@@ -1,0 +1,105 @@
+import { Column, Entity, PrimaryGeneratedColumn } from 'typeorm';
+import { BaseEntity } from '../common/entity/base.entity';
+import { IUserStatus } from '../user/interface/user.status';
+import { IUserAuthority } from '../user/interface/user.authority';
+import { IUserSettleCondition } from '../user/interface/user.settle.condition';
+import { IUserSettleMethod } from '../user/interface/user.settle.method';
+import { IUserBusinessType } from '../user/interface/user.business.type';
+
+@Entity('user')
+export class UserEntity extends BaseEntity {
+  @PrimaryGeneratedColumn()
+  id: number;
+
+  @Column({ type: 'varchar', length: 100, comment: '이메일' })
+  email: string;
+
+  @Column({ type: 'varchar', length: 256, comment: '비밀번호' })
+  password: string;
+
+  @Column({ comment: '비밀번호 초기화 여부' })
+  isPasswordReset: boolean;
+
+  @Column({
+    type: 'varchar',
+    length: 256,
+    comment: '권한 ex) 최고 관리자 : SUPER_ADMIN, 운영 관리자 :OPERATION_ADMIN, 기업관리자 : CORPORATE_ADMIN',
+  })
+  authority: IUserAuthority;
+
+  @Column({
+    type: 'enum',
+    enum: IUserStatus,
+    comment: '상태 ex) 사용 : USED, 미사용 : NOT_USED, 미승인 : NOT_APPROVED, 탈퇴 : LEAVE',
+  })
+  status: IUserStatus;
+
+  @Column({ type: 'varchar', length: 100, comment: '담당자 이름' })
+  personName: string;
+
+  @Column({ type: 'varchar', length: 20, comment: '담당자 연락처' })
+  personPhoneNumber: string;
+
+  @Column({ type: 'varchar', length: 100, comment: '담당자 이메일' })
+  personEmail: string;
+
+  @Column({ type: 'varchar', length: 100, comment: '담당자 코드' })
+  personCode: string;
+
+  @Column({ type: 'varchar', length: 100, default: 'GENERAL', comment: '담당자 분류, 고객 상담 내역' }) // TODO
+  personCategory: string;
+
+  @Column({
+    type: 'enum',
+    nullable: true,
+    enum: IUserBusinessType,
+    comment: '법인 유무 ex) 개인 : INDIVIDUAL, 법인 : CORPORATE',
+  })
+  businessType: IUserBusinessType | null;
+
+  @Column({ type: 'varchar', length: 100, comment: '법인 등록 번호' })
+  corporateNumber: string | null;
+
+  @Column({ type: 'varchar', length: 100, comment: '사업자 등록 번호' })
+  businessNumber: string;
+
+  @Column({ type: 'varchar', length: 100, comment: '사업자명' })
+  businessName: string;
+
+  @Column({ type: 'varchar', length: 100, comment: '사업자 주소' })
+  businessAddress: string;
+
+  @Column({ type: 'varchar', length: 100, comment: '사업자 연락처' })
+  businessPhoneNumber: string;
+
+  @Column({ type: 'varchar', nullable: true, length: 100, comment: '허용 IP' })
+  ip: string | null;
+
+  @Column({
+    type: 'enum',
+    enum: IUserSettleCondition,
+    comment: '정산 조건 ex) 선정산 : PRE_PAYMENT, 후정산: POST_PAYMENT',
+  })
+  settleCondition: IUserSettleCondition;
+
+  @Column({ type: 'varchar', length: 100, comment: '정산 방법 ex) 카드: CARD, 현금: CASH' })
+  settleMethod: IUserSettleMethod;
+
+  @Column({ comment: '최대 서비스 한도 가격' })
+  maximumLimit: number;
+
+  @Column({ type: 'varchar', length: 100, comment: '은행 명' })
+  bankName: string;
+
+  @Column({ type: 'varchar', length: 100, comment: '계좌 번호' })
+  bankNumber: string;
+
+  @Column({ type: 'varchar', length: 100, comment: '카드 명' })
+  cardName: string;
+
+  @Column({ type: 'varchar', length: 100, comment: '카드 번호' })
+  cardNumber: string;
+
+  @Column({ default: 0, comment: '잔액' })
+  balance: number;
+}

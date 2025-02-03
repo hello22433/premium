@@ -1,0 +1,144 @@
+import { UserManagementViewDto } from './dto/user.management.view.dto';
+import { GetListResDto } from '../../common/api/dto/get.list.res.dto';
+import { ApiProperty } from '@nestjs/swagger';
+import { UserManagementNameViewDto } from './dto/user.management.name.view.dto';
+import { IUserAuthority } from '../../user/interface/user.authority';
+import { IUserStatus } from '../../user/interface/user.status';
+import { IUserSettleCondition } from '../../user/interface/user.settle.condition';
+import { IUserSettleMethod } from '../../user/interface/user.settle.method';
+
+export class UserManagementGetNameListResDto {
+  @ApiProperty({
+    description: 'list',
+  })
+  list: UserManagementNameViewDto[];
+}
+
+export class UserManagementGetDetailResDto {
+  @ApiProperty({
+    description: 'user id',
+  })
+  id: number;
+
+  @ApiProperty({
+    description: 'user email',
+  })
+  email: string;
+
+  @ApiProperty({
+    description: '비밀번호 초기화 여부',
+  })
+  isPasswordReset: boolean;
+
+  @ApiProperty({
+    description: '권한 ex) 최고 관리자 : SUPER_ADMIN, 운영 관리자 :OPERATION_ADMIN, 기업관리자 : CORPORATE_ADMIN',
+  })
+  authority: IUserAuthority;
+
+  @ApiProperty({
+    description: '상태 ex) 사용 : USED, 미사용 : NOT_USED, 미승인 : NOT_APPROVED, 탈퇴 : LEAVE',
+  })
+  status: IUserStatus;
+
+  @ApiProperty({
+    description: '담당자 이름',
+  })
+  personName: string;
+
+  @ApiProperty({
+    description: '담당자 연락처',
+  })
+  personPhoneNumber: string;
+
+  @ApiProperty({
+    description: '담당자 이메일',
+  })
+  personEmail: string;
+
+  @ApiProperty({
+    description: '담당자 코드',
+  })
+  personCode: string;
+
+  @ApiProperty({
+    description: '담당자 분류',
+  })
+  personCategory: string;
+
+  @ApiProperty({
+    description: '법인 등록 번호',
+  })
+  corporateNumber: string | null;
+
+  @ApiProperty({
+    description: '사업자 등록 번호',
+  })
+  businessNumber: string;
+
+  @ApiProperty({
+    description: '사업자 명',
+  })
+  businessName: string;
+
+  @ApiProperty({
+    description: '사업자 주소',
+  })
+  businessAddress: string;
+
+  @ApiProperty({
+    description: '사업자 연락처',
+  })
+  businessPhoneNumber: string;
+
+  @ApiProperty({
+    description: '허용 ip',
+  })
+  ip: string | null;
+
+  @ApiProperty({
+    description: '정산 조건 ex) 선정산 : PRE_PAYMENT, 후정산: POST_PAYMENT',
+  })
+  settleCondition: IUserSettleCondition;
+
+  @ApiProperty({
+    description: '정산 방법 ex) 카드: CARD, 현금: CASH',
+  })
+  settleMethod: IUserSettleMethod;
+
+  @ApiProperty({
+    description: '최대 서비스 한도 가격',
+  })
+  maximumLimit: number;
+
+  @ApiProperty({
+    description: '은행 명',
+  })
+  bankName: string;
+
+  @ApiProperty({
+    description: '계좌 번호',
+  })
+  bankNumber: string;
+
+  @ApiProperty({
+    description: '카드 명',
+  })
+  cardName: string;
+
+  @ApiProperty({
+    description: '카드 번호',
+  })
+  cardNumber: string;
+
+  @ApiProperty({
+    description: '잔액',
+  })
+  balance: number;
+}
+
+export class UserManagementGetListResDto extends GetListResDto {
+  @ApiProperty({
+    description: '계정 list',
+  })
+  list: UserManagementViewDto[];
+}
