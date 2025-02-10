@@ -73,7 +73,7 @@ export class OrderDetailProductDto {
   @ApiProperty({
     description: '상품 정보',
   })
-  product: OrderProductDto;
+  product: OrderProductDto | null;
 
   @ApiProperty({
     type: [OrderViewDeliveryDto],

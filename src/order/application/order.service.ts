@@ -139,8 +139,8 @@ export class OrderService {
       .innerJoinAndSelect('order.user', 'user')
       .leftJoinAndSelect('order.operationUser', 'operationUser')
       .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
-      .innerJoinAndSelect('orderProductMappings.product', 'product')
-      .innerJoinAndSelect('product.brand', 'brand')
+      .leftJoinAndSelect('orderProductMappings.product', 'product')
+      .leftJoinAndSelect('product.brand', 'brand')
       .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
       .where('order.id = :id', { id: getParam.id });
 
@@ -166,17 +166,20 @@ export class OrderService {
           });
         }
 
+        const product = orderProductMapping.product
+          ? {
+              id: orderProductMapping.product.id,
+              name: orderProductMapping.product.name,
+              price: orderProductMapping.product.price,
+              expireDay: orderProductMapping.product.expireDay,
+              imagePath: orderProductMapping.product.imagePath,
+              brandId: orderProductMapping.product.brandId,
+              brandName: orderProductMapping.product.brand?.nameKorean ?? '',
+            }
+          : null;
         productList.push({
           id: orderProductMapping.id,
-          product: {
-            id: orderProductMapping.product.id,
-            name: orderProductMapping.product.name,
-            price: orderProductMapping.product.price,
-            expireDay: orderProductMapping.product.expireDay,
-            imagePath: orderProductMapping.product.imagePath,
-            brandId: orderProductMapping.product.brandId,
-            brandName: orderProductMapping.product.brand!.nameKorean,
-          },
+          product: product,
           orderDeliveryList: orderDeliveryList,
         });
       }

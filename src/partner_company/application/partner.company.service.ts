@@ -21,6 +21,7 @@ import { DateFormatStr } from '../../common/domain/date.format.str';
 import { format } from 'date-fns';
 import { CreateCode } from '../../common/domain/create.code';
 import { PartnerCompanyDigitNumber, PartnerCompanyPrefixCode } from '../domain/partner.company.code';
+import { IPartnerCompanyStatus } from '../interface/partner.company.status';
 
 @Injectable()
 export class PartnerCompanyService {
@@ -38,7 +39,7 @@ export class PartnerCompanyService {
         code: partnerCompany.code,
         businessName: partnerCompany.businessName,
         personName: partnerCompany.personName,
-        status: '정상', //TODO
+        status: IPartnerCompanyStatus.ACTIVE,
       };
     });
 
@@ -70,7 +71,7 @@ export class PartnerCompanyService {
         code: partnerCompany.code,
         businessName: partnerCompany.businessName,
         personName: partnerCompany.personName,
-        status: '정상', //TODO
+        status: IPartnerCompanyStatus.ACTIVE,
       };
     });
 

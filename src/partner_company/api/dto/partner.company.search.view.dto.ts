@@ -1,4 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
+import { IPartnerCompanyStatus } from '../../interface/partner.company.status';
 
 export class PartnerCompanySearchViewDto {
   @ApiProperty({
@@ -21,9 +22,8 @@ export class PartnerCompanySearchViewDto {
   })
   personName: string;
 
-  //TODO 상태
   @ApiProperty({
-    description: '상태 TODO 현재 정상만 return',
+    description: '상태',
   })
-  status: string;
+  status: IPartnerCompanyStatus;
 }

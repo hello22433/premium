@@ -322,6 +322,11 @@ export class ProductService {
       if (key === 'id') {
         continue;
       }
+
+      if (key === 'reason') {
+        continue;
+      }
+
       if (key === 'brandId') {
         const existBrandId = await this.brandRepository.count({ where: { id: getBody.brandId } });
         if (!existBrandId) {
