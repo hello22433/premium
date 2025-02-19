@@ -10,6 +10,7 @@ import { IGiftiel } from '../interface/giftiel';
 import { IGiftiShow } from '../interface/giftishow';
 import { PartnerCompanyExternHistoryEntity } from '../../entity/partner.company.extern.history.entity';
 import { ISsgIssue } from '../interface/ssg.issue';
+import { Propagation, Transactional } from 'typeorm-transactional';
 
 @Injectable()
 export class PartnerCompanyExternService {
