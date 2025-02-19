@@ -32,6 +32,7 @@ export class PartnerCompanyExternService {
     private partnerCompanyExternHistoryRepository: Repository<PartnerCompanyExternHistoryEntity>,
   ) {}
 
+  @Transactional({ propagation: Propagation.REQUIRED })
   async issue(orderDelivery: OrderDeliveryEntity) {
     const type = orderDelivery.orderProductMapping!.product.partnerCompany!.type;
 
