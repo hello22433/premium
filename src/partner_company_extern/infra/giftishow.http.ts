@@ -36,7 +36,8 @@ export class GiftishowHttp implements IGiftiShow {
       custom_auth_code: this.corpCode,
       custom_auth_token: this.authToken,
       custom_enc_flag: 'N',
-      Accept: 'application/json',
+      'Content-Type': 'application/xml', // XML로 요청을 보내기 위한 Content-Type
+      Accept: 'application/xml', // XML 응답을 수신하기 위함
     };
     const data = {
       MDCODE: this.corpCode,
@@ -54,12 +55,11 @@ export class GiftishowHttp implements IGiftiShow {
       const response = await firstValueFrom(this.httpService.post(url, data, { headers }));
       const result = response.data;
 
-      // const resultToJson = (await this.parser().parseStringPromise(result)) as unknown as GiftiShowIssueOut;
+      const resultToJson = (await this.parser().parseStringPromise(result)) as unknown as GiftiShowIssueOut;
 
       this.logger.log(result);
-      this.logger.log(response.status);
-      this.logger.log(response.headers);
-      return result as GiftiShowIssueOut;
+      this.logger.log(response.toString());
+      return resultToJson as GiftiShowIssueOut;
     } catch (e) {
       this.logger.error(e);
       throw e;
