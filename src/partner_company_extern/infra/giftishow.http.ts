@@ -58,7 +58,7 @@ export class GiftishowHttp implements IGiftiShow {
 
       this.logger.log(result);
       this.logger.log(response.status);
-      this.logger.log(response.header);
+      this.logger.log(response.headers);
       return result as GiftiShowIssueOut;
     } catch (e) {
       this.logger.error(e);
