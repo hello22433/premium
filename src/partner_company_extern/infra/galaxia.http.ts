@@ -3,7 +3,7 @@ import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
-import { GalaxiaIssueIn, GalaxiaIssueOut, IGalaxia } from '../interface/galaxia.';
+import { GalaxiaIssueIn, GalaxiaIssueOut, IGalaxia } from '../interface/galaxia';
 
 @Injectable()
 export class GalaxiaHttp implements IGalaxia {
@@ -48,6 +48,9 @@ export class GalaxiaHttp implements IGalaxia {
     });
 
     try {
+      this.logger.log(`${url}?${data.toString()}`);
+      this.logger.log(headers);
+
       const response = await firstValueFrom(this.httpService.post(`${url}?${data.toString()}`, {}, { headers }));
 
       this.logger.log(response.data);

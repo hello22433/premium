@@ -50,7 +50,7 @@ export class OrderViewDto {
   @ApiProperty({
     description: '발송 시간 ex) yyyy-MM-ddTHH:mm:ss',
   })
-  sendRequestAt: string;
+  sendRequestAt: string | null;
 
   @ApiProperty({
     nullable: true,

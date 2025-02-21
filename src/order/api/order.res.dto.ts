@@ -73,8 +73,9 @@ export class OrderGetDetailResDto {
 
   @ApiProperty({
     description: '발송 요청 시각 ex) yyyy-MM-ddTHH:mm:ss',
+    nullable: true,
   })
-  sendRequestAt: string;
+  sendRequestAt: string | null;
 
   @ApiProperty({
     enum: IOrderStatus,

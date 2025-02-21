@@ -4,7 +4,7 @@ import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { Repository } from 'typeorm';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 import { ICulture } from '../interface/culture';
-import { IGalaxia } from '../interface/galaxia.';
+import { IGalaxia } from '../interface/galaxia';
 import { IGsmbiz } from '../interface/gsmbiz';
 import { IGiftiel } from '../interface/giftiel';
 import { IGiftiShow } from '../interface/giftishow';

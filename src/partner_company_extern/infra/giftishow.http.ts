@@ -52,6 +52,9 @@ export class GiftishowHttp implements IGiftiShow {
     };
 
     try {
+      this.logger.log(url);
+      this.logger.log(data);
+      this.logger.log(headers);
       const response = await firstValueFrom(this.httpService.post(url, data, { headers }));
       const result = response.data;
 

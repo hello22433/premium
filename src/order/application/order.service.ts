@@ -33,6 +33,7 @@ import { UserEntity } from '../../entity/user.entity';
 import { IUserAuthority } from '../../user/interface/user.authority';
 import { IOrderSection } from '../interface/order.section';
 import { OrderDetailProductDto, OrderViewDeliveryDto } from '../api/dto/order.detail.product.dto';
+import { normalizeDate } from '../../util/time.util';
 
 @Injectable()
 export class OrderService {
@@ -112,6 +113,8 @@ export class OrderService {
         }
       }
 
+      const sendRequestAt = normalizeDate(order.sendRequestAt) ? format(order.sendRequestAt, DateFormatStr) : null;
+
       return {
         id: order.id,
         registerAt: format(order.registerAt, DateFormatStr),
@@ -122,7 +125,7 @@ export class OrderService {
         totalProductCount: totalProductCount,
         totalAmount: totalAmount,
         status: order.status,
-        sendRequestAt: format(order.sendRequestAt, DateFormatStr),
+        sendRequestAt: sendRequestAt,
         operationUserId: order.operationUserId,
         operationUserName: order.operationUser?.personName ?? null,
         deliveryPrice: 0, //TODO 발송금액
@@ -185,6 +188,8 @@ export class OrderService {
       }
     }
 
+    const sendRequestAt = normalizeDate(order.sendRequestAt) ? format(order.sendRequestAt, DateFormatStr) : null;
+
     return {
       id: order.id,
       registerAt: format(order.registerAt, DateFormatStr),
@@ -196,7 +201,7 @@ export class OrderService {
       fromPhoneNumber: order.fromPhoneNumber,
       sendTitle: order.sendTitle,
       sendContent: order.sendContent,
-      sendRequestAt: format(order.sendRequestAt, DateFormatStr),
+      sendRequestAt: sendRequestAt,
       status: order.status,
       productList: productList,
     };
