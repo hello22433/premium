@@ -57,7 +57,7 @@ export class GiftishowHttp implements IGiftiShow {
       // const resultToJson = (await this.parser().parseStringPromise(result)) as unknown as GiftiShowIssueOut;
 
       this.logger.log(result);
-      this.logger.log(response.toString());
+      this.logger.log(JSON.stringify(response));
       return result as GiftiShowIssueOut;
     } catch (e) {
       this.logger.error(e);
