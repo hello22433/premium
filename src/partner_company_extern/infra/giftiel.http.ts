@@ -24,7 +24,7 @@ export class GiftielHttp implements IGiftiel {
   private ciCode: string = '';
   private ciPwd: string = '';
 
-  private url = 'http://tserviceapi.giftiel.kr'; // test URL
+  private url = 'https://tserviceapi.giftiel.kr'; // test URL
 
   async issue(obj: GiftielIssueIn): Promise<GiftielIssueOut> {
     const url = `${this.url}/Api/Coupon/CouponProcessJson.asmx/GetCouponNumber`;
