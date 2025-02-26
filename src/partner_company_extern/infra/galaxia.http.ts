@@ -47,6 +47,7 @@ export class GalaxiaHttp implements IGalaxia {
       'msg-type': 'LMS',
       'msg-callback': callback,
       dept: obj.giftKind, // coupon : cpn, 상품권 : dept
+      sendMsg: 'N',
       // faceValue: obj.faceValue, // 발행 액면가
     });
 
