@@ -16,12 +16,13 @@ export class GiftishowHttp implements IGiftiShow {
     this.corpCode = this.configService.getOrThrow('GIFTI_SHOW_CORP_CODE');
     this.authToken = this.configService.getOrThrow('GIFTI_SHOW_CUSTOM_AUTH_TOKEN');
     if (this.configService.getOrThrow('ENVIRONMENT') === 'prod') {
-      this.url = 'https://giftishowgw.giftishow.co.kr/media/request.asp';
+      this.url = 'https://giftishowgw.giftishow.co.kr';
     }
   }
+
   private logger = new Logger('GIFTI_SHOW');
 
-  private url: string = 'http://tgiftishowgw.giftishow.co.kr/media/request.asp';
+  private url: string = 'http://tgiftishowgw.giftishow.co.kr';
   private corpCode: string = '';
   private authToken: string = '';
 

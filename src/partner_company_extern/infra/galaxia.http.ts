@@ -18,6 +18,7 @@ export class GalaxiaHttp implements IGalaxia {
       this.url = 'https://mcoupon.mdpt.co.kr';
     }
   }
+
   private logger = new Logger('GALAXIA');
 
   private companyCode: string = 'enmad';
@@ -29,6 +30,7 @@ export class GalaxiaHttp implements IGalaxia {
 
   // 쿠폰 발행
   async issue(obj: GalaxiaIssueIn): Promise<GalaxiaIssueOut> {
+    const callback = '16443614';
     const url = `${this.url}/interface/mkt/${this.companyCode}/${obj.giftKind}/issueCoupon`;
     const headers = {
       'Content-Type': 'application/x-www-form-urlencoded',
@@ -37,12 +39,13 @@ export class GalaxiaHttp implements IGalaxia {
     const data = new URLSearchParams({
       'order-number': obj.transactionId, // 거래 요청 번호
       goodsGroupId: this.cryptoCipher.encrypt(obj.partnerCompanyCode, this.encKey, this.encIv, this.cryptoAlgorithm), // 발행 상품 코드
-      buyer: '01000000000',
+      buyer: this.cryptoCipher.encrypt(callback, this.encKey, this.encIv, this.cryptoAlgorithm),
       recipient: this.cryptoCipher.encrypt(obj.fromPhoneNumber, this.encKey, this.encIv, this.cryptoAlgorithm), // 수신자 핸드폰 번호
       saleType: 'B2B',
       saleChannel: 'enmad',
       duration: '0',
       'msg-type': 'LMS',
+      'msg-callback': callback,
       dept: obj.giftKind, // coupon : cpn, 상품권 : dept
       // faceValue: obj.faceValue, // 발행 액면가
     });
