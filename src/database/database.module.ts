@@ -21,6 +21,8 @@ import { OrderDeliveryEntity } from '../entity/order.delivery.entity';
 import { DeliverySendHistoryEntity } from '../entity/delivery.send.history.entity';
 import { PartnerCompanyExternHistoryEntity } from '../entity/partner.company.extern.history.entity';
 import { ProductUpdateHistoryEntity } from '../entity/product.update.history.entity';
+import { EmailSendHistoryEntity } from '../entity/email.send.history.entity';
+import { SqlLogger } from '../common/api/sql.logger';
 
 @Module({
   imports: [
@@ -51,8 +53,10 @@ import { ProductUpdateHistoryEntity } from '../entity/product.update.history.ent
           DeliverySendHistoryEntity,
           PartnerCompanyExternHistoryEntity,
           ProductUpdateHistoryEntity,
+          EmailSendHistoryEntity,
         ],
         timezone: 'local',
+        logger: new SqlLogger(),
         namingStrategy: new SnakeNamingStrategy(),
         logging: configService.get('DATABASE_LOGGING') === 'true',
         synchronize: configService.get('DATABASE_SYNCHRONIZE') === 'true',

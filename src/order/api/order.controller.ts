@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Put, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Logger, Param, Patch, Post, Put, Query, Res, UseGuards } from '@nestjs/common';
 import { OrderService } from '../application/order.service';
 import {
   ApiBadRequestResponse,
@@ -9,20 +9,30 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import {
+  OrderCreateSettleReqDto,
   OrderCreateTempReqDto,
   OrderDeliveryCancelReqDto,
   OrderDeliveryConfirmedReqDto,
   OrderDeliveryRequestReqDto,
+  OrderExcelDownloadReqQueryDto,
   OrderGetDetailReqParamDto,
   OrderGetListReqDto,
+  OrderGetSettleReqDto,
   OrderUpdateOperationUserReqDto,
   OrderUpdateTempReqDto,
 } from './order.req.dto';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
-import { OrderCreateTempResDto, OrderGetDetailResDto, OrderGetListResDto } from './order.res.dto';
+import {
+  OrderCreateTempResDto,
+  OrderGetDetailResDto,
+  OrderGetListResDto,
+  OrderGetSettleGetListResDto,
+} from './order.res.dto';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { User } from '../../auth/api/user.decorator';
 import { AuthUserSuperAdminGuard } from '../../auth/api/auth.user.super-admin.guard';
+import * as fs from 'fs';
+import { Response } from 'express';
 
 @ApiTags('order')
 @ApiBearerAuth()
@@ -30,6 +40,8 @@ import { AuthUserSuperAdminGuard } from '../../auth/api/auth.user.super-admin.gu
 @UseGuards(AuthUserAuthorizationGuard)
 export class OrderController {
   constructor(private orderService: OrderService) {}
+
+  private logger = new Logger('ORDER');
 
   @ApiOperation({
     summary: '주문 및 발송 관리 list 조회 API',
@@ -63,6 +75,37 @@ export class OrderController {
   @Get('/order/detail/:id')
   getDetail(@Param() getParam: OrderGetDetailReqParamDto) {
     return this.orderService.getDetail(getParam);
+  }
+
+  @ApiOperation({
+    summary: '정산 정보 조회 API',
+  })
+  @ApiOkResponse({
+    type: OrderGetSettleGetListResDto,
+    description: '성공적으로 조회한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '해당 order id 가 존재하지 않는 경우',
+  })
+  // ====================================================
+  @Get('/order/settle')
+  getOrderSettle(@Query() getQuery: OrderGetSettleReqDto) {
+    return this.orderService.getOrderSettle(getQuery);
+  }
+
+  @ApiOperation({
+    summary: '정산 정보 입력 API',
+  })
+  @ApiOkResponse({
+    description: '성공적으로 입력한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '해당 order id 가 존재하지 않는 경우',
+  })
+  // ====================================================
+  @Post('/order/settle')
+  createOrderSettle(@Body() getBody: OrderCreateSettleReqDto) {
+    return this.orderService.createOrderSettle(getBody);
   }
 
   @ApiOperation({
@@ -157,5 +200,41 @@ export class OrderController {
   @Patch('/order/operation-user')
   updateOperationUser(@Body() getBody: OrderUpdateOperationUserReqDto) {
     return this.orderService.updateOperationUser(getBody);
+  }
+
+  @ApiOperation({
+    summary: '주문 및 발송 관리 list 엑셀 다운로드 API',
+  })
+  @ApiBearerAuth()
+  @ApiOkResponse({
+    description: '성공적으로 다운로드한 경우',
+  })
+  // ===================================================
+  @Post('/order/excel-download')
+  async excelDownload(
+    @User() user: ILoginUserInfo,
+    @Query() getQuery: OrderExcelDownloadReqQueryDto,
+    @Res() res: Response,
+  ) {
+    try {
+      const { fileName, filePath } = await this.orderService.excelDownload(user, getQuery);
+
+      const encodedFileName = encodeURIComponent(fileName);
+      res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
+      res.setHeader('Content-Disposition', `attachment; filename=${encodedFileName}`);
+
+      const fileStream = fs.createReadStream(filePath);
+      fileStream.pipe(res);
+
+      fileStream.on('close', async () => {
+        fs.unlink(filePath, (unlinkErr) => {
+          if (unlinkErr) {
+            this.logger.error(`파일 삭제 실패 ${unlinkErr}`);
+          }
+        });
+      });
+    } catch (e) {
+      throw e;
+    }
   }
 }

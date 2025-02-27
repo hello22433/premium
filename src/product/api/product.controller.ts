@@ -1,8 +1,31 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Logger,
+  Param,
+  Patch,
+  Post,
+  Query,
+  Res,
+  UploadedFile,
+  UseGuards,
+  UseInterceptors,
+} from '@nestjs/common';
 import { ProductService } from '../application/product.service';
-import { ApiBadRequestResponse, ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBadRequestResponse,
+  ApiBearerAuth,
+  ApiBody,
+  ApiConsumes,
+  ApiOkResponse,
+  ApiOperation,
+  ApiTags,
+} from '@nestjs/swagger';
 import {
   ProductCreateReqDto,
+  ProductExcelDownloadReqQueryDto,
+  ProductExcelUploadReqDto,
   ProductGetDetailReqParamDto,
   ProductGetListReqQueryDto,
   ProductGetUpdateHistoryReqParamDto,
@@ -19,6 +42,9 @@ import {
 } from './product.res.dto';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { User } from '../../auth/api/user.decorator';
+import * as fs from 'fs';
+import { Response } from 'express';
+import { FileInterceptor } from '@nestjs/platform-express';
 
 @ApiBearerAuth()
 @UseGuards(AuthUserAuthorizationGuard)
@@ -26,6 +52,8 @@ import { User } from '../../auth/api/user.decorator';
 @Controller('')
 export class ProductController {
   constructor(private productService: ProductService) {}
+
+  private logger = new Logger('PRODUCT');
 
   @ApiOperation({
     summary: '상품 리스트 조회하기 API',
@@ -121,5 +149,59 @@ export class ProductController {
   @Patch('/product')
   updatePartial(@User() user: ILoginUserInfo, @Body() getBody: ProductUpdatePartialReqDto) {
     return this.productService.updatePartial(user, getBody);
+  }
+
+  @ApiOperation({
+    summary: '상품 엑셀 다운로드 API',
+  })
+  @ApiBearerAuth()
+  @ApiOkResponse({
+    description: '성공적으로 다운로드한 경우',
+  })
+  // ===================================================
+  @Post('/product/excel-download')
+  async excelDownload(@Query() getQuery: ProductExcelDownloadReqQueryDto, @Res() res: Response) {
+    try {
+      const { fileName, filePath } = await this.productService.excelDownload(getQuery);
+
+      const encodedFileName = encodeURIComponent(fileName);
+      res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
+      res.setHeader('Content-Disposition', `attachment; filename=${encodedFileName}`);
+
+      const fileStream = fs.createReadStream(filePath);
+      fileStream.pipe(res);
+
+      fileStream.on('close', async () => {
+        fs.unlink(filePath, (unlinkErr) => {
+          if (unlinkErr) {
+            this.logger.error(`파일 삭제 실패 ${unlinkErr}`);
+          }
+        });
+      });
+    } catch (e) {
+      throw e;
+    }
+  }
+
+  @ApiOperation({
+    summary: '상품 엑셀 업로드 API',
+    description: '엑셀 파일을 업로드하여 상품을 등록합니다.',
+  })
+  @ApiConsumes('multipart/form-data')
+  @ApiOkResponse({
+    description: '성공적으로 업로드한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '상품 등록 과정에서 엑셀 양식이 맞지 않는 경우',
+  })
+  @ApiBody({
+    type: ProductExcelUploadReqDto,
+    description: '업로드 하고자 하는 엑셀 파일',
+  })
+  // =========================================
+  @Post('/product/excel-upload')
+  @UseInterceptors(FileInterceptor('file'))
+  excelUpload(@UploadedFile() file: Express.Multer.File) {
+    return this.productService.excelUpload(file);
   }
 }

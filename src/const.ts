@@ -2,3 +2,5 @@
 import { IPartnerCompanyType } from './partner_company/interface/partner.company.type';
 
 export const PartnerCompanySSGType = IPartnerCompanyType.SSG;
+
+export const EmailCertifyExpireMinute = 10;

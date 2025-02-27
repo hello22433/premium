@@ -16,6 +16,7 @@ export class MailSendHiworks implements IMailSend {
       this.url = 'https://api.hiworks.com'; // production 설정 용
     }
   }
+
   private logger = new Logger('MAIL_HI_WORKS');
 
   private url: string = 'https://api.hiworks.com';
@@ -25,7 +26,7 @@ export class MailSendHiworks implements IMailSend {
   async send(obj: IMailSendIn): Promise<IMailSendOut> {
     const url = `${this.url}/office/v2/webmail/sendMail`;
     const headers = {
-      'Content-Type': 'application/form-data',
+      'Content-Type': 'multipart/form-data',
       Authorization: `${this.officeToken}`,
     };
 

@@ -20,6 +20,10 @@ import { ServeStaticModule } from '@nestjs/serve-static';
 import { LoggerMiddleware } from './common/api/logger.middleware';
 import { MessageArchiveModule } from './message_archive/message.archive.module';
 import { FileModule } from './file/file.module';
+import { UserFindModule } from './user_find/user.find.module';
+import { UserBizModule } from './user_biz/user.biz.module';
+import { UserInfoModule } from './user_info/user.info.module';
+import { UserDiscountModule } from './user_discount/user.discount.module';
 
 @Module({
   imports: [
@@ -28,6 +32,7 @@ import { FileModule } from './file/file.module';
     DatabaseModule,
     UserModule,
     UserManagementModule,
+    UserDiscountModule,
     ProductModule,
     PartnerCompanyModule,
     NoticeModule,
@@ -46,6 +51,9 @@ import { FileModule } from './file/file.module';
     }),
     MessageArchiveModule,
     FileModule,
+    UserFindModule,
+    UserBizModule,
+    UserInfoModule,
   ],
   controllers: [AppController],
   providers: [],

@@ -11,6 +11,7 @@ import { IGiftiShow } from '../interface/giftishow';
 import { PartnerCompanyExternHistoryEntity } from '../../entity/partner.company.extern.history.entity';
 import { ISsgIssue } from '../interface/ssg.issue';
 import { Propagation, Transactional } from 'typeorm-transactional';
+import { orderBarcodeGenerate } from '../../order/domain/order.code.generate';
 
 @Injectable()
 export class PartnerCompanyExternService {
@@ -111,17 +112,24 @@ export class PartnerCompanyExternService {
         context = ssgBardCode;
         orderDelivery.barCode = ssgBardCode;
       }
+
+      if (type === null) {
+        orderDelivery.barCode = orderBarcodeGenerate();
+      }
+
       return;
     } catch (e) {
       context = JSON.stringify(e);
       isSuccess = false;
       orderDelivery.status = IOrderDeliveryStatus.FAIL;
     } finally {
-      this.partnerCompanyExternHistoryRepository.insert({
-        context,
-        isSuccess,
-        type: type!,
-      });
+      if (type !== null) {
+        this.partnerCompanyExternHistoryRepository.insert({
+          context,
+          isSuccess,
+          type: type!,
+        });
+      }
     }
   }
 }

@@ -10,6 +10,8 @@ import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { UserEntityTest } from '../../../test/infra/user.entity.test';
 import { UserService } from './user.service';
 import { LoginUserInfoTest } from '../../../test/common/login.user.info.test';
+import { EmailSendHistoryEntity } from '../../entity/email.send.history.entity';
+import { IMailSend } from '../../mail/interface/mail-send';
 
 jest.mock('typeorm-transactional', () => ({
   Transactional: () => () => ({}),
@@ -19,8 +21,17 @@ describe('user login service Test', () => {
   const userRepository: MockProxy<Repository<UserEntity>> = mock<Repository<UserEntity>>();
   const passwordEncrypt: MockProxy<PasswordBcryptEncrypt> = mock<PasswordBcryptEncrypt>();
   const loginTokenValidator: MockProxy<ILoginTokenValidator> = mock<ILoginTokenValidator>();
+  const emailSendHistoryRepository: MockProxy<Repository<EmailSendHistoryEntity>> =
+    mock<Repository<EmailSendHistoryEntity>>();
+  const mailSendService: MockProxy<IMailSend> = mock<IMailSend>();
 
-  const sut = new UserService(passwordEncrypt, loginTokenValidator, userRepository);
+  const sut = new UserService(
+    passwordEncrypt,
+    loginTokenValidator,
+    userRepository,
+    emailSendHistoryRepository,
+    mailSendService,
+  );
 
   beforeEach(() => {
     mockReset(passwordEncrypt);
@@ -96,9 +107,9 @@ describe('user login service Test', () => {
       const result = await sut.loginByEmailPassword(givenLoginDto);
 
       expect(result.accessToken).toBeDefined();
-      expect(result.accessToken.value).toBe('token');
+      expect(result.accessToken!.value).toBe('token');
       expect(result.refreshToken).toBeDefined();
-      expect(result.refreshToken.value).toBe('token');
+      expect(result.refreshToken!.value).toBe('token');
     });
 
     it('email의 유저가 존재하지 않는 경우', async () => {

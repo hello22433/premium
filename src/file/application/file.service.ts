@@ -1,10 +1,10 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable } from '@nestjs/common';
 import { FileUploadResDto } from '../api/file.res.dto';
-import { ConfigService } from '@nestjs/config';
+import { IFileStorage } from '../interface/file.storage';
 
 @Injectable()
 export class FileService {
-  constructor(private configService: ConfigService) {}
+  constructor(@Inject('IFileStorage') private fileStorage: IFileStorage) {}
 
   async uploadImageFile(file: Express.Multer.File): Promise<FileUploadResDto> {
     if (!file) {
@@ -20,13 +20,17 @@ export class FileService {
       throw new BadRequestException('NO_IMAGE_FILE_TYPE');
     }
 
-    // const fileReturn = await this.fileStorage.uploadImageFile(file);
+    const fileReturn = await this.fileStorage.uploadImageFile(file);
 
-    const serverHost = this.configService.getOrThrow('SERVER_HOST');
-    const uploadImageFilePath = this.configService.getOrThrow('SERVER_IMAGE_PATH');
+    return { url: fileReturn.url };
+  }
 
-    const fileUrl = `${serverHost}${uploadImageFilePath}/${file.filename}`;
-
-    return { url: fileUrl };
+  async downloadWithPath(path: string, fileTitle: string, fileUrl: string) {
+    try {
+      const key = fileUrl.split('.com/').slice(1).join('');
+      return this.fileStorage.downloadFileToLocalWithPath(path, fileTitle, key);
+    } catch (error) {
+      throw new Error('올바른 파일 경로가 아닙니다.');
+    }
   }
 }

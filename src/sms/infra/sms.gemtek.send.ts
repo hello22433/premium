@@ -3,12 +3,14 @@ import { GemteckMsgQueueEntity } from '../../entity/gemtek/msg.queue.entity';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 
 export class SmsGemtekSend implements ISmsSend {
   constructor(
     // private configService: ConfigService,
     @InjectRepository(GemteckMsgQueueEntity, 'gemtek_sms')
     private gemteckMsgQueueRepository: Repository<GemteckMsgQueueEntity>,
+    private configService: ConfigService,
   ) {}
 
   private logger = new Logger('SMS_GEMTEK');
@@ -43,6 +45,7 @@ export class SmsGemtekSend implements ISmsSend {
           fileLoc3,
           fileLoc4,
           fileLoc5,
+          senderCode: this.configService.get('SMS_GEMTEK_SENDER_CODE'),
           enmEtc02: 'epopkon-premium',
         })
         .execute();

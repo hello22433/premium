@@ -1,15 +1,23 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import {
+  OrderCreateSettleReqDto,
   OrderCreateTempReqDto,
   OrderDeliveryCancelReqDto,
   OrderDeliveryConfirmedReqDto,
   OrderDeliveryRequestReqDto,
+  OrderExcelDownloadReqQueryDto,
   OrderGetDetailReqParamDto,
   OrderGetListReqDto,
+  OrderGetSettleReqDto,
   OrderUpdateOperationUserReqDto,
   OrderUpdateTempReqDto,
 } from '../api/order.req.dto';
-import { OrderCreateTempResDto, OrderGetDetailResDto, OrderGetListResDto } from '../api/order.res.dto';
+import {
+  OrderCreateTempResDto,
+  OrderGetDetailResDto,
+  OrderGetListResDto,
+  OrderGetSettleGetListResDto,
+} from '../api/order.res.dto';
 import { OrderEntity } from '../../entity/order.entity';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
@@ -34,9 +42,21 @@ import { IUserAuthority } from '../../user/interface/user.authority';
 import { IOrderSection } from '../interface/order.section';
 import { OrderDetailProductDto, OrderViewDeliveryDto } from '../api/dto/order.detail.product.dto';
 import { normalizeDate } from '../../util/time.util';
+import { join } from 'path';
+import * as process from 'node:process';
+import * as ExcelJS from 'exceljs';
+import { OrderSettleViewDto } from '../api/dto/order.settle.view.dto';
 
 @Injectable()
 export class OrderService {
+  // 기본 상단 이미지
+  private static readonly DEFAULT_TOP_IMAGE_PATH =
+    'https://epopkon-premium.s3.amazonaws.com/image/1740558623939-coupon-ttl.jpg';
+
+  // 기본 중간 이미지
+  private static readonly DEFAULT_MID_IMAGE_PATH =
+    'https://epopkon-premium.s3.amazonaws.com/image/1740558757718-mms_text_img.jpg';
+
   constructor(
     @InjectRepository(OrderEntity)
     private orderRepository: Repository<OrderEntity>,
@@ -176,6 +196,8 @@ export class OrderService {
               price: orderProductMapping.product.price,
               expireDay: orderProductMapping.product.expireDay,
               imagePath: orderProductMapping.product.imagePath,
+              topImagePath: orderProductMapping.topImagePath,
+              midImagePath: orderProductMapping.midImagePath,
               brandId: orderProductMapping.product.brandId,
               brandName: orderProductMapping.product.brand?.nameKorean ?? '',
             }
@@ -207,6 +229,77 @@ export class OrderService {
     };
   }
 
+  async getOrderSettle(getQuery: OrderGetSettleReqDto): Promise<OrderGetSettleGetListResDto> {
+    const { id, page, take } = getQuery;
+
+    const skip = (page - 1) * take;
+
+    const [orderProductList, totalCount] = await this.orderProductMappingRepository.findAndCount({
+      where: {
+        orderId: id,
+      },
+      skip,
+      take,
+      relations: ['product', 'product.brand'],
+    });
+
+    const resultList: OrderSettleViewDto[] = orderProductList.map((orderProduct) => {
+      return {
+        id: orderProduct.id,
+        brandName: orderProduct.product.brand?.nameKorean ?? null,
+        name: orderProduct.product.name,
+        price: orderProduct.product.price,
+        amount: orderProduct.amount,
+        totalPrice: orderProduct.product.price * orderProduct.amount,
+        settleDiscountType: orderProduct.settleDiscountType ?? null,
+        priceAdjustment: orderProduct.priceAdjustment ?? null,
+        fee: orderProduct.fee ?? null,
+      };
+    });
+
+    const totalPage = Math.ceil(totalCount / take);
+
+    return {
+      list: resultList,
+      currentPage: page,
+      totalCount,
+      totalPage,
+    };
+  }
+
+  @Transactional()
+  async createOrderSettle(getBody: OrderCreateSettleReqDto) {
+    const { list } = getBody;
+
+    if (list.length === 0) {
+      return;
+    }
+
+    const orderProductIds = list.map((item) => item.id);
+
+    const existingOrderProducts = await this.orderProductMappingRepository.find({
+      where: { id: In(orderProductIds) },
+    });
+
+    const existingOrderProductMap = new Map(existingOrderProducts.map((order) => [order.id, order]));
+
+    const missOrderProductIds = orderProductIds.filter((id) => !existingOrderProductMap.has(id));
+    if (missOrderProductIds.length > 0) {
+      throw new BadRequestException('존재하지 않는 주문 내역이 있습니다');
+    }
+
+    const orderProductList = list.map((settle) => {
+      return this.orderProductMappingRepository.create({
+        id: settle.id,
+        settleDiscountType: settle.settleDiscountType,
+        priceAdjustment: settle.priceAdjustment,
+        fee: settle.fee,
+      });
+    });
+
+    await this.orderProductMappingRepository.save(orderProductList);
+  }
+
   @Transactional()
   async createTemp(user: ILoginUserInfo, getBody: OrderCreateTempReqDto): Promise<OrderCreateTempResDto> {
     const {
@@ -216,6 +309,8 @@ export class OrderService {
       sendTailText,
       requestToDestroyPersonalInfoDay,
       fromPhoneNumber,
+      topImagePath,
+      midImagePath,
       sendTitle,
       sendContent,
       sendRequestAt,
@@ -274,8 +369,11 @@ export class OrderService {
       orderProduct.orderId = orderId;
       orderProduct.productId = product.productId;
       orderProduct.amount = product.amount;
+      orderProduct.topImagePath = topImagePath ?? OrderService.DEFAULT_TOP_IMAGE_PATH;
+      orderProduct.midImagePath = midImagePath ?? OrderService.DEFAULT_MID_IMAGE_PATH;
 
       await this.orderProductMappingRepository.save(orderProduct);
+
       for (const orderDelivery of product.orderDeliveryList) {
         const oneOrderDelivery = new OrderDeliveryEntity();
         oneOrderDelivery.orderProductMappingId = orderProduct.id;
@@ -304,6 +402,8 @@ export class OrderService {
       sendTailText,
       requestToDestroyPersonalInfoDay,
       fromPhoneNumber,
+      topImagePath,
+      midImagePath,
       sendTitle,
       sendContent,
       sendRequestAt,
@@ -380,6 +480,8 @@ export class OrderService {
       orderProduct.orderId = orderId;
       orderProduct.productId = product.productId;
       orderProduct.amount = product.amount;
+      if (topImagePath !== undefined && topImagePath !== null) orderProduct.topImagePath = topImagePath;
+      if (midImagePath !== undefined && midImagePath !== null) orderProduct.midImagePath = midImagePath;
 
       await this.orderProductMappingRepository.save(orderProduct);
       for (const orderDelivery of product.orderDeliveryList) {
@@ -444,7 +546,7 @@ export class OrderService {
       .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .innerJoinAndSelect('product.brand', 'brand')
       .where('order.id = :id', { id })
-      .andWhere('order.userId = :userId', { userId: user.id })
+      // .andWhere('order.userId = :userId', { userId: user.id })
       .andWhere('order.status = :status', { status: IOrderStatus.DELIVERY_REQUEST })
       .getOne();
 
@@ -459,14 +561,16 @@ export class OrderService {
         await this.partnerCompanyExternService.issue(orderDelivery);
         orderDelivery.status = IOrderDeliveryStatus.WAIT;
         if (orderDelivery.barCode) {
-          const { fileName } = await DeliveryCreateCouponImage(
+          const { path } = await DeliveryCreateCouponImage(
             orderDelivery.orderProductMapping.product.imagePath,
             orderDelivery.orderProductMapping.product.name,
             orderDelivery.barCode,
             orderDelivery.orderProductMapping.product.brand!.nameKorean,
             orderDelivery.orderProductMapping.product.expireDay,
+            orderDelivery.orderProductMapping.topImagePath,
+            orderDelivery.orderProductMapping.midImagePath,
           );
-          orderDelivery.imagePath = fileName;
+          orderDelivery.imagePath = path;
         }
 
         await this.orderDeliveryRepository.save(orderDelivery);
@@ -487,7 +591,7 @@ export class OrderService {
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .where('order.id = :id', { id })
-      .andWhere('order.userId = :userId', { userId: user.id })
+      // .andWhere('order.userId = :userId', { userId: user.id })
       .andWhere('order.status = :status', { status: 'DELIVERY_REQUEST' })
       .getOne();
 
@@ -534,5 +638,111 @@ export class OrderService {
 
     await this.orderRepository.save(order);
     return;
+  }
+
+  async excelDownload(user: ILoginUserInfo, getQuery: OrderExcelDownloadReqQueryDto) {
+    const { eventName, type, status, userId, startAt, endAt, section } = getQuery;
+
+    const now = new Date();
+    const nowString = format(now, 'yyyyMMdd');
+    let orderType = '';
+
+    let queryBuilder = this.orderRepository
+      .createQueryBuilder('order')
+      .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('order.operationUser', 'operationUser')
+      .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
+      .leftJoinAndSelect('orderProductMappings.product', 'product')
+      .where('order.type = :type', { type });
+
+    // 주문 관리 일 경우
+    if (section === IOrderSection.ORDER) {
+      queryBuilder = queryBuilder.andWhere('order.userId = :userId', { userId: user.id });
+      orderType = '주문';
+    }
+
+    // 발송관리 일 경우
+    if (section === IOrderSection.SHIPPING) {
+      if (user.authority === IUserAuthority.CORPORATE_ADMIN) {
+        queryBuilder = queryBuilder.andWhere('order.userId = :userId', { userId: user.id });
+      }
+
+      if (user.authority === IUserAuthority.OPERATION_ADMIN) {
+        queryBuilder = queryBuilder.andWhere('order.operationUserId = :userId', { userId: user.id });
+      }
+
+      orderType = '발송';
+    }
+
+    if (status) {
+      queryBuilder = queryBuilder.andWhere('order.status = :status', { status });
+    }
+
+    if (userId) {
+      queryBuilder = queryBuilder.andWhere('order.userId = :userId', { userId });
+    }
+
+    if (eventName) {
+      queryBuilder = queryBuilder.andWhere('order.eventName = :eventName', { eventName: `%${eventName}%` });
+    }
+
+    queryBuilder = QueryBuilderDateCondition(queryBuilder, 'order', 'sendRequestAt', startAt, endAt);
+
+    const orderList = await queryBuilder.getMany();
+
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet(`sheet1`);
+
+    sheet.columns = [
+      { header: '번호', key: 'id', width: 10 },
+      { header: '등록일', key: 'createdAt', width: 32 },
+      { header: '고객사', key: 'userBusinessName', width: 20 },
+      { header: '담당자', key: 'userPersonName', width: 20 },
+      { header: '이벤트명', key: 'eventName', width: 20 },
+      { header: '상품명', key: 'productName', width: 32 },
+      { header: '발송수량', key: 'totalProductCount', width: 32 },
+      { header: '발송금액', key: 'expireDay', width: 32 },
+      { header: '정산금액', key: 'category', width: 40 },
+      { header: '진행상태', key: 'type', width: 40 },
+      { header: '발송시간', key: 'useStatus', width: 40 },
+    ];
+
+    for (const order of orderList) {
+      const sendRequestAt = normalizeDate(order.sendRequestAt) ? format(order.sendRequestAt, DateFormatStr) : null;
+
+      let totalAmount = 0;
+      let productName = '';
+      if (order.orderProductMappings && order.orderProductMappings.length > 0) {
+        totalAmount = order.orderProductMappings.reduce((acc, cur) => {
+          return acc + cur.amount;
+        }, 0);
+        productName = order.orderProductMappings[0].product.name;
+        const orderProductMappingsLength = order.orderProductMappings.length;
+        if (orderProductMappingsLength - 1 > 0) {
+          productName += `외 ${orderProductMappingsLength - 1}건`;
+        }
+      }
+
+      sheet.addRow({
+        id: order.id,
+        registerAt: format(order.registerAt, DateFormatStr),
+        userBusinessName: order.user!.businessName,
+        userPersonName: order.user!.personName,
+        eventName: order.eventName,
+        productName: productName,
+        totalAmount: totalAmount,
+        deliveryPrice: 0, //TODO 발송 금액
+        settlePrice: 0, // TODO 정산 금액
+        status: order.status,
+        sendRequestAt: sendRequestAt,
+      });
+    }
+
+    const fileName = `${orderType}_리스트_${nowString}.xlsx`;
+    const filePath = join(process.cwd(), '.', 'public', fileName);
+
+    await workbook.xlsx.writeFile(filePath);
+
+    return { fileName, filePath };
   }
 }

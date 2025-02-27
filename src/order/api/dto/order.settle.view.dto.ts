@@ -1,0 +1,59 @@
+import { ApiProperty } from '@nestjs/swagger';
+import { IOrderSettleDiscountType } from '../../interface/order.settle.discount.type';
+import { IPriceAdjustment } from '../../../user_discount/interface/price.adjustment';
+
+export class OrderSettleViewDto {
+  @ApiProperty({
+    description: 'order product mapping 의 id ',
+  })
+  // =================================
+  id: number;
+
+  @ApiProperty({
+    description: '상품 브랜드 명',
+  })
+  // =================================
+  brandName: string | null;
+
+  @ApiProperty({
+    description: '상품 명',
+  })
+  // =================================
+  name: string;
+
+  @ApiProperty({
+    description: '수량',
+  })
+  // =================================
+  amount: number;
+
+  @ApiProperty({
+    description: '정상단가',
+  })
+  // =================================
+  price: number;
+
+  @ApiProperty({
+    description: '정상금액(정상단가 x 수량)',
+  })
+  // =================================
+  totalPrice: number;
+
+  @ApiProperty({
+    description: '할인 구분 ex) 단건: ONE, 계약: CONTRACT',
+  })
+  // =================================
+  settleDiscountType: IOrderSettleDiscountType | null;
+
+  @ApiProperty({
+    description: '할인 방법 ex) 할인: DISCOUNT, 할증: ADDITIONAL',
+  })
+  // =================================
+  priceAdjustment: IPriceAdjustment | null;
+
+  @ApiProperty({
+    description: '수수료(%)',
+  })
+  // =================================
+  fee: number | null;
+}

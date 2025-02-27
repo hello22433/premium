@@ -13,8 +13,6 @@ import { FileUploadImageReqDto } from './file.req.dto';
 import { Express } from 'express';
 import { FileUploadResDto } from './file.res.dto';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
-import { extname, join } from 'path';
-import * as multer from 'multer';
 import { ConfigService } from '@nestjs/config';
 
 @ApiTags('file')
@@ -45,23 +43,7 @@ export class FileController {
     description: '이미지 파일을 업로드 하지 않은 경우',
   })
   // ============================================
-  @UseInterceptors(
-    FileInterceptor('imageFile', {
-      storage: multer.diskStorage({
-        destination: function (req, file, cb) {
-          cb(null, join(process.cwd(), 'public'));
-        },
-        filename: function (
-          req: any,
-          file: { originalname: string },
-          cb: (error: Error | null, filename: string) => void,
-        ) {
-          cb(null, `${new Date().getTime()}${extname(file.originalname)}`);
-        },
-      }),
-      preservePath: true,
-    }),
-  )
+  @UseInterceptors(FileInterceptor('imageFile'))
   @Post('file/image')
   createImage(@UploadedFile() imageFile: Express.Multer.File, @Body() dto: FileUploadImageReqDto) {
     return this.fileService.uploadImageFile(imageFile);

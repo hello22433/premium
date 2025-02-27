@@ -226,3 +226,69 @@ export class ProductUpdatePartialReqDto extends PartialType(ProductCreateReqDto)
   @IsOptional()
   reason?: string;
 }
+
+export class ProductExcelUploadReqDto {
+  @ApiProperty({
+    type: 'string',
+    description: '업로드 하고자 하는 상품 엑셀파일',
+    format: 'binary',
+  })
+  // =====================================================
+  file: Express.Multer.File;
+}
+
+export class ProductExcelDownloadReqQueryDto {
+  @ApiPropertyOptional({
+    description: '협력사 id',
+  })
+  // ================================
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  partnerCompanyId?: number;
+
+  @ApiPropertyOptional({
+    description: '브랜드 id',
+  })
+  // ================================
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  brandId?: number;
+
+  @ApiPropertyOptional({
+    description: '브랜드 명 ',
+  })
+  // ================================
+  @IsOptional()
+  brandName?: string;
+
+  @ApiPropertyOptional({
+    description: '상품 이름',
+  })
+  // ================================
+  @IsOptional()
+  name?: string;
+
+  @ApiProperty({
+    description: '상품 사용 상태 ex) 사용: USE 미사용: UNUSED 영구 미사용: PERMANENTLY_UNUSED',
+  })
+  // =================================
+  @IsEnum(IProductUseStatus)
+  @IsOptional()
+  useStatus?: IProductUseStatus;
+
+  @ApiProperty({
+    description: '상품 코드',
+  })
+  // =================================
+  @IsOptional()
+  code?: string;
+
+  @ApiProperty({
+    description: '협력사 코드',
+  })
+  // =================================
+  @IsOptional()
+  partnerCompanyCode?: string;
+}

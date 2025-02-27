@@ -4,6 +4,7 @@ import { FindOptionsWhere, In, Like, Repository } from 'typeorm';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
   ProductCreateReqDto,
+  ProductExcelDownloadReqQueryDto,
   ProductGetDetailReqParamDto,
   ProductGetListReqQueryDto,
   ProductGetUpdateHistoryReqParamDto,
@@ -30,6 +31,11 @@ import { Transactional } from 'typeorm-transactional';
 import { ProductHistoryViewDto } from '../api/dto/product.history.view.dto';
 import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
+import { join } from 'path';
+import * as process from 'node:process';
+import * as ExcelJS from 'exceljs';
+import { ProductTypeExcelMapping, ProductUseStatusExcelMapping } from '../domain/product.excel.mapping';
+import { plainToClass } from 'class-transformer';
 
 @Injectable()
 export class ProductService {
@@ -368,5 +374,141 @@ export class ProductService {
     await this.productRepository.save(product);
     await this.productUpdateHistoryRepository.insert(productUpdateHistoryCreateList);
     return;
+  }
+
+  async excelDownload(getQuery: ProductExcelDownloadReqQueryDto) {
+    const { partnerCompanyId, brandId, brandName, name, useStatus, code, partnerCompanyCode } = getQuery;
+
+    const now = new Date();
+    const nowString = format(now, 'yyyyMMdd');
+
+    let queryBuilder = this.productRepository
+      .createQueryBuilder('product')
+      .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .innerJoinAndSelect('product.brand', 'brand');
+
+    if (partnerCompanyId) {
+      queryBuilder = queryBuilder.andWhere('product.partnerCompanyId = :partnerCompanyId', { partnerCompanyId });
+    }
+
+    if (brandId) {
+      queryBuilder = queryBuilder.andWhere('product.brandId = :brandId', { brandId });
+    }
+
+    if (brandName) {
+      queryBuilder = queryBuilder.andWhere('brand.nameKorean LIKE :brandName', { brandName: `%${brandName}%` });
+      queryBuilder = queryBuilder.andWhere('brand.nameEnglish LIKE :brandName', { brandName: `%${brandName}%` });
+    }
+
+    if (name) {
+      queryBuilder = queryBuilder.andWhere('product.name LIKE :name', { name: `%${name}%` });
+    }
+
+    if (useStatus) {
+      queryBuilder = queryBuilder.andWhere('product.useStatus = :useStatus', { useStatus });
+    }
+
+    if (code) {
+      queryBuilder = queryBuilder.andWhere('product.code LIKE :code', { code: `%${code}%` });
+    }
+
+    if (partnerCompanyCode) {
+      queryBuilder = queryBuilder.andWhere('partnerCompany.code LIKE :partnerCompanyCode', {
+        partnerCompanyCode: `%${partnerCompanyCode}%`,
+      });
+    }
+
+    const productList = await queryBuilder.getMany();
+
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet(`sheet1`);
+
+    sheet.columns = [
+      { header: '번호', key: 'id', width: 10 },
+      { header: '등록일', key: 'createdAt', width: 32 },
+      { header: '상품코드', key: 'code', width: 20 },
+      { header: '협력사명', key: 'partnerCompanyName', width: 20 },
+      { header: '대분류', key: 'classification', width: 20 },
+      { header: '브랜드명', key: 'brandName', width: 20 },
+      { header: '상품명', key: 'name', width: 32 },
+      { header: '가격', key: 'price', width: 32 },
+      { header: '유효기간', key: 'expireDay', width: 32 },
+      { header: '상품군', key: 'category', width: 40 },
+      { header: '상품구분', key: 'type', width: 40 },
+      { header: '상품상태', key: 'useStatus', width: 40 },
+    ];
+
+    for (const product of productList) {
+      sheet.addRow({
+        id: product.id,
+        createdAt: format(product.createdAt, 'yyyy-MM-dd'),
+        code: product.code,
+        partnerCompanyName: product.partnerCompany!.businessName,
+        classification: product.classification,
+        brandId: product.brandId,
+        brandName: product.brand!.nameKorean,
+        name: product.name,
+        price: product.price,
+        expireDay: product.expireDay,
+        type: ProductTypeExcelMapping(product.type),
+        useStatus: ProductUseStatusExcelMapping(product.useStatus),
+      });
+    }
+
+    const fileName = `상품_리스트_${nowString}.xlsx`;
+    const filePath = join(process.cwd(), '.', 'public', fileName);
+
+    await workbook.xlsx.writeFile(filePath);
+
+    return { fileName, filePath };
+  }
+
+  async excelUpload(file: Express.Multer.File) {
+    if (!file) {
+      throw new BadRequestException('not exist file');
+    }
+
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(file.buffer);
+    const worksheet = workbook.worksheets[0];
+
+    if (!worksheet) {
+      throw new BadRequestException('엑셀 파일이 비어 있습니다.');
+    }
+
+    for (let i = 2; i <= worksheet.rowCount; i++) {
+      const row = worksheet.getRow(i);
+      const rowData = this.mapRowToDto(row);
+
+      if (!this.isValidRow(rowData)) {
+        continue;
+      }
+
+      const productCreateReqDto = plainToClass(ProductCreateReqDto, rowData);
+      await this.create(productCreateReqDto);
+    }
+  }
+
+  private mapRowToDto(row: ExcelJS.Row): Record<string, any> {
+    return {
+      partnerCompanyCode: row.getCell(1).value,
+      partnerCompanyId: row.getCell(2).value,
+      brandId: row.getCell(3).value,
+      name: row.getCell(4).value,
+      price: row.getCell(5).value,
+      expireDay: row.getCell(6).value,
+      category: row.getCell(7).value,
+      classification: row.getCell(8).value,
+      settleMethod: row.getCell(9).value,
+      settlePercent: row.getCell(10).value,
+      imagePath: row.getCell(11).value,
+      type: row.getCell(12).value,
+      memo: row.getCell(13).value ?? null,
+      useStatus: row.getCell(14).value,
+    };
+  }
+
+  private isValidRow(rowData: Record<string, any>): boolean {
+    return Object.values(rowData).some((value) => value !== null && value !== '');
   }
 }

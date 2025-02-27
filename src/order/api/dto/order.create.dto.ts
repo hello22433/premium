@@ -65,6 +65,20 @@ export class OrderCreateDto {
   sendContent: string;
 
   @ApiPropertyOptional({
+    description: '미리보기 상단 이미지 url, 없으면 기본 이미지 사용',
+  })
+  // =================================================
+  @IsOptional()
+  topImagePath?: string | null;
+
+  @ApiPropertyOptional({
+    description: '미리보기 중간 이미지 url, 없으면 기본 이미지 사용',
+  })
+  // =================================================
+  @IsOptional()
+  midImagePath?: string | null;
+
+  @ApiPropertyOptional({
     description: '발신 시간',
     default: '1970-01-01T00:00:00',
   })

@@ -5,6 +5,7 @@ import { IOrderType } from '../interface/order.type';
 import { IOrderSendMethod } from '../interface/order.send.method';
 import { OrderDetailProductDto } from './dto/order.detail.product.dto';
 import { IOrderStatus } from '../interface/order.status';
+import { OrderSettleViewDto } from './dto/order.settle.view.dto';
 
 export class OrderGetListResDto extends GetListResDto {
   @ApiProperty({
@@ -87,4 +88,11 @@ export class OrderGetDetailResDto {
     description: '상품 정보 리스트',
   })
   productList: OrderDetailProductDto[];
+}
+
+export class OrderGetSettleGetListResDto extends GetListResDto {
+  @ApiProperty({
+    description: '정산 정보 list',
+  })
+  list: OrderSettleViewDto[];
 }

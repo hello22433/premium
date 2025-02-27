@@ -19,6 +19,7 @@ export class GiftielHttp implements IGiftiel {
       this.url = 'https://serviceapi.giftiel.co.kr';
     }
   }
+
   private logger = new Logger('GIFTIEL');
 
   private ciCode: string = '';

@@ -22,9 +22,19 @@ export class OrderProductDto {
   expireDay: number;
 
   @ApiProperty({
-    description: '이미지 경로',
+    description: '상품 이미지 경로',
   })
   imagePath: string;
+
+  @ApiProperty({
+    description: '상단 이미지 경로',
+  })
+  topImagePath: string;
+
+  @ApiProperty({
+    description: '중간 이미지 경로',
+  })
+  midImagePath: string;
 
   @ApiProperty({
     description: '브랜드 id',

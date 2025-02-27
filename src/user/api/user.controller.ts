@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post } from '@nestjs/common';
 import { UserService } from '../application/user.service';
 import {
   ApiBadRequestResponse,
@@ -17,9 +17,16 @@ import {
   UserGetAccessByRefreshReqDto,
   UserGetRefreshByRefreshReqDto,
   UserLoginByEmailPasswordReqDto,
+  UserLoginEmailSendReqDto,
+  UserLoginEmailVerifyReqDto,
   UserSignUpReqDto,
 } from './user.req.dto';
-import { UserAccessByRefreshResDto, UserLoginByEmailPasswordResDto, UserRefreshByRefreshResDto } from './user.res.dto';
+import {
+  UserAccessByRefreshResDto,
+  UserLoginByEmailPasswordResDto,
+  UserLoginEmailResDto,
+  UserRefreshByRefreshResDto,
+} from './user.res.dto';
 
 @ApiTags('user')
 @Controller('')
@@ -58,22 +65,53 @@ export class UserController {
   @ApiOperation({
     summary: '유저 email password API',
     description:
-      '회원가입진행한 id password 를 통해 로그인을 진행합니다.<br>' + '소셜로 로그인 햇을 경우 에러가 발생합니다.',
+      '회원가입진행한 id password 를 통해 로그인을 진행합니다.<br>' +
+      '금일 로그인 이메일 인증에 성공하지 못한경우 token 에 null을 반환합니다.',
   })
   @ApiOkResponse({
     type: UserLoginByEmailPasswordResDto,
     description: '로그인에 성공한 경우 토큰 발급',
   })
   @ApiBadRequestResponse({
-    description:
-      '이메일(email) 이 이미 가입되어 있는 경우<br>' +
-      '소셜로 회원가입하여 비밀번호가 존재하지 않는 경우 <br>' +
-      '비밀번호가 일치하지 않는 경우',
+    description: '이메일(email) 이 이미 가입되어 있는 경우<br>' + '비밀번호가 일치하지 않는 경우',
   })
   // ============================================
   @Post('/user/login-email-password')
   loginByEmailPassword(@Body() loginDto: UserLoginByEmailPasswordReqDto) {
     return this.userService.loginByEmailPassword(loginDto);
+  }
+
+  @ApiOperation({
+    summary: '로그인 인증 이메일 전송 API',
+  })
+  @ApiOkResponse({
+    type: UserLoginEmailResDto,
+    description: '이메일 인증 전송 및 요청',
+  })
+  // ============================================
+  @Post('/user/login/email/send')
+  async loginEmailSend(@Body() getBody: UserLoginEmailSendReqDto): Promise<UserLoginEmailResDto> {
+    return this.userService.loginEmailSend(getBody);
+  }
+
+  @ApiOperation({
+    summary: '로그인 인증 이메일 인증 API',
+  })
+  @ApiOkResponse({
+    description: '인증이 완료된 경우 다시 /user/login-email-password 를 호출해주세요.',
+  })
+  @ApiBadRequestResponse({
+    description:
+      '해당 id 이메일 데이터가 없는 경우 <br>' +
+      '만료된 이메일 인증일 경우 <br>' +
+      '코드가 일치하지 않을 경우 <br>' +
+      '이미 인증 완료된 코드일경우',
+  })
+  // ============================================
+  @Post('/user/login/email/verify')
+  async loginEmailVerify(@Body() getBody: UserLoginEmailVerifyReqDto): Promise<void> {
+    await this.userService.loginEmailVerify(getBody);
+    return;
   }
 
   @ApiOperation({
