@@ -32,12 +32,12 @@ export class MailSendHiworks implements IMailSend {
 
     const data = {
       to: obj.to,
-      userId: this.id,
+      user_id: this.id,
       cc: obj.cc,
       bcc: obj.bcc,
       subject: obj.subject,
       content: obj.content,
-      saveSendMail: obj.saveSendMail,
+      save_sent_mail: obj.saveSentMail,
     };
 
     try {

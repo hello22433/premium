@@ -27,16 +27,6 @@ export class OrderProductDto {
   imagePath: string;
 
   @ApiProperty({
-    description: '상단 이미지 경로',
-  })
-  topImagePath: string;
-
-  @ApiProperty({
-    description: '중간 이미지 경로',
-  })
-  midImagePath: string;
-
-  @ApiProperty({
     description: '브랜드 id',
   })
   brandId: number;

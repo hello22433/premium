@@ -118,6 +118,9 @@ export class UserService {
     if (!user) {
       throw new BadRequestException('USER_DOES_NOT_EXIST');
     }
+    if (user.status === IUserStatus.NOT_APPROVED) {
+      throw new BadRequestException('승인후 사용 가능합니다.');
+    }
     const isPasswordMatch = await this.passwordEncrypt.compare(password, user.password);
     if (!isPasswordMatch) {
       throw new BadRequestException('USER_DO_NOT_MATCH_PASSWORD');
@@ -188,7 +191,7 @@ export class UserService {
     const { title, content } = userLoginTemplateHtml(code, EmailCertifyExpireMinute);
 
     await this.mailSendService.send({
-      saveSendMail: 'Y',
+      saveSentMail: 'Y',
       bcc: '',
       cc: '',
       content: content,

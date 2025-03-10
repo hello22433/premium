@@ -19,6 +19,7 @@ import {
   OrderGetListReqDto,
   OrderGetSettleReqDto,
   OrderUpdateOperationUserReqDto,
+  OrderUpdateSettleReqDto,
   OrderUpdateTempReqDto,
 } from './order.req.dto';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
@@ -106,6 +107,21 @@ export class OrderController {
   @Post('/order/settle')
   createOrderSettle(@Body() getBody: OrderCreateSettleReqDto) {
     return this.orderService.createOrderSettle(getBody);
+  }
+
+  @ApiOperation({
+    summary: '정산 정보 수정 API',
+  })
+  @ApiOkResponse({
+    description: '성공적으로 수정한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: 'order product mapping id 가 존재하지 않는 경우',
+  })
+  // ====================================================
+  @Put('/order/settle')
+  updateOrderSettle(@Body() getBody: OrderUpdateSettleReqDto) {
+    return this.orderService.updateOrderSettle(getBody);
   }
 
   @ApiOperation({

@@ -39,14 +39,14 @@ export class SmsGemtekSend implements ISmsSend {
           callback: obj.from,
           subject: obj.subject,
           text: obj.text,
+          fileCnt,
           requestTime: () => 'GETDATE()',
           fileLoc1,
           fileLoc2,
           fileLoc3,
           fileLoc4,
           fileLoc5,
-          senderCode: this.configService.get('SMS_GEMTEK_SENDER_CODE'),
-          enmEtc02: 'epopkon-premium',
+          senderCode: this.configService.get('DATABASE_GEMTEK_SMS_SENDER_CODE'),
         })
         .execute();
       return;

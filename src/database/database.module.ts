@@ -23,6 +23,11 @@ import { PartnerCompanyExternHistoryEntity } from '../entity/partner.company.ext
 import { ProductUpdateHistoryEntity } from '../entity/product.update.history.entity';
 import { EmailSendHistoryEntity } from '../entity/email.send.history.entity';
 import { SqlLogger } from '../common/api/sql.logger';
+import { SsgEventAmountHistoryEntity } from '../entity/ssg.event.amount.history.entity';
+import { SsgEventEntity } from '../entity/ssg.event.entity';
+import { GemteckMsgQueueEntity } from '../entity/gemtek/msg.queue.entity';
+import { QnaEntity } from '../entity/qna.entity';
+import { UserDriveEntity } from '../entity/user.drive.entity';
 
 @Module({
   imports: [
@@ -54,6 +59,10 @@ import { SqlLogger } from '../common/api/sql.logger';
           PartnerCompanyExternHistoryEntity,
           ProductUpdateHistoryEntity,
           EmailSendHistoryEntity,
+          SsgEventAmountHistoryEntity,
+          SsgEventEntity,
+          QnaEntity,
+          UserDriveEntity,
         ],
         timezone: 'local',
         logger: new SqlLogger(),
@@ -69,25 +78,25 @@ import { SqlLogger } from '../common/api/sql.logger';
         return addTransactionalDataSource(new DataSource(options));
       },
     }),
-    // TypeOrmModule.forRootAsync({
-    //   name: 'gemtek_sms',
-    //   inject: [ConfigService],
-    //   useFactory: (configService: ConfigService) => ({
-    //     type: 'mssql',
-    //     host: configService.get('DATABASE_GEMTEK_SMS_HOST'),
-    //     port: +configService.get('DATABASE_GEMTEK_SMS_PORT'),
-    //     username: configService.get('DATABASE_GEMTEK_SMS_USERNAME'),
-    //     password: configService.get('DATABASE_GEMTEK_SMS_PASSWORD'),
-    //     database: configService.get('DATABASE_GEMTEK_SMS_DATABASE'),
-    //     entities: [GemteckMsgQueueEntity],
-    //     logging: configService.get('DATABASE_LOGGING') === 'true',
-    //     synchronize: false,
-    //     options: {
-    //       encrypt: false, // TLS 암호화 비활성화
-    //       trustServerCertificate: true, // 인증서 검증 무시
-    //     },
-    //   }),
-    // }),
+    TypeOrmModule.forRootAsync({
+      name: 'gemtek_sms',
+      inject: [ConfigService],
+      useFactory: (configService: ConfigService) => ({
+        type: 'mssql',
+        host: configService.get('DATABASE_GEMTEK_SMS_HOST'),
+        port: +configService.get('DATABASE_GEMTEK_SMS_PORT'),
+        username: configService.get('DATABASE_GEMTEK_SMS_USERNAME'),
+        password: configService.get('DATABASE_GEMTEK_SMS_PASSWORD'),
+        database: configService.get('DATABASE_GEMTEK_SMS_DATABASE'),
+        entities: [GemteckMsgQueueEntity],
+        logging: configService.get('DATABASE_LOGGING') === 'true',
+        synchronize: false,
+        options: {
+          encrypt: false, // TLS 암호화 비활성화
+          trustServerCertificate: true, // 인증서 검증 무시
+        },
+      }),
+    }),
   ],
 })
 export class DatabaseModule {}

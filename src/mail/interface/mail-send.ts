@@ -4,7 +4,7 @@ export interface IMailSendIn {
   bcc: string;
   subject: string;
   content: string;
-  saveSendMail: string;
+  saveSentMail: string;
 }
 
 export interface IMailSendOut {

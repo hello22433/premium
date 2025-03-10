@@ -9,11 +9,19 @@ import { OrderService } from './application/order.service';
 import { ProductEntity } from '../entity/product.entity';
 import { PartnerCompanyExternModule } from '../partner_company_extern/partner.company.extern.module';
 import { UserEntity } from '../entity/user.entity';
+import { UserDiscountEntity } from '../entity/user.discount.entity';
 
 @Module({
   imports: [
     AuthModule,
-    TypeOrmModule.forFeature([OrderEntity, OrderDeliveryEntity, OrderProductMappingEntity, ProductEntity, UserEntity]),
+    TypeOrmModule.forFeature([
+      OrderEntity,
+      UserDiscountEntity,
+      OrderDeliveryEntity,
+      OrderProductMappingEntity,
+      ProductEntity,
+      UserEntity,
+    ]),
     PartnerCompanyExternModule,
   ],
   controllers: [OrderController],

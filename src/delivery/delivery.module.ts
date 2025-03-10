@@ -8,13 +8,14 @@ import { CryptoCipher } from '../common/infra/crypto.cipher';
 import { OrderDeliveryEntity } from '../entity/order.delivery.entity';
 import { DeliveryBatchSchedule } from './delivery.batch.schedule';
 import { MailModule } from '../mail/mail.module';
+import { SmsModule } from '../sms/sms.module';
 
 @Module({
   imports: [
     HttpModule,
     TypeOrmModule.forFeature([OrderDeliveryEntity, DeliverySendHistoryEntity]),
     MailModule,
-    // SmsModule,
+    SmsModule,
   ],
   providers: [
     {

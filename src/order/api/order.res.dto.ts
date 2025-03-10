@@ -79,6 +79,16 @@ export class OrderGetDetailResDto {
   sendRequestAt: string | null;
 
   @ApiProperty({
+    description: '상단 이미지 경로',
+  })
+  topImagePath?: string;
+
+  @ApiProperty({
+    description: '중간 이미지 경로',
+  })
+  midImagePath?: string;
+
+  @ApiProperty({
     enum: IOrderStatus,
     description: 'status',
   })

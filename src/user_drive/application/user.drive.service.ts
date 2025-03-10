@@ -1,0 +1,184 @@
+import { BadRequestException, Injectable } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { UserDriveEntity } from '../../entity/user.drive.entity';
+import { Repository } from 'typeorm';
+import {
+  UserDriveCreateReqDto,
+  UserDriveGetDetailReqParamDto,
+  UserDriveGetListReqDto,
+  UserDriveUpdateReqDto,
+} from '../api/user.drive.req.dto';
+import { UserDriveViewDto } from '../api/dto/user.drive.view.dto';
+import { UserDriveGetDetailResDto, UserDriveGetListResDto } from '../api/user.drive.res.dto';
+import { ILoginUserInfo } from '../../auth/interface/login.user';
+import { format } from 'date-fns';
+import { DateFormatStr } from '../../common/domain/date.format.str';
+import { UserEntity } from '../../entity/user.entity';
+import { IUserDriveStatus } from '../interface/user.drive.status';
+
+@Injectable()
+export class UserDriveService {
+  constructor(
+    @InjectRepository(UserDriveEntity)
+    private userDriveRepository: Repository<UserDriveEntity>,
+    @InjectRepository(UserEntity)
+    private userRepository: Repository<UserEntity>,
+  ) {}
+
+  async getList(user: ILoginUserInfo, getQuery: UserDriveGetListReqDto): Promise<UserDriveGetListResDto> {
+    const { take, page } = getQuery;
+
+    let queryBuilder = this.userDriveRepository
+      .createQueryBuilder('drive')
+      .leftJoinAndSelect('drive.sender', 'sender')
+      .leftJoinAndSelect('drive.receiver', 'receiver');
+
+    if (user.authority === 'CORPORATE_ADMIN') {
+      queryBuilder.where('drive.receiverId = :receiverId', { receiverId: user.id });
+    }
+
+    const skip = (page - 1) * take;
+    queryBuilder = queryBuilder.skip(skip).take(take);
+    const [driveList, totalCount] = await queryBuilder.getManyAndCount();
+
+    const totalPage = Math.ceil(totalCount / take);
+
+    const resultList: UserDriveViewDto[] = driveList.map((drive) => {
+      const isFile = !!drive.filePath;
+      return {
+        id: drive.id,
+        receiveAt: drive.receiveAt ? format(drive.receiveAt, DateFormatStr) : null,
+        senderBusinessName: drive.sender.businessName,
+        receiverPersonName: drive.receiver.personName,
+        senderName: drive.sender.personName,
+        title: drive.title,
+        isFile: isFile,
+      };
+    });
+
+    return { list: resultList, totalCount, totalPage, currentPage: page };
+  }
+
+  async getDetail(user: ILoginUserInfo, getParam: UserDriveGetDetailReqParamDto): Promise<UserDriveGetDetailResDto> {
+    const { id } = getParam;
+
+    if (user.authority === 'CORPORATE_ADMIN') {
+      const userDrive = await this.userDriveRepository.findOne({
+        where: {
+          id,
+          receiverId: user.id,
+        },
+        relations: ['sender', 'receiver'],
+      });
+
+      if (!userDrive) {
+        throw new BadRequestException('문서가 존재하지 않습니다.');
+      }
+
+      userDrive.receiveAt = new Date();
+      await this.userDriveRepository.save(userDrive);
+
+      return {
+        id: userDrive.id,
+        sendAt: format(userDrive.sendAt, DateFormatStr),
+        senderBusinessName: userDrive.sender.businessName,
+        receiverPersonName: userDrive.receiver.personName,
+        receiverEmail: userDrive.receiver.email,
+        receiverPhone: userDrive.receiver.personPhoneNumber,
+        title: userDrive.title,
+        content: userDrive.content,
+        status: userDrive.status,
+        filePathList: userDrive.filePath ? userDrive.filePath.split(',') : [],
+      };
+    }
+
+    const userDrive = await this.userDriveRepository.findOne({
+      where: {
+        id,
+      },
+      relations: ['sender', 'receiver'],
+    });
+
+    if (!userDrive) {
+      throw new BadRequestException('문서가 존재하지 않습니다.');
+    }
+
+    return {
+      id: userDrive.id,
+      sendAt: format(userDrive.sendAt, DateFormatStr),
+      senderBusinessName: userDrive.sender.businessName,
+      receiverPersonName: userDrive.receiver.personName,
+      receiverEmail: userDrive.receiver.email,
+      receiverPhone: userDrive.receiver.personPhoneNumber,
+      title: userDrive.title,
+      content: userDrive.content,
+      status: userDrive.status,
+      filePathList: userDrive.filePath ? userDrive.filePath.split(',') : [],
+    };
+  }
+
+  async create(user: ILoginUserInfo, getBody: UserDriveCreateReqDto) {
+    const { title, content, receiverId, filePath } = getBody;
+
+    if (user.authority === 'CORPORATE_ADMIN') {
+      throw new BadRequestException('관리자만 접근 가능합니다.');
+    }
+
+    const receiver = await this.userRepository.findOne({
+      where: {
+        id: receiverId,
+      },
+    });
+
+    if (!receiver) {
+      throw new BadRequestException('고객사가 존재 하지 않습니다.');
+    }
+
+    await this.userDriveRepository.insert({
+      receiverId: receiver.id,
+      title,
+      content,
+      sendAt: new Date(),
+      status: IUserDriveStatus.REGISTER,
+      filePath: filePath.length === 0 ? null : filePath.join(','),
+    });
+
+    return;
+  }
+
+  async update(user: ILoginUserInfo, getBody: UserDriveUpdateReqDto) {
+    const { id, receiverId, title, content, filePath } = getBody;
+
+    if (user.authority === 'CORPORATE_ADMIN') {
+      throw new BadRequestException('관리자만 접근 가능합니다.');
+    }
+
+    const userDrive = await this.userDriveRepository.findOne({
+      where: {
+        id,
+      },
+    });
+
+    if (!userDrive) {
+      throw new BadRequestException('문서가 존재하지 않습니다.');
+    }
+
+    const receiver = await this.userRepository.findOne({
+      where: {
+        id: receiverId,
+      },
+    });
+
+    if (!receiver) {
+      throw new BadRequestException('고객사가 존재 하지 않습니다.');
+    }
+
+    userDrive.title = title;
+    userDrive.content = content;
+    userDrive.receiverId = receiverId;
+    userDrive.filePath = filePath.length === 0 ? null : filePath.join(',');
+    await this.userDriveRepository.save(userDrive);
+
+    return;
+  }
+}

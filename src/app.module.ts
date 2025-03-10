@@ -24,6 +24,9 @@ import { UserFindModule } from './user_find/user.find.module';
 import { UserBizModule } from './user_biz/user.biz.module';
 import { UserInfoModule } from './user_info/user.info.module';
 import { UserDiscountModule } from './user_discount/user.discount.module';
+import { SsgEventModule } from './ssg_event/ssg.event.module';
+import { QnaModule } from './qna/qna.module';
+import { UserDriveModule } from './user_drive/user.drive.module';
 
 @Module({
   imports: [
@@ -54,6 +57,9 @@ import { UserDiscountModule } from './user_discount/user.discount.module';
     UserFindModule,
     UserBizModule,
     UserInfoModule,
+    SsgEventModule,
+    QnaModule,
+    UserDriveModule,
   ],
   controllers: [AppController],
   providers: [],

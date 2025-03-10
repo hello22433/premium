@@ -92,6 +92,22 @@ export class UserManagementGetDetailReqParamDto {
   id: number;
 }
 
+export class UserManagementChargeBalanceReqDto {
+  @ApiProperty({
+    description: '충전하고자 하는 유저 id',
+  })
+  // =============================================================
+  @IsNotEmpty()
+  id: number;
+
+  @ApiProperty({
+    description: '충전할 금액',
+  })
+  // =============================================================
+  @IsNotEmpty()
+  chargeAmount: number;
+}
+
 export class UserManagementCreateReqDto extends UserManagementUpsertDto {
   @ApiProperty({
     description: '이메일',
@@ -107,6 +123,14 @@ export class UserManagementCreateReqDto extends UserManagementUpsertDto {
   // ===============================
   @IsNotEmpty()
   password: string;
+
+  @ApiPropertyOptional({
+    description: 'user 상태 ',
+  })
+  // ============================
+  @IsNotEmpty()
+  @IsEnum(IUserStatus)
+  status: IUserStatus;
 }
 
 export class UserManagementUpdateReqDto extends UserManagementUpsertDto {

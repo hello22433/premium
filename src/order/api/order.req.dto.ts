@@ -114,6 +114,8 @@ export class OrderCreateSettleReqDto {
   list: OrderSettleCreateDto[];
 }
 
+export class OrderUpdateSettleReqDto extends OrderCreateSettleReqDto {}
+
 export class OrderUpdateTempReqDto extends OrderCreateDto {
   @ApiProperty({
     description: 'order id',

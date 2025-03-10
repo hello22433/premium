@@ -1,5 +1,4 @@
 import { Module } from '@nestjs/common';
-import { ISmsSend } from './interface/sms.send';
 import { SmsGemtekSend } from './infra/sms.gemtek.send';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { GemteckMsgQueueEntity } from '../entity/gemtek/msg.queue.entity';

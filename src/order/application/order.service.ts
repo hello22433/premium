@@ -10,6 +10,7 @@ import {
   OrderGetListReqDto,
   OrderGetSettleReqDto,
   OrderUpdateOperationUserReqDto,
+  OrderUpdateSettleReqDto,
   OrderUpdateTempReqDto,
 } from '../api/order.req.dto';
 import {
@@ -46,6 +47,7 @@ import { join } from 'path';
 import * as process from 'node:process';
 import * as ExcelJS from 'exceljs';
 import { OrderSettleViewDto } from '../api/dto/order.settle.view.dto';
+import { UserDiscountEntity } from '../../entity/user.discount.entity';
 
 @Injectable()
 export class OrderService {
@@ -66,6 +68,8 @@ export class OrderService {
     private orderDeliveryRepository: Repository<OrderDeliveryEntity>,
     @InjectRepository(ProductEntity)
     private productRepository: Repository<ProductEntity>,
+    @InjectRepository(UserDiscountEntity)
+    private userDiscountRepository: Repository<UserDiscountEntity>,
     @InjectRepository(UserEntity)
     private userRepository: Repository<UserEntity>,
     private partnerCompanyExternService: PartnerCompanyExternService,
@@ -175,6 +179,9 @@ export class OrderService {
 
     const productList: OrderDetailProductDto[] = [];
 
+    let topImagePath;
+    let midImagePath;
+
     if (order.orderProductMappings && order.orderProductMappings.length > 0) {
       for (const orderProductMapping of order.orderProductMappings) {
         const orderDeliveryList: OrderViewDeliveryDto[] = [];
@@ -189,6 +196,9 @@ export class OrderService {
           });
         }
 
+        topImagePath = orderProductMapping.topImagePath ?? OrderService.DEFAULT_TOP_IMAGE_PATH;
+        midImagePath = orderProductMapping.midImagePath ?? OrderService.DEFAULT_MID_IMAGE_PATH;
+
         const product = orderProductMapping.product
           ? {
               id: orderProductMapping.product.id,
@@ -196,8 +206,6 @@ export class OrderService {
               price: orderProductMapping.product.price,
               expireDay: orderProductMapping.product.expireDay,
               imagePath: orderProductMapping.product.imagePath,
-              topImagePath: orderProductMapping.topImagePath,
-              midImagePath: orderProductMapping.midImagePath,
               brandId: orderProductMapping.product.brandId,
               brandName: orderProductMapping.product.brand?.nameKorean ?? '',
             }
@@ -224,6 +232,8 @@ export class OrderService {
       sendTitle: order.sendTitle,
       sendContent: order.sendContent,
       sendRequestAt: sendRequestAt,
+      topImagePath,
+      midImagePath,
       status: order.status,
       productList: productList,
     };
@@ -234,6 +244,17 @@ export class OrderService {
 
     const skip = (page - 1) * take;
 
+    const order = await this.orderRepository.findOne({
+      where: {
+        id,
+      },
+    });
+
+    if (!order) {
+      throw new BadRequestException('not found order');
+    }
+
+    // 1. 유저의 주문 상품 조회
     const [orderProductList, totalCount] = await this.orderProductMappingRepository.findAndCount({
       where: {
         orderId: id,
@@ -243,19 +264,48 @@ export class OrderService {
       relations: ['product', 'product.brand'],
     });
 
-    const resultList: OrderSettleViewDto[] = orderProductList.map((orderProduct) => {
-      return {
-        id: orderProduct.id,
-        brandName: orderProduct.product.brand?.nameKorean ?? null,
-        name: orderProduct.product.name,
-        price: orderProduct.product.price,
-        amount: orderProduct.amount,
-        totalPrice: orderProduct.product.price * orderProduct.amount,
-        settleDiscountType: orderProduct.settleDiscountType ?? null,
-        priceAdjustment: orderProduct.priceAdjustment ?? null,
-        fee: orderProduct.fee ?? null,
-      };
-    });
+    const resultList: OrderSettleViewDto[] = await Promise.all(
+      orderProductList.map(async (orderProduct) => {
+        let priceAdjustment = orderProduct.priceAdjustment;
+        let fee = orderProduct.fee;
+
+        // 2. 할인 정보가 null 일 경우 유저 또는 협력사의 할인 옵션 조회
+        if (!priceAdjustment || fee === null) {
+          let discount = await this.userDiscountRepository.findOne({
+            where: {
+              userId: order.userId,
+            },
+          });
+
+          // 3. 유저 할인 정보가 없으면 협력사 할인 정보 조회
+          if (!discount) {
+            discount = await this.userDiscountRepository.findOne({
+              where: {
+                partnerCompanyId: orderProduct.product.partnerCompanyId,
+              },
+            });
+          }
+
+          // 4. 할인 정보가 존재하면 null 값만 채우기
+          if (discount) {
+            priceAdjustment = priceAdjustment ?? discount.priceAdjustment;
+            fee = fee ?? discount.pricePercent;
+          }
+        }
+
+        return {
+          id: orderProduct.id,
+          brandName: orderProduct.product.brand?.nameKorean ?? null,
+          name: orderProduct.product.name,
+          price: orderProduct.product.price,
+          amount: orderProduct.amount,
+          totalPrice: orderProduct.product.price * orderProduct.amount,
+          settleDiscountType: orderProduct.settleDiscountType ?? null,
+          priceAdjustment,
+          fee,
+        };
+      }),
+    );
 
     const totalPage = Math.ceil(totalCount / take);
 
@@ -289,6 +339,40 @@ export class OrderService {
     }
 
     const orderProductList = list.map((settle) => {
+      return this.orderProductMappingRepository.create({
+        id: settle.id,
+        settleDiscountType: settle.settleDiscountType,
+        priceAdjustment: settle.priceAdjustment,
+        fee: settle.fee,
+      });
+    });
+
+    await this.orderProductMappingRepository.save(orderProductList);
+  }
+
+  @Transactional()
+  async updateOrderSettle(getBody: OrderUpdateSettleReqDto) {
+    const { list } = getBody;
+
+    if (list.length === 0) {
+      return;
+    }
+
+    const orderProductIds = list.map((item) => item.id);
+
+    const existingOrderProducts = await this.orderProductMappingRepository.find({
+      where: { id: In(orderProductIds) },
+    });
+
+    const existingOrderProductMap = new Map(existingOrderProducts.map((order) => [order.id, order]));
+
+    const missOrderProductIds = orderProductIds.filter((id) => !existingOrderProductMap.has(id));
+    if (missOrderProductIds.length > 0) {
+      throw new BadRequestException('존재하지 않는 주문 내역이 있습니다');
+    }
+
+    const orderProductList = list.map((settle) => {
+      // 이미 db에 있는 id 들을 create 에 넣으면 type orm 에서 update 로 동작한다
       return this.orderProductMappingRepository.create({
         id: settle.id,
         settleDiscountType: settle.settleDiscountType,
@@ -422,6 +506,10 @@ export class OrderService {
       throw new BadRequestException('존재하지 않는 주문입니다.');
     }
 
+    if (order.status !== IOrderStatus.TEMP) {
+      throw new BadRequestException('임시저장이 아닐경우 수정할 수 없습니다.');
+    }
+
     const productIdList = orderProductList.map((orderProduct) => orderProduct.productId);
     const uniqueProductId = new Set(productIdList);
 
@@ -480,6 +568,13 @@ export class OrderService {
       orderProduct.orderId = orderId;
       orderProduct.productId = product.productId;
       orderProduct.amount = product.amount;
+      if (!topImagePath) {
+        orderProduct.topImagePath = OrderService.DEFAULT_TOP_IMAGE_PATH;
+      }
+      if (!midImagePath) {
+        orderProduct.midImagePath = OrderService.DEFAULT_MID_IMAGE_PATH;
+      }
+
       if (topImagePath !== undefined && topImagePath !== null) orderProduct.topImagePath = topImagePath;
       if (midImagePath !== undefined && midImagePath !== null) orderProduct.midImagePath = midImagePath;
 

@@ -3,6 +3,7 @@ import { UserEntity } from '../../entity/user.entity';
 import { Repository } from 'typeorm';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
+  UserManagementChargeBalanceReqDto,
   UserManagementCreateReqDto,
   UserManagementGetDetailReqParamDto,
   UserManagementGetListReqQueryDto,
@@ -16,7 +17,6 @@ import {
 } from '../api/user.management.res.dto';
 import { UserManagementViewDto } from '../api/dto/user.management.view.dto';
 import { PasswordBcryptEncrypt } from '../../auth/infrastructure/password.bcrypt.encrypt';
-import { IUserStatus } from '../../user/interface/user.status';
 import { UserManagementNameViewDto } from '../api/dto/user.management.name.view.dto';
 
 @Injectable()
@@ -180,6 +180,23 @@ export class UserManagementService {
     };
   }
 
+  async chargeBalance(getBody: UserManagementChargeBalanceReqDto) {
+    const { id, chargeAmount } = getBody;
+
+    const user = await this.userRepository.findOne({
+      where: {
+        id,
+      },
+    });
+
+    if (!user) {
+      throw new BadRequestException('not found user');
+    }
+
+    user.balance += chargeAmount;
+    await this.userRepository.save(user);
+  }
+
   async create(getBody: UserManagementCreateReqDto) {
     const isExistEmail = await this.userRepository.count({
       where: {
@@ -214,7 +231,7 @@ export class UserManagementService {
       bankNumber: getBody.bankNumber,
       cardName: getBody.cardName,
       cardNumber: getBody.cardNumber,
-      status: IUserStatus.USED,
+      status: getBody.status,
       personCode: 'test1234', // TODO
     });
 
@@ -250,6 +267,7 @@ export class UserManagementService {
     user.bankNumber = getBody.bankNumber;
     user.cardName = getBody.cardName;
     user.cardNumber = getBody.cardNumber;
+    user.status = getBody.status;
 
     await this.userRepository.save(user);
 

@@ -75,7 +75,7 @@ export class UserFindService {
     const { title, content } = UserResetPasswordVerifyTemplateHtml(code, EmailCertifyExpireMinute);
 
     await this.mailSendService.send({
-      saveSendMail: 'Y',
+      saveSentMail: 'Y',
       bcc: '',
       cc: '',
       content: content,

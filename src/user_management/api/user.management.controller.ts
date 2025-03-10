@@ -2,6 +2,7 @@ import { Body, Controller, Get, Param, Post, Put, Query, UseGuards } from '@nest
 import { ApiBadRequestResponse, ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { UserManagementService } from '../application/user.management.service';
 import {
+  UserManagementChargeBalanceReqDto,
   UserManagementCreateReqDto,
   UserManagementGetDetailReqParamDto,
   UserManagementGetListReqQueryDto,
@@ -68,6 +69,23 @@ export class UserManagementController {
   @Get('/user-management/detail/:id')
   getDetail(@Param() getParam: UserManagementGetDetailReqParamDto) {
     return this.userManagementService.getDetail(getParam);
+  }
+
+  @ApiOperation({
+    summary: '계정 잔액 충전 API',
+  })
+  @ApiBearerAuth()
+  @ApiOkResponse({
+    description: '성공적으로 충전한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '해당 계정이 존재하지 않는 경우',
+  })
+  // ====================================
+  @UseGuards(AuthUserAuthorizationGuard)
+  @Put('/user-management/balance')
+  chargeBalance(@Body() getBody: UserManagementChargeBalanceReqDto) {
+    return this.userManagementService.chargeBalance(getBody);
   }
 
   @ApiOperation({

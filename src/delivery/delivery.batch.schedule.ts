@@ -12,11 +12,12 @@ export class DeliveryBatchSchedule implements OnApplicationBootstrap {
     // TEST;
     // this.deliveryBatchService.issueAndSend();
   }
+
   private logger = new Logger('BATCH');
 
-  // 30분 마다 실행
-  @Cron('0,30 * * * *')
-  async pushSendStudyPlan() {
+  // 5분 마다 실행
+  @Cron('0 */5 * * * *')
+  async issueAndSend() {
     try {
       await this.deliveryBatchService.issueAndSend();
       this.logger.log('Complete Delivery');

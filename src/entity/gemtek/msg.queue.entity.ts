@@ -147,18 +147,18 @@ export class GemteckMsgQueueEntity {
   @Column({ name: 'EXT_COL3', type: 'varchar', length: 32, nullable: true })
   extCol3: string | null;
 
-  @Column({ name: 'ENM_ETC_01', type: 'varchar', length: 2000, nullable: true })
-  enmEtc01: string | null;
-
-  @Column({ name: 'ENM_ETC_02', type: 'varchar', length: 2000, nullable: true })
-  enmEtc02: string | null;
-
-  @Column({ name: 'ENM_ETC_03', type: 'varchar', length: 2000, nullable: true })
-  enmEtc03: string | null;
-
-  @Column({ name: 'ENM_ETC_04', type: 'varchar', length: 2000, nullable: true })
-  enmEtc04: string | null;
-
-  @Column({ name: 'ENM_ETC_05', type: 'varchar', length: 2000, nullable: true })
-  enmEtc05: string | null;
+  // @Column({ name: 'ENM_ETC_01', type: 'varchar', length: 2000, nullable: true })
+  // enmEtc01: string | null;
+  //
+  // @Column({ name: 'ENM_ETC_02', type: 'varchar', length: 2000, nullable: true })
+  // enmEtc02: string | null;
+  //
+  // @Column({ name: 'ENM_ETC_03', type: 'varchar', length: 2000, nullable: true })
+  // enmEtc03: string | null;
+  //
+  // @Column({ name: 'ENM_ETC_04', type: 'varchar', length: 2000, nullable: true })
+  // enmEtc04: string | null;
+  //
+  // @Column({ name: 'ENM_ETC_05', type: 'varchar', length: 2000, nullable: true })
+  // enmEtc05: string | null;
 }

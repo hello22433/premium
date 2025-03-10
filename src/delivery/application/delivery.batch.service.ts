@@ -7,6 +7,7 @@ import { IOrderDeliveryStatus } from '../interface/order.delivery.status';
 import { IMailSend } from '../../mail/interface/mail-send';
 import { IOrderSendMethod } from '../../order/interface/order.send.method';
 import { DeliverySendHistoryEntity } from '../../entity/delivery.send.history.entity';
+import { ISmsSend } from '../../sms/interface/sms.send';
 
 @Injectable()
 export class DeliveryBatchService {
@@ -19,8 +20,8 @@ export class DeliveryBatchService {
     private deliveryAlimTalk: DeliveryAlimTalk,
     @Inject('IMailSend')
     private mailSend: IMailSend,
-    // @Inject('ISmsSend')
-    // private smsSend: ISmsSend,
+    @Inject('ISmsSend')
+    private smsSend: ISmsSend,
   ) {}
 
   async issueAndSend() {
@@ -82,42 +83,42 @@ export class DeliveryBatchService {
         } catch (e) {
           deliveryHistory.context = JSON.stringify(e);
           deliveryHistory.isSuccess = false;
-          // const resultSms = await this.handleAlimTalkFail(orderDelivery, title, text, filePathList);
-          // // 문자 전송성공한 경우
-          // if (resultSms === IOrderDeliveryStatus.COMPLETE_SMS) {
-          //   deliveryHistory.isSuccess = true;
-          // }
-          // // 문자 전송도 실패한 경우
-          // if (resultSms !== IOrderDeliveryStatus.COMPLETE_SMS) {
-          //   deliveryHistory.context += JSON.stringify(resultSms);
-          // }
+          const resultSms = await this.handleAlimTalkFail(orderDelivery, title, text, filePathList);
+          // 문자 전송성공한 경우
+          if (resultSms === IOrderDeliveryStatus.COMPLETE_SMS) {
+            deliveryHistory.isSuccess = true;
+          }
+          // 문자 전송도 실패한 경우
+          if (resultSms !== IOrderDeliveryStatus.COMPLETE_SMS) {
+            deliveryHistory.context += JSON.stringify(resultSms);
+          }
         }
       }
 
       // 1.2 SMS 일 경우
-      // if (deliveryMethod === IOrderSendMethod.SMS) {
-      //   try {
-      //     await this.smsSend.send({
-      //       msgType: 'L',
-      //       to: orderDelivery.deliveryTarget,
-      //       from: orderDelivery.orderProductMapping.order.fromPhoneNumber,
-      //       subject: title,
-      //       text: text,
-      //       filePath: filePathList,
-      //     });
-      //     orderDelivery.status = IOrderDeliveryStatus.COMPLETE;
-      //   } catch (e) {
-      //     orderDelivery.status = IOrderDeliveryStatus.FAIL;
-      //     deliveryHistory.context = JSON.stringify(e);
-      //     deliveryHistory.isSuccess = false;
-      //   }
-      // }
+      if (deliveryMethod === IOrderSendMethod.SMS) {
+        try {
+          await this.smsSend.send({
+            msgType: 'M',
+            to: orderDelivery.deliveryTarget,
+            from: orderDelivery.orderProductMapping.order.fromPhoneNumber,
+            subject: title,
+            text: text,
+            filePath: filePathList,
+          });
+          orderDelivery.status = IOrderDeliveryStatus.COMPLETE;
+        } catch (e) {
+          orderDelivery.status = IOrderDeliveryStatus.FAIL;
+          deliveryHistory.context = JSON.stringify(e);
+          deliveryHistory.isSuccess = false;
+        }
+      }
 
       // 1.3 EMAIL 일 경우
       if (deliveryMethod === IOrderSendMethod.EMAIL) {
         try {
           await this.mailSend.send({
-            saveSendMail: 'Y',
+            saveSentMail: 'Y',
             bcc: '',
             cc: '',
             content: text,
@@ -140,26 +141,26 @@ export class DeliveryBatchService {
     return;
   }
 
-  // private async handleAlimTalkFail(
-  //   orderDelivery: OrderDeliveryEntity,
-  //   title: string,
-  //   text: string,
-  //   filePathList: string[],
-  // ) {
-  //   try {
-  //     await this.smsSend.send({
-  //       msgType: 'L',
-  //       to: orderDelivery.deliveryTarget,
-  //       from: orderDelivery.orderProductMapping.order.fromPhoneNumber,
-  //       subject: title,
-  //       text: text,
-  //       filePath: filePathList,
-  //     });
-  //     orderDelivery.status = IOrderDeliveryStatus.COMPLETE_SMS;
-  //     return IOrderDeliveryStatus.COMPLETE_SMS;
-  //   } catch (e) {
-  //     orderDelivery.status = IOrderDeliveryStatus.FAIL_SMS;
-  //     return e;
-  //   }
-  // }
+  private async handleAlimTalkFail(
+    orderDelivery: OrderDeliveryEntity,
+    title: string,
+    text: string,
+    filePathList: string[],
+  ) {
+    try {
+      await this.smsSend.send({
+        msgType: 'L',
+        to: orderDelivery.deliveryTarget,
+        from: orderDelivery.orderProductMapping.order.fromPhoneNumber,
+        subject: title,
+        text: text,
+        filePath: filePathList,
+      });
+      orderDelivery.status = IOrderDeliveryStatus.COMPLETE_SMS;
+      return IOrderDeliveryStatus.COMPLETE_SMS;
+    } catch (e) {
+      orderDelivery.status = IOrderDeliveryStatus.FAIL_SMS;
+      return e;
+    }
+  }
 }
