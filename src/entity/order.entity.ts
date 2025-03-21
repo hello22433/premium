@@ -5,6 +5,7 @@ import { OrderProductMappingEntity } from './order.product.mapping.entity';
 import { BaseEntity } from '../common/entity/base.entity';
 import { IOrderSendMethod } from '../order/interface/order.send.method';
 import { IOrderType } from '../order/interface/order.type';
+import { OrderEmailSendType } from '../order/domain/order.email.send.type';
 
 @Entity('order')
 export class OrderEntity extends BaseEntity {
@@ -42,14 +43,23 @@ export class OrderEntity extends BaseEntity {
   })
   requestToDestroyPersonalInfoDay: number;
 
-  @Column({ type: 'varchar', length: 20, comment: '발신 번호' })
-  fromPhoneNumber: string;
+  @Column({ type: 'varchar', nullable: true, length: 20, comment: '발신 번호' })
+  fromPhoneNumber: string | null;
 
   @Column({ type: 'varchar', length: 20, comment: '발신 제목' })
   sendTitle: string;
 
   @Column({ type: 'varchar', length: 200, comment: '발신 내용' })
   sendContent: string;
+
+  @Column({ type: 'varchar', nullable: true, length: 100, comment: '발신 이메일' })
+  fromEmail: string | null;
+
+  @Column({ type: 'varchar', nullable: true, length: 100, comment: 'QR: QR, URL: URL' })
+  emailSendType: OrderEmailSendType | null;
+
+  @Column({ type: 'text', nullable: true, comment: '이메일 시 사용 방법' })
+  useEmailContent: string | null;
 
   @Column({ comment: ' 등록일' })
   registerAt: Date;

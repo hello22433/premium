@@ -112,6 +112,8 @@ export class UserManagementService {
       });
     }
 
+    queryBuilder = queryBuilder.orderBy('user.id', 'DESC');
+
     const skip = (page - 1) * take;
     queryBuilder = queryBuilder.take(take).skip(skip);
 
@@ -163,6 +165,8 @@ export class UserManagementService {
       personCode: user.personCode,
       personCategory: user.personCategory,
       corporateNumber: user.corporateNumber,
+
+      businessType: user.businessType,
       businessNumber: user.businessNumber,
       businessName: user.businessName,
       businessAddress: user.businessAddress,
@@ -232,7 +236,7 @@ export class UserManagementService {
       cardName: getBody.cardName,
       cardNumber: getBody.cardNumber,
       status: getBody.status,
-      personCode: 'test1234', // TODO
+      personCode: getBody.email,
     });
 
     return;

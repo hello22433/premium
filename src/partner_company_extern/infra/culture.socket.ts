@@ -11,6 +11,7 @@ export class CultureSocket implements ICulture {
     this.socketIP = this.configService.getOrThrow('CULTURE_LAND_SOCKET_IP');
     this.port = this.configService.getOrThrow('CULTURE_LAND_SOCKET_PORT');
   }
+
   private socket: Socket;
   private logger = new Logger('CULTURE_LAND');
 
@@ -116,6 +117,8 @@ export class CultureSocket implements ICulture {
       return field;
     });
 
+    this.logger.log(`responseMap: ${responseMap}`);
+
     return {
       HeadNo: responseMap[0],
       MessageLength: responseMap[1],
@@ -123,7 +126,7 @@ export class CultureSocket implements ICulture {
       SubMemberCode: responseMap[3],
       ResultCode: responseMap[4],
       MemberControlCode: responseMap[5],
-      ScrachNo: responseMap[6],
+      ScrachNo: responseMessage.slice(69, 85),
       CertNo: responseMap[7],
       ControlCode: responseMap[8],
       CertType: responseMap[9],
@@ -167,10 +170,13 @@ export class CultureSocket implements ICulture {
       if (!response) {
         throw new Error('not exist response');
       }
+      this.logger.log(`response : ${response}`);
       const issueOut = this.socketResponseParsing(response, 8120);
+      this.logger.log(`issueOut : ${JSON.stringify(issueOut)}`);
       return issueOut;
     } catch (e) {
       this.logger.error(e);
+      this.logger.error(JSON.stringify(e));
       throw e;
     }
   }

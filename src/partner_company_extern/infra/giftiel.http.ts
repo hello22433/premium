@@ -54,6 +54,7 @@ export class GiftielHttp implements IGiftiel {
       return result as GiftielIssueOut;
     } catch (e) {
       this.logger.error(e);
+      this.logger.error(JSON.stringify(e));
       throw e;
     }
   }

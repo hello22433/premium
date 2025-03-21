@@ -3,6 +3,7 @@ import { InfoBankReportResponse, InfoBankSendResponse } from '../infra/delivery.
 export type IDeliveryAlimTalkSend = {
   to: string;
   text: string;
+  encryptKey: string;
 };
 
 export type IDeliveryAlimTalkSendOut = {

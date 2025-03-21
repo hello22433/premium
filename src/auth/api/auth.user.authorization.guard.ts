@@ -1,11 +1,4 @@
-import {
-  BadRequestException,
-  CanActivate,
-  ExecutionContext,
-  Inject,
-  Injectable,
-  UnauthorizedException,
-} from '@nestjs/common';
+import { CanActivate, ExecutionContext, Inject, Injectable, UnauthorizedException } from '@nestjs/common';
 import { LoginTokenValidatorJsonwebtoken } from '../infrastructure/login.token.validator.jsonwebtoken';
 
 @Injectable()

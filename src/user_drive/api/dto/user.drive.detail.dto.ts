@@ -13,6 +13,16 @@ export class UserDriveDetailDto {
   sendAt: string;
 
   @ApiProperty({
+    description: '발신자 id',
+  })
+  senderId: number;
+
+  @ApiProperty({
+    description: '수신자 id',
+  })
+  receiverId: number;
+
+  @ApiProperty({
     description: '발신자 고객사명',
   })
   senderBusinessName: string;

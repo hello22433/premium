@@ -108,6 +108,8 @@ export class PartnerCompanyService {
       });
     }
 
+    queryBuilder = queryBuilder.orderBy('partnerCompany.id', 'DESC');
+
     const skip = (page - 1) * take;
     queryBuilder = queryBuilder.take(take).skip(skip);
     const [partnerCompanyList, totalCount] = await queryBuilder.getManyAndCount();

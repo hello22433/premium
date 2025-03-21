@@ -11,9 +11,13 @@ import { PartnerCompanyExternService } from './application/partner.company.exter
 import { CryptoCipher } from '../common/infra/crypto.cipher';
 import { PartnerCompanyExternHistoryEntity } from '../entity/partner.company.extern.history.entity';
 import { SsgIssue } from './infra/ssg.issue';
+import { OrderEntity } from '../entity/order.entity';
 
 @Module({
-  imports: [HttpModule, TypeOrmModule.forFeature([OrderDeliveryEntity, PartnerCompanyExternHistoryEntity])],
+  imports: [
+    HttpModule,
+    TypeOrmModule.forFeature([OrderDeliveryEntity, OrderEntity, PartnerCompanyExternHistoryEntity]),
+  ],
   providers: [
     {
       provide: 'IGalaxia',

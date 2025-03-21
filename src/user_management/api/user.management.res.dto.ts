@@ -6,6 +6,7 @@ import { IUserAuthority } from '../../user/interface/user.authority';
 import { IUserStatus } from '../../user/interface/user.status';
 import { IUserSettleCondition } from '../../user/interface/user.settle.condition';
 import { IUserSettleMethod } from '../../user/interface/user.settle.method';
+import { IUserBusinessType } from '../../user/interface/user.business.type';
 
 export class UserManagementGetNameListResDto {
   @ApiProperty({
@@ -69,6 +70,11 @@ export class UserManagementGetDetailResDto {
     description: '법인 등록 번호',
   })
   corporateNumber: string | null;
+
+  @ApiProperty({
+    description: '법인 유무 ex) 개인 : INDIVIDUAL, 법인 : CORPORATE',
+  })
+  businessType: IUserBusinessType | null;
 
   @ApiProperty({
     description: '사업자 등록 번호',

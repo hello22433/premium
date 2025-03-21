@@ -19,6 +19,7 @@ export class GsmbizHttp implements IGsmbiz {
       this.url = 'https://t-api.gsncoupon.co.kr'; // TODO prod URL 받으면 변경
     }
   }
+
   private logger = new Logger('GS_M_BIZ');
 
   private url: string = 'https://t-api.gsncoupon.co.kr';
@@ -65,6 +66,7 @@ export class GsmbizHttp implements IGsmbiz {
       return { ...resultToJson, couponInfo: { ...resultToJson.couponInfo, barCode } };
     } catch (e) {
       this.logger.error(e);
+      this.logger.error(JSON.stringify(e));
       throw e;
     }
   }

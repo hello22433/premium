@@ -15,6 +15,7 @@ import {
   UserManagementGetNameListResDto,
 } from './user.management.res.dto';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
+import { AuthUserSuperAdminGuard } from '../../auth/api/auth.user.super-admin.guard';
 
 @ApiTags('user-management')
 @Controller('')
@@ -99,7 +100,7 @@ export class UserManagementController {
     description: '중복된 이메일이 존재하는 경우',
   })
   // ====================================
-  @UseGuards(AuthUserAuthorizationGuard)
+  @UseGuards(AuthUserSuperAdminGuard)
   @Post('/user-management')
   create(@Body() getBody: UserManagementCreateReqDto) {
     return this.userManagementService.create(getBody);
@@ -116,7 +117,7 @@ export class UserManagementController {
     description: '중복된 이메일이 존재하는 경우',
   })
   // ====================================
-  @UseGuards(AuthUserAuthorizationGuard)
+  @UseGuards(AuthUserSuperAdminGuard)
   @Put('/user-management')
   update(@Body() getBody: UserManagementUpdateReqDto) {
     return this.userManagementService.update(getBody);

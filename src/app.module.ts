@@ -27,6 +27,11 @@ import { UserDiscountModule } from './user_discount/user.discount.module';
 import { SsgEventModule } from './ssg_event/ssg.event.module';
 import { QnaModule } from './qna/qna.module';
 import { UserDriveModule } from './user_drive/user.drive.module';
+import { OrderRealProductModule } from './order_real_product/order.real.product.module';
+import { OrderReceiveModule } from './order_receive/order.receive.module';
+import { OrderFromModule } from './order_from/order.from.module';
+import { UserTaskHistoryModule } from './user_task_history/user.task.history.module';
+import { ProductChoiceModule } from './product_choice/product.choice.module';
 
 @Module({
   imports: [
@@ -41,6 +46,7 @@ import { UserDriveModule } from './user_drive/user.drive.module';
     NoticeModule,
     InquiryModule,
     OrderModule,
+    OrderRealProductModule,
     DeliveryModule,
     ScheduleModule.forRoot(),
     EventEmitterModule.forRoot(),
@@ -60,6 +66,10 @@ import { UserDriveModule } from './user_drive/user.drive.module';
     SsgEventModule,
     QnaModule,
     UserDriveModule,
+    OrderReceiveModule,
+    OrderFromModule,
+    UserTaskHistoryModule,
+    ProductChoiceModule,
   ],
   controllers: [AppController],
   providers: [],

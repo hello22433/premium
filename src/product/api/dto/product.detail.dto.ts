@@ -33,7 +33,7 @@ export class ProductDetailDto {
   @ApiProperty({
     description: '대분류',
   })
-  classification: string;
+  classification: string | null;
 
   @ApiProperty({
     description: '브랜드 id',
@@ -63,7 +63,7 @@ export class ProductDetailDto {
   @ApiProperty({
     description: '상품 군 A, B, C, D',
   })
-  category: string;
+  category: string | null;
 
   @ApiProperty({
     description: '정산 방법 ex) 교환당 : PER_EXCHANGE, 발행당: PER_ISSUANCE, 상품당: PER_PRODUCT',

@@ -12,6 +12,16 @@ export class SsgEventViewDto {
   code: string;
 
   @ApiProperty({
+    description: '행사 순번',
+  })
+  order: number;
+
+  @ApiProperty({
+    description: '행사 번호',
+  })
+  no: string;
+
+  @ApiProperty({
     description: '행사명',
   })
   name: string;
@@ -35,4 +45,24 @@ export class SsgEventViewDto {
     description: '행사 잔액',
   })
   eventBalance: number;
+
+  @ApiProperty({
+    description: '발생 대기 건수',
+  })
+  deliveryWaitCount: number;
+
+  @ApiProperty({
+    description: '발생 대기 금액',
+  })
+  deliveryWaitAmount: number;
+
+  @ApiProperty({
+    description: '발생 완료 건수',
+  })
+  deliveryCompleteCount: number;
+
+  @ApiProperty({
+    description: '발생 완료 금액',
+  })
+  deliveryCompleteAmount: number;
 }

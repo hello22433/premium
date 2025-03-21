@@ -3,4 +3,6 @@ export enum IProductType {
   CHOICE = 'CHOICE',
   DELIVERY = 'DELIVERY',
   SELF = 'SELF',
+  SSG = 'SSG',
+  REAL = 'REAL',
 }

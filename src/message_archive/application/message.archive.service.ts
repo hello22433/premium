@@ -1,10 +1,14 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { MessageArchiveEntity } from '../../entity/message.archive.entity';
 import { FindOptionsWhere, Repository } from 'typeorm';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { MessageArchiveGetListResDto } from '../api/message.archive.res.dto';
-import { MessageArchiveCreateReqDto, MessageArchiveGetListReqQueryDto } from '../api/message.archive.req.dto';
+import {
+  MessageArchiveCreateReqDto,
+  MessageArchiveDeleteReqDto,
+  MessageArchiveGetListReqQueryDto,
+} from '../api/message.archive.req.dto';
 import { MessageArchiveViewDto } from '../api/dto/message.archive.view.dto';
 
 @Injectable()
@@ -56,5 +60,21 @@ export class MessageArchiveService {
       content: content,
     });
     return;
+  }
+
+  async delete(user: ILoginUserInfo, getBody: MessageArchiveDeleteReqDto) {
+    const { id } = getBody;
+
+    const messageArchive = await this.messageArchiveRepository.findOne({
+      where: {
+        id,
+        userId: user.id,
+      },
+    });
+
+    if (!messageArchive) {
+      throw new BadRequestException('해당 문자 보관함이 존재하지 않습니다.');
+    }
+    await this.messageArchiveRepository.softDelete({ id: id });
   }
 }

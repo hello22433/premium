@@ -1,11 +1,12 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, InternalServerErrorException } from '@nestjs/common';
 import {
   OrderCreateSettleReqDto,
   OrderCreateTempReqDto,
   OrderDeliveryCancelReqDto,
   OrderDeliveryConfirmedReqDto,
   OrderDeliveryRequestReqDto,
-  OrderExcelDownloadReqQueryDto,
+  OrderDeliverySsgCouponExpireChangeReqDto,
+  OrderExcelDownloadReqBodyDto,
   OrderGetDetailReqParamDto,
   OrderGetListReqDto,
   OrderGetSettleReqDto,
@@ -15,13 +16,14 @@ import {
 } from '../api/order.req.dto';
 import {
   OrderCreateTempResDto,
+  OrderDeliveryConfirmed,
   OrderGetDetailResDto,
   OrderGetListResDto,
   OrderGetSettleGetListResDto,
 } from '../api/order.res.dto';
 import { OrderEntity } from '../../entity/order.entity';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
+import { In, LessThanOrEqual, MoreThanOrEqual, Repository } from 'typeorm';
 import { QueryBuilderDateCondition } from '../../common/infra/query.builder.date.condition';
 import { OrderViewDto } from '../api/dto/order.view.dto';
 import { DateFormatStr } from '../../common/domain/date.format.str';
@@ -33,7 +35,7 @@ import { Transactional } from 'typeorm-transactional';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { ProductEntity } from '../../entity/product.entity';
 import { OrderValidation } from '../domain/order.validation';
-import { listToMap } from '../../util/map.util';
+import { listToMap, listToMapValue } from '../../util/map.util';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 import { CreateTransactionId } from '../domain/create.transaction.id';
 import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
@@ -48,16 +50,21 @@ import * as process from 'node:process';
 import * as ExcelJS from 'exceljs';
 import { OrderSettleViewDto } from '../api/dto/order.settle.view.dto';
 import { UserDiscountEntity } from '../../entity/user.discount.entity';
+import { IOrderType } from '../interface/order.type';
+import { SsgEventEntity } from '../../entity/ssg.event.entity';
+import { SsgEventAmountHistoryEntity } from '../../entity/ssg.event.amount.history.entity';
+import { IProductType } from '../../product/interface/product.type';
+import { defaultOrderMidImagePath, defaultOrderTopImagePath } from '../../const';
+import { OrderStatusExcelMapping } from '../domain/order.excel.mapping';
+import { OrderFeeCalculator } from '../domain/order.fee.calculator';
 
 @Injectable()
 export class OrderService {
   // 기본 상단 이미지
-  private static readonly DEFAULT_TOP_IMAGE_PATH =
-    'https://epopkon-premium.s3.amazonaws.com/image/1740558623939-coupon-ttl.jpg';
+  private static readonly DEFAULT_TOP_IMAGE_PATH = defaultOrderTopImagePath;
 
   // 기본 중간 이미지
-  private static readonly DEFAULT_MID_IMAGE_PATH =
-    'https://epopkon-premium.s3.amazonaws.com/image/1740558757718-mms_text_img.jpg';
+  private static readonly DEFAULT_MID_IMAGE_PATH = defaultOrderMidImagePath;
 
   constructor(
     @InjectRepository(OrderEntity)
@@ -72,6 +79,10 @@ export class OrderService {
     private userDiscountRepository: Repository<UserDiscountEntity>,
     @InjectRepository(UserEntity)
     private userRepository: Repository<UserEntity>,
+    @InjectRepository(SsgEventEntity)
+    private ssgEventRepository: Repository<SsgEventEntity>,
+    @InjectRepository(SsgEventAmountHistoryEntity)
+    private ssgEventAmountHistoryRepository: Repository<SsgEventAmountHistoryEntity>,
     private partnerCompanyExternService: PartnerCompanyExternService,
   ) {}
 
@@ -88,7 +99,9 @@ export class OrderService {
 
     // 주문 관리 일 경우
     if (section === IOrderSection.ORDER) {
-      queryBuilder = queryBuilder.andWhere('order.userId = :userId', { userId: user.id });
+      if (user.authority !== IUserAuthority.SUPER_ADMIN) {
+        queryBuilder = queryBuilder.andWhere('order.userId = :userId', { userId: user.id });
+      }
     }
 
     // 발송관리 일 경우
@@ -115,6 +128,8 @@ export class OrderService {
     }
 
     queryBuilder = QueryBuilderDateCondition(queryBuilder, 'order', 'sendRequestAt', startAt, endAt);
+
+    queryBuilder = queryBuilder.orderBy('order.id', 'DESC');
 
     const skip = (page - 1) * take;
     queryBuilder = queryBuilder.take(take).skip(skip);
@@ -152,8 +167,8 @@ export class OrderService {
         sendRequestAt: sendRequestAt,
         operationUserId: order.operationUserId,
         operationUserName: order.operationUser?.personName ?? null,
-        deliveryPrice: 0, //TODO 발송금액
-        settlePrice: 0, // TODO 정산 금액
+        deliveryPrice: order.sendAmount,
+        settlePrice: order.settleAmount,
       };
     });
 
@@ -220,6 +235,11 @@ export class OrderService {
 
     const sendRequestAt = normalizeDate(order.sendRequestAt) ? format(order.sendRequestAt, DateFormatStr) : null;
 
+    let couponExpiration: number | null = null;
+    if (order.type === IOrderType.SSG) {
+      couponExpiration = productList[0].product?.expireDay ?? null;
+    }
+
     return {
       id: order.id,
       registerAt: format(order.registerAt, DateFormatStr),
@@ -229,12 +249,16 @@ export class OrderService {
       sendTailText: order.sendTailText,
       requestToDestroyPersonalInfoDay: order.requestToDestroyPersonalInfoDay,
       fromPhoneNumber: order.fromPhoneNumber,
+      fromEmail: order.fromEmail,
+      emailSendType: order.emailSendType,
+      useEmailContent: order.useEmailContent,
       sendTitle: order.sendTitle,
       sendContent: order.sendContent,
       sendRequestAt: sendRequestAt,
       topImagePath,
       midImagePath,
       status: order.status,
+      couponExpiration: couponExpiration,
       productList: productList,
     };
   }
@@ -269,6 +293,10 @@ export class OrderService {
         let priceAdjustment = orderProduct.priceAdjustment;
         let fee = orderProduct.fee;
 
+        let discountPrice = orderProduct.product.price;
+        const totalPrice = orderProduct.product.price * orderProduct.amount;
+        let discountTotalPrice = orderProduct.product.price * orderProduct.amount;
+
         // 2. 할인 정보가 null 일 경우 유저 또는 협력사의 할인 옵션 조회
         if (!priceAdjustment || fee === null) {
           let discount = await this.userDiscountRepository.findOne({
@@ -291,7 +319,23 @@ export class OrderService {
             priceAdjustment = priceAdjustment ?? discount.priceAdjustment;
             fee = fee ?? discount.pricePercent;
           }
+          fee = fee ?? 0;
         }
+
+        if (fee === null || (fee < 1 && fee > 0) || fee < 0 || fee > 100) {
+          throw new InternalServerErrorException('수수료는 1~100 이여야 합니다.');
+        }
+
+        discountPrice = OrderFeeCalculator({
+          fee: fee!,
+          priceAdjustment: priceAdjustment!,
+          price: orderProduct.product.price,
+        });
+        discountTotalPrice = OrderFeeCalculator({
+          fee: fee!,
+          priceAdjustment: priceAdjustment!,
+          price: totalPrice,
+        });
 
         return {
           id: orderProduct.id,
@@ -303,6 +347,8 @@ export class OrderService {
           settleDiscountType: orderProduct.settleDiscountType ?? null,
           priceAdjustment,
           fee,
+          discountPrice,
+          discountTotalPrice,
         };
       }),
     );
@@ -393,10 +439,16 @@ export class OrderService {
       sendTailText,
       requestToDestroyPersonalInfoDay,
       fromPhoneNumber,
+
+      fromEmail,
+      useEmailContent,
+      emailSendType,
+
       topImagePath,
       midImagePath,
       sendTitle,
       sendContent,
+
       sendRequestAt,
       orderProductList,
     } = getBody;
@@ -438,8 +490,11 @@ export class OrderService {
       fromPhoneNumber,
       sendTitle,
       sendContent,
+      fromEmail,
+      emailSendType,
+      useEmailContent,
       sendAmount: sendAmount,
-      settleAmount: sendAmount, // TODO 정산 할인 가격 적용 필요
+      settleAmount: sendAmount,
       registerAt: new Date(),
       sendRequestAt: new Date(sendRequestAt),
     });
@@ -486,6 +541,9 @@ export class OrderService {
       sendTailText,
       requestToDestroyPersonalInfoDay,
       fromPhoneNumber,
+      fromEmail,
+      emailSendType,
+      useEmailContent,
       topImagePath,
       midImagePath,
       sendTitle,
@@ -540,9 +598,16 @@ export class OrderService {
     order.sendTailText = sendTailText;
     order.requestToDestroyPersonalInfoDay = requestToDestroyPersonalInfoDay;
     order.fromPhoneNumber = fromPhoneNumber;
+
+    order.fromEmail = fromEmail;
+    order.emailSendType = emailSendType;
+    order.useEmailContent = useEmailContent;
+
     order.sendTitle = sendTitle;
     order.sendContent = sendContent;
-    order.sendAmount = sendAmount; // TODO 정산 할인 가격 적용 필요
+
+    order.sendAmount = sendAmount;
+    order.settleAmount = sendAmount;
     order.sendRequestAt = new Date(sendRequestAt);
 
     await this.orderRepository.save(order);
@@ -604,8 +669,9 @@ export class OrderService {
 
     const order = await this.orderRepository
       .createQueryBuilder('order')
-      .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
-      .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
+      .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
+      .leftJoinAndSelect('orderProductMappings.product', 'product')
+      .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
       .where('order.id = :id', { id })
       .andWhere('order.userId = :userId', { userId: user.id })
       .getOne();
@@ -614,7 +680,45 @@ export class OrderService {
       throw new BadRequestException('해당 주문건은 존재하지 않습니다.');
     }
 
+    if (!order.orderProductMappings || order.orderProductMappings.length === 0) {
+      throw new BadRequestException('발송 상세를 입력하지 않았습니다.');
+    }
+
+    for (const orderMapping of order.orderProductMappings!) {
+      if (!orderMapping.orderDeliveries || orderMapping.orderDeliveries.length === 0) {
+        throw new BadRequestException('발송 상세를 입력하지 않았습니다.');
+      }
+    }
+
     OrderValidation(order);
+
+    // 신세계 상품 검증
+    if (order.type === IOrderType.SSG) {
+      // 상품 가격으로 전체 가격 계산
+      const totalPrice = order.orderProductMappings!.reduce((acc, cur) => acc + cur.product.price * cur.amount, 0);
+      const couponExpiration = order.orderProductMappings[0].product.expireDay;
+
+      const now = new Date();
+      const ssgEventList = await this.ssgEventRepository.find({
+        where: {
+          startAt: LessThanOrEqual(now),
+          endAt: MoreThanOrEqual(now),
+          couponExpiration: couponExpiration,
+        },
+        order: { order: 'desc' },
+      });
+
+      if (ssgEventList.length === 0) {
+        throw new BadRequestException('행사가 존재하지 않습니다.');
+      }
+
+      const ssgEventTotalPrice = ssgEventList.reduce((acc, cur) => acc + cur.eventPrice, 0);
+
+      if (ssgEventTotalPrice < totalPrice) {
+        throw new BadRequestException('행사 잔액이 부족합니다.');
+      }
+    }
+
     for (const orderMapping of order.orderProductMappings!) {
       for (const orderDelivery of orderMapping.orderDeliveries) {
         orderDelivery.transactionId = CreateTransactionId(order.id, orderDelivery.id);
@@ -629,7 +733,10 @@ export class OrderService {
   }
 
   @Transactional()
-  async deliveryConfirmed(user: ILoginUserInfo, getBody: OrderDeliveryConfirmedReqDto) {
+  async deliveryConfirmed(
+    user: ILoginUserInfo,
+    getBody: OrderDeliveryConfirmedReqDto,
+  ): Promise<OrderDeliveryConfirmed> {
     const { id } = getBody;
 
     const order = await this.orderRepository
@@ -646,14 +753,72 @@ export class OrderService {
       .getOne();
 
     if (!order) {
-      throw new BadRequestException('해당 주문건은 존재하지 않습니다.');
+      throw new BadRequestException('해당 주문건은 존재하지 않거나, 발송 상세를 입력하지 않았습니다.');
     }
 
     OrderValidation(order);
 
+    let ssgEventIssue: SsgEventEntity | null = null;
+    // 신세계 상품 검증 및 차감
+    if (order.type === IOrderType.SSG) {
+      // 상품 가격으로 전체 가격 계산
+      const totalPrice = order.sendAmount;
+      const couponExpiration = order.orderProductMappings![0].orderDeliveries[0].orderProductMapping.product.expireDay;
+
+      const now = new Date();
+      const ssgEventList = await this.ssgEventRepository.find({
+        where: {
+          startAt: LessThanOrEqual(now),
+          endAt: MoreThanOrEqual(now),
+          couponExpiration: couponExpiration,
+        },
+        order: { order: 'desc' },
+      });
+
+      if (ssgEventList.length === 0) {
+        throw new BadRequestException('행사가 존재하지 않습니다.');
+      }
+
+      const ssgEventTotalPrice = ssgEventList.reduce((acc, cur) => acc + cur.eventPrice, 0);
+
+      if (ssgEventTotalPrice < totalPrice) {
+        throw new BadRequestException('행사 잔액이 부족합니다.');
+      }
+
+      const ssgEventAmountHistoryList: SsgEventAmountHistoryEntity[] = [];
+
+      for (const ssgEvent of ssgEventList) {
+        ssgEventIssue = ssgEvent;
+        const totalBalance = ssgEvent.eventBalance - totalPrice;
+
+        ssgEvent.eventBalance = totalBalance > 0 ? totalBalance : 0;
+        const ssgEventAmountEntity = new SsgEventAmountHistoryEntity();
+        ssgEventAmountEntity.ssgEventId = ssgEvent.id;
+        ssgEventAmountEntity.amount = -totalPrice;
+        ssgEventAmountEntity.balance = totalBalance;
+        ssgEventAmountEntity.orderId = order.id;
+
+        ssgEventAmountHistoryList.push(ssgEventAmountEntity);
+        if (totalBalance !== 0) {
+          break;
+        }
+      }
+
+      await this.ssgEventRepository.save(ssgEventList);
+      await this.ssgEventAmountHistoryRepository.save(ssgEventAmountHistoryList);
+    }
+
+    let message = 'success';
+
     for (const orderMapping of order.orderProductMappings!) {
       for (const orderDelivery of orderMapping.orderDeliveries) {
-        await this.partnerCompanyExternService.issue(orderDelivery);
+        await this.partnerCompanyExternService.issue(orderDelivery, ssgEventIssue);
+        // issue, 발급이 실패하지 않앗을 경우
+        if (orderDelivery.status === IOrderDeliveryStatus.FAIL || !orderDelivery.barCode) {
+          message = 'fail';
+          throw new InternalServerErrorException('발급 실패');
+        }
+
         orderDelivery.status = IOrderDeliveryStatus.WAIT;
         if (orderDelivery.barCode) {
           const { path } = await DeliveryCreateCouponImage(
@@ -666,6 +831,7 @@ export class OrderService {
             orderDelivery.orderProductMapping.midImagePath,
           );
           orderDelivery.imagePath = path;
+          orderDelivery.ssgEventId = ssgEventIssue ? ssgEventIssue.id : null;
         }
 
         await this.orderDeliveryRepository.save(orderDelivery);
@@ -674,6 +840,100 @@ export class OrderService {
 
     order.status = IOrderStatus.DELIVERY_CONFIRMED;
     await this.orderRepository.save(order);
+
+    return { message: message };
+  }
+
+  @Transactional()
+  async ssgCouponExpireChange(user: ILoginUserInfo, getBody: OrderDeliverySsgCouponExpireChangeReqDto) {
+    const { id, couponExpiration } = getBody;
+
+    const beforeOrder = await this.orderRepository
+      .createQueryBuilder('order')
+      .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
+      .innerJoinAndSelect('orderProductMappings.product', 'product')
+      .where('order.id = :id', { id })
+      // .andWhere('order.userId = :userId', { userId: user.id })
+      .andWhere('order.status = :status', { status: IOrderStatus.DELIVERY_REQUEST })
+      .andWhere('order.type = :type', { type: IOrderType.SSG })
+      .getOne();
+
+    if (!beforeOrder) {
+      throw new BadRequestException('해당 주문건은 존재하지 않습니다.');
+    }
+
+    const couponExpirationProduct = beforeOrder.orderProductMappings![0].product.expireDay;
+
+    if (couponExpiration === couponExpirationProduct) {
+      throw new BadRequestException(`유효기간이 ${couponExpiration}일 로 동일합니다.`);
+    }
+
+    const afterProductList = await this.productRepository.find({
+      where: {
+        type: IProductType.SSG,
+        expireDay: couponExpiration,
+      },
+    });
+    const afterProductPriceMap = listToMapValue(
+      afterProductList,
+      (product) => product.price,
+      (product) => product.id,
+    );
+
+    for (const orderProductMapping of beforeOrder.orderProductMappings!) {
+      const beforeProductId = orderProductMapping.productId;
+      const afterProductId = afterProductPriceMap.get(orderProductMapping.product.price);
+      if (!afterProductId) {
+        throw new InternalServerErrorException('신세계 product 가 존재하지 않습니다.');
+      }
+
+      await this.orderProductMappingRepository.update(
+        {
+          orderId: beforeOrder.id,
+          productId: beforeProductId,
+        },
+        {
+          productId: afterProductId,
+        },
+      );
+    }
+
+    const order = await this.orderRepository
+      .createQueryBuilder('order')
+      .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
+      .innerJoinAndSelect('orderProductMappings.product', 'product')
+      .where('order.id = :id', { id })
+      // .andWhere('order.userId = :userId', { userId: user.id })
+      .andWhere('order.status = :status', { status: IOrderStatus.DELIVERY_REQUEST })
+      .andWhere('order.type = :type', { type: IOrderType.SSG })
+      .getOne();
+    // 현재 order 에 되어있는 모든 product id 를 추출, 가격이 같은 다른 couponExpireation 으로 변경 진행
+    if (!order) {
+      throw new InternalServerErrorException('해당 주문이 존재하지 않습니다.');
+    }
+
+    // // 상품 가격으로 전체 가격 계산
+    const totalPrice = order.sendAmount;
+
+    const now = new Date();
+    const ssgEventList = await this.ssgEventRepository.find({
+      where: {
+        startAt: LessThanOrEqual(now),
+        endAt: MoreThanOrEqual(now),
+        couponExpiration: couponExpiration,
+      },
+      order: { order: 'desc' },
+    });
+
+    if (ssgEventList.length === 0) {
+      throw new BadRequestException('행사가 존재하지 않습니다.');
+    }
+
+    const ssgEventTotalPrice = ssgEventList.reduce((acc, cur) => acc + cur.eventPrice, 0);
+
+    if (ssgEventTotalPrice < totalPrice) {
+      throw new BadRequestException('행사 잔액이 부족합니다.');
+    }
 
     return;
   }
@@ -684,7 +944,7 @@ export class OrderService {
 
     const order = await this.orderRepository
       .createQueryBuilder('order')
-      .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
+      .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .where('order.id = :id', { id })
       // .andWhere('order.userId = :userId', { userId: user.id })
       .andWhere('order.status = :status', { status: 'DELIVERY_REQUEST' })
@@ -692,6 +952,10 @@ export class OrderService {
 
     if (!order) {
       throw new BadRequestException('해당 주문건은 존재하지 않습니다.');
+    }
+
+    if (!order.orderProductMappings || order.orderProductMappings.length === 0) {
+      throw new BadRequestException('발송 상세가 존재하지 않습니다.');
     }
 
     const orderProductMappingIdList = order.orderProductMappings!.map((orderProductMapping) => orderProductMapping.id);
@@ -702,6 +966,8 @@ export class OrderService {
       { orderProductMappingId: In(orderProductMappingIdList) },
       { status: IOrderDeliveryStatus.CANCEL },
     );
+
+    // TODO 취소시 신세계 정산 금액 rollback 필요
 
     return;
   }
@@ -735,8 +1001,8 @@ export class OrderService {
     return;
   }
 
-  async excelDownload(user: ILoginUserInfo, getQuery: OrderExcelDownloadReqQueryDto) {
-    const { eventName, type, status, userId, startAt, endAt, section } = getQuery;
+  async excelDownload(user: ILoginUserInfo, getBody: OrderExcelDownloadReqBodyDto) {
+    const { eventName, type, status, userId, startAt, endAt, section } = getBody;
 
     const now = new Date();
     const nowString = format(now, 'yyyyMMdd');
@@ -790,20 +1056,21 @@ export class OrderService {
 
     sheet.columns = [
       { header: '번호', key: 'id', width: 10 },
-      { header: '등록일', key: 'createdAt', width: 32 },
+      { header: '등록일', key: 'registerAt', width: 32 },
       { header: '고객사', key: 'userBusinessName', width: 20 },
       { header: '담당자', key: 'userPersonName', width: 20 },
       { header: '이벤트명', key: 'eventName', width: 20 },
       { header: '상품명', key: 'productName', width: 32 },
-      { header: '발송수량', key: 'totalProductCount', width: 32 },
-      { header: '발송금액', key: 'expireDay', width: 32 },
-      { header: '정산금액', key: 'category', width: 40 },
-      { header: '진행상태', key: 'type', width: 40 },
-      { header: '발송시간', key: 'useStatus', width: 40 },
+      { header: '발송수량', key: 'totalAmount', width: 32 },
+      { header: '발송금액', key: 'sendAmount', width: 32 },
+      { header: '정산금액', key: 'settleAmount', width: 40 },
+      { header: '진행상태', key: 'status', width: 40 },
+      { header: '발송시간', key: 'sendRequestAt', width: 40 },
     ];
 
+    let id = 1;
     for (const order of orderList) {
-      const sendRequestAt = normalizeDate(order.sendRequestAt) ? format(order.sendRequestAt, DateFormatStr) : null;
+      const sendRequestAt = normalizeDate(order.sendRequestAt) ? format(order.sendRequestAt, 'yyyy-MM-dd HH:mm') : null;
 
       let totalAmount = 0;
       let productName = '';
@@ -819,18 +1086,19 @@ export class OrderService {
       }
 
       sheet.addRow({
-        id: order.id,
-        registerAt: format(order.registerAt, DateFormatStr),
+        id: id,
+        registerAt: format(order.registerAt, 'yyyy-MM-dd HH:mm'),
         userBusinessName: order.user!.businessName,
         userPersonName: order.user!.personName,
         eventName: order.eventName,
         productName: productName,
         totalAmount: totalAmount,
-        deliveryPrice: 0, //TODO 발송 금액
-        settlePrice: 0, // TODO 정산 금액
-        status: order.status,
-        sendRequestAt: sendRequestAt,
+        sendAmount: order.sendAmount,
+        settleAmount: order.settleAmount,
+        status: OrderStatusExcelMapping(order.status),
+        sendRequestAt: sendRequestAt ?? '',
       });
+      id++;
     }
 
     const fileName = `${orderType}_리스트_${nowString}.xlsx`;

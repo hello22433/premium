@@ -19,7 +19,7 @@ export class ProductSsgDto {
   @ApiProperty({
     description: '대분류',
   })
-  classification: string;
+  classification: string | null;
 
   @ApiProperty({
     description: '브랜드 id',

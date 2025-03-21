@@ -27,26 +27,33 @@ export class MailSendHiworks implements IMailSend {
     const url = `${this.url}/office/v2/webmail/sendMail`;
     const headers = {
       'Content-Type': 'multipart/form-data',
-      Authorization: `${this.officeToken}`,
+      Authorization: `Bearer ${this.officeToken}`,
     };
 
-    const data = {
-      to: obj.to,
-      user_id: this.id,
-      cc: obj.cc,
-      bcc: obj.bcc,
-      subject: obj.subject,
-      content: obj.content,
-      save_sent_mail: obj.saveSentMail,
-    };
+    const id = obj.fromEmail ? obj.fromEmail : this.id;
+    const formData = new FormData();
+    formData.append('to', obj.to);
+    formData.append('user_id', id);
+    formData.append('subject', obj.subject);
+    formData.append('content', obj.content);
+    formData.append('save_sent_mail', obj.saveSentMail ? obj.saveSentMail : 'N'); // 기본값 N
+
+    if (obj.cc) {
+      formData.append('cc', obj.cc);
+    }
+    if (obj.bcc) {
+      formData.append('bcc', obj.bcc);
+    }
 
     try {
-      const response = await firstValueFrom(this.httpService.post(url, data, { headers }));
+      const response = await firstValueFrom(this.httpService.post(url, formData, { headers }));
 
       this.logger.log(response.data);
       return response.data as IMailSendOut;
     } catch (e) {
       this.logger.error(e);
+      this.logger.error(e.response.data);
+      this.logger.error(JSON.stringify(e));
       throw e;
     }
   }

@@ -1,6 +1,6 @@
 import { PagingReqDto } from '../../common/api/dto/pagination.req.dto';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsNotEmpty, IsNumber, IsOptional, Matches } from 'class-validator';
+import { IsNotEmpty, IsNumber, IsOptional, Matches, Min } from 'class-validator';
 import { dateAtRegexp } from '../../common/domain/date.regexp';
 
 export class SsgEventGetListReqDto extends PagingReqDto {
@@ -42,6 +42,22 @@ export class SsgEventCreateReqDto {
   // =============================================================
   @IsNotEmpty()
   code: string;
+
+  @ApiProperty({
+    description: '행사 순번',
+  })
+  // =============================================================
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  order: number | undefined;
+
+  @ApiProperty({
+    description: '행사 번호',
+  })
+  // =============================================================
+  @IsNotEmpty()
+  no: string;
 
   @ApiProperty({
     description: '행사 명',

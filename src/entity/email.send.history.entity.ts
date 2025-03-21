@@ -14,7 +14,7 @@ export class EmailSendHistoryEntity extends BaseEntity {
   @Column({
     type: 'enum',
     enum: EmailType,
-    comment: '이메일 인증 type ex) 로그인: LOGIN, 비밀번호 변경 관련: PASSWORD',
+    comment: '이메일 인증 type ex) 로그인: LOGIN, 비밀번호 변경 관련: PASSWORD, 쿠폰 발송: COUPON',
   })
   type: EmailType;
 

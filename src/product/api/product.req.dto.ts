@@ -27,6 +27,14 @@ export class ProductGetListReqQueryDto extends PagingReqDto {
   brandId?: number;
 
   @ApiPropertyOptional({
+    description: '상품 타입 ',
+  })
+  // ================================
+  @IsOptional()
+  @IsEnum(IProductType)
+  type?: IProductType;
+
+  @ApiPropertyOptional({
     description: '브랜드 명 ',
   })
   // ================================
@@ -186,11 +194,11 @@ export class ProductCreateReqDto {
   imagePath: string;
 
   @ApiProperty({
-    description: '상품유형 ex) 일반: GENERAL, 초이스: CHOICE, 배송: DELIVERY, 자체: SELF',
+    description: '상품유형 ex) 일반: GENERAL, 초이스: CHOICE, 배송: DELIVERY, 자체: SELF, 실물: REAL',
   })
   // ================================
   @IsNotEmpty()
-  @IsIn(['GENERAL', 'CHOICE', 'DELIVERY', 'SELF'])
+  @IsEnum(IProductType)
   type: IProductType;
 
   @ApiPropertyOptional({
@@ -237,7 +245,7 @@ export class ProductExcelUploadReqDto {
   file: Express.Multer.File;
 }
 
-export class ProductExcelDownloadReqQueryDto {
+export class ProductExcelDownloadReqBodyDto {
   @ApiPropertyOptional({
     description: '협력사 id',
   })

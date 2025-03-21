@@ -1,4 +1,4 @@
-import { IsString } from 'class-validator';
+import { IsNotEmpty, IsNumber, IsString } from 'class-validator';
 import { PagingReqDto } from '../../common/api/dto/pagination.req.dto';
 import { ApiProperty } from '@nestjs/swagger';
 
@@ -18,4 +18,14 @@ export class MessageArchiveCreateReqDto {
   // =======================
   @IsString()
   content: string;
+}
+
+export class MessageArchiveDeleteReqDto {
+  @ApiProperty({
+    description: '삭제할 문서함 id',
+  })
+  // =======================
+  @IsNotEmpty()
+  @IsNumber()
+  id: number;
 }

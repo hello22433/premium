@@ -4,6 +4,7 @@ import {
   ApiBadRequestResponse,
   ApiBearerAuth,
   ApiCreatedResponse,
+  ApiInternalServerErrorResponse,
   ApiOkResponse,
   ApiOperation,
   ApiTags,
@@ -14,7 +15,8 @@ import {
   OrderDeliveryCancelReqDto,
   OrderDeliveryConfirmedReqDto,
   OrderDeliveryRequestReqDto,
-  OrderExcelDownloadReqQueryDto,
+  OrderDeliverySsgCouponExpireChangeReqDto,
+  OrderExcelDownloadReqBodyDto,
   OrderGetDetailReqParamDto,
   OrderGetListReqDto,
   OrderGetSettleReqDto,
@@ -25,6 +27,7 @@ import {
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
 import {
   OrderCreateTempResDto,
+  OrderDeliveryConfirmed,
   OrderGetDetailResDto,
   OrderGetListResDto,
   OrderGetSettleGetListResDto,
@@ -34,6 +37,7 @@ import { User } from '../../auth/api/user.decorator';
 import { AuthUserSuperAdminGuard } from '../../auth/api/auth.user.super-admin.guard';
 import * as fs from 'fs';
 import { Response } from 'express';
+import { AuthUserSuperAndOperationAdminGuard } from '../../auth/api/auth.user.super-operation-admin.guard';
 
 @ApiTags('order')
 @ApiBearerAuth()
@@ -177,6 +181,7 @@ export class OrderController {
     description: '주문 확정 된 주문 중 발송 확정(발송 대기) 변환합니다. ',
   })
   @ApiCreatedResponse({
+    type: OrderDeliveryConfirmed,
     description: '성공적으로 주문 확정으로 변환한 경우',
   })
   @ApiBadRequestResponse({
@@ -186,6 +191,26 @@ export class OrderController {
   @Post('/order/delivery-confirmed')
   deliveryConfirmed(@User() user: ILoginUserInfo, @Body() getBody: OrderDeliveryConfirmedReqDto) {
     return this.orderService.deliveryConfirmed(user, getBody);
+  }
+
+  @ApiOperation({
+    summary: '신세계 발송 유효기간 변경 API',
+    description: '발송 확정 전, 신세계 상품권의 유효기간을 변경하고자 하는 API 입니다.',
+  })
+  @ApiCreatedResponse({
+    description: '성공적으로 변환한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '해당 주문이 존재하지 않는 경우 <br>' + '신세계 이벤트가 존재하지 않을 경우',
+  })
+  @ApiInternalServerErrorResponse({
+    description: '신세계 상품 데이터가 존재하지 않을 경우',
+  })
+  // ====================================================
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
+  @Post('/order/ssg/coupon-expire-change')
+  ssgCouponExpireChange(@User() user: ILoginUserInfo, @Body() getBody: OrderDeliverySsgCouponExpireChangeReqDto) {
+    return this.orderService.ssgCouponExpireChange(user, getBody);
   }
 
   @ApiOperation({
@@ -229,11 +254,11 @@ export class OrderController {
   @Post('/order/excel-download')
   async excelDownload(
     @User() user: ILoginUserInfo,
-    @Query() getQuery: OrderExcelDownloadReqQueryDto,
+    @Body() getBody: OrderExcelDownloadReqBodyDto,
     @Res() res: Response,
   ) {
     try {
-      const { fileName, filePath } = await this.orderService.excelDownload(user, getQuery);
+      const { fileName, filePath } = await this.orderService.excelDownload(user, getBody);
 
       const encodedFileName = encodeURIComponent(fileName);
       res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');

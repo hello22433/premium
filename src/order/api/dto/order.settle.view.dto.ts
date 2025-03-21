@@ -56,4 +56,16 @@ export class OrderSettleViewDto {
   })
   // =================================
   fee: number | null;
+
+  @ApiProperty({
+    description: '할인 단가 ',
+  })
+  // =================================
+  discountPrice: number;
+
+  @ApiProperty({
+    description: '할인 금액 ',
+  })
+  // =================================
+  discountTotalPrice: number;
 }

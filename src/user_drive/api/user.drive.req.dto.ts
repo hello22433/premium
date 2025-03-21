@@ -1,6 +1,6 @@
 import { PagingReqDto } from '../../common/api/dto/pagination.req.dto';
 import { ApiProperty } from '@nestjs/swagger';
-import { IsArray, IsNotEmpty, IsNumber } from 'class-validator';
+import { IsArray, IsNotEmpty, IsNumber, Min } from 'class-validator';
 import { Type } from 'class-transformer';
 import { IUserDriveStatus } from '../interface/user.drive.status';
 
@@ -23,6 +23,7 @@ export class UserDriveCreateReqDto {
   })
   // =================================
   @IsNotEmpty()
+  @Min(1)
   receiverId: number;
 
   @ApiProperty({

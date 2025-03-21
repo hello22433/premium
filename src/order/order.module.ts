@@ -10,6 +10,8 @@ import { ProductEntity } from '../entity/product.entity';
 import { PartnerCompanyExternModule } from '../partner_company_extern/partner.company.extern.module';
 import { UserEntity } from '../entity/user.entity';
 import { UserDiscountEntity } from '../entity/user.discount.entity';
+import { SsgEventEntity } from '../entity/ssg.event.entity';
+import { SsgEventAmountHistoryEntity } from '../entity/ssg.event.amount.history.entity';
 
 @Module({
   imports: [
@@ -21,6 +23,8 @@ import { UserDiscountEntity } from '../entity/user.discount.entity';
       OrderProductMappingEntity,
       ProductEntity,
       UserEntity,
+      SsgEventEntity,
+      SsgEventAmountHistoryEntity,
     ]),
     PartnerCompanyExternModule,
   ],

@@ -6,6 +6,7 @@ import { IOrderSendMethod } from '../interface/order.send.method';
 import { OrderDetailProductDto } from './dto/order.detail.product.dto';
 import { IOrderStatus } from '../interface/order.status';
 import { OrderSettleViewDto } from './dto/order.settle.view.dto';
+import { OrderEmailSendType } from '../domain/order.email.send.type';
 
 export class OrderGetListResDto extends GetListResDto {
   @ApiProperty({
@@ -60,12 +61,27 @@ export class OrderGetDetailResDto {
   @ApiProperty({
     description: '발신 번호',
   })
-  fromPhoneNumber: string;
+  fromPhoneNumber: string | null;
+
+  @ApiProperty({
+    description: '발신 이메일',
+  })
+  fromEmail: string | null;
 
   @ApiProperty({
     description: '전송 제목',
   })
   sendTitle: string;
+
+  @ApiProperty({
+    description: 'QR, URL',
+  })
+  emailSendType: OrderEmailSendType | null;
+
+  @ApiProperty({
+    description: '이메일 사용 방법',
+  })
+  useEmailContent: string | null;
 
   @ApiProperty({
     description: '전송 내용',
@@ -95,9 +111,21 @@ export class OrderGetDetailResDto {
   status: IOrderStatus;
 
   @ApiProperty({
+    description: '신세계 상품 유효기간',
+  })
+  couponExpiration: number | null;
+
+  @ApiProperty({
     description: '상품 정보 리스트',
   })
   productList: OrderDetailProductDto[];
+}
+
+export class OrderDeliveryConfirmed {
+  @ApiProperty({
+    description: '메세지 ex) 전체 성공 : success, 일부 실패가 존재하는 경우 : fail',
+  })
+  message: string;
 }
 
 export class OrderGetSettleGetListResDto extends GetListResDto {

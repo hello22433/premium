@@ -17,6 +17,10 @@ export const ProductTypeExcelMapping = (type: IProductType) => {
   if (type === IProductType.SELF) {
     return '자체';
   }
+
+  if (type === IProductType.REAL) {
+    return '실물상품';
+  }
   throw new Error('정의되지 않은 상품 타입입니다.');
 };
 

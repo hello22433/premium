@@ -1,5 +1,5 @@
 import { IOrderStatus } from '../interface/order.status';
-import { IsArray, IsEnum, IsNotEmpty, IsNumber, IsOptional, Matches } from 'class-validator';
+import { IsArray, IsEnum, IsIn, IsNotEmpty, IsNumber, IsOptional, Matches } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { dateAtRegexp } from '../../common/domain/date.regexp';
 import { PagingReqDto } from '../../common/api/dto/pagination.req.dto';
@@ -19,7 +19,7 @@ export class OrderGetListReqDto extends PagingReqDto {
   section: IOrderSection = IOrderSection.ORDER;
 
   @ApiProperty({
-    description: '주문 타입 ex) 일반: GENERAL, 신세계: SSG',
+    description: '주문 타입 ex) 일반: GENERAL, 신세계: SSG, 맞춤형: CUSTOM',
     default: 'GENERAL',
   })
   // ==============================================
@@ -75,7 +75,7 @@ export class OrderGetListReqDto extends PagingReqDto {
 
 export class OrderCreateTempReqDto extends OrderCreateDto {
   @ApiProperty({
-    description: '주문 타입 ex) 일반: GENERAL, 신세계: SSG',
+    description: '주문 타입 ex) 일반: GENERAL, 신세계: SSG, 맞춤형: CUSTOM',
     default: 'GENERAL',
   })
   // ==============================================
@@ -146,6 +146,25 @@ export class OrderDeliveryConfirmedReqDto {
   id: number;
 }
 
+export class OrderDeliverySsgCouponExpireChangeReqDto {
+  @ApiProperty({
+    description: 'order id',
+  })
+  // ==================================
+  @IsNotEmpty()
+  @IsNumber()
+  id: number;
+
+  @ApiProperty({
+    description: '신세계 상품 유효 기간',
+  })
+  // ==================================
+  @IsNotEmpty()
+  @IsNumber()
+  @IsIn([60, 90, 180])
+  couponExpiration: number;
+}
+
 export class OrderDeliveryCancelReqDto {
   @ApiProperty({
     description: 'order id',
@@ -174,7 +193,7 @@ export class OrderUpdateOperationUserReqDto {
   operationUserId: number;
 }
 
-export class OrderExcelDownloadReqQueryDto {
+export class OrderExcelDownloadReqBodyDto {
   @ApiPropertyOptional({
     description: '구분 ex) 주문관리 : ORDER, 발송관리: SHIPPING',
     default: IOrderSection.ORDER,

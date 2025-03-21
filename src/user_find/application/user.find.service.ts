@@ -17,6 +17,7 @@ import { PasswordBcryptEncrypt } from '../../auth/infrastructure/password.bcrypt
 import { UserResetPasswordVerifyTemplateHtml } from '../domain/user.reset.password.verify.template.html';
 import { generateRandomCode } from '../domain/code.generate';
 import { generateRandomPassword } from '../domain/user.password.regex';
+import { userResetPasswordTemplate } from '../domain/user.reset.password.template.html';
 
 export class UserFindService {
   constructor(
@@ -75,9 +76,9 @@ export class UserFindService {
     const { title, content } = UserResetPasswordVerifyTemplateHtml(code, EmailCertifyExpireMinute);
 
     await this.mailSendService.send({
-      saveSentMail: 'Y',
-      bcc: '',
-      cc: '',
+      saveSentMail: 'N',
+      bcc: undefined,
+      cc: undefined,
       content: content,
       subject: title,
       to: email,
@@ -125,6 +126,18 @@ export class UserFindService {
     }
 
     const tempPassword = generateRandomPassword();
+
+    const { title, content } = userResetPasswordTemplate(tempPassword);
+
+    await this.mailSendService.send({
+      saveSentMail: 'N',
+      bcc: undefined,
+      cc: undefined,
+      content: content,
+      subject: title,
+      to: email,
+    });
+
     user.password = await this.passwordEncrypt.encrypt(tempPassword);
     user.isPasswordReset = true;
 

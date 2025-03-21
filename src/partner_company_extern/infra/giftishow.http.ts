@@ -31,7 +31,7 @@ export class GiftishowHttp implements IGiftiShow {
   }
 
   async issue(obj: GiftiShowIssueIn): Promise<GiftiShowIssueOut> {
-    const url = `${this.url}/media/request.asp`;
+    // const url = `${this.url}/media/request.asp`;
     const headers = {
       api_code: '0101',
       custom_auth_code: this.corpCode,
@@ -40,7 +40,7 @@ export class GiftishowHttp implements IGiftiShow {
       'Content-Type': 'application/xml', // XML로 요청을 보내기 위한 Content-Type
       Accept: 'application/xml', // XML 응답을 수신하기 위함
     };
-    const data = {
+    const queryParams = new URLSearchParams({
       MDCODE: this.corpCode,
       MSG: 'MSSAGE',
       TITLE: 'TITLE',
@@ -50,22 +50,26 @@ export class GiftishowHttp implements IGiftiShow {
       sms_flag: 'N',
       gubun: 'Y',
       phone_no: '01000000000',
-    };
+    });
+
+    const url = `${this.url}/media/request.asp?${queryParams.toString()}`;
 
     try {
       this.logger.log(url);
-      this.logger.log(data);
       this.logger.log(headers);
-      const response = await firstValueFrom(this.httpService.post(url, data, { headers }));
+      const response = await firstValueFrom(this.httpService.get(url, { headers }));
+
       const result = response.data;
 
       const resultToJson = (await this.parser().parseStringPromise(result)) as unknown as GiftiShowIssueOut;
 
       this.logger.log(result);
-      this.logger.log(response.toString());
+      this.logger.log(resultToJson);
+      // this.logger.log(response.toString());
       return resultToJson as GiftiShowIssueOut;
     } catch (e) {
       this.logger.error(e);
+      this.logger.error(JSON.stringify(e));
       throw e;
     }
   }

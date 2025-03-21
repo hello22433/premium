@@ -1,10 +1,12 @@
 import { BaseEntity } from '../common/entity/base.entity';
-import { Column, Entity, ManyToOne, PrimaryGeneratedColumn } from 'typeorm';
+import { Column, Entity, ManyToOne, OneToMany, PrimaryGeneratedColumn } from 'typeorm';
 import { IProductSettleMethod } from '../product/interface/product.settle.method';
 import { IProductType } from '../product/interface/product.type';
 import { PartnerCompanyEntity } from './partner.company.entity';
 import { BrandEntity } from './brand.entity';
 import { IProductUseStatus } from '../product/interface/product.status';
+import { IRealProductStatus } from '../product/interface/real.product.status';
+import { ProductChoiceMappingEntity } from './product.choice.mapping.entity';
 
 @Entity('product')
 export class ProductEntity extends BaseEntity {
@@ -54,7 +56,7 @@ export class ProductEntity extends BaseEntity {
   @Column({
     type: 'varchar',
     length: 100,
-    comment: '상품유형 ex) 일반: GENERAL, 초이스: CHOICE, 배송: DELIVERY, 자체: SELF',
+    comment: '상품유형 ex) 일반: GENERAL, 초이스: CHOICE, 배송: DELIVERY, 자체: SELF, 신세계 : SSG, 실물상품: REAL',
   })
   type: IProductType;
 
@@ -67,6 +69,17 @@ export class ProductEntity extends BaseEntity {
   @Column({ comment: '상품 사용 상태 ex) 사용: USE 미사용: UNUSED 영구 미사용: PERMANENTLY_UNUSED' })
   useStatus: IProductUseStatus;
 
+  @Column({ type: 'varchar', nullable: true, length: 100, comment: '실물상품 색상 ' })
+  color: string | null;
+
+  @Column({
+    type: 'enum',
+    enum: IRealProductStatus,
+    comment: '실물상품 판매상태 ex) ON_SALE: 판매중, CLOSED: 판매중지',
+    nullable: true,
+  })
+  status: IRealProductStatus;
+
   @ManyToOne(() => PartnerCompanyEntity, {
     createForeignKeyConstraints: false,
   })
@@ -76,4 +89,9 @@ export class ProductEntity extends BaseEntity {
     createForeignKeyConstraints: false,
   })
   brand?: BrandEntity;
+
+  @OneToMany(() => ProductChoiceMappingEntity, (productChoiceMapping) => productChoiceMapping.choiceProduct, {
+    createForeignKeyConstraints: false,
+  })
+  productChoiceMappings: ProductChoiceMappingEntity[];
 }

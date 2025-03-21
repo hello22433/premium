@@ -9,6 +9,12 @@ export class SsgEventEntity extends BaseEntity {
   @Column({ type: 'varchar', length: 20, comment: '행사 코드' })
   code: string;
 
+  @Column({ type: 'varchar', length: 20, comment: '행사 번호' })
+  no: string;
+
+  @Column({ default: 1, comment: '행사 순번' })
+  order: number;
+
   @Column({ type: 'varchar', length: 20, comment: '행사 명' })
   name: string;
 
@@ -23,4 +29,7 @@ export class SsgEventEntity extends BaseEntity {
 
   @Column({ comment: '행사 금액' })
   eventPrice: number;
+
+  @Column({ default: 0, comment: '행사 잔액' })
+  eventBalance: number;
 }

@@ -28,6 +28,11 @@ import { SsgEventEntity } from '../entity/ssg.event.entity';
 import { GemteckMsgQueueEntity } from '../entity/gemtek/msg.queue.entity';
 import { QnaEntity } from '../entity/qna.entity';
 import { UserDriveEntity } from '../entity/user.drive.entity';
+import { OrderRealProductEntity } from '../entity/order.real.product.entity';
+import { OrderRealProductMappingEntity } from '../entity/order.real.product.mapping.entity';
+import { OrderFromDefinitionEntity } from '../entity/order.from.definition.entity';
+import { UserTaskHistoryEntity } from '../entity/user.task.history.entity';
+import { ProductChoiceMappingEntity } from '../entity/product.choice.mapping.entity';
 
 @Module({
   imports: [
@@ -53,6 +58,8 @@ import { UserDriveEntity } from '../entity/user.drive.entity';
           UserEventSaveMappingEntity,
           OrderEntity,
           OrderProductMappingEntity,
+          OrderRealProductEntity,
+          OrderRealProductMappingEntity,
           PartnerCompanyEntity,
           OrderDeliveryEntity,
           DeliverySendHistoryEntity,
@@ -63,9 +70,12 @@ import { UserDriveEntity } from '../entity/user.drive.entity';
           SsgEventEntity,
           QnaEntity,
           UserDriveEntity,
+          OrderFromDefinitionEntity,
+          UserTaskHistoryEntity,
+          ProductChoiceMappingEntity,
         ],
         timezone: 'local',
-        logger: new SqlLogger(),
+        logger: configService.get('DATABASE_LOGGING') === 'true' ? new SqlLogger() : undefined,
         namingStrategy: new SnakeNamingStrategy(),
         logging: configService.get('DATABASE_LOGGING') === 'true',
         synchronize: configService.get('DATABASE_SYNCHRONIZE') === 'true',

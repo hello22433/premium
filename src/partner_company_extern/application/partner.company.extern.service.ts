@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { Repository } from 'typeorm';
@@ -12,6 +12,12 @@ import { PartnerCompanyExternHistoryEntity } from '../../entity/partner.company.
 import { ISsgIssue } from '../interface/ssg.issue';
 import { Propagation, Transactional } from 'typeorm-transactional';
 import { orderBarcodeGenerate } from '../../order/domain/order.code.generate';
+import { SsgEventEntity } from '../../entity/ssg.event.entity';
+import { OrderEntity } from '../../entity/order.entity';
+import { SsgTransactionId } from '../domain/ssg.transaction.id';
+import { ssgIssueUserName } from '../../const';
+import { smsSsgTemplate } from '../../delivery/domain/sms.ssg.template';
+import { addDays } from 'date-fns';
 
 @Injectable()
 export class PartnerCompanyExternService {
@@ -28,14 +34,18 @@ export class PartnerCompanyExternService {
     private culture: ICulture,
     @Inject('ISsgIssue')
     private ssgIssue: ISsgIssue,
+    @InjectRepository(OrderEntity)
+    private orderRepository: Repository<OrderEntity>,
     @InjectRepository(OrderDeliveryEntity)
     private orderDeliveryRepository: Repository<OrderDeliveryEntity>,
     @InjectRepository(PartnerCompanyExternHistoryEntity)
     private partnerCompanyExternHistoryRepository: Repository<PartnerCompanyExternHistoryEntity>,
   ) {}
 
+  private logger = new Logger('PARTNER_COMPANY_EXTERN');
+
   @Transactional({ propagation: Propagation.REQUIRED })
-  async issue(orderDelivery: OrderDeliveryEntity) {
+  async issue(orderDelivery: OrderDeliveryEntity, ssgEvent: SsgEventEntity | null) {
     const type = orderDelivery.orderProductMapping!.product.partnerCompany!.type;
 
     let context = '';
@@ -56,7 +66,7 @@ export class PartnerCompanyExternService {
           giftKind: giftKind,
         });
         context = JSON.stringify(galaxiaOut);
-        orderDelivery.barCode = galaxiaOut.giftCertificate.barcode;
+        orderDelivery.barCode = galaxiaOut.giftCertificate.barcode ?? null;
       }
 
       // 1.1.2 GSMBIZ 쿠폰 발급
@@ -90,7 +100,7 @@ export class PartnerCompanyExternService {
           partnerCompanyCode: orderDelivery.orderProductMapping.product.partnerCompanyCode,
         });
         context = JSON.stringify(giftShowOut);
-        orderDelivery.barCode = giftShowOut.value.pin_no;
+        orderDelivery.barCode = giftShowOut.response.value[0].pin_no[0];
       }
 
       // 1.1.5 컬쳐랜드 쿠폰 발급
@@ -108,17 +118,73 @@ export class PartnerCompanyExternService {
 
       // 1.1.6 신세계 상품권 발행
       if (type === 'SSG') {
-        const ssgBardCode = await this.ssgIssue.issue('8', 7);
-        context = ssgBardCode;
-        orderDelivery.barCode = ssgBardCode;
+        if (!ssgEvent) {
+          throw new InternalServerErrorException('ssg event 가 존재하지 않습니다.');
+        }
+        const order = await this.orderRepository.findOne({
+          where: {
+            id: orderDelivery.orderProductMapping.orderId,
+          },
+        });
+
+        if (!order) {
+          throw new InternalServerErrorException('order not exist');
+        }
+
+        const { barCode, personalCode } = this.ssgIssue.generateSsgIssue();
+
+        orderDelivery.barCode = barCode;
+        orderDelivery.personalCode = personalCode;
+        orderDelivery.ssgTransactionId = SsgTransactionId.makeSsgTrade();
+        orderDelivery.expireAt = addDays(
+          orderDelivery.sendRequestAt,
+          orderDelivery.orderProductMapping.product.expireDay,
+        );
+        let text = order.sendContent;
+
+        if (order.sendTailText) {
+          text += order.sendTailText;
+        }
+        if (orderDelivery.replaceCharacter1) {
+          text = text.replace('{대치문자1}', orderDelivery.replaceCharacter1);
+        }
+        if (orderDelivery.replaceCharacter2) {
+          text = text.replace('{대치문자2}', orderDelivery.replaceCharacter2);
+        }
+        if (orderDelivery.replaceCharacter3) {
+          text = text.replace('{대치문자3}', orderDelivery.replaceCharacter3);
+        }
+
+        const textForSsg = text + smsSsgTemplate(orderDelivery);
+
+        const response = await this.ssgIssue.issue({
+          eventNo: ssgEvent.no,
+          eventSeq: ssgEvent.order,
+          eventKey: ssgEvent.code,
+          vno: orderDelivery.personalCode,
+          pinNo: orderDelivery.barCode,
+          userName: ssgIssueUserName,
+          userAmount: '' + orderDelivery.orderProductMapping.product.price,
+          msgContent: textForSsg,
+          trId: orderDelivery.ssgTransactionId,
+          callBack: order.fromPhoneNumber!,
+        });
+        context = JSON.stringify(response);
       }
 
-      if (type === null) {
+      if (!type) {
         orderDelivery.barCode = orderBarcodeGenerate();
       }
 
-      return;
+      this.logger.log(orderDelivery.barCode);
+      if (!orderDelivery.barCode) {
+        throw new Error('barCode not exist');
+      }
+
+      // return;
     } catch (e) {
+      this.logger.log(JSON.stringify(e));
+      this.logger.log(e);
       context = JSON.stringify(e);
       isSuccess = false;
       orderDelivery.status = IOrderDeliveryStatus.FAIL;

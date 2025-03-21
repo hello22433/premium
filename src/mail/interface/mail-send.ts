@@ -1,10 +1,11 @@
 export interface IMailSendIn {
   to: string;
-  cc: string;
-  bcc: string;
+  cc: string | undefined;
+  bcc: string | undefined;
   subject: string;
   content: string;
   saveSentMail: string;
+  fromEmail?: string | null;
 }
 
 export interface IMailSendOut {

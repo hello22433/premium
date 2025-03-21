@@ -102,4 +102,7 @@ export class UserEntity extends BaseEntity {
 
   @Column({ default: 0, comment: '잔액' })
   balance: number;
+
+  @Column({ type: 'varchar', length: 100, default: 'S+', comment: '고객사등급' }) // TODO
+  businessGrade: string;
 }

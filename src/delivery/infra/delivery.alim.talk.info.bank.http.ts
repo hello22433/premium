@@ -46,6 +46,7 @@ export class DeliveryAlimTalkInfoBankHttp implements DeliveryAlimTalk {
     this.infoBankPassword = this.configService.getOrThrow('ALIM_TALK_INFO_BANK_PASSWORD');
     this.infoBankSenderKey = this.configService.getOrThrow('ALIM_TALK_INFO_BANK_SENDER_KEY');
     this.infoBankTemplateCode = this.configService.getOrThrow('ALIM_TALK_INFO_BANK_TEMPLATE_CODE');
+    this.receiveUrl = this.configService.getOrThrow('ALIM_TALK_RECEIVE_URL');
     if (this.configService.getOrThrow('ENVIRONMENT') === 'prod') {
       this.infoBankUrl = 'https://omni.ibapi.kr';
     }
@@ -57,6 +58,7 @@ export class DeliveryAlimTalkInfoBankHttp implements DeliveryAlimTalk {
   private infoBankPassword: string = '';
   private infoBankSenderKey: string = '';
   private infoBankTemplateCode: string = '';
+  private receiveUrl: string = '';
 
   private infoBankUrl = 'https://omni.ibapi.kr';
 
@@ -72,6 +74,7 @@ export class DeliveryAlimTalkInfoBankHttp implements DeliveryAlimTalk {
 
     return `${DeliveryInfoBankAuth.schema} ${DeliveryInfoBankAuth.token}`;
   }
+
   private async getTokenByServer(): Promise<InfoBankAuthResponse> {
     const url = `${this.infoBankUrl}/v1/auth/token`;
 
@@ -114,10 +117,11 @@ export class DeliveryAlimTalkInfoBankHttp implements DeliveryAlimTalk {
         templateCode: this.infoBankTemplateCode,
         text: sendObj.text,
         button: [
-          // TODO Button 템플릿에 따라 수정 필요
           {
-            type: 'MD',
-            name: '선물 확인(테스트용)',
+            type: 'WL',
+            name: '선물메시지 확인',
+            // urlPc: `${this.receiveUrl}/${sendObj.encryptKey}`,
+            urlMobile: `${this.receiveUrl}/${sendObj.encryptKey}`,
           },
         ],
       };
@@ -125,15 +129,40 @@ export class DeliveryAlimTalkInfoBankHttp implements DeliveryAlimTalk {
       const response = await firstValueFrom(this.httpService.post(url, body, { headers }));
 
       const responseData = response.data as InfoBankSendResponse;
-      const reportResponse = await firstValueFrom(
-        this.httpService.get(`${this.infoBankUrl}/v1/report/inquiry/${responseData.msgKey}`, { headers }),
+      // const reportResponse = await firstValueFrom(
+      //   this.httpService.get(`${this.infoBankUrl}/v1/report/inquiry/${responseData.msgKey}`, { headers }),
+      // );
+
+      await this.sleep(500);
+
+      const reportResponsePolling = await firstValueFrom(
+        this.httpService.get(`${this.infoBankUrl}/v1/report/polling`, { headers }),
       );
-      const reportData = reportResponse.data as InfoBankReportResponse;
+
+      const reportResponsePollingData: InfoBankReportResponse = reportResponsePolling.data;
+
+      // msgKey 검증
+      const msgKey = responseData.msgKey;
+      const reportMsgKeys = reportResponsePollingData.data.report.map((report) => report.msgKey);
+
+      // TODO 알림톡 에러 검증
+      // if (!reportMsgKeys.includes(msgKey)) {
+      //   this.logger.error(JSON.stringify(reportResponsePollingData));
+      //   this.logger.error(JSON.stringify(responseData));
+      //
+      //   throw new Error(`msgKey "${msgKey}" not found in reportResponsePollingData`);
+      // }
+
+      const reportData = reportResponsePolling.data as InfoBankReportResponse;
       return { responseData, report: reportData };
     } catch (e) {
       this.logger.error(e);
 
       throw new Error(e);
     }
+  }
+
+  private async sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 }

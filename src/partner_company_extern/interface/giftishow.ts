@@ -4,8 +4,10 @@ export interface GiftiShowIssueIn {
 }
 
 export interface GiftiShowIssueOut {
-  result: { code: string; reason: string };
-  value: { pin_no: string; tr_id: string; ctr_id: string };
+  response: {
+    result: { code: string[]; reason: string[] }[];
+    value: { pin_no: string[]; tr_id: string[]; ctr_id: string[] }[];
+  };
 }
 
 export interface IGiftiShow {

@@ -24,7 +24,7 @@ import {
 } from '@nestjs/swagger';
 import {
   ProductCreateReqDto,
-  ProductExcelDownloadReqQueryDto,
+  ProductExcelDownloadReqBodyDto,
   ProductExcelUploadReqDto,
   ProductGetDetailReqParamDto,
   ProductGetListReqQueryDto,
@@ -160,9 +160,9 @@ export class ProductController {
   })
   // ===================================================
   @Post('/product/excel-download')
-  async excelDownload(@Query() getQuery: ProductExcelDownloadReqQueryDto, @Res() res: Response) {
+  async excelDownload(@Body() getBody: ProductExcelDownloadReqBodyDto, @Res() res: Response) {
     try {
-      const { fileName, filePath } = await this.productService.excelDownload(getQuery);
+      const { fileName, filePath } = await this.productService.excelDownload(getBody);
 
       const encodedFileName = encodeURIComponent(fileName);
       res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');

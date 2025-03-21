@@ -30,8 +30,8 @@ export class UserDriveService {
 
     let queryBuilder = this.userDriveRepository
       .createQueryBuilder('drive')
-      .leftJoinAndSelect('drive.sender', 'sender')
-      .leftJoinAndSelect('drive.receiver', 'receiver');
+      .innerJoinAndSelect('drive.sender', 'sender')
+      .innerJoinAndSelect('drive.receiver', 'receiver');
 
     if (user.authority === 'CORPORATE_ADMIN') {
       queryBuilder.where('drive.receiverId = :receiverId', { receiverId: user.id });
@@ -81,6 +81,8 @@ export class UserDriveService {
       return {
         id: userDrive.id,
         sendAt: format(userDrive.sendAt, DateFormatStr),
+        senderId: userDrive.senderId,
+        receiverId: userDrive.receiverId,
         senderBusinessName: userDrive.sender.businessName,
         receiverPersonName: userDrive.receiver.personName,
         receiverEmail: userDrive.receiver.email,
@@ -106,6 +108,8 @@ export class UserDriveService {
     return {
       id: userDrive.id,
       sendAt: format(userDrive.sendAt, DateFormatStr),
+      senderId: userDrive.senderId,
+      receiverId: userDrive.receiverId,
       senderBusinessName: userDrive.sender.businessName,
       receiverPersonName: userDrive.receiver.personName,
       receiverEmail: userDrive.receiver.email,
@@ -135,6 +139,7 @@ export class UserDriveService {
     }
 
     await this.userDriveRepository.insert({
+      senderId: user.id,
       receiverId: receiver.id,
       title,
       content,

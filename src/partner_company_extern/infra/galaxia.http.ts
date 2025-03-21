@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { GalaxiaIssueIn, GalaxiaIssueOut, IGalaxia } from '../interface/galaxia';
+import { Parser } from 'xml2js';
 
 @Injectable()
 export class GalaxiaHttp implements IGalaxia {
@@ -27,6 +28,10 @@ export class GalaxiaHttp implements IGalaxia {
 
   private url = 'https://mcoupon.mobilegift.co.kr'; // test URL
   private cryptoAlgorithm = 'aes-128-cbc';
+
+  private parser() {
+    return new Parser();
+  }
 
   // 쿠폰 발행
   async issue(obj: GalaxiaIssueIn): Promise<GalaxiaIssueOut> {
@@ -58,9 +63,15 @@ export class GalaxiaHttp implements IGalaxia {
       const response = await firstValueFrom(this.httpService.post(`${url}?${data.toString()}`, {}, { headers }));
 
       this.logger.log(response.data);
-      return response.data as GalaxiaIssueOut;
+      const result = response.data as GalaxiaIssueOut;
+
+      // const resultToJson = (await this.parser().parseStringPromise(response.data)) as unknown as GalaxiaIssueOut;
+
+      // this.logger.log(resultToJson);
+      return result as GalaxiaIssueOut;
     } catch (e) {
       this.logger.error(e);
+      this.logger.error(JSON.stringify(e));
       throw e;
     }
   }

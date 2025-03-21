@@ -4,6 +4,7 @@ import { IOrderSendMethod } from '../../interface/order.send.method';
 import { dateAtRegexp } from '../../../common/domain/date.regexp';
 import { Transform, Type } from 'class-transformer';
 import { OrderProductCreateTempDto } from './order.product.create.temp.dto';
+import { OrderEmailSendType } from '../../domain/order.email.send.type';
 
 export class OrderCreateDto {
   @ApiProperty({
@@ -39,14 +40,30 @@ export class OrderCreateDto {
   @Type(() => Number)
   requestToDestroyPersonalInfoDay: number = 0;
 
-  @ApiProperty({
+  @ApiPropertyOptional({
     description: '발신 번호',
-    default: '',
   })
   // =================================================
   @IsOptional()
   @IsString()
-  fromPhoneNumber: string = '16443614';
+  fromPhoneNumber: string | null = '16443614';
+
+  @ApiPropertyOptional({
+    description: '발신 이메일',
+  })
+  // =================================================
+  @IsOptional()
+  @IsString()
+  fromEmail: string | null;
+
+  @ApiPropertyOptional({
+    description: 'QR: QR, URL: URL',
+  })
+  // =================================================
+  @IsOptional()
+  @IsEnum(OrderEmailSendType)
+  @Transform(({ value }) => (value === '' ? null : value)) // 빈 문자열을 null로 변환
+  emailSendType: OrderEmailSendType | null = null;
 
   @ApiProperty({
     description: '발신 제목',
@@ -63,6 +80,15 @@ export class OrderCreateDto {
   // =================================================
   @IsString()
   sendContent: string;
+
+  @ApiProperty({
+    description: '이메일시 사용 방법',
+    default: '',
+  })
+  // =================================================
+  @IsOptional()
+  @IsString()
+  useEmailContent: string | null = null;
 
   @ApiPropertyOptional({
     description: '미리보기 상단 이미지 url, 없으면 기본 이미지 사용',

@@ -191,9 +191,9 @@ export class UserService {
     const { title, content } = userLoginTemplateHtml(code, EmailCertifyExpireMinute);
 
     await this.mailSendService.send({
-      saveSentMail: 'Y',
-      bcc: '',
-      cc: '',
+      saveSentMail: 'N',
+      bcc: undefined,
+      cc: undefined,
       content: content,
       subject: title,
       to: email,
@@ -255,7 +255,13 @@ export class UserService {
       throw new BadRequestException('USER_DOES_NOT_EXIST');
     }
 
-    const loginToken = this.loginTokenValidator.issuance(userDecode);
+    const loginUserInfo: ILoginUserInfo = {
+      id: user.id,
+      email: user.email,
+      authority: user.authority,
+    };
+
+    const loginToken = this.loginTokenValidator.issuance(loginUserInfo);
 
     return {
       accessToken: loginToken.accessToken,
@@ -273,7 +279,13 @@ export class UserService {
       throw new BadRequestException('USER_DOES_NOT_EXIST');
     }
 
-    return this.loginTokenValidator.issuance(userDecode);
+    const loginUserInfo: ILoginUserInfo = {
+      id: user.id,
+      email: user.email,
+      authority: user.authority,
+    };
+
+    return this.loginTokenValidator.issuance(loginUserInfo);
   }
 
   async delete(user: ILoginUserInfo) {

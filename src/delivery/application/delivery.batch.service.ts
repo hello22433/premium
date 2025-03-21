@@ -1,17 +1,37 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { DeliveryAlimTalk } from '../interface/delivery.alim.talk';
 import { IOrderDeliveryStatus } from '../interface/order.delivery.status';
 import { IMailSend } from '../../mail/interface/mail-send';
 import { IOrderSendMethod } from '../../order/interface/order.send.method';
 import { DeliverySendHistoryEntity } from '../../entity/delivery.send.history.entity';
 import { ISmsSend } from '../../sms/interface/sms.send';
+import { OrderEntity } from '../../entity/order.entity';
+import { IOrderStatus } from '../../order/interface/order.status';
+import { AlimTalkTemplate } from '../domain/alim.talk.template';
+import { CryptoCipher } from '../../common/infra/crypto.cipher';
+import { OrderEncryptKey } from '../../order_receive/interface/order.encrypt.key';
+import { ConfigService } from '@nestjs/config';
+import { EmailSendHistoryEntity } from '../../entity/email.send.history.entity';
+import { generateRandomCode } from '../../user_find/domain/code.generate';
+import { addDays } from 'date-fns';
+import { EmailCertifyExpireDay } from '../../const';
+import { EmailType } from '../../mail/domain/email.type';
+import { IOrderType } from '../../order/interface/order.type';
+import { smsSsgTemplate } from '../domain/sms.ssg.template';
+import { EmailDeliveryTemplate } from '../domain/email.delivery.template';
+import { OrderEmailSendType } from '../../order/domain/order.email.send.type';
+import * as QRCode from 'qrcode';
+import { randomUUID } from 'crypto';
+import { IFileStorage } from '../../file/interface/file.storage';
 
 @Injectable()
 export class DeliveryBatchService {
   constructor(
+    @InjectRepository(OrderEntity)
+    private orderRepository: Repository<OrderEntity>,
     @InjectRepository(OrderDeliveryEntity)
     private orderDeliveryRepository: Repository<OrderDeliveryEntity>,
     @InjectRepository(DeliverySendHistoryEntity)
@@ -22,6 +42,12 @@ export class DeliveryBatchService {
     private mailSend: IMailSend,
     @Inject('ISmsSend')
     private smsSend: ISmsSend,
+    private cryptoCipher: CryptoCipher,
+    private configService: ConfigService,
+    @InjectRepository(EmailSendHistoryEntity)
+    private emailSendHistoryRepository: Repository<EmailSendHistoryEntity>,
+    @Inject('IFileStorage')
+    private fileStorage: IFileStorage,
   ) {}
 
   async issueAndSend() {
@@ -31,7 +57,9 @@ export class DeliveryBatchService {
       .createQueryBuilder('orderDelivery')
       .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
       .innerJoinAndSelect('orderProductMapping.order', 'order')
+      .innerJoinAndSelect('order.user', 'user')
       .innerJoinAndSelect('orderProductMapping.product', 'product')
+      .innerJoinAndSelect('product.brand', 'brand')
       .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .where('orderDelivery.sendRequestAt < :now', { now })
       .andWhere('orderDelivery.status = :status', { status: 'WAIT' });
@@ -40,10 +68,19 @@ export class DeliveryBatchService {
 
     // 0. 전송 history 생성 entity list
     const deliveryHistoryList: DeliverySendHistoryEntity[] = [];
+    const orderIdList: number[] = [];
 
     // 1. 알림톡, SMS, 이메일 전송
     for (const orderDelivery of orderDeliveryList) {
       const title = orderDelivery.orderProductMapping.order.sendTitle;
+
+      if (orderDelivery.orderProductMapping.order.type !== IOrderType.SSG) {
+        orderDelivery.expireAt = addDays(
+          orderDelivery.sendRequestAt,
+          orderDelivery.orderProductMapping.product.expireDay,
+        );
+      }
+
       const filePathList = [];
       if (orderDelivery.imagePath) {
         filePathList.push(orderDelivery.imagePath);
@@ -69,16 +106,36 @@ export class DeliveryBatchService {
       deliveryHistory.context = '{}';
       deliveryHistory.isSuccess = true;
       deliveryHistory.target = orderDelivery.deliveryTarget;
+      deliveryHistory.deliveryMethod = deliveryMethod;
+
+      const encryptKey = this.cryptoCipher.encryptJson({
+        id: orderDelivery.id,
+        transactionId: orderDelivery.transactionId,
+      } as OrderEncryptKey);
 
       // 1.1 알림톡일 경우
       if (deliveryMethod === IOrderSendMethod.ALIM_TALK) {
         try {
+          const alimTalk = AlimTalkTemplate(orderDelivery);
           const { responseData, report } = await this.deliveryAlimTalk.send({
             to: orderDelivery.deliveryTarget,
-            text,
+            text: alimTalk,
+            encryptKey: encryptKey,
           });
+
+          console.log(JSON.stringify(report));
+          console.log(JSON.stringify(responseData));
           deliveryHistory.context = JSON.stringify(responseData);
           deliveryHistory.etcContext = JSON.stringify(report);
+          // TODO 알림톡 에러 검증
+          if (report.code !== 'A000') {
+            throw new Error('AlimTalk Send Error');
+          }
+          // if (report.code !== 'A000' || report.data.report.length === 0) {
+          //   throw new Error('AlimTalk Send Error');
+          // }
+          // deliveryHistory.context = JSON.stringify(responseData);
+          // deliveryHistory.etcContext = JSON.stringify(report);
           orderDelivery.status = IOrderDeliveryStatus.COMPLETE;
         } catch (e) {
           deliveryHistory.context = JSON.stringify(e);
@@ -87,26 +144,31 @@ export class DeliveryBatchService {
           // 문자 전송성공한 경우
           if (resultSms === IOrderDeliveryStatus.COMPLETE_SMS) {
             deliveryHistory.isSuccess = true;
+            orderDelivery.status = IOrderDeliveryStatus.COMPLETE_SMS;
           }
           // 문자 전송도 실패한 경우
           if (resultSms !== IOrderDeliveryStatus.COMPLETE_SMS) {
             deliveryHistory.context += JSON.stringify(resultSms);
+            orderDelivery.status = IOrderDeliveryStatus.COMPLETE_SMS;
           }
         }
       }
 
       // 1.2 SMS 일 경우
       if (deliveryMethod === IOrderSendMethod.SMS) {
+        const textForSsg =
+          orderDelivery.orderProductMapping.order.type === IOrderType.SSG ? text + smsSsgTemplate(orderDelivery) : text;
         try {
           await this.smsSend.send({
             msgType: 'M',
             to: orderDelivery.deliveryTarget,
-            from: orderDelivery.orderProductMapping.order.fromPhoneNumber,
+            from: orderDelivery.orderProductMapping.order.fromPhoneNumber!,
             subject: title,
-            text: text,
+            text: textForSsg,
             filePath: filePathList,
           });
           orderDelivery.status = IOrderDeliveryStatus.COMPLETE;
+          deliveryHistory.context = text;
         } catch (e) {
           orderDelivery.status = IOrderDeliveryStatus.FAIL;
           deliveryHistory.context = JSON.stringify(e);
@@ -116,16 +178,54 @@ export class DeliveryBatchService {
 
       // 1.3 EMAIL 일 경우
       if (deliveryMethod === IOrderSendMethod.EMAIL) {
+        const emailSendHistory = new EmailSendHistoryEntity();
+        emailSendHistory.email = orderDelivery.deliveryTarget;
+        emailSendHistory.type = EmailType.COUPON;
+        emailSendHistory.code = generateRandomCode();
+        emailSendHistory.expireAt = addDays(new Date(), EmailCertifyExpireDay);
+        await this.emailSendHistoryRepository.save(emailSendHistory);
+
+        const encryptKeyEmail = this.cryptoCipher.encryptJson({
+          id: orderDelivery.id,
+          transactionId: orderDelivery.transactionId,
+          emailHistoryId: emailSendHistory.id,
+        } as OrderEncryptKey);
+
+        const url = `${this.configService.getOrThrow('EMAIL_RECEIVE_URL')}/${encryptKeyEmail}`;
+        let qrCodeImagePath = undefined;
+        if (orderDelivery.orderProductMapping.order.emailSendType === OrderEmailSendType.QR) {
+          const qrCodeBuffer = await QRCode.toBuffer(url);
+
+          // 파일명 생성
+          const uuid = randomUUID();
+          const fileName = `qr-codes/${uuid}.png`;
+          const originalName = `${uuid}.png`;
+
+          const fileUrl = await this.fileStorage.uploadImageFileWithBuffer(qrCodeBuffer, fileName, originalName);
+          qrCodeImagePath = fileUrl.url;
+        }
+
+        const emailText = EmailDeliveryTemplate({
+          topImagePath: orderDelivery.orderProductMapping.topImagePath,
+          text,
+          url: url,
+          code: emailSendHistory.code,
+          useEmailContent: orderDelivery.orderProductMapping.order.useEmailContent!,
+          qrCodeImagePath,
+        });
+
         try {
           await this.mailSend.send({
-            saveSentMail: 'Y',
-            bcc: '',
-            cc: '',
-            content: text,
+            saveSentMail: 'N',
+            bcc: undefined,
+            cc: undefined,
+            content: emailText,
             subject: title,
             to: orderDelivery.deliveryTarget,
+            fromEmail: orderDelivery.orderProductMapping.order.fromEmail,
           });
           orderDelivery.status = IOrderDeliveryStatus.COMPLETE;
+          deliveryHistory.context = text;
         } catch (e) {
           orderDelivery.status = IOrderDeliveryStatus.FAIL;
           deliveryHistory.context = JSON.stringify(e);
@@ -133,10 +233,12 @@ export class DeliveryBatchService {
         }
       }
       deliveryHistoryList.push(deliveryHistory);
+      orderIdList.push(orderDelivery.orderProductMapping.order.id);
       await this.orderDeliveryRepository.save(orderDelivery);
     }
 
     await this.deliverySendHistoryRepository.insert(deliveryHistoryList);
+    await this.orderRepository.update({ id: In(orderIdList) }, { status: IOrderStatus.DELIVERY_COMPLETE });
 
     return;
   }
@@ -151,7 +253,7 @@ export class DeliveryBatchService {
       await this.smsSend.send({
         msgType: 'L',
         to: orderDelivery.deliveryTarget,
-        from: orderDelivery.orderProductMapping.order.fromPhoneNumber,
+        from: orderDelivery.orderProductMapping.order.fromPhoneNumber!,
         subject: title,
         text: text,
         filePath: filePathList,

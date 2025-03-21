@@ -4,7 +4,7 @@ import { FindOptionsWhere, In, Like, Repository } from 'typeorm';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
   ProductCreateReqDto,
-  ProductExcelDownloadReqQueryDto,
+  ProductExcelDownloadReqBodyDto,
   ProductGetDetailReqParamDto,
   ProductGetListReqQueryDto,
   ProductGetUpdateHistoryReqParamDto,
@@ -36,6 +36,7 @@ import * as process from 'node:process';
 import * as ExcelJS from 'exceljs';
 import { ProductTypeExcelMapping, ProductUseStatusExcelMapping } from '../domain/product.excel.mapping';
 import { plainToClass } from 'class-transformer';
+import { IProductType } from '../interface/product.type';
 
 @Injectable()
 export class ProductService {
@@ -51,14 +52,29 @@ export class ProductService {
   ) {}
 
   async getList(getQuery: ProductGetListReqQueryDto): Promise<ProductGetListResDto> {
-    const { partnerCompanyId, brandId, brandName, name, useStatus, code, partnerCompanyCode, page, take } = getQuery;
+    const { partnerCompanyId, brandId, brandName, name, useStatus, code, partnerCompanyCode, type, page, take } =
+      getQuery;
     let queryBuilder = this.productRepository
       .createQueryBuilder('product')
       .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
-      .innerJoinAndSelect('product.brand', 'brand');
+      .innerJoinAndSelect('product.brand', 'brand')
+      .andWhere('product.type != :ssg', { ssg: IProductType.SSG });
+
+    if (type) {
+      queryBuilder = queryBuilder.andWhere('product.type = :type', { type });
+      if (type === IProductType.GENERAL) {
+        queryBuilder = queryBuilder
+          .andWhere('partnerCompany.type IS NOT NULL')
+          .andWhere('partnerCompany.type != :ssg', { ssg: 'SSG' });
+      }
+    }
 
     if (partnerCompanyId) {
       queryBuilder = queryBuilder.andWhere('product.partnerCompanyId = :partnerCompanyId', { partnerCompanyId });
+    }
+
+    if (type) {
+      queryBuilder = queryBuilder.andWhere('product.type = :type', { type });
     }
 
     if (brandId) {
@@ -87,6 +103,8 @@ export class ProductService {
         partnerCompanyCode: `%${partnerCompanyCode}%`,
       });
     }
+
+    queryBuilder = queryBuilder.orderBy('product.id', 'DESC');
 
     const skip = (page - 1) * take;
     queryBuilder = queryBuilder.skip(skip).take(take);
@@ -141,6 +159,7 @@ export class ProductService {
       .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .innerJoinAndSelect('product.brand', 'brand')
       .where('product.price = :price', { price })
+      .andWhere('product.type = :type ', { type: IProductType.SSG })
       .andWhere('partnerCompany.type = :type', { type: IPartnerCompanyType.SSG })
       .getOne();
 
@@ -183,13 +202,13 @@ export class ProductService {
       partnerCompanyCode: product.partnerCompanyCode,
       partnerCompanyId: product.partnerCompanyId,
       partnerCompanyName: product.partnerCompany!.businessName,
-      classification: product.classification,
+      classification: product.classification ?? null,
       brandId: product.brandId,
       brandName: product.brand!.nameKorean,
       name: product.name,
       price: product.price,
       expireDay: product.expireDay,
-      category: product.category,
+      category: product.category ?? null,
 
       settleMethod: product.settleMethod,
       settlePercent: product.settlePercent,
@@ -376,8 +395,8 @@ export class ProductService {
     return;
   }
 
-  async excelDownload(getQuery: ProductExcelDownloadReqQueryDto) {
-    const { partnerCompanyId, brandId, brandName, name, useStatus, code, partnerCompanyCode } = getQuery;
+  async excelDownload(getBody: ProductExcelDownloadReqBodyDto) {
+    const { partnerCompanyId, brandId, brandName, name, useStatus, code, partnerCompanyCode } = getBody;
 
     const now = new Date();
     const nowString = format(now, 'yyyyMMdd');
@@ -385,7 +404,8 @@ export class ProductService {
     let queryBuilder = this.productRepository
       .createQueryBuilder('product')
       .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
-      .innerJoinAndSelect('product.brand', 'brand');
+      .innerJoinAndSelect('product.brand', 'brand')
+      .andWhere('product.type != :ssg', { ssg: IProductType.SSG });
 
     if (partnerCompanyId) {
       queryBuilder = queryBuilder.andWhere('product.partnerCompanyId = :partnerCompanyId', { partnerCompanyId });
@@ -438,9 +458,13 @@ export class ProductService {
       { header: '상품상태', key: 'useStatus', width: 40 },
     ];
 
+    let id = 1;
     for (const product of productList) {
+      if (product.type === IProductType.SSG) {
+        continue;
+      }
       sheet.addRow({
-        id: product.id,
+        id: id,
         createdAt: format(product.createdAt, 'yyyy-MM-dd'),
         code: product.code,
         partnerCompanyName: product.partnerCompany!.businessName,
@@ -453,6 +477,7 @@ export class ProductService {
         type: ProductTypeExcelMapping(product.type),
         useStatus: ProductUseStatusExcelMapping(product.useStatus),
       });
+      id++;
     }
 
     const fileName = `상품_리스트_${nowString}.xlsx`;

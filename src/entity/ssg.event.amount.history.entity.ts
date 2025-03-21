@@ -14,4 +14,7 @@ export class SsgEventAmountHistoryEntity extends BaseEntity {
 
   @Column({ type: 'int', default: 0, comment: '신세계 잔액' })
   balance: number;
+
+  @Column({ type: 'int', nullable: true, comment: 'FK) order id' })
+  orderId: number | null;
 }

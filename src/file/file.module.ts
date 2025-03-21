@@ -14,5 +14,12 @@ import { FileStorageS3 } from './infra/file.storage.s3';
       useClass: FileStorageS3,
     },
   ],
+  exports: [
+    FileService,
+    {
+      provide: 'IFileStorage',
+      useClass: FileStorageS3,
+    },
+  ],
 })
 export class FileModule {}
