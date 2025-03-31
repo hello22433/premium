@@ -233,6 +233,7 @@ export class PartnerCompanyExternService {
       if (type === 'GIFTIEL') {
         await this.giftiel.cancel({
           transactionId: orderDelivery.transactionId!,
+          barCode: orderDelivery.barCode!,
         });
       }
 

@@ -29,6 +29,7 @@ export interface GiftielCheckOut {
 
 export interface GiftielCancelIn {
   transactionId: string; // CouponCode
+  barCode: string;
 }
 
 export interface GiftielCheckIn {

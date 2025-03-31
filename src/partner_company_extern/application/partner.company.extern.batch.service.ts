@@ -125,6 +125,9 @@ export class PartnerCompanyExternBatchService {
               `id: ${orderDelivery.id} ssgEventId: ${orderDelivery.ssgEventId} ssg event 가 존재하지 않습니다.`,
             );
           }
+          if (!orderDelivery.personalCode) {
+            throw new Error(`personalCode가 존재하지 않습니다.`);
+          }
 
           const ssgOut = await this.ssgIssue.check({
             eventNo: orderDelivery.ssgEvent.no,
