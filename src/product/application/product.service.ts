@@ -9,6 +9,7 @@ import {
   ProductGetListReqQueryDto,
   ProductGetUpdateHistoryReqParamDto,
   ProductGetUpdateHistoryReqQueryDto,
+  ProductSetLikeReqDto,
   ProductSsgReqQueryDto,
   ProductUpdatePartialReqDto,
 } from '../api/product.req.dto';
@@ -37,6 +38,9 @@ import * as ExcelJS from 'exceljs';
 import { ProductTypeExcelMapping, ProductUseStatusExcelMapping } from '../domain/product.excel.mapping';
 import { plainToClass } from 'class-transformer';
 import { IProductType } from '../interface/product.type';
+import { IUserAuthority } from '../../user/interface/user.authority';
+import { UserSyncProductEventEntity } from '../../entity/user.sync.product.event.entity';
+import { ProductLikeEntity } from '../../entity/product.like.entity';
 
 @Injectable()
 export class ProductService {
@@ -49,18 +53,53 @@ export class ProductService {
     private brandRepository: Repository<BrandEntity>,
     @InjectRepository(ProductUpdateHistoryEntity)
     private productUpdateHistoryRepository: Repository<ProductUpdateHistoryEntity>,
+    @InjectRepository(UserSyncProductEventEntity)
+    private userSyncProductEventRepository: Repository<UserSyncProductEventEntity>,
+    @InjectRepository(ProductLikeEntity)
+    private productLikeRepository: Repository<ProductLikeEntity>,
   ) {}
 
-  async getList(getQuery: ProductGetListReqQueryDto): Promise<ProductGetListResDto> {
-    const { partnerCompanyId, brandId, brandName, name, useStatus, code, partnerCompanyCode, type, page, take } =
-      getQuery;
+  async getList(user: ILoginUserInfo, getQuery: ProductGetListReqQueryDto): Promise<ProductGetListResDto> {
+    const {
+      partnerCompanyId,
+      brandId,
+      brandName,
+      name,
+      useStatus,
+      code,
+      partnerCompanyCode,
+      type,
+      isLike,
+      page,
+      take,
+      isChoiceType,
+    } = getQuery;
     let queryBuilder = this.productRepository
       .createQueryBuilder('product')
       .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .innerJoinAndSelect('product.brand', 'brand')
+      .leftJoinAndSelect('product.productLikes', 'productLikes')
       .andWhere('product.type != :ssg', { ssg: IProductType.SSG });
 
-    if (type) {
+    if (user.authority === IUserAuthority.CORPORATE_ADMIN) {
+      const event = await this.userSyncProductEventRepository.findOne({
+        where: { businessUserId: user.id },
+        relations: ['userSyncProductEventMappings'],
+      });
+
+      const mappedProductIds = event?.userSyncProductEventMappings?.map((m) => m.productId);
+
+      // event 가 없거나 매핑된 상품이 없는 경우 빈 리스트 반환
+      if (!mappedProductIds || mappedProductIds.length === 0) {
+        queryBuilder = queryBuilder.andWhere('1 = 0');
+      } else {
+        queryBuilder = queryBuilder.andWhere('product.id IN (:...mappedProductIds)', {
+          mappedProductIds,
+        });
+      }
+    }
+
+    if (type && !isChoiceType) {
       queryBuilder = queryBuilder.andWhere('product.type = :type', { type });
       if (type === IProductType.GENERAL) {
         queryBuilder = queryBuilder
@@ -69,12 +108,18 @@ export class ProductService {
       }
     }
 
-    if (partnerCompanyId) {
-      queryBuilder = queryBuilder.andWhere('product.partnerCompanyId = :partnerCompanyId', { partnerCompanyId });
+    if (type && isChoiceType) {
+      if (type === IProductType.GENERAL) {
+        queryBuilder = queryBuilder.andWhere('product.type IN (:...type)', {
+          type: [IProductType.GENERAL, IProductType.CHOICE],
+        });
+        // .andWhere('partnerCompany.type IS NOT NULL')
+        // .andWhere('partnerCompany.type != :ssg', { ssg: 'SSG' });
+      }
     }
 
-    if (type) {
-      queryBuilder = queryBuilder.andWhere('product.type = :type', { type });
+    if (partnerCompanyId) {
+      queryBuilder = queryBuilder.andWhere('product.partnerCompanyId = :partnerCompanyId', { partnerCompanyId });
     }
 
     if (brandId) {
@@ -104,6 +149,12 @@ export class ProductService {
       });
     }
 
+    if (isLike !== undefined) {
+      queryBuilder = queryBuilder
+        .andWhere('productLikes.userId = :userId', { userId: user.id })
+        .andWhere('productLikes.isLike = :isLike', { isLike });
+    }
+
     queryBuilder = queryBuilder.orderBy('product.id', 'DESC');
 
     const skip = (page - 1) * take;
@@ -127,6 +178,16 @@ export class ProductService {
 
     const resultList: ProductViewDto[] = productList.map((product) => {
       const isChange = productUpdateBooleanMap.get(product.id) ?? false;
+      let isLike = false;
+      if (product.productLikes) {
+        for (const productLike of product.productLikes) {
+          if (productLike.userId === user.id) {
+            isLike = productLike.isLike;
+            break;
+          }
+        }
+      }
+
       return {
         id: product.id,
         createdAt: format(product.createdAt, DateFormatStr),
@@ -144,6 +205,7 @@ export class ProductService {
         useStatus: product.useStatus,
         imagePath: product.imagePath,
         isChange,
+        isLike,
       };
     });
 
@@ -535,5 +597,36 @@ export class ProductService {
 
   private isValidRow(rowData: Record<string, any>): boolean {
     return Object.values(rowData).some((value) => value !== null && value !== '');
+  }
+
+  async setLike(user: ILoginUserInfo, getBody: ProductSetLikeReqDto) {
+    const { productId, isLike } = getBody;
+
+    const product = await this.productRepository.findOne({
+      where: {
+        id: productId,
+      },
+    });
+
+    if (!product) {
+      throw new BadRequestException('상품이 존재하지 않습니다.');
+    }
+
+    let productLike = await this.productLikeRepository.findOne({
+      where: {
+        userId: user.id,
+        productId: productId,
+      },
+    });
+
+    if (productLike) {
+      productLike.isLike = isLike;
+    } else {
+      productLike = new ProductLikeEntity();
+      productLike.userId = user.id;
+      productLike.product = product;
+      productLike.isLike = isLike;
+    }
+    await this.productLikeRepository.save(productLike);
   }
 }

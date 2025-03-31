@@ -6,6 +6,7 @@ import { IOrderSendMethod } from '../order/interface/order.send.method';
 import { SsgEventEntity } from './ssg.event.entity';
 import { OrderDeliveryCouponStatus } from '../delivery/interface/order.delivery.coupon.status';
 import { OrderDeliveryEmailCouponStatus } from '../delivery/interface/order.delivery.email.coupon.status';
+import { ProductEntity } from './product.entity';
 
 @Entity('order_delivery')
 export class OrderDeliveryEntity extends BaseEntity {
@@ -63,11 +64,27 @@ export class OrderDeliveryEntity extends BaseEntity {
   @Column({ type: 'varchar', length: 200, nullable: true })
   ssgTransactionId: string | null;
 
+  @Column({ type: 'int', nullable: true, comment: 'FK) product.id 초이스 쿠폰 시' })
+  choiceSelectProductId: number | null;
+
+  @Column({ type: 'varchar', length: 100, nullable: true, comment: '기타 외부 협력사 코드 정보' })
+  couponNum: string | null;
+
+  @Column({ type: 'datetime', nullable: true, comment: '교환시각' })
+  tradeAt: Date | null;
+
+  @Column({ default: 0, comment: '갤럭시아 상품권형 잔액' })
+  galaxiaBalance: number;
+
   @ManyToOne(() => OrderProductMappingEntity, { createForeignKeyConstraints: false })
   @JoinColumn({ name: 'order_product_mapping_id' })
   orderProductMapping: OrderProductMappingEntity;
 
-  @ManyToOne(() => OrderProductMappingEntity, { createForeignKeyConstraints: false })
+  @ManyToOne(() => SsgEventEntity, { createForeignKeyConstraints: false })
   @JoinColumn({ name: 'ssg_event_id' })
-  ssgEvent: SsgEventEntity;
+  ssgEvent?: SsgEventEntity;
+
+  @ManyToOne(() => ProductEntity, { createForeignKeyConstraints: false })
+  @JoinColumn({ name: 'choice_select_product_id' })
+  choiceSelectProduct?: ProductEntity;
 }

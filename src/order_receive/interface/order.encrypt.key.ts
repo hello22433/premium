@@ -1,5 +1,6 @@
 export type OrderEncryptKey = {
-  id: number;
+  id?: number;
   transactionId: string;
   emailHistoryId?: number;
+  orderDeliveryId?: number;
 };

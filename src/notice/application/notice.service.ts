@@ -28,6 +28,7 @@ export class NoticeService {
 
     const skip = (page - 1) * take;
     queryBuilder = queryBuilder.skip(skip).take(take);
+    queryBuilder.orderBy('notice.id', 'DESC');
     const [noticeList, totalCount] = await queryBuilder.getManyAndCount();
 
     const totalPage = Math.ceil(totalCount / take);

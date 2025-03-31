@@ -33,6 +33,15 @@ import { OrderRealProductMappingEntity } from '../entity/order.real.product.mapp
 import { OrderFromDefinitionEntity } from '../entity/order.from.definition.entity';
 import { UserTaskHistoryEntity } from '../entity/user.task.history.entity';
 import { ProductChoiceMappingEntity } from '../entity/product.choice.mapping.entity';
+import { UserSyncProductEventMappingEntity } from '../entity/user.sync.product.event.mapping.entity';
+import { UserSyncProductEventEntity } from '../entity/user.sync.product.event.entity';
+import { OrderLikeEntity } from '../entity/order.like.entity';
+import { ProductLikeEntity } from '../entity/product.like.entity';
+import { OtherServiceSaleEntity } from '../entity/other.service.sale.entity';
+import { OtherServiceSaleProductEntity } from '../entity/other.service.sale.product.entity';
+import { OtherServiceSaleProductMappingEntity } from '../entity/other.service.sale.product.mapping.entity';
+import { OtherServiceSaleTypeEntity } from '../entity/other.service.sale.type.entity';
+import { ShippingStorageEntity } from '../entity/shipping.storage.entity';
 
 @Module({
   imports: [
@@ -70,9 +79,18 @@ import { ProductChoiceMappingEntity } from '../entity/product.choice.mapping.ent
           SsgEventEntity,
           QnaEntity,
           UserDriveEntity,
+          UserSyncProductEventEntity,
+          UserSyncProductEventMappingEntity,
           OrderFromDefinitionEntity,
           UserTaskHistoryEntity,
           ProductChoiceMappingEntity,
+          OrderLikeEntity,
+          ProductLikeEntity,
+          OtherServiceSaleEntity,
+          OtherServiceSaleProductEntity,
+          OtherServiceSaleProductMappingEntity,
+          OtherServiceSaleTypeEntity,
+          ShippingStorageEntity,
         ],
         timezone: 'local',
         logger: configService.get('DATABASE_LOGGING') === 'true' ? new SqlLogger() : undefined,

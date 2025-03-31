@@ -2,14 +2,23 @@ import { BadRequestException, Injectable, InternalServerErrorException } from '@
 import { InjectRepository } from '@nestjs/typeorm';
 import { SsgEventEntity } from '../../entity/ssg.event.entity';
 import { Repository } from 'typeorm';
-import { SsgEventCreateReqDto, SsgEventGetListReqDto, SsgEventUpdateAmountReqDto } from '../api/ssg.event.req.dto';
+import {
+  SsgEventCreateReqDto,
+  SsgEventExcelDownloadReqDto,
+  SsgEventGetListReqDto,
+  SsgEventUpdateAmountReqDto,
+} from '../api/ssg.event.req.dto';
 import { SsgEventGetListResDto } from '../api/ssg.event.res.dto';
 import { SsgEventViewDto } from '../api/dto/ssg.event.view.dto';
-import { DateFormatStr } from '../../common/domain/date.format.str';
+import { DateDateFormatStr, DateFormatStr } from '../../common/domain/date.format.str';
 import { format } from 'date-fns';
 import { SsgEventAmountHistoryEntity } from '../../entity/ssg.event.amount.history.entity';
 import { OrderProductMappingEntity } from '../../entity/order.product.mapping.entity';
 import { IOrderType } from '../../order/interface/order.type';
+import * as ExcelJS from 'exceljs';
+import { join } from 'path';
+import * as process from 'node:process';
+import { QueryBuilderDateCondition } from '../../common/infra/query.builder.date.condition';
 
 @Injectable()
 export class SsgEventService {
@@ -36,24 +45,7 @@ export class SsgEventService {
       queryBuilder = queryBuilder.andWhere('ssg.name LIKE :name', { name: '%' + name + '%' });
     }
 
-    if (createdStartAt && !createdEndAt) {
-      queryBuilder = queryBuilder.andWhere('ssg.createdAt >= :createdStartAt', {
-        createdStartAt: new Date(createdStartAt),
-      });
-    }
-
-    if (!createdStartAt && createdEndAt) {
-      queryBuilder = queryBuilder.andWhere('ssg.createdAt <= :createdEndAt', {
-        createdEndAt: new Date(createdEndAt),
-      });
-    }
-
-    if (createdStartAt && createdEndAt) {
-      queryBuilder = queryBuilder.andWhere('ssg.createdAt BETWEEN :createdStartAt AND :createdEndAt', {
-        createdStartAt: new Date(createdStartAt),
-        createdEndAt: new Date(createdEndAt),
-      });
-    }
+    queryBuilder = QueryBuilderDateCondition(queryBuilder, 'ssg', 'createdAt', createdStartAt, createdEndAt);
 
     const [eventList, totalCount] = await queryBuilder.skip(skip).take(take).getManyAndCount();
 
@@ -150,6 +142,161 @@ export class SsgEventService {
     });
 
     return { list: resultList, totalCount, totalPage, currentPage: page };
+  }
+
+  async excelDownload(getBody: SsgEventExcelDownloadReqDto) {
+    const { code, createdEndAt, createdStartAt, name } = getBody;
+
+    const now = new Date();
+    const nowString = format(now, 'yyyyMMdd');
+
+    let queryBuilder = this.ssgEventRepository.createQueryBuilder('ssg');
+
+    if (code) {
+      queryBuilder = queryBuilder.andWhere('ssg.code LIKE :code', { code: '%' + code + '%' });
+    }
+
+    if (name) {
+      queryBuilder = queryBuilder.andWhere('ssg.name LIKE :name', { name: '%' + name + '%' });
+    }
+
+    queryBuilder = QueryBuilderDateCondition(queryBuilder, 'ssg', 'createdAt', createdStartAt, createdEndAt);
+
+    const eventList = await queryBuilder.getMany();
+
+    const ssgEventIdList = eventList.map((event) => event.id);
+    const orderProductMappingList = await this.orderProductMappingRepository
+      .createQueryBuilder('orderProductMapping')
+      .innerJoinAndSelect('orderProductMapping.product', 'product')
+      .innerJoinAndSelect('orderProductMapping.order', 'order')
+      .innerJoinAndSelect('orderProductMapping.orderDeliveries', 'orderDeliveries')
+      .where('orderDeliveries.ssgEventId IN (:...ssgEventIdList)', { ssgEventIdList })
+      .andWhere('order.type = :type', { type: IOrderType.SSG })
+      .getMany();
+
+    // <ssgEventId, >
+    const ssgEventCountMap = new Map<
+      number,
+      {
+        deliveryWaitCount: number;
+        deliveryWaitAmount: number;
+        deliveryCompleteCount: number;
+        deliveryCompleteAmount: number;
+      }
+    >();
+
+    for (const orderProductMapping of orderProductMappingList) {
+      let ssgEventId: number | null = null;
+      for (const orderDelivery of orderProductMapping.orderDeliveries) {
+        if (!orderDelivery.ssgEventId) {
+          continue;
+        }
+        ssgEventId = orderDelivery.ssgEventId;
+
+        const oneSsgEventCount = ssgEventCountMap.get(ssgEventId);
+        if (!oneSsgEventCount) {
+          ssgEventCountMap.set(ssgEventId, {
+            deliveryWaitCount: orderDelivery.status === 'WAIT' ? 1 : 0,
+            deliveryWaitAmount: 0,
+            deliveryCompleteCount: orderDelivery.status === 'COMPLETE' ? 1 : 0,
+            deliveryCompleteAmount: 0,
+          });
+        } else {
+          ssgEventCountMap.set(ssgEventId, {
+            deliveryWaitCount:
+              orderDelivery.status === 'WAIT'
+                ? oneSsgEventCount.deliveryWaitCount + 1
+                : oneSsgEventCount.deliveryWaitCount,
+            deliveryWaitAmount: oneSsgEventCount.deliveryWaitAmount,
+            deliveryCompleteCount:
+              orderDelivery.status === 'COMPLETE'
+                ? oneSsgEventCount.deliveryCompleteCount + 1
+                : oneSsgEventCount.deliveryCompleteCount,
+            deliveryCompleteAmount: oneSsgEventCount.deliveryCompleteAmount,
+          });
+        }
+      }
+
+      const afterSsgEventCount = ssgEventCountMap.get(ssgEventId!);
+      if (!afterSsgEventCount) {
+        throw new InternalServerErrorException('ssg event id error');
+      }
+
+      if (orderProductMapping.order.status === 'DELIVERY_CONFIRMED') {
+        afterSsgEventCount.deliveryWaitAmount += orderProductMapping.amount * orderProductMapping.product.price;
+      }
+
+      if (orderProductMapping.order.status === 'DELIVERY_COMPLETE') {
+        afterSsgEventCount.deliveryCompleteAmount += orderProductMapping.amount * orderProductMapping.product.price;
+      }
+
+      if (!ssgEventId) {
+        throw new InternalServerErrorException('ssg event id error');
+      }
+    }
+
+    const resultList: SsgEventViewDto[] = eventList.map((event) => {
+      const oneSsgEventCount = ssgEventCountMap.get(event.id);
+      return {
+        id: event.id,
+        order: event.order,
+        no: event.no,
+        code: event.code,
+        name: event.name,
+        startAt: format(event.startAt, DateDateFormatStr),
+        endAt: format(event.endAt, DateDateFormatStr),
+        eventPrice: event.eventPrice,
+        eventBalance: event.eventBalance,
+        deliveryWaitCount: oneSsgEventCount?.deliveryWaitCount ?? 0,
+        deliveryWaitAmount: oneSsgEventCount?.deliveryWaitAmount ?? 0,
+        deliveryCompleteCount: oneSsgEventCount?.deliveryCompleteCount ?? 0,
+        deliveryCompleteAmount: oneSsgEventCount?.deliveryCompleteAmount ?? 0,
+      };
+    });
+
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet(`sheet1`);
+
+    sheet.columns = [
+      { header: '순번', key: 'id', width: 10 },
+      { header: '행사번호', key: 'order', width: 32 },
+      { header: '행사코드', key: 'code', width: 20 },
+      { header: '행사명', key: 'name', width: 20 },
+      { header: '행사기간', key: 'date', width: 20 },
+      { header: '행사금액', key: 'eventPrice', width: 20 },
+      { header: '행사잔액', key: 'eventBalance', width: 20 },
+      { header: '발송대기건수', key: 'deliveryWaitCount', width: 20 },
+      { header: '발송대기금액', key: 'deliveryWaitAmount', width: 20 },
+      { header: '발송완료건수', key: 'deliveryCompleteCount', width: 20 },
+      { header: '발송완료금액', key: 'deliveryCompleteAmount', width: 20 },
+      { header: '행사순번', key: 'no', width: 20 },
+    ];
+
+    let id = 1;
+    for (const result of resultList) {
+      sheet.addRow({
+        id: id,
+        order: result.order,
+        code: result.code,
+        name: result.name,
+        date: result.startAt + ' ~ ' + result.endAt,
+        eventPrice: result.eventPrice,
+        eventBalance: result.eventBalance,
+        deliveryWaitCount: result.deliveryWaitCount,
+        deliveryWaitAmount: result.deliveryWaitAmount,
+        deliveryCompleteCount: result.deliveryCompleteCount,
+        deliveryCompleteAmount: result.deliveryCompleteAmount,
+        no: result.no,
+      });
+      id++;
+    }
+
+    const fileName = `신세계_${nowString}.xlsx`;
+    const filePath = join(process.cwd(), '.', 'public', fileName);
+
+    await workbook.xlsx.writeFile(filePath);
+
+    return { fileName, filePath };
   }
 
   async create(getBody: SsgEventCreateReqDto) {

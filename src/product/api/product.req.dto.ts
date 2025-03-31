@@ -1,6 +1,6 @@
 import { ApiProperty, ApiPropertyOptional, PartialType } from '@nestjs/swagger';
-import { IsEnum, IsIn, IsInt, IsNotEmpty, IsNumber, IsOptional, Max, Min } from 'class-validator';
-import { Type } from 'class-transformer';
+import { IsBoolean, IsEnum, IsIn, IsInt, IsNotEmpty, IsNumber, IsOptional, Max, Min } from 'class-validator';
+import { Transform, Type } from 'class-transformer';
 import { PagingReqDto } from '../../common/api/dto/pagination.req.dto';
 import { IProductSettleMethod } from '../interface/product.settle.method';
 import { IProductType } from '../interface/product.type';
@@ -33,6 +33,15 @@ export class ProductGetListReqQueryDto extends PagingReqDto {
   @IsOptional()
   @IsEnum(IProductType)
   type?: IProductType;
+
+  @ApiProperty({
+    description: '초이스 쿠폰 같이 불러오기',
+  })
+  // =================================
+  @IsOptional()
+  @IsBoolean()
+  @Transform(({ value }) => value === 'true')
+  isChoiceType?: boolean;
 
   @ApiPropertyOptional({
     description: '브랜드 명 ',
@@ -69,6 +78,15 @@ export class ProductGetListReqQueryDto extends PagingReqDto {
   // =================================
   @IsOptional()
   partnerCompanyCode?: string;
+
+  @ApiProperty({
+    description: '찜한 상품 불러오기',
+  })
+  // =================================
+  @IsOptional()
+  @IsBoolean()
+  @Transform(({ value }) => value === 'true') // 문자열을 boolean으로 변환
+  isLike?: boolean;
 }
 
 export class ProductSsgReqQueryDto {
@@ -299,4 +317,40 @@ export class ProductExcelDownloadReqBodyDto {
   // =================================
   @IsOptional()
   partnerCompanyCode?: string;
+}
+
+export class ProductGetLikeListReqDto {
+  @ApiProperty({
+    description: 'product id',
+  })
+  // =================================
+  @IsNumber()
+  @IsNotEmpty()
+  productId: number;
+
+  @ApiProperty({
+    description: 'isLike',
+  })
+  // =================================
+  @IsBoolean()
+  @IsNotEmpty()
+  isLike: boolean;
+}
+
+export class ProductSetLikeReqDto {
+  @ApiProperty({
+    description: 'product id',
+  })
+  // =================================
+  @IsNumber()
+  @IsNotEmpty()
+  productId: number;
+
+  @ApiProperty({
+    description: 'isLike',
+  })
+  // =================================
+  @IsBoolean()
+  @IsNotEmpty()
+  isLike: boolean;
 }

@@ -1,5 +1,23 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsNotEmpty, IsString } from 'class-validator';
+import { IsNotEmpty, IsNumber, IsString } from 'class-validator';
+
+export class OrderReceiveSelectChoiceProductReqDto {
+  @ApiProperty({
+    description: 'encryptKey',
+  })
+  // ===============================
+  @IsNotEmpty()
+  @IsString()
+  encryptKey: string;
+
+  @ApiProperty({
+    description: '선택한 초이스 쿠폰 상품 product id',
+  })
+  // ===============================
+  @IsNotEmpty()
+  @IsNumber()
+  productId: number;
+}
 
 export class OrderReceiveAlimTalkReqDto {
   @ApiProperty({

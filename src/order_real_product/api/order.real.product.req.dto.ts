@@ -77,13 +77,29 @@ export class OrderRealProductGetListReqDto extends PagingReqDto {
   eventName?: string;
 }
 
+export class OrderRealProductGetAdminListReqDto extends PagingReqDto {
+  @ApiPropertyOptional({
+    description: '검색어(이름, 이메일, 회사명)',
+  })
+  // =============================================================
+  @IsOptional()
+  searchText?: string;
+}
+
 export class OrderRealProductCreateReqDto {
   @ApiProperty({
-    description: '고객사 user id',
+    description: '고객사 user id(고객사인 경우 자신의 user id)',
   })
   // ===================================
   @IsNumber()
   userId: number;
+
+  @ApiProperty({
+    description: '담당자 user id(최고 또는 운영관리자의 user id)',
+  })
+  // ===================================
+  @IsNumber()
+  adminUserId: number;
 
   @ApiProperty({
     description: '실물 상품 주문',
@@ -169,29 +185,77 @@ export class OrderRealProductConfirmRequestReqDto {
 
 export class OrderRealProductDeliveryTrackingReqDto {
   @ApiProperty({
-    description: '택배사 id',
+    description: '배송 조회할 order id',
   })
   // ==================================
-  @IsNotEmpty()
-  @IsString()
-  carrierId: string;
-
-  @ApiProperty({
-    description: '조회할 송장번호',
-  })
-  // ==================================
-  @IsNotEmpty()
-  @IsString()
-  trackingNumber: string;
+  @IsInt()
+  @Min(1)
+  @Type(() => Number)
+  id: number;
 }
 
-export class OrderRealProductTaxInfoUpdateReqDto {
+export class OrderRealProductDeliveryTrackingGetDetailReqParamDto {
+  @ApiProperty({
+    description: '배송 조회할 order mapping id',
+  })
+  // ==================================
+  @IsNotEmpty()
+  @IsNumber()
+  @Type(() => Number)
+  id: number;
+}
+
+export class OrderRealProductUpdateReqDto {
+  @ApiPropertyOptional({
+    description: '수정할 실물 상품 주문(order) id',
+  })
+  // ==================================
+  @IsNotEmpty()
+  @IsNumber()
+  realProductOrderId: number;
+
+  @ApiPropertyOptional({
+    description: '수정할 제세공과금 내역',
+  })
+  // ==================================
+  @IsArray()
+  @IsOptional()
+  realProductOrderInfo?: RealProductOrderInfoDto[];
+
+  @ApiPropertyOptional({
+    description: '수정할 제세공과금 내역',
+  })
+  // ==================================
+  @IsArray()
+  @IsOptional()
+  taxInfo?: TaxInfoDto[];
+}
+
+export class RealProductOrderInfoDto {
   @ApiProperty({
     description: '변경할 mapping id',
   })
   // ==================================
-  @IsArray()
-  list: TaxInfoDto[];
+  @Min(1)
+  @Type(() => Number)
+  @IsInt()
+  mappingId: number;
+
+  @ApiPropertyOptional({
+    description: '변경할 공급가액',
+  })
+  // ==================================
+  @Type(() => Number)
+  @IsOptional()
+  price?: number;
+
+  @ApiPropertyOptional({
+    description: '입력할 송장번호 (- 없이)',
+  })
+  // ==================================
+  @IsOptional()
+  @IsString()
+  trackingNumber?: string;
 }
 
 export class TaxInfoDto {
@@ -226,6 +290,89 @@ export class TaxInfoDto {
   isProcess: boolean;
 }
 
+export class OrderRealProductGetSettlementListReqDto extends PagingReqDto {
+  @ApiPropertyOptional({
+    description: '검색 시작 일(등록일) ex) yyyy-MM-ddTHH:mm:ss',
+  })
+  @IsOptional()
+  @Matches(dateAtRegexp)
+  startAt?: string;
+
+  @ApiPropertyOptional({
+    description: '검색 끝 일(등록일) ex) yyyy-MM-ddTHH:mm:ss',
+  })
+  @IsOptional()
+  @Matches(dateAtRegexp)
+  endAt?: string;
+
+  @ApiPropertyOptional({
+    description: '고객사 명 ',
+  })
+  // ================================
+  @IsOptional()
+  businessName?: string;
+
+  @ApiPropertyOptional({
+    description: '담당자(관리자) 명 ',
+  })
+  // ================================
+  @IsOptional()
+  personName?: string;
+
+  @ApiPropertyOptional({
+    description: '이벤트 명 ',
+  })
+  // ================================
+  @IsOptional()
+  eventName?: string;
+}
+
+export class OrderRealProductGetSettlementExcelDownloadReqDto {
+  @ApiPropertyOptional({
+    description: '검색 시작 일(등록일) ex) yyyy-MM-ddTHH:mm:ss',
+  })
+  @IsOptional()
+  @Matches(dateAtRegexp)
+  startAt?: string;
+
+  @ApiPropertyOptional({
+    description: '검색 끝 일(등록일) ex) yyyy-MM-ddTHH:mm:ss',
+  })
+  @IsOptional()
+  @Matches(dateAtRegexp)
+  endAt?: string;
+
+  @ApiPropertyOptional({
+    description: '고객사 명 ',
+  })
+  // ================================
+  @IsOptional()
+  businessName?: string;
+
+  @ApiPropertyOptional({
+    description: '담당자(관리자) 명 ',
+  })
+  // ================================
+  @IsOptional()
+  personName?: string;
+
+  @ApiPropertyOptional({
+    description: '이벤트 명 ',
+  })
+  // ================================
+  @IsOptional()
+  eventName?: string;
+}
+
+export class OrderRealProductGetDeliveryCompleteReportReqDto {
+  @ApiProperty({
+    description: '실물 상품 order id',
+  })
+  // ==============================================
+  @IsNumber()
+  @Type(() => Number)
+  id: number;
+}
 export class OrderRealProductExcelDownloadReqBodyDto {
   @ApiPropertyOptional({
     description: '구분 ex) 주문관리 : ORDER, 발송관리: SHIPPING',

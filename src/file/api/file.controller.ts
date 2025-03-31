@@ -9,7 +9,7 @@ import {
 } from '@nestjs/swagger';
 import { FileService } from '../application/file.service';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { FileUploadImageReqDto } from './file.req.dto';
+import { FileUploadImageReqDto, FileUploadPdfReqDto } from './file.req.dto';
 import { Express } from 'express';
 import { FileUploadResDto } from './file.res.dto';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
@@ -47,5 +47,24 @@ export class FileController {
   @Post('file/image')
   createImage(@UploadedFile() imageFile: Express.Multer.File, @Body() dto: FileUploadImageReqDto) {
     return this.fileService.uploadImageFile(imageFile);
+  }
+
+  @ApiOperation({
+    summary: 'pdf 파일 업로드 API',
+    description:
+      'pdf 파일 업로드를 위한 API 입니다.<br>' +
+      'multipart/form-data 형식, key는 imageFile로 전송하시면 됩니다. <br>' +
+      'response 값으로 파일의 경로를 드리게 되는데, 해당 경로를 이미지 저장에 있는 API의 값으로 사용하시면 됩니다.',
+  })
+  @ApiConsumes('multipart/form-data')
+  @ApiOkResponse({
+    type: FileUploadResDto,
+  })
+  @ApiBadRequestResponse({})
+  // ============================================
+  @UseInterceptors(FileInterceptor('file'))
+  @Post('file/pdf')
+  createPdf(@UploadedFile() file: Express.Multer.File, @Body() dto: FileUploadPdfReqDto) {
+    return this.fileService.createPdf(file);
   }
 }

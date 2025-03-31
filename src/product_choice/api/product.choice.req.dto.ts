@@ -42,6 +42,7 @@ export class ProductChoiceGetListReqQueryDto extends PagingReqDto {
   // ================================
   @IsNumber()
   @IsOptional()
+  @Type(() => Number)
   expireDay?: number;
 
   @ApiProperty({
@@ -50,6 +51,7 @@ export class ProductChoiceGetListReqQueryDto extends PagingReqDto {
   // =================================
   @IsNumber()
   @IsOptional()
+  @Type(() => Number)
   price?: number;
 }
 
@@ -109,6 +111,7 @@ export class ProductChoiceGetProductListReqQueryDto extends PagingReqDto {
   // ================================
   @IsNumber()
   @IsOptional()
+  @Type(() => Number)
   expireDay?: number;
 
   @ApiProperty({
@@ -117,6 +120,7 @@ export class ProductChoiceGetProductListReqQueryDto extends PagingReqDto {
   // =================================
   @IsNumber()
   @IsOptional()
+  @Type(() => Number)
   price?: number;
 }
 

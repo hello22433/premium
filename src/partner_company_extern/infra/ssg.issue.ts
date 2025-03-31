@@ -1,4 +1,4 @@
-import { ISsgIssue, ISsgIssueCode, ISsgIssueIn, ISsgIssueOut } from '../interface/ssg.issue';
+import { ISsgCheckIn, ISsgCheckOut, ISsgIssue, ISsgIssueCode, ISsgIssueIn, ISsgIssueOut } from '../interface/ssg.issue';
 import { Injectable, Logger } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
@@ -12,14 +12,14 @@ export class SsgIssue implements ISsgIssue {
     private configService: ConfigService,
   ) {
     if (this.configService.getOrThrow('ENVIRONMENT') === 'prod') {
-      this.url = 'https://api.epopkon.com/SsgCoupon.do';
+      this.url = 'https://api.epopkon.com/';
     }
   }
 
   private logger = new Logger('SSG');
 
-  // private url = 'https://tapi.epopkon.com/SsgCoupon.do'; // test URL
-  private url = 'https://api.epopkon.com/SsgCoupon.do';
+  // private url = 'https://tapi.epopkon.com/'; // test URL
+  private url = 'https://api.epopkon.com/';
 
   private parser() {
     return new Parser();
@@ -46,7 +46,7 @@ export class SsgIssue implements ISsgIssue {
     });
 
     try {
-      const sendUrl = `${this.url}?${data.toString()}&event_seq=${obj.eventSeq}`;
+      const sendUrl = `${this.url}/SsgCoupon.do?${data.toString()}&event_seq=${obj.eventSeq}`;
       this.logger.log(`${sendUrl}`);
 
       const response = await firstValueFrom(this.httpService.get(`${sendUrl}`));
@@ -76,5 +76,33 @@ export class SsgIssue implements ISsgIssue {
 
     // 접두사와 결합한 결과 반환
     return prefix + paddedNumber;
+  }
+
+  async check(obj: ISsgCheckIn): Promise<ISsgCheckOut> {
+    const data = new URLSearchParams({
+      event_no: obj.eventNo,
+      vno: obj.vno,
+    });
+    this.logger.log(data);
+
+    try {
+      const sendUrl = `${this.url}/GetSsgStatus.do?${data.toString()}&event_seq=${obj.eventSeq}`;
+      this.logger.log(`${sendUrl}`);
+
+      const response = await firstValueFrom(this.httpService.get(`${sendUrl}`));
+
+      this.logger.log(response.data);
+
+      const resultToJson = (await this.parser().parseStringPromise(response.data)) as unknown as ISsgCheckOut;
+      this.logger.log(resultToJson);
+      if (resultToJson.response.result[0].code[0] !== '1000') {
+        throw new Error(`${resultToJson.response.result[0].reason[0]}`);
+      }
+      return resultToJson;
+    } catch (e) {
+      this.logger.error(e);
+      this.logger.error(JSON.stringify(e));
+      throw e;
+    }
   }
 }

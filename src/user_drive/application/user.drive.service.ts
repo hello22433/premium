@@ -6,6 +6,7 @@ import {
   UserDriveCreateReqDto,
   UserDriveGetDetailReqParamDto,
   UserDriveGetListReqDto,
+  UserDriveReplyReqDto,
   UserDriveUpdateReqDto,
 } from '../api/user.drive.req.dto';
 import { UserDriveViewDto } from '../api/dto/user.drive.view.dto';
@@ -91,6 +92,7 @@ export class UserDriveService {
         content: userDrive.content,
         status: userDrive.status,
         filePathList: userDrive.filePath ? userDrive.filePath.split(',') : [],
+        replyContent: userDrive.replyContent,
       };
     }
 
@@ -118,6 +120,7 @@ export class UserDriveService {
       content: userDrive.content,
       status: userDrive.status,
       filePathList: userDrive.filePath ? userDrive.filePath.split(',') : [],
+      replyContent: userDrive.replyContent,
     };
   }
 
@@ -184,6 +187,25 @@ export class UserDriveService {
     userDrive.filePath = filePath.length === 0 ? null : filePath.join(',');
     await this.userDriveRepository.save(userDrive);
 
+    return;
+  }
+
+  async reply(user: ILoginUserInfo, getBody: UserDriveReplyReqDto) {
+    const { id, replyContent } = getBody;
+
+    const userDrive = await this.userDriveRepository.findOne({
+      where: {
+        id,
+      },
+    });
+
+    if (!userDrive) {
+      throw new BadRequestException('문서가 존재하지 않습니다.');
+    }
+
+    userDrive.replyContent = replyContent;
+
+    await this.userDriveRepository.save(userDrive);
     return;
   }
 }

@@ -7,11 +7,20 @@ import { AuthModule } from '../auth/auth.module';
 import { PartnerCompanyEntity } from '../entity/partner.company.entity';
 import { BrandEntity } from '../entity/brand.entity';
 import { ProductUpdateHistoryEntity } from '../entity/product.update.history.entity';
+import { UserSyncProductEventEntity } from '../entity/user.sync.product.event.entity';
+import { ProductLikeEntity } from '../entity/product.like.entity';
 
 @Module({
   imports: [
     AuthModule,
-    TypeOrmModule.forFeature([PartnerCompanyEntity, BrandEntity, ProductEntity, ProductUpdateHistoryEntity]),
+    TypeOrmModule.forFeature([
+      PartnerCompanyEntity,
+      BrandEntity,
+      ProductEntity,
+      ProductLikeEntity,
+      ProductUpdateHistoryEntity,
+      UserSyncProductEventEntity,
+    ]),
   ],
   controllers: [ProductController],
   providers: [ProductService],

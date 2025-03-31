@@ -3,7 +3,14 @@ import { io, Socket } from 'socket.io-client';
 import { ConfigService } from '@nestjs/config';
 import { format } from 'date-fns';
 import * as net from 'node:net';
-import { CultureIssueIn, CultureIssueOut, ICulture } from '../interface/culture';
+import {
+  CultureCancelIn,
+  CultureCheckIn,
+  CultureCheckOut,
+  CultureIssueIn,
+  CultureIssueOut,
+  ICulture,
+} from '../interface/culture';
 
 @Injectable()
 export class CultureSocket implements ICulture {
@@ -100,11 +107,13 @@ export class CultureSocket implements ICulture {
     });
   }
 
-  private socketResponseParsing(responseMessage: string, id: number): CultureIssueOut {
+  private socketResponseParsing(responseMessage: string, id: number): CultureIssueOut | CultureCheckOut {
     let positions: number[];
 
     if (id === 8120) {
       positions = [4, 4, 7, 20, 4, 30, 16, 16, 20, 5, 9, 8, 50, 44, 63];
+    } else if (id == 8220) {
+      positions = [4, 4, 7, 20, 4, 16, 16, 9, 9, 8, 6, 30, 1, 166];
     } else {
       // 필요에 따라 추가
       throw new Error(`Unknown ID: ${id}`);
@@ -118,6 +127,25 @@ export class CultureSocket implements ICulture {
     });
 
     this.logger.log(`responseMap: ${responseMap}`);
+
+    if (id === 8220) {
+      return {
+        HeadNo: responseMap[0],
+        MessageLength: responseMap[1],
+        MemberCode: responseMap[2],
+        SubMemberCode: responseMap[3],
+        ResultCode: responseMap[4],
+        ScrachNo: responseMap[5],
+        CertNo: responseMap[6],
+        FaceValue: Number(responseMap[7]) || 0,
+        Balance: Number(responseMap[8]) || 0,
+        CheckDate: responseMap[9],
+        CheckTime: responseMap[10],
+        ErrMsg: responseMap[11],
+        CancelPossibility: responseMap[12] as 'Y' | 'N',
+        Filler: responseMap[13],
+      };
+    }
 
     return {
       HeadNo: responseMap[0],
@@ -173,7 +201,7 @@ export class CultureSocket implements ICulture {
       this.logger.log(`response : ${response}`);
       const issueOut = this.socketResponseParsing(response, 8120);
       this.logger.log(`issueOut : ${JSON.stringify(issueOut)}`);
-      return issueOut;
+      return issueOut as CultureIssueOut;
     } catch (e) {
       this.logger.error(e);
       this.logger.error(JSON.stringify(e));
@@ -190,4 +218,85 @@ export class CultureSocket implements ICulture {
   // MN : 미니스톱 모바일문화상품권
   // CGV : CGV 모바일문화상품권
   // EMART : 이마트24 모바일문화상품권
+
+  async cancel(obj: CultureCancelIn): Promise<void> {
+    const memberCode =
+      obj.expireDay === 60
+        ? this.configService.getOrThrow('CULTURE_LAND_SOCKET_MEMBER_CODE_60')
+        : this.configService.getOrThrow('CULTURE_LAND_SOCKET_MEMBER_CODE');
+    const subMemberCode =
+      obj.expireDay === 60
+        ? this.configService.getOrThrow('CULTURE_LAND_SOCKET_SUB_MEMBER_CODE_60')
+        : this.configService.getOrThrow('CULTURE_LAND_SOCKET_SUB_MEMBER_CODE');
+
+    const sbURLParam: string[] = [];
+    sbURLParam.push('8310'); // HeadNo
+    sbURLParam.push('0292'); // MessageLength
+    sbURLParam.push(this.fillLeft(7, memberCode, false)); // MemberCode
+    sbURLParam.push(this.fillLeft(20, subMemberCode, false)); // SubMemberCode
+    sbURLParam.push(this.fillLeft(16, obj.barCode, false)); // ScratchNo
+    sbURLParam.push(this.fillLeft(8, format(new Date(), 'yyyyMMdd'), false)); // CancelDate
+    sbURLParam.push(this.fillLeft(6, format(new Date(), 'HHmmss'), false)); // CancelTime
+    sbURLParam.push(this.fillLeft(2, '10', false)); // CancelType
+    sbURLParam.push(this.fillLeft(233, '', false)); // Filler
+
+    try {
+      const massage = sbURLParam.join('');
+      const response = await this.socketSend(massage);
+
+      if (!response) {
+        throw new Error('not exist response');
+      }
+      this.logger.log(`response : ${response}`);
+      this.logger.log(`response : ${JSON.stringify(response)}`);
+      // const cancelOut = this.socketResponseParsing(response, 8120);
+      // this.logger.log(`issueOut : ${JSON.stringify(cancelOut)}`);
+    } catch (e) {
+      this.logger.error(e);
+      this.logger.error(JSON.stringify(e));
+      throw e;
+    }
+  }
+
+  async check(obj: CultureCheckIn): Promise<CultureCheckOut> {
+    const memberCode =
+      obj.expireDay === 60
+        ? this.configService.getOrThrow('CULTURE_LAND_SOCKET_MEMBER_CODE_60')
+        : this.configService.getOrThrow('CULTURE_LAND_SOCKET_MEMBER_CODE');
+    const subMemberCode =
+      obj.expireDay === 60
+        ? this.configService.getOrThrow('CULTURE_LAND_SOCKET_SUB_MEMBER_CODE_60')
+        : this.configService.getOrThrow('CULTURE_LAND_SOCKET_SUB_MEMBER_CODE');
+
+    const sbURLParam: string[] = [];
+    sbURLParam.push('8310'); // HeadNo
+    sbURLParam.push('0292'); // MessageLength
+    sbURLParam.push(this.fillLeft(7, memberCode, false)); // MemberCode
+    sbURLParam.push(this.fillLeft(20, subMemberCode, false)); // SubMemberCode
+    sbURLParam.push(this.fillLeft(16, obj.barCode, false)); // ScratchNo
+    sbURLParam.push(this.fillLeft(8, format(new Date(), 'yyyyMMdd'), false)); // CancelDate
+    sbURLParam.push(this.fillLeft(6, format(new Date(), 'HHmmss'), false)); // CancelTime
+    sbURLParam.push(this.fillLeft(2, '10', false)); // CancelType
+    sbURLParam.push(this.fillLeft(233, '', false)); // Filler
+
+    try {
+      const massage = sbURLParam.join('');
+      const response = await this.socketSend(massage);
+
+      if (!response) {
+        throw new Error('not exist response');
+      }
+      this.logger.log(`response : ${response}`);
+      this.logger.log(`response : ${JSON.stringify(response)}`);
+      const check = this.socketResponseParsing(response, 8220);
+      this.logger.log(`check : ${JSON.stringify(check)}`);
+      // const cancelOut = this.socketResponseParsing(response, 8120);
+      // this.logger.log(`issueOut : ${JSON.stringify(cancelOut)}`);
+      return check as CultureCheckOut;
+    } catch (e) {
+      this.logger.error(e);
+      this.logger.error(JSON.stringify(e));
+      throw e;
+    }
+  }
 }

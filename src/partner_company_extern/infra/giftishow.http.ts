@@ -4,7 +4,14 @@ import { ConfigService } from '@nestjs/config';
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { firstValueFrom } from 'rxjs';
 import { Parser } from 'xml2js';
-import { GiftiShowIssueIn, GiftiShowIssueOut, IGiftiShow } from '../interface/giftishow';
+import {
+  GifitiShowCancelIn,
+  GifitiShowCheckIn,
+  GiftiShowCheckOut,
+  GiftiShowIssueIn,
+  GiftiShowIssueOut,
+  IGiftiShow,
+} from '../interface/giftishow';
 
 @Injectable()
 export class GiftishowHttp implements IGiftiShow {
@@ -67,6 +74,78 @@ export class GiftishowHttp implements IGiftiShow {
       this.logger.log(resultToJson);
       // this.logger.log(response.toString());
       return resultToJson as GiftiShowIssueOut;
+    } catch (e) {
+      this.logger.error(e);
+      this.logger.error(JSON.stringify(e));
+      throw e;
+    }
+  }
+
+  async check(obj: GifitiShowCheckIn): Promise<GiftiShowCheckOut> {
+    const headers = {
+      api_code: '0101',
+      custom_auth_code: this.corpCode,
+      custom_auth_token: this.authToken,
+      custom_enc_flag: 'N',
+      'Content-Type': 'application/xml', // XML로 요청을 보내기 위한 Content-Type
+      Accept: 'application/xml', // XML 응답을 수신하기 위함
+    };
+    const queryParams = new URLSearchParams({
+      MDCODE: this.corpCode,
+      tr_id: obj.transactionId,
+    });
+
+    const url = `${this.url}/media/coupon_status.asp?${queryParams.toString()}`;
+
+    try {
+      this.logger.log(url);
+      this.logger.log(headers);
+      const response = await firstValueFrom(this.httpService.get(url, { headers }));
+
+      const result = response.data;
+
+      const resultToJson = (await this.parser().parseStringPromise(result)) as unknown as GiftiShowCheckOut;
+
+      this.logger.log(result);
+      this.logger.log(resultToJson);
+      // this.logger.log(response.toString());
+      return resultToJson;
+    } catch (e) {
+      this.logger.error(e);
+      this.logger.error(JSON.stringify(e));
+      throw e;
+    }
+  }
+
+  async cancel(obj: GifitiShowCancelIn): Promise<void> {
+    const headers = {
+      api_code: '0101',
+      custom_auth_code: this.corpCode,
+      custom_auth_token: this.authToken,
+      custom_enc_flag: 'N',
+      'Content-Type': 'application/xml', // XML로 요청을 보내기 위한 Content-Type
+      Accept: 'application/xml', // XML 응답을 수신하기 위함
+    };
+    const queryParams = new URLSearchParams({
+      MDCODE: this.corpCode,
+      tr_id: obj.transactionId,
+    });
+
+    const url = `${this.url}/media/coupon_cancel.asp?${queryParams.toString()}`;
+
+    try {
+      this.logger.log(url);
+      this.logger.log(headers);
+      const response = await firstValueFrom(this.httpService.get(url, { headers }));
+
+      const result = response.data;
+
+      const resultToJson = (await this.parser().parseStringPromise(result)) as unknown;
+
+      this.logger.log(result);
+      this.logger.log(resultToJson);
+      // this.logger.log(response.toString());
+      return;
     } catch (e) {
       this.logger.error(e);
       this.logger.error(JSON.stringify(e));

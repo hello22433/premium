@@ -35,6 +35,38 @@ export class SsgEventGetListReqDto extends PagingReqDto {
   code?: string;
 }
 
+export class SsgEventExcelDownloadReqDto extends PagingReqDto {
+  @ApiPropertyOptional({
+    description: '생성 시작일 ex) yyyy-MM-ddTHH:mm:ss',
+  })
+  // =============================================================
+  @IsOptional()
+  @Matches(dateAtRegexp)
+  createdStartAt?: string;
+
+  @ApiPropertyOptional({
+    description: '생성 끝 일 ex) yyyy-MM-ddTHH:mm:ss',
+  })
+  // =============================================================
+  @IsOptional()
+  @Matches(dateAtRegexp)
+  createdEndAt?: string;
+
+  @ApiPropertyOptional({
+    description: '행사명',
+  })
+  // =============================================================
+  @IsOptional()
+  name?: string;
+
+  @ApiPropertyOptional({
+    description: '행사코드',
+  })
+  // =============================================================
+  @IsOptional()
+  code?: string;
+}
+
 export class SsgEventCreateReqDto {
   @ApiProperty({
     description: '행사 코드',

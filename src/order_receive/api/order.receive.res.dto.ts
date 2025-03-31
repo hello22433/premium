@@ -1,5 +1,7 @@
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
 import { ApiProperty } from '@nestjs/swagger';
+import { IProductType } from '../../product/interface/product.type';
+import { OrderReceiveChoiceDto } from './dto/order.receive.choice.dto';
 
 export class OrderReceiveAlimTalkResDto {
   @ApiProperty({
@@ -46,6 +48,22 @@ export class OrderReceiveAlimTalkResDto {
     description: '수신 내용',
   })
   context: string;
+
+  @ApiProperty({
+    enum: IProductType,
+    description: '일반 쿠폰: GENERAL, 초이스쿠폰: CHOICE',
+  })
+  type: IProductType;
+
+  @ApiProperty({
+    description: '초이스 쿠폰 일 시 선택 가능 리스트',
+  })
+  choiceProductList: OrderReceiveChoiceDto[];
+
+  @ApiProperty({
+    description: '초이스 쿠폰 일 시 선택한 초이스 쿠폰 정보',
+  })
+  selectChoiceProduct: OrderReceiveChoiceDto | null;
 }
 
 export class OrderReceiveEmailResDto {
@@ -63,4 +81,20 @@ export class OrderReceiveEmailResDto {
     description: 'key 전송 값 ',
   })
   sendEncryptKey: string;
+
+  @ApiProperty({
+    enum: IProductType,
+    description: 'product type ex) 일반 : GENERAL, 초이스 : CHOICE',
+  })
+  type: IProductType;
+
+  @ApiProperty({
+    description: '초이스 쿠폰 일 시 선택 가능 리스트',
+  })
+  choiceProductList: OrderReceiveChoiceDto[];
+
+  @ApiProperty({
+    description: '초이스 쿠폰 일 시 선택한 초이스 쿠폰 정보',
+  })
+  selectChoiceProduct: OrderReceiveChoiceDto | null;
 }

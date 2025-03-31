@@ -1,8 +1,9 @@
-import { Column, Entity, PrimaryGeneratedColumn } from 'typeorm';
+import { Column, Entity, JoinColumn, ManyToOne, PrimaryGeneratedColumn } from 'typeorm';
 import { IUserDiscountCategory } from '../user_discount/interface/user.discount.category';
 import { IPriceAdjustment } from '../user_discount/interface/price.adjustment';
 import { ICompareCondition } from '../user_discount/interface/compare.condition';
 import { IUserDiscountMethod } from '../user_discount/interface/user.discount.method';
+import { UserEntity } from './user.entity';
 
 @Entity('user_discount')
 export class UserDiscountEntity {
@@ -54,4 +55,8 @@ export class UserDiscountEntity {
 
   @Column({ comment: '수수료 (percent)' })
   pricePercent: number;
+
+  @ManyToOne(() => UserEntity, { createForeignKeyConstraints: false })
+  @JoinColumn({ name: 'user_id' })
+  user: UserEntity;
 }

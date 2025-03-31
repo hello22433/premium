@@ -17,8 +17,12 @@ import {
   OrderDeliveryRequestReqDto,
   OrderDeliverySsgCouponExpireChangeReqDto,
   OrderExcelDownloadReqBodyDto,
+  OrderGetDeliveryCompleteReportPdfReqDto,
+  OrderGetDeliveryCompleteReportReqDto,
   OrderGetDetailReqParamDto,
   OrderGetListReqDto,
+  OrderGetOrderCompleteReportPdfReqDto,
+  OrderGetOrderCompleteReportReqDto,
   OrderGetSettleReqDto,
   OrderUpdateOperationUserReqDto,
   OrderUpdateSettleReqDto,
@@ -28,8 +32,11 @@ import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorizati
 import {
   OrderCreateTempResDto,
   OrderDeliveryConfirmed,
+  OrderGetDeliveryCompleteReportResDto,
   OrderGetDetailResDto,
   OrderGetListResDto,
+  OrderGetMyOrderHistoryResDto,
+  OrderGetOrderCompleteReportResDto,
   OrderGetSettleGetListResDto,
 } from './order.res.dto';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
@@ -83,6 +90,68 @@ export class OrderController {
   }
 
   @ApiOperation({
+    summary: '일반 상품 발송 완료 리포트 PDF 주문 상세 조회 API',
+  })
+  @ApiOkResponse({
+    type: OrderGetDeliveryCompleteReportResDto,
+    description: '성공적으로 조회한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '해당 order id 가 존재하지 않는 경우',
+  })
+  // ====================================================
+  @Get('/order/delivery-complete/report')
+  getDeliveryCompleteReport(@Query() getQuery: OrderGetDeliveryCompleteReportReqDto) {
+    return this.orderService.getDeliveryCompleteReport(getQuery);
+  }
+
+  @ApiOperation({
+    summary: '일반 상품 발송 완료 리포트 PDF 다운로드 카운트 API',
+  })
+  @ApiOkResponse({
+    description: '성공적으로 조회한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '해당 order id 가 존재하지 않는 경우',
+  })
+  // ====================================================
+  @Post('/order/delivery-complete/report/pdf')
+  deliveryCompleteReportPdf(@Body() getBody: OrderGetDeliveryCompleteReportPdfReqDto) {
+    return this.orderService.deliveryCompleteReportPdf(getBody);
+  }
+
+  @ApiOperation({
+    summary: '일반 상품 거래 명세서 PDF 상세 조회 API',
+  })
+  @ApiOkResponse({
+    type: OrderGetOrderCompleteReportResDto,
+    description: '성공적으로 조회한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '해당 order id 가 존재하지 않는 경우',
+  })
+  // ====================================================
+  @Get('/order/order-complete/report')
+  getOrderCompleteReport(@Query() getQuery: OrderGetOrderCompleteReportReqDto) {
+    return this.orderService.getOrderCompleteReport(getQuery);
+  }
+
+  @ApiOperation({
+    summary: '거래 명세서 PDF 다운로드 카운트 API',
+  })
+  @ApiOkResponse({
+    description: '성공적으로 조회한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '해당 order id 가 존재하지 않는 경우',
+  })
+  // ====================================================
+  @Post('/order/order-complete/report/pdf')
+  orderCompleteReportPdf(@Body() getBody: OrderGetOrderCompleteReportPdfReqDto) {
+    return this.orderService.orderCompleteReportPdf(getBody);
+  }
+
+  @ApiOperation({
     summary: '정산 정보 조회 API',
   })
   @ApiOkResponse({
@@ -111,6 +180,19 @@ export class OrderController {
   @Post('/order/settle')
   createOrderSettle(@Body() getBody: OrderCreateSettleReqDto) {
     return this.orderService.createOrderSettle(getBody);
+  }
+
+  @ApiOperation({
+    summary: '대시보드 - 나의 주문 내역 조회 API',
+  })
+  @ApiOkResponse({
+    type: OrderGetMyOrderHistoryResDto,
+    description: '성공적으로 조회한 경우',
+  })
+  // ====================================================
+  @Get('/order/my/dashboard')
+  getMyOrderHistory(@User() user: ILoginUserInfo) {
+    return this.orderService.getMyOrderHistory(user);
   }
 
   @ApiOperation({

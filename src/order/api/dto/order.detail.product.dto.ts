@@ -17,6 +17,11 @@ export class OrderProductDto {
   price: number;
 
   @ApiProperty({
+    description: '주문 수량',
+  })
+  amount: number;
+
+  @ApiProperty({
     description: '유효 일',
   })
   expireDay: number;
@@ -37,7 +42,7 @@ export class OrderProductDto {
   brandName: string;
 }
 
-export class OrderViewDeliveryDto {
+export class OrderDeliveryViewCommonDto {
   @ApiProperty({
     description: '주문 발송 id',
   })
@@ -47,7 +52,9 @@ export class OrderViewDeliveryDto {
     description: '발송시 수신 번호 전화번호 혹은 이메일',
   })
   deliveryTarget: string;
+}
 
+export class OrderViewDeliveryDto extends OrderDeliveryViewCommonDto {
   @ApiProperty({
     description: '대치문자 1',
   })
@@ -62,6 +69,60 @@ export class OrderViewDeliveryDto {
     description: '대치문자 3',
   })
   replaceCharacter3: string | null;
+}
+
+export class OrderDeliveryCompleteReportViewDto extends OrderDeliveryViewCommonDto {
+  @ApiProperty({
+    description: '발송 시각',
+  })
+  sendRequestAt: string | null;
+
+  @ApiProperty({
+    description: '상품명',
+  })
+  productName: string;
+
+  @ApiProperty({
+    description: '금액',
+  })
+  amount: number;
+
+  @ApiProperty({
+    description: '마스킹 된 바코드',
+  })
+  barCode: string | null;
+}
+
+export class OrderCompleteReportDeliveryViewDto {
+  @ApiProperty({
+    description: '발송 id',
+  })
+  id: number;
+
+  @ApiProperty({
+    description: '발송 시각',
+  })
+  sendRequestAt: string | null;
+
+  @ApiProperty({
+    description: '상품명',
+  })
+  productName: string;
+
+  @ApiProperty({
+    description: '수량',
+  })
+  quantity: number;
+
+  @ApiProperty({
+    description: '공급가액',
+  })
+  price: number;
+
+  @ApiProperty({
+    description: '부가세(공급가액의 10%)',
+  })
+  vat: number;
 }
 
 export class OrderDetailProductDto {
@@ -80,4 +141,22 @@ export class OrderDetailProductDto {
     description: '발송 상세 list',
   })
   orderDeliveryList: OrderViewDeliveryDto[];
+}
+
+export class OrderPdfDetailProductDto {
+  @ApiProperty({
+    description: 'order product mapping id',
+  })
+  id: number;
+
+  @ApiProperty({
+    description: '상품 정보',
+  })
+  product: OrderProductDto | null;
+
+  @ApiProperty({
+    type: [OrderDeliveryCompleteReportViewDto],
+    description: '발송 상세 list',
+  })
+  orderDeliveryList: OrderDeliveryCompleteReportViewDto[];
 }

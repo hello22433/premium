@@ -40,6 +40,9 @@ export class UserDriveEntity extends BaseEntity {
   @Column({ type: 'datetime', nullable: true, comment: '수신일자 ex) yyyy-MM-ddTHH:mm:ss' })
   receiveAt: Date | null;
 
+  @Column({ type: 'text', nullable: true, comment: '답변 내용' })
+  replyContent: string | null;
+
   @ManyToOne(() => UserEntity, { createForeignKeyConstraints: false })
   @JoinColumn({ name: 'sender_id' })
   sender: UserEntity;

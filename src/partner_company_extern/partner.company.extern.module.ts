@@ -12,6 +12,8 @@ import { CryptoCipher } from '../common/infra/crypto.cipher';
 import { PartnerCompanyExternHistoryEntity } from '../entity/partner.company.extern.history.entity';
 import { SsgIssue } from './infra/ssg.issue';
 import { OrderEntity } from '../entity/order.entity';
+import { PartnerCompanyExternBatchService } from './application/partner.company.extern.batch.service';
+import { PartnerCompanyBatchSchedule } from './partner.company.batch.schedule';
 
 @Module({
   imports: [
@@ -45,6 +47,8 @@ import { OrderEntity } from '../entity/order.entity';
     },
     PartnerCompanyExternService,
     CryptoCipher,
+    PartnerCompanyExternBatchService,
+    PartnerCompanyBatchSchedule,
   ],
   exports: [PartnerCompanyExternService],
 })

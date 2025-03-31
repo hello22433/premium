@@ -6,6 +6,7 @@ import { BaseEntity } from '../common/entity/base.entity';
 import { IOrderSendMethod } from '../order/interface/order.send.method';
 import { IOrderType } from '../order/interface/order.type';
 import { OrderEmailSendType } from '../order/domain/order.email.send.type';
+import { OrderLikeEntity } from './order.like.entity';
 
 @Entity('order')
 export class OrderEntity extends BaseEntity {
@@ -17,6 +18,9 @@ export class OrderEntity extends BaseEntity {
 
   @Column({ nullable: true, comment: '운영 담당자 FK) user.id' })
   operationUserId: number | null;
+
+  @Column({ type: 'varchar', length: 256, unique: true, comment: 'event 코드' })
+  code: string;
 
   @Column({ comment: '진행 상태' })
   status: IOrderStatus;
@@ -70,6 +74,12 @@ export class OrderEntity extends BaseEntity {
   @Column({ default: 0, comment: '정산 금액' })
   settleAmount: number;
 
+  @Column({ default: 0, comment: '배송 완료 리포트 pdf 카운트' })
+  deliveryCompleteReportCount: number;
+
+  @Column({ default: 0, comment: '거래명세서 pdf 카운트' })
+  orderCompleteReportCount: number;
+
   // 전송 시간 조회 편의성을 위한 컬럼 추가
   @Column({ comment: '발송 요청 시각' })
   sendRequestAt: Date;
@@ -86,4 +96,9 @@ export class OrderEntity extends BaseEntity {
     createForeignKeyConstraints: false,
   })
   orderProductMappings?: OrderProductMappingEntity[];
+
+  @OneToMany(() => OrderLikeEntity, (orderLike) => orderLike.order, {
+    createForeignKeyConstraints: false,
+  })
+  orderLikes?: OrderLikeEntity[];
 }

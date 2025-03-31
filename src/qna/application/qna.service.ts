@@ -9,7 +9,7 @@ import {
   QnaGetListReqDto,
   QnaUpdateAnswerReqDto,
 } from '../api/qna.req.dto';
-import { QnaGetDetailResDto, QnaGetListResDto } from '../api/qna.res.dto';
+import { QnaGetDetailResDto, QnaGetListResDto, QnaGetMyQnaHistoryResDto } from '../api/qna.res.dto';
 import { QnaViewDto } from '../api/dto/qna.view.dto';
 import { format } from 'date-fns';
 import { DateDateFormatStr } from '../../common/domain/date.format.str';
@@ -166,5 +166,28 @@ export class QnaService {
       registerDate: format(new Date(), DateDateFormatStr),
       status: IQnaStatus.WAIT,
     });
+  }
+
+  async getMyQnaHistory(user: ILoginUserInfo): Promise<QnaGetMyQnaHistoryResDto> {
+    const waitCount = await this.qnaRepository.count({
+      where: {
+        userId: user.id,
+        status: IQnaStatus.WAIT,
+      },
+    });
+
+    const completeCount = await this.qnaRepository.count({
+      where: {
+        userId: user.id,
+        status: IQnaStatus.OK,
+      },
+    });
+
+    return {
+      tempCount: 0, // TODO
+      waitCount,
+      completeCount,
+      deadlineCount: 0, // TODO
+    };
   }
 }

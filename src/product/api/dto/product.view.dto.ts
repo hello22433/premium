@@ -82,4 +82,9 @@ export class ProductViewDto {
     description: '이미지 경로',
   })
   imagePath: string;
+
+  @ApiProperty({
+    description: '찜여부',
+  })
+  isLike: boolean;
 }

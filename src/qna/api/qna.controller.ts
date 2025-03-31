@@ -8,7 +8,7 @@ import {
   QnaGetListReqDto,
   QnaUpdateAnswerReqDto,
 } from './qna.req.dto';
-import { QnaGetDetailResDto, QnaGetListResDto } from './qna.res.dto';
+import { QnaGetDetailResDto, QnaGetListResDto, QnaGetMyQnaHistoryResDto } from './qna.res.dto';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
 import { User } from '../../auth/api/user.decorator';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
@@ -89,5 +89,18 @@ export class QnaController {
   @Post('/qna')
   create(@User() user: ILoginUserInfo, @Body() getBody: QnaCreateReqDto) {
     return this.qnaService.create(user, getBody);
+  }
+
+  @ApiOperation({
+    summary: '대시보드 - 나의 문의 내역 조회 API',
+  })
+  @ApiOkResponse({
+    type: QnaGetMyQnaHistoryResDto,
+    description: '성공적으로 조회한 경우',
+  })
+  // ====================================================
+  @Get('/qna/my/dashboard')
+  getMyQnaHistory(@User() user: ILoginUserInfo) {
+    return this.qnaService.getMyQnaHistory(user);
   }
 }

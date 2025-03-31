@@ -37,6 +37,11 @@ export class RealProductViewDto {
   price: number;
 
   @ApiProperty({
+    description: '송장 번호',
+  })
+  trackingNumber: string | null;
+
+  @ApiProperty({
     description: '부가세 (공급가액의 10%)',
   })
   vat: number;

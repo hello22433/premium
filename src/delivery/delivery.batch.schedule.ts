@@ -2,6 +2,7 @@
 
 import { DeliveryBatchService } from './application/delivery.batch.service';
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
+import { Cron } from '@nestjs/schedule';
 
 @Injectable()
 export class DeliveryBatchSchedule implements OnApplicationBootstrap {
@@ -10,6 +11,7 @@ export class DeliveryBatchSchedule implements OnApplicationBootstrap {
   onApplicationBootstrap() {
     // TEST;
     // this.deliveryBatchService.issueAndSend();
+    // this.handleStatusUpdateBatch();
   }
 
   private logger = new Logger('BATCH');
@@ -21,6 +23,16 @@ export class DeliveryBatchSchedule implements OnApplicationBootstrap {
       await this.deliveryBatchService.issueAndSend();
       this.logger.log('Complete Delivery');
       return;
+    } catch (e) {
+      this.logger.error(e);
+    }
+  }
+  // 5분마다 실행
+  @Cron('0 */5 * * * *')
+  async handleDeliveryStatusUpdate() {
+    try {
+      await this.deliveryBatchService.updateDeliveryStatusFromTracking();
+      this.logger.log('Completed delivery status update');
     } catch (e) {
       this.logger.error(e);
     }

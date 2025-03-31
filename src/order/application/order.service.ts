@@ -7,8 +7,12 @@ import {
   OrderDeliveryRequestReqDto,
   OrderDeliverySsgCouponExpireChangeReqDto,
   OrderExcelDownloadReqBodyDto,
+  OrderGetDeliveryCompleteReportPdfReqDto,
+  OrderGetDeliveryCompleteReportReqDto,
   OrderGetDetailReqParamDto,
   OrderGetListReqDto,
+  OrderGetOrderCompleteReportPdfReqDto,
+  OrderGetOrderCompleteReportReqDto,
   OrderGetSettleReqDto,
   OrderUpdateOperationUserReqDto,
   OrderUpdateSettleReqDto,
@@ -17,16 +21,19 @@ import {
 import {
   OrderCreateTempResDto,
   OrderDeliveryConfirmed,
+  OrderGetDeliveryCompleteReportResDto,
   OrderGetDetailResDto,
   OrderGetListResDto,
+  OrderGetMyOrderHistoryResDto,
+  OrderGetOrderCompleteReportResDto,
   OrderGetSettleGetListResDto,
 } from '../api/order.res.dto';
 import { OrderEntity } from '../../entity/order.entity';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, LessThanOrEqual, MoreThanOrEqual, Repository } from 'typeorm';
+import { In, LessThanOrEqual, Like, MoreThanOrEqual, Repository } from 'typeorm';
 import { QueryBuilderDateCondition } from '../../common/infra/query.builder.date.condition';
 import { OrderViewDto } from '../api/dto/order.view.dto';
-import { DateFormatStr } from '../../common/domain/date.format.str';
+import { DateDateFormatStr, DateFormatStr } from '../../common/domain/date.format.str';
 import { format } from 'date-fns';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { IOrderStatus } from '../interface/order.status';
@@ -43,7 +50,13 @@ import { DeliveryCreateCouponImage } from '../../delivery/infra/delivery.create.
 import { UserEntity } from '../../entity/user.entity';
 import { IUserAuthority } from '../../user/interface/user.authority';
 import { IOrderSection } from '../interface/order.section';
-import { OrderDetailProductDto, OrderViewDeliveryDto } from '../api/dto/order.detail.product.dto';
+import {
+  OrderCompleteReportDeliveryViewDto,
+  OrderDeliveryCompleteReportViewDto,
+  OrderDetailProductDto,
+  OrderPdfDetailProductDto,
+  OrderViewDeliveryDto,
+} from '../api/dto/order.detail.product.dto';
 import { normalizeDate } from '../../util/time.util';
 import { join } from 'path';
 import * as process from 'node:process';
@@ -57,6 +70,10 @@ import { IProductType } from '../../product/interface/product.type';
 import { defaultOrderMidImagePath, defaultOrderTopImagePath } from '../../const';
 import { OrderStatusExcelMapping } from '../domain/order.excel.mapping';
 import { OrderFeeCalculator } from '../domain/order.fee.calculator';
+import { OrderCustomerViewDto } from '../api/dto/order.customer.view.dto';
+import { maskBarCode } from '../../util/mask.barcode.util';
+import { CreateCode } from '../../common/domain/create.code';
+import { OrderDigitNumber, OrderPrefixCode } from '../domain/order.code';
 
 @Injectable()
 export class OrderService {
@@ -220,6 +237,7 @@ export class OrderService {
               name: orderProductMapping.product.name,
               price: orderProductMapping.product.price,
               expireDay: orderProductMapping.product.expireDay,
+              amount: orderProductMapping.amount,
               imagePath: orderProductMapping.product.imagePath,
               brandId: orderProductMapping.product.brandId,
               brandName: orderProductMapping.product.brand?.nameKorean ?? '',
@@ -261,6 +279,225 @@ export class OrderService {
       couponExpiration: couponExpiration,
       productList: productList,
     };
+  }
+
+  async getDeliveryCompleteReport(
+    getQuery: OrderGetDeliveryCompleteReportReqDto,
+  ): Promise<OrderGetDeliveryCompleteReportResDto> {
+    const queryBuilder = this.orderRepository
+      .createQueryBuilder('order')
+      .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('order.operationUser', 'operationUser')
+      .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
+      .leftJoinAndSelect('orderProductMappings.product', 'product')
+      .leftJoinAndSelect('product.brand', 'brand')
+      .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
+      .where('order.id = :id', { id: getQuery.id });
+
+    const order = await queryBuilder.getOne();
+
+    if (!order) {
+      throw new BadRequestException('주문이 존재하지 않습니다.');
+    }
+
+    if (order.status !== IOrderStatus.DELIVERY_COMPLETE) {
+      throw new BadRequestException('발송 완료된 건에 대해서만 조회 가능합니다.');
+    }
+
+    const productList: OrderPdfDetailProductDto[] = [];
+    const userInfo: OrderCustomerViewDto = {
+      id: order.user?.id ?? null,
+      userBusinessName: order.user?.businessName ?? null,
+      userPersonPhoneNumber: order.user?.personPhoneNumber ?? null,
+      userBusinessEmail: order.user?.email ?? null,
+      userPersonName: order.user?.personName ?? null,
+    };
+    const now = new Date();
+    const today = format(now, 'yyMMdd');
+    const fileName: string = `${order.user?.businessName}_발송완료리포트_${today}`;
+
+    if (order.orderProductMappings && order.orderProductMappings.length > 0) {
+      for (const orderProductMapping of order.orderProductMappings) {
+        const orderDeliveryList: OrderDeliveryCompleteReportViewDto[] = [];
+
+        for (const orderDelivery of orderProductMapping.orderDeliveries) {
+          orderDeliveryList.push({
+            id: orderDelivery.id,
+            sendRequestAt: orderDelivery.sendRequestAt ? format(orderDelivery.sendRequestAt, DateFormatStr) : null,
+            productName: orderProductMapping.product.name ?? null,
+            amount: orderProductMapping.product.price ?? null,
+            barCode: orderDelivery.barCode ? maskBarCode(orderDelivery.barCode) : null,
+            deliveryTarget: orderDelivery.deliveryTarget,
+          });
+        }
+
+        const product = orderProductMapping.product
+          ? {
+              id: orderProductMapping.product.id,
+              name: orderProductMapping.product.name,
+              price: orderProductMapping.product.price,
+              expireDay: orderProductMapping.product.expireDay,
+              amount: orderProductMapping.amount,
+              imagePath: orderProductMapping.product.imagePath,
+              brandId: orderProductMapping.product.brandId,
+              brandName: orderProductMapping.product.brand?.nameKorean ?? '',
+            }
+          : null;
+        productList.push({
+          id: orderProductMapping.id,
+          product: product,
+          orderDeliveryList: orderDeliveryList,
+        });
+      }
+    }
+
+    const sendRequestAt = normalizeDate(order.sendRequestAt) ? format(order.sendRequestAt, DateFormatStr) : null;
+
+    let couponExpiration: number | null = null;
+    if (order.type === IOrderType.SSG) {
+      couponExpiration = productList[0].product?.expireDay ?? null;
+    }
+
+    return {
+      id: order.id,
+      fileName,
+      userInfo,
+      registerAt: format(order.registerAt, DateFormatStr),
+      eventName: order.eventName,
+      type: order.type,
+      sendMethod: order.sendMethod,
+      fromPhoneNumber: order.fromPhoneNumber,
+      fromEmail: order.fromEmail,
+      sendTitle: order.sendTitle,
+      sendContent: order.sendContent,
+      sendRequestAt: sendRequestAt,
+      status: order.status,
+      couponExpiration: couponExpiration,
+      productList: productList,
+    };
+  }
+
+  async deliveryCompleteReportPdf(getBody: OrderGetDeliveryCompleteReportPdfReqDto): Promise<void> {
+    const queryBuilder = this.orderRepository
+      .createQueryBuilder('order')
+      .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('order.operationUser', 'operationUser')
+      .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
+      .leftJoinAndSelect('orderProductMappings.product', 'product')
+      .leftJoinAndSelect('product.brand', 'brand')
+      .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
+      .where('order.id = :id', { id: getBody.id });
+
+    const order = await queryBuilder.getOne();
+
+    if (!order) {
+      throw new BadRequestException('주문이 존재하지 않습니다.');
+    }
+
+    order.deliveryCompleteReportCount++;
+
+    await this.orderRepository.save(order);
+
+    return;
+  }
+
+  async getOrderCompleteReport(
+    getQuery: OrderGetOrderCompleteReportReqDto,
+  ): Promise<OrderGetOrderCompleteReportResDto> {
+    const queryBuilder = this.orderRepository
+      .createQueryBuilder('order')
+      .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('order.operationUser', 'operationUser')
+      .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
+      .leftJoinAndSelect('orderProductMappings.product', 'product')
+      .leftJoinAndSelect('product.brand', 'brand')
+      .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
+      .where('order.id = :id', { id: getQuery.id });
+
+    const order = await queryBuilder.getOne();
+
+    if (!order) {
+      throw new BadRequestException('주문이 존재하지 않습니다.');
+    }
+
+    if (order.status !== IOrderStatus.DELIVERY_COMPLETE) {
+      throw new BadRequestException('발송 완료된 건에 대해서만 조회 가능합니다.');
+    }
+
+    const serialNumber: string = `${format(order.createdAt, DateDateFormatStr)}-${order.id}`;
+    const fileName: string = `${serialNumber}_거래명세서`;
+    const orderDeliveryList: OrderCompleteReportDeliveryViewDto[] = [];
+
+    let price = 0;
+    let vat = 0;
+    let totalAmount = 0;
+
+    if (order.orderProductMappings && order.orderProductMappings.length > 0) {
+      for (const orderProductMapping of order.orderProductMappings) {
+        const productPrice = orderProductMapping.product.price ?? 0;
+        const quantity = orderProductMapping.amount ?? 0;
+        const total = productPrice * quantity;
+        price += total;
+
+        for (const orderDelivery of orderProductMapping.orderDeliveries) {
+          orderDeliveryList.push({
+            id: orderDelivery.id,
+            sendRequestAt: orderDelivery.sendRequestAt ? format(orderDelivery.sendRequestAt, DateFormatStr) : null,
+            productName: orderProductMapping.product.name ?? null,
+            quantity,
+            vat: Math.floor(productPrice / 10),
+            price: productPrice,
+          });
+        }
+      }
+
+      vat = Math.floor(price * 0.1);
+      totalAmount = price + vat;
+    }
+
+    const sendRequestAt = normalizeDate(order.sendRequestAt) ? format(order.sendRequestAt, DateFormatStr) : null;
+
+    return {
+      fileName,
+      serialNumber,
+      userSettleCondition: order.user!.settleCondition,
+      businessName: order.user!.businessName,
+      businessNumber: order.user!.businessNumber,
+      personName: order.user!.personName,
+      businessAddress: order.user?.businessAddress ?? null,
+      businessType: null, // TODO
+      businessItem: null, // TODO
+      eventName: order.eventName,
+      sendRequestAt: sendRequestAt ?? null,
+      price,
+      vat,
+      totalAmount,
+      orderDeliveryList,
+    };
+  }
+
+  async orderCompleteReportPdf(getBody: OrderGetOrderCompleteReportPdfReqDto): Promise<void> {
+    const queryBuilder = this.orderRepository
+      .createQueryBuilder('order')
+      .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('order.operationUser', 'operationUser')
+      .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
+      .leftJoinAndSelect('orderProductMappings.product', 'product')
+      .leftJoinAndSelect('product.brand', 'brand')
+      .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
+      .where('order.id = :id', { id: getBody.id });
+
+    const order = await queryBuilder.getOne();
+
+    if (!order) {
+      throw new BadRequestException('주문이 존재하지 않습니다.');
+    }
+
+    order.orderCompleteReportCount++;
+
+    await this.orderRepository.save(order);
+
+    return;
   }
 
   async getOrderSettle(getQuery: OrderGetSettleReqDto): Promise<OrderGetSettleGetListResDto> {
@@ -474,6 +711,17 @@ export class OrderService {
     // 전송 정산 가격 적용
     let sendAmount = 0;
 
+    const prevProduct = await this.orderRepository.findOne({
+      where: {
+        code: Like(`${OrderPrefixCode}%`),
+      },
+      order: { code: 'DESC' },
+    });
+
+    const prevCode = prevProduct?.code ?? null;
+
+    const newCode = CreateCode(prevCode, OrderPrefixCode, OrderDigitNumber);
+
     for (const orderProduct of orderProductList) {
       const getProduct = productPriceMap.get(orderProduct.productId)!;
       sendAmount += getProduct.price * orderProduct.amount;
@@ -482,6 +730,7 @@ export class OrderService {
     const orderInsertResult = await this.orderRepository.insert({
       userId: user.id,
       status: IOrderStatus.TEMP,
+      code: newCode,
       type,
       eventName,
       sendMethod,
@@ -1107,5 +1356,35 @@ export class OrderService {
     await workbook.xlsx.writeFile(filePath);
 
     return { fileName, filePath };
+  }
+
+  async getMyOrderHistory(user: ILoginUserInfo): Promise<OrderGetMyOrderHistoryResDto> {
+    const completeCount = await this.orderRepository.count({
+      where: {
+        userId: user.id,
+        status: IOrderStatus.DELIVERY_REQUEST,
+      },
+    });
+
+    const notProcessCount = await this.orderRepository.count({
+      where: {
+        userId: user.id,
+        status: IOrderStatus.DELIVERY_CANCEL,
+      },
+    });
+
+    const stockOrderCount = await this.orderRepository.count({
+      where: {
+        userId: user.id,
+        status: IOrderStatus.DELIVERY_COMPLETE,
+      },
+    });
+
+    return {
+      waitingDepositCount: 0,
+      completeCount,
+      notProcessCount,
+      stockOrderCount,
+    };
   }
 }

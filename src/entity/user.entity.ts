@@ -1,10 +1,11 @@
-import { Column, Entity, PrimaryGeneratedColumn } from 'typeorm';
+import { Column, Entity, OneToMany, PrimaryGeneratedColumn } from 'typeorm';
 import { BaseEntity } from '../common/entity/base.entity';
 import { IUserStatus } from '../user/interface/user.status';
 import { IUserAuthority } from '../user/interface/user.authority';
 import { IUserSettleCondition } from '../user/interface/user.settle.condition';
 import { IUserSettleMethod } from '../user/interface/user.settle.method';
 import { IUserBusinessType } from '../user/interface/user.business.type';
+import { UserDiscountEntity } from './user.discount.entity';
 
 @Entity('user')
 export class UserEntity extends BaseEntity {
@@ -105,4 +106,7 @@ export class UserEntity extends BaseEntity {
 
   @Column({ type: 'varchar', length: 100, default: 'S+', comment: '고객사등급' }) // TODO
   businessGrade: string;
+
+  @OneToMany(() => UserDiscountEntity, (userDisCount) => userDisCount.user)
+  userDiscount: UserDiscountEntity[];
 }

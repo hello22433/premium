@@ -13,12 +13,21 @@ import { AuthModule } from '../auth/auth.module';
 import { EmailSendHistoryEntity } from '../entity/email.send.history.entity';
 import { FileModule } from '../file/file.module';
 import { DeliveryTrackHttp } from './infra/delivery.track.http';
+import { OrderRealProductEntity } from '../entity/order.real.product.entity';
+import { OrderRealProductMappingEntity } from '../entity/order.real.product.mapping.entity';
 
 @Module({
   imports: [
     AuthModule,
     HttpModule,
-    TypeOrmModule.forFeature([OrderEntity, OrderDeliveryEntity, DeliverySendHistoryEntity, EmailSendHistoryEntity]),
+    TypeOrmModule.forFeature([
+      OrderEntity,
+      OrderDeliveryEntity,
+      OrderRealProductEntity,
+      OrderRealProductMappingEntity,
+      DeliverySendHistoryEntity,
+      EmailSendHistoryEntity,
+    ]),
     MailModule,
     SmsModule,
     FileModule,
@@ -38,6 +47,7 @@ import { DeliveryTrackHttp } from './infra/delivery.track.http';
       useClass: DeliveryAlimTalkInfoBankHttp,
     },
     DeliveryTrackHttp,
+    DeliveryBatchService,
   ],
 })
 export class DeliveryModule {}

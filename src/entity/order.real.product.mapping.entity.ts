@@ -4,6 +4,7 @@ import { IPublicChargeTaxPaymentType } from '../order_real_product/interface/pub
 import { IProcessMethod } from '../order_real_product/interface/process.method';
 import { OrderRealProductEntity } from './order.real.product.entity';
 import { ProductEntity } from './product.entity';
+import { DeliveryTrackingStatus } from '../delivery/domain/delivery.tracking.status';
 
 @Entity('order_real_product_mapping')
 export class OrderRealProductMappingEntity extends BaseEntity {
@@ -16,8 +17,19 @@ export class OrderRealProductMappingEntity extends BaseEntity {
   @Column({ comment: 'FK) product id' })
   productId: number;
 
+  @Column({ type: 'varchar', comment: '송장번호' })
+  trackingNumber: string;
+
   @Column({ type: 'int', comment: '상품 수량' })
   quantity: number;
+
+  @Column({
+    type: 'enum',
+    enum: DeliveryTrackingStatus,
+    nullable: true,
+    comment: '배송 상태 코드',
+  })
+  deliveryStatus: DeliveryTrackingStatus | null;
 
   @Column({ type: 'int', comment: '공급가액' })
   price: number;

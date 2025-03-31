@@ -1,21 +1,34 @@
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import { OrderRealProductEntity } from '../../entity/order.real.product.entity';
-import { OrderRealProductGetListResDto } from '../api/order.real.product.res.dto';
+import {
+  OrderRealProductGetAdminListResDto,
+  OrderRealProductGetDeliveryCompleteReportResDto,
+  OrderRealProductGetDeliveryTrackDetailResDto,
+  OrderRealProductGetDeliveryTrackingLastEventResDto,
+  OrderRealProductGetDetailResDto,
+  OrderRealProductGetListResDto,
+  OrderRealProductGetSettlementListResDto,
+} from '../api/order.real.product.res.dto';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import {
   OrderRealProductConfirmRequestReqDto,
   OrderRealProductCreateReqDto,
+  OrderRealProductDeliveryTrackingGetDetailReqParamDto,
   OrderRealProductDeliveryTrackingReqDto,
   OrderRealProductExcelDownloadReqBodyDto,
+  OrderRealProductGetAdminListReqDto,
+  OrderRealProductGetDeliveryCompleteReportReqDto,
   OrderRealProductGetDetailReqParamDto,
   OrderRealProductGetListReqDto,
-  OrderRealProductTaxInfoUpdateReqDto,
+  OrderRealProductGetSettlementExcelDownloadReqDto,
+  OrderRealProductGetSettlementListReqDto,
+  OrderRealProductUpdateReqDto,
   OrderRealProductUpdateRequestReqDto,
 } from '../api/order.real.product.req.dto';
 import { QueryBuilderDateCondition } from '../../common/infra/query.builder.date.condition';
 import { format } from 'date-fns';
-import { DateFormatStr } from '../../common/domain/date.format.str';
+import { DateDateFormatStr, DateFormatStr } from '../../common/domain/date.format.str';
 import { OrderRealProductViewDto } from '../api/dto/order.real.product.view.dto';
 import { BadRequestException, UnauthorizedException } from '@nestjs/common';
 import { UserEntity } from '../../entity/user.entity';
@@ -24,7 +37,6 @@ import { IOrderRealProductStatus } from '../interface/order.real.product.status'
 import { ProductEntity } from '../../entity/product.entity';
 import { IOrderSection } from '../../order/interface/order.section';
 import { IUserAuthority } from '../../user/interface/user.authority';
-import { OrderRealProductDetailDto } from '../api/dto/order.real.product.detail.dto';
 import { RealProductViewDto } from '../api/dto/real.product.view.dto';
 import { PublicChargeTaxViewDto } from '../api/dto/public.charge.tax.view.dto';
 import { DeliveryTrackHttp } from '../../delivery/infra/delivery.track.http';
@@ -32,6 +44,13 @@ import { join } from 'path';
 import * as process from 'node:process';
 import * as ExcelJS from 'exceljs';
 import { OrderRealProductStatusExcelMapping } from '../domain/order.real.product.status.excel.mapping';
+import { OrderRealProductSettleViewDto } from '../api/dto/order.real.product.settle.view.dto';
+import { OrderCustomerViewDto } from '../../order/api/dto/order.customer.view.dto';
+import { Transactional } from 'typeorm-transactional';
+import { IUserStatus } from '../../user/interface/user.status';
+import { AdminListViewDto } from '../../settle/api/dto/admin.list.view.dto';
+import { OrderRealProductDeliveryViewDto } from '../api/dto/order.real.product.delivery.view.dto';
+import { DeliveryTrackingStatus } from '../../delivery/domain/delivery.tracking.status';
 
 export class OrderRealProductService {
   constructor(
@@ -71,13 +90,13 @@ export class OrderRealProductService {
       }
 
       // 운영, 최고관리자 인 경우
-      if (user.authority === IUserAuthority.OPERATION_ADMIN || user.authority === IUserAuthority.SUPER_ADMIN) {
+      if (user.authority === IUserAuthority.OPERATION_ADMIN) {
         queryBuilder = queryBuilder.andWhere('order.userId = :userId', { userId: user.id });
       }
     }
 
     if (status) {
-      queryBuilder = queryBuilder.andWhere('orderRealProductMappings.status = :status', { status });
+      queryBuilder = queryBuilder.andWhere('order.status = :status', { status });
     }
 
     if (userBusinessId) {
@@ -136,6 +155,45 @@ export class OrderRealProductService {
     };
   }
 
+  async getAdminUserList(getQuery: OrderRealProductGetAdminListReqDto): Promise<OrderRealProductGetAdminListResDto> {
+    const { searchText, page, take } = getQuery;
+
+    const queryBuilder = this.userRepository
+      .createQueryBuilder('user')
+      .where('user.status = :status', { status: IUserStatus.USED })
+      .andWhere('user.authority IN (:...authority)', {
+        authority: [IUserAuthority.SUPER_ADMIN, IUserAuthority.OPERATION_ADMIN],
+      });
+
+    if (searchText) {
+      queryBuilder.andWhere(
+        '(user.personName LIKE :searchText OR user.businessName LIKE :searchText OR user.email LIKE :searchText)',
+        { searchText: `%${searchText}%` },
+      );
+    }
+
+    const skip = (page - 1) * take;
+    const [adminUserList, totalCount] = await queryBuilder.skip(skip).take(take).getManyAndCount();
+    const totalPage = Math.ceil(totalCount / take);
+
+    const resultList: AdminListViewDto[] = adminUserList.map((user) => {
+      return {
+        id: user.id,
+        email: user.email,
+        personName: user.personName,
+        businessName: user.businessName,
+        status: user.status,
+      };
+    });
+
+    return {
+      list: resultList,
+      totalCount,
+      currentPage: page,
+      totalPage,
+    };
+  }
+
   async order(user: ILoginUserInfo, getBody: OrderRealProductCreateReqDto) {
     const {
       publicChargeTaxPayment,
@@ -145,12 +203,9 @@ export class OrderRealProductService {
       standardAmount,
       price,
       userId,
+      adminUserId,
       eventName,
     } = getBody;
-
-    if (user.authority !== IUserAuthority.SUPER_ADMIN && user.authority !== IUserAuthority.OPERATION_ADMIN) {
-      throw new UnauthorizedException('최고, 운영 관리자만 접근 가능합니다.');
-    }
 
     const userBusiness = await this.userRepository.findOne({
       where: {
@@ -160,6 +215,16 @@ export class OrderRealProductService {
 
     if (!userBusiness) {
       throw new BadRequestException('존재하지 않는 고객사 입니다.');
+    }
+
+    const adminUser = await this.userRepository.findOne({
+      where: {
+        id: adminUserId,
+      },
+    });
+
+    if (!adminUser) {
+      throw new BadRequestException('존재하지 않는 담당자 입니다');
     }
 
     const realProductIdList = orderRealProductList.map((product) => product.productId);
@@ -184,8 +249,8 @@ export class OrderRealProductService {
     }
 
     const savedOrder = this.orderRepository.create({
-      businessUserId: userBusiness.id,
-      userId: user.id,
+      userId: adminUser.id, // 관리자 id
+      businessUserId: userBusiness.id, // 고객사 id
       eventName: eventName,
       status: IOrderRealProductStatus.ORDER_PENDING,
     });
@@ -218,7 +283,7 @@ export class OrderRealProductService {
   async getDetail(
     user: ILoginUserInfo,
     getParam: OrderRealProductGetDetailReqParamDto,
-  ): Promise<OrderRealProductDetailDto> {
+  ): Promise<OrderRealProductGetDetailResDto> {
     const { id } = getParam;
 
     let queryBuilder = this.orderRepository
@@ -255,6 +320,7 @@ export class OrderRealProductService {
         color: mapping.product.color,
         quantity: mapping.quantity,
         price: mapping.price,
+        trackingNumber: mapping.trackingNumber,
         vat: Math.floor(mapping.price * 0.1),
         totalAmount: mapping.totalPrice,
       });
@@ -276,6 +342,7 @@ export class OrderRealProductService {
 
     return {
       id: order.id,
+      status: order.status,
       registerAt: format(order.createdAt, DateFormatStr),
       userBusinessName: order.businessUser ? order.businessUser.businessName : null,
       userName: order.user ? order.user.personName : null,
@@ -300,7 +367,7 @@ export class OrderRealProductService {
       .getOne();
 
     if (!order) {
-      throw new BadRequestException('해당 주문건은 존재하지 않습니다.');
+      throw new BadRequestException('존재하지 않는 주문입니다.');
     }
 
     order.status = IOrderRealProductStatus.ORDER_EDIT_REQUEST;
@@ -311,10 +378,6 @@ export class OrderRealProductService {
 
   async updateApprove(user: ILoginUserInfo, getBody: OrderRealProductUpdateRequestReqDto): Promise<void> {
     const { id } = getBody;
-
-    if (user.authority === IUserAuthority.CORPORATE_ADMIN) {
-      throw new UnauthorizedException('최고,운영 관리자만 접근 가능합니다.');
-    }
 
     const order = await this.orderRepository
       .createQueryBuilder('order')
@@ -333,12 +396,8 @@ export class OrderRealProductService {
     return;
   }
 
-  async orderConfirm(user: ILoginUserInfo, getBody: OrderRealProductConfirmRequestReqDto): Promise<void> {
+  async orderConfirm(getBody: OrderRealProductConfirmRequestReqDto): Promise<void> {
     const { id } = getBody;
-
-    if (user.authority !== IUserAuthority.CORPORATE_ADMIN) {
-      throw new UnauthorizedException('고객사 담당자만 가능합니다.');
-    }
 
     const order = await this.orderRepository
       .createQueryBuilder('order')
@@ -358,58 +417,495 @@ export class OrderRealProductService {
   }
 
   async getDeliveryTrackingStatus(
-    user: ILoginUserInfo,
     getQuery: OrderRealProductDeliveryTrackingReqDto,
-  ): Promise<any> {
-    const { carrierId, trackingNumber } = getQuery;
+  ): Promise<OrderRealProductGetDeliveryTrackingLastEventResDto> {
+    const { id } = getQuery;
 
-    const response = await this.deliveryTrackHttp.trackDeliveryLastInfo(carrierId, trackingNumber);
+    const order = await this.orderRepository.findOne({
+      where: {
+        id,
+      },
+      relations: ['orderRealProductMappings', 'orderRealProductMappings.product', 'user', 'businessUser'],
+    });
+
+    if (!order || order.orderRealProductMappings.length === 0) {
+      throw new BadRequestException('존재하지 않는 주문이거나, 주문의 상세 정보가 존재하지 않습니다.');
+    }
+
+    const resultList: OrderRealProductDeliveryViewDto[] = [];
+
+    for (const mapping of order.orderRealProductMappings) {
+      const trackingNumber = mapping.trackingNumber;
+
+      let code: DeliveryTrackingStatus = DeliveryTrackingStatus.UNKNOWN;
+      const response = await this.deliveryTrackHttp.trackDeliveryLastInfo('kr.cjlogistics', trackingNumber);
+      const lastEvent = response?.data?.track?.lastEvent;
+
+      if (lastEvent?.status?.code) {
+        code = lastEvent.status.code;
+      }
+
+      resultList.push({
+        id: order.id,
+        registerAt: format(order.createdAt, DateDateFormatStr),
+        userBusinessName: order.businessUser!.businessName || null,
+        userPersonName: order.user!.personName || null,
+        eventName: order.eventName,
+        productName: mapping.product!.name || '',
+        receiver: order.businessUser!.personName || null,
+        businessAddress: order.businessUser!.businessAddress || '',
+        code,
+      });
+    }
 
     return {
-      success: true,
-      data: response.data.track.lastEvent || null,
+      list: resultList,
     };
   }
 
   async getDeliveryTrackingDetail(
-    user: ILoginUserInfo,
-    getQuery: OrderRealProductDeliveryTrackingReqDto,
-  ): Promise<any> {
-    const { carrierId, trackingNumber } = getQuery;
+    getParam: OrderRealProductDeliveryTrackingGetDetailReqParamDto,
+  ): Promise<OrderRealProductGetDeliveryTrackDetailResDto> {
+    const { id } = getParam;
 
+    const mapping = await this.orderProductMappingRepository.findOne({
+      where: { id },
+      relations: ['realProductOrder', 'realProductOrder.user', 'realProductOrder.businessUser', 'product'],
+    });
+
+    if (!mapping) {
+      throw new BadRequestException('주문 매핑 정보를 찾을 수 없습니다.');
+    }
+
+    const trackingNumber = mapping.trackingNumber;
+    const carrierId = 'kr.cjlogistics';
+
+    if (!trackingNumber) {
+      throw new BadRequestException('송장번호가 존재하지 않습니다.');
+    }
     const response = await this.deliveryTrackHttp.trackDeliveryDetail(carrierId, trackingNumber);
 
+    const lastEventData = response.data.track.lastEvent
+      ? {
+          time: response.data.track.lastEvent.time,
+          code: response.data.track.lastEvent.status.code,
+          name: response.data.track.lastEvent.status.name,
+          description: response.data.track.lastEvent.description,
+        }
+      : null;
+
+    const eventDataList =
+      response.data.track.events?.edges?.map((edge) => ({
+        time: edge.node.time,
+        code: edge.node.status.code,
+        name: edge.node.status.name,
+        description: edge.node.description,
+      })) || [];
+
     return {
-      lastEvent: response.data.track.lastEvent || null,
-      events: response.data.track.events?.edges?.map((edge) => edge.node) || [],
+      id: mapping.realProductOrder.id,
+      eventName: mapping.realProductOrder.eventName,
+      productName: mapping.product.name,
+      receiver: mapping.realProductOrder.businessUser?.personName ?? null,
+      businessAddress: mapping.realProductOrder.businessUser?.businessAddress ?? '',
+      lastEvent: lastEventData?.code ?? null,
+      trackingNumber,
+      events: eventDataList,
     };
   }
 
-  async updateTaxInfo(user: ILoginUserInfo, getBody: OrderRealProductTaxInfoUpdateReqDto): Promise<void> {
-    const { list } = getBody;
+  @Transactional()
+  async update(user: ILoginUserInfo, getBody: OrderRealProductUpdateReqDto): Promise<void> {
+    const { realProductOrderId, taxInfo, realProductOrderInfo } = getBody;
 
-    const mappingIds = list.map((mapping) => mapping.mappingId);
+    let taxMappingIds: number[] = [];
+    let productMappingIds: number[] = [];
 
+    const queryBuilder = this.orderRepository
+      .createQueryBuilder('order')
+      .where('order.id = :id', { id: realProductOrderId });
+
+    if (user.authority === IUserAuthority.CORPORATE_ADMIN) {
+      queryBuilder.andWhere('order.businessUserId = :userId', { userId: user.id });
+    }
+
+    const order = await queryBuilder.getOne();
+
+    if (!order) {
+      throw new BadRequestException('존재하지 않는 주문입니다.');
+    }
+
+    if (user.authority === IUserAuthority.CORPORATE_ADMIN && order.status !== IOrderRealProductStatus.ORDER_PENDING) {
+      throw new BadRequestException('상품이 수정 가능한 상태가 아닙니다. 수정 요청을 진행해주세요.');
+    }
+
+    if (taxInfo) {
+      taxMappingIds = taxInfo.map((mapping) => mapping.mappingId);
+    }
+
+    if (realProductOrderInfo) {
+      productMappingIds = realProductOrderInfo.map((mapping) => mapping.mappingId);
+    }
+
+    const allMappingIds = [...new Set([...taxMappingIds, ...productMappingIds])];
+
+    // 전체 매핑 조회 (orderId 포함하여 해당 주문의 매핑만 가져옴)
     const mappings = await this.orderProductMappingRepository.find({
       where: {
-        id: In(mappingIds),
+        id: In(allMappingIds),
+        realProductOrderId, // order 에 속해있는 매핑인지 확인
       },
     });
 
-    if (mappings.length !== mappingIds.length) {
-      throw new BadRequestException('유효하지 않는 id 가 포함되어 있습니다.');
+    if (taxInfo) {
+      for (const tax of taxInfo) {
+        const mapping = mappings.find((m) => m.id === tax.mappingId);
+        if (!mapping) continue;
+
+        mapping.publicChargeTaxPayment = tax.publicChargeTaxPayment;
+        mapping.processMethod = tax.processMethod;
+        mapping.isProcess = tax.isProcess;
+      }
     }
 
-    for (const mapping of mappings) {
-      const taxInfo = list.find((item) => item.mappingId === mapping.id);
-      if (!taxInfo) continue;
+    // 관리자의 송장번호 입력 여부
+    let isTrackingUpdated = false;
 
-      mapping.publicChargeTaxPayment = taxInfo.publicChargeTaxPayment;
-      mapping.processMethod = taxInfo.processMethod;
-      mapping.isProcess = taxInfo.isProcess;
+    if (realProductOrderInfo) {
+      for (const real of realProductOrderInfo) {
+        const mapping = mappings.find((m) => m.id === real.mappingId);
+        if (!mapping) continue;
+
+        if (real.price != null) {
+          mapping.price = real.price;
+          mapping.totalPrice = real.price + Math.floor(real.price * 0.1); // VAT 계산
+        }
+        if (real.trackingNumber) {
+          mapping.trackingNumber = real.trackingNumber;
+          isTrackingUpdated = true;
+        }
+      }
     }
 
+    // 송장번호 입력시 상태 변경 저장
+    if (isTrackingUpdated && order.status === IOrderRealProductStatus.ORDER_PENDING) {
+      order.status = IOrderRealProductStatus.ORDER_COMPLETED;
+      await this.orderRepository.save(order);
+    }
+
+    // 저장
     await this.orderProductMappingRepository.save(mappings);
+  }
+
+  async getSettlement(
+    user: ILoginUserInfo,
+    getQuery: OrderRealProductGetSettlementListReqDto,
+  ): Promise<OrderRealProductGetSettlementListResDto> {
+    const { eventName, businessName, startAt, personName, endAt, take, page } = getQuery;
+
+    let queryBuilder = this.orderRepository
+      .createQueryBuilder('order')
+      .innerJoinAndSelect('order.businessUser', 'businessUser')
+      .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('order.orderRealProductMappings', 'orderRealProductMappings')
+      .leftJoinAndSelect('orderRealProductMappings.product', 'product')
+      .leftJoinAndSelect('product.brand', 'brand');
+
+    // 운영 관리자 인 경우
+    if (user.authority === IUserAuthority.OPERATION_ADMIN) {
+      queryBuilder = queryBuilder.andWhere('order.userId = :userId', { userId: user.id });
+    }
+
+    if (businessName) {
+      queryBuilder = queryBuilder.andWhere('order.businessUser.businessName LIKE :businessName', {
+        businessName: `%${businessName}%`,
+      });
+    }
+
+    if (personName) {
+      queryBuilder = queryBuilder.andWhere('order.user.personName LIKE :personName', {
+        personName: `%${personName}%`,
+      });
+    }
+
+    if (eventName) {
+      queryBuilder = queryBuilder.andWhere('order.eventName LIKE :eventName', { eventName: `%${eventName}%` });
+    }
+
+    queryBuilder = QueryBuilderDateCondition(queryBuilder, 'order', 'createdAt', startAt, endAt);
+
+    const skip = (page - 1) * take;
+    queryBuilder = queryBuilder.take(take).skip(skip);
+
+    const [orderRealProductList, totalCount] = await queryBuilder.getManyAndCount();
+    const totalPage = Math.ceil(totalCount / take);
+
+    const resultList: OrderRealProductSettleViewDto[] = [];
+
+    for (const order of orderRealProductList) {
+      for (const mapping of order.orderRealProductMappings) {
+        const product = mapping.product;
+        const brand = product.brand;
+
+        // TODO: 현재 정산 정책
+        // product.price: 상품의 원가 (1개당 원가)
+        // mapping.price: 실제 판매가 (관리자가 입력한 실제 판매가)
+        // mapping.quantity: 발송 건수 (수량)
+        // mapping.totalPrice: 판매가 * 수량 (공급금액)
+
+        // - 공급금액 = mapping.totalPrice (판매가 * 수량)
+        // - 부가세 = 공급금액의 10%
+        // - 합계 금액 = 공급금액 + 부가세
+        // - 수익액 = 공급금액 - (원가 * 수량)
+        // - 수익률 = (수익액 / 공급금액) * 100 (공급금액이 0이면 수익률은 0%)
+
+        const saleTotalPrice = mapping.totalPrice; // 총 판매가
+        const tax = Math.floor(saleTotalPrice * 0.1); // 부가세
+        const totalAmount = saleTotalPrice + tax; // 총합계
+        const profitAmount = saleTotalPrice - product.price * mapping.quantity; // 수익액
+        const profitPercent = saleTotalPrice > 0 ? Math.round((profitAmount / saleTotalPrice) * 100) : 0; // 수익률
+
+        resultList.push({
+          id: order.id,
+          userBusinessName: order.businessUser.personName,
+          classification: product.classification || null,
+          brandName: brand?.nameKorean || '',
+          userPersonName: order.user.personName,
+          eventName: order.eventName,
+          productName: product.name,
+          totalProductCount: mapping.quantity,
+          originalPrice: product.price,
+          salePrice: mapping.price,
+          saleTotalPrice,
+          tax,
+          totalAmount,
+          profitAmount,
+          profitPercent,
+        });
+      }
+    }
+
+    return {
+      list: resultList,
+      currentPage: page,
+      totalCount,
+      totalPage,
+    };
+  }
+
+  async getDeliveryCompleteReport(
+    getQuery: OrderRealProductGetDeliveryCompleteReportReqDto,
+  ): Promise<OrderRealProductGetDeliveryCompleteReportResDto> {
+    const { id } = getQuery;
+
+    const queryBuilder = this.orderRepository
+      .createQueryBuilder('order')
+      .leftJoinAndSelect('order.orderRealProductMappings', 'orderRealProductMappings')
+      .leftJoinAndSelect('orderRealProductMappings.product', 'product')
+      .leftJoinAndSelect('order.businessUser', 'businessUser')
+      .leftJoinAndSelect('order.user', 'user')
+      .where('order.id = :id', { id });
+
+    const order = await queryBuilder.getOne();
+
+    if (!order) {
+      throw new BadRequestException('존재하지 않는 주문 입니다.');
+    }
+
+    if (!order.orderRealProductMappings && order.orderRealProductMappings > 0) {
+      throw new BadRequestException('주문 상세 정보가 없습니다.');
+    }
+
+    const orderRealProductList: RealProductViewDto[] = [];
+    const publicChargeTaxList: PublicChargeTaxViewDto[] = [];
+
+    const userInfo: OrderCustomerViewDto = {
+      id: order.businessUser?.id ?? null,
+      userBusinessName: order.businessUser?.businessName ?? null,
+      userPersonPhoneNumber: order.businessUser?.personPhoneNumber ?? null,
+      userBusinessEmail: order.businessUser?.email ?? null,
+      userPersonName: order.businessUser?.personName ?? null,
+    };
+    const now = new Date();
+    const today = format(now, 'yyMMdd');
+    const fileName: string = `${order.businessUser?.businessName}_발송완료리포트_${today}`;
+
+    for (const mapping of order.orderRealProductMappings) {
+      orderRealProductList.push({
+        mappingId: mapping.id,
+        productId: mapping.product.id,
+        productName: mapping.product.name,
+        code: mapping.product.code,
+        color: mapping.product.color,
+        quantity: mapping.quantity,
+        price: mapping.price,
+        trackingNumber: mapping.trackingNumber,
+        vat: Math.floor(mapping.price * 0.1),
+        totalAmount: mapping.totalPrice,
+      });
+
+      publicChargeTaxList.push({
+        mappingId: mapping.id,
+        productId: mapping.product.id,
+        productName: mapping.product.name,
+        code: mapping.product.code,
+        quantity: mapping.quantity,
+        standardAmount: mapping.standardAmount,
+        tax: Math.floor(mapping.standardAmount * 0.1),
+        totalTaxAmount: mapping.totalTaxAmount,
+        publicChargeTaxPaymentType: mapping.publicChargeTaxPayment,
+        processMethod: mapping.processMethod,
+        isProcess: mapping.isProcess,
+      });
+    }
+
+    return {
+      id: order.id,
+      status: order.status,
+      fileName,
+      userInfo,
+      eventName: order.eventName,
+      registerAt: format(order.createdAt, DateFormatStr),
+      userBusinessName: order.businessUser ? order.businessUser.businessName : null,
+      userName: order.user ? order.user.personName : null,
+      orderRealProductList: orderRealProductList,
+      publicChargeTaxList: publicChargeTaxList,
+    };
+  }
+
+  async settleExcelDownload(user: ILoginUserInfo, getBody: OrderRealProductGetSettlementExcelDownloadReqDto) {
+    const now = new Date();
+    const nowString = format(now, 'yyyyMMdd');
+
+    const { eventName, businessName, startAt, personName, endAt } = getBody;
+
+    let queryBuilder = this.orderRepository
+      .createQueryBuilder('order')
+      .innerJoinAndSelect('order.businessUser', 'businessUser')
+      .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('order.orderRealProductMappings', 'orderRealProductMappings')
+      .leftJoinAndSelect('orderRealProductMappings.product', 'product')
+      .leftJoinAndSelect('product.brand', 'brand');
+
+    // 운영 관리자 인 경우
+    if (user.authority === IUserAuthority.OPERATION_ADMIN) {
+      queryBuilder = queryBuilder.andWhere('order.userId = :userId', { userId: user.id });
+    }
+
+    if (businessName) {
+      queryBuilder = queryBuilder.andWhere('order.businessUser.businessName LIKE :businessName', {
+        businessName: `%${businessName}%`,
+      });
+    }
+
+    if (personName) {
+      queryBuilder = queryBuilder.andWhere('order.user.personName LIKE :personName', {
+        personName: `%${personName}%`,
+      });
+    }
+
+    if (eventName) {
+      queryBuilder = queryBuilder.andWhere('order.eventName LIKE :eventName', { eventName: `%${eventName}%` });
+    }
+
+    queryBuilder = QueryBuilderDateCondition(queryBuilder, 'order', 'createdAt', startAt, endAt);
+
+    const orderRealProductList = await queryBuilder.getMany();
+
+    const resultList: OrderRealProductSettleViewDto[] = [];
+
+    for (const order of orderRealProductList) {
+      for (const mapping of order.orderRealProductMappings) {
+        const product = mapping.product;
+        const brand = product.brand;
+
+        // 현재 정산 정책
+        // product.price: 상품의 원가 (1개당 원가)
+        // mapping.price: 실제 판매가 (관리자가 입력한 실제 판매가)
+        // mapping.quantity: 발송 건수 (수량)
+        // mapping.totalPrice: 판매가 * 수량 (공급금액)
+
+        // - 공급금액 = mapping.totalPrice (판매가 * 수량)
+        // - 부가세 = 공급금액의 10%
+        // - 합계 금액 = 공급금액 + 부가세
+        // - 수익액 = 공급금액 - (원가 * 수량)
+        // - 수익률 = (수익액 / 공급금액) * 100 (공급금액이 0이면 수익률은 0%)
+
+        const saleTotalPrice = mapping.totalPrice; // 총 판매가
+        const tax = Math.floor(saleTotalPrice * 0.1); // 부가세
+        const totalAmount = saleTotalPrice + tax; // 총합계
+        const profitAmount = saleTotalPrice - product.price * mapping.quantity; // 수익액
+        const profitPercent = saleTotalPrice > 0 ? Math.round((profitAmount / saleTotalPrice) * 100) : 0; // 수익률
+
+        resultList.push({
+          id: order.id,
+          userBusinessName: order.businessUser.personName,
+          classification: product.classification || null,
+          brandName: brand?.nameKorean || '',
+          userPersonName: order.user.personName,
+          eventName: order.eventName,
+          productName: product.name,
+          totalProductCount: mapping.quantity,
+          originalPrice: product.price,
+          salePrice: mapping.price,
+          saleTotalPrice,
+          tax,
+          totalAmount,
+          profitAmount,
+          profitPercent,
+        });
+      }
+    }
+
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet(`sheet1`);
+
+    sheet.columns = [
+      { header: '번호', key: 'id', width: 10 },
+      { header: '고객사명', key: 'userBusinessName', width: 32 },
+      { header: '대분류', key: 'userBusinessName', width: 20 },
+      { header: '브랜드명', key: 'brandName', width: 20 },
+      { header: '담당자명', key: 'userPersonName', width: 20 },
+      { header: '이벤트명', key: 'eventName', width: 32 },
+      { header: '상품명', key: 'productName', width: 32 },
+      { header: '발송건수', key: 'totalProductCount', width: 32 },
+      { header: '원가', key: 'originalPrice', width: 20 },
+      { header: '판매가', key: 'salePrice', width: 20 },
+      { header: '공급금액', key: 'saleTotalPrice', width: 20 },
+      { header: '부가세', key: 'tax', width: 20 },
+      { header: '합계금액', key: 'totalAmount', width: 20 },
+      { header: '수익액', key: 'profitAmount', width: 20 },
+      { header: '수익률 ', key: 'profitPercent', width: 20 },
+    ];
+
+    let id = 1;
+    for (const result of resultList) {
+      sheet.addRow({
+        id: id,
+        userBusinessName: result.userBusinessName,
+        classification: result.classification,
+        brandName: result.brandName,
+        userPersonName: result.userPersonName,
+        eventName: result.eventName,
+        productName: result.productName,
+        totalProductCount: result.totalProductCount,
+        originalPrice: result.originalPrice,
+        salePrice: result.salePrice,
+        saleTotalPrice: result.saleTotalPrice,
+        tax: result.tax,
+        totalAmount: result.totalAmount,
+        profitAmount: result.profitAmount,
+        profitPercent: result.profitPercent,
+      });
+      id++;
+    }
+
+    const fileName = `수익률_조회_기타_정산_${nowString}.xlsx`;
+    const filePath = join(process.cwd(), '.', 'public', fileName);
+
+    await workbook.xlsx.writeFile(filePath);
+
+    return { fileName, filePath };
   }
 
   async excelDownload(user: ILoginUserInfo, getBody: OrderRealProductExcelDownloadReqBodyDto) {

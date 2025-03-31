@@ -1,7 +1,8 @@
-import { BadRequestException, Inject, Injectable } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, InternalServerErrorException } from '@nestjs/common';
 import {
   OrderReceiveAlimTalkReqDto,
   OrderReceiveEmailReqDto,
+  OrderReceiveSelectChoiceProductReqDto,
   OrderReceiveSendToMMsEmailReqDto,
 } from '../api/order.receive.req.dto';
 import { OrderReceiveAlimTalkResDto, OrderReceiveEmailResDto } from '../api/order.receive.res.dto';
@@ -19,6 +20,12 @@ import { ISmsSend } from '../../sms/interface/sms.send';
 import { defaultFromPhoneNumber } from '../../const';
 import { OrderDeliveryEmailCouponStatus } from '../../delivery/interface/order.delivery.email.coupon.status';
 import { Transactional } from 'typeorm-transactional';
+import { ProductChoiceMappingEntity } from '../../entity/product.choice.mapping.entity';
+import { IProductType } from '../../product/interface/product.type';
+import { OrderReceiveChoiceDto } from '../api/dto/order.receive.choice.dto';
+import { orderBarcodeGenerate } from '../../order/domain/order.code.generate';
+import { DeliveryCreateCouponImage } from '../../delivery/infra/delivery.create.coupon.image';
+import { OrderReceiveChoiceSmsTemplate } from '../domain/order.receive.choice.sms.template';
 
 @Injectable()
 export class OrderReceiveService {
@@ -30,9 +37,61 @@ export class OrderReceiveService {
     private orderDeliveryRepository: Repository<OrderDeliveryEntity>,
     @InjectRepository(EmailSendHistoryEntity)
     private emailSendHistoryRepository: Repository<EmailSendHistoryEntity>,
+    @InjectRepository(ProductChoiceMappingEntity)
+    private productChoiceMappingRepository: Repository<ProductChoiceMappingEntity>,
     @Inject('ISmsSend')
     private smsSend: ISmsSend,
   ) {}
+
+  async selectChoiceProduct(getBody: OrderReceiveSelectChoiceProductReqDto) {
+    const orderDecrypt = this.cryptoCipher.decryptJson(getBody.encryptKey) as OrderEncryptKey;
+
+    const orderDeliveryId = orderDecrypt.id ? orderDecrypt.id : orderDecrypt.orderDeliveryId;
+    const orderDelivery = await this.orderDeliveryRepository
+      .createQueryBuilder('orderDelivery')
+      .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
+      .innerJoinAndSelect('orderProductMapping.order', 'order')
+      .innerJoinAndSelect('orderProductMapping.product', 'product')
+      .innerJoinAndSelect('product.brand', 'brand')
+      .where('orderDelivery.id = :id', { id: orderDeliveryId })
+      .getOne();
+
+    if (!orderDelivery) {
+      throw new BadRequestException('존재하지 않는 주문 정보입니다.');
+    }
+
+    const productChoiceMapping = await this.productChoiceMappingRepository
+      .createQueryBuilder('productChoiceMapping')
+      .innerJoinAndSelect('productChoiceMapping.product', 'product')
+      .innerJoinAndSelect('product.brand', 'brand')
+      .where('productChoiceMapping.productId = :productId', {
+        productId: getBody.productId,
+      })
+      .getOne();
+    if (!productChoiceMapping) {
+      throw new InternalServerErrorException('choice product not exist');
+    }
+
+    orderDelivery.barCode = orderBarcodeGenerate();
+    orderDelivery.choiceSelectProductId = productChoiceMapping.product.id;
+
+    if (orderDelivery.barCode) {
+      const { path } = await DeliveryCreateCouponImage(
+        productChoiceMapping.product.imagePath,
+        productChoiceMapping.product.name,
+        orderDelivery.barCode,
+        productChoiceMapping.product.brand!.nameKorean,
+        productChoiceMapping.product.expireDay,
+        orderDelivery.orderProductMapping.topImagePath,
+        orderDelivery.orderProductMapping.midImagePath,
+      );
+      orderDelivery.imagePath = path;
+    }
+
+    await this.orderDeliveryRepository.save(orderDelivery);
+
+    return;
+  }
 
   async alimTalk(getQuery: OrderReceiveAlimTalkReqDto): Promise<OrderReceiveAlimTalkResDto> {
     const orderDecrypt = this.cryptoCipher.decryptJson(getQuery.encryptKey) as OrderEncryptKey;
@@ -53,6 +112,49 @@ export class OrderReceiveService {
     if (orderDelivery.deliveryTarget !== getQuery.phoneNumber) {
       throw new BadRequestException('전화번호가 일치하지 않습니다.');
     }
+
+    const choiceProductList: OrderReceiveChoiceDto[] = [];
+    let selectChoiceProduct: OrderReceiveChoiceDto | null = null;
+    // 초이스 쿠폰일 경우
+    if (orderDelivery.orderProductMapping.product.type === IProductType.CHOICE) {
+      const productChoiceMappingList = await this.productChoiceMappingRepository
+        .createQueryBuilder('productChoiceMapping')
+        .innerJoinAndSelect('productChoiceMapping.product', 'product')
+        .innerJoinAndSelect('product.brand', 'brand')
+        .where('productChoiceMapping.choiceProductId = :choiceProductId', {
+          choiceProductId: orderDelivery.orderProductMapping.product.id,
+        })
+        .getMany();
+      if (productChoiceMappingList.length === 0) {
+        throw new InternalServerErrorException("choice product's choiceProductMapping is empty");
+      }
+
+      for (const productChoiceMapping of productChoiceMappingList) {
+        choiceProductList.push({
+          id: productChoiceMapping.product.id,
+          name: productChoiceMapping.product.name,
+          imagePath: productChoiceMapping.product.imagePath,
+          price: productChoiceMapping.product.price,
+          expireDay: productChoiceMapping.product.expireDay,
+          brandNameKorean: productChoiceMapping.product.brand!.nameKorean,
+          brandNameEnglish: productChoiceMapping.product.brand!.nameEnglish,
+        });
+
+        // 선택한 초이스 상품이 있을 시
+        if (orderDelivery.choiceSelectProductId === productChoiceMapping.product.id) {
+          selectChoiceProduct = {
+            id: productChoiceMapping.product.id,
+            name: productChoiceMapping.product.name,
+            imagePath: productChoiceMapping.product.imagePath,
+            price: productChoiceMapping.product.price,
+            expireDay: productChoiceMapping.product.expireDay,
+            brandNameKorean: productChoiceMapping.product.brand!.nameKorean,
+            brandNameEnglish: productChoiceMapping.product.brand!.nameEnglish,
+          };
+        }
+      }
+    }
+
     let text = orderDelivery.orderProductMapping.order.sendContent;
 
     if (orderDelivery.orderProductMapping.order.sendTailText) {
@@ -78,6 +180,9 @@ export class OrderReceiveService {
       barCode: orderDelivery.barCode!,
       couponStatus: orderDelivery.couponStatus,
       context: text,
+      type: orderDelivery.orderProductMapping.product.type,
+      choiceProductList,
+      selectChoiceProduct,
     };
   }
 
@@ -124,10 +229,56 @@ export class OrderReceiveService {
       orderDeliveryId: orderDelivery.id,
     } as OrderSendEncryptKey);
 
+    const choiceProductList: OrderReceiveChoiceDto[] = [];
+    let selectChoiceProduct: OrderReceiveChoiceDto | null = null;
+
+    // 초이스 쿠폰일 경우
+    if (orderDelivery.orderProductMapping.product.type === IProductType.CHOICE) {
+      const productChoiceMappingList = await this.productChoiceMappingRepository
+        .createQueryBuilder('productChoiceMapping')
+        .innerJoinAndSelect('productChoiceMapping.product', 'product')
+        .innerJoinAndSelect('product.brand', 'brand')
+        .where('productChoiceMapping.choiceProductId = :choiceProductId', {
+          choiceProductId: orderDelivery.orderProductMapping.product.id,
+        })
+        .getMany();
+      if (productChoiceMappingList.length === 0) {
+        throw new InternalServerErrorException("choice product's choiceProductMapping is empty");
+      }
+
+      for (const productChoiceMapping of productChoiceMappingList) {
+        choiceProductList.push({
+          id: productChoiceMapping.product.id,
+          name: productChoiceMapping.product.name,
+          imagePath: productChoiceMapping.product.imagePath,
+          price: productChoiceMapping.product.price,
+          expireDay: productChoiceMapping.product.expireDay,
+          brandNameKorean: productChoiceMapping.product.brand!.nameKorean,
+          brandNameEnglish: productChoiceMapping.product.brand!.nameEnglish,
+        });
+
+        // 선택한 초이스 상품이 있을 시
+        if (orderDelivery.choiceSelectProductId === productChoiceMapping.product.id) {
+          selectChoiceProduct = {
+            id: productChoiceMapping.product.id,
+            name: productChoiceMapping.product.name,
+            imagePath: productChoiceMapping.product.imagePath,
+            price: productChoiceMapping.product.price,
+            expireDay: productChoiceMapping.product.expireDay,
+            brandNameKorean: productChoiceMapping.product.brand!.nameKorean,
+            brandNameEnglish: productChoiceMapping.product.brand!.nameEnglish,
+          };
+        }
+      }
+    }
+
     return {
       productName: orderDelivery.orderProductMapping.product.name,
       productImagePath: orderDelivery.orderProductMapping.product.imagePath,
       sendEncryptKey: sendEncryptKey,
+      type: orderDelivery.orderProductMapping.product.type,
+      choiceProductList,
+      selectChoiceProduct,
     };
   }
 
@@ -143,6 +294,7 @@ export class OrderReceiveService {
     const orderDelivery = await this.orderDeliveryRepository
       .createQueryBuilder('orderDelivery')
       .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
+      .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
       .innerJoinAndSelect('orderProductMapping.order', 'order')
       .innerJoinAndSelect('orderProductMapping.product', 'product')
       .where('orderDelivery.id = :id', { id: obj.orderDeliveryId })
@@ -174,12 +326,15 @@ export class OrderReceiveService {
     }
 
     const title = orderDelivery.orderProductMapping.order.sendTitle;
-    const filePathList = [];
+    const filePathList: string[] = [];
     if (orderDelivery.imagePath) {
       filePathList.push(orderDelivery.imagePath);
     }
 
-    const text = OrderReceiveSmsTemplate(orderDelivery);
+    const text =
+      orderDelivery.orderProductMapping.product.type === IProductType.CHOICE
+        ? OrderReceiveSmsTemplate(orderDelivery)
+        : OrderReceiveChoiceSmsTemplate(orderDelivery);
 
     let status = IOrderDeliveryStatus.COMPLETE;
     let emailCouponStatus = OrderDeliveryEmailCouponStatus.SEND;

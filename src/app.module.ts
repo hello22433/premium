@@ -31,7 +31,12 @@ import { OrderRealProductModule } from './order_real_product/order.real.product.
 import { OrderReceiveModule } from './order_receive/order.receive.module';
 import { OrderFromModule } from './order_from/order.from.module';
 import { UserTaskHistoryModule } from './user_task_history/user.task.history.module';
+import { UserSyncProductModule } from './user_sync_product/user.sync.product.module';
 import { ProductChoiceModule } from './product_choice/product.choice.module';
+import { SettleModule } from './settle/settle.module';
+import { CustomerServiceModule } from './customer_service/customer.service.module';
+import { OrderEventModule } from './order_event/order.event.module';
+import { ErpModule } from './erp/erp.module';
 
 @Module({
   imports: [
@@ -48,6 +53,7 @@ import { ProductChoiceModule } from './product_choice/product.choice.module';
     OrderModule,
     OrderRealProductModule,
     DeliveryModule,
+    UserSyncProductModule,
     ScheduleModule.forRoot(),
     EventEmitterModule.forRoot(),
     MailModule,
@@ -70,6 +76,10 @@ import { ProductChoiceModule } from './product_choice/product.choice.module';
     OrderFromModule,
     UserTaskHistoryModule,
     ProductChoiceModule,
+    SettleModule,
+    CustomerServiceModule,
+    OrderEventModule,
+    ErpModule,
   ],
   controllers: [AppController],
   providers: [],

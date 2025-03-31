@@ -1,0 +1,64 @@
+import { GetListResDto } from '../../common/api/dto/get.list.res.dto';
+import { SettleUserListViewDto } from './dto/settle.user.list.view.dto';
+import { ApiProperty } from '@nestjs/swagger';
+import { SettlePartnerCompanyListViewDto } from './dto/settle.partner.company.list.view.dto';
+import { SettleMobileListViewDto } from './dto/settle.mobile.list.view.dto';
+import { SettleUserDetailDto } from './dto/settle.user.detail.dto';
+import { SettleOtherViewDto } from './dto/settle.other.view.dto';
+import { ShippingStorageViewDto } from './dto/shipping.storage.view.dto';
+import { SaleTypeViewDto } from './dto/sale.type.view.dto';
+import { AdminListViewDto } from './dto/admin.list.view.dto';
+import { SettleOtherDetailDto } from './dto/settle.other.detail.dto';
+
+export class SettleGetOtherListResDto extends GetListResDto {
+  @ApiProperty({
+    description: '기타 서비스 매출 데이터 list',
+  })
+  list: SettleOtherViewDto[];
+}
+
+export class SettleGetOtherDetailResDto extends SettleOtherDetailDto {}
+
+export class SettleGetShippingStorageListResDto extends GetListResDto {
+  @ApiProperty({
+    description: '창고 데이터 list',
+  })
+  list: ShippingStorageViewDto[];
+}
+
+export class SettleGetSaleTypeListResDto extends GetListResDto {
+  @ApiProperty({
+    description: '판매유형 데이터 list',
+  })
+  list: SaleTypeViewDto[];
+}
+
+export class SettleGetAdminUserListResDto extends GetListResDto {
+  @ApiProperty({
+    description: '담당자 list',
+  })
+  list: AdminListViewDto[];
+}
+
+export class SettleGetMobileListResDto extends GetListResDto {
+  @ApiProperty({
+    description: '고객사별 정산 데이터 list',
+  })
+  list: SettleMobileListViewDto[];
+}
+
+export class SettleGetUserListResDto extends GetListResDto {
+  @ApiProperty({
+    description: '고객사별 정산 데이터 list',
+  })
+  list: SettleUserListViewDto[];
+}
+
+export class SettleGetUserDetailResDto extends SettleUserDetailDto {}
+
+export class SettleGetPartnerCompanyListResDto extends GetListResDto {
+  @ApiProperty({
+    description: '고객사별 정산 데이터 list',
+  })
+  list: SettlePartnerCompanyListViewDto[];
+}

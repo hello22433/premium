@@ -46,6 +46,31 @@ export class FileStorageS3 implements IFileStorage {
     }
   }
 
+  async uploadFile(file: Express.Multer.File): Promise<IFileUploadFileReturn> {
+    const bucketName = this.configService.getOrThrow('AWS_S3_BUCKET');
+
+    const uploadFileName = `pdf/${Date.now()}-${file.originalname}`;
+
+    const fileData: PutObjectCommandInput = {
+      Bucket: bucketName,
+      Key: uploadFileName,
+      Body: file.buffer,
+      ACL: 'public-read',
+    };
+
+    try {
+      const command = new PutObjectCommand(fileData);
+      await this.s3Client.send(command);
+
+      return {
+        url: `https://${bucketName}.s3.amazonaws.com/${uploadFileName}`,
+        originalName: file.originalname,
+      };
+    } catch (e) {
+      throw new Error(e as any);
+    }
+  }
+
   async uploadImageFileWithBuffer(
     buffer: Buffer,
     fileName: string,

@@ -18,6 +18,32 @@ export interface GiftielIssueOut {
   ];
 }
 
+export interface GiftielCheckOut {
+  ResultCode: string;
+  ResultMsg: string;
+  CouponNum: string;
+  AccountYn: 'Y' | 'C'; // Y 정상 발급, C 발급 취소
+  UseYn: 'Y' | 'N'; // Y 사용 완료 N 미사용
+  UseDate: string;
+}
+
+export interface GiftielCancelIn {
+  transactionId: string; // CouponCode
+}
+
+export interface GiftielCheckIn {
+  transactionId: string; // CouponCode
+  barCode: string; // CouponNum
+}
+
+export interface GiftielCancelIn {
+  transactionId: string; // CouponCode
+}
+
 export interface IGiftiel {
   issue(obj: GiftielIssueIn): Promise<GiftielIssueOut>;
+
+  check(obj: GiftielCheckIn): Promise<GiftielCheckOut>;
+
+  cancel(obj: GiftielCancelIn): Promise<void>;
 }

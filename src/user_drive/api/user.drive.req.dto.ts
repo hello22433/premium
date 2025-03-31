@@ -24,6 +24,7 @@ export class UserDriveCreateReqDto {
   // =================================
   @IsNotEmpty()
   @Min(1)
+  @IsNumber()
   receiverId: number;
 
   @ApiProperty({
@@ -54,6 +55,7 @@ export class UserDriveUpdateReqDto extends UserDriveCreateReqDto {
   })
   // =================================
   @IsNotEmpty()
+  @IsNumber()
   id: number;
 
   @ApiProperty({
@@ -62,4 +64,21 @@ export class UserDriveUpdateReqDto extends UserDriveCreateReqDto {
   // =================================
   @IsNotEmpty()
   status: IUserDriveStatus;
+}
+
+export class UserDriveReplyReqDto {
+  @ApiProperty({
+    description: '답변 할 user drive id',
+  })
+  // =================================
+  @IsNotEmpty()
+  @IsNumber()
+  id: number;
+
+  @ApiProperty({
+    description: '답변 내용',
+  })
+  // =================================
+  @IsNotEmpty()
+  replyContent: string;
 }

@@ -3,7 +3,14 @@ import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { firstValueFrom } from 'rxjs';
-import { GiftielIssueIn, GiftielIssueOut, IGiftiel } from '../interface/giftiel';
+import {
+  GiftielCancelIn,
+  GiftielCheckIn,
+  GiftielCheckOut,
+  GiftielIssueIn,
+  GiftielIssueOut,
+  IGiftiel,
+} from '../interface/giftiel';
 
 @Injectable()
 export class GiftielHttp implements IGiftiel {
@@ -52,6 +59,65 @@ export class GiftielHttp implements IGiftiel {
       const result = response.data;
       this.logger.log(result);
       return result as GiftielIssueOut;
+    } catch (e) {
+      this.logger.error(e);
+      this.logger.error(JSON.stringify(e));
+      throw e;
+    }
+  }
+
+  async check(obj: GiftielCheckIn): Promise<GiftielCheckOut> {
+    const url = `${this.url}/Api/Coupon/CouponInfomationJson.asmx/GetCouponCondition`;
+    const headers = {
+      'Content-Type': 'application/json',
+    };
+
+    const data = {
+      CiCode: this.ciCode,
+      CiPwd: this.ciPwd,
+      CouponCode: obj.transactionId,
+      CouponNum: obj.barCode,
+    };
+
+    try {
+      this.logger.log(url);
+      this.logger.log(data);
+      this.logger.log(headers);
+      const response = await firstValueFrom(this.httpService.post(url, data, { headers }));
+
+      const result = response.data;
+      this.logger.log(result);
+      return result as GiftielCheckOut;
+    } catch (e) {
+      this.logger.error(e);
+      this.logger.error(JSON.stringify(e));
+      throw e;
+    }
+  }
+
+  async cancel(obj: GiftielCancelIn): Promise<void> {
+    const url = `${this.url}/Api/Coupon/CouponProcess.asmx/SetCouponCancel`;
+    const headers = {
+      'Content-Type': 'application/json',
+    };
+
+    const data = {
+      CiCode: this.ciCode,
+      CiPwd: this.ciPwd,
+      CouponCode: obj.transactionId,
+      CancelState: '2',
+      Value: '2',
+    };
+
+    try {
+      this.logger.log(url);
+      this.logger.log(data);
+      this.logger.log(headers);
+      const response = await firstValueFrom(this.httpService.post(url, data, { headers }));
+
+      const result = response.data;
+      this.logger.log(result);
+      return;
     } catch (e) {
       this.logger.error(e);
       this.logger.error(JSON.stringify(e));

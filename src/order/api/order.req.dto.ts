@@ -94,6 +94,38 @@ export class OrderGetDetailReqParamDto {
   id: number;
 }
 
+export class OrderGetDeliveryCompleteReportReqDto {
+  @ApiProperty({
+    description: 'order id',
+  })
+  // ==============================================
+  @IsNumber()
+  @Type(() => Number)
+  id: number;
+}
+
+export class OrderGetDeliveryCompleteReportPdfReqDto {
+  @ApiProperty({
+    description: 'order id',
+  })
+  // ==============================================
+  @IsNumber()
+  @IsNotEmpty()
+  id: number;
+}
+
+export class OrderGetOrderCompleteReportReqDto extends OrderGetDeliveryCompleteReportReqDto {}
+
+export class OrderGetOrderCompleteReportPdfReqDto {
+  @ApiProperty({
+    description: 'order id',
+  })
+  // ==============================================
+  @IsNumber()
+  @IsNotEmpty()
+  id: number;
+}
+
 export class OrderGetSettleReqDto extends PagingReqDto {
   @ApiProperty({
     description: 'order id',

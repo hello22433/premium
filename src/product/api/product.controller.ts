@@ -30,6 +30,7 @@ import {
   ProductGetListReqQueryDto,
   ProductGetUpdateHistoryReqParamDto,
   ProductGetUpdateHistoryReqQueryDto,
+  ProductSetLikeReqDto,
   ProductSsgReqQueryDto,
   ProductUpdatePartialReqDto,
 } from './product.req.dto';
@@ -57,6 +58,7 @@ export class ProductController {
 
   @ApiOperation({
     summary: '상품 리스트 조회하기 API',
+    description: '고객사 관리자인 경우(CORPORATE_ADMIN) 연동되어 있는 상품들만 조회 가능합니다.',
   })
   @ApiOkResponse({
     type: ProductGetListResDto,
@@ -64,8 +66,8 @@ export class ProductController {
   })
   // =========================================
   @Get('/product/list')
-  getList(@Query() getQuery: ProductGetListReqQueryDto) {
-    return this.productService.getList(getQuery);
+  getList(@User() user: ILoginUserInfo, @Query() getQuery: ProductGetListReqQueryDto) {
+    return this.productService.getList(user, getQuery);
   }
 
   @ApiOperation({
@@ -203,5 +205,18 @@ export class ProductController {
   @UseInterceptors(FileInterceptor('file'))
   excelUpload(@UploadedFile() file: Express.Multer.File) {
     return this.productService.excelUpload(file);
+  }
+
+  @ApiOperation({
+    summary: '상품 찜하기 API',
+  })
+  @ApiOkResponse({
+    type: '',
+    description: '',
+  })
+  // =========================================
+  @Post('/product/like')
+  setLike(@User() user: ILoginUserInfo, @Body() getBody: ProductSetLikeReqDto) {
+    return this.productService.setLike(user, getBody);
   }
 }

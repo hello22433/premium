@@ -1,7 +1,8 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
+import { DeliveryTrackingStatus } from '../domain/delivery.tracking.status';
 
 type TrackLastEventResponse = {
   data: {
@@ -9,7 +10,7 @@ type TrackLastEventResponse = {
       lastEvent: {
         time: string;
         status: {
-          code: string;
+          code: DeliveryTrackingStatus;
         };
       };
     };
@@ -32,7 +33,7 @@ type TrackDetailResponse = {
           node: {
             time: string;
             status: {
-              code: string;
+              code: DeliveryTrackingStatus;
               name: string;
             };
             description: string;
@@ -48,6 +49,8 @@ export class DeliveryTrackHttp {
   private readonly trackerClientId: string;
   private readonly trackerClientSecret: string;
   private readonly headers: Record<string, string>;
+
+  private readonly logger = new Logger('TRACKER');
 
   constructor(
     private httpService: HttpService,
@@ -80,14 +83,23 @@ export class DeliveryTrackHttp {
       }
     `;
 
-    const response$ = this.httpService.post<TrackLastEventResponse>(
-      'https://apis.tracker.delivery/graphql',
-      { query, variables: { carrierId, trackingNumber } },
-      { headers: this.headers },
-    );
+    try {
+      const response$ = this.httpService.post<TrackLastEventResponse>(
+        'https://apis.tracker.delivery/graphql',
+        { query, variables: { carrierId, trackingNumber } },
+        { headers: this.headers },
+      );
 
-    const response = await firstValueFrom(response$);
-    return response.data;
+      const response = await firstValueFrom(response$);
+
+      if ((response.data as any).errors) {
+        this.logger.error(`배송 조회중 에러 발생 : ${JSON.stringify((response.data as any).errors)}`);
+      }
+      return response.data;
+    } catch (error) {
+      this.logger.error(`배송 API 호출 도중 에러 발생 : ${error.message}`);
+      throw error;
+    }
   }
 
   /**
@@ -123,13 +135,23 @@ export class DeliveryTrackHttp {
     }
   `;
 
-    const response$ = this.httpService.post<TrackDetailResponse>(
-      'https://apis.tracker.delivery/graphql',
-      { query, variables: { carrierId, trackingNumber } },
-      { headers: this.headers },
-    );
+    try {
+      const response$ = this.httpService.post<TrackDetailResponse>(
+        'https://apis.tracker.delivery/graphql',
+        { query, variables: { carrierId, trackingNumber } },
+        { headers: this.headers },
+      );
 
-    const response = await firstValueFrom(response$);
-    return response.data;
+      const response = await firstValueFrom(response$);
+
+      if ((response.data as any).errors) {
+        this.logger.error(`배송 조회중 에러 발생 : ${JSON.stringify((response.data as any).errors)}`);
+      }
+
+      return response.data;
+    } catch (error) {
+      this.logger.error(`배송 API 호출 도중 에러 발생 : ${error.message}`);
+      throw error;
+    }
   }
 }

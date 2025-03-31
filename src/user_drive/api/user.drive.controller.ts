@@ -8,9 +8,11 @@ import {
   UserDriveCreateReqDto,
   UserDriveGetDetailReqParamDto,
   UserDriveGetListReqDto,
+  UserDriveReplyReqDto,
   UserDriveUpdateReqDto,
 } from './user.drive.req.dto';
 import { UserDriveGetDetailResDto, UserDriveGetListResDto } from './user.drive.res.dto';
+import { AuthUserSuperAndOperationAdminGuard } from '../../auth/api/auth.user.super-operation-admin.guard';
 
 @ApiTags('user-drive')
 @ApiBearerAuth()
@@ -76,5 +78,22 @@ export class UserDriveController {
   @Put('/user-drive')
   update(@User() user: ILoginUserInfo, @Body() getBody: UserDriveUpdateReqDto) {
     return this.userDriveService.update(user, getBody);
+  }
+
+  @ApiOperation({
+    summary: '문서 답변 API',
+  })
+  @ApiBearerAuth()
+  @ApiOkResponse({
+    description: '문서 답변에 성공한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '문서가 존재하지 않는 경우',
+  })
+  // ===================================================
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
+  @Put('/user-drive/reply')
+  reply(@User() user: ILoginUserInfo, @Body() getBody: UserDriveReplyReqDto) {
+    return this.userDriveService.reply(user, getBody);
   }
 }

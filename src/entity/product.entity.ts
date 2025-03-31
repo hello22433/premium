@@ -7,6 +7,7 @@ import { BrandEntity } from './brand.entity';
 import { IProductUseStatus } from '../product/interface/product.status';
 import { IRealProductStatus } from '../product/interface/real.product.status';
 import { ProductChoiceMappingEntity } from './product.choice.mapping.entity';
+import { ProductLikeEntity } from './product.like.entity';
 
 @Entity('product')
 export class ProductEntity extends BaseEntity {
@@ -94,4 +95,9 @@ export class ProductEntity extends BaseEntity {
     createForeignKeyConstraints: false,
   })
   productChoiceMappings: ProductChoiceMappingEntity[];
+
+  @OneToMany(() => ProductLikeEntity, (productLike) => productLike.product, {
+    createForeignKeyConstraints: false,
+  })
+  productLikes?: ProductLikeEntity[];
 }

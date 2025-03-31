@@ -2,6 +2,7 @@ import { GetListResDto } from '../../common/api/dto/get.list.res.dto';
 import { ApiProperty } from '@nestjs/swagger';
 import { QnaViewDto } from './dto/qna.view.dto';
 import { QnaDetailDto } from './dto/qna.detail.dto';
+import { QnaDashboardViewDto } from './dto/qna.dashboard.view.dto';
 
 export class QnaGetListResDto extends GetListResDto {
   @ApiProperty({
@@ -11,3 +12,4 @@ export class QnaGetListResDto extends GetListResDto {
 }
 
 export class QnaGetDetailResDto extends QnaDetailDto {}
+export class QnaGetMyQnaHistoryResDto extends QnaDashboardViewDto {}

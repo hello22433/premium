@@ -61,4 +61,9 @@ export class UserDriveDetailDto {
     description: '파일 url list',
   })
   filePathList: string[];
+
+  @ApiProperty({
+    description: '답변 내용',
+  })
+  replyContent: string | null;
 }

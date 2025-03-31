@@ -1,9 +1,16 @@
 import { ApiBadRequestResponse, ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { Body, Controller, Get, Post, Put, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Logger, Post, Put, Query, Res, UseGuards } from '@nestjs/common';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
 import { SsgEventService } from '../application/ssg.event.service';
 import { SsgEventGetListResDto } from './ssg.event.res.dto';
-import { SsgEventCreateReqDto, SsgEventGetListReqDto, SsgEventUpdateAmountReqDto } from './ssg.event.req.dto';
+import {
+  SsgEventCreateReqDto,
+  SsgEventExcelDownloadReqDto,
+  SsgEventGetListReqDto,
+  SsgEventUpdateAmountReqDto,
+} from './ssg.event.req.dto';
+import * as fs from 'fs';
+import { Response } from 'express';
 
 @ApiTags('ssg-event')
 @ApiBearerAuth()
@@ -11,6 +18,8 @@ import { SsgEventCreateReqDto, SsgEventGetListReqDto, SsgEventUpdateAmountReqDto
 @UseGuards(AuthUserAuthorizationGuard)
 export class SsgEventController {
   constructor(private ssgEventService: SsgEventService) {}
+
+  private logger = new Logger('SSG_EVENT');
 
   @ApiOperation({
     summary: '신세계 행사 리스트 조회 API',
@@ -24,6 +33,38 @@ export class SsgEventController {
   @Get('/ssg-event/list')
   getList(@Query() getQuery: SsgEventGetListReqDto) {
     return this.ssgEventService.getList(getQuery);
+  }
+
+  @ApiOperation({
+    summary: '신세계 행사 엑셀다운로드 API',
+  })
+  @ApiOkResponse({
+    type: '',
+    description: '성공적으로 다운로드한 경우',
+  })
+  // =====================================
+  @Post('/ssg-event/excel-download')
+  async excelDownload(@Body() getBody: SsgEventExcelDownloadReqDto, @Res() res: Response) {
+    try {
+      const { fileName, filePath } = await this.ssgEventService.excelDownload(getBody);
+
+      const encodedFileName = encodeURIComponent(fileName);
+      res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
+      res.setHeader('Content-Disposition', `attachment; filename=${encodedFileName}`);
+
+      const fileStream = fs.createReadStream(filePath);
+      fileStream.pipe(res);
+
+      fileStream.on('close', async () => {
+        fs.unlink(filePath, (unlinkErr) => {
+          if (unlinkErr) {
+            this.logger.error(`파일 삭제 실패 ${unlinkErr}`);
+          }
+        });
+      });
+    } catch (e) {
+      throw e;
+    }
   }
 
   @ApiOperation({

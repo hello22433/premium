@@ -3,7 +3,14 @@ import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
-import { GalaxiaIssueIn, GalaxiaIssueOut, IGalaxia } from '../interface/galaxia';
+import {
+  GalaxiaCancelIn,
+  GalaxiaCheckIn,
+  GalaxiaCheckOut,
+  GalaxiaIssueIn,
+  GalaxiaIssueOut,
+  IGalaxia,
+} from '../interface/galaxia';
 import { Parser } from 'xml2js';
 
 @Injectable()
@@ -69,6 +76,64 @@ export class GalaxiaHttp implements IGalaxia {
 
       // this.logger.log(resultToJson);
       return result as GalaxiaIssueOut;
+    } catch (e) {
+      this.logger.error(e);
+      this.logger.error(JSON.stringify(e));
+      throw e;
+    }
+  }
+
+  async check(obj: GalaxiaCheckIn): Promise<GalaxiaCheckOut> {
+    const url = `${this.url}/interface/mkt/${this.companyCode}/${obj.giftKind}/${this.cryptoCipher.encrypt(obj.trId, this.encKey, this.encIv, this.cryptoAlgorithm)}?paramKind=1`;
+    const headers = {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      Accept: 'application/json',
+    };
+
+    try {
+      this.logger.log(url);
+      this.logger.log(headers);
+
+      const response = await firstValueFrom(this.httpService.get(`${url}`, { headers }));
+
+      this.logger.log(response.data);
+      const result = response.data as GalaxiaCheckOut;
+
+      // const resultToJson = (await this.parser().parseStringPromise(response.data)) as unknown as GalaxiaIssueOut;
+
+      this.logger.log(JSON.stringify(result));
+      return result as GalaxiaCheckOut;
+    } catch (e) {
+      this.logger.error(e);
+      this.logger.error(JSON.stringify(e));
+      throw e;
+    }
+  }
+
+  async cancel(obj: GalaxiaCancelIn): Promise<void> {
+    const url = `${this.url}/interface/mkt/${this.companyCode}/${obj.giftKind}/${this.cryptoCipher.encrypt(obj.trId, this.encKey, this.encIv, this.cryptoAlgorithm)}/cancel`;
+    const headers = {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      Accept: 'application/json',
+    };
+    const data = new URLSearchParams({
+      'order-number': obj.transactionId, // 거래 요청 번호
+    });
+
+    try {
+      const sendUrl = `${url}?${data.toString()}&issueDay=${obj.sendRequestAt}`;
+      this.logger.log(sendUrl);
+      this.logger.log(headers);
+
+      const response = await firstValueFrom(this.httpService.put(`${sendUrl}`, {}, { headers }));
+
+      this.logger.log(response.data);
+      const result = response.data as GalaxiaIssueOut;
+
+      // const resultToJson = (await this.parser().parseStringPromise(response.data)) as unknown as GalaxiaIssueOut;
+
+      this.logger.log(JSON.stringify(result));
+      // return result as GalaxiaIssueOut;
     } catch (e) {
       this.logger.error(e);
       this.logger.error(JSON.stringify(e));

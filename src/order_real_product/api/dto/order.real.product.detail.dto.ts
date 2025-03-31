@@ -1,6 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { RealProductViewDto } from './real.product.view.dto';
 import { PublicChargeTaxViewDto } from './public.charge.tax.view.dto';
+import { IOrderRealProductStatus } from '../../interface/order.real.product.status';
 
 export class OrderRealProductDetailDto {
   @ApiProperty({
@@ -27,6 +28,18 @@ export class OrderRealProductDetailDto {
     description: '이벤트 명',
   })
   eventName: string;
+
+  @ApiProperty({
+    description:
+      '주문 상태 <br>' +
+      '  ORDER_PENDING : 확정 대기<br>' +
+      '  ORDER_CONFIRM : 주문 확정 <br>' +
+      '  STORAGE_COMPLETED : 입고 완료<br>' +
+      '  DELIVERY_PROGRESS : 배송중<br>' +
+      '  DELIVERY_COMPLETED : 배송 완료<br>' +
+      '  ORDER_CANCELED : 주문 취소',
+  })
+  status: IOrderRealProductStatus;
 
   @ApiProperty({
     description: '주문 상품 내역 list',
