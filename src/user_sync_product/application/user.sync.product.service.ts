@@ -17,7 +17,6 @@ import { format } from 'date-fns';
 import { DateFormatStr } from '../../common/domain/date.format.str';
 import { UserSyncProductEventMappingEntity } from '../../entity/user.sync.product.event.mapping.entity';
 import { UserEntity } from '../../entity/user.entity';
-import { IUserAuthority } from '../../user/interface/user.authority';
 import { ProductEntity } from '../../entity/product.entity';
 import { IProductUseStatus } from '../../product/interface/product.status';
 
@@ -136,23 +135,23 @@ export class UserSyncProductService {
   }
 
   async registerEvent(getBody: UserSyncProductRegisterEventReqDto): Promise<void> {
-    const { userId, adminUserId, name, code, status, phone, email } = getBody;
+    const { userId, name, code, userPersonName, status, phone, email } = getBody;
 
-    const adminUser = await this.userRepository.findOne({
-      where: {
-        id: adminUserId,
-        authority: IUserAuthority.SUPER_ADMIN,
-      },
-    });
-
-    if (!adminUser) {
-      throw new BadRequestException('존재하지 않는 최고 관리자입니다.');
-    }
+    // const adminUser = await this.userRepository.findOne({
+    //   where: {
+    //     id: adminUserId,
+    //     authority: IUserAuthority.SUPER_ADMIN,
+    //   },
+    // });
+    //
+    // if (!adminUser) {
+    //   throw new BadRequestException('존재하지 않는 최고 관리자입니다.');
+    // }
 
     const businessUser = await this.userRepository.findOne({
       where: {
         id: userId,
-        authority: IUserAuthority.CORPORATE_ADMIN,
+        // authority: IUserAuthority.CORPORATE_ADMIN,
       },
     });
 
@@ -166,7 +165,8 @@ export class UserSyncProductService {
       phone,
       email,
       code,
-      adminUserId: adminUserId,
+      personName: userPersonName,
+      // adminUserId: adminUserId,
       businessUserId: userId,
     });
   }

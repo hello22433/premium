@@ -104,9 +104,12 @@ export class UserEntity extends BaseEntity {
   @Column({ default: 0, comment: '잔액' })
   balance: number;
 
-  @Column({ type: 'varchar', length: 100, default: 'S+', comment: '고객사등급' }) // TODO
+  @Column({ type: 'varchar', length: 100, default: 'S+', comment: '고객사등급' })
   businessGrade: string;
 
+  @Column({ type: 'varchar', nullable: true, length: 20, comment: '발신 번호' })
+  fromPhoneNumber: string | null;
+
   @OneToMany(() => UserDiscountEntity, (userDisCount) => userDisCount.user)
-  userDiscount: UserDiscountEntity[];
+  userDiscounts: UserDiscountEntity[];
 }

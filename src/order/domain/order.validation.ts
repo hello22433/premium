@@ -1,16 +1,18 @@
 import { OrderEntity } from '../../entity/order.entity';
 import { BadRequestException } from '@nestjs/common';
 import { IOrderSendMethod } from '../interface/order.send.method';
+import { addMinutes } from 'date-fns';
 
 export const OrderValidation = (order: OrderEntity) => {
-  const now = new Date();
+  let now = new Date();
+  now = addMinutes(now, 30);
 
   if (!order.eventName) {
     throw new BadRequestException('이벤트 명이 존재하지 않습니다.');
   }
 
   if (order.sendRequestAt < now) {
-    throw new BadRequestException('발송 요청 시각이 올바르지 않습니다.');
+    throw new BadRequestException('발송 요청 시각이 현재시각 보다 30분 전으로 입력 바랍니다.');
   }
 
   if (!order.sendTitle) {
@@ -24,6 +26,10 @@ export const OrderValidation = (order: OrderEntity) => {
   for (const orderProduct of order.orderProductMappings!) {
     if (orderProduct.amount !== orderProduct.orderDeliveries.length) {
       throw new BadRequestException('상품 전송과 전송 주체의 개수가 같지 않습니다.');
+    }
+
+    if (orderProduct.product.useStatus !== 'USE') {
+      throw new BadRequestException('사용할 수 없는 상품이 존재합니다.');
     }
   }
 

@@ -24,6 +24,17 @@ import {
 } from '../api/product.choice.res.dto';
 import { QueryBuilderDateCondition } from '../../common/infra/query.builder.date.condition';
 import { ProductChoiceViewDto } from '../api/dto/product.choice.view.dto';
+import {
+  choiceProductBrandId,
+  choiceProductCategory,
+  choiceProductClassification,
+  choiceProductCouponMethod,
+  choiceProductExpireDay,
+  choiceProductPartnerCompanyCode,
+  choiceProductPartnerCompanyId,
+  choiceProductSettleMethod,
+  choiceProductSettlePercent,
+} from '../../const';
 
 @Injectable()
 export class ProductChoiceService {
@@ -225,24 +236,27 @@ export class ProductChoiceService {
     const prevCodeBrand = prevProduct?.code ?? null;
     const newCode = CreateCode(prevCodeBrand, ProductChoicePrefixCode, ProductDigitNumber);
 
-    const insertedProduct = await this.productRepository.insert({
+    const insertedProduct = this.productRepository.create({
       type: IProductType.CHOICE,
       code: newCode,
       name,
       imagePath,
-      partnerCompanyCode: '', // TODO:
-      partnerCompanyId: 16, // TODO:
-      brandId: 59, // TODO:
+      partnerCompanyCode: choiceProductPartnerCompanyCode,
+      partnerCompanyId: choiceProductPartnerCompanyId,
+      brandId: choiceProductBrandId,
       price: initialPrice,
-      expireDay: 60, // TODO:
-      category: 'category', // TODO:
-      classification: 'classficiation', // TODO:
-      settlePercent: 30, // TODO:
-      settleMethod: 'PER_EXCHANGE', // TODO:
+      expireDay: choiceProductExpireDay,
+      category: choiceProductCategory,
+      classification: choiceProductClassification,
+      settlePercent: choiceProductSettlePercent,
+      settleMethod: choiceProductSettleMethod,
+      couponMethod: choiceProductCouponMethod,
       useStatus: useStatus,
     });
 
-    const newChoiceProductId = insertedProduct.identifiers[0].id;
+    const newChoiceProduct = await this.productRepository.save(insertedProduct);
+
+    const newChoiceProductId = newChoiceProduct.id;
 
     const productChoiceMappings = productIdList.map((productId) => {
       return this.productChoiceMappingRepository.create({

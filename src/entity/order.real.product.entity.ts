@@ -9,7 +9,7 @@ export class OrderRealProductEntity extends BaseEntity {
   @PrimaryGeneratedColumn()
   id: number;
 
-  @Column({ comment: 'FK) 등록한 담당자 user.id' })
+  @Column({ comment: 'FK) 등록한 관리자 user.id' })
   userId: number;
 
   @Column({ nullable: true, comment: 'FK) 고객사 user id ' })
@@ -42,7 +42,7 @@ export class OrderRealProductEntity extends BaseEntity {
   @JoinColumn({ name: 'business_user_id' })
   businessUser: UserEntity;
 
-  // 담당자 user
+  // 등록한 user
   @ManyToOne(() => UserEntity, { createForeignKeyConstraints: false })
   @JoinColumn({ name: 'user_id' })
   user: UserEntity;

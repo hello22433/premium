@@ -12,8 +12,8 @@ export class UserSyncProductEventEntity extends BaseEntity {
   @Column({ comment: 'FK) 고객사 user.id' })
   businessUserId: number;
 
-  @Column({ comment: 'FK) 담당자 user.id(최고 관리자)' })
-  adminUserId: number;
+  @Column({ comment: '담당자 이름' })
+  personName: string;
 
   @Column({ comment: '연동 이벤트 명' })
   name: string;

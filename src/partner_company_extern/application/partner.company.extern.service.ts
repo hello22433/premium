@@ -15,7 +15,7 @@ import { orderBarcodeGenerate } from '../../order/domain/order.code.generate';
 import { SsgEventEntity } from '../../entity/ssg.event.entity';
 import { OrderEntity } from '../../entity/order.entity';
 import { SsgTransactionId } from '../domain/ssg.transaction.id';
-import { ssgIssueUserName } from '../../const';
+import { defaultFromPhoneNumber, ssgIssueUserName } from '../../const';
 import { smsSsgTemplate } from '../../delivery/domain/sms.ssg.template';
 import { addDays, format } from 'date-fns';
 
@@ -169,7 +169,8 @@ export class PartnerCompanyExternService {
           userAmount: '' + orderDelivery.orderProductMapping.product.price,
           msgContent: textForSsg,
           trId: orderDelivery.ssgTransactionId,
-          callBack: order.fromPhoneNumber!,
+          callBack:
+            order.fromPhoneNumber === '' || !order.fromPhoneNumber ? defaultFromPhoneNumber : order.fromPhoneNumber,
         });
         context = JSON.stringify(response);
       }

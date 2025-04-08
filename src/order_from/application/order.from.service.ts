@@ -7,6 +7,7 @@ import { OrderFromGetPhoneListResDto } from '../api/order.from.res.dto';
 import { OrderFromCreateEmailReqDto, OrderFromCreatePhoneReqDto } from '../api/order.from.req.dto';
 import { IMailSend } from '../../mail/interface/mail-send';
 import { ConfigService } from '@nestjs/config';
+import { ILoginUserInfo } from '../../auth/interface/login.user';
 
 @Injectable()
 export class OrderFromService {
@@ -18,10 +19,11 @@ export class OrderFromService {
     private configService: ConfigService,
   ) {}
 
-  async getPhoneList(): Promise<OrderFromGetPhoneListResDto> {
+  async getPhoneList(user: ILoginUserInfo): Promise<OrderFromGetPhoneListResDto> {
     const orderFromDefinitionList = await this.orderFromDefinitionRepository.find({
       where: {
         type: OrderFromDefinitionType.PHONE,
+        userId: user.id,
       },
     });
 
@@ -35,7 +37,7 @@ export class OrderFromService {
     return { list: phoneList };
   }
 
-  async createPhone(getBody: OrderFromCreatePhoneReqDto) {
+  async createPhone(user: ILoginUserInfo, getBody: OrderFromCreatePhoneReqDto) {
     const { from } = getBody;
 
     const existFromPhone = await this.orderFromDefinitionRepository.existsBy({
@@ -50,6 +52,7 @@ export class OrderFromService {
     await this.orderFromDefinitionRepository.insert({
       from,
       type: OrderFromDefinitionType.PHONE,
+      userId: user.id,
     });
   }
 

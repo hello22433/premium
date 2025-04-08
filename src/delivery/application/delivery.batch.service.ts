@@ -140,15 +140,11 @@ export class DeliveryBatchService {
           console.log(JSON.stringify(responseData));
           deliveryHistory.context = JSON.stringify(responseData);
           deliveryHistory.etcContext = JSON.stringify(report);
-          // TODO 알림톡 에러 검증
+
           if (report.code !== 'A000') {
             throw new Error('AlimTalk Send Error');
           }
-          // if (report.code !== 'A000' || report.data.report.length === 0) {
-          //   throw new Error('AlimTalk Send Error');
-          // }
-          // deliveryHistory.context = JSON.stringify(responseData);
-          // deliveryHistory.etcContext = JSON.stringify(report);
+
           orderDelivery.status = IOrderDeliveryStatus.COMPLETE;
         } catch (e) {
           deliveryHistory.context = JSON.stringify(e);

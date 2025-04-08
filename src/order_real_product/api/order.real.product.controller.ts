@@ -64,7 +64,7 @@ export class OrderRealProductController {
   }
 
   @ApiOperation({
-    summary: ' 담당자 리스트 조회 API',
+    summary: '담당자 리스트 조회 API',
   })
   @ApiOkResponse({
     type: OrderRealProductGetAdminListResDto,

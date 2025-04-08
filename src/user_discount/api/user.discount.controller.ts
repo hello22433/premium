@@ -1,9 +1,9 @@
 import { ApiBadRequestResponse, ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { Body, Controller, Get, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Post, Query, UseGuards } from '@nestjs/common';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
 import { UserDiscountService } from '../application/user.discount.service';
 import { UserDiscountGetListResDto } from './user.discount.res.dto';
-import { UserDiscountCreateReqDto, UserDiscountGetListReqDto } from './user.discount.req.dto';
+import { UserDiscountCreateReqDto, UserDiscountDeleteReqDto, UserDiscountGetListReqDto } from './user.discount.req.dto';
 
 @ApiTags('user-management')
 @Controller('')
@@ -47,5 +47,22 @@ export class UserDiscountController {
   @Post('/user-management/discount')
   create(@Body() getBody: UserDiscountCreateReqDto) {
     return this.userDiscountService.create(getBody);
+  }
+
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: '할인 옵션 삭제 API',
+  })
+  @ApiOkResponse({
+    description: '성공적으로 삭제한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '할인 옵션이 존재하지 않는 경우',
+  })
+  // ====================================
+  @UseGuards(AuthUserAuthorizationGuard)
+  @Delete('/user-management/discount')
+  delete(@Body() getBody: UserDiscountDeleteReqDto) {
+    return this.userDiscountService.delete(getBody);
   }
 }

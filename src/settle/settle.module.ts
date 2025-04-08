@@ -10,6 +10,7 @@ import { OtherServiceSaleProductMappingEntity } from '../entity/other.service.sa
 import { ShippingStorageEntity } from '../entity/shipping.storage.entity';
 import { OtherServiceSaleTypeEntity } from '../entity/other.service.sale.type.entity';
 import { UserEntity } from '../entity/user.entity';
+import { UserDiscountEntity } from '../entity/user.discount.entity';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { UserEntity } from '../entity/user.entity';
       OtherServiceSaleProductMappingEntity,
       OtherServiceSaleTypeEntity,
       ShippingStorageEntity,
+      UserDiscountEntity,
       UserEntity,
     ]),
   ],

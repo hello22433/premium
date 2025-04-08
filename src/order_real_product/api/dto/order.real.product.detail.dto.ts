@@ -20,9 +20,9 @@ export class OrderRealProductDetailDto {
   userBusinessName: string | null;
 
   @ApiProperty({
-    description: '담당자 이름',
+    description: '(고객사) 담당자 이름',
   })
-  userName: string | null;
+  userPersonName: string | null;
 
   @ApiProperty({
     description: '이벤트 명',

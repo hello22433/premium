@@ -17,7 +17,7 @@ export class DeliveryBatchSchedule implements OnApplicationBootstrap {
   private logger = new Logger('BATCH');
 
   // 5분 마다 실행
-  // @Cron('0 */5 * * * *')
+  @Cron('0 */5 * * * *')
   async issueAndSend() {
     try {
       await this.deliveryBatchService.issueAndSend();
@@ -27,6 +27,7 @@ export class DeliveryBatchSchedule implements OnApplicationBootstrap {
       this.logger.error(e);
     }
   }
+
   // 5분마다 실행
   @Cron('0 */5 * * * *')
   async handleDeliveryStatusUpdate() {

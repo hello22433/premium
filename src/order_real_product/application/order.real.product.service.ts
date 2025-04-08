@@ -73,7 +73,8 @@ export class OrderRealProductService {
       .innerJoinAndSelect('order.businessUser', 'businessUser')
       .innerJoinAndSelect('order.user', 'user')
       .leftJoinAndSelect('order.orderRealProductMappings', 'orderRealProductMappings')
-      .leftJoinAndSelect('orderRealProductMappings.product', 'product');
+      .leftJoinAndSelect('orderRealProductMappings.product', 'product')
+      .orderBy('order.id', 'DESC');
 
     // 주문 관리 일 경우(최고관리자가 아닐 경우 자신이 등록한 주문만 조회)
     if (section === IOrderSection.ORDER) {
@@ -137,7 +138,7 @@ export class OrderRealProductService {
         id: order.id,
         registerAt: format(order.createdAt, DateFormatStr),
         userBusinessName: order.businessUser!.businessName,
-        userPersonName: order.user!.personName,
+        userPersonName: order.businessUser!.personName,
         eventName: order.eventName,
         productName,
         totalProductCount,
@@ -203,7 +204,7 @@ export class OrderRealProductService {
       standardAmount,
       price,
       userId,
-      adminUserId,
+      // adminUserId,
       eventName,
     } = getBody;
 
@@ -217,15 +218,16 @@ export class OrderRealProductService {
       throw new BadRequestException('존재하지 않는 고객사 입니다.');
     }
 
-    const adminUser = await this.userRepository.findOne({
-      where: {
-        id: adminUserId,
-      },
-    });
-
-    if (!adminUser) {
-      throw new BadRequestException('존재하지 않는 담당자 입니다');
-    }
+    // 담당자 기획 주석
+    // const adminUser = await this.userRepository.findOne({
+    //   where: {
+    //     id: adminUserId,
+    //   },
+    // });
+    //
+    // if (!adminUser) {
+    //   throw new BadRequestException('존재하지 않는 담당자 입니다');
+    // }
 
     const realProductIdList = orderRealProductList.map((product) => product.productId);
     const uniqueProductId = new Set(realProductIdList);
@@ -249,7 +251,7 @@ export class OrderRealProductService {
     }
 
     const savedOrder = this.orderRepository.create({
-      userId: adminUser.id, // 관리자 id
+      userId: user.id, // 로그인한 관리자 user id
       businessUserId: userBusiness.id, // 고객사 id
       eventName: eventName,
       status: IOrderRealProductStatus.ORDER_PENDING,
@@ -345,7 +347,7 @@ export class OrderRealProductService {
       status: order.status,
       registerAt: format(order.createdAt, DateFormatStr),
       userBusinessName: order.businessUser ? order.businessUser.businessName : null,
-      userName: order.user ? order.user.personName : null,
+      userPersonName: order.businessUser ? order.businessUser.personName : null,
       eventName: order.eventName,
       orderRealProductList: orderRealProductList,
       publicChargeTaxList: publicChargeTaxList,
@@ -449,7 +451,7 @@ export class OrderRealProductService {
         id: order.id,
         registerAt: format(order.createdAt, DateDateFormatStr),
         userBusinessName: order.businessUser!.businessName || null,
-        userPersonName: order.user!.personName || null,
+        userPersonName: order.businessUser!.personName || null,
         eventName: order.eventName,
         productName: mapping.product!.name || '',
         receiver: order.businessUser!.personName || null,
@@ -670,7 +672,7 @@ export class OrderRealProductService {
           userBusinessName: order.businessUser.personName,
           classification: product.classification || null,
           brandName: brand?.nameKorean || '',
-          userPersonName: order.user.personName,
+          userPersonName: order.businessUser.personName,
           eventName: order.eventName,
           productName: product.name,
           totalProductCount: mapping.quantity,
@@ -767,7 +769,7 @@ export class OrderRealProductService {
       eventName: order.eventName,
       registerAt: format(order.createdAt, DateFormatStr),
       userBusinessName: order.businessUser ? order.businessUser.businessName : null,
-      userName: order.user ? order.user.personName : null,
+      userPersonName: order.businessUser ? order.businessUser.personName : null,
       orderRealProductList: orderRealProductList,
       publicChargeTaxList: publicChargeTaxList,
     };
@@ -842,7 +844,7 @@ export class OrderRealProductService {
           userBusinessName: order.businessUser.personName,
           classification: product.classification || null,
           brandName: brand?.nameKorean || '',
-          userPersonName: order.user.personName,
+          userPersonName: order.businessUser.personName,
           eventName: order.eventName,
           productName: product.name,
           totalProductCount: mapping.quantity,
@@ -998,8 +1000,8 @@ export class OrderRealProductService {
       sheet.addRow({
         id: id,
         registerAt: format(order.createdAt, 'yyyy-MM-dd HH:mm'),
-        userBusinessName: order.user!.businessName,
-        userName: order.user!.personName,
+        userBusinessName: order.businessUser!.businessName,
+        userName: order.businessUser!.personName,
         eventName: order.eventName,
         productName: productName,
         totalAmount: totalAmount,

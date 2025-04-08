@@ -610,9 +610,12 @@ export class OrderService {
 
     const orderProductIds = list.map((item) => item.id);
 
-    const existingOrderProducts = await this.orderProductMappingRepository.find({
-      where: { id: In(orderProductIds) },
-    });
+    const existingOrderProducts = await this.orderProductMappingRepository
+      .createQueryBuilder('orderProductMapping')
+      .innerJoinAndSelect('orderProductMapping.product', 'product')
+      .innerJoinAndSelect('orderProductMapping.order', 'order')
+      .where('orderProductMapping.id IN (:...orderProductIds)', { orderProductIds })
+      .getMany();
 
     const existingOrderProductMap = new Map(existingOrderProducts.map((order) => [order.id, order]));
 
@@ -621,7 +624,23 @@ export class OrderService {
       throw new BadRequestException('존재하지 않는 주문 내역이 있습니다');
     }
 
+    const orderId = existingOrderProducts[0].orderId;
+    const settleAmount = existingOrderProducts[0].order.sendAmount;
+    let settleFee = 0;
+
     const orderProductList = list.map((settle) => {
+      const oneOrderProduct = existingOrderProductMap.get(settle.id);
+      if (!oneOrderProduct) {
+        throw new InternalServerErrorException('not exist order product');
+      }
+      if (settle.priceAdjustment === 'DISCOUNT') {
+        settleFee -= (oneOrderProduct.product.price * (settle.fee ?? 0)) / 100;
+      }
+
+      if (settle.priceAdjustment === 'ADDITIONAL') {
+        settleFee += (oneOrderProduct.product.price * (settle.fee ?? 0)) / 100;
+      }
+
       return this.orderProductMappingRepository.create({
         id: settle.id,
         settleDiscountType: settle.settleDiscountType,
@@ -631,6 +650,7 @@ export class OrderService {
     });
 
     await this.orderProductMappingRepository.save(orderProductList);
+    await this.orderRepository.update({ id: orderId }, { settleAmount: settleAmount + settleFee });
   }
 
   @Transactional()
@@ -643,9 +663,12 @@ export class OrderService {
 
     const orderProductIds = list.map((item) => item.id);
 
-    const existingOrderProducts = await this.orderProductMappingRepository.find({
-      where: { id: In(orderProductIds) },
-    });
+    const existingOrderProducts = await this.orderProductMappingRepository
+      .createQueryBuilder('orderProductMapping')
+      .innerJoinAndSelect('orderProductMapping.product', 'product')
+      .innerJoinAndSelect('orderProductMapping.order', 'order')
+      .where('orderProductMapping.id IN (:...orderProductIds)', { orderProductIds })
+      .getMany();
 
     const existingOrderProductMap = new Map(existingOrderProducts.map((order) => [order.id, order]));
 
@@ -654,7 +677,23 @@ export class OrderService {
       throw new BadRequestException('존재하지 않는 주문 내역이 있습니다');
     }
 
+    const orderId = existingOrderProducts[0].orderId;
+    const settleAmount = existingOrderProducts[0].order.sendAmount;
+    let settleFee = 0;
+
     const orderProductList = list.map((settle) => {
+      const oneOrderProduct = existingOrderProductMap.get(settle.id);
+      if (!oneOrderProduct) {
+        throw new InternalServerErrorException('not exist order product');
+      }
+
+      if (settle.priceAdjustment === 'DISCOUNT') {
+        settleFee -= (oneOrderProduct.product.price * (settle.fee ?? 0)) / 100;
+      }
+
+      if (settle.priceAdjustment === 'ADDITIONAL') {
+        settleFee += (oneOrderProduct.product.price * (settle.fee ?? 0)) / 100;
+      }
       // 이미 db에 있는 id 들을 create 에 넣으면 type orm 에서 update 로 동작한다
       return this.orderProductMappingRepository.create({
         id: settle.id,
@@ -665,6 +704,7 @@ export class OrderService {
     });
 
     await this.orderProductMappingRepository.save(orderProductList);
+    await this.orderRepository.update({ id: orderId }, { settleAmount: settleAmount + settleFee });
   }
 
   @Transactional()
@@ -1078,6 +1118,7 @@ export class OrderService {
             orderDelivery.orderProductMapping.product.expireDay,
             orderDelivery.orderProductMapping.topImagePath,
             orderDelivery.orderProductMapping.midImagePath,
+            orderDelivery.orderProductMapping.product.type,
           );
           orderDelivery.imagePath = path;
           orderDelivery.ssgEventId = ssgEventIssue ? ssgEventIssue.id : null;
@@ -1196,11 +1237,27 @@ export class OrderService {
       .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .where('order.id = :id', { id })
       // .andWhere('order.userId = :userId', { userId: user.id })
-      .andWhere('order.status = :status', { status: 'DELIVERY_REQUEST' })
+      // .andWhere('order.status = :status', { status: 'DELIVERY_REQUEST' })
       .getOne();
 
     if (!order) {
       throw new BadRequestException('해당 주문건은 존재하지 않습니다.');
+    }
+
+    const now = new Date();
+    const sendRequestAtTime = order.sendRequestAt.getTime();
+    const nowTime = now.getTime();
+    const diffMs = sendRequestAtTime - nowTime;
+    const tenMinutesMs = 10 * 60 * 1000;
+
+    if (order.status === IOrderStatus.DELIVERY_REQUEST) {
+      // 취소 허용
+    } else if (order.status === IOrderStatus.DELIVERY_CONFIRMED) {
+      if (diffMs < tenMinutesMs) {
+        throw new BadRequestException('주문 취소는 발송 요청 시간 10분 전까지만 가능합니다.');
+      }
+    } else {
+      throw new BadRequestException('주문 취소가 불가능한 상태입니다.');
     }
 
     if (!order.orderProductMappings || order.orderProductMappings.length === 0) {
@@ -1215,8 +1272,6 @@ export class OrderService {
       { orderProductMappingId: In(orderProductMappingIdList) },
       { status: IOrderDeliveryStatus.CANCEL },
     );
-
-    // TODO 취소시 신세계 정산 금액 rollback 필요
 
     return;
   }
@@ -1267,7 +1322,9 @@ export class OrderService {
 
     // 주문 관리 일 경우
     if (section === IOrderSection.ORDER) {
-      queryBuilder = queryBuilder.andWhere('order.userId = :userId', { userId: user.id });
+      if (user.authority === IUserAuthority.CORPORATE_ADMIN) {
+        queryBuilder = queryBuilder.andWhere('order.userId = :userId', { userId: user.id });
+      }
       orderType = '주문';
     }
 

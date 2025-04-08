@@ -41,6 +41,7 @@ import { IProductType } from '../interface/product.type';
 import { IUserAuthority } from '../../user/interface/user.authority';
 import { UserSyncProductEventEntity } from '../../entity/user.sync.product.event.entity';
 import { ProductLikeEntity } from '../../entity/product.like.entity';
+import { IProductUseStatus } from '../interface/product.status';
 
 @Injectable()
 export class ProductService {
@@ -399,6 +400,9 @@ export class ProductService {
     if (!product) {
       throw new BadRequestException('상품이 존재하지 않습니다.');
     }
+
+    product.useStatus = IProductUseStatus.UNUSED;
+
     const productUpdateHistoryCreateList: ProductUpdateHistoryEntity[] = [];
 
     for (const key of Object.keys(getBody)) {
@@ -564,34 +568,46 @@ export class ProductService {
     }
 
     for (let i = 2; i <= worksheet.rowCount; i++) {
-      const row = worksheet.getRow(i);
-      const rowData = this.mapRowToDto(row);
+      try {
+        const row = worksheet.getRow(i);
+        const rowData = this.mapRowToDto(row);
 
-      if (!this.isValidRow(rowData)) {
-        continue;
+        if (!this.isValidRow(rowData)) {
+          continue;
+        }
+
+        const productCreateReqDto = plainToClass(ProductCreateReqDto, rowData);
+
+        const prevProduct = await this.productRepository.findOne({
+          where: { code: Like(`${ProductPrefixCode}%`) },
+          order: { code: 'DESC' },
+        });
+
+        const prevCodeBrand = prevProduct?.code ?? null;
+        productCreateReqDto.partnerCompanyCode = CreateCode(prevCodeBrand, ProductPrefixCode, ProductDigitNumber);
+
+        await this.create(productCreateReqDto);
+      } catch (error) {
+        throw new BadRequestException(`엑셀 데이터 매핑 중 row : ${i} 에서 문제가 발생했습니다, ${error.message}`);
       }
-
-      const productCreateReqDto = plainToClass(ProductCreateReqDto, rowData);
-      await this.create(productCreateReqDto);
     }
   }
 
   private mapRowToDto(row: ExcelJS.Row): Record<string, any> {
     return {
-      partnerCompanyCode: row.getCell(1).value,
-      partnerCompanyId: row.getCell(2).value,
-      brandId: row.getCell(3).value,
-      name: row.getCell(4).value,
-      price: row.getCell(5).value,
-      expireDay: row.getCell(6).value,
-      category: row.getCell(7).value,
-      classification: row.getCell(8).value,
-      settleMethod: row.getCell(9).value,
-      settlePercent: row.getCell(10).value,
-      imagePath: row.getCell(11).value,
-      type: row.getCell(12).value,
-      memo: row.getCell(13).value ?? null,
-      useStatus: row.getCell(14).value,
+      partnerCompanyId: row.getCell(1).value,
+      brandId: row.getCell(2).value,
+      name: row.getCell(3).value,
+      price: row.getCell(4).value,
+      expireDay: row.getCell(5).value,
+      category: row.getCell(6).value,
+      classification: row.getCell(7).value,
+      settleMethod: row.getCell(8).value,
+      settlePercent: row.getCell(9).value,
+      imagePath: row.getCell(10).value,
+      type: row.getCell(11).value,
+      memo: row.getCell(12).value,
+      useStatus: row.getCell(13).value,
     };
   }
 

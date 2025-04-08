@@ -35,6 +35,8 @@ export class SsgEventService {
     const { take, page, code, createdEndAt, createdStartAt, name } = getQuery;
     const skip = (page - 1) * take;
 
+    const currentMonth = new Date().getMonth() + 1;
+
     let queryBuilder = this.ssgEventRepository.createQueryBuilder('ssg');
 
     if (code) {
@@ -44,6 +46,10 @@ export class SsgEventService {
     if (name) {
       queryBuilder = queryBuilder.andWhere('ssg.name LIKE :name', { name: '%' + name + '%' });
     }
+
+    queryBuilder = queryBuilder
+      .andWhere('MONTH(ssg.startAt) <= :currentMonth', { currentMonth })
+      .andWhere('MONTH(ssg.endAt) >= :currentMonth', { currentMonth });
 
     queryBuilder = QueryBuilderDateCondition(queryBuilder, 'ssg', 'createdAt', createdStartAt, createdEndAt);
 
@@ -57,6 +63,7 @@ export class SsgEventService {
       .innerJoinAndSelect('orderProductMapping.orderDeliveries', 'orderDeliveries')
       .where('orderDeliveries.ssgEventId IN (:...ssgEventIdList)', { ssgEventIdList })
       .andWhere('order.type = :type', { type: IOrderType.SSG })
+      .orderBy('order.id', 'DESC')
       .getMany();
 
     // <ssgEventId, >

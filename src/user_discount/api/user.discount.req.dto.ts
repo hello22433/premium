@@ -104,3 +104,13 @@ export class UserDiscountCreateReqDto {
   @IsNotEmpty()
   pricePercent: number;
 }
+
+export class UserDiscountDeleteReqDto {
+  @ApiProperty({
+    description: '삭제할 id',
+  })
+  // =============================================================
+  @IsNumber()
+  @IsNotEmpty()
+  id: number;
+}

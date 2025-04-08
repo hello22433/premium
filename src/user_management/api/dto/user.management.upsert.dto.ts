@@ -137,4 +137,11 @@ export class UserManagementUpsertDto {
   // ============================
   @IsNotEmpty()
   cardNumber: string;
+
+  @ApiProperty({
+    description: '발신 번호',
+  })
+  // ============================
+  @IsOptional()
+  fromPhoneNumber: string | null;
 }

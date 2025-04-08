@@ -57,6 +57,8 @@ import { IUserStatus } from '../../user/interface/user.status';
 import { SettleOtherProductDetailDto } from '../api/dto/settle.other.product.dto';
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
 import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
+import { UserDiscountEntity } from '../../entity/user.discount.entity';
+import { IPriceAdjustment } from '../../user_discount/interface/price.adjustment';
 
 @Injectable()
 export class SettleService {
@@ -71,6 +73,8 @@ export class SettleService {
     private otherSaleProductRepository: Repository<OtherServiceSaleProductEntity>,
     @InjectRepository(ShippingStorageEntity)
     private shippingStorageRepository: Repository<ShippingStorageEntity>,
+    @InjectRepository(UserDiscountEntity)
+    private userDiscountRepository: Repository<UserDiscountEntity>,
     @InjectRepository(OtherServiceSaleTypeEntity)
     private saleTypeRepository: Repository<OtherServiceSaleTypeEntity>,
     @InjectRepository(UserEntity)
@@ -880,7 +884,10 @@ export class SettleService {
           const fee = orderProductMapping.fee ?? 0;
           const feePrice = (orderProductMapping.product.price * fee) / 100;
 
-          const settlePrice = orderProductMapping.product.price - feePrice;
+          const settlePrice =
+            orderProductMapping.priceAdjustment === 'DISCOUNT'
+              ? orderProductMapping.product.price - feePrice
+              : orderProductMapping.product.price + feePrice;
           let usePrice = 0;
           let unUsePrice = 0;
 
@@ -922,6 +929,7 @@ export class SettleService {
       .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .innerJoinAndSelect('orderProductMappings.product', 'product')
       .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
+      .leftJoinAndSelect('user.userDiscounts', 'userDiscounts')
       .where('order.status IN (:...status)', { status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'] });
 
     if (isPublished === true) {
@@ -969,6 +977,19 @@ export class SettleService {
         amount += orderProductMapping.amount;
       }
 
+      // 기본 정산 금액
+      let finalSettlePrice = order.settleAmount;
+
+      // 할인 옵션 적용
+      if (order.user && order.user.userDiscounts && order.user.userDiscounts.length > 0) {
+        const discountData = order.user.userDiscounts[0]; // 초기값 설정
+        if (discountData.priceAdjustment === IPriceAdjustment.DISCOUNT) {
+          finalSettlePrice = (order.settleAmount * (100 - discountData.pricePercent)) / 100;
+        } else if (discountData.priceAdjustment === IPriceAdjustment.ADDITIONAL) {
+          finalSettlePrice = (order.settleAmount * (100 + discountData.pricePercent)) / 100;
+        }
+      }
+
       return {
         id: order.id,
         registeredAt: format(order.registerAt, DateFormatStr),
@@ -978,7 +999,8 @@ export class SettleService {
         productNameList: productNameList,
         amount: amount,
         deliveryPrice: order.sendAmount,
-        settlePrice: order.settleAmount,
+        originalSettlePrice: order.settleAmount,
+        settlePrice: finalSettlePrice,
         status: order.status,
         sendRequestAt: format(order.sendRequestAt, DateFormatStr),
         isDeliveryReport: order.deliveryCompleteReportCount > 0,
@@ -1108,6 +1130,7 @@ export class SettleService {
         amount: amount,
         deliveryPrice: order.sendAmount,
         settlePrice: order.settleAmount,
+        originalSettlePrice: order.settleAmount,
         status: order.status,
         sendRequestAt: format(order.sendRequestAt, DateEndMinuteFormatStr),
         isDeliveryReport: order.deliveryCompleteReportCount > 0,
@@ -1121,15 +1144,15 @@ export class SettleService {
     sheet.columns = [
       { header: '번호', key: 'id', width: 10 },
       { header: '등록일자', key: 'businessName', width: 32 },
-      { header: '고객사', key: 'productClassification', width: 20 },
-      { header: '담당자', key: 'brandNameKorean', width: 20 },
-      { header: '이벤트명', key: 'personName', width: 20 },
-      { header: '상품명', key: 'eventName', width: 20 },
-      { header: '발송수량', key: 'productName', width: 32 },
-      { header: '발송금액', key: 'deliveryAmount', width: 32 },
-      { header: '정산금액', key: 'tradeAmount', width: 32 },
-      { header: '진행상태', key: 'discardAmount', width: 20 },
-      { header: '발송시각', key: 'tradeRate', width: 20 },
+      { header: '고객사', key: 'businessName', width: 20 },
+      { header: '담당자', key: 'personName', width: 20 },
+      { header: '이벤트명', key: 'eventName', width: 20 },
+      { header: '상품명', key: 'productNameList', width: 20 },
+      { header: '발송수량', key: 'amount', width: 32 },
+      { header: '발송금액', key: 'deliveryPrice', width: 32 },
+      { header: '정산금액', key: 'settlePrice', width: 32 },
+      { header: '진행상태', key: 'status', width: 20 },
+      { header: '발송시각', key: 'sendRequestAt', width: 20 },
     ];
 
     let id = 1;
@@ -1149,7 +1172,7 @@ export class SettleService {
         businessName: result.businessName,
         personName: result.personName,
         eventName: result.eventName,
-        productNameList: result.productNameList,
+        productNameList: result.productNameList[0] + `외 ${result.productNameList.length - 1} 건`,
         amount: result.amount,
         deliveryPrice: result.deliveryPrice,
         settlePrice: result.settlePrice,

@@ -2,7 +2,11 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { UserDiscountEntity } from '../../entity/user.discount.entity';
-import { UserDiscountCreateReqDto, UserDiscountGetListReqDto } from '../api/user.discount.req.dto';
+import {
+  UserDiscountCreateReqDto,
+  UserDiscountDeleteReqDto,
+  UserDiscountGetListReqDto,
+} from '../api/user.discount.req.dto';
 import { UserDiscountGetListResDto } from '../api/user.discount.res.dto';
 import { UserDiscountViewDto } from '../api/dto/user.discount.view.dto';
 import { UserEntity } from '../../entity/user.entity';
@@ -89,5 +93,19 @@ export class UserDiscountService {
       compareCondition,
       pricePercent,
     });
+  }
+
+  async delete(getBody: UserDiscountDeleteReqDto) {
+    const { id } = getBody;
+
+    const discount = await this.userDiscountRepository.findOne({
+      where: { id },
+    });
+
+    if (!discount) {
+      throw new BadRequestException(`discount option not exist`);
+    }
+
+    await this.userDiscountRepository.softDelete(id);
   }
 }

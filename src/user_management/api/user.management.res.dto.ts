@@ -140,6 +140,11 @@ export class UserManagementGetDetailResDto {
     description: '잔액',
   })
   balance: number;
+
+  @ApiProperty({
+    description: '발신 번호',
+  })
+  fromPhoneNumber: string | null;
 }
 
 export class UserManagementGetListResDto extends GetListResDto {

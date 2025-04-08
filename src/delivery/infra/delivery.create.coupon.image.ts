@@ -6,6 +6,7 @@ import { join } from 'path';
 import * as sharp from 'sharp';
 import * as process from 'node:process';
 import axios from 'axios';
+import { IProductType } from '../../product/interface/product.type';
 
 // Helper: Buffer를 Canvas 이미지로 변환
 function createImageFromBuffer(buffer: Buffer): Promise<any> {
@@ -30,6 +31,7 @@ export const DeliveryCreateCouponImage = async (
   expireDay: number,
   topImagePath: string,
   middleImagePath: string,
+  type: any,
 ): Promise<{ fileName: string; path: string }> => {
   // 캔버스 크기 설정 (쿠폰 이미지 크기)
   const canvasWidth = 600;
@@ -106,7 +108,10 @@ export const DeliveryCreateCouponImage = async (
 
   const barcode = barcodeCanvas.toBuffer();
   const barcodeImage = await createImageFromBuffer(barcode);
-  ctx.drawImage(barcodeImage, 50, 580); // x 위치를 왼쪽으로 조정 (더 넓어진 바코드를 위해)
+  // 신세계가 아닐경우 이미지 생성 X
+  if (type !== IProductType.SSG) {
+    ctx.drawImage(barcodeImage, 50, 580); // x 위치를 왼쪽으로 조정 (더 넓어진 바코드를 위해)
+  }
 
   // 바코드 아래에 구분선 추가
   ctx.beginPath();

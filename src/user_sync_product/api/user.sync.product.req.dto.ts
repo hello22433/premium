@@ -1,6 +1,17 @@
 import { PagingReqDto } from '../../common/api/dto/pagination.req.dto';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { ArrayMinSize, IsArray, IsEnum, IsInt, IsNotEmpty, IsNumber, IsOptional, Matches, Min } from 'class-validator';
+import {
+  ArrayMinSize,
+  IsArray,
+  IsEnum,
+  IsInt,
+  IsNotEmpty,
+  IsNumber,
+  IsOptional,
+  IsString,
+  Matches,
+  Min,
+} from 'class-validator';
 import { Type } from 'class-transformer';
 import { IUserSyncProductStatus } from '../interface/user.sync.product.status';
 import { dateAtRegexp } from '../../common/domain/date.regexp';
@@ -70,11 +81,18 @@ export class UserSyncProductRegisterEventReqDto {
   userId: number;
 
   @ApiProperty({
-    description: '담당자 user.id',
+    description: '담당자 name',
   })
   // =================================
-  @IsNumber()
-  adminUserId: number;
+  @IsString()
+  userPersonName: string;
+
+  // @ApiProperty({
+  //   description: '담당자 user.id',
+  // })
+  // // =================================
+  // @IsNumber()
+  // adminUserId: number;
 
   @ApiProperty({
     description: '이벤트명',

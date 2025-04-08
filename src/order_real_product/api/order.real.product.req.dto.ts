@@ -94,12 +94,12 @@ export class OrderRealProductCreateReqDto {
   @IsNumber()
   userId: number;
 
-  @ApiProperty({
-    description: '담당자 user id(최고 또는 운영관리자의 user id)',
-  })
-  // ===================================
-  @IsNumber()
-  adminUserId: number;
+  // @ApiProperty({
+  //   description: '담당자 user id(최고 또는 운영관리자의 user id)',
+  // })
+  // // ===================================
+  // @IsNumber()
+  // adminUserId: number;
 
   @ApiProperty({
     description: '실물 상품 주문',

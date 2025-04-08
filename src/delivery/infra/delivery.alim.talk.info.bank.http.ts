@@ -3,6 +3,7 @@ import { DeliveryAlimTalk, IDeliveryAlimTalkSend, IDeliveryAlimTalkSendOut } fro
 import { ConfigService } from '@nestjs/config';
 import { HttpService } from '@nestjs/axios';
 import { firstValueFrom, lastValueFrom } from 'rxjs';
+import { listToMap } from '../../util/map.util';
 
 type InfoBankAuthResponse = {
   schema: string;
@@ -32,6 +33,7 @@ export type InfoBankReportResponse = {
       reportText: string;
       carrier: string;
       ref: string;
+      reportCode: string;
     }[];
   };
 };
@@ -129,9 +131,18 @@ export class DeliveryAlimTalkInfoBankHttp implements DeliveryAlimTalk {
       const response = await firstValueFrom(this.httpService.post(url, body, { headers }));
 
       const responseData = response.data as InfoBankSendResponse;
+
+      try {
+        await firstValueFrom(
+          this.httpService.delete(`${this.infoBankUrl}/v1/report/polling/${responseData.msgKey}`, { headers }),
+        );
+      } catch (e) {
+        this.logger.log(`수신 확인 : ${JSON.stringify(e)}`);
+      }
       // const reportResponse = await firstValueFrom(
       //   this.httpService.get(`${this.infoBankUrl}/v1/report/inquiry/${responseData.msgKey}`, { headers }),
       // );
+      this.logger.log(`알림톡 발신 : ${JSON.stringify(responseData)}`);
 
       await this.sleep(500);
 
@@ -143,17 +154,23 @@ export class DeliveryAlimTalkInfoBankHttp implements DeliveryAlimTalk {
 
       // msgKey 검증
       const msgKey = responseData.msgKey;
-      const reportMsgKeys = reportResponsePollingData.data.report.map((report) => report.msgKey);
+      // const reportMsgKeys = reportResponsePollingData.data.report.map((report) => report.msgKey);
+      const reportMap = listToMap(reportResponsePollingData.data.report, (report) => report.msgKey);
 
-      // TODO 알림톡 에러 검증
-      // if (!reportMsgKeys.includes(msgKey)) {
-      //   this.logger.error(JSON.stringify(reportResponsePollingData));
-      //   this.logger.error(JSON.stringify(responseData));
-      //
-      //   throw new Error(`msgKey "${msgKey}" not found in reportResponsePollingData`);
-      // }
+      const reportOne = reportMap.get(msgKey);
+      if (!reportOne) {
+        this.logger.error(JSON.stringify(reportResponsePollingData));
+        this.logger.error(JSON.stringify(responseData));
+        // throw new Error(`msgKey "${msgKey}" not found in reportResponsePollingData`);
+      }
+
+      if (reportOne && reportOne.reportCode !== '10000') {
+        this.logger.error(JSON.stringify(reportMap));
+        throw new Error(`msgKey "${msgKey}" not send ${reportOne.reportCode}`);
+      }
 
       const reportData = reportResponsePolling.data as InfoBankReportResponse;
+
       return { responseData, report: reportData };
     } catch (e) {
       this.logger.error(e);

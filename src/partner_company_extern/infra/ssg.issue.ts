@@ -12,14 +12,14 @@ export class SsgIssue implements ISsgIssue {
     private configService: ConfigService,
   ) {
     if (this.configService.getOrThrow('ENVIRONMENT') === 'prod') {
-      this.url = 'https://api.epopkon.com/';
+      this.url = 'https://api.epopkon.com';
     }
   }
 
   private logger = new Logger('SSG');
 
   // private url = 'https://tapi.epopkon.com/'; // test URL
-  private url = 'https://api.epopkon.com/';
+  private url = 'https://api.epopkon.com';
 
   private parser() {
     return new Parser();
@@ -27,7 +27,7 @@ export class SsgIssue implements ISsgIssue {
 
   generateSsgIssue(): ISsgIssueCode {
     const barCode = this.generateCode('8', 7);
-    const personalCode = this.generateCode('014', 8);
+    const personalCode = this.generateCode('013', 8);
 
     return { barCode: barCode, personalCode: personalCode };
   }

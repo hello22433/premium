@@ -181,6 +181,7 @@ export class UserManagementService {
       cardName: user.cardName,
       cardNumber: user.cardNumber,
       balance: user.balance,
+      fromPhoneNumber: user.fromPhoneNumber,
     };
   }
 
@@ -237,6 +238,7 @@ export class UserManagementService {
       cardNumber: getBody.cardNumber,
       status: getBody.status,
       personCode: getBody.email,
+      fromPhoneNumber: getBody.fromPhoneNumber,
     });
 
     return;
@@ -272,6 +274,7 @@ export class UserManagementService {
     user.cardName = getBody.cardName;
     user.cardNumber = getBody.cardNumber;
     user.status = getBody.status;
+    user.fromPhoneNumber = getBody.fromPhoneNumber;
 
     await this.userRepository.save(user);
 

@@ -4,6 +4,8 @@ import { ApiBadRequestResponse, ApiBearerAuth, ApiOkResponse, ApiOperation, ApiT
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
 import { OrderFromGetEmailListResDto, OrderFromGetPhoneListResDto } from './order.from.res.dto';
 import { OrderFromCreateEmailReqDto, OrderFromCreatePhoneReqDto } from './order.from.req.dto';
+import { User } from '../../auth/api/user.decorator';
+import { ILoginUserInfo } from '../../auth/interface/login.user';
 
 @ApiTags('order-from')
 @ApiBearerAuth()
@@ -20,8 +22,8 @@ export class OrderFromController {
   })
   // ====================================================
   @Get('/order-from/phone/list')
-  getPhoneList() {
-    return this.orderFromService.getPhoneList();
+  getPhoneList(@User() user: ILoginUserInfo) {
+    return this.orderFromService.getPhoneList(user);
   }
 
   @ApiOperation({
@@ -35,8 +37,8 @@ export class OrderFromController {
   })
   // ====================================================
   @Post('/order-from/phone')
-  createPhone(@Body() getBody: OrderFromCreatePhoneReqDto) {
-    return this.orderFromService.createPhone(getBody);
+  createPhone(@User() user: ILoginUserInfo, @Body() getBody: OrderFromCreatePhoneReqDto) {
+    return this.orderFromService.createPhone(user, getBody);
   }
 
   @ApiOperation({

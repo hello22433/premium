@@ -43,7 +43,12 @@ export class SettleUserListViewDto {
   deliveryPrice: number;
 
   @ApiProperty({
-    description: '정산금액',
+    description: '기존 정산금액',
+  })
+  originalSettlePrice: number;
+
+  @ApiProperty({
+    description: '할인옵션 적용 정산금액',
   })
   settlePrice: number;
 

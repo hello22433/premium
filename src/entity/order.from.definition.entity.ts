@@ -10,6 +10,9 @@ export class OrderFromDefinitionEntity extends BaseEntity {
   @Column({ type: 'varchar', length: 100, comment: '핸드폰: PHONE, 이메일 :EMAIL' })
   type: OrderFromDefinitionType;
 
+  @Column({ type: 'int', comment: 'FK) user.id' })
+  userId: number;
+
   @Column({ type: 'varchar', length: 100, comment: '핸드폰 혹은 이메일 발신 정보' })
   from: string;
 }

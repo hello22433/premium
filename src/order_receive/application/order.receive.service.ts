@@ -84,6 +84,7 @@ export class OrderReceiveService {
         productChoiceMapping.product.expireDay,
         orderDelivery.orderProductMapping.topImagePath,
         orderDelivery.orderProductMapping.midImagePath,
+        orderDelivery.orderProductMapping.product.type,
       );
       orderDelivery.imagePath = path;
     }
@@ -332,7 +333,7 @@ export class OrderReceiveService {
     }
 
     const text =
-      orderDelivery.orderProductMapping.product.type === IProductType.CHOICE
+      orderDelivery.orderProductMapping.product.type !== IProductType.CHOICE
         ? OrderReceiveSmsTemplate(orderDelivery)
         : OrderReceiveChoiceSmsTemplate(orderDelivery);
 
