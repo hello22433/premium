@@ -30,7 +30,7 @@ import { QueryBuilderDateCondition } from '../../common/infra/query.builder.date
 import { format } from 'date-fns';
 import { DateDateFormatStr, DateFormatStr } from '../../common/domain/date.format.str';
 import { OrderRealProductViewDto } from '../api/dto/order.real.product.view.dto';
-import { BadRequestException, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException } from '@nestjs/common';
 import { UserEntity } from '../../entity/user.entity';
 import { OrderRealProductMappingEntity } from '../../entity/order.real.product.mapping.entity';
 import { IOrderRealProductStatus } from '../interface/order.real.product.status';
@@ -357,9 +357,9 @@ export class OrderRealProductService {
   async updateRequest(user: ILoginUserInfo, getBody: OrderRealProductUpdateRequestReqDto): Promise<void> {
     const { id } = getBody;
 
-    if (user.authority !== IUserAuthority.CORPORATE_ADMIN) {
-      throw new UnauthorizedException('고객사 담당자만 가능합니다.');
-    }
+    // if (user.authority !== IUserAuthority.CORPORATE_ADMIN) {
+    //   throw new UnauthorizedException('고객사 담당자만 가능합니다.');
+    // }
 
     const order = await this.orderRepository
       .createQueryBuilder('order')

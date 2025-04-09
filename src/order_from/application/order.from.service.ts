@@ -4,7 +4,11 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { OrderFromDefinitionType } from '../interface/order.from.definition.type';
 import { OrderFromGetPhoneListResDto } from '../api/order.from.res.dto';
-import { OrderFromCreateEmailReqDto, OrderFromCreatePhoneReqDto } from '../api/order.from.req.dto';
+import {
+  OrderFromCreateEmailReqDto,
+  OrderFromCreatePhoneReqDto,
+  OrderFromGetPhoneReqQueryDto,
+} from '../api/order.from.req.dto';
 import { IMailSend } from '../../mail/interface/mail-send';
 import { ConfigService } from '@nestjs/config';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
@@ -19,11 +23,14 @@ export class OrderFromService {
     private configService: ConfigService,
   ) {}
 
-  async getPhoneList(user: ILoginUserInfo): Promise<OrderFromGetPhoneListResDto> {
+  async getPhoneList(
+    user: ILoginUserInfo,
+    getQuery: OrderFromGetPhoneReqQueryDto,
+  ): Promise<OrderFromGetPhoneListResDto> {
     const orderFromDefinitionList = await this.orderFromDefinitionRepository.find({
       where: {
         type: OrderFromDefinitionType.PHONE,
-        userId: user.id,
+        userId: getQuery.userId ? getQuery.userId : user.id,
       },
     });
 
@@ -38,11 +45,12 @@ export class OrderFromService {
   }
 
   async createPhone(user: ILoginUserInfo, getBody: OrderFromCreatePhoneReqDto) {
-    const { from } = getBody;
+    const { from, userId } = getBody;
 
     const existFromPhone = await this.orderFromDefinitionRepository.existsBy({
       from,
       type: OrderFromDefinitionType.PHONE,
+      userId: userId ? userId : user.id,
     });
 
     if (existFromPhone) {
@@ -52,7 +60,7 @@ export class OrderFromService {
     await this.orderFromDefinitionRepository.insert({
       from,
       type: OrderFromDefinitionType.PHONE,
-      userId: user.id,
+      userId: userId ? userId : user.id,
     });
   }
 

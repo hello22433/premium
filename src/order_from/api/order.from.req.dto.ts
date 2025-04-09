@@ -1,5 +1,17 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsNotEmpty } from 'class-validator';
+import { IsNotEmpty, IsNumber, IsOptional } from 'class-validator';
+import { Type } from 'class-transformer';
+
+export class OrderFromGetPhoneReqQueryDto {
+  @ApiProperty({
+    description: 'user id',
+  })
+  // ==============================
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  userId?: number;
+}
 
 export class OrderFromCreatePhoneReqDto {
   @ApiProperty({
@@ -8,6 +20,14 @@ export class OrderFromCreatePhoneReqDto {
   // ==============================
   @IsNotEmpty()
   from: string;
+
+  @ApiProperty({
+    description: 'user id',
+  })
+  // ==============================
+  @IsOptional()
+  @IsNumber()
+  userId?: number;
 }
 
 export class OrderFromCreateEmailReqDto {

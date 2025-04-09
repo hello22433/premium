@@ -36,12 +36,11 @@ import { join } from 'path';
 import * as process from 'node:process';
 import * as ExcelJS from 'exceljs';
 import { ProductTypeExcelMapping, ProductUseStatusExcelMapping } from '../domain/product.excel.mapping';
-import { plainToClass } from 'class-transformer';
 import { IProductType } from '../interface/product.type';
 import { IUserAuthority } from '../../user/interface/user.authority';
 import { UserSyncProductEventEntity } from '../../entity/user.sync.product.event.entity';
 import { ProductLikeEntity } from '../../entity/product.like.entity';
-import { IProductUseStatus } from '../interface/product.status';
+import { validate } from 'class-validator';
 
 @Injectable()
 export class ProductService {
@@ -279,6 +278,7 @@ export class ProductService {
       type: product.type,
       couponMethod: product.couponMethod,
       memo: product.memo,
+      useStatus: product.useStatus,
     };
   }
 
@@ -400,9 +400,6 @@ export class ProductService {
     if (!product) {
       throw new BadRequestException('상품이 존재하지 않습니다.');
     }
-
-    product.useStatus = IProductUseStatus.UNUSED;
-
     const productUpdateHistoryCreateList: ProductUpdateHistoryEntity[] = [];
 
     for (const key of Object.keys(getBody)) {
@@ -576,17 +573,30 @@ export class ProductService {
           continue;
         }
 
-        const productCreateReqDto = plainToClass(ProductCreateReqDto, rowData);
+        const reqDto = new ProductCreateReqDto();
+        reqDto.partnerCompanyCode = rowData.partnerCompanyCode;
+        reqDto.partnerCompanyId = rowData.partnerCompanyId;
+        reqDto.brandId = rowData.brandId;
+        reqDto.name = rowData.name;
+        reqDto.price = rowData.price;
+        reqDto.expireDay = rowData.expireDay;
+        reqDto.category = rowData.category;
+        reqDto.classification = rowData.classification;
+        reqDto.settleMethod = rowData.settleMethod;
+        reqDto.settlePercent = rowData.settlePercent;
+        reqDto.imagePath = rowData.imagePath;
+        reqDto.type = rowData.type;
+        reqDto.memo = rowData.memo;
+        reqDto.useStatus = rowData.useStatus;
 
-        const prevProduct = await this.productRepository.findOne({
-          where: { code: Like(`${ProductPrefixCode}%`) },
-          order: { code: 'DESC' },
+        validate(reqDto).then((errors) => {
+          if (errors.length > 0) {
+            console.log('validation failed. errors: ', errors);
+            throw new BadRequestException('필수값 기재 바랍니다.');
+          }
         });
 
-        const prevCodeBrand = prevProduct?.code ?? null;
-        productCreateReqDto.partnerCompanyCode = CreateCode(prevCodeBrand, ProductPrefixCode, ProductDigitNumber);
-
-        await this.create(productCreateReqDto);
+        await this.create(reqDto);
       } catch (error) {
         throw new BadRequestException(`엑셀 데이터 매핑 중 row : ${i} 에서 문제가 발생했습니다, ${error.message}`);
       }
@@ -608,6 +618,7 @@ export class ProductService {
       type: row.getCell(11).value,
       memo: row.getCell(12).value,
       useStatus: row.getCell(13).value,
+      partnerCompanyCode: row.getCell(14).value,
     };
   }
 

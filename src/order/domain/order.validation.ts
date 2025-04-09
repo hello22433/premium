@@ -2,6 +2,7 @@ import { OrderEntity } from '../../entity/order.entity';
 import { BadRequestException } from '@nestjs/common';
 import { IOrderSendMethod } from '../interface/order.send.method';
 import { addMinutes } from 'date-fns';
+import { IOrderStatus } from '../interface/order.status';
 
 export const OrderValidation = (order: OrderEntity) => {
   let now = new Date();
@@ -28,8 +29,10 @@ export const OrderValidation = (order: OrderEntity) => {
       throw new BadRequestException('상품 전송과 전송 주체의 개수가 같지 않습니다.');
     }
 
-    if (orderProduct.product.useStatus !== 'USE') {
-      throw new BadRequestException('사용할 수 없는 상품이 존재합니다.');
+    if (order.status !== IOrderStatus.DELIVERY_REQUEST) {
+      if (orderProduct.product.useStatus !== 'USE') {
+        throw new BadRequestException('사용할 수 없는 상품이 존재합니다.');
+      }
     }
   }
 

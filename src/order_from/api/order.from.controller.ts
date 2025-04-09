@@ -1,9 +1,13 @@
-import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Post, Query, UseGuards } from '@nestjs/common';
 import { OrderFromService } from '../application/order.from.service';
 import { ApiBadRequestResponse, ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
 import { OrderFromGetEmailListResDto, OrderFromGetPhoneListResDto } from './order.from.res.dto';
-import { OrderFromCreateEmailReqDto, OrderFromCreatePhoneReqDto } from './order.from.req.dto';
+import {
+  OrderFromCreateEmailReqDto,
+  OrderFromCreatePhoneReqDto,
+  OrderFromGetPhoneReqQueryDto,
+} from './order.from.req.dto';
 import { User } from '../../auth/api/user.decorator';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 
@@ -22,8 +26,8 @@ export class OrderFromController {
   })
   // ====================================================
   @Get('/order-from/phone/list')
-  getPhoneList(@User() user: ILoginUserInfo) {
-    return this.orderFromService.getPhoneList(user);
+  getPhoneList(@User() user: ILoginUserInfo, @Query() getQuery: OrderFromGetPhoneReqQueryDto) {
+    return this.orderFromService.getPhoneList(user, getQuery);
   }
 
   @ApiOperation({

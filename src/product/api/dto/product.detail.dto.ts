@@ -1,6 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { IProductSettleMethod } from '../../interface/product.settle.method';
 import { IProductType } from '../../interface/product.type';
+import { IProductUseStatus } from '../../interface/product.status';
 
 export class ProductDetailDto {
   id: number;
@@ -94,4 +95,9 @@ export class ProductDetailDto {
     description: '유의사항',
   })
   memo: string | null;
+
+  @ApiProperty({
+    description: '상품 상태',
+  })
+  useStatus: IProductUseStatus;
 }
