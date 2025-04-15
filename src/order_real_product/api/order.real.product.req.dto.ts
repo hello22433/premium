@@ -19,6 +19,7 @@ import { IPublicChargeTaxPaymentType } from '../interface/public.charge.tax.paym
 import { IProcessMethod } from '../interface/process.method';
 import { OrderRealProductCreateDto } from './dto/order.real.product.create.dto';
 import { IOrderSection } from '../../order/interface/order.section';
+import { OrderRealProductMappingDto } from './dto/order.real.product.mapping.dto';
 
 export class OrderRealProductGetListReqDto extends PagingReqDto {
   @ApiPropertyOptional({
@@ -373,6 +374,7 @@ export class OrderRealProductGetDeliveryCompleteReportReqDto {
   @Type(() => Number)
   id: number;
 }
+
 export class OrderRealProductExcelDownloadReqBodyDto {
   @ApiPropertyOptional({
     description: '구분 ex) 주문관리 : ORDER, 발송관리: SHIPPING',
@@ -429,3 +431,16 @@ export class OrderRealProductExcelDownloadReqBodyDto {
   @IsOptional()
   eventName?: string;
 }
+
+export class OrderRealProductMappingGetDetailReqParamDto {
+  @ApiProperty({
+    description: 'order product mapping id',
+  })
+  // ===================================
+  @IsNotEmpty()
+  @IsNumber()
+  @Type(() => Number)
+  id: number;
+}
+
+export class OrderRealProductMappingUpdateReqDto extends OrderRealProductMappingDto {}

@@ -9,6 +9,7 @@ import {
   OrderRealProductGetDetailResDto,
   OrderRealProductGetListResDto,
   OrderRealProductGetSettlementListResDto,
+  OrderRealProductMappingGetDetailResDto,
 } from '../api/order.real.product.res.dto';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import {
@@ -23,6 +24,8 @@ import {
   OrderRealProductGetListReqDto,
   OrderRealProductGetSettlementExcelDownloadReqDto,
   OrderRealProductGetSettlementListReqDto,
+  OrderRealProductMappingGetDetailReqParamDto,
+  OrderRealProductMappingUpdateReqDto,
   OrderRealProductUpdateReqDto,
   OrderRealProductUpdateRequestReqDto,
 } from '../api/order.real.product.req.dto';
@@ -1018,5 +1021,93 @@ export class OrderRealProductService {
     await workbook.xlsx.writeFile(filePath);
 
     return { fileName, filePath };
+  }
+
+  async getOrderProductMappingDetail(
+    getParam: OrderRealProductMappingGetDetailReqParamDto,
+  ): Promise<OrderRealProductMappingGetDetailResDto> {
+    const { id } = getParam;
+    const queryBuilder = this.orderProductMappingRepository
+      .createQueryBuilder('orderRealProductMapping')
+      .innerJoinAndSelect('orderRealProductMapping.realProductOrder', 'realProductOrder')
+      .innerJoinAndSelect('realProductOrder.businessUser', 'businessUser')
+      .leftJoinAndSelect('orderRealProductMapping.partnerCompany', 'partnerCompany')
+      .where('orderRealProductMapping.id = :id', { id });
+
+    const oneOrderProductMapping = await queryBuilder.getOne();
+    if (!oneOrderProductMapping) {
+      throw new BadRequestException('상품이 존재하지 않습니다.');
+    }
+
+    return {
+      id: oneOrderProductMapping.id,
+      realProductOrderId: oneOrderProductMapping.realProductOrder.id,
+      writer: oneOrderProductMapping.writer,
+      userId: oneOrderProductMapping.realProductOrder.businessUserId,
+      userBusinessName: oneOrderProductMapping.realProductOrder.businessUser?.businessName || '',
+      eventName: oneOrderProductMapping.realProductOrder.eventName,
+      partnerCompanyId: oneOrderProductMapping.partnerCompanyId,
+      partnerCompanyName: oneOrderProductMapping.partnerCompany?.businessName ?? null,
+      buyMethod: oneOrderProductMapping.buyMethod,
+      offlineAddress: oneOrderProductMapping.offlineAddress,
+      offlinePersonName: oneOrderProductMapping.offlinePersonName,
+      offlinePhoneNumber: oneOrderProductMapping.offlinePhoneNumber,
+      receivingMethod: oneOrderProductMapping.receivingMethod,
+      trackingNumber: oneOrderProductMapping.trackingNumber,
+      paymentMethod: oneOrderProductMapping.paymentMethod,
+      paymentBank: oneOrderProductMapping.realProductOrder.businessUser.bankName,
+      paymentAccountInfo: oneOrderProductMapping.realProductOrder.businessUser.bankNumber,
+      remarks: oneOrderProductMapping.remarks,
+      progressStatus: oneOrderProductMapping.progressStatus,
+      filePath: oneOrderProductMapping.filePath,
+    };
+  }
+
+  async updateOrderProductMappingDetail(getBody: OrderRealProductMappingUpdateReqDto) {
+    const {
+      id,
+      writer,
+      buyMethod,
+      offlineAddress,
+      offlinePhoneNumber,
+      offlinePersonName,
+      receivingMethod,
+      trackingNumber,
+      paymentMethod,
+
+      remarks,
+      progressStatus,
+      filePath,
+      partnerCompanyId,
+    } = getBody;
+
+    const queryBuilder = this.orderProductMappingRepository
+      .createQueryBuilder('orderRealProductMapping')
+      .where('orderRealProductMapping.id = :id', { id });
+
+    const oneOrderProductMapping = await queryBuilder.getOne();
+    if (!oneOrderProductMapping) {
+      throw new BadRequestException('상품이 존재하지 않습니다.');
+    }
+
+    oneOrderProductMapping.id = id;
+
+    oneOrderProductMapping.partnerCompanyId = partnerCompanyId;
+    oneOrderProductMapping.writer = writer;
+
+    oneOrderProductMapping.buyMethod = buyMethod;
+    oneOrderProductMapping.offlineAddress = offlineAddress;
+    oneOrderProductMapping.offlinePersonName = offlinePersonName;
+    oneOrderProductMapping.offlinePhoneNumber = offlinePhoneNumber;
+    oneOrderProductMapping.receivingMethod = receivingMethod;
+    oneOrderProductMapping.trackingNumber = trackingNumber;
+    oneOrderProductMapping.paymentMethod = paymentMethod;
+    
+    oneOrderProductMapping.remarks = remarks;
+    oneOrderProductMapping.progressStatus = progressStatus;
+    oneOrderProductMapping.filePath = filePath;
+
+    await this.orderProductMappingRepository.save(oneOrderProductMapping);
+    return;
   }
 }

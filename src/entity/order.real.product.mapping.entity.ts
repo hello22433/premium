@@ -5,6 +5,7 @@ import { IProcessMethod } from '../order_real_product/interface/process.method';
 import { OrderRealProductEntity } from './order.real.product.entity';
 import { ProductEntity } from './product.entity';
 import { DeliveryTrackingStatus } from '../delivery/domain/delivery.tracking.status';
+import { PartnerCompanyEntity } from './partner.company.entity';
 
 @Entity('order_real_product_mapping')
 export class OrderRealProductMappingEntity extends BaseEntity {
@@ -63,6 +64,39 @@ export class OrderRealProductMappingEntity extends BaseEntity {
   })
   isProcess: boolean;
 
+  @Column({ type: 'varchar', length: 100, nullable: true, comment: '작성자 ' })
+  writer: string | null;
+
+  @Column({ type: 'int', nullable: true, comment: 'FK) 협력사 id' })
+  partnerCompanyId: number | null;
+
+  @Column({ type: 'varchar', length: 50, nullable: true, comment: '구매 방법' })
+  buyMethod: string | null;
+
+  @Column({ type: 'varchar', length: 200, nullable: true, comment: '오프라인 주소' })
+  offlineAddress: string | null;
+
+  @Column({ type: 'varchar', length: 50, nullable: true, comment: '오프라인 담당자 이름' })
+  offlinePersonName: string | null;
+
+  @Column({ type: 'varchar', length: 20, nullable: true, comment: '오프라인 담당자 전화번호' })
+  offlinePhoneNumber: string | null;
+
+  @Column({ type: 'varchar', length: 20, nullable: true, comment: '수령 방식' })
+  receivingMethod: string | null;
+
+  @Column({ type: 'varchar', length: 20, nullable: true, comment: '결제 방법' })
+  paymentMethod: string | null;
+
+  @Column({ type: 'text', nullable: true, comment: '비고 사항' })
+  remarks: string | null;
+
+  @Column({ type: 'varchar', length: 50, nullable: true, comment: '진행 상태' })
+  progressStatus: string | null;
+
+  @Column({ type: 'text', nullable: true, comment: '파일 경로' })
+  filePath: string | null;
+
   @ManyToOne(() => OrderRealProductEntity, { createForeignKeyConstraints: false })
   @JoinColumn({ name: 'real_product_order_id' })
   realProductOrder: OrderRealProductEntity;
@@ -70,4 +104,8 @@ export class OrderRealProductMappingEntity extends BaseEntity {
   @ManyToOne(() => ProductEntity, { createForeignKeyConstraints: false })
   @JoinColumn({ name: 'product_id' })
   product: ProductEntity;
+
+  @ManyToOne(() => PartnerCompanyEntity, { createForeignKeyConstraints: false })
+  @JoinColumn({ name: 'partner_company_id' }) //partnerCompanyId
+  partnerCompany?: PartnerCompanyEntity;
 }

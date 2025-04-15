@@ -20,6 +20,7 @@ import {
   OrderRealProductGetDetailResDto,
   OrderRealProductGetListResDto,
   OrderRealProductGetSettlementListResDto,
+  OrderRealProductMappingGetDetailResDto,
 } from './order.real.product.res.dto';
 import {
   OrderRealProductConfirmRequestReqDto,
@@ -33,6 +34,8 @@ import {
   OrderRealProductGetListReqDto,
   OrderRealProductGetSettlementExcelDownloadReqDto,
   OrderRealProductGetSettlementListReqDto,
+  OrderRealProductMappingGetDetailReqParamDto,
+  OrderRealProductMappingUpdateReqDto,
   OrderRealProductUpdateReqDto,
   OrderRealProductUpdateRequestReqDto,
 } from './order.real.product.req.dto';
@@ -320,5 +323,43 @@ export class OrderRealProductController {
     } catch (e) {
       throw e;
     }
+  }
+
+  @ApiOperation({
+    summary: '실물 발송 관리 발주 상품 내역 자세히 보기 API',
+    description: '',
+  })
+  @ApiOkResponse({
+    type: OrderRealProductMappingGetDetailResDto,
+    description: '',
+  })
+  @ApiBadRequestResponse({
+    description: '주문이 존재하지 않을 경우',
+  })
+  // ====================================================
+  @Get('/real-product/order/order-product-mapping/detail/:id')
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
+  getOrderProductMappingDetail(@Param() getParam: OrderRealProductMappingGetDetailReqParamDto) {
+    return this.orderRealProductService.getOrderProductMappingDetail(getParam);
+  }
+
+  @ApiOperation({
+    summary: '주문 확정 API',
+    description: '주문 완료된 주문을 확정합니다. ',
+  })
+  @ApiCreatedResponse({
+    description: '성공적으로 주문 확정한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '주문이 존재하지 않을 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '최고 관리자가 아닌 경우',
+  })
+  // ====================================================
+  @Put('/real-product/order/order-product-mapping')
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
+  updateOrderProductMappingDetail(@Body() getBody: OrderRealProductMappingUpdateReqDto) {
+    return this.orderRealProductService.updateOrderProductMappingDetail(getBody);
   }
 }

@@ -7,6 +7,7 @@ import { OrderCustomerViewDto } from '../../order/api/dto/order.customer.view.dt
 import { AdminListViewDto } from '../../settle/api/dto/admin.list.view.dto';
 import { OrderRealProductDeliveryViewDto } from './dto/order.real.product.delivery.view.dto';
 import { OrderRealProductDeliveryDetailDto } from './dto/order.real.product.delivery.detail.dto';
+import { OrderRealProductMappingDto } from './dto/order.real.product.mapping.dto';
 
 export class OrderRealProductGetListResDto extends GetListResDto {
   @ApiProperty({
@@ -50,4 +51,38 @@ export class OrderRealProductGetDeliveryCompleteReportResDto extends OrderRealPr
     description: '고객사 정보',
   })
   userInfo: OrderCustomerViewDto;
+}
+
+export class OrderRealProductMappingGetDetailResDto extends OrderRealProductMappingDto {
+  @ApiProperty({
+    description: '주문 번호',
+  })
+  realProductOrderId: number;
+
+  @ApiProperty({
+    description: '고객사 명',
+  })
+  userBusinessName: string;
+
+  @ApiProperty({
+    description: '이벤트 명',
+  })
+  eventName: string;
+
+  @ApiProperty({
+    description: '협력사 명',
+  })
+  partnerCompanyName: string | null;
+
+  @ApiProperty({
+    description: '계좌이체 일 경우 은행',
+  })
+  // ==================================
+  paymentBank: string | null;
+
+  @ApiProperty({
+    description: '계좌이체 일 경우 계좌정보',
+  })
+  // ==================================
+  paymentAccountInfo: string | null;
 }

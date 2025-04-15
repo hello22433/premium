@@ -179,6 +179,7 @@ export class OrderReceiveService {
       productImagePath: orderDelivery.orderProductMapping.product.imagePath,
       brandName: orderDelivery.orderProductMapping.product.brand!.nameKorean,
       barCode: orderDelivery.barCode!,
+      personalCode: orderDelivery.personalCode,
       couponStatus: orderDelivery.couponStatus,
       context: text,
       type: orderDelivery.orderProductMapping.product.type,

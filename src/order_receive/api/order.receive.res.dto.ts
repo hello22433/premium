@@ -40,6 +40,11 @@ export class OrderReceiveAlimTalkResDto {
   barCode: string;
 
   @ApiProperty({
+    description: '상품 신세계 시 개인 번호',
+  })
+  personalCode: string | null;
+  
+  @ApiProperty({
     description: 'ex) 미사용 : NOT_USED, 사용 완료: USED',
   })
   couponStatus: OrderDeliveryCouponStatus;
