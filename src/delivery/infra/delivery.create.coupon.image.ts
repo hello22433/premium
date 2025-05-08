@@ -35,7 +35,7 @@ export const DeliveryCreateCouponImage = async (
 ): Promise<{ fileName: string; path: string }> => {
   // 캔버스 크기 설정 (쿠폰 이미지 크기)
   const canvasWidth = 600;
-  const canvasHeight = 900;
+  const canvasHeight = type === IProductType.SSG ? 850 : 900;
   const canvas = createCanvas(canvasWidth, canvasHeight);
   const ctx = canvas.getContext('2d');
 
@@ -88,38 +88,40 @@ export const DeliveryCreateCouponImage = async (
   ctx.lineTo(canvasWidth, 500); // 선의 끝점 (오른쪽 끝, 이미지 하단)
   ctx.stroke(); // 선 그리기
 
-  ctx.font = '24px "Noto Sans"';
-  ctx.fillStyle = '#ff0000';
-  ctx.fillText(`K 모바일쿠폰을 대표하는 이팝콘`, 150, 550);
 
-  // 바코드 생성 - 더 넓고 뚱뚱하고 짧게 설정
-  const barcodeCanvas = createCanvas(500, 100); // 너비 증가, 높이 감소
-  JsBarcode(barcodeCanvas, `${barcodeValue}`, {
-    format: 'CODE128',
-    width: 4, // 바 두께 증가 (기본값보다 두껍게)
-    height: 70, // 바코드 높이 설정
-    displayValue: true, // 바코드 아래 텍스트 표시
-    fontSize: 20, // 바코드 텍스트 크기
-    textMargin: 15, // 텍스트와 바코드 사이 간격
-    margin: 0, // 바코드 좌우 여백 최소화
-    background: '#ffffff', // 배경색
-    lineColor: '#000000', // 바코드 색상
-  });
-
-  const barcode = barcodeCanvas.toBuffer();
-  const barcodeImage = await createImageFromBuffer(barcode);
-  // 신세계가 아닐경우 이미지 생성 X
+  // 신세계 아닐 때만 바코드 레이어 생성
   if (type !== IProductType.SSG) {
-    ctx.drawImage(barcodeImage, 50, 580); // x 위치를 왼쪽으로 조정 (더 넓어진 바코드를 위해)
-  }
+    ctx.font = '24px "Noto Sans"';
+    ctx.fillStyle = '#ff0000';
+    ctx.fillText(`K 모바일쿠폰을 대표하는 이팝콘`, 150, 550);
 
-  // 바코드 아래에 구분선 추가
-  ctx.beginPath();
-  ctx.strokeStyle = '#D8D8D8'; // 선 색상 설정 (다른 구분선과 동일)
-  ctx.lineWidth = 2; // 선 두께 설정
-  ctx.moveTo(0, 710); // 선의 시작점 (왼쪽 끝, 바코드 아래)
-  ctx.lineTo(canvasWidth, 710); // 선의 끝점 (오른쪽 끝)
-  ctx.stroke(); // 선 그리기
+    // 바코드 생성 - 더 넓고 뚱뚱하고 짧게 설정
+    const barcodeCanvas = createCanvas(500, 100); // 너비 증가, 높이 감소
+    JsBarcode(barcodeCanvas, `${barcodeValue}`, {
+      format: 'CODE128',
+      width: 4, // 바 두께 증가 (기본값보다 두껍게)
+      height: 70, // 바코드 높이 설정
+      displayValue: true, // 바코드 아래 텍스트 표시
+      fontSize: 20, // 바코드 텍스트 크기
+      textMargin: 15, // 텍스트와 바코드 사이 간격
+      margin: 0, // 바코드 좌우 여백 최소화
+      background: '#ffffff', // 배경색
+      lineColor: '#000000', // 바코드 색상
+    });
+
+    const barcode = barcodeCanvas.toBuffer();
+    const barcodeImage = await createImageFromBuffer(barcode);
+
+    ctx.drawImage(barcodeImage, 50, 580); // x 위치를 왼쪽으로 조정 (더 넓어진 바코드를 위해)
+
+    // 바코드 아래에 구분선 추가
+    ctx.beginPath();
+    ctx.strokeStyle = '#D8D8D8'; // 선 색상 설정 (다른 구분선과 동일)
+    ctx.lineWidth = 2; // 선 두께 설정
+    ctx.moveTo(0, 710); // 선의 시작점 (왼쪽 끝, 바코드 아래)
+    ctx.lineTo(canvasWidth, 710); // 선의 끝점 (오른쪽 끝)
+    ctx.stroke(); // 선 그리기
+  }
 
   // 텍스트 추가
   ctx.font = '24px "Noto Sans"';
