@@ -149,7 +149,7 @@ export class ProductChoiceService {
     let queryBuilder = this.productRepository
       .createQueryBuilder('product')
       .innerJoinAndSelect('product.brand', 'brand')
-      .andWhere('product.type = :type', { type: IProductType.SELF });
+      .andWhere('product.type IN (:...types)', { types: [IProductType.SELF, IProductType.GENERAL] });
 
     if (brandId) {
       queryBuilder = queryBuilder.andWhere('product.brandId = :brandId', { brandId });

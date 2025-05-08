@@ -26,6 +26,7 @@ import { OrderReceiveChoiceDto } from '../api/dto/order.receive.choice.dto';
 import { orderBarcodeGenerate } from '../../order/domain/order.code.generate';
 import { DeliveryCreateCouponImage } from '../../delivery/infra/delivery.create.coupon.image';
 import { OrderReceiveChoiceSmsTemplate } from '../domain/order.receive.choice.sms.template';
+import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
 
 @Injectable()
 export class OrderReceiveService {
@@ -41,6 +42,7 @@ export class OrderReceiveService {
     private productChoiceMappingRepository: Repository<ProductChoiceMappingEntity>,
     @Inject('ISmsSend')
     private smsSend: ISmsSend,
+    private partnerCompanyExternService: PartnerCompanyExternService,
   ) {}
 
   async selectChoiceProduct(getBody: OrderReceiveSelectChoiceProductReqDto) {
@@ -53,6 +55,7 @@ export class OrderReceiveService {
       .innerJoinAndSelect('orderProductMapping.order', 'order')
       .innerJoinAndSelect('orderProductMapping.product', 'product')
       .innerJoinAndSelect('product.brand', 'brand')
+      .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .where('orderDelivery.id = :id', { id: orderDeliveryId })
       .getOne();
 
@@ -72,7 +75,7 @@ export class OrderReceiveService {
       throw new InternalServerErrorException('choice product not exist');
     }
 
-    orderDelivery.barCode = orderBarcodeGenerate();
+    await this.partnerCompanyExternService.issue(orderDelivery, null);
     orderDelivery.choiceSelectProductId = productChoiceMapping.product.id;
 
     if (orderDelivery.barCode) {

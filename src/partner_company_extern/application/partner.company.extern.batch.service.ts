@@ -35,6 +35,7 @@ export class PartnerCompanyExternBatchService {
     const orderDeliveryList = await this.orderDeliveryRepository
       .createQueryBuilder('orderDelivery')
       .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
+      .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
       .innerJoinAndSelect('orderProductMapping.product', 'product')
       .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .leftJoinAndSelect('orderDelivery.ssgEvent', 'ssgEvent')
@@ -51,7 +52,14 @@ export class PartnerCompanyExternBatchService {
 
         this.logger.verbose(type);
         if (type === 'GALAXIA') {
-          const giftKind = orderDelivery.orderProductMapping.product.name.includes('(백화점)') ? 'dept' : 'cpn';
+          let giftKind: 'dept' | 'cpn' = orderDelivery.orderProductMapping.product.name.includes('(백화점)')
+            ? 'dept'
+            : 'cpn';
+
+          if (orderDelivery.choiceSelectProduct) {
+            giftKind = orderDelivery.choiceSelectProduct.name.includes('(백화점)') ? 'dept' : 'cpn';
+          }
+
           const galaxiaOut = await this.galaxia.check({
             giftKind: giftKind,
             trId: orderDelivery.couponNum!,
@@ -68,9 +76,14 @@ export class PartnerCompanyExternBatchService {
         // 1.1.2 GSMBIZ 쿠폰 발급
         // GSM쿠폰_전문사양서_고객사_표준V3.4_20200529.pdf
         if (type === 'GS_M_BIZ') {
+          let partnerCompanyCode = orderDelivery.orderProductMapping.product.partnerCompanyCode!;
+          if (orderDelivery.choiceSelectProduct) {
+            partnerCompanyCode = orderDelivery.choiceSelectProduct.partnerCompanyCode!;
+          }
+
           const gsMBizOut = await this.gsmbiz.check({
             transactionId: orderDelivery.transactionId!,
-            partnerCompanyCode: orderDelivery.orderProductMapping.product.partnerCompanyCode!,
+            partnerCompanyCode: partnerCompanyCode,
             barCode: orderDelivery.barCode!,
           });
           orderDelivery.couponStatus =
@@ -106,11 +119,15 @@ export class PartnerCompanyExternBatchService {
         // 1.1.5 컬쳐랜드 쿠폰 발급
         // 컬쳐랜드상품권(모바일문화상품권)_구매_연동가이드_V3.0.pdf
         if (type === 'CULTURELAND') {
+          let expireDay = orderDelivery.orderProductMapping.product.expireDay;
+          if (orderDelivery.choiceSelectProduct) {
+            expireDay = orderDelivery.choiceSelectProduct.expireDay!;
+          }
           const cultureLandOut = await this.culture.check({
             barCode: orderDelivery.barCode!,
             couponNum: orderDelivery.couponNum!,
             requestAt: orderDelivery.sendRequestAt!,
-            expireDay: orderDelivery.orderProductMapping.product.expireDay,
+            expireDay: expireDay,
           });
           orderDelivery.couponStatus =
             cultureLandOut.CancelPossibility != 'Y'
