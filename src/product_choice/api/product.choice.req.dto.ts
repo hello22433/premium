@@ -136,7 +136,7 @@ export class ProductChoiceCreateReqDto {
     description: '대표 이미지 path',
   })
   // ================================
-  @IsNotEmpty()
+  @IsOptional()
   imagePath: string;
 
   @ApiProperty({

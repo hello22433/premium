@@ -213,7 +213,8 @@ export class ProductChoiceService {
 
   @Transactional()
   async create(getBody: ProductChoiceCreateReqDto) {
-    const { name, imagePath, productIdList, useStatus } = getBody;
+    const { name, productIdList, useStatus } = getBody;
+    let { imagePath } = getBody;
 
     const products = await this.productRepository.find({ where: { id: In(productIdList) } });
 
@@ -222,6 +223,8 @@ export class ProductChoiceService {
     }
 
     const initialPrice = products[0].price;
+    imagePath = imagePath ? imagePath : products[0].imagePath;
+
     if (!products.every((product) => product.price === initialPrice)) {
       throw new BadRequestException(`가격이 다른 상품이 포함 되어 있습니다.`);
     }
