@@ -1143,7 +1143,7 @@ export class SettleService {
 
     sheet.columns = [
       { header: '번호', key: 'id', width: 10 },
-      { header: '등록일자', key: 'businessName', width: 32 },
+      { header: '등록일자', key: 'registeredAt', width: 32 },
       { header: '고객사', key: 'businessName', width: 20 },
       { header: '담당자', key: 'personName', width: 20 },
       { header: '이벤트명', key: 'eventName', width: 20 },

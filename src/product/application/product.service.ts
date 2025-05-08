@@ -537,6 +537,7 @@ export class ProductService {
         name: product.name,
         price: product.price,
         expireDay: product.expireDay,
+        category: product.category,
         type: ProductTypeExcelMapping(product.type),
         useStatus: ProductUseStatusExcelMapping(product.useStatus),
       });
