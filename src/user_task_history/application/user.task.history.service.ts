@@ -161,7 +161,7 @@ export class UserTaskHistoryService {
       return {
         id: task.id,
         adminUserName: adminUserMap.get(task.adminUserId) || null,
-        registerAt: format(user.createdAt, DateFormatStr),
+        registerAt: format(task.createdAt, DateFormatStr),
         content: task.content,
       };
     });
