@@ -1,4 +1,4 @@
-export const passwordRegex = /^(?=.*[A-Za-z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,12}$/;
+export const passwordRegex = /^[A-Za-z\d@$!%*?&]{8,12}$/;
 
 export const generateRandomPassword = (): string => {
   const length = Math.floor(Math.random() * (12 - 8 + 1)) + 8;
