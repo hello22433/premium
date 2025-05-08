@@ -1102,7 +1102,7 @@ export class OrderRealProductService {
     oneOrderProductMapping.receivingMethod = receivingMethod;
     oneOrderProductMapping.trackingNumber = trackingNumber;
     oneOrderProductMapping.paymentMethod = paymentMethod;
-    
+
     oneOrderProductMapping.remarks = remarks;
     oneOrderProductMapping.progressStatus = progressStatus;
     oneOrderProductMapping.filePath = filePath;

@@ -88,7 +88,6 @@ export const DeliveryCreateCouponImage = async (
   ctx.lineTo(canvasWidth, 500); // 선의 끝점 (오른쪽 끝, 이미지 하단)
   ctx.stroke(); // 선 그리기
 
-
   // 신세계 아닐 때만 바코드 레이어 생성
   if (type !== IProductType.SSG) {
     ctx.font = '24px "Noto Sans"';
