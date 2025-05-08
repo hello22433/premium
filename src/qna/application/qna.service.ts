@@ -15,6 +15,7 @@ import { format } from 'date-fns';
 import { DateDateFormatStr } from '../../common/domain/date.format.str';
 import { IQnaStatus } from '../interface/qna.status';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
+import { FindOptionsWhere } from 'typeorm/find-options/FindOptionsWhere';
 
 @Injectable()
 export class QnaService {
@@ -26,13 +27,16 @@ export class QnaService {
   async getList(user: ILoginUserInfo, getQuery: QnaGetListReqDto): Promise<QnaGetListResDto> {
     const { page, take } = getQuery;
 
+    const whereCondition: FindOptionsWhere<QnaEntity> = {};
+
     if (user.authority === 'CORPORATE_ADMIN') {
-      throw new BadRequestException('관리자만 접근 가능합니다.');
+      whereCondition.userId = user.id;
     }
 
     const skip = (page - 1) * take;
 
     const [qnaList, totalCount] = await this.qnaRepository.findAndCount({
+      where: whereCondition,
       take,
       skip,
       relations: ['user'],
@@ -65,10 +69,6 @@ export class QnaService {
 
   async getDetail(user: ILoginUserInfo, getParam: QnaGetDetailReqParamDto): Promise<QnaGetDetailResDto> {
     const { id } = getParam;
-
-    if (user.authority === 'CORPORATE_ADMIN') {
-      throw new BadRequestException('관리자만 접근 가능합니다.');
-    }
 
     const qna = await this.qnaRepository.findOne({
       where: {
@@ -127,9 +127,9 @@ export class QnaService {
   async update(user: ILoginUserInfo, getBody: QnaUpdateAnswerReqDto) {
     const { id, answer } = getBody;
 
-    if (user.authority === 'CORPORATE_ADMIN') {
-      throw new BadRequestException('관리자만 접근 가능합니다.');
-    }
+    // if (user.authority === 'CORPORATE_ADMIN') {
+    //   throw new BadRequestException('관리자만 접근 가능합니다.');
+    // }
 
     const qna = await this.qnaRepository.findOne({
       where: {
