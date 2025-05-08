@@ -7,6 +7,7 @@ import {
   UserManagementGetDetailReqParamDto,
   UserManagementGetListReqQueryDto,
   UserManagementGetNameListReqQueryDto,
+  UserManagementPasswordResetReqDto,
   UserManagementUpdateReqDto,
 } from './user.management.req.dto';
 import {
@@ -121,5 +122,19 @@ export class UserManagementController {
   @Put('/user-management')
   update(@Body() getBody: UserManagementUpdateReqDto) {
     return this.userManagementService.update(getBody);
+  }
+
+  @ApiOperation({
+    summary: '계정 비밀번호 초기화 API',
+  })
+  @ApiBearerAuth()
+  @ApiOkResponse({
+    description: '성공적으로 초기화 한 경우',
+  })
+  // ====================================
+  @UseGuards(AuthUserSuperAdminGuard)
+  @Post('/user-management/password-reset')
+  passwordReset(@Body() getBody: UserManagementPasswordResetReqDto) {
+    return this.userManagementService.passwordReset(getBody);
   }
 }

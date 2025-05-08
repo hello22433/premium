@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable } from '@nestjs/common';
 import { UserEntity } from '../../entity/user.entity';
 import { Repository } from 'typeorm';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -8,6 +8,7 @@ import {
   UserManagementGetDetailReqParamDto,
   UserManagementGetListReqQueryDto,
   UserManagementGetNameListReqQueryDto,
+  UserManagementPasswordResetReqDto,
   UserManagementUpdateReqDto,
 } from '../api/user.management.req.dto';
 import {
@@ -18,6 +19,9 @@ import {
 import { UserManagementViewDto } from '../api/dto/user.management.view.dto';
 import { PasswordBcryptEncrypt } from '../../auth/infrastructure/password.bcrypt.encrypt';
 import { UserManagementNameViewDto } from '../api/dto/user.management.name.view.dto';
+import { generateRandomPassword } from '../../user_find/domain/user.password.regex';
+import { userResetPasswordTemplate } from '../../user_find/domain/user.reset.password.template.html';
+import { IMailSend } from '../../mail/interface/mail-send';
 
 @Injectable()
 export class UserManagementService {
@@ -25,6 +29,8 @@ export class UserManagementService {
     @InjectRepository(UserEntity)
     private userRepository: Repository<UserEntity>,
     private passwordEncrypt: PasswordBcryptEncrypt,
+    @Inject('IMailSend')
+    private readonly mailSendService: IMailSend,
   ) {}
 
   async getNameList(getQuery: UserManagementGetNameListReqQueryDto): Promise<UserManagementGetNameListResDto> {
@@ -275,6 +281,38 @@ export class UserManagementService {
     user.cardNumber = getBody.cardNumber;
     user.status = getBody.status;
     user.fromPhoneNumber = getBody.fromPhoneNumber;
+
+    await this.userRepository.save(user);
+
+    return;
+  }
+
+  async passwordReset(getBody: UserManagementPasswordResetReqDto) {
+    const { userId } = getBody;
+    const user = await this.userRepository.findOne({
+      where: {
+        id: userId,
+      },
+    });
+
+    if (!user) {
+      throw new BadRequestException('해당 이메일의 유저가 존재하지 않습니다.');
+    }
+    const tempPassword = generateRandomPassword();
+
+    const { title, content } = userResetPasswordTemplate(tempPassword);
+
+    await this.mailSendService.send({
+      saveSentMail: 'N',
+      bcc: undefined,
+      cc: undefined,
+      content: content,
+      subject: title,
+      to: user.email,
+    });
+
+    user.password = await this.passwordEncrypt.encrypt(tempPassword);
+    user.isPasswordReset = true;
 
     await this.userRepository.save(user);
 
