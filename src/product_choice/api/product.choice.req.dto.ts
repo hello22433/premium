@@ -132,12 +132,12 @@ export class ProductChoiceCreateReqDto {
   @IsNotEmpty()
   name: string;
 
-  @ApiProperty({
+  @ApiPropertyOptional({
     description: '대표 이미지 path',
   })
   // ================================
   @IsOptional()
-  imagePath: string;
+  imagePath?: string;
 
   @ApiProperty({
     description: '상품 pk 리스트',
@@ -177,8 +177,8 @@ export class ProductChoiceUpdateReqDto {
     description: '대표 이미지 path',
   })
   // ================================
-  @IsNotEmpty()
-  imagePath: string;
+  @IsOptional()
+  imagePath?: string;
 
   @ApiProperty({
     description: '상품 pk 리스트',

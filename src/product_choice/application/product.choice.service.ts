@@ -243,7 +243,7 @@ export class ProductChoiceService {
       type: IProductType.CHOICE,
       code: newCode,
       name,
-      imagePath,
+      imagePath: imagePath!,
       partnerCompanyCode: choiceProductPartnerCompanyCode,
       partnerCompanyId: choiceProductPartnerCompanyId,
       brandId: choiceProductBrandId,
@@ -275,7 +275,8 @@ export class ProductChoiceService {
 
   @Transactional()
   async update(getBody: ProductChoiceUpdateReqDto) {
-    const { id, name, imagePath, productIdList, useStatus } = getBody;
+    const { id, name, productIdList, useStatus } = getBody;
+    let { imagePath } = getBody;
 
     const product = await this.productRepository.findOne({ where: { id: id, type: IProductType.CHOICE } });
 
@@ -290,6 +291,7 @@ export class ProductChoiceService {
     }
 
     const initialPrice = products[0].price;
+    imagePath = imagePath ? imagePath : products[0].imagePath;
     if (!products.every((product) => product.price === initialPrice)) {
       throw new BadRequestException(`가격이 다른 상품이 포함 되어 있습니다.`);
     }
@@ -297,7 +299,7 @@ export class ProductChoiceService {
     await this.productRepository.update(id, {
       type: IProductType.CHOICE,
       name,
-      imagePath,
+      imagePath: imagePath!,
       price: initialPrice,
       useStatus: useStatus,
     });
