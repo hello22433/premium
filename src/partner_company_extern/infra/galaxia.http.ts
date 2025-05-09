@@ -144,11 +144,12 @@ export class GalaxiaHttp implements IGalaxia {
     // const data = new URLSearchParams({
     //
     // });
-    const body = {
-      'order-number': obj.transactionId, // 거래 요청 번호
-      issueDay: obj.sendRequestAt,
-      paramKind: 0,
-    };
+
+    const body = new URLSearchParams({
+      'order-number': obj.transactionId,
+      issueDay: `${obj.sendRequestAt}`,
+      paramKind: '0'
+    }).toString();
 
     try {
       const sendUrl = `${url}`;
