@@ -136,7 +136,7 @@ export class GalaxiaHttp implements IGalaxia {
   }
 
   async cancel(obj: GalaxiaCancelIn): Promise<void> {
-    const url = `${this.url}/interface/mkt/${this.companyCode}/${obj.giftKind}/${this.cryptoCipher.encrypt(obj.trId, this.encKey, this.encIv, this.cryptoAlgorithm)}/cancel`;
+    const url = `${this.url}/interface/mkt/${this.companyCode}/${obj.giftKind}/${this.cryptoCipher.encrypt(obj.transactionId, this.encKey, this.encIv, this.cryptoAlgorithm)}/cancel`;
     const headers = {
       'Content-Type': 'application/x-www-form-urlencoded',
       Accept: 'application/json',
