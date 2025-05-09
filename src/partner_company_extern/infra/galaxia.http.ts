@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
@@ -155,6 +155,9 @@ export class GalaxiaHttp implements IGalaxia {
       this.logger.log(response.data);
       const result = response.data as GalaxiaIssueOut;
 
+      if (result.resCode !== '0000') {
+        throw new InternalServerErrorException('핀폐기가 실패했습니다.');
+      }
       // const resultToJson = (await this.parser().parseStringPromise(response.data)) as unknown as GalaxiaIssueOut;
 
       this.logger.log(JSON.stringify(result));
