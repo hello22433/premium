@@ -75,7 +75,32 @@ export class GalaxiaHttp implements IGalaxia {
       // const resultToJson = (await this.parser().parseStringPromise(response.data)) as unknown as GalaxiaIssueOut;
 
       // this.logger.log(resultToJson);
-      return result as GalaxiaIssueOut;
+      return {
+        ...result,
+        transactionId: this.cryptoCipher.decrypt(result.transactionId, this.encKey, this.encIv, this.cryptoAlgorithm),
+        giftCertificate: {
+          ...result.giftCertificate,
+
+          issueNumber: this.cryptoCipher.decrypt(
+            result.giftCertificate.issueNumber,
+            this.encKey,
+            this.encIv,
+            this.cryptoAlgorithm,
+          ),
+          barcode: this.cryptoCipher.decrypt(
+            result.giftCertificate.barcode,
+            this.encKey,
+            this.encIv,
+            this.cryptoAlgorithm,
+          ),
+          faceValue: this.cryptoCipher.decrypt(
+            result.giftCertificate.faceValue,
+            this.encKey,
+            this.encIv,
+            this.cryptoAlgorithm,
+          ),
+        },
+      } as GalaxiaIssueOut;
     } catch (e) {
       this.logger.error(e);
       this.logger.error(JSON.stringify(e));
