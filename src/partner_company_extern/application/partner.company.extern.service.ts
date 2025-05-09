@@ -215,7 +215,7 @@ export class PartnerCompanyExternService {
           transactionId: orderDelivery.transactionId!,
           sendRequestAt: +format(orderDelivery.sendRequestAt, 'yyyyMMdd'),
           giftKind,
-          trId: orderDelivery.barCode!,
+          trId: orderDelivery.couponNum!,
         });
       }
 
