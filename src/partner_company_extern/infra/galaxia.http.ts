@@ -141,16 +141,21 @@ export class GalaxiaHttp implements IGalaxia {
       'Content-Type': 'application/x-www-form-urlencoded',
       Accept: 'application/json',
     };
-    const data = new URLSearchParams({
+    // const data = new URLSearchParams({
+    //
+    // });
+    const body = {
       'order-number': obj.transactionId, // 거래 요청 번호
-    });
+      issueDay: obj.sendRequestAt,
+      paramKind: 0,
+    };
 
     try {
-      const sendUrl = `${url}?${data.toString()}&issueDay=${obj.sendRequestAt}&paramKind=0`;
+      const sendUrl = `${url}`;
       this.logger.log(sendUrl);
       this.logger.log(headers);
 
-      const response = await firstValueFrom(this.httpService.put(`${sendUrl}`, {}, { headers }));
+      const response = await firstValueFrom(this.httpService.put(`${sendUrl}`, body, { headers }));
 
       this.logger.log(response.data);
       const result = response.data as GalaxiaIssueOut;
