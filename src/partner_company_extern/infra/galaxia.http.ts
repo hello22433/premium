@@ -146,7 +146,7 @@ export class GalaxiaHttp implements IGalaxia {
     });
 
     try {
-      const sendUrl = `${url}?${data.toString()}&issueDay=${obj.sendRequestAt}&=paramKind1`;
+      const sendUrl = `${url}?${data.toString()}&issueDay=${obj.sendRequestAt}&paramKind=1`;
       this.logger.log(sendUrl);
       this.logger.log(headers);
 
