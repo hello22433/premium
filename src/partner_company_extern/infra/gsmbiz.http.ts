@@ -37,7 +37,7 @@ export class GsmbizHttp implements IGsmbiz {
   private encIv: string = '';
   private cryptoAlgorithm = 'aes-256-cbc';
 
-  private parser = new Parser();
+  private parser = new Parser({ explicitArray: false, ignoreAttrs: true });
 
   async issue(obj: GsmBizIssueIn): Promise<GsmBizIssueOut> {
     const baseUrl = `${this.url}/services/standardWas/CouponIssue`;
@@ -69,33 +69,30 @@ export class GsmbizHttp implements IGsmbiz {
 
       const parsed = await this.parser.parseStringPromise(response.data);
 
-      const returnData =
-        parsed?.['soapenv:Envelope']?.['soapenv:Body']?.[0]?.['dlwmin:CouponIssueResponse']?.[0]?.['return']?.[0];
+      const returnData = parsed['dlwmin:CouponIssueResponse']?.return;
 
-      if (!returnData?.couponInfo?.[0]) {
-        this.logger.error('couponInfo 누락됨:', returnData);
-        throw new Error('couponInfo 파싱 실패');
+      const cupn_No = returnData?.couponInfo?.cupn_No;
+      const returnCode = returnData?.returnCode;
+      const returnMsg = returnData?.returnMsg ?? '';
+
+      if (!cupn_No || returnCode !== '00000') {
+        this.logger.error('필수 정보 누락 또는 실패:', returnData);
+        throw new Error(`발급 실패: ${returnCode} - ${returnMsg}`);
       }
-
-      const couponInfo = returnData.couponInfo[0];
-      const cupn_No = couponInfo.cupn_No?.[0];
-      const avlStart_Dy = couponInfo.avl_Start_Dy?.[0] || '';
-      const avl_End_Dy = couponInfo.avl_End_Dy?.[0] || '';
-      const appr_Url = couponInfo.appr_Url?.[0] || '';
 
       const barCode = this.cryptoCipher.gsmDecrypt(cupn_No, this.encKey, this.encIv, this.cryptoAlgorithm);
 
       return {
-        returnCode: returnData.returnCode?.[0] || '',
-        returnMsg: returnData.returnMsg?.[0] || '',
+        returnCode,
+        returnMsg,
         couponInfo: {
           cupn_No,
-          avlStart_Dy,
-          avl_End_Dy,
-          appr_Url,
+          avlStart_Dy: returnData.couponInfo?.avl_Start_Dy ?? '',
+          avl_End_Dy: returnData.couponInfo?.avl_End_Dy ?? '',
+          appr_Url: returnData.couponInfo?.appr_Url ?? '',
           barCode,
         },
-      };
+      };        
     } catch (e) {
       this.logger.error(e);
       this.logger.error(JSON.stringify(e));
