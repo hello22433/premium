@@ -55,14 +55,20 @@ export class GsmbizHttp implements IGsmbiz {
     dataStr += `&Cmpn_Cd=${obj.transactionId}`;
     dataStr += `&Cust_No=`;
 
+    this.logger.log('obj :::::::::::::::: ', obj);
+    this.logger.log('dataStr :::::::::::::::: ', dataStr);
     const encrypt = this.cryptoCipher.encrypt(dataStr, this.encKey, this.encIv, this.cryptoAlgorithm);
     const data = new URLSearchParams({
       Clico_Cd: `${this.cliCoCd}`,
       EncStr: encrypt,
     });
 
+    this.logger.log('encrypt :::::::::::::::: ', encrypt);
+
     try {
       const sendUrl = `${url}?${data.toString()}`;
+      this.logger.log('sendUrl :::::::::::::::: ', sendUrl);
+
       const response = await firstValueFrom(this.httpService.get(`${sendUrl}`, { headers }));
       const result = response.data;
       const resultToJson = (await this.parser().parseStringPromise(result)) as unknown as GsmBizIssueOut;
