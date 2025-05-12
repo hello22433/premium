@@ -99,7 +99,7 @@ export class GsmbizHttp implements IGsmbiz {
       throw e;
     }
   }
-
+/*
   async check(obj: GsmBizCheckIn): Promise<GsmBizCheckOut> {
     const url = `${this.url}/services/standardWas/CouponSearch`;
     const headers = {};
@@ -171,5 +171,5 @@ export class GsmbizHttp implements IGsmbiz {
       this.logger.error(JSON.stringify(e));
       throw e;
     }
-  }
+  } */
 }
