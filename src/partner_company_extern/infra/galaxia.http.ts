@@ -136,7 +136,7 @@ export class GalaxiaHttp implements IGalaxia {
   }
 
   async cancel(obj: GalaxiaCancelIn): Promise<void> {
-    const url = `${this.url}/interface/mkt/${this.companyCode}/${obj.giftKind}/${this.cryptoCipher.encrypt(obj.trId, this.encKey, this.encIv, this.cryptoAlgorithm)}/cancel`;
+    const url = `${this.url}/interface/mkt/${this.companyCode}/${obj.giftKind}/${this.cryptoCipher.encrypt(obj.transactionId, this.encKey, this.encIv, this.cryptoAlgorithm)}/cancel`;
     const headers = {
       'Content-Type': 'application/x-www-form-urlencoded',
       Accept: 'application/json',
@@ -144,12 +144,11 @@ export class GalaxiaHttp implements IGalaxia {
     // const data = new URLSearchParams({
     //
     // });
-
-    const body = new URLSearchParams({
-      'order-number': obj.transactionId,
-      issueDay: `${obj.sendRequestAt}`,
-      paramKind: '0'
-    }).toString();
+    const body = {
+      'order-number': obj.transactionId + 'C', // 거래 요청 번호
+      issueDay: obj.sendRequestAt,
+      paramKind: 0,
+    };
 
     try {
       const sendUrl = `${url}`;
