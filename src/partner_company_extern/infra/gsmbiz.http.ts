@@ -3,6 +3,7 @@ import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { Parser } from 'xml2js';
 import { firstValueFrom } from 'rxjs';
+import * as https from 'https';
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import {
   GsmBizCancelIn,
@@ -24,7 +25,7 @@ export class GsmbizHttp implements IGsmbiz {
     this.encKey = this.configService.getOrThrow('GS_M_BIZ_ENCKEY');
     this.encIv = this.configService.getOrThrow('GS_M_BIZ_ENCIV');
     if (this.configService.getOrThrow('ENVIRONMENT') === 'prod') {
-      this.url = 'https://api.gsmcoupon.gsmpp.com:32443'; // TODO prod URL 받으면 변경
+      this.url = 'https://api.gsmcoupon.gsmpp.com:32443';
     }
   }
 
@@ -36,59 +37,62 @@ export class GsmbizHttp implements IGsmbiz {
   private encIv: string = '';
   private cryptoAlgorithm = 'aes-256-cbc';
 
-  private parser() {
-    return new Parser();
-  }
+  private parser = new Parser();
 
   async issue(obj: GsmBizIssueIn): Promise<GsmBizIssueOut> {
-    const url = `${this.url}/services/standardWas/CouponIssue`;
-    const headers = {};
-    let dataStr = `Req_Div_Cd=01`;
-    dataStr += `&Issu_Req_Val=${obj.partnerCompanyCode}`;
-    dataStr += `&Clico_Issu_Paym_No=${obj.transactionId}`;
-    dataStr += `&Clico_Issu_Paym_Seq=1`;
-    dataStr += `&Cre_Cnt=1`;
-    dataStr += `&Avl_Div_Cd=02`;
-    dataStr += `&Avl_Start_Dy=`;
-    dataStr += `&Avl_End_Dy=`;
-    dataStr += `&Crd_Join_Yn=`;
-    dataStr += `&Cmpn_Cd=${obj.transactionId}`;
-    dataStr += `&Cust_No=`;
+    const baseUrl = `${this.url}/services/standardWas/CouponIssue`;
 
-    this.logger.log('obj :::::::::::::::: ', obj);
-    this.logger.log('dataStr :::::::::::::::: ', dataStr);
-    const encrypt = this.cryptoCipher.gsmEncrypt(dataStr, this.encKey, this.encIv, this.cryptoAlgorithm);
-    const data = new URLSearchParams({
-      Clico_Cd: `${this.cliCoCd}`,
-      EncStr: encrypt,
-    });
+    // 암호화할 평문 생성
+    const dataStr = [
+      'Req_Div_Cd=01',
+      `Issu_Req_Val=${obj.partnerCompanyCode}`,
+      `Clico_Issu_Paym_No=${obj.transactionId}`,
+      'Clico_Issu_Paym_Seq=1',
+      'Cre_Cnt=1',
+      'Avl_Div_Cd=02'
+    ].join('&');
 
-    this.logger.log('encrypt :::::::::::::::: ', encrypt);
-
+    const encrypted = this.cryptoCipher.gsmEncrypt(dataStr, this.encKey, this.encIv, this.cryptoAlgorithm);
+    const sendUrl = `${baseUrl}?Clico_Cd=${this.cliCoCd}&EncStr=${encodeURIComponent(encrypted)}`;
+    
     try {
-      const sendUrl = `${url}?${data.toString()}`;
-      this.logger.log('sendUrl :::::::::::::::: ', sendUrl);
-
-      const httpsAgent = new (require('https').Agent)({ rejectUnauthorized: false });
-
+      const httpsAgent = new https.Agent({ rejectUnauthorized: false });
       const response = await firstValueFrom(
         this.httpService.get(sendUrl, {
-          headers,
           httpsAgent,
+          responseType: 'text',
         }),
       );
-      const result = response.data;
-      const resultToJson = (await this.parser().parseStringPromise(result)) as unknown as GsmBizIssueOut;
 
-      this.logger.log(resultToJson);
+      const parsed = await this.parser.parseStringPromise(response.data);
 
-      const barCode = this.cryptoCipher.gsmDecrypt(
-        resultToJson.couponInfo.cupn_No,
-        this.encKey,
-        this.encIv,
-        this.cryptoAlgorithm,
-      );
-      return { ...resultToJson, couponInfo: { ...resultToJson.couponInfo, barCode } };
+      const returnData =
+        parsed?.['soapenv:Envelope']?.['soapenv:Body']?.[0]?.['dlwmin:CouponIssueResponse']?.[0]?.['return']?.[0];
+
+      if (!returnData?.couponInfo?.[0]) {
+        this.logger.error('couponInfo 누락됨:', returnData);
+        throw new Error('couponInfo 파싱 실패');
+      }
+
+      const couponInfo = returnData.couponInfo[0];
+      const cupn_No = couponInfo.cupn_No?.[0];
+      const avlStart_Dy = couponInfo.avl_Start_Dy?.[0] || '';
+      const avl_End_Dy = couponInfo.avl_End_Dy?.[0] || '';
+      const appr_Url = couponInfo.appr_Url?.[0] || '';
+
+      const barCode = this.cryptoCipher.gsmDecrypt(cupn_No, this.encKey, this.encIv, this.cryptoAlgorithm);
+
+      return {
+        returnCode: returnData.returnCode?.[0] || '',
+        returnMsg: returnData.returnMsg?.[0] || '',
+        couponInfo: {
+          cupn_No,
+          avlStart_Dy,
+          avl_End_Dy,
+          appr_Url,
+          barCode,
+        },
+      };
     } catch (e) {
       this.logger.error(e);
       this.logger.error(JSON.stringify(e));
