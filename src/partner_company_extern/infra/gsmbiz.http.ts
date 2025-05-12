@@ -99,40 +99,77 @@ export class GsmbizHttp implements IGsmbiz {
       throw e;
     }
   }
-/*
+
   async check(obj: GsmBizCheckIn): Promise<GsmBizCheckOut> {
     const url = `${this.url}/services/standardWas/CouponSearch`;
     const headers = {};
-    let dataStr = `Req_Div_Cd=01`;
-    dataStr += `&Issu_Req_Val=${obj.partnerCompanyCode}`;
-    dataStr += `&Search_Div=02`;
-    dataStr += `&Receive_Div=99`;
-    dataStr += `&Cupn_No=${obj.barCode}`;
-    dataStr += `&Clico_Issu_Paym_No=${obj.transactionId}`;
-    dataStr += `&Clico_Issu_Paym_Seq=1`;
+
+    const dataStr = [
+      'Req_Div_Cd=01',
+      `Issu_Req_Val=${obj.partnerCompanyCode}`,
+      'Search_Div=02',
+      'Receive_Div=99',
+      `Cupn_No=${obj.barCode}`,
+      `Clico_Issu_Paym_No=${obj.transactionId}`,
+      'Clico_Issu_Paym_Seq=1',
+    ].join('&');
 
     const encrypt = this.cryptoCipher.gsmEncrypt(dataStr, this.encKey, this.encIv, this.cryptoAlgorithm);
-    const data = new URLSearchParams({
-      Clico_Cd: `${this.cliCoCd}`,
+    const query = new URLSearchParams({
+      Clico_Cd: this.cliCoCd,
       EncStr: encrypt,
     });
 
+    const sendUrl = `${url}?${query.toString()}`;
+    this.logger.log('CHECK sendUrl :::::::::::::::: ', sendUrl);
+
     try {
-      const sendUrl = `${url}?${data.toString()}`;
-      const response = await firstValueFrom(this.httpService.get(`${sendUrl}`, { headers }));
-      const result = response.data;
-      const resultToJson = (await this.parser().parseStringPromise(result)) as unknown as GsmBizCheckOut;
+      const httpsAgent = new (require('https').Agent)({ rejectUnauthorized: false });
 
-      this.logger.log(result);
-      this.logger.log(resultToJson);
+      const response = await firstValueFrom(
+        this.httpService.get(sendUrl, {
+          headers,
+          httpsAgent,
+          responseType: 'text',
+        }),
+      );
 
-      // STATE
-      // 00: 취소 가능 쿠폰
-      // 10: 사용된 쿠폰,
-      // 11: 미결제 쿠폰,
-      // 12: 이미 취소된 쿠폰
-      // 14: 사용가능 유효기간 초과
-      return { ...resultToJson, couponInfo: { ...resultToJson.couponInfo } };
+      const parsed = await this.parser.parseStringPromise(response.data);
+
+      const returnData =
+        parsed?.['soapenv:Envelope']?.['soapenv:Body']?.[0]?.['dlwmin:CouponSearchResponse']?.[0]?.['return']?.[0];
+
+      const returnCode = returnData?.returnCode?.[0] || '';
+      const returnMsg = returnData?.returnMsg?.[0] || '';
+      const encOut = returnData?.encOut?.[0] || '';
+
+      if (!encOut) {
+        this.logger.error('encOut 누락됨:', returnData);
+        throw new Error('GSMBIZ check 응답에 encOut 없음');
+      }
+
+      const decrypted = this.cryptoCipher.gsmDecrypt(encOut, this.encKey, this.encIv, this.cryptoAlgorithm);
+
+      const parsedMap = Object.fromEntries(
+        decrypted.split('&').map((pair) => {
+          const [key, value] = pair.split('=');
+          return [key.trim(), value?.trim() ?? ''];
+        }),
+      );
+
+      return {
+        returnCode,
+        returnMsg,
+        couponInfo: {
+          STATE: parsedMap.STATE || '',
+          cupn_No: parsedMap.cupn_No || '',
+          avlStart_Dy: parsedMap.avlStart_Dy || '',
+          avl_End_Dy: parsedMap.avl_End_Dy || '',
+          appr_Url: parsedMap.appr_Url || '',
+          barCode: obj.barCode,
+          USE_DT: parsedMap.USE_DT || '',
+        },
+      };
     } catch (e) {
       this.logger.error(e);
       this.logger.error(JSON.stringify(e));
@@ -140,9 +177,12 @@ export class GsmbizHttp implements IGsmbiz {
     }
   }
 
+
+
   async cancel(obj: GsmBizCancelIn): Promise<void> {
     const url = `${this.url}/services/standardWas/CouponCancel`;
     const headers = {};
+
     let dataStr = `Req_Div_Cd=01`;
     dataStr += `&Issu_Req_Val=${obj.partnerCompanyCode}`;
     dataStr += `&Cncl_Req_Div=02`;
@@ -158,18 +198,48 @@ export class GsmbizHttp implements IGsmbiz {
 
     try {
       const sendUrl = `${url}?${data.toString()}`;
-      const response = await firstValueFrom(this.httpService.get(`${sendUrl}`, { headers }));
-      const result = response.data;
-      const resultToJson = (await this.parser().parseStringPromise(result)) as unknown;
+      const httpsAgent = new (require('https').Agent)({ rejectUnauthorized: false });
 
-      this.logger.log(result);
-      this.logger.log(resultToJson);
+      const response = await firstValueFrom(
+        this.httpService.get(sendUrl, {
+          headers,
+          httpsAgent,
+          responseType: 'text',
+        }),
+      );
 
-      // return { ...resultToJson, couponInfo: { ...resultToJson.couponInfo, barCode } };
+      const parsed = await this.parser.parseStringPromise(response.data);
+
+      const returnData =
+        parsed?.['soapenv:Envelope']?.['soapenv:Body']?.[0]?.['dlwmin:CouponCancelResponse']?.[0]?.['return']?.[0];
+
+      if (!returnData) {
+        this.logger.error('CouponCancel 응답 파싱 실패:', parsed);
+        throw new Error('응답 파싱 실패');
+      }
+
+      const encOut = returnData.encOut?.[0] || '';
+      const returnCode = returnData.returnCode?.[0] || '';
+      const returnMsg = returnData.returnMsg?.[0] || '';
+
+      if (returnCode !== '00000') {
+        throw new Error(`취소 실패: ${returnCode} - ${returnMsg}`);
+      }
+
+      // 복호화된 내용 안에서 Issu_Cncl_Dt 파싱 필요 시
+      const decrypted = this.cryptoCipher.gsmDecrypt(encOut, this.encKey, this.encIv, this.cryptoAlgorithm);
+      this.logger.log('복호화 결과:', decrypted);
+
+      // 예: YYYYMMDDhhmiss 형식 추출
+      const match = decrypted.match(/Issu_Cncl_Dt=(\d{14})/);
+      const cancelDate = match?.[1];
+
+      this.logger.log(`Coupon cancelled at: ${cancelDate}`);
     } catch (e) {
       this.logger.error(e);
       this.logger.error(JSON.stringify(e));
       throw e;
     }
-  } */
+  }
+
 }
