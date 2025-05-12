@@ -147,7 +147,7 @@ export class GalaxiaHttp implements IGalaxia {
     const body = {
       'order-number': obj.transactionId + 'C', // 거래 요청 번호
       issueDay: obj.sendRequestAt,
-      paramKind: 0,
+      paramKind: 1,
     };
 
     try {
