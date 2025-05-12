@@ -69,7 +69,14 @@ export class GsmbizHttp implements IGsmbiz {
       const sendUrl = `${url}?${data.toString()}`;
       this.logger.log('sendUrl :::::::::::::::: ', sendUrl);
 
-      const response = await firstValueFrom(this.httpService.get(`${sendUrl}`, { headers }));
+      const httpsAgent = new (require('https').Agent)({ rejectUnauthorized: false });
+
+      const response = await firstValueFrom(
+        this.httpService.get(sendUrl, {
+          headers,
+          httpsAgent,
+        }),
+      );
       const result = response.data;
       const resultToJson = (await this.parser().parseStringPromise(result)) as unknown as GsmBizIssueOut;
 
