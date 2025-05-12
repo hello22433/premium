@@ -49,6 +49,11 @@ export class GsmbizHttp implements IGsmbiz {
     dataStr += `&Clico_Issu_Paym_Seq=1`;
     dataStr += `&Cre_Cnt=1`;
     dataStr += `&Avl_Div_Cd=02`;
+    dataStr += `&Avl_Start_Dy=`;
+    dataStr += `&Avl_End_Dy=`;
+    dataStr += `&Crd_Join_Yn=`;
+    dataStr += `&Cmpn_Cd=${obj.transactionId}`;
+    dataStr += `&Cust_No=`;
 
     const encrypt = this.cryptoCipher.encrypt(dataStr, this.encKey, this.encIv, this.cryptoAlgorithm);
     const data = new URLSearchParams({
