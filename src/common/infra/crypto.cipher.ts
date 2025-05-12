@@ -11,13 +11,6 @@ export class CryptoCipher {
     const keyBuffer = Buffer.from(key, 'base64'); // Base64 디코딩
     const ivBuffer = Buffer.from(iv, 'utf8'); // IV는 UTF-8로 처리
 
-    console.log('data:', data);
-    console.log('key (base64):', key);
-    console.log('keyBuffer length:', keyBuffer.length);
-    console.log('iv:', iv);
-    console.log('ivBuffer length:', ivBuffer.length);
-    console.log('algorithm:', algorithm);
-
     // 암호화 생성
     const cipher = crypto.createCipheriv(algorithm, keyBuffer, ivBuffer);
 
@@ -43,6 +36,28 @@ export class CryptoCipher {
     decrypted += decipher.final('utf8');
 
     return decrypted; // 복호화된 데이터 반환
+  }
+
+  // gsmbiz 암호화
+  gsmEncrypt(data: string, key: string, iv: string, algorithm: string): string {
+    const keyBuffer = Buffer.from(key, 'utf8');
+    const ivBuffer = Buffer.from(iv, 'utf8');
+
+    const cipher = crypto.createCipheriv(algorithm, keyBuffer, ivBuffer);
+    let encrypted = cipher.update(data, 'utf8', 'base64');
+    encrypted += cipher.final('base64');
+    return encrypted;
+  }
+
+  // gsmbiz 복호화
+  gsmDecrypt(data: string, key: string, iv: string, algorithm: string): string {
+    const keyBuffer = Buffer.from(key, 'utf8');
+    const ivBuffer = Buffer.from(iv, 'utf8');
+
+    const decipher = crypto.createDecipheriv(algorithm, keyBuffer, ivBuffer);
+    let decrypted = decipher.update(data, 'base64', 'utf8');
+    decrypted += decipher.final('utf8');
+    return decrypted;
   }
 
   // JSON 데이터를 암호화하는 함수

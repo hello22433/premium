@@ -57,7 +57,7 @@ export class GsmbizHttp implements IGsmbiz {
 
     this.logger.log('obj :::::::::::::::: ', obj);
     this.logger.log('dataStr :::::::::::::::: ', dataStr);
-    const encrypt = this.cryptoCipher.encrypt(dataStr, this.encKey, this.encIv, this.cryptoAlgorithm);
+    const encrypt = this.cryptoCipher.gsmEncrypt(dataStr, this.encKey, this.encIv, this.cryptoAlgorithm);
     const data = new URLSearchParams({
       Clico_Cd: `${this.cliCoCd}`,
       EncStr: encrypt,
@@ -75,7 +75,7 @@ export class GsmbizHttp implements IGsmbiz {
 
       this.logger.log(resultToJson);
 
-      const barCode = this.cryptoCipher.decrypt(
+      const barCode = this.cryptoCipher.gsmDecrypt(
         resultToJson.couponInfo.cupn_No,
         this.encKey,
         this.encIv,
@@ -100,7 +100,7 @@ export class GsmbizHttp implements IGsmbiz {
     dataStr += `&Clico_Issu_Paym_No=${obj.transactionId}`;
     dataStr += `&Clico_Issu_Paym_Seq=1`;
 
-    const encrypt = this.cryptoCipher.encrypt(dataStr, this.encKey, this.encIv, this.cryptoAlgorithm);
+    const encrypt = this.cryptoCipher.gsmEncrypt(dataStr, this.encKey, this.encIv, this.cryptoAlgorithm);
     const data = new URLSearchParams({
       Clico_Cd: `${this.cliCoCd}`,
       EncStr: encrypt,
@@ -139,7 +139,7 @@ export class GsmbizHttp implements IGsmbiz {
     dataStr += `&Clico_Issu_Paym_No=${obj.transactionId}`;
     dataStr += `&Clico_Issu_Paym_Seq=1`;
 
-    const encrypt = this.cryptoCipher.encrypt(dataStr, this.encKey, this.encIv, this.cryptoAlgorithm);
+    const encrypt = this.cryptoCipher.gsmEncrypt(dataStr, this.encKey, this.encIv, this.cryptoAlgorithm);
     const data = new URLSearchParams({
       Clico_Cd: `${this.cliCoCd}`,
       EncStr: encrypt,
