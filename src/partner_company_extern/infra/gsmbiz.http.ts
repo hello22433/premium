@@ -53,8 +53,9 @@ export class GsmbizHttp implements IGsmbiz {
     ].join('&');
 
     const encrypted = this.cryptoCipher.gsmEncrypt(dataStr, this.encKey, this.encIv, this.cryptoAlgorithm);
-    const sendUrl = `${baseUrl}?Clico_Cd=${this.cliCoCd}&EncStr=${encodeURIComponent(encrypted)}`;
+    const sendUrl = `${baseUrl}?Clico_Cd=${this.cliCoCd}&EncStr=${encrypted}`;
     
+    this.logger.log('sendUrl ::::::::::::' + sendUrl);
     try {
       const httpsAgent = new https.Agent({ rejectUnauthorized: false });
       const response = await firstValueFrom(
@@ -63,6 +64,8 @@ export class GsmbizHttp implements IGsmbiz {
           responseType: 'text',
         }),
       );
+
+      this.logger.log('response.data ::::::::::::' + response.data);
 
       const parsed = await this.parser.parseStringPromise(response.data);
 
