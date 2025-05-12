@@ -24,7 +24,7 @@ export class GsmbizHttp implements IGsmbiz {
     this.encKey = this.configService.getOrThrow('GS_M_BIZ_ENCKEY');
     this.encIv = this.configService.getOrThrow('GS_M_BIZ_ENCIV');
     if (this.configService.getOrThrow('ENVIRONMENT') === 'prod') {
-      this.url = 'https://t-api.gsncoupon.co.kr'; // TODO prod URL 받으면 변경
+      this.url = 'https://api.gsmcoupon.gsmpp.com'; // TODO prod URL 받으면 변경
     }
   }
 
