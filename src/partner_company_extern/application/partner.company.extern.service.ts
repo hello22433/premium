@@ -233,7 +233,7 @@ export class PartnerCompanyExternService {
       // giftiel(기프티엘)_공통_판매사_연동가이드_v2.1.0.0_20210409.pdf
       if (type === 'GIFTIEL') {
         await this.giftiel.cancel({
-          transactionId: orderDelivery.transactionId!,
+          partnerCompanyCode: orderDelivery.orderProductMapping.product.partnerCompanyCode,
           barCode: orderDelivery.barCode!,
         });
       }

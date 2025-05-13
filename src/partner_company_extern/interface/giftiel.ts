@@ -28,17 +28,13 @@ export interface GiftielCheckOut {
 }
 
 export interface GiftielCancelIn {
-  transactionId: string; // CouponCode
+  partnerCompanyCode: string; // CouponCode
   barCode: string;
 }
 
 export interface GiftielCheckIn {
-  transactionId: string; // CouponCode
+  partnerCompanyCode: string; // CouponCode
   barCode: string; // CouponNum
-}
-
-export interface GiftielCancelIn {
-  transactionId: string; // CouponCode
 }
 
 export interface IGiftiel {

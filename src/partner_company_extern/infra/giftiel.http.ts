@@ -75,7 +75,7 @@ export class GiftielHttp implements IGiftiel {
     const data = {
       CiCode: this.ciCode,
       CiPwd: this.ciPwd,
-      CouponCode: obj.transactionId,
+      CouponCode: obj.partnerCompanyCode,
       CouponNum: obj.barCode,
     };
 
@@ -104,7 +104,7 @@ export class GiftielHttp implements IGiftiel {
     const data = {
       CiCode: this.ciCode,
       CiPwd: this.ciPwd,
-      CouponCode: obj.transactionId,
+      CouponCode: obj.partnerCompanyCode,
       CancelState: '1',
       Value: obj.barCode,
     };
