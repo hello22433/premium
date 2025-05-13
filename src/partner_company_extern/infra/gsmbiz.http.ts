@@ -41,6 +41,7 @@ export class GsmbizHttp implements IGsmbiz {
 
   async issue(obj: GsmBizIssueIn): Promise<GsmBizIssueOut> {
     const baseUrl = `${this.url}/services/standardWas/CouponIssue`;
+    const headers = {};
 
     // 암호화할 평문 생성
     const dataStr = [
@@ -55,22 +56,22 @@ export class GsmbizHttp implements IGsmbiz {
     const encrypted = this.cryptoCipher.gsmEncrypt(dataStr, this.encKey, this.encIv, this.cryptoAlgorithm);
     const sendUrl = `${baseUrl}?Clico_Cd=${this.cliCoCd}&EncStr=${encrypted}`;
     
-    this.logger.log('sendUrl ::::::::::::' + sendUrl);
+    this.logger.log('issue() sendUrl ::::::::::::' + sendUrl);
+
     try {
       const httpsAgent = new https.Agent({ rejectUnauthorized: false });
       const response = await firstValueFrom(
         this.httpService.get(sendUrl, {
+          headers,
           httpsAgent,
           responseType: 'text',
         }),
       );
 
-      this.logger.log('response.data ::::::::::::' + response.data);
+      this.logger.log('issue() response.data ::::::::::::' + response.data);
 
       const parsed = await this.parser.parseStringPromise(response.data);
-
       const returnData = parsed['dlwmin:CouponIssueResponse']?.return;
-
       const cupn_No = returnData?.couponInfo?.cupn_No;
       const returnCode = returnData?.returnCode;
       const returnMsg = returnData?.returnMsg ?? '';
@@ -101,7 +102,7 @@ export class GsmbizHttp implements IGsmbiz {
   }
 
   async check(obj: GsmBizCheckIn): Promise<GsmBizCheckOut> {
-    const url = `${this.url}/services/standardWas/CouponSearch`;
+    const baseUrl = `${this.url}/services/standardWas/CouponSearch`;
     const headers = {};
 
     const dataStr = [
@@ -114,18 +115,13 @@ export class GsmbizHttp implements IGsmbiz {
       'Clico_Issu_Paym_Seq=1',
     ].join('&');
 
-    const encrypt = this.cryptoCipher.gsmEncrypt(dataStr, this.encKey, this.encIv, this.cryptoAlgorithm);
-    const query = new URLSearchParams({
-      Clico_Cd: this.cliCoCd,
-      EncStr: encrypt,
-    });
+    const encrypted = this.cryptoCipher.gsmEncrypt(dataStr, this.encKey, this.encIv, this.cryptoAlgorithm);
+    const sendUrl = `${baseUrl}?Clico_Cd=${this.cliCoCd}&EncStr=${encrypted}`;
 
-    const sendUrl = `${url}?${query.toString()}`;
-    this.logger.log('CHECK sendUrl :::::::::::::::: ', sendUrl);
+    this.logger.log('check() sendUrl :::::::::::::::: ', sendUrl);
 
     try {
-      const httpsAgent = new (require('https').Agent)({ rejectUnauthorized: false });
-
+      const httpsAgent = new https.Agent({ rejectUnauthorized: false });
       const response = await firstValueFrom(
         this.httpService.get(sendUrl, {
           headers,
@@ -134,11 +130,10 @@ export class GsmbizHttp implements IGsmbiz {
         }),
       );
 
+      this.logger.log('check() response.data ::::::::::::' + response.data);
+
       const parsed = await this.parser.parseStringPromise(response.data);
-
-      const returnData =
-        parsed?.['soapenv:Envelope']?.['soapenv:Body']?.[0]?.['dlwmin:CouponSearchResponse']?.[0]?.['return']?.[0];
-
+      const returnData = parsed['dlwmin:CouponSearchResponse']?.return;
       const returnCode = returnData?.returnCode?.[0] || '';
       const returnMsg = returnData?.returnMsg?.[0] || '';
       const encOut = returnData?.encOut?.[0] || '';
@@ -180,26 +175,26 @@ export class GsmbizHttp implements IGsmbiz {
 
 
   async cancel(obj: GsmBizCancelIn): Promise<void> {
-    const url = `${this.url}/services/standardWas/CouponCancel`;
+    const baseUrl = `${this.url}/services/standardWas/CouponCancel`;
     const headers = {};
 
-    let dataStr = `Req_Div_Cd=01`;
-    dataStr += `&Issu_Req_Val=${obj.partnerCompanyCode}`;
-    dataStr += `&Cncl_Req_Div=02`;
-    dataStr += `&Cupn_No=${obj.barCode}`;
-    dataStr += `&Clico_Issu_Paym_No=${obj.transactionId}`;
-    dataStr += `&Clico_Issu_Paym_Seq=1`;
+    // 암호화할 평문 생성
+    const dataStr = [
+      'Req_Div_Cd=01',
+      `Issu_Req_Val=${obj.partnerCompanyCode}`,
+      `Cncl_Req_Div=02`,
+      `Cupn_No=${obj.barCode}`,
+      `Clico_Issu_Paym_No=${obj.transactionId}`,
+      'Clico_Issu_Paym_Seq=1'
+    ].join('&');
 
-    const encrypt = this.cryptoCipher.gsmEncrypt(dataStr, this.encKey, this.encIv, this.cryptoAlgorithm);
-    const data = new URLSearchParams({
-      Clico_Cd: `${this.cliCoCd}`,
-      EncStr: encrypt,
-    });
+    const encrypted = this.cryptoCipher.gsmEncrypt(dataStr, this.encKey, this.encIv, this.cryptoAlgorithm);
+    const sendUrl = `${baseUrl}?Clico_Cd=${this.cliCoCd}&EncStr=${encrypted}`;
+
+    this.logger.log('cancel() sendUrl ::::::::::::' + sendUrl);
 
     try {
-      const sendUrl = `${url}?${data.toString()}`;
-      const httpsAgent = new (require('https').Agent)({ rejectUnauthorized: false });
-
+      const httpsAgent = new https.Agent({ rejectUnauthorized: false });
       const response = await firstValueFrom(
         this.httpService.get(sendUrl, {
           headers,
@@ -208,19 +203,19 @@ export class GsmbizHttp implements IGsmbiz {
         }),
       );
 
+      this.logger.log('cancel() response.data ::::::::::::' + response.data);
+
       const parsed = await this.parser.parseStringPromise(response.data);
-
-      const returnData =
-        parsed?.['soapenv:Envelope']?.['soapenv:Body']?.[0]?.['dlwmin:CouponCancelResponse']?.[0]?.['return']?.[0];
-
+      const returnData = parsed['dlwmin:CouponCancelResponse']?.return;
+      
       if (!returnData) {
         this.logger.error('CouponCancel 응답 파싱 실패:', parsed);
         throw new Error('응답 파싱 실패');
       }
 
-      const encOut = returnData.encOut?.[0] || '';
       const returnCode = returnData.returnCode?.[0] || '';
       const returnMsg = returnData.returnMsg?.[0] || '';
+      const encOut = returnData.encOut?.[0] || '';
 
       if (returnCode !== '00000') {
         throw new Error(`취소 실패: ${returnCode} - ${returnMsg}`);
