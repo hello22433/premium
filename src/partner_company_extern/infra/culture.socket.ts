@@ -3,7 +3,7 @@ import { io, Socket } from 'socket.io-client';
 import { ConfigService } from '@nestjs/config';
 import { format } from 'date-fns';
 import * as net from 'node:net';
-import iconv from 'iconv-lite';
+import * as iconv from 'iconv-lite';
 import {
   CultureCancelIn,
   CultureCheckIn,
