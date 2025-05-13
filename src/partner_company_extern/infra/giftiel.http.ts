@@ -96,7 +96,7 @@ export class GiftielHttp implements IGiftiel {
   }
 
   async cancel(obj: GiftielCancelIn): Promise<void> {
-    const url = `${this.url}/Api/Coupon/CouponProcess.asmx/SetCouponCancel`;
+    const url = `${this.url}/Api/Coupon/CouponProcessJson.asmx/SetCouponCancel`;
     const headers = {
       'Content-Type': 'application/json',
     };
