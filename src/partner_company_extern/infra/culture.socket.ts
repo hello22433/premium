@@ -3,6 +3,7 @@ import { io, Socket } from 'socket.io-client';
 import { ConfigService } from '@nestjs/config';
 import { format } from 'date-fns';
 import * as net from 'node:net';
+import iconv from 'iconv-lite';
 import {
   CultureCancelIn,
   CultureCheckIn,
@@ -78,22 +79,25 @@ export class CultureSocket implements ICulture {
     return padded + str;
   }
 
-  private async socketSend(massage: string): Promise<string> {
+  private async socketSend(message: string): Promise<string> {
     return new Promise((resolve, reject) => {
       const client = new net.Socket();
-      const responseChunks: string[] = [];
+      const responseChunks: Buffer[] = [];
 
       client.connect(+this.port, this.socketIP, () => {
         console.log('Connected to server');
-        client.write(massage);
+        client.write(message);
       });
 
-      client.on('data', (data) => {
-        responseChunks.push(data.toString());
+      client.on('data', (data: Buffer) => {
+        responseChunks.push(data);
       });
 
       client.on('end', () => {
-        resolve(responseChunks.join(''));
+        const totalBuffer = Buffer.concat(responseChunks);
+        const decoded = iconv.decode(totalBuffer, 'euc-kr');
+        this.logger.log(`decoded response: ${decoded}`);
+        resolve(decoded);
       });
 
       client.on('error', (err) => {
@@ -121,7 +125,7 @@ export class CultureSocket implements ICulture {
 
     let startPos = 0;
     const responseMap = positions.map((length) => {
-      const field = responseMessage.substring(startPos, length).trim();
+      const field = responseMessage.substring(startPos, startPos + length).trim();
       startPos += length;
       return field;
     });
