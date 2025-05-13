@@ -95,7 +95,7 @@ export class PartnerCompanyExternBatchService {
         // giftiel(기프티엘)_공통_판매사_연동가이드_v2.1.0.0_20210409.pdf
         if (type === 'GIFTIEL') {
           const giftielOut = await this.giftiel.check({
-            transactionId: orderDelivery.transactionId!,
+            partnerCompanyCode: orderDelivery.orderProductMapping.product.partnerCompanyCode!,
             barCode: orderDelivery.barCode!,
           });
 
