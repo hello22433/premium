@@ -105,7 +105,7 @@ export class GiftielHttp implements IGiftiel {
       CiCode: this.ciCode,
       CiPwd: this.ciPwd,
       CouponCode: obj.transactionId,
-      CancelState: '2',
+      CancelState: '1',
       Value: obj.barCode,
     };
 
