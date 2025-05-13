@@ -72,8 +72,8 @@ export class GsmbizHttp implements IGsmbiz {
 
       const parsed = await this.parser.parseStringPromise(response.data);
       const returnData = parsed['dlwmin:CouponIssueResponse']?.return;
-      const cupn_No = returnData?.couponInfo?.cupn_No;
-      const returnCode = returnData?.returnCode;
+      const cupn_No = returnData?.couponInfo?.cupn_No ?? '';
+      const returnCode = returnData?.returnCode ?? '';
       const returnMsg = returnData?.returnMsg ?? '';
 
       if (!cupn_No || returnCode !== '00000') {
@@ -134,9 +134,9 @@ export class GsmbizHttp implements IGsmbiz {
 
       const parsed = await this.parser.parseStringPromise(response.data);
       const returnData = parsed['dlwmin:CouponSearchResponse']?.return;
-      const returnCode = returnData?.returnCode?.[0] || '';
-      const returnMsg = returnData?.returnMsg?.[0] || '';
-      const encOut = returnData?.encOut?.[0] || '';
+      const returnCode = returnData?.returnCode ?? '';
+      const returnMsg = returnData?.returnMsg ?? '';
+      const encOut = returnData?.encOut ?? '';
 
       if (!encOut) {
         this.logger.error('encOut 누락됨:', returnData);
@@ -213,9 +213,9 @@ export class GsmbizHttp implements IGsmbiz {
         throw new Error('응답 파싱 실패');
       }
 
-      const returnCode = returnData.returnCode?.[0] || '';
-      const returnMsg = returnData.returnMsg?.[0] || '';
-      const encOut = returnData.encOut?.[0] || '';
+      const returnCode = returnData?.returnCode ?? '';
+      const returnMsg = returnData?.returnMsg ?? '';
+      const encOut = returnData?.encOut ?? '';
 
       if (returnCode !== '00000') {
         throw new Error(`취소 실패: ${returnCode} - ${returnMsg}`);
