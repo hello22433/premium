@@ -90,7 +90,7 @@ export class PartnerCompanyExternService {
         });
 
         context = JSON.stringify(giftielOut);
-        orderDelivery.barCode = giftielOut.CouponList[0].PinNumber;
+        orderDelivery.barCode = giftielOut.CouponList[0].CouponNum;
       }
 
       // 1.1.4 giftshow 쿠폰 발급
