@@ -327,7 +327,8 @@ export class OrderService {
             productName: orderProductMapping.product.name ?? null,
             amount: orderProductMapping.product.price ?? null,
             barCode: orderDelivery.barCode ? maskBarCode(orderDelivery.barCode) : null,
-            deliveryTarget: maskBarCode(orderDelivery.deliveryTarget),
+            deliveryTarget:
+              order.sendMethod !== 'EMAIL' ? maskBarCode(orderDelivery.deliveryTarget) : orderDelivery.deliveryTarget,
           });
         }
 
