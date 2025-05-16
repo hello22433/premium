@@ -1,20 +1,19 @@
 import { OrderEntity } from '../../entity/order.entity';
 import { BadRequestException } from '@nestjs/common';
 import { IOrderSendMethod } from '../interface/order.send.method';
-import { addMinutes } from 'date-fns';
 import { IOrderStatus } from '../interface/order.status';
 
 export const OrderValidation = (order: OrderEntity) => {
-  let now = new Date();
-  now = addMinutes(now, 30);
+  // let now = new Date();
+  // now = addMinutes(now, 30);
 
   if (!order.eventName) {
     throw new BadRequestException('이벤트 명이 존재하지 않습니다.');
   }
 
-  if (order.sendRequestAt < now) {
-    throw new BadRequestException('발송 요청 시각이 현재시각 보다 30분 전으로 입력 바랍니다.');
-  }
+  // if (order.sendRequestAt < now) {
+  //   throw new BadRequestException('발송 요청 시각이 현재시각 보다 30분 전으로 입력 바랍니다.');
+  // }
 
   if (!order.sendTitle) {
     throw new BadRequestException('제목이 존재하지 않습니다.');
