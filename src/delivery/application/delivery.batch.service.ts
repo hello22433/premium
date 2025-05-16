@@ -100,6 +100,10 @@ export class DeliveryBatchService {
       }
       let text = orderDelivery.orderProductMapping.order.sendContent;
 
+      if (orderDelivery.orderProductMapping.product.memo) {
+        text += `\n\n${orderDelivery.orderProductMapping.product.memo}`;
+      }
+
       if (orderDelivery.orderProductMapping.order.sendTailText) {
         text += orderDelivery.orderProductMapping.order.sendTailText;
       }
