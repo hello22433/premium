@@ -7,6 +7,14 @@ export type EmailDeliveryTemplateIn = {
   qrCodeImagePath?: string;
 };
 
+function normalizeLineBreaks(text: string, replacement: string = '\n'): string {
+  return text
+    .replace(/\r\n/g, replacement) // Windows 줄바꿈 (\r\n)
+    .replace(/\r/g, replacement) // MacOS(구버전) 줄바꿈 (\r)
+    .replace(/\n/g, replacement) // Unix 줄바꿈 (\n)
+    .replace(/<br\s*\/?>/gi, replacement); // HTML 줄바꿈 (<br>)
+}
+
 export const EmailDeliveryTemplate = (obj: EmailDeliveryTemplateIn) => {
   return `
 <!DOCTYPE html>
@@ -29,7 +37,7 @@ export const EmailDeliveryTemplate = (obj: EmailDeliveryTemplateIn) => {
       <tr>
         <!-- 2. 내용 -->
         <td style="padding:20px; font-size:14px; line-height:1.6; color:#333;">
-         ${obj.text}
+         ${normalizeLineBreaks(obj.text, '<br>')}
         </td>
       </tr>
       <tr>
