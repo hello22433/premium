@@ -7,12 +7,14 @@ export type EmailDeliveryTemplateIn = {
   qrCodeImagePath?: string;
 };
 
-function normalizeLineBreaks(text: string, replacement: string = '\n'): string {
-  return text
-    .replace(/\r\n/g, replacement) // Windows 줄바꿈 (\r\n)
-    .replace(/\r/g, replacement) // MacOS(구버전) 줄바꿈 (\r)
-    .replace(/\n/g, replacement) // Unix 줄바꿈 (\n)
-    .replace(/<br\s*\/?>/gi, replacement); // HTML 줄바꿈 (<br>)
+function normalizeLineBreaks(text: string, replacement: string = '<br>'): string {
+  const returnText = text
+    .replaceAll(/\r\n/g, replacement) // Windows 줄바꿈 (\r\n)
+    .replaceAll(/\r/g, replacement) // MacOS(구버전) 줄바꿈 (\r)
+    .replaceAll(/\n/g, replacement) // Unix 줄바꿈 (\n)
+    .replaceAll(/\\n/g, replacement); // Unix 줄바꿈 (\n)
+  // .replaceAll(/<br\s*\/?>/gi, replacement); // HTML 줄바꿈 (<br>)
+  return returnText;
 }
 
 export const EmailDeliveryTemplate = (obj: EmailDeliveryTemplateIn) => {
