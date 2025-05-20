@@ -186,6 +186,7 @@ export class OrderService {
         operationUserName: order.operationUser?.personName ?? null,
         deliveryPrice: order.sendAmount,
         settlePrice: order.settleAmount,
+        requestToDestroyPersonalInfoDay: order.requestToDestroyPersonalInfoDay,
       };
     });
 

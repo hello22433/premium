@@ -73,4 +73,9 @@ export class OrderViewDto {
     description: '정산 금액',
   })
   settlePrice: number;
+
+  @ApiProperty({
+    description: '개인정보 파기 요청일',
+  })
+  requestToDestroyPersonalInfoDay: number;
 }
