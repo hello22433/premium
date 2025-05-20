@@ -226,6 +226,7 @@ export class DeliveryBatchService {
 
         const emailText = EmailDeliveryTemplate({
           topImagePath: orderDelivery.orderProductMapping.topImagePath,
+          productImagePath: orderDelivery.orderProductMapping.product.imagePath,
           text,
           url: url,
           code: emailSendHistory.code,
@@ -525,6 +526,7 @@ export class DeliveryBatchService {
 
       const emailText = EmailDeliveryTemplate({
         topImagePath: orderDelivery.orderProductMapping.topImagePath,
+        productImagePath: orderDelivery.orderProductMapping.product.imagePath,
         text,
         url: url,
         code: emailSendHistory.code,

@@ -50,12 +50,12 @@ export class GsmbizHttp implements IGsmbiz {
       `Clico_Issu_Paym_No=${obj.transactionId}`,
       'Clico_Issu_Paym_Seq=1',
       'Cre_Cnt=1',
-      'Avl_Div_Cd=02'
+      'Avl_Div_Cd=02',
     ].join('&');
 
     const encrypted = this.cryptoCipher.gsmEncrypt(dataStr, this.encKey, this.encIv, this.cryptoAlgorithm);
     const sendUrl = `${baseUrl}?Clico_Cd=${this.cliCoCd}&EncStr=${encrypted}`;
-    
+
     this.logger.log('issue() sendUrl ::::::::::::' + sendUrl);
 
     try {
@@ -93,7 +93,7 @@ export class GsmbizHttp implements IGsmbiz {
           appr_Url: returnData.couponInfo?.appr_Url ?? '',
           barCode,
         },
-      };        
+      };
     } catch (e) {
       this.logger.error(e);
       this.logger.error(JSON.stringify(e));
@@ -172,8 +172,6 @@ export class GsmbizHttp implements IGsmbiz {
     }
   }
 
-
-
   async cancel(obj: GsmBizCancelIn): Promise<void> {
     const baseUrl = `${this.url}/services/standardWas/CouponCancel`;
     const headers = {};
@@ -185,7 +183,7 @@ export class GsmbizHttp implements IGsmbiz {
       `Cncl_Req_Div=02`,
       `Cupn_No=${obj.barCode}`,
       `Clico_Issu_Paym_No=${obj.transactionId}`,
-      'Clico_Issu_Paym_Seq=1'
+      'Clico_Issu_Paym_Seq=1',
     ].join('&');
 
     const encrypted = this.cryptoCipher.gsmEncrypt(dataStr, this.encKey, this.encIv, this.cryptoAlgorithm);
@@ -207,7 +205,7 @@ export class GsmbizHttp implements IGsmbiz {
 
       const parsed = await this.parser.parseStringPromise(response.data);
       const returnData = parsed['dlwmin:CouponCancelResponse']?.return;
-      
+
       if (!returnData) {
         this.logger.error('CouponCancel 응답 파싱 실패:', parsed);
         throw new Error('응답 파싱 실패');
@@ -236,5 +234,4 @@ export class GsmbizHttp implements IGsmbiz {
       throw e;
     }
   }
-
 }

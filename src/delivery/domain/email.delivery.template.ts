@@ -1,5 +1,6 @@
 export type EmailDeliveryTemplateIn = {
   topImagePath: string;
+  productImagePath: string;
   text: string;
   url: string;
   code: string;
@@ -33,7 +34,7 @@ export const EmailDeliveryTemplate = (obj: EmailDeliveryTemplateIn) => {
           <!-- 
           
           -->
-          <img src="https://www.epopkon.com/Resource/enmad_web/newpage/html/img/email-temp-test.jpg" width="382" height="125" alt="배너 이미지" style="display:block; border:none;" />
+          <img src="${obj.topImagePath}" width="382" height="125" alt="배너 이미지" style="display:block; border:none;" />
         </td>
       </tr>
       <tr>

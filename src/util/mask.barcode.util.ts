@@ -4,5 +4,4 @@ export function maskBarCode(barCode: string): string {
   const masked = '*'.repeat(4);
   const end = barCode.slice(-Math.ceil((barCode.length - 4) / 2));
   return `${start}${masked}${end}`;
-
 }
