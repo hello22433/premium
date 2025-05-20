@@ -100,9 +100,13 @@ export class ProductService {
     }
 
     if (type && !isChoiceType) {
-      queryBuilder = queryBuilder.andWhere('product.type = :type', { type });
+      if (type !== IProductType.GENERAL) {
+        queryBuilder = queryBuilder.andWhere('product.type = :type', { type });
+      }
+
       if (type === IProductType.GENERAL) {
         queryBuilder = queryBuilder
+          .andWhere('product.type IN (:...type)', { type: [IProductType.GENERAL, IProductType.SELF] })
           .andWhere('partnerCompany.type IS NOT NULL')
           .andWhere('partnerCompany.type != :ssg', { ssg: 'SSG' });
       }
