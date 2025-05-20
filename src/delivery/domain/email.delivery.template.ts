@@ -46,7 +46,7 @@ export const EmailDeliveryTemplate = (obj: EmailDeliveryTemplateIn) => {
       <tr>
         <!-- 3. 상품 이미지 -->
         <td align="center" style="padding:10px;">
-          <img src="${obj.topImagePath}" width="200" height="200" alt="상품 이미지" style="border-radius:8px;" />
+          <img src="${obj.productImagePath}" width="200" height="200" alt="상품 이미지" style="border-radius:8px;" />
         </td>
       </tr>
       <tr>
