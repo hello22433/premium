@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Req } from '@nestjs/common';
 import { UserService } from '../application/user.service';
 import {
   ApiBadRequestResponse,
@@ -27,6 +27,7 @@ import {
   UserLoginEmailResDto,
   UserRefreshByRefreshResDto,
 } from './user.res.dto';
+import { Request } from 'express';
 
 @ApiTags('user')
 @Controller('')
@@ -77,8 +78,8 @@ export class UserController {
   })
   // ============================================
   @Post('/user/login-email-password')
-  loginByEmailPassword(@Body() loginDto: UserLoginByEmailPasswordReqDto) {
-    return this.userService.loginByEmailPassword(loginDto);
+  loginByEmailPassword(@Body() loginDto: UserLoginByEmailPasswordReqDto, @Req() req: Request) {
+    return this.userService.loginByEmailPassword(loginDto, req.ip);
   }
 
   @ApiOperation({

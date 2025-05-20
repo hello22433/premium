@@ -107,7 +107,10 @@ export class UserService {
     return;
   }
 
-  async loginByEmailPassword(loginDto: UserLoginByEmailPasswordReqDto): Promise<UserLoginByEmailPasswordResDto> {
+  async loginByEmailPassword(
+    loginDto: UserLoginByEmailPasswordReqDto,
+    reqIp: string | undefined,
+  ): Promise<UserLoginByEmailPasswordResDto> {
     const { email, password } = loginDto;
     const user = await this.userRepository.findOne({
       where: {
@@ -124,6 +127,14 @@ export class UserService {
     const isPasswordMatch = await this.passwordEncrypt.compare(password, user.password);
     if (!isPasswordMatch) {
       throw new BadRequestException('USER_DO_NOT_MATCH_PASSWORD');
+    }
+
+    const splitReqAllowedIp = reqIp ? reqIp.split(':') : ['', '', ''];
+
+    const reqAllowedIp = splitReqAllowedIp[3];
+
+    if (user.ip !== reqAllowedIp) {
+      throw new BadRequestException('허용된 IP 가 아닙니다.');
     }
 
     const now = new Date();
