@@ -1,4 +1,6 @@
 import { ApiProperty } from '@nestjs/swagger';
+import { IOrderDeliveryMethod } from '../../../delivery/interface/order.delivery.method';
+import { IOrderSendMethod } from '../../interface/order.send.method';
 
 export class OrderProductDto {
   @ApiProperty({
@@ -91,6 +93,11 @@ export class OrderDeliveryCompleteReportViewDto extends OrderDeliveryViewCommonD
     description: '마스킹 된 바코드',
   })
   barCode: string | null;
+
+  @ApiProperty({
+    description: '배송 정보',
+  })
+  deliveryMethod: IOrderSendMethod;
 }
 
 export class OrderCompleteReportDeliveryViewDto {
