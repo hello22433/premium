@@ -115,7 +115,7 @@ export class ProductService {
     if (type && isChoiceType) {
       if (type === IProductType.GENERAL) {
         queryBuilder = queryBuilder.andWhere('product.type IN (:...type)', {
-          type: [IProductType.GENERAL, IProductType.CHOICE],
+          type: [IProductType.GENERAL, IProductType.CHOICE, IProductType.SELF],
         });
         // .andWhere('partnerCompany.type IS NOT NULL')
         // .andWhere('partnerCompany.type != :ssg', { ssg: 'SSG' });
