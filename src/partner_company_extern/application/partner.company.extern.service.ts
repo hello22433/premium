@@ -55,6 +55,11 @@ export class PartnerCompanyExternService {
     }
 
     try {
+      if (!type || orderDelivery.orderProductMapping.product.type === 'SELF') {
+        orderDelivery.barCode = orderBarcodeGenerate();
+        return;
+      }
+
       // 1.1.1 갤럭시아 쿠폰 발급
       // 표준연동발행규격서 v.1.6.8_갤럭시아머니트리.pdf
       if (type === 'GALAXIA') {
@@ -173,10 +178,6 @@ export class PartnerCompanyExternService {
             order.fromPhoneNumber === '' || !order.fromPhoneNumber ? defaultFromPhoneNumber : order.fromPhoneNumber,
         });
         context = JSON.stringify(response);
-      }
-
-      if (!type) {
-        orderDelivery.barCode = orderBarcodeGenerate();
       }
 
       this.logger.log(orderDelivery.barCode);
