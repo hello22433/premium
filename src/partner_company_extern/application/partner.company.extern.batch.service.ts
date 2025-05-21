@@ -111,9 +111,9 @@ export class PartnerCompanyExternBatchService {
             transactionId: orderDelivery.transactionId!,
           });
           orderDelivery.couponStatus =
-            giftShowOut.response.result[0].StatusCode[0] != '0'
-              ? OrderDeliveryCouponStatus.USED
-              : OrderDeliveryCouponStatus.NOT_USED;
+            giftShowOut.response.result[0].StatusCode[0] == '0'
+              ? OrderDeliveryCouponStatus.NOT_USED
+              : OrderDeliveryCouponStatus.USED;
         }
 
         // 1.1.5 컬쳐랜드 쿠폰 발급
@@ -130,7 +130,7 @@ export class PartnerCompanyExternBatchService {
             expireDay: expireDay,
           });
           orderDelivery.couponStatus =
-            cultureLandOut.CancelPossibility != 'Y'
+            cultureLandOut.CancelPossibility == 'N'
               ? OrderDeliveryCouponStatus.USED
               : OrderDeliveryCouponStatus.NOT_USED;
         }
