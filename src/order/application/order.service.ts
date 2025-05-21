@@ -375,6 +375,7 @@ export class OrderService {
       sendRequestAt: sendRequestAt,
       status: order.status,
       couponExpiration: couponExpiration,
+      requestToDestroyPersonalInfoDay: order.requestToDestroyPersonalInfoDay,
       productList: productList,
     };
   }

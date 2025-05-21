@@ -203,6 +203,11 @@ export class OrderGetDeliveryCompleteReportResDto extends OrderGetDeliveryComple
     description: '고객사 정보',
   })
   userInfo: OrderCustomerViewDto;
+
+  @ApiProperty({
+    description: '개인정보 파기 요청일',
+  })
+  requestToDestroyPersonalInfoDay: number;
 }
 
 export class OrderGetOrderCompleteReportResDto extends OrderCompleteReportViewDto {}
