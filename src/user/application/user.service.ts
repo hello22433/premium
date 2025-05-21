@@ -134,6 +134,8 @@ export class UserService {
     const reqAllowedIp = splitReqAllowedIp[3];
 
     console.log(reqIp);
+    console.log(reqAllowedIp)
+    console.log(user.ip)
     if (user.ip !== reqAllowedIp) {
       throw new BadRequestException('허용된 IP 가 아닙니다.');
     }
