@@ -69,6 +69,31 @@ export class OrderReceiveAlimTalkResDto {
     description: '초이스 쿠폰 일 시 선택한 초이스 쿠폰 정보',
   })
   selectChoiceProduct: OrderReceiveChoiceDto | null;
+
+  @ApiProperty({
+    description: '',
+  })
+  memo: string;
+
+  @ApiProperty({
+    description: '',
+  })
+  sendRequestAt: string;
+
+  @ApiProperty({
+    description: '',
+  })
+  expireDay: number;
+
+  @ApiProperty({
+    description: '',
+  })
+  brandKoreanName: string;
+
+  @ApiProperty({
+    description: '',
+  })
+  userBusinessName: string;
 }
 
 export class OrderReceiveEmailResDto {

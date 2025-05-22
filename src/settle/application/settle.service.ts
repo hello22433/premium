@@ -611,8 +611,8 @@ export class SettleService {
     const resultList: SettleMobileListViewDto[] = [];
 
     // TODO 카드 수수료, mms 수수료
-    const cardFeePercent = 5; // 백분율 1~100사이
-    const mmsFee = 5; //
+    const cardFeePercent = 0;
+    const mmsFee = 0;
 
     for (const order of orderList) {
       for (const orderProductMapping of order.orderProductMappings!) {
@@ -722,8 +722,8 @@ export class SettleService {
     const resultList: SettleMobileListViewDto[] = [];
 
     // TODO 카드 수수료, mms 수수료
-    const cardFeePercent = 5; // 백분율 1~100사이
-    const mmsFee = 5; //
+    const cardFeePercent = 0;
+    const mmsFee = 0;
 
     for (const order of orderList) {
       for (const orderProductMapping of order.orderProductMappings!) {

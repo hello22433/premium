@@ -23,10 +23,12 @@ import { Transactional } from 'typeorm-transactional';
 import { ProductChoiceMappingEntity } from '../../entity/product.choice.mapping.entity';
 import { IProductType } from '../../product/interface/product.type';
 import { OrderReceiveChoiceDto } from '../api/dto/order.receive.choice.dto';
-import { orderBarcodeGenerate } from '../../order/domain/order.code.generate';
 import { DeliveryCreateCouponImage } from '../../delivery/infra/delivery.create.coupon.image';
 import { OrderReceiveChoiceSmsTemplate } from '../domain/order.receive.choice.sms.template';
 import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
+import { addDays, format } from 'date-fns';
+import { normalizeLineBreaks } from '../../delivery/domain/email.delivery.template';
+import { DateFormatStr } from '../../common/domain/date.format.str';
 
 @Injectable()
 export class OrderReceiveService {
@@ -106,6 +108,7 @@ export class OrderReceiveService {
       .innerJoinAndSelect('orderProductMapping.order', 'order')
       .innerJoinAndSelect('orderProductMapping.product', 'product')
       .innerJoinAndSelect('product.brand', 'brand')
+      .innerJoinAndSelect('order.user', 'user')
       .where('orderDelivery.id = :id', { id: orderDecrypt.id })
       .getOne();
 
@@ -188,6 +191,13 @@ export class OrderReceiveService {
       type: orderDelivery.orderProductMapping.product.type,
       choiceProductList,
       selectChoiceProduct,
+      memo: orderDelivery.orderProductMapping.product.memo
+        ? normalizeLineBreaks(orderDelivery.orderProductMapping.product.memo, '<br>')
+        : '',
+      sendRequestAt: format(orderDelivery.sendRequestAt, DateFormatStr),
+      expireDay: orderDelivery.orderProductMapping.product.expireDay,
+      brandKoreanName: orderDelivery.orderProductMapping.product.brand!.nameKorean,
+      userBusinessName: orderDelivery.orderProductMapping.order.user!.businessName,
     };
   }
 
