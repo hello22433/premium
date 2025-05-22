@@ -78,7 +78,12 @@ export class OrderReceiveAlimTalkResDto {
   @ApiProperty({
     description: '',
   })
-  expireDate: string;
+  sendRequestAt: string;
+
+  @ApiProperty({
+    description: '',
+  })
+  expireDay: number;
 
   @ApiProperty({
     description: '',

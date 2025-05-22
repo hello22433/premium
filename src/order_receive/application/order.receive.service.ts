@@ -28,6 +28,7 @@ import { OrderReceiveChoiceSmsTemplate } from '../domain/order.receive.choice.sm
 import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
 import { addDays, format } from 'date-fns';
 import { normalizeLineBreaks } from '../../delivery/domain/email.delivery.template';
+import { DateFormatStr } from '../../common/domain/date.format.str';
 
 @Injectable()
 export class OrderReceiveService {
@@ -193,10 +194,8 @@ export class OrderReceiveService {
       memo: orderDelivery.orderProductMapping.product.memo
         ? normalizeLineBreaks(orderDelivery.orderProductMapping.product.memo, '<br>')
         : '',
-      expireDate: format(
-        addDays(orderDelivery.sendRequestAt, orderDelivery.orderProductMapping.product.expireDay),
-        'yyyy. MM. dd.',
-      ),
+      sendRequestAt: format(orderDelivery.sendRequestAt, DateFormatStr),
+      expireDay: orderDelivery.orderProductMapping.product.expireDay,
       brandKoreanName: orderDelivery.orderProductMapping.product.brand!.nameKorean,
       userBusinessName: orderDelivery.orderProductMapping.order.user!.businessName,
     };
