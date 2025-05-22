@@ -9,7 +9,7 @@ export class DeliveryBatchSchedule implements OnApplicationBootstrap {
   constructor(private deliveryBatchService: DeliveryBatchService) {}
 
   onApplicationBootstrap() {
-    this.deliveryBatchService.deliveryDeliveryTargetDestroy();
+    // this.deliveryBatchService.deliveryDeliveryTargetDestroy();
     // TEST;
     // this.deliveryBatchService.issueAndSend();
     // this.handleStatusUpdateBatch();
