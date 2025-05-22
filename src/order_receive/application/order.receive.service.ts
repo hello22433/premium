@@ -106,6 +106,7 @@ export class OrderReceiveService {
       .innerJoinAndSelect('orderProductMapping.order', 'order')
       .innerJoinAndSelect('orderProductMapping.product', 'product')
       .innerJoinAndSelect('product.brand', 'brand')
+      .innerJoinAndSelect('order.user', 'user')
       .where('orderDelivery.id = :id', { id: orderDecrypt.id })
       .getOne();
 
