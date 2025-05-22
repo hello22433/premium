@@ -23,10 +23,10 @@ import { Transactional } from 'typeorm-transactional';
 import { ProductChoiceMappingEntity } from '../../entity/product.choice.mapping.entity';
 import { IProductType } from '../../product/interface/product.type';
 import { OrderReceiveChoiceDto } from '../api/dto/order.receive.choice.dto';
-import { orderBarcodeGenerate } from '../../order/domain/order.code.generate';
 import { DeliveryCreateCouponImage } from '../../delivery/infra/delivery.create.coupon.image';
 import { OrderReceiveChoiceSmsTemplate } from '../domain/order.receive.choice.sms.template';
 import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
+import { addDays, format } from 'date-fns';
 
 @Injectable()
 export class OrderReceiveService {
@@ -188,6 +188,13 @@ export class OrderReceiveService {
       type: orderDelivery.orderProductMapping.product.type,
       choiceProductList,
       selectChoiceProduct,
+      memo: orderDelivery.orderProductMapping.product.memo ?? '',
+      expireDate: format(
+        addDays(orderDelivery.sendRequestAt, orderDelivery.orderProductMapping.product.expireDay),
+        'yyyy. MM. dd.',
+      ),
+      brandKoreanName: orderDelivery.orderProductMapping.product.brand!.nameKorean,
+      userBusinessName: orderDelivery.orderProductMapping.order.user!.businessName,
     };
   }
 
