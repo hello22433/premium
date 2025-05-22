@@ -9,6 +9,7 @@ export class DeliveryBatchSchedule implements OnApplicationBootstrap {
   constructor(private deliveryBatchService: DeliveryBatchService) {}
 
   onApplicationBootstrap() {
+    this.deliveryBatchService.deliveryDeliveryTargetDestroy();
     // TEST;
     // this.deliveryBatchService.issueAndSend();
     // this.handleStatusUpdateBatch();
@@ -34,6 +35,18 @@ export class DeliveryBatchSchedule implements OnApplicationBootstrap {
     try {
       await this.deliveryBatchService.updateDeliveryStatusFromTracking();
       this.logger.log('Completed delivery status update');
+    } catch (e) {
+      this.logger.error(e);
+    }
+  }
+
+  // 개인정보 파기
+  // 30분 마다 실행
+  @Cron('0 */30 * * * *')
+  async handleDeliveryTargetDestroy() {
+    try {
+      await this.deliveryBatchService.deliveryDeliveryTargetDestroy();
+      this.logger.log('delivery Target update');
     } catch (e) {
       this.logger.error(e);
     }

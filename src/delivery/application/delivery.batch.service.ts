@@ -560,4 +560,42 @@ export class DeliveryBatchService {
 
     return;
   }
+
+  async deliveryDeliveryTargetDestroy() {
+    const now = new Date();
+    const destroyPhoneNumber = '000-0000-0000';
+    const destroyEmail = '';
+
+    const orderDeliveryList = await this.orderDeliveryRepository
+      .createQueryBuilder('orderDelivery')
+      .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
+      .innerJoinAndSelect('orderProductMapping.order', 'order')
+      .where(`DATE_ADD(order.sendRequestAt, INTERVAL order.requestToDestroyPersonalInfoDay DAY) <= :now`, {
+        now,
+      })
+      .andWhere('order.status = :status', { status: IOrderStatus.DELIVERY_COMPLETE })
+      .andWhere('orderDelivery.deliveryTarget != :targetPhone', { targetPhone: destroyPhoneNumber })
+      .andWhere('orderDelivery.deliveryTarget != :targetEmail', { targetEmail: destroyEmail })
+      .getMany();
+
+    const destroyEmailIdList: number[] = [];
+    const destroyPhoneNumberIdList: number[] = [];
+    for (const orderDelivery of orderDeliveryList) {
+      if (orderDelivery.deliveryMethod === IOrderSendMethod.EMAIL) {
+        destroyEmailIdList.push(orderDelivery.id);
+      }
+      if (
+        orderDelivery.deliveryMethod === IOrderSendMethod.SMS ||
+        orderDelivery.deliveryMethod === IOrderSendMethod.ALIM_TALK
+      ) {
+        destroyPhoneNumberIdList.push(orderDelivery.id);
+      }
+    }
+
+    await this.orderDeliveryRepository.update(
+      { id: In(destroyPhoneNumberIdList) },
+      { deliveryTarget: destroyPhoneNumber },
+    );
+    await this.orderDeliveryRepository.update({ id: In(destroyEmailIdList) }, { deliveryTarget: destroyEmail });
+  }
 }
