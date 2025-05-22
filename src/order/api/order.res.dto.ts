@@ -98,6 +98,11 @@ export class OrderGetDetailResDto {
   sendRequestAt: string | null;
 
   @ApiProperty({
+    description: '발송 방식 ex) IMMEDIATE : 즉시, RESERVE : 예약',
+  })
+  sendType: string | 'RESERVE';
+
+  @ApiProperty({
     description: '상단 이미지 경로',
   })
   topImagePath?: string;
