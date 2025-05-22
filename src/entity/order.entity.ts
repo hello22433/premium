@@ -84,6 +84,9 @@ export class OrderEntity extends BaseEntity {
   @Column({ comment: '발송 요청 시각' })
   sendRequestAt: Date;
 
+  @Column({ name: 'send_type' })
+  sendType: string;
+
   @ManyToOne(() => UserEntity, { createForeignKeyConstraints: false })
   @JoinColumn({ name: 'user_id' })
   user?: UserEntity;
@@ -101,4 +104,6 @@ export class OrderEntity extends BaseEntity {
     createForeignKeyConstraints: false,
   })
   orderLikes?: OrderLikeEntity[];
+
+
 }
