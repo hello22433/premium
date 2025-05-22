@@ -27,6 +27,7 @@ import { DeliveryCreateCouponImage } from '../../delivery/infra/delivery.create.
 import { OrderReceiveChoiceSmsTemplate } from '../domain/order.receive.choice.sms.template';
 import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
 import { addDays, format } from 'date-fns';
+import { normalizeLineBreaks } from '../../delivery/domain/email.delivery.template';
 
 @Injectable()
 export class OrderReceiveService {
@@ -189,7 +190,9 @@ export class OrderReceiveService {
       type: orderDelivery.orderProductMapping.product.type,
       choiceProductList,
       selectChoiceProduct,
-      memo: orderDelivery.orderProductMapping.product.memo ?? '',
+      memo: orderDelivery.orderProductMapping.product.memo
+        ? normalizeLineBreaks(orderDelivery.orderProductMapping.product.memo, '<br>')
+        : '',
       expireDate: format(
         addDays(orderDelivery.sendRequestAt, orderDelivery.orderProductMapping.product.expireDay),
         'yyyy. MM. dd.',

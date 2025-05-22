@@ -8,7 +8,7 @@ export type EmailDeliveryTemplateIn = {
   qrCodeImagePath?: string;
 };
 
-function normalizeLineBreaks(text: string, replacement: string = '<br>'): string {
+export function normalizeLineBreaks(text: string, replacement: string = '<br>'): string {
   const returnText = text
     .replaceAll(/\r\n/g, replacement) // Windows 줄바꿈 (\r\n)
     .replaceAll(/\r/g, replacement) // MacOS(구버전) 줄바꿈 (\r)
