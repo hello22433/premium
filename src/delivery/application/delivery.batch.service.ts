@@ -32,6 +32,7 @@ import { OrderRealProductEntity } from '../../entity/order.real.product.entity';
 import { DeliveryTrackHttp } from '../infra/delivery.track.http';
 import { DeliveryTrackingStatus } from '../domain/delivery.tracking.status';
 import { OrderRealProductMappingEntity } from '../../entity/order.real.product.mapping.entity';
+import { Transactional } from 'typeorm-transactional';
 
 @Injectable()
 export class DeliveryBatchService {
@@ -561,6 +562,7 @@ export class DeliveryBatchService {
     return;
   }
 
+  @Transactional()
   async deliveryDeliveryTargetDestroy() {
     const now = new Date();
     const destroyPhoneNumber = '000-0000-0000';
