@@ -106,7 +106,7 @@ export class CustomerServiceService {
   }
 
   async getDetailList(getQuery: CustomerServiceGetDetailListReqDto) {
-    const { orderProductMappingId, page, take } = getQuery;
+    const { orderId, page, take } = getQuery;
 
     const queryBuilder = this.orderDeliveryRepository
       .createQueryBuilder('orderDelivery')
@@ -114,8 +114,8 @@ export class CustomerServiceService {
       .innerJoinAndSelect('orderProductMapping.order', 'order')
       .innerJoinAndSelect('orderProductMapping.product', 'product')
       .innerJoinAndSelect('product.brand', 'brand')
-      .where('orderProductMapping.id = :orderProductMappingId', {
-        orderProductMappingId: orderProductMappingId,
+      .where('order.id = :orderId', {
+        orderId: orderId,
       });
     const skip = (page - 1) * take;
     queryBuilder.take(take).skip(skip);

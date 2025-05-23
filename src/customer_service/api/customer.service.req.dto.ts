@@ -79,13 +79,13 @@ export class CustomerServiceGetListReqDto extends PagingReqDto {
 
 export class CustomerServiceGetDetailListReqDto extends PagingReqDto {
   @ApiProperty({
-    description: 'orderProduct Mapping id',
+    description: 'orderId',
   })
   // =============================================================
   @IsNotEmpty()
   @IsNumber()
   @Type(() => Number)
-  orderProductMappingId: number;
+  orderId: number;
 }
 
 export class CustomerServiceReSendReqDto {
