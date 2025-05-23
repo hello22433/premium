@@ -87,7 +87,7 @@ export class CustomerServiceService {
     for (const order of orderList) {
       for (const orderProductMapping of order.orderProductMappings!) {
         result.push({
-          sendRequestAt: format(orderProductMapping.order.sendRequestAt, DateFormatStr),
+          sendRequestAt: format(order.sendRequestAt, DateFormatStr),
           id: order.id,
           orderProductMappingId: orderProductMapping.id,
           eventName: order.eventName,
