@@ -85,19 +85,17 @@ export class CustomerServiceService {
 
     const result: CustomerServiceViewDto[] = [];
     for (const order of orderList) {
-      for (const orderProductMapping of order.orderProductMappings!) {
-        result.push({
-          sendRequestAt: format(order.sendRequestAt, DateFormatStr),
-          id: order.id,
-          orderProductMappingId: orderProductMapping.id,
-          eventName: order.eventName,
-          productName: orderProductMapping.product.name,
-          productCode: orderProductMapping.product.code,
-          status: order.status,
-          fromPhoneNumber: order.fromPhoneNumber,
-          fromEmail: order.fromEmail,
-        });
-      }
+      result.push({
+        sendRequestAt: format(order.sendRequestAt, DateFormatStr),
+        id: order.id,
+        orderProductMappingId: order.orderProductMappings![0].id,
+        eventName: order.eventName,
+        productName: order.orderProductMappings![0].product.name,
+        productCode: order.orderProductMappings![0].product.code,
+        status: order.status,
+        fromPhoneNumber: order.fromPhoneNumber,
+        fromEmail: order.fromEmail,
+      });
     }
 
     return {
