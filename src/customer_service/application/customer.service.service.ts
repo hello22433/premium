@@ -37,10 +37,10 @@ export class CustomerServiceService {
     const { orderType, startAt, endAt, userId, status, orderNumber, eventName, productName, productCode, page, take } =
       getQuery;
 
-    let queryBuilder = this.orderProductMappingRepository
-      .createQueryBuilder('orderProductMapping')
-      .innerJoinAndSelect('orderProductMapping.order', 'order')
-      .innerJoinAndSelect('orderProductMapping.product', 'product');
+    let queryBuilder = this.orderRepository
+      .createQueryBuilder('order')
+      .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
+      .innerJoinAndSelect('orderProductMappings.product', 'product');
 
     if (orderType === 'GENERAL') {
       queryBuilder.andWhere('product.type = :type', { type: 'GENERAL' });
@@ -78,24 +78,27 @@ export class CustomerServiceService {
 
     const skip = (page - 1) * take;
     queryBuilder.take(take).skip(skip);
-    queryBuilder.orderBy('orderProductMapping.id', 'DESC');
-    const [orderProductMappingList, totalCount] = await queryBuilder.getManyAndCount();
+    queryBuilder.orderBy('order.id', 'DESC');
+    const [orderList, totalCount] = await queryBuilder.getManyAndCount();
 
     const totalPage = Math.ceil(totalCount / take);
 
-    const result: CustomerServiceViewDto[] = orderProductMappingList.map((orderProductMapping) => {
-      return {
-        sendRequestAt: format(orderProductMapping.order.sendRequestAt, DateFormatStr),
-        id: orderProductMapping.order.id,
-        orderProductMappingId: orderProductMapping.id,
-        eventName: orderProductMapping.order.eventName,
-        productName: orderProductMapping.product.name,
-        productCode: orderProductMapping.product.code,
-        status: orderProductMapping.order.status,
-        fromPhoneNumber: orderProductMapping.order.fromPhoneNumber,
-        fromEmail: orderProductMapping.order.fromEmail,
-      };
-    });
+    const result: CustomerServiceViewDto[] = [];
+    for (const order of orderList) {
+      for (const orderProductMapping of order.orderProductMappings!) {
+        result.push({
+          sendRequestAt: format(orderProductMapping.order.sendRequestAt, DateFormatStr),
+          id: order.id,
+          orderProductMappingId: orderProductMapping.id,
+          eventName: order.eventName,
+          productName: orderProductMapping.product.name,
+          productCode: orderProductMapping.product.code,
+          status: order.status,
+          fromPhoneNumber: order.fromPhoneNumber,
+          fromEmail: order.fromEmail,
+        });
+      }
+    }
 
     return {
       list: result,
