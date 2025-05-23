@@ -41,8 +41,8 @@ export class DeliveryBatchSchedule implements OnApplicationBootstrap {
   }
 
   // 개인정보 파기
-  // 30분 마다 실행
-  @Cron('0 */30 * * * *')
+  // 매일 00시 실행
+  @Cron('0 15 * * *')
   async handleDeliveryTargetDestroy() {
     try {
       await this.deliveryBatchService.deliveryDeliveryTargetDestroy();
