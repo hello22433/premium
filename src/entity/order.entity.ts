@@ -84,8 +84,8 @@ export class OrderEntity extends BaseEntity {
   @Column({ comment: '발송 요청 시각' })
   sendRequestAt: Date;
 
-  @Column({ name: 'send_type' })
-  sendType: string;
+  @Column({ name: 'send_type', type: 'varchar', length: 50, nullable: true })
+  sendType: string | null;
 
   @ManyToOne(() => UserEntity, { createForeignKeyConstraints: false })
   @JoinColumn({ name: 'user_id' })

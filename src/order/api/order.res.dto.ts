@@ -100,7 +100,7 @@ export class OrderGetDetailResDto {
   @ApiProperty({
     description: '발송 방식 ex) IMMEDIATE : 즉시, RESERVE : 예약',
   })
-  sendType: string | 'RESERVE';
+  sendType: string | null;
 
   @ApiProperty({
     description: '상단 이미지 경로',

@@ -274,6 +274,7 @@ export class OrderService {
       sendTitle: order.sendTitle,
       sendContent: order.sendContent,
       sendRequestAt: sendRequestAt,
+      sendType: order.sendType,
       topImagePath,
       midImagePath,
       status: order.status,
@@ -731,6 +732,7 @@ export class OrderService {
       sendContent,
 
       sendRequestAt,
+      sendType,
       orderProductList,
     } = getBody;
 
@@ -771,6 +773,13 @@ export class OrderService {
       sendAmount += getProduct.price * orderProduct.amount;
     }
 
+    const isImmediate = sendType === 'IMMEDIATE';
+    const sendAt = isImmediate
+      ? new Date()
+      : sendRequestAt
+        ? new Date(sendRequestAt)
+        : undefined;
+        
     const orderInsertResult = await this.orderRepository.insert({
       userId: user.id,
       status: IOrderStatus.TEMP,
@@ -789,7 +798,8 @@ export class OrderService {
       sendAmount: sendAmount,
       settleAmount: sendAmount,
       registerAt: new Date(),
-      sendRequestAt: new Date(sendRequestAt),
+      sendRequestAt: sendAt,
+      sendType: sendType,
     });
     const orderId: number = orderInsertResult.identifiers[0].id;
 

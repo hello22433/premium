@@ -114,6 +114,14 @@ export class OrderCreateDto {
   @Matches(dateAtRegexp)
   sendRequestAt: string = '1970-01-01T00:00:00';
 
+  @ApiPropertyOptional({
+    description: '발송 방식',
+  })
+  // =================================================
+  @IsOptional()
+  @IsString()
+  sendType: string | null;
+
   @ApiProperty({
     description: '상품 수량',
   })
