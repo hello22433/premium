@@ -114,7 +114,7 @@ export class CustomerServiceDiscardReqDto {
 }
 
 export class CustomerServiceCouponRefreshReqDto {
-  @ApiProperty({ example: 241, description: 'orderDelivery.id' })
+  @ApiProperty({ example: 241, description: '핀 새로고침 하고자 하는 orderDelivery.id' })
   @IsInt()
   @Min(1)
   @Type(() => Number)

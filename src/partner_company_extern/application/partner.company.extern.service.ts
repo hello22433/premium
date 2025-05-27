@@ -195,7 +195,7 @@ export class PartnerCompanyExternService {
       orderDelivery.status = IOrderDeliveryStatus.FAIL;
     } finally {
       if (type !== null) {
-        this.partnerCompanyExternHistoryRepository.insert({
+        await this.partnerCompanyExternHistoryRepository.insert({
           context,
           isSuccess,
           type: type!,
