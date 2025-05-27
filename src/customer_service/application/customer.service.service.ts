@@ -210,6 +210,7 @@ export class CustomerServiceService {
       .createQueryBuilder('orderDelivery')
       .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
       .innerJoinAndSelect('orderProductMapping.product', 'product')
+      .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
       .where('orderDelivery.id = :orderDeliveryId', { orderDeliveryId })
       .getOne();
