@@ -329,7 +329,7 @@ export class PartnerCompanyExternService {
         break;
       }
 
-      /* 4. GIFT_SHOW ───────────────────────────────────────────── */
+      // 4. GIFT_SHOW
       case 'GIFT_SHOW': {
         const giftiShowOut = await this.giftiShow.check({
           transactionId: orderDelivery.transactionId!,
