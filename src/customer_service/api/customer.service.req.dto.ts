@@ -1,7 +1,16 @@
 import { IOrderStatus } from '../../order/interface/order.status';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IOrderType } from '../../order/interface/order.type';
-import { IsEnum, IsIn, IsNotEmpty, IsNumber, IsOptional, Matches } from 'class-validator';
+import {
+  IsEnum,
+  IsIn,
+  IsInt,
+  IsNotEmpty,
+  IsNumber,
+  IsOptional,
+  Matches,
+  Min,
+} from 'class-validator';
 import { PagingReqDto } from '../../common/api/dto/pagination.req.dto';
 import { dateAtRegexp } from '../../common/domain/date.regexp';
 import { Type } from 'class-transformer';
@@ -101,5 +110,13 @@ export class CustomerServiceDiscardReqDto {
   // =============================================================
   @IsNotEmpty()
   @IsNumber()
+  orderDeliveryId: number;
+}
+
+export class CustomerServiceCouponRefreshReqDto {
+  @ApiProperty({ example: 241, description: 'orderDelivery.id' })
+  @IsInt()
+  @Min(1)
+  @Type(() => Number)
   orderDeliveryId: number;
 }

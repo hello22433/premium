@@ -18,6 +18,7 @@ import { SsgTransactionId } from '../domain/ssg.transaction.id';
 import { defaultFromPhoneNumber, ssgIssueUserName } from '../../const';
 import { smsSsgTemplate } from '../../delivery/domain/sms.ssg.template';
 import { addDays, format } from 'date-fns';
+import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
 
 @Injectable()
 export class PartnerCompanyExternService {
@@ -264,5 +265,127 @@ export class PartnerCompanyExternService {
       this.logger.log(JSON.stringify(e));
       this.logger.log(e);
     }
+  }
+
+  async refreshCouponStatus(orderDelivery: OrderDeliveryEntity): Promise<OrderDeliveryEntity> {
+    const partnerType = orderDelivery.orderProductMapping.product.partnerCompany?.type;
+
+    if (!partnerType) {
+      throw new Error('partnerCompany type is null');
+    }
+
+    switch (partnerType) {
+      // 1. GALAXIA
+      case 'GALAXIA': {
+        const baseProduct = orderDelivery.choiceSelectProduct ?? orderDelivery.orderProductMapping.product;
+
+        const giftKind: 'dept' | 'cpn' = baseProduct.name.includes('(백화점)') ? 'dept' : 'cpn';
+
+        const { giftCertificate } = await this.galaxia.check({
+          giftKind,
+          paramValue: orderDelivery.couponNum!,
+        });
+
+        orderDelivery.couponStatus = giftCertificate.isUsed
+          ? OrderDeliveryCouponStatus.USED
+          : OrderDeliveryCouponStatus.NOT_USED;
+        orderDelivery.tradeAt = giftCertificate.usedDate ? new Date(giftCertificate.usedDate) : null;
+        orderDelivery.galaxiaBalance = Number(giftCertificate.balance);
+        break;
+      }
+
+      // 2. GS_M_BIZ
+      case 'GS_M_BIZ': {
+        const partnerCompanyCode =
+          orderDelivery.choiceSelectProduct?.partnerCompanyCode ??
+          orderDelivery.orderProductMapping.product.partnerCompanyCode!;
+
+        const { couponInfo } = await this.gsmbiz.check({
+          transactionId: orderDelivery.transactionId!,
+          partnerCompanyCode,
+          barCode: orderDelivery.barCode!,
+        });
+
+        orderDelivery.couponStatus =
+          couponInfo.STATE === '10' ? OrderDeliveryCouponStatus.USED : OrderDeliveryCouponStatus.NOT_USED;
+        orderDelivery.tradeAt = couponInfo.USE_DT ? new Date(couponInfo.USE_DT) : null;
+        break;
+      }
+
+      // 3. GIFTIEL
+      case 'GIFTIEL': {
+        const partnerCompanyCode =
+          orderDelivery.choiceSelectProduct?.partnerCompanyCode ??
+          orderDelivery.orderProductMapping.product.partnerCompanyCode!;
+
+        const giftielOut = await this.giftiel.check({
+          partnerCompanyCode,
+          barCode: orderDelivery.barCode!,
+        });
+
+        orderDelivery.couponStatus =
+          giftielOut.UseYn === 'Y' ? OrderDeliveryCouponStatus.USED : OrderDeliveryCouponStatus.NOT_USED;
+        orderDelivery.tradeAt = giftielOut.UseDate ? new Date(giftielOut.UseDate) : null;
+        break;
+      }
+
+      /* 4. GIFT_SHOW ───────────────────────────────────────────── */
+      case 'GIFT_SHOW': {
+        const giftiShowOut = await this.giftiShow.check({
+          transactionId: orderDelivery.transactionId!,
+        });
+
+        orderDelivery.couponStatus =
+          giftiShowOut.StatusCode === '0' ? OrderDeliveryCouponStatus.NOT_USED : OrderDeliveryCouponStatus.USED;
+        break;
+      }
+
+      // 5. CULTURELAND
+      case 'CULTURELAND': {
+        const expireDay =
+          orderDelivery.choiceSelectProduct?.expireDay ?? orderDelivery.orderProductMapping.product.expireDay;
+
+        const cultureLandOut = await this.culture.check({
+          scrachNo: orderDelivery.barCode!,
+          certNo: orderDelivery.couponNum!, // 상품권 관리번호
+          requestAt: orderDelivery.sendRequestAt!,
+          expireDay,
+        });
+
+        orderDelivery.couponStatus =
+          cultureLandOut.CancelPossibility === 'N'
+            ? OrderDeliveryCouponStatus.USED
+            : OrderDeliveryCouponStatus.NOT_USED;
+        break;
+      }
+
+      // SSG
+      case 'SSG': {
+        if (!orderDelivery.ssgEvent) {
+          throw new Error('ssgEvent not loaded on orderDelivery');
+        }
+        if (!orderDelivery.personalCode) {
+          throw new Error('personalCode is null');
+        }
+
+        const ssgOut = await this.ssgIssue.check({
+          eventNo: orderDelivery.ssgEvent.no,
+          eventSeq: orderDelivery.ssgEvent.order,
+          vno: orderDelivery.personalCode,
+        });
+
+        const resultCd = ssgOut.response.value[0].resultCd[0];
+        orderDelivery.couponStatus =
+          resultCd === '0400' ? OrderDeliveryCouponStatus.USED : OrderDeliveryCouponStatus.NOT_USED;
+        break;
+      }
+
+      // 기타
+      default:
+        throw new Error(`Unsupported partnerCompany type: ${partnerType}`);
+    }
+
+    // 저장
+    return this.orderDeliveryRepository.save(orderDelivery);
   }
 }
