@@ -2,6 +2,7 @@ import { ApiProperty } from '@nestjs/swagger';
 import { IOrderDeliveryStatus } from '../../../delivery/interface/order.delivery.status';
 import { IOrderDeliveryMethod } from '../../../delivery/interface/order.delivery.method';
 import { IOrderSendMethod } from '../../../order/interface/order.send.method';
+import { OrderDeliveryCouponStatus } from '../../../delivery/interface/order.delivery.coupon.status';
 
 export class CustomerServiceDetailViewDto {
   @ApiProperty({
@@ -48,4 +49,10 @@ export class CustomerServiceDetailViewDto {
 
   @ApiProperty({ description: '교환처' })
   brandName: string;
+
+  @ApiProperty({
+    description: '핀 상태',
+    enum: OrderDeliveryCouponStatus,
+  })
+  couponStatus: OrderDeliveryCouponStatus;
 }

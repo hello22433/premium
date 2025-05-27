@@ -5,9 +5,9 @@ export interface GsmBizIssueIn {
 }
 
 export interface GsmBizCheckIn {
-  transactionId: string; // Clico_Issu_Paym_No
   partnerCompanyCode: string; // Issu_Req_Val
-  barCode: string;
+  transactionId: string; // Clico_Issu_Paym_No
+  barCode: string; // Cupn_No
 }
 
 export interface GsmBizCancelIn {

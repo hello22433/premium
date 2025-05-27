@@ -109,28 +109,44 @@ export class GalaxiaHttp implements IGalaxia {
   }
 
   async check(obj: GalaxiaCheckIn): Promise<GalaxiaCheckOut> {
-    const url = `${this.url}/interface/mkt/${this.companyCode}/${obj.giftKind}/${this.cryptoCipher.encrypt(obj.trId, this.encKey, this.encIv, this.cryptoAlgorithm)}?paramKind=1`;
-    const headers = {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      Accept: 'application/json',
-    };
+    const kind = obj.paramKind ?? 0;
+    const encrypted = this.cryptoCipher.encrypt(obj.paramValue, this.encKey, this.encIv, this.cryptoAlgorithm);
+
+    // https://[SERVER_DOMAIN]/interface/mkt/{company-code}/{gift-kind}/{paramKind selected parameter(+)}
+    const base = `${this.url}/interface/mkt/${this.companyCode}/${obj.giftKind}/${encrypted}`;
+    const url = kind === 0 ? base : `${base}?paramKind=${kind}`;
+
+    const headers = { Accept: 'application/json' };
 
     try {
       this.logger.log(url);
-      this.logger.log(headers);
 
-      const response = await firstValueFrom(this.httpService.get(`${url}`, { headers }));
+      const { data } = await firstValueFrom(this.httpService.get(url, { headers }));
 
-      this.logger.log(response.data);
-      const result = response.data as GalaxiaCheckOut;
+      // 결과 복호화
+      const parsed = data as GalaxiaCheckOut;
 
-      // const resultToJson = (await this.parser().parseStringPromise(response.data)) as unknown as GalaxiaIssueOut;
-
-      this.logger.log(JSON.stringify(result));
-      return result as GalaxiaCheckOut;
+      return {
+        ...parsed,
+        transactionId: this.cryptoCipher.decrypt(parsed.transactionId, this.encKey, this.encIv, this.cryptoAlgorithm),
+        giftCertificate: {
+          ...parsed.giftCertificate,
+          faceValue: this.cryptoCipher.decrypt(
+            parsed.giftCertificate.faceValue,
+            this.encKey,
+            this.encIv,
+            this.cryptoAlgorithm,
+          ),
+          balance: this.cryptoCipher.decrypt(
+            parsed.giftCertificate.balance,
+            this.encKey,
+            this.encIv,
+            this.cryptoAlgorithm,
+          ),
+        },
+      };
     } catch (e) {
       this.logger.error(e);
-      this.logger.error(JSON.stringify(e));
       throw e;
     }
   }
