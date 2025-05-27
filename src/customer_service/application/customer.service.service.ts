@@ -38,10 +38,10 @@ export class CustomerServiceService {
       getQuery;
 
     let queryBuilder = this.orderRepository
-    .createQueryBuilder('order')
-    .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
-    .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
-    .innerJoinAndSelect('orderProductMappings.product', 'product');
+      .createQueryBuilder('order')
+      .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
+      .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
+      .innerJoinAndSelect('orderProductMappings.product', 'product');
 
     if (orderType === 'GENERAL') {
       queryBuilder.andWhere('product.type = :type', { type: 'GENERAL' });
@@ -112,14 +112,14 @@ export class CustomerServiceService {
     const { orderId, page, take } = getQuery;
 
     const queryBuilder = this.orderDeliveryRepository
-    .createQueryBuilder('orderDelivery')
-    .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
-    .innerJoinAndSelect('orderProductMapping.order', 'order')
-    .innerJoinAndSelect('orderProductMapping.product', 'product')
-    .innerJoinAndSelect('product.brand', 'brand')
-    .where('order.id = :orderId', {
-      orderId: orderId,
-    });
+      .createQueryBuilder('orderDelivery')
+      .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
+      .innerJoinAndSelect('orderProductMapping.order', 'order')
+      .innerJoinAndSelect('orderProductMapping.product', 'product')
+      .innerJoinAndSelect('product.brand', 'brand')
+      .where('order.id = :orderId', {
+        orderId: orderId,
+      });
     const skip = (page - 1) * take;
     queryBuilder.take(take).skip(skip);
     queryBuilder.orderBy('orderDelivery.id', 'DESC');
@@ -154,15 +154,15 @@ export class CustomerServiceService {
     const { orderDeliveryId } = getBody;
 
     const queryBuilder = this.orderDeliveryRepository
-    .createQueryBuilder('orderDelivery')
-    .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
-    .innerJoinAndSelect('orderProductMapping.order', 'order')
-    .innerJoinAndSelect('order.user', 'user')
-    .innerJoinAndSelect('orderProductMapping.product', 'product')
-    .innerJoinAndSelect('product.brand', 'brand')
-    .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
-    .andWhere('orderDelivery.status IN (:...status)', { status: ['COMPLETE', 'FAIL', 'COMPLETE_SMS', 'FAIL_SMS'] })
-    .andWhere('orderDelivery.id = :orderDeliveryId', { orderDeliveryId: orderDeliveryId });
+      .createQueryBuilder('orderDelivery')
+      .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
+      .innerJoinAndSelect('orderProductMapping.order', 'order')
+      .innerJoinAndSelect('order.user', 'user')
+      .innerJoinAndSelect('orderProductMapping.product', 'product')
+      .innerJoinAndSelect('product.brand', 'brand')
+      .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .andWhere('orderDelivery.status IN (:...status)', { status: ['COMPLETE', 'FAIL', 'COMPLETE_SMS', 'FAIL_SMS'] })
+      .andWhere('orderDelivery.id = :orderDeliveryId', { orderDeliveryId: orderDeliveryId });
 
     const orderDelivery = await queryBuilder.getOne();
 
