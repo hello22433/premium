@@ -9,7 +9,7 @@ export const AlimTalkTemplate = (orderDelivery: OrderDeliveryEntity) => {
 고객센터 : ${customerName}
 발행자 : ${orderDelivery.orderProductMapping.order.user!.businessName}
 
-이 메시지는 알림톡 테스트(test)용 메시지 입니다.
 ${orderDelivery.orderProductMapping.order.eventName} 당첨을 축하드립니다.
-문의사항은 고객센터 번호를 통해 문의하시길 바랍니다.`;
+문의사항은 고객센터 번호를 통해 문의하시길 바랍니다.
+이 메시지는 고객님의 동의에 의해 지급된 쿠폰 안내 메시지입니다.`;
 };
