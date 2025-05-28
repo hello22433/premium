@@ -263,40 +263,43 @@ export class CultureSocket implements ICulture {
   }
 
   async check(obj: CultureCheckIn): Promise<CultureCheckOut> {
+    const requestAt = obj.requestAt ?? new Date();
+
     const memberCode =
       obj.expireDay === 60
         ? this.configService.getOrThrow('CULTURE_LAND_SOCKET_MEMBER_CODE_60')
         : this.configService.getOrThrow('CULTURE_LAND_SOCKET_MEMBER_CODE');
+
     const subMemberCode =
       obj.expireDay === 60
         ? this.configService.getOrThrow('CULTURE_LAND_SOCKET_SUB_MEMBER_CODE_60')
         : this.configService.getOrThrow('CULTURE_LAND_SOCKET_SUB_MEMBER_CODE');
 
+    // 메시지 구성 (총 300 Bytes)
     const sbURLParam: string[] = [];
-    sbURLParam.push('8310'); // HeadNo
+    sbURLParam.push('8210'); // HeadNo
     sbURLParam.push('0292'); // MessageLength
     sbURLParam.push(this.fillLeft(7, memberCode, false)); // MemberCode
     sbURLParam.push(this.fillLeft(20, subMemberCode, false)); // SubMemberCode
-    sbURLParam.push(this.fillLeft(16, obj.barCode, false)); // ScratchNo
-    sbURLParam.push(this.fillLeft(8, format(new Date(), 'yyyyMMdd'), false)); // CancelDate
-    sbURLParam.push(this.fillLeft(6, format(new Date(), 'HHmmss'), false)); // CancelTime
-    sbURLParam.push(this.fillLeft(2, '10', false)); // CancelType
-    sbURLParam.push(this.fillLeft(233, '', false)); // Filler
+    sbURLParam.push(this.fillLeft(16, obj.scrachNo, false)); // ScrachNo
+    sbURLParam.push(this.fillLeft(16, obj.certNo, false)); // CertNo
+    sbURLParam.push(this.fillLeft(8, format(requestAt, 'yyyyMMdd'), false)); // RequestDate
+    sbURLParam.push(this.fillLeft(6, format(requestAt, 'HHmmss'), false)); // RequestTime
+    sbURLParam.push(this.fillLeft(219, '', false)); // Filler
 
     try {
-      const massage = sbURLParam.join('');
-      const response = await this.socketSend(massage);
+      const message = sbURLParam.join('');
+      const response = await this.socketSend(message);
 
       if (!response) {
         throw new Error('not exist response');
       }
+
       this.logger.log(`response : ${response}`);
-      this.logger.log(`response : ${JSON.stringify(response)}`);
-      const check = this.socketResponseParsing(response, 8220);
-      this.logger.log(`check : ${JSON.stringify(check)}`);
-      // const cancelOut = this.socketResponseParsing(response, 8120);
-      // this.logger.log(`issueOut : ${JSON.stringify(cancelOut)}`);
-      return check as CultureCheckOut;
+      const parsed = this.socketResponseParsing(response, 8220);
+      this.logger.log(`check : ${JSON.stringify(parsed)}`);
+
+      return parsed as CultureCheckOut;
     } catch (e) {
       this.logger.error(e);
       this.logger.error(JSON.stringify(e));

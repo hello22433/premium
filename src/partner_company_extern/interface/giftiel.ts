@@ -19,12 +19,27 @@ export interface GiftielIssueOut {
 }
 
 export interface GiftielCheckOut {
-  ResultCode: string;
-  ResultMsg: string;
-  CouponNum: string;
-  AccountYn: 'Y' | 'C'; // Y 정상 발급, C 발급 취소
-  UseYn: 'Y' | 'N'; // Y 사용 완료 N 미사용
-  UseDate: string;
+  ResultCode: string; // 처리 결과 코드
+  ResultMsg: string; // 처리 메시지
+
+  CouponNum: string; // 쿠폰번호
+  CnName: string; // 상품명
+  CnPrice: string; // 소비자가격
+
+  AccountYn: 'Y' | 'C'; // Y: 정상발급, C: 발급취소
+  SendGubun: 'B' | 'C' | 'O'; // B:B2B, C:B2C, O:온라인몰
+
+  UseYn: 'Y' | 'N'; // Y: 사용, N: 미사용
+  UseDate: string; // 사용일시(yyyy-MM-dd HH:mm:ss)
+  BiName: string; // 사용매장명
+
+  IsCancel: 'Y' | 'N'; // 취소 가능 여부
+  DayStart: string; // 유효기간 시작(yyyy-MM-dd)
+  DayEnd: string; // 유효기간 종료(yyyy-MM-dd)
+
+  CouponType: '00' | '02'; // 00:교환/할인권, 02:금액권
+  CouponBalance: string; // 잔액
+  BalChkUrl: string; // 잔액조회 URL
 }
 
 export interface GiftielCancelIn {

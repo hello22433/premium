@@ -1,5 +1,8 @@
 import { IOrderStatus } from '../../../order/interface/order.status';
 import { ApiProperty } from '@nestjs/swagger';
+import {
+  OrderDeliveryCouponStatus
+} from '../../../delivery/interface/order.delivery.coupon.status';
 
 export class CustomerServiceViewDto {
   @ApiProperty({
@@ -46,4 +49,10 @@ export class CustomerServiceViewDto {
     description: '발송 상태',
   })
   status: IOrderStatus;
+
+  @ApiProperty({
+    description: '핀 상태',
+    enum: OrderDeliveryCouponStatus,
+  })
+  couponStatus: OrderDeliveryCouponStatus;
 }

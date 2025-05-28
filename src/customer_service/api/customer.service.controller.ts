@@ -3,6 +3,7 @@ import { Body, Controller, Get, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AuthUserSuperAndOperationAdminGuard } from '../../auth/api/auth.user.super-operation-admin.guard';
 import {
+  CustomerServiceCouponRefreshReqDto,
   CustomerServiceDiscardReqDto,
   CustomerServiceGetDetailListReqDto,
   CustomerServiceGetListReqDto,
@@ -65,5 +66,12 @@ export class CustomerServiceController {
   @Post('/customer-service/pin-discard')
   pinDiscard(@Body() getBody: CustomerServiceDiscardReqDto) {
     return this.customerServiceService.pinDiscard(getBody);
+  }
+
+  @ApiOperation({ description: '개별 쿠폰 상태 실시간 갱신 API' })
+  @ApiOkResponse({ description: '갱신 성공 시 최신 couponStatus 반환' })
+  @Get('/customer-service/coupon/refresh')
+  refreshCoupon(@Query() getQuery: CustomerServiceCouponRefreshReqDto) {
+    return this.customerServiceService.refreshCoupon(getQuery);
   }
 }

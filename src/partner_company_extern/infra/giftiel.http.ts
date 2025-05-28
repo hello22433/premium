@@ -68,11 +68,9 @@ export class GiftielHttp implements IGiftiel {
 
   async check(obj: GiftielCheckIn): Promise<GiftielCheckOut> {
     const url = `${this.url}/Api/Coupon/CouponInfomationJson.asmx/GetCouponCondition`;
-    const headers = {
-      'Content-Type': 'application/json',
-    };
+    const headers = { 'Content-Type': 'application/json' };
 
-    const data = {
+    const payload = {
       CiCode: this.ciCode,
       CiPwd: this.ciPwd,
       CouponCode: obj.partnerCompanyCode,
@@ -80,17 +78,44 @@ export class GiftielHttp implements IGiftiel {
     };
 
     try {
-      this.logger.log(url);
-      this.logger.log(data);
-      this.logger.log(headers);
-      const response = await firstValueFrom(this.httpService.post(url, data, { headers }));
+      this.logger.log('[Giftiel] GET-COUPON-CONDITION ▶', url, payload);
 
-      const result = response.data;
-      this.logger.log(result);
-      return result as GiftielCheckOut;
+      const { data } = await firstValueFrom(this.httpService.post(url, payload, { headers }));
+
+      if (!data?.ResultCode) {
+        this.logger.error('비정상 응답 형식 – ResultCode 없음', data);
+        throw new Error('Giftiel Response Error: ResultCode is missing');
+      }
+
+      if (data.ResultCode !== '0000') {
+        throw new Error(`Giftiel Response Error: ${data.ResultCode} – ${data.ResultMsg}`);
+      }
+
+      const safe = (k: keyof GiftielCheckOut) => (data[k] as string | undefined) ?? '';
+
+      const result: GiftielCheckOut = {
+        ResultCode: data.ResultCode,
+        ResultMsg: data.ResultMsg,
+
+        CouponNum: safe('CouponNum'),
+        CnName: safe('CnName'),
+        CnPrice: safe('CnPrice'),
+        AccountYn: safe('AccountYn') as 'Y' | 'C',
+        SendGubun: safe('SendGubun') as 'B' | 'C' | 'O',
+        UseYn: safe('UseYn') as 'Y' | 'N',
+        UseDate: safe('UseDate'),
+        BiName: safe('BiName'),
+        IsCancel: safe('IsCancel') as 'Y' | 'N',
+        DayStart: safe('DayStart'),
+        DayEnd: safe('DayEnd'),
+        CouponType: safe('CouponType') as '00' | '02',
+        CouponBalance: safe('CouponBalance'),
+        BalChkUrl: safe('BalChkUrl'),
+      };
+
+      return result;
     } catch (e) {
       this.logger.error(e);
-      this.logger.error(JSON.stringify(e));
       throw e;
     }
   }

@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import {
+  CustomerServiceCouponRefreshReqDto,
   CustomerServiceDiscardReqDto,
   CustomerServiceGetDetailListReqDto,
   CustomerServiceGetListReqDto,
@@ -40,6 +41,7 @@ export class CustomerServiceService {
     let queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
+      .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
       .innerJoinAndSelect('orderProductMappings.product', 'product');
 
     if (orderType === 'GENERAL') {
@@ -71,7 +73,7 @@ export class CustomerServiceService {
     }
 
     if (productCode) {
-      queryBuilder.andWhere('product.code LIKE :productCode', { productName: `%${productCode}%` });
+      queryBuilder.andWhere('product.code LIKE :productCode', { productCode: `%${productCode}%` });
     }
 
     queryBuilder = QueryBuilderDateCondition(queryBuilder, 'order', 'sendRequestAt', startAt, endAt);
@@ -95,6 +97,7 @@ export class CustomerServiceService {
         status: order.status,
         fromPhoneNumber: order.fromPhoneNumber,
         fromEmail: order.fromEmail,
+        couponStatus: order.orderProductMappings![0].orderDeliveries![0].couponStatus,
       });
     }
 
@@ -136,6 +139,7 @@ export class CustomerServiceService {
         status: orderDelivery.status,
         method: orderDelivery.deliveryMethod,
         brandName: orderDelivery.orderProductMapping.product.brand!.nameKorean ?? '',
+        couponStatus: orderDelivery.couponStatus,
       };
     });
 
@@ -197,5 +201,31 @@ export class CustomerServiceService {
     await this.orderDeliveryRepository.save(orderDelivery);
 
     return;
+  }
+
+  async refreshCoupon(getQuery: CustomerServiceCouponRefreshReqDto) {
+    const { orderDeliveryId } = getQuery;
+
+    const orderDelivery = await this.orderDeliveryRepository
+      .createQueryBuilder('orderDelivery')
+      .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
+      .innerJoinAndSelect('orderProductMapping.product', 'product')
+      .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
+      .where('orderDelivery.id = :orderDeliveryId', { orderDeliveryId })
+      .getOne();
+
+    if (!orderDelivery) {
+      throw new BadRequestException('존재하지 않는 orderDelivery 입니다.');
+    }
+
+    // 실시간 외부사 조회 → couponStatus 갱신
+    const updated = await this.partnerCompanyExternService.refreshCouponStatus(orderDelivery);
+
+    return {
+      id: updated.id,
+      couponStatus: updated.couponStatus,
+      tradeAt: updated.tradeAt,
+    };
   }
 }

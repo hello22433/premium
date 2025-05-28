@@ -61,8 +61,8 @@ export class PartnerCompanyExternBatchService {
           }
 
           const galaxiaOut = await this.galaxia.check({
-            giftKind: giftKind,
-            trId: orderDelivery.couponNum!,
+            giftKind,
+            paramValue: orderDelivery.couponNum!, // trId
           });
           orderDelivery.couponStatus = galaxiaOut.giftCertificate.isUsed
             ? OrderDeliveryCouponStatus.USED
@@ -73,7 +73,7 @@ export class PartnerCompanyExternBatchService {
           orderDelivery.galaxiaBalance = +galaxiaOut.giftCertificate.balance;
         }
 
-        // 1.1.2 GSMBIZ 쿠폰 발급
+        // 1.1.2 GSMBIZ 쿠폰 조회
         // GSM쿠폰_전문사양서_고객사_표준V3.4_20200529.pdf
         if (type === 'GS_M_BIZ') {
           let partnerCompanyCode = orderDelivery.orderProductMapping.product.partnerCompanyCode!;
@@ -91,7 +91,7 @@ export class PartnerCompanyExternBatchService {
           orderDelivery.tradeAt = gsMBizOut.couponInfo.USE_DT ? new Date(gsMBizOut.couponInfo.USE_DT) : null;
         }
 
-        // 1.1.3 Giftiel 쿠폰 발급
+        // 1.1.3 Giftiel 쿠폰 조회
         // giftiel(기프티엘)_공통_판매사_연동가이드_v2.1.0.0_20210409.pdf
         if (type === 'GIFTIEL') {
           const giftielOut = await this.giftiel.check({
@@ -104,19 +104,17 @@ export class PartnerCompanyExternBatchService {
           orderDelivery.tradeAt = giftielOut.UseDate ? new Date(giftielOut.UseDate) : null;
         }
 
-        // 1.1.4 giftshow 쿠폰 발급
+        // 1.1.4 giftshow 쿠폰 조회
         // 기프티쇼_매체_연동규격서_v1.9.1.2.pdf
         if (type === 'GIFT_SHOW') {
-          const giftShowOut = await this.giftiShow.check({
+          const giftiShowOut = await this.giftiShow.check({
             transactionId: orderDelivery.transactionId!,
           });
           orderDelivery.couponStatus =
-            giftShowOut.response.result[0].StatusCode[0] == '0'
-              ? OrderDeliveryCouponStatus.NOT_USED
-              : OrderDeliveryCouponStatus.USED;
+            giftiShowOut.StatusCode === '0' ? OrderDeliveryCouponStatus.NOT_USED : OrderDeliveryCouponStatus.USED;
         }
 
-        // 1.1.5 컬쳐랜드 쿠폰 발급
+        // 1.1.5 컬쳐랜드 쿠폰 조회
         // 컬쳐랜드상품권(모바일문화상품권)_구매_연동가이드_V3.0.pdf
         if (type === 'CULTURELAND') {
           let expireDay = orderDelivery.orderProductMapping.product.expireDay;
@@ -124,10 +122,10 @@ export class PartnerCompanyExternBatchService {
             expireDay = orderDelivery.choiceSelectProduct.expireDay!;
           }
           const cultureLandOut = await this.culture.check({
-            barCode: orderDelivery.barCode!,
-            couponNum: orderDelivery.couponNum!,
+            scrachNo: orderDelivery.barCode!,
+            certNo: orderDelivery.couponNum!, // 상품권 관리번호
             requestAt: orderDelivery.sendRequestAt!,
-            expireDay: expireDay,
+            expireDay,
           });
           orderDelivery.couponStatus =
             cultureLandOut.CancelPossibility == 'N'

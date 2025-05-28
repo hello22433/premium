@@ -96,20 +96,30 @@ export class GiftishowHttp implements IGiftiShow {
     });
 
     const url = `${this.url}/media/coupon_status.asp?${queryParams.toString()}`;
+    this.logger.log('[GiftiShow] coupon_status → ', url);
 
     try {
-      this.logger.log(url);
-      this.logger.log(headers);
-      const response = await firstValueFrom(this.httpService.get(url, { headers }));
+      const { data } = await firstValueFrom(this.httpService.get(url, { headers }));
 
-      const result = response.data;
+      // xml → json
+      const parsed = await this.parser().parseStringPromise(data);
+      const res = parsed?.response?.result ?? {};
 
-      const resultToJson = (await this.parser().parseStringPromise(result)) as unknown as GiftiShowCheckOut;
+      const pick = (x?: string[] | string) => (Array.isArray(x) ? (x[0] ?? '') : (x ?? ''));
 
-      this.logger.log(result);
-      this.logger.log(resultToJson);
-      // this.logger.log(response.toString());
-      return resultToJson;
+      const out: GiftiShowCheckOut = {
+        trID: pick(res.trID),
+        StatusCode: pick(res.StatusCode),
+        StatusText: pick(res.StatusText),
+        remainAmt: pick(res.remainAmt) || undefined,
+      };
+
+      /* 필수 필드 검증 */
+      if (!out.trID) {
+        throw new Error('GiftiShow 응답 형식 오류 – trID 없음');
+      }
+
+      return out;
     } catch (e) {
       this.logger.error(e);
       this.logger.error(JSON.stringify(e));

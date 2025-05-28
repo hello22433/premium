@@ -11,10 +11,10 @@ export interface CultureCancelIn {
 }
 
 export interface CultureCheckIn {
-  barCode: string;
-  couponNum: string;
-  requestAt: Date;
-  expireDay: number;
+  scrachNo: string; // 상품권 핀 번호(16자리)
+  certNo: string; // 상품권 관리번호(16자리)
+  requestAt?: Date; // 요청 일시(미지정 시 new Date())
+  expireDay: number; // 만료일 구분(60일/90일 등)
 }
 
 export interface CultureIssueOut {
