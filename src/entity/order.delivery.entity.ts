@@ -87,4 +87,7 @@ export class OrderDeliveryEntity extends BaseEntity {
   @ManyToOne(() => ProductEntity, { createForeignKeyConstraints: false })
   @JoinColumn({ name: 'choice_select_product_id' })
   choiceSelectProduct?: ProductEntity;
+
+  @Column({ type: 'varchar', length: 256, nullable: true })
+  apiErrorMessage: string | null;
 }

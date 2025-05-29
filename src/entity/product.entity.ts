@@ -1,5 +1,5 @@
 import { BaseEntity } from '../common/entity/base.entity';
-import { Column, Entity, ManyToOne, OneToMany, PrimaryGeneratedColumn } from 'typeorm';
+import { Column, Entity, JoinColumn, ManyToOne, OneToMany, PrimaryGeneratedColumn } from 'typeorm';
 import { IProductSettleMethod } from '../product/interface/product.settle.method';
 import { IProductType } from '../product/interface/product.type';
 import { PartnerCompanyEntity } from './partner.company.entity';
@@ -84,6 +84,7 @@ export class ProductEntity extends BaseEntity {
   @ManyToOne(() => PartnerCompanyEntity, {
     createForeignKeyConstraints: false,
   })
+  @JoinColumn({ name: 'partner_company_id' })
   partnerCompany?: PartnerCompanyEntity;
 
   @ManyToOne(() => BrandEntity, {

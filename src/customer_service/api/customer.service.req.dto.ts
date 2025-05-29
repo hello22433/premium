@@ -97,6 +97,17 @@ export class CustomerServiceGetDetailListReqDto extends PagingReqDto {
   orderId: number;
 }
 
+export class CustomerServiceGetDetailReqDto {
+  @ApiProperty({
+    description: '일반쿠폰주문CS 변경내역 조회 reqDto',
+  })
+  // =============================================================
+  @IsNotEmpty()
+  @IsNumber()
+  @Type(() => Number)
+  orderDeliveryId: number;
+}
+
 export class CustomerServiceReSendReqDto {
   @ApiProperty({ description: '재전송 하고자 하는 order Delivery id' })
   // =============================================================

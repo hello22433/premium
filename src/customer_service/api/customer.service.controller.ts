@@ -6,6 +6,7 @@ import {
   CustomerServiceCouponRefreshReqDto,
   CustomerServiceDiscardReqDto,
   CustomerServiceGetDetailListReqDto,
+  CustomerServiceGetDetailReqDto,
   CustomerServiceGetListReqDto,
   CustomerServiceReSendReqDto,
 } from './customer.service.req.dto';
@@ -32,7 +33,7 @@ export class CustomerServiceController {
   }
 
   @ApiOperation({
-    description: '일반쿠폰, 신세계 주문 클릭시 detail CS API',
+    description: '일반쿠폰, 신세계 주문 클릭시 detail CS list 조회 API',
   })
   @ApiOkResponse({
     type: CustomerServiceGetDetailListResDto,
@@ -42,6 +43,19 @@ export class CustomerServiceController {
   @Get('/customer-service/detail/list')
   getDetailList(@Query() getQuery: CustomerServiceGetDetailListReqDto) {
     return this.customerServiceService.getDetailList(getQuery);
+  }
+
+  @ApiOperation({
+    description: '일반쿠폰, 신세계 주문 클릭시 CS detail 조회 API',
+  })
+  @ApiOkResponse({
+    type: CustomerServiceGetDetailListResDto,
+    description: '성공적으로 return 한 경우',
+  })
+  // ===============================================
+  @Get('/customer-service/detail')
+  getDetail(@Query() getQuery: CustomerServiceGetDetailReqDto) {
+    return this.customerServiceService.getDetail(getQuery);
   }
 
   @ApiOperation({

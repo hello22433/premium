@@ -3,6 +3,7 @@ import {
   CustomerServiceCouponRefreshReqDto,
   CustomerServiceDiscardReqDto,
   CustomerServiceGetDetailListReqDto,
+  CustomerServiceGetDetailReqDto,
   CustomerServiceGetListReqDto,
   CustomerServiceReSendReqDto,
 } from '../api/customer.service.req.dto';
@@ -17,6 +18,7 @@ import { CustomerServiceViewDto } from '../api/dto/customer.service.view.dto';
 import { QueryBuilderDateCondition } from '../../common/infra/query.builder.date.condition';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { CustomerServiceDetailViewDto } from '../api/dto/customer.service.detail.view.dto';
+import { CustomerServiceDlvryDetailViewDto } from '../api/dto/customer.service.dlvry.detail.view.dto';
 import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
 import { DeliveryBatchService } from '../../delivery/application/delivery.batch.service';
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
@@ -118,12 +120,18 @@ export class CustomerServiceService {
       .innerJoinAndSelect('orderProductMapping.order', 'order')
       .innerJoinAndSelect('orderProductMapping.product', 'product')
       .innerJoinAndSelect('product.brand', 'brand')
+      .leftJoinAndMapOne(
+        'product.partnerCompany',
+        'partner_company',
+        'partnerCompany',
+        'partnerCompany.id = product.partner_company_id'
+      )
       .where('order.id = :orderId', {
         orderId: orderId,
       });
     const skip = (page - 1) * take;
     queryBuilder.take(take).skip(skip);
-    queryBuilder.orderBy('orderDelivery.id', 'DESC');
+    
     const [orderDeliveryList, totalCount] = await queryBuilder.getManyAndCount();
 
     const totalPage = Math.ceil(totalCount / take);
@@ -131,15 +139,19 @@ export class CustomerServiceService {
     const result: CustomerServiceDetailViewDto[] = orderDeliveryList.map((orderDelivery) => {
       return {
         id: orderDelivery.id,
-        eventName: orderDelivery.orderProductMapping.order.eventName,
-        productName: orderDelivery.orderProductMapping.product.name,
         registerAt: format(orderDelivery.createdAt, DateFormatStr),
+        productName: orderDelivery.orderProductMapping.product.name,
         deliveryTarget: orderDelivery.deliveryTarget,
+        barCode: orderDelivery.barCode,
+        brandName: orderDelivery.orderProductMapping.product.brand!.nameKorean ?? '',
+        partnerCompanyName: orderDelivery.orderProductMapping.product.partnerCompany?.businessName ?? '',
+        eventName: orderDelivery.orderProductMapping.order.eventName,
+        sendRequestAt: orderDelivery.sendRequestAt ? format(orderDelivery.sendRequestAt, DateFormatStr) : null,
         tradeAt: orderDelivery.tradeAt ? format(orderDelivery.tradeAt, DateFormatStr) : null,
         status: orderDelivery.status,
-        method: orderDelivery.deliveryMethod,
-        brandName: orderDelivery.orderProductMapping.product.brand!.nameKorean ?? '',
         couponStatus: orderDelivery.couponStatus,
+        apiErrorMessage: orderDelivery.apiErrorMessage,
+        method: orderDelivery.deliveryMethod,
       };
     });
 
@@ -148,6 +160,54 @@ export class CustomerServiceService {
       totalCount,
       totalPage,
       currentPage: page,
+    };
+  }
+
+  async getDetail(getQuery: CustomerServiceGetDetailReqDto): Promise<CustomerServiceDlvryDetailViewDto> {
+    const { orderDeliveryId } = getQuery;
+
+    const queryBuilder = await this.orderDeliveryRepository
+      .createQueryBuilder('orderDelivery')
+      .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
+      .innerJoinAndSelect('orderProductMapping.order', 'order')
+      .innerJoinAndSelect('orderProductMapping.product', 'product')
+      .innerJoinAndSelect('product.brand', 'brand')
+      .leftJoinAndMapOne(
+        'product.partnerCompany',
+        'partner_company',
+        'partnerCompany',
+        'partnerCompany.id = product.partner_company_id AND partnerCompany.deleted_at IS NULL'
+      )
+      .where('orderDelivery.id = :id', { id: orderDeliveryId })
+      .andWhere('orderDelivery.deletedAt IS NULL')
+      .getOne();
+
+    if (!queryBuilder) {
+      throw new BadRequestException('존재하지 않는 발송 정보입니다.');
+    }
+
+    const product = queryBuilder.orderProductMapping.product;
+    const partnerCompany = product.partnerCompany;
+    const order = queryBuilder.orderProductMapping.order;
+
+    return {
+      orderDeliveryId: queryBuilder.id,
+      businessName: partnerCompany?.businessName ?? '',
+      personName: partnerCompany?.personName ?? '',
+      sendContent: order.sendContent,
+      deliveryTarget: queryBuilder.deliveryTarget,
+      sendRequestAt: queryBuilder.sendRequestAt ? format(queryBuilder.sendRequestAt, DateFormatStr) : null,
+      fromPhoneNumber: order.fromPhoneNumber,
+      tradeAt: queryBuilder.tradeAt ? format(queryBuilder.tradeAt, DateFormatStr) : null,
+      price: product.price.toString(),
+      brandName: product.brand?.nameKorean ?? '',
+      partnerCompanyName: partnerCompany?.businessName ?? '',
+      code: product.code,
+      couponStatus: queryBuilder.couponStatus,
+      status: queryBuilder.status,
+      apiErrorMessage: queryBuilder.apiErrorMessage,
+      barCode: queryBuilder.barCode,
+      expireDay: product.expireDay.toString(),
     };
   }
 
