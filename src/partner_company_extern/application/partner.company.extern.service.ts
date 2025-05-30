@@ -19,6 +19,7 @@ import { defaultFromPhoneNumber, ssgIssueUserName } from '../../const';
 import { smsSsgTemplate } from '../../delivery/domain/sms.ssg.template';
 import { addDays, format } from 'date-fns';
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
+import { CancelCouponResDto } from '../api/CancelCouponResDto';
 
 @Injectable()
 export class PartnerCompanyExternService {
@@ -205,7 +206,7 @@ export class PartnerCompanyExternService {
   }
 
   @Transactional({ propagation: Propagation.REQUIRED })
-  async cancel(orderDelivery: OrderDeliveryEntity) {
+  async cancel(orderDelivery: OrderDeliveryEntity): Promise<CancelCouponResDto> {
     const type = orderDelivery.orderProductMapping!.product.partnerCompany!.type;
 
     try {
@@ -260,10 +261,17 @@ export class PartnerCompanyExternService {
       // 1.1.6 신세계 및 없는 type 은 타입만 수정
       orderDelivery.status = IOrderDeliveryStatus.CANCEL;
 
-      return;
+      return {
+        code: '',
+        message: '폐기 완료',
+      } as CancelCouponResDto;
     } catch (e) {
       this.logger.log(JSON.stringify(e));
       this.logger.log(e);
+      return {
+        code: '',
+        message: '잠시 후 다시 시도해 주세요.',
+      } as CancelCouponResDto;
     }
   }
 

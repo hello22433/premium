@@ -1,5 +1,5 @@
 import { CustomerServiceService } from '../application/customer.service.service';
-import { Body, Controller, Get, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Post, Put, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AuthUserSuperAndOperationAdminGuard } from '../../auth/api/auth.user.super-operation-admin.guard';
 import {
@@ -8,9 +8,16 @@ import {
   CustomerServiceGetDetailListReqDto,
   CustomerServiceGetDetailReqDto,
   CustomerServiceGetListReqDto,
+  CustomerServiceHistoryCreateReqDto,
   CustomerServiceReSendReqDto,
 } from './customer.service.req.dto';
-import { CustomerServiceGetDetailListResDto, CustomerServiceGetListResDto } from './customer.service.res.dto';
+import { 
+  CustomerServiceGetDetailListResDto, 
+  CustomerServiceGetListResDto, 
+  CustomerServiceGetDetailResDto 
+} from './customer.service.res.dto';
+import { ILoginUserInfo } from '../../auth/interface/login.user';
+import { User } from '../../auth/api/user.decorator';
 
 @Controller('')
 @ApiTags('customer-service')
@@ -49,7 +56,7 @@ export class CustomerServiceController {
     description: '일반쿠폰, 신세계 주문 클릭시 CS detail 조회 API',
   })
   @ApiOkResponse({
-    type: CustomerServiceGetDetailListResDto,
+    type: CustomerServiceGetDetailResDto,
     description: '성공적으로 return 한 경우',
   })
   // ===============================================
@@ -87,5 +94,27 @@ export class CustomerServiceController {
   @Get('/customer-service/coupon/refresh')
   refreshCoupon(@Query() getQuery: CustomerServiceCouponRefreshReqDto) {
     return this.customerServiceService.refreshCoupon(getQuery);
+  }
+
+  @ApiOperation({
+    description: '변경내역 상세 등록 API',
+  })
+  @ApiOkResponse({
+    description: '성공적으로 return 한 경우',
+  })
+  // ===============================================
+  @Post('/customer-service/history')
+  async history(
+    @User() user: ILoginUserInfo, 
+    @Body() getBody: CustomerServiceHistoryCreateReqDto
+  ): Promise<any> {
+    // 1. 유효성검사
+    await this.customerServiceService.validCreateHistory(user, getBody);
+
+    // 2. 데이터매핑
+    const map = await this.customerServiceService.mapCreateHistory(user, getBody);
+    
+    // 3. 서비스실행
+    return await this.customerServiceService.execCreateHistory(map);
   }
 }

@@ -8,12 +8,14 @@ import {
   IsNotEmpty,
   IsNumber,
   IsOptional,
+  IsString,
   Matches,
   Min,
 } from 'class-validator';
 import { PagingReqDto } from '../../common/api/dto/pagination.req.dto';
 import { dateAtRegexp } from '../../common/domain/date.regexp';
 import { Type } from 'class-transformer';
+import { OrderDeliveryCouponStatus } from 'src/delivery/interface/order.delivery.coupon.status';
 
 export class CustomerServiceGetListReqDto extends PagingReqDto {
   @ApiProperty({
@@ -108,6 +110,22 @@ export class CustomerServiceGetDetailReqDto {
   orderDeliveryId: number;
 }
 
+export class UpdateCouponStatusReqDto {
+  @ApiProperty({
+    description: 'order delivery id',
+  })
+  // ========================================
+  @IsNotEmpty()
+  @IsNumber()
+  orderDeliveryId: number;
+
+  @ApiProperty({
+    description: '핀 상태',
+    enum: OrderDeliveryCouponStatus,
+  })
+  couponStatus: OrderDeliveryCouponStatus;
+}
+
 export class CustomerServiceReSendReqDto {
   @ApiProperty({ description: '재전송 하고자 하는 order Delivery id' })
   // =============================================================
@@ -122,6 +140,12 @@ export class CustomerServiceDiscardReqDto {
   @IsNotEmpty()
   @IsNumber()
   orderDeliveryId: number;
+  
+  @ApiProperty({
+    description: '핀 상태',
+    enum: OrderDeliveryCouponStatus,
+  })
+  couponStatus: OrderDeliveryCouponStatus;
 }
 
 export class CustomerServiceCouponRefreshReqDto {
@@ -130,4 +154,36 @@ export class CustomerServiceCouponRefreshReqDto {
   @Min(1)
   @Type(() => Number)
   orderDeliveryId: number;
+}
+
+export class CustomerServiceHistoryCreateReqDto {
+  @ApiProperty({ description: '변경내역 상세 등록 API' })
+  // =============================================================
+  @IsNotEmpty()
+  @IsNumber()
+  orderDeliveryId: number;
+
+  @ApiProperty({
+    description: '유형',
+  })
+  // =================================
+  @IsOptional()
+  @IsString()
+  type?: string;
+
+  @ApiProperty({
+    description: '내용',
+  })
+  // =================================
+  @IsOptional()
+  @IsString()
+  content?: string;
+
+  @ApiProperty({
+    description: '내용',
+  })
+  // =================================
+  @IsOptional()
+  @IsString()
+  afterChange?: string;
 }

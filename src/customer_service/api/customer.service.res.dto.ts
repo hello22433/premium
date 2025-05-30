@@ -2,6 +2,7 @@ import { GetListResDto } from '../../common/api/dto/get.list.res.dto';
 import { CustomerServiceViewDto } from './dto/customer.service.view.dto';
 import { ApiProperty } from '@nestjs/swagger';
 import { CustomerServiceDetailViewDto } from './dto/customer.service.detail.view.dto';
+import { CustomerServiceDlvryDetailViewDto } from './dto/customer.service.dlvry.detail.view.dto';
 
 export class CustomerServiceGetListResDto extends GetListResDto {
   @ApiProperty({
@@ -15,4 +16,12 @@ export class CustomerServiceGetDetailListResDto extends GetListResDto {
     description: 'cs detail list',
   })
   list: CustomerServiceDetailViewDto[];
+}
+
+export class CustomerServiceGetDetailResDto {
+  @ApiProperty({
+    description: 'cs detail',
+    type: CustomerServiceDlvryDetailViewDto,
+  })
+  detail: CustomerServiceDlvryDetailViewDto;
 }

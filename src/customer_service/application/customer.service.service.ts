@@ -1,11 +1,13 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
 import {
   CustomerServiceCouponRefreshReqDto,
   CustomerServiceDiscardReqDto,
   CustomerServiceGetDetailListReqDto,
   CustomerServiceGetDetailReqDto,
   CustomerServiceGetListReqDto,
+  CustomerServiceHistoryCreateReqDto,
   CustomerServiceReSendReqDto,
+  UpdateCouponStatusReqDto,
 } from '../api/customer.service.req.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { OrderEntity } from '../../entity/order.entity';
@@ -22,6 +24,9 @@ import { CustomerServiceDlvryDetailViewDto } from '../api/dto/customer.service.d
 import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
 import { DeliveryBatchService } from '../../delivery/application/delivery.batch.service';
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
+import { ILoginUserInfo } from 'src/auth/interface/login.user';
+import { OrderHistoryEntity } from 'src/entity/order.history.entity';
+import { isEmpty } from 'lodash';
 
 @Injectable()
 export class CustomerServiceService {
@@ -34,6 +39,10 @@ export class CustomerServiceService {
     private orderDeliveryRepository: Repository<OrderDeliveryEntity>,
     private partnerCompanyExternService: PartnerCompanyExternService,
     private deliveryBatchService: DeliveryBatchService,
+    @InjectRepository(OrderHistoryEntity)
+    private orderHistoryEntity: Repository<OrderHistoryEntity>,
+    @InjectRepository(OrderHistoryEntity)
+    private readonly orderHistoryRepository: Repository<OrderHistoryEntity>,
   ) {}
 
   async getList(getQuery: CustomerServiceGetListReqDto): Promise<CustomerServiceGetListResDto> {
@@ -241,7 +250,7 @@ export class CustomerServiceService {
   }
 
   async pinDiscard(getBody: CustomerServiceDiscardReqDto) {
-    const { orderDeliveryId } = getBody;
+    const { orderDeliveryId, couponStatus } = getBody;
 
     const orderDelivery = await this.orderDeliveryRepository
       .createQueryBuilder('orderDelivery')
@@ -256,11 +265,62 @@ export class CustomerServiceService {
       throw new BadRequestException('존재하지 않는 주문 건입니다.');
     }
 
-    orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
-    await this.partnerCompanyExternService.cancel(orderDelivery);
-    await this.orderDeliveryRepository.save(orderDelivery);
+    const type = orderDelivery.orderProductMapping!.product.partnerCompany!.type;
 
-    return;
+    switch (type) {
+      case "SSG": {
+          switch (couponStatus) {
+            case OrderDeliveryCouponStatus.USED:
+            case OrderDeliveryCouponStatus.EXPIRED: {
+              throw new BadRequestException('변경할 수 없는 핀 상태입니다.');
+            }
+            case OrderDeliveryCouponStatus.NOT_USED: {
+              orderDelivery.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
+              await this.orderDeliveryRepository.save(orderDelivery);
+              break;
+            }
+            case OrderDeliveryCouponStatus.REFUND_CANCEL: {
+              orderDelivery.couponStatus = OrderDeliveryCouponStatus.REFUND_CANCEL;
+              await this.orderDeliveryRepository.save(orderDelivery);
+            }
+            case OrderDeliveryCouponStatus.CANCEL: {
+              orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
+              await this.orderDeliveryRepository.save(orderDelivery);
+              break;
+            }
+            default: {
+              throw new BadRequestException('지원하지 않는 핀 상태입니다.');
+            }
+          }
+        break;
+      }
+      case "GIFT_SHOW":
+      case "GS_M_BIZ":
+      case "GIFTIEL":
+      case "CULTURELAND":
+      case "GALAXIA": {
+        switch (couponStatus) {
+          case OrderDeliveryCouponStatus.NOT_USED:
+          case OrderDeliveryCouponStatus.USED:
+          case OrderDeliveryCouponStatus.EXPIRED:
+          case OrderDeliveryCouponStatus.REFUND_CANCEL: {
+            throw new BadRequestException('변경할 수 없는 핀 상태입니다.');
+          }
+          case OrderDeliveryCouponStatus.CANCEL: {
+            orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
+            await this.partnerCompanyExternService.cancel(orderDelivery);
+            await this.orderDeliveryRepository.save(orderDelivery);
+            break;
+          }
+          default: {
+            throw new BadRequestException('지원하지 않는 핀 상태입니다.');
+          }
+        }
+      }
+      default: {
+        throw new BadRequestException('지원하지 않는 협력사입니다.');
+      }
+    }
   }
 
   async refreshCoupon(getQuery: CustomerServiceCouponRefreshReqDto) {
@@ -287,5 +347,75 @@ export class CustomerServiceService {
       couponStatus: updated.couponStatus,
       tradeAt: updated.tradeAt,
     };
+  }
+
+  /**
+   * history 유효성검사
+   * @param user 
+   * @param getBody 
+   */
+  async validCreateHistory(user: ILoginUserInfo, getBody: CustomerServiceHistoryCreateReqDto) {
+    if (isEmpty(user.id)) throw new NotFoundException('사용자 정보가 없습니다.');
+    if (isEmpty(getBody.orderDeliveryId)) throw new NotFoundException('주문 상세데이터 정보가 없습니다.');
+    if (isEmpty(getBody.type)) throw new BadRequestException('유형을 선택 해 주세요.');
+  }
+
+  /**
+   * history 데이터매핑
+   * @param user 
+   * @param getBody 
+   * @returns 
+   */
+async mapCreateHistory(user: ILoginUserInfo, getBody: CustomerServiceHistoryCreateReqDto, ): Promise<Partial<OrderHistoryEntity>> {
+    let orderDeliveryData: Partial<OrderDeliveryEntity> | null;
+    const result: Partial<OrderHistoryEntity> = {};
+
+    switch (getBody.type) {
+      case '수신정보 변경요청':
+        orderDeliveryData = await this.orderDeliveryRepository.findOne({
+          where: { id: getBody.orderDeliveryId },
+          select: ['deliveryTarget'],
+        });
+
+        if (!orderDeliveryData) {
+          throw new NotFoundException('orderDelivery 데이터를 찾을 수 없습니다.');
+        }
+
+        result.beforeChange = orderDeliveryData?.deliveryTarget ?? '';
+        break;
+
+      case '폐기':
+      case '환불폐기':
+        orderDeliveryData = await this.orderDeliveryRepository.findOne({
+          where: { id: getBody.orderDeliveryId },
+          select: ['couponStatus'],
+        });
+
+        if (!orderDeliveryData) {
+          throw new NotFoundException('orderDelivery 데이터를 찾을 수 없습니다.');
+        }
+
+        result.beforeChange = orderDeliveryData?.couponStatus ?? '';
+        break;
+
+      default:
+        throw new NotFoundException('지원하지 않는 유형입니다.');
+    }
+
+    result.type = getBody.type;
+    result.orderDeliveryId = getBody.orderDeliveryId;
+    result.content = getBody.content;
+    result.userId = user.id;
+
+    return result;
+  }
+
+  /**
+   * history 서비스실행
+   * @param user 
+   * @param getBody 
+   */
+  async execCreateHistory(map: Partial<OrderHistoryEntity>) {
+    return await this.orderHistoryRepository.save(map);
   }
 }
