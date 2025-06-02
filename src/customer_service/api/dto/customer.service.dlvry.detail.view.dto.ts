@@ -9,6 +9,11 @@ export class CustomerServiceDlvryDetailViewDto {
     orderDeliveryId: number;
 
     @ApiProperty({
+        description: '이벤트명',
+    })
+    eventName: string;
+
+    @ApiProperty({
         description: '고객사',
     })
     businessName: string;
@@ -34,14 +39,24 @@ export class CustomerServiceDlvryDetailViewDto {
     sendRequestAt: string | null;
 
     @ApiProperty({
+        description: '발송 방법',
+    })
+    method: string | null;
+
+    @ApiProperty({
         description: '발신정보 (번호 혹은 이메일)',
     })
     fromPhoneNumber: string | null;
 
     @ApiProperty({
-        description: '교환일자 ex)yyyy-MM-ddTHH:mm:ss',
+        description: '협력사'
     })
-    tradeAt: string | null;
+    partnerCompanyName: string;
+
+    @ApiProperty({
+        description: '상품명'
+    })
+    productName: string;
 
     @ApiProperty({
         description: '상품가격',
@@ -54,11 +69,6 @@ export class CustomerServiceDlvryDetailViewDto {
     brandName: string;
 
     @ApiProperty({
-        description: '협력사'
-    })
-    partnerCompanyName: string;
-
-    @ApiProperty({
         description: '상품코드'
     })
     code: string;
@@ -66,8 +76,8 @@ export class CustomerServiceDlvryDetailViewDto {
     @ApiProperty({
         description: '핀 상태',
         enum: OrderDeliveryCouponStatus,
-      })
-      couponStatus: OrderDeliveryCouponStatus;
+    })
+    couponStatus: OrderDeliveryCouponStatus;
     
     @ApiProperty({
         description: '발송 상태',
@@ -85,6 +95,16 @@ export class CustomerServiceDlvryDetailViewDto {
     })
     barCode: string | null;
 
+    @ApiProperty({
+        description: '교환일자 ex)yyyy-MM-ddTHH:mm:ss',
+    })
+    tradeAt: string | null;
+
+    @ApiProperty({
+        description: '추가핀정보',
+    })
+    extraPinNo: string | null;
+    
     @ApiProperty({
         description: '유효일수'
     })

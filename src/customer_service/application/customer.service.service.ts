@@ -187,6 +187,12 @@ export class CustomerServiceService {
         'partnerCompany',
         'partnerCompany.id = product.partner_company_id AND partnerCompany.deleted_at IS NULL'
       )
+      .leftJoinAndMapOne(
+        'order.user',
+        'user',
+        'user',
+        'user.id = order.user_id AND user.deleted_at IS NULL'
+      )
       .where('orderDelivery.id = :id', { id: orderDeliveryId })
       .andWhere('orderDelivery.deletedAt IS NULL')
       .getOne();
@@ -198,24 +204,29 @@ export class CustomerServiceService {
     const product = queryBuilder.orderProductMapping.product;
     const partnerCompany = product.partnerCompany;
     const order = queryBuilder.orderProductMapping.order;
+    const user = queryBuilder.orderProductMapping.order.user;
 
     return {
       orderDeliveryId: queryBuilder.id,
+      eventName: order.eventName,
       businessName: partnerCompany?.businessName ?? '',
-      personName: partnerCompany?.personName ?? '',
+      personName: user?.personName ?? '',
       sendContent: order.sendContent,
       deliveryTarget: queryBuilder.deliveryTarget,
       sendRequestAt: queryBuilder.sendRequestAt ? format(queryBuilder.sendRequestAt, DateFormatStr) : null,
+      method: queryBuilder.deliveryMethod,
       fromPhoneNumber: order.fromPhoneNumber,
-      tradeAt: queryBuilder.tradeAt ? format(queryBuilder.tradeAt, DateFormatStr) : null,
+      partnerCompanyName: partnerCompany?.businessName ?? '',
+      productName: product.name,
       price: product.price.toString(),
       brandName: product.brand?.nameKorean ?? '',
-      partnerCompanyName: partnerCompany?.businessName ?? '',
       code: product.code,
       couponStatus: queryBuilder.couponStatus,
       status: queryBuilder.status,
       apiErrorMessage: queryBuilder.apiErrorMessage,
       barCode: queryBuilder.barCode,
+      tradeAt: queryBuilder.tradeAt ? format(queryBuilder.tradeAt, DateFormatStr) : null,
+      extraPinNo: queryBuilder.personalCode,
       expireDay: product.expireDay.toString(),
     };
   }

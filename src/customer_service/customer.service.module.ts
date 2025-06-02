@@ -8,11 +8,17 @@ import { AuthModule } from '../auth/auth.module';
 import { OrderDeliveryEntity } from '../entity/order.delivery.entity';
 import { PartnerCompanyExternModule } from '../partner_company_extern/partner.company.extern.module';
 import { DeliveryModule } from '../delivery/delivery.module';
+import { OrderHistoryEntity } from 'src/entity/order.history.entity';
 
 @Module({
   imports: [
     AuthModule,
-    TypeOrmModule.forFeature([OrderEntity, OrderDeliveryEntity, OrderProductMappingEntity]),
+    TypeOrmModule.forFeature([
+      OrderEntity, 
+      OrderDeliveryEntity, 
+      OrderProductMappingEntity,
+      OrderHistoryEntity,
+    ]),
     PartnerCompanyExternModule,
     DeliveryModule,
   ],
