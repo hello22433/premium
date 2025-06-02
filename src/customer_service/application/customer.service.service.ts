@@ -108,7 +108,8 @@ export class CustomerServiceService {
         status: order.status,
         fromPhoneNumber: order.fromPhoneNumber,
         fromEmail: order.fromEmail,
-        couponStatus: order.orderProductMappings![0].orderDeliveries![0].couponStatus,
+        couponStatus: order.orderProductMappings?.[0]?.orderDeliveries?.[0]?.couponStatus ?? OrderDeliveryCouponStatus.NOT_USED,
+
       });
     }
 
