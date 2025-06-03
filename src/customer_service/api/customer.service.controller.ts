@@ -8,8 +8,10 @@ import {
   CustomerServiceGetDetailListReqDto,
   CustomerServiceGetDetailReqDto,
   CustomerServiceGetListReqDto,
-  CustomerServiceHistoryCreateReqDto,
+  CustomerServicePinStatusModifyReqDto,
+  CustomerServicePinStatusRefreshReqDto,
   CustomerServiceReSendReqDto,
+  CustomerServiceStatusReqDto,
 } from './customer.service.req.dto';
 import { 
   CustomerServiceGetDetailListResDto, 
@@ -66,15 +68,57 @@ export class CustomerServiceController {
   }
 
   @ApiOperation({
-    description: '주문 CS 에서 재발송 API',
+    description: '핀상태변경 API',
   })
   @ApiOkResponse({
     description: '성공적으로 return 한 경우',
   })
-  // ===============================================
-  @Post('/customer-service/re-send')
-  reSend(@Body() getBody: CustomerServiceReSendReqDto) {
-    return this.customerServiceService.reSend(getBody);
+  @Put('/customer-service/pin-status/modify')
+  async pinStatusModify(@User() user: ILoginUserInfo, @Body() getBody: CustomerServicePinStatusModifyReqDto) {
+    // 1. 유효성검사
+    await this.customerServiceService.validPinStatusModify(getBody);
+
+    // 2. 데이터매핑
+    const map = await this.customerServiceService.mapPinStatusModify(user, getBody);
+    
+    // 3. 서비스실행
+    await this.customerServiceService.execPinStatusModify(map);
+  }
+
+  @ApiOperation({
+    description: '핀상태갱신 API',
+  })
+  @ApiOkResponse({
+    description: '성공적으로 return 한 경우',
+  })
+  @Put('/customer-service/pin-status/refresh')
+  async pinStatusRefresh(@User() user: ILoginUserInfo, @Body() getBody: CustomerServicePinStatusRefreshReqDto) {
+    // 1. 유효성검사
+    await this.customerServiceService.validPinStatusRefresh(getBody);
+
+    // 2. 데이터매핑
+    const map = await this.customerServiceService.mapPinStatusRefresh(user, getBody);
+    
+    // 3. 서비스실행
+    return await this.customerServiceService.execPinStatusRefresh(map);
+  }
+
+  @ApiOperation({
+    description: 'CS 등록 API',
+  })
+  @ApiOkResponse({
+    description: '성공적으로 return 한 경우',
+  })
+  @Put('/customer-service/status')
+  async status(@User() user: ILoginUserInfo, @Body() getBody: CustomerServiceStatusReqDto) {
+    // 1. 유효성검사
+    await this.customerServiceService.validStatus(getBody);
+
+    // 2. 데이터매핑
+    const map = await this.customerServiceService.mapStatus(user, getBody);
+    
+    // 3. 서비스실행
+    return await this.customerServiceService.execStatus(map);
   }
 
   @ApiOperation({
@@ -97,24 +141,15 @@ export class CustomerServiceController {
   }
 
   @ApiOperation({
-    description: '변경내역 상세 등록 API',
+    description: '주문 CS 에서 재발송 API',
   })
   @ApiOkResponse({
     description: '성공적으로 return 한 경우',
   })
   // ===============================================
-  @Post('/customer-service/history')
-  async history(
-    @User() user: ILoginUserInfo, 
-    @Body() getBody: CustomerServiceHistoryCreateReqDto
-  ): Promise<any> {
-    // 1. 유효성검사
-    await this.customerServiceService.validCreateHistory(user, getBody);
-
-    // 2. 데이터매핑
-    const map = await this.customerServiceService.mapCreateHistory(user, getBody);
-    
-    // 3. 서비스실행
-    return await this.customerServiceService.execCreateHistory(map);
+  @Post('/customer-service/re-send')
+  reSend(@Body() getBody: CustomerServiceReSendReqDto) {
+    return this.customerServiceService.reSend(getBody);
   }
+
 }

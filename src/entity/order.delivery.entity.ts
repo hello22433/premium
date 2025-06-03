@@ -1,4 +1,4 @@
-import { Column, Entity, JoinColumn, ManyToOne, PrimaryGeneratedColumn } from 'typeorm';
+import { Column, Entity, JoinColumn, ManyToOne, OneToMany, PrimaryGeneratedColumn } from 'typeorm';
 import { BaseEntity } from '../common/entity/base.entity';
 import { OrderProductMappingEntity } from './order.product.mapping.entity';
 import { IOrderDeliveryStatus } from '../delivery/interface/order.delivery.status';
@@ -7,6 +7,7 @@ import { SsgEventEntity } from './ssg.event.entity';
 import { OrderDeliveryCouponStatus } from '../delivery/interface/order.delivery.coupon.status';
 import { OrderDeliveryEmailCouponStatus } from '../delivery/interface/order.delivery.email.coupon.status';
 import { ProductEntity } from './product.entity';
+import { OrderHistoryEntity } from './order.history.entity';
 
 @Entity('order_delivery')
 export class OrderDeliveryEntity extends BaseEntity {
@@ -87,6 +88,9 @@ export class OrderDeliveryEntity extends BaseEntity {
   @ManyToOne(() => ProductEntity, { createForeignKeyConstraints: false })
   @JoinColumn({ name: 'choice_select_product_id' })
   choiceSelectProduct?: ProductEntity;
+
+  @OneToMany(() => OrderHistoryEntity, (history) => history.orderDelivery)
+  orderHistory: OrderHistoryEntity[];
 
   @Column({ type: 'varchar', length: 256, nullable: true })
   apiErrorMessage: string | null;

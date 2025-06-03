@@ -156,12 +156,44 @@ export class CustomerServiceCouponRefreshReqDto {
   orderDeliveryId: number;
 }
 
-export class CustomerServiceHistoryCreateReqDto {
-  @ApiProperty({ description: '변경내역 상세 등록 API' })
+export class CustomerServicePinStatusModifyReqDto {
+  @ApiProperty({ description: '핀상태변경 API' })
   // =============================================================
   @IsNotEmpty()
   @IsNumber()
   orderDeliveryId: number;
+
+  @ApiProperty({
+    description: '변경내역 후',
+  })
+  // =================================
+  @IsOptional()
+  @IsString()
+  afterChange?: string;
+}
+
+export class CustomerServicePinStatusRefreshReqDto {
+  @ApiProperty({ description: '핀상태갱신 API' })
+  // =============================================================
+  @IsNotEmpty()
+  @IsNumber()
+  orderDeliveryId: number;
+}
+
+export class CustomerServiceStatusReqDto {
+  @ApiProperty({ description: '핀상태변경 API' })
+  // =============================================================
+  @IsNotEmpty()
+  @IsNumber()
+  orderDeliveryId: number;
+
+  @ApiProperty({
+    description: '변경내역 후',
+  })
+  // =================================
+  @IsOptional()
+  @IsString()
+  afterChange?: string;
 
   @ApiProperty({
     description: '유형',
@@ -180,10 +212,10 @@ export class CustomerServiceHistoryCreateReqDto {
   content?: string;
 
   @ApiProperty({
-    description: '내용',
+    description: '재전송 type',
   })
   // =================================
   @IsOptional()
   @IsString()
-  afterChange?: string;
+  extraType?: string;
 }

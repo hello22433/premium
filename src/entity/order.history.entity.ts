@@ -1,5 +1,6 @@
 import { BaseEntity } from "src/common/entity/base.entity";
-import { Column, Entity, PrimaryGeneratedColumn } from "typeorm";
+import { Column, Entity, JoinColumn, ManyToOne, OneToMany, PrimaryGeneratedColumn } from "typeorm";
+import { OrderDeliveryEntity } from "./order.delivery.entity";
 
 @Entity('order_history')
 export class OrderHistoryEntity extends BaseEntity {
@@ -23,4 +24,10 @@ export class OrderHistoryEntity extends BaseEntity {
 
   @Column({ type: 'text', nullable: true })
   afterChange: string | null;
+
+  @ManyToOne(() => OrderDeliveryEntity, (delivery) => delivery.orderHistory, {
+    createForeignKeyConstraints: false,
+  })
+  @JoinColumn({ name: 'order_delivery_id' })
+  orderDelivery: OrderDeliveryEntity;
 }
