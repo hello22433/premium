@@ -1116,12 +1116,13 @@ export class OrderService {
     for (const orderMapping of order.orderProductMappings!) {
       for (const orderDelivery of orderMapping.orderDeliveries) {
         await this.partnerCompanyExternService.issue(orderDelivery, ssgEventIssue);
-        // issue, 발급이 실패하지 않앗을 경우
+        // issue, 발급이 실패했거나 바코드가 없는 경우
         if (orderDelivery.status === IOrderDeliveryStatus.FAIL || !orderDelivery.barCode) {
           message = 'fail';
           throw new InternalServerErrorException('발급 실패');
         }
 
+        // 발급 성공, status - WAIT 유지
         orderDelivery.status = IOrderDeliveryStatus.WAIT;
         if (orderDelivery.barCode) {
           const { path } = await DeliveryCreateCouponImage(
