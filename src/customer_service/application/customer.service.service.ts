@@ -29,7 +29,6 @@ import { DeliveryBatchService } from '../../delivery/application/delivery.batch.
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
 import { ILoginUserInfo } from 'src/auth/interface/login.user';
 import { OrderHistoryEntity } from 'src/entity/order.history.entity';
-import { isEmpty } from 'lodash';
 import { IOrderDeliveryStatus } from 'src/delivery/interface/order.delivery.status';
 import { User } from 'src/auth/api/user.decorator';
 
@@ -381,8 +380,8 @@ export class CustomerServiceService {
    * @param getBody 
    */
   async validPinStatusModify(getBody: CustomerServicePinStatusModifyReqDto) {
-    if (isEmpty(getBody.orderDeliveryId)) throw new NotFoundException('데이터 정보가 없습니다.');
-    if (isEmpty(getBody.afterChange)) throw new BadRequestException('변경 후 데이터가 없습니다.');
+    if (!getBody.orderDeliveryId) throw new NotFoundException('데이터 정보가 없습니다.');
+    if (!getBody.afterChange) throw new BadRequestException('변경 후 데이터가 없습니다.');
   }
 
   /**
@@ -401,6 +400,7 @@ export class CustomerServiceService {
         'orderProductMapping.product',
         'orderProductMapping.order',
         'orderHistory',
+        'orderProductMapping.product.partnerCompany',
       ],
     });
 
@@ -409,7 +409,7 @@ export class CustomerServiceService {
     }
 
     const result = {
-      businessName: orderDelivery.orderProductMapping.product.partnerCompany?.businessName,
+      businessName: orderDelivery?.orderProductMapping?.product?.partnerCompany?.businessName,
       beforeChange: orderDelivery.couponStatus,
       afterChange: getBody.afterChange,
       type: '핀상태 변경',
@@ -499,7 +499,7 @@ export class CustomerServiceService {
    * @param getBody 
    */
   async validPinStatusRefresh(getBody: CustomerServicePinStatusRefreshReqDto) {
-    if (isEmpty(getBody.orderDeliveryId)) throw new NotFoundException('데이터 정보가 없습니다.');
+    if (!getBody.orderDeliveryId) throw new NotFoundException('데이터 정보가 없습니다.');
   }
 
   /**
@@ -575,10 +575,10 @@ export class CustomerServiceService {
    * @param getBody 
    */
   async validStatus(getBody: CustomerServiceStatusReqDto) {
-    if (isEmpty(getBody.orderDeliveryId)) throw new NotFoundException('데이터 정보가 없습니다.');
-    if (isEmpty(getBody.type)) {
+    if (!getBody.orderDeliveryId) throw new NotFoundException('데이터 정보가 없습니다.');
+    if (!getBody.type) {
       throw new BadRequestException('CS 유형을 선택해 주세요.');
-    } else if (getBody.type === '재전송' && isEmpty(getBody.extraType)) {
+    } else if (getBody.type === '재전송' && !getBody.extraType) {
       throw new BadRequestException('재전송 유형을 선택해 주세요.');
     }
   }
@@ -712,7 +712,7 @@ export class CustomerServiceService {
    * @param getBody 
    */
   async validStatusList(getBody: CustomerServiceStatusListReqDto) {
-    if (isEmpty(getBody.orderDeliveryId)) throw new NotFoundException('발송 상세 데이터 정보가 없습니다.');
+    if (!getBody.orderDeliveryId) throw new NotFoundException('발송 상세 데이터 정보가 없습니다.');
   }
 
   /**

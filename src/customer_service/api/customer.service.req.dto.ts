@@ -161,6 +161,7 @@ export class CustomerServicePinStatusModifyReqDto {
   // =============================================================
   @IsNotEmpty()
   @IsNumber()
+  @Type(() => Number)
   orderDeliveryId: number;
 
   @ApiProperty({
