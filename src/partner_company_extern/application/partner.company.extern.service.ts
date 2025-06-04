@@ -46,7 +46,8 @@ export class PartnerCompanyExternService {
 
   private logger = new Logger('PARTNER_COMPANY_EXTERN');
 
-  @Transactional({ propagation: Propagation.REQUIRED })
+  // 발급 실패 시 트랜잭션 롤백으로 인한 저장 취소 때문에 새로운 트랜잭션 생성
+  @Transactional({ propagation: Propagation.REQUIRES_NEW })
   async issue(orderDelivery: OrderDeliveryEntity, ssgEvent: SsgEventEntity | null) {
     const type = orderDelivery.orderProductMapping!.product.partnerCompany!.type;
 
@@ -222,6 +223,7 @@ export class PartnerCompanyExternService {
       orderDelivery.status = IOrderDeliveryStatus.FAIL;
     } finally {
       if (type !== null) {
+        // 호출 이력 저장(성공/실패 구분) → 동일한 “REQUIRES_NEW” 트랜잭션에서 커밋됨
         await this.partnerCompanyExternHistoryRepository.insert({
           context,
           isSuccess,
