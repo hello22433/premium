@@ -517,6 +517,7 @@ export class CustomerServiceService {
         'orderProductMapping',
         'orderProductMapping.product',
         'orderProductMapping.order',
+        'orderProductMapping.product.partnerCompany',
         'orderHistory',
       ],
     });
