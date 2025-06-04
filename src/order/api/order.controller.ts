@@ -1,4 +1,17 @@
-import { Body, Controller, Get, Logger, Param, Patch, Post, Put, Query, Res, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Logger,
+  Param,
+  Patch,
+  Post,
+  Put,
+  Query,
+  Res,
+  UseGuards
+} from "@nestjs/common";
 import { OrderService } from '../application/order.service';
 import {
   ApiBadRequestResponse,
@@ -11,7 +24,7 @@ import {
 } from '@nestjs/swagger';
 import {
   OrderCreateSettleReqDto,
-  OrderCreateTempReqDto,
+  OrderCreateTempReqDto, OrderDeleteTempReqDto,
   OrderDeliveryCancelReqDto,
   OrderDeliveryConfirmedReqDto,
   OrderDeliveryRequestReqDto,
@@ -26,8 +39,8 @@ import {
   OrderGetSettleReqDto,
   OrderUpdateOperationUserReqDto,
   OrderUpdateSettleReqDto,
-  OrderUpdateTempReqDto,
-} from './order.req.dto';
+  OrderUpdateTempReqDto
+} from "./order.req.dto";
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
 import {
   OrderCreateTempResDto,
@@ -252,6 +265,23 @@ export class OrderController {
       '제목이 존재하지 않는 경우 <br>' +
       '내용이 존재하지 않는 경우',
   })
+  @ApiOperation({
+    summary: '임시저장(TEMP) 소프트 삭제 API',
+    description: '임시 저장된 주문의 상태가 TEMP인 경우 soft delete 처리 (deleted_at 업데이트).',
+  })
+  @ApiOkResponse({
+    description: '성공적으로 삭제된 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '존재하지 않거나 임시 상태가 아닌 주문입니다.',
+  })
+  @Delete('/order/temp')
+  deleteTemp(
+    @User() user: ILoginUserInfo,
+    @Body() getBody: OrderDeleteTempReqDto,
+  ): Promise<void> {
+    return this.orderService.deleteTemp(user, getBody);
+  }
   // ====================================================
   @Post('/order/delivery-request')
   deliveryRequest(@User() user: ILoginUserInfo, @Body() getBody: OrderDeliveryRequestReqDto) {

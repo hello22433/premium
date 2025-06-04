@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, InternalServerErrorException } from '@
 import {
   OrderCreateSettleReqDto,
   OrderCreateTempReqDto,
+  OrderDeleteTempReqDto,
   OrderDeliveryCancelReqDto,
   OrderDeliveryConfirmedReqDto,
   OrderDeliveryRequestReqDto,
@@ -779,7 +780,7 @@ export class OrderService {
       : sendRequestAt
         ? new Date(sendRequestAt)
         : undefined;
-        
+
     const orderInsertResult = await this.orderRepository.insert({
       userId: user.id,
       status: IOrderStatus.TEMP,
@@ -962,6 +963,49 @@ export class OrderService {
     }
 
     await this.orderDeliveryRepository.insert(orderDeliveryCreateList);
+
+    return;
+  }
+
+  @Transactional()
+  async deleteTemp(user: ILoginUserInfo, getBody: OrderDeleteTempReqDto): Promise<void> {
+    const { id } = getBody;
+
+    // 1. 주문 존재 여부와 TEMP 상태 확인
+    const order = await this.orderRepository.findOne({
+      where: {
+        id: id,
+        userId: user.id,
+        status: IOrderStatus.TEMP,
+      },
+    });
+
+    if (!order) {
+      throw new BadRequestException('존재하지 않거나 임시저장 상태가 아닌 주문입니다.');
+    }
+
+    // 2. 주문 자체 soft delete (deleted_at에 now() 기록)
+    await this.orderRepository.softDelete({ id });
+
+    // 3. 연관된 자식 테이블 soft delete
+    // 3-1. order_product_mapping
+    const mappingList = await this.orderProductMappingRepository.find({
+      where: { orderId: id },
+    });
+
+    if (mappingList.length > 0) {
+      const mappingIds = mappingList.map((mp) => mp.id);
+
+      // 3-2. order_delivery soft delete
+      await this.orderDeliveryRepository.softDelete({
+        orderProductMappingId: In(mappingIds),
+      });
+
+      // 3-3. order_product_mapping soft delete
+      await this.orderProductMappingRepository.softDelete({
+        id: In(mappingIds),
+      });
+    }
 
     return;
   }
