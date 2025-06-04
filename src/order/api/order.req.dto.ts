@@ -158,6 +158,16 @@ export class OrderUpdateTempReqDto extends OrderCreateDto {
   id: number;
 }
 
+export class OrderDeleteTempReqDto {
+  @ApiProperty({
+    description: 'order id',
+  })
+  // =============================
+  @IsNumber()
+  @IsNotEmpty()
+  id: number;
+}
+
 export class OrderDeliveryRequestReqDto {
   @ApiProperty({
     description: 'order id',

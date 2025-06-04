@@ -5,13 +5,16 @@ import {
   CustomerServiceGetDetailListReqDto,
   CustomerServiceGetDetailReqDto,
   CustomerServiceGetListReqDto,
-  CustomerServiceHistoryCreateReqDto,
+  CustomerServiceHistoryReqDto,
+  CustomerServicePinStatusModifyReqDto,
+  CustomerServicePinStatusRefreshReqDto,
   CustomerServiceReSendReqDto,
+  CustomerServiceStatusListReqDto,
   UpdateCouponStatusReqDto,
 } from '../api/customer.service.req.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { OrderEntity } from '../../entity/order.entity';
-import { Repository } from 'typeorm';
+import { IsNull, Repository } from 'typeorm';
 import { CustomerServiceGetListResDto } from '../api/customer.service.res.dto';
 import { OrderProductMappingEntity } from '../../entity/order.product.mapping.entity';
 import { DateFormatStr } from '../../common/domain/date.format.str';
@@ -26,10 +29,12 @@ import { DeliveryBatchService } from '../../delivery/application/delivery.batch.
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
 import { ILoginUserInfo } from 'src/auth/interface/login.user';
 import { OrderHistoryEntity } from 'src/entity/order.history.entity';
-import { isEmpty } from 'lodash';
+import { IOrderDeliveryStatus } from 'src/delivery/interface/order.delivery.status';
+import { User } from 'src/auth/api/user.decorator';
 
 @Injectable()
 export class CustomerServiceService {
+  dataSource: any;
   constructor(
     @InjectRepository(OrderEntity)
     private orderRepository: Repository<OrderEntity>,
@@ -362,72 +367,415 @@ export class CustomerServiceService {
   }
 
   /**
-   * history 유효성검사
-   * @param user 
-   * @param getBody 
-   */
-  async validCreateHistory(user: ILoginUserInfo, getBody: CustomerServiceHistoryCreateReqDto) {
-    if (isEmpty(user.id)) throw new NotFoundException('사용자 정보가 없습니다.');
-    if (isEmpty(getBody.orderDeliveryId)) throw new NotFoundException('주문 상세데이터 정보가 없습니다.');
-    if (isEmpty(getBody.type)) throw new BadRequestException('유형을 선택 해 주세요.');
-  }
-
-  /**
-   * history 데이터매핑
-   * @param user 
-   * @param getBody 
-   * @returns 
-   */
-async mapCreateHistory(user: ILoginUserInfo, getBody: CustomerServiceHistoryCreateReqDto, ): Promise<Partial<OrderHistoryEntity>> {
-    let orderDeliveryData: Partial<OrderDeliveryEntity> | null;
-    const result: Partial<OrderHistoryEntity> = {};
-
-    switch (getBody.type) {
-      case '수신정보 변경요청':
-        orderDeliveryData = await this.orderDeliveryRepository.findOne({
-          where: { id: getBody.orderDeliveryId },
-          select: ['deliveryTarget'],
-        });
-
-        if (!orderDeliveryData) {
-          throw new NotFoundException('orderDelivery 데이터를 찾을 수 없습니다.');
-        }
-
-        result.beforeChange = orderDeliveryData?.deliveryTarget ?? '';
-        break;
-
-      case '폐기':
-      case '환불폐기':
-        orderDeliveryData = await this.orderDeliveryRepository.findOne({
-          where: { id: getBody.orderDeliveryId },
-          select: ['couponStatus'],
-        });
-
-        if (!orderDeliveryData) {
-          throw new NotFoundException('orderDelivery 데이터를 찾을 수 없습니다.');
-        }
-
-        result.beforeChange = orderDeliveryData?.couponStatus ?? '';
-        break;
-
-      default:
-        throw new NotFoundException('지원하지 않는 유형입니다.');
-    }
-
-    result.type = getBody.type;
-    result.orderDeliveryId = getBody.orderDeliveryId;
-    result.content = getBody.content;
-    result.userId = user.id;
-
-    return result;
-  }
-
-  /**
-   * history 서비스실행
+   * order_history 등록
    * @param user 
    * @param getBody 
    */
   async execCreateHistory(map: Partial<OrderHistoryEntity>) {
     return await this.orderHistoryRepository.save(map);
+  }
+  
+  /**
+   * 핀상태변경 API 유효성검사
+   * @param getBody 
+   */
+  async validPinStatusModify(getBody: CustomerServicePinStatusModifyReqDto) {
+    if (!getBody.orderDeliveryId) throw new NotFoundException('데이터 정보가 없습니다.');
+    if (!getBody.afterChange) throw new BadRequestException('변경 후 데이터가 없습니다.');
+  }
+
+  /**
+   * 핀상태변경 API 데이터매핑
+   * @param getBody 
+   * @returns 
+   */
+  async mapPinStatusModify(@User() user: ILoginUserInfo, getBody: CustomerServicePinStatusModifyReqDto) {
+    const orderDelivery = await this.orderDeliveryRepository.findOne({
+      where: {
+        id: getBody.orderDeliveryId,
+        deletedAt: IsNull(),
+      },
+      relations: [
+        'orderProductMapping',
+        'orderProductMapping.product',
+        'orderProductMapping.order',
+        'orderHistory',
+        'orderProductMapping.product.partnerCompany',
+      ],
+    });
+
+    if (!orderDelivery) {
+      throw new BadRequestException('데이터가 존재하지 않습니다.');
+    }
+
+    const result = {
+      businessName: orderDelivery?.orderProductMapping?.product?.partnerCompany?.businessName,
+      beforeChange: orderDelivery.couponStatus,
+      afterChange: getBody.afterChange,
+      type: '핀상태 변경',
+      content: '핀상태 변경',
+      userId: user.id,
+      orderDelivery,
+    };
+
+    return result;
+  }
+
+  /**
+   * 핀상태변경 API 서비스실행
+   * @param map 
+   */
+  async execPinStatusModify(map: any) {
+    const { businessName, beforeChange, afterChange, type, content, orderDelivery } = map;
+
+    switch (businessName) {
+      case 'GS엠비즈':
+      case '대홍기획':
+      case '컬쳐랜드':
+      case '갤럭시아':
+      case '케이티알파':
+        if (beforeChange === 'USED' || beforeChange === 'CANCEL' || beforeChange === 'EXPIRED') {
+          throw new BadRequestException('현재 변경을 할 수 없는 핀상태입니다.');
+        }
+        
+        if (afterChange === 'CANCEL' || afterChange === 'REFUND_CANCEL') {
+          const result = this.partnerCompanyExternService.cancel(orderDelivery);
+
+          if ((await result).message === '폐기 완료') {
+            orderDelivery.status = IOrderDeliveryStatus.CANCEL;
+
+            await this.orderDeliveryRepository.save(orderDelivery);
+
+            const history = this.orderHistoryRepository.create({
+              orderDeliveryId: orderDelivery.id,
+              userId: map.userId,
+              type: type,
+              content: content,
+              beforeChange: beforeChange,
+              afterChange: IOrderDeliveryStatus.CANCEL,
+            });
+
+            await this.orderHistoryRepository.save(history);
+          } else {
+            throw new InternalServerErrorException((await result).message);
+          }
+        } else {
+          throw new BadRequestException('변경을 할 수 없는 핀상태입니다.');
+        }
+        
+        break;
+      case 'SSG':
+        if (beforeChange === 'USED' || beforeChange === 'EXPIRED') {
+          throw new BadRequestException('현재 변경을 할 수 없는 핀상태입니다.');
+        }
+
+        if (afterChange === 'USED' || afterChange === 'REFUND_CANCEL') {
+          orderDelivery.status = IOrderDeliveryStatus.CANCEL;
+
+          await this.orderDeliveryRepository.save(orderDelivery);
+
+          const history = this.orderHistoryRepository.create({
+              orderDeliveryId: orderDelivery.id,
+              userId: orderDelivery.userId,
+              type: type,
+              content: content,
+              beforeChange: beforeChange,
+              afterChange: IOrderDeliveryStatus.CANCEL,
+            });
+
+          await this.orderHistoryRepository.save(history);
+        } else {
+          throw new BadRequestException('변경을 할 수 없는 핀상태입니다.');
+        }
+        
+        break;
+      default :
+        throw new BadRequestException('처리할 수 없는 협력사 입니다.');
+    }
+  }
+
+  /**
+   * 핀상태갱신 API 유효성검사
+   * @param getBody 
+   */
+  async validPinStatusRefresh(getBody: CustomerServicePinStatusRefreshReqDto) {
+    if (!getBody.orderDeliveryId) throw new NotFoundException('데이터 정보가 없습니다.');
+  }
+
+  /**
+   * 핀상태갱신 API 데이터매핑
+   * @param getBody 
+   * @returns 
+   */
+  async mapPinStatusRefresh(@User() user: ILoginUserInfo, getBody: CustomerServicePinStatusRefreshReqDto) {
+    const orderDelivery = await this.orderDeliveryRepository.findOne({
+      where: {
+        id: getBody.orderDeliveryId,
+        deletedAt: IsNull(),
+      },
+      relations: [
+        'orderProductMapping',
+        'orderProductMapping.product',
+        'orderProductMapping.order',
+        'orderProductMapping.product.partnerCompany',
+        'orderHistory',
+      ],
+    });
+
+    if (!orderDelivery) {
+      throw new BadRequestException('데이터가 존재하지 않습니다.');
+    }
+
+    const result = {
+      userId: user.id,
+      type: '핀상태 변경',
+      content: '핀상태 변경',
+      beforeChange: orderDelivery.couponStatus,
+      orderDelivery,
+    };
+
+    return result;
+  }
+
+  /**
+   * 핀상태갱신 API 서비스실행
+   * @param map 
+   */
+  async execPinStatusRefresh(map: any) {
+    await this.partnerCompanyExternService.refreshCouponStatus(map.orderDelivery);
+
+    const orderDelivery = await this.orderDeliveryRepository.findOne({
+      where: {
+        id: map.orderDelivery.orderDeliveryId,
+        deletedAt: IsNull(),
+      },
+      relations: [
+        'orderProductMapping',
+        'orderProductMapping.product',
+        'orderProductMapping.order',
+        'orderHistory',
+      ],
+    });
+
+    let resCouponStatus = orderDelivery?.couponStatus;
+
+    const history = this.orderHistoryRepository.create({
+        orderDeliveryId: map.orderDelivery.id,
+        userId: map.userId,
+        type: map.type,
+        content: map.content,
+        beforeChange: map.beforeChange,
+        afterChange: resCouponStatus,
+      });
+
+    await this.orderHistoryRepository.save(history);
+  }
+
+  /**
+   * CS 등록 API 유효성검사
+   * @param getBody 
+   */
+  async validHistory(getBody: CustomerServiceHistoryReqDto) {
+    if (!getBody.orderDeliveryId) throw new NotFoundException('데이터 정보가 없습니다.');
+    if (!getBody.type) {
+      throw new BadRequestException('CS 유형을 선택해 주세요.');
+    } else if (getBody.type === '재전송' && !getBody.extraType) {
+      throw new BadRequestException('재전송 유형을 선택해 주세요.');
+    }
+  }
+
+  /**
+   * CS 등록 API 데이터매핑
+   * @param getBody 
+   * @returns 
+   */
+  async mapHistory(@User() user: ILoginUserInfo, getBody: CustomerServiceHistoryReqDto) {
+    const orderDelivery = await this.orderDeliveryRepository.findOne({
+      where: {
+        id: getBody.orderDeliveryId,
+        deletedAt: IsNull(),
+      },
+      relations: [
+        'orderProductMapping',
+        'orderProductMapping.product',
+        'orderProductMapping.order',
+        'orderHistory',
+      ],
+    });
+
+    if (!orderDelivery) {
+      throw new BadRequestException('데이터가 존재하지 않습니다.');
+    }
+
+    if (getBody.extraType === 'phone') {
+      getBody.afterChange = getBody.afterChange?.replace(/[^0-9]/g, '').trim();
+    }
+
+    let beforeChange = '';
+    switch (getBody.type) {
+      case '수신정보 변경요청': {
+        beforeChange = orderDelivery.deliveryTarget;
+        break;
+      }
+      case '폐기':
+      case '환불폐기': {
+        beforeChange = orderDelivery.couponStatus;
+        break;
+      }
+      default : {
+        beforeChange = '';
+      }
+    }
+
+    const result = {
+      orderDeliveryId: getBody.orderDeliveryId,
+      userId: user.id,
+      type: getBody.type,
+      extraType: getBody.extraType || '',
+      content: getBody.content || '',
+      beforeChange: beforeChange || '',
+      afterChange: getBody.afterChange || '',
+      orderDelivery,
+    };
+
+    return result;
+  }
+
+  /**
+   * CS 등록 API 서비스실행
+   * @param map 
+   */
+  async execHistory(map: any) {
+    let afterChange = '';
+
+    switch (map.type) {
+      case '단순문의': {
+        break;
+      }
+      case '재전송': {
+        switch (map.extraType) {
+          case 'sms': {
+            // sms 재전송
+            break;
+          }
+          case 'mms': {
+            const resendDto = new CustomerServiceReSendReqDto();
+            resendDto.orderDeliveryId = map.orderDeliveryId;
+
+            await this.reSend(resendDto);
+            break;
+          }
+          default : {
+            throw new BadRequestException('지원하지 않는 재전송 유형입니다.');
+          }
+        }
+        break;
+      }
+      case '수신정보 변경요청': {
+        const orderDeliveryDto = new OrderDeliveryEntity();
+        orderDeliveryDto.id = map.orderDeliveryId;
+        orderDeliveryDto.deliveryMethod = map.afterChange;
+
+        await this.orderDeliveryRepository.save(orderDeliveryDto);
+
+        const resendDto = new CustomerServiceReSendReqDto();
+        resendDto.orderDeliveryId = map.orderDeliveryId;
+
+        await this.reSend(resendDto);
+        break;
+      }
+      case '폐기': {
+        const pinDiscardDto = new CustomerServiceDiscardReqDto();
+        pinDiscardDto.orderDeliveryId = map.orderDeliveryId;
+        pinDiscardDto.couponStatus = map.beforeChange;
+
+        await this.pinDiscard(pinDiscardDto);
+
+        afterChange = OrderDeliveryCouponStatus.CANCEL;
+        break;
+      }
+      case '환불폐기': {
+        const pinDiscardDto = new CustomerServiceDiscardReqDto();
+        pinDiscardDto.orderDeliveryId = map.orderDeliveryId;
+        pinDiscardDto.couponStatus = map.beforeChange;
+
+        await this.pinDiscard(pinDiscardDto);
+
+        afterChange = OrderDeliveryCouponStatus.REFUND_CANCEL;
+        break;
+      }
+      default : {
+        throw new BadRequestException('지원하지 않는 유형입니다.');
+      }
+    }
+    
+    const history = this.orderHistoryRepository.create({
+        orderDeliveryId: map.orderDelivery.id,
+        userId: map.userId,
+        type: map.type,
+        content: map.content,
+        beforeChange: map.beforeChange,
+        afterChange: afterChange,
+      });
+
+    await this.orderHistoryRepository.save(history);
+  }
+
+  /**
+   * 변경내역 상세 list 조회 API 유효성검사
+   * @param getQuery 
+   */
+  async validStatusList(getQuery: CustomerServiceStatusListReqDto) {
+    if (!getQuery.orderDeliveryId) throw new NotFoundException('발송 상세 데이터 정보가 없습니다.');
+  }
+
+  /**
+   * 변경내역 상세 list 조회 API 데이터매핑
+   * @param getQuery 
+   * @returns 
+   */
+  async mapStatusList(getQuery: CustomerServiceStatusListReqDto) {
+    const result = {
+      orderDeliveryId: getQuery.orderDeliveryId,
+      page: getQuery.page,
+      take: getQuery.take,
+    }
+
+    return result;
+  }
+
+  /**
+   * 변경내역 상세 list 조회 API 서비스실행
+   * @param map 
+   */
+  async execStatusList(map: any) {
+    const { orderDeliveryId, page, take } = map;
+
+    const skip = (page - 1) * take;
+
+    const queryBuilder = this.orderHistoryRepository
+      .createQueryBuilder('history')
+      .leftJoinAndSelect('history.user', 'user')
+      .where('history.orderDeliveryId = :orderDeliveryId', { orderDeliveryId })
+      .orderBy('history.id', 'DESC')
+      .skip(skip)
+      .take(take);
+
+    const [list, totalCount] = await queryBuilder.getManyAndCount();
+
+    return {
+      list: list.map((h: OrderHistoryEntity) => ({
+        id: h.id,
+        type: h.type,
+        createdAt: h.createdAt ? format(h.createdAt, DateFormatStr) : null,
+        personName: h.user?.personName ?? '',
+        content: h.content,
+        beforeChange: h.beforeChange,
+        afterChange: h.afterChange,
+      })),
+      totalCount,
+      totalPage: Math.ceil(totalCount / take),
+      currentPage: page,
+    };
   }
 }
