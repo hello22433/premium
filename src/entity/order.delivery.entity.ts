@@ -92,6 +92,9 @@ export class OrderDeliveryEntity extends BaseEntity {
   @OneToMany(() => OrderHistoryEntity, (history) => history.orderDelivery)
   orderHistory: OrderHistoryEntity[];
 
-  @Column({ type: 'varchar', length: 256, nullable: true })
+  @Column({ name: 'api_error_code', type: 'varchar', length: 256, nullable: true, comment: '외부 api 응답 에러코드' })
+  apiErrorCode: string | null;
+
+  @Column({ type: 'varchar', length: 256, nullable: true, comment: '외부 api 응답 에러메시지' })
   apiErrorMessage: string | null;
 }

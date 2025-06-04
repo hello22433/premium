@@ -46,7 +46,8 @@ export class PartnerCompanyExternService {
 
   private logger = new Logger('PARTNER_COMPANY_EXTERN');
 
-  @Transactional({ propagation: Propagation.REQUIRED })
+  // 발급 실패 시 트랜잭션 롤백으로 인한 저장 취소 때문에 새로운 트랜잭션 생성
+  @Transactional({ propagation: Propagation.REQUIRES_NEW })
   async issue(orderDelivery: OrderDeliveryEntity, ssgEvent: SsgEventEntity | null) {
     const type = orderDelivery.orderProductMapping!.product.partnerCompany!.type;
 
@@ -59,22 +60,48 @@ export class PartnerCompanyExternService {
     try {
       if (!type || orderDelivery.orderProductMapping.product.type === 'SELF') {
         orderDelivery.barCode = orderBarcodeGenerate();
+        orderDelivery.apiErrorCode = null;
+        orderDelivery.apiErrorMessage = null;
+        await this.orderDeliveryRepository.save(orderDelivery);
         return;
       }
 
       // 1.1.1 갤럭시아 쿠폰 발급
       // 표준연동발행규격서 v.1.6.8_갤럭시아머니트리.pdf
       if (type === 'GALAXIA') {
-        const giftKind = orderDelivery.orderProductMapping.product.name.includes('(백화점)') ? 'dept' : 'cpn';
-        const galaxiaOut = await this.galaxia.issue({
-          transactionId: orderDelivery.transactionId,
-          partnerCompanyCode: orderDelivery.orderProductMapping.product.partnerCompanyCode,
-          fromPhoneNumber: orderDelivery.deliveryTarget,
-          giftKind: giftKind,
-        });
-        context = JSON.stringify(galaxiaOut);
-        orderDelivery.barCode = galaxiaOut.giftCertificate.barcode ?? null;
-        orderDelivery.couponNum = galaxiaOut.transactionId;
+        try {
+          const giftKind = orderDelivery.orderProductMapping.product.name.includes('(백화점)') ? 'dept' : 'cpn';
+          const galaxiaOut = await this.galaxia.issue({
+            transactionId: orderDelivery.transactionId,
+            partnerCompanyCode: orderDelivery.orderProductMapping.product.partnerCompanyCode,
+            fromPhoneNumber: orderDelivery.deliveryTarget,
+            giftKind: giftKind,
+          });
+          // GALAXIA - 정상응답일 경우
+          context = JSON.stringify(galaxiaOut);
+          orderDelivery.barCode = galaxiaOut.giftCertificate.barcode ?? null;
+          orderDelivery.couponNum = galaxiaOut.transactionId;
+          orderDelivery.apiErrorCode = null;
+          orderDelivery.apiErrorMessage = null;
+        } catch (galaxiaErr) {
+          // GALAXIA - 예외 발생 시
+          this.logger.error('Galaxia 발급 에러:', JSON.stringify(galaxiaErr));
+
+          const resCode = galaxiaErr.response?.data?.resCode ?? 'UNKNOWN';
+          const resMsg = galaxiaErr.response?.data?.resMsg ?? galaxiaErr.message ?? 'Galaxia 발급 중 에러 발생';
+
+          context = JSON.stringify(galaxiaErr);
+          isSuccess = false;
+          orderDelivery.status = IOrderDeliveryStatus.FAIL;
+          orderDelivery.apiErrorCode = resCode;
+          orderDelivery.apiErrorMessage = resMsg;
+
+          // 변경된 내용을 DB에 반영
+          await this.orderDeliveryRepository.save(orderDelivery);
+
+          // Galaxia 발급 실패로 더 이상 진행하지 않고 반환 -> deliveryConfirmed 쪽에서 status FAIL인 것을 감지해 다시 예외를 던짐
+          return;
+        }
       }
 
       // 1.1.2 GSMBIZ 쿠폰 발급
@@ -196,6 +223,7 @@ export class PartnerCompanyExternService {
       orderDelivery.status = IOrderDeliveryStatus.FAIL;
     } finally {
       if (type !== null) {
+        // 호출 이력 저장(성공/실패 구분) → 동일한 “REQUIRES_NEW” 트랜잭션에서 커밋됨
         await this.partnerCompanyExternHistoryRepository.insert({
           context,
           isSuccess,
