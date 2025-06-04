@@ -752,7 +752,7 @@ export class CustomerServiceService {
       list: list.map((h: OrderHistoryEntity) => ({
         id: h.id,
         type: h.type,
-        createdAt: h.createdAt,
+        createdAt: h.createdAt ? format(h.createdAt, DateFormatStr) : null,
         personName: h.user?.personName ?? '',
         content: h.content,
         beforeChange: h.beforeChange,

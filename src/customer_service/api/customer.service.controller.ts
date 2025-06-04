@@ -128,7 +128,7 @@ export class CustomerServiceController {
   @ApiOkResponse({
     description: '성공적으로 return 한 경우',
   })
-  @Put('/customer-service/status/list')
+  @Get('/customer-service/status/list')
   async statusList(@Body() getBody: CustomerServiceStatusListReqDto) {
     // 1. 유효성검사
     await this.customerServiceService.validStatusList(getBody);
