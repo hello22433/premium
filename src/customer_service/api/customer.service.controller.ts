@@ -11,6 +11,7 @@ import {
   CustomerServicePinStatusModifyReqDto,
   CustomerServicePinStatusRefreshReqDto,
   CustomerServiceReSendReqDto,
+  CustomerServiceStatusListReqDto,
   CustomerServiceStatusReqDto,
 } from './customer.service.req.dto';
 import { 
@@ -100,7 +101,7 @@ export class CustomerServiceController {
     const map = await this.customerServiceService.mapPinStatusRefresh(user, getBody);
     
     // 3. 서비스실행
-    return await this.customerServiceService.execPinStatusRefresh(map);
+    await this.customerServiceService.execPinStatusRefresh(map);
   }
 
   @ApiOperation({
@@ -118,7 +119,25 @@ export class CustomerServiceController {
     const map = await this.customerServiceService.mapStatus(user, getBody);
     
     // 3. 서비스실행
-    return await this.customerServiceService.execStatus(map);
+    await this.customerServiceService.execStatus(map);
+  }
+
+  @ApiOperation({
+    description: '변경내역 상세 list 조회 API',
+  })
+  @ApiOkResponse({
+    description: '성공적으로 return 한 경우',
+  })
+  @Put('/customer-service/status/list')
+  async statusList(@Body() getBody: CustomerServiceStatusListReqDto) {
+    // 1. 유효성검사
+    await this.customerServiceService.validStatusList(getBody);
+
+    // 2. 데이터매핑
+    const map = await this.customerServiceService.mapStatusList(getBody);
+    
+    // 3. 서비스실행
+    await this.customerServiceService.execStatusList(map);
   }
 
   @ApiOperation({

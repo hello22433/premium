@@ -8,6 +8,7 @@ import {
   CustomerServicePinStatusModifyReqDto,
   CustomerServicePinStatusRefreshReqDto,
   CustomerServiceReSendReqDto,
+  CustomerServiceStatusListReqDto,
   CustomerServiceStatusReqDto,
   UpdateCouponStatusReqDto,
 } from '../api/customer.service.req.dto';
@@ -34,6 +35,7 @@ import { User } from 'src/auth/api/user.decorator';
 
 @Injectable()
 export class CustomerServiceService {
+  dataSource: any;
   constructor(
     @InjectRepository(OrderEntity)
     private orderRepository: Repository<OrderEntity>,
@@ -539,9 +541,22 @@ export class CustomerServiceService {
    * @param map 
    */
   async execPinStatusRefresh(map: any) {
-    const res = this.partnerCompanyExternService.refreshCouponStatus(map);
+    await this.partnerCompanyExternService.refreshCouponStatus(map.orderDelivery);
 
-    let resCouponStatus = (await res).couponStatus;
+    const orderDelivery = await this.orderDeliveryRepository.findOne({
+      where: {
+        id: map.orderDelivery.orderDeliveryId,
+        deletedAt: IsNull(),
+      },
+      relations: [
+        'orderProductMapping',
+        'orderProductMapping.product',
+        'orderProductMapping.order',
+        'orderHistory',
+      ],
+    });
+
+    let resCouponStatus = orderDelivery?.couponStatus;
 
     const history = this.orderHistoryRepository.create({
         orderDeliveryId: map.orderDelivery.id,
@@ -690,5 +705,62 @@ export class CustomerServiceService {
       });
 
     await this.orderHistoryRepository.save(history);
+  }
+
+  /**
+   * 변경내역 상세 list 조회 API 유효성검사
+   * @param getBody 
+   */
+  async validStatusList(getBody: CustomerServiceStatusListReqDto) {
+    if (isEmpty(getBody.orderDeliveryId)) throw new NotFoundException('발송 상세 데이터 정보가 없습니다.');
+  }
+
+  /**
+   * 변경내역 상세 list 조회 API 데이터매핑
+   * @param getBody 
+   * @returns 
+   */
+  async mapStatusList(getBody: CustomerServiceStatusListReqDto) {
+    const result = {
+      orderDeliveryId: getBody.orderDeliveryId,
+      page: getBody.page,
+      take: getBody.take,
+    }
+  }
+
+  /**
+   * 변경내역 상세 list 조회 API 서비스실행
+   * @param map 
+   */
+  async execStatusList(map: any) {
+    const { orderDeliveryId, page, take } = map;
+
+    const skip = (page - 1) * take;
+
+    const queryBuilder = this.dataSource
+      .getRepository(OrderHistoryEntity)
+      .createQueryBuilder('history')
+      .leftJoinAndSelect('history.user', 'user')
+      .where('history.orderDeliveryId = :orderDeliveryId', { orderDeliveryId })
+      .orderBy('history.id', 'DESC')
+      .skip(skip)
+      .take(take);
+
+    const [list, totalCount] = await queryBuilder.getManyAndCount();
+
+    return {
+      list: list.map((h: OrderHistoryEntity) => ({
+        id: h.id,
+        type: h.type,
+        createdAt: h.createdAt,
+        personName: h.user?.personName ?? '',
+        content: h.content,
+        beforeChange: h.beforeChange,
+        afterChange: h.afterChange,
+      })),
+      totalCount,
+      totalPage: Math.ceil(totalCount / take),
+      currentPage: page,
+    };
   }
 }

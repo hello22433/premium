@@ -219,3 +219,11 @@ export class CustomerServiceStatusReqDto {
   @IsString()
   extraType?: string;
 }
+
+export class CustomerServiceStatusListReqDto extends PagingReqDto {
+  @ApiProperty({ description: '발송 데이터 id' })
+  // =============================================================
+  @IsNotEmpty()
+  @IsNumber()
+  orderDeliveryId: number;
+}

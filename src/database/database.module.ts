@@ -42,6 +42,7 @@ import { OtherServiceSaleProductEntity } from '../entity/other.service.sale.prod
 import { OtherServiceSaleProductMappingEntity } from '../entity/other.service.sale.product.mapping.entity';
 import { OtherServiceSaleTypeEntity } from '../entity/other.service.sale.type.entity';
 import { ShippingStorageEntity } from '../entity/shipping.storage.entity';
+import { OrderHistoryEntity } from 'src/entity/order.history.entity';
 
 @Module({
   imports: [
@@ -66,6 +67,7 @@ import { ShippingStorageEntity } from '../entity/shipping.storage.entity';
           MessageArchiveEntity,
           UserEventSaveMappingEntity,
           OrderEntity,
+          OrderHistoryEntity,
           OrderProductMappingEntity,
           OrderRealProductEntity,
           OrderRealProductMappingEntity,
