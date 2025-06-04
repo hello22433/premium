@@ -8,11 +8,11 @@ import {
   CustomerServiceGetDetailListReqDto,
   CustomerServiceGetDetailReqDto,
   CustomerServiceGetListReqDto,
+  CustomerServiceHistoryReqDto,
   CustomerServicePinStatusModifyReqDto,
   CustomerServicePinStatusRefreshReqDto,
   CustomerServiceReSendReqDto,
   CustomerServiceStatusListReqDto,
-  CustomerServiceStatusReqDto,
 } from './customer.service.req.dto';
 import { 
   CustomerServiceGetDetailListResDto, 
@@ -83,7 +83,7 @@ export class CustomerServiceController {
     const map = await this.customerServiceService.mapPinStatusModify(user, getBody);
     
     // 3. 서비스실행
-    await this.customerServiceService.execPinStatusModify(map);
+    return await this.customerServiceService.execPinStatusModify(map);
   }
 
   @ApiOperation({
@@ -101,7 +101,7 @@ export class CustomerServiceController {
     const map = await this.customerServiceService.mapPinStatusRefresh(user, getBody);
     
     // 3. 서비스실행
-    await this.customerServiceService.execPinStatusRefresh(map);
+    return await this.customerServiceService.execPinStatusRefresh(map);
   }
 
   @ApiOperation({
@@ -110,16 +110,16 @@ export class CustomerServiceController {
   @ApiOkResponse({
     description: '성공적으로 return 한 경우',
   })
-  @Put('/customer-service/status')
-  async status(@User() user: ILoginUserInfo, @Body() getBody: CustomerServiceStatusReqDto) {
+  @Post('/customer-service/history')
+  async history(@User() user: ILoginUserInfo, @Body() getBody: CustomerServiceHistoryReqDto) {
     // 1. 유효성검사
-    await this.customerServiceService.validStatus(getBody);
+    await this.customerServiceService.validHistory(getBody);
 
     // 2. 데이터매핑
-    const map = await this.customerServiceService.mapStatus(user, getBody);
+    const map = await this.customerServiceService.mapHistory(user, getBody);
     
     // 3. 서비스실행
-    await this.customerServiceService.execStatus(map);
+    return await this.customerServiceService.execHistory(map);
   }
 
   @ApiOperation({
@@ -129,15 +129,15 @@ export class CustomerServiceController {
     description: '성공적으로 return 한 경우',
   })
   @Get('/customer-service/status/list')
-  async statusList(@Body() getBody: CustomerServiceStatusListReqDto) {
+  async statusList(@Query() getQuery: CustomerServiceStatusListReqDto) {
     // 1. 유효성검사
-    await this.customerServiceService.validStatusList(getBody);
+    await this.customerServiceService.validStatusList(getQuery);
 
     // 2. 데이터매핑
-    const map = await this.customerServiceService.mapStatusList(getBody);
+    const map = await this.customerServiceService.mapStatusList(getQuery);
     
     // 3. 서비스실행
-    await this.customerServiceService.execStatusList(map);
+    return await this.customerServiceService.execStatusList(map);
   }
 
   @ApiOperation({

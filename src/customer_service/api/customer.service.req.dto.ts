@@ -181,8 +181,8 @@ export class CustomerServicePinStatusRefreshReqDto {
   orderDeliveryId: number;
 }
 
-export class CustomerServiceStatusReqDto {
-  @ApiProperty({ description: '핀상태변경 API' })
+export class CustomerServiceHistoryReqDto {
+  @ApiProperty({ description: 'order_delivery_id' })
   // =============================================================
   @IsNotEmpty()
   @IsNumber()
@@ -226,5 +226,6 @@ export class CustomerServiceStatusListReqDto extends PagingReqDto {
   // =============================================================
   @IsNotEmpty()
   @IsNumber()
+  @Type(() => Number)
   orderDeliveryId: number;
 }

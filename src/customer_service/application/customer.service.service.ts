@@ -5,11 +5,11 @@ import {
   CustomerServiceGetDetailListReqDto,
   CustomerServiceGetDetailReqDto,
   CustomerServiceGetListReqDto,
+  CustomerServiceHistoryReqDto,
   CustomerServicePinStatusModifyReqDto,
   CustomerServicePinStatusRefreshReqDto,
   CustomerServiceReSendReqDto,
   CustomerServiceStatusListReqDto,
-  CustomerServiceStatusReqDto,
   UpdateCouponStatusReqDto,
 } from '../api/customer.service.req.dto';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -575,7 +575,7 @@ export class CustomerServiceService {
    * CS 등록 API 유효성검사
    * @param getBody 
    */
-  async validStatus(getBody: CustomerServiceStatusReqDto) {
+  async validHistory(getBody: CustomerServiceHistoryReqDto) {
     if (!getBody.orderDeliveryId) throw new NotFoundException('데이터 정보가 없습니다.');
     if (!getBody.type) {
       throw new BadRequestException('CS 유형을 선택해 주세요.');
@@ -589,7 +589,7 @@ export class CustomerServiceService {
    * @param getBody 
    * @returns 
    */
-  async mapStatus(@User() user: ILoginUserInfo, getBody: CustomerServiceStatusReqDto) {
+  async mapHistory(@User() user: ILoginUserInfo, getBody: CustomerServiceHistoryReqDto) {
     const orderDelivery = await this.orderDeliveryRepository.findOne({
       where: {
         id: getBody.orderDeliveryId,
@@ -645,7 +645,9 @@ export class CustomerServiceService {
    * CS 등록 API 서비스실행
    * @param map 
    */
-  async execStatus(map: any) {
+  async execHistory(map: any) {
+    let afterChange = '';
+
     switch (map.type) {
       case '단순문의': {
         break;
@@ -682,13 +684,24 @@ export class CustomerServiceService {
         await this.reSend(resendDto);
         break;
       }
-      case '폐기':
+      case '폐기': {
+        const pinDiscardDto = new CustomerServiceDiscardReqDto();
+        pinDiscardDto.orderDeliveryId = map.orderDeliveryId;
+        pinDiscardDto.couponStatus = map.beforeChange;
+
+        await this.pinDiscard(pinDiscardDto);
+
+        afterChange = OrderDeliveryCouponStatus.CANCEL;
+        break;
+      }
       case '환불폐기': {
         const pinDiscardDto = new CustomerServiceDiscardReqDto();
         pinDiscardDto.orderDeliveryId = map.orderDeliveryId;
         pinDiscardDto.couponStatus = map.beforeChange;
 
         await this.pinDiscard(pinDiscardDto);
+
+        afterChange = OrderDeliveryCouponStatus.REFUND_CANCEL;
         break;
       }
       default : {
@@ -702,7 +715,7 @@ export class CustomerServiceService {
         type: map.type,
         content: map.content,
         beforeChange: map.beforeChange,
-        afterChange: map.orderDelivery.status,
+        afterChange: afterChange,
       });
 
     await this.orderHistoryRepository.save(history);
@@ -710,23 +723,25 @@ export class CustomerServiceService {
 
   /**
    * 변경내역 상세 list 조회 API 유효성검사
-   * @param getBody 
+   * @param getQuery 
    */
-  async validStatusList(getBody: CustomerServiceStatusListReqDto) {
-    if (!getBody.orderDeliveryId) throw new NotFoundException('발송 상세 데이터 정보가 없습니다.');
+  async validStatusList(getQuery: CustomerServiceStatusListReqDto) {
+    if (!getQuery.orderDeliveryId) throw new NotFoundException('발송 상세 데이터 정보가 없습니다.');
   }
 
   /**
    * 변경내역 상세 list 조회 API 데이터매핑
-   * @param getBody 
+   * @param getQuery 
    * @returns 
    */
-  async mapStatusList(getBody: CustomerServiceStatusListReqDto) {
+  async mapStatusList(getQuery: CustomerServiceStatusListReqDto) {
     const result = {
-      orderDeliveryId: getBody.orderDeliveryId,
-      page: getBody.page,
-      take: getBody.take,
+      orderDeliveryId: getQuery.orderDeliveryId,
+      page: getQuery.page,
+      take: getQuery.take,
     }
+
+    return result;
   }
 
   /**
@@ -738,8 +753,7 @@ export class CustomerServiceService {
 
     const skip = (page - 1) * take;
 
-    const queryBuilder = this.dataSource
-      .getRepository(OrderHistoryEntity)
+    const queryBuilder = this.orderHistoryRepository
       .createQueryBuilder('history')
       .leftJoinAndSelect('history.user', 'user')
       .where('history.orderDeliveryId = :orderDeliveryId', { orderDeliveryId })
