@@ -129,15 +129,13 @@ export class UserService {
       throw new BadRequestException('USER_DO_NOT_MATCH_PASSWORD');
     }
 
-    const splitReqAllowedIp = reqIp ? reqIp.split(':') : ['', '', ''];
-
-    const reqAllowedIp = splitReqAllowedIp[3];
+    const allowedIps = reqIp ? reqIp.split(':') : [];
+    const normalizedAllowedIps = allowedIps.map((ip) => ip.trim());
 
     console.log(reqIp);
-    console.log(reqAllowedIp);
     console.log(user.ip);
-    if (user.ip !== reqAllowedIp) {
-      throw new BadRequestException('허용된 IP 가 아닙니다.');
+    if (!normalizedAllowedIps.includes(<string>user.ip)) {
+      throw new BadRequestException('허용된 IP가 아닙니다.');
     }
 
     const now = new Date();

@@ -41,6 +41,8 @@ import { IUserAuthority } from '../../user/interface/user.authority';
 import { UserSyncProductEventEntity } from '../../entity/user.sync.product.event.entity';
 import { ProductLikeEntity } from '../../entity/product.like.entity';
 import { validate } from 'class-validator';
+import { IProductSettleMethod } from '../interface/product.settle.method';
+import { IProductUseStatus } from '../interface/product.status';
 
 @Injectable()
 export class ProductService {
@@ -558,54 +560,98 @@ export class ProductService {
 
   async excelUpload(file: Express.Multer.File) {
     if (!file) {
-      throw new BadRequestException('not exist file');
+      throw new BadRequestException('업로드할 파일이 존재하지 않습니다.');
     }
 
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.load(file.buffer);
     const worksheet = workbook.worksheets[0];
-
     if (!worksheet) {
-      throw new BadRequestException('엑셀 파일이 비어 있습니다.');
+      throw new BadRequestException('엑셀 파일에 워크시트가 없습니다.');
     }
 
     for (let i = 2; i <= worksheet.rowCount; i++) {
+      const rowIndex = i;
       try {
-        const row = worksheet.getRow(i);
+        const row = worksheet.getRow(rowIndex);
         const rowData = this.mapRowToDto(row);
 
         if (!this.isValidRow(rowData)) {
           continue;
         }
 
-        const reqDto = new ProductCreateReqDto();
-        reqDto.partnerCompanyCode = rowData.partnerCompanyCode;
-        reqDto.partnerCompanyId = rowData.partnerCompanyId;
-        reqDto.brandId = rowData.brandId;
-        reqDto.name = rowData.name;
-        reqDto.price = rowData.price;
-        reqDto.expireDay = rowData.expireDay;
-        reqDto.category = rowData.category;
-        reqDto.classification = rowData.classification;
-        reqDto.settleMethod = rowData.settleMethod;
-        reqDto.settlePercent = rowData.settlePercent;
-        reqDto.imagePath = rowData.imagePath;
-        reqDto.type = rowData.type;
-        reqDto.memo = rowData.memo;
-        reqDto.useStatus = rowData.useStatus;
+        const createDto = new ProductCreateReqDto();
+        createDto.partnerCompanyCode = String(rowData.partnerCompanyCode).trim();
+        createDto.partnerCompanyId = Number(rowData.partnerCompanyId);
+        createDto.brandId = Number(rowData.brandId);
+        createDto.name = String(rowData.name).trim();
+        createDto.price = Number(rowData.price);
+        createDto.expireDay = Number(rowData.expireDay);
+        createDto.category = String(rowData.category).trim();
+        createDto.classification = String(rowData.classification).trim();
+        createDto.settleMethod = String(rowData.settleMethod).trim() as IProductSettleMethod;
+        createDto.settlePercent = Number(rowData.settlePercent);
+        createDto.imagePath = String(rowData.imagePath).trim();
+        createDto.type = String(rowData.type).trim() as IProductType;
+        createDto.memo = rowData.memo !== null && rowData.memo !== undefined ? String(rowData.memo).trim() : null;
+        createDto.useStatus = String(rowData.useStatus).trim() as IProductUseStatus;
 
-        validate(reqDto).then((errors) => {
-          if (errors.length > 0) {
-            console.log('validation failed. errors: ', errors);
-            throw new BadRequestException('필수값 기재 바랍니다.');
-          }
+        const validationErrors = await validate(createDto);
+        if (validationErrors.length > 0) {
+          throw new BadRequestException(`행 ${rowIndex} 검증 실패: 필수값 누락 혹은 형식 오류가 있습니다.`);
+        }
+
+        const existingProduct = await this.productRepository.findOne({
+          where: { partnerCompanyCode: createDto.partnerCompanyCode },
         });
 
-        await this.create(reqDto);
+        if (existingProduct) {
+          const existBrandCount = await this.brandRepository.count({
+            where: { id: createDto.brandId },
+          });
+          if (!existBrandCount) {
+            throw new BadRequestException(
+              `행 ${rowIndex} 오류: 해당 브랜드(ID ${createDto.brandId})가 존재하지 않습니다.`,
+            );
+          }
+
+          const existPartnerCount = await this.partnerCompanyRepository.count({
+            where: { id: createDto.partnerCompanyId },
+          });
+          if (!existPartnerCount) {
+            throw new BadRequestException(
+              `행 ${rowIndex} 오류: 해당 협력사(ID ${createDto.partnerCompanyId})가 존재하지 않습니다.`,
+            );
+          }
+
+          existingProduct.partnerCompanyId = createDto.partnerCompanyId;
+          existingProduct.brandId = createDto.brandId;
+          existingProduct.name = createDto.name;
+          existingProduct.price = createDto.price;
+          existingProduct.expireDay = createDto.expireDay;
+          existingProduct.category = createDto.category;
+          existingProduct.classification = createDto.classification;
+          existingProduct.settleMethod = createDto.settleMethod;
+          existingProduct.settlePercent = createDto.settlePercent;
+          existingProduct.imagePath = createDto.imagePath;
+          existingProduct.type = createDto.type;
+          existingProduct.memo = createDto.memo;
+          existingProduct.useStatus = createDto.useStatus;
+
+          await this.productRepository.save(existingProduct);
+        } else {
+          await this.create(createDto);
+        }
       } catch (error) {
-        throw new BadRequestException(`엑셀 데이터 매핑 중 row : ${i} 에서 문제가 발생했습니다, ${error.message}`);
+        const msg =
+          error instanceof BadRequestException
+            ? error.message
+            : `행 ${rowIndex} 처리 중 알 수 없는 오류가 발생했습니다: ${error.message}`;
+        throw new BadRequestException(msg);
       }
     }
+
+    return { message: '엑셀 업로드가 성공적으로 완료되었습니다.' };
   }
 
   private mapRowToDto(row: ExcelJS.Row): Record<string, any> {
