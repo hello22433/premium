@@ -297,7 +297,7 @@ export class PartnerCompanyExternService {
       }
 
       // 1.1.6 신세계 및 없는 type 은 타입만 수정
-      orderDelivery.status = IOrderDeliveryStatus.CANCEL;
+      orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
 
       return {
         code: '',

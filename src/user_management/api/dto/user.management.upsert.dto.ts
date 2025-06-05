@@ -114,29 +114,29 @@ export class UserManagementUpsertDto {
     description: '은행 이름',
   })
   // ============================
-  @IsNotEmpty()
-  bankName: string;
+  @IsOptional()
+  bankName: string = '';
 
   @ApiProperty({
     description: '계좌번호',
   })
   // ============================
-  @IsNotEmpty()
-  bankNumber: string;
+  @IsOptional()
+  bankNumber: string = '';
 
   @ApiProperty({
     description: '카드명',
   })
   // ============================
-  @IsNotEmpty()
-  cardName: string;
+  @IsOptional()
+  cardName: string = '';
 
   @ApiProperty({
     description: '카드 번호',
   })
   // ============================
-  @IsNotEmpty()
-  cardNumber: string;
+  @IsOptional()
+  cardNumber: string = '';
 
   @ApiProperty({
     description: '발신 번호',
