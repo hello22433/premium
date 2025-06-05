@@ -673,7 +673,7 @@ export class CustomerServiceService {
       case '수신정보 변경요청': {
         const orderDeliveryDto = new OrderDeliveryEntity();
         orderDeliveryDto.id = map.orderDeliveryId;
-        orderDeliveryDto.deliveryMethod = map.afterChange;
+        orderDeliveryDto.deliveryTarget = map.afterChange;
 
         await this.orderDeliveryRepository.save(orderDeliveryDto);
 
@@ -681,6 +681,8 @@ export class CustomerServiceService {
         resendDto.orderDeliveryId = map.orderDeliveryId;
 
         await this.reSend(resendDto);
+
+        afterChange = orderDeliveryDto.deliveryTarget;
         break;
       }
       case '폐기': {
