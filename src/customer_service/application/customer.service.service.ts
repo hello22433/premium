@@ -29,7 +29,6 @@ import { DeliveryBatchService } from '../../delivery/application/delivery.batch.
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
 import { ILoginUserInfo } from 'src/auth/interface/login.user';
 import { OrderHistoryEntity } from 'src/entity/order.history.entity';
-import { IOrderDeliveryStatus } from 'src/delivery/interface/order.delivery.status';
 import { User } from 'src/auth/api/user.decorator';
 
 @Injectable()
@@ -442,7 +441,7 @@ export class CustomerServiceService {
           const result = this.partnerCompanyExternService.cancel(orderDelivery);
 
           if ((await result).message === '폐기 완료') {
-            orderDelivery.status = IOrderDeliveryStatus.CANCEL;
+            orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
 
             await this.orderDeliveryRepository.save(orderDelivery);
 
@@ -452,7 +451,7 @@ export class CustomerServiceService {
               type: type,
               content: content,
               beforeChange: beforeChange,
-              afterChange: IOrderDeliveryStatus.CANCEL,
+              afterChange: OrderDeliveryCouponStatus.CANCEL,
             });
 
             await this.orderHistoryRepository.save(history);
@@ -470,7 +469,7 @@ export class CustomerServiceService {
         }
 
         if (afterChange === 'USED' || afterChange === 'REFUND_CANCEL') {
-          orderDelivery.status = IOrderDeliveryStatus.CANCEL;
+          orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
 
           await this.orderDeliveryRepository.save(orderDelivery);
 
@@ -480,7 +479,7 @@ export class CustomerServiceService {
               type: type,
               content: content,
               beforeChange: beforeChange,
-              afterChange: IOrderDeliveryStatus.CANCEL,
+              afterChange: OrderDeliveryCouponStatus.CANCEL,
             });
 
           await this.orderHistoryRepository.save(history);
