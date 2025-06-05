@@ -55,4 +55,26 @@ export class SmsGemtekSend implements ISmsSend {
       throw e;
     }
   }
+
+  async smsSend(obj: GemteckMsgQueueEntity): Promise<void> {
+    try {
+      await this.gemteckMsgQueueRepository
+        .createQueryBuilder('gemteckMsgQueue')
+        .insert()
+        .into('MSG_QUEUE')
+        .values({
+          msgType: obj.msgType,
+          dstAddr: obj.dstAddr,
+          callback: obj.callback,
+          text: obj.text,
+          requestTime: () => 'GETDATE()',
+          senderCode: this.configService.get('DATABASE_GEMTEK_SMS_SENDER_CODE'),
+        })
+        .execute();
+      return;
+    } catch (e) {
+      this.logger.error(e);
+      throw e;
+    }
+  }
 }
