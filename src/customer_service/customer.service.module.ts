@@ -9,6 +9,8 @@ import { OrderDeliveryEntity } from '../entity/order.delivery.entity';
 import { PartnerCompanyExternModule } from '../partner_company_extern/partner.company.extern.module';
 import { DeliveryModule } from '../delivery/delivery.module';
 import { OrderHistoryEntity } from 'src/entity/order.history.entity';
+import { GemteckMsgQueueEntity } from 'src/entity/gemtek/msg.queue.entity';
+import { SmsModule } from 'src/sms/sms.module';
 
 @Module({
   imports: [
@@ -18,9 +20,11 @@ import { OrderHistoryEntity } from 'src/entity/order.history.entity';
       OrderDeliveryEntity, 
       OrderProductMappingEntity,
       OrderHistoryEntity,
+      GemteckMsgQueueEntity,
     ]),
     PartnerCompanyExternModule,
     DeliveryModule,
+    SmsModule,
   ],
   controllers: [CustomerServiceController],
   providers: [CustomerServiceService],

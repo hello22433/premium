@@ -32,11 +32,11 @@ import { OrderHistoryEntity } from 'src/entity/order.history.entity';
 import { User } from 'src/auth/api/user.decorator';
 import { GemteckMsgQueueEntity } from 'src/entity/gemtek/msg.queue.entity';
 import { ConfigService } from '@nestjs/config';
-import dayjs from 'dayjs';
-import utc from 'dayjs/plugin/utc';
+const dayjs = require('dayjs');
+const timezone = require('dayjs/plugin/timezone');
 import { SmsGemtekSend } from 'src/sms/infra/sms.gemtek.send';
 
-dayjs.extend(utc);
+dayjs.extend(timezone);
 
 @Injectable()
 export class CustomerServiceService {
@@ -624,8 +624,8 @@ export class CustomerServiceService {
         switch (getBody.extraType) {
           case 'sms': {
             const expireDate = dayjs(orderDelivery.sendRequestAt)
+              .tz('Asia/Seoul')
               .add(orderDelivery.orderProductMapping.product.expireDay, 'day')
-              .utc()
               .format('YYYY-MM-DD');
 
             let text = `[모바일상품권]` 

@@ -7,12 +7,14 @@ import { GemteckMsgQueueEntity } from '../entity/gemtek/msg.queue.entity';
   imports: [TypeOrmModule.forFeature([GemteckMsgQueueEntity], 'gemtek_sms')],
   controllers: [],
   providers: [
+    SmsGemtekSend,
     {
       provide: 'ISmsSend',
       useClass: SmsGemtekSend,
     },
   ],
   exports: [
+    SmsGemtekSend,
     {
       provide: 'ISmsSend',
       useClass: SmsGemtekSend,
