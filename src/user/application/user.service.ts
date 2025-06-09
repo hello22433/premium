@@ -138,6 +138,10 @@ export class UserService {
     console.log(user.ip);
 
     const allowedIpList: string[] = user.ip ? user.ip.split('::') : [];
+
+    const splitAllowed = user.ip.split('::');
+    console.log({ reqAllowedIp, splitAllowed });
+
     if (!allowedIpList.includes(reqAllowedIp)) {
       throw new BadRequestException('허용된 IP가 아닙니다.');
     }
