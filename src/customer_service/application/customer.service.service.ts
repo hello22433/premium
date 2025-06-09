@@ -30,6 +30,13 @@ import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delive
 import { ILoginUserInfo } from 'src/auth/interface/login.user';
 import { OrderHistoryEntity } from 'src/entity/order.history.entity';
 import { User } from 'src/auth/api/user.decorator';
+import { GemteckMsgQueueEntity } from 'src/entity/gemtek/msg.queue.entity';
+import { ConfigService } from '@nestjs/config';
+const dayjs = require('dayjs');
+const timezone = require('dayjs/plugin/timezone');
+import { SmsGemtekSend } from 'src/sms/infra/sms.gemtek.send';
+
+dayjs.extend(timezone);
 
 @Injectable()
 export class CustomerServiceService {
@@ -47,6 +54,10 @@ export class CustomerServiceService {
     private orderHistoryEntity: Repository<OrderHistoryEntity>,
     @InjectRepository(OrderHistoryEntity)
     private readonly orderHistoryRepository: Repository<OrderHistoryEntity>,
+    @InjectRepository(GemteckMsgQueueEntity, 'gemtek_sms')
+    private gemteckMsgQueueRepository: Repository<GemteckMsgQueueEntity>,
+    private configService: ConfigService,
+    private smsGemtekSend: SmsGemtekSend,
   ) {}
 
   async getList(getQuery: CustomerServiceGetListReqDto): Promise<CustomerServiceGetListResDto> {
@@ -597,6 +608,7 @@ export class CustomerServiceService {
       relations: [
         'orderProductMapping',
         'orderProductMapping.product',
+        'orderProductMapping.product.brand',
         'orderProductMapping.order',
         'orderHistory',
       ],
@@ -606,12 +618,37 @@ export class CustomerServiceService {
       throw new BadRequestException('데이터가 존재하지 않습니다.');
     }
 
-    if (getBody.extraType === 'phone') {
-      getBody.afterChange = getBody.afterChange?.replace(/[^0-9]/g, '').trim();
-    }
-
     let beforeChange = '';
+    let smsEntity
     switch (getBody.type) {
+      case '재전송': {
+        switch (getBody.extraType) {
+          case 'sms': {
+            const expireDate = dayjs(orderDelivery.sendRequestAt)
+              .tz('Asia/Seoul')
+              .add(orderDelivery.orderProductMapping.product.expireDay, 'day')
+              .format('YYYY-MM-DD');
+
+            let text = `[모바일상품권]` 
+                + orderDelivery.orderProductMapping.product.name
+                + `/교환처:`
+                + orderDelivery.orderProductMapping.product.brand?.nameKorean
+                + `/쿠폰번호:`
+                + orderDelivery.barCode
+                + `/`
+                + expireDate;
+  
+            smsEntity = this.gemteckMsgQueueRepository.create({
+              msgType: 'S',
+              dstAddr: orderDelivery.deliveryTarget ?? '',
+              callback: orderDelivery.orderProductMapping.order.fromPhoneNumber ?? '',
+              text: text ?? '',
+            });
+            break;
+          }
+        }
+        break;
+      }
       case '수신정보 변경요청': {
         beforeChange = orderDelivery.deliveryTarget;
         break;
@@ -626,6 +663,10 @@ export class CustomerServiceService {
       }
     }
 
+    if (getBody.extraType === 'phone') {
+      getBody.afterChange = getBody.afterChange?.replace(/[^0-9]/g, '').trim();
+    }
+
     const result = {
       orderDeliveryId: getBody.orderDeliveryId,
       userId: user.id,
@@ -635,6 +676,7 @@ export class CustomerServiceService {
       beforeChange: beforeChange || '',
       afterChange: getBody.afterChange || '',
       orderDelivery,
+      smsEntity,
     };
 
     return result;
@@ -654,7 +696,7 @@ export class CustomerServiceService {
       case '재전송': {
         switch (map.extraType) {
           case 'sms': {
-            // sms 재전송
+            await this.smsGemtekSend.smsSend(map.smsEntity);
             break;
           }
           case 'mms': {
@@ -780,3 +822,4 @@ export class CustomerServiceService {
     };
   }
 }
+
