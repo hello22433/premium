@@ -139,6 +139,7 @@ export class UserService {
 
     const allowedIpList: string[] = user.ip ? user.ip.split('::') : [];
 
+    // @ts-ignore
     const splitAllowed = user.ip.split('::');
     console.log({ reqAllowedIp, splitAllowed });
 
