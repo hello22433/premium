@@ -558,7 +558,7 @@ export class ProductService {
     return { fileName, filePath };
   }
 
-  async excelUpload(file: Express.Multer.File) {
+  async excelUpload(user: ILoginUserInfo, file: Express.Multer.File) {
     if (!file) {
       throw new BadRequestException('업로드할 파일이 존재하지 않습니다.');
     }
@@ -624,21 +624,25 @@ export class ProductService {
             );
           }
 
-          existingProduct.partnerCompanyId = createDto.partnerCompanyId;
-          existingProduct.brandId = createDto.brandId;
-          existingProduct.name = createDto.name;
-          existingProduct.price = createDto.price;
-          existingProduct.expireDay = createDto.expireDay;
-          existingProduct.category = createDto.category;
-          existingProduct.classification = createDto.classification;
-          existingProduct.settleMethod = createDto.settleMethod;
-          existingProduct.settlePercent = createDto.settlePercent;
-          existingProduct.imagePath = createDto.imagePath;
-          existingProduct.type = createDto.type;
-          existingProduct.memo = createDto.memo;
-          existingProduct.useStatus = createDto.useStatus;
+          const updateDto = new ProductUpdatePartialReqDto();
+          updateDto.id = existingProduct.id;
+          updateDto.reason = `엑셀 업로드(row ${rowIndex})`;
 
-          await this.productRepository.save(existingProduct);
+          updateDto.partnerCompanyId = createDto.partnerCompanyId;
+          updateDto.brandId = createDto.brandId;
+          updateDto.name = createDto.name;
+          updateDto.price = createDto.price;
+          updateDto.expireDay = createDto.expireDay;
+          updateDto.category = createDto.category;
+          updateDto.classification = createDto.classification;
+          updateDto.settleMethod = createDto.settleMethod;
+          updateDto.settlePercent = createDto.settlePercent;
+          updateDto.imagePath = createDto.imagePath;
+          updateDto.type = createDto.type;
+          updateDto.memo = createDto.memo;
+          updateDto.useStatus = createDto.useStatus;
+
+          await this.updatePartial(user, updateDto);
         } else {
           await this.create(createDto);
         }
