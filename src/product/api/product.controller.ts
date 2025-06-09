@@ -203,8 +203,8 @@ export class ProductController {
   // =========================================
   @Post('/product/excel-upload')
   @UseInterceptors(FileInterceptor('file'))
-  excelUpload(@UploadedFile() file: Express.Multer.File) {
-    return this.productService.excelUpload(file);
+  excelUpload(@User() user: ILoginUserInfo, @UploadedFile() file: Express.Multer.File) {
+    return this.productService.excelUpload(user, file);
   }
 
   @ApiOperation({
