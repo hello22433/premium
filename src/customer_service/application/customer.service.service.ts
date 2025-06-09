@@ -608,6 +608,7 @@ export class CustomerServiceService {
       relations: [
         'orderProductMapping',
         'orderProductMapping.product',
+        'orderProductMapping.product.brand',
         'orderProductMapping.order',
         'orderHistory',
       ],
@@ -639,8 +640,8 @@ export class CustomerServiceService {
   
             smsEntity = this.gemteckMsgQueueRepository.create({
               msgType: 'S',
-              dstAddr: orderDelivery.orderProductMapping.order.fromPhoneNumber ?? '',
-              callback: orderDelivery.deliveryTarget ?? '',
+              dstAddr: orderDelivery.deliveryTarget ?? '',
+              callback: orderDelivery.orderProductMapping.order.fromPhoneNumber ?? '',
               text: text ?? '',
             });
             break;
