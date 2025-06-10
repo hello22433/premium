@@ -6,7 +6,7 @@ import {
   ProductCreateReqDto,
   ProductExcelDownloadReqBodyDto,
   ProductGetDetailReqParamDto,
-  ProductGetListReqQueryDto,
+  ProductGetListReqQueryDto, ProductGetTotalListReqQueryDto,
   ProductGetUpdateHistoryReqParamDto,
   ProductGetUpdateHistoryReqQueryDto,
   ProductSetLikeReqDto,
@@ -60,6 +60,165 @@ export class ProductService {
     @InjectRepository(ProductLikeEntity)
     private productLikeRepository: Repository<ProductLikeEntity>,
   ) {}
+
+  async getTotalList(user: ILoginUserInfo, getQuery: ProductGetTotalListReqQueryDto): Promise<ProductGetListResDto> {
+    const {
+      partnerCompanyId,
+      brandId,
+      brandName,
+      name,
+      useStatus,
+      code,
+      partnerCompanyCode,
+      type,
+      isLike,
+      page,
+      take,
+      isChoiceType,
+    } = getQuery;
+    let queryBuilder = this.productRepository
+      .createQueryBuilder('product')
+      .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .innerJoinAndSelect('product.brand', 'brand')
+      .leftJoinAndSelect('product.productLikes', 'productLikes')
+      .andWhere('product.type != :ssg', { ssg: IProductType.SSG });
+
+    if (user.authority === IUserAuthority.CORPORATE_ADMIN) {
+      const event = await this.userSyncProductEventRepository.findOne({
+        where: { businessUserId: user.id },
+        relations: ['userSyncProductEventMappings'],
+      });
+
+      const mappedProductIds = event?.userSyncProductEventMappings?.map((m) => m.productId);
+
+      // event 가 없거나 매핑된 상품이 없는 경우 빈 리스트 반환
+      if (!mappedProductIds || mappedProductIds.length === 0) {
+        queryBuilder = queryBuilder.andWhere('1 = 0');
+      } else {
+        queryBuilder = queryBuilder.andWhere('product.id IN (:...mappedProductIds)', {
+          mappedProductIds,
+        });
+      }
+    }
+
+    if (type && !isChoiceType) {
+      if (type !== IProductType.GENERAL) {
+        queryBuilder = queryBuilder.andWhere('product.type = :type', { type });
+      }
+
+      if (type === IProductType.GENERAL) {
+        queryBuilder = queryBuilder
+          .andWhere('product.type IN (:...type)', { type: [IProductType.GENERAL, IProductType.SELF] })
+          .andWhere('partnerCompany.type IS NOT NULL')
+          .andWhere('partnerCompany.type != :ssg', { ssg: 'SSG' });
+      }
+    }
+
+    if (type && isChoiceType) {
+      if (type === IProductType.GENERAL) {
+        queryBuilder = queryBuilder.andWhere('product.type IN (:...type)', {
+          type: [IProductType.GENERAL, IProductType.CHOICE, IProductType.SELF],
+        });
+        // .andWhere('partnerCompany.type IS NOT NULL')
+        // .andWhere('partnerCompany.type != :ssg', { ssg: 'SSG' });
+      }
+    }
+
+    if (partnerCompanyId) {
+      queryBuilder = queryBuilder.andWhere('product.partnerCompanyId = :partnerCompanyId', { partnerCompanyId });
+    }
+
+    if (brandId) {
+      queryBuilder = queryBuilder.andWhere('product.brandId = :brandId', { brandId });
+    }
+
+    if (brandName) {
+      queryBuilder = queryBuilder.andWhere('brand.nameKorean LIKE :brandName', { brandName: `%${brandName}%` });
+      queryBuilder = queryBuilder.andWhere('brand.nameEnglish LIKE :brandName', { brandName: `%${brandName}%` });
+    }
+
+    if (name) {
+      queryBuilder = queryBuilder.andWhere('product.name LIKE :name', { name: `%${name}%` });
+    }
+
+    if (useStatus) {
+      queryBuilder = queryBuilder.andWhere('product.useStatus = :useStatus', { useStatus });
+    }
+
+    if (code) {
+      queryBuilder = queryBuilder.andWhere('product.code LIKE :code', { code: `%${code}%` });
+    }
+
+    if (partnerCompanyCode) {
+      queryBuilder = queryBuilder.andWhere('partnerCompany.code LIKE :partnerCompanyCode', {
+        partnerCompanyCode: `%${partnerCompanyCode}%`,
+      });
+    }
+
+    if (isLike !== undefined) {
+      queryBuilder = queryBuilder
+        .andWhere('productLikes.userId = :userId', { userId: user.id })
+        .andWhere('productLikes.isLike = :isLike', { isLike });
+    }
+
+    queryBuilder = queryBuilder.orderBy('product.id', 'DESC');
+
+    const skip = (page - 1) * take;
+    queryBuilder = queryBuilder.skip(skip).take(take);
+
+    const [productList, totalCount] = await queryBuilder.getManyAndCount();
+
+    const productIdList = productList.map((product) => product.id);
+
+    const productUpdateHistoryList = await this.productUpdateHistoryRepository.find({
+      where: {
+        productId: In(productIdList),
+      },
+    });
+
+    // <product.id, isChange> 변경 여부 boolean 값 설정
+    const productUpdateBooleanMap = new Map<number, boolean>();
+    for (const updateHistory of productUpdateHistoryList) {
+      productUpdateBooleanMap.set(updateHistory.productId, true);
+    }
+
+    const resultList: ProductViewDto[] = productList.map((product) => {
+      const isChange = productUpdateBooleanMap.get(product.id) ?? false;
+      let isLike = false;
+      if (product.productLikes) {
+        for (const productLike of product.productLikes) {
+          if (productLike.userId === user.id) {
+            isLike = productLike.isLike;
+            break;
+          }
+        }
+      }
+
+      return {
+        id: product.id,
+        createdAt: format(product.createdAt, DateFormatStr),
+        type: product.type,
+        code: product.code,
+        partnerCompanyId: product.partnerCompanyId,
+        partnerCompanyName: product.partnerCompany!.businessName,
+        classification: product.classification,
+        brandId: product.brandId,
+        brandName: product.brand!.nameKorean,
+        name: product.name,
+        price: product.price,
+        expireDay: product.expireDay,
+        category: product.category,
+        useStatus: product.useStatus,
+        imagePath: product.imagePath,
+        isChange,
+        isLike,
+      };
+    });
+
+    const totalPage = Math.ceil(totalCount / take);
+
+    return { list: resultList, totalPage, totalCount, currentPage: page };
+  }
 
   async getList(user: ILoginUserInfo, getQuery: ProductGetListReqQueryDto): Promise<ProductGetListResDto> {
     const {
