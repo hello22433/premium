@@ -153,3 +153,8 @@ export class UserManagementGetListResDto extends GetListResDto {
   })
   list: UserManagementViewDto[];
 }
+
+export class UserManagementBalanceViewDto {
+  @ApiProperty({ description: '현재 잔액' })
+  balance: number;
+}

@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable, Logger, InternalServerErrorException } from '@nestjs/common';
+import { UserManagementService } from '../../user_management/application/user.management.service';
 import {
   OrderCreateSettleReqDto,
   OrderCreateTempReqDto,
@@ -103,6 +104,7 @@ export class OrderService {
     @InjectRepository(SsgEventAmountHistoryEntity)
     private ssgEventAmountHistoryRepository: Repository<SsgEventAmountHistoryEntity>,
     private partnerCompanyExternService: PartnerCompanyExternService,
+    private readonly userManagementService: UserManagementService,
   ) {}
 
   async getList(user: ILoginUserInfo, getQuery: OrderGetListReqDto): Promise<OrderGetListResDto> {
@@ -741,8 +743,6 @@ export class OrderService {
     const productIdList = orderProductList.map((product) => product.productId);
     const uniqueProductId = new Set(productIdList);
 
-    this.logger.error(`createTemp() ● user raw: ${JSON.stringify(user)}`);
-
     if (uniqueProductId.size !== productIdList.length) {
       throw new BadRequestException('중복 상품이 존재합니다.');
     }
@@ -1041,6 +1041,19 @@ export class OrderService {
     }
 
     OrderValidation(order);
+    // 총 주문 금액
+    const totalAmount = order.orderProductMappings.reduce(
+      (sum, m) => sum + m.product.price * m.amount, 0);
+    this.logger.debug(`User#${user.id} totalAmount=${totalAmount}`);
+
+    // 유저 잔액 조회
+    const userBalance = await this.userManagementService.getBalance(user.id);
+    this.logger.debug(`User#${user.id} balance=${userBalance}`);
+
+    // 잔액 부족 시 예외
+    if (totalAmount > userBalance) {
+      throw new BadRequestException('잔액이 부족하여 발송 요청할 수 없습니다.');
+    }
 
     // 신세계 상품 검증
     if (order.type === IOrderType.SSG) {
