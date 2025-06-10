@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, InternalServerErrorException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, InternalServerErrorException } from '@nestjs/common';
 import {
   OrderCreateSettleReqDto,
   OrderCreateTempReqDto,
@@ -78,6 +78,7 @@ import { OrderDigitNumber, OrderPrefixCode } from '../domain/order.code';
 
 @Injectable()
 export class OrderService {
+  private logger = new Logger('OrderService');
   // 기본 상단 이미지
   private static readonly DEFAULT_TOP_IMAGE_PATH = defaultOrderTopImagePath;
 
@@ -739,6 +740,8 @@ export class OrderService {
 
     const productIdList = orderProductList.map((product) => product.productId);
     const uniqueProductId = new Set(productIdList);
+
+    this.logger.error(`createTemp() ● user raw: ${JSON.stringify(user)}`);
 
     if (uniqueProductId.size !== productIdList.length) {
       throw new BadRequestException('중복 상품이 존재합니다.');

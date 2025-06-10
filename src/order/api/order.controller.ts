@@ -222,6 +222,7 @@ export class OrderController {
   // ====================================================
   @Post('/order/temp')
   createTemp(@User() user: ILoginUserInfo, @Body() getBody: OrderCreateTempReqDto) {
+    this.logger.log(`createTemp user: ${user.id}, body: ${JSON.stringify(getBody)}`);
     return this.orderService.createTemp(user, getBody);
   }
 
