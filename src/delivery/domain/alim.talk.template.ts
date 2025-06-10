@@ -3,7 +3,7 @@ import { customerName } from '../../const';
 
 export const AlimTalkTemplate = (orderDelivery: OrderDeliveryEntity) => {
   return `상품명 : ${orderDelivery.orderProductMapping.product.name}
-사용기간 : ${orderDelivery.orderProductMapping.product.expireDay}
+유효기간 : ${orderDelivery.orderProductMapping.product.expireDay}일
 쿠폰번호 : ${orderDelivery.barCode}
 사용처 : ${orderDelivery.orderProductMapping.product.brand!.nameKorean}
 고객센터 : ${customerName}

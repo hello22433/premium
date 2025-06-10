@@ -7,7 +7,7 @@ export const OrderReceiveChoiceSmsTemplate = (orderDelivery: OrderDeliveryEntity
   }
 
   return `상품명 : ${orderDelivery.choiceSelectProduct.name}
-사용기간 : ${orderDelivery.choiceSelectProduct.expireDay}
+유효기간 : ${orderDelivery.choiceSelectProduct.expireDay}일
 쿠폰번호 : ${orderDelivery.barCode}
 
 ${orderDelivery.orderProductMapping.order.eventName} 당첨을 축하드립니다.
