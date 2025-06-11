@@ -16,6 +16,7 @@ import { DateDateFormatStr } from '../../common/domain/date.format.str';
 import { IQnaStatus } from '../interface/qna.status';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { FindOptionsWhere } from 'typeorm/find-options/FindOptionsWhere';
+import { IUserAuthority } from '../../user/interface/user.authority';
 
 @Injectable()
 export class QnaService {
@@ -169,19 +170,18 @@ export class QnaService {
   }
 
   async getMyQnaHistory(user: ILoginUserInfo): Promise<QnaGetMyQnaHistoryResDto> {
-    const waitCount = await this.qnaRepository.count({
-      where: {
-        userId: user.id,
-        status: IQnaStatus.WAIT,
-      },
-    });
+    const waitWhere: FindOptionsWhere<QnaEntity> = { status: IQnaStatus.WAIT };
+    const completeWhere: FindOptionsWhere<QnaEntity> = { status: IQnaStatus.OK };
 
-    const completeCount = await this.qnaRepository.count({
-      where: {
-        userId: user.id,
-        status: IQnaStatus.OK,
-      },
-    });
+    if (user.authority === IUserAuthority.CORPORATE_ADMIN) {
+      waitWhere.userId = user.id;
+      completeWhere.userId = user.id;
+    }
+
+    const [waitCount, completeCount] = await Promise.all([
+      this.qnaRepository.count({ where: waitWhere }),
+      this.qnaRepository.count({ where: completeWhere }),
+    ]);
 
     return {
       tempCount: 0, // TODO
