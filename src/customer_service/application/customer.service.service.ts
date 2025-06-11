@@ -309,6 +309,7 @@ export class CustomerServiceService {
             case OrderDeliveryCouponStatus.REFUND_CANCEL: {
               orderDelivery.couponStatus = OrderDeliveryCouponStatus.REFUND_CANCEL;
               await this.orderDeliveryRepository.save(orderDelivery);
+              break;
             }
             case OrderDeliveryCouponStatus.CANCEL: {
               orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
@@ -479,8 +480,8 @@ export class CustomerServiceService {
           throw new BadRequestException('현재 변경을 할 수 없는 핀상태입니다.');
         }
 
-        if (afterChange === 'USED' || afterChange === 'REFUND_CANCEL') {
-          orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
+        if (afterChange === 'CANCEL' || afterChange === 'REFUND_CANCEL') {
+          orderDelivery.couponStatus = afterChange;
 
           await this.orderDeliveryRepository.save(orderDelivery);
 
@@ -490,7 +491,7 @@ export class CustomerServiceService {
               type: type,
               content: content,
               beforeChange: beforeChange,
-              afterChange: OrderDeliveryCouponStatus.CANCEL,
+              afterChange: afterChange,
             });
 
           await this.orderHistoryRepository.save(history);
@@ -730,7 +731,7 @@ export class CustomerServiceService {
       case '폐기': {
         const pinDiscardDto = new CustomerServiceDiscardReqDto();
         pinDiscardDto.orderDeliveryId = map.orderDeliveryId;
-        pinDiscardDto.couponStatus = map.beforeChange;
+        pinDiscardDto.couponStatus = map.afterChange;
 
         await this.pinDiscard(pinDiscardDto);
 
@@ -740,7 +741,7 @@ export class CustomerServiceService {
       case '환불폐기': {
         const pinDiscardDto = new CustomerServiceDiscardReqDto();
         pinDiscardDto.orderDeliveryId = map.orderDeliveryId;
-        pinDiscardDto.couponStatus = map.beforeChange;
+        pinDiscardDto.couponStatus = map.afterChange;
 
         await this.pinDiscard(pinDiscardDto);
 
