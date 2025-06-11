@@ -2,7 +2,7 @@ import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 
 export const OrderReceiveSmsTemplate = (orderDelivery: OrderDeliveryEntity) => {
   return `상품명 : ${orderDelivery.orderProductMapping.product.name}
-사용기간 : ${orderDelivery.orderProductMapping.product.expireDay}
+유효기간 : ${orderDelivery.orderProductMapping.product.expireDay}일
 쿠폰번호 : ${orderDelivery.barCode}
 
 ${orderDelivery.orderProductMapping.order.eventName} 당첨을 축하드립니다.

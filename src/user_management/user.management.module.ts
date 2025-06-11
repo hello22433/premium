@@ -10,5 +10,6 @@ import { MailModule } from '../mail/mail.module';
   imports: [AuthModule, TypeOrmModule.forFeature([UserEntity]), MailModule],
   controllers: [UserManagementController],
   providers: [UserManagementService],
+  exports: [UserManagementService],
 })
 export class UserManagementModule {}

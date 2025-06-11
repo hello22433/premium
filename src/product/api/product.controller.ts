@@ -27,7 +27,7 @@ import {
   ProductExcelDownloadReqBodyDto,
   ProductExcelUploadReqDto,
   ProductGetDetailReqParamDto,
-  ProductGetListReqQueryDto,
+  ProductGetListReqQueryDto, ProductGetTotalListReqQueryDto,
   ProductGetUpdateHistoryReqParamDto,
   ProductGetUpdateHistoryReqQueryDto,
   ProductSetLikeReqDto,
@@ -55,6 +55,20 @@ export class ProductController {
   constructor(private productService: ProductService) {}
 
   private logger = new Logger('PRODUCT');
+
+  @ApiOperation({
+    summary: '전체 상품 리스트 조회하기 API',
+    description: '고객사 관리자인 경우(CORPORATE_ADMIN) 연동되어 있는 상품들만 조회 가능합니다.',
+  })
+  @ApiOkResponse({
+    type: ProductGetListResDto,
+    description: '성공적으로 조회한 경우',
+  })
+  // =========================================
+  @Get('/product/total/list')
+  getTotalList(@User() user: ILoginUserInfo, @Query() getQuery: ProductGetTotalListReqQueryDto) {
+    return this.productService.getTotalList(user, getQuery);
+  }
 
   @ApiOperation({
     summary: '상품 리스트 조회하기 API',
@@ -203,8 +217,8 @@ export class ProductController {
   // =========================================
   @Post('/product/excel-upload')
   @UseInterceptors(FileInterceptor('file'))
-  excelUpload(@UploadedFile() file: Express.Multer.File) {
-    return this.productService.excelUpload(file);
+  excelUpload(@User() user: ILoginUserInfo, @UploadedFile() file: Express.Multer.File) {
+    return this.productService.excelUpload(user, file);
   }
 
   @ApiOperation({

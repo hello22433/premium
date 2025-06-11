@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { forwardRef, Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { OrderEntity } from '../entity/order.entity';
@@ -12,6 +12,7 @@ import { UserEntity } from '../entity/user.entity';
 import { UserDiscountEntity } from '../entity/user.discount.entity';
 import { SsgEventEntity } from '../entity/ssg.event.entity';
 import { SsgEventAmountHistoryEntity } from '../entity/ssg.event.amount.history.entity';
+import { UserManagementModule } from '../user_management/user.management.module';
 
 @Module({
   imports: [
@@ -27,6 +28,7 @@ import { SsgEventAmountHistoryEntity } from '../entity/ssg.event.amount.history.
       SsgEventAmountHistoryEntity,
     ]),
     PartnerCompanyExternModule,
+    forwardRef(() => UserManagementModule),
   ],
   controllers: [OrderController],
   providers: [OrderService],

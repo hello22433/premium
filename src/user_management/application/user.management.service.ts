@@ -208,6 +208,14 @@ export class UserManagementService {
     await this.userRepository.save(user);
   }
 
+  async getBalance(id: number): Promise<number> {
+    const user = await this.userRepository.findOne({ where: { id } });
+    if (!user) {
+      throw new BadRequestException('존재하지 않는 계정입니다.');
+    }
+    return user.balance;
+  }
+
   async create(getBody: UserManagementCreateReqDto) {
     const isExistEmail = await this.userRepository.count({
       where: {

@@ -7,7 +7,7 @@ import { IProductType } from '../interface/product.type';
 import { IProductUseStatus } from '../interface/product.status';
 import { IsDivisibleBy5000 } from './validator/is-divisible-by-5000.validator';
 
-export class ProductGetListReqQueryDto extends PagingReqDto {
+export class ProductGetTotalListReqQueryDto extends PagingReqDto {
   @ApiPropertyOptional({
     description: '협력사 id',
   })
@@ -64,6 +64,88 @@ export class ProductGetListReqQueryDto extends PagingReqDto {
   @IsEnum(IProductUseStatus)
   @IsOptional()
   useStatus?: IProductUseStatus;
+
+  @ApiProperty({
+    description: '상품 코드',
+  })
+  // =================================
+  @IsOptional()
+  code?: string;
+
+  @ApiProperty({
+    description: '협력사 코드',
+  })
+  // =================================
+  @IsOptional()
+  partnerCompanyCode?: string;
+
+  @ApiProperty({
+    description: '찜한 상품 불러오기',
+  })
+  // =================================
+  @IsOptional()
+  @IsBoolean()
+  @Transform(({ value }) => value === 'true') // 문자열을 boolean으로 변환
+  isLike?: boolean;
+}
+
+export class ProductGetListReqQueryDto extends PagingReqDto {
+  @ApiPropertyOptional({
+    description: '협력사 id',
+  })
+  // ================================
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  partnerCompanyId?: number;
+
+  @ApiPropertyOptional({
+    description: '브랜드 id',
+  })
+  // ================================
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  brandId?: number;
+
+  @ApiPropertyOptional({
+    description: '상품 타입 ',
+  })
+  // ================================
+  @IsOptional()
+  @IsEnum(IProductType)
+  type?: IProductType;
+
+  @ApiProperty({
+    description: '초이스 쿠폰 같이 불러오기',
+  })
+  // =================================
+  @IsOptional()
+  @IsBoolean()
+  @Transform(({ value }) => value === 'true')
+  isChoiceType?: boolean;
+
+  @ApiPropertyOptional({
+    description: '브랜드 명 ',
+  })
+  // ================================
+  @IsOptional()
+  brandName?: string;
+
+  @ApiPropertyOptional({
+    description: '상품 이름',
+  })
+  // ================================
+  @IsOptional()
+  name?: string;
+
+  @ApiProperty({
+    description: '상품 사용 상태 ex) 사용: USE 미사용: UNUSED 영구 미사용: PERMANENTLY_UNUSED',
+  })
+  // =================================
+  @IsEnum(IProductUseStatus)
+  @IsOptional()
+  useStatus?: IProductUseStatus = IProductUseStatus.USE;
 
   @ApiProperty({
     description: '상품 코드',

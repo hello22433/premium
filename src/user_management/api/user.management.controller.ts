@@ -1,4 +1,14 @@
-import { Body, Controller, Get, Param, Post, Put, Query, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  ParseIntPipe,
+  Post,
+  Put,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { ApiBadRequestResponse, ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { UserManagementService } from '../application/user.management.service';
 import {
@@ -11,6 +21,7 @@ import {
   UserManagementUpdateReqDto,
 } from './user.management.req.dto';
 import {
+  UserManagementBalanceViewDto,
   UserManagementGetDetailResDto,
   UserManagementGetListResDto,
   UserManagementGetNameListResDto,
@@ -88,6 +99,17 @@ export class UserManagementController {
   @Put('/user-management/balance')
   chargeBalance(@Body() getBody: UserManagementChargeBalanceReqDto) {
     return this.userManagementService.chargeBalance(getBody);
+  }
+
+  @ApiOperation({ summary: '계정 잔액 조회 API' })
+  @ApiBearerAuth()
+  @ApiOkResponse({ type: UserManagementBalanceViewDto, description: '성공적으로 조회된 경우' })
+  @ApiBadRequestResponse({ description: '해당 계정이 존재하지 않는 경우' })
+  // ====================================
+  @Get('/user-management/:id/balance')
+  async getBalance(@Param('id', ParseIntPipe) id: number): Promise<UserManagementBalanceViewDto> {
+    const balance = await this.userManagementService.getBalance(id);
+    return { balance };
   }
 
   @ApiOperation({

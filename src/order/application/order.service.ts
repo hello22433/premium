@@ -1,4 +1,5 @@
-import { BadRequestException, Injectable, InternalServerErrorException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, InternalServerErrorException } from '@nestjs/common';
+import { UserManagementService } from '../../user_management/application/user.management.service';
 import {
   OrderCreateSettleReqDto,
   OrderCreateTempReqDto,
@@ -78,6 +79,7 @@ import { OrderDigitNumber, OrderPrefixCode } from '../domain/order.code';
 
 @Injectable()
 export class OrderService {
+  private logger = new Logger('OrderService');
   // 기본 상단 이미지
   private static readonly DEFAULT_TOP_IMAGE_PATH = defaultOrderTopImagePath;
 
@@ -102,6 +104,7 @@ export class OrderService {
     @InjectRepository(SsgEventAmountHistoryEntity)
     private ssgEventAmountHistoryRepository: Repository<SsgEventAmountHistoryEntity>,
     private partnerCompanyExternService: PartnerCompanyExternService,
+    private readonly userManagementService: UserManagementService,
   ) {}
 
   async getList(user: ILoginUserInfo, getQuery: OrderGetListReqDto): Promise<OrderGetListResDto> {
@@ -1038,6 +1041,19 @@ export class OrderService {
     }
 
     OrderValidation(order);
+    // 총 주문 금액
+    const totalAmount = order.orderProductMappings.reduce(
+      (sum, m) => sum + m.product.price * m.amount, 0);
+    this.logger.debug(`User#${user.id} totalAmount=${totalAmount}`);
+
+    // 유저 잔액 조회
+    const userBalance = await this.userManagementService.getBalance(user.id);
+    this.logger.debug(`User#${user.id} balance=${userBalance}`);
+
+    // 잔액 부족 시 예외
+    if (totalAmount > userBalance) {
+      throw new BadRequestException('잔액이 부족하여 발송 요청할 수 없습니다.');
+    }
 
     // 신세계 상품 검증
     if (order.type === IOrderType.SSG) {

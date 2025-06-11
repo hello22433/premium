@@ -136,8 +136,15 @@ export class UserService {
     console.log(reqIp);
     console.log(reqAllowedIp);
     console.log(user.ip);
-    if (user.ip !== reqAllowedIp) {
-      throw new BadRequestException('허용된 IP 가 아닙니다.');
+
+    const allowedIpList: string[] = user.ip ? user.ip.split('::') : [];
+
+    // @ts-ignore
+    const splitAllowed = user.ip.split('::');
+    console.log({ reqAllowedIp, splitAllowed });
+
+    if (!allowedIpList.includes(reqAllowedIp)) {
+      throw new BadRequestException('허용된 IP가 아닙니다.');
     }
 
     const now = new Date();
