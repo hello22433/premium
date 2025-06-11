@@ -1501,58 +1501,69 @@ export class OrderService {
 
     const raw = await this.orderRepository
       .createQueryBuilder('o')
-      .select('o.status', 'status')
-      .addSelect('o.type', 'type')
-      .addSelect('COUNT(o.id)', 'count')
+      .select([
+        `SUM(CASE WHEN o.status = 'TEMP' AND o.type = 'GENERAL' THEN 1 ELSE 0 END) AS "tempGeneralCount"`,
+        `SUM(CASE WHEN o.status = 'TEMP' AND o.type = 'SSG' THEN 1 ELSE 0 END) AS "tempSsgCount"`,
+        `SUM(CASE WHEN o.status = 'TEMP' THEN 1 ELSE 0 END) AS "tempTotalCount"`,
+        `SUM(CASE WHEN o.status = 'DELIVERY_REQUEST' AND o.type = 'GENERAL' THEN 1 ELSE 0 END) AS "deliveryRequestGeneralCount"`,
+        `SUM(CASE WHEN o.status = 'DELIVERY_REQUEST' AND o.type = 'SSG' THEN 1 ELSE 0 END) AS "deliveryRequestSsgCount"`,
+        `SUM(CASE WHEN o.status = 'DELIVERY_REQUEST' THEN 1 ELSE 0 END) AS "deliveryRequestTotalCount"`,
+        `SUM(CASE WHEN o.status = 'DELIVERY_CONFIRMED' AND o.type = 'GENERAL' THEN 1 ELSE 0 END) AS "deliveryConfirmedGeneralCount"`,
+        `SUM(CASE WHEN o.status = 'DELIVERY_CONFIRMED' AND o.type = 'SSG' THEN 1 ELSE 0 END) AS "deliveryConfirmedSsgCount"`,
+        `SUM(CASE WHEN o.status = 'DELIVERY_CONFIRMED' THEN 1 ELSE 0 END) AS "deliveryConfirmedTotalCount"`,
+        `SUM(CASE WHEN o.status = 'DELIVERY_COMPLETE' AND o.type = 'GENERAL' THEN 1 ELSE 0 END) AS "deliveryCompleteGeneralCount"`,
+        `SUM(CASE WHEN o.status = 'DELIVERY_COMPLETE' AND o.type = 'SSG' THEN 1 ELSE 0 END) AS "deliveryCompleteSsgCount"`,
+        `SUM(CASE WHEN o.status = 'DELIVERY_COMPLETE' THEN 1 ELSE 0 END) AS "deliveryCompleteTotalCount"`,
+      ])
       .where('o.userId = :uid', { uid: user.id })
       .andWhere('o.status IN (:...statuses)', { statuses })
-      .andWhere('o.type IN (:...types)', { types })
-      .groupBy('o.status')
-      .addGroupBy('o.type')
-      .getRawMany<{ status: string; type: string; count: string }>();
+      .andWhere('o.type   IN (:...types)', { types })
+      .getRawOne<{
+        tempGeneralCount: string;
+        tempSsgCount: string;
+        tempTotalCount: string;
+        deliveryRequestGeneralCount: string;
+        deliveryRequestSsgCount: string;
+        deliveryRequestTotalCount: string;
+        deliveryConfirmedGeneralCount: string;
+        deliveryConfirmedSsgCount: string;
+        deliveryConfirmedTotalCount: string;
+        deliveryCompleteGeneralCount: string;
+        deliveryCompleteSsgCount: string;
+        deliveryCompleteTotalCount: string;
+      }>();
+
+    console.log(raw);
+
+    const {
+      tempGeneralCount = '0',
+      tempSsgCount = '0',
+      tempTotalCount = '0',
+      deliveryRequestGeneralCount = '0',
+      deliveryRequestSsgCount = '0',
+      deliveryRequestTotalCount = '0',
+      deliveryConfirmedGeneralCount = '0',
+      deliveryConfirmedSsgCount = '0',
+      deliveryConfirmedTotalCount = '0',
+      deliveryCompleteGeneralCount = '0',
+      deliveryCompleteSsgCount = '0',
+      deliveryCompleteTotalCount = '0',
+    } = raw || {};
 
     const dto = new OrderGetMyOrderHistoryResDto();
-    Object.assign(dto, {
-      tempGeneralCount: 0,
-      tempSsgCount: 0,
-      tempTotalCount: 0,
-      deliveryRequestGeneralCount: 0,
-      deliveryRequestSsgCount: 0,
-      deliveryRequestTotalCount: 0,
-      deliveryConfirmedGeneralCount: 0,
-      deliveryConfirmedSsgCount: 0,
-      deliveryConfirmedTotalCount: 0,
-      deliveryCompleteGeneralCount: 0,
-      deliveryCompleteSsgCount: 0,
-      deliveryCompleteTotalCount: 0,
-    });
 
-    raw.forEach(({ status, type, count }) => {
-      const n = parseInt(count, 10);
-      const isGeneral = type === IOrderType.GENERAL;
-      switch (status as IOrderStatus) {
-        case IOrderStatus.TEMP:
-          if (isGeneral) dto.tempGeneralCount = n;
-          else dto.tempSsgCount = n;
-          dto.tempTotalCount += n;
-          break;
-        case IOrderStatus.DELIVERY_REQUEST:
-          if (isGeneral) dto.deliveryRequestGeneralCount = n;
-          else dto.deliveryRequestSsgCount = n;
-          dto.deliveryRequestTotalCount += n;
-          break;
-        case IOrderStatus.DELIVERY_CONFIRMED:
-          if (isGeneral) dto.deliveryConfirmedGeneralCount = n;
-          else dto.deliveryConfirmedSsgCount = n;
-          dto.deliveryConfirmedTotalCount += n;
-          break;
-        case IOrderStatus.DELIVERY_COMPLETE:
-          if (isGeneral) dto.deliveryCompleteGeneralCount = n;
-          else dto.deliveryCompleteSsgCount = n;
-          dto.deliveryCompleteTotalCount += n;
-          break;
-      }
-    });
+    dto.tempGeneralCount = parseInt(tempGeneralCount, 10);
+    dto.tempSsgCount = parseInt(tempSsgCount, 10);
+    dto.tempTotalCount = parseInt(tempTotalCount, 10);
+    dto.deliveryRequestGeneralCount = parseInt(deliveryRequestGeneralCount, 10);
+    dto.deliveryRequestSsgCount = parseInt(deliveryRequestSsgCount, 10);
+    dto.deliveryRequestTotalCount = parseInt(deliveryRequestTotalCount, 10);
+    dto.deliveryConfirmedGeneralCount = parseInt(deliveryConfirmedGeneralCount, 10);
+    dto.deliveryConfirmedSsgCount = parseInt(deliveryConfirmedSsgCount, 10);
+    dto.deliveryConfirmedTotalCount = parseInt(deliveryConfirmedTotalCount, 10);
+    dto.deliveryCompleteGeneralCount = parseInt(deliveryCompleteGeneralCount, 10);
+    dto.deliveryCompleteSsgCount = parseInt(deliveryCompleteSsgCount, 10);
+    dto.deliveryCompleteTotalCount = parseInt(deliveryCompleteTotalCount, 10);
 
     return dto;
   }
