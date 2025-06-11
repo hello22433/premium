@@ -1491,80 +1491,43 @@ export class OrderService {
   }
 
   async getMyOrderHistory(user: ILoginUserInfo): Promise<OrderGetMyOrderHistoryResDto> {
-    const statuses = [
-      IOrderStatus.TEMP,
-      IOrderStatus.DELIVERY_REQUEST,
-      IOrderStatus.DELIVERY_CONFIRMED,
-      IOrderStatus.DELIVERY_COMPLETE,
-    ];
-    const types = [IOrderType.GENERAL, IOrderType.SSG];
+    // 1. 최근 7일 범위 설정
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1_000);
 
+    // 2. 상태·타입 배열 enum 값 참조
+    const statuses = Object.values(IOrderStatus).filter((s) => s !== IOrderStatus.DELIVERY_CANCEL);
+    const types = Object.values(IOrderType);
+
+    // 3. 상태·타입 총합 CASE 절 생성
+    const selectExpressions: string[] = statuses.flatMap((status) => {
+      const byType = types.map(
+        (type) =>
+          `SUM(CASE WHEN o.status='${status}' AND o.type='${type}' THEN 1 ELSE 0 END)
+       AS "${status.toLowerCase()}${type.charAt(0) + type.slice(1).toLowerCase()}Count"`,
+      );
+      const total = `SUM(CASE WHEN o.status='${status}' THEN 1 ELSE 0 END)
+       AS "${status.toLowerCase()}TotalCount"`;
+
+      return [...byType, total];
+    });
+
+    // 4. 쿼리 빌더로 raw 데이터 조회
     const raw = await this.orderRepository
       .createQueryBuilder('o')
-      .select([
-        `SUM(CASE WHEN o.status = 'TEMP' AND o.type = 'GENERAL' THEN 1 ELSE 0 END) AS "tempGeneralCount"`,
-        `SUM(CASE WHEN o.status = 'TEMP' AND o.type = 'SSG' THEN 1 ELSE 0 END) AS "tempSsgCount"`,
-        `SUM(CASE WHEN o.status = 'TEMP' THEN 1 ELSE 0 END) AS "tempTotalCount"`,
-        `SUM(CASE WHEN o.status = 'DELIVERY_REQUEST' AND o.type = 'GENERAL' THEN 1 ELSE 0 END) AS "deliveryRequestGeneralCount"`,
-        `SUM(CASE WHEN o.status = 'DELIVERY_REQUEST' AND o.type = 'SSG' THEN 1 ELSE 0 END) AS "deliveryRequestSsgCount"`,
-        `SUM(CASE WHEN o.status = 'DELIVERY_REQUEST' THEN 1 ELSE 0 END) AS "deliveryRequestTotalCount"`,
-        `SUM(CASE WHEN o.status = 'DELIVERY_CONFIRMED' AND o.type = 'GENERAL' THEN 1 ELSE 0 END) AS "deliveryConfirmedGeneralCount"`,
-        `SUM(CASE WHEN o.status = 'DELIVERY_CONFIRMED' AND o.type = 'SSG' THEN 1 ELSE 0 END) AS "deliveryConfirmedSsgCount"`,
-        `SUM(CASE WHEN o.status = 'DELIVERY_CONFIRMED' THEN 1 ELSE 0 END) AS "deliveryConfirmedTotalCount"`,
-        `SUM(CASE WHEN o.status = 'DELIVERY_COMPLETE' AND o.type = 'GENERAL' THEN 1 ELSE 0 END) AS "deliveryCompleteGeneralCount"`,
-        `SUM(CASE WHEN o.status = 'DELIVERY_COMPLETE' AND o.type = 'SSG' THEN 1 ELSE 0 END) AS "deliveryCompleteSsgCount"`,
-        `SUM(CASE WHEN o.status = 'DELIVERY_COMPLETE' THEN 1 ELSE 0 END) AS "deliveryCompleteTotalCount"`,
-      ])
+      .select(selectExpressions)
       .where('o.userId = :uid', { uid: user.id })
       .andWhere('o.status IN (:...statuses)', { statuses })
-      .andWhere('o.type   IN (:...types)', { types })
-      .getRawOne<{
-        tempGeneralCount: string;
-        tempSsgCount: string;
-        tempTotalCount: string;
-        deliveryRequestGeneralCount: string;
-        deliveryRequestSsgCount: string;
-        deliveryRequestTotalCount: string;
-        deliveryConfirmedGeneralCount: string;
-        deliveryConfirmedSsgCount: string;
-        deliveryConfirmedTotalCount: string;
-        deliveryCompleteGeneralCount: string;
-        deliveryCompleteSsgCount: string;
-        deliveryCompleteTotalCount: string;
-      }>();
+      .andWhere('o.type IN (:...types)', { types })
+      .andWhere('o.registerAt >= :from', { from: sevenDaysAgo.toISOString() })
+      .getRawOne<Record<string, string>>();
 
-    console.log(raw);
+    // 5. raw 데이터를 숫자형으로 변환
+    const numeric: Record<string, number> = {};
+    for (const [key, value] of Object.entries(raw ?? {})) {
+      numeric[key] = Number.parseInt(value, 10) || 0;
+    }
 
-    const {
-      tempGeneralCount = '0',
-      tempSsgCount = '0',
-      tempTotalCount = '0',
-      deliveryRequestGeneralCount = '0',
-      deliveryRequestSsgCount = '0',
-      deliveryRequestTotalCount = '0',
-      deliveryConfirmedGeneralCount = '0',
-      deliveryConfirmedSsgCount = '0',
-      deliveryConfirmedTotalCount = '0',
-      deliveryCompleteGeneralCount = '0',
-      deliveryCompleteSsgCount = '0',
-      deliveryCompleteTotalCount = '0',
-    } = raw || {};
-
-    const dto = new OrderGetMyOrderHistoryResDto();
-
-    dto.tempGeneralCount = parseInt(tempGeneralCount, 10);
-    dto.tempSsgCount = parseInt(tempSsgCount, 10);
-    dto.tempTotalCount = parseInt(tempTotalCount, 10);
-    dto.deliveryRequestGeneralCount = parseInt(deliveryRequestGeneralCount, 10);
-    dto.deliveryRequestSsgCount = parseInt(deliveryRequestSsgCount, 10);
-    dto.deliveryRequestTotalCount = parseInt(deliveryRequestTotalCount, 10);
-    dto.deliveryConfirmedGeneralCount = parseInt(deliveryConfirmedGeneralCount, 10);
-    dto.deliveryConfirmedSsgCount = parseInt(deliveryConfirmedSsgCount, 10);
-    dto.deliveryConfirmedTotalCount = parseInt(deliveryConfirmedTotalCount, 10);
-    dto.deliveryCompleteGeneralCount = parseInt(deliveryCompleteGeneralCount, 10);
-    dto.deliveryCompleteSsgCount = parseInt(deliveryCompleteSsgCount, 10);
-    dto.deliveryCompleteTotalCount = parseInt(deliveryCompleteTotalCount, 10);
-
-    return dto;
+    // 6. OrderGetMyOrderHistoryResDto 객체로 변환
+    return Object.assign(new OrderGetMyOrderHistoryResDto(), numeric);
   }
 }
