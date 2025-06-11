@@ -38,6 +38,7 @@ export class QnaService {
 
     const [qnaList, totalCount] = await this.qnaRepository.findAndCount({
       where: whereCondition,
+      order: { id: 'DESC' },
       take,
       skip,
       relations: ['user'],
