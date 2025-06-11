@@ -1491,32 +1491,69 @@ export class OrderService {
   }
 
   async getMyOrderHistory(user: ILoginUserInfo): Promise<OrderGetMyOrderHistoryResDto> {
-    const completeCount = await this.orderRepository.count({
-      where: {
-        userId: user.id,
-        status: IOrderStatus.DELIVERY_REQUEST,
-      },
+    const statuses = [
+      IOrderStatus.TEMP,
+      IOrderStatus.DELIVERY_REQUEST,
+      IOrderStatus.DELIVERY_CONFIRMED,
+      IOrderStatus.DELIVERY_COMPLETE,
+    ];
+    const types = [IOrderType.GENERAL, IOrderType.SSG];
+
+    const raw = await this.orderRepository
+      .createQueryBuilder('o')
+      .select('o.status', 'status')
+      .addSelect('o.type', 'type')
+      .addSelect('COUNT(o.id)', 'count')
+      .where('o.userId = :uid', { uid: user.id })
+      .andWhere('o.status IN (:...statuses)', { statuses })
+      .andWhere('o.type IN (:...types)', { types })
+      .groupBy('o.status')
+      .addGroupBy('o.type')
+      .getRawMany<{ status: string; type: string; count: string }>();
+
+    const dto = new OrderGetMyOrderHistoryResDto();
+    Object.assign(dto, {
+      tempGeneralCount: 0,
+      tempSsgCount: 0,
+      tempTotalCount: 0,
+      deliveryRequestGeneralCount: 0,
+      deliveryRequestSsgCount: 0,
+      deliveryRequestTotalCount: 0,
+      deliveryConfirmedGeneralCount: 0,
+      deliveryConfirmedSsgCount: 0,
+      deliveryConfirmedTotalCount: 0,
+      deliveryCompleteGeneralCount: 0,
+      deliveryCompleteSsgCount: 0,
+      deliveryCompleteTotalCount: 0,
     });
 
-    const notProcessCount = await this.orderRepository.count({
-      where: {
-        userId: user.id,
-        status: IOrderStatus.DELIVERY_CANCEL,
-      },
+    raw.forEach(({ status, type, count }) => {
+      const n = parseInt(count, 10);
+      const isGeneral = type === IOrderType.GENERAL;
+      switch (status as IOrderStatus) {
+        case IOrderStatus.TEMP:
+          if (isGeneral) dto.tempGeneralCount = n;
+          else dto.tempSsgCount = n;
+          dto.tempTotalCount += n;
+          break;
+        case IOrderStatus.DELIVERY_REQUEST:
+          if (isGeneral) dto.deliveryRequestGeneralCount = n;
+          else dto.deliveryRequestSsgCount = n;
+          dto.deliveryRequestTotalCount += n;
+          break;
+        case IOrderStatus.DELIVERY_CONFIRMED:
+          if (isGeneral) dto.deliveryConfirmedGeneralCount = n;
+          else dto.deliveryConfirmedSsgCount = n;
+          dto.deliveryConfirmedTotalCount += n;
+          break;
+        case IOrderStatus.DELIVERY_COMPLETE:
+          if (isGeneral) dto.deliveryCompleteGeneralCount = n;
+          else dto.deliveryCompleteSsgCount = n;
+          dto.deliveryCompleteTotalCount += n;
+          break;
+      }
     });
 
-    const stockOrderCount = await this.orderRepository.count({
-      where: {
-        userId: user.id,
-        status: IOrderStatus.DELIVERY_COMPLETE,
-      },
-    });
-
-    return {
-      waitingDepositCount: 0,
-      completeCount,
-      notProcessCount,
-      stockOrderCount,
-    };
+    return dto;
   }
 }
