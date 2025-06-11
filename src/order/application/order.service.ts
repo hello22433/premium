@@ -1512,22 +1512,40 @@ export class OrderService {
     });
 
     // 4. 쿼리 빌더로 raw 데이터 조회
-    const raw = await this.orderRepository
+    const queryBuilder = this.orderRepository
       .createQueryBuilder('o')
       .select(selectExpressions)
       .where('o.userId = :uid', { uid: user.id })
-      .andWhere('o.status IN (:...statuses)', { statuses })
-      .andWhere('o.type IN (:...types)', { types })
       .andWhere('o.registerAt >= :from', { from: sevenDaysAgo.toISOString() })
-      .getRawOne<Record<string, string>>();
+      .andWhere('o.status IN (:...statuses)', { statuses })
+      .andWhere('o.type IN (:...types)', { types });
 
-    // 5. raw 데이터를 숫자형으로 변환
-    const numeric: Record<string, number> = {};
-    for (const [key, value] of Object.entries(raw ?? {})) {
-      numeric[key] = Number.parseInt(value, 10) || 0;
+    // 5. 권한에 따른 조회 제약
+    switch (user.authority as IUserAuthority) {
+      case IUserAuthority.SUPER_ADMIN:
+        // 아무 제약 없이 전체 조회
+        break;
+
+      case IUserAuthority.OPERATION_ADMIN:
+        // 본인 주문 OR 본인이 담당한 주문
+        queryBuilder.andWhere('(o.userId = :uid OR o.operationUserId = :uid)', { uid: user.id });
+        break;
+
+      case IUserAuthority.CORPORATE_ADMIN:
+      default:
+        // 본인 주문만
+        queryBuilder.andWhere('o.userId = :uid', { uid: user.id });
+        break;
     }
 
-    // 6. OrderGetMyOrderHistoryResDto 객체로 변환
+    // 6. raw 데이터를 숫자형으로 변환
+    const raw = await queryBuilder.getRawOne<Record<string, string>>();
+    const numeric: Record<string, number> = {};
+    for (const [k, v] of Object.entries(raw ?? {})) {
+      numeric[k] = Number.parseInt(v, 10) || 0;
+    }
+
+    // 7. OrderGetMyOrderHistoryResDto 객체로 변환
     return Object.assign(new OrderGetMyOrderHistoryResDto(), numeric);
   }
 }
