@@ -112,7 +112,6 @@ export class OrderService {
 
     let queryBuilder = this.orderRepository
       .createQueryBuilder('order')
-      .addSelect('order.sendType')
       .innerJoinAndSelect('order.user', 'user')
       .leftJoinAndSelect('order.operationUser', 'operationUser')
       .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
