@@ -191,6 +191,7 @@ export class OrderService {
         deliveryPrice: order.sendAmount,
         settlePrice: order.settleAmount,
         requestToDestroyPersonalInfoDay: order.requestToDestroyPersonalInfoDay,
+        sendType: order.sendType,
       };
     });
 
