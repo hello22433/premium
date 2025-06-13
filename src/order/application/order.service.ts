@@ -860,6 +860,7 @@ export class OrderService {
       sendTitle,
       sendContent,
       sendRequestAt,
+      sendType,
       orderProductList,
     } = getBody;
 
@@ -904,6 +905,15 @@ export class OrderService {
       sendAmount += getProduct.price * orderProduct.amount;
     }
 
+    const isImmediate = sendType === 'IMMEDIATE';
+    const sendAt = isImmediate
+      ? new Date()
+      : sendRequestAt
+        ? new Date(sendRequestAt)
+        : (() => {
+            throw new BadRequestException('sendRequestAt 누락');
+          })();
+
     order.eventName = eventName;
     order.sendMethod = sendMethod;
     order.sendTailText = sendTailText;
@@ -919,7 +929,8 @@ export class OrderService {
 
     order.sendAmount = sendAmount;
     order.settleAmount = sendAmount;
-    order.sendRequestAt = new Date(sendRequestAt);
+    order.sendType = sendType;
+    order.sendRequestAt = sendAt;
 
     await this.orderRepository.save(order);
 
@@ -964,7 +975,7 @@ export class OrderService {
         oneOrderDelivery.replaceCharacter1 = orderDelivery.replaceCharacter1 ?? null;
         oneOrderDelivery.replaceCharacter2 = orderDelivery.replaceCharacter2 ?? null;
         oneOrderDelivery.replaceCharacter3 = orderDelivery.replaceCharacter3 ?? null;
-        oneOrderDelivery.sendRequestAt = new Date(sendRequestAt);
+        oneOrderDelivery.sendRequestAt = sendAt;
         orderDeliveryCreateList.push(oneOrderDelivery);
       }
     }
