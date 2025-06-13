@@ -767,6 +767,7 @@ export class OrderService {
         code: Like(`${OrderPrefixCode}%`),
       },
       order: { code: 'DESC' },
+      withDeleted: true,
     });
 
     const prevCode = prevProduct?.code ?? null;
