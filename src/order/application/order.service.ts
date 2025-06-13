@@ -76,6 +76,7 @@ import { OrderCustomerViewDto } from '../api/dto/order.customer.view.dto';
 import { maskBarCode } from '../../util/mask.barcode.util';
 import { CreateCode } from '../../common/domain/create.code';
 import { OrderDigitNumber, OrderPrefixCode } from '../domain/order.code';
+import dayjs from 'dayjs';
 
 @Injectable()
 export class OrderService {
@@ -779,11 +780,7 @@ export class OrderService {
     }
 
     const isImmediate = sendType === 'IMMEDIATE';
-    const sendAt = isImmediate
-      ? new Date()
-      : sendRequestAt
-        ? new Date(sendRequestAt)
-        : undefined;
+    const sendAt = isImmediate ? new Date() : sendRequestAt ? new Date(sendRequestAt) : undefined;
 
     const orderInsertResult = await this.orderRepository.insert({
       userId: user.id,
@@ -1043,8 +1040,7 @@ export class OrderService {
 
     OrderValidation(order);
     // 총 주문 금액
-    const totalAmount = order.orderProductMappings.reduce(
-      (sum, m) => sum + m.product.price * m.amount, 0);
+    const totalAmount = order.orderProductMappings.reduce((sum, m) => sum + m.product.price * m.amount, 0);
     this.logger.debug(`User#${user.id} totalAmount=${totalAmount}`);
 
     // 유저 잔액 조회
@@ -1493,7 +1489,7 @@ export class OrderService {
 
   async getMyOrderHistory(user: ILoginUserInfo): Promise<OrderGetMyOrderHistoryResDto> {
     // 1. 최근 7일 범위 설정
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1_000);
+    const sevenDaysAgoStartOfDay = dayjs().subtract(7, 'day').startOf('day').toDate();
 
     // 2. 상태·타입 배열 enum 값 참조
     const statuses = Object.values(IOrderStatus).filter((s) => s !== IOrderStatus.DELIVERY_CANCEL);
@@ -1517,7 +1513,7 @@ export class OrderService {
       .createQueryBuilder('o')
       .select(selectExpressions)
       .where('o.userId = :uid', { uid: user.id })
-      .andWhere('o.registerAt >= :from', { from: sevenDaysAgo.toISOString() })
+      .andWhere('o.registerAt >= :from', { from: sevenDaysAgoStartOfDay.toISOString() })
       .andWhere('o.status IN (:...statuses)', { statuses })
       .andWhere('o.type IN (:...types)', { types });
 
