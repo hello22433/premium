@@ -784,7 +784,9 @@ export class OrderService {
       ? new Date()
       : sendRequestAt
         ? new Date(sendRequestAt)
-        : undefined;
+        : (() => {
+            throw new BadRequestException('sendRequestAt 누락');
+          })();
 
     const orderInsertResult = await this.orderRepository.insert({
       userId: user.id,
@@ -831,7 +833,7 @@ export class OrderService {
         oneOrderDelivery.replaceCharacter1 = orderDelivery.replaceCharacter1 ?? null;
         oneOrderDelivery.replaceCharacter2 = orderDelivery.replaceCharacter2 ?? null;
         oneOrderDelivery.replaceCharacter3 = orderDelivery.replaceCharacter3 ?? null;
-        oneOrderDelivery.sendRequestAt = new Date(sendRequestAt);
+        oneOrderDelivery.sendRequestAt = sendAt;
         orderDeliveryCreateList.push(oneOrderDelivery);
       }
     }
