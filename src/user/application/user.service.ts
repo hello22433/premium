@@ -129,22 +129,24 @@ export class UserService {
       throw new BadRequestException('USER_DO_NOT_MATCH_PASSWORD');
     }
 
-    const splitReqAllowedIp = reqIp ? reqIp.split(':') : ['', '', ''];
+    if (reqIp != '::1') {
+      const splitReqAllowedIp = reqIp ? reqIp.split(':') : ['', '', ''];
 
-    const reqAllowedIp = splitReqAllowedIp[3];
+      const reqAllowedIp = splitReqAllowedIp[3];
 
-    console.log(reqIp);
-    console.log(reqAllowedIp);
-    console.log(user.ip);
+      console.log(reqIp);
+      console.log(reqAllowedIp);
+      console.log(user.ip);
 
-    const allowedIpList: string[] = user.ip ? user.ip.split('::') : [];
+      const allowedIpList: string[] = user.ip ? user.ip.split('::') : [];
 
-    // @ts-ignore
-    const splitAllowed = user.ip.split('::');
-    console.log({ reqAllowedIp, splitAllowed });
+      // @ts-ignore
+      const splitAllowed = user.ip.split('::');
+      console.log({ reqAllowedIp, splitAllowed });
 
-    if (!allowedIpList.includes(reqAllowedIp)) {
-      throw new BadRequestException('허용된 IP가 아닙니다.');
+      if (!allowedIpList.includes(reqAllowedIp)) {
+        throw new BadRequestException('허용된 IP가 아닙니다.');
+      }
     }
 
     const now = new Date();
