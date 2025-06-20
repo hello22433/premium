@@ -79,16 +79,6 @@ export class PartnerCompanyExternService {
           });
           // GALAXIA - 정상응답일 경우
           context = JSON.stringify(galaxiaOut);
-
-          if (galaxiaOut.resCode !== '0000') {
-            // resCode가 0000이 아니면 비록 HTTP 200이더라도 “발급 실패”로 처리
-            orderDelivery.status = IOrderDeliveryStatus.FAIL;
-            orderDelivery.apiErrorCode = galaxiaOut.resCode;
-            orderDelivery.apiErrorMessage = galaxiaOut.resMsg;
-            context = JSON.stringify(galaxiaOut);
-            await this.orderDeliveryRepository.save(orderDelivery);
-            return;
-          }
           orderDelivery.barCode = galaxiaOut.giftCertificate.barcode ?? null;
           orderDelivery.couponNum = galaxiaOut.transactionId;
           orderDelivery.apiErrorCode = null;
