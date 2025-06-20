@@ -55,6 +55,10 @@ export class PartnerCompanyExternService {
     if (!orderDelivery.transactionId) {
       throw new Error('transaction id not exist');
     }
+    this.logger.warn(`issue orderDelivery: ${orderDelivery.id}, type: ${type}`);
+    this.logger.warn(
+      `issue orderDelivery: ${orderDelivery.id}, type: ${orderDelivery.orderProductMapping.product.type}`,
+    );
 
     try {
       if (!type || orderDelivery.orderProductMapping.product.type === 'SELF') {
