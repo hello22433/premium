@@ -55,14 +55,9 @@ export class PartnerCompanyExternService {
     if (!orderDelivery.transactionId) {
       throw new Error('transaction id not exist');
     }
-    this.logger.error(`issue orderDelivery: ${orderDelivery.id}, type: ${type}`);
-    this.logger.error(
-      `issue orderDelivery: ${orderDelivery.id}, type: ${orderDelivery.orderProductMapping.product.type}`,
-    );
 
     try {
       if (!type || orderDelivery.orderProductMapping.product.type === 'SELF') {
-        this.logger.error('여기로 옴');
         orderDelivery.barCode = orderBarcodeGenerate();
         return;
       }
