@@ -26,7 +26,7 @@ import { OrderReceiveChoiceDto } from '../api/dto/order.receive.choice.dto';
 import { DeliveryCreateCouponImage } from '../../delivery/infra/delivery.create.coupon.image';
 import { OrderReceiveChoiceSmsTemplate } from '../domain/order.receive.choice.sms.template';
 import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
-import { addDays, format } from 'date-fns';
+import { format } from 'date-fns';
 import { normalizeLineBreaks } from '../../delivery/domain/email.delivery.template';
 import { DateFormatStr } from '../../common/domain/date.format.str';
 
@@ -108,6 +108,7 @@ export class OrderReceiveService {
       .innerJoinAndSelect('orderProductMapping.order', 'order')
       .innerJoinAndSelect('orderProductMapping.product', 'product')
       .innerJoinAndSelect('product.brand', 'brand')
+      .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .innerJoinAndSelect('order.user', 'user')
       .where('orderDelivery.id = :id', { id: orderDecrypt.id })
       .getOne();
@@ -198,6 +199,7 @@ export class OrderReceiveService {
       expireDay: orderDelivery.orderProductMapping.product.expireDay,
       brandKoreanName: orderDelivery.orderProductMapping.product.brand!.nameKorean,
       userBusinessName: orderDelivery.orderProductMapping.order.user!.businessName,
+      partnerCompany: orderDelivery.orderProductMapping.product.partnerCompany?.type || null,
     };
   }
 

@@ -2,6 +2,7 @@ import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delive
 import { ApiProperty } from '@nestjs/swagger';
 import { IProductType } from '../../product/interface/product.type';
 import { OrderReceiveChoiceDto } from './dto/order.receive.choice.dto';
+import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
 
 export class OrderReceiveAlimTalkResDto {
   @ApiProperty({
@@ -94,6 +95,12 @@ export class OrderReceiveAlimTalkResDto {
     description: '',
   })
   userBusinessName: string;
+
+  @ApiProperty({
+    enum: IPartnerCompanyType,
+    description: '협력사 타입',
+  })
+  partnerCompany: IPartnerCompanyType | null;
 }
 
 export class OrderReceiveEmailResDto {
