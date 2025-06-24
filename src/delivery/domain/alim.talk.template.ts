@@ -2,9 +2,14 @@ import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { customerName } from '../../const';
 
 export const AlimTalkTemplate = (orderDelivery: OrderDeliveryEntity) => {
+  const couponCode =
+    orderDelivery.orderProductMapping.order.user!.businessName === 'SSG'
+      ? orderDelivery.personalCode
+      : orderDelivery.barCode;
+
   return `상품명 : ${orderDelivery.orderProductMapping.product.name}
 유효기간 : ${orderDelivery.orderProductMapping.product.expireDay}일
-쿠폰번호 : ${orderDelivery.barCode}
+쿠폰번호 : ${couponCode}
 사용처 : ${orderDelivery.orderProductMapping.product.brand!.nameKorean}
 고객센터 : ${customerName}
 발행자 : ${orderDelivery.orderProductMapping.order.user!.businessName}
