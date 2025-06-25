@@ -107,7 +107,10 @@ export class DeliveryBatchService {
       }
       let text = orderDelivery.orderProductMapping.order.sendContent;
 
-      if (orderDelivery.orderProductMapping.product.memo) {
+      if (
+        orderDelivery.orderProductMapping.product.memo &&
+        orderDelivery.orderProductMapping.order.type !== IOrderType.SSG
+      ) {
         text += `\n\n${orderDelivery.orderProductMapping.product.memo}`;
       }
 
