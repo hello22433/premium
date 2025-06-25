@@ -1,9 +1,10 @@
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { customerName } from '../../const';
+import { IOrderType } from '../../order/interface/order.type';
 
 export const AlimTalkTemplate = (orderDelivery: OrderDeliveryEntity) => {
   const couponCode =
-    orderDelivery.orderProductMapping.order.user!.businessName === 'SSG'
+    orderDelivery.orderProductMapping.order.type === IOrderType.SSG
       ? orderDelivery.personalCode
       : orderDelivery.barCode;
 
