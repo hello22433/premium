@@ -1505,8 +1505,10 @@ export class OrderService {
   }
 
   async getMyOrderHistory(user: ILoginUserInfo): Promise<OrderGetMyOrderHistoryResDto> {
-    // 1. 최근 7일 범위 설정
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1_000);
+    // 1. 최근 7일 범위 설정 (7일 전 00:00:00부터)
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+    sevenDaysAgo.setHours(0, 0, 0, 0);
 
     // 2. 상태·타입 배열 enum 값 참조
     const statuses = Object.values(IOrderStatus).filter((s) => s !== IOrderStatus.DELIVERY_CANCEL);
