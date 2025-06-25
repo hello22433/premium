@@ -1057,8 +1057,7 @@ export class OrderService {
 
     OrderValidation(order);
     // 총 주문 금액
-    const totalAmount = order.orderProductMappings.reduce(
-      (sum, m) => sum + m.product.price * m.amount, 0);
+    const totalAmount = order.orderProductMappings.reduce((sum, m) => sum + m.product.price * m.amount, 0);
     this.logger.debug(`User#${user.id} totalAmount=${totalAmount}`);
 
     // 유저 잔액 조회
@@ -1553,7 +1552,10 @@ export class OrderService {
     }
 
     // 6. raw 데이터를 숫자형으로 변환
+    console.log('getMyOrderHistory SQL:', queryBuilder.getSql());
+    console.log('getMyOrderHistory Parameters:', queryBuilder.getParameters());
     const raw = await queryBuilder.getRawOne<Record<string, string>>();
+    console.log('getMyOrderHistory Raw Result:', raw);
     const numeric: Record<string, number> = {};
     for (const [k, v] of Object.entries(raw ?? {})) {
       numeric[k] = Number.parseInt(v, 10) || 0;
