@@ -1562,6 +1562,8 @@ export class OrderService {
     }
 
     // 7. OrderGetMyOrderHistoryResDto 객체로 변환
-    return Object.assign(new OrderGetMyOrderHistoryResDto(), numeric);
+    const result = Object.assign(new OrderGetMyOrderHistoryResDto(), numeric);
+    console.log('getMyOrderHistory Final Result:', result);
+    return result;
   }
 }
