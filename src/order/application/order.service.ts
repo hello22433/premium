@@ -148,7 +148,7 @@ export class OrderService {
       queryBuilder = queryBuilder.andWhere('order.eventName = :eventName', { eventName: `%${eventName}%` });
     }
 
-    queryBuilder = QueryBuilderDateCondition(queryBuilder, 'order', 'sendRequestAt', startAt, endAt);
+    queryBuilder = QueryBuilderDateCondition(queryBuilder, 'order', 'registerAt', startAt, endAt);
 
     queryBuilder = queryBuilder.orderBy('order.id', 'DESC');
 
@@ -1551,19 +1551,16 @@ export class OrderService {
         break;
     }
 
+    console.log('주문내역조회 API 시작 - 사용자ID:', user.id);
+
     // 6. raw 데이터를 숫자형으로 변환
-    console.log('getMyOrderHistory SQL:', queryBuilder.getSql());
-    console.log('getMyOrderHistory Parameters:', queryBuilder.getParameters());
     const raw = await queryBuilder.getRawOne<Record<string, string>>();
-    console.log('getMyOrderHistory Raw Result:', raw);
     const numeric: Record<string, number> = {};
     for (const [k, v] of Object.entries(raw ?? {})) {
       numeric[k] = Number.parseInt(v, 10) || 0;
     }
 
     // 7. OrderGetMyOrderHistoryResDto 객체로 변환
-    const result = Object.assign(new OrderGetMyOrderHistoryResDto(), numeric);
-    console.log('getMyOrderHistory Final Result:', result);
-    return result;
+    return Object.assign(new OrderGetMyOrderHistoryResDto(), numeric);
   }
 }
