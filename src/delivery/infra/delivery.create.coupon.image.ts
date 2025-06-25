@@ -35,7 +35,7 @@ export const DeliveryCreateCouponImage = async (
 ): Promise<{ fileName: string; path: string }> => {
   // 캔버스 크기 설정 (쿠폰 이미지 크기)
   const canvasWidth = 600;
-  const canvasHeight = type === IProductType.SSG ? 850 : 900;
+  const canvasHeight = type === IProductType.SSG ? 680 : 900;
   const canvas = createCanvas(canvasWidth, canvasHeight);
   const ctx = canvas.getContext('2d');
 
@@ -122,12 +122,18 @@ export const DeliveryCreateCouponImage = async (
     ctx.stroke(); // 선 그리기
   }
 
-  // 텍스트 추가
+  // 텍스트 추가 - SSG는 바코드 영역 없이 위쪽에 배치
   ctx.font = '24px "Noto Sans"';
   ctx.fillStyle = '#585858';
-  ctx.fillText(`상품명: ${productName}`, 40, 770);
-  ctx.fillText(`교환처: ${exchangeBrandName}`, 40, 810);
-  ctx.fillText(`유효기간: ${expireDay}일`, 40, 850);
+  if (type === IProductType.SSG) {
+    ctx.fillText(`상품명: ${productName}`, 40, 550);
+    ctx.fillText(`교환처: ${exchangeBrandName}`, 40, 590);
+    ctx.fillText(`유효기간: ${expireDay}일`, 40, 630);
+  } else {
+    ctx.fillText(`상품명: ${productName}`, 40, 770);
+    ctx.fillText(`교환처: ${exchangeBrandName}`, 40, 810);
+    ctx.fillText(`유효기간: ${expireDay}일`, 40, 850);
+  }
 
   // 최종 이미지 저장
   const outputBuffer = canvas.toBuffer('image/jpeg');
