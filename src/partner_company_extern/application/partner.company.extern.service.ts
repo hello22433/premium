@@ -147,7 +147,7 @@ export class PartnerCompanyExternService {
         orderDelivery.ssgTransactionId = SsgTransactionId.makeSsgTrade();
         orderDelivery.expireAt = addDays(
           orderDelivery.sendRequestAt,
-          orderDelivery.orderProductMapping.product.expireDay,
+          orderDelivery.orderProductMapping.product.expireDay - 1,
         );
         let text = order.sendContent;
 

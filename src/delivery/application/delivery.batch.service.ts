@@ -20,6 +20,7 @@ import { addDays } from 'date-fns';
 import { EmailCertifyExpireDay } from '../../const';
 import { EmailType } from '../../mail/domain/email.type';
 import { IOrderType } from '../../order/interface/order.type';
+import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
 import { smsSsgTemplate } from '../domain/sms.ssg.template';
 import { EmailDeliveryTemplate } from '../domain/email.delivery.template';
 import { OrderEmailSendType } from '../../order/domain/order.email.send.type';
@@ -89,10 +90,15 @@ export class DeliveryBatchService {
       const title = orderDelivery.orderProductMapping.order.sendTitle;
 
       if (orderDelivery.orderProductMapping.order.type !== IOrderType.SSG) {
-        orderDelivery.expireAt = addDays(
-          orderDelivery.sendRequestAt,
-          orderDelivery.orderProductMapping.product.expireDay,
-        );
+        // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+        // @ts-expect-error
+        const partnerCompanyType = orderDelivery.orderProductMapping.product.partnerCompany.type;
+        const expireDays =
+          partnerCompanyType === IPartnerCompanyType.GIFT_SHOW
+            ? orderDelivery.orderProductMapping.product.expireDay
+            : orderDelivery.orderProductMapping.product.expireDay - 1;
+
+        orderDelivery.expireAt = addDays(orderDelivery.sendRequestAt, expireDays);
       }
 
       const filePathList = [];
