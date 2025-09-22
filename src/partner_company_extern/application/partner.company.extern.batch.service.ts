@@ -133,7 +133,7 @@ export class PartnerCompanyExternBatchService {
               : OrderDeliveryCouponStatus.NOT_USED;
         }
 
-        // 1.1.6 신세계 상품권 발행함
+        // 1.1.6 신세계 상품권 발행
         if (type === 'SSG') {
           if (!orderDelivery.ssgEvent) {
             throw new Error(

@@ -69,7 +69,7 @@ export class OrderRealProductService {
   ) {}
 
   async getList(user: ILoginUserInfo, getQuery: OrderRealProductGetListReqDto): Promise<OrderRealProductGetListResDto> {
-    const { page, take, eventName, startAt, endAt, userBusinessId, status, section } = getQuery;
+    const { page, take, searchType, searchKeyword, startAt, endAt, status, section } = getQuery;
 
     let queryBuilder = this.orderRepository
       .createQueryBuilder('order')
@@ -103,14 +103,29 @@ export class OrderRealProductService {
       queryBuilder = queryBuilder.andWhere('order.status = :status', { status });
     }
 
-    if (userBusinessId) {
-      queryBuilder = queryBuilder.andWhere('order.userBusinessId = :userBusinessId', {
-        userBusinessId,
-      });
-    }
-
-    if (eventName) {
-      queryBuilder = queryBuilder.andWhere('order.eventName LIKE :eventName', { eventName: `%${eventName}%` });
+    // 검색 조건 처리 (최소 1자 이상일 때만 검색)
+    if (searchKeyword && searchKeyword.length >= 1) {
+      switch (searchType) {
+        case 'CUSTOMER':
+          queryBuilder = queryBuilder.andWhere('businessUser.businessName LIKE :keyword', { keyword: `%${searchKeyword}%` });
+          break;
+        case 'MANAGER':
+          queryBuilder = queryBuilder.andWhere('user.personName LIKE :keyword', { keyword: `%${searchKeyword}%` });
+          break;
+        case 'EVENT':
+          queryBuilder = queryBuilder.andWhere('order.eventName LIKE :keyword', { keyword: `%${searchKeyword}%` });
+          break;
+        case 'PRODUCT':
+          queryBuilder = queryBuilder.andWhere('product.name LIKE :keyword', { keyword: `%${searchKeyword}%` });
+          break;
+        case 'ALL':
+        default:
+          queryBuilder = queryBuilder.andWhere(
+            '(businessUser.businessName LIKE :keyword OR user.personName LIKE :keyword OR order.eventName LIKE :keyword OR product.name LIKE :keyword)',
+            { keyword: `%${searchKeyword}%` }
+          );
+          break;
+      }
     }
 
     queryBuilder = QueryBuilderDateCondition(queryBuilder, 'order', 'createdAt', startAt, endAt);
@@ -914,7 +929,7 @@ export class OrderRealProductService {
   }
 
   async excelDownload(user: ILoginUserInfo, getBody: OrderRealProductExcelDownloadReqBodyDto) {
-    const { eventName, status, userBusinessId, startAt, endAt, section } = getBody;
+    const { searchType, searchKeyword, status, startAt, endAt, section } = getBody;
 
     const now = new Date();
     const nowString = format(now, 'yyyyMMdd');
@@ -954,12 +969,29 @@ export class OrderRealProductService {
       queryBuilder = queryBuilder.andWhere('order.status = :status', { status });
     }
 
-    if (userBusinessId) {
-      queryBuilder = queryBuilder.andWhere('order.userBusinessId = :userBusinessId', { userBusinessId });
-    }
-
-    if (eventName) {
-      queryBuilder = queryBuilder.andWhere('order.eventName LIKE :eventName', { eventName: `%${eventName}%` });
+    // 검색 조건 처리 (최소 1자 이상일 때만 검색)
+    if (searchKeyword && searchKeyword.length >= 1) {
+      switch (searchType) {
+        case 'CUSTOMER':
+          queryBuilder = queryBuilder.andWhere('businessUser.businessName LIKE :keyword', { keyword: `%${searchKeyword}%` });
+          break;
+        case 'MANAGER':
+          queryBuilder = queryBuilder.andWhere('user.personName LIKE :keyword', { keyword: `%${searchKeyword}%` });
+          break;
+        case 'EVENT':
+          queryBuilder = queryBuilder.andWhere('order.eventName LIKE :keyword', { keyword: `%${searchKeyword}%` });
+          break;
+        case 'PRODUCT':
+          queryBuilder = queryBuilder.andWhere('product.name LIKE :keyword', { keyword: `%${searchKeyword}%` });
+          break;
+        case 'ALL':
+        default:
+          queryBuilder = queryBuilder.andWhere(
+            '(businessUser.businessName LIKE :keyword OR user.personName LIKE :keyword OR order.eventName LIKE :keyword OR product.name LIKE :keyword)',
+            { keyword: `%${searchKeyword}%` }
+          );
+          break;
+      }
     }
 
     queryBuilder = QueryBuilderDateCondition(queryBuilder, 'order', 'sendRequestAt', startAt, endAt);

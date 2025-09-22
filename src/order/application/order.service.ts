@@ -108,7 +108,7 @@ export class OrderService {
   ) {}
 
   async getList(user: ILoginUserInfo, getQuery: OrderGetListReqDto): Promise<OrderGetListResDto> {
-    const { section, type, status, userId, startAt, endAt, eventName, page, take } = getQuery;
+    const { section, type, status, startAt, endAt, searchType, searchKeyword, page, take } = getQuery;
 
     let queryBuilder = this.orderRepository
       .createQueryBuilder('order')
@@ -140,12 +140,29 @@ export class OrderService {
       queryBuilder = queryBuilder.andWhere('order.status = :status', { status });
     }
 
-    if (userId) {
-      queryBuilder = queryBuilder.andWhere('order.userId = :userId', { userId });
-    }
-
-    if (eventName) {
-      queryBuilder = queryBuilder.andWhere('order.eventName = :eventName', { eventName: `%${eventName}%` });
+    // 검색 조건 처리 (최소 1자 이상일 때만 검색)
+    if (searchKeyword && searchKeyword.length >= 1) {
+      switch (searchType) {
+        case 'CUSTOMER':
+          queryBuilder = queryBuilder.andWhere('user.businessName LIKE :keyword', { keyword: `%${searchKeyword}%` });
+          break;
+        case 'MANAGER':
+          queryBuilder = queryBuilder.andWhere('operationUser.personName LIKE :keyword', { keyword: `%${searchKeyword}%` });
+          break;
+        case 'EVENT':
+          queryBuilder = queryBuilder.andWhere('order.eventName LIKE :keyword', { keyword: `%${searchKeyword}%` });
+          break;
+        case 'PRODUCT':
+          queryBuilder = queryBuilder.andWhere('product.name LIKE :keyword', { keyword: `%${searchKeyword}%` });
+          break;
+        case 'ALL':
+        default:
+          queryBuilder = queryBuilder.andWhere(
+            '(user.businessName LIKE :keyword OR operationUser.personName LIKE :keyword OR order.eventName LIKE :keyword OR product.name LIKE :keyword)',
+            { keyword: `%${searchKeyword}%` }
+          );
+          break;
+      }
     }
 
     queryBuilder = QueryBuilderDateCondition(queryBuilder, 'order', 'registerAt', startAt, endAt);
@@ -1395,7 +1412,7 @@ export class OrderService {
   }
 
   async excelDownload(user: ILoginUserInfo, getBody: OrderExcelDownloadReqBodyDto) {
-    const { eventName, type, status, userId, startAt, endAt, section } = getBody;
+    const { searchType, searchKeyword, type, status, startAt, endAt, section } = getBody;
 
     const now = new Date();
     const nowString = format(now, 'yyyyMMdd');
@@ -1434,12 +1451,29 @@ export class OrderService {
       queryBuilder = queryBuilder.andWhere('order.status = :status', { status });
     }
 
-    if (userId) {
-      queryBuilder = queryBuilder.andWhere('order.userId = :userId', { userId });
-    }
-
-    if (eventName) {
-      queryBuilder = queryBuilder.andWhere('order.eventName = :eventName', { eventName: `%${eventName}%` });
+    // 검색 조건 처리 (최소 1자 이상일 때만 검색)
+    if (searchKeyword && searchKeyword.length >= 1) {
+      switch (searchType) {
+        case 'CUSTOMER':
+          queryBuilder = queryBuilder.andWhere('user.businessName LIKE :keyword', { keyword: `%${searchKeyword}%` });
+          break;
+        case 'MANAGER':
+          queryBuilder = queryBuilder.andWhere('operationUser.personName LIKE :keyword', { keyword: `%${searchKeyword}%` });
+          break;
+        case 'EVENT':
+          queryBuilder = queryBuilder.andWhere('order.eventName LIKE :keyword', { keyword: `%${searchKeyword}%` });
+          break;
+        case 'PRODUCT':
+          queryBuilder = queryBuilder.andWhere('product.name LIKE :keyword', { keyword: `%${searchKeyword}%` });
+          break;
+        case 'ALL':
+        default:
+          queryBuilder = queryBuilder.andWhere(
+            '(user.businessName LIKE :keyword OR operationUser.personName LIKE :keyword OR order.eventName LIKE :keyword OR product.name LIKE :keyword)',
+            { keyword: `%${searchKeyword}%` }
+          );
+          break;
+      }
     }
 
     queryBuilder = QueryBuilderDateCondition(queryBuilder, 'order', 'sendRequestAt', startAt, endAt);

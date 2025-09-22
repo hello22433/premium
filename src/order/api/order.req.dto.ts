@@ -41,15 +41,6 @@ export class OrderGetListReqDto extends PagingReqDto {
   status?: IOrderStatus;
 
   @ApiPropertyOptional({
-    description: '고객사 id (user id)',
-  })
-  // ===================================
-  @IsOptional()
-  @IsNumber()
-  @Type(() => Number)
-  userId?: number;
-
-  @ApiPropertyOptional({
     description: '발송 시간 조회 시작 날짜 ex) yyyy-MM-ddTHH:mm:ss',
   })
   // ===================================
@@ -66,11 +57,21 @@ export class OrderGetListReqDto extends PagingReqDto {
   endAt?: string;
 
   @ApiPropertyOptional({
-    description: '발송 명 = 이벤트 명',
+    description: '검색조건 ex) ALL: 전체, CUSTOMER: 고객사, MANAGER: 담당자, EVENT: 이벤트명, PRODUCT: 상품명',
+    enum: ['ALL', 'CUSTOMER', 'MANAGER', 'EVENT', 'PRODUCT'],
+    default: 'ALL',
   })
   // ===================================
   @IsOptional()
-  eventName?: string;
+  @IsEnum(['ALL', 'CUSTOMER', 'MANAGER', 'EVENT', 'PRODUCT'])
+  searchType?: 'ALL' | 'CUSTOMER' | 'MANAGER' | 'EVENT' | 'PRODUCT' = 'ALL';
+
+  @ApiPropertyOptional({
+    description: '검색어 (최소 1자)',
+  })
+  // ===================================
+  @IsOptional()
+  searchKeyword?: string;
 }
 
 export class OrderCreateTempReqDto extends OrderCreateDto {
@@ -267,15 +268,6 @@ export class OrderExcelDownloadReqBodyDto {
   status?: IOrderStatus;
 
   @ApiPropertyOptional({
-    description: '고객사 id (user id)',
-  })
-  // ===================================
-  @IsOptional()
-  @IsNumber()
-  @Type(() => Number)
-  userId?: number;
-
-  @ApiPropertyOptional({
     description: '발송 시간 조회 시작 날짜 ex) yyyy-MM-ddTHH:mm:ss',
   })
   // ===================================
@@ -292,9 +284,19 @@ export class OrderExcelDownloadReqBodyDto {
   endAt?: string;
 
   @ApiPropertyOptional({
-    description: '발송 명 = 이벤트 명',
+    description: '검색조건 ex) ALL: 전체, CUSTOMER: 고객사, MANAGER: 담당자, EVENT: 이벤트명, PRODUCT: 상품명',
+    enum: ['ALL', 'CUSTOMER', 'MANAGER', 'EVENT', 'PRODUCT'],
+    default: 'ALL',
   })
   // ===================================
   @IsOptional()
-  eventName?: string;
+  @IsEnum(['ALL', 'CUSTOMER', 'MANAGER', 'EVENT', 'PRODUCT'])
+  searchType?: 'ALL' | 'CUSTOMER' | 'MANAGER' | 'EVENT' | 'PRODUCT' = 'ALL';
+
+  @ApiPropertyOptional({
+    description: '검색어 (최소 1자)',
+  })
+  // ===================================
+  @IsOptional()
+  searchKeyword?: string;
 }
