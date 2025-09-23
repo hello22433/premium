@@ -147,7 +147,7 @@ export class OrderService {
           queryBuilder = queryBuilder.andWhere('user.businessName LIKE :keyword', { keyword: `%${searchKeyword}%` });
           break;
         case 'MANAGER':
-          queryBuilder = queryBuilder.andWhere('operationUser.personName LIKE :keyword', { keyword: `%${searchKeyword}%` });
+          queryBuilder = queryBuilder.andWhere('user.personName LIKE :keyword', { keyword: `%${searchKeyword}%` });
           break;
         case 'EVENT':
           queryBuilder = queryBuilder.andWhere('order.eventName LIKE :keyword', { keyword: `%${searchKeyword}%` });
@@ -1458,7 +1458,7 @@ export class OrderService {
           queryBuilder = queryBuilder.andWhere('user.businessName LIKE :keyword', { keyword: `%${searchKeyword}%` });
           break;
         case 'MANAGER':
-          queryBuilder = queryBuilder.andWhere('operationUser.personName LIKE :keyword', { keyword: `%${searchKeyword}%` });
+          queryBuilder = queryBuilder.andWhere('user.personName LIKE :keyword', { keyword: `%${searchKeyword}%` });
           break;
         case 'EVENT':
           queryBuilder = queryBuilder.andWhere('order.eventName LIKE :keyword', { keyword: `%${searchKeyword}%` });
