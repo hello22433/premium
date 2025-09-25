@@ -37,6 +37,11 @@ export class OrderEventViewDto {
   deliveryCount: number;
 
   @ApiProperty({
+    description: '발송 금액',
+  })
+  sendAmount: number;
+
+  @ApiProperty({
     description: '찜 여부',
   })
   isLike: boolean;

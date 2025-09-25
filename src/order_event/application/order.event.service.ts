@@ -6,7 +6,7 @@ import { Repository } from 'typeorm';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { OrderEventGetListReqQueryDto, OrderEventSetLikeReqDto } from '../api/order.event.req.dto';
 import { format } from 'date-fns';
-import { DateFormatStr } from '../../common/domain/date.format.str';
+import { DateDateFormatStr } from '../../common/domain/date.format.str';
 import { OrderEventViewDto } from '../api/dto/order.event.view.dto';
 import { IUserAuthority } from '../../user/interface/user.authority';
 
@@ -103,12 +103,13 @@ export class OrderEventService {
 
       return {
         id: order.id,
-        registerAt: format(order.registerAt, DateFormatStr),
+        registerAt: format(order.registerAt, DateDateFormatStr), // YYYY-MM-DD 형식
         code: order.code,
         eventName: order.eventName,
         productName: productName,
         productCount: totalProductCount,
         deliveryCount: totalAmount,
+        sendAmount: order.sendAmount || 0,
         isLike,
       };
     });
