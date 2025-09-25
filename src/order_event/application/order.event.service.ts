@@ -36,33 +36,31 @@ export class OrderEventService {
       queryBuilder = queryBuilder.andWhere('order.userId = :userId', { userId: user.id });
     }
 
-    // SSG 타입인 경우 행사명과 행사기간으로 검색
-    if (type === 'SSG') {
-      if (eventName) {
-        queryBuilder = queryBuilder.andWhere('order.eventName LIKE :eventName', { eventName: `%${eventName}%` });
-      }
-
-      if (startDate) {
-        queryBuilder = queryBuilder.andWhere('order.registerAt >= :startDate', { startDate: new Date(startDate) });
-      }
-
-      if (endDate) {
-        const endDateTime = new Date(endDate);
-        endDateTime.setHours(23, 59, 59, 999);
-        queryBuilder = queryBuilder.andWhere('order.registerAt <= :endDate', { endDate: endDateTime });
-      }
-    } else {
-      // 일반 타입인 경우 기존처럼 상품명과 브랜드명으로 검색
-      if (productName) {
-        queryBuilder = queryBuilder.andWhere('product.name LIKE :productName', { productName: `%${productName}%` });
-      }
-
-      if (brandName) {
-        queryBuilder = queryBuilder.andWhere('(brand.nameKorean LIKE :brandName OR brand.nameEnglish LIKE :brandName)', {
-          brandName: `%${brandName}%`,
-        });
-      }
+    // 행사명과 행사기간으로 검색
+    if (eventName) {
+      queryBuilder = queryBuilder.andWhere('order.eventName LIKE :eventName', { eventName: `%${eventName}%` });
     }
+
+    if (startDate) {
+      queryBuilder = queryBuilder.andWhere('order.registerAt >= :startDate', { startDate: new Date(startDate) });
+    }
+
+    if (endDate) {
+      const endDateTime = new Date(endDate);
+      endDateTime.setHours(23, 59, 59, 999);
+      queryBuilder = queryBuilder.andWhere('order.registerAt <= :endDate', { endDate: endDateTime });
+    }
+
+    // 기존 상품명/브랜드명 검색 로직 제거 (사용하지 않음)
+    // if (productName) {
+    //   queryBuilder = queryBuilder.andWhere('product.name LIKE :productName', { productName: `%${productName}%` });
+    // }
+
+    // if (brandName) {
+    //   queryBuilder = queryBuilder.andWhere('(brand.nameKorean LIKE :brandName OR brand.nameEnglish LIKE :brandName)', {
+    //     brandName: `%${brandName}%`,
+    //   });
+    // }
 
     if (isLike !== undefined) {
       queryBuilder = queryBuilder

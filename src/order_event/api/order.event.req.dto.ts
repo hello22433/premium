@@ -15,35 +15,35 @@ export class OrderEventGetListReqQueryDto extends PagingReqDto {
   type: IOrderType = IOrderType.GENERAL;
 
   @ApiPropertyOptional({
-    description: '상품명',
+    description: '상품명 (사용 안 함 - 레거시)',
   })
   // =========================
   @IsOptional()
   productName?: string;
 
   @ApiPropertyOptional({
-    description: '브랜드명',
+    description: '브랜드명 (사용 안 함 - 레거시)',
   })
   // =========================
   @IsOptional()
   brandName?: string;
 
   @ApiPropertyOptional({
-    description: '행사명 (SSG 타입용)',
+    description: '행사명 (모든 타입에서 사용)',
   })
   // =========================
   @IsOptional()
   eventName?: string;
 
   @ApiPropertyOptional({
-    description: '행사 시작일 (SSG 타입용)',
+    description: '행사 시작일 (모든 타입에서 사용)',
   })
   // =========================
   @IsOptional()
   startDate?: string;
 
   @ApiPropertyOptional({
-    description: '행사 종료일 (SSG 타입용)',
+    description: '행사 종료일 (모든 타입에서 사용)',
   })
   // =========================
   @IsOptional()
