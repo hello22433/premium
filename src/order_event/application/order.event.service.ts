@@ -20,7 +20,7 @@ export class OrderEventService {
   ) {}
 
   async getList(user: ILoginUserInfo, getQuery: OrderEventGetListReqQueryDto) {
-    const { type, productName, brandName, isLike, page, take } = getQuery;
+    const { type, productName, brandName, eventName, startDate, endDate, isLike, page, take } = getQuery;
 
     let queryBuilder = this.orderRepository
       .createQueryBuilder('order')
@@ -36,14 +36,32 @@ export class OrderEventService {
       queryBuilder = queryBuilder.andWhere('order.userId = :userId', { userId: user.id });
     }
 
-    if (productName) {
-      queryBuilder = queryBuilder.andWhere('product.name = :productName', { productName: `%${productName}%` });
-    }
+    // SSG 타입인 경우 행사명과 행사기간으로 검색
+    if (type === 'SSG') {
+      if (eventName) {
+        queryBuilder = queryBuilder.andWhere('order.eventName LIKE :eventName', { eventName: `%${eventName}%` });
+      }
 
-    if (brandName) {
-      queryBuilder = queryBuilder.andWhere('(brand.nameKorean LIKE :brandName OR brand.nameEnglish LIKE :brandName)', {
-        brandName: `%${brandName}%`,
-      });
+      if (startDate) {
+        queryBuilder = queryBuilder.andWhere('order.registerAt >= :startDate', { startDate: new Date(startDate) });
+      }
+
+      if (endDate) {
+        const endDateTime = new Date(endDate);
+        endDateTime.setHours(23, 59, 59, 999);
+        queryBuilder = queryBuilder.andWhere('order.registerAt <= :endDate', { endDate: endDateTime });
+      }
+    } else {
+      // 일반 타입인 경우 기존처럼 상품명과 브랜드명으로 검색
+      if (productName) {
+        queryBuilder = queryBuilder.andWhere('product.name LIKE :productName', { productName: `%${productName}%` });
+      }
+
+      if (brandName) {
+        queryBuilder = queryBuilder.andWhere('(brand.nameKorean LIKE :brandName OR brand.nameEnglish LIKE :brandName)', {
+          brandName: `%${brandName}%`,
+        });
+      }
     }
 
     if (isLike !== undefined) {

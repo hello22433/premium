@@ -28,6 +28,27 @@ export class OrderEventGetListReqQueryDto extends PagingReqDto {
   @IsOptional()
   brandName?: string;
 
+  @ApiPropertyOptional({
+    description: '행사명 (SSG 타입용)',
+  })
+  // =========================
+  @IsOptional()
+  eventName?: string;
+
+  @ApiPropertyOptional({
+    description: '행사 시작일 (SSG 타입용)',
+  })
+  // =========================
+  @IsOptional()
+  startDate?: string;
+
+  @ApiPropertyOptional({
+    description: '행사 종료일 (SSG 타입용)',
+  })
+  // =========================
+  @IsOptional()
+  endDate?: string;
+
   @ApiProperty({
     description: '찜한 주문 이벤트 불러오기',
   })
