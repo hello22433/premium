@@ -148,3 +148,13 @@ export class SsgEventUpdateAmountReqDto {
   // =============================================================
   amount: number;
 }
+
+export class SsgEventGetValidListReqDto {
+  @ApiPropertyOptional({
+    description: '요청한 쿠폰 유효기간(일)으로 필터링',
+  })
+  // =============================================================
+  @IsOptional()
+  @IsNumber()
+  couponExpiration?: number;
+}

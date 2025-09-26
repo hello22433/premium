@@ -6,9 +6,10 @@ import {
   SsgEventCreateReqDto,
   SsgEventExcelDownloadReqDto,
   SsgEventGetListReqDto,
+  SsgEventGetValidListReqDto,
   SsgEventUpdateAmountReqDto,
 } from '../api/ssg.event.req.dto';
-import { SsgEventGetListResDto } from '../api/ssg.event.res.dto';
+import { SsgEventGetListResDto, SsgEventGetValidListResDto } from '../api/ssg.event.res.dto';
 import { SsgEventViewDto } from '../api/dto/ssg.event.view.dto';
 import { DateDateFormatStr, DateFormatStr } from '../../common/domain/date.format.str';
 import { format } from 'date-fns';
@@ -355,5 +356,130 @@ export class SsgEventService {
     ssgEvent.eventBalance = newBalance;
     await this.amountHistoryRepository.save(ssgEventAmountHistory);
     await this.ssgEventRepository.save(ssgEvent);
+  }
+
+  async getValidList(getQuery: SsgEventGetValidListReqDto): Promise<SsgEventGetValidListResDto> {
+    const { couponExpiration } = getQuery;
+    const now = new Date();
+
+    let queryBuilder = this.ssgEventRepository
+      .createQueryBuilder('ssg')
+      .where('ssg.startAt <= :now', { now })
+      .andWhere('ssg.endAt >= :now', { now })
+      .andWhere('ssg.eventBalance > 0')
+      .orderBy('ssg.order', 'ASC');
+
+    if (couponExpiration) {
+      queryBuilder = queryBuilder.andWhere('ssg.couponExpiration = :couponExpiration', { couponExpiration });
+    }
+
+    const eventList = await queryBuilder.getMany();
+
+    const resultList: SsgEventViewDto[] = eventList.map((event) => ({
+      id: event.id,
+      code: event.code,
+      no: event.no,
+      order: event.order,
+      name: event.name,
+      startAt: format(event.startAt, DateFormatStr),
+      endAt: format(event.endAt, DateFormatStr),
+      couponExpiration: event.couponExpiration,
+      eventPrice: event.eventPrice,
+      eventBalance: event.eventBalance,
+      deliveryWaitCount: 0,
+      deliveryWaitAmount: 0,
+      deliveryCompleteCount: 0,
+      deliveryCompleteAmount: 0,
+      createdAt: format(event.createdAt, DateFormatStr),
+    }));
+
+    return { list: resultList };
+  }
+
+  async selectEventForOrder(orderAmount: number, couponExpiration?: number): Promise<SsgEventEntity | null> {
+    const now = new Date();
+
+    let queryBuilder = this.ssgEventRepository
+      .createQueryBuilder('ssg')
+      .where('ssg.startAt <= :now', { now })
+      .andWhere('ssg.endAt >= :now', { now })
+      .andWhere('ssg.eventBalance >= :orderAmount', { orderAmount })
+      .orderBy('ssg.order', 'ASC');
+
+    if (couponExpiration) {
+      queryBuilder = queryBuilder.andWhere('ssg.couponExpiration = :couponExpiration', { couponExpiration });
+    }
+
+    const event = await queryBuilder.getOne();
+    return event;
+  }
+
+  async deductEventBalance(eventId: number, amount: number, orderId: number, isTemporary: boolean = true): Promise<void> {
+    const ssgEvent = await this.ssgEventRepository.findOne({
+      where: { id: eventId },
+    });
+
+    if (!ssgEvent) {
+      throw new BadRequestException('유효한 이벤트가 없습니다.');
+    }
+
+    if (ssgEvent.eventBalance < amount) {
+      throw new BadRequestException('이벤트 잔액이 부족합니다.');
+    }
+
+    const newBalance = ssgEvent.eventBalance - amount;
+
+    const ssgEventAmountHistory = this.amountHistoryRepository.create({
+      ssgEventId: ssgEvent.id,
+      amount: -amount,
+      balance: newBalance,
+      orderId,
+      isTemporary,
+    });
+
+    ssgEvent.eventBalance = newBalance;
+    await this.amountHistoryRepository.save(ssgEventAmountHistory);
+    await this.ssgEventRepository.save(ssgEvent);
+  }
+
+  async restoreEventBalance(orderId: number): Promise<void> {
+    const histories = await this.amountHistoryRepository.find({
+      where: { orderId },
+    });
+
+    for (const history of histories) {
+      if (!history.ssgEventId || !history.amount) {
+        continue;
+      }
+
+      const ssgEvent = await this.ssgEventRepository.findOne({
+        where: { id: history.ssgEventId },
+      });
+
+      if (!ssgEvent) {
+        continue;
+      }
+
+      const restoredBalance = ssgEvent.eventBalance - history.amount;
+
+      const restorationHistory = this.amountHistoryRepository.create({
+        ssgEventId: ssgEvent.id,
+        amount: -history.amount,
+        balance: restoredBalance,
+        orderId,
+        isTemporary: false,
+      });
+
+      ssgEvent.eventBalance = restoredBalance;
+      await this.amountHistoryRepository.save(restorationHistory);
+      await this.ssgEventRepository.save(ssgEvent);
+    }
+  }
+
+  async confirmEventBalance(orderId: number): Promise<void> {
+    await this.amountHistoryRepository.update(
+      { orderId, isTemporary: true },
+      { isTemporary: false }
+    );
   }
 }

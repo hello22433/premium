@@ -9,3 +9,11 @@ export class SsgEventGetListResDto extends GetListResDto {
   })
   list: SsgEventViewDto[];
 }
+
+export class SsgEventGetValidListResDto {
+  @ApiProperty({
+    type: [SsgEventViewDto],
+    description: '현재 유효한 신세계 행사 list',
+  })
+  list: SsgEventViewDto[];
+}

@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable, Logger, InternalServerErrorException } from '@nestjs/common';
 import { UserManagementService } from '../../user_management/application/user.management.service';
+import { SsgEventService } from '../../ssg_event/application/ssg.event.service';
 import {
   OrderCreateSettleReqDto,
   OrderCreateTempReqDto,
@@ -105,6 +106,7 @@ export class OrderService {
     private ssgEventAmountHistoryRepository: Repository<SsgEventAmountHistoryEntity>,
     private partnerCompanyExternService: PartnerCompanyExternService,
     private readonly userManagementService: UserManagementService,
+    private readonly ssgEventService: SsgEventService,
   ) {}
 
   async getList(user: ILoginUserInfo, getQuery: OrderGetListReqDto): Promise<OrderGetListResDto> {
@@ -1086,31 +1088,27 @@ export class OrderService {
       throw new BadRequestException('잔액이 부족하여 발송 요청할 수 없습니다.');
     }
 
-    // 신세계 상품 검증
+    // 신세계 상품 검증 및 이벤트 자동 선택
     if (order.type === IOrderType.SSG) {
       // 상품 가격으로 전체 가격 계산
       const totalPrice = order.orderProductMappings!.reduce((acc, cur) => acc + cur.product.price * cur.amount, 0);
       const couponExpiration = order.orderProductMappings[0].product.expireDay;
 
-      const now = new Date();
-      const ssgEventList = await this.ssgEventRepository.find({
-        where: {
-          startAt: LessThanOrEqual(now),
-          endAt: MoreThanOrEqual(now),
-          couponExpiration: couponExpiration,
-        },
-        order: { order: 'desc' },
-      });
+      // 이벤트 자동 선택 (주문 금액 전체를 커버 가능한 첫 번째 행사)
+      const selectedEvent = await this.ssgEventService.selectEventForOrder(totalPrice, couponExpiration);
 
-      if (ssgEventList.length === 0) {
-        throw new BadRequestException('행사가 존재하지 않습니다.');
+      if (!selectedEvent) {
+        throw new BadRequestException('사용 가능한 SSG 이벤트가 없습니다. (잔액 부족)');
       }
 
-      const ssgEventTotalPrice = ssgEventList.reduce((acc, cur) => acc + cur.eventPrice, 0);
+      // 선택된 이벤트 ID를 주문에 저장
+      order.ssgEventId = selectedEvent.id;
 
-      if (ssgEventTotalPrice < totalPrice) {
-        throw new BadRequestException('행사 잔액이 부족합니다.');
-      }
+      // 이벤트 잔액 가차감 (isTemporary = true)
+      await this.ssgEventService.deductEventBalance(selectedEvent.id, totalPrice, order.id, true);
+
+      // 사용자 잔액도 차감
+      await this.userManagementService.deductBalance(user.id, totalPrice);
     }
 
     for (const orderMapping of order.orderProductMappings!) {
@@ -1153,53 +1151,24 @@ export class OrderService {
     OrderValidation(order);
 
     let ssgEventIssue: SsgEventEntity | null = null;
-    // 신세계 상품 검증 및 차감
+    // 신세계 상품 검증 및 차감 확정
     if (order.type === IOrderType.SSG) {
-      // 상품 가격으로 전체 가격 계산
-      const totalPrice = order.sendAmount;
-      const couponExpiration = order.orderProductMappings![0].orderDeliveries[0].orderProductMapping.product.expireDay;
+      // 주문에 저장된 SSG 이벤트 ID 확인
+      if (!order.ssgEventId) {
+        throw new BadRequestException('SSG 이벤트가 선택되지 않았습니다.');
+      }
 
-      const now = new Date();
-      const ssgEventList = await this.ssgEventRepository.find({
-        where: {
-          startAt: LessThanOrEqual(now),
-          endAt: MoreThanOrEqual(now),
-          couponExpiration: couponExpiration,
-        },
-        order: { order: 'desc' },
+      // 선택된 이벤트 조회
+      ssgEventIssue = await this.ssgEventRepository.findOne({
+        where: { id: order.ssgEventId },
       });
 
-      if (ssgEventList.length === 0) {
-        throw new BadRequestException('행사가 존재하지 않습니다.');
+      if (!ssgEventIssue) {
+        throw new BadRequestException('선택된 SSG 이벤트를 찾을 수 없습니다.');
       }
 
-      const ssgEventTotalPrice = ssgEventList.reduce((acc, cur) => acc + cur.eventPrice, 0);
-
-      if (ssgEventTotalPrice < totalPrice) {
-        throw new BadRequestException('행사 잔액이 부족합니다.');
-      }
-
-      const ssgEventAmountHistoryList: SsgEventAmountHistoryEntity[] = [];
-
-      for (const ssgEvent of ssgEventList) {
-        ssgEventIssue = ssgEvent;
-        const totalBalance = ssgEvent.eventBalance - totalPrice;
-
-        ssgEvent.eventBalance = totalBalance > 0 ? totalBalance : 0;
-        const ssgEventAmountEntity = new SsgEventAmountHistoryEntity();
-        ssgEventAmountEntity.ssgEventId = ssgEvent.id;
-        ssgEventAmountEntity.amount = -totalPrice;
-        ssgEventAmountEntity.balance = totalBalance;
-        ssgEventAmountEntity.orderId = order.id;
-
-        ssgEventAmountHistoryList.push(ssgEventAmountEntity);
-        if (totalBalance !== 0) {
-          break;
-        }
-      }
-
-      await this.ssgEventRepository.save(ssgEventList);
-      await this.ssgEventAmountHistoryRepository.save(ssgEventAmountHistoryList);
+      // 가차감을 확정으로 변경 (isTemporary: true -> false)
+      await this.ssgEventService.confirmEventBalance(order.id);
     }
 
     let message = 'success';
@@ -1371,6 +1340,15 @@ export class OrderService {
     }
 
     const orderProductMappingIdList = order.orderProductMappings!.map((orderProductMapping) => orderProductMapping.id);
+
+    // SSG 주문인 경우 이벤트 잔액 복구
+    if (order.type === IOrderType.SSG) {
+      await this.ssgEventService.restoreEventBalance(order.id);
+
+      // 사용자 잔액도 복원
+      const totalPrice = order.orderProductMappings!.reduce((acc, cur) => acc + cur.product.price * cur.amount, 0);
+      await this.userManagementService.addBalance(user.id, totalPrice);
+    }
 
     order.status = IOrderStatus.DELIVERY_CANCEL;
     await this.orderRepository.save(order);

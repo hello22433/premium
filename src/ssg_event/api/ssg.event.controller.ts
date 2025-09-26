@@ -2,11 +2,12 @@ import { ApiBadRequestResponse, ApiBearerAuth, ApiOkResponse, ApiOperation, ApiT
 import { Body, Controller, Get, Logger, Post, Put, Query, Res, UseGuards } from '@nestjs/common';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
 import { SsgEventService } from '../application/ssg.event.service';
-import { SsgEventGetListResDto } from './ssg.event.res.dto';
+import { SsgEventGetListResDto, SsgEventGetValidListResDto } from './ssg.event.res.dto';
 import {
   SsgEventCreateReqDto,
   SsgEventExcelDownloadReqDto,
   SsgEventGetListReqDto,
+  SsgEventGetValidListReqDto,
   SsgEventUpdateAmountReqDto,
 } from './ssg.event.req.dto';
 import * as fs from 'fs';
@@ -33,6 +34,20 @@ export class SsgEventController {
   @Get('/ssg-event/list')
   getList(@Query() getQuery: SsgEventGetListReqDto) {
     return this.ssgEventService.getList(getQuery);
+  }
+
+  @ApiOperation({
+    summary: '현재 유효한 신세계 행사 리스트 조회 API',
+    description: '현재 날짜 기준으로 행사 기간이 유효하고 잔액이 있는 행사 리스트를 조회합니다.',
+  })
+  @ApiOkResponse({
+    type: SsgEventGetValidListResDto,
+    description: '성공적으로 조회한 경우',
+  })
+  // =====================================
+  @Get('/ssg-event/valid-list')
+  getValidList(@Query() getQuery: SsgEventGetValidListReqDto) {
+    return this.ssgEventService.getValidList(getQuery);
   }
 
   @ApiOperation({

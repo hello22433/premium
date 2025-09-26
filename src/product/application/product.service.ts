@@ -41,6 +41,7 @@ import { IProductType } from '../interface/product.type';
 import { IUserAuthority } from '../../user/interface/user.authority';
 import { UserSyncProductEventEntity } from '../../entity/user.sync.product.event.entity';
 import { ProductLikeEntity } from '../../entity/product.like.entity';
+import { SsgEventEntity } from '../../entity/ssg.event.entity';
 import { validate } from 'class-validator';
 import { IProductSettleMethod } from '../interface/product.settle.method';
 import { IProductUseStatus } from '../interface/product.status';
@@ -60,6 +61,8 @@ export class ProductService {
     private userSyncProductEventRepository: Repository<UserSyncProductEventEntity>,
     @InjectRepository(ProductLikeEntity)
     private productLikeRepository: Repository<ProductLikeEntity>,
+    @InjectRepository(SsgEventEntity)
+    private ssgEventRepository: Repository<SsgEventEntity>,
   ) {}
 
   async getTotalList(user: ILoginUserInfo, getQuery: ProductGetTotalListReqQueryDto): Promise<ProductGetListResDto> {
@@ -382,7 +385,9 @@ export class ProductService {
 
   async getSsg(getQuery: ProductSsgReqQueryDto): Promise<ProductGetSsgResDto> {
     const { price } = getQuery;
-    const product = await this.productRepository
+
+    // 먼저 해당 가격의 기존 SSG 상품을 찾아봄
+    let product = await this.productRepository
       .createQueryBuilder('product')
       .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .innerJoinAndSelect('product.brand', 'brand')
@@ -391,21 +396,101 @@ export class ProductService {
       .andWhere('partnerCompany.type = :type', { type: IPartnerCompanyType.SSG })
       .getOne();
 
-    if (!product) {
-      throw new BadRequestException('존재하지 않는 상품입니다.');
+    // 기존 상품이 있으면 바로 반환
+    if (product) {
+      return {
+        id: product.id,
+        partnerCompanyId: product.partnerCompanyId,
+        partnerCompanyName: product.partnerCompany!.businessName,
+        classification: product.classification,
+        brandId: product.brandId,
+        brandName: product.brand!.nameKorean,
+        name: product.name,
+        price: product.price,
+        expireDay: product.expireDay,
+        imagePath: product.imagePath,
+      };
     }
 
+    // 기존 상품이 없으면 템플릿으로 사용할 기존 SSG 상품을 찾음
+    const templateProduct = await this.productRepository
+      .createQueryBuilder('product')
+      .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .innerJoinAndSelect('product.brand', 'brand')
+      .where('product.type = :type', { type: IProductType.SSG })
+      .andWhere('partnerCompany.type = :type', { type: IPartnerCompanyType.SSG })
+      .orderBy('product.id', 'ASC') // 가장 오래된 SSG 상품을 템플릿으로 사용
+      .getOne();
+
+    if (!templateProduct) {
+      throw new BadRequestException('SSG 상품 템플릿을 찾을 수 없습니다.');
+    }
+
+    // 새로운 상품 코드 생성 (기존 패턴 따라 생성)
+    const latestProduct = await this.productRepository
+      .createQueryBuilder('product')
+      .where('product.code LIKE :codePattern', { codePattern: 'EP%' })
+      .orderBy('product.id', 'DESC')
+      .getOne();
+
+    let nextCodeNumber = 1;
+    if (latestProduct && latestProduct.code.match(/EP(\d+)/)) {
+      const currentNumber = parseInt(latestProduct.code.match(/EP(\d+)/)![1]);
+      nextCodeNumber = currentNumber + 1;
+    }
+    const newCode = `EP${nextCodeNumber.toString().padStart(11, '0')}`;
+
+    // 새로운 SSG 상품 생성
+    const newProduct = new ProductEntity();
+    newProduct.code = newCode;
+    newProduct.partnerCompanyId = templateProduct.partnerCompanyId;
+    newProduct.partnerCompanyCode = templateProduct.partnerCompanyCode;
+    newProduct.brandId = templateProduct.brandId;
+    newProduct.name = `신세계 상품권 ${price.toLocaleString()}원`;
+    newProduct.price = price;
+    // SSG 이벤트의 쿠폰 유효기간을 조회하여 사용
+    const currentSsgEvent = await this.ssgEventRepository
+      .createQueryBuilder('ssgEvent')
+      .where('ssgEvent.startAt <= :now', { now: new Date() })
+      .andWhere('ssgEvent.endAt >= :now', { now: new Date() })
+      .orderBy('ssgEvent.id', 'DESC')
+      .getOne();
+
+    newProduct.expireDay = currentSsgEvent?.couponExpiration || 60; // SSG 이벤트의 쿠폰 유효기간 또는 기본값 60일
+    newProduct.category = templateProduct.category;
+    newProduct.classification = templateProduct.classification;
+    newProduct.settleMethod = templateProduct.settleMethod;
+    newProduct.settlePercent = templateProduct.settlePercent;
+    newProduct.imagePath = templateProduct.imagePath;
+    newProduct.type = IProductType.SSG;
+    newProduct.couponMethod = templateProduct.couponMethod;
+    newProduct.memo = templateProduct.memo;
+    newProduct.useStatus = templateProduct.useStatus;
+    newProduct.color = templateProduct.color;
+    newProduct.status = templateProduct.status;
+
+    // 데이터베이스에 새 상품 저장
+    const savedProduct = await this.productRepository.save(newProduct);
+
+    // 저장된 상품을 다시 조회하여 관계 데이터와 함께 반환
+    const newProductWithRelations = await this.productRepository
+      .createQueryBuilder('product')
+      .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .innerJoinAndSelect('product.brand', 'brand')
+      .where('product.id = :id', { id: savedProduct.id })
+      .getOne();
+
     return {
-      id: product.id,
-      partnerCompanyId: product.partnerCompanyId,
-      partnerCompanyName: product.partnerCompany!.businessName,
-      classification: product.classification,
-      brandId: product.brandId,
-      brandName: product.brand!.nameKorean,
-      name: product.name,
-      price: product.price,
-      expireDay: product.expireDay,
-      imagePath: product.imagePath,
+      id: newProductWithRelations!.id,
+      partnerCompanyId: newProductWithRelations!.partnerCompanyId,
+      partnerCompanyName: newProductWithRelations!.partnerCompany!.businessName,
+      classification: newProductWithRelations!.classification,
+      brandId: newProductWithRelations!.brandId,
+      brandName: newProductWithRelations!.brand!.nameKorean,
+      name: newProductWithRelations!.name,
+      price: newProductWithRelations!.price,
+      expireDay: newProductWithRelations!.expireDay,
+      imagePath: newProductWithRelations!.imagePath,
     };
   }
 

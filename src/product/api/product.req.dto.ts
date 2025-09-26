@@ -180,7 +180,7 @@ export class ProductSsgReqQueryDto {
   @IsInt()
   @Type(() => Number)
   @Min(5000, { message: '금액은 최소 5,000원 이상이어야 합니다.' })
-  @Max(200000, { message: '금액은 최대 200,000원 이하여야 합니다.' })
+  @Max(2000000, { message: '금액은 최대 2,000,000원 이하여야 합니다.' })
   @IsDivisibleBy5000({ message: '금액은 5,000원 단위로 입력해야 합니다.' })
   price: number;
 }

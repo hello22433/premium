@@ -17,4 +17,7 @@ export class SsgEventAmountHistoryEntity extends BaseEntity {
 
   @Column({ type: 'int', nullable: true, comment: 'FK) order id' })
   orderId: number | null;
+
+  @Column({ type: 'boolean', default: true, comment: '임시 차감 여부 (true: 가차감, false: 확정)' })
+  isTemporary: boolean;
 }

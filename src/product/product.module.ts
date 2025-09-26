@@ -9,6 +9,7 @@ import { BrandEntity } from '../entity/brand.entity';
 import { ProductUpdateHistoryEntity } from '../entity/product.update.history.entity';
 import { UserSyncProductEventEntity } from '../entity/user.sync.product.event.entity';
 import { ProductLikeEntity } from '../entity/product.like.entity';
+import { SsgEventEntity } from '../entity/ssg.event.entity';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { ProductLikeEntity } from '../entity/product.like.entity';
       ProductLikeEntity,
       ProductUpdateHistoryEntity,
       UserSyncProductEventEntity,
+      SsgEventEntity,
     ]),
   ],
   controllers: [ProductController],

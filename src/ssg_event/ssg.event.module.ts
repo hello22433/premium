@@ -20,5 +20,6 @@ import { OrderProductMappingEntity } from '../entity/order.product.mapping.entit
   ],
   controllers: [SsgEventController],
   providers: [SsgEventService],
+  exports: [SsgEventService],
 })
 export class SsgEventModule {}

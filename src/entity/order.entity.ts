@@ -87,6 +87,9 @@ export class OrderEntity extends BaseEntity {
   @Column({ name: 'send_type', type: 'varchar', length: 50, nullable: true })
   sendType: string | null;
 
+  @Column({ type: 'int', nullable: true, comment: 'FK) ssg_event.id for SSG orders' })
+  ssgEventId: number | null;
+
   @ManyToOne(() => UserEntity, { createForeignKeyConstraints: false })
   @JoinColumn({ name: 'user_id' })
   user?: UserEntity;

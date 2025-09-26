@@ -216,6 +216,27 @@ export class UserManagementService {
     return user.balance;
   }
 
+  async deductBalance(id: number, amount: number): Promise<void> {
+    const user = await this.userRepository.findOne({ where: { id } });
+    if (!user) {
+      throw new BadRequestException('존재하지 않는 계정입니다.');
+    }
+    if (user.balance < amount) {
+      throw new BadRequestException('잔액이 부족합니다.');
+    }
+    user.balance -= amount;
+    await this.userRepository.save(user);
+  }
+
+  async addBalance(id: number, amount: number): Promise<void> {
+    const user = await this.userRepository.findOne({ where: { id } });
+    if (!user) {
+      throw new BadRequestException('존재하지 않는 계정입니다.');
+    }
+    user.balance += amount;
+    await this.userRepository.save(user);
+  }
+
   async create(getBody: UserManagementCreateReqDto) {
     const isExistEmail = await this.userRepository.count({
       where: {
