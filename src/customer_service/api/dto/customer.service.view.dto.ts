@@ -55,4 +55,14 @@ export class CustomerServiceViewDto {
     enum: OrderDeliveryCouponStatus,
   })
   couponStatus: OrderDeliveryCouponStatus;
+
+  @ApiProperty({
+    description: '수신 정보 (전화번호 또는 이메일)',
+  })
+  deliveryTarget: string | null;
+
+  @ApiProperty({
+    description: '거래 ID',
+  })
+  transactionId: string | null;
 }

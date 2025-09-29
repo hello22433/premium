@@ -68,7 +68,8 @@ export class CustomerServiceService {
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
-      .innerJoinAndSelect('orderProductMappings.product', 'product');
+      .innerJoinAndSelect('orderProductMappings.product', 'product')
+      .andWhere('orderDeliveries.status = :deliveryStatus', { deliveryStatus: 'COMPLETE' });
 
     if (orderType === 'GENERAL') {
       queryBuilder.andWhere('product.type = :type', { type: 'GENERAL' });
@@ -113,6 +114,7 @@ export class CustomerServiceService {
 
     const result: CustomerServiceViewDto[] = [];
     for (const order of orderList) {
+      const firstDelivery = order.orderProductMappings![0].orderDeliveries?.[0];
       result.push({
         sendRequestAt: format(order.sendRequestAt, DateFormatStr),
         id: order.id,
@@ -123,6 +125,8 @@ export class CustomerServiceService {
         status: order.status,
         fromPhoneNumber: order.fromPhoneNumber,
         fromEmail: order.fromEmail,
+        deliveryTarget: firstDelivery?.deliveryTarget || null,
+        transactionId: firstDelivery?.transactionId || null,
         couponStatus: order.orderProductMappings?.[0]?.orderDeliveries?.[0]?.couponStatus ?? OrderDeliveryCouponStatus.NOT_USED,
 
       });
