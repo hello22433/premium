@@ -14,6 +14,11 @@ export class CustomerServiceViewDto {
   id: number;
 
   @ApiProperty({
+    description: 'order delivery Id (발송 데이터 ID)',
+  })
+  orderDeliveryId: number | null;
+
+  @ApiProperty({
     description: 'order Product id Id',
   })
   orderProductMappingId: number;

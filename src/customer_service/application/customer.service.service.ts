@@ -120,6 +120,7 @@ export class CustomerServiceService {
       result.push({
         sendRequestAt: format(order.sendRequestAt, DateFormatStr),
         id: order.id,
+        orderDeliveryId: firstDelivery?.id || null,
         orderProductMappingId: order.orderProductMappings![0].id,
         eventName: order.eventName,
         productName: order.orderProductMappings![0].product.name,
