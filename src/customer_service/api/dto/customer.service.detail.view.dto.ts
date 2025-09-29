@@ -82,12 +82,12 @@ export class CustomerServiceDetailViewDto {
   barCode: string | null;
 
   @ApiProperty({
-    description: '교환처'
+    description: '교환처',
   })
   brandName: string;
 
   @ApiProperty({
-      description: '협력사'
+    description: '협력사',
   })
   partnerCompanyName: string;
 

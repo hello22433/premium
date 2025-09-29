@@ -1,7 +1,7 @@
-import { BaseEntity } from "src/common/entity/base.entity";
-import { Column, Entity, JoinColumn, ManyToOne, OneToMany, PrimaryGeneratedColumn } from "typeorm";
-import { OrderDeliveryEntity } from "./order.delivery.entity";
-import { UserEntity } from "./user.entity";
+import { BaseEntity } from 'src/common/entity/base.entity';
+import { Column, Entity, JoinColumn, ManyToOne, OneToMany, PrimaryGeneratedColumn } from 'typeorm';
+import { OrderDeliveryEntity } from './order.delivery.entity';
+import { UserEntity } from './user.entity';
 
 @Entity('order_history')
 export class OrderHistoryEntity extends BaseEntity {

@@ -414,7 +414,12 @@ export class SsgEventService {
     return event;
   }
 
-  async deductEventBalance(eventId: number, amount: number, orderId: number, isTemporary: boolean = true): Promise<void> {
+  async deductEventBalance(
+    eventId: number,
+    amount: number,
+    orderId: number,
+    isTemporary: boolean = true,
+  ): Promise<void> {
     const ssgEvent = await this.ssgEventRepository.findOne({
       where: { id: eventId },
     });
@@ -477,9 +482,6 @@ export class SsgEventService {
   }
 
   async confirmEventBalance(orderId: number): Promise<void> {
-    await this.amountHistoryRepository.update(
-      { orderId, isTemporary: true },
-      { isTemporary: false }
-    );
+    await this.amountHistoryRepository.update({ orderId, isTemporary: true }, { isTemporary: false });
   }
 }

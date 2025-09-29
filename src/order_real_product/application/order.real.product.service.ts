@@ -107,7 +107,9 @@ export class OrderRealProductService {
     if (searchKeyword && searchKeyword.length >= 1) {
       switch (searchType) {
         case 'CUSTOMER':
-          queryBuilder = queryBuilder.andWhere('businessUser.businessName LIKE :keyword', { keyword: `%${searchKeyword}%` });
+          queryBuilder = queryBuilder.andWhere('businessUser.businessName LIKE :keyword', {
+            keyword: `%${searchKeyword}%`,
+          });
           break;
         case 'MANAGER':
           queryBuilder = queryBuilder.andWhere('user.personName LIKE :keyword', { keyword: `%${searchKeyword}%` });
@@ -122,7 +124,7 @@ export class OrderRealProductService {
         default:
           queryBuilder = queryBuilder.andWhere(
             '(businessUser.businessName LIKE :keyword OR user.personName LIKE :keyword OR order.eventName LIKE :keyword OR product.name LIKE :keyword)',
-            { keyword: `%${searchKeyword}%` }
+            { keyword: `%${searchKeyword}%` },
           );
           break;
       }
@@ -973,7 +975,9 @@ export class OrderRealProductService {
     if (searchKeyword && searchKeyword.length >= 1) {
       switch (searchType) {
         case 'CUSTOMER':
-          queryBuilder = queryBuilder.andWhere('businessUser.businessName LIKE :keyword', { keyword: `%${searchKeyword}%` });
+          queryBuilder = queryBuilder.andWhere('businessUser.businessName LIKE :keyword', {
+            keyword: `%${searchKeyword}%`,
+          });
           break;
         case 'MANAGER':
           queryBuilder = queryBuilder.andWhere('user.personName LIKE :keyword', { keyword: `%${searchKeyword}%` });
@@ -988,7 +992,7 @@ export class OrderRealProductService {
         default:
           queryBuilder = queryBuilder.andWhere(
             '(businessUser.businessName LIKE :keyword OR user.personName LIKE :keyword OR order.eventName LIKE :keyword OR product.name LIKE :keyword)',
-            { keyword: `%${searchKeyword}%` }
+            { keyword: `%${searchKeyword}%` },
           );
           break;
       }

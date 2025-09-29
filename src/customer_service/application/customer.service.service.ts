@@ -127,10 +127,12 @@ export class CustomerServiceService {
         status: order.status,
         fromPhoneNumber: order.fromPhoneNumber,
         fromEmail: order.fromEmail,
-        deliveryTarget: firstDelivery?.deliveryTarget ? MaskingUtil.maskDeliveryTarget(firstDelivery.deliveryTarget) : null,
+        deliveryTarget: firstDelivery?.deliveryTarget
+          ? MaskingUtil.maskDeliveryTarget(firstDelivery.deliveryTarget)
+          : null,
         transactionId: firstDelivery?.transactionId || null,
-        couponStatus: order.orderProductMappings?.[0]?.orderDeliveries?.[0]?.couponStatus ?? OrderDeliveryCouponStatus.NOT_USED,
-
+        couponStatus:
+          order.orderProductMappings?.[0]?.orderDeliveries?.[0]?.couponStatus ?? OrderDeliveryCouponStatus.NOT_USED,
       });
     }
 
@@ -155,14 +157,14 @@ export class CustomerServiceService {
         'product.partnerCompany',
         'partner_company',
         'partnerCompany',
-        'partnerCompany.id = product.partner_company_id'
+        'partnerCompany.id = product.partner_company_id',
       )
       .where('order.id = :orderId', {
         orderId: orderId,
       });
     const skip = (page - 1) * take;
     queryBuilder.take(take).skip(skip);
-    
+
     const [orderDeliveryList, totalCount] = await queryBuilder.getManyAndCount();
 
     const totalPage = Math.ceil(totalCount / take);
@@ -207,14 +209,9 @@ export class CustomerServiceService {
         'product.partnerCompany',
         'partner_company',
         'partnerCompany',
-        'partnerCompany.id = product.partner_company_id AND partnerCompany.deleted_at IS NULL'
+        'partnerCompany.id = product.partner_company_id AND partnerCompany.deleted_at IS NULL',
       )
-      .leftJoinAndMapOne(
-        'order.user',
-        'user',
-        'user',
-        'user.id = order.user_id AND user.deleted_at IS NULL'
-      )
+      .leftJoinAndMapOne('order.user', 'user', 'user', 'user.id = order.user_id AND user.deleted_at IS NULL')
       .where('orderDelivery.id = :id', { id: orderDeliveryId })
       .andWhere('orderDelivery.deletedAt IS NULL')
       .getOne();
@@ -301,38 +298,38 @@ export class CustomerServiceService {
     const type = orderDelivery.orderProductMapping!.product.partnerCompany!.type;
 
     switch (type) {
-      case "SSG": {
-          switch (couponStatus) {
-            case OrderDeliveryCouponStatus.USED:
-            case OrderDeliveryCouponStatus.EXPIRED: {
-              throw new BadRequestException('변경할 수 없는 핀 상태입니다.');
-            }
-            case OrderDeliveryCouponStatus.NOT_USED: {
-              orderDelivery.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
-              await this.orderDeliveryRepository.save(orderDelivery);
-              break;
-            }
-            case OrderDeliveryCouponStatus.REFUND_CANCEL: {
-              orderDelivery.couponStatus = OrderDeliveryCouponStatus.REFUND_CANCEL;
-              await this.orderDeliveryRepository.save(orderDelivery);
-              break;
-            }
-            case OrderDeliveryCouponStatus.CANCEL: {
-              orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
-              await this.orderDeliveryRepository.save(orderDelivery);
-              break;
-            }
-            default: {
-              throw new BadRequestException('지원하지 않는 핀 상태입니다.');
-            }
+      case 'SSG': {
+        switch (couponStatus) {
+          case OrderDeliveryCouponStatus.USED:
+          case OrderDeliveryCouponStatus.EXPIRED: {
+            throw new BadRequestException('변경할 수 없는 핀 상태입니다.');
           }
+          case OrderDeliveryCouponStatus.NOT_USED: {
+            orderDelivery.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
+            await this.orderDeliveryRepository.save(orderDelivery);
+            break;
+          }
+          case OrderDeliveryCouponStatus.REFUND_CANCEL: {
+            orderDelivery.couponStatus = OrderDeliveryCouponStatus.REFUND_CANCEL;
+            await this.orderDeliveryRepository.save(orderDelivery);
+            break;
+          }
+          case OrderDeliveryCouponStatus.CANCEL: {
+            orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
+            await this.orderDeliveryRepository.save(orderDelivery);
+            break;
+          }
+          default: {
+            throw new BadRequestException('지원하지 않는 핀 상태입니다.');
+          }
+        }
         break;
       }
-      case "GIFT_SHOW":
-      case "GS_M_BIZ":
-      case "GIFTIEL":
-      case "CULTURELAND":
-      case "GALAXIA": {
+      case 'GIFT_SHOW':
+      case 'GS_M_BIZ':
+      case 'GIFTIEL':
+      case 'CULTURELAND':
+      case 'GALAXIA': {
         switch (couponStatus) {
           case OrderDeliveryCouponStatus.NOT_USED:
           case OrderDeliveryCouponStatus.USED:
@@ -385,16 +382,16 @@ export class CustomerServiceService {
 
   /**
    * order_history 등록
-   * @param user 
-   * @param getBody 
+   * @param user
+   * @param getBody
    */
   async execCreateHistory(map: Partial<OrderHistoryEntity>) {
     return await this.orderHistoryRepository.save(map);
   }
-  
+
   /**
    * 핀상태변경 API 유효성검사
-   * @param getBody 
+   * @param getBody
    */
   async validPinStatusModify(getBody: CustomerServicePinStatusModifyReqDto) {
     if (!getBody.orderDeliveryId) throw new NotFoundException('데이터 정보가 없습니다.');
@@ -403,8 +400,8 @@ export class CustomerServiceService {
 
   /**
    * 핀상태변경 API 데이터매핑
-   * @param getBody 
-   * @returns 
+   * @param getBody
+   * @returns
    */
   async mapPinStatusModify(@User() user: ILoginUserInfo, getBody: CustomerServicePinStatusModifyReqDto) {
     const orderDelivery = await this.orderDeliveryRepository.findOne({
@@ -440,7 +437,7 @@ export class CustomerServiceService {
 
   /**
    * 핀상태변경 API 서비스실행
-   * @param map 
+   * @param map
    */
   async execPinStatusModify(map: any) {
     const { businessName, beforeChange, afterChange, type, content, orderDelivery } = map;
@@ -454,7 +451,7 @@ export class CustomerServiceService {
         if (beforeChange === 'USED' || beforeChange === 'CANCEL' || beforeChange === 'EXPIRED') {
           throw new BadRequestException('현재 변경을 할 수 없는 핀상태입니다.');
         }
-        
+
         if (afterChange === 'CANCEL' || afterChange === 'REFUND_CANCEL') {
           const result = this.partnerCompanyExternService.cancel(orderDelivery);
 
@@ -479,7 +476,7 @@ export class CustomerServiceService {
         } else {
           throw new BadRequestException('변경을 할 수 없는 핀상태입니다.');
         }
-        
+
         break;
       case 'SSG':
         if (beforeChange === 'USED' || beforeChange === 'EXPIRED') {
@@ -492,28 +489,28 @@ export class CustomerServiceService {
           await this.orderDeliveryRepository.save(orderDelivery);
 
           const history = this.orderHistoryRepository.create({
-              orderDeliveryId: orderDelivery.id,
-              userId: orderDelivery.userId,
-              type: type,
-              content: content,
-              beforeChange: beforeChange,
-              afterChange: afterChange,
-            });
+            orderDeliveryId: orderDelivery.id,
+            userId: orderDelivery.userId,
+            type: type,
+            content: content,
+            beforeChange: beforeChange,
+            afterChange: afterChange,
+          });
 
           await this.orderHistoryRepository.save(history);
         } else {
           throw new BadRequestException('변경을 할 수 없는 핀상태입니다.');
         }
-        
+
         break;
-      default :
+      default:
         throw new BadRequestException('처리할 수 없는 협력사 입니다.');
     }
   }
 
   /**
    * 핀상태갱신 API 유효성검사
-   * @param getBody 
+   * @param getBody
    */
   async validPinStatusRefresh(getBody: CustomerServicePinStatusRefreshReqDto) {
     if (!getBody.orderDeliveryId) throw new NotFoundException('데이터 정보가 없습니다.');
@@ -521,8 +518,8 @@ export class CustomerServiceService {
 
   /**
    * 핀상태갱신 API 데이터매핑
-   * @param getBody 
-   * @returns 
+   * @param getBody
+   * @returns
    */
   async mapPinStatusRefresh(@User() user: ILoginUserInfo, getBody: CustomerServicePinStatusRefreshReqDto) {
     const orderDelivery = await this.orderDeliveryRepository.findOne({
@@ -556,7 +553,7 @@ export class CustomerServiceService {
 
   /**
    * 핀상태갱신 API 서비스실행
-   * @param map 
+   * @param map
    */
   async execPinStatusRefresh(map: any) {
     await this.partnerCompanyExternService.refreshCouponStatus(map.orderDelivery);
@@ -566,31 +563,26 @@ export class CustomerServiceService {
         id: map.orderDelivery.orderDeliveryId,
         deletedAt: IsNull(),
       },
-      relations: [
-        'orderProductMapping',
-        'orderProductMapping.product',
-        'orderProductMapping.order',
-        'orderHistory',
-      ],
+      relations: ['orderProductMapping', 'orderProductMapping.product', 'orderProductMapping.order', 'orderHistory'],
     });
 
     let resCouponStatus = orderDelivery?.couponStatus;
 
     const history = this.orderHistoryRepository.create({
-        orderDeliveryId: map.orderDelivery.id,
-        userId: map.userId,
-        type: map.type,
-        content: map.content,
-        beforeChange: map.beforeChange,
-        afterChange: resCouponStatus,
-      });
+      orderDeliveryId: map.orderDelivery.id,
+      userId: map.userId,
+      type: map.type,
+      content: map.content,
+      beforeChange: map.beforeChange,
+      afterChange: resCouponStatus,
+    });
 
     await this.orderHistoryRepository.save(history);
   }
 
   /**
    * CS 등록 API 유효성검사
-   * @param getBody 
+   * @param getBody
    */
   async validHistory(getBody: CustomerServiceHistoryReqDto) {
     if (!getBody.orderDeliveryId) throw new NotFoundException('데이터 정보가 없습니다.');
@@ -603,8 +595,8 @@ export class CustomerServiceService {
 
   /**
    * CS 등록 API 데이터매핑
-   * @param getBody 
-   * @returns 
+   * @param getBody
+   * @returns
    */
   async mapHistory(@User() user: ILoginUserInfo, getBody: CustomerServiceHistoryReqDto) {
     const orderDelivery = await this.orderDeliveryRepository.findOne({
@@ -626,7 +618,7 @@ export class CustomerServiceService {
     }
 
     let beforeChange = '';
-    let smsEntity
+    let smsEntity;
     switch (getBody.type) {
       case '재전송': {
         switch (getBody.extraType) {
@@ -636,15 +628,16 @@ export class CustomerServiceService {
               .add(orderDelivery.orderProductMapping.product.expireDay, 'day')
               .format('YYYY-MM-DD');
 
-            let text = `[모바일상품권]` 
-                + orderDelivery.orderProductMapping.product.name
-                + `/교환처:`
-                + orderDelivery.orderProductMapping.product.brand?.nameKorean
-                + `/쿠폰번호:`
-                + orderDelivery.barCode
-                + `/`
-                + expireDate;
-  
+            let text =
+              `[모바일상품권]` +
+              orderDelivery.orderProductMapping.product.name +
+              `/교환처:` +
+              orderDelivery.orderProductMapping.product.brand?.nameKorean +
+              `/쿠폰번호:` +
+              orderDelivery.barCode +
+              `/` +
+              expireDate;
+
             smsEntity = this.gemteckMsgQueueRepository.create({
               msgType: 'S',
               dstAddr: orderDelivery.deliveryTarget ?? '',
@@ -665,7 +658,7 @@ export class CustomerServiceService {
         beforeChange = orderDelivery.couponStatus;
         break;
       }
-      default : {
+      default: {
         beforeChange = '';
       }
     }
@@ -691,7 +684,7 @@ export class CustomerServiceService {
 
   /**
    * CS 등록 API 서비스실행
-   * @param map 
+   * @param map
    */
   async execHistory(map: any) {
     let afterChange = '';
@@ -713,7 +706,7 @@ export class CustomerServiceService {
             await this.reSend(resendDto);
             break;
           }
-          default : {
+          default: {
             throw new BadRequestException('지원하지 않는 재전송 유형입니다.');
           }
         }
@@ -754,26 +747,26 @@ export class CustomerServiceService {
         afterChange = OrderDeliveryCouponStatus.REFUND_CANCEL;
         break;
       }
-      default : {
+      default: {
         throw new BadRequestException('지원하지 않는 유형입니다.');
       }
     }
-    
+
     const history = this.orderHistoryRepository.create({
-        orderDeliveryId: map.orderDelivery.id,
-        userId: map.userId,
-        type: map.type,
-        content: map.content,
-        beforeChange: map.beforeChange,
-        afterChange: afterChange,
-      });
+      orderDeliveryId: map.orderDelivery.id,
+      userId: map.userId,
+      type: map.type,
+      content: map.content,
+      beforeChange: map.beforeChange,
+      afterChange: afterChange,
+    });
 
     await this.orderHistoryRepository.save(history);
   }
 
   /**
    * 변경내역 상세 list 조회 API 유효성검사
-   * @param getQuery 
+   * @param getQuery
    */
   async validStatusList(getQuery: CustomerServiceStatusListReqDto) {
     if (!getQuery.orderDeliveryId) throw new NotFoundException('발송 상세 데이터 정보가 없습니다.');
@@ -781,22 +774,22 @@ export class CustomerServiceService {
 
   /**
    * 변경내역 상세 list 조회 API 데이터매핑
-   * @param getQuery 
-   * @returns 
+   * @param getQuery
+   * @returns
    */
   async mapStatusList(getQuery: CustomerServiceStatusListReqDto) {
     const result = {
       orderDeliveryId: getQuery.orderDeliveryId,
       page: getQuery.page,
       take: getQuery.take,
-    }
+    };
 
     return result;
   }
 
   /**
    * 변경내역 상세 list 조회 API 서비스실행
-   * @param map 
+   * @param map
    */
   async execStatusList(map: any) {
     const { orderDeliveryId, page, take } = map;
@@ -852,4 +845,3 @@ export class CustomerServiceService {
     };
   }
 }
-

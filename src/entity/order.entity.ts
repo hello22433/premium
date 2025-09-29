@@ -107,6 +107,4 @@ export class OrderEntity extends BaseEntity {
     createForeignKeyConstraints: false,
   })
   orderLikes?: OrderLikeEntity[];
-
-
 }

@@ -161,7 +161,7 @@ export class OrderService {
         default:
           queryBuilder = queryBuilder.andWhere(
             '(user.businessName LIKE :keyword OR operationUser.personName LIKE :keyword OR order.eventName LIKE :keyword OR product.name LIKE :keyword)',
-            { keyword: `%${searchKeyword}%` }
+            { keyword: `%${searchKeyword}%` },
           );
           break;
       }
@@ -1448,7 +1448,7 @@ export class OrderService {
         default:
           queryBuilder = queryBuilder.andWhere(
             '(user.businessName LIKE :keyword OR operationUser.personName LIKE :keyword OR order.eventName LIKE :keyword OR product.name LIKE :keyword)',
-            { keyword: `%${searchKeyword}%` }
+            { keyword: `%${searchKeyword}%` },
           );
           break;
       }

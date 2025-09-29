@@ -19,7 +19,7 @@ import {
   CustomerServiceGetDetailListResDto,
   CustomerServiceGetListResDto,
   CustomerServiceGetDetailResDto,
-  CustomerServiceUnmaskedDeliveryTargetResDto
+  CustomerServiceUnmaskedDeliveryTargetResDto,
 } from './customer.service.res.dto';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { User } from '../../auth/api/user.decorator';
@@ -83,7 +83,7 @@ export class CustomerServiceController {
 
     // 2. 데이터매핑
     const map = await this.customerServiceService.mapPinStatusModify(user, getBody);
-    
+
     // 3. 서비스실행
     return await this.customerServiceService.execPinStatusModify(map);
   }
@@ -101,7 +101,7 @@ export class CustomerServiceController {
 
     // 2. 데이터매핑
     const map = await this.customerServiceService.mapPinStatusRefresh(user, getBody);
-    
+
     // 3. 서비스실행
     return await this.customerServiceService.execPinStatusRefresh(map);
   }
@@ -119,7 +119,7 @@ export class CustomerServiceController {
 
     // 2. 데이터매핑
     const map = await this.customerServiceService.mapHistory(user, getBody);
-    
+
     // 3. 서비스실행
     return await this.customerServiceService.execHistory(map);
   }
@@ -137,7 +137,7 @@ export class CustomerServiceController {
 
     // 2. 데이터매핑
     const map = await this.customerServiceService.mapStatusList(getQuery);
-    
+
     // 3. 서비스실행
     return await this.customerServiceService.execStatusList(map);
   }
@@ -185,5 +185,4 @@ export class CustomerServiceController {
   getUnmaskedDeliveryTarget(@Query() getQuery: CustomerServiceUnmaskedDeliveryTargetReqDto) {
     return this.customerServiceService.getUnmaskedDeliveryTarget(getQuery);
   }
-
 }

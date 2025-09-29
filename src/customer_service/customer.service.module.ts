@@ -16,8 +16,8 @@ import { SmsModule } from 'src/sms/sms.module';
   imports: [
     AuthModule,
     TypeOrmModule.forFeature([
-      OrderEntity, 
-      OrderDeliveryEntity, 
+      OrderEntity,
+      OrderDeliveryEntity,
       OrderProductMappingEntity,
       OrderHistoryEntity,
       GemteckMsgQueueEntity,

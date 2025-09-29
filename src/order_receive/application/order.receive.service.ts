@@ -197,9 +197,10 @@ export class OrderReceiveService {
         : '',
       sendRequestAt: format(orderDelivery.sendRequestAt, DateFormatStr),
       expireDay: orderDelivery.orderProductMapping.product.expireDay,
-      brandKoreanName: orderDelivery.orderProductMapping.product.brand!.nameKorean === '신세계'
-        ? '이마트'
-        : orderDelivery.orderProductMapping.product.brand!.nameKorean,
+      brandKoreanName:
+        orderDelivery.orderProductMapping.product.brand!.nameKorean === '신세계'
+          ? '이마트'
+          : orderDelivery.orderProductMapping.product.brand!.nameKorean,
       userBusinessName: orderDelivery.orderProductMapping.order.user!.businessName,
       partnerCompany: orderDelivery.orderProductMapping.product.partnerCompany?.type || null,
     };
