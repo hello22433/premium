@@ -25,3 +25,10 @@ export class CustomerServiceGetDetailResDto {
   })
   detail: CustomerServiceDlvryDetailViewDto;
 }
+
+export class CustomerServiceUnmaskedDeliveryTargetResDto {
+  @ApiProperty({
+    description: '평문 수신정보 (전화번호 또는 이메일)',
+  })
+  deliveryTarget: string;
+}

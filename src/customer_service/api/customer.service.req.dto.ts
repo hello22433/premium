@@ -229,3 +229,12 @@ export class CustomerServiceStatusListReqDto extends PagingReqDto {
   @Type(() => Number)
   orderDeliveryId: number;
 }
+
+export class CustomerServiceUnmaskedDeliveryTargetReqDto {
+  @ApiProperty({ description: '발송 데이터 id' })
+  // =============================================================
+  @IsNotEmpty()
+  @IsNumber()
+  @Type(() => Number)
+  orderDeliveryId: number;
+}

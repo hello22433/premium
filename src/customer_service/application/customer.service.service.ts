@@ -10,6 +10,7 @@ import {
   CustomerServicePinStatusRefreshReqDto,
   CustomerServiceReSendReqDto,
   CustomerServiceStatusListReqDto,
+  CustomerServiceUnmaskedDeliveryTargetReqDto,
   UpdateCouponStatusReqDto,
 } from '../api/customer.service.req.dto';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -35,6 +36,7 @@ import { ConfigService } from '@nestjs/config';
 const dayjs = require('dayjs');
 const timezone = require('dayjs/plugin/timezone');
 import { SmsGemtekSend } from 'src/sms/infra/sms.gemtek.send';
+import { MaskingUtil } from 'src/common/utils/masking.util';
 
 dayjs.extend(timezone);
 
@@ -125,7 +127,7 @@ export class CustomerServiceService {
         status: order.status,
         fromPhoneNumber: order.fromPhoneNumber,
         fromEmail: order.fromEmail,
-        deliveryTarget: firstDelivery?.deliveryTarget || null,
+        deliveryTarget: firstDelivery?.deliveryTarget ? MaskingUtil.maskDeliveryTarget(firstDelivery.deliveryTarget) : null,
         transactionId: firstDelivery?.transactionId || null,
         couponStatus: order.orderProductMappings?.[0]?.orderDeliveries?.[0]?.couponStatus ?? OrderDeliveryCouponStatus.NOT_USED,
 
@@ -824,6 +826,29 @@ export class CustomerServiceService {
       totalCount,
       totalPage: Math.ceil(totalCount / take),
       currentPage: page,
+    };
+  }
+
+  /**
+   * 마스킹되지 않은 수신정보 조회 API
+   * @param getQuery
+   */
+  async getUnmaskedDeliveryTarget(getQuery: CustomerServiceUnmaskedDeliveryTargetReqDto) {
+    const { orderDeliveryId } = getQuery;
+
+    const orderDelivery = await this.orderDeliveryRepository.findOne({
+      where: {
+        id: orderDeliveryId,
+        deletedAt: IsNull(),
+      },
+    });
+
+    if (!orderDelivery) {
+      throw new NotFoundException('존재하지 않는 발송 정보입니다.');
+    }
+
+    return {
+      deliveryTarget: orderDelivery.deliveryTarget || '',
     };
   }
 }

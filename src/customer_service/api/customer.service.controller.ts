@@ -13,11 +13,13 @@ import {
   CustomerServicePinStatusRefreshReqDto,
   CustomerServiceReSendReqDto,
   CustomerServiceStatusListReqDto,
+  CustomerServiceUnmaskedDeliveryTargetReqDto,
 } from './customer.service.req.dto';
-import { 
-  CustomerServiceGetDetailListResDto, 
-  CustomerServiceGetListResDto, 
-  CustomerServiceGetDetailResDto 
+import {
+  CustomerServiceGetDetailListResDto,
+  CustomerServiceGetListResDto,
+  CustomerServiceGetDetailResDto,
+  CustomerServiceUnmaskedDeliveryTargetResDto
 } from './customer.service.res.dto';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { User } from '../../auth/api/user.decorator';
@@ -169,6 +171,19 @@ export class CustomerServiceController {
   @Post('/customer-service/re-send')
   reSend(@Body() getBody: CustomerServiceReSendReqDto) {
     return this.customerServiceService.reSend(getBody);
+  }
+
+  @ApiOperation({
+    description: '마스킹되지 않은 수신정보 조회 API',
+  })
+  @ApiOkResponse({
+    type: CustomerServiceUnmaskedDeliveryTargetResDto,
+    description: '성공적으로 return 한 경우',
+  })
+  // ===============================================
+  @Get('/customer-service/unmasked-delivery-target')
+  getUnmaskedDeliveryTarget(@Query() getQuery: CustomerServiceUnmaskedDeliveryTargetReqDto) {
+    return this.customerServiceService.getUnmaskedDeliveryTarget(getQuery);
   }
 
 }
