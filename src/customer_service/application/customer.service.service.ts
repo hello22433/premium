@@ -132,6 +132,7 @@ export class CustomerServiceService {
           ? MaskingUtil.maskDeliveryTarget(firstDelivery.deliveryTarget)
           : null,
         transactionId: firstDelivery?.transactionId || null,
+        deliveryMethod: firstDelivery?.deliveryMethod || null,
         couponStatus:
           order.orderProductMappings?.[0]?.orderDeliveries?.[0]?.couponStatus ?? OrderDeliveryCouponStatus.NOT_USED,
       });

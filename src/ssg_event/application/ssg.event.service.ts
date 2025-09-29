@@ -48,26 +48,34 @@ export class SsgEventService {
       queryBuilder = queryBuilder.andWhere('ssg.name LIKE :name', { name: '%' + name + '%' });
     }
 
-    queryBuilder = queryBuilder
-      .andWhere('MONTH(ssg.startAt) <= :currentMonth', { currentMonth })
-      .andWhere('MONTH(ssg.endAt) >= :currentMonth', { currentMonth });
+    // 조회기간이 설정되지 않은 경우에만 현재 월 필터 적용
+    if (!createdStartAt && !createdEndAt) {
+      queryBuilder = queryBuilder
+        .andWhere('MONTH(ssg.startAt) <= :currentMonth', { currentMonth })
+        .andWhere('MONTH(ssg.endAt) >= :currentMonth', { currentMonth });
+    }
 
     queryBuilder = QueryBuilderDateCondition(queryBuilder, 'ssg', 'createdAt', createdStartAt, createdEndAt);
 
     const [eventList, totalCount] = await queryBuilder.skip(skip).take(take).getManyAndCount();
 
     const ssgEventIdList = eventList.map((event) => event.id);
-    const orderProductMappingList = await this.orderProductMappingRepository
-      .createQueryBuilder('orderProductMapping')
-      .innerJoinAndSelect('orderProductMapping.product', 'product')
-      .innerJoinAndSelect('orderProductMapping.order', 'order')
-      .innerJoinAndSelect('orderProductMapping.orderDeliveries', 'orderDeliveries')
-      .where('orderDeliveries.ssgEventId IN (:...ssgEventIdList)', { ssgEventIdList })
-      .andWhere('order.type = :type', { type: IOrderType.SSG })
-      .orderBy('order.id', 'DESC')
-      .getMany();
 
-    // <ssgEventId, >
+    // ssgEventIdList가 비어있을 때 빈 배열 반환
+    let orderProductMappingList: OrderProductMappingEntity[] = [];
+    if (ssgEventIdList.length > 0) {
+      orderProductMappingList = await this.orderProductMappingRepository
+        .createQueryBuilder('orderProductMapping')
+        .innerJoinAndSelect('orderProductMapping.product', 'product')
+        .innerJoinAndSelect('orderProductMapping.order', 'order')
+        .innerJoinAndSelect('orderProductMapping.orderDeliveries', 'orderDeliveries')
+        .where('orderDeliveries.ssgEventId IN (:...ssgEventIdList)', { ssgEventIdList })
+        .andWhere('order.type = :type', { type: IOrderType.SSG })
+        .orderBy('order.id', 'DESC')
+        .getMany();
+    }
+
+    // <ssgEventId>
     const ssgEventCountMap = new Map<
       number,
       {
@@ -110,7 +118,11 @@ export class SsgEventService {
         }
       }
 
-      const afterSsgEventCount = ssgEventCountMap.get(ssgEventId!);
+      if (!ssgEventId) {
+        continue;
+      }
+
+      const afterSsgEventCount = ssgEventCountMap.get(ssgEventId);
       if (!afterSsgEventCount) {
         throw new InternalServerErrorException('ssg event id error');
       }
@@ -121,10 +133,6 @@ export class SsgEventService {
 
       if (orderProductMapping.order.status === 'DELIVERY_COMPLETE') {
         afterSsgEventCount.deliveryCompleteAmount += orderProductMapping.amount * orderProductMapping.product.price;
-      }
-
-      if (!ssgEventId) {
-        throw new InternalServerErrorException('ssg event id error');
       }
     }
 
@@ -149,7 +157,18 @@ export class SsgEventService {
       };
     });
 
-    return { list: resultList, totalCount, totalPage, currentPage: page };
+    // 빈 결과일 때 안내 메시지 추가
+    const response: any = { list: resultList, totalCount, totalPage, currentPage: page };
+
+    if (resultList.length === 0) {
+      if (createdStartAt || createdEndAt) {
+        response.emptyMessage = '선택한 조회기간에 해당하는 신세계 행사가 없습니다.';
+      } else {
+        response.emptyMessage = '현재 진행 중인 신세계 행사가 없습니다.';
+      }
+    }
+
+    return response;
   }
 
   async excelDownload(getBody: SsgEventExcelDownloadReqDto) {
@@ -225,7 +244,11 @@ export class SsgEventService {
         }
       }
 
-      const afterSsgEventCount = ssgEventCountMap.get(ssgEventId!);
+      if (!ssgEventId) {
+        continue;
+      }
+
+      const afterSsgEventCount = ssgEventCountMap.get(ssgEventId);
       if (!afterSsgEventCount) {
         throw new InternalServerErrorException('ssg event id error');
       }
@@ -236,10 +259,6 @@ export class SsgEventService {
 
       if (orderProductMapping.order.status === 'DELIVERY_COMPLETE') {
         afterSsgEventCount.deliveryCompleteAmount += orderProductMapping.amount * orderProductMapping.product.price;
-      }
-
-      if (!ssgEventId) {
-        throw new InternalServerErrorException('ssg event id error');
       }
     }
 

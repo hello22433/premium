@@ -68,4 +68,9 @@ export class CustomerServiceViewDto {
     description: '거래 ID',
   })
   transactionId: string | null;
+
+  @ApiProperty({
+    description: '발송 유형 (ALIM_TALK, EMAIL, SMS 등)',
+  })
+  deliveryMethod: string | null;
 }

@@ -8,6 +8,12 @@ export class SsgEventGetListResDto extends GetListResDto {
     description: '신세계 행사 list',
   })
   list: SsgEventViewDto[];
+
+  @ApiProperty({
+    description: '데이터가 없을 때 표시할 메시지',
+    required: false,
+  })
+  emptyMessage?: string;
 }
 
 export class SsgEventGetValidListResDto {
