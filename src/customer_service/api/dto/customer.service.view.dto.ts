@@ -29,6 +29,11 @@ export class CustomerServiceViewDto {
   eventName: string;
 
   @ApiProperty({
+    description: '고객사',
+  })
+  businessName: string;
+
+  @ApiProperty({
     description: '상품 코드',
   })
   productCode: string;

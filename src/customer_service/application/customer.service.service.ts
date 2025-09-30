@@ -71,6 +71,7 @@ export class CustomerServiceService {
       .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
       .innerJoinAndSelect('orderProductMappings.product', 'product')
+      .leftJoinAndMapOne('order.user', 'user', 'user', 'user.id = order.user_id AND user.deleted_at IS NULL')
       .andWhere('orderDeliveries.status = :deliveryStatus', { deliveryStatus: 'COMPLETE' });
 
     if (orderType === 'GENERAL') {
@@ -123,6 +124,7 @@ export class CustomerServiceService {
         orderDeliveryId: firstDelivery?.id || null,
         orderProductMappingId: order.orderProductMappings![0].id,
         eventName: order.eventName,
+        businessName: order.user?.businessName ?? '',
         productName: order.orderProductMappings![0].product.name,
         productCode: order.orderProductMappings![0].product.code,
         status: order.status,
@@ -230,7 +232,7 @@ export class CustomerServiceService {
     return {
       orderDeliveryId: queryBuilder.id,
       eventName: order.eventName,
-      businessName: partnerCompany?.businessName ?? '',
+      businessName: user?.businessName ?? '',
       personName: user?.personName ?? '',
       sendContent: order.sendContent,
       deliveryTarget: queryBuilder.deliveryTarget,
