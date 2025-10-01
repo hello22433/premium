@@ -137,6 +137,7 @@ export class CustomerServiceService {
         deliveryMethod: firstDelivery?.deliveryMethod || null,
         couponStatus:
           order.orderProductMappings?.[0]?.orderDeliveries?.[0]?.couponStatus ?? OrderDeliveryCouponStatus.NOT_USED,
+        barCode: firstDelivery?.barCode || null,
       });
     }
 

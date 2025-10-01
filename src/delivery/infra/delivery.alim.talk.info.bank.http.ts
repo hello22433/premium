@@ -144,46 +144,44 @@ export class DeliveryAlimTalkInfoBankHttp implements DeliveryAlimTalk {
       // );
       this.logger.log(`알림톡 발신 : ${JSON.stringify(responseData)}`);
 
-      await this.sleep(500);
-
-      const reportResponsePolling = await firstValueFrom(
-        this.httpService.get(`${this.infoBankUrl}/v1/report/polling`, { headers }),
-      );
-
-      const reportResponsePollingData: InfoBankReportResponse = reportResponsePolling.data;
-
-      // msgKey 검증
       const msgKey = responseData.msgKey;
-      // const reportMsgKeys = reportResponsePollingData.data.report.map((report) => report.msgKey);
-      const reportList = reportResponsePollingData.data?.report || [];
-      const reportMap = listToMap(reportList, (report) => report.msgKey);
 
-      const reportOne = reportMap.get(msgKey);
+      // report 조회 재시도 (최대 3번, 각 1초 대기)
+      let reportOne: { msgKey: string; reportCode: string; [key: string]: any } | undefined = undefined;
+      let reportResponsePollingData: InfoBankReportResponse | null = null;
+
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        await this.sleep(1000);
+
+        const reportResponsePolling = await firstValueFrom(
+          this.httpService.get(`${this.infoBankUrl}/v1/report/polling`, { headers }),
+        );
+
+        reportResponsePollingData = reportResponsePolling.data;
+        const reportList = reportResponsePollingData?.data?.report || [];
+        const reportMap = listToMap(reportList, (report: any) => report.msgKey);
+
+        reportOne = reportMap.get(msgKey);
+        if (reportOne) {
+          this.logger.log(`Report found on attempt ${attempt}`);
+          break;
+        }
+
+        this.logger.log(`Report not found on attempt ${attempt}, retrying...`);
+      }
+
       if (!reportOne) {
         this.logger.error(JSON.stringify(reportResponsePollingData));
         this.logger.error(JSON.stringify(responseData));
-
-        // responseData.code가 A000(성공)이면 report가 없어도 성공으로 처리
-        if (responseData.code === 'A000') {
-          return {
-            responseData,
-            report: {
-              code: 'A000',
-              result: 'Success',
-              data: { report: [] }
-            }
-          };
-        }
-
-        throw new Error(`msgKey "${msgKey}" not found in reportResponsePollingData`);
+        throw new Error(`msgKey "${msgKey}" not found in reportResponsePollingData after 3 attempts`);
       }
 
-      if (reportOne && reportOne.reportCode !== '10000') {
-        this.logger.error(JSON.stringify(reportMap));
+      if (reportOne.reportCode !== '10000') {
+        this.logger.error(JSON.stringify(reportOne));
         throw new Error(`msgKey "${msgKey}" not send ${reportOne.reportCode}`);
       }
 
-      const reportData = reportResponsePolling.data as InfoBankReportResponse;
+      const reportData = reportResponsePollingData as InfoBankReportResponse;
 
       return { responseData, report: reportData };
     } catch (e) {

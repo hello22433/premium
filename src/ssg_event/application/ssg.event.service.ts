@@ -110,10 +110,9 @@ export class SsgEventService {
                 ? oneSsgEventCount.deliveryWaitCount + 1
                 : oneSsgEventCount.deliveryWaitCount,
             deliveryWaitAmount: oneSsgEventCount.deliveryWaitAmount,
-            deliveryCompleteCount:
-              isComplete
-                ? oneSsgEventCount.deliveryCompleteCount + 1
-                : oneSsgEventCount.deliveryCompleteCount,
+            deliveryCompleteCount: isComplete
+              ? oneSsgEventCount.deliveryCompleteCount + 1
+              : oneSsgEventCount.deliveryCompleteCount,
             deliveryCompleteAmount: oneSsgEventCount.deliveryCompleteAmount,
           });
         }
@@ -237,10 +236,9 @@ export class SsgEventService {
                 ? oneSsgEventCount.deliveryWaitCount + 1
                 : oneSsgEventCount.deliveryWaitCount,
             deliveryWaitAmount: oneSsgEventCount.deliveryWaitAmount,
-            deliveryCompleteCount:
-              isComplete
-                ? oneSsgEventCount.deliveryCompleteCount + 1
-                : oneSsgEventCount.deliveryCompleteCount,
+            deliveryCompleteCount: isComplete
+              ? oneSsgEventCount.deliveryCompleteCount + 1
+              : oneSsgEventCount.deliveryCompleteCount,
             deliveryCompleteAmount: oneSsgEventCount.deliveryCompleteAmount,
           });
         }

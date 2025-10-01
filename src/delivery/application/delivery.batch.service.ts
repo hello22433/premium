@@ -81,6 +81,8 @@ export class DeliveryBatchService {
 
     const orderDeliveryList = await queryBuilder.getMany();
 
+    this.logger.log(`[BATCH] Found ${orderDeliveryList.length} deliveries to send at ${now.toISOString()}`);
+
     // 0. 전송 history 생성 entity list
     const deliveryHistoryList: DeliverySendHistoryEntity[] = [];
     const orderIdList: number[] = [];

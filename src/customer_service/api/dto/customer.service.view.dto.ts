@@ -78,4 +78,9 @@ export class CustomerServiceViewDto {
     description: '발송 유형 (ALIM_TALK, EMAIL, SMS 등)',
   })
   deliveryMethod: string | null;
+
+  @ApiProperty({
+    description: '핀번호',
+  })
+  barCode: string | null;
 }
