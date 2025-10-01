@@ -338,10 +338,12 @@ export class SsgEventService {
       endAt: new Date(endAt),
       couponExpiration,
       eventPrice,
+      eventBalance: eventPrice, // 등록 시 행사금액을 초기 잔액으로 설정
     });
     return;
   }
 
+  /* 충전 기능 미사용으로 주석처리
   async updateAmount(getBody: SsgEventUpdateAmountReqDto) {
     const { id, amount } = getBody;
 
@@ -376,6 +378,7 @@ export class SsgEventService {
     await this.amountHistoryRepository.save(ssgEventAmountHistory);
     await this.ssgEventRepository.save(ssgEvent);
   }
+  */
 
   async getValidList(getQuery: SsgEventGetValidListReqDto): Promise<SsgEventGetValidListResDto> {
     const { couponExpiration } = getQuery;

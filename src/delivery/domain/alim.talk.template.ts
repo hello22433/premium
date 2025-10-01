@@ -8,11 +8,16 @@ export const AlimTalkTemplate = (orderDelivery: OrderDeliveryEntity) => {
       ? orderDelivery.personalCode
       : orderDelivery.barCode;
 
+  const brandKoreanName =
+    orderDelivery.orderProductMapping.product.brand!.nameKorean === '신세계'
+      ? '이마트'
+      : orderDelivery.orderProductMapping.product.brand!.nameKorean;
+
   return `상품명 : ${orderDelivery.orderProductMapping.product.name}
 유효기간 : ${orderDelivery.orderProductMapping.product.expireDay}일
 쿠폰번호 : ${couponCode}
-사용처 : ${orderDelivery.orderProductMapping.product.brand!.nameKorean}
-고객센터 : ${customerName}
+사용처(교환처) : ${brandKoreanName}
+고객센터 : 1644-3614
 발행자 : ${orderDelivery.orderProductMapping.order.user!.businessName}
 
 ${orderDelivery.orderProductMapping.order.eventName} 당첨을 축하드립니다.
