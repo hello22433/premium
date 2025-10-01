@@ -373,12 +373,15 @@ export class DeliveryBatchService {
     filePathList: string[],
   ) {
     try {
+      let smsText =
+        orderDelivery.orderProductMapping.order.type === IOrderType.SSG ? text + smsSsgTemplate(orderDelivery) : text;
+
       await this.smsSend.send({
         msgType: 'L',
         to: orderDelivery.deliveryTarget,
         from: orderDelivery.orderProductMapping.order.fromPhoneNumber!,
         subject: title,
-        text: text,
+        text: smsText,
         filePath: filePathList,
       });
       orderDelivery.status = IOrderDeliveryStatus.COMPLETE_SMS;

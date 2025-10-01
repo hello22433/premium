@@ -95,11 +95,12 @@ export class SsgEventService {
         ssgEventId = orderDelivery.ssgEventId;
 
         const oneSsgEventCount = ssgEventCountMap.get(ssgEventId);
+        const isComplete = orderDelivery.status === 'COMPLETE' || orderDelivery.status === 'COMPLETE_SMS';
         if (!oneSsgEventCount) {
           ssgEventCountMap.set(ssgEventId, {
             deliveryWaitCount: orderDelivery.status === 'WAIT' ? 1 : 0,
             deliveryWaitAmount: 0,
-            deliveryCompleteCount: orderDelivery.status === 'COMPLETE' ? 1 : 0,
+            deliveryCompleteCount: isComplete ? 1 : 0,
             deliveryCompleteAmount: 0,
           });
         } else {
@@ -110,7 +111,7 @@ export class SsgEventService {
                 : oneSsgEventCount.deliveryWaitCount,
             deliveryWaitAmount: oneSsgEventCount.deliveryWaitAmount,
             deliveryCompleteCount:
-              orderDelivery.status === 'COMPLETE'
+              isComplete
                 ? oneSsgEventCount.deliveryCompleteCount + 1
                 : oneSsgEventCount.deliveryCompleteCount,
             deliveryCompleteAmount: oneSsgEventCount.deliveryCompleteAmount,
@@ -221,11 +222,12 @@ export class SsgEventService {
         ssgEventId = orderDelivery.ssgEventId;
 
         const oneSsgEventCount = ssgEventCountMap.get(ssgEventId);
+        const isComplete = orderDelivery.status === 'COMPLETE' || orderDelivery.status === 'COMPLETE_SMS';
         if (!oneSsgEventCount) {
           ssgEventCountMap.set(ssgEventId, {
             deliveryWaitCount: orderDelivery.status === 'WAIT' ? 1 : 0,
             deliveryWaitAmount: 0,
-            deliveryCompleteCount: orderDelivery.status === 'COMPLETE' ? 1 : 0,
+            deliveryCompleteCount: isComplete ? 1 : 0,
             deliveryCompleteAmount: 0,
           });
         } else {
@@ -236,7 +238,7 @@ export class SsgEventService {
                 : oneSsgEventCount.deliveryWaitCount,
             deliveryWaitAmount: oneSsgEventCount.deliveryWaitAmount,
             deliveryCompleteCount:
-              orderDelivery.status === 'COMPLETE'
+              isComplete
                 ? oneSsgEventCount.deliveryCompleteCount + 1
                 : oneSsgEventCount.deliveryCompleteCount,
             deliveryCompleteAmount: oneSsgEventCount.deliveryCompleteAmount,

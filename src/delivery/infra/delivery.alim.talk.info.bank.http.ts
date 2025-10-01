@@ -155,13 +155,27 @@ export class DeliveryAlimTalkInfoBankHttp implements DeliveryAlimTalk {
       // msgKey 검증
       const msgKey = responseData.msgKey;
       // const reportMsgKeys = reportResponsePollingData.data.report.map((report) => report.msgKey);
-      const reportMap = listToMap(reportResponsePollingData.data.report, (report) => report.msgKey);
+      const reportList = reportResponsePollingData.data?.report || [];
+      const reportMap = listToMap(reportList, (report) => report.msgKey);
 
       const reportOne = reportMap.get(msgKey);
       if (!reportOne) {
         this.logger.error(JSON.stringify(reportResponsePollingData));
         this.logger.error(JSON.stringify(responseData));
-        // throw new Error(`msgKey "${msgKey}" not found in reportResponsePollingData`);
+
+        // responseData.code가 A000(성공)이면 report가 없어도 성공으로 처리
+        if (responseData.code === 'A000') {
+          return {
+            responseData,
+            report: {
+              code: 'A000',
+              result: 'Success',
+              data: { report: [] }
+            }
+          };
+        }
+
+        throw new Error(`msgKey "${msgKey}" not found in reportResponsePollingData`);
       }
 
       if (reportOne && reportOne.reportCode !== '10000') {

@@ -12,7 +12,7 @@ export const smsSsgTemplate = (orderDelivery: OrderDeliveryEntity) => {
 ▷인증번호: ${orderDelivery.barCode}
 ▷발송업체: ${ssgIssueUserName}
 ▷교환기간: ${format(orderDelivery.expireAt!, 'yyyy-MM-dd')} 까지
-▷교 환 처: 전국 이마트 키오스크
+▷사용처(교환처): 이마트
  가까운 신세계이마트 위치 검색하기: http://m.enmad.com
 
 ▷교환방법: 고객센터에 비치된
