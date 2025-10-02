@@ -13,7 +13,8 @@ export const AlimTalkTemplate = (orderDelivery: OrderDeliveryEntity) => {
       ? '이마트'
       : orderDelivery.orderProductMapping.product.brand!.nameKorean;
 
-  return `상품명 : ${orderDelivery.orderProductMapping.product.name}
+  return `[모바일쿠폰] 이팝콘 도착
+상품명 : ${orderDelivery.orderProductMapping.product.name}
 유효기간 : ${orderDelivery.orderProductMapping.product.expireDay}일
 쿠폰번호 : ${couponCode}
 사용처(교환처) : ${brandKoreanName}
