@@ -179,8 +179,10 @@ export class CustomerServiceService {
         id: orderDelivery.id,
         registerAt: format(orderDelivery.createdAt, DateFormatStr),
         productName: orderDelivery.orderProductMapping.product.name,
-        deliveryTarget: orderDelivery.deliveryTarget,
-        barCode: orderDelivery.barCode,
+        deliveryTarget: orderDelivery.deliveryTarget
+          ? MaskingUtil.maskDeliveryTarget(orderDelivery.deliveryTarget)
+          : null,
+        barCode: orderDelivery.barCode ? MaskingUtil.maskPinNumber(orderDelivery.barCode) : null,
         brandName: orderDelivery.orderProductMapping.product.brand!.nameKorean ?? '',
         partnerCompanyName: orderDelivery.orderProductMapping.product.partnerCompany?.businessName ?? '',
         eventName: orderDelivery.orderProductMapping.order.eventName,
@@ -248,9 +250,9 @@ export class CustomerServiceService {
       couponStatus: queryBuilder.couponStatus,
       status: queryBuilder.status,
       apiErrorMessage: queryBuilder.apiErrorMessage,
-      barCode: queryBuilder.barCode ? MaskingUtil.maskPinNumber(queryBuilder.barCode) : null,
+      barCode: queryBuilder.barCode || null,
       tradeAt: queryBuilder.tradeAt ? format(queryBuilder.tradeAt, DateFormatStr) : null,
-      extraPinNo: queryBuilder.personalCode ? MaskingUtil.maskPinNumber(queryBuilder.personalCode) : null,
+      extraPinNo: queryBuilder.personalCode || null,
       expireDay: product.expireDay.toString(),
     };
   }

@@ -74,7 +74,7 @@ export class CustomerServiceDetailViewDto {
   @ApiProperty({
     description: '수신정보 (번호 혹은 이메일)',
   })
-  deliveryTarget: string;
+  deliveryTarget: string | null;
 
   @ApiProperty({
     description: '핀번호',

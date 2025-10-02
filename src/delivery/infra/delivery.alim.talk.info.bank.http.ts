@@ -158,7 +158,9 @@ export class DeliveryAlimTalkInfoBankHttp implements DeliveryAlimTalk {
       if (!reportResult || !reportResult.success) {
         this.logger.error(`Final inquiry result: ${JSON.stringify(reportResult)}`);
         this.logger.error(`Original send response: ${JSON.stringify(responseData)}`);
-        throw new Error(`msgKey "${msgKey}" inquiry failed after 3 attempts: ${reportResult?.error || 'Unknown error'}`);
+        throw new Error(
+          `msgKey "${msgKey}" inquiry failed after 3 attempts: ${reportResult?.error || 'Unknown error'}`,
+        );
       }
 
       if (reportResult.reportCode !== '10000') {
@@ -196,8 +198,8 @@ export class DeliveryAlimTalkInfoBankHttp implements DeliveryAlimTalk {
     try {
       const url = `${this.reportUrl}/api/comm/v1/report/inquiry/${msgKey}`;
       const headers = {
-        'Authorization': this.apiKey,
-        'Accept': 'application/json',
+        Authorization: this.apiKey,
+        Accept: 'application/json',
       };
 
       const response = await firstValueFrom(this.httpService.get(url, { headers }));

@@ -1310,6 +1310,7 @@ export class OrderService {
     const order = await this.orderRepository
       .createQueryBuilder('order')
       .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
+      .leftJoinAndSelect('orderProductMappings.product', 'product')
       .where('order.id = :id', { id })
       // .andWhere('order.userId = :userId', { userId: user.id })
       // .andWhere('order.status = :status', { status: 'DELIVERY_REQUEST' })
