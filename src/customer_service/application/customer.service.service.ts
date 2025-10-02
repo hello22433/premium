@@ -34,6 +34,8 @@ import { GemteckMsgQueueEntity } from 'src/entity/gemtek/msg.queue.entity';
 import { ConfigService } from '@nestjs/config';
 import { SmsGemtekSend } from 'src/sms/infra/sms.gemtek.send';
 import { MaskingUtil } from 'src/common/utils/masking.util';
+import { CryptoCipher } from 'src/common/infra/crypto.cipher';
+import { PhoneUtil } from 'src/common/utils/phone.util';
 
 const dayjs = require('dayjs');
 const timezone = require('dayjs/plugin/timezone');
@@ -60,6 +62,7 @@ export class CustomerServiceService {
     private gemteckMsgQueueRepository: Repository<GemteckMsgQueueEntity>,
     private configService: ConfigService,
     private smsGemtekSend: SmsGemtekSend,
+    private readonly cryptoCipher: CryptoCipher,
   ) {}
 
   async getList(getQuery: CustomerServiceGetListReqDto): Promise<CustomerServiceGetListResDto> {
@@ -718,7 +721,9 @@ export class CustomerServiceService {
       case '수신정보 변경요청': {
         const orderDeliveryDto = new OrderDeliveryEntity();
         orderDeliveryDto.id = map.orderDeliveryId;
-        orderDeliveryDto.deliveryTarget = map.afterChange;
+        orderDeliveryDto.deliveryTarget = this.cryptoCipher.encryptDeliveryTarget(
+          PhoneUtil.normalizeDeliveryTarget(map.afterChange),
+        );
 
         await this.orderDeliveryRepository.save(orderDeliveryDto);
 

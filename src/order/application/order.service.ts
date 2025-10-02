@@ -77,6 +77,8 @@ import { OrderCustomerViewDto } from '../api/dto/order.customer.view.dto';
 import { maskBarCode } from '../../util/mask.barcode.util';
 import { CreateCode } from '../../common/domain/create.code';
 import { OrderDigitNumber, OrderPrefixCode } from '../domain/order.code';
+import { CryptoCipher } from '../../common/infra/crypto.cipher';
+import { PhoneUtil } from '../../common/utils/phone.util';
 
 @Injectable()
 export class OrderService {
@@ -107,6 +109,7 @@ export class OrderService {
     private partnerCompanyExternService: PartnerCompanyExternService,
     private readonly userManagementService: UserManagementService,
     private readonly ssgEventService: SsgEventService,
+    private readonly cryptoCipher: CryptoCipher,
   ) {}
 
   async getList(user: ILoginUserInfo, getQuery: OrderGetListReqDto): Promise<OrderGetListResDto> {
@@ -848,7 +851,9 @@ export class OrderService {
         oneOrderDelivery.orderProductMappingId = orderProduct.id;
         oneOrderDelivery.status = IOrderDeliveryStatus.TEMP;
         oneOrderDelivery.deliveryMethod = sendMethod;
-        oneOrderDelivery.deliveryTarget = orderDelivery.deliveryTarget;
+        oneOrderDelivery.deliveryTarget = this.cryptoCipher.encryptDeliveryTarget(
+          PhoneUtil.normalizeDeliveryTarget(orderDelivery.deliveryTarget),
+        );
         oneOrderDelivery.replaceCharacter1 = orderDelivery.replaceCharacter1 ?? null;
         oneOrderDelivery.replaceCharacter2 = orderDelivery.replaceCharacter2 ?? null;
         oneOrderDelivery.replaceCharacter3 = orderDelivery.replaceCharacter3 ?? null;
@@ -990,7 +995,9 @@ export class OrderService {
         oneOrderDelivery.orderProductMappingId = orderProduct.id;
         oneOrderDelivery.status = IOrderDeliveryStatus.TEMP;
         oneOrderDelivery.deliveryMethod = sendMethod;
-        oneOrderDelivery.deliveryTarget = orderDelivery.deliveryTarget;
+        oneOrderDelivery.deliveryTarget = this.cryptoCipher.encryptDeliveryTarget(
+          PhoneUtil.normalizeDeliveryTarget(orderDelivery.deliveryTarget),
+        );
         oneOrderDelivery.replaceCharacter1 = orderDelivery.replaceCharacter1 ?? null;
         oneOrderDelivery.replaceCharacter2 = orderDelivery.replaceCharacter2 ?? null;
         oneOrderDelivery.replaceCharacter3 = orderDelivery.replaceCharacter3 ?? null;

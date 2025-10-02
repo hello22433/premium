@@ -96,4 +96,36 @@ export class CryptoCipher {
     // JSON 문자열을 객체로 변환하여 반환
     return JSON.parse(decrypted);
   }
+
+  // deliveryTarget 암호화 (AES-256-CBC, Base64)
+  encryptDeliveryTarget(data: string): string {
+    const key = this.configService.getOrThrow('DELIVERY_TARGET_CRYPTO_KEY');
+    const iv = this.configService.getOrThrow('DELIVERY_TARGET_CRYPTO_IV');
+    const algorithm = 'aes-256-cbc';
+
+    const keyBuffer = Buffer.from(key, 'utf8');
+    const ivBuffer = Buffer.from(iv, 'utf8');
+
+    const cipher = crypto.createCipheriv(algorithm, keyBuffer, ivBuffer);
+    let encrypted = cipher.update(data, 'utf8', 'base64');
+    encrypted += cipher.final('base64');
+
+    return encrypted;
+  }
+
+  // deliveryTarget 복호화 (AES-256-CBC, Base64)
+  decryptDeliveryTarget(encryptedData: string): string {
+    const key = this.configService.getOrThrow('DELIVERY_TARGET_CRYPTO_KEY');
+    const iv = this.configService.getOrThrow('DELIVERY_TARGET_CRYPTO_IV');
+    const algorithm = 'aes-256-cbc';
+
+    const keyBuffer = Buffer.from(key, 'utf8');
+    const ivBuffer = Buffer.from(iv, 'utf8');
+
+    const decipher = crypto.createDecipheriv(algorithm, keyBuffer, ivBuffer);
+    let decrypted = decipher.update(encryptedData, 'base64', 'utf8');
+    decrypted += decipher.final('utf8');
+
+    return decrypted;
+  }
 }
