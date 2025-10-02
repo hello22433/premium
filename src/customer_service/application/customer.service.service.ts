@@ -72,7 +72,7 @@ export class CustomerServiceService {
       .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
       .innerJoinAndSelect('orderProductMappings.product', 'product')
       .leftJoinAndMapOne('order.user', 'user', 'user', 'user.id = order.user_id AND user.deleted_at IS NULL')
-      .andWhere('orderDeliveries.status = :deliveryStatus', { deliveryStatus: 'COMPLETE' });
+      .andWhere('orderDeliveries.status IN (:...deliveryStatus)', { deliveryStatus: ['COMPLETE', 'COMPLETE_SMS'] });
 
     if (orderType === 'GENERAL') {
       queryBuilder.andWhere('product.type = :type', { type: 'GENERAL' });
