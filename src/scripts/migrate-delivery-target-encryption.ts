@@ -4,14 +4,18 @@ import { OrderDeliveryEntity } from '../entity/order.delivery.entity';
 import { Repository } from 'typeorm';
 import { CryptoCipher } from '../common/infra/crypto.cipher';
 import { PhoneUtil } from '../common/utils/phone.util';
+import { initializeTransactionalContext } from 'typeorm-transactional';
 
 /**
  * deliveryTarget 평문 데이터를 암호화하는 마이그레이션 스크립트
  *
  * 실행 방법:
- * npx ts-node src/scripts/migrate-delivery-target-encryption.ts
+ * npx ts-node -r tsconfig-paths/register src/scripts/migrate-delivery-target-encryption.ts
  */
 async function migrate() {
+  // typeorm-transactional 초기화
+  initializeTransactionalContext();
+
   const app = await NestFactory.createApplicationContext(AppModule);
 
   const orderDeliveryRepository = app.get<Repository<OrderDeliveryEntity>>('OrderDeliveryEntityRepository');
