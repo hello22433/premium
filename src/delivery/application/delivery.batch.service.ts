@@ -89,6 +89,18 @@ export class DeliveryBatchService {
 
     // 1. 알림톡, SMS, 이메일 전송
     for (const orderDelivery of orderDeliveryList) {
+      // deliveryTarget 복호화
+      let decryptedDeliveryTarget = orderDelivery.deliveryTarget;
+      if (orderDelivery.deliveryTarget) {
+        try {
+          decryptedDeliveryTarget = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.deliveryTarget);
+        } catch (error) {
+          this.logger.error(`Failed to decrypt deliveryTarget for orderDelivery ${orderDelivery.id}: ${error}`);
+          // 복호화 실패 시 원본 데이터 사용
+          decryptedDeliveryTarget = orderDelivery.deliveryTarget;
+        }
+      }
+
       const title = orderDelivery.orderProductMapping.order.sendTitle;
 
       if (orderDelivery.orderProductMapping.order.type !== IOrderType.SSG) {
@@ -134,7 +146,7 @@ export class DeliveryBatchService {
 
       deliveryHistory.context = '{}';
       deliveryHistory.isSuccess = true;
-      deliveryHistory.target = orderDelivery.deliveryTarget;
+      deliveryHistory.target = decryptedDeliveryTarget;
       deliveryHistory.deliveryMethod = deliveryMethod;
 
       const encryptKey = this.cryptoCipher.encryptJson({
@@ -147,7 +159,7 @@ export class DeliveryBatchService {
         try {
           const alimTalk = AlimTalkTemplate(orderDelivery);
           const { responseData, report } = await this.deliveryAlimTalk.send({
-            to: orderDelivery.deliveryTarget,
+            to: decryptedDeliveryTarget,
             text: alimTalk,
             encryptKey: encryptKey,
           });
@@ -192,7 +204,7 @@ export class DeliveryBatchService {
         try {
           await this.smsSend.send({
             msgType: 'M',
-            to: orderDelivery.deliveryTarget,
+            to: decryptedDeliveryTarget,
             from: orderDelivery.orderProductMapping.order.fromPhoneNumber!,
             subject: title,
             text: smsText,
@@ -210,7 +222,7 @@ export class DeliveryBatchService {
       // 1.3 EMAIL 일 경우
       if (deliveryMethod === IOrderSendMethod.EMAIL) {
         const emailSendHistory = new EmailSendHistoryEntity();
-        emailSendHistory.email = orderDelivery.deliveryTarget;
+        emailSendHistory.email = decryptedDeliveryTarget;
         emailSendHistory.type = EmailType.COUPON;
         emailSendHistory.code = generateRandomCode();
         emailSendHistory.expireAt = addDays(new Date(), EmailCertifyExpireDay);
@@ -253,7 +265,7 @@ export class DeliveryBatchService {
             cc: undefined,
             content: emailText,
             subject: title,
-            to: orderDelivery.deliveryTarget,
+            to: decryptedDeliveryTarget,
             fromEmail: orderDelivery.orderProductMapping.order.fromEmail,
           });
           orderDelivery.status = IOrderDeliveryStatus.COMPLETE;
@@ -395,6 +407,18 @@ export class DeliveryBatchService {
   }
 
   async oneSend(orderDelivery: OrderDeliveryEntity) {
+    // deliveryTarget 복호화
+    let decryptedDeliveryTarget = orderDelivery.deliveryTarget;
+    if (orderDelivery.deliveryTarget) {
+      try {
+        decryptedDeliveryTarget = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.deliveryTarget);
+      } catch (error) {
+        this.logger.error(`Failed to decrypt deliveryTarget for orderDelivery ${orderDelivery.id}: ${error}`);
+        // 복호화 실패 시 원본 데이터 사용
+        decryptedDeliveryTarget = orderDelivery.deliveryTarget;
+      }
+    }
+
     // 0. 전송 history 생성 entity list
     const deliveryHistoryList: DeliverySendHistoryEntity[] = [];
 
@@ -437,7 +461,7 @@ export class DeliveryBatchService {
 
     deliveryHistory.context = '{}';
     deliveryHistory.isSuccess = true;
-    deliveryHistory.target = orderDelivery.deliveryTarget;
+    deliveryHistory.target = decryptedDeliveryTarget;
     deliveryHistory.deliveryMethod = deliveryMethod;
 
     const encryptKey = this.cryptoCipher.encryptJson({
@@ -450,7 +474,7 @@ export class DeliveryBatchService {
       try {
         const alimTalk = AlimTalkTemplate(orderDelivery);
         const { responseData, report } = await this.deliveryAlimTalk.send({
-          to: orderDelivery.deliveryTarget,
+          to: decryptedDeliveryTarget,
           text: alimTalk,
           encryptKey: encryptKey,
         });
@@ -499,7 +523,7 @@ export class DeliveryBatchService {
       try {
         await this.smsSend.send({
           msgType: 'M',
-          to: orderDelivery.deliveryTarget,
+          to: decryptedDeliveryTarget,
           from: orderDelivery.orderProductMapping.order.fromPhoneNumber!,
           subject: title,
           text: smsText,
@@ -517,7 +541,7 @@ export class DeliveryBatchService {
     // 1.3 EMAIL 일 경우
     if (deliveryMethod === IOrderSendMethod.EMAIL) {
       const emailSendHistory = new EmailSendHistoryEntity();
-      emailSendHistory.email = orderDelivery.deliveryTarget;
+      emailSendHistory.email = decryptedDeliveryTarget;
       emailSendHistory.type = EmailType.COUPON;
       emailSendHistory.code = generateRandomCode();
       emailSendHistory.expireAt = addDays(new Date(), EmailCertifyExpireDay);
@@ -560,7 +584,7 @@ export class DeliveryBatchService {
           cc: undefined,
           content: emailText,
           subject: title,
-          to: orderDelivery.deliveryTarget,
+          to: decryptedDeliveryTarget,
           fromEmail: orderDelivery.orderProductMapping.order.fromEmail,
         });
         orderDelivery.status = IOrderDeliveryStatus.COMPLETE;
@@ -586,6 +610,10 @@ export class DeliveryBatchService {
     const destroyPhoneNumber = '000-0000-0000';
     const destroyEmail = '';
 
+    // 파기용 암호화된 값
+    const encryptedDestroyPhoneNumber = this.cryptoCipher.encryptDeliveryTarget(destroyPhoneNumber);
+    const encryptedDestroyEmail = this.cryptoCipher.encryptDeliveryTarget(destroyEmail);
+
     const orderDeliveryList = await this.orderDeliveryRepository
       .createQueryBuilder('orderDelivery')
       .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
@@ -594,8 +622,8 @@ export class DeliveryBatchService {
         now,
       })
       .andWhere('order.status = :status', { status: IOrderStatus.DELIVERY_COMPLETE })
-      .andWhere('orderDelivery.deliveryTarget != :targetPhone', { targetPhone: destroyPhoneNumber })
-      .andWhere('orderDelivery.deliveryTarget != :targetEmail', { targetEmail: destroyEmail })
+      .andWhere('orderDelivery.deliveryTarget != :targetPhone', { targetPhone: encryptedDestroyPhoneNumber })
+      .andWhere('orderDelivery.deliveryTarget != :targetEmail', { targetEmail: encryptedDestroyEmail })
       .getMany();
 
     const destroyEmailIdList: number[] = [];
@@ -614,8 +642,8 @@ export class DeliveryBatchService {
 
     await this.orderDeliveryRepository.update(
       { id: In(destroyPhoneNumberIdList) },
-      { deliveryTarget: destroyPhoneNumber },
+      { deliveryTarget: encryptedDestroyPhoneNumber },
     );
-    await this.orderDeliveryRepository.update({ id: In(destroyEmailIdList) }, { deliveryTarget: destroyEmail });
+    await this.orderDeliveryRepository.update({ id: In(destroyEmailIdList) }, { deliveryTarget: encryptedDestroyEmail });
   }
 }

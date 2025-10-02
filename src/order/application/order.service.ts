@@ -247,9 +247,20 @@ export class OrderService {
         const orderDeliveryList: OrderViewDeliveryDto[] = [];
 
         for (const orderDelivery of orderProductMapping.orderDeliveries) {
+          // deliveryTarget 복호화
+          let decryptedDeliveryTarget = orderDelivery.deliveryTarget;
+          if (orderDelivery.deliveryTarget) {
+            try {
+              decryptedDeliveryTarget = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.deliveryTarget);
+            } catch (error) {
+              // 복호화 실패 시 원본 데이터 사용
+              decryptedDeliveryTarget = orderDelivery.deliveryTarget;
+            }
+          }
+
           orderDeliveryList.push({
             id: orderDelivery.id,
-            deliveryTarget: orderDelivery.deliveryTarget,
+            deliveryTarget: decryptedDeliveryTarget,
             replaceCharacter1: orderDelivery.replaceCharacter1,
             replaceCharacter2: orderDelivery.replaceCharacter2,
             replaceCharacter3: orderDelivery.replaceCharacter3,
@@ -350,6 +361,17 @@ export class OrderService {
         const orderDeliveryList: OrderDeliveryCompleteReportViewDto[] = [];
 
         for (const orderDelivery of orderProductMapping.orderDeliveries) {
+          // deliveryTarget 복호화 후 마스킹 처리
+          let decryptedDeliveryTarget = orderDelivery.deliveryTarget;
+          if (orderDelivery.deliveryTarget) {
+            try {
+              decryptedDeliveryTarget = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.deliveryTarget);
+            } catch (error) {
+              // 복호화 실패 시 원본 데이터 사용
+              decryptedDeliveryTarget = orderDelivery.deliveryTarget;
+            }
+          }
+
           orderDeliveryList.push({
             id: orderDelivery.id,
             sendRequestAt: orderDelivery.sendRequestAt ? format(orderDelivery.sendRequestAt, DateFormatStr) : null,
@@ -358,7 +380,7 @@ export class OrderService {
             barCode: orderDelivery.barCode ? maskBarCode(orderDelivery.barCode) : null,
             deliveryMethod: orderDelivery.deliveryMethod,
             deliveryTarget:
-              order.sendMethod !== 'EMAIL' ? maskBarCode(orderDelivery.deliveryTarget) : orderDelivery.deliveryTarget,
+              order.sendMethod !== 'EMAIL' ? maskBarCode(decryptedDeliveryTarget) : decryptedDeliveryTarget,
           });
         }
 
