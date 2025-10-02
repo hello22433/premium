@@ -49,6 +49,8 @@ export class DeliveryAlimTalkInfoBankHttp implements DeliveryAlimTalk {
     this.infoBankSenderKey = this.configService.getOrThrow('ALIM_TALK_INFO_BANK_SENDER_KEY');
     this.infoBankTemplateCode = this.configService.getOrThrow('ALIM_TALK_INFO_BANK_TEMPLATE_CODE');
     this.receiveUrl = this.configService.getOrThrow('ALIM_TALK_RECEIVE_URL');
+    this.reportUrl = this.configService.getOrThrow('ALIM_TALK_REPORT_URL');
+    this.apiKey = this.configService.getOrThrow('ALIM_TALK_API_KEY');
     if (this.configService.getOrThrow('ENVIRONMENT') === 'prod') {
       this.infoBankUrl = 'https://omni.ibapi.kr';
     }
@@ -61,6 +63,8 @@ export class DeliveryAlimTalkInfoBankHttp implements DeliveryAlimTalk {
   private infoBankSenderKey: string = '';
   private infoBankTemplateCode: string = '';
   private receiveUrl: string = '';
+  private reportUrl: string = '';
+  private apiKey: string = '';
 
   private infoBankUrl = 'https://omni.ibapi.kr';
 
@@ -131,57 +135,45 @@ export class DeliveryAlimTalkInfoBankHttp implements DeliveryAlimTalk {
       const response = await firstValueFrom(this.httpService.post(url, body, { headers }));
 
       const responseData = response.data as InfoBankSendResponse;
-
-      try {
-        await firstValueFrom(
-          this.httpService.delete(`${this.infoBankUrl}/v1/report/polling/${responseData.msgKey}`, { headers }),
-        );
-      } catch (e) {
-        this.logger.log(`수신 확인 : ${JSON.stringify(e)}`);
-      }
-      // const reportResponse = await firstValueFrom(
-      //   this.httpService.get(`${this.infoBankUrl}/v1/report/inquiry/${responseData.msgKey}`, { headers }),
-      // );
-      this.logger.log(`알림톡 발신 : ${JSON.stringify(responseData)}`);
-
       const msgKey = responseData.msgKey;
 
-      // report 조회 재시도 (최대 3번, 각 1초 대기)
-      let reportOne: { msgKey: string; reportCode: string; [key: string]: any } | undefined = undefined;
-      let reportResponsePollingData: InfoBankReportResponse | null = null;
+      this.logger.log(`알림톡 발신 : ${JSON.stringify(responseData)}`);
+
+      // inquiry API로 수신 확인 재시도 (최대 3번, 각 1초 대기)
+      let reportResult: { success: boolean; reportCode?: string; data?: any; error?: string } | undefined = undefined;
 
       for (let attempt = 1; attempt <= 3; attempt++) {
         await this.sleep(1000);
 
-        const reportResponsePolling = await firstValueFrom(
-          this.httpService.get(`${this.infoBankUrl}/v1/report/polling`, { headers }),
-        );
+        reportResult = await this.inquiryReport(msgKey);
 
-        reportResponsePollingData = reportResponsePolling.data;
-        const reportList = reportResponsePollingData?.data?.report || [];
-        const reportMap = listToMap(reportList, (report: any) => report.msgKey);
-
-        reportOne = reportMap.get(msgKey);
-        if (reportOne) {
-          this.logger.log(`Report found on attempt ${attempt}`);
+        if (reportResult.success && reportResult.data) {
+          this.logger.log(`Report inquiry success on attempt ${attempt}: ${JSON.stringify(reportResult.data)}`);
           break;
         }
 
-        this.logger.log(`Report not found on attempt ${attempt}, retrying...`);
+        this.logger.log(`Report inquiry failed on attempt ${attempt}: ${reportResult.error}, retrying...`);
       }
 
-      if (!reportOne) {
-        this.logger.error(JSON.stringify(reportResponsePollingData));
-        this.logger.error(JSON.stringify(responseData));
-        throw new Error(`msgKey "${msgKey}" not found in reportResponsePollingData after 3 attempts`);
+      if (!reportResult || !reportResult.success) {
+        this.logger.error(`Final inquiry result: ${JSON.stringify(reportResult)}`);
+        this.logger.error(`Original send response: ${JSON.stringify(responseData)}`);
+        throw new Error(`msgKey "${msgKey}" inquiry failed after 3 attempts: ${reportResult?.error || 'Unknown error'}`);
       }
 
-      if (reportOne.reportCode !== '10000') {
-        this.logger.error(JSON.stringify(reportOne));
-        throw new Error(`msgKey "${msgKey}" not send ${reportOne.reportCode}`);
+      if (reportResult.reportCode !== '10000') {
+        this.logger.error(JSON.stringify(reportResult.data));
+        throw new Error(`msgKey "${msgKey}" not send successfully. reportCode: ${reportResult.reportCode}`);
       }
 
-      const reportData = reportResponsePollingData as InfoBankReportResponse;
+      // InfoBankReportResponse 형식으로 변환
+      const reportData: InfoBankReportResponse = {
+        code: 'A000',
+        result: 'Success',
+        data: {
+          report: [reportResult.data],
+        },
+      };
 
       return { responseData, report: reportData };
     } catch (e) {
@@ -193,5 +185,49 @@ export class DeliveryAlimTalkInfoBankHttp implements DeliveryAlimTalk {
 
   private async sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private async inquiryReport(msgKey: string): Promise<{
+    success: boolean;
+    reportCode?: string;
+    data?: any;
+    error?: string;
+  }> {
+    try {
+      const url = `${this.reportUrl}/api/comm/v1/report/inquiry/${msgKey}`;
+      const headers = {
+        'Authorization': this.apiKey,
+        'Accept': 'application/json',
+      };
+
+      const response = await firstValueFrom(this.httpService.get(url, { headers }));
+
+      // 성공 응답 (200)
+      if (response.status === 200 && response.data?.common?.authResult === 'SUCCESS') {
+        const reportData = response.data?.data?.data?.report?.[0];
+        if (reportData) {
+          return {
+            success: true,
+            reportCode: reportData.reportCode,
+            data: reportData,
+          };
+        }
+      }
+
+      return { success: false, error: 'No report data found' };
+    } catch (e) {
+      // 에러 응답 처리 (400, 401, 429, 500)
+      if (e.response?.data) {
+        const errorData = e.response.data;
+        this.logger.warn(`Report inquiry error: ${JSON.stringify(errorData)}`);
+        return {
+          success: false,
+          error: `${errorData.code}: ${errorData.result}`,
+        };
+      }
+
+      this.logger.error(`Report inquiry failed: ${e.message}`);
+      return { success: false, error: e.message };
+    }
   }
 }
