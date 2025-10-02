@@ -179,10 +179,8 @@ export class CustomerServiceService {
         id: orderDelivery.id,
         registerAt: format(orderDelivery.createdAt, DateFormatStr),
         productName: orderDelivery.orderProductMapping.product.name,
-        deliveryTarget: orderDelivery.deliveryTarget
-          ? MaskingUtil.maskDeliveryTarget(orderDelivery.deliveryTarget)
-          : null,
-        barCode: orderDelivery.barCode ? MaskingUtil.maskPinNumber(orderDelivery.barCode) : null,
+        deliveryTarget: orderDelivery.deliveryTarget,
+        barCode: orderDelivery.barCode,
         brandName: orderDelivery.orderProductMapping.product.brand!.nameKorean ?? '',
         partnerCompanyName: orderDelivery.orderProductMapping.product.partnerCompany?.businessName ?? '',
         eventName: orderDelivery.orderProductMapping.order.eventName,
