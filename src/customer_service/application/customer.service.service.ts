@@ -11,7 +11,6 @@ import {
   CustomerServiceReSendReqDto,
   CustomerServiceStatusListReqDto,
   CustomerServiceUnmaskedDeliveryTargetReqDto,
-  UpdateCouponStatusReqDto,
 } from '../api/customer.service.req.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { OrderEntity } from '../../entity/order.entity';
@@ -33,10 +32,11 @@ import { OrderHistoryEntity } from 'src/entity/order.history.entity';
 import { User } from 'src/auth/api/user.decorator';
 import { GemteckMsgQueueEntity } from 'src/entity/gemtek/msg.queue.entity';
 import { ConfigService } from '@nestjs/config';
-const dayjs = require('dayjs');
-const timezone = require('dayjs/plugin/timezone');
 import { SmsGemtekSend } from 'src/sms/infra/sms.gemtek.send';
 import { MaskingUtil } from 'src/common/utils/masking.util';
+
+const dayjs = require('dayjs');
+const timezone = require('dayjs/plugin/timezone');
 
 dayjs.extend(timezone);
 
@@ -137,7 +137,7 @@ export class CustomerServiceService {
         deliveryMethod: firstDelivery?.deliveryMethod || null,
         couponStatus:
           order.orderProductMappings?.[0]?.orderDeliveries?.[0]?.couponStatus ?? OrderDeliveryCouponStatus.NOT_USED,
-        barCode: firstDelivery?.barCode || null,
+        barCode: firstDelivery?.barCode ? MaskingUtil.maskPinNumber(firstDelivery.barCode) : null,
       });
     }
 
@@ -248,9 +248,9 @@ export class CustomerServiceService {
       couponStatus: queryBuilder.couponStatus,
       status: queryBuilder.status,
       apiErrorMessage: queryBuilder.apiErrorMessage,
-      barCode: queryBuilder.barCode,
+      barCode: queryBuilder.barCode ? MaskingUtil.maskPinNumber(queryBuilder.barCode) : null,
       tradeAt: queryBuilder.tradeAt ? format(queryBuilder.tradeAt, DateFormatStr) : null,
-      extraPinNo: queryBuilder.personalCode,
+      extraPinNo: queryBuilder.personalCode ? MaskingUtil.maskPinNumber(queryBuilder.personalCode) : null,
       expireDay: product.expireDay.toString(),
     };
   }
@@ -672,7 +672,7 @@ export class CustomerServiceService {
       getBody.afterChange = getBody.afterChange?.replace(/[^0-9]/g, '').trim();
     }
 
-    const result = {
+    return {
       orderDeliveryId: getBody.orderDeliveryId,
       userId: user.id,
       type: getBody.type,
@@ -683,8 +683,6 @@ export class CustomerServiceService {
       orderDelivery,
       smsEntity,
     };
-
-    return result;
   }
 
   /**

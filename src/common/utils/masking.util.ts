@@ -66,4 +66,27 @@ export class MaskingUtil {
       return this.maskPhoneNumber(deliveryTarget);
     }
   }
+
+  /**
+   * 바코드/핀번호 마스킹 처리
+   * 첫번째 글자와 마지막 두글자만 남기고 중간은 - 으로 처리
+   * 134913491 -> 1-91
+   * M103912j32 -> M-32
+   */
+  static maskPinNumber(value: string): string {
+    if (!value) return '';
+
+    const length = value.length;
+
+    if (length <= 2) {
+      return value;
+    }
+
+    if (length === 3) {
+      return `${value.charAt(0)}-${value.charAt(2)}`;
+    }
+
+    // 첫 글자 + '-' + 마지막 2글자
+    return `${value.charAt(0)}-${value.substring(length - 2)}`;
+  }
 }
