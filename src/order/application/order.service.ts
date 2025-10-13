@@ -1,4 +1,10 @@
-import { BadRequestException, Injectable, Logger, InternalServerErrorException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  InternalServerErrorException,
+  Logger,
+} from '@nestjs/common';
 import { UserManagementService } from '../../user_management/application/user.management.service';
 import { SsgEventService } from '../../ssg_event/application/ssg.event.service';
 import {
@@ -913,13 +919,18 @@ export class OrderService {
     const order = await this.orderRepository.findOne({
       where: {
         id: id,
-        userId: user.id,
+        // userId: user.id,
         // status: IOrderStatus.TEMP,
       },
     });
 
     if (!order) {
       throw new BadRequestException('존재하지 않는 주문입니다.');
+    }
+
+    // 최고 관리자 외 타 유저 주문 수정 불가능
+    if (user.authority !== IUserAuthority.SUPER_ADMIN && order.userId !== user.id) {
+      throw new ForbiddenException('타 유저의 주문입니다.');
     }
 
     if (order.status !== IOrderStatus.TEMP) {
