@@ -90,6 +90,9 @@ export class OrderEntity extends BaseEntity {
   @Column({ type: 'int', nullable: true, comment: 'FK) ssg_event.id for SSG orders' })
   ssgEventId: number | null;
 
+  @Column({ type: 'int', nullable: true, comment: '독려 문자 day' })
+  encourageDay: number | null;
+
   @ManyToOne(() => UserEntity, { createForeignKeyConstraints: false })
   @JoinColumn({ name: 'user_id' })
   user?: UserEntity;

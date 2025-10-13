@@ -77,6 +77,9 @@ export class OrderDeliveryEntity extends BaseEntity {
   @Column({ default: 0, comment: '갤럭시아 상품권형 잔액' })
   galaxiaBalance: number;
 
+  @Column({ type: 'datetime', nullable: true, comment: '독려 문자 일시' })
+  encourageAt: Date | null;
+
   @ManyToOne(() => OrderProductMappingEntity, { createForeignKeyConstraints: false })
   @JoinColumn({ name: 'order_product_mapping_id' })
   orderProductMapping: OrderProductMappingEntity;

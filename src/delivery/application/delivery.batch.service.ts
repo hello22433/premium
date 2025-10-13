@@ -16,7 +16,7 @@ import { OrderEncryptKey } from '../../order_receive/interface/order.encrypt.key
 import { ConfigService } from '@nestjs/config';
 import { EmailSendHistoryEntity } from '../../entity/email.send.history.entity';
 import { generateRandomCode } from '../../user_find/domain/code.generate';
-import { addDays } from 'date-fns';
+import { addDays, format, subDays } from 'date-fns';
 import { EmailCertifyExpireDay } from '../../const';
 import { EmailType } from '../../mail/domain/email.type';
 import { IOrderType } from '../../order/interface/order.type';
@@ -34,6 +34,7 @@ import { DeliveryTrackHttp } from '../infra/delivery.track.http';
 import { DeliveryTrackingStatus } from '../domain/delivery.tracking.status';
 import { OrderRealProductMappingEntity } from '../../entity/order.real.product.mapping.entity';
 import { Transactional } from 'typeorm-transactional';
+import { OrderDeliveryCouponStatus } from '../interface/order.delivery.coupon.status';
 
 @Injectable()
 export class DeliveryBatchService {
@@ -113,6 +114,12 @@ export class DeliveryBatchService {
             : orderDelivery.orderProductMapping.product.expireDay - 1;
 
         orderDelivery.expireAt = addDays(orderDelivery.sendRequestAt, expireDays);
+        if (orderDelivery.orderProductMapping.order.encourageDay) {
+          orderDelivery.encourageAt = subDays(
+            orderDelivery.expireAt,
+            orderDelivery.orderProductMapping.order.encourageDay,
+          );
+        }
       }
 
       const filePathList = [];
@@ -431,6 +438,12 @@ export class DeliveryBatchService {
         orderDelivery.sendRequestAt,
         orderDelivery.orderProductMapping.product.expireDay,
       );
+      if (orderDelivery.orderProductMapping.order.encourageDay) {
+        orderDelivery.encourageAt = subDays(
+          orderDelivery.expireAt,
+          orderDelivery.orderProductMapping.order.encourageDay,
+        );
+      }
     }
 
     const filePathList = [];
@@ -644,6 +657,76 @@ export class DeliveryBatchService {
       { id: In(destroyPhoneNumberIdList) },
       { deliveryTarget: encryptedDestroyPhoneNumber },
     );
-    await this.orderDeliveryRepository.update({ id: In(destroyEmailIdList) }, { deliveryTarget: encryptedDestroyEmail });
+    await this.orderDeliveryRepository.update(
+      { id: In(destroyEmailIdList) },
+      { deliveryTarget: encryptedDestroyEmail },
+    );
+  }
+
+  async handleDeliveryEncourage() {
+    // const now = new Date();
+
+    const orderDeliveryList = await this.orderDeliveryRepository
+      .createQueryBuilder('orderDelivery')
+      .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
+      .innerJoinAndSelect('orderProductMapping.order', 'order')
+      .where(`orderDelivery.encourageAt >= :startOfDay AND orderDelivery.encourageAt < :endOfDay`, {
+        startOfDay: new Date(new Date().setHours(0, 0, 0, 0) - 9 * 60 * 60 * 1000),
+        endOfDay: new Date(new Date().setHours(24, 0, 0, 0) - 9 * 60 * 60 * 1000),
+      })
+      .andWhere('order.status = :status', { status: IOrderStatus.DELIVERY_COMPLETE })
+      .andWhere('orderDelivery.couponStatus = :couponStatus', { couponStatus: OrderDeliveryCouponStatus.NOT_USED })
+      .andWhere('orderDelivery.status IN (:...deliveryStatusList)', {
+        deliveryStatusList: [IOrderDeliveryStatus.COMPLETE, IOrderDeliveryStatus.COMPLETE_SMS],
+      })
+      .andWhere('orderDelivery.expireAt IS NOT NULL')
+      .andWhere('orderDelivery.encourageAt IS NOT NULL')
+      .andWhere('orderDelivery.barCode IS NOT NULL')
+      .getMany();
+
+    for (const orderDelivery of orderDeliveryList) {
+      // deliveryTarget 복호화
+      let decryptedDeliveryTarget = orderDelivery.deliveryTarget;
+      if (orderDelivery.deliveryTarget) {
+        try {
+          decryptedDeliveryTarget = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.deliveryTarget);
+        } catch (error) {
+          this.logger.error(`Failed to decrypt deliveryTarget for orderDelivery ${orderDelivery.id}: ${error}`);
+          // 복호화 실패 시 원본 데이터 사용
+          decryptedDeliveryTarget = orderDelivery.deliveryTarget;
+        }
+      }
+
+      // TODO email 독려 문자 전송 여부
+      // const emailText = EmailDeliveryTemplate({
+      //   topImagePath: orderDelivery.orderProductMapping.topImagePath,
+      //   productImagePath: orderDelivery.orderProductMapping.product.imagePath,
+      //   text,
+      //   url: url,
+      //   code: emailSendHistory.code,
+      //   useEmailContent: orderDelivery.orderProductMapping.order.useEmailContent!,
+      //   qrCodeImagePath,
+      // });
+
+      if (
+        orderDelivery.deliveryMethod === IOrderSendMethod.ALIM_TALK ||
+        orderDelivery.deliveryMethod === IOrderSendMethod.SMS
+      ) {
+        try {
+          const title = '미사용쿠폰발생 안내';
+          const smsText = `미사용쿠폰발생. 뒷자리 ${orderDelivery.barCode!.slice(0, -4)}번. ${format(orderDelivery.expireAt!, 'yyyy/MM/dd')}일까지사용. 재발송문의 1644-3614`;
+          await this.smsSend.send({
+            msgType: 'M',
+            to: decryptedDeliveryTarget,
+            from: orderDelivery.orderProductMapping.order.fromPhoneNumber!,
+            subject: title,
+            text: smsText,
+            filePath: [],
+          });
+        } catch (e) {
+          console.error(e);
+        }
+      }
+    }
   }
 }

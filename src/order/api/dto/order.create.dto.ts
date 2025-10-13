@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsArray, IsEnum, IsOptional, IsString, Matches } from 'class-validator';
+import { IsArray, IsEnum, IsNumber, IsOptional, IsString, Matches } from 'class-validator';
 import { IOrderSendMethod } from '../../interface/order.send.method';
 import { dateAtRegexp } from '../../../common/domain/date.regexp';
 import { Transform, Type } from 'class-transformer';
@@ -121,6 +121,14 @@ export class OrderCreateDto {
   @IsOptional()
   @IsString()
   sendType: string | null;
+
+  @ApiPropertyOptional({
+    description: '독려 문자 day',
+  })
+  // =================================================
+  @IsOptional()
+  @IsNumber()
+  encourageDay: number | null;
 
   @ApiProperty({
     description: '상품 수량',

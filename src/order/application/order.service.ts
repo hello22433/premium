@@ -782,6 +782,7 @@ export class OrderService {
 
       sendRequestAt,
       sendType,
+      encourageDay,
       orderProductList,
     } = getBody;
 
@@ -852,6 +853,7 @@ export class OrderService {
       registerAt: new Date(),
       sendRequestAt: sendAt,
       sendType: sendType,
+      encourageDay: encourageDay,
     });
     const orderId: number = orderInsertResult.identifiers[0].id;
 
@@ -907,6 +909,7 @@ export class OrderService {
       sendContent,
       sendRequestAt,
       sendType,
+      encourageDay,
       orderProductList,
     } = getBody;
 
@@ -976,6 +979,7 @@ export class OrderService {
     order.sendAmount = sendAmount;
     order.settleAmount = sendAmount;
     order.sendType = sendType;
+    order.encourageDay = encourageDay;
     order.sendRequestAt = sendAt;
 
     await this.orderRepository.save(order);
