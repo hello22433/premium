@@ -4,6 +4,7 @@ import { FindOptionsWhere, In, Like, Repository } from 'typeorm';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
   ProductCreateReqDto,
+  ProductDeleteReqDto,
   ProductExcelDownloadReqBodyDto,
   ProductGetDetailReqParamDto,
   ProductGetListReqQueryDto,
@@ -957,5 +958,25 @@ export class ProductService {
       productLike.isLike = isLike;
     }
     await this.productLikeRepository.save(productLike);
+  }
+
+  async delete(getDto: ProductDeleteReqDto) {
+    const { idList } = getDto;
+
+    const productList = await this.productRepository.find({
+      where: {
+        id: In(idList),
+      },
+    });
+
+    if (productList.length !== idList.length) {
+      throw new BadRequestException('실제 존재하는 상품 개수가 일치하지 않습니다.');
+    }
+
+    await this.productRepository.softDelete({
+      id: In(idList),
+    });
+
+    return;
   }
 }

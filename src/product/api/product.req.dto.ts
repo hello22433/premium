@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional, PartialType } from '@nestjs/swagger';
-import { IsBoolean, IsEnum, IsIn, IsInt, IsNotEmpty, IsNumber, IsOptional, Max, Min } from 'class-validator';
+import { IsArray, IsBoolean, IsEnum, IsIn, IsInt, IsNotEmpty, IsNumber, IsOptional, Max, Min } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
 import { PagingReqDto } from '../../common/api/dto/pagination.req.dto';
 import { IProductSettleMethod } from '../interface/product.settle.method';
@@ -435,4 +435,15 @@ export class ProductSetLikeReqDto {
   @IsBoolean()
   @IsNotEmpty()
   isLike: boolean;
+}
+
+export class ProductDeleteReqDto {
+  @ApiProperty({
+    description: '삭제 할 product id list',
+  })
+  // ==================================
+  @IsArray()
+  @IsNotEmpty()
+  @IsNumber({}, { each: true })
+  idList: number[];
 }
