@@ -288,10 +288,31 @@ export class OrderService {
               brandName: orderProductMapping.product.brand?.nameKorean ?? '',
             }
           : null;
+
+        if (!product) {
+          continue;
+        }
+
         productList.push({
           id: orderProductMapping.id,
           product: product,
           orderDeliveryList: orderDeliveryList,
+
+          emailSendType: orderProductMapping.emailSendType,
+          fromEmail: orderProductMapping.fromEmail,
+          fromPhoneNumber: orderProductMapping.fromPhoneNumber,
+          requestToDestroyPersonalInfoDay: orderProductMapping.requestToDestroyPersonalInfoDay,
+          sendContent: orderProductMapping.sendContent ? orderProductMapping.sendContent : order.sendContent,
+          sendMethod: orderProductMapping.sendMethod ? orderProductMapping.sendMethod : order.sendMethod,
+          sendRequestAt: orderProductMapping.sendRequestAt
+            ? format(order.sendRequestAt, DateFormatStr)
+            : orderProductMapping.sendRequestAt
+              ? format(orderProductMapping.sendRequestAt, DateFormatStr)
+              : null,
+          sendTailText: orderProductMapping.sendTailText,
+          sendTitle: orderProductMapping.sendTitle ? orderProductMapping.sendTitle : order.sendTitle,
+          sendType: orderProductMapping.sendType,
+          useEmailContent: orderProductMapping.useEmailContent,
         });
       }
     }
@@ -872,20 +893,42 @@ export class OrderService {
       orderProduct.topImagePath = topImagePath ?? OrderService.DEFAULT_TOP_IMAGE_PATH;
       orderProduct.midImagePath = midImagePath ?? OrderService.DEFAULT_MID_IMAGE_PATH;
 
+      const isProductImmediate = product.sendType === 'IMMEDIATE';
+      const productSendAt = isProductImmediate
+        ? new Date()
+        : product.sendRequestAt
+          ? new Date(product.sendRequestAt)
+          : sendAt;
+
+      orderProduct.sendMethod = product.sendMethod;
+      orderProduct.sendTailText = product.sendTailText;
+      orderProduct.requestToDestroyPersonalInfoDay = product.requestToDestroyPersonalInfoDay;
+      orderProduct.fromPhoneNumber = product.fromPhoneNumber;
+      orderProduct.fromEmail = product.fromEmail;
+      orderProduct.sendTitle = product.sendTitle;
+      orderProduct.emailSendType = product.emailSendType;
+      orderProduct.useEmailContent = product.useEmailContent;
+      orderProduct.sendContent = product.sendContent;
+      orderProduct.sendRequestAt = productSendAt;
+      orderProduct.sendType = product.sendType;
+
       await this.orderProductMappingRepository.save(orderProduct);
+
+      // 상품별 발신 수단 선 적용
+      const deliverySendMethod = orderProduct.sendMethod ?? sendMethod;
 
       for (const orderDelivery of product.orderDeliveryList) {
         const oneOrderDelivery = new OrderDeliveryEntity();
         oneOrderDelivery.orderProductMappingId = orderProduct.id;
         oneOrderDelivery.status = IOrderDeliveryStatus.TEMP;
-        oneOrderDelivery.deliveryMethod = sendMethod;
+        oneOrderDelivery.deliveryMethod = deliverySendMethod;
         oneOrderDelivery.deliveryTarget = this.cryptoCipher.encryptDeliveryTarget(
           PhoneUtil.normalizeDeliveryTarget(orderDelivery.deliveryTarget),
         );
         oneOrderDelivery.replaceCharacter1 = orderDelivery.replaceCharacter1 ?? null;
         oneOrderDelivery.replaceCharacter2 = orderDelivery.replaceCharacter2 ?? null;
         oneOrderDelivery.replaceCharacter3 = orderDelivery.replaceCharacter3 ?? null;
-        oneOrderDelivery.sendRequestAt = sendAt;
+        oneOrderDelivery.sendRequestAt = productSendAt;
         orderDeliveryCreateList.push(oneOrderDelivery);
       }
     }
@@ -1022,19 +1065,42 @@ export class OrderService {
       if (topImagePath !== undefined && topImagePath !== null) orderProduct.topImagePath = topImagePath;
       if (midImagePath !== undefined && midImagePath !== null) orderProduct.midImagePath = midImagePath;
 
+      const isProductImmediate = product.sendType === 'IMMEDIATE';
+      const productSendAt = isProductImmediate
+        ? new Date()
+        : product.sendRequestAt
+          ? new Date(product.sendRequestAt)
+          : sendAt;
+
+      orderProduct.sendMethod = product.sendMethod;
+      orderProduct.sendTailText = product.sendTailText;
+      orderProduct.requestToDestroyPersonalInfoDay = product.requestToDestroyPersonalInfoDay;
+      orderProduct.fromPhoneNumber = product.fromPhoneNumber;
+      orderProduct.fromEmail = product.fromEmail;
+      orderProduct.sendTitle = product.sendTitle;
+      orderProduct.emailSendType = product.emailSendType;
+      orderProduct.useEmailContent = product.useEmailContent;
+      orderProduct.sendContent = product.sendContent;
+      orderProduct.sendRequestAt = productSendAt;
+      orderProduct.sendType = product.sendType;
+
       await this.orderProductMappingRepository.save(orderProduct);
+
+      // 상품별 발신 수단 선 적용
+      const deliverySendMethod = orderProduct.sendMethod ?? order.sendMethod;
+
       for (const orderDelivery of product.orderDeliveryList) {
         const oneOrderDelivery = new OrderDeliveryEntity();
         oneOrderDelivery.orderProductMappingId = orderProduct.id;
         oneOrderDelivery.status = IOrderDeliveryStatus.TEMP;
-        oneOrderDelivery.deliveryMethod = sendMethod;
+        oneOrderDelivery.deliveryMethod = deliverySendMethod;
         oneOrderDelivery.deliveryTarget = this.cryptoCipher.encryptDeliveryTarget(
           PhoneUtil.normalizeDeliveryTarget(orderDelivery.deliveryTarget),
         );
         oneOrderDelivery.replaceCharacter1 = orderDelivery.replaceCharacter1 ?? null;
         oneOrderDelivery.replaceCharacter2 = orderDelivery.replaceCharacter2 ?? null;
         oneOrderDelivery.replaceCharacter3 = orderDelivery.replaceCharacter3 ?? null;
-        oneOrderDelivery.sendRequestAt = sendAt;
+        oneOrderDelivery.sendRequestAt = productSendAt;
         orderDeliveryCreateList.push(oneOrderDelivery);
       }
     }
