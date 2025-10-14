@@ -1,6 +1,9 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsArray, IsNotEmpty, IsNumber, IsOptional } from 'class-validator';
-import { Type } from 'class-transformer';
+import { IsArray, IsEnum, IsNotEmpty, IsNumber, IsOptional, IsString, Matches } from 'class-validator';
+import { Transform, Type } from 'class-transformer';
+import { IOrderSendMethod } from '../../interface/order.send.method';
+import { OrderEmailSendType } from '../../domain/order.email.send.type';
+import { dateAtRegexp } from '../../../common/domain/date.regexp';
 
 export class OrderProductCreateTempDto {
   @ApiPropertyOptional({
@@ -26,6 +29,95 @@ export class OrderProductCreateTempDto {
   @IsNotEmpty()
   @IsNumber()
   amount: number;
+
+  @ApiPropertyOptional({
+    description: '전송 방식 ex) 알림톡: ALIM_TALK, 문자: SMS, 이메일: EMAIL',
+  })
+  // =================================================
+  @IsEnum(IOrderSendMethod)
+  @IsOptional()
+  sendMethod: IOrderSendMethod | null;
+
+  @ApiPropertyOptional({
+    description: '꼬리 광고 텍스트',
+  })
+  // =================================================
+  @IsOptional()
+  sendTailText: string | null;
+
+  @ApiPropertyOptional({
+    description: '개인정보 파기 요청 일',
+  })
+  // =================================================
+  @IsNumber()
+  @IsOptional()
+  requestToDestroyPersonalInfoDay: number | null;
+
+  @ApiPropertyOptional({
+    description: '발신 번호',
+  })
+  // =================================================
+  @IsOptional()
+  @IsString()
+  fromPhoneNumber: string | null;
+
+  @ApiPropertyOptional({
+    description: '발신 이메일',
+  })
+  // =================================================
+  @IsOptional()
+  @IsString()
+  fromEmail: string | null;
+
+  @ApiPropertyOptional({
+    description: '전송 제목',
+  })
+  // =================================================
+  @IsOptional()
+  @IsString()
+  sendTitle: string | null;
+
+  @ApiPropertyOptional({
+    description: 'QR: QR, URL: URL',
+  })
+  // =================================================
+  @IsOptional()
+  @IsEnum(OrderEmailSendType)
+  @Transform(({ value }) => (value === '' ? null : value)) // 빈 문자열을 null로 변환
+  emailSendType: OrderEmailSendType | null = null;
+
+  @ApiProperty({
+    description: '이메일 사용 방법',
+  })
+  // =================================================
+  @IsOptional()
+  @IsString()
+  useEmailContent: string | null;
+
+  @ApiPropertyOptional({
+    description: '전송 내용',
+  })
+  // =================================================
+  @IsString()
+  @IsOptional()
+  sendContent: string | null;
+
+  @ApiPropertyOptional({
+    description: '발송 요청 시각 ex) yyyy-MM-ddTHH:mm:ss',
+    nullable: true,
+  })
+  // =================================================
+  @IsOptional()
+  @Matches(dateAtRegexp)
+  sendRequestAt: string | null;
+
+  @ApiProperty({
+    description: '발송 방식 ex) IMMEDIATE : 즉시, RESERVE : 예약',
+  })
+  // =================================================
+  @IsOptional()
+  @IsString()
+  sendType: string | null;
 
   @ApiProperty({
     description: '수신자 정보 list',

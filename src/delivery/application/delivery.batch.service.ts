@@ -101,7 +101,7 @@ export class DeliveryBatchService {
         }
       }
 
-      const title = orderDelivery.orderProductMapping.order.sendTitle;
+      const title = orderDelivery.orderProductMapping.sendTitle ?? orderDelivery.orderProductMapping.order.sendTitle;
 
       if (orderDelivery.orderProductMapping.order.type !== IOrderType.SSG) {
         // eslint-disable-next-line @typescript-eslint/ban-ts-comment
@@ -119,7 +119,7 @@ export class DeliveryBatchService {
       if (orderDelivery.imagePath) {
         filePathList.push(orderDelivery.imagePath);
       }
-      let text = orderDelivery.orderProductMapping.order.sendContent;
+      let text = orderDelivery.orderProductMapping.sendContent ?? orderDelivery.orderProductMapping.order.sendContent;
 
       if (
         orderDelivery.orderProductMapping.product.memo &&
@@ -128,8 +128,10 @@ export class DeliveryBatchService {
         text += `\n\n${orderDelivery.orderProductMapping.product.memo}`;
       }
 
-      if (orderDelivery.orderProductMapping.order.sendTailText) {
-        text += orderDelivery.orderProductMapping.order.sendTailText;
+      const sendTailText =
+        orderDelivery.orderProductMapping.sendTailText ?? orderDelivery.orderProductMapping.order.sendTailText;
+      if (sendTailText) {
+        text += sendTailText;
       }
       if (orderDelivery.replaceCharacter1) {
         text = text.replace('{대치문자1}', orderDelivery.replaceCharacter1);
@@ -202,10 +204,13 @@ export class DeliveryBatchService {
         );
 
         try {
+          const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber
+            ? orderDelivery.orderProductMapping.fromPhoneNumber
+            : orderDelivery.orderProductMapping.order.fromPhoneNumber!;
           await this.smsSend.send({
             msgType: 'M',
             to: decryptedDeliveryTarget,
-            from: orderDelivery.orderProductMapping.order.fromPhoneNumber!,
+            from: fromPhoneNumber,
             subject: title,
             text: smsText,
             filePath: filePathList,
@@ -236,7 +241,9 @@ export class DeliveryBatchService {
 
         const url = `${this.configService.getOrThrow('EMAIL_RECEIVE_URL')}/${encryptKeyEmail}`;
         let qrCodeImagePath = undefined;
-        if (orderDelivery.orderProductMapping.order.emailSendType === OrderEmailSendType.QR) {
+        const emailSendType =
+          orderDelivery.orderProductMapping.emailSendType ?? orderDelivery.orderProductMapping.order.emailSendType;
+        if (emailSendType === OrderEmailSendType.QR) {
           const qrCodeBuffer = await QRCode.toBuffer(url);
 
           // 파일명 생성
@@ -248,17 +255,22 @@ export class DeliveryBatchService {
           qrCodeImagePath = fileUrl.url;
         }
 
+        const useEmailContent =
+          orderDelivery.orderProductMapping.useEmailContent ?? orderDelivery.orderProductMapping.order.useEmailContent!;
+
         const emailText = EmailDeliveryTemplate({
           topImagePath: orderDelivery.orderProductMapping.topImagePath,
           productImagePath: orderDelivery.orderProductMapping.product.imagePath,
           text,
           url: url,
           code: emailSendHistory.code,
-          useEmailContent: orderDelivery.orderProductMapping.order.useEmailContent!,
+          useEmailContent: useEmailContent,
           qrCodeImagePath,
         });
 
         try {
+          const fromEmail =
+            orderDelivery.orderProductMapping.fromEmail ?? orderDelivery.orderProductMapping.order.fromEmail;
           await this.mailSend.send({
             saveSentMail: 'N',
             bcc: undefined,
@@ -266,7 +278,7 @@ export class DeliveryBatchService {
             content: emailText,
             subject: title,
             to: decryptedDeliveryTarget,
-            fromEmail: orderDelivery.orderProductMapping.order.fromEmail,
+            fromEmail: fromEmail,
           });
           orderDelivery.status = IOrderDeliveryStatus.COMPLETE;
           deliveryHistory.context = text;
@@ -390,10 +402,12 @@ export class DeliveryBatchService {
       let smsText =
         orderDelivery.orderProductMapping.order.type === IOrderType.SSG ? text + smsSsgTemplate(orderDelivery) : text;
 
+      const fromPhoneNumber =
+        orderDelivery.orderProductMapping.fromPhoneNumber ?? orderDelivery.orderProductMapping.order.fromPhoneNumber!;
       await this.smsSend.send({
         msgType: 'L',
         to: orderDelivery.deliveryTarget,
-        from: orderDelivery.orderProductMapping.order.fromPhoneNumber!,
+        from: fromPhoneNumber,
         subject: title,
         text: smsText,
         filePath: filePathList,
@@ -424,7 +438,7 @@ export class DeliveryBatchService {
 
     // 1. 알림톡, SMS, 이메일 전송
 
-    const title = orderDelivery.orderProductMapping.order.sendTitle;
+    const title = orderDelivery.orderProductMapping.sendTitle ?? orderDelivery.orderProductMapping.order.sendTitle;
 
     if (orderDelivery.orderProductMapping.order.type !== IOrderType.SSG) {
       orderDelivery.expireAt = addDays(
@@ -437,14 +451,16 @@ export class DeliveryBatchService {
     if (orderDelivery.imagePath) {
       filePathList.push(orderDelivery.imagePath);
     }
-    let text = orderDelivery.orderProductMapping.order.sendContent;
+    let text = orderDelivery.orderProductMapping.sendContent ?? orderDelivery.orderProductMapping.order.sendContent;
 
     if (orderDelivery.orderProductMapping.product.memo) {
       text += `\n\n${orderDelivery.orderProductMapping.product.memo}`;
     }
 
-    if (orderDelivery.orderProductMapping.order.sendTailText) {
-      text += orderDelivery.orderProductMapping.order.sendTailText;
+    const sendTailText =
+      orderDelivery.orderProductMapping.sendTailText ?? orderDelivery.orderProductMapping.order.sendTailText;
+    if (sendTailText) {
+      text += sendTailText;
     }
     if (orderDelivery.replaceCharacter1) {
       text = text.replace('{대치문자1}', orderDelivery.replaceCharacter1);
@@ -521,10 +537,12 @@ export class DeliveryBatchService {
       );
 
       try {
+        const fromPhoneNumber =
+          orderDelivery.orderProductMapping.fromPhoneNumber ?? orderDelivery.orderProductMapping.order.fromPhoneNumber!;
         await this.smsSend.send({
           msgType: 'M',
           to: decryptedDeliveryTarget,
-          from: orderDelivery.orderProductMapping.order.fromPhoneNumber!,
+          from: fromPhoneNumber,
           subject: title,
           text: smsText,
           filePath: filePathList,
@@ -555,7 +573,9 @@ export class DeliveryBatchService {
 
       const url = `${this.configService.getOrThrow('EMAIL_RECEIVE_URL')}/${encryptKeyEmail}`;
       let qrCodeImagePath = undefined;
-      if (orderDelivery.orderProductMapping.order.emailSendType === OrderEmailSendType.QR) {
+      const emailSendType =
+        orderDelivery.orderProductMapping.emailSendType ?? orderDelivery.orderProductMapping.order.emailSendType;
+      if (emailSendType === OrderEmailSendType.QR) {
         const qrCodeBuffer = await QRCode.toBuffer(url);
 
         // 파일명 생성
@@ -567,17 +587,21 @@ export class DeliveryBatchService {
         qrCodeImagePath = fileUrl.url;
       }
 
+      const useEmailContent =
+        orderDelivery.orderProductMapping.useEmailContent ?? orderDelivery.orderProductMapping.order.useEmailContent!;
       const emailText = EmailDeliveryTemplate({
         topImagePath: orderDelivery.orderProductMapping.topImagePath,
         productImagePath: orderDelivery.orderProductMapping.product.imagePath,
         text,
         url: url,
         code: emailSendHistory.code,
-        useEmailContent: orderDelivery.orderProductMapping.order.useEmailContent!,
+        useEmailContent: useEmailContent,
         qrCodeImagePath,
       });
 
       try {
+        const fromEmail =
+          orderDelivery.orderProductMapping.fromEmail ?? orderDelivery.orderProductMapping.order.fromEmail;
         await this.mailSend.send({
           saveSentMail: 'N',
           bcc: undefined,
@@ -585,7 +609,7 @@ export class DeliveryBatchService {
           content: emailText,
           subject: title,
           to: decryptedDeliveryTarget,
-          fromEmail: orderDelivery.orderProductMapping.order.fromEmail,
+          fromEmail: fromEmail,
         });
         orderDelivery.status = IOrderDeliveryStatus.COMPLETE;
         deliveryHistory.context = text;
