@@ -121,19 +121,6 @@ export class CustomerServiceService {
     const result: CustomerServiceViewDto[] = [];
     for (const order of orderList) {
       const firstDelivery = order.orderProductMappings![0].orderDeliveries?.[0];
-
-      // deliveryTarget 복호화 후 마스킹
-      let decryptedDeliveryTarget: string | null = null;
-      if (firstDelivery?.deliveryTarget) {
-        try {
-          const decrypted = this.cryptoCipher.decryptDeliveryTarget(firstDelivery.deliveryTarget);
-          decryptedDeliveryTarget = MaskingUtil.maskDeliveryTarget(decrypted);
-        } catch (error) {
-          // 복호화 실패 시 원본 데이터로 마스킹 (마이그레이션 과정에서 평문이 남아있을 수 있음)
-          decryptedDeliveryTarget = MaskingUtil.maskDeliveryTarget(firstDelivery.deliveryTarget);
-        }
-      }
-
       result.push({
         sendRequestAt: format(order.sendRequestAt, DateFormatStr),
         id: order.id,
@@ -146,7 +133,9 @@ export class CustomerServiceService {
         status: order.status,
         fromPhoneNumber: order.fromPhoneNumber,
         fromEmail: order.fromEmail,
-        deliveryTarget: decryptedDeliveryTarget,
+        deliveryTarget: firstDelivery?.deliveryTarget
+          ? MaskingUtil.maskDeliveryTarget(firstDelivery.deliveryTarget)
+          : null,
         transactionId: firstDelivery?.transactionId || null,
         deliveryMethod: firstDelivery?.deliveryMethod || null,
         couponStatus:
@@ -189,22 +178,11 @@ export class CustomerServiceService {
     const totalPage = Math.ceil(totalCount / take);
 
     const result: CustomerServiceDetailViewDto[] = orderDeliveryList.map((orderDelivery) => {
-      // deliveryTarget 복호화
-      let decryptedDeliveryTarget = orderDelivery.deliveryTarget;
-      if (orderDelivery.deliveryTarget) {
-        try {
-          decryptedDeliveryTarget = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.deliveryTarget);
-        } catch (error) {
-          // 복호화 실패 시 원본 데이터 사용 (마이그레이션 과정에서 평문이 남아있을 수 있음)
-          decryptedDeliveryTarget = orderDelivery.deliveryTarget;
-        }
-      }
-
       return {
         id: orderDelivery.id,
         registerAt: format(orderDelivery.createdAt, DateFormatStr),
         productName: orderDelivery.orderProductMapping.product.name,
-        deliveryTarget: decryptedDeliveryTarget,
+        deliveryTarget: orderDelivery.deliveryTarget,
         barCode: orderDelivery.barCode,
         brandName: orderDelivery.orderProductMapping.product.brand!.nameKorean ?? '',
         partnerCompanyName: orderDelivery.orderProductMapping.product.partnerCompany?.businessName ?? '',
@@ -255,24 +233,13 @@ export class CustomerServiceService {
     const order = queryBuilder.orderProductMapping.order;
     const user = queryBuilder.orderProductMapping.order.user;
 
-    // deliveryTarget 복호화
-    let decryptedDeliveryTarget = queryBuilder.deliveryTarget;
-    if (queryBuilder.deliveryTarget) {
-      try {
-        decryptedDeliveryTarget = this.cryptoCipher.decryptDeliveryTarget(queryBuilder.deliveryTarget);
-      } catch (error) {
-        // 복호화 실패 시 원본 데이터 사용 (마이그레이션 과정에서 평문이 남아있을 수 있음)
-        decryptedDeliveryTarget = queryBuilder.deliveryTarget;
-      }
-    }
-
     return {
       orderDeliveryId: queryBuilder.id,
       eventName: order.eventName,
       businessName: user?.businessName ?? '',
       personName: user?.personName ?? '',
       sendContent: order.sendContent,
-      deliveryTarget: decryptedDeliveryTarget,
+      deliveryTarget: queryBuilder.deliveryTarget,
       sendRequestAt: queryBuilder.sendRequestAt ? format(queryBuilder.sendRequestAt, DateFormatStr) : null,
       method: queryBuilder.deliveryMethod,
       fromPhoneNumber: order.fromPhoneNumber,
@@ -311,18 +278,7 @@ export class CustomerServiceService {
       throw new BadRequestException('주문 발송가 존재하지 않습니다.');
     }
 
-    // deliveryTarget 복호화 후 파기 여부 확인
-    let decryptedDeliveryTarget = orderDelivery.deliveryTarget;
-    if (orderDelivery.deliveryTarget) {
-      try {
-        decryptedDeliveryTarget = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.deliveryTarget);
-      } catch (error) {
-        // 복호화 실패 시 원본 데이터 사용
-        decryptedDeliveryTarget = orderDelivery.deliveryTarget;
-      }
-    }
-
-    if (decryptedDeliveryTarget === '000-0000-0000' || decryptedDeliveryTarget === '') {
+    if (orderDelivery.deliveryTarget === '000-0000-0000' || orderDelivery.deliveryTarget === '') {
       throw new BadRequestException('파기된 발송 정보입니다.');
     }
 
@@ -671,18 +627,6 @@ export class CustomerServiceService {
 
     let beforeChange = '';
     let smsEntity;
-
-    // deliveryTarget 복호화 (재전송 및 변경요청에서 사용)
-    let decryptedDeliveryTarget = orderDelivery.deliveryTarget;
-    if (orderDelivery.deliveryTarget) {
-      try {
-        decryptedDeliveryTarget = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.deliveryTarget);
-      } catch (error) {
-        // 복호화 실패 시 원본 데이터 사용
-        decryptedDeliveryTarget = orderDelivery.deliveryTarget;
-      }
-    }
-
     switch (getBody.type) {
       case '재전송': {
         switch (getBody.extraType) {
@@ -704,7 +648,7 @@ export class CustomerServiceService {
 
             smsEntity = this.gemteckMsgQueueRepository.create({
               msgType: 'S',
-              dstAddr: decryptedDeliveryTarget ?? '',
+              dstAddr: orderDelivery.deliveryTarget ?? '',
               callback: orderDelivery.orderProductMapping.order.fromPhoneNumber ?? '',
               text: text ?? '',
             });
@@ -714,7 +658,7 @@ export class CustomerServiceService {
         break;
       }
       case '수신정보 변경요청': {
-        beforeChange = decryptedDeliveryTarget;
+        beforeChange = orderDelivery.deliveryTarget;
         break;
       }
       case '폐기':
@@ -904,19 +848,8 @@ export class CustomerServiceService {
       throw new NotFoundException('존재하지 않는 발송 정보입니다.');
     }
 
-    // deliveryTarget 복호화 (마스킹되지 않은 원본 데이터 반환)
-    let decryptedDeliveryTarget = orderDelivery.deliveryTarget || '';
-    if (orderDelivery.deliveryTarget) {
-      try {
-        decryptedDeliveryTarget = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.deliveryTarget);
-      } catch (error) {
-        // 복호화 실패 시 원본 데이터 사용
-        decryptedDeliveryTarget = orderDelivery.deliveryTarget;
-      }
-    }
-
     return {
-      deliveryTarget: decryptedDeliveryTarget,
+      deliveryTarget: orderDelivery.deliveryTarget || '',
     };
   }
 }

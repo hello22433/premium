@@ -20,7 +20,6 @@ import { smsSsgTemplate } from '../../delivery/domain/sms.ssg.template';
 import { addDays, format, subDays } from 'date-fns';
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
 import { CancelCouponResDto } from '../api/CancelCouponResDto';
-import { CryptoCipher } from '../../common/infra/crypto.cipher';
 
 @Injectable()
 export class PartnerCompanyExternService {
@@ -43,7 +42,6 @@ export class PartnerCompanyExternService {
     private orderDeliveryRepository: Repository<OrderDeliveryEntity>,
     @InjectRepository(PartnerCompanyExternHistoryEntity)
     private partnerCompanyExternHistoryRepository: Repository<PartnerCompanyExternHistoryEntity>,
-    private cryptoCipher: CryptoCipher,
   ) {}
 
   private logger = new Logger('PARTNER_COMPANY_EXTERN');
@@ -51,18 +49,6 @@ export class PartnerCompanyExternService {
   @Transactional({ propagation: Propagation.REQUIRED })
   async issue(orderDelivery: OrderDeliveryEntity, ssgEvent: SsgEventEntity | null) {
     const type = orderDelivery.orderProductMapping!.product.partnerCompany!.type;
-
-    // deliveryTarget 복호화
-    let decryptedDeliveryTarget = orderDelivery.deliveryTarget;
-    if (orderDelivery.deliveryTarget) {
-      try {
-        decryptedDeliveryTarget = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.deliveryTarget);
-      } catch (error) {
-        this.logger.error(`Failed to decrypt deliveryTarget for orderDelivery ${orderDelivery.id}: ${error}`);
-        // 복호화 실패 시 원본 데이터 사용
-        decryptedDeliveryTarget = orderDelivery.deliveryTarget;
-      }
-    }
 
     let context = '';
     let isSuccess = true;
@@ -83,7 +69,7 @@ export class PartnerCompanyExternService {
         const galaxiaOut = await this.galaxia.issue({
           transactionId: orderDelivery.transactionId,
           partnerCompanyCode: orderDelivery.orderProductMapping.product.partnerCompanyCode,
-          fromPhoneNumber: decryptedDeliveryTarget,
+          fromPhoneNumber: orderDelivery.deliveryTarget,
           giftKind: giftKind,
         });
         context = JSON.stringify(galaxiaOut);
