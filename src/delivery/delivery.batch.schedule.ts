@@ -51,16 +51,4 @@ export class DeliveryBatchSchedule implements OnApplicationBootstrap {
       this.logger.error(e);
     }
   }
-
-  // 개인정보 파기
-  // 매일 00시 실행
-  @Cron('0 03 * * *')
-  async handleDeliveryEncourage() {
-    try {
-      await this.deliveryBatchService.handleDeliveryEncourage();
-      this.logger.log('encourage msg send');
-    } catch (e) {
-      this.logger.error(e);
-    }
-  }
 }

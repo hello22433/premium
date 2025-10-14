@@ -17,31 +17,33 @@ import { OrderEntity } from '../../entity/order.entity';
 import { SsgTransactionId } from '../domain/ssg.transaction.id';
 import { defaultFromPhoneNumber, ssgIssueUserName } from '../../const';
 import { smsSsgTemplate } from '../../delivery/domain/sms.ssg.template';
-import { addDays, format, subDays } from 'date-fns';
+import { addDays, format } from 'date-fns';
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
 import { CancelCouponResDto } from '../api/CancelCouponResDto';
+import { CryptoCipher } from '../../common/infra/crypto.cipher';
 
 @Injectable()
 export class PartnerCompanyExternService {
   constructor(
-    @Inject('IGalaxia')
-    private galaxia: IGalaxia,
-    @Inject('IGsmbiz')
-    private gsmbiz: IGsmbiz,
-    @Inject('IGiftiel')
-    private giftiel: IGiftiel,
-    @Inject('IGiftiShow')
-    private giftiShow: IGiftiShow,
-    @Inject('ICulture')
-    private culture: ICulture,
-    @Inject('ISsgIssue')
-    private ssgIssue: ISsgIssue,
-    @InjectRepository(OrderEntity)
-    private orderRepository: Repository<OrderEntity>,
-    @InjectRepository(OrderDeliveryEntity)
-    private orderDeliveryRepository: Repository<OrderDeliveryEntity>,
-    @InjectRepository(PartnerCompanyExternHistoryEntity)
-    private partnerCompanyExternHistoryRepository: Repository<PartnerCompanyExternHistoryEntity>,
+      @Inject('IGalaxia')
+      private galaxia: IGalaxia,
+      @Inject('IGsmbiz')
+      private gsmbiz: IGsmbiz,
+      @Inject('IGiftiel')
+      private giftiel: IGiftiel,
+      @Inject('IGiftiShow')
+      private giftiShow: IGiftiShow,
+      @Inject('ICulture')
+      private culture: ICulture,
+      @Inject('ISsgIssue')
+      private ssgIssue: ISsgIssue,
+      @InjectRepository(OrderEntity)
+      private orderRepository: Repository<OrderEntity>,
+      @InjectRepository(OrderDeliveryEntity)
+      private orderDeliveryRepository: Repository<OrderDeliveryEntity>,
+      @InjectRepository(PartnerCompanyExternHistoryEntity)
+      private partnerCompanyExternHistoryRepository: Repository<PartnerCompanyExternHistoryEntity>,
+      private cryptoCipher: CryptoCipher,
   ) {}
 
   private logger = new Logger('PARTNER_COMPANY_EXTERN');
@@ -49,6 +51,18 @@ export class PartnerCompanyExternService {
   @Transactional({ propagation: Propagation.REQUIRED })
   async issue(orderDelivery: OrderDeliveryEntity, ssgEvent: SsgEventEntity | null) {
     const type = orderDelivery.orderProductMapping!.product.partnerCompany!.type;
+
+    // deliveryTarget 복호화
+    let decryptedDeliveryTarget = orderDelivery.deliveryTarget;
+    if (orderDelivery.deliveryTarget) {
+      try {
+        decryptedDeliveryTarget = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.deliveryTarget);
+      } catch (error) {
+        this.logger.error(`Failed to decrypt deliveryTarget for orderDelivery ${orderDelivery.id}: ${error}`);
+        // 복호화 실패 시 원본 데이터 사용
+        decryptedDeliveryTarget = orderDelivery.deliveryTarget;
+      }
+    }
 
     let context = '';
     let isSuccess = true;
@@ -69,7 +83,7 @@ export class PartnerCompanyExternService {
         const galaxiaOut = await this.galaxia.issue({
           transactionId: orderDelivery.transactionId,
           partnerCompanyCode: orderDelivery.orderProductMapping.product.partnerCompanyCode,
-          fromPhoneNumber: orderDelivery.deliveryTarget,
+          fromPhoneNumber: decryptedDeliveryTarget,
           giftKind: giftKind,
         });
         context = JSON.stringify(galaxiaOut);
@@ -146,12 +160,9 @@ export class PartnerCompanyExternService {
         orderDelivery.personalCode = personalCode;
         orderDelivery.ssgTransactionId = SsgTransactionId.makeSsgTrade();
         orderDelivery.expireAt = addDays(
-          orderDelivery.sendRequestAt,
-          orderDelivery.orderProductMapping.product.expireDay - 1,
+            orderDelivery.sendRequestAt,
+            orderDelivery.orderProductMapping.product.expireDay - 1,
         );
-        if (order.encourageDay) {
-          orderDelivery.encourageAt = subDays(orderDelivery.expireAt, order.encourageDay);
-        }
         let text = order.sendContent;
 
         if (order.sendTailText) {
@@ -180,7 +191,7 @@ export class PartnerCompanyExternService {
           msgContent: textForSsg,
           trId: orderDelivery.ssgTransactionId,
           callBack:
-            order.fromPhoneNumber === '' || !order.fromPhoneNumber ? defaultFromPhoneNumber : order.fromPhoneNumber,
+              order.fromPhoneNumber === '' || !order.fromPhoneNumber ? defaultFromPhoneNumber : order.fromPhoneNumber,
         });
         context = JSON.stringify(response);
       }
@@ -287,7 +298,7 @@ export class PartnerCompanyExternService {
     }
 
     switch (partnerType) {
-      // 1. GALAXIA
+        // 1. GALAXIA
       case 'GALAXIA': {
         const baseProduct = orderDelivery.choiceSelectProduct ?? orderDelivery.orderProductMapping.product;
 
@@ -299,18 +310,18 @@ export class PartnerCompanyExternService {
         });
 
         orderDelivery.couponStatus = giftCertificate.isUsed
-          ? OrderDeliveryCouponStatus.USED
-          : OrderDeliveryCouponStatus.NOT_USED;
+            ? OrderDeliveryCouponStatus.USED
+            : OrderDeliveryCouponStatus.NOT_USED;
         orderDelivery.tradeAt = giftCertificate.usedDate ? new Date(giftCertificate.usedDate) : null;
         orderDelivery.galaxiaBalance = Number(giftCertificate.balance);
         break;
       }
 
-      // 2. GS_M_BIZ
+        // 2. GS_M_BIZ
       case 'GS_M_BIZ': {
         const partnerCompanyCode =
-          orderDelivery.choiceSelectProduct?.partnerCompanyCode ??
-          orderDelivery.orderProductMapping.product.partnerCompanyCode!;
+            orderDelivery.choiceSelectProduct?.partnerCompanyCode ??
+            orderDelivery.orderProductMapping.product.partnerCompanyCode!;
 
         const { couponInfo } = await this.gsmbiz.check({
           transactionId: orderDelivery.transactionId!,
@@ -319,16 +330,16 @@ export class PartnerCompanyExternService {
         });
 
         orderDelivery.couponStatus =
-          couponInfo.STATE === '10' ? OrderDeliveryCouponStatus.USED : OrderDeliveryCouponStatus.NOT_USED;
+            couponInfo.STATE === '10' ? OrderDeliveryCouponStatus.USED : OrderDeliveryCouponStatus.NOT_USED;
         orderDelivery.tradeAt = couponInfo.USE_DT ? new Date(couponInfo.USE_DT) : null;
         break;
       }
 
-      // 3. GIFTIEL
+        // 3. GIFTIEL
       case 'GIFTIEL': {
         const partnerCompanyCode =
-          orderDelivery.choiceSelectProduct?.partnerCompanyCode ??
-          orderDelivery.orderProductMapping.product.partnerCompanyCode!;
+            orderDelivery.choiceSelectProduct?.partnerCompanyCode ??
+            orderDelivery.orderProductMapping.product.partnerCompanyCode!;
 
         const giftielOut = await this.giftiel.check({
           partnerCompanyCode,
@@ -336,26 +347,26 @@ export class PartnerCompanyExternService {
         });
 
         orderDelivery.couponStatus =
-          giftielOut.UseYn === 'Y' ? OrderDeliveryCouponStatus.USED : OrderDeliveryCouponStatus.NOT_USED;
+            giftielOut.UseYn === 'Y' ? OrderDeliveryCouponStatus.USED : OrderDeliveryCouponStatus.NOT_USED;
         orderDelivery.tradeAt = giftielOut.UseDate ? new Date(giftielOut.UseDate) : null;
         break;
       }
 
-      // 4. GIFT_SHOW
+        // 4. GIFT_SHOW
       case 'GIFT_SHOW': {
         const giftiShowOut = await this.giftiShow.check({
           transactionId: orderDelivery.transactionId!,
         });
 
         orderDelivery.couponStatus =
-          giftiShowOut.StatusCode === '0' ? OrderDeliveryCouponStatus.NOT_USED : OrderDeliveryCouponStatus.USED;
+            giftiShowOut.StatusCode === '0' ? OrderDeliveryCouponStatus.NOT_USED : OrderDeliveryCouponStatus.USED;
         break;
       }
 
-      // 5. CULTURELAND
+        // 5. CULTURELAND
       case 'CULTURELAND': {
         const expireDay =
-          orderDelivery.choiceSelectProduct?.expireDay ?? orderDelivery.orderProductMapping.product.expireDay;
+            orderDelivery.choiceSelectProduct?.expireDay ?? orderDelivery.orderProductMapping.product.expireDay;
 
         const cultureLandOut = await this.culture.check({
           scrachNo: orderDelivery.barCode!,
@@ -365,13 +376,13 @@ export class PartnerCompanyExternService {
         });
 
         orderDelivery.couponStatus =
-          cultureLandOut.CancelPossibility === 'N'
-            ? OrderDeliveryCouponStatus.USED
-            : OrderDeliveryCouponStatus.NOT_USED;
+            cultureLandOut.CancelPossibility === 'N'
+                ? OrderDeliveryCouponStatus.USED
+                : OrderDeliveryCouponStatus.NOT_USED;
         break;
       }
 
-      // SSG
+        // SSG
       case 'SSG': {
         if (!orderDelivery.ssgEvent) {
           throw new Error('ssgEvent not loaded on orderDelivery');
@@ -388,11 +399,11 @@ export class PartnerCompanyExternService {
 
         const resultCd = ssgOut.response.value[0].resultCd[0];
         orderDelivery.couponStatus =
-          resultCd === '0400' ? OrderDeliveryCouponStatus.USED : OrderDeliveryCouponStatus.NOT_USED;
+            resultCd === '0400' ? OrderDeliveryCouponStatus.USED : OrderDeliveryCouponStatus.NOT_USED;
         break;
       }
 
-      // 기타
+        // 기타
       default:
         throw new Error(`Unsupported partnerCompany type: ${partnerType}`);
     }
