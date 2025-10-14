@@ -24,6 +24,11 @@ export class ProductViewDto {
   code: string;
 
   @ApiProperty({
+    description: '협력사 코드',
+  })
+  partnerCompanyCode: string;
+
+  @ApiProperty({
     description: '협력사 id',
   })
   partnerCompanyId: number;

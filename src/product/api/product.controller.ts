@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Logger,
   Param,
@@ -24,6 +25,7 @@ import {
 } from '@nestjs/swagger';
 import {
   ProductCreateReqDto,
+  ProductDeleteReqDto,
   ProductExcelDownloadReqBodyDto,
   ProductExcelUploadReqDto,
   ProductGetDetailReqParamDto,
@@ -47,6 +49,8 @@ import { User } from '../../auth/api/user.decorator';
 import * as fs from 'fs';
 import { Response } from 'express';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { join } from 'path';
+import * as process from 'node:process';
 
 @ApiBearerAuth()
 @UseGuards(AuthUserAuthorizationGuard)
@@ -233,5 +237,18 @@ export class ProductController {
   @Post('/product/like')
   setLike(@User() user: ILoginUserInfo, @Body() getBody: ProductSetLikeReqDto) {
     return this.productService.setLike(user, getBody);
+  }
+  @ApiOperation({
+    summary: '상품관리 > 상품 선택 삭제하기 API',
+    description: '',
+  })
+  @ApiOkResponse({
+    type: '',
+    description: '',
+  })
+  // =========================================
+  @Delete('/product/list')
+  delete(@Body() getDto: ProductDeleteReqDto) {
+    return this.productService.delete(getDto);
   }
 }
