@@ -90,38 +90,38 @@ export class OrderService {
   private static readonly DEFAULT_MID_IMAGE_PATH = defaultOrderMidImagePath;
 
   constructor(
-      @InjectRepository(OrderEntity)
-      private orderRepository: Repository<OrderEntity>,
-      @InjectRepository(OrderProductMappingEntity)
-      private orderProductMappingRepository: Repository<OrderProductMappingEntity>,
-      @InjectRepository(OrderDeliveryEntity)
-      private orderDeliveryRepository: Repository<OrderDeliveryEntity>,
-      @InjectRepository(ProductEntity)
-      private productRepository: Repository<ProductEntity>,
-      @InjectRepository(UserDiscountEntity)
-      private userDiscountRepository: Repository<UserDiscountEntity>,
-      @InjectRepository(UserEntity)
-      private userRepository: Repository<UserEntity>,
-      @InjectRepository(SsgEventEntity)
-      private ssgEventRepository: Repository<SsgEventEntity>,
-      @InjectRepository(SsgEventAmountHistoryEntity)
-      private ssgEventAmountHistoryRepository: Repository<SsgEventAmountHistoryEntity>,
-      private partnerCompanyExternService: PartnerCompanyExternService,
-      private readonly userManagementService: UserManagementService,
-      private readonly ssgEventService: SsgEventService,
-      private readonly cryptoCipher: CryptoCipher,
+    @InjectRepository(OrderEntity)
+    private orderRepository: Repository<OrderEntity>,
+    @InjectRepository(OrderProductMappingEntity)
+    private orderProductMappingRepository: Repository<OrderProductMappingEntity>,
+    @InjectRepository(OrderDeliveryEntity)
+    private orderDeliveryRepository: Repository<OrderDeliveryEntity>,
+    @InjectRepository(ProductEntity)
+    private productRepository: Repository<ProductEntity>,
+    @InjectRepository(UserDiscountEntity)
+    private userDiscountRepository: Repository<UserDiscountEntity>,
+    @InjectRepository(UserEntity)
+    private userRepository: Repository<UserEntity>,
+    @InjectRepository(SsgEventEntity)
+    private ssgEventRepository: Repository<SsgEventEntity>,
+    @InjectRepository(SsgEventAmountHistoryEntity)
+    private ssgEventAmountHistoryRepository: Repository<SsgEventAmountHistoryEntity>,
+    private partnerCompanyExternService: PartnerCompanyExternService,
+    private readonly userManagementService: UserManagementService,
+    private readonly ssgEventService: SsgEventService,
+    private readonly cryptoCipher: CryptoCipher,
   ) {}
 
   async getList(user: ILoginUserInfo, getQuery: OrderGetListReqDto): Promise<OrderGetListResDto> {
     const { section, type, status, startAt, endAt, searchType, searchKeyword, page, take } = getQuery;
 
     let queryBuilder = this.orderRepository
-    .createQueryBuilder('order')
-    .innerJoinAndSelect('order.user', 'user')
-    .leftJoinAndSelect('order.operationUser', 'operationUser')
-    .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
-    .leftJoinAndSelect('orderProductMappings.product', 'product')
-    .where('order.type = :type', { type });
+      .createQueryBuilder('order')
+      .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('order.operationUser', 'operationUser')
+      .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
+      .leftJoinAndSelect('orderProductMappings.product', 'product')
+      .where('order.type = :type', { type });
 
     // 주문 관리 일 경우
     if (section === IOrderSection.ORDER) {
@@ -163,8 +163,8 @@ export class OrderService {
         case 'ALL':
         default:
           queryBuilder = queryBuilder.andWhere(
-              '(user.businessName LIKE :keyword OR operationUser.personName LIKE :keyword OR order.eventName LIKE :keyword OR product.name LIKE :keyword)',
-              { keyword: `%${searchKeyword}%` },
+            '(user.businessName LIKE :keyword OR operationUser.personName LIKE :keyword OR order.eventName LIKE :keyword OR product.name LIKE :keyword)',
+            { keyword: `%${searchKeyword}%` },
           );
           break;
       }
@@ -222,14 +222,14 @@ export class OrderService {
 
   async getDetail(getParam: OrderGetDetailReqParamDto): Promise<OrderGetDetailResDto> {
     const queryBuilder = this.orderRepository
-    .createQueryBuilder('order')
-    .innerJoinAndSelect('order.user', 'user')
-    .leftJoinAndSelect('order.operationUser', 'operationUser')
-    .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
-    .leftJoinAndSelect('orderProductMappings.product', 'product')
-    .leftJoinAndSelect('product.brand', 'brand')
-    .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
-    .where('order.id = :id', { id: getParam.id });
+      .createQueryBuilder('order')
+      .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('order.operationUser', 'operationUser')
+      .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
+      .leftJoinAndSelect('orderProductMappings.product', 'product')
+      .leftJoinAndSelect('product.brand', 'brand')
+      .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
+      .where('order.id = :id', { id: getParam.id });
 
     const order = await queryBuilder.getOne();
 
@@ -271,7 +271,7 @@ export class OrderService {
         midImagePath = orderProductMapping.midImagePath ?? OrderService.DEFAULT_MID_IMAGE_PATH;
 
         const product = orderProductMapping.product
-            ? {
+          ? {
               id: orderProductMapping.product.id,
               name: orderProductMapping.product.name,
               price: orderProductMapping.product.price,
@@ -281,7 +281,7 @@ export class OrderService {
               brandId: orderProductMapping.product.brandId,
               brandName: orderProductMapping.product.brand?.nameKorean ?? '',
             }
-            : null;
+          : null;
         productList.push({
           id: orderProductMapping.id,
           product: product,
@@ -322,17 +322,17 @@ export class OrderService {
   }
 
   async getDeliveryCompleteReport(
-      getQuery: OrderGetDeliveryCompleteReportReqDto,
+    getQuery: OrderGetDeliveryCompleteReportReqDto,
   ): Promise<OrderGetDeliveryCompleteReportResDto> {
     const queryBuilder = this.orderRepository
-    .createQueryBuilder('order')
-    .innerJoinAndSelect('order.user', 'user')
-    .leftJoinAndSelect('order.operationUser', 'operationUser')
-    .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
-    .leftJoinAndSelect('orderProductMappings.product', 'product')
-    .leftJoinAndSelect('product.brand', 'brand')
-    .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
-    .where('order.id = :id', { id: getQuery.id });
+      .createQueryBuilder('order')
+      .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('order.operationUser', 'operationUser')
+      .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
+      .leftJoinAndSelect('orderProductMappings.product', 'product')
+      .leftJoinAndSelect('product.brand', 'brand')
+      .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
+      .where('order.id = :id', { id: getQuery.id });
 
     const order = await queryBuilder.getOne();
 
@@ -380,12 +380,12 @@ export class OrderService {
             barCode: orderDelivery.barCode ? maskBarCode(orderDelivery.barCode) : null,
             deliveryMethod: orderDelivery.deliveryMethod,
             deliveryTarget:
-                order.sendMethod !== 'EMAIL' ? maskBarCode(decryptedDeliveryTarget) : decryptedDeliveryTarget,
+              order.sendMethod !== 'EMAIL' ? maskBarCode(decryptedDeliveryTarget) : decryptedDeliveryTarget,
           });
         }
 
         const product = orderProductMapping.product
-            ? {
+          ? {
               id: orderProductMapping.product.id,
               name: orderProductMapping.product.name,
               price: orderProductMapping.product.price,
@@ -395,7 +395,7 @@ export class OrderService {
               brandId: orderProductMapping.product.brandId,
               brandName: orderProductMapping.product.brand?.nameKorean ?? '',
             }
-            : null;
+          : null;
         productList.push({
           id: orderProductMapping.id,
           product: product,
@@ -433,14 +433,14 @@ export class OrderService {
 
   async deliveryCompleteReportPdf(getBody: OrderGetDeliveryCompleteReportPdfReqDto): Promise<void> {
     const queryBuilder = this.orderRepository
-    .createQueryBuilder('order')
-    .innerJoinAndSelect('order.user', 'user')
-    .leftJoinAndSelect('order.operationUser', 'operationUser')
-    .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
-    .leftJoinAndSelect('orderProductMappings.product', 'product')
-    .leftJoinAndSelect('product.brand', 'brand')
-    .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
-    .where('order.id = :id', { id: getBody.id });
+      .createQueryBuilder('order')
+      .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('order.operationUser', 'operationUser')
+      .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
+      .leftJoinAndSelect('orderProductMappings.product', 'product')
+      .leftJoinAndSelect('product.brand', 'brand')
+      .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
+      .where('order.id = :id', { id: getBody.id });
 
     const order = await queryBuilder.getOne();
 
@@ -456,17 +456,17 @@ export class OrderService {
   }
 
   async getOrderCompleteReport(
-      getQuery: OrderGetOrderCompleteReportReqDto,
+    getQuery: OrderGetOrderCompleteReportReqDto,
   ): Promise<OrderGetOrderCompleteReportResDto> {
     const queryBuilder = this.orderRepository
-    .createQueryBuilder('order')
-    .innerJoinAndSelect('order.user', 'user')
-    .leftJoinAndSelect('order.operationUser', 'operationUser')
-    .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
-    .leftJoinAndSelect('orderProductMappings.product', 'product')
-    .leftJoinAndSelect('product.brand', 'brand')
-    .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
-    .where('order.id = :id', { id: getQuery.id });
+      .createQueryBuilder('order')
+      .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('order.operationUser', 'operationUser')
+      .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
+      .leftJoinAndSelect('orderProductMappings.product', 'product')
+      .leftJoinAndSelect('product.brand', 'brand')
+      .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
+      .where('order.id = :id', { id: getQuery.id });
 
     const order = await queryBuilder.getOne();
 
@@ -532,14 +532,14 @@ export class OrderService {
 
   async orderCompleteReportPdf(getBody: OrderGetOrderCompleteReportPdfReqDto): Promise<void> {
     const queryBuilder = this.orderRepository
-    .createQueryBuilder('order')
-    .innerJoinAndSelect('order.user', 'user')
-    .leftJoinAndSelect('order.operationUser', 'operationUser')
-    .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
-    .leftJoinAndSelect('orderProductMappings.product', 'product')
-    .leftJoinAndSelect('product.brand', 'brand')
-    .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
-    .where('order.id = :id', { id: getBody.id });
+      .createQueryBuilder('order')
+      .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('order.operationUser', 'operationUser')
+      .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
+      .leftJoinAndSelect('orderProductMappings.product', 'product')
+      .leftJoinAndSelect('product.brand', 'brand')
+      .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
+      .where('order.id = :id', { id: getBody.id });
 
     const order = await queryBuilder.getOne();
 
@@ -580,68 +580,68 @@ export class OrderService {
     });
 
     const resultList: OrderSettleViewDto[] = await Promise.all(
-        orderProductList.map(async (orderProduct) => {
-          let priceAdjustment = orderProduct.priceAdjustment;
-          let fee = orderProduct.fee;
+      orderProductList.map(async (orderProduct) => {
+        let priceAdjustment = orderProduct.priceAdjustment;
+        let fee = orderProduct.fee;
 
-          let discountPrice = orderProduct.product.price;
-          const totalPrice = orderProduct.product.price * orderProduct.amount;
-          let discountTotalPrice = orderProduct.product.price * orderProduct.amount;
+        let discountPrice = orderProduct.product.price;
+        const totalPrice = orderProduct.product.price * orderProduct.amount;
+        let discountTotalPrice = orderProduct.product.price * orderProduct.amount;
 
-          // 2. 할인 정보가 null 일 경우 유저 또는 협력사의 할인 옵션 조회
-          if (!priceAdjustment || fee === null) {
-            let discount = await this.userDiscountRepository.findOne({
+        // 2. 할인 정보가 null 일 경우 유저 또는 협력사의 할인 옵션 조회
+        if (!priceAdjustment || fee === null) {
+          let discount = await this.userDiscountRepository.findOne({
+            where: {
+              userId: order.userId,
+            },
+          });
+
+          // 3. 유저 할인 정보가 없으면 협력사 할인 정보 조회
+          if (!discount) {
+            discount = await this.userDiscountRepository.findOne({
               where: {
-                userId: order.userId,
+                partnerCompanyId: orderProduct.product.partnerCompanyId,
               },
             });
-
-            // 3. 유저 할인 정보가 없으면 협력사 할인 정보 조회
-            if (!discount) {
-              discount = await this.userDiscountRepository.findOne({
-                where: {
-                  partnerCompanyId: orderProduct.product.partnerCompanyId,
-                },
-              });
-            }
-
-            // 4. 할인 정보가 존재하면 null 값만 채우기
-            if (discount) {
-              priceAdjustment = priceAdjustment ?? discount.priceAdjustment;
-              fee = fee ?? discount.pricePercent;
-            }
-            fee = fee ?? 0;
           }
 
-          if (fee === null || (fee < 1 && fee > 0) || fee < 0 || fee > 100) {
-            throw new InternalServerErrorException('수수료는 1~100 이여야 합니다.');
+          // 4. 할인 정보가 존재하면 null 값만 채우기
+          if (discount) {
+            priceAdjustment = priceAdjustment ?? discount.priceAdjustment;
+            fee = fee ?? discount.pricePercent;
           }
+          fee = fee ?? 0;
+        }
 
-          discountPrice = OrderFeeCalculator({
-            fee: fee!,
-            priceAdjustment: priceAdjustment!,
-            price: orderProduct.product.price,
-          });
-          discountTotalPrice = OrderFeeCalculator({
-            fee: fee!,
-            priceAdjustment: priceAdjustment!,
-            price: totalPrice,
-          });
+        if (fee === null || (fee < 1 && fee > 0) || fee < 0 || fee > 100) {
+          throw new InternalServerErrorException('수수료는 1~100 이여야 합니다.');
+        }
 
-          return {
-            id: orderProduct.id,
-            brandName: orderProduct.product.brand?.nameKorean ?? null,
-            name: orderProduct.product.name,
-            price: orderProduct.product.price,
-            amount: orderProduct.amount,
-            totalPrice: orderProduct.product.price * orderProduct.amount,
-            settleDiscountType: orderProduct.settleDiscountType ?? null,
-            priceAdjustment,
-            fee,
-            discountPrice,
-            discountTotalPrice,
-          };
-        }),
+        discountPrice = OrderFeeCalculator({
+          fee: fee!,
+          priceAdjustment: priceAdjustment!,
+          price: orderProduct.product.price,
+        });
+        discountTotalPrice = OrderFeeCalculator({
+          fee: fee!,
+          priceAdjustment: priceAdjustment!,
+          price: totalPrice,
+        });
+
+        return {
+          id: orderProduct.id,
+          brandName: orderProduct.product.brand?.nameKorean ?? null,
+          name: orderProduct.product.name,
+          price: orderProduct.product.price,
+          amount: orderProduct.amount,
+          totalPrice: orderProduct.product.price * orderProduct.amount,
+          settleDiscountType: orderProduct.settleDiscountType ?? null,
+          priceAdjustment,
+          fee,
+          discountPrice,
+          discountTotalPrice,
+        };
+      }),
     );
 
     const totalPage = Math.ceil(totalCount / take);
@@ -665,11 +665,11 @@ export class OrderService {
     const orderProductIds = list.map((item) => item.id);
 
     const existingOrderProducts = await this.orderProductMappingRepository
-    .createQueryBuilder('orderProductMapping')
-    .innerJoinAndSelect('orderProductMapping.product', 'product')
-    .innerJoinAndSelect('orderProductMapping.order', 'order')
-    .where('orderProductMapping.id IN (:...orderProductIds)', { orderProductIds })
-    .getMany();
+      .createQueryBuilder('orderProductMapping')
+      .innerJoinAndSelect('orderProductMapping.product', 'product')
+      .innerJoinAndSelect('orderProductMapping.order', 'order')
+      .where('orderProductMapping.id IN (:...orderProductIds)', { orderProductIds })
+      .getMany();
 
     const existingOrderProductMap = new Map(existingOrderProducts.map((order) => [order.id, order]));
 
@@ -718,11 +718,11 @@ export class OrderService {
     const orderProductIds = list.map((item) => item.id);
 
     const existingOrderProducts = await this.orderProductMappingRepository
-    .createQueryBuilder('orderProductMapping')
-    .innerJoinAndSelect('orderProductMapping.product', 'product')
-    .innerJoinAndSelect('orderProductMapping.order', 'order')
-    .where('orderProductMapping.id IN (:...orderProductIds)', { orderProductIds })
-    .getMany();
+      .createQueryBuilder('orderProductMapping')
+      .innerJoinAndSelect('orderProductMapping.product', 'product')
+      .innerJoinAndSelect('orderProductMapping.order', 'order')
+      .where('orderProductMapping.id IN (:...orderProductIds)', { orderProductIds })
+      .getMany();
 
     const existingOrderProductMap = new Map(existingOrderProducts.map((order) => [order.id, order]));
 
@@ -825,12 +825,12 @@ export class OrderService {
 
     const isImmediate = sendType === 'IMMEDIATE';
     const sendAt = isImmediate
-        ? new Date()
-        : sendRequestAt
-            ? new Date(sendRequestAt)
-            : (() => {
-              throw new BadRequestException('sendRequestAt 누락');
-            })();
+      ? new Date()
+      : sendRequestAt
+        ? new Date(sendRequestAt)
+        : (() => {
+            throw new BadRequestException('sendRequestAt 누락');
+          })();
 
     const orderInsertResult = await this.orderRepository.insert({
       userId: user.id,
@@ -874,7 +874,7 @@ export class OrderService {
         oneOrderDelivery.status = IOrderDeliveryStatus.TEMP;
         oneOrderDelivery.deliveryMethod = sendMethod;
         oneOrderDelivery.deliveryTarget = this.cryptoCipher.encryptDeliveryTarget(
-            PhoneUtil.normalizeDeliveryTarget(orderDelivery.deliveryTarget),
+          PhoneUtil.normalizeDeliveryTarget(orderDelivery.deliveryTarget),
         );
         oneOrderDelivery.replaceCharacter1 = orderDelivery.replaceCharacter1 ?? null;
         oneOrderDelivery.replaceCharacter2 = orderDelivery.replaceCharacter2 ?? null;
@@ -953,12 +953,12 @@ export class OrderService {
 
     const isImmediate = sendType === 'IMMEDIATE';
     const sendAt = isImmediate
-        ? new Date()
-        : sendRequestAt
-            ? new Date(sendRequestAt)
-            : (() => {
-              throw new BadRequestException('sendRequestAt 누락');
-            })();
+      ? new Date()
+      : sendRequestAt
+        ? new Date(sendRequestAt)
+        : (() => {
+            throw new BadRequestException('sendRequestAt 누락');
+          })();
 
     order.eventName = eventName;
     order.sendMethod = sendMethod;
@@ -1018,7 +1018,7 @@ export class OrderService {
         oneOrderDelivery.status = IOrderDeliveryStatus.TEMP;
         oneOrderDelivery.deliveryMethod = sendMethod;
         oneOrderDelivery.deliveryTarget = this.cryptoCipher.encryptDeliveryTarget(
-            PhoneUtil.normalizeDeliveryTarget(orderDelivery.deliveryTarget),
+          PhoneUtil.normalizeDeliveryTarget(orderDelivery.deliveryTarget),
         );
         oneOrderDelivery.replaceCharacter1 = orderDelivery.replaceCharacter1 ?? null;
         oneOrderDelivery.replaceCharacter2 = orderDelivery.replaceCharacter2 ?? null;
@@ -1081,13 +1081,13 @@ export class OrderService {
     const { id } = getBody;
 
     const order = await this.orderRepository
-    .createQueryBuilder('order')
-    .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
-    .leftJoinAndSelect('orderProductMappings.product', 'product')
-    .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
-    .where('order.id = :id', { id })
-    .andWhere('order.userId = :userId', { userId: user.id })
-    .getOne();
+      .createQueryBuilder('order')
+      .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
+      .leftJoinAndSelect('orderProductMappings.product', 'product')
+      .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
+      .where('order.id = :id', { id })
+      .andWhere('order.userId = :userId', { userId: user.id })
+      .getOne();
 
     if (!order) {
       throw new BadRequestException('해당 주문건은 존재하지 않습니다.');
@@ -1155,23 +1155,23 @@ export class OrderService {
 
   @Transactional()
   async deliveryConfirmed(
-      user: ILoginUserInfo,
-      getBody: OrderDeliveryConfirmedReqDto,
+    user: ILoginUserInfo,
+    getBody: OrderDeliveryConfirmedReqDto,
   ): Promise<OrderDeliveryConfirmed> {
     const { id } = getBody;
 
     const order = await this.orderRepository
-    .createQueryBuilder('order')
-    .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
-    .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
-    .innerJoinAndSelect('orderDeliveries.orderProductMapping', 'orderProductMapping')
-    .innerJoinAndSelect('orderProductMapping.product', 'product')
-    .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
-    .innerJoinAndSelect('product.brand', 'brand')
-    .where('order.id = :id', { id })
-    // .andWhere('order.userId = :userId', { userId: user.id })
-    .andWhere('order.status = :status', { status: IOrderStatus.DELIVERY_REQUEST })
-    .getOne();
+      .createQueryBuilder('order')
+      .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
+      .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
+      .innerJoinAndSelect('orderDeliveries.orderProductMapping', 'orderProductMapping')
+      .innerJoinAndSelect('orderProductMapping.product', 'product')
+      .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .innerJoinAndSelect('product.brand', 'brand')
+      .where('order.id = :id', { id })
+      // .andWhere('order.userId = :userId', { userId: user.id })
+      .andWhere('order.status = :status', { status: IOrderStatus.DELIVERY_REQUEST })
+      .getOne();
 
     if (!order) {
       throw new BadRequestException('해당 주문건은 존재하지 않거나, 발송 상세를 입력하지 않았습니다.');
@@ -1215,14 +1215,14 @@ export class OrderService {
         orderDelivery.status = IOrderDeliveryStatus.WAIT;
         if (orderDelivery.barCode) {
           const { path } = await DeliveryCreateCouponImage(
-              orderDelivery.orderProductMapping.product.imagePath,
-              orderDelivery.orderProductMapping.product.name,
-              orderDelivery.barCode,
-              orderDelivery.orderProductMapping.product.brand!.nameKorean,
-              orderDelivery.orderProductMapping.product.expireDay,
-              orderDelivery.orderProductMapping.topImagePath,
-              orderDelivery.orderProductMapping.midImagePath,
-              orderDelivery.orderProductMapping.product.type,
+            orderDelivery.orderProductMapping.product.imagePath,
+            orderDelivery.orderProductMapping.product.name,
+            orderDelivery.barCode,
+            orderDelivery.orderProductMapping.product.brand!.nameKorean,
+            orderDelivery.orderProductMapping.product.expireDay,
+            orderDelivery.orderProductMapping.topImagePath,
+            orderDelivery.orderProductMapping.midImagePath,
+            orderDelivery.orderProductMapping.product.type,
           );
           orderDelivery.imagePath = path;
           orderDelivery.ssgEventId = ssgEventIssue ? ssgEventIssue.id : null;
@@ -1243,14 +1243,14 @@ export class OrderService {
     const { id, couponExpiration } = getBody;
 
     const beforeOrder = await this.orderRepository
-    .createQueryBuilder('order')
-    .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
-    .innerJoinAndSelect('orderProductMappings.product', 'product')
-    .where('order.id = :id', { id })
-    // .andWhere('order.userId = :userId', { userId: user.id })
-    .andWhere('order.status = :status', { status: IOrderStatus.DELIVERY_REQUEST })
-    .andWhere('order.type = :type', { type: IOrderType.SSG })
-    .getOne();
+      .createQueryBuilder('order')
+      .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
+      .innerJoinAndSelect('orderProductMappings.product', 'product')
+      .where('order.id = :id', { id })
+      // .andWhere('order.userId = :userId', { userId: user.id })
+      .andWhere('order.status = :status', { status: IOrderStatus.DELIVERY_REQUEST })
+      .andWhere('order.type = :type', { type: IOrderType.SSG })
+      .getOne();
 
     if (!beforeOrder) {
       throw new BadRequestException('해당 주문건은 존재하지 않습니다.');
@@ -1269,9 +1269,9 @@ export class OrderService {
       },
     });
     const afterProductPriceMap = listToMapValue(
-        afterProductList,
-        (product) => product.price,
-        (product) => product.id,
+      afterProductList,
+      (product) => product.price,
+      (product) => product.id,
     );
 
     for (const orderProductMapping of beforeOrder.orderProductMappings!) {
@@ -1282,25 +1282,25 @@ export class OrderService {
       }
 
       await this.orderProductMappingRepository.update(
-          {
-            orderId: beforeOrder.id,
-            productId: beforeProductId,
-          },
-          {
-            productId: afterProductId,
-          },
+        {
+          orderId: beforeOrder.id,
+          productId: beforeProductId,
+        },
+        {
+          productId: afterProductId,
+        },
       );
     }
 
     const order = await this.orderRepository
-    .createQueryBuilder('order')
-    .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
-    .innerJoinAndSelect('orderProductMappings.product', 'product')
-    .where('order.id = :id', { id })
-    // .andWhere('order.userId = :userId', { userId: user.id })
-    .andWhere('order.status = :status', { status: IOrderStatus.DELIVERY_REQUEST })
-    .andWhere('order.type = :type', { type: IOrderType.SSG })
-    .getOne();
+      .createQueryBuilder('order')
+      .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
+      .innerJoinAndSelect('orderProductMappings.product', 'product')
+      .where('order.id = :id', { id })
+      // .andWhere('order.userId = :userId', { userId: user.id })
+      .andWhere('order.status = :status', { status: IOrderStatus.DELIVERY_REQUEST })
+      .andWhere('order.type = :type', { type: IOrderType.SSG })
+      .getOne();
     // 현재 order 에 되어있는 모든 product id 를 추출, 가격이 같은 다른 couponExpireation 으로 변경 진행
     if (!order) {
       throw new InternalServerErrorException('해당 주문이 존재하지 않습니다.');
@@ -1337,13 +1337,13 @@ export class OrderService {
     const { id } = getBody;
 
     const order = await this.orderRepository
-    .createQueryBuilder('order')
-    .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
-    .leftJoinAndSelect('orderProductMappings.product', 'product')
-    .where('order.id = :id', { id })
-    // .andWhere('order.userId = :userId', { userId: user.id })
-    // .andWhere('order.status = :status', { status: 'DELIVERY_REQUEST' })
-    .getOne();
+      .createQueryBuilder('order')
+      .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
+      .leftJoinAndSelect('orderProductMappings.product', 'product')
+      .where('order.id = :id', { id })
+      // .andWhere('order.userId = :userId', { userId: user.id })
+      // .andWhere('order.status = :status', { status: 'DELIVERY_REQUEST' })
+      .getOne();
 
     if (!order) {
       throw new BadRequestException('해당 주문건은 존재하지 않습니다.');
@@ -1383,8 +1383,8 @@ export class OrderService {
     order.status = IOrderStatus.DELIVERY_CANCEL;
     await this.orderRepository.save(order);
     await this.orderDeliveryRepository.update(
-        { orderProductMappingId: In(orderProductMappingIdList) },
-        { status: IOrderDeliveryStatus.CANCEL },
+      { orderProductMappingId: In(orderProductMappingIdList) },
+      { status: IOrderDeliveryStatus.CANCEL },
     );
 
     return;
@@ -1427,12 +1427,12 @@ export class OrderService {
     let orderType = '';
 
     let queryBuilder = this.orderRepository
-    .createQueryBuilder('order')
-    .innerJoinAndSelect('order.user', 'user')
-    .leftJoinAndSelect('order.operationUser', 'operationUser')
-    .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
-    .leftJoinAndSelect('orderProductMappings.product', 'product')
-    .where('order.type = :type', { type });
+      .createQueryBuilder('order')
+      .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('order.operationUser', 'operationUser')
+      .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
+      .leftJoinAndSelect('orderProductMappings.product', 'product')
+      .where('order.type = :type', { type });
 
     // 주문 관리 일 경우
     if (section === IOrderSection.ORDER) {
@@ -1477,8 +1477,8 @@ export class OrderService {
         case 'ALL':
         default:
           queryBuilder = queryBuilder.andWhere(
-              '(user.businessName LIKE :keyword OR operationUser.personName LIKE :keyword OR order.eventName LIKE :keyword OR product.name LIKE :keyword)',
-              { keyword: `%${searchKeyword}%` },
+            '(user.businessName LIKE :keyword OR operationUser.personName LIKE :keyword OR order.eventName LIKE :keyword OR product.name LIKE :keyword)',
+            { keyword: `%${searchKeyword}%` },
           );
           break;
       }
@@ -1559,8 +1559,8 @@ export class OrderService {
     // 3. 상태·타입 총합 CASE 절 생성
     const selectExpressions: string[] = statuses.flatMap((status) => {
       const byType = types.map(
-          (type) =>
-              `SUM(CASE WHEN o.status='${status}' AND o.type='${type}' THEN 1 ELSE 0 END)
+        (type) =>
+          `SUM(CASE WHEN o.status='${status}' AND o.type='${type}' THEN 1 ELSE 0 END)
        AS "${status.toLowerCase()}${type.charAt(0) + type.slice(1).toLowerCase()}Count"`,
       );
       const total = `SUM(CASE WHEN o.status='${status}' THEN 1 ELSE 0 END)
@@ -1571,11 +1571,11 @@ export class OrderService {
 
     // 4. 쿼리 빌더로 raw 데이터 조회
     const queryBuilder = this.orderRepository
-    .createQueryBuilder('o')
-    .select(selectExpressions)
-    .where('o.registerAt >= :from', { from: sevenDaysAgo.toISOString() })
-    .andWhere('o.status IN (:...statuses)', { statuses })
-    .andWhere('o.type IN (:...types)', { types });
+      .createQueryBuilder('o')
+      .select(selectExpressions)
+      .where('o.registerAt >= :from', { from: sevenDaysAgo.toISOString() })
+      .andWhere('o.status IN (:...statuses)', { statuses })
+      .andWhere('o.type IN (:...types)', { types });
 
     // 5. 권한에 따른 조회 제약
     switch (user.authority as IUserAuthority) {

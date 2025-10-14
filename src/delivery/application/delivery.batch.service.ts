@@ -38,29 +38,29 @@ import { Transactional } from 'typeorm-transactional';
 @Injectable()
 export class DeliveryBatchService {
   constructor(
-      @InjectRepository(OrderEntity)
-      private orderRepository: Repository<OrderEntity>,
-      @InjectRepository(OrderRealProductEntity)
-      private realProductOrderRepository: Repository<OrderRealProductEntity>,
-      @InjectRepository(OrderRealProductMappingEntity)
-      private realProductOrderMappingRepository: Repository<OrderRealProductMappingEntity>,
-      @InjectRepository(OrderDeliveryEntity)
-      private orderDeliveryRepository: Repository<OrderDeliveryEntity>,
-      @InjectRepository(DeliverySendHistoryEntity)
-      private deliverySendHistoryRepository: Repository<DeliverySendHistoryEntity>,
-      @Inject('DeliveryAlimTalk')
-      private deliveryAlimTalk: DeliveryAlimTalk,
-      @Inject('IMailSend')
-      private mailSend: IMailSend,
-      @Inject('ISmsSend')
-      private smsSend: ISmsSend,
-      private deliveryTrackHttp: DeliveryTrackHttp,
-      private cryptoCipher: CryptoCipher,
-      private configService: ConfigService,
-      @InjectRepository(EmailSendHistoryEntity)
-      private emailSendHistoryRepository: Repository<EmailSendHistoryEntity>,
-      @Inject('IFileStorage')
-      private fileStorage: IFileStorage,
+    @InjectRepository(OrderEntity)
+    private orderRepository: Repository<OrderEntity>,
+    @InjectRepository(OrderRealProductEntity)
+    private realProductOrderRepository: Repository<OrderRealProductEntity>,
+    @InjectRepository(OrderRealProductMappingEntity)
+    private realProductOrderMappingRepository: Repository<OrderRealProductMappingEntity>,
+    @InjectRepository(OrderDeliveryEntity)
+    private orderDeliveryRepository: Repository<OrderDeliveryEntity>,
+    @InjectRepository(DeliverySendHistoryEntity)
+    private deliverySendHistoryRepository: Repository<DeliverySendHistoryEntity>,
+    @Inject('DeliveryAlimTalk')
+    private deliveryAlimTalk: DeliveryAlimTalk,
+    @Inject('IMailSend')
+    private mailSend: IMailSend,
+    @Inject('ISmsSend')
+    private smsSend: ISmsSend,
+    private deliveryTrackHttp: DeliveryTrackHttp,
+    private cryptoCipher: CryptoCipher,
+    private configService: ConfigService,
+    @InjectRepository(EmailSendHistoryEntity)
+    private emailSendHistoryRepository: Repository<EmailSendHistoryEntity>,
+    @Inject('IFileStorage')
+    private fileStorage: IFileStorage,
   ) {}
 
   private logger = new Logger('batch');
@@ -69,15 +69,15 @@ export class DeliveryBatchService {
     // 현재 이전 시간에 대기중인 모든 쿠폰 발행 및 발송 진행
     const now = new Date();
     const queryBuilder = this.orderDeliveryRepository
-    .createQueryBuilder('orderDelivery')
-    .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
-    .innerJoinAndSelect('orderProductMapping.order', 'order')
-    .innerJoinAndSelect('order.user', 'user')
-    .innerJoinAndSelect('orderProductMapping.product', 'product')
-    .innerJoinAndSelect('product.brand', 'brand')
-    .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
-    .where('orderDelivery.sendRequestAt < :now', { now })
-    .andWhere('orderDelivery.status = :status', { status: 'WAIT' });
+      .createQueryBuilder('orderDelivery')
+      .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
+      .innerJoinAndSelect('orderProductMapping.order', 'order')
+      .innerJoinAndSelect('order.user', 'user')
+      .innerJoinAndSelect('orderProductMapping.product', 'product')
+      .innerJoinAndSelect('product.brand', 'brand')
+      .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .where('orderDelivery.sendRequestAt < :now', { now })
+      .andWhere('orderDelivery.status = :status', { status: 'WAIT' });
 
     const orderDeliveryList = await queryBuilder.getMany();
 
@@ -108,9 +108,9 @@ export class DeliveryBatchService {
         // @ts-expect-error
         const partnerCompanyType = orderDelivery.orderProductMapping.product.partnerCompany.type;
         const expireDays =
-            partnerCompanyType === IPartnerCompanyType.GIFT_SHOW
-                ? orderDelivery.orderProductMapping.product.expireDay
-                : orderDelivery.orderProductMapping.product.expireDay - 1;
+          partnerCompanyType === IPartnerCompanyType.GIFT_SHOW
+            ? orderDelivery.orderProductMapping.product.expireDay
+            : orderDelivery.orderProductMapping.product.expireDay - 1;
 
         orderDelivery.expireAt = addDays(orderDelivery.sendRequestAt, expireDays);
       }
@@ -122,8 +122,8 @@ export class DeliveryBatchService {
       let text = orderDelivery.orderProductMapping.order.sendContent;
 
       if (
-          orderDelivery.orderProductMapping.product.memo &&
-          orderDelivery.orderProductMapping.order.type !== IOrderType.SSG
+        orderDelivery.orderProductMapping.product.memo &&
+        orderDelivery.orderProductMapping.order.type !== IOrderType.SSG
       ) {
         text += `\n\n${orderDelivery.orderProductMapping.product.memo}`;
       }
@@ -194,11 +194,11 @@ export class DeliveryBatchService {
       // 1.2 SMS 일 경우
       if (deliveryMethod === IOrderSendMethod.SMS) {
         let smsText =
-            orderDelivery.orderProductMapping.order.type === IOrderType.SSG ? text + smsSsgTemplate(orderDelivery) : text;
+          orderDelivery.orderProductMapping.order.type === IOrderType.SSG ? text + smsSsgTemplate(orderDelivery) : text;
         smsText = SmsChoiceProductTemplate(
-            orderDelivery,
-            `${this.configService.getOrThrow('SMS_CHOICE_URL')}/${encryptKey}`,
-            smsText,
+          orderDelivery,
+          `${this.configService.getOrThrow('SMS_CHOICE_URL')}/${encryptKey}`,
+          smsText,
         );
 
         try {
@@ -381,14 +381,14 @@ export class DeliveryBatchService {
   }
 
   private async handleAlimTalkFail(
-      orderDelivery: OrderDeliveryEntity,
-      title: string,
-      text: string,
-      filePathList: string[],
+    orderDelivery: OrderDeliveryEntity,
+    title: string,
+    text: string,
+    filePathList: string[],
   ) {
     try {
       let smsText =
-          orderDelivery.orderProductMapping.order.type === IOrderType.SSG ? text + smsSsgTemplate(orderDelivery) : text;
+        orderDelivery.orderProductMapping.order.type === IOrderType.SSG ? text + smsSsgTemplate(orderDelivery) : text;
 
       await this.smsSend.send({
         msgType: 'L',
@@ -428,8 +428,8 @@ export class DeliveryBatchService {
 
     if (orderDelivery.orderProductMapping.order.type !== IOrderType.SSG) {
       orderDelivery.expireAt = addDays(
-          orderDelivery.sendRequestAt,
-          orderDelivery.orderProductMapping.product.expireDay,
+        orderDelivery.sendRequestAt,
+        orderDelivery.orderProductMapping.product.expireDay,
       );
     }
 
@@ -513,11 +513,11 @@ export class DeliveryBatchService {
     // 1.2 SMS 일 경우
     if (deliveryMethod === IOrderSendMethod.SMS) {
       let smsText =
-          orderDelivery.orderProductMapping.order.type === IOrderType.SSG ? text + smsSsgTemplate(orderDelivery) : text;
+        orderDelivery.orderProductMapping.order.type === IOrderType.SSG ? text + smsSsgTemplate(orderDelivery) : text;
       smsText = SmsChoiceProductTemplate(
-          orderDelivery,
-          `${this.configService.getOrThrow('SMS_CHOICE_URL')}/${encryptKey}`,
-          smsText,
+        orderDelivery,
+        `${this.configService.getOrThrow('SMS_CHOICE_URL')}/${encryptKey}`,
+        smsText,
       );
 
       try {
@@ -615,16 +615,16 @@ export class DeliveryBatchService {
     const encryptedDestroyEmail = this.cryptoCipher.encryptDeliveryTarget(destroyEmail);
 
     const orderDeliveryList = await this.orderDeliveryRepository
-    .createQueryBuilder('orderDelivery')
-    .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
-    .innerJoinAndSelect('orderProductMapping.order', 'order')
-    .where(`DATE_ADD(order.sendRequestAt, INTERVAL order.requestToDestroyPersonalInfoDay DAY) <= :now`, {
-      now,
-    })
-    .andWhere('order.status = :status', { status: IOrderStatus.DELIVERY_COMPLETE })
-    .andWhere('orderDelivery.deliveryTarget != :targetPhone', { targetPhone: encryptedDestroyPhoneNumber })
-    .andWhere('orderDelivery.deliveryTarget != :targetEmail', { targetEmail: encryptedDestroyEmail })
-    .getMany();
+      .createQueryBuilder('orderDelivery')
+      .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
+      .innerJoinAndSelect('orderProductMapping.order', 'order')
+      .where(`DATE_ADD(order.sendRequestAt, INTERVAL order.requestToDestroyPersonalInfoDay DAY) <= :now`, {
+        now,
+      })
+      .andWhere('order.status = :status', { status: IOrderStatus.DELIVERY_COMPLETE })
+      .andWhere('orderDelivery.deliveryTarget != :targetPhone', { targetPhone: encryptedDestroyPhoneNumber })
+      .andWhere('orderDelivery.deliveryTarget != :targetEmail', { targetEmail: encryptedDestroyEmail })
+      .getMany();
 
     const destroyEmailIdList: number[] = [];
     const destroyPhoneNumberIdList: number[] = [];
@@ -633,17 +633,20 @@ export class DeliveryBatchService {
         destroyEmailIdList.push(orderDelivery.id);
       }
       if (
-          orderDelivery.deliveryMethod === IOrderSendMethod.SMS ||
-          orderDelivery.deliveryMethod === IOrderSendMethod.ALIM_TALK
+        orderDelivery.deliveryMethod === IOrderSendMethod.SMS ||
+        orderDelivery.deliveryMethod === IOrderSendMethod.ALIM_TALK
       ) {
         destroyPhoneNumberIdList.push(orderDelivery.id);
       }
     }
 
     await this.orderDeliveryRepository.update(
-        { id: In(destroyPhoneNumberIdList) },
-        { deliveryTarget: encryptedDestroyPhoneNumber },
+      { id: In(destroyPhoneNumberIdList) },
+      { deliveryTarget: encryptedDestroyPhoneNumber },
     );
-    await this.orderDeliveryRepository.update({ id: In(destroyEmailIdList) }, { deliveryTarget: encryptedDestroyEmail });
+    await this.orderDeliveryRepository.update(
+      { id: In(destroyEmailIdList) },
+      { deliveryTarget: encryptedDestroyEmail },
+    );
   }
 }
