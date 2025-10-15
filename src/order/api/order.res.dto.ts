@@ -124,6 +124,11 @@ export class OrderGetDetailResDto {
   couponExpiration: number | null;
 
   @ApiProperty({
+    description: '독려 문자 일',
+  })
+  encourageDay: number | null;
+
+  @ApiProperty({
     description: '상품 정보 리스트',
   })
   productList: OrderDetailProductDto[];

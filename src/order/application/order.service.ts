@@ -344,6 +344,7 @@ export class OrderService {
       midImagePath,
       status: order.status,
       couponExpiration: couponExpiration,
+      encourageDay: order.encourageDay,
       productList: productList,
     };
   }
