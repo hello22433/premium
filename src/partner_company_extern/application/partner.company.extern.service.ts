@@ -17,7 +17,7 @@ import { OrderEntity } from '../../entity/order.entity';
 import { SsgTransactionId } from '../domain/ssg.transaction.id';
 import { defaultFromPhoneNumber, ssgIssueUserName } from '../../const';
 import { smsSsgTemplate } from '../../delivery/domain/sms.ssg.template';
-import { addDays, format } from 'date-fns';
+import { addDays, format, subDays } from 'date-fns';
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
 import { CancelCouponResDto } from '../api/CancelCouponResDto';
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
@@ -163,6 +163,9 @@ export class PartnerCompanyExternService {
           orderDelivery.sendRequestAt,
           orderDelivery.orderProductMapping.product.expireDay - 1,
         );
+        if (order.encourageDay) {
+          orderDelivery.encourageAt = subDays(orderDelivery.expireAt, order.encourageDay);
+        }
         let text = order.sendContent;
 
         if (order.sendTailText) {
