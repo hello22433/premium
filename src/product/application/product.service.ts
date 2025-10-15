@@ -616,6 +616,7 @@ export class ProductService {
         code: Like(`${ProductPrefixCode}%`),
       },
       order: { code: 'DESC' },
+      withDeleted: true,
     });
 
     const prevCodeBrand = prevProduct?.code ?? null;

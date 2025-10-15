@@ -234,6 +234,7 @@ export class ProductChoiceService {
         code: Like(`${ProductChoicePrefixCode}%`),
       },
       order: { code: 'DESC' },
+      withDeleted: true,
     });
 
     const prevCodeBrand = prevProduct?.code ?? null;
