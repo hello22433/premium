@@ -93,6 +93,9 @@ export class OrderEntity extends BaseEntity {
   @Column({ type: 'int', nullable: true, comment: '독려 문자 day' })
   encourageDay: number | null;
 
+  @Column({ type: 'int', default: 0, comment: '테스트 전송 카운트 횟수' })
+  testDeliveryCount: number;
+
   @ManyToOne(() => UserEntity, { createForeignKeyConstraints: false })
   @JoinColumn({ name: 'user_id' })
   user?: UserEntity;
