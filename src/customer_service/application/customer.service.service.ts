@@ -512,8 +512,11 @@ export class CustomerServiceService {
 
         break;
       default:
-        throw new BadRequestException('처리할 수 없는 협력사 입니다.');
+        orderDelivery.couponStatus = afterChange;
+        await this.orderDeliveryRepository.save(orderDelivery);
     }
+
+    return;
   }
 
   /**
