@@ -1,5 +1,6 @@
 import { IProductType } from '../interface/product.type';
 import { IProductUseStatus } from '../interface/product.status';
+import { IProductSettleMethod } from '../interface/product.settle.method';
 
 export const ProductTypeExcelMapping = (type: IProductType) => {
   if (type === IProductType.GENERAL) {
@@ -35,6 +36,22 @@ export const ProductUseStatusExcelMapping = (useStatus: IProductUseStatus) => {
 
   if (useStatus === IProductUseStatus.PERMANENTLY_UNUSED) {
     return '영구 미사용';
+  }
+
+  throw new Error('정의되지 않은 상태 타입입니다.');
+};
+
+export const ProductSettleMethodExcelMapping = (settleMethod: IProductSettleMethod) => {
+  if (settleMethod === 'PER_EXCHANGE') {
+    return '교환당';
+  }
+
+  if (settleMethod === 'PER_ISSUANCE') {
+    return '발행당';
+  }
+
+  if (settleMethod === 'PER_PRODUCT') {
+    return '상품당';
   }
 
   throw new Error('정의되지 않은 상태 타입입니다.');

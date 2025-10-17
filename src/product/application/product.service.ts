@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, InternalServerErrorException } from '@nestjs/common';
 import { ProductEntity } from '../../entity/product.entity';
 import { FindOptionsWhere, In, Like, Repository } from 'typeorm';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -27,7 +27,7 @@ import {
 import { PartnerCompanyEntity } from '../../entity/partner.company.entity';
 import { BrandEntity } from '../../entity/brand.entity';
 import { CreateCode } from '../../common/domain/create.code';
-import { ProductDigitNumber, ProductPrefixCode } from '../domain/product.code';
+import { ProductChoicePrefixCode, ProductDigitNumber, ProductPrefixCode } from '../domain/product.code';
 import { ProductUpdateHistoryEntity } from '../../entity/product.update.history.entity';
 import { ProductUpdateHistoryKeyName } from '../domain/product.update.history.key.name';
 import { Transactional } from 'typeorm-transactional';
@@ -37,7 +37,11 @@ import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { join } from 'path';
 import * as process from 'node:process';
 import * as ExcelJS from 'exceljs';
-import { ProductTypeExcelMapping, ProductUseStatusExcelMapping } from '../domain/product.excel.mapping';
+import {
+  ProductSettleMethodExcelMapping,
+  ProductTypeExcelMapping,
+  ProductUseStatusExcelMapping,
+} from '../domain/product.excel.mapping';
 import { IProductType } from '../interface/product.type';
 import { IUserAuthority } from '../../user/interface/user.authority';
 import { UserSyncProductEventEntity } from '../../entity/user.sync.product.event.entity';
@@ -45,7 +49,12 @@ import { ProductLikeEntity } from '../../entity/product.like.entity';
 import { SsgEventEntity } from '../../entity/ssg.event.entity';
 import { validate } from 'class-validator';
 import { IProductSettleMethod } from '../interface/product.settle.method';
-import { IProductUseStatus } from '../interface/product.status';
+import {
+  ProductSettleMethodExcelToDbMapping,
+  ProductTypeExcelToDBMapping,
+  ProductUseStatusExcelToDBMapping,
+} from '../domain/product.excel.to.db.mapping';
+import { listToMap } from '../../util/map.util';
 
 @Injectable()
 export class ProductService {
@@ -611,16 +620,18 @@ export class ProductService {
       throw new BadRequestException('해당 협력사가 존재하지 않습니다.');
     }
 
+    const getProductPrefixCode = type === IProductType.CHOICE ? ProductChoicePrefixCode : ProductPrefixCode;
+
     const prevProduct = await this.productRepository.findOne({
       where: {
-        code: Like(`${ProductPrefixCode}%`),
+        code: Like(`${getProductPrefixCode}%`),
       },
       order: { code: 'DESC' },
       withDeleted: true,
     });
 
     const prevCodeBrand = prevProduct?.code ?? null;
-    const newCode = CreateCode(prevCodeBrand, ProductPrefixCode, ProductDigitNumber);
+    const newCode = CreateCode(prevCodeBrand, getProductPrefixCode, ProductDigitNumber);
 
     await this.productRepository.insert({
       partnerCompanyCode,
@@ -765,8 +776,10 @@ export class ProductService {
       { header: '번호', key: 'id', width: 10 },
       { header: '등록일', key: 'createdAt', width: 32 },
       { header: '상품코드', key: 'code', width: 20 },
+      { header: '협력사 id', key: 'partnerCompanyId', width: 20 },
       { header: '협력사명', key: 'partnerCompanyName', width: 20 },
       { header: '대분류', key: 'classification', width: 20 },
+      { header: '브랜드 id', key: 'brandId', width: 20 },
       { header: '브랜드명', key: 'brandName', width: 20 },
       { header: '상품명', key: 'name', width: 32 },
       { header: '가격', key: 'price', width: 32 },
@@ -774,6 +787,11 @@ export class ProductService {
       { header: '상품군', key: 'category', width: 40 },
       { header: '상품구분', key: 'type', width: 40 },
       { header: '상품상태', key: 'useStatus', width: 40 },
+      { header: '정산 방법', key: 'settleMethod', width: 40 },
+      { header: '정산 조건 (퍼센트)', key: 'settlePercent', width: 40 },
+      { header: '협력사 상품 코드', key: 'partnerCompanyCode', width: 40 },
+      { header: '이미지경로', key: 'imagePath', width: 40 },
+      { header: '메모', key: 'memo', width: 40 },
     ];
 
     let id = 1;
@@ -785,6 +803,7 @@ export class ProductService {
         id: id,
         createdAt: format(product.createdAt, 'yyyy-MM-dd'),
         code: product.code,
+        partnerCompanyId: product.partnerCompanyId,
         partnerCompanyName: product.partnerCompany!.businessName,
         classification: product.classification,
         brandId: product.brandId,
@@ -795,6 +814,11 @@ export class ProductService {
         category: product.category,
         type: ProductTypeExcelMapping(product.type),
         useStatus: ProductUseStatusExcelMapping(product.useStatus),
+        settleMethod: ProductSettleMethodExcelMapping(product.settleMethod),
+        settlePercent: product.settlePercent,
+        partnerCompanyCode: product.partnerCompanyCode,
+        imagePath: product.imagePath,
+        memo: product.memo,
       });
       id++;
     }
@@ -807,6 +831,7 @@ export class ProductService {
     return { fileName, filePath };
   }
 
+  @Transactional()
   async excelUpload(user: ILoginUserInfo, file: Express.Multer.File) {
     if (!file) {
       throw new BadRequestException('업로드할 파일이 존재하지 않습니다.');
@@ -819,77 +844,74 @@ export class ProductService {
       throw new BadRequestException('엑셀 파일에 워크시트가 없습니다.');
     }
 
-    for (let i = 2; i <= worksheet.rowCount; i++) {
+    const codeList: string[] = [];
+    for (let i = 2; i <= worksheet.actualRowCount; i++) {
+      const rowIndex = i;
+
+      const row = worksheet.getRow(rowIndex);
+      const rowData = this.mapRowToDto(row);
+      if (rowData.code) {
+        codeList.push(rowData.code);
+      }
+    }
+
+    const productList = await this.productRepository.find({
+      where: {
+        code: In(codeList),
+      },
+    });
+
+    const productCodeMap = listToMap(productList, (product) => product.code);
+
+    for (let i = 2; i <= worksheet.actualRowCount; i++) {
       const rowIndex = i;
       try {
         const row = worksheet.getRow(rowIndex);
         const rowData = this.mapRowToDto(row);
 
-        if (!this.isValidRow(rowData)) {
-          continue;
-        }
-
         const createDto = new ProductCreateReqDto();
-        createDto.partnerCompanyCode = String(rowData.partnerCompanyCode).trim();
-        createDto.partnerCompanyId = Number(rowData.partnerCompanyId);
-        createDto.brandId = Number(rowData.brandId);
-        createDto.name = String(rowData.name).trim();
-        createDto.price = Number(rowData.price);
-        createDto.expireDay = Number(rowData.expireDay);
-        createDto.category = String(rowData.category).trim();
-        createDto.classification = String(rowData.classification).trim();
-        createDto.settleMethod = String(rowData.settleMethod).trim() as IProductSettleMethod;
-        createDto.settlePercent = Number(rowData.settlePercent);
-        createDto.imagePath = String(rowData.imagePath).trim();
-        createDto.type = String(rowData.type).trim() as IProductType;
-        createDto.memo = rowData.memo !== null && rowData.memo !== undefined ? String(rowData.memo).trim() : null;
-        createDto.useStatus = String(rowData.useStatus).trim() as IProductUseStatus;
+        createDto.partnerCompanyId = +rowData.partnerCompanyId;
+        createDto.classification = rowData.classification.trim();
+        createDto.brandId = +rowData.brandId;
+        createDto.name = rowData.name.trim();
+        createDto.price = +rowData.price;
+        createDto.expireDay = +rowData.expireDay;
+        createDto.category = rowData.category.trim();
+        createDto.type = ProductTypeExcelToDBMapping(rowData.type.trim());
+        createDto.useStatus = ProductUseStatusExcelToDBMapping(rowData.useStatus.trim());
+        createDto.settleMethod = ProductSettleMethodExcelToDbMapping(rowData.settleMethod.trim());
+        createDto.settlePercent = +rowData.settlePercent;
+        createDto.partnerCompanyCode = rowData.partnerCompanyCode;
+        createDto.imagePath = rowData.imagePath;
+        createDto.memo = rowData.memo;
 
         const validationErrors = await validate(createDto);
         if (validationErrors.length > 0) {
+          console.error(JSON.stringify(validationErrors));
           throw new BadRequestException(`행 ${rowIndex} 검증 실패: 필수값 누락 혹은 형식 오류가 있습니다.`);
         }
 
-        const existingProduct = await this.productRepository.findOne({
-          where: { partnerCompanyCode: createDto.partnerCompanyCode },
-        });
+        const existingProduct = productCodeMap.get(rowData.code);
 
         if (existingProduct) {
-          const existBrandCount = await this.brandRepository.count({
-            where: { id: createDto.brandId },
-          });
-          if (!existBrandCount) {
-            throw new BadRequestException(
-              `행 ${rowIndex} 오류: 해당 브랜드(ID ${createDto.brandId})가 존재하지 않습니다.`,
-            );
-          }
-
-          const existPartnerCount = await this.partnerCompanyRepository.count({
-            where: { id: createDto.partnerCompanyId },
-          });
-          if (!existPartnerCount) {
-            throw new BadRequestException(
-              `행 ${rowIndex} 오류: 해당 협력사(ID ${createDto.partnerCompanyId})가 존재하지 않습니다.`,
-            );
-          }
-
           const updateDto = new ProductUpdatePartialReqDto();
           updateDto.id = existingProduct.id;
           updateDto.reason = `엑셀 업로드(row ${rowIndex})`;
 
-          updateDto.partnerCompanyId = createDto.partnerCompanyId;
-          updateDto.brandId = createDto.brandId;
-          updateDto.name = createDto.name;
-          updateDto.price = createDto.price;
-          updateDto.expireDay = createDto.expireDay;
-          updateDto.category = createDto.category;
-          updateDto.classification = createDto.classification;
-          updateDto.settleMethod = createDto.settleMethod;
-          updateDto.settlePercent = createDto.settlePercent;
-          updateDto.imagePath = createDto.imagePath;
-          updateDto.type = createDto.type;
-          updateDto.memo = createDto.memo;
-          updateDto.useStatus = createDto.useStatus;
+          updateDto.partnerCompanyId = +rowData.partnerCompanyId;
+          updateDto.classification = rowData.classification.trim();
+          updateDto.brandId = +rowData.brandId;
+          updateDto.name = rowData.name.trim();
+          updateDto.price = +rowData.price;
+          updateDto.expireDay = +rowData.expireDay;
+          updateDto.category = rowData.category.trim();
+          updateDto.type = ProductTypeExcelToDBMapping(rowData.type.trim());
+          updateDto.useStatus = ProductUseStatusExcelToDBMapping(rowData.useStatus.trim());
+          updateDto.settleMethod = ProductSettleMethodExcelToDbMapping(rowData.settleMethod.trim());
+          updateDto.settlePercent = +rowData.settlePercent;
+          updateDto.partnerCompanyCode = rowData.partnerCompanyCode;
+          updateDto.imagePath = rowData.imagePath;
+          updateDto.memo = rowData.memo;
 
           await this.updatePartial(user, updateDto);
         } else {
@@ -907,22 +929,23 @@ export class ProductService {
     return { message: '엑셀 업로드가 성공적으로 완료되었습니다.' };
   }
 
-  private mapRowToDto(row: ExcelJS.Row): Record<string, any> {
+  private mapRowToDto(row: ExcelJS.Row): any {
     return {
-      partnerCompanyId: row.getCell(1).value,
-      brandId: row.getCell(2).value,
-      name: row.getCell(3).value,
-      price: row.getCell(4).value,
-      expireDay: row.getCell(5).value,
-      category: row.getCell(6).value,
-      classification: row.getCell(7).value,
-      settleMethod: row.getCell(8).value,
-      settlePercent: row.getCell(9).value,
-      imagePath: row.getCell(10).value,
-      type: row.getCell(11).value,
-      memo: row.getCell(12).value,
-      useStatus: row.getCell(13).value,
-      partnerCompanyCode: row.getCell(14).value,
+      code: row.getCell(3).value,
+      partnerCompanyId: row.getCell(4).value,
+      classification: row.getCell(6).value,
+      brandId: row.getCell(7).value,
+      name: row.getCell(9).value,
+      price: row.getCell(10).value,
+      expireDay: row.getCell(11).value,
+      category: row.getCell(12).value,
+      type: row.getCell(13).value,
+      useStatus: row.getCell(14).value,
+      settleMethod: row.getCell(15).value,
+      settlePercent: row.getCell(16).value,
+      partnerCompanyCode: row.getCell(17).value,
+      imagePath: row.getCell(18).value,
+      memo: row.getCell(19).value,
     };
   }
 
