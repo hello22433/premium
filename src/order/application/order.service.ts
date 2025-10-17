@@ -23,6 +23,7 @@ import {
   OrderGetOrderCompleteReportPdfReqDto,
   OrderGetOrderCompleteReportReqDto,
   OrderGetSettleReqDto,
+  OrderTestDeliveryReqDto,
   OrderUpdateOperationUserReqDto,
   OrderUpdateSettleReqDto,
   OrderUpdateTempReqDto,
@@ -85,6 +86,7 @@ import { CreateCode } from '../../common/domain/create.code';
 import { OrderDigitNumber, OrderPrefixCode } from '../domain/order.code';
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { PhoneUtil } from '../../common/utils/phone.util';
+import { DeliveryBatchService } from '../../delivery/application/delivery.batch.service';
 
 @Injectable()
 export class OrderService {
@@ -116,6 +118,19 @@ export class OrderService {
     private readonly userManagementService: UserManagementService,
     private readonly ssgEventService: SsgEventService,
     private readonly cryptoCipher: CryptoCipher,
+
+    // @Inject('DeliveryAlimTalk')
+    // private deliveryAlimTalk: DeliveryAlimTalk,
+    // @Inject('IMailSend')
+    // private mailSend: IMailSend,
+    // @Inject('ISmsSend')
+    // private smsSend: ISmsSend,
+    // private configService: ConfigService,
+    // @InjectRepository(EmailSendHistoryEntity)
+    // private emailSendHistoryRepository: Repository<EmailSendHistoryEntity>,
+    // @Inject('IFileStorage')
+    // private fileStorage: IFileStorage,
+    private deliveryBatchService: DeliveryBatchService,
   ) {}
 
   async getList(user: ILoginUserInfo, getQuery: OrderGetListReqDto): Promise<OrderGetListResDto> {
@@ -1688,5 +1703,71 @@ export class OrderService {
 
     // 7. OrderGetMyOrderHistoryResDto 객체로 변환
     return Object.assign(new OrderGetMyOrderHistoryResDto(), numeric);
+  }
+
+  async testDelivery(user: ILoginUserInfo, getBody: OrderTestDeliveryReqDto) {
+    const { orderId, orderProductMappingId, deliveryTarget } = getBody;
+
+    // 최대 횟수
+    const maxLimitCount = 2;
+    const barCode = '999999';
+    const order = await this.orderRepository.findOne({
+      where: {
+        id: orderId,
+      },
+    });
+
+    if (!order) {
+      throw new BadRequestException('주문이 존재하지 않습니다.');
+    }
+
+    if (order.testDeliveryCount >= maxLimitCount) {
+      throw new BadRequestException('주문이 존재하지 않습니다.');
+    }
+
+    const orderProductMapping = await this.orderProductMappingRepository
+      .createQueryBuilder('orderProductMapping')
+      .innerJoinAndSelect('orderProductMapping.product', 'product')
+      .innerJoinAndSelect('orderProductMapping.order', 'order')
+      .innerJoinAndSelect('product.brand', 'brand')
+      .where('orderProductMapping.id = :id', { id: orderProductMappingId })
+      .getOne();
+
+    if (!orderProductMapping) {
+      throw new BadRequestException('해당 주문-상품이 존재하지 않습니다. ');
+    }
+
+    // 2. 쿠폰이미지 만들기
+    const { path: imagePath } = await DeliveryCreateCouponImage(
+      orderProductMapping.product.imagePath,
+      orderProductMapping.product.name,
+      barCode,
+      orderProductMapping.product.brand!.nameKorean,
+      orderProductMapping.product.expireDay,
+      orderProductMapping.topImagePath,
+      orderProductMapping.midImagePath,
+      orderProductMapping.product.type,
+    );
+
+    const deliveryMethod = order.sendMethod;
+
+    const orderDelivery = new OrderDeliveryEntity();
+    orderDelivery.deliveryMethod = deliveryMethod;
+    orderDelivery.orderProductMappingId = orderProductMapping.id;
+    orderDelivery.deliveryTarget = this.cryptoCipher.encryptDeliveryTarget(
+      PhoneUtil.normalizeDeliveryTarget(deliveryTarget),
+    );
+    orderDelivery.barCode = barCode;
+    orderDelivery.personalCode = barCode;
+    orderDelivery.orderProductMapping = orderProductMapping;
+    orderDelivery.imagePath = imagePath;
+
+    // 3. 전송
+    await this.deliveryBatchService.oneSend(orderDelivery, false);
+
+    // 4. 테스트 알람 회수 증가 및 종료
+    order.testDeliveryCount += 1;
+
+    await this.orderRepository.save(order);
   }
 }

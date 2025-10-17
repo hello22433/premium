@@ -8,6 +8,7 @@ import { IOrderType } from '../interface/order.type';
 import { IOrderSection } from '../interface/order.section';
 import { Type } from 'class-transformer';
 import { OrderSettleCreateDto } from './dto/order.settle.create.dto';
+import { IOrderSendMethod } from '../interface/order.send.method';
 
 export class OrderGetListReqDto extends PagingReqDto {
   @ApiPropertyOptional({
@@ -299,4 +300,29 @@ export class OrderExcelDownloadReqBodyDto {
   // ===================================
   @IsOptional()
   searchKeyword?: string;
+}
+
+export class OrderTestDeliveryReqDto {
+  @ApiProperty({
+    description: 'order id',
+  })
+  // ===================================
+  @IsNumber()
+  @IsNotEmpty()
+  orderId: number;
+
+  @ApiProperty({
+    description: 'order product mapping id',
+  })
+  // ===================================
+  @IsNumber()
+  @IsNotEmpty()
+  orderProductMappingId: number;
+
+  @ApiProperty({
+    description: '수신 대상',
+  })
+  // ===================================
+  @IsNotEmpty()
+  deliveryTarget: string;
 }

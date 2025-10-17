@@ -406,7 +406,7 @@ export class DeliveryBatchService {
     filePathList: string[],
   ) {
     try {
-      let smsText =
+      const smsText =
         orderDelivery.orderProductMapping.order.type === IOrderType.SSG ? text + smsSsgTemplate(orderDelivery) : text;
 
       const fromPhoneNumber =
@@ -427,7 +427,7 @@ export class DeliveryBatchService {
     }
   }
 
-  async oneSend(orderDelivery: OrderDeliveryEntity) {
+  async oneSend(orderDelivery: OrderDeliveryEntity, isSave: boolean = true) {
     // deliveryTarget 복호화
     let decryptedDeliveryTarget = orderDelivery.deliveryTarget;
     if (orderDelivery.deliveryTarget) {
@@ -634,7 +634,9 @@ export class DeliveryBatchService {
     }
     deliveryHistoryList.push(deliveryHistory);
 
-    await this.orderDeliveryRepository.save(orderDelivery);
+    if (isSave) {
+      await this.orderDeliveryRepository.save(orderDelivery);
+    }
 
     await this.deliverySendHistoryRepository.insert(deliveryHistoryList);
 

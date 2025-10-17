@@ -25,6 +25,7 @@ import {
   OrderGetOrderCompleteReportPdfReqDto,
   OrderGetOrderCompleteReportReqDto,
   OrderGetSettleReqDto,
+  OrderTestDeliveryReqDto,
   OrderUpdateOperationUserReqDto,
   OrderUpdateSettleReqDto,
   OrderUpdateTempReqDto,
@@ -377,5 +378,22 @@ export class OrderController {
     } catch (e) {
       throw e;
     }
+  }
+
+  @ApiOperation({
+    summary: '주문 테스트 발송 API',
+    description: '',
+  })
+  @ApiBearerAuth()
+  @ApiOkResponse({
+    description: '성공적으로 전송한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '테스트발송은 최대 2회입니다.',
+  })
+  // ===================================================
+  @Post('/order/test-delivery')
+  async testDelivery(@User() user: ILoginUserInfo, @Body() getBody: OrderTestDeliveryReqDto) {
+    return this.orderService.testDelivery(user, getBody);
   }
 }
