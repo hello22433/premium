@@ -24,6 +24,7 @@ import {
   OrderGetListReqDto,
   OrderGetOrderCompleteReportPdfReqDto,
   OrderGetOrderCompleteReportReqDto,
+  OrderGetPreviousContentReqQueryDto,
   OrderGetSettleReqDto,
   OrderTestDeliveryReqDto,
   OrderUpdateOperationUserReqDto,
@@ -39,6 +40,7 @@ import {
   OrderGetListResDto,
   OrderGetMyOrderHistoryResDto,
   OrderGetOrderCompleteReportResDto,
+  OrderGetPreviousContentResDto,
   OrderGetSettleGetListResDto,
 } from './order.res.dto';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
@@ -395,5 +397,19 @@ export class OrderController {
   @Post('/order/test-delivery')
   async testDelivery(@User() user: ILoginUserInfo, @Body() getBody: OrderTestDeliveryReqDto) {
     return this.orderService.testDelivery(user, getBody);
+  }
+
+  @ApiOperation({
+    summary: '이전 발송 문구 불러오기 API',
+  })
+  @ApiBearerAuth()
+  @ApiOkResponse({
+    type: OrderGetPreviousContentResDto,
+    description: '성공적으로 전송한 경우',
+  })
+  // =========================================
+  @Get('/order/previous-content')
+  async getPreviousContent(@User() user: ILoginUserInfo, @Query() getDto: OrderGetPreviousContentReqQueryDto) {
+    return this.orderService.getPreviousContent(user, getDto);
   }
 }

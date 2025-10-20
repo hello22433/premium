@@ -326,3 +326,23 @@ export class OrderTestDeliveryReqDto {
   @IsNotEmpty()
   deliveryTarget: string;
 }
+
+export class OrderGetPreviousContentReqQueryDto {
+  @ApiProperty({
+    description: 'order id',
+  })
+  // ===================================
+  @IsNumber()
+  @IsNotEmpty()
+  @Type(() => Number)
+  orderId: number;
+
+  @ApiProperty({
+    description: 'product id',
+  })
+  // ===================================
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  productId?: number;
+}

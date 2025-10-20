@@ -237,3 +237,15 @@ export class OrderGetSettleGetListResDto extends GetListResDto {
 }
 
 export class OrderGetMyOrderHistoryResDto extends OrderDashboardViewDto {}
+
+export class OrderGetPreviousContentResDto {
+  @ApiProperty({
+    description: '발송 제목',
+  })
+  sendTitle: string | null;
+
+  @ApiProperty({
+    description: '발송 내용 ',
+  })
+  sendContent: string | null;
+}

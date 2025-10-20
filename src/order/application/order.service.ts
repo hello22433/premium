@@ -4,6 +4,7 @@ import {
   Injectable,
   InternalServerErrorException,
   Logger,
+  Query,
 } from '@nestjs/common';
 import { UserManagementService } from '../../user_management/application/user.management.service';
 import { SsgEventService } from '../../ssg_event/application/ssg.event.service';
@@ -22,6 +23,7 @@ import {
   OrderGetListReqDto,
   OrderGetOrderCompleteReportPdfReqDto,
   OrderGetOrderCompleteReportReqDto,
+  OrderGetPreviousContentReqQueryDto,
   OrderGetSettleReqDto,
   OrderTestDeliveryReqDto,
   OrderUpdateOperationUserReqDto,
@@ -36,6 +38,7 @@ import {
   OrderGetListResDto,
   OrderGetMyOrderHistoryResDto,
   OrderGetOrderCompleteReportResDto,
+  OrderGetPreviousContentResDto,
   OrderGetSettleGetListResDto,
 } from '../api/order.res.dto';
 import { OrderEntity } from '../../entity/order.entity';
@@ -87,6 +90,7 @@ import { OrderDigitNumber, OrderPrefixCode } from '../domain/order.code';
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { PhoneUtil } from '../../common/utils/phone.util';
 import { DeliveryBatchService } from '../../delivery/application/delivery.batch.service';
+import { User } from '../../auth/api/user.decorator';
 
 @Injectable()
 export class OrderService {
@@ -1769,5 +1773,52 @@ export class OrderService {
     order.testDeliveryCount += 1;
 
     await this.orderRepository.save(order);
+  }
+
+  async getPreviousContent(
+    user: ILoginUserInfo,
+    getDto: OrderGetPreviousContentReqQueryDto,
+  ): Promise<OrderGetPreviousContentResDto> {
+    const { orderId, productId } = getDto;
+
+    const response: OrderGetPreviousContentResDto = {
+      sendTitle: null,
+      sendContent: null,
+    };
+
+    const order = await this.orderRepository.findOne({
+      where: {
+        id: orderId,
+      },
+    });
+
+    if (!order) {
+      return response;
+    }
+
+    const queryBuilder = this.orderProductMappingRepository
+      .createQueryBuilder('orderProductMapping')
+      .innerJoinAndSelect('orderProductMapping.order', 'order')
+      .where('orderProductMapping.id != :id', { id: orderId })
+      .andWhere('order.userId = :userId', { userId: user.id })
+      .andWhere('order.status IN (:...statusList)', {
+        statusList: [IOrderStatus.DELIVERY_REQUEST, IOrderStatus.DELIVERY_CONFIRMED, IOrderStatus.DELIVERY_COMPLETE],
+      })
+      .andWhere('order.type = :type', { type: order.type })
+      .orderBy('orderProductMapping.id', 'DESC');
+
+    if (productId) {
+      queryBuilder.andWhere('orderProductMapping.productId = :productId', { productId });
+    }
+
+    const orderProductMapping = await queryBuilder.getOne();
+
+    if (orderProductMapping) {
+      response.sendTitle = orderProductMapping.order.sendTitle;
+      response.sendContent = orderProductMapping.order.sendContent;
+      return response;
+    }
+
+    return response;
   }
 }
