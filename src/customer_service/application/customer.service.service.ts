@@ -8,6 +8,7 @@ import {
   CustomerServiceHistoryReqDto,
   CustomerServicePinStatusModifyReqDto,
   CustomerServicePinStatusRefreshReqDto,
+  CustomerServiceRefundReqDto,
   CustomerServiceReSendReqDto,
   CustomerServiceStatusListReqDto,
   CustomerServiceUnmaskedDeliveryTargetReqDto,
@@ -36,6 +37,7 @@ import { SmsGemtekSend } from 'src/sms/infra/sms.gemtek.send';
 import { MaskingUtil } from 'src/common/utils/masking.util';
 import { CryptoCipher } from 'src/common/infra/crypto.cipher';
 import { PhoneUtil } from 'src/common/utils/phone.util';
+import { OrderDeliveryRefundStatusEnum } from '../../delivery/interface/order.delivery.refund.status.enum';
 
 const dayjs = require('dayjs');
 const timezone = require('dayjs/plugin/timezone');
@@ -854,5 +856,26 @@ export class CustomerServiceService {
     return {
       deliveryTarget: orderDelivery.deliveryTarget || '',
     };
+  }
+
+  async refund(getDto: CustomerServiceRefundReqDto): Promise<void> {
+    const { orderDeliveryId, refundRatio } = getDto;
+
+    const orderDelivery = await this.orderDeliveryRepository.findOne({
+      where: {
+        id: orderDeliveryId,
+      },
+    });
+
+    if (!orderDelivery) {
+      throw new BadRequestException('존재하지 않는 발송 정보입니다.');
+    }
+
+    orderDelivery.refundRatio = refundRatio;
+    orderDelivery.refundRegisterAt = new Date();
+    orderDelivery.refundStatus = OrderDeliveryRefundStatusEnum.PROGRESS;
+
+    await this.orderDeliveryRepository.save(orderDelivery);
+    return;
   }
 }

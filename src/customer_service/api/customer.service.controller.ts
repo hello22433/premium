@@ -11,6 +11,7 @@ import {
   CustomerServiceHistoryReqDto,
   CustomerServicePinStatusModifyReqDto,
   CustomerServicePinStatusRefreshReqDto,
+  CustomerServiceRefundReqDto,
   CustomerServiceReSendReqDto,
   CustomerServiceStatusListReqDto,
   CustomerServiceUnmaskedDeliveryTargetReqDto,
@@ -184,5 +185,17 @@ export class CustomerServiceController {
   @Get('/customer-service/unmasked-delivery-target')
   getUnmaskedDeliveryTarget(@Query() getQuery: CustomerServiceUnmaskedDeliveryTargetReqDto) {
     return this.customerServiceService.getUnmaskedDeliveryTarget(getQuery);
+  }
+
+  @ApiOperation({
+    description: '고객관리 > 신세계 CS > 이벤트명 상세 > 발송상세 > 환불 API',
+  })
+  @ApiOkResponse({
+    description: '성공적으로 return 한 경우',
+  })
+  // ===============================================
+  @Put('/customer-service/refund')
+  refund(@Body() getDto: CustomerServiceRefundReqDto) {
+    return this.customerServiceService.refund(getDto);
   }
 }
