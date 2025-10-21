@@ -1,7 +1,7 @@
 import { IOrderStatus } from '../../order/interface/order.status';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IOrderType } from '../../order/interface/order.type';
-import { IsEnum, IsIn, IsInt, IsNotEmpty, IsNumber, IsOptional, IsString, Matches, Min } from 'class-validator';
+import { IsEnum, IsIn, IsInt, IsNotEmpty, IsNumber, IsOptional, IsString, Matches, Max, Min } from 'class-validator';
 import { PagingReqDto } from '../../common/api/dto/pagination.req.dto';
 import { dateAtRegexp } from '../../common/domain/date.regexp';
 import { Type } from 'class-transformer';
@@ -227,4 +227,22 @@ export class CustomerServiceUnmaskedDeliveryTargetReqDto {
   @IsNumber()
   @Type(() => Number)
   orderDeliveryId: number;
+}
+
+export class CustomerServiceRefundReqDto {
+  @ApiProperty({ description: '환불처리 하고자 하는 id' })
+  // =============================================================
+  @IsNotEmpty()
+  @IsNumber()
+  @Type(() => Number)
+  orderDeliveryId: number;
+
+  @ApiProperty({ description: '환불율 1~100 까지 입력 가능' })
+  // =============================================================
+  @IsNotEmpty()
+  @IsNumber()
+  @Max(100)
+  @Min(1)
+  @Type(() => Number)
+  refundRatio: number;
 }

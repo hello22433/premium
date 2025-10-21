@@ -37,6 +37,7 @@ import { SettleModule } from './settle/settle.module';
 import { CustomerServiceModule } from './customer_service/customer.service.module';
 import { OrderEventModule } from './order_event/order.event.module';
 import { ErpModule } from './erp/erp.module';
+import { RefundModule } from './refund/refund.module';
 
 @Module({
   imports: [
@@ -80,6 +81,7 @@ import { ErpModule } from './erp/erp.module';
     CustomerServiceModule,
     OrderEventModule,
     ErpModule,
+    RefundModule,
   ],
   controllers: [AppController],
   providers: [],

@@ -8,6 +8,7 @@ import { OrderDeliveryCouponStatus } from '../delivery/interface/order.delivery.
 import { OrderDeliveryEmailCouponStatus } from '../delivery/interface/order.delivery.email.coupon.status';
 import { ProductEntity } from './product.entity';
 import { OrderHistoryEntity } from './order.history.entity';
+import { OrderDeliveryRefundStatusEnum } from '../delivery/interface/order.delivery.refund.status.enum';
 
 @Entity('order_delivery')
 export class OrderDeliveryEntity extends BaseEntity {
@@ -79,6 +80,27 @@ export class OrderDeliveryEntity extends BaseEntity {
 
   @Column({ type: 'datetime', nullable: true, comment: '독려 문자 일시' })
   encourageAt: Date | null;
+
+  @Column({ type: 'enum', enum: OrderDeliveryRefundStatusEnum, nullable: true, comment: '환불 상태' })
+  refundStatus: OrderDeliveryRefundStatusEnum | null;
+
+  @Column({ type: 'int', nullable: true, comment: '환불 률 1~100 으로 저장 및 사용' })
+  refundRatio: number | null;
+
+  @Column({ type: 'datetime', nullable: true, comment: '환불 접수 일자' })
+  refundRegisterAt: Date | null;
+
+  @Column({ type: 'varchar', nullable: true, comment: '은행명' })
+  bankName: string | null;
+
+  @Column({ type: 'varchar', nullable: true, comment: '계좌번호' })
+  bankAccount: string | null;
+
+  @Column({ type: 'varchar', nullable: true, comment: '예금주' })
+  bankAccountOwner: string | null;
+
+  @Column({ type: 'datetime', nullable: true, comment: '환불일자' })
+  refundAt: Date | null;
 
   @ManyToOne(() => OrderProductMappingEntity, { createForeignKeyConstraints: false })
   @JoinColumn({ name: 'order_product_mapping_id' })

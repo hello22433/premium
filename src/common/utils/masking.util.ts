@@ -89,4 +89,15 @@ export class MaskingUtil {
     // 첫 글자 + '-' + 마지막 2글자
     return `${value.charAt(0)}-${value.substring(length - 2)}`;
   }
+
+  /**
+   * 핀번호 마스킹 처리
+   */
+  static maskPersonalCode(personalCode: string): string {
+    // 공백 제거
+    const trimmedPhone = personalCode.replace(/\s+/g, '');
+
+    // 패턴에 따라 첫 3자리 + **** + 마지막 4자리로 가리기
+    return `${trimmedPhone.slice(0, 3)}****${trimmedPhone.slice(-4)}`;
+  }
 }
