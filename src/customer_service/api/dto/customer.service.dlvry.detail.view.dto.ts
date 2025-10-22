@@ -1,6 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { OrderDeliveryCouponStatus } from '../../../delivery/interface/order.delivery.coupon.status';
 import { IOrderDeliveryStatus } from '../../../delivery/interface/order.delivery.status';
+import { OrderDeliveryRefundStatusEnum } from 'src/delivery/interface/order.delivery.refund.status.enum';
 
 export class CustomerServiceDlvryDetailViewDto {
   @ApiProperty({
@@ -32,6 +33,12 @@ export class CustomerServiceDlvryDetailViewDto {
     description: '수신정보 (번호 혹은 이메일)',
   })
   deliveryTarget: string;
+
+  @ApiProperty({
+    description: '환불 상태',
+    enum: OrderDeliveryRefundStatusEnum,
+  })
+  refundStatus: OrderDeliveryRefundStatusEnum | null;
 
   @ApiProperty({
     description: '발송일자 ex)yyyy-MM-ddTHH:mm:ss',

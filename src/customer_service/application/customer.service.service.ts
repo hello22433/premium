@@ -242,6 +242,7 @@ export class CustomerServiceService {
       personName: user?.personName ?? '',
       sendContent: order.sendContent,
       deliveryTarget: queryBuilder.deliveryTarget,
+      refundStatus: queryBuilder.refundStatus ?? null,
       sendRequestAt: queryBuilder.sendRequestAt ? format(queryBuilder.sendRequestAt, DateFormatStr) : null,
       method: queryBuilder.deliveryMethod,
       fromPhoneNumber: order.fromPhoneNumber,
