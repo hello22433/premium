@@ -356,6 +356,15 @@ export class ProductExcelDownloadReqBodyDto {
   partnerCompanyId?: number;
 
   @ApiPropertyOptional({
+    description: '고객사 user.id',
+  })
+  // ================================
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  userId?: number;
+
+  @ApiPropertyOptional({
     description: '브랜드 id',
   })
   // ================================

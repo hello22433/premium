@@ -61,6 +61,24 @@ export class UserSyncProductGetListReqDto extends PagingReqDto {
   name?: string;
 }
 
+export class UserSyncProductUpdateStatusReqDto {
+  @ApiProperty({
+    description: '이벤트 id',
+  })
+  // =================================
+  @IsNumber()
+  @IsNotEmpty()
+  id: number;
+
+  @ApiProperty({
+    description: '운영 상태 ex) ACTIVE: 사용, STOPPED: 일시중지, CLOSED: 종료',
+  })
+  // =================================
+  @IsNotEmpty()
+  @IsEnum(IUserSyncProductStatus)
+  status: IUserSyncProductStatus;
+}
+
 export class UserSyncProductGetDetailReqParamDto {
   @ApiProperty({
     description: '이벤트 id',
@@ -159,4 +177,27 @@ export class UserSyncProductDeleteProductReqDto {
   @IsInt({ each: true }) // 배열 내 값 number 검증
   @ArrayMinSize(1, { message: '삭제할 id 는 최소 1개 이상의 값이 필요합니다.' })
   idList: number[];
+}
+
+export class UserSyncProductSetHeadPersonReqDto {
+  @ApiProperty({
+    description: '기본 담당자로 설정할 user.id',
+  })
+  // =================================
+  @IsNumber()
+  @IsNotEmpty()
+  userId: number;
+}
+
+export class UserSyncProductGetHeadPersonListReqQueryDto extends PagingReqDto {}
+
+export class UserSyncProductGetPersonsByBusinessReqDto {
+  @ApiProperty({
+    description: '고객사 user.id',
+  })
+  // =================================
+  @IsNumber()
+  @Type(() => Number)
+  @IsNotEmpty()
+  userId: number;
 }

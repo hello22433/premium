@@ -13,6 +13,16 @@ export class UserSyncProductEventDetailDto {
   registerAt: string;
 
   @ApiProperty({
+    description: '고객사 명',
+  })
+  businessUserName: string;
+
+  @ApiProperty({
+    description: '고객사 담당자',
+  })
+  businessPersonName: string;
+
+  @ApiProperty({
     description: '상품 코드',
   })
   code: string;

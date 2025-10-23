@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, InternalServerErrorException } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { ProductEntity } from '../../entity/product.entity';
 import { FindOptionsWhere, In, Like, Repository } from 'typeorm';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -48,13 +48,13 @@ import { UserSyncProductEventEntity } from '../../entity/user.sync.product.event
 import { ProductLikeEntity } from '../../entity/product.like.entity';
 import { SsgEventEntity } from '../../entity/ssg.event.entity';
 import { validate } from 'class-validator';
-import { IProductSettleMethod } from '../interface/product.settle.method';
 import {
   ProductSettleMethodExcelToDbMapping,
   ProductTypeExcelToDBMapping,
   ProductUseStatusExcelToDBMapping,
 } from '../domain/product.excel.to.db.mapping';
 import { listToMap } from '../../util/map.util';
+import { UserEntity } from 'src/entity/user.entity';
 
 @Injectable()
 export class ProductService {
@@ -73,6 +73,8 @@ export class ProductService {
     private productLikeRepository: Repository<ProductLikeEntity>,
     @InjectRepository(SsgEventEntity)
     private ssgEventRepository: Repository<SsgEventEntity>,
+    @InjectRepository(UserEntity)
+    private userRepository: Repository<UserEntity>,
   ) {}
 
   async getTotalList(user: ILoginUserInfo, getQuery: ProductGetTotalListReqQueryDto): Promise<ProductGetListResDto> {
@@ -725,7 +727,7 @@ export class ProductService {
   }
 
   async excelDownload(getBody: ProductExcelDownloadReqBodyDto) {
-    const { partnerCompanyId, brandId, brandName, name, useStatus, code, partnerCompanyCode } = getBody;
+    const { partnerCompanyId, brandId, brandName, name, useStatus, code, partnerCompanyCode, userId } = getBody;
 
     const now = new Date();
     const nowString = format(now, 'yyyyMMdd');
@@ -735,6 +737,31 @@ export class ProductService {
       .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .innerJoinAndSelect('product.brand', 'brand')
       .andWhere('product.type != :ssg', { ssg: IProductType.SSG });
+
+    if (userId) {
+      const user = await this.userRepository.findOne({
+        where: { id: userId },
+      });
+
+      if (!user) {
+        throw new BadRequestException('해당 고객사가 존재하지 않습니다.');
+      }
+
+      const event = await this.userSyncProductEventRepository.findOne({
+        where: { businessUserId: user.id },
+        relations: ['userSyncProductEventMappings'],
+      });
+
+      if (!event) {
+        throw new BadRequestException('해당 고객사의 연동 이벤트가 존재하지 않습니다.');
+      }
+
+      const mappedProductIds = event.userSyncProductEventMappings?.map((m) => m.productId);
+
+      if (mappedProductIds && mappedProductIds.length > 0) {
+        queryBuilder = queryBuilder.andWhere('product.id IN (:...mappedProductIds)', { mappedProductIds });
+      }
+    }
 
     if (partnerCompanyId) {
       queryBuilder = queryBuilder.andWhere('product.partnerCompanyId = :partnerCompanyId', { partnerCompanyId });
