@@ -13,6 +13,11 @@ export class UserSyncProductEventViewDto {
   userBusinessName: string;
 
   @ApiProperty({
+    description: '등록 날짜 ex) yyyy-MM-ddTHH:mm:ss',
+  })
+  createdAt: string;
+
+  @ApiProperty({
     description: '이벤트 코드 ',
   })
   code: string;

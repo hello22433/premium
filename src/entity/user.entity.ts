@@ -73,6 +73,9 @@ export class UserEntity extends BaseEntity {
   @Column({ type: 'varchar', length: 100, comment: '사업자 연락처' })
   businessPhoneNumber: string;
 
+  @Column({ comment: '대표자 여부 ex) true: 기본 담당자(대표)', default: false })
+  isHeadPerson: boolean;
+
   @Column({ type: 'varchar', nullable: true, length: 100, comment: '허용 IP' })
   ip: string | null;
 
