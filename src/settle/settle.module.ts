@@ -11,6 +11,7 @@ import { ShippingStorageEntity } from '../entity/shipping.storage.entity';
 import { OtherServiceSaleTypeEntity } from '../entity/other.service.sale.type.entity';
 import { UserEntity } from '../entity/user.entity';
 import { UserDiscountEntity } from '../entity/user.discount.entity';
+import { SettleSchedule } from './settle.schedule';
 
 @Module({
   imports: [
@@ -26,7 +27,7 @@ import { UserDiscountEntity } from '../entity/user.discount.entity';
       UserEntity,
     ]),
   ],
-  providers: [SettleService],
+  providers: [SettleService, SettleSchedule],
   controllers: [SettleController],
 })
 export class SettleModule {}

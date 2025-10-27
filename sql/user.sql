@@ -5,3 +5,17 @@ ALTER TABLE user
     ADD COLUMN settle_period_count INT NULL COMMENT '정산 기준 일 수';
 
 ALTER TABLE order ADD COLUMN settle_status ENUM('UNSETTLE_OVERDUE', 'UNSETTLE_NORMAL', 'SETTLE_COMPLETE') NULL COMMENT '정산상태';
+
+ALTER TABLE user
+    ADD COLUMN all_settle_amount INT DEFAULT 0 COMMENT '전체 주문 완료 금액';
+
+ALTER TABLE user
+    ADD COLUMN service_amount INT DEFAULT 0 COMMENT '서비스 금액';
+
+UPDATE user u
+SET u.all_settle_amount = (
+    SELECT COALESCE(SUM(o.send_amount), 0)
+    FROM `order` o
+    WHERE o.user_id = u.id
+      AND o.status = 'DELIVERY_COMPLETE'
+);
