@@ -1726,7 +1726,7 @@ export class OrderService {
     }
 
     if (order.testDeliveryCount >= maxLimitCount) {
-      throw new BadRequestException('주문이 존재하지 않습니다.');
+      throw new BadRequestException('테스트발송은 최대 2회입니다.');
     }
 
     const orderProductMapping = await this.orderProductMappingRepository
