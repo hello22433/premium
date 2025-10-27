@@ -7,6 +7,7 @@ import { IUserStatus } from '../../user/interface/user.status';
 import { IUserSettleCondition } from '../../user/interface/user.settle.condition';
 import { IUserSettleMethod } from '../../user/interface/user.settle.method';
 import { IUserBusinessType } from '../../user/interface/user.business.type';
+import { UserSettlePeriodConditionEnum } from '../../user/interface/user.settle.period.condition.enum';
 
 export class UserManagementGetNameListResDto {
   @ApiProperty({
@@ -145,6 +146,17 @@ export class UserManagementGetDetailResDto {
     description: '발신 번호',
   })
   fromPhoneNumber: string | null;
+
+  @ApiProperty({
+    description:
+      '정산 조건 월 타입 ex) CURRENT_MONTH: 당월, NEXT_MONTH: 익월, NEXT_MONTH_AFTER: 익익월, DELIVERY_DATE: 발송일',
+  })
+  settlePeriodCondition: UserSettlePeriodConditionEnum | null;
+
+  @ApiProperty({
+    description: '발송 조건 일',
+  })
+  settlePeriodCount: number | null;
 }
 
 export class UserManagementGetListResDto extends GetListResDto {

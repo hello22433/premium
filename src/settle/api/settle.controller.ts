@@ -275,4 +275,8 @@ export class SettleController {
       throw e;
     }
   }
+
+  // 정산관리 고객사별 정산관리 목록 list
+  // 정산관리 고객사별 정산관리 detail list
+  // 정산관리 고객사별 정산관리 detail 정산상태 update API
 }

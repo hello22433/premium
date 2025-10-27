@@ -6,6 +6,7 @@ import { IUserSettleCondition } from '../user/interface/user.settle.condition';
 import { IUserSettleMethod } from '../user/interface/user.settle.method';
 import { IUserBusinessType } from '../user/interface/user.business.type';
 import { UserDiscountEntity } from './user.discount.entity';
+import { UserSettlePeriodConditionEnum } from '../user/interface/user.settle.period.condition.enum';
 
 @Entity('user')
 export class UserEntity extends BaseEntity {
@@ -112,6 +113,12 @@ export class UserEntity extends BaseEntity {
 
   @Column({ type: 'varchar', nullable: true, length: 20, comment: '발신 번호' })
   fromPhoneNumber: string | null;
+
+  @Column({ type: 'enum', enum: UserSettlePeriodConditionEnum, nullable: true, comment: '정산 기준 지정 월 조건' })
+  settlePeriodCondition: UserSettlePeriodConditionEnum | null;
+
+  @Column({ type: 'int', nullable: true, comment: '정산 기준 일 수' })
+  settlePeriodCount: number | null;
 
   @OneToMany(() => UserDiscountEntity, (userDisCount) => userDisCount.user)
   userDiscounts: UserDiscountEntity[];

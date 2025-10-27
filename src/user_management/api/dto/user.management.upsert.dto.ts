@@ -4,6 +4,7 @@ import { IUserAuthority } from '../../../user/interface/user.authority';
 import { IUserSettleCondition } from '../../../user/interface/user.settle.condition';
 import { IUserSettleMethod } from '../../../user/interface/user.settle.method';
 import { IUserBusinessType } from '../../../user/interface/user.business.type';
+import { UserSettlePeriodConditionEnum } from '../../../user/interface/user.settle.period.condition.enum';
 
 export class UserManagementUpsertDto {
   @ApiProperty({
@@ -144,4 +145,21 @@ export class UserManagementUpsertDto {
   // ============================
   @IsOptional()
   fromPhoneNumber: string | null;
+
+  @ApiProperty({
+    description:
+      '정산 조건 월 타입 ex) CURRENT_MONTH: 당월, NEXT_MONTH: 익월, NEXT_MONTH_AFTER: 익익월, DELIVERY_DATE: 발송일',
+  })
+  // ============================
+  @IsOptional()
+  @IsEnum(UserSettlePeriodConditionEnum)
+  settlePeriodCondition: UserSettlePeriodConditionEnum | null;
+
+  @ApiProperty({
+    description: '발송 조건 일',
+  })
+  // ============================
+  @IsOptional()
+  @IsNumber()
+  settlePeriodCount: number | null;
 }

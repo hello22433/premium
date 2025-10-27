@@ -22,6 +22,7 @@ import { UserManagementNameViewDto } from '../api/dto/user.management.name.view.
 import { generateRandomPassword } from '../../user_find/domain/user.password.regex';
 import { userResetPasswordTemplate } from '../../user_find/domain/user.reset.password.template.html';
 import { IMailSend } from '../../mail/interface/mail-send';
+import { UserSettlePeriodConditionEnum } from '../../user/interface/user.settle.period.condition.enum';
 
 @Injectable()
 export class UserManagementService {
@@ -188,6 +189,9 @@ export class UserManagementService {
       cardNumber: user.cardNumber,
       balance: user.balance,
       fromPhoneNumber: user.fromPhoneNumber,
+
+      settlePeriodCondition: user.settlePeriodCondition,
+      settlePeriodCount: user.settlePeriodCount,
     };
   }
 
@@ -274,6 +278,8 @@ export class UserManagementService {
       status: getBody.status,
       personCode: getBody.email,
       fromPhoneNumber: getBody.fromPhoneNumber,
+      settlePeriodCondition: getBody.settlePeriodCondition,
+      settlePeriodCount: getBody.settlePeriodCount,
     });
 
     return;
@@ -310,6 +316,9 @@ export class UserManagementService {
     user.cardNumber = getBody.cardNumber;
     user.status = getBody.status;
     user.fromPhoneNumber = getBody.fromPhoneNumber;
+
+    user.settlePeriodCondition = getBody.settlePeriodCondition;
+    user.settlePeriodCount = getBody.settlePeriodCount;
 
     await this.userRepository.save(user);
 
