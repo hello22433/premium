@@ -121,6 +121,12 @@ export class UserEntity extends BaseEntity {
   @Column({ type: 'int', nullable: true, comment: '정산 기준 일 수' })
   settlePeriodCount: number | null;
 
+  @Column({ type: 'int', default: 0, comment: '전체 주문 완료 금액' })
+  allSettleAmount: number;
+
+  @Column({ type: 'int', default: 0, comment: '서비스 금액' })
+  serviceAmount: number;
+
   @OneToMany(() => OrderEntity, (order) => order.user)
   orders: OrderEntity[];
 

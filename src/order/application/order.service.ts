@@ -1213,6 +1213,17 @@ export class OrderService {
     const userBalance = await this.userManagementService.getBalance(user.id);
     this.logger.debug(`User#${user.id} balance=${userBalance}`);
 
+    const oneUser = await this.userRepository.findOne({ where: { id: user.id } });
+    if (!oneUser) {
+      throw new InternalServerErrorException('유저가 존재하지 않습니다.');
+    }
+    const remainServiceAmount =
+      oneUser.maximumLimit + oneUser.balance - oneUser.allSettleAmount + oneUser.serviceAmount;
+
+    if (totalAmount > remainServiceAmount) {
+      throw new BadRequestException('잔액이 부족하여 발송 요청할 수 없습니다.');
+    }
+
     // 잔액 부족 시 예외
     if (totalAmount > userBalance) {
       throw new BadRequestException('잔액이 부족하여 발송 요청할 수 없습니다.');

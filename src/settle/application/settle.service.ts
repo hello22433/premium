@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, InternalServerErrorException } from '@nestjs/common';
 import {
   SettleGetAdminUserListResDto,
   SettleGetMobileListResDto,
@@ -13,7 +13,7 @@ import {
 } from '../api/settle.res.dto';
 import { OrderEntity } from '../../entity/order.entity';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
+import { Brackets, In, IsNull, Not, Repository } from 'typeorm';
 import {
   SettleCreateOtherSaleReqDto,
   SettleCreateSaleTypeReqDto,
@@ -66,6 +66,8 @@ import { IPriceAdjustment } from '../../user_discount/interface/price.adjustment
 import { SettleUserPerListViewDto } from '../api/dto/settle.user.per.list.view.dto';
 import { SettleUserStatusEnum } from '../interface/settle.user.status';
 import { SettleUserPerDetailViewDto } from '../api/dto/settle.user.per.detail.view.dto';
+import { SettleUserOrderDetailEnum } from '../interface/settle.user.order.detail';
+import { UserSettlePeriodConditionEnum } from '../../user/interface/user.settle.period.condition.enum';
 
 @Injectable()
 export class SettleService {
@@ -1220,14 +1222,32 @@ export class SettleService {
     }
 
     if (status) {
-      // TODO
+      if (status === 'ACTIVE') {
+        queryBuilder.where(`user.maximumLimit + user.balance - user.allSettleAmount + user.serviceAmount > 0`);
+      }
+
+      if (status === 'STOP') {
+        queryBuilder.where(`user.maximumLimit + user.balance - user.allSettleAmount + user.serviceAmount <= 0`);
+      }
     }
 
     queryBuilder.skip((page - 1) * take).take(take);
     queryBuilder.orderBy('user.id', 'DESC');
+
     const [userList, totalCount] = await queryBuilder.getManyAndCount();
 
     const result: SettleUserPerListViewDto[] = userList.map((user) => {
+      let overdueCount = 0;
+      let overdueAmount = 0;
+      for (const order of user.orders!) {
+        if (order.status === 'DELIVERY_COMPLETE' && order.settleStatus !== 'UNSETTLE_OVERDUE') {
+          overdueCount += 1;
+          overdueAmount += order.sendAmount;
+        }
+      }
+
+      const remainServiceAmount = user.maximumLimit + user.balance - user.allSettleAmount + user.serviceAmount;
+
       return {
         id: user.id,
         email: user.email,
@@ -1237,12 +1257,12 @@ export class SettleService {
         settlePeriodCondition: user.settlePeriodCondition,
         settlePeriodCount: user.settlePeriodCount,
         maximumLimit: user.maximumLimit,
-        serviceAmount: 0, // TODO
-        overdueCount: 0, // TODO
-        overdueAmount: 0, // TODO
+        serviceAmount: user.serviceAmount,
+        overdueCount: overdueCount,
+        overdueAmount: overdueAmount,
         balance: user.balance,
-        remainServiceAmount: 0, // TODO
-        status: SettleUserStatusEnum.ACTIVE, // TODO ,
+        remainServiceAmount: remainServiceAmount,
+        status: remainServiceAmount > 0 ? SettleUserStatusEnum.ACTIVE : SettleUserStatusEnum.STOP,
       };
     });
 
@@ -1268,12 +1288,12 @@ export class SettleService {
     QueryBuilderDateCondition(queryBuilder, 'order', 'sendRequestAt', startAt, endAt);
 
     if (userBusinessName) {
-      queryBuilder.andWhere('order.user.businessName LIKE :userBusinessName', {
+      queryBuilder.andWhere('user.businessName LIKE :userBusinessName', {
         userBusinessName: `%${userBusinessName}%`,
       });
     }
     if (userPersonName) {
-      queryBuilder.andWhere('order.user.personName LIKE :userPersonName', { userPersonName: `%${userPersonName}%` });
+      queryBuilder.andWhere('user.personName LIKE :userPersonName', { userPersonName: `%${userPersonName}%` });
     }
 
     if (settleStatus) {
@@ -1302,8 +1322,8 @@ export class SettleService {
         sendRequestAt: format(order.sendRequestAt, DateFormatStr),
         eventName: order.eventName,
         productName: productName,
-        settleAmount: 0, // TODO
-        settleDiscountAmount: 0, // TODO
+        settleAmount: order.sendAmount,
+        settleDiscountAmount: order.settleAmount,
         isOrderCompleteReport: order.orderCompleteReportCount > 0,
         settleStatus: order.settleStatus,
         isSettleComplete: order.isSettleComplete,
@@ -1325,6 +1345,17 @@ export class SettleService {
     if (!order) {
       throw new BadRequestException('주문이 존재하지 않습니다.');
     }
+
+    const user = await this.userRepository.findOne({
+      where: {
+        id: order.userId,
+      },
+    });
+
+    if (!user) {
+      throw new InternalServerErrorException('유저가 존재하지 않습니다.');
+    }
+
     order.settleStatus = settleStatus;
 
     if (order.settleStatus === 'SETTLE_COMPLETE') {
@@ -1333,10 +1364,90 @@ export class SettleService {
 
     if (settleStatus === 'SETTLE_COMPLETE') {
       order.isSettleComplete = true;
+      user.serviceAmount += order.sendAmount;
+
+      await this.userRepository.save(user);
     }
 
     await this.orderRepository.save(order);
 
     return;
+  }
+
+  @Transactional()
+  async syncSettleOverdue() {
+    const userList = await this.userRepository.find({
+      where: {
+        settlePeriodCount: Not(IsNull()),
+        settlePeriodCondition: Not(IsNull()),
+      },
+    });
+
+    for (const user of userList) {
+      // 초과하는 날짜 기준
+      const orderList = await this.orderRepository
+        .createQueryBuilder('order')
+        .where('order.userId = :userId', { userId: user.id })
+        .andWhere(
+          new Brackets((qb) => {
+            qb.where('order.settleStatus IS NULL').orWhere('order.settleStatus = :settleStatus', {
+              settleStatus: SettleUserOrderDetailEnum.UNSETTLE_NORMAL,
+            });
+          }),
+        )
+        .andWhere('order.status = :status', { status: 'DELIVERY_COMPLETE' })
+        .getMany();
+
+      const now = new Date();
+      let conditionDate = new Date();
+      const updateOrderIdList: number[] = [];
+
+      if (user.settlePeriodCondition === UserSettlePeriodConditionEnum.CURRENT_MONTH) {
+        const year = now.getFullYear();
+        const month = now.getMonth();
+
+        conditionDate = new Date(year, month, user.settlePeriodCount!);
+      }
+
+      if (user.settlePeriodCondition === UserSettlePeriodConditionEnum.NEXT_MONTH) {
+        const year = now.getFullYear();
+        const month = now.getMonth() + 1;
+
+        conditionDate = new Date(year, month, user.settlePeriodCount!);
+      }
+
+      if (user.settlePeriodCondition === UserSettlePeriodConditionEnum.NEXT_MONTH_AFTER) {
+        const year = now.getFullYear();
+        const month = now.getMonth() + 2;
+
+        conditionDate = new Date(year, month, user.settlePeriodCount!);
+      }
+
+      for (const order of orderList) {
+        if (user.settlePeriodCondition === UserSettlePeriodConditionEnum.DELIVERY_DATE) {
+          const year = order.sendRequestAt.getFullYear();
+          const month = order.sendRequestAt.getMonth();
+          const day = order.sendRequestAt.getDate() + user.settlePeriodCount!;
+          conditionDate = new Date(year, month, day);
+
+          if (now >= conditionDate) {
+            updateOrderIdList.push(order.id);
+          }
+        }
+
+        if (
+          user.settlePeriodCondition !== UserSettlePeriodConditionEnum.DELIVERY_DATE &&
+          conditionDate >= order.sendRequestAt
+        ) {
+          updateOrderIdList.push(order.id);
+        }
+      }
+
+      if (updateOrderIdList.length > 0) {
+        await this.orderRepository.update(updateOrderIdList, {
+          settleStatus: SettleUserOrderDetailEnum.UNSETTLE_OVERDUE,
+        });
+      }
+    }
   }
 }

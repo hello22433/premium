@@ -15,6 +15,7 @@ import { FileModule } from '../file/file.module';
 import { DeliveryTrackHttp } from './infra/delivery.track.http';
 import { OrderRealProductEntity } from '../entity/order.real.product.entity';
 import { OrderRealProductMappingEntity } from '../entity/order.real.product.mapping.entity';
+import { UserEntity } from '../entity/user.entity';
 
 @Module({
   imports: [
@@ -27,6 +28,7 @@ import { OrderRealProductMappingEntity } from '../entity/order.real.product.mapp
       OrderRealProductMappingEntity,
       DeliverySendHistoryEntity,
       EmailSendHistoryEntity,
+      UserEntity,
     ]),
     MailModule,
     SmsModule,

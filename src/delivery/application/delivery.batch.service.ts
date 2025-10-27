@@ -35,6 +35,7 @@ import { DeliveryTrackingStatus } from '../domain/delivery.tracking.status';
 import { OrderRealProductMappingEntity } from '../../entity/order.real.product.mapping.entity';
 import { Transactional } from 'typeorm-transactional';
 import { OrderDeliveryCouponStatus } from '../interface/order.delivery.coupon.status';
+import { UserEntity } from '../../entity/user.entity';
 
 @Injectable()
 export class DeliveryBatchService {
@@ -62,6 +63,8 @@ export class DeliveryBatchService {
     private emailSendHistoryRepository: Repository<EmailSendHistoryEntity>,
     @Inject('IFileStorage')
     private fileStorage: IFileStorage,
+    @InjectRepository(UserEntity)
+    private userRepository: Repository<UserEntity>,
   ) {}
 
   private logger = new Logger('batch');
@@ -302,6 +305,26 @@ export class DeliveryBatchService {
 
     await this.deliverySendHistoryRepository.insert(deliveryHistoryList);
     await this.orderRepository.update({ id: In(orderIdList) }, { status: IOrderStatus.DELIVERY_COMPLETE });
+
+    if (orderIdList.length > 0) {
+      const orderList = await this.orderRepository
+        .createQueryBuilder('order')
+        .innerJoinAndSelect('order.user', 'user')
+        .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
+        .where('order.id IN (:...orderIdList)', { orderIdList })
+        .getMany();
+
+      for (const order of orderList) {
+        await this.userRepository.update(
+          {
+            id: order.userId,
+          },
+          {
+            allSettleAmount: order.user!.allSettleAmount + order.sendAmount,
+          },
+        );
+      }
+    }
 
     return;
   }
