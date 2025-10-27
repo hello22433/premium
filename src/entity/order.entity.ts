@@ -7,6 +7,7 @@ import { IOrderSendMethod } from '../order/interface/order.send.method';
 import { IOrderType } from '../order/interface/order.type';
 import { OrderEmailSendType } from '../order/domain/order.email.send.type';
 import { OrderLikeEntity } from './order.like.entity';
+import { SettleUserOrderDetailEnum } from '../settle/interface/settle.user.order.detail';
 
 @Entity('order')
 export class OrderEntity extends BaseEntity {
@@ -95,6 +96,12 @@ export class OrderEntity extends BaseEntity {
 
   @Column({ type: 'int', default: 0, comment: '테스트 전송 카운트 횟수' })
   testDeliveryCount: number;
+
+  @Column({ type: 'enum', enum: SettleUserOrderDetailEnum, nullable: true, comment: '정산상태 ' })
+  settleStatus: SettleUserOrderDetailEnum | null;
+
+  @Column({ default: false, comment: '정산 확정 여부' })
+  isSettleComplete: boolean;
 
   @ManyToOne(() => UserEntity, { createForeignKeyConstraints: false })
   @JoinColumn({ name: 'user_id' })

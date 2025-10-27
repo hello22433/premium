@@ -5,6 +5,7 @@ import {
   SettleGetOtherDetailResDto,
   SettleGetOtherListResDto,
   SettleGetPartnerCompanyListResDto,
+  SettleGetPerUserDetailResDto,
   SettleGetSaleTypeListResDto,
   SettleGetShippingStorageListResDto,
   SettleGetUserDetailResDto,
@@ -27,8 +28,11 @@ import {
   SettleGetUserDetailReqParamDto,
   SettleGetUserExcelDownloadReqDto,
   SettleGetUserListReqQueryDto,
+  SettleGetUserPerDetailReqQueryDto,
+  SettleGetUserPerListReqQueryDto,
   SettleMobileExcelDownloadReqDto,
   SettlerUpdateOtherSaleReqDto,
+  SettleUpdateUserPerOrderReqDto,
 } from '../api/settle.req.dto';
 import { SettleUserListViewDto } from '../api/dto/settle.user.list.view.dto';
 import { QueryBuilderDateCondition } from '../../common/infra/query.builder.date.condition';
@@ -59,6 +63,9 @@ import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delive
 import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
 import { UserDiscountEntity } from '../../entity/user.discount.entity';
 import { IPriceAdjustment } from '../../user_discount/interface/price.adjustment';
+import { SettleUserPerListViewDto } from '../api/dto/settle.user.per.list.view.dto';
+import { SettleUserStatusEnum } from '../interface/settle.user.status';
+import { SettleUserPerDetailViewDto } from '../api/dto/settle.user.per.detail.view.dto';
 
 @Injectable()
 export class SettleService {
@@ -1191,5 +1198,145 @@ export class SettleService {
     await workbook.xlsx.writeFile(filePath);
 
     return { fileName, filePath };
+  }
+
+  async getUserPerList(getDto: SettleGetUserPerListReqQueryDto) {
+    const { startAt, endAt, userPersonName, userBusinessName, take, page, status } = getDto;
+
+    const queryBuilder = this.userRepository
+      .createQueryBuilder('user')
+      .innerJoinAndSelect('user.orders', 'orders')
+      .innerJoinAndSelect('orders.orderProductMappings', 'orderProductMappings')
+      .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries');
+
+    QueryBuilderDateCondition(queryBuilder, 'orderDeliveries', 'sendRequestAt', startAt, endAt);
+
+    if (userPersonName) {
+      queryBuilder.andWhere('user.personName LIKE :userPersonName', { userPersonName: `%${userPersonName}%` });
+    }
+
+    if (userBusinessName) {
+      queryBuilder.andWhere('user.businessName LIKE :userBusinessName', { userBusinessName: `%${userBusinessName}%` });
+    }
+
+    if (status) {
+      // TODO
+    }
+
+    queryBuilder.skip((page - 1) * take).take(take);
+    queryBuilder.orderBy('user.id', 'DESC');
+    const [userList, totalCount] = await queryBuilder.getManyAndCount();
+
+    const result: SettleUserPerListViewDto[] = userList.map((user) => {
+      return {
+        id: user.id,
+        email: user.email,
+        businessName: user.businessName,
+        personName: user.personName,
+        settleCondition: user.settleCondition,
+        settlePeriodCondition: user.settlePeriodCondition,
+        settlePeriodCount: user.settlePeriodCount,
+        maximumLimit: user.maximumLimit,
+        serviceAmount: 0, // TODO
+        overdueCount: 0, // TODO
+        overdueAmount: 0, // TODO
+        balance: user.balance,
+        remainServiceAmount: 0, // TODO
+        status: SettleUserStatusEnum.ACTIVE, // TODO ,
+      };
+    });
+
+    return {
+      list: result,
+      totalCount,
+      totalPage: Math.ceil(totalCount / take),
+      currentPage: page,
+    };
+  }
+
+  async getUserPerDetail(getDto: SettleGetUserPerDetailReqQueryDto): Promise<SettleGetPerUserDetailResDto> {
+    const { userId, startAt, endAt, userBusinessName, userPersonName, settleStatus, take, page } = getDto;
+
+    const queryBuilder = this.orderRepository
+      .createQueryBuilder('order')
+      .innerJoinAndSelect('order.user', 'user')
+      .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
+      .innerJoinAndSelect('orderProductMappings.product', 'product')
+      .where('order.userId = :userId', { userId: userId })
+      .andWhere('order.status IN (:...status)', { status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'] });
+
+    QueryBuilderDateCondition(queryBuilder, 'order', 'sendRequestAt', startAt, endAt);
+
+    if (userBusinessName) {
+      queryBuilder.andWhere('order.user.businessName LIKE :userBusinessName', {
+        userBusinessName: `%${userBusinessName}%`,
+      });
+    }
+    if (userPersonName) {
+      queryBuilder.andWhere('order.user.personName LIKE :userPersonName', { userPersonName: `%${userPersonName}%` });
+    }
+
+    if (settleStatus) {
+      queryBuilder.andWhere('order.status = :settleStatus', { settleStatus: settleStatus });
+    }
+
+    queryBuilder.skip((page - 1) * take).take(take);
+    queryBuilder.orderBy('order.id', 'DESC');
+
+    const [orderList, totalCount] = await queryBuilder.getManyAndCount();
+
+    const resultList: SettleUserPerDetailViewDto[] = orderList.map((order) => {
+      let productName = '';
+      if (order.orderProductMappings && order.orderProductMappings.length > 0) {
+        productName = order.orderProductMappings[0].product.name;
+        const orderProductMappingsLength = order.orderProductMappings.length;
+        if (orderProductMappingsLength - 1 > 0) {
+          productName += `외 ${orderProductMappingsLength - 1}건`;
+        }
+      }
+
+      return {
+        id: order.id,
+        userBusinessName: order.user!.businessName,
+        userPersonName: order.user!.personName,
+        sendRequestAt: format(order.sendRequestAt, DateFormatStr),
+        eventName: order.eventName,
+        productName: productName,
+        settleAmount: 0, // TODO
+        settleDiscountAmount: 0, // TODO
+        isOrderCompleteReport: order.orderCompleteReportCount > 0,
+        settleStatus: order.settleStatus,
+        isSettleComplete: order.isSettleComplete,
+      };
+    });
+
+    return { list: resultList, totalCount, totalPage: Math.ceil(totalCount / take), currentPage: page };
+  }
+
+  async updateUserPerOrder(getDto: SettleUpdateUserPerOrderReqDto) {
+    const { orderId, settleStatus } = getDto;
+
+    const order = await this.orderRepository.findOne({
+      where: {
+        id: orderId,
+      },
+    });
+
+    if (!order) {
+      throw new BadRequestException('주문이 존재하지 않습니다.');
+    }
+    order.settleStatus = settleStatus;
+
+    if (order.settleStatus === 'SETTLE_COMPLETE') {
+      throw new BadRequestException('이미 정산이 완료된 주문입니다.');
+    }
+
+    if (settleStatus === 'SETTLE_COMPLETE') {
+      order.isSettleComplete = true;
+    }
+
+    await this.orderRepository.save(order);
+
+    return;
   }
 }

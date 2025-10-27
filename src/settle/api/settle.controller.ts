@@ -8,6 +8,8 @@ import {
   SettleGetOtherDetailResDto,
   SettleGetOtherListResDto,
   SettleGetPartnerCompanyListResDto,
+  SettleGetPerUserDetailResDto,
+  SettleGetPerUserListResDto,
   SettleGetSaleTypeListResDto,
   SettleGetShippingStorageListResDto,
   SettleGetUserDetailResDto,
@@ -27,8 +29,11 @@ import {
   SettleGetUserDetailReqParamDto,
   SettleGetUserExcelDownloadReqDto,
   SettleGetUserListReqQueryDto,
+  SettleGetUserPerDetailReqQueryDto,
+  SettleGetUserPerListReqQueryDto,
   SettleMobileExcelDownloadReqDto,
   SettlerUpdateOtherSaleReqDto,
+  SettleUpdateUserPerOrderReqDto,
 } from './settle.req.dto';
 import * as fs from 'fs';
 import { Response } from 'express';
@@ -274,5 +279,45 @@ export class SettleController {
     } catch (e) {
       throw e;
     }
+  }
+
+  @ApiOperation({
+    summary: '정산관리 > 정산관리 고객사별 정산관리 목록 list',
+    description: '고객사별 정산 관리 (목록)',
+  })
+  @ApiOkResponse({
+    type: SettleGetPerUserListResDto,
+  })
+  // =====================================
+  @Get('settle/user-per/list')
+  getUserPerList(@Query() getDto: SettleGetUserPerListReqQueryDto) {
+    return this.settleService.getUserPerList(getDto);
+  }
+
+  @ApiOperation({
+    summary: '정산관리 > 정산관리 고객사별 정산관리 상세 API',
+    description: '고객사별 정산 관리 (상세)',
+  })
+  @ApiOkResponse({
+    type: SettleGetPerUserDetailResDto,
+  })
+  // =====================================
+  @Get('settle/user-per/detail')
+  getUserPerDetail(@Query() getDto: SettleGetUserPerDetailReqQueryDto) {
+    return this.settleService.getUserPerDetail(getDto);
+  }
+
+  // 정산관리 고객사별 정산관리 detail 정산상태 update API
+  @ApiOperation({
+    summary: '정산관리 > 정산관리 고객사별 정산관리 detail 정산상태 update API',
+    description: '고객사별 정산 관리 업데이트 API',
+  })
+  @ApiOkResponse({
+    type: '',
+  })
+  // =====================================
+  @Put('settle/user-per/order')
+  updateUserPerOrder(@Body() getDto: SettleUpdateUserPerOrderReqDto) {
+    return this.settleService.updateUserPerOrder(getDto);
   }
 }
