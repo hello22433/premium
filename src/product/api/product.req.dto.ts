@@ -100,6 +100,15 @@ export class ProductGetListReqQueryDto extends PagingReqDto {
   partnerCompanyId?: number;
 
   @ApiPropertyOptional({
+    description: '기본 담당자 user.id',
+  })
+  // ================================
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  headPersonUserId?: number;
+
+  @ApiPropertyOptional({
     description: '브랜드 id',
   })
   // ================================

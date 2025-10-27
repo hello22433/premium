@@ -240,6 +240,7 @@ export class ProductService {
   async getList(user: ILoginUserInfo, getQuery: ProductGetListReqQueryDto): Promise<ProductGetListResDto> {
     const {
       partnerCompanyId,
+      headPersonUserId,
       brandId,
       brandName,
       name,
@@ -259,6 +260,32 @@ export class ProductService {
       .leftJoinAndSelect('product.productLikes', 'productLikes')
       .andWhere('product.type != :ssg', { ssg: IProductType.SSG });
 
+    if (headPersonUserId) {
+      const events = await this.userSyncProductEventRepository.find({
+        where: {
+          businessUserId: headPersonUserId,
+        },
+        relations: ['userSyncProductEventMappings'],
+      });
+
+      const mappedProductIds: number[] = [];
+      for (const event of events) {
+        if (event.userSyncProductEventMappings) {
+          for (const mapping of event.userSyncProductEventMappings) {
+            mappedProductIds.push(mapping.productId);
+          }
+        }
+      }
+      const uniqueProductIds = [...new Set(mappedProductIds)];
+      if (uniqueProductIds.length === 0) {
+        queryBuilder = queryBuilder.andWhere('1 = 0');
+      } else {
+        queryBuilder = queryBuilder.andWhere('product.id IN (:...mappedProductIds)', {
+          mappedProductIds: uniqueProductIds,
+        });
+      }
+    }
+
     if (user.authority === IUserAuthority.CORPORATE_ADMIN) {
       const event = await this.userSyncProductEventRepository.findOne({
         where: { businessUserId: user.id },
@@ -267,7 +294,6 @@ export class ProductService {
 
       const mappedProductIds = event?.userSyncProductEventMappings?.map((m) => m.productId);
 
-      // event 가 없거나 매핑된 상품이 없는 경우 빈 리스트 반환
       if (!mappedProductIds || mappedProductIds.length === 0) {
         queryBuilder = queryBuilder.andWhere('1 = 0');
       } else {
