@@ -314,7 +314,7 @@ export class UserSyncProductService {
   async getHeadPersonList(
     getQuery: UserSyncProductGetHeadPersonListReqQueryDto,
   ): Promise<UserSyncProductGetHeadPersonListResDto> {
-    const { take, page } = getQuery;
+    const { take, page, keyword } = getQuery;
     const skip = (page - 1) * take;
 
     const totalCount = await this.userRepository.count({
@@ -323,27 +323,31 @@ export class UserSyncProductService {
       },
     });
 
-    const headPersonUsers = await this.userRepository.find({
-      where: {
-        isHeadPerson: true,
-      },
-      order: {
-        id: 'ASC',
-      },
-      skip: skip,
-      take: take,
-    });
+    let queryBuilder = this.userRepository
+      .createQueryBuilder('user')
+      .where('user.isHeadPerson = :isHeadPerson', { isHeadPerson: true });
+
+    if (keyword) {
+      queryBuilder = queryBuilder.andWhere('(user.businessName LIKE :keyword OR user.personEmail LIKE :keyword)', {
+        keyword: `%${keyword}%`,
+      });
+    }
+
+    const headPersonUsers = await queryBuilder.orderBy('user.id', 'ASC').skip(skip).take(take).getMany();
 
     const list: UserSyncProductPersonProductViewDto[] = [];
 
     for (const user of headPersonUsers) {
-      const events = await this.eventRepository
+      let queryBuilder = this.eventRepository
         .createQueryBuilder('event')
+        .innerJoinAndSelect('event.businessUser', 'businessUser')
         .leftJoinAndSelect('event.userSyncProductEventMappings', 'mappings')
         .leftJoin('mappings.product', 'product')
         .leftJoin('product.brand', 'brand')
         .where('event.businessUserId = :userId', { userId: user.id })
-        .andWhere('event.status = :status', { status: IUserSyncProductStatus.ACTIVE })
+        .andWhere('event.status = :status', { status: IUserSyncProductStatus.ACTIVE });
+
+      const events = await queryBuilder
         .select(['event.id', 'mappings.id', 'mappings.productId', 'product.id', 'product.brandId', 'brand.id'])
         .getMany();
 
