@@ -3,3 +3,5 @@ ALTER TABLE user
 
 ALTER TABLE user
     ADD COLUMN settle_period_count INT NULL COMMENT '정산 기준 일 수';
+
+ALTER TABLE order ADD COLUMN settle_status ENUM('UNSETTLE_OVERDUE', 'UNSETTLE_NORMAL', 'SETTLE_COMPLETE') NULL COMMENT '정산상태';

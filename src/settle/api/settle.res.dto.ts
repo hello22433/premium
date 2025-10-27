@@ -9,6 +9,8 @@ import { ShippingStorageViewDto } from './dto/shipping.storage.view.dto';
 import { SaleTypeViewDto } from './dto/sale.type.view.dto';
 import { AdminListViewDto } from './dto/admin.list.view.dto';
 import { SettleOtherDetailDto } from './dto/settle.other.detail.dto';
+import { SettleUserPerListViewDto } from './dto/settle.user.per.list.view.dto';
+import { SettleUserPerDetailViewDto } from './dto/settle.user.per.detail.view.dto';
 
 export class SettleGetOtherListResDto extends GetListResDto {
   @ApiProperty({
@@ -63,7 +65,16 @@ export class SettleGetPartnerCompanyListResDto extends GetListResDto {
   list: SettlePartnerCompanyListViewDto[];
 }
 
-
 export class SettleGetPerUserListResDto extends GetListResDto {
+  @ApiProperty({
+    description: '정산관리 list',
+  })
+  list: SettleUserPerListViewDto[];
+}
 
+export class SettleGetPerUserDetailResDto extends GetListResDto {
+  @ApiProperty({
+    description: '정산관리 detail list',
+  })
+  list: SettleUserPerDetailViewDto[];
 }

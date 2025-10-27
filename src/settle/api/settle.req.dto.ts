@@ -17,6 +17,7 @@ import { Transform, Type } from 'class-transformer';
 import { IPartnerCompanySettleMethod } from '../../partner_company/interface/partner.company.settle.method';
 import { IShippingStorageType } from '../../entity/shipping.storage.entity';
 import { SettleUserStatusEnum } from '../interface/settle.user.status';
+import { SettleUserOrderDetailEnum } from '../interface/settle.user.order.detail';
 
 export class SettleGetOtherServiceSaleGetListReqDto extends PagingReqDto {
   @ApiPropertyOptional({
@@ -618,4 +619,74 @@ export class SettleGetUserPerListReqQueryDto extends PagingReqDto {
   @IsOptional()
   @IsEnum(SettleUserStatusEnum)
   status?: SettleUserStatusEnum;
+}
+
+export class SettleGetUserPerDetailReqQueryDto extends PagingReqDto {
+  @ApiProperty({
+    description: 'user id',
+  })
+  // =============================
+  @IsNotEmpty()
+  @IsNumber()
+  @Type(() => Number)
+  userId: number;
+
+  @ApiPropertyOptional({
+    description: '조회 시작 시각',
+  })
+  // =============================================================
+  @IsOptional()
+  @Matches(dateAtRegexp)
+  startAt?: string;
+
+  @ApiPropertyOptional({
+    description: '조회 종료 시각',
+  })
+  // =============================================================
+  @IsOptional()
+  @Matches(dateAtRegexp)
+  endAt?: string;
+
+  @ApiPropertyOptional({
+    description: '고객사 명',
+  })
+  // =============================================================
+  @IsOptional()
+  userBusinessName?: string;
+
+  @ApiPropertyOptional({
+    description: '담당자 명',
+  })
+  // =============================================================
+  @IsOptional()
+  userPersonName?: string;
+
+  @ApiPropertyOptional({
+    description:
+      '정산 상태 ex) UNSETTLE_OVERDUE: 미정산(초과), UNSETTLE_NORMAL:미정산(정상), SETTLE_COMPLETE: 정산완료',
+  })
+  // =============================================================
+  @IsOptional()
+  @IsEnum(SettleUserOrderDetailEnum)
+  settleStatus?: SettleUserOrderDetailEnum;
+}
+
+export class SettleUpdateUserPerOrderReqDto {
+  @ApiProperty({
+    description: 'order id',
+  })
+  // =============================
+  @IsNotEmpty()
+  @IsNumber()
+  @Type(() => Number)
+  orderId: number;
+
+  @ApiPropertyOptional({
+    description:
+      '정산 상태 ex) UNSETTLE_OVERDUE: 미정산(초과), UNSETTLE_NORMAL:미정산(정상), SETTLE_COMPLETE: 정산완료',
+  })
+  // =============================================================
+  @IsNotEmpty()
+  @IsEnum(SettleUserOrderDetailEnum)
+  settleStatus: SettleUserOrderDetailEnum;
 }
