@@ -27,6 +27,7 @@ import {
   SettleGetUserDetailReqParamDto,
   SettleGetUserExcelDownloadReqDto,
   SettleGetUserListReqQueryDto,
+  SettleGetUserPerListReqQueryDto,
   SettleMobileExcelDownloadReqDto,
   SettlerUpdateOtherSaleReqDto,
 } from '../api/settle.req.dto';
@@ -59,6 +60,8 @@ import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delive
 import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
 import { UserDiscountEntity } from '../../entity/user.discount.entity';
 import { IPriceAdjustment } from '../../user_discount/interface/price.adjustment';
+import { SettleUserPerListViewDto } from '../api/dto/settle.user.per.list.view.dto';
+import { SettleUserStatusEnum } from '../interface/settle.user.status';
 
 @Injectable()
 export class SettleService {
@@ -1191,5 +1194,59 @@ export class SettleService {
     await workbook.xlsx.writeFile(filePath);
 
     return { fileName, filePath };
+  }
+
+  async getUserPerList(getDto: SettleGetUserPerListReqQueryDto) {
+    const { startAt, endAt, userPersonName, userBusinessName, take, page, status } = getDto;
+
+    const queryBuilder = this.userRepository
+      .createQueryBuilder('user')
+      .innerJoinAndSelect('user.orders', 'orders')
+      .innerJoinAndSelect('orders.orderProductMappings', 'orderProductMappings')
+      .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries');
+
+    QueryBuilderDateCondition(queryBuilder, 'orderDeliveries', 'sendRequestAt', startAt, endAt);
+
+    if (userPersonName) {
+      queryBuilder.andWhere('user.personName LIKE :userPersonName', { userPersonName: `%${userPersonName}%` });
+    }
+
+    if (userBusinessName) {
+      queryBuilder.andWhere('user.businessName LIKE :userBusinessName', { userBusinessName: `%${userBusinessName}%` });
+    }
+
+    if (status) {
+      // TODO
+    }
+
+    queryBuilder.skip((page - 1) * take).take(take);
+    queryBuilder.orderBy('user.id', 'DESC');
+    const [userList, totalCount] = await queryBuilder.getManyAndCount();
+
+    const result: SettleUserPerListViewDto[] = userList.map((user) => {
+      return {
+        id: user.id,
+        email: user.email,
+        businessName: user.businessName,
+        personName: user.personName,
+        settleCondition: user.settleCondition,
+        settlePeriodCondition: user.settlePeriodCondition,
+        settlePeriodCount: user.settlePeriodCount,
+        maximumLimit: user.maximumLimit,
+        serviceAmount: 0, // TODO
+        overdueCount: 0, // TODO
+        overdueAmount: 0, // TODO
+        balance: user.balance,
+        remainServiceAmount: 0, // TODO
+        status: SettleUserStatusEnum.ACTIVE, // TODO ,
+      };
+    });
+
+    return {
+      list: result,
+      totalCount,
+      totalPage: Math.ceil(totalCount / take),
+      currentPage: page,
+    };
   }
 }

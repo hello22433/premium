@@ -16,6 +16,7 @@ import { dateAtRegexp, dateRegexp } from '../../common/domain/date.regexp';
 import { Transform, Type } from 'class-transformer';
 import { IPartnerCompanySettleMethod } from '../../partner_company/interface/partner.company.settle.method';
 import { IShippingStorageType } from '../../entity/shipping.storage.entity';
+import { SettleUserStatusEnum } from '../interface/settle.user.status';
 
 export class SettleGetOtherServiceSaleGetListReqDto extends PagingReqDto {
   @ApiPropertyOptional({
@@ -577,4 +578,44 @@ export class SettleGetUserExcelDownloadReqDto {
   // =============================================================
   @IsOptional()
   eventName?: string;
+}
+
+export class SettleGetUserPerListReqQueryDto extends PagingReqDto {
+  @ApiPropertyOptional({
+    description: '조회 시작 시각',
+  })
+  // =============================================================
+  @IsOptional()
+  @Matches(dateAtRegexp)
+  startAt?: string;
+
+  @ApiPropertyOptional({
+    description: '조회 종료 시각',
+  })
+  // =============================================================
+  @IsOptional()
+  @Matches(dateAtRegexp)
+  endAt?: string;
+
+  @ApiPropertyOptional({
+    description: '고객사 명',
+  })
+  // =============================================================
+  @IsOptional()
+  userBusinessName?: string;
+
+  @ApiPropertyOptional({
+    description: '담당자 명',
+  })
+  // =============================================================
+  @IsOptional()
+  userPersonName?: string;
+
+  @ApiPropertyOptional({
+    description: '상태',
+  })
+  // =============================================================
+  @IsOptional()
+  @IsEnum(SettleUserStatusEnum)
+  status?: SettleUserStatusEnum;
 }

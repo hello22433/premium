@@ -62,3 +62,8 @@ export class SettleGetPartnerCompanyListResDto extends GetListResDto {
   })
   list: SettlePartnerCompanyListViewDto[];
 }
+
+
+export class SettleGetPerUserListResDto extends GetListResDto {
+
+}

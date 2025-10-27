@@ -8,6 +8,7 @@ import {
   SettleGetOtherDetailResDto,
   SettleGetOtherListResDto,
   SettleGetPartnerCompanyListResDto,
+  SettleGetPerUserListResDto,
   SettleGetSaleTypeListResDto,
   SettleGetShippingStorageListResDto,
   SettleGetUserDetailResDto,
@@ -27,6 +28,7 @@ import {
   SettleGetUserDetailReqParamDto,
   SettleGetUserExcelDownloadReqDto,
   SettleGetUserListReqQueryDto,
+  SettleGetUserPerListReqQueryDto,
   SettleMobileExcelDownloadReqDto,
   SettlerUpdateOtherSaleReqDto,
 } from './settle.req.dto';
@@ -276,7 +278,19 @@ export class SettleController {
     }
   }
 
-  // 정산관리 고객사별 정산관리 목록 list
+  @ApiOperation({
+    summary: '정산관리 > 정산관리 고객사별 정산관리 목록 list',
+    description: '고객사별 정산 관리 (목록)',
+  })
+  @ApiOkResponse({
+    type: SettleGetPerUserListResDto,
+  })
+  // =====================================
+  @Get('settle/user-per/list')
+  getUserPerList(@Query() getDto: SettleGetUserPerListReqQueryDto) {
+    return this.settleService.getUserPerList(getDto);
+  }
+
   // 정산관리 고객사별 정산관리 detail list
   // 정산관리 고객사별 정산관리 detail 정산상태 update API
 }
