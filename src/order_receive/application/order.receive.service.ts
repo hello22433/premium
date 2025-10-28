@@ -117,7 +117,15 @@ export class OrderReceiveService {
       throw new BadRequestException('존재하지 않는 주문 정보입니다.');
     }
 
-    if (orderDelivery.deliveryTarget !== getQuery.phoneNumber) {
+    // deliveryTarget 복호화 후 비교
+    let decryptedDeliveryTarget = orderDelivery.deliveryTarget;
+    try {
+      decryptedDeliveryTarget = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.deliveryTarget);
+    } catch (error) {
+      throw new BadRequestException('전화번호 복호화에 실패했습니다.');
+    }
+
+    if (decryptedDeliveryTarget !== getQuery.phoneNumber) {
       throw new BadRequestException('전화번호가 일치하지 않습니다.');
     }
 
