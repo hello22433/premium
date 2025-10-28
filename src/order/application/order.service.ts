@@ -91,6 +91,7 @@ import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { PhoneUtil } from '../../common/utils/phone.util';
 import { DeliveryBatchService } from '../../delivery/application/delivery.batch.service';
 import { User } from '../../auth/api/user.decorator';
+import { IOrderSendMethod } from '../interface/order.send.method';
 
 @Injectable()
 export class OrderService {
@@ -1740,11 +1741,18 @@ export class OrderService {
       throw new BadRequestException('테스트발송은 최대 2회입니다.');
     }
 
-    const orderProductMapping = await this.orderProductMappingRepository
+    let queryBuilder = this.orderProductMappingRepository
       .createQueryBuilder('orderProductMapping')
       .innerJoinAndSelect('orderProductMapping.product', 'product')
       .innerJoinAndSelect('orderProductMapping.order', 'order')
-      .innerJoinAndSelect('product.brand', 'brand')
+      .innerJoinAndSelect('product.brand', 'brand');
+
+    // 알림톡일 경우 order.user도 조회 (AlimTalkTemplate에서 발행자 정보 필요)
+    if (order.sendMethod === IOrderSendMethod.ALIM_TALK) {
+      queryBuilder = queryBuilder.innerJoinAndSelect('order.user', 'user');
+    }
+
+    const orderProductMapping = await queryBuilder
       .where('orderProductMapping.id = :id', { id: orderProductMappingId })
       .getOne();
 
