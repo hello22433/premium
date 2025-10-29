@@ -1772,7 +1772,7 @@ export class OrderService {
       orderProductMapping.product.type,
     );
 
-    const deliveryMethod = order.sendMethod;
+    const deliveryMethod = orderProductMapping.sendMethod ? orderProductMapping.sendMethod : order.sendMethod;
 
     const orderDelivery = new OrderDeliveryEntity();
     orderDelivery.deliveryMethod = deliveryMethod;
