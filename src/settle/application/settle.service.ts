@@ -1223,11 +1223,11 @@ export class SettleService {
 
     if (status) {
       if (status === 'ACTIVE') {
-        queryBuilder.where(`user.maximumLimit + user.balance - user.allSettleAmount + user.serviceAmount > 0`);
+        queryBuilder.andWhere(`user.maximumLimit + user.balance - user.allSettleAmount + user.serviceAmount > 0`);
       }
 
       if (status === 'STOP') {
-        queryBuilder.where(`user.maximumLimit + user.balance - user.allSettleAmount + user.serviceAmount <= 0`);
+        queryBuilder.andWhere(`user.maximumLimit + user.balance - user.allSettleAmount + user.serviceAmount <= 0`);
       }
     }
 
@@ -1240,7 +1240,7 @@ export class SettleService {
       let overdueCount = 0;
       let overdueAmount = 0;
       for (const order of user.orders!) {
-        if (order.status === 'DELIVERY_COMPLETE' && order.settleStatus !== 'UNSETTLE_OVERDUE') {
+        if (order.status === 'DELIVERY_COMPLETE' && order.settleStatus === 'UNSETTLE_OVERDUE') {
           overdueCount += 1;
           overdueAmount += order.sendAmount;
         }
@@ -1358,17 +1358,20 @@ export class SettleService {
 
     order.settleStatus = settleStatus;
 
-    if (order.settleStatus === 'SETTLE_COMPLETE') {
-      throw new BadRequestException('이미 정산이 완료된 주문입니다.');
+    if (order.settleStatus === SettleUserOrderDetailEnum.SETTLE_COMPLETE) {
+      // throw new BadRequestException('이미 정산이 완료된 주문입니다.');
+      if (settleStatus !== SettleUserOrderDetailEnum.SETTLE_COMPLETE) {
+        user.serviceAmount -= order.sendAmount;
+        order.isSettleComplete = false;
+      }
     }
 
-    if (settleStatus === 'SETTLE_COMPLETE') {
+    if (settleStatus === SettleUserOrderDetailEnum.SETTLE_COMPLETE) {
       order.isSettleComplete = true;
       user.serviceAmount += order.sendAmount;
-
-      await this.userRepository.save(user);
     }
 
+    await this.userRepository.save(user);
     await this.orderRepository.save(order);
 
     return;
