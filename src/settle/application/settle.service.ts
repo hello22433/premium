@@ -1297,7 +1297,7 @@ export class SettleService {
     }
 
     if (settleStatus) {
-      queryBuilder.andWhere('order.status = :settleStatus', { settleStatus: settleStatus });
+      queryBuilder.andWhere('order.settleStatus = :settleStatus', { settleStatus: settleStatus });
     }
 
     queryBuilder.skip((page - 1) * take).take(take);
