@@ -884,8 +884,19 @@ export class CustomerServiceService {
       throw new NotFoundException('존재하지 않는 발송 정보입니다.');
     }
 
+    // deliveryTarget 복호화 처리
+    let decryptedDeliveryTarget = '';
+    if (orderDelivery.deliveryTarget) {
+      try {
+        decryptedDeliveryTarget = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.deliveryTarget);
+      } catch (error) {
+        // 복호화 실패 시 원본 데이터 사용
+        decryptedDeliveryTarget = orderDelivery.deliveryTarget;
+      }
+    }
+
     return {
-      deliveryTarget: orderDelivery.deliveryTarget || '',
+      deliveryTarget: decryptedDeliveryTarget,
     };
   }
 
