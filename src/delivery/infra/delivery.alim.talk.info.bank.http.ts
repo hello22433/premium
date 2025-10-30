@@ -120,7 +120,7 @@ export class DeliveryAlimTalkInfoBankHttp implements DeliveryAlimTalk {
         senderKey: this.infoBankSenderKey,
         msgType: 'AI',
         to: sendObj.to,
-        templateCode: this.infoBankTemplateCode,
+        templateCode: sendObj.templateCode || this.infoBankTemplateCode,
         text: sendObj.text,
         button: [
           {
