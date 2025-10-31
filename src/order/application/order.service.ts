@@ -214,7 +214,8 @@ export class OrderService {
           return acc + cur.amount;
         }, 0);
         totalProductCount = order.orderProductMappings.length;
-        productName = order.orderProductMappings[0].product.name;
+        const firstProduct = order.orderProductMappings[0].product;
+        productName = firstProduct ? firstProduct.name : '(삭제된 상품)';
         const orderProductMappingsLength = order.orderProductMappings.length;
         if (orderProductMappingsLength - 1 > 0) {
           productName += `외 ${orderProductMappingsLength - 1}건`;
@@ -1207,7 +1208,12 @@ export class OrderService {
 
     OrderValidation(order);
     // 총 주문 금액
-    const totalAmount = order.orderProductMappings.reduce((sum, m) => sum + m.product.price * m.amount, 0);
+    const totalAmount = order.orderProductMappings.reduce((sum, m) => {
+      if (!m.product) {
+        throw new BadRequestException('상품 정보가 존재하지 않습니다.');
+      }
+      return sum + m.product.price * m.amount;
+    }, 0);
     this.logger.debug(`User#${user.id} totalAmount=${totalAmount}`);
 
     // 유저 잔액 조회
@@ -1233,8 +1239,17 @@ export class OrderService {
     // 신세계 상품 검증 및 이벤트 자동 선택
     if (order.type === IOrderType.SSG) {
       // 상품 가격으로 전체 가격 계산
-      const totalPrice = order.orderProductMappings!.reduce((acc, cur) => acc + cur.product.price * cur.amount, 0);
-      const couponExpiration = order.orderProductMappings[0].product.expireDay;
+      const totalPrice = order.orderProductMappings!.reduce((acc, cur) => {
+        if (!cur.product) {
+          throw new BadRequestException('상품 정보가 존재하지 않습니다.');
+        }
+        return acc + cur.product.price * cur.amount;
+      }, 0);
+      const firstProduct = order.orderProductMappings[0].product;
+      if (!firstProduct) {
+        throw new BadRequestException('상품 정보가 존재하지 않습니다.');
+      }
+      const couponExpiration = firstProduct.expireDay;
 
       // 이벤트 자동 선택 (주문 금액 전체를 커버 가능한 첫 번째 행사)
       const selectedEvent = await this.ssgEventService.selectEventForOrder(totalPrice, couponExpiration);
@@ -1489,7 +1504,12 @@ export class OrderService {
       await this.ssgEventService.restoreEventBalance(order.id);
 
       // 사용자 잔액도 복원
-      const totalPrice = order.orderProductMappings!.reduce((acc, cur) => acc + cur.product.price * cur.amount, 0);
+      const totalPrice = order.orderProductMappings!.reduce((acc, cur) => {
+        if (!cur.product) {
+          throw new BadRequestException('상품 정보가 존재하지 않습니다.');
+        }
+        return acc + cur.product.price * cur.amount;
+      }, 0);
       await this.userManagementService.addBalance(user.id, totalPrice);
     }
 
@@ -1628,7 +1648,8 @@ export class OrderService {
         totalAmount = order.orderProductMappings.reduce((acc, cur) => {
           return acc + cur.amount;
         }, 0);
-        productName = order.orderProductMappings[0].product.name;
+        const firstProduct = order.orderProductMappings[0].product;
+        productName = firstProduct ? firstProduct.name : '(삭제된 상품)';
         const orderProductMappingsLength = order.orderProductMappings.length;
         if (orderProductMappingsLength - 1 > 0) {
           productName += `외 ${orderProductMappingsLength - 1}건`;
