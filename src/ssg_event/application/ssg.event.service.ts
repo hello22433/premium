@@ -329,13 +329,18 @@ export class SsgEventService {
   async create(getBody: SsgEventCreateReqDto) {
     const { code, no, order, name, startAt, endAt, couponExpiration, eventPrice } = getBody;
     const orderInsert = order ? order : 1;
+
+    // endAt을 해당 날짜의 23:59:59로 설정
+    const endAtDate = new Date(endAt);
+    endAtDate.setHours(23, 59, 59, 999);
+
     await this.ssgEventRepository.insert({
       code,
       order: orderInsert,
       no: no,
       name,
       startAt: new Date(startAt),
-      endAt: new Date(endAt),
+      endAt: endAtDate,
       couponExpiration,
       eventPrice,
       eventBalance: eventPrice, // 등록 시 행사금액을 초기 잔액으로 설정

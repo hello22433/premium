@@ -11,6 +11,8 @@ import { ISmsSend } from '../../sms/interface/sms.send';
 import { OrderEntity } from '../../entity/order.entity';
 import { IOrderStatus } from '../../order/interface/order.status';
 import { AlimTalkTemplate } from '../domain/alim.talk.template';
+import { AlimTalkEncourageTemplate } from '../domain/alim.talk.encourage.template';
+import { EmailEncourageTemplate } from '../domain/email.encourage.template';
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { OrderEncryptKey } from '../../order_receive/interface/order.encrypt.key';
 import { ConfigService } from '@nestjs/config';
@@ -746,24 +748,35 @@ export class DeliveryBatchService {
         }
       }
 
-      // TODO email 독려 문자 전송 여부
-      // const emailText = EmailDeliveryTemplate({
-      //   topImagePath: orderDelivery.orderProductMapping.topImagePath,
-      //   productImagePath: orderDelivery.orderProductMapping.product.imagePath,
-      //   text,
-      //   url: url,
-      //   code: emailSendHistory.code,
-      //   useEmailContent: orderDelivery.orderProductMapping.order.useEmailContent!,
-      //   qrCodeImagePath,
-      // });
+      const title = '미사용쿠폰발생 안내';
+      const encryptKey = this.cryptoCipher.encryptJson({
+        id: orderDelivery.id,
+        transactionId: orderDelivery.transactionId,
+      } as OrderEncryptKey);
 
-      if (
-        orderDelivery.deliveryMethod === IOrderSendMethod.ALIM_TALK ||
-        orderDelivery.deliveryMethod === IOrderSendMethod.SMS
-      ) {
+      // 1. 알림톡 발송
+      if (orderDelivery.deliveryMethod === IOrderSendMethod.ALIM_TALK) {
         try {
-          const title = '미사용쿠폰발생 안내';
-          const smsText = `미사용쿠폰발생. 뒷자리 ${orderDelivery.barCode!.slice(0, -4)}번. ${format(orderDelivery.expireAt!, 'yyyy/MM/dd')}일까지사용. 재발송문의 1644-3614`;
+          const encourageTemplateCode = this.configService.getOrThrow('ALIM_TALK_INFO_BANK_ENCOURAGE_TEMPLATE_CODE');
+          const alimTalkText = AlimTalkEncourageTemplate(orderDelivery, encourageTemplateCode);
+
+          await this.deliveryAlimTalk.send({
+            to: decryptedDeliveryTarget,
+            text: alimTalkText,
+            encryptKey: encryptKey,
+            templateCode: encourageTemplateCode,
+          });
+
+          this.logger.log(`독려 알림톡 발송 완료: orderDelivery ${orderDelivery.id}`);
+        } catch (e) {
+          this.logger.error(`독려 알림톡 발송 실패: orderDelivery ${orderDelivery.id}`, e);
+        }
+      }
+
+      // 2. SMS 발송
+      if (orderDelivery.deliveryMethod === IOrderSendMethod.SMS) {
+        try {
+          const smsText = `미사용쿠폰발생. 뒷자리 ${orderDelivery.barCode!.slice(-4)}번. ${format(orderDelivery.expireAt!, 'yyyy/MM/dd')}일까지사용. 재발송문의 1644-3614`;
           await this.smsSend.send({
             msgType: 'M',
             to: decryptedDeliveryTarget,
@@ -772,8 +785,33 @@ export class DeliveryBatchService {
             text: smsText,
             filePath: [],
           });
+
+          this.logger.log(`독려 SMS 발송 완료: orderDelivery ${orderDelivery.id}`);
         } catch (e) {
-          console.error(e);
+          this.logger.error(`독려 SMS 발송 실패: orderDelivery ${orderDelivery.id}`, e);
+        }
+      }
+
+      // 3. 이메일 발송
+      if (orderDelivery.deliveryMethod === IOrderSendMethod.EMAIL) {
+        try {
+          const emailText = EmailEncourageTemplate(orderDelivery);
+          const fromEmail =
+            orderDelivery.orderProductMapping.fromEmail ?? orderDelivery.orderProductMapping.order.fromEmail;
+
+          await this.mailSend.send({
+            saveSentMail: 'N',
+            bcc: undefined,
+            cc: undefined,
+            content: emailText,
+            subject: title,
+            to: decryptedDeliveryTarget,
+            fromEmail: fromEmail,
+          });
+
+          this.logger.log(`독려 이메일 발송 완료: orderDelivery ${orderDelivery.id}`);
+        } catch (e) {
+          this.logger.error(`독려 이메일 발송 실패: orderDelivery ${orderDelivery.id}`, e);
         }
       }
     }

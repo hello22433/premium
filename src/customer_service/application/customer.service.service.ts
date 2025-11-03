@@ -1,4 +1,9 @@
-import { BadRequestException, Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  InternalServerErrorException,
+  NotFoundException
+} from '@nestjs/common';
 import {
   CustomerServiceCouponRefreshReqDto,
   CustomerServiceDiscardReqDto,
@@ -13,31 +18,33 @@ import {
   CustomerServiceStatusListReqDto,
   CustomerServiceUnmaskedDeliveryTargetReqDto,
 } from '../api/customer.service.req.dto';
-import { InjectRepository } from '@nestjs/typeorm';
-import { OrderEntity } from '../../entity/order.entity';
-import { IsNull, Repository } from 'typeorm';
-import { CustomerServiceGetListResDto } from '../api/customer.service.res.dto';
-import { OrderProductMappingEntity } from '../../entity/order.product.mapping.entity';
-import { DateFormatStr } from '../../common/domain/date.format.str';
-import { format } from 'date-fns';
-import { CustomerServiceViewDto } from '../api/dto/customer.service.view.dto';
-import { QueryBuilderDateCondition } from '../../common/infra/query.builder.date.condition';
-import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
-import { CustomerServiceDetailViewDto } from '../api/dto/customer.service.detail.view.dto';
-import { CustomerServiceDlvryDetailViewDto } from '../api/dto/customer.service.dlvry.detail.view.dto';
-import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
-import { DeliveryBatchService } from '../../delivery/application/delivery.batch.service';
-import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
-import { ILoginUserInfo } from 'src/auth/interface/login.user';
-import { OrderHistoryEntity } from 'src/entity/order.history.entity';
-import { User } from 'src/auth/api/user.decorator';
-import { GemteckMsgQueueEntity } from 'src/entity/gemtek/msg.queue.entity';
-import { ConfigService } from '@nestjs/config';
-import { SmsGemtekSend } from 'src/sms/infra/sms.gemtek.send';
-import { MaskingUtil } from 'src/common/utils/masking.util';
-import { CryptoCipher } from 'src/common/infra/crypto.cipher';
-import { PhoneUtil } from 'src/common/utils/phone.util';
-import { OrderDeliveryRefundStatusEnum } from '../../delivery/interface/order.delivery.refund.status.enum';
+import {InjectRepository} from '@nestjs/typeorm';
+import {OrderEntity} from '../../entity/order.entity';
+import {IsNull, Repository} from 'typeorm';
+import {CustomerServiceGetListResDto} from '../api/customer.service.res.dto';
+import {DateFormatStr} from '../../common/domain/date.format.str';
+import {format} from 'date-fns';
+import {CustomerServiceViewDto} from '../api/dto/customer.service.view.dto';
+import {QueryBuilderDateCondition} from '../../common/infra/query.builder.date.condition';
+import {OrderDeliveryEntity} from '../../entity/order.delivery.entity';
+import {CustomerServiceDetailViewDto} from '../api/dto/customer.service.detail.view.dto';
+import {CustomerServiceDlvryDetailViewDto} from '../api/dto/customer.service.dlvry.detail.view.dto';
+import {
+  PartnerCompanyExternService
+} from '../../partner_company_extern/application/partner.company.extern.service';
+import {DeliveryBatchService} from '../../delivery/application/delivery.batch.service';
+import {OrderDeliveryCouponStatus} from '../../delivery/interface/order.delivery.coupon.status';
+import {ILoginUserInfo} from 'src/auth/interface/login.user';
+import {OrderHistoryEntity} from 'src/entity/order.history.entity';
+import {User} from 'src/auth/api/user.decorator';
+import {GemteckMsgQueueEntity} from 'src/entity/gemtek/msg.queue.entity';
+import {SmsGemtekSend} from 'src/sms/infra/sms.gemtek.send';
+import {MaskingUtil} from 'src/common/utils/masking.util';
+import {CryptoCipher} from 'src/common/infra/crypto.cipher';
+import {PhoneUtil} from 'src/common/utils/phone.util';
+import {
+  OrderDeliveryRefundStatusEnum
+} from '../../delivery/interface/order.delivery.refund.status.enum';
 
 const dayjs = require('dayjs');
 const timezone = require('dayjs/plugin/timezone');
@@ -46,23 +53,17 @@ dayjs.extend(timezone);
 
 @Injectable()
 export class CustomerServiceService {
-  dataSource: any;
   constructor(
     @InjectRepository(OrderEntity)
     private orderRepository: Repository<OrderEntity>,
-    @InjectRepository(OrderProductMappingEntity)
-    private orderProductMappingRepository: Repository<OrderProductMappingEntity>,
     @InjectRepository(OrderDeliveryEntity)
     private orderDeliveryRepository: Repository<OrderDeliveryEntity>,
     private partnerCompanyExternService: PartnerCompanyExternService,
     private deliveryBatchService: DeliveryBatchService,
     @InjectRepository(OrderHistoryEntity)
-    private orderHistoryEntity: Repository<OrderHistoryEntity>,
-    @InjectRepository(OrderHistoryEntity)
     private readonly orderHistoryRepository: Repository<OrderHistoryEntity>,
     @InjectRepository(GemteckMsgQueueEntity, 'gemtek_sms')
     private gemteckMsgQueueRepository: Repository<GemteckMsgQueueEntity>,
-    private configService: ConfigService,
     private smsGemtekSend: SmsGemtekSend,
     private readonly cryptoCipher: CryptoCipher,
   ) {}
@@ -123,6 +124,19 @@ export class CustomerServiceService {
     const result: CustomerServiceViewDto[] = [];
     for (const order of orderList) {
       const firstDelivery = order.orderProductMappings![0].orderDeliveries?.[0];
+
+      // deliveryTarget 복호화 및 마스킹 처리
+      let maskedDeliveryTarget: string | null = null;
+      if (firstDelivery?.deliveryTarget) {
+        try {
+          const decryptedTarget = this.cryptoCipher.decryptDeliveryTarget(firstDelivery.deliveryTarget);
+          maskedDeliveryTarget = MaskingUtil.maskDeliveryTarget(decryptedTarget);
+        } catch (error) {
+          // 복호화 실패 시 원본 데이터로 마스킹 시도
+          maskedDeliveryTarget = MaskingUtil.maskDeliveryTarget(firstDelivery.deliveryTarget);
+        }
+      }
+
       result.push({
         sendRequestAt: format(order.sendRequestAt, DateFormatStr),
         id: order.id,
@@ -135,9 +149,7 @@ export class CustomerServiceService {
         status: order.status,
         fromPhoneNumber: order.fromPhoneNumber,
         fromEmail: order.fromEmail,
-        deliveryTarget: firstDelivery?.deliveryTarget
-          ? MaskingUtil.maskDeliveryTarget(firstDelivery.deliveryTarget)
-          : null,
+        deliveryTarget: maskedDeliveryTarget,
         transactionId: firstDelivery?.transactionId || null,
         deliveryMethod: firstDelivery?.deliveryMethod || null,
         couponStatus:
@@ -179,12 +191,24 @@ export class CustomerServiceService {
 
     const totalPage = Math.ceil(totalCount / take);
 
-    const result: CustomerServiceDetailViewDto[] = orderDeliveryList.map((orderDelivery) => {
-      return {
+    const result: CustomerServiceDetailViewDto[] = [];
+    for (const orderDelivery of orderDeliveryList) {
+      // deliveryTarget 복호화 처리
+      let decryptedDeliveryTarget: string | null = null;
+      if (orderDelivery.deliveryTarget) {
+        try {
+          decryptedDeliveryTarget = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.deliveryTarget);
+        } catch (error) {
+          // 복호화 실패 시 원본 데이터 사용
+          decryptedDeliveryTarget = orderDelivery.deliveryTarget;
+        }
+      }
+
+      result.push({
         id: orderDelivery.id,
         registerAt: format(orderDelivery.createdAt, DateFormatStr),
         productName: orderDelivery.orderProductMapping.product.name,
-        deliveryTarget: orderDelivery.deliveryTarget,
+        deliveryTarget: decryptedDeliveryTarget ?? '',
         barCode: orderDelivery.barCode,
         brandName: orderDelivery.orderProductMapping.product.brand!.nameKorean ?? '',
         partnerCompanyName: orderDelivery.orderProductMapping.product.partnerCompany?.businessName ?? '',
@@ -195,8 +219,8 @@ export class CustomerServiceService {
         couponStatus: orderDelivery.couponStatus,
         apiErrorMessage: orderDelivery.apiErrorMessage,
         method: orderDelivery.deliveryMethod,
-      };
-    });
+      });
+    }
 
     return {
       list: result,
@@ -235,13 +259,24 @@ export class CustomerServiceService {
     const order = queryBuilder.orderProductMapping.order;
     const user = queryBuilder.orderProductMapping.order.user;
 
+    // deliveryTarget 복호화 처리
+    let decryptedDeliveryTarget: string | null = null;
+    if (queryBuilder.deliveryTarget) {
+      try {
+        decryptedDeliveryTarget = this.cryptoCipher.decryptDeliveryTarget(queryBuilder.deliveryTarget);
+      } catch (error) {
+        // 복호화 실패 시 원본 데이터 사용
+        decryptedDeliveryTarget = queryBuilder.deliveryTarget;
+      }
+    }
+
     return {
       orderDeliveryId: queryBuilder.id,
       eventName: order.eventName,
       businessName: user?.businessName ?? '',
       personName: user?.personName ?? '',
       sendContent: order.sendContent,
-      deliveryTarget: queryBuilder.deliveryTarget,
+      deliveryTarget: decryptedDeliveryTarget ?? '',
       refundStatus: queryBuilder.refundStatus ?? null,
       sendRequestAt: queryBuilder.sendRequestAt ? format(queryBuilder.sendRequestAt, DateFormatStr) : null,
       method: queryBuilder.deliveryMethod,
@@ -393,8 +428,7 @@ export class CustomerServiceService {
 
   /**
    * order_history 등록
-   * @param user
-   * @param getBody
+   * @param map
    */
   async execCreateHistory(map: Partial<OrderHistoryEntity>) {
     return await this.orderHistoryRepository.save(map);
@@ -411,6 +445,7 @@ export class CustomerServiceService {
 
   /**
    * 핀상태변경 API 데이터매핑
+   * @param user
    * @param getBody
    * @returns
    */
@@ -433,7 +468,7 @@ export class CustomerServiceService {
       throw new BadRequestException('데이터가 존재하지 않습니다.');
     }
 
-    const result = {
+    return {
       businessName: orderDelivery?.orderProductMapping?.product?.partnerCompany?.businessName,
       beforeChange: orderDelivery.couponStatus,
       afterChange: getBody.afterChange,
@@ -442,8 +477,6 @@ export class CustomerServiceService {
       userId: user.id,
       orderDelivery,
     };
-
-    return result;
   }
 
   /**
@@ -532,6 +565,7 @@ export class CustomerServiceService {
 
   /**
    * 핀상태갱신 API 데이터매핑
+   * @param user
    * @param getBody
    * @returns
    */
@@ -554,15 +588,13 @@ export class CustomerServiceService {
       throw new BadRequestException('데이터가 존재하지 않습니다.');
     }
 
-    const result = {
+    return {
       userId: user.id,
       type: '핀상태 변경',
       content: '핀상태 변경',
       beforeChange: orderDelivery.couponStatus,
       orderDelivery,
     };
-
-    return result;
   }
 
   /**
@@ -609,6 +641,7 @@ export class CustomerServiceService {
 
   /**
    * CS 등록 API 데이터매핑
+   * @param user
    * @param getBody
    * @returns
    */
@@ -792,13 +825,11 @@ export class CustomerServiceService {
    * @returns
    */
   async mapStatusList(getQuery: CustomerServiceStatusListReqDto) {
-    const result = {
+    return {
       orderDeliveryId: getQuery.orderDeliveryId,
       page: getQuery.page,
       take: getQuery.take,
     };
-
-    return result;
   }
 
   /**
@@ -854,8 +885,19 @@ export class CustomerServiceService {
       throw new NotFoundException('존재하지 않는 발송 정보입니다.');
     }
 
+    // deliveryTarget 복호화 처리
+    let decryptedDeliveryTarget = '';
+    if (orderDelivery.deliveryTarget) {
+      try {
+        decryptedDeliveryTarget = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.deliveryTarget);
+      } catch (error) {
+        // 복호화 실패 시 원본 데이터 사용
+        decryptedDeliveryTarget = orderDelivery.deliveryTarget;
+      }
+    }
+
     return {
-      deliveryTarget: orderDelivery.deliveryTarget || '',
+      deliveryTarget: decryptedDeliveryTarget,
     };
   }
 
