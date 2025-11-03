@@ -322,7 +322,7 @@ export class DeliveryBatchService {
             id: order.userId,
           },
           {
-            allSettleAmount: order.user!.allSettleAmount + order.sendAmount,
+            allSettleAmount: order.user!.allSettleAmount + order.settleAmount,
           },
         );
       }

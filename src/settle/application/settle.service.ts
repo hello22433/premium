@@ -1371,14 +1371,14 @@ export class SettleService {
     if (order.settleStatus === SettleUserOrderDetailEnum.SETTLE_COMPLETE) {
       // throw new BadRequestException('이미 정산이 완료된 주문입니다.');
       if (settleStatus !== SettleUserOrderDetailEnum.SETTLE_COMPLETE) {
-        user.serviceAmount -= order.sendAmount;
+        user.serviceAmount -= order.settleAmount;
         order.isSettleComplete = false;
       }
     }
 
     if (settleStatus === SettleUserOrderDetailEnum.SETTLE_COMPLETE) {
       order.isSettleComplete = true;
-      user.serviceAmount += order.sendAmount;
+      user.serviceAmount += order.settleAmount;
     }
 
     await this.userRepository.save(user);
