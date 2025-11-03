@@ -1297,7 +1297,17 @@ export class SettleService {
     }
 
     if (settleStatus) {
-      queryBuilder.andWhere('order.settleStatus = :settleStatus', { settleStatus: settleStatus });
+      if (settleStatus === 'UNSETTLE_NORMAL') {
+        queryBuilder.andWhere(
+          new Brackets((qb) => {
+            qb.where('order.settleStatus = :settleStatus', { settleStatus: settleStatus }).orWhere(
+              'order.settleStatus IS NULL',
+            );
+          }),
+        );
+      } else {
+        queryBuilder.andWhere('order.settleStatus = :settleStatus', { settleStatus: settleStatus });
+      }
     }
 
     queryBuilder.skip((page - 1) * take).take(take);
