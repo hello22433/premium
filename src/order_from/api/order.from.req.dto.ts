@@ -38,3 +38,14 @@ export class OrderFromCreateEmailReqDto {
   @IsNotEmpty()
   from: string;
 }
+
+export class OrderFromDeleteEmailReqDto {
+  @ApiProperty({
+    description: '발신 이메일 ID',
+  })
+  // ==============================
+  @IsNotEmpty()
+  @IsNumber()
+  @Type(() => Number)
+  id: number;
+}

@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Post, Query, UseGuards } from '@nestjs/common';
 import { OrderFromService } from '../application/order.from.service';
 import { ApiBadRequestResponse, ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
@@ -6,6 +6,7 @@ import { OrderFromGetEmailListResDto, OrderFromGetPhoneListResDto } from './orde
 import {
   OrderFromCreateEmailReqDto,
   OrderFromCreatePhoneReqDto,
+  OrderFromDeleteEmailReqDto,
   OrderFromGetPhoneReqQueryDto,
 } from './order.from.req.dto';
 import { User } from '../../auth/api/user.decorator';
@@ -70,5 +71,20 @@ export class OrderFromController {
   @Post('/order-from/email')
   createEmail(@Body() getBody: OrderFromCreateEmailReqDto) {
     return this.orderFromService.createEmail(getBody);
+  }
+
+  @ApiOperation({
+    summary: '발신 이메일 삭제하기',
+  })
+  @ApiOkResponse({
+    description: '성공적으로 삭제한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '존재하지 않는 이메일일 경우',
+  })
+  // ====================================================
+  @Delete('/order-from/email')
+  deleteEmail(@Body() getBody: OrderFromDeleteEmailReqDto) {
+    return this.orderFromService.deleteEmail(getBody.id);
   }
 }

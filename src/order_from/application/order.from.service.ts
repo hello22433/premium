@@ -1,7 +1,7 @@
 import { BadRequestException, Inject, Injectable } from '@nestjs/common';
 import { OrderFromDefinitionEntity } from '../../entity/order.from.definition.entity';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { IsNull, Repository } from 'typeorm';
 import { OrderFromDefinitionType } from '../interface/order.from.definition.type';
 import { OrderFromGetPhoneListResDto } from '../api/order.from.res.dto';
 import {
@@ -68,6 +68,7 @@ export class OrderFromService {
     const orderFromDefinitionList = await this.orderFromDefinitionRepository.find({
       where: {
         type: OrderFromDefinitionType.EMAIL,
+        deletedAt: IsNull(),
       },
     });
 
@@ -113,5 +114,21 @@ export class OrderFromService {
       from,
       type: OrderFromDefinitionType.EMAIL,
     });
+  }
+
+  async deleteEmail(id: number) {
+    const email = await this.orderFromDefinitionRepository.findOne({
+      where: {
+        id,
+        type: OrderFromDefinitionType.EMAIL,
+        deletedAt: IsNull(),
+      },
+    });
+
+    if (!email) {
+      throw new BadRequestException('존재하지 않는 이메일입니다.');
+    }
+
+    await this.orderFromDefinitionRepository.softDelete(id);
   }
 }
