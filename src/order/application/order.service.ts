@@ -255,7 +255,8 @@ export class OrderService {
       .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .leftJoinAndSelect('orderProductMappings.product', 'product')
       .leftJoinAndSelect('product.brand', 'brand')
-      .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
+      // 이벤트 불러오기 시 수신자 정보는 제외
+      // .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
       .where('order.id = :id', { id: getParam.id });
 
     const order = await queryBuilder.getOne();
@@ -271,28 +272,27 @@ export class OrderService {
 
     if (order.orderProductMappings && order.orderProductMappings.length > 0) {
       for (const orderProductMapping of order.orderProductMappings) {
-        const orderDeliveryList: OrderViewDeliveryDto[] = [];
-
-        for (const orderDelivery of orderProductMapping.orderDeliveries) {
-          // deliveryTarget 복호화
-          let decryptedDeliveryTarget = orderDelivery.deliveryTarget;
-          if (orderDelivery.deliveryTarget) {
-            try {
-              decryptedDeliveryTarget = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.deliveryTarget);
-            } catch (error) {
-              // 복호화 실패 시 원본 데이터 사용
-              decryptedDeliveryTarget = orderDelivery.deliveryTarget;
-            }
-          }
-
-          orderDeliveryList.push({
-            id: orderDelivery.id,
-            deliveryTarget: decryptedDeliveryTarget,
-            replaceCharacter1: orderDelivery.replaceCharacter1,
-            replaceCharacter2: orderDelivery.replaceCharacter2,
-            replaceCharacter3: orderDelivery.replaceCharacter3,
-          });
-        }
+        // 이벤트 불러오기 시 수신자 정보는 제외하도록 변경해서 주석처리
+        // const orderDeliveryList: OrderViewDeliveryDto[] = [];
+        // for (const orderDelivery of orderProductMapping.orderDeliveries) {
+        //   // deliveryTarget 복호화
+        //   let decryptedDeliveryTarget = orderDelivery.deliveryTarget;
+        //   if (orderDelivery.deliveryTarget) {
+        //     try {
+        //       decryptedDeliveryTarget = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.deliveryTarget);
+        //     } catch (error) {
+        //       // 복호화 실패 시 원본 데이터 사용
+        //       decryptedDeliveryTarget = orderDelivery.deliveryTarget;
+        //     }
+        //   }
+        //   orderDeliveryList.push({
+        //     id: orderDelivery.id,
+        //     deliveryTarget: decryptedDeliveryTarget,
+        //     replaceCharacter1: orderDelivery.replaceCharacter1,
+        //     replaceCharacter2: orderDelivery.replaceCharacter2,
+        //     replaceCharacter3: orderDelivery.replaceCharacter3,
+        //   });
+        // }
 
         topImagePath = orderProductMapping.topImagePath ?? OrderService.DEFAULT_TOP_IMAGE_PATH;
         midImagePath = orderProductMapping.midImagePath ?? OrderService.DEFAULT_MID_IMAGE_PATH;
@@ -317,7 +317,7 @@ export class OrderService {
         productList.push({
           id: orderProductMapping.id,
           product: product,
-          orderDeliveryList: orderDeliveryList,
+          orderDeliveryList: [], // 이벤트 불러오기 시 수신자 정보는 빈 배열 전달
 
           emailSendType: orderProductMapping.emailSendType,
           fromEmail: orderProductMapping.fromEmail,
