@@ -90,7 +90,6 @@ import { OrderDigitNumber, OrderPrefixCode } from '../domain/order.code';
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { PhoneUtil } from '../../common/utils/phone.util';
 import { DeliveryBatchService } from '../../delivery/application/delivery.batch.service';
-import { User } from '../../auth/api/user.decorator';
 import { IOrderSendMethod } from '../interface/order.send.method';
 
 @Injectable()
@@ -392,6 +391,8 @@ export class OrderService {
       couponExpiration: couponExpiration,
       encourageDay: order.encourageDay,
       productList: productList,
+      settlePeriodCondition: user.settlePeriodCondition,
+      settlePeriodCount: user.settlePeriodCount,
     };
   }
 
@@ -492,8 +493,8 @@ export class OrderService {
       couponExpiration: couponExpiration,
       encourageDay: order.encourageDay,
       productList: productList,
-      settlePeriodCondition: user.settlePeriodCondition,
-      settlePeriodCount: user.settlePeriodCount,
+      settlePeriodCondition: order.user!.settlePeriodCondition,
+      settlePeriodCount: order.user!.settlePeriodCount,
     };
   }
 
