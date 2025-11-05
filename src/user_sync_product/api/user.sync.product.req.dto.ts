@@ -197,6 +197,14 @@ export class UserSyncProductGetHeadPersonListReqQueryDto extends PagingReqDto {
   @IsOptional()
   @IsString()
   keyword?: string;
+
+  @ApiPropertyOptional({
+    description: '담당자 명',
+  })
+  // =================================
+  @IsOptional()
+  @IsString()
+  personName?: string;
 }
 
 export class UserSyncProductGetPersonsByBusinessReqDto {

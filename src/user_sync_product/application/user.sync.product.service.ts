@@ -314,14 +314,8 @@ export class UserSyncProductService {
   async getHeadPersonList(
     getQuery: UserSyncProductGetHeadPersonListReqQueryDto,
   ): Promise<UserSyncProductGetHeadPersonListResDto> {
-    const { take, page, keyword } = getQuery;
+    const { take, page, keyword, personName } = getQuery;
     const skip = (page - 1) * take;
-
-    const totalCount = await this.userRepository.count({
-      where: {
-        isHeadPerson: true,
-      },
-    });
 
     let queryBuilder = this.userRepository
       .createQueryBuilder('user')
@@ -333,7 +327,15 @@ export class UserSyncProductService {
       });
     }
 
-    const headPersonUsers = await queryBuilder.orderBy('user.id', 'ASC').skip(skip).take(take).getMany();
+    if (personName) {
+      queryBuilder = queryBuilder.andWhere('user.personName LIKE :personName', { personName: `%${personName}%` });
+    }
+
+    const [headPersonUsers, totalCount] = await queryBuilder
+      .orderBy('user.id', 'ASC')
+      .skip(skip)
+      .take(take)
+      .getManyAndCount();
 
     const list: UserSyncProductPersonProductViewDto[] = [];
 
@@ -388,9 +390,9 @@ export class UserSyncProductService {
   async setHeadPerson(user: ILoginUserInfo, getBody: UserSyncProductSetHeadPersonReqDto): Promise<boolean> {
     const { userId } = getBody;
 
-    // 로그인한 유저 조회
+    // body user 정보 확인
     const findUser = await this.userRepository.findOne({
-      where: { id: user.id },
+      where: { id: userId },
     });
 
     if (!findUser) {
