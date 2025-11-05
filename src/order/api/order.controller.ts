@@ -94,6 +94,22 @@ export class OrderController {
   }
 
   @ApiOperation({
+    summary: '이벤트 불러오기용 주문 상세 조회 API (수신자 정보 제외)',
+  })
+  @ApiOkResponse({
+    type: OrderGetDetailResDto,
+    description: '성공적으로 조회한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '해당 order id 가 존재하지 않는 경우',
+  })
+  // ====================================================
+  @Get('/order/event-detail/:id')
+  getEventDetail(@Param() getParam: OrderGetDetailReqParamDto) {
+    return this.orderService.getEventDetail(getParam);
+  }
+
+  @ApiOperation({
     summary: '일반 상품 발송 완료 리포트 PDF 주문 상세 조회 API',
   })
   @ApiOkResponse({
