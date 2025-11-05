@@ -161,6 +161,7 @@ export class UserSyncProductService {
 
     return {
       userId: event.businessUser.id,
+      isHeadPerson: event.businessUser.isHeadPerson,
       businessUserName: event.businessUser.businessName,
       businessPersonName: event.businessUser.personName,
       list: result,
@@ -190,6 +191,16 @@ export class UserSyncProductService {
 
     if (!businessUser) {
       throw new BadRequestException('존재하지 않는 고객사 유저입니다.');
+    }
+
+    const existEvent = await this.eventRepository.count({
+      where: {
+        businessUserId: userId,
+      },
+    });
+
+    if (existEvent) {
+      throw new BadRequestException('해당 계정의 이벤트가 이미 존재합니다.');
     }
 
     await this.eventRepository.insert({
@@ -314,18 +325,19 @@ export class UserSyncProductService {
   async getHeadPersonList(
     getQuery: UserSyncProductGetHeadPersonListReqQueryDto,
   ): Promise<UserSyncProductGetHeadPersonListResDto> {
-    const { take, page, keyword } = getQuery;
+    const { userId, take, page, keyword, personName } = getQuery;
     const skip = (page - 1) * take;
 
-    const totalCount = await this.userRepository.count({
+    const oneUser = await this.userRepository.findOneOrFail({
       where: {
-        isHeadPerson: true,
+        id: userId,
       },
     });
 
     let queryBuilder = this.userRepository
       .createQueryBuilder('user')
-      .where('user.isHeadPerson = :isHeadPerson', { isHeadPerson: true });
+      .where('user.businessNumber = :businessNumber', { businessNumber: oneUser.businessNumber })
+      .andWhere('user.isHeadPerson = :isHeadPerson', { isHeadPerson: true });
 
     if (keyword) {
       queryBuilder = queryBuilder.andWhere('(user.businessName LIKE :keyword OR user.personEmail LIKE :keyword)', {
@@ -333,12 +345,20 @@ export class UserSyncProductService {
       });
     }
 
-    const headPersonUsers = await queryBuilder.orderBy('user.id', 'ASC').skip(skip).take(take).getMany();
+    if (personName) {
+      queryBuilder = queryBuilder.andWhere('user.personName LIKE :personName', { personName: `%${personName}%` });
+    }
+
+    const [headPersonUsers, totalCount] = await queryBuilder
+      .orderBy('user.id', 'ASC')
+      .skip(skip)
+      .take(take)
+      .getManyAndCount();
 
     const list: UserSyncProductPersonProductViewDto[] = [];
 
     for (const user of headPersonUsers) {
-      let queryBuilder = this.eventRepository
+      const eventQueryBuilder = this.eventRepository
         .createQueryBuilder('event')
         .innerJoinAndSelect('event.businessUser', 'businessUser')
         .leftJoinAndSelect('event.userSyncProductEventMappings', 'mappings')
@@ -347,7 +367,7 @@ export class UserSyncProductService {
         .where('event.businessUserId = :userId', { userId: user.id })
         .andWhere('event.status = :status', { status: IUserSyncProductStatus.ACTIVE });
 
-      const events = await queryBuilder
+      const events = await eventQueryBuilder
         .select(['event.id', 'mappings.id', 'mappings.productId', 'product.id', 'product.brandId', 'brand.id'])
         .getMany();
 
@@ -386,43 +406,20 @@ export class UserSyncProductService {
   }
 
   async setHeadPerson(user: ILoginUserInfo, getBody: UserSyncProductSetHeadPersonReqDto): Promise<boolean> {
-    const { userId } = getBody;
+    const { userId, isHeadPerson } = getBody;
 
-    // 로그인한 유저 조회
+    // body user 정보 확인
     const findUser = await this.userRepository.findOne({
-      where: { id: user.id },
+      where: { id: userId },
     });
 
     if (!findUser) {
       throw new BadRequestException('존재하지 않는 유저입니다.');
     }
 
-    // 같은 사업자 번호를 가진 모든 담당자 조회
-    const normalizedBusinessNumber = findUser.businessNumber.replace(/-/g, '');
+    findUser.isHeadPerson = isHeadPerson;
 
-    const users = await this.userRepository
-      .createQueryBuilder('user')
-      .where('REPLACE(user.businessNumber, "-", "") = :normalizedBusinessNumber', {
-        normalizedBusinessNumber,
-      })
-      .getMany();
-
-    if (users.length === 0) {
-      throw new BadRequestException('해당 사업자 번호로 등록된 담당자가 없습니다.');
-    }
-
-    // 선택한 담당자가 해당 사업자 번호에 속하는지 확인
-    const targetUser = users.find((user) => user.id === userId);
-    if (!targetUser) {
-      throw new BadRequestException('해당 담당자는 이 사업자 번호(회사)에 속하지 않습니다.');
-    }
-
-    for (const user of users) {
-      user.isHeadPerson = false;
-    }
-    targetUser.isHeadPerson = true;
-
-    await this.userRepository.save(users);
+    await this.userRepository.save(findUser);
 
     return true;
   }

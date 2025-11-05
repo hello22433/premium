@@ -3,6 +3,7 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   ArrayMinSize,
   IsArray,
+  IsBoolean,
   IsEnum,
   IsInt,
   IsNotEmpty,
@@ -187,9 +188,27 @@ export class UserSyncProductSetHeadPersonReqDto {
   @IsNumber()
   @IsNotEmpty()
   userId: number;
+
+  @ApiProperty({
+    default: true,
+    description: 'boolean 처리',
+  })
+  // =================================
+  @IsBoolean()
+  @IsNotEmpty()
+  isHeadPerson: boolean = true;
 }
 
 export class UserSyncProductGetHeadPersonListReqQueryDto extends PagingReqDto {
+  @ApiProperty({
+    description: '고객상품 관리 고객사 user id',
+  })
+  // =================================
+  @IsNotEmpty()
+  @IsNumber()
+  @Type(() => Number)
+  userId: number;
+
   @ApiPropertyOptional({
     description: '검색 키워드 ex) 계정 email, 고객사 명',
   })
@@ -197,6 +216,14 @@ export class UserSyncProductGetHeadPersonListReqQueryDto extends PagingReqDto {
   @IsOptional()
   @IsString()
   keyword?: string;
+
+  @ApiPropertyOptional({
+    description: '담당자 명',
+  })
+  // =================================
+  @IsOptional()
+  @IsString()
+  personName?: string;
 }
 
 export class UserSyncProductGetPersonsByBusinessReqDto {
