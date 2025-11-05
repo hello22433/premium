@@ -10,6 +10,7 @@ import { OrderEmailSendType } from '../domain/order.email.send.type';
 import { OrderCustomerViewDto } from './dto/order.customer.view.dto';
 import { OrderCompleteReportViewDto } from './dto/order.complete.report.view.dto';
 import { OrderDashboardViewDto } from './dto/order.dashboard.view.dto';
+import { UserSettlePeriodConditionEnum } from '../../user/interface/user.settle.period.condition.enum';
 
 export class OrderGetListResDto extends GetListResDto {
   @ApiProperty({
@@ -132,6 +133,17 @@ export class OrderGetDetailResDto {
     description: '상품 정보 리스트',
   })
   productList: OrderDetailProductDto[];
+
+  @ApiProperty({
+    description:
+      '정산 조건 월 타입 ex) CURRENT_MONTH: 당월, NEXT_MONTH: 익월, NEXT_MONTH_AFTER: 익익월, DELIVERY_DATE: 발송일',
+  })
+  settlePeriodCondition: UserSettlePeriodConditionEnum | null;
+
+  @ApiProperty({
+    description: '발송 조건 일',
+  })
+  settlePeriodCount: number | null;
 }
 
 export class OrderGetDeliveryCompleteReportDetailResDto {

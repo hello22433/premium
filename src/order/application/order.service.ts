@@ -265,6 +265,16 @@ export class OrderService {
       throw new BadRequestException('주문이 존재하지 않습니다.');
     }
 
+    const user = await this.userRepository.findOne({
+      where: {
+        id: order.userId,
+      },
+    });
+
+    if (!user) {
+      throw new InternalServerErrorException('');
+    }
+
     const productList: OrderDetailProductDto[] = [];
 
     let topImagePath;
@@ -367,6 +377,8 @@ export class OrderService {
       couponExpiration: couponExpiration,
       encourageDay: order.encourageDay,
       productList: productList,
+      settlePeriodCondition: user.settlePeriodCondition,
+      settlePeriodCount: user.settlePeriodCount,
     };
   }
 
