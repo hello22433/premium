@@ -103,6 +103,9 @@ export class OrderEntity extends BaseEntity {
   @Column({ default: false, comment: '정산 확정 여부' })
   isSettleComplete: boolean;
 
+  @Column({ default: false, comment: '정산 선충전 혹은 한도 여부' })
+  isSettleBalance: boolean;
+
   @ManyToOne(() => UserEntity, { createForeignKeyConstraints: false })
   @JoinColumn({ name: 'user_id' })
   user?: UserEntity;

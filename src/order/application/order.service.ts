@@ -741,6 +741,9 @@ export class OrderService {
 
     const orderId = existingOrderProducts[0].orderId;
     const settleAmount = existingOrderProducts[0].order.sendAmount;
+    const oneUserId = existingOrderProducts[0].order.userId;
+    const sendAmount = existingOrderProducts[0].order.sendAmount;
+    const isSettleBalance = existingOrderProducts[0].order.isSettleBalance;
     let settleFee = 0;
 
     const orderProductList = list.map((settle) => {
@@ -766,6 +769,20 @@ export class OrderService {
 
     await this.orderProductMappingRepository.save(orderProductList);
     await this.orderRepository.update({ id: orderId }, { settleAmount: settleAmount + settleFee });
+
+    const oneUser = await this.userRepository.findOneOrFail({
+      where: {
+        id: oneUserId,
+      },
+    });
+
+    if (isSettleBalance) {
+      oneUser.balance = oneUser.balance + sendAmount - (settleAmount + settleFee);
+    } else {
+      oneUser.allSettleAmount = oneUser.allSettleAmount - sendAmount + (settleAmount + settleFee);
+    }
+
+    await this.userRepository.save(oneUser);
   }
 
   @Transactional()
@@ -794,6 +811,10 @@ export class OrderService {
 
     const orderId = existingOrderProducts[0].orderId;
     const settleAmount = existingOrderProducts[0].order.sendAmount;
+    const oneUserId = existingOrderProducts[0].order.userId;
+
+    const beforeSettleAmount = existingOrderProducts[0].order.settleAmount;
+    const isSettleBanace = existingOrderProducts[0].order.isSettleBalance;
     let settleFee = 0;
 
     const orderProductList = list.map((settle) => {
@@ -820,6 +841,20 @@ export class OrderService {
 
     await this.orderProductMappingRepository.save(orderProductList);
     await this.orderRepository.update({ id: orderId }, { settleAmount: settleAmount + settleFee });
+
+    const oneUser = await this.userRepository.findOneOrFail({
+      where: {
+        id: oneUserId,
+      },
+    });
+
+    if (isSettleBanace) {
+      oneUser.balance = oneUser.balance + beforeSettleAmount - (settleAmount + settleFee);
+    } else {
+      oneUser.allSettleAmount = oneUser.allSettleAmount - beforeSettleAmount + (settleAmount + settleFee);
+    }
+
+    await this.userRepository.save(oneUser);
   }
 
   @Transactional()
@@ -1219,6 +1254,7 @@ export class OrderService {
     }
 
     OrderValidation(order);
+
     // 총 주문 금액
     const totalAmount = order.orderProductMappings.reduce((sum, m) => {
       if (!m.product) {
@@ -1236,16 +1272,21 @@ export class OrderService {
     if (!oneUser) {
       throw new InternalServerErrorException('유저가 존재하지 않습니다.');
     }
+
+    // allSettleAmount 해당 유저의 전체 order 사용 금액
+    // serviceAmount -> 정산 완료된 order 금액
+    // balance -> 선충전 금액
+    // maximumLimit -> 최대 서비스 한도
     const remainServiceAmount =
       oneUser.maximumLimit + oneUser.balance - oneUser.allSettleAmount + oneUser.serviceAmount;
-
-    if (totalAmount > remainServiceAmount) {
-      throw new BadRequestException('잔액이 부족하여 발송 요청할 수 없습니다.');
-    }
 
     // 잔액 부족 시 예외
     if (totalAmount > userBalance) {
       throw new BadRequestException('잔액이 부족하여 발송 요청할 수 없습니다.');
+    }
+
+    if (totalAmount > remainServiceAmount) {
+      throw new BadRequestException('최대 서비스 한도를 넘어 요청할 수 없습니다.');
     }
 
     // 신세계 상품 검증 및 이벤트 자동 선택
@@ -1275,9 +1316,6 @@ export class OrderService {
 
       // 이벤트 잔액 가차감 (isTemporary = true)
       await this.ssgEventService.deductEventBalance(selectedEvent.id, totalPrice, order.id, true);
-
-      // 사용자 잔액도 차감
-      await this.userManagementService.deductBalance(user.id, totalPrice);
     }
 
     for (const orderMapping of order.orderProductMappings!) {
@@ -1285,6 +1323,14 @@ export class OrderService {
         orderDelivery.transactionId = CreateTransactionId(order.id, orderDelivery.id);
         await this.orderDeliveryRepository.save(orderDelivery);
       }
+    }
+
+    if (totalAmount > oneUser.balance) {
+      oneUser.allSettleAmount += totalAmount;
+      order.isSettleBalance = false;
+    } else if (totalAmount <= oneUser.balance) {
+      oneUser.balance = oneUser.balance - totalAmount;
+      order.isSettleBalance = true;
     }
 
     order.status = IOrderStatus.DELIVERY_REQUEST;
@@ -1489,6 +1535,12 @@ export class OrderService {
       throw new BadRequestException('해당 주문건은 존재하지 않습니다.');
     }
 
+    const oneUser = await this.userRepository.findOneOrFail({
+      where: {
+        id: order.userId,
+      },
+    });
+
     const now = new Date();
     const sendRequestAtTime = order.sendRequestAt.getTime();
     const nowTime = now.getTime();
@@ -1511,18 +1563,27 @@ export class OrderService {
 
     const orderProductMappingIdList = order.orderProductMappings!.map((orderProductMapping) => orderProductMapping.id);
 
+    const totalPrice = order.orderProductMappings!.reduce((acc, cur) => {
+      if (!cur.product) {
+        throw new BadRequestException('상품 정보가 존재하지 않습니다.');
+      }
+      return acc + cur.product.price * cur.amount;
+    }, 0);
+
     // SSG 주문인 경우 이벤트 잔액 복구
     if (order.type === IOrderType.SSG) {
       await this.ssgEventService.restoreEventBalance(order.id);
 
       // 사용자 잔액도 복원
-      const totalPrice = order.orderProductMappings!.reduce((acc, cur) => {
-        if (!cur.product) {
-          throw new BadRequestException('상품 정보가 존재하지 않습니다.');
-        }
-        return acc + cur.product.price * cur.amount;
-      }, 0);
+
       await this.userManagementService.addBalance(user.id, totalPrice);
+    }
+
+    if (order.isSettleBalance) {
+      oneUser.balance = oneUser.balance + totalPrice;
+      order.isSettleBalance = false;
+    } else {
+      oneUser.allSettleAmount -= totalPrice;
     }
 
     order.status = IOrderStatus.DELIVERY_CANCEL;
@@ -1531,6 +1592,7 @@ export class OrderService {
       { orderProductMappingId: In(orderProductMappingIdList) },
       { status: IOrderDeliveryStatus.CANCEL },
     );
+    await this.userRepository.save(oneUser);
 
     return;
   }

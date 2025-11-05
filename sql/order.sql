@@ -9,3 +9,6 @@ ALTER TABLE `order`
 
 ALTER TABLE `order`
     ADD COLUMN is_settle_complete TINYINT(1) DEFAULT 0 COMMENT '정산 확정 여부';
+
+ALTER TABLE `order`
+    ADD COLUMN is_settle_balance TINYINT(1) DEFAULT 0 COMMENT '정산 선충전 혹은 한도 여부';

@@ -308,25 +308,25 @@ export class DeliveryBatchService {
     await this.deliverySendHistoryRepository.insert(deliveryHistoryList);
     await this.orderRepository.update({ id: In(orderIdList) }, { status: IOrderStatus.DELIVERY_COMPLETE });
 
-    if (orderIdList.length > 0) {
-      const orderList = await this.orderRepository
-        .createQueryBuilder('order')
-        .innerJoinAndSelect('order.user', 'user')
-        .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
-        .where('order.id IN (:...orderIdList)', { orderIdList })
-        .getMany();
-
-      for (const order of orderList) {
-        await this.userRepository.update(
-          {
-            id: order.userId,
-          },
-          {
-            allSettleAmount: order.user!.allSettleAmount + order.settleAmount,
-          },
-        );
-      }
-    }
+    // if (orderIdList.length > 0) {
+    //   const orderList = await this.orderRepository
+    //     .createQueryBuilder('order')
+    //     .innerJoinAndSelect('order.user', 'user')
+    //     .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
+    //     .where('order.id IN (:...orderIdList)', { orderIdList })
+    //     .getMany();
+    //
+    //   for (const order of orderList) {
+    //     await this.userRepository.update(
+    //       {
+    //         id: order.userId,
+    //       },
+    //       {
+    //         allSettleAmount: order.user!.allSettleAmount + order.settleAmount,
+    //       },
+    //     );
+    //   }
+    // }
 
     return;
   }
