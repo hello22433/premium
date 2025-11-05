@@ -19,6 +19,11 @@ export class UserSyncProductGetDetailResDto {
   userId: number;
 
   @ApiProperty({
+    description: '기본 고객사 여부',
+  })
+  isHeadPerson: boolean;
+
+  @ApiProperty({
     description: '고객사 명',
   })
   businessUserName: string;

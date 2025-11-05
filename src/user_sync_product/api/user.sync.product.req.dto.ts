@@ -3,6 +3,7 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   ArrayMinSize,
   IsArray,
+  IsBoolean,
   IsEnum,
   IsInt,
   IsNotEmpty,
@@ -187,6 +188,15 @@ export class UserSyncProductSetHeadPersonReqDto {
   @IsNumber()
   @IsNotEmpty()
   userId: number;
+
+  @ApiProperty({
+    default: true,
+    description: 'boolean 처리',
+  })
+  // =================================
+  @IsBoolean()
+  @IsNotEmpty()
+  isHeadPerson: boolean = true;
 }
 
 export class UserSyncProductGetHeadPersonListReqQueryDto extends PagingReqDto {
