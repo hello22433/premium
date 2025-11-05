@@ -224,10 +224,15 @@ export class OrderService {
           productName += `외 ${orderProductMappingsLength - 1}건`;
         }
 
-        // 실제 발송 시간: 발송 완료된 경우 첫 번째 orderDelivery의 createdAt
+        // 실제 발송 시간: 발송 완료 상태일 때만 orderDelivery의 updatedAt 사용
         const firstDelivery = order.orderProductMappings[0].orderDeliveries?.[0];
-        if (firstDelivery && normalizeDate(firstDelivery.createdAt)) {
-          actualSendAt = format(firstDelivery.createdAt, DateFormatStr);
+        if (
+          firstDelivery &&
+          (firstDelivery.status === IOrderDeliveryStatus.COMPLETE ||
+            firstDelivery.status === IOrderDeliveryStatus.COMPLETE_SMS) &&
+          normalizeDate(firstDelivery.updatedAt)
+        ) {
+          actualSendAt = format(firstDelivery.updatedAt, DateFormatStr);
         }
       }
 
