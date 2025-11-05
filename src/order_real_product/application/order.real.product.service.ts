@@ -460,11 +460,14 @@ export class OrderRealProductService {
       const trackingNumber = mapping.trackingNumber;
 
       let code: DeliveryTrackingStatus = DeliveryTrackingStatus.UNKNOWN;
-      const response = await this.deliveryTrackHttp.trackDeliveryLastInfo('kr.cjlogistics', trackingNumber);
-      const lastEvent = response?.data?.track?.lastEvent;
 
-      if (lastEvent?.status?.code) {
-        code = lastEvent.status.code;
+      if (trackingNumber) {
+        const response = await this.deliveryTrackHttp.trackDeliveryLastInfo('kr.cjlogistics', trackingNumber);
+        const lastEvent = response?.data?.track?.lastEvent;
+
+        if (lastEvent?.status?.code) {
+          code = lastEvent.status.code;
+        }
       }
 
       resultList.push({

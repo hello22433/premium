@@ -18,8 +18,8 @@ export class OrderRealProductMappingEntity extends BaseEntity {
   @Column({ comment: 'FK) product id' })
   productId: number;
 
-  @Column({ type: 'varchar', comment: '송장번호' })
-  trackingNumber: string;
+  @Column({ type: 'varchar', nullable: true, comment: '송장번호' })
+  trackingNumber: string | null;
 
   @Column({ type: 'int', comment: '상품 수량' })
   quantity: number;

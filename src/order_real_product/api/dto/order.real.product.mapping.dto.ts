@@ -72,8 +72,8 @@ export class OrderRealProductMappingDto {
     description: '운송장 번호',
   })
   // ==================================
-  @IsNotEmpty()
-  trackingNumber: string;
+  @IsOptional()
+  trackingNumber: string | null;
 
   @ApiProperty({
     description: '결제 방법',
