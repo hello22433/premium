@@ -48,9 +48,15 @@ export class OrderViewDto {
   status: IOrderStatus;
 
   @ApiProperty({
-    description: '발송 시간 ex) yyyy-MM-ddTHH:mm:ss',
+    description: '발송 요청 시간 (예약 시간) ex) yyyy-MM-ddTHH:mm:ss',
   })
   sendRequestAt: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    description: '실제 발송 시간 ex) yyyy-MM-ddTHH:mm:ss',
+  })
+  actualSendAt: string | null;
 
   @ApiProperty({
     nullable: true,
@@ -78,4 +84,10 @@ export class OrderViewDto {
     description: '개인정보 파기 요청일',
   })
   requestToDestroyPersonalInfoDay: number;
+
+  @ApiProperty({
+    nullable: true,
+    description: '발송 방식 ex) IMMEDIATE: 즉시발송, RESERVE: 예약발송',
+  })
+  sendType: string | null;
 }

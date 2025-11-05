@@ -147,6 +147,7 @@ export class OrderService {
       .leftJoinAndSelect('order.operationUser', 'operationUser')
       .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .leftJoinAndSelect('orderProductMappings.product', 'product')
+      .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
       .where('order.type = :type', { type });
 
     // 주문 관리 일 경우
@@ -209,6 +210,8 @@ export class OrderService {
       let totalAmount = 0;
       let totalProductCount = 0;
       let productName = '';
+      let actualSendAt: string | null = null;
+
       if (order.orderProductMappings && order.orderProductMappings.length > 0) {
         totalAmount = order.orderProductMappings.reduce((acc, cur) => {
           return acc + cur.amount;
@@ -219,6 +222,12 @@ export class OrderService {
         const orderProductMappingsLength = order.orderProductMappings.length;
         if (orderProductMappingsLength - 1 > 0) {
           productName += `외 ${orderProductMappingsLength - 1}건`;
+        }
+
+        // 실제 발송 시간: 발송 완료된 경우 첫 번째 orderDelivery의 createdAt
+        const firstDelivery = order.orderProductMappings[0].orderDeliveries?.[0];
+        if (firstDelivery && normalizeDate(firstDelivery.createdAt)) {
+          actualSendAt = format(firstDelivery.createdAt, DateFormatStr);
         }
       }
 
@@ -235,6 +244,7 @@ export class OrderService {
         totalAmount: totalAmount,
         status: order.status,
         sendRequestAt: sendRequestAt,
+        actualSendAt: actualSendAt,
         operationUserId: order.operationUserId,
         operationUserName: order.operationUser?.personName ?? null,
         deliveryPrice: order.sendAmount,
