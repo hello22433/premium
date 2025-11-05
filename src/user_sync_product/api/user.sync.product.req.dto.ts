@@ -190,6 +190,15 @@ export class UserSyncProductSetHeadPersonReqDto {
 }
 
 export class UserSyncProductGetHeadPersonListReqQueryDto extends PagingReqDto {
+  @ApiProperty({
+    description: '고객상품 관리 고객사 user id',
+  })
+  // =================================
+  @IsNotEmpty()
+  @IsNumber()
+  @Type(() => Number)
+  userId: number;
+
   @ApiPropertyOptional({
     description: '검색 키워드 ex) 계정 email, 고객사 명',
   })

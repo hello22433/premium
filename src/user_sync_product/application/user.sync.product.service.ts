@@ -324,12 +324,18 @@ export class UserSyncProductService {
   async getHeadPersonList(
     getQuery: UserSyncProductGetHeadPersonListReqQueryDto,
   ): Promise<UserSyncProductGetHeadPersonListResDto> {
-    const { take, page, keyword, personName } = getQuery;
+    const { userId, take, page, keyword, personName } = getQuery;
     const skip = (page - 1) * take;
+
+    const oneUser = await this.userRepository.findOneOrFail({
+      where: {
+        id: userId,
+      },
+    });
 
     let queryBuilder = this.userRepository
       .createQueryBuilder('user')
-      .where('user.isHeadPerson = :isHeadPerson', { isHeadPerson: true });
+      .where('user.businessNumber = :businessNumber', { businessNumber: oneUser.businessNumber });
 
     if (keyword) {
       queryBuilder = queryBuilder.andWhere('(user.businessName LIKE :keyword OR user.personEmail LIKE :keyword)', {
