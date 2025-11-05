@@ -192,6 +192,16 @@ export class UserSyncProductService {
       throw new BadRequestException('존재하지 않는 고객사 유저입니다.');
     }
 
+    const existEvent = await this.eventRepository.count({
+      where: {
+        businessUserId: userId,
+      },
+    });
+
+    if (existEvent) {
+      throw new BadRequestException('해당 계정의 이벤트가 이미 존재합니다.');
+    }
+
     await this.eventRepository.insert({
       name,
       status,
