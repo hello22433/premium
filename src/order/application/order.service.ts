@@ -1995,6 +1995,7 @@ export class OrderService {
     orderDelivery.personalCode = barCode;
     orderDelivery.orderProductMapping = orderProductMapping;
     orderDelivery.imagePath = imagePath;
+    orderDelivery.expireAt = new Date();
 
     // 3. 전송
     await this.deliveryBatchService.oneSend(orderDelivery, false);
