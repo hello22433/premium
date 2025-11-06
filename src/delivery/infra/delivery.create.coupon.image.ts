@@ -94,30 +94,39 @@ export const DeliveryCreateCouponImage = async (
     ctx.fillStyle = '#ff0000';
     ctx.fillText(`K 모바일쿠폰을 대표하는 이팝콘`, 150, 550);
 
-    // 바코드 생성 - 더 넓고 뚱뚱하고 짧게 설정
-    const barcodeCanvas = createCanvas(500, 100); // 너비 증가, 높이 감소
+    // 바코드 생성
+    const barcodeCanvas = createCanvas(500, 100);
     JsBarcode(barcodeCanvas, `${barcodeValue}`, {
       format: 'CODE128',
-      width: 4, // 바 두께 증가 (기본값보다 두껍게)
-      height: 70, // 바코드 높이 설정
-      displayValue: true, // 바코드 아래 텍스트 표시
-      fontSize: 20, // 바코드 텍스트 크기
-      textMargin: 15, // 텍스트와 바코드 사이 간격
-      margin: 10, // 바코드 좌우 여백 최소화
-      background: '#ffffff', // 배경색
-      lineColor: '#000000', // 바코드 색상
+      width: 4,
+      height: 70,
+      displayValue: true,
+      fontSize: 20,
+      textMargin: 15,
+      margin: 10, // sharp의 trim()이 배경을 인식할 수 있도록 약간의 여백을 줍니다.
+      background: '#ffffff',
+      lineColor: '#000000',
       textAlign: 'center',
     });
 
-    const barcode = barcodeCanvas.toBuffer();
-    const barcodeImage = await createImageFromBuffer(barcode);
+    // 캔버스를 PNG 버퍼로 변환
+    const barcodeBuffer = barcodeCanvas.toBuffer('image/png');
 
-    // const barcodeX = (canvasWidth - barcodeImage.width) / 2;
-    const bw = barcodeCanvas.width;
-    const bh = barcodeCanvas.height;
-    const x = (canvasWidth - bw) / 2;
-    const y = (canvasHeight - bh) / 2;
-    ctx.drawImage(barcodeImage, 50, 580);
+    // sharp를 사용하여 이미지 주변의 공백을 자동으로 제거
+    const trimmedBarcodeBuffer = await sharp(barcodeBuffer).trim().toBuffer();
+
+    // 공백이 제거된 이미지의 너비를 얻기 위해 metadata() 사용
+    const barcodeMetadata = await sharp(trimmedBarcodeBuffer).metadata();
+    const barcodeWidth = barcodeMetadata.width;
+
+    // 공백이 제거된 버퍼로부터 최종 바코드 이미지 생성
+    const barcodeImage = await createImageFromBuffer(trimmedBarcodeBuffer);
+
+    // 메인 캔버스의 중앙에 바코드를 그리기 위한 x 좌표 계산
+    const barcodeX = (canvasWidth - barcodeWidth!) / 2;
+
+    // 계산된 중앙 위치에 바코드 이미지 그리기
+    ctx.drawImage(barcodeImage, barcodeX, 580);
 
     // 바코드 아래에 구분선 추가
     ctx.beginPath();
