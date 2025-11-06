@@ -106,13 +106,14 @@ export const DeliveryCreateCouponImage = async (
       margin: 0, // 바코드 좌우 여백 최소화
       background: '#ffffff', // 배경색
       lineColor: '#000000', // 바코드 색상
+      textAlign: 'center',
     });
 
     const barcode = barcodeCanvas.toBuffer();
     const barcodeImage = await createImageFromBuffer(barcode);
 
-    const barcodeX = (canvasWidth - barcodeImage.width) / 2;
-    ctx.drawImage(barcodeImage, barcodeX, 580);
+    // const barcodeX = (canvasWidth - barcodeImage.width) / 2;
+    ctx.drawImage(barcodeImage, 50, 580);
 
     // 바코드 아래에 구분선 추가
     ctx.beginPath();
