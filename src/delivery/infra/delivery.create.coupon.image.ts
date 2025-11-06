@@ -111,7 +111,8 @@ export const DeliveryCreateCouponImage = async (
     const barcode = barcodeCanvas.toBuffer();
     const barcodeImage = await createImageFromBuffer(barcode);
 
-    ctx.drawImage(barcodeImage, 50, 580); // x 위치를 왼쪽으로 조정 (더 넓어진 바코드를 위해)
+    const barcodeX = (canvasWidth - barcodeImage.width) / 2;
+    ctx.drawImage(barcodeImage, barcodeX, 580);
 
     // 바코드 아래에 구분선 추가
     ctx.beginPath();
