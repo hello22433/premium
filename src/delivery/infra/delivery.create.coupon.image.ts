@@ -103,7 +103,7 @@ export const DeliveryCreateCouponImage = async (
       displayValue: true, // 바코드 아래 텍스트 표시
       fontSize: 20, // 바코드 텍스트 크기
       textMargin: 15, // 텍스트와 바코드 사이 간격
-      margin: 0, // 바코드 좌우 여백 최소화
+      margin: 10, // 바코드 좌우 여백 최소화
       background: '#ffffff', // 배경색
       lineColor: '#000000', // 바코드 색상
       textAlign: 'center',
@@ -113,6 +113,10 @@ export const DeliveryCreateCouponImage = async (
     const barcodeImage = await createImageFromBuffer(barcode);
 
     // const barcodeX = (canvasWidth - barcodeImage.width) / 2;
+    const bw = barcodeCanvas.width;
+    const bh = barcodeCanvas.height;
+    const x = (canvasWidth - bw) / 2;
+    const y = (canvasHeight - bh) / 2;
     ctx.drawImage(barcodeImage, 50, 580);
 
     // 바코드 아래에 구분선 추가
