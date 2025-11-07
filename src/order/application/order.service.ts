@@ -1450,6 +1450,7 @@ export class OrderService {
 
     order.status = IOrderStatus.DELIVERY_REQUEST;
     await this.orderRepository.save(order);
+    await this.userRepository.save(oneUser)
 
     return;
   }
