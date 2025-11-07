@@ -347,7 +347,7 @@ export class OrderService {
           fromEmail: orderProductMapping.fromEmail,
           fromPhoneNumber: orderProductMapping.fromPhoneNumber,
           requestToDestroyPersonalInfoDay: orderProductMapping.requestToDestroyPersonalInfoDay,
-          sendContent: orderProductMapping.sendContent ? orderProductMapping.sendContent : order.sendContent,
+          sendContent: orderProductMapping.sendContent ?? '',
           sendMethod: orderProductMapping.sendMethod ? orderProductMapping.sendMethod : order.sendMethod,
           sendRequestAt: orderProductMapping.sendRequestAt
             ? format(order.sendRequestAt, DateFormatStr)
@@ -355,7 +355,7 @@ export class OrderService {
               ? format(orderProductMapping.sendRequestAt, DateFormatStr)
               : null,
           sendTailText: orderProductMapping.sendTailText,
-          sendTitle: orderProductMapping.sendTitle ? orderProductMapping.sendTitle : order.sendTitle,
+          sendTitle: orderProductMapping.sendTitle ?? '',
           sendType: orderProductMapping.sendType,
           useEmailContent: orderProductMapping.useEmailContent,
         });
