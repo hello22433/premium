@@ -44,15 +44,20 @@ export const EmailDeliveryTemplate = (obj: EmailDeliveryTemplateIn) => {
         </td>
       </tr>
       <tr>
-        <!-- 3. 상품 이미지 -->
-        <td align="center" style="padding:10px;">
-          <img src="${obj.productImagePath}" width="200" height="200" alt="상품 이미지" style="border-radius:8px;" />
-        </td>
-      </tr>
-      <tr>
-        <!-- 4. 사용방법 -->
-        <td style="padding:10px 20px; font-size:13px; color:#555;">
-          ${obj.useEmailContent}
+        <!-- 3. 상품 이미지와 사용방법 (같은 줄에 배치) -->
+        <td style="padding:10px 20px;">
+          <table style="width:100%; cellpadding=0; cellspacing=0; border=0;">
+            <tr>
+              <!-- 쿠폰 이미지 (왼쪽) -->
+              <td style="width=200; valign=top; style=padding-right:15px;">
+                <img src="${obj.productImagePath}" width="200" height="200" alt="상품 이미지" style="border-radius:8px; display:block;" />
+              </td>
+              <!-- 사용방법 (오른쪽) -->
+              <td style="valign=top; font-size=13px; line-height=1.6; color=#555;">
+                ${obj.useEmailContent}
+              </td>
+            </tr>
+          </table>
         </td>
       </tr>
       <tr>
