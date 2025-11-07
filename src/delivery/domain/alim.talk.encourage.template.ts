@@ -6,7 +6,7 @@ export const AlimTalkEncourageTemplate = (orderDelivery: OrderDeliveryEntity, te
   const isTestTemplate = templateCode.toLowerCase().includes('dev');
 
   const barcodeLast4 = orderDelivery.barCode!.slice(-4);
-  const expireDate = format(orderDelivery.expireAt!, 'yyyy/MM/dd');
+  const expireDate = format(orderDelivery.expireAt!, 'yyyy.MM.dd');
 
   const message = `미사용쿠폰발생.
 뒷자리 ${barcodeLast4}번.

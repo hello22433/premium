@@ -95,4 +95,9 @@ export class PartnerCompanyDetailDto {
     description: '협력사 등록일 ex) yyyy-MM-ddTHH:mm:ss',
   })
   createdAt: string;
+
+  @ApiProperty({
+    description: '유효기간 시작일 설정 (true: 다음날부터, false: 당일 포함)',
+  })
+  validityStartsNextDay: boolean;
 }

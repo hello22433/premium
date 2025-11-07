@@ -110,13 +110,11 @@ export class DeliveryBatchService {
       const title = orderDelivery.orderProductMapping.order.sendTitle;
 
       if (orderDelivery.orderProductMapping.order.type !== IOrderType.SSG) {
-        // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-        // @ts-expect-error
-        const partnerCompanyType = orderDelivery.orderProductMapping.product.partnerCompany.type;
+        const partnerCompany = orderDelivery.orderProductMapping.product.partnerCompany;
         const expireDays =
-          partnerCompanyType === IPartnerCompanyType.GIFT_SHOW
-            ? orderDelivery.orderProductMapping.product.expireDay
-            : orderDelivery.orderProductMapping.product.expireDay - 1;
+          partnerCompany?.validityStartsNextDay === false
+            ? orderDelivery.orderProductMapping.product.expireDay - 1
+            : orderDelivery.orderProductMapping.product.expireDay;
 
         orderDelivery.expireAt = addDays(orderDelivery.sendRequestAt, expireDays);
         if (orderDelivery.orderProductMapping.order.encourageDay) {
@@ -475,10 +473,13 @@ export class DeliveryBatchService {
     const title = orderDelivery.orderProductMapping.sendTitle ?? orderDelivery.orderProductMapping.order.sendTitle;
 
     if (orderDelivery.orderProductMapping.order.type !== IOrderType.SSG) {
-      orderDelivery.expireAt = addDays(
-        orderDelivery.sendRequestAt,
-        orderDelivery.orderProductMapping.product.expireDay,
-      );
+      const partnerCompany = orderDelivery.orderProductMapping.product.partnerCompany;
+      const expireDays =
+        partnerCompany?.validityStartsNextDay === false
+          ? orderDelivery.orderProductMapping.product.expireDay - 1
+          : orderDelivery.orderProductMapping.product.expireDay;
+
+      orderDelivery.expireAt = addDays(orderDelivery.sendRequestAt, expireDays);
       if (orderDelivery.orderProductMapping.order.encourageDay) {
         orderDelivery.encourageAt = subDays(
           orderDelivery.expireAt,

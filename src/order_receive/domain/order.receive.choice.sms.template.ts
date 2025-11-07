@@ -1,5 +1,6 @@
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { InternalServerErrorException } from '@nestjs/common';
+import { format } from 'date-fns';
 
 export const OrderReceiveChoiceSmsTemplate = (orderDelivery: OrderDeliveryEntity) => {
   if (!orderDelivery.choiceSelectProduct) {
@@ -11,7 +12,10 @@ export const OrderReceiveChoiceSmsTemplate = (orderDelivery: OrderDeliveryEntity
     : '';
 
   return `상품명 : ${orderDelivery.choiceSelectProduct.name}
-유효기간 : ${orderDelivery.choiceSelectProduct.expireDay}일
+유효기간 : ${format(
+    orderDelivery.expireAt!,
+    'yyyy.MM.dd',
+  )} 까지
 쿠폰번호 : ${orderDelivery.barCode}
 
 ${orderDelivery.orderProductMapping.order.eventName} 당첨을 축하드립니다.

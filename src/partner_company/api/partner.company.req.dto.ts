@@ -165,6 +165,14 @@ export class PartnerCompanyCreateReqDto {
   @IsOptional()
   @IsEnum(IPartnerCompanyType)
   type?: IPartnerCompanyType;
+
+  @ApiPropertyOptional({
+    description: '유효기간 시작일 설정 (true: 다음날부터, false: 당일 포함)',
+    default: true,
+  })
+  // ==================================
+  @IsOptional()
+  validityStartsNextDay?: boolean;
 }
 
 export class PartnerCompanyUpdateReqDto extends PartnerCompanyCreateReqDto {

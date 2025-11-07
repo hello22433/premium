@@ -168,6 +168,7 @@ export class PartnerCompanyService {
       bankNumber: partnerCompany.bankNumber,
       status: partnerCompany.status,
       createdAt: format(partnerCompany.createdAt, DateFormatStr),
+      validityStartsNextDay: partnerCompany.validityStartsNextDay,
     };
   }
 
@@ -188,6 +189,7 @@ export class PartnerCompanyService {
       bankName,
       settleDay,
       type,
+      validityStartsNextDay,
     } = getBody;
 
     const prevPartnerCompany = await this.partnerCompanyRepository.findOne({
@@ -217,6 +219,7 @@ export class PartnerCompanyService {
       bankName,
       settleDay,
       type: type ?? null,
+      validityStartsNextDay: validityStartsNextDay ?? true,
     });
 
     return;
@@ -240,6 +243,7 @@ export class PartnerCompanyService {
       bankName,
       settleDay,
       type,
+      validityStartsNextDay,
     } = getBody;
 
     const partnerCompany = await this.partnerCompanyRepository.findOne({
@@ -267,6 +271,7 @@ export class PartnerCompanyService {
     partnerCompany.bankName = bankName;
     partnerCompany.settleDay = settleDay;
     partnerCompany.type = type ?? null;
+    partnerCompany.validityStartsNextDay = validityStartsNextDay ?? true;
 
     await this.partnerCompanyRepository.save(partnerCompany);
 

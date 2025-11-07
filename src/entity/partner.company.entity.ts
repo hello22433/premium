@@ -64,6 +64,14 @@ export class PartnerCompanyEntity extends BaseEntity {
   status: IPartnerCompanyStatus;
 
   @Column({
+    type: 'boolean',
+    comment:
+      '유효기간 계산 시 발송 다음날부터 계산할지 여부 (true: 다음날, false: 발송일 포함)',
+    default: true,
+  })
+  validityStartsNextDay: boolean;
+
+  @Column({
     type: 'enum',
     enum: IPartnerCompanyType,
     nullable: true,
