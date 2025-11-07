@@ -1,9 +1,4 @@
-import {
-  BadRequestException,
-  Injectable,
-  InternalServerErrorException,
-  NotFoundException
-} from '@nestjs/common';
+import { BadRequestException, Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
 import {
   CustomerServiceCouponRefreshReqDto,
   CustomerServiceDiscardReqDto,
@@ -18,33 +13,29 @@ import {
   CustomerServiceStatusListReqDto,
   CustomerServiceUnmaskedDeliveryTargetReqDto,
 } from '../api/customer.service.req.dto';
-import {InjectRepository} from '@nestjs/typeorm';
-import {OrderEntity} from '../../entity/order.entity';
-import {IsNull, Repository} from 'typeorm';
-import {CustomerServiceGetListResDto} from '../api/customer.service.res.dto';
-import {DateFormatStr} from '../../common/domain/date.format.str';
-import {format} from 'date-fns';
-import {CustomerServiceViewDto} from '../api/dto/customer.service.view.dto';
-import {QueryBuilderDateCondition} from '../../common/infra/query.builder.date.condition';
-import {OrderDeliveryEntity} from '../../entity/order.delivery.entity';
-import {CustomerServiceDetailViewDto} from '../api/dto/customer.service.detail.view.dto';
-import {CustomerServiceDlvryDetailViewDto} from '../api/dto/customer.service.dlvry.detail.view.dto';
-import {
-  PartnerCompanyExternService
-} from '../../partner_company_extern/application/partner.company.extern.service';
-import {DeliveryBatchService} from '../../delivery/application/delivery.batch.service';
-import {OrderDeliveryCouponStatus} from '../../delivery/interface/order.delivery.coupon.status';
-import {ILoginUserInfo} from 'src/auth/interface/login.user';
-import {OrderHistoryEntity} from 'src/entity/order.history.entity';
-import {User} from 'src/auth/api/user.decorator';
-import {GemteckMsgQueueEntity} from 'src/entity/gemtek/msg.queue.entity';
-import {SmsGemtekSend} from 'src/sms/infra/sms.gemtek.send';
-import {MaskingUtil} from 'src/common/utils/masking.util';
-import {CryptoCipher} from 'src/common/infra/crypto.cipher';
-import {PhoneUtil} from 'src/common/utils/phone.util';
-import {
-  OrderDeliveryRefundStatusEnum
-} from '../../delivery/interface/order.delivery.refund.status.enum';
+import { InjectRepository } from '@nestjs/typeorm';
+import { OrderEntity } from '../../entity/order.entity';
+import { IsNull, Repository } from 'typeorm';
+import { CustomerServiceGetListResDto } from '../api/customer.service.res.dto';
+import { DateFormatStr } from '../../common/domain/date.format.str';
+import { format } from 'date-fns';
+import { CustomerServiceViewDto } from '../api/dto/customer.service.view.dto';
+import { QueryBuilderDateCondition } from '../../common/infra/query.builder.date.condition';
+import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
+import { CustomerServiceDetailViewDto } from '../api/dto/customer.service.detail.view.dto';
+import { CustomerServiceDlvryDetailViewDto } from '../api/dto/customer.service.dlvry.detail.view.dto';
+import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
+import { DeliveryBatchService } from '../../delivery/application/delivery.batch.service';
+import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
+import { ILoginUserInfo } from 'src/auth/interface/login.user';
+import { OrderHistoryEntity } from 'src/entity/order.history.entity';
+import { User } from 'src/auth/api/user.decorator';
+import { GemteckMsgQueueEntity } from 'src/entity/gemtek/msg.queue.entity';
+import { SmsGemtekSend } from 'src/sms/infra/sms.gemtek.send';
+import { MaskingUtil } from 'src/common/utils/masking.util';
+import { CryptoCipher } from 'src/common/infra/crypto.cipher';
+import { PhoneUtil } from 'src/common/utils/phone.util';
+import { OrderDeliveryRefundStatusEnum } from '../../delivery/interface/order.delivery.refund.status.enum';
 
 const dayjs = require('dayjs');
 const timezone = require('dayjs/plugin/timezone');
@@ -395,7 +386,7 @@ export class CustomerServiceService {
         }
       }
       default: {
-        throw new BadRequestException('지원하지 않는 협력사입니다.');
+        // throw new BadRequestException('지원하지 않는 협력사입니다.');
       }
     }
   }
