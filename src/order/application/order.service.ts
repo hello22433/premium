@@ -1390,16 +1390,15 @@ export class OrderService {
     }
 
     // allSettleAmount 해당 유저의 전체 order 사용 금액
-    // serviceAmount -> 정산 완료된 order 금액
     // balance -> 선충전 금액
     // maximumLimit -> 최대 서비스 한도
     const remainServiceAmount =
       oneUser.maximumLimit + oneUser.balance - oneUser.allSettleAmount + oneUser.serviceAmount;
 
     // 잔액 부족 시 예외
-    if (totalAmount > userBalance) {
-      throw new BadRequestException('잔액이 부족하여 발송 요청할 수 없습니다.');
-    }
+    // if (totalAmount > userBalance) {
+    //   throw new BadRequestException('잔액이 부족하여 발송 요청할 수 없습니다.');
+    // }
 
     if (totalAmount > remainServiceAmount) {
       throw new BadRequestException('최대 서비스 한도를 넘어 요청할 수 없습니다.');
