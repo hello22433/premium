@@ -12,10 +12,18 @@ ALTER TABLE user
 ALTER TABLE user
     ADD COLUMN service_amount INT DEFAULT 0 COMMENT '서비스 금액';
 
-UPDATE user u
-SET u.all_settle_amount = (
-    SELECT COALESCE(SUM(o.send_amount), 0)
-    FROM `order` o
-    WHERE o.user_id = u.id
-      AND o.status = 'DELIVERY_COMPLETE'
-);
+UPDATE
+    user u
+SET
+    u.all_settle_amount = (
+        SELECT
+            COALESCE(SUM(o.settle_amount), 0)
+        FROM
+            `order` o
+        WHERE
+            o.user_id = u.id
+          AND (o.status = 'DELIVERY_COMPLETE'
+            or o.status = 'DELIVERY_REQUEST'
+            or o.status = 'DELIVERY_CONFIRMED')
+          and (o.settle_status != 'SETTLE_COMPLETE' or o.settle_status is null)
+    );
