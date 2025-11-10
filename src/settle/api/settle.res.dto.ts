@@ -78,3 +78,41 @@ export class SettleGetPerUserDetailResDto extends GetListResDto {
   })
   list: SettleUserPerDetailViewDto[];
 }
+
+export class SettleGetRemainServiceAmountResDto {
+  @ApiProperty({
+    description: '최대 서비스 한도',
+    example: 10000000,
+  })
+  maximumLimit: number;
+
+  @ApiProperty({
+    description: '선입금 금액',
+    example: 5000000,
+  })
+  balance: number;
+
+  @ApiProperty({
+    description: '서비스 금액 (미정산 금액)',
+    example: 3000000,
+  })
+  serviceAmount: number;
+
+  @ApiProperty({
+    description: '정산기일 초과 금액',
+    example: 500000,
+  })
+  overdueAmount: number;
+
+  @ApiProperty({
+    description: '정산 금액',
+    example: 2000000,
+  })
+  allSettleAmount: number;
+
+  @ApiProperty({
+    description: '잔여 발송 한도',
+    example: 13500000,
+  })
+  remainServiceAmount: number;
+}

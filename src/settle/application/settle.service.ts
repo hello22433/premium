@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, InternalServerErrorException } from '@nestjs/common';
+import { BadRequestException, Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
 import {
   SettleGetAdminUserListResDto,
   SettleGetMobileListResDto,
@@ -6,11 +6,13 @@ import {
   SettleGetOtherListResDto,
   SettleGetPartnerCompanyListResDto,
   SettleGetPerUserDetailResDto,
+  SettleGetRemainServiceAmountResDto,
   SettleGetSaleTypeListResDto,
   SettleGetShippingStorageListResDto,
   SettleGetUserDetailResDto,
   SettleGetUserListResDto,
 } from '../api/settle.res.dto';
+import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { OrderEntity } from '../../entity/order.entity';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Brackets, In, IsNull, Not, Repository } from 'typeorm';
@@ -1462,5 +1464,48 @@ export class SettleService {
         });
       }
     }
+  }
+
+  /**
+   * 로그인한 사용자의 잔여 발송 한도 조회
+   * 공식: 잔여발송한도 = 최대서비스한도 + 선입금금액 - 발송금액(서비스금액 + 정산기일초과금액) + 정산금액
+   * @param user 로그인한 사용자 정보
+   * @returns 잔여 발송 한도 정보
+   */
+  async getRemainServiceAmount(user: ILoginUserInfo): Promise<SettleGetRemainServiceAmountResDto> {
+    // 사용자 정보 조회
+    const userEntity = await this.userRepository.findOne({
+      where: { id: user.id },
+      relations: ['orders'],
+    });
+
+    if (!userEntity) {
+      throw new NotFoundException('사용자를 찾을 수 없습니다.');
+    }
+
+    // 정산기일 초과 금액 계산
+    let overdueAmount = 0;
+    if (userEntity.orders) {
+      for (const order of userEntity.orders) {
+        if (order.status === 'DELIVERY_COMPLETE' && order.settleStatus === 'UNSETTLE_OVERDUE') {
+          overdueAmount += order.sendAmount;
+        }
+      }
+    }
+
+    // 발송금액 = 서비스금액 + 정산기일초과금액
+    const deliveryAmount = userEntity.serviceAmount + overdueAmount;
+
+    // 잔여발송한도 = 최대서비스한도 + 선입금금액 - 발송금액 + 정산금액
+    const remainServiceAmount = userEntity.maximumLimit + userEntity.balance - deliveryAmount + userEntity.allSettleAmount;
+
+    return {
+      maximumLimit: userEntity.maximumLimit,
+      balance: userEntity.balance,
+      serviceAmount: userEntity.serviceAmount,
+      overdueAmount: overdueAmount,
+      allSettleAmount: userEntity.allSettleAmount,
+      remainServiceAmount: remainServiceAmount,
+    };
   }
 }
