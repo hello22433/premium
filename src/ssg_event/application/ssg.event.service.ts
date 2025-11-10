@@ -20,6 +20,9 @@ import * as ExcelJS from 'exceljs';
 import { join } from 'path';
 import * as process from 'node:process';
 import { QueryBuilderDateCondition } from '../../common/infra/query.builder.date.condition';
+import { ActivityLogService } from '../../activity_log/application/activity.log.service';
+import { ActivityLogResult } from '../../activity_log/interface/activity.log.result';
+import { ILoginUserInfo } from '../../auth/interface/login.user';
 
 @Injectable()
 export class SsgEventService {
@@ -30,6 +33,7 @@ export class SsgEventService {
     private readonly amountHistoryRepository: Repository<SsgEventAmountHistoryEntity>,
     @InjectRepository(OrderProductMappingEntity)
     private readonly orderProductMappingRepository: Repository<OrderProductMappingEntity>,
+    private readonly activityLogService: ActivityLogService,
   ) {}
 
   async getList(getQuery: SsgEventGetListReqDto): Promise<SsgEventGetListResDto> {
@@ -171,8 +175,12 @@ export class SsgEventService {
     return response;
   }
 
-  async excelDownload(getBody: SsgEventExcelDownloadReqDto) {
-    const { code, createdEndAt, createdStartAt, name } = getBody;
+  async excelDownload(user: ILoginUserInfo, getBody: SsgEventExcelDownloadReqDto) {
+    const startTime = Date.now();
+    const { code, createdEndAt, createdStartAt, name, password, downloadReason } = getBody;
+
+    // 비밀번호 검증
+    await this.activityLogService.verifyPassword(user.id, password);
 
     const now = new Date();
     const nowString = format(now, 'yyyyMMdd');
@@ -322,6 +330,28 @@ export class SsgEventService {
     const filePath = join(process.cwd(), '.', 'public', fileName);
 
     await workbook.xlsx.writeFile(filePath);
+
+    // 성공 로그 저장
+    const responseTime = Date.now() - startTime;
+    const recordCount = resultList.length;
+    const { password: _, ...requestParams } = getBody;
+
+    await this.activityLogService.createLog({
+      userId: user.id,
+      userEmail: user.email,
+      method: 'POST',
+      requestUrl: '/ssg-event/excel-download',
+      actionType: 'EXCEL_DOWNLOAD',
+      ipAddress: '',
+      userAgent: '',
+      statusCode: 200,
+      result: ActivityLogResult.SUCCESS,
+      responseTime,
+      downloadReason,
+      recordCount,
+      requestParams,
+      errorMessage: undefined,
+    });
 
     return { fileName, filePath };
   }

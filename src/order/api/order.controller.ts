@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Logger, Param, Patch, Post, Put, Query, Res, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Logger, Param, Patch, Post, Put, Query, Res, UseFilters, UseGuards } from '@nestjs/common';
 import { OrderService } from '../application/order.service';
 import {
   ApiBadRequestResponse,
@@ -9,6 +9,8 @@ import {
   ApiOperation,
   ApiTags,
 } from '@nestjs/swagger';
+import { DownloadExceptionFilter } from '../../activity_log/api/download.exception.filter';
+import { ActivityLogService } from '../../activity_log/application/activity.log.service';
 import {
   OrderCreateSettleReqDto,
   OrderCreateTempReqDto,
@@ -55,7 +57,10 @@ import { AuthUserSuperAndOperationAdminGuard } from '../../auth/api/auth.user.su
 @Controller('')
 @UseGuards(AuthUserAuthorizationGuard)
 export class OrderController {
-  constructor(private orderService: OrderService) {}
+  constructor(
+    private orderService: OrderService,
+    private activityLogService: ActivityLogService,
+  ) {}
 
   private logger = new Logger('ORDER');
 
@@ -364,6 +369,7 @@ export class OrderController {
 
   @ApiOperation({
     summary: '주문 및 발송 관리 list 엑셀 다운로드 API',
+    description: '비밀번호 확인 후 엑셀 다운로드를 진행하며, 다운로드 사유와 함께 로그에 기록됩니다.',
   })
   @ApiBearerAuth()
   @ApiOkResponse({
@@ -371,6 +377,7 @@ export class OrderController {
   })
   // ===================================================
   @Post('/order/excel-download')
+  @UseFilters(DownloadExceptionFilter)
   async excelDownload(
     @User() user: ILoginUserInfo,
     @Body() getBody: OrderExcelDownloadReqBodyDto,

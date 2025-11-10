@@ -12,10 +12,12 @@ import { OtherServiceSaleTypeEntity } from '../entity/other.service.sale.type.en
 import { UserEntity } from '../entity/user.entity';
 import { UserDiscountEntity } from '../entity/user.discount.entity';
 import { SettleSchedule } from './settle.schedule';
+import { ActivityLogModule } from '../activity_log/activity.log.module';
 
 @Module({
   imports: [
     AuthModule,
+    ActivityLogModule,
     TypeOrmModule.forFeature([
       OrderEntity,
       OtherServiceSaleEntity,

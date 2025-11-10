@@ -9,6 +9,7 @@ import { OrderRealProductService } from './application/order.real.product.servic
 import { OrderRealProductMappingEntity } from '../entity/order.real.product.mapping.entity';
 import { ProductEntity } from '../entity/product.entity';
 import { DeliveryModule } from '../delivery/delivery.module';
+import { ActivityLogModule } from '../activity_log/activity.log.module';
 
 @Module({
   imports: [
@@ -16,6 +17,7 @@ import { DeliveryModule } from '../delivery/delivery.module';
     TypeOrmModule.forFeature([UserEntity, OrderRealProductEntity, ProductEntity, OrderRealProductMappingEntity]),
     PartnerCompanyExternModule,
     DeliveryModule,
+    ActivityLogModule,
   ],
   controllers: [OrderRealProductController],
   providers: [OrderRealProductService],

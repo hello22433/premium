@@ -300,6 +300,20 @@ export class OrderExcelDownloadReqBodyDto {
   // ===================================
   @IsOptional()
   searchKeyword?: string;
+
+  @ApiProperty({
+    description: '비밀번호 (다운로드 확인용)',
+  })
+  // ===================================
+  @IsNotEmpty()
+  password: string;
+
+  @ApiProperty({
+    description: '다운로드 사유',
+  })
+  // ===================================
+  @IsNotEmpty()
+  downloadReason: string;
 }
 
 export class OrderTestDeliveryReqDto {

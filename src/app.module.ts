@@ -38,6 +38,7 @@ import { CustomerServiceModule } from './customer_service/customer.service.modul
 import { OrderEventModule } from './order_event/order.event.module';
 import { ErpModule } from './erp/erp.module';
 import { RefundModule } from './refund/refund.module';
+import { ActivityLogModule } from './activity_log/activity.log.module';
 
 @Module({
   imports: [
@@ -82,6 +83,7 @@ import { RefundModule } from './refund/refund.module';
     OrderEventModule,
     ErpModule,
     RefundModule,
+    ActivityLogModule,
   ],
   controllers: [AppController],
   providers: [],

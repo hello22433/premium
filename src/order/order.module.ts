@@ -15,6 +15,7 @@ import { SsgEventAmountHistoryEntity } from '../entity/ssg.event.amount.history.
 import { UserManagementModule } from '../user_management/user.management.module';
 import { SsgEventModule } from '../ssg_event/ssg.event.module';
 import { DeliveryModule } from '../delivery/delivery.module';
+import { ActivityLogModule } from '../activity_log/activity.log.module';
 
 @Module({
   imports: [
@@ -33,6 +34,7 @@ import { DeliveryModule } from '../delivery/delivery.module';
     forwardRef(() => UserManagementModule),
     SsgEventModule,
     DeliveryModule,
+    ActivityLogModule,
   ],
   controllers: [OrderController],
   providers: [OrderService],

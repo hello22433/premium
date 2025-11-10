@@ -1,0 +1,27 @@
+-- 활동 로그 테이블 생성
+CREATE TABLE `activity_log` (
+  `id` int NOT NULL AUTO_INCREMENT COMMENT 'PK',
+  `user_id` int NOT NULL COMMENT 'FK) user.id 활동 계정 ID',
+  `user_email` varchar(100) NOT NULL COMMENT '활동 계정 이메일',
+  `method` varchar(10) NOT NULL COMMENT 'HTTP 메소드 (GET, POST 등)',
+  `request_url` varchar(500) NOT NULL COMMENT '요청 URL/서비스',
+  `action_type` varchar(100) NOT NULL COMMENT '액션 타입 (EXCEL_DOWNLOAD, LOGIN 등)',
+  `ip_address` varchar(50) NOT NULL COMMENT '접속 IP',
+  `user_agent` varchar(500) DEFAULT NULL COMMENT 'User Agent',
+  `status_code` int NOT NULL COMMENT 'HTTP 상태 코드 (200, 404, 500 등)',
+  `result` varchar(1) NOT NULL COMMENT '결과 (O: 성공, X: 실패)',
+  `response_time` int NOT NULL DEFAULT '0' COMMENT '응답 시간 (ms)',
+  `download_reason` text DEFAULT NULL COMMENT '다운로드 사유 (엑셀 다운로드 시)',
+  `record_count` int DEFAULT NULL COMMENT '다운로드된 레코드 수',
+  `request_params` json DEFAULT NULL COMMENT '요청 파라미터 (검색 조건 등)',
+  `error_message` text DEFAULT NULL COMMENT '에러 메시지 (실패 시)',
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '생성일',
+  `updated_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6) COMMENT '수정일',
+  `deleted_at` datetime(6) DEFAULT NULL COMMENT '삭제일',
+  PRIMARY KEY (`id`),
+  KEY `idx_user_id` (`user_id`),
+  KEY `idx_action_type` (`action_type`),
+  KEY `idx_created_at` (`created_at`),
+  KEY `idx_user_email` (`user_email`),
+  KEY `idx_result` (`result`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='활동 로그 테이블';

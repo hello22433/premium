@@ -438,6 +438,22 @@ export class SettleMobileExcelDownloadReqDto {
   // =============================================================
   @IsOptional()
   eventName?: string;
+
+  @ApiProperty({
+    description: '비밀번호 (다운로드 확인용)',
+    example: 'mypassword123',
+  })
+  // =============================================================
+  @IsNotEmpty()
+  password: string;
+
+  @ApiProperty({
+    description: '다운로드 사유',
+    example: '월간 보고서 작성을 위한 데이터 다운로드',
+  })
+  // =============================================================
+  @IsNotEmpty()
+  downloadReason: string;
 }
 
 export class SettleGetPartnerCompanyListReqQueryDto extends PagingReqDto {
@@ -579,6 +595,22 @@ export class SettleGetUserExcelDownloadReqDto {
   // =============================================================
   @IsOptional()
   eventName?: string;
+
+  @ApiProperty({
+    description: '비밀번호 (다운로드 확인용)',
+    example: 'mypassword123',
+  })
+  // =============================================================
+  @IsNotEmpty()
+  password: string;
+
+  @ApiProperty({
+    description: '다운로드 사유',
+    example: '월간 보고서 작성을 위한 데이터 다운로드',
+  })
+  // =============================================================
+  @IsNotEmpty()
+  downloadReason: string;
 }
 
 export class SettleGetUserPerListReqQueryDto extends PagingReqDto {

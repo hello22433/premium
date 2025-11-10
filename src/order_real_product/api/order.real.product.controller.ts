@@ -7,9 +7,11 @@ import {
   ApiTags,
   ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
-import { Body, Controller, Get, Logger, Param, Post, Put, Query, Res, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Logger, Param, Post, Put, Query, Res, UseFilters, UseGuards } from '@nestjs/common';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
 import { OrderRealProductService } from '../application/order.real.product.service';
+import { DownloadExceptionFilter } from '../../activity_log/api/download.exception.filter';
+import { ActivityLogService } from '../../activity_log/application/activity.log.service';
 import { User } from '../../auth/api/user.decorator';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import {
@@ -48,7 +50,10 @@ import { AuthUserSuperAdminGuard } from '../../auth/api/auth.user.super-admin.gu
 @ApiBearerAuth()
 @Controller('')
 export class OrderRealProductController {
-  constructor(private orderRealProductService: OrderRealProductService) {}
+  constructor(
+    private orderRealProductService: OrderRealProductService,
+    private activityLogService: ActivityLogService,
+  ) {}
 
   private logger = new Logger('REAL_PRODUCT_ORDER');
 
@@ -254,12 +259,14 @@ export class OrderRealProductController {
 
   @ApiOperation({
     summary: '정산관리 > 수익률 조회 > 기타 엑셀 다운로드 API',
+    description: '비밀번호 확인 후 엑셀 다운로드를 진행하며, 다운로드 사유와 함께 로그에 기록됩니다.',
   })
   @ApiCreatedResponse({
     type: '',
   })
   // ====================================================
   @Post('/real-product/settle/excel-download')
+  @UseFilters(DownloadExceptionFilter)
   @UseGuards(AuthUserSuperAndOperationAdminGuard)
   async settleExcelDownload(
     @User() user: ILoginUserInfo,
@@ -290,6 +297,7 @@ export class OrderRealProductController {
 
   @ApiOperation({
     summary: '실물 상품 주문 및 발송 관리 list 엑셀 다운로드 API',
+    description: '비밀번호 확인 후 엑셀 다운로드를 진행하며, 다운로드 사유와 함께 로그에 기록됩니다.',
   })
   @ApiBearerAuth()
   @ApiOkResponse({
@@ -297,6 +305,7 @@ export class OrderRealProductController {
   })
   // ===================================================
   @Post('/real-product/order/excel-download')
+  @UseFilters(DownloadExceptionFilter)
   @UseGuards(AuthUserAuthorizationGuard)
   async excelDownload(
     @User() user: ILoginUserInfo,

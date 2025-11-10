@@ -55,6 +55,8 @@ import {
 } from '../domain/product.excel.to.db.mapping';
 import { listToMap } from '../../util/map.util';
 import { UserEntity } from 'src/entity/user.entity';
+import { ActivityLogService } from '../../activity_log/application/activity.log.service';
+import { ActivityLogResult } from '../../activity_log/interface/activity.log.result';
 
 @Injectable()
 export class ProductService {
@@ -75,6 +77,7 @@ export class ProductService {
     private ssgEventRepository: Repository<SsgEventEntity>,
     @InjectRepository(UserEntity)
     private userRepository: Repository<UserEntity>,
+    private activityLogService: ActivityLogService,
   ) {}
 
   async getTotalList(user: ILoginUserInfo, getQuery: ProductGetTotalListReqQueryDto): Promise<ProductGetListResDto> {
@@ -752,8 +755,12 @@ export class ProductService {
     return;
   }
 
-  async excelDownload(getBody: ProductExcelDownloadReqBodyDto) {
-    const { partnerCompanyId, brandId, brandName, name, useStatus, code, partnerCompanyCode, userId } = getBody;
+  async excelDownload(user: ILoginUserInfo, getBody: ProductExcelDownloadReqBodyDto) {
+    const startTime = Date.now();
+    const { partnerCompanyId, brandId, brandName, name, useStatus, code, partnerCompanyCode, userId, password, downloadReason } = getBody;
+
+    // 비밀번호 검증
+    await this.activityLogService.verifyPassword(user.id, password);
 
     const now = new Date();
     const nowString = format(now, 'yyyyMMdd');
@@ -880,6 +887,28 @@ export class ProductService {
     const filePath = join(process.cwd(), '.', 'public', fileName);
 
     await workbook.xlsx.writeFile(filePath);
+
+    // 성공 로그 저장
+    const responseTime = Date.now() - startTime;
+    const recordCount = productList.length;
+    const { password: _, ...requestParams } = getBody;
+
+    await this.activityLogService.createLog({
+      userId: user.id,
+      userEmail: user.email,
+      method: 'POST',
+      requestUrl: '/product/excel-download',
+      actionType: 'EXCEL_DOWNLOAD',
+      ipAddress: '',
+      userAgent: '',
+      statusCode: 200,
+      result: ActivityLogResult.SUCCESS,
+      responseTime,
+      downloadReason,
+      recordCount,
+      requestParams,
+      errorMessage: undefined,
+    });
 
     return { fileName, filePath };
   }

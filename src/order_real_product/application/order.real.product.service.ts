@@ -54,6 +54,8 @@ import { IUserStatus } from '../../user/interface/user.status';
 import { AdminListViewDto } from '../../settle/api/dto/admin.list.view.dto';
 import { OrderRealProductDeliveryViewDto } from '../api/dto/order.real.product.delivery.view.dto';
 import { DeliveryTrackingStatus } from '../../delivery/domain/delivery.tracking.status';
+import { ActivityLogService } from '../../activity_log/application/activity.log.service';
+import { ActivityLogResult } from '../../activity_log/interface/activity.log.result';
 
 export class OrderRealProductService {
   constructor(
@@ -66,6 +68,7 @@ export class OrderRealProductService {
     @InjectRepository(UserEntity)
     private userRepository: Repository<UserEntity>,
     private deliveryTrackHttp: DeliveryTrackHttp,
+    private activityLogService: ActivityLogService,
   ) {}
 
   async getList(user: ILoginUserInfo, getQuery: OrderRealProductGetListReqDto): Promise<OrderRealProductGetListResDto> {
@@ -799,10 +802,14 @@ export class OrderRealProductService {
   }
 
   async settleExcelDownload(user: ILoginUserInfo, getBody: OrderRealProductGetSettlementExcelDownloadReqDto) {
+    const startTime = Date.now();
     const now = new Date();
     const nowString = format(now, 'yyyyMMdd');
 
-    const { eventName, businessName, startAt, personName, endAt } = getBody;
+    const { eventName, businessName, startAt, personName, endAt, password, downloadReason } = getBody;
+
+    // 비밀번호 검증
+    await this.activityLogService.verifyPassword(user.id, password);
 
     let queryBuilder = this.orderRepository
       .createQueryBuilder('order')
@@ -930,11 +937,37 @@ export class OrderRealProductService {
 
     await workbook.xlsx.writeFile(filePath);
 
+    // 성공 로그 저장
+    const responseTime = Date.now() - startTime;
+    const recordCount = resultList.length;
+    const { password: _, ...requestParams } = getBody;
+
+    await this.activityLogService.createLog({
+      userId: user.id,
+      userEmail: user.email,
+      method: 'POST',
+      requestUrl: '/real-product/settle/excel-download',
+      actionType: 'EXCEL_DOWNLOAD',
+      ipAddress: '',
+      userAgent: '',
+      statusCode: 200,
+      result: ActivityLogResult.SUCCESS,
+      responseTime,
+      downloadReason,
+      recordCount,
+      requestParams,
+      errorMessage: undefined,
+    });
+
     return { fileName, filePath };
   }
 
   async excelDownload(user: ILoginUserInfo, getBody: OrderRealProductExcelDownloadReqBodyDto) {
-    const { searchType, searchKeyword, status, startAt, endAt, section } = getBody;
+    const startTime = Date.now();
+    const { searchType, searchKeyword, status, startAt, endAt, section, password, downloadReason } = getBody;
+
+    // 비밀번호 검증
+    await this.activityLogService.verifyPassword(user.id, password);
 
     const now = new Date();
     const nowString = format(now, 'yyyyMMdd');
@@ -1058,6 +1091,28 @@ export class OrderRealProductService {
     const filePath = join(process.cwd(), '.', 'public', fileName);
 
     await workbook.xlsx.writeFile(filePath);
+
+    // 성공 로그 저장
+    const responseTime = Date.now() - startTime;
+    const recordCount = orderList.length;
+    const { password: _, ...requestParams } = getBody;
+
+    await this.activityLogService.createLog({
+      userId: user.id,
+      userEmail: user.email,
+      method: 'POST',
+      requestUrl: '/real-product/order/excel-download',
+      actionType: 'EXCEL_DOWNLOAD',
+      ipAddress: '',
+      userAgent: '',
+      statusCode: 200,
+      result: ActivityLogResult.SUCCESS,
+      responseTime,
+      downloadReason,
+      recordCount,
+      requestParams,
+      errorMessage: undefined,
+    });
 
     return { fileName, filePath };
   }

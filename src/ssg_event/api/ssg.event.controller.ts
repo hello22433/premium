@@ -1,5 +1,5 @@
 import { ApiBadRequestResponse, ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { Body, Controller, Get, Logger, Post, Put, Query, Res, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Logger, Post, Put, Query, Res, UseFilters, UseGuards } from '@nestjs/common';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
 import { SsgEventService } from '../application/ssg.event.service';
 import { SsgEventGetListResDto, SsgEventGetValidListResDto } from './ssg.event.res.dto';
@@ -12,13 +12,20 @@ import {
 } from './ssg.event.req.dto';
 import * as fs from 'fs';
 import { Response } from 'express';
+import { User } from '../../auth/api/user.decorator';
+import { ILoginUserInfo } from '../../auth/interface/login.user';
+import { DownloadExceptionFilter } from '../../activity_log/api/download.exception.filter';
+import { ActivityLogService } from '../../activity_log/application/activity.log.service';
 
 @ApiTags('ssg-event')
 @ApiBearerAuth()
 @Controller('')
 @UseGuards(AuthUserAuthorizationGuard)
 export class SsgEventController {
-  constructor(private ssgEventService: SsgEventService) {}
+  constructor(
+    private ssgEventService: SsgEventService,
+    private activityLogService: ActivityLogService,
+  ) {}
 
   private logger = new Logger('SSG_EVENT');
 
@@ -52,6 +59,7 @@ export class SsgEventController {
 
   @ApiOperation({
     summary: '신세계 행사 엑셀다운로드 API',
+    description: '비밀번호 확인 후 엑셀 다운로드를 진행하며, 다운로드 사유와 함께 로그에 기록됩니다.',
   })
   @ApiOkResponse({
     type: '',
@@ -59,9 +67,10 @@ export class SsgEventController {
   })
   // =====================================
   @Post('/ssg-event/excel-download')
-  async excelDownload(@Body() getBody: SsgEventExcelDownloadReqDto, @Res() res: Response) {
+  @UseFilters(DownloadExceptionFilter)
+  async excelDownload(@User() user: ILoginUserInfo, @Body() getBody: SsgEventExcelDownloadReqDto, @Res() res: Response) {
     try {
-      const { fileName, filePath } = await this.ssgEventService.excelDownload(getBody);
+      const { fileName, filePath } = await this.ssgEventService.excelDownload(user, getBody);
 
       const encodedFileName = encodeURIComponent(fileName);
       res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');

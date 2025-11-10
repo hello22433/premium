@@ -10,10 +10,13 @@ import {
   Query,
   Res,
   UploadedFile,
+  UseFilters,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
 import { ProductService } from '../application/product.service';
+import { DownloadExceptionFilter } from '../../activity_log/api/download.exception.filter';
+import { ActivityLogService } from '../../activity_log/application/activity.log.service';
 import {
   ApiBadRequestResponse,
   ApiBearerAuth,
@@ -57,7 +60,10 @@ import * as process from 'node:process';
 @ApiTags('product')
 @Controller('')
 export class ProductController {
-  constructor(private productService: ProductService) {}
+  constructor(
+    private productService: ProductService,
+    private activityLogService: ActivityLogService,
+  ) {}
 
   private logger = new Logger('PRODUCT');
 
@@ -174,6 +180,7 @@ export class ProductController {
 
   @ApiOperation({
     summary: '상품 엑셀 다운로드 API',
+    description: '비밀번호 확인 후 엑셀 다운로드를 진행하며, 다운로드 사유와 함께 로그에 기록됩니다.',
   })
   @ApiBearerAuth()
   @ApiOkResponse({
@@ -181,9 +188,10 @@ export class ProductController {
   })
   // ===================================================
   @Post('/product/excel-download')
-  async excelDownload(@Body() getBody: ProductExcelDownloadReqBodyDto, @Res() res: Response) {
+  @UseFilters(DownloadExceptionFilter)
+  async excelDownload(@User() user: ILoginUserInfo, @Body() getBody: ProductExcelDownloadReqBodyDto, @Res() res: Response) {
     try {
-      const { fileName, filePath } = await this.productService.excelDownload(getBody);
+      const { fileName, filePath } = await this.productService.excelDownload(user, getBody);
 
       const encodedFileName = encodeURIComponent(fileName);
       res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');

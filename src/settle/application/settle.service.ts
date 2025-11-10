@@ -70,6 +70,8 @@ import { SettleUserStatusEnum } from '../interface/settle.user.status';
 import { SettleUserPerDetailViewDto } from '../api/dto/settle.user.per.detail.view.dto';
 import { SettleUserOrderDetailEnum } from '../interface/settle.user.order.detail';
 import { UserSettlePeriodConditionEnum } from '../../user/interface/user.settle.period.condition.enum';
+import { ActivityLogService } from '../../activity_log/application/activity.log.service';
+import { ActivityLogResult } from '../../activity_log/interface/activity.log.result';
 
 @Injectable()
 export class SettleService {
@@ -90,6 +92,7 @@ export class SettleService {
     private saleTypeRepository: Repository<OtherServiceSaleTypeEntity>,
     @InjectRepository(UserEntity)
     private userRepository: Repository<UserEntity>,
+    private activityLogService: ActivityLogService,
   ) {}
 
   async getOtherList(getQuery: SettleGetOtherServiceSaleGetListReqDto): Promise<SettleGetOtherListResDto> {
@@ -689,8 +692,13 @@ export class SettleService {
     return { list: resultList, totalPage, totalCount, currentPage: page };
   }
 
-  async mobileExcelDownload(getQuery: SettleMobileExcelDownloadReqDto) {
-    const { startAt, endAt, personName, businessName, eventName } = getQuery;
+  async mobileExcelDownload(user: ILoginUserInfo, getQuery: SettleMobileExcelDownloadReqDto) {
+    const startTime = Date.now();
+
+    // 비밀번호 확인
+    await this.activityLogService.verifyPassword(user.id, getQuery.password);
+
+    const { startAt, endAt, personName, businessName, eventName, downloadReason } = getQuery;
 
     const now = new Date();
     const nowString = format(now, 'yyyyMMdd');
@@ -849,6 +857,25 @@ export class SettleService {
     const filePath = join(process.cwd(), '.', 'public', fileName);
 
     await workbook.xlsx.writeFile(filePath);
+
+    const endTime = Date.now();
+    const responseTime = endTime - startTime;
+
+    // 다운로드 로그 저장
+    await this.activityLogService.createLog({
+      userId: user.id,
+      userEmail: user.email,
+      method: 'POST',
+      requestUrl: '/settle/mobile/excel-download',
+      actionType: 'EXCEL_DOWNLOAD',
+      ipAddress: '',
+      statusCode: 200,
+      result: ActivityLogResult.SUCCESS,
+      responseTime,
+      downloadReason,
+      recordCount: resultList.length,
+      requestParams: { startAt, endAt, personName, businessName, eventName },
+    });
 
     return { fileName, filePath };
   }
@@ -1078,8 +1105,13 @@ export class SettleService {
     };
   }
 
-  async getUserExcelDownload(getBody: SettleGetUserExcelDownloadReqDto) {
-    const { startAt, endAt, isPublished, businessName, personName, eventName } = getBody;
+  async getUserExcelDownload(user: ILoginUserInfo, getBody: SettleGetUserExcelDownloadReqDto) {
+    const startTime = Date.now();
+
+    // 비밀번호 확인
+    await this.activityLogService.verifyPassword(user.id, getBody.password);
+
+    const { startAt, endAt, isPublished, businessName, personName, eventName, downloadReason } = getBody;
 
     let queryBuilder = this.orderRepository
       .createQueryBuilder('order')
@@ -1201,7 +1233,26 @@ export class SettleService {
 
     await workbook.xlsx.writeFile(filePath);
 
-    return { fileName, filePath };
+    const endTime = Date.now();
+    const responseTime = endTime - startTime;
+
+    // 다운로드 로그 저장
+    await this.activityLogService.createLog({
+      userId: user.id,
+      userEmail: user.email,
+      method: 'POST',
+      requestUrl: '/settle/user/excel-download',
+      actionType: 'EXCEL_DOWNLOAD',
+      ipAddress: '', // Controller에서 추가 필요
+      statusCode: 200,
+      result: ActivityLogResult.SUCCESS,
+      responseTime,
+      downloadReason,
+      recordCount: resultList.length,
+      requestParams: { startAt, endAt, isPublished, businessName, personName, eventName },
+    });
+
+    return { fileName, filePath, recordCount: resultList.length };
   }
 
   async getUserPerList(getDto: SettleGetUserPerListReqQueryDto) {

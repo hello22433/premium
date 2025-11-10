@@ -11,6 +11,7 @@ import { UserSyncProductEventEntity } from '../entity/user.sync.product.event.en
 import { ProductLikeEntity } from '../entity/product.like.entity';
 import { SsgEventEntity } from '../entity/ssg.event.entity';
 import { UserEntity } from 'src/entity/user.entity';
+import { ActivityLogModule } from '../activity_log/activity.log.module';
 
 @Module({
   imports: [
@@ -25,6 +26,7 @@ import { UserEntity } from 'src/entity/user.entity';
       SsgEventEntity,
       UserEntity,
     ]),
+    ActivityLogModule,
   ],
   controllers: [ProductController],
   providers: [ProductService],

@@ -91,6 +91,8 @@ import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { PhoneUtil } from '../../common/utils/phone.util';
 import { DeliveryBatchService } from '../../delivery/application/delivery.batch.service';
 import { IOrderSendMethod } from '../interface/order.send.method';
+import { ActivityLogService } from '../../activity_log/application/activity.log.service';
+import { ActivityLogResult } from '../../activity_log/interface/activity.log.result';
 
 @Injectable()
 export class OrderService {
@@ -135,6 +137,7 @@ export class OrderService {
     // @Inject('IFileStorage')
     // private fileStorage: IFileStorage,
     private deliveryBatchService: DeliveryBatchService,
+    private activityLogService: ActivityLogService,
   ) {}
 
   async getList(user: ILoginUserInfo, getQuery: OrderGetListReqDto): Promise<OrderGetListResDto> {
@@ -1743,7 +1746,11 @@ export class OrderService {
   }
 
   async excelDownload(user: ILoginUserInfo, getBody: OrderExcelDownloadReqBodyDto) {
-    const { searchType, searchKeyword, type, status, startAt, endAt, section } = getBody;
+    const startTime = Date.now();
+    const { searchType, searchKeyword, type, status, startAt, endAt, section, password, downloadReason } = getBody;
+
+    // 비밀번호 검증
+    await this.activityLogService.verifyPassword(user.id, password);
 
     const now = new Date();
     const nowString = format(now, 'yyyyMMdd');
@@ -1866,6 +1873,28 @@ export class OrderService {
     const filePath = join(process.cwd(), '.', 'public', fileName);
 
     await workbook.xlsx.writeFile(filePath);
+
+    // 성공 로그 저장
+    const responseTime = Date.now() - startTime;
+    const recordCount = orderList.length;
+    const { password: _, ...requestParams } = getBody;
+
+    await this.activityLogService.createLog({
+      userId: user.id,
+      userEmail: user.email,
+      method: 'POST',
+      requestUrl: '/order/excel-download',
+      actionType: 'EXCEL_DOWNLOAD',
+      ipAddress: '',
+      userAgent: '',
+      statusCode: 200,
+      result: ActivityLogResult.SUCCESS,
+      responseTime,
+      downloadReason,
+      recordCount,
+      requestParams,
+      errorMessage: undefined,
+    });
 
     return { fileName, filePath };
   }

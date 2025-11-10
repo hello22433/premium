@@ -43,6 +43,7 @@ import { OtherServiceSaleProductMappingEntity } from '../entity/other.service.sa
 import { OtherServiceSaleTypeEntity } from '../entity/other.service.sale.type.entity';
 import { ShippingStorageEntity } from '../entity/shipping.storage.entity';
 import { OrderHistoryEntity } from 'src/entity/order.history.entity';
+import { ActivityLogEntity } from '../entity/activity.log.entity';
 
 @Module({
   imports: [
@@ -93,6 +94,7 @@ import { OrderHistoryEntity } from 'src/entity/order.history.entity';
           OtherServiceSaleProductMappingEntity,
           OtherServiceSaleTypeEntity,
           ShippingStorageEntity,
+          ActivityLogEntity,
         ],
         timezone: 'local',
         logger: configService.get('DATABASE_LOGGING') === 'true' ? new SqlLogger() : undefined,
