@@ -1419,8 +1419,6 @@ export class SettleService {
       throw new InternalServerErrorException('유저가 존재하지 않습니다.');
     }
 
-    order.settleStatus = settleStatus;
-
     if (order.settleStatus === SettleUserOrderDetailEnum.SETTLE_COMPLETE) {
       throw new BadRequestException('이미 정산이 완료된 주문입니다.');
       // if (settleStatus !== SettleUserOrderDetailEnum.SETTLE_COMPLETE) {
@@ -1428,6 +1426,8 @@ export class SettleService {
       //   order.isSettleComplete = false;
       // }
     }
+
+    order.settleStatus = settleStatus;
 
     if (settleStatus === SettleUserOrderDetailEnum.SETTLE_COMPLETE) {
       order.isSettleComplete = true;
@@ -1548,7 +1548,8 @@ export class SettleService {
     const deliveryAmount = userEntity.serviceAmount + overdueAmount;
 
     // 잔여발송한도 = 최대서비스한도 + 선입금금액 - 발송금액 + 정산금액
-    const remainServiceAmount = userEntity.maximumLimit + userEntity.balance - deliveryAmount + userEntity.allSettleAmount;
+    const remainServiceAmount =
+      userEntity.maximumLimit + userEntity.balance - deliveryAmount + userEntity.allSettleAmount;
 
     return {
       maximumLimit: userEntity.maximumLimit,
