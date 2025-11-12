@@ -23,6 +23,7 @@ import { generateRandomPassword } from '../../user_find/domain/user.password.reg
 import { userResetPasswordTemplate } from '../../user_find/domain/user.reset.password.template.html';
 import { IMailSend } from '../../mail/interface/mail-send';
 import { UserSettlePeriodConditionEnum } from '../../user/interface/user.settle.period.condition.enum';
+import { IUserSettleCondition } from '../../user/interface/user.settle.condition';
 
 @Injectable()
 export class UserManagementService {
@@ -209,6 +210,12 @@ export class UserManagementService {
     }
 
     user.balance += chargeAmount;
+
+    // 선정산 계정의 경우 최대서비스한도도 증가
+    if (user.settleCondition === IUserSettleCondition.PRE_PAYMENT) {
+      user.maximumLimit += chargeAmount;
+    }
+
     await this.userRepository.save(user);
   }
 
