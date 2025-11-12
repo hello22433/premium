@@ -1545,10 +1545,10 @@ export class SettleService {
     }
 
     // 발송금액 = 서비스금액 + 정산기일초과금액
-    const deliveryAmount = userEntity.serviceAmount + overdueAmount;
+    // const deliveryAmount = userEntity.serviceAmount + overdueAmount;
 
-    // 잔여발송한도 = 최대서비스한도 + 선입금금액 - 발송금액 + 정산금액
-    const remainServiceAmount = userEntity.maximumLimit - deliveryAmount + userEntity.allSettleAmount;
+    // 잔여발송한도 = 최대서비스한도 - 서비스 금액 + 정산금액
+    const remainServiceAmount = userEntity.maximumLimit - userEntity.allSettleAmount + userEntity.serviceAmount;
 
     return {
       maximumLimit: userEntity.maximumLimit,
