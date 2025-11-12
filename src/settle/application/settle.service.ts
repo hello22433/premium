@@ -1422,16 +1422,16 @@ export class SettleService {
     order.settleStatus = settleStatus;
 
     if (order.settleStatus === SettleUserOrderDetailEnum.SETTLE_COMPLETE) {
-      // throw new BadRequestException('이미 정산이 완료된 주문입니다.');
-      if (settleStatus !== SettleUserOrderDetailEnum.SETTLE_COMPLETE) {
-        user.allSettleAmount -= order.settleAmount;
-        order.isSettleComplete = false;
-      }
+      throw new BadRequestException('이미 정산이 완료된 주문입니다.');
+      // if (settleStatus !== SettleUserOrderDetailEnum.SETTLE_COMPLETE) {
+      //   user.allSettleAmount -= order.settleAmount;
+      //   order.isSettleComplete = false;
+      // }
     }
 
     if (settleStatus === SettleUserOrderDetailEnum.SETTLE_COMPLETE) {
       order.isSettleComplete = true;
-      user.allSettleAmount += order.settleAmount;
+      user.allSettleAmount -= order.settleAmount;
     }
 
     await this.userRepository.save(user);
