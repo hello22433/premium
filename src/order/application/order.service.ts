@@ -455,10 +455,8 @@ export class OrderService {
           sendContent: orderProductMapping.sendContent ? orderProductMapping.sendContent : order.sendContent,
           sendMethod: orderProductMapping.sendMethod ? orderProductMapping.sendMethod : order.sendMethod,
           sendRequestAt: orderProductMapping.sendRequestAt
-            ? format(order.sendRequestAt, DateFormatStr)
-            : orderProductMapping.sendRequestAt
-              ? format(orderProductMapping.sendRequestAt, DateFormatStr)
-              : null,
+            ? format(orderProductMapping.sendRequestAt, DateFormatStr)
+            : null,
           sendTailText: orderProductMapping.sendTailText,
           sendTitle: orderProductMapping.sendTitle ? orderProductMapping.sendTitle : order.sendTitle,
           sendType: orderProductMapping.sendType,
@@ -1453,7 +1451,7 @@ export class OrderService {
 
     order.status = IOrderStatus.DELIVERY_REQUEST;
     await this.orderRepository.save(order);
-    await this.userRepository.save(oneUser)
+    await this.userRepository.save(oneUser);
 
     return;
   }
