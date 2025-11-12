@@ -1,4 +1,7 @@
-import { BadRequestException, Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ActivityLogEntity } from '../../entity/activity.log.entity';
@@ -73,7 +76,7 @@ export class ActivityLogService {
     const isPasswordValid = await this.passwordBcryptEncrypt.compare(password, user.password);
 
     if (!isPasswordValid) {
-      throw new UnauthorizedException('비밀번호가 일치하지 않습니다.');
+      throw new BadRequestException('비밀번호가 일치하지 않습니다.');
     }
   }
 }
