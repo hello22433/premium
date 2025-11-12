@@ -4,6 +4,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { OrderEntity } from '../entity/order.entity';
 import { SettleService } from './application/settle.service';
 import { SettleController } from './api/settle.controller';
+import { SettleUserController } from './api/settle.user.controller';
 import { OtherServiceSaleEntity } from '../entity/other.service.sale.entity';
 import { OtherServiceSaleProductEntity } from '../entity/other.service.sale.product.entity';
 import { OtherServiceSaleProductMappingEntity } from '../entity/other.service.sale.product.mapping.entity';
@@ -30,6 +31,6 @@ import { ActivityLogModule } from '../activity_log/activity.log.module';
     ]),
   ],
   providers: [SettleService, SettleSchedule],
-  controllers: [SettleController],
+  controllers: [SettleController, SettleUserController],
 })
 export class SettleModule {}

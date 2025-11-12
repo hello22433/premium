@@ -1548,7 +1548,7 @@ export class SettleService {
     const deliveryAmount = userEntity.serviceAmount + overdueAmount;
 
     // 잔여발송한도 = 최대서비스한도 + 선입금금액 - 발송금액 + 정산금액
-    const remainServiceAmount = userEntity.maximumLimit + userEntity.balance - deliveryAmount + userEntity.allSettleAmount;
+    const remainServiceAmount = userEntity.maximumLimit - deliveryAmount + userEntity.allSettleAmount;
 
     return {
       maximumLimit: userEntity.maximumLimit,
