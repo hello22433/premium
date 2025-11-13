@@ -144,6 +144,7 @@ export class UserSyncProductService {
 
         result.push({
           id: mapping.id,
+          productId: mapping.product.id,
           registerAt: format(mapping.product.createdAt, DateFormatStr),
           code: product.code,
           businessUserName: event.businessUser.businessName,

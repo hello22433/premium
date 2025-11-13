@@ -8,6 +8,11 @@ export class UserSyncProductEventDetailDto {
   id: number;
 
   @ApiProperty({
+    description: 'product id',
+  })
+  productId: number;
+
+  @ApiProperty({
     description: '등록일 ex) yyyy-MM-ddTHH:mm:ss',
   })
   registerAt: string;
