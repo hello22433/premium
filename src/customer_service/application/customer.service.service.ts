@@ -68,11 +68,12 @@ export class CustomerServiceService {
       .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
       .innerJoinAndSelect('orderProductMappings.product', 'product')
+      .leftJoinAndSelect('orderDeliveries.choiceSelectProduct', 'choiceSelectProduct')
       .leftJoinAndMapOne('order.user', 'user', 'user', 'user.id = order.user_id AND user.deleted_at IS NULL')
       .andWhere('orderDeliveries.status IN (:...deliveryStatus)', { deliveryStatus: ['COMPLETE', 'COMPLETE_SMS'] });
 
     if (orderType === 'GENERAL') {
-      queryBuilder.andWhere('product.type = :type', { type: 'GENERAL' });
+      queryBuilder.andWhere('product.type IN (:...types)', { types: ['GENERAL', 'CHOICE'] });
     }
 
     if (orderType === 'SSG') {
@@ -147,7 +148,9 @@ export class CustomerServiceService {
         orderProductMappingId: order.orderProductMappings![0].id,
         eventName: order.eventName,
         businessName: order.user?.businessName ?? '',
-        productName: order.orderProductMappings![0].product.name,
+        productName: firstDelivery?.choiceSelectProduct
+          ? firstDelivery.choiceSelectProduct.name
+          : order.orderProductMappings![0].product.name,
         productCode: order.orderProductMappings![0].product.code,
         status: order.status,
         fromPhoneNumber: order.fromPhoneNumber,
@@ -177,6 +180,7 @@ export class CustomerServiceService {
       .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
       .innerJoinAndSelect('orderProductMapping.order', 'order')
       .innerJoinAndSelect('orderProductMapping.product', 'product')
+      .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
       .innerJoinAndSelect('product.brand', 'brand')
       .leftJoinAndMapOne(
         'product.partnerCompany',
@@ -220,7 +224,9 @@ export class CustomerServiceService {
       result.push({
         id: orderDelivery.id,
         registerAt: format(orderDelivery.createdAt, DateFormatStr),
-        productName: orderDelivery.orderProductMapping.product.name,
+        productName: orderDelivery.choiceSelectProduct
+          ? orderDelivery.choiceSelectProduct.name
+          : orderDelivery.orderProductMapping.product.name,
         deliveryTarget: decryptedDeliveryTarget ?? '',
         barCode: orderDelivery.barCode,
         brandName: orderDelivery.orderProductMapping.product.brand!.nameKorean ?? '',
@@ -253,6 +259,7 @@ export class CustomerServiceService {
       .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
       .innerJoinAndSelect('orderProductMapping.order', 'order')
       .innerJoinAndSelect('orderProductMapping.product', 'product')
+      .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
       .innerJoinAndSelect('product.brand', 'brand')
       .leftJoinAndMapOne(
         'product.partnerCompany',
@@ -309,7 +316,9 @@ export class CustomerServiceService {
       method: queryBuilder.deliveryMethod,
       fromPhoneNumber: order.fromPhoneNumber,
       partnerCompanyName: partnerCompany?.businessName ?? '',
-      productName: product.name,
+      productName: queryBuilder.choiceSelectProduct
+        ? queryBuilder.choiceSelectProduct.name
+        : product.name,
       price: product.price.toString(),
       brandName: product.brand?.nameKorean ?? '',
       code: product.code,
