@@ -207,6 +207,16 @@ export class CustomerServiceService {
         }
       }
 
+      // 실제 발송 시간 계산 (발송 완료 상태일 때 updatedAt 사용)
+      let actualSendAt: string | null = null;
+      if (
+        orderDelivery &&
+        (orderDelivery.status === 'COMPLETE' || orderDelivery.status === 'COMPLETE_SMS') &&
+        orderDelivery.updatedAt
+      ) {
+        actualSendAt = format(orderDelivery.updatedAt, DateFormatStr);
+      }
+
       result.push({
         id: orderDelivery.id,
         registerAt: format(orderDelivery.createdAt, DateFormatStr),
@@ -217,6 +227,8 @@ export class CustomerServiceService {
         partnerCompanyName: orderDelivery.orderProductMapping.product.partnerCompany?.businessName ?? '',
         eventName: orderDelivery.orderProductMapping.order.eventName,
         sendRequestAt: orderDelivery.sendRequestAt ? format(orderDelivery.sendRequestAt, DateFormatStr) : null,
+        actualSendAt: actualSendAt,
+        sendType: orderDelivery.orderProductMapping.order.sendType,
         tradeAt: orderDelivery.tradeAt ? format(orderDelivery.tradeAt, DateFormatStr) : null,
         status: orderDelivery.status,
         couponStatus: orderDelivery.couponStatus,
@@ -273,6 +285,16 @@ export class CustomerServiceService {
       }
     }
 
+    // 실제 발송 시간 계산 (발송 완료 상태일 때 updatedAt 사용)
+    let actualSendAt: string | null = null;
+    if (
+      queryBuilder &&
+      (queryBuilder.status === 'COMPLETE' || queryBuilder.status === 'COMPLETE_SMS') &&
+      queryBuilder.updatedAt
+    ) {
+      actualSendAt = format(queryBuilder.updatedAt, DateFormatStr);
+    }
+
     return {
       orderDeliveryId: queryBuilder.id,
       eventName: order.eventName,
@@ -282,6 +304,8 @@ export class CustomerServiceService {
       deliveryTarget: decryptedDeliveryTarget ?? '',
       refundStatus: queryBuilder.refundStatus ?? null,
       sendRequestAt: queryBuilder.sendRequestAt ? format(queryBuilder.sendRequestAt, DateFormatStr) : null,
+      actualSendAt: actualSendAt,
+      sendType: order.sendType,
       method: queryBuilder.deliveryMethod,
       fromPhoneNumber: order.fromPhoneNumber,
       partnerCompanyName: partnerCompany?.businessName ?? '',
