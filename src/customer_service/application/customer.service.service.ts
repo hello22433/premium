@@ -128,14 +128,14 @@ export class CustomerServiceService {
         }
       }
 
-      // 실제 발송 시간 계산 (발송 완료 상태일 때 updatedAt 사용)
+      // 실제 발송 시간 계산 (발송 완료 상태일 때 actualSendAt 사용)
       let actualSendAt: string | null = null;
       if (
         firstDelivery &&
         (firstDelivery.status === 'COMPLETE' || firstDelivery.status === 'COMPLETE_SMS') &&
-        firstDelivery.updatedAt
+        firstDelivery.actualSendAt
       ) {
-        actualSendAt = format(firstDelivery.updatedAt, DateFormatStr);
+        actualSendAt = format(firstDelivery.actualSendAt, DateFormatStr);
       }
 
       result.push({
@@ -207,14 +207,14 @@ export class CustomerServiceService {
         }
       }
 
-      // 실제 발송 시간 계산 (발송 완료 상태일 때 updatedAt 사용)
+      // 실제 발송 시간 계산 (발송 완료 상태일 때 actualSendAt 사용)
       let actualSendAt: string | null = null;
       if (
         orderDelivery &&
         (orderDelivery.status === 'COMPLETE' || orderDelivery.status === 'COMPLETE_SMS') &&
-        orderDelivery.updatedAt
+        orderDelivery.actualSendAt
       ) {
-        actualSendAt = format(orderDelivery.updatedAt, DateFormatStr);
+        actualSendAt = format(orderDelivery.actualSendAt, DateFormatStr);
       }
 
       result.push({
@@ -285,14 +285,14 @@ export class CustomerServiceService {
       }
     }
 
-    // 실제 발송 시간 계산 (발송 완료 상태일 때 updatedAt 사용)
+    // 실제 발송 시간 계산 (발송 완료 상태일 때 actualSendAt 사용)
     let actualSendAt: string | null = null;
     if (
       queryBuilder &&
       (queryBuilder.status === 'COMPLETE' || queryBuilder.status === 'COMPLETE_SMS') &&
-      queryBuilder.updatedAt
+      queryBuilder.actualSendAt
     ) {
-      actualSendAt = format(queryBuilder.updatedAt, DateFormatStr);
+      actualSendAt = format(queryBuilder.actualSendAt, DateFormatStr);
     }
 
     return {

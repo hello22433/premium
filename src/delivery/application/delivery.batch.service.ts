@@ -188,6 +188,7 @@ export class DeliveryBatchService {
           }
 
           orderDelivery.status = IOrderDeliveryStatus.COMPLETE;
+          orderDelivery.actualSendAt = new Date();
         } catch (e) {
           deliveryHistory.context = JSON.stringify(e);
           deliveryHistory.isSuccess = false;
@@ -196,6 +197,7 @@ export class DeliveryBatchService {
           if (resultSms === IOrderDeliveryStatus.COMPLETE_SMS) {
             deliveryHistory.isSuccess = true;
             orderDelivery.status = IOrderDeliveryStatus.COMPLETE_SMS;
+            orderDelivery.actualSendAt = new Date();
           }
           // 문자 전송도 실패한 경우
           if (resultSms !== IOrderDeliveryStatus.COMPLETE_SMS) {
@@ -228,6 +230,7 @@ export class DeliveryBatchService {
             filePath: filePathList,
           });
           orderDelivery.status = IOrderDeliveryStatus.COMPLETE;
+          orderDelivery.actualSendAt = new Date();
           deliveryHistory.context = text;
         } catch (e) {
           orderDelivery.status = IOrderDeliveryStatus.FAIL;
@@ -293,6 +296,7 @@ export class DeliveryBatchService {
             fromEmail: fromEmail,
           });
           orderDelivery.status = IOrderDeliveryStatus.COMPLETE;
+          orderDelivery.actualSendAt = new Date();
           deliveryHistory.context = text;
         } catch (e) {
           orderDelivery.status = IOrderDeliveryStatus.FAIL;
@@ -554,6 +558,7 @@ export class DeliveryBatchService {
         // deliveryHistory.context = JSON.stringify(responseData);
         // deliveryHistory.etcContext = JSON.stringify(report);
         orderDelivery.status = IOrderDeliveryStatus.COMPLETE;
+        orderDelivery.actualSendAt = new Date();
       } catch (e) {
         deliveryHistory.context = JSON.stringify(e);
         deliveryHistory.isSuccess = false;
@@ -562,6 +567,7 @@ export class DeliveryBatchService {
         if (resultSms === IOrderDeliveryStatus.COMPLETE_SMS) {
           deliveryHistory.isSuccess = true;
           orderDelivery.status = IOrderDeliveryStatus.COMPLETE_SMS;
+          orderDelivery.actualSendAt = new Date();
         }
         // 문자 전송도 실패한 경우
         if (resultSms !== IOrderDeliveryStatus.COMPLETE_SMS) {
@@ -593,6 +599,7 @@ export class DeliveryBatchService {
           filePath: filePathList,
         });
         orderDelivery.status = IOrderDeliveryStatus.COMPLETE;
+        orderDelivery.actualSendAt = new Date();
         deliveryHistory.context = text;
       } catch (e) {
         orderDelivery.status = IOrderDeliveryStatus.FAIL;
@@ -657,6 +664,7 @@ export class DeliveryBatchService {
           fromEmail: fromEmail,
         });
         orderDelivery.status = IOrderDeliveryStatus.COMPLETE;
+        orderDelivery.actualSendAt = new Date();
         deliveryHistory.context = text;
       } catch (e) {
         orderDelivery.status = IOrderDeliveryStatus.FAIL;

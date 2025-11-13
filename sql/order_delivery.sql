@@ -18,3 +18,6 @@ ALTER TABLE order_delivery
 
 ALTER TABLE order_delivery
     ADD COLUMN refund_at DATETIME NULL COMMENT '환불일자';
+
+ALTER TABLE order_delivery
+    ADD COLUMN actual_send_at DATETIME NULL COMMENT '실제 발송 시각';
