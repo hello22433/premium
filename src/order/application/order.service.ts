@@ -353,10 +353,8 @@ export class OrderService {
           sendContent: orderProductMapping.sendContent ?? '',
           sendMethod: orderProductMapping.sendMethod ? orderProductMapping.sendMethod : order.sendMethod,
           sendRequestAt: orderProductMapping.sendRequestAt
-            ? format(order.sendRequestAt, DateFormatStr)
-            : orderProductMapping.sendRequestAt
-              ? format(orderProductMapping.sendRequestAt, DateFormatStr)
-              : null,
+            ? format(orderProductMapping.sendRequestAt, DateFormatStr)
+            : null,
           sendTailText: orderProductMapping.sendTailText,
           sendTitle: orderProductMapping.sendTitle ?? '',
           sendType: orderProductMapping.sendType,
