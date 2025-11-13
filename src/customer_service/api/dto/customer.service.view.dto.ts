@@ -9,6 +9,18 @@ export class CustomerServiceViewDto {
   sendRequestAt: string;
 
   @ApiProperty({
+    nullable: true,
+    description: '실제 발송 시간 ex) yyyy-MM-ddTHH:mm:ss',
+  })
+  actualSendAt: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    description: '발송 방식 ex) IMMEDIATE: 즉시발송, RESERVE: 예약발송',
+  })
+  sendType: string | null;
+
+  @ApiProperty({
     description: 'order Id',
   })
   id: number;

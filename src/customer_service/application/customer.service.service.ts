@@ -128,8 +128,20 @@ export class CustomerServiceService {
         }
       }
 
+      // 실제 발송 시간 계산 (발송 완료 상태일 때 updatedAt 사용)
+      let actualSendAt: string | null = null;
+      if (
+        firstDelivery &&
+        (firstDelivery.status === 'COMPLETE' || firstDelivery.status === 'COMPLETE_SMS') &&
+        firstDelivery.updatedAt
+      ) {
+        actualSendAt = format(firstDelivery.updatedAt, DateFormatStr);
+      }
+
       result.push({
         sendRequestAt: format(order.sendRequestAt, DateFormatStr),
+        actualSendAt: actualSendAt,
+        sendType: order.sendType,
         id: order.id,
         orderDeliveryId: firstDelivery?.id || null,
         orderProductMappingId: order.orderProductMappings![0].id,
