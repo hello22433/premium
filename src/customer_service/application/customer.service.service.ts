@@ -879,15 +879,38 @@ export class CustomerServiceService {
     const [list, totalCount] = await queryBuilder.getManyAndCount();
 
     return {
-      list: list.map((h: OrderHistoryEntity) => ({
-        id: h.id,
-        type: h.type,
-        createdAt: h.createdAt ? format(h.createdAt, DateFormatStr) : null,
-        personName: h.user?.personName ?? '',
-        content: h.content,
-        beforeChange: h.beforeChange,
-        afterChange: h.afterChange,
-      })),
+      list: list.map((h: OrderHistoryEntity) => {
+        // 수신정보 변경요청일 경우 암호화된 deliveryTarget을 복호화
+        let beforeChange = h.beforeChange;
+        let afterChange = h.afterChange;
+
+        if (h.type === '수신정보 변경요청') {
+          if (beforeChange) {
+            try {
+              beforeChange = this.cryptoCipher.decryptDeliveryTarget(beforeChange);
+            } catch (e) {
+              // 복호화 실패 시 원본 유지
+            }
+          }
+          if (afterChange) {
+            try {
+              afterChange = this.cryptoCipher.decryptDeliveryTarget(afterChange);
+            } catch (e) {
+              // 복호화 실패 시 원본 유지
+            }
+          }
+        }
+
+        return {
+          id: h.id,
+          type: h.type,
+          createdAt: h.createdAt ? format(h.createdAt, DateFormatStr) : null,
+          personName: h.user?.personName ?? '',
+          content: h.content,
+          beforeChange,
+          afterChange,
+        };
+      }),
       totalCount,
       totalPage: Math.ceil(totalCount / take),
       currentPage: page,
