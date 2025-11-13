@@ -68,11 +68,12 @@ export class CustomerServiceService {
       .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
       .innerJoinAndSelect('orderProductMappings.product', 'product')
+      .leftJoinAndSelect('orderDeliveries.choiceSelectProduct', 'choiceSelectProduct')
       .leftJoinAndMapOne('order.user', 'user', 'user', 'user.id = order.user_id AND user.deleted_at IS NULL')
       .andWhere('orderDeliveries.status IN (:...deliveryStatus)', { deliveryStatus: ['COMPLETE', 'COMPLETE_SMS'] });
 
     if (orderType === 'GENERAL') {
-      queryBuilder.andWhere('product.type = :type', { type: 'GENERAL' });
+      queryBuilder.andWhere('product.type IN (:...types)', { types: ['GENERAL', 'CHOICE'] });
     }
 
     if (orderType === 'SSG') {
@@ -128,14 +129,28 @@ export class CustomerServiceService {
         }
       }
 
+      // 실제 발송 시간 계산 (발송 완료 상태일 때 actualSendAt 사용)
+      let actualSendAt: string | null = null;
+      if (
+        firstDelivery &&
+        (firstDelivery.status === 'COMPLETE' || firstDelivery.status === 'COMPLETE_SMS') &&
+        firstDelivery.actualSendAt
+      ) {
+        actualSendAt = format(firstDelivery.actualSendAt, DateFormatStr);
+      }
+
       result.push({
         sendRequestAt: format(order.sendRequestAt, DateFormatStr),
+        actualSendAt: actualSendAt,
+        sendType: order.sendType,
         id: order.id,
         orderDeliveryId: firstDelivery?.id || null,
         orderProductMappingId: order.orderProductMappings![0].id,
         eventName: order.eventName,
         businessName: order.user?.businessName ?? '',
-        productName: order.orderProductMappings![0].product.name,
+        productName: firstDelivery?.choiceSelectProduct
+          ? firstDelivery.choiceSelectProduct.name
+          : order.orderProductMappings![0].product.name,
         productCode: order.orderProductMappings![0].product.code,
         status: order.status,
         fromPhoneNumber: order.fromPhoneNumber,
@@ -165,6 +180,7 @@ export class CustomerServiceService {
       .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
       .innerJoinAndSelect('orderProductMapping.order', 'order')
       .innerJoinAndSelect('orderProductMapping.product', 'product')
+      .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
       .innerJoinAndSelect('product.brand', 'brand')
       .leftJoinAndMapOne(
         'product.partnerCompany',
@@ -195,16 +211,30 @@ export class CustomerServiceService {
         }
       }
 
+      // 실제 발송 시간 계산 (발송 완료 상태일 때 actualSendAt 사용)
+      let actualSendAt: string | null = null;
+      if (
+        orderDelivery &&
+        (orderDelivery.status === 'COMPLETE' || orderDelivery.status === 'COMPLETE_SMS') &&
+        orderDelivery.actualSendAt
+      ) {
+        actualSendAt = format(orderDelivery.actualSendAt, DateFormatStr);
+      }
+
       result.push({
         id: orderDelivery.id,
         registerAt: format(orderDelivery.createdAt, DateFormatStr),
-        productName: orderDelivery.orderProductMapping.product.name,
+        productName: orderDelivery.choiceSelectProduct
+          ? orderDelivery.choiceSelectProduct.name
+          : orderDelivery.orderProductMapping.product.name,
         deliveryTarget: decryptedDeliveryTarget ?? '',
         barCode: orderDelivery.barCode,
         brandName: orderDelivery.orderProductMapping.product.brand!.nameKorean ?? '',
         partnerCompanyName: orderDelivery.orderProductMapping.product.partnerCompany?.businessName ?? '',
         eventName: orderDelivery.orderProductMapping.order.eventName,
         sendRequestAt: orderDelivery.sendRequestAt ? format(orderDelivery.sendRequestAt, DateFormatStr) : null,
+        actualSendAt: actualSendAt,
+        sendType: orderDelivery.orderProductMapping.order.sendType,
         tradeAt: orderDelivery.tradeAt ? format(orderDelivery.tradeAt, DateFormatStr) : null,
         status: orderDelivery.status,
         couponStatus: orderDelivery.couponStatus,
@@ -229,6 +259,7 @@ export class CustomerServiceService {
       .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
       .innerJoinAndSelect('orderProductMapping.order', 'order')
       .innerJoinAndSelect('orderProductMapping.product', 'product')
+      .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
       .innerJoinAndSelect('product.brand', 'brand')
       .leftJoinAndMapOne(
         'product.partnerCompany',
@@ -261,6 +292,16 @@ export class CustomerServiceService {
       }
     }
 
+    // 실제 발송 시간 계산 (발송 완료 상태일 때 actualSendAt 사용)
+    let actualSendAt: string | null = null;
+    if (
+      queryBuilder &&
+      (queryBuilder.status === 'COMPLETE' || queryBuilder.status === 'COMPLETE_SMS') &&
+      queryBuilder.actualSendAt
+    ) {
+      actualSendAt = format(queryBuilder.actualSendAt, DateFormatStr);
+    }
+
     return {
       orderDeliveryId: queryBuilder.id,
       eventName: order.eventName,
@@ -270,10 +311,14 @@ export class CustomerServiceService {
       deliveryTarget: decryptedDeliveryTarget ?? '',
       refundStatus: queryBuilder.refundStatus ?? null,
       sendRequestAt: queryBuilder.sendRequestAt ? format(queryBuilder.sendRequestAt, DateFormatStr) : null,
+      actualSendAt: actualSendAt,
+      sendType: order.sendType,
       method: queryBuilder.deliveryMethod,
       fromPhoneNumber: order.fromPhoneNumber,
       partnerCompanyName: partnerCompany?.businessName ?? '',
-      productName: product.name,
+      productName: queryBuilder.choiceSelectProduct
+        ? queryBuilder.choiceSelectProduct.name
+        : product.name,
       price: product.price.toString(),
       brandName: product.brand?.nameKorean ?? '',
       code: product.code,
@@ -843,15 +888,38 @@ export class CustomerServiceService {
     const [list, totalCount] = await queryBuilder.getManyAndCount();
 
     return {
-      list: list.map((h: OrderHistoryEntity) => ({
-        id: h.id,
-        type: h.type,
-        createdAt: h.createdAt ? format(h.createdAt, DateFormatStr) : null,
-        personName: h.user?.personName ?? '',
-        content: h.content,
-        beforeChange: h.beforeChange,
-        afterChange: h.afterChange,
-      })),
+      list: list.map((h: OrderHistoryEntity) => {
+        // 수신정보 변경요청일 경우 암호화된 deliveryTarget을 복호화
+        let beforeChange = h.beforeChange;
+        let afterChange = h.afterChange;
+
+        if (h.type === '수신정보 변경요청') {
+          if (beforeChange) {
+            try {
+              beforeChange = this.cryptoCipher.decryptDeliveryTarget(beforeChange);
+            } catch (e) {
+              // 복호화 실패 시 원본 유지
+            }
+          }
+          if (afterChange) {
+            try {
+              afterChange = this.cryptoCipher.decryptDeliveryTarget(afterChange);
+            } catch (e) {
+              // 복호화 실패 시 원본 유지
+            }
+          }
+        }
+
+        return {
+          id: h.id,
+          type: h.type,
+          createdAt: h.createdAt ? format(h.createdAt, DateFormatStr) : null,
+          personName: h.user?.personName ?? '',
+          content: h.content,
+          beforeChange,
+          afterChange,
+        };
+      }),
       totalCount,
       totalPage: Math.ceil(totalCount / take),
       currentPage: page,

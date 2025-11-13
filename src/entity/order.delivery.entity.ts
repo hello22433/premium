@@ -42,6 +42,9 @@ export class OrderDeliveryEntity extends BaseEntity {
   @Column({ comment: '발송 요청 시각' })
   sendRequestAt: Date;
 
+  @Column({ type: 'datetime', nullable: true, comment: '실제 발송 시각' })
+  actualSendAt: Date | null;
+
   @Column({ type: 'datetime', nullable: true, comment: '만료 시간' })
   expireAt: Date | null;
 
