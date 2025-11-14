@@ -181,6 +181,8 @@ export class CustomerServiceService {
       .innerJoinAndSelect('orderProductMapping.order', 'order')
       .innerJoinAndSelect('orderProductMapping.product', 'product')
       .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
+      .leftJoinAndSelect('choiceSelectProduct.brand', 'choiceBrand')
+      .leftJoinAndSelect('choiceSelectProduct.partnerCompany', 'choicePartnerCompany')
       .innerJoinAndSelect('product.brand', 'brand')
       .leftJoinAndMapOne(
         'product.partnerCompany',
@@ -221,6 +223,11 @@ export class CustomerServiceService {
         actualSendAt = format(orderDelivery.actualSendAt, DateFormatStr);
       }
 
+      // 초이스 쿠폰인 경우 선택된 상품의 brand와 partnerCompany 사용
+      const displayBrand = orderDelivery.choiceSelectProduct?.brand ?? orderDelivery.orderProductMapping.product.brand;
+      const displayPartnerCompany =
+        orderDelivery.choiceSelectProduct?.partnerCompany ?? orderDelivery.orderProductMapping.product.partnerCompany;
+
       result.push({
         id: orderDelivery.id,
         registerAt: format(orderDelivery.createdAt, DateFormatStr),
@@ -229,8 +236,8 @@ export class CustomerServiceService {
           : orderDelivery.orderProductMapping.product.name,
         deliveryTarget: decryptedDeliveryTarget ?? '',
         barCode: orderDelivery.barCode,
-        brandName: orderDelivery.orderProductMapping.product.brand!.nameKorean ?? '',
-        partnerCompanyName: orderDelivery.orderProductMapping.product.partnerCompany?.businessName ?? '',
+        brandName: displayBrand?.nameKorean ?? '',
+        partnerCompanyName: displayPartnerCompany?.businessName ?? '',
         eventName: orderDelivery.orderProductMapping.order.eventName,
         sendRequestAt: orderDelivery.sendRequestAt ? format(orderDelivery.sendRequestAt, DateFormatStr) : null,
         actualSendAt: actualSendAt,
@@ -260,6 +267,8 @@ export class CustomerServiceService {
       .innerJoinAndSelect('orderProductMapping.order', 'order')
       .innerJoinAndSelect('orderProductMapping.product', 'product')
       .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
+      .leftJoinAndSelect('choiceSelectProduct.brand', 'choiceBrand')
+      .leftJoinAndSelect('choiceSelectProduct.partnerCompany', 'choicePartnerCompany')
       .innerJoinAndSelect('product.brand', 'brand')
       .leftJoinAndMapOne(
         'product.partnerCompany',
@@ -280,6 +289,11 @@ export class CustomerServiceService {
     const partnerCompany = product.partnerCompany;
     const order = queryBuilder.orderProductMapping.order;
     const user = queryBuilder.orderProductMapping.order.user;
+
+    // 초이스 쿠폰인 경우 선택된 상품의 brand와 partnerCompany 사용
+    const displayBrand = queryBuilder.choiceSelectProduct?.brand ?? product.brand;
+    const displayPartnerCompany = queryBuilder.choiceSelectProduct?.partnerCompany ?? partnerCompany;
+    const displayProduct = queryBuilder.choiceSelectProduct ?? product;
 
     // deliveryTarget 복호화 처리
     let decryptedDeliveryTarget: string | null = null;
@@ -315,20 +329,18 @@ export class CustomerServiceService {
       sendType: order.sendType,
       method: queryBuilder.deliveryMethod,
       fromPhoneNumber: order.fromPhoneNumber,
-      partnerCompanyName: partnerCompany?.businessName ?? '',
-      productName: queryBuilder.choiceSelectProduct
-        ? queryBuilder.choiceSelectProduct.name
-        : product.name,
-      price: product.price.toString(),
-      brandName: product.brand?.nameKorean ?? '',
-      code: product.code,
+      partnerCompanyName: displayPartnerCompany?.businessName ?? '',
+      productName: displayProduct.name,
+      price: displayProduct.price.toString(),
+      brandName: displayBrand?.nameKorean ?? '',
+      code: displayProduct.code,
       couponStatus: queryBuilder.couponStatus,
       status: queryBuilder.status,
       apiErrorMessage: queryBuilder.apiErrorMessage,
       barCode: queryBuilder.barCode || null,
       tradeAt: queryBuilder.tradeAt ? format(queryBuilder.tradeAt, DateFormatStr) : null,
       extraPinNo: queryBuilder.personalCode || null,
-      expireDay: product.expireDay.toString(),
+      expireDay: displayProduct.expireDay.toString(),
     };
   }
 

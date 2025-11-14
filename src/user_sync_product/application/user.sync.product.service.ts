@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
+import { In, IsNull, Repository } from 'typeorm';
 import { UserSyncProductEventEntity } from '../../entity/user.sync.product.event.entity';
 import {
   UserSyncProductDeleteProductReqDto,
@@ -129,6 +129,9 @@ export class UserSyncProductService {
       .leftJoinAndSelect('userSyncProductEventMappings.product', 'product')
       .leftJoinAndSelect('product.brand', 'brand')
       .where('event.id = :id', { id })
+      .andWhere('(product.id IS NULL OR (product.deletedAt IS NULL AND product.useStatus = :useStatus))', {
+        useStatus: IProductUseStatus.USE,
+      })
       .getOne();
 
     if (!event) {
@@ -230,6 +233,7 @@ export class UserSyncProductService {
       where: {
         id: In(productIdList),
         useStatus: IProductUseStatus.USE,
+        deletedAt: IsNull(),
       },
     });
     const productIds = products.map((product) => product.id);

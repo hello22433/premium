@@ -69,6 +69,7 @@ export class OrderReceiveService {
       .createQueryBuilder('productChoiceMapping')
       .innerJoinAndSelect('productChoiceMapping.product', 'product')
       .innerJoinAndSelect('product.brand', 'brand')
+      .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .where('productChoiceMapping.productId = :productId', {
         productId: getBody.productId,
       })
@@ -77,7 +78,14 @@ export class OrderReceiveService {
       throw new InternalServerErrorException('choice product not exist');
     }
 
+    // 선택된 상품의 협력사 정보로 쿠폰 발급을 위해 임시로 product 교체
+    const originalProduct = orderDelivery.orderProductMapping.product;
+    orderDelivery.orderProductMapping.product = productChoiceMapping.product;
+
     await this.partnerCompanyExternService.issue(orderDelivery, null);
+
+    // 원래 product로 복원 (초이스쿠폰 상품)
+    orderDelivery.orderProductMapping.product = originalProduct;
     orderDelivery.choiceSelectProductId = productChoiceMapping.product.id;
 
     if (orderDelivery.barCode) {
