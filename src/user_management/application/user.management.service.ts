@@ -261,6 +261,9 @@ export class UserManagementService {
 
     const passwordEncrypt = await this.passwordEncrypt.encrypt(getBody.password);
 
+    // 사업자등록번호에서 하이픈 제거
+    const businessNumber = getBody.businessNumber ? getBody.businessNumber.replace(/-/g, '') : getBody.businessNumber;
+
     await this.userRepository.insert({
       email: getBody.email,
       password: passwordEncrypt,
@@ -270,7 +273,7 @@ export class UserManagementService {
       personEmail: getBody.personEmail,
       corporateNumber: getBody.corporateNumber,
       businessType: getBody.businessType,
-      businessNumber: getBody.businessNumber,
+      businessNumber: businessNumber,
       businessName: getBody.businessName,
       businessAddress: getBody.businessAddress,
       businessPhoneNumber: getBody.businessPhoneNumber,
@@ -303,13 +306,16 @@ export class UserManagementService {
       throw new BadRequestException('유저가 존재하지 않습니다.');
     }
 
+    // 사업자등록번호에서 하이픈 제거
+    const businessNumber = getBody.businessNumber ? getBody.businessNumber.replace(/-/g, '') : getBody.businessNumber;
+
     user.authority = getBody.authority;
     user.personName = getBody.personName;
     user.personPhoneNumber = getBody.personPhoneNumber;
     user.personEmail = getBody.personEmail;
     user.corporateNumber = getBody.corporateNumber;
     user.businessType = getBody.businessType;
-    user.businessNumber = getBody.businessNumber;
+    user.businessNumber = businessNumber;
     user.businessName = getBody.businessName;
     user.businessAddress = getBody.businessAddress;
     user.businessPhoneNumber = getBody.businessPhoneNumber;

@@ -126,12 +126,14 @@ export class UserSyncProductService {
       .createQueryBuilder('event')
       .innerJoinAndSelect('event.businessUser', 'businessUser')
       .leftJoinAndSelect('event.userSyncProductEventMappings', 'userSyncProductEventMappings')
-      .leftJoinAndSelect('userSyncProductEventMappings.product', 'product')
+      .leftJoinAndSelect(
+        'userSyncProductEventMappings.product',
+        'product',
+        'product.deletedAt IS NULL AND product.useStatus = :useStatus',
+        { useStatus: IProductUseStatus.USE },
+      )
       .leftJoinAndSelect('product.brand', 'brand')
       .where('event.id = :id', { id })
-      .andWhere('(product.id IS NULL OR (product.deletedAt IS NULL AND product.useStatus = :useStatus))', {
-        useStatus: IProductUseStatus.USE,
-      })
       .getOne();
 
     if (!event) {
