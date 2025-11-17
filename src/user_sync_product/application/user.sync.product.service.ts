@@ -202,6 +202,7 @@ export class UserSyncProductService {
     const existEvent = await this.eventRepository.count({
       where: {
         businessUserId: userId,
+        status: IUserSyncProductStatus.ACTIVE,
       },
     });
 
