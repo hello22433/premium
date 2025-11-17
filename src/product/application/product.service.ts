@@ -57,6 +57,7 @@ import { listToMap } from '../../util/map.util';
 import { UserEntity } from 'src/entity/user.entity';
 import { ActivityLogService } from '../../activity_log/application/activity.log.service';
 import { ActivityLogResult } from '../../activity_log/interface/activity.log.result';
+import { IUserSyncProductStatus } from '../../user_sync_product/interface/user.sync.product.status';
 
 @Injectable()
 export class ProductService {
@@ -267,6 +268,7 @@ export class ProductService {
       const events = await this.userSyncProductEventRepository.find({
         where: {
           businessUserId: headPersonUserId,
+          status: IUserSyncProductStatus.ACTIVE,
         },
         relations: ['userSyncProductEventMappings'],
       });
@@ -757,7 +759,18 @@ export class ProductService {
 
   async excelDownload(user: ILoginUserInfo, getBody: ProductExcelDownloadReqBodyDto) {
     const startTime = Date.now();
-    const { partnerCompanyId, brandId, brandName, name, useStatus, code, partnerCompanyCode, userId, password, downloadReason } = getBody;
+    const {
+      partnerCompanyId,
+      brandId,
+      brandName,
+      name,
+      useStatus,
+      code,
+      partnerCompanyCode,
+      userId,
+      password,
+      downloadReason,
+    } = getBody;
 
     // 비밀번호 검증
     await this.activityLogService.verifyPassword(user.id, password);
