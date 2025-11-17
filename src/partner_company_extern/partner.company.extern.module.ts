@@ -4,6 +4,7 @@ import { GiftielHttp } from './infra/giftiel.http';
 import { GsmbizHttp } from './infra/gsmbiz.http';
 import { GiftishowHttp } from './infra/giftishow.http';
 import { CultureSocket } from './infra/culture.socket';
+import { DaouHttp } from './infra/daou.http';
 import { HttpModule } from '@nestjs/axios';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { OrderDeliveryEntity } from '../entity/order.delivery.entity';
@@ -44,6 +45,10 @@ import { PartnerCompanyBatchSchedule } from './partner.company.batch.schedule';
     {
       provide: 'ISsgIssue',
       useClass: SsgIssue,
+    },
+    {
+      provide: 'IDaou',
+      useClass: DaouHttp,
     },
     PartnerCompanyExternService,
     CryptoCipher,

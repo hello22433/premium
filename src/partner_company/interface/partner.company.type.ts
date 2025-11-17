@@ -5,4 +5,5 @@ export enum IPartnerCompanyType {
   CULTURELAND = 'CULTURELAND', // 컬쳐랜드
   GALAXIA = 'GALAXIA', // 갤럭시아
   SSG = 'SSG', // 신세계
+  DAOU = 'DAOU', // 다우기술
 }

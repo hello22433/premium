@@ -1505,28 +1505,37 @@ export class OrderService {
 
     for (const orderMapping of order.orderProductMappings!) {
       for (const orderDelivery of orderMapping.orderDeliveries) {
-        await this.partnerCompanyExternService.issue(orderDelivery, ssgEventIssue);
-        // issue, 발급이 실패했거나 바코드가 없는 경우
-        if (orderDelivery.status === IOrderDeliveryStatus.FAIL || !orderDelivery.barCode) {
-          message = 'fail';
-          throw new InternalServerErrorException('발급 실패');
-        }
+        const isChoiceCoupon = orderDelivery.orderProductMapping.product.type === IProductType.CHOICE;
 
-        // 발급 성공, status - WAIT 유지
-        orderDelivery.status = IOrderDeliveryStatus.WAIT;
-        if (orderDelivery.barCode) {
-          const { path } = await DeliveryCreateCouponImage(
-            orderDelivery.orderProductMapping.product.imagePath,
-            orderDelivery.orderProductMapping.product.name,
-            orderDelivery.barCode,
-            orderDelivery.orderProductMapping.product.brand!.nameKorean,
-            orderDelivery.orderProductMapping.product.expireDay,
-            orderDelivery.orderProductMapping.topImagePath,
-            orderDelivery.orderProductMapping.midImagePath,
-            orderDelivery.orderProductMapping.product.type,
-          );
-          orderDelivery.imagePath = path;
-          orderDelivery.ssgEventId = ssgEventIssue ? ssgEventIssue.id : null;
+        // 초이스쿠폰이 아닌 경우에만 협력사 API를 통해 쿠폰 발급
+        if (!isChoiceCoupon) {
+          await this.partnerCompanyExternService.issue(orderDelivery, ssgEventIssue);
+          // issue, 발급이 실패했거나 바코드가 없는 경우
+          if (orderDelivery.status === IOrderDeliveryStatus.FAIL || !orderDelivery.barCode) {
+            message = 'fail';
+            throw new InternalServerErrorException('발급 실패');
+          }
+
+          // 발급 성공, status - WAIT 유지
+          orderDelivery.status = IOrderDeliveryStatus.WAIT;
+          if (orderDelivery.barCode) {
+            const { path } = await DeliveryCreateCouponImage(
+              orderDelivery.orderProductMapping.product.imagePath,
+              orderDelivery.orderProductMapping.product.name,
+              orderDelivery.barCode,
+              orderDelivery.orderProductMapping.product.brand!.nameKorean,
+              orderDelivery.orderProductMapping.product.expireDay,
+              orderDelivery.orderProductMapping.topImagePath,
+              orderDelivery.orderProductMapping.midImagePath,
+              orderDelivery.orderProductMapping.product.type,
+            );
+            orderDelivery.imagePath = path;
+            orderDelivery.ssgEventId = ssgEventIssue ? ssgEventIssue.id : null;
+          }
+        } else {
+          // 초이스쿠폰인 경우: 상품 선택 링크만 전송하므로 barCode 생성 안함
+          // 고객이 상품을 선택하면 selectChoiceProduct()에서 실제 쿠폰 발급
+          orderDelivery.status = IOrderDeliveryStatus.WAIT;
         }
 
         await this.orderDeliveryRepository.save(orderDelivery);

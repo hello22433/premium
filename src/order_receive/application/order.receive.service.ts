@@ -139,6 +139,8 @@ export class OrderReceiveService {
 
     const choiceProductList: OrderReceiveChoiceDto[] = [];
     let selectChoiceProduct: OrderReceiveChoiceDto | null = null;
+    let selectedProductEntity: any = null; // 선택된 상품의 전체 정보 (brand, memo 포함)
+
     // 초이스 쿠폰일 경우
     if (orderDelivery.orderProductMapping.product.type === IProductType.CHOICE) {
       const productChoiceMappingList = await this.productChoiceMappingRepository
@@ -175,6 +177,8 @@ export class OrderReceiveService {
             brandNameKorean: productChoiceMapping.product.brand!.nameKorean,
             brandNameEnglish: productChoiceMapping.product.brand!.nameEnglish,
           };
+          // 선택된 상품의 전체 정보 저장 (brand, memo 포함)
+          selectedProductEntity = productChoiceMapping.product;
         }
       }
     }
@@ -194,13 +198,17 @@ export class OrderReceiveService {
       text = text.replace('{대치문자3}', orderDelivery.replaceCharacter3);
     }
 
+    // 초이스쿠폰이고 상품을 선택한 경우, 선택된 상품의 정보 사용
+    const displayProduct = selectedProductEntity || orderDelivery.orderProductMapping.product;
+    const displayBrand = selectedProductEntity?.brand || orderDelivery.orderProductMapping.product.brand;
+
     return {
       topImagePath: orderDelivery.orderProductMapping.topImagePath,
       midImagePath: orderDelivery.orderProductMapping.midImagePath,
       fromPhoneNumber: orderDelivery.orderProductMapping.order.fromPhoneNumber!,
-      productName: orderDelivery.orderProductMapping.product.name,
-      productImagePath: orderDelivery.orderProductMapping.product.imagePath,
-      brandName: orderDelivery.orderProductMapping.product.brand!.nameKorean,
+      productName: displayProduct.name,
+      productImagePath: displayProduct.imagePath,
+      brandName: displayBrand!.nameKorean,
       barCode: orderDelivery.barCode!,
       personalCode: orderDelivery.personalCode,
       couponStatus: orderDelivery.couponStatus,
@@ -208,17 +216,17 @@ export class OrderReceiveService {
       type: orderDelivery.orderProductMapping.product.type,
       choiceProductList,
       selectChoiceProduct,
-      memo: orderDelivery.orderProductMapping.product.memo
-        ? normalizeLineBreaks(orderDelivery.orderProductMapping.product.memo, '<br>')
+      memo: displayProduct.memo
+        ? normalizeLineBreaks(displayProduct.memo, '<br>')
         : '',
       sendRequestAt: format(orderDelivery.sendRequestAt, DateFormatStr),
-      expireDay: orderDelivery.orderProductMapping.product.expireDay,
+      expireDay: displayProduct.expireDay,
       brandKoreanName:
-        orderDelivery.orderProductMapping.product.brand!.nameKorean === '신세계'
+        displayBrand!.nameKorean === '신세계'
           ? '이마트'
-          : orderDelivery.orderProductMapping.product.brand!.nameKorean,
+          : displayBrand!.nameKorean,
       userBusinessName: orderDelivery.orderProductMapping.order.user!.businessName,
-      partnerCompany: orderDelivery.orderProductMapping.product.partnerCompany?.type || null,
+      partnerCompany: displayProduct.partnerCompany?.type || null,
     };
   }
 
@@ -267,6 +275,7 @@ export class OrderReceiveService {
 
     const choiceProductList: OrderReceiveChoiceDto[] = [];
     let selectChoiceProduct: OrderReceiveChoiceDto | null = null;
+    let selectedProductEntity: any = null; // 선택된 상품의 전체 정보
 
     // 초이스 쿠폰일 경우
     if (orderDelivery.orderProductMapping.product.type === IProductType.CHOICE) {
@@ -304,13 +313,18 @@ export class OrderReceiveService {
             brandNameKorean: productChoiceMapping.product.brand!.nameKorean,
             brandNameEnglish: productChoiceMapping.product.brand!.nameEnglish,
           };
+          // 선택된 상품의 전체 정보 저장
+          selectedProductEntity = productChoiceMapping.product;
         }
       }
     }
 
+    // 초이스쿠폰이고 상품을 선택한 경우, 선택된 상품의 정보 사용
+    const displayProduct = selectedProductEntity || orderDelivery.orderProductMapping.product;
+
     return {
-      productName: orderDelivery.orderProductMapping.product.name,
-      productImagePath: orderDelivery.orderProductMapping.product.imagePath,
+      productName: displayProduct.name,
+      productImagePath: displayProduct.imagePath,
       sendEncryptKey: sendEncryptKey,
       type: orderDelivery.orderProductMapping.product.type,
       choiceProductList,

@@ -8,6 +8,7 @@ import { IGalaxia } from '../interface/galaxia';
 import { IGsmbiz } from '../interface/gsmbiz';
 import { IGiftiel } from '../interface/giftiel';
 import { IGiftiShow } from '../interface/giftishow';
+import { IDaou } from '../interface/daou';
 import { PartnerCompanyExternHistoryEntity } from '../../entity/partner.company.extern.history.entity';
 import { ISsgIssue } from '../interface/ssg.issue';
 import { Propagation, Transactional } from 'typeorm-transactional';
@@ -37,6 +38,8 @@ export class PartnerCompanyExternService {
     private culture: ICulture,
     @Inject('ISsgIssue')
     private ssgIssue: ISsgIssue,
+    @Inject('IDaou')
+    private daou: IDaou,
     @InjectRepository(OrderEntity)
     private orderRepository: Repository<OrderEntity>,
     @InjectRepository(OrderDeliveryEntity)
@@ -199,6 +202,26 @@ export class PartnerCompanyExternService {
         context = JSON.stringify(response);
       }
 
+      // 1.1.7 다우기술 PIN 발급
+      if (type === 'DAOU') {
+        const daouOut = await this.daou.issue({
+          goodsId: orderDelivery.orderProductMapping.product.partnerCompanyCode,
+          transactionId: orderDelivery.transactionId,
+          phoneNumber: decryptedDeliveryTarget,
+          limitDate: '' + orderDelivery.orderProductMapping.product.expireDay,
+          tradeNo: orderDelivery.transactionId, // tradeNo로 transactionId 사용
+        });
+        context = JSON.stringify(daouOut);
+
+        // 성공 응답인 경우에만 barCode 설정
+        if (daouOut.resultCode === 'S000001' && daouOut.pinNo) {
+          orderDelivery.barCode = daouOut.pinNo;
+          orderDelivery.couponNum = daouOut.tsId || null; // TS_ID를 couponNum에 저장
+        } else {
+          throw new Error(daouOut.resultMessage || '다우기술 PIN 발급 실패');
+        }
+      }
+
       this.logger.log(orderDelivery.barCode);
       if (!orderDelivery.barCode) {
         throw new Error('barCode not exist');
@@ -274,6 +297,18 @@ export class PartnerCompanyExternService {
           barCode: orderDelivery.barCode!,
           expireDay: orderDelivery.orderProductMapping.product.expireDay,
         });
+      }
+
+      // 1.1.7 다우기술 쿠폰 취소
+      if (type === 'DAOU') {
+        const daouCancelOut = await this.daou.cancel({
+          pinNo: orderDelivery.barCode!,
+        });
+
+        // 취소 실패 시 에러 발생
+        if (daouCancelOut.resultCode !== 'S000001') {
+          throw new Error(daouCancelOut.resultMessage || '다우기술 쿠폰 취소 실패');
+        }
       }
 
       // 1.1.6 신세계 및 없는 type 은 타입만 수정
@@ -403,6 +438,35 @@ export class PartnerCompanyExternService {
         const resultCd = ssgOut.response.value[0].resultCd[0];
         orderDelivery.couponStatus =
           resultCd === '0400' ? OrderDeliveryCouponStatus.USED : OrderDeliveryCouponStatus.NOT_USED;
+        break;
+      }
+
+      // 7. DAOU
+      case 'DAOU': {
+        const daouCheckOut = await this.daou.check({
+          transactionId: orderDelivery.transactionId!,
+        });
+
+        // 응답 코드 확인
+        if (daouCheckOut.resultCode === 'S000001') {
+          // CPN_STATUS: 00(미사용), 01(교환완료), 02(기취소)
+          if (daouCheckOut.cpnStatus === '00') {
+            orderDelivery.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
+          } else if (daouCheckOut.cpnStatus === '01') {
+            orderDelivery.couponStatus = OrderDeliveryCouponStatus.USED;
+            // 사용일자가 있으면 tradeAt에 설정 (YYYYMMDD 형식)
+            if (daouCheckOut.useDate) {
+              const year = parseInt(daouCheckOut.useDate.substring(0, 4));
+              const month = parseInt(daouCheckOut.useDate.substring(4, 6)) - 1;
+              const day = parseInt(daouCheckOut.useDate.substring(6, 8));
+              orderDelivery.tradeAt = new Date(year, month, day);
+            }
+          } else if (daouCheckOut.cpnStatus === '02') {
+            orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
+          }
+        } else {
+          throw new Error(`DAOU 쿠폰 상태 조회 실패: ${daouCheckOut.resultMessage}`);
+        }
         break;
       }
 
