@@ -96,7 +96,7 @@ import { ActivityLogEntity } from '../entity/activity.log.entity';
           ShippingStorageEntity,
           ActivityLogEntity,
         ],
-        timezone: 'local',
+        timezone: '+09:00',
         logger: configService.get('DATABASE_LOGGING') === 'true' ? new SqlLogger() : undefined,
         namingStrategy: new SnakeNamingStrategy(),
         logging: configService.get('DATABASE_LOGGING') === 'true',
