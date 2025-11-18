@@ -1418,7 +1418,24 @@ export class OrderService {
         where: [{ userId: user.id }, { partnerCompanyId: In(order.orderProductMappings!.map((m) => m.product!.partnerCompanyId)) }],
       });
 
+      this.logger.debug(
+        `조회된 user_discount 개수: ${userDiscounts.length}, 내용: ${JSON.stringify(
+          userDiscounts.map((d) => ({
+            id: d.id,
+            category: d.category,
+            primaryCategory: d.primaryCategory,
+            group: d.group,
+            priceAdjustment: d.priceAdjustment,
+            pricePercent: d.pricePercent,
+          })),
+        )}`,
+      );
+
       for (const orderMapping of order.orderProductMappings!) {
+        this.logger.debug(
+          `상품 ${orderMapping.productId} 정보: category=${orderMapping.product?.category}, classification=${orderMapping.product?.classification}, fee=${orderMapping.fee}, priceAdjustment=${orderMapping.priceAdjustment}`,
+        );
+
         // 할인이 적용된 상품만 체크
         // orderMapping.fee가 아직 설정되지 않았을 수 있으므로, user_discount와 product를 비교해서 판단
         let hasDiscount = false;
@@ -1428,23 +1445,30 @@ export class OrderService {
         if (orderMapping.fee !== null && orderMapping.fee !== undefined && orderMapping.priceAdjustment === 'DISCOUNT') {
           hasDiscount = orderMapping.fee > 0;
           discountPercent = orderMapping.fee;
+          this.logger.debug(`상품 ${orderMapping.productId}: 기존 fee/priceAdjustment로 할인 적용 확인됨`);
         }
         // 2. 설정되지 않은 경우, user_discount에서 찾기
         else {
           for (const discount of userDiscounts) {
-            // CATEGORY 방식: primaryCategory와 상품의 category 비교
-            if (discount.category === 'CATEGORY' && discount.primaryCategory === orderMapping.product!.category) {
+            // CATEGORY 방식: group(상품군)과 상품의 category 비교
+            if (discount.category === 'CATEGORY' && discount.group === orderMapping.product!.category) {
               if (discount.priceAdjustment === 'DISCOUNT') {
                 hasDiscount = true;
                 discountPercent = discount.pricePercent;
+                this.logger.debug(
+                  `상품 ${orderMapping.productId}: CATEGORY 매칭됨 (discount.group=${discount.group}, product.category=${orderMapping.product!.category})`,
+                );
                 break;
               }
             }
-            // CLASSIFICATION 방식: group과 상품의 classification 비교
-            else if (discount.category === 'CLASSIFICATION' && discount.group === orderMapping.product!.classification) {
+            // CLASSIFICATION 방식: primaryCategory(대분류)와 상품의 classification 비교
+            else if (discount.category === 'CLASSIFICATION' && discount.primaryCategory === orderMapping.product!.classification) {
               if (discount.priceAdjustment === 'DISCOUNT') {
                 hasDiscount = true;
                 discountPercent = discount.pricePercent;
+                this.logger.debug(
+                  `상품 ${orderMapping.productId}: CLASSIFICATION 매칭됨 (discount.primaryCategory=${discount.primaryCategory}, product.classification=${orderMapping.product!.classification})`,
+                );
                 break;
               }
             }
@@ -1466,21 +1490,40 @@ export class OrderService {
           currentOrderPhoneCount.set(phone, (currentOrderPhoneCount.get(phone) || 0) + 1);
         }
 
-        // 현재 주문 내에서 중복된 번호가 limit를 초과하는지 체크
+        // 모든 중복 에러를 수집
+        const duplicateErrors: string[] = [];
+
+        // 현재 주문 내에서 중복된 수신처가 limit를 초과하는지 체크
+        // duplicatePhoneLimit: 허용되는 중복 개수 (총 허용 개수 = limit + 1)
+        // 예: limit=1이면 1개 중복 허용, 즉 총 2건까지 가능
         for (const [phone, count] of currentOrderPhoneCount.entries()) {
-          if (count > oneUser.duplicatePhoneLimit) {
-            throw new BadRequestException(
-              `동일번호(${phone})가 현재 주문에 ${count}건 포함되어 있습니다. 중복 제한(${oneUser.duplicatePhoneLimit}건)을 초과합니다.`,
-            );
+          if (count > oneUser.duplicatePhoneLimit + 1) {
+            // 에러 메시지에 표시할 평문 복호화
+            let displayPhone = phone;
+            try {
+              displayPhone = this.cryptoCipher.decryptDeliveryTarget(phone);
+            } catch (error) {
+              // 복호화 실패 시 원본 사용
+            }
+
+            duplicateErrors.push(`- ${displayPhone}: 현재 주문에 ${count}건 포함`);
           }
         }
 
         // ======== 기존 주문과 중복 체크 ========
-        // 각 고유 번호에 대해 기존 주문과 현재 주문을 합쳐서 체크
+        // 각 고유 수신처에 대해 기존 주문과 현재 주문을 합쳐서 체크
         for (const [phone, currentCount] of currentOrderPhoneCount.entries()) {
+          // 에러 메시지와 로그에 표시할 평문 복호화
+          let displayPhone = phone;
+          try {
+            displayPhone = this.cryptoCipher.decryptDeliveryTarget(phone);
+          } catch (error) {
+            // 복호화 실패 시 원본 사용
+          }
+
           // 신세계 특별 케이스: 동일 이벤트 + 동일 상품 중복 체크
           if (order.type === IOrderType.SSG) {
-            // 같은 이벤트, 같은 상품, 같은 번호로 이미 주문이 있는지 확인
+            // 같은 이벤트, 같은 상품, 같은 수신처로 이미 주문이 있는지 확인
             const sameEventOrderCount = await this.orderDeliveryRepository
               .createQueryBuilder('od')
               .innerJoin('od.orderProductMapping', 'opm')
@@ -1497,11 +1540,11 @@ export class OrderService {
               .getCount();
 
             if (sameEventOrderCount > 0) {
-              throw new BadRequestException('동일번호가 존재합니다. 합산하여 입력바랍니다.');
+              duplicateErrors.push(`- ${displayPhone}: 동일 이벤트에서 이미 발송됨 (합산하여 입력 필요)`);
             }
           }
 
-          // 일반 중복 체크: 하루 기준 동일상품 동일번호 발송 횟수
+          // 일반 중복 체크: 하루 기준 동일상품 동일수신처 발송 횟수
           const existingCount = await this.orderDeliveryRepository
             .createQueryBuilder('od')
             .innerJoin('od.orderProductMapping', 'opm')
@@ -1517,16 +1560,23 @@ export class OrderService {
             .getCount();
 
           const totalCount = existingCount + currentCount;
+          const allowedCount = oneUser.duplicatePhoneLimit + 1;
 
           this.logger.debug(
-            `중복 체크 결과: 상품=${orderMapping.productId}, 번호=${phone}, 기존=${existingCount}, 현재=${currentCount}, 합계=${totalCount}, 제한=${oneUser.duplicatePhoneLimit}`,
+            `중복 체크 결과: 상품=${orderMapping.productId}, 수신처=${displayPhone}, 기존=${existingCount}, 현재=${currentCount}, 합계=${totalCount}, 허용=${allowedCount}`,
           );
 
-          if (totalCount > oneUser.duplicatePhoneLimit) {
-            throw new BadRequestException(
-              `중복발송건입니다. 번호 ${phone}는 금일 이미 ${existingCount}건 발송되었고, 현재 주문에 ${currentCount}건 포함되어 총 ${totalCount}건으로 제한(${oneUser.duplicatePhoneLimit}건)을 초과합니다.`,
-            );
+          if (totalCount > allowedCount) {
+            duplicateErrors.push(`- ${displayPhone}: 금일 ${existingCount}건 발송 + 현재 ${currentCount}건 = 총 ${totalCount}건`);
           }
+        }
+
+        // 중복 에러가 있으면 모두 표시
+        if (duplicateErrors.length > 0) {
+          const allowedCount = oneUser.duplicatePhoneLimit + 1;
+          throw new BadRequestException(
+            `중복발송 제한(총 ${allowedCount}건까지 허용)을 초과한 수신처가 ${duplicateErrors.length}건 발견되었습니다:\n\n${duplicateErrors.join('\n')}`,
+          );
         }
       }
     }
