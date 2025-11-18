@@ -381,8 +381,10 @@ export class UserSyncProductService {
 
       let productCount = 0;
       const brandIds = new Set<number>();
+      const eventStatusList: IUserSyncProductStatus[] = [];
 
       for (const event of events) {
+        eventStatusList.push(event.status);
         if (event.userSyncProductEventMappings) {
           for (const mapping of event.userSyncProductEventMappings) {
             productCount++;
@@ -391,6 +393,17 @@ export class UserSyncProductService {
             }
           }
         }
+      }
+
+      if (eventStatusList.length === 0) {
+        continue;
+      }
+
+      const isAllActive =
+        eventStatusList.length > 0 && eventStatusList.every((status) => status === IUserSyncProductStatus.ACTIVE);
+
+      if (!isAllActive) {
+        continue;
       }
 
       list.push({
