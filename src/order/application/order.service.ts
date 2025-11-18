@@ -1403,6 +1403,78 @@ export class OrderService {
       throw new BadRequestException('최대 서비스 한도를 넘어 요청할 수 없습니다.');
     }
 
+    // ======== 중복번호 제어 체크 시작 ========
+    if (oneUser.duplicatePhoneLimit > 0) {
+      this.logger.debug(`중복번호 제어 활성화: limit=${oneUser.duplicatePhoneLimit}`);
+
+      // 오늘 날짜 범위 계산 (00:00:00 ~ 23:59:59)
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+      const todayEnd = new Date();
+      todayEnd.setHours(23, 59, 59, 999);
+
+      for (const orderMapping of order.orderProductMappings!) {
+        // 할인이 적용된 상품만 체크
+        const hasDiscount = orderMapping.fee && orderMapping.fee > 0 && orderMapping.priceAdjustment === 'DISCOUNT';
+
+        if (!hasDiscount) {
+          this.logger.debug(`상품 ${orderMapping.productId}: 할인 미적용, 중복 체크 스킵`);
+          continue;
+        }
+
+        this.logger.debug(`상품 ${orderMapping.productId}: 할인 적용됨 (${orderMapping.fee}%), 중복 체크 시작`);
+
+        for (const orderDelivery of orderMapping.orderDeliveries) {
+          // 신세계 특별 케이스: 동일 이벤트 + 동일 상품 중복 체크
+          if (order.type === IOrderType.SSG) {
+            // 같은 이벤트, 같은 상품, 같은 번호로 이미 주문이 있는지 확인
+            const sameEventOrderCount = await this.orderDeliveryRepository
+              .createQueryBuilder('od')
+              .innerJoin('od.orderProductMapping', 'opm')
+              .innerJoin('opm.order', 'o')
+              .where('o.userId = :userId', { userId: user.id })
+              .andWhere('o.eventName = :eventName', { eventName: order.eventName })
+              .andWhere('opm.productId = :productId', { productId: orderMapping.productId })
+              .andWhere('od.deliveryTarget = :deliveryTarget', { deliveryTarget: orderDelivery.deliveryTarget })
+              .andWhere('o.status IN (:...statuses)', {
+                statuses: [IOrderStatus.DELIVERY_REQUEST, IOrderStatus.DELIVERY_CONFIRMED, IOrderStatus.DELIVERY_COMPLETE],
+              })
+              .andWhere('o.createdAt >= :todayStart', { todayStart })
+              .andWhere('o.createdAt <= :todayEnd', { todayEnd })
+              .getCount();
+
+            if (sameEventOrderCount > 0) {
+              throw new BadRequestException('동일번호가 존재합니다. 합산하여 입력바랍니다.');
+            }
+          }
+
+          // 일반 중복 체크: 하루 기준 동일상품 동일번호 발송 횟수
+          const duplicateCount = await this.orderDeliveryRepository
+            .createQueryBuilder('od')
+            .innerJoin('od.orderProductMapping', 'opm')
+            .innerJoin('opm.order', 'o')
+            .where('o.userId = :userId', { userId: user.id })
+            .andWhere('opm.productId = :productId', { productId: orderMapping.productId })
+            .andWhere('od.deliveryTarget = :deliveryTarget', { deliveryTarget: orderDelivery.deliveryTarget })
+            .andWhere('o.status IN (:...statuses)', {
+              statuses: [IOrderStatus.DELIVERY_REQUEST, IOrderStatus.DELIVERY_CONFIRMED, IOrderStatus.DELIVERY_COMPLETE],
+            })
+            .andWhere('o.createdAt >= :todayStart', { todayStart })
+            .andWhere('o.createdAt <= :todayEnd', { todayEnd })
+            .getCount();
+
+          this.logger.debug(
+            `중복 체크 결과: 상품=${orderMapping.productId}, 번호=${orderDelivery.deliveryTarget}, 기존 발송=${duplicateCount}, 제한=${oneUser.duplicatePhoneLimit}`,
+          );
+
+          if (duplicateCount >= oneUser.duplicatePhoneLimit) {
+            throw new BadRequestException('중복발송건입니다. 금일 발송이 제한됩니다.');
+          }
+        }
+      }
+    }
+    // ======== 중복번호 제어 체크 끝 ========
+
     // 신세계 상품 검증 및 이벤트 자동 선택
     if (order.type === IOrderType.SSG) {
       // 상품 가격으로 전체 가격 계산

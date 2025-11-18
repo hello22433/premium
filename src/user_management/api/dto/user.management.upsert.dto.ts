@@ -162,4 +162,13 @@ export class UserManagementUpsertDto {
   @IsOptional()
   @IsNumber()
   settlePeriodCount: number | null;
+
+  @ApiPropertyOptional({
+    description: '중복번호제어 (0: 중복허용, 1~10: 해당 개수만큼 중복 허용)',
+    default: 0,
+  })
+  // ============================
+  @IsOptional()
+  @IsNumber()
+  duplicatePhoneLimit: number = 0;
 }
