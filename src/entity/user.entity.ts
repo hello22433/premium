@@ -127,6 +127,9 @@ export class UserEntity extends BaseEntity {
   @Column({ type: 'int', default: 0, comment: '서비스 금액' })
   serviceAmount: number;
 
+  @Column({ type: 'int', default: 0, comment: '중복번호제어 (0: 중복허용, 1~10: 해당 개수만큼 중복 허용)' })
+  duplicatePhoneLimit: number;
+
   @OneToMany(() => OrderEntity, (order) => order.user)
   orders: OrderEntity[];
 

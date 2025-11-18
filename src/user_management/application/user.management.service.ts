@@ -140,6 +140,7 @@ export class UserManagementService {
         maximumLimit: user.maximumLimit,
         balance: user.balance,
         status: user.status,
+        duplicatePhoneLimit: user.duplicatePhoneLimit,
       };
     });
 
@@ -193,6 +194,7 @@ export class UserManagementService {
 
       settlePeriodCondition: user.settlePeriodCondition,
       settlePeriodCount: user.settlePeriodCount,
+      duplicatePhoneLimit: user.duplicatePhoneLimit,
     };
   }
 
@@ -290,6 +292,7 @@ export class UserManagementService {
       fromPhoneNumber: getBody.fromPhoneNumber,
       settlePeriodCondition: getBody.settlePeriodCondition,
       settlePeriodCount: getBody.settlePeriodCount,
+      duplicatePhoneLimit: getBody.duplicatePhoneLimit ?? 0,
     });
 
     return;
@@ -332,6 +335,7 @@ export class UserManagementService {
 
     user.settlePeriodCondition = getBody.settlePeriodCondition;
     user.settlePeriodCount = getBody.settlePeriodCount;
+    user.duplicatePhoneLimit = getBody.duplicatePhoneLimit ?? 0;
 
     await this.userRepository.save(user);
 

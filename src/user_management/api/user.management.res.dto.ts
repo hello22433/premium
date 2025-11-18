@@ -157,6 +157,11 @@ export class UserManagementGetDetailResDto {
     description: '발송 조건 일',
   })
   settlePeriodCount: number | null;
+
+  @ApiProperty({
+    description: '중복번호제어 (0: 중복허용, 1~10: 해당 개수만큼 중복 허용)',
+  })
+  duplicatePhoneLimit: number;
 }
 
 export class UserManagementGetListResDto extends GetListResDto {

@@ -1403,6 +1403,135 @@ export class OrderService {
       throw new BadRequestException('최대 서비스 한도를 넘어 요청할 수 없습니다.');
     }
 
+    // ======== 중복번호 제어 체크 시작 ========
+    if (oneUser.duplicatePhoneLimit > 0) {
+      this.logger.debug(`중복번호 제어 활성화: limit=${oneUser.duplicatePhoneLimit}`);
+
+      // 오늘 날짜 범위 계산 (00:00:00 ~ 23:59:59)
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+      const todayEnd = new Date();
+      todayEnd.setHours(23, 59, 59, 999);
+
+      // user_discount 조회 (유저별 또는 협력사별 할인 규칙)
+      const userDiscounts = await this.userDiscountRepository.find({
+        where: [{ userId: user.id }, { partnerCompanyId: In(order.orderProductMappings!.map((m) => m.product!.partnerCompanyId)) }],
+      });
+
+      for (const orderMapping of order.orderProductMappings!) {
+        // 할인이 적용된 상품만 체크
+        // orderMapping.fee가 아직 설정되지 않았을 수 있으므로, user_discount와 product를 비교해서 판단
+        let hasDiscount = false;
+        let discountPercent = 0;
+
+        // 1. orderMapping에 이미 fee와 priceAdjustment가 설정되어 있는 경우
+        if (orderMapping.fee !== null && orderMapping.fee !== undefined && orderMapping.priceAdjustment === 'DISCOUNT') {
+          hasDiscount = orderMapping.fee > 0;
+          discountPercent = orderMapping.fee;
+        }
+        // 2. 설정되지 않은 경우, user_discount에서 찾기
+        else {
+          for (const discount of userDiscounts) {
+            // CATEGORY 방식: primaryCategory와 상품의 category 비교
+            if (discount.category === 'CATEGORY' && discount.primaryCategory === orderMapping.product!.category) {
+              if (discount.priceAdjustment === 'DISCOUNT') {
+                hasDiscount = true;
+                discountPercent = discount.pricePercent;
+                break;
+              }
+            }
+            // CLASSIFICATION 방식: group과 상품의 classification 비교
+            else if (discount.category === 'CLASSIFICATION' && discount.group === orderMapping.product!.classification) {
+              if (discount.priceAdjustment === 'DISCOUNT') {
+                hasDiscount = true;
+                discountPercent = discount.pricePercent;
+                break;
+              }
+            }
+          }
+        }
+
+        if (!hasDiscount) {
+          this.logger.debug(`상품 ${orderMapping.productId}: 할인 미적용, 중복 체크 스킵`);
+          continue;
+        }
+
+        this.logger.debug(`상품 ${orderMapping.productId}: 할인 적용됨 (${discountPercent}%), 중복 체크 시작`);
+
+        // ======== 현재 주문 내 중복 체크 ========
+        const currentOrderPhoneCount = new Map<string, number>(); // key: deliveryTarget, value: count
+
+        for (const od of orderMapping.orderDeliveries) {
+          const phone = od.deliveryTarget;
+          currentOrderPhoneCount.set(phone, (currentOrderPhoneCount.get(phone) || 0) + 1);
+        }
+
+        // 현재 주문 내에서 중복된 번호가 limit를 초과하는지 체크
+        for (const [phone, count] of currentOrderPhoneCount.entries()) {
+          if (count > oneUser.duplicatePhoneLimit) {
+            throw new BadRequestException(
+              `동일번호(${phone})가 현재 주문에 ${count}건 포함되어 있습니다. 중복 제한(${oneUser.duplicatePhoneLimit}건)을 초과합니다.`,
+            );
+          }
+        }
+
+        // ======== 기존 주문과 중복 체크 ========
+        // 각 고유 번호에 대해 기존 주문과 현재 주문을 합쳐서 체크
+        for (const [phone, currentCount] of currentOrderPhoneCount.entries()) {
+          // 신세계 특별 케이스: 동일 이벤트 + 동일 상품 중복 체크
+          if (order.type === IOrderType.SSG) {
+            // 같은 이벤트, 같은 상품, 같은 번호로 이미 주문이 있는지 확인
+            const sameEventOrderCount = await this.orderDeliveryRepository
+              .createQueryBuilder('od')
+              .innerJoin('od.orderProductMapping', 'opm')
+              .innerJoin('opm.order', 'o')
+              .where('o.userId = :userId', { userId: user.id })
+              .andWhere('o.eventName = :eventName', { eventName: order.eventName })
+              .andWhere('opm.productId = :productId', { productId: orderMapping.productId })
+              .andWhere('od.deliveryTarget = :deliveryTarget', { deliveryTarget: phone })
+              .andWhere('o.status IN (:...statuses)', {
+                statuses: [IOrderStatus.DELIVERY_REQUEST, IOrderStatus.DELIVERY_CONFIRMED, IOrderStatus.DELIVERY_COMPLETE],
+              })
+              .andWhere('o.createdAt >= :todayStart', { todayStart })
+              .andWhere('o.createdAt <= :todayEnd', { todayEnd })
+              .getCount();
+
+            if (sameEventOrderCount > 0) {
+              throw new BadRequestException('동일번호가 존재합니다. 합산하여 입력바랍니다.');
+            }
+          }
+
+          // 일반 중복 체크: 하루 기준 동일상품 동일번호 발송 횟수
+          const existingCount = await this.orderDeliveryRepository
+            .createQueryBuilder('od')
+            .innerJoin('od.orderProductMapping', 'opm')
+            .innerJoin('opm.order', 'o')
+            .where('o.userId = :userId', { userId: user.id })
+            .andWhere('opm.productId = :productId', { productId: orderMapping.productId })
+            .andWhere('od.deliveryTarget = :deliveryTarget', { deliveryTarget: phone })
+            .andWhere('o.status IN (:...statuses)', {
+              statuses: [IOrderStatus.DELIVERY_REQUEST, IOrderStatus.DELIVERY_CONFIRMED, IOrderStatus.DELIVERY_COMPLETE],
+            })
+            .andWhere('o.createdAt >= :todayStart', { todayStart })
+            .andWhere('o.createdAt <= :todayEnd', { todayEnd })
+            .getCount();
+
+          const totalCount = existingCount + currentCount;
+
+          this.logger.debug(
+            `중복 체크 결과: 상품=${orderMapping.productId}, 번호=${phone}, 기존=${existingCount}, 현재=${currentCount}, 합계=${totalCount}, 제한=${oneUser.duplicatePhoneLimit}`,
+          );
+
+          if (totalCount > oneUser.duplicatePhoneLimit) {
+            throw new BadRequestException(
+              `중복발송건입니다. 번호 ${phone}는 금일 이미 ${existingCount}건 발송되었고, 현재 주문에 ${currentCount}건 포함되어 총 ${totalCount}건으로 제한(${oneUser.duplicatePhoneLimit}건)을 초과합니다.`,
+            );
+          }
+        }
+      }
+    }
+    // ======== 중복번호 제어 체크 끝 ========
+
     // 신세계 상품 검증 및 이벤트 자동 선택
     if (order.type === IOrderType.SSG) {
       // 상품 가격으로 전체 가격 계산

@@ -12,6 +12,9 @@ ALTER TABLE user
 ALTER TABLE user
     ADD COLUMN service_amount INT DEFAULT 0 COMMENT '서비스 금액';
 
+ALTER TABLE user
+    ADD COLUMN duplicate_phone_limit INT DEFAULT 0 NOT NULL COMMENT '중복번호제어 (0: 중복허용, 1~10: 해당 개수만큼 중복 허용)';
+
 UPDATE
     user u
 SET

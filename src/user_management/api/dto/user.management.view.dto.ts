@@ -58,4 +58,9 @@ export class UserManagementViewDto {
     description: '회원 상태',
   })
   status: IUserStatus;
+
+  @ApiProperty({
+    description: '중복번호제어 (0: 중복허용, 1~10: 해당 개수만큼 중복 허용)',
+  })
+  duplicatePhoneLimit: number;
 }
