@@ -1,10 +1,11 @@
-import { Body, Controller, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
 import { UserInfoService } from '../application/user.info.service';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { UserInfoChangePasswordReqDto } from './user.info.req.dto';
 import { User } from '../../auth/api/user.decorator';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
+import { UserGetAuthListResDto } from './user.info.res.dto';
 
 @ApiTags('user-info')
 @Controller('')
@@ -21,5 +22,20 @@ export class UserInfoController {
   @Post('/user-info/change-password')
   async changePassword(@User() user: ILoginUserInfo, @Body() getBody: UserInfoChangePasswordReqDto) {
     return this.userInfoService.changePassword(user, getBody);
+  }
+
+  @ApiOperation({
+    summary: '유저의 권한 불러오기 API',
+  })
+  @ApiBearerAuth()
+  @ApiOkResponse({
+    type: UserGetAuthListResDto,
+    description: '권한조회',
+  })
+  // =================================================
+  @UseGuards(AuthUserAuthorizationGuard)
+  @Get('/user-info/auth-list')
+  async getAuthList(@User() user: ILoginUserInfo) {
+    return this.userInfoService.getAuthList(user);
   }
 }

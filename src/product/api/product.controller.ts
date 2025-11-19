@@ -189,7 +189,11 @@ export class ProductController {
   // ===================================================
   @Post('/product/excel-download')
   @UseFilters(DownloadExceptionFilter)
-  async excelDownload(@User() user: ILoginUserInfo, @Body() getBody: ProductExcelDownloadReqBodyDto, @Res() res: Response) {
+  async excelDownload(
+    @User() user: ILoginUserInfo,
+    @Body() getBody: ProductExcelDownloadReqBodyDto,
+    @Res() res: Response,
+  ) {
     try {
       const { fileName, filePath } = await this.productService.excelDownload(user, getBody);
 

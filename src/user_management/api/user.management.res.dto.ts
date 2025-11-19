@@ -162,6 +162,11 @@ export class UserManagementGetDetailResDto {
     description: '중복번호제어 (0: 중복허용, 1~10: 해당 개수만큼 중복 허용)',
   })
   duplicatePhoneLimit: number;
+
+  @ApiProperty({
+    description: '권한 허용 list',
+  })
+  authorityList: string[];
 }
 
 export class UserManagementGetListResDto extends GetListResDto {

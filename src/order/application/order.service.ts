@@ -1415,7 +1415,10 @@ export class OrderService {
 
       // user_discount 조회 (유저별 또는 협력사별 할인 규칙)
       const userDiscounts = await this.userDiscountRepository.find({
-        where: [{ userId: user.id }, { partnerCompanyId: In(order.orderProductMappings!.map((m) => m.product!.partnerCompanyId)) }],
+        where: [
+          { userId: user.id },
+          { partnerCompanyId: In(order.orderProductMappings!.map((m) => m.product!.partnerCompanyId)) },
+        ],
       });
 
       this.logger.debug(
@@ -1442,7 +1445,11 @@ export class OrderService {
         let discountPercent = 0;
 
         // 1. orderMapping에 이미 fee와 priceAdjustment가 설정되어 있는 경우
-        if (orderMapping.fee !== null && orderMapping.fee !== undefined && orderMapping.priceAdjustment === 'DISCOUNT') {
+        if (
+          orderMapping.fee !== null &&
+          orderMapping.fee !== undefined &&
+          orderMapping.priceAdjustment === 'DISCOUNT'
+        ) {
           hasDiscount = orderMapping.fee > 0;
           discountPercent = orderMapping.fee;
           this.logger.debug(`상품 ${orderMapping.productId}: 기존 fee/priceAdjustment로 할인 적용 확인됨`);
@@ -1462,7 +1469,10 @@ export class OrderService {
               }
             }
             // CLASSIFICATION 방식: primaryCategory(대분류)와 상품의 classification 비교
-            else if (discount.category === 'CLASSIFICATION' && discount.primaryCategory === orderMapping.product!.classification) {
+            else if (
+              discount.category === 'CLASSIFICATION' &&
+              discount.primaryCategory === orderMapping.product!.classification
+            ) {
               if (discount.priceAdjustment === 'DISCOUNT') {
                 hasDiscount = true;
                 discountPercent = discount.pricePercent;
@@ -1533,7 +1543,11 @@ export class OrderService {
               .andWhere('opm.productId = :productId', { productId: orderMapping.productId })
               .andWhere('od.deliveryTarget = :deliveryTarget', { deliveryTarget: phone })
               .andWhere('o.status IN (:...statuses)', {
-                statuses: [IOrderStatus.DELIVERY_REQUEST, IOrderStatus.DELIVERY_CONFIRMED, IOrderStatus.DELIVERY_COMPLETE],
+                statuses: [
+                  IOrderStatus.DELIVERY_REQUEST,
+                  IOrderStatus.DELIVERY_CONFIRMED,
+                  IOrderStatus.DELIVERY_COMPLETE,
+                ],
               })
               .andWhere('o.createdAt >= :todayStart', { todayStart })
               .andWhere('o.createdAt <= :todayEnd', { todayEnd })
@@ -1553,7 +1567,11 @@ export class OrderService {
             .andWhere('opm.productId = :productId', { productId: orderMapping.productId })
             .andWhere('od.deliveryTarget = :deliveryTarget', { deliveryTarget: phone })
             .andWhere('o.status IN (:...statuses)', {
-              statuses: [IOrderStatus.DELIVERY_REQUEST, IOrderStatus.DELIVERY_CONFIRMED, IOrderStatus.DELIVERY_COMPLETE],
+              statuses: [
+                IOrderStatus.DELIVERY_REQUEST,
+                IOrderStatus.DELIVERY_CONFIRMED,
+                IOrderStatus.DELIVERY_COMPLETE,
+              ],
             })
             .andWhere('o.createdAt >= :todayStart', { todayStart })
             .andWhere('o.createdAt <= :todayEnd', { todayEnd })
@@ -1567,7 +1585,9 @@ export class OrderService {
           );
 
           if (totalCount > allowedCount) {
-            duplicateErrors.push(`- ${displayPhone}: 금일 ${existingCount}건 발송 + 현재 ${currentCount}건 = 총 ${totalCount}건`);
+            duplicateErrors.push(
+              `- ${displayPhone}: 금일 ${existingCount}건 발송 + 현재 ${currentCount}건 = 총 ${totalCount}건`,
+            );
           }
         }
 
