@@ -36,20 +36,30 @@ export class MaskingUtil {
 
   /**
    * 이메일 마스킹 처리
-   * test@example.com -> t***@example.com
-   * development@enmad.com -> d***@enmad.com
+   * - 아이디가 5글자 이하: 앞 2글자만 보여주고 나머지는 ****로 마스킹
+   *   예: abc@test.com -> ab****@test.com
+   * - 아이디가 6글자 이상: 앞뒤 2글자만 보여주고 중간은 ****로 마스킹
+   *   예: abcdef@test.com -> ab****ef@test.com
    */
   static maskEmail(email: string): string {
     if (!email || !email.includes('@')) return '';
 
     const [localPart, domain] = email.split('@');
+    const localLength = localPart.length;
 
-    if (localPart.length <= 1) {
+    if (localLength <= 2) {
+      // 2글자 이하는 전체 마스킹
       return `****@${domain}`;
+    } else if (localLength <= 5) {
+      // 5글자 이하: 앞 2글자만 보여주고 나머지는 ****
+      const visiblePart = localPart.substring(0, 2);
+      return `${visiblePart}****@${domain}`;
+    } else {
+      // 6글자 이상: 앞뒤 2글자만 보여주고 중간은 ****
+      const firstPart = localPart.substring(0, 2);
+      const lastPart = localPart.substring(localLength - 2);
+      return `${firstPart}****${lastPart}@${domain}`;
     }
-
-    const maskedLocal = localPart.charAt(0) + '****';
-    return `${maskedLocal}@${domain}`;
   }
 
   /**

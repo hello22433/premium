@@ -18,6 +18,7 @@ import { UserTaskHistoryEntity } from '../../entity/user.task.history.entity';
 import { UserTaskHistoryDetailViewDto } from '../api/dto/user.task.history.detail.view.dto';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { QueryBuilderDateCondition } from '../../common/infra/query.builder.date.condition';
+import { MaskingUtil } from '../../common/utils/masking.util';
 
 @Injectable()
 export class UserTaskHistoryService {
@@ -112,11 +113,10 @@ export class UserTaskHistoryService {
       return {
         id: user.id,
         registerDate: format(user.createdAt, DateDateFormatStr),
-        email: user.email,
+        email: MaskingUtil.maskEmail(user.email),
         personCode: user.personCode,
         businessName: user.businessName,
         personName: user.personName,
-        personPhoneNumber: user.personPhoneNumber,
         transactionAmount: transactionAmount,
         transactionCount: transactionCount,
         businessGrade: user.businessGrade,

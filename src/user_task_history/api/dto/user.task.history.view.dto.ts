@@ -32,11 +32,6 @@ export class UserTaskHistoryViewDto {
   personName: string;
 
   @ApiProperty({
-    description: '담당자 연락처',
-  })
-  personPhoneNumber: string;
-
-  @ApiProperty({
     description: '거래금액',
   })
   transactionAmount: number;
