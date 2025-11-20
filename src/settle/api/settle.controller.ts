@@ -43,17 +43,20 @@ import {
 } from './settle.req.dto';
 import * as fs from 'fs';
 import { Response } from 'express';
+import { UserAuthSubEnum } from '../../user_management/domain/user.auth.enum';
+import { AuthService } from '../../auth/application/auth.service';
 
 @Controller('')
 @ApiTags('settle')
 @ApiBearerAuth()
-@UseGuards(AuthUserSuperAndOperationAdminGuard)
+@UseGuards(AuthUserAuthorizationGuard)
 export class SettleController {
   private logger = new Logger('SETTLE');
 
   constructor(
     private settleService: SettleService,
     private activityLogService: ActivityLogService,
+    private authService: AuthService,
   ) {}
 
   @ApiOperation({
@@ -64,7 +67,8 @@ export class SettleController {
   })
   // =====================================
   @Get('settle/other-service-sale/list')
-  getOtherList(@Query() getQuery: SettleGetOtherServiceSaleGetListReqDto) {
+  async getOtherList(@User() user: ILoginUserInfo, @Query() getQuery: SettleGetOtherServiceSaleGetListReqDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.SERVICE_SALES);
     return this.settleService.getOtherList(getQuery);
   }
 
@@ -179,7 +183,8 @@ export class SettleController {
   })
   // =====================================
   @Get('settle/mobile/list')
-  getMobileList(@Query() getQuery: SettleGetMobileListReqQueryDto) {
+  async getMobileList(@User() user: ILoginUserInfo, @Query() getQuery: SettleGetMobileListReqQueryDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.PROFIT);
     return this.settleService.getMobileList(getQuery);
   }
 
@@ -229,7 +234,8 @@ export class SettleController {
   })
   // =====================================
   @Get('settle/partner-company/list')
-  getPartnerCompanyList(@Query() getQuery: SettleGetPartnerCompanyListReqQueryDto) {
+  async getPartnerCompanyList(@User() user: ILoginUserInfo, @Query() getQuery: SettleGetPartnerCompanyListReqQueryDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.SETTLE_PARTNER_COMPANY);
     return this.settleService.getPartnerCompanyList(getQuery);
   }
 
@@ -242,7 +248,8 @@ export class SettleController {
   })
   // =====================================
   @Get('settle/user/list')
-  getUserList(@Query() getQuery: SettleGetUserListReqQueryDto) {
+  async getUserList(@User() user: ILoginUserInfo, @Query() getQuery: SettleGetUserListReqQueryDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.SETTLE_USER);
     return this.settleService.getUserList(getQuery);
   }
 
@@ -308,7 +315,8 @@ export class SettleController {
   })
   // =====================================
   @Get('settle/user-per/list')
-  getUserPerList(@Query() getDto: SettleGetUserPerListReqQueryDto) {
+  async getUserPerList(@User() user: ILoginUserInfo, @Query() getDto: SettleGetUserPerListReqQueryDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.SETTLE_USER_MANAGE);
     return this.settleService.getUserPerList(getDto);
   }
 

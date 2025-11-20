@@ -11,11 +11,17 @@ import { NoticeGetDetailResDto, NoticeGetListResDto } from './notice.res.dto';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { User } from '../../auth/api/user.decorator';
+import { AuthService } from '../../auth/application/auth.service';
+import { UserAuthSubEnum } from '../../user_management/domain/user.auth.enum';
 
 @ApiTags('notice')
 @Controller('')
+@UseGuards(AuthUserAuthorizationGuard)
 export class NoticeController {
-  constructor(private noticeService: NoticeService) {}
+  constructor(
+    private noticeService: NoticeService,
+    private authService: AuthService,
+  ) {}
 
   @ApiOperation({
     summary: '공지사항 list API',
@@ -26,7 +32,8 @@ export class NoticeController {
   })
   // ===================================================
   @Get('/notice/list')
-  getList(@Query() getQuery: NoticeGetListReqQueryDto) {
+  async getList(@User() user: ILoginUserInfo, @Query() getQuery: NoticeGetListReqQueryDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.NOTICE);
     return this.noticeService.getList(getQuery);
   }
 

@@ -14,6 +14,10 @@ import {
   ProductChoiceGetProductListResDto,
 } from './product.choice.res.dto';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
+import { UserAuthSubEnum } from '../../user_management/domain/user.auth.enum';
+import { ILoginUserInfo } from '../../auth/interface/login.user';
+import { User } from '../../auth/api/user.decorator';
+import { AuthService } from '../../auth/application/auth.service';
 
 @ApiTags('product-choice')
 @ApiBearerAuth()
@@ -21,7 +25,10 @@ import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorizati
 @UseGuards(AuthUserAuthorizationGuard)
 @Controller('')
 export class ProductChoiceController {
-  constructor(private productChoiceService: ProductChoiceService) {}
+  constructor(
+    private productChoiceService: ProductChoiceService,
+    private authService: AuthService,
+  ) {}
 
   @ApiOperation({
     summary: '초이스쿠폰 리스트 조회하기 API',
@@ -61,9 +68,11 @@ export class ProductChoiceController {
   })
   // =========================================
   @Get('/product-choice/product/list')
-  getProductList(
+  async getProductList(
+    @User() user: ILoginUserInfo,
     @Query() getQuery: ProductChoiceGetProductListReqQueryDto,
   ): Promise<ProductChoiceGetProductListResDto> {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.PRODUCT_CHOICE);
     return this.productChoiceService.getProductList(getQuery);
   }
 

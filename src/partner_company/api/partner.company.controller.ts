@@ -14,13 +14,20 @@ import {
   PartnerCompanyUpdateReqDto,
 } from './partner.company.req.dto';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
+import { ILoginUserInfo } from '../../auth/interface/login.user';
+import { AuthService } from '../../auth/application/auth.service';
+import { User } from '../../auth/api/user.decorator';
+import { UserAuthSubEnum } from '../../user_management/domain/user.auth.enum';
 
 @ApiTags('partner-company')
 @ApiBearerAuth()
 @UseGuards(AuthUserAuthorizationGuard)
 @Controller('')
 export class PartnerCompanyController {
-  constructor(private partnerCompanyService: PartnerCompanyService) {}
+  constructor(
+    private partnerCompanyService: PartnerCompanyService,
+    private authService: AuthService,
+  ) {}
 
   @ApiOperation({
     summary: '협력사 Select 리스트 조회 API',
@@ -45,7 +52,9 @@ export class PartnerCompanyController {
   })
   // =====================================
   @Get('/partner-company/search/list')
-  getSearchList(@Query() getQuery: PartnerCompanyGetSearchListReqQueryDto) {
+  async getSearchList(@User() user: ILoginUserInfo, @Query() getQuery: PartnerCompanyGetSearchListReqQueryDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.PARTNER);
+
     return this.partnerCompanyService.getSearchList(getQuery);
   }
 

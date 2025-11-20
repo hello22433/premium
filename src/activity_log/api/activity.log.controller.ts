@@ -8,13 +8,18 @@ import { AuthUserSuperAndOperationAdminGuard } from '../../auth/api/auth.user.su
 import { User } from '../../auth/api/user.decorator';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { ActivityLogResult } from '../interface/activity.log.result';
+import { AuthService } from '../../auth/application/auth.service';
+import { UserAuthSubEnum } from '../../user_management/domain/user.auth.enum';
 
 @Controller('')
 @ApiTags('activity-log')
 @ApiBearerAuth()
 @UseGuards(AuthUserSuperAndOperationAdminGuard)
 export class ActivityLogController {
-  constructor(private activityLogService: ActivityLogService) {}
+  constructor(
+    private activityLogService: ActivityLogService,
+    private authService: AuthService,
+  ) {}
 
   @ApiOperation({
     description: '활동 로그 목록 조회 API',
@@ -24,7 +29,11 @@ export class ActivityLogController {
     description: '성공적으로 조회한 경우',
   })
   @Get('/activity-log/list')
-  async getList(@Query() dto: GetActivityLogListReqDto): Promise<GetActivityLogListResDto> {
+  async getList(
+    @User() user: ILoginUserInfo,
+    @Query() dto: GetActivityLogListReqDto,
+  ): Promise<GetActivityLogListResDto> {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.ACTIVITY_LOG);
     return this.activityLogService.getActivityLogList(dto);
   }
 

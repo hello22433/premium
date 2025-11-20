@@ -18,11 +18,18 @@ import {
 } from './user.management.res.dto';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
 import { AuthUserSuperAdminGuard } from '../../auth/api/auth.user.super-admin.guard';
+import { UserAuthSubEnum } from '../domain/user.auth.enum';
+import { ILoginUserInfo } from '../../auth/interface/login.user';
+import { AuthService } from '../../auth/application/auth.service';
+import { User } from '../../auth/api/user.decorator';
 
 @ApiTags('user-management')
 @Controller('')
 export class UserManagementController {
-  constructor(private userManagementService: UserManagementService) {}
+  constructor(
+    private userManagementService: UserManagementService,
+    private authService: AuthService,
+  ) {}
 
   @ApiOperation({
     summary: '고객사 이름 list 불러오기 API',
@@ -52,7 +59,8 @@ export class UserManagementController {
   // ====================================
   @UseGuards(AuthUserAuthorizationGuard)
   @Get('/user-management/list')
-  getList(@Query() getQuery: UserManagementGetListReqQueryDto) {
+  async getList(@User() user: ILoginUserInfo, @Query() getQuery: UserManagementGetListReqQueryDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.ACCOUNT);
     return this.userManagementService.getList(getQuery);
   }
 
