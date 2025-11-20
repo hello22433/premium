@@ -480,3 +480,12 @@ export class ProductDeleteReqDto {
   @IsNumber({}, { each: true })
   idList: number[];
 }
+
+export class ClassificationGetSearchListReqDto extends PagingReqDto {
+  @ApiPropertyOptional({
+    description: '검색하고자 하는 대분류명',
+  })
+  // ========================================
+  @IsOptional()
+  searchText?: string;
+}

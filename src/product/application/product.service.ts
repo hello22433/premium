@@ -3,6 +3,7 @@ import { ProductEntity } from '../../entity/product.entity';
 import { FindOptionsWhere, In, Like, Repository } from 'typeorm';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
+  ClassificationGetSearchListReqDto,
   ProductCreateReqDto,
   ProductDeleteReqDto,
   ProductExcelDownloadReqBodyDto,
@@ -16,9 +17,11 @@ import {
   ProductUpdatePartialReqDto,
 } from '../api/product.req.dto';
 import { ProductViewDto } from '../api/dto/product.view.dto';
+import { ClassificationViewDto } from '../api/dto/classification.view.dto';
 import { DateFormatStr } from '../../common/domain/date.format.str';
 import { format } from 'date-fns';
 import {
+  ClassificationGetSearchListResDto,
   ProductGetDetailResDto,
   ProductGetListResDto,
   ProductGetSsgResDto,
@@ -1230,5 +1233,35 @@ export class ProductService {
     const fileName = '상품 등록 템플릿.xlsx';
 
     return { fileName, fileBuffer };
+  }
+
+  async getClassificationSearchList(
+    getQuery: ClassificationGetSearchListReqDto,
+  ): Promise<ClassificationGetSearchListResDto> {
+    const { searchText, take, page } = getQuery;
+
+    let queryBuilder = this.classificationRepository.createQueryBuilder('classification');
+
+    if (searchText) {
+      queryBuilder = queryBuilder.andWhere('classification.classification LIKE :searchText', {
+        searchText: `%${searchText}%`,
+      });
+    }
+
+    const skip = (page - 1) * take;
+    queryBuilder = queryBuilder.take(take).skip(skip);
+
+    const [classificationList, totalCount] = await queryBuilder.getManyAndCount();
+
+    const totalPage = Math.ceil(totalCount / take);
+
+    const resultList: ClassificationViewDto[] = classificationList.map((classification) => {
+      return {
+        id: classification.id,
+        classification: classification.classification,
+      };
+    });
+
+    return { list: resultList, totalCount, totalPage, currentPage: page };
   }
 }

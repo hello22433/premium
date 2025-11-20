@@ -4,6 +4,7 @@ import { GetListResDto } from '../../common/api/dto/get.list.res.dto';
 import { ProductDetailDto } from './dto/product.detail.dto';
 import { ProductHistoryViewDto } from './dto/product.history.view.dto';
 import { ProductSsgDto } from './dto/product.ssg.dto';
+import { ClassificationViewDto } from './dto/classification.view.dto';
 
 export class ProductGetListResDto extends GetListResDto {
   @ApiProperty({
@@ -23,4 +24,12 @@ export class ProductGetUpdateHistoryResDto extends GetListResDto {
     description: '변경 내역 히스토리 list ',
   })
   list: ProductHistoryViewDto[];
+}
+
+export class ClassificationGetSearchListResDto extends GetListResDto {
+  @ApiProperty({
+    type: [ClassificationViewDto],
+    description: '대분류 리스트',
+  })
+  list: ClassificationViewDto[];
 }

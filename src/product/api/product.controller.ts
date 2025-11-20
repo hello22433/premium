@@ -27,6 +27,7 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import {
+  ClassificationGetSearchListReqDto,
   ProductCreateReqDto,
   ProductDeleteReqDto,
   ProductExcelDownloadReqBodyDto,
@@ -42,6 +43,7 @@ import {
 } from './product.req.dto';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
 import {
+  ClassificationGetSearchListResDto,
   ProductGetDetailResDto,
   ProductGetListResDto,
   ProductGetSsgResDto,
@@ -288,5 +290,19 @@ export class ProductController {
   @Delete('/product/list')
   delete(@Body() getDto: ProductDeleteReqDto) {
     return this.productService.delete(getDto);
+  }
+
+  @ApiOperation({
+    summary: '대분류 조회 API',
+    description: '상품 팝업에서 대분류 검색 시 사용합니다.',
+  })
+  @ApiOkResponse({
+    type: ClassificationGetSearchListResDto,
+    description: '성공적으로 조회한 경우',
+  })
+  // =========================================
+  @Get('/classification/search/list')
+  getClassificationSearchList(@Query() getQuery: ClassificationGetSearchListReqDto) {
+    return this.productService.getClassificationSearchList(getQuery);
   }
 }
