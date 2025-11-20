@@ -12,13 +12,18 @@ import { QnaGetDetailResDto, QnaGetListResDto, QnaGetMyQnaHistoryResDto } from '
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
 import { User } from '../../auth/api/user.decorator';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
+import { AuthService } from '../../auth/application/auth.service';
+import { UserAuthSubEnum } from '../../user_management/domain/user.auth.enum';
 
 @ApiTags('qna')
 @ApiBearerAuth()
 @Controller('')
 @UseGuards(AuthUserAuthorizationGuard)
 export class QnaController {
-  constructor(private qnaService: QnaService) {}
+  constructor(
+    private qnaService: QnaService,
+    private authService: AuthService,
+  ) {}
 
   @ApiOperation({
     summary: '1대1 문의 list API',
@@ -29,7 +34,8 @@ export class QnaController {
   })
   // ===================================================
   @Get('/qna/list')
-  getList(@User() user: ILoginUserInfo, @Query() getQuery: QnaGetListReqDto) {
+  async getList(@User() user: ILoginUserInfo, @Query() getQuery: QnaGetListReqDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.QNA);
     return this.qnaService.getList(user, getQuery);
   }
 

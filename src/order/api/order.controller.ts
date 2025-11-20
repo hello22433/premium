@@ -65,6 +65,8 @@ import { AuthUserSuperAdminGuard } from '../../auth/api/auth.user.super-admin.gu
 import * as fs from 'fs';
 import { Response } from 'express';
 import { AuthUserSuperAndOperationAdminGuard } from '../../auth/api/auth.user.super-operation-admin.guard';
+import { AuthService } from '../../auth/application/auth.service';
+import { UserAuthSubEnum } from '../../user_management/domain/user.auth.enum';
 
 @ApiTags('order')
 @ApiBearerAuth()
@@ -74,6 +76,7 @@ export class OrderController {
   constructor(
     private orderService: OrderService,
     private activityLogService: ActivityLogService,
+    private authService: AuthService,
   ) {}
 
   private logger = new Logger('ORDER');
@@ -92,7 +95,23 @@ export class OrderController {
   })
   // ====================================================
   @Get('/order/list')
-  getList(@User() user: ILoginUserInfo, @Query() getQuery: OrderGetListReqDto) {
+  async getList(@User() user: ILoginUserInfo, @Query() getQuery: OrderGetListReqDto) {
+    if (getQuery.section === 'ORDER' && getQuery.type === 'GENERAL') {
+      await this.authService.authorityValidator(user, UserAuthSubEnum.ORDER_GENERAL);
+    }
+
+    if (getQuery.section === 'SHIPPING' && getQuery.type === 'GENERAL') {
+      await this.authService.authorityValidator(user, UserAuthSubEnum.SEND_GENERAL);
+    }
+
+    if (getQuery.section === 'ORDER' && getQuery.type === 'SSG') {
+      await this.authService.authorityValidator(user, UserAuthSubEnum.ORDER_SSG);
+    }
+
+    if (getQuery.section === 'SHIPPING' && getQuery.type === 'SSG') {
+      await this.authService.authorityValidator(user, UserAuthSubEnum.SEND_SSG);
+    }
+
     return this.orderService.getList(user, getQuery);
   }
 

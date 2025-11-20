@@ -24,13 +24,19 @@ import {
 } from './customer.service.res.dto';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { User } from '../../auth/api/user.decorator';
+import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
+import { UserAuthSubEnum } from '../../user_management/domain/user.auth.enum';
+import { AuthService } from '../../auth/application/auth.service';
 
 @Controller('')
 @ApiTags('customer-service')
 @ApiBearerAuth()
-@UseGuards(AuthUserSuperAndOperationAdminGuard)
+@UseGuards(AuthUserAuthorizationGuard)
 export class CustomerServiceController {
-  constructor(private customerServiceService: CustomerServiceService) {}
+  constructor(
+    private customerServiceService: CustomerServiceService,
+    private authService: AuthService,
+  ) {}
 
   @ApiOperation({
     description: '일반쿠폰, 신세계 주문 CS API',
@@ -41,7 +47,15 @@ export class CustomerServiceController {
   })
   // ===============================================
   @Get('/customer-service/list')
-  getList(@Query() getQuery: CustomerServiceGetListReqDto) {
+  async getList(@User() user: ILoginUserInfo, @Query() getQuery: CustomerServiceGetListReqDto) {
+    if (getQuery.orderType === 'GENERAL') {
+      await this.authService.authorityValidator(user, UserAuthSubEnum.CUSTOMER_GENERAL_COUPON);
+    }
+
+    if (getQuery.orderType === 'SSG') {
+      await this.authService.authorityValidator(user, UserAuthSubEnum.CUSTOMER_SSG_COUPON);
+    }
+
     return this.customerServiceService.getList(getQuery);
   }
 

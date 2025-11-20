@@ -18,16 +18,21 @@ import {
   UserSyncProductGetListResDto,
   UserSyncProductGetPersonsByBusinessResDto,
 } from './user.sync.product.res.dto';
-import { AuthUserSuperAdminGuard } from '../../auth/api/auth.user.super-admin.guard';
 import { User } from '../../auth/api/user.decorator';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
+import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
+import { UserAuthSubEnum } from '../../user_management/domain/user.auth.enum';
+import { AuthService } from '../../auth/application/auth.service';
 
 @ApiBearerAuth()
-@UseGuards(AuthUserSuperAdminGuard)
+@UseGuards(AuthUserAuthorizationGuard)
 @ApiTags('user-sync-product')
 @Controller('')
 export class UserSyncProductController {
-  constructor(private userSyncProductService: UserSyncProductService) {}
+  constructor(
+    private userSyncProductService: UserSyncProductService,
+    private authService: AuthService,
+  ) {}
 
   @ApiOperation({
     summary: '연동 상품 등록 이벤트 list 조회',
@@ -39,7 +44,8 @@ export class UserSyncProductController {
   })
   // =========================================
   @Get('/user-sync-product/list')
-  getList(@Query() getQuery: UserSyncProductGetListReqDto) {
+  async getList(@User() user: ILoginUserInfo, @Query() getQuery: UserSyncProductGetListReqDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.PRODUCT_CUSTOMER_LINK_ITEM);
     return this.userSyncProductService.getList(getQuery);
   }
 

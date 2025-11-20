@@ -54,6 +54,8 @@ import { Response } from 'express';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { join } from 'path';
 import * as process from 'node:process';
+import { AuthService } from '../../auth/application/auth.service';
+import { UserAuthSubEnum } from '../../user_management/domain/user.auth.enum';
 
 @ApiBearerAuth()
 @UseGuards(AuthUserAuthorizationGuard)
@@ -63,6 +65,7 @@ export class ProductController {
   constructor(
     private productService: ProductService,
     private activityLogService: ActivityLogService,
+    private authService: AuthService,
   ) {}
 
   private logger = new Logger('PRODUCT');
@@ -91,7 +94,7 @@ export class ProductController {
   })
   // =========================================
   @Get('/product/list')
-  getList(@User() user: ILoginUserInfo, @Query() getQuery: ProductGetListReqQueryDto) {
+  async getList(@User() user: ILoginUserInfo, @Query() getQuery: ProductGetListReqQueryDto) {
     return this.productService.getList(user, getQuery);
   }
 
