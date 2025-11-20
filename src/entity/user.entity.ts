@@ -23,6 +23,9 @@ export class UserEntity extends BaseEntity {
   @Column({ comment: '비밀번호 초기화 여부' })
   isPasswordReset: boolean;
 
+  @Column({ type: 'datetime', nullable: true, comment: '비밀번호 마지막 변경 일시' })
+  passwordChangedAt: Date | null;
+
   @Column({
     type: 'varchar',
     length: 256,

@@ -140,6 +140,7 @@ export class UserFindService {
 
     user.password = await this.passwordEncrypt.encrypt(tempPassword);
     user.isPasswordReset = true;
+    user.passwordChangedAt = null; // 임시 비밀번호이므로 null로 설정
 
     await this.userRepository.save(user);
     emailSendHistory.isCertified = true;

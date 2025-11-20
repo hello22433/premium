@@ -41,6 +41,20 @@ export class UserLoginByEmailPasswordResDto {
     description: '로그인 이메일 인증 진행 여부 ex) true : 인증한경우 false: 인증하지 않은 경우',
   })
   readonly isEmailVerify: boolean;
+
+  @ApiProperty({
+    type: Date,
+    nullable: true,
+    description: '비밀번호 마지막 변경 일시 (null이면 임시 비밀번호)',
+  })
+  readonly passwordChangedAt: Date | null;
+
+  @ApiProperty({
+    type: Number,
+    nullable: true,
+    description: '비밀번호 만료 기간 (일 단위)',
+  })
+  readonly passwordExpiryDays: number | null;
 }
 
 export class UserLoginEmailResDto {

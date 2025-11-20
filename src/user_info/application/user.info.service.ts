@@ -30,6 +30,29 @@ export class UserInfoService {
 
     oneUser.password = await this.passwordEncrypt.encrypt(getBody.password);
     oneUser.isPasswordReset = false;
+    oneUser.passwordChangedAt = new Date();
+    await this.userRepository.save(oneUser);
+    return;
+  }
+
+  async postponePasswordChange(user: ILoginUserInfo) {
+    const oneUser = await this.userRepository.findOne({
+      where: {
+        id: user.id,
+      },
+    });
+
+    if (!oneUser) {
+      throw new BadRequestException('유저가 존재하지 않습니다.');
+    }
+
+    // passwordChangedAt이 null이면 연기 불가 (임시 비밀번호는 반드시 변경해야 함)
+    if (!oneUser.passwordChangedAt) {
+      throw new BadRequestException('임시 비밀번호는 반드시 변경해야 합니다.');
+    }
+
+    // passwordChangedAt을 현재 날짜로 업데이트하여 비밀번호 변경 연기
+    oneUser.passwordChangedAt = new Date();
     await this.userRepository.save(oneUser);
     return;
   }

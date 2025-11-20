@@ -8,15 +8,16 @@ import {
 import { PasswordBcryptEncrypt } from '../../auth/infrastructure/password.bcrypt.encrypt';
 import { ILoginTokenValidator } from '../../auth/interface/login.token.validator';
 import { UserEntity } from '../../entity/user.entity';
+import { PasswordPolicyEntity } from '../../entity/password.policy.entity';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Between, Repository } from 'typeorm';
+import { Between, IsNull, Repository } from 'typeorm';
 import { Transactional } from 'typeorm-transactional';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { UserLoginByEmailPasswordResDto } from '../api/user.res.dto';
 import { EmailSendHistoryEntity } from '../../entity/email.send.history.entity';
 import { IMailSend } from '../../mail/interface/mail-send';
 import { EmailType } from '../../mail/domain/email.type';
-import { addMinutes, endOfDay, startOfDay } from 'date-fns';
+import { addMinutes, differenceInDays, endOfDay, startOfDay } from 'date-fns';
 import { generateRandomCode } from '../../user_find/domain/code.generate';
 import { EmailCertifyExpireMinute } from '../../const';
 import { userLoginTemplateHtml } from '../domain/user.login.template.html';
@@ -35,6 +36,8 @@ export class UserService {
     private userRepository: Repository<UserEntity>,
     @InjectRepository(EmailSendHistoryEntity)
     private emailSendHistoryRepository: Repository<EmailSendHistoryEntity>,
+    @InjectRepository(PasswordPolicyEntity)
+    private passwordPolicyRepository: Repository<PasswordPolicyEntity>,
     @Inject('IMailSend')
     private readonly mailSendService: IMailSend,
   ) {}
@@ -92,6 +95,7 @@ export class UserService {
       businessPhoneNumber,
       ip,
       isPasswordReset: false,
+      passwordChangedAt: new Date(),
       authority: IUserAuthority.CORPORATE_ADMIN,
       status: IUserStatus.NOT_APPROVED,
       personCode: businessNumber,
@@ -127,6 +131,28 @@ export class UserService {
     const isPasswordMatch = await this.passwordEncrypt.compare(password, user.password);
     if (!isPasswordMatch) {
       throw new BadRequestException('USER_DO_NOT_MATCH_PASSWORD');
+    }
+
+    // password_policy에서 최신 정책 조회 (soft delete 제외)
+    const passwordPolicy = await this.passwordPolicyRepository.findOne({
+      where: { deletedAt: IsNull() },
+      order: { createdAt: 'DESC' },
+    });
+
+    // 비밀번호 변경 기간 체크
+    let shouldResetPassword = user.isPasswordReset;
+
+    if (!shouldResetPassword && passwordPolicy) {
+      const now = new Date();
+      // passwordChangedAt이 null이거나 설정된 기간이 지났으면 비밀번호 변경 필요
+      if (!user.passwordChangedAt) {
+        shouldResetPassword = true;
+      } else {
+        const daysSincePasswordChange = differenceInDays(now, user.passwordChangedAt);
+        if (daysSincePasswordChange >= passwordPolicy.passwordExpiryDays) {
+          shouldResetPassword = true;
+        }
+      }
     }
 
     if (reqIp != '::1') {
@@ -173,8 +199,10 @@ export class UserService {
         ...this.loginTokenValidator.issuance(loginUserInfo),
         authority: user.authority,
         personName: user.personName,
-        isPasswordReset: user.isPasswordReset,
+        isPasswordReset: shouldResetPassword,
         isEmailVerify: false,
+        passwordChangedAt: user.passwordChangedAt,
+        passwordExpiryDays: passwordPolicy?.passwordExpiryDays ?? null,
       };
     }
 
@@ -182,8 +210,10 @@ export class UserService {
       ...this.loginTokenValidator.issuance(loginUserInfo),
       authority: user.authority,
       personName: user.personName,
-      isPasswordReset: user.isPasswordReset,
+      isPasswordReset: shouldResetPassword,
       isEmailVerify: true,
+      passwordChangedAt: user.passwordChangedAt,
+      passwordExpiryDays: passwordPolicy?.passwordExpiryDays ?? null,
     };
   }
 
