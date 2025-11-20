@@ -24,6 +24,7 @@ import { userResetPasswordTemplate } from '../../user_find/domain/user.reset.pas
 import { IMailSend } from '../../mail/interface/mail-send';
 import { UserSettlePeriodConditionEnum } from '../../user/interface/user.settle.period.condition.enum';
 import { IUserSettleCondition } from '../../user/interface/user.settle.condition';
+import { UserAuthListDefault } from '../../user_info/domain/user.auth.list.default';
 
 @Injectable()
 export class UserManagementService {
@@ -162,6 +163,9 @@ export class UserManagementService {
       throw new BadRequestException('유저가 존재하지 않습니다.');
     }
 
+    // null 일 경우 기본값 return 하는 함수 생성 필요
+    const authorityList = UserAuthListDefault(user.authority, user.authorityList);
+
     return {
       id: user.id,
       email: user.email,
@@ -195,6 +199,7 @@ export class UserManagementService {
       settlePeriodCondition: user.settlePeriodCondition,
       settlePeriodCount: user.settlePeriodCount,
       duplicatePhoneLimit: user.duplicatePhoneLimit,
+      authorityList: authorityList,
     };
   }
 
@@ -293,6 +298,7 @@ export class UserManagementService {
       settlePeriodCondition: getBody.settlePeriodCondition,
       settlePeriodCount: getBody.settlePeriodCount,
       duplicatePhoneLimit: getBody.duplicatePhoneLimit ?? 0,
+      authorityList: getBody.authorityList.join(','),
     });
 
     return;
@@ -336,6 +342,7 @@ export class UserManagementService {
     user.settlePeriodCondition = getBody.settlePeriodCondition;
     user.settlePeriodCount = getBody.settlePeriodCount;
     user.duplicatePhoneLimit = getBody.duplicatePhoneLimit ?? 0;
+    user.authorityList = getBody.authorityList.join(',');
 
     await this.userRepository.save(user);
 

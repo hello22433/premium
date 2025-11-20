@@ -194,7 +194,11 @@ export class SettleController {
   // =====================================
   @Post('settle/mobile/excel-download')
   @UseFilters(DownloadExceptionFilter)
-  async mobileExcelDownload(@User() user: ILoginUserInfo, @Body() getBody: SettleMobileExcelDownloadReqDto, @Res() res: Response) {
+  async mobileExcelDownload(
+    @User() user: ILoginUserInfo,
+    @Body() getBody: SettleMobileExcelDownloadReqDto,
+    @Res() res: Response,
+  ) {
     try {
       const { fileName, filePath } = await this.settleService.mobileExcelDownload(user, getBody);
 
@@ -274,10 +278,7 @@ export class SettleController {
     res: Response,
   ) {
     try {
-      const { fileName, filePath, recordCount } = await this.settleService.getUserExcelDownload(
-        user,
-        getBody,
-      );
+      const { fileName, filePath, recordCount } = await this.settleService.getUserExcelDownload(user, getBody);
 
       const encodedFileName = encodeURIComponent(fileName);
       res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');

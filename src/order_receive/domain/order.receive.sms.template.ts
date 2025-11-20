@@ -7,10 +7,7 @@ export const OrderReceiveSmsTemplate = (orderDelivery: OrderDeliveryEntity) => {
     : '';
 
   return `상품명 : ${orderDelivery.orderProductMapping.product.name}
-유효기간 : ${format(
-    orderDelivery.expireAt!,
-    'yyyy.MM.dd',
-  )} 까지
+유효기간 : ${format(orderDelivery.expireAt!, 'yyyy.MM.dd')} 까지
 쿠폰번호 : ${orderDelivery.barCode}
 
 ${orderDelivery.orderProductMapping.order.eventName} 당첨을 축하드립니다.

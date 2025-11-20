@@ -499,10 +499,7 @@ export class DeliveryBatchService {
     let text = orderDelivery.orderProductMapping.sendContent ?? orderDelivery.orderProductMapping.order.sendContent;
 
     // 이메일이 아닌 경우에만 상품 유의사항 추가
-    if (
-      orderDelivery.orderProductMapping.product.memo &&
-      orderDelivery.deliveryMethod !== IOrderSendMethod.EMAIL
-    ) {
+    if (orderDelivery.orderProductMapping.product.memo && orderDelivery.deliveryMethod !== IOrderSendMethod.EMAIL) {
       text += `\n\n${orderDelivery.orderProductMapping.product.memo}`;
     }
 

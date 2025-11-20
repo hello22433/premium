@@ -68,7 +68,11 @@ export class SsgEventController {
   // =====================================
   @Post('/ssg-event/excel-download')
   @UseFilters(DownloadExceptionFilter)
-  async excelDownload(@User() user: ILoginUserInfo, @Body() getBody: SsgEventExcelDownloadReqDto, @Res() res: Response) {
+  async excelDownload(
+    @User() user: ILoginUserInfo,
+    @Body() getBody: SsgEventExcelDownloadReqDto,
+    @Res() res: Response,
+  ) {
     try {
       const { fileName, filePath } = await this.ssgEventService.excelDownload(user, getBody);
 

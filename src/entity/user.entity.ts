@@ -130,6 +130,9 @@ export class UserEntity extends BaseEntity {
   @Column({ type: 'int', default: 0, comment: '중복번호제어 (0: 중복허용, 1~10: 해당 개수만큼 중복 허용)' })
   duplicatePhoneLimit: number;
 
+  @Column({ type: 'varchar', nullable: true, length: 1024, comment: '페이지 접근 허용 list' })
+  authorityList: string | null;
+
   @OneToMany(() => OrderEntity, (order) => order.user)
   orders: OrderEntity[];
 

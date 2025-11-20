@@ -30,3 +30,6 @@ SET
             or o.status = 'DELIVERY_CONFIRMED')
           and (o.settle_status != 'SETTLE_COMPLETE' or o.settle_status is null)
     );
+
+
+ALTER TABLE user ADD authority_list varchar(1024) NULL COMMENT '페이지 접근 허용 list';

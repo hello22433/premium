@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsEmail, IsEnum, IsNotEmpty, IsNumber, IsOptional } from 'class-validator';
+import { IsEmail, IsEnum, IsNotEmpty, IsNumber, IsOptional, IsArray } from 'class-validator';
 import { IUserAuthority } from '../../../user/interface/user.authority';
 import { IUserSettleCondition } from '../../../user/interface/user.settle.condition';
 import { IUserSettleMethod } from '../../../user/interface/user.settle.method';
@@ -171,4 +171,12 @@ export class UserManagementUpsertDto {
   @IsOptional()
   @IsNumber()
   duplicatePhoneLimit: number = 0;
+
+  @ApiPropertyOptional({
+    description: '권한 허용 list',
+  })
+  // ============================
+  @IsOptional()
+  @IsArray()
+  authorityList: string[] = [];
 }
