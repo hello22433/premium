@@ -4,13 +4,20 @@ import { ApiBadRequestResponse, ApiBearerAuth, ApiOkResponse, ApiOperation, ApiT
 import { RefundGetListResDto } from './refund.res.dto';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
 import { RefundGetListReqQueryDto, RefundUpdateReqDto } from './refund.req.dto';
+import { ILoginUserInfo } from '../../auth/interface/login.user';
+import { User } from '../../auth/api/user.decorator';
+import { UserAuthSubEnum } from '../../user_management/domain/user.auth.enum';
+import { AuthService } from '../../auth/application/auth.service';
 
 @Controller('')
 @ApiTags('refund')
 @UseGuards(AuthUserAuthorizationGuard)
 @ApiBearerAuth()
 export class RefundController {
-  constructor(private refundService: RefundService) {}
+  constructor(
+    private refundService: RefundService,
+    private authService: AuthService,
+  ) {}
 
   @ApiOperation({
     summary: '고객관리 > 환불관리 list API',
@@ -20,7 +27,9 @@ export class RefundController {
   })
   // =================================
   @Get('/settle/refund/list')
-  getList(@Query() getDto: RefundGetListReqQueryDto) {
+  async getList(@User() user: ILoginUserInfo, @Query() getDto: RefundGetListReqQueryDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.CUSTOMER_REFUND);
+
     return this.refundService.getList(getDto);
   }
 

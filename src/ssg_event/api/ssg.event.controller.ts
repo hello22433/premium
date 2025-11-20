@@ -16,6 +16,8 @@ import { User } from '../../auth/api/user.decorator';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { DownloadExceptionFilter } from '../../activity_log/api/download.exception.filter';
 import { ActivityLogService } from '../../activity_log/application/activity.log.service';
+import { UserAuthSubEnum } from '../../user_management/domain/user.auth.enum';
+import { AuthService } from '../../auth/application/auth.service';
 
 @ApiTags('ssg-event')
 @ApiBearerAuth()
@@ -25,6 +27,7 @@ export class SsgEventController {
   constructor(
     private ssgEventService: SsgEventService,
     private activityLogService: ActivityLogService,
+    private authService: AuthService,
   ) {}
 
   private logger = new Logger('SSG_EVENT');
@@ -39,7 +42,8 @@ export class SsgEventController {
   })
   // =====================================
   @Get('/ssg-event/list')
-  getList(@Query() getQuery: SsgEventGetListReqDto) {
+  async getList(@User() user: ILoginUserInfo, @Query() getQuery: SsgEventGetListReqDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.REFILL_SSG);
     return this.ssgEventService.getList(getQuery);
   }
 

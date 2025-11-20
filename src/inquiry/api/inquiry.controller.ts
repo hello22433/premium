@@ -18,11 +18,17 @@ import { InquiryGetDetailResDto, InquiryGetListResDto } from './inquiry.res.dto'
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { User } from '../../auth/api/user.decorator';
+import { UserAuthSubEnum } from '../../user_management/domain/user.auth.enum';
+import { AuthService } from '../../auth/application/auth.service';
 
 @ApiTags('inquiry')
 @Controller('')
+@UseGuards(AuthUserAuthorizationGuard)
 export class InquiryController {
-  constructor(private inquiryService: InquiryService) {}
+  constructor(
+    private inquiryService: InquiryService,
+    private authService: AuthService,
+  ) {}
 
   @ApiOperation({
     summary: '1:1 문의 리스트 조회 API',
@@ -33,7 +39,8 @@ export class InquiryController {
   })
   // ===================================================
   @Get('/inquiry/list')
-  getList(@Query() getQuery: InquiryGetListReqQueryDto) {
+  async getList(@User() user: ILoginUserInfo, @Query() getQuery: InquiryGetListReqQueryDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.QNA);
     return this.inquiryService.getList(getQuery);
   }
 

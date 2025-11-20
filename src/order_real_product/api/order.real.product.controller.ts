@@ -45,6 +45,9 @@ import * as fs from 'fs';
 import { Response } from 'express';
 import { AuthUserSuperAndOperationAdminGuard } from '../../auth/api/auth.user.super-operation-admin.guard';
 import { AuthUserSuperAdminGuard } from '../../auth/api/auth.user.super-admin.guard';
+import { IOrderSection } from '../../order/interface/order.section';
+import { AuthService } from '../../auth/application/auth.service';
+import { UserAuthSubEnum } from '../../user_management/domain/user.auth.enum';
 
 @ApiTags('order-real-product')
 @ApiBearerAuth()
@@ -53,6 +56,7 @@ export class OrderRealProductController {
   constructor(
     private orderRealProductService: OrderRealProductService,
     private activityLogService: ActivityLogService,
+    private authService: AuthService,
   ) {}
 
   private logger = new Logger('REAL_PRODUCT_ORDER');
@@ -67,7 +71,15 @@ export class OrderRealProductController {
   // ====================================================
   @Get('/real-product/order/list')
   @UseGuards(AuthUserAuthorizationGuard)
-  getList(@User() user: ILoginUserInfo, @Query() getQuery: OrderRealProductGetListReqDto) {
+  async getList(@User() user: ILoginUserInfo, @Query() getQuery: OrderRealProductGetListReqDto) {
+    if (getQuery.section === IOrderSection.ORDER) {
+      await this.authService.authorityValidator(user, UserAuthSubEnum.ORDER_REAL_ITEM);
+    }
+
+    if (getQuery.section === IOrderSection.SHIPPING) {
+      await this.authService.authorityValidator(user, UserAuthSubEnum.SEND_REAL_ITEM);
+    }
+
     return this.orderRealProductService.getList(user, getQuery);
   }
 
@@ -235,7 +247,7 @@ export class OrderRealProductController {
   })
   // ====================================================
   @Get('/real-product/settle')
-  @UseGuards(AuthUserSuperAndOperationAdminGuard)
+  @UseGuards(AuthUserAuthorizationGuard)
   getSettlement(@User() user: ILoginUserInfo, @Query() getQuery: OrderRealProductGetSettlementListReqDto) {
     return this.orderRealProductService.getSettlement(user, getQuery);
   }
@@ -267,7 +279,7 @@ export class OrderRealProductController {
   // ====================================================
   @Post('/real-product/settle/excel-download')
   @UseFilters(DownloadExceptionFilter)
-  @UseGuards(AuthUserSuperAndOperationAdminGuard)
+  @UseGuards(AuthUserAuthorizationGuard)
   async settleExcelDownload(
     @User() user: ILoginUserInfo,
     @Body() getBody: OrderRealProductGetSettlementExcelDownloadReqDto,
@@ -347,7 +359,7 @@ export class OrderRealProductController {
   })
   // ====================================================
   @Get('/real-product/order/order-product-mapping/detail/:id')
-  @UseGuards(AuthUserSuperAndOperationAdminGuard)
+  @UseGuards(AuthUserAuthorizationGuard)
   getOrderProductMappingDetail(@Param() getParam: OrderRealProductMappingGetDetailReqParamDto) {
     return this.orderRealProductService.getOrderProductMappingDetail(getParam);
   }
