@@ -4,6 +4,7 @@ import { IProductSettleMethod } from '../product/interface/product.settle.method
 import { IProductType } from '../product/interface/product.type';
 import { PartnerCompanyEntity } from './partner.company.entity';
 import { BrandEntity } from './brand.entity';
+import { ClassificationEntity } from './classification.entity';
 import { IProductUseStatus } from '../product/interface/product.status';
 import { IRealProductStatus } from '../product/interface/real.product.status';
 import { ProductChoiceMappingEntity } from './product.choice.mapping.entity';
@@ -38,8 +39,8 @@ export class ProductEntity extends BaseEntity {
   @Column({ type: 'varchar', length: 50, comment: '상품군 ex) A,B,C,D' })
   category: string;
 
-  @Column({ type: 'varchar', length: 50, comment: '대분류' })
-  classification: string;
+  @Column({ nullable: true, comment: 'FK) classification.id 대분류' })
+  classificationId: number | null;
 
   @Column({
     type: 'varchar',
@@ -91,6 +92,12 @@ export class ProductEntity extends BaseEntity {
     createForeignKeyConstraints: false,
   })
   brand?: BrandEntity;
+
+  @ManyToOne(() => ClassificationEntity, {
+    createForeignKeyConstraints: false,
+  })
+  @JoinColumn({ name: 'classification_id' })
+  classification?: ClassificationEntity;
 
   @OneToMany(() => ProductChoiceMappingEntity, (productChoiceMapping) => productChoiceMapping.choiceProduct, {
     createForeignKeyConstraints: false,

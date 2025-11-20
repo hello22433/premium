@@ -44,6 +44,7 @@ import { OtherServiceSaleTypeEntity } from '../entity/other.service.sale.type.en
 import { ShippingStorageEntity } from '../entity/shipping.storage.entity';
 import { OrderHistoryEntity } from 'src/entity/order.history.entity';
 import { ActivityLogEntity } from '../entity/activity.log.entity';
+import { ClassificationEntity } from '../entity/classification.entity';
 
 @Module({
   imports: [
@@ -63,6 +64,7 @@ import { ActivityLogEntity } from '../entity/activity.log.entity';
           NoticeEntity,
           UserDiscountEntity,
           BrandEntity,
+          ClassificationEntity,
           EventEntity,
           EventProductMappingEntity,
           MessageArchiveEntity,

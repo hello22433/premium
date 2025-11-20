@@ -667,7 +667,7 @@ export class SettleService {
         resultList.push({
           id: order.id,
           businessName: order.user!.businessName,
-          productClassification: orderProductMapping.product.classification,
+          productClassification: orderProductMapping.product.classification?.classification ?? '',
           brandNameKorean: orderProductMapping.product.brand!.nameKorean,
           brandNameEnglish: orderProductMapping.product.brand!.nameEnglish,
           personName: order.user!.personName,
@@ -783,7 +783,7 @@ export class SettleService {
         resultList.push({
           id: order.id,
           businessName: order.user!.businessName,
-          productClassification: orderProductMapping.product.classification,
+          productClassification: orderProductMapping.product.classification?.classification ?? '',
           brandNameKorean: orderProductMapping.product.brand!.nameKorean,
           brandNameEnglish: orderProductMapping.product.brand!.nameEnglish,
           personName: order.user!.personName,

@@ -239,6 +239,32 @@ export class ProductController {
   }
 
   @ApiOperation({
+    summary: '상품 등록 템플릿 엑셀 다운로드 API',
+    description: '협력사, 대분류, 브랜드 데이터가 채워진 상품 등록 템플릿을 다운로드합니다.',
+  })
+  @ApiBearerAuth()
+  @ApiOkResponse({
+    description: '성공적으로 다운로드한 경우',
+  })
+  // ===================================================
+  @Get('/product/excel-template-download')
+  @UseFilters(DownloadExceptionFilter)
+  async excelTemplateDownload(@Res() res: Response) {
+    try {
+      const { fileName, fileBuffer } = await this.productService.excelTemplateDownload();
+
+      const encodedFileName = encodeURIComponent(fileName);
+      res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
+      res.setHeader('Content-Disposition', `attachment; filename=${encodedFileName}`);
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+
+      res.send(fileBuffer);
+    } catch (e) {
+      throw e;
+    }
+  }
+
+  @ApiOperation({
     summary: '상품 찜하기 API',
   })
   @ApiOkResponse({

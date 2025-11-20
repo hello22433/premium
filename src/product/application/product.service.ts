@@ -26,6 +26,7 @@ import {
 } from '../api/product.res.dto';
 import { PartnerCompanyEntity } from '../../entity/partner.company.entity';
 import { BrandEntity } from '../../entity/brand.entity';
+import { ClassificationEntity } from '../../entity/classification.entity';
 import { CreateCode } from '../../common/domain/create.code';
 import { ProductChoicePrefixCode, ProductDigitNumber, ProductPrefixCode } from '../domain/product.code';
 import { ProductUpdateHistoryEntity } from '../../entity/product.update.history.entity';
@@ -68,6 +69,8 @@ export class ProductService {
     private partnerCompanyRepository: Repository<PartnerCompanyEntity>,
     @InjectRepository(BrandEntity)
     private brandRepository: Repository<BrandEntity>,
+    @InjectRepository(ClassificationEntity)
+    private classificationRepository: Repository<ClassificationEntity>,
     @InjectRepository(ProductUpdateHistoryEntity)
     private productUpdateHistoryRepository: Repository<ProductUpdateHistoryEntity>,
     @InjectRepository(UserSyncProductEventEntity)
@@ -100,6 +103,7 @@ export class ProductService {
       .createQueryBuilder('product')
       .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .innerJoinAndSelect('product.brand', 'brand')
+      .leftJoinAndSelect('product.classification', 'classification')
       .leftJoinAndSelect('product.productLikes', 'productLikes')
       .andWhere('product.type != :ssg', { ssg: IProductType.SSG });
 
@@ -222,7 +226,7 @@ export class ProductService {
         partnerCompanyCode: product.partnerCompanyCode,
         partnerCompanyId: product.partnerCompanyId,
         partnerCompanyName: product.partnerCompany!.businessName,
-        classification: product.classification,
+        classification: product.classification?.classification ?? null,
         brandId: product.brandId,
         brandName: product.brand!.nameKorean,
         name: product.name,
@@ -261,6 +265,7 @@ export class ProductService {
       .createQueryBuilder('product')
       .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .innerJoinAndSelect('product.brand', 'brand')
+      .leftJoinAndSelect('product.classification', 'classification')
       .leftJoinAndSelect('product.productLikes', 'productLikes')
       .andWhere('product.type != :ssg', { ssg: IProductType.SSG });
 
@@ -409,7 +414,7 @@ export class ProductService {
         partnerCompanyCode: product.partnerCompanyCode,
         partnerCompanyId: product.partnerCompanyId,
         partnerCompanyName: product.partnerCompany!.businessName,
-        classification: product.classification,
+        classification: product.classification?.classification ?? null,
         brandId: product.brandId,
         brandName: product.brand!.nameKorean,
         name: product.name,
@@ -436,6 +441,7 @@ export class ProductService {
       .createQueryBuilder('product')
       .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .innerJoinAndSelect('product.brand', 'brand')
+      .leftJoinAndSelect('product.classification', 'classification')
       .where('product.price = :price', { price })
       .andWhere('product.type = :type ', { type: IProductType.SSG })
       .andWhere('partnerCompany.type = :type', { type: IPartnerCompanyType.SSG })
@@ -447,7 +453,7 @@ export class ProductService {
         id: product.id,
         partnerCompanyId: product.partnerCompanyId,
         partnerCompanyName: product.partnerCompany!.businessName,
-        classification: product.classification,
+        classification: product.classification?.classification ?? null,
         brandId: product.brandId,
         brandName: product.brand!.nameKorean,
         name: product.name,
@@ -462,6 +468,7 @@ export class ProductService {
       .createQueryBuilder('product')
       .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .innerJoinAndSelect('product.brand', 'brand')
+      .leftJoinAndSelect('product.classification', 'classification')
       .where('product.type = :type', { type: IProductType.SSG })
       .andWhere('partnerCompany.type = :type', { type: IPartnerCompanyType.SSG })
       .orderBy('product.id', 'ASC') // 가장 오래된 SSG 상품을 템플릿으로 사용
@@ -503,7 +510,7 @@ export class ProductService {
 
     newProduct.expireDay = currentSsgEvent?.couponExpiration || 60; // SSG 이벤트의 쿠폰 유효기간 또는 기본값 60일
     newProduct.category = templateProduct.category;
-    newProduct.classification = templateProduct.classification;
+    newProduct.classificationId = templateProduct.classificationId;
     newProduct.settleMethod = templateProduct.settleMethod;
     newProduct.settlePercent = templateProduct.settlePercent;
     newProduct.imagePath = templateProduct.imagePath;
@@ -522,6 +529,7 @@ export class ProductService {
       .createQueryBuilder('product')
       .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .innerJoinAndSelect('product.brand', 'brand')
+      .leftJoinAndSelect('product.classification', 'classification')
       .where('product.id = :id', { id: savedProduct.id })
       .getOne();
 
@@ -529,7 +537,7 @@ export class ProductService {
       id: newProductWithRelations!.id,
       partnerCompanyId: newProductWithRelations!.partnerCompanyId,
       partnerCompanyName: newProductWithRelations!.partnerCompany!.businessName,
-      classification: newProductWithRelations!.classification,
+      classification: newProductWithRelations!.classification?.classification ?? null,
       brandId: newProductWithRelations!.brandId,
       brandName: newProductWithRelations!.brand!.nameKorean,
       name: newProductWithRelations!.name,
@@ -546,6 +554,7 @@ export class ProductService {
       .createQueryBuilder('product')
       .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .innerJoinAndSelect('product.brand', 'brand')
+      .leftJoinAndSelect('product.classification', 'classification')
       .andWhere('product.id = :id', { id })
       .getOne();
 
@@ -560,7 +569,7 @@ export class ProductService {
       partnerCompanyCode: product.partnerCompanyCode,
       partnerCompanyId: product.partnerCompanyId,
       partnerCompanyName: product.partnerCompany!.businessName,
-      classification: product.classification ?? null,
+      classification: product.classification?.classification ?? null,
       brandId: product.brandId,
       brandName: product.brand!.nameKorean,
       name: product.name,
@@ -634,7 +643,7 @@ export class ProductService {
       price,
       expireDay,
       category,
-      classification,
+      classificationId,
       settlePercent,
       settleMethod,
       imagePath,
@@ -651,6 +660,13 @@ export class ProductService {
     const existPartnerCompanyId = await this.partnerCompanyRepository.count({ where: { id: partnerCompanyId } });
     if (!existPartnerCompanyId) {
       throw new BadRequestException('해당 협력사가 존재하지 않습니다.');
+    }
+
+    if (classificationId !== undefined && classificationId !== null) {
+      const existClassificationId = await this.classificationRepository.count({ where: { id: classificationId } });
+      if (!existClassificationId) {
+        throw new BadRequestException('해당 대분류가 존재하지 않습니다.');
+      }
     }
 
     const getProductPrefixCode = type === IProductType.CHOICE ? ProductChoicePrefixCode : ProductPrefixCode;
@@ -675,7 +691,7 @@ export class ProductService {
       price,
       expireDay,
       category,
-      classification,
+      classificationId,
       settlePercent,
       settleMethod,
       imagePath,
@@ -730,10 +746,43 @@ export class ProductService {
         }
       }
 
+      if (key === 'classificationId') {
+        const existClassificationId = await this.classificationRepository.count({
+          where: { id: getBody.classificationId },
+        });
+        if (!existClassificationId) {
+          throw new BadRequestException('해당 대분류가 존재하지 않습니다.');
+        }
+      }
+
       // @ts-ignore
-      const beforeValue = product[key];
+      let beforeValue = product[key];
       // @ts-ignore
-      const afterValue = getBody[key];
+      let afterValue = getBody[key];
+
+      // classificationId 변경 시 가독성을 위해 분류명도 함께 저장
+      if (key === 'classificationId' && beforeValue !== afterValue) {
+        let beforeClassificationName = null;
+        let afterClassificationName = null;
+
+        if (beforeValue) {
+          const beforeClassification = await this.classificationRepository.findOne({
+            where: { id: beforeValue },
+          });
+          beforeClassificationName = beforeClassification?.classification;
+        }
+
+        if (afterValue) {
+          const afterClassification = await this.classificationRepository.findOne({
+            where: { id: afterValue },
+          });
+          afterClassificationName = afterClassification?.classification;
+        }
+
+        // "ID: name" 형식으로 저장
+        beforeValue = beforeValue ? `${beforeValue}: ${beforeClassificationName}` : null;
+        afterValue = afterValue ? `${afterValue}: ${afterClassificationName}` : null;
+      }
 
       if (beforeValue !== afterValue) {
         const productUpdateHistoryEntity = new ProductUpdateHistoryEntity();
@@ -782,6 +831,7 @@ export class ProductService {
       .createQueryBuilder('product')
       .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .innerJoinAndSelect('product.brand', 'brand')
+      .leftJoinAndSelect('product.classification', 'classification')
       .andWhere('product.type != :ssg', { ssg: IProductType.SSG });
 
     if (userId) {
@@ -878,7 +928,7 @@ export class ProductService {
         code: product.code,
         partnerCompanyId: product.partnerCompanyId,
         partnerCompanyName: product.partnerCompany!.businessName,
-        classification: product.classification,
+        classification: product.classification?.classification ?? null,
         brandId: product.brandId,
         brandName: product.brand!.nameKorean,
         name: product.name,
@@ -934,10 +984,22 @@ export class ProductService {
 
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.load(file.buffer);
-    const worksheet = workbook.worksheets[0];
+
+    // '결과' 시트를 찾기
+    const worksheet = workbook.getWorksheet('결과');
     if (!worksheet) {
-      throw new BadRequestException('엑셀 파일에 워크시트가 없습니다.');
+      throw new BadRequestException('엑셀 파일에 "결과" 시트가 없습니다.');
     }
+
+    // 협력사, 브랜드, 대분류 데이터를 미리 로드하여 맵으로 만듦
+    const allPartnerCompanies = await this.partnerCompanyRepository.find();
+    const partnerCompanyNameMap = listToMap(allPartnerCompanies, (pc) => pc.businessName);
+
+    const allBrands = await this.brandRepository.find();
+    const brandNameMap = listToMap(allBrands, (brand) => brand.nameKorean);
+
+    const allClassifications = await this.classificationRepository.find();
+    const classificationNameMap = listToMap(allClassifications, (classification) => classification.classification);
 
     const codeList: string[] = [];
     for (let i = 2; i <= worksheet.actualRowCount; i++) {
@@ -964,17 +1026,35 @@ export class ProductService {
         const row = worksheet.getRow(rowIndex);
         const rowData = this.mapRowToDto(row);
 
+        // 협력사명으로 협력사 ID 조회
+        const partnerCompany = partnerCompanyNameMap.get(rowData.partnerCompanyName?.trim());
+        if (!partnerCompany) {
+          throw new BadRequestException(`행 ${rowIndex}: 협력사명 "${rowData.partnerCompanyName}"을 찾을 수 없습니다.`);
+        }
+
+        // 브랜드명으로 브랜드 ID 조회
+        const brand = brandNameMap.get(rowData.brandName?.trim());
+        if (!brand) {
+          throw new BadRequestException(`행 ${rowIndex}: 브랜드명 "${rowData.brandName}"을 찾을 수 없습니다.`);
+        }
+
+        // 대분류명으로 대분류 ID 조회
+        const classification = classificationNameMap.get(rowData.classificationName?.trim());
+        if (!classification) {
+          throw new BadRequestException(`행 ${rowIndex}: 대분류 "${rowData.classificationName}"을 찾을 수 없습니다.`);
+        }
+
         const createDto = new ProductCreateReqDto();
-        createDto.partnerCompanyId = +rowData.partnerCompanyId;
-        createDto.classification = rowData.classification.trim();
-        createDto.brandId = +rowData.brandId;
-        createDto.name = rowData.name.trim();
+        createDto.partnerCompanyId = partnerCompany.id;
+        createDto.classificationId = classification.id;
+        createDto.brandId = brand.id;
+        createDto.name = rowData.name?.trim();
         createDto.price = +rowData.price;
         createDto.expireDay = +rowData.expireDay;
-        createDto.category = rowData.category.trim();
-        createDto.type = ProductTypeExcelToDBMapping(rowData.type.trim());
-        createDto.useStatus = ProductUseStatusExcelToDBMapping(rowData.useStatus.trim());
-        createDto.settleMethod = ProductSettleMethodExcelToDbMapping(rowData.settleMethod.trim());
+        createDto.category = rowData.category?.trim();
+        createDto.type = ProductTypeExcelToDBMapping(rowData.type?.trim());
+        createDto.useStatus = ProductUseStatusExcelToDBMapping(rowData.useStatus?.trim());
+        createDto.settleMethod = ProductSettleMethodExcelToDbMapping(rowData.settleMethod?.trim());
         createDto.settlePercent = +rowData.settlePercent;
         createDto.partnerCompanyCode = rowData.partnerCompanyCode;
         createDto.imagePath = rowData.imagePath;
@@ -993,16 +1073,16 @@ export class ProductService {
           updateDto.id = existingProduct.id;
           updateDto.reason = `엑셀 업로드(row ${rowIndex})`;
 
-          updateDto.partnerCompanyId = +rowData.partnerCompanyId;
-          updateDto.classification = rowData.classification.trim();
-          updateDto.brandId = +rowData.brandId;
-          updateDto.name = rowData.name.trim();
+          updateDto.partnerCompanyId = partnerCompany.id;
+          updateDto.classificationId = classification.id;
+          updateDto.brandId = brand.id;
+          updateDto.name = rowData.name?.trim();
           updateDto.price = +rowData.price;
           updateDto.expireDay = +rowData.expireDay;
-          updateDto.category = rowData.category.trim();
-          updateDto.type = ProductTypeExcelToDBMapping(rowData.type.trim());
-          updateDto.useStatus = ProductUseStatusExcelToDBMapping(rowData.useStatus.trim());
-          updateDto.settleMethod = ProductSettleMethodExcelToDbMapping(rowData.settleMethod.trim());
+          updateDto.category = rowData.category?.trim();
+          updateDto.type = ProductTypeExcelToDBMapping(rowData.type?.trim());
+          updateDto.useStatus = ProductUseStatusExcelToDBMapping(rowData.useStatus?.trim());
+          updateDto.settleMethod = ProductSettleMethodExcelToDbMapping(rowData.settleMethod?.trim());
           updateDto.settlePercent = +rowData.settlePercent;
           updateDto.partnerCompanyCode = rowData.partnerCompanyCode;
           updateDto.imagePath = rowData.imagePath;
@@ -1026,21 +1106,21 @@ export class ProductService {
 
   private mapRowToDto(row: ExcelJS.Row): any {
     return {
-      code: row.getCell(3).value,
-      partnerCompanyId: row.getCell(4).value,
-      classification: row.getCell(6).value,
-      brandId: row.getCell(7).value,
-      name: row.getCell(9).value,
-      price: row.getCell(10).value,
-      expireDay: row.getCell(11).value,
-      category: row.getCell(12).value,
-      type: row.getCell(13).value,
-      useStatus: row.getCell(14).value,
-      settleMethod: row.getCell(15).value,
-      settlePercent: row.getCell(16).value,
-      partnerCompanyCode: row.getCell(17).value,
-      imagePath: row.getCell(18).value,
-      memo: row.getCell(19).value,
+      code: row.getCell(1).value,
+      partnerCompanyName: row.getCell(2).value,
+      classificationName: row.getCell(3).value,
+      brandName: row.getCell(4).value,
+      name: row.getCell(5).value,
+      price: row.getCell(6).value,
+      expireDay: row.getCell(7).value,
+      category: row.getCell(8).value,
+      type: row.getCell(9).value,
+      useStatus: row.getCell(10).value,
+      settleMethod: row.getCell(11).value,
+      settlePercent: row.getCell(12).value,
+      partnerCompanyCode: row.getCell(13).value,
+      imagePath: row.getCell(14).value,
+      memo: row.getCell(15).value,
     };
   }
 
@@ -1097,5 +1177,58 @@ export class ProductService {
     });
 
     return;
+  }
+
+  async excelTemplateDownload() {
+    // 템플릿 파일 경로
+    const templatePath = join(process.cwd(), 'public', 'excel_template', '상품 등록 템플릿.xlsx');
+
+    // 템플릿 파일 읽기
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.readFile(templatePath);
+
+    // DB에서 데이터 조회
+    const partnerCompanies = await this.partnerCompanyRepository.find({
+      order: { id: 'ASC' },
+    });
+
+    const classifications = await this.classificationRepository.find({
+      order: { id: 'ASC' },
+    });
+
+    const brands = await this.brandRepository.find({
+      order: { id: 'ASC' },
+    });
+
+    // 협력사 시트에 데이터 작성
+    const partnerSheet = workbook.getWorksheet('협력사');
+    if (partnerSheet) {
+      partnerCompanies.forEach((pc, index) => {
+        partnerSheet.getCell(`A${index + 1}`).value = pc.businessName;
+      });
+    }
+
+    // 대분류 시트에 데이터 작성
+    const classificationSheet = workbook.getWorksheet('대분류');
+    if (classificationSheet) {
+      classifications.forEach((classification, index) => {
+        classificationSheet.getCell(`A${index + 1}`).value = classification.classification;
+      });
+    }
+
+    // 브랜드 시트에 데이터 작성
+    const brandSheet = workbook.getWorksheet('브랜드');
+    if (brandSheet) {
+      brands.forEach((brand, index) => {
+        brandSheet.getCell(`A${index + 1}`).value = brand.nameKorean;
+      });
+    }
+
+    // 파일을 버퍼로 변환
+    const fileBuffer = await workbook.xlsx.writeBuffer();
+
+    const fileName = '상품 등록 템플릿.xlsx';
+
+    return { fileName, fileBuffer };
   }
 }

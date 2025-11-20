@@ -6,6 +6,7 @@ import { ProductController } from './api/product.controller';
 import { AuthModule } from '../auth/auth.module';
 import { PartnerCompanyEntity } from '../entity/partner.company.entity';
 import { BrandEntity } from '../entity/brand.entity';
+import { ClassificationEntity } from '../entity/classification.entity';
 import { ProductUpdateHistoryEntity } from '../entity/product.update.history.entity';
 import { UserSyncProductEventEntity } from '../entity/user.sync.product.event.entity';
 import { ProductLikeEntity } from '../entity/product.like.entity';
@@ -19,6 +20,7 @@ import { ActivityLogModule } from '../activity_log/activity.log.module';
     TypeOrmModule.forFeature([
       PartnerCompanyEntity,
       BrandEntity,
+      ClassificationEntity,
       ProductEntity,
       ProductLikeEntity,
       ProductUpdateHistoryEntity,

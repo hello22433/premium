@@ -25,7 +25,7 @@ export const choiceProductBrandId = 0;
 
 export const choiceProductCategory = 'C';
 
-export const choiceProductClassification = 'classification';
+export const choiceProductClassificationId = 1; // 기본 대분류 ID
 
 export const choiceProductExpireDay = 60;
 

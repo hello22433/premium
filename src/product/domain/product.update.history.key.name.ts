@@ -27,7 +27,7 @@ export const ProductUpdateHistoryKeyName = (key: string): string => {
     return '상품군';
   }
 
-  if (key === 'classification') {
+  if (key === 'classificationId') {
     return '대분류';
   }
 

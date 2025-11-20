@@ -696,7 +696,7 @@ export class OrderRealProductService {
         resultList.push({
           id: order.id,
           userBusinessName: order.businessUser.personName,
-          classification: product.classification || null,
+          classification: product.classification?.classification ?? null,
           brandName: brand?.nameKorean || '',
           userPersonName: order.businessUser.personName,
           eventName: order.eventName,
@@ -872,7 +872,7 @@ export class OrderRealProductService {
         resultList.push({
           id: order.id,
           userBusinessName: order.businessUser.personName,
-          classification: product.classification || null,
+          classification: product.classification?.classification ?? null,
           brandName: brand?.nameKorean || '',
           userPersonName: order.businessUser.personName,
           eventName: order.eventName,

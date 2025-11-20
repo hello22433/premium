@@ -154,7 +154,7 @@ export class UserSyncProductService {
           code: product.code,
           businessUserName: event.businessUser.businessName,
           businessPersonName: event.businessUser.personName,
-          classification: product.classification || null,
+          classification: product.classification?.classification ?? null,
           brandName: product.brand?.nameKorean || '',
           name: product.name,
           price: product.price,

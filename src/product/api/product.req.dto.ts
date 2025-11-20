@@ -272,12 +272,13 @@ export class ProductCreateReqDto {
   @IsNotEmpty()
   category: string;
 
-  @ApiProperty({
-    description: '대분류',
+  @ApiPropertyOptional({
+    description: '대분류 classification.id',
   })
   // ================================
-  @IsNotEmpty()
-  classification: string;
+  @IsOptional()
+  @IsNumber()
+  classificationId?: number;
 
   @ApiProperty({
     description: '정산 방법 ex) 교환당 : PER_EXCHANGE, 발행당: PER_ISSUANCE, 상품당: PER_PRODUCT',

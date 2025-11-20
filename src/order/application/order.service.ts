@@ -1471,7 +1471,7 @@ export class OrderService {
             // CLASSIFICATION 방식: primaryCategory(대분류)와 상품의 classification 비교
             else if (
               discount.category === 'CLASSIFICATION' &&
-              discount.primaryCategory === orderMapping.product!.classification
+              discount.primaryCategory === orderMapping.product!.classification?.classification
             ) {
               if (discount.priceAdjustment === 'DISCOUNT') {
                 hasDiscount = true;
