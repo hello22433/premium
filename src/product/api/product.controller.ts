@@ -27,6 +27,7 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import {
+  ClassificationCreateReqDto,
   ClassificationGetSearchListReqDto,
   ProductCreateReqDto,
   ProductDeleteReqDto,
@@ -307,5 +308,20 @@ export class ProductController {
   @Get('/classification/search/list')
   getClassificationSearchList(@Query() getQuery: ClassificationGetSearchListReqDto) {
     return this.productService.getClassificationSearchList(getQuery);
+  }
+
+  @ApiOperation({
+    summary: '대분류 신규 등록 API',
+  })
+  @ApiOkResponse({
+    description: '성공적으로 생성된 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '이미 존재하는 대분류명인 경우',
+  })
+  // =========================================
+  @Post('/classification')
+  createClassification(@Body() getBody: ClassificationCreateReqDto) {
+    return this.productService.createClassification(getBody);
   }
 }

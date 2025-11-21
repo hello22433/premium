@@ -489,3 +489,12 @@ export class ClassificationGetSearchListReqDto extends PagingReqDto {
   @IsOptional()
   searchText?: string;
 }
+
+export class ClassificationCreateReqDto {
+  @ApiProperty({
+    description: '대분류명',
+  })
+  // ========================================
+  @IsNotEmpty()
+  classification: string;
+}

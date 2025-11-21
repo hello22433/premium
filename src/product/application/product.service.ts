@@ -3,6 +3,7 @@ import { ProductEntity } from '../../entity/product.entity';
 import { FindOptionsWhere, In, Like, Repository } from 'typeorm';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
+  ClassificationCreateReqDto,
   ClassificationGetSearchListReqDto,
   ProductCreateReqDto,
   ProductDeleteReqDto,
@@ -1263,5 +1264,24 @@ export class ProductService {
     });
 
     return { list: resultList, totalCount, totalPage, currentPage: page };
+  }
+
+  async createClassification(getBody: ClassificationCreateReqDto) {
+    const { classification } = getBody;
+
+    // 중복 체크
+    const existingClassification = await this.classificationRepository.findOne({
+      where: { classification },
+    });
+
+    if (existingClassification) {
+      throw new BadRequestException('이미 존재하는 대분류명입니다.');
+    }
+
+    await this.classificationRepository.insert({
+      classification,
+    });
+
+    return;
   }
 }
