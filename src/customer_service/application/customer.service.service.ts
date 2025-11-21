@@ -341,6 +341,7 @@ export class CustomerServiceService {
       tradeAt: queryBuilder.tradeAt ? format(queryBuilder.tradeAt, DateFormatStr) : null,
       extraPinNo: queryBuilder.personalCode || null,
       expireDay: displayProduct.expireDay.toString(),
+      transactionId: queryBuilder.transactionId || null,
     };
   }
 

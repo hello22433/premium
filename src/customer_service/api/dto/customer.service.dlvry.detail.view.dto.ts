@@ -128,4 +128,10 @@ export class CustomerServiceDlvryDetailViewDto {
     description: '유효일수',
   })
   expireDay: string;
+
+  @ApiProperty({
+    description: '주문번호 (transaction_id)',
+    nullable: true,
+  })
+  transactionId: string | null;
 }
