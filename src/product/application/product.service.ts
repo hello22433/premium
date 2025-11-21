@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { ProductEntity } from '../../entity/product.entity';
-import { FindOptionsWhere, In, Like, Repository } from 'typeorm';
+import { FindOptionsWhere, In, IsNull, Like, Repository } from 'typeorm';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
   ClassificationCreateReqDto,
@@ -1197,17 +1197,17 @@ export class ProductService {
       // 병렬 DB 조회 - 필요한 필드만 선택
       this.partnerCompanyRepository.find({
         select: ['businessName'],
-        where: { deletedAt: null },
+        where: { deletedAt: IsNull() },
         order: { id: 'ASC' },
       }),
       this.classificationRepository.find({
         select: ['classification'],
-        where: { deletedAt: null },
+        where: { deletedAt: IsNull() },
         order: { id: 'ASC' },
       }),
       this.brandRepository.find({
         select: ['nameKorean'],
-        where: { deletedAt: null },
+        where: { deletedAt: IsNull() },
         order: { id: 'ASC' },
       }),
     ]);
