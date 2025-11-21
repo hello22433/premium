@@ -1187,22 +1187,30 @@ export class ProductService {
     // 템플릿 파일 경로
     const templatePath = join(process.cwd(), 'public', 'excel_template', '상품 등록 템플릿.xlsx');
 
-    // 템플릿 파일 읽기
-    const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.readFile(templatePath);
-
-    // DB에서 데이터 조회
-    const partnerCompanies = await this.partnerCompanyRepository.find({
-      order: { id: 'ASC' },
-    });
-
-    const classifications = await this.classificationRepository.find({
-      order: { id: 'ASC' },
-    });
-
-    const brands = await this.brandRepository.find({
-      order: { id: 'ASC' },
-    });
+    // 템플릿 파일 읽기 & DB 조회를 병렬로 실행
+    const [workbook, partnerCompanies, classifications, brands] = await Promise.all([
+      (async () => {
+        const wb = new ExcelJS.Workbook();
+        await wb.xlsx.readFile(templatePath);
+        return wb;
+      })(),
+      // 병렬 DB 조회 - 필요한 필드만 선택
+      this.partnerCompanyRepository.find({
+        select: ['businessName'],
+        where: { deletedAt: null },
+        order: { id: 'ASC' },
+      }),
+      this.classificationRepository.find({
+        select: ['classification'],
+        where: { deletedAt: null },
+        order: { id: 'ASC' },
+      }),
+      this.brandRepository.find({
+        select: ['nameKorean'],
+        where: { deletedAt: null },
+        order: { id: 'ASC' },
+      }),
+    ]);
 
     // 협력사 시트에 데이터 작성
     const partnerSheet = workbook.getWorksheet('협력사');
