@@ -10,7 +10,7 @@ import { ILoginTokenValidator } from '../../auth/interface/login.token.validator
 import { UserEntity } from '../../entity/user.entity';
 import { PasswordPolicyEntity } from '../../entity/password.policy.entity';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Between, IsNull, Repository } from 'typeorm';
+import { Between, IsNull, Repository, Raw } from 'typeorm';
 import { Transactional } from 'typeorm-transactional';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { UserLoginByEmailPasswordResDto } from '../api/user.res.dto';
@@ -179,6 +179,15 @@ export class UserService {
     const startOfToday = startOfDay(now);
     const endOfToday = endOfDay(now);
 
+    // 디버깅: 실제 값 확인
+    console.log('=== Login Email Check Debug ===');
+    console.log('now:', now);
+    console.log('now.toISOString():', now.toISOString());
+    console.log('startOfToday:', startOfToday);
+    console.log('startOfToday.toISOString():', startOfToday.toISOString());
+    console.log('endOfToday:', endOfToday);
+    console.log('endOfToday.toISOString():', endOfToday.toISOString());
+
     const emailCodeCount = await this.emailSendHistoryRepository.count({
       where: {
         email: user.email,
@@ -187,6 +196,8 @@ export class UserService {
         createdAt: Between(startOfToday, endOfToday),
       },
     });
+
+    console.log('emailCodeCount:', emailCodeCount);
 
     const loginUserInfo: ILoginUserInfo = {
       id: user.id,
