@@ -17,7 +17,7 @@ import { UserLoginByEmailPasswordResDto } from '../api/user.res.dto';
 import { EmailSendHistoryEntity } from '../../entity/email.send.history.entity';
 import { IMailSend } from '../../mail/interface/mail-send';
 import { EmailType } from '../../mail/domain/email.type';
-import { addMinutes, differenceInDays, endOfDay, startOfDay } from 'date-fns';
+import { addMinutes, differenceInDays } from 'date-fns';
 import { generateRandomCode } from '../../user_find/domain/code.generate';
 import { EmailCertifyExpireMinute } from '../../const';
 import { userLoginTemplateHtml } from '../domain/user.login.template.html';
@@ -175,29 +175,17 @@ export class UserService {
       }
     }
 
-    const now = new Date();
-    const startOfToday = startOfDay(now);
-    const endOfToday = endOfDay(now);
-
-    // 디버깅: 실제 값 확인
-    console.log('=== Login Email Check Debug ===');
-    console.log('now:', now);
-    console.log('now.toISOString():', now.toISOString());
-    console.log('startOfToday:', startOfToday);
-    console.log('startOfToday.toISOString():', startOfToday.toISOString());
-    console.log('endOfToday:', endOfToday);
-    console.log('endOfToday.toISOString():', endOfToday.toISOString());
-
+    // KST 기준으로 오늘 날짜 비교
+    // MySQL 세션 타임존이 +09:00(KST)로 설정되어 있으므로
+    // CURDATE()와 DATE() 함수는 KST 기준으로 동작
     const emailCodeCount = await this.emailSendHistoryRepository.count({
       where: {
         email: user.email,
         type: EmailType.LOGIN,
         isCertified: true,
-        createdAt: Between(startOfToday, endOfToday),
+        createdAt: Raw((alias) => `DATE(${alias}) = CURDATE()`),
       },
     });
-
-    console.log('emailCodeCount:', emailCodeCount);
 
     const loginUserInfo: ILoginUserInfo = {
       id: user.id,
