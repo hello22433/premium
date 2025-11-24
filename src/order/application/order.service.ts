@@ -669,16 +669,16 @@ export class OrderService {
         const total = productPrice * quantity;
         price += total;
 
-        for (const orderDelivery of orderProductMapping.orderDeliveries) {
-          orderDeliveryList.push({
-            id: orderDelivery.id,
-            sendRequestAt: orderDelivery.sendRequestAt ? format(orderDelivery.sendRequestAt, DateFormatStr) : null,
-            productName: orderProductMapping.product.name ?? null,
-            quantity,
-            vat: Math.floor(productPrice / 10),
-            price: productPrice,
-          });
-        }
+        // 상품별로 한 줄만 추가 (첫 번째 orderDelivery의 발송 시각 사용)
+        const firstDelivery = orderProductMapping.orderDeliveries?.[0];
+        orderDeliveryList.push({
+          id: orderProductMapping.id, // orderProductMapping id 사용
+          sendRequestAt: firstDelivery?.sendRequestAt ? format(firstDelivery.sendRequestAt, DateFormatStr) : null,
+          productName: orderProductMapping.product.name ?? null,
+          quantity, // 수량
+          unitPrice: productPrice, // 단가
+          price: total, // 공급가액 (단가 * 수량)
+        });
       }
 
       vat = Math.floor(price * 0.1);

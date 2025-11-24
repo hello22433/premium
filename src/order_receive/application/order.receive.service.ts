@@ -222,6 +222,7 @@ export class OrderReceiveService {
       brandKoreanName: displayBrand!.nameKorean === '신세계' ? '이마트' : displayBrand!.nameKorean,
       userBusinessName: orderDelivery.orderProductMapping.order.user!.businessName,
       partnerCompany: displayProduct.partnerCompany?.type || null,
+      validityStartsNextDay: displayProduct.partnerCompany?.validityStartsNextDay,
     };
   }
 

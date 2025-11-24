@@ -123,14 +123,14 @@ export class OrderCompleteReportDeliveryViewDto {
   quantity: number;
 
   @ApiProperty({
+    description: '단가',
+  })
+  unitPrice: number;
+
+  @ApiProperty({
     description: '공급가액',
   })
   price: number;
-
-  @ApiProperty({
-    description: '부가세(공급가액의 10%)',
-  })
-  vat: number;
 }
 
 export class OrderDetailProductDto {

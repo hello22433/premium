@@ -101,6 +101,12 @@ export class OrderReceiveAlimTalkResDto {
     description: '협력사 타입',
   })
   partnerCompany: IPartnerCompanyType | null;
+
+  @ApiProperty({
+    description: '유효기간 시작일 (true: 다음날부터, false: 당일부터)',
+    required: false,
+  })
+  validityStartsNextDay?: boolean;
 }
 
 export class OrderReceiveEmailResDto {
