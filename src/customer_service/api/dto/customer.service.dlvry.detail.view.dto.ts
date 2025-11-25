@@ -134,4 +134,9 @@ export class CustomerServiceDlvryDetailViewDto {
     nullable: true,
   })
   transactionId: string | null;
+
+  @ApiProperty({
+    description: '유효기간 익일 시작 여부',
+  })
+  validityStartsNextDay: boolean;
 }

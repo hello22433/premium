@@ -342,6 +342,7 @@ export class CustomerServiceService {
       extraPinNo: queryBuilder.personalCode || null,
       expireDay: displayProduct.expireDay.toString(),
       transactionId: queryBuilder.transactionId || null,
+      validityStartsNextDay: displayPartnerCompany?.validityStartsNextDay ?? true,
     };
   }
 
