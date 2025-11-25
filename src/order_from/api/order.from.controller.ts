@@ -1,9 +1,12 @@
-import { Body, Controller, Delete, Get, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { OrderFromService } from '../application/order.from.service';
 import { ApiBadRequestResponse, ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
-import { OrderFromGetEmailListResDto, OrderFromGetPhoneListResDto } from './order.from.res.dto';
+import { AuthUserSuperAdminGuard } from '../../auth/api/auth.user.super-admin.guard';
+import { OrderFromAdminListResDto, OrderFromGetEmailListResDto, OrderFromGetPhoneListResDto } from './order.from.res.dto';
 import {
+  OrderFromAdminApproveReqDto,
+  OrderFromAdminDeleteReqDto,
   OrderFromCreateEmailReqDto,
   OrderFromCreatePhoneReqDto,
   OrderFromDeleteEmailReqDto,
@@ -86,5 +89,52 @@ export class OrderFromController {
   @Delete('/order-from/email')
   deleteEmail(@Body() getBody: OrderFromDeleteEmailReqDto) {
     return this.orderFromService.deleteEmail(getBody.id);
+  }
+
+  // ==================== 관리자용 API ====================
+
+  @ApiOperation({
+    summary: '[관리자] 발신번호/이메일 전체 조회 (삭제/거절 제외)',
+  })
+  @ApiOkResponse({
+    type: OrderFromAdminListResDto,
+  })
+  // ====================================================
+  @UseGuards(AuthUserSuperAdminGuard)
+  @Get('/order-from/admin/list')
+  getAdminList() {
+    return this.orderFromService.getAdminList();
+  }
+
+  @ApiOperation({
+    summary: '[관리자] 발신번호/이메일 삭제',
+  })
+  @ApiOkResponse({
+    description: '성공적으로 삭제한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '존재하지 않는 발신번호/이메일일 경우',
+  })
+  // ====================================================
+  @UseGuards(AuthUserSuperAdminGuard)
+  @Delete('/order-from/admin')
+  adminDelete(@Body() getBody: OrderFromAdminDeleteReqDto) {
+    return this.orderFromService.adminDelete(getBody.id);
+  }
+
+  @ApiOperation({
+    summary: '[관리자] 발신번호 승인 (PENDING → APPROVED)',
+  })
+  @ApiOkResponse({
+    description: '성공적으로 승인한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '승인할 수 있는 요청이 없는 경우',
+  })
+  // ====================================================
+  @UseGuards(AuthUserSuperAdminGuard)
+  @Patch('/order-from/admin/approve')
+  adminApprove(@Body() getBody: OrderFromAdminApproveReqDto) {
+    return this.orderFromService.adminApprove(getBody.id);
   }
 }

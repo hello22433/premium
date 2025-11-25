@@ -37,11 +37,43 @@ export class OrderFromCreateEmailReqDto {
   // ==============================
   @IsNotEmpty()
   from: string;
+
+  @ApiProperty({
+    description: 'user id',
+  })
+  // ==============================
+  @IsOptional()
+  @IsNumber()
+  userId?: number;
 }
 
 export class OrderFromDeleteEmailReqDto {
   @ApiProperty({
     description: '발신 이메일 ID',
+  })
+  // ==============================
+  @IsNotEmpty()
+  @IsNumber()
+  @Type(() => Number)
+  id: number;
+}
+
+// ==================== 관리자용 DTO ====================
+
+export class OrderFromAdminDeleteReqDto {
+  @ApiProperty({
+    description: '발신번호/이메일 ID',
+  })
+  // ==============================
+  @IsNotEmpty()
+  @IsNumber()
+  @Type(() => Number)
+  id: number;
+}
+
+export class OrderFromAdminApproveReqDto {
+  @ApiProperty({
+    description: '발신번호/이메일 ID',
   })
   // ==============================
   @IsNotEmpty()
