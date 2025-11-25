@@ -14,9 +14,11 @@ import {
   PartnerCompanyGetListResDto,
   PartnerCompanyGetSearchListResDto,
   PartnerCompanyGetSelectListResDto,
+  PartnerCompanyGetValidityListResDto,
 } from '../api/partner.company.res.dto';
 import { PartnerCompanySearchViewDto } from '../api/dto/partner.company.search.view.dto';
 import { PartnerCompanyViewDto } from '../api/dto/partner.company.view.dto';
+import { PartnerCompanyValidityViewDto } from '../api/dto/partner.company.validity.view.dto';
 import { DateFormatStr } from '../../common/domain/date.format.str';
 import { format } from 'date-fns';
 import { CreateCode } from '../../common/domain/create.code';
@@ -40,6 +42,21 @@ export class PartnerCompanyService {
         businessName: partnerCompany.businessName,
         personName: partnerCompany.personName,
         status: IPartnerCompanyStatus.ACTIVE,
+      };
+    });
+
+    return { list: resultList };
+  }
+
+  async getValidityList(): Promise<PartnerCompanyGetValidityListResDto> {
+    const partnerCompanyList = await this.partnerCompanyRepository.find({
+      select: ['businessName', 'validityStartsNextDay'],
+    });
+
+    const resultList: PartnerCompanyValidityViewDto[] = partnerCompanyList.map((partnerCompany) => {
+      return {
+        businessName: partnerCompany.businessName,
+        validityStartsNextDay: partnerCompany.validityStartsNextDay,
       };
     });
 

@@ -3,6 +3,7 @@ import { GetListResDto } from '../../common/api/dto/get.list.res.dto';
 import { PartnerCompanyViewDto } from './dto/partner.company.view.dto';
 import { PartnerCompanySearchViewDto } from './dto/partner.company.search.view.dto';
 import { PartnerCompanyDetailDto } from './dto/partner.company.detail.dto';
+import { PartnerCompanyValidityViewDto } from './dto/partner.company.validity.view.dto';
 
 export class PartnerCompanyGetSearchListResDto extends GetListResDto {
   @ApiProperty({
@@ -28,3 +29,11 @@ export class PartnerCompanyGetListResDto extends GetListResDto {
 }
 
 export class PartnerCompanyGetDetailResDto extends PartnerCompanyDetailDto {}
+
+export class PartnerCompanyGetValidityListResDto {
+  @ApiProperty({
+    type: [PartnerCompanyValidityViewDto],
+    description: '협력사 유효기간 설정 list',
+  })
+  list: PartnerCompanyValidityViewDto[];
+}

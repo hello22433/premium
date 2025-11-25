@@ -4,6 +4,7 @@ import {
   PartnerCompanyGetDetailResDto,
   PartnerCompanyGetListResDto,
   PartnerCompanyGetSearchListResDto,
+  PartnerCompanyGetValidityListResDto,
 } from './partner.company.res.dto';
 import { PartnerCompanyService } from '../application/partner.company.service';
 import {
@@ -41,6 +42,20 @@ export class PartnerCompanyController {
   @Get('/partner-company/select/list')
   getSelectList() {
     return this.partnerCompanyService.getSelectList();
+  }
+
+  @ApiOperation({
+    summary: '협력사 유효기간 설정 리스트 조회 API',
+    description: '협력사별 businessName, validityStartsNextDay 값을 조회합니다.',
+  })
+  @ApiOkResponse({
+    type: PartnerCompanyGetValidityListResDto,
+    description: '성공적으로 조회한 경우',
+  })
+  // =====================================
+  @Get('/partner-company/validity/list')
+  getValidityList() {
+    return this.partnerCompanyService.getValidityList();
   }
 
   @ApiOperation({
