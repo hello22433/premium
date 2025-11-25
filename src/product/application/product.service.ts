@@ -482,12 +482,12 @@ export class ProductService {
       throw new BadRequestException('SSG 상품 템플릿을 찾을 수 없습니다.');
     }
 
-    // 새로운 상품 코드 생성 (기존 패턴 따라 생성)
-    // code로 정렬하여 가장 큰 코드 번호를 찾음 (id 순서와 code 순서가 다를 수 있음)
+    // 새로운 상품 코드 생성 (12자리: EP + 10자리 숫자)
+    // 숫자 부분을 정수로 변환하여 최대값을 찾음
     const latestProduct = await this.productRepository
       .createQueryBuilder('product')
       .where('product.code LIKE :codePattern', { codePattern: 'EP%' })
-      .orderBy('product.code', 'DESC')
+      .orderBy('CAST(SUBSTRING(product.code, 3) AS UNSIGNED)', 'DESC')
       .getOne();
 
     let nextCodeNumber = 1;
@@ -495,7 +495,7 @@ export class ProductService {
       const currentNumber = parseInt(latestProduct.code.match(/EP(\d+)/)![1]);
       nextCodeNumber = currentNumber + 1;
     }
-    const newCode = `EP${nextCodeNumber.toString().padStart(11, '0')}`;
+    const newCode = `EP${nextCodeNumber.toString().padStart(10, '0')}`;
 
     // 새로운 SSG 상품 생성
     const newProduct = new ProductEntity();
