@@ -45,4 +45,10 @@ export class OrderFromAdminListResDto {
     type: [OrderFromAdminViewDto],
   })
   list: OrderFromAdminViewDto[];
+
+  @ApiProperty({ description: '전체 갯수' })
+  totalCount: number;
+
+  @ApiProperty({ description: '전체 페이지 수' })
+  totalPage: number;
 }

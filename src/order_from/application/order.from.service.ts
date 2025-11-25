@@ -5,6 +5,7 @@ import { In, IsNull, Not, Repository } from 'typeorm';
 import { OrderFromDefinitionType, OrderFromRequestStatus } from '../interface/order.from.definition.type';
 import { OrderFromGetPhoneListResDto } from '../api/order.from.res.dto';
 import {
+  OrderFromAdminGetListReqDto,
   OrderFromCreateEmailReqDto,
   OrderFromCreatePhoneReqDto,
   OrderFromGetPhoneReqQueryDto,
@@ -148,8 +149,12 @@ export class OrderFromService {
   /**
    * 관리자용 전체 조회 (삭제/거절 제외)
    */
-  async getAdminList() {
-    const list = await this.orderFromDefinitionRepository.find({
+  async getAdminList(getQuery: OrderFromAdminGetListReqDto) {
+    const page = getQuery.page ?? 1;
+    const take = getQuery.take ?? 10;
+    const skip = (page - 1) * take;
+
+    const [list, totalCount] = await this.orderFromDefinitionRepository.findAndCount({
       where: {
         type: In([OrderFromDefinitionType.PHONE]),
         deletedAt: IsNull(),
@@ -158,7 +163,11 @@ export class OrderFromService {
       order: {
         createdAt: 'DESC',
       },
+      skip,
+      take,
     });
+
+    const totalPage = Math.ceil(totalCount / take);
 
     return {
       list: list.map((item) => ({
@@ -169,6 +178,8 @@ export class OrderFromService {
         requestStatus: item.requestStatus,
         createdAt: item.createdAt,
       })),
+      totalCount,
+      totalPage,
     };
   }
 

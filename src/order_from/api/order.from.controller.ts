@@ -7,6 +7,7 @@ import { OrderFromAdminListResDto, OrderFromGetEmailListResDto, OrderFromGetPhon
 import {
   OrderFromAdminApproveReqDto,
   OrderFromAdminDeleteReqDto,
+  OrderFromAdminGetListReqDto,
   OrderFromCreateEmailReqDto,
   OrderFromCreatePhoneReqDto,
   OrderFromDeleteEmailReqDto,
@@ -102,8 +103,8 @@ export class OrderFromController {
   // ====================================================
   @UseGuards(AuthUserSuperAdminGuard)
   @Get('/order-from/admin/list')
-  getAdminList() {
-    return this.orderFromService.getAdminList();
+  getAdminList(@Query() getQuery: OrderFromAdminGetListReqDto) {
+    return this.orderFromService.getAdminList(getQuery);
   }
 
   @ApiOperation({

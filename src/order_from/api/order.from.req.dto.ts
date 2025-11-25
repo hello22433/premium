@@ -81,3 +81,25 @@ export class OrderFromAdminApproveReqDto {
   @Type(() => Number)
   id: number;
 }
+
+export class OrderFromAdminGetListReqDto {
+  @ApiProperty({
+    description: '페이지 번호',
+    default: 1,
+  })
+  // ==============================
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  page?: number = 1;
+
+  @ApiProperty({
+    description: '페이지당 항목 수',
+    default: 10,
+  })
+  // ==============================
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  take?: number = 10;
+}
