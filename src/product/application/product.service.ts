@@ -483,10 +483,11 @@ export class ProductService {
     }
 
     // 새로운 상품 코드 생성 (기존 패턴 따라 생성)
+    // code로 정렬하여 가장 큰 코드 번호를 찾음 (id 순서와 code 순서가 다를 수 있음)
     const latestProduct = await this.productRepository
       .createQueryBuilder('product')
       .where('product.code LIKE :codePattern', { codePattern: 'EP%' })
-      .orderBy('product.id', 'DESC')
+      .orderBy('product.code', 'DESC')
       .getOne();
 
     let nextCodeNumber = 1;
