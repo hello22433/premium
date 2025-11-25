@@ -16,7 +16,7 @@ export const AlimTalkTemplate = (orderDelivery: OrderDeliveryEntity) => {
   // 템플릿 코드에 'dev'가 포함되어 있으면 테스트 환경으로 판단
   const templateCode = process.env.ALIM_TALK_INFO_BANK_TEMPLATE_CODE || '';
   const isTestTemplate = templateCode.toLowerCase().includes('dev');
-
+// 유효기간 : ~ ${orderDelivery.orderProductMapping.product.expireDay}
   const baseMessage = `[모바일쿠폰] 이팝콘 도착
 상품명 : ${orderDelivery.orderProductMapping.product.name}
 유효기간 : ${orderDelivery.orderProductMapping.product.expireDay}일
