@@ -51,4 +51,7 @@ export class OrderFromAdminListResDto {
 
   @ApiProperty({ description: '전체 페이지 수' })
   totalPage: number;
+
+  @ApiProperty({ description: '현재 페이지' })
+  currentPage: number;
 }

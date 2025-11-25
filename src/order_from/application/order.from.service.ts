@@ -188,6 +188,7 @@ export class OrderFromService {
       })),
       totalCount,
       totalPage,
+      currentPage: page,
     };
   }
 
