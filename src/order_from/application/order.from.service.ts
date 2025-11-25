@@ -151,6 +151,7 @@ export class OrderFromService {
   async getAdminList() {
     const list = await this.orderFromDefinitionRepository.find({
       where: {
+        type: In([OrderFromDefinitionType.PHONE]),
         deletedAt: IsNull(),
         requestStatus: In([OrderFromRequestStatus.PENDING, OrderFromRequestStatus.APPROVED]),
       },
