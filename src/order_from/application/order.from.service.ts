@@ -14,12 +14,15 @@ import { IMailSend } from '../../mail/interface/mail-send';
 import { ConfigService } from '@nestjs/config';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { IUserAuthority } from '../../user/interface/user.authority';
+import { UserEntity } from '../../entity/user.entity';
 
 @Injectable()
 export class OrderFromService {
   constructor(
     @InjectRepository(OrderFromDefinitionEntity)
     private orderFromDefinitionRepository: Repository<OrderFromDefinitionEntity>,
+    @InjectRepository(UserEntity)
+    private userRepository: Repository<UserEntity>,
     @Inject('IMailSend')
     private mailSend: IMailSend,
     private configService: ConfigService,
@@ -169,12 +172,17 @@ export class OrderFromService {
 
     const totalPage = Math.ceil(totalCount / take);
 
+    // userId 목록 추출 후 user email 조회
+    const userIds = [...new Set(list.map((item) => item.userId).filter((id) => id !== null))];
+    const users = userIds.length > 0 ? await this.userRepository.find({ where: { id: In(userIds) } }) : [];
+    const userEmailMap = new Map(users.map((user) => [user.id, user.email]));
+
     return {
       list: list.map((item) => ({
         id: item.id,
         type: item.type,
         from: item.from,
-        userId: item.userId,
+        userEmail: item.userId ? userEmailMap.get(item.userId) ?? '' : '',
         requestStatus: item.requestStatus,
         createdAt: item.createdAt,
       })),
@@ -219,6 +227,27 @@ export class OrderFromService {
 
     await this.orderFromDefinitionRepository.update(id, {
       requestStatus: OrderFromRequestStatus.APPROVED,
+    });
+  }
+
+  /**
+   * 관리자용 거절 (PENDING → REJECTED)
+   */
+  async adminReject(id: number) {
+    const item = await this.orderFromDefinitionRepository.findOne({
+      where: {
+        id,
+        deletedAt: IsNull(),
+        requestStatus: OrderFromRequestStatus.PENDING,
+      },
+    });
+
+    if (!item) {
+      throw new BadRequestException('거절할 수 있는 요청이 없습니다.');
+    }
+
+    await this.orderFromDefinitionRepository.update(id, {
+      requestStatus: OrderFromRequestStatus.REJECTED,
     });
   }
 }

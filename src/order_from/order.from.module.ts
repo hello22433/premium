@@ -5,9 +5,10 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { OrderFromDefinitionEntity } from '../entity/order.from.definition.entity';
 import { AuthModule } from '../auth/auth.module';
 import { MailModule } from '../mail/mail.module';
+import { UserEntity } from '../entity/user.entity';
 
 @Module({
-  imports: [AuthModule, MailModule, TypeOrmModule.forFeature([OrderFromDefinitionEntity])],
+  imports: [AuthModule, MailModule, TypeOrmModule.forFeature([OrderFromDefinitionEntity, UserEntity])],
   controllers: [OrderFromController],
   providers: [OrderFromService],
 })

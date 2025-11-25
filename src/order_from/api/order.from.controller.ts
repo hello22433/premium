@@ -8,6 +8,7 @@ import {
   OrderFromAdminApproveReqDto,
   OrderFromAdminDeleteReqDto,
   OrderFromAdminGetListReqDto,
+  OrderFromAdminRejectReqDto,
   OrderFromCreateEmailReqDto,
   OrderFromCreatePhoneReqDto,
   OrderFromDeleteEmailReqDto,
@@ -137,5 +138,21 @@ export class OrderFromController {
   @Patch('/order-from/admin/approve')
   adminApprove(@Body() getBody: OrderFromAdminApproveReqDto) {
     return this.orderFromService.adminApprove(getBody.id);
+  }
+
+  @ApiOperation({
+    summary: '[관리자] 발신번호 거절 (PENDING → REJECTED)',
+  })
+  @ApiOkResponse({
+    description: '성공적으로 거절한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '거절할 수 있는 요청이 없는 경우',
+  })
+  // ====================================================
+  @UseGuards(AuthUserSuperAdminGuard)
+  @Patch('/order-from/admin/reject')
+  adminReject(@Body() getBody: OrderFromAdminRejectReqDto) {
+    return this.orderFromService.adminReject(getBody.id);
   }
 }

@@ -82,6 +82,17 @@ export class OrderFromAdminApproveReqDto {
   id: number;
 }
 
+export class OrderFromAdminRejectReqDto {
+  @ApiProperty({
+    description: '발신번호/이메일 ID',
+  })
+  // ==============================
+  @IsNotEmpty()
+  @IsNumber()
+  @Type(() => Number)
+  id: number;
+}
+
 export class OrderFromAdminGetListReqDto {
   @ApiProperty({
     description: '페이지 번호',

@@ -29,8 +29,8 @@ export class OrderFromAdminViewDto {
   @ApiProperty({ description: '발신번호 또는 이메일' })
   from: string;
 
-  @ApiProperty({ description: '사용자 ID' })
-  userId: number;
+  @ApiProperty({ description: '사용자 이메일' })
+  userEmail: string;
 
   @ApiProperty({ description: '요청 상태 (PENDING/APPROVED/REJECTED)' })
   requestStatus: OrderFromRequestStatus;
