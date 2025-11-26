@@ -93,6 +93,12 @@ import { DeliveryBatchService } from '../../delivery/application/delivery.batch.
 import { IOrderSendMethod } from '../interface/order.send.method';
 import { ActivityLogService } from '../../activity_log/application/activity.log.service';
 import { ActivityLogResult } from '../../activity_log/interface/activity.log.result';
+import dayjs from 'dayjs';
+import timezone from 'dayjs/plugin/timezone';
+import utc from 'dayjs/plugin/utc';
+
+dayjs.extend(utc);
+dayjs.extend(timezone);
 
 @Injectable()
 export class OrderService {
@@ -1718,12 +1724,19 @@ export class OrderService {
           // 발급 성공, status - WAIT 유지
           orderDelivery.status = IOrderDeliveryStatus.WAIT;
           if (orderDelivery.barCode) {
+            const productExpireDay = orderDelivery.orderProductMapping.product.expireDay || 0;
+            const validityStartsNextDay =
+              orderDelivery.orderProductMapping.product.partnerCompany?.validityStartsNextDay ?? true;
+            const expireDay = validityStartsNextDay ? productExpireDay : productExpireDay - 1;
+
+            const expireDate = expireDay ? dayjs().tz('Asia/Seoul').add(expireDay, 'day').format('YYYY. MM. DD') : null;
+
             const { path } = await DeliveryCreateCouponImage(
               orderDelivery.orderProductMapping.product.imagePath,
               orderDelivery.orderProductMapping.product.name,
               orderDelivery.barCode,
               orderDelivery.orderProductMapping.product.brand!.nameKorean,
-              orderDelivery.orderProductMapping.product.expireDay,
+              expireDate,
               orderDelivery.orderProductMapping.topImagePath,
               orderDelivery.orderProductMapping.midImagePath,
               orderDelivery.orderProductMapping.product.type,
@@ -2189,7 +2202,8 @@ export class OrderService {
       .createQueryBuilder('orderProductMapping')
       .innerJoinAndSelect('orderProductMapping.product', 'product')
       .innerJoinAndSelect('orderProductMapping.order', 'order')
-      .innerJoinAndSelect('product.brand', 'brand');
+      .innerJoinAndSelect('product.brand', 'brand')
+      .leftJoinAndSelect('product.partnerCompany', 'partnerCompany');
 
     // 알림톡일 경우 order.user도 조회 (AlimTalkTemplate에서 발행자 정보 필요)
     if (order.sendMethod === IOrderSendMethod.ALIM_TALK) {
@@ -2204,13 +2218,19 @@ export class OrderService {
       throw new BadRequestException('해당 주문-상품이 존재하지 않습니다. ');
     }
 
+    const productExpireDay = orderProductMapping.product.expireDay || 0;
+    const validityStartsNextDay = orderProductMapping.product.partnerCompany?.validityStartsNextDay ?? true;
+    const expireDay = validityStartsNextDay ? productExpireDay : productExpireDay - 1;
+
+    const expireDate = expireDay ? dayjs().tz('Asia/Seoul').add(expireDay, 'day').format('YYYY. MM. DD') : null;
+
     // 2. 쿠폰이미지 만들기
     const { path: imagePath } = await DeliveryCreateCouponImage(
       orderProductMapping.product.imagePath,
       orderProductMapping.product.name,
       barCode,
       orderProductMapping.product.brand!.nameKorean,
-      orderProductMapping.product.expireDay,
+      expireDate,
       orderProductMapping.topImagePath,
       orderProductMapping.midImagePath,
       orderProductMapping.product.type,

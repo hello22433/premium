@@ -30,6 +30,13 @@ import { format } from 'date-fns';
 import { normalizeLineBreaks } from '../../delivery/domain/email.delivery.template';
 import { DateFormatStr } from '../../common/domain/date.format.str';
 
+import dayjs from 'dayjs';
+import timezone from 'dayjs/plugin/timezone';
+import utc from 'dayjs/plugin/utc';
+
+dayjs.extend(utc);
+dayjs.extend(timezone);
+
 @Injectable()
 export class OrderReceiveService {
   constructor(
@@ -89,12 +96,18 @@ export class OrderReceiveService {
     orderDelivery.choiceSelectProductId = productChoiceMapping.product.id;
 
     if (orderDelivery.barCode) {
+      const productExpireDay = productChoiceMapping.product.expireDay || 0;
+      const validityStartsNextDay = productChoiceMapping.product.partnerCompany?.validityStartsNextDay ?? true;
+      const expireDay = validityStartsNextDay ? productExpireDay : productExpireDay - 1;
+
+      const expireDate = expireDay ? dayjs().tz('Asia/Seoul').add(expireDay, 'day').format('YYYY. MM. DD') : null;
+
       const { path } = await DeliveryCreateCouponImage(
         productChoiceMapping.product.imagePath,
         productChoiceMapping.product.name,
         orderDelivery.barCode,
         productChoiceMapping.product.brand!.nameKorean,
-        productChoiceMapping.product.expireDay,
+        expireDate,
         orderDelivery.orderProductMapping.topImagePath,
         orderDelivery.orderProductMapping.midImagePath,
         orderDelivery.orderProductMapping.product.type,
