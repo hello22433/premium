@@ -1,9 +1,9 @@
 import { createCanvas, Image } from 'canvas';
-import * as JsBarcode from 'jsbarcode';
+import JsBarcode from 'jsbarcode';
 
 import * as fs from 'fs';
 import { join } from 'path';
-import * as sharp from 'sharp';
+import sharp from 'sharp';
 import * as process from 'node:process';
 import axios from 'axios';
 import { IProductType } from '../../product/interface/product.type';
