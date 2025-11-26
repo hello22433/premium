@@ -143,11 +143,11 @@ export const DeliveryCreateCouponImage = async (
   if (type === IProductType.SSG) {
     ctx.fillText(`상품명: ${productName}`, 40, 550);
     ctx.fillText(`사용처(교환처): 이마트`, 40, 590);
-    ctx.fillText(`유효기간: ${expireDate}`, 40, 630);
+    ctx.fillText(`유효기간: ~ ${expireDate}`, 40, 630);
   } else {
     ctx.fillText(`상품명: ${productName}`, 40, 770);
     ctx.fillText(`사용처(교환처): ${exchangeBrandName}`, 40, 810);
-    ctx.fillText(`유효기간: ${expireDate}`, 40, 850);
+    ctx.fillText(`유효기간: ~ ${expireDate}`, 40, 850);
   }
 
   // 최종 이미지 저장
