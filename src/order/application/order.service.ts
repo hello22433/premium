@@ -279,6 +279,7 @@ export class OrderService {
       .leftJoinAndSelect('orderProductMappings.product', 'product')
       .leftJoinAndSelect('product.brand', 'brand')
       .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
+      .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .where('order.id = :id', { id: getParam.id });
 
     const order = await queryBuilder.getOne();
@@ -305,7 +306,11 @@ export class OrderService {
     if (order.orderProductMappings && order.orderProductMappings.length > 0) {
       for (const orderProductMapping of order.orderProductMappings) {
         const orderDeliveryList: OrderViewDeliveryDto[] = [];
+        const productExpireDay = orderProductMapping.product.expireDay;
+        const validityStartsNextDay = orderProductMapping.product.partnerCompany?.validityStartsNextDay ?? true;
+        const expireDay = validityStartsNextDay ? productExpireDay : productExpireDay - 1;
 
+        const expireDate = expireDay ? dayjs().tz('Asia/Seoul').add(expireDay, 'day').format('YYYY. MM. DD') : null;
         for (const orderDelivery of orderProductMapping.orderDeliveries) {
           // deliveryTarget 복호화
           let decryptedDeliveryTarget = orderDelivery.deliveryTarget;
@@ -336,11 +341,11 @@ export class OrderService {
               name: orderProductMapping.product.name,
               price: orderProductMapping.product.price,
               expireDay: orderProductMapping.product.expireDay,
+              expireDate: expireDate,
               amount: orderProductMapping.amount,
               imagePath: orderProductMapping.product.imagePath,
               brandId: orderProductMapping.product.brandId,
               brandName: orderProductMapping.product.brand?.nameKorean ?? '',
-              partnerCompanyName: orderProductMapping.product.partnerCompany,
             }
           : null;
 
@@ -413,6 +418,7 @@ export class OrderService {
       .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .leftJoinAndSelect('orderProductMappings.product', 'product')
       .leftJoinAndSelect('product.brand', 'brand')
+      .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .where('order.id = :id', { id: getParam.id });
 
     const order = await queryBuilder.getOne();
@@ -428,6 +434,11 @@ export class OrderService {
 
     if (order.orderProductMappings && order.orderProductMappings.length > 0) {
       for (const orderProductMapping of order.orderProductMappings) {
+        const productExpireDay = orderProductMapping.product.expireDay;
+        const validityStartsNextDay = orderProductMapping.product.partnerCompany?.validityStartsNextDay ?? true;
+        const expireDay = validityStartsNextDay ? productExpireDay : productExpireDay - 1;
+
+        const expireDate = expireDay ? dayjs().tz('Asia/Seoul').add(expireDay, 'day').format('YYYY. MM. DD') : null;
         topImagePath = orderProductMapping.topImagePath ?? OrderService.DEFAULT_TOP_IMAGE_PATH;
         midImagePath = orderProductMapping.midImagePath ?? OrderService.DEFAULT_MID_IMAGE_PATH;
 
@@ -437,6 +448,7 @@ export class OrderService {
               name: orderProductMapping.product.name,
               price: orderProductMapping.product.price,
               expireDay: orderProductMapping.product.expireDay,
+              expireDate: expireDate,
               amount: orderProductMapping.amount,
               imagePath: orderProductMapping.product.imagePath,
               brandId: orderProductMapping.product.brandId,
@@ -542,6 +554,11 @@ export class OrderService {
     if (order.orderProductMappings && order.orderProductMappings.length > 0) {
       for (const orderProductMapping of order.orderProductMappings) {
         const orderDeliveryList: OrderDeliveryCompleteReportViewDto[] = [];
+        const productExpireDay = orderProductMapping.product.expireDay || 0;
+        const validityStartsNextDay = orderProductMapping.product.partnerCompany?.validityStartsNextDay ?? true;
+        const expireDay = validityStartsNextDay ? productExpireDay : productExpireDay - 1;
+
+        const expireDate = expireDay ? dayjs().tz('Asia/Seoul').add(expireDay, 'day').format('YYYY. MM. DD') : null;
 
         for (const orderDelivery of orderProductMapping.orderDeliveries) {
           // deliveryTarget 복호화 후 마스킹 처리
@@ -574,6 +591,7 @@ export class OrderService {
               price: orderProductMapping.product.price,
               expireDay: orderProductMapping.product.expireDay,
               amount: orderProductMapping.amount,
+              expireDate: expireDate,
               imagePath: orderProductMapping.product.imagePath,
               brandId: orderProductMapping.product.brandId,
               brandName: orderProductMapping.product.brand?.nameKorean ?? '',
