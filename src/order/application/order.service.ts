@@ -1998,6 +1998,7 @@ export class OrderService {
       .leftJoinAndSelect('order.operationUser', 'operationUser')
       .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .leftJoinAndSelect('orderProductMappings.product', 'product')
+      .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
       .where('order.type = :type', { type });
 
     // 주문 관리 일 경우
@@ -2071,12 +2072,39 @@ export class OrderService {
       { header: '발송시간', key: 'sendRequestAt', width: 40 },
     ];
 
+    const getSendRequestAt = ({
+      status,
+      actualSendAt,
+      sendRequestAt,
+      sendType,
+    }: {
+      status: string;
+      actualSendAt: Date | null;
+      sendRequestAt: Date;
+      sendType: string | null;
+    }) => {
+      if (status === 'TEMP' || status === 'DELIVERY_CANCEL') return '-';
+
+      if (actualSendAt) {
+        return dayjs(actualSendAt).format('YYYY/MM/DD HH:mm:ss');
+      }
+
+      if (sendType === 'IMMEDIATE') {
+        return '-';
+      }
+
+      if (sendRequestAt) {
+        return dayjs(sendRequestAt).format('YYYY/MM/DD HH:mm:ss');
+      }
+      return '-';
+    };
+
     let id = 1;
     for (const order of orderList) {
-      const sendRequestAt = normalizeDate(order.sendRequestAt) ? format(order.sendRequestAt, 'yyyy-MM-dd HH:mm') : null;
-
       let totalAmount = 0;
       let productName = '';
+      let actualSendAt: Date | null = null;
+
       if (order.orderProductMappings && order.orderProductMappings.length > 0) {
         totalAmount = order.orderProductMappings.reduce((acc, cur) => {
           return acc + cur.amount;
@@ -2086,6 +2114,19 @@ export class OrderService {
         const orderProductMappingsLength = order.orderProductMappings.length;
         if (orderProductMappingsLength - 1 > 0) {
           productName += `외 ${orderProductMappingsLength - 1}건`;
+        }
+
+        // 실제 발송 시간 추출 (첫 번째 유효한 값 사용)
+        for (const mapping of order.orderProductMappings) {
+          if (mapping.orderDeliveries) {
+            for (const delivery of mapping.orderDeliveries) {
+              if (delivery.actualSendAt) {
+                actualSendAt = delivery.actualSendAt;
+                break;
+              }
+            }
+          }
+          if (actualSendAt) break;
         }
       }
 
@@ -2100,7 +2141,12 @@ export class OrderService {
         sendAmount: order.sendAmount,
         settleAmount: order.settleAmount,
         status: OrderStatusExcelMapping(order.status),
-        sendRequestAt: sendRequestAt ?? '',
+        sendRequestAt: getSendRequestAt({
+          status: order.status,
+          actualSendAt: actualSendAt,
+          sendRequestAt: order.sendRequestAt,
+          sendType: order.sendType,
+        }),
       });
       id++;
     }
