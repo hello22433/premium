@@ -179,6 +179,9 @@ export class DeliveryBatchService {
           orderDelivery.status = IOrderDeliveryStatus.FAIL;
           await this.orderDeliveryRepository.save(orderDelivery);
 
+          // 발송 시도가 되었으므로 orderIdList에 추가 (order.status를 DELIVERY_COMPLETE로 변경하기 위해)
+          orderIdList.push(order.id);
+
           // 이 배송건은 발송하지 않고 다음으로 넘어감
           continue;
         }
