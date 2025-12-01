@@ -43,7 +43,7 @@ export class DaouHttp implements IDaou {
   private cooperPw: string;
 
   // ACTION 파라미터 값들
-  private readonly ACTION_ISSUE = 'CI102_ISSUECPN_WITHPAY'; // 쿠폰 발급
+  private readonly ACTION_ISSUE = 'CI102_ONLY_ISSUECPN_WITHPAY'; // 쿠폰 발급
   private readonly ACTION_CANCEL = 'CI104_DISUSECPN'; // 쿠폰 취소
   private readonly ACTION_CHECK = 'CI07113_QUERY_COOPERORDER_WITHPAY'; // 쿠폰 상태 조회
 
