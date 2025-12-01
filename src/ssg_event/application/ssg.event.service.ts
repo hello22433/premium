@@ -541,4 +541,43 @@ export class SsgEventService {
   async confirmEventBalance(orderId: number): Promise<void> {
     await this.amountHistoryRepository.update({ orderId, isTemporary: true }, { isTemporary: false });
   }
+
+  /**
+   * 개별 배송건 PIN 발급 실패 시 해당 금액만 환불
+   * @param orderId 주문 ID
+   * @param amount 환불할 금액 (상품 가격)
+   */
+  async refundForDeliveryFail(orderId: number, amount: number): Promise<void> {
+    // 해당 주문의 차감 이력에서 ssgEventId 조회
+    const history = await this.amountHistoryRepository.findOne({
+      where: { orderId },
+      order: { id: 'DESC' },
+    });
+
+    if (!history || !history.ssgEventId) {
+      return;
+    }
+
+    const ssgEvent = await this.ssgEventRepository.findOne({
+      where: { id: history.ssgEventId },
+    });
+
+    if (!ssgEvent) {
+      return;
+    }
+
+    const restoredBalance = ssgEvent.eventBalance + amount;
+
+    const refundHistory = this.amountHistoryRepository.create({
+      ssgEventId: ssgEvent.id,
+      amount: amount, // 양수로 저장 (환불)
+      balance: restoredBalance,
+      orderId,
+      isTemporary: false,
+    });
+
+    ssgEvent.eventBalance = restoredBalance;
+    await this.amountHistoryRepository.save(refundHistory);
+    await this.ssgEventRepository.save(ssgEvent);
+  }
 }

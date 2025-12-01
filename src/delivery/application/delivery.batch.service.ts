@@ -38,6 +38,13 @@ import { OrderRealProductMappingEntity } from '../../entity/order.real.product.m
 import { Transactional } from 'typeorm-transactional';
 import { OrderDeliveryCouponStatus } from '../interface/order.delivery.coupon.status';
 import { UserEntity } from '../../entity/user.entity';
+import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
+import { SsgEventService } from '../../ssg_event/application/ssg.event.service';
+import { SsgEventEntity } from '../../entity/ssg.event.entity';
+import { UserManagementService } from '../../user_management/application/user.management.service';
+import { DeliveryCreateCouponImage } from '../infra/delivery.create.coupon.image';
+import { IProductType } from '../../product/interface/product.type';
+import dayjs from 'dayjs';
 
 @Injectable()
 export class DeliveryBatchService {
@@ -67,6 +74,11 @@ export class DeliveryBatchService {
     private fileStorage: IFileStorage,
     @InjectRepository(UserEntity)
     private userRepository: Repository<UserEntity>,
+    @InjectRepository(SsgEventEntity)
+    private ssgEventRepository: Repository<SsgEventEntity>,
+    private partnerCompanyExternService: PartnerCompanyExternService,
+    private ssgEventService: SsgEventService,
+    private userManagementService: UserManagementService,
   ) {}
 
   private logger = new Logger('batch');
@@ -95,6 +107,83 @@ export class DeliveryBatchService {
 
     // 1. 알림톡, SMS, 이메일 전송
     for (const orderDelivery of orderDeliveryList) {
+      const order = orderDelivery.orderProductMapping.order;
+      const product = orderDelivery.orderProductMapping.product;
+      const isChoiceCoupon = product.type === IProductType.CHOICE;
+
+      // 1.0 barCode가 없는 경우 PIN 발급 (초이스쿠폰 제외)
+      if (!orderDelivery.barCode && !isChoiceCoupon) {
+        try {
+          // SSG 이벤트 조회 (SSG 타입인 경우)
+          let ssgEvent: SsgEventEntity | null = null;
+          if (order.type === IOrderType.SSG && orderDelivery.ssgEventId) {
+            ssgEvent = await this.ssgEventRepository.findOne({
+              where: { id: orderDelivery.ssgEventId },
+            });
+          }
+
+          // 협력사 API로 PIN 발급
+          await this.partnerCompanyExternService.issue(orderDelivery, ssgEvent);
+
+          // PIN 발급 실패 확인
+          if (orderDelivery.status === IOrderDeliveryStatus.FAIL || !orderDelivery.barCode) {
+            throw new Error('PIN 발급 실패');
+          }
+
+          // PIN 발급 성공: 쿠폰 이미지 생성
+          const partnerCompany = product.partnerCompany;
+          const productExpireDay = product.expireDay || 0;
+          const validityStartsNextDay = partnerCompany?.validityStartsNextDay ?? true;
+          const expireDay = validityStartsNextDay ? productExpireDay : productExpireDay - 1;
+          const expireDate = expireDay ? dayjs().add(expireDay, 'day').format('YYYY. MM. DD') : null;
+
+          const { path } = await DeliveryCreateCouponImage(
+            product.imagePath,
+            product.name,
+            orderDelivery.barCode,
+            product.brand!.nameKorean,
+            expireDate,
+            orderDelivery.orderProductMapping.topImagePath,
+            orderDelivery.orderProductMapping.midImagePath,
+            product.type,
+          );
+          orderDelivery.imagePath = path;
+
+          this.logger.log(`[BATCH] PIN 발급 성공 - orderDelivery.id: ${orderDelivery.id}, barCode: ${orderDelivery.barCode}`);
+        } catch (error) {
+          // PIN 발급 실패: 환불 처리
+          this.logger.error(`[BATCH] PIN 발급 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
+
+          const productPrice = product.price;
+          const userId = order.user!.id;
+
+          // SSG 이벤트 잔액 환불
+          if (order.type === IOrderType.SSG) {
+            await this.ssgEventService.refundForDeliveryFail(order.id, productPrice);
+          }
+
+          // 사용자 잔액 환불
+          if (order.isSettleBalance) {
+            // 잔액 결제였던 경우: 잔액 복원
+            await this.userManagementService.addBalance(userId, productPrice);
+          } else {
+            // 정산 결제였던 경우: 정산 금액 차감
+            const user = await this.userRepository.findOne({ where: { id: userId } });
+            if (user) {
+              user.allSettleAmount -= productPrice;
+              await this.userRepository.save(user);
+            }
+          }
+
+          // 상태를 FAIL로 변경하고 저장
+          orderDelivery.status = IOrderDeliveryStatus.FAIL;
+          await this.orderDeliveryRepository.save(orderDelivery);
+
+          // 이 배송건은 발송하지 않고 다음으로 넘어감
+          continue;
+        }
+      }
+
       // deliveryTarget 복호화
       let decryptedDeliveryTarget = orderDelivery.deliveryTarget;
       if (orderDelivery.deliveryTarget) {
@@ -107,20 +196,20 @@ export class DeliveryBatchService {
         }
       }
 
-      const title = orderDelivery.orderProductMapping.order.sendTitle;
+      const title = order.sendTitle;
 
-      if (orderDelivery.orderProductMapping.order.type !== IOrderType.SSG) {
-        const partnerCompany = orderDelivery.orderProductMapping.product.partnerCompany;
+      if (order.type !== IOrderType.SSG) {
+        const partnerCompany = product.partnerCompany;
         const expireDays =
           partnerCompany?.validityStartsNextDay === false
-            ? orderDelivery.orderProductMapping.product.expireDay - 1
-            : orderDelivery.orderProductMapping.product.expireDay;
+            ? product.expireDay - 1
+            : product.expireDay;
 
         orderDelivery.expireAt = addDays(orderDelivery.sendRequestAt, expireDays);
-        if (orderDelivery.orderProductMapping.order.encourageDay) {
+        if (order.encourageDay) {
           orderDelivery.encourageAt = subDays(
             orderDelivery.expireAt,
-            orderDelivery.orderProductMapping.order.encourageDay,
+            order.encourageDay,
           );
         }
       }
