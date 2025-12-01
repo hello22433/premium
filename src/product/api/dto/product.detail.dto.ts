@@ -32,9 +32,14 @@ export class ProductDetailDto {
   partnerCompanyName: string;
 
   @ApiProperty({
-    description: '대분류',
+    description: '대분류 id',
   })
-  classification: string | null;
+  classificationId: number | null;
+
+  @ApiProperty({
+    description: '대분류명',
+  })
+  classificationName: string | null;
 
   @ApiProperty({
     description: '브랜드 id',
