@@ -93,6 +93,12 @@ import { DeliveryBatchService } from '../../delivery/application/delivery.batch.
 import { IOrderSendMethod } from '../interface/order.send.method';
 import { ActivityLogService } from '../../activity_log/application/activity.log.service';
 import { ActivityLogResult } from '../../activity_log/interface/activity.log.result';
+import dayjs from 'dayjs';
+import timezone from 'dayjs/plugin/timezone';
+import utc from 'dayjs/plugin/utc';
+
+dayjs.extend(utc);
+dayjs.extend(timezone);
 
 @Injectable()
 export class OrderService {
@@ -273,6 +279,7 @@ export class OrderService {
       .leftJoinAndSelect('orderProductMappings.product', 'product')
       .leftJoinAndSelect('product.brand', 'brand')
       .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
+      .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .where('order.id = :id', { id: getParam.id });
 
     const order = await queryBuilder.getOne();
@@ -299,7 +306,11 @@ export class OrderService {
     if (order.orderProductMappings && order.orderProductMappings.length > 0) {
       for (const orderProductMapping of order.orderProductMappings) {
         const orderDeliveryList: OrderViewDeliveryDto[] = [];
+        const productExpireDay = orderProductMapping.product.expireDay;
+        const validityStartsNextDay = orderProductMapping.product.partnerCompany?.validityStartsNextDay ?? true;
+        const expireDay = validityStartsNextDay ? productExpireDay : productExpireDay - 1;
 
+        const expireDate = expireDay ? dayjs().tz('Asia/Seoul').add(expireDay, 'day').format('YYYY. MM. DD') : null;
         for (const orderDelivery of orderProductMapping.orderDeliveries) {
           // deliveryTarget 복호화
           let decryptedDeliveryTarget = orderDelivery.deliveryTarget;
@@ -330,6 +341,7 @@ export class OrderService {
               name: orderProductMapping.product.name,
               price: orderProductMapping.product.price,
               expireDay: orderProductMapping.product.expireDay,
+              expireDate: expireDate,
               amount: orderProductMapping.amount,
               imagePath: orderProductMapping.product.imagePath,
               brandId: orderProductMapping.product.brandId,
@@ -406,6 +418,7 @@ export class OrderService {
       .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .leftJoinAndSelect('orderProductMappings.product', 'product')
       .leftJoinAndSelect('product.brand', 'brand')
+      .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .where('order.id = :id', { id: getParam.id });
 
     const order = await queryBuilder.getOne();
@@ -421,6 +434,11 @@ export class OrderService {
 
     if (order.orderProductMappings && order.orderProductMappings.length > 0) {
       for (const orderProductMapping of order.orderProductMappings) {
+        const productExpireDay = orderProductMapping.product.expireDay;
+        const validityStartsNextDay = orderProductMapping.product.partnerCompany?.validityStartsNextDay ?? true;
+        const expireDay = validityStartsNextDay ? productExpireDay : productExpireDay - 1;
+
+        const expireDate = expireDay ? dayjs().tz('Asia/Seoul').add(expireDay, 'day').format('YYYY. MM. DD') : null;
         topImagePath = orderProductMapping.topImagePath ?? OrderService.DEFAULT_TOP_IMAGE_PATH;
         midImagePath = orderProductMapping.midImagePath ?? OrderService.DEFAULT_MID_IMAGE_PATH;
 
@@ -430,6 +448,7 @@ export class OrderService {
               name: orderProductMapping.product.name,
               price: orderProductMapping.product.price,
               expireDay: orderProductMapping.product.expireDay,
+              expireDate: expireDate,
               amount: orderProductMapping.amount,
               imagePath: orderProductMapping.product.imagePath,
               brandId: orderProductMapping.product.brandId,
@@ -535,6 +554,11 @@ export class OrderService {
     if (order.orderProductMappings && order.orderProductMappings.length > 0) {
       for (const orderProductMapping of order.orderProductMappings) {
         const orderDeliveryList: OrderDeliveryCompleteReportViewDto[] = [];
+        const productExpireDay = orderProductMapping.product.expireDay || 0;
+        const validityStartsNextDay = orderProductMapping.product.partnerCompany?.validityStartsNextDay ?? true;
+        const expireDay = validityStartsNextDay ? productExpireDay : productExpireDay - 1;
+
+        const expireDate = expireDay ? dayjs().tz('Asia/Seoul').add(expireDay, 'day').format('YYYY. MM. DD') : null;
 
         for (const orderDelivery of orderProductMapping.orderDeliveries) {
           // deliveryTarget 복호화 후 마스킹 처리
@@ -567,6 +591,7 @@ export class OrderService {
               price: orderProductMapping.product.price,
               expireDay: orderProductMapping.product.expireDay,
               amount: orderProductMapping.amount,
+              expireDate: expireDate,
               imagePath: orderProductMapping.product.imagePath,
               brandId: orderProductMapping.product.brandId,
               brandName: orderProductMapping.product.brand?.nameKorean ?? '',
@@ -1718,12 +1743,19 @@ export class OrderService {
           // 발급 성공, status - WAIT 유지
           orderDelivery.status = IOrderDeliveryStatus.WAIT;
           if (orderDelivery.barCode) {
+            const productExpireDay = orderDelivery.orderProductMapping.product.expireDay || 0;
+            const validityStartsNextDay =
+              orderDelivery.orderProductMapping.product.partnerCompany?.validityStartsNextDay ?? true;
+            const expireDay = validityStartsNextDay ? productExpireDay : productExpireDay - 1;
+
+            const expireDate = expireDay ? dayjs().tz('Asia/Seoul').add(expireDay, 'day').format('YYYY. MM. DD') : null;
+
             const { path } = await DeliveryCreateCouponImage(
               orderDelivery.orderProductMapping.product.imagePath,
               orderDelivery.orderProductMapping.product.name,
               orderDelivery.barCode,
               orderDelivery.orderProductMapping.product.brand!.nameKorean,
-              orderDelivery.orderProductMapping.product.expireDay,
+              expireDate,
               orderDelivery.orderProductMapping.topImagePath,
               orderDelivery.orderProductMapping.midImagePath,
               orderDelivery.orderProductMapping.product.type,
@@ -1966,6 +1998,7 @@ export class OrderService {
       .leftJoinAndSelect('order.operationUser', 'operationUser')
       .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .leftJoinAndSelect('orderProductMappings.product', 'product')
+      .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
       .where('order.type = :type', { type });
 
     // 주문 관리 일 경우
@@ -2039,12 +2072,39 @@ export class OrderService {
       { header: '발송시간', key: 'sendRequestAt', width: 40 },
     ];
 
+    const getSendRequestAt = ({
+      status,
+      actualSendAt,
+      sendRequestAt,
+      sendType,
+    }: {
+      status: string;
+      actualSendAt: Date | null;
+      sendRequestAt: Date;
+      sendType: string | null;
+    }) => {
+      if (status === 'TEMP' || status === 'DELIVERY_CANCEL') return '-';
+
+      if (actualSendAt) {
+        return dayjs(actualSendAt).format('YYYY/MM/DD HH:mm:ss');
+      }
+
+      if (sendType === 'IMMEDIATE') {
+        return '-';
+      }
+
+      if (sendRequestAt) {
+        return dayjs(sendRequestAt).format('YYYY/MM/DD HH:mm:ss');
+      }
+      return '-';
+    };
+
     let id = 1;
     for (const order of orderList) {
-      const sendRequestAt = normalizeDate(order.sendRequestAt) ? format(order.sendRequestAt, 'yyyy-MM-dd HH:mm') : null;
-
       let totalAmount = 0;
       let productName = '';
+      let actualSendAt: Date | null = null;
+
       if (order.orderProductMappings && order.orderProductMappings.length > 0) {
         totalAmount = order.orderProductMappings.reduce((acc, cur) => {
           return acc + cur.amount;
@@ -2054,6 +2114,19 @@ export class OrderService {
         const orderProductMappingsLength = order.orderProductMappings.length;
         if (orderProductMappingsLength - 1 > 0) {
           productName += `외 ${orderProductMappingsLength - 1}건`;
+        }
+
+        // 실제 발송 시간 추출 (첫 번째 유효한 값 사용)
+        for (const mapping of order.orderProductMappings) {
+          if (mapping.orderDeliveries) {
+            for (const delivery of mapping.orderDeliveries) {
+              if (delivery.actualSendAt) {
+                actualSendAt = delivery.actualSendAt;
+                break;
+              }
+            }
+          }
+          if (actualSendAt) break;
         }
       }
 
@@ -2068,7 +2141,12 @@ export class OrderService {
         sendAmount: order.sendAmount,
         settleAmount: order.settleAmount,
         status: OrderStatusExcelMapping(order.status),
-        sendRequestAt: sendRequestAt ?? '',
+        sendRequestAt: getSendRequestAt({
+          status: order.status,
+          actualSendAt: actualSendAt,
+          sendRequestAt: order.sendRequestAt,
+          sendType: order.sendType,
+        }),
       });
       id++;
     }
@@ -2189,7 +2267,8 @@ export class OrderService {
       .createQueryBuilder('orderProductMapping')
       .innerJoinAndSelect('orderProductMapping.product', 'product')
       .innerJoinAndSelect('orderProductMapping.order', 'order')
-      .innerJoinAndSelect('product.brand', 'brand');
+      .innerJoinAndSelect('product.brand', 'brand')
+      .leftJoinAndSelect('product.partnerCompany', 'partnerCompany');
 
     // 알림톡일 경우 order.user도 조회 (AlimTalkTemplate에서 발행자 정보 필요)
     if (order.sendMethod === IOrderSendMethod.ALIM_TALK) {
@@ -2204,13 +2283,19 @@ export class OrderService {
       throw new BadRequestException('해당 주문-상품이 존재하지 않습니다. ');
     }
 
+    const productExpireDay = orderProductMapping.product.expireDay || 0;
+    const validityStartsNextDay = orderProductMapping.product.partnerCompany?.validityStartsNextDay ?? true;
+    const expireDay = validityStartsNextDay ? productExpireDay : productExpireDay - 1;
+
+    const expireDate = expireDay ? dayjs().tz('Asia/Seoul').add(expireDay, 'day').format('YYYY. MM. DD') : null;
+
     // 2. 쿠폰이미지 만들기
     const { path: imagePath } = await DeliveryCreateCouponImage(
       orderProductMapping.product.imagePath,
       orderProductMapping.product.name,
       barCode,
       orderProductMapping.product.brand!.nameKorean,
-      orderProductMapping.product.expireDay,
+      expireDate,
       orderProductMapping.topImagePath,
       orderProductMapping.midImagePath,
       orderProductMapping.product.type,

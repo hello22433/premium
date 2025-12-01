@@ -143,7 +143,7 @@ export class DeliveryBatchService {
       const sendTailText =
         orderDelivery.orderProductMapping.sendTailText ?? orderDelivery.orderProductMapping.order.sendTailText;
       if (sendTailText) {
-        text += sendTailText;
+        text += `\n\n${sendTailText}`;
       }
       if (orderDelivery.replaceCharacter1) {
         text = text.replace('{대치문자1}', orderDelivery.replaceCharacter1);
@@ -506,7 +506,7 @@ export class DeliveryBatchService {
     const sendTailText =
       orderDelivery.orderProductMapping.sendTailText ?? orderDelivery.orderProductMapping.order.sendTailText;
     if (sendTailText) {
-      text += sendTailText;
+      text += `\n\n${sendTailText}`;
     }
     if (orderDelivery.replaceCharacter1) {
       text = text.replace('{대치문자1}', orderDelivery.replaceCharacter1);
