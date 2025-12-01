@@ -1,4 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
+import { IUserDriveStatus } from '../../interface/user.drive.status';
 
 export class UserDriveViewDto {
   @ApiProperty({
@@ -35,4 +36,10 @@ export class UserDriveViewDto {
     description: '첨부파일 유무',
   })
   isFile: boolean;
+
+  @ApiProperty({
+    description: '상태',
+    enum: IUserDriveStatus,
+  })
+  status: IUserDriveStatus;
 }
