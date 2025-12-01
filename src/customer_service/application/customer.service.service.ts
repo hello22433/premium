@@ -542,6 +542,7 @@ export class CustomerServiceService {
       case '컬쳐랜드':
       case '갤럭시아':
       case '케이티알파':
+      case '다우기술':
         if (beforeChange === 'USED' || beforeChange === 'CANCEL' || beforeChange === 'EXPIRED') {
           throw new BadRequestException('현재 변경을 할 수 없는 핀상태입니다.');
         }
