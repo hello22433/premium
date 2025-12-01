@@ -1,6 +1,7 @@
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { customerName } from '../../const';
 import { IOrderType } from '../../order/interface/order.type';
+import dayjs from 'dayjs';
 
 export const AlimTalkTemplate = (orderDelivery: OrderDeliveryEntity) => {
   const couponCode =
@@ -8,18 +9,23 @@ export const AlimTalkTemplate = (orderDelivery: OrderDeliveryEntity) => {
       ? orderDelivery.personalCode
       : orderDelivery.barCode;
 
+  const product = orderDelivery.orderProductMapping.product;
+
   const brandKoreanName =
-    orderDelivery.orderProductMapping.product.brand!.nameKorean === '신세계'
-      ? '이마트'
-      : orderDelivery.orderProductMapping.product.brand!.nameKorean;
+    product.brand!.nameKorean === '신세계' ? '이마트' : product.brand!.nameKorean;
 
   // 템플릿 코드에 'dev'가 포함되어 있으면 테스트 환경으로 판단
   const templateCode = process.env.ALIM_TALK_INFO_BANK_TEMPLATE_CODE || '';
   const isTestTemplate = templateCode.toLowerCase().includes('dev');
-// 유효기간 : ~ ${orderDelivery.orderProductMapping.product.expireDay}
+
+  // 유효기간 계산: 실제 발송 시점 + 유효일수 (validityStartsNextDay에 따라 조정)
+  const validityStartsNextDay = product.partnerCompany?.validityStartsNextDay ?? true;
+  const expireDays = validityStartsNextDay ? product.expireDay : product.expireDay - 1;
+  const expireDateStr = dayjs().add(expireDays, 'day').format('YYYY. MM. DD');
+
   const baseMessage = `[모바일쿠폰] 이팝콘 도착
-상품명 : ${orderDelivery.orderProductMapping.product.name}
-유효기간 : ${orderDelivery.orderProductMapping.product.expireDay}일
+상품명 : ${product.name}
+유효기간 : ~ ${expireDateStr}
 쿠폰번호 : ${couponCode}
 사용처(교환처) : ${brandKoreanName}
 고객센터 : 1644-3614
