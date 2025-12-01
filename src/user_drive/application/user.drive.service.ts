@@ -53,6 +53,7 @@ export class UserDriveService {
         receiverPersonName: drive.receiver.personName,
         senderName: drive.sender.personName,
         title: drive.title,
+        status: drive.status,
         isFile: isFile,
       };
     });
