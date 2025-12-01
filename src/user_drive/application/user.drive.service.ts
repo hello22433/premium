@@ -155,7 +155,7 @@ export class UserDriveService {
   }
 
   async update(user: ILoginUserInfo, getBody: UserDriveUpdateReqDto) {
-    const { id, receiverId, title, content, filePath } = getBody;
+    const { id, receiverId, title, content, filePath, status } = getBody;
 
     if (user.authority === 'CORPORATE_ADMIN') {
       throw new BadRequestException('관리자만 접근 가능합니다.');
@@ -184,6 +184,7 @@ export class UserDriveService {
     userDrive.title = title;
     userDrive.content = content;
     userDrive.receiverId = receiverId;
+    userDrive.status = status;
     userDrive.filePath = filePath.length === 0 ? null : filePath.join(',');
     await this.userDriveRepository.save(userDrive);
 
