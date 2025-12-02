@@ -2356,6 +2356,35 @@ export class OrderService {
       throw new BadRequestException('임시저장 상태에서는 독려문자를 설정할 수 없습니다.');
     }
 
+    // 독려문자 사용 설정 시 유효기간 검증
+    if (encourageDay !== null) {
+      // 주문에 연결된 배송 정보 중 가장 빠른 만료일 조회
+      const orderDelivery = await this.orderDeliveryRepository
+        .createQueryBuilder('orderDelivery')
+        .innerJoin('orderDelivery.orderProductMapping', 'orderProductMapping')
+        .where('orderProductMapping.orderId = :orderId', { orderId })
+        .andWhere('orderDelivery.expireAt IS NOT NULL')
+        .orderBy('orderDelivery.expireAt', 'ASC')
+        .getOne();
+
+      if (orderDelivery?.expireAt) {
+        const now = new Date();
+        const expireAt = new Date(orderDelivery.expireAt);
+        const diffTime = expireAt.getTime() - now.getTime();
+        const remainingDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+        // 유효기간이 이미 지난 경우
+        if (remainingDays <= 0) {
+          throw new BadRequestException('유효기간이 만료되어 독려문자를 설정할 수 없습니다.');
+        }
+
+        // 독려일이 남은 유효기간보다 큰 경우
+        if (encourageDay >= remainingDays) {
+          throw new BadRequestException(`남은 유효기간(${remainingDays}일)보다 작은 값을 입력해주세요.`);
+        }
+      }
+    }
+
     order.encourageDay = encourageDay;
     await this.orderRepository.save(order);
   }
