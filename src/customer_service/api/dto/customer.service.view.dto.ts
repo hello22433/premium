@@ -4,6 +4,11 @@ import { OrderDeliveryCouponStatus } from '../../../delivery/interface/order.del
 
 export class CustomerServiceViewDto {
   @ApiProperty({
+    description: '등록일 ex) yyyy-MM-ddTHH:mm:ss',
+  })
+  registerAt: string;
+
+  @ApiProperty({
     description: '발송 일자 및 시각 ex) yyyy-MM-ddTHH:mm:ss',
   })
   sendRequestAt: string;
@@ -39,6 +44,11 @@ export class CustomerServiceViewDto {
     description: '이벤트 명',
   })
   eventName: string;
+
+  @ApiProperty({
+    description: 'MMS 제목 (발신 제목)',
+  })
+  sendTitle: string;
 
   @ApiProperty({
     description: '고객사',

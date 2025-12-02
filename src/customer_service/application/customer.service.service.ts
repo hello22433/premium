@@ -63,14 +63,16 @@ export class CustomerServiceService {
     const { orderType, startAt, endAt, userId, status, orderNumber, eventName, productName, productCode, page, take } =
       getQuery;
 
-    let queryBuilder = this.orderRepository
-      .createQueryBuilder('order')
-      .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
-      .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
-      .innerJoinAndSelect('orderProductMappings.product', 'product')
-      .leftJoinAndSelect('orderDeliveries.choiceSelectProduct', 'choiceSelectProduct')
+    // order_delivery 기반으로 조회하도록 변경
+    let queryBuilder = this.orderDeliveryRepository
+      .createQueryBuilder('orderDelivery')
+      .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
+      .innerJoinAndSelect('orderProductMapping.order', 'order')
+      .innerJoinAndSelect('orderProductMapping.product', 'product')
+      .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
       .leftJoinAndMapOne('order.user', 'user', 'user', 'user.id = order.user_id AND user.deleted_at IS NULL')
-      .andWhere('orderDeliveries.status IN (:...deliveryStatus)', { deliveryStatus: ['COMPLETE', 'COMPLETE_SMS'] });
+      .andWhere('orderDelivery.status IN (:...deliveryStatus)', { deliveryStatus: ['COMPLETE', 'COMPLETE_SMS'] })
+      .andWhere('orderDelivery.deletedAt IS NULL');
 
     if (orderType === 'GENERAL') {
       queryBuilder.andWhere('product.type IN (:...types)', { types: ['GENERAL', 'CHOICE'] });
@@ -97,70 +99,72 @@ export class CustomerServiceService {
     }
 
     if (productName) {
-      queryBuilder.andWhere('product.productName LIKE :productName', { productName: `%${productName}%` });
+      queryBuilder.andWhere('product.name LIKE :productName', { productName: `%${productName}%` });
     }
 
     if (productCode) {
       queryBuilder.andWhere('product.code LIKE :productCode', { productCode: `%${productCode}%` });
     }
 
-    queryBuilder = QueryBuilderDateCondition(queryBuilder, 'order', 'sendRequestAt', startAt, endAt);
+    // 날짜 조건을 orderDelivery 기준으로 변경
+    queryBuilder = QueryBuilderDateCondition(queryBuilder, 'orderDelivery', 'sendRequestAt', startAt, endAt);
 
     const skip = (page - 1) * take;
     queryBuilder.take(take).skip(skip);
-    queryBuilder.orderBy('order.id', 'DESC');
-    const [orderList, totalCount] = await queryBuilder.getManyAndCount();
+    queryBuilder.orderBy('orderDelivery.id', 'DESC');
+    const [orderDeliveryList, totalCount] = await queryBuilder.getManyAndCount();
 
     const totalPage = Math.ceil(totalCount / take);
 
     const result: CustomerServiceViewDto[] = [];
-    for (const order of orderList) {
-      const firstDelivery = order.orderProductMappings![0].orderDeliveries?.[0];
+    for (const orderDelivery of orderDeliveryList) {
+      const order = orderDelivery.orderProductMapping.order;
+      const product = orderDelivery.orderProductMapping.product;
 
       // deliveryTarget 복호화 및 마스킹 처리
       let maskedDeliveryTarget: string | null = null;
-      if (firstDelivery?.deliveryTarget) {
+      if (orderDelivery.deliveryTarget) {
         try {
-          const decryptedTarget = this.cryptoCipher.decryptDeliveryTarget(firstDelivery.deliveryTarget);
+          const decryptedTarget = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.deliveryTarget);
           maskedDeliveryTarget = MaskingUtil.maskDeliveryTarget(decryptedTarget);
         } catch (error) {
           // 복호화 실패 시 원본 데이터로 마스킹 시도
-          maskedDeliveryTarget = MaskingUtil.maskDeliveryTarget(firstDelivery.deliveryTarget);
+          maskedDeliveryTarget = MaskingUtil.maskDeliveryTarget(orderDelivery.deliveryTarget);
         }
       }
 
       // 실제 발송 시간 계산 (발송 완료 상태일 때 actualSendAt 사용)
       let actualSendAt: string | null = null;
       if (
-        firstDelivery &&
-        (firstDelivery.status === 'COMPLETE' || firstDelivery.status === 'COMPLETE_SMS') &&
-        firstDelivery.actualSendAt
+        (orderDelivery.status === 'COMPLETE' || orderDelivery.status === 'COMPLETE_SMS') &&
+        orderDelivery.actualSendAt
       ) {
-        actualSendAt = format(firstDelivery.actualSendAt, DateFormatStr);
+        actualSendAt = format(orderDelivery.actualSendAt, DateFormatStr);
       }
 
       result.push({
-        sendRequestAt: format(order.sendRequestAt, DateFormatStr),
+        registerAt: format(orderDelivery.createdAt, DateFormatStr),
+        sendRequestAt: orderDelivery.sendRequestAt ? format(orderDelivery.sendRequestAt, DateFormatStr) : format(order.sendRequestAt, DateFormatStr),
         actualSendAt: actualSendAt,
         sendType: order.sendType,
         id: order.id,
-        orderDeliveryId: firstDelivery?.id || null,
-        orderProductMappingId: order.orderProductMappings![0].id,
+        orderDeliveryId: orderDelivery.id,
+        orderProductMappingId: orderDelivery.orderProductMapping.id,
         eventName: order.eventName,
+        sendTitle: order.sendTitle ?? '',
         businessName: order.user?.businessName ?? '',
-        productName: firstDelivery?.choiceSelectProduct
-          ? firstDelivery.choiceSelectProduct.name
-          : order.orderProductMappings![0].product.name,
-        productCode: order.orderProductMappings![0].product.code,
+        productName: orderDelivery.choiceSelectProduct
+          ? orderDelivery.choiceSelectProduct.name
+          : product.name,
+        productCode: product.code,
         status: order.status,
         fromPhoneNumber: order.fromPhoneNumber,
         fromEmail: order.fromEmail,
         deliveryTarget: maskedDeliveryTarget,
-        transactionId: firstDelivery?.transactionId || null,
-        deliveryMethod: firstDelivery?.deliveryMethod || null,
-        couponStatus:
-          order.orderProductMappings?.[0]?.orderDeliveries?.[0]?.couponStatus ?? OrderDeliveryCouponStatus.NOT_USED,
-        barCode: firstDelivery?.barCode ? MaskingUtil.maskPinNumber(firstDelivery.barCode) : null,
+        transactionId: orderDelivery.transactionId || null,
+        deliveryMethod: orderDelivery.deliveryMethod || null,
+        couponStatus: orderDelivery.couponStatus ?? OrderDeliveryCouponStatus.NOT_USED,
+        barCode: orderDelivery.barCode ? MaskingUtil.maskPinNumber(orderDelivery.barCode) : null,
       });
     }
 
