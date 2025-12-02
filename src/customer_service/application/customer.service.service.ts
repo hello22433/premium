@@ -980,6 +980,10 @@ export class CustomerServiceService {
     if (orderDelivery.deliveryTarget) {
       try {
         decryptedDeliveryTarget = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.deliveryTarget);
+        // 이메일이 아닌 경우 (전화번호) 하이픈 포맷 적용
+        if (!decryptedDeliveryTarget.includes('@')) {
+          decryptedDeliveryTarget = PhoneUtil.formatWithHyphen(decryptedDeliveryTarget);
+        }
       } catch (error) {
         // 복호화 실패 시 원본 데이터 사용
         decryptedDeliveryTarget = orderDelivery.deliveryTarget;
