@@ -1,4 +1,3 @@
-import { IOrderStatus } from '../../order/interface/order.status';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IOrderType } from '../../order/interface/order.type';
 import { IsArray, IsEnum, IsIn, IsInt, IsNotEmpty, IsNumber, IsOptional, IsString, Matches, Max, Min } from 'class-validator';
@@ -33,7 +32,7 @@ export class CustomerServiceGetListReqDto extends PagingReqDto {
   endAt?: string;
 
   @ApiPropertyOptional({
-    description: 'user id',
+    description: 'user id (고객사)',
   })
   // =============================================================
   @IsOptional()
@@ -42,40 +41,62 @@ export class CustomerServiceGetListReqDto extends PagingReqDto {
   userId?: number;
 
   @ApiPropertyOptional({
-    description: '발송 상태',
+    description: '핀 상태',
+    enum: OrderDeliveryCouponStatus,
   })
   // =============================================================
   @IsOptional()
-  @IsEnum(IOrderStatus)
-  status?: IOrderStatus;
+  @IsEnum(OrderDeliveryCouponStatus)
+  couponStatus?: OrderDeliveryCouponStatus;
 
   @ApiPropertyOptional({
-    description: '주문 번호',
+    description: '주문 번호 (부분검색)',
   })
   // =============================================================
   @IsOptional()
+  @IsString()
   orderNumber?: string;
 
   @ApiPropertyOptional({
-    description: '이벤트 명',
+    description: '상품 코드 (부분검색)',
   })
   // =============================================================
   @IsOptional()
-  eventName?: string;
-
-  @ApiPropertyOptional({
-    description: '상품 코드',
-  })
-  // =============================================================
-  @IsOptional()
+  @IsString()
   productCode?: string;
 
   @ApiPropertyOptional({
-    description: '상품 명',
+    description: '상품 명 (부분검색)',
   })
   // =============================================================
   @IsOptional()
+  @IsString()
   productName?: string;
+
+  @ApiPropertyOptional({
+    description: '수신정보 - 전화번호 또는 이메일 (전문검색, 부분검색 불가)',
+  })
+  // =============================================================
+  @IsOptional()
+  @IsString()
+  deliveryTarget?: string;
+
+  @ApiPropertyOptional({
+    description: 'MMS 제목 (부분검색)',
+  })
+  // =============================================================
+  @IsOptional()
+  @IsString()
+  sendTitle?: string;
+
+  @ApiPropertyOptional({
+    description: '협력사 ID',
+  })
+  // =============================================================
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  partnerCompanyId?: number;
 }
 
 export class CustomerServiceGetDetailListReqDto extends PagingReqDto {

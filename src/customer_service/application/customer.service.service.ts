@@ -60,8 +60,21 @@ export class CustomerServiceService {
   ) {}
 
   async getList(getQuery: CustomerServiceGetListReqDto): Promise<CustomerServiceGetListResDto> {
-    const { orderType, startAt, endAt, userId, status, orderNumber, eventName, productName, productCode, page, take } =
-      getQuery;
+    const {
+      orderType,
+      startAt,
+      endAt,
+      userId,
+      couponStatus,
+      orderNumber,
+      productName,
+      productCode,
+      deliveryTarget,
+      sendTitle,
+      partnerCompanyId,
+      page,
+      take,
+    } = getQuery;
 
     // order_delivery 기반으로 조회하도록 변경
     let queryBuilder = this.orderDeliveryRepository
@@ -69,6 +82,7 @@ export class CustomerServiceService {
       .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
       .innerJoinAndSelect('orderProductMapping.order', 'order')
       .innerJoinAndSelect('orderProductMapping.product', 'product')
+      .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
       .leftJoinAndMapOne('order.user', 'user', 'user', 'user.id = order.user_id AND user.deleted_at IS NULL')
       .andWhere('orderDelivery.status IN (:...deliveryStatus)', { deliveryStatus: ['COMPLETE', 'COMPLETE_SMS'] })
@@ -82,28 +96,46 @@ export class CustomerServiceService {
       queryBuilder.andWhere('product.type = :type', { type: 'SSG' });
     }
 
+    // 고객사 (userId)
     if (userId) {
       queryBuilder.andWhere('order.userId = :userId', { userId });
     }
 
+    // 주문번호 (부분검색)
     if (orderNumber) {
-      queryBuilder.andWhere('order.id = :id', { id: +orderNumber });
+      queryBuilder.andWhere('CAST(order.id AS CHAR) LIKE :orderNumber', { orderNumber: `%${orderNumber}%` });
     }
 
-    if (status) {
-      queryBuilder.andWhere('order.status = :status', { status });
+    // 핀상태
+    if (couponStatus) {
+      queryBuilder.andWhere('orderDelivery.couponStatus = :couponStatus', { couponStatus });
     }
 
-    if (eventName) {
-      queryBuilder.andWhere('order.eventName LIKE :eventName', { eventName: `%${eventName}%` });
-    }
-
+    // 상품명 (부분검색)
     if (productName) {
       queryBuilder.andWhere('product.name LIKE :productName', { productName: `%${productName}%` });
     }
 
+    // 상품코드 (부분검색)
     if (productCode) {
       queryBuilder.andWhere('product.code LIKE :productCode', { productCode: `%${productCode}%` });
+    }
+
+    // 수신정보 (전문검색 - 암호화하여 비교)
+    if (deliveryTarget) {
+      const normalizedTarget = PhoneUtil.normalizeDeliveryTarget(deliveryTarget);
+      const encryptedTarget = this.cryptoCipher.encryptDeliveryTarget(normalizedTarget);
+      queryBuilder.andWhere('orderDelivery.deliveryTarget = :deliveryTarget', { deliveryTarget: encryptedTarget });
+    }
+
+    // MMS제목 (부분검색)
+    if (sendTitle) {
+      queryBuilder.andWhere('orderProductMapping.sendTitle LIKE :sendTitle', { sendTitle: `%${sendTitle}%` });
+    }
+
+    // 협력사
+    if (partnerCompanyId) {
+      queryBuilder.andWhere('product.partnerCompanyId = :partnerCompanyId', { partnerCompanyId });
     }
 
     // 날짜 조건을 orderDelivery 기준으로 변경
