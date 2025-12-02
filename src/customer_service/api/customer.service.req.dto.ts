@@ -1,7 +1,7 @@
 import { IOrderStatus } from '../../order/interface/order.status';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IOrderType } from '../../order/interface/order.type';
-import { IsEnum, IsIn, IsInt, IsNotEmpty, IsNumber, IsOptional, IsString, Matches, Max, Min } from 'class-validator';
+import { IsArray, IsEnum, IsIn, IsInt, IsNotEmpty, IsNumber, IsOptional, IsString, Matches, Max, Min } from 'class-validator';
 import { PagingReqDto } from '../../common/api/dto/pagination.req.dto';
 import { dateAtRegexp } from '../../common/domain/date.regexp';
 import { Type } from 'class-transformer';
@@ -245,4 +245,26 @@ export class CustomerServiceRefundReqDto {
   @Min(1)
   @Type(() => Number)
   refundRatio: number;
+}
+
+export class CustomerServiceBulkDiscardReqDto {
+  @ApiProperty({
+    description: '폐기할 order_delivery ID 목록',
+    type: [Number],
+    example: [1, 2, 3],
+  })
+  // =============================================================
+  @IsNotEmpty()
+  @IsArray()
+  @IsNumber({}, { each: true })
+  orderDeliveryIds: number[];
+
+  @ApiProperty({
+    description: 'CS 내용 (1.의뢰자, 2.인입경로, 3.사유, 4.폐기여부, 5.비고)',
+    example: '1. 의뢰자 : 홍길동\n2. 인입경로 : 전화\n3. 사유 : 고객 요청\n4. 폐기여부 : Y\n5. 비고 : 없음',
+  })
+  // =============================================================
+  @IsNotEmpty()
+  @IsString()
+  content: string;
 }

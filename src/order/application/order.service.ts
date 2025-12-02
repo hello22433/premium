@@ -245,7 +245,12 @@ export class OrderService {
         }
       }
 
-      const sendRequestAt = normalizeDate(order.sendRequestAt) ? format(order.sendRequestAt, DateFormatStr) : null;
+      // 첫 번째 상품의 발송 정보 사용
+      const firstMapping = order.orderProductMappings?.[0];
+      const sendRequestAt =
+        firstMapping && normalizeDate(firstMapping.sendRequestAt)
+          ? format(firstMapping.sendRequestAt!, DateFormatStr)
+          : null;
 
       return {
         id: order.id,
@@ -263,8 +268,8 @@ export class OrderService {
         operationUserName: order.operationUser?.personName ?? null,
         deliveryPrice: order.sendAmount,
         settlePrice: order.settleAmount,
-        requestToDestroyPersonalInfoDay: order.requestToDestroyPersonalInfoDay,
-        sendType: order.sendType,
+        requestToDestroyPersonalInfoDay: firstMapping?.requestToDestroyPersonalInfoDay ?? 0,
+        sendType: firstMapping?.sendType ?? null,
       };
     });
 
@@ -364,7 +369,7 @@ export class OrderService {
           fromPhoneNumber: orderProductMapping.fromPhoneNumber,
           requestToDestroyPersonalInfoDay: orderProductMapping.requestToDestroyPersonalInfoDay,
           sendContent: orderProductMapping.sendContent ?? '',
-          sendMethod: orderProductMapping.sendMethod ? orderProductMapping.sendMethod : order.sendMethod,
+          sendMethod: orderProductMapping.sendMethod!,
           sendRequestAt: orderProductMapping.sendRequestAt
             ? format(orderProductMapping.sendRequestAt, DateFormatStr)
             : null,
@@ -372,11 +377,10 @@ export class OrderService {
           sendTitle: orderProductMapping.sendTitle ?? '',
           sendType: orderProductMapping.sendType,
           useEmailContent: orderProductMapping.useEmailContent,
+          encourageDay: orderProductMapping.encourageDay,
         });
       }
     }
-
-    const sendRequestAt = normalizeDate(order.sendRequestAt) ? format(order.sendRequestAt, DateFormatStr) : null;
 
     let couponExpiration: number | null = null;
     if (order.type === IOrderType.SSG) {
@@ -388,22 +392,10 @@ export class OrderService {
       registerAt: format(order.registerAt, DateFormatStr),
       eventName: order.eventName,
       type: order.type,
-      sendMethod: order.sendMethod,
-      sendTailText: order.sendTailText,
-      requestToDestroyPersonalInfoDay: order.requestToDestroyPersonalInfoDay,
-      fromPhoneNumber: order.fromPhoneNumber,
-      fromEmail: order.fromEmail,
-      emailSendType: order.emailSendType,
-      useEmailContent: order.useEmailContent,
-      sendTitle: order.sendTitle,
-      sendContent: order.sendContent,
-      sendRequestAt: sendRequestAt,
-      sendType: order.sendType,
       topImagePath,
       midImagePath,
       status: order.status,
       couponExpiration: couponExpiration,
-      encourageDay: order.encourageDay,
       productList: productList,
       settlePeriodCondition: user.settlePeriodCondition,
       settlePeriodCount: user.settlePeriodCount,
@@ -470,20 +462,19 @@ export class OrderService {
           fromEmail: orderProductMapping.fromEmail,
           fromPhoneNumber: orderProductMapping.fromPhoneNumber,
           requestToDestroyPersonalInfoDay: orderProductMapping.requestToDestroyPersonalInfoDay,
-          sendContent: orderProductMapping.sendContent ? orderProductMapping.sendContent : order.sendContent,
-          sendMethod: orderProductMapping.sendMethod ? orderProductMapping.sendMethod : order.sendMethod,
+          sendContent: orderProductMapping.sendContent ?? '',
+          sendMethod: orderProductMapping.sendMethod!,
           sendRequestAt: orderProductMapping.sendRequestAt
             ? format(orderProductMapping.sendRequestAt, DateFormatStr)
             : null,
           sendTailText: orderProductMapping.sendTailText,
-          sendTitle: orderProductMapping.sendTitle ? orderProductMapping.sendTitle : order.sendTitle,
+          sendTitle: orderProductMapping.sendTitle ?? '',
           sendType: orderProductMapping.sendType,
           useEmailContent: orderProductMapping.useEmailContent,
+          encourageDay: orderProductMapping.encourageDay,
         });
       }
     }
-
-    const sendRequestAt = normalizeDate(order.sendRequestAt) ? format(order.sendRequestAt, DateFormatStr) : null;
 
     let couponExpiration: number | null = null;
     if (order.type === IOrderType.SSG) {
@@ -495,22 +486,10 @@ export class OrderService {
       registerAt: format(order.registerAt, DateFormatStr),
       eventName: order.eventName,
       type: order.type,
-      sendMethod: order.sendMethod,
-      sendTailText: order.sendTailText,
-      requestToDestroyPersonalInfoDay: order.requestToDestroyPersonalInfoDay,
-      fromPhoneNumber: order.fromPhoneNumber,
-      fromEmail: order.fromEmail,
-      emailSendType: order.emailSendType,
-      useEmailContent: order.useEmailContent,
-      sendTitle: order.sendTitle,
-      sendContent: order.sendContent,
-      sendRequestAt: sendRequestAt,
-      sendType: order.sendType,
       topImagePath,
       midImagePath,
       status: order.status,
       couponExpiration: couponExpiration,
-      encourageDay: order.encourageDay,
       productList: productList,
       settlePeriodCondition: order.user!.settlePeriodCondition,
       settlePeriodCount: order.user!.settlePeriodCount,
@@ -581,7 +560,9 @@ export class OrderService {
             barCode: orderDelivery.barCode ? maskBarCode(orderDelivery.barCode) : null,
             deliveryMethod: orderDelivery.deliveryMethod,
             deliveryTarget:
-              order.sendMethod !== 'EMAIL' ? maskBarCode(decryptedDeliveryTarget) : decryptedDeliveryTarget,
+              orderProductMapping.sendMethod !== 'EMAIL'
+                ? maskBarCode(decryptedDeliveryTarget)
+                : decryptedDeliveryTarget,
           });
         }
 
@@ -606,12 +587,13 @@ export class OrderService {
       }
     }
 
-    const sendRequestAt = normalizeDate(order.sendRequestAt) ? format(order.sendRequestAt, DateFormatStr) : null;
-
     let couponExpiration: number | null = null;
     if (order.type === IOrderType.SSG) {
       couponExpiration = productList[0].product?.expireDay ?? null;
     }
+
+    // 첫 번째 상품의 정보 사용
+    const firstMapping = order.orderProductMappings?.[0];
 
     return {
       id: order.id,
@@ -620,15 +602,9 @@ export class OrderService {
       registerAt: format(order.registerAt, DateFormatStr),
       eventName: order.eventName,
       type: order.type,
-      sendMethod: order.sendMethod,
-      fromPhoneNumber: order.fromPhoneNumber,
-      fromEmail: order.fromEmail,
-      sendTitle: order.sendTitle,
-      sendContent: order.sendContent,
-      sendRequestAt: sendRequestAt,
       status: order.status,
       couponExpiration: couponExpiration,
-      requestToDestroyPersonalInfoDay: order.requestToDestroyPersonalInfoDay,
+      requestToDestroyPersonalInfoDay: firstMapping?.requestToDestroyPersonalInfoDay ?? 0,
       productList: productList,
     };
   }
@@ -711,7 +687,12 @@ export class OrderService {
       totalAmount = price + vat;
     }
 
-    const sendRequestAt = normalizeDate(order.sendRequestAt) ? format(order.sendRequestAt, DateFormatStr) : null;
+    // 첫 번째 상품의 발송 요청 시간 사용
+    const firstMapping = order.orderProductMappings?.[0];
+    const sendRequestAt =
+      firstMapping && normalizeDate(firstMapping.sendRequestAt)
+        ? format(firstMapping.sendRequestAt!, DateFormatStr)
+        : null;
 
     return {
       fileName,
@@ -1000,28 +981,7 @@ export class OrderService {
 
   @Transactional()
   async createTemp(user: ILoginUserInfo, getBody: OrderCreateTempReqDto): Promise<OrderCreateTempResDto> {
-    const {
-      type,
-      eventName,
-      sendMethod,
-      sendTailText,
-      requestToDestroyPersonalInfoDay,
-      fromPhoneNumber,
-
-      fromEmail,
-      useEmailContent,
-      emailSendType,
-
-      topImagePath,
-      midImagePath,
-      sendTitle,
-      sendContent,
-
-      sendRequestAt,
-      sendType,
-      encourageDay,
-      orderProductList,
-    } = getBody;
+    const { type, eventName, topImagePath, midImagePath, orderProductList } = getBody;
 
     const productIdList = orderProductList.map((product) => product.productId);
     const uniqueProductId = new Set(productIdList);
@@ -1061,11 +1021,13 @@ export class OrderService {
       sendAmount += getProduct.price * orderProduct.amount;
     }
 
-    const isImmediate = sendType === 'IMMEDIATE';
-    const sendAt = isImmediate
+    // 첫 번째 상품의 sendType으로 즉시발송 여부 판단
+    const firstProduct = orderProductList[0];
+    const isImmediate = firstProduct?.sendType === 'IMMEDIATE';
+    const defaultSendAt = isImmediate
       ? new Date()
-      : sendRequestAt
-        ? new Date(sendRequestAt)
+      : firstProduct?.sendRequestAt
+        ? new Date(firstProduct.sendRequestAt)
         : (() => {
             throw new BadRequestException('sendRequestAt 누락');
           })();
@@ -1076,21 +1038,9 @@ export class OrderService {
       code: newCode,
       type,
       eventName,
-      sendMethod,
-      sendTailText,
-      requestToDestroyPersonalInfoDay,
-      fromPhoneNumber,
-      sendTitle,
-      sendContent,
-      fromEmail,
-      emailSendType,
-      useEmailContent,
       sendAmount: sendAmount,
       settleAmount: sendAmount,
       registerAt: new Date(),
-      sendRequestAt: sendAt,
-      sendType: sendType,
-      encourageDay: null, // 주문관리에서는 독려문자 미사용, 발송관리에서 설정
     });
     const orderId: number = orderInsertResult.identifiers[0].id;
 
@@ -1110,7 +1060,7 @@ export class OrderService {
         ? new Date()
         : product.sendRequestAt
           ? new Date(product.sendRequestAt)
-          : sendAt;
+          : defaultSendAt;
 
       orderProduct.sendMethod = product.sendMethod;
       orderProduct.sendTailText = product.sendTailText;
@@ -1123,11 +1073,12 @@ export class OrderService {
       orderProduct.sendContent = product.sendContent;
       orderProduct.sendRequestAt = productSendAt;
       orderProduct.sendType = product.sendType;
+      orderProduct.encourageDay = product.encourageDay ?? null;
 
       await this.orderProductMappingRepository.save(orderProduct);
 
-      // 상품별 발신 수단 선 적용
-      const deliverySendMethod = orderProduct.sendMethod ?? sendMethod;
+      // 상품별 발신 수단 사용
+      const deliverySendMethod = orderProduct.sendMethod!;
 
       for (const orderDelivery of product.orderDeliveryList) {
         const oneOrderDelivery = new OrderDeliveryEntity();
@@ -1152,25 +1103,7 @@ export class OrderService {
 
   @Transactional()
   async updateTemp(user: ILoginUserInfo, getBody: OrderUpdateTempReqDto): Promise<void> {
-    const {
-      id,
-      eventName,
-      sendMethod,
-      sendTailText,
-      requestToDestroyPersonalInfoDay,
-      fromPhoneNumber,
-      fromEmail,
-      emailSendType,
-      useEmailContent,
-      topImagePath,
-      midImagePath,
-      sendTitle,
-      sendContent,
-      sendRequestAt,
-      sendType,
-      encourageDay,
-      orderProductList,
-    } = getBody;
+    const { id, eventName, topImagePath, midImagePath, orderProductList } = getBody;
 
     const order = await this.orderRepository.findOne({
       where: {
@@ -1218,33 +1151,20 @@ export class OrderService {
       sendAmount += getProduct.price * orderProduct.amount;
     }
 
-    const isImmediate = sendType === 'IMMEDIATE';
-    const sendAt = isImmediate
+    // 첫 번째 상품의 sendType으로 즉시발송 여부 판단
+    const firstProduct = orderProductList[0];
+    const isImmediate = firstProduct?.sendType === 'IMMEDIATE';
+    const defaultSendAt = isImmediate
       ? new Date()
-      : sendRequestAt
-        ? new Date(sendRequestAt)
+      : firstProduct?.sendRequestAt
+        ? new Date(firstProduct.sendRequestAt)
         : (() => {
             throw new BadRequestException('sendRequestAt 누락');
           })();
 
     order.eventName = eventName;
-    order.sendMethod = sendMethod;
-    order.sendTailText = sendTailText;
-    order.requestToDestroyPersonalInfoDay = requestToDestroyPersonalInfoDay;
-    order.fromPhoneNumber = fromPhoneNumber;
-
-    order.fromEmail = fromEmail;
-    order.emailSendType = emailSendType;
-    order.useEmailContent = useEmailContent;
-
-    order.sendTitle = sendTitle;
-    order.sendContent = sendContent;
-
     order.sendAmount = sendAmount;
     order.settleAmount = sendAmount;
-    order.sendType = sendType;
-    order.encourageDay = null; // 주문관리에서는 독려문자 미사용, 발송관리에서 설정
-    order.sendRequestAt = sendAt;
 
     await this.orderRepository.save(order);
 
@@ -1284,7 +1204,7 @@ export class OrderService {
         ? new Date()
         : product.sendRequestAt
           ? new Date(product.sendRequestAt)
-          : sendAt;
+          : defaultSendAt;
 
       orderProduct.sendMethod = product.sendMethod;
       orderProduct.sendTailText = product.sendTailText;
@@ -1297,11 +1217,12 @@ export class OrderService {
       orderProduct.sendContent = product.sendContent;
       orderProduct.sendRequestAt = productSendAt;
       orderProduct.sendType = product.sendType;
+      orderProduct.encourageDay = product.encourageDay ?? null;
 
       await this.orderProductMappingRepository.save(orderProduct);
 
-      // 상품별 발신 수단 선 적용
-      const deliverySendMethod = orderProduct.sendMethod ?? order.sendMethod;
+      // 상품별 발신 수단 사용
+      const deliverySendMethod = orderProduct.sendMethod!;
 
       for (const orderDelivery of product.orderDeliveryList) {
         const oneOrderDelivery = new OrderDeliveryEntity();
@@ -1863,7 +1784,9 @@ export class OrderService {
     });
 
     const now = new Date();
-    const sendRequestAtTime = order.sendRequestAt.getTime();
+    // 첫 번째 상품의 발송 요청 시간 사용
+    const firstMapping = order.orderProductMappings?.[0];
+    const sendRequestAtTime = firstMapping?.sendRequestAt?.getTime() ?? 0;
     const nowTime = now.getTime();
     const diffMs = sendRequestAtTime - nowTime;
     const tenMinutesMs = 10 * 60 * 1000;
@@ -2046,7 +1969,7 @@ export class OrderService {
     }: {
       status: string;
       actualSendAt: Date | null;
-      sendRequestAt: Date;
+      sendRequestAt: Date | null;
       sendType: string | null;
     }) => {
       if (status === 'TEMP' || status === 'DELIVERY_CANCEL') return '-';
@@ -2096,6 +2019,9 @@ export class OrderService {
         }
       }
 
+      // 첫 번째 상품의 발송 정보 사용
+      const firstMapping = order.orderProductMappings?.[0];
+
       sheet.addRow({
         id: id,
         registerAt: format(order.registerAt, 'yyyy-MM-dd HH:mm'),
@@ -2110,8 +2036,8 @@ export class OrderService {
         sendRequestAt: getSendRequestAt({
           status: order.status,
           actualSendAt: actualSendAt,
-          sendRequestAt: order.sendRequestAt,
-          sendType: order.sendType,
+          sendRequestAt: firstMapping?.sendRequestAt ?? null,
+          sendType: firstMapping?.sendType ?? null,
         }),
       });
       id++;
@@ -2229,19 +2155,14 @@ export class OrderService {
       throw new BadRequestException('테스트발송은 최대 2회입니다.');
     }
 
-    let queryBuilder = this.orderProductMappingRepository
+    // 알림톡일 경우 order.user도 필요하므로 항상 조인
+    const orderProductMapping = await this.orderProductMappingRepository
       .createQueryBuilder('orderProductMapping')
       .innerJoinAndSelect('orderProductMapping.product', 'product')
       .innerJoinAndSelect('orderProductMapping.order', 'order')
       .innerJoinAndSelect('product.brand', 'brand')
-      .leftJoinAndSelect('product.partnerCompany', 'partnerCompany');
-
-    // 알림톡일 경우 order.user도 조회 (AlimTalkTemplate에서 발행자 정보 필요)
-    if (order.sendMethod === IOrderSendMethod.ALIM_TALK) {
-      queryBuilder = queryBuilder.innerJoinAndSelect('order.user', 'user');
-    }
-
-    const orderProductMapping = await queryBuilder
+      .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .innerJoinAndSelect('order.user', 'user')
       .where('orderProductMapping.id = :id', { id: orderProductMappingId })
       .getOne();
 
@@ -2267,7 +2188,7 @@ export class OrderService {
       orderProductMapping.product.type,
     );
 
-    const deliveryMethod = orderProductMapping.sendMethod ? orderProductMapping.sendMethod : order.sendMethod;
+    const deliveryMethod = orderProductMapping.sendMethod!;
 
     const orderDelivery = new OrderDeliveryEntity();
     orderDelivery.deliveryMethod = deliveryMethod;
@@ -2329,8 +2250,8 @@ export class OrderService {
     const orderProductMapping = await queryBuilder.getOne();
 
     if (orderProductMapping) {
-      response.sendTitle = orderProductMapping.order.sendTitle;
-      response.sendContent = orderProductMapping.order.sendContent;
+      response.sendTitle = orderProductMapping.sendTitle ?? '';
+      response.sendContent = orderProductMapping.sendContent ?? '';
       return response;
     }
 
@@ -2338,31 +2259,32 @@ export class OrderService {
   }
 
   /**
-   * 독려문자 설정 수정 (발송관리용)
+   * 독려문자 설정 수정 (발송관리용, 상품별)
+   * @param orderProductMappingId order_product_mapping의 id
    */
-  async updateEncourageDay(user: ILoginUserInfo, orderId: number, getBody: OrderUpdateEncourageDayReqBodyDto): Promise<void> {
+  async updateEncourageDay(user: ILoginUserInfo, orderProductMappingId: number, getBody: OrderUpdateEncourageDayReqBodyDto): Promise<void> {
     const { encourageDay } = getBody;
 
-    const order = await this.orderRepository.findOne({
-      where: { id: orderId },
+    const orderProductMapping = await this.orderProductMappingRepository.findOne({
+      where: { id: orderProductMappingId },
+      relations: ['order'],
     });
 
-    if (!order) {
-      throw new BadRequestException('존재하지 않는 주문입니다.');
+    if (!orderProductMapping) {
+      throw new BadRequestException('존재하지 않는 상품입니다.');
     }
 
     // 발송관리에서만 수정 가능 (주문완료 상태 이상)
-    if (order.status === IOrderStatus.TEMP) {
+    if (orderProductMapping.order.status === IOrderStatus.TEMP) {
       throw new BadRequestException('임시저장 상태에서는 독려문자를 설정할 수 없습니다.');
     }
 
     // 독려문자 사용 설정 시 유효기간 검증
     if (encourageDay !== null) {
-      // 주문에 연결된 배송 정보 중 가장 빠른 만료일 조회
+      // 해당 상품의 배송 정보 중 가장 빠른 만료일 조회
       const orderDelivery = await this.orderDeliveryRepository
         .createQueryBuilder('orderDelivery')
-        .innerJoin('orderDelivery.orderProductMapping', 'orderProductMapping')
-        .where('orderProductMapping.orderId = :orderId', { orderId })
+        .where('orderDelivery.orderProductMappingId = :orderProductMappingId', { orderProductMappingId })
         .andWhere('orderDelivery.expireAt IS NOT NULL')
         .orderBy('orderDelivery.expireAt', 'ASC')
         .getOne();
@@ -2385,7 +2307,7 @@ export class OrderService {
       }
     }
 
-    order.encourageDay = encourageDay;
-    await this.orderRepository.save(order);
+    orderProductMapping.encourageDay = encourageDay;
+    await this.orderProductMappingRepository.save(orderProductMapping);
   }
 }

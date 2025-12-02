@@ -19,8 +19,9 @@ export class SettleUserPerDetailViewDto {
 
   @ApiProperty({
     description: '발송일자',
+    nullable: true,
   })
-  sendRequestAt: string;
+  sendRequestAt: string | null;
 
   @ApiProperty({
     description: '이벤트 명',

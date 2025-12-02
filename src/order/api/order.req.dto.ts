@@ -363,7 +363,7 @@ export class OrderGetPreviousContentReqQueryDto {
 
 export class OrderUpdateEncourageDayReqParamDto {
   @ApiProperty({
-    description: 'order id',
+    description: 'order_product_mapping id (상품별 설정)',
   })
   // ===================================
   @IsNumber()

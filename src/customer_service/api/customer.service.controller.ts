@@ -3,6 +3,7 @@ import { Body, Controller, Get, Post, Put, Query, UseGuards } from '@nestjs/comm
 import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AuthUserSuperAndOperationAdminGuard } from '../../auth/api/auth.user.super-operation-admin.guard';
 import {
+  CustomerServiceBulkDiscardReqDto,
   CustomerServiceCouponRefreshReqDto,
   CustomerServiceDiscardReqDto,
   CustomerServiceGetDetailListReqDto,
@@ -211,5 +212,38 @@ export class CustomerServiceController {
   @Put('/customer-service/refund')
   refund(@Body() getDto: CustomerServiceRefundReqDto) {
     return this.customerServiceService.refund(getDto);
+  }
+
+  @ApiOperation({
+    description: '다중 폐기 API - 선택한 여러 발송 건을 일괄 폐기 처리',
+  })
+  @ApiOkResponse({
+    description: '성공/실패 목록 반환',
+    schema: {
+      type: 'object',
+      properties: {
+        success: {
+          type: 'array',
+          items: { type: 'number' },
+          description: '폐기 성공한 orderDeliveryId 목록',
+        },
+        failed: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'number' },
+              reason: { type: 'string' },
+            },
+          },
+          description: '폐기 실패한 항목과 사유',
+        },
+      },
+    },
+  })
+  // ===============================================
+  @Post('/customer-service/bulk-discard')
+  bulkDiscard(@User() user: ILoginUserInfo, @Body() getBody: CustomerServiceBulkDiscardReqDto) {
+    return this.customerServiceService.bulkDiscard(user, getBody.orderDeliveryIds, getBody.content);
   }
 }

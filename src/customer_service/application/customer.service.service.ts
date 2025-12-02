@@ -144,22 +144,22 @@ export class CustomerServiceService {
 
       result.push({
         registerAt: format(orderDelivery.createdAt, DateFormatStr),
-        sendRequestAt: orderDelivery.sendRequestAt ? format(orderDelivery.sendRequestAt, DateFormatStr) : format(order.sendRequestAt, DateFormatStr),
+        sendRequestAt: orderDelivery.sendRequestAt ? format(orderDelivery.sendRequestAt, DateFormatStr) : (orderDelivery.orderProductMapping.sendRequestAt ? format(orderDelivery.orderProductMapping.sendRequestAt, DateFormatStr) : ''),
         actualSendAt: actualSendAt,
-        sendType: order.sendType,
+        sendType: orderDelivery.orderProductMapping.sendType,
         id: order.id,
         orderDeliveryId: orderDelivery.id,
         orderProductMappingId: orderDelivery.orderProductMapping.id,
         eventName: order.eventName,
-        sendTitle: order.sendTitle ?? '',
+        sendTitle: orderDelivery.orderProductMapping.sendTitle ?? '',
         businessName: order.user?.businessName ?? '',
         productName: orderDelivery.choiceSelectProduct
           ? orderDelivery.choiceSelectProduct.name
           : product.name,
         productCode: product.code,
         status: order.status,
-        fromPhoneNumber: order.fromPhoneNumber,
-        fromEmail: order.fromEmail,
+        fromPhoneNumber: orderDelivery.orderProductMapping.fromPhoneNumber,
+        fromEmail: orderDelivery.orderProductMapping.fromEmail,
         deliveryTarget: maskedDeliveryTarget,
         transactionId: orderDelivery.transactionId || null,
         deliveryMethod: orderDelivery.deliveryMethod || null,
@@ -245,7 +245,7 @@ export class CustomerServiceService {
         eventName: orderDelivery.orderProductMapping.order.eventName,
         sendRequestAt: orderDelivery.sendRequestAt ? format(orderDelivery.sendRequestAt, DateFormatStr) : null,
         actualSendAt: actualSendAt,
-        sendType: orderDelivery.orderProductMapping.order.sendType,
+        sendType: orderDelivery.orderProductMapping.sendType,
         tradeAt: orderDelivery.tradeAt ? format(orderDelivery.tradeAt, DateFormatStr) : null,
         status: orderDelivery.status,
         couponStatus: orderDelivery.couponStatus,
@@ -320,19 +320,31 @@ export class CustomerServiceService {
       actualSendAt = format(queryBuilder.actualSendAt, DateFormatStr);
     }
 
+    // sendContent: order_product_mapping에서 가져오고, 대치문자 처리
+    let sendContent = queryBuilder.orderProductMapping.sendContent ?? '';
+    if (queryBuilder.replaceCharacter1) {
+      sendContent = sendContent.replace('{대치문자1}', queryBuilder.replaceCharacter1);
+    }
+    if (queryBuilder.replaceCharacter2) {
+      sendContent = sendContent.replace('{대치문자2}', queryBuilder.replaceCharacter2);
+    }
+    if (queryBuilder.replaceCharacter3) {
+      sendContent = sendContent.replace('{대치문자3}', queryBuilder.replaceCharacter3);
+    }
+
     return {
       orderDeliveryId: queryBuilder.id,
       eventName: order.eventName,
       businessName: user?.businessName ?? '',
       personName: user?.personName ?? '',
-      sendContent: order.sendContent,
+      sendContent: sendContent,
       deliveryTarget: decryptedDeliveryTarget ?? '',
       refundStatus: queryBuilder.refundStatus ?? null,
       sendRequestAt: queryBuilder.sendRequestAt ? format(queryBuilder.sendRequestAt, DateFormatStr) : null,
       actualSendAt: actualSendAt,
-      sendType: order.sendType,
+      sendType: queryBuilder.orderProductMapping.sendType,
       method: queryBuilder.deliveryMethod,
-      fromPhoneNumber: order.fromPhoneNumber,
+      fromPhoneNumber: queryBuilder.orderProductMapping.fromPhoneNumber,
       partnerCompanyName: displayPartnerCompany?.businessName ?? '',
       productName: displayProduct.name,
       price: displayProduct.price.toString(),
@@ -743,7 +755,7 @@ export class CustomerServiceService {
             smsEntity = this.gemteckMsgQueueRepository.create({
               msgType: 'S',
               dstAddr: orderDelivery.deliveryTarget ?? '',
-              callback: orderDelivery.orderProductMapping.order.fromPhoneNumber ?? '',
+              callback: orderDelivery.orderProductMapping.fromPhoneNumber ?? '',
               text: text ?? '',
             });
             break;
@@ -998,5 +1010,111 @@ export class CustomerServiceService {
 
     await this.orderDeliveryRepository.save(orderDelivery);
     return;
+  }
+
+  /**
+   * 다중 폐기 API
+   * @param user 로그인 사용자 정보
+   * @param orderDeliveryIds 폐기할 order_delivery ID 목록
+   * @param content CS 내용
+   */
+  async bulkDiscard(
+    user: ILoginUserInfo,
+    orderDeliveryIds: number[],
+    content: string,
+  ): Promise<{ success: number[]; failed: { id: number; reason: string }[] }> {
+    const success: number[] = [];
+    const failed: { id: number; reason: string }[] = [];
+
+    for (const orderDeliveryId of orderDeliveryIds) {
+      try {
+        // 1. orderDelivery 조회
+        const orderDelivery = await this.orderDeliveryRepository.findOne({
+          where: {
+            id: orderDeliveryId,
+            deletedAt: IsNull(),
+          },
+          relations: [
+            'orderProductMapping',
+            'orderProductMapping.product',
+            'orderProductMapping.product.partnerCompany',
+          ],
+        });
+
+        if (!orderDelivery) {
+          failed.push({ id: orderDeliveryId, reason: '존재하지 않는 발송 정보입니다.' });
+          continue;
+        }
+
+        // 2. 현재 핀 상태 확인 - 이미 폐기된 경우 스킵
+        if (
+          orderDelivery.couponStatus === OrderDeliveryCouponStatus.CANCEL ||
+          orderDelivery.couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL
+        ) {
+          failed.push({ id: orderDeliveryId, reason: '이미 폐기된 상태입니다.' });
+          continue;
+        }
+
+        // 3. 교환 또는 기간만료 상태인 경우 폐기 불가
+        if (
+          orderDelivery.couponStatus === OrderDeliveryCouponStatus.USED ||
+          orderDelivery.couponStatus === OrderDeliveryCouponStatus.EXPIRED
+        ) {
+          failed.push({ id: orderDeliveryId, reason: '교환 또는 기간만료 상태는 폐기할 수 없습니다.' });
+          continue;
+        }
+
+        const beforeChange = orderDelivery.couponStatus;
+        const partnerCompanyName = orderDelivery.orderProductMapping?.product?.partnerCompany?.businessName;
+
+        // 4. 협력사별 폐기 처리
+        switch (partnerCompanyName) {
+          case 'GS엠비즈':
+          case '대홍기획':
+          case '컬쳐랜드':
+          case '갤럭시아':
+          case '케이티알파':
+          case '주식회사 다우기술': {
+            // 외부 API를 통한 폐기 처리
+            const result = await this.partnerCompanyExternService.cancel(orderDelivery);
+            if (result.message !== '폐기 완료') {
+              failed.push({ id: orderDeliveryId, reason: result.message || '외부 API 폐기 실패' });
+              continue;
+            }
+            orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
+            break;
+          }
+          case 'SSG':
+          default: {
+            // 내부 DB만 업데이트
+            orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
+            break;
+          }
+        }
+
+        // 5. orderDelivery 저장
+        await this.orderDeliveryRepository.save(orderDelivery);
+
+        // 6. CS 히스토리 저장
+        const history = this.orderHistoryRepository.create({
+          orderDeliveryId: orderDelivery.id,
+          userId: user.id,
+          type: '폐기',
+          content: content,
+          beforeChange: beforeChange,
+          afterChange: OrderDeliveryCouponStatus.CANCEL,
+        });
+        await this.orderHistoryRepository.save(history);
+
+        success.push(orderDeliveryId);
+      } catch (error: any) {
+        failed.push({
+          id: orderDeliveryId,
+          reason: error.message || '폐기 처리 중 오류가 발생했습니다.',
+        });
+      }
+    }
+
+    return { success, failed };
   }
 }

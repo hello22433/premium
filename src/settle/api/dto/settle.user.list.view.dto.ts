@@ -58,9 +58,10 @@ export class SettleUserListViewDto {
   status: IOrderStatus;
 
   @ApiProperty({
-    description: '발송 시각 UTC ex)yyyy-MM-ddTHH:mm:ss',
+    description: '발송 시각 ex)yyyy-MM-ddTHH:mm:ss',
+    nullable: true,
   })
-  sendRequestAt: string;
+  sendRequestAt: string | null;
 
   @ApiProperty({
     description: '발송 완료 리포트 ex) true:  발행완료, false: 미발행',

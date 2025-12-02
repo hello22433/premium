@@ -196,10 +196,10 @@ export class OrderReceiveService {
       }
     }
 
-    let text = orderDelivery.orderProductMapping.order.sendContent;
+    let text = orderDelivery.orderProductMapping.sendContent ?? '';
 
-    if (orderDelivery.orderProductMapping.order.sendTailText) {
-      text += orderDelivery.orderProductMapping.order.sendTailText;
+    if (orderDelivery.orderProductMapping.sendTailText) {
+      text += orderDelivery.orderProductMapping.sendTailText;
     }
     if (orderDelivery.replaceCharacter1) {
       text = text.replace('{대치문자1}', orderDelivery.replaceCharacter1);
@@ -218,7 +218,7 @@ export class OrderReceiveService {
     return {
       topImagePath: orderDelivery.orderProductMapping.topImagePath,
       midImagePath: orderDelivery.orderProductMapping.midImagePath,
-      fromPhoneNumber: orderDelivery.orderProductMapping.order.fromPhoneNumber!,
+      fromPhoneNumber: orderDelivery.orderProductMapping.fromPhoneNumber!,
       productName: displayProduct.name,
       productImagePath: displayProduct.imagePath,
       brandName: displayBrand!.nameKorean,
@@ -384,7 +384,7 @@ export class OrderReceiveService {
       throw new BadRequestException('인증받지 않은 key입니다.');
     }
 
-    const title = orderDelivery.orderProductMapping.order.sendTitle;
+    const title = orderDelivery.orderProductMapping.sendTitle ?? '';
     const filePathList: string[] = [];
     if (orderDelivery.imagePath) {
       filePathList.push(orderDelivery.imagePath);

@@ -166,13 +166,15 @@ export class PartnerCompanyExternService {
           orderDelivery.sendRequestAt,
           orderDelivery.orderProductMapping.product.expireDay - 1,
         );
-        if (order.encourageDay) {
-          orderDelivery.encourageAt = subDays(orderDelivery.expireAt, order.encourageDay);
+        // 상품별 독려문자 설정 적용
+        const encourageDay = orderDelivery.orderProductMapping.encourageDay;
+        if (encourageDay) {
+          orderDelivery.encourageAt = subDays(orderDelivery.expireAt, encourageDay);
         }
-        let text = order.sendContent;
+        let text = orderDelivery.orderProductMapping.sendContent ?? '';
 
-        if (order.sendTailText) {
-          text += order.sendTailText;
+        if (orderDelivery.orderProductMapping.sendTailText) {
+          text += orderDelivery.orderProductMapping.sendTailText;
         }
         if (orderDelivery.replaceCharacter1) {
           text = text.replace('{대치문자1}', orderDelivery.replaceCharacter1);
@@ -197,7 +199,7 @@ export class PartnerCompanyExternService {
           msgContent: textForSsg,
           trId: orderDelivery.ssgTransactionId,
           callBack:
-            order.fromPhoneNumber === '' || !order.fromPhoneNumber ? defaultFromPhoneNumber : order.fromPhoneNumber,
+            orderDelivery.orderProductMapping.fromPhoneNumber === '' || !orderDelivery.orderProductMapping.fromPhoneNumber ? defaultFromPhoneNumber : orderDelivery.orderProductMapping.fromPhoneNumber,
         });
         context = JSON.stringify(response);
       }

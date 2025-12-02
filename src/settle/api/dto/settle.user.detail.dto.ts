@@ -40,16 +40,6 @@ export class SettleUserDetailDto {
   type: IOrderType;
 
   @ApiProperty({
-    description: '전송 제목',
-  })
-  sendTitle: string;
-
-  @ApiProperty({
-    description: '전송 내용',
-  })
-  sendContent: string;
-
-  @ApiProperty({
     description: '발송 요청 시각 ex) yyyy-MM-ddTHH:mm:ss',
     nullable: true,
   })

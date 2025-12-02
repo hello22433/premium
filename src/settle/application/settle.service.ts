@@ -1028,6 +1028,10 @@ export class SettleService {
         }
       }
 
+      // 첫 번째 상품의 발송 요청 시간 사용
+      const firstMapping = order.orderProductMappings?.[0];
+      const sendRequestAt = firstMapping?.sendRequestAt ? format(firstMapping.sendRequestAt, DateFormatStr) : null;
+
       return {
         id: order.id,
         registeredAt: format(order.registerAt, DateFormatStr),
@@ -1040,7 +1044,7 @@ export class SettleService {
         originalSettlePrice: order.settleAmount,
         settlePrice: finalSettlePrice,
         status: order.status,
-        sendRequestAt: format(order.sendRequestAt, DateFormatStr),
+        sendRequestAt: sendRequestAt,
         isDeliveryReport: order.deliveryCompleteReportCount > 0,
         isTransactionStatement: order.orderCompleteReportCount > 0,
       };
@@ -1087,7 +1091,9 @@ export class SettleService {
       }
     }
 
-    const sendRequestAt = normalizeDate(order.sendRequestAt) ? format(order.sendRequestAt, DateFormatStr) : null;
+    // 첫 번째 상품의 발송 요청 시간 사용
+    const firstMapping = order.orderProductMappings?.[0];
+    const sendRequestAt = firstMapping && normalizeDate(firstMapping.sendRequestAt) ? format(firstMapping.sendRequestAt!, DateFormatStr) : null;
 
     return {
       id: order.id,
@@ -1097,8 +1103,6 @@ export class SettleService {
       operationPersonName: order.operationUser?.personName ?? null,
       eventName: order.eventName,
       type: order.type,
-      sendTitle: order.sendTitle,
-      sendContent: order.sendContent,
       sendRequestAt: sendRequestAt,
       status: order.status,
       productList: productList,
@@ -1163,6 +1167,10 @@ export class SettleService {
         amount += orderProductMapping.amount;
       }
 
+      // 첫 번째 상품의 발송 요청 시간 사용
+      const firstMapping = order.orderProductMappings?.[0];
+      const sendRequestAt = firstMapping?.sendRequestAt ? format(firstMapping.sendRequestAt, DateEndMinuteFormatStr) : null;
+
       return {
         id: order.id,
         registeredAt: format(order.registerAt, DateDateFormatStr),
@@ -1175,7 +1183,7 @@ export class SettleService {
         settlePrice: order.settleAmount,
         originalSettlePrice: order.settleAmount,
         status: order.status,
-        sendRequestAt: format(order.sendRequestAt, DateEndMinuteFormatStr),
+        sendRequestAt: sendRequestAt,
         isDeliveryReport: order.deliveryCompleteReportCount > 0,
         isTransactionStatement: order.orderCompleteReportCount > 0,
       };
@@ -1370,6 +1378,7 @@ export class SettleService {
 
     const resultList: SettleUserPerDetailViewDto[] = orderList.map((order) => {
       let productName = '';
+      const firstMapping = order.orderProductMappings?.[0];
       if (order.orderProductMappings && order.orderProductMappings.length > 0) {
         productName = order.orderProductMappings[0].product.name;
         const orderProductMappingsLength = order.orderProductMappings.length;
@@ -1378,11 +1387,14 @@ export class SettleService {
         }
       }
 
+      // 첫 번째 상품의 발송 요청 시간 사용
+      const sendRequestAt = firstMapping?.sendRequestAt ? format(firstMapping.sendRequestAt, DateFormatStr) : null;
+
       return {
         id: order.id,
         userBusinessName: order.user!.businessName,
         userPersonName: order.user!.personName,
-        sendRequestAt: format(order.sendRequestAt, DateFormatStr),
+        sendRequestAt: sendRequestAt,
         eventName: order.eventName,
         productName: productName,
         settleAmount: order.sendAmount,
@@ -1453,6 +1465,7 @@ export class SettleService {
       // 초과하는 날짜 기준
       const orderList = await this.orderRepository
         .createQueryBuilder('order')
+        .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
         .where('order.userId = :userId', { userId: user.id })
         .andWhere(
           new Brackets((qb) => {
@@ -1490,10 +1503,15 @@ export class SettleService {
       }
 
       for (const order of orderList) {
+        // 첫 번째 상품의 발송 요청 시간 사용
+        const firstMapping = order.orderProductMappings?.[0];
+        const sendRequestAt = firstMapping?.sendRequestAt;
+        if (!sendRequestAt) continue;
+
         if (user.settlePeriodCondition === UserSettlePeriodConditionEnum.DELIVERY_DATE) {
-          const year = order.sendRequestAt.getFullYear();
-          const month = order.sendRequestAt.getMonth();
-          const day = order.sendRequestAt.getDate() + user.settlePeriodCount!;
+          const year = sendRequestAt.getFullYear();
+          const month = sendRequestAt.getMonth();
+          const day = sendRequestAt.getDate() + user.settlePeriodCount!;
           conditionDate = new Date(year, month, day);
 
           if (now >= conditionDate) {
@@ -1503,7 +1521,7 @@ export class SettleService {
 
         if (
           user.settlePeriodCondition !== UserSettlePeriodConditionEnum.DELIVERY_DATE &&
-          conditionDate >= order.sendRequestAt
+          conditionDate >= sendRequestAt
         ) {
           updateOrderIdList.push(order.id);
         }

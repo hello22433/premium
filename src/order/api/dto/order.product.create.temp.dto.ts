@@ -119,6 +119,14 @@ export class OrderProductCreateTempDto {
   @IsString()
   sendType: string | null;
 
+  @ApiPropertyOptional({
+    description: '독려 문자 day (만료일 N일 전 발송, null이면 미사용)',
+  })
+  // =================================================
+  @IsOptional()
+  @IsNumber()
+  encourageDay: number | null;
+
   @ApiProperty({
     description: '수신자 정보 list',
   })

@@ -98,6 +98,9 @@ export class OrderProductMappingEntity extends BaseEntity {
   @Column({ type: 'varchar', length: 50, nullable: true })
   sendType: string | null;
 
+  @Column({ type: 'int', nullable: true, comment: '독려 문자 day (만료일 N일 전 발송)' })
+  encourageDay: number | null;
+
   @ManyToOne(() => OrderEntity, { createForeignKeyConstraints: false })
   @JoinColumn({ name: 'order_id' })
   order: OrderEntity;

@@ -199,7 +199,7 @@ export class DeliveryBatchService {
         }
       }
 
-      const title = order.sendTitle;
+      const title = orderDelivery.orderProductMapping.sendTitle ?? '';
 
       if (order.type !== IOrderType.SSG) {
         const partnerCompany = product.partnerCompany;
@@ -209,10 +209,12 @@ export class DeliveryBatchService {
             : product.expireDay;
 
         orderDelivery.expireAt = addDays(orderDelivery.sendRequestAt, expireDays);
-        if (order.encourageDay) {
+        // 상품별 독려문자 설정 적용
+        const encourageDay = orderDelivery.orderProductMapping.encourageDay;
+        if (encourageDay) {
           orderDelivery.encourageAt = subDays(
             orderDelivery.expireAt,
-            order.encourageDay,
+            encourageDay,
           );
         }
       }
@@ -221,7 +223,7 @@ export class DeliveryBatchService {
       if (orderDelivery.imagePath) {
         filePathList.push(orderDelivery.imagePath);
       }
-      let text = orderDelivery.orderProductMapping.sendContent ?? orderDelivery.orderProductMapping.order.sendContent;
+      let text = orderDelivery.orderProductMapping.sendContent ?? '';
 
       // 이메일이 아니고 SSG 타입이 아닌 경우에만 상품 유의사항 추가
       if (
@@ -232,8 +234,7 @@ export class DeliveryBatchService {
         text += `\n\n${orderDelivery.orderProductMapping.product.memo}`;
       }
 
-      const sendTailText =
-        orderDelivery.orderProductMapping.sendTailText ?? orderDelivery.orderProductMapping.order.sendTailText;
+      const sendTailText = orderDelivery.orderProductMapping.sendTailText;
       if (sendTailText) {
         text += `\n\n${sendTailText}`;
       }
@@ -310,9 +311,7 @@ export class DeliveryBatchService {
         );
 
         try {
-          const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber
-            ? orderDelivery.orderProductMapping.fromPhoneNumber
-            : orderDelivery.orderProductMapping.order.fromPhoneNumber!;
+          const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber!;
           await this.smsSend.send({
             msgType: 'M',
             to: decryptedDeliveryTarget,
@@ -348,8 +347,7 @@ export class DeliveryBatchService {
 
         const url = `${this.configService.getOrThrow('EMAIL_RECEIVE_URL')}/${encryptKeyEmail}`;
         let qrCodeImagePath = undefined;
-        const emailSendType =
-          orderDelivery.orderProductMapping.emailSendType ?? orderDelivery.orderProductMapping.order.emailSendType;
+        const emailSendType = orderDelivery.orderProductMapping.emailSendType;
         if (emailSendType === OrderEmailSendType.QR) {
           const qrCodeBuffer = await QRCode.toBuffer(url);
 
@@ -362,8 +360,7 @@ export class DeliveryBatchService {
           qrCodeImagePath = fileUrl.url;
         }
 
-        const useEmailContent =
-          orderDelivery.orderProductMapping.useEmailContent ?? orderDelivery.orderProductMapping.order.useEmailContent!;
+        const useEmailContent = orderDelivery.orderProductMapping.useEmailContent ?? '';
 
         const emailText = EmailDeliveryTemplate({
           topImagePath: orderDelivery.orderProductMapping.topImagePath,
@@ -371,13 +368,12 @@ export class DeliveryBatchService {
           text,
           url: url,
           code: emailSendHistory.code,
-          useEmailContent: useEmailContent,
+          useEmailContent,
           qrCodeImagePath,
         });
 
         try {
-          const fromEmail =
-            orderDelivery.orderProductMapping.fromEmail ?? orderDelivery.orderProductMapping.order.fromEmail;
+          const fromEmail = orderDelivery.orderProductMapping.fromEmail;
           await this.mailSend.send({
             saveSentMail: 'N',
             bcc: undefined,
@@ -530,8 +526,7 @@ export class DeliveryBatchService {
       const smsText =
         orderDelivery.orderProductMapping.order.type === IOrderType.SSG ? text + smsSsgTemplate(orderDelivery) : text;
 
-      const fromPhoneNumber =
-        orderDelivery.orderProductMapping.fromPhoneNumber ?? orderDelivery.orderProductMapping.order.fromPhoneNumber!;
+      const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber!;
       await this.smsSend.send({
         msgType: 'L',
         to: orderDelivery.deliveryTarget,
@@ -566,7 +561,7 @@ export class DeliveryBatchService {
 
     // 1. 알림톡, SMS, 이메일 전송
 
-    const title = orderDelivery.orderProductMapping.sendTitle ?? orderDelivery.orderProductMapping.order.sendTitle;
+    const title = orderDelivery.orderProductMapping.sendTitle ?? '';
 
     if (orderDelivery.orderProductMapping.order.type !== IOrderType.SSG) {
       const partnerCompany = orderDelivery.orderProductMapping.product.partnerCompany;
@@ -576,10 +571,12 @@ export class DeliveryBatchService {
           : orderDelivery.orderProductMapping.product.expireDay;
 
       orderDelivery.expireAt = addDays(orderDelivery.sendRequestAt, expireDays);
-      if (orderDelivery.orderProductMapping.order.encourageDay) {
+      // 상품별 독려문자 설정 적용
+      const encourageDay = orderDelivery.orderProductMapping.encourageDay;
+      if (encourageDay) {
         orderDelivery.encourageAt = subDays(
           orderDelivery.expireAt,
-          orderDelivery.orderProductMapping.order.encourageDay,
+          encourageDay,
         );
       }
     }
@@ -588,15 +585,14 @@ export class DeliveryBatchService {
     if (orderDelivery.imagePath) {
       filePathList.push(orderDelivery.imagePath);
     }
-    let text = orderDelivery.orderProductMapping.sendContent ?? orderDelivery.orderProductMapping.order.sendContent;
+    let text = orderDelivery.orderProductMapping.sendContent ?? '';
 
     // 이메일이 아닌 경우에만 상품 유의사항 추가
     if (orderDelivery.orderProductMapping.product.memo && orderDelivery.deliveryMethod !== IOrderSendMethod.EMAIL) {
       text += `\n\n${orderDelivery.orderProductMapping.product.memo}`;
     }
 
-    const sendTailText =
-      orderDelivery.orderProductMapping.sendTailText ?? orderDelivery.orderProductMapping.order.sendTailText;
+    const sendTailText = orderDelivery.orderProductMapping.sendTailText;
     if (sendTailText) {
       text += `\n\n${sendTailText}`;
     }
@@ -677,8 +673,7 @@ export class DeliveryBatchService {
       );
 
       try {
-        const fromPhoneNumber =
-          orderDelivery.orderProductMapping.fromPhoneNumber ?? orderDelivery.orderProductMapping.order.fromPhoneNumber!;
+        const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber!;
         await this.smsSend.send({
           msgType: 'M',
           to: decryptedDeliveryTarget,
@@ -714,8 +709,7 @@ export class DeliveryBatchService {
 
       const url = `${this.configService.getOrThrow('EMAIL_RECEIVE_URL')}/${encryptKeyEmail}`;
       let qrCodeImagePath = undefined;
-      const emailSendType =
-        orderDelivery.orderProductMapping.emailSendType ?? orderDelivery.orderProductMapping.order.emailSendType;
+      const emailSendType = orderDelivery.orderProductMapping.emailSendType;
       if (emailSendType === OrderEmailSendType.QR) {
         const qrCodeBuffer = await QRCode.toBuffer(url);
 
@@ -728,21 +722,19 @@ export class DeliveryBatchService {
         qrCodeImagePath = fileUrl.url;
       }
 
-      const useEmailContent =
-        orderDelivery.orderProductMapping.useEmailContent ?? orderDelivery.orderProductMapping.order.useEmailContent!;
+      const useEmailContent = orderDelivery.orderProductMapping.useEmailContent ?? '';
       const emailText = EmailDeliveryTemplate({
         topImagePath: orderDelivery.orderProductMapping.topImagePath,
         productImagePath: orderDelivery.orderProductMapping.product.imagePath,
         text,
         url: url,
         code: emailSendHistory.code,
-        useEmailContent: useEmailContent,
+        useEmailContent,
         qrCodeImagePath,
       });
 
       try {
-        const fromEmail =
-          orderDelivery.orderProductMapping.fromEmail ?? orderDelivery.orderProductMapping.order.fromEmail;
+        const fromEmail = orderDelivery.orderProductMapping.fromEmail;
         await this.mailSend.send({
           saveSentMail: 'N',
           bcc: undefined,
@@ -786,9 +778,10 @@ export class DeliveryBatchService {
       .createQueryBuilder('orderDelivery')
       .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
       .innerJoinAndSelect('orderProductMapping.order', 'order')
-      .where(`DATE_ADD(order.sendRequestAt, INTERVAL order.requestToDestroyPersonalInfoDay DAY) <= :now`, {
-        now,
-      })
+      .where(
+        `DATE_ADD(orderProductMapping.sendRequestAt, INTERVAL orderProductMapping.requestToDestroyPersonalInfoDay DAY) <= :now`,
+        { now },
+      )
       .andWhere('order.status = :status', { status: IOrderStatus.DELIVERY_COMPLETE })
       .andWhere('orderDelivery.deliveryTarget != :targetPhone', { targetPhone: encryptedDestroyPhoneNumber })
       .andWhere('orderDelivery.deliveryTarget != :targetEmail', { targetEmail: encryptedDestroyEmail })
@@ -884,7 +877,7 @@ export class DeliveryBatchService {
           await this.smsSend.send({
             msgType: 'M',
             to: decryptedDeliveryTarget,
-            from: orderDelivery.orderProductMapping.order.fromPhoneNumber!,
+            from: orderDelivery.orderProductMapping.fromPhoneNumber!,
             subject: title,
             text: smsText,
             filePath: [],
@@ -900,8 +893,7 @@ export class DeliveryBatchService {
       if (orderDelivery.deliveryMethod === IOrderSendMethod.EMAIL) {
         try {
           const emailText = EmailEncourageTemplate(orderDelivery);
-          const fromEmail =
-            orderDelivery.orderProductMapping.fromEmail ?? orderDelivery.orderProductMapping.order.fromEmail;
+          const fromEmail = orderDelivery.orderProductMapping.fromEmail;
 
           await this.mailSend.send({
             saveSentMail: 'N',

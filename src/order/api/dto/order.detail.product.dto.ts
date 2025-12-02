@@ -205,6 +205,12 @@ export class OrderDetailProductDto {
     description: '발송 방식 ex) IMMEDIATE : 즉시, RESERVE : 예약',
   })
   sendType: string | null;
+
+  @ApiProperty({
+    description: '독려 문자 day (만료일 N일 전 발송, null이면 미사용)',
+    nullable: true,
+  })
+  encourageDay: number | null;
 }
 
 export class OrderPdfDetailProductDto {
