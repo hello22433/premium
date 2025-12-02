@@ -360,3 +360,24 @@ export class OrderGetPreviousContentReqQueryDto {
   @Type(() => Number)
   productId?: number;
 }
+
+export class OrderUpdateEncourageDayReqParamDto {
+  @ApiProperty({
+    description: 'order id',
+  })
+  // ===================================
+  @IsNumber()
+  @IsNotEmpty()
+  @Type(() => Number)
+  id: number;
+}
+
+export class OrderUpdateEncourageDayReqBodyDto {
+  @ApiPropertyOptional({
+    description: '독려 문자 day (null이면 미사용)',
+  })
+  // ===================================
+  @IsOptional()
+  @IsNumber()
+  encourageDay: number | null;
+}

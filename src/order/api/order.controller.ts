@@ -46,6 +46,8 @@ import {
   OrderUpdateOperationUserReqDto,
   OrderUpdateSettleReqDto,
   OrderUpdateTempReqDto,
+  OrderUpdateEncourageDayReqParamDto,
+  OrderUpdateEncourageDayReqBodyDto,
 } from './order.req.dto';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
 import {
@@ -467,5 +469,26 @@ export class OrderController {
   @Get('/order/previous-content')
   async getPreviousContent(@User() user: ILoginUserInfo, @Query() getDto: OrderGetPreviousContentReqQueryDto) {
     return this.orderService.getPreviousContent(user, getDto);
+  }
+
+  @ApiOperation({
+    summary: '독려문자 설정 수정 API (발송관리용)',
+    description: '발송관리에서 독려문자 day를 설정합니다. null이면 미사용.',
+  })
+  @ApiBearerAuth()
+  @ApiOkResponse({
+    description: '성공적으로 수정한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '존재하지 않는 주문이거나 임시저장 상태인 경우',
+  })
+  // =========================================
+  @Patch('/order/:id/encourage-day')
+  async updateEncourageDay(
+    @User() user: ILoginUserInfo,
+    @Param() getParam: OrderUpdateEncourageDayReqParamDto,
+    @Body() getBody: OrderUpdateEncourageDayReqBodyDto,
+  ) {
+    return this.orderService.updateEncourageDay(user, getParam.id, getBody);
   }
 }

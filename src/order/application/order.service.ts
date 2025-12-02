@@ -29,6 +29,7 @@ import {
   OrderUpdateOperationUserReqDto,
   OrderUpdateSettleReqDto,
   OrderUpdateTempReqDto,
+  OrderUpdateEncourageDayReqBodyDto,
 } from '../api/order.req.dto';
 import {
   OrderCreateTempResDto,
@@ -1089,7 +1090,7 @@ export class OrderService {
       registerAt: new Date(),
       sendRequestAt: sendAt,
       sendType: sendType,
-      encourageDay: encourageDay,
+      encourageDay: null, // 주문관리에서는 독려문자 미사용, 발송관리에서 설정
     });
     const orderId: number = orderInsertResult.identifiers[0].id;
 
@@ -1242,7 +1243,7 @@ export class OrderService {
     order.sendAmount = sendAmount;
     order.settleAmount = sendAmount;
     order.sendType = sendType;
-    order.encourageDay = encourageDay;
+    order.encourageDay = null; // 주문관리에서는 독려문자 미사용, 발송관리에서 설정
     order.sendRequestAt = sendAt;
 
     await this.orderRepository.save(order);
@@ -2334,5 +2335,28 @@ export class OrderService {
     }
 
     return response;
+  }
+
+  /**
+   * 독려문자 설정 수정 (발송관리용)
+   */
+  async updateEncourageDay(user: ILoginUserInfo, orderId: number, getBody: OrderUpdateEncourageDayReqBodyDto): Promise<void> {
+    const { encourageDay } = getBody;
+
+    const order = await this.orderRepository.findOne({
+      where: { id: orderId },
+    });
+
+    if (!order) {
+      throw new BadRequestException('존재하지 않는 주문입니다.');
+    }
+
+    // 발송관리에서만 수정 가능 (주문완료 상태 이상)
+    if (order.status === IOrderStatus.TEMP) {
+      throw new BadRequestException('임시저장 상태에서는 독려문자를 설정할 수 없습니다.');
+    }
+
+    order.encourageDay = encourageDay;
+    await this.orderRepository.save(order);
   }
 }
