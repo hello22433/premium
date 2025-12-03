@@ -156,9 +156,11 @@ export class UserService {
     }
 
     if (reqIp != '::1') {
-      const splitReqAllowedIp = reqIp ? reqIp.split(':') : ['', '', ''];
-
-      const reqAllowedIp = splitReqAllowedIp[3];
+      // IPv6 mapped IPv4 (::ffff:x.x.x.x) 또는 일반 IPv4 (x.x.x.x) 처리
+      let reqAllowedIp = reqIp;
+      if (reqIp && reqIp.includes('::ffff:')) {
+        reqAllowedIp = reqIp.split(':').pop() || reqIp;
+      }
 
       console.log(reqIp);
       console.log(reqAllowedIp);
