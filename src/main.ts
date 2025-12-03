@@ -1,4 +1,5 @@
 import { NestFactory } from '@nestjs/core';
+import { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { TransformResInterceptor } from './common/api/transform.res.interceptor';
@@ -8,8 +9,9 @@ import { initializeTransactionalContext } from 'typeorm-transactional';
 async function bootstrap() {
   initializeTransactionalContext();
 
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
   app.enableCors();
+  app.set('trust proxy', true);
   app.useGlobalInterceptors(new TransformResInterceptor());
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
 
