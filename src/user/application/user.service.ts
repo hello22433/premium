@@ -157,7 +157,7 @@ export class UserService {
 
     if (reqIp != '::1') {
       // IPv6 mapped IPv4 (::ffff:x.x.x.x) 또는 일반 IPv4 (x.x.x.x) 처리
-      let reqAllowedIp = reqIp;
+      let reqAllowedIp: string = reqIp || '';
       if (reqIp && reqIp.includes('::ffff:')) {
         reqAllowedIp = reqIp.split(':').pop() || reqIp;
       }
