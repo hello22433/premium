@@ -1541,38 +1541,62 @@ export class OrderService {
     }
     // ======== 중복번호 제어 체크 끝 ========
 
-    // 신세계 상품 검증 및 이벤트 자동 선택
+    // 신세계 상품 검증 및 이벤트 자동 선택 (배송건별 행사 분할 할당)
+    let ssgAllocations: { deliveryId: number; eventId: number; price: number }[] | null = null;
+
     if (order.type === IOrderType.SSG) {
-      // 상품 가격으로 전체 가격 계산
-      const totalPrice = order.orderProductMappings!.reduce((acc, cur) => {
-        if (!cur.product) {
-          throw new BadRequestException('상품 정보가 존재하지 않습니다.');
-        }
-        return acc + cur.product.price * cur.amount;
-      }, 0);
       const firstProduct = order.orderProductMappings[0].product;
       if (!firstProduct) {
         throw new BadRequestException('상품 정보가 존재하지 않습니다.');
       }
       const couponExpiration = firstProduct.expireDay;
 
-      // 이벤트 자동 선택 (주문 금액 전체를 커버 가능한 첫 번째 행사)
-      const selectedEvent = await this.ssgEventService.selectEventForOrder(totalPrice, couponExpiration);
+      // 모든 배송건 정보 수집 (각 배송건 = 상품권 1장)
+      const deliveries: { deliveryId: number; price: number }[] = [];
+      for (const orderMapping of order.orderProductMappings!) {
+        if (!orderMapping.product) {
+          throw new BadRequestException('상품 정보가 존재하지 않습니다.');
+        }
+        const price = orderMapping.product.price;
+        for (const orderDelivery of orderMapping.orderDeliveries) {
+          deliveries.push({
+            deliveryId: orderDelivery.id,
+            price,
+          });
+        }
+      }
 
-      if (!selectedEvent) {
+      // 배송건별 행사 할당 (All or Nothing)
+      ssgAllocations = await this.ssgEventService.allocateEventsForDeliveries(deliveries, couponExpiration);
+
+      if (!ssgAllocations) {
         throw new BadRequestException('사용 가능한 SSG 이벤트가 없습니다. (잔액 부족)');
       }
 
-      // 선택된 이벤트 ID를 주문에 저장
-      order.ssgEventId = selectedEvent.id;
+      // 첫 번째 할당된 행사 ID를 주문에 저장 (대표 행사)
+      order.ssgEventId = ssgAllocations.length > 0 ? ssgAllocations[0].eventId : null;
 
-      // 이벤트 잔액 가차감 (isTemporary = true)
-      await this.ssgEventService.deductEventBalance(selectedEvent.id, totalPrice, order.id, true);
+      // 여러 행사에서 분할 차감 (isTemporary = true)
+      await this.ssgEventService.deductEventBalanceMultiple(ssgAllocations, order.id, true);
+    }
+
+    // 배송건 저장 및 SSG 행사 할당
+    const allocationMap = new Map<number, number>();
+    if (ssgAllocations) {
+      for (const alloc of ssgAllocations) {
+        allocationMap.set(alloc.deliveryId, alloc.eventId);
+      }
     }
 
     for (const orderMapping of order.orderProductMappings!) {
       for (const orderDelivery of orderMapping.orderDeliveries) {
         orderDelivery.transactionId = CreateTransactionId(order.id, orderDelivery.id);
+
+        // SSG 주문인 경우 배송건에 할당된 행사 ID 저장
+        if (order.type === IOrderType.SSG && allocationMap.has(orderDelivery.id)) {
+          orderDelivery.ssgEventId = allocationMap.get(orderDelivery.id) || null;
+        }
+
         await this.orderDeliveryRepository.save(orderDelivery);
       }
     }
@@ -1618,21 +1642,15 @@ export class OrderService {
 
     OrderValidation(order);
 
-    let ssgEventIssue: SsgEventEntity | null = null;
     // 신세계 상품 검증 및 차감 확정
     if (order.type === IOrderType.SSG) {
-      // 주문에 저장된 SSG 이벤트 ID 확인
-      if (!order.ssgEventId) {
+      // 배송건에 SSG 이벤트가 할당되어 있는지 확인
+      const hasSsgEvent = order.orderProductMappings!.some((mapping) =>
+        mapping.orderDeliveries.some((delivery) => delivery.ssgEventId != null),
+      );
+
+      if (!hasSsgEvent) {
         throw new BadRequestException('SSG 이벤트가 선택되지 않았습니다.');
-      }
-
-      // 선택된 이벤트 조회
-      ssgEventIssue = await this.ssgEventRepository.findOne({
-        where: { id: order.ssgEventId },
-      });
-
-      if (!ssgEventIssue) {
-        throw new BadRequestException('선택된 SSG 이벤트를 찾을 수 없습니다.');
       }
 
       // 가차감을 확정으로 변경 (isTemporary: true -> false)
@@ -1644,9 +1662,8 @@ export class OrderService {
     for (const orderMapping of order.orderProductMappings!) {
       for (const orderDelivery of orderMapping.orderDeliveries) {
         // PIN 발급은 배치에서 실제 발송 시점에 수행
-        // 여기서는 ssgEventId만 저장하고 상태를 WAIT으로 변경
+        // 상태를 WAIT으로 변경 (ssgEventId는 이미 deliveryRequest에서 할당됨)
         orderDelivery.status = IOrderDeliveryStatus.WAIT;
-        orderDelivery.ssgEventId = ssgEventIssue ? ssgEventIssue.id : null;
 
         await this.orderDeliveryRepository.save(orderDelivery);
       }

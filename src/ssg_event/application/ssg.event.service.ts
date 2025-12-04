@@ -471,6 +471,125 @@ export class SsgEventService {
     return event;
   }
 
+  /**
+   * 배송건별로 행사를 할당합니다.
+   * 각 배송건(상품권)은 하나의 행사에서 전액 처리되어야 합니다.
+   * 모든 배송건 할당 가능 시에만 결과 반환, 하나라도 불가하면 null 반환 (All or Nothing)
+   * @param deliveries 배송건 정보 배열 [{ deliveryId, price }]
+   * @param couponExpiration 쿠폰 유효기간
+   * @returns 할당 결과 배열 [{ deliveryId, eventId, price }] 또는 null (잔액 부족)
+   */
+  async allocateEventsForDeliveries(
+    deliveries: { deliveryId: number; price: number }[],
+    couponExpiration?: number,
+  ): Promise<{ deliveryId: number; eventId: number; price: number }[] | null> {
+    const now = new Date();
+
+    // 유효한 행사 목록 조회 (order 기준 정렬, 잔액 > 0)
+    let queryBuilder = this.ssgEventRepository
+      .createQueryBuilder('ssg')
+      .where('ssg.startAt <= :now', { now })
+      .andWhere('ssg.endAt >= :now', { now })
+      .andWhere('ssg.eventBalance > 0')
+      .orderBy('ssg.order', 'ASC');
+
+    if (couponExpiration) {
+      queryBuilder = queryBuilder.andWhere('ssg.couponExpiration = :couponExpiration', { couponExpiration });
+    }
+
+    const events = await queryBuilder.getMany();
+
+    if (events.length === 0) {
+      return null;
+    }
+
+    // 각 행사의 잔여 잔액을 추적 (실제 차감 전 시뮬레이션)
+    const eventBalances = new Map<number, number>();
+    for (const event of events) {
+      eventBalances.set(event.id, event.eventBalance);
+    }
+
+    const allocations: { deliveryId: number; eventId: number; price: number }[] = [];
+
+    // 각 배송건에 대해 행사 할당
+    for (const delivery of deliveries) {
+      let allocated = false;
+
+      for (const event of events) {
+        const remainingBalance = eventBalances.get(event.id) || 0;
+
+        // 현재 행사 잔액이 상품 가격 이상이면 할당
+        if (remainingBalance >= delivery.price) {
+          allocations.push({
+            deliveryId: delivery.deliveryId,
+            eventId: event.id,
+            price: delivery.price,
+          });
+
+          // 잔액 차감 (시뮬레이션)
+          eventBalances.set(event.id, remainingBalance - delivery.price);
+          allocated = true;
+          break;
+        }
+      }
+
+      // 어떤 행사에서도 처리 못하면 잔액 부족
+      if (!allocated) {
+        return null;
+      }
+    }
+
+    return allocations;
+  }
+
+  /**
+   * 여러 행사에서 분할 차감합니다.
+   * @param allocations 할당 정보 배열 [{ deliveryId, eventId, price }]
+   * @param orderId 주문 ID
+   * @param isTemporary 가차감 여부
+   */
+  async deductEventBalanceMultiple(
+    allocations: { deliveryId: number; eventId: number; price: number }[],
+    orderId: number,
+    isTemporary: boolean = true,
+  ): Promise<void> {
+    // 행사별로 차감 금액 합산
+    const eventDeductions = new Map<number, number>();
+    for (const alloc of allocations) {
+      const current = eventDeductions.get(alloc.eventId) || 0;
+      eventDeductions.set(alloc.eventId, current + alloc.price);
+    }
+
+    // 각 행사에서 차감
+    for (const [eventId, totalAmount] of eventDeductions) {
+      const ssgEvent = await this.ssgEventRepository.findOne({
+        where: { id: eventId },
+      });
+
+      if (!ssgEvent) {
+        throw new BadRequestException(`유효한 이벤트가 없습니다. (eventId: ${eventId})`);
+      }
+
+      if (ssgEvent.eventBalance < totalAmount) {
+        throw new BadRequestException(`이벤트 잔액이 부족합니다. (eventId: ${eventId})`);
+      }
+
+      const newBalance = ssgEvent.eventBalance - totalAmount;
+
+      const ssgEventAmountHistory = this.amountHistoryRepository.create({
+        ssgEventId: ssgEvent.id,
+        amount: -totalAmount,
+        balance: newBalance,
+        orderId,
+        isTemporary,
+      });
+
+      ssgEvent.eventBalance = newBalance;
+      await this.amountHistoryRepository.save(ssgEventAmountHistory);
+      await this.ssgEventRepository.save(ssgEvent);
+    }
+  }
+
   async deductEventBalance(
     eventId: number,
     amount: number,
