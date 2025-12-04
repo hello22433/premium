@@ -136,6 +136,12 @@ export class OrderGetDeliveryCompleteReportResDto extends OrderGetDeliveryComple
     description: '개인정보 파기 요청일',
   })
   requestToDestroyPersonalInfoDay: number;
+
+  @ApiProperty({
+    nullable: true,
+    description: '실제 발송 시간 ex) yyyy-MM-ddTHH:mm:ss',
+  })
+  actualSendAt: string | null;
 }
 
 export class OrderGetOrderCompleteReportResDto extends OrderCompleteReportViewDto {}
