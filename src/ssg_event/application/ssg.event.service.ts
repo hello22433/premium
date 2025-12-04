@@ -40,7 +40,7 @@ export class SsgEventService {
     const { take, page, code, createdEndAt, createdStartAt, name } = getQuery;
     const skip = (page - 1) * take;
 
-    const currentMonth = new Date().getMonth() + 1;
+    const now = new Date();
 
     let queryBuilder = this.ssgEventRepository.createQueryBuilder('ssg');
 
@@ -52,11 +52,11 @@ export class SsgEventService {
       queryBuilder = queryBuilder.andWhere('ssg.name LIKE :name', { name: '%' + name + '%' });
     }
 
-    // 조회기간이 설정되지 않은 경우에만 현재 월 필터 적용
+    // 조회기간이 설정되지 않은 경우에만 현재 진행 중인 행사 필터 적용
     if (!createdStartAt && !createdEndAt) {
       queryBuilder = queryBuilder
-        .andWhere('MONTH(ssg.startAt) <= :currentMonth', { currentMonth })
-        .andWhere('MONTH(ssg.endAt) >= :currentMonth', { currentMonth });
+        .andWhere('ssg.startAt <= :now', { now })
+        .andWhere('ssg.endAt >= :now', { now });
     }
 
     queryBuilder = QueryBuilderDateCondition(queryBuilder, 'ssg', 'createdAt', createdStartAt, createdEndAt);
@@ -362,7 +362,7 @@ export class SsgEventService {
 
     // endAt을 해당 날짜의 23:59:59로 설정
     const endAtDate = new Date(endAt);
-    endAtDate.setHours(23, 59, 59, 999);
+    endAtDate.setHours(23, 59, 59);
 
     await this.ssgEventRepository.insert({
       code,
