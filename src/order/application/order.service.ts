@@ -982,19 +982,8 @@ export class OrderService {
     await this.orderProductMappingRepository.save(orderProductList);
     await this.orderRepository.update({ id: orderId }, { settleAmount: settleAmount + settleFee });
 
-    const oneUser = await this.userRepository.findOneOrFail({
-      where: {
-        id: oneUserId,
-      },
-    });
-
-    if (isSettleBanace) {
-      oneUser.balance = oneUser.balance + beforeSettleAmount - (settleAmount + settleFee);
-    } else {
-      oneUser.allSettleAmount = oneUser.allSettleAmount - beforeSettleAmount + (settleAmount + settleFee);
-    }
-
-    await this.userRepository.save(oneUser);
+    // Note: balance 조정은 deliveryConfirmed 시점에 수행됨
+    // 발송확정 시 최종 정산금액과 정가의 차액을 계산하여 조정함
   }
 
   @Transactional()
@@ -1368,193 +1357,8 @@ export class OrderService {
       throw new BadRequestException('최대 서비스 한도를 넘어 요청할 수 없습니다.');
     }
 
-    // ======== 중복번호 제어 체크 시작 ========
-    if (oneUser.duplicatePhoneLimit > 0) {
-      this.logger.debug(`중복번호 제어 활성화: limit=${oneUser.duplicatePhoneLimit}`);
-
-      // 오늘 날짜 범위 계산 (00:00:00 ~ 23:59:59)
-      const todayStart = new Date();
-      todayStart.setHours(0, 0, 0, 0);
-      const todayEnd = new Date();
-      todayEnd.setHours(23, 59, 59, 999);
-
-      // user_discount 조회 (유저별 또는 협력사별 할인 규칙)
-      const userDiscounts = await this.userDiscountRepository.find({
-        where: [
-          { userId: user.id },
-          { partnerCompanyId: In(order.orderProductMappings!.map((m) => m.product!.partnerCompanyId)) },
-        ],
-      });
-
-      this.logger.debug(
-        `조회된 user_discount 개수: ${userDiscounts.length}, 내용: ${JSON.stringify(
-          userDiscounts.map((d) => ({
-            id: d.id,
-            category: d.category,
-            primaryCategory: d.primaryCategory,
-            group: d.group,
-            priceAdjustment: d.priceAdjustment,
-            pricePercent: d.pricePercent,
-          })),
-        )}`,
-      );
-
-      for (const orderMapping of order.orderProductMappings!) {
-        this.logger.debug(
-          `상품 ${orderMapping.productId} 정보: category=${orderMapping.product?.category}, classification=${orderMapping.product?.classification}, fee=${orderMapping.fee}, priceAdjustment=${orderMapping.priceAdjustment}`,
-        );
-
-        // 할인이 적용된 상품만 중복 체크 (할증은 체크 안 함)
-        let hasDiscount = false;
-        let discountPercent = 0;
-
-        // 1. orderMapping에 이미 fee와 priceAdjustment가 설정되어 있는 경우
-        if (
-          orderMapping.fee !== null &&
-          orderMapping.fee !== undefined &&
-          orderMapping.priceAdjustment === 'DISCOUNT'
-        ) {
-          hasDiscount = orderMapping.fee > 0;
-          discountPercent = orderMapping.fee;
-          this.logger.debug(`상품 ${orderMapping.productId}: 기존 fee/priceAdjustment로 할인 적용 확인됨`);
-        }
-        // 2. 설정되지 않은 경우, findMatchingDiscount로 찾기 (구간/일괄, 상품단가 기준 매칭)
-        else {
-          const matchingDiscount = this.findMatchingDiscount(
-            {
-              price: orderMapping.product!.price,
-              category: orderMapping.product!.category,
-              classification: orderMapping.product!.classification,
-            },
-            userDiscounts,
-          );
-
-          // 할인(DISCOUNT)인 경우만 중복 체크 적용
-          if (matchingDiscount && matchingDiscount.priceAdjustment === 'DISCOUNT') {
-            hasDiscount = true;
-            discountPercent = matchingDiscount.pricePercent;
-            this.logger.debug(
-              `상품 ${orderMapping.productId}: 할인 매칭됨 (method=${matchingDiscount.method}, category=${matchingDiscount.category}, percent=${discountPercent}%)`,
-            );
-          }
-        }
-
-        if (!hasDiscount) {
-          this.logger.debug(`상품 ${orderMapping.productId}: 할인 미적용, 중복 체크 스킵`);
-          continue;
-        }
-
-        this.logger.debug(`상품 ${orderMapping.productId}: 할인 적용됨 (${discountPercent}%), 중복 체크 시작`);
-
-        // ======== 현재 주문 내 중복 체크 ========
-        const currentOrderPhoneCount = new Map<string, number>(); // key: deliveryTarget, value: count
-
-        for (const od of orderMapping.orderDeliveries) {
-          const phone = od.deliveryTarget;
-          currentOrderPhoneCount.set(phone, (currentOrderPhoneCount.get(phone) || 0) + 1);
-        }
-
-        // 모든 중복 에러를 수집
-        const duplicateErrors: string[] = [];
-
-        // 현재 주문 내에서 중복된 수신처가 limit를 초과하는지 체크
-        // duplicatePhoneLimit: 허용되는 중복 개수 (총 허용 개수 = limit + 1)
-        // 예: limit=1이면 1개 중복 허용, 즉 총 2건까지 가능
-        for (const [phone, count] of currentOrderPhoneCount.entries()) {
-          if (count > oneUser.duplicatePhoneLimit + 1) {
-            // 에러 메시지에 표시할 평문 복호화
-            let displayPhone = phone;
-            try {
-              displayPhone = this.cryptoCipher.decryptDeliveryTarget(phone);
-            } catch (error) {
-              // 복호화 실패 시 원본 사용
-            }
-
-            duplicateErrors.push(`- ${displayPhone}: 현재 주문에 ${count}건 포함`);
-          }
-        }
-
-        // ======== 기존 주문과 중복 체크 ========
-        // 각 고유 수신처에 대해 기존 주문과 현재 주문을 합쳐서 체크
-        for (const [phone, currentCount] of currentOrderPhoneCount.entries()) {
-          // 에러 메시지와 로그에 표시할 평문 복호화
-          let displayPhone = phone;
-          try {
-            displayPhone = this.cryptoCipher.decryptDeliveryTarget(phone);
-          } catch (error) {
-            // 복호화 실패 시 원본 사용
-          }
-
-          // 신세계 특별 케이스: 동일 이벤트 + 동일 상품 중복 체크
-          if (order.type === IOrderType.SSG) {
-            // 같은 이벤트, 같은 상품, 같은 수신처로 이미 주문이 있는지 확인
-            const sameEventOrderCount = await this.orderDeliveryRepository
-              .createQueryBuilder('od')
-              .innerJoin('od.orderProductMapping', 'opm')
-              .innerJoin('opm.order', 'o')
-              .where('o.userId = :userId', { userId: user.id })
-              .andWhere('o.eventName = :eventName', { eventName: order.eventName })
-              .andWhere('opm.productId = :productId', { productId: orderMapping.productId })
-              .andWhere('od.deliveryTarget = :deliveryTarget', { deliveryTarget: phone })
-              .andWhere('o.status IN (:...statuses)', {
-                statuses: [
-                  IOrderStatus.DELIVERY_REQUEST,
-                  IOrderStatus.DELIVERY_CONFIRMED,
-                  IOrderStatus.DELIVERY_COMPLETE,
-                ],
-              })
-              .andWhere('o.createdAt >= :todayStart', { todayStart })
-              .andWhere('o.createdAt <= :todayEnd', { todayEnd })
-              .getCount();
-
-            if (sameEventOrderCount > 0) {
-              duplicateErrors.push(`- ${displayPhone}: 동일 이벤트에서 이미 발송됨 (합산하여 입력 필요)`);
-            }
-          }
-
-          // 일반 중복 체크: 하루 기준 동일상품 동일수신처 발송 횟수
-          const existingCount = await this.orderDeliveryRepository
-            .createQueryBuilder('od')
-            .innerJoin('od.orderProductMapping', 'opm')
-            .innerJoin('opm.order', 'o')
-            .where('o.userId = :userId', { userId: user.id })
-            .andWhere('opm.productId = :productId', { productId: orderMapping.productId })
-            .andWhere('od.deliveryTarget = :deliveryTarget', { deliveryTarget: phone })
-            .andWhere('o.status IN (:...statuses)', {
-              statuses: [
-                IOrderStatus.DELIVERY_REQUEST,
-                IOrderStatus.DELIVERY_CONFIRMED,
-                IOrderStatus.DELIVERY_COMPLETE,
-              ],
-            })
-            .andWhere('o.createdAt >= :todayStart', { todayStart })
-            .andWhere('o.createdAt <= :todayEnd', { todayEnd })
-            .getCount();
-
-          const totalCount = existingCount + currentCount;
-          const allowedCount = oneUser.duplicatePhoneLimit + 1;
-
-          this.logger.debug(
-            `중복 체크 결과: 상품=${orderMapping.productId}, 수신처=${displayPhone}, 기존=${existingCount}, 현재=${currentCount}, 합계=${totalCount}, 허용=${allowedCount}`,
-          );
-
-          if (totalCount > allowedCount) {
-            duplicateErrors.push(
-              `- ${displayPhone}: 금일 ${existingCount}건 발송 + 현재 ${currentCount}건 = 총 ${totalCount}건`,
-            );
-          }
-        }
-
-        // 중복 에러가 있으면 모두 표시
-        if (duplicateErrors.length > 0) {
-          const allowedCount = oneUser.duplicatePhoneLimit + 1;
-          throw new BadRequestException(
-            `중복발송 제한(총 ${allowedCount}건까지 허용)을 초과한 수신처가 ${duplicateErrors.length}건 발견되었습니다:\n\n${duplicateErrors.join('\n')}`,
-          );
-        }
-      }
-    }
-    // ======== 중복번호 제어 체크 끝 ========
+    // Note: 중복번호 제어 체크는 deliveryConfirmed에서 수행됨
+    // 발송확정 시점에 할인/할증 정보가 확정되어 있으므로, 그때 체크함
 
     // 신세계 상품 검증 및 이벤트 자동 선택 (배송건별 행사 분할 할당)
     let ssgAllocations: { deliveryId: number; eventId: number; price: number }[] | null = null;
@@ -1673,6 +1477,269 @@ export class OrderService {
     }
 
     let message = 'success';
+
+    // 사용자 정보 조회 (중복번호 체크 및 잔액 조정에 필요)
+    const oneUser = await this.userRepository.findOneOrFail({
+      where: { id: order.userId },
+    });
+
+    // ======== 할인/할증 차액 정산 시작 ========
+    // 발송요청 시 정가(sendAmount)로 차감되었으므로, 발송확정 시 최종 정산금액과의 차액을 조정
+    const partnerCompanyIds = order.orderProductMappings!
+      .map((m) => m.product.partnerCompanyId)
+      .filter((id, index, arr) => arr.indexOf(id) === index);
+
+    const userDiscounts = await this.userDiscountRepository.find({
+      where: [{ userId: order.userId }, { partnerCompanyId: In(partnerCompanyIds) }],
+    });
+
+    let totalSettleFee = 0;
+    const mappingsToUpdate: OrderProductMappingEntity[] = [];
+
+    // 각 매핑별 할인/할증 상태 저장 (중복번호 체크에 사용)
+    const mappingPriceAdjustments = new Map<number, IPriceAdjustment | null>();
+
+    for (const mapping of order.orderProductMappings!) {
+      let fee = mapping.fee;
+      let priceAdjustment = mapping.priceAdjustment;
+
+      // fee 또는 priceAdjustment가 설정되지 않은 경우 할인 옵션에서 찾기
+      if (fee === null || priceAdjustment === null) {
+        const matchingDiscount = this.findMatchingDiscount(
+          {
+            price: mapping.product.price,
+            category: mapping.product.category,
+            classification: mapping.product.classification,
+          },
+          userDiscounts,
+        );
+
+        if (matchingDiscount) {
+          fee = fee ?? matchingDiscount.pricePercent;
+          priceAdjustment = priceAdjustment ?? matchingDiscount.priceAdjustment;
+
+          // 매핑에 할인 정보 저장
+          mapping.fee = fee;
+          mapping.priceAdjustment = priceAdjustment;
+          mappingsToUpdate.push(mapping);
+        }
+      }
+
+      // 할인/할증 상태 저장
+      mappingPriceAdjustments.set(mapping.id, priceAdjustment);
+
+      // 할인/할증 계산
+      if (fee !== null && fee > 0 && priceAdjustment) {
+        const productTotalPrice = mapping.product.price * mapping.amount;
+        if (priceAdjustment === IPriceAdjustment.DISCOUNT) {
+          totalSettleFee -= (productTotalPrice * fee) / 100;
+        } else if (priceAdjustment === IPriceAdjustment.ADDITIONAL) {
+          totalSettleFee += (productTotalPrice * fee) / 100;
+        }
+      }
+    }
+
+    // 업데이트할 매핑이 있으면 저장
+    if (mappingsToUpdate.length > 0) {
+      await this.orderProductMappingRepository.save(mappingsToUpdate);
+    }
+
+    // ======== 중복번호 제어 체크 시작 ========
+    // 할인 적용 → 1건만 허용 (중복 불가)
+    // 할인/할증 없음 → duplicatePhoneLimit 만큼 허용 (0이면 무제한)
+    // 할증 적용 → 무제한
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const todayEnd = new Date();
+    todayEnd.setHours(23, 59, 59, 999);
+
+    for (const orderMapping of order.orderProductMappings!) {
+      const priceAdjustment = mappingPriceAdjustments.get(orderMapping.id);
+
+      // 할증인 경우 중복 체크 스킵 (무제한)
+      if (priceAdjustment === IPriceAdjustment.ADDITIONAL) {
+        this.logger.debug(`상품 ${orderMapping.productId}: 할증 적용, 중복 체크 스킵 (무제한)`);
+        continue;
+      }
+
+      // 허용 개수 결정
+      let allowedCount: number;
+      if (priceAdjustment === IPriceAdjustment.DISCOUNT) {
+        // 할인인 경우 1건만 허용
+        allowedCount = 1;
+        this.logger.debug(`상품 ${orderMapping.productId}: 할인 적용, 중복 허용 1건`);
+      } else {
+        // 할인/할증 없음인 경우
+        if (oneUser.duplicatePhoneLimit === 0) {
+          // 0이면 무제한
+          this.logger.debug(`상품 ${orderMapping.productId}: 할인/할증 없음, duplicatePhoneLimit=0 (무제한)`);
+          continue;
+        }
+        allowedCount = oneUser.duplicatePhoneLimit;
+        this.logger.debug(
+          `상품 ${orderMapping.productId}: 할인/할증 없음, 중복 허용 ${allowedCount}건`,
+        );
+      }
+
+      // 현재 주문 내 중복 체크
+      const currentOrderPhoneCount = new Map<string, number>();
+      for (const od of orderMapping.orderDeliveries) {
+        const phone = od.deliveryTarget;
+        currentOrderPhoneCount.set(phone, (currentOrderPhoneCount.get(phone) || 0) + 1);
+      }
+
+      const duplicateErrors: string[] = [];
+
+      // 현재 주문 내 중복 체크
+      for (const [phone, count] of currentOrderPhoneCount.entries()) {
+        if (count > allowedCount) {
+          let displayPhone = phone;
+          try {
+            displayPhone = this.cryptoCipher.decryptDeliveryTarget(phone);
+          } catch (error) {
+            // 복호화 실패 시 원본 사용
+          }
+          duplicateErrors.push(`- ${displayPhone}: 현재 주문에 ${count}건 포함 (허용: ${allowedCount}건)`);
+        }
+      }
+
+      // 기존 주문과 중복 체크
+      for (const [phone, currentCount] of currentOrderPhoneCount.entries()) {
+        let displayPhone = phone;
+        try {
+          displayPhone = this.cryptoCipher.decryptDeliveryTarget(phone);
+        } catch (error) {
+          // 복호화 실패 시 원본 사용
+        }
+
+        // 하루 기준 동일상품 동일수신처 발송 횟수
+        const existingCount = await this.orderDeliveryRepository
+          .createQueryBuilder('od')
+          .innerJoin('od.orderProductMapping', 'opm')
+          .innerJoin('opm.order', 'o')
+          .where('o.userId = :userId', { userId: order.userId })
+          .andWhere('opm.productId = :productId', { productId: orderMapping.productId })
+          .andWhere('od.deliveryTarget = :deliveryTarget', { deliveryTarget: phone })
+          .andWhere('o.id != :currentOrderId', { currentOrderId: order.id })
+          .andWhere('o.status IN (:...statuses)', {
+            statuses: [
+              IOrderStatus.DELIVERY_CONFIRMED,
+              IOrderStatus.DELIVERY_COMPLETE,
+            ],
+          })
+          .andWhere('o.createdAt >= :todayStart', { todayStart })
+          .andWhere('o.createdAt <= :todayEnd', { todayEnd })
+          .getCount();
+
+        const totalCount = existingCount + currentCount;
+
+        this.logger.debug(
+          `중복 체크: 상품=${orderMapping.productId}, 수신처=${displayPhone}, 기존=${existingCount}, 현재=${currentCount}, 합계=${totalCount}, 허용=${allowedCount}`,
+        );
+
+        if (totalCount > allowedCount) {
+          duplicateErrors.push(
+            `- ${displayPhone}: 금일 ${existingCount}건 발송 + 현재 ${currentCount}건 = 총 ${totalCount}건 (허용: ${allowedCount}건)`,
+          );
+        }
+      }
+
+      // 중복 에러가 있으면 발송 거절
+      if (duplicateErrors.length > 0) {
+        const statusText =
+          priceAdjustment === IPriceAdjustment.DISCOUNT ? '할인 적용 상품' : '일반 상품';
+        throw new BadRequestException(
+          `${statusText}의 중복발송 제한(${allowedCount}건까지 허용)을 초과한 수신처가 발견되었습니다:\n\n${duplicateErrors.join('\n')}`,
+        );
+      }
+    }
+    // ======== 중복번호 제어 체크 끝 ========
+
+    // 최종 정산금액 계산
+    const newSettleAmount = order.sendAmount + totalSettleFee;
+
+    // 차액이 있으면 balance/allSettleAmount 조정
+    if (totalSettleFee !== 0) {
+      if (totalSettleFee < 0) {
+        // 할인인 경우 - 차액만큼 복구
+        const discountAmount = Math.abs(totalSettleFee);
+        if (order.isSettleBalance) {
+          // 선충전에서 차감된 경우 - balance 복구
+          oneUser.balance += discountAmount;
+        } else {
+          // 한도에서 차감된 경우 - allSettleAmount 감소
+          oneUser.allSettleAmount -= discountAmount;
+        }
+        this.logger.debug(
+          `할인 적용: orderId=${order.id}, 할인액=${discountAmount}, isSettleBalance=${order.isSettleBalance}`,
+        );
+      } else if (totalSettleFee > 0) {
+        // 할증인 경우 - 차액만큼 추가 차감
+        const additionalAmount = totalSettleFee;
+
+        if (order.isSettleBalance) {
+          // 선충전에서 차감된 경우
+          if (oneUser.balance >= additionalAmount) {
+            // balance가 충분하면 balance에서 추가 차감
+            oneUser.balance -= additionalAmount;
+            this.logger.debug(
+              `할증 적용 (balance 차감): orderId=${order.id}, 할증액=${additionalAmount}`,
+            );
+          } else {
+            // balance가 부족하면 한도에서 추가 차감
+            const remainingLimit = oneUser.maximumLimit - oneUser.allSettleAmount;
+            const neededFromLimit = additionalAmount - oneUser.balance;
+
+            if (remainingLimit >= neededFromLimit) {
+              // 한도에 여유가 있으면 balance 전부 사용 + 한도에서 추가 차감
+              oneUser.allSettleAmount += neededFromLimit;
+              oneUser.balance = 0;
+              message = 'warning: 잔여발송한도가 부족하여 한도에서 추가 차감되었습니다.';
+              this.logger.debug(
+                `할증 적용 (한도 추가 차감): orderId=${order.id}, 할증액=${additionalAmount}, 한도사용=${neededFromLimit}`,
+              );
+            } else {
+              // 한도도 부족하면 발송 거절
+              throw new BadRequestException(
+                `잔여발송한도가 부족하여 발송을 진행할 수 없습니다. (필요 금액: ${additionalAmount.toLocaleString()}원, 사용 가능: ${(oneUser.balance + remainingLimit).toLocaleString()}원)`,
+              );
+            }
+          }
+        } else {
+          // 한도에서 차감된 경우
+          const remainingLimit = oneUser.maximumLimit - oneUser.allSettleAmount;
+
+          if (remainingLimit >= additionalAmount) {
+            // 한도에 여유가 있으면 allSettleAmount에 추가
+            oneUser.allSettleAmount += additionalAmount;
+            message = 'warning: 할증 금액이 추가되었습니다.';
+            this.logger.debug(
+              `할증 적용 (한도 차감): orderId=${order.id}, 할증액=${additionalAmount}`,
+            );
+          } else if (oneUser.balance >= additionalAmount - remainingLimit) {
+            // 한도가 부족하면 balance에서 추가 차감
+            const neededFromBalance = additionalAmount - remainingLimit;
+            oneUser.allSettleAmount = oneUser.maximumLimit;
+            oneUser.balance -= neededFromBalance;
+            message = 'warning: 한도가 부족하여 선충전 잔액에서 추가 차감되었습니다.';
+            this.logger.debug(
+              `할증 적용 (선충전 추가 차감): orderId=${order.id}, 할증액=${additionalAmount}, 선충전사용=${neededFromBalance}`,
+            );
+          } else {
+            // 둘 다 부족하면 발송 거절
+            throw new BadRequestException(
+              `잔여발송한도가 부족하여 발송을 진행할 수 없습니다. (필요 금액: ${additionalAmount.toLocaleString()}원, 사용 가능: ${(oneUser.balance + remainingLimit).toLocaleString()}원)`,
+            );
+          }
+        }
+      }
+
+      await this.userRepository.save(oneUser);
+
+      // 정산금액 업데이트
+      order.settleAmount = newSettleAmount;
+    }
+    // ======== 할인/할증 차액 정산 끝 ========
 
     for (const orderMapping of order.orderProductMappings!) {
       for (const orderDelivery of orderMapping.orderDeliveries) {
