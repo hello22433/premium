@@ -41,3 +41,7 @@ ALTER TABLE `order` DROP COLUMN use_email_content;
 -- 발송 요청일시/타입 컬럼 삭제
 ALTER TABLE `order` DROP COLUMN send_request_at;
 ALTER TABLE `order` DROP COLUMN send_type;
+
+-- 테스트발송횟수 삭제
+ALTER TABLE `order`
+    DROP COLUMN test_delivery_count;

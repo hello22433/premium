@@ -11,3 +11,6 @@ ADD COLUMN use_email_content TEXT NULL COMMENT '이메일 사용 방법',
 ADD COLUMN send_request_at DATETIME NULL COMMENT '발송 요청 시각',
 ADD COLUMN send_type VARCHAR(50) NULL COMMENT '발송 방식',
 ADD COLUMN encourage_day INT NULL COMMENT '독려 문자 day (만료일 N일 전 발송)';
+
+ALTER TABLE order_product_mapping
+    ADD COLUMN test_delivery_count INT NOT NULL DEFAULT 0 COMMENT '테스트 전송 카운트 횟수';

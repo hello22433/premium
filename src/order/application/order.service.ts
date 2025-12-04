@@ -2162,22 +2162,9 @@ export class OrderService {
   async testDelivery(user: ILoginUserInfo, getBody: OrderTestDeliveryReqDto) {
     const { orderId, orderProductMappingId, deliveryTarget } = getBody;
 
-    // 최대 횟수
+    // 최대 횟수 (상품별 2회)
     const maxLimitCount = 2;
     const barCode = '999999';
-    const order = await this.orderRepository.findOne({
-      where: {
-        id: orderId,
-      },
-    });
-
-    if (!order) {
-      throw new BadRequestException('주문이 존재하지 않습니다.');
-    }
-
-    if (order.testDeliveryCount >= maxLimitCount) {
-      throw new BadRequestException('테스트발송은 최대 2회입니다.');
-    }
 
     // 알림톡일 경우 order.user도 필요하므로 항상 조인
     const orderProductMapping = await this.orderProductMappingRepository
@@ -2191,7 +2178,11 @@ export class OrderService {
       .getOne();
 
     if (!orderProductMapping) {
-      throw new BadRequestException('해당 주문-상품이 존재하지 않습니다. ');
+      throw new BadRequestException('해당 주문-상품이 존재하지 않습니다.');
+    }
+
+    if (orderProductMapping.testDeliveryCount >= maxLimitCount) {
+      throw new BadRequestException('테스트발송은 상품당 최대 2회입니다.');
     }
 
     const productExpireDay = orderProductMapping.product.expireDay || 0;
@@ -2229,10 +2220,9 @@ export class OrderService {
     // 3. 전송
     await this.deliveryBatchService.oneSend(orderDelivery, false);
 
-    // 4. 테스트 알람 회수 증가 및 종료
-    order.testDeliveryCount += 1;
-
-    await this.orderRepository.save(order);
+    // 4. 테스트 발송 횟수 증가 (상품별)
+    orderProductMapping.testDeliveryCount += 1;
+    await this.orderProductMappingRepository.save(orderProductMapping);
   }
 
   async getPreviousContent(

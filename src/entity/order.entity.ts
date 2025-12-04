@@ -48,9 +48,6 @@ export class OrderEntity extends BaseEntity {
   @Column({ type: 'int', nullable: true, comment: 'FK) ssg_event.id for SSG orders' })
   ssgEventId: number | null;
 
-  @Column({ type: 'int', default: 0, comment: '테스트 전송 카운트 횟수' })
-  testDeliveryCount: number;
-
   @Column({ type: 'enum', enum: SettleUserOrderDetailEnum, nullable: true, comment: '정산상태 ' })
   settleStatus: SettleUserOrderDetailEnum | null;
 
