@@ -77,6 +77,10 @@ import * as process from 'node:process';
 import * as ExcelJS from 'exceljs';
 import { OrderSettleViewDto } from '../api/dto/order.settle.view.dto';
 import { UserDiscountEntity } from '../../entity/user.discount.entity';
+import { IUserDiscountCategory } from '../../user_discount/interface/user.discount.category';
+import { IUserDiscountMethod } from '../../user_discount/interface/user.discount.method';
+import { ICompareCondition } from '../../user_discount/interface/compare.condition';
+import { IPriceAdjustment } from '../../user_discount/interface/price.adjustment';
 import { IOrderType } from '../interface/order.type';
 import { SsgEventEntity } from '../../entity/ssg.event.entity';
 import { SsgEventAmountHistoryEntity } from '../../entity/ssg.event.amount.history.entity';
@@ -752,80 +756,79 @@ export class OrderService {
       throw new BadRequestException('not found order');
     }
 
-    // 1. 유저의 주문 상품 조회
+    // 1. 유저의 주문 상품 조회 (classification 포함)
     const [orderProductList, totalCount] = await this.orderProductMappingRepository.findAndCount({
       where: {
         orderId: id,
       },
       skip,
       take,
-      relations: ['product', 'product.brand'],
+      relations: ['product', 'product.brand', 'product.classification'],
     });
 
-    const resultList: OrderSettleViewDto[] = await Promise.all(
-      orderProductList.map(async (orderProduct) => {
-        let priceAdjustment = orderProduct.priceAdjustment;
-        let fee = orderProduct.fee;
+    // 2. 유저 및 협력사의 할인 옵션 전체 조회
+    const partnerCompanyIds = [...new Set(orderProductList.map((op) => op.product.partnerCompanyId))];
+    const userDiscounts = await this.userDiscountRepository.find({
+      where: [{ userId: order.userId }, { partnerCompanyId: In(partnerCompanyIds) }],
+    });
 
-        let discountPrice = orderProduct.product.price;
-        const totalPrice = orderProduct.product.price * orderProduct.amount;
-        let discountTotalPrice = orderProduct.product.price * orderProduct.amount;
+    const resultList: OrderSettleViewDto[] = orderProductList.map((orderProduct) => {
+      let priceAdjustment = orderProduct.priceAdjustment;
+      let fee = orderProduct.fee;
 
-        // 2. 할인 정보가 null 일 경우 유저 또는 협력사의 할인 옵션 조회
-        if (!priceAdjustment || fee === null) {
-          let discount = await this.userDiscountRepository.findOne({
-            where: {
-              userId: order.userId,
-            },
-          });
+      let discountPrice = orderProduct.product.price;
+      const totalPrice = orderProduct.product.price * orderProduct.amount;
+      let discountTotalPrice = orderProduct.product.price * orderProduct.amount;
 
-          // 3. 유저 할인 정보가 없으면 협력사 할인 정보 조회
-          if (!discount) {
-            discount = await this.userDiscountRepository.findOne({
-              where: {
-                partnerCompanyId: orderProduct.product.partnerCompanyId,
-              },
-            });
-          }
+      // 3. 할인 정보가 null 일 경우 상품에 맞는 할인 옵션 찾기
+      if (!priceAdjustment || fee === null) {
+        const matchingDiscount = this.findMatchingDiscount(
+          {
+            price: orderProduct.product.price,
+            category: orderProduct.product.category,
+            classification: orderProduct.product.classification,
+          },
+          userDiscounts,
+        );
 
-          // 4. 할인 정보가 존재하면 null 값만 채우기
-          if (discount) {
-            priceAdjustment = priceAdjustment ?? discount.priceAdjustment;
-            fee = fee ?? discount.pricePercent;
-          }
-          fee = fee ?? 0;
+        // 4. 할인 정보가 존재하면 null 값만 채우기
+        if (matchingDiscount) {
+          priceAdjustment = priceAdjustment ?? matchingDiscount.priceAdjustment;
+          fee = fee ?? matchingDiscount.pricePercent;
         }
+        fee = fee ?? 0;
+      }
 
-        if (fee === null || (fee < 1 && fee > 0) || fee < 0 || fee > 100) {
-          throw new InternalServerErrorException('수수료는 1~100 이여야 합니다.');
-        }
+      // fee 유효성 검사 (0은 허용)
+      if (fee === null || fee < 0 || fee > 100) {
+        fee = 0;
+      }
 
-        discountPrice = OrderFeeCalculator({
-          fee: fee!,
-          priceAdjustment: priceAdjustment!,
-          price: orderProduct.product.price,
-        });
-        discountTotalPrice = OrderFeeCalculator({
-          fee: fee!,
-          priceAdjustment: priceAdjustment!,
-          price: totalPrice,
-        });
+      discountPrice = OrderFeeCalculator({
+        fee: fee!,
+        priceAdjustment: priceAdjustment!,
+        price: orderProduct.product.price,
+      });
+      discountTotalPrice = OrderFeeCalculator({
+        fee: fee!,
+        priceAdjustment: priceAdjustment!,
+        price: totalPrice,
+      });
 
-        return {
-          id: orderProduct.id,
-          brandName: orderProduct.product.brand?.nameKorean ?? null,
-          name: orderProduct.product.name,
-          price: orderProduct.product.price,
-          amount: orderProduct.amount,
-          totalPrice: orderProduct.product.price * orderProduct.amount,
-          settleDiscountType: orderProduct.settleDiscountType ?? null,
-          priceAdjustment,
-          fee,
-          discountPrice,
-          discountTotalPrice,
-        };
-      }),
-    );
+      return {
+        id: orderProduct.id,
+        brandName: orderProduct.product.brand?.nameKorean ?? null,
+        name: orderProduct.product.name,
+        price: orderProduct.product.price,
+        amount: orderProduct.amount,
+        totalPrice: orderProduct.product.price * orderProduct.amount,
+        settleDiscountType: orderProduct.settleDiscountType ?? null,
+        priceAdjustment,
+        fee,
+        discountPrice,
+        discountTotalPrice,
+      };
+    });
 
     const totalPage = Math.ceil(totalCount / take);
 
@@ -1386,8 +1389,7 @@ export class OrderService {
           `상품 ${orderMapping.productId} 정보: category=${orderMapping.product?.category}, classification=${orderMapping.product?.classification}, fee=${orderMapping.fee}, priceAdjustment=${orderMapping.priceAdjustment}`,
         );
 
-        // 할인이 적용된 상품만 체크
-        // orderMapping.fee가 아직 설정되지 않았을 수 있으므로, user_discount와 product를 비교해서 판단
+        // 할인이 적용된 상품만 중복 체크 (할증은 체크 안 함)
         let hasDiscount = false;
         let discountPercent = 0;
 
@@ -1401,34 +1403,24 @@ export class OrderService {
           discountPercent = orderMapping.fee;
           this.logger.debug(`상품 ${orderMapping.productId}: 기존 fee/priceAdjustment로 할인 적용 확인됨`);
         }
-        // 2. 설정되지 않은 경우, user_discount에서 찾기
+        // 2. 설정되지 않은 경우, findMatchingDiscount로 찾기 (구간/일괄, 상품단가 기준 매칭)
         else {
-          for (const discount of userDiscounts) {
-            // CATEGORY 방식: group(상품군)과 상품의 category 비교
-            if (discount.category === 'CATEGORY' && discount.group === orderMapping.product!.category) {
-              if (discount.priceAdjustment === 'DISCOUNT') {
-                hasDiscount = true;
-                discountPercent = discount.pricePercent;
-                this.logger.debug(
-                  `상품 ${orderMapping.productId}: CATEGORY 매칭됨 (discount.group=${discount.group}, product.category=${orderMapping.product!.category})`,
-                );
-                break;
-              }
-            }
-            // CLASSIFICATION 방식: primaryCategory(대분류)와 상품의 classification 비교
-            else if (
-              discount.category === 'CLASSIFICATION' &&
-              discount.primaryCategory === orderMapping.product!.classification?.classification
-            ) {
-              if (discount.priceAdjustment === 'DISCOUNT') {
-                hasDiscount = true;
-                discountPercent = discount.pricePercent;
-                this.logger.debug(
-                  `상품 ${orderMapping.productId}: CLASSIFICATION 매칭됨 (discount.primaryCategory=${discount.primaryCategory}, product.classification=${orderMapping.product!.classification})`,
-                );
-                break;
-              }
-            }
+          const matchingDiscount = this.findMatchingDiscount(
+            {
+              price: orderMapping.product!.price,
+              category: orderMapping.product!.category,
+              classification: orderMapping.product!.classification,
+            },
+            userDiscounts,
+          );
+
+          // 할인(DISCOUNT)인 경우만 중복 체크 적용
+          if (matchingDiscount && matchingDiscount.priceAdjustment === 'DISCOUNT') {
+            hasDiscount = true;
+            discountPercent = matchingDiscount.pricePercent;
+            this.logger.debug(
+              `상품 ${orderMapping.productId}: 할인 매칭됨 (method=${matchingDiscount.method}, category=${matchingDiscount.category}, percent=${discountPercent}%)`,
+            );
           }
         }
 
@@ -2309,5 +2301,94 @@ export class OrderService {
 
     orderProductMapping.encourageDay = encourageDay;
     await this.orderProductMappingRepository.save(orderProductMapping);
+  }
+
+  /**
+   * 상품에 맞는 할인/할증 설정을 찾는 헬퍼 함수
+   * - BULK(일괄): 구간 없이 해당 상품군/대분류 전체에 적용
+   * - SECTION(구간): 상품 단가가 속하는 구간의 할인율을 전체 가격에 적용
+   */
+  private findMatchingDiscount(
+    product: { price: number; category: string; classification?: { classification: string } | null },
+    userDiscounts: UserDiscountEntity[],
+  ): UserDiscountEntity | null {
+    if (!userDiscounts || userDiscounts.length === 0) {
+      return null;
+    }
+
+    // 1. BULK(일괄) 방식 먼저 찾기
+    const bulkDiscount = userDiscounts.find((d) => {
+      if (d.method !== IUserDiscountMethod.BULK) return false;
+
+      if (d.category === IUserDiscountCategory.CATEGORY) {
+        return d.group === product.category;
+      }
+      if (d.category === IUserDiscountCategory.CLASSIFICATION) {
+        return d.primaryCategory === product.classification?.classification;
+      }
+      return false;
+    });
+
+    if (bulkDiscount) {
+      return bulkDiscount;
+    }
+
+    // 2. SECTION(구간) 방식 - 상품 단가 기준으로 해당 구간 찾기
+    const sectionDiscounts = userDiscounts.filter((d) => {
+      if (d.method !== IUserDiscountMethod.SECTION) return false;
+      if (!d.range) return false;
+
+      if (d.category === IUserDiscountCategory.CATEGORY) {
+        return d.group === product.category;
+      }
+      if (d.category === IUserDiscountCategory.CLASSIFICATION) {
+        return d.primaryCategory === product.classification?.classification;
+      }
+      return false;
+    });
+
+    if (sectionDiscounts.length === 0) {
+      return null;
+    }
+
+    // range 값으로 오름차순 정렬
+    const sortedDiscounts = sectionDiscounts.sort((a, b) => {
+      return parseInt(a.range || '0', 10) - parseInt(b.range || '0', 10);
+    });
+
+    const productPrice = product.price;
+    let previousUpperBound = 0;
+
+    for (const discount of sortedDiscounts) {
+      const rangeValue = parseInt(discount.range || '0', 10);
+      let isInRange = false;
+
+      switch (discount.compareCondition) {
+        case ICompareCondition.LESS: // 이하
+          isInRange = productPrice > previousUpperBound && productPrice <= rangeValue;
+          break;
+        case ICompareCondition.LESS_THAN: // 미만
+          isInRange = productPrice > previousUpperBound && productPrice < rangeValue;
+          break;
+        case ICompareCondition.MORE: // 이상
+          isInRange = productPrice >= rangeValue;
+          break;
+        case ICompareCondition.MORE_THAN: // 초과
+          isInRange = productPrice > rangeValue;
+          break;
+      }
+
+      if (isInRange) {
+        return discount;
+      }
+
+      if (discount.compareCondition === ICompareCondition.LESS) {
+        previousUpperBound = rangeValue;
+      } else if (discount.compareCondition === ICompareCondition.LESS_THAN) {
+        previousUpperBound = rangeValue - 1;
+      }
+    }
+
+    return null;
   }
 }
