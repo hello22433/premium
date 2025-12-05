@@ -1027,16 +1027,31 @@ export class ProductService {
 
     console.log(`[엑셀업로드] 상품코드 수집 시작 - 총 행 수: ${worksheet.actualRowCount}`);
     const codeList: string[] = [];
-    for (let i = 2; i <= worksheet.actualRowCount; i++) {
-      const rowIndex = i;
+    const validRowIndices: number[] = []; // 실제 데이터가 있는 행 번호 저장
+    let emptyRowCount = 0;
+    const maxEmptyRows = 10; // 연속 빈 행 10개 이상이면 중단
 
-      const row = worksheet.getRow(rowIndex);
+    for (let i = 2; i <= worksheet.actualRowCount; i++) {
+      const row = worksheet.getRow(i);
       const rowData = this.mapRowToDto(row);
+
+      // 필수 필드(상품명, 협력사명)가 비어있으면 빈 행으로 판단
+      if (!rowData.name || !rowData.partnerCompanyName) {
+        emptyRowCount++;
+        if (emptyRowCount >= maxEmptyRows) {
+          console.log(`[엑셀업로드] 연속 빈 행 ${maxEmptyRows}개 발견, 수집 중단 (행 ${i})`);
+          break;
+        }
+        continue;
+      }
+
+      emptyRowCount = 0; // 데이터가 있으면 카운터 리셋
+      validRowIndices.push(i);
       if (rowData.code) {
         codeList.push(rowData.code);
       }
     }
-    console.log(`[엑셀업로드] 상품코드 수집 완료: ${codeList.length}건`);
+    console.log(`[엑셀업로드] 상품코드 수집 완료: 유효 행 ${validRowIndices.length}건, 코드 ${codeList.length}건`);
 
     console.log(`[엑셀업로드] 기존 상품 조회 시작`);
     const productList = await this.productRepository.find({
@@ -1048,10 +1063,9 @@ export class ProductService {
 
     const productCodeMap = listToMap(productList, (product) => product.code);
 
-    console.log(`[엑셀업로드] 상품 처리 시작 - 총 ${worksheet.actualRowCount - 1}건`);
+    console.log(`[엑셀업로드] 상품 처리 시작 - 총 ${validRowIndices.length}건`);
 
-    for (let i = 2; i <= worksheet.actualRowCount; i++) {
-      const rowIndex = i;
+    for (const rowIndex of validRowIndices) {
       try {
         console.log(`[엑셀업로드] 행 ${rowIndex} 처리 시작`);
         const row = worksheet.getRow(rowIndex);
