@@ -1010,13 +1010,19 @@ export class ProductService {
     console.log('[엑셀업로드] 대분류/브랜드 처리 완료, 데이터 로드 시작');
 
     // 협력사, 브랜드, 대분류 데이터를 미리 로드하여 맵으로 만듦
+    console.log('[엑셀업로드] 협력사 로드 시작');
     const allPartnerCompanies = await this.partnerCompanyRepository.find();
+    console.log(`[엑셀업로드] 협력사 로드 완료: ${allPartnerCompanies.length}건`);
     const partnerCompanyNameMap = listToMap(allPartnerCompanies, (pc) => pc.businessName);
 
+    console.log('[엑셀업로드] 브랜드 로드 시작');
     const allBrands = await this.brandRepository.find();
+    console.log(`[엑셀업로드] 브랜드 로드 완료: ${allBrands.length}건`);
     const brandNameMap = listToMap(allBrands, (brand) => brand.nameKorean);
 
+    console.log('[엑셀업로드] 대분류 로드 시작');
     const allClassifications = await this.classificationRepository.find();
+    console.log(`[엑셀업로드] 대분류 로드 완료: ${allClassifications.length}건`);
     const classificationNameMap = listToMap(allClassifications, (classification) => classification.classification);
 
     const codeList: string[] = [];
@@ -1312,9 +1318,9 @@ export class ProductService {
 
     const excelClassifications: string[] = [];
     classificationSheet.eachRow((row) => {
-      const cellValue = row.getCell(1).value;
-      if (cellValue && typeof cellValue === 'string' && cellValue.trim()) {
-        excelClassifications.push(cellValue.trim());
+      const cellValue = this.getCellValue(row.getCell(1));
+      if (cellValue && String(cellValue).trim()) {
+        excelClassifications.push(String(cellValue).trim());
       }
     });
 
@@ -1348,9 +1354,9 @@ export class ProductService {
 
     const excelBrands: string[] = [];
     brandSheet.eachRow((row) => {
-      const cellValue = row.getCell(1).value;
-      if (cellValue && typeof cellValue === 'string' && cellValue.trim()) {
-        excelBrands.push(cellValue.trim());
+      const cellValue = this.getCellValue(row.getCell(1));
+      if (cellValue && String(cellValue).trim()) {
+        excelBrands.push(String(cellValue).trim());
       }
     });
 
@@ -1387,26 +1393,47 @@ export class ProductService {
 
   private mapRowToDto(row: ExcelJS.Row): any {
     return {
-      code: row.getCell(1).value,
-      partnerCompanyName: row.getCell(2).value,
-      classificationName: row.getCell(3).value,
-      brandName: row.getCell(4).value,
-      name: row.getCell(5).value,
-      price: row.getCell(6).value,
-      expireDay: row.getCell(7).value,
-      category: row.getCell(8).value,
-      type: row.getCell(9).value,
-      useStatus: row.getCell(10).value,
-      settleMethod: row.getCell(11).value,
-      settlePercent: row.getCell(12).value,
-      partnerCompanyCode: row.getCell(13).value,
-      imagePath: row.getCell(14).value,
-      memo: row.getCell(15).value,
+      code: this.getCellValue(row.getCell(1)),
+      partnerCompanyName: this.getCellValue(row.getCell(2)),
+      classificationName: this.getCellValue(row.getCell(3)),
+      brandName: this.getCellValue(row.getCell(4)),
+      name: this.getCellValue(row.getCell(5)),
+      price: this.getCellValue(row.getCell(6)),
+      expireDay: this.getCellValue(row.getCell(7)),
+      category: this.getCellValue(row.getCell(8)),
+      type: this.getCellValue(row.getCell(9)),
+      useStatus: this.getCellValue(row.getCell(10)),
+      settleMethod: this.getCellValue(row.getCell(11)),
+      settlePercent: this.getCellValue(row.getCell(12)),
+      partnerCompanyCode: this.getCellValue(row.getCell(13)),
+      imagePath: this.getCellValue(row.getCell(14)),
+      memo: this.getCellValue(row.getCell(15)),
     };
   }
 
   private isValidRow(rowData: Record<string, any>): boolean {
     return Object.values(rowData).some((value) => value !== null && value !== '');
+  }
+
+  /**
+   * ExcelJS 셀 값 추출 (수식 셀 처리)
+   * 수식이 있는 셀은 { formula: '=A1', result: 'value' } 형태로 반환되므로 result를 추출
+   */
+  private getCellValue(cell: ExcelJS.Cell): any {
+    const value = cell.value;
+    if (value === null || value === undefined) return null;
+
+    // 수식 셀인 경우 result 값 사용
+    if (typeof value === 'object' && 'formula' in value) {
+      return (value as any).result ?? null;
+    }
+
+    // 리치 텍스트인 경우 텍스트 추출
+    if (typeof value === 'object' && 'richText' in value) {
+      return (value as any).richText.map((r: any) => r.text).join('');
+    }
+
+    return value;
   }
 
   /**
@@ -1434,9 +1461,9 @@ export class ProductService {
     // 엑셀에서 대분류명 목록 추출
     const excelClassifications: string[] = [];
     classificationSheet.eachRow((row, rowNumber) => {
-      const cellValue = row.getCell(1).value;
-      if (cellValue && typeof cellValue === 'string' && cellValue.trim()) {
-        excelClassifications.push(cellValue.trim());
+      const cellValue = this.getCellValue(row.getCell(1));
+      if (cellValue && String(cellValue).trim()) {
+        excelClassifications.push(String(cellValue).trim());
       }
     });
 
@@ -1466,9 +1493,9 @@ export class ProductService {
     // 엑셀에서 브랜드명 목록 추출
     const excelBrands: string[] = [];
     brandSheet.eachRow((row, rowNumber) => {
-      const cellValue = row.getCell(1).value;
-      if (cellValue && typeof cellValue === 'string' && cellValue.trim()) {
-        excelBrands.push(cellValue.trim());
+      const cellValue = this.getCellValue(row.getCell(1));
+      if (cellValue && String(cellValue).trim()) {
+        excelBrands.push(String(cellValue).trim());
       }
     });
 

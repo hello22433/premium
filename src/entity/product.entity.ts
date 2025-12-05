@@ -49,7 +49,7 @@ export class ProductEntity extends BaseEntity {
   })
   settleMethod: IProductSettleMethod;
 
-  @Column({ comment: '정산 조건 (퍼센트), ex) 30 = 30%' })
+  @Column({ type: 'decimal', precision: 5, scale: 2, comment: '정산 조건 (퍼센트), ex) 30.55 = 30.55%' })
   settlePercent: number;
 
   @Column({ type: 'varchar', length: 512, comment: '미리 보기 이미지 path' })

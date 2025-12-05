@@ -925,10 +925,11 @@ export class SettleService {
           const fee = orderProductMapping.fee ?? 0;
           const feePrice = (orderProductMapping.product.price * fee) / 100;
 
+          // 협력사 정산: 소수점 발생 시 올림 처리
           const settlePrice =
             orderProductMapping.priceAdjustment === 'DISCOUNT'
-              ? orderProductMapping.product.price - feePrice
-              : orderProductMapping.product.price + feePrice;
+              ? Math.ceil(orderProductMapping.product.price - feePrice)
+              : Math.ceil(orderProductMapping.product.price + feePrice);
           let usePrice = 0;
           let unUsePrice = 0;
 
@@ -1030,9 +1031,9 @@ export class SettleService {
           let adjustedPrice = productTotalPrice;
           if (orderProductMapping.fee > 0) {
             if (orderProductMapping.priceAdjustment === IPriceAdjustment.DISCOUNT) {
-              adjustedPrice = Math.floor(productTotalPrice * (100 - orderProductMapping.fee) / 100);
+              adjustedPrice = Math.ceil(productTotalPrice * (100 - orderProductMapping.fee) / 100);
             } else if (orderProductMapping.priceAdjustment === IPriceAdjustment.ADDITIONAL) {
-              adjustedPrice = Math.floor(productTotalPrice * (100 + orderProductMapping.fee) / 100);
+              adjustedPrice = Math.ceil(productTotalPrice * (100 + orderProductMapping.fee) / 100);
             }
           }
           finalSettlePrice += adjustedPrice;
@@ -1108,9 +1109,9 @@ export class SettleService {
         ) {
           const originalPrice = orderProductMapping.product?.price ?? 0;
           if (orderProductMapping.priceAdjustment === IPriceAdjustment.DISCOUNT) {
-            adjustedPrice = Math.floor(originalPrice * (100 - orderProductMapping.fee) / 100);
+            adjustedPrice = Math.ceil(originalPrice * (100 - orderProductMapping.fee) / 100);
           } else if (orderProductMapping.priceAdjustment === IPriceAdjustment.ADDITIONAL) {
-            adjustedPrice = Math.floor(originalPrice * (100 + orderProductMapping.fee) / 100);
+            adjustedPrice = Math.ceil(originalPrice * (100 + orderProductMapping.fee) / 100);
           }
         }
 
