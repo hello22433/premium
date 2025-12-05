@@ -767,7 +767,7 @@ export class DeliveryBatchService {
   @Transactional()
   async deliveryDeliveryTargetDestroy() {
     const now = new Date();
-    const destroyPhoneNumber = '000-0000-0000';
+    const destroyPhoneNumber = '00000000000';
     const destroyEmail = '';
 
     // 파기용 암호화된 값

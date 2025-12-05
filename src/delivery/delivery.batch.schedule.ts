@@ -42,7 +42,7 @@ export class DeliveryBatchSchedule implements OnApplicationBootstrap {
 
   // 개인정보 파기
   // 매일 00시 실행
-  @Cron('0 15 * * *')
+  @Cron('0 0 * * *')
   async handleDeliveryTargetDestroy() {
     try {
       await this.deliveryBatchService.deliveryDeliveryTargetDestroy();
