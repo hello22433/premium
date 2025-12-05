@@ -1025,6 +1025,7 @@ export class ProductService {
     console.log(`[엑셀업로드] 대분류 로드 완료: ${allClassifications.length}건`);
     const classificationNameMap = listToMap(allClassifications, (classification) => classification.classification);
 
+    console.log(`[엑셀업로드] 상품코드 수집 시작 - 총 행 수: ${worksheet.actualRowCount}`);
     const codeList: string[] = [];
     for (let i = 2; i <= worksheet.actualRowCount; i++) {
       const rowIndex = i;
@@ -1035,12 +1036,15 @@ export class ProductService {
         codeList.push(rowData.code);
       }
     }
+    console.log(`[엑셀업로드] 상품코드 수집 완료: ${codeList.length}건`);
 
+    console.log(`[엑셀업로드] 기존 상품 조회 시작`);
     const productList = await this.productRepository.find({
       where: {
         code: In(codeList),
       },
     });
+    console.log(`[엑셀업로드] 기존 상품 조회 완료: ${productList.length}건`);
 
     const productCodeMap = listToMap(productList, (product) => product.code);
 
