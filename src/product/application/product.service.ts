@@ -1007,6 +1007,8 @@ export class ProductService {
     // 2. 브랜드 시트 처리 - 새로운 브랜드 자동 등록
     await this.processBrandSheet(workbook);
 
+    console.log('[엑셀업로드] 대분류/브랜드 처리 완료, 데이터 로드 시작');
+
     // 협력사, 브랜드, 대분류 데이터를 미리 로드하여 맵으로 만듦
     const allPartnerCompanies = await this.partnerCompanyRepository.find();
     const partnerCompanyNameMap = listToMap(allPartnerCompanies, (pc) => pc.businessName);
@@ -1036,9 +1038,12 @@ export class ProductService {
 
     const productCodeMap = listToMap(productList, (product) => product.code);
 
+    console.log(`[엑셀업로드] 상품 처리 시작 - 총 ${worksheet.actualRowCount - 1}건`);
+
     for (let i = 2; i <= worksheet.actualRowCount; i++) {
       const rowIndex = i;
       try {
+        console.log(`[엑셀업로드] 행 ${rowIndex} 처리 시작`);
         const row = worksheet.getRow(rowIndex);
         const rowData = this.mapRowToDto(row);
 
@@ -1064,8 +1069,10 @@ export class ProductService {
         let imagePath = rowData.imagePath;
         if (imagePath && this.isExternalImageUrl(imagePath)) {
           try {
+            console.log(`[엑셀업로드] 행 ${rowIndex} - 외부 이미지 복사 시작: ${imagePath}`);
             const result = await this.fileStorage.copyImageFromUrl(imagePath);
             imagePath = result.url;
+            console.log(`[엑셀업로드] 행 ${rowIndex} - 외부 이미지 복사 완료: ${imagePath}`);
           } catch (e) {
             console.error(`행 ${rowIndex}: 이미지 복사 실패 - ${e.message}`);
             // 이미지 복사 실패 시 원본 URL 유지
@@ -1127,8 +1134,10 @@ export class ProductService {
             : `행 ${rowIndex} 처리 중 알 수 없는 오류가 발생했습니다: ${error.message}`;
         throw new BadRequestException(msg);
       }
+      console.log(`[엑셀업로드] 행 ${rowIndex} 처리 완료`);
     }
 
+    console.log('[엑셀업로드] 모든 상품 처리 완료');
     return { message: '엑셀 업로드가 성공적으로 완료되었습니다.' };
   }
 
