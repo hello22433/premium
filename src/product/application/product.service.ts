@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable } from '@nestjs/common';
 import { ProductEntity } from '../../entity/product.entity';
 import { FindOptionsWhere, In, IsNull, Like, Repository } from 'typeorm';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -33,6 +33,7 @@ import { BrandEntity } from '../../entity/brand.entity';
 import { ClassificationEntity } from '../../entity/classification.entity';
 import { CreateCode } from '../../common/domain/create.code';
 import { ProductChoicePrefixCode, ProductDigitNumber, ProductPrefixCode } from '../domain/product.code';
+import { BrandDigitNumber, BrandPrefixCode } from '../../brand/domain/brand.code';
 import { ProductUpdateHistoryEntity } from '../../entity/product.update.history.entity';
 import { ProductUpdateHistoryKeyName } from '../domain/product.update.history.key.name';
 import { Transactional } from 'typeorm-transactional';
@@ -63,6 +64,7 @@ import { UserEntity } from 'src/entity/user.entity';
 import { ActivityLogService } from '../../activity_log/application/activity.log.service';
 import { ActivityLogResult } from '../../activity_log/interface/activity.log.result';
 import { IUserSyncProductStatus } from '../../user_sync_product/interface/user.sync.product.status';
+import { IFileStorage } from '../../file/interface/file.storage';
 
 @Injectable()
 export class ProductService {
@@ -86,6 +88,8 @@ export class ProductService {
     @InjectRepository(UserEntity)
     private userRepository: Repository<UserEntity>,
     private activityLogService: ActivityLogService,
+    @Inject('IFileStorage')
+    private fileStorage: IFileStorage,
   ) {}
 
   async getTotalList(user: ILoginUserInfo, getQuery: ProductGetTotalListReqQueryDto): Promise<ProductGetListResDto> {
@@ -997,6 +1001,12 @@ export class ProductService {
       throw new BadRequestException('엑셀 파일에 "결과" 시트가 없습니다.');
     }
 
+    // 1. 대분류 시트 처리 - 새로운 대분류 자동 등록
+    await this.processClassificationSheet(workbook);
+
+    // 2. 브랜드 시트 처리 - 새로운 브랜드 자동 등록
+    await this.processBrandSheet(workbook);
+
     // 협력사, 브랜드, 대분류 데이터를 미리 로드하여 맵으로 만듦
     const allPartnerCompanies = await this.partnerCompanyRepository.find();
     const partnerCompanyNameMap = listToMap(allPartnerCompanies, (pc) => pc.businessName);
@@ -1050,6 +1060,18 @@ export class ProductService {
           throw new BadRequestException(`행 ${rowIndex}: 대분류 "${rowData.classificationName}"을 찾을 수 없습니다.`);
         }
 
+        // 외부 URL 이미지인 경우 S3로 복사
+        let imagePath = rowData.imagePath;
+        if (imagePath && this.isExternalImageUrl(imagePath)) {
+          try {
+            const result = await this.fileStorage.copyImageFromUrl(imagePath);
+            imagePath = result.url;
+          } catch (e) {
+            console.error(`행 ${rowIndex}: 이미지 복사 실패 - ${e.message}`);
+            // 이미지 복사 실패 시 원본 URL 유지
+          }
+        }
+
         const createDto = new ProductCreateReqDto();
         createDto.partnerCompanyId = partnerCompany.id;
         createDto.classificationId = classification.id;
@@ -1063,7 +1085,7 @@ export class ProductService {
         createDto.settleMethod = ProductSettleMethodExcelToDbMapping(rowData.settleMethod?.trim());
         createDto.settlePercent = +rowData.settlePercent;
         createDto.partnerCompanyCode = rowData.partnerCompanyCode;
-        createDto.imagePath = rowData.imagePath;
+        createDto.imagePath = imagePath;
         createDto.memo = rowData.memo;
 
         const validationErrors = await validate(createDto);
@@ -1091,7 +1113,7 @@ export class ProductService {
           updateDto.settleMethod = ProductSettleMethodExcelToDbMapping(rowData.settleMethod?.trim());
           updateDto.settlePercent = +rowData.settlePercent;
           updateDto.partnerCompanyCode = rowData.partnerCompanyCode;
-          updateDto.imagePath = rowData.imagePath;
+          updateDto.imagePath = imagePath;
           updateDto.memo = rowData.memo;
 
           await this.updatePartial(user, updateDto);
@@ -1108,6 +1130,250 @@ export class ProductService {
     }
 
     return { message: '엑셀 업로드가 성공적으로 완료되었습니다.' };
+  }
+
+  /**
+   * 엑셀 업로드 (진행 상황 콜백 포함)
+   */
+  @Transactional()
+  async excelUploadWithProgress(
+    user: ILoginUserInfo,
+    file: Express.Multer.File,
+    onProgress: (stage: string, current: number, total: number, message?: string) => void,
+  ) {
+    if (!file) {
+      throw new BadRequestException('업로드할 파일이 존재하지 않습니다.');
+    }
+
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(file.buffer);
+
+    // '결과' 시트를 찾기
+    const worksheet = workbook.getWorksheet('결과');
+    if (!worksheet) {
+      throw new BadRequestException('엑셀 파일에 "결과" 시트가 없습니다.');
+    }
+
+    // 1. 대분류 시트 처리 - 새로운 대분류 자동 등록
+    onProgress('classification', 0, 1, '대분류 확인 중...');
+    const newClassificationCount = await this.processClassificationSheetWithProgress(workbook, onProgress);
+
+    // 2. 브랜드 시트 처리 - 새로운 브랜드 자동 등록
+    onProgress('brand', 0, 1, '브랜드 확인 중...');
+    const newBrandCount = await this.processBrandSheetWithProgress(workbook, onProgress);
+
+    // 협력사, 브랜드, 대분류 데이터를 미리 로드하여 맵으로 만듦
+    onProgress('prepare', 0, 1, '데이터 준비 중...');
+    const allPartnerCompanies = await this.partnerCompanyRepository.find();
+    const partnerCompanyNameMap = listToMap(allPartnerCompanies, (pc) => pc.businessName);
+
+    const allBrands = await this.brandRepository.find();
+    const brandNameMap = listToMap(allBrands, (brand) => brand.nameKorean);
+
+    const allClassifications = await this.classificationRepository.find();
+    const classificationNameMap = listToMap(allClassifications, (classification) => classification.classification);
+
+    // 상품 코드 목록 수집
+    const codeList: string[] = [];
+    for (let i = 2; i <= worksheet.actualRowCount; i++) {
+      const row = worksheet.getRow(i);
+      const rowData = this.mapRowToDto(row);
+      if (rowData.code) {
+        codeList.push(rowData.code);
+      }
+    }
+
+    const productList = await this.productRepository.find({
+      where: { code: In(codeList) },
+    });
+    const productCodeMap = listToMap(productList, (product) => product.code);
+
+    // 총 상품 수 계산
+    const totalProducts = worksheet.actualRowCount - 1; // 헤더 제외
+    let processedProducts = 0;
+
+    // 상품 등록/수정
+    for (let i = 2; i <= worksheet.actualRowCount; i++) {
+      const rowIndex = i;
+      processedProducts++;
+      onProgress('product', processedProducts, totalProducts, `상품 등록 중 (${processedProducts}/${totalProducts})`);
+
+      try {
+        const row = worksheet.getRow(rowIndex);
+        const rowData = this.mapRowToDto(row);
+
+        // 협력사명으로 협력사 ID 조회
+        const partnerCompany = partnerCompanyNameMap.get(rowData.partnerCompanyName?.trim());
+        if (!partnerCompany) {
+          throw new BadRequestException(`행 ${rowIndex}: 협력사명 "${rowData.partnerCompanyName}"을 찾을 수 없습니다.`);
+        }
+
+        // 브랜드명으로 브랜드 ID 조회
+        const brand = brandNameMap.get(rowData.brandName?.trim());
+        if (!brand) {
+          throw new BadRequestException(`행 ${rowIndex}: 브랜드명 "${rowData.brandName}"을 찾을 수 없습니다.`);
+        }
+
+        // 대분류명으로 대분류 ID 조회
+        const classification = classificationNameMap.get(rowData.classificationName?.trim());
+        if (!classification) {
+          throw new BadRequestException(`행 ${rowIndex}: 대분류 "${rowData.classificationName}"을 찾을 수 없습니다.`);
+        }
+
+        // 외부 URL 이미지인 경우 S3로 복사
+        let imagePath = rowData.imagePath;
+        if (imagePath && this.isExternalImageUrl(imagePath)) {
+          try {
+            const result = await this.fileStorage.copyImageFromUrl(imagePath);
+            imagePath = result.url;
+          } catch (e) {
+            console.error(`행 ${rowIndex}: 이미지 복사 실패 - ${e.message}`);
+          }
+        }
+
+        const createDto = new ProductCreateReqDto();
+        createDto.partnerCompanyId = partnerCompany.id;
+        createDto.classificationId = classification.id;
+        createDto.brandId = brand.id;
+        createDto.name = rowData.name?.trim();
+        createDto.price = +rowData.price;
+        createDto.expireDay = +rowData.expireDay;
+        createDto.category = rowData.category?.trim();
+        createDto.type = ProductTypeExcelToDBMapping(rowData.type?.trim());
+        createDto.useStatus = ProductUseStatusExcelToDBMapping(rowData.useStatus?.trim());
+        createDto.settleMethod = ProductSettleMethodExcelToDbMapping(rowData.settleMethod?.trim());
+        createDto.settlePercent = +rowData.settlePercent;
+        createDto.partnerCompanyCode = rowData.partnerCompanyCode;
+        createDto.imagePath = imagePath;
+        createDto.memo = rowData.memo;
+
+        const validationErrors = await validate(createDto);
+        if (validationErrors.length > 0) {
+          console.error(JSON.stringify(validationErrors));
+          throw new BadRequestException(`행 ${rowIndex} 검증 실패: 필수값 누락 혹은 형식 오류가 있습니다.`);
+        }
+
+        const existingProduct = productCodeMap.get(rowData.code);
+
+        if (existingProduct) {
+          const updateDto = new ProductUpdatePartialReqDto();
+          updateDto.id = existingProduct.id;
+          updateDto.reason = `엑셀 업로드(row ${rowIndex})`;
+
+          updateDto.partnerCompanyId = partnerCompany.id;
+          updateDto.classificationId = classification.id;
+          updateDto.brandId = brand.id;
+          updateDto.name = rowData.name?.trim();
+          updateDto.price = +rowData.price;
+          updateDto.expireDay = +rowData.expireDay;
+          updateDto.category = rowData.category?.trim();
+          updateDto.type = ProductTypeExcelToDBMapping(rowData.type?.trim());
+          updateDto.useStatus = ProductUseStatusExcelToDBMapping(rowData.useStatus?.trim());
+          updateDto.settleMethod = ProductSettleMethodExcelToDbMapping(rowData.settleMethod?.trim());
+          updateDto.settlePercent = +rowData.settlePercent;
+          updateDto.partnerCompanyCode = rowData.partnerCompanyCode;
+          updateDto.imagePath = imagePath;
+          updateDto.memo = rowData.memo;
+
+          await this.updatePartial(user, updateDto);
+        } else {
+          await this.create(createDto);
+        }
+      } catch (error) {
+        const msg =
+          error instanceof BadRequestException
+            ? error.message
+            : `행 ${rowIndex} 처리 중 알 수 없는 오류가 발생했습니다: ${error.message}`;
+        throw new BadRequestException(msg);
+      }
+    }
+
+    return { message: '엑셀 업로드가 성공적으로 완료되었습니다.' };
+  }
+
+  /**
+   * 대분류 시트 처리 (진행 상황 포함)
+   */
+  private async processClassificationSheetWithProgress(
+    workbook: ExcelJS.Workbook,
+    onProgress: (stage: string, current: number, total: number, message?: string) => void,
+  ): Promise<number> {
+    const classificationSheet = workbook.getWorksheet('대분류');
+    if (!classificationSheet) return 0;
+
+    const excelClassifications: string[] = [];
+    classificationSheet.eachRow((row) => {
+      const cellValue = row.getCell(1).value;
+      if (cellValue && typeof cellValue === 'string' && cellValue.trim()) {
+        excelClassifications.push(cellValue.trim());
+      }
+    });
+
+    if (excelClassifications.length === 0) return 0;
+
+    const existingClassifications = await this.classificationRepository.find();
+    const existingNameSet = new Set(existingClassifications.map((c) => c.classification));
+    const newClassifications = excelClassifications.filter((name) => !existingNameSet.has(name));
+
+    if (newClassifications.length === 0) return 0;
+
+    for (let i = 0; i < newClassifications.length; i++) {
+      const classification = newClassifications[i];
+      onProgress('classification', i + 1, newClassifications.length, `대분류 등록 중 (${i + 1}/${newClassifications.length})`);
+      await this.classificationRepository.insert({ classification });
+      console.log(`새로운 대분류 등록: ${classification}`);
+    }
+
+    return newClassifications.length;
+  }
+
+  /**
+   * 브랜드 시트 처리 (진행 상황 포함)
+   */
+  private async processBrandSheetWithProgress(
+    workbook: ExcelJS.Workbook,
+    onProgress: (stage: string, current: number, total: number, message?: string) => void,
+  ): Promise<number> {
+    const brandSheet = workbook.getWorksheet('브랜드');
+    if (!brandSheet) return 0;
+
+    const excelBrands: string[] = [];
+    brandSheet.eachRow((row) => {
+      const cellValue = row.getCell(1).value;
+      if (cellValue && typeof cellValue === 'string' && cellValue.trim()) {
+        excelBrands.push(cellValue.trim());
+      }
+    });
+
+    if (excelBrands.length === 0) return 0;
+
+    const existingBrands = await this.brandRepository.find();
+    const existingNameSet = new Set(existingBrands.map((b) => b.nameKorean));
+    const newBrands = excelBrands.filter((name) => !existingNameSet.has(name));
+
+    if (newBrands.length === 0) return 0;
+
+    for (let i = 0; i < newBrands.length; i++) {
+      const nameKorean = newBrands[i];
+      onProgress('brand', i + 1, newBrands.length, `브랜드 등록 중 (${i + 1}/${newBrands.length})`);
+
+      const prevBrand = await this.brandRepository.findOne({
+        where: { code: Like(`${BrandPrefixCode}%`) },
+        order: { code: 'DESC' },
+      });
+      const prevCode = prevBrand?.code ?? null;
+      const newCode = CreateCode(prevCode, BrandPrefixCode, BrandDigitNumber);
+
+      await this.brandRepository.insert({
+        code: newCode,
+        nameKorean,
+        nameEnglish: nameKorean,
+        isUsed: true,
+      });
+      console.log(`새로운 브랜드 등록: ${nameKorean} (${newCode})`);
+    }
+
+    return newBrands.length;
   }
 
   private mapRowToDto(row: ExcelJS.Row): any {
@@ -1132,6 +1398,98 @@ export class ProductService {
 
   private isValidRow(rowData: Record<string, any>): boolean {
     return Object.values(rowData).some((value) => value !== null && value !== '');
+  }
+
+  /**
+   * 외부 이미지 URL인지 확인 (자체 S3가 아닌 외부 URL)
+   */
+  private isExternalImageUrl(url: string): boolean {
+    if (!url || typeof url !== 'string') return false;
+
+    // http:// 또는 https://로 시작하는지 확인
+    if (!url.startsWith('http://') && !url.startsWith('https://')) return false;
+
+    // 자체 S3 URL인 경우 외부 URL이 아님
+    if (url.includes('epopkon-premium.s3.amazonaws.com')) return false;
+
+    return true;
+  }
+
+  /**
+   * 엑셀의 '대분류' 시트를 처리하여 새로운 대분류 자동 등록
+   */
+  private async processClassificationSheet(workbook: ExcelJS.Workbook): Promise<void> {
+    const classificationSheet = workbook.getWorksheet('대분류');
+    if (!classificationSheet) return;
+
+    // 엑셀에서 대분류명 목록 추출
+    const excelClassifications: string[] = [];
+    classificationSheet.eachRow((row, rowNumber) => {
+      const cellValue = row.getCell(1).value;
+      if (cellValue && typeof cellValue === 'string' && cellValue.trim()) {
+        excelClassifications.push(cellValue.trim());
+      }
+    });
+
+    if (excelClassifications.length === 0) return;
+
+    // DB에서 기존 대분류 조회
+    const existingClassifications = await this.classificationRepository.find();
+    const existingNameSet = new Set(existingClassifications.map((c) => c.classification));
+
+    // 새로운 대분류 찾기
+    const newClassifications = excelClassifications.filter((name) => !existingNameSet.has(name));
+
+    // 새로운 대분류 등록
+    for (const classification of newClassifications) {
+      await this.classificationRepository.insert({ classification });
+      console.log(`새로운 대분류 등록: ${classification}`);
+    }
+  }
+
+  /**
+   * 엑셀의 '브랜드' 시트를 처리하여 새로운 브랜드 자동 등록
+   */
+  private async processBrandSheet(workbook: ExcelJS.Workbook): Promise<void> {
+    const brandSheet = workbook.getWorksheet('브랜드');
+    if (!brandSheet) return;
+
+    // 엑셀에서 브랜드명 목록 추출
+    const excelBrands: string[] = [];
+    brandSheet.eachRow((row, rowNumber) => {
+      const cellValue = row.getCell(1).value;
+      if (cellValue && typeof cellValue === 'string' && cellValue.trim()) {
+        excelBrands.push(cellValue.trim());
+      }
+    });
+
+    if (excelBrands.length === 0) return;
+
+    // DB에서 기존 브랜드 조회
+    const existingBrands = await this.brandRepository.find();
+    const existingNameSet = new Set(existingBrands.map((b) => b.nameKorean));
+
+    // 새로운 브랜드 찾기
+    const newBrands = excelBrands.filter((name) => !existingNameSet.has(name));
+
+    // 새로운 브랜드 등록
+    for (const nameKorean of newBrands) {
+      // 브랜드 코드 생성
+      const prevBrand = await this.brandRepository.findOne({
+        where: { code: Like(`${BrandPrefixCode}%`) },
+        order: { code: 'DESC' },
+      });
+      const prevCode = prevBrand?.code ?? null;
+      const newCode = CreateCode(prevCode, BrandPrefixCode, BrandDigitNumber);
+
+      await this.brandRepository.insert({
+        code: newCode,
+        nameKorean,
+        nameEnglish: nameKorean,
+        isUsed: true,
+      });
+      console.log(`새로운 브랜드 등록: ${nameKorean} (${newCode})`);
+    }
   }
 
   async setLike(user: ILoginUserInfo, getBody: ProductSetLikeReqDto) {

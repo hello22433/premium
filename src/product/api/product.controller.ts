@@ -245,6 +245,44 @@ export class ProductController {
   }
 
   @ApiOperation({
+    summary: '상품 엑셀 업로드 API (진행 상황 포함)',
+    description: '엑셀 파일을 업로드하여 상품을 등록합니다. SSE로 진행 상황을 전송합니다.',
+  })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    type: ProductExcelUploadReqDto,
+    description: '업로드 하고자 하는 엑셀 파일',
+  })
+  // =========================================
+  @Post('/product/excel-upload-with-progress')
+  @UseInterceptors(FileInterceptor('file'))
+  async excelUploadWithProgress(
+    @User() user: ILoginUserInfo,
+    @UploadedFile() file: Express.Multer.File,
+    @Res() res: Response,
+  ) {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+
+    const sendProgress = (stage: string, current: number, total: number, message?: string) => {
+      const data = JSON.stringify({ stage, current, total, message });
+      res.write(`data: ${data}\n\n`);
+    };
+
+    try {
+      const result = await this.productService.excelUploadWithProgress(user, file, sendProgress);
+      sendProgress('complete', 100, 100, result.message);
+      res.end();
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : '알 수 없는 오류가 발생했습니다.';
+      sendProgress('error', 0, 0, errorMessage);
+      res.end();
+    }
+  }
+
+  @ApiOperation({
     summary: '상품 등록 템플릿 엑셀 다운로드 API',
     description: '협력사, 대분류, 브랜드 데이터가 채워진 상품 등록 템플릿을 다운로드합니다.',
   })

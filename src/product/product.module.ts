@@ -13,6 +13,7 @@ import { ProductLikeEntity } from '../entity/product.like.entity';
 import { SsgEventEntity } from '../entity/ssg.event.entity';
 import { UserEntity } from 'src/entity/user.entity';
 import { ActivityLogModule } from '../activity_log/activity.log.module';
+import { FileModule } from '../file/file.module';
 
 @Module({
   imports: [
@@ -29,6 +30,7 @@ import { ActivityLogModule } from '../activity_log/activity.log.module';
       UserEntity,
     ]),
     ActivityLogModule,
+    FileModule,
   ],
   controllers: [ProductController],
   providers: [ProductService],

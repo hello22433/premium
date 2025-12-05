@@ -6,6 +6,7 @@ import { Readable } from 'stream';
 import { join } from 'path';
 import process from 'node:process';
 import fs from 'node:fs';
+import axios from 'axios';
 
 @Injectable()
 export class FileStorageS3 implements IFileStorage {
@@ -152,5 +153,43 @@ export class FileStorageS3 implements IFileStorage {
       });
     }
     throw new Error('Body is not a readable stream');
+  }
+
+  async copyImageFromUrl(imageUrl: string): Promise<IFileUploadFileReturn> {
+    const bucketName = this.configService.getOrThrow('AWS_S3_BUCKET');
+
+    // 외부 URL에서 이미지 다운로드
+    const response = await axios.get(imageUrl, {
+      responseType: 'arraybuffer',
+      timeout: 30000, // 30초 타임아웃
+    });
+
+    const buffer = Buffer.from(response.data);
+
+    // URL에서 파일명 추출 (쿼리스트링 제거)
+    const urlPath = new URL(imageUrl).pathname;
+    const originalName = decodeURIComponent(urlPath.split('/').pop() || 'image.jpg');
+
+    // S3 업로드 경로 생성
+    const uploadFileName = `image/${Date.now()}-${originalName}`;
+
+    const fileData: PutObjectCommandInput = {
+      Bucket: bucketName,
+      Key: uploadFileName,
+      Body: buffer,
+      ACL: 'public-read',
+    };
+
+    try {
+      const command = new PutObjectCommand(fileData);
+      await this.s3Client.send(command);
+
+      return {
+        url: `https://${bucketName}.s3.amazonaws.com/${uploadFileName}`,
+        originalName: originalName,
+      };
+    } catch (e) {
+      throw new Error(`이미지 복사 실패: ${e}`);
+    }
   }
 }
