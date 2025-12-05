@@ -249,12 +249,9 @@ export class OrderService {
         }
       }
 
-      // 첫 번째 상품의 발송 정보 사용
+      // 첫 번째 상품의 발송 정보 사용 - 즉시건/예약건 모두 실제발송시간 사용
       const firstMapping = order.orderProductMappings?.[0];
-      const sendRequestAt =
-        firstMapping && normalizeDate(firstMapping.sendRequestAt)
-          ? format(firstMapping.sendRequestAt!, DateFormatStr)
-          : null;
+      const sendRequestAt = actualSendAt;
 
       return {
         id: order.id,
