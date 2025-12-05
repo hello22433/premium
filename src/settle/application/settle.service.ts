@@ -1086,13 +1086,28 @@ export class SettleService {
 
     if (order.orderProductMappings && order.orderProductMappings.length > 0) {
       for (const orderProductMapping of order.orderProductMappings) {
+        // 할인/할증 적용된 단가 계산
+        let adjustedPrice = orderProductMapping.product?.price ?? 0;
+        if (
+          orderProductMapping.fee !== null &&
+          orderProductMapping.fee > 0 &&
+          orderProductMapping.priceAdjustment
+        ) {
+          const originalPrice = orderProductMapping.product?.price ?? 0;
+          if (orderProductMapping.priceAdjustment === IPriceAdjustment.DISCOUNT) {
+            adjustedPrice = Math.floor(originalPrice * (100 - orderProductMapping.fee) / 100);
+          } else if (orderProductMapping.priceAdjustment === IPriceAdjustment.ADDITIONAL) {
+            adjustedPrice = Math.floor(originalPrice * (100 + orderProductMapping.fee) / 100);
+          }
+        }
+
         const product = orderProductMapping.product
           ? {
               id: orderProductMapping.product.id,
               code: orderProductMapping.product.code,
               brandName: orderProductMapping.product.brand?.nameKorean ?? '',
               name: orderProductMapping.product.name,
-              price: orderProductMapping.product.price,
+              price: adjustedPrice, // 할인/할증 적용된 단가
               amount: orderProductMapping.amount,
             }
           : null;

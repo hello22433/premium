@@ -685,9 +685,20 @@ export class OrderService {
 
     if (order.orderProductMappings && order.orderProductMappings.length > 0) {
       for (const orderProductMapping of order.orderProductMappings) {
-        const productPrice = orderProductMapping.product.price ?? 0;
+        const originalPrice = orderProductMapping.product.price ?? 0;
         const quantity = orderProductMapping.amount ?? 0;
-        const total = productPrice * quantity;
+
+        // 할인/할증 적용된 단가 계산
+        let adjustedPrice = originalPrice;
+        if (orderProductMapping.fee !== null && orderProductMapping.fee > 0 && orderProductMapping.priceAdjustment) {
+          if (orderProductMapping.priceAdjustment === IPriceAdjustment.DISCOUNT) {
+            adjustedPrice = Math.floor(originalPrice * (100 - orderProductMapping.fee) / 100);
+          } else if (orderProductMapping.priceAdjustment === IPriceAdjustment.ADDITIONAL) {
+            adjustedPrice = Math.floor(originalPrice * (100 + orderProductMapping.fee) / 100);
+          }
+        }
+
+        const total = adjustedPrice * quantity;
         price += total;
 
         // 상품별로 한 줄만 추가 (첫 번째 orderDelivery의 발송 시각 사용)
@@ -697,12 +708,12 @@ export class OrderService {
           sendRequestAt: firstDelivery?.sendRequestAt ? format(firstDelivery.sendRequestAt, DateFormatStr) : null,
           productName: orderProductMapping.product.name ?? null,
           quantity, // 수량
-          unitPrice: productPrice, // 단가
+          unitPrice: adjustedPrice, // 할인/할증 적용된 단가
           price: total, // 공급가액 (단가 * 수량)
         });
       }
 
-      vat = Math.floor(price * 0.1);
+      // vat = Math.floor(price * 0.1);
       totalAmount = price + vat;
     }
 
@@ -980,10 +991,42 @@ export class OrderService {
     });
 
     await this.orderProductMappingRepository.save(orderProductList);
-    await this.orderRepository.update({ id: orderId }, { settleAmount: settleAmount + settleFee });
 
-    // Note: balance 조정은 deliveryConfirmed 시점에 수행됨
-    // 발송확정 시 최종 정산금액과 정가의 차액을 계산하여 조정함
+    const newSettleAmount = settleAmount + settleFee;
+    await this.orderRepository.update({ id: orderId }, { settleAmount: newSettleAmount });
+
+    // 발송확정 이후(DELIVERY_CONFIRMED, DELIVERY_COMPLETE)에 정산정보를 수정한 경우
+    // 이전 정산금액과 새 정산금액의 차이를 balance/allSettleAmount에 반영
+    const orderStatus = existingOrderProducts[0].order.status;
+    if (
+      orderStatus === IOrderStatus.DELIVERY_CONFIRMED ||
+      orderStatus === IOrderStatus.DELIVERY_COMPLETE
+    ) {
+      const difference = beforeSettleAmount - newSettleAmount;
+
+      if (difference !== 0) {
+        const oneUser = await this.userRepository.findOneOrFail({
+          where: { id: oneUserId },
+        });
+
+        if (isSettleBanace) {
+          // 선충전에서 차감된 주문 → balance 조정
+          oneUser.balance += difference;
+          this.logger.debug(
+            `정산정보 수정 (발송확정 후): orderId=${orderId}, 이전=${beforeSettleAmount}, 새=${newSettleAmount}, 차이=${difference}, balance 조정`,
+          );
+        } else {
+          // 한도에서 차감된 주문 → allSettleAmount 조정
+          oneUser.allSettleAmount -= difference;
+          this.logger.debug(
+            `정산정보 수정 (발송확정 후): orderId=${orderId}, 이전=${beforeSettleAmount}, 새=${newSettleAmount}, 차이=${difference}, allSettleAmount 조정`,
+          );
+        }
+
+        await this.userRepository.save(oneUser);
+      }
+    }
+    // 발송요청 상태(DELIVERY_REQUEST)인 경우 balance 조정은 deliveryConfirmed에서 수행됨
   }
 
   @Transactional()
