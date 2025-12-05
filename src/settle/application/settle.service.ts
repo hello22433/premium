@@ -1025,19 +1025,32 @@ export class SettleService {
         const product = orderProductMapping.product;
         const productTotalPrice = product.price * orderProductMapping.amount;
 
-        // 상품에 맞는 할인 설정 찾기
-        const matchingDiscount = this.findMatchingDiscount(
-          {
-            price: product.price,
-            category: product.category,
-            classification: product.classification,
-          },
-          userDiscounts,
-        );
+        // 1. orderProductMapping에 이미 fee/priceAdjustment가 저장되어 있으면 그걸 사용
+        if (orderProductMapping.fee !== null && orderProductMapping.priceAdjustment !== null) {
+          let adjustedPrice = productTotalPrice;
+          if (orderProductMapping.fee > 0) {
+            if (orderProductMapping.priceAdjustment === IPriceAdjustment.DISCOUNT) {
+              adjustedPrice = Math.floor(productTotalPrice * (100 - orderProductMapping.fee) / 100);
+            } else if (orderProductMapping.priceAdjustment === IPriceAdjustment.ADDITIONAL) {
+              adjustedPrice = Math.floor(productTotalPrice * (100 + orderProductMapping.fee) / 100);
+            }
+          }
+          finalSettlePrice += adjustedPrice;
+        } else {
+          // 2. 저장된 값이 없으면 userDiscounts에서 매칭되는 할인 설정 찾기
+          const matchingDiscount = this.findMatchingDiscount(
+            {
+              price: product.price,
+              category: product.category,
+              classification: product.classification,
+            },
+            userDiscounts,
+          );
 
-        // 할인/할증 적용
-        const discountedPrice = this.applyDiscount(productTotalPrice, matchingDiscount);
-        finalSettlePrice += discountedPrice;
+          // 할인/할증 적용
+          const discountedPrice = this.applyDiscount(productTotalPrice, matchingDiscount);
+          finalSettlePrice += discountedPrice;
+        }
       }
 
       // 첫 번째 상품의 발송 요청 시간 사용
