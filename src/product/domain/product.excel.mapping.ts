@@ -51,7 +51,7 @@ export const ProductSettleMethodExcelMapping = (settleMethod: IProductSettleMeth
   }
 
   if (settleMethod === 'PER_PRODUCT') {
-    return '상품분';
+    return '사용분';
   }
 
   throw new Error('정의되지 않은 정산방법입니다.');

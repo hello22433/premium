@@ -51,7 +51,7 @@ export const ProductSettleMethodExcelToDbMapping = (settleMethod: string): IProd
     return 'PER_ISSUANCE';
   }
 
-  if (settleMethod === '상품분' || settleMethod === '상품당') {
+  if (settleMethod === '사용분' || settleMethod === '상품당') {
     return 'PER_PRODUCT';
   }
 
