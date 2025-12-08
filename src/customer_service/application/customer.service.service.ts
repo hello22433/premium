@@ -680,6 +680,7 @@ export class CustomerServiceService {
         'orderProductMapping.order',
         'orderProductMapping.product.partnerCompany',
         'orderHistory',
+        'ssgEvent',
       ],
     });
 
