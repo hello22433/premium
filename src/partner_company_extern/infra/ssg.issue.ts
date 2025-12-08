@@ -95,7 +95,8 @@ export class SsgIssue implements ISsgIssue {
 
       const resultToJson = (await this.parser().parseStringPromise(response.data)) as unknown as ISsgCheckOut;
       this.logger.log(resultToJson);
-      if (resultToJson.response.result[0].code[0] !== '1000') {
+      // 조회 성공 코드는 1001
+      if (resultToJson.response.result[0].code[0] !== '1001') {
         throw new Error(`${resultToJson.response.result[0].reason[0]}`);
       }
       return resultToJson;
