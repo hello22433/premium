@@ -1486,10 +1486,11 @@ export class ProductService {
     // 수식 셀인 경우 result 값 사용
     if (typeof value === 'object' && 'formula' in value) {
       value = (value as any).result ?? null;
+      if (value === null) return null;
     }
 
     // 리치 텍스트인 경우 텍스트 추출
-    if (typeof value === 'object' && 'richText' in value) {
+    if (value !== null && typeof value === 'object' && 'richText' in value) {
       value = (value as any).richText.map((r: any) => r.text).join('');
     }
 
