@@ -287,8 +287,8 @@ export class PartnerCompanyService {
     partnerCompany.bankNumber = bankNumber;
     partnerCompany.bankName = bankName;
     partnerCompany.settleDay = settleDay;
-    partnerCompany.type = type ?? null;
-    partnerCompany.validityStartsNextDay = validityStartsNextDay ?? true;
+    partnerCompany.type = type ?? partnerCompany.type;
+    partnerCompany.validityStartsNextDay = validityStartsNextDay ?? partnerCompany.validityStartsNextDay;
 
     await this.partnerCompanyRepository.save(partnerCompany);
 
