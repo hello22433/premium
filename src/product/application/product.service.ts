@@ -1093,9 +1093,11 @@ export class ProductService {
           throw new Error(`대분류 "${rowData.classificationName}"을 찾을 수 없습니다.`);
         }
 
-        // 외부 URL 이미지인 경우 S3로 복사
+        // 외부 URL 이미지인 경우 S3로 복사, 이미지 없으면 기본 이미지 사용
         let imagePath = rowData.imagePath;
-        if (imagePath && this.isExternalImageUrl(imagePath)) {
+        if (!imagePath || !imagePath.trim()) {
+          imagePath = '/img/upload-plz.jpg';
+        } else if (this.isExternalImageUrl(imagePath)) {
           try {
             console.log(`[엑셀업로드] 행 ${rowIndex} - 외부 이미지 복사 시작: ${imagePath}`);
             const result = await this.fileStorage.copyImageFromUrl(imagePath);
@@ -1286,9 +1288,11 @@ export class ProductService {
           throw new Error(`대분류 "${rowData.classificationName}"을 찾을 수 없습니다.`);
         }
 
-        // 외부 URL 이미지인 경우 S3로 복사
+        // 외부 URL 이미지인 경우 S3로 복사, 이미지 없으면 기본 이미지 사용
         let imagePath = rowData.imagePath;
-        if (imagePath && this.isExternalImageUrl(imagePath)) {
+        if (!imagePath || !imagePath.trim()) {
+          imagePath = '/img/upload-plz.jpg';
+        } else if (this.isExternalImageUrl(imagePath)) {
           try {
             const result = await this.fileStorage.copyImageFromUrl(imagePath);
             imagePath = result.url;

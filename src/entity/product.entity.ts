@@ -52,8 +52,8 @@ export class ProductEntity extends BaseEntity {
   @Column({ type: 'decimal', precision: 5, scale: 2, comment: '정산 조건 (퍼센트), ex) 30.55 = 30.55%' })
   settlePercent: number;
 
-  @Column({ type: 'varchar', length: 512, comment: '미리 보기 이미지 path', nullable: true })
-  imagePath: string | null;
+  @Column({ type: 'varchar', length: 512, comment: '미리 보기 이미지 path' })
+  imagePath: string;
 
   @Column({
     type: 'varchar',
