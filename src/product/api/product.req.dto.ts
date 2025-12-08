@@ -221,10 +221,11 @@ export class ProductGetUpdateHistoryReqQueryDto extends PagingReqDto {}
 export class ProductCreateReqDto {
   @ApiProperty({
     description: '협력사 상품 코드',
+    required: false,
   })
   // ================================
-  @IsNotEmpty()
-  partnerCompanyCode: string;
+  @IsOptional()
+  partnerCompanyCode?: string;
 
   @ApiProperty({
     description: '협력사 partnerCompany.id',
