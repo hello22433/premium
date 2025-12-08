@@ -1480,17 +1480,22 @@ export class ProductService {
    * 수식이 있는 셀은 { formula: '=A1', result: 'value' } 형태로 반환되므로 result를 추출
    */
   private getCellValue(cell: ExcelJS.Cell): any {
-    const value = cell.value;
+    let value = cell.value;
     if (value === null || value === undefined) return null;
 
     // 수식 셀인 경우 result 값 사용
     if (typeof value === 'object' && 'formula' in value) {
-      return (value as any).result ?? null;
+      value = (value as any).result ?? null;
     }
 
     // 리치 텍스트인 경우 텍스트 추출
     if (typeof value === 'object' && 'richText' in value) {
-      return (value as any).richText.map((r: any) => r.text).join('');
+      value = (value as any).richText.map((r: any) => r.text).join('');
+    }
+
+    // 문자열인 경우 _x000D_ (캐리지 리턴) 제거
+    if (typeof value === 'string') {
+      value = value.replace(/_x000D_/g, '');
     }
 
     return value;
