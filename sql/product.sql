@@ -1,0 +1,1 @@
+ALTER TABLE product MODIFY COLUMN partner_company_code VARCHAR(256) NULL COMMENT '협력사 상품 코드, 발행시 필요';

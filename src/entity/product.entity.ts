@@ -18,8 +18,8 @@ export class ProductEntity extends BaseEntity {
   @Column({ type: 'varchar', length: 256, unique: true, comment: '상품 코드' })
   code: string;
 
-  @Column({ type: 'varchar', length: 256, comment: '협력사 상품 코드, 발행시 필요' })
-  partnerCompanyCode: string;
+  @Column({ type: 'varchar', length: 256, comment: '협력사 상품 코드, 발행시 필요', nullable: true })
+  partnerCompanyCode: string | null;
 
   @Column({ comment: 'FK) partner_company.id 협력사' })
   partnerCompanyId: number;
