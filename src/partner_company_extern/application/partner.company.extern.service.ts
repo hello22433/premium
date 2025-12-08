@@ -85,7 +85,7 @@ export class PartnerCompanyExternService {
         const giftKind = orderDelivery.orderProductMapping.product.name.includes('(백화점)') ? 'dept' : 'cpn';
         const galaxiaOut = await this.galaxia.issue({
           transactionId: orderDelivery.transactionId,
-          partnerCompanyCode: orderDelivery.orderProductMapping.product.partnerCompanyCode,
+          partnerCompanyCode: orderDelivery.orderProductMapping.product.partnerCompanyCode!,
           fromPhoneNumber: decryptedDeliveryTarget,
           giftKind: giftKind,
         });
@@ -99,7 +99,7 @@ export class PartnerCompanyExternService {
       if (type === 'GS_M_BIZ') {
         const gsMBizOut = await this.gsmbiz.issue({
           transactionId: orderDelivery.transactionId,
-          partnerCompanyCode: orderDelivery.orderProductMapping.product.partnerCompanyCode,
+          partnerCompanyCode: orderDelivery.orderProductMapping.product.partnerCompanyCode!,
         });
         context = JSON.stringify(gsMBizOut);
         orderDelivery.barCode = gsMBizOut.couponInfo.barCode;
@@ -110,7 +110,7 @@ export class PartnerCompanyExternService {
       if (type === 'GIFTIEL') {
         const giftielOut = await this.giftiel.issue({
           transactionId: orderDelivery.transactionId,
-          partnerCompanyCode: orderDelivery.orderProductMapping.product.partnerCompanyCode,
+          partnerCompanyCode: orderDelivery.orderProductMapping.product.partnerCompanyCode!,
         });
 
         context = JSON.stringify(giftielOut);
@@ -122,7 +122,7 @@ export class PartnerCompanyExternService {
       if (type === 'GIFT_SHOW') {
         const giftShowOut = await this.giftiShow.issue({
           transactionId: orderDelivery.transactionId,
-          partnerCompanyCode: orderDelivery.orderProductMapping.product.partnerCompanyCode,
+          partnerCompanyCode: orderDelivery.orderProductMapping.product.partnerCompanyCode!,
         });
         context = JSON.stringify(giftShowOut);
         orderDelivery.barCode = giftShowOut.response.value[0].pin_no[0];
@@ -133,7 +133,7 @@ export class PartnerCompanyExternService {
       if (type === 'CULTURELAND') {
         const cultureLandOut = await this.culture.issue({
           transactionId: orderDelivery.transactionId,
-          partnerCompanyCode: orderDelivery.orderProductMapping.product.partnerCompanyCode,
+          partnerCompanyCode: orderDelivery.orderProductMapping.product.partnerCompanyCode!,
           expireDay: orderDelivery.orderProductMapping.product.expireDay,
           price: orderDelivery.orderProductMapping.product.price,
         });
@@ -207,7 +207,7 @@ export class PartnerCompanyExternService {
       // 1.1.7 다우기술 PIN 발급
       if (type === 'DAOU') {
         const daouOut = await this.daou.issue({
-          goodsId: orderDelivery.orderProductMapping.product.partnerCompanyCode,
+          goodsId: orderDelivery.orderProductMapping.product.partnerCompanyCode!,
           transactionId: orderDelivery.transactionId,
           phoneNumber: decryptedDeliveryTarget,
           limitDate: '' + orderDelivery.orderProductMapping.product.expireDay,
@@ -270,7 +270,7 @@ export class PartnerCompanyExternService {
       if (type === 'GS_M_BIZ') {
         await this.gsmbiz.cancel({
           transactionId: orderDelivery.transactionId!,
-          partnerCompanyCode: orderDelivery.orderProductMapping.product.partnerCompanyCode,
+          partnerCompanyCode: orderDelivery.orderProductMapping.product.partnerCompanyCode!,
           barCode: orderDelivery.barCode!,
         });
       }
@@ -279,7 +279,7 @@ export class PartnerCompanyExternService {
       // giftiel(기프티엘)_공통_판매사_연동가이드_v2.1.0.0_20210409.pdf
       if (type === 'GIFTIEL') {
         await this.giftiel.cancel({
-          partnerCompanyCode: orderDelivery.orderProductMapping.product.partnerCompanyCode,
+          partnerCompanyCode: orderDelivery.orderProductMapping.product.partnerCompanyCode!,
           barCode: orderDelivery.barCode!,
         });
       }

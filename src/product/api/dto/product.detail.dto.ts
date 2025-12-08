@@ -17,9 +17,9 @@ export class ProductDetailDto {
   code: string;
 
   @ApiProperty({
-    description: '상품 코드',
+    description: '협력사 상품 코드',
   })
-  partnerCompanyCode: string;
+  partnerCompanyCode: string | null;
 
   @ApiProperty({
     description: '협력사 id',
