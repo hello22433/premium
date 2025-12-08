@@ -986,7 +986,7 @@ export class ProductService {
     return { fileName, filePath };
   }
 
-  @Transactional()
+  // 트랜잭션 제거: 실패한 행만 건너뛰고 나머지는 처리하기 위함
   async excelUpload(user: ILoginUserInfo, file: Express.Multer.File) {
     if (!file) {
       throw new BadRequestException('업로드할 파일이 존재하지 않습니다.');
@@ -1065,6 +1065,10 @@ export class ProductService {
 
     console.log(`[엑셀업로드] 상품 처리 시작 - 총 ${validRowIndices.length}건`);
 
+    // 실패한 행 정보 저장
+    const failedRows: { row: number; reason: string }[] = [];
+    let successCount = 0;
+
     for (const rowIndex of validRowIndices) {
       try {
         console.log(`[엑셀업로드] 행 ${rowIndex} 처리 시작`);
@@ -1074,19 +1078,19 @@ export class ProductService {
         // 협력사명으로 협력사 ID 조회
         const partnerCompany = partnerCompanyNameMap.get(rowData.partnerCompanyName?.trim());
         if (!partnerCompany) {
-          throw new BadRequestException(`행 ${rowIndex}: 협력사명 "${rowData.partnerCompanyName}"을 찾을 수 없습니다.`);
+          throw new Error(`협력사명 "${rowData.partnerCompanyName}"을 찾을 수 없습니다.`);
         }
 
         // 브랜드명으로 브랜드 ID 조회
         const brand = brandNameMap.get(rowData.brandName?.trim());
         if (!brand) {
-          throw new BadRequestException(`행 ${rowIndex}: 브랜드명 "${rowData.brandName}"을 찾을 수 없습니다.`);
+          throw new Error(`브랜드명 "${rowData.brandName}"을 찾을 수 없습니다.`);
         }
 
         // 대분류명으로 대분류 ID 조회
         const classification = classificationNameMap.get(rowData.classificationName?.trim());
         if (!classification) {
-          throw new BadRequestException(`행 ${rowIndex}: 대분류 "${rowData.classificationName}"을 찾을 수 없습니다.`);
+          throw new Error(`대분류 "${rowData.classificationName}"을 찾을 수 없습니다.`);
         }
 
         // 외부 URL 이미지인 경우 S3로 복사
@@ -1122,7 +1126,7 @@ export class ProductService {
         const validationErrors = await validate(createDto);
         if (validationErrors.length > 0) {
           console.error(JSON.stringify(validationErrors));
-          throw new BadRequestException(`행 ${rowIndex} 검증 실패: 필수값 누락 혹은 형식 오류가 있습니다.`);
+          throw new Error(`필수값 누락 혹은 형식 오류가 있습니다.`);
         }
 
         const existingProduct = productCodeMap.get(rowData.code);
@@ -1151,24 +1155,38 @@ export class ProductService {
         } else {
           await this.create(createDto);
         }
+        successCount++;
+        console.log(`[엑셀업로드] 행 ${rowIndex} 처리 완료`);
       } catch (error) {
-        const msg =
-          error instanceof BadRequestException
-            ? error.message
-            : `행 ${rowIndex} 처리 중 알 수 없는 오류가 발생했습니다: ${error.message}`;
-        throw new BadRequestException(msg);
+        const reason = error instanceof Error ? error.message : '알 수 없는 오류';
+        console.error(`[엑셀업로드] 행 ${rowIndex} 실패: ${reason}`);
+        failedRows.push({ row: rowIndex, reason });
+        // 실패해도 계속 진행
       }
-      console.log(`[엑셀업로드] 행 ${rowIndex} 처리 완료`);
     }
 
-    console.log('[엑셀업로드] 모든 상품 처리 완료');
-    return { message: '엑셀 업로드가 성공적으로 완료되었습니다.' };
+    console.log(`[엑셀업로드] 모든 상품 처리 완료 - 성공: ${successCount}건, 실패: ${failedRows.length}건`);
+
+    // 결과 메시지 생성
+    if (failedRows.length === 0) {
+      return { message: `엑셀 업로드가 성공적으로 완료되었습니다. (${successCount}건 처리)` };
+    }
+
+    // 실패한 행 정보 포함
+    const failedRowNumbers = failedRows.map((f) => f.row).join(', ');
+    const failedDetails = failedRows.map((f) => `${f.row}행: ${f.reason}`).join('\n');
+    console.log(`[엑셀업로드] 실패 상세:\n${failedDetails}`);
+
+    return {
+      message: `엑셀 업로드 완료. 성공: ${successCount}건, 실패: ${failedRows.length}건 (실패 행: ${failedRowNumbers})`,
+      failedRows,
+    };
   }
 
   /**
    * 엑셀 업로드 (진행 상황 콜백 포함)
    */
-  @Transactional()
+  // 트랜잭션 제거: 실패한 행만 건너뛰고 나머지는 처리하기 위함
   async excelUploadWithProgress(
     user: ILoginUserInfo,
     file: Express.Multer.File,
@@ -1206,11 +1224,26 @@ export class ProductService {
     const allClassifications = await this.classificationRepository.find();
     const classificationNameMap = listToMap(allClassifications, (classification) => classification.classification);
 
-    // 상품 코드 목록 수집
+    // 상품 코드 목록 수집 (연속 빈 행 체크 포함)
     const codeList: string[] = [];
+    const validRowIndices: number[] = [];
+    let emptyRowCount = 0;
+    const maxEmptyRows = 10;
+
     for (let i = 2; i <= worksheet.actualRowCount; i++) {
       const row = worksheet.getRow(i);
       const rowData = this.mapRowToDto(row);
+
+      if (!rowData.name || !rowData.partnerCompanyName) {
+        emptyRowCount++;
+        if (emptyRowCount >= maxEmptyRows) {
+          break;
+        }
+        continue;
+      }
+
+      emptyRowCount = 0;
+      validRowIndices.push(i);
       if (rowData.code) {
         codeList.push(rowData.code);
       }
@@ -1221,15 +1254,15 @@ export class ProductService {
     });
     const productCodeMap = listToMap(productList, (product) => product.code);
 
-    // 총 상품 수 계산
-    const totalProducts = worksheet.actualRowCount - 1; // 헤더 제외
-    let processedProducts = 0;
+    // 실패한 행 정보 저장
+    const failedRows: { row: number; reason: string }[] = [];
+    let successCount = 0;
+    const totalProducts = validRowIndices.length;
 
     // 상품 등록/수정
-    for (let i = 2; i <= worksheet.actualRowCount; i++) {
-      const rowIndex = i;
-      processedProducts++;
-      onProgress('product', processedProducts, totalProducts, `상품 등록 중 (${processedProducts}/${totalProducts})`);
+    for (let idx = 0; idx < validRowIndices.length; idx++) {
+      const rowIndex = validRowIndices[idx];
+      onProgress('product', idx + 1, totalProducts, `상품 등록 중 (${idx + 1}/${totalProducts})`);
 
       try {
         const row = worksheet.getRow(rowIndex);
@@ -1238,19 +1271,19 @@ export class ProductService {
         // 협력사명으로 협력사 ID 조회
         const partnerCompany = partnerCompanyNameMap.get(rowData.partnerCompanyName?.trim());
         if (!partnerCompany) {
-          throw new BadRequestException(`행 ${rowIndex}: 협력사명 "${rowData.partnerCompanyName}"을 찾을 수 없습니다.`);
+          throw new Error(`협력사명 "${rowData.partnerCompanyName}"을 찾을 수 없습니다.`);
         }
 
         // 브랜드명으로 브랜드 ID 조회
         const brand = brandNameMap.get(rowData.brandName?.trim());
         if (!brand) {
-          throw new BadRequestException(`행 ${rowIndex}: 브랜드명 "${rowData.brandName}"을 찾을 수 없습니다.`);
+          throw new Error(`브랜드명 "${rowData.brandName}"을 찾을 수 없습니다.`);
         }
 
         // 대분류명으로 대분류 ID 조회
         const classification = classificationNameMap.get(rowData.classificationName?.trim());
         if (!classification) {
-          throw new BadRequestException(`행 ${rowIndex}: 대분류 "${rowData.classificationName}"을 찾을 수 없습니다.`);
+          throw new Error(`대분류 "${rowData.classificationName}"을 찾을 수 없습니다.`);
         }
 
         // 외부 URL 이미지인 경우 S3로 복사
@@ -1283,7 +1316,7 @@ export class ProductService {
         const validationErrors = await validate(createDto);
         if (validationErrors.length > 0) {
           console.error(JSON.stringify(validationErrors));
-          throw new BadRequestException(`행 ${rowIndex} 검증 실패: 필수값 누락 혹은 형식 오류가 있습니다.`);
+          throw new Error(`필수값 누락 혹은 형식 오류가 있습니다.`);
         }
 
         const existingProduct = productCodeMap.get(rowData.code);
@@ -1312,16 +1345,25 @@ export class ProductService {
         } else {
           await this.create(createDto);
         }
+        successCount++;
       } catch (error) {
-        const msg =
-          error instanceof BadRequestException
-            ? error.message
-            : `행 ${rowIndex} 처리 중 알 수 없는 오류가 발생했습니다: ${error.message}`;
-        throw new BadRequestException(msg);
+        const reason = error instanceof Error ? error.message : '알 수 없는 오류';
+        console.error(`[엑셀업로드] 행 ${rowIndex} 실패: ${reason}`);
+        failedRows.push({ row: rowIndex, reason });
+        // 실패해도 계속 진행
       }
     }
 
-    return { message: '엑셀 업로드가 성공적으로 완료되었습니다.' };
+    // 결과 메시지 생성
+    if (failedRows.length === 0) {
+      return { message: `엑셀 업로드가 성공적으로 완료되었습니다. (${successCount}건 처리)` };
+    }
+
+    const failedRowNumbers = failedRows.map((f) => f.row).join(', ');
+    return {
+      message: `엑셀 업로드 완료. 성공: ${successCount}건, 실패: ${failedRows.length}건 (실패 행: ${failedRowNumbers})`,
+      failedRows,
+    };
   }
 
   /**

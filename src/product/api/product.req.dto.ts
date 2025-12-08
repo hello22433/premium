@@ -299,10 +299,11 @@ export class ProductCreateReqDto {
 
   @ApiProperty({
     description: '미리보기 이미지 path',
+    required: false,
   })
   // ================================
-  @IsNotEmpty()
-  imagePath: string;
+  @IsOptional()
+  imagePath?: string;
 
   @ApiProperty({
     description: '상품유형 ex) 일반: GENERAL, 초이스: CHOICE, 배송: DELIVERY, 자체: SELF, 실물: REAL',
