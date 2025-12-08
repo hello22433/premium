@@ -43,16 +43,16 @@ export const ProductUseStatusExcelMapping = (useStatus: IProductUseStatus) => {
 
 export const ProductSettleMethodExcelMapping = (settleMethod: IProductSettleMethod) => {
   if (settleMethod === 'PER_EXCHANGE') {
-    return '교환당';
+    return '교환분';
   }
 
   if (settleMethod === 'PER_ISSUANCE') {
-    return '발행당';
+    return '발행분';
   }
 
   if (settleMethod === 'PER_PRODUCT') {
-    return '상품당';
+    return '상품분';
   }
 
-  throw new Error('정의되지 않은 상태 타입입니다.');
+  throw new Error('정의되지 않은 정산방법입니다.');
 };

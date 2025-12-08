@@ -42,17 +42,18 @@ export const ProductUseStatusExcelToDBMapping = (useStatus: string): IProductUse
 };
 
 export const ProductSettleMethodExcelToDbMapping = (settleMethod: string): IProductSettleMethod => {
-  if (settleMethod === '교환당') {
+  // 새로운 값 + 기존 값 하위 호환
+  if (settleMethod === '교환분' || settleMethod === '교환당') {
     return 'PER_EXCHANGE';
   }
 
-  if (settleMethod === '발행당') {
+  if (settleMethod === '발행분' || settleMethod === '발행당') {
     return 'PER_ISSUANCE';
   }
 
-  if (settleMethod === '상품당') {
+  if (settleMethod === '상품분' || settleMethod === '상품당') {
     return 'PER_PRODUCT';
   }
 
-  throw new Error('정의되지 않은 상태 타입입니다.');
+  throw new Error('정의되지 않은 정산방법입니다. (교환분, 발행분, 상품분 중 선택)');
 };
