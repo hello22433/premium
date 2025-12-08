@@ -103,7 +103,8 @@ export class GiftishowHttp implements IGiftiShow {
 
       // xml → json
       const parsed = await this.parser().parseStringPromise(data);
-      const res = parsed?.response?.result ?? {};
+      const resultArray = parsed?.response?.result;
+      const res = Array.isArray(resultArray) ? resultArray[0] : resultArray ?? {};
 
       const pick = (x?: string[] | string) => (Array.isArray(x) ? (x[0] ?? '') : (x ?? ''));
 

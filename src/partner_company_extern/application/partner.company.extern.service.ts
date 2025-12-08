@@ -398,8 +398,19 @@ export class PartnerCompanyExternService {
           transactionId: orderDelivery.transactionId!,
         });
 
-        orderDelivery.couponStatus =
-          giftiShowOut.StatusCode === '0' ? OrderDeliveryCouponStatus.NOT_USED : OrderDeliveryCouponStatus.USED;
+        // StatusCode '0' = 미사용(취소가능), 그 외는 StatusText로 판단
+        if (giftiShowOut.StatusCode === '0') {
+          orderDelivery.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
+        } else {
+          const statusText = giftiShowOut.StatusText || '';
+          if (statusText.includes('취소') || statusText.includes('반품') || statusText.includes('폐기')) {
+            orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
+          } else if (statusText.includes('만료')) {
+            orderDelivery.couponStatus = OrderDeliveryCouponStatus.EXPIRED;
+          } else {
+            orderDelivery.couponStatus = OrderDeliveryCouponStatus.USED;
+          }
+        }
         break;
       }
 
