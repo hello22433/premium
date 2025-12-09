@@ -179,4 +179,18 @@ export class UserManagementUpsertDto {
   @IsOptional()
   @IsArray()
   authorityList: string[] = [];
+
+  @ApiPropertyOptional({
+    description: '업태',
+  })
+  // ============================
+  @IsOptional()
+  industryType: string | null = null;
+
+  @ApiPropertyOptional({
+    description: '종목',
+  })
+  // ============================
+  @IsOptional()
+  industryItem: string | null = null;
 }

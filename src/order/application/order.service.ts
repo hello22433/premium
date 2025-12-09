@@ -730,8 +730,8 @@ export class OrderService {
       businessNumber: order.user!.businessNumber,
       personName: order.user!.personName,
       businessAddress: order.user?.businessAddress ?? null,
-      businessType: null, // TODO
-      businessItem: null, // TODO
+      businessType: order.user?.industryType ?? null,
+      businessItem: order.user?.industryItem ?? null,
       eventName: order.eventName,
       sendRequestAt: sendRequestAt ?? null,
       price,

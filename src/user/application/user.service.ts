@@ -67,6 +67,8 @@ export class UserService {
       businessAddress,
       businessPhoneNumber,
       ip,
+      industryType,
+      industryItem,
     } = signUpDto;
 
     const dupEmail = await this.userRepository.count({
@@ -107,6 +109,8 @@ export class UserService {
       cardNumber: '',
       maximumLimit: 0,
       balance: 0,
+      industryType: industryType ?? null,
+      industryItem: industryItem ?? null,
     });
     return;
   }

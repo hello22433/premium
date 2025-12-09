@@ -167,6 +167,16 @@ export class UserManagementGetDetailResDto {
     description: '권한 허용 list',
   })
   authorityList: string[];
+
+  @ApiProperty({
+    description: '업태',
+  })
+  industryType: string | null;
+
+  @ApiProperty({
+    description: '종목',
+  })
+  industryItem: string | null;
 }
 
 export class UserManagementGetListResDto extends GetListResDto {

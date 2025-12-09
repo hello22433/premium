@@ -136,6 +136,12 @@ export class UserEntity extends BaseEntity {
   @Column({ type: 'varchar', nullable: true, length: 1024, comment: '페이지 접근 허용 list' })
   authorityList: string | null;
 
+  @Column({ type: 'varchar', nullable: true, length: 100, comment: '업태' })
+  industryType: string | null;
+
+  @Column({ type: 'varchar', nullable: true, length: 100, comment: '종목' })
+  industryItem: string | null;
+
   @OneToMany(() => OrderEntity, (order) => order.user)
   orders: OrderEntity[];
 

@@ -200,6 +200,8 @@ export class UserManagementService {
       settlePeriodCount: user.settlePeriodCount,
       duplicatePhoneLimit: user.duplicatePhoneLimit,
       authorityList: authorityList,
+      industryType: user.industryType,
+      industryItem: user.industryItem,
     };
   }
 
@@ -299,6 +301,8 @@ export class UserManagementService {
       settlePeriodCount: getBody.settlePeriodCount,
       duplicatePhoneLimit: getBody.duplicatePhoneLimit ?? 0,
       authorityList: getBody.authorityList.join(','),
+      industryType: getBody.industryType,
+      industryItem: getBody.industryItem,
     });
 
     return;
@@ -343,6 +347,8 @@ export class UserManagementService {
     user.settlePeriodCount = getBody.settlePeriodCount;
     user.duplicatePhoneLimit = getBody.duplicatePhoneLimit ?? 0;
     user.authorityList = getBody.authorityList.join(',');
+    user.industryType = getBody.industryType;
+    user.industryItem = getBody.industryItem;
 
     await this.userRepository.save(user);
 

@@ -37,3 +37,7 @@ ALTER TABLE user ADD authority_list varchar(1024) NULL COMMENT '페이지 접근
 ALTER TABLE `epopkon`.`user`
     ADD COLUMN `password_changed_at` DATETIME NULL DEFAULT NULL
   COMMENT '비밀번호 마지막 변경 일시';
+
+ALTER TABLE `user`
+    ADD COLUMN `industry_type` VARCHAR(100) NULL COMMENT '업태' AFTER `authority_list`,
+    ADD COLUMN `industry_item` VARCHAR(100) NULL COMMENT '종목' AFTER `industry_type`;

@@ -107,6 +107,20 @@ export class UserSignUpReqDto {
   // =================================
   @IsNotEmpty()
   ip: string;
+
+  @ApiPropertyOptional({
+    description: '업태',
+  })
+  // =================================
+  @IsOptional()
+  industryType: string | null;
+
+  @ApiPropertyOptional({
+    description: '종목',
+  })
+  // =================================
+  @IsOptional()
+  industryItem: string | null;
 }
 
 export class UserGetAccessByRefreshReqDto {
