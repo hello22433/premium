@@ -74,8 +74,15 @@ export const EmailDeliveryTemplate = (obj: EmailDeliveryTemplateIn) => {
           인증번호: <span style="letter-spacing:2px;">${obj.code}</span>
         </td>
       </tr>
+      ${obj.qrCodeImagePath ? `
+      <tr>
+        <!-- 7. QR 코드 -->
+        <td align="center" style="padding:20px 0;">
+          <img src="${obj.qrCodeImagePath}" alt="QR 코드" style="display:block; margin:0 auto;" />
+        </td>
+      </tr>
+      ` : ''}
     </table>
-    <img src="${obj.qrCodeImagePath}" alt="" align="center"></img>
 </body>
 </html>
 `;
