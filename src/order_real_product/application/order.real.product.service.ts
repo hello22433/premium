@@ -82,10 +82,13 @@ export class OrderRealProductService {
       .leftJoinAndSelect('orderRealProductMappings.product', 'product')
       .orderBy('order.id', 'DESC');
 
-    // 주문 관리 일 경우(최고관리자가 아닐 경우 자신이 등록한 주문만 조회)
+    // 주문 관리 일 경우(최고관리자가 아닐 경우 자신이 등록한 주문 또는 담당자로 지정된 주문만 조회)
     if (section === IOrderSection.ORDER) {
       if (user.authority !== IUserAuthority.SUPER_ADMIN) {
-        queryBuilder = queryBuilder.andWhere('order.userId = :userId', { userId: user.id });
+        queryBuilder = queryBuilder.andWhere(
+          '(order.userId = :userId OR order.businessUserId = :userId)',
+          { userId: user.id },
+        );
       }
     }
 
