@@ -15,6 +15,7 @@ import { OrderEncryptKey } from '../interface/order.encrypt.key';
 import { EmailSendHistoryEntity } from '../../entity/email.send.history.entity';
 import { OrderSendEncryptKey } from '../interface/order.send.encrypt.key';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
+import { IOrderSendMethod } from '../../order/interface/order.send.method';
 import { OrderReceiveSmsTemplate } from '../domain/order.receive.sms.template';
 import { ISmsSend } from '../../sms/interface/sms.send';
 import { defaultFromPhoneNumber } from '../../const';
@@ -356,6 +357,8 @@ export class OrderReceiveService {
       .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
       .innerJoinAndSelect('orderProductMapping.order', 'order')
       .innerJoinAndSelect('orderProductMapping.product', 'product')
+      .innerJoinAndSelect('product.brand', 'brand')
+      .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .where('orderDelivery.id = :id', { id: obj.orderDeliveryId })
       .getOne();
     if (!orderDelivery) {
@@ -364,6 +367,11 @@ export class OrderReceiveService {
 
     if (!obj.emailSendHistoryId) {
       throw new BadRequestException('올바른 요청이 아닙니다.');
+    }
+
+    // 이메일 발송 건인지 확인
+    if (orderDelivery.deliveryMethod !== IOrderSendMethod.EMAIL) {
+      throw new BadRequestException('이메일 발송 건이 아닙니다.');
     }
 
     if (orderDelivery.emailCouponStatus === OrderDeliveryEmailCouponStatus.SEND) {
@@ -382,6 +390,46 @@ export class OrderReceiveService {
 
     if (!emailSendHistory.isCertified) {
       throw new BadRequestException('인증받지 않은 key입니다.');
+    }
+
+    // 핸드폰 번호 암호화 저장
+    const encryptedPhoneNumber = this.cryptoCipher.encryptDeliveryTarget(getBody.phoneNumber);
+
+    // 이메일 쿠폰은 이 시점에 핀 발급 (초이스쿠폰 제외 - 초이스쿠폰은 상품 선택 시 발급)
+    const isChoiceCoupon = orderDelivery.orderProductMapping.product.type === IProductType.CHOICE;
+    if (!orderDelivery.barCode && !isChoiceCoupon) {
+      try {
+        await this.partnerCompanyExternService.issue(orderDelivery, null);
+      } catch (e) {
+        // 핀 발급 실패
+        await this.orderDeliveryRepository.update(orderDelivery.id, {
+          emailCouponStatus: OrderDeliveryEmailCouponStatus.FAIL,
+          deliveryTarget: encryptedPhoneNumber,
+        });
+        throw new InternalServerErrorException('쿠폰 발급에 실패했습니다. 다시 시도해주세요.');
+      }
+
+      // 핀 발급 성공 후 쿠폰 이미지 생성
+      if (orderDelivery.barCode) {
+        const product = orderDelivery.orderProductMapping.product;
+        const productExpireDay = product.expireDay || 0;
+        const validityStartsNextDay = product.partnerCompany?.validityStartsNextDay ?? true;
+        const expireDay = validityStartsNextDay ? productExpireDay : productExpireDay - 1;
+        const expireDate = expireDay ? dayjs().tz('Asia/Seoul').add(expireDay, 'day').format('YYYY. MM. DD') : null;
+
+        const { path } = await DeliveryCreateCouponImage(
+          product.imagePath,
+          product.name,
+          orderDelivery.barCode,
+          product.brand!.nameKorean,
+          expireDate,
+          orderDelivery.orderProductMapping.topImagePath,
+          orderDelivery.orderProductMapping.midImagePath,
+          product.type,
+        );
+        orderDelivery.imagePath = path;
+        await this.orderDeliveryRepository.save(orderDelivery);
+      }
     }
 
     const title = orderDelivery.orderProductMapping.sendTitle ?? '';
@@ -408,13 +456,15 @@ export class OrderReceiveService {
       });
     } catch (e) {
       status = IOrderDeliveryStatus.FAIL;
-      emailCouponStatus = OrderDeliveryEmailCouponStatus.NOT_SEND;
-    } finally {
-      await this.orderDeliveryRepository.update(orderDelivery.id, {
-        status: status,
-        emailCouponStatus: emailCouponStatus,
-      });
+      // 핀은 발급됐지만 문자 발송 실패
+      emailCouponStatus = OrderDeliveryEmailCouponStatus.PIN_ISSUED;
     }
+
+    await this.orderDeliveryRepository.update(orderDelivery.id, {
+      status: status,
+      emailCouponStatus: emailCouponStatus,
+      emailReceiverPhone: encryptedPhoneNumber,
+    });
 
     return;
   }

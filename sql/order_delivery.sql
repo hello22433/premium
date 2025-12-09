@@ -21,3 +21,6 @@ ALTER TABLE order_delivery
 
 ALTER TABLE order_delivery
     ADD COLUMN actual_send_at DATETIME NULL COMMENT '실제 발송 시각';
+
+ALTER TABLE order_delivery
+    ADD COLUMN email_receiver_phone VARCHAR(512) NULL COMMENT '이메일 쿠폰 수령 시 입력한 핸드폰 번호 (암호화)';

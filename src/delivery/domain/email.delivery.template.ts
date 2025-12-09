@@ -75,7 +75,7 @@ export const EmailDeliveryTemplate = (obj: EmailDeliveryTemplateIn) => {
         </td>
       </tr>
     </table>
-    <img src="${obj.qrCodeImagePath}" alt=""></img>
+    <img src="${obj.qrCodeImagePath}" alt="" align="center"></img>
 </body>
 </html>
 `;

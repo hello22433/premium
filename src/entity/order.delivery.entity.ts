@@ -66,6 +66,9 @@ export class OrderDeliveryEntity extends BaseEntity {
   @Column({ type: 'varchar', length: 100, nullable: true })
   emailCouponStatus: OrderDeliveryEmailCouponStatus | null;
 
+  @Column({ type: 'varchar', length: 512, nullable: true, comment: '이메일 쿠폰 수령 시 입력한 핸드폰 번호 (암호화)' })
+  emailReceiverPhone: string | null;
+
   @Column({ type: 'varchar', length: 200, nullable: true })
   ssgTransactionId: string | null;
 
