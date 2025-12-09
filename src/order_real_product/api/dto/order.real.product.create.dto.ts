@@ -2,14 +2,6 @@ import { ApiProperty } from '@nestjs/swagger';
 import { IsNotEmpty, IsNumber } from 'class-validator';
 
 export class OrderRealProductCreateDto {
-  // @ApiPropertyOptional({
-  //   description: 'order real product mapping 의 id ',
-  // })
-  // // =================================
-  // @IsOptional()
-  // @IsNumber()
-  // id?: number;
-
   @ApiProperty({
     description: 'product id',
   })
@@ -25,4 +17,12 @@ export class OrderRealProductCreateDto {
   @IsNotEmpty()
   @IsNumber()
   quantity: number;
+
+  @ApiProperty({
+    description: '공급가액 (단가)',
+  })
+  // =================================
+  @IsNotEmpty()
+  @IsNumber()
+  price: number;
 }

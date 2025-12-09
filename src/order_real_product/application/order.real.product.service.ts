@@ -227,10 +227,7 @@ export class OrderRealProductService {
       processMethod,
       isProcess,
       orderRealProductList,
-      standardAmount,
-      price,
       userId,
-      // adminUserId,
       eventName,
     } = getBody;
 
@@ -244,23 +241,7 @@ export class OrderRealProductService {
       throw new BadRequestException('존재하지 않는 고객사 입니다.');
     }
 
-    // 담당자 기획 주석
-    // const adminUser = await this.userRepository.findOne({
-    //   where: {
-    //     id: adminUserId,
-    //   },
-    // });
-    //
-    // if (!adminUser) {
-    //   throw new BadRequestException('존재하지 않는 담당자 입니다');
-    // }
-
     const realProductIdList = orderRealProductList.map((product) => product.productId);
-    const uniqueProductId = new Set(realProductIdList);
-
-    if (uniqueProductId.size !== realProductIdList.length) {
-      throw new BadRequestException('중복 상품이 존재합니다.');
-    }
 
     const realProductList = await this.productRepository.find({
       where: {
@@ -285,13 +266,21 @@ export class OrderRealProductService {
 
     await this.orderRepository.save(savedOrder);
 
-    // 주문, 세금 합계 금액 계산(부가세 10%, 제세공과금 10%)
-    const totalPrice = price + price * 0.1;
-    const totalTaxAmount = standardAmount + standardAmount * 0.1;
+    // productId를 key로 하는 상품 Map 생성 (정가 조회용)
+    const productMap = new Map(realProductList.map((p) => [p.id, p]));
 
     for (const realProduct of orderRealProductList) {
       const orderRealProduct = new OrderRealProductMappingEntity();
       const quantity = realProduct.quantity;
+      const price = realProduct.price; // 각 상품별 공급가액 (단가)
+
+      // 공급가액 + VAT 10% = 총액
+      const totalPrice = price + Math.floor(price * 0.1);
+
+      // 상품 정가를 기준가액으로 사용 (제세공과금 계산용)
+      const product = productMap.get(realProduct.productId);
+      const productStandardAmount = product ? product.price : 0;
+      const totalTaxAmount = productStandardAmount + Math.floor(productStandardAmount * 0.1);
 
       orderRealProduct.realProductOrderId = savedOrder.id;
       orderRealProduct.productId = realProduct.productId;
@@ -299,11 +288,10 @@ export class OrderRealProductService {
       orderRealProduct.quantity = quantity;
       orderRealProduct.totalPrice = totalPrice * quantity;
       orderRealProduct.processMethod = processMethod;
-      orderRealProduct.standardAmount = standardAmount;
+      orderRealProduct.standardAmount = productStandardAmount;
       orderRealProduct.totalTaxAmount = totalTaxAmount * quantity;
       orderRealProduct.publicChargeTaxPayment = publicChargeTaxPayment;
       orderRealProduct.isProcess = isProcess;
-      orderRealProduct.processMethod = processMethod;
       await this.orderProductMappingRepository.save(orderRealProduct);
     }
   }

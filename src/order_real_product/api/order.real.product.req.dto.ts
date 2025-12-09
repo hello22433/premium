@@ -119,20 +119,6 @@ export class OrderRealProductCreateReqDto {
   eventName: string;
 
   @ApiProperty({
-    description: '공급가액',
-  })
-  // ===================================
-  @IsNumber()
-  price: number;
-
-  @ApiProperty({
-    description: '기준가액 (제세공과금 계산의 기준가)',
-  })
-  // ===================================
-  @IsNumber()
-  standardAmount: number;
-
-  @ApiProperty({
     description: '제세공과금 납부 방법 ex) PERSON: 고객납부, COMPANY: 고객사대납',
   })
   // ===================================
