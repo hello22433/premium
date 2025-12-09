@@ -167,7 +167,11 @@ export class OrderService {
     // 주문 관리 일 경우
     if (section === IOrderSection.ORDER) {
       if (user.authority !== IUserAuthority.SUPER_ADMIN) {
-        queryBuilder = queryBuilder.andWhere('order.userId = :userId', { userId: user.id });
+        // 자신이 생성한 주문 또는 자신이 담당자로 지정된 주문
+        queryBuilder = queryBuilder.andWhere(
+          '(order.userId = :userId OR order.operationUserId = :userId)',
+          { userId: user.id },
+        );
       }
     }
 
