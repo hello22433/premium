@@ -116,19 +116,43 @@ export class GalaxiaHttp implements IGalaxia {
     const base = `${this.url}/interface/mkt/${this.companyCode}/${obj.giftKind}/${encrypted}`;
     const url = kind === 0 ? base : `${base}?paramKind=${kind}`;
 
-    const headers = { Accept: 'application/json' };
+    const headers = { Accept: 'application/xml' };
 
     try {
       this.logger.log(url);
 
       const { data } = await firstValueFrom(this.httpService.get(url, { headers }));
 
-      // 결과 복호화
-      const parsed = data as GalaxiaCheckOut;
+      this.logger.log('갤럭시아 check 응답:', data);
 
+      // XML 응답을 JSON으로 파싱
+      const xmlResult = await this.parser().parseStringPromise(data);
+      const result = xmlResult.result;
+
+      // XML 파싱 결과에서 값 추출 (배열 형태로 반환되므로 [0] 사용)
+      const giftCert = result.giftCertificate[0];
+
+      const parsed: GalaxiaCheckOut = {
+        resCode: result.resCode[0],
+        resMsg: result.resMsg[0],
+        transactionId: result.transactionId?.[0] || null,
+        giftCertificate: {
+          couponStatus: giftCert.couponStatus[0],
+          isUsed: giftCert.isUsed[0] === 'true',
+          isRevocable: giftCert.isRevocable[0],
+          validTo: giftCert.validTo[0],
+          usedDate: giftCert.usedDate?.[0] || '',
+          faceValue: giftCert.faceValue[0],
+          balance: giftCert.balance[0],
+        },
+      };
+
+      // 복호화가 필요한 필드만 복호화 (transactionId는 check 응답에 없을 수 있음)
       return {
         ...parsed,
-        transactionId: this.cryptoCipher.decrypt(parsed.transactionId, this.encKey, this.encIv, this.cryptoAlgorithm),
+        transactionId: parsed.transactionId
+          ? this.cryptoCipher.decrypt(parsed.transactionId, this.encKey, this.encIv, this.cryptoAlgorithm)
+          : null,
         giftCertificate: {
           ...parsed.giftCertificate,
           faceValue: this.cryptoCipher.decrypt(

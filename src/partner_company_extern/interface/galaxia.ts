@@ -42,7 +42,7 @@ export interface GalaxiaIssueOut {
 export interface GalaxiaCheckOut {
   resCode: string;
   resMsg: string;
-  transactionId: string;
+  transactionId: string | null; // check 응답에는 transactionId가 없을 수 있음
   giftCertificate: {
     couponStatus: 'ACTIVE' | 'CANCEL' | 'INACTIVE';
     isUsed: boolean;

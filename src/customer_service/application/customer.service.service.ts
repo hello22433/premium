@@ -749,24 +749,27 @@ export class CustomerServiceService {
 
     const orderDelivery = await this.orderDeliveryRepository.findOne({
       where: {
-        id: map.orderDelivery.orderDeliveryId,
+        id: map.orderDelivery.id,
         deletedAt: IsNull(),
       },
       relations: ['orderProductMapping', 'orderProductMapping.product', 'orderProductMapping.order', 'orderHistory'],
     });
 
-    let resCouponStatus = orderDelivery?.couponStatus;
+    const resCouponStatus = orderDelivery?.couponStatus;
 
-    const history = this.orderHistoryRepository.create({
-      orderDeliveryId: map.orderDelivery.id,
-      userId: map.userId,
-      type: map.type,
-      content: map.content,
-      beforeChange: map.beforeChange,
-      afterChange: resCouponStatus,
-    });
+    // 상태가 변경된 경우에만 히스토리 저장
+    if (map.beforeChange !== resCouponStatus) {
+      const history = this.orderHistoryRepository.create({
+        orderDeliveryId: map.orderDelivery.id,
+        userId: map.userId,
+        type: map.type,
+        content: map.content,
+        beforeChange: map.beforeChange,
+        afterChange: resCouponStatus,
+      });
 
-    await this.orderHistoryRepository.save(history);
+      await this.orderHistoryRepository.save(history);
+    }
   }
 
   /**
