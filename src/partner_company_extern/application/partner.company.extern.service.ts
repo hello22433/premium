@@ -236,6 +236,7 @@ export class PartnerCompanyExternService {
       context = JSON.stringify(e);
       isSuccess = false;
       orderDelivery.status = IOrderDeliveryStatus.FAIL;
+      throw e;
     } finally {
       if (type !== null) {
         // 호출 이력 저장(성공/실패 구분) → 동일한 “REQUIRES_NEW” 트랜잭션에서 커밋됨
