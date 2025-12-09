@@ -54,7 +54,7 @@ export const EmailDeliveryTemplate = (obj: EmailDeliveryTemplateIn) => {
               </td>
               <!-- 사용방법 (오른쪽) -->
               <td style="valign=top; font-size=13px; line-height=1.6; color=#555;">
-                ${obj.useEmailContent}
+                ${normalizeLineBreaks(obj.useEmailContent, '<br>')}
               </td>
             </tr>
           </table>
