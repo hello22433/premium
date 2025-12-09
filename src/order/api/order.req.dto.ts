@@ -1,5 +1,5 @@
 import { IOrderStatus } from '../interface/order.status';
-import { IsArray, IsEnum, IsIn, IsNotEmpty, IsNumber, IsOptional, Matches } from 'class-validator';
+import { IsArray, IsEnum, IsIn, IsNotEmpty, IsNumber, IsOptional, IsString, Matches, MaxLength } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { dateAtRegexp } from '../../common/domain/date.regexp';
 import { PagingReqDto } from '../../common/api/dto/pagination.req.dto';
@@ -380,4 +380,26 @@ export class OrderUpdateEncourageDayReqBodyDto {
   @IsOptional()
   @IsNumber()
   encourageDay: number | null;
+}
+
+export class OrderUpdateTailTextReqParamDto {
+  @ApiProperty({
+    description: 'order_product_mapping id (상품별 설정)',
+  })
+  // ===================================
+  @IsNumber()
+  @IsNotEmpty()
+  @Type(() => Number)
+  id: number;
+}
+
+export class OrderUpdateTailTextReqBodyDto {
+  @ApiPropertyOptional({
+    description: '꼬리 광고 text (null 또는 빈 문자열이면 미사용)',
+  })
+  // ===================================
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  sendTailText: string | null;
 }

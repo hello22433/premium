@@ -30,6 +30,7 @@ import {
   OrderUpdateSettleReqDto,
   OrderUpdateTempReqDto,
   OrderUpdateEncourageDayReqBodyDto,
+  OrderUpdateTailTextReqBodyDto,
 } from '../api/order.req.dto';
 import {
   OrderCreateTempResDto,
@@ -2429,6 +2430,32 @@ export class OrderService {
     }
 
     orderProductMapping.encourageDay = encourageDay;
+    await this.orderProductMappingRepository.save(orderProductMapping);
+  }
+
+  /**
+   * 꼬리광고 설정 수정 (발송관리용, 상품별)
+   * @param orderProductMappingId order_product_mapping의 id
+   */
+  async updateTailText(user: ILoginUserInfo, orderProductMappingId: number, getBody: OrderUpdateTailTextReqBodyDto): Promise<void> {
+    const { sendTailText } = getBody;
+
+    const orderProductMapping = await this.orderProductMappingRepository.findOne({
+      where: { id: orderProductMappingId },
+      relations: ['order'],
+    });
+
+    if (!orderProductMapping) {
+      throw new BadRequestException('존재하지 않는 상품입니다.');
+    }
+
+    // 발송관리에서만 수정 가능 (주문완료 상태 이상)
+    if (orderProductMapping.order.status === IOrderStatus.TEMP) {
+      throw new BadRequestException('임시저장 상태에서는 꼬리광고를 설정할 수 없습니다.');
+    }
+
+    // 빈 문자열인 경우 null로 처리
+    orderProductMapping.sendTailText = sendTailText?.trim() || null;
     await this.orderProductMappingRepository.save(orderProductMapping);
   }
 

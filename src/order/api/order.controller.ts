@@ -48,6 +48,8 @@ import {
   OrderUpdateTempReqDto,
   OrderUpdateEncourageDayReqParamDto,
   OrderUpdateEncourageDayReqBodyDto,
+  OrderUpdateTailTextReqParamDto,
+  OrderUpdateTailTextReqBodyDto,
 } from './order.req.dto';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
 import {
@@ -490,5 +492,26 @@ export class OrderController {
     @Body() getBody: OrderUpdateEncourageDayReqBodyDto,
   ) {
     return this.orderService.updateEncourageDay(user, getParam.id, getBody);
+  }
+
+  @ApiOperation({
+    summary: '꼬리광고 설정 수정 API (발송관리용)',
+    description: '발송관리에서 꼬리광고 텍스트를 설정합니다. null 또는 빈 문자열이면 미사용.',
+  })
+  @ApiBearerAuth()
+  @ApiOkResponse({
+    description: '성공적으로 수정한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '존재하지 않는 주문이거나 임시저장 상태인 경우',
+  })
+  // =========================================
+  @Patch('/order/:id/tail-text')
+  async updateTailText(
+    @User() user: ILoginUserInfo,
+    @Param() getParam: OrderUpdateTailTextReqParamDto,
+    @Body() getBody: OrderUpdateTailTextReqBodyDto,
+  ) {
+    return this.orderService.updateTailText(user, getParam.id, getBody);
   }
 }
