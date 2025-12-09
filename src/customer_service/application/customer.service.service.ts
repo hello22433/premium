@@ -482,61 +482,50 @@ export class CustomerServiceService {
       throw new BadRequestException('존재하지 않는 주문 건입니다.');
     }
 
-    const type = orderDelivery.orderProductMapping!.product.partnerCompany!.type;
+    const partnerType = orderDelivery.orderProductMapping!.product.partnerCompany!.type;
+    const beforeChange = orderDelivery.couponStatus;
 
-    switch (type) {
-      case 'SSG': {
-        switch (couponStatus) {
-          case OrderDeliveryCouponStatus.USED:
-          case OrderDeliveryCouponStatus.EXPIRED: {
-            throw new BadRequestException('변경할 수 없는 핀 상태입니다.');
-          }
-          case OrderDeliveryCouponStatus.NOT_USED: {
-            orderDelivery.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
-            await this.orderDeliveryRepository.save(orderDelivery);
-            break;
-          }
-          case OrderDeliveryCouponStatus.REFUND_CANCEL: {
-            orderDelivery.couponStatus = OrderDeliveryCouponStatus.REFUND_CANCEL;
-            await this.orderDeliveryRepository.save(orderDelivery);
-            break;
-          }
-          case OrderDeliveryCouponStatus.CANCEL: {
+    switch (partnerType) {
+      case 'GS_M_BIZ':
+      case 'GIFT_SHOW':
+      case 'CULTURELAND':
+      case 'GALAXIA':
+      case 'GIFTIEL':
+      case 'DAOU': {
+        if (beforeChange === 'USED' || beforeChange === 'CANCEL' || beforeChange === 'EXPIRED') {
+          throw new BadRequestException('현재 변경을 할 수 없는 핀상태입니다.');
+        }
+
+        if (couponStatus === OrderDeliveryCouponStatus.CANCEL || couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL) {
+          const result = await this.partnerCompanyExternService.cancel(orderDelivery);
+
+          if (result.message === '폐기 완료') {
             orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
             await this.orderDeliveryRepository.save(orderDelivery);
-            break;
+          } else {
+            throw new InternalServerErrorException(result.message);
           }
-          default: {
-            throw new BadRequestException('지원하지 않는 핀 상태입니다.');
-          }
+        } else {
+          throw new BadRequestException('변경을 할 수 없는 핀상태입니다.');
         }
         break;
       }
-      case 'GIFT_SHOW':
-      case 'GS_M_BIZ':
-      case 'GIFTIEL':
-      case 'CULTURELAND':
-      case 'GALAXIA': {
-        switch (couponStatus) {
-          case OrderDeliveryCouponStatus.NOT_USED:
-          case OrderDeliveryCouponStatus.USED:
-          case OrderDeliveryCouponStatus.EXPIRED:
-          case OrderDeliveryCouponStatus.REFUND_CANCEL: {
-            throw new BadRequestException('변경할 수 없는 핀 상태입니다.');
-          }
-          case OrderDeliveryCouponStatus.CANCEL: {
-            orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
-            await this.partnerCompanyExternService.cancel(orderDelivery);
-            await this.orderDeliveryRepository.save(orderDelivery);
-            break;
-          }
-          default: {
-            throw new BadRequestException('지원하지 않는 핀 상태입니다.');
-          }
+      case 'SSG': {
+        if (beforeChange === 'USED' || beforeChange === 'EXPIRED') {
+          throw new BadRequestException('현재 변경을 할 수 없는 핀상태입니다.');
         }
+
+        if (couponStatus === OrderDeliveryCouponStatus.CANCEL || couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL) {
+          orderDelivery.couponStatus = couponStatus;
+          await this.orderDeliveryRepository.save(orderDelivery);
+        } else {
+          throw new BadRequestException('변경을 할 수 없는 핀상태입니다.');
+        }
+        break;
       }
       default: {
-        // throw new BadRequestException('지원하지 않는 협력사입니다.');
+        orderDelivery.couponStatus = couponStatus;
+        await this.orderDeliveryRepository.save(orderDelivery);
       }
     }
   }
