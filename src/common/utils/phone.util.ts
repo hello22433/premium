@@ -48,4 +48,41 @@ export class PhoneUtil {
 
     return phone;
   }
+
+  /**
+   * 유효한 전화번호인지 검증 (010으로 시작하는 11자리 휴대폰 번호)
+   * @param phone 전화번호
+   * @returns 유효한 전화번호면 true
+   */
+  static isValidPhone(phone: string): boolean {
+    if (!phone) return false;
+
+    const digits = phone.replace(/\D/g, '');
+
+    // 11자리 체크
+    if (digits.length !== 11) return false;
+
+    // 숫자만 포함되어 있는지 체크
+    if (!/^\d{11}$/.test(digits)) return false;
+
+    // 010으로 시작하는지 체크
+    if (!digits.startsWith('010')) return false;
+
+    // 4번째 자리가 0 또는 1이 아닌지 체크 (2-9만 허용)
+    const fourthDigit = digits[3];
+    if (fourthDigit === '0' || fourthDigit === '1') return false;
+
+    return /^010[2-9][0-9]{7}$/.test(digits);
+  }
+
+  /**
+   * 유효한 이메일인지 검증
+   * @param email 이메일 주소
+   * @returns 유효한 이메일이면 true
+   */
+  static isValidEmail(email: string): boolean {
+    if (!email) return false;
+    const emailRegex = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
+    return emailRegex.test(email);
+  }
 }

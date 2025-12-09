@@ -371,15 +371,15 @@ export class CustomerServiceService {
       }
     }
 
-    // emailReceiverPhone 복호화 및 마스킹 처리
-    let maskedEmailReceiverPhone: string | null = null;
+    // emailReceiverPhone 복호화 및 하이픈 포맷 처리 (history 페이지에서는 원문 표시)
+    let formattedEmailReceiverPhone: string | null = null;
     if (queryBuilder.emailReceiverPhone) {
       try {
         const decryptedPhone = this.cryptoCipher.decryptDeliveryTarget(queryBuilder.emailReceiverPhone);
-        maskedEmailReceiverPhone = MaskingUtil.maskPhoneNumber(decryptedPhone);
+        formattedEmailReceiverPhone = PhoneUtil.formatWithHyphen(decryptedPhone);
       } catch (error) {
         // 복호화 실패 시 원본 데이터 사용
-        maskedEmailReceiverPhone = queryBuilder.emailReceiverPhone;
+        formattedEmailReceiverPhone = queryBuilder.emailReceiverPhone;
       }
     }
 
@@ -433,7 +433,7 @@ export class CustomerServiceService {
       transactionId: queryBuilder.transactionId || null,
       validityStartsNextDay: displayPartnerCompany?.validityStartsNextDay ?? true,
       emailCouponStatus: queryBuilder.emailCouponStatus ?? null,
-      emailReceiverPhone: maskedEmailReceiverPhone,
+      emailReceiverPhone: formattedEmailReceiverPhone,
     };
   }
 
@@ -894,9 +894,8 @@ export class CustomerServiceService {
       }
       case '수신정보 변경요청': {
         const orderDelivery = map.orderDelivery as OrderDeliveryEntity;
-        const encryptedNewTarget = this.cryptoCipher.encryptDeliveryTarget(
-          PhoneUtil.normalizeDeliveryTarget(map.afterChange),
-        );
+        const newTarget = map.afterChange;
+        let encryptedNewTarget: string;
 
         // 이메일 발송 건에서 핀이 발급된 경우: emailReceiverPhone 변경
         // 그 외의 경우: deliveryTarget 변경
@@ -905,17 +904,29 @@ export class CustomerServiceService {
           orderDelivery.barCode &&
           orderDelivery.emailReceiverPhone
         ) {
-          // 핀이 발급된 이메일 쿠폰: emailReceiverPhone(핸드폰 번호) 변경
+          // 핀이 발급된 이메일 쿠폰: 전화번호만 입력 가능
+          if (!PhoneUtil.isValidPhone(newTarget)) {
+            throw new BadRequestException('핀이 발급된 이메일 쿠폰은 유효한 전화번호만 입력 가능합니다.');
+          }
+          encryptedNewTarget = this.cryptoCipher.encryptDeliveryTarget(PhoneUtil.normalize(newTarget));
           await this.orderDeliveryRepository.update(map.orderDeliveryId, {
             emailReceiverPhone: encryptedNewTarget,
           });
         } else if (orderDelivery.deliveryMethod === IOrderSendMethod.EMAIL && !orderDelivery.barCode) {
-          // 핀이 발급되지 않은 이메일 쿠폰: deliveryTarget(이메일) 변경
+          // 핀이 발급되지 않은 이메일 쿠폰: 이메일만 입력 가능
+          if (!PhoneUtil.isValidEmail(newTarget)) {
+            throw new BadRequestException('핀이 발급되지 않은 이메일 쿠폰은 유효한 이메일 주소만 입력 가능합니다.');
+          }
+          encryptedNewTarget = this.cryptoCipher.encryptDeliveryTarget(newTarget);
           await this.orderDeliveryRepository.update(map.orderDeliveryId, {
             deliveryTarget: encryptedNewTarget,
           });
         } else {
-          // 그 외 (SMS, 알림톡 등): deliveryTarget 변경
+          // 그 외 (SMS, 알림톡 등): 전화번호만 입력 가능
+          if (!PhoneUtil.isValidPhone(newTarget)) {
+            throw new BadRequestException('유효한 전화번호를 입력해 주세요.');
+          }
+          encryptedNewTarget = this.cryptoCipher.encryptDeliveryTarget(PhoneUtil.normalize(newTarget));
           await this.orderDeliveryRepository.update(map.orderDeliveryId, {
             deliveryTarget: encryptedNewTarget,
           });
