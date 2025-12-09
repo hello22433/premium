@@ -349,9 +349,17 @@ export class PartnerCompanyExternService {
           paramValue: orderDelivery.couponNum!,
         });
 
-        orderDelivery.couponStatus = giftCertificate.isUsed
-          ? OrderDeliveryCouponStatus.USED
-          : OrderDeliveryCouponStatus.NOT_USED;
+        // couponStatus 우선 확인: CANCEL, INACTIVE 상태 처리
+        if (giftCertificate.couponStatus === 'CANCEL') {
+          orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
+        } else if (giftCertificate.couponStatus === 'INACTIVE') {
+          orderDelivery.couponStatus = OrderDeliveryCouponStatus.EXPIRED;
+        } else {
+          // ACTIVE 상태일 때 isUsed로 사용여부 판단
+          orderDelivery.couponStatus = giftCertificate.isUsed
+            ? OrderDeliveryCouponStatus.USED
+            : OrderDeliveryCouponStatus.NOT_USED;
+        }
         orderDelivery.tradeAt = giftCertificate.usedDate ? new Date(giftCertificate.usedDate) : null;
         orderDelivery.galaxiaBalance = Number(giftCertificate.balance);
         break;
