@@ -166,6 +166,18 @@ export class CustomerServiceService {
         }
       }
 
+      // emailReceiverPhone 복호화 및 마스킹 처리
+      let maskedEmailReceiverPhone: string | null = null;
+      if (orderDelivery.emailReceiverPhone) {
+        try {
+          const decryptedPhone = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.emailReceiverPhone);
+          maskedEmailReceiverPhone = MaskingUtil.maskDeliveryTarget(decryptedPhone);
+        } catch (error) {
+          // 복호화 실패 시 원본 데이터로 마스킹 시도
+          maskedEmailReceiverPhone = MaskingUtil.maskDeliveryTarget(orderDelivery.emailReceiverPhone);
+        }
+      }
+
       // 실제 발송 시간 계산 (발송 완료 상태일 때 actualSendAt 사용)
       let actualSendAt: string | null = null;
       if (
@@ -198,6 +210,8 @@ export class CustomerServiceService {
         deliveryMethod: orderDelivery.deliveryMethod || null,
         couponStatus: orderDelivery.couponStatus ?? OrderDeliveryCouponStatus.NOT_USED,
         barCode: orderDelivery.barCode ? MaskingUtil.maskPinNumber(orderDelivery.barCode) : null,
+        emailCouponStatus: orderDelivery.emailCouponStatus,
+        emailReceiverPhone: maskedEmailReceiverPhone,
       });
     }
 
@@ -357,6 +371,18 @@ export class CustomerServiceService {
       }
     }
 
+    // emailReceiverPhone 복호화 및 마스킹 처리
+    let maskedEmailReceiverPhone: string | null = null;
+    if (queryBuilder.emailReceiverPhone) {
+      try {
+        const decryptedPhone = this.cryptoCipher.decryptDeliveryTarget(queryBuilder.emailReceiverPhone);
+        maskedEmailReceiverPhone = MaskingUtil.maskPhoneNumber(decryptedPhone);
+      } catch (error) {
+        // 복호화 실패 시 원본 데이터 사용
+        maskedEmailReceiverPhone = queryBuilder.emailReceiverPhone;
+      }
+    }
+
     // 실제 발송 시간 계산 (발송 완료 상태일 때 actualSendAt 사용)
     let actualSendAt: string | null = null;
     if (
@@ -406,6 +432,8 @@ export class CustomerServiceService {
       expireDay: displayProduct.expireDay.toString(),
       transactionId: queryBuilder.transactionId || null,
       validityStartsNextDay: displayPartnerCompany?.validityStartsNextDay ?? true,
+      emailCouponStatus: queryBuilder.emailCouponStatus ?? null,
+      emailReceiverPhone: maskedEmailReceiverPhone,
     };
   }
 
@@ -1043,18 +1071,35 @@ export class CustomerServiceService {
       throw new NotFoundException('존재하지 않는 발송 정보입니다.');
     }
 
-    // deliveryTarget 복호화 처리
+    // 이메일 발송 건에서 핀이 발급된 경우: emailReceiverPhone 반환
+    // 그 외의 경우: deliveryTarget 반환
     let decryptedDeliveryTarget = '';
-    if (orderDelivery.deliveryTarget) {
+
+    if (
+      orderDelivery.deliveryMethod === IOrderSendMethod.EMAIL &&
+      orderDelivery.barCode &&
+      orderDelivery.emailReceiverPhone
+    ) {
+      // 핀이 발급된 이메일 쿠폰: emailReceiverPhone(핸드폰 번호) 반환
       try {
-        decryptedDeliveryTarget = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.deliveryTarget);
-        // 이메일이 아닌 경우 (전화번호) 하이픈 포맷 적용
-        if (!decryptedDeliveryTarget.includes('@')) {
-          decryptedDeliveryTarget = PhoneUtil.formatWithHyphen(decryptedDeliveryTarget);
-        }
+        decryptedDeliveryTarget = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.emailReceiverPhone);
+        decryptedDeliveryTarget = PhoneUtil.formatWithHyphen(decryptedDeliveryTarget);
       } catch (error) {
-        // 복호화 실패 시 원본 데이터 사용
-        decryptedDeliveryTarget = orderDelivery.deliveryTarget;
+        decryptedDeliveryTarget = orderDelivery.emailReceiverPhone;
+      }
+    } else {
+      // 그 외: deliveryTarget 반환
+      if (orderDelivery.deliveryTarget) {
+        try {
+          decryptedDeliveryTarget = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.deliveryTarget);
+          // 이메일이 아닌 경우 (전화번호) 하이픈 포맷 적용
+          if (!decryptedDeliveryTarget.includes('@')) {
+            decryptedDeliveryTarget = PhoneUtil.formatWithHyphen(decryptedDeliveryTarget);
+          }
+        } catch (error) {
+          // 복호화 실패 시 원본 데이터 사용
+          decryptedDeliveryTarget = orderDelivery.deliveryTarget;
+        }
       }
     }
 
