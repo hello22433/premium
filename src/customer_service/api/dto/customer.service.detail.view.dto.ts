@@ -3,6 +3,7 @@ import { IOrderDeliveryStatus } from '../../../delivery/interface/order.delivery
 import { IOrderDeliveryMethod } from '../../../delivery/interface/order.delivery.method';
 import { IOrderSendMethod } from '../../../order/interface/order.send.method';
 import { OrderDeliveryCouponStatus } from '../../../delivery/interface/order.delivery.coupon.status';
+import { OrderDeliveryEmailCouponStatus } from '../../../delivery/interface/order.delivery.email.coupon.status';
 
 export class CustomerServiceDetailViewDto {
   // @ApiProperty({
@@ -140,4 +141,17 @@ export class CustomerServiceDetailViewDto {
     enum: IOrderDeliveryMethod,
   })
   method: IOrderSendMethod;
+
+  @ApiProperty({
+    description: '이메일 쿠폰 발급 상태 (SEND: 발급완료, PIN_ISSUED: 문자발송실패, FAIL: 핀발급실패)',
+    enum: OrderDeliveryEmailCouponStatus,
+    nullable: true,
+  })
+  emailCouponStatus: OrderDeliveryEmailCouponStatus | null;
+
+  @ApiProperty({
+    description: '이메일 쿠폰 수령 시 입력한 핸드폰 번호 (마스킹 처리됨)',
+    nullable: true,
+  })
+  emailReceiverPhone: string | null;
 }

@@ -36,6 +36,7 @@ import { MaskingUtil } from 'src/common/utils/masking.util';
 import { CryptoCipher } from 'src/common/infra/crypto.cipher';
 import { PhoneUtil } from 'src/common/utils/phone.util';
 import { OrderDeliveryRefundStatusEnum } from '../../delivery/interface/order.delivery.refund.status.enum';
+import { IOrderSendMethod } from '../../order/interface/order.send.method';
 
 const dayjs = require('dayjs');
 const timezone = require('dayjs/plugin/timezone');
@@ -264,6 +265,18 @@ export class CustomerServiceService {
       const displayPartnerCompany =
         orderDelivery.choiceSelectProduct?.partnerCompany ?? orderDelivery.orderProductMapping.product.partnerCompany;
 
+      // emailReceiverPhone 복호화 및 마스킹 처리
+      let maskedEmailReceiverPhone: string | null = null;
+      if (orderDelivery.emailReceiverPhone) {
+        try {
+          const decryptedPhone = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.emailReceiverPhone);
+          maskedEmailReceiverPhone = MaskingUtil.maskDeliveryTarget(decryptedPhone);
+        } catch (error) {
+          // 복호화 실패 시 원본 데이터로 마스킹 시도
+          maskedEmailReceiverPhone = MaskingUtil.maskDeliveryTarget(orderDelivery.emailReceiverPhone);
+        }
+      }
+
       result.push({
         id: orderDelivery.id,
         registerAt: format(orderDelivery.createdAt, DateFormatStr),
@@ -283,6 +296,8 @@ export class CustomerServiceService {
         couponStatus: orderDelivery.couponStatus,
         apiErrorMessage: orderDelivery.apiErrorMessage,
         method: orderDelivery.deliveryMethod,
+        emailCouponStatus: orderDelivery.emailCouponStatus,
+        emailReceiverPhone: maskedEmailReceiverPhone,
       });
     }
 
@@ -858,20 +873,40 @@ export class CustomerServiceService {
         break;
       }
       case '수신정보 변경요청': {
-        const orderDeliveryDto = new OrderDeliveryEntity();
-        orderDeliveryDto.id = map.orderDeliveryId;
-        orderDeliveryDto.deliveryTarget = this.cryptoCipher.encryptDeliveryTarget(
+        const orderDelivery = map.orderDelivery as OrderDeliveryEntity;
+        const encryptedNewTarget = this.cryptoCipher.encryptDeliveryTarget(
           PhoneUtil.normalizeDeliveryTarget(map.afterChange),
         );
 
-        await this.orderDeliveryRepository.save(orderDeliveryDto);
+        // 이메일 발송 건에서 핀이 발급된 경우: emailReceiverPhone 변경
+        // 그 외의 경우: deliveryTarget 변경
+        if (
+          orderDelivery.deliveryMethod === IOrderSendMethod.EMAIL &&
+          orderDelivery.barCode &&
+          orderDelivery.emailReceiverPhone
+        ) {
+          // 핀이 발급된 이메일 쿠폰: emailReceiverPhone(핸드폰 번호) 변경
+          await this.orderDeliveryRepository.update(map.orderDeliveryId, {
+            emailReceiverPhone: encryptedNewTarget,
+          });
+        } else if (orderDelivery.deliveryMethod === IOrderSendMethod.EMAIL && !orderDelivery.barCode) {
+          // 핀이 발급되지 않은 이메일 쿠폰: deliveryTarget(이메일) 변경
+          await this.orderDeliveryRepository.update(map.orderDeliveryId, {
+            deliveryTarget: encryptedNewTarget,
+          });
+        } else {
+          // 그 외 (SMS, 알림톡 등): deliveryTarget 변경
+          await this.orderDeliveryRepository.update(map.orderDeliveryId, {
+            deliveryTarget: encryptedNewTarget,
+          });
+        }
 
         const resendDto = new CustomerServiceReSendReqDto();
         resendDto.orderDeliveryId = map.orderDeliveryId;
 
         await this.reSend(resendDto);
 
-        afterChange = orderDeliveryDto.deliveryTarget;
+        afterChange = encryptedNewTarget;
         break;
       }
       case '폐기': {

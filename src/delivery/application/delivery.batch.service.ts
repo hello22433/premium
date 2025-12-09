@@ -111,8 +111,10 @@ export class DeliveryBatchService {
       const product = orderDelivery.orderProductMapping.product;
       const isChoiceCoupon = product.type === IProductType.CHOICE;
 
-      // 1.0 barCode가 없는 경우 PIN 발급 (초이스쿠폰 제외)
-      if (!orderDelivery.barCode && !isChoiceCoupon) {
+      // 1.0 barCode가 없는 경우 PIN 발급 (초이스쿠폰, 이메일 발송 제외)
+      // 이메일 발송은 고객이 쿠폰 수령 시점에 핀 발급
+      const isEmailDelivery = orderDelivery.deliveryMethod === IOrderSendMethod.EMAIL;
+      if (!orderDelivery.barCode && !isChoiceCoupon && !isEmailDelivery) {
         try {
           // SSG 이벤트 조회 (SSG 타입인 경우)
           let ssgEvent: SsgEventEntity | null = null;
@@ -694,63 +696,95 @@ export class DeliveryBatchService {
 
     // 1.3 EMAIL 일 경우
     if (deliveryMethod === IOrderSendMethod.EMAIL) {
-      const emailSendHistory = new EmailSendHistoryEntity();
-      emailSendHistory.email = decryptedDeliveryTarget;
-      emailSendHistory.type = EmailType.COUPON;
-      emailSendHistory.code = generateRandomCode();
-      emailSendHistory.expireAt = addDays(new Date(), EmailCertifyExpireDay);
-      await this.emailSendHistoryRepository.save(emailSendHistory);
+      // 이메일 쿠폰이 이미 수령되어 핀이 발급된 경우 (barCode가 있고 emailReceiverPhone이 있는 경우)
+      // 이메일 대신 문자로 재발송
+      if (orderDelivery.barCode && orderDelivery.emailReceiverPhone) {
+        let decryptedEmailReceiverPhone = orderDelivery.emailReceiverPhone;
+        try {
+          decryptedEmailReceiverPhone = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.emailReceiverPhone);
+        } catch (error) {
+          this.logger.error(`Failed to decrypt emailReceiverPhone for orderDelivery ${orderDelivery.id}: ${error}`);
+        }
 
-      const encryptKeyEmail = this.cryptoCipher.encryptJson({
-        id: orderDelivery.id,
-        transactionId: orderDelivery.transactionId,
-        emailHistoryId: emailSendHistory.id,
-      } as OrderEncryptKey);
+        try {
+          const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber!;
+          await this.smsSend.send({
+            msgType: 'M',
+            to: decryptedEmailReceiverPhone,
+            from: fromPhoneNumber,
+            subject: title,
+            text: text,
+            filePath: filePathList,
+          });
+          orderDelivery.status = IOrderDeliveryStatus.COMPLETE;
+          orderDelivery.actualSendAt = new Date();
+          deliveryHistory.context = text;
+          deliveryHistory.target = decryptedEmailReceiverPhone;
+        } catch (e) {
+          orderDelivery.status = IOrderDeliveryStatus.FAIL;
+          deliveryHistory.context = JSON.stringify(e);
+          deliveryHistory.isSuccess = false;
+        }
+      } else {
+        // 핀이 발급되지 않은 경우: 이메일로 쿠폰 수령 링크 발송
+        const emailSendHistory = new EmailSendHistoryEntity();
+        emailSendHistory.email = decryptedDeliveryTarget;
+        emailSendHistory.type = EmailType.COUPON;
+        emailSendHistory.code = generateRandomCode();
+        emailSendHistory.expireAt = addDays(new Date(), EmailCertifyExpireDay);
+        await this.emailSendHistoryRepository.save(emailSendHistory);
 
-      const url = `${this.configService.getOrThrow('EMAIL_RECEIVE_URL')}/${encryptKeyEmail}`;
-      let qrCodeImagePath = undefined;
-      const emailSendType = orderDelivery.orderProductMapping.emailSendType;
-      if (emailSendType === OrderEmailSendType.QR) {
-        const qrCodeBuffer = await QRCode.toBuffer(url);
+        const encryptKeyEmail = this.cryptoCipher.encryptJson({
+          id: orderDelivery.id,
+          transactionId: orderDelivery.transactionId,
+          emailHistoryId: emailSendHistory.id,
+        } as OrderEncryptKey);
 
-        // 파일명 생성
-        const uuid = randomUUID();
-        const fileName = `qr-codes/${uuid}.png`;
-        const originalName = `${uuid}.png`;
+        const url = `${this.configService.getOrThrow('EMAIL_RECEIVE_URL')}/${encryptKeyEmail}`;
+        let qrCodeImagePath = undefined;
+        const emailSendType = orderDelivery.orderProductMapping.emailSendType;
+        if (emailSendType === OrderEmailSendType.QR) {
+          const qrCodeBuffer = await QRCode.toBuffer(url);
 
-        const fileUrl = await this.fileStorage.uploadImageFileWithBuffer(qrCodeBuffer, fileName, originalName);
-        qrCodeImagePath = fileUrl.url;
-      }
+          // 파일명 생성
+          const uuid = randomUUID();
+          const fileName = `qr-codes/${uuid}.png`;
+          const originalName = `${uuid}.png`;
 
-      const useEmailContent = orderDelivery.orderProductMapping.useEmailContent ?? '';
-      const emailText = EmailDeliveryTemplate({
-        topImagePath: orderDelivery.orderProductMapping.topImagePath,
-        productImagePath: orderDelivery.orderProductMapping.product.imagePath,
-        text,
-        url: url,
-        code: emailSendHistory.code,
-        useEmailContent,
-        qrCodeImagePath,
-      });
+          const fileUrl = await this.fileStorage.uploadImageFileWithBuffer(qrCodeBuffer, fileName, originalName);
+          qrCodeImagePath = fileUrl.url;
+        }
 
-      try {
-        const fromEmail = orderDelivery.orderProductMapping.fromEmail;
-        await this.mailSend.send({
-          saveSentMail: 'N',
-          bcc: undefined,
-          cc: undefined,
-          content: emailText,
-          subject: title,
-          to: decryptedDeliveryTarget,
-          fromEmail: fromEmail,
+        const useEmailContent = orderDelivery.orderProductMapping.useEmailContent ?? '';
+        const emailText = EmailDeliveryTemplate({
+          topImagePath: orderDelivery.orderProductMapping.topImagePath,
+          productImagePath: orderDelivery.orderProductMapping.product.imagePath,
+          text,
+          url: url,
+          code: emailSendHistory.code,
+          useEmailContent,
+          qrCodeImagePath,
         });
-        orderDelivery.status = IOrderDeliveryStatus.COMPLETE;
-        orderDelivery.actualSendAt = new Date();
-        deliveryHistory.context = text;
-      } catch (e) {
-        orderDelivery.status = IOrderDeliveryStatus.FAIL;
-        deliveryHistory.context = JSON.stringify(e);
-        deliveryHistory.isSuccess = false;
+
+        try {
+          const fromEmail = orderDelivery.orderProductMapping.fromEmail;
+          await this.mailSend.send({
+            saveSentMail: 'N',
+            bcc: undefined,
+            cc: undefined,
+            content: emailText,
+            subject: title,
+            to: decryptedDeliveryTarget,
+            fromEmail: fromEmail,
+          });
+          orderDelivery.status = IOrderDeliveryStatus.COMPLETE;
+          orderDelivery.actualSendAt = new Date();
+          deliveryHistory.context = text;
+        } catch (e) {
+          orderDelivery.status = IOrderDeliveryStatus.FAIL;
+          deliveryHistory.context = JSON.stringify(e);
+          deliveryHistory.isSuccess = false;
+        }
       }
     }
     deliveryHistoryList.push(deliveryHistory);
