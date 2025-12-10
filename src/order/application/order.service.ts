@@ -669,6 +669,12 @@ export class OrderService {
 
     const order = await queryBuilder.getOne();
 
+    // DEBUG: 업태/종목 값 확인
+    console.log('=== DEBUG getOrderCompleteReport ===');
+    console.log('order.user:', JSON.stringify(order?.user, null, 2));
+    console.log('industryType:', order?.user?.industryType);
+    console.log('industryItem:', order?.user?.industryItem);
+
     if (!order) {
       throw new BadRequestException('주문이 존재하지 않습니다.');
     }
