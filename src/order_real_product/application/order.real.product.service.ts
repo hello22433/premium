@@ -272,7 +272,11 @@ export class OrderRealProductService {
     for (const realProduct of orderRealProductList) {
       const orderRealProduct = new OrderRealProductMappingEntity();
       const quantity = realProduct.quantity;
-      const price = realProduct.price; // 각 상품별 공급가액 (단가)
+      const price = realProduct.price ?? 0; // 각 상품별 공급가액 (단가)
+
+      if (!price || price <= 0) {
+        throw new BadRequestException('공급가액을 입력해주세요.');
+      }
 
       // 공급가액 + VAT 10% = 총액
       const totalPrice = price + Math.floor(price * 0.1);
