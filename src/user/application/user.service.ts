@@ -25,6 +25,9 @@ import { IUserAuthority } from '../interface/user.authority';
 import { IUserStatus } from '../interface/user.status';
 import { IUserSettleCondition } from '../interface/user.settle.condition';
 import { IUserSettleMethod } from '../interface/user.settle.method';
+import { ActivityLogService } from '../../activity_log/application/activity.log.service';
+import { ActivityLogActionType } from '../../activity_log/interface/activity.log.action.type';
+import { ActivityLogResult } from '../../activity_log/interface/activity.log.result';
 
 @Injectable()
 export class UserService {
@@ -40,6 +43,7 @@ export class UserService {
     private passwordPolicyRepository: Repository<PasswordPolicyEntity>,
     @Inject('IMailSend')
     private readonly mailSendService: IMailSend,
+    private activityLogService: ActivityLogService,
   ) {}
 
   async isExistEmail(email: string) {
@@ -198,6 +202,23 @@ export class UserService {
       email: user.email,
       authority: user.authority,
     };
+
+    // 로그인 성공 Activity Log 기록
+    await this.activityLogService.createLog({
+      userId: user.id,
+      userEmail: user.email,
+      method: 'POST',
+      requestUrl: '/user/login-email-password',
+      actionType: ActivityLogActionType.LOGIN,
+      ipAddress: reqIp || '',
+      statusCode: 200,
+      result: ActivityLogResult.SUCCESS,
+      responseTime: 0,
+      requestParams: {
+        authority: user.authority,
+        businessName: user.businessName,
+      },
+    });
 
     if (emailCodeCount === 0) {
       return {
