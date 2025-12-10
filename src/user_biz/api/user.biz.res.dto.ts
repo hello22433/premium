@@ -20,6 +20,16 @@ export class UserBizGetBuzInfoDto {
     description: '회사 전화번호',
   })
   businessPhoneNumber: string;
+
+  @ApiProperty({
+    description: '업태',
+  })
+  industryType: string;
+
+  @ApiProperty({
+    description: '종목',
+  })
+  industryItem: string;
 }
 
 export class UserBizGetBuzInfoResDto {

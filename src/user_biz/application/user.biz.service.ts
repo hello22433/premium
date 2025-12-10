@@ -15,6 +15,8 @@ export class UserBizService {
         businessAddress: crawlingResponse.data.address ?? '',
         businessNumber: crawlingResponse.data.bizNumber ?? '',
         businessPhoneNumber: crawlingResponse.data.bizTell ?? '',
+        industryType: crawlingResponse.data.industryType ?? '',
+        industryItem: crawlingResponse.data.industryItem ?? '',
       };
     }
 

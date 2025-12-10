@@ -7,5 +7,7 @@ export interface CrawlingResponse {
     address?: string; // 회사 주소
     bizNumber?: string; // 사업자번호
     bizTell?: string; // 전화번호
+    industryType?: string; // 업태
+    industryItem?: string; // 종목
   };
 }

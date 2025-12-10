@@ -42,6 +42,14 @@ export class UserBizBiznoCrawling {
       const addressElement = $('tr:contains(회사주소) td');
       const address = this.extractAddress(addressElement);
 
+      // 업태 가져오기
+      const industryType = this.getTextContent($('tr:contains(업 태) td span'))
+        || this.getTextContent($('tr:contains(업태) td span'));
+
+      // 종목 가져오기
+      const industryItem = this.getTextContent($('tr:contains(종 목) td span'))
+        || this.getTextContent($('tr:contains(종목) td span'));
+
       const data: Record<string, string> = {};
       if (companyName && companyStatus && address && bizNumber) {
         if (companyStatus.includes('폐업')) {
@@ -56,6 +64,8 @@ export class UserBizBiznoCrawling {
           data.address = address;
           data.bizNumber = bizNumber;
           data.bizTell = bizTell ?? '';
+          data.industryType = industryType ?? '';
+          data.industryItem = industryItem ?? '';
           response.status_code = 'OK';
         }
       } else {
