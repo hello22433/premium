@@ -561,6 +561,12 @@ export class OrderService {
             }
           }
 
+          // 파기된 경우('-')는 마스킹하지 않고 그대로 반환
+          let finalDeliveryTarget = decryptedDeliveryTarget;
+          if (decryptedDeliveryTarget !== '-' && orderProductMapping.sendMethod !== 'EMAIL') {
+            finalDeliveryTarget = maskBarCode(decryptedDeliveryTarget);
+          }
+
           orderDeliveryList.push({
             id: orderDelivery.id,
             sendRequestAt: orderDelivery.sendRequestAt ? format(orderDelivery.sendRequestAt, DateFormatStr) : null,
@@ -568,10 +574,7 @@ export class OrderService {
             amount: orderProductMapping.product.price ?? null,
             barCode: orderDelivery.barCode ? maskBarCode(orderDelivery.barCode) : null,
             deliveryMethod: orderDelivery.deliveryMethod,
-            deliveryTarget:
-              orderProductMapping.sendMethod !== 'EMAIL'
-                ? maskBarCode(decryptedDeliveryTarget)
-                : decryptedDeliveryTarget,
+            deliveryTarget: finalDeliveryTarget,
           });
         }
 
