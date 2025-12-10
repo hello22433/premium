@@ -73,6 +73,7 @@ import { SettleUserStatusEnum } from '../interface/settle.user.status';
 import { SettleUserPerDetailViewDto } from '../api/dto/settle.user.per.detail.view.dto';
 import { SettleUserOrderDetailEnum } from '../interface/settle.user.order.detail';
 import { UserSettlePeriodConditionEnum } from '../../user/interface/user.settle.period.condition.enum';
+import { IUserSettleCondition } from '../../user/interface/user.settle.condition';
 import { ActivityLogService } from '../../activity_log/application/activity.log.service';
 import { ActivityLogResult } from '../../activity_log/interface/activity.log.result';
 
@@ -1578,7 +1579,8 @@ export class SettleService {
 
   /**
    * 로그인한 사용자의 잔여 발송 한도 조회
-   * 공식: 잔여발송한도 = 최대서비스한도 + 선입금금액 - 발송금액(서비스금액 + 정산기일초과금액) + 정산금액
+   * - 선정산(PRE_PAYMENT): 최대한도 = 선충전잔액 (balance)
+   * - 후정산(POST_PAYMENT): 최대한도 = 선충전잔액 + 여신한도 (balance + maximumLimit)
    * @param user 로그인한 사용자 정보
    * @returns 잔여 발송 한도 정보
    */
@@ -1606,8 +1608,18 @@ export class SettleService {
     // 발송금액 = 서비스금액 + 정산기일초과금액
     const deliveryAmount = userEntity.serviceAmount + overdueAmount;
 
-    // 잔여발송한도 = 최대서비스한도 - 주문금액
-    const remainServiceAmount = userEntity.maximumLimit - userEntity.allSettleAmount;
+    // 정산 조건에 따른 최대 한도 계산
+    // - 선정산(PRE_PAYMENT): 최대한도 = 선충전잔액
+    // - 후정산(POST_PAYMENT): 최대한도 = 선충전잔액 + 여신한도
+    let effectiveMaxLimit: number;
+    if (userEntity.settleCondition === IUserSettleCondition.PRE_PAYMENT) {
+      effectiveMaxLimit = userEntity.balance;
+    } else {
+      effectiveMaxLimit = userEntity.balance + userEntity.maximumLimit;
+    }
+
+    // 잔여발송한도 = 유효최대한도 - 주문금액
+    const remainServiceAmount = effectiveMaxLimit - userEntity.allSettleAmount;
 
     return {
       maximumLimit: userEntity.maximumLimit,

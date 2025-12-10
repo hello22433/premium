@@ -64,6 +64,7 @@ import { PartnerCompanyExternService } from '../../partner_company_extern/applic
 import { DeliveryCreateCouponImage } from '../../delivery/infra/delivery.create.coupon.image';
 import { UserEntity } from '../../entity/user.entity';
 import { IUserAuthority } from '../../user/interface/user.authority';
+import { IUserSettleCondition } from '../../user/interface/user.settle.condition';
 import { IOrderSection } from '../interface/order.section';
 import {
   OrderCompleteReportDeliveryViewDto,
@@ -405,6 +406,7 @@ export class OrderService {
       productList: productList,
       settlePeriodCondition: user.settlePeriodCondition,
       settlePeriodCount: user.settlePeriodCount,
+      isPreSettle: user.settleCondition === IUserSettleCondition.PRE_PAYMENT,
     };
   }
 
@@ -499,6 +501,7 @@ export class OrderService {
       productList: productList,
       settlePeriodCondition: order.user!.settlePeriodCondition,
       settlePeriodCount: order.user!.settlePeriodCount,
+      isPreSettle: order.user!.settleCondition === IUserSettleCondition.PRE_PAYMENT,
     };
   }
 

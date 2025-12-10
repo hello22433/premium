@@ -81,6 +81,11 @@ export class OrderGetDetailResDto {
     description: '발송 조건 일',
   })
   settlePeriodCount: number | null;
+
+  @ApiProperty({
+    description: '선정산 여부 (true: 선정산, false: 후정산)',
+  })
+  isPreSettle: boolean;
 }
 
 export class OrderGetDeliveryCompleteReportDetailResDto {
