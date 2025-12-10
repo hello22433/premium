@@ -399,11 +399,15 @@ export class OrderRealProductService {
   async updateApprove(user: ILoginUserInfo, getBody: OrderRealProductUpdateRequestReqDto): Promise<void> {
     const { id } = getBody;
 
+    // 수정요청 승인은 관리자만 가능
+    if (user.authority !== IUserAuthority.SUPER_ADMIN && user.authority !== IUserAuthority.OPERATION_ADMIN) {
+      throw new BadRequestException('수정요청 승인 권한이 없습니다.');
+    }
+
     const order = await this.orderRepository
       .createQueryBuilder('order')
       .leftJoinAndSelect('order.orderRealProductMappings', 'orderRealProductMappings')
       .where('order.id = :id', { id })
-      .andWhere('order.businessUserId = :businessUserId', { businessUserId: user.id })
       .getOne();
 
     if (!order) {
