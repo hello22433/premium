@@ -43,12 +43,12 @@ export class UserBizBiznoCrawling {
       const address = this.extractAddress(addressElement);
 
       // 업태 가져오기
-      const industryType = this.getTextContent($('tr:contains(업 태) td a'))
-        || this.getTextContent($('tr:contains(업태) td a'));
+      const industryType = this.getTextContent($('tr:contains(업 태) td'))
+        || this.getTextContent($('tr:contains(업태) td'));
 
       // 종목 가져오기
-      const industryItem = this.getTextContent($('tr:contains(종 목) td a'))
-        || this.getTextContent($('tr:contains(종목) td a'));
+      const industryItem = this.getTextContent($('tr:contains(종 목) td'))
+        || this.getTextContent($('tr:contains(종목) td'));
 
       const data: Record<string, string> = {};
       if (companyName && companyStatus && address && bizNumber) {
