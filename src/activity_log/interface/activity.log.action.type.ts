@@ -8,4 +8,6 @@ export enum ActivityLogActionType {
   CREATE = 'CREATE', // 생성
   UPDATE = 'UPDATE', // 수정
   DELETE = 'DELETE', // 삭제
+  BALANCE_CHARGE = 'BALANCE_CHARGE', // 선충전 잔액 충전
+  BALANCE_MODIFY = 'BALANCE_MODIFY', // 선충전 잔액 수정 (최고관리자)
 }

@@ -10,11 +10,14 @@ import {
   UserManagementGetNameListReqQueryDto,
   UserManagementPasswordResetReqDto,
   UserManagementUpdateReqDto,
+  UserManagementModifyBalanceReqDto,
 } from '../api/user.management.req.dto';
 import {
   UserManagementGetDetailResDto,
   UserManagementGetListResDto,
   UserManagementGetNameListResDto,
+  UserManagementGetBalanceHistoryResDto,
+  BalanceHistoryItemDto,
 } from '../api/user.management.res.dto';
 import { UserManagementViewDto } from '../api/dto/user.management.view.dto';
 import { PasswordBcryptEncrypt } from '../../auth/infrastructure/password.bcrypt.encrypt';
@@ -25,6 +28,13 @@ import { IMailSend } from '../../mail/interface/mail-send';
 import { UserSettlePeriodConditionEnum } from '../../user/interface/user.settle.period.condition.enum';
 import { IUserSettleCondition } from '../../user/interface/user.settle.condition';
 import { UserAuthListDefault } from '../../user_info/domain/user.auth.list.default';
+import { ActivityLogService } from '../../activity_log/application/activity.log.service';
+import { ActivityLogActionType } from '../../activity_log/interface/activity.log.action.type';
+import { ActivityLogResult } from '../../activity_log/interface/activity.log.result';
+import { ILoginUserInfo } from '../../auth/interface/login.user';
+import { ActivityLogEntity } from '../../entity/activity.log.entity';
+import { format } from 'date-fns';
+import { DateFormatStr } from '../../common/domain/date.format.str';
 
 @Injectable()
 export class UserManagementService {
@@ -34,6 +44,7 @@ export class UserManagementService {
     private passwordEncrypt: PasswordBcryptEncrypt,
     @Inject('IMailSend')
     private readonly mailSendService: IMailSend,
+    private activityLogService: ActivityLogService,
   ) {}
 
   async getNameList(getQuery: UserManagementGetNameListReqQueryDto): Promise<UserManagementGetNameListResDto> {
@@ -205,7 +216,7 @@ export class UserManagementService {
     };
   }
 
-  async chargeBalance(getBody: UserManagementChargeBalanceReqDto) {
+  async chargeBalance(getBody: UserManagementChargeBalanceReqDto, operator: ILoginUserInfo) {
     const { id, chargeAmount } = getBody;
 
     const user = await this.userRepository.findOne({
@@ -218,7 +229,9 @@ export class UserManagementService {
       throw new BadRequestException('not found user');
     }
 
+    const beforeBalance = user.balance;
     user.balance += chargeAmount;
+    const afterBalance = user.balance;
 
     // 선정산 계정의 경우 최대서비스한도도 증가
     if (user.settleCondition === IUserSettleCondition.PRE_PAYMENT) {
@@ -226,6 +239,98 @@ export class UserManagementService {
     }
 
     await this.userRepository.save(user);
+
+    // Activity Log 기록
+    await this.activityLogService.createLog({
+      userId: operator.id,
+      userEmail: operator.email,
+      method: 'PUT',
+      requestUrl: '/user-management/balance',
+      actionType: ActivityLogActionType.BALANCE_CHARGE,
+      ipAddress: '',
+      statusCode: 200,
+      result: ActivityLogResult.SUCCESS,
+      responseTime: 0,
+      requestParams: {
+        targetUserId: id,
+        targetUserEmail: user.email,
+        targetBusinessName: user.businessName,
+        chargeAmount: chargeAmount,
+        beforeBalance: beforeBalance,
+        afterBalance: afterBalance,
+      },
+    });
+  }
+
+  async modifyBalance(getBody: UserManagementModifyBalanceReqDto, operator: ILoginUserInfo) {
+    const { id, newBalance, memo } = getBody;
+
+    const user = await this.userRepository.findOne({
+      where: {
+        id,
+      },
+    });
+
+    if (!user) {
+      throw new BadRequestException('not found user');
+    }
+
+    const beforeBalance = user.balance;
+    const changeAmount = newBalance - beforeBalance;
+
+    user.balance = newBalance;
+
+    // 선정산 계정의 경우 최대서비스한도도 변경
+    if (user.settleCondition === IUserSettleCondition.PRE_PAYMENT) {
+      user.maximumLimit += changeAmount;
+    }
+
+    await this.userRepository.save(user);
+
+    // Activity Log 기록
+    await this.activityLogService.createLog({
+      userId: operator.id,
+      userEmail: operator.email,
+      method: 'PUT',
+      requestUrl: '/user-management/balance/modify',
+      actionType: ActivityLogActionType.BALANCE_MODIFY,
+      ipAddress: '',
+      statusCode: 200,
+      result: ActivityLogResult.SUCCESS,
+      responseTime: 0,
+      requestParams: {
+        targetUserId: id,
+        targetUserEmail: user.email,
+        targetBusinessName: user.businessName,
+        changeAmount: changeAmount,
+        beforeBalance: beforeBalance,
+        afterBalance: newBalance,
+        memo: memo || null,
+      },
+    });
+  }
+
+  async getBalanceHistory(userId: number): Promise<UserManagementGetBalanceHistoryResDto> {
+    const user = await this.userRepository.findOne({ where: { id: userId } });
+    if (!user) {
+      throw new BadRequestException('존재하지 않는 계정입니다.');
+    }
+
+    // Activity Log에서 해당 유저의 충전/수정 이력 조회
+    const logs = await this.activityLogService.getBalanceHistoryByUserId(userId);
+
+    const list: BalanceHistoryItemDto[] = logs.map((log) => ({
+      id: log.id,
+      createdAt: format(log.createdAt, DateFormatStr),
+      actionType: log.actionType,
+      amount: log.requestParams?.chargeAmount ?? log.requestParams?.changeAmount ?? 0,
+      beforeBalance: log.requestParams?.beforeBalance ?? 0,
+      afterBalance: log.requestParams?.afterBalance ?? 0,
+      operatorEmail: log.userEmail,
+      memo: log.requestParams?.memo || null,
+    }));
+
+    return { list };
   }
 
   async getBalance(id: number): Promise<number> {

@@ -160,3 +160,41 @@ export class UserManagementPasswordResetReqDto {
   @IsNumber()
   userId: number;
 }
+
+export class UserManagementModifyBalanceReqDto {
+  @ApiProperty({
+    description: '수정하고자 하는 유저 id',
+  })
+  // =============================================================
+  @IsNotEmpty()
+  @IsNumber()
+  @Type(() => Number)
+  id: number;
+
+  @ApiProperty({
+    description: '수정할 잔액 (전체 금액으로 덮어쓰기)',
+  })
+  // =============================================================
+  @IsNotEmpty()
+  @IsNumber()
+  @Type(() => Number)
+  newBalance: number;
+
+  @ApiPropertyOptional({
+    description: '수정 사유',
+  })
+  // =============================================================
+  @IsOptional()
+  memo?: string;
+}
+
+export class UserManagementGetBalanceHistoryReqDto {
+  @ApiProperty({
+    description: '조회하고자 하는 유저 id',
+  })
+  // =============================================================
+  @IsNotEmpty()
+  @IsNumber()
+  @Type(() => Number)
+  id: number;
+}

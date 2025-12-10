@@ -190,3 +190,34 @@ export class UserManagementBalanceViewDto {
   @ApiProperty({ description: '현재 잔액' })
   balance: number;
 }
+
+export class BalanceHistoryItemDto {
+  @ApiProperty({ description: '이력 ID' })
+  id: number;
+
+  @ApiProperty({ description: '일시 (yyyy-MM-ddTHH:mm:ss)' })
+  createdAt: string;
+
+  @ApiProperty({ description: '액션 타입 (BALANCE_CHARGE: 충전, BALANCE_MODIFY: 수정)' })
+  actionType: string;
+
+  @ApiProperty({ description: '변경 금액 (양수: 증가, 음수: 감소)' })
+  amount: number;
+
+  @ApiProperty({ description: '변경 전 잔액' })
+  beforeBalance: number;
+
+  @ApiProperty({ description: '변경 후 잔액' })
+  afterBalance: number;
+
+  @ApiProperty({ description: '처리자 이메일' })
+  operatorEmail: string;
+
+  @ApiProperty({ description: '메모/사유' })
+  memo: string | null;
+}
+
+export class UserManagementGetBalanceHistoryResDto {
+  @ApiProperty({ description: '충전/수정 이력 목록', type: [BalanceHistoryItemDto] })
+  list: BalanceHistoryItemDto[];
+}

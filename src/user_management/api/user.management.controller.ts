@@ -9,12 +9,14 @@ import {
   UserManagementGetNameListReqQueryDto,
   UserManagementPasswordResetReqDto,
   UserManagementUpdateReqDto,
+  UserManagementModifyBalanceReqDto,
 } from './user.management.req.dto';
 import {
   UserManagementBalanceViewDto,
   UserManagementGetDetailResDto,
   UserManagementGetListResDto,
   UserManagementGetNameListResDto,
+  UserManagementGetBalanceHistoryResDto,
 } from './user.management.res.dto';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
 import { AuthUserSuperAdminGuard } from '../../auth/api/auth.user.super-admin.guard';
@@ -95,8 +97,26 @@ export class UserManagementController {
   // ====================================
   @UseGuards(AuthUserAuthorizationGuard)
   @Put('/user-management/balance')
-  chargeBalance(@Body() getBody: UserManagementChargeBalanceReqDto) {
-    return this.userManagementService.chargeBalance(getBody);
+  chargeBalance(@User() user: ILoginUserInfo, @Body() getBody: UserManagementChargeBalanceReqDto) {
+    return this.userManagementService.chargeBalance(getBody, user);
+  }
+
+  @ApiOperation({
+    summary: '계정 잔액 수정 API (최고관리자 전용)',
+    description: '최고관리자만 접근 가능합니다. 잔액을 직접 수정합니다.',
+  })
+  @ApiBearerAuth()
+  @ApiOkResponse({
+    description: '성공적으로 수정한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '해당 계정이 존재하지 않는 경우',
+  })
+  // ====================================
+  @UseGuards(AuthUserSuperAdminGuard)
+  @Put('/user-management/balance/modify')
+  modifyBalance(@User() user: ILoginUserInfo, @Body() getBody: UserManagementModifyBalanceReqDto) {
+    return this.userManagementService.modifyBalance(getBody, user);
   }
 
   @ApiOperation({ summary: '계정 잔액 조회 API' })
@@ -108,6 +128,25 @@ export class UserManagementController {
   async getBalance(@Param('id', ParseIntPipe) id: number): Promise<UserManagementBalanceViewDto> {
     const balance = await this.userManagementService.getBalance(id);
     return { balance };
+  }
+
+  @ApiOperation({
+    summary: '계정 잔액 충전/수정 이력 조회 API',
+    description: '해당 계정의 선충전 잔액 충전 및 수정 이력을 조회합니다.',
+  })
+  @ApiBearerAuth()
+  @ApiOkResponse({
+    type: UserManagementGetBalanceHistoryResDto,
+    description: '성공적으로 조회한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '해당 계정이 존재하지 않는 경우',
+  })
+  // ====================================
+  @UseGuards(AuthUserAuthorizationGuard)
+  @Get('/user-management/:id/balance/history')
+  getBalanceHistory(@Param('id', ParseIntPipe) id: number) {
+    return this.userManagementService.getBalanceHistory(id);
   }
 
   @ApiOperation({

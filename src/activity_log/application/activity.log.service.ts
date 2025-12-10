@@ -266,4 +266,23 @@ export class ActivityLogService {
     await workbook.xlsx.write(res);
     res.end();
   }
+
+  /**
+   * 특정 유저의 잔액 충전/수정 이력 조회
+   * @param targetUserId 대상 유저 ID
+   * @returns 잔액 관련 활동 로그 목록
+   */
+  async getBalanceHistoryByUserId(targetUserId: number): Promise<ActivityLogEntity[]> {
+    return this.activityLogRepository
+      .createQueryBuilder('activityLog')
+      .where('activityLog.deletedAt IS NULL')
+      .andWhere('activityLog.actionType IN (:...actionTypes)', {
+        actionTypes: ['BALANCE_CHARGE', 'BALANCE_MODIFY'],
+      })
+      .andWhere("JSON_EXTRACT(activityLog.requestParams, '$.targetUserId') = :targetUserId", {
+        targetUserId,
+      })
+      .orderBy('activityLog.createdAt', 'DESC')
+      .getMany();
+  }
 }
