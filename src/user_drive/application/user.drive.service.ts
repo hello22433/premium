@@ -38,6 +38,8 @@ export class UserDriveService {
       queryBuilder.where('drive.receiverId = :receiverId', { receiverId: user.id });
     }
 
+    queryBuilder.orderBy('drive.id', 'DESC');
+
     const skip = (page - 1) * take;
     queryBuilder = queryBuilder.skip(skip).take(take);
     const [driveList, totalCount] = await queryBuilder.getManyAndCount();
