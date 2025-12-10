@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, InternalServerErrorException, NotFound
 import {
   CustomerServiceCouponRefreshReqDto,
   CustomerServiceDiscardReqDto,
+  CustomerServiceExcelDownloadReqDto,
   CustomerServiceGetDetailListReqDto,
   CustomerServiceGetDetailReqDto,
   CustomerServiceGetListReqDto,
@@ -37,6 +38,11 @@ import { CryptoCipher } from 'src/common/infra/crypto.cipher';
 import { PhoneUtil } from 'src/common/utils/phone.util';
 import { OrderDeliveryRefundStatusEnum } from '../../delivery/interface/order.delivery.refund.status.enum';
 import { IOrderSendMethod } from '../../order/interface/order.send.method';
+import { ActivityLogService } from 'src/activity_log/application/activity.log.service';
+import { ActivityLogActionType } from 'src/activity_log/interface/activity.log.action.type';
+import { ActivityLogResult } from 'src/activity_log/interface/activity.log.result';
+import { Response } from 'express';
+import * as ExcelJS from 'exceljs';
 
 const dayjs = require('dayjs');
 const timezone = require('dayjs/plugin/timezone');
@@ -58,6 +64,7 @@ export class CustomerServiceService {
     private gemteckMsgQueueRepository: Repository<GemteckMsgQueueEntity>,
     private smsGemtekSend: SmsGemtekSend,
     private readonly cryptoCipher: CryptoCipher,
+    private readonly activityLogService: ActivityLogService,
   ) {}
 
   async getList(getQuery: CustomerServiceGetListReqDto): Promise<CustomerServiceGetListResDto> {
@@ -1236,5 +1243,230 @@ export class CustomerServiceService {
     }
 
     return { success, failed };
+  }
+
+  /**
+   * CS 리스트 엑셀 다운로드
+   * @param user 로그인 사용자 정보
+   * @param dto 검색 조건 및 다운로드 정보
+   * @param res Express Response
+   */
+  async excelDownload(
+    user: ILoginUserInfo,
+    dto: CustomerServiceExcelDownloadReqDto,
+    res: Response,
+  ): Promise<void> {
+    const startTime = Date.now();
+    const { password, downloadReason, ...searchParams } = dto;
+    const {
+      orderType,
+      startAt,
+      endAt,
+      userId,
+      couponStatus,
+      orderNumber,
+      productName,
+      productCode,
+      deliveryTarget,
+      sendTitle,
+      partnerCompanyId,
+    } = searchParams;
+
+    // 1. 비밀번호 검증
+    await this.activityLogService.verifyPassword(user.id, password);
+
+    // 2. 데이터 조회 (페이징 없이 전체 조회)
+    let queryBuilder = this.orderDeliveryRepository
+      .createQueryBuilder('orderDelivery')
+      .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
+      .innerJoinAndSelect('orderProductMapping.order', 'order')
+      .innerJoinAndSelect('orderProductMapping.product', 'product')
+      .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
+      .leftJoinAndMapOne('order.user', 'user', 'user', 'user.id = order.user_id AND user.deleted_at IS NULL')
+      .andWhere('orderDelivery.status IN (:...deliveryStatus)', { deliveryStatus: ['COMPLETE', 'COMPLETE_SMS'] })
+      .andWhere('orderDelivery.deletedAt IS NULL');
+
+    if (orderType === 'GENERAL') {
+      queryBuilder.andWhere('product.type IN (:...types)', { types: ['GENERAL', 'CHOICE'] });
+    }
+
+    if (orderType === 'SSG') {
+      queryBuilder.andWhere('product.type = :type', { type: 'SSG' });
+    }
+
+    if (userId) {
+      queryBuilder.andWhere('order.userId = :userId', { userId });
+    }
+
+    if (orderNumber) {
+      queryBuilder.andWhere('CAST(order.id AS CHAR) LIKE :orderNumber', { orderNumber: `%${orderNumber}%` });
+    }
+
+    if (couponStatus) {
+      queryBuilder.andWhere('orderDelivery.couponStatus = :couponStatus', { couponStatus });
+    }
+
+    if (productName) {
+      queryBuilder.andWhere('product.name LIKE :productName', { productName: `%${productName}%` });
+    }
+
+    if (productCode) {
+      queryBuilder.andWhere('product.code LIKE :productCode', { productCode: `%${productCode}%` });
+    }
+
+    if (deliveryTarget) {
+      const normalizedTarget = PhoneUtil.normalizeDeliveryTarget(deliveryTarget);
+      const encryptedTarget = this.cryptoCipher.encryptDeliveryTarget(normalizedTarget);
+      queryBuilder.andWhere('orderDelivery.deliveryTarget = :deliveryTarget', { deliveryTarget: encryptedTarget });
+    }
+
+    if (sendTitle) {
+      queryBuilder.andWhere('orderProductMapping.sendTitle LIKE :sendTitle', { sendTitle: `%${sendTitle}%` });
+    }
+
+    if (partnerCompanyId) {
+      queryBuilder.andWhere('product.partnerCompanyId = :partnerCompanyId', { partnerCompanyId });
+    }
+
+    queryBuilder = QueryBuilderDateCondition(queryBuilder, 'orderDelivery', 'sendRequestAt', startAt, endAt);
+    queryBuilder.orderBy('orderDelivery.id', 'DESC');
+
+    const orderDeliveryList = await queryBuilder.getMany();
+
+    // 3. 엑셀 워크북 생성
+    const workbook = new ExcelJS.Workbook();
+    const sheetName = orderType === 'GENERAL' ? '일반쿠폰주문CS' : '신세계CS';
+    const worksheet = workbook.addWorksheet(sheetName);
+
+    // 4. 컬럼 정의
+    worksheet.columns = [
+      { header: '발송요청일', key: 'sendRequestAt', width: 20 },
+      { header: '실발송일', key: 'actualSendAt', width: 20 },
+      { header: '주문번호', key: 'orderId', width: 12 },
+      { header: '고객사', key: 'businessName', width: 20 },
+      { header: '이벤트명', key: 'eventName', width: 30 },
+      { header: 'MMS제목', key: 'sendTitle', width: 30 },
+      { header: '상품명', key: 'productName', width: 40 },
+      { header: '상품코드', key: 'productCode', width: 15 },
+      { header: '수신정보', key: 'deliveryTarget', width: 20 },
+      { header: '이메일쿠폰수령번호', key: 'emailReceiverPhone', width: 18 },
+      { header: '발송방법', key: 'deliveryMethod', width: 12 },
+      { header: '발신번호', key: 'fromPhoneNumber', width: 15 },
+      { header: '핀번호', key: 'barCode', width: 25 },
+      { header: '핀상태', key: 'couponStatus', width: 12 },
+      { header: '거래번호', key: 'transactionId', width: 20 },
+    ];
+
+    // 5. 헤더 스타일 적용
+    const headerRow = worksheet.getRow(1);
+    headerRow.font = { bold: true };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFE0E0E0' },
+    };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+
+    // 6. 데이터 행 추가
+    for (const orderDelivery of orderDeliveryList) {
+      const order = orderDelivery.orderProductMapping.order;
+      const product = orderDelivery.orderProductMapping.product;
+
+      // deliveryTarget 복호화 (엑셀 다운로드 시 원문 표시)
+      let decryptedDeliveryTarget: string | null = null;
+      if (orderDelivery.deliveryTarget) {
+        try {
+          decryptedDeliveryTarget = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.deliveryTarget);
+        } catch (error) {
+          // 복호화 실패 시 원본 데이터 사용 (이미 평문일 수 있음)
+          decryptedDeliveryTarget = orderDelivery.deliveryTarget;
+        }
+      }
+
+      // emailReceiverPhone 복호화 (이메일 쿠폰 수령 시 입력한 핸드폰 번호)
+      let decryptedEmailReceiverPhone: string | null = null;
+      if (orderDelivery.emailReceiverPhone) {
+        try {
+          decryptedEmailReceiverPhone = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.emailReceiverPhone);
+        } catch (error) {
+          // 복호화 실패 시 원본 데이터 사용
+          decryptedEmailReceiverPhone = orderDelivery.emailReceiverPhone;
+        }
+      }
+
+      // 실제 발송 시간 계산
+      let actualSendAt: string | null = null;
+      if (
+        (orderDelivery.status === 'COMPLETE' || orderDelivery.status === 'COMPLETE_SMS') &&
+        orderDelivery.actualSendAt
+      ) {
+        actualSendAt = format(orderDelivery.actualSendAt, DateFormatStr);
+      }
+
+      // 핀상태 한글 변환
+      const couponStatusMap: Record<string, string> = {
+        NOT_USED: '미사용',
+        USED: '사용',
+        CANCEL: '취소',
+        REFUND_CANCEL: '환불취소',
+        EXPIRED: '기간만료',
+      };
+
+      worksheet.addRow({
+        sendRequestAt: orderDelivery.sendRequestAt
+          ? format(orderDelivery.sendRequestAt, DateFormatStr)
+          : (orderDelivery.orderProductMapping.sendRequestAt
+            ? format(orderDelivery.orderProductMapping.sendRequestAt, DateFormatStr)
+            : ''),
+        actualSendAt: actualSendAt || '',
+        orderId: order.id,
+        businessName: order.user?.businessName ?? '',
+        eventName: order.eventName,
+        sendTitle: orderDelivery.orderProductMapping.sendTitle ?? '',
+        productName: orderDelivery.choiceSelectProduct
+          ? orderDelivery.choiceSelectProduct.name
+          : product.name,
+        productCode: product.code,
+        deliveryTarget: decryptedDeliveryTarget || '',
+        emailReceiverPhone: decryptedEmailReceiverPhone || '',
+        deliveryMethod: orderDelivery.deliveryMethod || '',
+        fromPhoneNumber: orderDelivery.orderProductMapping.fromPhoneNumber || '',
+        barCode: orderDelivery.barCode || '',
+        couponStatus: couponStatusMap[orderDelivery.couponStatus] || orderDelivery.couponStatus || '',
+        transactionId: orderDelivery.transactionId || '',
+      });
+    }
+
+    // 7. Activity Log 기록
+    const responseTime = Date.now() - startTime;
+    const recordCount = orderDeliveryList.length;
+
+    await this.activityLogService.createLog({
+      userId: user.id,
+      userEmail: user.email,
+      method: 'POST',
+      requestUrl: '/customer-service/excel-download',
+      actionType: ActivityLogActionType.EXCEL_DOWNLOAD,
+      ipAddress: res.req?.ip || '',
+      userAgent: res.req?.headers?.['user-agent'] || '',
+      statusCode: 200,
+      result: ActivityLogResult.SUCCESS,
+      responseTime,
+      downloadReason,
+      recordCount,
+      requestParams: searchParams,
+    });
+
+    // 8. 엑셀 파일 전송
+    const nowString = format(new Date(), 'yyyyMMdd_HHmmss');
+    const fileName = `${sheetName}_${nowString}.xlsx`;
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`);
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
+
+    await workbook.xlsx.write(res);
+    res.end();
   }
 }

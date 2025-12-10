@@ -289,3 +289,112 @@ export class CustomerServiceBulkDiscardReqDto {
   @IsString()
   content: string;
 }
+
+export class CustomerServiceExcelDownloadReqDto {
+  @ApiProperty({
+    description: '일반 쿠폰주문 CS: GENERAL, 신세계 :SSG',
+  })
+  // =============================================================
+  @IsNotEmpty()
+  @IsIn(['GENERAL', 'SSG'])
+  orderType: IOrderType;
+
+  @ApiPropertyOptional({
+    description: '시작일 ex) yyyy-MM-ddTHH:mm:ss',
+  })
+  // =============================================================
+  @IsOptional()
+  @Matches(dateAtRegexp)
+  startAt?: string;
+
+  @ApiPropertyOptional({
+    description: '끝 일 ex) yyyy-MM-ddTHH:mm:ss',
+  })
+  // =============================================================
+  @IsOptional()
+  @Matches(dateAtRegexp)
+  endAt?: string;
+
+  @ApiPropertyOptional({
+    description: 'user id (고객사)',
+  })
+  // =============================================================
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  userId?: number;
+
+  @ApiPropertyOptional({
+    description: '핀 상태',
+    enum: OrderDeliveryCouponStatus,
+  })
+  // =============================================================
+  @IsOptional()
+  @IsEnum(OrderDeliveryCouponStatus)
+  couponStatus?: OrderDeliveryCouponStatus;
+
+  @ApiPropertyOptional({
+    description: '주문 번호 (부분검색)',
+  })
+  // =============================================================
+  @IsOptional()
+  @IsString()
+  orderNumber?: string;
+
+  @ApiPropertyOptional({
+    description: '상품 코드 (부분검색)',
+  })
+  // =============================================================
+  @IsOptional()
+  @IsString()
+  productCode?: string;
+
+  @ApiPropertyOptional({
+    description: '상품 명 (부분검색)',
+  })
+  // =============================================================
+  @IsOptional()
+  @IsString()
+  productName?: string;
+
+  @ApiPropertyOptional({
+    description: '수신정보 - 전화번호 또는 이메일 (전문검색, 부분검색 불가)',
+  })
+  // =============================================================
+  @IsOptional()
+  @IsString()
+  deliveryTarget?: string;
+
+  @ApiPropertyOptional({
+    description: 'MMS 제목 (부분검색)',
+  })
+  // =============================================================
+  @IsOptional()
+  @IsString()
+  sendTitle?: string;
+
+  @ApiPropertyOptional({
+    description: '협력사 ID',
+  })
+  // =============================================================
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  partnerCompanyId?: number;
+
+  @ApiProperty({
+    description: '비밀번호 (다운로드 확인용)',
+  })
+  // =============================================================
+  @IsNotEmpty()
+  @IsString()
+  password: string;
+
+  @ApiProperty({
+    description: '다운로드 사유',
+  })
+  // =============================================================
+  @IsNotEmpty()
+  @IsString()
+  downloadReason: string;
+}

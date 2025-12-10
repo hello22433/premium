@@ -1,11 +1,12 @@
 import { CustomerServiceService } from '../application/customer.service.service';
-import { Body, Controller, Get, Post, Put, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Post, Put, Query, Res, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AuthUserSuperAndOperationAdminGuard } from '../../auth/api/auth.user.super-operation-admin.guard';
 import {
   CustomerServiceBulkDiscardReqDto,
   CustomerServiceCouponRefreshReqDto,
   CustomerServiceDiscardReqDto,
+  CustomerServiceExcelDownloadReqDto,
   CustomerServiceGetDetailListReqDto,
   CustomerServiceGetDetailReqDto,
   CustomerServiceGetListReqDto,
@@ -28,6 +29,7 @@ import { User } from '../../auth/api/user.decorator';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
 import { UserAuthSubEnum } from '../../user_management/domain/user.auth.enum';
 import { AuthService } from '../../auth/application/auth.service';
+import { Response } from 'express';
 
 @Controller('')
 @ApiTags('customer-service')
@@ -245,5 +247,29 @@ export class CustomerServiceController {
   @Post('/customer-service/bulk-discard')
   bulkDiscard(@User() user: ILoginUserInfo, @Body() getBody: CustomerServiceBulkDiscardReqDto) {
     return this.customerServiceService.bulkDiscard(user, getBody.orderDeliveryIds, getBody.content);
+  }
+
+  @ApiOperation({
+    description: 'CS 리스트 엑셀 다운로드 API - 검색 조건에 맞는 발송 이력을 엑셀 파일로 다운로드',
+  })
+  @ApiOkResponse({
+    description: '엑셀 파일 다운로드',
+  })
+  // ===============================================
+  @Post('/customer-service/excel-download')
+  async excelDownload(
+    @User() user: ILoginUserInfo,
+    @Body() getBody: CustomerServiceExcelDownloadReqDto,
+    @Res() res: Response,
+  ) {
+    if (getBody.orderType === 'GENERAL') {
+      await this.authService.authorityValidator(user, UserAuthSubEnum.CUSTOMER_GENERAL_COUPON);
+    }
+
+    if (getBody.orderType === 'SSG') {
+      await this.authService.authorityValidator(user, UserAuthSubEnum.CUSTOMER_SSG_COUPON);
+    }
+
+    return this.customerServiceService.excelDownload(user, getBody, res);
   }
 }

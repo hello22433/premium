@@ -11,6 +11,7 @@ import { DeliveryModule } from '../delivery/delivery.module';
 import { OrderHistoryEntity } from 'src/entity/order.history.entity';
 import { GemteckMsgQueueEntity } from 'src/entity/gemtek/msg.queue.entity';
 import { SmsModule } from 'src/sms/sms.module';
+import { ActivityLogModule } from 'src/activity_log/activity.log.module';
 
 @Module({
   imports: [
@@ -25,6 +26,7 @@ import { SmsModule } from 'src/sms/sms.module';
     PartnerCompanyExternModule,
     DeliveryModule,
     SmsModule,
+    ActivityLogModule,
   ],
   controllers: [CustomerServiceController],
   providers: [CustomerServiceService],
