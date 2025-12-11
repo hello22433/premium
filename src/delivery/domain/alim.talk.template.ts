@@ -21,9 +21,13 @@ export const AlimTalkTemplate = (orderDelivery: OrderDeliveryEntity) => {
   // 유효기간 계산: 실제 발송 시점 + 유효일수 (validityStartsNextDay에 따라 조정)
   const validityStartsNextDay = product.partnerCompany?.validityStartsNextDay ?? true;
   const expireDays = validityStartsNextDay ? product.expireDay : product.expireDay - 1;
+
   const expireDateStr = dayjs().add(expireDays, 'day').format('YYYY. MM. DD');
 
-  const baseMessage = `[모바일쿠폰] 이팝콘 도착
+  // 테스트 환경일 경우 [TEST] 접두사와 테스트 메시지 추가
+  if (isTestTemplate) {
+    return `[TEST]
+[모바일쿠폰] 이팝콘 도착
 상품명 : ${product.name}
 유효기간 : ~ ${expireDateStr}
 쿠폰번호 : ${couponCode}
@@ -31,15 +35,22 @@ export const AlimTalkTemplate = (orderDelivery: OrderDeliveryEntity) => {
 고객센터 : 1644-3614
 발행자 : ${orderDelivery.orderProductMapping.order.user!.businessName}
 
-${isTestTemplate ? '이 메시지는 알림톡 테스트 메시지 입니다.\n\n' : ''}${orderDelivery.orderProductMapping.order.eventName} 당첨을 축하드립니다.
+이 메시지는 알림톡 테스트 메시지 입니다.
+
+${orderDelivery.orderProductMapping.order.eventName} 당첨을 축하드립니다.
 문의사항은 고객센터 번호를 통해 문의하시길 바랍니다.
 이 메시지는 고객님의 동의에 의해 지급된 쿠폰 안내 메시지입니다.`;
-
-  // 테스트 환경일 경우 [TEST] 접두사 추가
-  if (isTestTemplate) {
-    return `[TEST]
-${baseMessage}`;
   }
 
-  return baseMessage;
+  return `[모바일쿠폰] 이팝콘 도착
+상품명 : ${product.name}
+유효기간 : ~ ${expireDateStr}
+쿠폰번호 : ${couponCode}
+사용처(교환처) : ${brandKoreanName}
+고객센터 : 1644-3614
+발행자 : ${orderDelivery.orderProductMapping.order.user!.businessName}
+
+${orderDelivery.orderProductMapping.order.eventName} 당첨을 축하드립니다.
+문의사항은 고객센터 번호를 통해 문의하시길 바랍니다.
+이 메시지는 고객님의 동의에 의해 지급된 쿠폰 안내 메시지입니다.`;
 };
