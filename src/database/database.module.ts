@@ -18,6 +18,7 @@ import { OrderEntity } from '../entity/order.entity';
 import { OrderProductMappingEntity } from '../entity/order.product.mapping.entity';
 import { PartnerCompanyEntity } from '../entity/partner.company.entity';
 import { OrderDeliveryEntity } from '../entity/order.delivery.entity';
+import { TestOrderDeliveryEntity } from '../entity/test.order.delivery.entity';
 import { DeliverySendHistoryEntity } from '../entity/delivery.send.history.entity';
 import { PartnerCompanyExternHistoryEntity } from '../entity/partner.company.extern.history.entity';
 import { ProductUpdateHistoryEntity } from '../entity/product.update.history.entity';
@@ -77,6 +78,7 @@ import { PasswordPolicyEntity } from '../entity/password.policy.entity';
           OrderRealProductMappingEntity,
           PartnerCompanyEntity,
           OrderDeliveryEntity,
+          TestOrderDeliveryEntity,
           DeliverySendHistoryEntity,
           PartnerCompanyExternHistoryEntity,
           ProductUpdateHistoryEntity,
