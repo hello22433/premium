@@ -545,7 +545,7 @@ export class DeliveryBatchService {
     }
   }
 
-  async oneSend(orderDelivery: OrderDeliveryEntity, isSave: boolean = true, testOrderDeliveryId?: number) {
+  async oneSend(orderDelivery: OrderDeliveryEntity, isSave: boolean = true, testOrderDeliveryId?: number): Promise<boolean> {
     // deliveryTarget 복호화
     let decryptedDeliveryTarget = orderDelivery.deliveryTarget;
     if (orderDelivery.deliveryTarget) {
@@ -797,7 +797,8 @@ export class DeliveryBatchService {
 
     await this.deliverySendHistoryRepository.insert(deliveryHistoryList);
 
-    return;
+    // 발송 성공 여부 반환
+    return orderDelivery.status === IOrderDeliveryStatus.COMPLETE || orderDelivery.status === IOrderDeliveryStatus.COMPLETE_SMS;
   }
 
   @Transactional()

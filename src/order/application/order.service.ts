@@ -2359,9 +2359,14 @@ export class OrderService {
     orderDelivery.expireAt = new Date();
 
     // 3. 전송 (testOrderDeliveryId가 있으면 테스트 발송용 encryptKey 생성)
-    await this.deliveryBatchService.oneSend(orderDelivery, false, testOrderDeliveryId);
+    const isSuccess = await this.deliveryBatchService.oneSend(orderDelivery, false, testOrderDeliveryId);
 
-    // 4. 테스트 발송 횟수 증가 (상품별)
+    // 발송 실패 시 에러 throw (횟수 증가하지 않음)
+    if (!isSuccess) {
+      throw new BadRequestException('테스트 발송에 실패했습니다. 수신자 정보를 확인해주세요.');
+    }
+
+    // 4. 테스트 발송 횟수 증가 (상품별) - 발송 성공 시에만 증가
     orderProductMapping.testDeliveryCount += 1;
     await this.orderProductMappingRepository.save(orderProductMapping);
   }
