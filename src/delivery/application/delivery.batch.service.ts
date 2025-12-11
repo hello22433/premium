@@ -545,7 +545,7 @@ export class DeliveryBatchService {
     }
   }
 
-  async oneSend(orderDelivery: OrderDeliveryEntity, isSave: boolean = true) {
+  async oneSend(orderDelivery: OrderDeliveryEntity, isSave: boolean = true, testOrderDeliveryId?: number) {
     // deliveryTarget 복호화
     let decryptedDeliveryTarget = orderDelivery.deliveryTarget;
     if (orderDelivery.deliveryTarget) {
@@ -616,9 +616,11 @@ export class DeliveryBatchService {
     deliveryHistory.target = decryptedDeliveryTarget;
     deliveryHistory.deliveryMethod = deliveryMethod;
 
+    // 테스트 발송인 경우 testOrderDeliveryId와 isTest 플래그 사용
     const encryptKey = this.cryptoCipher.encryptJson({
-      id: orderDelivery.id,
+      id: testOrderDeliveryId ?? orderDelivery.id,
       transactionId: orderDelivery.transactionId,
+      isTest: !!testOrderDeliveryId,
     } as OrderEncryptKey);
 
     // 1.1 알림톡일 경우

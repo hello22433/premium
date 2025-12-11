@@ -3,6 +3,7 @@ import { AuthModule } from '../auth/auth.module';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { OrderEntity } from '../entity/order.entity';
 import { OrderDeliveryEntity } from '../entity/order.delivery.entity';
+import { TestOrderDeliveryEntity } from '../entity/test.order.delivery.entity';
 import { OrderProductMappingEntity } from '../entity/order.product.mapping.entity';
 import { OrderController } from './api/order.controller';
 import { OrderService } from './application/order.service';
@@ -24,6 +25,7 @@ import { ActivityLogModule } from '../activity_log/activity.log.module';
       OrderEntity,
       UserDiscountEntity,
       OrderDeliveryEntity,
+      TestOrderDeliveryEntity,
       OrderProductMappingEntity,
       ProductEntity,
       UserEntity,

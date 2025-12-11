@@ -4,6 +4,7 @@ import { OrderReceiveService } from './application/order.receive.service';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AuthModule } from '../auth/auth.module';
 import { OrderDeliveryEntity } from '../entity/order.delivery.entity';
+import { TestOrderDeliveryEntity } from '../entity/test.order.delivery.entity';
 import { OrderEntity } from '../entity/order.entity';
 import { SmsModule } from '../sms/sms.module';
 import { EmailSendHistoryEntity } from '../entity/email.send.history.entity';
@@ -13,7 +14,7 @@ import { PartnerCompanyExternModule } from '../partner_company_extern/partner.co
 @Module({
   imports: [
     AuthModule,
-    TypeOrmModule.forFeature([EmailSendHistoryEntity, OrderDeliveryEntity, OrderEntity, ProductChoiceMappingEntity]),
+    TypeOrmModule.forFeature([EmailSendHistoryEntity, OrderDeliveryEntity, TestOrderDeliveryEntity, OrderEntity, ProductChoiceMappingEntity]),
     SmsModule,
     PartnerCompanyExternModule,
   ],

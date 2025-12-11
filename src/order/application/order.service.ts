@@ -55,6 +55,7 @@ import { IOrderStatus } from '../interface/order.status';
 import { OrderProductMappingEntity } from '../../entity/order.product.mapping.entity';
 import { Transactional } from 'typeorm-transactional';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
+import { TestOrderDeliveryEntity } from '../../entity/test.order.delivery.entity';
 import { ProductEntity } from '../../entity/product.entity';
 import { OrderValidation } from '../domain/order.validation';
 import { listToMap, listToMapValue } from '../../util/map.util';
@@ -98,6 +99,7 @@ import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { PhoneUtil } from '../../common/utils/phone.util';
 import { DeliveryBatchService } from '../../delivery/application/delivery.batch.service';
 import { IOrderSendMethod } from '../interface/order.send.method';
+import { OrderEncryptKey } from '../../order_receive/interface/order.encrypt.key';
 import { ActivityLogService } from '../../activity_log/application/activity.log.service';
 import { ActivityLogResult } from '../../activity_log/interface/activity.log.result';
 import dayjs from 'dayjs';
@@ -123,6 +125,8 @@ export class OrderService {
     private orderProductMappingRepository: Repository<OrderProductMappingEntity>,
     @InjectRepository(OrderDeliveryEntity)
     private orderDeliveryRepository: Repository<OrderDeliveryEntity>,
+    @InjectRepository(TestOrderDeliveryEntity)
+    private testOrderDeliveryRepository: Repository<TestOrderDeliveryEntity>,
     @InjectRepository(ProductEntity)
     private productRepository: Repository<ProductEntity>,
     @InjectRepository(UserDiscountEntity)
@@ -2322,21 +2326,40 @@ export class OrderService {
     );
 
     const deliveryMethod = orderProductMapping.sendMethod!;
+    const encryptedDeliveryTarget = this.cryptoCipher.encryptDeliveryTarget(
+      PhoneUtil.normalizeDeliveryTarget(deliveryTarget),
+    );
+
+    // 알림톡인 경우 test_order_delivery 테이블에 저장하여 쿠폰 정보 조회 가능하게 함
+    let testOrderDeliveryId: number | undefined;
+    if (deliveryMethod === IOrderSendMethod.ALIM_TALK) {
+      const testOrderDelivery = new TestOrderDeliveryEntity();
+      testOrderDelivery.status = IOrderDeliveryStatus.COMPLETE;
+      testOrderDelivery.orderProductMappingId = orderProductMapping.id;
+      testOrderDelivery.deliveryMethod = deliveryMethod;
+      testOrderDelivery.deliveryTarget = encryptedDeliveryTarget;
+      testOrderDelivery.imagePath = imagePath;
+      testOrderDelivery.sendRequestAt = new Date();
+      testOrderDelivery.expireAt = new Date();
+      testOrderDelivery.barCode = barCode;
+      testOrderDelivery.personalCode = barCode;
+
+      const savedTestOrderDelivery = await this.testOrderDeliveryRepository.save(testOrderDelivery);
+      testOrderDeliveryId = savedTestOrderDelivery.id;
+    }
 
     const orderDelivery = new OrderDeliveryEntity();
     orderDelivery.deliveryMethod = deliveryMethod;
     orderDelivery.orderProductMappingId = orderProductMapping.id;
-    orderDelivery.deliveryTarget = this.cryptoCipher.encryptDeliveryTarget(
-      PhoneUtil.normalizeDeliveryTarget(deliveryTarget),
-    );
+    orderDelivery.deliveryTarget = encryptedDeliveryTarget;
     orderDelivery.barCode = barCode;
     orderDelivery.personalCode = barCode;
     orderDelivery.orderProductMapping = orderProductMapping;
     orderDelivery.imagePath = imagePath;
     orderDelivery.expireAt = new Date();
 
-    // 3. 전송
-    await this.deliveryBatchService.oneSend(orderDelivery, false);
+    // 3. 전송 (testOrderDeliveryId가 있으면 테스트 발송용 encryptKey 생성)
+    await this.deliveryBatchService.oneSend(orderDelivery, false, testOrderDeliveryId);
 
     // 4. 테스트 발송 횟수 증가 (상품별)
     orderProductMapping.testDeliveryCount += 1;

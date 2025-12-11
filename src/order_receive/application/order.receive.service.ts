@@ -11,6 +11,7 @@ import { OrderEntity } from '../../entity/order.entity';
 import { Repository } from 'typeorm';
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
+import { TestOrderDeliveryEntity } from '../../entity/test.order.delivery.entity';
 import { OrderEncryptKey } from '../interface/order.encrypt.key';
 import { EmailSendHistoryEntity } from '../../entity/email.send.history.entity';
 import { OrderSendEncryptKey } from '../interface/order.send.encrypt.key';
@@ -46,6 +47,8 @@ export class OrderReceiveService {
     private orderRepository: Repository<OrderEntity>,
     @InjectRepository(OrderDeliveryEntity)
     private orderDeliveryRepository: Repository<OrderDeliveryEntity>,
+    @InjectRepository(TestOrderDeliveryEntity)
+    private testOrderDeliveryRepository: Repository<TestOrderDeliveryEntity>,
     @InjectRepository(EmailSendHistoryEntity)
     private emailSendHistoryRepository: Repository<EmailSendHistoryEntity>,
     @InjectRepository(ProductChoiceMappingEntity)
@@ -123,6 +126,11 @@ export class OrderReceiveService {
 
   async alimTalk(getQuery: OrderReceiveAlimTalkReqDto): Promise<OrderReceiveAlimTalkResDto> {
     const orderDecrypt = this.cryptoCipher.decryptJson(getQuery.encryptKey) as OrderEncryptKey;
+
+    // 테스트 발송인 경우 test_order_delivery 테이블에서 조회
+    if (orderDecrypt.isTest) {
+      return this.alimTalkForTest(orderDecrypt, getQuery.phoneNumber);
+    }
 
     const orderDelivery = await this.orderDeliveryRepository
       .createQueryBuilder('orderDelivery')
@@ -235,6 +243,108 @@ export class OrderReceiveService {
       expireDay: displayProduct.expireDay,
       brandKoreanName: displayBrand!.nameKorean === '신세계' ? '이마트' : displayBrand!.nameKorean,
       userBusinessName: orderDelivery.orderProductMapping.order.user!.businessName,
+      partnerCompany: displayProduct.partnerCompany?.type || null,
+      validityStartsNextDay: displayProduct.partnerCompany?.validityStartsNextDay,
+    };
+  }
+
+  /**
+   * 테스트 발송용 알림톡 쿠폰 정보 조회
+   */
+  private async alimTalkForTest(
+    orderDecrypt: OrderEncryptKey,
+    phoneNumber: string,
+  ): Promise<OrderReceiveAlimTalkResDto> {
+    const testOrderDelivery = await this.testOrderDeliveryRepository
+      .createQueryBuilder('testOrderDelivery')
+      .innerJoinAndSelect('testOrderDelivery.orderProductMapping', 'orderProductMapping')
+      .innerJoinAndSelect('orderProductMapping.order', 'order')
+      .innerJoinAndSelect('orderProductMapping.product', 'product')
+      .innerJoinAndSelect('product.brand', 'brand')
+      .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .innerJoinAndSelect('order.user', 'user')
+      .where('testOrderDelivery.id = :id', { id: orderDecrypt.id })
+      .getOne();
+
+    if (!testOrderDelivery) {
+      throw new BadRequestException('존재하지 않는 테스트 주문 정보입니다.');
+    }
+
+    // deliveryTarget 복호화 후 비교
+    let decryptedDeliveryTarget = testOrderDelivery.deliveryTarget;
+    try {
+      decryptedDeliveryTarget = this.cryptoCipher.decryptDeliveryTarget(testOrderDelivery.deliveryTarget);
+    } catch (error) {
+      throw new BadRequestException('전화번호 복호화에 실패했습니다.');
+    }
+
+    if (decryptedDeliveryTarget !== phoneNumber) {
+      throw new BadRequestException('전화번호가 일치하지 않습니다.');
+    }
+
+    const choiceProductList: OrderReceiveChoiceDto[] = [];
+
+    // 초이스 쿠폰일 경우 목록 조회 (테스트에서는 선택 불가)
+    if (testOrderDelivery.orderProductMapping.product.type === IProductType.CHOICE) {
+      const productChoiceMappingList = await this.productChoiceMappingRepository
+        .createQueryBuilder('productChoiceMapping')
+        .innerJoinAndSelect('productChoiceMapping.product', 'product')
+        .innerJoinAndSelect('product.brand', 'brand')
+        .where('productChoiceMapping.choiceProductId = :choiceProductId', {
+          choiceProductId: testOrderDelivery.orderProductMapping.product.id,
+        })
+        .getMany();
+
+      for (const productChoiceMapping of productChoiceMappingList) {
+        choiceProductList.push({
+          id: productChoiceMapping.product.id,
+          name: productChoiceMapping.product.name,
+          imagePath: productChoiceMapping.product.imagePath,
+          price: productChoiceMapping.product.price,
+          expireDay: productChoiceMapping.product.expireDay,
+          brandNameKorean: productChoiceMapping.product.brand!.nameKorean,
+          brandNameEnglish: productChoiceMapping.product.brand!.nameEnglish,
+        });
+      }
+    }
+
+    let text = testOrderDelivery.orderProductMapping.sendContent ?? '';
+
+    if (testOrderDelivery.orderProductMapping.sendTailText) {
+      text += testOrderDelivery.orderProductMapping.sendTailText;
+    }
+    if (testOrderDelivery.replaceCharacter1) {
+      text = text.replace('{대치문자1}', testOrderDelivery.replaceCharacter1);
+    }
+    if (testOrderDelivery.replaceCharacter2) {
+      text = text.replace('{대치문자2}', testOrderDelivery.replaceCharacter2);
+    }
+    if (testOrderDelivery.replaceCharacter3) {
+      text = text.replace('{대치문자3}', testOrderDelivery.replaceCharacter3);
+    }
+
+    const displayProduct = testOrderDelivery.orderProductMapping.product;
+    const displayBrand = testOrderDelivery.orderProductMapping.product.brand;
+
+    return {
+      topImagePath: testOrderDelivery.orderProductMapping.topImagePath,
+      midImagePath: testOrderDelivery.orderProductMapping.midImagePath,
+      fromPhoneNumber: testOrderDelivery.orderProductMapping.fromPhoneNumber!,
+      productName: displayProduct.name,
+      productImagePath: displayProduct.imagePath,
+      brandName: displayBrand!.nameKorean,
+      barCode: testOrderDelivery.barCode!,
+      personalCode: testOrderDelivery.personalCode,
+      couponStatus: testOrderDelivery.couponStatus,
+      context: text,
+      type: testOrderDelivery.orderProductMapping.product.type,
+      choiceProductList,
+      selectChoiceProduct: null, // 테스트 발송은 초이스 쿠폰 선택 불가
+      memo: displayProduct.memo ? normalizeLineBreaks(displayProduct.memo, '<br>') : '',
+      sendRequestAt: format(testOrderDelivery.sendRequestAt, DateFormatStr),
+      expireDay: displayProduct.expireDay,
+      brandKoreanName: displayBrand!.nameKorean === '신세계' ? '이마트' : displayBrand!.nameKorean,
+      userBusinessName: testOrderDelivery.orderProductMapping.order.user!.businessName,
       partnerCompany: displayProduct.partnerCompany?.type || null,
       validityStartsNextDay: displayProduct.partnerCompany?.validityStartsNextDay,
     };
