@@ -736,10 +736,12 @@ export class DeliveryBatchService {
         emailSendHistory.expireAt = addDays(new Date(), EmailCertifyExpireDay);
         await this.emailSendHistoryRepository.save(emailSendHistory);
 
+        // 테스트 발송인 경우 testOrderDeliveryId 사용
         const encryptKeyEmail = this.cryptoCipher.encryptJson({
-          id: orderDelivery.id,
+          id: testOrderDeliveryId ?? orderDelivery.id,
           transactionId: orderDelivery.transactionId,
           emailHistoryId: emailSendHistory.id,
+          isTest: !!testOrderDeliveryId,
         } as OrderEncryptKey);
 
         const url = `${this.configService.getOrThrow('EMAIL_RECEIVE_URL')}/${encryptKeyEmail}`;

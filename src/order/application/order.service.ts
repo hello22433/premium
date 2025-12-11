@@ -2330,9 +2330,9 @@ export class OrderService {
       PhoneUtil.normalizeDeliveryTarget(deliveryTarget),
     );
 
-    // 알림톡인 경우 test_order_delivery 테이블에 저장하여 쿠폰 정보 조회 가능하게 함
+    // 알림톡 또는 이메일인 경우 test_order_delivery 테이블에 저장하여 쿠폰 정보 조회 가능하게 함
     let testOrderDeliveryId: number | undefined;
-    if (deliveryMethod === IOrderSendMethod.ALIM_TALK) {
+    if (deliveryMethod === IOrderSendMethod.ALIM_TALK || deliveryMethod === IOrderSendMethod.EMAIL) {
       const testOrderDelivery = new TestOrderDeliveryEntity();
       testOrderDelivery.status = IOrderDeliveryStatus.COMPLETE;
       testOrderDelivery.orderProductMappingId = orderProductMapping.id;

@@ -353,6 +353,11 @@ export class OrderReceiveService {
   async email(getQuery: OrderReceiveEmailReqDto): Promise<OrderReceiveEmailResDto> {
     const orderDecrypt = this.cryptoCipher.decryptJson(getQuery.encryptKey) as OrderEncryptKey;
 
+    // 테스트 발송인 경우 test_order_delivery에서 조회
+    if (orderDecrypt.isTest) {
+      return this.emailForTest(orderDecrypt, getQuery.code);
+    }
+
     const orderDelivery = await this.orderDeliveryRepository
       .createQueryBuilder('orderDelivery')
       .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
@@ -452,6 +457,95 @@ export class OrderReceiveService {
     };
   }
 
+  /**
+   * 테스트 발송용 이메일 인증 처리
+   */
+  private async emailForTest(
+    orderDecrypt: OrderEncryptKey,
+    code: string,
+  ): Promise<OrderReceiveEmailResDto> {
+    const testOrderDelivery = await this.testOrderDeliveryRepository
+      .createQueryBuilder('testOrderDelivery')
+      .innerJoinAndSelect('testOrderDelivery.orderProductMapping', 'orderProductMapping')
+      .innerJoinAndSelect('orderProductMapping.order', 'order')
+      .innerJoinAndSelect('orderProductMapping.product', 'product')
+      .where('testOrderDelivery.id = :id', { id: orderDecrypt.id })
+      .getOne();
+
+    if (!testOrderDelivery) {
+      throw new BadRequestException('존재하지 않는 테스트 주문 정보입니다.');
+    }
+
+    if (!orderDecrypt.emailHistoryId) {
+      throw new BadRequestException('올바른 요청이 아닙니다.');
+    }
+
+    const emailSendHistory = await this.emailSendHistoryRepository.findOne({
+      where: {
+        id: orderDecrypt.emailHistoryId,
+      },
+    });
+
+    if (!emailSendHistory) {
+      throw new BadRequestException('이메일 전송 데이터가 없습니다.');
+    }
+
+    if (emailSendHistory.expireAt < new Date()) {
+      throw new BadRequestException('만료된 이메일 인증 코드입니다.');
+    }
+
+    if (emailSendHistory.code !== code) {
+      throw new BadRequestException('코드가 일치하지 않습니다.');
+    }
+
+    emailSendHistory.isCertified = true;
+    await this.emailSendHistoryRepository.save(emailSendHistory);
+
+    // 테스트 발송용 sendEncryptKey (isTest 플래그 포함)
+    const sendEncryptKey = this.cryptoCipher.encryptJson({
+      emailSendHistoryId: emailSendHistory.id,
+      orderDeliveryId: testOrderDelivery.id,
+      isTest: true,
+    } as OrderSendEncryptKey);
+
+    const choiceProductList: OrderReceiveChoiceDto[] = [];
+
+    // 초이스 쿠폰일 경우 목록 조회
+    if (testOrderDelivery.orderProductMapping.product.type === IProductType.CHOICE) {
+      const productChoiceMappingList = await this.productChoiceMappingRepository
+        .createQueryBuilder('productChoiceMapping')
+        .innerJoinAndSelect('productChoiceMapping.product', 'product')
+        .innerJoinAndSelect('product.brand', 'brand')
+        .where('productChoiceMapping.choiceProductId = :choiceProductId', {
+          choiceProductId: testOrderDelivery.orderProductMapping.product.id,
+        })
+        .getMany();
+
+      for (const productChoiceMapping of productChoiceMappingList) {
+        choiceProductList.push({
+          id: productChoiceMapping.product.id,
+          name: productChoiceMapping.product.name,
+          imagePath: productChoiceMapping.product.imagePath,
+          price: productChoiceMapping.product.price,
+          expireDay: productChoiceMapping.product.expireDay,
+          brandNameKorean: productChoiceMapping.product.brand!.nameKorean,
+          brandNameEnglish: productChoiceMapping.product.brand!.nameEnglish,
+        });
+      }
+    }
+
+    const displayProduct = testOrderDelivery.orderProductMapping.product;
+
+    return {
+      productName: displayProduct.name,
+      productImagePath: displayProduct.imagePath,
+      sendEncryptKey: sendEncryptKey,
+      type: testOrderDelivery.orderProductMapping.product.type,
+      choiceProductList,
+      selectChoiceProduct: null,
+    };
+  }
+
   @Transactional()
   async sendToMMS(getBody: OrderReceiveSendToMMsEmailReqDto) {
     let obj: OrderSendEncryptKey;
@@ -459,6 +553,11 @@ export class OrderReceiveService {
       obj = this.cryptoCipher.decryptJson(getBody.sendEncryptKey) as OrderSendEncryptKey;
     } catch (e) {
       throw new BadRequestException('올바른 sendEncryptKey 값 이 아닙니다');
+    }
+
+    // 테스트 발송인 경우 별도 처리
+    if (obj.isTest) {
+      return this.sendToMMSForTest(obj, getBody.phoneNumber);
     }
 
     const orderDelivery = await this.orderDeliveryRepository
@@ -575,6 +674,70 @@ export class OrderReceiveService {
       emailCouponStatus: emailCouponStatus,
       emailReceiverPhone: encryptedPhoneNumber,
     });
+
+    return;
+  }
+
+  /**
+   * 테스트 이메일 발송 건의 MMS 전송 (테스트용)
+   * 실제 핀 발급 없이 테스트 핀(999999)으로 MMS 발송
+   */
+  private async sendToMMSForTest(obj: OrderSendEncryptKey, phoneNumber: string) {
+    const testOrderDelivery = await this.testOrderDeliveryRepository
+      .createQueryBuilder('testOrderDelivery')
+      .innerJoinAndSelect('testOrderDelivery.orderProductMapping', 'orderProductMapping')
+      .innerJoinAndSelect('orderProductMapping.order', 'order')
+      .innerJoinAndSelect('orderProductMapping.product', 'product')
+      .innerJoinAndSelect('product.brand', 'brand')
+      .where('testOrderDelivery.id = :id', { id: obj.orderDeliveryId })
+      .getOne();
+
+    if (!testOrderDelivery) {
+      throw new BadRequestException('존재하지 않는 테스트 주문 정보입니다.');
+    }
+
+    // 이메일 발송 건인지 확인
+    if (testOrderDelivery.deliveryMethod !== IOrderSendMethod.EMAIL) {
+      throw new BadRequestException('이메일 발송 건이 아닙니다.');
+    }
+
+    // 테스트용 바코드 (999999)
+    const testBarcode = '999999';
+
+    // 테스트용 쿠폰 이미지 생성
+    const product = testOrderDelivery.orderProductMapping.product;
+    const productExpireDay = product.expireDay || 0;
+    const expireDate = productExpireDay ? dayjs().tz('Asia/Seoul').add(productExpireDay, 'day').format('YYYY. MM. DD') : null;
+
+    const { path } = await DeliveryCreateCouponImage(
+      product.imagePath,
+      product.name,
+      testBarcode,
+      product.brand!.nameKorean,
+      expireDate,
+      testOrderDelivery.orderProductMapping.topImagePath,
+      testOrderDelivery.orderProductMapping.midImagePath,
+      product.type,
+    );
+
+    const title = testOrderDelivery.orderProductMapping.sendTitle ?? '';
+    const filePathList: string[] = [path];
+
+    // 테스트용 SMS 템플릿 생성
+    const text = `[테스트 발송]\n상품명: ${product.name}\n바코드: ${testBarcode}\n유효기간: ${expireDate || '없음'}`;
+
+    try {
+      await this.smsSend.send({
+        msgType: 'M',
+        to: phoneNumber,
+        from: defaultFromPhoneNumber,
+        subject: title,
+        text: text,
+        filePath: filePathList,
+      });
+    } catch (e) {
+      throw new InternalServerErrorException('테스트 MMS 발송에 실패했습니다.');
+    }
 
     return;
   }
