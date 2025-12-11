@@ -658,6 +658,7 @@ export class OrderService {
     }
 
     order.deliveryCompleteReportCount++;
+    order.deliveryReportLastSource = getBody.source || 'DOCUMENT';
 
     await this.orderRepository.save(order);
 
@@ -773,6 +774,7 @@ export class OrderService {
     }
 
     order.orderCompleteReportCount++;
+    order.transactionStatementLastSource = getBody.source || 'DOCUMENT';
 
     await this.orderRepository.save(order);
 

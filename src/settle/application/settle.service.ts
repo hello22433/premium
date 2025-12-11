@@ -1059,6 +1059,28 @@ export class SettleService {
       const firstMapping = order.orderProductMappings?.[0];
       const sendRequestAt = firstMapping?.sendRequestAt ? format(firstMapping.sendRequestAt, DateFormatStr) : null;
 
+      // 발송완료 리포트 상태 계산
+      let deliveryReportStatus = '-';
+      if (order.deliveryCompleteReportCount > 0) {
+        const isReissue = order.deliveryCompleteReportCount > 1;
+        if (order.deliveryReportLastSource === 'DIRECT') {
+          deliveryReportStatus = isReissue ? '발행(재)' : '발행 완료';
+        } else {
+          deliveryReportStatus = isReissue ? '다운로드(재)' : '다운로드 완료';
+        }
+      }
+
+      // 거래명세서 상태 계산
+      let transactionStatementStatus = '-';
+      if (order.orderCompleteReportCount > 0) {
+        const isReissue = order.orderCompleteReportCount > 1;
+        if (order.transactionStatementLastSource === 'DIRECT') {
+          transactionStatementStatus = isReissue ? '발행(재)' : '발행 완료';
+        } else {
+          transactionStatementStatus = isReissue ? '다운로드(재)' : '다운로드 완료';
+        }
+      }
+
       return {
         id: order.id,
         registeredAt: format(order.registerAt, DateFormatStr),
@@ -1072,8 +1094,8 @@ export class SettleService {
         settlePrice: finalSettlePrice,
         status: order.status,
         sendRequestAt: sendRequestAt,
-        isDeliveryReport: order.deliveryCompleteReportCount > 0,
-        isTransactionStatement: order.orderCompleteReportCount > 0,
+        deliveryReportStatus,
+        transactionStatementStatus,
       };
     });
 
@@ -1200,7 +1222,7 @@ export class SettleService {
 
     const orderList = await queryBuilder.getMany();
 
-    const resultList: SettleUserListViewDto[] = orderList.map((order) => {
+    const resultList = orderList.map((order) => {
       const productNameList: string[] = [];
       let amount: number = 0;
 
@@ -1226,8 +1248,6 @@ export class SettleService {
         originalSettlePrice: order.settleAmount,
         status: order.status,
         sendRequestAt: sendRequestAt,
-        isDeliveryReport: order.deliveryCompleteReportCount > 0,
-        isTransactionStatement: order.orderCompleteReportCount > 0,
       };
     });
 

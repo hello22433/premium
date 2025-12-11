@@ -114,6 +114,14 @@ export class OrderGetDeliveryCompleteReportPdfReqDto {
   @IsNumber()
   @IsNotEmpty()
   id: number;
+
+  @ApiProperty({
+    description: '발행 소스 ex) DOCUMENT: 문서함, DIRECT: 직접발행',
+    required: false,
+  })
+  @IsOptional()
+  @IsString()
+  source?: string;
 }
 
 export class OrderGetOrderCompleteReportReqDto extends OrderGetDeliveryCompleteReportReqDto {}
@@ -126,6 +134,14 @@ export class OrderGetOrderCompleteReportPdfReqDto {
   @IsNumber()
   @IsNotEmpty()
   id: number;
+
+  @ApiProperty({
+    description: '발행 소스 ex) DOCUMENT: 문서함, DIRECT: 직접발행',
+    required: false,
+  })
+  @IsOptional()
+  @IsString()
+  source?: string;
 }
 
 export class OrderGetSettleReqDto extends PagingReqDto {

@@ -42,8 +42,24 @@ export class OrderEntity extends BaseEntity {
   @Column({ default: 0, comment: '배송 완료 리포트 pdf 카운트' })
   deliveryCompleteReportCount: number;
 
+  @Column({
+    type: 'varchar',
+    length: 20,
+    nullable: true,
+    comment: '마지막 배송 완료 리포트 발행 소스 ex) DOCUMENT: 문서함, DIRECT: 직접발행',
+  })
+  deliveryReportLastSource: string | null;
+
   @Column({ default: 0, comment: '거래명세서 pdf 카운트' })
   orderCompleteReportCount: number;
+
+  @Column({
+    type: 'varchar',
+    length: 20,
+    nullable: true,
+    comment: '마지막 거래명세서 발행 소스 ex) DOCUMENT: 문서함, DIRECT: 직접발행',
+  })
+  transactionStatementLastSource: string | null;
 
   @Column({ type: 'int', nullable: true, comment: 'FK) ssg_event.id for SSG orders' })
   ssgEventId: number | null;

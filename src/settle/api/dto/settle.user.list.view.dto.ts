@@ -64,12 +64,12 @@ export class SettleUserListViewDto {
   sendRequestAt: string | null;
 
   @ApiProperty({
-    description: '발송 완료 리포트 ex) true:  발행완료, false: 미발행',
+    description: '발송 완료 리포트 상태 ex) - / 다운로드 완료 / 다운로드(재) / 발행 완료 / 발행(재)',
   })
-  isDeliveryReport: boolean;
+  deliveryReportStatus: string;
 
   @ApiProperty({
-    description: '거래명세서 ex) true:  발행완료, false: 미발행',
+    description: '거래명세서 상태 ex) - / 다운로드 완료 / 다운로드(재) / 발행 완료 / 발행(재)',
   })
-  isTransactionStatement: boolean;
+  transactionStatementStatus: string;
 }

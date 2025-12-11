@@ -45,3 +45,7 @@ ALTER TABLE `order` DROP COLUMN send_type;
 -- 테스트발송횟수 삭제
 ALTER TABLE `order`
     DROP COLUMN test_delivery_count;
+
+ALTER TABLE `order`
+    ADD COLUMN `delivery_report_last_source` VARCHAR(20) NULL COMMENT '마지막 배송 완료 리포트 발행 소스 ex) DOCUMENT: 문서함, DIRECT: 직접발행',
+    ADD COLUMN `transaction_statement_last_source` VARCHAR(20) NULL COMMENT '마지막 거래명세서 발행 소스 ex) DOCUMENT: 문서함, DIRECT: 직접발행';
