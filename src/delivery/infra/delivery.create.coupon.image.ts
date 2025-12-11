@@ -18,8 +18,24 @@ function createImageFromBuffer(buffer: Buffer): Promise<any> {
   });
 }
 
+// 기본 플레이스홀더 이미지 URL
+const DEFAULT_PLACEHOLDER_IMAGE_URL = 'https://premium.epopkon.com/img/upload-plz.jpg';
+
 async function fetchImageBufferFromURL(url: string): Promise<Buffer> {
-  const response = await axios.get(url, { responseType: 'arraybuffer' });
+  // URL이 없거나 유효하지 않은 경우 기본 이미지 URL 사용
+  let targetUrl = url;
+  if (!url || url.trim() === '') {
+    targetUrl = DEFAULT_PLACEHOLDER_IMAGE_URL;
+  } else {
+    try {
+      new URL(url);
+    } catch {
+      // URL이 유효하지 않은 경우 기본 이미지 URL 사용
+      targetUrl = DEFAULT_PLACEHOLDER_IMAGE_URL;
+    }
+  }
+
+  const response = await axios.get(targetUrl, { responseType: 'arraybuffer' });
   return Buffer.from(response.data);
 }
 
