@@ -287,7 +287,7 @@ export class DeliveryBatchService {
         } catch (e) {
           deliveryHistory.context = JSON.stringify(e);
           deliveryHistory.isSuccess = false;
-          const resultSms = await this.handleAlimTalkFail(orderDelivery, title, text, filePathList);
+          const resultSms = await this.handleAlimTalkFail(orderDelivery, title, text, filePathList, decryptedDeliveryTarget);
           // 문자 전송성공한 경우
           if (resultSms === IOrderDeliveryStatus.COMPLETE_SMS) {
             deliveryHistory.isSuccess = true;
@@ -297,7 +297,7 @@ export class DeliveryBatchService {
           // 문자 전송도 실패한 경우
           if (resultSms !== IOrderDeliveryStatus.COMPLETE_SMS) {
             deliveryHistory.context += JSON.stringify(resultSms);
-            orderDelivery.status = IOrderDeliveryStatus.COMPLETE_SMS;
+            orderDelivery.status = IOrderDeliveryStatus.FAIL;
           }
         }
       }
@@ -523,6 +523,7 @@ export class DeliveryBatchService {
     title: string,
     text: string,
     filePathList: string[],
+    decryptedDeliveryTarget: string,
   ) {
     try {
       const smsText =
@@ -531,7 +532,7 @@ export class DeliveryBatchService {
       const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber!;
       await this.smsSend.send({
         msgType: 'L',
-        to: orderDelivery.deliveryTarget,
+        to: decryptedDeliveryTarget,
         from: fromPhoneNumber,
         subject: title,
         text: smsText,
@@ -651,7 +652,7 @@ export class DeliveryBatchService {
       } catch (e) {
         deliveryHistory.context = JSON.stringify(e);
         deliveryHistory.isSuccess = false;
-        const resultSms = await this.handleAlimTalkFail(orderDelivery, title, text, filePathList);
+        const resultSms = await this.handleAlimTalkFail(orderDelivery, title, text, filePathList, decryptedDeliveryTarget);
         // 문자 전송성공한 경우
         if (resultSms === IOrderDeliveryStatus.COMPLETE_SMS) {
           deliveryHistory.isSuccess = true;
@@ -661,7 +662,7 @@ export class DeliveryBatchService {
         // 문자 전송도 실패한 경우
         if (resultSms !== IOrderDeliveryStatus.COMPLETE_SMS) {
           deliveryHistory.context += JSON.stringify(resultSms);
-          orderDelivery.status = IOrderDeliveryStatus.COMPLETE_SMS;
+          orderDelivery.status = IOrderDeliveryStatus.FAIL;
         }
       }
     }
