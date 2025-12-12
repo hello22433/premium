@@ -799,8 +799,10 @@ export class OrderService {
   /**
    * 다중 주문 발송완료 리포트 조회 (통합)
    */
-  async getDeliveryCompleteReportMultiple(ids: string): Promise<any> {
+  async getDeliveryCompleteReportMultiple(ids: string, evidenceDate?: string): Promise<any> {
     const orderIds = ids.split(',').map((id) => parseInt(id.trim(), 10));
+    // 증빙일자가 있으면 파싱
+    const evidenceDateParsed = evidenceDate ? new Date(evidenceDate) : null;
 
     if (orderIds.length === 0) {
       throw new BadRequestException('주문 ID가 필요합니다.');
@@ -851,6 +853,7 @@ export class OrderService {
     const productList: OrderPdfDetailProductDto[] = [];
     let firstMapping: any = null;
     let actualSendAt: string | null = null;
+    const allMappings: any[] = [];
 
     for (const order of orders) {
       if (order.orderProductMappings && order.orderProductMappings.length > 0) {
@@ -858,6 +861,7 @@ export class OrderService {
           if (!firstMapping) {
             firstMapping = orderProductMapping;
           }
+          allMappings.push(orderProductMapping);
 
           const orderDeliveryList: OrderDeliveryCompleteReportViewDto[] = [];
           const productExpireDay = orderProductMapping.product.expireDay || 0;
@@ -885,14 +889,25 @@ export class OrderService {
               }
             }
 
-            // 실제 발송 시간 추출
-            if (!actualSendAt && orderDelivery.actualSendAt) {
-              actualSendAt = format(orderDelivery.actualSendAt, DateFormatStr);
+            // 실제 발송 시간 추출 (증빙일자가 있으면 증빙일자 사용)
+            if (!actualSendAt) {
+              if (evidenceDateParsed) {
+                actualSendAt = format(evidenceDateParsed, DateFormatStr);
+              } else if (orderDelivery.actualSendAt) {
+                actualSendAt = format(orderDelivery.actualSendAt, DateFormatStr);
+              }
             }
+
+            // 발송날짜: 증빙일자가 있으면 증빙일자 사용
+            const deliverySendRequestAt = evidenceDateParsed
+              ? format(evidenceDateParsed, DateFormatStr)
+              : orderDelivery.sendRequestAt
+                ? format(orderDelivery.sendRequestAt, DateFormatStr)
+                : null;
 
             orderDeliveryList.push({
               id: orderDelivery.id,
-              sendRequestAt: orderDelivery.sendRequestAt ? format(orderDelivery.sendRequestAt, DateFormatStr) : null,
+              sendRequestAt: deliverySendRequestAt,
               productName: orderProductMapping.product.name ?? null,
               amount: orderProductMapping.product.price ?? null,
               barCode: orderDelivery.barCode ? maskBarCode(orderDelivery.barCode) : null,
@@ -943,8 +958,16 @@ export class OrderService {
       productList: productList,
       actualSendAt: actualSendAt,
       sendMethod: firstMapping?.sendMethod ?? null,
-      sendTitle: firstMapping?.sendTitle ?? null,
-      sendContent: firstMapping?.sendContent ?? null,
+      // 발송 제목 통합 (여러 개면 "제목 외" 형식)
+      sendTitle:
+        allMappings.length > 1
+          ? `${firstMapping?.sendTitle ?? ''} 외`
+          : (firstMapping?.sendTitle ?? null),
+      // 발송 내용 통합 (여러 개면 "내용\n\n외" 형식)
+      sendContent:
+        allMappings.length > 1
+          ? `${firstMapping?.sendContent ?? ''}\n\n외`
+          : (firstMapping?.sendContent ?? null),
       sendRequestAt: firstMapping?.sendRequestAt ? format(firstMapping.sendRequestAt, DateFormatStr) : null,
       fromPhoneNumber: firstMapping?.fromPhoneNumber ?? null,
       fromEmail: firstMapping?.fromEmail ?? null,
@@ -955,8 +978,10 @@ export class OrderService {
   /**
    * 다중 주문 거래명세서 조회 (통합)
    */
-  async getOrderCompleteReportMultiple(ids: string): Promise<any> {
+  async getOrderCompleteReportMultiple(ids: string, evidenceDate?: string): Promise<any> {
     const orderIds = ids.split(',').map((id) => parseInt(id.trim(), 10));
+    // 증빙일자가 있으면 파싱
+    const evidenceDateParsed = evidenceDate ? new Date(evidenceDate) : null;
 
     if (orderIds.length === 0) {
       throw new BadRequestException('주문 ID가 필요합니다.');
@@ -985,7 +1010,11 @@ export class OrderService {
     }
 
     const firstOrder = orders[0];
-    const serialNumber: string = `${format(firstOrder.createdAt, DateDateFormatStr)}-${orderIds.join('_')}`;
+    // 일련번호: 증빙일자가 있으면 증빙일자 사용, 없으면 주문 생성일 사용
+    const serialDateStr = evidenceDateParsed
+      ? format(evidenceDateParsed, DateDateFormatStr)
+      : format(firstOrder.createdAt, DateDateFormatStr);
+    const serialNumber: string = `${serialDateStr}-${orderIds.join('_')}`;
     const fileName: string = `${serialNumber}_거래명세서`;
 
     // 이벤트명 통합
@@ -996,7 +1025,8 @@ export class OrderService {
     let price = 0;
     let vat = 0;
     let totalAmount = 0;
-    let sendRequestAt: string | null = null;
+    // 거래일자: 증빙일자가 있으면 증빙일자 사용
+    let sendRequestAt: string | null = evidenceDateParsed ? format(evidenceDateParsed, DateFormatStr) : null;
 
     for (const order of orders) {
       if (order.orderProductMappings && order.orderProductMappings.length > 0) {
@@ -1017,13 +1047,21 @@ export class OrderService {
           price += total;
 
           const firstDelivery = orderProductMapping.orderDeliveries?.[0];
+          // 증빙일자가 없고 sendRequestAt도 없으면 첫 배송의 발송요청일 사용
           if (!sendRequestAt && firstDelivery?.sendRequestAt) {
             sendRequestAt = format(firstDelivery.sendRequestAt, DateFormatStr);
           }
 
+          // 품목별 일자: 증빙일자가 있으면 증빙일자 사용
+          const itemSendRequestAt = evidenceDateParsed
+            ? format(evidenceDateParsed, DateFormatStr)
+            : firstDelivery?.sendRequestAt
+              ? format(firstDelivery.sendRequestAt, DateFormatStr)
+              : null;
+
           orderDeliveryList.push({
             id: orderProductMapping.id,
-            sendRequestAt: firstDelivery?.sendRequestAt ? format(firstDelivery.sendRequestAt, DateFormatStr) : null,
+            sendRequestAt: itemSendRequestAt,
             productName: orderProductMapping.product.name ?? null,
             quantity,
             unitPrice: adjustedPrice,

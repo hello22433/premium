@@ -222,8 +222,8 @@ export class OrderController {
   })
   // ====================================================
   @Get('/order/delivery-complete/report-multiple')
-  getDeliveryCompleteReportMultiple(@Query('ids') ids: string) {
-    return this.orderService.getDeliveryCompleteReportMultiple(ids);
+  getDeliveryCompleteReportMultiple(@Query('ids') ids: string, @Query('evidenceDate') evidenceDate?: string) {
+    return this.orderService.getDeliveryCompleteReportMultiple(ids, evidenceDate);
   }
 
   @ApiOperation({
@@ -235,8 +235,8 @@ export class OrderController {
   })
   // ====================================================
   @Get('/order/order-complete/report-multiple')
-  getOrderCompleteReportMultiple(@Query('ids') ids: string) {
-    return this.orderService.getOrderCompleteReportMultiple(ids);
+  getOrderCompleteReportMultiple(@Query('ids') ids: string, @Query('evidenceDate') evidenceDate?: string) {
+    return this.orderService.getOrderCompleteReportMultiple(ids, evidenceDate);
   }
 
   @ApiOperation({
