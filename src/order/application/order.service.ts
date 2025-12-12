@@ -93,6 +93,7 @@ import { OrderStatusExcelMapping } from '../domain/order.excel.mapping';
 import { OrderFeeCalculator } from '../domain/order.fee.calculator';
 import { OrderCustomerViewDto } from '../api/dto/order.customer.view.dto';
 import { maskBarCode } from '../../util/mask.barcode.util';
+import { MaskingUtil } from '../../common/utils/masking.util';
 import { CreateCode } from '../../common/domain/create.code';
 import { OrderDigitNumber, OrderPrefixCode } from '../domain/order.code';
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
@@ -567,8 +568,14 @@ export class OrderService {
 
           // 파기된 경우('-')는 마스킹하지 않고 그대로 반환
           let finalDeliveryTarget = decryptedDeliveryTarget;
-          if (decryptedDeliveryTarget !== '-' && orderProductMapping.sendMethod !== 'EMAIL') {
-            finalDeliveryTarget = maskBarCode(decryptedDeliveryTarget);
+          if (decryptedDeliveryTarget !== '-') {
+            if (orderProductMapping.sendMethod === 'EMAIL') {
+              // 이메일인 경우 이메일 마스킹
+              finalDeliveryTarget = MaskingUtil.maskEmail(decryptedDeliveryTarget);
+            } else {
+              // 전화번호인 경우 전화번호 마스킹
+              finalDeliveryTarget = maskBarCode(decryptedDeliveryTarget);
+            }
           }
 
           orderDeliveryList.push({
