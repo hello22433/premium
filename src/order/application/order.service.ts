@@ -618,19 +618,21 @@ export class OrderService {
     // 첫 번째 상품의 정보 사용
     const firstMapping = order.orderProductMappings?.[0];
 
-    // 실제 발송 시간 추출 (첫 번째 유효한 값 사용)
-    let actualSendAt: string | null = null;
+    // 실제 발송 시간 추출 (모든 상품 중 가장 늦은 날짜 사용)
+    let latestActualSendAt: Date | null = null;
     for (const mapping of order.orderProductMappings || []) {
       if (mapping.orderDeliveries) {
         for (const delivery of mapping.orderDeliveries) {
           if (delivery.actualSendAt) {
-            actualSendAt = format(delivery.actualSendAt, DateFormatStr);
-            break;
+            const sendDate = new Date(delivery.actualSendAt);
+            if (!latestActualSendAt || sendDate > latestActualSendAt) {
+              latestActualSendAt = sendDate;
+            }
           }
         }
       }
-      if (actualSendAt) break;
     }
+    const actualSendAt = latestActualSendAt ? format(latestActualSendAt, DateFormatStr) : null;
 
     return {
       id: order.id,
