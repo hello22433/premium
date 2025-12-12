@@ -549,6 +549,16 @@ export class SettleGetUserDetailReqParamDto {
   orderId: number;
 }
 
+export class SettleGetUserDetailMultipleReqQueryDto {
+  @ApiProperty({
+    description: '여러 order id (콤마로 구분) ex) 1,2,3',
+  })
+  // ======================================
+  @IsNotEmpty()
+  @IsString()
+  ids: string;
+}
+
 export class SettleGetUserExcelDownloadReqDto {
   @ApiPropertyOptional({
     description: '시작일 ex) yyyy-MM-ddTHH:mm:ss',

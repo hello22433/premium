@@ -4,6 +4,7 @@ import { ApiProperty } from '@nestjs/swagger';
 import { SettlePartnerCompanyListViewDto } from './dto/settle.partner.company.list.view.dto';
 import { SettleMobileListViewDto } from './dto/settle.mobile.list.view.dto';
 import { SettleUserDetailDto } from './dto/settle.user.detail.dto';
+import { SettleUserDetailMultipleDto } from './dto/settle.user.detail.multiple.dto';
 import { SettleOtherViewDto } from './dto/settle.other.view.dto';
 import { ShippingStorageViewDto } from './dto/shipping.storage.view.dto';
 import { SaleTypeViewDto } from './dto/sale.type.view.dto';
@@ -57,6 +58,8 @@ export class SettleGetUserListResDto extends GetListResDto {
 }
 
 export class SettleGetUserDetailResDto extends SettleUserDetailDto {}
+
+export class SettleGetUserDetailMultipleResDto extends SettleUserDetailMultipleDto {}
 
 export class SettleGetPartnerCompanyListResDto extends GetListResDto {
   @ApiProperty({

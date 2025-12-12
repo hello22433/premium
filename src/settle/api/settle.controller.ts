@@ -19,6 +19,7 @@ import {
   SettleGetSaleTypeListResDto,
   SettleGetShippingStorageListResDto,
   SettleGetUserDetailResDto,
+  SettleGetUserDetailMultipleResDto,
   SettleGetUserListResDto,
 } from './settle.res.dto';
 import {
@@ -33,6 +34,7 @@ import {
   SettleGetSaleTypeListReqDto,
   SettleGetShippingStorageListReqDto,
   SettleGetUserDetailReqParamDto,
+  SettleGetUserDetailMultipleReqQueryDto,
   SettleGetUserExcelDownloadReqDto,
   SettleGetUserListReqQueryDto,
   SettleGetUserPerDetailReqQueryDto,
@@ -41,6 +43,7 @@ import {
   SettlerUpdateOtherSaleReqDto,
   SettleUpdateUserPerOrderReqDto,
 } from './settle.req.dto';
+import { SettleUserDetailMultipleDto } from './dto/settle.user.detail.multiple.dto';
 import * as fs from 'fs';
 import { Response } from 'express';
 import { UserAuthSubEnum } from '../../user_management/domain/user.auth.enum';
@@ -265,6 +268,20 @@ export class SettleController {
   @Get('settle/user/:orderId')
   getUserDetail(@Param() getParam: SettleGetUserDetailReqParamDto) {
     return this.settleService.getUserDetail(getParam);
+  }
+
+  @ApiOperation({
+    summary: '정산관리 > 고객사 정산 > 다중 상세조회',
+    description: '여러 주문을 통합하여 조회 (동일 고객사만 가능)',
+  })
+  @ApiOkResponse({
+    type: SettleGetUserDetailMultipleResDto,
+    description: '성공적으로 조회할 경우',
+  })
+  // =====================================
+  @Get('settle/user-multiple')
+  getUserDetailMultiple(@Query() getQuery: SettleGetUserDetailMultipleReqQueryDto) {
+    return this.settleService.getUserDetailMultiple(getQuery);
   }
 
   @ApiOperation({

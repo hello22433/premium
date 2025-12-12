@@ -28,6 +28,7 @@ import {
   SettleGetSaleTypeListReqDto,
   SettleGetShippingStorageListReqDto,
   SettleGetUserDetailReqParamDto,
+  SettleGetUserDetailMultipleReqQueryDto,
   SettleGetUserExcelDownloadReqDto,
   SettleGetUserListReqQueryDto,
   SettleGetUserPerDetailReqQueryDto,
@@ -36,6 +37,10 @@ import {
   SettlerUpdateOtherSaleReqDto,
   SettleUpdateUserPerOrderReqDto,
 } from '../api/settle.req.dto';
+import {
+  SettleUserDetailMultipleDto,
+  SettleProductMultipleDetailDto,
+} from '../api/dto/settle.user.detail.multiple.dto';
 import { SettleUserListViewDto } from '../api/dto/settle.user.list.view.dto';
 import { QueryBuilderDateCondition } from '../../common/infra/query.builder.date.condition';
 import { DateDateFormatStr, DateEndMinuteFormatStr, DateFormatStr } from '../../common/domain/date.format.str';
@@ -1170,6 +1175,112 @@ export class SettleService {
       sendRequestAt: sendRequestAt,
       status: order.status,
       productList: productList,
+    };
+  }
+
+  async getUserDetailMultiple(getQuery: SettleGetUserDetailMultipleReqQueryDto): Promise<SettleUserDetailMultipleDto> {
+    const orderIds = getQuery.ids.split(',').map((id) => parseInt(id.trim(), 10)).filter((id) => !isNaN(id));
+
+    if (orderIds.length === 0) {
+      throw new BadRequestException('유효한 주문 ID가 없습니다.');
+    }
+
+    const queryBuilder = this.orderRepository
+      .createQueryBuilder('order')
+      .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('order.operationUser', 'operationUser')
+      .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
+      .leftJoinAndSelect('orderProductMappings.product', 'product')
+      .leftJoinAndSelect('product.brand', 'brand')
+      .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
+      .where('order.id IN (:...orderIds)', { orderIds });
+
+    const orders = await queryBuilder.getMany();
+
+    if (orders.length === 0) {
+      throw new BadRequestException('주문이 존재하지 않습니다.');
+    }
+
+    // 동일한 고객사인지 검증
+    const businessNames = [...new Set(orders.map((order) => order.user!.businessName))];
+    if (businessNames.length > 1) {
+      throw new BadRequestException('동일한 고객사의 주문만 함께 조회할 수 있습니다.');
+    }
+
+    // 이벤트명 생성: 1개면 그대로, 2개 이상이면 "첫번째 외"
+    const eventNames = orders.map((order) => order.eventName);
+    const eventName = eventNames.length === 1 ? eventNames[0] : `${eventNames[0]} 외`;
+
+    // 상품 목록 통합: 동일 상품 + 동일 단가는 합산, 다른 단가는 분리
+    const productMap = new Map<string, SettleProductMultipleDetailDto>();
+
+    for (const order of orders) {
+      if (order.orderProductMappings && order.orderProductMappings.length > 0) {
+        for (const mapping of order.orderProductMappings) {
+          // 할인/할증 적용된 단가 계산
+          let adjustedPrice = mapping.product?.price ?? 0;
+          if (mapping.fee !== null && mapping.fee > 0 && mapping.priceAdjustment) {
+            const originalPrice = mapping.product?.price ?? 0;
+            if (mapping.priceAdjustment === IPriceAdjustment.DISCOUNT) {
+              adjustedPrice = Math.ceil((originalPrice * (100 - mapping.fee)) / 100);
+            } else if (mapping.priceAdjustment === IPriceAdjustment.ADDITIONAL) {
+              adjustedPrice = Math.ceil((originalPrice * (100 + mapping.fee)) / 100);
+            }
+          }
+
+          // 키: 상품ID + 단가 (같은 상품이라도 단가가 다르면 분리)
+          const key = `${mapping.product?.id}-${adjustedPrice}`;
+
+          if (productMap.has(key)) {
+            // 기존 상품에 수량 합산
+            const existing = productMap.get(key)!;
+            existing.amount += mapping.amount;
+            // 이벤트명도 업데이트 (여러 이벤트에 걸쳐있으면 "a 외" 형태)
+            if (existing.eventName !== order.eventName && !existing.eventName.endsWith(' 외')) {
+              existing.eventName = `${existing.eventName} 외`;
+            }
+          } else {
+            // 새로운 상품 추가
+            productMap.set(key, {
+              id: mapping.product?.id ?? 0,
+              code: mapping.product?.code ?? '',
+              brandName: mapping.product?.brand?.nameKorean ?? '',
+              name: mapping.product?.name ?? '',
+              price: adjustedPrice,
+              amount: mapping.amount,
+              eventName: order.eventName,
+            });
+          }
+        }
+      }
+    }
+
+    // 가장 최근 발송 요청 시각 찾기
+    let latestSendRequestAt: Date | null = null;
+    for (const order of orders) {
+      const firstMapping = order.orderProductMappings?.[0];
+      if (firstMapping?.sendRequestAt && normalizeDate(firstMapping.sendRequestAt)) {
+        if (!latestSendRequestAt || firstMapping.sendRequestAt > latestSendRequestAt) {
+          latestSendRequestAt = firstMapping.sendRequestAt;
+        }
+      }
+    }
+    const sendRequestAt = latestSendRequestAt ? format(latestSendRequestAt, DateFormatStr) : null;
+
+    // 첫 번째 주문 기준으로 기본 정보 설정
+    const firstOrder = orders[0];
+
+    return {
+      orderIds: orders.map((o) => o.id),
+      userId: firstOrder.userId,
+      userPersonName: firstOrder.user!.personName,
+      userBusinessName: firstOrder.user!.businessName,
+      operationPersonName: firstOrder.operationUser?.personName ?? null,
+      eventName,
+      type: firstOrder.type,
+      sendRequestAt,
+      status: firstOrder.status,
+      productList: Array.from(productMap.values()),
     };
   }
 
