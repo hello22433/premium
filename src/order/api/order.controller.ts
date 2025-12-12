@@ -214,6 +214,32 @@ export class OrderController {
   }
 
   @ApiOperation({
+    summary: '다중 주문 발송 완료 리포트 PDF 통합 조회 API',
+    description: '여러 주문을 통합하여 발송완료리포트 조회 (동일 고객사만 가능)',
+  })
+  @ApiOkResponse({
+    description: '성공적으로 조회한 경우',
+  })
+  // ====================================================
+  @Get('/order/delivery-complete/report-multiple')
+  getDeliveryCompleteReportMultiple(@Query('ids') ids: string) {
+    return this.orderService.getDeliveryCompleteReportMultiple(ids);
+  }
+
+  @ApiOperation({
+    summary: '다중 주문 거래명세서 PDF 통합 조회 API',
+    description: '여러 주문을 통합하여 거래명세서 조회 (동일 고객사만 가능)',
+  })
+  @ApiOkResponse({
+    description: '성공적으로 조회한 경우',
+  })
+  // ====================================================
+  @Get('/order/order-complete/report-multiple')
+  getOrderCompleteReportMultiple(@Query('ids') ids: string) {
+    return this.orderService.getOrderCompleteReportMultiple(ids);
+  }
+
+  @ApiOperation({
     summary: '정산 정보 조회 API',
   })
   @ApiOkResponse({

@@ -796,6 +796,265 @@ export class OrderService {
     return;
   }
 
+  /**
+   * 다중 주문 발송완료 리포트 조회 (통합)
+   */
+  async getDeliveryCompleteReportMultiple(ids: string): Promise<any> {
+    const orderIds = ids.split(',').map((id) => parseInt(id.trim(), 10));
+
+    if (orderIds.length === 0) {
+      throw new BadRequestException('주문 ID가 필요합니다.');
+    }
+
+    const queryBuilder = this.orderRepository
+      .createQueryBuilder('order')
+      .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('order.operationUser', 'operationUser')
+      .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
+      .leftJoinAndSelect('orderProductMappings.product', 'product')
+      .leftJoinAndSelect('product.brand', 'brand')
+      .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
+      .where('order.id IN (:...ids)', { ids: orderIds });
+
+    const orders = await queryBuilder.getMany();
+
+    if (orders.length === 0) {
+      throw new BadRequestException('주문이 존재하지 않습니다.');
+    }
+
+    // 모든 주문이 발송 완료 상태인지 확인
+    for (const order of orders) {
+      if (order.status !== IOrderStatus.DELIVERY_COMPLETE) {
+        throw new BadRequestException('발송 완료된 건에 대해서만 조회 가능합니다.');
+      }
+    }
+
+    // 첫 번째 주문 기준으로 기본 정보 설정
+    const firstOrder = orders[0];
+    const userInfo: OrderCustomerViewDto = {
+      id: firstOrder.user?.id ?? null,
+      userBusinessName: firstOrder.user?.businessName ?? null,
+      userPersonPhoneNumber: firstOrder.user?.personPhoneNumber ?? null,
+      userBusinessEmail: firstOrder.user?.email ?? null,
+      userPersonName: firstOrder.user?.personName ?? null,
+    };
+
+    const now = new Date();
+    const today = format(now, 'yyMMdd');
+    const fileName: string = `${firstOrder.user?.businessName}_발송완료리포트_${today}`;
+
+    // 이벤트명 통합 (여러 개면 "a 외 n건" 형식)
+    const eventNames = [...new Set(orders.map((o) => o.eventName))];
+    const eventName = eventNames.length > 1 ? `${eventNames[0]} 외 ${eventNames.length - 1}건` : eventNames[0];
+
+    // 모든 주문의 상품 목록 통합
+    const productList: OrderPdfDetailProductDto[] = [];
+    let firstMapping: any = null;
+    let actualSendAt: string | null = null;
+
+    for (const order of orders) {
+      if (order.orderProductMappings && order.orderProductMappings.length > 0) {
+        for (const orderProductMapping of order.orderProductMappings) {
+          if (!firstMapping) {
+            firstMapping = orderProductMapping;
+          }
+
+          const orderDeliveryList: OrderDeliveryCompleteReportViewDto[] = [];
+          const productExpireDay = orderProductMapping.product.expireDay || 0;
+          const validityStartsNextDay = orderProductMapping.product.partnerCompany?.validityStartsNextDay ?? true;
+          const expireDay = validityStartsNextDay ? productExpireDay : productExpireDay - 1;
+          const expireDate = expireDay ? dayjs().tz('Asia/Seoul').add(expireDay, 'day').format('YYYY. MM. DD') : null;
+
+          for (const orderDelivery of orderProductMapping.orderDeliveries) {
+            // deliveryTarget 복호화 후 마스킹 처리
+            let decryptedDeliveryTarget = orderDelivery.deliveryTarget;
+            if (orderDelivery.deliveryTarget) {
+              try {
+                decryptedDeliveryTarget = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.deliveryTarget);
+              } catch (error) {
+                decryptedDeliveryTarget = orderDelivery.deliveryTarget;
+              }
+            }
+
+            let finalDeliveryTarget = decryptedDeliveryTarget;
+            if (decryptedDeliveryTarget !== '-') {
+              if (orderProductMapping.sendMethod === 'EMAIL') {
+                finalDeliveryTarget = MaskingUtil.maskEmail(decryptedDeliveryTarget);
+              } else {
+                finalDeliveryTarget = maskBarCode(decryptedDeliveryTarget);
+              }
+            }
+
+            // 실제 발송 시간 추출
+            if (!actualSendAt && orderDelivery.actualSendAt) {
+              actualSendAt = format(orderDelivery.actualSendAt, DateFormatStr);
+            }
+
+            orderDeliveryList.push({
+              id: orderDelivery.id,
+              sendRequestAt: orderDelivery.sendRequestAt ? format(orderDelivery.sendRequestAt, DateFormatStr) : null,
+              productName: orderProductMapping.product.name ?? null,
+              amount: orderProductMapping.product.price ?? null,
+              barCode: orderDelivery.barCode ? maskBarCode(orderDelivery.barCode) : null,
+              deliveryMethod: orderDelivery.deliveryMethod,
+              deliveryTarget: finalDeliveryTarget,
+            });
+          }
+
+          const product = orderProductMapping.product
+            ? {
+                id: orderProductMapping.product.id,
+                name: orderProductMapping.product.name,
+                price: orderProductMapping.product.price,
+                expireDay: orderProductMapping.product.expireDay,
+                amount: orderProductMapping.amount,
+                expireDate: expireDate,
+                imagePath: orderProductMapping.product.imagePath,
+                brandId: orderProductMapping.product.brandId,
+                brandName: orderProductMapping.product.brand?.nameKorean ?? '',
+              }
+            : null;
+
+          productList.push({
+            id: orderProductMapping.id,
+            product: product,
+            orderDeliveryList: orderDeliveryList,
+          });
+        }
+      }
+    }
+
+    let couponExpiration: number | null = null;
+    if (firstOrder.type === IOrderType.SSG && productList.length > 0) {
+      couponExpiration = productList[0].product?.expireDay ?? null;
+    }
+
+    return {
+      id: firstOrder.id,
+      orderIds: orderIds,
+      fileName,
+      userInfo,
+      registerAt: format(firstOrder.registerAt, DateFormatStr),
+      eventName: eventName,
+      type: firstOrder.type,
+      status: firstOrder.status,
+      couponExpiration: couponExpiration,
+      requestToDestroyPersonalInfoDay: firstMapping?.requestToDestroyPersonalInfoDay ?? 0,
+      productList: productList,
+      actualSendAt: actualSendAt,
+      sendMethod: firstMapping?.sendMethod ?? null,
+      sendTitle: firstMapping?.sendTitle ?? null,
+      sendContent: firstMapping?.sendContent ?? null,
+      sendRequestAt: firstMapping?.sendRequestAt ? format(firstMapping.sendRequestAt, DateFormatStr) : null,
+      fromPhoneNumber: firstMapping?.fromPhoneNumber ?? null,
+      fromEmail: firstMapping?.fromEmail ?? null,
+      encourageDay: firstMapping?.encourageDay ?? null,
+    };
+  }
+
+  /**
+   * 다중 주문 거래명세서 조회 (통합)
+   */
+  async getOrderCompleteReportMultiple(ids: string): Promise<any> {
+    const orderIds = ids.split(',').map((id) => parseInt(id.trim(), 10));
+
+    if (orderIds.length === 0) {
+      throw new BadRequestException('주문 ID가 필요합니다.');
+    }
+
+    const queryBuilder = this.orderRepository
+      .createQueryBuilder('order')
+      .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('order.operationUser', 'operationUser')
+      .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
+      .leftJoinAndSelect('orderProductMappings.product', 'product')
+      .leftJoinAndSelect('product.brand', 'brand')
+      .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
+      .where('order.id IN (:...ids)', { ids: orderIds });
+
+    const orders = await queryBuilder.getMany();
+
+    if (orders.length === 0) {
+      throw new BadRequestException('주문이 존재하지 않습니다.');
+    }
+
+    for (const order of orders) {
+      if (order.status !== IOrderStatus.DELIVERY_COMPLETE) {
+        throw new BadRequestException('발송 완료된 건에 대해서만 조회 가능합니다.');
+      }
+    }
+
+    const firstOrder = orders[0];
+    const serialNumber: string = `${format(firstOrder.createdAt, DateDateFormatStr)}-${orderIds.join('_')}`;
+    const fileName: string = `${serialNumber}_거래명세서`;
+
+    // 이벤트명 통합
+    const eventNames = [...new Set(orders.map((o) => o.eventName))];
+    const eventName = eventNames.length > 1 ? `${eventNames[0]} 외 ${eventNames.length - 1}건` : eventNames[0];
+
+    const orderDeliveryList: OrderCompleteReportDeliveryViewDto[] = [];
+    let price = 0;
+    let vat = 0;
+    let totalAmount = 0;
+    let sendRequestAt: string | null = null;
+
+    for (const order of orders) {
+      if (order.orderProductMappings && order.orderProductMappings.length > 0) {
+        for (const orderProductMapping of order.orderProductMappings) {
+          const originalPrice = orderProductMapping.product.price ?? 0;
+          const quantity = orderProductMapping.amount ?? 0;
+
+          let adjustedPrice = originalPrice;
+          if (orderProductMapping.fee !== null && orderProductMapping.fee > 0 && orderProductMapping.priceAdjustment) {
+            if (orderProductMapping.priceAdjustment === IPriceAdjustment.DISCOUNT) {
+              adjustedPrice = Math.ceil((originalPrice * (100 - orderProductMapping.fee)) / 100);
+            } else if (orderProductMapping.priceAdjustment === IPriceAdjustment.ADDITIONAL) {
+              adjustedPrice = Math.ceil((originalPrice * (100 + orderProductMapping.fee)) / 100);
+            }
+          }
+
+          const total = adjustedPrice * quantity;
+          price += total;
+
+          const firstDelivery = orderProductMapping.orderDeliveries?.[0];
+          if (!sendRequestAt && firstDelivery?.sendRequestAt) {
+            sendRequestAt = format(firstDelivery.sendRequestAt, DateFormatStr);
+          }
+
+          orderDeliveryList.push({
+            id: orderProductMapping.id,
+            sendRequestAt: firstDelivery?.sendRequestAt ? format(firstDelivery.sendRequestAt, DateFormatStr) : null,
+            productName: orderProductMapping.product.name ?? null,
+            quantity,
+            unitPrice: adjustedPrice,
+            price: total,
+          });
+        }
+      }
+    }
+
+    totalAmount = price + vat;
+
+    return {
+      orderIds: orderIds,
+      fileName,
+      serialNumber,
+      userSettleCondition: firstOrder.user!.settleCondition,
+      businessName: firstOrder.user!.businessName,
+      businessNumber: firstOrder.user!.businessNumber,
+      personName: firstOrder.user!.personName,
+      businessAddress: firstOrder.user?.businessAddress ?? null,
+      businessType: firstOrder.user?.industryType ?? null,
+      businessItem: firstOrder.user?.industryItem ?? null,
+      eventName: eventName,
+      sendRequestAt: sendRequestAt ?? null,
+      price,
+      vat,
+      totalAmount,
+      orderDeliveryList,
+    };
+  }
+
   async getOrderSettle(getQuery: OrderGetSettleReqDto): Promise<OrderGetSettleGetListResDto> {
     const { id, page, take } = getQuery;
 
