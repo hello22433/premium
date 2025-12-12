@@ -147,6 +147,48 @@ export class OrderGetDeliveryCompleteReportResDto extends OrderGetDeliveryComple
     description: '실제 발송 시간 ex) yyyy-MM-ddTHH:mm:ss',
   })
   actualSendAt: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    description: '발송 방법 ex) ALIM_TALK, SMS, EMAIL',
+  })
+  sendMethod: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    description: '발송 제목',
+  })
+  sendTitle: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    description: '발송 내용',
+  })
+  sendContent: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    description: '발송 요청 시간 ex) yyyy-MM-ddTHH:mm:ss',
+  })
+  sendRequestAt: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    description: '발신 전화번호',
+  })
+  fromPhoneNumber: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    description: '발신 이메일',
+  })
+  fromEmail: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    description: '독려 문자 발송 일',
+  })
+  encourageDay: number | null;
 }
 
 export class OrderGetOrderCompleteReportResDto extends OrderCompleteReportViewDto {}

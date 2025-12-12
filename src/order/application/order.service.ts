@@ -637,6 +637,14 @@ export class OrderService {
       requestToDestroyPersonalInfoDay: firstMapping?.requestToDestroyPersonalInfoDay ?? 0,
       productList: productList,
       actualSendAt: actualSendAt,
+      // 발송 정보 추가 (첫 번째 상품의 정보 사용)
+      sendMethod: firstMapping?.sendMethod ?? null,
+      sendTitle: firstMapping?.sendTitle ?? null,
+      sendContent: firstMapping?.sendContent ?? null,
+      sendRequestAt: firstMapping?.sendRequestAt ? format(firstMapping.sendRequestAt, DateFormatStr) : null,
+      fromPhoneNumber: firstMapping?.fromPhoneNumber ?? null,
+      fromEmail: firstMapping?.fromEmail ?? null,
+      encourageDay: firstMapping?.encourageDay ?? null,
     };
   }
 
