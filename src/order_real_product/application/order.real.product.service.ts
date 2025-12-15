@@ -56,6 +56,57 @@ import { OrderRealProductDeliveryViewDto } from '../api/dto/order.real.product.d
 import { DeliveryTrackingStatus } from '../../delivery/domain/delivery.tracking.status';
 import { ActivityLogService } from '../../activity_log/application/activity.log.service';
 import { ActivityLogResult } from '../../activity_log/interface/activity.log.result';
+import { IPublicChargeTaxPaymentType } from '../interface/public.charge.tax.payment.type';
+
+/**
+ * 제세공과금 계산 함수
+ * @param standardAmount 기준가액 (단가)
+ * @param quantity 수량
+ * @param paymentType 납부방식
+ * @returns { tax: 납세액, totalTaxAmount: 합계 }
+ */
+const calculateTax = (
+  standardAmount: number,
+  quantity: number,
+  paymentType: IPublicChargeTaxPaymentType | null,
+): { tax: number; totalTaxAmount: number } => {
+  const totalStandardAmount = standardAmount * quantity;
+
+  // 기준가 5만원 이하이거나 해당없음이면 세금 없음
+  if (standardAmount <= 50000 || paymentType === IPublicChargeTaxPaymentType.NONE || !paymentType) {
+    return {
+      tax: 0,
+      totalTaxAmount: totalStandardAmount,
+    };
+  }
+
+  if (paymentType === IPublicChargeTaxPaymentType.PERSON) {
+    // 고객납부: 기준가액의 22%
+    const tax = Math.floor(totalStandardAmount * 0.22);
+    return {
+      tax,
+      totalTaxAmount: totalStandardAmount + tax,
+    };
+  }
+
+  if (paymentType === IPublicChargeTaxPaymentType.COMPANY) {
+    // 고객사 대납
+    // 소득세 = 상품금액 * 20% / 78% (1원 단위 버림 = 10원 단위로 절삭)
+    const incomeTax = Math.floor((totalStandardAmount * 0.2) / 0.78 / 10) * 10;
+    // 주민세 = 소득세 * 10% (1원 단위 버림 = 10원 단위로 절삭)
+    const residentTax = Math.floor((incomeTax * 0.1) / 10) * 10;
+    const tax = incomeTax + residentTax;
+    return {
+      tax,
+      totalTaxAmount: totalStandardAmount + tax,
+    };
+  }
+
+  return {
+    tax: 0,
+    totalTaxAmount: totalStandardAmount,
+  };
+};
 
 export class OrderRealProductService {
   constructor(
@@ -345,6 +396,11 @@ export class OrderRealProductService {
         totalAmount: mapping.totalPrice,
       });
 
+      const { tax, totalTaxAmount } = calculateTax(
+        mapping.standardAmount,
+        mapping.quantity,
+        mapping.publicChargeTaxPayment,
+      );
       publicChargeTaxList.push({
         mappingId: mapping.id,
         productId: mapping.product.id,
@@ -352,8 +408,8 @@ export class OrderRealProductService {
         code: mapping.product.code,
         quantity: mapping.quantity,
         standardAmount: mapping.standardAmount,
-        tax: Math.floor(mapping.standardAmount * 0.1),
-        totalTaxAmount: mapping.totalTaxAmount,
+        tax,
+        totalTaxAmount,
         publicChargeTaxPaymentType: mapping.publicChargeTaxPayment,
         processMethod: mapping.processMethod,
         isProcess: mapping.isProcess,
@@ -771,6 +827,11 @@ export class OrderRealProductService {
         totalAmount: mapping.totalPrice,
       });
 
+      const { tax, totalTaxAmount } = calculateTax(
+        mapping.standardAmount,
+        mapping.quantity,
+        mapping.publicChargeTaxPayment,
+      );
       publicChargeTaxList.push({
         mappingId: mapping.id,
         productId: mapping.product.id,
@@ -778,8 +839,8 @@ export class OrderRealProductService {
         code: mapping.product.code,
         quantity: mapping.quantity,
         standardAmount: mapping.standardAmount,
-        tax: Math.floor(mapping.standardAmount * 0.1),
-        totalTaxAmount: mapping.totalTaxAmount,
+        tax,
+        totalTaxAmount,
         publicChargeTaxPaymentType: mapping.publicChargeTaxPayment,
         processMethod: mapping.processMethod,
         isProcess: mapping.isProcess,
