@@ -47,6 +47,7 @@ import { OrderHistoryEntity } from 'src/entity/order.history.entity';
 import { ActivityLogEntity } from '../entity/activity.log.entity';
 import { ClassificationEntity } from '../entity/classification.entity';
 import { PasswordPolicyEntity } from '../entity/password.policy.entity';
+import { EmailManualEntity } from '../entity/email.manual.entity';
 
 @Module({
   imports: [
@@ -101,6 +102,7 @@ import { PasswordPolicyEntity } from '../entity/password.policy.entity';
           ShippingStorageEntity,
           ActivityLogEntity,
           PasswordPolicyEntity,
+          EmailManualEntity,
         ],
         timezone: '+09:00',
         logger: configService.get('DATABASE_LOGGING') === 'true' ? new SqlLogger() : undefined,
