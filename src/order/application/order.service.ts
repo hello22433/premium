@@ -174,10 +174,9 @@ export class OrderService {
     if (section === IOrderSection.ORDER) {
       if (user.authority !== IUserAuthority.SUPER_ADMIN) {
         // 자신이 생성한 주문 또는 자신이 담당자로 지정된 주문
-        queryBuilder = queryBuilder.andWhere(
-          '(order.userId = :userId OR order.operationUserId = :userId)',
-          { userId: user.id },
-        );
+        queryBuilder = queryBuilder.andWhere('(order.userId = :userId OR order.operationUserId = :userId)', {
+          userId: user.id,
+        });
       }
     }
 
@@ -328,7 +327,13 @@ export class OrderService {
         const validityStartsNextDay = orderProductMapping.product.partnerCompany?.validityStartsNextDay ?? true;
         const expireDay = validityStartsNextDay ? productExpireDay : productExpireDay - 1;
 
-        const expireDate = expireDay ? dayjs().tz('Asia/Seoul').add(expireDay, 'day').format('YYYY. MM. DD') : null;
+        const expireDate = expireDay
+          ? (orderProductMapping.sendType === 'IMMEDIATE' ? dayjs() : dayjs(orderProductMapping.sendRequestAt))
+              .tz('Asia/Seoul')
+              .add(expireDay, 'day')
+              .format('YYYY. MM. DD')
+          : null;
+
         for (const orderDelivery of orderProductMapping.orderDeliveries) {
           // deliveryTarget 복호화
           let decryptedDeliveryTarget = orderDelivery.deliveryTarget;
@@ -364,6 +369,7 @@ export class OrderService {
               imagePath: orderProductMapping.product.imagePath,
               brandId: orderProductMapping.product.brandId,
               brandName: orderProductMapping.product.brand?.nameKorean ?? '',
+              partnerCompanyName: orderProductMapping.product.partnerCompany?.businessName ?? '',
             }
           : null;
 
@@ -722,9 +728,9 @@ export class OrderService {
         let adjustedPrice = originalPrice;
         if (orderProductMapping.fee !== null && orderProductMapping.fee > 0 && orderProductMapping.priceAdjustment) {
           if (orderProductMapping.priceAdjustment === IPriceAdjustment.DISCOUNT) {
-            adjustedPrice = Math.ceil(originalPrice * (100 - orderProductMapping.fee) / 100);
+            adjustedPrice = Math.ceil((originalPrice * (100 - orderProductMapping.fee)) / 100);
           } else if (orderProductMapping.priceAdjustment === IPriceAdjustment.ADDITIONAL) {
-            adjustedPrice = Math.ceil(originalPrice * (100 + orderProductMapping.fee) / 100);
+            adjustedPrice = Math.ceil((originalPrice * (100 + orderProductMapping.fee)) / 100);
           }
         }
 
@@ -961,15 +967,10 @@ export class OrderService {
       actualSendAt: actualSendAt,
       sendMethod: firstMapping?.sendMethod ?? null,
       // 발송 제목 통합 (여러 개면 "제목 외" 형식)
-      sendTitle:
-        allMappings.length > 1
-          ? `${firstMapping?.sendTitle ?? ''} 외`
-          : (firstMapping?.sendTitle ?? null),
+      sendTitle: allMappings.length > 1 ? `${firstMapping?.sendTitle ?? ''} 외` : (firstMapping?.sendTitle ?? null),
       // 발송 내용 통합 (여러 개면 "내용\n\n외" 형식)
       sendContent:
-        allMappings.length > 1
-          ? `${firstMapping?.sendContent ?? ''}\n\n외`
-          : (firstMapping?.sendContent ?? null),
+        allMappings.length > 1 ? `${firstMapping?.sendContent ?? ''}\n\n외` : (firstMapping?.sendContent ?? null),
       sendRequestAt: firstMapping?.sendRequestAt ? format(firstMapping.sendRequestAt, DateFormatStr) : null,
       fromPhoneNumber: firstMapping?.fromPhoneNumber ?? null,
       fromEmail: firstMapping?.fromEmail ?? null,
@@ -1326,10 +1327,7 @@ export class OrderService {
     // 발송확정 이후(DELIVERY_CONFIRMED, DELIVERY_COMPLETE)에 정산정보를 수정한 경우
     // 이전 정산금액과 새 정산금액의 차이를 balance/allSettleAmount에 반영
     const orderStatus = existingOrderProducts[0].order.status;
-    if (
-      orderStatus === IOrderStatus.DELIVERY_CONFIRMED ||
-      orderStatus === IOrderStatus.DELIVERY_COMPLETE
-    ) {
+    if (orderStatus === IOrderStatus.DELIVERY_CONFIRMED || orderStatus === IOrderStatus.DELIVERY_COMPLETE) {
       const difference = beforeSettleAmount - newSettleAmount;
 
       if (difference !== 0) {
@@ -1856,8 +1854,8 @@ export class OrderService {
 
     // ======== 할인/할증 차액 정산 시작 ========
     // 발송요청 시 정가(sendAmount)로 차감되었으므로, 발송확정 시 최종 정산금액과의 차액을 조정
-    const partnerCompanyIds = order.orderProductMappings!
-      .map((m) => m.product.partnerCompanyId)
+    const partnerCompanyIds = order
+      .orderProductMappings!.map((m) => m.product.partnerCompanyId)
       .filter((id, index, arr) => arr.indexOf(id) === index);
 
     const userDiscounts = await this.userDiscountRepository.find({
@@ -1947,9 +1945,7 @@ export class OrderService {
           continue;
         }
         allowedCount = oneUser.duplicatePhoneLimit;
-        this.logger.debug(
-          `상품 ${orderMapping.productId}: 할인/할증 없음, 중복 허용 ${allowedCount}건`,
-        );
+        this.logger.debug(`상품 ${orderMapping.productId}: 할인/할증 없음, 중복 허용 ${allowedCount}건`);
       }
 
       // 현재 주문 내 중복 체크
@@ -1993,10 +1989,7 @@ export class OrderService {
           .andWhere('od.deliveryTarget = :deliveryTarget', { deliveryTarget: phone })
           .andWhere('o.id != :currentOrderId', { currentOrderId: order.id })
           .andWhere('o.status IN (:...statuses)', {
-            statuses: [
-              IOrderStatus.DELIVERY_CONFIRMED,
-              IOrderStatus.DELIVERY_COMPLETE,
-            ],
+            statuses: [IOrderStatus.DELIVERY_CONFIRMED, IOrderStatus.DELIVERY_COMPLETE],
           })
           .andWhere('o.createdAt >= :todayStart', { todayStart })
           .andWhere('o.createdAt <= :todayEnd', { todayEnd })
@@ -2017,8 +2010,7 @@ export class OrderService {
 
       // 중복 에러가 있으면 발송 거절
       if (duplicateErrors.length > 0) {
-        const statusText =
-          priceAdjustment === IPriceAdjustment.DISCOUNT ? '할인 적용 상품' : '일반 상품';
+        const statusText = priceAdjustment === IPriceAdjustment.DISCOUNT ? '할인 적용 상품' : '일반 상품';
         throw new BadRequestException(
           `${statusText}의 중복발송 제한(${allowedCount}건까지 허용)을 초과한 수신처가 발견되었습니다:\n\n${duplicateErrors.join('\n')}`,
         );
@@ -2053,9 +2045,7 @@ export class OrderService {
           if (oneUser.balance >= additionalAmount) {
             // balance가 충분하면 balance에서 추가 차감
             oneUser.balance -= additionalAmount;
-            this.logger.debug(
-              `할증 적용 (balance 차감): orderId=${order.id}, 할증액=${additionalAmount}`,
-            );
+            this.logger.debug(`할증 적용 (balance 차감): orderId=${order.id}, 할증액=${additionalAmount}`);
           } else {
             // balance가 부족하면 한도에서 추가 차감
             const remainingLimit = oneUser.maximumLimit - oneUser.allSettleAmount;
@@ -2084,9 +2074,7 @@ export class OrderService {
             // 한도에 여유가 있으면 allSettleAmount에 추가
             oneUser.allSettleAmount += additionalAmount;
             message = 'warning: 할증 금액이 추가되었습니다.';
-            this.logger.debug(
-              `할증 적용 (한도 차감): orderId=${order.id}, 할증액=${additionalAmount}`,
-            );
+            this.logger.debug(`할증 적용 (한도 차감): orderId=${order.id}, 할증액=${additionalAmount}`);
           } else if (oneUser.balance >= additionalAmount - remainingLimit) {
             // 한도가 부족하면 balance에서 추가 차감
             const neededFromBalance = additionalAmount - remainingLimit;
@@ -2738,7 +2726,11 @@ export class OrderService {
    * 독려문자 설정 수정 (발송관리용, 상품별)
    * @param orderProductMappingId order_product_mapping의 id
    */
-  async updateEncourageDay(user: ILoginUserInfo, orderProductMappingId: number, getBody: OrderUpdateEncourageDayReqBodyDto): Promise<void> {
+  async updateEncourageDay(
+    user: ILoginUserInfo,
+    orderProductMappingId: number,
+    getBody: OrderUpdateEncourageDayReqBodyDto,
+  ): Promise<void> {
     const { encourageDay } = getBody;
 
     const orderProductMapping = await this.orderProductMappingRepository.findOne({
@@ -2791,7 +2783,11 @@ export class OrderService {
    * 꼬리광고 설정 수정 (발송관리용, 상품별)
    * @param orderProductMappingId order_product_mapping의 id
    */
-  async updateTailText(user: ILoginUserInfo, orderProductMappingId: number, getBody: OrderUpdateTailTextReqBodyDto): Promise<void> {
+  async updateTailText(
+    user: ILoginUserInfo,
+    orderProductMappingId: number,
+    getBody: OrderUpdateTailTextReqBodyDto,
+  ): Promise<void> {
     const { sendTailText } = getBody;
 
     const orderProductMapping = await this.orderProductMappingRepository.findOne({
