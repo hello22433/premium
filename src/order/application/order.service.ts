@@ -369,6 +369,7 @@ export class OrderService {
               imagePath: orderProductMapping.product.imagePath,
               brandId: orderProductMapping.product.brandId,
               brandName: orderProductMapping.product.brand?.nameKorean ?? '',
+              partrnerCompanyName: orderProductMapping.product.partnerCompany?.businessName ?? '',
             }
           : null;
 
