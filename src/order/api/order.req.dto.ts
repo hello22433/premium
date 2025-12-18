@@ -419,3 +419,24 @@ export class OrderUpdateTailTextReqBodyDto {
   @MaxLength(100)
   sendTailText: string | null;
 }
+
+export class OrderUpdateUseEmailContentReqParamDto {
+  @ApiProperty({
+    description: 'order_product_mapping id (상품별 설정)',
+  })
+  // ===================================
+  @IsNumber()
+  @IsNotEmpty()
+  @Type(() => Number)
+  id: number;
+}
+
+export class OrderUpdateUseEmailContentReqBodyDto {
+  @ApiProperty({
+    description: '이메일 사용방법',
+  })
+  // ===================================
+  @IsNotEmpty()
+  @IsString()
+  useEmailContent: string;
+}

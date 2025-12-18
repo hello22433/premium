@@ -50,6 +50,8 @@ import {
   OrderUpdateEncourageDayReqBodyDto,
   OrderUpdateTailTextReqParamDto,
   OrderUpdateTailTextReqBodyDto,
+  OrderUpdateUseEmailContentReqParamDto,
+  OrderUpdateUseEmailContentReqBodyDto,
 } from './order.req.dto';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
 import {
@@ -539,5 +541,26 @@ export class OrderController {
     @Body() getBody: OrderUpdateTailTextReqBodyDto,
   ) {
     return this.orderService.updateTailText(user, getParam.id, getBody);
+  }
+
+  @ApiOperation({
+    summary: '이메일 사용방법 수정 API (발송관리용)',
+    description: '발송관리에서 이메일 사용방법을 설정합니다.',
+  })
+  @ApiBearerAuth()
+  @ApiOkResponse({
+    description: '성공적으로 수정한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '존재하지 않는 상품 매핑인 경우',
+  })
+  // =========================================
+  @Patch('/order/:id/use-email-content')
+  async updateUseEmailContent(
+    @User() user: ILoginUserInfo,
+    @Param() getParam: OrderUpdateUseEmailContentReqParamDto,
+    @Body() getBody: OrderUpdateUseEmailContentReqBodyDto,
+  ) {
+    return this.orderService.updateUseEmailContent(user, getParam.id, getBody);
   }
 }

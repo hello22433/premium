@@ -31,6 +31,7 @@ import {
   OrderUpdateTempReqDto,
   OrderUpdateEncourageDayReqBodyDto,
   OrderUpdateTailTextReqBodyDto,
+  OrderUpdateUseEmailContentReqBodyDto,
 } from '../api/order.req.dto';
 import {
   OrderCreateTempResDto,
@@ -2806,6 +2807,35 @@ export class OrderService {
 
     // 빈 문자열인 경우 null로 처리
     orderProductMapping.sendTailText = sendTailText?.trim() || null;
+    await this.orderProductMappingRepository.save(orderProductMapping);
+  }
+
+  /**
+   * 이메일 사용방법 수정 (발송관리용, 상품별)
+   * @param orderProductMappingId order_product_mapping의 id
+   */
+  async updateUseEmailContent(
+    user: ILoginUserInfo,
+    orderProductMappingId: number,
+    getBody: OrderUpdateUseEmailContentReqBodyDto,
+  ): Promise<void> {
+    const { useEmailContent } = getBody;
+
+    const orderProductMapping = await this.orderProductMappingRepository.findOne({
+      where: { id: orderProductMappingId },
+      relations: ['order'],
+    });
+
+    if (!orderProductMapping) {
+      throw new BadRequestException('존재하지 않는 상품입니다.');
+    }
+
+    // 발송관리에서만 수정 가능 (주문완료 상태 이상)
+    if (orderProductMapping.order.status === IOrderStatus.TEMP) {
+      throw new BadRequestException('임시저장 상태에서는 이메일 사용방법을 설정할 수 없습니다.');
+    }
+
+    orderProductMapping.useEmailContent = useEmailContent;
     await this.orderProductMappingRepository.save(orderProductMapping);
   }
 
