@@ -1342,9 +1342,10 @@ export class CustomerServiceService {
     const workbook = new ExcelJS.Workbook();
     const sheetName = orderType === 'GENERAL' ? '일반쿠폰주문CS' : '신세계CS';
     const worksheet = workbook.addWorksheet(sheetName);
+    const isSSG = orderType === 'SSG';
 
-    // 4. 컬럼 정의
-    worksheet.columns = [
+    // 4. 컬럼 정의 (신세계는 개인번호 컬럼 포함)
+    const baseColumns = [
       { header: '발송요청일', key: 'sendRequestAt', width: 20 },
       { header: '실발송일', key: 'actualSendAt', width: 20 },
       { header: '주문번호', key: 'orderId', width: 12 },
@@ -1357,10 +1358,20 @@ export class CustomerServiceService {
       { header: '이메일쿠폰수령번호', key: 'emailReceiverPhone', width: 18 },
       { header: '발송방법', key: 'deliveryMethod', width: 12 },
       { header: '발신번호', key: 'fromPhoneNumber', width: 15 },
+    ];
+
+    // 신세계인 경우 개인번호(쿠폰번호) 컬럼 추가
+    if (isSSG) {
+      baseColumns.push({ header: '개인번호(쿠폰번호)', key: 'personalCode', width: 25 });
+    }
+
+    baseColumns.push(
       { header: '핀번호', key: 'barCode', width: 25 },
       { header: '핀상태', key: 'couponStatus', width: 12 },
       { header: '거래번호', key: 'transactionId', width: 20 },
-    ];
+    );
+
+    worksheet.columns = baseColumns;
 
     // 5. 헤더 스타일 적용
     const headerRow = worksheet.getRow(1);
@@ -1436,6 +1447,7 @@ export class CustomerServiceService {
         emailReceiverPhone: decryptedEmailReceiverPhone || '',
         deliveryMethod: orderDelivery.deliveryMethod || '',
         fromPhoneNumber: orderDelivery.orderProductMapping.fromPhoneNumber || '',
+        personalCode: orderDelivery.personalCode || '',
         barCode: orderDelivery.barCode || '',
         couponStatus: couponStatusMap[orderDelivery.couponStatus] || orderDelivery.couponStatus || '',
         transactionId: orderDelivery.transactionId || '',
