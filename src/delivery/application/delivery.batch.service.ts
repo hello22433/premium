@@ -1,7 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
+import { In, MoreThan, Repository } from 'typeorm';
 import { DeliveryAlimTalk } from '../interface/delivery.alim.talk';
 import { IOrderDeliveryStatus } from '../interface/order.delivery.status';
 import { IMailSend } from '../../mail/interface/mail-send';
@@ -335,6 +335,7 @@ export class DeliveryBatchService {
       // 1.3 EMAIL 일 경우
       if (deliveryMethod === IOrderSendMethod.EMAIL) {
         const emailSendHistory = new EmailSendHistoryEntity();
+        emailSendHistory.orderDeliveryId = orderDelivery.id;
         emailSendHistory.email = decryptedDeliveryTarget;
         emailSendHistory.type = EmailType.COUPON;
         emailSendHistory.code = generateRandomCode();
@@ -730,12 +731,26 @@ export class DeliveryBatchService {
         }
       } else {
         // 핀이 발급되지 않은 경우: 이메일로 쿠폰 수령 링크 발송
-        const emailSendHistory = new EmailSendHistoryEntity();
-        emailSendHistory.email = decryptedDeliveryTarget;
-        emailSendHistory.type = EmailType.COUPON;
-        emailSendHistory.code = generateRandomCode();
-        emailSendHistory.expireAt = addDays(new Date(), EmailCertifyExpireDay);
-        await this.emailSendHistoryRepository.save(emailSendHistory);
+        // 기존 인증코드가 있으면 재사용 (미인증 & 미만료)
+        let emailSendHistory = await this.emailSendHistoryRepository.findOne({
+          where: {
+            orderDeliveryId: orderDelivery.id,
+            type: EmailType.COUPON,
+            isCertified: false,
+            expireAt: MoreThan(new Date()),
+          },
+        });
+
+        if (!emailSendHistory) {
+          // 기존 인증코드가 없거나 만료된 경우 새로 생성
+          emailSendHistory = new EmailSendHistoryEntity();
+          emailSendHistory.orderDeliveryId = orderDelivery.id;
+          emailSendHistory.email = decryptedDeliveryTarget;
+          emailSendHistory.type = EmailType.COUPON;
+          emailSendHistory.code = generateRandomCode();
+          emailSendHistory.expireAt = addDays(new Date(), EmailCertifyExpireDay);
+          await this.emailSendHistoryRepository.save(emailSendHistory);
+        }
 
         // 테스트 발송인 경우 testOrderDeliveryId 사용
         const encryptKeyEmail = this.cryptoCipher.encryptJson({
