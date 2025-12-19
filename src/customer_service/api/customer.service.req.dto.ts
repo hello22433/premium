@@ -97,6 +97,14 @@ export class CustomerServiceGetListReqDto extends PagingReqDto {
   @IsNumber()
   @Type(() => Number)
   partnerCompanyId?: number;
+
+  @ApiPropertyOptional({
+    description: '통합검색 키워드 (주문번호, 상품명, 상품코드, MMS제목, 수신정보를 OR 조건으로 검색)',
+  })
+  // =============================================================
+  @IsOptional()
+  @IsString()
+  keyword?: string;
 }
 
 export class CustomerServiceGetDetailListReqDto extends PagingReqDto {
@@ -392,6 +400,14 @@ export class CustomerServiceExcelDownloadReqDto {
   @IsNumber()
   @Type(() => Number)
   partnerCompanyId?: number;
+
+  @ApiPropertyOptional({
+    description: '통합검색 키워드 (주문번호, 상품명, 상품코드, MMS제목, 수신정보를 OR 조건으로 검색)',
+  })
+  // =============================================================
+  @IsOptional()
+  @IsString()
+  keyword?: string;
 
   @ApiProperty({
     description: '비밀번호 (다운로드 확인용)',

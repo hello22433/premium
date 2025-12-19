@@ -80,6 +80,7 @@ export class CustomerServiceService {
       deliveryTarget,
       sendTitle,
       partnerCompanyId,
+      keyword,
       page,
       take,
     } = getQuery;
@@ -107,6 +108,20 @@ export class CustomerServiceService {
     // 고객사 (userId)
     if (userId) {
       queryBuilder.andWhere('order.userId = :userId', { userId });
+    }
+
+    // 통합검색 (주문번호, 상품명, 상품코드, MMS제목, 수신정보를 OR 조건으로 검색)
+    if (keyword) {
+      const normalizedKeyword = PhoneUtil.normalizeDeliveryTarget(keyword);
+      const encryptedKeyword = this.cryptoCipher.encryptDeliveryTarget(normalizedKeyword);
+      queryBuilder.andWhere(
+        `(CAST(order.id AS CHAR) LIKE :keyword
+          OR product.name LIKE :keyword
+          OR product.code LIKE :keyword
+          OR orderProductMapping.sendTitle LIKE :keyword
+          OR orderDelivery.deliveryTarget = :encryptedKeyword)`,
+        { keyword: `%${keyword}%`, encryptedKeyword },
+      );
     }
 
     // 주문번호 (부분검색)
@@ -1257,7 +1272,7 @@ export class CustomerServiceService {
     res: Response,
   ): Promise<void> {
     const startTime = Date.now();
-    const { password, downloadReason, orderDeliveryIds, ...searchParams } = dto;
+    const { password, downloadReason, orderDeliveryIds, keyword, ...searchParams } = dto;
     const {
       orderType,
       startAt,
@@ -1332,6 +1347,20 @@ export class CustomerServiceService {
 
     if (partnerCompanyId) {
       queryBuilder.andWhere('product.partnerCompanyId = :partnerCompanyId', { partnerCompanyId });
+    }
+
+    // 통합검색 (주문번호, 상품명, 상품코드, MMS제목, 수신정보를 OR 조건으로 검색)
+    if (keyword) {
+      const normalizedKeyword = PhoneUtil.normalizeDeliveryTarget(keyword);
+      const encryptedKeyword = this.cryptoCipher.encryptDeliveryTarget(normalizedKeyword);
+      queryBuilder.andWhere(
+        `(CAST(order.id AS CHAR) LIKE :keyword
+          OR product.name LIKE :keyword
+          OR product.code LIKE :keyword
+          OR orderProductMapping.sendTitle LIKE :keyword
+          OR orderDelivery.deliveryTarget = :encryptedKeyword)`,
+        { keyword: `%${keyword}%`, encryptedKeyword },
+      );
     }
 
     queryBuilder = QueryBuilderDateCondition(queryBuilder, 'orderDelivery', 'sendRequestAt', startAt, endAt);
