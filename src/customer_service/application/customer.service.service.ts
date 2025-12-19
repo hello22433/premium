@@ -508,7 +508,6 @@ export class CustomerServiceService {
 
           if (result.message === '폐기 완료') {
             orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
-            orderDelivery.deliveryTarget = '-'; // 개인정보 파기
             await this.orderDeliveryRepository.save(orderDelivery);
           } else {
             throw new InternalServerErrorException(result.message);
@@ -525,7 +524,6 @@ export class CustomerServiceService {
 
         if (couponStatus === OrderDeliveryCouponStatus.CANCEL || couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL) {
           orderDelivery.couponStatus = couponStatus;
-          orderDelivery.deliveryTarget = '-'; // 개인정보 파기
           await this.orderDeliveryRepository.save(orderDelivery);
         } else {
           throw new BadRequestException('변경을 할 수 없는 핀상태입니다.');
@@ -534,7 +532,6 @@ export class CustomerServiceService {
       }
       default: {
         orderDelivery.couponStatus = couponStatus;
-        orderDelivery.deliveryTarget = '-'; // 개인정보 파기
         await this.orderDeliveryRepository.save(orderDelivery);
       }
     }
@@ -1222,8 +1219,7 @@ export class CustomerServiceService {
           }
         }
 
-        // 5. orderDelivery 저장 (개인정보 파기 포함)
-        orderDelivery.deliveryTarget = '-'; // 개인정보 파기
+        // 5. orderDelivery 저장
         await this.orderDeliveryRepository.save(orderDelivery);
 
         // 6. CS 히스토리 저장
