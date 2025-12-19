@@ -419,6 +419,8 @@ export class OrderService {
       settlePeriodCondition: user.settlePeriodCondition,
       settlePeriodCount: user.settlePeriodCount,
       isPreSettle: user.settleCondition === IUserSettleCondition.PRE_PAYMENT,
+      cancelReason: order.cancelReason,
+      canceledAt: order.canceledAt ? format(order.canceledAt, DateFormatStr) : null,
     };
   }
 
@@ -514,6 +516,8 @@ export class OrderService {
       settlePeriodCondition: order.user!.settlePeriodCondition,
       settlePeriodCount: order.user!.settlePeriodCount,
       isPreSettle: order.user!.settleCondition === IUserSettleCondition.PRE_PAYMENT,
+      cancelReason: order.cancelReason,
+      canceledAt: order.canceledAt ? format(order.canceledAt, DateFormatStr) : null,
     };
   }
 
@@ -1499,8 +1503,16 @@ export class OrderService {
       throw new ForbiddenException('타 유저의 주문입니다.');
     }
 
-    if (order.status !== IOrderStatus.TEMP) {
-      throw new BadRequestException('임시저장이 아닐경우 수정할 수 없습니다.');
+    if (order.status !== IOrderStatus.TEMP && order.status !== IOrderStatus.DELIVERY_CANCEL) {
+      throw new BadRequestException('임시저장 또는 발송취소 상태가 아닐경우 수정할 수 없습니다.');
+    }
+
+    // 취소된 주문을 수정하는 경우 상태를 임시저장으로 변경하고 취소 정보 초기화
+    const wasCanceled = order.status === IOrderStatus.DELIVERY_CANCEL;
+    if (wasCanceled) {
+      order.status = IOrderStatus.TEMP;
+      order.cancelReason = null;
+      order.canceledAt = null;
     }
 
     const productIdList = orderProductList.map((orderProduct) => orderProduct.productId);
@@ -2213,7 +2225,7 @@ export class OrderService {
 
   @Transactional()
   async deliveryCancel(user: ILoginUserInfo, getBody: OrderDeliveryCancelReqDto) {
-    const { id } = getBody;
+    const { id, cancelReason } = getBody;
 
     const order = await this.orderRepository
       .createQueryBuilder('order')
@@ -2282,6 +2294,8 @@ export class OrderService {
     }
 
     order.status = IOrderStatus.DELIVERY_CANCEL;
+    order.cancelReason = cancelReason;
+    order.canceledAt = new Date();
     await this.orderRepository.save(order);
     await this.orderDeliveryRepository.update(
       { orderProductMappingId: In(orderProductMappingIdList) },

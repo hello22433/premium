@@ -73,6 +73,12 @@ export class OrderEntity extends BaseEntity {
   @Column({ default: false, comment: '정산 선충전 혹은 한도 여부' })
   isSettleBalance: boolean;
 
+  @Column({ type: 'text', nullable: true, comment: '주문 취소 사유' })
+  cancelReason: string | null;
+
+  @Column({ type: 'datetime', nullable: true, comment: '주문 취소 일시' })
+  canceledAt: Date | null;
+
   @ManyToOne(() => UserEntity, { createForeignKeyConstraints: false })
   @JoinColumn({ name: 'user_id' })
   user?: UserEntity;

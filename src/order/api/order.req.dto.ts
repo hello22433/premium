@@ -233,6 +233,15 @@ export class OrderDeliveryCancelReqDto {
   @IsNotEmpty()
   @IsNumber()
   id: number;
+
+  @ApiProperty({
+    description: '주문 취소 사유',
+  })
+  // ==================================
+  @IsNotEmpty()
+  @IsString()
+  @MaxLength(1000)
+  cancelReason: string;
 }
 
 export class OrderUpdateOperationUserReqDto {

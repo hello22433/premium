@@ -86,6 +86,18 @@ export class OrderGetDetailResDto {
     description: '선정산 여부 (true: 선정산, false: 후정산)',
   })
   isPreSettle: boolean;
+
+  @ApiProperty({
+    description: '주문 취소 사유',
+    nullable: true,
+  })
+  cancelReason: string | null;
+
+  @ApiProperty({
+    description: '주문 취소 일시 ex) yyyy-MM-ddTHH:mm:ss',
+    nullable: true,
+  })
+  canceledAt: string | null;
 }
 
 export class OrderGetDeliveryCompleteReportDetailResDto {
