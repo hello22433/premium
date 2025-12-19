@@ -300,6 +300,17 @@ export class CustomerServiceExcelDownloadReqDto {
   orderType: IOrderType;
 
   @ApiPropertyOptional({
+    description: '선택한 order_delivery ID 목록 (선택 다운로드 시 사용)',
+    type: [Number],
+    example: [1, 2, 3],
+  })
+  // =============================================================
+  @IsOptional()
+  @IsArray()
+  @IsNumber({}, { each: true })
+  orderDeliveryIds?: number[];
+
+  @ApiPropertyOptional({
     description: '시작일 ex) yyyy-MM-ddTHH:mm:ss',
   })
   // =============================================================

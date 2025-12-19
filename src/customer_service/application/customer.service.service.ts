@@ -1257,7 +1257,7 @@ export class CustomerServiceService {
     res: Response,
   ): Promise<void> {
     const startTime = Date.now();
-    const { password, downloadReason, ...searchParams } = dto;
+    const { password, downloadReason, orderDeliveryIds, ...searchParams } = dto;
     const {
       orderType,
       startAt,
@@ -1286,6 +1286,11 @@ export class CustomerServiceService {
       .leftJoinAndMapOne('order.user', 'user', 'user', 'user.id = order.user_id AND user.deleted_at IS NULL')
       .andWhere('orderDelivery.status IN (:...deliveryStatus)', { deliveryStatus: ['COMPLETE', 'COMPLETE_SMS'] })
       .andWhere('orderDelivery.deletedAt IS NULL');
+
+    // 선택한 ID들이 있으면 해당 ID들만 조회
+    if (orderDeliveryIds && orderDeliveryIds.length > 0) {
+      queryBuilder.andWhere('orderDelivery.id IN (:...orderDeliveryIds)', { orderDeliveryIds });
+    }
 
     if (orderType === 'GENERAL') {
       queryBuilder.andWhere('product.type IN (:...types)', { types: ['GENERAL', 'CHOICE'] });
