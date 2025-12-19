@@ -49,10 +49,17 @@ export class MailSendHiworks implements IMailSend {
       const response = await firstValueFrom(this.httpService.post(url, formData, { headers }));
 
       this.logger.log(response.data);
+
+      // HiWorks API 응답에서 에러 체크 (HTTP 200이지만 응답 내용이 에러인 경우)
+      if (response.data?.code === 'ERR') {
+        this.logger.error(`이메일 전송 실패: ${response.data.message}`);
+        throw new Error(response.data.message || '이메일 전송에 실패했습니다.');
+      }
+
       return response.data as IMailSendOut;
     } catch (e) {
       this.logger.error(e);
-      this.logger.error(e.response.data);
+      this.logger.error(e.response?.data);
       this.logger.error(JSON.stringify(e));
       throw e;
     }
