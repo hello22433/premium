@@ -1060,9 +1060,9 @@ export class SettleService {
         }
       }
 
-      // 첫 번째 상품의 발송 요청 시간 사용
-      const firstMapping = order.orderProductMappings?.[0];
-      const sendRequestAt = firstMapping?.sendRequestAt ? format(firstMapping.sendRequestAt, DateFormatStr) : null;
+      // 첫 번째 배송의 실제 발송 시간 사용
+      const firstDelivery = order.orderProductMappings?.[0]?.orderDeliveries?.[0];
+      const sendRequestAt = firstDelivery?.actualSendAt ? format(firstDelivery.actualSendAt, DateFormatStr) : null;
 
       // 발송완료 리포트 상태 계산
       let deliveryReportStatus = '-';
@@ -1160,9 +1160,9 @@ export class SettleService {
       }
     }
 
-    // 첫 번째 상품의 발송 요청 시간 사용
-    const firstMapping = order.orderProductMappings?.[0];
-    const sendRequestAt = firstMapping && normalizeDate(firstMapping.sendRequestAt) ? format(firstMapping.sendRequestAt!, DateFormatStr) : null;
+    // 첫 번째 배송의 실제 발송 시간 사용
+    const firstDelivery = order.orderProductMappings?.[0]?.orderDeliveries?.[0];
+    const sendRequestAt = firstDelivery?.actualSendAt ? format(firstDelivery.actualSendAt, DateFormatStr) : null;
 
     return {
       id: order.id,
@@ -1255,17 +1255,17 @@ export class SettleService {
       }
     }
 
-    // 가장 최근 발송 요청 시각 찾기
-    let latestSendRequestAt: Date | null = null;
+    // 가장 최근 실제 발송 시각 찾기
+    let latestActualSendAt: Date | null = null;
     for (const order of orders) {
-      const firstMapping = order.orderProductMappings?.[0];
-      if (firstMapping?.sendRequestAt && normalizeDate(firstMapping.sendRequestAt)) {
-        if (!latestSendRequestAt || firstMapping.sendRequestAt > latestSendRequestAt) {
-          latestSendRequestAt = firstMapping.sendRequestAt;
+      const firstDelivery = order.orderProductMappings?.[0]?.orderDeliveries?.[0];
+      if (firstDelivery?.actualSendAt) {
+        if (!latestActualSendAt || firstDelivery.actualSendAt > latestActualSendAt) {
+          latestActualSendAt = firstDelivery.actualSendAt;
         }
       }
     }
-    const sendRequestAt = latestSendRequestAt ? format(latestSendRequestAt, DateFormatStr) : null;
+    const sendRequestAt = latestActualSendAt ? format(latestActualSendAt, DateFormatStr) : null;
 
     // 첫 번째 주문 기준으로 기본 정보 설정
     const firstOrder = orders[0];
@@ -1342,9 +1342,9 @@ export class SettleService {
         amount += orderProductMapping.amount;
       }
 
-      // 첫 번째 상품의 발송 요청 시간 사용
-      const firstMapping = order.orderProductMappings?.[0];
-      const sendRequestAt = firstMapping?.sendRequestAt ? format(firstMapping.sendRequestAt, DateEndMinuteFormatStr) : null;
+      // 첫 번째 배송의 실제 발송 시간 사용
+      const firstDelivery = order.orderProductMappings?.[0]?.orderDeliveries?.[0];
+      const sendRequestAt = firstDelivery?.actualSendAt ? format(firstDelivery.actualSendAt, DateEndMinuteFormatStr) : null;
 
       return {
         id: order.id,
@@ -1516,6 +1516,7 @@ export class SettleService {
       .innerJoinAndSelect('order.user', 'user')
       .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .innerJoinAndSelect('orderProductMappings.product', 'product')
+      .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
       .where('order.userId = :userId', { userId: userId })
       .andWhere('order.status IN (:...status)', { status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'] });
 
@@ -1551,7 +1552,6 @@ export class SettleService {
 
     const resultList: SettleUserPerDetailViewDto[] = orderList.map((order) => {
       let productName = '';
-      const firstMapping = order.orderProductMappings?.[0];
       if (order.orderProductMappings && order.orderProductMappings.length > 0) {
         productName = order.orderProductMappings[0].product.name;
         const orderProductMappingsLength = order.orderProductMappings.length;
@@ -1560,8 +1560,9 @@ export class SettleService {
         }
       }
 
-      // 첫 번째 상품의 발송 요청 시간 사용
-      const sendRequestAt = firstMapping?.sendRequestAt ? format(firstMapping.sendRequestAt, DateFormatStr) : null;
+      // 첫 번째 배송의 실제 발송 시간 사용
+      const firstDelivery = order.orderProductMappings?.[0]?.orderDeliveries?.[0];
+      const sendRequestAt = firstDelivery?.actualSendAt ? format(firstDelivery.actualSendAt, DateFormatStr) : null;
 
       return {
         id: order.id,
