@@ -5,12 +5,16 @@ import { firstValueFrom } from 'rxjs';
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import {
   GalaxiaCancelIn,
+  GalaxiaCheckDailyIn,
+  GalaxiaCheckDailyOut,
   GalaxiaCheckIn,
   GalaxiaCheckOut,
   GalaxiaIssueIn,
   GalaxiaIssueOut,
+  GalaxiaTransactionItem,
   IGalaxia,
 } from '../interface/galaxia';
+import { format, subDays } from 'date-fns';
 import { Parser } from 'xml2js';
 
 @Injectable()
@@ -207,6 +211,72 @@ export class GalaxiaHttp implements IGalaxia {
 
       this.logger.log(JSON.stringify(result));
       // return result as GalaxiaIssueOut;
+    } catch (e) {
+      this.logger.error(e);
+      this.logger.error(JSON.stringify(e));
+      throw e;
+    }
+  }
+
+  /**
+   * 일대사(Daily Batch) 조회 - 전날 사용 내역 조회
+   * 참고: GalaxiaManagerImpl.java galaxiaCoupon_daily()
+   * 참고: HttpClientUtil.java doGetGalaxiaJson()
+   */
+  async checkDaily(obj: GalaxiaCheckDailyIn): Promise<GalaxiaCheckDailyOut> {
+    // 기본값: 어제 날짜
+    const targetDay = obj.targetDay ?? format(subDays(new Date(), 1), 'yyyyMMdd');
+
+    const url = `${this.url}/interface/mkt/${this.companyCode}/${obj.giftKind}/checklist?targetday=${targetDay}`;
+    const headers = {
+      Accept: 'application/json',
+      'Content-type': 'text/plain',
+    };
+
+    try {
+      this.logger.log(`[checkDaily] URL: ${url}`);
+
+      const { data } = await firstValueFrom(this.httpService.get(url, { headers }));
+
+      this.logger.log(`[checkDaily] Response: ${JSON.stringify(data)}`);
+
+      const resCode = data.resCode;
+      const resMsg = data.resMsg;
+      const transactions: GalaxiaTransactionItem[] = [];
+
+      if (resCode === '0000' && data.transactionList?.transaction) {
+        const transactionList = data.transactionList.transaction;
+
+        for (const item of transactionList) {
+          // barcode 복호화
+          const decryptedBarcode = this.cryptoCipher.decrypt(
+            item.barcode,
+            this.encKey,
+            this.encIv,
+            this.cryptoAlgorithm,
+          );
+
+          transactions.push({
+            appDiv: item.appDiv,
+            barcode: decryptedBarcode,
+            appDay: item.appDay,
+            appTime: item.appTime,
+            amount: item.amount,
+            appNo: item.appNo,
+            appStore: item.appStore,
+          });
+
+          this.logger.verbose(
+            `[checkDaily] Transaction: barcode=${decryptedBarcode}, appStore=${item.appStore}, appDay=${item.appDay}`,
+          );
+        }
+      }
+
+      return {
+        resCode,
+        resMsg,
+        transactions,
+      };
     } catch (e) {
       this.logger.error(e);
       this.logger.error(JSON.stringify(e));

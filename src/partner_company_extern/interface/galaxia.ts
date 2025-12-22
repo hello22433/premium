@@ -24,6 +24,36 @@ export interface GalaxiaCancelIn {
   trId: string; // 갤럭시아 고유 trid
 }
 
+/**
+ * 일대사(Daily Batch) 조회 API
+ * URL: /interface/mkt/{company-code}/{giftKind}/checklist
+ * 참고: GalaxiaManagerImpl.java galaxiaCoupon_daily()
+ */
+export interface GalaxiaCheckDailyIn {
+  giftKind: 'cpn' | 'dept'; // 쿠폰(cpn) / 백화점 상품권(dept)
+  targetDay?: string; // YYYYMMDD 형식, 기본값: 어제
+}
+
+/**
+ * 일대사 거래 항목
+ * 참고: GalaxiaTransactionItem.java
+ */
+export interface GalaxiaTransactionItem {
+  appDiv: string; // 거래구분
+  barcode: string; // 바코드 (복호화된 값)
+  appDay: string; // 사용일자 (YYYYMMDD)
+  appTime: string; // 사용시간 (HHmmss)
+  amount: string; // 금액
+  appNo: string; // 승인번호
+  appStore: string; // 사용처(교환처)
+}
+
+export interface GalaxiaCheckDailyOut {
+  resCode: string;
+  resMsg: string;
+  transactions: GalaxiaTransactionItem[];
+}
+
 // 갤럭시아 측에서 application server 로 받은 object dto
 export interface GalaxiaIssueOut {
   resCode: string;
@@ -60,4 +90,10 @@ export interface IGalaxia {
   check(obj: GalaxiaCheckIn): Promise<GalaxiaCheckOut>;
 
   cancel(obj: GalaxiaCancelIn): Promise<void>;
+
+  /**
+   * 일대사(Daily Batch) 조회 - 전날 사용 내역 조회
+   * 참고: GalaxiaManagerImpl.java galaxiaCoupon_daily()
+   */
+  checkDaily(obj: GalaxiaCheckDailyIn): Promise<GalaxiaCheckDailyOut>;
 }

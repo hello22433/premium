@@ -193,24 +193,43 @@ export class PartnerCompanyExternBatchService {
   /**
    * 갤럭시아 일대사(Daily Batch) - 전날 사용 내역 조회 후 tradePlace 업데이트
    * 매일 03:01에 실행
+   * cpn(쿠폰), dept(백화점 상품권) 각각 조회
    * 참고: GalaxiaManagerImpl.java galaxiaCoupon_daily()
    */
   async checkGalaxiaDaily(targetDay?: string) {
     this.logger.log(`[checkGalaxiaDaily] 시작 - targetDay: ${targetDay ?? '어제'}`);
 
+    // cpn, dept 순차 호출
+    const giftKinds: Array<'cpn' | 'dept'> = ['cpn', 'dept'];
+
+    for (const giftKind of giftKinds) {
+      await this.processGalaxiaDailyByGiftKind(giftKind, targetDay);
+    }
+
+    this.logger.log('[checkGalaxiaDaily] 완료');
+  }
+
+  /**
+   * giftKind별 일대사 처리
+   */
+  private async processGalaxiaDailyByGiftKind(giftKind: 'cpn' | 'dept', targetDay?: string) {
+    this.logger.log(`[checkGalaxiaDaily] ${giftKind} 조회 시작`);
+
     try {
       // 갤럭시아 일대사 조회 API 호출
-      const dailyResult = await this.galaxia.checkDaily({ targetDay });
+      const dailyResult = await this.galaxia.checkDaily({ giftKind, targetDay });
 
       if (dailyResult.resCode !== '0000') {
-        this.logger.error(`[checkGalaxiaDaily] API 오류: ${dailyResult.resCode} - ${dailyResult.resMsg}`);
+        this.logger.error(
+          `[checkGalaxiaDaily] ${giftKind} API 오류: ${dailyResult.resCode} - ${dailyResult.resMsg}`,
+        );
         return;
       }
 
-      this.logger.log(`[checkGalaxiaDaily] 조회된 거래 건수: ${dailyResult.transactions.length}`);
+      this.logger.log(`[checkGalaxiaDaily] ${giftKind} 조회된 거래 건수: ${dailyResult.transactions.length}`);
 
       if (dailyResult.transactions.length === 0) {
-        this.logger.log('[checkGalaxiaDaily] 처리할 거래 내역이 없습니다.');
+        this.logger.log(`[checkGalaxiaDaily] ${giftKind} 처리할 거래 내역이 없습니다.`);
         return;
       }
 
@@ -226,7 +245,7 @@ export class PartnerCompanyExternBatchService {
 
           if (!orderDelivery) {
             this.logger.verbose(
-              `[checkGalaxiaDaily] 매칭되는 order_delivery 없음: barcode=${transaction.barcode}`,
+              `[checkGalaxiaDaily] ${giftKind} 매칭되는 order_delivery 없음: barcode=${transaction.barcode}`,
             );
             continue;
           }
@@ -237,18 +256,18 @@ export class PartnerCompanyExternBatchService {
             await this.orderDeliveryRepository.save(orderDelivery);
 
             this.logger.log(
-              `[checkGalaxiaDaily] tradePlace 업데이트: orderDeliveryId=${orderDelivery.id}, appStore=${transaction.appStore}`,
+              `[checkGalaxiaDaily] ${giftKind} tradePlace 업데이트: orderDeliveryId=${orderDelivery.id}, appStore=${transaction.appStore}`,
             );
           }
         } catch (e) {
-          this.logger.error(`[checkGalaxiaDaily] 거래 처리 오류: barcode=${transaction.barcode}`);
+          this.logger.error(`[checkGalaxiaDaily] ${giftKind} 거래 처리 오류: barcode=${transaction.barcode}`);
           this.logger.error(e);
         }
       }
 
-      this.logger.log('[checkGalaxiaDaily] 완료');
+      this.logger.log(`[checkGalaxiaDaily] ${giftKind} 처리 완료`);
     } catch (e) {
-      this.logger.error('[checkGalaxiaDaily] 실행 오류');
+      this.logger.error(`[checkGalaxiaDaily] ${giftKind} 실행 오류`);
       this.logger.error(e);
       this.logger.error(JSON.stringify(e));
     }
