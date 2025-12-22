@@ -24,3 +24,6 @@ ALTER TABLE order_delivery
 
 ALTER TABLE order_delivery
     ADD COLUMN email_receiver_phone VARCHAR(512) NULL COMMENT '이메일 쿠폰 수령 시 입력한 핸드폰 번호 (암호화)';
+
+ALTER TABLE order_delivery
+    ADD COLUMN trade_place VARCHAR(200) NULL COMMENT '교환장소';

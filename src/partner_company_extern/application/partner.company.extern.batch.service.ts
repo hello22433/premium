@@ -102,16 +102,37 @@ export class PartnerCompanyExternBatchService {
           orderDelivery.couponStatus =
             giftielOut.UseYn === 'Y' ? OrderDeliveryCouponStatus.USED : orderDelivery.couponStatus;
           orderDelivery.tradeAt = giftielOut.UseDate ? new Date(giftielOut.UseDate) : null;
+          orderDelivery.tradePlace = giftielOut.BiName || null;
         }
 
-        // 1.1.4 giftshow 쿠폰 조회
-        // 기프티쇼_매체_연동규격서_v1.9.1.2.pdf
+        // 1.1.4 giftshow 쿠폰 조회 (V2 API)
         if (type === 'GIFT_SHOW') {
           const giftiShowOut = await this.giftiShow.check({
             transactionId: orderDelivery.transactionId!,
           });
-          orderDelivery.couponStatus =
-            giftiShowOut.StatusCode === '0' ? OrderDeliveryCouponStatus.NOT_USED : OrderDeliveryCouponStatus.USED;
+
+          if (giftiShowOut.resCode === '0000' && giftiShowOut.couponInfo) {
+            const { pinStatusCd, exchDtm, tradeBranchNm, branchNm, useComNm } = giftiShowOut.couponInfo;
+
+            // pinStatusCd: 01=발행, 02=교환, 07=취소, 08=만료
+            if (pinStatusCd === '02') {
+              orderDelivery.couponStatus = OrderDeliveryCouponStatus.USED;
+              // 교환일시 파싱 (YYYYMMDDHHmmss)
+              if (exchDtm) {
+                const year = parseInt(exchDtm.substring(0, 4));
+                const month = parseInt(exchDtm.substring(4, 6)) - 1;
+                const day = parseInt(exchDtm.substring(6, 8));
+                const hour = parseInt(exchDtm.substring(8, 10));
+                const minute = parseInt(exchDtm.substring(10, 12));
+                const second = parseInt(exchDtm.substring(12, 14));
+                orderDelivery.tradeAt = new Date(year, month, day, hour, minute, second);
+              }
+              // 교환장소: tradeBranchNm > branchNm > useComNm 순으로 사용
+              orderDelivery.tradePlace = tradeBranchNm || branchNm || useComNm || null;
+            } else if (pinStatusCd === '01') {
+              orderDelivery.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
+            }
+          }
         }
 
         // 1.1.5 컬쳐랜드 쿠폰 조회
@@ -131,6 +152,9 @@ export class PartnerCompanyExternBatchService {
             cultureLandOut.CancelPossibility == 'N'
               ? OrderDeliveryCouponStatus.USED
               : OrderDeliveryCouponStatus.NOT_USED;
+          if (cultureLandOut.CancelPossibility === 'N') {
+            orderDelivery.tradeAt = new Date();
+          }
         }
 
         // 1.1.6 신세계 상품권 발행
@@ -164,5 +188,69 @@ export class PartnerCompanyExternBatchService {
     }
 
     return;
+  }
+
+  /**
+   * 갤럭시아 일대사(Daily Batch) - 전날 사용 내역 조회 후 tradePlace 업데이트
+   * 매일 03:01에 실행
+   * 참고: GalaxiaManagerImpl.java galaxiaCoupon_daily()
+   */
+  async checkGalaxiaDaily(targetDay?: string) {
+    this.logger.log(`[checkGalaxiaDaily] 시작 - targetDay: ${targetDay ?? '어제'}`);
+
+    try {
+      // 갤럭시아 일대사 조회 API 호출
+      const dailyResult = await this.galaxia.checkDaily({ targetDay });
+
+      if (dailyResult.resCode !== '0000') {
+        this.logger.error(`[checkGalaxiaDaily] API 오류: ${dailyResult.resCode} - ${dailyResult.resMsg}`);
+        return;
+      }
+
+      this.logger.log(`[checkGalaxiaDaily] 조회된 거래 건수: ${dailyResult.transactions.length}`);
+
+      if (dailyResult.transactions.length === 0) {
+        this.logger.log('[checkGalaxiaDaily] 처리할 거래 내역이 없습니다.');
+        return;
+      }
+
+      // 각 거래 항목에 대해 order_delivery 매칭 및 tradePlace 업데이트
+      for (const transaction of dailyResult.transactions) {
+        try {
+          // barcode로 order_delivery 검색
+          const orderDelivery = await this.orderDeliveryRepository.findOne({
+            where: {
+              barCode: transaction.barcode,
+            },
+          });
+
+          if (!orderDelivery) {
+            this.logger.verbose(
+              `[checkGalaxiaDaily] 매칭되는 order_delivery 없음: barcode=${transaction.barcode}`,
+            );
+            continue;
+          }
+
+          // tradePlace 업데이트
+          if (transaction.appStore && transaction.appStore.trim()) {
+            orderDelivery.tradePlace = transaction.appStore.trim();
+            await this.orderDeliveryRepository.save(orderDelivery);
+
+            this.logger.log(
+              `[checkGalaxiaDaily] tradePlace 업데이트: orderDeliveryId=${orderDelivery.id}, appStore=${transaction.appStore}`,
+            );
+          }
+        } catch (e) {
+          this.logger.error(`[checkGalaxiaDaily] 거래 처리 오류: barcode=${transaction.barcode}`);
+          this.logger.error(e);
+        }
+      }
+
+      this.logger.log('[checkGalaxiaDaily] 완료');
+    } catch (e) {
+      this.logger.error('[checkGalaxiaDaily] 실행 오류');
+      this.logger.error(e);
+      this.logger.error(JSON.stringify(e));
+    }
   }
 }

@@ -81,6 +81,9 @@ export class OrderDeliveryEntity extends BaseEntity {
   @Column({ type: 'datetime', nullable: true, comment: '교환시각' })
   tradeAt: Date | null;
 
+  @Column({ type: 'varchar', length: 200, nullable: true, comment: '교환장소' })
+  tradePlace: string | null;
+
   @Column({ default: 0, comment: '갤럭시아 상품권형 잔액' })
   galaxiaBalance: number;
 

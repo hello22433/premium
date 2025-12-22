@@ -398,27 +398,50 @@ export class PartnerCompanyExternService {
         orderDelivery.couponStatus =
           giftielOut.UseYn === 'Y' ? OrderDeliveryCouponStatus.USED : OrderDeliveryCouponStatus.NOT_USED;
         orderDelivery.tradeAt = giftielOut.UseDate ? new Date(giftielOut.UseDate) : null;
+        orderDelivery.tradePlace = giftielOut.BiName || null;
         break;
       }
 
-      // 4. GIFT_SHOW
+      // 4. GIFT_SHOW (V2 API)
       case 'GIFT_SHOW': {
         const giftiShowOut = await this.giftiShow.check({
           transactionId: orderDelivery.transactionId!,
         });
 
-        // StatusCode '0' = 미사용(취소가능), 그 외는 StatusText로 판단
-        if (giftiShowOut.StatusCode === '0') {
-          orderDelivery.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
-        } else {
-          const statusText = giftiShowOut.StatusText || '';
-          if (statusText.includes('취소') || statusText.includes('반품') || statusText.includes('폐기')) {
-            orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
-          } else if (statusText.includes('만료')) {
-            orderDelivery.couponStatus = OrderDeliveryCouponStatus.EXPIRED;
-          } else {
+        if (giftiShowOut.resCode !== '0000' || !giftiShowOut.couponInfo) {
+          throw new Error(`GiftiShow API 오류: ${giftiShowOut.resCode} - ${giftiShowOut.resMsg}`);
+        }
+
+        const { pinStatusCd, exchDtm, tradeBranchNm, branchNm, useComNm } = giftiShowOut.couponInfo;
+
+        // pinStatusCd: 01=발행, 02=교환, 07=취소, 08=만료
+        switch (pinStatusCd) {
+          case '01':
+            orderDelivery.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
+            break;
+          case '02':
             orderDelivery.couponStatus = OrderDeliveryCouponStatus.USED;
-          }
+            // 교환일시 파싱 (YYYYMMDDHHmmss)
+            if (exchDtm) {
+              const year = parseInt(exchDtm.substring(0, 4));
+              const month = parseInt(exchDtm.substring(4, 6)) - 1;
+              const day = parseInt(exchDtm.substring(6, 8));
+              const hour = parseInt(exchDtm.substring(8, 10));
+              const minute = parseInt(exchDtm.substring(10, 12));
+              const second = parseInt(exchDtm.substring(12, 14));
+              orderDelivery.tradeAt = new Date(year, month, day, hour, minute, second);
+            }
+            // 교환장소: tradeBranchNm > branchNm > useComNm 순으로 사용
+            orderDelivery.tradePlace = tradeBranchNm || branchNm || useComNm || null;
+            break;
+          case '07':
+            orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
+            break;
+          case '08':
+            orderDelivery.couponStatus = OrderDeliveryCouponStatus.EXPIRED;
+            break;
+          default:
+            orderDelivery.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
         }
         break;
       }
@@ -439,6 +462,9 @@ export class PartnerCompanyExternService {
           cultureLandOut.CancelPossibility === 'N'
             ? OrderDeliveryCouponStatus.USED
             : OrderDeliveryCouponStatus.NOT_USED;
+        if (cultureLandOut.CancelPossibility === 'N') {
+          orderDelivery.tradeAt = new Date();
+        }
         break;
       }
 
