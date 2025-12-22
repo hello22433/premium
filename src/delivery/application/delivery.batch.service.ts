@@ -370,7 +370,7 @@ export class DeliveryBatchService {
           productImagePath: orderDelivery.orderProductMapping.product.imagePath,
           text,
           url: url,
-          code: emailSendHistory.code,
+          code: emailSendHistory.code!,
           useEmailContent,
           qrCodeImagePath,
         });
@@ -781,7 +781,7 @@ export class DeliveryBatchService {
           productImagePath: orderDelivery.orderProductMapping.product.imagePath,
           text,
           url: url,
-          code: emailSendHistory.code,
+          code: emailSendHistory.code!,
           useEmailContent,
           qrCodeImagePath,
         });
@@ -822,12 +822,7 @@ export class DeliveryBatchService {
   @Transactional()
   async deliveryDeliveryTargetDestroy() {
     const now = new Date();
-    const destroyPhoneNumber = '01000000000';
-    const destroyEmail = '';
-
-    // 파기용 암호화된 값
-    const encryptedDestroyPhoneNumber = this.cryptoCipher.encryptDeliveryTarget(destroyPhoneNumber);
-    const encryptedDestroyEmail = this.cryptoCipher.encryptDeliveryTarget(destroyEmail);
+    const destroyValue = '-';
 
     const orderDeliveryList = await this.orderDeliveryRepository
       .createQueryBuilder('orderDelivery')
@@ -838,32 +833,20 @@ export class DeliveryBatchService {
         { now },
       )
       .andWhere('order.status = :status', { status: IOrderStatus.DELIVERY_COMPLETE })
-      .andWhere('orderDelivery.deliveryTarget != :targetPhone', { targetPhone: encryptedDestroyPhoneNumber })
-      .andWhere('orderDelivery.deliveryTarget != :targetEmail', { targetEmail: encryptedDestroyEmail })
+      .andWhere('orderDelivery.deliveryTarget != :destroyValue', { destroyValue })
       .getMany();
 
-    const destroyEmailIdList: number[] = [];
-    const destroyPhoneNumberIdList: number[] = [];
+    const destroyIdList: number[] = [];
     for (const orderDelivery of orderDeliveryList) {
-      if (orderDelivery.deliveryMethod === IOrderSendMethod.EMAIL) {
-        destroyEmailIdList.push(orderDelivery.id);
-      }
-      if (
-        orderDelivery.deliveryMethod === IOrderSendMethod.SMS ||
-        orderDelivery.deliveryMethod === IOrderSendMethod.ALIM_TALK
-      ) {
-        destroyPhoneNumberIdList.push(orderDelivery.id);
-      }
+      destroyIdList.push(orderDelivery.id);
     }
 
-    await this.orderDeliveryRepository.update(
-      { id: In(destroyPhoneNumberIdList) },
-      { deliveryTarget: encryptedDestroyPhoneNumber },
-    );
-    await this.orderDeliveryRepository.update(
-      { id: In(destroyEmailIdList) },
-      { deliveryTarget: encryptedDestroyEmail },
-    );
+    if (destroyIdList.length > 0) {
+      await this.orderDeliveryRepository.update(
+        { id: In(destroyIdList) },
+        { deliveryTarget: destroyValue },
+      );
+    }
   }
 
   async handleDeliveryEncourage() {

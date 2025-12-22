@@ -479,7 +479,7 @@ export class CustomerServiceService {
       throw new BadRequestException('주문 발송가 존재하지 않습니다.');
     }
 
-    if (orderDelivery.deliveryTarget === '000-0000-0000' || orderDelivery.deliveryTarget === '') {
+    if (orderDelivery.deliveryTarget === '-') {
       throw new BadRequestException('파기된 발송 정보입니다.');
     }
 
