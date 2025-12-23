@@ -69,6 +69,9 @@ export class MaskingUtil {
   static maskDeliveryTarget(deliveryTarget: string): string {
     if (!deliveryTarget) return '';
 
+    // 파기된 데이터('-')는 그대로 반환
+    if (deliveryTarget === '-') return '-';
+
     // 이메일 형식 체크
     if (deliveryTarget.includes('@')) {
       return this.maskEmail(deliveryTarget);
