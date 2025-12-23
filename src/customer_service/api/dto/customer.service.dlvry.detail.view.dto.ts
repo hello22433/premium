@@ -121,6 +121,12 @@ export class CustomerServiceDlvryDetailViewDto {
   tradeAt: string | null;
 
   @ApiProperty({
+    description: '교환장소 (사용처)',
+    nullable: true,
+  })
+  tradePlace: string | null;
+
+  @ApiProperty({
     description: '추가핀정보',
   })
   extraPinNo: string | null;

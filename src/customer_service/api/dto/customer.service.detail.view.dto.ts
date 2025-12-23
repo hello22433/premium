@@ -120,6 +120,12 @@ export class CustomerServiceDetailViewDto {
   tradeAt: string | null;
 
   @ApiProperty({
+    description: '교환장소 (사용처)',
+    nullable: true,
+  })
+  tradePlace: string | null;
+
+  @ApiProperty({
     description: '발송 상태',
     enum: IOrderDeliveryStatus,
   })
