@@ -83,10 +83,12 @@ export class PartnerCompanyExternService {
       // 표준연동발행규격서 v.1.6.8_갤럭시아머니트리.pdf
       if (type === 'GALAXIA') {
         const giftKind = orderDelivery.orderProductMapping.product.name.includes('(백화점)') ? 'dept' : 'cpn';
+        // 개인정보 보호: 백화점(dept)만 실제 전화번호 전달, 그 외는 더미 번호 사용
+        const phoneNumberForGalaxia = giftKind === 'dept' ? decryptedDeliveryTarget : '01000000000';
         const galaxiaOut = await this.galaxia.issue({
           transactionId: orderDelivery.transactionId,
           partnerCompanyCode: orderDelivery.orderProductMapping.product.partnerCompanyCode!,
-          fromPhoneNumber: decryptedDeliveryTarget,
+          fromPhoneNumber: phoneNumberForGalaxia,
           giftKind: giftKind,
         });
         context = JSON.stringify(galaxiaOut);
@@ -209,7 +211,7 @@ export class PartnerCompanyExternService {
         const daouOut = await this.daou.issue({
           goodsId: orderDelivery.orderProductMapping.product.partnerCompanyCode!,
           transactionId: orderDelivery.transactionId,
-          phoneNumber: decryptedDeliveryTarget,
+          phoneNumber: '01000000000', // 개인정보 보호: 더미 번호 사용
           limitDate: '' + orderDelivery.orderProductMapping.product.expireDay,
           tradeNo: orderDelivery.transactionId, // tradeNo로 transactionId 사용
         });

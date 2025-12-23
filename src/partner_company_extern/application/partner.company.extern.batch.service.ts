@@ -5,6 +5,7 @@ import { IGiftiel } from '../interface/giftiel';
 import { IGiftiShow } from '../interface/giftishow';
 import { ICulture } from '../interface/culture';
 import { ISsgIssue } from '../interface/ssg.issue';
+import { IDaou } from '../interface/daou';
 import { InjectRepository } from '@nestjs/typeorm';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { Repository } from 'typeorm';
@@ -25,6 +26,8 @@ export class PartnerCompanyExternBatchService {
     private culture: ICulture,
     @Inject('ISsgIssue')
     private ssgIssue: ISsgIssue,
+    @Inject('IDaou')
+    private daou: IDaou,
     @InjectRepository(OrderDeliveryEntity)
     private orderDeliveryRepository: Repository<OrderDeliveryEntity>,
   ) {}
@@ -177,6 +180,34 @@ export class PartnerCompanyExternBatchService {
             ssgOut.response.value[0].resultCd[0] == '0400'
               ? OrderDeliveryCouponStatus.USED
               : OrderDeliveryCouponStatus.NOT_USED;
+        }
+
+        // 1.1.7 다우기술 쿠폰 조회
+        if (type === 'DAOU') {
+          const daouCheckOut = await this.daou.check({
+            transactionId: orderDelivery.transactionId!,
+          });
+
+          if (daouCheckOut.resultCode === 'S000001') {
+            // CPN_STATUS: 00(미사용), 01(교환완료), 02(기취소), 03(사용중)
+            if (daouCheckOut.cpnStatus === '01' || daouCheckOut.cpnStatus === '03') {
+              // 01: 교환완료, 03: 사용중 - 둘 다 USED로 처리
+              orderDelivery.couponStatus = OrderDeliveryCouponStatus.USED;
+              // 사용일자가 있으면 tradeAt에 설정 (YYYYMMDD 형식)
+              if (daouCheckOut.useDate) {
+                const year = parseInt(daouCheckOut.useDate.substring(0, 4));
+                const month = parseInt(daouCheckOut.useDate.substring(4, 6)) - 1;
+                const day = parseInt(daouCheckOut.useDate.substring(6, 8));
+                orderDelivery.tradeAt = new Date(year, month, day);
+              }
+              // 사용처가 있으면 tradePlace에 설정
+              if (daouCheckOut.useBranch) {
+                orderDelivery.tradePlace = daouCheckOut.useBranch;
+              }
+            } else if (daouCheckOut.cpnStatus === '02') {
+              orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
+            }
+          }
         }
 
         await this.orderDeliveryRepository.save(orderDelivery);
