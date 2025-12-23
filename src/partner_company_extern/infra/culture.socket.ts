@@ -1,13 +1,18 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { HttpService } from '@nestjs/axios';
 import { io, Socket } from 'socket.io-client';
 import { ConfigService } from '@nestjs/config';
-import { format } from 'date-fns';
+import { format, subDays } from 'date-fns';
 import * as net from 'node:net';
 import * as iconv from 'iconv-lite';
+import { firstValueFrom } from 'rxjs';
+import { XMLParser } from 'fast-xml-parser';
 import {
   CultureCancelIn,
   CultureCheckIn,
   CultureCheckOut,
+  CultureCheckDailyIn,
+  CultureCheckDailyOut,
   CultureIssueIn,
   CultureIssueOut,
   ICulture,
@@ -15,9 +20,13 @@ import {
 
 @Injectable()
 export class CultureSocket implements ICulture {
-  constructor(private configService: ConfigService) {
+  constructor(
+    private configService: ConfigService,
+    private httpService: HttpService,
+  ) {
     this.socketIP = this.configService.getOrThrow('CULTURE_LAND_SOCKET_IP');
     this.port = this.configService.getOrThrow('CULTURE_LAND_SOCKET_PORT');
+    this.environment = this.configService.getOrThrow('ENVIRONMENT');
   }
 
   private socket: Socket;
@@ -25,6 +34,7 @@ export class CultureSocket implements ICulture {
 
   private socketIP = '';
   private port = '';
+  private environment = '';
 
   // 모듈 초기화 시 연결 설정
   onModuleInit() {
@@ -302,6 +312,70 @@ export class CultureSocket implements ICulture {
       return parsed as CultureCheckOut;
     } catch (e) {
       this.logger.error(e);
+      this.logger.error(JSON.stringify(e));
+      throw e;
+    }
+  }
+
+  /**
+   * 일대사(Daily Batch) - 60일 상품 전용
+   * 전날 사용된 상품권 목록 조회 (HTTP API)
+   * 참고: 컬쳐랜드상품권(모바일문화상품권)_사용PIN확인_연동가이드_V2.1.pdf
+   */
+  async checkDaily(obj: CultureCheckDailyIn): Promise<CultureCheckDailyOut> {
+    // 사용일 기본값: 어제
+    const useDate = obj.useDate ?? format(subDays(new Date(), 1), 'yyyyMMdd');
+
+    // 60일 상품 계정만 사용
+    const memberCode = this.configService.getOrThrow('CULTURE_LAND_SOCKET_MEMBER_CODE_60');
+    const subMemberCode = this.configService.getOrThrow('CULTURE_LAND_SOCKET_SUB_MEMBER_CODE_60');
+
+    // URL 결정 (환경별)
+    const url =
+      this.environment === 'prod'
+        ? 'https://manager.cultureland.co.kr/giftcard/usePinDayRequest_kcpi.asp'
+        : 'https://tsalecheck.cultureland.co.kr/giftcard/usePinDayRequest_kcpi.asp';
+
+    this.logger.log(`[checkDaily] URL: ${url}, UseDate: ${useDate}`);
+
+    try {
+      // HTTP 요청 (POST)
+      const response = await firstValueFrom(
+        this.httpService.post(
+          url,
+          `MemberCode=${memberCode}&SubMemberCode=${subMemberCode}&UseDate=${useDate}`,
+          {
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            responseType: 'arraybuffer', // euc-kr 인코딩 처리를 위해
+          },
+        ),
+      );
+
+      // euc-kr 디코딩
+      const decodedResponse = iconv.decode(Buffer.from(response.data), 'euc-kr');
+      this.logger.log(`[checkDaily] Response: ${decodedResponse}`);
+
+      // XML 파싱
+      const parser = new XMLParser();
+      const xmlData = parser.parse(decodedResponse);
+
+      // certno 목록 추출
+      let certNoList: string[] = [];
+      if (xmlData.response?.result?.certno) {
+        const certno = xmlData.response.result.certno;
+        certNoList = Array.isArray(certno) ? certno : [certno];
+      }
+
+      return {
+        memberCode: xmlData.response?.membercode || memberCode,
+        subMemberCode: xmlData.response?.submembercode || subMemberCode,
+        useDate: xmlData.response?.usedate || useDate,
+        certNoList,
+      };
+    } catch (e) {
+      this.logger.error(`[checkDaily] Error: ${e}`);
       this.logger.error(JSON.stringify(e));
       throw e;
     }

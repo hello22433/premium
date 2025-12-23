@@ -52,10 +52,29 @@ export interface CultureCheckOut {
   Filler: string; // 공백 문자 (166자)
 }
 
+// 컬쳐랜드 일대사(Daily Batch) 요청 DTO - 60일 상품 전용
+export interface CultureCheckDailyIn {
+  useDate?: string; // 사용일 (YYYYMMDD), 기본값: 어제
+}
+
+// 컬쳐랜드 일대사(Daily Batch) 응답 DTO
+export interface CultureCheckDailyOut {
+  memberCode: string; // 구매처 코드
+  subMemberCode: string; // 구매처 판매점코드
+  useDate: string; // 사용일 (YYYYMMDD)
+  certNoList: string[]; // 사용된 상품권 관리번호 목록
+}
+
 export interface ICulture {
   issue(obj: CultureIssueIn): Promise<CultureIssueOut>;
 
   cancel(obj: CultureCancelIn): Promise<void>;
 
   check(obj: CultureCheckIn): Promise<CultureCheckOut>;
+
+  /**
+   * 일대사(Daily Batch) - 60일 상품 전용
+   * 전날 사용된 상품권 목록 조회
+   */
+  checkDaily(obj: CultureCheckDailyIn): Promise<CultureCheckDailyOut>;
 }
