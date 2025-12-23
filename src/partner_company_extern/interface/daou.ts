@@ -24,9 +24,9 @@ export interface DaouCheckIn {
 export interface DaouCheckOut {
   resultCode: string; // RT - 결과코드
   resultMessage: string; // RTMSG - 결과메시지
-  cpnStatus?: string; // CPN_STATUS - 쿠폰상태 (00: 미사용, 01: 교환완료, 02: 기취소)
+  cpnStatus?: string; // CPN_STATUS - 쿠폰상태 (00: 미사용, 01: 교환완료, 02: 기취소, 03: 사용중)
   useDate?: string; // USE_DATE - 사용일자
-  useBranch?: string; // USER_STORE - 사용처
+  useBranch?: string; // USE_STORE - 사용처
 }
 
 // 다우기술 PIN 취소 요청 DTO
@@ -46,9 +46,9 @@ export interface DaouXmlResponse {
   RTMSG?: string; // 결과메시지
   NO_CPN?: string; // 쿠폰번호
   TS_ID?: string; // 파트너키
-  CPN_STATUS?: string; // 쿠폰상태
-  USE_DATE?: string; // 사용일자
-  USER_STORE?: string; // 사용처
+  CPN_STATUS?: string; // 쿠폰상태 (00: 미사용, 01: 교환완료, 02: 기취소, 03: 사용중)
+  USE_DATE?: string; // 사용일자 (YYYYMMDD)
+  USE_STORE?: string; // 사용처
 }
 
 // 다우기술 서비스 인터페이스

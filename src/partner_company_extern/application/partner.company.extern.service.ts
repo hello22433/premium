@@ -497,10 +497,11 @@ export class PartnerCompanyExternService {
 
         // 응답 코드 확인
         if (daouCheckOut.resultCode === 'S000001') {
-          // CPN_STATUS: 00(미사용), 01(교환완료), 02(기취소)
+          // CPN_STATUS: 00(미사용), 01(교환완료), 02(기취소), 03(사용중)
           if (daouCheckOut.cpnStatus === '00') {
             orderDelivery.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
-          } else if (daouCheckOut.cpnStatus === '01') {
+          } else if (daouCheckOut.cpnStatus === '01' || daouCheckOut.cpnStatus === '03') {
+            // 01: 교환완료, 03: 사용중 - 둘 다 USED로 처리
             orderDelivery.couponStatus = OrderDeliveryCouponStatus.USED;
             // 사용일자가 있으면 tradeAt에 설정 (YYYYMMDD 형식)
             if (daouCheckOut.useDate) {
@@ -508,6 +509,10 @@ export class PartnerCompanyExternService {
               const month = parseInt(daouCheckOut.useDate.substring(4, 6)) - 1;
               const day = parseInt(daouCheckOut.useDate.substring(6, 8));
               orderDelivery.tradeAt = new Date(year, month, day);
+            }
+            // 사용처가 있으면 tradePlace에 설정
+            if (daouCheckOut.useBranch) {
+              orderDelivery.tradePlace = daouCheckOut.useBranch;
             }
           } else if (daouCheckOut.cpnStatus === '02') {
             orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
