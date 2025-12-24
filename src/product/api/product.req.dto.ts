@@ -3,7 +3,7 @@ import { IsArray, IsBoolean, IsEnum, IsIn, IsInt, IsNotEmpty, IsNumber, IsOption
 import { Transform, Type } from 'class-transformer';
 import { PagingReqDto } from '../../common/api/dto/pagination.req.dto';
 import { IProductSettleMethod } from '../interface/product.settle.method';
-import { IProductType } from '../interface/product.type';
+import { IProductCategory, IProductType } from '../interface/product.type';
 import { IProductUseStatus } from '../interface/product.status';
 import { IsDivisibleBy5000 } from './validator/is-divisible-by-5000.validator';
 
@@ -87,6 +87,14 @@ export class ProductGetTotalListReqQueryDto extends PagingReqDto {
   @IsBoolean()
   @Transform(({ value }) => value === 'true') // 문자열을 boolean으로 변환
   isLike?: boolean;
+
+  @ApiPropertyOptional({
+    description: '상품 카테고리 ex) 모바일쿠폰: MOBILE_COUPON, 실물상품: REAL_PRODUCT',
+  })
+  // =================================
+  @IsOptional()
+  @IsEnum(IProductCategory)
+  productCategory?: IProductCategory;
 }
 
 export class ProductGetListReqQueryDto extends PagingReqDto {
@@ -178,6 +186,14 @@ export class ProductGetListReqQueryDto extends PagingReqDto {
   @IsBoolean()
   @Transform(({ value }) => value === 'true') // 문자열을 boolean으로 변환
   isLike?: boolean;
+
+  @ApiPropertyOptional({
+    description: '상품 카테고리 ex) 모바일쿠폰: MOBILE_COUPON, 실물상품: REAL_PRODUCT',
+  })
+  // =================================
+  @IsOptional()
+  @IsEnum(IProductCategory)
+  productCategory?: IProductCategory;
 }
 
 export class ProductSsgReqQueryDto {

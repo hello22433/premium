@@ -48,7 +48,7 @@ import {
   ProductTypeExcelMapping,
   ProductUseStatusExcelMapping,
 } from '../domain/product.excel.mapping';
-import { IProductType } from '../interface/product.type';
+import { IProductCategory, IProductType } from '../interface/product.type';
 import { IUserAuthority } from '../../user/interface/user.authority';
 import { UserSyncProductEventEntity } from '../../entity/user.sync.product.event.entity';
 import { ProductLikeEntity } from '../../entity/product.like.entity';
@@ -106,6 +106,7 @@ export class ProductService {
       page,
       take,
       isChoiceType,
+      productCategory,
     } = getQuery;
     let queryBuilder = this.productRepository
       .createQueryBuilder('product')
@@ -131,6 +132,17 @@ export class ProductService {
           mappedProductIds,
         });
       }
+    }
+
+    // 상품 카테고리 필터링 (모바일쿠폰 / 실물상품 탭 분리용)
+    if (productCategory === IProductCategory.MOBILE_COUPON) {
+      // 모바일쿠폰: GENERAL, CHOICE, DELIVERY, SELF (REAL 제외)
+      queryBuilder = queryBuilder.andWhere('product.type IN (:...mobileCouponTypes)', {
+        mobileCouponTypes: [IProductType.GENERAL, IProductType.CHOICE, IProductType.DELIVERY, IProductType.SELF],
+      });
+    } else if (productCategory === IProductCategory.REAL_PRODUCT) {
+      // 실물상품: REAL만
+      queryBuilder = queryBuilder.andWhere('product.type = :realType', { realType: IProductType.REAL });
     }
 
     if (type && !isChoiceType) {
@@ -268,6 +280,7 @@ export class ProductService {
       page,
       take,
       isChoiceType,
+      productCategory,
     } = getQuery;
     let queryBuilder = this.productRepository
       .createQueryBuilder('product')
@@ -319,6 +332,17 @@ export class ProductService {
           mappedProductIds,
         });
       }
+    }
+
+    // 상품 카테고리 필터링 (모바일쿠폰 / 실물상품 탭 분리용)
+    if (productCategory === IProductCategory.MOBILE_COUPON) {
+      // 모바일쿠폰: GENERAL, CHOICE, DELIVERY, SELF (REAL 제외)
+      queryBuilder = queryBuilder.andWhere('product.type IN (:...mobileCouponTypes)', {
+        mobileCouponTypes: [IProductType.GENERAL, IProductType.CHOICE, IProductType.DELIVERY, IProductType.SELF],
+      });
+    } else if (productCategory === IProductCategory.REAL_PRODUCT) {
+      // 실물상품: REAL만
+      queryBuilder = queryBuilder.andWhere('product.type = :realType', { realType: IProductType.REAL });
     }
 
     if (type && !isChoiceType) {
