@@ -183,6 +183,9 @@ export class OrderService {
 
     // 발송관리 일 경우
     if (section === IOrderSection.SHIPPING) {
+      // 발송관리에서는 임시저장 상태 제외
+      queryBuilder = queryBuilder.andWhere('order.status != :tempStatus', { tempStatus: IOrderStatus.TEMP });
+
       if (user.authority === IUserAuthority.CORPORATE_ADMIN) {
         queryBuilder = queryBuilder.andWhere('order.userId = :userId', { userId: user.id });
       }
