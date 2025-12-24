@@ -298,7 +298,8 @@ export class OrderService {
       .leftJoinAndSelect('product.brand', 'brand')
       .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
       .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
-      .where('order.id = :id', { id: getParam.id });
+      .where('order.id = :id', { id: getParam.id })
+      .addOrderBy('orderDeliveries.id', 'ASC');
 
     const order = await queryBuilder.getOne();
 
