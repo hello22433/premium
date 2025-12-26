@@ -1685,6 +1685,8 @@ export class OrderService {
   async deliveryRequest(user: ILoginUserInfo, getBody: OrderDeliveryRequestReqDto): Promise<void> {
     const { id } = getBody;
 
+    this.logger.log(`[deliveryRequest] 요청 - orderId: ${id}, userId: ${user.id}`);
+
     const order = await this.orderRepository
       .createQueryBuilder('order')
       .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
@@ -1693,6 +1695,8 @@ export class OrderService {
       .where('order.id = :id', { id })
       .andWhere('order.userId = :userId', { userId: user.id })
       .getOne();
+
+    this.logger.log(`[deliveryRequest] 조회 결과 - order: ${order ? order.id : 'null'}`);
 
     if (!order) {
       throw new BadRequestException('해당 주문건은 존재하지 않습니다.');
