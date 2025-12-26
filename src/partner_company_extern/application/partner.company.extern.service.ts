@@ -90,6 +90,8 @@ export class PartnerCompanyExternService {
           partnerCompanyCode: orderDelivery.orderProductMapping.product.partnerCompanyCode!,
           fromPhoneNumber: phoneNumberForGalaxia,
           giftKind: giftKind,
+          // 백화점(dept) 상품권의 경우 액면가 필수
+          faceValue: giftKind === 'dept' ? String(orderDelivery.orderProductMapping.product.price) : undefined,
         });
         context = JSON.stringify(galaxiaOut);
         orderDelivery.barCode = galaxiaOut.giftCertificate.barcode ?? null;

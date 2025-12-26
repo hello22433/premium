@@ -4,6 +4,7 @@ export interface GalaxiaIssueIn {
   partnerCompanyCode: string; // goodsGroupid
   fromPhoneNumber: string; //buyer
   giftKind: 'cpn' | 'dept'; // coupon : cpn, 상품권 : dept
+  faceValue?: string; // 발행 액면가 (백화점 상품권 필수)
 }
 
 export interface GalaxiaCheckIn {

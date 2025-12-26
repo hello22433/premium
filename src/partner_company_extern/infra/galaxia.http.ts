@@ -64,8 +64,12 @@ export class GalaxiaHttp implements IGalaxia {
       'msg-callback': callback,
       dept: obj.giftKind, // coupon : cpn, 상품권 : dept
       sendMsg: 'N',
-      // faceValue: obj.faceValue, // 발행 액면가
     });
+
+    // 백화점(dept) 상품권의 경우 액면가 필수 (암호화 없이 전달)
+    if (obj.faceValue) {
+      data.append('faceValue', obj.faceValue);
+    }
 
     try {
       this.logger.log(`${url}?${data.toString()}`);
@@ -108,6 +112,11 @@ export class GalaxiaHttp implements IGalaxia {
     } catch (e) {
       this.logger.error(e);
       this.logger.error(JSON.stringify(e));
+      // AxiosError의 경우 response data 로깅
+      if (e.response) {
+        this.logger.error(`[issue] Galaxia API 응답 status: ${e.response.status}`);
+        this.logger.error(`[issue] Galaxia API 응답 data: ${JSON.stringify(e.response.data)}`);
+      }
       throw e;
     }
   }
