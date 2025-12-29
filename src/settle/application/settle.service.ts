@@ -1477,11 +1477,11 @@ export class SettleService {
 
     if (status) {
       if (status === 'ACTIVE') {
-        queryBuilder.andWhere(`user.maximumLimit + user.balance - user.allSettleAmount + user.serviceAmount > 0`);
+        queryBuilder.andWhere(`COALESCE(userCompany.maximumLimit, 0) + user.balance - user.allSettleAmount + user.serviceAmount > 0`);
       }
 
       if (status === 'STOP') {
-        queryBuilder.andWhere(`user.maximumLimit + user.balance - user.allSettleAmount + user.serviceAmount <= 0`);
+        queryBuilder.andWhere(`COALESCE(userCompany.maximumLimit, 0) + user.balance - user.allSettleAmount + user.serviceAmount <= 0`);
       }
     }
 
@@ -1500,7 +1500,8 @@ export class SettleService {
         }
       }
 
-      const remainServiceAmount = user.maximumLimit + user.balance - user.allSettleAmount + user.serviceAmount;
+      const companyMaximumLimit = Number(user.company?.maximumLimit ?? 0);
+      const remainServiceAmount = companyMaximumLimit + user.balance - user.allSettleAmount + user.serviceAmount;
 
       return {
         id: user.id,
@@ -1510,7 +1511,7 @@ export class SettleService {
         settleCondition: user.settleCondition,
         settlePeriodCondition: user.settlePeriodCondition,
         settlePeriodCount: user.settlePeriodCount,
-        maximumLimit: user.maximumLimit,
+        maximumLimit: companyMaximumLimit,
         serviceAmount: user.allSettleAmount,
         overdueCount: overdueCount,
         overdueAmount: overdueAmount,
@@ -1741,7 +1742,7 @@ export class SettleService {
     // 사용자 정보 조회
     const userEntity = await this.userRepository.findOne({
       where: { id: user.id },
-      relations: ['orders'],
+      relations: ['orders', 'company'],
     });
 
     if (!userEntity) {
@@ -1763,19 +1764,20 @@ export class SettleService {
 
     // 정산 조건에 따른 최대 한도 계산
     // - 선정산(PRE_PAYMENT): 최대한도 = 선충전잔액
-    // - 후정산(POST_PAYMENT): 최대한도 = 선충전잔액 + 여신한도
+    // - 후정산(POST_PAYMENT): 최대한도 = 선충전잔액 + 여신한도 (company에서 조회)
+    const companyMaximumLimit = userEntity.company?.maximumLimit ?? 0;
     let effectiveMaxLimit: number;
     if (userEntity.settleCondition === IUserSettleCondition.PRE_PAYMENT) {
       effectiveMaxLimit = userEntity.balance;
     } else {
-      effectiveMaxLimit = userEntity.balance + userEntity.maximumLimit;
+      effectiveMaxLimit = userEntity.balance + companyMaximumLimit;
     }
 
     // 잔여발송한도 = 유효최대한도 - 주문금액
     const remainServiceAmount = effectiveMaxLimit - userEntity.allSettleAmount;
 
     return {
-      maximumLimit: userEntity.maximumLimit,
+      maximumLimit: companyMaximumLimit,
       balance: userEntity.balance,
       serviceAmount: userEntity.serviceAmount,
       overdueAmount: overdueAmount,

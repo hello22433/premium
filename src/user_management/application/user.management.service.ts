@@ -156,7 +156,7 @@ export class UserManagementService {
         personPhoneNumber: user.personPhoneNumber,
         settleCondition: user.settleCondition,
         settleMethod: user.settleMethod,
-        maximumLimit: user.maximumLimit,
+        maximumLimit: user.company?.maximumLimit ?? 0,
         balance: user.balance,
         status: user.status,
         duplicatePhoneLimit: user.duplicatePhoneLimit,
@@ -209,7 +209,7 @@ export class UserManagementService {
       ip: user.ip,
       settleCondition: user.settleCondition,
       settleMethod: user.settleMethod,
-      maximumLimit: user.maximumLimit,
+      maximumLimit: company?.maximumLimit ?? 0,
 
       bankName: user.bankName,
       bankNumber: user.bankNumber,
@@ -254,11 +254,6 @@ export class UserManagementService {
     user.balance += chargeAmount;
     const afterBalance = user.balance;
 
-    // 선정산 계정의 경우 최대서비스한도도 증가
-    if (user.settleCondition === IUserSettleCondition.PRE_PAYMENT) {
-      user.maximumLimit += chargeAmount;
-    }
-
     await this.userRepository.save(user);
 
     // Activity Log 기록
@@ -301,11 +296,6 @@ export class UserManagementService {
     const changeAmount = newBalance - beforeBalance;
 
     user.balance = newBalance;
-
-    // 선정산 계정의 경우 최대서비스한도도 변경
-    if (user.settleCondition === IUserSettleCondition.PRE_PAYMENT) {
-      user.maximumLimit += changeAmount;
-    }
 
     await this.userRepository.save(user);
 
@@ -436,7 +426,6 @@ export class UserManagementService {
       ip: getBody.ip,
       settleCondition: getBody.settleCondition,
       settleMethod: getBody.settleMethod,
-      maximumLimit: getBody.maximumLimit,
       bankName: getBody.bankName,
       bankNumber: getBody.bankNumber,
       cardName: getBody.cardName,
@@ -478,6 +467,7 @@ export class UserManagementService {
       user.company.businessPhoneNumber = getBody.businessPhoneNumber;
       user.company.industryType = getBody.industryType;
       user.company.industryItem = getBody.industryItem;
+      user.company.maximumLimit = getBody.maximumLimit;
       await this.userCompanyRepository.save(user.company);
     }
 
@@ -491,7 +481,6 @@ export class UserManagementService {
     user.ip = getBody.ip;
     user.settleCondition = getBody.settleCondition;
     user.settleMethod = getBody.settleMethod;
-    user.maximumLimit = getBody.maximumLimit;
     user.bankName = getBody.bankName;
     user.bankNumber = getBody.bankNumber;
     user.cardName = getBody.cardName;

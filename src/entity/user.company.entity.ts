@@ -28,7 +28,7 @@ export class UserCompanyEntity extends BaseEntity {
   @Column({ type: 'varchar', length: 100, nullable: true, comment: '정산방법 ex) 카드: CARD, 현금: CASH' })
   settleMethod: string | null;
 
-  @Column({ type: 'bigint', default: 0, comment: '여신 한도' })
+  @Column({ type: 'int', default: 0, comment: '여신 한도' })
   maximumLimit: number;
 
   @Column({ type: 'varchar', length: 100, nullable: true, comment: '은행명' })

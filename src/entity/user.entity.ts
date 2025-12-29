@@ -90,9 +90,6 @@ export class UserEntity extends BaseEntity {
   @Column({ type: 'varchar', length: 100, comment: '정산 방법 ex) 카드: CARD, 현금: CASH' })
   settleMethod: IUserSettleMethod;
 
-  @Column({ comment: '최대 서비스 한도 가격' })
-  maximumLimit: number;
-
   @Column({ type: 'varchar', length: 100, comment: '은행 명' })
   bankName: string;
 

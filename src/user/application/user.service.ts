@@ -133,7 +133,6 @@ export class UserService {
       bankNumber: '',
       cardName: '',
       cardNumber: '',
-      maximumLimit: 0,
       balance: 0,
       companyId: companyId,
     });

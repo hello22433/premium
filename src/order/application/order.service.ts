@@ -1795,8 +1795,8 @@ export class OrderService {
 
       remainServiceAmount = oneUser.company.maximumLimit + oneUser.balance - totalAllSettleAmount;
     } else {
-      // companyId가 없는 경우 기존 방식 (개별 계정 기준)
-      remainServiceAmount = oneUser.maximumLimit + oneUser.balance - oneUser.allSettleAmount;
+      // companyId가 없는 경우 기존 방식 (개별 계정 기준, maximumLimit은 0으로 처리)
+      remainServiceAmount = oneUser.balance - oneUser.allSettleAmount;
     }
 
     if (totalAmount > remainServiceAmount) {
@@ -1927,6 +1927,7 @@ export class OrderService {
     // 사용자 정보 조회 (중복번호 체크 및 잔액 조정에 필요)
     const oneUser = await this.userRepository.findOneOrFail({
       where: { id: order.userId },
+      relations: ['company'],
     });
 
     // ======== 할인/할증 차액 정산 시작 ========
@@ -2125,7 +2126,8 @@ export class OrderService {
             this.logger.debug(`할증 적용 (balance 차감): orderId=${order.id}, 할증액=${additionalAmount}`);
           } else {
             // balance가 부족하면 한도에서 추가 차감
-            const remainingLimit = oneUser.maximumLimit - oneUser.allSettleAmount;
+            const companyMaximumLimit = oneUser.company?.maximumLimit ?? 0;
+            const remainingLimit = companyMaximumLimit - oneUser.allSettleAmount;
             const neededFromLimit = additionalAmount - oneUser.balance;
 
             if (remainingLimit >= neededFromLimit) {
@@ -2145,7 +2147,8 @@ export class OrderService {
           }
         } else {
           // 한도에서 차감된 경우
-          const remainingLimit = oneUser.maximumLimit - oneUser.allSettleAmount;
+          const companyMaxLimit = oneUser.company?.maximumLimit ?? 0;
+          const remainingLimit = companyMaxLimit - oneUser.allSettleAmount;
 
           if (remainingLimit >= additionalAmount) {
             // 한도에 여유가 있으면 allSettleAmount에 추가
@@ -2155,7 +2158,7 @@ export class OrderService {
           } else if (oneUser.balance >= additionalAmount - remainingLimit) {
             // 한도가 부족하면 balance에서 추가 차감
             const neededFromBalance = additionalAmount - remainingLimit;
-            oneUser.allSettleAmount = oneUser.maximumLimit;
+            oneUser.allSettleAmount = companyMaxLimit;
             oneUser.balance -= neededFromBalance;
             message = 'warning: 한도가 부족하여 선충전 잔액에서 추가 차감되었습니다.';
             this.logger.debug(
