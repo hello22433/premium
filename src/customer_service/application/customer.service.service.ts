@@ -219,7 +219,7 @@ export class CustomerServiceService {
         orderProductMappingId: orderDelivery.orderProductMapping.id,
         eventName: order.eventName,
         sendTitle: orderDelivery.orderProductMapping.sendTitle ?? '',
-        businessName: order.user?.businessName ?? '',
+        businessName: order.user?.company?.businessName ?? '',
         productName: orderDelivery.choiceSelectProduct
           ? orderDelivery.choiceSelectProduct.name
           : product.name,
@@ -365,6 +365,7 @@ export class CustomerServiceService {
         'partnerCompany.id = product.partner_company_id AND partnerCompany.deleted_at IS NULL',
       )
       .leftJoinAndMapOne('order.user', 'user', 'user', 'user.id = order.user_id AND user.deleted_at IS NULL')
+      .leftJoin('user.company', 'userCompany')
       .where('orderDelivery.id = :id', { id: orderDeliveryId })
       .andWhere('orderDelivery.deletedAt IS NULL')
       .getOne();
@@ -431,7 +432,7 @@ export class CustomerServiceService {
     return {
       orderDeliveryId: queryBuilder.id,
       eventName: order.eventName,
-      businessName: user?.businessName ?? '',
+      businessName: user?.company?.businessName ?? '',
       personName: user?.personName ?? '',
       sendContent: sendContent,
       deliveryTarget: decryptedDeliveryTarget ?? '',
@@ -1301,6 +1302,7 @@ export class CustomerServiceService {
       .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
       .leftJoinAndMapOne('order.user', 'user', 'user', 'user.id = order.user_id AND user.deleted_at IS NULL')
+      .leftJoin('user.company', 'userCompany')
       .andWhere('orderDelivery.status IN (:...deliveryStatus)', { deliveryStatus: ['COMPLETE', 'COMPLETE_SMS'] })
       .andWhere('orderDelivery.deletedAt IS NULL');
 
@@ -1468,7 +1470,7 @@ export class CustomerServiceService {
             : ''),
         actualSendAt: actualSendAt || '',
         orderId: order.id,
-        businessName: order.user?.businessName ?? '',
+        businessName: order.user?.company?.businessName ?? '',
         eventName: order.eventName,
         sendTitle: orderDelivery.orderProductMapping.sendTitle ?? '',
         productName: orderDelivery.choiceSelectProduct

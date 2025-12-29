@@ -44,7 +44,9 @@ export class UserTaskHistoryService {
       take,
     } = getQuery;
 
-    let queryBuilder = this.userRepository.createQueryBuilder('user');
+    let queryBuilder = this.userRepository
+      .createQueryBuilder('user')
+      .leftJoinAndSelect('user.company', 'company');
 
     queryBuilder = QueryBuilderDateCondition(queryBuilder, 'user', 'createdAt', createdStartAt, createdEndAt);
 
@@ -53,7 +55,7 @@ export class UserTaskHistoryService {
     }
 
     if (businessName) {
-      queryBuilder = queryBuilder.andWhere('user.businessName LIKE :businessName', {
+      queryBuilder = queryBuilder.andWhere('company.businessName LIKE :businessName', {
         businessName: `%${businessName}%`,
       });
     }
@@ -115,7 +117,7 @@ export class UserTaskHistoryService {
         registerDate: format(user.createdAt, DateDateFormatStr),
         email: MaskingUtil.maskEmail(user.email),
         personCode: user.personCode,
-        businessName: user.businessName,
+        businessName: user.company?.businessName ?? '',
         personName: user.personName,
         transactionAmount: transactionAmount,
         transactionCount: transactionCount,

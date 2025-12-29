@@ -53,7 +53,9 @@ export class UserManagementService {
   async getNameList(getQuery: UserManagementGetNameListReqQueryDto): Promise<UserManagementGetNameListResDto> {
     const { authority } = getQuery;
 
-    let queryBuilder = this.userRepository.createQueryBuilder('user');
+    let queryBuilder = this.userRepository
+      .createQueryBuilder('user')
+      .leftJoinAndSelect('user.company', 'company');
 
     if (authority) {
       queryBuilder = queryBuilder.andWhere('user.authority = :authority', { authority });
@@ -63,7 +65,7 @@ export class UserManagementService {
     const resultList: UserManagementNameViewDto[] = userList.map((user) => {
       return {
         id: user.id,
-        businessName: user.businessName,
+        businessName: user.company?.businessName ?? '',
         personName: user.personName,
       };
     });
@@ -85,7 +87,9 @@ export class UserManagementService {
       take,
     } = getQuery;
 
-    let queryBuilder = this.userRepository.createQueryBuilder('user');
+    let queryBuilder = this.userRepository
+      .createQueryBuilder('user')
+      .leftJoinAndSelect('user.company', 'company');
 
     if (settleCondition) {
       queryBuilder = queryBuilder.andWhere('user.settleCondition = :settleCondition', { settleCondition });
@@ -118,7 +122,7 @@ export class UserManagementService {
     }
 
     if (businessName) {
-      queryBuilder = queryBuilder.andWhere('user.businessName LIKE :businessName', {
+      queryBuilder = queryBuilder.andWhere('company.businessName LIKE :businessName', {
         businessName: `%${businessName}%`,
       });
     }
@@ -147,7 +151,7 @@ export class UserManagementService {
         id: user.id,
         email: user.email,
         personCode: user.personCode,
-        businessName: user.businessName,
+        businessName: user.company?.businessName ?? '',
         personName: user.personName,
         personPhoneNumber: user.personPhoneNumber,
         settleCondition: user.settleCondition,
@@ -181,6 +185,9 @@ export class UserManagementService {
     // null 일 경우 기본값 return 하는 함수 생성 필요
     const authorityList = UserAuthListDefault(user.authority, user.authorityList);
 
+    // 사업자 정보는 user_company에서 가져옴
+    const company = user.company;
+
     return {
       id: user.id,
       email: user.email,
@@ -195,10 +202,10 @@ export class UserManagementService {
       corporateNumber: user.corporateNumber,
 
       businessType: user.businessType,
-      businessNumber: user.businessNumber,
-      businessName: user.businessName,
-      businessAddress: user.businessAddress,
-      businessPhoneNumber: user.businessPhoneNumber,
+      businessNumber: company?.businessNumber ?? '',
+      businessName: company?.businessName ?? '',
+      businessAddress: company?.businessAddress ?? '',
+      businessPhoneNumber: company?.businessPhoneNumber ?? '',
       ip: user.ip,
       settleCondition: user.settleCondition,
       settleMethod: user.settleMethod,
@@ -215,15 +222,15 @@ export class UserManagementService {
       settlePeriodCount: user.settlePeriodCount,
       duplicatePhoneLimit: user.duplicatePhoneLimit,
       authorityList: authorityList,
-      industryType: user.industryType,
-      industryItem: user.industryItem,
+      industryType: company?.industryType ?? null,
+      industryItem: company?.industryItem ?? null,
       companyId: user.companyId,
-      company: user.company
+      company: company
         ? {
-            id: user.company.id,
-            businessName: user.company.businessName,
-            businessNumber: user.company.businessNumber,
-            maximumLimit: user.company.maximumLimit,
+            id: company.id,
+            businessName: company.businessName,
+            businessNumber: company.businessNumber,
+            maximumLimit: company.maximumLimit,
           }
         : null,
     };
@@ -236,6 +243,7 @@ export class UserManagementService {
       where: {
         id,
       },
+      relations: ['company'],
     });
 
     if (!user) {
@@ -267,7 +275,7 @@ export class UserManagementService {
       requestParams: {
         targetUserId: id,
         targetUserEmail: user.email,
-        targetBusinessName: user.businessName,
+        targetBusinessName: user.company?.businessName ?? '',
         chargeAmount: chargeAmount,
         beforeBalance: beforeBalance,
         afterBalance: afterBalance,
@@ -282,6 +290,7 @@ export class UserManagementService {
       where: {
         id,
       },
+      relations: ['company'],
     });
 
     if (!user) {
@@ -314,7 +323,7 @@ export class UserManagementService {
       requestParams: {
         targetUserId: id,
         targetUserEmail: user.email,
-        targetBusinessName: user.businessName,
+        targetBusinessName: user.company?.businessName ?? '',
         changeAmount: changeAmount,
         beforeBalance: beforeBalance,
         afterBalance: newBalance,
@@ -391,14 +400,27 @@ export class UserManagementService {
     // 사업자등록번호에서 하이픈 제거
     const businessNumber = getBody.businessNumber ? getBody.businessNumber.replace(/-/g, '') : getBody.businessNumber;
 
-    // 동일 사업자등록번호의 회사가 있으면 연결
+    // 동일 사업자등록번호의 회사가 있으면 연결, 없으면 생성
     let companyId: number | null = null;
     if (businessNumber) {
-      const existingCompany = await this.userCompanyRepository.findOne({
+      let existingCompany = await this.userCompanyRepository.findOne({
         where: { businessNumber },
       });
+
       if (existingCompany) {
         companyId = existingCompany.id;
+      } else {
+        // 새 회사 생성
+        const newCompany = await this.userCompanyRepository.save({
+          businessNumber: businessNumber,
+          businessName: getBody.businessName,
+          businessAddress: getBody.businessAddress,
+          businessPhoneNumber: getBody.businessPhoneNumber,
+          industryType: getBody.industryType,
+          industryItem: getBody.industryItem,
+          maximumLimit: getBody.maximumLimit,
+        });
+        companyId = newCompany.id;
       }
     }
 
@@ -411,10 +433,6 @@ export class UserManagementService {
       personEmail: getBody.personEmail,
       corporateNumber: getBody.corporateNumber,
       businessType: getBody.businessType,
-      businessNumber: businessNumber,
-      businessName: getBody.businessName,
-      businessAddress: getBody.businessAddress,
-      businessPhoneNumber: getBody.businessPhoneNumber,
       ip: getBody.ip,
       settleCondition: getBody.settleCondition,
       settleMethod: getBody.settleMethod,
@@ -430,8 +448,6 @@ export class UserManagementService {
       settlePeriodCount: getBody.settlePeriodCount,
       duplicatePhoneLimit: getBody.duplicatePhoneLimit ?? 0,
       authorityList: getBody.authorityList.join(','),
-      industryType: getBody.industryType,
-      industryItem: getBody.industryItem,
       companyId: companyId,
     });
 
@@ -443,6 +459,7 @@ export class UserManagementService {
       where: {
         id: getBody.id,
       },
+      relations: ['company'],
     });
 
     if (!user) {
@@ -452,28 +469,25 @@ export class UserManagementService {
     // 사업자등록번호에서 하이픈 제거
     const businessNumber = getBody.businessNumber ? getBody.businessNumber.replace(/-/g, '') : getBody.businessNumber;
 
-    // 사업자등록번호가 변경된 경우 회사 연결 업데이트
-    if (businessNumber !== user.businessNumber) {
-      if (businessNumber) {
-        const existingCompany = await this.userCompanyRepository.findOne({
-          where: { businessNumber },
-        });
-        user.companyId = existingCompany ? existingCompany.id : null;
-      } else {
-        user.companyId = null;
-      }
+    // user_company 업데이트 또는 생성
+    if (user.companyId && user.company) {
+      // 기존 회사 정보 업데이트
+      user.company.businessNumber = businessNumber;
+      user.company.businessName = getBody.businessName;
+      user.company.businessAddress = getBody.businessAddress;
+      user.company.businessPhoneNumber = getBody.businessPhoneNumber;
+      user.company.industryType = getBody.industryType;
+      user.company.industryItem = getBody.industryItem;
+      await this.userCompanyRepository.save(user.company);
     }
 
+    // user 정보 업데이트 (사업자 관련 필드 제외)
     user.authority = getBody.authority;
     user.personName = getBody.personName;
     user.personPhoneNumber = getBody.personPhoneNumber;
     user.personEmail = getBody.personEmail;
     user.corporateNumber = getBody.corporateNumber;
     user.businessType = getBody.businessType;
-    user.businessNumber = businessNumber;
-    user.businessName = getBody.businessName;
-    user.businessAddress = getBody.businessAddress;
-    user.businessPhoneNumber = getBody.businessPhoneNumber;
     user.ip = getBody.ip;
     user.settleCondition = getBody.settleCondition;
     user.settleMethod = getBody.settleMethod;
@@ -489,8 +503,6 @@ export class UserManagementService {
     user.settlePeriodCount = getBody.settlePeriodCount;
     user.duplicatePhoneLimit = getBody.duplicatePhoneLimit ?? 0;
     user.authorityList = getBody.authorityList.join(',');
-    user.industryType = getBody.industryType;
-    user.industryItem = getBody.industryItem;
 
     await this.userRepository.save(user);
 

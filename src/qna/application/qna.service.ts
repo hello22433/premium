@@ -41,7 +41,7 @@ export class QnaService {
       order: { id: 'DESC' },
       take,
       skip,
-      relations: ['user'],
+      relations: ['user', 'user.company'],
     });
 
     const totalPage = Math.ceil(totalCount / take);
@@ -53,7 +53,7 @@ export class QnaService {
       return {
         id: qna.id,
         registerDate: format(qna.createdAt, DateDateFormatStr),
-        businessName: qna.user.businessName,
+        businessName: qna.user.company?.businessName ?? '',
         personName: qna.user.personName,
         title: qna.title,
         isFile,
@@ -76,7 +76,7 @@ export class QnaService {
       where: {
         id,
       },
-      relations: ['user'],
+      relations: ['user', 'user.company'],
     });
 
     if (!qna) {
@@ -86,7 +86,7 @@ export class QnaService {
     return {
       id: qna.id,
       registerDate: format(qna.registerDate, DateDateFormatStr),
-      businessName: qna.user.businessName,
+      businessName: qna.user.company?.businessName ?? '',
       personName: qna.user.personName,
       userEmail: qna.user.email,
       userPhone: qna.user.personPhoneNumber,

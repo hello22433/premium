@@ -128,6 +128,7 @@ export class OrderRealProductService {
     let queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.businessUser', 'businessUser')
+      .leftJoinAndSelect('businessUser.company', 'businessUserCompany')
       .innerJoinAndSelect('order.user', 'user')
       .leftJoinAndSelect('order.orderRealProductMappings', 'orderRealProductMappings')
       .leftJoinAndSelect('orderRealProductMappings.product', 'product')
@@ -164,7 +165,7 @@ export class OrderRealProductService {
     if (searchKeyword && searchKeyword.length >= 1) {
       switch (searchType) {
         case 'CUSTOMER':
-          queryBuilder = queryBuilder.andWhere('businessUser.businessName LIKE :keyword', {
+          queryBuilder = queryBuilder.andWhere('businessUserCompany.businessName LIKE :keyword', {
             keyword: `%${searchKeyword}%`,
           });
           break;
@@ -180,7 +181,7 @@ export class OrderRealProductService {
         case 'ALL':
         default:
           queryBuilder = queryBuilder.andWhere(
-            '(businessUser.businessName LIKE :keyword OR user.personName LIKE :keyword OR order.eventName LIKE :keyword OR product.name LIKE :keyword)',
+            '(businessUserCompany.businessName LIKE :keyword OR user.personName LIKE :keyword OR order.eventName LIKE :keyword OR product.name LIKE :keyword)',
             { keyword: `%${searchKeyword}%` },
           );
           break;
@@ -214,7 +215,7 @@ export class OrderRealProductService {
       return {
         id: order.id,
         registerAt: format(order.createdAt, DateFormatStr),
-        userBusinessName: order.businessUser!.businessName,
+        userBusinessName: order.businessUser!.company?.businessName ?? '',
         userPersonName: order.businessUser!.personName,
         eventName: order.eventName,
         productName,
@@ -238,6 +239,7 @@ export class OrderRealProductService {
 
     const queryBuilder = this.userRepository
       .createQueryBuilder('user')
+      .leftJoinAndSelect('user.company', 'userCompany')
       .where('user.status = :status', { status: IUserStatus.USED })
       .andWhere('user.authority IN (:...authority)', {
         authority: [IUserAuthority.SUPER_ADMIN, IUserAuthority.OPERATION_ADMIN],
@@ -245,7 +247,7 @@ export class OrderRealProductService {
 
     if (searchText) {
       queryBuilder.andWhere(
-        '(user.personName LIKE :searchText OR user.businessName LIKE :searchText OR user.email LIKE :searchText)',
+        '(user.personName LIKE :searchText OR userCompany.businessName LIKE :searchText OR user.email LIKE :searchText)',
         { searchText: `%${searchText}%` },
       );
     }
@@ -259,7 +261,7 @@ export class OrderRealProductService {
         id: user.id,
         email: user.email,
         personName: user.personName,
-        businessName: user.businessName,
+        businessName: user.company?.businessName ?? '',
         status: user.status,
       };
     });
@@ -362,6 +364,7 @@ export class OrderRealProductService {
       .leftJoinAndSelect('order.orderRealProductMappings', 'orderRealProductMappings')
       .leftJoinAndSelect('orderRealProductMappings.product', 'product')
       .leftJoinAndSelect('order.businessUser', 'businessUser')
+      .leftJoinAndSelect('businessUser.company', 'businessUserCompany')
       .leftJoinAndSelect('order.user', 'user')
       .where('order.id = :id', { id });
 
@@ -420,7 +423,7 @@ export class OrderRealProductService {
       id: order.id,
       status: order.status,
       registerAt: format(order.createdAt, DateFormatStr),
-      userBusinessName: order.businessUser ? order.businessUser.businessName : null,
+      userBusinessName: order.businessUser ? order.businessUser.company?.businessName ?? '' : null,
       userPersonName: order.businessUser ? order.businessUser.personName : null,
       eventName: order.eventName,
       orderRealProductList: orderRealProductList,
@@ -505,7 +508,7 @@ export class OrderRealProductService {
       where: {
         id,
       },
-      relations: ['orderRealProductMappings', 'orderRealProductMappings.product', 'user', 'businessUser'],
+      relations: ['orderRealProductMappings', 'orderRealProductMappings.product', 'user', 'businessUser', 'businessUser.company'],
     });
 
     if (!order || order.orderRealProductMappings.length === 0) {
@@ -531,12 +534,12 @@ export class OrderRealProductService {
       resultList.push({
         id: order.id,
         registerAt: format(order.createdAt, DateDateFormatStr),
-        userBusinessName: order.businessUser!.businessName || null,
+        userBusinessName: order.businessUser!.company?.businessName || null,
         userPersonName: order.businessUser!.personName || null,
         eventName: order.eventName,
         productName: mapping.product!.name || '',
         receiver: order.businessUser!.personName || null,
-        businessAddress: order.businessUser!.businessAddress || '',
+        businessAddress: order.businessUser!.company?.businessAddress || '',
         code,
       });
     }
@@ -553,7 +556,7 @@ export class OrderRealProductService {
 
     const mapping = await this.orderProductMappingRepository.findOne({
       where: { id },
-      relations: ['realProductOrder', 'realProductOrder.user', 'realProductOrder.businessUser', 'product'],
+      relations: ['realProductOrder', 'realProductOrder.user', 'realProductOrder.businessUser', 'realProductOrder.businessUser.company', 'product'],
     });
 
     if (!mapping) {
@@ -590,7 +593,7 @@ export class OrderRealProductService {
       eventName: mapping.realProductOrder.eventName,
       productName: mapping.product.name,
       receiver: mapping.realProductOrder.businessUser?.personName ?? null,
-      businessAddress: mapping.realProductOrder.businessUser?.businessAddress ?? '',
+      businessAddress: mapping.realProductOrder.businessUser?.company?.businessAddress ?? '',
       lastEvent: lastEventData?.code ?? null,
       trackingNumber,
       events: eventDataList,
@@ -804,14 +807,14 @@ export class OrderRealProductService {
 
     const userInfo: OrderCustomerViewDto = {
       id: order.businessUser?.id ?? null,
-      userBusinessName: order.businessUser?.businessName ?? null,
+      userBusinessName: order.businessUser?.company?.businessName ?? null,
       userPersonPhoneNumber: order.businessUser?.personPhoneNumber ?? null,
       userBusinessEmail: order.businessUser?.email ?? null,
       userPersonName: order.businessUser?.personName ?? null,
     };
     const now = new Date();
     const today = format(now, 'yyMMdd');
-    const fileName: string = `${order.businessUser?.businessName}_발송완료리포트_${today}`;
+    const fileName: string = `${order.businessUser?.company?.businessName ?? ''}_발송완료리포트_${today}`;
 
     for (const mapping of order.orderRealProductMappings) {
       orderRealProductList.push({
@@ -854,7 +857,7 @@ export class OrderRealProductService {
       userInfo,
       eventName: order.eventName,
       registerAt: format(order.createdAt, DateFormatStr),
-      userBusinessName: order.businessUser ? order.businessUser.businessName : null,
+      userBusinessName: order.businessUser ? order.businessUser.company?.businessName ?? null : null,
       userPersonName: order.businessUser ? order.businessUser.personName : null,
       orderRealProductList: orderRealProductList,
       publicChargeTaxList: publicChargeTaxList,
@@ -1135,7 +1138,7 @@ export class OrderRealProductService {
       sheet.addRow({
         id: id,
         registerAt: format(order.createdAt, 'yyyy-MM-dd HH:mm'),
-        userBusinessName: order.businessUser!.businessName,
+        userBusinessName: order.businessUser!.company?.businessName ?? '',
         userName: order.businessUser!.personName,
         eventName: order.eventName,
         productName: productName,
@@ -1198,7 +1201,7 @@ export class OrderRealProductService {
       realProductOrderId: oneOrderProductMapping.realProductOrder.id,
       writer: oneOrderProductMapping.writer,
       userId: oneOrderProductMapping.realProductOrder.businessUserId,
-      userBusinessName: oneOrderProductMapping.realProductOrder.businessUser?.businessName || '',
+      userBusinessName: oneOrderProductMapping.realProductOrder.businessUser?.company?.businessName ?? '',
       eventName: oneOrderProductMapping.realProductOrder.eventName,
       partnerCompanyId: oneOrderProductMapping.partnerCompanyId,
       partnerCompanyName: oneOrderProductMapping.partnerCompany?.businessName ?? null,

@@ -90,7 +90,7 @@ export class UserService {
 
     const passwordEncrypt = await this.passwordEncrypt.encrypt(password);
 
-    // 동일 사업자등록번호의 회사가 있으면 연결
+    // 동일 사업자등록번호의 회사가 있으면 연결, 없으면 생성
     let companyId: number | null = null;
     if (businessNumber) {
       const existingCompany = await this.userCompanyRepository.findOne({
@@ -98,6 +98,18 @@ export class UserService {
       });
       if (existingCompany) {
         companyId = existingCompany.id;
+      } else {
+        // 새 회사 생성
+        const newCompany = await this.userCompanyRepository.save({
+          businessNumber,
+          businessName,
+          businessAddress,
+          businessPhoneNumber,
+          industryType: industryType ?? null,
+          industryItem: industryItem ?? null,
+          maximumLimit: 0,
+        });
+        companyId = newCompany.id;
       }
     }
 
@@ -109,10 +121,6 @@ export class UserService {
       personEmail,
       businessType,
       corporateNumber,
-      businessNumber,
-      businessName,
-      businessAddress,
-      businessPhoneNumber,
       ip,
       isPasswordReset: false,
       passwordChangedAt: new Date(),
@@ -127,8 +135,6 @@ export class UserService {
       cardNumber: '',
       maximumLimit: 0,
       balance: 0,
-      industryType: industryType ?? null,
-      industryItem: industryItem ?? null,
       companyId: companyId,
     });
     return;
@@ -143,6 +149,7 @@ export class UserService {
       where: {
         email: email,
       },
+      relations: ['company'],
     });
 
     if (!user) {
@@ -231,7 +238,7 @@ export class UserService {
       responseTime: 0,
       requestParams: {
         authority: user.authority,
-        businessName: user.businessName,
+        businessName: user.company?.businessName ?? '',
       },
     });
 

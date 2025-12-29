@@ -33,10 +33,11 @@ export class UserFindService {
   async findId(getBody: UserFindIdReqDto): Promise<UserFindIdResDto> {
     const user = await this.userRepository.findOne({
       where: {
-        businessNumber: getBody.businessNumber,
+        company: { businessNumber: getBody.businessNumber },
         personName: getBody.personName,
         personPhoneNumber: getBody.personPhoneNumber,
       },
+      relations: ['company'],
     });
 
     if (!user) {
@@ -52,10 +53,11 @@ export class UserFindService {
     const user = await this.userRepository.findOne({
       where: {
         email: email,
-        businessNumber: businessNumber,
+        company: { businessNumber: businessNumber },
         personName,
         personPhoneNumber,
       },
+      relations: ['company'],
     });
 
     if (!user) {

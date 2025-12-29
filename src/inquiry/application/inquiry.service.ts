@@ -25,7 +25,10 @@ export class InquiryService {
   async getList(getQuery: InquiryGetListReqQueryDto): Promise<InquiryGetListResDto> {
     const { take, page } = getQuery;
 
-    let queryBuilder = this.inquiryRepository.createQueryBuilder('inquiry').innerJoinAndSelect('inquiry.user', 'user');
+    let queryBuilder = this.inquiryRepository
+      .createQueryBuilder('inquiry')
+      .innerJoinAndSelect('inquiry.user', 'user')
+      .leftJoinAndSelect('user.company', 'company');
 
     const skip = (page - 1) * take;
 
@@ -37,7 +40,7 @@ export class InquiryService {
       return {
         id: inquiry.id,
         createdAt: format(inquiry.createdAt, DateFormatStr),
-        userBusinessName: inquiry.user.businessName,
+        userBusinessName: inquiry.user.company?.businessName ?? '',
         userPersonName: inquiry.user.personName,
         title: inquiry.title,
         isFilePath: !!inquiry.filePath,
@@ -62,7 +65,7 @@ export class InquiryService {
       where: {
         id: id,
       },
-      relations: ['user'],
+      relations: ['user', 'user.company'],
     });
 
     if (!inquiry || !inquiry.user) {
@@ -72,7 +75,7 @@ export class InquiryService {
     return {
       id: inquiry.id,
       createdAt: format(inquiry.createdAt, DateFormatStr),
-      userBusinessName: inquiry.user.businessName,
+      userBusinessName: inquiry.user.company?.businessName ?? '',
       userPersonName: inquiry.user.personName,
       userEmail: inquiry.user.email,
       userPersonPhoneNumber: inquiry.user.personPhoneNumber,

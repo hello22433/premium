@@ -182,7 +182,7 @@ export class SettleService {
           eventName: sale.eventName,
           productName: saleProductMapping.otherServiceSaleProduct.name,
           proveAt: format(sale.proveAt, DateDateFormatStr),
-          businessName: sale.businessUser!.businessName,
+          businessName: sale.businessUser!.company?.businessName ?? '',
           type: sale.saleType.name,
           isVat: sale.isVat,
         });
@@ -228,7 +228,7 @@ export class SettleService {
       businessUserId: sale.businessUserId,
       userId: sale.userId,
       userName: sale.user.personName,
-      businessName: sale.businessUser.businessName,
+      businessName: sale.businessUser.company?.businessName ?? '',
       businessUserName: sale.businessUser.personName,
       shippingStorageId: sale.shippingStorageId,
       shippingStorageName: sale.shippingStorage.name,
@@ -532,6 +532,7 @@ export class SettleService {
 
     const queryBuilder = this.userRepository
       .createQueryBuilder('user')
+      .leftJoinAndSelect('user.company', 'company')
       .where('user.status = :status', { status: IUserStatus.USED })
       .andWhere('user.authority IN (:...authority)', {
         authority: [IUserAuthority.SUPER_ADMIN, IUserAuthority.OPERATION_ADMIN],
@@ -539,7 +540,7 @@ export class SettleService {
 
     if (searchText) {
       queryBuilder.andWhere(
-        '(user.personName LIKE :searchText OR user.businessName LIKE :searchText OR user.email LIKE :searchText)',
+        '(user.personName LIKE :searchText OR company.businessName LIKE :searchText OR user.email LIKE :searchText)',
         { searchText: `%${searchText}%` },
       );
     }
@@ -553,7 +554,7 @@ export class SettleService {
         id: user.id,
         email: user.email,
         personName: user.personName,
-        businessName: user.businessName,
+        businessName: user.company?.businessName ?? '',
         status: user.status,
       };
     });
@@ -598,6 +599,7 @@ export class SettleService {
     let queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('user.company', 'userCompany')
       .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .innerJoinAndSelect('orderProductMappings.product', 'product')
       .innerJoinAndSelect('product.brand', 'brand')
@@ -617,7 +619,7 @@ export class SettleService {
     }
 
     if (businessName) {
-      queryBuilder = queryBuilder.andWhere('user.businessName LIKE :businessName', {
+      queryBuilder = queryBuilder.andWhere('userCompany.businessName LIKE :businessName', {
         businessName: `%${businessName}%`,
       });
     }
@@ -675,7 +677,7 @@ export class SettleService {
 
         resultList.push({
           id: order.id,
-          businessName: order.user!.businessName,
+          businessName: order.user!.company?.businessName ?? '',
           productClassification: orderProductMapping.product.classification?.classification ?? '',
           brandNameKorean: orderProductMapping.product.brand!.nameKorean,
           brandNameEnglish: orderProductMapping.product.brand!.nameEnglish,
@@ -715,6 +717,7 @@ export class SettleService {
     let queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('user.company', 'userCompany')
       .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .innerJoinAndSelect('orderProductMappings.product', 'product')
       .innerJoinAndSelect('product.brand', 'brand')
@@ -734,7 +737,7 @@ export class SettleService {
     }
 
     if (businessName) {
-      queryBuilder = queryBuilder.andWhere('user.businessName LIKE :businessName', {
+      queryBuilder = queryBuilder.andWhere('userCompany.businessName LIKE :businessName', {
         businessName: `%${businessName}%`,
       });
     }
@@ -791,7 +794,7 @@ export class SettleService {
 
         resultList.push({
           id: order.id,
-          businessName: order.user!.businessName,
+          businessName: order.user!.company?.businessName ?? '',
           productClassification: orderProductMapping.product.classification?.classification ?? '',
           brandNameKorean: orderProductMapping.product.brand!.nameKorean,
           brandNameEnglish: orderProductMapping.product.brand!.nameEnglish,
@@ -948,7 +951,7 @@ export class SettleService {
             id: order.id,
             registeredAt: format(orderDelivery.sendRequestAt, DateFormatStr),
             partnerCompanyName: orderProductMapping.product.partnerCompany!.businessName,
-            userBusinessName: order.user!.businessName,
+            userBusinessName: order.user!.company?.businessName ?? '',
             eventName: order.eventName,
             code: order.code,
             productNameList: [orderProductMapping.product.name],
@@ -974,6 +977,7 @@ export class SettleService {
     let queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('user.company', 'userCompany')
       .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .innerJoinAndSelect('orderProductMappings.product', 'product')
       .leftJoinAndSelect('product.classification', 'classification')
@@ -992,7 +996,7 @@ export class SettleService {
     }
 
     if (businessName) {
-      queryBuilder = queryBuilder.andWhere('user.businessName LIKE :businessName', {
+      queryBuilder = queryBuilder.andWhere('userCompany.businessName LIKE :businessName', {
         businessName: `%${businessName}%`,
       });
     }
@@ -1089,7 +1093,7 @@ export class SettleService {
       return {
         id: order.id,
         registeredAt: format(order.registerAt, DateFormatStr),
-        businessName: order.user!.businessName,
+        businessName: order.user!.company?.businessName ?? '',
         personName: order.user!.personName,
         eventName: order.eventName,
         productNameList: productNameList,
@@ -1168,7 +1172,7 @@ export class SettleService {
       id: order.id,
       userId: order.userId,
       userPersonName: order.user!.personName,
-      userBusinessName: order.user!.businessName,
+      userBusinessName: order.user!.company?.businessName ?? '',
       operationPersonName: order.operationUser?.personName ?? null,
       eventName: order.eventName,
       type: order.type,
@@ -1202,7 +1206,7 @@ export class SettleService {
     }
 
     // 동일한 고객사인지 검증
-    const businessNames = [...new Set(orders.map((order) => order.user!.businessName))];
+    const businessNames = [...new Set(orders.map((order) => order.user!.company?.businessName ?? ''))];
     if (businessNames.length > 1) {
       throw new BadRequestException('동일한 고객사의 주문만 함께 조회할 수 있습니다.');
     }
@@ -1274,7 +1278,7 @@ export class SettleService {
       orderIds: orders.map((o) => o.id),
       userId: firstOrder.userId,
       userPersonName: firstOrder.user!.personName,
-      userBusinessName: firstOrder.user!.businessName,
+      userBusinessName: firstOrder.user!.company?.businessName ?? '',
       operationPersonName: firstOrder.operationUser?.personName ?? null,
       eventName,
       type: firstOrder.type,
@@ -1295,6 +1299,7 @@ export class SettleService {
     let queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('user.company', 'userCompany')
       .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .innerJoinAndSelect('orderProductMappings.product', 'product')
       .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
@@ -1311,7 +1316,7 @@ export class SettleService {
     }
 
     if (businessName) {
-      queryBuilder = queryBuilder.andWhere('user.businessName LIKE :businessName', {
+      queryBuilder = queryBuilder.andWhere('userCompany.businessName LIKE :businessName', {
         businessName: `%${businessName}%`,
       });
     }
@@ -1349,7 +1354,7 @@ export class SettleService {
       return {
         id: order.id,
         registeredAt: format(order.registerAt, DateDateFormatStr),
-        businessName: order.user!.businessName,
+        businessName: order.user!.company?.businessName ?? '',
         personName: order.user!.personName,
         eventName: order.eventName,
         productNameList: productNameList,
@@ -1441,6 +1446,7 @@ export class SettleService {
 
     const queryBuilder = this.userRepository
       .createQueryBuilder('user')
+      .leftJoinAndSelect('user.company', 'userCompany')
       .innerJoinAndSelect('user.orders', 'orders')
       .innerJoinAndSelect('orders.orderProductMappings', 'orderProductMappings')
       .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries');
@@ -1452,7 +1458,7 @@ export class SettleService {
     }
 
     if (userBusinessName) {
-      queryBuilder.andWhere('user.businessName LIKE :userBusinessName', { userBusinessName: `%${userBusinessName}%` });
+      queryBuilder.andWhere('userCompany.businessName LIKE :userBusinessName', { userBusinessName: `%${userBusinessName}%` });
     }
 
     if (status) {
@@ -1485,7 +1491,7 @@ export class SettleService {
       return {
         id: user.id,
         email: user.email,
-        businessName: user.businessName,
+        businessName: user.company?.businessName ?? '',
         personName: user.personName,
         settleCondition: user.settleCondition,
         settlePeriodCondition: user.settlePeriodCondition,
@@ -1514,6 +1520,7 @@ export class SettleService {
     const queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('user.company', 'userCompany')
       .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .innerJoinAndSelect('orderProductMappings.product', 'product')
       .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
@@ -1523,7 +1530,7 @@ export class SettleService {
     QueryBuilderDateCondition(queryBuilder, 'order', 'sendRequestAt', startAt, endAt);
 
     if (userBusinessName) {
-      queryBuilder.andWhere('user.businessName LIKE :userBusinessName', {
+      queryBuilder.andWhere('userCompany.businessName LIKE :userBusinessName', {
         userBusinessName: `%${userBusinessName}%`,
       });
     }
@@ -1566,7 +1573,7 @@ export class SettleService {
 
       return {
         id: order.id,
-        userBusinessName: order.user!.businessName,
+        userBusinessName: order.user!.company?.businessName ?? '',
         userPersonName: order.user!.personName,
         sendRequestAt: sendRequestAt,
         eventName: order.eventName,

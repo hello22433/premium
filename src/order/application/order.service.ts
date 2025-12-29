@@ -166,6 +166,7 @@ export class OrderService {
     let queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('user.company', 'userCompany')
       .leftJoinAndSelect('order.operationUser', 'operationUser')
       .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .leftJoinAndSelect('orderProductMappings.product', 'product')
@@ -224,7 +225,7 @@ export class OrderService {
     if (searchKeyword && searchKeyword.length >= 1) {
       switch (searchType) {
         case 'CUSTOMER':
-          queryBuilder = queryBuilder.andWhere('user.businessName LIKE :keyword', { keyword: `%${searchKeyword}%` });
+          queryBuilder = queryBuilder.andWhere('userCompany.businessName LIKE :keyword', { keyword: `%${searchKeyword}%` });
           break;
         case 'MANAGER':
           queryBuilder = queryBuilder.andWhere('user.personName LIKE :keyword', { keyword: `%${searchKeyword}%` });
@@ -238,7 +239,7 @@ export class OrderService {
         case 'ALL':
         default:
           queryBuilder = queryBuilder.andWhere(
-            '(user.businessName LIKE :keyword OR operationUser.personName LIKE :keyword OR order.eventName LIKE :keyword OR product.name LIKE :keyword)',
+            '(userCompany.businessName LIKE :keyword OR operationUser.personName LIKE :keyword OR order.eventName LIKE :keyword OR product.name LIKE :keyword)',
             { keyword: `%${searchKeyword}%` },
           );
           break;
@@ -291,7 +292,7 @@ export class OrderService {
       return {
         id: order.id,
         registerAt: format(order.registerAt, DateFormatStr),
-        userBusinessName: order.user!.businessName,
+        userBusinessName: order.user!.company?.businessName ?? '',
         userPersonName: order.user!.personName,
         eventName: order.eventName,
         productName: productName,
@@ -552,6 +553,7 @@ export class OrderService {
     const queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('user.company', 'userCompany')
       .leftJoinAndSelect('order.operationUser', 'operationUser')
       .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .leftJoinAndSelect('orderProductMappings.product', 'product')
@@ -572,14 +574,14 @@ export class OrderService {
     const productList: OrderPdfDetailProductDto[] = [];
     const userInfo: OrderCustomerViewDto = {
       id: order.user?.id ?? null,
-      userBusinessName: order.user?.businessName ?? null,
+      userBusinessName: order.user?.company?.businessName ?? null,
       userPersonPhoneNumber: order.user?.personPhoneNumber ?? null,
       userBusinessEmail: order.user?.email ?? null,
       userPersonName: order.user?.personName ?? null,
     };
     const now = new Date();
     const today = format(now, 'yyMMdd');
-    const fileName: string = `${order.user?.businessName}_발송완료리포트_${today}`;
+    const fileName: string = `${order.user?.company?.businessName ?? ''}_발송완료리포트_${today}`;
 
     if (order.orderProductMappings && order.orderProductMappings.length > 0) {
       for (const orderProductMapping of order.orderProductMappings) {
@@ -724,6 +726,7 @@ export class OrderService {
     const queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('user.company', 'userCompany')
       .leftJoinAndSelect('order.operationUser', 'operationUser')
       .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .leftJoinAndSelect('orderProductMappings.product', 'product')
@@ -794,12 +797,12 @@ export class OrderService {
       fileName,
       serialNumber,
       userSettleCondition: order.user!.settleCondition,
-      businessName: order.user!.businessName,
-      businessNumber: order.user!.businessNumber,
+      businessName: order.user!.company?.businessName ?? '',
+      businessNumber: order.user!.company?.businessNumber ?? '',
       personName: order.user!.personName,
-      businessAddress: order.user?.businessAddress ?? null,
-      businessType: order.user?.industryType ?? null,
-      businessItem: order.user?.industryItem ?? null,
+      businessAddress: order.user?.company?.businessAddress ?? null,
+      businessType: order.user?.company?.industryType ?? null,
+      businessItem: order.user?.company?.industryItem ?? null,
       eventName: order.eventName,
       sendRequestAt: sendRequestAt ?? null,
       price,
@@ -849,6 +852,7 @@ export class OrderService {
     const queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('user.company', 'userCompany')
       .leftJoinAndSelect('order.operationUser', 'operationUser')
       .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .leftJoinAndSelect('orderProductMappings.product', 'product')
@@ -882,7 +886,7 @@ export class OrderService {
     const firstOrder = orders[0];
     const userInfo: OrderCustomerViewDto = {
       id: firstOrder.user?.id ?? null,
-      userBusinessName: firstOrder.user?.businessName ?? null,
+      userBusinessName: firstOrder.user?.company?.businessName ?? null,
       userPersonPhoneNumber: firstOrder.user?.personPhoneNumber ?? null,
       userBusinessEmail: firstOrder.user?.email ?? null,
       userPersonName: firstOrder.user?.personName ?? null,
@@ -890,7 +894,7 @@ export class OrderService {
 
     const now = new Date();
     const today = format(now, 'yyMMdd');
-    const fileName: string = `${firstOrder.user?.businessName}_발송완료리포트_${today}`;
+    const fileName: string = `${firstOrder.user?.company?.businessName ?? ''}_발송완료리포트_${today}`;
 
     // 이벤트명 통합 (여러 개면 "a 외 n건" 형식)
     const eventNames = [...new Set(orders.map((o) => o.eventName))];
@@ -1032,6 +1036,7 @@ export class OrderService {
     const queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('user.company', 'userCompany')
       .leftJoinAndSelect('order.operationUser', 'operationUser')
       .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .leftJoinAndSelect('orderProductMappings.product', 'product')
@@ -1129,12 +1134,12 @@ export class OrderService {
       fileName,
       serialNumber,
       userSettleCondition: firstOrder.user!.settleCondition,
-      businessName: firstOrder.user!.businessName,
-      businessNumber: firstOrder.user!.businessNumber,
+      businessName: firstOrder.user!.company?.businessName ?? '',
+      businessNumber: firstOrder.user!.company?.businessNumber ?? '',
       personName: firstOrder.user!.personName,
-      businessAddress: firstOrder.user?.businessAddress ?? null,
-      businessType: firstOrder.user?.industryType ?? null,
-      businessItem: firstOrder.user?.industryItem ?? null,
+      businessAddress: firstOrder.user?.company?.businessAddress ?? null,
+      businessType: firstOrder.user?.company?.industryType ?? null,
+      businessItem: firstOrder.user?.company?.industryItem ?? null,
       eventName: eventName,
       sendRequestAt: sendRequestAt ?? null,
       price,
@@ -2408,6 +2413,7 @@ export class OrderService {
     let queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('user.company', 'userCompany')
       .leftJoinAndSelect('order.operationUser', 'operationUser')
       .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .leftJoinAndSelect('orderProductMappings.product', 'product')
@@ -2443,7 +2449,7 @@ export class OrderService {
     if (searchKeyword && searchKeyword.length >= 1) {
       switch (searchType) {
         case 'CUSTOMER':
-          queryBuilder = queryBuilder.andWhere('user.businessName LIKE :keyword', { keyword: `%${searchKeyword}%` });
+          queryBuilder = queryBuilder.andWhere('userCompany.businessName LIKE :keyword', { keyword: `%${searchKeyword}%` });
           break;
         case 'MANAGER':
           queryBuilder = queryBuilder.andWhere('user.personName LIKE :keyword', { keyword: `%${searchKeyword}%` });
@@ -2457,7 +2463,7 @@ export class OrderService {
         case 'ALL':
         default:
           queryBuilder = queryBuilder.andWhere(
-            '(user.businessName LIKE :keyword OR operationUser.personName LIKE :keyword OR order.eventName LIKE :keyword OR product.name LIKE :keyword)',
+            '(userCompany.businessName LIKE :keyword OR operationUser.personName LIKE :keyword OR order.eventName LIKE :keyword OR product.name LIKE :keyword)',
             { keyword: `%${searchKeyword}%` },
           );
           break;
@@ -2549,7 +2555,7 @@ export class OrderService {
       sheet.addRow({
         id: id,
         registerAt: format(order.registerAt, 'yyyy-MM-dd HH:mm'),
-        userBusinessName: order.user!.businessName,
+        userBusinessName: order.user!.company?.businessName ?? '',
         userPersonName: order.user!.personName,
         eventName: order.eventName,
         productName: productName,

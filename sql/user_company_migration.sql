@@ -167,3 +167,15 @@ LEFT JOIN user u ON uc.id = u.company_id
 GROUP BY uc.id, uc.business_number, uc.business_name
 HAVING COUNT(u.id) > 1
 ORDER BY user_count DESC;
+
+-- ================================================
+-- 6단계: user 테이블에서 중복 컬럼 삭제 (마이그레이션 완료 후 실행)
+-- 주의: 데이터 마이그레이션 확인 후 실행할 것!
+-- ================================================
+ALTER TABLE `user`
+DROP COLUMN `business_number`,
+DROP COLUMN `business_name`,
+DROP COLUMN `business_address`,
+DROP COLUMN `business_phone_number`,
+DROP COLUMN `industry_type`,
+DROP COLUMN `industry_item`;

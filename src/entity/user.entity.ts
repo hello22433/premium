@@ -74,18 +74,6 @@ export class UserEntity extends BaseEntity {
   @Column({ type: 'varchar', length: 100, comment: '법인 등록 번호' })
   corporateNumber: string | null;
 
-  @Column({ type: 'varchar', length: 100, comment: '사업자 등록 번호' })
-  businessNumber: string;
-
-  @Column({ type: 'varchar', length: 100, comment: '사업자명' })
-  businessName: string;
-
-  @Column({ type: 'varchar', length: 100, comment: '사업자 주소' })
-  businessAddress: string;
-
-  @Column({ type: 'varchar', length: 100, comment: '사업자 연락처' })
-  businessPhoneNumber: string;
-
   @Column({ comment: '대표자 여부 ex) true: 기본 담당자(대표)', default: false })
   isHeadPerson: boolean;
 
@@ -143,12 +131,6 @@ export class UserEntity extends BaseEntity {
 
   @Column({ type: 'varchar', nullable: true, length: 1024, comment: '페이지 접근 허용 list' })
   authorityList: string | null;
-
-  @Column({ type: 'varchar', nullable: true, length: 100, comment: '업태' })
-  industryType: string | null;
-
-  @Column({ type: 'varchar', nullable: true, length: 100, comment: '종목' })
-  industryItem: string | null;
 
   @OneToMany(() => OrderEntity, (order) => order.user)
   orders: OrderEntity[];

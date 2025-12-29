@@ -242,7 +242,7 @@ export class OrderReceiveService {
       sendRequestAt: format(orderDelivery.sendRequestAt, DateFormatStr),
       expireDay: displayProduct.expireDay,
       brandKoreanName: displayBrand!.nameKorean === '신세계' ? '이마트' : displayBrand!.nameKorean,
-      userBusinessName: orderDelivery.orderProductMapping.order.user!.businessName,
+      userBusinessName: orderDelivery.orderProductMapping.order.user!.company?.businessName ?? '',
       partnerCompany: displayProduct.partnerCompany?.type || null,
       validityStartsNextDay: displayProduct.partnerCompany?.validityStartsNextDay,
     };
@@ -344,7 +344,7 @@ export class OrderReceiveService {
       sendRequestAt: format(testOrderDelivery.sendRequestAt, DateFormatStr),
       expireDay: displayProduct.expireDay,
       brandKoreanName: displayBrand!.nameKorean === '신세계' ? '이마트' : displayBrand!.nameKorean,
-      userBusinessName: testOrderDelivery.orderProductMapping.order.user!.businessName,
+      userBusinessName: testOrderDelivery.orderProductMapping.order.user!.company?.businessName ?? '',
       partnerCompany: displayProduct.partnerCompany?.type || null,
       validityStartsNextDay: displayProduct.partnerCompany?.validityStartsNextDay,
     };
