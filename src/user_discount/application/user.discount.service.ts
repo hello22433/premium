@@ -164,10 +164,11 @@ export class UserDiscountService {
     const newIsLowerBound = isLowerBound(compareCondition);
 
     for (const existing of existingDiscounts) {
+      // 1. 비교조건 방향 혼합 검사 (이하/미만 vs 이상/초과) - 구간 설정 유연성을 위해 제거
+      /*
       const existingIsUpperBound = isUpperBound(existing.compareCondition);
       const existingIsLowerBound = isLowerBound(existing.compareCondition);
 
-      // 1. 비교조건 방향 혼합 검사 (이하/미만 vs 이상/초과)
       if ((newIsUpperBound && existingIsLowerBound) || (newIsLowerBound && existingIsUpperBound)) {
         const targetName = category === IUserDiscountCategory.CATEGORY ? `상품군 ${group}` : `대분류 ${primaryCategory}`;
         throw new BadRequestException(
@@ -175,11 +176,12 @@ export class UserDiscountService {
             `이하/미만과 이상/초과를 혼합하여 사용할 수 없습니다.`,
         );
       }
+      */
 
-      // 2. 같은 구간 값 중복 검사
-      if (existing.range === range) {
+      // 2. 같은 구간 값 중복 검사 (값과 조건이 모두 같을 때만 차단)
+      if (existing.range === range && existing.compareCondition === compareCondition) {
         const targetName = category === IUserDiscountCategory.CATEGORY ? `상품군 ${group}` : `대분류 ${primaryCategory}`;
-        throw new BadRequestException(`${targetName}에 이미 같은 구간(${range}원)이 등록되어 있습니다.`);
+        throw new BadRequestException(`${targetName}에 이미 같은 구간(${range}원) 및 조건이 등록되어 있습니다.`);
       }
     }
   }
