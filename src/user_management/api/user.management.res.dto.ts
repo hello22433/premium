@@ -177,6 +177,32 @@ export class UserManagementGetDetailResDto {
     description: '종목',
   })
   industryItem: string | null;
+
+  @ApiProperty({
+    description: '소속 회사 ID',
+    nullable: true,
+  })
+  companyId: number | null;
+
+  @ApiProperty({
+    description: '소속 회사 정보',
+    nullable: true,
+  })
+  company: UserCompanyInfoDto | null;
+}
+
+export class UserCompanyInfoDto {
+  @ApiProperty({ description: '회사 ID' })
+  id: number;
+
+  @ApiProperty({ description: '사업자명' })
+  businessName: string;
+
+  @ApiProperty({ description: '사업자등록번호' })
+  businessNumber: string;
+
+  @ApiProperty({ description: '여신 한도' })
+  maximumLimit: number;
 }
 
 export class UserManagementGetListResDto extends GetListResDto {

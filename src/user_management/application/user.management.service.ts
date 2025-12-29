@@ -1,5 +1,6 @@
 import { BadRequestException, Inject, Injectable } from '@nestjs/common';
 import { UserEntity } from '../../entity/user.entity';
+import { UserCompanyEntity } from '../../entity/user.company.entity';
 import { Repository } from 'typeorm';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
@@ -41,6 +42,8 @@ export class UserManagementService {
   constructor(
     @InjectRepository(UserEntity)
     private userRepository: Repository<UserEntity>,
+    @InjectRepository(UserCompanyEntity)
+    private userCompanyRepository: Repository<UserCompanyEntity>,
     private passwordEncrypt: PasswordBcryptEncrypt,
     @Inject('IMailSend')
     private readonly mailSendService: IMailSend,
@@ -168,6 +171,7 @@ export class UserManagementService {
       where: {
         id,
       },
+      relations: ['company'],
     });
 
     if (!user) {
@@ -213,6 +217,15 @@ export class UserManagementService {
       authorityList: authorityList,
       industryType: user.industryType,
       industryItem: user.industryItem,
+      companyId: user.companyId,
+      company: user.company
+        ? {
+            id: user.company.id,
+            businessName: user.company.businessName,
+            businessNumber: user.company.businessNumber,
+            maximumLimit: user.company.maximumLimit,
+          }
+        : null,
     };
   }
 
@@ -378,6 +391,17 @@ export class UserManagementService {
     // 사업자등록번호에서 하이픈 제거
     const businessNumber = getBody.businessNumber ? getBody.businessNumber.replace(/-/g, '') : getBody.businessNumber;
 
+    // 동일 사업자등록번호의 회사가 있으면 연결
+    let companyId: number | null = null;
+    if (businessNumber) {
+      const existingCompany = await this.userCompanyRepository.findOne({
+        where: { businessNumber },
+      });
+      if (existingCompany) {
+        companyId = existingCompany.id;
+      }
+    }
+
     await this.userRepository.insert({
       email: getBody.email,
       password: passwordEncrypt,
@@ -408,6 +432,7 @@ export class UserManagementService {
       authorityList: getBody.authorityList.join(','),
       industryType: getBody.industryType,
       industryItem: getBody.industryItem,
+      companyId: companyId,
     });
 
     return;
@@ -426,6 +451,18 @@ export class UserManagementService {
 
     // 사업자등록번호에서 하이픈 제거
     const businessNumber = getBody.businessNumber ? getBody.businessNumber.replace(/-/g, '') : getBody.businessNumber;
+
+    // 사업자등록번호가 변경된 경우 회사 연결 업데이트
+    if (businessNumber !== user.businessNumber) {
+      if (businessNumber) {
+        const existingCompany = await this.userCompanyRepository.findOne({
+          where: { businessNumber },
+        });
+        user.companyId = existingCompany ? existingCompany.id : null;
+      } else {
+        user.companyId = null;
+      }
+    }
 
     user.authority = getBody.authority;
     user.personName = getBody.personName;

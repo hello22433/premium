@@ -8,6 +8,7 @@ import {
 import { PasswordBcryptEncrypt } from '../../auth/infrastructure/password.bcrypt.encrypt';
 import { ILoginTokenValidator } from '../../auth/interface/login.token.validator';
 import { UserEntity } from '../../entity/user.entity';
+import { UserCompanyEntity } from '../../entity/user.company.entity';
 import { PasswordPolicyEntity } from '../../entity/password.policy.entity';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Between, IsNull, Repository, Raw } from 'typeorm';
@@ -37,6 +38,8 @@ export class UserService {
     private loginTokenValidator: ILoginTokenValidator,
     @InjectRepository(UserEntity)
     private userRepository: Repository<UserEntity>,
+    @InjectRepository(UserCompanyEntity)
+    private userCompanyRepository: Repository<UserCompanyEntity>,
     @InjectRepository(EmailSendHistoryEntity)
     private emailSendHistoryRepository: Repository<EmailSendHistoryEntity>,
     @InjectRepository(PasswordPolicyEntity)
@@ -87,6 +90,17 @@ export class UserService {
 
     const passwordEncrypt = await this.passwordEncrypt.encrypt(password);
 
+    // 동일 사업자등록번호의 회사가 있으면 연결
+    let companyId: number | null = null;
+    if (businessNumber) {
+      const existingCompany = await this.userCompanyRepository.findOne({
+        where: { businessNumber },
+      });
+      if (existingCompany) {
+        companyId = existingCompany.id;
+      }
+    }
+
     await this.userRepository.insert({
       email: signUpDto.email,
       password: passwordEncrypt,
@@ -115,6 +129,7 @@ export class UserService {
       balance: 0,
       industryType: industryType ?? null,
       industryItem: industryItem ?? null,
+      companyId: companyId,
     });
     return;
   }

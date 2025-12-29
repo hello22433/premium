@@ -3,6 +3,7 @@ import { UserController } from './api/user.controller';
 import { UserService } from './application/user.service';
 import { AuthModule } from '../auth/auth.module';
 import { UserEntity } from '../entity/user.entity';
+import { UserCompanyEntity } from '../entity/user.company.entity';
 import { PasswordPolicyEntity } from '../entity/password.policy.entity';
 import { EmailSendHistoryEntity } from '../entity/email.send.history.entity';
 import { MailModule } from '../mail/mail.module';
@@ -13,7 +14,7 @@ import { ActivityLogModule } from '../activity_log/activity.log.module';
   imports: [
     AuthModule,
     MailModule,
-    TypeOrmModule.forFeature([UserEntity, PasswordPolicyEntity, EmailSendHistoryEntity]),
+    TypeOrmModule.forFeature([UserEntity, UserCompanyEntity, PasswordPolicyEntity, EmailSendHistoryEntity]),
     ActivityLogModule,
   ],
   controllers: [UserController],

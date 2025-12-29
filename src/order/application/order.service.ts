@@ -65,6 +65,7 @@ import { CreateTransactionId } from '../domain/create.transaction.id';
 import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
 import { DeliveryCreateCouponImage } from '../../delivery/infra/delivery.create.coupon.image';
 import { UserEntity } from '../../entity/user.entity';
+import { UserCompanyEntity } from '../../entity/user.company.entity';
 import { IUserAuthority } from '../../user/interface/user.authority';
 import { IUserSettleCondition } from '../../user/interface/user.settle.condition';
 import { IOrderSection } from '../interface/order.section';
@@ -171,13 +172,26 @@ export class OrderService {
       .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
       .where('order.type = :type', { type });
 
+    // 현재 사용자의 회사 ID 조회 (회사 단위 주문 조회를 위해)
+    const currentUser = await this.userRepository.findOne({
+      where: { id: user.id },
+      select: ['id', 'companyId'],
+    });
+
     // 주문 관리 일 경우
     if (section === IOrderSection.ORDER) {
       if (user.authority !== IUserAuthority.SUPER_ADMIN) {
-        // 자신이 생성한 주문 또는 자신이 담당자로 지정된 주문
-        queryBuilder = queryBuilder.andWhere('(order.userId = :userId OR order.operationUserId = :userId)', {
-          userId: user.id,
-        });
+        if (currentUser?.companyId) {
+          // 같은 회사의 모든 주문 조회
+          queryBuilder = queryBuilder.andWhere('user.companyId = :companyId', {
+            companyId: currentUser.companyId,
+          });
+        } else {
+          // companyId가 없으면 기존 방식 (본인 건만)
+          queryBuilder = queryBuilder.andWhere('(order.userId = :userId OR order.operationUserId = :userId)', {
+            userId: user.id,
+          });
+        }
       }
     }
 
@@ -187,7 +201,14 @@ export class OrderService {
       queryBuilder = queryBuilder.andWhere('order.status != :tempStatus', { tempStatus: IOrderStatus.TEMP });
 
       if (user.authority === IUserAuthority.CORPORATE_ADMIN) {
-        queryBuilder = queryBuilder.andWhere('order.userId = :userId', { userId: user.id });
+        if (currentUser?.companyId) {
+          // 같은 회사의 모든 주문 조회
+          queryBuilder = queryBuilder.andWhere('user.companyId = :companyId', {
+            companyId: currentUser.companyId,
+          });
+        } else {
+          queryBuilder = queryBuilder.andWhere('order.userId = :userId', { userId: user.id });
+        }
       }
 
       if (user.authority === IUserAuthority.OPERATION_ADMIN) {
@@ -848,6 +869,15 @@ export class OrderService {
       }
     }
 
+    // 모든 주문이 같은 회사 소속인지 확인 (다중 주문 증빙 발행 시)
+    if (orders.length > 1) {
+      const firstCompanyId = orders[0].user?.companyId;
+      const allSameCompany = orders.every((order) => order.user?.companyId === firstCompanyId);
+      if (!allSameCompany) {
+        throw new BadRequestException('서로 다른 회사의 주문은 합쳐서 증빙 발행할 수 없습니다.');
+      }
+    }
+
     // 첫 번째 주문 기준으로 기본 정보 설정
     const firstOrder = orders[0];
     const userInfo: OrderCustomerViewDto = {
@@ -1018,6 +1048,15 @@ export class OrderService {
     for (const order of orders) {
       if (order.status !== IOrderStatus.DELIVERY_COMPLETE) {
         throw new BadRequestException('발송 완료된 건에 대해서만 조회 가능합니다.');
+      }
+    }
+
+    // 모든 주문이 같은 회사 소속인지 확인 (다중 주문 증빙 발행 시)
+    if (orders.length > 1) {
+      const firstCompanyId = orders[0].user?.companyId;
+      const allSameCompany = orders.every((order) => order.user?.companyId === firstCompanyId);
+      if (!allSameCompany) {
+        throw new BadRequestException('서로 다른 회사의 주문은 합쳐서 증빙 발행할 수 없습니다.');
       }
     }
 
@@ -1727,21 +1766,33 @@ export class OrderService {
     const userBalance = await this.userManagementService.getBalance(user.id);
     this.logger.debug(`User#${user.id} balance=${userBalance}`);
 
-    const oneUser = await this.userRepository.findOne({ where: { id: user.id } });
+    const oneUser = await this.userRepository.findOne({
+      where: { id: user.id },
+      relations: ['company'],
+    });
     if (!oneUser) {
       throw new InternalServerErrorException('유저가 존재하지 않습니다.');
     }
 
-    // allSettleAmount 해당 유저의 전체 order 사용 금액
-    // balance -> 선충전 금액
-    // maximumLimit -> 최대 서비스 한도
-    const remainServiceAmount =
-      oneUser.maximumLimit + oneUser.balance - oneUser.allSettleAmount + oneUser.serviceAmount;
+    // 회사 단위 잔여발송한도 계산
+    // 잔여한도 = Company.maximumLimit + 현재계정.balance - SUM(동일회사 User.allSettleAmount)
+    // balance는 각 계정별로만 사용 가능, allSettleAmount는 회사 단위로 합산
+    let remainServiceAmount: number;
 
-    // 잔액 부족 시 예외
-    // if (totalAmount > userBalance) {
-    //   throw new BadRequestException('잔액이 부족하여 발송 요청할 수 없습니다.');
-    // }
+    if (oneUser.companyId && oneUser.company) {
+      // 동일 회사 계정들의 allSettleAmount 합산
+      const companyUsers = await this.userRepository.find({
+        where: { companyId: oneUser.companyId },
+        select: ['id', 'allSettleAmount'],
+      });
+
+      const totalAllSettleAmount = companyUsers.reduce((sum, u) => sum + u.allSettleAmount, 0);
+
+      remainServiceAmount = oneUser.company.maximumLimit + oneUser.balance - totalAllSettleAmount;
+    } else {
+      // companyId가 없는 경우 기존 방식 (개별 계정 기준)
+      remainServiceAmount = oneUser.maximumLimit + oneUser.balance - oneUser.allSettleAmount;
+    }
 
     if (totalAmount > remainServiceAmount) {
       throw new BadRequestException('최대 서비스 한도를 넘어 요청할 수 없습니다.');

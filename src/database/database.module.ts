@@ -2,9 +2,13 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
 import { DataSource } from 'typeorm';
-import { addTransactionalDataSource } from 'typeorm-transactional';
+import {
+  addTransactionalDataSource,
+  getDataSourceByName,
+} from 'typeorm-transactional';
 import { SnakeNamingStrategy } from 'typeorm-naming-strategies';
 import { UserEntity } from '../entity/user.entity';
+import { UserCompanyEntity } from '../entity/user.company.entity';
 import { ProductEntity } from '../entity/product.entity';
 import { InquiryEntity } from '../entity/inquiry.entity';
 import { NoticeEntity } from '../entity/notice.entity';
@@ -62,6 +66,7 @@ import { EmailManualEntity } from '../entity/email.manual.entity';
         database: configService.get('DATABASE_DATABASE'),
         entities: [
           UserEntity,
+          UserCompanyEntity,
           ProductEntity,
           InquiryEntity,
           NoticeEntity,
@@ -113,6 +118,11 @@ import { EmailManualEntity } from '../entity/email.manual.entity';
       async dataSourceFactory(options) {
         if (!options) {
           throw new Error('Invalid options passed');
+        }
+
+        const existingDataSource = getDataSourceByName('default');
+        if (existingDataSource) {
+          return existingDataSource;
         }
 
         return addTransactionalDataSource(new DataSource(options));

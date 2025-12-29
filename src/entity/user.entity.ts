@@ -1,4 +1,4 @@
-import { Column, Entity, OneToMany, PrimaryGeneratedColumn } from 'typeorm';
+import { Column, Entity, JoinColumn, ManyToOne, OneToMany, PrimaryGeneratedColumn } from 'typeorm';
 import { BaseEntity } from '../common/entity/base.entity';
 import { IUserStatus } from '../user/interface/user.status';
 import { IUserAuthority } from '../user/interface/user.authority';
@@ -8,11 +8,19 @@ import { IUserBusinessType } from '../user/interface/user.business.type';
 import { UserDiscountEntity } from './user.discount.entity';
 import { UserSettlePeriodConditionEnum } from '../user/interface/user.settle.period.condition.enum';
 import { OrderEntity } from './order.entity';
+import { UserCompanyEntity } from './user.company.entity';
 
 @Entity('user')
 export class UserEntity extends BaseEntity {
   @PrimaryGeneratedColumn()
   id: number;
+
+  @Column({ type: 'int', nullable: true, comment: 'FK) user_company.id' })
+  companyId: number | null;
+
+  @ManyToOne(() => UserCompanyEntity, (company) => company.users)
+  @JoinColumn({ name: 'company_id' })
+  company: UserCompanyEntity;
 
   @Column({ type: 'varchar', length: 100, comment: '이메일' })
   email: string;
