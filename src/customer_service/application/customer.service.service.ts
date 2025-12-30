@@ -94,6 +94,7 @@ export class CustomerServiceService {
       .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
       .leftJoinAndMapOne('order.user', 'user', 'user', 'user.id = order.user_id AND user.deleted_at IS NULL')
+      .leftJoinAndSelect('user.company', 'userCompany')
       .andWhere('orderDelivery.status IN (:...deliveryStatus)', { deliveryStatus: ['COMPLETE', 'COMPLETE_SMS'] })
       .andWhere('orderDelivery.deletedAt IS NULL');
 
@@ -365,7 +366,7 @@ export class CustomerServiceService {
         'partnerCompany.id = product.partner_company_id AND partnerCompany.deleted_at IS NULL',
       )
       .leftJoinAndMapOne('order.user', 'user', 'user', 'user.id = order.user_id AND user.deleted_at IS NULL')
-      .leftJoin('user.company', 'userCompany')
+      .leftJoinAndSelect('user.company', 'userCompany')
       .where('orderDelivery.id = :id', { id: orderDeliveryId })
       .andWhere('orderDelivery.deletedAt IS NULL')
       .getOne();
@@ -1302,7 +1303,7 @@ export class CustomerServiceService {
       .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
       .leftJoinAndMapOne('order.user', 'user', 'user', 'user.id = order.user_id AND user.deleted_at IS NULL')
-      .leftJoin('user.company', 'userCompany')
+      .leftJoinAndSelect('user.company', 'userCompany')
       .andWhere('orderDelivery.status IN (:...deliveryStatus)', { deliveryStatus: ['COMPLETE', 'COMPLETE_SMS'] })
       .andWhere('orderDelivery.deletedAt IS NULL');
 
