@@ -1475,22 +1475,27 @@ export class SettleService {
       queryBuilder.andWhere('userCompany.businessName LIKE :userBusinessName', { userBusinessName: `%${userBusinessName}%` });
     }
 
-    if (status) {
-      if (status === 'ACTIVE') {
-        queryBuilder.andWhere(`COALESCE(userCompany.maximumLimit, 0) + user.balance - user.allSettleAmount + user.serviceAmount > 0`);
-      }
+    // 상태 필터링은 회사별 합산 후에 적용
 
-      if (status === 'STOP') {
-        queryBuilder.andWhere(`COALESCE(userCompany.maximumLimit, 0) + user.balance - user.allSettleAmount + user.serviceAmount <= 0`);
-      }
-    }
-
-    queryBuilder.skip((page - 1) * take).take(take);
     queryBuilder.orderBy('user.id', 'DESC');
 
-    const [userList, totalCount] = await queryBuilder.getManyAndCount();
+    const allUsers = await queryBuilder.getMany();
 
-    const result: SettleUserPerListViewDto[] = userList.map((user) => {
+    // 동일 회사별 allSettleAmount 합산 (companyId -> totalAllSettleAmount)
+    const companyAllSettleMap = new Map<number, number>();
+
+    for (const user of allUsers) {
+      const companyId = user.companyId;
+      if (!companyId) continue;
+
+      if (!companyAllSettleMap.has(companyId)) {
+        companyAllSettleMap.set(companyId, 0);
+      }
+      companyAllSettleMap.set(companyId, companyAllSettleMap.get(companyId)! + user.allSettleAmount);
+    }
+
+    // 결과 리스트 생성 (회사별 합산된 allSettleAmount 사용)
+    let result: SettleUserPerListViewDto[] = allUsers.map((user) => {
       let overdueCount = 0;
       let overdueAmount = 0;
       for (const order of user.orders!) {
@@ -1501,7 +1506,17 @@ export class SettleService {
       }
 
       const companyMaximumLimit = Number(user.company?.maximumLimit ?? 0);
-      const remainServiceAmount = companyMaximumLimit + user.balance - user.allSettleAmount + user.serviceAmount;
+      const companyId = user.companyId;
+
+      // 잔여서비스한도 = 회사최대한도 + 개별balance - 회사전체allSettleAmount
+      let remainServiceAmount: number;
+      if (companyId && companyAllSettleMap.has(companyId)) {
+        const totalAllSettleAmount = companyAllSettleMap.get(companyId)!;
+        remainServiceAmount = companyMaximumLimit + user.balance - totalAllSettleAmount;
+      } else {
+        // 회사가 없는 경우 개별 계산
+        remainServiceAmount = user.balance - user.allSettleAmount;
+      }
 
       return {
         id: user.id,
@@ -1521,8 +1536,24 @@ export class SettleService {
       };
     });
 
+    // 상태 필터링 적용 (회사별 합산 후)
+    if (status) {
+      if (status === 'ACTIVE') {
+        result = result.filter((r) => r.remainServiceAmount > 0);
+      }
+      if (status === 'STOP') {
+        result = result.filter((r) => r.remainServiceAmount <= 0);
+      }
+    }
+
+    const totalCount = result.length;
+
+    // 페이지네이션 적용
+    const skip = (page - 1) * take;
+    const paginatedResult = result.slice(skip, skip + take);
+
     return {
-      list: result,
+      list: paginatedResult,
       totalCount,
       totalPage: Math.ceil(totalCount / take),
       currentPage: page,
@@ -1733,8 +1764,8 @@ export class SettleService {
 
   /**
    * 로그인한 사용자의 잔여 발송 한도 조회
-   * - 선정산(PRE_PAYMENT): 최대한도 = 선충전잔액 (balance)
-   * - 후정산(POST_PAYMENT): 최대한도 = 선충전잔액 + 여신한도 (balance + maximumLimit)
+   * - 잔여서비스한도 = 회사최대한도 + 개별balance - 회사전체allSettleAmount
+   * - 동일 회사의 모든 계정이 한도를 공유함
    * @param user 로그인한 사용자 정보
    * @returns 잔여 발송 한도 정보
    */
@@ -1759,22 +1790,20 @@ export class SettleService {
       }
     }
 
-    // 발송금액 = 서비스금액 + 정산기일초과금액
-    const deliveryAmount = userEntity.serviceAmount + overdueAmount;
-
-    // 정산 조건에 따른 최대 한도 계산
-    // - 선정산(PRE_PAYMENT): 최대한도 = 선충전잔액
-    // - 후정산(POST_PAYMENT): 최대한도 = 선충전잔액 + 여신한도 (company에서 조회)
     const companyMaximumLimit = userEntity.company?.maximumLimit ?? 0;
-    let effectiveMaxLimit: number;
-    if (userEntity.settleCondition === IUserSettleCondition.PRE_PAYMENT) {
-      effectiveMaxLimit = userEntity.balance;
-    } else {
-      effectiveMaxLimit = userEntity.balance + companyMaximumLimit;
+
+    // 동일 회사의 모든 계정 allSettleAmount 합산
+    let totalAllSettleAmount = userEntity.allSettleAmount;
+    if (userEntity.companyId) {
+      const companyUsers = await this.userRepository.find({
+        where: { companyId: userEntity.companyId },
+        select: ['id', 'allSettleAmount'],
+      });
+      totalAllSettleAmount = companyUsers.reduce((sum, u) => sum + u.allSettleAmount, 0);
     }
 
-    // 잔여발송한도 = 유효최대한도 - 주문금액
-    const remainServiceAmount = effectiveMaxLimit - userEntity.allSettleAmount;
+    // 잔여발송한도 = 회사최대한도 + 개별balance - 회사전체allSettleAmount
+    const remainServiceAmount = companyMaximumLimit + userEntity.balance - totalAllSettleAmount;
 
     return {
       maximumLimit: companyMaximumLimit,
