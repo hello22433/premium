@@ -135,6 +135,7 @@ export class UserSyncProductService {
         { useStatus: IProductUseStatus.USE },
       )
       .leftJoinAndSelect('product.brand', 'brand')
+      .leftJoinAndSelect('product.classification', 'classification')
       .where('event.id = :id', { id })
       .getOne();
 
