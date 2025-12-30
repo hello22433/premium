@@ -195,10 +195,10 @@ export class UserService {
       console.log(reqAllowedIp);
       console.log(user.ip);
 
-      const allowedIpList: string[] = user.ip ? user.ip.split('::') : [];
+      const allowedIpList: string[] = user.ip ? user.ip.split(',').map((ip) => ip.trim()) : [];
 
       // @ts-ignore
-      const splitAllowed = user.ip.split('::');
+      const splitAllowed = user.ip.split(',').map((ip) => ip.trim());
       console.log({ reqAllowedIp, splitAllowed });
 
       if (!allowedIpList.includes(reqAllowedIp)) {

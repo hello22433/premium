@@ -173,7 +173,9 @@ export class UserTaskHistoryService {
       email: user.email,
       personName: user.personName,
       personPhoneNumber: user.personPhoneNumber,
-      personEmail: user.personEmail,
+      personEmail: user.personEmail?.includes(',')
+        ? user.personEmail.split(',')[0].trim()
+        : user.personEmail,
       personCode: user.personCode,
       personCategory: user.personCategory,
       businessGrade: user.businessGrade,
