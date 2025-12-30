@@ -54,7 +54,7 @@ export class UserEntity extends BaseEntity {
   @Column({ type: 'varchar', length: 20, comment: '담당자 연락처' })
   personPhoneNumber: string;
 
-  @Column({ type: 'varchar', length: 100, comment: '담당자 이메일' })
+  @Column({ type: 'varchar', length: 500, comment: '담당자 이메일 (쉼표 구분으로 여러 개 저장 가능)' })
   personEmail: string;
 
   @Column({ type: 'varchar', length: 100, comment: '담당자 코드' })

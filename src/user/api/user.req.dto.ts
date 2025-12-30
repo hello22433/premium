@@ -166,12 +166,21 @@ export class UserLoginByEmailPasswordReqDto {
 export class UserLoginEmailSendReqDto {
   @ApiProperty({
     type: String,
-    description: '로그인 인증 이메일 보내고자 하는 email',
+    description: '계정 이메일 (로그인 ID)',
   })
   // =================================
   @IsNotEmpty()
   @IsEmail()
   readonly email: string;
+
+  @ApiProperty({
+    type: String,
+    description: '인증코드를 받을 담당자 이메일',
+  })
+  // =================================
+  @IsNotEmpty()
+  @IsEmail()
+  readonly targetEmail: string;
 }
 
 export class UserLoginEmailVerifyReqDto {

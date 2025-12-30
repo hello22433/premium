@@ -11,7 +11,7 @@ import { UserEntity } from '../../entity/user.entity';
 import { UserCompanyEntity } from '../../entity/user.company.entity';
 import { PasswordPolicyEntity } from '../../entity/password.policy.entity';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Between, IsNull, Repository, Raw } from 'typeorm';
+import { Between, In, IsNull, Repository, Raw } from 'typeorm';
 import { Transactional } from 'typeorm-transactional';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { UserLoginByEmailPasswordResDto } from '../api/user.res.dto';
@@ -206,17 +206,25 @@ export class UserService {
       }
     }
 
+    // 담당자 이메일 파싱 (쉼표 구분)
+    const personEmails = user.personEmail
+      ? user.personEmail.split(',').map((e) => e.trim()).filter((e) => e)
+      : [];
+
     // KST 기준으로 오늘 날짜 비교
     // MySQL 세션 타임존이 +09:00(KST)로 설정되어 있으므로
     // CURDATE()와 DATE() 함수는 KST 기준으로 동작
-    const emailCodeCount = await this.emailSendHistoryRepository.count({
-      where: {
-        email: user.email,
-        type: EmailType.LOGIN,
-        isCertified: true,
-        createdAt: Raw((alias) => `DATE(${alias}) = CURDATE()`),
-      },
-    });
+    // 담당자 이메일 중 하나라도 오늘 인증했으면 통과
+    const emailCodeCount = personEmails.length > 0
+      ? await this.emailSendHistoryRepository.count({
+          where: {
+            email: In(personEmails),
+            type: EmailType.LOGIN,
+            isCertified: true,
+            createdAt: Raw((alias) => `DATE(${alias}) = CURDATE()`),
+          },
+        })
+      : 0;
 
     const loginUserInfo: ILoginUserInfo = {
       id: user.id,
@@ -250,6 +258,8 @@ export class UserService {
         isEmailVerify: false,
         passwordChangedAt: user.passwordChangedAt,
         passwordExpiryDays: passwordPolicy?.passwordExpiryDays ?? null,
+        personEmails,
+        needEmailSelection: personEmails.length > 1,
       };
     }
 
@@ -261,11 +271,13 @@ export class UserService {
       isEmailVerify: true,
       passwordChangedAt: user.passwordChangedAt,
       passwordExpiryDays: passwordPolicy?.passwordExpiryDays ?? null,
+      personEmails,
+      needEmailSelection: false,
     };
   }
 
   async loginEmailSend(getBody: UserLoginEmailSendReqDto) {
-    const { email } = getBody;
+    const { email, targetEmail } = getBody;
 
     const user = await this.userRepository.findOne({
       where: {
@@ -277,13 +289,22 @@ export class UserService {
       throw new BadRequestException('해당 이메일의 유저가 존재하지 않습니다.');
     }
 
+    // targetEmail이 해당 유저의 담당자 이메일 목록에 있는지 검증
+    const personEmails = user.personEmail
+      ? user.personEmail.split(',').map((e) => e.trim()).filter((e) => e)
+      : [];
+
+    if (!personEmails.includes(targetEmail)) {
+      throw new BadRequestException('유효하지 않은 담당자 이메일입니다.');
+    }
+
     const code = generateRandomCode();
     const expireAt = addMinutes(new Date(), EmailCertifyExpireMinute);
 
     // 이메일 전송한 history record 생성하기
     const emailSendHistory = new EmailSendHistoryEntity();
 
-    emailSendHistory.email = getBody.email;
+    emailSendHistory.email = targetEmail; // 담당자 이메일로 저장
     emailSendHistory.type = EmailType.LOGIN;
     emailSendHistory.expireAt = expireAt;
     emailSendHistory.code = code;
@@ -296,7 +317,7 @@ export class UserService {
       cc: undefined,
       content: content,
       subject: title,
-      to: email,
+      to: targetEmail, // 담당자 이메일로 발송
     });
 
     await this.emailSendHistoryRepository.save(emailSendHistory);
