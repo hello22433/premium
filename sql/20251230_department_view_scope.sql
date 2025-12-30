@@ -8,7 +8,7 @@
 -- ================================================
 CREATE TABLE IF NOT EXISTS `department` (
   `id` INT NOT NULL AUTO_INCREMENT,
-  `company_id` INT NOT NULL COMMENT 'FK) user_company.id',
+  `company_id` BIGINT NOT NULL COMMENT 'FK) user_company.id',
   `name` VARCHAR(100) NOT NULL COMMENT '부서명',
   `created_at` DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
   `updated_at` DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
