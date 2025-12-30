@@ -12,6 +12,10 @@ export class EmailSendHistoryEntity extends BaseEntity {
   orderDeliveryId: number | null;
 
   @Index()
+  @Column({ type: 'int', nullable: true, comment: '사용자 ID (로그인 인증용)' })
+  userId: number | null;
+
+  @Index()
   @Column({ type: 'varchar', length: 200, comment: '이메일' })
   email: string;
 

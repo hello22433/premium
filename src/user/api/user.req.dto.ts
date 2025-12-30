@@ -175,12 +175,13 @@ export class UserLoginEmailSendReqDto {
 
   @ApiProperty({
     type: String,
-    description: '인증코드를 받을 담당자 이메일',
+    required: false,
+    description: '인증코드를 받을 담당자 이메일 (담당자 이메일이 2개 이상일 때 필수)',
   })
   // =================================
-  @IsNotEmpty()
+  @IsOptional()
   @IsEmail()
-  readonly targetEmail: string;
+  readonly targetEmail?: string;
 }
 
 export class UserLoginEmailVerifyReqDto {

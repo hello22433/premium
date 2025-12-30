@@ -214,17 +214,15 @@ export class UserService {
     // KST 기준으로 오늘 날짜 비교
     // MySQL 세션 타임존이 +09:00(KST)로 설정되어 있으므로
     // CURDATE()와 DATE() 함수는 KST 기준으로 동작
-    // 담당자 이메일 중 하나라도 오늘 인증했으면 통과
-    const emailCodeCount = personEmails.length > 0
-      ? await this.emailSendHistoryRepository.count({
-          where: {
-            email: In(personEmails),
-            type: EmailType.LOGIN,
-            isCertified: true,
-            createdAt: Raw((alias) => `DATE(${alias}) = CURDATE()`),
-          },
-        })
-      : 0;
+    // userId 기반으로 오늘 인증 이력 체크 (계정별 로그인 여부 확인)
+    const emailCodeCount = await this.emailSendHistoryRepository.count({
+      where: {
+        userId: user.id,
+        type: EmailType.LOGIN,
+        isCertified: true,
+        createdAt: Raw((alias) => `DATE(${alias}) = CURDATE()`),
+      },
+    });
 
     const loginUserInfo: ILoginUserInfo = {
       id: user.id,
@@ -289,13 +287,28 @@ export class UserService {
       throw new BadRequestException('해당 이메일의 유저가 존재하지 않습니다.');
     }
 
-    // targetEmail이 해당 유저의 담당자 이메일 목록에 있는지 검증
+    // 담당자 이메일 파싱
     const personEmails = user.personEmail
       ? user.personEmail.split(',').map((e) => e.trim()).filter((e) => e)
       : [];
 
-    if (!personEmails.includes(targetEmail)) {
-      throw new BadRequestException('유효하지 않은 담당자 이메일입니다.');
+    // 발송할 이메일 결정
+    // - 담당자 이메일이 1개일 때: 계정 이메일로 발송
+    // - 담당자 이메일이 2개 이상일 때: 선택한 담당자 이메일로 발송
+    let sendToEmail: string;
+
+    if (personEmails.length <= 1) {
+      // 1개 이하일 때는 계정 이메일로 발송
+      sendToEmail = email;
+    } else {
+      // 2개 이상일 때는 targetEmail 필수
+      if (!targetEmail) {
+        throw new BadRequestException('담당자 이메일이 2개 이상일 때는 targetEmail이 필수입니다.');
+      }
+      if (!personEmails.includes(targetEmail)) {
+        throw new BadRequestException('유효하지 않은 담당자 이메일입니다.');
+      }
+      sendToEmail = targetEmail;
     }
 
     const code = generateRandomCode();
@@ -304,7 +317,8 @@ export class UserService {
     // 이메일 전송한 history record 생성하기
     const emailSendHistory = new EmailSendHistoryEntity();
 
-    emailSendHistory.email = targetEmail; // 담당자 이메일로 저장
+    emailSendHistory.userId = user.id; // 계정별 인증 이력 관리
+    emailSendHistory.email = sendToEmail;
     emailSendHistory.type = EmailType.LOGIN;
     emailSendHistory.expireAt = expireAt;
     emailSendHistory.code = code;
@@ -317,7 +331,7 @@ export class UserService {
       cc: undefined,
       content: content,
       subject: title,
-      to: targetEmail, // 담당자 이메일로 발송
+      to: sendToEmail,
     });
 
     await this.emailSendHistoryRepository.save(emailSendHistory);
