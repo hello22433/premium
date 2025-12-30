@@ -34,7 +34,6 @@ export class UserManagementUpsertDto {
   })
   // ===============================
   @IsNotEmpty()
-  @IsEmail()
   personEmail: string;
 
   @ApiPropertyOptional({
