@@ -52,6 +52,8 @@ import { ActivityLogEntity } from '../entity/activity.log.entity';
 import { ClassificationEntity } from '../entity/classification.entity';
 import { PasswordPolicyEntity } from '../entity/password.policy.entity';
 import { EmailManualEntity } from '../entity/email.manual.entity';
+import { DepartmentEntity } from '../entity/department.entity';
+import { UserViewScopeEntity } from '../entity/user.view.scope.entity';
 
 @Module({
   imports: [
@@ -108,6 +110,8 @@ import { EmailManualEntity } from '../entity/email.manual.entity';
           ActivityLogEntity,
           PasswordPolicyEntity,
           EmailManualEntity,
+          DepartmentEntity,
+          UserViewScopeEntity,
         ],
         timezone: '+09:00',
         logger: configService.get('DATABASE_LOGGING') === 'true' ? new SqlLogger() : undefined,

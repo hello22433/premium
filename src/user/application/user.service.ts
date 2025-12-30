@@ -9,6 +9,7 @@ import { PasswordBcryptEncrypt } from '../../auth/infrastructure/password.bcrypt
 import { ILoginTokenValidator } from '../../auth/interface/login.token.validator';
 import { UserEntity } from '../../entity/user.entity';
 import { UserCompanyEntity } from '../../entity/user.company.entity';
+import { UserViewScopeEntity, ViewScopeType } from '../../entity/user.view.scope.entity';
 import { PasswordPolicyEntity } from '../../entity/password.policy.entity';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Between, In, IsNull, Repository, Raw } from 'typeorm';
@@ -40,6 +41,8 @@ export class UserService {
     private userRepository: Repository<UserEntity>,
     @InjectRepository(UserCompanyEntity)
     private userCompanyRepository: Repository<UserCompanyEntity>,
+    @InjectRepository(UserViewScopeEntity)
+    private userViewScopeRepository: Repository<UserViewScopeEntity>,
     @InjectRepository(EmailSendHistoryEntity)
     private emailSendHistoryRepository: Repository<EmailSendHistoryEntity>,
     @InjectRepository(PasswordPolicyEntity)
@@ -113,7 +116,7 @@ export class UserService {
       }
     }
 
-    await this.userRepository.insert({
+    const insertResult = await this.userRepository.insert({
       email: signUpDto.email,
       password: passwordEncrypt,
       personName,
@@ -136,6 +139,14 @@ export class UserService {
       balance: 0,
       companyId: companyId,
     });
+
+    // 신규 사용자의 조회 범위 기본값 설정 (SELF)
+    const newUserId = insertResult.identifiers[0].id;
+    await this.userViewScopeRepository.insert({
+      userId: newUserId,
+      scopeType: ViewScopeType.SELF,
+    });
+
     return;
   }
 

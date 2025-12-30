@@ -1,6 +1,8 @@
 import { BadRequestException, Inject, Injectable } from '@nestjs/common';
 import { UserEntity } from '../../entity/user.entity';
 import { UserCompanyEntity } from '../../entity/user.company.entity';
+import { UserViewScopeEntity, ViewScopeType } from '../../entity/user.view.scope.entity';
+import { DepartmentEntity } from '../../entity/department.entity';
 import { Repository } from 'typeorm';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
@@ -44,6 +46,10 @@ export class UserManagementService {
     private userRepository: Repository<UserEntity>,
     @InjectRepository(UserCompanyEntity)
     private userCompanyRepository: Repository<UserCompanyEntity>,
+    @InjectRepository(UserViewScopeEntity)
+    private userViewScopeRepository: Repository<UserViewScopeEntity>,
+    @InjectRepository(DepartmentEntity)
+    private departmentRepository: Repository<DepartmentEntity>,
     private passwordEncrypt: PasswordBcryptEncrypt,
     @Inject('IMailSend')
     private readonly mailSendService: IMailSend,
@@ -175,7 +181,7 @@ export class UserManagementService {
       where: {
         id,
       },
-      relations: ['company'],
+      relations: ['company', 'department'],
     });
 
     if (!user) {
@@ -187,6 +193,11 @@ export class UserManagementService {
 
     // 사업자 정보는 user_company에서 가져옴
     const company = user.company;
+
+    // 조회 범위 정보 조회
+    const viewScope = await this.userViewScopeRepository.findOne({
+      where: { userId: id },
+    });
 
     return {
       id: user.id,
@@ -233,6 +244,22 @@ export class UserManagementService {
             maximumLimit: company.maximumLimit,
           }
         : null,
+      departmentId: user.departmentId,
+      department: user.department
+        ? {
+            id: user.department.id,
+            name: user.department.name,
+          }
+        : null,
+      viewScope: viewScope
+        ? {
+            scopeType: viewScope.scopeType,
+            deptIds: viewScope.getDeptIdList(),
+          }
+        : {
+            scopeType: ViewScopeType.SELF,
+            deptIds: [],
+          },
     };
   }
 
@@ -414,7 +441,7 @@ export class UserManagementService {
       }
     }
 
-    await this.userRepository.insert({
+    const insertResult = await this.userRepository.insert({
       email: getBody.email,
       password: passwordEncrypt,
       authority: getBody.authority,
@@ -438,6 +465,14 @@ export class UserManagementService {
       duplicatePhoneLimit: getBody.duplicatePhoneLimit ?? 0,
       authorityList: getBody.authorityList.join(','),
       companyId: companyId,
+    });
+
+    // 신규 사용자의 조회 범위 설정 (SUPER_ADMIN은 ALL, 나머지는 SELF)
+    const newUserId = insertResult.identifiers[0].id;
+    const scopeType = getBody.authority === 'SUPER_ADMIN' ? ViewScopeType.ALL : ViewScopeType.SELF;
+    await this.userViewScopeRepository.insert({
+      userId: newUserId,
+      scopeType: scopeType,
     });
 
     return;

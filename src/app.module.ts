@@ -40,6 +40,7 @@ import { ErpModule } from './erp/erp.module';
 import { RefundModule } from './refund/refund.module';
 import { ActivityLogModule } from './activity_log/activity.log.module';
 import { EmailManualModule } from './email_manual/email.manual.module';
+import { DepartmentModule } from './department/department.module';
 
 @Module({
   imports: [
@@ -86,6 +87,7 @@ import { EmailManualModule } from './email_manual/email.manual.module';
     RefundModule,
     ActivityLogModule,
     EmailManualModule,
+    DepartmentModule,
   ],
   controllers: [AppController],
   providers: [],

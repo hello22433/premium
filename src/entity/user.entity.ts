@@ -1,4 +1,4 @@
-import { Column, Entity, JoinColumn, ManyToOne, OneToMany, PrimaryGeneratedColumn } from 'typeorm';
+import { Column, Entity, JoinColumn, ManyToOne, OneToMany, OneToOne, PrimaryGeneratedColumn } from 'typeorm';
 import { BaseEntity } from '../common/entity/base.entity';
 import { IUserStatus } from '../user/interface/user.status';
 import { IUserAuthority } from '../user/interface/user.authority';
@@ -9,6 +9,8 @@ import { UserDiscountEntity } from './user.discount.entity';
 import { UserSettlePeriodConditionEnum } from '../user/interface/user.settle.period.condition.enum';
 import { OrderEntity } from './order.entity';
 import { UserCompanyEntity } from './user.company.entity';
+import { DepartmentEntity } from './department.entity';
+import { UserViewScopeEntity } from './user.view.scope.entity';
 
 @Entity('user')
 export class UserEntity extends BaseEntity {
@@ -21,6 +23,13 @@ export class UserEntity extends BaseEntity {
   @ManyToOne(() => UserCompanyEntity, (company) => company.users)
   @JoinColumn({ name: 'company_id' })
   company: UserCompanyEntity;
+
+  @Column({ type: 'int', nullable: true, comment: 'FK) department.id' })
+  departmentId: number | null;
+
+  @ManyToOne(() => DepartmentEntity, (department) => department.users)
+  @JoinColumn({ name: 'department_id' })
+  department: DepartmentEntity;
 
   @Column({ type: 'varchar', length: 100, comment: '이메일' })
   email: string;
@@ -134,4 +143,7 @@ export class UserEntity extends BaseEntity {
 
   @OneToMany(() => UserDiscountEntity, (userDisCount) => userDisCount.user)
   userDiscounts: UserDiscountEntity[];
+
+  @OneToOne(() => UserViewScopeEntity, (viewScope) => viewScope.user)
+  viewScope: UserViewScopeEntity;
 }

@@ -66,6 +66,7 @@ import { PartnerCompanyExternService } from '../../partner_company_extern/applic
 import { DeliveryCreateCouponImage } from '../../delivery/infra/delivery.create.coupon.image';
 import { UserEntity } from '../../entity/user.entity';
 import { UserCompanyEntity } from '../../entity/user.company.entity';
+import { UserViewScopeEntity, ViewScopeType } from '../../entity/user.view.scope.entity';
 import { IUserAuthority } from '../../user/interface/user.authority';
 import { IUserSettleCondition } from '../../user/interface/user.settle.condition';
 import { IOrderSection } from '../interface/order.section';
@@ -140,6 +141,8 @@ export class OrderService {
     private ssgEventRepository: Repository<SsgEventEntity>,
     @InjectRepository(SsgEventAmountHistoryEntity)
     private ssgEventAmountHistoryRepository: Repository<SsgEventAmountHistoryEntity>,
+    @InjectRepository(UserViewScopeEntity)
+    private userViewScopeRepository: Repository<UserViewScopeEntity>,
     private partnerCompanyExternService: PartnerCompanyExternService,
     private readonly userManagementService: UserManagementService,
     private readonly ssgEventService: SsgEventService,
@@ -173,48 +176,75 @@ export class OrderService {
       .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
       .where('order.type = :type', { type });
 
-    // 현재 사용자의 회사 ID 조회 (회사 단위 주문 조회를 위해)
+    // 현재 사용자 정보 및 조회 범위 설정 조회
     const currentUser = await this.userRepository.findOne({
       where: { id: user.id },
-      select: ['id', 'companyId'],
+      select: ['id', 'companyId', 'departmentId'],
     });
 
-    // 주문 관리 일 경우
-    if (section === IOrderSection.ORDER) {
-      if (user.authority !== IUserAuthority.SUPER_ADMIN) {
-        if (currentUser?.companyId) {
-          // 같은 회사의 모든 주문 조회
-          queryBuilder = queryBuilder.andWhere('user.companyId = :companyId', {
-            companyId: currentUser.companyId,
-          });
-        } else {
-          // companyId가 없으면 기존 방식 (본인 건만)
+    const viewScope = await this.userViewScopeRepository.findOne({
+      where: { userId: user.id },
+    });
+
+    // view_scope 기반 조회 조건 적용 함수
+    const applyViewScopeFilter = () => {
+      const scopeType = viewScope?.scopeType ?? ViewScopeType.SELF;
+
+      switch (scopeType) {
+        case ViewScopeType.ALL:
+          // 전체 조회 - 조건 없음
+          break;
+        case ViewScopeType.COMPANY:
+          // 같은 회사 전체 조회
+          if (currentUser?.companyId) {
+            queryBuilder = queryBuilder.andWhere('user.companyId = :companyId', {
+              companyId: currentUser.companyId,
+            });
+          } else {
+            // companyId가 없으면 본인 + 배정된 주문만
+            queryBuilder = queryBuilder.andWhere('(order.userId = :userId OR order.operationUserId = :userId)', {
+              userId: user.id,
+            });
+          }
+          break;
+        case ViewScopeType.DEPARTMENT:
+          // 같은 부서 + 추가 부서들 조회
+          const deptIds = viewScope?.getDeptIdList() ?? [];
+          const targetDeptIds = currentUser?.departmentId
+            ? [currentUser.departmentId, ...deptIds]
+            : deptIds;
+
+          if (targetDeptIds.length > 0) {
+            queryBuilder = queryBuilder.andWhere('user.departmentId IN (:...deptIds)', {
+              deptIds: targetDeptIds,
+            });
+          } else {
+            // 부서 ID가 없으면 본인 + 배정된 주문만
+            queryBuilder = queryBuilder.andWhere('(order.userId = :userId OR order.operationUserId = :userId)', {
+              userId: user.id,
+            });
+          }
+          break;
+        case ViewScopeType.SELF:
+        default:
+          // 본인 주문 + 배정된 주문만
           queryBuilder = queryBuilder.andWhere('(order.userId = :userId OR order.operationUserId = :userId)', {
             userId: user.id,
           });
-        }
+          break;
       }
+    };
+
+    // 주문 관리 일 경우
+    if (section === IOrderSection.ORDER) {
+      applyViewScopeFilter();
     }
 
     // 발송관리 일 경우
     if (section === IOrderSection.SHIPPING) {
       // 발송관리에서는 임시저장 상태 제외
       queryBuilder = queryBuilder.andWhere('order.status != :tempStatus', { tempStatus: IOrderStatus.TEMP });
-
-      if (user.authority === IUserAuthority.CORPORATE_ADMIN) {
-        if (currentUser?.companyId) {
-          // 같은 회사의 모든 주문 조회
-          queryBuilder = queryBuilder.andWhere('user.companyId = :companyId', {
-            companyId: currentUser.companyId,
-          });
-        } else {
-          queryBuilder = queryBuilder.andWhere('order.userId = :userId', { userId: user.id });
-        }
-      }
-
-      if (user.authority === IUserAuthority.OPERATION_ADMIN) {
-        queryBuilder = queryBuilder.andWhere('order.operationUserId = :userId', { userId: user.id });
-      }
+      applyViewScopeFilter();
     }
 
     if (status) {

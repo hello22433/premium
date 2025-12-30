@@ -1,6 +1,6 @@
 import { UserManagementViewDto } from './dto/user.management.view.dto';
 import { GetListResDto } from '../../common/api/dto/get.list.res.dto';
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { UserManagementNameViewDto } from './dto/user.management.name.view.dto';
 import { IUserAuthority } from '../../user/interface/user.authority';
 import { IUserStatus } from '../../user/interface/user.status';
@@ -8,6 +8,7 @@ import { IUserSettleCondition } from '../../user/interface/user.settle.condition
 import { IUserSettleMethod } from '../../user/interface/user.settle.method';
 import { IUserBusinessType } from '../../user/interface/user.business.type';
 import { UserSettlePeriodConditionEnum } from '../../user/interface/user.settle.period.condition.enum';
+import { ViewScopeType } from '../../entity/user.view.scope.entity';
 
 export class UserManagementGetNameListResDto {
   @ApiProperty({
@@ -189,6 +190,40 @@ export class UserManagementGetDetailResDto {
     nullable: true,
   })
   company: UserCompanyInfoDto | null;
+
+  @ApiPropertyOptional({
+    description: '소속 부서 ID',
+    nullable: true,
+  })
+  departmentId?: number | null;
+
+  @ApiPropertyOptional({
+    description: '소속 부서 정보',
+    nullable: true,
+  })
+  department?: UserDepartmentInfoDto | null;
+
+  @ApiPropertyOptional({
+    description: '조회 범위 설정',
+    nullable: true,
+  })
+  viewScope?: UserViewScopeInfoDto | null;
+}
+
+export class UserDepartmentInfoDto {
+  @ApiProperty({ description: '부서 ID' })
+  id: number;
+
+  @ApiProperty({ description: '부서명' })
+  name: string;
+}
+
+export class UserViewScopeInfoDto {
+  @ApiProperty({ description: '조회 범위 타입', enum: ViewScopeType })
+  scopeType: ViewScopeType;
+
+  @ApiProperty({ description: '추가 조회 가능 부서 ID 목록', type: [Number] })
+  deptIds: number[];
 }
 
 export class UserCompanyInfoDto {
