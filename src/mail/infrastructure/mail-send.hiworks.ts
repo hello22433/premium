@@ -3,6 +3,7 @@ import { IMailSend, IMailSendIn, IMailSendOut } from '../interface/mail-send';
 import { ConfigService } from '@nestjs/config';
 import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
+import { Blob } from 'buffer';
 
 @Injectable()
 export class MailSendHiworks implements IMailSend {
@@ -43,6 +44,16 @@ export class MailSendHiworks implements IMailSend {
     }
     if (obj.bcc) {
       formData.append('bcc', obj.bcc);
+    }
+
+    // 첨부파일 처리
+    if (obj.attachments && obj.attachments.length > 0) {
+      for (const attachment of obj.attachments) {
+        const blob = new Blob([attachment.content], {
+          type: attachment.contentType || 'application/octet-stream',
+        });
+        formData.append('file', blob, attachment.filename);
+      }
     }
 
     try {
