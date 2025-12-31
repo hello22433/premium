@@ -57,6 +57,7 @@ import {
   OrderUpdateUseEmailContentReqBodyDto,
   OrderGetReportHistoryReqQueryDto,
   OrderGetReportHistoryReqParamDto,
+  OrderDeliveryCompleteReportEmailReqDto,
 } from './order.req.dto';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
 import {
@@ -620,5 +621,28 @@ export class OrderController {
       getQuery.reportType,
     );
     return { list };
+  }
+
+  @ApiOperation({
+    summary: '발송완료 리포트 이메일 전송 API',
+    description: '발송완료 리포트 PDF를 이메일로 전송합니다. 운영관리자 이상만 사용 가능.',
+  })
+  @ApiBearerAuth()
+  @ApiOkResponse({
+    description: '성공적으로 전송한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '해당 order id 가 존재하지 않는 경우',
+  })
+  // =========================================
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
+  @Post('/order/delivery-complete/report/email')
+  async sendDeliveryCompleteReportEmail(
+    @Body() getBody: OrderDeliveryCompleteReportEmailReqDto,
+    @User() user: ILoginUserInfo,
+    @Req() req: Request,
+  ) {
+    const ipAddress = req.ip || req.headers['x-forwarded-for']?.toString() || '';
+    return this.orderService.sendDeliveryCompleteReportEmail(getBody, user, ipAddress);
   }
 }

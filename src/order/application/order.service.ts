@@ -110,6 +110,10 @@ import { ActivityLogResult } from '../../activity_log/interface/activity.log.res
 import dayjs from 'dayjs';
 import timezone from 'dayjs/plugin/timezone';
 import utc from 'dayjs/plugin/utc';
+import { MailSendSmtp } from '../../mail/infrastructure/mail-send.smtp';
+import { OrderDeliveryCompleteReportEmailReqDto } from '../api/order.req.dto';
+import { EmailSendHistoryEntity } from '../../entity/email.send.history.entity';
+import { EmailType } from '../../mail/domain/email.type';
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
@@ -156,12 +160,13 @@ export class OrderService {
     // @Inject('ISmsSend')
     // private smsSend: ISmsSend,
     // private configService: ConfigService,
-    // @InjectRepository(EmailSendHistoryEntity)
-    // private emailSendHistoryRepository: Repository<EmailSendHistoryEntity>,
     // @Inject('IFileStorage')
     // private fileStorage: IFileStorage,
     private deliveryBatchService: DeliveryBatchService,
     private activityLogService: ActivityLogService,
+    private mailSendSmtp: MailSendSmtp,
+    @InjectRepository(EmailSendHistoryEntity)
+    private emailSendHistoryRepository: Repository<EmailSendHistoryEntity>,
   ) {}
 
   async getList(user: ILoginUserInfo, getQuery: OrderGetListReqDto): Promise<OrderGetListResDto> {
@@ -3093,5 +3098,73 @@ export class OrderService {
     }
 
     return null;
+  }
+
+  /**
+   * 발송완료리포트 이메일 발송
+   */
+  async sendDeliveryCompleteReportEmail(
+    getBody: OrderDeliveryCompleteReportEmailReqDto,
+    user: ILoginUserInfo,
+    ipAddress: string,
+  ): Promise<{ success: boolean; message: string }> {
+    const { orderId, to, subject, content, pdfBase64, pdfFileName } = getBody;
+
+    // 주문 존재 여부 확인
+    const order = await this.orderRepository.findOne({
+      where: { id: orderId },
+    });
+
+    if (!order) {
+      throw new BadRequestException('해당 주문이 존재하지 않습니다.');
+    }
+
+    // base64를 Buffer로 변환
+    const pdfBuffer = Buffer.from(pdfBase64, 'base64');
+
+    // 이메일 발송
+    const result = await this.mailSendSmtp.send({
+      to,
+      subject,
+      content,
+      attachments: [
+        {
+          filename: pdfFileName,
+          content: pdfBuffer,
+          contentType: 'application/pdf',
+        },
+      ],
+    });
+
+    // 활동 로그 기록
+    await this.activityLogService.createLog({
+      userId: user.id,
+      userEmail: user.email,
+      method: 'POST',
+      requestUrl: '/order/delivery-complete/report/email',
+      actionType: 'DELIVERY_COMPLETE_REPORT_EMAIL',
+      ipAddress,
+      statusCode: result.success ? 200 : 500,
+      result: result.success ? ActivityLogResult.SUCCESS : ActivityLogResult.FAILURE,
+      responseTime: 0,
+      requestParams: {
+        orderId,
+        to,
+        subject,
+        pdfFileName,
+        messageId: result.messageId,
+        error: result.error,
+      },
+      errorMessage: result.error || undefined,
+    });
+
+    if (!result.success) {
+      throw new InternalServerErrorException(result.error || '이메일 발송에 실패했습니다.');
+    }
+
+    return {
+      success: true,
+      message: '이메일이 성공적으로 발송되었습니다.',
+    };
   }
 }
