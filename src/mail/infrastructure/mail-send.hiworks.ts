@@ -52,7 +52,7 @@ export class MailSendHiworks implements IMailSend {
         const blob = new Blob([attachment.content], {
           type: attachment.contentType || 'application/octet-stream',
         });
-        formData.append('file', blob, attachment.filename);
+        formData.append('file', blob as unknown as globalThis.Blob, attachment.filename);
       }
     }
 

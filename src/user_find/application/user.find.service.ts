@@ -105,7 +105,7 @@ export class UserFindService {
       throw new BadRequestException('이메일 전송 데이터가 없습니다.');
     }
 
-    if (emailSendHistory.expireAt < new Date()) {
+    if (emailSendHistory.expireAt && emailSendHistory.expireAt < new Date()) {
       throw new BadRequestException('만료된 이메일 인증 코드입니다.');
     }
 
