@@ -282,3 +282,22 @@ export class UserManagementGetBalanceHistoryResDto {
   @ApiProperty({ description: '충전/수정 이력 목록', type: [BalanceHistoryItemDto] })
   list: BalanceHistoryItemDto[];
 }
+
+export class UserCompanyViewDto {
+  @ApiProperty({ description: '회사 ID (user_company.id)' })
+  id: number;
+
+  @ApiProperty({ description: '사업자명' })
+  businessName: string;
+
+  @ApiProperty({ description: '사업자등록번호' })
+  businessNumber: string;
+}
+
+export class UserManagementGetCompanyListResDto extends GetListResDto {
+  @ApiProperty({
+    description: '고객사 (회사) list',
+    type: [UserCompanyViewDto],
+  })
+  list: UserCompanyViewDto[];
+}

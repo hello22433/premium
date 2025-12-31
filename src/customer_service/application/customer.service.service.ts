@@ -72,7 +72,7 @@ export class CustomerServiceService {
       orderType,
       startAt,
       endAt,
-      userId,
+      userCompanyId,
       couponStatus,
       orderNumber,
       productName,
@@ -106,9 +106,9 @@ export class CustomerServiceService {
       queryBuilder.andWhere('product.type = :type', { type: 'SSG' });
     }
 
-    // 고객사 (userId)
-    if (userId) {
-      queryBuilder.andWhere('order.userId = :userId', { userId });
+    // 고객사 (userCompanyId)
+    if (userCompanyId) {
+      queryBuilder.andWhere('user.companyId = :userCompanyId', { userCompanyId });
     }
 
     // 통합검색 (주문번호, 상품명, 상품코드, MMS제목, 수신정보를 OR 조건으로 검색)
@@ -1281,7 +1281,7 @@ export class CustomerServiceService {
       orderType,
       startAt,
       endAt,
-      userId,
+      userCompanyId,
       couponStatus,
       orderNumber,
       productName,
@@ -1320,8 +1320,9 @@ export class CustomerServiceService {
       queryBuilder.andWhere('product.type = :type', { type: 'SSG' });
     }
 
-    if (userId) {
-      queryBuilder.andWhere('order.userId = :userId', { userId });
+    // 고객사 (userCompanyId)
+    if (userCompanyId) {
+      queryBuilder.andWhere('user.companyId = :userCompanyId', { userCompanyId });
     }
 
     if (orderNumber) {

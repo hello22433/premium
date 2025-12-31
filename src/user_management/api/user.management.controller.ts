@@ -10,6 +10,7 @@ import {
   UserManagementPasswordResetReqDto,
   UserManagementUpdateReqDto,
   UserManagementModifyBalanceReqDto,
+  UserManagementGetCompanyListReqQueryDto,
 } from './user.management.req.dto';
 import {
   UserManagementBalanceViewDto,
@@ -17,6 +18,7 @@ import {
   UserManagementGetListResDto,
   UserManagementGetNameListResDto,
   UserManagementGetBalanceHistoryResDto,
+  UserManagementGetCompanyListResDto,
 } from './user.management.res.dto';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
 import { AuthUserSuperAdminGuard } from '../../auth/api/auth.user.super-admin.guard';
@@ -195,5 +197,21 @@ export class UserManagementController {
   @Post('/user-management/password-reset')
   passwordReset(@Body() getBody: UserManagementPasswordResetReqDto) {
     return this.userManagementService.passwordReset(getBody);
+  }
+
+  @ApiOperation({
+    summary: '고객사(회사) 목록 조회 API',
+    description: 'user_company 테이블 기준으로 중복 없이 고객사 목록을 반환합니다.',
+  })
+  @ApiBearerAuth()
+  @ApiOkResponse({
+    type: UserManagementGetCompanyListResDto,
+    description: '성공적으로 불러온 경우',
+  })
+  // ====================================
+  @UseGuards(AuthUserAuthorizationGuard)
+  @Get('/user-management/company/list')
+  getCompanyList(@Query() getQuery: UserManagementGetCompanyListReqQueryDto) {
+    return this.userManagementService.getCompanyList(getQuery);
   }
 }

@@ -32,13 +32,13 @@ export class CustomerServiceGetListReqDto extends PagingReqDto {
   endAt?: string;
 
   @ApiPropertyOptional({
-    description: 'user id (고객사)',
+    description: '고객사 ID (user_company.id)',
   })
   // =============================================================
   @IsOptional()
   @IsNumber()
   @Type(() => Number)
-  userId?: number;
+  userCompanyId?: number;
 
   @ApiPropertyOptional({
     description: '핀 상태',
@@ -335,13 +335,13 @@ export class CustomerServiceExcelDownloadReqDto {
   endAt?: string;
 
   @ApiPropertyOptional({
-    description: 'user id (고객사)',
+    description: '고객사 ID (user_company.id)',
   })
   // =============================================================
   @IsOptional()
   @IsNumber()
   @Type(() => Number)
-  userId?: number;
+  userCompanyId?: number;
 
   @ApiPropertyOptional({
     description: '핀 상태',

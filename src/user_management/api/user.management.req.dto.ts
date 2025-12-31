@@ -198,3 +198,12 @@ export class UserManagementGetBalanceHistoryReqDto {
   @Type(() => Number)
   id: number;
 }
+
+export class UserManagementGetCompanyListReqQueryDto extends PagingReqDto {
+  @ApiPropertyOptional({
+    description: '고객사명 (사업자명)',
+  })
+  // =============================================================
+  @IsOptional()
+  businessName?: string;
+}

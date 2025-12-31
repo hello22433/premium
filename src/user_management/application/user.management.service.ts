@@ -14,6 +14,7 @@ import {
   UserManagementPasswordResetReqDto,
   UserManagementUpdateReqDto,
   UserManagementModifyBalanceReqDto,
+  UserManagementGetCompanyListReqQueryDto,
 } from '../api/user.management.req.dto';
 import {
   UserManagementGetDetailResDto,
@@ -564,5 +565,40 @@ export class UserManagementService {
     await this.userRepository.save(user);
 
     return;
+  }
+
+  /**
+   * 고객사(회사) 목록 조회 API
+   * user_company 테이블 기준으로 중복 없이 고객사 목록을 반환
+   */
+  async getCompanyList(getQuery: UserManagementGetCompanyListReqQueryDto) {
+    const { businessName, page, take } = getQuery;
+
+    let queryBuilder = this.userCompanyRepository
+      .createQueryBuilder('company')
+      .where('company.deletedAt IS NULL');
+
+    if (businessName) {
+      queryBuilder = queryBuilder.andWhere('company.businessName LIKE :businessName', {
+        businessName: `%${businessName}%`,
+      });
+    }
+
+    queryBuilder = queryBuilder.orderBy('company.businessName', 'ASC');
+
+    const skip = (page - 1) * take;
+    queryBuilder = queryBuilder.take(take).skip(skip);
+
+    const [companyList, totalCount] = await queryBuilder.getManyAndCount();
+
+    const resultList = companyList.map((company) => ({
+      id: company.id,
+      businessName: company.businessName,
+      businessNumber: company.businessNumber,
+    }));
+
+    const totalPage = Math.ceil(totalCount / take);
+
+    return { list: resultList, totalCount, totalPage, currentPage: page };
   }
 }
