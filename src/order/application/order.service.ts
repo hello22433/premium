@@ -19,6 +19,7 @@ import {
   OrderExcelDownloadReqBodyDto,
   OrderGetDeliveryCompleteReportPdfReqDto,
   OrderGetDeliveryCompleteReportReqDto,
+  OrderGetDestructionCertificatePdfReqDto,
   OrderGetDetailReqParamDto,
   OrderGetListReqDto,
   OrderGetOrderCompleteReportPdfReqDto,
@@ -890,6 +891,32 @@ export class OrderService {
       result: ActivityLogResult.SUCCESS,
       responseTime: 0,
       requestParams: { orderId: getBody.id, source: getBody.source },
+    });
+
+    return;
+  }
+
+  async destructionCertificatePdf(getBody: OrderGetDestructionCertificatePdfReqDto, user: ILoginUserInfo, ipAddress: string): Promise<void> {
+    const order = await this.orderRepository.findOne({
+      where: { id: getBody.id },
+    });
+
+    if (!order) {
+      throw new BadRequestException('주문이 존재하지 않습니다.');
+    }
+
+    // activity_log에 기록
+    await this.activityLogService.createLog({
+      userId: user.id,
+      userEmail: user.email,
+      method: 'POST',
+      requestUrl: '/order/destruction-certificate/pdf',
+      actionType: 'DESTRUCTION_CERTIFICATE',
+      ipAddress,
+      statusCode: 200,
+      result: ActivityLogResult.SUCCESS,
+      responseTime: 0,
+      requestParams: { orderId: getBody.id },
     });
 
     return;

@@ -144,6 +144,16 @@ export class OrderGetOrderCompleteReportPdfReqDto {
   source?: string;
 }
 
+export class OrderGetDestructionCertificatePdfReqDto {
+  @ApiProperty({
+    description: 'order id',
+  })
+  // ==============================================
+  @IsNumber()
+  @IsNotEmpty()
+  id: number;
+}
+
 export class OrderGetSettleReqDto extends PagingReqDto {
   @ApiProperty({
     description: 'order id',

@@ -38,6 +38,7 @@ import {
   OrderExcelDownloadReqBodyDto,
   OrderGetDeliveryCompleteReportPdfReqDto,
   OrderGetDeliveryCompleteReportReqDto,
+  OrderGetDestructionCertificatePdfReqDto,
   OrderGetDetailReqParamDto,
   OrderGetListReqDto,
   OrderGetOrderCompleteReportPdfReqDto,
@@ -228,6 +229,26 @@ export class OrderController {
   ) {
     const ipAddress = req.ip || req.headers['x-forwarded-for']?.toString() || '';
     return this.orderService.orderCompleteReportPdf(getBody, user, ipAddress);
+  }
+
+  @ApiOperation({
+    summary: '파기확인서 PDF 다운로드 로그 기록 API',
+  })
+  @ApiOkResponse({
+    description: '성공적으로 기록한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '해당 order id 가 존재하지 않는 경우',
+  })
+  // ====================================================
+  @Post('/order/destruction-certificate/pdf')
+  destructionCertificatePdf(
+    @Body() getBody: OrderGetDestructionCertificatePdfReqDto,
+    @User() user: ILoginUserInfo,
+    @Req() req: Request,
+  ) {
+    const ipAddress = req.ip || req.headers['x-forwarded-for']?.toString() || '';
+    return this.orderService.destructionCertificatePdf(getBody, user, ipAddress);
   }
 
   @ApiOperation({
