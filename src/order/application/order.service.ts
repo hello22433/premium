@@ -725,7 +725,7 @@ export class OrderService {
     };
   }
 
-  async deliveryCompleteReportPdf(getBody: OrderGetDeliveryCompleteReportPdfReqDto, user: ILoginUserInfo): Promise<void> {
+  async deliveryCompleteReportPdf(getBody: OrderGetDeliveryCompleteReportPdfReqDto, user: ILoginUserInfo, ipAddress: string): Promise<void> {
     const queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
@@ -754,7 +754,7 @@ export class OrderService {
       method: 'POST',
       requestUrl: '/order/delivery-complete/report/pdf',
       actionType: 'DELIVERY_COMPLETE_REPORT',
-      ipAddress: '',
+      ipAddress,
       statusCode: 200,
       result: ActivityLogResult.SUCCESS,
       responseTime: 0,
@@ -856,7 +856,7 @@ export class OrderService {
     };
   }
 
-  async orderCompleteReportPdf(getBody: OrderGetOrderCompleteReportPdfReqDto, user: ILoginUserInfo): Promise<void> {
+  async orderCompleteReportPdf(getBody: OrderGetOrderCompleteReportPdfReqDto, user: ILoginUserInfo, ipAddress: string): Promise<void> {
     const queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
@@ -885,7 +885,7 @@ export class OrderService {
       method: 'POST',
       requestUrl: '/order/order-complete/report/pdf',
       actionType: 'TRANSACTION_STATEMENT',
-      ipAddress: '',
+      ipAddress,
       statusCode: 200,
       result: ActivityLogResult.SUCCESS,
       responseTime: 0,

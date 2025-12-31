@@ -9,10 +9,12 @@ import {
   Post,
   Put,
   Query,
+  Req,
   Res,
   UseFilters,
   UseGuards,
 } from '@nestjs/common';
+import { Request } from 'express';
 import { OrderService } from '../application/order.service';
 import {
   ApiBadRequestResponse,
@@ -186,8 +188,10 @@ export class OrderController {
   deliveryCompleteReportPdf(
     @Body() getBody: OrderGetDeliveryCompleteReportPdfReqDto,
     @User() user: ILoginUserInfo,
+    @Req() req: Request,
   ) {
-    return this.orderService.deliveryCompleteReportPdf(getBody, user);
+    const ipAddress = req.ip || req.headers['x-forwarded-for']?.toString() || '';
+    return this.orderService.deliveryCompleteReportPdf(getBody, user, ipAddress);
   }
 
   @ApiOperation({
@@ -220,8 +224,10 @@ export class OrderController {
   orderCompleteReportPdf(
     @Body() getBody: OrderGetOrderCompleteReportPdfReqDto,
     @User() user: ILoginUserInfo,
+    @Req() req: Request,
   ) {
-    return this.orderService.orderCompleteReportPdf(getBody, user);
+    const ipAddress = req.ip || req.headers['x-forwarded-for']?.toString() || '';
+    return this.orderService.orderCompleteReportPdf(getBody, user, ipAddress);
   }
 
   @ApiOperation({
