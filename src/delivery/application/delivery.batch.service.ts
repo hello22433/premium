@@ -24,6 +24,7 @@ import { EmailType } from '../../mail/domain/email.type';
 import { IOrderType } from '../../order/interface/order.type';
 import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
 import { smsSsgTemplate } from '../domain/sms.ssg.template';
+import { smsEncourageTemplate } from '../domain/sms.encourage.template';
 import { EmailDeliveryTemplate } from '../domain/email.delivery.template';
 import { OrderEmailSendType } from '../../order/domain/order.email.send.type';
 import * as QRCode from 'qrcode';
@@ -883,7 +884,7 @@ export class DeliveryBatchService {
         }
       }
 
-      const title = '미사용쿠폰발생 안내';
+      const title = '미사용 쿠폰에 대한 유효기간 안내';
       const encryptKey = this.cryptoCipher.encryptJson({
         id: orderDelivery.id,
         transactionId: orderDelivery.transactionId,
@@ -911,7 +912,7 @@ export class DeliveryBatchService {
       // 2. SMS 발송
       if (orderDelivery.deliveryMethod === IOrderSendMethod.SMS) {
         try {
-          const smsText = `미사용쿠폰발생. 뒷자리 ${orderDelivery.barCode!.slice(-4)}번. ${format(orderDelivery.expireAt!, 'yyyy/MM/dd')}일까지사용. 재발송문의 1644-3614`;
+          const smsText = smsEncourageTemplate(orderDelivery);
           await this.smsSend.send({
             msgType: 'M',
             to: decryptedDeliveryTarget,

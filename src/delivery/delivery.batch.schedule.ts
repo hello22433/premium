@@ -52,9 +52,9 @@ export class DeliveryBatchSchedule implements OnApplicationBootstrap {
     }
   }
 
-  // 개인정보 파기
-  // 매일 00시 실행
-  @Cron('0 03 * * *')
+  // 독려문자 발송
+  // 매일 15시 실행
+  @Cron('0 15 * * *')
   async handleDeliveryEncourage() {
     try {
       await this.deliveryBatchService.handleDeliveryEncourage();
