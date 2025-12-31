@@ -232,3 +232,29 @@ export class OrderGetPreviousContentResDto {
   })
   sendContent: string | null;
 }
+
+export class OrderReportHistoryItemDto {
+  @ApiProperty({
+    description: '다운로드한 사용자 이메일',
+  })
+  userEmail: string;
+
+  @ApiProperty({
+    description: '다운로드 일시',
+  })
+  createdAt: string;
+
+  @ApiProperty({
+    description: '발행 소스 (DOCUMENT: 문서함, DIRECT: 직접발행)',
+    nullable: true,
+  })
+  source: string | null;
+}
+
+export class OrderGetReportHistoryResDto {
+  @ApiProperty({
+    type: [OrderReportHistoryItemDto],
+    description: '다운로드 이력 목록',
+  })
+  list: OrderReportHistoryItemDto[];
+}

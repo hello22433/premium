@@ -725,7 +725,7 @@ export class OrderService {
     };
   }
 
-  async deliveryCompleteReportPdf(getBody: OrderGetDeliveryCompleteReportPdfReqDto): Promise<void> {
+  async deliveryCompleteReportPdf(getBody: OrderGetDeliveryCompleteReportPdfReqDto, user: ILoginUserInfo): Promise<void> {
     const queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
@@ -746,6 +746,20 @@ export class OrderService {
     order.deliveryReportLastSource = getBody.source || 'DOCUMENT';
 
     await this.orderRepository.save(order);
+
+    // activity_log에 기록
+    await this.activityLogService.createLog({
+      userId: user.id,
+      userEmail: user.email,
+      method: 'POST',
+      requestUrl: '/order/delivery-complete/report/pdf',
+      actionType: 'DELIVERY_COMPLETE_REPORT',
+      ipAddress: '',
+      statusCode: 200,
+      result: ActivityLogResult.SUCCESS,
+      responseTime: 0,
+      requestParams: { orderId: getBody.id, source: getBody.source },
+    });
 
     return;
   }
@@ -842,7 +856,7 @@ export class OrderService {
     };
   }
 
-  async orderCompleteReportPdf(getBody: OrderGetOrderCompleteReportPdfReqDto): Promise<void> {
+  async orderCompleteReportPdf(getBody: OrderGetOrderCompleteReportPdfReqDto, user: ILoginUserInfo): Promise<void> {
     const queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
@@ -863,6 +877,20 @@ export class OrderService {
     order.transactionStatementLastSource = getBody.source || 'DOCUMENT';
 
     await this.orderRepository.save(order);
+
+    // activity_log에 기록
+    await this.activityLogService.createLog({
+      userId: user.id,
+      userEmail: user.email,
+      method: 'POST',
+      requestUrl: '/order/order-complete/report/pdf',
+      actionType: 'TRANSACTION_STATEMENT',
+      ipAddress: '',
+      statusCode: 200,
+      result: ActivityLogResult.SUCCESS,
+      responseTime: 0,
+      requestParams: { orderId: getBody.id, source: getBody.source },
+    });
 
     return;
   }

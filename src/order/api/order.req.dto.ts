@@ -449,3 +449,25 @@ export class OrderUpdateUseEmailContentReqBodyDto {
   @IsString()
   useEmailContent: string;
 }
+
+export class OrderGetReportHistoryReqQueryDto {
+  @ApiProperty({
+    description: '리포트 타입 ex) DELIVERY_COMPLETE_REPORT: 발송완료리포트, TRANSACTION_STATEMENT: 거래명세서',
+    enum: ['DELIVERY_COMPLETE_REPORT', 'TRANSACTION_STATEMENT'],
+  })
+  // ===================================
+  @IsNotEmpty()
+  @IsString()
+  reportType: 'DELIVERY_COMPLETE_REPORT' | 'TRANSACTION_STATEMENT';
+}
+
+export class OrderGetReportHistoryReqParamDto {
+  @ApiProperty({
+    description: 'order id',
+  })
+  // ===================================
+  @IsNumber()
+  @IsNotEmpty()
+  @Type(() => Number)
+  orderId: number;
+}

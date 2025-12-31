@@ -10,4 +10,6 @@ export enum ActivityLogActionType {
   DELETE = 'DELETE', // 삭제
   BALANCE_CHARGE = 'BALANCE_CHARGE', // 선충전 잔액 충전
   BALANCE_MODIFY = 'BALANCE_MODIFY', // 선충전 잔액 수정 (최고관리자)
+  DELIVERY_COMPLETE_REPORT = 'DELIVERY_COMPLETE_REPORT', // 발송완료리포트 다운로드
+  TRANSACTION_STATEMENT = 'TRANSACTION_STATEMENT', // 거래명세서 다운로드
 }

@@ -52,6 +52,8 @@ import {
   OrderUpdateTailTextReqBodyDto,
   OrderUpdateUseEmailContentReqParamDto,
   OrderUpdateUseEmailContentReqBodyDto,
+  OrderGetReportHistoryReqQueryDto,
+  OrderGetReportHistoryReqParamDto,
 } from './order.req.dto';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
 import {
@@ -64,6 +66,7 @@ import {
   OrderGetOrderCompleteReportResDto,
   OrderGetPreviousContentResDto,
   OrderGetSettleGetListResDto,
+  OrderGetReportHistoryResDto,
 } from './order.res.dto';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { User } from '../../auth/api/user.decorator';
@@ -180,8 +183,11 @@ export class OrderController {
   })
   // ====================================================
   @Post('/order/delivery-complete/report/pdf')
-  deliveryCompleteReportPdf(@Body() getBody: OrderGetDeliveryCompleteReportPdfReqDto) {
-    return this.orderService.deliveryCompleteReportPdf(getBody);
+  deliveryCompleteReportPdf(
+    @Body() getBody: OrderGetDeliveryCompleteReportPdfReqDto,
+    @User() user: ILoginUserInfo,
+  ) {
+    return this.orderService.deliveryCompleteReportPdf(getBody, user);
   }
 
   @ApiOperation({
@@ -211,8 +217,11 @@ export class OrderController {
   })
   // ====================================================
   @Post('/order/order-complete/report/pdf')
-  orderCompleteReportPdf(@Body() getBody: OrderGetOrderCompleteReportPdfReqDto) {
-    return this.orderService.orderCompleteReportPdf(getBody);
+  orderCompleteReportPdf(
+    @Body() getBody: OrderGetOrderCompleteReportPdfReqDto,
+    @User() user: ILoginUserInfo,
+  ) {
+    return this.orderService.orderCompleteReportPdf(getBody, user);
   }
 
   @ApiOperation({
@@ -562,5 +571,27 @@ export class OrderController {
     @Body() getBody: OrderUpdateUseEmailContentReqBodyDto,
   ) {
     return this.orderService.updateUseEmailContent(user, getParam.id, getBody);
+  }
+
+  @ApiOperation({
+    summary: '주문별 리포트 다운로드 이력 조회 API',
+    description: '발송완료리포트 또는 거래명세서의 다운로드 이력을 조회합니다.',
+  })
+  @ApiBearerAuth()
+  @ApiOkResponse({
+    type: OrderGetReportHistoryResDto,
+    description: '성공적으로 조회한 경우',
+  })
+  // =========================================
+  @Get('/order/:orderId/report-history')
+  async getReportHistory(
+    @Param() getParam: OrderGetReportHistoryReqParamDto,
+    @Query() getQuery: OrderGetReportHistoryReqQueryDto,
+  ): Promise<OrderGetReportHistoryResDto> {
+    const list = await this.activityLogService.getOrderReportHistory(
+      getParam.orderId,
+      getQuery.reportType,
+    );
+    return { list };
   }
 }
