@@ -494,17 +494,45 @@ export class UserManagementService {
     // 사업자등록번호에서 하이픈 제거
     const businessNumber = getBody.businessNumber ? getBody.businessNumber.replace(/-/g, '') : getBody.businessNumber;
 
-    // user_company 업데이트 또는 생성
-    if (user.companyId && user.company) {
-      // 기존 회사 정보 업데이트
-      user.company.businessNumber = businessNumber;
-      user.company.businessName = getBody.businessName;
-      user.company.businessAddress = getBody.businessAddress;
-      user.company.businessPhoneNumber = getBody.businessPhoneNumber;
-      user.company.industryType = getBody.industryType;
-      user.company.industryItem = getBody.industryItem;
-      user.company.maximumLimit = getBody.maximumLimit;
-      await this.userCompanyRepository.save(user.company);
+    // user_company 업데이트 또는 연결
+    if (businessNumber) {
+      const currentBusinessNumber = user.company?.businessNumber;
+
+      // 사업자등록번호가 변경된 경우
+      if (currentBusinessNumber !== businessNumber) {
+        // 새로운 사업자등록번호로 기존 회사 검색
+        const existingCompany = await this.userCompanyRepository.findOne({
+          where: { businessNumber },
+        });
+
+        if (existingCompany) {
+          // 이미 존재하는 회사로 연결
+          user.companyId = existingCompany.id;
+          user.company = existingCompany;
+        } else {
+          // 새 회사 생성
+          const newCompany = await this.userCompanyRepository.save({
+            businessNumber: businessNumber,
+            businessName: getBody.businessName,
+            businessAddress: getBody.businessAddress,
+            businessPhoneNumber: getBody.businessPhoneNumber,
+            industryType: getBody.industryType,
+            industryItem: getBody.industryItem,
+            maximumLimit: getBody.maximumLimit,
+          });
+          user.companyId = newCompany.id;
+          user.company = newCompany;
+        }
+      } else if (user.companyId && user.company) {
+        // 사업자등록번호가 동일한 경우 기존 회사 정보만 업데이트
+        user.company.businessName = getBody.businessName;
+        user.company.businessAddress = getBody.businessAddress;
+        user.company.businessPhoneNumber = getBody.businessPhoneNumber;
+        user.company.industryType = getBody.industryType;
+        user.company.industryItem = getBody.industryItem;
+        user.company.maximumLimit = getBody.maximumLimit;
+        await this.userCompanyRepository.save(user.company);
+      }
     }
 
     // user 정보 업데이트 (사업자 관련 필드 제외)
