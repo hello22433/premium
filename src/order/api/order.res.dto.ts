@@ -249,6 +249,12 @@ export class OrderReportHistoryItemDto {
     nullable: true,
   })
   source: string | null;
+
+  @ApiProperty({
+    description: '이메일 수신자 (이메일 발송 시)',
+    nullable: true,
+  })
+  to: string | null;
 }
 
 export class OrderGetReportHistoryResDto {

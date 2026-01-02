@@ -287,14 +287,14 @@ export class ActivityLogService {
   }
 
   /**
-   * 주문별 발행 이력 조회 (발송완료리포트/거래명세서)
+   * 주문별 발행 이력 조회 (발송완료리포트/거래명세서/이메일발송)
    * @param orderId 주문 ID
-   * @param reportType 리포트 타입 (DELIVERY_COMPLETE_REPORT 또는 TRANSACTION_STATEMENT)
+   * @param reportType 리포트 타입
    */
   async getOrderReportHistory(
     orderId: number,
-    reportType: 'DELIVERY_COMPLETE_REPORT' | 'TRANSACTION_STATEMENT',
-  ): Promise<{ userEmail: string; createdAt: string; source: string | null }[]> {
+    reportType: 'DELIVERY_COMPLETE_REPORT' | 'TRANSACTION_STATEMENT' | 'DELIVERY_COMPLETE_REPORT_EMAIL',
+  ): Promise<{ userEmail: string; createdAt: string; source: string | null; to: string | null }[]> {
     const logs = await this.activityLogRepository
       .createQueryBuilder('activityLog')
       .where('activityLog.deletedAt IS NULL')
@@ -307,6 +307,7 @@ export class ActivityLogService {
       userEmail: log.userEmail,
       createdAt: format(log.createdAt, DateFormatStr),
       source: log.requestParams?.source || null,
+      to: log.requestParams?.to || null,
     }));
   }
 }

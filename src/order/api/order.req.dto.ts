@@ -462,13 +462,14 @@ export class OrderUpdateUseEmailContentReqBodyDto {
 
 export class OrderGetReportHistoryReqQueryDto {
   @ApiProperty({
-    description: '리포트 타입 ex) DELIVERY_COMPLETE_REPORT: 발송완료리포트, TRANSACTION_STATEMENT: 거래명세서',
-    enum: ['DELIVERY_COMPLETE_REPORT', 'TRANSACTION_STATEMENT'],
+    description:
+      '리포트 타입 ex) DELIVERY_COMPLETE_REPORT: 발송완료리포트, TRANSACTION_STATEMENT: 거래명세서, DELIVERY_COMPLETE_REPORT_EMAIL: 발송완료리포트 이메일 발송',
+    enum: ['DELIVERY_COMPLETE_REPORT', 'TRANSACTION_STATEMENT', 'DELIVERY_COMPLETE_REPORT_EMAIL'],
   })
   // ===================================
   @IsNotEmpty()
   @IsString()
-  reportType: 'DELIVERY_COMPLETE_REPORT' | 'TRANSACTION_STATEMENT';
+  reportType: 'DELIVERY_COMPLETE_REPORT' | 'TRANSACTION_STATEMENT' | 'DELIVERY_COMPLETE_REPORT_EMAIL';
 }
 
 export class OrderGetReportHistoryReqParamDto {
