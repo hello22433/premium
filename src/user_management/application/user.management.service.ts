@@ -468,9 +468,12 @@ export class UserManagementService {
       companyId: companyId,
     });
 
-    // 신규 사용자의 조회 범위 설정 (SUPER_ADMIN은 ALL, 나머지는 SELF)
+    // 신규 사용자의 조회 범위 설정 (SUPER_ADMIN, OPERATION_ADMIN은 ALL, 나머지는 SELF)
     const newUserId = insertResult.identifiers[0].id;
-    const scopeType = getBody.authority === 'SUPER_ADMIN' ? ViewScopeType.ALL : ViewScopeType.SELF;
+    const scopeType =
+      getBody.authority === 'SUPER_ADMIN' || getBody.authority === 'OPERATION_ADMIN'
+        ? ViewScopeType.ALL
+        : ViewScopeType.SELF;
     await this.userViewScopeRepository.insert({
       userId: newUserId,
       scopeType: scopeType,
@@ -558,6 +561,26 @@ export class UserManagementService {
     user.authorityList = getBody.authorityList.join(',');
 
     await this.userRepository.save(user);
+
+    // 권한에 따른 user_view_scope 자동 설정
+    const scopeType =
+      getBody.authority === 'SUPER_ADMIN' || getBody.authority === 'OPERATION_ADMIN'
+        ? ViewScopeType.ALL
+        : ViewScopeType.SELF;
+
+    const existingViewScope = await this.userViewScopeRepository.findOne({
+      where: { userId: getBody.id },
+    });
+
+    if (existingViewScope) {
+      existingViewScope.scopeType = scopeType;
+      await this.userViewScopeRepository.save(existingViewScope);
+    } else {
+      await this.userViewScopeRepository.insert({
+        userId: getBody.id,
+        scopeType: scopeType,
+      });
+    }
 
     return;
   }
