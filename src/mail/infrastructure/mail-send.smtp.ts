@@ -34,8 +34,8 @@ export class MailSendSmtp {
   constructor(private configService: ConfigService) {
     const host = this.configService.get('SMTP_HOST');
     const port = this.configService.get('SMTP_PORT');
-    const user = this.configService.get('SMTP_USER');
-    const pass = this.configService.get('SMTP_PASSWORD');
+    const user = this.configService.get('SMTP_ID');
+    const pass = this.configService.get('SMTP_PWD');
 
     this.transporter = nodemailer.createTransport({
       host,
