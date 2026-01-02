@@ -77,10 +77,10 @@ export class OrderProductMappingEntity extends BaseEntity {
   @Column({ type: 'varchar', nullable: true, length: 20, comment: '발신 번호' })
   fromPhoneNumber: string | null;
 
-  @Column({ type: 'varchar', nullable: true, length: 20, comment: '발신 제목' })
+  @Column({ type: 'varchar', nullable: true, length: 24, comment: '발신 제목' })
   sendTitle: string | null;
 
-  @Column({ type: 'varchar', nullable: true, length: 200, comment: '발신 내용' })
+  @Column({ type: 'varchar', nullable: true, length: 2500, comment: '발신 내용' })
   sendContent: string | null;
 
   @Column({ type: 'varchar', nullable: true, length: 100, comment: '발신 이메일' })
