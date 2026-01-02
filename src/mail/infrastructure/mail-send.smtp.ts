@@ -51,6 +51,9 @@ export class MailSendSmtp {
 
   async send(obj: ISmtpMailSendIn): Promise<ISmtpMailSendOut> {
     try {
+      // 줄바꿈을 <br>로 변환 (HTML에서 줄바꿈 적용)
+      const htmlContent = obj.content.replace(/\n/g, '<br>');
+
       const mailOptions: nodemailer.SendMailOptions = {
         from: {
           name: this.FROM_NAME,
@@ -58,7 +61,7 @@ export class MailSendSmtp {
         },
         to: obj.to,
         subject: obj.subject,
-        html: obj.content,
+        html: htmlContent,
       };
 
       // 참조(CC) 처리
