@@ -243,11 +243,12 @@ export class PartnerCompanyExternService {
       throw e;
     } finally {
       if (type !== null) {
-        // 호출 이력 저장(성공/실패 구분) → 동일한 “REQUIRES_NEW” 트랜잭션에서 커밋됨
+        // 호출 이력 저장(성공/실패 구분) → 동일한 "REQUIRES_NEW" 트랜잭션에서 커밋됨
         await this.partnerCompanyExternHistoryRepository.insert({
           context,
           isSuccess,
           type: type!,
+          orderDeliveryId: orderDelivery.id,
         });
       }
     }

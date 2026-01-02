@@ -41,6 +41,7 @@ import { RefundModule } from './refund/refund.module';
 import { ActivityLogModule } from './activity_log/activity.log.module';
 import { EmailManualModule } from './email_manual/email.manual.module';
 import { DepartmentModule } from './department/department.module';
+import { PartnerCompanyExternHistoryModule } from './partner_company_extern_history/partner.company.extern.history.module';
 
 @Module({
   imports: [
@@ -88,6 +89,7 @@ import { DepartmentModule } from './department/department.module';
     ActivityLogModule,
     EmailManualModule,
     DepartmentModule,
+    PartnerCompanyExternHistoryModule,
   ],
   controllers: [AppController],
   providers: [],

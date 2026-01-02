@@ -48,4 +48,5 @@ export enum UserAuthSubEnum {
   // 기타
   IMS_PLAN = 'IMS_PLAN', // IMS 추진일정
   ACTIVITY_LOG = 'ACTIVITY_LOG', // 로그 조회
+  SEND_FAIL_HISTORY = 'SEND_FAIL_HISTORY', // 발송실패내역
 }
