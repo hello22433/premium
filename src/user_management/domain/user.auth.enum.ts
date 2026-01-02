@@ -18,6 +18,7 @@ export enum UserAuthSubEnum {
   SEND_GENERAL = 'SEND_GENERAL', // 일반쿠폰 발송
   SEND_SSG = 'SEND_SSG', // 신세계 발송
   SEND_REAL_ITEM = 'SEND_REAL_ITEM', // 실물 상품 발송
+  SEND_FAIL_HISTORY = 'SEND_FAIL_HISTORY', // 발송실패내역
 
   // 상품 관리
   PRODUCT_LIST = 'PRODUCT_LIST', // 상품 조회
@@ -48,5 +49,4 @@ export enum UserAuthSubEnum {
   // 기타
   IMS_PLAN = 'IMS_PLAN', // IMS 추진일정
   ACTIVITY_LOG = 'ACTIVITY_LOG', // 로그 조회
-  SEND_FAIL_HISTORY = 'SEND_FAIL_HISTORY', // 발송실패내역
 }

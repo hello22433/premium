@@ -31,6 +31,10 @@ export const UserAuthMainMenuAuthList = (userSubmenuAuthList: UserAuthSubEnum[])
       mainMenuSet.add(UserAuthMainEnum.SEND);
     }
 
+    if (subMenu === UserAuthSubEnum.SEND_FAIL_HISTORY) {
+      mainMenuSet.add(UserAuthMainEnum.SEND);
+    }
+
     if (subMenu === UserAuthSubEnum.PRODUCT_LIST) {
       mainMenuSet.add(UserAuthMainEnum.PRODUCT);
     }
