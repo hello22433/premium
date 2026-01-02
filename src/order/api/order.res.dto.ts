@@ -255,6 +255,12 @@ export class OrderReportHistoryItemDto {
     nullable: true,
   })
   to: string | null;
+
+  @ApiProperty({
+    description: '이메일 참조 (이메일 발송 시)',
+    nullable: true,
+  })
+  cc: string | null;
 }
 
 export class OrderGetReportHistoryResDto {

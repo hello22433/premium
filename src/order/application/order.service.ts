@@ -3122,9 +3122,18 @@ export class OrderService {
     // base64를 Buffer로 변환
     const pdfBuffer = Buffer.from(pdfBase64, 'base64');
 
+    // 이메일 주소 파싱 (첫번째: to, 나머지: cc)
+    const emails = to
+      .split(',')
+      .map((email) => email.trim())
+      .filter((email) => email);
+    const toEmail = emails[0];
+    const ccEmails = emails.length > 1 ? emails.slice(1).join(', ') : undefined;
+
     // 이메일 발송
     const result = await this.mailSendSmtp.send({
-      to,
+      to: toEmail,
+      cc: ccEmails,
       subject,
       content,
       attachments: [
@@ -3149,7 +3158,8 @@ export class OrderService {
       responseTime: 0,
       requestParams: {
         orderId,
-        to,
+        to: toEmail,
+        cc: ccEmails || null,
         subject,
         pdfFileName,
         messageId: result.messageId,

@@ -11,6 +11,7 @@ export interface ISmtpMailAttachment {
 
 export interface ISmtpMailSendIn {
   to: string;
+  cc?: string;
   subject: string;
   content: string;
   attachments?: ISmtpMailAttachment[];
@@ -59,6 +60,11 @@ export class MailSendSmtp {
         subject: obj.subject,
         html: obj.content,
       };
+
+      // 참조(CC) 처리
+      if (obj.cc) {
+        mailOptions.cc = obj.cc;
+      }
 
       // 첨부파일 처리
       if (obj.attachments && obj.attachments.length > 0) {

@@ -294,7 +294,7 @@ export class ActivityLogService {
   async getOrderReportHistory(
     orderId: number,
     reportType: 'DELIVERY_COMPLETE_REPORT' | 'TRANSACTION_STATEMENT' | 'DELIVERY_COMPLETE_REPORT_EMAIL',
-  ): Promise<{ userEmail: string; createdAt: string; source: string | null; to: string | null }[]> {
+  ): Promise<{ userEmail: string; createdAt: string; source: string | null; to: string | null; cc: string | null }[]> {
     const logs = await this.activityLogRepository
       .createQueryBuilder('activityLog')
       .where('activityLog.deletedAt IS NULL')
@@ -308,6 +308,7 @@ export class ActivityLogService {
       createdAt: format(log.createdAt, DateFormatStr),
       source: log.requestParams?.source || null,
       to: log.requestParams?.to || null,
+      cc: log.requestParams?.cc || null,
     }));
   }
 }
