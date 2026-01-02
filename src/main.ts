@@ -11,6 +11,8 @@ async function bootstrap() {
 
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
   app.enableCors();
+  app.useBodyParser('json', { limit: '50mb' });
+  app.useBodyParser('urlencoded', { limit: '50mb', extended: true });
   app.set('trust proxy', true);
   app.useGlobalInterceptors(new TransformResInterceptor());
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
