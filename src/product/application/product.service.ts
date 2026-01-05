@@ -1468,6 +1468,7 @@ export class ProductService {
       const prevBrand = await this.brandRepository.findOne({
         where: { code: Like(`${BrandPrefixCode}%`) },
         order: { code: 'DESC' },
+        withDeleted: true, // soft delete된 레코드도 포함하여 코드 중복 방지
       });
       const prevCode = prevBrand?.code ?? null;
       const newCode = CreateCode(prevCode, BrandPrefixCode, BrandDigitNumber);
@@ -1613,6 +1614,7 @@ export class ProductService {
       const prevBrand = await this.brandRepository.findOne({
         where: { code: Like(`${BrandPrefixCode}%`) },
         order: { code: 'DESC' },
+        withDeleted: true, // soft delete된 레코드도 포함하여 코드 중복 방지
       });
       const prevCode = prevBrand?.code ?? null;
       const newCode = CreateCode(prevCode, BrandPrefixCode, BrandDigitNumber);

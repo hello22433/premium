@@ -103,6 +103,7 @@ export class BrandService {
         code: Like(`${BrandPrefixCode}%`),
       },
       order: { code: 'DESC' },
+      withDeleted: true, // soft delete된 레코드도 포함하여 코드 중복 방지
     });
 
     const prevCodeBrand = prevBrand?.code ?? null;
