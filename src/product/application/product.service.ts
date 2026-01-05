@@ -1398,7 +1398,12 @@ export class ProductService {
 
     for (let i = 0; i < newClassifications.length; i++) {
       const classification = newClassifications[i];
-      onProgress('classification', i + 1, newClassifications.length, `대분류 등록 중 (${i + 1}/${newClassifications.length})`);
+      onProgress(
+        'classification',
+        i + 1,
+        newClassifications.length,
+        `대분류 등록 중 (${i + 1}/${newClassifications.length})`,
+      );
       await this.classificationRepository.insert({ classification });
       console.log(`새로운 대분류 등록: ${classification}`);
     }
