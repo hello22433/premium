@@ -1,7 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
+import { In, MoreThan, Repository } from 'typeorm';
 import { DeliveryAlimTalk } from '../interface/delivery.alim.talk';
 import { IOrderDeliveryStatus } from '../interface/order.delivery.status';
 import { IMailSend } from '../../mail/interface/mail-send';
@@ -24,6 +24,7 @@ import { EmailType } from '../../mail/domain/email.type';
 import { IOrderType } from '../../order/interface/order.type';
 import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
 import { smsSsgTemplate } from '../domain/sms.ssg.template';
+import { smsEncourageTemplate } from '../domain/sms.encourage.template';
 import { EmailDeliveryTemplate } from '../domain/email.delivery.template';
 import { OrderEmailSendType } from '../../order/domain/order.email.send.type';
 import * as QRCode from 'qrcode';
@@ -91,6 +92,7 @@ export class DeliveryBatchService {
       .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
       .innerJoinAndSelect('orderProductMapping.order', 'order')
       .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('user.company', 'company')
       .innerJoinAndSelect('orderProductMapping.product', 'product')
       .innerJoinAndSelect('product.brand', 'brand')
       .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
@@ -335,6 +337,7 @@ export class DeliveryBatchService {
       // 1.3 EMAIL 일 경우
       if (deliveryMethod === IOrderSendMethod.EMAIL) {
         const emailSendHistory = new EmailSendHistoryEntity();
+        emailSendHistory.orderDeliveryId = orderDelivery.id;
         emailSendHistory.email = decryptedDeliveryTarget;
         emailSendHistory.type = EmailType.COUPON;
         emailSendHistory.code = generateRandomCode();
@@ -369,7 +372,7 @@ export class DeliveryBatchService {
           productImagePath: orderDelivery.orderProductMapping.product.imagePath,
           text,
           url: url,
-          code: emailSendHistory.code,
+          code: emailSendHistory.code!,
           useEmailContent,
           qrCodeImagePath,
         });
@@ -730,12 +733,26 @@ export class DeliveryBatchService {
         }
       } else {
         // 핀이 발급되지 않은 경우: 이메일로 쿠폰 수령 링크 발송
-        const emailSendHistory = new EmailSendHistoryEntity();
-        emailSendHistory.email = decryptedDeliveryTarget;
-        emailSendHistory.type = EmailType.COUPON;
-        emailSendHistory.code = generateRandomCode();
-        emailSendHistory.expireAt = addDays(new Date(), EmailCertifyExpireDay);
-        await this.emailSendHistoryRepository.save(emailSendHistory);
+        // 기존 인증코드가 있으면 재사용 (미인증 & 미만료)
+        let emailSendHistory = await this.emailSendHistoryRepository.findOne({
+          where: {
+            orderDeliveryId: orderDelivery.id,
+            type: EmailType.COUPON,
+            isCertified: false,
+            expireAt: MoreThan(new Date()),
+          },
+        });
+
+        if (!emailSendHistory) {
+          // 기존 인증코드가 없거나 만료된 경우 새로 생성
+          emailSendHistory = new EmailSendHistoryEntity();
+          emailSendHistory.orderDeliveryId = orderDelivery.id;
+          emailSendHistory.email = decryptedDeliveryTarget;
+          emailSendHistory.type = EmailType.COUPON;
+          emailSendHistory.code = generateRandomCode();
+          emailSendHistory.expireAt = addDays(new Date(), EmailCertifyExpireDay);
+          await this.emailSendHistoryRepository.save(emailSendHistory);
+        }
 
         // 테스트 발송인 경우 testOrderDeliveryId 사용
         const encryptKeyEmail = this.cryptoCipher.encryptJson({
@@ -766,7 +783,7 @@ export class DeliveryBatchService {
           productImagePath: orderDelivery.orderProductMapping.product.imagePath,
           text,
           url: url,
-          code: emailSendHistory.code,
+          code: emailSendHistory.code!,
           useEmailContent,
           qrCodeImagePath,
         });
@@ -807,12 +824,7 @@ export class DeliveryBatchService {
   @Transactional()
   async deliveryDeliveryTargetDestroy() {
     const now = new Date();
-    const destroyPhoneNumber = '01000000000';
-    const destroyEmail = '';
-
-    // 파기용 암호화된 값
-    const encryptedDestroyPhoneNumber = this.cryptoCipher.encryptDeliveryTarget(destroyPhoneNumber);
-    const encryptedDestroyEmail = this.cryptoCipher.encryptDeliveryTarget(destroyEmail);
+    const destroyValue = '-';
 
     const orderDeliveryList = await this.orderDeliveryRepository
       .createQueryBuilder('orderDelivery')
@@ -823,32 +835,20 @@ export class DeliveryBatchService {
         { now },
       )
       .andWhere('order.status = :status', { status: IOrderStatus.DELIVERY_COMPLETE })
-      .andWhere('orderDelivery.deliveryTarget != :targetPhone', { targetPhone: encryptedDestroyPhoneNumber })
-      .andWhere('orderDelivery.deliveryTarget != :targetEmail', { targetEmail: encryptedDestroyEmail })
+      .andWhere('orderDelivery.deliveryTarget != :destroyValue', { destroyValue })
       .getMany();
 
-    const destroyEmailIdList: number[] = [];
-    const destroyPhoneNumberIdList: number[] = [];
+    const destroyIdList: number[] = [];
     for (const orderDelivery of orderDeliveryList) {
-      if (orderDelivery.deliveryMethod === IOrderSendMethod.EMAIL) {
-        destroyEmailIdList.push(orderDelivery.id);
-      }
-      if (
-        orderDelivery.deliveryMethod === IOrderSendMethod.SMS ||
-        orderDelivery.deliveryMethod === IOrderSendMethod.ALIM_TALK
-      ) {
-        destroyPhoneNumberIdList.push(orderDelivery.id);
-      }
+      destroyIdList.push(orderDelivery.id);
     }
 
-    await this.orderDeliveryRepository.update(
-      { id: In(destroyPhoneNumberIdList) },
-      { deliveryTarget: encryptedDestroyPhoneNumber },
-    );
-    await this.orderDeliveryRepository.update(
-      { id: In(destroyEmailIdList) },
-      { deliveryTarget: encryptedDestroyEmail },
-    );
+    if (destroyIdList.length > 0) {
+      await this.orderDeliveryRepository.update(
+        { id: In(destroyIdList) },
+        { deliveryTarget: destroyValue },
+      );
+    }
   }
 
   async handleDeliveryEncourage() {
@@ -885,7 +885,7 @@ export class DeliveryBatchService {
         }
       }
 
-      const title = '미사용쿠폰발생 안내';
+      const title = '미사용 쿠폰에 대한 유효기간 안내';
       const encryptKey = this.cryptoCipher.encryptJson({
         id: orderDelivery.id,
         transactionId: orderDelivery.transactionId,
@@ -913,7 +913,7 @@ export class DeliveryBatchService {
       // 2. SMS 발송
       if (orderDelivery.deliveryMethod === IOrderSendMethod.SMS) {
         try {
-          const smsText = `미사용쿠폰발생. 뒷자리 ${orderDelivery.barCode!.slice(-4)}번. ${format(orderDelivery.expireAt!, 'yyyy/MM/dd')}일까지사용. 재발송문의 1644-3614`;
+          const smsText = smsEncourageTemplate(orderDelivery);
           await this.smsSend.send({
             msgType: 'M',
             to: decryptedDeliveryTarget,

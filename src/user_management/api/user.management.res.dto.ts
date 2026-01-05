@@ -1,6 +1,6 @@
 import { UserManagementViewDto } from './dto/user.management.view.dto';
 import { GetListResDto } from '../../common/api/dto/get.list.res.dto';
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { UserManagementNameViewDto } from './dto/user.management.name.view.dto';
 import { IUserAuthority } from '../../user/interface/user.authority';
 import { IUserStatus } from '../../user/interface/user.status';
@@ -8,6 +8,7 @@ import { IUserSettleCondition } from '../../user/interface/user.settle.condition
 import { IUserSettleMethod } from '../../user/interface/user.settle.method';
 import { IUserBusinessType } from '../../user/interface/user.business.type';
 import { UserSettlePeriodConditionEnum } from '../../user/interface/user.settle.period.condition.enum';
+import { ViewScopeType } from '../../entity/user.view.scope.entity';
 
 export class UserManagementGetNameListResDto {
   @ApiProperty({
@@ -177,6 +178,66 @@ export class UserManagementGetDetailResDto {
     description: '종목',
   })
   industryItem: string | null;
+
+  @ApiProperty({
+    description: '소속 회사 ID',
+    nullable: true,
+  })
+  companyId: number | null;
+
+  @ApiProperty({
+    description: '소속 회사 정보',
+    nullable: true,
+  })
+  company: UserCompanyInfoDto | null;
+
+  @ApiPropertyOptional({
+    description: '소속 부서 ID',
+    nullable: true,
+  })
+  departmentId?: number | null;
+
+  @ApiPropertyOptional({
+    description: '소속 부서 정보',
+    nullable: true,
+  })
+  department?: UserDepartmentInfoDto | null;
+
+  @ApiPropertyOptional({
+    description: '조회 범위 설정',
+    nullable: true,
+  })
+  viewScope?: UserViewScopeInfoDto | null;
+}
+
+export class UserDepartmentInfoDto {
+  @ApiProperty({ description: '부서 ID' })
+  id: number;
+
+  @ApiProperty({ description: '부서명' })
+  name: string;
+}
+
+export class UserViewScopeInfoDto {
+  @ApiProperty({ description: '조회 범위 타입', enum: ViewScopeType })
+  scopeType: ViewScopeType;
+
+  @ApiProperty({ description: '추가 조회 가능 부서 ID 목록', type: [Number] })
+  deptIds: number[];
+}
+
+export class UserCompanyInfoDto {
+  @ApiProperty({ description: '회사 ID' })
+  id: number;
+
+  @ApiProperty({ description: '사업자명' })
+  businessName: string;
+
+  @ApiProperty({ description: '사업자등록번호' })
+  businessNumber: string;
+
+  @ApiProperty({ description: '여신 한도' })
+  maximumLimit: number;
 }
 
 export class UserManagementGetListResDto extends GetListResDto {
@@ -220,4 +281,23 @@ export class BalanceHistoryItemDto {
 export class UserManagementGetBalanceHistoryResDto {
   @ApiProperty({ description: '충전/수정 이력 목록', type: [BalanceHistoryItemDto] })
   list: BalanceHistoryItemDto[];
+}
+
+export class UserCompanyViewDto {
+  @ApiProperty({ description: '회사 ID (user_company.id)' })
+  id: number;
+
+  @ApiProperty({ description: '사업자명' })
+  businessName: string;
+
+  @ApiProperty({ description: '사업자등록번호' })
+  businessNumber: string;
+}
+
+export class UserManagementGetCompanyListResDto extends GetListResDto {
+  @ApiProperty({
+    description: '고객사 (회사) list',
+    type: [UserCompanyViewDto],
+  })
+  list: UserCompanyViewDto[];
 }

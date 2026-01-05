@@ -8,6 +8,7 @@ import {
   GifitiShowCancelIn,
   GifitiShowCheckIn,
   GiftiShowCheckOut,
+  GiftiShowCouponInfo,
   GiftiShowIssueIn,
   GiftiShowIssueOut,
   IGiftiShow,
@@ -82,43 +83,62 @@ export class GiftishowHttp implements IGiftiShow {
   }
 
   async check(obj: GifitiShowCheckIn): Promise<GiftiShowCheckOut> {
+    // V2 API 헤더
     const headers = {
-      api_code: '0101',
+      api_code: '0451',
       custom_auth_code: this.corpCode,
       custom_auth_token: this.authToken,
       custom_enc_flag: 'N',
-      'Content-Type': 'application/xml', // XML로 요청을 보내기 위한 Content-Type
-      Accept: 'application/xml', // XML 응답을 수신하기 위함
+      Accept: 'application/json',
     };
-    const queryParams = new URLSearchParams({
-      MDCODE: this.corpCode,
-      tr_id: obj.transactionId,
-    });
 
-    const url = `${this.url}/media/coupon_status.asp?${queryParams.toString()}`;
-    this.logger.log('[GiftiShow] coupon_status → ', url);
+    // tr_id 또는 pin_no로 조회
+    const queryParams = new URLSearchParams();
+    if (obj.transactionId) {
+      queryParams.set('tr_id', obj.transactionId);
+    } else if (obj.pinNo) {
+      queryParams.set('pin_no', obj.pinNo);
+    } else {
+      throw new Error('transactionId 또는 pinNo 중 하나는 필수입니다.');
+    }
+
+    const url = `${this.url}/coupon?${queryParams.toString()}`;
+    this.logger.log('[GiftiShow V2] coupon check → ', url);
 
     try {
       const { data } = await firstValueFrom(this.httpService.get(url, { headers }));
 
-      // xml → json
-      const parsed = await this.parser().parseStringPromise(data);
-      const resultArray = parsed?.response?.result;
-      const res = Array.isArray(resultArray) ? resultArray[0] : resultArray ?? {};
+      this.logger.log('[GiftiShow V2] response:', JSON.stringify(data));
 
-      const pick = (x?: string[] | string) => (Array.isArray(x) ? (x[0] ?? '') : (x ?? ''));
+      // JSON 응답 파싱
+      const resCode = data.resCode;
+      const resMsg = data.resMsg;
+
+      let couponInfo: GiftiShowCouponInfo | undefined;
+      if (data.couponInfoList && data.couponInfoList.length > 0) {
+        const info = data.couponInfoList[0];
+        couponInfo = {
+          pinNo: info.pinNo,
+          pinStatusCd: info.pinStatusCd,
+          pinStatusNm: info.pinStatusNm,
+          goodsNm: info.goodsNm,
+          brandNm: info.brandNm,
+          branchNm: info.branchNm,
+          tradeBranchNm: info.tradeBranchNm,
+          useComNm: info.useComNm,
+          remainAmt: info.remainAmt,
+          exchDtm: info.exchDtm,
+          apprvDtm: info.apprvDtm,
+          cancelDtm: info.cancelDtm,
+          validPrdEndDt: info.validPrdEndDt,
+        };
+      }
 
       const out: GiftiShowCheckOut = {
-        trID: pick(res.trID),
-        StatusCode: pick(res.StatusCode),
-        StatusText: pick(res.StatusText),
-        remainAmt: pick(res.remainAmt) || undefined,
+        resCode,
+        resMsg,
+        couponInfo,
       };
-
-      /* 필수 필드 검증 */
-      if (!out.trID) {
-        throw new Error('GiftiShow 응답 형식 오류 – trID 없음');
-      }
 
       return out;
     } catch (e) {

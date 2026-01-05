@@ -39,6 +39,9 @@ import { OrderEventModule } from './order_event/order.event.module';
 import { ErpModule } from './erp/erp.module';
 import { RefundModule } from './refund/refund.module';
 import { ActivityLogModule } from './activity_log/activity.log.module';
+import { EmailManualModule } from './email_manual/email.manual.module';
+import { DepartmentModule } from './department/department.module';
+import { PartnerCompanyExternHistoryModule } from './partner_company_extern_history/partner.company.extern.history.module';
 
 @Module({
   imports: [
@@ -84,6 +87,9 @@ import { ActivityLogModule } from './activity_log/activity.log.module';
     ErpModule,
     RefundModule,
     ActivityLogModule,
+    EmailManualModule,
+    DepartmentModule,
+    PartnerCompanyExternHistoryModule,
   ],
   controllers: [AppController],
   providers: [],

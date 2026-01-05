@@ -39,6 +39,18 @@ export class SettleProductMultipleDetailDto {
   eventName: string;
 }
 
+export class SettleManagerDto {
+  @ApiProperty({
+    description: '담당자 user id',
+  })
+  userId: number;
+
+  @ApiProperty({
+    description: '담당자 이름',
+  })
+  personName: string;
+}
+
 export class SettleUserDetailMultipleDto {
   @ApiProperty({
     description: '선택된 order id 목록',
@@ -46,14 +58,20 @@ export class SettleUserDetailMultipleDto {
   orderIds: number[];
 
   @ApiProperty({
-    description: '고객사 user id',
+    description: '고객사 user id (첫번째 주문 기준, 하위호환용)',
   })
   userId: number;
 
   @ApiProperty({
-    description: '고객사 담당자',
+    description: '고객사 담당자 (첫번째 주문 기준, 하위호환용)',
   })
   userPersonName: string;
+
+  @ApiProperty({
+    description: '고객사 담당자 목록 (동일 회사의 여러 담당자)',
+    type: [SettleManagerDto],
+  })
+  managers: SettleManagerDto[];
 
   @ApiProperty({
     description: '고객사 (회사명)',

@@ -55,6 +55,17 @@ export class UserLoginByEmailPasswordResDto {
     description: '비밀번호 만료 기간 (일 단위)',
   })
   readonly passwordExpiryDays: number | null;
+
+  @ApiProperty({
+    type: [String],
+    description: '담당자 이메일 목록',
+  })
+  readonly personEmails: string[];
+
+  @ApiProperty({
+    description: '이메일 선택 필요 여부 (담당자 이메일이 2개 이상이고 미인증 시 true)',
+  })
+  readonly needEmailSelection: boolean;
 }
 
 export class UserLoginEmailResDto {

@@ -8,6 +8,14 @@ export class EmailSendHistoryEntity extends BaseEntity {
   id: number;
 
   @Index()
+  @Column({ type: 'int', nullable: true, comment: '주문 발송 ID (이메일 쿠폰용)' })
+  orderDeliveryId: number | null;
+
+  @Index()
+  @Column({ type: 'int', nullable: true, comment: '사용자 ID (로그인 인증용)' })
+  userId: number | null;
+
+  @Index()
   @Column({ type: 'varchar', length: 200, comment: '이메일' })
   email: string;
 
@@ -24,6 +32,6 @@ export class EmailSendHistoryEntity extends BaseEntity {
   @Column({ type: 'boolean', default: false, comment: '인증 여부' })
   isCertified: boolean;
 
-  @Column({ type: 'datetime', comment: '만료 일자' })
-  expireAt: Date;
+  @Column({ type: 'datetime', nullable: true, comment: '만료 일자' })
+  expireAt: Date | null;
 }

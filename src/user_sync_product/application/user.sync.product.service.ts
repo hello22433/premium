@@ -52,14 +52,15 @@ export class UserSyncProductService {
     let queryBuilder = this.eventRepository
       .createQueryBuilder('event')
       .leftJoinAndSelect('event.userSyncProductEventMappings', 'userSyncProductEventMappings')
-      .innerJoinAndSelect('event.businessUser', 'user');
+      .innerJoinAndSelect('event.businessUser', 'user')
+      .leftJoinAndSelect('user.company', 'userCompany');
 
     if (code) {
       queryBuilder = queryBuilder.andWhere('event.code = :code', { code });
     }
 
     if (businessUserName) {
-      queryBuilder = queryBuilder.andWhere('user.businessName LIKE :businessName', {
+      queryBuilder = queryBuilder.andWhere('userCompany.businessName LIKE :businessName', {
         businessName: `%${businessUserName}%`,
       });
     }
@@ -90,7 +91,7 @@ export class UserSyncProductService {
         createdAt: format(event.createdAt, DateFormatStr),
         name: event.name,
         code: event.code,
-        userBusinessName: event.businessUser.businessName,
+        userBusinessName: event.businessUser.company?.businessName ?? '',
         syncProductCount: event.userSyncProductEventMappings?.length ?? 0,
         status: event.status,
       };
@@ -125,6 +126,7 @@ export class UserSyncProductService {
     const event = await this.eventRepository
       .createQueryBuilder('event')
       .innerJoinAndSelect('event.businessUser', 'businessUser')
+      .leftJoinAndSelect('businessUser.company', 'businessUserCompany')
       .leftJoinAndSelect('event.userSyncProductEventMappings', 'userSyncProductEventMappings')
       .leftJoinAndSelect(
         'userSyncProductEventMappings.product',
@@ -133,6 +135,7 @@ export class UserSyncProductService {
         { useStatus: IProductUseStatus.USE },
       )
       .leftJoinAndSelect('product.brand', 'brand')
+      .leftJoinAndSelect('product.classification', 'classification')
       .where('event.id = :id', { id })
       .getOne();
 
@@ -152,7 +155,7 @@ export class UserSyncProductService {
           productId: mapping.product.id,
           registerAt: format(mapping.product.createdAt, DateFormatStr),
           code: product.code,
-          businessUserName: event.businessUser.businessName,
+          businessUserName: event.businessUser.company?.businessName ?? '',
           businessPersonName: event.businessUser.personName,
           classification: product.classification?.classification ?? null,
           brandName: product.brand?.nameKorean || '',
@@ -168,7 +171,7 @@ export class UserSyncProductService {
     return {
       userId: event.businessUser.id,
       isHeadPerson: event.businessUser.isHeadPerson,
-      businessUserName: event.businessUser.businessName,
+      businessUserName: event.businessUser.company?.businessName ?? '',
       businessPersonName: event.businessUser.personName,
       list: result,
     };
@@ -293,19 +296,21 @@ export class UserSyncProductService {
   async getPersonsByBusinessNumber(userId: number): Promise<UserSyncProductGetPersonsByBusinessResDto> {
     const user = await this.userRepository.findOne({
       where: { id: userId },
+      relations: ['company'],
     });
 
     if (!user) {
       throw new BadRequestException('존재하지 않는 유저입니다.');
     }
 
-    const normalizedBusinessNumber = user.businessNumber.replace(/-/g, '');
+    if (!user.companyId) {
+      throw new BadRequestException('해당 유저의 회사 정보가 없습니다.');
+    }
 
     const users = await this.userRepository
       .createQueryBuilder('user')
-      .where('REPLACE(user.businessNumber, "-", "") = :normalizedBusinessNumber', {
-        normalizedBusinessNumber,
-      })
+      .leftJoinAndSelect('user.company', 'company')
+      .where('user.companyId = :companyId', { companyId: user.companyId })
       .orderBy('user.isHeadPerson', 'DESC')
       .addOrderBy('user.id', 'ASC')
       .getMany();
@@ -323,8 +328,8 @@ export class UserSyncProductService {
     }));
 
     return {
-      businessNumber: users[0].businessNumber,
-      businessName: users[0].businessName,
+      businessNumber: users[0].company?.businessNumber ?? '',
+      businessName: users[0].company?.businessName ?? '',
       personCount: users.length,
       persons,
     };
@@ -344,11 +349,12 @@ export class UserSyncProductService {
 
     let queryBuilder = this.userRepository
       .createQueryBuilder('user')
-      .where('user.businessNumber = :businessNumber', { businessNumber: oneUser.businessNumber })
+      .leftJoinAndSelect('user.company', 'userCompany')
+      .where('user.companyId = :companyId', { companyId: oneUser.companyId })
       .andWhere('user.isHeadPerson = :isHeadPerson', { isHeadPerson: true });
 
     if (keyword) {
-      queryBuilder = queryBuilder.andWhere('(user.businessName LIKE :keyword OR user.personEmail LIKE :keyword)', {
+      queryBuilder = queryBuilder.andWhere('(userCompany.businessName LIKE :keyword OR user.personEmail LIKE :keyword)', {
         keyword: `%${keyword}%`,
       });
     }
@@ -409,7 +415,7 @@ export class UserSyncProductService {
       list.push({
         headPersonEmail: user.personEmail,
         headPersonUserId: user.id,
-        businessName: user.businessName,
+        businessName: user.company?.businessName ?? '',
         headPersonName: user.personName,
         brandCount: brandIds.size,
         productCount: productCount,

@@ -242,7 +242,7 @@ export class OrderReceiveService {
       sendRequestAt: format(orderDelivery.sendRequestAt, DateFormatStr),
       expireDay: displayProduct.expireDay,
       brandKoreanName: displayBrand!.nameKorean === '신세계' ? '이마트' : displayBrand!.nameKorean,
-      userBusinessName: orderDelivery.orderProductMapping.order.user!.businessName,
+      userBusinessName: orderDelivery.orderProductMapping.order.user!.company?.businessName ?? '',
       partnerCompany: displayProduct.partnerCompany?.type || null,
       validityStartsNextDay: displayProduct.partnerCompany?.validityStartsNextDay,
     };
@@ -344,7 +344,7 @@ export class OrderReceiveService {
       sendRequestAt: format(testOrderDelivery.sendRequestAt, DateFormatStr),
       expireDay: displayProduct.expireDay,
       brandKoreanName: displayBrand!.nameKorean === '신세계' ? '이마트' : displayBrand!.nameKorean,
-      userBusinessName: testOrderDelivery.orderProductMapping.order.user!.businessName,
+      userBusinessName: testOrderDelivery.orderProductMapping.order.user!.company?.businessName ?? '',
       partnerCompany: displayProduct.partnerCompany?.type || null,
       validityStartsNextDay: displayProduct.partnerCompany?.validityStartsNextDay,
     };
@@ -382,7 +382,7 @@ export class OrderReceiveService {
       throw new BadRequestException('이메일 전송 데이터가 없습니다.');
     }
 
-    if (emailSendHistory.expireAt < new Date()) {
+    if (emailSendHistory.expireAt && emailSendHistory.expireAt < new Date()) {
       throw new BadRequestException('만료된 이메일 인증 코드입니다.');
     }
 
@@ -490,7 +490,7 @@ export class OrderReceiveService {
       throw new BadRequestException('이메일 전송 데이터가 없습니다.');
     }
 
-    if (emailSendHistory.expireAt < new Date()) {
+    if (emailSendHistory.expireAt && emailSendHistory.expireAt < new Date()) {
       throw new BadRequestException('만료된 이메일 인증 코드입니다.');
     }
 

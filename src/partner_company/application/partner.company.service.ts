@@ -24,6 +24,7 @@ import { format } from 'date-fns';
 import { CreateCode } from '../../common/domain/create.code';
 import { PartnerCompanyDigitNumber, PartnerCompanyPrefixCode } from '../domain/partner.company.code';
 import { IPartnerCompanyStatus } from '../interface/partner.company.status';
+import { IPartnerCompanyType } from '../interface/partner.company.type';
 
 @Injectable()
 export class PartnerCompanyService {
@@ -287,7 +288,10 @@ export class PartnerCompanyService {
     partnerCompany.bankNumber = bankNumber;
     partnerCompany.bankName = bankName;
     partnerCompany.settleDay = settleDay;
-    partnerCompany.type = type ?? partnerCompany.type;
+    // type은 유효한 enum 값이 제공된 경우에만 업데이트 (빈 문자열, null, undefined 무시)
+    if (type && Object.values(IPartnerCompanyType).includes(type)) {
+      partnerCompany.type = type;
+    }
     partnerCompany.validityStartsNextDay = validityStartsNextDay ?? partnerCompany.validityStartsNextDay;
 
     await this.partnerCompanyRepository.save(partnerCompany);

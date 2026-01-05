@@ -86,6 +86,18 @@ export class OrderGetDetailResDto {
     description: '선정산 여부 (true: 선정산, false: 후정산)',
   })
   isPreSettle: boolean;
+
+  @ApiProperty({
+    description: '주문 취소 사유',
+    nullable: true,
+  })
+  cancelReason: string | null;
+
+  @ApiProperty({
+    description: '주문 취소 일시 ex) yyyy-MM-ddTHH:mm:ss',
+    nullable: true,
+  })
+  canceledAt: string | null;
 }
 
 export class OrderGetDeliveryCompleteReportDetailResDto {
@@ -219,4 +231,42 @@ export class OrderGetPreviousContentResDto {
     description: '발송 내용 ',
   })
   sendContent: string | null;
+}
+
+export class OrderReportHistoryItemDto {
+  @ApiProperty({
+    description: '다운로드한 사용자 이메일',
+  })
+  userEmail: string;
+
+  @ApiProperty({
+    description: '다운로드 일시',
+  })
+  createdAt: string;
+
+  @ApiProperty({
+    description: '발행 소스 (DOCUMENT: 문서함, DIRECT: 직접발행)',
+    nullable: true,
+  })
+  source: string | null;
+
+  @ApiProperty({
+    description: '이메일 수신자 (이메일 발송 시)',
+    nullable: true,
+  })
+  to: string | null;
+
+  @ApiProperty({
+    description: '이메일 참조 (이메일 발송 시)',
+    nullable: true,
+  })
+  cc: string | null;
+}
+
+export class OrderGetReportHistoryResDto {
+  @ApiProperty({
+    type: [OrderReportHistoryItemDto],
+    description: '다운로드 이력 목록',
+  })
+  list: OrderReportHistoryItemDto[];
 }

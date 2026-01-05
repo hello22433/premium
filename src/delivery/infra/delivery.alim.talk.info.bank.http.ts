@@ -116,16 +116,20 @@ export class DeliveryAlimTalkInfoBankHttp implements DeliveryAlimTalk {
         Accept: 'application/json',
       };
 
+      const templateCode = sendObj.templateCode || this.infoBankTemplateCode;
+      const isTestTemplate = templateCode.toLowerCase().includes('dev');
+      const buttonName = isTestTemplate ? '[TEST]선물메시지 확인' : '선물메시지 확인';
+
       const body = {
         senderKey: this.infoBankSenderKey,
         msgType: 'AI',
         to: sendObj.to,
-        templateCode: sendObj.templateCode || this.infoBankTemplateCode,
+        templateCode: templateCode,
         text: sendObj.text,
         button: [
           {
             type: 'WL',
-            name: '선물메시지 확인',
+            name: buttonName,
             // urlPc: `${this.receiveUrl}/${sendObj.encryptKey}`,
             urlMobile: `${this.receiveUrl}/${sendObj.encryptKey}`,
           },

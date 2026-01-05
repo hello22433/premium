@@ -32,13 +32,13 @@ export class CustomerServiceGetListReqDto extends PagingReqDto {
   endAt?: string;
 
   @ApiPropertyOptional({
-    description: 'user id (고객사)',
+    description: '고객사 ID (user_company.id)',
   })
   // =============================================================
   @IsOptional()
   @IsNumber()
   @Type(() => Number)
-  userId?: number;
+  userCompanyId?: number;
 
   @ApiPropertyOptional({
     description: '핀 상태',
@@ -97,6 +97,14 @@ export class CustomerServiceGetListReqDto extends PagingReqDto {
   @IsNumber()
   @Type(() => Number)
   partnerCompanyId?: number;
+
+  @ApiPropertyOptional({
+    description: '통합검색 키워드 (주문번호, 상품명, 상품코드, MMS제목, 수신정보를 OR 조건으로 검색)',
+  })
+  // =============================================================
+  @IsOptional()
+  @IsString()
+  keyword?: string;
 }
 
 export class CustomerServiceGetDetailListReqDto extends PagingReqDto {
@@ -300,6 +308,17 @@ export class CustomerServiceExcelDownloadReqDto {
   orderType: IOrderType;
 
   @ApiPropertyOptional({
+    description: '선택한 order_delivery ID 목록 (선택 다운로드 시 사용)',
+    type: [Number],
+    example: [1, 2, 3],
+  })
+  // =============================================================
+  @IsOptional()
+  @IsArray()
+  @IsNumber({}, { each: true })
+  orderDeliveryIds?: number[];
+
+  @ApiPropertyOptional({
     description: '시작일 ex) yyyy-MM-ddTHH:mm:ss',
   })
   // =============================================================
@@ -316,13 +335,13 @@ export class CustomerServiceExcelDownloadReqDto {
   endAt?: string;
 
   @ApiPropertyOptional({
-    description: 'user id (고객사)',
+    description: '고객사 ID (user_company.id)',
   })
   // =============================================================
   @IsOptional()
   @IsNumber()
   @Type(() => Number)
-  userId?: number;
+  userCompanyId?: number;
 
   @ApiPropertyOptional({
     description: '핀 상태',
@@ -381,6 +400,14 @@ export class CustomerServiceExcelDownloadReqDto {
   @IsNumber()
   @Type(() => Number)
   partnerCompanyId?: number;
+
+  @ApiPropertyOptional({
+    description: '통합검색 키워드 (주문번호, 상품명, 상품코드, MMS제목, 수신정보를 OR 조건으로 검색)',
+  })
+  // =============================================================
+  @IsOptional()
+  @IsString()
+  keyword?: string;
 
   @ApiProperty({
     description: '비밀번호 (다운로드 확인용)',

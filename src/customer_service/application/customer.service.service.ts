@@ -72,7 +72,7 @@ export class CustomerServiceService {
       orderType,
       startAt,
       endAt,
-      userId,
+      userCompanyId,
       couponStatus,
       orderNumber,
       productName,
@@ -80,6 +80,7 @@ export class CustomerServiceService {
       deliveryTarget,
       sendTitle,
       partnerCompanyId,
+      keyword,
       page,
       take,
     } = getQuery;
@@ -93,6 +94,7 @@ export class CustomerServiceService {
       .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
       .leftJoinAndMapOne('order.user', 'user', 'user', 'user.id = order.user_id AND user.deleted_at IS NULL')
+      .leftJoinAndSelect('user.company', 'userCompany')
       .andWhere('orderDelivery.status IN (:...deliveryStatus)', { deliveryStatus: ['COMPLETE', 'COMPLETE_SMS'] })
       .andWhere('orderDelivery.deletedAt IS NULL');
 
@@ -104,9 +106,23 @@ export class CustomerServiceService {
       queryBuilder.andWhere('product.type = :type', { type: 'SSG' });
     }
 
-    // 고객사 (userId)
-    if (userId) {
-      queryBuilder.andWhere('order.userId = :userId', { userId });
+    // 고객사 (userCompanyId)
+    if (userCompanyId) {
+      queryBuilder.andWhere('user.companyId = :userCompanyId', { userCompanyId });
+    }
+
+    // 통합검색 (주문번호, 상품명, 상품코드, MMS제목, 수신정보를 OR 조건으로 검색)
+    if (keyword) {
+      const normalizedKeyword = PhoneUtil.normalizeDeliveryTarget(keyword);
+      const encryptedKeyword = this.cryptoCipher.encryptDeliveryTarget(normalizedKeyword);
+      queryBuilder.andWhere(
+        `(CAST(order.id AS CHAR) LIKE :keyword
+          OR product.name LIKE :keyword
+          OR product.code LIKE :keyword
+          OR orderProductMapping.sendTitle LIKE :keyword
+          OR orderDelivery.deliveryTarget = :encryptedKeyword)`,
+        { keyword: `%${keyword}%`, encryptedKeyword },
+      );
     }
 
     // 주문번호 (부분검색)
@@ -204,7 +220,7 @@ export class CustomerServiceService {
         orderProductMappingId: orderDelivery.orderProductMapping.id,
         eventName: order.eventName,
         sendTitle: orderDelivery.orderProductMapping.sendTitle ?? '',
-        businessName: order.user?.businessName ?? '',
+        businessName: order.user?.company?.businessName ?? '',
         productName: orderDelivery.choiceSelectProduct
           ? orderDelivery.choiceSelectProduct.name
           : product.name,
@@ -313,6 +329,7 @@ export class CustomerServiceService {
         actualSendAt: actualSendAt,
         sendType: orderDelivery.orderProductMapping.sendType,
         tradeAt: orderDelivery.tradeAt ? format(orderDelivery.tradeAt, DateFormatStr) : null,
+        tradePlace: orderDelivery.tradePlace || null,
         status: orderDelivery.status,
         couponStatus: orderDelivery.couponStatus,
         apiErrorMessage: orderDelivery.apiErrorMessage,
@@ -349,6 +366,7 @@ export class CustomerServiceService {
         'partnerCompany.id = product.partner_company_id AND partnerCompany.deleted_at IS NULL',
       )
       .leftJoinAndMapOne('order.user', 'user', 'user', 'user.id = order.user_id AND user.deleted_at IS NULL')
+      .leftJoinAndSelect('user.company', 'userCompany')
       .where('orderDelivery.id = :id', { id: orderDeliveryId })
       .andWhere('orderDelivery.deletedAt IS NULL')
       .getOne();
@@ -415,7 +433,7 @@ export class CustomerServiceService {
     return {
       orderDeliveryId: queryBuilder.id,
       eventName: order.eventName,
-      businessName: user?.businessName ?? '',
+      businessName: user?.company?.businessName ?? '',
       personName: user?.personName ?? '',
       sendContent: sendContent,
       deliveryTarget: decryptedDeliveryTarget ?? '',
@@ -435,6 +453,7 @@ export class CustomerServiceService {
       apiErrorMessage: queryBuilder.apiErrorMessage,
       barCode: queryBuilder.barCode || null,
       tradeAt: queryBuilder.tradeAt ? format(queryBuilder.tradeAt, DateFormatStr) : null,
+      tradePlace: queryBuilder.tradePlace || null,
       extraPinNo: queryBuilder.personalCode || null,
       expireDay: displayProduct.expireDay.toString(),
       transactionId: queryBuilder.transactionId || null,
@@ -452,6 +471,7 @@ export class CustomerServiceService {
       .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
       .innerJoinAndSelect('orderProductMapping.order', 'order')
       .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('user.company', 'company')
       .innerJoinAndSelect('orderProductMapping.product', 'product')
       .innerJoinAndSelect('product.brand', 'brand')
       .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
@@ -464,7 +484,7 @@ export class CustomerServiceService {
       throw new BadRequestException('주문 발송가 존재하지 않습니다.');
     }
 
-    if (orderDelivery.deliveryTarget === '000-0000-0000' || orderDelivery.deliveryTarget === '') {
+    if (orderDelivery.deliveryTarget === '-') {
       throw new BadRequestException('파기된 발송 정보입니다.');
     }
 
@@ -508,7 +528,6 @@ export class CustomerServiceService {
 
           if (result.message === '폐기 완료') {
             orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
-            orderDelivery.deliveryTarget = '-'; // 개인정보 파기
             await this.orderDeliveryRepository.save(orderDelivery);
           } else {
             throw new InternalServerErrorException(result.message);
@@ -525,7 +544,6 @@ export class CustomerServiceService {
 
         if (couponStatus === OrderDeliveryCouponStatus.CANCEL || couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL) {
           orderDelivery.couponStatus = couponStatus;
-          orderDelivery.deliveryTarget = '-'; // 개인정보 파기
           await this.orderDeliveryRepository.save(orderDelivery);
         } else {
           throw new BadRequestException('변경을 할 수 없는 핀상태입니다.');
@@ -534,7 +552,6 @@ export class CustomerServiceService {
       }
       default: {
         orderDelivery.couponStatus = couponStatus;
-        orderDelivery.deliveryTarget = '-'; // 개인정보 파기
         await this.orderDeliveryRepository.save(orderDelivery);
       }
     }
@@ -1222,8 +1239,7 @@ export class CustomerServiceService {
           }
         }
 
-        // 5. orderDelivery 저장 (개인정보 파기 포함)
-        orderDelivery.deliveryTarget = '-'; // 개인정보 파기
+        // 5. orderDelivery 저장
         await this.orderDeliveryRepository.save(orderDelivery);
 
         // 6. CS 히스토리 저장
@@ -1261,12 +1277,12 @@ export class CustomerServiceService {
     res: Response,
   ): Promise<void> {
     const startTime = Date.now();
-    const { password, downloadReason, ...searchParams } = dto;
+    const { password, downloadReason, orderDeliveryIds, keyword, ...searchParams } = dto;
     const {
       orderType,
       startAt,
       endAt,
-      userId,
+      userCompanyId,
       couponStatus,
       orderNumber,
       productName,
@@ -1288,8 +1304,14 @@ export class CustomerServiceService {
       .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
       .leftJoinAndMapOne('order.user', 'user', 'user', 'user.id = order.user_id AND user.deleted_at IS NULL')
+      .leftJoinAndSelect('user.company', 'userCompany')
       .andWhere('orderDelivery.status IN (:...deliveryStatus)', { deliveryStatus: ['COMPLETE', 'COMPLETE_SMS'] })
       .andWhere('orderDelivery.deletedAt IS NULL');
+
+    // 선택한 ID들이 있으면 해당 ID들만 조회
+    if (orderDeliveryIds && orderDeliveryIds.length > 0) {
+      queryBuilder.andWhere('orderDelivery.id IN (:...orderDeliveryIds)', { orderDeliveryIds });
+    }
 
     if (orderType === 'GENERAL') {
       queryBuilder.andWhere('product.type IN (:...types)', { types: ['GENERAL', 'CHOICE'] });
@@ -1299,8 +1321,9 @@ export class CustomerServiceService {
       queryBuilder.andWhere('product.type = :type', { type: 'SSG' });
     }
 
-    if (userId) {
-      queryBuilder.andWhere('order.userId = :userId', { userId });
+    // 고객사 (userCompanyId)
+    if (userCompanyId) {
+      queryBuilder.andWhere('user.companyId = :userCompanyId', { userCompanyId });
     }
 
     if (orderNumber) {
@@ -1333,6 +1356,20 @@ export class CustomerServiceService {
       queryBuilder.andWhere('product.partnerCompanyId = :partnerCompanyId', { partnerCompanyId });
     }
 
+    // 통합검색 (주문번호, 상품명, 상품코드, MMS제목, 수신정보를 OR 조건으로 검색)
+    if (keyword) {
+      const normalizedKeyword = PhoneUtil.normalizeDeliveryTarget(keyword);
+      const encryptedKeyword = this.cryptoCipher.encryptDeliveryTarget(normalizedKeyword);
+      queryBuilder.andWhere(
+        `(CAST(order.id AS CHAR) LIKE :keyword
+          OR product.name LIKE :keyword
+          OR product.code LIKE :keyword
+          OR orderProductMapping.sendTitle LIKE :keyword
+          OR orderDelivery.deliveryTarget = :encryptedKeyword)`,
+        { keyword: `%${keyword}%`, encryptedKeyword },
+      );
+    }
+
     queryBuilder = QueryBuilderDateCondition(queryBuilder, 'orderDelivery', 'sendRequestAt', startAt, endAt);
     queryBuilder.orderBy('orderDelivery.id', 'DESC');
 
@@ -1342,9 +1379,10 @@ export class CustomerServiceService {
     const workbook = new ExcelJS.Workbook();
     const sheetName = orderType === 'GENERAL' ? '일반쿠폰주문CS' : '신세계CS';
     const worksheet = workbook.addWorksheet(sheetName);
+    const isSSG = orderType === 'SSG';
 
-    // 4. 컬럼 정의
-    worksheet.columns = [
+    // 4. 컬럼 정의 (신세계는 개인번호 컬럼 포함)
+    const baseColumns = [
       { header: '발송요청일', key: 'sendRequestAt', width: 20 },
       { header: '실발송일', key: 'actualSendAt', width: 20 },
       { header: '주문번호', key: 'orderId', width: 12 },
@@ -1357,10 +1395,20 @@ export class CustomerServiceService {
       { header: '이메일쿠폰수령번호', key: 'emailReceiverPhone', width: 18 },
       { header: '발송방법', key: 'deliveryMethod', width: 12 },
       { header: '발신번호', key: 'fromPhoneNumber', width: 15 },
+    ];
+
+    // 신세계인 경우 개인번호(쿠폰번호) 컬럼 추가
+    if (isSSG) {
+      baseColumns.push({ header: '개인번호(쿠폰번호)', key: 'personalCode', width: 25 });
+    }
+
+    baseColumns.push(
       { header: '핀번호', key: 'barCode', width: 25 },
       { header: '핀상태', key: 'couponStatus', width: 12 },
       { header: '거래번호', key: 'transactionId', width: 20 },
-    ];
+    );
+
+    worksheet.columns = baseColumns;
 
     // 5. 헤더 스타일 적용
     const headerRow = worksheet.getRow(1);
@@ -1425,7 +1473,7 @@ export class CustomerServiceService {
             : ''),
         actualSendAt: actualSendAt || '',
         orderId: order.id,
-        businessName: order.user?.businessName ?? '',
+        businessName: order.user?.company?.businessName ?? '',
         eventName: order.eventName,
         sendTitle: orderDelivery.orderProductMapping.sendTitle ?? '',
         productName: orderDelivery.choiceSelectProduct
@@ -1436,6 +1484,7 @@ export class CustomerServiceService {
         emailReceiverPhone: decryptedEmailReceiverPhone || '',
         deliveryMethod: orderDelivery.deliveryMethod || '',
         fromPhoneNumber: orderDelivery.orderProductMapping.fromPhoneNumber || '',
+        personalCode: orderDelivery.personalCode || '',
         barCode: orderDelivery.barCode || '',
         couponStatus: couponStatusMap[orderDelivery.couponStatus] || orderDelivery.couponStatus || '',
         transactionId: orderDelivery.transactionId || '',

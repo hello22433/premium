@@ -182,7 +182,7 @@ export class SettleService {
           eventName: sale.eventName,
           productName: saleProductMapping.otherServiceSaleProduct.name,
           proveAt: format(sale.proveAt, DateDateFormatStr),
-          businessName: sale.businessUser!.businessName,
+          businessName: sale.businessUser!.company?.businessName ?? '',
           type: sale.saleType.name,
           isVat: sale.isVat,
         });
@@ -228,7 +228,7 @@ export class SettleService {
       businessUserId: sale.businessUserId,
       userId: sale.userId,
       userName: sale.user.personName,
-      businessName: sale.businessUser.businessName,
+      businessName: sale.businessUser.company?.businessName ?? '',
       businessUserName: sale.businessUser.personName,
       shippingStorageId: sale.shippingStorageId,
       shippingStorageName: sale.shippingStorage.name,
@@ -532,6 +532,7 @@ export class SettleService {
 
     const queryBuilder = this.userRepository
       .createQueryBuilder('user')
+      .leftJoinAndSelect('user.company', 'company')
       .where('user.status = :status', { status: IUserStatus.USED })
       .andWhere('user.authority IN (:...authority)', {
         authority: [IUserAuthority.SUPER_ADMIN, IUserAuthority.OPERATION_ADMIN],
@@ -539,7 +540,7 @@ export class SettleService {
 
     if (searchText) {
       queryBuilder.andWhere(
-        '(user.personName LIKE :searchText OR user.businessName LIKE :searchText OR user.email LIKE :searchText)',
+        '(user.personName LIKE :searchText OR company.businessName LIKE :searchText OR user.email LIKE :searchText)',
         { searchText: `%${searchText}%` },
       );
     }
@@ -553,7 +554,7 @@ export class SettleService {
         id: user.id,
         email: user.email,
         personName: user.personName,
-        businessName: user.businessName,
+        businessName: user.company?.businessName ?? '',
         status: user.status,
       };
     });
@@ -598,6 +599,7 @@ export class SettleService {
     let queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('user.company', 'userCompany')
       .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .innerJoinAndSelect('orderProductMappings.product', 'product')
       .innerJoinAndSelect('product.brand', 'brand')
@@ -617,7 +619,7 @@ export class SettleService {
     }
 
     if (businessName) {
-      queryBuilder = queryBuilder.andWhere('user.businessName LIKE :businessName', {
+      queryBuilder = queryBuilder.andWhere('userCompany.businessName LIKE :businessName', {
         businessName: `%${businessName}%`,
       });
     }
@@ -675,7 +677,7 @@ export class SettleService {
 
         resultList.push({
           id: order.id,
-          businessName: order.user!.businessName,
+          businessName: order.user!.company?.businessName ?? '',
           productClassification: orderProductMapping.product.classification?.classification ?? '',
           brandNameKorean: orderProductMapping.product.brand!.nameKorean,
           brandNameEnglish: orderProductMapping.product.brand!.nameEnglish,
@@ -715,6 +717,7 @@ export class SettleService {
     let queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('user.company', 'userCompany')
       .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .innerJoinAndSelect('orderProductMappings.product', 'product')
       .innerJoinAndSelect('product.brand', 'brand')
@@ -734,7 +737,7 @@ export class SettleService {
     }
 
     if (businessName) {
-      queryBuilder = queryBuilder.andWhere('user.businessName LIKE :businessName', {
+      queryBuilder = queryBuilder.andWhere('userCompany.businessName LIKE :businessName', {
         businessName: `%${businessName}%`,
       });
     }
@@ -791,7 +794,7 @@ export class SettleService {
 
         resultList.push({
           id: order.id,
-          businessName: order.user!.businessName,
+          businessName: order.user!.company?.businessName ?? '',
           productClassification: orderProductMapping.product.classification?.classification ?? '',
           brandNameKorean: orderProductMapping.product.brand!.nameKorean,
           brandNameEnglish: orderProductMapping.product.brand!.nameEnglish,
@@ -948,7 +951,7 @@ export class SettleService {
             id: order.id,
             registeredAt: format(orderDelivery.sendRequestAt, DateFormatStr),
             partnerCompanyName: orderProductMapping.product.partnerCompany!.businessName,
-            userBusinessName: order.user!.businessName,
+            userBusinessName: order.user!.company?.businessName ?? '',
             eventName: order.eventName,
             code: order.code,
             productNameList: [orderProductMapping.product.name],
@@ -974,6 +977,7 @@ export class SettleService {
     let queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('user.company', 'userCompany')
       .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .innerJoinAndSelect('orderProductMappings.product', 'product')
       .leftJoinAndSelect('product.classification', 'classification')
@@ -992,7 +996,7 @@ export class SettleService {
     }
 
     if (businessName) {
-      queryBuilder = queryBuilder.andWhere('user.businessName LIKE :businessName', {
+      queryBuilder = queryBuilder.andWhere('userCompany.businessName LIKE :businessName', {
         businessName: `%${businessName}%`,
       });
     }
@@ -1060,9 +1064,9 @@ export class SettleService {
         }
       }
 
-      // 첫 번째 상품의 발송 요청 시간 사용
-      const firstMapping = order.orderProductMappings?.[0];
-      const sendRequestAt = firstMapping?.sendRequestAt ? format(firstMapping.sendRequestAt, DateFormatStr) : null;
+      // 첫 번째 배송의 실제 발송 시간 사용
+      const firstDelivery = order.orderProductMappings?.[0]?.orderDeliveries?.[0];
+      const sendRequestAt = firstDelivery?.actualSendAt ? format(firstDelivery.actualSendAt, DateFormatStr) : null;
 
       // 발송완료 리포트 상태 계산
       let deliveryReportStatus = '-';
@@ -1089,7 +1093,7 @@ export class SettleService {
       return {
         id: order.id,
         registeredAt: format(order.registerAt, DateFormatStr),
-        businessName: order.user!.businessName,
+        businessName: order.user!.company?.businessName ?? '',
         personName: order.user!.personName,
         eventName: order.eventName,
         productNameList: productNameList,
@@ -1160,15 +1164,15 @@ export class SettleService {
       }
     }
 
-    // 첫 번째 상품의 발송 요청 시간 사용
-    const firstMapping = order.orderProductMappings?.[0];
-    const sendRequestAt = firstMapping && normalizeDate(firstMapping.sendRequestAt) ? format(firstMapping.sendRequestAt!, DateFormatStr) : null;
+    // 첫 번째 배송의 실제 발송 시간 사용
+    const firstDelivery = order.orderProductMappings?.[0]?.orderDeliveries?.[0];
+    const sendRequestAt = firstDelivery?.actualSendAt ? format(firstDelivery.actualSendAt, DateFormatStr) : null;
 
     return {
       id: order.id,
       userId: order.userId,
       userPersonName: order.user!.personName,
-      userBusinessName: order.user!.businessName,
+      userBusinessName: order.user!.company?.businessName ?? '',
       operationPersonName: order.operationUser?.personName ?? null,
       eventName: order.eventName,
       type: order.type,
@@ -1188,6 +1192,7 @@ export class SettleService {
     const queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('user.company', 'userCompany')
       .leftJoinAndSelect('order.operationUser', 'operationUser')
       .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .leftJoinAndSelect('orderProductMappings.product', 'product')
@@ -1201,11 +1206,23 @@ export class SettleService {
       throw new BadRequestException('주문이 존재하지 않습니다.');
     }
 
-    // 동일한 고객사인지 검증
-    const businessNames = [...new Set(orders.map((order) => order.user!.businessName))];
-    if (businessNames.length > 1) {
+    // 동일한 고객사인지 검증 (companyId 기준)
+    const companyIds = [...new Set(orders.map((order) => order.user!.companyId))];
+    if (companyIds.length > 1) {
       throw new BadRequestException('동일한 고객사의 주문만 함께 조회할 수 있습니다.');
     }
+
+    // 담당자 목록 수집 (중복 제거)
+    const managersMap = new Map<number, { userId: number; personName: string }>();
+    for (const order of orders) {
+      if (order.user && !managersMap.has(order.user.id)) {
+        managersMap.set(order.user.id, {
+          userId: order.user.id,
+          personName: order.user.personName,
+        });
+      }
+    }
+    const managers = Array.from(managersMap.values());
 
     // 이벤트명 생성: 1개면 그대로, 2개 이상이면 "첫번째 외"
     const eventNames = orders.map((order) => order.eventName);
@@ -1255,17 +1272,17 @@ export class SettleService {
       }
     }
 
-    // 가장 최근 발송 요청 시각 찾기
-    let latestSendRequestAt: Date | null = null;
+    // 가장 최근 실제 발송 시각 찾기
+    let latestActualSendAt: Date | null = null;
     for (const order of orders) {
-      const firstMapping = order.orderProductMappings?.[0];
-      if (firstMapping?.sendRequestAt && normalizeDate(firstMapping.sendRequestAt)) {
-        if (!latestSendRequestAt || firstMapping.sendRequestAt > latestSendRequestAt) {
-          latestSendRequestAt = firstMapping.sendRequestAt;
+      const firstDelivery = order.orderProductMappings?.[0]?.orderDeliveries?.[0];
+      if (firstDelivery?.actualSendAt) {
+        if (!latestActualSendAt || firstDelivery.actualSendAt > latestActualSendAt) {
+          latestActualSendAt = firstDelivery.actualSendAt;
         }
       }
     }
-    const sendRequestAt = latestSendRequestAt ? format(latestSendRequestAt, DateFormatStr) : null;
+    const sendRequestAt = latestActualSendAt ? format(latestActualSendAt, DateFormatStr) : null;
 
     // 첫 번째 주문 기준으로 기본 정보 설정
     const firstOrder = orders[0];
@@ -1274,7 +1291,8 @@ export class SettleService {
       orderIds: orders.map((o) => o.id),
       userId: firstOrder.userId,
       userPersonName: firstOrder.user!.personName,
-      userBusinessName: firstOrder.user!.businessName,
+      managers,
+      userBusinessName: firstOrder.user!.company?.businessName ?? '',
       operationPersonName: firstOrder.operationUser?.personName ?? null,
       eventName,
       type: firstOrder.type,
@@ -1295,6 +1313,7 @@ export class SettleService {
     let queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('user.company', 'userCompany')
       .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .innerJoinAndSelect('orderProductMappings.product', 'product')
       .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
@@ -1311,7 +1330,7 @@ export class SettleService {
     }
 
     if (businessName) {
-      queryBuilder = queryBuilder.andWhere('user.businessName LIKE :businessName', {
+      queryBuilder = queryBuilder.andWhere('userCompany.businessName LIKE :businessName', {
         businessName: `%${businessName}%`,
       });
     }
@@ -1342,14 +1361,14 @@ export class SettleService {
         amount += orderProductMapping.amount;
       }
 
-      // 첫 번째 상품의 발송 요청 시간 사용
-      const firstMapping = order.orderProductMappings?.[0];
-      const sendRequestAt = firstMapping?.sendRequestAt ? format(firstMapping.sendRequestAt, DateEndMinuteFormatStr) : null;
+      // 첫 번째 배송의 실제 발송 시간 사용
+      const firstDelivery = order.orderProductMappings?.[0]?.orderDeliveries?.[0];
+      const sendRequestAt = firstDelivery?.actualSendAt ? format(firstDelivery.actualSendAt, DateEndMinuteFormatStr) : null;
 
       return {
         id: order.id,
         registeredAt: format(order.registerAt, DateDateFormatStr),
-        businessName: order.user!.businessName,
+        businessName: order.user!.company?.businessName ?? '',
         personName: order.user!.personName,
         eventName: order.eventName,
         productNameList: productNameList,
@@ -1441,6 +1460,7 @@ export class SettleService {
 
     const queryBuilder = this.userRepository
       .createQueryBuilder('user')
+      .leftJoinAndSelect('user.company', 'userCompany')
       .innerJoinAndSelect('user.orders', 'orders')
       .innerJoinAndSelect('orders.orderProductMappings', 'orderProductMappings')
       .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries');
@@ -1452,25 +1472,30 @@ export class SettleService {
     }
 
     if (userBusinessName) {
-      queryBuilder.andWhere('user.businessName LIKE :userBusinessName', { userBusinessName: `%${userBusinessName}%` });
+      queryBuilder.andWhere('userCompany.businessName LIKE :userBusinessName', { userBusinessName: `%${userBusinessName}%` });
     }
 
-    if (status) {
-      if (status === 'ACTIVE') {
-        queryBuilder.andWhere(`user.maximumLimit + user.balance - user.allSettleAmount + user.serviceAmount > 0`);
-      }
+    // 상태 필터링은 회사별 합산 후에 적용
 
-      if (status === 'STOP') {
-        queryBuilder.andWhere(`user.maximumLimit + user.balance - user.allSettleAmount + user.serviceAmount <= 0`);
-      }
-    }
-
-    queryBuilder.skip((page - 1) * take).take(take);
     queryBuilder.orderBy('user.id', 'DESC');
 
-    const [userList, totalCount] = await queryBuilder.getManyAndCount();
+    const allUsers = await queryBuilder.getMany();
 
-    const result: SettleUserPerListViewDto[] = userList.map((user) => {
+    // 동일 회사별 allSettleAmount 합산 (companyId -> totalAllSettleAmount)
+    const companyAllSettleMap = new Map<number, number>();
+
+    for (const user of allUsers) {
+      const companyId = user.companyId;
+      if (!companyId) continue;
+
+      if (!companyAllSettleMap.has(companyId)) {
+        companyAllSettleMap.set(companyId, 0);
+      }
+      companyAllSettleMap.set(companyId, companyAllSettleMap.get(companyId)! + user.allSettleAmount);
+    }
+
+    // 결과 리스트 생성 (회사별 합산된 allSettleAmount 사용)
+    let result: SettleUserPerListViewDto[] = allUsers.map((user) => {
       let overdueCount = 0;
       let overdueAmount = 0;
       for (const order of user.orders!) {
@@ -1480,17 +1505,28 @@ export class SettleService {
         }
       }
 
-      const remainServiceAmount = user.maximumLimit + user.balance - user.allSettleAmount + user.serviceAmount;
+      const companyMaximumLimit = Number(user.company?.maximumLimit ?? 0);
+      const companyId = user.companyId;
+
+      // 잔여서비스한도 = 회사최대한도 + 개별balance - 회사전체allSettleAmount
+      let remainServiceAmount: number;
+      if (companyId && companyAllSettleMap.has(companyId)) {
+        const totalAllSettleAmount = companyAllSettleMap.get(companyId)!;
+        remainServiceAmount = companyMaximumLimit + user.balance - totalAllSettleAmount;
+      } else {
+        // 회사가 없는 경우 개별 계산
+        remainServiceAmount = user.balance - user.allSettleAmount;
+      }
 
       return {
         id: user.id,
         email: user.email,
-        businessName: user.businessName,
+        businessName: user.company?.businessName ?? '',
         personName: user.personName,
         settleCondition: user.settleCondition,
         settlePeriodCondition: user.settlePeriodCondition,
         settlePeriodCount: user.settlePeriodCount,
-        maximumLimit: user.maximumLimit,
+        maximumLimit: companyMaximumLimit,
         serviceAmount: user.allSettleAmount,
         overdueCount: overdueCount,
         overdueAmount: overdueAmount,
@@ -1500,8 +1536,24 @@ export class SettleService {
       };
     });
 
+    // 상태 필터링 적용 (회사별 합산 후)
+    if (status) {
+      if (status === 'ACTIVE') {
+        result = result.filter((r) => r.remainServiceAmount > 0);
+      }
+      if (status === 'STOP') {
+        result = result.filter((r) => r.remainServiceAmount <= 0);
+      }
+    }
+
+    const totalCount = result.length;
+
+    // 페이지네이션 적용
+    const skip = (page - 1) * take;
+    const paginatedResult = result.slice(skip, skip + take);
+
     return {
-      list: result,
+      list: paginatedResult,
       totalCount,
       totalPage: Math.ceil(totalCount / take),
       currentPage: page,
@@ -1514,15 +1566,17 @@ export class SettleService {
     const queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('user.company', 'userCompany')
       .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .innerJoinAndSelect('orderProductMappings.product', 'product')
+      .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
       .where('order.userId = :userId', { userId: userId })
       .andWhere('order.status IN (:...status)', { status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'] });
 
     QueryBuilderDateCondition(queryBuilder, 'order', 'sendRequestAt', startAt, endAt);
 
     if (userBusinessName) {
-      queryBuilder.andWhere('user.businessName LIKE :userBusinessName', {
+      queryBuilder.andWhere('userCompany.businessName LIKE :userBusinessName', {
         userBusinessName: `%${userBusinessName}%`,
       });
     }
@@ -1551,7 +1605,6 @@ export class SettleService {
 
     const resultList: SettleUserPerDetailViewDto[] = orderList.map((order) => {
       let productName = '';
-      const firstMapping = order.orderProductMappings?.[0];
       if (order.orderProductMappings && order.orderProductMappings.length > 0) {
         productName = order.orderProductMappings[0].product.name;
         const orderProductMappingsLength = order.orderProductMappings.length;
@@ -1560,12 +1613,13 @@ export class SettleService {
         }
       }
 
-      // 첫 번째 상품의 발송 요청 시간 사용
-      const sendRequestAt = firstMapping?.sendRequestAt ? format(firstMapping.sendRequestAt, DateFormatStr) : null;
+      // 첫 번째 배송의 실제 발송 시간 사용
+      const firstDelivery = order.orderProductMappings?.[0]?.orderDeliveries?.[0];
+      const sendRequestAt = firstDelivery?.actualSendAt ? format(firstDelivery.actualSendAt, DateFormatStr) : null;
 
       return {
         id: order.id,
-        userBusinessName: order.user!.businessName,
+        userBusinessName: order.user!.company?.businessName ?? '',
         userPersonName: order.user!.personName,
         sendRequestAt: sendRequestAt,
         eventName: order.eventName,
@@ -1710,8 +1764,8 @@ export class SettleService {
 
   /**
    * 로그인한 사용자의 잔여 발송 한도 조회
-   * - 선정산(PRE_PAYMENT): 최대한도 = 선충전잔액 (balance)
-   * - 후정산(POST_PAYMENT): 최대한도 = 선충전잔액 + 여신한도 (balance + maximumLimit)
+   * - 잔여서비스한도 = 회사최대한도 + 개별balance - 회사전체allSettleAmount
+   * - 동일 회사의 모든 계정이 한도를 공유함
    * @param user 로그인한 사용자 정보
    * @returns 잔여 발송 한도 정보
    */
@@ -1719,7 +1773,7 @@ export class SettleService {
     // 사용자 정보 조회
     const userEntity = await this.userRepository.findOne({
       where: { id: user.id },
-      relations: ['orders'],
+      relations: ['orders', 'company'],
     });
 
     if (!userEntity) {
@@ -1736,24 +1790,23 @@ export class SettleService {
       }
     }
 
-    // 발송금액 = 서비스금액 + 정산기일초과금액
-    const deliveryAmount = userEntity.serviceAmount + overdueAmount;
+    const companyMaximumLimit = userEntity.company?.maximumLimit ?? 0;
 
-    // 정산 조건에 따른 최대 한도 계산
-    // - 선정산(PRE_PAYMENT): 최대한도 = 선충전잔액
-    // - 후정산(POST_PAYMENT): 최대한도 = 선충전잔액 + 여신한도
-    let effectiveMaxLimit: number;
-    if (userEntity.settleCondition === IUserSettleCondition.PRE_PAYMENT) {
-      effectiveMaxLimit = userEntity.balance;
-    } else {
-      effectiveMaxLimit = userEntity.balance + userEntity.maximumLimit;
+    // 동일 회사의 모든 계정 allSettleAmount 합산
+    let totalAllSettleAmount = userEntity.allSettleAmount;
+    if (userEntity.companyId) {
+      const companyUsers = await this.userRepository.find({
+        where: { companyId: userEntity.companyId },
+        select: ['id', 'allSettleAmount'],
+      });
+      totalAllSettleAmount = companyUsers.reduce((sum, u) => sum + u.allSettleAmount, 0);
     }
 
-    // 잔여발송한도 = 유효최대한도 - 주문금액
-    const remainServiceAmount = effectiveMaxLimit - userEntity.allSettleAmount;
+    // 잔여발송한도 = 회사최대한도 + 개별balance - 회사전체allSettleAmount
+    const remainServiceAmount = companyMaximumLimit + userEntity.balance - totalAllSettleAmount;
 
     return {
-      maximumLimit: userEntity.maximumLimit,
+      maximumLimit: companyMaximumLimit,
       balance: userEntity.balance,
       serviceAmount: userEntity.serviceAmount,
       overdueAmount: overdueAmount,

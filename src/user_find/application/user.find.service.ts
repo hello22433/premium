@@ -33,10 +33,11 @@ export class UserFindService {
   async findId(getBody: UserFindIdReqDto): Promise<UserFindIdResDto> {
     const user = await this.userRepository.findOne({
       where: {
-        businessNumber: getBody.businessNumber,
+        company: { businessNumber: getBody.businessNumber },
         personName: getBody.personName,
         personPhoneNumber: getBody.personPhoneNumber,
       },
+      relations: ['company'],
     });
 
     if (!user) {
@@ -52,10 +53,11 @@ export class UserFindService {
     const user = await this.userRepository.findOne({
       where: {
         email: email,
-        businessNumber: businessNumber,
+        company: { businessNumber: businessNumber },
         personName,
         personPhoneNumber,
       },
+      relations: ['company'],
     });
 
     if (!user) {
@@ -103,7 +105,7 @@ export class UserFindService {
       throw new BadRequestException('이메일 전송 데이터가 없습니다.');
     }
 
-    if (emailSendHistory.expireAt < new Date()) {
+    if (emailSendHistory.expireAt && emailSendHistory.expireAt < new Date()) {
       throw new BadRequestException('만료된 이메일 인증 코드입니다.');
     }
 

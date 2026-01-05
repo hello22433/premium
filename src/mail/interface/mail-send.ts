@@ -1,3 +1,9 @@
+export interface IMailAttachment {
+  filename: string;
+  content: Buffer;
+  contentType?: string;
+}
+
 export interface IMailSendIn {
   to: string;
   cc: string | undefined;
@@ -6,6 +12,7 @@ export interface IMailSendIn {
   content: string;
   saveSentMail: string;
   fromEmail?: string | null;
+  attachments?: IMailAttachment[];
 }
 
 export interface IMailSendOut {

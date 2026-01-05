@@ -49,3 +49,10 @@ ALTER TABLE `order`
 ALTER TABLE `order`
     ADD COLUMN `delivery_report_last_source` VARCHAR(20) NULL COMMENT '마지막 배송 완료 리포트 발행 소스 ex) DOCUMENT: 문서함, DIRECT: 직접발행',
     ADD COLUMN `transaction_statement_last_source` VARCHAR(20) NULL COMMENT '마지막 거래명세서 발행 소스 ex) DOCUMENT: 문서함, DIRECT: 직접발행';
+
+-- =========================================
+-- 주문 취소 사유 관련 컬럼 추가 (2025-12-19)
+-- =========================================
+ALTER TABLE `order`
+    ADD COLUMN `cancel_reason` TEXT NULL COMMENT '주문 취소 사유',
+    ADD COLUMN `canceled_at` DATETIME NULL COMMENT '주문 취소 일시';

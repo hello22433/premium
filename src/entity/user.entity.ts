@@ -1,4 +1,4 @@
-import { Column, Entity, OneToMany, PrimaryGeneratedColumn } from 'typeorm';
+import { Column, Entity, JoinColumn, ManyToOne, OneToMany, OneToOne, PrimaryGeneratedColumn } from 'typeorm';
 import { BaseEntity } from '../common/entity/base.entity';
 import { IUserStatus } from '../user/interface/user.status';
 import { IUserAuthority } from '../user/interface/user.authority';
@@ -8,11 +8,28 @@ import { IUserBusinessType } from '../user/interface/user.business.type';
 import { UserDiscountEntity } from './user.discount.entity';
 import { UserSettlePeriodConditionEnum } from '../user/interface/user.settle.period.condition.enum';
 import { OrderEntity } from './order.entity';
+import { UserCompanyEntity } from './user.company.entity';
+import { DepartmentEntity } from './department.entity';
+import { UserViewScopeEntity } from './user.view.scope.entity';
 
 @Entity('user')
 export class UserEntity extends BaseEntity {
   @PrimaryGeneratedColumn()
   id: number;
+
+  @Column({ type: 'int', nullable: true, comment: 'FK) user_company.id' })
+  companyId: number | null;
+
+  @ManyToOne(() => UserCompanyEntity, (company) => company.users)
+  @JoinColumn({ name: 'company_id' })
+  company: UserCompanyEntity;
+
+  @Column({ type: 'int', nullable: true, comment: 'FK) department.id' })
+  departmentId: number | null;
+
+  @ManyToOne(() => DepartmentEntity, (department) => department.users)
+  @JoinColumn({ name: 'department_id' })
+  department: DepartmentEntity;
 
   @Column({ type: 'varchar', length: 100, comment: '이메일' })
   email: string;
@@ -46,7 +63,7 @@ export class UserEntity extends BaseEntity {
   @Column({ type: 'varchar', length: 20, comment: '담당자 연락처' })
   personPhoneNumber: string;
 
-  @Column({ type: 'varchar', length: 100, comment: '담당자 이메일' })
+  @Column({ type: 'varchar', length: 500, comment: '담당자 이메일 (쉼표 구분으로 여러 개 저장 가능)' })
   personEmail: string;
 
   @Column({ type: 'varchar', length: 100, comment: '담당자 코드' })
@@ -66,18 +83,6 @@ export class UserEntity extends BaseEntity {
   @Column({ type: 'varchar', length: 100, comment: '법인 등록 번호' })
   corporateNumber: string | null;
 
-  @Column({ type: 'varchar', length: 100, comment: '사업자 등록 번호' })
-  businessNumber: string;
-
-  @Column({ type: 'varchar', length: 100, comment: '사업자명' })
-  businessName: string;
-
-  @Column({ type: 'varchar', length: 100, comment: '사업자 주소' })
-  businessAddress: string;
-
-  @Column({ type: 'varchar', length: 100, comment: '사업자 연락처' })
-  businessPhoneNumber: string;
-
   @Column({ comment: '대표자 여부 ex) true: 기본 담당자(대표)', default: false })
   isHeadPerson: boolean;
 
@@ -93,9 +98,6 @@ export class UserEntity extends BaseEntity {
 
   @Column({ type: 'varchar', length: 100, comment: '정산 방법 ex) 카드: CARD, 현금: CASH' })
   settleMethod: IUserSettleMethod;
-
-  @Column({ comment: '최대 서비스 한도 가격' })
-  maximumLimit: number;
 
   @Column({ type: 'varchar', length: 100, comment: '은행 명' })
   bankName: string;
@@ -136,15 +138,12 @@ export class UserEntity extends BaseEntity {
   @Column({ type: 'varchar', nullable: true, length: 1024, comment: '페이지 접근 허용 list' })
   authorityList: string | null;
 
-  @Column({ type: 'varchar', nullable: true, length: 100, comment: '업태' })
-  industryType: string | null;
-
-  @Column({ type: 'varchar', nullable: true, length: 100, comment: '종목' })
-  industryItem: string | null;
-
   @OneToMany(() => OrderEntity, (order) => order.user)
   orders: OrderEntity[];
 
   @OneToMany(() => UserDiscountEntity, (userDisCount) => userDisCount.user)
   userDiscounts: UserDiscountEntity[];
+
+  @OneToOne(() => UserViewScopeEntity, (viewScope) => viewScope.user)
+  viewScope: UserViewScopeEntity;
 }

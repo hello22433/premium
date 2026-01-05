@@ -192,9 +192,9 @@ export class DaouHttp implements IDaou {
         return {
           resultCode: xmlResponse.RT,
           resultMessage: xmlResponse.RTMSG || '정상처리',
-          cpnStatus: xmlResponse.CPN_STATUS, // 00: 미사용, 01: 교환완료, 02: 기취소
+          cpnStatus: xmlResponse.CPN_STATUS, // 00: 미사용, 01: 교환완료, 02: 기취소, 03: 사용중
           useDate: xmlResponse.USE_DATE,
-          useBranch: xmlResponse.USER_STORE,
+          useBranch: xmlResponse.USE_STORE,
         };
       } else {
         return {

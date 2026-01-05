@@ -4,6 +4,7 @@ import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { Parser } from 'xml2js';
 import { firstValueFrom } from 'rxjs';
+import * as iconv from 'iconv-lite';
 
 @Injectable()
 export class SsgIssue implements ISsgIssue {
@@ -78,6 +79,16 @@ export class SsgIssue implements ISsgIssue {
     return prefix + paddedNumber;
   }
 
+  // EUC-KR이 Latin-1로 잘못 해석된 문자열 복원
+  private fixMojibake(str: string): string {
+    try {
+      const bytes = Buffer.from(str, 'latin1');
+      return iconv.decode(bytes, 'euc-kr');
+    } catch {
+      return str;
+    }
+  }
+
   async check(obj: ISsgCheckIn): Promise<ISsgCheckOut> {
     const data = new URLSearchParams({
       event_no: obj.eventNo,
@@ -94,6 +105,12 @@ export class SsgIssue implements ISsgIssue {
       this.logger.log(response.data);
 
       const resultToJson = (await this.parser().parseStringPromise(response.data)) as unknown as ISsgCheckOut;
+
+      // value.result 필드 인코딩 복원 (EUC-KR → UTF-8)
+      if (resultToJson.response.value?.[0]?.result?.[0]) {
+        resultToJson.response.value[0].result[0] = this.fixMojibake(resultToJson.response.value[0].result[0]);
+      }
+
       this.logger.log(resultToJson);
       // 조회 성공 코드는 1001
       if (resultToJson.response.result[0].code[0] !== '1001') {

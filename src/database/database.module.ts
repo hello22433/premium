@@ -2,9 +2,13 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
 import { DataSource } from 'typeorm';
-import { addTransactionalDataSource } from 'typeorm-transactional';
+import {
+  addTransactionalDataSource,
+  getDataSourceByName,
+} from 'typeorm-transactional';
 import { SnakeNamingStrategy } from 'typeorm-naming-strategies';
 import { UserEntity } from '../entity/user.entity';
+import { UserCompanyEntity } from '../entity/user.company.entity';
 import { ProductEntity } from '../entity/product.entity';
 import { InquiryEntity } from '../entity/inquiry.entity';
 import { NoticeEntity } from '../entity/notice.entity';
@@ -47,6 +51,9 @@ import { OrderHistoryEntity } from 'src/entity/order.history.entity';
 import { ActivityLogEntity } from '../entity/activity.log.entity';
 import { ClassificationEntity } from '../entity/classification.entity';
 import { PasswordPolicyEntity } from '../entity/password.policy.entity';
+import { EmailManualEntity } from '../entity/email.manual.entity';
+import { DepartmentEntity } from '../entity/department.entity';
+import { UserViewScopeEntity } from '../entity/user.view.scope.entity';
 
 @Module({
   imports: [
@@ -61,6 +68,7 @@ import { PasswordPolicyEntity } from '../entity/password.policy.entity';
         database: configService.get('DATABASE_DATABASE'),
         entities: [
           UserEntity,
+          UserCompanyEntity,
           ProductEntity,
           InquiryEntity,
           NoticeEntity,
@@ -101,6 +109,9 @@ import { PasswordPolicyEntity } from '../entity/password.policy.entity';
           ShippingStorageEntity,
           ActivityLogEntity,
           PasswordPolicyEntity,
+          EmailManualEntity,
+          DepartmentEntity,
+          UserViewScopeEntity,
         ],
         timezone: '+09:00',
         logger: configService.get('DATABASE_LOGGING') === 'true' ? new SqlLogger() : undefined,
@@ -111,6 +122,11 @@ import { PasswordPolicyEntity } from '../entity/password.policy.entity';
       async dataSourceFactory(options) {
         if (!options) {
           throw new Error('Invalid options passed');
+        }
+
+        const existingDataSource = getDataSourceByName('default');
+        if (existingDataSource) {
+          return existingDataSource;
         }
 
         return addTransactionalDataSource(new DataSource(options));

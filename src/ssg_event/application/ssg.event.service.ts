@@ -100,19 +100,26 @@ export class SsgEventService {
 
         const oneSsgEventCount = ssgEventCountMap.get(ssgEventId);
         const isComplete = orderDelivery.status === 'COMPLETE' || orderDelivery.status === 'COMPLETE_SMS';
+        // 발송 대기 상태: WAIT 또는 TEMP (ssgEventId가 있으면서 발송 완료/취소/실패가 아닌 상태)
+        const isWait =
+          orderDelivery.status === 'WAIT' ||
+          orderDelivery.status === 'TEMP' ||
+          (!isComplete &&
+            orderDelivery.status !== 'CANCEL' &&
+            orderDelivery.status !== 'FAIL' &&
+            orderDelivery.status !== 'FAIL_SMS');
         if (!oneSsgEventCount) {
           ssgEventCountMap.set(ssgEventId, {
-            deliveryWaitCount: orderDelivery.status === 'WAIT' ? 1 : 0,
+            deliveryWaitCount: isWait ? 1 : 0,
             deliveryWaitAmount: 0,
             deliveryCompleteCount: isComplete ? 1 : 0,
             deliveryCompleteAmount: 0,
           });
         } else {
           ssgEventCountMap.set(ssgEventId, {
-            deliveryWaitCount:
-              orderDelivery.status === 'WAIT'
-                ? oneSsgEventCount.deliveryWaitCount + 1
-                : oneSsgEventCount.deliveryWaitCount,
+            deliveryWaitCount: isWait
+              ? oneSsgEventCount.deliveryWaitCount + 1
+              : oneSsgEventCount.deliveryWaitCount,
             deliveryWaitAmount: oneSsgEventCount.deliveryWaitAmount,
             deliveryCompleteCount: isComplete
               ? oneSsgEventCount.deliveryCompleteCount + 1
@@ -131,7 +138,11 @@ export class SsgEventService {
         throw new InternalServerErrorException('ssg event id error');
       }
 
-      if (orderProductMapping.order.status === 'DELIVERY_CONFIRMED') {
+      // 발송 대기 금액: DELIVERY_REQUEST 또는 DELIVERY_CONFIRMED 상태의 주문
+      if (
+        orderProductMapping.order.status === 'DELIVERY_REQUEST' ||
+        orderProductMapping.order.status === 'DELIVERY_CONFIRMED'
+      ) {
         afterSsgEventCount.deliveryWaitAmount += orderProductMapping.amount * orderProductMapping.product.price;
       }
 
@@ -230,19 +241,26 @@ export class SsgEventService {
 
         const oneSsgEventCount = ssgEventCountMap.get(ssgEventId);
         const isComplete = orderDelivery.status === 'COMPLETE' || orderDelivery.status === 'COMPLETE_SMS';
+        // 발송 대기 상태: WAIT 또는 TEMP (ssgEventId가 있으면서 발송 완료/취소/실패가 아닌 상태)
+        const isWait =
+          orderDelivery.status === 'WAIT' ||
+          orderDelivery.status === 'TEMP' ||
+          (!isComplete &&
+            orderDelivery.status !== 'CANCEL' &&
+            orderDelivery.status !== 'FAIL' &&
+            orderDelivery.status !== 'FAIL_SMS');
         if (!oneSsgEventCount) {
           ssgEventCountMap.set(ssgEventId, {
-            deliveryWaitCount: orderDelivery.status === 'WAIT' ? 1 : 0,
+            deliveryWaitCount: isWait ? 1 : 0,
             deliveryWaitAmount: 0,
             deliveryCompleteCount: isComplete ? 1 : 0,
             deliveryCompleteAmount: 0,
           });
         } else {
           ssgEventCountMap.set(ssgEventId, {
-            deliveryWaitCount:
-              orderDelivery.status === 'WAIT'
-                ? oneSsgEventCount.deliveryWaitCount + 1
-                : oneSsgEventCount.deliveryWaitCount,
+            deliveryWaitCount: isWait
+              ? oneSsgEventCount.deliveryWaitCount + 1
+              : oneSsgEventCount.deliveryWaitCount,
             deliveryWaitAmount: oneSsgEventCount.deliveryWaitAmount,
             deliveryCompleteCount: isComplete
               ? oneSsgEventCount.deliveryCompleteCount + 1
@@ -261,7 +279,11 @@ export class SsgEventService {
         throw new InternalServerErrorException('ssg event id error');
       }
 
-      if (orderProductMapping.order.status === 'DELIVERY_CONFIRMED') {
+      // 발송 대기 금액: DELIVERY_REQUEST 또는 DELIVERY_CONFIRMED 상태의 주문
+      if (
+        orderProductMapping.order.status === 'DELIVERY_REQUEST' ||
+        orderProductMapping.order.status === 'DELIVERY_CONFIRMED'
+      ) {
         afterSsgEventCount.deliveryWaitAmount += orderProductMapping.amount * orderProductMapping.product.price;
       }
 

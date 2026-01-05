@@ -65,8 +65,8 @@ export class DaouXmlParser {
         response.CPN_STATUS = value.trim();
       } else if (key === 'USE_DATE' && value && typeof value === 'string') {
         response.USE_DATE = value.trim();
-      } else if (key === 'USER_STORE' && value && typeof value === 'string') {
-        response.USER_STORE = value.trim();
+      } else if (key === 'USE_STORE' && value && typeof value === 'string') {
+        response.USE_STORE = value.trim();
       }
 
       // 값이 객체이거나 배열이면 재귀 호출

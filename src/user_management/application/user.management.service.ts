@@ -1,5 +1,8 @@
 import { BadRequestException, Inject, Injectable } from '@nestjs/common';
 import { UserEntity } from '../../entity/user.entity';
+import { UserCompanyEntity } from '../../entity/user.company.entity';
+import { UserViewScopeEntity, ViewScopeType } from '../../entity/user.view.scope.entity';
+import { DepartmentEntity } from '../../entity/department.entity';
 import { Repository } from 'typeorm';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
@@ -11,6 +14,7 @@ import {
   UserManagementPasswordResetReqDto,
   UserManagementUpdateReqDto,
   UserManagementModifyBalanceReqDto,
+  UserManagementGetCompanyListReqQueryDto,
 } from '../api/user.management.req.dto';
 import {
   UserManagementGetDetailResDto,
@@ -41,6 +45,12 @@ export class UserManagementService {
   constructor(
     @InjectRepository(UserEntity)
     private userRepository: Repository<UserEntity>,
+    @InjectRepository(UserCompanyEntity)
+    private userCompanyRepository: Repository<UserCompanyEntity>,
+    @InjectRepository(UserViewScopeEntity)
+    private userViewScopeRepository: Repository<UserViewScopeEntity>,
+    @InjectRepository(DepartmentEntity)
+    private departmentRepository: Repository<DepartmentEntity>,
     private passwordEncrypt: PasswordBcryptEncrypt,
     @Inject('IMailSend')
     private readonly mailSendService: IMailSend,
@@ -50,7 +60,9 @@ export class UserManagementService {
   async getNameList(getQuery: UserManagementGetNameListReqQueryDto): Promise<UserManagementGetNameListResDto> {
     const { authority } = getQuery;
 
-    let queryBuilder = this.userRepository.createQueryBuilder('user');
+    let queryBuilder = this.userRepository
+      .createQueryBuilder('user')
+      .leftJoinAndSelect('user.company', 'company');
 
     if (authority) {
       queryBuilder = queryBuilder.andWhere('user.authority = :authority', { authority });
@@ -60,7 +72,7 @@ export class UserManagementService {
     const resultList: UserManagementNameViewDto[] = userList.map((user) => {
       return {
         id: user.id,
-        businessName: user.businessName,
+        businessName: user.company?.businessName ?? '',
         personName: user.personName,
       };
     });
@@ -82,7 +94,9 @@ export class UserManagementService {
       take,
     } = getQuery;
 
-    let queryBuilder = this.userRepository.createQueryBuilder('user');
+    let queryBuilder = this.userRepository
+      .createQueryBuilder('user')
+      .leftJoinAndSelect('user.company', 'company');
 
     if (settleCondition) {
       queryBuilder = queryBuilder.andWhere('user.settleCondition = :settleCondition', { settleCondition });
@@ -115,7 +129,7 @@ export class UserManagementService {
     }
 
     if (businessName) {
-      queryBuilder = queryBuilder.andWhere('user.businessName LIKE :businessName', {
+      queryBuilder = queryBuilder.andWhere('company.businessName LIKE :businessName', {
         businessName: `%${businessName}%`,
       });
     }
@@ -144,12 +158,12 @@ export class UserManagementService {
         id: user.id,
         email: user.email,
         personCode: user.personCode,
-        businessName: user.businessName,
+        businessName: user.company?.businessName ?? '',
         personName: user.personName,
         personPhoneNumber: user.personPhoneNumber,
         settleCondition: user.settleCondition,
         settleMethod: user.settleMethod,
-        maximumLimit: user.maximumLimit,
+        maximumLimit: user.company?.maximumLimit ?? 0,
         balance: user.balance,
         status: user.status,
         duplicatePhoneLimit: user.duplicatePhoneLimit,
@@ -168,6 +182,7 @@ export class UserManagementService {
       where: {
         id,
       },
+      relations: ['company', 'department'],
     });
 
     if (!user) {
@@ -176,6 +191,14 @@ export class UserManagementService {
 
     // null 일 경우 기본값 return 하는 함수 생성 필요
     const authorityList = UserAuthListDefault(user.authority, user.authorityList);
+
+    // 사업자 정보는 user_company에서 가져옴
+    const company = user.company;
+
+    // 조회 범위 정보 조회
+    const viewScope = await this.userViewScopeRepository.findOne({
+      where: { userId: id },
+    });
 
     return {
       id: user.id,
@@ -191,14 +214,14 @@ export class UserManagementService {
       corporateNumber: user.corporateNumber,
 
       businessType: user.businessType,
-      businessNumber: user.businessNumber,
-      businessName: user.businessName,
-      businessAddress: user.businessAddress,
-      businessPhoneNumber: user.businessPhoneNumber,
+      businessNumber: company?.businessNumber ?? '',
+      businessName: company?.businessName ?? '',
+      businessAddress: company?.businessAddress ?? '',
+      businessPhoneNumber: company?.businessPhoneNumber ?? '',
       ip: user.ip,
       settleCondition: user.settleCondition,
       settleMethod: user.settleMethod,
-      maximumLimit: user.maximumLimit,
+      maximumLimit: company?.maximumLimit ?? 0,
 
       bankName: user.bankName,
       bankNumber: user.bankNumber,
@@ -211,8 +234,33 @@ export class UserManagementService {
       settlePeriodCount: user.settlePeriodCount,
       duplicatePhoneLimit: user.duplicatePhoneLimit,
       authorityList: authorityList,
-      industryType: user.industryType,
-      industryItem: user.industryItem,
+      industryType: company?.industryType ?? null,
+      industryItem: company?.industryItem ?? null,
+      companyId: user.companyId,
+      company: company
+        ? {
+            id: company.id,
+            businessName: company.businessName,
+            businessNumber: company.businessNumber,
+            maximumLimit: company.maximumLimit,
+          }
+        : null,
+      departmentId: user.departmentId,
+      department: user.department
+        ? {
+            id: user.department.id,
+            name: user.department.name,
+          }
+        : null,
+      viewScope: viewScope
+        ? {
+            scopeType: viewScope.scopeType,
+            deptIds: viewScope.getDeptIdList(),
+          }
+        : {
+            scopeType: ViewScopeType.SELF,
+            deptIds: [],
+          },
     };
   }
 
@@ -223,6 +271,7 @@ export class UserManagementService {
       where: {
         id,
       },
+      relations: ['company'],
     });
 
     if (!user) {
@@ -232,11 +281,6 @@ export class UserManagementService {
     const beforeBalance = user.balance;
     user.balance += chargeAmount;
     const afterBalance = user.balance;
-
-    // 선정산 계정의 경우 최대서비스한도도 증가
-    if (user.settleCondition === IUserSettleCondition.PRE_PAYMENT) {
-      user.maximumLimit += chargeAmount;
-    }
 
     await this.userRepository.save(user);
 
@@ -254,7 +298,7 @@ export class UserManagementService {
       requestParams: {
         targetUserId: id,
         targetUserEmail: user.email,
-        targetBusinessName: user.businessName,
+        targetBusinessName: user.company?.businessName ?? '',
         chargeAmount: chargeAmount,
         beforeBalance: beforeBalance,
         afterBalance: afterBalance,
@@ -269,6 +313,7 @@ export class UserManagementService {
       where: {
         id,
       },
+      relations: ['company'],
     });
 
     if (!user) {
@@ -279,11 +324,6 @@ export class UserManagementService {
     const changeAmount = newBalance - beforeBalance;
 
     user.balance = newBalance;
-
-    // 선정산 계정의 경우 최대서비스한도도 변경
-    if (user.settleCondition === IUserSettleCondition.PRE_PAYMENT) {
-      user.maximumLimit += changeAmount;
-    }
 
     await this.userRepository.save(user);
 
@@ -301,7 +341,7 @@ export class UserManagementService {
       requestParams: {
         targetUserId: id,
         targetUserEmail: user.email,
-        targetBusinessName: user.businessName,
+        targetBusinessName: user.company?.businessName ?? '',
         changeAmount: changeAmount,
         beforeBalance: beforeBalance,
         afterBalance: newBalance,
@@ -378,7 +418,31 @@ export class UserManagementService {
     // 사업자등록번호에서 하이픈 제거
     const businessNumber = getBody.businessNumber ? getBody.businessNumber.replace(/-/g, '') : getBody.businessNumber;
 
-    await this.userRepository.insert({
+    // 동일 사업자등록번호의 회사가 있으면 연결, 없으면 생성
+    let companyId: number | null = null;
+    if (businessNumber) {
+      let existingCompany = await this.userCompanyRepository.findOne({
+        where: { businessNumber },
+      });
+
+      if (existingCompany) {
+        companyId = existingCompany.id;
+      } else {
+        // 새 회사 생성
+        const newCompany = await this.userCompanyRepository.save({
+          businessNumber: businessNumber,
+          businessName: getBody.businessName,
+          businessAddress: getBody.businessAddress,
+          businessPhoneNumber: getBody.businessPhoneNumber,
+          industryType: getBody.industryType,
+          industryItem: getBody.industryItem,
+          maximumLimit: getBody.maximumLimit,
+        });
+        companyId = newCompany.id;
+      }
+    }
+
+    const insertResult = await this.userRepository.insert({
       email: getBody.email,
       password: passwordEncrypt,
       authority: getBody.authority,
@@ -387,14 +451,9 @@ export class UserManagementService {
       personEmail: getBody.personEmail,
       corporateNumber: getBody.corporateNumber,
       businessType: getBody.businessType,
-      businessNumber: businessNumber,
-      businessName: getBody.businessName,
-      businessAddress: getBody.businessAddress,
-      businessPhoneNumber: getBody.businessPhoneNumber,
       ip: getBody.ip,
       settleCondition: getBody.settleCondition,
       settleMethod: getBody.settleMethod,
-      maximumLimit: getBody.maximumLimit,
       bankName: getBody.bankName,
       bankNumber: getBody.bankNumber,
       cardName: getBody.cardName,
@@ -406,8 +465,18 @@ export class UserManagementService {
       settlePeriodCount: getBody.settlePeriodCount,
       duplicatePhoneLimit: getBody.duplicatePhoneLimit ?? 0,
       authorityList: getBody.authorityList.join(','),
-      industryType: getBody.industryType,
-      industryItem: getBody.industryItem,
+      companyId: companyId,
+    });
+
+    // 신규 사용자의 조회 범위 설정 (SUPER_ADMIN, OPERATION_ADMIN은 ALL, 나머지는 SELF)
+    const newUserId = insertResult.identifiers[0].id;
+    const scopeType =
+      getBody.authority === 'SUPER_ADMIN' || getBody.authority === 'OPERATION_ADMIN'
+        ? ViewScopeType.ALL
+        : ViewScopeType.SELF;
+    await this.userViewScopeRepository.insert({
+      userId: newUserId,
+      scopeType: scopeType,
     });
 
     return;
@@ -418,6 +487,7 @@ export class UserManagementService {
       where: {
         id: getBody.id,
       },
+      relations: ['company'],
     });
 
     if (!user) {
@@ -427,20 +497,57 @@ export class UserManagementService {
     // 사업자등록번호에서 하이픈 제거
     const businessNumber = getBody.businessNumber ? getBody.businessNumber.replace(/-/g, '') : getBody.businessNumber;
 
+    // user_company 업데이트 또는 연결
+    if (businessNumber) {
+      const currentBusinessNumber = user.company?.businessNumber;
+
+      // 사업자등록번호가 변경된 경우
+      if (currentBusinessNumber !== businessNumber) {
+        // 새로운 사업자등록번호로 기존 회사 검색
+        const existingCompany = await this.userCompanyRepository.findOne({
+          where: { businessNumber },
+        });
+
+        if (existingCompany) {
+          // 이미 존재하는 회사로 연결
+          user.companyId = existingCompany.id;
+          user.company = existingCompany;
+        } else {
+          // 새 회사 생성
+          const newCompany = await this.userCompanyRepository.save({
+            businessNumber: businessNumber,
+            businessName: getBody.businessName,
+            businessAddress: getBody.businessAddress,
+            businessPhoneNumber: getBody.businessPhoneNumber,
+            industryType: getBody.industryType,
+            industryItem: getBody.industryItem,
+            maximumLimit: getBody.maximumLimit,
+          });
+          user.companyId = newCompany.id;
+          user.company = newCompany;
+        }
+      } else if (user.companyId && user.company) {
+        // 사업자등록번호가 동일한 경우 기존 회사 정보만 업데이트
+        user.company.businessName = getBody.businessName;
+        user.company.businessAddress = getBody.businessAddress;
+        user.company.businessPhoneNumber = getBody.businessPhoneNumber;
+        user.company.industryType = getBody.industryType;
+        user.company.industryItem = getBody.industryItem;
+        user.company.maximumLimit = getBody.maximumLimit;
+        await this.userCompanyRepository.save(user.company);
+      }
+    }
+
+    // user 정보 업데이트 (사업자 관련 필드 제외)
     user.authority = getBody.authority;
     user.personName = getBody.personName;
     user.personPhoneNumber = getBody.personPhoneNumber;
     user.personEmail = getBody.personEmail;
     user.corporateNumber = getBody.corporateNumber;
     user.businessType = getBody.businessType;
-    user.businessNumber = businessNumber;
-    user.businessName = getBody.businessName;
-    user.businessAddress = getBody.businessAddress;
-    user.businessPhoneNumber = getBody.businessPhoneNumber;
     user.ip = getBody.ip;
     user.settleCondition = getBody.settleCondition;
     user.settleMethod = getBody.settleMethod;
-    user.maximumLimit = getBody.maximumLimit;
     user.bankName = getBody.bankName;
     user.bankNumber = getBody.bankNumber;
     user.cardName = getBody.cardName;
@@ -452,10 +559,28 @@ export class UserManagementService {
     user.settlePeriodCount = getBody.settlePeriodCount;
     user.duplicatePhoneLimit = getBody.duplicatePhoneLimit ?? 0;
     user.authorityList = getBody.authorityList.join(',');
-    user.industryType = getBody.industryType;
-    user.industryItem = getBody.industryItem;
 
     await this.userRepository.save(user);
+
+    // 권한에 따른 user_view_scope 자동 설정
+    const scopeType =
+      getBody.authority === 'SUPER_ADMIN' || getBody.authority === 'OPERATION_ADMIN'
+        ? ViewScopeType.ALL
+        : ViewScopeType.SELF;
+
+    const existingViewScope = await this.userViewScopeRepository.findOne({
+      where: { userId: getBody.id },
+    });
+
+    if (existingViewScope) {
+      existingViewScope.scopeType = scopeType;
+      await this.userViewScopeRepository.save(existingViewScope);
+    } else {
+      await this.userViewScopeRepository.insert({
+        userId: getBody.id,
+        scopeType: scopeType,
+      });
+    }
 
     return;
   }
@@ -491,5 +616,40 @@ export class UserManagementService {
     await this.userRepository.save(user);
 
     return;
+  }
+
+  /**
+   * 고객사(회사) 목록 조회 API
+   * user_company 테이블 기준으로 중복 없이 고객사 목록을 반환
+   */
+  async getCompanyList(getQuery: UserManagementGetCompanyListReqQueryDto) {
+    const { businessName, page, take } = getQuery;
+
+    let queryBuilder = this.userCompanyRepository
+      .createQueryBuilder('company')
+      .where('company.deletedAt IS NULL');
+
+    if (businessName) {
+      queryBuilder = queryBuilder.andWhere('company.businessName LIKE :businessName', {
+        businessName: `%${businessName}%`,
+      });
+    }
+
+    queryBuilder = queryBuilder.orderBy('company.businessName', 'ASC');
+
+    const skip = (page - 1) * take;
+    queryBuilder = queryBuilder.take(take).skip(skip);
+
+    const [companyList, totalCount] = await queryBuilder.getManyAndCount();
+
+    const resultList = companyList.map((company) => ({
+      id: company.id,
+      businessName: company.businessName,
+      businessNumber: company.businessNumber,
+    }));
+
+    const totalPage = Math.ceil(totalCount / take);
+
+    return { list: resultList, totalCount, totalPage, currentPage: page };
   }
 }

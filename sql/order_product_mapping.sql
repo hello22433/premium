@@ -14,3 +14,9 @@ ADD COLUMN encourage_day INT NULL COMMENT '독려 문자 day (만료일 N일 전
 
 ALTER TABLE order_product_mapping
     ADD COLUMN test_delivery_count INT NOT NULL DEFAULT 0 COMMENT '테스트 전송 카운트 횟수';
+
+-- send_title 컬럼 길이 변경 (20 -> 24)
+-- send_content 컬럼 길이 변경 (200 -> 2500)
+ALTER TABLE order_product_mapping
+    MODIFY COLUMN send_title VARCHAR(24) NULL COMMENT '발신 제목',
+    MODIFY COLUMN send_content VARCHAR(2500) NULL COMMENT '발신 내용';

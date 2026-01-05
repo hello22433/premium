@@ -9,10 +9,12 @@ import {
   Post,
   Put,
   Query,
+  Req,
   Res,
   UseFilters,
   UseGuards,
 } from '@nestjs/common';
+import { Request } from 'express';
 import { OrderService } from '../application/order.service';
 import {
   ApiBadRequestResponse,
@@ -36,6 +38,7 @@ import {
   OrderExcelDownloadReqBodyDto,
   OrderGetDeliveryCompleteReportPdfReqDto,
   OrderGetDeliveryCompleteReportReqDto,
+  OrderGetDestructionCertificatePdfReqDto,
   OrderGetDetailReqParamDto,
   OrderGetListReqDto,
   OrderGetOrderCompleteReportPdfReqDto,
@@ -50,6 +53,11 @@ import {
   OrderUpdateEncourageDayReqBodyDto,
   OrderUpdateTailTextReqParamDto,
   OrderUpdateTailTextReqBodyDto,
+  OrderUpdateUseEmailContentReqParamDto,
+  OrderUpdateUseEmailContentReqBodyDto,
+  OrderGetReportHistoryReqQueryDto,
+  OrderGetReportHistoryReqParamDto,
+  OrderDeliveryCompleteReportEmailReqDto,
 } from './order.req.dto';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
 import {
@@ -62,6 +70,7 @@ import {
   OrderGetOrderCompleteReportResDto,
   OrderGetPreviousContentResDto,
   OrderGetSettleGetListResDto,
+  OrderGetReportHistoryResDto,
 } from './order.res.dto';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { User } from '../../auth/api/user.decorator';
@@ -178,8 +187,13 @@ export class OrderController {
   })
   // ====================================================
   @Post('/order/delivery-complete/report/pdf')
-  deliveryCompleteReportPdf(@Body() getBody: OrderGetDeliveryCompleteReportPdfReqDto) {
-    return this.orderService.deliveryCompleteReportPdf(getBody);
+  deliveryCompleteReportPdf(
+    @Body() getBody: OrderGetDeliveryCompleteReportPdfReqDto,
+    @User() user: ILoginUserInfo,
+    @Req() req: Request,
+  ) {
+    const ipAddress = req.ip || req.headers['x-forwarded-for']?.toString() || '';
+    return this.orderService.deliveryCompleteReportPdf(getBody, user, ipAddress);
   }
 
   @ApiOperation({
@@ -209,8 +223,33 @@ export class OrderController {
   })
   // ====================================================
   @Post('/order/order-complete/report/pdf')
-  orderCompleteReportPdf(@Body() getBody: OrderGetOrderCompleteReportPdfReqDto) {
-    return this.orderService.orderCompleteReportPdf(getBody);
+  orderCompleteReportPdf(
+    @Body() getBody: OrderGetOrderCompleteReportPdfReqDto,
+    @User() user: ILoginUserInfo,
+    @Req() req: Request,
+  ) {
+    const ipAddress = req.ip || req.headers['x-forwarded-for']?.toString() || '';
+    return this.orderService.orderCompleteReportPdf(getBody, user, ipAddress);
+  }
+
+  @ApiOperation({
+    summary: '파기확인서 PDF 다운로드 로그 기록 API',
+  })
+  @ApiOkResponse({
+    description: '성공적으로 기록한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '해당 order id 가 존재하지 않는 경우',
+  })
+  // ====================================================
+  @Post('/order/destruction-certificate/pdf')
+  destructionCertificatePdf(
+    @Body() getBody: OrderGetDestructionCertificatePdfReqDto,
+    @User() user: ILoginUserInfo,
+    @Req() req: Request,
+  ) {
+    const ipAddress = req.ip || req.headers['x-forwarded-for']?.toString() || '';
+    return this.orderService.destructionCertificatePdf(getBody, user, ipAddress);
   }
 
   @ApiOperation({
@@ -539,5 +578,71 @@ export class OrderController {
     @Body() getBody: OrderUpdateTailTextReqBodyDto,
   ) {
     return this.orderService.updateTailText(user, getParam.id, getBody);
+  }
+
+  @ApiOperation({
+    summary: '이메일 사용방법 수정 API (발송관리용)',
+    description: '발송관리에서 이메일 사용방법을 설정합니다.',
+  })
+  @ApiBearerAuth()
+  @ApiOkResponse({
+    description: '성공적으로 수정한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '존재하지 않는 상품 매핑인 경우',
+  })
+  // =========================================
+  @Patch('/order/:id/use-email-content')
+  async updateUseEmailContent(
+    @User() user: ILoginUserInfo,
+    @Param() getParam: OrderUpdateUseEmailContentReqParamDto,
+    @Body() getBody: OrderUpdateUseEmailContentReqBodyDto,
+  ) {
+    return this.orderService.updateUseEmailContent(user, getParam.id, getBody);
+  }
+
+  @ApiOperation({
+    summary: '주문별 리포트 다운로드 이력 조회 API',
+    description: '발송완료리포트 또는 거래명세서의 다운로드 이력을 조회합니다.',
+  })
+  @ApiBearerAuth()
+  @ApiOkResponse({
+    type: OrderGetReportHistoryResDto,
+    description: '성공적으로 조회한 경우',
+  })
+  // =========================================
+  @Get('/order/:orderId/report-history')
+  async getReportHistory(
+    @Param() getParam: OrderGetReportHistoryReqParamDto,
+    @Query() getQuery: OrderGetReportHistoryReqQueryDto,
+  ): Promise<OrderGetReportHistoryResDto> {
+    const list = await this.activityLogService.getOrderReportHistory(
+      getParam.orderId,
+      getQuery.reportType,
+    );
+    return { list };
+  }
+
+  @ApiOperation({
+    summary: '발송완료 리포트 이메일 전송 API',
+    description: '발송완료 리포트 PDF를 이메일로 전송합니다. 운영관리자 이상만 사용 가능.',
+  })
+  @ApiBearerAuth()
+  @ApiOkResponse({
+    description: '성공적으로 전송한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '해당 order id 가 존재하지 않는 경우',
+  })
+  // =========================================
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
+  @Post('/order/delivery-complete/report/email')
+  async sendDeliveryCompleteReportEmail(
+    @Body() getBody: OrderDeliveryCompleteReportEmailReqDto,
+    @User() user: ILoginUserInfo,
+    @Req() req: Request,
+  ) {
+    const ipAddress = req.ip || req.headers['x-forwarded-for']?.toString() || '';
+    return this.orderService.sendDeliveryCompleteReportEmail(getBody, user, ipAddress);
   }
 }

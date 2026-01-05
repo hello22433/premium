@@ -19,6 +19,7 @@ import {
   OrderExcelDownloadReqBodyDto,
   OrderGetDeliveryCompleteReportPdfReqDto,
   OrderGetDeliveryCompleteReportReqDto,
+  OrderGetDestructionCertificatePdfReqDto,
   OrderGetDetailReqParamDto,
   OrderGetListReqDto,
   OrderGetOrderCompleteReportPdfReqDto,
@@ -31,6 +32,7 @@ import {
   OrderUpdateTempReqDto,
   OrderUpdateEncourageDayReqBodyDto,
   OrderUpdateTailTextReqBodyDto,
+  OrderUpdateUseEmailContentReqBodyDto,
 } from '../api/order.req.dto';
 import {
   OrderCreateTempResDto,
@@ -64,6 +66,8 @@ import { CreateTransactionId } from '../domain/create.transaction.id';
 import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
 import { DeliveryCreateCouponImage } from '../../delivery/infra/delivery.create.coupon.image';
 import { UserEntity } from '../../entity/user.entity';
+import { UserCompanyEntity } from '../../entity/user.company.entity';
+import { UserViewScopeEntity, ViewScopeType } from '../../entity/user.view.scope.entity';
 import { IUserAuthority } from '../../user/interface/user.authority';
 import { IUserSettleCondition } from '../../user/interface/user.settle.condition';
 import { IOrderSection } from '../interface/order.section';
@@ -106,6 +110,10 @@ import { ActivityLogResult } from '../../activity_log/interface/activity.log.res
 import dayjs from 'dayjs';
 import timezone from 'dayjs/plugin/timezone';
 import utc from 'dayjs/plugin/utc';
+import { MailSendSmtp } from '../../mail/infrastructure/mail-send.smtp';
+import { OrderDeliveryCompleteReportEmailReqDto } from '../api/order.req.dto';
+import { EmailSendHistoryEntity } from '../../entity/email.send.history.entity';
+import { EmailType } from '../../mail/domain/email.type';
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
@@ -138,6 +146,8 @@ export class OrderService {
     private ssgEventRepository: Repository<SsgEventEntity>,
     @InjectRepository(SsgEventAmountHistoryEntity)
     private ssgEventAmountHistoryRepository: Repository<SsgEventAmountHistoryEntity>,
+    @InjectRepository(UserViewScopeEntity)
+    private userViewScopeRepository: Repository<UserViewScopeEntity>,
     private partnerCompanyExternService: PartnerCompanyExternService,
     private readonly userManagementService: UserManagementService,
     private readonly ssgEventService: SsgEventService,
@@ -150,12 +160,13 @@ export class OrderService {
     // @Inject('ISmsSend')
     // private smsSend: ISmsSend,
     // private configService: ConfigService,
-    // @InjectRepository(EmailSendHistoryEntity)
-    // private emailSendHistoryRepository: Repository<EmailSendHistoryEntity>,
     // @Inject('IFileStorage')
     // private fileStorage: IFileStorage,
     private deliveryBatchService: DeliveryBatchService,
     private activityLogService: ActivityLogService,
+    private mailSendSmtp: MailSendSmtp,
+    @InjectRepository(EmailSendHistoryEntity)
+    private emailSendHistoryRepository: Repository<EmailSendHistoryEntity>,
   ) {}
 
   async getList(user: ILoginUserInfo, getQuery: OrderGetListReqDto): Promise<OrderGetListResDto> {
@@ -164,31 +175,82 @@ export class OrderService {
     let queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('user.company', 'userCompany')
       .leftJoinAndSelect('order.operationUser', 'operationUser')
       .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .leftJoinAndSelect('orderProductMappings.product', 'product')
       .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
       .where('order.type = :type', { type });
 
+    // 현재 사용자 정보 및 조회 범위 설정 조회
+    const currentUser = await this.userRepository.findOne({
+      where: { id: user.id },
+      select: ['id', 'companyId', 'departmentId'],
+    });
+
+    const viewScope = await this.userViewScopeRepository.findOne({
+      where: { userId: user.id },
+    });
+
+    // view_scope 기반 조회 조건 적용 함수
+    const applyViewScopeFilter = () => {
+      const scopeType = viewScope?.scopeType ?? ViewScopeType.SELF;
+
+      switch (scopeType) {
+        case ViewScopeType.ALL:
+          // 전체 조회 - 조건 없음
+          break;
+        case ViewScopeType.COMPANY:
+          // 같은 회사 전체 조회
+          if (currentUser?.companyId) {
+            queryBuilder = queryBuilder.andWhere('user.companyId = :companyId', {
+              companyId: currentUser.companyId,
+            });
+          } else {
+            // companyId가 없으면 본인 + 배정된 주문만
+            queryBuilder = queryBuilder.andWhere('(order.userId = :userId OR order.operationUserId = :userId)', {
+              userId: user.id,
+            });
+          }
+          break;
+        case ViewScopeType.DEPARTMENT:
+          // 같은 부서 + 추가 부서들 조회
+          const deptIds = viewScope?.getDeptIdList() ?? [];
+          const targetDeptIds = currentUser?.departmentId
+            ? [currentUser.departmentId, ...deptIds]
+            : deptIds;
+
+          if (targetDeptIds.length > 0) {
+            queryBuilder = queryBuilder.andWhere('user.departmentId IN (:...deptIds)', {
+              deptIds: targetDeptIds,
+            });
+          } else {
+            // 부서 ID가 없으면 본인 + 배정된 주문만
+            queryBuilder = queryBuilder.andWhere('(order.userId = :userId OR order.operationUserId = :userId)', {
+              userId: user.id,
+            });
+          }
+          break;
+        case ViewScopeType.SELF:
+        default:
+          // 본인 주문 + 배정된 주문만
+          queryBuilder = queryBuilder.andWhere('(order.userId = :userId OR order.operationUserId = :userId)', {
+            userId: user.id,
+          });
+          break;
+      }
+    };
+
     // 주문 관리 일 경우
     if (section === IOrderSection.ORDER) {
-      if (user.authority !== IUserAuthority.SUPER_ADMIN) {
-        // 자신이 생성한 주문 또는 자신이 담당자로 지정된 주문
-        queryBuilder = queryBuilder.andWhere('(order.userId = :userId OR order.operationUserId = :userId)', {
-          userId: user.id,
-        });
-      }
+      applyViewScopeFilter();
     }
 
     // 발송관리 일 경우
     if (section === IOrderSection.SHIPPING) {
-      if (user.authority === IUserAuthority.CORPORATE_ADMIN) {
-        queryBuilder = queryBuilder.andWhere('order.userId = :userId', { userId: user.id });
-      }
-
-      if (user.authority === IUserAuthority.OPERATION_ADMIN) {
-        queryBuilder = queryBuilder.andWhere('order.operationUserId = :userId', { userId: user.id });
-      }
+      // 발송관리에서는 임시저장 상태 제외
+      queryBuilder = queryBuilder.andWhere('order.status != :tempStatus', { tempStatus: IOrderStatus.TEMP });
+      applyViewScopeFilter();
     }
 
     if (status) {
@@ -199,7 +261,7 @@ export class OrderService {
     if (searchKeyword && searchKeyword.length >= 1) {
       switch (searchType) {
         case 'CUSTOMER':
-          queryBuilder = queryBuilder.andWhere('user.businessName LIKE :keyword', { keyword: `%${searchKeyword}%` });
+          queryBuilder = queryBuilder.andWhere('userCompany.businessName LIKE :keyword', { keyword: `%${searchKeyword}%` });
           break;
         case 'MANAGER':
           queryBuilder = queryBuilder.andWhere('user.personName LIKE :keyword', { keyword: `%${searchKeyword}%` });
@@ -213,7 +275,7 @@ export class OrderService {
         case 'ALL':
         default:
           queryBuilder = queryBuilder.andWhere(
-            '(user.businessName LIKE :keyword OR operationUser.personName LIKE :keyword OR order.eventName LIKE :keyword OR product.name LIKE :keyword)',
+            '(userCompany.businessName LIKE :keyword OR operationUser.personName LIKE :keyword OR order.eventName LIKE :keyword OR product.name LIKE :keyword)',
             { keyword: `%${searchKeyword}%` },
           );
           break;
@@ -266,7 +328,7 @@ export class OrderService {
       return {
         id: order.id,
         registerAt: format(order.registerAt, DateFormatStr),
-        userBusinessName: order.user!.businessName,
+        userBusinessName: order.user!.company?.businessName ?? '',
         userPersonName: order.user!.personName,
         eventName: order.eventName,
         productName: productName,
@@ -297,7 +359,8 @@ export class OrderService {
       .leftJoinAndSelect('product.brand', 'brand')
       .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
       .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
-      .where('order.id = :id', { id: getParam.id });
+      .where('order.id = :id', { id: getParam.id })
+      .addOrderBy('orderDeliveries.id', 'ASC');
 
     const order = await queryBuilder.getOne();
 
@@ -418,6 +481,8 @@ export class OrderService {
       settlePeriodCondition: user.settlePeriodCondition,
       settlePeriodCount: user.settlePeriodCount,
       isPreSettle: user.settleCondition === IUserSettleCondition.PRE_PAYMENT,
+      cancelReason: order.cancelReason,
+      canceledAt: order.canceledAt ? format(order.canceledAt, DateFormatStr) : null,
     };
   }
 
@@ -513,6 +578,8 @@ export class OrderService {
       settlePeriodCondition: order.user!.settlePeriodCondition,
       settlePeriodCount: order.user!.settlePeriodCount,
       isPreSettle: order.user!.settleCondition === IUserSettleCondition.PRE_PAYMENT,
+      cancelReason: order.cancelReason,
+      canceledAt: order.canceledAt ? format(order.canceledAt, DateFormatStr) : null,
     };
   }
 
@@ -522,6 +589,7 @@ export class OrderService {
     const queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('user.company', 'userCompany')
       .leftJoinAndSelect('order.operationUser', 'operationUser')
       .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .leftJoinAndSelect('orderProductMappings.product', 'product')
@@ -542,14 +610,14 @@ export class OrderService {
     const productList: OrderPdfDetailProductDto[] = [];
     const userInfo: OrderCustomerViewDto = {
       id: order.user?.id ?? null,
-      userBusinessName: order.user?.businessName ?? null,
+      userBusinessName: order.user?.company?.businessName ?? null,
       userPersonPhoneNumber: order.user?.personPhoneNumber ?? null,
       userBusinessEmail: order.user?.email ?? null,
       userPersonName: order.user?.personName ?? null,
     };
     const now = new Date();
     const today = format(now, 'yyMMdd');
-    const fileName: string = `${order.user?.businessName}_발송완료리포트_${today}`;
+    const fileName: string = `${order.user?.company?.businessName ?? ''}_발송완료리포트_${today}`;
 
     if (order.orderProductMappings && order.orderProductMappings.length > 0) {
       for (const orderProductMapping of order.orderProductMappings) {
@@ -663,7 +731,7 @@ export class OrderService {
     };
   }
 
-  async deliveryCompleteReportPdf(getBody: OrderGetDeliveryCompleteReportPdfReqDto): Promise<void> {
+  async deliveryCompleteReportPdf(getBody: OrderGetDeliveryCompleteReportPdfReqDto, user: ILoginUserInfo, ipAddress: string): Promise<void> {
     const queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
@@ -685,6 +753,20 @@ export class OrderService {
 
     await this.orderRepository.save(order);
 
+    // activity_log에 기록
+    await this.activityLogService.createLog({
+      userId: user.id,
+      userEmail: user.email,
+      method: 'POST',
+      requestUrl: '/order/delivery-complete/report/pdf',
+      actionType: 'DELIVERY_COMPLETE_REPORT',
+      ipAddress,
+      statusCode: 200,
+      result: ActivityLogResult.SUCCESS,
+      responseTime: 0,
+      requestParams: { orderId: getBody.id, source: getBody.source },
+    });
+
     return;
   }
 
@@ -694,6 +776,7 @@ export class OrderService {
     const queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('user.company', 'userCompany')
       .leftJoinAndSelect('order.operationUser', 'operationUser')
       .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .leftJoinAndSelect('orderProductMappings.product', 'product')
@@ -764,12 +847,12 @@ export class OrderService {
       fileName,
       serialNumber,
       userSettleCondition: order.user!.settleCondition,
-      businessName: order.user!.businessName,
-      businessNumber: order.user!.businessNumber,
+      businessName: order.user!.company?.businessName ?? '',
+      businessNumber: order.user!.company?.businessNumber ?? '',
       personName: order.user!.personName,
-      businessAddress: order.user?.businessAddress ?? null,
-      businessType: order.user?.industryType ?? null,
-      businessItem: order.user?.industryItem ?? null,
+      businessAddress: order.user?.company?.businessAddress ?? null,
+      businessType: order.user?.company?.industryType ?? null,
+      businessItem: order.user?.company?.industryItem ?? null,
       eventName: order.eventName,
       sendRequestAt: sendRequestAt ?? null,
       price,
@@ -779,7 +862,7 @@ export class OrderService {
     };
   }
 
-  async orderCompleteReportPdf(getBody: OrderGetOrderCompleteReportPdfReqDto): Promise<void> {
+  async orderCompleteReportPdf(getBody: OrderGetOrderCompleteReportPdfReqDto, user: ILoginUserInfo, ipAddress: string): Promise<void> {
     const queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
@@ -801,6 +884,46 @@ export class OrderService {
 
     await this.orderRepository.save(order);
 
+    // activity_log에 기록
+    await this.activityLogService.createLog({
+      userId: user.id,
+      userEmail: user.email,
+      method: 'POST',
+      requestUrl: '/order/order-complete/report/pdf',
+      actionType: 'TRANSACTION_STATEMENT',
+      ipAddress,
+      statusCode: 200,
+      result: ActivityLogResult.SUCCESS,
+      responseTime: 0,
+      requestParams: { orderId: getBody.id, source: getBody.source },
+    });
+
+    return;
+  }
+
+  async destructionCertificatePdf(getBody: OrderGetDestructionCertificatePdfReqDto, user: ILoginUserInfo, ipAddress: string): Promise<void> {
+    const order = await this.orderRepository.findOne({
+      where: { id: getBody.id },
+    });
+
+    if (!order) {
+      throw new BadRequestException('주문이 존재하지 않습니다.');
+    }
+
+    // activity_log에 기록
+    await this.activityLogService.createLog({
+      userId: user.id,
+      userEmail: user.email,
+      method: 'POST',
+      requestUrl: '/order/destruction-certificate/pdf',
+      actionType: 'DESTRUCTION_CERTIFICATE',
+      ipAddress,
+      statusCode: 200,
+      result: ActivityLogResult.SUCCESS,
+      responseTime: 0,
+      requestParams: { orderId: getBody.id },
+    });
+
     return;
   }
 
@@ -819,6 +942,7 @@ export class OrderService {
     const queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('user.company', 'userCompany')
       .leftJoinAndSelect('order.operationUser', 'operationUser')
       .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .leftJoinAndSelect('orderProductMappings.product', 'product')
@@ -839,11 +963,20 @@ export class OrderService {
       }
     }
 
+    // 모든 주문이 같은 회사 소속인지 확인 (다중 주문 증빙 발행 시)
+    if (orders.length > 1) {
+      const firstCompanyId = orders[0].user?.companyId;
+      const allSameCompany = orders.every((order) => order.user?.companyId === firstCompanyId);
+      if (!allSameCompany) {
+        throw new BadRequestException('서로 다른 회사의 주문은 합쳐서 증빙 발행할 수 없습니다.');
+      }
+    }
+
     // 첫 번째 주문 기준으로 기본 정보 설정
     const firstOrder = orders[0];
     const userInfo: OrderCustomerViewDto = {
       id: firstOrder.user?.id ?? null,
-      userBusinessName: firstOrder.user?.businessName ?? null,
+      userBusinessName: firstOrder.user?.company?.businessName ?? null,
       userPersonPhoneNumber: firstOrder.user?.personPhoneNumber ?? null,
       userBusinessEmail: firstOrder.user?.email ?? null,
       userPersonName: firstOrder.user?.personName ?? null,
@@ -851,7 +984,7 @@ export class OrderService {
 
     const now = new Date();
     const today = format(now, 'yyMMdd');
-    const fileName: string = `${firstOrder.user?.businessName}_발송완료리포트_${today}`;
+    const fileName: string = `${firstOrder.user?.company?.businessName ?? ''}_발송완료리포트_${today}`;
 
     // 이벤트명 통합 (여러 개면 "a 외 n건" 형식)
     const eventNames = [...new Set(orders.map((o) => o.eventName))];
@@ -993,6 +1126,7 @@ export class OrderService {
     const queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('user.company', 'userCompany')
       .leftJoinAndSelect('order.operationUser', 'operationUser')
       .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .leftJoinAndSelect('orderProductMappings.product', 'product')
@@ -1009,6 +1143,15 @@ export class OrderService {
     for (const order of orders) {
       if (order.status !== IOrderStatus.DELIVERY_COMPLETE) {
         throw new BadRequestException('발송 완료된 건에 대해서만 조회 가능합니다.');
+      }
+    }
+
+    // 모든 주문이 같은 회사 소속인지 확인 (다중 주문 증빙 발행 시)
+    if (orders.length > 1) {
+      const firstCompanyId = orders[0].user?.companyId;
+      const allSameCompany = orders.every((order) => order.user?.companyId === firstCompanyId);
+      if (!allSameCompany) {
+        throw new BadRequestException('서로 다른 회사의 주문은 합쳐서 증빙 발행할 수 없습니다.');
       }
     }
 
@@ -1081,12 +1224,12 @@ export class OrderService {
       fileName,
       serialNumber,
       userSettleCondition: firstOrder.user!.settleCondition,
-      businessName: firstOrder.user!.businessName,
-      businessNumber: firstOrder.user!.businessNumber,
+      businessName: firstOrder.user!.company?.businessName ?? '',
+      businessNumber: firstOrder.user!.company?.businessNumber ?? '',
       personName: firstOrder.user!.personName,
-      businessAddress: firstOrder.user?.businessAddress ?? null,
-      businessType: firstOrder.user?.industryType ?? null,
-      businessItem: firstOrder.user?.industryItem ?? null,
+      businessAddress: firstOrder.user?.company?.businessAddress ?? null,
+      businessType: firstOrder.user?.company?.industryType ?? null,
+      businessItem: firstOrder.user?.company?.industryItem ?? null,
       eventName: eventName,
       sendRequestAt: sendRequestAt ?? null,
       price,
@@ -1498,8 +1641,16 @@ export class OrderService {
       throw new ForbiddenException('타 유저의 주문입니다.');
     }
 
-    if (order.status !== IOrderStatus.TEMP) {
-      throw new BadRequestException('임시저장이 아닐경우 수정할 수 없습니다.');
+    if (order.status !== IOrderStatus.TEMP && order.status !== IOrderStatus.DELIVERY_CANCEL) {
+      throw new BadRequestException('임시저장 또는 발송취소 상태가 아닐경우 수정할 수 없습니다.');
+    }
+
+    // 취소된 주문을 수정하는 경우 상태를 임시저장으로 변경하고 취소 정보 초기화
+    const wasCanceled = order.status === IOrderStatus.DELIVERY_CANCEL;
+    if (wasCanceled) {
+      order.status = IOrderStatus.TEMP;
+      order.cancelReason = null;
+      order.canceledAt = null;
     }
 
     const productIdList = orderProductList.map((orderProduct) => orderProduct.productId);
@@ -1668,6 +1819,8 @@ export class OrderService {
   async deliveryRequest(user: ILoginUserInfo, getBody: OrderDeliveryRequestReqDto): Promise<void> {
     const { id } = getBody;
 
+    this.logger.log(`[deliveryRequest] 요청 - orderId: ${id}, userId: ${user.id}`);
+
     const order = await this.orderRepository
       .createQueryBuilder('order')
       .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
@@ -1676,6 +1829,8 @@ export class OrderService {
       .where('order.id = :id', { id })
       .andWhere('order.userId = :userId', { userId: user.id })
       .getOne();
+
+    this.logger.log(`[deliveryRequest] 조회 결과 - order: ${order ? order.id : 'null'}`);
 
     if (!order) {
       throw new BadRequestException('해당 주문건은 존재하지 않습니다.');
@@ -1706,21 +1861,33 @@ export class OrderService {
     const userBalance = await this.userManagementService.getBalance(user.id);
     this.logger.debug(`User#${user.id} balance=${userBalance}`);
 
-    const oneUser = await this.userRepository.findOne({ where: { id: user.id } });
+    const oneUser = await this.userRepository.findOne({
+      where: { id: user.id },
+      relations: ['company'],
+    });
     if (!oneUser) {
       throw new InternalServerErrorException('유저가 존재하지 않습니다.');
     }
 
-    // allSettleAmount 해당 유저의 전체 order 사용 금액
-    // balance -> 선충전 금액
-    // maximumLimit -> 최대 서비스 한도
-    const remainServiceAmount =
-      oneUser.maximumLimit + oneUser.balance - oneUser.allSettleAmount + oneUser.serviceAmount;
+    // 회사 단위 잔여발송한도 계산
+    // 잔여한도 = Company.maximumLimit + 현재계정.balance - SUM(동일회사 User.allSettleAmount)
+    // balance는 각 계정별로만 사용 가능, allSettleAmount는 회사 단위로 합산
+    let remainServiceAmount: number;
 
-    // 잔액 부족 시 예외
-    // if (totalAmount > userBalance) {
-    //   throw new BadRequestException('잔액이 부족하여 발송 요청할 수 없습니다.');
-    // }
+    if (oneUser.companyId && oneUser.company) {
+      // 동일 회사 계정들의 allSettleAmount 합산
+      const companyUsers = await this.userRepository.find({
+        where: { companyId: oneUser.companyId },
+        select: ['id', 'allSettleAmount'],
+      });
+
+      const totalAllSettleAmount = companyUsers.reduce((sum, u) => sum + u.allSettleAmount, 0);
+
+      remainServiceAmount = oneUser.company.maximumLimit + oneUser.balance - totalAllSettleAmount;
+    } else {
+      // companyId가 없는 경우 기존 방식 (개별 계정 기준, maximumLimit은 0으로 처리)
+      remainServiceAmount = oneUser.balance - oneUser.allSettleAmount;
+    }
 
     if (totalAmount > remainServiceAmount) {
       throw new BadRequestException('최대 서비스 한도를 넘어 요청할 수 없습니다.');
@@ -1850,6 +2017,7 @@ export class OrderService {
     // 사용자 정보 조회 (중복번호 체크 및 잔액 조정에 필요)
     const oneUser = await this.userRepository.findOneOrFail({
       where: { id: order.userId },
+      relations: ['company'],
     });
 
     // ======== 할인/할증 차액 정산 시작 ========
@@ -2048,7 +2216,8 @@ export class OrderService {
             this.logger.debug(`할증 적용 (balance 차감): orderId=${order.id}, 할증액=${additionalAmount}`);
           } else {
             // balance가 부족하면 한도에서 추가 차감
-            const remainingLimit = oneUser.maximumLimit - oneUser.allSettleAmount;
+            const companyMaximumLimit = oneUser.company?.maximumLimit ?? 0;
+            const remainingLimit = companyMaximumLimit - oneUser.allSettleAmount;
             const neededFromLimit = additionalAmount - oneUser.balance;
 
             if (remainingLimit >= neededFromLimit) {
@@ -2068,7 +2237,8 @@ export class OrderService {
           }
         } else {
           // 한도에서 차감된 경우
-          const remainingLimit = oneUser.maximumLimit - oneUser.allSettleAmount;
+          const companyMaxLimit = oneUser.company?.maximumLimit ?? 0;
+          const remainingLimit = companyMaxLimit - oneUser.allSettleAmount;
 
           if (remainingLimit >= additionalAmount) {
             // 한도에 여유가 있으면 allSettleAmount에 추가
@@ -2078,7 +2248,7 @@ export class OrderService {
           } else if (oneUser.balance >= additionalAmount - remainingLimit) {
             // 한도가 부족하면 balance에서 추가 차감
             const neededFromBalance = additionalAmount - remainingLimit;
-            oneUser.allSettleAmount = oneUser.maximumLimit;
+            oneUser.allSettleAmount = companyMaxLimit;
             oneUser.balance -= neededFromBalance;
             message = 'warning: 한도가 부족하여 선충전 잔액에서 추가 차감되었습니다.';
             this.logger.debug(
@@ -2212,7 +2382,7 @@ export class OrderService {
 
   @Transactional()
   async deliveryCancel(user: ILoginUserInfo, getBody: OrderDeliveryCancelReqDto) {
-    const { id } = getBody;
+    const { id, cancelReason } = getBody;
 
     const order = await this.orderRepository
       .createQueryBuilder('order')
@@ -2281,6 +2451,8 @@ export class OrderService {
     }
 
     order.status = IOrderStatus.DELIVERY_CANCEL;
+    order.cancelReason = cancelReason;
+    order.canceledAt = new Date();
     await this.orderRepository.save(order);
     await this.orderDeliveryRepository.update(
       { orderProductMappingId: In(orderProductMappingIdList) },
@@ -2334,6 +2506,7 @@ export class OrderService {
     let queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('user.company', 'userCompany')
       .leftJoinAndSelect('order.operationUser', 'operationUser')
       .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .leftJoinAndSelect('orderProductMappings.product', 'product')
@@ -2369,7 +2542,7 @@ export class OrderService {
     if (searchKeyword && searchKeyword.length >= 1) {
       switch (searchType) {
         case 'CUSTOMER':
-          queryBuilder = queryBuilder.andWhere('user.businessName LIKE :keyword', { keyword: `%${searchKeyword}%` });
+          queryBuilder = queryBuilder.andWhere('userCompany.businessName LIKE :keyword', { keyword: `%${searchKeyword}%` });
           break;
         case 'MANAGER':
           queryBuilder = queryBuilder.andWhere('user.personName LIKE :keyword', { keyword: `%${searchKeyword}%` });
@@ -2383,7 +2556,7 @@ export class OrderService {
         case 'ALL':
         default:
           queryBuilder = queryBuilder.andWhere(
-            '(user.businessName LIKE :keyword OR operationUser.personName LIKE :keyword OR order.eventName LIKE :keyword OR product.name LIKE :keyword)',
+            '(userCompany.businessName LIKE :keyword OR operationUser.personName LIKE :keyword OR order.eventName LIKE :keyword OR product.name LIKE :keyword)',
             { keyword: `%${searchKeyword}%` },
           );
           break;
@@ -2475,7 +2648,7 @@ export class OrderService {
       sheet.addRow({
         id: id,
         registerAt: format(order.registerAt, 'yyyy-MM-dd HH:mm'),
-        userBusinessName: order.user!.businessName,
+        userBusinessName: order.user!.company?.businessName ?? '',
         userPersonName: order.user!.personName,
         eventName: order.eventName,
         productName: productName,
@@ -2810,6 +2983,35 @@ export class OrderService {
   }
 
   /**
+   * 이메일 사용방법 수정 (발송관리용, 상품별)
+   * @param orderProductMappingId order_product_mapping의 id
+   */
+  async updateUseEmailContent(
+    user: ILoginUserInfo,
+    orderProductMappingId: number,
+    getBody: OrderUpdateUseEmailContentReqBodyDto,
+  ): Promise<void> {
+    const { useEmailContent } = getBody;
+
+    const orderProductMapping = await this.orderProductMappingRepository.findOne({
+      where: { id: orderProductMappingId },
+      relations: ['order'],
+    });
+
+    if (!orderProductMapping) {
+      throw new BadRequestException('존재하지 않는 상품입니다.');
+    }
+
+    // 발송관리에서만 수정 가능 (주문완료 상태 이상)
+    if (orderProductMapping.order.status === IOrderStatus.TEMP) {
+      throw new BadRequestException('임시저장 상태에서는 이메일 사용방법을 설정할 수 없습니다.');
+    }
+
+    orderProductMapping.useEmailContent = useEmailContent;
+    await this.orderProductMappingRepository.save(orderProductMapping);
+  }
+
+  /**
    * 상품에 맞는 할인/할증 설정을 찾는 헬퍼 함수
    * - BULK(일괄): 구간 없이 해당 상품군/대분류 전체에 적용
    * - SECTION(구간): 상품 단가가 속하는 구간의 할인율을 전체 가격에 적용
@@ -2896,5 +3098,83 @@ export class OrderService {
     }
 
     return null;
+  }
+
+  /**
+   * 발송완료리포트 이메일 발송
+   */
+  async sendDeliveryCompleteReportEmail(
+    getBody: OrderDeliveryCompleteReportEmailReqDto,
+    user: ILoginUserInfo,
+    ipAddress: string,
+  ): Promise<{ success: boolean; message: string }> {
+    const { orderId, to, subject, content, pdfBase64, pdfFileName } = getBody;
+
+    // 주문 존재 여부 확인
+    const order = await this.orderRepository.findOne({
+      where: { id: orderId },
+    });
+
+    if (!order) {
+      throw new BadRequestException('해당 주문이 존재하지 않습니다.');
+    }
+
+    // base64를 Buffer로 변환
+    const pdfBuffer = Buffer.from(pdfBase64, 'base64');
+
+    // 이메일 주소 파싱 (첫번째: to, 나머지: cc)
+    const emails = to
+      .split(',')
+      .map((email) => email.trim())
+      .filter((email) => email);
+    const toEmail = emails[0];
+    const ccEmails = emails.length > 1 ? emails.slice(1).join(', ') : undefined;
+
+    // 이메일 발송
+    const result = await this.mailSendSmtp.send({
+      to: toEmail,
+      cc: ccEmails,
+      subject,
+      content,
+      attachments: [
+        {
+          filename: pdfFileName,
+          content: pdfBuffer,
+          contentType: 'application/pdf',
+        },
+      ],
+    });
+
+    // 활동 로그 기록
+    await this.activityLogService.createLog({
+      userId: user.id,
+      userEmail: user.email,
+      method: 'POST',
+      requestUrl: '/order/delivery-complete/report/email',
+      actionType: 'DELIVERY_COMPLETE_REPORT_EMAIL',
+      ipAddress,
+      statusCode: result.success ? 200 : 500,
+      result: result.success ? ActivityLogResult.SUCCESS : ActivityLogResult.FAILURE,
+      responseTime: 0,
+      requestParams: {
+        orderId,
+        to: toEmail,
+        cc: ccEmails || null,
+        subject,
+        pdfFileName,
+        messageId: result.messageId,
+        error: result.error,
+      },
+      errorMessage: result.error || undefined,
+    });
+
+    if (!result.success) {
+      throw new InternalServerErrorException(result.error || '이메일 발송에 실패했습니다.');
+    }
+
+    return {
+      success: true,
+      message: '이메일이 성공적으로 발송되었습니다.',
+    };
   }
 }

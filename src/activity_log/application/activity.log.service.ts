@@ -285,4 +285,30 @@ export class ActivityLogService {
       .orderBy('activityLog.createdAt', 'DESC')
       .getMany();
   }
+
+  /**
+   * 주문별 발행 이력 조회 (발송완료리포트/거래명세서/이메일발송)
+   * @param orderId 주문 ID
+   * @param reportType 리포트 타입
+   */
+  async getOrderReportHistory(
+    orderId: number,
+    reportType: 'DELIVERY_COMPLETE_REPORT' | 'TRANSACTION_STATEMENT' | 'DELIVERY_COMPLETE_REPORT_EMAIL',
+  ): Promise<{ userEmail: string; createdAt: string; source: string | null; to: string | null; cc: string | null }[]> {
+    const logs = await this.activityLogRepository
+      .createQueryBuilder('activityLog')
+      .where('activityLog.deletedAt IS NULL')
+      .andWhere('activityLog.actionType = :actionType', { actionType: reportType })
+      .andWhere("JSON_EXTRACT(activityLog.requestParams, '$.orderId') = :orderId", { orderId })
+      .orderBy('activityLog.createdAt', 'DESC')
+      .getMany();
+
+    return logs.map((log) => ({
+      userEmail: log.userEmail,
+      createdAt: format(log.createdAt, DateFormatStr),
+      source: log.requestParams?.source || null,
+      to: log.requestParams?.to || null,
+      cc: log.requestParams?.cc || null,
+    }));
+  }
 }

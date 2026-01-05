@@ -83,11 +83,15 @@ export class PartnerCompanyExternService {
       // 표준연동발행규격서 v.1.6.8_갤럭시아머니트리.pdf
       if (type === 'GALAXIA') {
         const giftKind = orderDelivery.orderProductMapping.product.name.includes('(백화점)') ? 'dept' : 'cpn';
+        // 개인정보 보호: 백화점(dept)만 실제 전화번호 전달, 그 외는 더미 번호 사용
+        const phoneNumberForGalaxia = giftKind === 'dept' ? decryptedDeliveryTarget : '01000000000';
         const galaxiaOut = await this.galaxia.issue({
           transactionId: orderDelivery.transactionId,
           partnerCompanyCode: orderDelivery.orderProductMapping.product.partnerCompanyCode!,
-          fromPhoneNumber: decryptedDeliveryTarget,
+          fromPhoneNumber: phoneNumberForGalaxia,
           giftKind: giftKind,
+          // 백화점(dept) 상품권의 경우 액면가 필수
+          faceValue: giftKind === 'dept' ? String(orderDelivery.orderProductMapping.product.price) : undefined,
         });
         context = JSON.stringify(galaxiaOut);
         orderDelivery.barCode = galaxiaOut.giftCertificate.barcode ?? null;
@@ -209,7 +213,7 @@ export class PartnerCompanyExternService {
         const daouOut = await this.daou.issue({
           goodsId: orderDelivery.orderProductMapping.product.partnerCompanyCode!,
           transactionId: orderDelivery.transactionId,
-          phoneNumber: decryptedDeliveryTarget,
+          phoneNumber: '01000000000', // 개인정보 보호: 더미 번호 사용
           limitDate: '' + orderDelivery.orderProductMapping.product.expireDay,
           tradeNo: orderDelivery.transactionId, // tradeNo로 transactionId 사용
         });
@@ -239,11 +243,12 @@ export class PartnerCompanyExternService {
       throw e;
     } finally {
       if (type !== null) {
-        // 호출 이력 저장(성공/실패 구분) → 동일한 “REQUIRES_NEW” 트랜잭션에서 커밋됨
+        // 호출 이력 저장(성공/실패 구분) → 동일한 "REQUIRES_NEW" 트랜잭션에서 커밋됨
         await this.partnerCompanyExternHistoryRepository.insert({
           context,
           isSuccess,
           type: type!,
+          orderDeliveryId: orderDelivery.id,
         });
       }
     }
@@ -398,27 +403,50 @@ export class PartnerCompanyExternService {
         orderDelivery.couponStatus =
           giftielOut.UseYn === 'Y' ? OrderDeliveryCouponStatus.USED : OrderDeliveryCouponStatus.NOT_USED;
         orderDelivery.tradeAt = giftielOut.UseDate ? new Date(giftielOut.UseDate) : null;
+        orderDelivery.tradePlace = giftielOut.BiName || null;
         break;
       }
 
-      // 4. GIFT_SHOW
+      // 4. GIFT_SHOW (V2 API)
       case 'GIFT_SHOW': {
         const giftiShowOut = await this.giftiShow.check({
           transactionId: orderDelivery.transactionId!,
         });
 
-        // StatusCode '0' = 미사용(취소가능), 그 외는 StatusText로 판단
-        if (giftiShowOut.StatusCode === '0') {
-          orderDelivery.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
-        } else {
-          const statusText = giftiShowOut.StatusText || '';
-          if (statusText.includes('취소') || statusText.includes('반품') || statusText.includes('폐기')) {
-            orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
-          } else if (statusText.includes('만료')) {
-            orderDelivery.couponStatus = OrderDeliveryCouponStatus.EXPIRED;
-          } else {
+        if (giftiShowOut.resCode !== '0000' || !giftiShowOut.couponInfo) {
+          throw new Error(`GiftiShow API 오류: ${giftiShowOut.resCode} - ${giftiShowOut.resMsg}`);
+        }
+
+        const { pinStatusCd, exchDtm, tradeBranchNm, branchNm, useComNm } = giftiShowOut.couponInfo;
+
+        // pinStatusCd: 01=발행, 02=교환, 07=취소, 08=만료
+        switch (pinStatusCd) {
+          case '01':
+            orderDelivery.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
+            break;
+          case '02':
             orderDelivery.couponStatus = OrderDeliveryCouponStatus.USED;
-          }
+            // 교환일시 파싱 (YYYYMMDDHHmmss)
+            if (exchDtm) {
+              const year = parseInt(exchDtm.substring(0, 4));
+              const month = parseInt(exchDtm.substring(4, 6)) - 1;
+              const day = parseInt(exchDtm.substring(6, 8));
+              const hour = parseInt(exchDtm.substring(8, 10));
+              const minute = parseInt(exchDtm.substring(10, 12));
+              const second = parseInt(exchDtm.substring(12, 14));
+              orderDelivery.tradeAt = new Date(year, month, day, hour, minute, second);
+            }
+            // 교환장소: tradeBranchNm > branchNm > useComNm 순으로 사용
+            orderDelivery.tradePlace = tradeBranchNm || branchNm || useComNm || null;
+            break;
+          case '07':
+            orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
+            break;
+          case '08':
+            orderDelivery.couponStatus = OrderDeliveryCouponStatus.EXPIRED;
+            break;
+          default:
+            orderDelivery.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
         }
         break;
       }
@@ -439,6 +467,9 @@ export class PartnerCompanyExternService {
           cultureLandOut.CancelPossibility === 'N'
             ? OrderDeliveryCouponStatus.USED
             : OrderDeliveryCouponStatus.NOT_USED;
+        if (cultureLandOut.CancelPossibility === 'N') {
+          orderDelivery.tradeAt = new Date();
+        }
         break;
       }
 
@@ -471,10 +502,11 @@ export class PartnerCompanyExternService {
 
         // 응답 코드 확인
         if (daouCheckOut.resultCode === 'S000001') {
-          // CPN_STATUS: 00(미사용), 01(교환완료), 02(기취소)
+          // CPN_STATUS: 00(미사용), 01(교환완료), 02(기취소), 03(사용중)
           if (daouCheckOut.cpnStatus === '00') {
             orderDelivery.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
-          } else if (daouCheckOut.cpnStatus === '01') {
+          } else if (daouCheckOut.cpnStatus === '01' || daouCheckOut.cpnStatus === '03') {
+            // 01: 교환완료, 03: 사용중 - 둘 다 USED로 처리
             orderDelivery.couponStatus = OrderDeliveryCouponStatus.USED;
             // 사용일자가 있으면 tradeAt에 설정 (YYYYMMDD 형식)
             if (daouCheckOut.useDate) {
@@ -482,6 +514,10 @@ export class PartnerCompanyExternService {
               const month = parseInt(daouCheckOut.useDate.substring(4, 6)) - 1;
               const day = parseInt(daouCheckOut.useDate.substring(6, 8));
               orderDelivery.tradeAt = new Date(year, month, day);
+            }
+            // 사용처가 있으면 tradePlace에 설정
+            if (daouCheckOut.useBranch) {
+              orderDelivery.tradePlace = daouCheckOut.useBranch;
             }
           } else if (daouCheckOut.cpnStatus === '02') {
             orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;

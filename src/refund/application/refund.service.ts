@@ -31,12 +31,13 @@ export class RefundService {
       .innerJoinAndSelect('orderProductMapping.product', 'product')
       .innerJoinAndSelect('orderProductMapping.order', 'order')
       .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('user.company', 'company')
       .where('orderDelivery.refundStatus IS NOT NULL');
 
     QueryBuilderDateCondition(queryBuilder, 'orderDelivery', 'refundRegisterAt', startAt, endAt);
 
     if (userBusinessName) {
-      queryBuilder.andWhere('user.businessName LIKE :userBusinessName', { userBusinessName: `%${userBusinessName}%` });
+      queryBuilder.andWhere('company.businessName LIKE :userBusinessName', { userBusinessName: `%${userBusinessName}%` });
     }
 
     if (userPersonName) {
@@ -66,7 +67,7 @@ export class RefundService {
       return {
         id: orderDelivery.id,
         refundRegisterAt: format(orderDelivery.refundRegisterAt!, DateFormatStr),
-        userBusinessName: orderDelivery.orderProductMapping!.order!.user!.businessName,
+        userBusinessName: orderDelivery.orderProductMapping!.order!.user!.company?.businessName ?? '',
         productName: orderDelivery.orderProductMapping!.product.name,
         deliveryPrice: orderDelivery.orderProductMapping!.product.price,
         sendRequestAt: format(orderDelivery.sendRequestAt, DateFormatStr),

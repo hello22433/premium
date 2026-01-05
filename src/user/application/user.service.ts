@@ -8,9 +8,11 @@ import {
 import { PasswordBcryptEncrypt } from '../../auth/infrastructure/password.bcrypt.encrypt';
 import { ILoginTokenValidator } from '../../auth/interface/login.token.validator';
 import { UserEntity } from '../../entity/user.entity';
+import { UserCompanyEntity } from '../../entity/user.company.entity';
+import { UserViewScopeEntity, ViewScopeType } from '../../entity/user.view.scope.entity';
 import { PasswordPolicyEntity } from '../../entity/password.policy.entity';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Between, IsNull, Repository, Raw } from 'typeorm';
+import { Between, In, IsNull, Repository, Raw } from 'typeorm';
 import { Transactional } from 'typeorm-transactional';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { UserLoginByEmailPasswordResDto } from '../api/user.res.dto';
@@ -37,6 +39,10 @@ export class UserService {
     private loginTokenValidator: ILoginTokenValidator,
     @InjectRepository(UserEntity)
     private userRepository: Repository<UserEntity>,
+    @InjectRepository(UserCompanyEntity)
+    private userCompanyRepository: Repository<UserCompanyEntity>,
+    @InjectRepository(UserViewScopeEntity)
+    private userViewScopeRepository: Repository<UserViewScopeEntity>,
     @InjectRepository(EmailSendHistoryEntity)
     private emailSendHistoryRepository: Repository<EmailSendHistoryEntity>,
     @InjectRepository(PasswordPolicyEntity)
@@ -87,7 +93,30 @@ export class UserService {
 
     const passwordEncrypt = await this.passwordEncrypt.encrypt(password);
 
-    await this.userRepository.insert({
+    // 동일 사업자등록번호의 회사가 있으면 연결, 없으면 생성
+    let companyId: number | null = null;
+    if (businessNumber) {
+      const existingCompany = await this.userCompanyRepository.findOne({
+        where: { businessNumber },
+      });
+      if (existingCompany) {
+        companyId = existingCompany.id;
+      } else {
+        // 새 회사 생성
+        const newCompany = await this.userCompanyRepository.save({
+          businessNumber,
+          businessName,
+          businessAddress,
+          businessPhoneNumber,
+          industryType: industryType ?? null,
+          industryItem: industryItem ?? null,
+          maximumLimit: 0,
+        });
+        companyId = newCompany.id;
+      }
+    }
+
+    const insertResult = await this.userRepository.insert({
       email: signUpDto.email,
       password: passwordEncrypt,
       personName,
@@ -95,10 +124,6 @@ export class UserService {
       personEmail,
       businessType,
       corporateNumber,
-      businessNumber,
-      businessName,
-      businessAddress,
-      businessPhoneNumber,
       ip,
       isPasswordReset: false,
       passwordChangedAt: new Date(),
@@ -111,11 +136,17 @@ export class UserService {
       bankNumber: '',
       cardName: '',
       cardNumber: '',
-      maximumLimit: 0,
       balance: 0,
-      industryType: industryType ?? null,
-      industryItem: industryItem ?? null,
+      companyId: companyId,
     });
+
+    // 신규 사용자의 조회 범위 기본값 설정 (SELF)
+    const newUserId = insertResult.identifiers[0].id;
+    await this.userViewScopeRepository.insert({
+      userId: newUserId,
+      scopeType: ViewScopeType.SELF,
+    });
+
     return;
   }
 
@@ -128,6 +159,7 @@ export class UserService {
       where: {
         email: email,
       },
+      relations: ['company'],
     });
 
     if (!user) {
@@ -174,10 +206,10 @@ export class UserService {
       console.log(reqAllowedIp);
       console.log(user.ip);
 
-      const allowedIpList: string[] = user.ip ? user.ip.split('::') : [];
+      const allowedIpList: string[] = user.ip ? user.ip.split(',').map((ip) => ip.trim()) : [];
 
       // @ts-ignore
-      const splitAllowed = user.ip.split('::');
+      const splitAllowed = user.ip.split(',').map((ip) => ip.trim());
       console.log({ reqAllowedIp, splitAllowed });
 
       if (!allowedIpList.includes(reqAllowedIp)) {
@@ -185,12 +217,18 @@ export class UserService {
       }
     }
 
+    // 담당자 이메일 파싱 (쉼표 구분)
+    const personEmails = user.personEmail
+      ? user.personEmail.split(',').map((e) => e.trim()).filter((e) => e)
+      : [];
+
     // KST 기준으로 오늘 날짜 비교
     // MySQL 세션 타임존이 +09:00(KST)로 설정되어 있으므로
     // CURDATE()와 DATE() 함수는 KST 기준으로 동작
+    // userId 기반으로 오늘 인증 이력 체크 (계정별 로그인 여부 확인)
     const emailCodeCount = await this.emailSendHistoryRepository.count({
       where: {
-        email: user.email,
+        userId: user.id,
         type: EmailType.LOGIN,
         isCertified: true,
         createdAt: Raw((alias) => `DATE(${alias}) = CURDATE()`),
@@ -216,7 +254,7 @@ export class UserService {
       responseTime: 0,
       requestParams: {
         authority: user.authority,
-        businessName: user.businessName,
+        businessName: user.company?.businessName ?? '',
       },
     });
 
@@ -229,6 +267,8 @@ export class UserService {
         isEmailVerify: false,
         passwordChangedAt: user.passwordChangedAt,
         passwordExpiryDays: passwordPolicy?.passwordExpiryDays ?? null,
+        personEmails,
+        needEmailSelection: personEmails.length > 1,
       };
     }
 
@@ -240,11 +280,13 @@ export class UserService {
       isEmailVerify: true,
       passwordChangedAt: user.passwordChangedAt,
       passwordExpiryDays: passwordPolicy?.passwordExpiryDays ?? null,
+      personEmails,
+      needEmailSelection: false,
     };
   }
 
   async loginEmailSend(getBody: UserLoginEmailSendReqDto) {
-    const { email } = getBody;
+    const { email, targetEmail } = getBody;
 
     const user = await this.userRepository.findOne({
       where: {
@@ -256,13 +298,38 @@ export class UserService {
       throw new BadRequestException('해당 이메일의 유저가 존재하지 않습니다.');
     }
 
+    // 담당자 이메일 파싱
+    const personEmails = user.personEmail
+      ? user.personEmail.split(',').map((e) => e.trim()).filter((e) => e)
+      : [];
+
+    // 발송할 이메일 결정
+    // - 담당자 이메일이 1개일 때: 계정 이메일로 발송
+    // - 담당자 이메일이 2개 이상일 때: 선택한 담당자 이메일로 발송
+    let sendToEmail: string;
+
+    if (personEmails.length <= 1) {
+      // 1개 이하일 때는 계정 이메일로 발송
+      sendToEmail = email;
+    } else {
+      // 2개 이상일 때는 targetEmail 필수
+      if (!targetEmail) {
+        throw new BadRequestException('담당자 이메일이 2개 이상일 때는 targetEmail이 필수입니다.');
+      }
+      if (!personEmails.includes(targetEmail)) {
+        throw new BadRequestException('유효하지 않은 담당자 이메일입니다.');
+      }
+      sendToEmail = targetEmail;
+    }
+
     const code = generateRandomCode();
     const expireAt = addMinutes(new Date(), EmailCertifyExpireMinute);
 
     // 이메일 전송한 history record 생성하기
     const emailSendHistory = new EmailSendHistoryEntity();
 
-    emailSendHistory.email = getBody.email;
+    emailSendHistory.userId = user.id; // 계정별 인증 이력 관리
+    emailSendHistory.email = sendToEmail;
     emailSendHistory.type = EmailType.LOGIN;
     emailSendHistory.expireAt = expireAt;
     emailSendHistory.code = code;
@@ -275,7 +342,7 @@ export class UserService {
       cc: undefined,
       content: content,
       subject: title,
-      to: email,
+      to: sendToEmail,
     });
 
     await this.emailSendHistoryRepository.save(emailSendHistory);
@@ -297,7 +364,7 @@ export class UserService {
       throw new BadRequestException('이메일 전송 데이터가 없습니다.');
     }
 
-    if (emailSendHistory.expireAt < new Date()) {
+    if (emailSendHistory.expireAt && emailSendHistory.expireAt < new Date()) {
       throw new BadRequestException('만료된 이메일 인증 코드입니다.');
     }
 

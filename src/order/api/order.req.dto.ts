@@ -144,6 +144,16 @@ export class OrderGetOrderCompleteReportPdfReqDto {
   source?: string;
 }
 
+export class OrderGetDestructionCertificatePdfReqDto {
+  @ApiProperty({
+    description: 'order id',
+  })
+  // ==============================================
+  @IsNumber()
+  @IsNotEmpty()
+  id: number;
+}
+
 export class OrderGetSettleReqDto extends PagingReqDto {
   @ApiProperty({
     description: 'order id',
@@ -233,6 +243,15 @@ export class OrderDeliveryCancelReqDto {
   @IsNotEmpty()
   @IsNumber()
   id: number;
+
+  @ApiProperty({
+    description: '주문 취소 사유',
+  })
+  // ==================================
+  @IsNotEmpty()
+  @IsString()
+  @MaxLength(1000)
+  cancelReason: string;
 }
 
 export class OrderUpdateOperationUserReqDto {
@@ -418,4 +437,99 @@ export class OrderUpdateTailTextReqBodyDto {
   @IsString()
   @MaxLength(100)
   sendTailText: string | null;
+}
+
+export class OrderUpdateUseEmailContentReqParamDto {
+  @ApiProperty({
+    description: 'order_product_mapping id (상품별 설정)',
+  })
+  // ===================================
+  @IsNumber()
+  @IsNotEmpty()
+  @Type(() => Number)
+  id: number;
+}
+
+export class OrderUpdateUseEmailContentReqBodyDto {
+  @ApiProperty({
+    description: '이메일 사용방법',
+  })
+  // ===================================
+  @IsNotEmpty()
+  @IsString()
+  useEmailContent: string;
+}
+
+export class OrderGetReportHistoryReqQueryDto {
+  @ApiProperty({
+    description:
+      '리포트 타입 ex) DELIVERY_COMPLETE_REPORT: 발송완료리포트, TRANSACTION_STATEMENT: 거래명세서, DELIVERY_COMPLETE_REPORT_EMAIL: 발송완료리포트 이메일 발송',
+    enum: ['DELIVERY_COMPLETE_REPORT', 'TRANSACTION_STATEMENT', 'DELIVERY_COMPLETE_REPORT_EMAIL'],
+  })
+  // ===================================
+  @IsNotEmpty()
+  @IsString()
+  reportType: 'DELIVERY_COMPLETE_REPORT' | 'TRANSACTION_STATEMENT' | 'DELIVERY_COMPLETE_REPORT_EMAIL';
+}
+
+export class OrderGetReportHistoryReqParamDto {
+  @ApiProperty({
+    description: 'order id',
+  })
+  // ===================================
+  @IsNumber()
+  @IsNotEmpty()
+  @Type(() => Number)
+  orderId: number;
+}
+
+export class OrderDeliveryCompleteReportEmailReqDto {
+  @ApiProperty({
+    description: 'order id',
+  })
+  // ===================================
+  @IsNumber()
+  @IsNotEmpty()
+  orderId: number;
+
+  @ApiProperty({
+    description: '수신 이메일',
+  })
+  // ===================================
+  @IsNotEmpty()
+  @IsString()
+  to: string;
+
+  @ApiProperty({
+    description: '이메일 제목',
+  })
+  // ===================================
+  @IsNotEmpty()
+  @IsString()
+  @MaxLength(200)
+  subject: string;
+
+  @ApiProperty({
+    description: '이메일 내용 (HTML)',
+  })
+  // ===================================
+  @IsNotEmpty()
+  @IsString()
+  content: string;
+
+  @ApiProperty({
+    description: 'PDF 파일 (base64 인코딩)',
+  })
+  // ===================================
+  @IsNotEmpty()
+  @IsString()
+  pdfBase64: string;
+
+  @ApiProperty({
+    description: 'PDF 파일명',
+  })
+  // ===================================
+  @IsNotEmpty()
+  @IsString()
+  pdfFileName: string;
 }
