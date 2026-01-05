@@ -655,6 +655,15 @@ export class SettleGetUserPerListReqQueryDto extends PagingReqDto {
   userPersonName?: string;
 
   @ApiPropertyOptional({
+    description: '날짜 기준 타입 ex) CREATED_AT: 등록일, ACTUAL_SEND_AT: 실제 발송일 (기본값: 등록일)',
+    enum: ['CREATED_AT', 'ACTUAL_SEND_AT'],
+  })
+  // =============================================================
+  @IsOptional()
+  @IsString()
+  dateType?: 'CREATED_AT' | 'ACTUAL_SEND_AT';
+
+  @ApiPropertyOptional({
     description: '상태',
   })
   // =============================================================
