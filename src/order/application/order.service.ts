@@ -2563,7 +2563,7 @@ export class OrderService {
       }
     }
 
-    queryBuilder = QueryBuilderDateCondition(queryBuilder, 'order', 'sendRequestAt', startAt, endAt);
+    queryBuilder = QueryBuilderDateCondition(queryBuilder, 'order', 'registerAt', startAt, endAt);
 
     const orderList = await queryBuilder.getMany();
 
@@ -2584,29 +2584,9 @@ export class OrderService {
       { header: '발송시간', key: 'sendRequestAt', width: 40 },
     ];
 
-    const getSendRequestAt = ({
-      status,
-      actualSendAt,
-      sendRequestAt,
-      sendType,
-    }: {
-      status: string;
-      actualSendAt: Date | null;
-      sendRequestAt: Date | null;
-      sendType: string | null;
-    }) => {
-      if (status === 'TEMP' || status === 'DELIVERY_CANCEL') return '-';
-
+    const getActualSendAt = (actualSendAt: Date | null) => {
       if (actualSendAt) {
         return dayjs(actualSendAt).format('YYYY/MM/DD HH:mm:ss');
-      }
-
-      if (sendType === 'IMMEDIATE') {
-        return '-';
-      }
-
-      if (sendRequestAt) {
-        return dayjs(sendRequestAt).format('YYYY/MM/DD HH:mm:ss');
       }
       return '-';
     };
@@ -2656,12 +2636,7 @@ export class OrderService {
         sendAmount: order.sendAmount,
         settleAmount: order.settleAmount,
         status: OrderStatusExcelMapping(order.status),
-        sendRequestAt: getSendRequestAt({
-          status: order.status,
-          actualSendAt: actualSendAt,
-          sendRequestAt: firstMapping?.sendRequestAt ?? null,
-          sendType: firstMapping?.sendType ?? null,
-        }),
+        sendRequestAt: getActualSendAt(actualSendAt),
       });
       id++;
     }

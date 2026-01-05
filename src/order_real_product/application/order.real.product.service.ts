@@ -1097,7 +1097,7 @@ export class OrderRealProductService {
       }
     }
 
-    queryBuilder = QueryBuilderDateCondition(queryBuilder, 'order', 'sendRequestAt', startAt, endAt);
+    queryBuilder = QueryBuilderDateCondition(queryBuilder, 'order', 'createdAt', startAt, endAt);
 
     const orderList = await queryBuilder.getMany();
 
