@@ -26,6 +26,7 @@ export class GetPartnerCompanyExternHistoryListReqDto {
     example: 'GALAXIA',
   })
   @IsOptional()
+  @Transform(({ value }) => (value === '' ? undefined : value))
   @IsEnum(IPartnerCompanyType)
   type?: IPartnerCompanyType;
 
@@ -35,6 +36,7 @@ export class GetPartnerCompanyExternHistoryListReqDto {
   })
   @IsOptional()
   @Transform(({ value }) => {
+    if (value === '' || value === undefined || value === null) return undefined;
     if (value === 'true') return true;
     if (value === 'false') return false;
     return value;
