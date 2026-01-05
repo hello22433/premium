@@ -22,6 +22,7 @@ import { addDays, format, subDays } from 'date-fns';
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
 import { CancelCouponResDto } from '../api/CancelCouponResDto';
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
+import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
 
 @Injectable()
 export class PartnerCompanyExternService {
@@ -240,10 +241,16 @@ export class PartnerCompanyExternService {
       context = JSON.stringify(e);
       isSuccess = false;
       orderDelivery.status = IOrderDeliveryStatus.FAIL;
+
+      // 실패 시 이력을 별도 트랜잭션으로 먼저 저장 (롤백 방지)
+      if (type !== null) {
+        await this.saveHistoryInNewTransaction(context, isSuccess, type, orderDelivery.id);
+      }
+
       throw e;
     } finally {
-      if (type !== null) {
-        // 호출 이력 저장(성공/실패 구분) → 동일한 "REQUIRES_NEW" 트랜잭션에서 커밋됨
+      // 성공 시에만 finally에서 이력 저장 (실패 시는 catch에서 이미 저장됨)
+      if (type !== null && isSuccess) {
         await this.partnerCompanyExternHistoryRepository.insert({
           context,
           isSuccess,
@@ -252,6 +259,24 @@ export class PartnerCompanyExternService {
         });
       }
     }
+  }
+
+  /**
+   * 별도 트랜잭션으로 이력 저장 (메인 트랜잭션 롤백 시에도 이력 유지)
+   */
+  @Transactional({ propagation: Propagation.REQUIRES_NEW })
+  private async saveHistoryInNewTransaction(
+    context: string,
+    isSuccess: boolean,
+    type: IPartnerCompanyType,
+    orderDeliveryId: number,
+  ): Promise<void> {
+    await this.partnerCompanyExternHistoryRepository.insert({
+      context,
+      isSuccess,
+      type,
+      orderDeliveryId,
+    });
   }
 
   @Transactional({ propagation: Propagation.REQUIRED })
