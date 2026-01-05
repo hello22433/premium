@@ -1,5 +1,6 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { IOrderDeliveryMethod } from '../../../delivery/interface/order.delivery.method';
+import { IOrderDeliveryStatus } from '../../../delivery/interface/order.delivery.status';
 import { IOrderSendMethod } from '../../interface/order.send.method';
 import { OrderEmailSendType } from '../../domain/order.email.send.type';
 
@@ -72,6 +73,11 @@ export class OrderViewDeliveryDto extends OrderDeliveryViewCommonDto {
     description: '대치문자 3',
   })
   replaceCharacter3: string | null;
+
+  @ApiProperty({
+    description: '발송 상태',
+  })
+  status: IOrderDeliveryStatus;
 }
 
 export class OrderDeliveryCompleteReportViewDto extends OrderDeliveryViewCommonDto {
@@ -211,6 +217,11 @@ export class OrderDetailProductDto {
     nullable: true,
   })
   encourageDay: number | null;
+
+  @ApiProperty({
+    description: '해당 상품의 발송 실패 건수',
+  })
+  failCount: number;
 }
 
 export class OrderPdfDetailProductDto {

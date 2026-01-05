@@ -98,6 +98,11 @@ export class OrderGetDetailResDto {
     nullable: true,
   })
   canceledAt: string | null;
+
+  @ApiProperty({
+    description: '해당 주문의 총 발송 실패 건수',
+  })
+  totalFailCount: number;
 }
 
 export class OrderGetDeliveryCompleteReportDetailResDto {

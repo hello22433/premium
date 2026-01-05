@@ -321,6 +321,14 @@ export class OrderService {
         }
       }
 
+      // 발송 실패 건 포함 여부 확인
+      const hasFailedDelivery = order.orderProductMappings?.some((mapping) =>
+        mapping.orderDeliveries?.some(
+          (delivery) =>
+            delivery.status === IOrderDeliveryStatus.FAIL || delivery.status === IOrderDeliveryStatus.FAIL_SMS,
+        ),
+      );
+
       // 첫 번째 상품의 발송 정보 사용 - 즉시건/예약건 모두 실제발송시간 사용
       const firstMapping = order.orderProductMappings?.[0];
       const sendRequestAt = actualSendAt;
@@ -343,6 +351,7 @@ export class OrderService {
         settlePrice: order.settleAmount,
         requestToDestroyPersonalInfoDay: firstMapping?.requestToDestroyPersonalInfoDay ?? 0,
         sendType: firstMapping?.sendType ?? null,
+        hasFailedDelivery: hasFailedDelivery ?? false,
       };
     });
 
@@ -415,6 +424,7 @@ export class OrderService {
             replaceCharacter1: orderDelivery.replaceCharacter1,
             replaceCharacter2: orderDelivery.replaceCharacter2,
             replaceCharacter3: orderDelivery.replaceCharacter3,
+            status: orderDelivery.status,
           });
         }
 
@@ -440,6 +450,12 @@ export class OrderService {
           continue;
         }
 
+        // 해당 상품의 발송 실패 건수 계산
+        const failCount = orderProductMapping.orderDeliveries.filter(
+          (delivery) =>
+            delivery.status === IOrderDeliveryStatus.FAIL || delivery.status === IOrderDeliveryStatus.FAIL_SMS,
+        ).length;
+
         productList.push({
           id: orderProductMapping.id,
           product: product,
@@ -459,9 +475,13 @@ export class OrderService {
           sendType: orderProductMapping.sendType,
           useEmailContent: orderProductMapping.useEmailContent,
           encourageDay: orderProductMapping.encourageDay,
+          failCount: failCount,
         });
       }
     }
+
+    // 총 발송 실패 건수 계산
+    const totalFailCount = productList.reduce((acc, product) => acc + product.failCount, 0);
 
     let couponExpiration: number | null = null;
     if (order.type === IOrderType.SSG) {
@@ -483,6 +503,7 @@ export class OrderService {
       isPreSettle: user.settleCondition === IUserSettleCondition.PRE_PAYMENT,
       cancelReason: order.cancelReason,
       canceledAt: order.canceledAt ? format(order.canceledAt, DateFormatStr) : null,
+      totalFailCount: totalFailCount,
     };
   }
 
@@ -556,6 +577,7 @@ export class OrderService {
           sendType: orderProductMapping.sendType,
           useEmailContent: orderProductMapping.useEmailContent,
           encourageDay: orderProductMapping.encourageDay,
+          failCount: 0, // 이벤트 불러오기 시 발송 정보가 없으므로 0
         });
       }
     }
@@ -580,6 +602,7 @@ export class OrderService {
       isPreSettle: order.user!.settleCondition === IUserSettleCondition.PRE_PAYMENT,
       cancelReason: order.cancelReason,
       canceledAt: order.canceledAt ? format(order.canceledAt, DateFormatStr) : null,
+      totalFailCount: 0, // 이벤트 불러오기 시 발송 정보가 없으므로 0
     };
   }
 

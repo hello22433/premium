@@ -1,5 +1,6 @@
 import { IOrderStatus } from '../../interface/order.status';
 import { ApiProperty } from '@nestjs/swagger';
+import { IOrderDeliveryStatus } from '../../../delivery/interface/order.delivery.status';
 
 export class OrderViewDto {
   @ApiProperty({
@@ -90,4 +91,9 @@ export class OrderViewDto {
     description: '발송 방식 ex) IMMEDIATE: 즉시발송, RESERVE: 예약발송',
   })
   sendType: string | null;
+
+  @ApiProperty({
+    description: '발송 실패 건 포함 여부',
+  })
+  hasFailedDelivery: boolean;
 }
