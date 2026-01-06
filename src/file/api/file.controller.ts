@@ -67,4 +67,26 @@ export class FileController {
   createPdf(@UploadedFile() file: Express.Multer.File, @Body() dto: FileUploadPdfReqDto) {
     return this.fileService.createPdf(file);
   }
+
+  @ApiOperation({
+    summary: '범용 파일 업로드 API',
+    description:
+      '모든 타입의 파일 업로드를 위한 API 입니다.<br>' +
+      'multipart/form-data 형식, key는 file로 전송하시면 됩니다. <br>' +
+      'response 값으로 파일의 경로를 드리게 됩니다.',
+  })
+  @ApiConsumes('multipart/form-data')
+  @ApiOkResponse({
+    type: FileUploadResDto,
+    description: '파일을 성공적으로 업로드한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '파일을 업로드 하지 않은 경우',
+  })
+  // ============================================
+  @UseInterceptors(FileInterceptor('file'))
+  @Post('file/upload')
+  uploadFile(@UploadedFile() file: Express.Multer.File, @Body() dto: FileUploadPdfReqDto) {
+    return this.fileService.uploadFile(file);
+  }
 }

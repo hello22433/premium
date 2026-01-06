@@ -46,4 +46,17 @@ export class FileService {
 
     return { url: fileReturn.url };
   }
+
+  async uploadFile(file: Express.Multer.File): Promise<FileUploadResDto> {
+    if (!file) {
+      throw new BadRequestException('파일이 존재하지 않습니다.');
+    }
+
+    // 한글 깨짐 방지
+    file.originalname = Buffer.from(file.originalname, 'latin1').toString('utf8');
+
+    const fileReturn = await this.fileStorage.uploadFile(file);
+
+    return { url: fileReturn.url };
+  }
 }

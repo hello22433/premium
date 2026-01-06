@@ -50,7 +50,7 @@ export class FileStorageS3 implements IFileStorage {
   async uploadFile(file: Express.Multer.File): Promise<IFileUploadFileReturn> {
     const bucketName = this.configService.getOrThrow('AWS_S3_BUCKET');
 
-    const uploadFileName = `pdf/${Date.now()}-${file.originalname}`;
+    const uploadFileName = `file/${Date.now()}-${file.originalname}`;
 
     const fileData: PutObjectCommandInput = {
       Bucket: bucketName,
