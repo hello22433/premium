@@ -293,7 +293,7 @@ export class ActivityLogService {
    */
   async getOrderReportHistory(
     orderId: number,
-    reportType: 'DELIVERY_COMPLETE_REPORT' | 'TRANSACTION_STATEMENT' | 'DELIVERY_COMPLETE_REPORT_EMAIL',
+    reportType: 'DELIVERY_COMPLETE_REPORT' | 'TRANSACTION_STATEMENT' | 'DELIVERY_COMPLETE_REPORT_EMAIL' | 'TRANSACTION_STATEMENT_EMAIL',
   ): Promise<{ userEmail: string; createdAt: string; source: string | null; to: string | null; cc: string | null }[]> {
     const logs = await this.activityLogRepository
       .createQueryBuilder('activityLog')

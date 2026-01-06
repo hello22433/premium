@@ -473,13 +473,13 @@ export class OrderUpdateUseEmailContentReqBodyDto {
 export class OrderGetReportHistoryReqQueryDto {
   @ApiProperty({
     description:
-      '리포트 타입 ex) DELIVERY_COMPLETE_REPORT: 발송완료리포트, TRANSACTION_STATEMENT: 거래명세서, DELIVERY_COMPLETE_REPORT_EMAIL: 발송완료리포트 이메일 발송',
-    enum: ['DELIVERY_COMPLETE_REPORT', 'TRANSACTION_STATEMENT', 'DELIVERY_COMPLETE_REPORT_EMAIL'],
+      '리포트 타입 ex) DELIVERY_COMPLETE_REPORT: 발송완료리포트, TRANSACTION_STATEMENT: 거래명세서, DELIVERY_COMPLETE_REPORT_EMAIL: 발송완료리포트 이메일 발송, TRANSACTION_STATEMENT_EMAIL: 거래명세서 이메일 발송',
+    enum: ['DELIVERY_COMPLETE_REPORT', 'TRANSACTION_STATEMENT', 'DELIVERY_COMPLETE_REPORT_EMAIL', 'TRANSACTION_STATEMENT_EMAIL'],
   })
   // ===================================
   @IsNotEmpty()
   @IsString()
-  reportType: 'DELIVERY_COMPLETE_REPORT' | 'TRANSACTION_STATEMENT' | 'DELIVERY_COMPLETE_REPORT_EMAIL';
+  reportType: 'DELIVERY_COMPLETE_REPORT' | 'TRANSACTION_STATEMENT' | 'DELIVERY_COMPLETE_REPORT_EMAIL' | 'TRANSACTION_STATEMENT_EMAIL';
 }
 
 export class OrderGetReportHistoryReqParamDto {
@@ -494,6 +494,57 @@ export class OrderGetReportHistoryReqParamDto {
 }
 
 export class OrderDeliveryCompleteReportEmailReqDto {
+  @ApiProperty({
+    description: 'order id',
+  })
+  // ===================================
+  @IsNumber()
+  @IsNotEmpty()
+  orderId: number;
+
+  @ApiProperty({
+    description: '수신 이메일',
+  })
+  // ===================================
+  @IsNotEmpty()
+  @IsString()
+  to: string;
+
+  @ApiProperty({
+    description: '이메일 제목',
+  })
+  // ===================================
+  @IsNotEmpty()
+  @IsString()
+  @MaxLength(200)
+  subject: string;
+
+  @ApiProperty({
+    description: '이메일 내용 (HTML)',
+  })
+  // ===================================
+  @IsNotEmpty()
+  @IsString()
+  content: string;
+
+  @ApiProperty({
+    description: 'PDF 파일 (base64 인코딩)',
+  })
+  // ===================================
+  @IsNotEmpty()
+  @IsString()
+  pdfBase64: string;
+
+  @ApiProperty({
+    description: 'PDF 파일명',
+  })
+  // ===================================
+  @IsNotEmpty()
+  @IsString()
+  pdfFileName: string;
+}
+
+export class OrderTransactionStatementEmailReqDto {
   @ApiProperty({
     description: 'order id',
   })
