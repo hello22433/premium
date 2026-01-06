@@ -400,11 +400,16 @@ export class OrderService {
         const validityStartsNextDay = orderProductMapping.product.partnerCompany?.validityStartsNextDay ?? true;
         const expireDay = validityStartsNextDay ? productExpireDay : productExpireDay - 1;
 
+        // 발송 완료된 건의 경우 첫 번째 배송의 actualSendAt 사용
+        const firstDelivery = orderProductMapping.orderDeliveries?.[0];
+        const baseDate = firstDelivery?.actualSendAt
+          ? dayjs(firstDelivery.actualSendAt)
+          : orderProductMapping.sendType === 'IMMEDIATE'
+            ? dayjs()
+            : dayjs(orderProductMapping.sendRequestAt);
+
         const expireDate = expireDay
-          ? (orderProductMapping.sendType === 'IMMEDIATE' ? dayjs() : dayjs(orderProductMapping.sendRequestAt))
-              .tz('Asia/Seoul')
-              .add(expireDay, 'day')
-              .format('YYYY. MM. DD')
+          ? baseDate.tz('Asia/Seoul').add(expireDay, 'day').format('YYYY. MM. DD')
           : null;
 
         for (const orderDelivery of orderProductMapping.orderDeliveries) {
@@ -1063,11 +1068,11 @@ export class OrderService {
               }
             }
 
-            // 발송날짜: 증빙일자가 있으면 증빙일자 사용
+            // 발송날짜: 증빙일자가 있으면 증빙일자 사용, 없으면 실발송일 사용
             const deliverySendRequestAt = evidenceDateParsed
               ? format(evidenceDateParsed, DateFormatStr)
-              : orderDelivery.sendRequestAt
-                ? format(orderDelivery.sendRequestAt, DateFormatStr)
+              : orderDelivery.actualSendAt
+                ? format(orderDelivery.actualSendAt, DateFormatStr)
                 : null;
 
             orderDeliveryList.push({
