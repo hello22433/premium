@@ -678,7 +678,7 @@ export class OrderService {
 
           orderDeliveryList.push({
             id: orderDelivery.id,
-            sendRequestAt: orderDelivery.sendRequestAt ? format(orderDelivery.sendRequestAt, DateFormatStr) : null,
+            sendRequestAt: orderDelivery.actualSendAt ? format(orderDelivery.actualSendAt, DateFormatStr) : null,
             productName: orderProductMapping.product.name ?? null,
             amount: orderProductMapping.product.price ?? null,
             barCode: orderDelivery.barCode ? maskBarCode(orderDelivery.barCode) : null,
