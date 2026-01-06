@@ -446,7 +446,7 @@ export class SsgEventService {
       .where('ssg.startAt <= :now', { now })
       .andWhere('ssg.endAt >= :now', { now })
       .andWhere('ssg.eventBalance > 0')
-      .orderBy('ssg.order', 'ASC');
+      .orderBy('ssg.id', 'ASC');
 
     if (couponExpiration) {
       queryBuilder = queryBuilder.andWhere('ssg.couponExpiration = :couponExpiration', { couponExpiration });
@@ -483,7 +483,7 @@ export class SsgEventService {
       .where('ssg.startAt <= :now', { now })
       .andWhere('ssg.endAt >= :now', { now })
       .andWhere('ssg.eventBalance >= :orderAmount', { orderAmount })
-      .orderBy('ssg.order', 'ASC');
+      .orderBy('ssg.id', 'ASC');
 
     if (couponExpiration) {
       queryBuilder = queryBuilder.andWhere('ssg.couponExpiration = :couponExpiration', { couponExpiration });
@@ -507,13 +507,13 @@ export class SsgEventService {
   ): Promise<{ deliveryId: number; eventId: number; price: number }[] | null> {
     const now = new Date();
 
-    // 유효한 행사 목록 조회 (order 기준 정렬, 잔액 > 0)
+    // 유효한 행사 목록 조회 (id 기준 정렬 - 먼저 등록한 행사 우선, 잔액 > 0)
     let queryBuilder = this.ssgEventRepository
       .createQueryBuilder('ssg')
       .where('ssg.startAt <= :now', { now })
       .andWhere('ssg.endAt >= :now', { now })
       .andWhere('ssg.eventBalance > 0')
-      .orderBy('ssg.order', 'ASC');
+      .orderBy('ssg.id', 'ASC');
 
     if (couponExpiration) {
       queryBuilder = queryBuilder.andWhere('ssg.couponExpiration = :couponExpiration', { couponExpiration });
