@@ -594,3 +594,54 @@ export class OrderTransactionStatementEmailReqDto {
   @IsString()
   pdfFileName: string;
 }
+
+export class OrderDestructionCertificateEmailReqDto {
+  @ApiProperty({
+    description: 'order id',
+  })
+  // ===================================
+  @IsNumber()
+  @IsNotEmpty()
+  orderId: number;
+
+  @ApiProperty({
+    description: '수신 이메일',
+  })
+  // ===================================
+  @IsNotEmpty()
+  @IsString()
+  to: string;
+
+  @ApiProperty({
+    description: '이메일 제목',
+  })
+  // ===================================
+  @IsNotEmpty()
+  @IsString()
+  @MaxLength(200)
+  subject: string;
+
+  @ApiProperty({
+    description: '이메일 내용 (HTML)',
+  })
+  // ===================================
+  @IsNotEmpty()
+  @IsString()
+  content: string;
+
+  @ApiProperty({
+    description: 'PDF 파일 (base64 인코딩)',
+  })
+  // ===================================
+  @IsNotEmpty()
+  @IsString()
+  pdfBase64: string;
+
+  @ApiProperty({
+    description: 'PDF 파일명',
+  })
+  // ===================================
+  @IsNotEmpty()
+  @IsString()
+  pdfFileName: string;
+}

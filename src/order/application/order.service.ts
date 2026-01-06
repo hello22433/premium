@@ -35,6 +35,7 @@ import {
   OrderUpdateTailTextReqBodyDto,
   OrderUpdateUseEmailContentReqBodyDto,
   OrderTransactionStatementEmailReqDto,
+  OrderDestructionCertificateEmailReqDto,
 } from '../api/order.req.dto';
 import {
   OrderCreateTempResDto,
@@ -3268,6 +3269,84 @@ export class OrderService {
       method: 'POST',
       requestUrl: '/order/transaction-statement/report/email',
       actionType: 'TRANSACTION_STATEMENT_EMAIL',
+      ipAddress,
+      statusCode: result.success ? 200 : 500,
+      result: result.success ? ActivityLogResult.SUCCESS : ActivityLogResult.FAILURE,
+      responseTime: 0,
+      requestParams: {
+        orderId,
+        to: toEmail,
+        cc: ccEmails || null,
+        subject,
+        pdfFileName,
+        messageId: result.messageId,
+        error: result.error,
+      },
+      errorMessage: result.error || undefined,
+    });
+
+    if (!result.success) {
+      throw new InternalServerErrorException(result.error || '이메일 발송에 실패했습니다.');
+    }
+
+    return {
+      success: true,
+      message: '이메일이 성공적으로 발송되었습니다.',
+    };
+  }
+
+  /**
+   * 파기확약서 이메일 발송
+   */
+  async sendDestructionCertificateReportEmail(
+    getBody: OrderDestructionCertificateEmailReqDto,
+    user: ILoginUserInfo,
+    ipAddress: string,
+  ): Promise<{ success: boolean; message: string }> {
+    const { orderId, to, subject, content, pdfBase64, pdfFileName } = getBody;
+
+    // 주문 존재 여부 확인
+    const order = await this.orderRepository.findOne({
+      where: { id: orderId },
+    });
+
+    if (!order) {
+      throw new BadRequestException('해당 주문이 존재하지 않습니다.');
+    }
+
+    // base64를 Buffer로 변환
+    const pdfBuffer = Buffer.from(pdfBase64, 'base64');
+
+    // 이메일 주소 파싱 (첫번째: to, 나머지: cc)
+    const emails = to
+      .split(',')
+      .map((email) => email.trim())
+      .filter((email) => email);
+    const toEmail = emails[0];
+    const ccEmails = emails.length > 1 ? emails.slice(1).join(', ') : undefined;
+
+    // 이메일 발송
+    const result = await this.mailSendSmtp.send({
+      to: toEmail,
+      cc: ccEmails,
+      subject,
+      content,
+      attachments: [
+        {
+          filename: pdfFileName,
+          content: pdfBuffer,
+          contentType: 'application/pdf',
+        },
+      ],
+    });
+
+    // 활동 로그 기록
+    await this.activityLogService.createLog({
+      userId: user.id,
+      userEmail: user.email,
+      method: 'POST',
+      requestUrl: '/order/destruction-certificate/report/email',
+      actionType: 'DESTRUCTION_CERTIFICATE_EMAIL',
       ipAddress,
       statusCode: result.success ? 200 : 500,
       result: result.success ? ActivityLogResult.SUCCESS : ActivityLogResult.FAILURE,
