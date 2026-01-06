@@ -137,6 +137,7 @@ export class UserSyncProductService {
       .leftJoinAndSelect('product.brand', 'brand')
       .leftJoinAndSelect('product.classification', 'classification')
       .where('event.id = :id', { id })
+      .orderBy('userSyncProductEventMappings.id', 'DESC')
       .getOne();
 
     if (!event) {
