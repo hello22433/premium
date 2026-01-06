@@ -655,7 +655,13 @@ export class OrderService {
         const validityStartsNextDay = orderProductMapping.product.partnerCompany?.validityStartsNextDay ?? true;
         const expireDay = validityStartsNextDay ? productExpireDay : productExpireDay - 1;
 
-        const expireDate = expireDay ? dayjs().tz('Asia/Seoul').add(expireDay, 'day').format('YYYY. MM. DD') : null;
+        // 발송 완료된 건의 경우 첫 번째 배송의 actualSendAt 사용
+        const firstDelivery = orderProductMapping.orderDeliveries?.[0];
+        const baseDate = firstDelivery?.actualSendAt
+          ? dayjs(firstDelivery.actualSendAt)
+          : dayjs();
+
+        const expireDate = expireDay ? baseDate.tz('Asia/Seoul').add(expireDay, 'day').format('YYYY. MM. DD') : null;
 
         for (const orderDelivery of orderProductMapping.orderDeliveries) {
           // deliveryTarget 복호화 후 마스킹 처리
@@ -1037,7 +1043,14 @@ export class OrderService {
           const productExpireDay = orderProductMapping.product.expireDay || 0;
           const validityStartsNextDay = orderProductMapping.product.partnerCompany?.validityStartsNextDay ?? true;
           const expireDay = validityStartsNextDay ? productExpireDay : productExpireDay - 1;
-          const expireDate = expireDay ? dayjs().tz('Asia/Seoul').add(expireDay, 'day').format('YYYY. MM. DD') : null;
+
+          // 발송 완료된 건의 경우 첫 번째 배송의 actualSendAt 사용
+          const firstDelivery = orderProductMapping.orderDeliveries?.[0];
+          const baseDate = firstDelivery?.actualSendAt
+            ? dayjs(firstDelivery.actualSendAt)
+            : dayjs();
+
+          const expireDate = expireDay ? baseDate.tz('Asia/Seoul').add(expireDay, 'day').format('YYYY. MM. DD') : null;
 
           for (const orderDelivery of orderProductMapping.orderDeliveries) {
             // deliveryTarget 복호화 후 마스킹 처리
