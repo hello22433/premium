@@ -23,6 +23,13 @@ export class UserDiscountService {
     private userRepository: Repository<UserEntity>,
   ) {}
 
+  /**
+   * 할인 그룹 키 생성 (같은 그룹을 식별하기 위한 키)
+   */
+  private getDiscountGroupKey(discount: UserDiscountEntity): string {
+    return `${discount.category}-${discount.method}-${discount.primaryCategory || ''}-${discount.group || ''}`;
+  }
+
   async getList(getQuery: UserDiscountGetListReqDto): Promise<UserDiscountGetListResDto> {
     const { userId, partnerCompanyId, page, take } = getQuery;
 
@@ -30,7 +37,6 @@ export class UserDiscountService {
       throw new BadRequestException('조회할 id는 한 개만 입력 가능합니다.');
     }
 
-    const skip = (page - 1) * take;
     let queryBuilder = this.userDiscountRepository.createQueryBuilder('discount');
 
     if (userId) {
@@ -41,9 +47,85 @@ export class UserDiscountService {
       queryBuilder = queryBuilder.andWhere('discount.partnerCompanyId = :partnerCompanyId', { partnerCompanyId });
     }
 
-    const [discountList, totalCount] = await queryBuilder.skip(skip).take(take).getManyAndCount();
+    // 그룹별로 정렬하여 조회 (같은 그룹이 연속되도록)
+    queryBuilder = queryBuilder
+      .orderBy('discount.category', 'ASC')
+      .addOrderBy('discount.method', 'ASC')
+      .addOrderBy('discount.primaryCategory', 'ASC')
+      .addOrderBy('discount.group', 'ASC')
+      .addOrderBy('CAST(discount.range AS UNSIGNED)', 'ASC');
 
-    const resultList: UserDiscountViewDto[] = discountList.map((discount) => {
+    // 전체 데이터 조회
+    const allDiscounts = await queryBuilder.getMany();
+    const totalCount = allDiscounts.length;
+
+    if (totalCount === 0) {
+      return { list: [], totalCount: 0, totalPage: 0, currentPage: page };
+    }
+
+    // 그룹별로 묶기
+    const groups: UserDiscountEntity[][] = [];
+    let currentGroup: UserDiscountEntity[] = [];
+    let currentGroupKey = '';
+
+    for (const discount of allDiscounts) {
+      const groupKey = this.getDiscountGroupKey(discount);
+
+      if (groupKey !== currentGroupKey) {
+        if (currentGroup.length > 0) {
+          groups.push(currentGroup);
+        }
+        currentGroup = [discount];
+        currentGroupKey = groupKey;
+      } else {
+        currentGroup.push(discount);
+      }
+    }
+    if (currentGroup.length > 0) {
+      groups.push(currentGroup);
+    }
+
+    // 각 페이지에 어떤 그룹들이 포함되는지 계산 (그룹이 페이지 경계에서 잘리지 않도록)
+    const pageGroupRanges: { startGroupIndex: number; endGroupIndex: number }[] = [];
+    let currentPageStart = 0;
+    let currentPageItemCount = 0;
+
+    for (let i = 0; i < groups.length; i++) {
+      const group = groups[i];
+      // 현재 페이지에 그룹을 추가할 수 있는지 확인
+      if (currentPageItemCount > 0 && currentPageItemCount + group.length > take) {
+        // 현재 페이지 범위 저장
+        pageGroupRanges.push({
+          startGroupIndex: currentPageStart,
+          endGroupIndex: i - 1,
+        });
+        // 새 페이지 시작
+        currentPageStart = i;
+        currentPageItemCount = group.length;
+      } else {
+        currentPageItemCount += group.length;
+      }
+    }
+    // 마지막 페이지 범위 저장
+    if (currentPageStart < groups.length) {
+      pageGroupRanges.push({
+        startGroupIndex: currentPageStart,
+        endGroupIndex: groups.length - 1,
+      });
+    }
+
+    const totalPage = pageGroupRanges.length;
+
+    // 요청된 페이지의 그룹들 추출
+    const pageItems: UserDiscountEntity[] = [];
+    if (page <= totalPage) {
+      const range = pageGroupRanges[page - 1];
+      for (let i = range.startGroupIndex; i <= range.endGroupIndex; i++) {
+        pageItems.push(...groups[i]);
+      }
+    }
+
+    const resultList: UserDiscountViewDto[] = pageItems.map((discount) => {
       return {
         id: discount.id,
         userId: discount.userId ?? null,
@@ -58,8 +140,6 @@ export class UserDiscountService {
         pricePercent: discount.pricePercent,
       };
     });
-
-    const totalPage = Math.ceil(totalCount / take);
 
     return { list: resultList, totalCount, totalPage, currentPage: page };
   }
