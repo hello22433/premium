@@ -91,12 +91,17 @@ export class SsgEventService {
     >();
 
     for (const orderProductMapping of orderProductMappingList) {
-      let ssgEventId: number | null = null;
+      const productPrice = orderProductMapping.product.price;
+      const isOrderWait =
+        orderProductMapping.order.status === 'DELIVERY_REQUEST' ||
+        orderProductMapping.order.status === 'DELIVERY_CONFIRMED';
+      const isOrderComplete = orderProductMapping.order.status === 'DELIVERY_COMPLETE';
+
       for (const orderDelivery of orderProductMapping.orderDeliveries) {
         if (!orderDelivery.ssgEventId) {
           continue;
         }
-        ssgEventId = orderDelivery.ssgEventId;
+        const ssgEventId = orderDelivery.ssgEventId;
 
         const oneSsgEventCount = ssgEventCountMap.get(ssgEventId);
         const isComplete = orderDelivery.status === 'COMPLETE' || orderDelivery.status === 'COMPLETE_SMS';
@@ -108,46 +113,31 @@ export class SsgEventService {
             orderDelivery.status !== 'CANCEL' &&
             orderDelivery.status !== 'FAIL' &&
             orderDelivery.status !== 'FAIL_SMS');
+
+        // 배송건별로 건수와 금액 모두 계산
         if (!oneSsgEventCount) {
           ssgEventCountMap.set(ssgEventId, {
             deliveryWaitCount: isWait ? 1 : 0,
-            deliveryWaitAmount: 0,
+            deliveryWaitAmount: isOrderWait ? productPrice : 0,
             deliveryCompleteCount: isComplete ? 1 : 0,
-            deliveryCompleteAmount: 0,
+            deliveryCompleteAmount: isOrderComplete ? productPrice : 0,
           });
         } else {
           ssgEventCountMap.set(ssgEventId, {
             deliveryWaitCount: isWait
               ? oneSsgEventCount.deliveryWaitCount + 1
               : oneSsgEventCount.deliveryWaitCount,
-            deliveryWaitAmount: oneSsgEventCount.deliveryWaitAmount,
+            deliveryWaitAmount: isOrderWait
+              ? oneSsgEventCount.deliveryWaitAmount + productPrice
+              : oneSsgEventCount.deliveryWaitAmount,
             deliveryCompleteCount: isComplete
               ? oneSsgEventCount.deliveryCompleteCount + 1
               : oneSsgEventCount.deliveryCompleteCount,
-            deliveryCompleteAmount: oneSsgEventCount.deliveryCompleteAmount,
+            deliveryCompleteAmount: isOrderComplete
+              ? oneSsgEventCount.deliveryCompleteAmount + productPrice
+              : oneSsgEventCount.deliveryCompleteAmount,
           });
         }
-      }
-
-      if (!ssgEventId) {
-        continue;
-      }
-
-      const afterSsgEventCount = ssgEventCountMap.get(ssgEventId);
-      if (!afterSsgEventCount) {
-        throw new InternalServerErrorException('ssg event id error');
-      }
-
-      // 발송 대기 금액: DELIVERY_REQUEST 또는 DELIVERY_CONFIRMED 상태의 주문
-      if (
-        orderProductMapping.order.status === 'DELIVERY_REQUEST' ||
-        orderProductMapping.order.status === 'DELIVERY_CONFIRMED'
-      ) {
-        afterSsgEventCount.deliveryWaitAmount += orderProductMapping.amount * orderProductMapping.product.price;
-      }
-
-      if (orderProductMapping.order.status === 'DELIVERY_COMPLETE') {
-        afterSsgEventCount.deliveryCompleteAmount += orderProductMapping.amount * orderProductMapping.product.price;
       }
     }
 
@@ -232,12 +222,17 @@ export class SsgEventService {
     >();
 
     for (const orderProductMapping of orderProductMappingList) {
-      let ssgEventId: number | null = null;
+      const productPrice = orderProductMapping.product.price;
+      const isOrderWait =
+        orderProductMapping.order.status === 'DELIVERY_REQUEST' ||
+        orderProductMapping.order.status === 'DELIVERY_CONFIRMED';
+      const isOrderComplete = orderProductMapping.order.status === 'DELIVERY_COMPLETE';
+
       for (const orderDelivery of orderProductMapping.orderDeliveries) {
         if (!orderDelivery.ssgEventId) {
           continue;
         }
-        ssgEventId = orderDelivery.ssgEventId;
+        const ssgEventId = orderDelivery.ssgEventId;
 
         const oneSsgEventCount = ssgEventCountMap.get(ssgEventId);
         const isComplete = orderDelivery.status === 'COMPLETE' || orderDelivery.status === 'COMPLETE_SMS';
@@ -249,46 +244,31 @@ export class SsgEventService {
             orderDelivery.status !== 'CANCEL' &&
             orderDelivery.status !== 'FAIL' &&
             orderDelivery.status !== 'FAIL_SMS');
+
+        // 배송건별로 건수와 금액 모두 계산
         if (!oneSsgEventCount) {
           ssgEventCountMap.set(ssgEventId, {
             deliveryWaitCount: isWait ? 1 : 0,
-            deliveryWaitAmount: 0,
+            deliveryWaitAmount: isOrderWait ? productPrice : 0,
             deliveryCompleteCount: isComplete ? 1 : 0,
-            deliveryCompleteAmount: 0,
+            deliveryCompleteAmount: isOrderComplete ? productPrice : 0,
           });
         } else {
           ssgEventCountMap.set(ssgEventId, {
             deliveryWaitCount: isWait
               ? oneSsgEventCount.deliveryWaitCount + 1
               : oneSsgEventCount.deliveryWaitCount,
-            deliveryWaitAmount: oneSsgEventCount.deliveryWaitAmount,
+            deliveryWaitAmount: isOrderWait
+              ? oneSsgEventCount.deliveryWaitAmount + productPrice
+              : oneSsgEventCount.deliveryWaitAmount,
             deliveryCompleteCount: isComplete
               ? oneSsgEventCount.deliveryCompleteCount + 1
               : oneSsgEventCount.deliveryCompleteCount,
-            deliveryCompleteAmount: oneSsgEventCount.deliveryCompleteAmount,
+            deliveryCompleteAmount: isOrderComplete
+              ? oneSsgEventCount.deliveryCompleteAmount + productPrice
+              : oneSsgEventCount.deliveryCompleteAmount,
           });
         }
-      }
-
-      if (!ssgEventId) {
-        continue;
-      }
-
-      const afterSsgEventCount = ssgEventCountMap.get(ssgEventId);
-      if (!afterSsgEventCount) {
-        throw new InternalServerErrorException('ssg event id error');
-      }
-
-      // 발송 대기 금액: DELIVERY_REQUEST 또는 DELIVERY_CONFIRMED 상태의 주문
-      if (
-        orderProductMapping.order.status === 'DELIVERY_REQUEST' ||
-        orderProductMapping.order.status === 'DELIVERY_CONFIRMED'
-      ) {
-        afterSsgEventCount.deliveryWaitAmount += orderProductMapping.amount * orderProductMapping.product.price;
-      }
-
-      if (orderProductMapping.order.status === 'DELIVERY_COMPLETE') {
-        afterSsgEventCount.deliveryCompleteAmount += orderProductMapping.amount * orderProductMapping.product.price;
       }
     }
 
