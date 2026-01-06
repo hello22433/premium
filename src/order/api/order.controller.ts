@@ -34,6 +34,7 @@ import {
   OrderDeliveryCancelReqDto,
   OrderDeliveryConfirmedReqDto,
   OrderDeliveryRequestReqDto,
+  OrderReviewCompleteReqDto,
   OrderDeliverySsgCouponExpireChangeReqDto,
   OrderExcelDownloadReqBodyDto,
   OrderGetDeliveryCompleteReportPdfReqDto,
@@ -403,8 +404,24 @@ export class OrderController {
   }
 
   @ApiOperation({
+    summary: '검토 완료 API',
+    description: '주문완료 상태의 주문을 검토완료 상태로 변환합니다.',
+  })
+  @ApiCreatedResponse({
+    description: '성공적으로 검토완료로 변환한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '해당 주문이 존재하지 않거나 주문완료 상태가 아닌 경우',
+  })
+  // ====================================================
+  @Post('/order/review-complete')
+  reviewComplete(@User() user: ILoginUserInfo, @Body() getBody: OrderReviewCompleteReqDto) {
+    return this.orderService.reviewComplete(user, getBody);
+  }
+
+  @ApiOperation({
     summary: '발송 확정(발송 대기) API',
-    description: '주문 확정 된 주문 중 발송 확정(발송 대기) 변환합니다. ',
+    description: '검토완료 상태의 주문을 발송 확정(발송 대기)으로 변환합니다.',
   })
   @ApiCreatedResponse({
     type: OrderDeliveryConfirmed,

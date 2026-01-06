@@ -216,6 +216,16 @@ export class OrderDeliveryConfirmedReqDto {
   id: number;
 }
 
+export class OrderReviewCompleteReqDto {
+  @ApiProperty({
+    description: 'order id',
+  })
+  // ==================================
+  @IsNotEmpty()
+  @IsNumber()
+  id: number;
+}
+
 export class OrderDeliverySsgCouponExpireChangeReqDto {
   @ApiProperty({
     description: 'order id',

@@ -514,8 +514,21 @@ export class PartnerCompanyExternService {
         });
 
         const resultCd = ssgOut.response.value[0].resultCd[0];
-        orderDelivery.couponStatus =
-          resultCd === '0400' ? OrderDeliveryCouponStatus.USED : OrderDeliveryCouponStatus.NOT_USED;
+        const isExchanged = resultCd === '0400';
+        orderDelivery.couponStatus = isExchanged ? OrderDeliveryCouponStatus.USED : OrderDeliveryCouponStatus.NOT_USED;
+
+        // 교환 완료 시 교환장소(payaccntNm)와 교환일시(executeDate) 저장
+        if (isExchanged) {
+          const payaccntNm = ssgOut.response.value[0].payaccntNm?.[0];
+          const executeDate = ssgOut.response.value[0].executeDate?.[0];
+
+          if (payaccntNm && payaccntNm.trim()) {
+            orderDelivery.tradePlace = payaccntNm.trim();
+          }
+          if (executeDate) {
+            orderDelivery.tradeAt = new Date(executeDate);
+          }
+        }
         break;
       }
 

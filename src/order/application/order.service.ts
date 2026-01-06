@@ -26,6 +26,7 @@ import {
   OrderGetOrderCompleteReportReqDto,
   OrderGetPreviousContentReqQueryDto,
   OrderGetSettleReqDto,
+  OrderReviewCompleteReqDto,
   OrderTestDeliveryReqDto,
   OrderUpdateOperationUserReqDto,
   OrderUpdateSettleReqDto,
@@ -1995,6 +1996,26 @@ export class OrderService {
   }
 
   @Transactional()
+  async reviewComplete(user: ILoginUserInfo, getBody: OrderReviewCompleteReqDto): Promise<void> {
+    const { id } = getBody;
+
+    const order = await this.orderRepository
+      .createQueryBuilder('order')
+      .where('order.id = :id', { id })
+      .andWhere('order.status = :status', { status: IOrderStatus.DELIVERY_REQUEST })
+      .getOne();
+
+    if (!order) {
+      throw new BadRequestException('해당 주문건은 존재하지 않거나, 주문완료 상태가 아닙니다.');
+    }
+
+    order.status = IOrderStatus.REVIEW_COMPLETE;
+    await this.orderRepository.save(order);
+
+    return;
+  }
+
+  @Transactional()
   async deliveryConfirmed(
     user: ILoginUserInfo,
     getBody: OrderDeliveryConfirmedReqDto,
@@ -2011,11 +2032,11 @@ export class OrderService {
       .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
       .where('order.id = :id', { id })
       // .andWhere('order.userId = :userId', { userId: user.id })
-      .andWhere('order.status = :status', { status: IOrderStatus.DELIVERY_REQUEST })
+      .andWhere('order.status = :status', { status: IOrderStatus.REVIEW_COMPLETE })
       .getOne();
 
     if (!order) {
-      throw new BadRequestException('해당 주문건은 존재하지 않거나, 발송 상세를 입력하지 않았습니다.');
+      throw new BadRequestException('해당 주문건은 존재하지 않거나, 검토완료 상태가 아닙니다.');
     }
 
     OrderValidation(order);

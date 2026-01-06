@@ -394,10 +394,21 @@ export class PartnerCompanyExternBatchService {
         vno: orderDelivery.personalCode!,
       });
 
-      result.couponStatus =
-        ssgOut.response.value[0].resultCd[0] === '0400'
-          ? OrderDeliveryCouponStatus.USED
-          : OrderDeliveryCouponStatus.NOT_USED;
+      const isExchanged = ssgOut.response.value[0].resultCd[0] === '0400';
+      result.couponStatus = isExchanged ? OrderDeliveryCouponStatus.USED : OrderDeliveryCouponStatus.NOT_USED;
+
+      // 교환 완료 시 교환장소(payaccntNm)와 교환일시(executeDate) 저장
+      if (isExchanged) {
+        const payaccntNm = ssgOut.response.value[0].payaccntNm?.[0];
+        const executeDate = ssgOut.response.value[0].executeDate?.[0];
+
+        if (payaccntNm && payaccntNm.trim()) {
+          result.tradePlace = payaccntNm.trim();
+        }
+        if (executeDate) {
+          result.tradeAt = new Date(executeDate);
+        }
+      }
     }
 
     // DAOU 처리
