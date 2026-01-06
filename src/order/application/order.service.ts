@@ -1305,7 +1305,7 @@ export class OrderService {
       },
       skip,
       take,
-      relations: ['product', 'product.brand', 'product.classification'],
+      relations: ['product', 'product.brand', 'product.classification', 'orderDeliveries'],
     });
 
     // 2. 유저 및 협력사의 할인 옵션 전체 조회
@@ -1357,6 +1357,10 @@ export class OrderService {
         price: totalPrice,
       });
 
+      // 해당 상품의 첫 번째 orderDelivery에서 refundRatio 가져오기
+      const firstDelivery = orderProduct.orderDeliveries?.[0];
+      const refund = firstDelivery?.refundRatio ?? null;
+
       return {
         id: orderProduct.id,
         brandName: orderProduct.product.brand?.nameKorean ?? null,
@@ -1369,6 +1373,7 @@ export class OrderService {
         fee,
         discountPrice,
         discountTotalPrice,
+        refund,
       };
     });
 
@@ -1436,6 +1441,16 @@ export class OrderService {
 
     await this.orderProductMappingRepository.save(orderProductList);
     await this.orderRepository.update({ id: orderId }, { settleAmount: settleAmount + settleFee });
+
+    // 환불률 업데이트: 각 orderProductMapping에 해당하는 orderDelivery들의 refundRatio 업데이트
+    for (const settle of list) {
+      if (settle.refund !== undefined) {
+        await this.orderDeliveryRepository.update(
+          { orderProductMappingId: settle.id },
+          { refundRatio: settle.refund },
+        );
+      }
+    }
 
     const oneUser = await this.userRepository.findOneOrFail({
       where: {
@@ -1510,6 +1525,16 @@ export class OrderService {
 
     const newSettleAmount = settleAmount + settleFee;
     await this.orderRepository.update({ id: orderId }, { settleAmount: newSettleAmount });
+
+    // 환불률 업데이트: 각 orderProductMapping에 해당하는 orderDelivery들의 refundRatio 업데이트
+    for (const settle of list) {
+      if (settle.refund !== undefined) {
+        await this.orderDeliveryRepository.update(
+          { orderProductMappingId: settle.id },
+          { refundRatio: settle.refund },
+        );
+      }
+    }
 
     // 발송확정 이후(DELIVERY_CONFIRMED, DELIVERY_COMPLETE)에 정산정보를 수정한 경우
     // 이전 정산금액과 새 정산금액의 차이를 balance/allSettleAmount에 반영

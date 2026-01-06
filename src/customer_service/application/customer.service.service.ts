@@ -438,6 +438,7 @@ export class CustomerServiceService {
       sendContent: sendContent,
       deliveryTarget: decryptedDeliveryTarget ?? '',
       refundStatus: queryBuilder.refundStatus ?? null,
+      refundRatio: queryBuilder.refundRatio ?? null,
       sendRequestAt: queryBuilder.sendRequestAt ? format(queryBuilder.sendRequestAt, DateFormatStr) : null,
       actualSendAt: actualSendAt,
       sendType: queryBuilder.orderProductMapping.sendType,

@@ -42,6 +42,12 @@ export class CustomerServiceDlvryDetailViewDto {
   refundStatus: OrderDeliveryRefundStatusEnum | null;
 
   @ApiProperty({
+    description: '환불률 (1~100)',
+    nullable: true,
+  })
+  refundRatio: number | null;
+
+  @ApiProperty({
     description: '발송일자 ex)yyyy-MM-ddTHH:mm:ss',
   })
   sendRequestAt: string | null;

@@ -68,4 +68,11 @@ export class OrderSettleViewDto {
   })
   // =================================
   discountTotalPrice: number;
+
+  @ApiProperty({
+    description: '환불률 % (0: 환불불가, 80/90: 환불가능, null: 미설정)',
+    nullable: true,
+  })
+  // =================================
+  refund: number | null;
 }
