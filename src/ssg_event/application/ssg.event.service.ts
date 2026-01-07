@@ -92,10 +92,11 @@ export class SsgEventService {
 
     for (const orderProductMapping of orderProductMappingList) {
       const productPrice = orderProductMapping.product.price;
+      // 발송대기: 주문완료, 검토완료, 발송확정 상태 (임시저장 제외)
       const isOrderWait =
         orderProductMapping.order.status === 'DELIVERY_REQUEST' ||
+        orderProductMapping.order.status === 'REVIEW_COMPLETE' ||
         orderProductMapping.order.status === 'DELIVERY_CONFIRMED';
-      const isOrderComplete = orderProductMapping.order.status === 'DELIVERY_COMPLETE';
 
       for (const orderDelivery of orderProductMapping.orderDeliveries) {
         if (!orderDelivery.ssgEventId) {
@@ -104,27 +105,22 @@ export class SsgEventService {
         const ssgEventId = orderDelivery.ssgEventId;
 
         const oneSsgEventCount = ssgEventCountMap.get(ssgEventId);
+        // 발송완료: 배송건 상태가 COMPLETE 또는 COMPLETE_SMS
         const isComplete = orderDelivery.status === 'COMPLETE' || orderDelivery.status === 'COMPLETE_SMS';
-        // 발송 대기 상태: WAIT 또는 TEMP (ssgEventId가 있으면서 발송 완료/취소/실패가 아닌 상태)
-        const isWait =
-          orderDelivery.status === 'WAIT' ||
-          orderDelivery.status === 'TEMP' ||
-          (!isComplete &&
-            orderDelivery.status !== 'CANCEL' &&
-            orderDelivery.status !== 'FAIL' &&
-            orderDelivery.status !== 'FAIL_SMS');
 
-        // 배송건별로 건수와 금액 모두 계산
+        // 배송건별로 건수와 금액 계산
+        // - 발송대기: 주문 상태 기준 (주문완료, 검토완료, 발송확정)
+        // - 발송완료: 배송건 상태 기준 (COMPLETE, COMPLETE_SMS)
         if (!oneSsgEventCount) {
           ssgEventCountMap.set(ssgEventId, {
-            deliveryWaitCount: isWait ? 1 : 0,
+            deliveryWaitCount: isOrderWait ? 1 : 0,
             deliveryWaitAmount: isOrderWait ? productPrice : 0,
             deliveryCompleteCount: isComplete ? 1 : 0,
-            deliveryCompleteAmount: isOrderComplete ? productPrice : 0,
+            deliveryCompleteAmount: isComplete ? productPrice : 0,
           });
         } else {
           ssgEventCountMap.set(ssgEventId, {
-            deliveryWaitCount: isWait
+            deliveryWaitCount: isOrderWait
               ? oneSsgEventCount.deliveryWaitCount + 1
               : oneSsgEventCount.deliveryWaitCount,
             deliveryWaitAmount: isOrderWait
@@ -133,7 +129,7 @@ export class SsgEventService {
             deliveryCompleteCount: isComplete
               ? oneSsgEventCount.deliveryCompleteCount + 1
               : oneSsgEventCount.deliveryCompleteCount,
-            deliveryCompleteAmount: isOrderComplete
+            deliveryCompleteAmount: isComplete
               ? oneSsgEventCount.deliveryCompleteAmount + productPrice
               : oneSsgEventCount.deliveryCompleteAmount,
           });
@@ -223,10 +219,11 @@ export class SsgEventService {
 
     for (const orderProductMapping of orderProductMappingList) {
       const productPrice = orderProductMapping.product.price;
+      // 발송대기: 주문완료, 검토완료, 발송확정 상태 (임시저장 제외)
       const isOrderWait =
         orderProductMapping.order.status === 'DELIVERY_REQUEST' ||
+        orderProductMapping.order.status === 'REVIEW_COMPLETE' ||
         orderProductMapping.order.status === 'DELIVERY_CONFIRMED';
-      const isOrderComplete = orderProductMapping.order.status === 'DELIVERY_COMPLETE';
 
       for (const orderDelivery of orderProductMapping.orderDeliveries) {
         if (!orderDelivery.ssgEventId) {
@@ -235,27 +232,22 @@ export class SsgEventService {
         const ssgEventId = orderDelivery.ssgEventId;
 
         const oneSsgEventCount = ssgEventCountMap.get(ssgEventId);
+        // 발송완료: 배송건 상태가 COMPLETE 또는 COMPLETE_SMS
         const isComplete = orderDelivery.status === 'COMPLETE' || orderDelivery.status === 'COMPLETE_SMS';
-        // 발송 대기 상태: WAIT 또는 TEMP (ssgEventId가 있으면서 발송 완료/취소/실패가 아닌 상태)
-        const isWait =
-          orderDelivery.status === 'WAIT' ||
-          orderDelivery.status === 'TEMP' ||
-          (!isComplete &&
-            orderDelivery.status !== 'CANCEL' &&
-            orderDelivery.status !== 'FAIL' &&
-            orderDelivery.status !== 'FAIL_SMS');
 
-        // 배송건별로 건수와 금액 모두 계산
+        // 배송건별로 건수와 금액 계산
+        // - 발송대기: 주문 상태 기준 (주문완료, 검토완료, 발송확정)
+        // - 발송완료: 배송건 상태 기준 (COMPLETE, COMPLETE_SMS)
         if (!oneSsgEventCount) {
           ssgEventCountMap.set(ssgEventId, {
-            deliveryWaitCount: isWait ? 1 : 0,
+            deliveryWaitCount: isOrderWait ? 1 : 0,
             deliveryWaitAmount: isOrderWait ? productPrice : 0,
             deliveryCompleteCount: isComplete ? 1 : 0,
-            deliveryCompleteAmount: isOrderComplete ? productPrice : 0,
+            deliveryCompleteAmount: isComplete ? productPrice : 0,
           });
         } else {
           ssgEventCountMap.set(ssgEventId, {
-            deliveryWaitCount: isWait
+            deliveryWaitCount: isOrderWait
               ? oneSsgEventCount.deliveryWaitCount + 1
               : oneSsgEventCount.deliveryWaitCount,
             deliveryWaitAmount: isOrderWait
@@ -264,7 +256,7 @@ export class SsgEventService {
             deliveryCompleteCount: isComplete
               ? oneSsgEventCount.deliveryCompleteCount + 1
               : oneSsgEventCount.deliveryCompleteCount,
-            deliveryCompleteAmount: isOrderComplete
+            deliveryCompleteAmount: isComplete
               ? oneSsgEventCount.deliveryCompleteAmount + productPrice
               : oneSsgEventCount.deliveryCompleteAmount,
           });
