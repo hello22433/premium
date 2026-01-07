@@ -119,4 +119,10 @@ export class CustomerServiceViewDto {
     nullable: true,
   })
   emailReceiverPhone: string | null;
+
+  @ApiProperty({
+    description: '환불률 (0~100, 0: 환불불가, null: 미설정)',
+    nullable: true,
+  })
+  refund: number | null;
 }

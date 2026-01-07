@@ -235,6 +235,7 @@ export class CustomerServiceService {
         barCode: orderDelivery.barCode ? MaskingUtil.maskPinNumber(orderDelivery.barCode) : null,
         emailCouponStatus: orderDelivery.emailCouponStatus,
         emailReceiverPhone: maskedEmailReceiverPhone,
+        refund: orderDelivery.refundRatio ?? null,
       });
     }
 
