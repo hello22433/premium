@@ -2500,8 +2500,8 @@ export class OrderService {
     const diffMs = sendRequestAtTime - nowTime;
     const tenMinutesMs = 10 * 60 * 1000;
 
-    if (order.status === IOrderStatus.DELIVERY_REQUEST) {
-      // 취소 허용
+    if (order.status === IOrderStatus.DELIVERY_REQUEST || order.status === IOrderStatus.REVIEW_COMPLETE) {
+      // 주문완료 또는 검토완료 상태에서 취소 허용
     } else if (order.status === IOrderStatus.DELIVERY_CONFIRMED) {
       if (diffMs < tenMinutesMs) {
         throw new BadRequestException('주문 취소는 발송 요청 시간 10분 전까지만 가능합니다.');
