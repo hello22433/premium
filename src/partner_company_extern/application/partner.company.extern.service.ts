@@ -500,6 +500,15 @@ export class PartnerCompanyExternService {
 
       // SSG
       case 'SSG': {
+        // SSG는 폐기 정보가 연동 DB(CUST_INFO_RESULT)에 반영되지 않음
+        // 이미 폐기된 쿠폰은 상태조회 시 상태를 변경하지 않음
+        if (
+          orderDelivery.couponStatus === OrderDeliveryCouponStatus.CANCEL ||
+          orderDelivery.couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL
+        ) {
+          break;
+        }
+
         if (!orderDelivery.ssgEvent) {
           throw new Error('ssgEvent not loaded on orderDelivery');
         }
