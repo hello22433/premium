@@ -182,7 +182,11 @@ export class ProductService {
     }
 
     if (name) {
-      queryBuilder = queryBuilder.andWhere('product.name LIKE :name', { name: `%${name}%` });
+      // 띄어쓰기 무시 검색: 상품명과 검색어 모두 공백 제거 후 비교
+      const searchName = name.replace(/\s/g, '');
+      queryBuilder = queryBuilder.andWhere("REPLACE(product.name, ' ', '') LIKE :name", {
+        name: `%${searchName}%`,
+      });
     }
 
     if (useStatus) {
@@ -382,7 +386,11 @@ export class ProductService {
     }
 
     if (name) {
-      queryBuilder = queryBuilder.andWhere('product.name LIKE :name', { name: `%${name}%` });
+      // 띄어쓰기 무시 검색: 상품명과 검색어 모두 공백 제거 후 비교
+      const searchName = name.replace(/\s/g, '');
+      queryBuilder = queryBuilder.andWhere("REPLACE(product.name, ' ', '') LIKE :name", {
+        name: `%${searchName}%`,
+      });
     }
 
     if (useStatus) {
@@ -907,7 +915,11 @@ export class ProductService {
     }
 
     if (name) {
-      queryBuilder = queryBuilder.andWhere('product.name LIKE :name', { name: `%${name}%` });
+      // 띄어쓰기 무시 검색: 상품명과 검색어 모두 공백 제거 후 비교
+      const searchName = name.replace(/\s/g, '');
+      queryBuilder = queryBuilder.andWhere("REPLACE(product.name, ' ', '') LIKE :name", {
+        name: `%${searchName}%`,
+      });
     }
 
     if (useStatus) {
