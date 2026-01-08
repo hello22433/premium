@@ -167,8 +167,9 @@ export class PartnerCompanyExternService {
         orderDelivery.barCode = barCode;
         orderDelivery.personalCode = personalCode;
         orderDelivery.ssgTransactionId = SsgTransactionId.makeSsgTrade();
+        // 실제 발송 시점 기준으로 유효기간 계산 (sendRequestAt이 아닌 현재 시간 사용)
         orderDelivery.expireAt = addDays(
-          orderDelivery.sendRequestAt,
+          new Date(),
           orderDelivery.orderProductMapping.product.expireDay - 1,
         );
         // 상품별 독려문자 설정 적용

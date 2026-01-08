@@ -23,7 +23,8 @@ export class BrandService {
   async getSelectList(): Promise<BrandGetSelectListResDto> {
     const queryBuilder = this.brandRepository.createQueryBuilder('brand');
 
-    const brandList = await queryBuilder.getMany();
+    // 브랜드명 기준 오름차순 정렬 (숫자 -> 영어 -> 한글)
+    const brandList = await queryBuilder.orderBy('brand.nameKorean', 'ASC').getMany();
 
     const resultList: BrandViewDto[] = brandList.map((brand) => {
       return {
