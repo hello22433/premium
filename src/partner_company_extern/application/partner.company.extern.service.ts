@@ -208,6 +208,8 @@ export class PartnerCompanyExternService {
             orderDelivery.orderProductMapping.fromPhoneNumber === '' || !orderDelivery.orderProductMapping.fromPhoneNumber ? defaultFromPhoneNumber : orderDelivery.orderProductMapping.fromPhoneNumber,
         });
         context = JSON.stringify(response);
+        // SSG 발송 성공 시 실제 발송 시간 설정
+        orderDelivery.actualSendAt = new Date();
       }
 
       // 1.1.7 다우기술 PIN 발급
