@@ -117,19 +117,30 @@ export class ProductService {
       .andWhere('product.type != :ssg', { ssg: IProductType.SSG });
 
     if (user.authority === IUserAuthority.CORPORATE_ADMIN) {
-      const event = await this.userSyncProductEventRepository.findOne({
-        where: { businessUserId: user.id },
+      const events = await this.userSyncProductEventRepository.find({
+        where: {
+          businessUserId: user.id,
+          status: IUserSyncProductStatus.ACTIVE,
+        },
         relations: ['userSyncProductEventMappings'],
       });
 
-      const mappedProductIds = event?.userSyncProductEventMappings?.map((m) => m.productId);
+      const mappedProductIds: number[] = [];
+      for (const event of events) {
+        if (event.userSyncProductEventMappings) {
+          for (const mapping of event.userSyncProductEventMappings) {
+            mappedProductIds.push(mapping.productId);
+          }
+        }
+      }
+      const uniqueProductIds = [...new Set(mappedProductIds)];
 
       // event 가 없거나 매핑된 상품이 없는 경우 빈 리스트 반환
-      if (!mappedProductIds || mappedProductIds.length === 0) {
+      if (uniqueProductIds.length === 0) {
         queryBuilder = queryBuilder.andWhere('1 = 0');
       } else {
         queryBuilder = queryBuilder.andWhere('product.id IN (:...mappedProductIds)', {
-          mappedProductIds,
+          mappedProductIds: uniqueProductIds,
         });
       }
     }
@@ -322,18 +333,29 @@ export class ProductService {
     }
 
     if (user.authority === IUserAuthority.CORPORATE_ADMIN) {
-      const event = await this.userSyncProductEventRepository.findOne({
-        where: { businessUserId: user.id },
+      const events = await this.userSyncProductEventRepository.find({
+        where: {
+          businessUserId: user.id,
+          status: IUserSyncProductStatus.ACTIVE,
+        },
         relations: ['userSyncProductEventMappings'],
       });
 
-      const mappedProductIds = event?.userSyncProductEventMappings?.map((m) => m.productId);
+      const mappedProductIds: number[] = [];
+      for (const event of events) {
+        if (event.userSyncProductEventMappings) {
+          for (const mapping of event.userSyncProductEventMappings) {
+            mappedProductIds.push(mapping.productId);
+          }
+        }
+      }
+      const uniqueProductIds = [...new Set(mappedProductIds)];
 
-      if (!mappedProductIds || mappedProductIds.length === 0) {
+      if (uniqueProductIds.length === 0) {
         queryBuilder = queryBuilder.andWhere('1 = 0');
       } else {
         queryBuilder = queryBuilder.andWhere('product.id IN (:...mappedProductIds)', {
-          mappedProductIds,
+          mappedProductIds: uniqueProductIds,
         });
       }
     }
