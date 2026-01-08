@@ -277,7 +277,7 @@ export class ActivityLogService {
       .createQueryBuilder('activityLog')
       .where('activityLog.deletedAt IS NULL')
       .andWhere('activityLog.actionType IN (:...actionTypes)', {
-        actionTypes: ['BALANCE_CHARGE', 'BALANCE_MODIFY'],
+        actionTypes: ['BALANCE_CHARGE', 'BALANCE_MODIFY', 'BALANCE_REFUND'],
       })
       .andWhere("JSON_EXTRACT(activityLog.requestParams, '$.targetUserId') = :targetUserId", {
         targetUserId,

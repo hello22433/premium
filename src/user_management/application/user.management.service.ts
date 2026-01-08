@@ -393,13 +393,42 @@ export class UserManagementService {
     await this.userRepository.save(user);
   }
 
-  async addBalance(id: number, amount: number): Promise<void> {
-    const user = await this.userRepository.findOne({ where: { id } });
+  async addBalance(id: number, amount: number, memo?: string): Promise<void> {
+    const user = await this.userRepository.findOne({
+      where: { id },
+      relations: ['company'],
+    });
     if (!user) {
       throw new BadRequestException('존재하지 않는 계정입니다.');
     }
+
+    const beforeBalance = user.balance;
     user.balance += amount;
+    const afterBalance = user.balance;
+
     await this.userRepository.save(user);
+
+    // Activity Log 기록 (시스템 자동 환불)
+    await this.activityLogService.createLog({
+      userId: 0, // 시스템
+      userEmail: 'system@epopkon.com',
+      method: 'SYSTEM',
+      requestUrl: '/system/balance/refund',
+      actionType: ActivityLogActionType.BALANCE_REFUND,
+      ipAddress: '',
+      statusCode: 200,
+      result: ActivityLogResult.SUCCESS,
+      responseTime: 0,
+      requestParams: {
+        targetUserId: id,
+        targetUserEmail: user.email,
+        targetBusinessName: user.company?.businessName ?? '',
+        chargeAmount: amount,
+        beforeBalance: beforeBalance,
+        afterBalance: afterBalance,
+        memo: memo || '시스템 자동 환불',
+      },
+    });
   }
 
   async create(getBody: UserManagementCreateReqDto) {

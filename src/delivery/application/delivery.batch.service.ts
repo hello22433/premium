@@ -169,7 +169,7 @@ export class DeliveryBatchService {
           // 사용자 잔액 환불
           if (order.isSettleBalance) {
             // 잔액 결제였던 경우: 잔액 복원
-            await this.userManagementService.addBalance(userId, productPrice);
+            await this.userManagementService.addBalance(userId, productPrice, `발송 실패 환불 (주문번호: ${order.id})`);
           } else {
             // 정산 결제였던 경우: 정산 금액 차감
             const user = await this.userRepository.findOne({ where: { id: userId } });

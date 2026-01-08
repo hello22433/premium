@@ -2528,8 +2528,7 @@ export class OrderService {
       await this.ssgEventService.restoreEventBalance(order.id);
 
       // 사용자 잔액도 복원
-
-      await this.userManagementService.addBalance(user.id, totalPrice);
+      await this.userManagementService.addBalance(user.id, totalPrice, `SSG 주문 취소 환불 (주문번호: ${order.id})`);
     }
 
     if (order.isSettleBalance) {
