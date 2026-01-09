@@ -415,14 +415,15 @@ export class OrderService {
           : null;
 
         for (const orderDelivery of orderProductMapping.orderDeliveries) {
-          // deliveryTarget 복호화
-          let decryptedDeliveryTarget = orderDelivery.deliveryTarget;
-          if (orderDelivery.deliveryTarget) {
+          // deliveryTarget 복호화 (originalDeliveryTarget 우선 사용)
+          const targetToDecrypt = orderDelivery.originalDeliveryTarget || orderDelivery.deliveryTarget;
+          let decryptedDeliveryTarget = targetToDecrypt;
+          if (targetToDecrypt) {
             try {
-              decryptedDeliveryTarget = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.deliveryTarget);
+              decryptedDeliveryTarget = this.cryptoCipher.decryptDeliveryTarget(targetToDecrypt);
             } catch (error) {
               // 복호화 실패 시 원본 데이터 사용
-              decryptedDeliveryTarget = orderDelivery.deliveryTarget;
+              decryptedDeliveryTarget = targetToDecrypt;
             }
           }
 
@@ -666,14 +667,15 @@ export class OrderService {
         const expireDate = expireDay ? baseDate.tz('Asia/Seoul').add(expireDay, 'day').format('YYYY. MM. DD') : null;
 
         for (const orderDelivery of orderProductMapping.orderDeliveries) {
-          // deliveryTarget 복호화 후 마스킹 처리
-          let decryptedDeliveryTarget = orderDelivery.deliveryTarget;
-          if (orderDelivery.deliveryTarget) {
+          // deliveryTarget 복호화 후 마스킹 처리 (originalDeliveryTarget 우선 사용)
+          const targetToDecrypt = orderDelivery.originalDeliveryTarget || orderDelivery.deliveryTarget;
+          let decryptedDeliveryTarget = targetToDecrypt;
+          if (targetToDecrypt) {
             try {
-              decryptedDeliveryTarget = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.deliveryTarget);
+              decryptedDeliveryTarget = this.cryptoCipher.decryptDeliveryTarget(targetToDecrypt);
             } catch (error) {
               // 복호화 실패 시 원본 데이터 사용
-              decryptedDeliveryTarget = orderDelivery.deliveryTarget;
+              decryptedDeliveryTarget = targetToDecrypt;
             }
           }
 
@@ -1055,13 +1057,14 @@ export class OrderService {
           const expireDate = expireDay ? baseDate.tz('Asia/Seoul').add(expireDay, 'day').format('YYYY. MM. DD') : null;
 
           for (const orderDelivery of orderProductMapping.orderDeliveries) {
-            // deliveryTarget 복호화 후 마스킹 처리
-            let decryptedDeliveryTarget = orderDelivery.deliveryTarget;
-            if (orderDelivery.deliveryTarget) {
+            // deliveryTarget 복호화 후 마스킹 처리 (originalDeliveryTarget 우선 사용)
+            const targetToDecrypt = orderDelivery.originalDeliveryTarget || orderDelivery.deliveryTarget;
+            let decryptedDeliveryTarget = targetToDecrypt;
+            if (targetToDecrypt) {
               try {
-                decryptedDeliveryTarget = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.deliveryTarget);
+                decryptedDeliveryTarget = this.cryptoCipher.decryptDeliveryTarget(targetToDecrypt);
               } catch (error) {
-                decryptedDeliveryTarget = orderDelivery.deliveryTarget;
+                decryptedDeliveryTarget = targetToDecrypt;
               }
             }
 
@@ -1673,9 +1676,11 @@ export class OrderService {
         oneOrderDelivery.orderProductMappingId = orderProduct.id;
         oneOrderDelivery.status = IOrderDeliveryStatus.TEMP;
         oneOrderDelivery.deliveryMethod = deliverySendMethod;
-        oneOrderDelivery.deliveryTarget = this.cryptoCipher.encryptDeliveryTarget(
+        const encryptedTarget = this.cryptoCipher.encryptDeliveryTarget(
           PhoneUtil.normalizeDeliveryTarget(orderDelivery.deliveryTarget),
         );
+        oneOrderDelivery.deliveryTarget = encryptedTarget;
+        oneOrderDelivery.originalDeliveryTarget = encryptedTarget;
         oneOrderDelivery.replaceCharacter1 = orderDelivery.replaceCharacter1 ?? null;
         oneOrderDelivery.replaceCharacter2 = orderDelivery.replaceCharacter2 ?? null;
         oneOrderDelivery.replaceCharacter3 = orderDelivery.replaceCharacter3 ?? null;
@@ -1825,9 +1830,11 @@ export class OrderService {
         oneOrderDelivery.orderProductMappingId = orderProduct.id;
         oneOrderDelivery.status = IOrderDeliveryStatus.TEMP;
         oneOrderDelivery.deliveryMethod = deliverySendMethod;
-        oneOrderDelivery.deliveryTarget = this.cryptoCipher.encryptDeliveryTarget(
+        const encryptedTarget = this.cryptoCipher.encryptDeliveryTarget(
           PhoneUtil.normalizeDeliveryTarget(orderDelivery.deliveryTarget),
         );
+        oneOrderDelivery.deliveryTarget = encryptedTarget;
+        oneOrderDelivery.originalDeliveryTarget = encryptedTarget;
         oneOrderDelivery.replaceCharacter1 = orderDelivery.replaceCharacter1 ?? null;
         oneOrderDelivery.replaceCharacter2 = orderDelivery.replaceCharacter2 ?? null;
         oneOrderDelivery.replaceCharacter3 = orderDelivery.replaceCharacter3 ?? null;

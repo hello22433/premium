@@ -27,6 +27,9 @@ export class OrderDeliveryEntity extends BaseEntity {
   @Column({ type: 'varchar', length: 128, comment: 'EMAIL 일 경우 email, SMS, ALIM_TALK 일 경우 핸드폰 번호' })
   deliveryTarget: string;
 
+  @Column({ type: 'varchar', length: 128, nullable: true, comment: '최초 발송 수신정보 (암호화, CS 변경 시에도 불변)' })
+  originalDeliveryTarget: string | null;
+
   @Column({ type: 'varchar', length: 512, nullable: true, comment: '이미지 경로' })
   imagePath: string | null;
 
