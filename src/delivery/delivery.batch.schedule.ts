@@ -17,15 +17,25 @@ export class DeliveryBatchSchedule implements OnApplicationBootstrap {
 
   private logger = new Logger('BATCH');
 
+  // 동시 실행 방지 플래그
+  private isIssueAndSendRunning = false;
+
   // 5분 마다 실행
   @Cron('0 */5 * * * *')
   async issueAndSend() {
+    if (this.isIssueAndSendRunning) {
+      this.logger.warn('[BATCH] issueAndSend 이전 배치가 실행 중입니다. 스킵합니다.');
+      return;
+    }
+
+    this.isIssueAndSendRunning = true;
     try {
       await this.deliveryBatchService.issueAndSend();
       this.logger.log('Complete Delivery');
-      return;
     } catch (e) {
       this.logger.error(e);
+    } finally {
+      this.isIssueAndSendRunning = false;
     }
   }
 
