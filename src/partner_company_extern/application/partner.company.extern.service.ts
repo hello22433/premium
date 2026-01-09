@@ -241,7 +241,12 @@ export class PartnerCompanyExternService {
     } catch (e) {
       this.logger.log(JSON.stringify(e));
       this.logger.log(e);
-      context = JSON.stringify(e);
+      // Error 객체 직렬화 개선 (Error의 message, stack은 non-enumerable이라 JSON.stringify 시 {}가 됨)
+      if (e instanceof Error) {
+        context = JSON.stringify({ message: e.message, stack: e.stack });
+      } else {
+        context = JSON.stringify(e);
+      }
       isSuccess = false;
       orderDelivery.status = IOrderDeliveryStatus.FAIL;
 
