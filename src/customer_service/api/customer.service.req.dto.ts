@@ -1,6 +1,18 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IOrderType } from '../../order/interface/order.type';
-import { IsArray, IsEnum, IsIn, IsInt, IsNotEmpty, IsNumber, IsOptional, IsString, Matches, Max, Min } from 'class-validator';
+import {
+  IsArray,
+  IsEnum,
+  IsIn,
+  IsInt,
+  IsNotEmpty,
+  IsNumber,
+  IsOptional,
+  IsString,
+  Matches,
+  Max,
+  Min,
+} from 'class-validator';
 import { PagingReqDto } from '../../common/api/dto/pagination.req.dto';
 import { dateAtRegexp } from '../../common/domain/date.regexp';
 import { Type } from 'class-transformer';
@@ -99,12 +111,20 @@ export class CustomerServiceGetListReqDto extends PagingReqDto {
   partnerCompanyId?: number;
 
   @ApiPropertyOptional({
-    description: '통합검색 키워드 (주문번호, 상품명, 상품코드, MMS제목, 수신정보를 OR 조건으로 검색)',
+    description: '통합검색 키워드 (주문번호, 상품명, 상품코드, MMS제목, 수신정보, 이벤트명을 OR 조건으로 검색)',
   })
   // =============================================================
   @IsOptional()
   @IsString()
   keyword?: string;
+
+  @ApiPropertyOptional({
+    description: '이벤트명 (부분검색)',
+  })
+  // =============================================================
+  @IsOptional()
+  @IsString()
+  eventName?: string;
 }
 
 export class CustomerServiceGetDetailListReqDto extends PagingReqDto {
@@ -402,12 +422,20 @@ export class CustomerServiceExcelDownloadReqDto {
   partnerCompanyId?: number;
 
   @ApiPropertyOptional({
-    description: '통합검색 키워드 (주문번호, 상품명, 상품코드, MMS제목, 수신정보를 OR 조건으로 검색)',
+    description: '통합검색 키워드 (주문번호, 상품명, 상품코드, MMS제목, 수신정보, 이벤트명을 OR 조건으로 검색)',
   })
   // =============================================================
   @IsOptional()
   @IsString()
   keyword?: string;
+
+  @ApiPropertyOptional({
+    description: '이벤트명 (부분검색)',
+  })
+  // =============================================================
+  @IsOptional()
+  @IsString()
+  eventName?: string;
 
   @ApiProperty({
     description: '비밀번호 (다운로드 확인용)',

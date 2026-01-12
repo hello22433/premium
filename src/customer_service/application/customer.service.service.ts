@@ -81,6 +81,7 @@ export class CustomerServiceService {
       sendTitle,
       partnerCompanyId,
       keyword,
+      eventName,
       page,
       take,
     } = getQuery;
@@ -123,6 +124,11 @@ export class CustomerServiceService {
           OR orderDelivery.deliveryTarget = :encryptedKeyword)`,
         { keyword: `%${keyword}%`, encryptedKeyword },
       );
+    }
+
+    // 이벤트명 (부분검색)
+    if (eventName) {
+      queryBuilder.andWhere('order.eventName LIKE :eventName', { eventName: `%${eventName}%` });
     }
 
     // 주문번호 (부분검색)
@@ -212,7 +218,11 @@ export class CustomerServiceService {
 
       result.push({
         registerAt: format(orderDelivery.createdAt, DateFormatStr),
-        sendRequestAt: orderDelivery.sendRequestAt ? format(orderDelivery.sendRequestAt, DateFormatStr) : (orderDelivery.orderProductMapping.sendRequestAt ? format(orderDelivery.orderProductMapping.sendRequestAt, DateFormatStr) : ''),
+        sendRequestAt: orderDelivery.sendRequestAt
+          ? format(orderDelivery.sendRequestAt, DateFormatStr)
+          : orderDelivery.orderProductMapping.sendRequestAt
+            ? format(orderDelivery.orderProductMapping.sendRequestAt, DateFormatStr)
+            : '',
         actualSendAt: actualSendAt,
         sendType: orderDelivery.orderProductMapping.sendType,
         id: order.id,
@@ -221,9 +231,7 @@ export class CustomerServiceService {
         eventName: order.eventName,
         sendTitle: orderDelivery.orderProductMapping.sendTitle ?? '',
         businessName: order.user?.company?.businessName ?? '',
-        productName: orderDelivery.choiceSelectProduct
-          ? orderDelivery.choiceSelectProduct.name
-          : product.name,
+        productName: orderDelivery.choiceSelectProduct ? orderDelivery.choiceSelectProduct.name : product.name,
         productCode: product.code,
         status: order.status,
         fromPhoneNumber: orderDelivery.orderProductMapping.fromPhoneNumber,
@@ -525,7 +533,10 @@ export class CustomerServiceService {
           throw new BadRequestException('현재 변경을 할 수 없는 핀상태입니다.');
         }
 
-        if (couponStatus === OrderDeliveryCouponStatus.CANCEL || couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL) {
+        if (
+          couponStatus === OrderDeliveryCouponStatus.CANCEL ||
+          couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL
+        ) {
           const result = await this.partnerCompanyExternService.cancel(orderDelivery);
 
           if (result.message === '폐기 완료') {
@@ -544,7 +555,10 @@ export class CustomerServiceService {
           throw new BadRequestException('현재 변경을 할 수 없는 핀상태입니다.');
         }
 
-        if (couponStatus === OrderDeliveryCouponStatus.CANCEL || couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL) {
+        if (
+          couponStatus === OrderDeliveryCouponStatus.CANCEL ||
+          couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL
+        ) {
           orderDelivery.couponStatus = couponStatus;
           await this.orderDeliveryRepository.save(orderDelivery);
         } else {
@@ -1273,11 +1287,7 @@ export class CustomerServiceService {
    * @param dto 검색 조건 및 다운로드 정보
    * @param res Express Response
    */
-  async excelDownload(
-    user: ILoginUserInfo,
-    dto: CustomerServiceExcelDownloadReqDto,
-    res: Response,
-  ): Promise<void> {
+  async excelDownload(user: ILoginUserInfo, dto: CustomerServiceExcelDownloadReqDto, res: Response): Promise<void> {
     const startTime = Date.now();
     const { password, downloadReason, orderDeliveryIds, keyword, ...searchParams } = dto;
     const {
@@ -1292,6 +1302,7 @@ export class CustomerServiceService {
       deliveryTarget,
       sendTitle,
       partnerCompanyId,
+      eventName,
     } = searchParams;
 
     // 1. 비밀번호 검증
@@ -1370,6 +1381,11 @@ export class CustomerServiceService {
           OR orderDelivery.deliveryTarget = :encryptedKeyword)`,
         { keyword: `%${keyword}%`, encryptedKeyword },
       );
+    }
+
+    // 이벤트명 (부분검색)
+    if (eventName) {
+      queryBuilder.andWhere('order.eventName LIKE :eventName', { eventName: `%${eventName}%` });
     }
 
     queryBuilder = QueryBuilderDateCondition(queryBuilder, 'orderDelivery', 'sendRequestAt', startAt, endAt);
@@ -1470,17 +1486,15 @@ export class CustomerServiceService {
       worksheet.addRow({
         sendRequestAt: orderDelivery.sendRequestAt
           ? format(orderDelivery.sendRequestAt, DateFormatStr)
-          : (orderDelivery.orderProductMapping.sendRequestAt
+          : orderDelivery.orderProductMapping.sendRequestAt
             ? format(orderDelivery.orderProductMapping.sendRequestAt, DateFormatStr)
-            : ''),
+            : '',
         actualSendAt: actualSendAt || '',
         orderId: order.id,
         businessName: order.user?.company?.businessName ?? '',
         eventName: order.eventName,
         sendTitle: orderDelivery.orderProductMapping.sendTitle ?? '',
-        productName: orderDelivery.choiceSelectProduct
-          ? orderDelivery.choiceSelectProduct.name
-          : product.name,
+        productName: orderDelivery.choiceSelectProduct ? orderDelivery.choiceSelectProduct.name : product.name,
         productCode: product.code,
         deliveryTarget: decryptedDeliveryTarget || '',
         emailReceiverPhone: decryptedEmailReceiverPhone || '',
