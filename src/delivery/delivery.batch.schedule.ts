@@ -17,25 +17,36 @@ export class DeliveryBatchSchedule implements OnApplicationBootstrap {
 
   private logger = new Logger('BATCH');
 
-  // 동시 실행 방지 플래그
-  private isIssueAndSendRunning = false;
+  // 동시 실행 방지 플래그 (타임스탬프)
+  private issueAndSendStartedAt: Date | null = null;
+  private readonly MAX_BATCH_DURATION = 30 * 60 * 1000; // 30분
 
   // 5분 마다 실행
   @Cron('0 */5 * * * *')
   async issueAndSend() {
-    if (this.isIssueAndSendRunning) {
-      this.logger.warn('[BATCH] issueAndSend 이전 배치가 실행 중입니다. 스킵합니다.');
-      return;
+    const now = new Date();
+    if (this.issueAndSendStartedAt) {
+      const elapsed = now.getTime() - this.issueAndSendStartedAt.getTime();
+
+      if (elapsed > this.MAX_BATCH_DURATION) {
+        this.logger.warn(
+          `[BATCH] issueAndSend가 ${Math.floor(elapsed / 60000)}분 동안 실행 중. 강제 리셋합니다.`,
+        );
+        this.issueAndSendStartedAt = null;
+      } else {
+        this.logger.warn('[BATCH] issueAndSend 이전 배치가 실행 중입니다. 스킵합니다.');
+        return;
+      }
     }
 
-    this.isIssueAndSendRunning = true;
+    this.issueAndSendStartedAt = now;
     try {
       await this.deliveryBatchService.issueAndSend();
       this.logger.log('Complete Delivery');
     } catch (e) {
       this.logger.error(e);
     } finally {
-      this.isIssueAndSendRunning = false;
+      this.issueAndSendStartedAt = null;
     }
   }
 

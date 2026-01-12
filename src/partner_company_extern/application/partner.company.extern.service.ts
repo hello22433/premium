@@ -130,7 +130,36 @@ export class PartnerCompanyExternService {
           partnerCompanyCode: orderDelivery.orderProductMapping.product.partnerCompanyCode!,
         });
         context = JSON.stringify(giftShowOut);
-        orderDelivery.barCode = giftShowOut.response.value[0].pin_no[0];
+
+        const responseCode = giftShowOut.response.result[0].code[0];
+        const responseReason = giftShowOut.response.result[0].reason[0];
+
+        if (responseCode === '1000') {
+          // 성공
+          const pinNo = giftShowOut.response.value[0].pin_no[0];
+          if (!pinNo || pinNo === 'null') {
+            throw new Error('GIFT_SHOW 발급 성공이나 pin_no가 유효하지 않습니다');
+          }
+          orderDelivery.barCode = pinNo;
+        } else if (responseCode === '3001') {
+          // 중복 요청 - 기존 발급된 PIN 조회
+          this.logger.warn(`GIFT_SHOW 중복 요청 감지 - transactionId: ${orderDelivery.transactionId}, 기존 PIN 조회 시도`);
+          const checkResult = await this.giftiShow.check({
+            transactionId: orderDelivery.transactionId,
+          });
+
+          if (checkResult.resCode === '0000' && checkResult.couponInfo?.pinNo) {
+            // 기존 PIN 조회 성공 - 같은 transactionId로 발급된 PIN이므로 동일 주문
+            this.logger.log(`GIFT_SHOW 기존 PIN 조회 성공 - pinNo: ${checkResult.couponInfo.pinNo}`);
+            orderDelivery.barCode = checkResult.couponInfo.pinNo;
+          } else {
+            // 기존 PIN 조회 실패 - 이상한 상황
+            throw new Error(`GIFT_SHOW 중복 요청이나 기존 PIN 조회 실패: ${checkResult.resCode} - ${checkResult.resMsg}`);
+          }
+        } else {
+          // 기타 에러
+          throw new Error(`GIFT_SHOW 발급 실패: ${responseCode} - ${responseReason}`);
+        }
       }
 
       // 1.1.5 컬쳐랜드 쿠폰 발급

@@ -3,7 +3,7 @@ import { Module } from '@nestjs/common';
 import { ErpExternHttp } from './infra/erp.extern.http';
 
 @Module({
-  imports: [HttpModule],
+  imports: [HttpModule.register({ timeout: 30000 })],
   providers: [
     {
       provide: 'IErpExtern',
