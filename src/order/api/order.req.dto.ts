@@ -9,6 +9,7 @@ import { IOrderSection } from '../interface/order.section';
 import { Type } from 'class-transformer';
 import { OrderSettleCreateDto } from './dto/order.settle.create.dto';
 import { IOrderSendMethod } from '../interface/order.send.method';
+import { CompanyType } from '../../common/domain/company.type';
 
 export class OrderGetListReqDto extends PagingReqDto {
   @ApiPropertyOptional({
@@ -542,6 +543,16 @@ export class OrderDeliveryCompleteReportEmailReqDto {
   @IsNotEmpty()
   @IsString()
   pdfFileName: string;
+
+  @ApiPropertyOptional({
+    description: '회사 타입 ex) ENMAD: 모바일이앤엠애드, SYSCUSS: 시스커스',
+    enum: CompanyType,
+    default: CompanyType.ENMAD,
+  })
+  // ===================================
+  @IsOptional()
+  @IsEnum(CompanyType)
+  companyType?: CompanyType = CompanyType.ENMAD;
 }
 
 export class OrderTransactionStatementEmailReqDto {
@@ -593,6 +604,16 @@ export class OrderTransactionStatementEmailReqDto {
   @IsNotEmpty()
   @IsString()
   pdfFileName: string;
+
+  @ApiPropertyOptional({
+    description: '회사 타입 ex) ENMAD: 모바일이앤엠애드, SYSCUSS: 시스커스',
+    enum: CompanyType,
+    default: CompanyType.ENMAD,
+  })
+  // ===================================
+  @IsOptional()
+  @IsEnum(CompanyType)
+  companyType?: CompanyType = CompanyType.ENMAD;
 }
 
 export class OrderDestructionCertificateEmailReqDto {
@@ -644,4 +665,14 @@ export class OrderDestructionCertificateEmailReqDto {
   @IsNotEmpty()
   @IsString()
   pdfFileName: string;
+
+  @ApiPropertyOptional({
+    description: '회사 타입 ex) ENMAD: 모바일이앤엠애드, SYSCUSS: 시스커스',
+    enum: CompanyType,
+    default: CompanyType.ENMAD,
+  })
+  // ===================================
+  @IsOptional()
+  @IsEnum(CompanyType)
+  companyType?: CompanyType = CompanyType.ENMAD;
 }
