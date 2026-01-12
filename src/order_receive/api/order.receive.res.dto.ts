@@ -21,6 +21,11 @@ export class OrderReceiveAlimTalkResDto {
   fromPhoneNumber: string;
 
   @ApiProperty({
+    description: '문자 제목 (발신자 표시용)',
+  })
+  sendTitle: string;
+
+  @ApiProperty({
     description: '상품 이름',
   })
   productName: string;
