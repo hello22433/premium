@@ -18,7 +18,7 @@ import { PartnerCompanyBatchSchedule } from './partner.company.batch.schedule';
 
 @Module({
   imports: [
-    HttpModule,
+    HttpModule.register({ timeout: 30000 }),
     TypeOrmModule.forFeature([OrderDeliveryEntity, OrderEntity, PartnerCompanyExternHistoryEntity]),
   ],
   providers: [

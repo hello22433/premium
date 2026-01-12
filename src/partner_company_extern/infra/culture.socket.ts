@@ -92,6 +92,15 @@ export class CultureSocket implements ICulture {
   private async socketSend(message: string): Promise<string> {
     return new Promise((resolve, reject) => {
       const client = new net.Socket();
+      const SOCKET_TIMEOUT = 60000; // 60초
+
+      client.setTimeout(SOCKET_TIMEOUT);
+
+      client.on('timeout', () => {
+        client.destroy();
+        reject(new Error(`Socket timeout after ${SOCKET_TIMEOUT}ms`));
+      });
+
       const responseChunks: Buffer[] = [];
 
       client.connect(+this.port, this.socketIP, () => {

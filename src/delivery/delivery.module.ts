@@ -24,7 +24,7 @@ import { UserManagementModule } from '../user_management/user.management.module'
 @Module({
   imports: [
     AuthModule,
-    HttpModule,
+    HttpModule.register({ timeout: 30000 }),
     TypeOrmModule.forFeature([
       OrderEntity,
       OrderDeliveryEntity,

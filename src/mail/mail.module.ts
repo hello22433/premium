@@ -4,7 +4,7 @@ import { MailSendHiworks } from './infrastructure/mail-send.hiworks';
 import { MailSendSmtp } from './infrastructure/mail-send.smtp';
 
 @Module({
-  imports: [HttpModule],
+  imports: [HttpModule.register({ timeout: 30000 })],
   controllers: [],
   providers: [
     {
