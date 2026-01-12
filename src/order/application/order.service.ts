@@ -312,15 +312,19 @@ export class OrderService {
           productName += `외 ${orderProductMappingsLength - 1}건`;
         }
 
-        // 실제 발송 시간: 발송 완료 상태일 때만 orderDelivery의 actualSendAt 사용
-        const firstDelivery = order.orderProductMappings[0].orderDeliveries?.[0];
-        if (
-          firstDelivery &&
-          (firstDelivery.status === IOrderDeliveryStatus.COMPLETE ||
-            firstDelivery.status === IOrderDeliveryStatus.COMPLETE_SMS) &&
-          firstDelivery.actualSendAt
-        ) {
-          actualSendAt = format(firstDelivery.actualSendAt, DateFormatStr);
+        // 실제 발송 시간: 성공한 배송 건 중 하나의 actualSendAt 사용
+        for (const mapping of order.orderProductMappings) {
+          for (const delivery of mapping.orderDeliveries ?? []) {
+            if (
+              delivery.actualSendAt &&
+              (delivery.status === IOrderDeliveryStatus.COMPLETE ||
+                delivery.status === IOrderDeliveryStatus.COMPLETE_SMS)
+            ) {
+              actualSendAt = format(delivery.actualSendAt, DateFormatStr);
+              break;
+            }
+          }
+          if (actualSendAt) break;
         }
       }
 
