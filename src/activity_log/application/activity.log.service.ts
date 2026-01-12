@@ -287,6 +287,25 @@ export class ActivityLogService {
   }
 
   /**
+   * 특정 유저(회사)의 최대서비스한도 변경 이력 조회
+   * @param targetUserId 대상 유저 ID
+   * @returns 최대서비스한도 변경 활동 로그 목록
+   */
+  async getMaximumLimitHistoryByUserId(targetUserId: number): Promise<ActivityLogEntity[]> {
+    return this.activityLogRepository
+      .createQueryBuilder('activityLog')
+      .where('activityLog.deletedAt IS NULL')
+      .andWhere('activityLog.actionType = :actionType', {
+        actionType: 'MAXIMUM_LIMIT_MODIFY',
+      })
+      .andWhere("JSON_EXTRACT(activityLog.requestParams, '$.targetUserId') = :targetUserId", {
+        targetUserId,
+      })
+      .orderBy('activityLog.createdAt', 'DESC')
+      .getMany();
+  }
+
+  /**
    * 주문별 발행 이력 조회 (발송완료리포트/거래명세서/이메일발송)
    * @param orderId 주문 ID
    * @param reportType 리포트 타입

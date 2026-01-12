@@ -67,6 +67,11 @@ export class CustomerServiceViewDto {
   productName: string;
 
   @ApiProperty({
+    description: '상품 금액 (판매가)',
+  })
+  price: string;
+
+  @ApiProperty({
     description: '발송 번호',
   })
   fromPhoneNumber: string | null;

@@ -216,6 +216,9 @@ export class CustomerServiceService {
         actualSendAt = format(orderDelivery.actualSendAt, DateFormatStr);
       }
 
+      // 초이스 쿠폰인 경우 선택된 상품의 가격 사용
+      const displayProduct = orderDelivery.choiceSelectProduct ?? product;
+
       result.push({
         registerAt: format(orderDelivery.createdAt, DateFormatStr),
         sendRequestAt: orderDelivery.sendRequestAt
@@ -232,6 +235,7 @@ export class CustomerServiceService {
         sendTitle: orderDelivery.orderProductMapping.sendTitle ?? '',
         businessName: order.user?.company?.businessName ?? '',
         productName: orderDelivery.choiceSelectProduct ? orderDelivery.choiceSelectProduct.name : product.name,
+        price: displayProduct.price.toString(),
         productCode: product.code,
         status: order.status,
         fromPhoneNumber: orderDelivery.orderProductMapping.fromPhoneNumber,
@@ -1408,6 +1412,7 @@ export class CustomerServiceService {
       { header: '이벤트명', key: 'eventName', width: 30 },
       { header: 'MMS제목', key: 'sendTitle', width: 30 },
       { header: '상품명', key: 'productName', width: 40 },
+      { header: '금액', key: 'price', width: 15 },
       { header: '상품코드', key: 'productCode', width: 15 },
       { header: '수신정보', key: 'deliveryTarget', width: 20 },
       { header: '이메일쿠폰수령번호', key: 'emailReceiverPhone', width: 18 },
@@ -1483,6 +1488,9 @@ export class CustomerServiceService {
         EXPIRED: '기간만료',
       };
 
+      // 초이스 쿠폰인 경우 선택된 상품의 가격 사용
+      const displayProduct = orderDelivery.choiceSelectProduct ?? product;
+
       worksheet.addRow({
         sendRequestAt: orderDelivery.sendRequestAt
           ? format(orderDelivery.sendRequestAt, DateFormatStr)
@@ -1495,6 +1503,7 @@ export class CustomerServiceService {
         eventName: order.eventName,
         sendTitle: orderDelivery.orderProductMapping.sendTitle ?? '',
         productName: orderDelivery.choiceSelectProduct ? orderDelivery.choiceSelectProduct.name : product.name,
+        price: displayProduct.price,
         productCode: product.code,
         deliveryTarget: decryptedDeliveryTarget || '',
         emailReceiverPhone: decryptedEmailReceiverPhone || '',
