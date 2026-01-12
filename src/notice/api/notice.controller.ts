@@ -1,5 +1,5 @@
 import { NoticeService } from '../application/notice.service';
-import { Body, Controller, Get, Param, Post, Put, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Post, Put, Query, UseGuards } from '@nestjs/common';
 import { ApiBadRequestResponse, ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import {
   NoticeCreateReqDto,
@@ -79,5 +79,22 @@ export class NoticeController {
   @Put('/notice')
   update(@User() user: ILoginUserInfo, @Body() getBody: NoticeUpdateReqDto) {
     return this.noticeService.update(user, getBody);
+  }
+
+  @ApiOperation({
+    summary: '공지사항 삭제 API',
+  })
+  @ApiBearerAuth()
+  @ApiOkResponse({
+    description: '공지사항 삭제에 성공한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '공지사항이 존재하지 않는 경우',
+  })
+  // ===================================================
+  @UseGuards(AuthUserAuthorizationGuard)
+  @Delete('/notice/:id')
+  delete(@User() user: ILoginUserInfo, @Param() getParam: NoticeGetDetailReqParamDto) {
+    return this.noticeService.delete(user, getParam.id);
   }
 }

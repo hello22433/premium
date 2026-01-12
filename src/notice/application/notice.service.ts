@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
 import { NoticeEntity } from '../../entity/notice.entity';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -13,6 +13,7 @@ import { NoticeGetDetailResDto, NoticeGetListResDto } from '../api/notice.res.dt
 import { DateFormatStr } from '../../common/domain/date.format.str';
 import { format } from 'date-fns';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
+import { IUserAuthority } from '../../user/interface/user.authority';
 
 @Injectable()
 export class NoticeService {
@@ -108,6 +109,27 @@ export class NoticeService {
     notice.priority = priority;
     notice.filePath = filePath.length === 0 ? null : filePath.join(',');
     await this.noticeRepository.save(notice);
+
+    return;
+  }
+
+  async delete(user: ILoginUserInfo, id: number) {
+    const notice = await this.noticeRepository.findOne({
+      where: { id },
+    });
+
+    if (!notice) {
+      throw new BadRequestException('공지사항이 존재하지 않습니다.');
+    }
+
+    const isSuperAdmin = user.authority === IUserAuthority.SUPER_ADMIN;
+    const isOwner = notice.userId === user.id;
+
+    if (!isSuperAdmin && !isOwner) {
+      throw new ForbiddenException('삭제 권한이 없습니다.');
+    }
+
+    await this.noticeRepository.softDelete(id);
 
     return;
   }
