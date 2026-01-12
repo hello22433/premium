@@ -110,6 +110,13 @@ export class UserManagementUpsertDto {
   @IsNumber()
   maximumLimit: number;
 
+  @ApiPropertyOptional({
+    description: '최대 서비스 한도 변경 사유',
+  })
+  // ============================
+  @IsOptional()
+  maximumLimitMemo?: string;
+
   @ApiProperty({
     description: '은행 이름',
   })

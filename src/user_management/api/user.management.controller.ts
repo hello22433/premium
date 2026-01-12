@@ -19,6 +19,7 @@ import {
   UserManagementGetNameListResDto,
   UserManagementGetBalanceHistoryResDto,
   UserManagementGetCompanyListResDto,
+  UserManagementGetMaximumLimitHistoryResDto,
 } from './user.management.res.dto';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
 import { AuthUserSuperAdminGuard } from '../../auth/api/auth.user.super-admin.guard';
@@ -152,6 +153,25 @@ export class UserManagementController {
   }
 
   @ApiOperation({
+    summary: '최대서비스한도 변경 이력 조회 API',
+    description: '해당 계정의 최대서비스한도(여신한도) 변경 이력을 조회합니다.',
+  })
+  @ApiBearerAuth()
+  @ApiOkResponse({
+    type: UserManagementGetMaximumLimitHistoryResDto,
+    description: '성공적으로 조회한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '해당 계정이 존재하지 않는 경우',
+  })
+  // ====================================
+  @UseGuards(AuthUserAuthorizationGuard)
+  @Get('/user-management/:id/maximum-limit/history')
+  getMaximumLimitHistory(@Param('id', ParseIntPipe) id: number) {
+    return this.userManagementService.getMaximumLimitHistory(id);
+  }
+
+  @ApiOperation({
     summary: '계정 관리 신규 등록 API',
   })
   @ApiBearerAuth()
@@ -181,8 +201,8 @@ export class UserManagementController {
   // ====================================
   @UseGuards(AuthUserSuperAdminGuard)
   @Put('/user-management')
-  update(@Body() getBody: UserManagementUpdateReqDto) {
-    return this.userManagementService.update(getBody);
+  update(@User() user: ILoginUserInfo, @Body() getBody: UserManagementUpdateReqDto) {
+    return this.userManagementService.update(getBody, user);
   }
 
   @ApiOperation({

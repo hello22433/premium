@@ -22,6 +22,8 @@ import {
   UserManagementGetNameListResDto,
   UserManagementGetBalanceHistoryResDto,
   BalanceHistoryItemDto,
+  UserManagementGetMaximumLimitHistoryResDto,
+  MaximumLimitHistoryItemDto,
 } from '../api/user.management.res.dto';
 import { UserManagementViewDto } from '../api/dto/user.management.view.dto';
 import { PasswordBcryptEncrypt } from '../../auth/infrastructure/password.bcrypt.encrypt';
@@ -265,7 +267,7 @@ export class UserManagementService {
   }
 
   async chargeBalance(getBody: UserManagementChargeBalanceReqDto, operator: ILoginUserInfo) {
-    const { id, chargeAmount } = getBody;
+    const { id, chargeAmount, memo } = getBody;
 
     const user = await this.userRepository.findOne({
       where: {
@@ -302,6 +304,7 @@ export class UserManagementService {
         chargeAmount: chargeAmount,
         beforeBalance: beforeBalance,
         afterBalance: afterBalance,
+        memo: memo || null,
       },
     });
   }
@@ -511,7 +514,7 @@ export class UserManagementService {
     return;
   }
 
-  async update(getBody: UserManagementUpdateReqDto) {
+  async update(getBody: UserManagementUpdateReqDto, operator?: ILoginUserInfo) {
     const user = await this.userRepository.findOne({
       where: {
         id: getBody.id,
@@ -525,6 +528,9 @@ export class UserManagementService {
 
     // 사업자등록번호에서 하이픈 제거
     const businessNumber = getBody.businessNumber ? getBody.businessNumber.replace(/-/g, '') : getBody.businessNumber;
+
+    // 최대서비스한도 변경 감지를 위한 이전 값 저장
+    const beforeMaximumLimit = user.company?.maximumLimit ?? 0;
 
     // user_company 업데이트 또는 연결
     if (businessNumber) {
@@ -565,6 +571,30 @@ export class UserManagementService {
         user.company.maximumLimit = getBody.maximumLimit;
         await this.userCompanyRepository.save(user.company);
       }
+    }
+
+    // 최대서비스한도 변경 이력 기록
+    const afterMaximumLimit = getBody.maximumLimit ?? 0;
+    if (beforeMaximumLimit !== afterMaximumLimit && operator) {
+      await this.activityLogService.createLog({
+        userId: operator.id,
+        userEmail: operator.email,
+        method: 'PUT',
+        requestUrl: '/user-management',
+        actionType: ActivityLogActionType.MAXIMUM_LIMIT_MODIFY,
+        ipAddress: '',
+        statusCode: 200,
+        result: ActivityLogResult.SUCCESS,
+        responseTime: 0,
+        requestParams: {
+          targetUserId: getBody.id,
+          targetUserEmail: user.email,
+          targetBusinessName: user.company?.businessName ?? '',
+          beforeMaximumLimit: beforeMaximumLimit,
+          afterMaximumLimit: afterMaximumLimit,
+          memo: getBody.maximumLimitMemo || null,
+        },
+      });
     }
 
     // user 정보 업데이트 (사업자 관련 필드 제외)
@@ -680,5 +710,26 @@ export class UserManagementService {
     const totalPage = Math.ceil(totalCount / take);
 
     return { list: resultList, totalCount, totalPage, currentPage: page };
+  }
+
+  async getMaximumLimitHistory(userId: number): Promise<UserManagementGetMaximumLimitHistoryResDto> {
+    const user = await this.userRepository.findOne({ where: { id: userId } });
+    if (!user) {
+      throw new BadRequestException('존재하지 않는 계정입니다.');
+    }
+
+    // Activity Log에서 해당 유저의 최대서비스한도 변경 이력 조회
+    const logs = await this.activityLogService.getMaximumLimitHistoryByUserId(userId);
+
+    const list: MaximumLimitHistoryItemDto[] = logs.map((log) => ({
+      id: log.id,
+      createdAt: format(log.createdAt, DateFormatStr),
+      beforeMaximumLimit: log.requestParams?.beforeMaximumLimit ?? 0,
+      afterMaximumLimit: log.requestParams?.afterMaximumLimit ?? 0,
+      operatorEmail: log.userEmail,
+      memo: log.requestParams?.memo || null,
+    }));
+
+    return { list };
   }
 }

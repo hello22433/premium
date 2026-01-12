@@ -301,3 +301,28 @@ export class UserManagementGetCompanyListResDto extends GetListResDto {
   })
   list: UserCompanyViewDto[];
 }
+
+export class MaximumLimitHistoryItemDto {
+  @ApiProperty({ description: '이력 ID' })
+  id: number;
+
+  @ApiProperty({ description: '일시 (yyyy-MM-ddTHH:mm:ss)' })
+  createdAt: string;
+
+  @ApiProperty({ description: '변경 전 금액' })
+  beforeMaximumLimit: number;
+
+  @ApiProperty({ description: '변경 후 금액' })
+  afterMaximumLimit: number;
+
+  @ApiProperty({ description: '처리자 이메일' })
+  operatorEmail: string;
+
+  @ApiProperty({ description: '변경 사유' })
+  memo: string | null;
+}
+
+export class UserManagementGetMaximumLimitHistoryResDto {
+  @ApiProperty({ description: '최대서비스한도 변경 이력 목록', type: [MaximumLimitHistoryItemDto] })
+  list: MaximumLimitHistoryItemDto[];
+}

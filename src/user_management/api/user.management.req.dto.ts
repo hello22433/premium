@@ -106,6 +106,13 @@ export class UserManagementChargeBalanceReqDto {
   // =============================================================
   @IsNotEmpty()
   chargeAmount: number;
+
+  @ApiPropertyOptional({
+    description: '충전 사유',
+  })
+  // =============================================================
+  @IsOptional()
+  memo?: string;
 }
 
 export class UserManagementCreateReqDto extends UserManagementUpsertDto {
