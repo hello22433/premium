@@ -8,6 +8,7 @@ import { PasswordBcryptEncrypt } from '../../auth/infrastructure/password.bcrypt
 import { UserAuthListDefault } from '../domain/user.auth.list.default';
 import { UserAuthMainMenuAuthList } from '../domain/user.auth.main.menu.auth.list';
 import { UserGetAuthListResDto } from '../api/user.info.res.dto';
+import { IOrderSendMethod } from '../../order/interface/order.send.method';
 
 @Injectable()
 export class UserInfoService {
@@ -72,9 +73,14 @@ export class UserInfoService {
 
     const mainMenuList = UserAuthMainMenuAuthList(authList);
 
+    const allowedSendMethods = oneUser.allowedSendMethods
+      ? (oneUser.allowedSendMethods.split(',') as IOrderSendMethod[])
+      : [IOrderSendMethod.ALIM_TALK, IOrderSendMethod.SMS, IOrderSendMethod.EMAIL];
+
     return {
       mainMenuList,
       subMenuList: authList,
+      allowedSendMethods,
     };
   }
 }
