@@ -214,3 +214,30 @@ export class UserManagementGetCompanyListReqQueryDto extends PagingReqDto {
   @IsOptional()
   businessName?: string;
 }
+
+export class UserManagementModifyMaximumLimitReqDto {
+  @ApiProperty({
+    description: '수정하고자 하는 유저 id',
+  })
+  // =============================================================
+  @IsNotEmpty()
+  @IsNumber()
+  @Type(() => Number)
+  id: number;
+
+  @ApiProperty({
+    description: '수정할 최대서비스한도 금액',
+  })
+  // =============================================================
+  @IsNotEmpty()
+  @IsNumber()
+  @Type(() => Number)
+  newMaximumLimit: number;
+
+  @ApiPropertyOptional({
+    description: '변경 사유',
+  })
+  // =============================================================
+  @IsOptional()
+  memo?: string;
+}

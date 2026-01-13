@@ -11,6 +11,7 @@ import {
   UserManagementUpdateReqDto,
   UserManagementModifyBalanceReqDto,
   UserManagementGetCompanyListReqQueryDto,
+  UserManagementModifyMaximumLimitReqDto,
 } from './user.management.req.dto';
 import {
   UserManagementBalanceViewDto,
@@ -169,6 +170,24 @@ export class UserManagementController {
   @Get('/user-management/:id/maximum-limit/history')
   getMaximumLimitHistory(@Param('id', ParseIntPipe) id: number) {
     return this.userManagementService.getMaximumLimitHistory(id);
+  }
+
+  @ApiOperation({
+    summary: '최대서비스한도(여신한도) 수정 API',
+    description: '최고관리자만 접근 가능합니다. 최대서비스한도를 직접 수정합니다.',
+  })
+  @ApiBearerAuth()
+  @ApiOkResponse({
+    description: '성공적으로 수정한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '해당 계정이 존재하지 않거나 회사 정보가 없는 경우',
+  })
+  // ====================================
+  @UseGuards(AuthUserSuperAdminGuard)
+  @Put('/user-management/maximum-limit')
+  modifyMaximumLimit(@User() user: ILoginUserInfo, @Body() getBody: UserManagementModifyMaximumLimitReqDto) {
+    return this.userManagementService.modifyMaximumLimit(getBody, user);
   }
 
   @ApiOperation({

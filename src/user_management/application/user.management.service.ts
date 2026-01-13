@@ -15,6 +15,7 @@ import {
   UserManagementUpdateReqDto,
   UserManagementModifyBalanceReqDto,
   UserManagementGetCompanyListReqQueryDto,
+  UserManagementModifyMaximumLimitReqDto,
 } from '../api/user.management.req.dto';
 import {
   UserManagementGetDetailResDto,
@@ -529,10 +530,8 @@ export class UserManagementService {
     // 사업자등록번호에서 하이픈 제거
     const businessNumber = getBody.businessNumber ? getBody.businessNumber.replace(/-/g, '') : getBody.businessNumber;
 
-    // 최대서비스한도 변경 감지를 위한 이전 값 저장
-    const beforeMaximumLimit = user.company?.maximumLimit ?? 0;
-
     // user_company 업데이트 또는 연결
+    // 주의: 최대서비스한도(maximumLimit)는 별도 API(PUT /user-management/maximum-limit)로만 수정 가능
     if (businessNumber) {
       const currentBusinessNumber = user.company?.businessNumber;
 
@@ -548,7 +547,7 @@ export class UserManagementService {
           user.companyId = existingCompany.id;
           user.company = existingCompany;
         } else {
-          // 새 회사 생성
+          // 새 회사 생성 (최대서비스한도는 기본값 0, 별도 API로 설정)
           const newCompany = await this.userCompanyRepository.save({
             businessNumber: businessNumber,
             businessName: getBody.businessName,
@@ -556,45 +555,21 @@ export class UserManagementService {
             businessPhoneNumber: getBody.businessPhoneNumber,
             industryType: getBody.industryType,
             industryItem: getBody.industryItem,
-            maximumLimit: getBody.maximumLimit,
+            maximumLimit: 0,
           });
           user.companyId = newCompany.id;
           user.company = newCompany;
         }
       } else if (user.companyId && user.company) {
-        // 사업자등록번호가 동일한 경우 기존 회사 정보만 업데이트
+        // 사업자등록번호가 동일한 경우 기존 회사 정보만 업데이트 (최대서비스한도 제외)
         user.company.businessName = getBody.businessName;
         user.company.businessAddress = getBody.businessAddress;
         user.company.businessPhoneNumber = getBody.businessPhoneNumber;
         user.company.industryType = getBody.industryType;
         user.company.industryItem = getBody.industryItem;
-        user.company.maximumLimit = getBody.maximumLimit;
+        // maximumLimit은 별도 API로만 수정 가능하므로 여기서는 업데이트하지 않음
         await this.userCompanyRepository.save(user.company);
       }
-    }
-
-    // 최대서비스한도 변경 이력 기록
-    const afterMaximumLimit = getBody.maximumLimit ?? 0;
-    if (beforeMaximumLimit !== afterMaximumLimit && operator) {
-      await this.activityLogService.createLog({
-        userId: operator.id,
-        userEmail: operator.email,
-        method: 'PUT',
-        requestUrl: '/user-management',
-        actionType: ActivityLogActionType.MAXIMUM_LIMIT_MODIFY,
-        ipAddress: '',
-        statusCode: 200,
-        result: ActivityLogResult.SUCCESS,
-        responseTime: 0,
-        requestParams: {
-          targetUserId: getBody.id,
-          targetUserEmail: user.email,
-          targetBusinessName: user.company?.businessName ?? '',
-          beforeMaximumLimit: beforeMaximumLimit,
-          afterMaximumLimit: afterMaximumLimit,
-          memo: getBody.maximumLimitMemo || null,
-        },
-      });
     }
 
     // user 정보 업데이트 (사업자 관련 필드 제외)
@@ -731,5 +706,53 @@ export class UserManagementService {
     }));
 
     return { list };
+  }
+
+  /**
+   * 최대서비스한도(여신한도) 단독 수정 API
+   * 팝업에서 바로 적용되는 용도
+   */
+  async modifyMaximumLimit(getBody: UserManagementModifyMaximumLimitReqDto, operator: ILoginUserInfo) {
+    const { id, newMaximumLimit, memo } = getBody;
+
+    const user = await this.userRepository.findOne({
+      where: { id },
+      relations: ['company'],
+    });
+
+    if (!user) {
+      throw new BadRequestException('존재하지 않는 계정입니다.');
+    }
+
+    if (!user.company) {
+      throw new BadRequestException('해당 계정에 연결된 회사 정보가 없습니다.');
+    }
+
+    const beforeMaximumLimit = user.company.maximumLimit;
+
+    // 회사의 최대서비스한도 업데이트
+    user.company.maximumLimit = newMaximumLimit;
+    await this.userCompanyRepository.save(user.company);
+
+    // Activity Log 기록
+    await this.activityLogService.createLog({
+      userId: operator.id,
+      userEmail: operator.email,
+      method: 'PUT',
+      requestUrl: '/user-management/maximum-limit',
+      actionType: ActivityLogActionType.MAXIMUM_LIMIT_MODIFY,
+      ipAddress: '',
+      statusCode: 200,
+      result: ActivityLogResult.SUCCESS,
+      responseTime: 0,
+      requestParams: {
+        targetUserId: id,
+        targetUserEmail: user.email,
+        targetBusinessName: user.company.businessName ?? '',
+        beforeMaximumLimit: beforeMaximumLimit,
+        afterMaximumLimit: newMaximumLimit,
+        memo: memo || null,
+      },
+    });
   }
 }
