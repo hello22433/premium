@@ -13,6 +13,7 @@ import {
   OrderFromCreatePhoneReqDto,
   OrderFromDeleteEmailReqDto,
   OrderFromGetPhoneReqQueryDto,
+  OrderFromSetDefaultReqDto,
 } from './order.from.req.dto';
 import { User } from '../../auth/api/user.decorator';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
@@ -91,6 +92,21 @@ export class OrderFromController {
   @Delete('/order-from/email')
   deleteEmail(@Body() getBody: OrderFromDeleteEmailReqDto) {
     return this.orderFromService.deleteEmail(getBody.id);
+  }
+
+  @ApiOperation({
+    summary: '기본 발신번호 설정',
+  })
+  @ApiOkResponse({
+    description: '성공적으로 설정한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '존재하지 않는 발신번호일 경우',
+  })
+  // ====================================================
+  @Patch('/order-from/phone/default')
+  setDefault(@User() user: ILoginUserInfo, @Body() getBody: OrderFromSetDefaultReqDto) {
+    return this.orderFromService.setDefault(user, getBody);
   }
 
   // ==================== 관리자용 API ====================

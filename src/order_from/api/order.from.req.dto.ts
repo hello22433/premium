@@ -114,3 +114,23 @@ export class OrderFromAdminGetListReqDto {
   @Type(() => Number)
   take?: number = 10;
 }
+
+export class OrderFromSetDefaultReqDto {
+  @ApiProperty({
+    description: '발신번호 ID',
+  })
+  // ==============================
+  @IsNotEmpty()
+  @IsNumber()
+  @Type(() => Number)
+  id: number;
+
+  @ApiProperty({
+    description: 'user id (관리자가 다른 사용자의 기본 발신번호를 설정할 때 사용)',
+  })
+  // ==============================
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  userId?: number;
+}
