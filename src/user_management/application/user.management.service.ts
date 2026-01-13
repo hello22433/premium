@@ -264,6 +264,7 @@ export class UserManagementService {
             scopeType: ViewScopeType.SELF,
             deptIds: [],
           },
+      allowedSendMethods: user.allowedSendMethods ? user.allowedSendMethods.split(',') : ['ALIM_TALK', 'SMS', 'EMAIL'],
     };
   }
 
@@ -499,6 +500,7 @@ export class UserManagementService {
       duplicatePhoneLimit: getBody.duplicatePhoneLimit ?? 0,
       authorityList: getBody.authorityList.join(','),
       companyId: companyId,
+      allowedSendMethods: getBody.allowedSendMethods.join(','),
     });
 
     // 신규 사용자의 조회 범위 설정 (SUPER_ADMIN, OPERATION_ADMIN은 ALL, 나머지는 SELF)
@@ -593,6 +595,7 @@ export class UserManagementService {
     user.settlePeriodCount = getBody.settlePeriodCount;
     user.duplicatePhoneLimit = getBody.duplicatePhoneLimit ?? 0;
     user.authorityList = getBody.authorityList.join(',');
+    user.allowedSendMethods = getBody.allowedSendMethods.join(',');
 
     await this.userRepository.save(user);
 
