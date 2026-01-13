@@ -1578,6 +1578,21 @@ export class OrderService {
   async createTemp(user: ILoginUserInfo, getBody: OrderCreateTempReqDto): Promise<OrderCreateTempResDto> {
     const { type, eventName, topImagePath, midImagePath, orderProductList } = getBody;
 
+    // 사용자의 허용 발신수단 검증
+    const userEntity = await this.userRepository.findOne({ where: { id: user.id } });
+    if (!userEntity) {
+      throw new BadRequestException('사용자 정보를 찾을 수 없습니다.');
+    }
+    const allowedMethods = userEntity.allowedSendMethods
+      ? userEntity.allowedSendMethods.split(',')
+      : ['ALIM_TALK', 'SMS', 'EMAIL'];
+
+    for (const product of orderProductList) {
+      if (product.sendMethod && !allowedMethods.includes(product.sendMethod)) {
+        throw new BadRequestException(`허용되지 않은 발신수단입니다: ${product.sendMethod}`);
+      }
+    }
+
     const productIdList = orderProductList.map((product) => product.productId);
     const uniqueProductId = new Set(productIdList);
 

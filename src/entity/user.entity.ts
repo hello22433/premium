@@ -138,6 +138,14 @@ export class UserEntity extends BaseEntity {
   @Column({ type: 'varchar', nullable: true, length: 1024, comment: '페이지 접근 허용 list' })
   authorityList: string | null;
 
+  @Column({
+    type: 'varchar',
+    length: 100,
+    default: 'ALIM_TALK,SMS,EMAIL',
+    comment: '허용 발신수단 목록 (쉼표 구분: ALIM_TALK,SMS,EMAIL)',
+  })
+  allowedSendMethods: string;
+
   @OneToMany(() => OrderEntity, (order) => order.user)
   orders: OrderEntity[];
 

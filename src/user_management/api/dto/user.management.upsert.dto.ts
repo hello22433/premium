@@ -1,10 +1,11 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsEmail, IsEnum, IsNotEmpty, IsNumber, IsOptional, IsArray } from 'class-validator';
+import { IsEmail, IsEnum, IsNotEmpty, IsNumber, IsOptional, IsArray, ArrayNotEmpty } from 'class-validator';
 import { IUserAuthority } from '../../../user/interface/user.authority';
 import { IUserSettleCondition } from '../../../user/interface/user.settle.condition';
 import { IUserSettleMethod } from '../../../user/interface/user.settle.method';
 import { IUserBusinessType } from '../../../user/interface/user.business.type';
 import { UserSettlePeriodConditionEnum } from '../../../user/interface/user.settle.period.condition.enum';
+import { IOrderSendMethod } from '../../../order/interface/order.send.method';
 
 export class UserManagementUpsertDto {
   @ApiProperty({
@@ -199,4 +200,14 @@ export class UserManagementUpsertDto {
   // ============================
   @IsOptional()
   industryItem: string | null = null;
+
+  @ApiProperty({
+    description: '허용 발신수단 목록 (ALIM_TALK, SMS, EMAIL)',
+    example: ['ALIM_TALK', 'SMS', 'EMAIL'],
+  })
+  // ============================
+  @IsArray()
+  @ArrayNotEmpty({ message: '발신수단은 최소 1개 이상 선택해야 합니다.' })
+  @IsEnum(IOrderSendMethod, { each: true, message: '유효하지 않은 발신수단입니다.' })
+  allowedSendMethods: IOrderSendMethod[] = [IOrderSendMethod.ALIM_TALK, IOrderSendMethod.SMS, IOrderSendMethod.EMAIL];
 }
