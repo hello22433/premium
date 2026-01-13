@@ -24,4 +24,7 @@ export class OrderFromDefinitionEntity extends BaseEntity {
     comment: 'PENDING - 요청중, APPROVED - 승인, REJECTED - 거절',
   })
   requestStatus: OrderFromRequestStatus;
+
+  @Column({ type: 'boolean', default: false, comment: '기본 발신번호 여부' })
+  isDefault: boolean;
 }

@@ -10,4 +10,9 @@ export class OrderFromPhoneViewDto {
     description: '발신 휴대폰 번호',
   })
   from: string;
+
+  @ApiProperty({
+    description: '기본 발신번호 여부',
+  })
+  isDefault: boolean;
 }

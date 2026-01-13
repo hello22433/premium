@@ -1,14 +1,15 @@
 import { BadRequestException, Inject, Injectable } from '@nestjs/common';
 import { OrderFromDefinitionEntity } from '../../entity/order.from.definition.entity';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, IsNull, Not, Repository } from 'typeorm';
+import { In, IsNull, Repository } from 'typeorm';
 import { OrderFromDefinitionType, OrderFromRequestStatus } from '../interface/order.from.definition.type';
-import { OrderFromGetPhoneListResDto } from '../api/order.from.res.dto';
+import { OrderFromGetEmailListResDto, OrderFromGetPhoneListResDto } from '../api/order.from.res.dto';
 import {
   OrderFromAdminGetListReqDto,
   OrderFromCreateEmailReqDto,
   OrderFromCreatePhoneReqDto,
   OrderFromGetPhoneReqQueryDto,
+  OrderFromSetDefaultReqDto,
 } from '../api/order.from.req.dto';
 import { IMailSend } from '../../mail/interface/mail-send';
 import { ConfigService } from '@nestjs/config';
@@ -38,12 +39,17 @@ export class OrderFromService {
         userId: getQuery.userId ? getQuery.userId : user.id,
         requestStatus: OrderFromRequestStatus.APPROVED,
       },
+      order: {
+        isDefault: 'DESC',
+        id: 'ASC',
+      },
     });
 
     const phoneList = orderFromDefinitionList.map((orderFromDefinition) => {
       return {
         id: orderFromDefinition.id,
         from: orderFromDefinition.from,
+        isDefault: orderFromDefinition.isDefault,
       };
     });
 
@@ -78,7 +84,7 @@ export class OrderFromService {
     });
   }
 
-  async getEmailList(): Promise<OrderFromGetPhoneListResDto> {
+  async getEmailList(): Promise<OrderFromGetEmailListResDto> {
     const orderFromDefinitionList = await this.orderFromDefinitionRepository.find({
       where: {
         type: OrderFromDefinitionType.EMAIL,
@@ -250,5 +256,40 @@ export class OrderFromService {
     await this.orderFromDefinitionRepository.update(id, {
       requestStatus: OrderFromRequestStatus.REJECTED,
     });
+  }
+
+  /**
+   * 기본 발신번호 설정
+   */
+  async setDefault(user: ILoginUserInfo, getBody: OrderFromSetDefaultReqDto) {
+    const { id, userId } = getBody;
+    const targetUserId = userId ? userId : user.id;
+
+    const item = await this.orderFromDefinitionRepository.findOne({
+      where: {
+        id,
+        type: OrderFromDefinitionType.PHONE,
+        userId: targetUserId,
+        deletedAt: IsNull(),
+        requestStatus: OrderFromRequestStatus.APPROVED,
+      },
+    });
+
+    if (!item) {
+      throw new BadRequestException('존재하지 않는 발신번호입니다.');
+    }
+
+    // 해당 사용자의 기존 기본 발신번호 해제
+    await this.orderFromDefinitionRepository.update(
+      {
+        userId: targetUserId,
+        type: OrderFromDefinitionType.PHONE,
+        isDefault: true,
+      },
+      { isDefault: false },
+    );
+
+    // 새로운 기본 발신번호 설정
+    await this.orderFromDefinitionRepository.update(id, { isDefault: true });
   }
 }
