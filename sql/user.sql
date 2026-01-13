@@ -41,3 +41,7 @@ ALTER TABLE `epopkon`.`user`
 ALTER TABLE `user`
     ADD COLUMN `industry_type` VARCHAR(100) NULL COMMENT '업태' AFTER `authority_list`,
     ADD COLUMN `industry_item` VARCHAR(100) NULL COMMENT '종목' AFTER `industry_type`;
+
+ALTER TABLE `user`
+  ADD COLUMN `allowed_send_methods` VARCHAR(100) NOT NULL DEFAULT 'ALIM_TALK,SMS,EMAIL'
+  COMMENT '허용 발신수단 목록 (쉼표 구분: ALIM_TALK,SMS,EMAIL)';
