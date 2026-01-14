@@ -917,7 +917,7 @@ export class DeliveryBatchService {
         try {
           const smsText = smsEncourageTemplate(orderDelivery);
           await this.smsSend.send({
-            msgType: 'M',
+            msgType: 'S',
             to: decryptedDeliveryTarget,
             from: orderDelivery.orderProductMapping.fromPhoneNumber!,
             subject: title,
