@@ -107,8 +107,18 @@ export class DeliveryBatchService {
     const deliveryHistoryList: DeliverySendHistoryEntity[] = [];
     const orderIdList: number[] = [];
 
+    // 중복 처리 방지를 위한 Set
+    const processedIds = new Set<number>();
+
     // 1. 알림톡, SMS, 이메일 전송
     for (const orderDelivery of orderDeliveryList) {
+      // 이미 이 배치에서 처리한 orderDelivery는 스킵 (중복 조회 방지)
+      if (processedIds.has(orderDelivery.id)) {
+        this.logger.warn(`[BATCH] Skip duplicate orderDelivery.id: ${orderDelivery.id}`);
+        continue;
+      }
+      processedIds.add(orderDelivery.id);
+
       const order = orderDelivery.orderProductMapping.order;
       const product = orderDelivery.orderProductMapping.product;
       const isChoiceCoupon = product.type === IProductType.CHOICE;
@@ -917,7 +927,7 @@ export class DeliveryBatchService {
         try {
           const smsText = smsEncourageTemplate(orderDelivery);
           await this.smsSend.send({
-            msgType: 'M',
+            msgType: 'S',
             to: decryptedDeliveryTarget,
             from: orderDelivery.orderProductMapping.fromPhoneNumber!,
             subject: title,
