@@ -1,17 +1,24 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { PartnerCompanyExternHistoryEntity } from '../../entity/partner.company.extern.history.entity';
+import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
+import { SsgEventEntity } from '../../entity/ssg.event.entity';
 import { GetPartnerCompanyExternHistoryListReqDto } from '../api/partner.company.extern.history.req.dto';
 import {
   GetPartnerCompanyExternHistoryListResDto,
   PartnerCompanyExternHistoryViewDto,
   GetPartnerCompanyTypesResDto,
+  ResendResultDto,
+  FailType,
 } from '../api/partner.company.extern.history.res.dto';
 import { format } from 'date-fns';
 import { DateFormatStr } from '../../common/domain/date.format.str';
 import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
+import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
+import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
+import { DeliveryBatchService } from '../../delivery/application/delivery.batch.service';
 
 // 협력사 타입 한글 매핑
 const PartnerCompanyTypeKo: Record<IPartnerCompanyType, string> = {
@@ -26,58 +33,70 @@ const PartnerCompanyTypeKo: Record<IPartnerCompanyType, string> = {
 
 @Injectable()
 export class PartnerCompanyExternHistoryService {
+  private logger = new Logger('PARTNER_COMPANY_EXTERN_HISTORY');
+
   constructor(
     @InjectRepository(PartnerCompanyExternHistoryEntity)
     private historyRepository: Repository<PartnerCompanyExternHistoryEntity>,
+    @InjectRepository(OrderDeliveryEntity)
+    private orderDeliveryRepository: Repository<OrderDeliveryEntity>,
+    @InjectRepository(SsgEventEntity)
+    private ssgEventRepository: Repository<SsgEventEntity>,
     private cryptoCipher: CryptoCipher,
+    @Inject(forwardRef(() => PartnerCompanyExternService))
+    private partnerCompanyExternService: PartnerCompanyExternService,
+    @Inject(forwardRef(() => DeliveryBatchService))
+    private deliveryBatchService: DeliveryBatchService,
   ) {}
 
   /**
-   * 발송 실패/성공 내역 목록 조회
+   * 발송 실패 내역 목록 조회
+   * orderDelivery.status = FAIL 기준으로 조회 (중복 없이 최종 실패 건만)
    */
   async getHistoryList(dto: GetPartnerCompanyExternHistoryListReqDto): Promise<GetPartnerCompanyExternHistoryListResDto> {
-    const { startAt, endAt, type, isSuccess, searchKeyword, page, take } = dto;
+    const { startAt, endAt, type, searchKeyword, page, take } = dto;
 
-    let queryBuilder = this.historyRepository
-      .createQueryBuilder('history')
-      .leftJoinAndSelect('history.orderDelivery', 'orderDelivery')
+    // orderDelivery 기준으로 조회 (status = FAIL)
+    let queryBuilder = this.orderDeliveryRepository
+      .createQueryBuilder('orderDelivery')
       .leftJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
       .leftJoinAndSelect('orderProductMapping.order', 'order')
-      .where('history.deletedAt IS NULL');
+      .leftJoinAndSelect('orderProductMapping.product', 'product')
+      .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .where('orderDelivery.deletedAt IS NULL')
+      .andWhere('orderDelivery.status = :status', { status: IOrderDeliveryStatus.FAIL });
 
-    // 기간 필터
+    // 기간 필터 (발송 요청일 기준)
     if (startAt) {
-      queryBuilder.andWhere('history.createdAt >= :startAt', { startAt: `${startAt} 00:00:00` });
+      queryBuilder.andWhere('orderDelivery.sendRequestAt >= :startAt', { startAt: `${startAt} 00:00:00` });
     }
     if (endAt) {
-      queryBuilder.andWhere('history.createdAt <= :endAt', { endAt: `${endAt} 23:59:59` });
+      queryBuilder.andWhere('orderDelivery.sendRequestAt <= :endAt', { endAt: `${endAt} 23:59:59` });
     }
 
     // 협력사 타입 필터
     if (type) {
-      queryBuilder.andWhere('history.type = :type', { type });
+      queryBuilder.andWhere('partnerCompany.type = :type', { type });
     }
 
-    // 성공/실패 필터
-    if (typeof isSuccess === 'boolean') {
-      queryBuilder.andWhere('history.isSuccess = :isSuccess', { isSuccess });
-    }
-
-    // 키워드 검색 (context 내)
+    // 키워드 검색 (주문코드, 이벤트명)
     if (searchKeyword) {
-      queryBuilder.andWhere('history.context LIKE :searchKeyword', {
-        searchKeyword: `%${searchKeyword}%`,
-      });
+      queryBuilder.andWhere(
+        '(order.code LIKE :searchKeyword OR order.eventName LIKE :searchKeyword)',
+        { searchKeyword: `%${searchKeyword}%` },
+      );
     }
 
     // 페이징 및 정렬
     const skip = (page - 1) * take;
-    queryBuilder.orderBy('history.createdAt', 'DESC').skip(skip).take(take);
+    queryBuilder.orderBy('orderDelivery.sendRequestAt', 'DESC').skip(skip).take(take);
 
-    const [histories, totalCount] = await queryBuilder.getManyAndCount();
+    const [orderDeliveries, totalCount] = await queryBuilder.getManyAndCount();
 
-    // DTO 변환
-    const list: PartnerCompanyExternHistoryViewDto[] = histories.map((h) => this.parseHistoryView(h));
+    // DTO 변환 (가장 최근 history에서 에러 정보 가져옴)
+    const list: PartnerCompanyExternHistoryViewDto[] = await Promise.all(
+      orderDeliveries.map((od) => this.parseOrderDeliveryView(od)),
+    );
 
     return {
       list,
@@ -100,70 +119,84 @@ export class PartnerCompanyExternHistoryService {
   }
 
   /**
-   * 히스토리 엔티티를 View DTO로 변환
+   * orderDelivery를 View DTO로 변환
+   * 가장 최근 history에서 에러 정보를 가져옴
    */
-  private parseHistoryView(history: PartnerCompanyExternHistoryEntity): PartnerCompanyExternHistoryViewDto {
-    let errorCode: string | null = null;
-    let errorMessage: string | null = null;
-    let transactionId: string | null = null;
+  private async parseOrderDeliveryView(orderDelivery: OrderDeliveryEntity): Promise<PartnerCompanyExternHistoryViewDto> {
+    // 협력사 타입
+    const partnerCompanyType = orderDelivery.orderProductMapping?.product?.partnerCompany?.type || null;
 
-    // context JSON 파싱하여 에러 정보 추출
-    try {
-      const context = JSON.parse(history.context);
+    // 핀 발급 여부 (barCode 유무로 판단)
+    const pinIssued = !!orderDelivery.barCode;
 
-      // 각 협력사별로 다른 필드명을 가질 수 있으므로 다양한 경우 처리
-      errorCode = context.errorCode || context.resultCode || context.code || context.resCode || null;
-      errorMessage =
-        context.errorMessage ||
-        context.resultMessage ||
-        context.message ||
-        context.resMsg ||
-        context.msg ||
-        null;
-      transactionId = context.transactionId || context.trId || context.tradeNo || null;
-    } catch (e) {
-      // JSON 파싱 실패 시 무시
+    // 실패 유형 결정
+    const failType = pinIssued ? FailType.SEND_FAIL : FailType.PIN_ISSUE_FAIL;
+    const failTypeKo = pinIssued ? '발송실패' : '핀발급실패';
+
+    // 수신처 마스킹 처리
+    let deliveryTarget: string | null = null;
+    if (orderDelivery.deliveryTarget) {
+      try {
+        const decrypted = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.deliveryTarget);
+        deliveryTarget = this.maskDeliveryTarget(decrypted);
+      } catch {
+        deliveryTarget = this.maskDeliveryTarget(orderDelivery.deliveryTarget);
+      }
     }
 
-    // order 정보 추출
-    let orderCode: string | null = null;
-    let eventName: string | null = null;
-    let deliveryTarget: string | null = null;
+    // 주문 정보
+    const orderCode = orderDelivery.orderProductMapping?.order?.code || null;
+    const eventName = orderDelivery.orderProductMapping?.order?.eventName || null;
 
-    if (history.orderDelivery) {
-      const orderDelivery = history.orderDelivery;
+    // 가장 최근 history에서 에러 정보 가져오기
+    let errorCode: string | null = null;
+    let errorMessage: string | null = null;
+    let transactionId: string | null = orderDelivery.transactionId || null;
+    let context: string | null = null;
 
-      // 수신처 마스킹 처리
-      if (orderDelivery.deliveryTarget) {
-        try {
-          const decrypted = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.deliveryTarget);
-          deliveryTarget = this.maskDeliveryTarget(decrypted);
-        } catch {
-          deliveryTarget = this.maskDeliveryTarget(orderDelivery.deliveryTarget);
-        }
+    const latestHistory = await this.historyRepository.findOne({
+      where: { orderDeliveryId: orderDelivery.id },
+      order: { createdAt: 'DESC' },
+    });
+
+    if (latestHistory) {
+      context = latestHistory.context;
+      try {
+        const parsedContext = JSON.parse(latestHistory.context);
+        errorCode = parsedContext.errorCode || parsedContext.resultCode || parsedContext.code || parsedContext.resCode || null;
+        errorMessage =
+          parsedContext.errorMessage ||
+          parsedContext.resultMessage ||
+          parsedContext.message ||
+          parsedContext.resMsg ||
+          parsedContext.msg ||
+          null;
+      } catch {
+        // JSON 파싱 실패 시 무시
       }
+    }
 
-      if (orderDelivery.orderProductMapping?.order) {
-        const order = orderDelivery.orderProductMapping.order;
-        orderCode = order.code;
-        eventName = order.eventName;
-      }
+    // 핀은 발급됐지만 발송 실패인 경우, history가 없을 수 있음 (발송 실패는 delivery_send_history에 기록)
+    if (pinIssued && !errorMessage) {
+      errorMessage = '문자/알림톡 발송 실패';
     }
 
     return {
-      id: history.id,
-      createdAt: format(history.createdAt, DateFormatStr),
-      type: history.type,
-      typeKo: PartnerCompanyTypeKo[history.type] || history.type,
-      isSuccess: history.isSuccess,
+      id: orderDelivery.id,
+      createdAt: orderDelivery.sendRequestAt ? format(orderDelivery.sendRequestAt, DateFormatStr) : '',
+      type: partnerCompanyType,
+      typeKo: partnerCompanyType ? (PartnerCompanyTypeKo[partnerCompanyType] || partnerCompanyType) : null,
+      failType,
+      failTypeKo,
       errorCode,
       errorMessage,
       transactionId,
-      context: history.context,
-      orderDeliveryId: history.orderDeliveryId,
+      context,
+      orderDeliveryId: orderDelivery.id,
       orderCode,
       eventName,
       deliveryTarget,
+      pinIssued,
     };
   }
 
@@ -193,5 +226,128 @@ export class PartnerCompanyExternHistoryService {
     // 기타
     if (target.length <= 4) return target;
     return `${target.substring(0, 2)}${'*'.repeat(target.length - 4)}${target.substring(target.length - 2)}`;
+  }
+
+  /**
+   * 발송 실패 건 재발송
+   * - PIN 미발급 (barCode 없음): issue() + oneSend() - 핀 발급 후 발송
+   * - PIN 발급됨 (barCode 있음): oneSend() 만 - 발송만 재시도
+   */
+  async resendFailedDelivery(orderDeliveryId: number): Promise<ResendResultDto> {
+    try {
+      // 1. orderDelivery 조회 (발송에 필요한 모든 relation 포함)
+      const orderDelivery = await this.orderDeliveryRepository.findOne({
+        where: { id: orderDeliveryId },
+        relations: [
+          'orderProductMapping',
+          'orderProductMapping.order',
+          'orderProductMapping.order.user',
+          'orderProductMapping.product',
+          'orderProductMapping.product.brand',
+          'orderProductMapping.product.partnerCompany',
+        ],
+      });
+
+      if (!orderDelivery) {
+        return {
+          success: false,
+          message: `orderDelivery를 찾을 수 없습니다. id: ${orderDeliveryId}`,
+          orderDeliveryId,
+        };
+      }
+
+      // 2. 실패 상태인지 확인
+      if (orderDelivery.status !== IOrderDeliveryStatus.FAIL) {
+        return {
+          success: false,
+          message: `해당 건은 발송 실패 상태가 아닙니다. 현재 상태: ${orderDelivery.status}`,
+          orderDeliveryId,
+        };
+      }
+
+      // 3. 핀 발급 여부 판단 (barCode 유무로 확인)
+      const pinIssued = !!orderDelivery.barCode;
+      const partnerCompanyType = orderDelivery.orderProductMapping?.product?.partnerCompany?.type;
+
+      this.logger.log(
+        `[resendFailedDelivery] orderDeliveryId: ${orderDeliveryId}, pinIssued: ${pinIssued}, partnerCompanyType: ${partnerCompanyType}`,
+      );
+
+      // 4. 재발송 처리
+      if (pinIssued) {
+        // PIN이 이미 발급됨 → 발송만 재시도
+        const sendSuccess = await this.deliveryBatchService.oneSend(orderDelivery);
+
+        if (sendSuccess) {
+          return {
+            success: true,
+            message: '재발송 성공 (기존 발급된 핀으로 발송)',
+            orderDeliveryId,
+          };
+        } else {
+          return {
+            success: false,
+            message: '발송 실패 - 알림톡/SMS/이메일 발송에 실패했습니다.',
+            orderDeliveryId,
+          };
+        }
+      } else {
+        // PIN 미발급 → 핀 발급 + 발송
+        // SSG의 경우 ssgEvent 필요
+        let ssgEvent: SsgEventEntity | null = null;
+        if (partnerCompanyType === IPartnerCompanyType.SSG && orderDelivery.ssgEventId) {
+          ssgEvent = await this.ssgEventRepository.findOne({
+            where: { id: orderDelivery.ssgEventId },
+          });
+
+          if (!ssgEvent) {
+            return {
+              success: false,
+              message: 'SSG 이벤트 정보를 찾을 수 없습니다.',
+              orderDeliveryId,
+            };
+          }
+        }
+
+        // PIN 발급
+        await this.partnerCompanyExternService.issue(orderDelivery, ssgEvent);
+
+        // PIN 발급 성공 확인
+        if (!orderDelivery.barCode) {
+          return {
+            success: false,
+            message: 'PIN 발급에 실패했습니다.',
+            orderDeliveryId,
+          };
+        }
+
+        // SSG는 issue()에서 SSG DB INSERT 시 발송도 처리됨
+        // 다른 협력사는 별도로 발송 필요
+        if (partnerCompanyType !== IPartnerCompanyType.SSG) {
+          const sendSuccess = await this.deliveryBatchService.oneSend(orderDelivery);
+
+          if (!sendSuccess) {
+            return {
+              success: false,
+              message: 'PIN 발급 성공, 발송 실패 - 알림톡/SMS/이메일 발송에 실패했습니다.',
+              orderDeliveryId,
+            };
+          }
+        }
+
+        return {
+          success: true,
+          message: '재발송 성공 (PIN 발급 + 발송)',
+          orderDeliveryId,
+        };
+      }
+    } catch (e) {
+      this.logger.error(`[resendFailedDelivery] 재발송 실패: ${e.message}`, e.stack);
+      return {
+        success: false,
+        message: e.message || '재발송 중 오류가 발생했습니다.',
+        orderDeliveryId,
+      };
+    }
   }
 }

@@ -1,10 +1,11 @@
-import { Controller, Get, Query, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Controller, Get, Post, Param, Query, UseGuards, ParseIntPipe } from '@nestjs/common';
+import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
 import { PartnerCompanyExternHistoryService } from '../application/partner.company.extern.history.service';
 import { GetPartnerCompanyExternHistoryListReqDto } from './partner.company.extern.history.req.dto';
 import {
   GetPartnerCompanyExternHistoryListResDto,
   GetPartnerCompanyTypesResDto,
+  ResendResultDto,
 } from './partner.company.extern.history.res.dto';
 import { AuthUserSuperAndOperationAdminGuard } from '../../auth/api/auth.user.super-operation-admin.guard';
 import { User } from '../../auth/api/user.decorator';
@@ -50,5 +51,24 @@ export class PartnerCompanyExternHistoryController {
   @Get('/partner-company-extern-history/types')
   async getTypes(): Promise<GetPartnerCompanyTypesResDto> {
     return this.historyService.getPartnerCompanyTypes();
+  }
+
+  @ApiOperation({
+    summary: '발송 실패 건 재발송',
+    description:
+      '발송 실패한 orderDelivery를 재발송합니다. SSG의 경우 핀 미발급 건은 기존 핀을 재사용하고, 핀 발급 건은 기존 핀으로 재발송합니다.',
+  })
+  @ApiParam({ name: 'orderDeliveryId', description: 'orderDelivery ID', type: Number })
+  @ApiOkResponse({
+    type: ResendResultDto,
+    description: '재발송 결과',
+  })
+  @Post('/partner-company-extern-history/resend/:orderDeliveryId')
+  async resend(
+    @User() user: ILoginUserInfo,
+    @Param('orderDeliveryId', ParseIntPipe) orderDeliveryId: number,
+  ): Promise<ResendResultDto> {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.SEND_FAIL_HISTORY);
+    return this.historyService.resendFailedDelivery(orderDeliveryId);
   }
 }
