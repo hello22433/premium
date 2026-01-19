@@ -1,6 +1,6 @@
 import { BadRequestException, Inject, Injectable } from '@nestjs/common';
 import { ProductEntity } from '../../entity/product.entity';
-import { FindOptionsWhere, In, IsNull, Like, Repository } from 'typeorm';
+import { Brackets, FindOptionsWhere, In, IsNull, Like, Repository } from 'typeorm';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
   ClassificationCreateReqDto,
@@ -188,8 +188,14 @@ export class ProductService {
     }
 
     if (brandName) {
-      queryBuilder = queryBuilder.andWhere('brand.nameKorean LIKE :brandName', { brandName: `%${brandName}%` });
-      queryBuilder = queryBuilder.andWhere('brand.nameEnglish LIKE :brandName', { brandName: `%${brandName}%` });
+      queryBuilder = queryBuilder.andWhere(
+        new Brackets((qb) => {
+          qb.where('brand.nameKorean LIKE :brandName', { brandName: `%${brandName}%` }).orWhere(
+            'brand.nameEnglish LIKE :brandName',
+            { brandName: `%${brandName}%` },
+          );
+        }),
+      );
     }
 
     if (name) {
@@ -403,8 +409,14 @@ export class ProductService {
     }
 
     if (brandName) {
-      queryBuilder = queryBuilder.andWhere('brand.nameKorean LIKE :brandName', { brandName: `%${brandName}%` });
-      queryBuilder = queryBuilder.andWhere('brand.nameEnglish LIKE :brandName', { brandName: `%${brandName}%` });
+      queryBuilder = queryBuilder.andWhere(
+        new Brackets((qb) => {
+          qb.where('brand.nameKorean LIKE :brandName', { brandName: `%${brandName}%` }).orWhere(
+            'brand.nameEnglish LIKE :brandName',
+            { brandName: `%${brandName}%` },
+          );
+        }),
+      );
     }
 
     if (name) {
@@ -932,8 +944,14 @@ export class ProductService {
     }
 
     if (brandName) {
-      queryBuilder = queryBuilder.andWhere('brand.nameKorean LIKE :brandName', { brandName: `%${brandName}%` });
-      queryBuilder = queryBuilder.andWhere('brand.nameEnglish LIKE :brandName', { brandName: `%${brandName}%` });
+      queryBuilder = queryBuilder.andWhere(
+        new Brackets((qb) => {
+          qb.where('brand.nameKorean LIKE :brandName', { brandName: `%${brandName}%` }).orWhere(
+            'brand.nameEnglish LIKE :brandName',
+            { brandName: `%${brandName}%` },
+          );
+        }),
+      );
     }
 
     if (name) {
