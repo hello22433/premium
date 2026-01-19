@@ -1419,9 +1419,7 @@ export class CustomerServiceService {
 
     // 4. 컬럼 정의 (신세계는 개인번호 컬럼 포함)
     const baseColumns = [
-      { header: '발송요청일', key: 'sendRequestAt', width: 20 },
       { header: '실발송일', key: 'actualSendAt', width: 20 },
-      { header: '주문번호', key: 'orderId', width: 12 },
       { header: '고객사', key: 'businessName', width: 20 },
       { header: '이벤트명', key: 'eventName', width: 30 },
       { header: 'MMS제목', key: 'sendTitle', width: 30 },
@@ -1506,13 +1504,7 @@ export class CustomerServiceService {
       const displayProduct = orderDelivery.choiceSelectProduct ?? product;
 
       worksheet.addRow({
-        sendRequestAt: orderDelivery.sendRequestAt
-          ? format(orderDelivery.sendRequestAt, DateFormatStr)
-          : orderDelivery.orderProductMapping.sendRequestAt
-            ? format(orderDelivery.orderProductMapping.sendRequestAt, DateFormatStr)
-            : '',
         actualSendAt: actualSendAt || '',
-        orderId: order.id,
         businessName: order.user?.company?.businessName ?? '',
         eventName: order.eventName,
         sendTitle: orderDelivery.orderProductMapping.sendTitle ?? '',
