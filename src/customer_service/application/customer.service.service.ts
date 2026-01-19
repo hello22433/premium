@@ -171,6 +171,13 @@ export class CustomerServiceService {
     // 날짜 조건을 실제 발송일(actualSendAt) 기준으로 변경
     queryBuilder = QueryBuilderDateCondition(queryBuilder, 'orderDelivery', 'actualSendAt', startAt, endAt);
 
+    // 총 금액 계산 (페이징 적용 전 전체 조건에 대해)
+    const sumResult = await queryBuilder
+      .clone()
+      .select('SUM(COALESCE(choiceSelectProduct.price, product.price))', 'totalPrice')
+      .getRawOne();
+    const totalPrice = Number(sumResult?.totalPrice) || 0;
+
     const skip = (page - 1) * take;
     queryBuilder.take(take).skip(skip);
     queryBuilder.orderBy('orderDelivery.id', 'DESC');
@@ -261,6 +268,7 @@ export class CustomerServiceService {
       totalCount,
       totalPage,
       currentPage: page,
+      totalPrice,
     };
   }
 

@@ -9,6 +9,11 @@ export class CustomerServiceGetListResDto extends GetListResDto {
     description: 'cs list',
   })
   list: CustomerServiceViewDto[];
+
+  @ApiProperty({
+    description: '총 금액 (쿠폰금액 합계)',
+  })
+  totalPrice: number;
 }
 
 export class CustomerServiceGetDetailListResDto extends GetListResDto {
