@@ -1,21 +1,30 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
 
+// 실패 유형
+export enum FailType {
+  PIN_ISSUE_FAIL = 'PIN_ISSUE_FAIL', // 핀 발급 실패
+  SEND_FAIL = 'SEND_FAIL', // 발송 실패 (핀은 발급됨)
+}
+
 export class PartnerCompanyExternHistoryViewDto {
-  @ApiProperty({ description: 'ID' })
+  @ApiProperty({ description: 'orderDelivery ID' })
   id: number;
 
-  @ApiProperty({ description: '생성일시' })
+  @ApiProperty({ description: '생성일시 (발송 요청일시)' })
   createdAt: string;
 
-  @ApiProperty({ description: '협력사 타입', enum: IPartnerCompanyType })
-  type: IPartnerCompanyType;
+  @ApiProperty({ description: '협력사 타입', enum: IPartnerCompanyType, nullable: true })
+  type: IPartnerCompanyType | null;
 
-  @ApiProperty({ description: '협력사 타입명 (한글)' })
-  typeKo: string;
+  @ApiProperty({ description: '협력사 타입명 (한글)', nullable: true })
+  typeKo: string | null;
 
-  @ApiProperty({ description: '성공 여부' })
-  isSuccess: boolean;
+  @ApiProperty({ description: '실패 유형', enum: FailType })
+  failType: FailType;
+
+  @ApiProperty({ description: '실패 유형명 (한글)' })
+  failTypeKo: string;
 
   @ApiProperty({ description: '에러 코드 (context에서 추출)', nullable: true })
   errorCode: string | null;
@@ -23,14 +32,14 @@ export class PartnerCompanyExternHistoryViewDto {
   @ApiProperty({ description: '에러 메시지 (context에서 추출)', nullable: true })
   errorMessage: string | null;
 
-  @ApiProperty({ description: 'transactionId (context에서 추출)', nullable: true })
+  @ApiProperty({ description: 'transactionId', nullable: true })
   transactionId: string | null;
 
-  @ApiProperty({ description: 'context 원본 (JSON)' })
-  context: string;
+  @ApiProperty({ description: 'context 원본 (JSON)', nullable: true })
+  context: string | null;
 
-  @ApiProperty({ description: 'order_delivery.id', nullable: true })
-  orderDeliveryId: number | null;
+  @ApiProperty({ description: 'order_delivery.id' })
+  orderDeliveryId: number;
 
   @ApiProperty({ description: '주문 코드', nullable: true })
   orderCode: string | null;
@@ -40,6 +49,9 @@ export class PartnerCompanyExternHistoryViewDto {
 
   @ApiProperty({ description: '수신처 (마스킹)', nullable: true })
   deliveryTarget: string | null;
+
+  @ApiProperty({ description: '핀 발급 여부 (barCode 유무)' })
+  pinIssued: boolean;
 }
 
 export class GetPartnerCompanyExternHistoryListResDto {
@@ -63,4 +75,15 @@ export class GetPartnerCompanyTypesResDto {
     example: [{ value: 'GALAXIA', label: '갤럭시아' }],
   })
   types: { value: string; label: string }[];
+}
+
+export class ResendResultDto {
+  @ApiProperty({ description: '성공 여부' })
+  success: boolean;
+
+  @ApiProperty({ description: '결과 메시지' })
+  message: string;
+
+  @ApiProperty({ description: 'orderDelivery ID', nullable: true })
+  orderDeliveryId: number | null;
 }

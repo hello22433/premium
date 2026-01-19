@@ -191,10 +191,18 @@ export class PartnerCompanyExternService {
           throw new InternalServerErrorException('order not exist');
         }
 
-        const { barCode, personalCode } = this.ssgIssue.generateSsgIssue();
+        // 재발송 시 기존 핀이 있으면 재사용, 없으면 새로 생성
+        if (orderDelivery.barCode && orderDelivery.personalCode) {
+          this.logger.log(
+            `[SSG] 기존 핀 재사용 - barCode: ${orderDelivery.barCode}, personalCode: ${orderDelivery.personalCode}`,
+          );
+        } else {
+          const { barCode, personalCode } = this.ssgIssue.generateSsgIssue();
+          orderDelivery.barCode = barCode;
+          orderDelivery.personalCode = personalCode;
+        }
 
-        orderDelivery.barCode = barCode;
-        orderDelivery.personalCode = personalCode;
+        // ssgTransactionId는 항상 새로 생성 (SSG API 호출마다 새로운 트랜잭션)
         orderDelivery.ssgTransactionId = SsgTransactionId.makeSsgTrade();
         // 실제 발송 시점 기준으로 유효기간 계산 (sendRequestAt이 아닌 현재 시간 사용)
         orderDelivery.expireAt = addDays(

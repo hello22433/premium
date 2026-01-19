@@ -168,8 +168,8 @@ export class CustomerServiceService {
       queryBuilder.andWhere('product.partnerCompanyId = :partnerCompanyId', { partnerCompanyId });
     }
 
-    // 날짜 조건을 orderDelivery 기준으로 변경
-    queryBuilder = QueryBuilderDateCondition(queryBuilder, 'orderDelivery', 'sendRequestAt', startAt, endAt);
+    // 날짜 조건을 실제 발송일(actualSendAt) 기준으로 변경
+    queryBuilder = QueryBuilderDateCondition(queryBuilder, 'orderDelivery', 'actualSendAt', startAt, endAt);
 
     const skip = (page - 1) * take;
     queryBuilder.take(take).skip(skip);
@@ -1392,7 +1392,8 @@ export class CustomerServiceService {
       queryBuilder.andWhere('order.eventName LIKE :eventName', { eventName: `%${eventName}%` });
     }
 
-    queryBuilder = QueryBuilderDateCondition(queryBuilder, 'orderDelivery', 'sendRequestAt', startAt, endAt);
+    // 날짜 조건을 실제 발송일(actualSendAt) 기준으로 변경
+    queryBuilder = QueryBuilderDateCondition(queryBuilder, 'orderDelivery', 'actualSendAt', startAt, endAt);
     queryBuilder.orderBy('orderDelivery.id', 'DESC');
 
     const orderDeliveryList = await queryBuilder.getMany();
