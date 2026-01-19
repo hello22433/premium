@@ -248,6 +248,11 @@ export class CustomerServiceService {
         emailCouponStatus: orderDelivery.emailCouponStatus,
         emailReceiverPhone: maskedEmailReceiverPhone,
         refund: orderDelivery.refundRatio ?? null,
+        expireAt: orderDelivery.actualSendAt
+          ? dayjs(orderDelivery.actualSendAt).add(displayProduct.expireDay, 'day').format('YYYY-MM-DD')
+          : orderDelivery.sendRequestAt
+            ? dayjs(orderDelivery.sendRequestAt).add(displayProduct.expireDay, 'day').format('YYYY-MM-DD')
+            : null,
       });
     }
 
