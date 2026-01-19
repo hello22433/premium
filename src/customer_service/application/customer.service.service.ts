@@ -171,6 +171,13 @@ export class CustomerServiceService {
     // 날짜 조건을 실제 발송일(actualSendAt) 기준으로 변경
     queryBuilder = QueryBuilderDateCondition(queryBuilder, 'orderDelivery', 'actualSendAt', startAt, endAt);
 
+    // 총 금액 계산 (페이징 적용 전 전체 조건에 대해)
+    const sumResult = await queryBuilder
+      .clone()
+      .select('SUM(COALESCE(choiceSelectProduct.price, product.price))', 'totalPrice')
+      .getRawOne();
+    const totalPrice = Number(sumResult?.totalPrice) || 0;
+
     const skip = (page - 1) * take;
     queryBuilder.take(take).skip(skip);
     queryBuilder.orderBy('orderDelivery.id', 'DESC');
@@ -248,6 +255,11 @@ export class CustomerServiceService {
         emailCouponStatus: orderDelivery.emailCouponStatus,
         emailReceiverPhone: maskedEmailReceiverPhone,
         refund: orderDelivery.refundRatio ?? null,
+        expireAt: orderDelivery.actualSendAt
+          ? dayjs(orderDelivery.actualSendAt).add(displayProduct.expireDay, 'day').format('YYYY-MM-DD')
+          : orderDelivery.sendRequestAt
+            ? dayjs(orderDelivery.sendRequestAt).add(displayProduct.expireDay, 'day').format('YYYY-MM-DD')
+            : null,
       });
     }
 
@@ -256,6 +268,7 @@ export class CustomerServiceService {
       totalCount,
       totalPage,
       currentPage: page,
+      totalPrice,
     };
   }
 
@@ -1406,9 +1419,7 @@ export class CustomerServiceService {
 
     // 4. 컬럼 정의 (신세계는 개인번호 컬럼 포함)
     const baseColumns = [
-      { header: '발송요청일', key: 'sendRequestAt', width: 20 },
       { header: '실발송일', key: 'actualSendAt', width: 20 },
-      { header: '주문번호', key: 'orderId', width: 12 },
       { header: '고객사', key: 'businessName', width: 20 },
       { header: '이벤트명', key: 'eventName', width: 30 },
       { header: 'MMS제목', key: 'sendTitle', width: 30 },
@@ -1493,13 +1504,7 @@ export class CustomerServiceService {
       const displayProduct = orderDelivery.choiceSelectProduct ?? product;
 
       worksheet.addRow({
-        sendRequestAt: orderDelivery.sendRequestAt
-          ? format(orderDelivery.sendRequestAt, DateFormatStr)
-          : orderDelivery.orderProductMapping.sendRequestAt
-            ? format(orderDelivery.orderProductMapping.sendRequestAt, DateFormatStr)
-            : '',
         actualSendAt: actualSendAt || '',
-        orderId: order.id,
         businessName: order.user?.company?.businessName ?? '',
         eventName: order.eventName,
         sendTitle: orderDelivery.orderProductMapping.sendTitle ?? '',

@@ -130,4 +130,10 @@ export class CustomerServiceViewDto {
     nullable: true,
   })
   refund: number | null;
+
+  @ApiProperty({
+    description: '유효기간 만료일 ex) yyyy-MM-dd',
+    nullable: true,
+  })
+  expireAt: string | null;
 }

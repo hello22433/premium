@@ -69,6 +69,12 @@ export class MailSendSmtp {
         mailOptions.cc = obj.cc;
       }
 
+      // 숨은참조(BCC) 처리 - 환경변수 BCC_EMAIL이 설정되어 있으면 추가
+      const bccEmail = this.configService.get('BCC_EMAIL');
+      if (bccEmail) {
+        mailOptions.bcc = bccEmail;
+      }
+
       // 첨부파일 처리
       if (obj.attachments && obj.attachments.length > 0) {
         mailOptions.attachments = obj.attachments.map((attachment) => ({
