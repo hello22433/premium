@@ -13,7 +13,7 @@ export class SettleSchedule implements OnApplicationBootstrap {
   private logger = new Logger('BATCH');
 
   // 매일 00시 30분 실행 (delivery 배치와 충돌 방지)
-  @Cron('0 30 * * *')
+  @Cron('0 30 0 * * *')
   async handleDeliveryTargetDestroy() {
     try {
       await this.settleService.syncSettleOverdue();
