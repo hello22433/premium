@@ -4,6 +4,8 @@ import { Cron } from '@nestjs/schedule';
 
 @Injectable()
 export class PartnerCompanyBatchSchedule implements OnApplicationBootstrap {
+  private logger = new Logger('PARTNER_COMPANY_BATCH');
+
   constructor(private partnerCompanyExternBatchService: PartnerCompanyExternBatchService) {}
 
   onApplicationBootstrap() {
@@ -11,15 +13,13 @@ export class PartnerCompanyBatchSchedule implements OnApplicationBootstrap {
     // this.check();
   }
 
-  private logger = new Logger('PARTNER_COMPANY_BATCH');
-
-  // 30분 마다 실행 - 쿠폰 상태 조회
-  @Cron('0 */30 * * * *')
+  // 매일 05:38 실행 - 쿠폰 상태 조회 (레거시 방식: 하루 1회)
+  @Cron('0 38 5 * * *')
   async check() {
     try {
+      this.logger.log('Start check');
       await this.partnerCompanyExternBatchService.check();
       this.logger.log('Complete check');
-      return;
     } catch (e) {
       this.logger.error(e);
     }
