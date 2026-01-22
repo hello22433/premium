@@ -13,8 +13,8 @@ export class PartnerCompanyBatchSchedule implements OnApplicationBootstrap {
     // this.check();
   }
 
-  // 매일 05:38 실행 - 쿠폰 상태 조회 (레거시 방식: 하루 1회)
-  @Cron('0 38 5 * * *')
+  // 매일 02:15 실행 - 쿠폰 상태 조회 (레거시 방식: 하루 1회)
+  @Cron('0 15 2 * * *')
   async check() {
     try {
       this.logger.log('Start check');
