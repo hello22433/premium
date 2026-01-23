@@ -1432,11 +1432,11 @@ export class OrderService {
         throw new InternalServerErrorException('not exist order product');
       }
       if (settle.priceAdjustment === 'DISCOUNT') {
-        settleFee -= (oneOrderProduct.product.price * (settle.fee ?? 0)) / 100;
+        settleFee -= (oneOrderProduct.product.price * oneOrderProduct.amount * (settle.fee ?? 0)) / 100;
       }
 
       if (settle.priceAdjustment === 'ADDITIONAL') {
-        settleFee += (oneOrderProduct.product.price * (settle.fee ?? 0)) / 100;
+        settleFee += (oneOrderProduct.product.price * oneOrderProduct.amount * (settle.fee ?? 0)) / 100;
       }
 
       return this.orderProductMappingRepository.create({
@@ -1504,7 +1504,7 @@ export class OrderService {
     const oneUserId = existingOrderProducts[0].order.userId;
 
     const beforeSettleAmount = existingOrderProducts[0].order.settleAmount;
-    const isSettleBanace = existingOrderProducts[0].order.isSettleBalance;
+    const isSettleBalance = existingOrderProducts[0].order.isSettleBalance;
     let settleFee = 0;
 
     const orderProductList = list.map((settle) => {
@@ -1514,11 +1514,11 @@ export class OrderService {
       }
 
       if (settle.priceAdjustment === 'DISCOUNT') {
-        settleFee -= (oneOrderProduct.product.price * (settle.fee ?? 0)) / 100;
+        settleFee -= (oneOrderProduct.product.price * oneOrderProduct.amount * (settle.fee ?? 0)) / 100;
       }
 
       if (settle.priceAdjustment === 'ADDITIONAL') {
-        settleFee += (oneOrderProduct.product.price * (settle.fee ?? 0)) / 100;
+        settleFee += (oneOrderProduct.product.price * oneOrderProduct.amount * (settle.fee ?? 0)) / 100;
       }
       // 이미 db에 있는 id 들을 create 에 넣으면 type orm 에서 update 로 동작한다
       return this.orderProductMappingRepository.create({
@@ -1555,7 +1555,7 @@ export class OrderService {
           where: { id: oneUserId },
         });
 
-        if (isSettleBanace) {
+        if (isSettleBalance) {
           // 선충전에서 차감된 주문 → balance 조정
           oneUser.balance += difference;
           this.logger.debug(
