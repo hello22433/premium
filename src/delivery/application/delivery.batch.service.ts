@@ -102,7 +102,7 @@ export class DeliveryBatchService {
       : orderDelivery.deliveryTarget;
 
     if (!encryptedValue) {
-      return encryptedValue;
+      return encryptedValue ?? '';
     }
 
     try {
