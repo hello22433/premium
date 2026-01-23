@@ -307,6 +307,7 @@ export class OrderController {
     description: '해당 order id 가 존재하지 않는 경우',
   })
   // ====================================================
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @Post('/order/settle')
   createOrderSettle(@Body() getBody: OrderCreateSettleReqDto) {
     return this.orderService.createOrderSettle(getBody);
@@ -335,6 +336,7 @@ export class OrderController {
     description: 'order product mapping id 가 존재하지 않는 경우',
   })
   // ====================================================
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @Put('/order/settle')
   updateOrderSettle(@Body() getBody: OrderUpdateSettleReqDto) {
     return this.orderService.updateOrderSettle(getBody);
