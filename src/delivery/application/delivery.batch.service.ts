@@ -1,51 +1,55 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, MoreThan, Repository } from 'typeorm';
+import { ConfigService } from '@nestjs/config';
+import { Transactional } from 'typeorm-transactional';
+import { randomUUID } from 'crypto';
+import { addDays, subDays } from 'date-fns';
+import dayjs from 'dayjs';
+import * as QRCode from 'qrcode';
+
+import { OrderEntity } from '../../entity/order.entity';
+import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
+import { OrderRealProductEntity } from '../../entity/order.real.product.entity';
+import { OrderRealProductMappingEntity } from '../../entity/order.real.product.mapping.entity';
+import { DeliverySendHistoryEntity } from '../../entity/delivery.send.history.entity';
+import { EmailSendHistoryEntity } from '../../entity/email.send.history.entity';
+import { UserEntity } from '../../entity/user.entity';
+import { SsgEventEntity } from '../../entity/ssg.event.entity';
+
 import { DeliveryAlimTalk } from '../interface/delivery.alim.talk';
 import { IOrderDeliveryStatus } from '../interface/order.delivery.status';
+import { OrderDeliveryCouponStatus } from '../interface/order.delivery.coupon.status';
 import { IMailSend } from '../../mail/interface/mail-send';
-import { IOrderSendMethod } from '../../order/interface/order.send.method';
-import { DeliverySendHistoryEntity } from '../../entity/delivery.send.history.entity';
 import { ISmsSend } from '../../sms/interface/sms.send';
-import { OrderEntity } from '../../entity/order.entity';
+import { IOrderSendMethod } from '../../order/interface/order.send.method';
 import { IOrderStatus } from '../../order/interface/order.status';
+import { IOrderType } from '../../order/interface/order.type';
+import { IOrderRealProductStatus } from '../../order_real_product/interface/order.real.product.status';
+import { IFileStorage } from '../../file/interface/file.storage';
+import { IProductType } from '../../product/interface/product.type';
+
 import { AlimTalkTemplate } from '../domain/alim.talk.template';
 import { AlimTalkEncourageTemplate } from '../domain/alim.talk.encourage.template';
 import { EmailEncourageTemplate } from '../domain/email.encourage.template';
-import { CryptoCipher } from '../../common/infra/crypto.cipher';
-import { OrderEncryptKey } from '../../order_receive/interface/order.encrypt.key';
-import { ConfigService } from '@nestjs/config';
-import { EmailSendHistoryEntity } from '../../entity/email.send.history.entity';
-import { generateRandomCode } from '../../user_find/domain/code.generate';
-import { addDays, format, subDays } from 'date-fns';
-import { EmailCertifyExpireDay } from '../../const';
-import { EmailType } from '../../mail/domain/email.type';
-import { IOrderType } from '../../order/interface/order.type';
-import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
+import { EmailDeliveryTemplate } from '../domain/email.delivery.template';
 import { smsSsgTemplate } from '../domain/sms.ssg.template';
 import { smsEncourageTemplate } from '../domain/sms.encourage.template';
-import { EmailDeliveryTemplate } from '../domain/email.delivery.template';
-import { OrderEmailSendType } from '../../order/domain/order.email.send.type';
-import * as QRCode from 'qrcode';
-import { randomUUID } from 'crypto';
-import { IFileStorage } from '../../file/interface/file.storage';
 import { SmsChoiceProductTemplate } from '../domain/sms.choice.product.template';
-import { IOrderRealProductStatus } from '../../order_real_product/interface/order.real.product.status';
-import { OrderRealProductEntity } from '../../entity/order.real.product.entity';
-import { DeliveryTrackHttp } from '../infra/delivery.track.http';
 import { DeliveryTrackingStatus } from '../domain/delivery.tracking.status';
-import { OrderRealProductMappingEntity } from '../../entity/order.real.product.mapping.entity';
-import { Transactional } from 'typeorm-transactional';
-import { OrderDeliveryCouponStatus } from '../interface/order.delivery.coupon.status';
-import { UserEntity } from '../../entity/user.entity';
+import { OrderEmailSendType } from '../../order/domain/order.email.send.type';
+import { EmailType } from '../../mail/domain/email.type';
+import { EmailCertifyExpireDay } from '../../const';
+
+import { CryptoCipher } from '../../common/infra/crypto.cipher';
+import { OrderEncryptKey } from '../../order_receive/interface/order.encrypt.key';
+import { generateRandomCode } from '../../user_find/domain/code.generate';
+import { DeliveryTrackHttp } from '../infra/delivery.track.http';
+import { DeliveryCreateCouponImage } from '../infra/delivery.create.coupon.image';
+
 import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
 import { SsgEventService } from '../../ssg_event/application/ssg.event.service';
-import { SsgEventEntity } from '../../entity/ssg.event.entity';
 import { UserManagementService } from '../../user_management/application/user.management.service';
-import { DeliveryCreateCouponImage } from '../infra/delivery.create.coupon.image';
-import { IProductType } from '../../product/interface/product.type';
-import dayjs from 'dayjs';
 
 @Injectable()
 export class DeliveryBatchService {
@@ -82,7 +86,71 @@ export class DeliveryBatchService {
     private userManagementService: UserManagementService,
   ) {}
 
-  private logger = new Logger('batch');
+  private readonly logger = new Logger('batch');
+
+  // 동시 처리 수 (환경변수로 설정 가능, 기본값 5)
+  private get concurrencyLimit(): number {
+    return this.configService.get<number>('BATCH_DELIVERY_CONCURRENCY', 5);
+  }
+
+  /**
+   * deliveryTarget 복호화 (실패 시 원본 반환)
+   */
+  private decryptDeliveryTarget(orderDelivery: OrderDeliveryEntity, fieldName: string = 'deliveryTarget'): string {
+    const encryptedValue = fieldName === 'emailReceiverPhone'
+      ? orderDelivery.emailReceiverPhone
+      : orderDelivery.deliveryTarget;
+
+    if (!encryptedValue) {
+      return encryptedValue;
+    }
+
+    try {
+      return this.cryptoCipher.decryptDeliveryTarget(encryptedValue);
+    } catch (error) {
+      this.logger.error(`Failed to decrypt ${fieldName} for orderDelivery ${orderDelivery.id}: ${error}`);
+      return encryptedValue;
+    }
+  }
+
+  /**
+   * 대치문자 치환
+   */
+  private applyReplaceCharacters(text: string, orderDelivery: OrderDeliveryEntity): string {
+    let result = text;
+    if (orderDelivery.replaceCharacter1) {
+      result = result.replace('{대치문자1}', orderDelivery.replaceCharacter1);
+    }
+    if (orderDelivery.replaceCharacter2) {
+      result = result.replace('{대치문자2}', orderDelivery.replaceCharacter2);
+    }
+    if (orderDelivery.replaceCharacter3) {
+      result = result.replace('{대치문자3}', orderDelivery.replaceCharacter3);
+    }
+    return result;
+  }
+
+  /**
+   * 발송 성공 시 actualSendAt 설정
+   */
+  private markSendSuccess(orderDelivery: OrderDeliveryEntity, status: IOrderDeliveryStatus): void {
+    orderDelivery.status = status;
+    if (!orderDelivery.actualSendAt) {
+      orderDelivery.actualSendAt = new Date();
+    }
+  }
+
+  /**
+   * QR 코드 이미지 생성 및 업로드
+   */
+  private async generateQrCodeImage(url: string): Promise<string> {
+    const qrCodeBuffer = await QRCode.toBuffer(url);
+    const uuid = randomUUID();
+    const fileName = `qr-codes/${uuid}.png`;
+    const originalName = `${uuid}.png`;
+    const fileUrl = await this.fileStorage.uploadImageFileWithBuffer(qrCodeBuffer, fileName, originalName);
+    return fileUrl.url;
+  }
 
   async issueAndSend() {
     // 현재 이전 시간에 대기중인 모든 쿠폰 발행 및 발송 진행
@@ -103,348 +171,390 @@ export class DeliveryBatchService {
 
     this.logger.log(`[BATCH] Found ${orderDeliveryList.length} deliveries to send at ${now.toISOString()}`);
 
-    // 0. 전송 history 생성 entity list
-    const deliveryHistoryList: DeliverySendHistoryEntity[] = [];
-    const orderIdList: number[] = [];
-
-    // 중복 처리 방지를 위한 Set
-    const processedIds = new Set<number>();
-
-    // 1. 알림톡, SMS, 이메일 전송
-    for (const orderDelivery of orderDeliveryList) {
-      // 이미 이 배치에서 처리한 orderDelivery는 스킵 (중복 조회 방지)
-      if (processedIds.has(orderDelivery.id)) {
-        this.logger.warn(`[BATCH] Skip duplicate orderDelivery.id: ${orderDelivery.id}`);
-        continue;
-      }
-      processedIds.add(orderDelivery.id);
-
-      const order = orderDelivery.orderProductMapping.order;
-      const product = orderDelivery.orderProductMapping.product;
-      const isChoiceCoupon = product.type === IProductType.CHOICE;
-
-      // 1.0 barCode가 없는 경우 PIN 발급 (초이스쿠폰, 이메일 발송 제외)
-      // 이메일 발송은 고객이 쿠폰 수령 시점에 핀 발급
-      const isEmailDelivery = orderDelivery.deliveryMethod === IOrderSendMethod.EMAIL;
-      if (!orderDelivery.barCode && !isChoiceCoupon && !isEmailDelivery) {
-        try {
-          // SSG 이벤트 조회 (SSG 타입인 경우)
-          let ssgEvent: SsgEventEntity | null = null;
-          if (order.type === IOrderType.SSG && orderDelivery.ssgEventId) {
-            ssgEvent = await this.ssgEventRepository.findOne({
-              where: { id: orderDelivery.ssgEventId },
-            });
-          }
-
-          // 협력사 API로 PIN 발급
-          await this.partnerCompanyExternService.issue(orderDelivery, ssgEvent);
-
-          // PIN 발급 실패 확인
-          if (orderDelivery.status === IOrderDeliveryStatus.FAIL || !orderDelivery.barCode) {
-            throw new Error('PIN 발급 실패');
-          }
-
-          // PIN 발급 성공: 쿠폰 이미지 생성
-          const partnerCompany = product.partnerCompany;
-          const productExpireDay = product.expireDay || 0;
-          const validityStartsNextDay = partnerCompany?.validityStartsNextDay ?? true;
-          const expireDay = validityStartsNextDay ? productExpireDay : productExpireDay - 1;
-          const expireDate = expireDay ? dayjs().add(expireDay, 'day').format('YYYY. MM. DD') : null;
-
-          const { path } = await DeliveryCreateCouponImage(
-            product.imagePath,
-            product.name,
-            orderDelivery.barCode,
-            product.brand!.nameKorean,
-            expireDate,
-            orderDelivery.orderProductMapping.topImagePath,
-            orderDelivery.orderProductMapping.midImagePath,
-            product.type,
-          );
-          orderDelivery.imagePath = path;
-
-          this.logger.log(`[BATCH] PIN 발급 성공 - orderDelivery.id: ${orderDelivery.id}, barCode: ${orderDelivery.barCode}`);
-        } catch (error) {
-          // PIN 발급 실패: 환불 처리
-          this.logger.error(`[BATCH] PIN 발급 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
-
-          const productPrice = product.price;
-          const userId = order.user!.id;
-
-          // SSG 이벤트 잔액 환불
-          if (order.type === IOrderType.SSG) {
-            await this.ssgEventService.refundForDeliveryFail(order.id, productPrice);
-          }
-
-          // 사용자 잔액 환불
-          if (order.isSettleBalance) {
-            // 잔액 결제였던 경우: 잔액 복원
-            await this.userManagementService.addBalance(userId, productPrice, `발송 실패 환불 (주문번호: ${order.id})`);
-          } else {
-            // 정산 결제였던 경우: 정산 금액 차감
-            const user = await this.userRepository.findOne({ where: { id: userId } });
-            if (user) {
-              user.allSettleAmount -= productPrice;
-              await this.userRepository.save(user);
-            }
-          }
-
-          // 상태를 FAIL로 변경하고 저장
-          orderDelivery.status = IOrderDeliveryStatus.FAIL;
-          await this.orderDeliveryRepository.save(orderDelivery);
-
-          // 발송 시도가 되었으므로 orderIdList에 추가 (order.status를 DELIVERY_COMPLETE로 변경하기 위해)
-          orderIdList.push(order.id);
-
-          // 이 배송건은 발송하지 않고 다음으로 넘어감
-          continue;
-        }
-      }
-
-      // deliveryTarget 복호화
-      let decryptedDeliveryTarget = orderDelivery.deliveryTarget;
-      if (orderDelivery.deliveryTarget) {
-        try {
-          decryptedDeliveryTarget = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.deliveryTarget);
-        } catch (error) {
-          this.logger.error(`Failed to decrypt deliveryTarget for orderDelivery ${orderDelivery.id}: ${error}`);
-          // 복호화 실패 시 원본 데이터 사용
-          decryptedDeliveryTarget = orderDelivery.deliveryTarget;
-        }
-      }
-
-      const title = orderDelivery.orderProductMapping.sendTitle ?? '';
-
-      if (order.type !== IOrderType.SSG) {
-        const partnerCompany = product.partnerCompany;
-        const expireDays =
-          partnerCompany?.validityStartsNextDay === false
-            ? product.expireDay - 1
-            : product.expireDay;
-
-        // 실제 발송 시점 기준으로 유효기간 계산 (sendRequestAt이 아닌 현재 시간 사용)
-        orderDelivery.expireAt = addDays(new Date(), expireDays);
-        // 상품별 독려문자 설정 적용
-        const encourageDay = orderDelivery.orderProductMapping.encourageDay;
-        if (encourageDay) {
-          orderDelivery.encourageAt = subDays(
-            orderDelivery.expireAt,
-            encourageDay,
-          );
-        }
-      }
-
-      const filePathList = [];
-      if (orderDelivery.imagePath) {
-        filePathList.push(orderDelivery.imagePath);
-      }
-      let text = orderDelivery.orderProductMapping.sendContent ?? '';
-
-      // 이메일이 아니고 SSG 타입이 아닌 경우에만 상품 유의사항 추가
-      if (
-        orderDelivery.orderProductMapping.product.memo &&
-        orderDelivery.orderProductMapping.order.type !== IOrderType.SSG &&
-        orderDelivery.deliveryMethod !== IOrderSendMethod.EMAIL
-      ) {
-        text += `\n\n${orderDelivery.orderProductMapping.product.memo}`;
-      }
-
-      const sendTailText = orderDelivery.orderProductMapping.sendTailText;
-      if (sendTailText) {
-        text += `\n\n${sendTailText}`;
-      }
-      if (orderDelivery.replaceCharacter1) {
-        text = text.replace('{대치문자1}', orderDelivery.replaceCharacter1);
-      }
-      if (orderDelivery.replaceCharacter2) {
-        text = text.replace('{대치문자2}', orderDelivery.replaceCharacter2);
-      }
-      if (orderDelivery.replaceCharacter3) {
-        text = text.replace('{대치문자3}', orderDelivery.replaceCharacter3);
-      }
-
-      const deliveryMethod = orderDelivery.deliveryMethod;
-      const deliveryHistory = new DeliverySendHistoryEntity();
-
-      deliveryHistory.context = '{}';
-      deliveryHistory.isSuccess = true;
-      deliveryHistory.target = decryptedDeliveryTarget;
-      deliveryHistory.deliveryMethod = deliveryMethod;
-
-      const encryptKey = this.cryptoCipher.encryptJson({
-        id: orderDelivery.id,
-        transactionId: orderDelivery.transactionId,
-      } as OrderEncryptKey);
-
-      // 1.1 알림톡일 경우
-      if (deliveryMethod === IOrderSendMethod.ALIM_TALK) {
-        try {
-          const alimTalk = AlimTalkTemplate(orderDelivery);
-          const { responseData, report } = await this.deliveryAlimTalk.send({
-            to: decryptedDeliveryTarget,
-            text: alimTalk,
-            encryptKey: encryptKey,
-          });
-
-          console.log(JSON.stringify(report));
-          console.log(JSON.stringify(responseData));
-          deliveryHistory.context = JSON.stringify(responseData);
-          deliveryHistory.etcContext = JSON.stringify(report);
-
-          if (report.code !== 'A000') {
-            throw new Error('AlimTalk Send Error');
-          }
-
-          orderDelivery.status = IOrderDeliveryStatus.COMPLETE;
-          if (!orderDelivery.actualSendAt) {
-            orderDelivery.actualSendAt = new Date();
-          }
-        } catch (e) {
-          deliveryHistory.context = JSON.stringify(e);
-          deliveryHistory.isSuccess = false;
-          const resultSms = await this.handleAlimTalkFail(orderDelivery, title, text, filePathList, decryptedDeliveryTarget);
-          // 문자 전송성공한 경우
-          if (resultSms === IOrderDeliveryStatus.COMPLETE_SMS) {
-            deliveryHistory.isSuccess = true;
-            orderDelivery.status = IOrderDeliveryStatus.COMPLETE_SMS;
-            if (!orderDelivery.actualSendAt) {
-              orderDelivery.actualSendAt = new Date();
-            }
-          }
-          // 문자 전송도 실패한 경우
-          if (resultSms !== IOrderDeliveryStatus.COMPLETE_SMS) {
-            deliveryHistory.context += JSON.stringify(resultSms);
-            orderDelivery.status = IOrderDeliveryStatus.FAIL;
-          }
-        }
-      }
-
-      // 1.2 SMS 일 경우
-      if (deliveryMethod === IOrderSendMethod.SMS) {
-        let smsText =
-          orderDelivery.orderProductMapping.order.type === IOrderType.SSG ? text + smsSsgTemplate(orderDelivery) : text;
-        smsText = SmsChoiceProductTemplate(
-          orderDelivery,
-          `${this.configService.getOrThrow('SMS_CHOICE_URL')}/${encryptKey}`,
-          smsText,
-        );
-
-        try {
-          const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber!;
-          await this.smsSend.send({
-            msgType: 'M',
-            to: decryptedDeliveryTarget,
-            from: fromPhoneNumber,
-            subject: title,
-            text: smsText,
-            filePath: filePathList,
-          });
-          orderDelivery.status = IOrderDeliveryStatus.COMPLETE;
-          if (!orderDelivery.actualSendAt) {
-            orderDelivery.actualSendAt = new Date();
-          }
-          deliveryHistory.context = text;
-        } catch (e) {
-          orderDelivery.status = IOrderDeliveryStatus.FAIL;
-          deliveryHistory.context = JSON.stringify(e);
-          deliveryHistory.isSuccess = false;
-        }
-      }
-
-      // 1.3 EMAIL 일 경우
-      if (deliveryMethod === IOrderSendMethod.EMAIL) {
-        const emailSendHistory = new EmailSendHistoryEntity();
-        emailSendHistory.orderDeliveryId = orderDelivery.id;
-        emailSendHistory.email = decryptedDeliveryTarget;
-        emailSendHistory.type = EmailType.COUPON;
-        emailSendHistory.code = generateRandomCode();
-        emailSendHistory.expireAt = addDays(new Date(), EmailCertifyExpireDay);
-        await this.emailSendHistoryRepository.save(emailSendHistory);
-
-        const encryptKeyEmail = this.cryptoCipher.encryptJson({
-          id: orderDelivery.id,
-          transactionId: orderDelivery.transactionId,
-          emailHistoryId: emailSendHistory.id,
-        } as OrderEncryptKey);
-
-        const url = `${this.configService.getOrThrow('EMAIL_RECEIVE_URL')}/${encryptKeyEmail}`;
-        let qrCodeImagePath = undefined;
-        const emailSendType = orderDelivery.orderProductMapping.emailSendType;
-        if (emailSendType === OrderEmailSendType.QR) {
-          const qrCodeBuffer = await QRCode.toBuffer(url);
-
-          // 파일명 생성
-          const uuid = randomUUID();
-          const fileName = `qr-codes/${uuid}.png`;
-          const originalName = `${uuid}.png`;
-
-          const fileUrl = await this.fileStorage.uploadImageFileWithBuffer(qrCodeBuffer, fileName, originalName);
-          qrCodeImagePath = fileUrl.url;
-        }
-
-        const useEmailContent = orderDelivery.orderProductMapping.useEmailContent ?? '';
-
-        const emailText = EmailDeliveryTemplate({
-          topImagePath: orderDelivery.orderProductMapping.topImagePath,
-          productImagePath: orderDelivery.orderProductMapping.product.imagePath,
-          text,
-          url: url,
-          code: emailSendHistory.code!,
-          useEmailContent,
-          qrCodeImagePath,
-        });
-
-        try {
-          const fromEmail = orderDelivery.orderProductMapping.fromEmail;
-          await this.mailSend.send({
-            saveSentMail: 'N',
-            bcc: undefined,
-            cc: undefined,
-            content: emailText,
-            subject: title,
-            to: decryptedDeliveryTarget,
-            fromEmail: fromEmail,
-          });
-          orderDelivery.status = IOrderDeliveryStatus.COMPLETE;
-          if (!orderDelivery.actualSendAt) {
-            orderDelivery.actualSendAt = new Date();
-          }
-          deliveryHistory.context = text;
-        } catch (e) {
-          orderDelivery.status = IOrderDeliveryStatus.FAIL;
-          deliveryHistory.context = JSON.stringify(e);
-          deliveryHistory.isSuccess = false;
-        }
-      }
-      deliveryHistoryList.push(deliveryHistory);
-      orderIdList.push(orderDelivery.orderProductMapping.order.id);
-      await this.orderDeliveryRepository.save(orderDelivery);
+    if (orderDeliveryList.length === 0) {
+      return;
     }
 
-    await this.deliverySendHistoryRepository.insert(deliveryHistoryList);
-    await this.orderRepository.update({ id: In(orderIdList) }, { status: IOrderStatus.DELIVERY_COMPLETE });
+    // 중복 제거
+    const processedIds = new Set<number>();
+    const uniqueDeliveryList = orderDeliveryList.filter((od) => {
+      if (processedIds.has(od.id)) {
+        this.logger.warn(`[BATCH] Skip duplicate orderDelivery.id: ${od.id}`);
+        return false;
+      }
+      processedIds.add(od.id);
+      return true;
+    });
 
-    // if (orderIdList.length > 0) {
-    //   const orderList = await this.orderRepository
-    //     .createQueryBuilder('order')
-    //     .innerJoinAndSelect('order.user', 'user')
-    //     .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
-    //     .where('order.id IN (:...orderIdList)', { orderIdList })
-    //     .getMany();
-    //
-    //   for (const order of orderList) {
-    //     await this.userRepository.update(
-    //       {
-    //         id: order.userId,
-    //       },
-    //       {
-    //         allSettleAmount: order.user!.allSettleAmount + order.settleAmount,
-    //       },
-    //     );
-    //   }
-    // }
+    // 병렬 처리 결과 수집용
+    const allResults: { deliveryHistory: DeliverySendHistoryEntity; orderId: number }[] = [];
+    const concurrency = this.concurrencyLimit;
 
-    return;
+    this.logger.log(`[BATCH] Processing ${uniqueDeliveryList.length} deliveries with concurrency: ${concurrency}`);
+
+    // 청크 단위로 병렬 처리
+    for (let i = 0; i < uniqueDeliveryList.length; i += concurrency) {
+      const chunk = uniqueDeliveryList.slice(i, i + concurrency);
+      const chunkResults = await Promise.all(
+        chunk.map((orderDelivery) => this.processOneDeliveryForBatch(orderDelivery)),
+      );
+      allResults.push(...chunkResults.filter((r) => r !== null));
+      this.logger.log(`[BATCH] Processed ${Math.min(i + concurrency, uniqueDeliveryList.length)}/${uniqueDeliveryList.length}`);
+    }
+
+    // 결과 집계
+    const deliveryHistoryList = allResults.map((r) => r.deliveryHistory);
+    const orderIdList = [...new Set(allResults.map((r) => r.orderId))];
+
+    // 히스토리 및 주문 상태 일괄 업데이트
+    if (deliveryHistoryList.length > 0) {
+      await this.deliverySendHistoryRepository.insert(deliveryHistoryList);
+    }
+    if (orderIdList.length > 0) {
+      await this.orderRepository.update({ id: In(orderIdList) }, { status: IOrderStatus.DELIVERY_COMPLETE });
+    }
+
+    this.logger.log(`[BATCH] Completed. Total: ${uniqueDeliveryList.length}, Success: ${deliveryHistoryList.length}`);
+  }
+
+  /**
+   * 단일 배송건 처리 (배치용) - PIN 발급 + 발송 + DB 저장
+   */
+  private async processOneDeliveryForBatch(
+    orderDelivery: OrderDeliveryEntity,
+  ): Promise<{ deliveryHistory: DeliverySendHistoryEntity; orderId: number } | null> {
+    try {
+      const result = await this.processOneDeliveryInternal(orderDelivery);
+      return result;
+    } catch (error) {
+      this.logger.error(`[BATCH] Failed to process orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
+      return null;
+    }
+  }
+
+  /**
+   * 단일 배송건 내부 처리 로직
+   */
+  private async processOneDeliveryInternal(
+    orderDelivery: OrderDeliveryEntity,
+  ): Promise<{ deliveryHistory: DeliverySendHistoryEntity; orderId: number }> {
+    const order = orderDelivery.orderProductMapping.order;
+    const product = orderDelivery.orderProductMapping.product;
+    const isChoiceCoupon = product.type === IProductType.CHOICE;
+    const isEmailDelivery = orderDelivery.deliveryMethod === IOrderSendMethod.EMAIL;
+
+    // 1. PIN 발급 (barCode가 없는 경우)
+    if (!orderDelivery.barCode && !isChoiceCoupon && !isEmailDelivery) {
+      try {
+        let ssgEvent: SsgEventEntity | null = null;
+        if (order.type === IOrderType.SSG && orderDelivery.ssgEventId) {
+          ssgEvent = await this.ssgEventRepository.findOne({
+            where: { id: orderDelivery.ssgEventId },
+          });
+        }
+
+        await this.partnerCompanyExternService.issue(orderDelivery, ssgEvent);
+
+        if (orderDelivery.status === IOrderDeliveryStatus.FAIL || !orderDelivery.barCode) {
+          throw new Error('PIN 발급 실패');
+        }
+
+        // 쿠폰 이미지 생성
+        const partnerCompany = product.partnerCompany;
+        const productExpireDay = product.expireDay || 0;
+        const validityStartsNextDay = partnerCompany?.validityStartsNextDay ?? true;
+        const expireDay = validityStartsNextDay ? productExpireDay : productExpireDay - 1;
+        const expireDate = expireDay ? dayjs().add(expireDay, 'day').format('YYYY. MM. DD') : null;
+
+        const { path } = await DeliveryCreateCouponImage(
+          product.imagePath,
+          product.name,
+          orderDelivery.barCode,
+          product.brand!.nameKorean,
+          expireDate,
+          orderDelivery.orderProductMapping.topImagePath,
+          orderDelivery.orderProductMapping.midImagePath,
+          product.type,
+        );
+        orderDelivery.imagePath = path;
+
+        this.logger.log(`[BATCH] PIN 발급 성공 - orderDelivery.id: ${orderDelivery.id}, barCode: ${orderDelivery.barCode}`);
+      } catch (error) {
+        this.logger.error(`[BATCH] PIN 발급 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
+
+        const productPrice = product.price;
+        const userId = order.user!.id;
+
+        // 환불 처리
+        if (order.type === IOrderType.SSG) {
+          await this.ssgEventService.refundForDeliveryFail(order.id, productPrice);
+        }
+
+        if (order.isSettleBalance) {
+          await this.userManagementService.addBalance(userId, productPrice, `발송 실패 환불 (주문번호: ${order.id})`);
+        } else {
+          const user = await this.userRepository.findOne({ where: { id: userId } });
+          if (user) {
+            user.allSettleAmount -= productPrice;
+            await this.userRepository.save(user);
+          }
+        }
+
+        orderDelivery.status = IOrderDeliveryStatus.FAIL;
+        await this.orderDeliveryRepository.save(orderDelivery);
+
+        // 실패해도 히스토리는 남김
+        const deliveryHistory = new DeliverySendHistoryEntity();
+        deliveryHistory.context = JSON.stringify(error);
+        deliveryHistory.isSuccess = false;
+        deliveryHistory.target = orderDelivery.deliveryTarget;
+        deliveryHistory.deliveryMethod = orderDelivery.deliveryMethod;
+
+        return { deliveryHistory, orderId: order.id };
+      }
+    }
+
+    // 2. deliveryTarget 복호화
+    let decryptedDeliveryTarget = orderDelivery.deliveryTarget;
+    if (orderDelivery.deliveryTarget) {
+      try {
+        decryptedDeliveryTarget = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.deliveryTarget);
+      } catch (error) {
+        this.logger.error(`Failed to decrypt deliveryTarget for orderDelivery ${orderDelivery.id}: ${error}`);
+      }
+    }
+
+    const title = orderDelivery.orderProductMapping.sendTitle ?? '';
+
+    // 3. 유효기간 설정
+    if (order.type !== IOrderType.SSG) {
+      const partnerCompany = product.partnerCompany;
+      const expireDays =
+        partnerCompany?.validityStartsNextDay === false ? product.expireDay - 1 : product.expireDay;
+
+      orderDelivery.expireAt = addDays(new Date(), expireDays);
+      const encourageDay = orderDelivery.orderProductMapping.encourageDay;
+      if (encourageDay) {
+        orderDelivery.encourageAt = subDays(orderDelivery.expireAt, encourageDay);
+      }
+    }
+
+    // 4. 발송 텍스트 준비
+    const filePathList: string[] = [];
+    if (orderDelivery.imagePath) {
+      filePathList.push(orderDelivery.imagePath);
+    }
+    let text = orderDelivery.orderProductMapping.sendContent ?? '';
+
+    if (
+      orderDelivery.orderProductMapping.product.memo &&
+      orderDelivery.orderProductMapping.order.type !== IOrderType.SSG &&
+      orderDelivery.deliveryMethod !== IOrderSendMethod.EMAIL
+    ) {
+      text += `\n\n${orderDelivery.orderProductMapping.product.memo}`;
+    }
+
+    const sendTailText = orderDelivery.orderProductMapping.sendTailText;
+    if (sendTailText) {
+      text += `\n\n${sendTailText}`;
+    }
+    if (orderDelivery.replaceCharacter1) {
+      text = text.replace('{대치문자1}', orderDelivery.replaceCharacter1);
+    }
+    if (orderDelivery.replaceCharacter2) {
+      text = text.replace('{대치문자2}', orderDelivery.replaceCharacter2);
+    }
+    if (orderDelivery.replaceCharacter3) {
+      text = text.replace('{대치문자3}', orderDelivery.replaceCharacter3);
+    }
+
+    const deliveryMethod = orderDelivery.deliveryMethod;
+    const deliveryHistory = new DeliverySendHistoryEntity();
+    deliveryHistory.context = '{}';
+    deliveryHistory.isSuccess = true;
+    deliveryHistory.target = decryptedDeliveryTarget;
+    deliveryHistory.deliveryMethod = deliveryMethod;
+
+    const encryptKey = this.cryptoCipher.encryptJson({
+      id: orderDelivery.id,
+      transactionId: orderDelivery.transactionId,
+    } as OrderEncryptKey);
+
+    // 5. 발송 채널별 처리
+    if (deliveryMethod === IOrderSendMethod.ALIM_TALK) {
+      await this.sendAlimTalk(orderDelivery, decryptedDeliveryTarget, encryptKey, title, text, filePathList, deliveryHistory);
+    } else if (deliveryMethod === IOrderSendMethod.SMS) {
+      await this.sendSms(orderDelivery, decryptedDeliveryTarget, encryptKey, title, text, filePathList, deliveryHistory);
+    } else if (deliveryMethod === IOrderSendMethod.EMAIL) {
+      await this.sendEmail(orderDelivery, decryptedDeliveryTarget, encryptKey, title, text, deliveryHistory);
+    }
+
+    // 6. DB 저장
+    await this.orderDeliveryRepository.save(orderDelivery);
+
+    return { deliveryHistory, orderId: order.id };
+  }
+
+  /**
+   * 알림톡 발송
+   */
+  private async sendAlimTalk(
+    orderDelivery: OrderDeliveryEntity,
+    decryptedDeliveryTarget: string,
+    encryptKey: string,
+    title: string,
+    text: string,
+    filePathList: string[],
+    deliveryHistory: DeliverySendHistoryEntity,
+  ): Promise<void> {
+    try {
+      const alimTalk = AlimTalkTemplate(orderDelivery);
+      const { responseData, report } = await this.deliveryAlimTalk.send({
+        to: decryptedDeliveryTarget,
+        text: alimTalk,
+        encryptKey: encryptKey,
+      });
+
+      deliveryHistory.context = JSON.stringify(responseData);
+      deliveryHistory.etcContext = JSON.stringify(report);
+
+      if (report.code !== 'A000') {
+        throw new Error('AlimTalk Send Error');
+      }
+
+      orderDelivery.status = IOrderDeliveryStatus.COMPLETE;
+      if (!orderDelivery.actualSendAt) {
+        orderDelivery.actualSendAt = new Date();
+      }
+    } catch (e) {
+      deliveryHistory.context = JSON.stringify(e);
+      deliveryHistory.isSuccess = false;
+      const resultSms = await this.handleAlimTalkFail(orderDelivery, title, text, filePathList, decryptedDeliveryTarget);
+      if (resultSms === IOrderDeliveryStatus.COMPLETE_SMS) {
+        deliveryHistory.isSuccess = true;
+        orderDelivery.status = IOrderDeliveryStatus.COMPLETE_SMS;
+        if (!orderDelivery.actualSendAt) {
+          orderDelivery.actualSendAt = new Date();
+        }
+      } else {
+        deliveryHistory.context += JSON.stringify(resultSms);
+        orderDelivery.status = IOrderDeliveryStatus.FAIL;
+      }
+    }
+  }
+
+  /**
+   * SMS 발송
+   */
+  private async sendSms(
+    orderDelivery: OrderDeliveryEntity,
+    decryptedDeliveryTarget: string,
+    encryptKey: string,
+    title: string,
+    text: string,
+    filePathList: string[],
+    deliveryHistory: DeliverySendHistoryEntity,
+  ): Promise<void> {
+    let smsText =
+      orderDelivery.orderProductMapping.order.type === IOrderType.SSG ? text + smsSsgTemplate(orderDelivery) : text;
+    smsText = SmsChoiceProductTemplate(
+      orderDelivery,
+      `${this.configService.getOrThrow('SMS_CHOICE_URL')}/${encryptKey}`,
+      smsText,
+    );
+
+    try {
+      const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber!;
+      await this.smsSend.send({
+        msgType: 'M',
+        to: decryptedDeliveryTarget,
+        from: fromPhoneNumber,
+        subject: title,
+        text: smsText,
+        filePath: filePathList,
+      });
+      orderDelivery.status = IOrderDeliveryStatus.COMPLETE;
+      if (!orderDelivery.actualSendAt) {
+        orderDelivery.actualSendAt = new Date();
+      }
+      deliveryHistory.context = text;
+    } catch (e) {
+      orderDelivery.status = IOrderDeliveryStatus.FAIL;
+      deliveryHistory.context = JSON.stringify(e);
+      deliveryHistory.isSuccess = false;
+    }
+  }
+
+  /**
+   * 이메일 발송
+   */
+  private async sendEmail(
+    orderDelivery: OrderDeliveryEntity,
+    decryptedDeliveryTarget: string,
+    encryptKey: string,
+    title: string,
+    text: string,
+    deliveryHistory: DeliverySendHistoryEntity,
+  ): Promise<void> {
+    const emailSendHistory = new EmailSendHistoryEntity();
+    emailSendHistory.orderDeliveryId = orderDelivery.id;
+    emailSendHistory.email = decryptedDeliveryTarget;
+    emailSendHistory.type = EmailType.COUPON;
+    emailSendHistory.code = generateRandomCode();
+    emailSendHistory.expireAt = addDays(new Date(), EmailCertifyExpireDay);
+    await this.emailSendHistoryRepository.save(emailSendHistory);
+
+    const encryptKeyEmail = this.cryptoCipher.encryptJson({
+      id: orderDelivery.id,
+      transactionId: orderDelivery.transactionId,
+      emailHistoryId: emailSendHistory.id,
+    } as OrderEncryptKey);
+
+    const url = `${this.configService.getOrThrow('EMAIL_RECEIVE_URL')}/${encryptKeyEmail}`;
+    let qrCodeImagePath = undefined;
+    const emailSendType = orderDelivery.orderProductMapping.emailSendType;
+    if (emailSendType === OrderEmailSendType.QR) {
+      const qrCodeBuffer = await QRCode.toBuffer(url);
+      const uuid = randomUUID();
+      const fileName = `qr-codes/${uuid}.png`;
+      const originalName = `${uuid}.png`;
+      const fileUrl = await this.fileStorage.uploadImageFileWithBuffer(qrCodeBuffer, fileName, originalName);
+      qrCodeImagePath = fileUrl.url;
+    }
+
+    const useEmailContent = orderDelivery.orderProductMapping.useEmailContent ?? '';
+
+    const emailText = EmailDeliveryTemplate({
+      topImagePath: orderDelivery.orderProductMapping.topImagePath,
+      productImagePath: orderDelivery.orderProductMapping.product.imagePath,
+      text,
+      url: url,
+      code: emailSendHistory.code!,
+      useEmailContent,
+      qrCodeImagePath,
+    });
+
+    try {
+      const fromEmail = orderDelivery.orderProductMapping.fromEmail;
+      await this.mailSend.send({
+        saveSentMail: 'N',
+        bcc: undefined,
+        cc: undefined,
+        content: emailText,
+        subject: title,
+        to: decryptedDeliveryTarget,
+        fromEmail: fromEmail,
+      });
+      orderDelivery.status = IOrderDeliveryStatus.COMPLETE;
+      if (!orderDelivery.actualSendAt) {
+        orderDelivery.actualSendAt = new Date();
+      }
+      deliveryHistory.context = text;
+    } catch (e) {
+      orderDelivery.status = IOrderDeliveryStatus.FAIL;
+      deliveryHistory.context = JSON.stringify(e);
+      deliveryHistory.isSuccess = false;
+    }
   }
 
   async updateDeliveryStatusFromTracking(): Promise<void> {
@@ -553,7 +663,7 @@ export class DeliveryBatchService {
 
       const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber!;
       await this.smsSend.send({
-        msgType: 'L',
+        msgType: 'M',
         to: decryptedDeliveryTarget,
         from: fromPhoneNumber,
         subject: title,
@@ -569,23 +679,7 @@ export class DeliveryBatchService {
   }
 
   async oneSend(orderDelivery: OrderDeliveryEntity, isSave: boolean = true, testOrderDeliveryId?: number): Promise<boolean> {
-    // deliveryTarget 복호화
-    let decryptedDeliveryTarget = orderDelivery.deliveryTarget;
-    if (orderDelivery.deliveryTarget) {
-      try {
-        decryptedDeliveryTarget = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.deliveryTarget);
-      } catch (error) {
-        this.logger.error(`Failed to decrypt deliveryTarget for orderDelivery ${orderDelivery.id}: ${error}`);
-        // 복호화 실패 시 원본 데이터 사용
-        decryptedDeliveryTarget = orderDelivery.deliveryTarget;
-      }
-    }
-
-    // 0. 전송 history 생성 entity list
-    const deliveryHistoryList: DeliverySendHistoryEntity[] = [];
-
-    // 1. 알림톡, SMS, 이메일 전송
-
+    const decryptedDeliveryTarget = this.decryptDeliveryTarget(orderDelivery);
     const title = orderDelivery.orderProductMapping.sendTitle ?? '';
 
     if (orderDelivery.orderProductMapping.order.type !== IOrderType.SSG) {
@@ -647,7 +741,7 @@ export class DeliveryBatchService {
       isTest: !!testOrderDeliveryId,
     } as OrderEncryptKey);
 
-    // 1.1 알림톡일 경우
+    // 알림톡 발송
     if (deliveryMethod === IOrderSendMethod.ALIM_TALK) {
       try {
         const alimTalk = AlimTalkTemplate(orderDelivery);
@@ -657,44 +751,30 @@ export class DeliveryBatchService {
           encryptKey: encryptKey,
         });
 
-        console.log(JSON.stringify(report));
-        console.log(JSON.stringify(responseData));
         deliveryHistory.context = JSON.stringify(responseData);
         deliveryHistory.etcContext = JSON.stringify(report);
-        // TODO 알림톡 에러 검증
+
         if (report.code !== 'A000') {
           throw new Error('AlimTalk Send Error');
         }
-        // if (report.code !== 'A000' || report.data.report.length === 0) {
-        //   throw new Error('AlimTalk Send Error');
-        // }
-        // deliveryHistory.context = JSON.stringify(responseData);
-        // deliveryHistory.etcContext = JSON.stringify(report);
-        orderDelivery.status = IOrderDeliveryStatus.COMPLETE;
-        if (!orderDelivery.actualSendAt) {
-          orderDelivery.actualSendAt = new Date();
-        }
+
+        this.markSendSuccess(orderDelivery, IOrderDeliveryStatus.COMPLETE);
       } catch (e) {
         deliveryHistory.context = JSON.stringify(e);
         deliveryHistory.isSuccess = false;
         const resultSms = await this.handleAlimTalkFail(orderDelivery, title, text, filePathList, decryptedDeliveryTarget);
-        // 문자 전송성공한 경우
+
         if (resultSms === IOrderDeliveryStatus.COMPLETE_SMS) {
           deliveryHistory.isSuccess = true;
-          orderDelivery.status = IOrderDeliveryStatus.COMPLETE_SMS;
-          if (!orderDelivery.actualSendAt) {
-            orderDelivery.actualSendAt = new Date();
-          }
-        }
-        // 문자 전송도 실패한 경우
-        if (resultSms !== IOrderDeliveryStatus.COMPLETE_SMS) {
+          this.markSendSuccess(orderDelivery, IOrderDeliveryStatus.COMPLETE_SMS);
+        } else {
           deliveryHistory.context += JSON.stringify(resultSms);
           orderDelivery.status = IOrderDeliveryStatus.FAIL;
         }
       }
     }
 
-    // 1.2 SMS 일 경우
+    // SMS 발송
     if (deliveryMethod === IOrderSendMethod.SMS) {
       let smsText =
         orderDelivery.orderProductMapping.order.type === IOrderType.SSG ? text + smsSsgTemplate(orderDelivery) : text;
@@ -726,7 +806,7 @@ export class DeliveryBatchService {
       }
     }
 
-    // 1.3 EMAIL 일 경우
+    // 이메일 발송
     if (deliveryMethod === IOrderSendMethod.EMAIL) {
       // 이메일 쿠폰이 이미 수령되어 핀이 발급된 경우 (barCode가 있고 emailReceiverPhone이 있는 경우)
       // 이메일 대신 문자로 재발송
@@ -839,13 +919,12 @@ export class DeliveryBatchService {
         }
       }
     }
-    deliveryHistoryList.push(deliveryHistory);
 
     if (isSave) {
       await this.orderDeliveryRepository.save(orderDelivery);
     }
 
-    await this.deliverySendHistoryRepository.insert(deliveryHistoryList);
+    await this.deliverySendHistoryRepository.insert([deliveryHistory]);
 
     // 발송 성공 여부 반환
     return orderDelivery.status === IOrderDeliveryStatus.COMPLETE || orderDelivery.status === IOrderDeliveryStatus.COMPLETE_SMS;
@@ -868,10 +947,7 @@ export class DeliveryBatchService {
       .andWhere('orderDelivery.deliveryTarget != :destroyValue', { destroyValue })
       .getMany();
 
-    const destroyIdList: number[] = [];
-    for (const orderDelivery of orderDeliveryList) {
-      destroyIdList.push(orderDelivery.id);
-    }
+    const destroyIdList = orderDeliveryList.map((od) => od.id);
 
     if (destroyIdList.length > 0) {
       await this.orderDeliveryRepository.update(
@@ -881,9 +957,7 @@ export class DeliveryBatchService {
     }
   }
 
-  async handleDeliveryEncourage() {
-    // const now = new Date();
-
+  async handleDeliveryEncourage(): Promise<void> {
     const orderDeliveryList = await this.orderDeliveryRepository
       .createQueryBuilder('orderDelivery')
       .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
@@ -903,18 +977,7 @@ export class DeliveryBatchService {
       .getMany();
 
     for (const orderDelivery of orderDeliveryList) {
-      // deliveryTarget 복호화
-      let decryptedDeliveryTarget = orderDelivery.deliveryTarget;
-      if (orderDelivery.deliveryTarget) {
-        try {
-          decryptedDeliveryTarget = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.deliveryTarget);
-        } catch (error) {
-          this.logger.error(`Failed to decrypt deliveryTarget for orderDelivery ${orderDelivery.id}: ${error}`);
-          // 복호화 실패 시 원본 데이터 사용
-          decryptedDeliveryTarget = orderDelivery.deliveryTarget;
-        }
-      }
-
+      const decryptedDeliveryTarget = this.decryptDeliveryTarget(orderDelivery);
       const title = '미사용 쿠폰에 대한 유효기간 안내';
       const encryptKey = this.cryptoCipher.encryptJson({
         id: orderDelivery.id,
