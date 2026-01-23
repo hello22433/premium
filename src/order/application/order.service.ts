@@ -1336,7 +1336,7 @@ export class OrderService {
           {
             price: orderProduct.product.price,
             category: orderProduct.product.category,
-            classification: orderProduct.product.classification,
+            brand: orderProduct.product.brand,
           },
           userDiscounts,
         );
@@ -2162,7 +2162,7 @@ export class OrderService {
           {
             price: mapping.product.price,
             category: mapping.product.category,
-            classification: mapping.product.classification,
+            brand: mapping.product.brand,
           },
           userDiscounts,
         );
@@ -3107,7 +3107,7 @@ export class OrderService {
    * - SECTION(구간): 상품 단가가 속하는 구간의 할인율을 전체 가격에 적용
    */
   private findMatchingDiscount(
-    product: { price: number; category: string; classification?: { classification: string } | null },
+    product: { price: number; category: string; brand?: { nameKorean: string } | null },
     userDiscounts: UserDiscountEntity[],
   ): UserDiscountEntity | null {
     if (!userDiscounts || userDiscounts.length === 0) {
@@ -3122,7 +3122,8 @@ export class OrderService {
         return d.group === product.category;
       }
       if (d.category === IUserDiscountCategory.CLASSIFICATION) {
-        return d.primaryCategory === product.classification?.classification;
+        // primaryCategory는 브랜드명을 저장하므로 brand.nameKorean과 비교
+        return d.primaryCategory === product.brand?.nameKorean;
       }
       return false;
     });
@@ -3140,7 +3141,8 @@ export class OrderService {
         return d.group === product.category;
       }
       if (d.category === IUserDiscountCategory.CLASSIFICATION) {
-        return d.primaryCategory === product.classification?.classification;
+        // primaryCategory는 브랜드명을 저장하므로 brand.nameKorean과 비교
+        return d.primaryCategory === product.brand?.nameKorean;
       }
       return false;
     });

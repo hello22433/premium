@@ -981,6 +981,7 @@ export class SettleService {
       .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .innerJoinAndSelect('orderProductMappings.product', 'product')
       .leftJoinAndSelect('product.classification', 'classification')
+      .leftJoinAndSelect('product.brand', 'brand')
       .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
       .leftJoinAndSelect('user.userDiscounts', 'userDiscounts')
       .where('order.status IN (:...status)', { status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'] });
@@ -1053,7 +1054,7 @@ export class SettleService {
             {
               price: product.price,
               category: product.category,
-              classification: product.classification,
+              brand: product.brand,
             },
             userDiscounts,
           );
@@ -1827,7 +1828,7 @@ export class SettleService {
    *   예: 5000원이하 10%, 10000원이하 2% → 6000원 상품은 2% 할인 (전체 6000원에 적용)
    */
   private findMatchingDiscount(
-    product: { price: number; category: string; classification?: { classification: string } | null },
+    product: { price: number; category: string; brand?: { nameKorean: string } | null },
     userDiscounts: UserDiscountEntity[],
   ): UserDiscountEntity | null {
     if (!userDiscounts || userDiscounts.length === 0) {
@@ -1842,7 +1843,8 @@ export class SettleService {
         return d.group === product.category;
       }
       if (d.category === IUserDiscountCategory.CLASSIFICATION) {
-        return d.primaryCategory === product.classification?.classification;
+        // primaryCategory는 브랜드명을 저장하므로 brand.nameKorean과 비교
+        return d.primaryCategory === product.brand?.nameKorean;
       }
       return false;
     });
@@ -1860,7 +1862,8 @@ export class SettleService {
         return d.group === product.category;
       }
       if (d.category === IUserDiscountCategory.CLASSIFICATION) {
-        return d.primaryCategory === product.classification?.classification;
+        // primaryCategory는 브랜드명을 저장하므로 brand.nameKorean과 비교
+        return d.primaryCategory === product.brand?.nameKorean;
       }
       return false;
     });
