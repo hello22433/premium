@@ -597,8 +597,9 @@ export class CustomerServiceService {
       .createQueryBuilder('orderDelivery')
       .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
       .innerJoinAndSelect('orderProductMapping.product', 'product')
-      .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
+      .leftJoinAndSelect('choiceSelectProduct.partnerCompany', 'choicePartnerCompany')
       .where('orderDelivery.id = :orderDeliveryId', { orderDeliveryId })
       .getOne();
 
@@ -648,9 +649,11 @@ export class CustomerServiceService {
       relations: [
         'orderProductMapping',
         'orderProductMapping.product',
-        'orderProductMapping.order',
-        'orderHistory',
         'orderProductMapping.product.partnerCompany',
+        'orderProductMapping.order',
+        'choiceSelectProduct',
+        'choiceSelectProduct.partnerCompany',
+        'orderHistory',
       ],
     });
 
@@ -771,6 +774,8 @@ export class CustomerServiceService {
         'orderProductMapping.product',
         'orderProductMapping.order',
         'orderProductMapping.product.partnerCompany',
+        'choiceSelectProduct',
+        'choiceSelectProduct.partnerCompany',
         'orderHistory',
         'ssgEvent',
       ],

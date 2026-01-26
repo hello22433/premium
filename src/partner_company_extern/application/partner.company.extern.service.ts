@@ -409,10 +409,13 @@ export class PartnerCompanyExternService {
   }
 
   async refreshCouponStatus(orderDelivery: OrderDeliveryEntity): Promise<OrderDeliveryEntity> {
-    const partnerType = orderDelivery.orderProductMapping.product.partnerCompany?.type;
+    // 초이스쿠폰의 경우 선택한 상품의 협력사를 우선 확인
+    const choicePartnerType = orderDelivery.choiceSelectProduct?.partnerCompany?.type;
+    const productPartnerType = orderDelivery.orderProductMapping.product.partnerCompany?.type;
+    const partnerType = choicePartnerType ?? productPartnerType;
 
     if (!partnerType) {
-      throw new Error('partnerCompany type is null');
+      throw new Error('협력사 정보를 찾을 수 없습니다. (partnerCompany type is null)');
     }
 
     switch (partnerType) {
