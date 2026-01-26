@@ -42,6 +42,7 @@ import { ActivityLogModule } from './activity_log/activity.log.module';
 import { EmailManualModule } from './email_manual/email.manual.module';
 import { DepartmentModule } from './department/department.module';
 import { PartnerCompanyExternHistoryModule } from './partner_company_extern_history/partner.company.extern.history.module';
+import { PopularProductModule } from './popular_product/popular.product.module';
 
 @Module({
   imports: [
@@ -90,6 +91,7 @@ import { PartnerCompanyExternHistoryModule } from './partner_company_extern_hist
     EmailManualModule,
     DepartmentModule,
     PartnerCompanyExternHistoryModule,
+    PopularProductModule,
   ],
   controllers: [AppController],
   providers: [],
