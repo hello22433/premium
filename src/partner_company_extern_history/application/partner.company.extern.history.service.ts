@@ -20,6 +20,9 @@ import { PartnerCompanyExternService } from '../../partner_company_extern/applic
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 import { DeliveryBatchService } from '../../delivery/application/delivery.batch.service';
 
+// 재발송 가능한 실패 상태 목록
+const RESENDABLE_FAIL_STATUSES = [IOrderDeliveryStatus.FAIL, IOrderDeliveryStatus.FAIL_SMS];
+
 // 협력사 타입 한글 매핑
 const PartnerCompanyTypeKo: Record<IPartnerCompanyType, string> = {
   [IPartnerCompanyType.GIFT_SHOW]: 'KT알파 (기프티쇼)',
@@ -64,7 +67,7 @@ export class PartnerCompanyExternHistoryService {
       .leftJoinAndSelect('orderProductMapping.product', 'product')
       .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .where('orderDelivery.deletedAt IS NULL')
-      .andWhere('orderDelivery.status = :status', { status: IOrderDeliveryStatus.FAIL });
+      .andWhere('orderDelivery.status IN (:...statuses)', { statuses: RESENDABLE_FAIL_STATUSES });
 
     // 기간 필터 (발송 요청일 기준)
     if (startAt) {
@@ -256,8 +259,8 @@ export class PartnerCompanyExternHistoryService {
         };
       }
 
-      // 2. 실패 상태인지 확인
-      if (orderDelivery.status !== IOrderDeliveryStatus.FAIL) {
+      // 2. 실패 상태인지 확인 (FAIL 또는 FAIL_SMS)
+      if (!RESENDABLE_FAIL_STATUSES.includes(orderDelivery.status)) {
         return {
           success: false,
           message: `해당 건은 발송 실패 상태가 아닙니다. 현재 상태: ${orderDelivery.status}`,
