@@ -2215,22 +2215,28 @@ export class OrderService {
         continue;
       }
 
+      // [임시 비활성화] 할인 상품도 중복 체크 스킵 - 복구 시 이 블록 삭제
+      if (priceAdjustment === IPriceAdjustment.DISCOUNT) {
+        this.logger.debug(`상품 ${orderMapping.productId}: 할인 적용, 중복 체크 임시 비활성화`);
+        continue;
+      }
+
       // 허용 개수 결정
       let allowedCount: number;
-      if (priceAdjustment === IPriceAdjustment.DISCOUNT) {
-        // 할인인 경우 1건만 허용
-        allowedCount = 1;
-        this.logger.debug(`상품 ${orderMapping.productId}: 할인 적용, 중복 허용 1건`);
-      } else {
-        // 할인/할증 없음인 경우
-        if (oneUser.duplicatePhoneLimit === 0) {
-          // 0이면 무제한
-          this.logger.debug(`상품 ${orderMapping.productId}: 할인/할증 없음, duplicatePhoneLimit=0 (무제한)`);
-          continue;
-        }
-        allowedCount = oneUser.duplicatePhoneLimit;
-        this.logger.debug(`상품 ${orderMapping.productId}: 할인/할증 없음, 중복 허용 ${allowedCount}건`);
+      // [임시 비활성화] 할인은 위에서 continue 처리됨, 아래는 할인/할증 없음만 해당
+      // if (priceAdjustment === IPriceAdjustment.DISCOUNT) {
+      //   allowedCount = 1;
+      //   this.logger.debug(`상품 ${orderMapping.productId}: 할인 적용, 중복 허용 1건`);
+      // } else {
+      // 할인/할증 없음인 경우
+      if (oneUser.duplicatePhoneLimit === 0) {
+        // 0이면 무제한
+        this.logger.debug(`상품 ${orderMapping.productId}: 할인/할증 없음, duplicatePhoneLimit=0 (무제한)`);
+        continue;
       }
+      allowedCount = oneUser.duplicatePhoneLimit;
+      this.logger.debug(`상품 ${orderMapping.productId}: 할인/할증 없음, 중복 허용 ${allowedCount}건`);
+      // }
 
       // 현재 주문 내 중복 체크
       const currentOrderPhoneCount = new Map<string, number>();
@@ -2294,7 +2300,9 @@ export class OrderService {
 
       // 중복 에러가 있으면 발송 거절
       if (duplicateErrors.length > 0) {
-        const statusText = priceAdjustment === IPriceAdjustment.DISCOUNT ? '할인 적용 상품' : '일반 상품';
+        // [임시 비활성화] 할인은 위에서 continue 처리되어 여기까지 오지 않음
+        // const statusText = priceAdjustment === IPriceAdjustment.DISCOUNT ? '할인 적용 상품' : '일반 상품';
+        const statusText = '일반 상품';
         throw new BadRequestException(
           `${statusText}의 중복발송 제한(${allowedCount}건까지 허용)을 초과한 수신처가 발견되었습니다:\n\n${duplicateErrors.join('\n')}`,
         );
