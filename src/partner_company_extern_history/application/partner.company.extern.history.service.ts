@@ -69,12 +69,12 @@ export class PartnerCompanyExternHistoryService {
       .where('orderDelivery.deletedAt IS NULL')
       .andWhere('orderDelivery.status IN (:...statuses)', { statuses: RESENDABLE_FAIL_STATUSES });
 
-    // 기간 필터 (발송 요청일 기준)
+    // 기간 필터 (실제 발송일 기준)
     if (startAt) {
-      queryBuilder.andWhere('orderDelivery.sendRequestAt >= :startAt', { startAt: `${startAt} 00:00:00` });
+      queryBuilder.andWhere('orderDelivery.actualSendAt >= :startAt', { startAt: `${startAt} 00:00:00` });
     }
     if (endAt) {
-      queryBuilder.andWhere('orderDelivery.sendRequestAt <= :endAt', { endAt: `${endAt} 23:59:59` });
+      queryBuilder.andWhere('orderDelivery.actualSendAt <= :endAt', { endAt: `${endAt} 23:59:59` });
     }
 
     // 협력사 타입 필터
@@ -90,9 +90,9 @@ export class PartnerCompanyExternHistoryService {
       );
     }
 
-    // 페이징 및 정렬
+    // 페이징 및 정렬 (실제 발송일 기준)
     const skip = (page - 1) * take;
-    queryBuilder.orderBy('orderDelivery.sendRequestAt', 'DESC').skip(skip).take(take);
+    queryBuilder.orderBy('orderDelivery.actualSendAt', 'DESC').skip(skip).take(take);
 
     const [orderDeliveries, totalCount] = await queryBuilder.getManyAndCount();
 
@@ -186,7 +186,7 @@ export class PartnerCompanyExternHistoryService {
 
     return {
       id: orderDelivery.id,
-      createdAt: orderDelivery.sendRequestAt ? format(orderDelivery.sendRequestAt, DateFormatStr) : '',
+      createdAt: orderDelivery.actualSendAt ? format(orderDelivery.actualSendAt, DateFormatStr) : '',
       type: partnerCompanyType,
       typeKo: partnerCompanyType ? (PartnerCompanyTypeKo[partnerCompanyType] || partnerCompanyType) : null,
       failType,
