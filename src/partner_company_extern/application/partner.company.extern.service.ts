@@ -172,8 +172,14 @@ export class PartnerCompanyExternService {
           price: orderDelivery.orderProductMapping.product.price,
         });
         context = JSON.stringify(cultureLandOut);
-        orderDelivery.barCode = cultureLandOut.ScrachNo;
-        orderDelivery.couponNum = cultureLandOut.CertNo;
+
+        // 성공 응답인 경우에만 barCode 설정
+        if (cultureLandOut.ResultCode === '0000') {
+          orderDelivery.barCode = cultureLandOut.ScrachNo;
+          orderDelivery.couponNum = cultureLandOut.CertNo;
+        } else {
+          throw new Error(`컬쳐랜드 PIN 발급 실패: ${cultureLandOut.ResultCode}`);
+        }
       }
 
       // 1.1.6 신세계 상품권 발행
