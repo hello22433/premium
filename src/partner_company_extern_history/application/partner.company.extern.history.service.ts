@@ -19,6 +19,7 @@ import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 import { DeliveryBatchService } from '../../delivery/application/delivery.batch.service';
+import { CreateResendTransactionId } from '../../order/domain/create.transaction.id';
 
 // 재발송 가능한 실패 상태 목록
 const RESENDABLE_FAIL_STATUSES = [IOrderDeliveryStatus.FAIL, IOrderDeliveryStatus.FAIL_SMS];
@@ -268,7 +269,14 @@ export class PartnerCompanyExternHistoryService {
         };
       }
 
-      // 3. 핀 발급 여부 판단 (barCode 유무로 확인)
+      // 3. 핀 발급 여부 판단 (barCode 유무 + 유효성 확인)
+      // barCode에 한글이 포함된 경우 에러 메시지가 저장된 것이므로 무효 처리
+      if (orderDelivery.barCode && /[가-힣]/.test(orderDelivery.barCode)) {
+        this.logger.warn(
+          `[resendFailedDelivery] barCode에 잘못된 값 감지, 초기화: "${orderDelivery.barCode}" (orderDeliveryId: ${orderDeliveryId})`,
+        );
+        orderDelivery.barCode = null;
+      }
       const pinIssued = !!orderDelivery.barCode;
       const partnerCompanyType = orderDelivery.orderProductMapping?.product?.partnerCompany?.type;
 
@@ -296,6 +304,23 @@ export class PartnerCompanyExternHistoryService {
         }
       } else {
         // PIN 미발급 → 핀 발급 + 발송
+        // 재발급 시 transactionId 갱신 (협력사 거래번호 중복 방지)
+        const orderId = orderDelivery.orderProductMapping?.order?.id;
+        if (!orderId) {
+          return {
+            success: false,
+            message: '주문 정보를 찾을 수 없습니다.',
+            orderDeliveryId,
+          };
+        }
+        const retryMatch = orderDelivery.transactionId?.match(/R(\d+)$/);
+        const retryCount = retryMatch ? parseInt(retryMatch[1], 10) + 1 : 1;
+        orderDelivery.transactionId = CreateResendTransactionId(orderId, orderDeliveryId, retryCount);
+
+        this.logger.log(
+          `[resendFailedDelivery] transactionId 갱신: ${orderDelivery.transactionId}`,
+        );
+
         // SSG의 경우 ssgEvent 필요
         let ssgEvent: SsgEventEntity | null = null;
         if (partnerCompanyType === IPartnerCompanyType.SSG && orderDelivery.ssgEventId) {
