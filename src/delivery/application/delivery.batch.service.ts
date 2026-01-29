@@ -152,6 +152,31 @@ export class DeliveryBatchService {
     return fileUrl.url;
   }
 
+  /**
+   * 쿠폰 이미지 생성 및 경로 반환
+   */
+  private async createCouponImage(orderDelivery: OrderDeliveryEntity): Promise<string> {
+    const product = orderDelivery.orderProductMapping.product;
+    const partnerCompany = product.partnerCompany;
+    const productExpireDay = product.expireDay || 0;
+    const validityStartsNextDay = partnerCompany?.validityStartsNextDay ?? true;
+    const expireDay = validityStartsNextDay ? productExpireDay : productExpireDay - 1;
+    const expireDate = expireDay ? dayjs().add(expireDay, 'day').format('YYYY. MM. DD') : null;
+
+    const { path } = await DeliveryCreateCouponImage(
+      product.imagePath,
+      product.name,
+      orderDelivery.barCode!,
+      product.brand!.nameKorean,
+      expireDate,
+      orderDelivery.orderProductMapping.topImagePath,
+      orderDelivery.orderProductMapping.midImagePath,
+      product.type,
+    );
+
+    return path;
+  }
+
   async issueAndSend() {
     // 현재 이전 시간에 대기중인 모든 쿠폰 발행 및 발송 진행
     const now = new Date();
@@ -259,24 +284,7 @@ export class DeliveryBatchService {
           throw new Error('PIN 발급 실패');
         }
 
-        // 쿠폰 이미지 생성
-        const partnerCompany = product.partnerCompany;
-        const productExpireDay = product.expireDay || 0;
-        const validityStartsNextDay = partnerCompany?.validityStartsNextDay ?? true;
-        const expireDay = validityStartsNextDay ? productExpireDay : productExpireDay - 1;
-        const expireDate = expireDay ? dayjs().add(expireDay, 'day').format('YYYY. MM. DD') : null;
-
-        const { path } = await DeliveryCreateCouponImage(
-          product.imagePath,
-          product.name,
-          orderDelivery.barCode,
-          product.brand!.nameKorean,
-          expireDate,
-          orderDelivery.orderProductMapping.topImagePath,
-          orderDelivery.orderProductMapping.midImagePath,
-          product.type,
-        );
-        orderDelivery.imagePath = path;
+        orderDelivery.imagePath = await this.createCouponImage(orderDelivery);
 
         this.logger.log(`[BATCH] PIN 발급 성공 - orderDelivery.id: ${orderDelivery.id}, barCode: ${orderDelivery.barCode}`);
       } catch (error) {
@@ -678,7 +686,119 @@ export class DeliveryBatchService {
     }
   }
 
+  /**
+   * 재발송 시 PIN 재발급 및 이미지 재생성
+   * - barCode가 없는 경우: PIN 재발급 + 이미지 생성 + 환불 복구
+   * - barCode는 있는데 imagePath가 없는 경우: 이미지만 재생성
+   * @returns true if successful or not needed, false if PIN reissue failed
+   */
+  private async reissuePinAndCreateImageIfNeeded(orderDelivery: OrderDeliveryEntity): Promise<boolean> {
+    const order = orderDelivery.orderProductMapping.order;
+    const product = orderDelivery.orderProductMapping.product;
+    const isChoiceCoupon = product.type === IProductType.CHOICE;
+    const isEmailDelivery = orderDelivery.deliveryMethod === IOrderSendMethod.EMAIL;
+
+    // 초이스 쿠폰이나 이메일 발송은 PIN/이미지 재생성 대상 아님
+    if (isChoiceCoupon || isEmailDelivery) {
+      return true;
+    }
+
+    // Case 1: barCode가 없는 경우 - PIN 재발급 필요
+    if (!orderDelivery.barCode) {
+      try {
+        let ssgEvent: SsgEventEntity | null = null;
+        if (order.type === IOrderType.SSG && orderDelivery.ssgEventId) {
+          ssgEvent = await this.ssgEventRepository.findOne({
+            where: { id: orderDelivery.ssgEventId },
+          });
+        }
+
+        await this.partnerCompanyExternService.issue(orderDelivery, ssgEvent);
+
+        if (orderDelivery.status === IOrderDeliveryStatus.FAIL || !orderDelivery.barCode) {
+          this.logger.error(`[RESEND] PIN 재발급 실패 - orderDelivery.id: ${orderDelivery.id}`);
+          return false;
+        }
+
+        // PIN 재발급 성공 - 환불 복구 처리
+        await this.reverseRefundForResend(orderDelivery);
+
+        this.logger.log(`[RESEND] PIN 재발급 성공 - orderDelivery.id: ${orderDelivery.id}, barCode: ${orderDelivery.barCode}`);
+      } catch (error) {
+        this.logger.error(`[RESEND] PIN 재발급 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
+        return false;
+      }
+    }
+
+    // Case 2: barCode는 있는데 imagePath가 없는 경우 - 이미지만 재생성
+    if (!orderDelivery.imagePath && orderDelivery.barCode) {
+      try {
+        const path = await this.createCouponImage(orderDelivery);
+        orderDelivery.imagePath = path;
+
+        this.logger.log(`[RESEND] 이미지 재생성 성공 - orderDelivery.id: ${orderDelivery.id}, imagePath: ${path}`);
+      } catch (error) {
+        this.logger.error(`[RESEND] 이미지 재생성 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
+        // 이미지 생성 실패해도 텍스트만으로 발송 시도하도록 진행 (return false 하지 않음)
+      }
+    }
+
+    return true;
+  }
+
+  /**
+   * 환불 복구 (PIN 재발급 성공 시)
+   * 최초 발송 실패 시 환불된 금액을 다시 차감
+   */
+  private async reverseRefundForResend(orderDelivery: OrderDeliveryEntity): Promise<void> {
+    const order = orderDelivery.orderProductMapping.order;
+    const product = orderDelivery.orderProductMapping.product;
+    const productPrice = product.price;
+    const userId = order.user!.id;
+
+    try {
+      // SSG 주문인 경우: eventBalance 차감
+      if (order.type === IOrderType.SSG) {
+        await this.ssgEventService.chargeBackForResend(order.id, productPrice);
+      }
+
+      // 잔액 차감 주문인 경우: 잔액 다시 차감
+      if (order.isSettleBalance) {
+        await this.userManagementService.deductBalance(userId, productPrice);
+      } else {
+        // 정산 차감인 경우: allSettleAmount 복구
+        const user = await this.userRepository.findOne({ where: { id: userId } });
+        if (user) {
+          user.allSettleAmount += productPrice;
+          await this.userRepository.save(user);
+        }
+      }
+
+      this.logger.log(`[RESEND] 환불 복구 완료 - orderDelivery.id: ${orderDelivery.id}, amount: ${productPrice}`);
+    } catch (error) {
+      this.logger.error(`[RESEND] 환불 복구 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
+      // 환불 복구 실패해도 발송은 진행 (로그만 남김)
+    }
+  }
+
   async oneSend(orderDelivery: OrderDeliveryEntity, isSave: boolean = true, testOrderDeliveryId?: number): Promise<boolean> {
+    // PIN 재발급 및 이미지 재생성 (barCode나 imagePath가 없는 경우)
+    const reissueSuccess = await this.reissuePinAndCreateImageIfNeeded(orderDelivery);
+    if (!reissueSuccess) {
+      // PIN 재발급 실패 시 발송 중단하고 실패 이력 기록
+      const deliveryHistory = new DeliverySendHistoryEntity();
+      deliveryHistory.context = 'PIN 재발급 실패';
+      deliveryHistory.isSuccess = false;
+      deliveryHistory.target = orderDelivery.deliveryTarget;
+      deliveryHistory.deliveryMethod = orderDelivery.deliveryMethod;
+
+      if (isSave) {
+        await this.orderDeliveryRepository.save(orderDelivery);
+      }
+      await this.deliverySendHistoryRepository.save(deliveryHistory);
+      return false;
+    }
+
     const decryptedDeliveryTarget = this.decryptDeliveryTarget(orderDelivery);
     const title = orderDelivery.orderProductMapping.sendTitle ?? '';
 
@@ -924,9 +1044,8 @@ export class DeliveryBatchService {
       await this.orderDeliveryRepository.save(orderDelivery);
     }
 
-    await this.deliverySendHistoryRepository.insert([deliveryHistory]);
+    await this.deliverySendHistoryRepository.save(deliveryHistory);
 
-    // 발송 성공 여부 반환
     return orderDelivery.status === IOrderDeliveryStatus.COMPLETE || orderDelivery.status === IOrderDeliveryStatus.COMPLETE_SMS;
   }
 
