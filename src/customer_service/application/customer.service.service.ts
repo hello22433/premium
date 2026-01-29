@@ -527,8 +527,10 @@ export class CustomerServiceService {
       .createQueryBuilder('orderDelivery')
       .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
       .innerJoinAndSelect('orderProductMapping.product', 'product')
-      .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .innerJoinAndSelect('product.brand', 'brand')
+      .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
+      .leftJoinAndSelect('choiceSelectProduct.partnerCompany', 'choicePartnerCompany')
       .where('orderDelivery.id = :orderDeliveryId', { orderDeliveryId: orderDeliveryId })
       .getOne();
 
@@ -536,7 +538,10 @@ export class CustomerServiceService {
       throw new BadRequestException('존재하지 않는 주문 건입니다.');
     }
 
-    const partnerType = orderDelivery.orderProductMapping!.product.partnerCompany!.type;
+    // 초이스쿠폰의 경우 선택한 상품의 협력사를 우선 사용
+    const partnerType =
+      orderDelivery.choiceSelectProduct?.partnerCompany?.type ??
+      orderDelivery.orderProductMapping?.product.partnerCompany?.type;
     const beforeChange = orderDelivery.couponStatus;
 
     switch (partnerType) {
@@ -1223,6 +1228,8 @@ export class CustomerServiceService {
             'orderProductMapping',
             'orderProductMapping.product',
             'orderProductMapping.product.partnerCompany',
+            'choiceSelectProduct',
+            'choiceSelectProduct.partnerCompany',
           ],
         });
 
@@ -1250,7 +1257,10 @@ export class CustomerServiceService {
         }
 
         const beforeChange = orderDelivery.couponStatus;
-        const partnerCompanyName = orderDelivery.orderProductMapping?.product?.partnerCompany?.businessName;
+        // 초이스쿠폰의 경우 선택한 상품의 협력사를 우선 사용
+        const partnerCompanyName =
+          orderDelivery.choiceSelectProduct?.partnerCompany?.businessName ??
+          orderDelivery.orderProductMapping?.product?.partnerCompany?.businessName;
 
         // 4. 협력사별 폐기 처리
         switch (partnerCompanyName) {
