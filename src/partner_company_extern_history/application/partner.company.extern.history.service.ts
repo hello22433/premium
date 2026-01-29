@@ -61,8 +61,11 @@ export class PartnerCompanyExternHistoryService {
     const { startAt, endAt, type, searchKeyword, page, take } = dto;
 
     // orderDelivery 기준으로 조회 (status = FAIL)
+    // 정렬용 가상 컬럼: actualSendAt 우선, 없으면 updatedAt (핀발급실패 시 actualSendAt이 NULL)
+    const dateCoalesceExpr = 'COALESCE(`orderDelivery`.`actual_send_at`, `orderDelivery`.`updated_at`)';
     let queryBuilder = this.orderDeliveryRepository
       .createQueryBuilder('orderDelivery')
+      .addSelect(dateCoalesceExpr, 'sortDate')
       .leftJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
       .leftJoinAndSelect('orderProductMapping.order', 'order')
       .leftJoinAndSelect('orderProductMapping.product', 'product')
@@ -94,7 +97,7 @@ export class PartnerCompanyExternHistoryService {
 
     // 페이징 및 정렬 (actualSendAt 우선, 없으면 updatedAt)
     const skip = (page - 1) * take;
-    queryBuilder.orderBy(dateColumn, 'DESC').skip(skip).take(take);
+    queryBuilder.orderBy('sortDate', 'DESC').skip(skip).take(take);
 
     const [orderDeliveries, totalCount] = await queryBuilder.getManyAndCount();
 
