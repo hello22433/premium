@@ -70,12 +70,13 @@ export class PartnerCompanyExternHistoryService {
       .where('orderDelivery.deletedAt IS NULL')
       .andWhere('orderDelivery.status IN (:...statuses)', { statuses: RESENDABLE_FAIL_STATUSES });
 
-    // 기간 필터 (실제 발송일 기준)
+    // 기간 필터 (actualSendAt이 없는 경우 updatedAt으로 대체)
+    const dateColumn = 'COALESCE(orderDelivery.actualSendAt, orderDelivery.updatedAt)';
     if (startAt) {
-      queryBuilder.andWhere('orderDelivery.actualSendAt >= :startAt', { startAt: `${startAt} 00:00:00` });
+      queryBuilder.andWhere(`${dateColumn} >= :startAt`, { startAt: `${startAt} 00:00:00` });
     }
     if (endAt) {
-      queryBuilder.andWhere('orderDelivery.actualSendAt <= :endAt', { endAt: `${endAt} 23:59:59` });
+      queryBuilder.andWhere(`${dateColumn} <= :endAt`, { endAt: `${endAt} 23:59:59` });
     }
 
     // 협력사 타입 필터
@@ -91,9 +92,9 @@ export class PartnerCompanyExternHistoryService {
       );
     }
 
-    // 페이징 및 정렬 (실제 발송일 기준)
+    // 페이징 및 정렬 (actualSendAt 우선, 없으면 updatedAt)
     const skip = (page - 1) * take;
-    queryBuilder.orderBy('orderDelivery.actualSendAt', 'DESC').skip(skip).take(take);
+    queryBuilder.orderBy(dateColumn, 'DESC').skip(skip).take(take);
 
     const [orderDeliveries, totalCount] = await queryBuilder.getManyAndCount();
 
@@ -185,9 +186,11 @@ export class PartnerCompanyExternHistoryService {
       errorMessage = '문자/알림톡 발송 실패';
     }
 
+    const displayDate = orderDelivery.actualSendAt ?? orderDelivery.updatedAt;
+
     return {
       id: orderDelivery.id,
-      createdAt: orderDelivery.actualSendAt ? format(orderDelivery.actualSendAt, DateFormatStr) : '',
+      createdAt: displayDate ? format(displayDate, DateFormatStr) : '',
       type: partnerCompanyType,
       typeKo: partnerCompanyType ? (PartnerCompanyTypeKo[partnerCompanyType] || partnerCompanyType) : null,
       failType,
