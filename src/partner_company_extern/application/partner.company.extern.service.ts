@@ -334,7 +334,10 @@ export class PartnerCompanyExternService {
 
   @Transactional({ propagation: Propagation.REQUIRED })
   async cancel(orderDelivery: OrderDeliveryEntity): Promise<CancelCouponResDto> {
-    const type = orderDelivery.orderProductMapping!.product.partnerCompany!.type;
+    // 초이스쿠폰의 경우 선택한 상품의 협력사를 우선 사용
+    const choicePartnerType = orderDelivery.choiceSelectProduct?.partnerCompany?.type;
+    const productPartnerType = orderDelivery.orderProductMapping?.product?.partnerCompany?.type;
+    const type = choicePartnerType ?? productPartnerType;
 
     try {
       // 1.1.1 갤럭시아 쿠폰 발급
