@@ -661,13 +661,12 @@ export class SsgEventService {
    * @param amount 환불할 금액 (상품 가격)
    */
   async refundForDeliveryFail(orderId: number, amount: number): Promise<void> {
-    // 해당 주문의 차감 이력에서 ssgEventId 조회
     const history = await this.amountHistoryRepository.findOne({
       where: { orderId },
       order: { id: 'DESC' },
     });
 
-    if (!history || !history.ssgEventId) {
+    if (!history?.ssgEventId) {
       return;
     }
 
@@ -683,7 +682,7 @@ export class SsgEventService {
 
     const refundHistory = this.amountHistoryRepository.create({
       ssgEventId: ssgEvent.id,
-      amount: amount, // 양수로 저장 (환불)
+      amount: amount,
       balance: restoredBalance,
       orderId,
       isTemporary: false,
@@ -691,6 +690,50 @@ export class SsgEventService {
 
     ssgEvent.eventBalance = restoredBalance;
     await this.amountHistoryRepository.save(refundHistory);
+    await this.ssgEventRepository.save(ssgEvent);
+  }
+
+  /**
+   * 재발송 시 환불 복구 (refundForDeliveryFail의 역연산)
+   * PIN 재발급 성공 시 이전에 환불된 금액을 다시 차감
+   * @param orderId 주문 ID
+   * @param amount 차감할 금액 (상품 가격)
+   */
+  async chargeBackForResend(orderId: number, amount: number): Promise<void> {
+    const history = await this.amountHistoryRepository.findOne({
+      where: { orderId },
+      order: { id: 'DESC' },
+    });
+
+    if (!history?.ssgEventId) {
+      return;
+    }
+
+    const ssgEvent = await this.ssgEventRepository.findOne({
+      where: { id: history.ssgEventId },
+    });
+
+    if (!ssgEvent) {
+      return;
+    }
+
+    // 잔액 부족 시 차감하지 않음 (이미 다른 곳에서 사용된 경우)
+    if (ssgEvent.eventBalance < amount) {
+      return;
+    }
+
+    const newBalance = ssgEvent.eventBalance - amount;
+
+    const chargeHistory = this.amountHistoryRepository.create({
+      ssgEventId: ssgEvent.id,
+      amount: -amount,
+      balance: newBalance,
+      orderId,
+      isTemporary: false,
+    });
+
+    ssgEvent.eventBalance = newBalance;
+    await this.amountHistoryRepository.save(chargeHistory);
     await this.ssgEventRepository.save(ssgEvent);
   }
 }
