@@ -900,9 +900,11 @@ export class SettleService {
   ): Promise<SettleGetPartnerCompanyListResDto> {
     const { startAt, endAt, settleMethod, businessName, page, take } = getQuery;
 
+    // 조건에 맞는 모든 order 조회 (페이징 없이)
     let queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('user.company', 'userCompany')
       .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .innerJoinAndSelect('orderProductMappings.product', 'product')
       .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
@@ -926,13 +928,10 @@ export class SettleService {
     queryBuilder = QueryBuilderDateCondition(queryBuilder, 'order', 'createdAt', startAt, endAt);
     queryBuilder = queryBuilder.orderBy('order.id', 'DESC');
 
-    const skip = (page - 1) * take;
-    queryBuilder.skip(skip).take(take);
-    const [orderList, totalCount] = await queryBuilder.getManyAndCount();
+    const orderList = await queryBuilder.getMany();
 
-    const totalPage = Math.ceil(totalCount / take);
-
-    const resultList: SettlePartnerCompanyListViewDto[] = [];
+    // orderDelivery 기준으로 펼쳐서 결과 생성
+    const allResults: SettlePartnerCompanyListViewDto[] = [];
     for (const order of orderList) {
       for (const orderProductMapping of order.orderProductMappings!) {
         for (const orderDelivery of orderProductMapping.orderDeliveries) {
@@ -977,7 +976,7 @@ export class SettleService {
             unUsePrice = orderDelivery.galaxiaBalance;
           }
 
-          resultList.push({
+          allResults.push({
             id: order.id,
             registeredAt: format(orderDelivery.sendRequestAt, DateFormatStr),
             partnerCompanyName: orderProductMapping.product.partnerCompany!.businessName,
@@ -997,6 +996,12 @@ export class SettleService {
         }
       }
     }
+
+    // orderDelivery 기준으로 페이징
+    const totalCount = allResults.length;
+    const totalPage = Math.ceil(totalCount / take);
+    const skip = (page - 1) * take;
+    const resultList = allResults.slice(skip, skip + take);
 
     return { list: resultList, totalPage, totalCount, currentPage: page };
   }
