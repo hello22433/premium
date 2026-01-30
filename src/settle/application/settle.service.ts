@@ -69,6 +69,7 @@ import { IUserStatus } from '../../user/interface/user.status';
 import { SettleOtherProductDetailDto } from '../api/dto/settle.other.product.dto';
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
 import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
+import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { UserDiscountEntity } from '../../entity/user.discount.entity';
 import { IPriceAdjustment } from '../../user_discount/interface/price.adjustment';
 import { IUserDiscountCategory } from '../../user_discount/interface/user.discount.category';
@@ -89,6 +90,8 @@ export class SettleService {
   constructor(
     @InjectRepository(OrderEntity)
     private orderRepository: Repository<OrderEntity>,
+    @InjectRepository(OrderDeliveryEntity)
+    private orderDeliveryRepository: Repository<OrderDeliveryEntity>,
     @InjectRepository(OtherServiceSaleEntity)
     private otherSaleRepository: Repository<OtherServiceSaleEntity>,
     @InjectRepository(OtherServiceSaleProductMappingEntity)
@@ -900,17 +903,17 @@ export class SettleService {
   ): Promise<SettleGetPartnerCompanyListResDto> {
     const { startAt, endAt, settleMethod, businessName, page, take } = getQuery;
 
-    // 조건에 맞는 모든 order 조회 (페이징 없이)
-    let queryBuilder = this.orderRepository
-      .createQueryBuilder('order')
+    // OrderDelivery 기준으로 직접 쿼리하여 DB 레벨 페이징 적용
+    let queryBuilder = this.orderDeliveryRepository
+      .createQueryBuilder('orderDelivery')
+      .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
+      .innerJoinAndSelect('orderProductMapping.order', 'order')
       .innerJoinAndSelect('order.user', 'user')
       .leftJoinAndSelect('user.company', 'userCompany')
-      .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
-      .innerJoinAndSelect('orderProductMappings.product', 'product')
+      .innerJoinAndSelect('orderProductMapping.product', 'product')
       .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .leftJoinAndSelect('partnerCompany.userDiscounts', 'partnerDiscounts')
       .leftJoinAndSelect('product.brand', 'brand')
-      .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
       .where('order.status IN (:...status)', { status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'] });
 
     if (settleMethod) {
@@ -925,83 +928,86 @@ export class SettleService {
       });
     }
 
+    // 날짜 조건 적용 (order.createdAt 기준)
     queryBuilder = QueryBuilderDateCondition(queryBuilder, 'order', 'createdAt', startAt, endAt);
-    queryBuilder = queryBuilder.orderBy('order.id', 'DESC');
 
-    const orderList = await queryBuilder.getMany();
-
-    // orderDelivery 기준으로 펼쳐서 결과 생성
-    const allResults: SettlePartnerCompanyListViewDto[] = [];
-    for (const order of orderList) {
-      for (const orderProductMapping of order.orderProductMappings!) {
-        for (const orderDelivery of orderProductMapping.orderDeliveries) {
-          const product = orderProductMapping.product;
-          const partnerCompany = product.partnerCompany!;
-          const partnerDiscounts = partnerCompany.userDiscounts || [];
-
-          // 협력사 할인옵션에서 매칭되는 할인 찾기
-          const matchingDiscount = this.findMatchingDiscount(
-            {
-              price: product.price,
-              category: product.category,
-              brand: product.brand,
-            },
-            partnerDiscounts,
-          );
-
-          // 협력사별 정산은 협력사 할인옵션만 적용 (없으면 수수료율 0%)
-          let fee: number;
-          let priceAdjustment: string;
-          if (matchingDiscount) {
-            fee = matchingDiscount.pricePercent;
-            priceAdjustment = matchingDiscount.priceAdjustment;
-          } else {
-            // 협력사 할인옵션이 없으면 수수료 없음 (정상가 = 공급가)
-            fee = 0;
-            priceAdjustment = 'DISCOUNT';
-          }
-
-          const feePrice = (product.price * fee) / 100;
-
-          // 협력사 정산: 소수점 발생 시 올림 처리
-          const settlePrice =
-            priceAdjustment === 'DISCOUNT'
-              ? Math.ceil(product.price - feePrice)
-              : Math.ceil(product.price + feePrice);
-          let usePrice = 0;
-          let unUsePrice = 0;
-
-          if (orderProductMapping.product.partnerCompany!.type === IPartnerCompanyType.GALAXIA) {
-            usePrice = orderProductMapping.product.price - orderDelivery.galaxiaBalance;
-            unUsePrice = orderDelivery.galaxiaBalance;
-          }
-
-          allResults.push({
-            id: order.id,
-            registeredAt: format(orderDelivery.sendRequestAt, DateFormatStr),
-            partnerCompanyName: orderProductMapping.product.partnerCompany!.businessName,
-            userBusinessName: order.user!.company?.businessName ?? '',
-            eventName: order.eventName,
-            code: order.code,
-            productNameList: [orderProductMapping.product.name],
-            deliveryPrice: orderProductMapping.product.price,
-            settlePrice: settlePrice,
-            fee: fee,
-            feePrice: feePrice,
-            usePrice: usePrice,
-            unUsePrice: unUsePrice,
-            settleMethod: orderProductMapping.product.partnerCompany!.settleMethod,
-            isTransfer: orderDelivery.couponStatus === OrderDeliveryCouponStatus.USED,
-          });
-        }
-      }
-    }
-
-    // orderDelivery 기준으로 페이징
-    const totalCount = allResults.length;
+    // 총 개수 조회 (페이징 전)
+    const totalCount = await queryBuilder.getCount();
     const totalPage = Math.ceil(totalCount / take);
+
+    // DB 레벨 페이징 적용
     const skip = (page - 1) * take;
-    const resultList = allResults.slice(skip, skip + take);
+    queryBuilder = queryBuilder
+      .orderBy('orderDelivery.id', 'DESC')
+      .skip(skip)
+      .take(take);
+
+    const orderDeliveryList = await queryBuilder.getMany();
+
+    // 결과 변환
+    const resultList: SettlePartnerCompanyListViewDto[] = orderDeliveryList.map((orderDelivery) => {
+      const orderProductMapping = orderDelivery.orderProductMapping;
+      const order = orderProductMapping.order;
+      const product = orderProductMapping.product;
+      const partnerCompany = product.partnerCompany!;
+      const partnerDiscounts = partnerCompany.userDiscounts || [];
+
+      // 협력사 할인옵션에서 매칭되는 할인 찾기
+      const matchingDiscount = this.findMatchingDiscount(
+        {
+          price: product.price,
+          category: product.category,
+          brand: product.brand,
+        },
+        partnerDiscounts,
+      );
+
+      // 협력사별 정산은 협력사 할인옵션만 적용 (없으면 수수료율 0%)
+      let fee: number;
+      let priceAdjustment: string;
+      if (matchingDiscount) {
+        fee = matchingDiscount.pricePercent;
+        priceAdjustment = matchingDiscount.priceAdjustment;
+      } else {
+        // 협력사 할인옵션이 없으면 수수료 없음 (정상가 = 공급가)
+        fee = 0;
+        priceAdjustment = 'DISCOUNT';
+      }
+
+      const feePrice = (product.price * fee) / 100;
+
+      // 협력사 정산: 소수점 발생 시 올림 처리
+      const settlePrice =
+        priceAdjustment === 'DISCOUNT'
+          ? Math.ceil(product.price - feePrice)
+          : Math.ceil(product.price + feePrice);
+
+      let usePrice = 0;
+      let unUsePrice = 0;
+
+      if (partnerCompany.type === IPartnerCompanyType.GALAXIA) {
+        usePrice = product.price - orderDelivery.galaxiaBalance;
+        unUsePrice = orderDelivery.galaxiaBalance;
+      }
+
+      return {
+        id: order.id,
+        registeredAt: format(orderDelivery.sendRequestAt, DateFormatStr),
+        partnerCompanyName: partnerCompany.businessName,
+        userBusinessName: order.user!.company?.businessName ?? '',
+        eventName: order.eventName,
+        code: order.code,
+        productNameList: [product.name],
+        deliveryPrice: product.price,
+        settlePrice: settlePrice,
+        fee: fee,
+        feePrice: feePrice,
+        usePrice: usePrice,
+        unUsePrice: unUsePrice,
+        settleMethod: partnerCompany.settleMethod,
+        isTransfer: orderDelivery.couponStatus === OrderDeliveryCouponStatus.USED,
+      };
+    });
 
     return { list: resultList, totalPage, totalCount, currentPage: page };
   }

@@ -12,6 +12,7 @@ import { ShippingStorageEntity } from '../entity/shipping.storage.entity';
 import { OtherServiceSaleTypeEntity } from '../entity/other.service.sale.type.entity';
 import { UserEntity } from '../entity/user.entity';
 import { UserDiscountEntity } from '../entity/user.discount.entity';
+import { OrderDeliveryEntity } from '../entity/order.delivery.entity';
 import { SettleSchedule } from './settle.schedule';
 import { ActivityLogModule } from '../activity_log/activity.log.module';
 
@@ -21,6 +22,7 @@ import { ActivityLogModule } from '../activity_log/activity.log.module';
     ActivityLogModule,
     TypeOrmModule.forFeature([
       OrderEntity,
+      OrderDeliveryEntity,
       OtherServiceSaleEntity,
       OtherServiceSaleProductEntity,
       OtherServiceSaleProductMappingEntity,
