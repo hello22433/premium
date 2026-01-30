@@ -950,15 +950,16 @@ export class SettleService {
             partnerDiscounts,
           );
 
-          // 협력사 할인옵션이 있으면 그것을 사용, 없으면 기존 저장된 값 사용
+          // 협력사별 정산은 협력사 할인옵션만 적용 (없으면 수수료율 0%)
           let fee: number;
           let priceAdjustment: string;
           if (matchingDiscount) {
             fee = matchingDiscount.pricePercent;
             priceAdjustment = matchingDiscount.priceAdjustment;
           } else {
-            fee = orderProductMapping.fee ?? 0;
-            priceAdjustment = orderProductMapping.priceAdjustment ?? 'DISCOUNT';
+            // 협력사 할인옵션이 없으면 수수료 없음 (정상가 = 공급가)
+            fee = 0;
+            priceAdjustment = 'DISCOUNT';
           }
 
           const feePrice = (product.price * fee) / 100;
