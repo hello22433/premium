@@ -490,6 +490,56 @@ export class SettleGetPartnerCompanyListReqQueryDto extends PagingReqDto {
   businessName?: string;
 }
 
+export class SettlePartnerCompanyExcelDownloadReqDto {
+  @ApiPropertyOptional({
+    description: '시작일 ex) yyyy-MM-ddTHH:mm:ss',
+  })
+  // =============================================================
+  @IsOptional()
+  @Matches(dateAtRegexp)
+  startAt?: string;
+
+  @ApiPropertyOptional({
+    description: '끝 일 ex) yyyy-MM-ddTHH:mm:ss',
+  })
+  // =============================================================
+  @IsOptional()
+  @Matches(dateAtRegexp)
+  endAt?: string;
+
+  @ApiPropertyOptional({
+    description: '정산방법',
+    enum: IPartnerCompanySettleMethod,
+  })
+  // =============================================================
+  @IsOptional()
+  @IsEnum(IPartnerCompanySettleMethod)
+  settleMethod?: IPartnerCompanySettleMethod;
+
+  @ApiPropertyOptional({
+    description: '협력사 명 ',
+  })
+  // =============================================================
+  @IsOptional()
+  businessName?: string;
+
+  @ApiProperty({
+    description: '비밀번호 (다운로드 확인용)',
+    example: 'mypassword123',
+  })
+  // =============================================================
+  @IsNotEmpty()
+  password: string;
+
+  @ApiProperty({
+    description: '다운로드 사유',
+    example: '협력사 정산을 위한 데이터 다운로드',
+  })
+  // =============================================================
+  @IsNotEmpty()
+  downloadReason: string;
+}
+
 export class SettleGetUserListReqQueryDto extends PagingReqDto {
   @ApiPropertyOptional({
     description: '시작일 ex) yyyy-MM-ddTHH:mm:ss',

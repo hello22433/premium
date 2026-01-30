@@ -4,6 +4,7 @@ import { IPriceAdjustment } from '../user_discount/interface/price.adjustment';
 import { ICompareCondition } from '../user_discount/interface/compare.condition';
 import { IUserDiscountMethod } from '../user_discount/interface/user.discount.method';
 import { UserEntity } from './user.entity';
+import { PartnerCompanyEntity } from './partner.company.entity';
 import { BaseEntity } from '../common/entity/base.entity';
 
 @Entity('user_discount')
@@ -60,4 +61,8 @@ export class UserDiscountEntity extends BaseEntity {
   @ManyToOne(() => UserEntity, { createForeignKeyConstraints: false })
   @JoinColumn({ name: 'user_id' })
   user: UserEntity;
+
+  @ManyToOne(() => PartnerCompanyEntity, { createForeignKeyConstraints: false })
+  @JoinColumn({ name: 'partner_company_id' })
+  partnerCompany: PartnerCompanyEntity;
 }

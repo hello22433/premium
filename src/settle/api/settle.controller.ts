@@ -40,6 +40,7 @@ import {
   SettleGetUserPerDetailReqQueryDto,
   SettleGetUserPerListReqQueryDto,
   SettleMobileExcelDownloadReqDto,
+  SettlePartnerCompanyExcelDownloadReqDto,
   SettlerUpdateOtherSaleReqDto,
   SettleUpdateUserPerOrderReqDto,
 } from './settle.req.dto';
@@ -240,6 +241,31 @@ export class SettleController {
   async getPartnerCompanyList(@User() user: ILoginUserInfo, @Query() getQuery: SettleGetPartnerCompanyListReqQueryDto) {
     await this.authService.authorityValidator(user, UserAuthSubEnum.SETTLE_PARTNER_COMPANY);
     return this.settleService.getPartnerCompanyList(getQuery);
+  }
+
+  @ApiOperation({
+    summary: '정산관리 > 협력사 정산 > 엑셀 다운로드',
+  })
+  // =====================================
+  @UseFilters(DownloadExceptionFilter)
+  @Post('settle/partner-company/excel-download')
+  async partnerCompanyExcelDownload(
+    @User() user: ILoginUserInfo,
+    @Body() body: SettlePartnerCompanyExcelDownloadReqDto,
+    @Res() res: Response,
+  ) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.SETTLE_PARTNER_COMPANY);
+    const { fileName, filePath } = await this.settleService.partnerCompanyExcelDownload(user, body);
+    res.download(filePath, fileName, (err) => {
+      if (err) {
+        this.logger.error(`Error downloading file: ${err}`);
+      }
+      fs.unlink(filePath, (unlinkErr) => {
+        if (unlinkErr) {
+          this.logger.error(`파일 삭제 실패: ${unlinkErr}`);
+        }
+      });
+    });
   }
 
   @ApiOperation({

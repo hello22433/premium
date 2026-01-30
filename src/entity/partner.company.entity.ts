@@ -1,9 +1,10 @@
 import { BaseEntity } from '../common/entity/base.entity';
-import { Column, Entity, PrimaryGeneratedColumn } from 'typeorm';
+import { Column, Entity, OneToMany, PrimaryGeneratedColumn } from 'typeorm';
 import { IPartnerCompanySettleCondition } from '../partner_company/interface/partner.company.settle.condition';
 import { IPartnerCompanySettleMethod } from '../partner_company/interface/partner.company.settle.method';
 import { IPartnerCompanyStatus } from '../partner_company/interface/partner.company.status';
 import { IPartnerCompanyType } from '../partner_company/interface/partner.company.type';
+import { UserDiscountEntity } from './user.discount.entity';
 
 @Entity('partner_company')
 export class PartnerCompanyEntity extends BaseEntity {
@@ -76,4 +77,9 @@ export class PartnerCompanyEntity extends BaseEntity {
     nullable: true,
   })
   type: IPartnerCompanyType | null;
+
+  @OneToMany(() => UserDiscountEntity, (userDiscount) => userDiscount.partnerCompany, {
+    createForeignKeyConstraints: false,
+  })
+  userDiscounts?: UserDiscountEntity[];
 }

@@ -34,6 +34,7 @@ import {
   SettleGetUserPerDetailReqQueryDto,
   SettleGetUserPerListReqQueryDto,
   SettleMobileExcelDownloadReqDto,
+  SettlePartnerCompanyExcelDownloadReqDto,
   SettlerUpdateOtherSaleReqDto,
   SettleUpdateUserPerOrderReqDto,
 } from '../api/settle.req.dto';
@@ -81,6 +82,7 @@ import { UserSettlePeriodConditionEnum } from '../../user/interface/user.settle.
 import { IUserSettleCondition } from '../../user/interface/user.settle.condition';
 import { ActivityLogService } from '../../activity_log/application/activity.log.service';
 import { ActivityLogResult } from '../../activity_log/interface/activity.log.result';
+import { CryptoCipher } from '../../common/infra/crypto.cipher';
 
 @Injectable()
 export class SettleService {
@@ -102,6 +104,7 @@ export class SettleService {
     @InjectRepository(UserEntity)
     private userRepository: Repository<UserEntity>,
     private activityLogService: ActivityLogService,
+    private cryptoCipher: CryptoCipher,
   ) {}
 
   async getOtherList(getQuery: SettleGetOtherServiceSaleGetListReqDto): Promise<SettleGetOtherListResDto> {
@@ -903,6 +906,8 @@ export class SettleService {
       .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .innerJoinAndSelect('orderProductMappings.product', 'product')
       .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .leftJoinAndSelect('partnerCompany.userDiscounts', 'partnerDiscounts')
+      .leftJoinAndSelect('product.brand', 'brand')
       .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
       .where('order.status IN (:...status)', { status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'] });
 
@@ -931,14 +936,38 @@ export class SettleService {
     for (const order of orderList) {
       for (const orderProductMapping of order.orderProductMappings!) {
         for (const orderDelivery of orderProductMapping.orderDeliveries) {
-          const fee = orderProductMapping.fee ?? 0;
-          const feePrice = (orderProductMapping.product.price * fee) / 100;
+          const product = orderProductMapping.product;
+          const partnerCompany = product.partnerCompany!;
+          const partnerDiscounts = partnerCompany.userDiscounts || [];
+
+          // 협력사 할인옵션에서 매칭되는 할인 찾기
+          const matchingDiscount = this.findMatchingDiscount(
+            {
+              price: product.price,
+              category: product.category,
+              brand: product.brand,
+            },
+            partnerDiscounts,
+          );
+
+          // 협력사 할인옵션이 있으면 그것을 사용, 없으면 기존 저장된 값 사용
+          let fee: number;
+          let priceAdjustment: string;
+          if (matchingDiscount) {
+            fee = matchingDiscount.pricePercent;
+            priceAdjustment = matchingDiscount.priceAdjustment;
+          } else {
+            fee = orderProductMapping.fee ?? 0;
+            priceAdjustment = orderProductMapping.priceAdjustment ?? 'DISCOUNT';
+          }
+
+          const feePrice = (product.price * fee) / 100;
 
           // 협력사 정산: 소수점 발생 시 올림 처리
           const settlePrice =
-            orderProductMapping.priceAdjustment === 'DISCOUNT'
-              ? Math.ceil(orderProductMapping.product.price - feePrice)
-              : Math.ceil(orderProductMapping.product.price + feePrice);
+            priceAdjustment === 'DISCOUNT'
+              ? Math.ceil(product.price - feePrice)
+              : Math.ceil(product.price + feePrice);
           let usePrice = 0;
           let unUsePrice = 0;
 
@@ -969,6 +998,203 @@ export class SettleService {
     }
 
     return { list: resultList, totalPage, totalCount, currentPage: page };
+  }
+
+  async partnerCompanyExcelDownload(user: ILoginUserInfo, body: SettlePartnerCompanyExcelDownloadReqDto) {
+    const startTime = Date.now();
+
+    // 비밀번호 확인
+    await this.activityLogService.verifyPassword(user.id, body.password);
+
+    const { startAt, endAt, settleMethod, businessName, downloadReason } = body;
+
+    const now = new Date();
+    const nowString = format(now, 'yyyyMMdd');
+
+    let queryBuilder = this.orderRepository
+      .createQueryBuilder('order')
+      .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('user.company', 'userCompany')
+      .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
+      .innerJoinAndSelect('orderProductMappings.product', 'product')
+      .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .leftJoinAndSelect('partnerCompany.userDiscounts', 'partnerDiscounts')
+      .leftJoinAndSelect('product.brand', 'brand')
+      .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
+      .where('order.status IN (:...status)', { status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'] });
+
+    if (settleMethod) {
+      queryBuilder = queryBuilder.andWhere('partnerCompany.settleMethod LIKE :settleMethod', {
+        settleMethod: `%${settleMethod}%`,
+      });
+    }
+
+    if (businessName) {
+      queryBuilder = queryBuilder.andWhere('partnerCompany.businessName LIKE :businessName', {
+        businessName: `%${businessName}%`,
+      });
+    }
+
+    queryBuilder = QueryBuilderDateCondition(queryBuilder, 'order', 'createdAt', startAt, endAt);
+    queryBuilder = queryBuilder.orderBy('order.id', 'DESC');
+
+    const orderList = await queryBuilder.getMany();
+
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('협력사별정산');
+
+    // 엑셀 컬럼 정의
+    sheet.columns = [
+      { header: '협력사', key: 'partnerCompanyName', width: 20 },
+      { header: '고객사', key: 'userBusinessName', width: 20 },
+      { header: '상품번호(EP코드)', key: 'productCode', width: 15 },
+      { header: '발송명', key: 'sendTitle', width: 25 },
+      { header: '이벤트명', key: 'eventName', width: 25 },
+      { header: '상품명', key: 'productName', width: 30 },
+      { header: '브랜드명', key: 'brandName', width: 20 },
+      { header: '금액', key: 'price', width: 12 },
+      { header: '잔액', key: 'balance', width: 12 },
+      { header: '유효일수', key: 'expireDay', width: 10 },
+      { header: '유효기간시작일', key: 'validityStartAt', width: 18 },
+      { header: '유효기간종료일', key: 'validityEndAt', width: 18 },
+      { header: '수신번호', key: 'receiverPhone', width: 15 },
+      { header: '발신번호', key: 'senderPhone', width: 15 },
+      { header: '교환일자', key: 'tradeDate', width: 12 },
+      { header: '교환시간', key: 'tradeTime', width: 10 },
+      { header: '발송일자', key: 'sendDate', width: 12 },
+      { header: '발송시간', key: 'sendTime', width: 10 },
+      { header: '핀상태', key: 'pinStatus', width: 10 },
+      { header: '핀번호', key: 'pinNumber', width: 20 },
+      { header: '폐기시간', key: 'discardAt', width: 18 },
+      { header: '업체거래번호', key: 'transactionId', width: 20 },
+    ];
+
+    // 핀 상태 한글 변환
+    const couponStatusToKorean = (status: string): string => {
+      switch (status) {
+        case 'NOT_USED':
+          return '미사용';
+        case 'USED':
+          return '사용';
+        case 'CANCEL':
+          return '취소';
+        case 'REFUND_CANCEL':
+          return '환불취소';
+        case 'EXPIRED':
+          return '기간만료';
+        default:
+          return status;
+      }
+    };
+
+    for (const order of orderList) {
+      for (const orderProductMapping of order.orderProductMappings!) {
+        const product = orderProductMapping.product;
+        const partnerCompany = product.partnerCompany!;
+
+        for (const orderDelivery of orderProductMapping.orderDeliveries!) {
+          // 수신번호 복호화
+          let receiverPhone = '';
+          if (orderDelivery.deliveryTarget) {
+            try {
+              receiverPhone = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.deliveryTarget);
+            } catch {
+              receiverPhone = orderDelivery.deliveryTarget;
+            }
+          }
+
+          // 유효기간 계산
+          let validityStartAt = '';
+          let validityEndAt = '';
+          if (orderDelivery.actualSendAt) {
+            const sendDate = new Date(orderDelivery.actualSendAt);
+            // 협력사 설정에 따라 시작일 계산
+            const startDate = partnerCompany.validityStartsNextDay
+              ? new Date(sendDate.getTime() + 24 * 60 * 60 * 1000)
+              : sendDate;
+            const endDate = new Date(startDate.getTime() + product.expireDay * 24 * 60 * 60 * 1000);
+            validityStartAt = format(startDate, DateDateFormatStr);
+            validityEndAt = format(endDate, DateDateFormatStr);
+          }
+
+          // 발송일/시간
+          let sendDate = '';
+          let sendTime = '';
+          if (orderDelivery.actualSendAt) {
+            sendDate = format(orderDelivery.actualSendAt, DateDateFormatStr);
+            sendTime = format(orderDelivery.actualSendAt, 'HH:mm:ss');
+          }
+
+          // 교환일/시간
+          let tradeDate = '';
+          let tradeTime = '';
+          if (orderDelivery.tradeAt) {
+            tradeDate = format(orderDelivery.tradeAt, DateDateFormatStr);
+            tradeTime = format(orderDelivery.tradeAt, 'HH:mm:ss');
+          }
+
+          // 폐기시간 (취소/환불 시)
+          let discardAt = '';
+          if (
+            orderDelivery.tradeAt &&
+            (orderDelivery.couponStatus === 'CANCEL' || orderDelivery.couponStatus === 'REFUND_CANCEL')
+          ) {
+            discardAt = format(orderDelivery.tradeAt, DateFormatStr);
+          }
+
+          sheet.addRow({
+            partnerCompanyName: partnerCompany.businessName,
+            userBusinessName: order.user!.company?.businessName ?? '',
+            productCode: product.code,
+            sendTitle: orderProductMapping.sendTitle ?? '',
+            eventName: order.eventName,
+            productName: product.name,
+            brandName: product.brand?.nameKorean ?? '',
+            price: product.price,
+            balance: orderDelivery.galaxiaBalance ?? 0,
+            expireDay: product.expireDay,
+            validityStartAt,
+            validityEndAt,
+            receiverPhone,
+            senderPhone: orderProductMapping.fromPhoneNumber ?? '',
+            tradeDate,
+            tradeTime,
+            sendDate,
+            sendTime,
+            pinStatus: couponStatusToKorean(orderDelivery.couponStatus),
+            pinNumber: orderDelivery.barCode ?? '',
+            discardAt,
+            transactionId: orderDelivery.transactionId ?? '',
+          });
+        }
+      }
+    }
+
+    const fileName = `협력사별정산_${nowString}.xlsx`;
+    const filePath = join(process.cwd(), '.', 'public', fileName);
+
+    await workbook.xlsx.writeFile(filePath);
+
+    const endTime = Date.now();
+    const responseTime = endTime - startTime;
+
+    // 다운로드 로그 저장
+    await this.activityLogService.createLog({
+      userId: user.id,
+      userEmail: user.email,
+      method: 'POST',
+      requestUrl: '/settle/partner-company/excel-download',
+      actionType: 'EXCEL_DOWNLOAD',
+      ipAddress: '',
+      statusCode: 200,
+      result: ActivityLogResult.SUCCESS,
+      responseTime,
+      downloadReason,
+      recordCount: sheet.rowCount - 1, // 헤더 제외
+      requestParams: { startAt, endAt, settleMethod, businessName },
+    });
+
+    return { fileName, filePath };
   }
 
   async getUserList(getQuery: SettleGetUserListReqQueryDto): Promise<SettleGetUserListResDto> {
