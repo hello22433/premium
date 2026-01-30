@@ -371,6 +371,8 @@ export class OrderService {
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
       .leftJoinAndSelect('order.operationUser', 'operationUser')
+      .leftJoinAndSelect('order.clientUser', 'clientUser')
+      .leftJoinAndSelect('clientUser.company', 'clientCompany')
       .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .leftJoinAndSelect('orderProductMappings.product', 'product')
       .leftJoinAndSelect('product.brand', 'brand')
@@ -518,6 +520,12 @@ export class OrderService {
       cancelReason: order.cancelReason,
       canceledAt: order.canceledAt ? format(order.canceledAt, DateFormatStr) : null,
       totalFailCount: totalFailCount,
+      // 대행주문 관련 정보
+      clientUserId: order.clientUserId ?? null,
+      clientUserName: order.clientUser?.personName ?? null,
+      clientCompanyName: order.clientUser?.company?.businessName ?? null,
+      operationUserId: order.operationUserId ?? null,
+      operationUserName: order.operationUser?.personName ?? null,
     };
   }
 
@@ -527,6 +535,8 @@ export class OrderService {
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
       .leftJoinAndSelect('order.operationUser', 'operationUser')
+      .leftJoinAndSelect('order.clientUser', 'clientUser')
+      .leftJoinAndSelect('clientUser.company', 'clientCompany')
       .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .leftJoinAndSelect('orderProductMappings.product', 'product')
       .leftJoinAndSelect('product.brand', 'brand')
@@ -617,6 +627,12 @@ export class OrderService {
       cancelReason: order.cancelReason,
       canceledAt: order.canceledAt ? format(order.canceledAt, DateFormatStr) : null,
       totalFailCount: 0, // 이벤트 불러오기 시 발송 정보가 없으므로 0
+      // 대행주문 관련 정보
+      clientUserId: order.clientUserId ?? null,
+      clientUserName: order.clientUser?.personName ?? null,
+      clientCompanyName: order.clientUser?.company?.businessName ?? null,
+      operationUserId: order.operationUserId ?? null,
+      operationUserName: order.operationUser?.personName ?? null,
     };
   }
 
@@ -628,6 +644,8 @@ export class OrderService {
       .innerJoinAndSelect('order.user', 'user')
       .leftJoinAndSelect('user.company', 'userCompany')
       .leftJoinAndSelect('order.operationUser', 'operationUser')
+      .leftJoinAndSelect('order.clientUser', 'clientUser')
+      .leftJoinAndSelect('clientUser.company', 'clientCompany')
       .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .leftJoinAndSelect('orderProductMappings.product', 'product')
       .leftJoinAndSelect('product.brand', 'brand')
@@ -645,16 +663,18 @@ export class OrderService {
     }
 
     const productList: OrderPdfDetailProductDto[] = [];
+    // 대행주문인 경우 clientUser, 아니면 user 정보 사용
+    const billingUser = order.clientUser ?? order.user;
     const userInfo: OrderCustomerViewDto = {
-      id: order.user?.id ?? null,
-      userBusinessName: order.user?.company?.businessName ?? null,
-      userPersonPhoneNumber: order.user?.personPhoneNumber ?? null,
-      userBusinessEmail: order.user?.email ?? null,
-      userPersonName: order.user?.personName ?? null,
+      id: billingUser?.id ?? null,
+      userBusinessName: billingUser?.company?.businessName ?? null,
+      userPersonPhoneNumber: billingUser?.personPhoneNumber ?? null,
+      userBusinessEmail: billingUser?.email ?? null,
+      userPersonName: billingUser?.personName ?? null,
     };
     const now = new Date();
     const today = format(now, 'yyMMdd');
-    const fileName: string = `${order.user?.company?.businessName ?? ''}_발송완료리포트_${today}`;
+    const fileName: string = `${billingUser?.company?.businessName ?? ''}_발송완료리포트_${today}`;
 
     if (order.orderProductMappings && order.orderProductMappings.length > 0) {
       for (const orderProductMapping of order.orderProductMappings) {
@@ -822,6 +842,8 @@ export class OrderService {
       .innerJoinAndSelect('order.user', 'user')
       .leftJoinAndSelect('user.company', 'userCompany')
       .leftJoinAndSelect('order.operationUser', 'operationUser')
+      .leftJoinAndSelect('order.clientUser', 'clientUser')
+      .leftJoinAndSelect('clientUser.company', 'clientCompany')
       .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .leftJoinAndSelect('orderProductMappings.product', 'product')
       .leftJoinAndSelect('product.brand', 'brand')
@@ -887,16 +909,19 @@ export class OrderService {
         ? format(firstMapping.sendRequestAt!, DateFormatStr)
         : null;
 
+    // 대행주문인 경우 clientUser, 아니면 user 정보 사용
+    const billingUser = order.clientUser ?? order.user;
+
     return {
       fileName,
       serialNumber,
-      userSettleCondition: order.user!.settleCondition,
-      businessName: order.user!.company?.businessName ?? '',
-      businessNumber: order.user!.company?.businessNumber ?? '',
-      personName: order.user!.personName,
-      businessAddress: order.user?.company?.businessAddress ?? null,
-      businessType: order.user?.company?.industryType ?? null,
-      businessItem: order.user?.company?.industryItem ?? null,
+      userSettleCondition: billingUser!.settleCondition,
+      businessName: billingUser!.company?.businessName ?? '',
+      businessNumber: billingUser!.company?.businessNumber ?? '',
+      personName: billingUser!.personName,
+      businessAddress: billingUser?.company?.businessAddress ?? null,
+      businessType: billingUser?.company?.industryType ?? null,
+      businessItem: billingUser?.company?.industryItem ?? null,
       eventName: order.eventName,
       sendRequestAt: sendRequestAt ?? null,
       price,
@@ -988,6 +1013,8 @@ export class OrderService {
       .innerJoinAndSelect('order.user', 'user')
       .leftJoinAndSelect('user.company', 'userCompany')
       .leftJoinAndSelect('order.operationUser', 'operationUser')
+      .leftJoinAndSelect('order.clientUser', 'clientUser')
+      .leftJoinAndSelect('clientUser.company', 'clientCompany')
       .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .leftJoinAndSelect('orderProductMappings.product', 'product')
       .leftJoinAndSelect('product.brand', 'brand')
@@ -1007,10 +1034,14 @@ export class OrderService {
       }
     }
 
-    // 모든 주문이 같은 회사 소속인지 확인 (다중 주문 증빙 발행 시)
+    // 모든 주문이 같은 과금 대상 회사 소속인지 확인 (다중 주문 증빙 발행 시)
     if (orders.length > 1) {
-      const firstCompanyId = orders[0].user?.companyId;
-      const allSameCompany = orders.every((order) => order.user?.companyId === firstCompanyId);
+      const getBillingCompanyId = (order: OrderEntity) => {
+        const billingUser = order.clientUser ?? order.user;
+        return billingUser?.companyId;
+      };
+      const firstCompanyId = getBillingCompanyId(orders[0]);
+      const allSameCompany = orders.every((order) => getBillingCompanyId(order) === firstCompanyId);
       if (!allSameCompany) {
         throw new BadRequestException('서로 다른 회사의 주문은 합쳐서 증빙 발행할 수 없습니다.');
       }
@@ -1018,17 +1049,19 @@ export class OrderService {
 
     // 첫 번째 주문 기준으로 기본 정보 설정
     const firstOrder = orders[0];
+    // 대행주문인 경우 clientUser, 아니면 user 정보 사용
+    const billingUser = firstOrder.clientUser ?? firstOrder.user;
     const userInfo: OrderCustomerViewDto = {
-      id: firstOrder.user?.id ?? null,
-      userBusinessName: firstOrder.user?.company?.businessName ?? null,
-      userPersonPhoneNumber: firstOrder.user?.personPhoneNumber ?? null,
-      userBusinessEmail: firstOrder.user?.email ?? null,
-      userPersonName: firstOrder.user?.personName ?? null,
+      id: billingUser?.id ?? null,
+      userBusinessName: billingUser?.company?.businessName ?? null,
+      userPersonPhoneNumber: billingUser?.personPhoneNumber ?? null,
+      userBusinessEmail: billingUser?.email ?? null,
+      userPersonName: billingUser?.personName ?? null,
     };
 
     const now = new Date();
     const today = format(now, 'yyMMdd');
-    const fileName: string = `${firstOrder.user?.company?.businessName ?? ''}_발송완료리포트_${today}`;
+    const fileName: string = `${billingUser?.company?.businessName ?? ''}_발송완료리포트_${today}`;
 
     // 이벤트명 통합 (여러 개면 "a 외 n건" 형식)
     const eventNames = [...new Set(orders.map((o) => o.eventName))];
@@ -1180,6 +1213,8 @@ export class OrderService {
       .innerJoinAndSelect('order.user', 'user')
       .leftJoinAndSelect('user.company', 'userCompany')
       .leftJoinAndSelect('order.operationUser', 'operationUser')
+      .leftJoinAndSelect('order.clientUser', 'clientUser')
+      .leftJoinAndSelect('clientUser.company', 'clientCompany')
       .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .leftJoinAndSelect('orderProductMappings.product', 'product')
       .leftJoinAndSelect('product.brand', 'brand')
@@ -1198,10 +1233,14 @@ export class OrderService {
       }
     }
 
-    // 모든 주문이 같은 회사 소속인지 확인 (다중 주문 증빙 발행 시)
+    // 모든 주문이 같은 과금 대상 회사 소속인지 확인 (다중 주문 증빙 발행 시)
     if (orders.length > 1) {
-      const firstCompanyId = orders[0].user?.companyId;
-      const allSameCompany = orders.every((order) => order.user?.companyId === firstCompanyId);
+      const getBillingCompanyId = (order: OrderEntity) => {
+        const billingUser = order.clientUser ?? order.user;
+        return billingUser?.companyId;
+      };
+      const firstCompanyId = getBillingCompanyId(orders[0]);
+      const allSameCompany = orders.every((order) => getBillingCompanyId(order) === firstCompanyId);
       if (!allSameCompany) {
         throw new BadRequestException('서로 다른 회사의 주문은 합쳐서 증빙 발행할 수 없습니다.');
       }
@@ -1271,17 +1310,20 @@ export class OrderService {
 
     totalAmount = price + vat;
 
+    // 대행주문인 경우 clientUser, 아니면 user 정보 사용
+    const billingUser = firstOrder.clientUser ?? firstOrder.user;
+
     return {
       orderIds: orderIds,
       fileName,
       serialNumber,
-      userSettleCondition: firstOrder.user!.settleCondition,
-      businessName: firstOrder.user!.company?.businessName ?? '',
-      businessNumber: firstOrder.user!.company?.businessNumber ?? '',
-      personName: firstOrder.user!.personName,
-      businessAddress: firstOrder.user?.company?.businessAddress ?? null,
-      businessType: firstOrder.user?.company?.industryType ?? null,
-      businessItem: firstOrder.user?.company?.industryItem ?? null,
+      userSettleCondition: billingUser!.settleCondition,
+      businessName: billingUser!.company?.businessName ?? '',
+      businessNumber: billingUser!.company?.businessNumber ?? '',
+      personName: billingUser!.personName,
+      businessAddress: billingUser?.company?.businessAddress ?? null,
+      businessType: billingUser?.company?.industryType ?? null,
+      businessItem: billingUser?.company?.industryItem ?? null,
       eventName: eventName,
       sendRequestAt: sendRequestAt ?? null,
       price,

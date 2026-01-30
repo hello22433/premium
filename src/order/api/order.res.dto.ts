@@ -103,6 +103,36 @@ export class OrderGetDetailResDto {
     description: '해당 주문의 총 발송 실패 건수',
   })
   totalFailCount: number;
+
+  @ApiProperty({
+    description: '과금 대상 담당자 ID (대행주문 시)',
+    nullable: true,
+  })
+  clientUserId: number | null;
+
+  @ApiProperty({
+    description: '과금 대상 담당자명 (대행주문 시)',
+    nullable: true,
+  })
+  clientUserName: string | null;
+
+  @ApiProperty({
+    description: '과금 대상 담당자 회사명 (대행주문 시)',
+    nullable: true,
+  })
+  clientCompanyName: string | null;
+
+  @ApiProperty({
+    description: '운영담당자 ID',
+    nullable: true,
+  })
+  operationUserId: number | null;
+
+  @ApiProperty({
+    description: '운영담당자명',
+    nullable: true,
+  })
+  operationUserName: string | null;
 }
 
 export class OrderGetDeliveryCompleteReportDetailResDto {
