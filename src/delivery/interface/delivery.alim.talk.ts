@@ -5,6 +5,7 @@ export type IDeliveryAlimTalkSend = {
   text: string;
   encryptKey: string;
   templateCode?: string; // 선택적으로 템플릿 코드를 지정할 수 있음
+  msgType?: 'AT' | 'AI'; // AT: 기본형, AI: 이미지 강조유형 (기본값: AI)
 };
 
 export type IDeliveryAlimTalkSendOut = {

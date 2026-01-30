@@ -291,7 +291,8 @@ export class DeliveryBatchService {
         this.logger.error(`[BATCH] PIN 발급 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
 
         const productPrice = product.price;
-        const userId = order.user!.id;
+        // 과금 대상 userId (대행주문인 경우 clientUserId, 아니면 userId)
+        const userId = order.clientUserId ?? order.user!.id;
 
         // 환불 처리
         if (order.type === IOrderType.SSG) {
@@ -754,7 +755,8 @@ export class DeliveryBatchService {
     const order = orderDelivery.orderProductMapping.order;
     const product = orderDelivery.orderProductMapping.product;
     const productPrice = product.price;
-    const userId = order.user!.id;
+    // 과금 대상 userId (대행주문인 경우 clientUserId, 아니면 userId)
+    const userId = order.clientUserId ?? order.user!.id;
 
     try {
       // SSG 주문인 경우: eventBalance 차감
@@ -1114,6 +1116,7 @@ export class DeliveryBatchService {
             text: alimTalkText,
             encryptKey: encryptKey,
             templateCode: encourageTemplateCode,
+            msgType: 'AT', // 독려문자는 이미지 없는 기본형(AT) 사용
           });
 
           this.logger.log(`독려 알림톡 발송 완료: orderDelivery ${orderDelivery.id}`);

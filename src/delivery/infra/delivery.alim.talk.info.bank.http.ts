@@ -122,7 +122,7 @@ export class DeliveryAlimTalkInfoBankHttp implements DeliveryAlimTalk {
 
       const body = {
         senderKey: this.infoBankSenderKey,
-        msgType: 'AI',
+        msgType: sendObj.msgType || 'AI', // 기본값: 이미지 강조유형(AI)
         to: sendObj.to,
         templateCode: templateCode,
         text: sendObj.text,
