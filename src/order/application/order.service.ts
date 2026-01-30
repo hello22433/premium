@@ -219,9 +219,7 @@ export class OrderService {
         case ViewScopeType.DEPARTMENT:
           // 같은 부서 + 추가 부서들 조회
           const deptIds = viewScope?.getDeptIdList() ?? [];
-          const targetDeptIds = currentUser?.departmentId
-            ? [currentUser.departmentId, ...deptIds]
-            : deptIds;
+          const targetDeptIds = currentUser?.departmentId ? [currentUser.departmentId, ...deptIds] : deptIds;
 
           if (targetDeptIds.length > 0) {
             queryBuilder = queryBuilder.andWhere('user.departmentId IN (:...deptIds)', {
@@ -264,7 +262,9 @@ export class OrderService {
     if (searchKeyword && searchKeyword.length >= 1) {
       switch (searchType) {
         case 'CUSTOMER':
-          queryBuilder = queryBuilder.andWhere('userCompany.businessName LIKE :keyword', { keyword: `%${searchKeyword}%` });
+          queryBuilder = queryBuilder.andWhere('userCompany.businessName LIKE :keyword', {
+            keyword: `%${searchKeyword}%`,
+          });
           break;
         case 'MANAGER':
           queryBuilder = queryBuilder.andWhere('user.personName LIKE :keyword', { keyword: `%${searchKeyword}%` });
@@ -417,9 +417,7 @@ export class OrderService {
             ? dayjs()
             : dayjs(orderProductMapping.sendRequestAt);
 
-        const expireDate = expireDay
-          ? baseDate.tz('Asia/Seoul').add(expireDay, 'day').format('YYYY. MM. DD')
-          : null;
+        const expireDate = expireDay ? baseDate.tz('Asia/Seoul').add(expireDay, 'day').format('YYYY. MM. DD') : null;
 
         for (const orderDelivery of orderProductMapping.orderDeliveries) {
           // deliveryTarget 복호화 (originalDeliveryTarget 우선 사용)
@@ -685,9 +683,7 @@ export class OrderService {
 
         // 발송 완료된 건의 경우 첫 번째 배송의 actualSendAt 사용
         const firstDelivery = orderProductMapping.orderDeliveries?.[0];
-        const baseDate = firstDelivery?.actualSendAt
-          ? dayjs(firstDelivery.actualSendAt)
-          : dayjs();
+        const baseDate = firstDelivery?.actualSendAt ? dayjs(firstDelivery.actualSendAt) : dayjs();
 
         const expireDate = expireDay ? baseDate.tz('Asia/Seoul').add(expireDay, 'day').format('YYYY. MM. DD') : null;
 
@@ -795,7 +791,11 @@ export class OrderService {
     };
   }
 
-  async deliveryCompleteReportPdf(getBody: OrderGetDeliveryCompleteReportPdfReqDto, user: ILoginUserInfo, ipAddress: string): Promise<void> {
+  async deliveryCompleteReportPdf(
+    getBody: OrderGetDeliveryCompleteReportPdfReqDto,
+    user: ILoginUserInfo,
+    ipAddress: string,
+  ): Promise<void> {
     const queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
@@ -931,7 +931,11 @@ export class OrderService {
     };
   }
 
-  async orderCompleteReportPdf(getBody: OrderGetOrderCompleteReportPdfReqDto, user: ILoginUserInfo, ipAddress: string): Promise<void> {
+  async orderCompleteReportPdf(
+    getBody: OrderGetOrderCompleteReportPdfReqDto,
+    user: ILoginUserInfo,
+    ipAddress: string,
+  ): Promise<void> {
     const queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
@@ -970,7 +974,11 @@ export class OrderService {
     return;
   }
 
-  async destructionCertificatePdf(getBody: OrderGetDestructionCertificatePdfReqDto, user: ILoginUserInfo, ipAddress: string): Promise<void> {
+  async destructionCertificatePdf(
+    getBody: OrderGetDestructionCertificatePdfReqDto,
+    user: ILoginUserInfo,
+    ipAddress: string,
+  ): Promise<void> {
     const order = await this.orderRepository.findOne({
       where: { id: getBody.id },
     });
@@ -1088,9 +1096,7 @@ export class OrderService {
 
           // 발송 완료된 건의 경우 첫 번째 배송의 actualSendAt 사용
           const firstDelivery = orderProductMapping.orderDeliveries?.[0];
-          const baseDate = firstDelivery?.actualSendAt
-            ? dayjs(firstDelivery.actualSendAt)
-            : dayjs();
+          const baseDate = firstDelivery?.actualSendAt ? dayjs(firstDelivery.actualSendAt) : dayjs();
 
           const expireDate = expireDay ? baseDate.tz('Asia/Seoul').add(expireDay, 'day').format('YYYY. MM. DD') : null;
 
@@ -1495,10 +1501,7 @@ export class OrderService {
     // 환불률 업데이트: 각 orderProductMapping에 해당하는 orderDelivery들의 refundRatio 업데이트
     for (const settle of list) {
       if (settle.refund !== undefined) {
-        await this.orderDeliveryRepository.update(
-          { orderProductMappingId: settle.id },
-          { refundRatio: settle.refund },
-        );
+        await this.orderDeliveryRepository.update({ orderProductMappingId: settle.id }, { refundRatio: settle.refund });
       }
     }
 
@@ -1579,10 +1582,7 @@ export class OrderService {
     // 환불률 업데이트: 각 orderProductMapping에 해당하는 orderDelivery들의 refundRatio 업데이트
     for (const settle of list) {
       if (settle.refund !== undefined) {
-        await this.orderDeliveryRepository.update(
-          { orderProductMappingId: settle.id },
-          { refundRatio: settle.refund },
-        );
+        await this.orderDeliveryRepository.update({ orderProductMappingId: settle.id }, { refundRatio: settle.refund });
       }
     }
 
@@ -1835,6 +1835,14 @@ export class OrderService {
     order.sendAmount = sendAmount;
     order.settleAmount = sendAmount;
 
+    // 대행주문 관련 정보 업데이트
+    const clientUserId = getBody.clientUserId ?? null;
+    order.clientUserId = clientUserId;
+    if (clientUserId) {
+      // 대행주문인 경우 현재 관리자를 운영 담당자로 자동 배정 (createTemp와 동일 로직)
+      order.operationUserId = user.id;
+    }
+
     await this.orderRepository.save(order);
 
     const orderId: number = order.id;
@@ -2003,7 +2011,9 @@ export class OrderService {
 
     // 과금 대상 userId 결정 (대행주문인 경우 clientUserId, 아니면 userId)
     const billingUserId = order.clientUserId ?? order.userId;
-    this.logger.debug(`Billing User ID: ${billingUserId} (clientUserId: ${order.clientUserId}, userId: ${order.userId})`);
+    this.logger.debug(
+      `Billing User ID: ${billingUserId} (clientUserId: ${order.clientUserId}, userId: ${order.userId})`,
+    );
 
     // 유저 잔액 조회 (과금 대상 기준)
     const userBalance = await this.userManagementService.getBalance(billingUserId);
@@ -2720,7 +2730,9 @@ export class OrderService {
     if (searchKeyword && searchKeyword.length >= 1) {
       switch (searchType) {
         case 'CUSTOMER':
-          queryBuilder = queryBuilder.andWhere('userCompany.businessName LIKE :keyword', { keyword: `%${searchKeyword}%` });
+          queryBuilder = queryBuilder.andWhere('userCompany.businessName LIKE :keyword', {
+            keyword: `%${searchKeyword}%`,
+          });
           break;
         case 'MANAGER':
           queryBuilder = queryBuilder.andWhere('user.personName LIKE :keyword', { keyword: `%${searchKeyword}%` });
