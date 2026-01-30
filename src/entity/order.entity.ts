@@ -18,6 +18,9 @@ export class OrderEntity extends BaseEntity {
   @Column({ nullable: true, comment: '운영 담당자 FK) user.id' })
   operationUserId: number | null;
 
+  @Column({ nullable: true, comment: '과금 대상 담당자 FK) user.id (대행주문 시 사용)' })
+  clientUserId: number | null;
+
   @Column({ type: 'varchar', length: 256, unique: true, comment: 'event 코드' })
   code: string;
 
@@ -86,6 +89,10 @@ export class OrderEntity extends BaseEntity {
   @ManyToOne(() => UserEntity, { createForeignKeyConstraints: false })
   @JoinColumn({ name: 'operation_user_id' })
   operationUser?: UserEntity;
+
+  @ManyToOne(() => UserEntity, { createForeignKeyConstraints: false })
+  @JoinColumn({ name: 'client_user_id' })
+  clientUser?: UserEntity;
 
   @OneToMany(() => OrderProductMappingEntity, (orderProductMapping) => orderProductMapping.order, {
     createForeignKeyConstraints: false,
