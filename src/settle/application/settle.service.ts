@@ -978,12 +978,15 @@ export class SettleService {
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
       .leftJoinAndSelect('user.company', 'userCompany')
+      .leftJoinAndSelect('order.clientUser', 'clientUser')
+      .leftJoinAndSelect('clientUser.company', 'clientUserCompany')
       .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .innerJoinAndSelect('orderProductMappings.product', 'product')
       .leftJoinAndSelect('product.classification', 'classification')
       .leftJoinAndSelect('product.brand', 'brand')
       .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
       .leftJoinAndSelect('user.userDiscounts', 'userDiscounts')
+      .leftJoinAndSelect('clientUser.userDiscounts', 'clientUserDiscounts')
       .where('order.status IN (:...status)', { status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'] });
 
     if (isPublished === true) {
@@ -1027,7 +1030,9 @@ export class SettleService {
       let amount: number = 0;
       let finalSettlePrice = 0;
 
-      const userDiscounts = order.user?.userDiscounts || [];
+      // 과금 대상 사용자 (대행주문인 경우 clientUser, 아니면 user)
+      const billingUser = order.clientUser ?? order.user;
+      const userDiscounts = billingUser?.userDiscounts || [];
 
       // 각 상품별로 할인/할증 적용
       for (const orderProductMapping of order.orderProductMappings!) {
@@ -1094,8 +1099,8 @@ export class SettleService {
       return {
         id: order.id,
         registeredAt: format(order.registerAt, DateFormatStr),
-        businessName: order.user!.company?.businessName ?? '',
-        personName: order.user!.personName,
+        businessName: billingUser?.company?.businessName ?? '',
+        personName: billingUser?.personName ?? '',
         eventName: order.eventName,
         productNameList: productNameList,
         amount: amount,
@@ -1116,6 +1121,9 @@ export class SettleService {
     const queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('user.company', 'userCompany')
+      .leftJoinAndSelect('order.clientUser', 'clientUser')
+      .leftJoinAndSelect('clientUser.company', 'clientUserCompany')
       .leftJoinAndSelect('order.operationUser', 'operationUser')
       .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .leftJoinAndSelect('orderProductMappings.product', 'product')
@@ -1165,11 +1173,14 @@ export class SettleService {
     const firstDelivery = order.orderProductMappings?.[0]?.orderDeliveries?.[0];
     const sendRequestAt = firstDelivery?.actualSendAt ? format(firstDelivery.actualSendAt, DateFormatStr) : null;
 
+    // 과금 대상 사용자 (대행주문인 경우 clientUser, 아니면 user)
+    const billingUser = order.clientUser ?? order.user;
+
     return {
       id: order.id,
-      userId: order.userId,
-      userPersonName: order.user!.personName,
-      userBusinessName: order.user!.company?.businessName ?? '',
+      userId: order.clientUserId ?? order.userId,
+      userPersonName: billingUser!.personName,
+      userBusinessName: billingUser!.company?.businessName ?? '',
       operationPersonName: order.operationUser?.personName ?? null,
       eventName: order.eventName,
       type: order.type,

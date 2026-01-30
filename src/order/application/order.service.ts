@@ -1643,6 +1643,10 @@ export class OrderService {
             throw new BadRequestException('sendRequestAt 누락');
           })();
 
+    // 대행주문인 경우 clientUserId 설정 및 operationUserId 자동 배정
+    const clientUserId = getBody.clientUserId ?? null;
+    const operationUserId = clientUserId ? user.id : null;
+
     const orderInsertResult = await this.orderRepository.insert({
       userId: user.id,
       status: IOrderStatus.TEMP,
@@ -1652,6 +1656,8 @@ export class OrderService {
       sendAmount: sendAmount,
       settleAmount: sendAmount,
       registerAt: new Date(),
+      clientUserId,
+      operationUserId,
     });
     const orderId: number = orderInsertResult.identifiers[0].id;
 
@@ -1953,16 +1959,20 @@ export class OrderService {
     }, 0);
     this.logger.debug(`User#${user.id} totalAmount=${totalAmount}`);
 
-    // 유저 잔액 조회
-    const userBalance = await this.userManagementService.getBalance(user.id);
-    this.logger.debug(`User#${user.id} balance=${userBalance}`);
+    // 과금 대상 userId 결정 (대행주문인 경우 clientUserId, 아니면 userId)
+    const billingUserId = order.clientUserId ?? order.userId;
+    this.logger.debug(`Billing User ID: ${billingUserId} (clientUserId: ${order.clientUserId}, userId: ${order.userId})`);
+
+    // 유저 잔액 조회 (과금 대상 기준)
+    const userBalance = await this.userManagementService.getBalance(billingUserId);
+    this.logger.debug(`User#${billingUserId} balance=${userBalance}`);
 
     const oneUser = await this.userRepository.findOne({
-      where: { id: user.id },
+      where: { id: billingUserId },
       relations: ['company'],
     });
     if (!oneUser) {
-      throw new InternalServerErrorException('유저가 존재하지 않습니다.');
+      throw new InternalServerErrorException('과금 대상 유저가 존재하지 않습니다.');
     }
 
     // 회사 단위 잔여발송한도 계산
@@ -2130,9 +2140,12 @@ export class OrderService {
 
     let message = 'success';
 
+    // 과금 대상 userId 결정 (대행주문인 경우 clientUserId, 아니면 userId)
+    const billingUserId = order.clientUserId ?? order.userId;
+
     // 사용자 정보 조회 (중복번호 체크 및 잔액 조정에 필요)
     const oneUser = await this.userRepository.findOneOrFail({
-      where: { id: order.userId },
+      where: { id: billingUserId },
       relations: ['company'],
     });
 
@@ -2143,7 +2156,7 @@ export class OrderService {
       .filter((id, index, arr) => arr.indexOf(id) === index);
 
     const userDiscounts = await this.userDiscountRepository.find({
-      where: [{ userId: order.userId }, { partnerCompanyId: In(partnerCompanyIds) }],
+      where: [{ userId: billingUserId }, { partnerCompanyId: In(partnerCompanyIds) }],
     });
 
     let totalSettleFee = 0;

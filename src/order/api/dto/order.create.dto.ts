@@ -1,9 +1,17 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsArray, IsOptional, IsString } from 'class-validator';
+import { IsArray, IsNumber, IsOptional, IsString } from 'class-validator';
 import { Type } from 'class-transformer';
 import { OrderProductCreateTempDto } from './order.product.create.temp.dto';
 
 export class OrderCreateDto {
+  @ApiPropertyOptional({
+    description: '과금 대상 담당자 ID (대행주문 시 사용)',
+  })
+  // =================================================
+  @IsOptional()
+  @IsNumber()
+  clientUserId?: number;
+
   @ApiProperty({
     description: '이벤트 명',
     default: '',
