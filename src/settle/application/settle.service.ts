@@ -1145,13 +1145,13 @@ export class SettleService {
             tradeTime = format(orderDelivery.tradeAt, 'HH:mm:ss');
           }
 
-          // 폐기시간 (취소/환불 시)
+          // 폐기시간 (취소/환불 시) - 상태 변경 시점인 updatedAt 사용
           let discardAt = '';
           if (
-            orderDelivery.tradeAt &&
+            orderDelivery.updatedAt &&
             (orderDelivery.couponStatus === 'CANCEL' || orderDelivery.couponStatus === 'REFUND_CANCEL')
           ) {
-            discardAt = format(orderDelivery.tradeAt, DateFormatStr);
+            discardAt = format(orderDelivery.updatedAt, DateFormatStr);
           }
 
           sheet.addRow({
