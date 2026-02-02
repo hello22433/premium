@@ -1455,6 +1455,7 @@ export class CustomerServiceService {
     baseColumns.push(
       { header: '핀번호', key: 'barCode', width: 25 },
       { header: '핀상태', key: 'couponStatus', width: 12 },
+      { header: '교환 일시·장소', key: 'tradeInfo', width: 30 },
       { header: '거래번호', key: 'transactionId', width: 20 },
     );
 
@@ -1518,6 +1519,17 @@ export class CustomerServiceService {
       // 초이스 쿠폰인 경우 선택된 상품의 가격 사용
       const displayProduct = orderDelivery.choiceSelectProduct ?? product;
 
+      // 교환 일시·장소 조합
+      let tradeInfo = '';
+      if (orderDelivery.tradeAt) {
+        tradeInfo = format(orderDelivery.tradeAt, DateFormatStr);
+        if (orderDelivery.tradePlace) {
+          tradeInfo += ` ${orderDelivery.tradePlace}`;
+        }
+      } else if (orderDelivery.tradePlace) {
+        tradeInfo = orderDelivery.tradePlace;
+      }
+
       worksheet.addRow({
         actualSendAt: actualSendAt || '',
         businessName: order.user?.company?.businessName ?? '',
@@ -1533,6 +1545,7 @@ export class CustomerServiceService {
         personalCode: orderDelivery.personalCode || '',
         barCode: orderDelivery.barCode || '',
         couponStatus: couponStatusMap[orderDelivery.couponStatus] || orderDelivery.couponStatus || '',
+        tradeInfo,
         transactionId: orderDelivery.transactionId || '',
       });
     }
