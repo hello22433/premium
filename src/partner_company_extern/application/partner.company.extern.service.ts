@@ -24,6 +24,26 @@ import { CancelCouponResDto } from '../api/CancelCouponResDto';
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
 
+/**
+ * YYYYMMDDHHmmss 또는 YYYYMMDD 형식의 날짜 문자열을 Date 객체로 변환
+ * @param dateStr - 날짜 문자열 (최소 8자리 이상)
+ * @returns 파싱된 Date 객체 또는 null (유효하지 않은 경우)
+ */
+function parseDateString(dateStr: string | null | undefined): Date | null {
+  if (!dateStr || dateStr.length < 8) {
+    return null;
+  }
+
+  const year = parseInt(dateStr.substring(0, 4));
+  const month = parseInt(dateStr.substring(4, 6)) - 1;
+  const day = parseInt(dateStr.substring(6, 8));
+  const hour = dateStr.length >= 10 ? parseInt(dateStr.substring(8, 10)) : 0;
+  const minute = dateStr.length >= 12 ? parseInt(dateStr.substring(10, 12)) : 0;
+  const second = dateStr.length >= 14 ? parseInt(dateStr.substring(12, 14)) : 0;
+
+  return new Date(year, month, day, hour, minute, second);
+}
+
 @Injectable()
 export class PartnerCompanyExternService {
   constructor(
@@ -450,7 +470,7 @@ export class PartnerCompanyExternService {
             ? OrderDeliveryCouponStatus.USED
             : OrderDeliveryCouponStatus.NOT_USED;
         }
-        orderDelivery.tradeAt = giftCertificate.usedDate ? new Date(giftCertificate.usedDate) : null;
+        orderDelivery.tradeAt = parseDateString(giftCertificate.usedDate);
         orderDelivery.galaxiaBalance = Number(giftCertificate.balance);
         break;
       }
@@ -510,16 +530,7 @@ export class PartnerCompanyExternService {
             break;
           case '02':
             orderDelivery.couponStatus = OrderDeliveryCouponStatus.USED;
-            // 교환일시 파싱 (YYYYMMDDHHmmss)
-            if (exchDtm) {
-              const year = parseInt(exchDtm.substring(0, 4));
-              const month = parseInt(exchDtm.substring(4, 6)) - 1;
-              const day = parseInt(exchDtm.substring(6, 8));
-              const hour = parseInt(exchDtm.substring(8, 10));
-              const minute = parseInt(exchDtm.substring(10, 12));
-              const second = parseInt(exchDtm.substring(12, 14));
-              orderDelivery.tradeAt = new Date(year, month, day, hour, minute, second);
-            }
+            orderDelivery.tradeAt = parseDateString(exchDtm);
             // 교환장소: tradeBranchNm > branchNm > useComNm 순으로 사용
             orderDelivery.tradePlace = tradeBranchNm || branchNm || useComNm || null;
             break;
@@ -614,13 +625,7 @@ export class PartnerCompanyExternService {
           } else if (daouCheckOut.cpnStatus === '01' || daouCheckOut.cpnStatus === '03') {
             // 01: 교환완료, 03: 사용중 - 둘 다 USED로 처리
             orderDelivery.couponStatus = OrderDeliveryCouponStatus.USED;
-            // 사용일자가 있으면 tradeAt에 설정 (YYYYMMDD 형식)
-            if (daouCheckOut.useDate) {
-              const year = parseInt(daouCheckOut.useDate.substring(0, 4));
-              const month = parseInt(daouCheckOut.useDate.substring(4, 6)) - 1;
-              const day = parseInt(daouCheckOut.useDate.substring(6, 8));
-              orderDelivery.tradeAt = new Date(year, month, day);
-            }
+            orderDelivery.tradeAt = parseDateString(daouCheckOut.useDate);
             // 사용처가 있으면 tradePlace에 설정
             if (daouCheckOut.useBranch) {
               orderDelivery.tradePlace = daouCheckOut.useBranch;
