@@ -94,6 +94,7 @@ export class CustomerServiceService {
       .innerJoinAndSelect('orderProductMapping.product', 'product')
       .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
+      .leftJoinAndSelect('choiceSelectProduct.partnerCompany', 'choicePartnerCompany')
       .leftJoinAndMapOne('order.user', 'user', 'user', 'user.id = order.user_id AND user.deleted_at IS NULL')
       .leftJoinAndSelect('user.company', 'userCompany')
       .andWhere('orderDelivery.status IN (:...deliveryStatus)', { deliveryStatus: ['COMPLETE', 'COMPLETE_SMS'] })
@@ -223,16 +224,28 @@ export class CustomerServiceService {
         actualSendAt = format(orderDelivery.actualSendAt, DateFormatStr);
       }
 
-      // 초이스 쿠폰인 경우 선택된 상품의 가격 사용
+      // 초이스 쿠폰인 경우 선택된 상품의 가격 및 협력사 사용
       const displayProduct = orderDelivery.choiceSelectProduct ?? product;
+      const displayPartnerCompany = orderDelivery.choiceSelectProduct?.partnerCompany ?? product.partnerCompany;
+
+      // 유효기간 만료일 계산
+      const expireAt = this.calculateExpireAt(
+        orderDelivery.actualSendAt ?? orderDelivery.sendRequestAt,
+        displayProduct.expireDay,
+        displayPartnerCompany?.validityStartsNextDay ?? true,
+      );
+
+      // sendRequestAt 포맷팅
+      let formattedSendRequestAt = '';
+      if (orderDelivery.sendRequestAt) {
+        formattedSendRequestAt = format(orderDelivery.sendRequestAt, DateFormatStr);
+      } else if (orderDelivery.orderProductMapping.sendRequestAt) {
+        formattedSendRequestAt = format(orderDelivery.orderProductMapping.sendRequestAt, DateFormatStr);
+      }
 
       result.push({
         registerAt: format(orderDelivery.createdAt, DateFormatStr),
-        sendRequestAt: orderDelivery.sendRequestAt
-          ? format(orderDelivery.sendRequestAt, DateFormatStr)
-          : orderDelivery.orderProductMapping.sendRequestAt
-            ? format(orderDelivery.orderProductMapping.sendRequestAt, DateFormatStr)
-            : '',
+        sendRequestAt: formattedSendRequestAt,
         actualSendAt: actualSendAt,
         sendType: orderDelivery.orderProductMapping.sendType,
         id: order.id,
@@ -255,11 +268,7 @@ export class CustomerServiceService {
         emailCouponStatus: orderDelivery.emailCouponStatus,
         emailReceiverPhone: maskedEmailReceiverPhone,
         refund: orderDelivery.refundRatio ?? null,
-        expireAt: orderDelivery.actualSendAt
-          ? dayjs(orderDelivery.actualSendAt).add(displayProduct.expireDay, 'day').format('YYYY-MM-DD')
-          : orderDelivery.sendRequestAt
-            ? dayjs(orderDelivery.sendRequestAt).add(displayProduct.expireDay, 'day').format('YYYY-MM-DD')
-            : null,
+        expireAt,
       });
     }
 
@@ -1580,5 +1589,26 @@ export class CustomerServiceService {
 
     await workbook.xlsx.write(res);
     res.end();
+  }
+
+  /**
+   * 유효기간 만료일 계산
+   * @param baseDate 기준일 (actualSendAt 또는 sendRequestAt)
+   * @param expireDay 유효기간 일수
+   * @param validityStartsNextDay true면 다음날부터, false면 당일부터 계산
+   * @returns YYYY-MM-DD 형식의 만료일 또는 null
+   */
+  private calculateExpireAt(
+    baseDate: Date | null | undefined,
+    expireDay: number,
+    validityStartsNextDay: boolean,
+  ): string | null {
+    if (!baseDate) {
+      return null;
+    }
+    // validityStartsNextDay가 true면 다음날부터 계산 (+expireDay)
+    // validityStartsNextDay가 false면 발송당일부터 계산 (+expireDay - 1)
+    const adjustedExpireDay = validityStartsNextDay ? expireDay : expireDay - 1;
+    return dayjs(baseDate).add(adjustedExpireDay, 'day').format('YYYY-MM-DD');
   }
 }
