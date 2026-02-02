@@ -82,9 +82,14 @@ export class OrderViewDeliveryDto extends OrderDeliveryViewCommonDto {
 
 export class OrderDeliveryCompleteReportViewDto extends OrderDeliveryViewCommonDto {
   @ApiProperty({
-    description: '발송 시각',
+    description: '발송 요청 시각',
   })
   sendRequestAt: string | null;
+
+  @ApiProperty({
+    description: '실제 발송 시각',
+  })
+  actualSendAt: string | null;
 
   @ApiProperty({
     description: '상품명',
