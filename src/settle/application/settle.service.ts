@@ -1442,6 +1442,8 @@ export class SettleService {
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
       .leftJoinAndSelect('user.company', 'userCompany')
+      .leftJoinAndSelect('order.clientUser', 'clientUser')
+      .leftJoinAndSelect('clientUser.company', 'clientUserCompany')
       .leftJoinAndSelect('order.operationUser', 'operationUser')
       .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .leftJoinAndSelect('orderProductMappings.product', 'product')
@@ -1455,19 +1457,23 @@ export class SettleService {
       throw new BadRequestException('주문이 존재하지 않습니다.');
     }
 
-    // 동일한 고객사인지 검증 (companyId 기준)
-    const companyIds = [...new Set(orders.map((order) => order.user!.companyId))];
-    if (companyIds.length > 1) {
+    // 과금 대상 사용자 (대행주문인 경우 clientUser, 아니면 user)
+    const getBillingUser = (order: OrderEntity) => order.clientUser ?? order.user;
+
+    // 고객사 검증: 동일한 고객사의 주문만 함께 조회 가능
+    const billingCompanyIds = [...new Set(orders.map((order) => getBillingUser(order)!.companyId))];
+    if (billingCompanyIds.length > 1) {
       throw new BadRequestException('동일한 고객사의 주문만 함께 조회할 수 있습니다.');
     }
 
     // 담당자 목록 수집 (중복 제거)
     const managersMap = new Map<number, { userId: number; personName: string }>();
     for (const order of orders) {
-      if (order.user && !managersMap.has(order.user.id)) {
-        managersMap.set(order.user.id, {
-          userId: order.user.id,
-          personName: order.user.personName,
+      const billingUser = getBillingUser(order);
+      if (billingUser && !managersMap.has(billingUser.id)) {
+        managersMap.set(billingUser.id, {
+          userId: billingUser.id,
+          personName: billingUser.personName,
         });
       }
     }
@@ -1535,13 +1541,14 @@ export class SettleService {
 
     // 첫 번째 주문 기준으로 기본 정보 설정
     const firstOrder = orders[0];
+    const billingUser = getBillingUser(firstOrder);
 
     return {
       orderIds: orders.map((o) => o.id),
-      userId: firstOrder.userId,
-      userPersonName: firstOrder.user!.personName,
+      userId: firstOrder.clientUserId ?? firstOrder.userId,
+      userPersonName: billingUser!.personName,
       managers,
-      userBusinessName: firstOrder.user!.company?.businessName ?? '',
+      userBusinessName: billingUser!.company?.businessName ?? '',
       operationPersonName: firstOrder.operationUser?.personName ?? null,
       eventName,
       type: firstOrder.type,

@@ -35,7 +35,10 @@ export class UserDriveService {
       .innerJoinAndSelect('drive.receiver', 'receiver');
 
     if (user.authority === 'CORPORATE_ADMIN') {
-      queryBuilder.where('drive.receiverId = :receiverId', { receiverId: user.id });
+      // 고객사에게는 DRAFT 상태 문서 미노출
+      queryBuilder
+        .where('drive.receiverId = :receiverId', { receiverId: user.id })
+        .andWhere('drive.status != :draftStatus', { draftStatus: IUserDriveStatus.DRAFT });
     }
 
     queryBuilder.orderBy('drive.id', 'DESC');
@@ -65,49 +68,28 @@ export class UserDriveService {
 
   async getDetail(user: ILoginUserInfo, getParam: UserDriveGetDetailReqParamDto): Promise<UserDriveGetDetailResDto> {
     const { id } = getParam;
+    const isCorporateAdmin = user.authority === 'CORPORATE_ADMIN';
 
-    if (user.authority === 'CORPORATE_ADMIN') {
-      const userDrive = await this.userDriveRepository.findOne({
-        where: {
-          id,
-          receiverId: user.id,
-        },
-        relations: ['sender', 'receiver'],
-      });
-
-      if (!userDrive) {
-        throw new BadRequestException('문서가 존재하지 않습니다.');
-      }
-
-      userDrive.receiveAt = new Date();
-      await this.userDriveRepository.save(userDrive);
-
-      return {
-        id: userDrive.id,
-        sendAt: format(userDrive.sendAt, DateFormatStr),
-        senderId: userDrive.senderId,
-        receiverId: userDrive.receiverId,
-        senderBusinessName: userDrive.sender.company?.businessName ?? '',
-        receiverPersonName: userDrive.receiver.personName,
-        receiverEmail: userDrive.receiver.email,
-        receiverPhone: userDrive.receiver.personPhoneNumber,
-        title: userDrive.title,
-        content: userDrive.content,
-        status: userDrive.status,
-        filePathList: userDrive.filePath ? userDrive.filePath.split(',') : [],
-        replyContent: userDrive.replyContent,
-      };
-    }
+    const whereCondition = isCorporateAdmin ? { id, receiverId: user.id } : { id };
 
     const userDrive = await this.userDriveRepository.findOne({
-      where: {
-        id,
-      },
+      where: whereCondition,
       relations: ['sender', 'receiver'],
     });
 
     if (!userDrive) {
       throw new BadRequestException('문서가 존재하지 않습니다.');
+    }
+
+    // 고객사에게는 DRAFT 상태 문서 미노출
+    if (isCorporateAdmin && userDrive.status === IUserDriveStatus.DRAFT) {
+      throw new BadRequestException('문서가 존재하지 않습니다.');
+    }
+
+    // 고객사가 조회 시 수신 시각 업데이트
+    if (isCorporateAdmin) {
+      userDrive.receiveAt = new Date();
+      await this.userDriveRepository.save(userDrive);
     }
 
     return {
@@ -128,7 +110,7 @@ export class UserDriveService {
   }
 
   async create(user: ILoginUserInfo, getBody: UserDriveCreateReqDto) {
-    const { title, content, receiverId, filePath } = getBody;
+    const { title, content, receiverId, filePath, status } = getBody;
 
     if (user.authority === 'CORPORATE_ADMIN') {
       throw new BadRequestException('관리자만 접근 가능합니다.');
@@ -150,7 +132,7 @@ export class UserDriveService {
       title,
       content,
       sendAt: new Date(),
-      status: IUserDriveStatus.REGISTER,
+      status: status ?? IUserDriveStatus.REGISTER,
       filePath: filePath.length === 0 ? null : filePath.join(','),
     });
 

@@ -1,6 +1,6 @@
 import { PagingReqDto } from '../../common/api/dto/pagination.req.dto';
-import { ApiProperty } from '@nestjs/swagger';
-import { IsArray, IsNotEmpty, IsNumber, Min } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { IsArray, IsEnum, IsNotEmpty, IsNumber, IsOptional, Min } from 'class-validator';
 import { Type } from 'class-transformer';
 import { IUserDriveStatus } from '../interface/user.drive.status';
 
@@ -47,6 +47,16 @@ export class UserDriveCreateReqDto {
   // =================================
   @IsArray()
   filePath: string[];
+
+  @ApiPropertyOptional({
+    description: '상태값 ex) 임시저장: DRAFT, 등록: REGISTER (기본값: REGISTER)',
+    enum: IUserDriveStatus,
+    default: IUserDriveStatus.REGISTER,
+  })
+  // =================================
+  @IsOptional()
+  @IsEnum(IUserDriveStatus)
+  status?: IUserDriveStatus;
 }
 
 export class UserDriveUpdateReqDto extends UserDriveCreateReqDto {
@@ -59,11 +69,13 @@ export class UserDriveUpdateReqDto extends UserDriveCreateReqDto {
   id: number;
 
   @ApiProperty({
-    description: '수정할 상태값 ex) 등록: REGISTER, 진행: PROGRESS, 완료: COMPLETE',
+    description: '상태값 ex) 등록: REGISTER, 진행: PROGRESS, 완료: COMPLETE',
+    enum: IUserDriveStatus,
   })
   // =================================
   @IsNotEmpty()
-  status: IUserDriveStatus;
+  @IsEnum(IUserDriveStatus)
+  override status: IUserDriveStatus;
 }
 
 export class UserDriveReplyReqDto {
