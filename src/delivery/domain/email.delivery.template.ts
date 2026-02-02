@@ -39,7 +39,7 @@ export const EmailDeliveryTemplate = (obj: EmailDeliveryTemplateIn) => {
       </tr>
       <tr>
         <!-- 2. 내용 -->
-          <div style="font-size:16px; line-height:1.6; color:#333;">
+          <div style="padding:20px; font-size:16px; line-height:1.6; color:#333;">
             ${normalizeLineBreaks(obj.text, '<br>')}
           </div>
       </tr>
