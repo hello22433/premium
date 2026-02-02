@@ -30,7 +30,7 @@ export const EmailDeliveryTemplate = (obj: EmailDeliveryTemplateIn) => {
     <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#ffffff; max-width:500px; margin:0; border:1px solid #ddd;">
       <tr>
         <!-- 1. 템플릿 배너 -->
-        <td align="left" style="padding:0;">
+        <td align="center" style="padding:0;">
           <!-- 
           
           -->
@@ -62,7 +62,7 @@ export const EmailDeliveryTemplate = (obj: EmailDeliveryTemplateIn) => {
       </tr>
       <tr>
         <!-- 5. 인증 링크 -->
-        <td align="left" style="padding:20px;">
+        <td align="center" style="padding:20px;">
           <a href="${obj.url}" target="_blank" style="background-color:#ff3b30; color:#fff; text-decoration:none; padding:10px 20px; border-radius:5px; display:inline-block; font-weight:bold;">
             쿠폰 인증하러 가기
           </a>
@@ -70,7 +70,7 @@ export const EmailDeliveryTemplate = (obj: EmailDeliveryTemplateIn) => {
       </tr>
       <tr>
         <!-- 6. 인증번호 -->
-        <td align="left" style="padding:10px 0 20px 0; font-size:22px; font-weight:bold; color:#000;">
+        <td align="center" style="padding:10px 0 20px 0; font-size:22px; font-weight:bold; color:#000;">
           인증번호: <span style="letter-spacing:2px;">${obj.code}</span>
         </td>
       </tr>
@@ -79,8 +79,8 @@ export const EmailDeliveryTemplate = (obj: EmailDeliveryTemplateIn) => {
           ? `
       <tr>
         <!-- 7. QR 코드 -->
-        <td align="left" style="padding:20px 0;">
-          <img src="${obj.qrCodeImagePath}" alt="QR 코드" style="display:block; margin:0;" />
+        <td align="center" style="padding:20px 0;">
+          <img src="${obj.qrCodeImagePath}" alt="QR 코드" style="display:block; margin:0 auto;" />
         </td>
       </tr>
       `
