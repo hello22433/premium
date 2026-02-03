@@ -72,6 +72,28 @@ export class PartnerCompanyExternService {
 
   private logger = new Logger('PARTNER_COMPANY_EXTERN');
 
+  // SSG API 동시 호출 방지를 위한 Mutex (한 번에 1개씩만 실행)
+  private ssgApiMutex: Promise<void> = Promise.resolve();
+
+  /**
+   * SSG API 호출을 순차적으로 실행하기 위한 래퍼
+   * 여러 곳에서 동시에 SSG API를 호출해도 한 번에 1개씩만 실행됨
+   */
+  private async withSsgMutex<T>(fn: () => Promise<T>): Promise<T> {
+    let release: () => void;
+    const waitForPrevious = this.ssgApiMutex;
+    this.ssgApiMutex = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    await waitForPrevious;
+    try {
+      return await fn();
+    } finally {
+      release!();
+    }
+  }
+
   @Transactional({ propagation: Propagation.REQUIRED })
   async issue(orderDelivery: OrderDeliveryEntity, ssgEvent: SsgEventEntity | null) {
     const type = orderDelivery.orderProductMapping!.product.partnerCompany!.type;
@@ -257,19 +279,22 @@ export class PartnerCompanyExternService {
 
         const textForSsg = text + smsSsgTemplate(orderDelivery);
 
-        const response = await this.ssgIssue.issue({
-          eventNo: ssgEvent.no,
-          eventSeq: ssgEvent.order,
-          eventKey: ssgEvent.code,
-          vno: orderDelivery.personalCode,
-          pinNo: orderDelivery.barCode,
-          userName: ssgIssueUserName,
-          userAmount: '' + orderDelivery.orderProductMapping.product.price,
-          msgContent: textForSsg,
-          trId: orderDelivery.ssgTransactionId,
-          callBack:
-            orderDelivery.orderProductMapping.fromPhoneNumber === '' || !orderDelivery.orderProductMapping.fromPhoneNumber ? defaultFromPhoneNumber : orderDelivery.orderProductMapping.fromPhoneNumber,
-        });
+        // SSG API 동시 호출 방지 (Mutex로 순차 실행)
+        const callBackNumber = orderDelivery.orderProductMapping.fromPhoneNumber || defaultFromPhoneNumber;
+        const response = await this.withSsgMutex(() =>
+          this.ssgIssue.issue({
+            eventNo: ssgEvent.no,
+            eventSeq: ssgEvent.order,
+            eventKey: ssgEvent.code,
+            vno: orderDelivery.personalCode!,
+            pinNo: orderDelivery.barCode!,
+            userName: ssgIssueUserName,
+            userAmount: '' + orderDelivery.orderProductMapping.product.price,
+            msgContent: textForSsg,
+            trId: orderDelivery.ssgTransactionId!,
+            callBack: callBackNumber,
+          }),
+        );
         context = JSON.stringify(response);
         // SSG 발송 성공 시 실제 발송 시간 설정 (최초 발송 시에만)
         if (!orderDelivery.actualSendAt) {

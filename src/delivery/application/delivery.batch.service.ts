@@ -215,16 +215,22 @@ export class DeliveryBatchService {
     const allResults: { deliveryHistory: DeliverySendHistoryEntity; orderId: number }[] = [];
     const concurrency = this.concurrencyLimit;
 
-    this.logger.log(`[BATCH] Processing ${uniqueDeliveryList.length} deliveries with concurrency: ${concurrency}`);
+    // 청크 구성 (SSG는 Mutex로 보호되므로 동시 처리 가능)
+    const chunks = this.createDeliveryChunks(uniqueDeliveryList, concurrency);
+
+    this.logger.log(
+      `[BATCH] Processing ${uniqueDeliveryList.length} deliveries in ${chunks.length} chunks (concurrency: ${concurrency})`,
+    );
 
     // 청크 단위로 병렬 처리
-    for (let i = 0; i < uniqueDeliveryList.length; i += concurrency) {
-      const chunk = uniqueDeliveryList.slice(i, i + concurrency);
+    let processedCount = 0;
+    for (const chunk of chunks) {
       const chunkResults = await Promise.all(
         chunk.map((orderDelivery) => this.processOneDeliveryForBatch(orderDelivery)),
       );
       allResults.push(...chunkResults.filter((r) => r !== null));
-      this.logger.log(`[BATCH] Processed ${Math.min(i + concurrency, uniqueDeliveryList.length)}/${uniqueDeliveryList.length}`);
+      processedCount += chunk.length;
+      this.logger.log(`[BATCH] Processed ${processedCount}/${uniqueDeliveryList.length}`);
     }
 
     // 결과 집계
@@ -1166,5 +1172,22 @@ export class DeliveryBatchService {
         }
       }
     }
+  }
+
+  /**
+   * 배송 목록을 청크로 분할
+   * SSG는 Mutex로 보호되므로 별도 분리 없이 일반 청크 처리
+   */
+  private createDeliveryChunks(
+    deliveryList: OrderDeliveryEntity[],
+    chunkSize: number,
+  ): OrderDeliveryEntity[][] {
+    const chunks: OrderDeliveryEntity[][] = [];
+
+    for (let i = 0; i < deliveryList.length; i += chunkSize) {
+      chunks.push(deliveryList.slice(i, i + chunkSize));
+    }
+
+    return chunks;
   }
 }
