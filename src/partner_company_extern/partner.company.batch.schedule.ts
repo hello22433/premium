@@ -9,8 +9,8 @@ export class PartnerCompanyBatchSchedule implements OnApplicationBootstrap {
   constructor(private partnerCompanyExternBatchService: PartnerCompanyExternBatchService) {}
 
   onApplicationBootstrap() {
-    // TEST;
-    // this.check();
+    // TEST: 수동 실행
+    this.check();
   }
 
   // 매일 02:15 실행 - 쿠폰 상태 조회 (레거시 방식: 하루 1회)
