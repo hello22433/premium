@@ -44,20 +44,20 @@ export class PartnerCompanyExternBatchService {
 
   // ===== 설정값 =====
   private get pageSize(): number {
-    return this.configService.get<number>('BATCH_PAGE_SIZE', 100);
+    return Number(this.configService.get('BATCH_PAGE_SIZE', 100));
   }
 
   private get apiTimeoutMs(): number {
-    return this.configService.get<number>('BATCH_API_TIMEOUT_MS', 30000);
+    return Number(this.configService.get('BATCH_API_TIMEOUT_MS', 30000));
   }
 
   private get retryCount(): number {
-    return this.configService.get<number>('BATCH_RETRY_COUNT', 1);
+    return Number(this.configService.get('BATCH_RETRY_COUNT', 1));
   }
 
   private getConcurrencyLimit(type: PartnerCompanyType): number {
     const key = `BATCH_CONCURRENCY_${type}`;
-    return this.configService.get<number>(key, 5);
+    return Number(this.configService.get(key, 5));
   }
 
   // ===== 메인 배치 메서드 (최적화 버전) =====
