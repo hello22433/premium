@@ -296,7 +296,7 @@ export class PartnerCompanyExternBatchService {
       result.couponStatus = galaxiaOut.giftCertificate.isUsed
         ? OrderDeliveryCouponStatus.USED
         : OrderDeliveryCouponStatus.NOT_USED;
-      result.tradeAt = galaxiaOut.giftCertificate.usedDate ? new Date(galaxiaOut.giftCertificate.usedDate) : null;
+      result.tradeAt = this.parseDateString(galaxiaOut.giftCertificate.usedDate);
       result.galaxiaBalance = +galaxiaOut.giftCertificate.balance;
     }
 
@@ -345,7 +345,7 @@ export class PartnerCompanyExternBatchService {
         if (pinStatusCd === '02') {
           result.couponStatus = OrderDeliveryCouponStatus.USED;
           if (exchDtm) {
-            result.tradeAt = this.parseDateTime(exchDtm);
+            result.tradeAt = this.parseDateString(exchDtm);
           }
           result.tradePlace = tradeBranchNm || branchNm || useComNm || null;
         } else if (pinStatusCd === '01') {
@@ -425,7 +425,7 @@ export class PartnerCompanyExternBatchService {
         if (daouCheckOut.cpnStatus === '01' || daouCheckOut.cpnStatus === '03') {
           result.couponStatus = OrderDeliveryCouponStatus.USED;
           if (daouCheckOut.useDate) {
-            result.tradeAt = this.parseDate(daouCheckOut.useDate);
+            result.tradeAt = this.parseDateString(daouCheckOut.useDate);
           }
           if (daouCheckOut.useBranch) {
             result.tradePlace = daouCheckOut.useBranch;
@@ -471,25 +471,22 @@ export class PartnerCompanyExternBatchService {
   }
 
   // ===== 유틸리티 =====
-  private parseDateTime(dtm: string): Date {
-    // YYYYMMDDHHmmss 형식
-    return new Date(
-      parseInt(dtm.substring(0, 4)),
-      parseInt(dtm.substring(4, 6)) - 1,
-      parseInt(dtm.substring(6, 8)),
-      parseInt(dtm.substring(8, 10)),
-      parseInt(dtm.substring(10, 12)),
-      parseInt(dtm.substring(12, 14)),
-    );
-  }
+  /**
+   * 날짜 문자열(YYYYMMDD 또는 YYYYMMDDHHmmss)을 Date 객체로 변환
+   */
+  private parseDateString(dateStr: string | null | undefined): Date | null {
+    if (!dateStr || dateStr.length < 8) {
+      return null;
+    }
 
-  private parseDate(date: string): Date {
-    // YYYYMMDD 형식
-    return new Date(
-      parseInt(date.substring(0, 4)),
-      parseInt(date.substring(4, 6)) - 1,
-      parseInt(date.substring(6, 8)),
-    );
+    const year = parseInt(dateStr.substring(0, 4));
+    const month = parseInt(dateStr.substring(4, 6)) - 1;
+    const day = parseInt(dateStr.substring(6, 8));
+    const hour = dateStr.length >= 10 ? parseInt(dateStr.substring(8, 10)) : 0;
+    const minute = dateStr.length >= 12 ? parseInt(dateStr.substring(10, 12)) : 0;
+    const second = dateStr.length >= 14 ? parseInt(dateStr.substring(12, 14)) : 0;
+
+    return new Date(year, month, day, hour, minute, second);
   }
 
   // ===== 기존 check() 메서드 백업 (롤백용) =====
