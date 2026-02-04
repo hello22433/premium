@@ -79,9 +79,12 @@ export class PartnerCompanyExternBatchService {
 
       // 1. Keyset 페이지네이션으로 데이터 조회 및 처리
       while (hasMore) {
+        this.logger.log(`[check] fetchBatch 호출: lastId=${lastId}, pageSize=${this.pageSize}`);
         const batch = await this.fetchBatch(lastId, this.pageSize);
+        this.logger.log(`[check] fetchBatch 결과: ${batch.length}건`);
 
         if (batch.length === 0) {
+          this.logger.log(`[check] 더 이상 데이터 없음, 루프 종료`);
           hasMore = false;
           break;
         }
@@ -104,6 +107,7 @@ export class PartnerCompanyExternBatchService {
         // 다음 페이지를 위해 마지막 ID 갱신
         lastId = batch[batch.length - 1].id;
         hasMore = batch.length === this.pageSize;
+        this.logger.log(`[check] 다음 페이지 준비: newLastId=${lastId}, hasMore=${hasMore}`);
       }
     } catch (e) {
       this.logger.error('[check] 배치 처리 중 예외 발생');
