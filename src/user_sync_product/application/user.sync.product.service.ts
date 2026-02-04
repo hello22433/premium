@@ -35,14 +35,14 @@ import { ILoginUserInfo } from '../../auth/interface/login.user';
 @Injectable()
 export class UserSyncProductService {
   constructor(
-    @InjectRepository(UserSyncProductEventEntity)
-    private eventRepository: Repository<UserSyncProductEventEntity>,
-    @InjectRepository(UserSyncProductEventMappingEntity)
-    private eventMappingRepository: Repository<UserSyncProductEventMappingEntity>,
-    @InjectRepository(ProductEntity)
-    private productRepository: Repository<ProductEntity>,
-    @InjectRepository(UserEntity)
-    private userRepository: Repository<UserEntity>,
+      @InjectRepository(UserSyncProductEventEntity)
+      private eventRepository: Repository<UserSyncProductEventEntity>,
+      @InjectRepository(UserSyncProductEventMappingEntity)
+      private eventMappingRepository: Repository<UserSyncProductEventMappingEntity>,
+      @InjectRepository(ProductEntity)
+      private productRepository: Repository<ProductEntity>,
+      @InjectRepository(UserEntity)
+      private userRepository: Repository<UserEntity>,
   ) {}
 
   async getList(getQuery: UserSyncProductGetListReqDto): Promise<UserSyncProductGetListResDto> {
@@ -50,10 +50,10 @@ export class UserSyncProductService {
     const skip = (page - 1) * take;
 
     let queryBuilder = this.eventRepository
-      .createQueryBuilder('event')
-      .leftJoinAndSelect('event.userSyncProductEventMappings', 'userSyncProductEventMappings')
-      .innerJoinAndSelect('event.businessUser', 'user')
-      .leftJoinAndSelect('user.company', 'userCompany');
+    .createQueryBuilder('event')
+    .leftJoinAndSelect('event.userSyncProductEventMappings', 'userSyncProductEventMappings')
+    .innerJoinAndSelect('event.businessUser', 'user')
+    .leftJoinAndSelect('user.company', 'userCompany');
 
     if (code) {
       queryBuilder = queryBuilder.andWhere('event.code = :code', { code });
@@ -124,21 +124,21 @@ export class UserSyncProductService {
     const { id } = getParam;
 
     const event = await this.eventRepository
-      .createQueryBuilder('event')
-      .innerJoinAndSelect('event.businessUser', 'businessUser')
-      .leftJoinAndSelect('businessUser.company', 'businessUserCompany')
-      .leftJoinAndSelect('event.userSyncProductEventMappings', 'userSyncProductEventMappings')
-      .leftJoinAndSelect(
+    .createQueryBuilder('event')
+    .innerJoinAndSelect('event.businessUser', 'businessUser')
+    .leftJoinAndSelect('businessUser.company', 'businessUserCompany')
+    .leftJoinAndSelect('event.userSyncProductEventMappings', 'userSyncProductEventMappings')
+    .leftJoinAndSelect(
         'userSyncProductEventMappings.product',
         'product',
         'product.deletedAt IS NULL AND product.useStatus = :useStatus',
         { useStatus: IProductUseStatus.USE },
-      )
-      .leftJoinAndSelect('product.brand', 'brand')
-      .leftJoinAndSelect('product.classification', 'classification')
-      .where('event.id = :id', { id })
-      .orderBy('userSyncProductEventMappings.id', 'DESC')
-      .getOne();
+    )
+    .leftJoinAndSelect('product.brand', 'brand')
+    .leftJoinAndSelect('product.classification', 'classification')
+    .where('event.id = :id', { id })
+    .orderBy('userSyncProductEventMappings.id', 'DESC')
+    .getOne();
 
     if (!event) {
       throw new BadRequestException('존재하지 않는 연동 상품 이벤트 id 입니다.');
@@ -309,12 +309,12 @@ export class UserSyncProductService {
     }
 
     const users = await this.userRepository
-      .createQueryBuilder('user')
-      .leftJoinAndSelect('user.company', 'company')
-      .where('user.companyId = :companyId', { companyId: user.companyId })
-      .orderBy('user.isHeadPerson', 'DESC')
-      .addOrderBy('user.id', 'ASC')
-      .getMany();
+    .createQueryBuilder('user')
+    .leftJoinAndSelect('user.company', 'company')
+    .where('user.companyId = :companyId', { companyId: user.companyId })
+    .orderBy('user.isHeadPerson', 'DESC')
+    .addOrderBy('user.id', 'ASC')
+    .getMany();
 
     if (users.length === 0) {
       throw new BadRequestException('해당 사업자 번호로 등록된 담당자가 없습니다.');
@@ -337,7 +337,7 @@ export class UserSyncProductService {
   }
 
   async getHeadPersonList(
-    getQuery: UserSyncProductGetHeadPersonListReqQueryDto,
+      getQuery: UserSyncProductGetHeadPersonListReqQueryDto,
   ): Promise<UserSyncProductGetHeadPersonListResDto> {
     const { userId, take, page, keyword, personName } = getQuery;
     const skip = (page - 1) * take;
@@ -349,10 +349,10 @@ export class UserSyncProductService {
     });
 
     let queryBuilder = this.userRepository
-      .createQueryBuilder('user')
-      .leftJoinAndSelect('user.company', 'userCompany')
-      .where('user.companyId = :companyId', { companyId: oneUser.companyId })
-      .andWhere('user.isHeadPerson = :isHeadPerson', { isHeadPerson: true });
+    .createQueryBuilder('user')
+    .leftJoinAndSelect('user.company', 'userCompany')
+    .where('user.companyId = :companyId', { companyId: oneUser.companyId })
+    .andWhere('user.isHeadPerson = :isHeadPerson', { isHeadPerson: true });
 
     if (keyword) {
       queryBuilder = queryBuilder.andWhere('(userCompany.businessName LIKE :keyword OR user.personEmail LIKE :keyword)', {
@@ -365,33 +365,36 @@ export class UserSyncProductService {
     }
 
     const [headPersonUsers, totalCount] = await queryBuilder
-      .orderBy('user.id', 'ASC')
-      .skip(skip)
-      .take(take)
-      .getManyAndCount();
+    .orderBy('user.id', 'ASC')
+    .skip(skip)
+    .take(take)
+    .getManyAndCount();
 
     const list: UserSyncProductPersonProductViewDto[] = [];
 
     for (const user of headPersonUsers) {
       const eventQueryBuilder = this.eventRepository
-        .createQueryBuilder('event')
-        .innerJoinAndSelect('event.businessUser', 'businessUser')
-        .leftJoinAndSelect('event.userSyncProductEventMappings', 'mappings')
-        .leftJoin('mappings.product', 'product')
-        .leftJoin('product.brand', 'brand')
-        .where('event.businessUserId = :userId', { userId: user.id })
-        .andWhere('event.status = :status', { status: IUserSyncProductStatus.ACTIVE });
+      .createQueryBuilder('event')
+      .innerJoinAndSelect('event.businessUser', 'businessUser')
+      .leftJoinAndSelect('event.userSyncProductEventMappings', 'mappings')
+      .leftJoin('mappings.product', 'product')
+      .leftJoin('product.brand', 'brand')
+      .where('event.businessUserId = :userId', { userId: user.id })
+      .andWhere('event.status = :status', { status: IUserSyncProductStatus.ACTIVE });
 
       const events = await eventQueryBuilder
-        .select(['event.id', 'mappings.id', 'mappings.productId', 'product.id', 'product.brandId', 'brand.id'])
-        .getMany();
+      .select(['event.id', 'mappings.id', 'mappings.productId', 'product.id', 'product.brandId', 'brand.id'])
+      .getMany();
+
+      // ACTIVE 이벤트가 없으면 건너뛰기
+      if (events.length === 0) {
+        continue;
+      }
 
       let productCount = 0;
       const brandIds = new Set<number>();
-      const eventStatusList: IUserSyncProductStatus[] = [];
 
       for (const event of events) {
-        eventStatusList.push(event.status);
         if (event.userSyncProductEventMappings) {
           for (const mapping of event.userSyncProductEventMappings) {
             productCount++;
@@ -402,24 +405,13 @@ export class UserSyncProductService {
         }
       }
 
-      if (eventStatusList.length === 0) {
-        continue;
-      }
-
-      const isAllActive =
-        eventStatusList.length > 0 && eventStatusList.every((status) => status === IUserSyncProductStatus.ACTIVE);
-
-      if (!isAllActive) {
-        continue;
-      }
-
       list.push({
         headPersonEmail: user.personEmail,
         headPersonUserId: user.id,
         businessName: user.company?.businessName ?? '',
         headPersonName: user.personName,
         brandCount: brandIds.size,
-        productCount: productCount,
+        productCount,
       });
     }
 
