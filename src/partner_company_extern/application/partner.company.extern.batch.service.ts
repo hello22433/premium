@@ -9,7 +9,7 @@ import { ISsgIssue } from '../interface/ssg.issue';
 import { IDaou } from '../interface/daou';
 import { InjectRepository } from '@nestjs/typeorm';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
-import { Repository } from 'typeorm';
+import { Brackets, Repository } from 'typeorm';
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
 import {
   PartnerCompanyType,
@@ -17,6 +17,25 @@ import {
   BatchStatistics,
   PartnerCompanyGroup,
 } from './partner.company.extern.batch.types';
+
+// ===== 상수 정의 =====
+const COUPON_STATUS_VALUES = {
+  NOT_USED: 'NOT_USED',
+  USED: 'USED',
+  CANCEL: 'CANCEL',
+} as const;
+
+const PARTNER_COMPANY_TYPES = {
+  GALAXIA: 'GALAXIA',
+  GS_M_BIZ: 'GS_M_BIZ',
+  GIFTIEL: 'GIFTIEL',
+  GIFT_SHOW: 'GIFT_SHOW',
+  CULTURELAND: 'CULTURELAND',
+  SSG: 'SSG',
+  DAOU: 'DAOU',
+} as const;
+
+const DELIVERY_STATUS_PATTERN = 'COMPLETE%';
 
 @Injectable()
 export class PartnerCompanyExternBatchService {
@@ -136,8 +155,29 @@ export class PartnerCompanyExternBatchService {
       .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .leftJoinAndSelect('orderDelivery.ssgEvent', 'ssgEvent')
       .where('orderDelivery.id < :lastId', { lastId })
-      .andWhere('orderDelivery.status LIKE :status', { status: 'COMPLETE%' })
-      .andWhere('orderDelivery.couponStatus = :couponStatus', { couponStatus: 'NOT_USED' })
+      .andWhere('orderDelivery.status LIKE :status', { status: DELIVERY_STATUS_PATTERN })
+      // 조회 조건:
+      // 1. NOT_USED 상태인 모든 쿠폰
+      // 2. GALAXIA 쿠폰 중 USED 상태이면서 tradeAt이 NULL인 경우
+      //    (갤럭시아는 사용 여부만 먼저 조회되고, 사용처 정보는 일대사로 나중에 업데이트됨)
+      .andWhere(
+        new Brackets((qb) => {
+          qb.where('orderDelivery.couponStatus = :notUsed', {
+            notUsed: COUPON_STATUS_VALUES.NOT_USED,
+          }).orWhere(
+            new Brackets((subQb) => {
+              subQb
+                .where('orderDelivery.couponStatus = :used', {
+                  used: COUPON_STATUS_VALUES.USED,
+                })
+                .andWhere('orderDelivery.tradeAt IS NULL')
+                .andWhere('partnerCompany.type = :galaxia', {
+                  galaxia: PARTNER_COMPANY_TYPES.GALAXIA,
+                });
+            }),
+          );
+        }),
+      )
       .andWhere('partnerCompany.type IS NOT NULL')
       .andWhere('orderDelivery.barCode IS NOT NULL')
       .orderBy('orderDelivery.id', 'DESC')
@@ -279,7 +319,7 @@ export class PartnerCompanyExternBatchService {
     };
 
     // GALAXIA 처리
-    if (type === 'GALAXIA') {
+    if (type === PARTNER_COMPANY_TYPES.GALAXIA) {
       let giftKind: 'dept' | 'cpn' = orderDelivery.orderProductMapping.product.name.includes('(백화점)')
         ? 'dept'
         : 'cpn';
