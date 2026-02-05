@@ -44,7 +44,13 @@ import {
 } from '../api/dto/settle.user.detail.multiple.dto';
 import { SettleUserListViewDto } from '../api/dto/settle.user.list.view.dto';
 import { QueryBuilderDateCondition } from '../../common/infra/query.builder.date.condition';
-import { DateDateFormatStr, DateEndMinuteFormatStr, DateFormatStr } from '../../common/domain/date.format.str';
+import {
+  DateCompactStr,
+  DateDateFormatStr,
+  DateEndMinuteFormatStr,
+  DateFormatStr,
+  TimeCompactStr,
+} from '../../common/domain/date.format.str';
 import { format } from 'date-fns';
 import { SettlePartnerCompanyListViewDto } from '../api/dto/settle.partner.company.list.view.dto';
 import { SettleMobileListViewDto } from '../api/dto/settle.mobile.list.view.dto';
@@ -1055,31 +1061,43 @@ export class SettleService {
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet('협력사별정산');
 
-    // 엑셀 컬럼 정의
+    // 엑셀 컬럼 정의 (모든 컬럼 텍스트 형식으로 지정하여 자동 변환 방지)
+    const textStyle = { numFmt: '@' };
     sheet.columns = [
-      { header: '협력사', key: 'partnerCompanyName', width: 20 },
-      { header: '고객사', key: 'userBusinessName', width: 20 },
-      { header: '상품번호(EP코드)', key: 'productCode', width: 15 },
-      { header: '발송명', key: 'sendTitle', width: 25 },
-      { header: '이벤트명', key: 'eventName', width: 25 },
-      { header: '상품명', key: 'productName', width: 30 },
-      { header: '브랜드명', key: 'brandName', width: 20 },
-      { header: '금액', key: 'price', width: 12 },
-      { header: '잔액', key: 'balance', width: 12 },
-      { header: '유효일수', key: 'expireDay', width: 10 },
-      { header: '유효기간시작일', key: 'validityStartAt', width: 18 },
-      { header: '유효기간종료일', key: 'validityEndAt', width: 18 },
-      { header: '수신번호', key: 'receiverPhone', width: 15 },
-      { header: '발신번호', key: 'senderPhone', width: 15 },
-      { header: '교환일자', key: 'tradeDate', width: 12 },
-      { header: '교환시간', key: 'tradeTime', width: 10 },
-      { header: '발송일자', key: 'sendDate', width: 12 },
-      { header: '발송시간', key: 'sendTime', width: 10 },
-      { header: '핀상태', key: 'pinStatus', width: 10 },
-      { header: '핀번호', key: 'pinNumber', width: 20 },
-      { header: '폐기시간', key: 'discardAt', width: 18 },
-      { header: '업체거래번호', key: 'transactionId', width: 20 },
+      { header: '협력사', key: 'partnerCompanyName', width: 20, style: textStyle },
+      { header: '고객사', key: 'userBusinessName', width: 20, style: textStyle },
+      { header: '상품번호(EP코드)', key: 'productCode', width: 15, style: textStyle },
+      { header: '발송명', key: 'sendTitle', width: 25, style: textStyle },
+      { header: '이벤트명', key: 'eventName', width: 25, style: textStyle },
+      { header: '상품명', key: 'productName', width: 30, style: textStyle },
+      { header: '브랜드명', key: 'brandName', width: 20, style: textStyle },
+      { header: '금액', key: 'price', width: 12, style: textStyle },
+      { header: '잔액', key: 'balance', width: 12, style: textStyle },
+      { header: '유효일수', key: 'expireDay', width: 10, style: textStyle },
+      { header: '유효기간시작일', key: 'validityStartAt', width: 18, style: textStyle },
+      { header: '유효기간종료일', key: 'validityEndAt', width: 18, style: textStyle },
+      { header: '수신번호', key: 'receiverPhone', width: 15, style: textStyle },
+      { header: '발신번호', key: 'senderPhone', width: 15, style: textStyle },
+      { header: '교환일자', key: 'tradeDate', width: 12, style: textStyle },
+      { header: '교환시간', key: 'tradeTime', width: 10, style: textStyle },
+      { header: '발송일자', key: 'sendDate', width: 12, style: textStyle },
+      { header: '발송시간', key: 'sendTime', width: 10, style: textStyle },
+      { header: '핀상태', key: 'pinStatus', width: 10, style: textStyle },
+      { header: '핀번호', key: 'pinNumber', width: 20, style: textStyle },
+      { header: '폐기시간', key: 'discardAt', width: 18, style: textStyle },
+      { header: '업체거래번호', key: 'transactionId', width: 20, style: textStyle },
     ];
+
+    // 날짜/시간 기호 없는 형식으로 변환 (엑셀용)
+    const formatCompactDateTime = (date: Date | null | undefined): { date: string; time: string } => {
+      if (!date) {
+        return { date: '', time: '' };
+      }
+      return {
+        date: format(date, DateCompactStr),
+        time: format(date, TimeCompactStr),
+      };
+    };
 
     // 핀 상태 한글 변환
     const couponStatusToKorean = (status: string): string => {
@@ -1115,35 +1133,23 @@ export class SettleService {
             }
           }
 
-          // 유효기간 계산
+          // 유효기간 계산 (기호 없이 yyyyMMdd 형식)
           let validityStartAt = '';
           let validityEndAt = '';
           if (orderDelivery.actualSendAt) {
-            const sendDate = new Date(orderDelivery.actualSendAt);
+            const sendDateObj = new Date(orderDelivery.actualSendAt);
             // 협력사 설정에 따라 시작일 계산
             const startDate = partnerCompany.validityStartsNextDay
-              ? new Date(sendDate.getTime() + 24 * 60 * 60 * 1000)
-              : sendDate;
+              ? new Date(sendDateObj.getTime() + 24 * 60 * 60 * 1000)
+              : sendDateObj;
             const endDate = new Date(startDate.getTime() + product.expireDay * 24 * 60 * 60 * 1000);
-            validityStartAt = format(startDate, DateDateFormatStr);
-            validityEndAt = format(endDate, DateDateFormatStr);
+            validityStartAt = format(startDate, DateCompactStr);
+            validityEndAt = format(endDate, DateCompactStr);
           }
 
-          // 발송일/시간
-          let sendDate = '';
-          let sendTime = '';
-          if (orderDelivery.actualSendAt) {
-            sendDate = format(orderDelivery.actualSendAt, DateDateFormatStr);
-            sendTime = format(orderDelivery.actualSendAt, 'HH:mm:ss');
-          }
-
-          // 교환일/시간
-          let tradeDate = '';
-          let tradeTime = '';
-          if (orderDelivery.tradeAt) {
-            tradeDate = format(orderDelivery.tradeAt, DateDateFormatStr);
-            tradeTime = format(orderDelivery.tradeAt, 'HH:mm:ss');
-          }
+          // 발송일/시간, 교환일/시간 (기호 없이 yyyyMMdd, HHmmss 형식)
+          const sendDateTime = formatCompactDateTime(orderDelivery.actualSendAt);
+          const tradeDateTime = formatCompactDateTime(orderDelivery.tradeAt);
 
           // 폐기시간 (취소/환불 시) - 상태 변경 시점인 updatedAt 사용
           let discardAt = '';
@@ -1169,10 +1175,10 @@ export class SettleService {
             validityEndAt,
             receiverPhone,
             senderPhone: orderProductMapping.fromPhoneNumber ?? '',
-            tradeDate,
-            tradeTime,
-            sendDate,
-            sendTime,
+            tradeDate: tradeDateTime.date,
+            tradeTime: tradeDateTime.time,
+            sendDate: sendDateTime.date,
+            sendTime: sendDateTime.time,
             pinStatus: couponStatusToKorean(orderDelivery.couponStatus),
             pinNumber: orderDelivery.barCode ?? '',
             discardAt,
