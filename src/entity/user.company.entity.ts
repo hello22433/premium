@@ -32,6 +32,17 @@ export class UserCompanyEntity extends BaseEntity {
   @Column({ type: 'int', default: 0, comment: '여신 한도' })
   maximumLimit: number;
 
+  @Column({ type: 'int', default: 0, comment: '선충전잔액 (회사 레벨)' })
+  balance: number;
+
+  @Column({
+    type: 'varchar',
+    length: 20,
+    default: 'COMPANY',
+    comment: '선충전 관리 방식: COMPANY(회사별 공유), ACCOUNT(계정별 개별)',
+  })
+  balanceManagementType: 'COMPANY' | 'ACCOUNT';
+
   @Column({ type: 'varchar', length: 100, nullable: true, comment: '은행명' })
   bankName: string | null;
 

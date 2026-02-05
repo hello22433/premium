@@ -60,6 +60,13 @@ export class UserManagementService {
     private activityLogService: ActivityLogService,
   ) {}
 
+  /**
+   * 회사 레벨 선충전 관리 모드인지 확인
+   */
+  private isCompanyBalanceMode(company: UserCompanyEntity | null): company is UserCompanyEntity {
+    return company?.balanceManagementType === 'COMPANY';
+  }
+
   async getNameList(getQuery: UserManagementGetNameListReqQueryDto): Promise<UserManagementGetNameListResDto> {
     const { authority } = getQuery;
 
@@ -246,6 +253,8 @@ export class UserManagementService {
             businessName: company.businessName,
             businessNumber: company.businessNumber,
             maximumLimit: company.maximumLimit,
+            balance: company.balance,
+            balanceManagementType: company.balanceManagementType,
           }
         : null,
       departmentId: user.departmentId,
@@ -282,13 +291,9 @@ export class UserManagementService {
       throw new BadRequestException('not found user');
     }
 
-    const beforeBalance = user.balance;
-    user.balance += chargeAmount;
-    const afterBalance = user.balance;
+    const company = user.company;
+    const { beforeBalance, afterBalance } = await this.updateBalance(user, company, chargeAmount);
 
-    await this.userRepository.save(user);
-
-    // Activity Log 기록
     await this.activityLogService.createLog({
       userId: operator.id,
       userEmail: operator.email,
@@ -302,13 +307,36 @@ export class UserManagementService {
       requestParams: {
         targetUserId: id,
         targetUserEmail: user.email,
-        targetBusinessName: user.company?.businessName ?? '',
+        targetBusinessName: company?.businessName ?? '',
+        targetCompanyId: company?.id ?? null,
+        balanceManagementType: company?.balanceManagementType ?? 'ACCOUNT',
         chargeAmount: chargeAmount,
         beforeBalance: beforeBalance,
         afterBalance: afterBalance,
         memo: memo || null,
       },
     });
+  }
+
+  /**
+   * 잔액 업데이트 공통 로직 (회사/계정 레벨 분기 처리)
+   */
+  private async updateBalance(
+    user: UserEntity,
+    company: UserCompanyEntity | null,
+    amount: number,
+  ): Promise<{ beforeBalance: number; afterBalance: number }> {
+    if (this.isCompanyBalanceMode(company)) {
+      const beforeBalance = company.balance;
+      company.balance += amount;
+      await this.userCompanyRepository.save(company);
+      return { beforeBalance, afterBalance: company.balance };
+    }
+
+    const beforeBalance = user.balance;
+    user.balance += amount;
+    await this.userRepository.save(user);
+    return { beforeBalance, afterBalance: user.balance };
   }
 
   async modifyBalance(getBody: UserManagementModifyBalanceReqDto, operator: ILoginUserInfo) {
@@ -325,14 +353,10 @@ export class UserManagementService {
       throw new BadRequestException('not found user');
     }
 
-    const beforeBalance = user.balance;
+    const company = user.company;
+    const { beforeBalance } = await this.setBalance(user, company, newBalance);
     const changeAmount = newBalance - beforeBalance;
 
-    user.balance = newBalance;
-
-    await this.userRepository.save(user);
-
-    // Activity Log 기록
     await this.activityLogService.createLog({
       userId: operator.id,
       userEmail: operator.email,
@@ -346,13 +370,36 @@ export class UserManagementService {
       requestParams: {
         targetUserId: id,
         targetUserEmail: user.email,
-        targetBusinessName: user.company?.businessName ?? '',
+        targetBusinessName: company?.businessName ?? '',
+        targetCompanyId: company?.id ?? null,
+        balanceManagementType: company?.balanceManagementType ?? 'ACCOUNT',
         changeAmount: changeAmount,
         beforeBalance: beforeBalance,
         afterBalance: newBalance,
         memo: memo || null,
       },
     });
+  }
+
+  /**
+   * 잔액을 특정 값으로 설정하는 공통 로직 (회사/계정 레벨 분기 처리)
+   */
+  private async setBalance(
+    user: UserEntity,
+    company: UserCompanyEntity | null,
+    newBalance: number,
+  ): Promise<{ beforeBalance: number }> {
+    if (this.isCompanyBalanceMode(company)) {
+      const beforeBalance = company.balance;
+      company.balance = newBalance;
+      await this.userCompanyRepository.save(company);
+      return { beforeBalance };
+    }
+
+    const beforeBalance = user.balance;
+    user.balance = newBalance;
+    await this.userRepository.save(user);
+    return { beforeBalance };
   }
 
   async getBalanceHistory(userId: number): Promise<UserManagementGetBalanceHistoryResDto> {
@@ -379,23 +426,42 @@ export class UserManagementService {
   }
 
   async getBalance(id: number): Promise<number> {
-    const user = await this.userRepository.findOne({ where: { id } });
+    const user = await this.userRepository.findOne({
+      where: { id },
+      relations: ['company'],
+    });
     if (!user) {
       throw new BadRequestException('존재하지 않는 계정입니다.');
+    }
+
+    return this.getCurrentBalance(user, user.company);
+  }
+
+  /**
+   * 현재 잔액 조회 (회사/계정 레벨 분기 처리)
+   */
+  private getCurrentBalance(user: UserEntity, company: UserCompanyEntity | null): number {
+    if (this.isCompanyBalanceMode(company)) {
+      return company.balance;
     }
     return user.balance;
   }
 
   async deductBalance(id: number, amount: number): Promise<void> {
-    const user = await this.userRepository.findOne({ where: { id } });
+    const user = await this.userRepository.findOne({
+      where: { id },
+      relations: ['company'],
+    });
     if (!user) {
       throw new BadRequestException('존재하지 않는 계정입니다.');
     }
-    if (user.balance < amount) {
+
+    const currentBalance = this.getCurrentBalance(user, user.company);
+    if (currentBalance < amount) {
       throw new BadRequestException('잔액이 부족합니다.');
     }
-    user.balance -= amount;
-    await this.userRepository.save(user);
+
+    await this.updateBalance(user, user.company, -amount);
   }
 
   async addBalance(id: number, amount: number, memo?: string): Promise<void> {
@@ -407,15 +473,11 @@ export class UserManagementService {
       throw new BadRequestException('존재하지 않는 계정입니다.');
     }
 
-    const beforeBalance = user.balance;
-    user.balance += amount;
-    const afterBalance = user.balance;
+    const company = user.company;
+    const { beforeBalance, afterBalance } = await this.updateBalance(user, company, amount);
 
-    await this.userRepository.save(user);
-
-    // Activity Log 기록 (시스템 자동 환불)
     await this.activityLogService.createLog({
-      userId: 0, // 시스템
+      userId: 0,
       userEmail: 'system@epopkon.com',
       method: 'SYSTEM',
       requestUrl: '/system/balance/refund',
@@ -427,7 +489,9 @@ export class UserManagementService {
       requestParams: {
         targetUserId: id,
         targetUserEmail: user.email,
-        targetBusinessName: user.company?.businessName ?? '',
+        targetBusinessName: company?.businessName ?? '',
+        targetCompanyId: company?.id ?? null,
+        balanceManagementType: company?.balanceManagementType ?? 'ACCOUNT',
         chargeAmount: amount,
         beforeBalance: beforeBalance,
         afterBalance: afterBalance,
