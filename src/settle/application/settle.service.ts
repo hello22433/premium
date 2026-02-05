@@ -1784,14 +1784,20 @@ export class SettleService {
       const companyMaximumLimit = Number(user.company?.maximumLimit ?? 0);
       const companyId = user.companyId;
 
-      // 잔여서비스한도 = 회사최대한도 + 개별balance - 회사전체allSettleAmount
+      // balanceManagementType에 따른 실제 balance 결정
+      const isCompanyBalanceMode = user.company?.balanceManagementType === 'COMPANY';
+      const effectiveBalance = isCompanyBalanceMode && user.company
+        ? user.company.balance
+        : user.balance;
+
+      // 잔여서비스한도 = 회사최대한도 + effectiveBalance - 회사전체allSettleAmount
       let remainServiceAmount: number;
       if (companyId && companyAllSettleMap.has(companyId)) {
         const totalAllSettleAmount = companyAllSettleMap.get(companyId)!;
-        remainServiceAmount = companyMaximumLimit + user.balance - totalAllSettleAmount;
+        remainServiceAmount = companyMaximumLimit + effectiveBalance - totalAllSettleAmount;
       } else {
         // 회사가 없는 경우 개별 계산
-        remainServiceAmount = user.balance - user.allSettleAmount;
+        remainServiceAmount = effectiveBalance - user.allSettleAmount;
       }
 
       return {
@@ -1806,7 +1812,7 @@ export class SettleService {
         serviceAmount: user.allSettleAmount,
         overdueCount: overdueCount,
         overdueAmount: overdueAmount,
-        balance: user.balance,
+        balance: effectiveBalance,
         remainServiceAmount: remainServiceAmount,
         status: remainServiceAmount > 0 ? SettleUserStatusEnum.ACTIVE : SettleUserStatusEnum.STOP,
       };
