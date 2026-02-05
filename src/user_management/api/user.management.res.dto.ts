@@ -244,6 +244,12 @@ export class UserCompanyInfoDto {
 
   @ApiProperty({ description: '여신 한도' })
   maximumLimit: number;
+
+  @ApiProperty({ description: '선충전잔액 (회사 레벨)' })
+  balance: number;
+
+  @ApiProperty({ description: '선충전 관리 방식: COMPANY(회사별 공유), ACCOUNT(계정별 개별)' })
+  balanceManagementType: 'COMPANY' | 'ACCOUNT';
 }
 
 export class UserManagementGetListResDto extends GetListResDto {
