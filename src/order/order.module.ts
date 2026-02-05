@@ -10,6 +10,7 @@ import { OrderService } from './application/order.service';
 import { ProductEntity } from '../entity/product.entity';
 import { PartnerCompanyExternModule } from '../partner_company_extern/partner.company.extern.module';
 import { UserEntity } from '../entity/user.entity';
+import { UserCompanyEntity } from '../entity/user.company.entity';
 import { UserDiscountEntity } from '../entity/user.discount.entity';
 import { UserViewScopeEntity } from '../entity/user.view.scope.entity';
 import { SsgEventEntity } from '../entity/ssg.event.entity';
@@ -32,6 +33,7 @@ import { MailModule } from '../mail/mail.module';
       OrderProductMappingEntity,
       ProductEntity,
       UserEntity,
+      UserCompanyEntity,
       UserViewScopeEntity,
       SsgEventEntity,
       SsgEventAmountHistoryEntity,
