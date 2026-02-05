@@ -115,21 +115,14 @@ export class UserManagementService {
       queryBuilder = queryBuilder.andWhere('user.status = :status', { status });
     }
 
-    if (createdStartAt && !createdEndAt) {
+    if (createdStartAt) {
       queryBuilder = queryBuilder.andWhere('user.createdAt >= :createdStartAt', {
         createdStartAt: new Date(createdStartAt),
       });
     }
 
-    if (!createdStartAt && createdEndAt) {
+    if (createdEndAt) {
       queryBuilder = queryBuilder.andWhere('user.createdAt <= :createdEndAt', {
-        createdEndAt: new Date(createdEndAt),
-      });
-    }
-
-    if (createdStartAt && createdEndAt) {
-      queryBuilder = queryBuilder.andWhere('user.createdAt BETWEEN :createdStartAt AND :createdEndAt', {
-        createdStartAt: new Date(createdStartAt),
         createdEndAt: new Date(createdEndAt),
       });
     }
@@ -174,7 +167,7 @@ export class UserManagementService {
         settleCondition: user.settleCondition,
         settleMethod: user.settleMethod,
         maximumLimit: user.company?.maximumLimit ?? 0,
-        balance: user.balance,
+        balance: this.getCurrentBalance(user, user.company),
         status: user.status,
         duplicatePhoneLimit: user.duplicatePhoneLimit,
       };
