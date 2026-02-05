@@ -1039,6 +1039,9 @@ export class SettleService {
       .leftJoinAndSelect('partnerCompany.userDiscounts', 'partnerDiscounts')
       .leftJoinAndSelect('product.brand', 'brand')
       .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
+      .leftJoinAndSelect('orderDeliveries.choiceSelectProduct', 'choiceSelectProduct')
+      .leftJoinAndSelect('choiceSelectProduct.partnerCompany', 'choicePartnerCompany')
+      .leftJoinAndSelect('choiceSelectProduct.brand', 'choiceBrand')
       .where('order.status IN (:...status)', { status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'] });
 
     if (settleMethod) {
@@ -1123,6 +1126,11 @@ export class SettleService {
         const partnerCompany = product.partnerCompany!;
 
         for (const orderDelivery of orderProductMapping.orderDeliveries!) {
+          // 초이스쿠폰 선택 시 선택된 상품 정보 사용
+          const displayProduct = orderDelivery.choiceSelectProduct ?? product;
+          const displayPartnerCompany = orderDelivery.choiceSelectProduct?.partnerCompany ?? partnerCompany;
+          const displayBrand = orderDelivery.choiceSelectProduct?.brand ?? product.brand;
+
           // 수신번호 복호화
           let receiverPhone = '';
           if (orderDelivery.deliveryTarget) {
@@ -1138,11 +1146,11 @@ export class SettleService {
           let validityEndAt = '';
           if (orderDelivery.actualSendAt) {
             const sendDateObj = new Date(orderDelivery.actualSendAt);
-            // 협력사 설정에 따라 시작일 계산
-            const startDate = partnerCompany.validityStartsNextDay
+            // 협력사 설정에 따라 시작일 계산 (초이스쿠폰 선택 시 선택된 상품의 협력사 설정 사용)
+            const startDate = displayPartnerCompany.validityStartsNextDay
               ? new Date(sendDateObj.getTime() + 24 * 60 * 60 * 1000)
               : sendDateObj;
-            const endDate = new Date(startDate.getTime() + product.expireDay * 24 * 60 * 60 * 1000);
+            const endDate = new Date(startDate.getTime() + displayProduct.expireDay * 24 * 60 * 60 * 1000);
             validityStartAt = format(startDate, DateCompactStr);
             validityEndAt = format(endDate, DateCompactStr);
           }
@@ -1161,16 +1169,16 @@ export class SettleService {
           }
 
           sheet.addRow({
-            partnerCompanyName: partnerCompany.businessName,
+            partnerCompanyName: displayPartnerCompany.businessName,
             userBusinessName: order.user!.company?.businessName ?? '',
-            productCode: product.code,
+            productCode: displayProduct.code,
             sendTitle: orderProductMapping.sendTitle ?? '',
             eventName: order.eventName,
-            productName: product.name,
-            brandName: product.brand?.nameKorean ?? '',
-            price: product.price,
+            productName: displayProduct.name,
+            brandName: displayBrand?.nameKorean ?? '',
+            price: displayProduct.price,
             balance: orderDelivery.galaxiaBalance ?? 0,
-            expireDay: product.expireDay,
+            expireDay: displayProduct.expireDay,
             validityStartAt,
             validityEndAt,
             receiverPhone,
