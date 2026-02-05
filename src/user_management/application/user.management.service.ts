@@ -237,7 +237,7 @@ export class UserManagementService {
       bankNumber: user.bankNumber,
       cardName: user.cardName,
       cardNumber: user.cardNumber,
-      balance: user.balance,
+      balance: this.getCurrentBalance(user, company),
       fromPhoneNumber: user.fromPhoneNumber,
 
       settlePeriodCondition: user.settlePeriodCondition,
