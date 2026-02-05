@@ -9,7 +9,7 @@ import { ISsgIssue } from '../interface/ssg.issue';
 import { IDaou } from '../interface/daou';
 import { InjectRepository } from '@nestjs/typeorm';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
-import { Brackets, Repository } from 'typeorm';
+import { Repository } from 'typeorm';
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
 import {
   PartnerCompanyType,
@@ -156,28 +156,9 @@ export class PartnerCompanyExternBatchService {
       .leftJoinAndSelect('orderDelivery.ssgEvent', 'ssgEvent')
       .where('orderDelivery.id < :lastId', { lastId })
       .andWhere('orderDelivery.status LIKE :status', { status: DELIVERY_STATUS_PATTERN })
-      // 조회 조건:
-      // 1. NOT_USED 상태인 모든 쿠폰
-      // 2. GALAXIA 쿠폰 중 USED 상태이면서 tradeAt이 NULL인 경우
-      //    (갤럭시아는 사용 여부만 먼저 조회되고, 사용처 정보는 일대사로 나중에 업데이트됨)
-      .andWhere(
-        new Brackets((qb) => {
-          qb.where('orderDelivery.couponStatus = :notUsed', {
-            notUsed: COUPON_STATUS_VALUES.NOT_USED,
-          }).orWhere(
-            new Brackets((subQb) => {
-              subQb
-                .where('orderDelivery.couponStatus = :used', {
-                  used: COUPON_STATUS_VALUES.USED,
-                })
-                .andWhere('orderDelivery.tradeAt IS NULL')
-                .andWhere('partnerCompany.type = :galaxia', {
-                  galaxia: PARTNER_COMPANY_TYPES.GALAXIA,
-                });
-            }),
-          );
-        }),
-      )
+      .andWhere('orderDelivery.couponStatus = :couponStatus', {
+        couponStatus: COUPON_STATUS_VALUES.NOT_USED,
+      })
       .andWhere('partnerCompany.type IS NOT NULL')
       .andWhere('orderDelivery.barCode IS NOT NULL')
       .orderBy('orderDelivery.id', 'DESC')
