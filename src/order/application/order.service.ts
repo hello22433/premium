@@ -201,6 +201,14 @@ export class OrderService {
     const applyViewScopeFilter = () => {
       const scopeType = viewScope?.scopeType ?? ViewScopeType.SELF;
 
+      // 본인 관련 주문 조회 조건 (본인 주문 + 배정된 주문 + 담당 고객으로 지정된 주문)
+      const applyUserOrderFilter = () => {
+        queryBuilder = queryBuilder.andWhere(
+          '(order.userId = :userId OR order.operationUserId = :userId OR order.clientUserId = :userId)',
+          { userId: user.id },
+        );
+      };
+
       switch (scopeType) {
         case ViewScopeType.ALL:
           // 전체 조회 - 조건 없음
@@ -212,13 +220,10 @@ export class OrderService {
               companyId: currentUser.companyId,
             });
           } else {
-            // companyId가 없으면 본인 + 배정된 주문만
-            queryBuilder = queryBuilder.andWhere('(order.userId = :userId OR order.operationUserId = :userId)', {
-              userId: user.id,
-            });
+            applyUserOrderFilter();
           }
           break;
-        case ViewScopeType.DEPARTMENT:
+        case ViewScopeType.DEPARTMENT: {
           // 같은 부서 + 추가 부서들 조회
           const deptIds = viewScope?.getDeptIdList() ?? [];
           const targetDeptIds = currentUser?.departmentId ? [currentUser.departmentId, ...deptIds] : deptIds;
@@ -228,18 +233,13 @@ export class OrderService {
               deptIds: targetDeptIds,
             });
           } else {
-            // 부서 ID가 없으면 본인 + 배정된 주문만
-            queryBuilder = queryBuilder.andWhere('(order.userId = :userId OR order.operationUserId = :userId)', {
-              userId: user.id,
-            });
+            applyUserOrderFilter();
           }
           break;
+        }
         case ViewScopeType.SELF:
         default:
-          // 본인 주문 + 배정된 주문만
-          queryBuilder = queryBuilder.andWhere('(order.userId = :userId OR order.operationUserId = :userId)', {
-            userId: user.id,
-          });
+          applyUserOrderFilter();
           break;
       }
     };
