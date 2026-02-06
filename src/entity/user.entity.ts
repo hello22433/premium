@@ -149,6 +149,9 @@ export class UserEntity extends BaseEntity {
   @OneToMany(() => OrderEntity, (order) => order.user)
   orders: OrderEntity[];
 
+  @OneToMany(() => OrderEntity, (order) => order.clientUser)
+  clientOrders: OrderEntity[];
+
   @OneToMany(() => UserDiscountEntity, (userDisCount) => userDisCount.user)
   userDiscounts: UserDiscountEntity[];
 
