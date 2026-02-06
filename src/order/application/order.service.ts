@@ -1368,10 +1368,11 @@ export class OrderService {
       relations: ['product', 'product.brand', 'product.classification', 'orderDeliveries'],
     });
 
-    // 2. 유저 및 협력사의 할인 옵션 전체 조회
+    // 2. 유저 및 협력사의 할인 옵션 전체 조회 (대행주문인 경우 clientUser의 할인옵션 사용)
+    const billingUserId = order.clientUserId ?? order.userId;
     const partnerCompanyIds = [...new Set(orderProductList.map((op) => op.product.partnerCompanyId))];
     const userDiscounts = await this.userDiscountRepository.find({
-      where: [{ userId: order.userId }, { partnerCompanyId: In(partnerCompanyIds) }],
+      where: [{ userId: billingUserId }, { partnerCompanyId: In(partnerCompanyIds) }],
     });
 
     const resultList: OrderSettleViewDto[] = orderProductList.map((orderProduct) => {
