@@ -2067,7 +2067,8 @@ export class SettleService {
 
   /**
    * 로그인한 사용자의 잔여 발송 한도 조회
-   * - 잔여서비스한도 = 회사최대한도 + 개별balance - 회사전체allSettleAmount
+   * - 잔여서비스한도 = 회사최대한도 + effectiveBalance - 회사전체allSettleAmount
+   * - effectiveBalance: balanceManagementType이 COMPANY이면 company.balance, 아니면 user.balance
    * - 동일 회사의 모든 계정이 한도를 공유함
    * @param user 로그인한 사용자 정보
    * @returns 잔여 발송 한도 정보
@@ -2105,16 +2106,21 @@ export class SettleService {
       totalAllSettleAmount = companyUsers.reduce((sum, u) => sum + u.allSettleAmount, 0);
     }
 
-    // 잔여발송한도 = 회사최대한도 + 개별balance - 회사전체allSettleAmount
-    const remainServiceAmount = companyMaximumLimit + userEntity.balance - totalAllSettleAmount;
+    // balanceManagementType에 따른 실제 balance 결정
+    const effectiveBalance = userEntity.company?.balanceManagementType === 'COMPANY'
+      ? userEntity.company.balance
+      : userEntity.balance;
+
+    // 잔여발송한도 = 회사최대한도 + effectiveBalance - 회사전체allSettleAmount
+    const remainServiceAmount = companyMaximumLimit + effectiveBalance - totalAllSettleAmount;
 
     return {
       maximumLimit: companyMaximumLimit,
-      balance: userEntity.balance,
+      balance: effectiveBalance,
       serviceAmount: userEntity.serviceAmount,
-      overdueAmount: overdueAmount,
+      overdueAmount,
       allSettleAmount: userEntity.allSettleAmount,
-      remainServiceAmount: remainServiceAmount,
+      remainServiceAmount,
     };
   }
 
