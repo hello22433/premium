@@ -181,7 +181,7 @@ export class CustomerServiceService {
 
     const skip = (page - 1) * take;
     queryBuilder.take(take).skip(skip);
-    queryBuilder.orderBy('orderDelivery.id', 'DESC');
+    queryBuilder.orderBy('orderDelivery.actualSendAt', 'DESC');
     const [orderDeliveryList, totalCount] = await queryBuilder.getManyAndCount();
 
     const totalPage = Math.ceil(totalCount / take);
@@ -1431,7 +1431,7 @@ export class CustomerServiceService {
 
     // 날짜 조건을 실제 발송일(actualSendAt) 기준으로 변경
     queryBuilder = QueryBuilderDateCondition(queryBuilder, 'orderDelivery', 'actualSendAt', startAt, endAt);
-    queryBuilder.orderBy('orderDelivery.id', 'DESC');
+    queryBuilder.orderBy('orderDelivery.actualSendAt', 'DESC');
 
     const orderDeliveryList = await queryBuilder.getMany();
 
