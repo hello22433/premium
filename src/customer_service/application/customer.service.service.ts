@@ -122,6 +122,7 @@ export class CustomerServiceService {
           OR product.name LIKE :keyword
           OR product.code LIKE :keyword
           OR orderProductMapping.sendTitle LIKE :keyword
+          OR order.eventName LIKE :keyword
           OR orderDelivery.deliveryTarget = :encryptedKeyword)`,
         { keyword: `%${keyword}%`, encryptedKeyword },
       );
@@ -1419,6 +1420,7 @@ export class CustomerServiceService {
           OR product.name LIKE :keyword
           OR product.code LIKE :keyword
           OR orderProductMapping.sendTitle LIKE :keyword
+          OR order.eventName LIKE :keyword
           OR orderDelivery.deliveryTarget = :encryptedKeyword)`,
         { keyword: `%${keyword}%`, encryptedKeyword },
       );
