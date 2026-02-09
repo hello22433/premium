@@ -11,6 +11,7 @@ import {
   SettleGetShippingStorageListResDto,
   SettleGetUserDetailResDto,
   SettleGetUserListResDto,
+  SettleGetGalaxiaListResDto,
 } from '../api/settle.res.dto';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { OrderEntity } from '../../entity/order.entity';
@@ -37,6 +38,8 @@ import {
   SettlePartnerCompanyExcelDownloadReqDto,
   SettlerUpdateOtherSaleReqDto,
   SettleUpdateUserPerOrderReqDto,
+  SettleGetGalaxiaListReqQueryDto,
+  SettleGalaxiaExcelDownloadReqDto,
 } from '../api/settle.req.dto';
 import {
   SettleUserDetailMultipleDto,
@@ -90,6 +93,8 @@ import { IUserSettleCondition } from '../../user/interface/user.settle.condition
 import { ActivityLogService } from '../../activity_log/application/activity.log.service';
 import { ActivityLogResult } from '../../activity_log/interface/activity.log.result';
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
+import { GalaxiaBarcodeLogEntity } from '../../entity/galaxia.barcode.log.entity';
+import { SettleGalaxiaListViewDto } from '../api/dto/settle.galaxia.list.view.dto';
 
 @Injectable()
 export class SettleService {
@@ -112,6 +117,8 @@ export class SettleService {
     private saleTypeRepository: Repository<OtherServiceSaleTypeEntity>,
     @InjectRepository(UserEntity)
     private userRepository: Repository<UserEntity>,
+    @InjectRepository(GalaxiaBarcodeLogEntity)
+    private galaxiaBarcodeLogRepository: Repository<GalaxiaBarcodeLogEntity>,
     private activityLogService: ActivityLogService,
     private cryptoCipher: CryptoCipher,
   ) {}
@@ -920,7 +927,14 @@ export class SettleService {
       .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .leftJoinAndSelect('partnerCompany.userDiscounts', 'partnerDiscounts')
       .leftJoinAndSelect('product.brand', 'brand')
-      .where('order.status IN (:...status)', { status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'] });
+      .where('order.status IN (:...status)', { status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'] })
+      .andWhere(
+        new Brackets((qb) =>
+          qb
+            .where('partnerCompany.type != :galaxiaType', { galaxiaType: IPartnerCompanyType.GALAXIA })
+            .orWhere('partnerCompany.type IS NULL'),
+        ),
+      );
 
     if (settleMethod) {
       queryBuilder = queryBuilder.andWhere('partnerCompany.settleMethod LIKE :settleMethod', {
@@ -988,14 +1002,6 @@ export class SettleService {
           ? Math.ceil(product.price - feePrice)
           : Math.ceil(product.price + feePrice);
 
-      let usePrice = 0;
-      let unUsePrice = 0;
-
-      if (partnerCompany.type === IPartnerCompanyType.GALAXIA) {
-        usePrice = product.price - orderDelivery.galaxiaBalance;
-        unUsePrice = orderDelivery.galaxiaBalance;
-      }
-
       return {
         id: order.id,
         registeredAt: format(orderDelivery.sendRequestAt, DateFormatStr),
@@ -1008,8 +1014,8 @@ export class SettleService {
         settlePrice: settlePrice,
         fee: fee,
         feePrice: feePrice,
-        usePrice: usePrice,
-        unUsePrice: unUsePrice,
+        usePrice: 0,
+        unUsePrice: 0,
         settleMethod: partnerCompany.settleMethod,
         isTransfer: orderDelivery.couponStatus === OrderDeliveryCouponStatus.USED,
       };
@@ -1042,7 +1048,14 @@ export class SettleService {
       .leftJoinAndSelect('orderDeliveries.choiceSelectProduct', 'choiceSelectProduct')
       .leftJoinAndSelect('choiceSelectProduct.partnerCompany', 'choicePartnerCompany')
       .leftJoinAndSelect('choiceSelectProduct.brand', 'choiceBrand')
-      .where('order.status IN (:...status)', { status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'] });
+      .where('order.status IN (:...status)', { status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'] })
+      .andWhere(
+        new Brackets((qb) =>
+          qb
+            .where('partnerCompany.type != :galaxiaType', { galaxiaType: IPartnerCompanyType.GALAXIA })
+            .orWhere('partnerCompany.type IS NULL'),
+        ),
+      );
 
     if (settleMethod) {
       queryBuilder = queryBuilder.andWhere('partnerCompany.settleMethod LIKE :settleMethod', {
@@ -2296,5 +2309,208 @@ export class SettleService {
     }
 
     return price;
+  }
+
+  private getAppDivName(appDiv: string): string {
+    switch (appDiv) {
+      case '10':
+        return '사용';
+      case '20':
+        return '사용취소';
+      case '25':
+        return '망취소';
+      case '81':
+        return '환불등록';
+      default:
+        return appDiv;
+    }
+  }
+
+  async getGalaxiaList(getQuery: SettleGetGalaxiaListReqQueryDto): Promise<SettleGetGalaxiaListResDto> {
+    const { startAt, endAt, businessName, appDiv, page, take } = getQuery;
+
+    let queryBuilder = this.galaxiaBarcodeLogRepository
+      .createQueryBuilder('log')
+      .innerJoinAndSelect('log.orderDelivery', 'orderDelivery')
+      .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
+      .innerJoinAndSelect('orderProductMapping.order', 'order')
+      .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('user.company', 'userCompany')
+      .innerJoinAndSelect('orderProductMapping.product', 'product')
+      .innerJoinAndSelect('product.partnerCompany', 'partnerCompany');
+
+    // appDay 기준 날짜 필터링 (yyyy-MM-ddTHH:mm:ss → YYYYMMDD 변환)
+    if (startAt) {
+      const startDay = startAt.replace(/[-T:]/g, '').substring(0, 8);
+      queryBuilder = queryBuilder.andWhere('log.appDay >= :startDay', { startDay });
+    }
+    if (endAt) {
+      const endDay = endAt.replace(/[-T:]/g, '').substring(0, 8);
+      queryBuilder = queryBuilder.andWhere('log.appDay <= :endDay', { endDay });
+    }
+
+    if (businessName) {
+      queryBuilder = queryBuilder.andWhere('userCompany.businessName LIKE :businessName', {
+        businessName: `%${businessName}%`,
+      });
+    }
+
+    if (appDiv) {
+      queryBuilder = queryBuilder.andWhere('log.appDiv = :appDiv', { appDiv });
+    }
+
+    const totalCount = await queryBuilder.getCount();
+    const totalPage = Math.ceil(totalCount / take);
+
+    const skip = (page - 1) * take;
+    queryBuilder = queryBuilder.orderBy('log.appDay', 'DESC').addOrderBy('log.appTime', 'DESC').skip(skip).take(take);
+
+    const logList = await queryBuilder.getMany();
+
+    const resultList: SettleGalaxiaListViewDto[] = logList.map((log) => {
+      const orderDelivery = log.orderDelivery;
+      const orderProductMapping = orderDelivery.orderProductMapping;
+      const order = orderProductMapping.order;
+      const product = orderProductMapping.product;
+
+      return {
+        id: log.id,
+        orderDeliveryId: log.orderDeliveryId,
+        barcode: log.barcode,
+        appDiv: log.appDiv,
+        appDivName: this.getAppDivName(log.appDiv),
+        appDay: log.appDay,
+        appTime: log.appTime,
+        amount: log.amount,
+        appNo: log.appNo,
+        appStore: log.appStore ?? '',
+        giftKind: log.giftKind,
+        productName: product.name,
+        productPrice: product.price,
+        galaxiaBalance: orderDelivery.galaxiaBalance ?? 0,
+        userBusinessName: order.user?.company?.businessName ?? '',
+        eventName: order.eventName,
+        code: product.code,
+        partnerCompanyName: product.partnerCompany?.businessName ?? '',
+      };
+    });
+
+    return { list: resultList, totalPage, totalCount, currentPage: page };
+  }
+
+  async galaxiaExcelDownload(user: ILoginUserInfo, body: SettleGalaxiaExcelDownloadReqDto) {
+    const startTime = Date.now();
+
+    await this.activityLogService.verifyPassword(user.id, body.password);
+
+    const { startAt, endAt, businessName, appDiv, downloadReason } = body;
+
+    const now = new Date();
+    const nowString = format(now, 'yyyyMMdd');
+
+    let queryBuilder = this.galaxiaBarcodeLogRepository
+      .createQueryBuilder('log')
+      .innerJoinAndSelect('log.orderDelivery', 'orderDelivery')
+      .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
+      .innerJoinAndSelect('orderProductMapping.order', 'order')
+      .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('user.company', 'userCompany')
+      .innerJoinAndSelect('orderProductMapping.product', 'product')
+      .innerJoinAndSelect('product.partnerCompany', 'partnerCompany');
+
+    if (startAt) {
+      const startDay = startAt.replace(/[-T:]/g, '').substring(0, 8);
+      queryBuilder = queryBuilder.andWhere('log.appDay >= :startDay', { startDay });
+    }
+    if (endAt) {
+      const endDay = endAt.replace(/[-T:]/g, '').substring(0, 8);
+      queryBuilder = queryBuilder.andWhere('log.appDay <= :endDay', { endDay });
+    }
+
+    if (businessName) {
+      queryBuilder = queryBuilder.andWhere('userCompany.businessName LIKE :businessName', {
+        businessName: `%${businessName}%`,
+      });
+    }
+
+    if (appDiv) {
+      queryBuilder = queryBuilder.andWhere('log.appDiv = :appDiv', { appDiv });
+    }
+
+    queryBuilder = queryBuilder.orderBy('log.appDay', 'DESC').addOrderBy('log.appTime', 'DESC');
+
+    const logList = await queryBuilder.getMany();
+
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('갤럭시아정산');
+
+    const textStyle = { numFmt: '@' };
+    sheet.columns = [
+      { header: '고객사', key: 'userBusinessName', width: 20, style: textStyle },
+      { header: '이벤트명', key: 'eventName', width: 25, style: textStyle },
+      { header: 'EP코드', key: 'code', width: 15, style: textStyle },
+      { header: '협력사', key: 'partnerCompanyName', width: 20, style: textStyle },
+      { header: '상품명', key: 'productName', width: 30, style: textStyle },
+      { header: '상품 정상가', key: 'productPrice', width: 12, style: textStyle },
+      { header: '바코드', key: 'barcode', width: 25, style: textStyle },
+      { header: '거래구분', key: 'appDivName', width: 12, style: textStyle },
+      { header: '사용일자', key: 'appDay', width: 12, style: textStyle },
+      { header: '사용시간', key: 'appTime', width: 10, style: textStyle },
+      { header: '사용금액', key: 'amount', width: 12, style: textStyle },
+      { header: '승인번호', key: 'appNo', width: 15, style: textStyle },
+      { header: '사용처', key: 'appStore', width: 20, style: textStyle },
+      { header: '상품권종류', key: 'giftKind', width: 12, style: textStyle },
+      { header: '현재잔액', key: 'galaxiaBalance', width: 12, style: textStyle },
+    ];
+
+    for (const log of logList) {
+      const orderDelivery = log.orderDelivery;
+      const orderProductMapping = orderDelivery.orderProductMapping;
+      const order = orderProductMapping.order;
+      const product = orderProductMapping.product;
+
+      sheet.addRow({
+        userBusinessName: order.user?.company?.businessName ?? '',
+        eventName: order.eventName,
+        code: product.code,
+        partnerCompanyName: product.partnerCompany?.businessName ?? '',
+        productName: product.name,
+        productPrice: product.price,
+        barcode: log.barcode,
+        appDivName: this.getAppDivName(log.appDiv),
+        appDay: log.appDay,
+        appTime: log.appTime,
+        amount: log.amount,
+        appNo: log.appNo,
+        appStore: log.appStore ?? '',
+        giftKind: log.giftKind,
+        galaxiaBalance: orderDelivery.galaxiaBalance ?? 0,
+      });
+    }
+
+    const fileName = `갤럭시아정산_${nowString}.xlsx`;
+    const filePath = join(process.cwd(), '.', 'public', fileName);
+
+    await workbook.xlsx.writeFile(filePath);
+
+    const endTime = Date.now();
+    const responseTime = endTime - startTime;
+
+    await this.activityLogService.createLog({
+      userId: user.id,
+      userEmail: user.email,
+      method: 'POST',
+      requestUrl: '/settle/galaxia/excel-download',
+      actionType: 'EXCEL_DOWNLOAD',
+      ipAddress: '',
+      statusCode: 200,
+      result: ActivityLogResult.SUCCESS,
+      responseTime,
+      downloadReason,
+      recordCount: sheet.rowCount - 1,
+      requestParams: { startAt, endAt, businessName, appDiv },
+    });
+
+    return { fileName, filePath };
   }
 }
