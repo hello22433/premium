@@ -173,6 +173,25 @@ export class OrderGetDeliveryCompleteReportDetailResDto {
   productList: OrderPdfDetailProductDto[];
 }
 
+export class OrderSendInfoItemDto {
+  @ApiProperty({
+    description: '상품명',
+  })
+  productName: string;
+
+  @ApiProperty({
+    nullable: true,
+    description: '발송 제목 (이벤트명)',
+  })
+  sendTitle: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    description: '발송 내용 (발송문구)',
+  })
+  sendContent: string | null;
+}
+
 export class OrderGetDeliveryCompleteReportResDto extends OrderGetDeliveryCompleteReportDetailResDto {
   @ApiProperty({
     description: 'pdf 파운로드시 파일명',
@@ -236,6 +255,13 @@ export class OrderGetDeliveryCompleteReportResDto extends OrderGetDeliveryComple
     description: '독려 문자 발송 일',
   })
   encourageDay: number | null;
+
+  @ApiProperty({
+    type: [OrderSendInfoItemDto],
+    nullable: true,
+    description: '상품별 발송정보 목록',
+  })
+  sendInfoList: OrderSendInfoItemDto[] | null;
 }
 
 export class OrderGetOrderCompleteReportResDto extends OrderCompleteReportViewDto {}
