@@ -140,6 +140,9 @@ export class OrderReceiveService {
       .innerJoinAndSelect('product.brand', 'brand')
       .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('user.company', 'userCompany')
+      .leftJoinAndSelect('order.clientUser', 'clientUser')
+      .leftJoinAndSelect('clientUser.company', 'clientCompany')
       .where('orderDelivery.id = :id', { id: orderDecrypt.id })
       .getOne();
 
@@ -224,6 +227,9 @@ export class OrderReceiveService {
     const displayProduct = selectedProductEntity || orderDelivery.orderProductMapping.product;
     const displayBrand = selectedProductEntity?.brand || orderDelivery.orderProductMapping.product.brand;
 
+    const order = orderDelivery.orderProductMapping.order;
+    const userBusinessName = order.clientUser?.company?.businessName ?? order.user!.company?.businessName ?? '';
+
     return {
       topImagePath: orderDelivery.orderProductMapping.topImagePath,
       midImagePath: orderDelivery.orderProductMapping.midImagePath,
@@ -243,7 +249,7 @@ export class OrderReceiveService {
       sendRequestAt: format(orderDelivery.sendRequestAt, DateFormatStr),
       expireDay: displayProduct.expireDay,
       brandKoreanName: displayBrand!.nameKorean === '신세계' ? '이마트' : displayBrand!.nameKorean,
-      userBusinessName: orderDelivery.orderProductMapping.order.user!.company?.businessName ?? '',
+      userBusinessName,
       partnerCompany: displayProduct.partnerCompany?.type || null,
       validityStartsNextDay: displayProduct.partnerCompany?.validityStartsNextDay,
     };
@@ -264,6 +270,9 @@ export class OrderReceiveService {
       .innerJoinAndSelect('product.brand', 'brand')
       .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('user.company', 'userCompany')
+      .leftJoinAndSelect('order.clientUser', 'clientUser')
+      .leftJoinAndSelect('clientUser.company', 'clientCompany')
       .where('testOrderDelivery.id = :id', { id: orderDecrypt.id })
       .getOne();
 
@@ -327,6 +336,9 @@ export class OrderReceiveService {
     const displayProduct = testOrderDelivery.orderProductMapping.product;
     const displayBrand = testOrderDelivery.orderProductMapping.product.brand;
 
+    const order = testOrderDelivery.orderProductMapping.order;
+    const userBusinessName = order.clientUser?.company?.businessName ?? order.user!.company?.businessName ?? '';
+
     return {
       topImagePath: testOrderDelivery.orderProductMapping.topImagePath,
       midImagePath: testOrderDelivery.orderProductMapping.midImagePath,
@@ -346,7 +358,7 @@ export class OrderReceiveService {
       sendRequestAt: format(testOrderDelivery.sendRequestAt, DateFormatStr),
       expireDay: displayProduct.expireDay,
       brandKoreanName: displayBrand!.nameKorean === '신세계' ? '이마트' : displayBrand!.nameKorean,
-      userBusinessName: testOrderDelivery.orderProductMapping.order.user!.company?.businessName ?? '',
+      userBusinessName,
       partnerCompany: displayProduct.partnerCompany?.type || null,
       validityStartsNextDay: displayProduct.partnerCompany?.validityStartsNextDay,
     };

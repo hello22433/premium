@@ -2777,6 +2777,8 @@ export class OrderService {
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
       .leftJoinAndSelect('user.company', 'userCompany')
+      .leftJoinAndSelect('order.clientUser', 'clientUser')
+      .leftJoinAndSelect('clientUser.company', 'clientCompany')
       .leftJoinAndSelect('order.operationUser', 'operationUser')
       .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .leftJoinAndSelect('orderProductMappings.product', 'product')
@@ -2812,12 +2814,16 @@ export class OrderService {
     if (searchKeyword && searchKeyword.length >= 1) {
       switch (searchType) {
         case 'CUSTOMER':
-          queryBuilder = queryBuilder.andWhere('userCompany.businessName LIKE :keyword', {
-            keyword: `%${searchKeyword}%`,
-          });
+          queryBuilder = queryBuilder.andWhere(
+            '(userCompany.businessName LIKE :keyword OR clientCompany.businessName LIKE :keyword)',
+            { keyword: `%${searchKeyword}%` },
+          );
           break;
         case 'MANAGER':
-          queryBuilder = queryBuilder.andWhere('user.personName LIKE :keyword', { keyword: `%${searchKeyword}%` });
+          queryBuilder = queryBuilder.andWhere(
+            '(user.personName LIKE :keyword OR clientUser.personName LIKE :keyword)',
+            { keyword: `%${searchKeyword}%` },
+          );
           break;
         case 'EVENT':
           queryBuilder = queryBuilder.andWhere('order.eventName LIKE :keyword', { keyword: `%${searchKeyword}%` });
@@ -2828,7 +2834,15 @@ export class OrderService {
         case 'ALL':
         default:
           queryBuilder = queryBuilder.andWhere(
-            '(userCompany.businessName LIKE :keyword OR operationUser.personName LIKE :keyword OR order.eventName LIKE :keyword OR product.name LIKE :keyword)',
+            `(${[
+              'userCompany.businessName LIKE :keyword',
+              'clientCompany.businessName LIKE :keyword',
+              'user.personName LIKE :keyword',
+              'clientUser.personName LIKE :keyword',
+              'operationUser.personName LIKE :keyword',
+              'order.eventName LIKE :keyword',
+              'product.name LIKE :keyword',
+            ].join(' OR ')})`,
             { keyword: `%${searchKeyword}%` },
           );
           break;
@@ -2900,8 +2914,8 @@ export class OrderService {
       sheet.addRow({
         id: id,
         registerAt: format(order.registerAt, 'yyyy-MM-dd HH:mm'),
-        userBusinessName: order.user!.company?.businessName ?? '',
-        userPersonName: order.user!.personName,
+        userBusinessName: order.clientUser?.company?.businessName ?? order.user!.company?.businessName ?? '',
+        userPersonName: order.clientUser?.personName ?? order.user!.personName,
         eventName: order.eventName,
         productName: productName,
         totalAmount: totalAmount,

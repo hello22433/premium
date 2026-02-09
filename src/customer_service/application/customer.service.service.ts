@@ -97,6 +97,8 @@ export class CustomerServiceService {
       .leftJoinAndSelect('choiceSelectProduct.partnerCompany', 'choicePartnerCompany')
       .leftJoinAndMapOne('order.user', 'user', 'user', 'user.id = order.user_id AND user.deleted_at IS NULL')
       .leftJoinAndSelect('user.company', 'userCompany')
+      .leftJoinAndMapOne('order.clientUser', 'user', 'clientUser', 'clientUser.id = order.client_user_id AND clientUser.deleted_at IS NULL')
+      .leftJoinAndSelect('clientUser.company', 'clientCompany')
       .andWhere('orderDelivery.status IN (:...deliveryStatus)', { deliveryStatus: ['COMPLETE', 'COMPLETE_SMS'] })
       .andWhere('orderDelivery.deletedAt IS NULL');
 
@@ -254,7 +256,7 @@ export class CustomerServiceService {
         orderProductMappingId: orderDelivery.orderProductMapping.id,
         eventName: order.eventName,
         sendTitle: orderDelivery.orderProductMapping.sendTitle ?? '',
-        businessName: order.user?.company?.businessName ?? '',
+        businessName: order.clientUser?.company?.businessName ?? order.user?.company?.businessName ?? '',
         productName: orderDelivery.choiceSelectProduct ? orderDelivery.choiceSelectProduct.name : product.name,
         price: displayProduct.price.toString(),
         productCode: product.code,
@@ -1360,6 +1362,8 @@ export class CustomerServiceService {
       .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
       .leftJoinAndMapOne('order.user', 'user', 'user', 'user.id = order.user_id AND user.deleted_at IS NULL')
       .leftJoinAndSelect('user.company', 'userCompany')
+      .leftJoinAndMapOne('order.clientUser', 'user', 'clientUser', 'clientUser.id = order.client_user_id AND clientUser.deleted_at IS NULL')
+      .leftJoinAndSelect('clientUser.company', 'clientCompany')
       .andWhere('orderDelivery.status IN (:...deliveryStatus)', { deliveryStatus: ['COMPLETE', 'COMPLETE_SMS'] })
       .andWhere('orderDelivery.deletedAt IS NULL');
 
@@ -1543,7 +1547,7 @@ export class CustomerServiceService {
 
       worksheet.addRow({
         actualSendAt: actualSendAt || '',
-        businessName: order.user?.company?.businessName ?? '',
+        businessName: order.clientUser?.company?.businessName ?? order.user?.company?.businessName ?? '',
         eventName: order.eventName,
         sendTitle: orderDelivery.orderProductMapping.sendTitle ?? '',
         productName: orderDelivery.choiceSelectProduct ? orderDelivery.choiceSelectProduct.name : product.name,
