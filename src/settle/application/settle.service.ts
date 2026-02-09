@@ -1730,69 +1730,41 @@ export class SettleService {
   async getUserPerList(getDto: SettleGetUserPerListReqQueryDto) {
     const { startAt, endAt, userPersonName, userBusinessName, take, page, status, dateType } = getDto;
 
-    const dateColumn = dateType === 'ACTUAL_SEND_AT' ? 'actualSendAt' : 'createdAt';
+    const dateColumn = dateType === 'ACTUAL_SEND_AT' ? 'actual_send_at' : 'created_at';
 
-    const applyUserFilters = (qb: typeof directQueryBuilder) => {
-      if (userPersonName) {
-        qb.andWhere('user.personName LIKE :userPersonName', { userPersonName: `%${userPersonName}%` });
-      }
-      if (userBusinessName) {
-        qb.andWhere('userCompany.businessName LIKE :userBusinessName', {
-          userBusinessName: `%${userBusinessName}%`,
-        });
-      }
-      qb.orderBy('user.id', 'DESC');
-    };
+    // Phase 1: EXISTS 서브쿼리로 대상 사용자만 조회 (주문/배송 엔티티 로드 없이)
+    const { clause: existsDateClause, params: existsDateParams } = this.buildDateConditions(
+      'od',
+      dateColumn,
+      'exists',
+      startAt,
+      endAt,
+    );
 
-    // 1. 직접 주문이 있는 사용자 조회
-    const directQueryBuilder = this.userRepository
-      .createQueryBuilder('user')
-      .leftJoinAndSelect('user.company', 'userCompany')
-      .innerJoinAndSelect('user.orders', 'orders')
-      .innerJoinAndSelect('orders.orderProductMappings', 'orderProductMappings')
-      .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries');
+    const qb = this.userRepository
+      .createQueryBuilder('u')
+      .leftJoinAndSelect('u.company', 'uc')
+      .where(
+        `EXISTS (
+          SELECT 1 FROM \`order\` o
+          INNER JOIN order_product_mapping opm ON opm.order_id = o.id
+          INNER JOIN order_delivery od ON od.order_product_mapping_id = opm.id
+          WHERE (o.user_id = u.id OR o.client_user_id = u.id)${existsDateClause}
+        )`,
+        existsDateParams,
+      )
+      .orderBy('u.id', 'DESC');
 
-    QueryBuilderDateCondition(directQueryBuilder, 'orderDeliveries', dateColumn, startAt, endAt);
-    applyUserFilters(directQueryBuilder);
-    const directUsers = await directQueryBuilder.getMany();
-
-    // 2. 대행주문의 고객사 사용자 조회
-    const clientQueryBuilder = this.userRepository
-      .createQueryBuilder('user')
-      .leftJoinAndSelect('user.company', 'userCompany')
-      .innerJoinAndSelect('user.clientOrders', 'clientOrders')
-      .innerJoinAndSelect('clientOrders.orderProductMappings', 'clientOpm')
-      .innerJoinAndSelect('clientOpm.orderDeliveries', 'clientOd');
-
-    QueryBuilderDateCondition(clientQueryBuilder, 'clientOd', dateColumn, startAt, endAt);
-    applyUserFilters(clientQueryBuilder);
-    const clientUsers = await clientQueryBuilder.getMany();
-
-    // 3. 결과 병합 (직접주문 + 대행주문의 고객사)
-    const userMap = new Map<number, UserEntity>();
-    for (const user of directUsers) {
-      userMap.set(user.id, user);
+    if (userPersonName) {
+      qb.andWhere('u.personName LIKE :userPersonName', { userPersonName: `%${userPersonName}%` });
     }
-    for (const user of clientUsers) {
-      const existingUser = userMap.get(user.id);
-      if (existingUser) {
-        // 기존 사용자에 대행주문 추가 (중복 제거)
-        const existingOrderIds = new Set(existingUser.orders.map((o) => o.id));
-        for (const clientOrder of user.clientOrders) {
-          if (!existingOrderIds.has(clientOrder.id)) {
-            existingUser.orders.push(clientOrder);
-          }
-        }
-      } else {
-        // 대행주문만 있는 사용자: clientOrders를 orders로 할당
-        user.orders = user.clientOrders;
-        userMap.set(user.id, user);
-      }
+    if (userBusinessName) {
+      qb.andWhere('uc.businessName LIKE :userBusinessName', { userBusinessName: `%${userBusinessName}%` });
     }
 
-    const allUsers = Array.from(userMap.values()).sort((a, b) => b.id - a.id);
+    const allUsers = await qb.getMany();
 
-    // 동일 회사별 allSettleAmount 합산 (companyId -> totalAllSettleAmount)
+    // Phase 2: 동일 회사별 allSettleAmount 합산
     const companyAllSettleMap = new Map<number, number>();
     for (const user of allUsers) {
       if (!user.companyId) continue;
@@ -1800,33 +1772,18 @@ export class SettleService {
       companyAllSettleMap.set(user.companyId, current + user.allSettleAmount);
     }
 
-    // 결과 리스트 생성 (회사별 합산된 allSettleAmount 사용)
-    let result: SettleUserPerListViewDto[] = allUsers.map((user) => {
-      let overdueCount = 0;
-      let overdueAmount = 0;
-      for (const order of user.orders) {
-        if (order.status === 'DELIVERY_COMPLETE' && order.settleStatus === 'UNSETTLE_OVERDUE') {
-          overdueCount += 1;
-          overdueAmount += order.sendAmount;
-        }
-      }
-
+    // Phase 3: remainServiceAmount 계산 및 결과 생성
+    const allResults: SettleUserPerListViewDto[] = allUsers.map((user) => {
       const companyMaximumLimit = Number(user.company?.maximumLimit ?? 0);
-      const companyId = user.companyId;
 
-      // balanceManagementType에 따른 실제 balance 결정
-      const effectiveBalance = user.company?.balanceManagementType === 'COMPANY'
-        ? user.company.balance
-        : user.balance;
+      const effectiveBalance =
+        user.company?.balanceManagementType === 'COMPANY' ? user.company.balance : user.balance;
 
-      // 잔여서비스한도 = 회사최대한도 + effectiveBalance - 회사전체allSettleAmount
-      let remainServiceAmount: number;
-      if (companyId && companyAllSettleMap.has(companyId)) {
-        const totalAllSettleAmount = companyAllSettleMap.get(companyId)!;
-        remainServiceAmount = companyMaximumLimit + effectiveBalance - totalAllSettleAmount;
-      } else {
-        remainServiceAmount = effectiveBalance - user.allSettleAmount;
-      }
+      const companyTotal = user.companyId ? companyAllSettleMap.get(user.companyId) : undefined;
+      const remainServiceAmount =
+        companyTotal !== undefined
+          ? companyMaximumLimit + effectiveBalance - companyTotal
+          : effectiveBalance - user.allSettleAmount;
 
       return {
         id: user.id,
@@ -1838,30 +1795,134 @@ export class SettleService {
         settlePeriodCount: user.settlePeriodCount,
         maximumLimit: companyMaximumLimit,
         serviceAmount: user.allSettleAmount,
-        overdueCount,
-        overdueAmount,
+        overdueCount: 0,
+        overdueAmount: 0,
         balance: effectiveBalance,
         remainServiceAmount,
         status: remainServiceAmount > 0 ? SettleUserStatusEnum.ACTIVE : SettleUserStatusEnum.STOP,
       };
     });
 
-    // 상태 필터링 적용 (회사별 합산 후)
-    if (status === 'ACTIVE') {
-      result = result.filter((r) => r.remainServiceAmount > 0);
-    } else if (status === 'STOP') {
-      result = result.filter((r) => r.remainServiceAmount <= 0);
+    // Phase 4: 상태 필터링 및 페이지네이션
+    const filtered =
+      status === 'ACTIVE'
+        ? allResults.filter((r) => r.remainServiceAmount > 0)
+        : status === 'STOP'
+          ? allResults.filter((r) => r.remainServiceAmount <= 0)
+          : allResults;
+
+    const totalCount = filtered.length;
+    const skip = (page - 1) * take;
+    const pageResult = filtered.slice(skip, skip + take);
+
+    // Phase 5: 현재 페이지 사용자에 대해서만 overdue 통계 조회
+    if (pageResult.length > 0) {
+      const pageUserIds = pageResult.map((r) => r.id);
+
+      const { clause: overdueDateClause, params: overdueDateParams } = this.buildDateConditions(
+        'od2',
+        dateColumn,
+        'overdue',
+        startAt,
+        endAt,
+      );
+
+      const overdueQb = this.orderRepository
+        .createQueryBuilder('o')
+        .select('o.id', 'orderId')
+        .addSelect('o.userId', 'userId')
+        .addSelect('o.clientUserId', 'clientUserId')
+        .addSelect('o.sendAmount', 'sendAmount')
+        .where(
+          new Brackets((wb) => {
+            wb.where('o.userId IN (:...pageUserIds)', { pageUserIds }).orWhere(
+              'o.clientUserId IN (:...pageUserIds)',
+              { pageUserIds },
+            );
+          }),
+        )
+        .andWhere('o.status = :overdueStatus', { overdueStatus: 'DELIVERY_COMPLETE' })
+        .andWhere('o.settleStatus = :overdueSettleStatus', {
+          overdueSettleStatus: 'UNSETTLE_OVERDUE',
+        })
+        .andWhere(
+          `EXISTS (
+            SELECT 1 FROM order_product_mapping opm2
+            INNER JOIN order_delivery od2 ON od2.order_product_mapping_id = opm2.id
+            WHERE opm2.order_id = o.id${overdueDateClause}
+          )`,
+          overdueDateParams,
+        );
+
+      const overdueOrders = await overdueQb.getRawMany();
+
+      const pageUserIdSet = new Set(pageUserIds);
+      const userOverdueMap = new Map<number, { count: number; amount: number }>();
+
+      for (const row of overdueOrders) {
+        const userId = Number(row.userId);
+        const clientUserId = row.clientUserId ? Number(row.clientUserId) : null;
+        const sendAmount = Number(row.sendAmount);
+
+        if (pageUserIdSet.has(userId)) {
+          this.accumulateOverdue(userOverdueMap, userId, sendAmount);
+        }
+        if (clientUserId && clientUserId !== userId && pageUserIdSet.has(clientUserId)) {
+          this.accumulateOverdue(userOverdueMap, clientUserId, sendAmount);
+        }
+      }
+
+      for (const item of pageResult) {
+        const overdue = userOverdueMap.get(item.id);
+        if (overdue) {
+          item.overdueCount = overdue.count;
+          item.overdueAmount = overdue.amount;
+        }
+      }
     }
 
-    const totalCount = result.length;
-    const skip = (page - 1) * take;
-
     return {
-      list: result.slice(skip, skip + take),
+      list: pageResult,
       totalCount,
       totalPage: Math.ceil(totalCount / take),
       currentPage: page,
     };
+  }
+
+  private buildDateConditions(
+    alias: string,
+    dateColumn: string,
+    prefix: string,
+    startAt?: string,
+    endAt?: string,
+  ): { clause: string; params: Record<string, any> } {
+    const conditions: string[] = [];
+    const params: Record<string, any> = {};
+
+    if (startAt) {
+      const paramName = `${prefix}StartAt`;
+      conditions.push(`${alias}.${dateColumn} >= :${paramName}`);
+      params[paramName] = new Date(startAt);
+    }
+    if (endAt) {
+      const paramName = `${prefix}EndAt`;
+      conditions.push(`${alias}.${dateColumn} <= :${paramName}`);
+      params[paramName] = new Date(endAt);
+    }
+
+    const clause = conditions.length > 0 ? ' AND ' + conditions.join(' AND ') : '';
+    return { clause, params };
+  }
+
+  private accumulateOverdue(
+    map: Map<number, { count: number; amount: number }>,
+    userId: number,
+    amount: number,
+  ): void {
+    const entry = map.get(userId) ?? { count: 0, amount: 0 };
+    entry.count += 1;
+    entry.amount += amount;
+    map.set(userId, entry);
   }
 
   async getUserPerDetail(getDto: SettleGetUserPerDetailReqQueryDto): Promise<SettleGetPerUserDetailResDto> {
