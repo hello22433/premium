@@ -771,6 +771,16 @@ export class OrderService {
     }
     const actualSendAt = latestActualSendAt ? format(latestActualSendAt, DateFormatStr) : null;
 
+    // 상품별 발송정보 목록 생성
+    const sendInfoList: { productName: string; sendTitle: string | null; sendContent: string | null }[] = [];
+    for (const mapping of order.orderProductMappings || []) {
+      sendInfoList.push({
+        productName: mapping.product?.name ?? '',
+        sendTitle: mapping.sendTitle ?? null,
+        sendContent: mapping.sendContent ?? null,
+      });
+    }
+
     return {
       id: order.id,
       fileName,
@@ -791,6 +801,7 @@ export class OrderService {
       fromPhoneNumber: firstMapping?.fromPhoneNumber ?? null,
       fromEmail: firstMapping?.fromEmail ?? null,
       encourageDay: firstMapping?.encourageDay ?? null,
+      sendInfoList,
     };
   }
 
