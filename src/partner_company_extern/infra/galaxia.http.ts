@@ -110,12 +110,50 @@ export class GalaxiaHttp implements IGalaxia {
         },
       } as GalaxiaIssueOut;
     } catch (e) {
-      this.logger.error(e);
-      this.logger.error(JSON.stringify(e));
-      // AxiosError의 경우 response data 로깅
+      // 409 Duplicate order number - 이미 발급된 주문번호 처리
+      if (e.response?.status === 409 && e.response?.data?.resCode === '4900') {
+        this.logger.warn(`[issue] 중복 주문번호 감지 - transactionId: ${obj.transactionId}, 기존 발급 내역 조회 시도`);
+
+        try {
+          const checkResult = await this.check({
+            giftKind: obj.giftKind,
+            paramValue: obj.transactionId,
+            paramKind: 1,
+          });
+
+          if (checkResult.resCode === '0000' && checkResult.giftCertificate.couponStatus === 'ACTIVE') {
+            this.logger.warn(
+              `[issue] 기존 발급 확인됨 - transactionId: ${obj.transactionId}, ` +
+              `trId: ${checkResult.transactionId}, 잔액: ${checkResult.giftCertificate.balance}`,
+            );
+            return {
+              resCode: '0000',
+              resMsg: 'Duplicate recovered via check',
+              transactionId: checkResult.transactionId || obj.transactionId,
+              giftCertificate: {
+                issueNumber: '',
+                issueDate: '',
+                faceValue: checkResult.giftCertificate.faceValue,
+                pinNumber: '',
+                barcode: '',
+                validTo: checkResult.giftCertificate.validTo,
+              },
+            } as GalaxiaIssueOut;
+          }
+        } catch (checkError) {
+          this.logger.error(`[issue] 중복 주문번호 기존 발급 조회 실패: ${checkError}`);
+        }
+
+        // check 조회 실패 또는 쿠폰이 ACTIVE가 아닌 경우
+        throw new Error(
+          `Galaxia 중복 주문번호(${obj.transactionId}): 이미 처리된 주문입니다. Galaxia resCode: 4900`,
+        );
+      }
+
+      // 409가 아닌 일반 에러 로깅
+      this.logger.error(`[issue] Galaxia API 에러: ${e instanceof Error ? e.message : e}`);
       if (e.response) {
-        this.logger.error(`[issue] Galaxia API 응답 status: ${e.response.status}`);
-        this.logger.error(`[issue] Galaxia API 응답 data: ${JSON.stringify(e.response.data)}`);
+        this.logger.error(`[issue] Galaxia API 응답 status: ${e.response.status}, data: ${JSON.stringify(e.response.data)}`);
       }
       throw e;
     }

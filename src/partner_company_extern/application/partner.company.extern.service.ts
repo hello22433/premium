@@ -125,6 +125,14 @@ export class PartnerCompanyExternService {
       // 1.1.1 갤럭시아 쿠폰 발급
       // 표준연동발행규격서 v.1.6.8_갤럭시아머니트리.pdf
       if (type === 'GALAXIA') {
+        // 이미 발급된 쿠폰이 있으면 중복 호출 방지
+        if (orderDelivery.barCode && orderDelivery.couponNum) {
+          this.logger.warn(
+            `[GALAXIA] 이미 발급된 쿠폰 존재 - barCode: ${orderDelivery.barCode}, couponNum: ${orderDelivery.couponNum}, 발급 skip`,
+          );
+          return;
+        }
+
         const giftKind = orderDelivery.orderProductMapping.product.name.includes('(백화점)') ? 'dept' : 'cpn';
         // 개인정보 보호: 백화점(dept)만 실제 전화번호 전달, 그 외는 더미 번호 사용
         const phoneNumberForGalaxia = giftKind === 'dept' ? decryptedDeliveryTarget : '01000000000';
@@ -132,13 +140,23 @@ export class PartnerCompanyExternService {
           transactionId: orderDelivery.transactionId,
           partnerCompanyCode: orderDelivery.orderProductMapping.product.partnerCompanyCode!,
           fromPhoneNumber: phoneNumberForGalaxia,
-          giftKind: giftKind,
+          giftKind,
           // 백화점(dept) 상품권의 경우 액면가 필수
           faceValue: giftKind === 'dept' ? String(orderDelivery.orderProductMapping.product.price) : undefined,
         });
         context = JSON.stringify(galaxiaOut);
-        orderDelivery.barCode = galaxiaOut.giftCertificate.barcode ?? null;
+
+        // 409 복구 응답의 경우 barcode가 비어있을 수 있음 - couponNum(trId)은 저장
         orderDelivery.couponNum = galaxiaOut.transactionId;
+        if (galaxiaOut.giftCertificate.barcode) {
+          orderDelivery.barCode = galaxiaOut.giftCertificate.barcode;
+        } else {
+          // barcode 없이 couponNum만 복구된 경우 (409 중복 복구)
+          this.logger.warn(
+            `[GALAXIA] 중복 복구: barcode 없음, couponNum(trId): ${galaxiaOut.transactionId}. ` +
+            `transactionId: ${orderDelivery.transactionId}`,
+          );
+        }
       }
 
       // 1.1.2 GSMBIZ 쿠폰 발급
