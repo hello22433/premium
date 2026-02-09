@@ -619,6 +619,8 @@ export class SettleService {
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
       .leftJoinAndSelect('user.company', 'userCompany')
+      .leftJoinAndSelect('order.clientUser', 'clientUser')
+      .leftJoinAndSelect('clientUser.company', 'clientCompany')
       .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .innerJoinAndSelect('orderProductMappings.product', 'product')
       .innerJoinAndSelect('product.brand', 'brand')
@@ -626,9 +628,10 @@ export class SettleService {
       .where('order.status IN (:...status)', { status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'] });
 
     if (personName) {
-      queryBuilder = queryBuilder.andWhere('user.personName LIKE :personName', {
-        personName: `%${personName}%`,
-      });
+      queryBuilder = queryBuilder.andWhere(
+        '(user.personName LIKE :personName OR clientUser.personName LIKE :personName)',
+        { personName: `%${personName}%` },
+      );
     }
 
     if (eventName) {
@@ -638,9 +641,10 @@ export class SettleService {
     }
 
     if (businessName) {
-      queryBuilder = queryBuilder.andWhere('userCompany.businessName LIKE :businessName', {
-        businessName: `%${businessName}%`,
-      });
+      queryBuilder = queryBuilder.andWhere(
+        '(userCompany.businessName LIKE :businessName OR clientCompany.businessName LIKE :businessName)',
+        { businessName: `%${businessName}%` },
+      );
     }
 
     queryBuilder = QueryBuilderDateCondition(queryBuilder, 'order', 'createdAt', startAt, endAt);
@@ -696,11 +700,11 @@ export class SettleService {
 
         resultList.push({
           id: order.id,
-          businessName: order.user!.company?.businessName ?? '',
+          businessName: order.clientUser?.company?.businessName ?? order.user!.company?.businessName ?? '',
           productClassification: orderProductMapping.product.classification?.classification ?? '',
           brandNameKorean: orderProductMapping.product.brand!.nameKorean,
           brandNameEnglish: orderProductMapping.product.brand!.nameEnglish,
-          personName: order.user!.personName,
+          personName: order.clientUser?.personName ?? order.user!.personName,
           eventName: order.eventName,
           productName: orderProductMapping.product.name,
           deliveryAmount: deliveryAmount,
@@ -737,6 +741,8 @@ export class SettleService {
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
       .leftJoinAndSelect('user.company', 'userCompany')
+      .leftJoinAndSelect('order.clientUser', 'clientUser')
+      .leftJoinAndSelect('clientUser.company', 'clientCompany')
       .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .innerJoinAndSelect('orderProductMappings.product', 'product')
       .innerJoinAndSelect('product.brand', 'brand')
@@ -744,9 +750,10 @@ export class SettleService {
       .where('order.status IN (:...status)', { status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'] });
 
     if (personName) {
-      queryBuilder = queryBuilder.andWhere('user.personName LIKE :personName', {
-        personName: `%${personName}%`,
-      });
+      queryBuilder = queryBuilder.andWhere(
+        '(user.personName LIKE :personName OR clientUser.personName LIKE :personName)',
+        { personName: `%${personName}%` },
+      );
     }
 
     if (eventName) {
@@ -756,9 +763,10 @@ export class SettleService {
     }
 
     if (businessName) {
-      queryBuilder = queryBuilder.andWhere('userCompany.businessName LIKE :businessName', {
-        businessName: `%${businessName}%`,
-      });
+      queryBuilder = queryBuilder.andWhere(
+        '(userCompany.businessName LIKE :businessName OR clientCompany.businessName LIKE :businessName)',
+        { businessName: `%${businessName}%` },
+      );
     }
 
     queryBuilder = QueryBuilderDateCondition(queryBuilder, 'order', 'createdAt', startAt, endAt);
@@ -813,11 +821,11 @@ export class SettleService {
 
         resultList.push({
           id: order.id,
-          businessName: order.user!.company?.businessName ?? '',
+          businessName: order.clientUser?.company?.businessName ?? order.user!.company?.businessName ?? '',
           productClassification: orderProductMapping.product.classification?.classification ?? '',
           brandNameKorean: orderProductMapping.product.brand!.nameKorean,
           brandNameEnglish: orderProductMapping.product.brand!.nameEnglish,
-          personName: order.user!.personName,
+          personName: order.clientUser?.personName ?? order.user!.personName,
           eventName: order.eventName,
           productName: orderProductMapping.product.name,
           deliveryAmount: deliveryAmount,
@@ -923,6 +931,8 @@ export class SettleService {
       .innerJoinAndSelect('orderProductMapping.order', 'order')
       .innerJoinAndSelect('order.user', 'user')
       .leftJoinAndSelect('user.company', 'userCompany')
+      .leftJoinAndSelect('order.clientUser', 'clientUser')
+      .leftJoinAndSelect('clientUser.company', 'clientCompany')
       .innerJoinAndSelect('orderProductMapping.product', 'product')
       .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .leftJoinAndSelect('partnerCompany.userDiscounts', 'partnerDiscounts')
@@ -1006,7 +1016,7 @@ export class SettleService {
         id: order.id,
         registeredAt: format(orderDelivery.sendRequestAt, DateFormatStr),
         partnerCompanyName: partnerCompany.businessName,
-        userBusinessName: order.user!.company?.businessName ?? '',
+        userBusinessName: order.clientUser?.company?.businessName ?? order.user!.company?.businessName ?? '',
         eventName: order.eventName,
         code: order.code,
         productNameList: [product.name],
@@ -1039,6 +1049,8 @@ export class SettleService {
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
       .leftJoinAndSelect('user.company', 'userCompany')
+      .leftJoinAndSelect('order.clientUser', 'clientUser')
+      .leftJoinAndSelect('clientUser.company', 'clientCompany')
       .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .innerJoinAndSelect('orderProductMappings.product', 'product')
       .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
@@ -1183,7 +1195,7 @@ export class SettleService {
 
           sheet.addRow({
             partnerCompanyName: displayPartnerCompany.businessName,
-            userBusinessName: order.user!.company?.businessName ?? '',
+            userBusinessName: order.clientUser?.company?.businessName ?? order.user!.company?.businessName ?? '',
             productCode: displayProduct.code,
             sendTitle: orderProductMapping.sendTitle ?? '',
             eventName: order.eventName,
@@ -1244,7 +1256,7 @@ export class SettleService {
       .innerJoinAndSelect('order.user', 'user')
       .leftJoinAndSelect('user.company', 'userCompany')
       .leftJoinAndSelect('order.clientUser', 'clientUser')
-      .leftJoinAndSelect('clientUser.company', 'clientUserCompany')
+      .leftJoinAndSelect('clientUser.company', 'clientCompany')
       .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .innerJoinAndSelect('orderProductMappings.product', 'product')
       .leftJoinAndSelect('product.classification', 'classification')
@@ -1265,15 +1277,17 @@ export class SettleService {
     }
 
     if (businessName) {
-      queryBuilder = queryBuilder.andWhere('userCompany.businessName LIKE :businessName', {
-        businessName: `%${businessName}%`,
-      });
+      queryBuilder = queryBuilder.andWhere(
+        '(userCompany.businessName LIKE :businessName OR clientCompany.businessName LIKE :businessName)',
+        { businessName: `%${businessName}%` },
+      );
     }
 
     if (personName) {
-      queryBuilder = queryBuilder.andWhere('user.personName LIKE :personName', {
-        personName: `%${personName}%`,
-      });
+      queryBuilder = queryBuilder.andWhere(
+        '(user.personName LIKE :personName OR clientUser.personName LIKE :personName)',
+        { personName: `%${personName}%` },
+      );
     }
 
     if (eventName) {
@@ -1388,7 +1402,7 @@ export class SettleService {
       .innerJoinAndSelect('order.user', 'user')
       .leftJoinAndSelect('user.company', 'userCompany')
       .leftJoinAndSelect('order.clientUser', 'clientUser')
-      .leftJoinAndSelect('clientUser.company', 'clientUserCompany')
+      .leftJoinAndSelect('clientUser.company', 'clientCompany')
       .leftJoinAndSelect('order.operationUser', 'operationUser')
       .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .leftJoinAndSelect('orderProductMappings.product', 'product')
@@ -1470,7 +1484,7 @@ export class SettleService {
       .innerJoinAndSelect('order.user', 'user')
       .leftJoinAndSelect('user.company', 'userCompany')
       .leftJoinAndSelect('order.clientUser', 'clientUser')
-      .leftJoinAndSelect('clientUser.company', 'clientUserCompany')
+      .leftJoinAndSelect('clientUser.company', 'clientCompany')
       .leftJoinAndSelect('order.operationUser', 'operationUser')
       .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .leftJoinAndSelect('orderProductMappings.product', 'product')
@@ -1597,6 +1611,8 @@ export class SettleService {
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
       .leftJoinAndSelect('user.company', 'userCompany')
+      .leftJoinAndSelect('order.clientUser', 'clientUser')
+      .leftJoinAndSelect('clientUser.company', 'clientCompany')
       .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .innerJoinAndSelect('orderProductMappings.product', 'product')
       .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
@@ -1613,15 +1629,17 @@ export class SettleService {
     }
 
     if (businessName) {
-      queryBuilder = queryBuilder.andWhere('userCompany.businessName LIKE :businessName', {
-        businessName: `%${businessName}%`,
-      });
+      queryBuilder = queryBuilder.andWhere(
+        '(userCompany.businessName LIKE :businessName OR clientCompany.businessName LIKE :businessName)',
+        { businessName: `%${businessName}%` },
+      );
     }
 
     if (personName) {
-      queryBuilder = queryBuilder.andWhere('user.personName LIKE :personName', {
-        personName: `%${personName}%`,
-      });
+      queryBuilder = queryBuilder.andWhere(
+        '(user.personName LIKE :personName OR clientUser.personName LIKE :personName)',
+        { personName: `%${personName}%` },
+      );
     }
 
     if (eventName) {
@@ -1653,8 +1671,8 @@ export class SettleService {
       return {
         id: order.id,
         registeredAt: format(order.registerAt, DateDateFormatStr),
-        businessName: order.user!.company?.businessName ?? '',
-        personName: order.user!.personName,
+        businessName: order.clientUser?.company?.businessName ?? order.user!.company?.businessName ?? '',
+        personName: order.clientUser?.personName ?? order.user!.personName,
         eventName: order.eventName,
         productNameList: productNameList,
         amount: amount,
@@ -1945,6 +1963,8 @@ export class SettleService {
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
       .leftJoinAndSelect('user.company', 'userCompany')
+      .leftJoinAndSelect('order.clientUser', 'clientUser')
+      .leftJoinAndSelect('clientUser.company', 'clientCompany')
       .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .innerJoinAndSelect('orderProductMappings.product', 'product')
       .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
@@ -1954,12 +1974,16 @@ export class SettleService {
     QueryBuilderDateCondition(queryBuilder, 'orderProductMappings', 'sendRequestAt', startAt, endAt);
 
     if (userBusinessName) {
-      queryBuilder.andWhere('userCompany.businessName LIKE :userBusinessName', {
-        userBusinessName: `%${userBusinessName}%`,
-      });
+      queryBuilder.andWhere(
+        '(userCompany.businessName LIKE :userBusinessName OR clientCompany.businessName LIKE :userBusinessName)',
+        { userBusinessName: `%${userBusinessName}%` },
+      );
     }
     if (userPersonName) {
-      queryBuilder.andWhere('user.personName LIKE :userPersonName', { userPersonName: `%${userPersonName}%` });
+      queryBuilder.andWhere(
+        '(user.personName LIKE :userPersonName OR clientUser.personName LIKE :userPersonName)',
+        { userPersonName: `%${userPersonName}%` },
+      );
     }
 
     if (settleStatus) {
@@ -1996,8 +2020,8 @@ export class SettleService {
 
       return {
         id: order.id,
-        userBusinessName: order.user!.company?.businessName ?? '',
-        userPersonName: order.user!.personName,
+        userBusinessName: order.clientUser?.company?.businessName ?? order.user!.company?.businessName ?? '',
+        userPersonName: order.clientUser?.personName ?? order.user!.personName,
         sendRequestAt,
         eventName: order.eventName,
         productName,
