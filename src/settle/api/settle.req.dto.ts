@@ -791,3 +791,83 @@ export class SettleUpdateUserPerOrderReqDto {
   @IsEnum(SettleUserOrderDetailEnum)
   settleStatus: SettleUserOrderDetailEnum;
 }
+
+export class SettleGetGalaxiaListReqQueryDto extends PagingReqDto {
+  @ApiPropertyOptional({
+    description: '사용일자 시작 ex) yyyy-MM-ddTHH:mm:ss',
+  })
+  // =============================================================
+  @IsOptional()
+  @Matches(dateAtRegexp)
+  startAt?: string;
+
+  @ApiPropertyOptional({
+    description: '사용일자 끝 ex) yyyy-MM-ddTHH:mm:ss',
+  })
+  // =============================================================
+  @IsOptional()
+  @Matches(dateAtRegexp)
+  endAt?: string;
+
+  @ApiPropertyOptional({
+    description: '고객사 명',
+  })
+  // =============================================================
+  @IsOptional()
+  businessName?: string;
+
+  @ApiPropertyOptional({
+    description: '거래구분 (10: 사용, 20: 사용취소, 25: 망취소, 81: 환불등록)',
+  })
+  // =============================================================
+  @IsOptional()
+  appDiv?: string;
+}
+
+export class SettleGalaxiaExcelDownloadReqDto {
+  @ApiPropertyOptional({
+    description: '사용일자 시작 ex) yyyy-MM-ddTHH:mm:ss',
+  })
+  // =============================================================
+  @IsOptional()
+  @Matches(dateAtRegexp)
+  startAt?: string;
+
+  @ApiPropertyOptional({
+    description: '사용일자 끝 ex) yyyy-MM-ddTHH:mm:ss',
+  })
+  // =============================================================
+  @IsOptional()
+  @Matches(dateAtRegexp)
+  endAt?: string;
+
+  @ApiPropertyOptional({
+    description: '고객사 명',
+  })
+  // =============================================================
+  @IsOptional()
+  businessName?: string;
+
+  @ApiPropertyOptional({
+    description: '거래구분 (10: 사용, 20: 사용취소, 25: 망취소, 81: 환불등록)',
+  })
+  // =============================================================
+  @IsOptional()
+  appDiv?: string;
+
+  @ApiProperty({
+    description: '비밀번호 (다운로드 확인용)',
+    example: 'mypassword123',
+  })
+  // =============================================================
+  @IsNotEmpty()
+  password: string;
+
+  @ApiProperty({
+    description: '다운로드 사유',
+    example: '갤럭시아 정산을 위한 데이터 다운로드',
+  })
+  // =============================================================
+  @IsNotEmpty()
+  downloadReason: string;
+}

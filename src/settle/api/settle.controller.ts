@@ -21,6 +21,7 @@ import {
   SettleGetUserDetailResDto,
   SettleGetUserDetailMultipleResDto,
   SettleGetUserListResDto,
+  SettleGetGalaxiaListResDto,
 } from './settle.res.dto';
 import {
   SettleCreateOtherSaleReqDto,
@@ -43,6 +44,8 @@ import {
   SettlePartnerCompanyExcelDownloadReqDto,
   SettlerUpdateOtherSaleReqDto,
   SettleUpdateUserPerOrderReqDto,
+  SettleGetGalaxiaListReqQueryDto,
+  SettleGalaxiaExcelDownloadReqDto,
 } from './settle.req.dto';
 import { SettleUserDetailMultipleDto } from './dto/settle.user.detail.multiple.dto';
 import * as fs from 'fs';
@@ -388,5 +391,45 @@ export class SettleController {
   @Put('settle/user-per/order')
   updateUserPerOrder(@Body() getDto: SettleUpdateUserPerOrderReqDto) {
     return this.settleService.updateUserPerOrder(getDto);
+  }
+
+  @ApiOperation({
+    summary: '정산관리 > 갤럭시아 정산',
+    description: '갤럭시아 사용내역 기준 정산 목록 (appDay 기준 필터링)',
+  })
+  @ApiOkResponse({
+    type: SettleGetGalaxiaListResDto,
+  })
+  // =====================================
+  @Get('settle/galaxia/list')
+  async getGalaxiaList(@User() user: ILoginUserInfo, @Query() getQuery: SettleGetGalaxiaListReqQueryDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.SETTLE_PARTNER_COMPANY);
+    return this.settleService.getGalaxiaList(getQuery);
+  }
+
+  @ApiOperation({
+    summary: '정산관리 > 갤럭시아 정산 > 엑셀 다운로드',
+    description: '갤럭시아 사용내역 기준 엑셀 다운로드 (appDay 기준 필터링)',
+  })
+  // =====================================
+  @UseFilters(DownloadExceptionFilter)
+  @Post('settle/galaxia/excel-download')
+  async galaxiaExcelDownload(
+    @User() user: ILoginUserInfo,
+    @Body() body: SettleGalaxiaExcelDownloadReqDto,
+    @Res() res: Response,
+  ) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.SETTLE_PARTNER_COMPANY);
+    const { fileName, filePath } = await this.settleService.galaxiaExcelDownload(user, body);
+    res.download(filePath, fileName, (err) => {
+      if (err) {
+        this.logger.error(`Error downloading file: ${err}`);
+      }
+      fs.unlink(filePath, (unlinkErr) => {
+        if (unlinkErr) {
+          this.logger.error(`파일 삭제 실패: ${unlinkErr}`);
+        }
+      });
+    });
   }
 }

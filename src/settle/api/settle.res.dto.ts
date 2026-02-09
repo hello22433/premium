@@ -12,6 +12,7 @@ import { AdminListViewDto } from './dto/admin.list.view.dto';
 import { SettleOtherDetailDto } from './dto/settle.other.detail.dto';
 import { SettleUserPerListViewDto } from './dto/settle.user.per.list.view.dto';
 import { SettleUserPerDetailViewDto } from './dto/settle.user.per.detail.view.dto';
+import { SettleGalaxiaListViewDto } from './dto/settle.galaxia.list.view.dto';
 
 export class SettleGetOtherListResDto extends GetListResDto {
   @ApiProperty({
@@ -80,6 +81,13 @@ export class SettleGetPerUserDetailResDto extends GetListResDto {
     description: '정산관리 detail list',
   })
   list: SettleUserPerDetailViewDto[];
+}
+
+export class SettleGetGalaxiaListResDto extends GetListResDto {
+  @ApiProperty({
+    description: '갤럭시아 사용내역 list',
+  })
+  list: SettleGalaxiaListViewDto[];
 }
 
 export class SettleGetRemainServiceAmountResDto {

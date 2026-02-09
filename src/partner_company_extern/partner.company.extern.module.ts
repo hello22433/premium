@@ -15,11 +15,12 @@ import { SsgIssue } from './infra/ssg.issue';
 import { OrderEntity } from '../entity/order.entity';
 import { PartnerCompanyExternBatchService } from './application/partner.company.extern.batch.service';
 import { PartnerCompanyBatchSchedule } from './partner.company.batch.schedule';
+import { GalaxiaBarcodeLogEntity } from '../entity/galaxia.barcode.log.entity';
 
 @Module({
   imports: [
     HttpModule.register({ timeout: 30000 }),
-    TypeOrmModule.forFeature([OrderDeliveryEntity, OrderEntity, PartnerCompanyExternHistoryEntity]),
+    TypeOrmModule.forFeature([OrderDeliveryEntity, OrderEntity, PartnerCompanyExternHistoryEntity, GalaxiaBarcodeLogEntity]),
   ],
   providers: [
     {

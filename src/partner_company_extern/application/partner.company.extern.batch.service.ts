@@ -17,6 +17,7 @@ import {
   BatchStatistics,
   PartnerCompanyGroup,
 } from './partner.company.extern.batch.types';
+import { GalaxiaBarcodeLogEntity } from '../../entity/galaxia.barcode.log.entity';
 
 // ===== 상수 정의 =====
 const COUPON_STATUS_VALUES = {
@@ -56,6 +57,8 @@ export class PartnerCompanyExternBatchService {
     private daou: IDaou,
     @InjectRepository(OrderDeliveryEntity)
     private orderDeliveryRepository: Repository<OrderDeliveryEntity>,
+    @InjectRepository(GalaxiaBarcodeLogEntity)
+    private galaxiaBarcodeLogRepository: Repository<GalaxiaBarcodeLogEntity>,
     private configService: ConfigService,
   ) {}
 
@@ -748,7 +751,7 @@ export class PartnerCompanyExternBatchService {
         return;
       }
 
-      // 각 거래 항목에 대해 order_delivery 매칭 및 tradePlace 업데이트
+      // 각 거래 항목에 대해 order_delivery 매칭 및 사용내역 저장/tradePlace 업데이트
       for (const transaction of dailyResult.transactions) {
         try {
           // barcode로 order_delivery 검색
@@ -765,7 +768,36 @@ export class PartnerCompanyExternBatchService {
             continue;
           }
 
-          // tradePlace 업데이트
+          // 사용내역 중복 체크 후 저장
+          const existingLog = await this.galaxiaBarcodeLogRepository.findOne({
+            where: {
+              barcode: transaction.barcode,
+              appDiv: transaction.appDiv,
+              appDay: transaction.appDay,
+              appTime: transaction.appTime,
+              appNo: transaction.appNo,
+            },
+          });
+
+          if (!existingLog) {
+            await this.galaxiaBarcodeLogRepository.save({
+              orderDeliveryId: orderDelivery.id,
+              barcode: transaction.barcode,
+              appDiv: transaction.appDiv,
+              appDay: transaction.appDay,
+              appTime: transaction.appTime,
+              amount: parseInt(transaction.amount, 10),
+              appNo: transaction.appNo,
+              appStore: transaction.appStore?.trim() || null,
+              giftKind,
+            });
+
+            this.logger.log(
+              `[checkGalaxiaDaily] ${giftKind} 사용내역 저장: orderDeliveryId=${orderDelivery.id}, appDiv=${transaction.appDiv}, appDay=${transaction.appDay}, amount=${transaction.amount}`,
+            );
+          }
+
+          // tradePlace 업데이트 (기존 로직 유지)
           if (transaction.appStore && transaction.appStore.trim()) {
             orderDelivery.tradePlace = transaction.appStore.trim();
             await this.orderDeliveryRepository.save(orderDelivery);
