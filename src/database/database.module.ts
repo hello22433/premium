@@ -54,6 +54,7 @@ import { PasswordPolicyEntity } from '../entity/password.policy.entity';
 import { EmailManualEntity } from '../entity/email.manual.entity';
 import { DepartmentEntity } from '../entity/department.entity';
 import { UserViewScopeEntity } from '../entity/user.view.scope.entity';
+import { GalaxiaBarcodeLogEntity } from '../entity/galaxia.barcode.log.entity';
 
 @Module({
   imports: [
@@ -112,6 +113,7 @@ import { UserViewScopeEntity } from '../entity/user.view.scope.entity';
           EmailManualEntity,
           DepartmentEntity,
           UserViewScopeEntity,
+          GalaxiaBarcodeLogEntity,
         ],
         timezone: '+09:00',
         logger: configService.get('DATABASE_LOGGING') === 'true' ? new SqlLogger() : undefined,
