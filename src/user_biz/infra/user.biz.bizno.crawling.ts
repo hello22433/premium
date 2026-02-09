@@ -59,7 +59,7 @@ export class UserBizBiznoCrawling {
           response.status_code = 'ERROR';
           data.error = '휴업자로 조회되는 사업자등록번호입니다';
         } else {
-          data.companyName = companyName;
+          data.companyName = companyName.replace(/（/g, '(').replace(/）/g, ')');
           data.companyStatus = companyStatus;
           data.address = address;
           data.bizNumber = bizNumber;
