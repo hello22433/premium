@@ -27,8 +27,8 @@ export class GalaxiaBarcodeLogEntity extends BaseEntity {
   @Column({ type: 'int', comment: '사용금액' })
   amount: number;
 
-  @Column({ type: 'varchar', length: 100, comment: '승인번호' })
-  appNo: string;
+  @Column({ type: 'varchar', length: 100, nullable: true, comment: '승인번호' })
+  appNo: string | null;
 
   @Column({ type: 'varchar', length: 200, nullable: true, comment: '사용처(교환처)' })
   appStore: string | null;

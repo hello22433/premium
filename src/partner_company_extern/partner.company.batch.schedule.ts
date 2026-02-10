@@ -1,28 +1,12 @@
-import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { PartnerCompanyExternBatchService } from './application/partner.company.extern.batch.service';
 import { Cron } from '@nestjs/schedule';
 
 @Injectable()
-export class PartnerCompanyBatchSchedule implements OnApplicationBootstrap {
+export class PartnerCompanyBatchSchedule {
   private logger = new Logger('PARTNER_COMPANY_BATCH');
 
   constructor(private partnerCompanyExternBatchService: PartnerCompanyExternBatchService) {}
-
-  async onApplicationBootstrap() {
-    // TEST: 갤럭시아 일대사 과거 데이터 수집 (테스트 후 삭제)
-    const days = ['20260201', '20260202', '20260203', '20260204', '20260205', '20260206', '20260207', '20260208', '20260209'];
-    for (const day of days) {
-      try {
-        this.logger.log(`[TEST] checkGalaxiaDaily 시작 - targetDay: ${day}`);
-        await this.partnerCompanyExternBatchService.checkGalaxiaDaily(day);
-        this.logger.log(`[TEST] checkGalaxiaDaily 완료 - targetDay: ${day}`);
-      } catch (e) {
-        this.logger.error(`[TEST] checkGalaxiaDaily 실패 - targetDay: ${day}`);
-        this.logger.error(e);
-      }
-    }
-    this.logger.log('[TEST] 전체 과거 데이터 수집 완료');
-  }
 
   // 매일 02:15 실행 - 쿠폰 상태 조회 (레거시 방식: 하루 1회)
   @Cron('0 15 2 * * *')
@@ -46,6 +30,20 @@ export class PartnerCompanyBatchSchedule implements OnApplicationBootstrap {
     } catch (e) {
       this.logger.error(e);
     }
+
+    // TODO: 1월 데이터 백필 완료 후 삭제
+    for (let day = 1; day <= 31; day++) {
+      const targetDay = `202601${String(day).padStart(2, '0')}`;
+      try {
+        this.logger.log(`[백필] checkGalaxiaDaily 시작 - targetDay: ${targetDay}`);
+        await this.partnerCompanyExternBatchService.checkGalaxiaDaily(targetDay);
+        this.logger.log(`[백필] checkGalaxiaDaily 완료 - targetDay: ${targetDay}`);
+      } catch (e) {
+        this.logger.error(`[백필] checkGalaxiaDaily 실패 - targetDay: ${targetDay}`);
+        this.logger.error(e);
+      }
+    }
+    this.logger.log('[백필] 1월 데이터 백필 완료');
   }
 
   // 매일 07:15에 실행 - 컬쳐랜드 일대사 (60일 상품 전용, 전날 사용 내역 조회)
