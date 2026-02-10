@@ -768,33 +768,40 @@ export class PartnerCompanyExternBatchService {
             continue;
           }
 
-          // 사용내역 중복 체크 후 저장
-          const existingLog = await this.galaxiaBarcodeLogRepository.findOne({
-            where: {
-              barcode: transaction.barcode,
-              appDiv: transaction.appDiv,
-              appDay: transaction.appDay,
-              appTime: transaction.appTime,
-              appNo: transaction.appNo,
-            },
-          });
-
-          if (!existingLog) {
-            await this.galaxiaBarcodeLogRepository.save({
-              orderDeliveryId: orderDelivery.id,
-              barcode: transaction.barcode,
-              appDiv: transaction.appDiv,
-              appDay: transaction.appDay,
-              appTime: transaction.appTime,
-              amount: parseInt(transaction.amount, 10),
-              appNo: transaction.appNo,
-              appStore: transaction.appStore?.trim() || null,
-              giftKind,
+          // 사용내역 중복 체크 후 저장 (별도 try-catch로 tradePlace 업데이트에 영향 주지 않도록)
+          try {
+            const existingLog = await this.galaxiaBarcodeLogRepository.findOne({
+              where: {
+                barcode: transaction.barcode,
+                appDiv: transaction.appDiv,
+                appDay: transaction.appDay,
+                appTime: transaction.appTime,
+                appNo: transaction.appNo,
+              },
             });
 
-            this.logger.log(
-              `[checkGalaxiaDaily] ${giftKind} 사용내역 저장: orderDeliveryId=${orderDelivery.id}, appDiv=${transaction.appDiv}, appDay=${transaction.appDay}, amount=${transaction.amount}`,
+            if (!existingLog) {
+              await this.galaxiaBarcodeLogRepository.save({
+                orderDeliveryId: orderDelivery.id,
+                barcode: transaction.barcode,
+                appDiv: transaction.appDiv,
+                appDay: transaction.appDay,
+                appTime: transaction.appTime,
+                amount: parseInt(transaction.amount, 10),
+                appNo: transaction.appNo,
+                appStore: transaction.appStore?.trim() || null,
+                giftKind,
+              });
+
+              this.logger.log(
+                `[checkGalaxiaDaily] ${giftKind} 사용내역 저장: orderDeliveryId=${orderDelivery.id}, appDiv=${transaction.appDiv}, appDay=${transaction.appDay}, amount=${transaction.amount}`,
+              );
+            }
+          } catch (logError) {
+            this.logger.error(
+              `[checkGalaxiaDaily] ${giftKind} 사용내역 저장 실패: orderDeliveryId=${orderDelivery.id}, barcode=${transaction.barcode}`,
             );
+            this.logger.error(logError);
           }
 
           // tradePlace 업데이트 (기존 로직 유지)
