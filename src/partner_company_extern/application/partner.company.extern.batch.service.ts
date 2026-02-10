@@ -9,7 +9,7 @@ import { ISsgIssue } from '../interface/ssg.issue';
 import { IDaou } from '../interface/daou';
 import { InjectRepository } from '@nestjs/typeorm';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
-import { Repository } from 'typeorm';
+import { IsNull, Repository } from 'typeorm';
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
 import {
   PartnerCompanyType,
@@ -776,7 +776,7 @@ export class PartnerCompanyExternBatchService {
                 appDiv: transaction.appDiv,
                 appDay: transaction.appDay,
                 appTime: transaction.appTime,
-                appNo: transaction.appNo,
+                appNo: transaction.appNo ?? IsNull(),
               },
             });
 
@@ -788,7 +788,7 @@ export class PartnerCompanyExternBatchService {
                 appDay: transaction.appDay,
                 appTime: transaction.appTime,
                 amount: parseInt(transaction.amount, 10),
-                appNo: transaction.appNo,
+                appNo: transaction.appNo ?? null,
                 appStore: transaction.appStore?.trim() || null,
                 giftKind,
               });

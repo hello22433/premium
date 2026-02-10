@@ -25,8 +25,8 @@ export class SettleGalaxiaListViewDto {
   @ApiProperty({ description: '사용금액' })
   amount: number;
 
-  @ApiProperty({ description: '승인번호' })
-  appNo: string;
+  @ApiProperty({ description: '승인번호', nullable: true })
+  appNo: string | null;
 
   @ApiProperty({ description: '사용처' })
   appStore: string;
