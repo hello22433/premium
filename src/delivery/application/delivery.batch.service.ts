@@ -710,8 +710,12 @@ export class DeliveryBatchService {
       return true;
     }
 
-    // Case 1: barCode가 없는 경우 - PIN 재발급 필요
-    if (!orderDelivery.barCode) {
+    // Case 1: PIN 발급/확인 필요
+    // - barCode 없음: PIN 재발급 필요
+    // - SSG: barCode가 있어도 SSG DB 등록 여부 확인 필요 (SSG는 PIN을 로컬 생성 후 외부 API로 등록하는 구조)
+    const needsIssue = !orderDelivery.barCode || order.type === IOrderType.SSG;
+    if (needsIssue) {
+      const hadNoBarCode = !orderDelivery.barCode;
       try {
         let ssgEvent: SsgEventEntity | null = null;
         if (order.type === IOrderType.SSG && orderDelivery.ssgEventId) {
@@ -727,12 +731,14 @@ export class DeliveryBatchService {
           return false;
         }
 
-        // PIN 재발급 성공 - 환불 복구 처리
-        await this.reverseRefundForResend(orderDelivery);
+        // barCode가 없었던 경우에만 환불 복구 (최초 실패 시 환불된 금액 재차감)
+        if (hadNoBarCode) {
+          await this.reverseRefundForResend(orderDelivery);
+        }
 
-        this.logger.log(`[RESEND] PIN 재발급 성공 - orderDelivery.id: ${orderDelivery.id}, barCode: ${orderDelivery.barCode}`);
+        this.logger.log(`[RESEND] PIN 발급/확인 성공 - orderDelivery.id: ${orderDelivery.id}, barCode: ${orderDelivery.barCode}`);
       } catch (error) {
-        this.logger.error(`[RESEND] PIN 재발급 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
+        this.logger.error(`[RESEND] PIN 발급/확인 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
         return false;
       }
     }
