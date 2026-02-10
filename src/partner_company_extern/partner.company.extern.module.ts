@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { AuthModule } from '../auth/auth.module';
 import { GalaxiaHttp } from './infra/galaxia.http';
 import { GiftielHttp } from './infra/giftiel.http';
 import { GsmbizHttp } from './infra/gsmbiz.http';
@@ -15,10 +16,12 @@ import { SsgIssue } from './infra/ssg.issue';
 import { OrderEntity } from '../entity/order.entity';
 import { PartnerCompanyExternBatchService } from './application/partner.company.extern.batch.service';
 import { PartnerCompanyBatchSchedule } from './partner.company.batch.schedule';
+import { PartnerCompanyBatchController } from './api/partner.company.batch.controller';
 import { GalaxiaBarcodeLogEntity } from '../entity/galaxia.barcode.log.entity';
 
 @Module({
   imports: [
+    AuthModule,
     HttpModule.register({ timeout: 30000 }),
     TypeOrmModule.forFeature([OrderDeliveryEntity, OrderEntity, PartnerCompanyExternHistoryEntity, GalaxiaBarcodeLogEntity]),
   ],
@@ -56,6 +59,7 @@ import { GalaxiaBarcodeLogEntity } from '../entity/galaxia.barcode.log.entity';
     PartnerCompanyExternBatchService,
     PartnerCompanyBatchSchedule,
   ],
+  controllers: [PartnerCompanyBatchController],
   exports: [PartnerCompanyExternService],
 })
 export class PartnerCompanyExternModule {}

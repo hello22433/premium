@@ -8,9 +8,20 @@ export class PartnerCompanyBatchSchedule implements OnApplicationBootstrap {
 
   constructor(private partnerCompanyExternBatchService: PartnerCompanyExternBatchService) {}
 
-  onApplicationBootstrap() {
-    // TEST: 수동 실행 (필요 시 주석 해제)
-    // this.check();
+  async onApplicationBootstrap() {
+    // TEST: 갤럭시아 일대사 과거 데이터 수집 (테스트 후 삭제)
+    const days = ['20260201', '20260202', '20260203', '20260204', '20260205', '20260206', '20260207', '20260208', '20260209'];
+    for (const day of days) {
+      try {
+        this.logger.log(`[TEST] checkGalaxiaDaily 시작 - targetDay: ${day}`);
+        await this.partnerCompanyExternBatchService.checkGalaxiaDaily(day);
+        this.logger.log(`[TEST] checkGalaxiaDaily 완료 - targetDay: ${day}`);
+      } catch (e) {
+        this.logger.error(`[TEST] checkGalaxiaDaily 실패 - targetDay: ${day}`);
+        this.logger.error(e);
+      }
+    }
+    this.logger.log('[TEST] 전체 과거 데이터 수집 완료');
   }
 
   // 매일 02:15 실행 - 쿠폰 상태 조회 (레거시 방식: 하루 1회)
