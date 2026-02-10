@@ -314,6 +314,7 @@ export class PartnerCompanyExternService {
           }),
         );
         context = JSON.stringify(response);
+
         // SSG 발송 성공 시 실제 발송 시간 설정 (최초 발송 시에만)
         if (!orderDelivery.actualSendAt) {
           orderDelivery.actualSendAt = new Date();
@@ -349,6 +350,15 @@ export class PartnerCompanyExternService {
     } catch (e) {
       this.logger.log(JSON.stringify(e));
       this.logger.log(e);
+
+      // SSG API 실패 시 barCode/personalCode 초기화
+      // SSG는 PIN을 로컬에서 생성 후 SSG DB에 등록하는 구조이므로,
+      // API 실패 시 등록되지 않은 PIN 정보를 제거해야 재발송 시 새로 발급됨
+      if (type === 'SSG') {
+        orderDelivery.barCode = null;
+        orderDelivery.personalCode = null;
+      }
+
       // Error 객체 직렬화 개선 (Error의 message, stack은 non-enumerable이라 JSON.stringify 시 {}가 됨)
       if (e instanceof Error) {
         context = JSON.stringify({ message: e.message, stack: e.stack });

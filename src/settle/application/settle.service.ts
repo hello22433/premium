@@ -2361,7 +2361,9 @@ export class SettleService {
       .innerJoinAndSelect('order.user', 'user')
       .leftJoinAndSelect('user.company', 'userCompany')
       .innerJoinAndSelect('orderProductMapping.product', 'product')
-      .innerJoinAndSelect('product.partnerCompany', 'partnerCompany');
+      .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
+      .leftJoinAndSelect('choiceSelectProduct.partnerCompany', 'choicePartnerCompany');
 
     // appDay 기준 날짜 필터링 (yyyy-MM-ddTHH:mm:ss → YYYYMMDD 변환)
     if (startAt) {
@@ -2396,6 +2398,7 @@ export class SettleService {
       const orderProductMapping = orderDelivery.orderProductMapping;
       const order = orderProductMapping.order;
       const product = orderProductMapping.product;
+      const displayProduct = orderDelivery.choiceSelectProduct ?? product;
 
       return {
         id: log.id,
@@ -2409,13 +2412,13 @@ export class SettleService {
         appNo: log.appNo,
         appStore: log.appStore ?? '',
         giftKind: log.giftKind,
-        productName: product.name,
-        productPrice: product.price,
+        productName: displayProduct.name,
+        productPrice: displayProduct.price,
         galaxiaBalance: orderDelivery.galaxiaBalance ?? 0,
         userBusinessName: order.user?.company?.businessName ?? '',
         eventName: order.eventName,
-        code: product.code,
-        partnerCompanyName: product.partnerCompany?.businessName ?? '',
+        code: displayProduct.code,
+        partnerCompanyName: displayProduct.partnerCompany?.businessName ?? '',
       };
     });
 
@@ -2440,7 +2443,9 @@ export class SettleService {
       .innerJoinAndSelect('order.user', 'user')
       .leftJoinAndSelect('user.company', 'userCompany')
       .innerJoinAndSelect('orderProductMapping.product', 'product')
-      .innerJoinAndSelect('product.partnerCompany', 'partnerCompany');
+      .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
+      .leftJoinAndSelect('choiceSelectProduct.partnerCompany', 'choicePartnerCompany');
 
     if (startAt) {
       const startDay = startAt.replace(/[-T:]/g, '').substring(0, 8);
@@ -2492,14 +2497,15 @@ export class SettleService {
       const orderProductMapping = orderDelivery.orderProductMapping;
       const order = orderProductMapping.order;
       const product = orderProductMapping.product;
+      const displayProduct = orderDelivery.choiceSelectProduct ?? product;
 
       sheet.addRow({
         userBusinessName: order.user?.company?.businessName ?? '',
         eventName: order.eventName,
-        code: product.code,
-        partnerCompanyName: product.partnerCompany?.businessName ?? '',
-        productName: product.name,
-        productPrice: product.price,
+        code: displayProduct.code,
+        partnerCompanyName: displayProduct.partnerCompany?.businessName ?? '',
+        productName: displayProduct.name,
+        productPrice: displayProduct.price,
         barcode: log.barcode,
         appDivName: this.getAppDivName(log.appDiv),
         appDay: log.appDay,
