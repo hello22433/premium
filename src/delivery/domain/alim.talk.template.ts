@@ -48,14 +48,18 @@ ${sendTitle} 당첨을 축하드립니다.
   }
 
   return `[모바일쿠폰] 이팝콘 도착
-상품명 : ${product.name}
-유효기간 : ~ ${expireDateStr}
-쿠폰번호 : ${couponCode}
-사용처(교환처) : ${brandKoreanName}
-고객센터 : 1644-3614
-발행자 : ${publisherName}
+  
+${sendTitle}
 
-${sendTitle} 당첨을 축하드립니다.
+▶상품명 : ${product.name}
+▶유효기간 : ~ ${expireDateStr}
+▶쿠폰번호 : ${couponCode}
+▶사용처(교환처) : ${brandKoreanName}
+▶고객센터 : 1644-3614
+▶발행자 : ${publisherName}
+
 문의사항은 고객센터 번호를 통해 문의하시길 바랍니다.
-이 메시지는 고객님의 동의에 의해 지급된 쿠폰 안내 메시지입니다.`;
+이 메시지는 계약이나 거래관계로 인해 지급된 쿠폰 안내 메시지입니다.
+
+하기 쿠폰 확인하기 버튼을 통해 상세내역 확인 바랍니다.`;
 };
