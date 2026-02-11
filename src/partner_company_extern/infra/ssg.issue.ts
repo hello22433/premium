@@ -1,10 +1,21 @@
-import { ISsgCheckIn, ISsgCheckOut, ISsgIssue, ISsgIssueCode, ISsgIssueIn, ISsgIssueOut } from '../interface/ssg.issue';
 import { Injectable, Logger } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
-import { Parser } from 'xml2js';
 import { firstValueFrom } from 'rxjs';
 import * as iconv from 'iconv-lite';
+import { Parser } from 'xml2js';
+import { ISsgCheckIn, ISsgCheckOut, ISsgIssue, ISsgIssueCode, ISsgIssueIn, ISsgIssueOut } from '../interface/ssg.issue';
+
+/**
+ * SSG 조회 API가 정상 응답했지만 PIN이 미등록(code ≠ 1001)인 경우 전용 에러
+ * 네트워크 에러, 타임아웃 등 API 호출 자체 실패와 구분하기 위해 사용
+ */
+export class SsgCheckNotFoundError extends Error {
+  constructor(reason: string) {
+    super(reason);
+    this.name = 'SsgCheckNotFoundError';
+  }
+}
 
 @Injectable()
 export class SsgIssue implements ISsgIssue {
@@ -30,7 +41,7 @@ export class SsgIssue implements ISsgIssue {
     const barCode = this.generateCode('8', 7);
     const personalCode = this.generateCode('013', 8);
 
-    return { barCode: barCode, personalCode: personalCode };
+    return { barCode, personalCode };
   }
 
   async issue(obj: ISsgIssueIn): Promise<any> {
@@ -48,21 +59,20 @@ export class SsgIssue implements ISsgIssue {
 
     try {
       const sendUrl = `${this.url}/SsgCoupon.do?${data.toString()}&event_seq=${obj.eventSeq}`;
-      this.logger.log(`${sendUrl}`);
+      this.logger.log(sendUrl);
 
-      const response = await firstValueFrom(this.httpService.get(`${sendUrl}`));
+      const response = await firstValueFrom(this.httpService.get(sendUrl));
 
       this.logger.log(response.data);
 
       const resultToJson = (await this.parser().parseStringPromise(response.data)) as unknown as ISsgIssueOut;
       this.logger.log(resultToJson);
       if (resultToJson.response.result[0].code[0] !== '1000') {
-        throw new Error(`${resultToJson.response.result[0].reason[0]}`);
+        throw new Error(resultToJson.response.result[0].reason[0]);
       }
       return resultToJson;
     } catch (e) {
       this.logger.error(e);
-      this.logger.error(JSON.stringify(e));
       throw e;
     }
   }
@@ -98,9 +108,9 @@ export class SsgIssue implements ISsgIssue {
 
     try {
       const sendUrl = `${this.url}/GetSsgStatus.do?${data.toString()}&event_seq=${obj.eventSeq}`;
-      this.logger.log(`${sendUrl}`);
+      this.logger.log(sendUrl);
 
-      const response = await firstValueFrom(this.httpService.get(`${sendUrl}`));
+      const response = await firstValueFrom(this.httpService.get(sendUrl));
 
       this.logger.log(response.data);
 
@@ -114,12 +124,11 @@ export class SsgIssue implements ISsgIssue {
       this.logger.log(resultToJson);
       // 조회 성공 코드는 1001
       if (resultToJson.response.result[0].code[0] !== '1001') {
-        throw new Error(`${resultToJson.response.result[0].reason[0]}`);
+        throw new SsgCheckNotFoundError(resultToJson.response.result[0].reason[0]);
       }
       return resultToJson;
     } catch (e) {
       this.logger.error(e);
-      this.logger.error(JSON.stringify(e));
       throw e;
     }
   }

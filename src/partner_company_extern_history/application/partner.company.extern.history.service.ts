@@ -137,9 +137,9 @@ export class PartnerCompanyExternHistoryService {
     // 핀 발급 여부 (barCode 유무로 판단)
     const pinIssued = !!orderDelivery.barCode;
 
-    // 실패 유형 결정
-    const failType = pinIssued ? FailType.SEND_FAIL : FailType.PIN_ISSUE_FAIL;
-    const failTypeKo = pinIssued ? '발송실패' : '핀발급실패';
+    // 실패 유형 결정 (SSG는 하단에서 history 기반으로 보정)
+    let failType = pinIssued ? FailType.SEND_FAIL : FailType.PIN_ISSUE_FAIL;
+    let failTypeKo = pinIssued ? '발송실패' : '핀발급실패';
 
     // 수신처 마스킹 처리
     let deliveryTarget: string | null = null;
@@ -182,6 +182,13 @@ export class PartnerCompanyExternHistoryService {
       } catch {
         // JSON 파싱 실패 시 무시
       }
+    }
+
+    // SSG 실패유형 보정: SSG는 barCode를 로컬 생성하므로 barCode 유무로 판단 불가
+    // SSG API(SsgCoupon.do) 호출 실패 = PIN SSG DB 등록 실패 → 핀발급실패로 표시
+    if (partnerCompanyType === IPartnerCompanyType.SSG && latestHistory && !latestHistory.isSuccess) {
+      failType = FailType.PIN_ISSUE_FAIL;
+      failTypeKo = '핀발급실패';
     }
 
     // 핀은 발급됐지만 발송 실패인 경우, history가 없을 수 있음 (발송 실패는 delivery_send_history에 기록)
@@ -291,95 +298,92 @@ export class PartnerCompanyExternHistoryService {
       );
 
       // 4. 재발송 처리
-      if (pinIssued) {
-        // PIN이 이미 발급됨 → 발송만 재시도
+      // SSG는 barCode가 있어도 SSG DB에 미등록 상태일 수 있으므로 항상 issue() 거침
+      const needsPinIssue = !pinIssued || partnerCompanyType === IPartnerCompanyType.SSG;
+
+      // PIN이 이미 발급됨 (SSG 제외) → 발송만 재시도
+      if (!needsPinIssue) {
         const sendSuccess = await this.deliveryBatchService.oneSend(orderDelivery);
-
-        if (sendSuccess) {
-          return {
-            success: true,
-            message: '재발송 성공 (기존 발급된 핀으로 발송)',
-            orderDeliveryId,
-          };
-        } else {
-          return {
-            success: false,
-            message: '발송 실패 - 알림톡/SMS/이메일 발송에 실패했습니다.',
-            orderDeliveryId,
-          };
-        }
-      } else {
-        // PIN 미발급 → 핀 발급 + 발송
-        // 재발급 시 transactionId 갱신 (협력사 거래번호 중복 방지)
-        const orderId = orderDelivery.orderProductMapping?.order?.id;
-        if (!orderId) {
-          return {
-            success: false,
-            message: '주문 정보를 찾을 수 없습니다.',
-            orderDeliveryId,
-          };
-        }
-        const retryMatch = orderDelivery.transactionId?.match(/R(\d+)$/);
-        const retryCount = retryMatch ? parseInt(retryMatch[1], 10) + 1 : 1;
-        orderDelivery.transactionId = CreateResendTransactionId(orderId, orderDeliveryId, retryCount);
-
-        this.logger.log(
-          `[resendFailedDelivery] transactionId 갱신: ${orderDelivery.transactionId}`,
-        );
-
-        // SSG의 경우 ssgEvent 필요
-        let ssgEvent: SsgEventEntity | null = null;
-        if (partnerCompanyType === IPartnerCompanyType.SSG && orderDelivery.ssgEventId) {
-          ssgEvent = await this.ssgEventRepository.findOne({
-            where: { id: orderDelivery.ssgEventId },
-          });
-
-          if (!ssgEvent) {
-            return {
-              success: false,
-              message: 'SSG 이벤트 정보를 찾을 수 없습니다.',
-              orderDeliveryId,
-            };
-          }
-        }
-
-        // PIN 발급
-        await this.partnerCompanyExternService.issue(orderDelivery, ssgEvent);
-
-        // PIN 발급 성공 확인
-        if (!orderDelivery.barCode) {
-          return {
-            success: false,
-            message: 'PIN 발급에 실패했습니다.',
-            orderDeliveryId,
-          };
-        }
-
-        // SSG는 issue()에서 SSG DB INSERT 시 발송도 처리됨
-        // 다른 협력사는 별도로 발송 필요
-        if (partnerCompanyType !== IPartnerCompanyType.SSG) {
-          const sendSuccess = await this.deliveryBatchService.oneSend(orderDelivery);
-
-          if (!sendSuccess) {
-            return {
-              success: false,
-              message: 'PIN 발급 성공, 발송 실패 - 알림톡/SMS/이메일 발송에 실패했습니다.',
-              orderDeliveryId,
-            };
-          }
-        }
-
         return {
-          success: true,
-          message: '재발송 성공 (PIN 발급 + 발송)',
+          success: sendSuccess,
+          message: sendSuccess
+            ? '재발송 성공 (기존 발급된 핀으로 발송)'
+            : '발송 실패 - 알림톡/SMS/이메일 발송에 실패했습니다.',
           orderDeliveryId,
         };
       }
+
+      // PIN 미발급 → 핀 발급 + 발송
+      // 재발급 시 transactionId 갱신 (협력사 거래번호 중복 방지)
+      const orderId = orderDelivery.orderProductMapping?.order?.id;
+      if (!orderId) {
+        return {
+          success: false,
+          message: '주문 정보를 찾을 수 없습니다.',
+          orderDeliveryId,
+        };
+      }
+      const retryMatch = orderDelivery.transactionId?.match(/R(\d+)$/);
+      const retryCount = retryMatch ? parseInt(retryMatch[1], 10) + 1 : 1;
+      orderDelivery.transactionId = CreateResendTransactionId(orderId, orderDeliveryId, retryCount);
+
+      this.logger.log(
+        `[resendFailedDelivery] transactionId 갱신: ${orderDelivery.transactionId}`,
+      );
+
+      // SSG의 경우 ssgEvent 필요
+      let ssgEvent: SsgEventEntity | null = null;
+      if (partnerCompanyType === IPartnerCompanyType.SSG && orderDelivery.ssgEventId) {
+        ssgEvent = await this.ssgEventRepository.findOne({
+          where: { id: orderDelivery.ssgEventId },
+        });
+
+        if (!ssgEvent) {
+          return {
+            success: false,
+            message: 'SSG 이벤트 정보를 찾을 수 없습니다.',
+            orderDeliveryId,
+          };
+        }
+      }
+
+      // PIN 발급
+      await this.partnerCompanyExternService.issue(orderDelivery, ssgEvent);
+
+      // PIN 발급 성공 확인
+      if (!orderDelivery.barCode) {
+        return {
+          success: false,
+          message: 'PIN 발급에 실패했습니다.',
+          orderDeliveryId,
+        };
+      }
+
+      // SSG는 issue()에서 SSG DB INSERT 시 발송도 처리됨
+      // 다른 협력사는 별도로 발송 필요
+      if (partnerCompanyType !== IPartnerCompanyType.SSG) {
+        const sendSuccess = await this.deliveryBatchService.oneSend(orderDelivery);
+
+        if (!sendSuccess) {
+          return {
+            success: false,
+            message: 'PIN 발급 성공, 발송 실패 - 알림톡/SMS/이메일 발송에 실패했습니다.',
+            orderDeliveryId,
+          };
+        }
+      }
+
+      return {
+        success: true,
+        message: '재발송 성공 (PIN 발급 + 발송)',
+        orderDeliveryId,
+      };
     } catch (e) {
-      this.logger.error(`[resendFailedDelivery] 재발송 실패: ${e.message}`, e.stack);
+      const error = e instanceof Error ? e : new Error(String(e));
+      this.logger.error(`[resendFailedDelivery] 재발송 실패: ${error.message}`, error.stack);
       return {
         success: false,
-        message: e.message || '재발송 중 오류가 발생했습니다.',
+        message: error.message || '재발송 중 오류가 발생했습니다.',
         orderDeliveryId,
       };
     }

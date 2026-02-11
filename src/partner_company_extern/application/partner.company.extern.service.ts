@@ -10,7 +10,8 @@ import { IGiftiel } from '../interface/giftiel';
 import { IGiftiShow } from '../interface/giftishow';
 import { IDaou } from '../interface/daou';
 import { PartnerCompanyExternHistoryEntity } from '../../entity/partner.company.extern.history.entity';
-import { ISsgIssue } from '../interface/ssg.issue';
+import { ISsgCheckOut, ISsgIssue } from '../interface/ssg.issue';
+import { SsgCheckNotFoundError } from '../infra/ssg.issue';
 import { Propagation, Transactional } from 'typeorm-transactional';
 import { orderBarcodeGenerate } from '../../order/domain/order.code.generate';
 import { SsgEventEntity } from '../../entity/ssg.event.entity';
@@ -92,6 +93,32 @@ export class PartnerCompanyExternService {
     } finally {
       release!();
     }
+  }
+
+  /**
+   * SSG check() API를 재시도 포함하여 호출 (최대 3회: 1차 + 2차 재시도)
+   * SsgCheckNotFoundError는 정상 응답이므로 재시도 없이 즉시 throw
+   */
+  private async checkSsgWithRetry(params: { eventNo: string; eventSeq: number; vno: string }): Promise<ISsgCheckOut> {
+    const maxAttempts = 3;
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        return await this.ssgIssue.check(params);
+      } catch (e) {
+        if (e instanceof SsgCheckNotFoundError) {
+          throw e;
+        }
+        lastError = e;
+        if (attempt < maxAttempts) {
+          this.logger.warn(
+            `[SSG] check() 실패, ${attempt}차 재시도 예정 (${attempt}/${maxAttempts}): ${e instanceof Error ? e.message : e}`,
+          );
+          await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
+        }
+      }
+    }
+    throw lastError;
   }
 
   @Transactional({ propagation: Propagation.REQUIRED })
@@ -257,63 +284,123 @@ export class PartnerCompanyExternService {
           throw new InternalServerErrorException('order not exist');
         }
 
-        // 재발송 시 기존 핀이 있으면 재사용, 없으면 새로 생성
+        // 1) 기존 PIN이 있으면 SSG DB 등록 여부 확인
+        let needsInsert = true;
         if (orderDelivery.barCode && orderDelivery.personalCode) {
-          this.logger.log(
-            `[SSG] 기존 핀 재사용 - barCode: ${orderDelivery.barCode}, personalCode: ${orderDelivery.personalCode}`,
-          );
-        } else {
-          const { barCode, personalCode } = this.ssgIssue.generateSsgIssue();
-          orderDelivery.barCode = barCode;
-          orderDelivery.personalCode = personalCode;
+          try {
+            await this.checkSsgWithRetry({
+              eventNo: ssgEvent.no,
+              eventSeq: ssgEvent.order,
+              vno: orderDelivery.personalCode,
+            });
+            // 조회 성공 → INSERT는 됐고 발송만 실패한 경우
+            needsInsert = false;
+            this.logger.log(
+              `[SSG] 기존 PIN이 SSG DB에 등록됨 - barCode: ${orderDelivery.barCode}, INSERT 건너뜀`,
+            );
+          } catch (e) {
+            if (e instanceof SsgCheckNotFoundError) {
+              // API 정상 응답 + code ≠ 1001 → PIN 미등록 확정 → 새 PIN 생성
+              this.logger.log(
+                `[SSG] 기존 PIN이 SSG DB에 미등록 - barCode: ${orderDelivery.barCode}, 새 PIN 생성`,
+              );
+              orderDelivery.barCode = null;
+              orderDelivery.personalCode = null;
+            } else {
+              // 네트워크 에러, 타임아웃 등 → 등록 여부 불명 → 안전을 위해 중단
+              this.logger.error(
+                `[SSG] SSG DB 조회 중 네트워크 오류 발생 - barCode: ${orderDelivery.barCode}, 안전을 위해 중단`,
+              );
+              throw e;
+            }
+          }
         }
 
-        // ssgTransactionId는 항상 새로 생성 (SSG API 호출마다 새로운 트랜잭션)
+        // 2) 새 PIN 생성 (최초 발송 또는 INSERT 실패 시) + 중복 확인
+        if (!orderDelivery.barCode || !orderDelivery.personalCode) {
+          const maxRetries = 5;
+          let generated = false;
+          for (let i = 0; i < maxRetries; i++) {
+            const { barCode, personalCode } = this.ssgIssue.generateSsgIssue();
+
+            // 생성한 PIN이 SSG DB에 이미 존재하는지 중복 확인
+            try {
+              await this.checkSsgWithRetry({
+                eventNo: ssgEvent.no,
+                eventSeq: ssgEvent.order,
+                vno: personalCode,
+              });
+              // 조회 성공 = 중복
+              this.logger.warn(
+                `[SSG] PIN 중복 감지 - personalCode: ${personalCode}, 재생성 시도 (${i + 1}/${maxRetries})`,
+              );
+              continue;
+            } catch (e) {
+              if (e instanceof SsgCheckNotFoundError) {
+                // API 정상 응답 + 미등록 = 사용 가능
+                orderDelivery.barCode = barCode;
+                orderDelivery.personalCode = personalCode;
+                generated = true;
+                this.logger.log(`[SSG] PIN 생성 완료 - barCode: ${barCode}, personalCode: ${personalCode}`);
+                break;
+              }
+              // 네트워크 에러 → 중복 여부 불명 → 안전을 위해 중단
+              this.logger.error(`[SSG] PIN 중복 확인 중 네트워크 오류 발생 - personalCode: ${personalCode}, 안전을 위해 중단`);
+              throw e;
+            }
+          }
+          if (!generated) {
+            throw new Error(`SSG PIN 생성 ${maxRetries}회 시도 후에도 중복 발생`);
+          }
+        }
+
+        // 3) 유효기간 설정 (등록 여부와 무관하게 항상 갱신)
         orderDelivery.ssgTransactionId = SsgTransactionId.makeSsgTrade();
-        // 실제 발송 시점 기준으로 유효기간 계산 (sendRequestAt이 아닌 현재 시간 사용)
         orderDelivery.expireAt = addDays(
           new Date(),
           orderDelivery.orderProductMapping.product.expireDay - 1,
         );
-        // 상품별 독려문자 설정 적용
         const encourageDay = orderDelivery.orderProductMapping.encourageDay;
         if (encourageDay) {
           orderDelivery.encourageAt = subDays(orderDelivery.expireAt, encourageDay);
         }
-        let text = orderDelivery.orderProductMapping.sendContent ?? '';
 
-        if (orderDelivery.orderProductMapping.sendTailText) {
-          text += orderDelivery.orderProductMapping.sendTailText;
-        }
-        if (orderDelivery.replaceCharacter1) {
-          text = text.replace('{대치문자1}', orderDelivery.replaceCharacter1);
-        }
-        if (orderDelivery.replaceCharacter2) {
-          text = text.replace('{대치문자2}', orderDelivery.replaceCharacter2);
-        }
-        if (orderDelivery.replaceCharacter3) {
-          text = text.replace('{대치문자3}', orderDelivery.replaceCharacter3);
-        }
+        // 4) SSG DB INSERT (필요한 경우에만)
+        if (needsInsert) {
+          let text = orderDelivery.orderProductMapping.sendContent ?? '';
 
-        const textForSsg = text + smsSsgTemplate(orderDelivery);
+          if (orderDelivery.orderProductMapping.sendTailText) {
+            text += orderDelivery.orderProductMapping.sendTailText;
+          }
+          if (orderDelivery.replaceCharacter1) {
+            text = text.replace('{대치문자1}', orderDelivery.replaceCharacter1);
+          }
+          if (orderDelivery.replaceCharacter2) {
+            text = text.replace('{대치문자2}', orderDelivery.replaceCharacter2);
+          }
+          if (orderDelivery.replaceCharacter3) {
+            text = text.replace('{대치문자3}', orderDelivery.replaceCharacter3);
+          }
 
-        // SSG API 동시 호출 방지 (Mutex로 순차 실행)
-        const callBackNumber = orderDelivery.orderProductMapping.fromPhoneNumber || defaultFromPhoneNumber;
-        const response = await this.withSsgMutex(() =>
-          this.ssgIssue.issue({
-            eventNo: ssgEvent.no,
-            eventSeq: ssgEvent.order,
-            eventKey: ssgEvent.code,
-            vno: orderDelivery.personalCode!,
-            pinNo: orderDelivery.barCode!,
-            userName: ssgIssueUserName,
-            userAmount: '' + orderDelivery.orderProductMapping.product.price,
-            msgContent: textForSsg,
-            trId: orderDelivery.ssgTransactionId!,
-            callBack: callBackNumber,
-          }),
-        );
-        context = JSON.stringify(response);
+          const textForSsg = text + smsSsgTemplate(orderDelivery);
+
+          const callBackNumber = orderDelivery.orderProductMapping.fromPhoneNumber || defaultFromPhoneNumber;
+          const response = await this.withSsgMutex(() =>
+            this.ssgIssue.issue({
+              eventNo: ssgEvent.no,
+              eventSeq: ssgEvent.order,
+              eventKey: ssgEvent.code,
+              vno: orderDelivery.personalCode!,
+              pinNo: orderDelivery.barCode!,
+              userName: ssgIssueUserName,
+              userAmount: '' + orderDelivery.orderProductMapping.product.price,
+              msgContent: textForSsg,
+              trId: orderDelivery.ssgTransactionId!,
+              callBack: callBackNumber,
+            }),
+          );
+          context = JSON.stringify(response);
+        }
 
         // SSG 발송 성공 시 실제 발송 시간 설정 (최초 발송 시에만)
         if (!orderDelivery.actualSendAt) {
@@ -345,19 +432,8 @@ export class PartnerCompanyExternService {
       if (!orderDelivery.barCode) {
         throw new Error('barCode not exist');
       }
-
-      // return;
     } catch (e) {
-      this.logger.log(JSON.stringify(e));
-      this.logger.log(e);
-
-      // SSG API 실패 시 barCode/personalCode 초기화
-      // SSG는 PIN을 로컬에서 생성 후 SSG DB에 등록하는 구조이므로,
-      // API 실패 시 등록되지 않은 PIN 정보를 제거해야 재발송 시 새로 발급됨
-      if (type === 'SSG') {
-        orderDelivery.barCode = null;
-        orderDelivery.personalCode = null;
-      }
+      this.logger.error(e);
 
       // Error 객체 직렬화 개선 (Error의 message, stack은 non-enumerable이라 JSON.stringify 시 {}가 됨)
       if (e instanceof Error) {
@@ -481,8 +557,7 @@ export class PartnerCompanyExternService {
         message: '폐기 완료',
       } as CancelCouponResDto;
     } catch (e) {
-      this.logger.log(JSON.stringify(e));
-      this.logger.log(e);
+      this.logger.error(e);
       return {
         code: '',
         message: '잠시 후 다시 시도해 주세요.',
