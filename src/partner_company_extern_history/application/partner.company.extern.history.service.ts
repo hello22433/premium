@@ -71,7 +71,7 @@ export class PartnerCompanyExternHistoryService {
       .leftJoinAndSelect('orderProductMapping.product', 'product')
       .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .where('orderDelivery.deletedAt IS NULL')
-      .andWhere('orderDelivery.status IN (:...statuses)', { statuses: RESENDABLE_FAIL_STATUSES });
+      .andWhere('(orderDelivery.status IN (:...statuses) OR orderDelivery.resendAt IS NOT NULL)', { statuses: RESENDABLE_FAIL_STATUSES });
 
     // 기간 필터 (actualSendAt이 없는 경우 updatedAt으로 대체)
     const dateColumn = 'COALESCE(orderDelivery.actualSendAt, orderDelivery.updatedAt)';
@@ -85,6 +85,14 @@ export class PartnerCompanyExternHistoryService {
     // 협력사 타입 필터
     if (type) {
       queryBuilder.andWhere('partnerCompany.type = :type', { type });
+    }
+
+    // 발송상태 필터
+    if (dto.sendStatus === 'FAIL') {
+      queryBuilder.andWhere('orderDelivery.status IN (:...failStatuses)', { failStatuses: RESENDABLE_FAIL_STATUSES });
+      queryBuilder.andWhere('orderDelivery.resendAt IS NULL');
+    } else if (dto.sendStatus === 'RESEND') {
+      queryBuilder.andWhere('orderDelivery.resendAt IS NOT NULL');
     }
 
     // 키워드 검색 (주문코드, 이벤트명)
@@ -137,9 +145,15 @@ export class PartnerCompanyExternHistoryService {
     // 핀 발급 여부 (barCode 유무로 판단)
     const pinIssued = !!orderDelivery.barCode;
 
-    // 실패 유형 결정 (SSG는 하단에서 history 기반으로 보정)
-    let failType = pinIssued ? FailType.SEND_FAIL : FailType.PIN_ISSUE_FAIL;
+    // 발송상태 결정
+    let failType: FailType | 'RESEND' = pinIssued ? FailType.SEND_FAIL : FailType.PIN_ISSUE_FAIL;
     let failTypeKo = pinIssued ? '발송실패' : '핀발급실패';
+
+    // 재발송 완료 건
+    if (orderDelivery.resendAt) {
+      failType = 'RESEND';
+      failTypeKo = '재발송완료';
+    }
 
     // 수신처 마스킹 처리
     let deliveryTarget: string | null = null;
@@ -186,7 +200,8 @@ export class PartnerCompanyExternHistoryService {
 
     // SSG 실패유형 보정: SSG는 barCode를 로컬 생성하므로 barCode 유무로 판단 불가
     // SSG API(SsgCoupon.do) 호출 실패 = PIN SSG DB 등록 실패 → 핀발급실패로 표시
-    if (partnerCompanyType === IPartnerCompanyType.SSG && latestHistory && !latestHistory.isSuccess) {
+    // 단, 재발송 완료 건은 보정하지 않음
+    if (!orderDelivery.resendAt && partnerCompanyType === IPartnerCompanyType.SSG && latestHistory && !latestHistory.isSuccess) {
       failType = FailType.PIN_ISSUE_FAIL;
       failTypeKo = '핀발급실패';
     }
@@ -214,6 +229,7 @@ export class PartnerCompanyExternHistoryService {
       eventName,
       deliveryTarget,
       pinIssued,
+      resendAt: orderDelivery.resendAt ? format(orderDelivery.resendAt, DateFormatStr) : null,
     };
   }
 
@@ -304,6 +320,12 @@ export class PartnerCompanyExternHistoryService {
       // PIN이 이미 발급됨 (SSG 제외) → 발송만 재시도
       if (!needsPinIssue) {
         const sendSuccess = await this.deliveryBatchService.oneSend(orderDelivery);
+
+        if (sendSuccess) {
+          orderDelivery.status = IOrderDeliveryStatus.COMPLETE;
+          orderDelivery.resendAt = new Date();
+          await this.orderDeliveryRepository.save(orderDelivery);
+        }
         return {
           success: sendSuccess,
           message: sendSuccess
@@ -372,6 +394,10 @@ export class PartnerCompanyExternHistoryService {
           };
         }
       }
+
+      orderDelivery.status = IOrderDeliveryStatus.COMPLETE;
+      orderDelivery.resendAt = new Date();
+      await this.orderDeliveryRepository.save(orderDelivery);
 
       return {
         success: true,

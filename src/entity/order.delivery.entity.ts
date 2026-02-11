@@ -93,6 +93,9 @@ export class OrderDeliveryEntity extends BaseEntity {
   @Column({ type: 'datetime', nullable: true, comment: '독려 문자 일시' })
   encourageAt: Date | null;
 
+  @Column({ type: 'datetime', nullable: true, comment: '재발송 완료 시각' })
+  resendAt: Date | null;
+
   @Column({ type: 'enum', enum: OrderDeliveryRefundStatusEnum, nullable: true, comment: '환불 상태' })
   refundStatus: OrderDeliveryRefundStatusEnum | null;
 
@@ -114,6 +117,12 @@ export class OrderDeliveryEntity extends BaseEntity {
   @Column({ type: 'datetime', nullable: true, comment: '환불일자' })
   refundAt: Date | null;
 
+  @Column({ name: 'api_error_code', type: 'varchar', length: 256, nullable: true, comment: '외부 api 응답 에러코드' })
+  apiErrorCode: string | null;
+
+  @Column({ type: 'varchar', length: 256, nullable: true, comment: '외부 api 응답 에러메시지' })
+  apiErrorMessage: string | null;
+
   @ManyToOne(() => OrderProductMappingEntity, { createForeignKeyConstraints: false })
   @JoinColumn({ name: 'order_product_mapping_id' })
   orderProductMapping: OrderProductMappingEntity;
@@ -128,10 +137,4 @@ export class OrderDeliveryEntity extends BaseEntity {
 
   @OneToMany(() => OrderHistoryEntity, (history) => history.orderDelivery)
   orderHistory: OrderHistoryEntity[];
-
-  @Column({ name: 'api_error_code', type: 'varchar', length: 256, nullable: true, comment: '외부 api 응답 에러코드' })
-  apiErrorCode: string | null;
-
-  @Column({ type: 'varchar', length: 256, nullable: true, comment: '외부 api 응답 에러메시지' })
-  apiErrorMessage: string | null;
 }

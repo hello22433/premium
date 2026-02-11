@@ -20,10 +20,10 @@ export class PartnerCompanyExternHistoryViewDto {
   @ApiProperty({ description: '협력사 타입명 (한글)', nullable: true })
   typeKo: string | null;
 
-  @ApiProperty({ description: '실패 유형', enum: FailType })
-  failType: FailType;
+  @ApiProperty({ description: '발송상태', enum: [...Object.values(FailType), 'RESEND'] })
+  failType: FailType | 'RESEND';
 
-  @ApiProperty({ description: '실패 유형명 (한글)' })
+  @ApiProperty({ description: '발송상태명 (한글)' })
   failTypeKo: string;
 
   @ApiProperty({ description: '에러 코드 (context에서 추출)', nullable: true })
@@ -52,6 +52,9 @@ export class PartnerCompanyExternHistoryViewDto {
 
   @ApiProperty({ description: '핀 발급 여부 (barCode 유무)' })
   pinIssued: boolean;
+
+  @ApiProperty({ description: '재발송 완료 시각', nullable: true })
+  resendAt: string | null;
 }
 
 export class GetPartnerCompanyExternHistoryListResDto {
