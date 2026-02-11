@@ -373,15 +373,7 @@ export class DeliveryBatchService {
     if (sendTailText) {
       text += `\n\n${sendTailText}`;
     }
-    if (orderDelivery.replaceCharacter1) {
-      text = text.replace('{대치문자1}', orderDelivery.replaceCharacter1);
-    }
-    if (orderDelivery.replaceCharacter2) {
-      text = text.replace('{대치문자2}', orderDelivery.replaceCharacter2);
-    }
-    if (orderDelivery.replaceCharacter3) {
-      text = text.replace('{대치문자3}', orderDelivery.replaceCharacter3);
-    }
+    text = this.applyReplaceCharacters(text, orderDelivery);
 
     const deliveryMethod = orderDelivery.deliveryMethod;
     const deliveryHistory = new DeliverySendHistoryEntity();
@@ -437,20 +429,14 @@ export class DeliveryBatchService {
         throw new Error('AlimTalk Send Error');
       }
 
-      orderDelivery.status = IOrderDeliveryStatus.COMPLETE;
-      if (!orderDelivery.actualSendAt) {
-        orderDelivery.actualSendAt = new Date();
-      }
+      this.markSendSuccess(orderDelivery, IOrderDeliveryStatus.COMPLETE);
     } catch (e) {
       deliveryHistory.context = JSON.stringify(e);
       deliveryHistory.isSuccess = false;
-      const resultSms = await this.handleAlimTalkFail(orderDelivery, title, text, filePathList, decryptedDeliveryTarget);
+      const resultSms = await this.handleAlimTalkFail(orderDelivery, title, text, filePathList, decryptedDeliveryTarget, encryptKey);
       if (resultSms === IOrderDeliveryStatus.COMPLETE_SMS) {
         deliveryHistory.isSuccess = true;
-        orderDelivery.status = IOrderDeliveryStatus.COMPLETE_SMS;
-        if (!orderDelivery.actualSendAt) {
-          orderDelivery.actualSendAt = new Date();
-        }
+        this.markSendSuccess(orderDelivery, IOrderDeliveryStatus.COMPLETE_SMS);
       } else {
         deliveryHistory.context += JSON.stringify(resultSms);
         orderDelivery.status = IOrderDeliveryStatus.FAIL;
@@ -470,13 +456,7 @@ export class DeliveryBatchService {
     filePathList: string[],
     deliveryHistory: DeliverySendHistoryEntity,
   ): Promise<void> {
-    let smsText =
-      orderDelivery.orderProductMapping.order.type === IOrderType.SSG ? text + smsSsgTemplate(orderDelivery) : text;
-    smsText = SmsChoiceProductTemplate(
-      orderDelivery,
-      `${this.configService.getOrThrow('SMS_CHOICE_URL')}/${encryptKey}`,
-      smsText,
-    );
+    const smsText = this.buildSmsText(orderDelivery, encryptKey, text);
 
     try {
       const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber!;
@@ -488,10 +468,7 @@ export class DeliveryBatchService {
         text: smsText,
         filePath: filePathList,
       });
-      orderDelivery.status = IOrderDeliveryStatus.COMPLETE;
-      if (!orderDelivery.actualSendAt) {
-        orderDelivery.actualSendAt = new Date();
-      }
+      this.markSendSuccess(orderDelivery, IOrderDeliveryStatus.COMPLETE);
       deliveryHistory.context = text;
     } catch (e) {
       orderDelivery.status = IOrderDeliveryStatus.FAIL;
@@ -665,17 +642,33 @@ export class DeliveryBatchService {
     return priority[next] > priority[current] ? next : current;
   }
 
+  /**
+   * SMS 발송 텍스트 구성 (SSG 템플릿 + 초이스 쿠폰 URL 적용)
+   */
+  private buildSmsText(orderDelivery: OrderDeliveryEntity, encryptKey: string, text: string): string {
+    let smsText =
+      orderDelivery.orderProductMapping.order.type === IOrderType.SSG ? text + smsSsgTemplate(orderDelivery) : text;
+    smsText = SmsChoiceProductTemplate(
+      orderDelivery,
+      `${this.configService.getOrThrow('SMS_CHOICE_URL')}/${encryptKey}`,
+      smsText,
+    );
+    return smsText;
+  }
+
+  /**
+   * 알림톡 실패 시 SMS fallback 발송
+   */
   private async handleAlimTalkFail(
     orderDelivery: OrderDeliveryEntity,
     title: string,
     text: string,
     filePathList: string[],
     decryptedDeliveryTarget: string,
-  ) {
+    encryptKey: string,
+  ): Promise<IOrderDeliveryStatus.COMPLETE_SMS | unknown> {
     try {
-      const smsText =
-        orderDelivery.orderProductMapping.order.type === IOrderType.SSG ? text + smsSsgTemplate(orderDelivery) : text;
-
+      const smsText = this.buildSmsText(orderDelivery, encryptKey, text);
       const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber!;
       await this.smsSend.send({
         msgType: 'M',
@@ -853,15 +846,7 @@ export class DeliveryBatchService {
     if (sendTailText) {
       text += `\n\n${sendTailText}`;
     }
-    if (orderDelivery.replaceCharacter1) {
-      text = text.replace('{대치문자1}', orderDelivery.replaceCharacter1);
-    }
-    if (orderDelivery.replaceCharacter2) {
-      text = text.replace('{대치문자2}', orderDelivery.replaceCharacter2);
-    }
-    if (orderDelivery.replaceCharacter3) {
-      text = text.replace('{대치문자3}', orderDelivery.replaceCharacter3);
-    }
+    text = this.applyReplaceCharacters(text, orderDelivery);
 
     const deliveryMethod = orderDelivery.deliveryMethod;
     const deliveryHistory = new DeliverySendHistoryEntity();
@@ -899,7 +884,7 @@ export class DeliveryBatchService {
       } catch (e) {
         deliveryHistory.context = JSON.stringify(e);
         deliveryHistory.isSuccess = false;
-        const resultSms = await this.handleAlimTalkFail(orderDelivery, title, text, filePathList, decryptedDeliveryTarget);
+        const resultSms = await this.handleAlimTalkFail(orderDelivery, title, text, filePathList, decryptedDeliveryTarget, encryptKey);
 
         if (resultSms === IOrderDeliveryStatus.COMPLETE_SMS) {
           deliveryHistory.isSuccess = true;
@@ -913,13 +898,7 @@ export class DeliveryBatchService {
 
     // SMS 발송
     if (deliveryMethod === IOrderSendMethod.SMS) {
-      let smsText =
-        orderDelivery.orderProductMapping.order.type === IOrderType.SSG ? text + smsSsgTemplate(orderDelivery) : text;
-      smsText = SmsChoiceProductTemplate(
-        orderDelivery,
-        `${this.configService.getOrThrow('SMS_CHOICE_URL')}/${encryptKey}`,
-        smsText,
-      );
+      const smsText = this.buildSmsText(orderDelivery, encryptKey, text);
 
       try {
         const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber!;
@@ -931,10 +910,7 @@ export class DeliveryBatchService {
           text: smsText,
           filePath: filePathList,
         });
-        orderDelivery.status = IOrderDeliveryStatus.COMPLETE;
-        if (!orderDelivery.actualSendAt) {
-          orderDelivery.actualSendAt = new Date();
-        }
+        this.markSendSuccess(orderDelivery, IOrderDeliveryStatus.COMPLETE);
         deliveryHistory.context = text;
       } catch (e) {
         orderDelivery.status = IOrderDeliveryStatus.FAIL;
