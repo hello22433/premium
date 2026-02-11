@@ -797,20 +797,23 @@ export class DeliveryBatchService {
 
   async oneSend(orderDelivery: OrderDeliveryEntity, isSave: boolean = true, testOrderDeliveryId?: number): Promise<boolean> {
     // PIN 재발급 및 이미지 재생성 (barCode나 imagePath가 없는 경우)
-    const reissueSuccess = await this.reissuePinAndCreateImageIfNeeded(orderDelivery);
-    if (!reissueSuccess) {
-      // PIN 재발급 실패 시 발송 중단하고 실패 이력 기록
-      const deliveryHistory = new DeliverySendHistoryEntity();
-      deliveryHistory.context = 'PIN 재발급 실패';
-      deliveryHistory.isSuccess = false;
-      deliveryHistory.target = orderDelivery.deliveryTarget;
-      deliveryHistory.deliveryMethod = orderDelivery.deliveryMethod;
+    // 테스트 발송은 mock 데이터(barCode='999999')를 사용하므로 PIN 재발급 불필요
+    if (!testOrderDeliveryId) {
+      const reissueSuccess = await this.reissuePinAndCreateImageIfNeeded(orderDelivery);
+      if (!reissueSuccess) {
+        // PIN 재발급 실패 시 발송 중단하고 실패 이력 기록
+        const deliveryHistory = new DeliverySendHistoryEntity();
+        deliveryHistory.context = 'PIN 재발급 실패';
+        deliveryHistory.isSuccess = false;
+        deliveryHistory.target = orderDelivery.deliveryTarget;
+        deliveryHistory.deliveryMethod = orderDelivery.deliveryMethod;
 
-      if (isSave) {
-        await this.orderDeliveryRepository.save(orderDelivery);
+        if (isSave) {
+          await this.orderDeliveryRepository.save(orderDelivery);
+        }
+        await this.deliverySendHistoryRepository.save(deliveryHistory);
+        return false;
       }
-      await this.deliverySendHistoryRepository.save(deliveryHistory);
-      return false;
     }
 
     const decryptedDeliveryTarget = this.decryptDeliveryTarget(orderDelivery);
