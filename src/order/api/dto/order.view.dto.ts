@@ -96,4 +96,9 @@ export class OrderViewDto {
     description: '발송 실패 건 포함 여부',
   })
   hasFailedDelivery: boolean;
+
+  @ApiProperty({
+    description: '재발송 완료 건 포함 여부',
+  })
+  hasResentDelivery: boolean;
 }

@@ -1,5 +1,5 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsOptional, IsString, IsInt, Min, IsEnum, IsBoolean } from 'class-validator';
+import { IsOptional, IsString, IsInt, Min, IsEnum, IsBoolean, IsIn } from 'class-validator';
 import { Type, Transform } from 'class-transformer';
 import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
 
@@ -43,6 +43,11 @@ export class GetPartnerCompanyExternHistoryListReqDto {
   })
   @IsBoolean()
   isSuccess?: boolean;
+
+  @ApiPropertyOptional({ description: '발송상태 필터 (FAIL: 실패, RESEND: 재발송)', enum: ['FAIL', 'RESEND'] })
+  @IsOptional()
+  @IsIn(['FAIL', 'RESEND'])
+  sendStatus?: 'FAIL' | 'RESEND';
 
   @ApiPropertyOptional({
     description: '검색어 (context 내 키워드, transactionId, 에러코드 등)',

@@ -350,7 +350,12 @@ export class OrderService {
           (delivery) =>
             delivery.status === IOrderDeliveryStatus.FAIL || delivery.status === IOrderDeliveryStatus.FAIL_SMS,
         ),
-      );
+      ) ?? false;
+
+      // 재발송 완료 건 포함 여부 확인
+      const hasResentDelivery = order.orderProductMappings?.some((mapping) =>
+        mapping.orderDeliveries?.some((delivery) => delivery.resendAt != null),
+      ) ?? false;
 
       // 첫 번째 상품의 발송 정보 사용
       const firstMapping = order.orderProductMappings?.[0];
@@ -375,7 +380,8 @@ export class OrderService {
         settlePrice: order.settleAmount,
         requestToDestroyPersonalInfoDay: firstMapping?.requestToDestroyPersonalInfoDay ?? 0,
         sendType: firstMapping?.sendType ?? null,
-        hasFailedDelivery: hasFailedDelivery ?? false,
+        hasFailedDelivery,
+        hasResentDelivery,
       };
     });
 
