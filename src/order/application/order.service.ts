@@ -1406,6 +1406,15 @@ export class OrderService {
       where: [{ userId: billingUserId }, { partnerCompanyId: In(partnerCompanyIds) }],
     });
 
+    this.logger.debug(`[getOrderSettle] orderId=${id}, billingUserId=${billingUserId} (clientUserId=${order.clientUserId}, userId=${order.userId})`);
+    this.logger.debug(`[getOrderSettle] partnerCompanyIds=${JSON.stringify(partnerCompanyIds)}`);
+    this.logger.debug(`[getOrderSettle] userDiscounts count=${userDiscounts.length}`);
+    userDiscounts.forEach((d) => {
+      this.logger.debug(
+        `[getOrderSettle] discount: id=${d.id}, category=${d.category}, method=${d.method}, group=${d.group}, primaryCategory=${d.primaryCategory}, range=${d.range}, compareCondition=${d.compareCondition}, priceAdjustment=${d.priceAdjustment}, pricePercent=${d.pricePercent}, userId=${d.userId}, partnerCompanyId=${d.partnerCompanyId}`,
+      );
+    });
+
     const resultList: OrderSettleViewDto[] = orderProductList.map((orderProduct) => {
       let priceAdjustment = orderProduct.priceAdjustment;
       let fee = orderProduct.fee;
@@ -1416,6 +1425,13 @@ export class OrderService {
 
       // 3. 할인 정보가 null 일 경우 상품에 맞는 할인 옵션 찾기
       if (!priceAdjustment || fee === null) {
+        this.logger.debug(
+          `[getOrderSettle] product: id=${orderProduct.product.id}, name=${orderProduct.product.name}, category='${orderProduct.product.category}', price=${orderProduct.product.price}, brand=${orderProduct.product.brand?.nameKorean ?? 'null'}`,
+        );
+        this.logger.debug(
+          `[getOrderSettle] stored values: fee=${orderProduct.fee}, priceAdjustment=${orderProduct.priceAdjustment}`,
+        );
+
         const matchingDiscount = this.findMatchingDiscount(
           {
             price: orderProduct.product.price,
@@ -1423,6 +1439,10 @@ export class OrderService {
             brand: orderProduct.product.brand,
           },
           userDiscounts,
+        );
+
+        this.logger.debug(
+          `[getOrderSettle] matchingDiscount: ${matchingDiscount ? `id=${matchingDiscount.id}, category=${matchingDiscount.category}, method=${matchingDiscount.method}, group='${matchingDiscount.group}', range=${matchingDiscount.range}, compareCondition=${matchingDiscount.compareCondition}, priceAdjustment=${matchingDiscount.priceAdjustment}, pricePercent=${matchingDiscount.pricePercent}` : 'null (no match found)'}`,
         );
 
         // 4. 할인 정보가 존재하면 null 값만 채우기
