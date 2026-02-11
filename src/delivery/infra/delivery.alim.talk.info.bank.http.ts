@@ -118,7 +118,7 @@ export class DeliveryAlimTalkInfoBankHttp implements DeliveryAlimTalk {
 
       const templateCode = sendObj.templateCode || this.infoBankTemplateCode;
       const isTestTemplate = templateCode.toLowerCase().includes('dev');
-      const buttonName = isTestTemplate ? '[TEST]선물메시지 확인' : '선물메시지 확인';
+      const buttonName = isTestTemplate ? '[TEST]선물메시지 확인' : '쿠폰 확인하기';
 
       const body = {
         senderKey: this.infoBankSenderKey,
