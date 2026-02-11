@@ -30,8 +30,7 @@ export class SsgIssue implements ISsgIssue {
 
   private logger = new Logger('SSG');
 
-  // private url = 'https://tapi.epopkon.com/'; // test URL
-  private url = 'https://api.epopkon.com';
+  private url = 'https://tapi.epopkon.com';
 
   private parser() {
     return new Parser();
@@ -44,9 +43,10 @@ export class SsgIssue implements ISsgIssue {
     return { barCode, personalCode };
   }
 
-  async issue(obj: ISsgIssueIn): Promise<any> {
+  async issue(obj: ISsgIssueIn): Promise<ISsgIssueOut> {
     const data = new URLSearchParams({
       event_no: obj.eventNo,
+      event_seq: String(obj.eventSeq),
       event_key: obj.eventKey,
       vno: obj.vno,
       pin_no: obj.pinNo,
@@ -57,36 +57,27 @@ export class SsgIssue implements ISsgIssue {
       call_back: obj.callBack,
     });
 
-    try {
-      const sendUrl = `${this.url}/SsgCoupon.do?${data.toString()}&event_seq=${obj.eventSeq}`;
-      this.logger.log(sendUrl);
+    const sendUrl = `${this.url}/SsgCoupon.do?${data.toString()}`;
+    this.logger.log(sendUrl);
 
-      const response = await firstValueFrom(this.httpService.get(sendUrl));
+    const response = await firstValueFrom(this.httpService.get(sendUrl));
+    this.logger.log(response.data);
 
-      this.logger.log(response.data);
+    const resultToJson = (await this.parser().parseStringPromise(response.data)) as unknown as ISsgIssueOut;
+    this.logger.log(resultToJson);
 
-      const resultToJson = (await this.parser().parseStringPromise(response.data)) as unknown as ISsgIssueOut;
-      this.logger.log(resultToJson);
-      if (resultToJson.response.result[0].code[0] !== '1000') {
-        throw new Error(resultToJson.response.result[0].reason[0]);
-      }
-      return resultToJson;
-    } catch (e) {
-      this.logger.error(e);
-      throw e;
+    const code = resultToJson?.response?.result?.[0]?.code?.[0];
+    const reason = resultToJson?.response?.result?.[0]?.reason?.[0];
+    if (code !== '1000') {
+      throw new Error(reason ?? `SSG 등록 실패 (code: ${code ?? 'null'})`);
     }
+    return resultToJson;
   }
 
   private generateCode(prefix: string, length: number): string {
-    // 난수를 length 자릿수로 제한
-    const max = Math.pow(10, length); // 최대 값 (10^length)
-    const randomNumber = Math.floor(Math.random() * max); // 0부터 max-1 사이의 랜덤 숫자 생성
-
-    // 자릿수 보장 (부족한 경우 앞에 '0' 추가)
-    const paddedNumber = randomNumber.toString().padStart(length, '0');
-
-    // 접두사와 결합한 결과 반환
-    return prefix + paddedNumber;
+    const max = Math.pow(10, length);
+    const randomNumber = Math.floor(Math.random() * max);
+    return prefix + randomNumber.toString().padStart(length, '0');
   }
 
   // EUC-KR이 Latin-1로 잘못 해석된 문자열 복원
@@ -102,34 +93,30 @@ export class SsgIssue implements ISsgIssue {
   async check(obj: ISsgCheckIn): Promise<ISsgCheckOut> {
     const data = new URLSearchParams({
       event_no: obj.eventNo,
+      event_seq: String(obj.eventSeq),
       vno: obj.vno,
     });
-    this.logger.log(data);
 
-    try {
-      const sendUrl = `${this.url}/GetSsgStatus.do?${data.toString()}&event_seq=${obj.eventSeq}`;
-      this.logger.log(sendUrl);
+    const sendUrl = `${this.url}/GetSsgStatus.do?${data.toString()}`;
+    this.logger.log(sendUrl);
 
-      const response = await firstValueFrom(this.httpService.get(sendUrl));
+    const response = await firstValueFrom(this.httpService.get(sendUrl));
+    this.logger.log(response.data);
 
-      this.logger.log(response.data);
+    const resultToJson = (await this.parser().parseStringPromise(response.data)) as unknown as ISsgCheckOut;
 
-      const resultToJson = (await this.parser().parseStringPromise(response.data)) as unknown as ISsgCheckOut;
-
-      // value.result 필드 인코딩 복원 (EUC-KR → UTF-8)
-      if (resultToJson.response.value?.[0]?.result?.[0]) {
-        resultToJson.response.value[0].result[0] = this.fixMojibake(resultToJson.response.value[0].result[0]);
-      }
-
-      this.logger.log(resultToJson);
-      // 조회 성공 코드는 1001
-      if (resultToJson.response.result[0].code[0] !== '1001') {
-        throw new SsgCheckNotFoundError(resultToJson.response.result[0].reason[0]);
-      }
-      return resultToJson;
-    } catch (e) {
-      this.logger.error(e);
-      throw e;
+    // value.result 필드 인코딩 복원 (EUC-KR → UTF-8)
+    if (resultToJson.response.value?.[0]?.result?.[0]) {
+      resultToJson.response.value[0].result[0] = this.fixMojibake(resultToJson.response.value[0].result[0]);
     }
+
+    this.logger.log(resultToJson);
+
+    const code = resultToJson?.response?.result?.[0]?.code?.[0];
+    const reason = resultToJson?.response?.result?.[0]?.reason?.[0];
+    if (code !== '1001') {
+      throw new SsgCheckNotFoundError(reason ?? `SSG 조회 실패 (code: ${code ?? 'null'})`);
+    }
+    return resultToJson;
   }
 }
