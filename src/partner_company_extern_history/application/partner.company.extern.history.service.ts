@@ -381,18 +381,16 @@ export class PartnerCompanyExternHistoryService {
         };
       }
 
-      // SSG는 issue()에서 SSG DB INSERT 시 발송도 처리됨
-      // 다른 협력사는 별도로 발송 필요
-      if (partnerCompanyType !== IPartnerCompanyType.SSG) {
-        const sendSuccess = await this.deliveryBatchService.oneSend(orderDelivery);
+      // SsgCoupon.do는 Oracle INSERT만 수행하며 문자 발송은 하지 않음
+      // 모든 협력사 공통으로 oneSend()를 통해 실제 SMS/알림톡 발송 필요
+      const sendSuccess = await this.deliveryBatchService.oneSend(orderDelivery);
 
-        if (!sendSuccess) {
-          return {
-            success: false,
-            message: 'PIN 발급 성공, 발송 실패 - 알림톡/SMS/이메일 발송에 실패했습니다.',
-            orderDeliveryId,
-          };
-        }
+      if (!sendSuccess) {
+        return {
+          success: false,
+          message: 'PIN 발급 성공, 발송 실패 - 알림톡/SMS/이메일 발송에 실패했습니다.',
+          orderDeliveryId,
+        };
       }
 
       orderDelivery.status = IOrderDeliveryStatus.COMPLETE;
