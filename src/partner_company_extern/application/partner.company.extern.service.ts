@@ -15,7 +15,6 @@ import { SsgCheckNotFoundError } from '../infra/ssg.issue';
 import { Propagation, Transactional } from 'typeorm-transactional';
 import { orderBarcodeGenerate } from '../../order/domain/order.code.generate';
 import { SsgEventEntity } from '../../entity/ssg.event.entity';
-import { OrderEntity } from '../../entity/order.entity';
 import { SsgTransactionId } from '../domain/ssg.transaction.id';
 import { defaultFromPhoneNumber, ssgIssueUserName } from '../../const';
 import { smsSsgTemplate } from '../../delivery/domain/sms.ssg.template';
@@ -62,8 +61,6 @@ export class PartnerCompanyExternService {
     private ssgIssue: ISsgIssue,
     @Inject('IDaou')
     private daou: IDaou,
-    @InjectRepository(OrderEntity)
-    private orderRepository: Repository<OrderEntity>,
     @InjectRepository(OrderDeliveryEntity)
     private orderDeliveryRepository: Repository<OrderDeliveryEntity>,
     @InjectRepository(PartnerCompanyExternHistoryEntity)
@@ -274,15 +271,6 @@ export class PartnerCompanyExternService {
         if (!ssgEvent) {
           throw new InternalServerErrorException('ssg event 가 존재하지 않습니다.');
         }
-        const order = await this.orderRepository.findOne({
-          where: {
-            id: orderDelivery.orderProductMapping.orderId,
-          },
-        });
-
-        if (!order) {
-          throw new InternalServerErrorException('order not exist');
-        }
 
         // 1) 기존 PIN이 있으면 SSG DB 등록 여부 확인
         let needsInsert = true;
@@ -393,7 +381,7 @@ export class PartnerCompanyExternService {
               vno: orderDelivery.personalCode!,
               pinNo: orderDelivery.barCode!,
               userName: ssgIssueUserName,
-              userAmount: '' + orderDelivery.orderProductMapping.product.price,
+              userAmount: String(orderDelivery.orderProductMapping.product.price),
               msgContent: textForSsg,
               trId: orderDelivery.ssgTransactionId!,
               callBack: callBackNumber,
@@ -402,10 +390,8 @@ export class PartnerCompanyExternService {
           context = JSON.stringify(response);
         }
 
-        // SSG 발송 성공 시 실제 발송 시간 설정 (최초 발송 시에만)
-        if (!orderDelivery.actualSendAt) {
-          orderDelivery.actualSendAt = new Date();
-        }
+        // SSG의 SsgCoupon.do는 Oracle INSERT만 수행하며 문자 발송은 하지 않음
+        // actualSendAt은 실제 SMS/알림톡 발송 성공 시 delivery.batch.service에서 설정됨
       }
 
       // 1.1.7 다우기술 PIN 발급
@@ -414,7 +400,7 @@ export class PartnerCompanyExternService {
           goodsId: orderDelivery.orderProductMapping.product.partnerCompanyCode!,
           transactionId: orderDelivery.transactionId,
           phoneNumber: '01000000000', // 개인정보 보호: 더미 번호 사용
-          limitDate: '' + orderDelivery.orderProductMapping.product.expireDay,
+          limitDate: String(orderDelivery.orderProductMapping.product.expireDay),
           tradeNo: orderDelivery.transactionId, // tradeNo로 transactionId 사용
         });
         context = JSON.stringify(daouOut);

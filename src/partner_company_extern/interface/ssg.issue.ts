@@ -53,7 +53,7 @@ export type ISsgCheckOut = {
 export interface ISsgIssue {
   generateSsgIssue(): ISsgIssueCode;
 
-  issue(obj: ISsgIssueIn): Promise<any>;
+  issue(obj: ISsgIssueIn): Promise<ISsgIssueOut>;
 
   check(obj: ISsgCheckIn): Promise<ISsgCheckOut>;
 }
