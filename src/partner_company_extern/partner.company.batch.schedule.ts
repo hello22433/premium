@@ -30,20 +30,6 @@ export class PartnerCompanyBatchSchedule {
     } catch (e) {
       this.logger.error(e);
     }
-
-    // TODO: 1월 데이터 백필 완료 후 삭제
-    for (let day = 1; day <= 31; day++) {
-      const targetDay = `202601${String(day).padStart(2, '0')}`;
-      try {
-        this.logger.log(`[백필] checkGalaxiaDaily 시작 - targetDay: ${targetDay}`);
-        await this.partnerCompanyExternBatchService.checkGalaxiaDaily(targetDay);
-        this.logger.log(`[백필] checkGalaxiaDaily 완료 - targetDay: ${targetDay}`);
-      } catch (e) {
-        this.logger.error(`[백필] checkGalaxiaDaily 실패 - targetDay: ${targetDay}`);
-        this.logger.error(e);
-      }
-    }
-    this.logger.log('[백필] 1월 데이터 백필 완료');
   }
 
   // 매일 07:15에 실행 - 컬쳐랜드 일대사 (60일 상품 전용, 전날 사용 내역 조회)
