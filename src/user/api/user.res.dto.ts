@@ -33,6 +33,13 @@ export class UserLoginByEmailPasswordResDto {
   readonly authority: IUserAuthority;
 
   @ApiProperty({
+    type: String,
+    description: '로그인한 유저의 이메일',
+  })
+  // =====================================================
+  readonly email: string;
+
+  @ApiProperty({
     description: '비밀번호 리셋을 진행한 경우, true 일 경우 비밀번호 변경 프로세스를 진행해야 합니다.',
   })
   readonly isPasswordReset: boolean;
