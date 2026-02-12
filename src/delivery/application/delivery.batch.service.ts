@@ -719,7 +719,7 @@ export class DeliveryBatchService {
 
         await this.partnerCompanyExternService.issue(orderDelivery, ssgEvent);
 
-        if (orderDelivery.status === IOrderDeliveryStatus.FAIL || !orderDelivery.barCode) {
+        if (!orderDelivery.barCode) {
           this.logger.error(`[RESEND] PIN 재발급 실패 - orderDelivery.id: ${orderDelivery.id}`);
           return false;
         }
