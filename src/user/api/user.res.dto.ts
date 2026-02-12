@@ -4,6 +4,13 @@ import { IUserAuthority } from '../interface/user.authority';
 
 export class UserLoginByEmailPasswordResDto {
   @ApiProperty({
+    type: Number,
+    description: '로그인한 유저의 ID',
+  })
+  // =====================================================
+  readonly userId: number;
+
+  @ApiProperty({
     type: TokenDto,
     nullable: true,
     description: 'access 토큰 정보',

@@ -4,6 +4,8 @@ import { ApiBadRequestResponse, ApiBearerAuth, ApiOkResponse, ApiOperation, ApiT
 import {
   RequirementCommentCreateReqDto,
   RequirementCommentDeleteReqParamDto,
+  RequirementCommentUpdateReqDto,
+  RequirementCommentUpdateReqParamDto,
   RequirementCreateReqDto,
   RequirementGetDetailReqParamDto,
   RequirementGetListReqQueryDto,
@@ -154,6 +156,24 @@ export class RequirementController {
   ) {
     await this.authService.authorityValidator(user, UserAuthSubEnum.REQUIREMENT);
     return this.requirementService.deleteComment(user, getParam.id, getParam.commentId);
+  }
+
+  @ApiOperation({
+    summary: '개발 요구사항 댓글 수정 API',
+  })
+  @ApiBearerAuth()
+  @ApiOkResponse({
+    description: '댓글 수정에 성공한 경우',
+  })
+  // ===================================================
+  @Patch('/requirement/:id/comment/:commentId')
+  async updateComment(
+    @User() user: ILoginUserInfo,
+    @Param() getParam: RequirementCommentUpdateReqParamDto,
+    @Body() getBody: RequirementCommentUpdateReqDto,
+  ) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.REQUIREMENT);
+    return this.requirementService.updateComment(user, getParam.id, getParam.commentId, getBody);
   }
 
   @ApiOperation({

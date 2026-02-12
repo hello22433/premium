@@ -13,7 +13,7 @@ export class RequirementGetListReqQueryDto extends PagingReqDto {
   })
   // =================================
   @IsOptional()
-  @IsIn(['NEW', 'REVIEW', 'IN_PROGRESS', 'COMPLETE'])
+  @IsIn(['NEW', 'IN_PROGRESS', 'REJECTED', 'DEV_COMPLETE', 'REVIEW_COMPLETE'])
   status?: RequirementStatus;
 
   @ApiPropertyOptional({
@@ -33,6 +33,38 @@ export class RequirementGetListReqQueryDto extends PagingReqDto {
   @IsOptional()
   @IsIn(['URGENT', 'HIGH', 'NORMAL'])
   priority?: RequirementPriority;
+
+  @ApiPropertyOptional({
+    description: '제목 검색',
+  })
+  // =================================
+  @IsOptional()
+  @IsString()
+  title?: string;
+
+  @ApiPropertyOptional({
+    description: '작성자명 검색',
+  })
+  // =================================
+  @IsOptional()
+  @IsString()
+  userName?: string;
+
+  @ApiPropertyOptional({
+    description: '등록일 시작 (ISO 8601)',
+  })
+  // =================================
+  @IsOptional()
+  @IsString()
+  startCreatedAt?: string;
+
+  @ApiPropertyOptional({
+    description: '등록일 종료 (ISO 8601)',
+  })
+  // =================================
+  @IsOptional()
+  @IsString()
+  endCreatedAt?: string;
 }
 
 export class RequirementGetDetailReqParamDto {
@@ -135,7 +167,7 @@ export class RequirementUpdateStatusReqDto {
   })
   // =================================
   @IsNotEmpty()
-  @IsIn(['NEW', 'REVIEW', 'IN_PROGRESS', 'COMPLETE'])
+  @IsIn(['NEW', 'IN_PROGRESS', 'REJECTED', 'DEV_COMPLETE', 'REVIEW_COMPLETE'])
   status: RequirementStatus;
 }
 
@@ -150,6 +182,36 @@ export class RequirementCommentCreateReqDto {
 }
 
 export class RequirementCommentDeleteReqParamDto {
+  @ApiProperty({
+    description: 'requirement id',
+  })
+  // =================================
+  @IsNotEmpty()
+  @IsNumber()
+  @Type(() => Number)
+  id: number;
+
+  @ApiProperty({
+    description: 'comment id',
+  })
+  // =================================
+  @IsNotEmpty()
+  @IsNumber()
+  @Type(() => Number)
+  commentId: number;
+}
+
+export class RequirementCommentUpdateReqDto {
+  @ApiProperty({
+    description: '수정할 댓글 내용',
+  })
+  // =================================
+  @IsNotEmpty()
+  @IsString()
+  content: string;
+}
+
+export class RequirementCommentUpdateReqParamDto {
   @ApiProperty({
     description: 'requirement id',
   })

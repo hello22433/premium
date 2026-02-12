@@ -6,6 +6,7 @@ import { RequirementCommentEntity } from '../../entity/requirement.comment.entit
 import { RequirementAttachmentEntity } from '../../entity/requirement.attachment.entity';
 import {
   RequirementCommentCreateReqDto,
+  RequirementCommentUpdateReqDto,
   RequirementCreateReqDto,
   RequirementGetDetailReqParamDto,
   RequirementGetListReqQueryDto,
@@ -43,7 +44,7 @@ export class RequirementService {
   ) {}
 
   async getList(getQuery: RequirementGetListReqQueryDto): Promise<RequirementGetListResDto> {
-    const { take, page, status, type, priority } = getQuery;
+    const { take, page, status, type, priority, title, userName, startCreatedAt, endCreatedAt } = getQuery;
 
     let queryBuilder = this.requirementRepository
       .createQueryBuilder('requirement')
@@ -63,21 +64,48 @@ export class RequirementService {
     if (priority) {
       queryBuilder = queryBuilder.andWhere('requirement.priority = :priority', { priority });
     }
+    if (title) {
+      queryBuilder = queryBuilder.andWhere('requirement.title LIKE :title', { title: `%${title}%` });
+    }
+    if (userName) {
+      queryBuilder = queryBuilder.andWhere('user.personName LIKE :userName', { userName: `%${userName}%` });
+    }
+    if (startCreatedAt) {
+      queryBuilder = queryBuilder.andWhere('requirement.createdAt >= :startCreatedAt', { startCreatedAt });
+    }
+    if (endCreatedAt) {
+      queryBuilder = queryBuilder.andWhere('requirement.createdAt <= :endCreatedAt', { endCreatedAt });
+    }
 
     const skip = (page - 1) * take;
     queryBuilder = queryBuilder.orderBy('requirement.id', 'DESC').offset(skip).limit(take);
 
     const rawResults = await queryBuilder.getRawAndEntities();
-    const totalCount = await this.requirementRepository.createQueryBuilder('requirement').where(
-      status ? 'requirement.status = :status' : '1=1',
-      status ? { status } : {},
-    ).andWhere(
-      type ? 'requirement.type = :type' : '1=1',
-      type ? { type } : {},
-    ).andWhere(
-      priority ? 'requirement.priority = :priority' : '1=1',
-      priority ? { priority } : {},
-    ).getCount();
+    let countQueryBuilder = this.requirementRepository
+      .createQueryBuilder('requirement')
+      .innerJoin('requirement.user', 'user');
+    if (status) {
+      countQueryBuilder = countQueryBuilder.andWhere('requirement.status = :status', { status });
+    }
+    if (type) {
+      countQueryBuilder = countQueryBuilder.andWhere('requirement.type = :type', { type });
+    }
+    if (priority) {
+      countQueryBuilder = countQueryBuilder.andWhere('requirement.priority = :priority', { priority });
+    }
+    if (title) {
+      countQueryBuilder = countQueryBuilder.andWhere('requirement.title LIKE :title', { title: `%${title}%` });
+    }
+    if (userName) {
+      countQueryBuilder = countQueryBuilder.andWhere('user.personName LIKE :userName', { userName: `%${userName}%` });
+    }
+    if (startCreatedAt) {
+      countQueryBuilder = countQueryBuilder.andWhere('requirement.createdAt >= :startCreatedAt', { startCreatedAt });
+    }
+    if (endCreatedAt) {
+      countQueryBuilder = countQueryBuilder.andWhere('requirement.createdAt <= :endCreatedAt', { endCreatedAt });
+    }
+    const totalCount = await countQueryBuilder.getCount();
 
     const totalPage = Math.ceil(totalCount / take);
 
@@ -298,6 +326,26 @@ export class RequirementService {
     );
   }
 
+  async updateComment(user: ILoginUserInfo, id: number, commentId: number, getBody: RequirementCommentUpdateReqDto) {
+    const comment = await this.commentRepository.findOne({
+      where: { id: commentId, requirementId: id },
+    });
+
+    if (!comment) {
+      throw new BadRequestException('댓글이 존재하지 않습니다.');
+    }
+
+    const isSuperAdmin = user.authority === IUserAuthority.SUPER_ADMIN;
+    const isOwner = comment.userId === user.id;
+
+    if (!isSuperAdmin && !isOwner) {
+      throw new ForbiddenException('수정 권한이 없습니다.');
+    }
+
+    comment.content = getBody.content;
+    await this.commentRepository.save(comment);
+  }
+
   async downloadMarkdown(id: number, res: Response) {
     const requirement = await this.requirementRepository.findOne({
       where: { id },
@@ -322,9 +370,10 @@ export class RequirementService {
 
     const statusKo: Record<string, string> = {
       NEW: '신규',
-      REVIEW: '검토중',
       IN_PROGRESS: '진행중',
-      COMPLETE: '완료',
+      REJECTED: '반려',
+      DEV_COMPLETE: '개발완료',
+      REVIEW_COMPLETE: '검토완료',
     };
 
     // HTML 태그 제거 (plain text 변환)

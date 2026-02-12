@@ -261,6 +261,7 @@ export class UserService {
     if (emailCodeCount === 0) {
       return {
         ...this.loginTokenValidator.issuance(loginUserInfo),
+        userId: user.id,
         authority: user.authority,
         personName: user.personName,
         email: user.email,
@@ -275,6 +276,7 @@ export class UserService {
 
     return {
       ...this.loginTokenValidator.issuance(loginUserInfo),
+      userId: user.id,
       authority: user.authority,
       personName: user.personName,
       email: user.email,
