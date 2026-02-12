@@ -55,6 +55,9 @@ import { EmailManualEntity } from '../entity/email.manual.entity';
 import { DepartmentEntity } from '../entity/department.entity';
 import { UserViewScopeEntity } from '../entity/user.view.scope.entity';
 import { GalaxiaBarcodeLogEntity } from '../entity/galaxia.barcode.log.entity';
+import { RequirementEntity } from '../entity/requirement.entity';
+import { RequirementCommentEntity } from '../entity/requirement.comment.entity';
+import { RequirementAttachmentEntity } from '../entity/requirement.attachment.entity';
 
 @Module({
   imports: [
@@ -114,6 +117,9 @@ import { GalaxiaBarcodeLogEntity } from '../entity/galaxia.barcode.log.entity';
           DepartmentEntity,
           UserViewScopeEntity,
           GalaxiaBarcodeLogEntity,
+          RequirementEntity,
+          RequirementCommentEntity,
+          RequirementAttachmentEntity,
         ],
         timezone: '+09:00',
         logger: configService.get('DATABASE_LOGGING') === 'true' ? new SqlLogger() : undefined,

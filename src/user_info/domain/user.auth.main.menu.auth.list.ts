@@ -114,6 +114,10 @@ export const UserAuthMainMenuAuthList = (userSubmenuAuthList: UserAuthSubEnum[])
     if (subMenu === UserAuthSubEnum.ACTIVITY_LOG) {
       mainMenuSet.add(UserAuthMainEnum.ETC);
     }
+
+    if (subMenu === UserAuthSubEnum.REQUIREMENT) {
+      mainMenuSet.add(UserAuthMainEnum.ETC);
+    }
   }
 
   return [...mainMenuSet];

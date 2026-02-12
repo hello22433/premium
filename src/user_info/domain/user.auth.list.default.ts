@@ -41,6 +41,7 @@ export const UserAuthListDefault = (authority: IUserAuthority, authorityList: st
       //기타
       UserAuthSubEnum.IMS_PLAN,
       UserAuthSubEnum.ACTIVITY_LOG,
+      UserAuthSubEnum.REQUIREMENT,
     ];
   }
 
