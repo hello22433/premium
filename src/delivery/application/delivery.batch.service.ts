@@ -301,8 +301,8 @@ export class DeliveryBatchService {
         const userId = order.clientUserId ?? order.user!.id;
 
         // 환불 처리
-        if (order.type === IOrderType.SSG) {
-          await this.ssgEventService.refundForDeliveryFail(order.id, productPrice);
+        if (order.type === IOrderType.SSG && orderDelivery.ssgEventId) {
+          await this.ssgEventService.refundForDeliveryFail(orderDelivery.ssgEventId, order.id, productPrice);
         }
 
         if (order.isSettleBalance) {
@@ -765,8 +765,8 @@ export class DeliveryBatchService {
 
     try {
       // SSG 주문인 경우: eventBalance 차감
-      if (order.type === IOrderType.SSG) {
-        await this.ssgEventService.chargeBackForResend(order.id, productPrice);
+      if (order.type === IOrderType.SSG && orderDelivery.ssgEventId) {
+        await this.ssgEventService.chargeBackForResend(orderDelivery.ssgEventId, order.id, productPrice);
       }
 
       // 잔액 차감 주문인 경우: 잔액 다시 차감

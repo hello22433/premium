@@ -2036,12 +2036,13 @@ export class OrderService {
       .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
       .where('order.id = :id', { id })
       .andWhere('order.userId = :userId', { userId: user.id })
+      .andWhere('order.status = :status', { status: IOrderStatus.TEMP })
       .getOne();
 
     this.logger.log(`[deliveryRequest] 조회 결과 - order: ${order ? order.id : 'null'}`);
 
     if (!order) {
-      throw new BadRequestException('해당 주문건은 존재하지 않습니다.');
+      throw new BadRequestException('해당 주문건은 존재하지 않거나, 임시저장 상태가 아닙니다.');
     }
 
     if (!order.orderProductMappings || order.orderProductMappings.length === 0) {
