@@ -43,6 +43,8 @@ import { EmailManualModule } from './email_manual/email.manual.module';
 import { DepartmentModule } from './department/department.module';
 import { PartnerCompanyExternHistoryModule } from './partner_company_extern_history/partner.company.extern.history.module';
 import { PopularProductModule } from './popular_product/popular.product.module';
+import { RequirementModule } from './requirement/requirement.module';
+import { NotificationModule } from './notification/notification.module';
 
 @Module({
   imports: [
@@ -92,6 +94,8 @@ import { PopularProductModule } from './popular_product/popular.product.module';
     DepartmentModule,
     PartnerCompanyExternHistoryModule,
     PopularProductModule,
+    RequirementModule,
+    NotificationModule,
   ],
   controllers: [AppController],
   providers: [],

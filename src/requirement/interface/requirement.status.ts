@@ -1,0 +1,7 @@
+export enum RequirementStatus {
+  NEW = 'NEW',
+  IN_PROGRESS = 'IN_PROGRESS',
+  REJECTED = 'REJECTED',
+  DEV_COMPLETE = 'DEV_COMPLETE',
+  REVIEW_COMPLETE = 'REVIEW_COMPLETE',
+}
