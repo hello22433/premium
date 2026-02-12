@@ -3,7 +3,6 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { PartnerCompanyExternHistoryEntity } from '../../entity/partner.company.extern.history.entity';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
-import { SsgEventEntity } from '../../entity/ssg.event.entity';
 import { GetPartnerCompanyExternHistoryListReqDto } from '../api/partner.company.extern.history.req.dto';
 import {
   GetPartnerCompanyExternHistoryListResDto,
@@ -16,7 +15,6 @@ import { format } from 'date-fns';
 import { DateFormatStr } from '../../common/domain/date.format.str';
 import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
-import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 import { DeliveryBatchService } from '../../delivery/application/delivery.batch.service';
 import { CreateResendTransactionId } from '../../order/domain/create.transaction.id';
@@ -44,11 +42,7 @@ export class PartnerCompanyExternHistoryService {
     private historyRepository: Repository<PartnerCompanyExternHistoryEntity>,
     @InjectRepository(OrderDeliveryEntity)
     private orderDeliveryRepository: Repository<OrderDeliveryEntity>,
-    @InjectRepository(SsgEventEntity)
-    private ssgEventRepository: Repository<SsgEventEntity>,
     private cryptoCipher: CryptoCipher,
-    @Inject(forwardRef(() => PartnerCompanyExternService))
-    private partnerCompanyExternService: PartnerCompanyExternService,
     @Inject(forwardRef(() => DeliveryBatchService))
     private deliveryBatchService: DeliveryBatchService,
   ) {}
@@ -314,92 +308,48 @@ export class PartnerCompanyExternHistoryService {
       );
 
       // 4. 재발송 처리
-      // SSG는 barCode가 있어도 SSG DB에 미등록 상태일 수 있으므로 항상 issue() 거침
+      // SSG는 barCode가 있어도 SSG DB에 미등록 상태일 수 있으므로 oneSend() 내부에서 재확인
       const needsPinIssue = !pinIssued || partnerCompanyType === IPartnerCompanyType.SSG;
 
-      // PIN이 이미 발급됨 (SSG 제외) → 발송만 재시도
-      if (!needsPinIssue) {
-        const sendSuccess = await this.deliveryBatchService.oneSend(orderDelivery);
-
-        if (sendSuccess) {
-          orderDelivery.status = IOrderDeliveryStatus.COMPLETE;
-          orderDelivery.resendAt = new Date();
-          await this.orderDeliveryRepository.save(orderDelivery);
-        }
-        return {
-          success: sendSuccess,
-          message: sendSuccess
-            ? '재발송 성공 (기존 발급된 핀으로 발송)'
-            : '발송 실패 - 알림톡/SMS/이메일 발송에 실패했습니다.',
-          orderDeliveryId,
-        };
-      }
-
-      // PIN 미발급 → 핀 발급 + 발송
-      // 재발급 시 transactionId 갱신 (협력사 거래번호 중복 방지)
-      const orderId = orderDelivery.orderProductMapping?.order?.id;
-      if (!orderId) {
-        return {
-          success: false,
-          message: '주문 정보를 찾을 수 없습니다.',
-          orderDeliveryId,
-        };
-      }
-      const retryMatch = orderDelivery.transactionId?.match(/R(\d+)$/);
-      const retryCount = retryMatch ? parseInt(retryMatch[1], 10) + 1 : 1;
-      orderDelivery.transactionId = CreateResendTransactionId(orderId, orderDeliveryId, retryCount);
-
-      this.logger.log(
-        `[resendFailedDelivery] transactionId 갱신: ${orderDelivery.transactionId}`,
-      );
-
-      // SSG의 경우 ssgEvent 필요
-      let ssgEvent: SsgEventEntity | null = null;
-      if (partnerCompanyType === IPartnerCompanyType.SSG && orderDelivery.ssgEventId) {
-        ssgEvent = await this.ssgEventRepository.findOne({
-          where: { id: orderDelivery.ssgEventId },
-        });
-
-        if (!ssgEvent) {
+      // 재발급이 필요한 경우 transactionId 갱신 (협력사 거래번호 중복 방지)
+      if (needsPinIssue) {
+        const orderId = orderDelivery.orderProductMapping?.order?.id;
+        if (!orderId) {
           return {
             success: false,
-            message: 'SSG 이벤트 정보를 찾을 수 없습니다.',
+            message: '주문 정보를 찾을 수 없습니다.',
             orderDeliveryId,
           };
         }
+        const retryMatch = orderDelivery.transactionId?.match(/R(\d+)$/);
+        const retryCount = retryMatch ? parseInt(retryMatch[1], 10) + 1 : 1;
+        orderDelivery.transactionId = CreateResendTransactionId(orderId, orderDeliveryId, retryCount);
+
+        this.logger.log(
+          `[resendFailedDelivery] transactionId 갱신: ${orderDelivery.transactionId}`,
+        );
       }
 
-      // PIN 발급
-      await this.partnerCompanyExternService.issue(orderDelivery, ssgEvent);
-
-      // PIN 발급 성공 확인
-      if (!orderDelivery.barCode) {
-        return {
-          success: false,
-          message: 'PIN 발급에 실패했습니다.',
-          orderDeliveryId,
-        };
-      }
-
-      // SsgCoupon.do는 Oracle INSERT만 수행하며 문자 발송은 하지 않음
-      // 모든 협력사 공통으로 oneSend()를 통해 실제 SMS/알림톡 발송 필요
+      // oneSend()가 PIN 발급(필요시) + 이미지 생성 + 실제 발송을 모두 처리
+      // - PIN 미발급: reissuePinAndCreateImageIfNeeded() → issue() → 이미지 생성 → 발송
+      // - SSG: SSG DB 등록 여부 확인 후 필요시 INSERT → 이미지 생성 → 발송
+      // - PIN 발급됨 (비SSG): 이미지 확인 → 발송만 재시도
       const sendSuccess = await this.deliveryBatchService.oneSend(orderDelivery);
 
-      if (!sendSuccess) {
-        return {
-          success: false,
-          message: 'PIN 발급 성공, 발송 실패 - 알림톡/SMS/이메일 발송에 실패했습니다.',
-          orderDeliveryId,
-        };
+      if (sendSuccess) {
+        orderDelivery.resendAt = new Date();
+        await this.orderDeliveryRepository.save(orderDelivery);
       }
 
-      orderDelivery.status = IOrderDeliveryStatus.COMPLETE;
-      orderDelivery.resendAt = new Date();
-      await this.orderDeliveryRepository.save(orderDelivery);
-
       return {
-        success: true,
-        message: '재발송 성공 (PIN 발급 + 발송)',
+        success: sendSuccess,
+        message: sendSuccess
+          ? needsPinIssue
+            ? '재발송 성공 (PIN 발급 + 발송)'
+            : '재발송 성공 (기존 발급된 핀으로 발송)'
+          : needsPinIssue
+            ? 'PIN 발급 또는 발송에 실패했습니다.'
+            : '발송 실패 - 알림톡/SMS/이메일 발송에 실패했습니다.',
         orderDeliveryId,
       };
     } catch (e) {
