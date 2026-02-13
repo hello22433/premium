@@ -53,6 +53,7 @@ import {
   DateEndMinuteFormatStr,
   DateFormatStr,
   TimeCompactStr,
+  TimeFormatStr,
 } from '../../common/domain/date.format.str';
 import { format } from 'date-fns';
 import { SettlePartnerCompanyListViewDto } from '../api/dto/settle.partner.company.list.view.dto';
@@ -2483,6 +2484,8 @@ export class SettleService {
       { header: '상품 정상가', key: 'productPrice', width: 12, style: textStyle },
       { header: '바코드', key: 'barcode', width: 25, style: textStyle },
       { header: '거래구분', key: 'appDivName', width: 12, style: textStyle },
+      { header: '발송일자', key: 'sendDate', width: 12, style: textStyle },
+      { header: '발송시간', key: 'sendTime', width: 10, style: textStyle },
       { header: '사용일자', key: 'appDay', width: 12, style: textStyle },
       { header: '사용시간', key: 'appTime', width: 10, style: textStyle },
       { header: '사용금액', key: 'amount', width: 12, style: textStyle },
@@ -2508,6 +2511,12 @@ export class SettleService {
         productPrice: displayProduct.price,
         barcode: log.barcode,
         appDivName: this.getAppDivName(log.appDiv),
+        sendDate: orderDelivery.actualSendAt
+          ? format(orderDelivery.actualSendAt, DateDateFormatStr)
+          : '',
+        sendTime: orderDelivery.actualSendAt
+          ? format(orderDelivery.actualSendAt, TimeFormatStr)
+          : '',
         appDay: log.appDay,
         appTime: log.appTime,
         amount: log.amount,
