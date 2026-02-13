@@ -1,9 +1,9 @@
 import { Inject, Injectable, Logger, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { Transactional } from 'typeorm-transactional';
 import { PartnerCompanyExternHistoryEntity } from '../../entity/partner.company.extern.history.entity';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
-import { SsgEventEntity } from '../../entity/ssg.event.entity';
 import { GetPartnerCompanyExternHistoryListReqDto } from '../api/partner.company.extern.history.req.dto';
 import {
   GetPartnerCompanyExternHistoryListResDto,
@@ -16,7 +16,6 @@ import { format } from 'date-fns';
 import { DateFormatStr } from '../../common/domain/date.format.str';
 import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
-import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 import { DeliveryBatchService } from '../../delivery/application/delivery.batch.service';
 import { CreateResendTransactionId } from '../../order/domain/create.transaction.id';
@@ -44,11 +43,7 @@ export class PartnerCompanyExternHistoryService {
     private historyRepository: Repository<PartnerCompanyExternHistoryEntity>,
     @InjectRepository(OrderDeliveryEntity)
     private orderDeliveryRepository: Repository<OrderDeliveryEntity>,
-    @InjectRepository(SsgEventEntity)
-    private ssgEventRepository: Repository<SsgEventEntity>,
     private cryptoCipher: CryptoCipher,
-    @Inject(forwardRef(() => PartnerCompanyExternService))
-    private partnerCompanyExternService: PartnerCompanyExternService,
     @Inject(forwardRef(() => DeliveryBatchService))
     private deliveryBatchService: DeliveryBatchService,
   ) {}
@@ -265,40 +260,38 @@ export class PartnerCompanyExternHistoryService {
    * 발송 실패 건 재발송
    * - PIN 미발급 (barCode 없음): issue() + oneSend() - 핀 발급 후 발송
    * - PIN 발급됨 (barCode 있음): oneSend() 만 - 발송만 재시도
+   *
+   * 비관적 락(SELECT FOR UPDATE)으로 동시 재발송 Race Condition 방지:
+   * - 첫 번째 요청: 락 획득 → 재발송 처리 → status 변경 → 커밋 → 락 해제
+   * - 두 번째 요청: 락 대기 → 획득 후 status 확인 → 이미 COMPLETE → 재발송 불가 반환
    */
+  @Transactional()
   async resendFailedDelivery(orderDeliveryId: number): Promise<ResendResultDto> {
     try {
-      // 1. orderDelivery 조회 (발송에 필요한 모든 relation 포함)
-      const orderDelivery = await this.orderDeliveryRepository.findOne({
-        where: { id: orderDeliveryId },
-        relations: [
-          'orderProductMapping',
-          'orderProductMapping.order',
-          'orderProductMapping.order.user',
-          'orderProductMapping.product',
-          'orderProductMapping.product.brand',
-          'orderProductMapping.product.partnerCompany',
-        ],
-      });
+      // 1. 비관적 락으로 orderDelivery 조회 (동시 재발송 방지)
+      // WHERE 조건에 실패 상태 포함 → 이미 처리된 건은 조회되지 않음
+      const orderDelivery = await this.orderDeliveryRepository
+        .createQueryBuilder('orderDelivery')
+        .setLock('pessimistic_write')
+        .leftJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
+        .leftJoinAndSelect('orderProductMapping.order', 'order')
+        .leftJoinAndSelect('order.user', 'user')
+        .leftJoinAndSelect('orderProductMapping.product', 'product')
+        .leftJoinAndSelect('product.brand', 'brand')
+        .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
+        .where('orderDelivery.id = :id', { id: orderDeliveryId })
+        .andWhere('orderDelivery.status IN (:...statuses)', { statuses: RESENDABLE_FAIL_STATUSES })
+        .getOne();
 
       if (!orderDelivery) {
         return {
           success: false,
-          message: `orderDelivery를 찾을 수 없습니다. id: ${orderDeliveryId}`,
+          message: '이미 처리 중이거나 재발송 대상이 아닙니다.',
           orderDeliveryId,
         };
       }
 
-      // 2. 실패 상태인지 확인 (FAIL 또는 FAIL_SMS)
-      if (!RESENDABLE_FAIL_STATUSES.includes(orderDelivery.status)) {
-        return {
-          success: false,
-          message: `해당 건은 발송 실패 상태가 아닙니다. 현재 상태: ${orderDelivery.status}`,
-          orderDeliveryId,
-        };
-      }
-
-      // 3. 핀 발급 여부 판단 (barCode 유무 + 유효성 확인)
+      // 2. 핀 발급 여부 판단 (barCode 유무 + 유효성 확인)
       // barCode에 한글이 포함된 경우 에러 메시지가 저장된 것이므로 무효 처리
       if (orderDelivery.barCode && /[가-힣]/.test(orderDelivery.barCode)) {
         this.logger.warn(
@@ -313,97 +306,52 @@ export class PartnerCompanyExternHistoryService {
         `[resendFailedDelivery] orderDeliveryId: ${orderDeliveryId}, pinIssued: ${pinIssued}, partnerCompanyType: ${partnerCompanyType}`,
       );
 
-      // 4. 재발송 처리
-      // SSG는 barCode가 있어도 SSG DB에 미등록 상태일 수 있으므로 항상 issue() 거침
+      // 3. 재발송 처리
+      // SSG는 barCode가 있어도 SSG DB에 미등록 상태일 수 있으므로 oneSend() 내부에서 재확인
       const needsPinIssue = !pinIssued || partnerCompanyType === IPartnerCompanyType.SSG;
 
-      // PIN이 이미 발급됨 (SSG 제외) → 발송만 재시도
-      if (!needsPinIssue) {
-        const sendSuccess = await this.deliveryBatchService.oneSend(orderDelivery);
-
-        if (sendSuccess) {
-          orderDelivery.status = IOrderDeliveryStatus.COMPLETE;
-          orderDelivery.resendAt = new Date();
-          await this.orderDeliveryRepository.save(orderDelivery);
-        }
-        return {
-          success: sendSuccess,
-          message: sendSuccess
-            ? '재발송 성공 (기존 발급된 핀으로 발송)'
-            : '발송 실패 - 알림톡/SMS/이메일 발송에 실패했습니다.',
-          orderDeliveryId,
-        };
-      }
-
-      // PIN 미발급 → 핀 발급 + 발송
-      // 재발급 시 transactionId 갱신 (협력사 거래번호 중복 방지)
-      const orderId = orderDelivery.orderProductMapping?.order?.id;
-      if (!orderId) {
-        return {
-          success: false,
-          message: '주문 정보를 찾을 수 없습니다.',
-          orderDeliveryId,
-        };
-      }
-      const retryMatch = orderDelivery.transactionId?.match(/R(\d+)$/);
-      const retryCount = retryMatch ? parseInt(retryMatch[1], 10) + 1 : 1;
-      orderDelivery.transactionId = CreateResendTransactionId(orderId, orderDeliveryId, retryCount);
-
-      this.logger.log(
-        `[resendFailedDelivery] transactionId 갱신: ${orderDelivery.transactionId}`,
-      );
-
-      // SSG의 경우 ssgEvent 필요
-      let ssgEvent: SsgEventEntity | null = null;
-      if (partnerCompanyType === IPartnerCompanyType.SSG && orderDelivery.ssgEventId) {
-        ssgEvent = await this.ssgEventRepository.findOne({
-          where: { id: orderDelivery.ssgEventId },
-        });
-
-        if (!ssgEvent) {
+      // 재발급이 필요한 경우 transactionId 갱신 (협력사 거래번호 중복 방지)
+      if (needsPinIssue) {
+        const orderId = orderDelivery.orderProductMapping?.order?.id;
+        if (!orderId) {
           return {
             success: false,
-            message: 'SSG 이벤트 정보를 찾을 수 없습니다.',
+            message: '주문 정보를 찾을 수 없습니다.',
             orderDeliveryId,
           };
         }
+        const retryMatch = orderDelivery.transactionId?.match(/R(\d+)$/);
+        const retryCount = retryMatch ? parseInt(retryMatch[1], 10) + 1 : 1;
+        orderDelivery.transactionId = CreateResendTransactionId(orderId, orderDeliveryId, retryCount);
+
+        this.logger.log(
+          `[resendFailedDelivery] transactionId 갱신: ${orderDelivery.transactionId}`,
+        );
       }
 
-      // PIN 발급
-      await this.partnerCompanyExternService.issue(orderDelivery, ssgEvent);
+      // oneSend()가 PIN 발급(필요시) + 이미지 생성 + 실제 발송을 모두 처리
+      // - PIN 미발급: reissuePinAndCreateImageIfNeeded() → issue() → 이미지 생성 → 발송
+      // - SSG: SSG DB 등록 여부 확인 후 필요시 INSERT → 이미지 생성 → 발송
+      // - PIN 발급됨 (비SSG): 이미지 확인 → 발송만 재시도
+      const sendSuccess = await this.deliveryBatchService.oneSend(orderDelivery);
 
-      // PIN 발급 성공 확인
-      if (!orderDelivery.barCode) {
-        return {
-          success: false,
-          message: 'PIN 발급에 실패했습니다.',
-          orderDeliveryId,
-        };
+      if (sendSuccess) {
+        orderDelivery.resendAt = new Date();
+        await this.orderDeliveryRepository.save(orderDelivery);
       }
 
-      // SSG는 issue()에서 SSG DB INSERT 시 발송도 처리됨
-      // 다른 협력사는 별도로 발송 필요
-      if (partnerCompanyType !== IPartnerCompanyType.SSG) {
-        const sendSuccess = await this.deliveryBatchService.oneSend(orderDelivery);
-
-        if (!sendSuccess) {
-          return {
-            success: false,
-            message: 'PIN 발급 성공, 발송 실패 - 알림톡/SMS/이메일 발송에 실패했습니다.',
-            orderDeliveryId,
-          };
-        }
+      let message: string;
+      if (sendSuccess && needsPinIssue) {
+        message = '재발송 성공 (PIN 발급 + 발송)';
+      } else if (sendSuccess) {
+        message = '재발송 성공 (기존 발급된 핀으로 발송)';
+      } else if (needsPinIssue) {
+        message = 'PIN 발급 또는 발송에 실패했습니다.';
+      } else {
+        message = '발송 실패 - 알림톡/SMS/이메일 발송에 실패했습니다.';
       }
 
-      orderDelivery.status = IOrderDeliveryStatus.COMPLETE;
-      orderDelivery.resendAt = new Date();
-      await this.orderDeliveryRepository.save(orderDelivery);
-
-      return {
-        success: true,
-        message: '재발송 성공 (PIN 발급 + 발송)',
-        orderDeliveryId,
-      };
+      return { success: sendSuccess, message, orderDeliveryId };
     } catch (e) {
       const error = e instanceof Error ? e : new Error(String(e));
       this.logger.error(`[resendFailedDelivery] 재발송 실패: ${error.message}`, error.stack);

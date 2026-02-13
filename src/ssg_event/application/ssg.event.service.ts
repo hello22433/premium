@@ -657,21 +657,13 @@ export class SsgEventService {
 
   /**
    * 개별 배송건 PIN 발급 실패 시 해당 금액만 환불
+   * @param ssgEventId SSG 이벤트 ID
    * @param orderId 주문 ID
    * @param amount 환불할 금액 (상품 가격)
    */
-  async refundForDeliveryFail(orderId: number, amount: number): Promise<void> {
-    const history = await this.amountHistoryRepository.findOne({
-      where: { orderId },
-      order: { id: 'DESC' },
-    });
-
-    if (!history?.ssgEventId) {
-      return;
-    }
-
+  async refundForDeliveryFail(ssgEventId: number, orderId: number, amount: number): Promise<void> {
     const ssgEvent = await this.ssgEventRepository.findOne({
-      where: { id: history.ssgEventId },
+      where: { id: ssgEventId },
     });
 
     if (!ssgEvent) {
@@ -682,7 +674,7 @@ export class SsgEventService {
 
     const refundHistory = this.amountHistoryRepository.create({
       ssgEventId: ssgEvent.id,
-      amount: amount,
+      amount,
       balance: restoredBalance,
       orderId,
       isTemporary: false,
@@ -696,29 +688,16 @@ export class SsgEventService {
   /**
    * 재발송 시 환불 복구 (refundForDeliveryFail의 역연산)
    * PIN 재발급 성공 시 이전에 환불된 금액을 다시 차감
+   * @param ssgEventId SSG 이벤트 ID
    * @param orderId 주문 ID
    * @param amount 차감할 금액 (상품 가격)
    */
-  async chargeBackForResend(orderId: number, amount: number): Promise<void> {
-    const history = await this.amountHistoryRepository.findOne({
-      where: { orderId },
-      order: { id: 'DESC' },
-    });
-
-    if (!history?.ssgEventId) {
-      return;
-    }
-
+  async chargeBackForResend(ssgEventId: number, orderId: number, amount: number): Promise<void> {
     const ssgEvent = await this.ssgEventRepository.findOne({
-      where: { id: history.ssgEventId },
+      where: { id: ssgEventId },
     });
 
     if (!ssgEvent) {
-      return;
-    }
-
-    // 잔액 부족 시 차감하지 않음 (이미 다른 곳에서 사용된 경우)
-    if (ssgEvent.eventBalance < amount) {
       return;
     }
 

@@ -23,7 +23,10 @@ export class SsgIssue implements ISsgIssue {
     private httpService: HttpService,
     private configService: ConfigService,
   ) {
-    if (this.configService.getOrThrow('ENVIRONMENT') === 'prod') {
+    const ssgApiUrl = this.configService.get<string>('SSG_API_URL');
+    if (ssgApiUrl) {
+      this.url = ssgApiUrl;
+    } else if (this.configService.getOrThrow('ENVIRONMENT') === 'prod') {
       this.url = 'https://api.epopkon.com';
     }
   }
