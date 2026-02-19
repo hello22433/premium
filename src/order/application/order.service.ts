@@ -277,6 +277,11 @@ export class OrderService {
             { keyword: `%${searchKeyword}%` },
           );
           break;
+        case 'OPERATION_ADMIN':
+          queryBuilder = queryBuilder.andWhere('operationUser.personName LIKE :keyword', {
+            keyword: `%${searchKeyword}%`,
+          });
+          break;
         case 'EVENT':
           queryBuilder = queryBuilder.andWhere('order.eventName LIKE :keyword', { keyword: `%${searchKeyword}%` });
           break;
@@ -2851,6 +2856,11 @@ export class OrderService {
             '(user.personName LIKE :keyword OR clientUser.personName LIKE :keyword)',
             { keyword: `%${searchKeyword}%` },
           );
+          break;
+        case 'OPERATION_ADMIN':
+          queryBuilder = queryBuilder.andWhere('operationUser.personName LIKE :keyword', {
+            keyword: `%${searchKeyword}%`,
+          });
           break;
         case 'EVENT':
           queryBuilder = queryBuilder.andWhere('order.eventName LIKE :keyword', { keyword: `%${searchKeyword}%` });
