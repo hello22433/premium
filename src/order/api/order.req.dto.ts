@@ -332,13 +332,13 @@ export class OrderExcelDownloadReqBodyDto {
 
   @ApiPropertyOptional({
     description: '검색조건 ex) ALL: 전체, CUSTOMER: 고객사, MANAGER: 담당자, EVENT: 이벤트명, PRODUCT: 상품명',
-    enum: ['ALL', 'CUSTOMER', 'MANAGER', 'OPERATION_ADMIN', 'EVENT', 'PRODUCT'],
+    enum: ['ALL', 'CUSTOMER', 'MANAGER', 'EVENT', 'PRODUCT'],
     default: 'ALL',
   })
   // ===================================
   @IsOptional()
-  @IsEnum(['ALL', 'CUSTOMER', 'MANAGER', 'OPERATION_ADMIN', 'EVENT', 'PRODUCT'])
-  searchType?: 'ALL' | 'CUSTOMER' | 'MANAGER' | 'OPERATION_ADMIN' | 'EVENT' | 'PRODUCT' = 'ALL';
+  @IsEnum(['ALL', 'CUSTOMER', 'MANAGER', 'EVENT', 'PRODUCT'])
+  searchType?: 'ALL' | 'CUSTOMER' | 'MANAGER' | 'EVENT' | 'PRODUCT' = 'ALL';
 
   @ApiPropertyOptional({
     description: '검색어 (최소 1자)',
