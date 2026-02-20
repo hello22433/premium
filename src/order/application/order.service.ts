@@ -1566,19 +1566,40 @@ export class OrderService {
       }
     }
 
-    const oneUser = await this.userRepository.findOneOrFail({
-      where: {
-        id: oneUserId,
-      },
-    });
+    const order = existingOrderProducts[0].order;
 
-    if (isSettleBalance) {
-      oneUser.balance = oneUser.balance + sendAmount - (settleAmount + settleFee);
+    if (order.isNewBillingFlow) {
+      // === 새 흐름 ===
+      if (order.status === IOrderStatus.DELIVERY_CONFIRMED || order.status === IOrderStatus.DELIVERY_COMPLETE) {
+        // 발송확정 후 정산 입력: difference 기반 조정 (updateOrderSettle 패턴)
+        const difference = order.settleAmount - (sendAmount + settleFee);
+        if (difference !== 0) {
+          const oneUser = await this.userRepository.findOneOrFail({
+            where: { id: oneUserId },
+          });
+          if (isSettleBalance) {
+            oneUser.balance += difference;
+          } else {
+            oneUser.allSettleAmount -= difference;
+          }
+          await this.userRepository.save(oneUser);
+        }
+      }
+      // DELIVERY_REQUEST, REVIEW_COMPLETE: 정산 정보만 저장 (balance 건드리지 않음)
     } else {
-      oneUser.allSettleAmount = oneUser.allSettleAmount - sendAmount + (settleAmount + settleFee);
-    }
+      // === 기존 흐름 ===
+      const oneUser = await this.userRepository.findOneOrFail({
+        where: { id: oneUserId },
+      });
 
-    await this.userRepository.save(oneUser);
+      if (isSettleBalance) {
+        oneUser.balance = oneUser.balance + sendAmount - (settleAmount + settleFee);
+      } else {
+        oneUser.allSettleAmount = oneUser.allSettleAmount - sendAmount + (settleAmount + settleFee);
+      }
+
+      await this.userRepository.save(oneUser);
+    }
   }
 
   @Transactional()
@@ -2077,10 +2098,6 @@ export class OrderService {
       `Billing User ID: ${billingUserId} (clientUserId: ${order.clientUserId}, userId: ${order.userId})`,
     );
 
-    // 유저 잔액 조회 (과금 대상 기준)
-    const userBalance = await this.userManagementService.getBalance(billingUserId);
-    this.logger.debug(`User#${billingUserId} balance=${userBalance}`);
-
     const oneUser = await this.userRepository.findOne({
       where: { id: billingUserId },
       relations: ['company'],
@@ -2089,38 +2106,31 @@ export class OrderService {
       throw new InternalServerErrorException('과금 대상 유저가 존재하지 않습니다.');
     }
 
-    // 회사 단위 잔여발송한도 계산
-    // 잔여한도 = Company.maximumLimit + 현재balance - SUM(동일회사 User.allSettleAmount)
-    // balanceManagementType에 따라 company.balance 또는 user.balance 사용
-    let remainServiceAmount: number;
-
-    // balanceManagementType에 따른 실제 balance 결정
+    // 과금 모드 결정 (두 블록에서 공통 사용)
     const isCompanyBalanceMode = oneUser.company?.balanceManagementType === 'COMPANY';
     const effectiveBalance = isCompanyBalanceMode && oneUser.company
       ? oneUser.company.balance
       : oneUser.balance;
 
-    if (oneUser.companyId && oneUser.company) {
-      // 동일 회사 계정들의 allSettleAmount 합산
-      const companyUsers = await this.userRepository.find({
-        where: { companyId: oneUser.companyId },
-        select: ['id', 'allSettleAmount'],
-      });
+    if (!order.isNewBillingFlow) {
+      // === 기존 흐름: 발송요청 시 잔액/한도 체크 ===
+      let remainServiceAmount: number;
+      if (oneUser.companyId && oneUser.company) {
+        const companyUsers = await this.userRepository.find({
+          where: { companyId: oneUser.companyId },
+          select: ['id', 'allSettleAmount'],
+        });
+        const totalAllSettleAmount = companyUsers.reduce((sum, u) => sum + u.allSettleAmount, 0);
+        remainServiceAmount = oneUser.company.maximumLimit + effectiveBalance - totalAllSettleAmount;
+      } else {
+        remainServiceAmount = effectiveBalance - oneUser.allSettleAmount;
+      }
 
-      const totalAllSettleAmount = companyUsers.reduce((sum, u) => sum + u.allSettleAmount, 0);
-
-      remainServiceAmount = oneUser.company.maximumLimit + effectiveBalance - totalAllSettleAmount;
-    } else {
-      // companyId가 없는 경우 기존 방식 (개별 계정 기준, maximumLimit은 0으로 처리)
-      remainServiceAmount = effectiveBalance - oneUser.allSettleAmount;
+      if (totalAmount > remainServiceAmount) {
+        throw new BadRequestException('최대 서비스 한도를 넘어 요청할 수 없습니다.');
+      }
     }
-
-    if (totalAmount > remainServiceAmount) {
-      throw new BadRequestException('최대 서비스 한도를 넘어 요청할 수 없습니다.');
-    }
-
-    // Note: 중복번호 제어 체크는 deliveryConfirmed에서 수행됨
-    // 발송확정 시점에 할인/할증 정보가 확정되어 있으므로, 그때 체크함
+    // 새 흐름(isNewBillingFlow=true): 발송요청 시 잔액/한도 체크 없음 (발송확정 시 차감)
 
     // 신세계 상품 검증 및 이벤트 자동 선택 (배송건별 행사 분할 할당)
     let ssgAllocations: { deliveryId: number; eventId: number; price: number }[] | null = null;
@@ -2182,26 +2192,29 @@ export class OrderService {
       }
     }
 
-    if (totalAmount > effectiveBalance) {
-      oneUser.allSettleAmount += totalAmount;
-      order.isSettleBalance = false;
-    } else if (totalAmount <= effectiveBalance) {
-      // balanceManagementType에 따라 올바른 엔티티의 balance 차감
-      if (isCompanyBalanceMode && oneUser.company) {
-        oneUser.company.balance -= totalAmount;
+    if (!order.isNewBillingFlow) {
+      // === 기존 흐름: 발송요청 시 잔액 차감 ===
+      if (totalAmount > effectiveBalance) {
+        oneUser.allSettleAmount += totalAmount;
+        order.isSettleBalance = false;
       } else {
-        oneUser.balance -= totalAmount;
+        if (isCompanyBalanceMode && oneUser.company) {
+          oneUser.company.balance -= totalAmount;
+        } else {
+          oneUser.balance -= totalAmount;
+        }
+        order.isSettleBalance = true;
       }
-      order.isSettleBalance = true;
+
+      await this.userRepository.save(oneUser);
+      if (isCompanyBalanceMode && oneUser.company) {
+        await this.userCompanyRepository.save(oneUser.company);
+      }
     }
+    // 새 흐름: 잔액 차감 없음 (발송확정 시 처리)
 
     order.status = IOrderStatus.DELIVERY_REQUEST;
     await this.orderRepository.save(order);
-    await this.userRepository.save(oneUser);
-    // 회사 레벨 balance 변경 시 company도 저장
-    if (isCompanyBalanceMode && oneUser.company) {
-      await this.userCompanyRepository.save(oneUser.company);
-    }
 
     return;
   }
@@ -2456,106 +2469,139 @@ export class OrderService {
     // ======== 중복번호 제어 체크 끝 ========
 
     // 최종 정산금액 계산
-    const newSettleAmount = order.sendAmount + totalSettleFee;
+    const finalAmount = order.sendAmount + totalSettleFee;
 
-    // 차액이 있으면 balance/allSettleAmount 조정
-    // balanceManagementType에 따라 user.balance 또는 company.balance 사용
-    const getEffectiveBalance = () =>
-      isCompanyBalanceMode && oneUser.company ? oneUser.company.balance : oneUser.balance;
-    const setEffectiveBalance = (value: number) => {
-      if (isCompanyBalanceMode && oneUser.company) {
-        oneUser.company.balance = value;
+    if (order.isNewBillingFlow) {
+      // === 새 흐름: 발송확정 시 전액 차감 ===
+
+      // 1. effectiveBalance 결정
+      const effectiveBalance = isCompanyBalanceMode && oneUser.company
+        ? oneUser.company.balance
+        : oneUser.balance;
+
+      // 2. 잔여한도 계산
+      let remainServiceAmount: number;
+      if (oneUser.companyId && oneUser.company) {
+        const companyUsers = await this.userRepository.find({
+          where: { companyId: oneUser.companyId },
+          select: ['id', 'allSettleAmount'],
+        });
+        const totalAllSettleAmount = companyUsers.reduce((sum, u) => sum + u.allSettleAmount, 0);
+        remainServiceAmount = oneUser.company.maximumLimit + effectiveBalance - totalAllSettleAmount;
       } else {
-        oneUser.balance = value;
+        remainServiceAmount = effectiveBalance - oneUser.allSettleAmount;
       }
-    };
-    const addEffectiveBalance = (amount: number) => setEffectiveBalance(getEffectiveBalance() + amount);
-    const subtractEffectiveBalance = (amount: number) => setEffectiveBalance(getEffectiveBalance() - amount);
 
-    if (totalSettleFee !== 0) {
-      if (totalSettleFee < 0) {
-        // 할인인 경우 - 차액만큼 복구
-        const discountAmount = Math.abs(totalSettleFee);
-        if (order.isSettleBalance) {
-          // 선충전에서 차감된 경우 - balance 복구
-          addEffectiveBalance(discountAmount);
-        } else {
-          // 한도에서 차감된 경우 - allSettleAmount 감소
-          oneUser.allSettleAmount -= discountAmount;
-        }
-        this.logger.debug(
-          `할인 적용: orderId=${order.id}, 할인액=${discountAmount}, isSettleBalance=${order.isSettleBalance}`,
+      // 3. 한도 체크
+      if (finalAmount > remainServiceAmount) {
+        throw new BadRequestException(
+          `잔여발송한도가 부족하여 발송확정할 수 없습니다. (필요: ${finalAmount.toLocaleString()}원, 가능: ${remainServiceAmount.toLocaleString()}원)`,
         );
-      } else if (totalSettleFee > 0) {
-        // 할증인 경우 - 차액만큼 추가 차감
-        const additionalAmount = totalSettleFee;
-        const currentBalance = getEffectiveBalance();
+      }
 
-        if (order.isSettleBalance) {
-          // 선충전에서 차감된 경우
-          if (currentBalance >= additionalAmount) {
-            // balance가 충분하면 balance에서 추가 차감
-            subtractEffectiveBalance(additionalAmount);
-            this.logger.debug(`할증 적용 (balance 차감): orderId=${order.id}, 할증액=${additionalAmount}`);
+      // 4. isSettleBalance 결정 + 차감
+      if (finalAmount <= effectiveBalance) {
+        if (isCompanyBalanceMode && oneUser.company) {
+          oneUser.company.balance -= finalAmount;
+        } else {
+          oneUser.balance -= finalAmount;
+        }
+        order.isSettleBalance = true;
+      } else {
+        oneUser.allSettleAmount += finalAmount;
+        order.isSettleBalance = false;
+      }
+
+      // 5. 저장
+      order.settleAmount = finalAmount;
+      await this.userRepository.save(oneUser);
+      if (isCompanyBalanceMode && oneUser.company) {
+        await this.userCompanyRepository.save(oneUser.company);
+      }
+    } else {
+      // === 기존 흐름: 차액 조정 ===
+      const getEffectiveBalance = () =>
+        isCompanyBalanceMode && oneUser.company ? oneUser.company.balance : oneUser.balance;
+      const setEffectiveBalance = (value: number) => {
+        if (isCompanyBalanceMode && oneUser.company) {
+          oneUser.company.balance = value;
+        } else {
+          oneUser.balance = value;
+        }
+      };
+      const addEffectiveBalance = (amount: number) => setEffectiveBalance(getEffectiveBalance() + amount);
+      const subtractEffectiveBalance = (amount: number) => setEffectiveBalance(getEffectiveBalance() - amount);
+
+      if (totalSettleFee !== 0) {
+        if (totalSettleFee < 0) {
+          const discountAmount = Math.abs(totalSettleFee);
+          if (order.isSettleBalance) {
+            addEffectiveBalance(discountAmount);
           } else {
-            // balance가 부족하면 한도에서 추가 차감
-            const companyMaximumLimit = oneUser.company?.maximumLimit ?? 0;
-            const remainingLimit = companyMaximumLimit - oneUser.allSettleAmount;
-            const neededFromLimit = additionalAmount - currentBalance;
+            oneUser.allSettleAmount -= discountAmount;
+          }
+          this.logger.debug(
+            `할인 적용: orderId=${order.id}, 할인액=${discountAmount}, isSettleBalance=${order.isSettleBalance}`,
+          );
+        } else if (totalSettleFee > 0) {
+          const additionalAmount = totalSettleFee;
+          const currentBalance = getEffectiveBalance();
 
-            if (remainingLimit >= neededFromLimit) {
-              // 한도에 여유가 있으면 balance 전부 사용 + 한도에서 추가 차감
-              oneUser.allSettleAmount += neededFromLimit;
-              setEffectiveBalance(0);
-              message = 'warning: 잔여발송한도가 부족하여 한도에서 추가 차감되었습니다.';
+          if (order.isSettleBalance) {
+            if (currentBalance >= additionalAmount) {
+              subtractEffectiveBalance(additionalAmount);
+              this.logger.debug(`할증 적용 (balance 차감): orderId=${order.id}, 할증액=${additionalAmount}`);
+            } else {
+              const companyMaximumLimit = oneUser.company?.maximumLimit ?? 0;
+              const remainingLimit = companyMaximumLimit - oneUser.allSettleAmount;
+              const neededFromLimit = additionalAmount - currentBalance;
+
+              if (remainingLimit >= neededFromLimit) {
+                oneUser.allSettleAmount += neededFromLimit;
+                setEffectiveBalance(0);
+                message = 'warning: 잔여발송한도가 부족하여 한도에서 추가 차감되었습니다.';
+                this.logger.debug(
+                  `할증 적용 (한도 추가 차감): orderId=${order.id}, 할증액=${additionalAmount}, 한도사용=${neededFromLimit}`,
+                );
+              } else {
+                throw new BadRequestException(
+                  `잔여발송한도가 부족하여 발송을 진행할 수 없습니다. (필요 금액: ${additionalAmount.toLocaleString()}원, 사용 가능: ${(currentBalance + remainingLimit).toLocaleString()}원)`,
+                );
+              }
+            }
+          } else {
+            const companyMaxLimit = oneUser.company?.maximumLimit ?? 0;
+            const remainingLimit = companyMaxLimit - oneUser.allSettleAmount;
+
+            if (remainingLimit >= additionalAmount) {
+              oneUser.allSettleAmount += additionalAmount;
+              message = 'warning: 할증 금액이 추가되었습니다.';
+              this.logger.debug(`할증 적용 (한도 차감): orderId=${order.id}, 할증액=${additionalAmount}`);
+            } else if (currentBalance >= additionalAmount - remainingLimit) {
+              const neededFromBalance = additionalAmount - remainingLimit;
+              oneUser.allSettleAmount = companyMaxLimit;
+              subtractEffectiveBalance(neededFromBalance);
+              message = 'warning: 한도가 부족하여 선충전 잔액에서 추가 차감되었습니다.';
               this.logger.debug(
-                `할증 적용 (한도 추가 차감): orderId=${order.id}, 할증액=${additionalAmount}, 한도사용=${neededFromLimit}`,
+                `할증 적용 (선충전 추가 차감): orderId=${order.id}, 할증액=${additionalAmount}, 선충전사용=${neededFromBalance}`,
               );
             } else {
-              // 한도도 부족하면 발송 거절
               throw new BadRequestException(
                 `잔여발송한도가 부족하여 발송을 진행할 수 없습니다. (필요 금액: ${additionalAmount.toLocaleString()}원, 사용 가능: ${(currentBalance + remainingLimit).toLocaleString()}원)`,
               );
             }
           }
-        } else {
-          // 한도에서 차감된 경우
-          const companyMaxLimit = oneUser.company?.maximumLimit ?? 0;
-          const remainingLimit = companyMaxLimit - oneUser.allSettleAmount;
+        }
 
-          if (remainingLimit >= additionalAmount) {
-            // 한도에 여유가 있으면 allSettleAmount에 추가
-            oneUser.allSettleAmount += additionalAmount;
-            message = 'warning: 할증 금액이 추가되었습니다.';
-            this.logger.debug(`할증 적용 (한도 차감): orderId=${order.id}, 할증액=${additionalAmount}`);
-          } else if (currentBalance >= additionalAmount - remainingLimit) {
-            // 한도가 부족하면 balance에서 추가 차감
-            const neededFromBalance = additionalAmount - remainingLimit;
-            oneUser.allSettleAmount = companyMaxLimit;
-            subtractEffectiveBalance(neededFromBalance);
-            message = 'warning: 한도가 부족하여 선충전 잔액에서 추가 차감되었습니다.';
-            this.logger.debug(
-              `할증 적용 (선충전 추가 차감): orderId=${order.id}, 할증액=${additionalAmount}, 선충전사용=${neededFromBalance}`,
-            );
-          } else {
-            // 둘 다 부족하면 발송 거절
-            throw new BadRequestException(
-              `잔여발송한도가 부족하여 발송을 진행할 수 없습니다. (필요 금액: ${additionalAmount.toLocaleString()}원, 사용 가능: ${(currentBalance + remainingLimit).toLocaleString()}원)`,
-            );
-          }
+        await this.userRepository.save(oneUser);
+        if (isCompanyBalanceMode && oneUser.company) {
+          await this.userCompanyRepository.save(oneUser.company);
         }
       }
 
-      await this.userRepository.save(oneUser);
-      // 회사 레벨 balance 변경 시 company도 저장
-      if (isCompanyBalanceMode && oneUser.company) {
-        await this.userCompanyRepository.save(oneUser.company);
-      }
-
-      // 정산금액 업데이트
-      order.settleAmount = newSettleAmount;
+      order.settleAmount = finalAmount;
     }
-    // ======== 할인/할증 차액 정산 끝 ========
+    // ======== 과금 처리 끝 ========
 
     for (const orderMapping of order.orderProductMappings!) {
       for (const orderDelivery of orderMapping.orderDeliveries) {
@@ -2728,24 +2774,37 @@ export class OrderService {
       return acc + cur.product.price * cur.amount;
     }, 0);
 
-    // SSG 주문인 경우 이벤트 잔액 복구
+    // SSG 주문인 경우 이벤트 잔액 복구 (새/기존 흐름 공통)
     if (order.type === IOrderType.SSG) {
       await this.ssgEventService.restoreEventBalance(order.id);
-
-      // 사용자 잔액도 복원 (과금 대상에게 환불)
-      await this.userManagementService.addBalance(billingUserId, totalPrice, `SSG 주문 취소 환불 (주문번호: ${order.id})`);
+      // ★ addBalance() 호출 삭제 — 아래 통합 블록에서 oneUser 엔티티를 통해 처리
+      // 기존 addBalance()는 DB를 직접 수정하지만, 이후 save(oneUser)가 stale 스냅샷으로 덮어씀
     }
 
-    if (order.isSettleBalance) {
-      // balanceManagementType에 따라 올바른 엔티티의 balance 복구
-      if (isCompanyBalanceMode && oneUser.company) {
-        oneUser.company.balance += totalPrice;
-      } else {
-        oneUser.balance += totalPrice;
+    // 환불 금액 결정
+    // - 새 흐름: 발송확정(DELIVERY_CONFIRMED) 후에만 settleAmount(할인가) 기준 환불
+    //           발송확정 전(DELIVERY_REQUEST, REVIEW_COMPLETE)은 잔액 차감 없었으므로 환불 불필요
+    // - 기존 흐름: 항상 정가(totalPrice) 기준 환불
+    let refundAmount = 0;
+    if (order.isNewBillingFlow) {
+      if (order.status === IOrderStatus.DELIVERY_CONFIRMED) {
+        refundAmount = order.settleAmount;
       }
-      order.isSettleBalance = false;
     } else {
-      oneUser.allSettleAmount -= totalPrice;
+      refundAmount = totalPrice;
+    }
+
+    if (refundAmount > 0) {
+      if (order.isSettleBalance) {
+        if (isCompanyBalanceMode && oneUser.company) {
+          oneUser.company.balance += refundAmount;
+        } else {
+          oneUser.balance += refundAmount;
+        }
+        order.isSettleBalance = false;
+      } else {
+        oneUser.allSettleAmount -= refundAmount;
+      }
     }
 
     order.status = IOrderStatus.DELIVERY_CANCEL;

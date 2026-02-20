@@ -76,6 +76,9 @@ export class OrderEntity extends BaseEntity {
   @Column({ default: false, comment: '정산 선충전 혹은 한도 여부' })
   isSettleBalance: boolean;
 
+  @Column({ default: true, comment: '신규 과금 흐름 적용 여부 (true: 발송확정 시 차감)' })
+  isNewBillingFlow: boolean;
+
   @Column({ type: 'text', nullable: true, comment: '주문 취소 사유' })
   cancelReason: string | null;
 
