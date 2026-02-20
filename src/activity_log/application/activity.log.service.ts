@@ -172,8 +172,11 @@ export class ActivityLogService {
   async downloadActivityLogExcel(dto: DownloadActivityLogExcelReqDto, res: Response): Promise<void> {
     const { startAt, endAt, actionType, searchKeyword } = dto;
 
-    let queryBuilder = this.activityLogRepository
+    const queryBuilder = this.activityLogRepository
       .createQueryBuilder('activityLog')
+      .leftJoin('activityLog.user', 'user')
+      .leftJoin('user.company', 'company')
+      .addSelect(['user.personName', 'company.businessName'])
       .where('activityLog.deletedAt IS NULL');
 
     // 기간 검색
@@ -212,15 +215,12 @@ export class ActivityLogService {
     // 헤더 설정
     worksheet.columns = [
       { header: '생성일시', key: 'createdAt', width: 20 },
+      { header: '고객사명', key: 'companyName', width: 25 },
+      { header: '담당자 이름', key: 'personName', width: 15 },
       { header: '사용자 이메일', key: 'userEmail', width: 30 },
-      { header: 'HTTP 메소드', key: 'method', width: 12 },
       { header: '요청 URL', key: 'requestUrl', width: 50 },
       { header: '액션 타입', key: 'actionType', width: 20 },
       { header: 'IP 주소', key: 'ipAddress', width: 20 },
-      { header: 'User Agent', key: 'userAgent', width: 50 },
-      { header: 'HTTP 상태 코드', key: 'statusCode', width: 15 },
-      { header: '결과', key: 'result', width: 10 },
-      { header: '응답 시간(ms)', key: 'responseTime', width: 15 },
       { header: '다운로드 사유', key: 'downloadReason', width: 40 },
       { header: '레코드 수', key: 'recordCount', width: 12 },
       { header: '요청 파라미터', key: 'requestParams', width: 40 },
@@ -239,15 +239,12 @@ export class ActivityLogService {
     logs.forEach((log) => {
       worksheet.addRow({
         createdAt: format(log.createdAt, DateFormatStr),
+        companyName: log.user?.company?.businessName || '',
+        personName: log.user?.personName || '',
         userEmail: log.userEmail,
-        method: log.method,
         requestUrl: log.requestUrl,
         actionType: log.actionType,
         ipAddress: log.ipAddress,
-        userAgent: log.userAgent || '',
-        statusCode: log.statusCode,
-        result: log.result,
-        responseTime: log.responseTime,
         downloadReason: log.downloadReason || '',
         recordCount: log.recordCount || '',
         requestParams: log.requestParams ? JSON.stringify(log.requestParams) : '',
