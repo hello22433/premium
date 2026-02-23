@@ -36,6 +36,7 @@ import { EmailDeliveryTemplate } from '../domain/email.delivery.template';
 import { smsSsgTemplate } from '../domain/sms.ssg.template';
 import { smsEncourageTemplate } from '../domain/sms.encourage.template';
 import { SmsChoiceProductTemplate } from '../domain/sms.choice.product.template';
+import { smsCouponInfoTemplate } from '../domain/sms.coupon.info.template';
 import { DeliveryTrackingStatus } from '../domain/delivery.tracking.status';
 import { OrderEmailSendType } from '../../order/domain/order.email.send.type';
 import { EmailType } from '../../mail/domain/email.type';
@@ -646,13 +647,21 @@ export class DeliveryBatchService {
    * SMS 발송 텍스트 구성 (SSG 템플릿 + 초이스 쿠폰 URL 적용)
    */
   private buildSmsText(orderDelivery: OrderDeliveryEntity, encryptKey: string, text: string): string {
-    let smsText =
-      orderDelivery.orderProductMapping.order.type === IOrderType.SSG ? text + smsSsgTemplate(orderDelivery) : text;
+    const orderType = orderDelivery.orderProductMapping.order.type;
+    const productType = orderDelivery.orderProductMapping.product.type;
+
+    let smsText = orderType === IOrderType.SSG ? text + smsSsgTemplate(orderDelivery) : text;
     smsText = SmsChoiceProductTemplate(
       orderDelivery,
       `${this.configService.getOrThrow('SMS_CHOICE_URL')}/${encryptKey}`,
       smsText,
     );
+
+    // 비SSG, 비초이스 상품에 쿠폰 정보 추가 (barCode가 있는 경우만)
+    if (orderType !== IOrderType.SSG && productType !== IProductType.CHOICE && orderDelivery.barCode) {
+      smsText += smsCouponInfoTemplate(orderDelivery);
+    }
+
     return smsText;
   }
 
