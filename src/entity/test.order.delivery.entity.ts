@@ -7,7 +7,7 @@ import { OrderDeliveryCouponStatus } from '../delivery/interface/order.delivery.
 
 /**
  * 테스트 발송용 주문 배송 엔티티
- * 알림톡 테스트 발송 시 쿠폰 정보 조회를 위해 임시로 저장됨
+ * 테스트 발송 시 쿠폰 정보 조회 및 PIN 재발급 스킵 판단을 위해 저장됨
  */
 @Entity('test_order_delivery')
 export class TestOrderDeliveryEntity extends BaseEntity {

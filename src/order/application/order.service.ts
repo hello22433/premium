@@ -3165,23 +3165,20 @@ export class OrderService {
       PhoneUtil.normalizeDeliveryTarget(deliveryTarget),
     );
 
-    // 알림톡 또는 이메일인 경우 test_order_delivery 테이블에 저장하여 쿠폰 정보 조회 가능하게 함
-    let testOrderDeliveryId: number | undefined;
-    if (deliveryMethod === IOrderSendMethod.ALIM_TALK || deliveryMethod === IOrderSendMethod.EMAIL) {
-      const testOrderDelivery = new TestOrderDeliveryEntity();
-      testOrderDelivery.status = IOrderDeliveryStatus.COMPLETE;
-      testOrderDelivery.orderProductMappingId = orderProductMapping.id;
-      testOrderDelivery.deliveryMethod = deliveryMethod;
-      testOrderDelivery.deliveryTarget = encryptedDeliveryTarget;
-      testOrderDelivery.imagePath = imagePath;
-      testOrderDelivery.sendRequestAt = new Date();
-      testOrderDelivery.expireAt = new Date();
-      testOrderDelivery.barCode = barCode;
-      testOrderDelivery.personalCode = barCode;
+    // test_order_delivery 테이블에 저장 (oneSend에서 테스트 발송 여부를 판단하여 PIN 재발급 스킵)
+    const testOrderDelivery = new TestOrderDeliveryEntity();
+    testOrderDelivery.status = IOrderDeliveryStatus.COMPLETE;
+    testOrderDelivery.orderProductMappingId = orderProductMapping.id;
+    testOrderDelivery.deliveryMethod = deliveryMethod;
+    testOrderDelivery.deliveryTarget = encryptedDeliveryTarget;
+    testOrderDelivery.imagePath = imagePath;
+    testOrderDelivery.sendRequestAt = new Date();
+    testOrderDelivery.expireAt = new Date();
+    testOrderDelivery.barCode = barCode;
+    testOrderDelivery.personalCode = barCode;
 
-      const savedTestOrderDelivery = await this.testOrderDeliveryRepository.save(testOrderDelivery);
-      testOrderDeliveryId = savedTestOrderDelivery.id;
-    }
+    const savedTestOrderDelivery = await this.testOrderDeliveryRepository.save(testOrderDelivery);
+    const testOrderDeliveryId = savedTestOrderDelivery.id;
 
     const orderDelivery = new OrderDeliveryEntity();
     orderDelivery.deliveryMethod = deliveryMethod;
@@ -3193,7 +3190,7 @@ export class OrderService {
     orderDelivery.imagePath = imagePath;
     orderDelivery.expireAt = new Date();
 
-    // 3. 전송 (testOrderDeliveryId가 있으면 테스트 발송용 encryptKey 생성)
+    // 3. 전송 (testOrderDeliveryId로 테스트 발송임을 전달하여 PIN 재발급 스킵)
     const isSuccess = await this.deliveryBatchService.oneSend(orderDelivery, false, testOrderDeliveryId);
 
     // 발송 실패 시 에러 throw (횟수 증가하지 않음)
