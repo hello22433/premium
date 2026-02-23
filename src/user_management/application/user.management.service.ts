@@ -560,10 +560,10 @@ export class UserManagementService {
       allowedSendMethods: getBody.allowedSendMethods.join(','),
     });
 
-    // 신규 사용자의 조회 범위 설정 (SUPER_ADMIN, OPERATION_ADMIN은 ALL, 나머지는 SELF)
+    // 신규 사용자의 조회 범위 설정 (SUPER_ADMIN만 ALL, 나머지는 SELF)
     const newUserId = insertResult.identifiers[0].id;
     const scopeType =
-      getBody.authority === 'SUPER_ADMIN' || getBody.authority === 'OPERATION_ADMIN'
+      getBody.authority === 'SUPER_ADMIN'
         ? ViewScopeType.ALL
         : ViewScopeType.SELF;
     await this.userViewScopeRepository.insert({
@@ -656,9 +656,9 @@ export class UserManagementService {
 
     await this.userRepository.save(user);
 
-    // 권한에 따른 user_view_scope 자동 설정
+    // 권한에 따른 user_view_scope 자동 설정 (SUPER_ADMIN만 ALL, 나머지는 SELF)
     const scopeType =
-      getBody.authority === 'SUPER_ADMIN' || getBody.authority === 'OPERATION_ADMIN'
+      getBody.authority === 'SUPER_ADMIN'
         ? ViewScopeType.ALL
         : ViewScopeType.SELF;
 
