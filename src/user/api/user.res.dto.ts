@@ -52,6 +52,15 @@ export class UserLoginByEmailPasswordResDto {
   readonly isPasswordReset: boolean;
 
   @ApiProperty({
+    type: String,
+    nullable: true,
+    enum: ['TEMP', 'EXPIRED'],
+    description:
+      '비밀번호 재설정 사유. TEMP: 임시비밀번호 발급, EXPIRED: 비밀번호 변경 기간 만료, null: 재설정 불필요',
+  })
+  readonly passwordResetReason: 'TEMP' | 'EXPIRED' | null;
+
+  @ApiProperty({
     description: '로그인 이메일 인증 진행 여부 ex) true : 인증한경우 false: 인증하지 않은 경우',
   })
   readonly isEmailVerify: boolean;

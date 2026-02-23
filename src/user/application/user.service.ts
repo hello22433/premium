@@ -181,16 +181,19 @@ export class UserService {
 
     // 비밀번호 변경 기간 체크
     let shouldResetPassword = user.isPasswordReset;
+    let passwordResetReason: 'TEMP' | 'EXPIRED' | null = user.isPasswordReset ? 'TEMP' : null;
 
     if (!shouldResetPassword && passwordPolicy) {
       const now = new Date();
       // passwordChangedAt이 null이거나 설정된 기간이 지났으면 비밀번호 변경 필요
       if (!user.passwordChangedAt) {
         shouldResetPassword = true;
+        passwordResetReason = 'EXPIRED';
       } else {
         const daysSincePasswordChange = differenceInDays(now, user.passwordChangedAt);
         if (daysSincePasswordChange >= passwordPolicy.passwordExpiryDays) {
           shouldResetPassword = true;
+          passwordResetReason = 'EXPIRED';
         }
       }
     }
@@ -266,6 +269,7 @@ export class UserService {
         personName: user.personName,
         email: user.email,
         isPasswordReset: shouldResetPassword,
+        passwordResetReason,
         isEmailVerify: false,
         passwordChangedAt: user.passwordChangedAt,
         passwordExpiryDays: passwordPolicy?.passwordExpiryDays ?? null,
@@ -281,6 +285,7 @@ export class UserService {
       personName: user.personName,
       email: user.email,
       isPasswordReset: shouldResetPassword,
+      passwordResetReason,
       isEmailVerify: true,
       passwordChangedAt: user.passwordChangedAt,
       passwordExpiryDays: passwordPolicy?.passwordExpiryDays ?? null,
