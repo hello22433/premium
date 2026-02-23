@@ -609,6 +609,67 @@ export class SettleGetUserDetailMultipleReqQueryDto {
   ids: string;
 }
 
+export class SettlePostUserDetailMultipleReqBodyDto {
+  @ApiProperty({
+    description: '주문 ID 배열 (최대 1,000건)',
+    example: [1, 2, 3],
+  })
+  // ======================================
+  @IsArray()
+  @IsNotEmpty({ each: true })
+  @IsInt({ each: true })
+  @Type(() => Number)
+  orderIds: number[];
+}
+
+export class SettleGetUserIdsReqQueryDto {
+  @ApiPropertyOptional({
+    description: '시작일 ex) yyyy-MM-ddTHH:mm:ss',
+  })
+  // =============================================================
+  @IsOptional()
+  @Matches(dateAtRegexp)
+  startAt?: string;
+
+  @ApiPropertyOptional({
+    description: '끝 일 ex) yyyy-MM-ddTHH:mm:ss',
+  })
+  // =============================================================
+  @IsOptional()
+  @Matches(dateAtRegexp)
+  endAt?: string;
+
+  @ApiPropertyOptional({
+    description: '발행 : true, 미발행 : false',
+  })
+  // =============================================================
+  @IsOptional()
+  @IsBoolean()
+  @Transform(({ value }) => value === 'true')
+  isPublished?: boolean;
+
+  @ApiPropertyOptional({
+    description: '고객사 명 (사업자 명)',
+  })
+  // =============================================================
+  @IsOptional()
+  businessName?: string;
+
+  @ApiPropertyOptional({
+    description: '담당자 명',
+  })
+  // =============================================================
+  @IsOptional()
+  personName?: string;
+
+  @ApiPropertyOptional({
+    description: '이벤트 명',
+  })
+  // =============================================================
+  @IsOptional()
+  eventName?: string;
+}
+
 export class SettleGetUserExcelDownloadReqDto {
   @ApiPropertyOptional({
     description: '시작일 ex) yyyy-MM-ddTHH:mm:ss',

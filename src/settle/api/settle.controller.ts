@@ -21,6 +21,7 @@ import {
   SettleGetUserDetailResDto,
   SettleGetUserDetailMultipleResDto,
   SettleGetUserListResDto,
+  SettleGetUserIdsResDto,
   SettleGetGalaxiaListResDto,
 } from './settle.res.dto';
 import {
@@ -36,6 +37,8 @@ import {
   SettleGetShippingStorageListReqDto,
   SettleGetUserDetailReqParamDto,
   SettleGetUserDetailMultipleReqQueryDto,
+  SettlePostUserDetailMultipleReqBodyDto,
+  SettleGetUserIdsReqQueryDto,
   SettleGetUserExcelDownloadReqDto,
   SettleGetUserListReqQueryDto,
   SettleGetUserPerDetailReqQueryDto,
@@ -286,6 +289,20 @@ export class SettleController {
   }
 
   @ApiOperation({
+    summary: '정산관리 > 고객사 정산 > ID 목록 조회',
+    description: '검색 조건에 해당하는 모든 주문의 ID + 최소 메타정보를 반환하는 경량 API (최대 1,000건)',
+  })
+  @ApiOkResponse({
+    type: SettleGetUserIdsResDto,
+  })
+  // =====================================
+  @Get('settle/user/ids')
+  async getUserIds(@User() user: ILoginUserInfo, @Query() getQuery: SettleGetUserIdsReqQueryDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.SETTLE_USER);
+    return this.settleService.getUserIds(getQuery);
+  }
+
+  @ApiOperation({
     summary: '정산관리 > 고객사 정산 > 상세조회',
     description: '고객사 정산 상세조회 API',
   })
@@ -311,6 +328,20 @@ export class SettleController {
   @Get('settle/user-multiple')
   getUserDetailMultiple(@Query() getQuery: SettleGetUserDetailMultipleReqQueryDto) {
     return this.settleService.getUserDetailMultiple(getQuery);
+  }
+
+  @ApiOperation({
+    summary: '정산관리 > 고객사 정산 > 다중 상세조회 (POST)',
+    description: '여러 주문을 통합하여 조회 (동일 고객사만 가능, 최대 1,000건)',
+  })
+  @ApiOkResponse({
+    type: SettleGetUserDetailMultipleResDto,
+    description: '성공적으로 조회할 경우',
+  })
+  // =====================================
+  @Post('settle/user-multiple')
+  postUserDetailMultiple(@Body() body: SettlePostUserDetailMultipleReqBodyDto) {
+    return this.settleService.getUserDetailMultipleByBody(body);
   }
 
   @ApiOperation({

@@ -11,6 +11,8 @@ import {
   SettleGetShippingStorageListResDto,
   SettleGetUserDetailResDto,
   SettleGetUserListResDto,
+  SettleGetUserIdsResDto,
+  SettleGetUserIdsItemDto,
   SettleGetGalaxiaListResDto,
 } from '../api/settle.res.dto';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
@@ -30,6 +32,8 @@ import {
   SettleGetShippingStorageListReqDto,
   SettleGetUserDetailReqParamDto,
   SettleGetUserDetailMultipleReqQueryDto,
+  SettlePostUserDetailMultipleReqBodyDto,
+  SettleGetUserIdsReqQueryDto,
   SettleGetUserExcelDownloadReqDto,
   SettleGetUserListReqQueryDto,
   SettleGetUserPerDetailReqQueryDto,
@@ -1252,57 +1256,31 @@ export class SettleService {
   async getUserList(getQuery: SettleGetUserListReqQueryDto): Promise<SettleGetUserListResDto> {
     const { startAt, endAt, isPublished, businessName, personName, eventName, page, take } = getQuery;
 
-    let queryBuilder = this.orderRepository
-      .createQueryBuilder('order')
-      .innerJoinAndSelect('order.user', 'user')
-      .leftJoinAndSelect('user.company', 'userCompany')
-      .leftJoinAndSelect('order.clientUser', 'clientUser')
-      .leftJoinAndSelect('clientUser.company', 'clientCompany')
-      .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
-      .innerJoinAndSelect('orderProductMappings.product', 'product')
-      .leftJoinAndSelect('product.classification', 'classification')
-      .leftJoinAndSelect('product.brand', 'brand')
-      .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
-      .leftJoinAndSelect('user.userDiscounts', 'userDiscounts')
-      .leftJoinAndSelect('clientUser.userDiscounts', 'clientUserDiscounts')
-      .where('order.status IN (:...status)', { status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'] });
+    const queryBuilder = this.buildUserSettleQueryBuilder({ startAt, endAt, isPublished, businessName, personName, eventName });
 
-    if (isPublished === true) {
-      queryBuilder.andWhere('order.deliveryCompleteReportCount > 0');
-      queryBuilder.andWhere('order.orderCompleteReportCount > 0');
+    // 전체 주문 조회 (합산 + 페이지네이션 모두 처리)
+    const allOrders = await queryBuilder.getMany();
+    const totalCount = allOrders.length;
+
+    // 합산 계산 (JS 레벨 - 할인 적용 때문)
+    let totalAmountSum = 0;
+    let totalDeliveryPriceSum = 0;
+    let totalSettlePriceSum = 0;
+
+    for (const order of allOrders) {
+      totalDeliveryPriceSum += order.sendAmount;
+      const billingUser = order.clientUser ?? order.user;
+      const userDiscounts = billingUser?.userDiscounts || [];
+
+      for (const mapping of order.orderProductMappings!) {
+        totalAmountSum += mapping.amount;
+        totalSettlePriceSum += this.calculateMappingSettlePrice(mapping, userDiscounts);
+      }
     }
 
-    if (isPublished === false) {
-      queryBuilder.andWhere('order.deliveryCompleteReportCount = 0');
-      queryBuilder.andWhere('order.orderCompleteReportCount = 0');
-    }
-
-    if (businessName) {
-      queryBuilder = queryBuilder.andWhere(
-        '(userCompany.businessName LIKE :businessName OR clientCompany.businessName LIKE :businessName)',
-        { businessName: `%${businessName}%` },
-      );
-    }
-
-    if (personName) {
-      queryBuilder = queryBuilder.andWhere(
-        '(user.personName LIKE :personName OR clientUser.personName LIKE :personName)',
-        { personName: `%${personName}%` },
-      );
-    }
-
-    if (eventName) {
-      queryBuilder = queryBuilder.andWhere('order.eventName LIKE :eventName', {
-        eventName: `%${eventName}%`,
-      });
-    }
-
-    queryBuilder = QueryBuilderDateCondition(queryBuilder, 'order', 'createdAt', startAt, endAt);
-    queryBuilder = queryBuilder.orderBy('order.id', 'DESC');
-
+    // 페이지네이션 (메모리에서 슬라이스)
     const skip = (page - 1) * take;
-    queryBuilder.skip(skip).take(take);
-    const [orderList, totalCount] = await queryBuilder.getManyAndCount();
+    const orderList = allOrders.slice(skip, skip + take);
 
     const totalPage = Math.ceil(totalCount / take);
     const resultList: SettleUserListViewDto[] = orderList.map((order) => {
@@ -1315,39 +1293,10 @@ export class SettleService {
       const userDiscounts = billingUser?.userDiscounts || [];
 
       // 각 상품별로 할인/할증 적용
-      for (const orderProductMapping of order.orderProductMappings!) {
-        productNameList.push(orderProductMapping.product.name);
-        amount += orderProductMapping.amount;
-
-        const product = orderProductMapping.product;
-        const productTotalPrice = product.price * orderProductMapping.amount;
-
-        // 1. orderProductMapping에 이미 fee/priceAdjustment가 저장되어 있으면 그걸 사용
-        if (orderProductMapping.fee !== null && orderProductMapping.priceAdjustment !== null) {
-          let adjustedPrice = productTotalPrice;
-          if (orderProductMapping.fee > 0) {
-            if (orderProductMapping.priceAdjustment === IPriceAdjustment.DISCOUNT) {
-              adjustedPrice = Math.ceil((productTotalPrice * (100 - orderProductMapping.fee)) / 100);
-            } else if (orderProductMapping.priceAdjustment === IPriceAdjustment.ADDITIONAL) {
-              adjustedPrice = Math.ceil((productTotalPrice * (100 + orderProductMapping.fee)) / 100);
-            }
-          }
-          finalSettlePrice += adjustedPrice;
-        } else {
-          // 2. 저장된 값이 없으면 userDiscounts에서 매칭되는 할인 설정 찾기
-          const matchingDiscount = this.findMatchingDiscount(
-            {
-              price: product.price,
-              category: product.category,
-              brand: product.brand,
-            },
-            userDiscounts,
-          );
-
-          // 할인/할증 적용
-          const discountedPrice = this.applyDiscount(productTotalPrice, matchingDiscount);
-          finalSettlePrice += discountedPrice;
-        }
+      for (const mapping of order.orderProductMappings!) {
+        productNameList.push(mapping.product.name);
+        amount += mapping.amount;
+        finalSettlePrice += this.calculateMappingSettlePrice(mapping, userDiscounts);
       }
 
       // 첫 번째 배송의 실제 발송 시간 사용
@@ -1391,10 +1340,55 @@ export class SettleService {
         sendRequestAt: sendRequestAt,
         deliveryReportStatus,
         transactionStatementStatus,
+        companyId: billingUser?.companyId ?? undefined,
       };
     });
 
-    return { list: resultList, totalPage, totalCount, currentPage: page };
+    return {
+      list: resultList,
+      totalPage,
+      totalCount,
+      currentPage: page,
+      totalAmountSum,
+      totalDeliveryPriceSum,
+      totalSettlePriceSum,
+    };
+  }
+
+  async getUserIds(getQuery: SettleGetUserIdsReqQueryDto): Promise<SettleGetUserIdsResDto> {
+    const { startAt, endAt, isPublished, businessName, personName, eventName } = getQuery;
+
+    const queryBuilder = this.buildUserSettleQueryBuilder({ startAt, endAt, isPublished, businessName, personName, eventName });
+    const orders = await queryBuilder.getMany();
+
+    if (orders.length > 1000) {
+      throw new BadRequestException({
+        message: '검색 결과가 1,000건을 초과합니다. 검색 범위를 좁혀주세요.',
+        totalCount: orders.length,
+      });
+    }
+
+    const items: SettleGetUserIdsItemDto[] = orders.map((order) => {
+      const billingUser = order.clientUser ?? order.user;
+      const userDiscounts = billingUser?.userDiscounts || [];
+
+      let finalSettlePrice = 0;
+      for (const mapping of order.orderProductMappings!) {
+        finalSettlePrice += this.calculateMappingSettlePrice(mapping, userDiscounts);
+      }
+
+      return {
+        id: order.id,
+        settlePrice: finalSettlePrice,
+        businessName: billingUser?.company?.businessName ?? '',
+        companyId: billingUser?.companyId ?? 0,
+      };
+    });
+
+    return {
+      items,
+      totalCount: items.length,
+    };
   }
 
   async getUserDetail(getParam: SettleGetUserDetailReqParamDto): Promise<SettleGetUserDetailResDto> {
@@ -1480,6 +1474,24 @@ export class SettleService {
       throw new BadRequestException('유효한 주문 ID가 없습니다.');
     }
 
+    return this.getUserDetailMultipleByOrderIds(orderIds);
+  }
+
+  async getUserDetailMultipleByBody(body: SettlePostUserDetailMultipleReqBodyDto): Promise<SettleUserDetailMultipleDto> {
+    const orderIds = [...new Set(body.orderIds)];
+
+    if (orderIds.length === 0) {
+      throw new BadRequestException('유효한 주문 ID가 없습니다.');
+    }
+
+    if (orderIds.length > 1000) {
+      throw new BadRequestException('최대 1,000건까지 선택할 수 있습니다.');
+    }
+
+    return this.getUserDetailMultipleByOrderIds(orderIds);
+  }
+
+  private async getUserDetailMultipleByOrderIds(orderIds: number[]): Promise<SettleUserDetailMultipleDto> {
     const queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
@@ -2221,6 +2233,100 @@ export class SettleService {
       allSettleAmount: userEntity.allSettleAmount,
       remainServiceAmount,
     };
+  }
+
+  /**
+   * orderProductMapping에 저장된 fee/priceAdjustment 또는 userDiscounts에서 매칭되는 할인을 적용하여
+   * 해당 매핑의 정산금액을 계산한다.
+   */
+  private calculateMappingSettlePrice(
+    mapping: { fee: number | null; priceAdjustment: IPriceAdjustment | null; amount: number; product: { price: number; category: string; brand?: { nameKorean: string } | null } },
+    userDiscounts: UserDiscountEntity[],
+  ): number {
+    const productTotalPrice = mapping.product.price * mapping.amount;
+
+    if (mapping.fee !== null && mapping.priceAdjustment !== null) {
+      let adjustedPrice = productTotalPrice;
+      if (mapping.fee > 0) {
+        if (mapping.priceAdjustment === IPriceAdjustment.DISCOUNT) {
+          adjustedPrice = Math.ceil((productTotalPrice * (100 - mapping.fee)) / 100);
+        } else if (mapping.priceAdjustment === IPriceAdjustment.ADDITIONAL) {
+          adjustedPrice = Math.ceil((productTotalPrice * (100 + mapping.fee)) / 100);
+        }
+      }
+      return adjustedPrice;
+    }
+
+    const matchingDiscount = this.findMatchingDiscount(
+      { price: mapping.product.price, category: mapping.product.category, brand: mapping.product.brand },
+      userDiscounts,
+    );
+    return this.applyDiscount(productTotalPrice, matchingDiscount);
+  }
+
+  /**
+   * getUserList / getUserIds 공통 쿼리빌더 생성
+   * 동일한 join + 필터 조건을 공유한다.
+   */
+  private buildUserSettleQueryBuilder(filters: {
+    startAt?: string;
+    endAt?: string;
+    isPublished?: boolean;
+    businessName?: string;
+    personName?: string;
+    eventName?: string;
+  }) {
+    const { startAt, endAt, isPublished, businessName, personName, eventName } = filters;
+
+    let queryBuilder = this.orderRepository
+      .createQueryBuilder('order')
+      .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('user.company', 'userCompany')
+      .leftJoinAndSelect('order.clientUser', 'clientUser')
+      .leftJoinAndSelect('clientUser.company', 'clientCompany')
+      .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
+      .innerJoinAndSelect('orderProductMappings.product', 'product')
+      .leftJoinAndSelect('product.classification', 'classification')
+      .leftJoinAndSelect('product.brand', 'brand')
+      .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
+      .leftJoinAndSelect('user.userDiscounts', 'userDiscounts')
+      .leftJoinAndSelect('clientUser.userDiscounts', 'clientUserDiscounts')
+      .where('order.status IN (:...status)', { status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'] });
+
+    if (isPublished === true) {
+      queryBuilder.andWhere('order.deliveryCompleteReportCount > 0');
+      queryBuilder.andWhere('order.orderCompleteReportCount > 0');
+    }
+
+    if (isPublished === false) {
+      queryBuilder.andWhere('order.deliveryCompleteReportCount = 0');
+      queryBuilder.andWhere('order.orderCompleteReportCount = 0');
+    }
+
+    if (businessName) {
+      queryBuilder = queryBuilder.andWhere(
+        '(userCompany.businessName LIKE :businessName OR clientCompany.businessName LIKE :businessName)',
+        { businessName: `%${businessName}%` },
+      );
+    }
+
+    if (personName) {
+      queryBuilder = queryBuilder.andWhere(
+        '(user.personName LIKE :personName OR clientUser.personName LIKE :personName)',
+        { personName: `%${personName}%` },
+      );
+    }
+
+    if (eventName) {
+      queryBuilder = queryBuilder.andWhere('order.eventName LIKE :eventName', {
+        eventName: `%${eventName}%`,
+      });
+    }
+
+    queryBuilder = QueryBuilderDateCondition(queryBuilder, 'order', 'createdAt', startAt, endAt);
+    queryBuilder = queryBuilder.orderBy('order.id', 'DESC');
+
+    return queryBuilder;
   }
 
   /**

@@ -1,5 +1,5 @@
 import { IOrderStatus } from '../../../order/interface/order.status';
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class SettleUserListViewDto {
   @ApiProperty({
@@ -72,4 +72,9 @@ export class SettleUserListViewDto {
     description: '거래명세서 상태 ex) - / 다운로드 완료 / 다운로드(재) / 발행 완료 / 발행(재)',
   })
   transactionStatementStatus: string;
+
+  @ApiPropertyOptional({
+    description: '고객사 ID',
+  })
+  companyId?: number;
 }
