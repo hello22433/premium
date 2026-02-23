@@ -56,11 +56,51 @@ export class SettleGetUserListResDto extends GetListResDto {
     description: '고객사별 정산 데이터 list',
   })
   list: SettleUserListViewDto[];
+
+  @ApiProperty({
+    description: '검색 조건 전체의 총 발송수량 합계 (페이지 무관)',
+  })
+  totalAmountSum: number;
+
+  @ApiProperty({
+    description: '검색 조건 전체의 총 발송금액 합계',
+  })
+  totalDeliveryPriceSum: number;
+
+  @ApiProperty({
+    description: '검색 조건 전체의 총 정산금액 합계',
+  })
+  totalSettlePriceSum: number;
 }
 
 export class SettleGetUserDetailResDto extends SettleUserDetailDto {}
 
 export class SettleGetUserDetailMultipleResDto extends SettleUserDetailMultipleDto {}
+
+export class SettleGetUserIdsItemDto {
+  @ApiProperty({ description: '주문 ID' })
+  id: number;
+
+  @ApiProperty({ description: '정산금액 (할인 적용)' })
+  settlePrice: number;
+
+  @ApiProperty({ description: '고객사 명' })
+  businessName: string;
+
+  @ApiProperty({ description: '고객사 ID' })
+  companyId: number;
+}
+
+export class SettleGetUserIdsResDto {
+  @ApiProperty({
+    description: '주문 ID + 메타정보 목록',
+    type: [SettleGetUserIdsItemDto],
+  })
+  items: SettleGetUserIdsItemDto[];
+
+  @ApiProperty({ description: '전체 건수' })
+  totalCount: number;
+}
 
 export class SettleGetPartnerCompanyListResDto extends GetListResDto {
   @ApiProperty({
