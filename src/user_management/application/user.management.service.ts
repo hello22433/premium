@@ -1,5 +1,6 @@
 import { BadRequestException, Inject, Injectable } from '@nestjs/common';
 import { UserEntity } from '../../entity/user.entity';
+import { IUserStatus } from '../../user/interface/user.status';
 import { UserCompanyEntity } from '../../entity/user.company.entity';
 import { UserViewScopeEntity, ViewScopeType } from '../../entity/user.view.scope.entity';
 import { DepartmentEntity } from '../../entity/department.entity';
@@ -72,7 +73,8 @@ export class UserManagementService {
 
     let queryBuilder = this.userRepository
       .createQueryBuilder('user')
-      .leftJoinAndSelect('user.company', 'company');
+      .leftJoinAndSelect('user.company', 'company')
+      .where('user.status != :leaveStatus', { leaveStatus: IUserStatus.LEAVE });
 
     if (authority) {
       queryBuilder = queryBuilder.andWhere('user.authority = :authority', { authority });
