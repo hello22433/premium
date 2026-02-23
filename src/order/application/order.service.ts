@@ -2881,6 +2881,12 @@ export class OrderService {
       if (user.authority === IUserAuthority.CORPORATE_ADMIN) {
         queryBuilder = queryBuilder.andWhere('order.userId = :userId', { userId: user.id });
       }
+      if (user.authority === IUserAuthority.OPERATION_ADMIN) {
+        queryBuilder = queryBuilder.andWhere(
+          '(order.userId = :userId OR order.operationUserId = :userId OR order.clientUserId = :userId)',
+          { userId: user.id },
+        );
+      }
       orderType = '주문';
     }
 
