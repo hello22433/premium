@@ -58,6 +58,7 @@ import { GalaxiaBarcodeLogEntity } from '../entity/galaxia.barcode.log.entity';
 import { RequirementEntity } from '../entity/requirement.entity';
 import { RequirementCommentEntity } from '../entity/requirement.comment.entity';
 import { RequirementAttachmentEntity } from '../entity/requirement.attachment.entity';
+import { OrderReceiptEntity } from '../entity/order.receipt.entity';
 
 @Module({
   imports: [
@@ -120,6 +121,7 @@ import { RequirementAttachmentEntity } from '../entity/requirement.attachment.en
           RequirementEntity,
           RequirementCommentEntity,
           RequirementAttachmentEntity,
+          OrderReceiptEntity,
         ],
         timezone: '+09:00',
         logger: configService.get('DATABASE_LOGGING') === 'true' ? new SqlLogger() : undefined,

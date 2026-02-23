@@ -13,6 +13,7 @@ export enum UserAuthSubEnum {
   ORDER_GENERAL = 'ORDER_GENERAL', // 일반쿠폰 주문
   ORDER_SSG = 'ORDER_SSG', // 신세계 주문
   ORDER_REAL_ITEM = 'ORDER_REAL_ITEM', // 실물 상품 주문
+  ORDER_RECEIPT = 'ORDER_RECEIPT', // 주문접수
 
   // 발송 관리
   SEND_GENERAL = 'SEND_GENERAL', // 일반쿠폰 발송
