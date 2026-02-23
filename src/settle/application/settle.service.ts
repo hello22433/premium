@@ -1277,22 +1277,17 @@ export class SettleService {
     const { isPublished, businessName, personName, eventName, page, take } = getQuery;
 
     const filters = { startAt, endAt, isPublished, businessName, personName, eventName };
-    const skip = (page - 1) * take;
 
-    // 1. 페이지네이션된 목록 + 총 건수 (SQL LIMIT/OFFSET)
-    const [orderList, totalCount] = await this.buildUserSettleQueryBuilder(filters)
-      .skip(skip)
-      .take(take)
-      .getManyAndCount();
+    // 전체 주문 조회 (기본 1개월 기간으로 데이터 볼륨 제한)
+    const allOrders = await this.buildUserSettleQueryBuilder(filters).getMany();
+    const totalCount = allOrders.length;
 
-    // 2. 합산용 경량 쿼리 (company, classification, orderDeliveries 데이터 로드 제외)
-    const sumOrders = await this.buildUserSettleQueryBuilder(filters, { forSum: true }).getMany();
-
+    // 합산 계산
     let totalAmountSum = 0;
     let totalDeliveryPriceSum = 0;
     let totalSettlePriceSum = 0;
 
-    for (const order of sumOrders) {
+    for (const order of allOrders) {
       totalDeliveryPriceSum += order.sendAmount;
       const billingUser = order.clientUser ?? order.user;
       const userDiscounts = billingUser?.userDiscounts || [];
@@ -1302,6 +1297,10 @@ export class SettleService {
         totalSettlePriceSum += this.calculateMappingSettlePrice(mapping, userDiscounts);
       }
     }
+
+    // 페이지네이션 (메모리 슬라이스)
+    const skip = (page - 1) * take;
+    const orderList = allOrders.slice(skip, skip + take);
 
     const totalPage = Math.ceil(totalCount / take);
     const resultList: SettleUserListViewDto[] = orderList.map((order) => {
