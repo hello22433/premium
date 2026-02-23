@@ -59,7 +59,7 @@ import {
   TimeCompactStr,
   TimeFormatStr,
 } from '../../common/domain/date.format.str';
-import { format } from 'date-fns';
+import { format, subMonths } from 'date-fns';
 import { SettlePartnerCompanyListViewDto } from '../api/dto/settle.partner.company.list.view.dto';
 import { SettleMobileListViewDto } from '../api/dto/settle.mobile.list.view.dto';
 import * as ExcelJS from 'exceljs';
@@ -128,10 +128,20 @@ export class SettleService {
     private cryptoCipher: CryptoCipher,
   ) {}
 
+  /**
+   * 기본 조회 기간 적용 (startAt/endAt 미지정 시 최근 1개월)
+   */
+  private applyDefaultDateRange(startAt?: string, endAt?: string): { startAt: string; endAt: string } {
+    const now = new Date();
+    return {
+      startAt: startAt || format(subMonths(now, 1), "yyyy-MM-dd'T'00:00:00"),
+      endAt: endAt || format(now, "yyyy-MM-dd'T'23:59:59"),
+    };
+  }
+
   async getOtherList(getQuery: SettleGetOtherServiceSaleGetListReqDto): Promise<SettleGetOtherListResDto> {
+    const defaultDate = this.applyDefaultDateRange(getQuery.startAt, getQuery.endAt);
     const {
-      startAt,
-      endAt,
       personName,
       eventName,
       businessName,
@@ -142,6 +152,7 @@ export class SettleService {
       take,
       page,
     } = getQuery;
+    const { startAt, endAt } = defaultDate;
 
     let queryBuilder = this.otherSaleRepository
       .createQueryBuilder('sale')
@@ -618,7 +629,9 @@ export class SettleService {
   }
 
   async getMobileList(getQuery: SettleGetMobileListReqQueryDto): Promise<SettleGetMobileListResDto> {
-    const { startAt, endAt, personName, businessName, eventName, page, take } = getQuery;
+    const defaultDate = this.applyDefaultDateRange(getQuery.startAt, getQuery.endAt);
+    const { personName, businessName, eventName, page, take } = getQuery;
+    const { startAt, endAt } = defaultDate;
 
     let queryBuilder = this.orderRepository
       .createQueryBuilder('order')
@@ -737,7 +750,9 @@ export class SettleService {
     // 비밀번호 확인
     await this.activityLogService.verifyPassword(user.id, getQuery.password);
 
-    const { startAt, endAt, personName, businessName, eventName, downloadReason } = getQuery;
+    const defaultDate = this.applyDefaultDateRange(getQuery.startAt, getQuery.endAt);
+    const { personName, businessName, eventName, downloadReason } = getQuery;
+    const { startAt, endAt } = defaultDate;
 
     const now = new Date();
     const nowString = format(now, 'yyyyMMdd');
@@ -927,7 +942,9 @@ export class SettleService {
   async getPartnerCompanyList(
     getQuery: SettleGetPartnerCompanyListReqQueryDto,
   ): Promise<SettleGetPartnerCompanyListResDto> {
-    const { startAt, endAt, settleMethod, businessName, page, take } = getQuery;
+    const defaultDate = this.applyDefaultDateRange(getQuery.startAt, getQuery.endAt);
+    const { settleMethod, businessName, page, take } = getQuery;
+    const { startAt, endAt } = defaultDate;
 
     // OrderDelivery 기준으로 직접 쿼리하여 DB 레벨 페이징 적용
     let queryBuilder = this.orderDeliveryRepository
@@ -1045,7 +1062,9 @@ export class SettleService {
     // 비밀번호 확인
     await this.activityLogService.verifyPassword(user.id, body.password);
 
-    const { startAt, endAt, settleMethod, businessName, downloadReason } = body;
+    const defaultDate = this.applyDefaultDateRange(body.startAt, body.endAt);
+    const { settleMethod, businessName, downloadReason } = body;
+    const { startAt, endAt } = defaultDate;
 
     const now = new Date();
     const nowString = format(now, 'yyyyMMdd');
@@ -1254,20 +1273,26 @@ export class SettleService {
   }
 
   async getUserList(getQuery: SettleGetUserListReqQueryDto): Promise<SettleGetUserListResDto> {
-    const { startAt, endAt, isPublished, businessName, personName, eventName, page, take } = getQuery;
+    const { startAt, endAt } = this.applyDefaultDateRange(getQuery.startAt, getQuery.endAt);
+    const { isPublished, businessName, personName, eventName, page, take } = getQuery;
 
-    const queryBuilder = this.buildUserSettleQueryBuilder({ startAt, endAt, isPublished, businessName, personName, eventName });
+    const filters = { startAt, endAt, isPublished, businessName, personName, eventName };
+    const skip = (page - 1) * take;
 
-    // 전체 주문 조회 (합산 + 페이지네이션 모두 처리)
-    const allOrders = await queryBuilder.getMany();
-    const totalCount = allOrders.length;
+    // 1. 페이지네이션된 목록 + 총 건수 (SQL LIMIT/OFFSET)
+    const [orderList, totalCount] = await this.buildUserSettleQueryBuilder(filters)
+      .skip(skip)
+      .take(take)
+      .getManyAndCount();
 
-    // 합산 계산 (JS 레벨 - 할인 적용 때문)
+    // 2. 합산용 경량 쿼리 (company, classification, orderDeliveries 데이터 로드 제외)
+    const sumOrders = await this.buildUserSettleQueryBuilder(filters, { forSum: true }).getMany();
+
     let totalAmountSum = 0;
     let totalDeliveryPriceSum = 0;
     let totalSettlePriceSum = 0;
 
-    for (const order of allOrders) {
+    for (const order of sumOrders) {
       totalDeliveryPriceSum += order.sendAmount;
       const billingUser = order.clientUser ?? order.user;
       const userDiscounts = billingUser?.userDiscounts || [];
@@ -1278,52 +1303,23 @@ export class SettleService {
       }
     }
 
-    // 페이지네이션 (메모리에서 슬라이스)
-    const skip = (page - 1) * take;
-    const orderList = allOrders.slice(skip, skip + take);
-
     const totalPage = Math.ceil(totalCount / take);
     const resultList: SettleUserListViewDto[] = orderList.map((order) => {
-      const productNameList: string[] = [];
-      let amount: number = 0;
-      let finalSettlePrice = 0;
-
-      // 과금 대상 사용자 (대행주문인 경우 clientUser, 아니면 user)
       const billingUser = order.clientUser ?? order.user;
       const userDiscounts = billingUser?.userDiscounts || [];
 
-      // 각 상품별로 할인/할증 적용
+      const productNameList: string[] = [];
+      let amount = 0;
+      let finalSettlePrice = 0;
+
       for (const mapping of order.orderProductMappings!) {
         productNameList.push(mapping.product.name);
         amount += mapping.amount;
         finalSettlePrice += this.calculateMappingSettlePrice(mapping, userDiscounts);
       }
 
-      // 첫 번째 배송의 실제 발송 시간 사용
       const firstDelivery = order.orderProductMappings?.[0]?.orderDeliveries?.[0];
       const sendRequestAt = firstDelivery?.actualSendAt ? format(firstDelivery.actualSendAt, DateFormatStr) : null;
-
-      // 발송완료 리포트 상태 계산
-      let deliveryReportStatus = '-';
-      if (order.deliveryCompleteReportCount > 0) {
-        const isReissue = order.deliveryCompleteReportCount > 1;
-        if (order.deliveryReportLastSource === 'DIRECT') {
-          deliveryReportStatus = isReissue ? '발행(재)' : '발행 완료';
-        } else {
-          deliveryReportStatus = isReissue ? '다운로드(재)' : '다운로드 완료';
-        }
-      }
-
-      // 거래명세서 상태 계산
-      let transactionStatementStatus = '-';
-      if (order.orderCompleteReportCount > 0) {
-        const isReissue = order.orderCompleteReportCount > 1;
-        if (order.transactionStatementLastSource === 'DIRECT') {
-          transactionStatementStatus = isReissue ? '발행(재)' : '발행 완료';
-        } else {
-          transactionStatementStatus = isReissue ? '다운로드(재)' : '다운로드 완료';
-        }
-      }
 
       return {
         id: order.id,
@@ -1331,15 +1327,15 @@ export class SettleService {
         businessName: billingUser?.company?.businessName ?? '',
         personName: billingUser?.personName ?? '',
         eventName: order.eventName,
-        productNameList: productNameList,
-        amount: amount,
+        productNameList,
+        amount,
         deliveryPrice: order.sendAmount,
         originalSettlePrice: order.settleAmount,
         settlePrice: finalSettlePrice,
         status: order.status,
-        sendRequestAt: sendRequestAt,
-        deliveryReportStatus,
-        transactionStatementStatus,
+        sendRequestAt,
+        deliveryReportStatus: this.formatReportStatus(order.deliveryCompleteReportCount, order.deliveryReportLastSource),
+        transactionStatementStatus: this.formatReportStatus(order.orderCompleteReportCount, order.transactionStatementLastSource),
         companyId: billingUser?.companyId ?? undefined,
       };
     });
@@ -1356,10 +1352,11 @@ export class SettleService {
   }
 
   async getUserIds(getQuery: SettleGetUserIdsReqQueryDto): Promise<SettleGetUserIdsResDto> {
-    const { startAt, endAt, isPublished, businessName, personName, eventName } = getQuery;
+    const { startAt, endAt } = this.applyDefaultDateRange(getQuery.startAt, getQuery.endAt);
+    const { isPublished, businessName, personName, eventName } = getQuery;
 
-    const queryBuilder = this.buildUserSettleQueryBuilder({ startAt, endAt, isPublished, businessName, personName, eventName });
-    const orders = await queryBuilder.getMany();
+    const filters = { startAt, endAt, isPublished, businessName, personName, eventName };
+    const orders = await this.buildUserSettleQueryBuilder(filters).getMany();
 
     if (orders.length > 1000) {
       throw new BadRequestException({
@@ -1618,7 +1615,9 @@ export class SettleService {
     // 비밀번호 확인
     await this.activityLogService.verifyPassword(user.id, getBody.password);
 
-    const { startAt, endAt, isPublished, businessName, personName, eventName, downloadReason } = getBody;
+    const defaultDate = this.applyDefaultDateRange(getBody.startAt, getBody.endAt);
+    const { isPublished, businessName, personName, eventName, downloadReason } = getBody;
+    const { startAt, endAt } = defaultDate;
 
     let queryBuilder = this.orderRepository
       .createQueryBuilder('order')
@@ -2236,6 +2235,21 @@ export class SettleService {
   }
 
   /**
+   * 리포트 발행 상태 문자열 생성
+   * count=0이면 '-', 1이면 '발행 완료'/'다운로드 완료', 2이상이면 '발행(재)'/'다운로드(재)'
+   */
+  private formatReportStatus(count: number, lastSource: string | null): string {
+    if (count === 0) {
+      return '-';
+    }
+    const isReissue = count > 1;
+    if (lastSource === 'DIRECT') {
+      return isReissue ? '발행(재)' : '발행 완료';
+    }
+    return isReissue ? '다운로드(재)' : '다운로드 완료';
+  }
+
+  /**
    * orderProductMapping에 저장된 fee/priceAdjustment 또는 userDiscounts에서 매칭되는 할인을 적용하여
    * 해당 매핑의 정산금액을 계산한다.
    */
@@ -2267,40 +2281,75 @@ export class SettleService {
   /**
    * getUserList / getUserIds 공통 쿼리빌더 생성
    * 동일한 join + 필터 조건을 공유한다.
+   *
+   * forSum=true: 합산 계산 전용 경량 쿼리 (display 전용 JOIN 제외)
+   *  - company: leftJoin만 (SELECT 제외, 필터용)
+   *  - classification: 제외
+   *  - orderDeliveries: innerJoin만 (SELECT 제외, 필터용)
+   *  - orderBy: 제외
    */
-  private buildUserSettleQueryBuilder(filters: {
-    startAt?: string;
-    endAt?: string;
-    isPublished?: boolean;
-    businessName?: string;
-    personName?: string;
-    eventName?: string;
-  }) {
+  private buildUserSettleQueryBuilder(
+    filters: {
+      startAt?: string;
+      endAt?: string;
+      isPublished?: boolean;
+      businessName?: string;
+      personName?: string;
+      eventName?: string;
+    },
+    options?: { forSum?: boolean },
+  ) {
+    const forSum = options?.forSum ?? false;
     const { startAt, endAt, isPublished, businessName, personName, eventName } = filters;
 
     let queryBuilder = this.orderRepository
       .createQueryBuilder('order')
-      .innerJoinAndSelect('order.user', 'user')
-      .leftJoinAndSelect('user.company', 'userCompany')
-      .leftJoinAndSelect('order.clientUser', 'clientUser')
-      .leftJoinAndSelect('clientUser.company', 'clientCompany')
+      .innerJoinAndSelect('order.user', 'user');
+
+    // forSum: company는 필터용 JOIN만, classification/orderDeliveries는 SELECT 제외
+    if (forSum) {
+      queryBuilder = queryBuilder
+        .leftJoin('user.company', 'userCompany')
+        .leftJoinAndSelect('order.clientUser', 'clientUser')
+        .leftJoin('clientUser.company', 'clientCompany');
+    } else {
+      queryBuilder = queryBuilder
+        .leftJoinAndSelect('user.company', 'userCompany')
+        .leftJoinAndSelect('order.clientUser', 'clientUser')
+        .leftJoinAndSelect('clientUser.company', 'clientCompany');
+    }
+
+    queryBuilder = queryBuilder
       .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
-      .innerJoinAndSelect('orderProductMappings.product', 'product')
-      .leftJoinAndSelect('product.classification', 'classification')
-      .leftJoinAndSelect('product.brand', 'brand')
-      .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
+      .innerJoinAndSelect('orderProductMappings.product', 'product');
+
+    if (!forSum) {
+      queryBuilder = queryBuilder.leftJoinAndSelect('product.classification', 'classification');
+    }
+
+    queryBuilder = queryBuilder.leftJoinAndSelect('product.brand', 'brand');
+
+    if (forSum) {
+      queryBuilder = queryBuilder.innerJoin('orderProductMappings.orderDeliveries', 'orderDeliveries');
+    } else {
+      queryBuilder = queryBuilder.innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries');
+    }
+
+    queryBuilder = queryBuilder
       .leftJoinAndSelect('user.userDiscounts', 'userDiscounts')
       .leftJoinAndSelect('clientUser.userDiscounts', 'clientUserDiscounts')
       .where('order.status IN (:...status)', { status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'] });
 
     if (isPublished === true) {
-      queryBuilder.andWhere('order.deliveryCompleteReportCount > 0');
-      queryBuilder.andWhere('order.orderCompleteReportCount > 0');
+      queryBuilder = queryBuilder
+        .andWhere('order.deliveryCompleteReportCount > 0')
+        .andWhere('order.orderCompleteReportCount > 0');
     }
 
     if (isPublished === false) {
-      queryBuilder.andWhere('order.deliveryCompleteReportCount = 0');
-      queryBuilder.andWhere('order.orderCompleteReportCount = 0');
+      queryBuilder = queryBuilder
+        .andWhere('order.deliveryCompleteReportCount = 0')
+        .andWhere('order.orderCompleteReportCount = 0');
     }
 
     if (businessName) {
@@ -2324,7 +2373,10 @@ export class SettleService {
     }
 
     queryBuilder = QueryBuilderDateCondition(queryBuilder, 'order', 'createdAt', startAt, endAt);
-    queryBuilder = queryBuilder.orderBy('order.id', 'DESC');
+
+    if (!forSum) {
+      queryBuilder = queryBuilder.orderBy('order.id', 'DESC');
+    }
 
     return queryBuilder;
   }
@@ -2458,7 +2510,9 @@ export class SettleService {
   }
 
   async getGalaxiaList(getQuery: SettleGetGalaxiaListReqQueryDto): Promise<SettleGetGalaxiaListResDto> {
-    const { startAt, endAt, businessName, appDiv, page, take } = getQuery;
+    const defaultDate = this.applyDefaultDateRange(getQuery.startAt, getQuery.endAt);
+    const { businessName, appDiv, page, take } = getQuery;
+    const { startAt, endAt } = defaultDate;
 
     let queryBuilder = this.galaxiaBarcodeLogRepository
       .createQueryBuilder('log')
@@ -2537,7 +2591,9 @@ export class SettleService {
 
     await this.activityLogService.verifyPassword(user.id, body.password);
 
-    const { startAt, endAt, businessName, appDiv, downloadReason } = body;
+    const defaultDate = this.applyDefaultDateRange(body.startAt, body.endAt);
+    const { businessName, appDiv, downloadReason } = body;
+    const { startAt, endAt } = defaultDate;
 
     const now = new Date();
     const nowString = format(now, 'yyyyMMdd');
