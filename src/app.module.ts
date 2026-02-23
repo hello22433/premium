@@ -45,6 +45,7 @@ import { PartnerCompanyExternHistoryModule } from './partner_company_extern_hist
 import { PopularProductModule } from './popular_product/popular.product.module';
 import { RequirementModule } from './requirement/requirement.module';
 import { NotificationModule } from './notification/notification.module';
+import { OrderReceiptModule } from './order_receipt/order.receipt.module';
 
 @Module({
   imports: [
@@ -96,6 +97,7 @@ import { NotificationModule } from './notification/notification.module';
     PopularProductModule,
     RequirementModule,
     NotificationModule,
+    OrderReceiptModule,
   ],
   controllers: [AppController],
   providers: [],
