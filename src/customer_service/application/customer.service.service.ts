@@ -474,6 +474,7 @@ export class CustomerServiceService {
       businessName: user?.company?.businessName ?? '',
       personName: user?.personName ?? '',
       sendContent: sendContent,
+      sendTitle: queryBuilder.orderProductMapping.sendTitle ?? null,
       deliveryTarget: decryptedDeliveryTarget ?? '',
       refundStatus: queryBuilder.refundStatus ?? null,
       refundRatio: queryBuilder.refundRatio ?? null,

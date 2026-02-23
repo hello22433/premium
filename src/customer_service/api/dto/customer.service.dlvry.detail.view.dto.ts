@@ -31,6 +31,12 @@ export class CustomerServiceDlvryDetailViewDto {
   sendContent: string;
 
   @ApiProperty({
+    description: 'MMS 제목 (발송제목)',
+    nullable: true,
+  })
+  sendTitle: string | null;
+
+  @ApiProperty({
     description: '수신정보 (번호 혹은 이메일)',
   })
   deliveryTarget: string;
