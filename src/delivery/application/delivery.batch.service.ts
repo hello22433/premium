@@ -6,6 +6,7 @@ import { Transactional } from 'typeorm-transactional';
 import { randomUUID } from 'crypto';
 import { addDays, subDays } from 'date-fns';
 import dayjs from 'dayjs';
+import * as fsPromises from 'fs/promises';
 import * as QRCode from 'qrcode';
 
 import { OrderEntity } from '../../entity/order.entity';
@@ -1049,6 +1050,42 @@ export class DeliveryBatchService {
     await this.deliverySendHistoryRepository.save(deliveryHistory);
 
     return orderDelivery.status === IOrderDeliveryStatus.COMPLETE || orderDelivery.status === IOrderDeliveryStatus.COMPLETE_SMS;
+  }
+
+  /**
+   * 쿠폰 유효기간이 만료된 이미지 파일 정리
+   * expireAt + 1일이 지난 orderDelivery의 imagePath 파일을 삭제하고 DB에서 경로 초기화
+   */
+  async cleanupExpiredCouponImages() {
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+
+    // 유효기간 만료+1일 지난 건 중 imagePath가 있는 건 조회
+    const expiredDeliveries = await this.orderDeliveryRepository
+      .createQueryBuilder('od')
+      .select(['od.id', 'od.imagePath'])
+      .where('od.imagePath IS NOT NULL')
+      .andWhere('od.expireAt IS NOT NULL')
+      .andWhere('od.expireAt < :yesterday', { yesterday })
+      .getMany();
+
+    if (expiredDeliveries.length === 0) return;
+
+    let deletedCount = 0;
+    for (const od of expiredDeliveries) {
+      try {
+        await fsPromises.unlink(od.imagePath!);
+        deletedCount++;
+      } catch {
+        // 이미 삭제되었거나 접근 불가 - 무시
+      }
+    }
+
+    // DB에서 imagePath 일괄 초기화
+    const ids = expiredDeliveries.map((od) => od.id);
+    await this.orderDeliveryRepository.update(ids, { imagePath: null });
+
+    this.logger.log(`[CLEANUP] 만료 쿠폰 이미지 정리: ${deletedCount}건 삭제, ${ids.length}건 DB 초기화`);
   }
 
   @Transactional()
