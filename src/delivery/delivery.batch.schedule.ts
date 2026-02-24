@@ -73,6 +73,17 @@ export class DeliveryBatchSchedule implements OnApplicationBootstrap {
     }
   }
 
+  // 쿠폰 이미지 정리
+  // 매일 03시 실행 - 유효기간 만료된 쿠폰 이미지 파일 삭제
+  @Cron('0 0 3 * * *')
+  async handleCouponImageCleanup() {
+    try {
+      await this.deliveryBatchService.cleanupExpiredCouponImages();
+    } catch (e) {
+      this.logger.error(e);
+    }
+  }
+
   // 독려문자 발송
   // 매일 15시 실행
   @Cron('0 15 * * *')
