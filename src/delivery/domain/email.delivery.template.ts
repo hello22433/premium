@@ -39,9 +39,9 @@ export const EmailDeliveryTemplate = (obj: EmailDeliveryTemplateIn) => {
       </tr>
       <tr>
         <!-- 2. 내용 -->
-          <div style="padding:20px; font-size:16px; line-height:1.6; color:#333;">
-            ${normalizeLineBreaks(obj.text, '<br>')}
-          </div>
+        <td style="padding:20px; font-size:16px; line-height:1.6; color:#333;">
+          ${normalizeLineBreaks(obj.text, '<br>')}
+        </td>
       </tr>
       <tr>
         <!-- 3. 상품 이미지와 사용방법 (같은 줄에 배치) -->
