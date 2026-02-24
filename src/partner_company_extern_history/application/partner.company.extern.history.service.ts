@@ -104,9 +104,15 @@ export class PartnerCompanyExternHistoryService {
 
     const [orderDeliveries, totalCount] = await queryBuilder.getManyAndCount();
 
-    // DTO 변환 (가장 최근 history에서 에러 정보 가져옴)
-    const list: PartnerCompanyExternHistoryViewDto[] = await Promise.all(
-      orderDeliveries.map((od) => this.parseOrderDeliveryView(od)),
+    // 최신 history를 배치로 한번에 조회 (N+1 방지)
+    const odIds = orderDeliveries.map((od) => od.id);
+    const latestHistoryMap = odIds.length > 0
+      ? await this.batchFetchLatestHistories(odIds)
+      : new Map<number, PartnerCompanyExternHistoryEntity>();
+
+    // DTO 변환 (배치로 가져온 history 전달)
+    const list: PartnerCompanyExternHistoryViewDto[] = orderDeliveries.map((od) =>
+      this.parseOrderDeliveryView(od, latestHistoryMap.get(od.id) ?? null),
     );
 
     return {
@@ -130,10 +136,36 @@ export class PartnerCompanyExternHistoryService {
   }
 
   /**
-   * orderDelivery를 View DTO로 변환
-   * 가장 최근 history에서 에러 정보를 가져옴
+   * 여러 orderDeliveryId에 대해 최신 history를 한번에 조회
    */
-  private async parseOrderDeliveryView(orderDelivery: OrderDeliveryEntity): Promise<PartnerCompanyExternHistoryViewDto> {
+  private async batchFetchLatestHistories(
+    orderDeliveryIds: number[],
+  ): Promise<Map<number, PartnerCompanyExternHistoryEntity>> {
+    // 해당 ID들의 모든 history를 최신순으로 조회 후 그룹핑
+    // 페이지 크기(최대 20건)로 제한되어 데이터 볼륨 안전
+    const allHistories = await this.historyRepository
+      .createQueryBuilder('h')
+      .where('h.orderDeliveryId IN (:...ids)', { ids: orderDeliveryIds })
+      .orderBy('h.createdAt', 'DESC')
+      .getMany();
+
+    const historyMap = new Map<number, PartnerCompanyExternHistoryEntity>();
+    for (const h of allHistories) {
+      if (h.orderDeliveryId !== null && !historyMap.has(h.orderDeliveryId)) {
+        historyMap.set(h.orderDeliveryId, h);
+      }
+    }
+    return historyMap;
+  }
+
+  /**
+   * orderDelivery를 View DTO로 변환
+   * 배치로 가져온 latestHistory를 인자로 받아 추가 DB 쿼리 없이 변환
+   */
+  private parseOrderDeliveryView(
+    orderDelivery: OrderDeliveryEntity,
+    latestHistory: PartnerCompanyExternHistoryEntity | null,
+  ): PartnerCompanyExternHistoryViewDto {
     // 협력사 타입
     const partnerCompanyType = orderDelivery.orderProductMapping?.product?.partnerCompany?.type || null;
 
@@ -170,11 +202,6 @@ export class PartnerCompanyExternHistoryService {
     let errorMessage: string | null = null;
     let transactionId: string | null = orderDelivery.transactionId || null;
     let context: string | null = null;
-
-    const latestHistory = await this.historyRepository.findOne({
-      where: { orderDeliveryId: orderDelivery.id },
-      order: { createdAt: 'DESC' },
-    });
 
     if (latestHistory) {
       context = latestHistory.context;

@@ -1,7 +1,7 @@
 import { createCanvas, Image } from 'canvas';
 import JsBarcode from 'jsbarcode';
 
-import * as fs from 'fs';
+import * as fsPromises from 'fs/promises';
 import { join } from 'path';
 import sharp from 'sharp';
 import * as process from 'node:process';
@@ -170,12 +170,12 @@ export const DeliveryCreateCouponImage = async (
       ctx.fillText(`유효기간: ~ ${expireDate}`, 40, 850);
     }
 
-    // 최종 이미지 저장
+    // 최종 이미지 저장 (비동기)
     const outputBuffer = canvas.toBuffer('image/jpeg');
     const now = new Date().getTime();
     const resultCouponFileName = `${now}-coupon.jpeg`;
     const path = `${homeUrl}/public/${resultCouponFileName}`;
-    fs.writeFileSync(path, outputBuffer);
+    await fsPromises.writeFile(path, outputBuffer);
 
     return { fileName: resultCouponFileName, path };
   } finally {

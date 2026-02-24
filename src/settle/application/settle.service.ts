@@ -1278,16 +1278,14 @@ export class SettleService {
 
     const filters = { startAt, endAt, isPublished, businessName, personName, eventName };
 
-    // 전체 주문 조회 (기본 1개월 기간으로 데이터 볼륨 제한)
-    const allOrders = await this.buildUserSettleQueryBuilder(filters).getMany();
-    const totalCount = allOrders.length;
+    // 1. 합산 계산용 경량 쿼리 (forSum=true: display용 JOIN 제외)
+    const sumOrders = await this.buildUserSettleQueryBuilder(filters, { forSum: true }).getMany();
 
-    // 합산 계산
     let totalAmountSum = 0;
     let totalDeliveryPriceSum = 0;
     let totalSettlePriceSum = 0;
 
-    for (const order of allOrders) {
+    for (const order of sumOrders) {
       totalDeliveryPriceSum += order.sendAmount;
       const billingUser = order.clientUser ?? order.user;
       const userDiscounts = billingUser?.userDiscounts || [];
@@ -1298,11 +1296,16 @@ export class SettleService {
       }
     }
 
-    // 페이지네이션 (메모리 슬라이스)
-    const skip = (page - 1) * take;
-    const orderList = allOrders.slice(skip, skip + take);
-
+    const totalCount = sumOrders.length;
     const totalPage = Math.ceil(totalCount / take);
+
+    // 2. 현재 페이지 데이터만 DB 페이지네이션으로 조회 (전체 JOIN 포함)
+    const skip = (page - 1) * take;
+    const orderList = await this.buildUserSettleQueryBuilder(filters)
+      .skip(skip)
+      .take(take)
+      .getMany();
+
     const resultList: SettleUserListViewDto[] = orderList.map((order) => {
       const billingUser = order.clientUser ?? order.user;
       const userDiscounts = billingUser?.userDiscounts || [];
@@ -2093,6 +2096,7 @@ export class SettleService {
 
   @Transactional()
   async syncSettleOverdue() {
+    // 1. 정산기일 설정이 있는 사용자 목록 조회
     const userList = await this.userRepository.find({
       where: {
         settlePeriodCount: Not(IsNull()),
@@ -2100,77 +2104,92 @@ export class SettleService {
       },
     });
 
-    for (const user of userList) {
-      // 초과하는 날짜 기준
-      const orderList = await this.orderRepository
-        .createQueryBuilder('order')
-        .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
-        .where('order.userId = :userId', { userId: user.id })
-        .andWhere(
-          new Brackets((qb) => {
-            qb.where('order.settleStatus IS NULL').orWhere('order.settleStatus = :settleStatus', {
-              settleStatus: SettleUserOrderDetailEnum.UNSETTLE_NORMAL,
-            });
-          }),
-        )
-        .andWhere('order.status = :status', { status: 'DELIVERY_COMPLETE' })
-        .getMany();
+    if (userList.length === 0) return;
 
-      const now = new Date();
-      let conditionDate = new Date();
-      const updateOrderIdList: number[] = [];
+    const userIds = userList.map((u) => u.id);
+    const userMap = new Map(userList.map((u) => [u.id, u]));
 
-      if (user.settlePeriodCondition === UserSettlePeriodConditionEnum.CURRENT_MONTH) {
-        const year = now.getFullYear();
-        const month = now.getMonth();
+    // 2. 해당 사용자들의 미정산 주문을 단일 쿼리로 조회 (N+1 방지)
+    const allOrders = await this.orderRepository
+      .createQueryBuilder('order')
+      .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
+      .where('order.userId IN (:...userIds)', { userIds })
+      .andWhere(
+        new Brackets((qb) => {
+          qb.where('order.settleStatus IS NULL').orWhere('order.settleStatus = :settleStatus', {
+            settleStatus: SettleUserOrderDetailEnum.UNSETTLE_NORMAL,
+          });
+        }),
+      )
+      .andWhere('order.status = :status', { status: 'DELIVERY_COMPLETE' })
+      .getMany();
 
-        conditionDate = new Date(year, month, user.settlePeriodCount!);
+    // 3. userId별로 주문 그룹핑
+    const ordersByUserId = new Map<number, typeof allOrders>();
+    for (const order of allOrders) {
+      const userId = order.userId;
+      if (!ordersByUserId.has(userId)) {
+        ordersByUserId.set(userId, []);
+      }
+      ordersByUserId.get(userId)!.push(order);
+    }
+
+    // 4. 사용자별 정산기일 초과 주문 판별
+    const now = new Date();
+    const allUpdateOrderIds: number[] = [];
+
+    for (const [userId, orderList] of ordersByUserId) {
+      const user = userMap.get(userId);
+      if (!user) continue;
+
+      const condition = user.settlePeriodCondition!;
+      const count = user.settlePeriodCount!;
+
+      let monthOffset: number;
+      switch (condition) {
+        case UserSettlePeriodConditionEnum.CURRENT_MONTH:
+          monthOffset = 0;
+          break;
+        case UserSettlePeriodConditionEnum.NEXT_MONTH:
+          monthOffset = 1;
+          break;
+        case UserSettlePeriodConditionEnum.NEXT_MONTH_AFTER:
+          monthOffset = 2;
+          break;
+        default:
+          monthOffset = 0;
+          break;
       }
 
-      if (user.settlePeriodCondition === UserSettlePeriodConditionEnum.NEXT_MONTH) {
-        const year = now.getFullYear();
-        const month = now.getMonth() + 1;
-
-        conditionDate = new Date(year, month, user.settlePeriodCount!);
-      }
-
-      if (user.settlePeriodCondition === UserSettlePeriodConditionEnum.NEXT_MONTH_AFTER) {
-        const year = now.getFullYear();
-        const month = now.getMonth() + 2;
-
-        conditionDate = new Date(year, month, user.settlePeriodCount!);
-      }
+      const conditionDate = condition !== UserSettlePeriodConditionEnum.DELIVERY_DATE
+        ? new Date(now.getFullYear(), now.getMonth() + monthOffset, count)
+        : null;
 
       for (const order of orderList) {
-        // 첫 번째 상품의 발송 요청 시간 사용
-        const firstMapping = order.orderProductMappings?.[0];
-        const sendRequestAt = firstMapping?.sendRequestAt;
+        const sendRequestAt = order.orderProductMappings?.[0]?.sendRequestAt;
         if (!sendRequestAt) continue;
 
-        if (user.settlePeriodCondition === UserSettlePeriodConditionEnum.DELIVERY_DATE) {
-          const year = sendRequestAt.getFullYear();
-          const month = sendRequestAt.getMonth();
-          const day = sendRequestAt.getDate() + user.settlePeriodCount!;
-          conditionDate = new Date(year, month, day);
+        if (condition === UserSettlePeriodConditionEnum.DELIVERY_DATE) {
+          const deliveryConditionDate = new Date(
+            sendRequestAt.getFullYear(),
+            sendRequestAt.getMonth(),
+            sendRequestAt.getDate() + count,
+          );
 
-          if (now >= conditionDate) {
-            updateOrderIdList.push(order.id);
+          if (now >= deliveryConditionDate) {
+            allUpdateOrderIds.push(order.id);
           }
-        }
-
-        if (
-          user.settlePeriodCondition !== UserSettlePeriodConditionEnum.DELIVERY_DATE &&
-          conditionDate >= sendRequestAt
-        ) {
-          updateOrderIdList.push(order.id);
+        } else if (conditionDate! >= sendRequestAt) {
+          allUpdateOrderIds.push(order.id);
         }
       }
+    }
 
-      if (updateOrderIdList.length > 0) {
-        await this.orderRepository.update(updateOrderIdList, {
-          settleStatus: SettleUserOrderDetailEnum.UNSETTLE_OVERDUE,
-        });
-      }
+    // 5. 초과 주문 일괄 업데이트
+    if (allUpdateOrderIds.length > 0) {
+      await this.orderRepository.update(allUpdateOrderIds, {
+        settleStatus: SettleUserOrderDetailEnum.UNSETTLE_OVERDUE,
+      });
     }
   }
 
