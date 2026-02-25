@@ -466,6 +466,7 @@ export class OrderService {
             replaceCharacter2: orderDelivery.replaceCharacter2,
             replaceCharacter3: orderDelivery.replaceCharacter3,
             status: orderDelivery.status,
+            isResent: orderDelivery.resendAt !== null,
           });
         }
 

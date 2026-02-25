@@ -78,6 +78,11 @@ export class OrderViewDeliveryDto extends OrderDeliveryViewCommonDto {
     description: '발송 상태',
   })
   status: IOrderDeliveryStatus;
+
+  @ApiProperty({
+    description: '재발송 여부',
+  })
+  isResent: boolean;
 }
 
 export class OrderDeliveryCompleteReportViewDto extends OrderDeliveryViewCommonDto {
