@@ -687,6 +687,7 @@ export class OrderReceiveService {
       status: status,
       emailCouponStatus: emailCouponStatus,
       emailReceiverPhone: encryptedPhoneNumber,
+      ...(status === IOrderDeliveryStatus.FAIL ? { failedAt: new Date() } : {}),
     });
 
     return;
