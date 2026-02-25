@@ -189,6 +189,38 @@ export class DeliveryBatchService {
     return path;
   }
 
+  /**
+   * 발송 실패 시 환불 처리 (SSG 이벤트 잔액 복원 + 사용자 잔액/정산 복원)
+   * PIN 발급 실패, 메시지 발송 실패 등 delivery가 FAIL이 될 때 호출
+   */
+  private async refundForFail(orderDelivery: OrderDeliveryEntity): Promise<void> {
+    const order = orderDelivery.orderProductMapping.order;
+    const product = orderDelivery.orderProductMapping.product;
+    const productPrice = product.price;
+    // 과금 대상 userId (대행주문인 경우 clientUserId, 아니면 userId)
+    const userId = order.clientUserId ?? order.user!.id;
+
+    try {
+      if (order.type === IOrderType.SSG && orderDelivery.ssgEventId) {
+        await this.ssgEventService.refundForDeliveryFail(orderDelivery.ssgEventId, order.id, productPrice);
+      }
+
+      if (order.isSettleBalance) {
+        await this.userManagementService.addBalance(userId, productPrice, `발송 실패 환불 (주문번호: ${order.id})`);
+      } else {
+        const user = await this.userRepository.findOne({ where: { id: userId } });
+        if (user) {
+          user.allSettleAmount -= productPrice;
+          await this.userRepository.save(user);
+        }
+      }
+
+      this.logger.log(`[REFUND] 환불 완료 - orderDelivery.id: ${orderDelivery.id}, amount: ${productPrice}`);
+    } catch (error) {
+      this.logger.error(`[REFUND] 환불 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
+    }
+  }
+
   async issueAndSend() {
     // 현재 이전 시간에 대기중인 모든 쿠폰 발행 및 발송 진행
     const now = new Date();
@@ -308,24 +340,7 @@ export class DeliveryBatchService {
       } catch (error) {
         this.logger.error(`[BATCH] PIN 발급 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
 
-        const productPrice = product.price;
-        // 과금 대상 userId (대행주문인 경우 clientUserId, 아니면 userId)
-        const userId = order.clientUserId ?? order.user!.id;
-
-        // 환불 처리
-        if (order.type === IOrderType.SSG && orderDelivery.ssgEventId) {
-          await this.ssgEventService.refundForDeliveryFail(orderDelivery.ssgEventId, order.id, productPrice);
-        }
-
-        if (order.isSettleBalance) {
-          await this.userManagementService.addBalance(userId, productPrice, `발송 실패 환불 (주문번호: ${order.id})`);
-        } else {
-          const user = await this.userRepository.findOne({ where: { id: userId } });
-          if (user) {
-            user.allSettleAmount -= productPrice;
-            await this.userRepository.save(user);
-          }
-        }
+        await this.refundForFail(orderDelivery);
 
         this.markSendFail(orderDelivery, IOrderDeliveryStatus.FAIL);
         await this.orderDeliveryRepository.save(orderDelivery);
@@ -408,7 +423,12 @@ export class DeliveryBatchService {
       await this.sendEmail(orderDelivery, decryptedDeliveryTarget, encryptKey, title, text, deliveryHistory);
     }
 
-    // 6. DB 저장
+    // 6. 발송 실패 시 환불 처리
+    if (orderDelivery.status === IOrderDeliveryStatus.FAIL) {
+      await this.refundForFail(orderDelivery);
+    }
+
+    // 7. DB 저장
     await this.orderDeliveryRepository.save(orderDelivery);
 
     return { deliveryHistory, orderId: order.id };
@@ -741,8 +761,8 @@ export class DeliveryBatchService {
           return false;
         }
 
-        // barCode가 없었던 경우에만 환불 복구 (최초 실패 시 환불된 금액 재차감)
-        if (hadNoBarCode) {
+        // 이전 실패로 환불된 금액 재차감 (PIN 실패든 발송 실패든)
+        if (hadNoBarCode || orderDelivery.status === IOrderDeliveryStatus.FAIL) {
           await this.reverseRefundForResend(orderDelivery);
         }
 
@@ -806,6 +826,9 @@ export class DeliveryBatchService {
   }
 
   async oneSend(orderDelivery: OrderDeliveryEntity, isSave: boolean = true, testOrderDeliveryId?: number): Promise<boolean> {
+    // 재발송인 경우 chargeBack 후 발송 실패 시 재환불이 필요한지 판단하기 위해 이전 상태 저장
+    const wasFailBefore = !testOrderDeliveryId && orderDelivery.status === IOrderDeliveryStatus.FAIL;
+
     // PIN 재발급 및 이미지 재생성 (barCode나 imagePath가 없는 경우)
     // 테스트 발송은 mock 데이터(barCode='999999')를 사용하므로 PIN 재발급 불필요
     if (!testOrderDeliveryId) {
@@ -1042,6 +1065,11 @@ export class DeliveryBatchService {
           deliveryHistory.isSuccess = false;
         }
       }
+    }
+
+    // 재발송 시 chargeBack 후 발송이 다시 실패한 경우: 환불 복구
+    if (wasFailBefore && orderDelivery.status === IOrderDeliveryStatus.FAIL) {
+      await this.refundForFail(orderDelivery);
     }
 
     if (isSave) {
