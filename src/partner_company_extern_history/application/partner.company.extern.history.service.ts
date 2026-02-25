@@ -57,7 +57,7 @@ export class PartnerCompanyExternHistoryService {
 
     // orderDelivery 기준으로 조회 (status = FAIL)
     // 정렬용 가상 컬럼: actualSendAt 우선, 없으면 updatedAt (핀발급실패 시 actualSendAt이 NULL)
-    const dateCoalesceExpr = 'COALESCE(`orderDelivery`.`actual_send_at`, `orderDelivery`.`updated_at`)';
+    const dateCoalesceExpr = 'COALESCE(`orderDelivery`.`actual_send_at`, `orderDelivery`.`failed_at`, `orderDelivery`.`updated_at`)';
     let queryBuilder = this.orderDeliveryRepository
       .createQueryBuilder('orderDelivery')
       .addSelect(dateCoalesceExpr, 'sortDate')
@@ -69,7 +69,7 @@ export class PartnerCompanyExternHistoryService {
       .andWhere('(orderDelivery.status IN (:...statuses) OR orderDelivery.resendAt IS NOT NULL)', { statuses: RESENDABLE_FAIL_STATUSES });
 
     // 기간 필터 (actualSendAt이 없는 경우 updatedAt으로 대체)
-    const dateColumn = 'COALESCE(orderDelivery.actualSendAt, orderDelivery.updatedAt)';
+    const dateColumn = 'COALESCE(orderDelivery.actualSendAt, orderDelivery.failedAt, orderDelivery.updatedAt)';
     if (startAt) {
       queryBuilder.andWhere(`${dateColumn} >= :startAt`, { startAt: `${startAt} 00:00:00` });
     }
@@ -233,7 +233,7 @@ export class PartnerCompanyExternHistoryService {
       errorMessage = '문자/알림톡 발송 실패';
     }
 
-    const displayDate = orderDelivery.actualSendAt ?? orderDelivery.updatedAt;
+    const displayDate = orderDelivery.actualSendAt ?? orderDelivery.failedAt ?? orderDelivery.updatedAt;
 
     return {
       id: orderDelivery.id,

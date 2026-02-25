@@ -96,6 +96,9 @@ export class OrderDeliveryEntity extends BaseEntity {
   @Column({ type: 'datetime', nullable: true, comment: '재발송 완료 시각' })
   resendAt: Date | null;
 
+  @Column({ type: 'datetime', nullable: true, comment: '발송 실패 시각' })
+  failedAt: Date | null;
+
   @Column({ type: 'enum', enum: OrderDeliveryRefundStatusEnum, nullable: true, comment: '환불 상태' })
   refundStatus: OrderDeliveryRefundStatusEnum | null;
 

@@ -429,6 +429,9 @@ export class PartnerCompanyExternService {
       }
       isSuccess = false;
       orderDelivery.status = IOrderDeliveryStatus.FAIL;
+      if (!orderDelivery.failedAt) {
+        orderDelivery.failedAt = new Date();
+      }
 
       // 실패 시 이력을 별도 트랜잭션으로 먼저 저장 (롤백 방지)
       if (type !== null) {

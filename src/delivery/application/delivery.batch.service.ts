@@ -143,6 +143,16 @@ export class DeliveryBatchService {
   }
 
   /**
+   * 발송 실패 시 failedAt 설정
+   */
+  private markSendFail(orderDelivery: OrderDeliveryEntity, status: IOrderDeliveryStatus): void {
+    orderDelivery.status = status;
+    if (!orderDelivery.failedAt) {
+      orderDelivery.failedAt = new Date();
+    }
+  }
+
+  /**
    * QR 코드 이미지 생성 및 업로드
    */
   private async generateQrCodeImage(url: string): Promise<string> {
@@ -317,7 +327,7 @@ export class DeliveryBatchService {
           }
         }
 
-        orderDelivery.status = IOrderDeliveryStatus.FAIL;
+        this.markSendFail(orderDelivery, IOrderDeliveryStatus.FAIL);
         await this.orderDeliveryRepository.save(orderDelivery);
 
         // 실패해도 히스토리는 남김
@@ -441,7 +451,7 @@ export class DeliveryBatchService {
         this.markSendSuccess(orderDelivery, IOrderDeliveryStatus.COMPLETE_SMS);
       } else {
         deliveryHistory.context += JSON.stringify(resultSms);
-        orderDelivery.status = IOrderDeliveryStatus.FAIL;
+        this.markSendFail(orderDelivery, IOrderDeliveryStatus.FAIL);
       }
     }
   }
@@ -473,7 +483,7 @@ export class DeliveryBatchService {
       this.markSendSuccess(orderDelivery, IOrderDeliveryStatus.COMPLETE);
       deliveryHistory.context = text;
     } catch (e) {
-      orderDelivery.status = IOrderDeliveryStatus.FAIL;
+      this.markSendFail(orderDelivery, IOrderDeliveryStatus.FAIL);
       deliveryHistory.context = JSON.stringify(e);
       deliveryHistory.isSuccess = false;
     }
@@ -539,13 +549,10 @@ export class DeliveryBatchService {
         to: decryptedDeliveryTarget,
         fromEmail: fromEmail,
       });
-      orderDelivery.status = IOrderDeliveryStatus.COMPLETE;
-      if (!orderDelivery.actualSendAt) {
-        orderDelivery.actualSendAt = new Date();
-      }
+      this.markSendSuccess(orderDelivery, IOrderDeliveryStatus.COMPLETE);
       deliveryHistory.context = text;
     } catch (e) {
-      orderDelivery.status = IOrderDeliveryStatus.FAIL;
+      this.markSendFail(orderDelivery, IOrderDeliveryStatus.FAIL);
       deliveryHistory.context = JSON.stringify(e);
       deliveryHistory.isSuccess = false;
     }
@@ -691,7 +698,7 @@ export class DeliveryBatchService {
       orderDelivery.status = IOrderDeliveryStatus.COMPLETE_SMS;
       return IOrderDeliveryStatus.COMPLETE_SMS;
     } catch (e) {
-      orderDelivery.status = IOrderDeliveryStatus.FAIL_SMS;
+      this.markSendFail(orderDelivery, IOrderDeliveryStatus.FAIL_SMS);
       return e;
     }
   }
@@ -901,7 +908,7 @@ export class DeliveryBatchService {
           this.markSendSuccess(orderDelivery, IOrderDeliveryStatus.COMPLETE_SMS);
         } else {
           deliveryHistory.context += JSON.stringify(resultSms);
-          orderDelivery.status = IOrderDeliveryStatus.FAIL;
+          this.markSendFail(orderDelivery, IOrderDeliveryStatus.FAIL);
         }
       }
     }
@@ -923,7 +930,7 @@ export class DeliveryBatchService {
         this.markSendSuccess(orderDelivery, IOrderDeliveryStatus.COMPLETE);
         deliveryHistory.context = text;
       } catch (e) {
-        orderDelivery.status = IOrderDeliveryStatus.FAIL;
+        this.markSendFail(orderDelivery, IOrderDeliveryStatus.FAIL);
         deliveryHistory.context = JSON.stringify(e);
         deliveryHistory.isSuccess = false;
       }
@@ -951,14 +958,11 @@ export class DeliveryBatchService {
             text: text,
             filePath: filePathList,
           });
-          orderDelivery.status = IOrderDeliveryStatus.COMPLETE;
-          if (!orderDelivery.actualSendAt) {
-            orderDelivery.actualSendAt = new Date();
-          }
+          this.markSendSuccess(orderDelivery, IOrderDeliveryStatus.COMPLETE);
           deliveryHistory.context = text;
           deliveryHistory.target = decryptedEmailReceiverPhone;
         } catch (e) {
-          orderDelivery.status = IOrderDeliveryStatus.FAIL;
+          this.markSendFail(orderDelivery, IOrderDeliveryStatus.FAIL);
           deliveryHistory.context = JSON.stringify(e);
           deliveryHistory.isSuccess = false;
         }
@@ -1030,13 +1034,10 @@ export class DeliveryBatchService {
             to: decryptedDeliveryTarget,
             fromEmail: fromEmail,
           });
-          orderDelivery.status = IOrderDeliveryStatus.COMPLETE;
-          if (!orderDelivery.actualSendAt) {
-            orderDelivery.actualSendAt = new Date();
-          }
+          this.markSendSuccess(orderDelivery, IOrderDeliveryStatus.COMPLETE);
           deliveryHistory.context = text;
         } catch (e) {
-          orderDelivery.status = IOrderDeliveryStatus.FAIL;
+          this.markSendFail(orderDelivery, IOrderDeliveryStatus.FAIL);
           deliveryHistory.context = JSON.stringify(e);
           deliveryHistory.isSuccess = false;
         }
