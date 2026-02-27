@@ -701,6 +701,12 @@ export class SsgEventService {
       return;
     }
 
+    if (ssgEvent.eventBalance < amount) {
+      throw new BadRequestException(
+        `재발송 잔액 부족 (eventId: ${ssgEventId}, 잔액: ${ssgEvent.eventBalance}, 필요: ${amount})`,
+      );
+    }
+
     const newBalance = ssgEvent.eventBalance - amount;
 
     const chargeHistory = this.amountHistoryRepository.create({
