@@ -746,29 +746,70 @@ export class DeliveryBatchService {
     const needsIssue = !orderDelivery.barCode || order.type === IOrderType.SSG;
     if (needsIssue) {
       const hadNoBarCode = !orderDelivery.barCode;
+      let ssgEvent: SsgEventEntity | null = null;
+      let resendDeducted = false;
       try {
-        let ssgEvent: SsgEventEntity | null = null;
         if (order.type === IOrderType.SSG && orderDelivery.ssgEventId) {
           ssgEvent = await this.ssgEventRepository.findOne({
             where: { id: orderDelivery.ssgEventId },
           });
         }
 
+        // SSG FAIL 재발송: 잔액 충분한 행사 재선택 + 잔액 선차감
+        if (order.type === IOrderType.SSG && orderDelivery.status === IOrderDeliveryStatus.FAIL) {
+          const newEvent = await this.ssgEventService.selectEventForOrder(
+            product.price,
+            product.expireDay,
+          );
+          if (!newEvent) {
+            this.logger.warn(
+              `[RESEND] 잔액 충분한 SSG 행사 없음 - orderDelivery.id: ${orderDelivery.id}, price: ${product.price}`,
+            );
+            return false;
+          }
+          await this.ssgEventService.deductEventBalance(newEvent.id, product.price, order.id, false);
+          ssgEvent = newEvent;
+          resendDeducted = true;
+        }
+
         await this.partnerCompanyExternService.issue(orderDelivery, ssgEvent);
 
         if (!orderDelivery.barCode) {
           this.logger.error(`[RESEND] PIN 재발급 실패 - orderDelivery.id: ${orderDelivery.id}`);
+          // PIN 실패 시 선차감 환불
+          if (resendDeducted && ssgEvent) {
+            try {
+              await this.ssgEventService.refundForDeliveryFail(ssgEvent.id, order.id, product.price);
+            } catch (refundError) {
+              this.logger.error(`[RESEND] 선차감 환불 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${refundError}`);
+            }
+            resendDeducted = false;
+          }
           return false;
         }
 
+        // 성공 시 ssgEventId 업데이트 (다른 행사로 변경된 경우)
+        if (resendDeducted && ssgEvent) {
+          orderDelivery.ssgEventId = ssgEvent.id;
+        }
+
         // 이전 실패로 환불된 금액 재차감 (PIN 실패든 발송 실패든)
+        // SSG 선차감이 이미 완료된 경우 skipSsg=true
         if (hadNoBarCode || orderDelivery.status === IOrderDeliveryStatus.FAIL) {
-          await this.reverseRefundForResend(orderDelivery);
+          await this.reverseRefundForResend(orderDelivery, resendDeducted);
         }
 
         this.logger.log(`[RESEND] PIN 발급/확인 성공 - orderDelivery.id: ${orderDelivery.id}, barCode: ${orderDelivery.barCode}`);
       } catch (error) {
         this.logger.error(`[RESEND] PIN 발급/확인 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
+        // issue() throw 시에도 선차감 환불
+        if (resendDeducted && ssgEvent) {
+          try {
+            await this.ssgEventService.refundForDeliveryFail(ssgEvent.id, order.id, product.price);
+          } catch (refundError) {
+            this.logger.error(`[RESEND] 선차감 환불 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${refundError}`);
+          }
+        }
         return false;
       }
     }
@@ -792,8 +833,9 @@ export class DeliveryBatchService {
   /**
    * 환불 복구 (PIN 재발급 성공 시)
    * 최초 발송 실패 시 환불된 금액을 다시 차감
+   * @param skipSsg SSG 선차감이 이미 완료된 경우 true (SSG chargeBack 스킵)
    */
-  private async reverseRefundForResend(orderDelivery: OrderDeliveryEntity): Promise<void> {
+  private async reverseRefundForResend(orderDelivery: OrderDeliveryEntity, skipSsg: boolean = false): Promise<void> {
     const order = orderDelivery.orderProductMapping.order;
     const product = orderDelivery.orderProductMapping.product;
     const productPrice = product.price;
@@ -801,8 +843,8 @@ export class DeliveryBatchService {
     const userId = order.clientUserId ?? order.user!.id;
 
     try {
-      // SSG 주문인 경우: eventBalance 차감
-      if (order.type === IOrderType.SSG && orderDelivery.ssgEventId) {
+      // SSG 주문인 경우: eventBalance 차감 (선차감 완료 시 스킵)
+      if (!skipSsg && order.type === IOrderType.SSG && orderDelivery.ssgEventId) {
         await this.ssgEventService.chargeBackForResend(orderDelivery.ssgEventId, order.id, productPrice);
       }
 
