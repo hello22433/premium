@@ -962,6 +962,10 @@ export class CustomerServiceService {
             await this.smsGemtekSend.smsSend(map.smsEntity);
             break;
           }
+          case 'forced_mms': {
+            await this.deliveryBatchService.csResendAsMms(map.orderDeliveryId);
+            break;
+          }
           case 'mms': {
             const resendDto = new CustomerServiceReSendReqDto();
             resendDto.orderDeliveryId = map.orderDeliveryId;

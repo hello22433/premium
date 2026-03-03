@@ -867,6 +867,83 @@ export class DeliveryBatchService {
     }
   }
 
+  /**
+   * CS 재전송용 MMS 발송 (부작용 없음)
+   * - 유효기간 재계산 안 함
+   * - 상태 변경 안 함
+   * - PIN 재발급 안 함
+   * - 이미지 없으면 기존 barCode로 생성
+   */
+  async csResendAsMms(orderDeliveryId: number): Promise<void> {
+    const orderDelivery = await this.orderDeliveryRepository
+      .createQueryBuilder('orderDelivery')
+      .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
+      .innerJoinAndSelect('orderProductMapping.order', 'order')
+      .innerJoinAndSelect('orderProductMapping.product', 'product')
+      .innerJoinAndSelect('product.brand', 'brand')
+      .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .where('orderDelivery.id = :id', { id: orderDeliveryId })
+      .getOne();
+
+    if (!orderDelivery) {
+      throw new Error('발송 데이터가 존재하지 않습니다.');
+    }
+
+    if (!orderDelivery.barCode) {
+      throw new Error('쿠폰이 발급되지 않은 건은 MMS 재발송이 불가능합니다.');
+    }
+
+    // 이미지 없으면 기존 barCode로 생성
+    if (!orderDelivery.imagePath) {
+      try {
+        const path = await this.createCouponImage(orderDelivery);
+        orderDelivery.imagePath = path;
+        await this.orderDeliveryRepository.update(orderDelivery.id, { imagePath: path });
+      } catch (error) {
+        this.logger.error(`[CS_RESEND] 이미지 재생성 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
+      }
+    }
+
+    // 수신 전화번호 결정
+    const phoneNumber = orderDelivery.deliveryMethod === IOrderSendMethod.EMAIL && orderDelivery.emailReceiverPhone
+      ? this.decryptDeliveryTarget(orderDelivery, 'emailReceiverPhone')
+      : this.decryptDeliveryTarget(orderDelivery);
+
+    // 텍스트 빌드
+    const title = orderDelivery.orderProductMapping.sendTitle ?? '';
+    let text = orderDelivery.orderProductMapping.sendContent ?? '';
+    if (orderDelivery.orderProductMapping.product.memo) {
+      text += `\n\n${orderDelivery.orderProductMapping.product.memo}`;
+    }
+    const sendTailText = orderDelivery.orderProductMapping.sendTailText;
+    if (sendTailText) {
+      text += `\n\n${sendTailText}`;
+    }
+    text = this.applyReplaceCharacters(text, orderDelivery);
+
+    const encryptKey = this.cryptoCipher.encryptJson({
+      id: orderDelivery.id,
+      transactionId: orderDelivery.transactionId,
+    } as OrderEncryptKey);
+
+    const smsText = this.buildSmsText(orderDelivery, encryptKey, text);
+
+    const filePathList: string[] = [];
+    if (orderDelivery.imagePath) {
+      filePathList.push(orderDelivery.imagePath);
+    }
+
+    const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber!;
+    await this.smsSend.send({
+      msgType: 'M',
+      to: phoneNumber,
+      from: fromPhoneNumber,
+      subject: title,
+      text: smsText,
+      filePath: filePathList,
+    });
+  }
+
   async oneSend(orderDelivery: OrderDeliveryEntity, isSave: boolean = true, testOrderDeliveryId?: number): Promise<boolean> {
     // 재발송인 경우 chargeBack 후 발송 실패 시 재환불이 필요한지 판단하기 위해 이전 상태 저장
     const wasFailBefore = !testOrderDeliveryId && orderDelivery.status === IOrderDeliveryStatus.FAIL;
