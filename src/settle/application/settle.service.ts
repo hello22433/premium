@@ -2692,10 +2692,10 @@ export class SettleService {
         barcode: log.barcode,
         appDivName: this.getAppDivName(log.appDiv),
         sendDate: orderDelivery.actualSendAt
-          ? format(orderDelivery.actualSendAt, DateDateFormatStr)
+          ? format(orderDelivery.actualSendAt, DateCompactStr)
           : '',
         sendTime: orderDelivery.actualSendAt
-          ? format(orderDelivery.actualSendAt, TimeFormatStr)
+          ? format(orderDelivery.actualSendAt, TimeCompactStr)
           : '',
         appDay: log.appDay,
         appTime: log.appTime,
