@@ -1,6 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { IGalaxia } from '../interface/galaxia';
+import { GalaxiaPushRawTransaction, IGalaxia } from '../interface/galaxia';
+import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { IGsmbiz } from '../interface/gsmbiz';
 import { IGiftiel } from '../interface/giftiel';
 import { IGiftiShow } from '../interface/giftishow';
@@ -60,9 +61,17 @@ export class PartnerCompanyExternBatchService {
     @InjectRepository(GalaxiaBarcodeLogEntity)
     private galaxiaBarcodeLogRepository: Repository<GalaxiaBarcodeLogEntity>,
     private configService: ConfigService,
-  ) {}
+    private cryptoCipher: CryptoCipher,
+  ) {
+    this.galaxiaEncKey = this.configService.getOrThrow('GALAXIA_ENCKEY');
+    this.galaxiaEncIv = this.configService.getOrThrow('GALAXIA_ENCIV');
+  }
 
   private logger = new Logger('PARTNER_COMPANY_EXTERN_BATCH');
+
+  private readonly galaxiaEncKey: string;
+  private readonly galaxiaEncIv: string;
+  private readonly galaxiaEncAlgorithm = 'aes-128-cbc';
 
   // ===== 설정값 =====
   private get pageSize(): number {
@@ -825,6 +834,113 @@ export class PartnerCompanyExternBatchService {
       this.logger.error(e);
       this.logger.error(JSON.stringify(e));
     }
+  }
+
+  /**
+   * 갤럭시아 실시간 Push 거래 처리
+   * 갤럭시아가 사용 이벤트 발생 시 XML로 전송하는 개별 transaction 처리
+   */
+  async processGalaxiaPush(
+    raw: GalaxiaPushRawTransaction,
+    giftKind: 'cpn' | 'dept' | null,
+  ): Promise<'saved' | 'skipped'> {
+    // 1. 복호화
+    const barcode = this.cryptoCipher.decrypt(raw.barcode, this.galaxiaEncKey, this.galaxiaEncIv, this.galaxiaEncAlgorithm);
+    const amount = this.cryptoCipher.decrypt(raw.amount, this.galaxiaEncKey, this.galaxiaEncIv, this.galaxiaEncAlgorithm);
+    const remainprice = this.cryptoCipher.decrypt(raw.remainprice, this.galaxiaEncKey, this.galaxiaEncIv, this.galaxiaEncAlgorithm);
+
+    // 2. storename URL 디코딩
+    const storename = raw.storename ? decodeURIComponent(raw.storename) : null;
+
+    // 3. appNo가 없으면 synthetic appNo 생성
+    const appNo = raw.appno || this.generateSyntheticAppNo(barcode, raw.apptime);
+
+    // 4. barCode로 orderDelivery 매칭
+    const orderDelivery = await this.orderDeliveryRepository.findOne({
+      where: { barCode: barcode },
+    });
+
+    if (!orderDelivery) {
+      this.logger.verbose(`[galaxiaPush] 매칭 order_delivery 없음: barcode=${barcode}`);
+      return 'skipped';
+    }
+
+    // 5. 중복 체크
+    const existingLog = await this.galaxiaBarcodeLogRepository.findOne({
+      where: {
+        barcode,
+        appDiv: raw.appdiv,
+        appDay: raw.appday,
+        appTime: raw.apptime,
+        appNo: appNo ?? IsNull(),
+      },
+    });
+
+    if (existingLog) {
+      this.logger.verbose(
+        `[galaxiaPush] 중복 스킵: barcode=${barcode}, appDiv=${raw.appdiv}, appDay=${raw.appday}`,
+      );
+      return 'skipped';
+    }
+
+    // 6. galaxia_barcode_log 저장
+    await this.galaxiaBarcodeLogRepository.save({
+      orderDeliveryId: orderDelivery.id,
+      barcode,
+      appDiv: raw.appdiv,
+      appDay: raw.appday,
+      appTime: raw.apptime,
+      amount: parseInt(amount, 10),
+      appNo: appNo ?? null,
+      appStore: storename?.trim() || null,
+      giftKind: giftKind ?? 'cpn',
+    });
+
+    // 7. orderDelivery 상태 업데이트
+    const galaxiaBalance = parseInt(remainprice, 10);
+
+    switch (raw.appdiv) {
+      case '10': // 사용
+        orderDelivery.couponStatus = OrderDeliveryCouponStatus.USED;
+        orderDelivery.tradeAt = this.parseGalaxiaDateTime(raw.appday, raw.apptime);
+        orderDelivery.tradePlace = storename?.trim() || orderDelivery.tradePlace;
+        orderDelivery.galaxiaBalance = galaxiaBalance;
+        break;
+      case '20': // 사용취소
+      case '25': // 망취소
+        orderDelivery.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
+        orderDelivery.tradeAt = null;
+        orderDelivery.galaxiaBalance = galaxiaBalance;
+        break;
+      case '81': // 환불등록
+        orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
+        orderDelivery.galaxiaBalance = 0;
+        break;
+    }
+
+    await this.orderDeliveryRepository.save(orderDelivery);
+
+    this.logger.log(
+      `[galaxiaPush] 처리 완료: orderDeliveryId=${orderDelivery.id}, appDiv=${raw.appdiv}, amount=${amount}`,
+    );
+    return 'saved';
+  }
+
+  private generateSyntheticAppNo(barcode: string, appTime: string): string {
+    const suffix = barcode.slice(-5);
+    const rand = Math.random().toString(36).substring(2, 5);
+    return `nav${suffix}${appTime}${rand}`;
+  }
+
+  private parseGalaxiaDateTime(appDay: string, appTime: string): Date {
+    // appDay: YYYYMMDD, appTime: HHmmss
+    const year = parseInt(appDay.substring(0, 4), 10);
+    const month = parseInt(appDay.substring(4, 6), 10) - 1;
+    const day = parseInt(appDay.substring(6, 8), 10);
+    const hour = parseInt(appTime.substring(0, 2), 10);
+    const minute = parseInt(appTime.substring(2, 4), 10);
+    const second = parseInt(appTime.substring(4, 6), 10);
+    return new Date(year, month, day, hour, minute, second);
   }
 
   /**

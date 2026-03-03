@@ -85,6 +85,21 @@ export interface GalaxiaCheckOut {
   };
 }
 
+/**
+ * 갤럭시아 실시간 Push 거래 항목 (xml2js 파싱 결과, 암호화 상태)
+ * XML 태그명이 소문자이므로 필드명도 소문자
+ */
+export interface GalaxiaPushRawTransaction {
+  appdiv: string;
+  barcode: string; // AES 암호화
+  appno?: string; // 승인번호 (null 가능)
+  appday: string;
+  apptime: string;
+  amount: string; // AES 암호화
+  remainprice: string; // AES 암호화
+  storename?: string; // URL 인코딩
+}
+
 export interface IGalaxia {
   issue(obj: GalaxiaIssueIn): Promise<GalaxiaIssueOut>;
 
