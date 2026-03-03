@@ -21,4 +21,13 @@ export class PartnerCompanyBatchController {
     this.logger.log('[수동실행] checkGalaxiaDaily 완료');
     return { message: 'checkGalaxiaDaily 실행 완료' };
   }
+
+  @ApiOperation({ summary: '갤럭시아 백화점(dept) 사용내역 배치 수동 실행' })
+  @Post('batch/galaxia-dept-usage')
+  async triggerGalaxiaDeptUsage() {
+    this.logger.log('[수동실행] checkGalaxiaDeptUsage 시작');
+    await this.partnerCompanyExternBatchService.checkGalaxiaDeptUsage();
+    this.logger.log('[수동실행] checkGalaxiaDeptUsage 완료');
+    return { message: 'checkGalaxiaDeptUsage 실행 완료' };
+  }
 }

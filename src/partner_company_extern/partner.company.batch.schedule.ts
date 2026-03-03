@@ -44,4 +44,17 @@ export class PartnerCompanyBatchSchedule {
       this.logger.error(e);
     }
   }
+
+  // 매일 23:42에 실행 - 갤럭시아 백화점(dept) 상품 사용내역 조회
+  // 일대사로 누락되는 네이버페이 등 사용내역을 개별 check API로 감지
+  @Cron('0 42 23 * * *')
+  async checkGalaxiaDeptUsage() {
+    try {
+      this.logger.log('Start checkGalaxiaDeptUsage');
+      await this.partnerCompanyExternBatchService.checkGalaxiaDeptUsage();
+      this.logger.log('Complete checkGalaxiaDeptUsage');
+    } catch (e) {
+      this.logger.error(e);
+    }
+  }
 }

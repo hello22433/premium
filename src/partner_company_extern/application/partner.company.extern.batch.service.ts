@@ -10,7 +10,7 @@ import { ISsgIssue } from '../interface/ssg.issue';
 import { IDaou } from '../interface/daou';
 import { InjectRepository } from '@nestjs/typeorm';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
-import { IsNull, Repository } from 'typeorm';
+import { Brackets, IsNull, Repository } from 'typeorm';
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
 import {
   PartnerCompanyType,
@@ -116,7 +116,6 @@ export class PartnerCompanyExternBatchService {
 
         if (batch.length === 0) {
           this.logger.log(`[check] 더 이상 데이터 없음, 루프 종료`);
-          hasMore = false;
           break;
         }
 
@@ -313,13 +312,7 @@ export class PartnerCompanyExternBatchService {
 
     // GALAXIA 처리
     if (type === PARTNER_COMPANY_TYPES.GALAXIA) {
-      let giftKind: 'dept' | 'cpn' = orderDelivery.orderProductMapping.product.name.includes('(백화점)')
-        ? 'dept'
-        : 'cpn';
-
-      if (orderDelivery.choiceSelectProduct) {
-        giftKind = orderDelivery.choiceSelectProduct.name.includes('(백화점)') ? 'dept' : 'cpn';
-      }
+      const giftKind = this.resolveGalaxiaGiftKind(orderDelivery);
 
       const galaxiaOut = await this.galaxia.check({
         giftKind,
@@ -504,6 +497,16 @@ export class PartnerCompanyExternBatchService {
   }
 
   // ===== 유틸리티 =====
+
+  /**
+   * 상품명 기반 giftKind 판별 (choiceSelectProduct 우선)
+   */
+  private resolveGalaxiaGiftKind(orderDelivery: OrderDeliveryEntity): 'dept' | 'cpn' {
+    const name = orderDelivery.choiceSelectProduct?.name
+      ?? orderDelivery.orderProductMapping.product.name;
+    return name.includes('(백화점)') ? 'dept' : 'cpn';
+  }
+
   /**
    * 날짜 문자열(YYYYMMDD 또는 YYYYMMDDHHmmss)을 Date 객체로 변환
    */
@@ -928,8 +931,7 @@ export class PartnerCompanyExternBatchService {
 
   private generateSyntheticAppNo(barcode: string, appTime: string): string {
     const suffix = barcode.slice(-5);
-    const rand = Math.random().toString(36).substring(2, 5);
-    return `nav${suffix}${appTime}${rand}`;
+    return `nav${suffix}${appTime}${this.randomString(3)}`;
   }
 
   private parseGalaxiaDateTime(appDay: string, appTime: string): Date {
@@ -1009,5 +1011,211 @@ export class PartnerCompanyExternBatchService {
       this.logger.error(e);
       this.logger.error(JSON.stringify(e));
     }
+  }
+
+  /**
+   * 갤럭시아 백화점(dept) 상품 사용내역 야간 배치
+   * 매일 23:42에 실행 - 백화점 상품 배송건을 개별 상태조회하여 잔액 변동 감지
+   * 일대사(checkGalaxiaDaily)는 cpn 상품에는 충분하지만, dept 상품의 사용내역(네이버페이 등)은 누락됨
+   */
+  async checkGalaxiaDeptUsage(): Promise<void> {
+    this.logger.log('[checkGalaxiaDeptUsage] 배치 시작');
+
+    let lastId = Number.MAX_SAFE_INTEGER;
+    let hasMore = true;
+    let totalProcessed = 0;
+    let totalUpdated = 0;
+    let totalSkipped = 0;
+    let totalFailed = 0;
+
+    try {
+      while (hasMore) {
+        const batch = await this.fetchGalaxiaDeptBatch(lastId, this.pageSize);
+
+        if (batch.length === 0) {
+          break;
+        }
+
+        this.logger.log(
+          `[checkGalaxiaDeptUsage] 페이지 처리: lastId=${lastId}, count=${batch.length}`,
+        );
+
+        const concurrency = this.getConcurrencyLimit('GALAXIA');
+
+        for (let i = 0; i < batch.length; i += concurrency) {
+          const chunk = batch.slice(i, i + concurrency);
+          const results = await Promise.allSettled(
+            chunk.map((item) => this.processGalaxiaDeptItem(item)),
+          );
+
+          for (let j = 0; j < results.length; j++) {
+            totalProcessed++;
+            const result = results[j];
+
+            if (result.status === 'fulfilled') {
+              if (result.value === 'updated') totalUpdated++;
+              else totalSkipped++;
+            } else {
+              totalFailed++;
+              this.logger.error(
+                `[checkGalaxiaDeptUsage] 처리 실패: id=${chunk[j].id}`,
+              );
+              this.logger.error(result.reason);
+            }
+          }
+        }
+
+        lastId = batch[batch.length - 1].id;
+        hasMore = batch.length === this.pageSize;
+      }
+    } catch (e) {
+      this.logger.error('[checkGalaxiaDeptUsage] 배치 처리 중 예외 발생');
+      this.logger.error(e);
+    }
+
+    this.logger.log(
+      `[checkGalaxiaDeptUsage] 배치 완료 - 처리: ${totalProcessed}, 업데이트: ${totalUpdated}, ` +
+        `스킵: ${totalSkipped}, 실패: ${totalFailed}`,
+    );
+  }
+
+  /**
+   * 갤럭시아 백화점 상품 대상 조회 (Keyset 페이지네이션)
+   * NOT_USED → 첫 사용 감지 / USED + galaxiaBalance > 0 → 추가 사용 감지
+   */
+  private async fetchGalaxiaDeptBatch(lastId: number, limit: number): Promise<OrderDeliveryEntity[]> {
+    return this.orderDeliveryRepository
+      .createQueryBuilder('orderDelivery')
+      .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
+      .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
+      .innerJoinAndSelect('orderProductMapping.product', 'product')
+      .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .where('orderDelivery.id < :lastId', { lastId })
+      .andWhere('orderDelivery.status LIKE :status', { status: DELIVERY_STATUS_PATTERN })
+      .andWhere('orderDelivery.barCode IS NOT NULL')
+      .andWhere('orderDelivery.couponNum IS NOT NULL')
+      .andWhere('partnerCompany.type = :type', { type: PARTNER_COMPANY_TYPES.GALAXIA })
+      .andWhere(
+        new Brackets((qb) => {
+          qb.where('orderDelivery.couponStatus = :notUsed', {
+            notUsed: COUPON_STATUS_VALUES.NOT_USED,
+          }).orWhere(
+            new Brackets((qb2) => {
+              qb2
+                .where('orderDelivery.couponStatus = :used', {
+                  used: COUPON_STATUS_VALUES.USED,
+                })
+                .andWhere('orderDelivery.galaxiaBalance > 0');
+            }),
+          );
+        }),
+      )
+      .andWhere(
+        new Brackets((qb) => {
+          qb.where('product.name LIKE :deptPattern', { deptPattern: '%(백화점)%' }).orWhere(
+            'choiceSelectProduct.name LIKE :deptPattern2',
+            { deptPattern2: '%(백화점)%' },
+          );
+        }),
+      )
+      .orderBy('orderDelivery.id', 'DESC')
+      .take(limit)
+      .getMany();
+  }
+
+  /**
+   * 갤럭시아 백화점 상품 개별 처리 - check API 호출 후 잔액 변동 감지
+   */
+  private async processGalaxiaDeptItem(
+    orderDelivery: OrderDeliveryEntity,
+  ): Promise<'updated' | 'skipped'> {
+    // 1. giftKind 판별 (choiceSelectProduct 우선)
+    const giftKind = this.resolveGalaxiaGiftKind(orderDelivery);
+
+    // 2. 갤럭시아 check API 호출
+    const galaxiaOut = await this.galaxia.check({
+      giftKind,
+      paramValue: orderDelivery.couponNum!,
+    });
+
+    const currentBalance = +galaxiaOut.giftCertificate.balance;
+
+    // 3. 이전 잔액 결정
+    let previousBalance: number;
+    if (orderDelivery.couponStatus === OrderDeliveryCouponStatus.NOT_USED) {
+      // 첫 사용 감지: 상품 액면가(faceValue)와 비교
+      const product = orderDelivery.choiceSelectProduct ?? orderDelivery.orderProductMapping.product;
+      previousBalance = product.price;
+    } else {
+      // 추가 사용 감지: 저장된 galaxiaBalance와 비교
+      previousBalance = orderDelivery.galaxiaBalance;
+    }
+
+    // 4. 잔액 변동 확인
+    if (currentBalance >= previousBalance) {
+      return 'skipped';
+    }
+
+    // 5. 사용 감지 - galaxia_barcode_log 저장
+    const now = new Date();
+    const appDay = this.formatDateYMD(now);
+    const appTime = this.formatTimeHMS(now);
+    const usedAmount = previousBalance - currentBalance;
+    const appNo = `chk${orderDelivery.barCode!.slice(-5)}${appTime}${this.randomString(3)}`;
+
+    await this.galaxiaBarcodeLogRepository.save({
+      orderDeliveryId: orderDelivery.id,
+      barcode: orderDelivery.barCode!,
+      appDiv: '10',
+      appDay,
+      appTime,
+      amount: usedAmount,
+      appNo,
+      appStore: null,
+      giftKind: 'dept',
+    });
+
+    // 6. orderDelivery 업데이트
+    const updateData: Partial<OrderDeliveryEntity> = {
+      galaxiaBalance: currentBalance,
+    };
+
+    if (galaxiaOut.giftCertificate.isUsed) {
+      updateData.couponStatus = OrderDeliveryCouponStatus.USED;
+      updateData.tradeAt = this.parseDateString(galaxiaOut.giftCertificate.usedDate);
+    }
+
+    if (galaxiaOut.giftCertificate.couponStatus === 'CANCEL') {
+      updateData.couponStatus = OrderDeliveryCouponStatus.CANCEL;
+    }
+
+    await this.orderDeliveryRepository.update({ id: orderDelivery.id }, updateData);
+
+    this.logger.log(
+      `[checkGalaxiaDeptUsage] 사용 감지: id=${orderDelivery.id}, ` +
+        `이전잔액=${previousBalance}, 현재잔액=${currentBalance}, 사용액=${usedAmount}`,
+    );
+
+    return 'updated';
+  }
+
+  private formatDateYMD(date: Date): string {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    return `${y}${m}${d}`;
+  }
+
+  private formatTimeHMS(date: Date): string {
+    const h = String(date.getHours()).padStart(2, '0');
+    const m = String(date.getMinutes()).padStart(2, '0');
+    const s = String(date.getSeconds()).padStart(2, '0');
+    return `${h}${m}${s}`;
+  }
+
+  private randomString(length: number): string {
+    return Math.random()
+      .toString(36)
+      .substring(2, 2 + length);
   }
 }
