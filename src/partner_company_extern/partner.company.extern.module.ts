@@ -16,6 +16,8 @@ import { SsgIssue } from './infra/ssg.issue';
 import { PartnerCompanyExternBatchService } from './application/partner.company.extern.batch.service';
 import { PartnerCompanyBatchSchedule } from './partner.company.batch.schedule';
 import { PartnerCompanyBatchController } from './api/partner.company.batch.controller';
+import { GalaxiaPushController } from './api/galaxia.push.controller';
+import { GalaxiaIpGuard } from './api/galaxia.ip.guard';
 import { GalaxiaBarcodeLogEntity } from '../entity/galaxia.barcode.log.entity';
 
 @Module({
@@ -57,8 +59,9 @@ import { GalaxiaBarcodeLogEntity } from '../entity/galaxia.barcode.log.entity';
     CryptoCipher,
     PartnerCompanyExternBatchService,
     PartnerCompanyBatchSchedule,
+    GalaxiaIpGuard,
   ],
-  controllers: [PartnerCompanyBatchController],
+  controllers: [PartnerCompanyBatchController, GalaxiaPushController],
   exports: [PartnerCompanyExternService],
 })
 export class PartnerCompanyExternModule {}

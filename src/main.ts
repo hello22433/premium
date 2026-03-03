@@ -13,6 +13,7 @@ async function bootstrap() {
   app.enableCors();
   app.useBodyParser('json', { limit: '50mb' });
   app.useBodyParser('urlencoded', { limit: '50mb', extended: true });
+  app.useBodyParser('text', { type: ['application/xml', 'text/xml'], limit: '10mb' });
   app.set('trust proxy', true);
   app.useGlobalInterceptors(new TransformResInterceptor());
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
