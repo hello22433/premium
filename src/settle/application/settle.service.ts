@@ -18,7 +18,7 @@ import {
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { OrderEntity } from '../../entity/order.entity';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Brackets, In, IsNull, Not, Repository } from 'typeorm';
+import { Brackets, In, IsNull, Not, Repository, SelectQueryBuilder } from 'typeorm';
 import {
   SettleCreateOtherSaleReqDto,
   SettleCreateSaleTypeReqDto,
@@ -1794,7 +1794,7 @@ export class SettleService {
           SELECT 1 FROM \`order\` o
           INNER JOIN order_product_mapping opm ON opm.order_id = o.id
           INNER JOIN order_delivery od ON od.order_product_mapping_id = opm.id
-          WHERE (o.user_id = u.id OR o.client_user_id = u.id)${existsDateClause}
+          WHERE (o.client_user_id = u.id OR (o.client_user_id IS NULL AND o.user_id = u.id))${existsDateClause}
         )`,
         existsDateParams,
       )
@@ -1849,12 +1849,14 @@ export class SettleService {
     });
 
     // Phase 4: 상태 필터링 및 페이지네이션
-    const filtered =
-      status === 'ACTIVE'
-        ? allResults.filter((r) => r.remainServiceAmount > 0)
-        : status === 'STOP'
-          ? allResults.filter((r) => r.remainServiceAmount <= 0)
-          : allResults;
+    let filtered: SettleUserPerListViewDto[];
+    if (status === 'ACTIVE') {
+      filtered = allResults.filter((r) => r.remainServiceAmount > 0);
+    } else if (status === 'STOP') {
+      filtered = allResults.filter((r) => r.remainServiceAmount <= 0);
+    } else {
+      filtered = allResults;
+    }
 
     const totalCount = filtered.length;
     const skip = (page - 1) * take;
@@ -1880,9 +1882,10 @@ export class SettleService {
         .addSelect('o.sendAmount', 'sendAmount')
         .where(
           new Brackets((wb) => {
-            wb.where('o.userId IN (:...pageUserIds)', { pageUserIds }).orWhere(
-              'o.clientUserId IN (:...pageUserIds)',
-              { pageUserIds },
+            wb.where('o.clientUserId IN (:...pageUserIds)', { pageUserIds }).orWhere(
+              new Brackets((wb2) => {
+                wb2.where('o.clientUserId IS NULL').andWhere('o.userId IN (:...pageUserIds2)', { pageUserIds2: pageUserIds });
+              }),
             );
           }),
         )
@@ -1909,11 +1912,10 @@ export class SettleService {
         const clientUserId = row.clientUserId ? Number(row.clientUserId) : null;
         const sendAmount = Number(row.sendAmount);
 
-        if (pageUserIdSet.has(userId)) {
-          this.accumulateOverdue(userOverdueMap, userId, sendAmount);
-        }
-        if (clientUserId && clientUserId !== userId && pageUserIdSet.has(clientUserId)) {
-          this.accumulateOverdue(userOverdueMap, clientUserId, sendAmount);
+        // 과금 대상에게만 연체 누적 (대행주문이면 clientUserId, 아니면 userId)
+        const billingUserId = clientUserId ?? userId;
+        if (pageUserIdSet.has(billingUserId)) {
+          this.accumulateOverdue(userOverdueMap, billingUserId, sendAmount);
         }
       }
 
@@ -1973,6 +1975,56 @@ export class SettleService {
   async getUserPerDetail(getDto: SettleGetUserPerDetailReqQueryDto): Promise<SettleGetPerUserDetailResDto> {
     const { userId, startAt, endAt, userBusinessName, userPersonName, settleStatus, take, page } = getDto;
 
+    // 대행주문은 과금대상(clientUserId)의 정산에만 귀속
+    const billingUserCondition = '(order.clientUserId = :userId OR (order.clientUserId IS NULL AND order.userId = :userId))';
+
+    const applyFilters = (qb: SelectQueryBuilder<OrderEntity>) => {
+      qb.where(billingUserCondition, { userId })
+        .andWhere('order.status IN (:...status)', { status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'] });
+
+      QueryBuilderDateCondition(qb, 'orderProductMappings', 'sendRequestAt', startAt, endAt);
+
+      if (userBusinessName) {
+        qb.andWhere(
+          '(userCompany.businessName LIKE :userBusinessName OR clientCompany.businessName LIKE :userBusinessName)',
+          { userBusinessName: `%${userBusinessName}%` },
+        );
+      }
+      if (userPersonName) {
+        qb.andWhere(
+          '(user.personName LIKE :userPersonName OR clientUser.personName LIKE :userPersonName)',
+          { userPersonName: `%${userPersonName}%` },
+        );
+      }
+
+      if (settleStatus) {
+        if (settleStatus === 'UNSETTLE_NORMAL') {
+          qb.andWhere(
+            new Brackets((wb) => {
+              wb.where('order.settleStatus = :settleStatus', { settleStatus }).orWhere(
+                'order.settleStatus IS NULL',
+              );
+            }),
+          );
+        } else {
+          qb.andWhere('order.settleStatus = :settleStatus', { settleStatus });
+        }
+      }
+    };
+
+    // 카운트 쿼리 (최소한의 JOIN)
+    const countQb = this.orderRepository
+      .createQueryBuilder('order')
+      .innerJoin('order.user', 'user')
+      .leftJoin('user.company', 'userCompany')
+      .leftJoin('order.clientUser', 'clientUser')
+      .leftJoin('clientUser.company', 'clientCompany')
+      .innerJoin('order.orderProductMappings', 'orderProductMappings');
+
+    applyFilters(countQb);
+    const totalCount = await countQb.getCount();
+
+    // 데이터 쿼리 (orderDeliveries JOIN 제거 — actualSendAt은 별도 조회)
     const queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
@@ -1980,44 +2032,31 @@ export class SettleService {
       .leftJoinAndSelect('order.clientUser', 'clientUser')
       .leftJoinAndSelect('clientUser.company', 'clientCompany')
       .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
-      .innerJoinAndSelect('orderProductMappings.product', 'product')
-      .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
-      .where('(order.userId = :userId OR order.clientUserId = :userId)', { userId })
-      .andWhere('order.status IN (:...status)', { status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'] });
+      .innerJoinAndSelect('orderProductMappings.product', 'product');
 
-    QueryBuilderDateCondition(queryBuilder, 'orderProductMappings', 'sendRequestAt', startAt, endAt);
-
-    if (userBusinessName) {
-      queryBuilder.andWhere(
-        '(userCompany.businessName LIKE :userBusinessName OR clientCompany.businessName LIKE :userBusinessName)',
-        { userBusinessName: `%${userBusinessName}%` },
-      );
-    }
-    if (userPersonName) {
-      queryBuilder.andWhere(
-        '(user.personName LIKE :userPersonName OR clientUser.personName LIKE :userPersonName)',
-        { userPersonName: `%${userPersonName}%` },
-      );
-    }
-
-    if (settleStatus) {
-      if (settleStatus === 'UNSETTLE_NORMAL') {
-        queryBuilder.andWhere(
-          new Brackets((qb) => {
-            qb.where('order.settleStatus = :settleStatus', { settleStatus }).orWhere(
-              'order.settleStatus IS NULL',
-            );
-          }),
-        );
-      } else {
-        queryBuilder.andWhere('order.settleStatus = :settleStatus', { settleStatus });
-      }
-    }
-
+    applyFilters(queryBuilder);
     queryBuilder.orderBy('order.id', 'DESC');
     queryBuilder.skip((page - 1) * take).take(take);
 
-    const [orderList, totalCount] = await queryBuilder.getManyAndCount();
+    const orderList = await queryBuilder.getMany();
+
+    // actualSendAt 별도 조회 (주문별 첫 번째 배송건의 actualSendAt)
+    const actualSendAtMap = new Map<number, Date | null>();
+    if (orderList.length > 0) {
+      const orderIds = orderList.map((o) => o.id);
+      const sendDates = await this.orderDeliveryRepository
+        .createQueryBuilder('od')
+        .select('opm.orderId', 'orderId')
+        .addSelect('MIN(od.actualSendAt)', 'actualSendAt')
+        .innerJoin('od.orderProductMapping', 'opm')
+        .where('opm.orderId IN (:...orderIds)', { orderIds })
+        .groupBy('opm.orderId')
+        .getRawMany();
+
+      for (const row of sendDates) {
+        actualSendAtMap.set(Number(row.orderId), row.actualSendAt ? new Date(row.actualSendAt) : null);
+      }
+    }
 
     const resultList: SettleUserPerDetailViewDto[] = orderList.map((order) => {
       const mappings = order.orderProductMappings;
@@ -2029,8 +2068,8 @@ export class SettleService {
         }
       }
 
-      const firstDelivery = mappings?.[0]?.orderDeliveries?.[0];
-      const sendRequestAt = firstDelivery?.actualSendAt ? format(firstDelivery.actualSendAt, DateFormatStr) : null;
+      const actualSendAt = actualSendAtMap.get(order.id);
+      const sendRequestAt = actualSendAt ? format(actualSendAt, DateFormatStr) : null;
 
       return {
         id: order.id,
@@ -2063,14 +2102,16 @@ export class SettleService {
       throw new BadRequestException('주문이 존재하지 않습니다.');
     }
 
+    // 과금 대상 사용자 조회 (대행주문인 경우 clientUserId)
+    const billingUserId = order.clientUserId ?? order.userId;
     const user = await this.userRepository.findOne({
       where: {
-        id: order.userId,
+        id: billingUserId,
       },
     });
 
     if (!user) {
-      throw new InternalServerErrorException('유저가 존재하지 않습니다.');
+      throw new InternalServerErrorException('과금 대상 유저가 존재하지 않습니다.');
     }
 
     if (order.settleStatus === SettleUserOrderDetailEnum.SETTLE_COMPLETE) {
@@ -2110,10 +2151,19 @@ export class SettleService {
     const userMap = new Map(userList.map((u) => [u.id, u]));
 
     // 2. 해당 사용자들의 미정산 주문을 단일 쿼리로 조회 (N+1 방지)
+    // 대행주문 포함: clientUserId 또는 (clientUserId가 없는 경우) userId 기준
     const allOrders = await this.orderRepository
       .createQueryBuilder('order')
       .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
-      .where('order.userId IN (:...userIds)', { userIds })
+      .where(
+        new Brackets((wb) => {
+          wb.where('order.clientUserId IN (:...userIds)', { userIds }).orWhere(
+            new Brackets((wb2) => {
+              wb2.where('order.clientUserId IS NULL').andWhere('order.userId IN (:...userIds2)', { userIds2: userIds });
+            }),
+          );
+        }),
+      )
       .andWhere(
         new Brackets((qb) => {
           qb.where('order.settleStatus IS NULL').orWhere('order.settleStatus = :settleStatus', {
@@ -2124,14 +2174,14 @@ export class SettleService {
       .andWhere('order.status = :status', { status: 'DELIVERY_COMPLETE' })
       .getMany();
 
-    // 3. userId별로 주문 그룹핑
+    // 3. 과금 대상 userId별로 주문 그룹핑 (대행주문이면 clientUserId)
     const ordersByUserId = new Map<number, typeof allOrders>();
     for (const order of allOrders) {
-      const userId = order.userId;
-      if (!ordersByUserId.has(userId)) {
-        ordersByUserId.set(userId, []);
+      const billingUserId = order.clientUserId ?? order.userId;
+      if (!ordersByUserId.has(billingUserId)) {
+        ordersByUserId.set(billingUserId, []);
       }
-      ordersByUserId.get(userId)!.push(order);
+      ordersByUserId.get(billingUserId)!.push(order);
     }
 
     // 4. 사용자별 정산기일 초과 주문 판별
