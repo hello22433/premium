@@ -1,4 +1,4 @@
-import { Column, Entity, JoinColumn, ManyToOne, OneToMany, PrimaryGeneratedColumn } from 'typeorm';
+import { Column, Entity, Index, JoinColumn, ManyToOne, OneToMany, PrimaryGeneratedColumn } from 'typeorm';
 import { IOrderStatus } from '../order/interface/order.status';
 import { UserEntity } from './user.entity';
 import { OrderProductMappingEntity } from './order.product.mapping.entity';
@@ -12,18 +12,21 @@ export class OrderEntity extends BaseEntity {
   @PrimaryGeneratedColumn()
   id: number;
 
+  @Index()
   @Column({ comment: 'FK) user.id' })
   userId: number;
 
   @Column({ nullable: true, comment: '운영 담당자 FK) user.id' })
   operationUserId: number | null;
 
+  @Index()
   @Column({ nullable: true, comment: '과금 대상 담당자 FK) user.id (대행주문 시 사용)' })
   clientUserId: number | null;
 
   @Column({ type: 'varchar', length: 256, unique: true, comment: 'event 코드' })
   code: string;
 
+  @Index()
   @Column({ comment: '진행 상태' })
   status: IOrderStatus;
 
