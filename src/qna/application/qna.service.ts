@@ -52,7 +52,7 @@ export class QnaService {
 
       return {
         id: qna.id,
-        registerDate: format(qna.createdAt, DateDateFormatStr),
+        registerDate: format(qna.createdAt, 'yyyy-MM-dd HH:mm'),
         businessName: qna.user.company?.businessName ?? '',
         personName: qna.user.personName,
         title: qna.title,
