@@ -893,7 +893,7 @@ export class CustomerServiceService {
               .add(orderDelivery.orderProductMapping.product.expireDay, 'day')
               .format('YYYY-MM-DD');
 
-            let text =
+            const text =
               `[모바일상품권]` +
               orderDelivery.orderProductMapping.product.name +
               `/교환처:` +
@@ -903,9 +903,19 @@ export class CustomerServiceService {
               `/` +
               expireDate;
 
+            let decryptedTarget = '';
+            if (orderDelivery.deliveryTarget) {
+              try {
+                decryptedTarget = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.deliveryTarget);
+              } catch (error) {
+                // 복호화 실패 시 원본 데이터 사용
+                decryptedTarget = orderDelivery.deliveryTarget;
+              }
+            }
+
             smsEntity = this.gemteckMsgQueueRepository.create({
               msgType: 'S',
-              dstAddr: orderDelivery.deliveryTarget ?? '',
+              dstAddr: decryptedTarget,
               callback: orderDelivery.orderProductMapping.fromPhoneNumber ?? '',
               text: text ?? '',
             });
