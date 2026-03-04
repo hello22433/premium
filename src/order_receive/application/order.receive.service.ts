@@ -59,9 +59,11 @@ export class OrderReceiveService {
   ) {}
 
   async selectChoiceProduct(getBody: OrderReceiveSelectChoiceProductReqDto) {
-    const orderDecrypt = this.cryptoCipher.decryptJson(getBody.encryptKey) as OrderEncryptKey;
+    const orderDecrypt = this.cryptoCipher.decryptJson(getBody.encryptKey) as OrderEncryptKey & { emailSendHistoryId?: number };
 
     const orderDeliveryId = orderDecrypt.id ? orderDecrypt.id : orderDecrypt.orderDeliveryId;
+    const isEmailPath = !!orderDecrypt.emailSendHistoryId;
+
     const orderDelivery = await this.orderDeliveryRepository
       .createQueryBuilder('orderDelivery')
       .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
@@ -89,35 +91,28 @@ export class OrderReceiveService {
       throw new InternalServerErrorException('choice product not exist');
     }
 
-    // 선택된 상품의 협력사 정보로 쿠폰 발급을 위해 임시로 product 교체
-    const originalProduct = orderDelivery.orderProductMapping.product;
-    orderDelivery.orderProductMapping.product = productChoiceMapping.product;
+    // 이메일 경로: 상품 선택만 저장, PIN 발급은 sendToMMS()에서 전화번호 입력 후 처리
+    // 알림톡/SMS 경로: 기존대로 즉시 PIN 발급
+    if (!isEmailPath) {
+      // 선택된 상품의 협력사 정보로 쿠폰 발급을 위해 임시로 product 교체
+      const originalProduct = orderDelivery.orderProductMapping.product;
+      orderDelivery.orderProductMapping.product = productChoiceMapping.product;
 
-    await this.partnerCompanyExternService.issue(orderDelivery, null);
+      await this.partnerCompanyExternService.issue(orderDelivery, null);
 
-    // 원래 product로 복원 (초이스쿠폰 상품)
-    orderDelivery.orderProductMapping.product = originalProduct;
-    orderDelivery.choiceSelectProductId = productChoiceMapping.product.id;
+      // 원래 product로 복원 (초이스쿠폰 상품)
+      orderDelivery.orderProductMapping.product = originalProduct;
 
-    if (orderDelivery.barCode) {
-      const productExpireDay = productChoiceMapping.product.expireDay || 0;
-      const validityStartsNextDay = productChoiceMapping.product.partnerCompany?.validityStartsNextDay ?? true;
-      const expireDay = validityStartsNextDay ? productExpireDay : productExpireDay - 1;
-
-      const expireDate = expireDay ? dayjs().tz('Asia/Seoul').add(expireDay, 'day').format('YYYY. MM. DD') : null;
-
-      const { path } = await DeliveryCreateCouponImage(
-        productChoiceMapping.product.imagePath,
-        productChoiceMapping.product.name,
-        orderDelivery.barCode,
-        productChoiceMapping.product.brand!.nameKorean,
-        expireDate,
-        orderDelivery.orderProductMapping.topImagePath,
-        orderDelivery.orderProductMapping.midImagePath,
-        orderDelivery.orderProductMapping.product.type,
-      );
-      orderDelivery.imagePath = path;
+      // PIN 발급 성공 시 쿠폰 이미지 생성
+      if (orderDelivery.barCode) {
+        orderDelivery.imagePath = await this.createCouponImage(
+          productChoiceMapping.product,
+          orderDelivery,
+        );
+      }
     }
+
+    orderDelivery.choiceSelectProductId = productChoiceMapping.product.id;
 
     await this.orderDeliveryRepository.save(orderDelivery);
 
@@ -618,39 +613,49 @@ export class OrderReceiveService {
     // 핸드폰 번호 암호화 저장
     const encryptedPhoneNumber = this.cryptoCipher.encryptDeliveryTarget(getBody.phoneNumber);
 
-    // 이메일 쿠폰은 이 시점에 핀 발급 (초이스쿠폰 제외 - 초이스쿠폰은 상품 선택 시 발급)
+    // 이메일 쿠폰은 이 시점에 핀 발급 (초이스쿠폰 포함 - 전화번호 입력 후 발급)
     const isChoiceCoupon = orderDelivery.orderProductMapping.product.type === IProductType.CHOICE;
-    if (!orderDelivery.barCode && !isChoiceCoupon) {
+    if (!orderDelivery.barCode) {
+      // 초이스쿠폰: 선택된 상품의 협력사 정보로 PIN 발급
+      let issueProduct = orderDelivery.orderProductMapping.product;
+
+      if (isChoiceCoupon) {
+        if (!orderDelivery.choiceSelectProduct) {
+          throw new BadRequestException('상품을 먼저 선택해주세요.');
+        }
+        const choiceProductMapping = await this.productChoiceMappingRepository
+          .createQueryBuilder('productChoiceMapping')
+          .innerJoinAndSelect('productChoiceMapping.product', 'product')
+          .innerJoinAndSelect('product.brand', 'brand')
+          .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
+          .where('productChoiceMapping.productId = :productId', {
+            productId: orderDelivery.choiceSelectProduct.id,
+          })
+          .getOne();
+        if (!choiceProductMapping) {
+          throw new InternalServerErrorException('선택된 초이스 상품 정보를 찾을 수 없습니다.');
+        }
+        issueProduct = choiceProductMapping.product;
+      }
+
+      // PIN 발급 (초이스쿠폰은 선택된 상품으로 임시 교체 후 발급)
+      const originalProduct = orderDelivery.orderProductMapping.product;
+      orderDelivery.orderProductMapping.product = issueProduct;
       try {
         await this.partnerCompanyExternService.issue(orderDelivery, null);
       } catch (e) {
-        // 핀 발급 실패
+        orderDelivery.orderProductMapping.product = originalProduct;
         await this.orderDeliveryRepository.update(orderDelivery.id, {
           emailCouponStatus: OrderDeliveryEmailCouponStatus.FAIL,
           deliveryTarget: encryptedPhoneNumber,
         });
         throw new InternalServerErrorException('쿠폰 발급에 실패했습니다. 다시 시도해주세요.');
       }
+      orderDelivery.orderProductMapping.product = originalProduct;
 
-      // 핀 발급 성공 후 쿠폰 이미지 생성
+      // PIN 발급 성공 시 쿠폰 이미지 생성
       if (orderDelivery.barCode) {
-        const product = orderDelivery.orderProductMapping.product;
-        const productExpireDay = product.expireDay || 0;
-        const validityStartsNextDay = product.partnerCompany?.validityStartsNextDay ?? true;
-        const expireDay = validityStartsNextDay ? productExpireDay : productExpireDay - 1;
-        const expireDate = expireDay ? dayjs().tz('Asia/Seoul').add(expireDay, 'day').format('YYYY. MM. DD') : null;
-
-        const { path } = await DeliveryCreateCouponImage(
-          product.imagePath,
-          product.name,
-          orderDelivery.barCode,
-          product.brand!.nameKorean,
-          expireDate,
-          orderDelivery.orderProductMapping.topImagePath,
-          orderDelivery.orderProductMapping.midImagePath,
-          product.type,
-        );
-        orderDelivery.imagePath = path;
+        orderDelivery.imagePath = await this.createCouponImage(issueProduct, orderDelivery);
         await this.orderDeliveryRepository.save(orderDelivery);
       }
     }
@@ -755,5 +760,28 @@ export class OrderReceiveService {
     }
 
     return;
+  }
+
+  /**
+   * 쿠폰 이미지 생성 - 주어진 product 정보로 만료일 계산 후 이미지 생성
+   */
+  private async createCouponImage(product: any, orderDelivery: OrderDeliveryEntity): Promise<string> {
+    const productExpireDay = product.expireDay || 0;
+    const validityStartsNextDay = product.partnerCompany?.validityStartsNextDay ?? true;
+    const expireDay = validityStartsNextDay ? productExpireDay : productExpireDay - 1;
+    const expireDate = expireDay ? dayjs().tz('Asia/Seoul').add(expireDay, 'day').format('YYYY. MM. DD') : null;
+
+    const { path } = await DeliveryCreateCouponImage(
+      product.imagePath,
+      product.name,
+      orderDelivery.barCode!,
+      product.brand!.nameKorean,
+      expireDate,
+      orderDelivery.orderProductMapping.topImagePath,
+      orderDelivery.orderProductMapping.midImagePath,
+      orderDelivery.orderProductMapping.product.type,
+    );
+
+    return path;
   }
 }
