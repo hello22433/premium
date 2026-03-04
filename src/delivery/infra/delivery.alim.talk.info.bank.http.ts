@@ -117,8 +117,18 @@ export class DeliveryAlimTalkInfoBankHttp implements DeliveryAlimTalk {
       };
 
       const templateCode = sendObj.templateCode || this.infoBankTemplateCode;
-      const isTestTemplate = templateCode.toLowerCase().includes('dev');
-      const buttonName = isTestTemplate ? '[TEST]선물메시지 확인' : '쿠폰 확인하기';
+      const templateCodeLower = templateCode.toLowerCase();
+      const isTestTemplate = templateCodeLower.includes('dev');
+      const isEncourageTemplate = templateCodeLower.includes('encourage');
+
+      let buttonName: string;
+      if (isTestTemplate) {
+        buttonName = '[TEST]선물메시지 확인';
+      } else if (isEncourageTemplate) {
+        buttonName = '선물메시지 확인';
+      } else {
+        buttonName = '쿠폰 확인하기';
+      }
 
       const body = {
         senderKey: this.infoBankSenderKey,
