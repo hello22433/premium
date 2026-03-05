@@ -60,6 +60,14 @@ export class UserSyncProductGetListReqDto extends PagingReqDto {
   // =================================
   @IsOptional()
   name?: string;
+
+  @ApiPropertyOptional({
+    description: '상품명 (해당 상품이 매핑된 이벤트만 조회)',
+  })
+  // =================================
+  @IsOptional()
+  @IsString()
+  productName?: string;
 }
 
 export class UserSyncProductUpdateStatusReqDto {
