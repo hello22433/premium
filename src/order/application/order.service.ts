@@ -107,6 +107,7 @@ import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { PhoneUtil } from '../../common/utils/phone.util';
 import { DeliveryBatchService } from '../../delivery/application/delivery.batch.service';
 import { IOrderSendMethod } from '../interface/order.send.method';
+import { IOrderSendingType } from '../interface/order.sending.type';
 import { OrderEncryptKey } from '../../order_receive/interface/order.encrypt.key';
 import { ActivityLogService } from '../../activity_log/application/activity.log.service';
 import { ActivityLogResult } from '../../activity_log/interface/activity.log.result';
@@ -175,7 +176,7 @@ export class OrderService {
   ) {}
 
   async getList(user: ILoginUserInfo, getQuery: OrderGetListReqDto): Promise<OrderGetListResDto> {
-    const { section, type, status, startAt, endAt, searchType, searchKeyword, page, take } = getQuery;
+    const { section, type, status, startAt, endAt, searchType, searchKeyword, page, take, sendingType } = getQuery;
 
     let queryBuilder = this.orderRepository
       .createQueryBuilder('order')
@@ -256,6 +257,13 @@ export class OrderService {
       // 발송관리에서는 임시저장 상태 제외
       queryBuilder = queryBuilder.andWhere('order.status != :tempStatus', { tempStatus: IOrderStatus.TEMP });
       applyViewScopeFilter();
+    }
+
+    // 발송 유형 필터 (직발송/대행발송)
+    if (sendingType === IOrderSendingType.DIRECT) {
+      queryBuilder = queryBuilder.andWhere('order.clientUserId IS NULL');
+    } else if (sendingType === IOrderSendingType.AGENCY) {
+      queryBuilder = queryBuilder.andWhere('order.clientUserId IS NOT NULL');
     }
 
     if (status) {
@@ -2856,7 +2864,7 @@ export class OrderService {
 
   async excelDownload(user: ILoginUserInfo, getBody: OrderExcelDownloadReqBodyDto) {
     const startTime = Date.now();
-    const { searchType, searchKeyword, type, status, startAt, endAt, section, password, downloadReason } = getBody;
+    const { searchType, searchKeyword, type, status, startAt, endAt, section, password, downloadReason, sendingType } = getBody;
 
     // 비밀번호 검증
     await this.activityLogService.verifyPassword(user.id, password);
@@ -2902,6 +2910,13 @@ export class OrderService {
       }
 
       orderType = '발송';
+    }
+
+    // 발송 유형 필터 (직발송/대행발송)
+    if (sendingType === IOrderSendingType.DIRECT) {
+      queryBuilder = queryBuilder.andWhere('order.clientUserId IS NULL');
+    } else if (sendingType === IOrderSendingType.AGENCY) {
+      queryBuilder = queryBuilder.andWhere('order.clientUserId IS NOT NULL');
     }
 
     if (status) {

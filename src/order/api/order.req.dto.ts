@@ -9,6 +9,7 @@ import { IOrderSection } from '../interface/order.section';
 import { Type } from 'class-transformer';
 import { OrderSettleCreateDto } from './dto/order.settle.create.dto';
 import { IOrderSendMethod } from '../interface/order.send.method';
+import { IOrderSendingType } from '../interface/order.sending.type';
 import { CompanyType } from '../../common/domain/company.type';
 
 export class OrderGetListReqDto extends PagingReqDto {
@@ -74,6 +75,16 @@ export class OrderGetListReqDto extends PagingReqDto {
   // ===================================
   @IsOptional()
   searchKeyword?: string;
+
+  @ApiPropertyOptional({
+    description: '발송 유형 필터 ex) ALL: 전체, DIRECT: 직발송, AGENCY: 대행발송',
+    enum: IOrderSendingType,
+    default: IOrderSendingType.ALL,
+  })
+  // ===================================
+  @IsOptional()
+  @IsEnum(IOrderSendingType)
+  sendingType?: IOrderSendingType = IOrderSendingType.ALL;
 }
 
 export class OrderCreateTempReqDto extends OrderCreateDto {
@@ -346,6 +357,16 @@ export class OrderExcelDownloadReqBodyDto {
   // ===================================
   @IsOptional()
   searchKeyword?: string;
+
+  @ApiPropertyOptional({
+    description: '발송 유형 필터 ex) ALL: 전체, DIRECT: 직발송, AGENCY: 대행발송',
+    enum: IOrderSendingType,
+    default: IOrderSendingType.ALL,
+  })
+  // ===================================
+  @IsOptional()
+  @IsEnum(IOrderSendingType)
+  sendingType?: IOrderSendingType = IOrderSendingType.ALL;
 
   @ApiProperty({
     description: '비밀번호 (다운로드 확인용)',
