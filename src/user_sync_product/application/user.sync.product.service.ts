@@ -46,7 +46,7 @@ export class UserSyncProductService {
   ) {}
 
   async getList(getQuery: UserSyncProductGetListReqDto): Promise<UserSyncProductGetListResDto> {
-    const { take, page, name, businessUserName, startAt, endAt, code, status } = getQuery;
+    const { take, page, name, businessUserName, startAt, endAt, code, status, productName } = getQuery;
     const skip = (page - 1) * take;
 
     let queryBuilder = this.eventRepository
@@ -54,10 +54,6 @@ export class UserSyncProductService {
     .leftJoinAndSelect('event.userSyncProductEventMappings', 'userSyncProductEventMappings')
     .innerJoinAndSelect('event.businessUser', 'user')
     .leftJoinAndSelect('user.company', 'userCompany');
-
-    if (code) {
-      queryBuilder = queryBuilder.andWhere('event.code = :code', { code });
-    }
 
     if (businessUserName) {
       queryBuilder = queryBuilder.andWhere('userCompany.businessName LIKE :businessName', {
@@ -71,6 +67,22 @@ export class UserSyncProductService {
 
     if (code) {
       queryBuilder = queryBuilder.andWhere('event.code LIKE :code', { code: `%${code}%` });
+    }
+
+    if (productName) {
+      queryBuilder = queryBuilder.andWhere((qb) => {
+        const subQuery = qb
+          .subQuery()
+          .select('mapping.userSyncProductEventId')
+          .from(UserSyncProductEventMappingEntity, 'mapping')
+          .innerJoin(ProductEntity, 'p', 'p.id = mapping.productId')
+          .where('p.name LIKE :productName')
+          .andWhere('p.deletedAt IS NULL')
+          .andWhere('mapping.deletedAt IS NULL')
+          .getQuery();
+        return 'event.id IN ' + subQuery;
+      });
+      queryBuilder = queryBuilder.setParameter('productName', `%${productName}%`);
     }
 
     if (status) {
