@@ -45,6 +45,29 @@ export class PartnerCompanyBatchSchedule {
     }
   }
 
+  // [일회성] 2026-03-06 04:00 실행 - 2월 전체 갤럭시아 일대사 재실행 (누락 데이터 보정)
+  // 실행 완료 후 이 메서드 삭제할 것
+  @Cron('0 0 4 6 3 *')
+  async backfillGalaxiaFeb() {
+    const today = new Date();
+    if (today.getFullYear() !== 2026 || today.getMonth() !== 2 || today.getDate() !== 6) {
+      return; // 2026-03-06만 실행
+    }
+
+    this.logger.log('[일회성] 2월 갤럭시아 일대사 백필 시작');
+    try {
+      for (let day = 1; day <= 28; day++) {
+        const targetDay = `202602${String(day).padStart(2, '0')}`;
+        this.logger.log(`[백필] checkGalaxiaDaily targetDay=${targetDay}`);
+        await this.partnerCompanyExternBatchService.checkGalaxiaDaily(targetDay);
+      }
+      this.logger.log('[일회성] 2월 갤럭시아 일대사 백필 완료');
+    } catch (e) {
+      this.logger.error('[일회성] 2월 백필 오류');
+      this.logger.error(e);
+    }
+  }
+
   // 매일 23:42에 실행 - 갤럭시아 백화점(dept) 상품 사용내역 조회
   // 일대사로 누락되는 네이버페이 등 사용내역을 개별 check API로 감지
   @Cron('0 42 23 * * *')
