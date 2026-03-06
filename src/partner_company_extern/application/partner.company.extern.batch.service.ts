@@ -796,7 +796,17 @@ export class PartnerCompanyExternBatchService {
               dedupQuery.andWhere('log.appNo IS NULL');
             }
 
+            const dedupSql = dedupQuery.getQuery();
+            const dedupParams = dedupQuery.getParameters();
+            this.logger.log(
+              `[checkGalaxiaDaily] dedup SQL: ${dedupSql}, params: ${JSON.stringify(dedupParams)}`,
+            );
+
             const existingLog = await dedupQuery.getOne();
+
+            this.logger.log(
+              `[checkGalaxiaDaily] dedup result for barcode=${transaction.barcode}: existingLog=${existingLog ? `id=${existingLog.id}, barcode=${existingLog.barcode}` : 'null'}`,
+            );
 
             if (!existingLog) {
               await this.galaxiaBarcodeLogRepository.save({
