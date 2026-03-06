@@ -23,14 +23,11 @@ export const AlimTalkTemplate = (orderDelivery: OrderDeliveryEntity) => {
   const templateCode = process.env.ALIM_TALK_INFO_BANK_TEMPLATE_CODE || '';
   const isTestTemplate = templateCode.toLowerCase().includes('dev');
 
-  // 유효기간: expireAt이 이미 설정되어 있으면 사용 (재발송 시 최초 발송 기준 유지)
-  const expireDateStr = orderDelivery.expireAt
-    ? dayjs(orderDelivery.expireAt).format('YYYY. MM. DD')
-    : (() => {
-        const validityStartsNextDay = product.partnerCompany?.validityStartsNextDay ?? true;
-        const expireDays = validityStartsNextDay ? product.expireDay : product.expireDay - 1;
-        return dayjs().add(expireDays, 'day').format('YYYY. MM. DD');
-      })();
+  // 유효기간 계산: 재발송 시 최초 발송일(actualSendAt) 기준, 최초 발송 시 현재 시점 기준
+  const validityStartsNextDay = product.partnerCompany?.validityStartsNextDay ?? true;
+  const expireDays = validityStartsNextDay ? product.expireDay : product.expireDay - 1;
+  const baseDate = orderDelivery.actualSendAt ? dayjs(orderDelivery.actualSendAt) : dayjs();
+  const expireDateStr = baseDate.add(expireDays, 'day').format('YYYY. MM. DD');
 
   // 테스트 환경일 경우 [TEST] 접두사와 테스트 메시지 추가
   if (isTestTemplate) {
