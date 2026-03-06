@@ -10,7 +10,7 @@ import { ISsgIssue } from '../interface/ssg.issue';
 import { IDaou } from '../interface/daou';
 import { InjectRepository } from '@nestjs/typeorm';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
-import { Brackets, IsNull, Repository } from 'typeorm';
+import { Brackets, Repository } from 'typeorm';
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
 import {
   PartnerCompanyType,
@@ -783,15 +783,20 @@ export class PartnerCompanyExternBatchService {
 
           // 사용내역 중복 체크 후 저장 (별도 try-catch로 tradePlace 업데이트에 영향 주지 않도록)
           try {
-            const existingLog = await this.galaxiaBarcodeLogRepository.findOne({
-              where: {
-                barcode: transaction.barcode,
-                appDiv: transaction.appDiv,
-                appDay: transaction.appDay,
-                appTime: transaction.appTime,
-                appNo: transaction.appNo ?? IsNull(),
-              },
-            });
+            const dedupQuery = this.galaxiaBarcodeLogRepository
+              .createQueryBuilder('log')
+              .where('log.barcode = :barcode', { barcode: transaction.barcode })
+              .andWhere('log.appDiv = :appDiv', { appDiv: transaction.appDiv })
+              .andWhere('log.appDay = :appDay', { appDay: transaction.appDay })
+              .andWhere('log.appTime = :appTime', { appTime: transaction.appTime });
+
+            if (transaction.appNo != null) {
+              dedupQuery.andWhere('log.appNo = :appNo', { appNo: transaction.appNo });
+            } else {
+              dedupQuery.andWhere('log.appNo IS NULL');
+            }
+
+            const existingLog = await dedupQuery.getOne();
 
             if (!existingLog) {
               await this.galaxiaBarcodeLogRepository.save({
@@ -870,15 +875,20 @@ export class PartnerCompanyExternBatchService {
     }
 
     // 5. 중복 체크
-    const existingLog = await this.galaxiaBarcodeLogRepository.findOne({
-      where: {
-        barcode,
-        appDiv: raw.appdiv,
-        appDay: raw.appday,
-        appTime: raw.apptime,
-        appNo: appNo ?? IsNull(),
-      },
-    });
+    const dedupQuery = this.galaxiaBarcodeLogRepository
+      .createQueryBuilder('log')
+      .where('log.barcode = :barcode', { barcode })
+      .andWhere('log.appDiv = :appDiv', { appDiv: raw.appdiv })
+      .andWhere('log.appDay = :appDay', { appDay: raw.appday })
+      .andWhere('log.appTime = :appTime', { appTime: raw.apptime });
+
+    if (appNo != null) {
+      dedupQuery.andWhere('log.appNo = :appNo', { appNo });
+    } else {
+      dedupQuery.andWhere('log.appNo IS NULL');
+    }
+
+    const existingLog = await dedupQuery.getOne();
 
     if (existingLog) {
       this.logger.verbose(
