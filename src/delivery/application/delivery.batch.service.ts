@@ -368,8 +368,8 @@ export class DeliveryBatchService {
 
     const title = orderDelivery.orderProductMapping.sendTitle ?? '';
 
-    // 3. 유효기간 설정
-    if (order.type !== IOrderType.SSG) {
+    // 3. 유효기간 설정 (재발송 시 기존 expireAt 유지)
+    if (order.type !== IOrderType.SSG && !orderDelivery.expireAt) {
       const partnerCompany = product.partnerCompany;
       const expireDays =
         partnerCompany?.validityStartsNextDay === false ? product.expireDay - 1 : product.expireDay;
@@ -971,14 +971,14 @@ export class DeliveryBatchService {
     const decryptedDeliveryTarget = this.decryptDeliveryTarget(orderDelivery);
     const title = orderDelivery.orderProductMapping.sendTitle ?? '';
 
-    if (orderDelivery.orderProductMapping.order.type !== IOrderType.SSG) {
+    // 유효기간 설정 (재발송 시 기존 expireAt 유지)
+    if (orderDelivery.orderProductMapping.order.type !== IOrderType.SSG && !orderDelivery.expireAt) {
       const partnerCompany = orderDelivery.orderProductMapping.product.partnerCompany;
       const expireDays =
         partnerCompany?.validityStartsNextDay === false
           ? orderDelivery.orderProductMapping.product.expireDay - 1
           : orderDelivery.orderProductMapping.product.expireDay;
 
-      // 실제 발송 시점 기준으로 유효기간 계산 (sendRequestAt이 아닌 현재 시간 사용)
       orderDelivery.expireAt = addDays(new Date(), expireDays);
       // 상품별 독려문자 설정 적용
       const encourageDay = orderDelivery.orderProductMapping.encourageDay;
