@@ -47,7 +47,7 @@ export class PartnerCompanyBatchSchedule {
 
    // [일회성] 2026-03-06 15:36 실행 - IsNull() 수정 후 갤럭시아 일대사 재테스트 (20260220)
   // 실행 완료 후 이 메서드 삭제할 것
-  @Cron('0 36 15 6 3 *')
+  @Cron('0 38 15 6 3 *')
   async debugGalaxiaDaily() {
     const today = new Date();
     if (today.getFullYear() !== 2026 || today.getMonth() !== 2 || today.getDate() !== 6) {
