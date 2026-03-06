@@ -259,12 +259,8 @@ export class OrderService {
       applyViewScopeFilter();
     }
 
-    // 발송 유형 필터 (직발송/대행발송)
-    if (sendingType === IOrderSendingType.DIRECT) {
-      queryBuilder = queryBuilder.andWhere('order.clientUserId IS NULL');
-    } else if (sendingType === IOrderSendingType.AGENCY) {
-      queryBuilder = queryBuilder.andWhere('order.clientUserId IS NOT NULL');
-    }
+    // 직발송 권한 제어 (역할 기반 + 발송유형 필터)
+    this.applyDirectSendingFilter(queryBuilder, user, sendingType);
 
     if (status) {
       queryBuilder = queryBuilder.andWhere('order.status = :status', { status });
@@ -2912,12 +2908,8 @@ export class OrderService {
       orderType = '발송';
     }
 
-    // 발송 유형 필터 (직발송/대행발송)
-    if (sendingType === IOrderSendingType.DIRECT) {
-      queryBuilder = queryBuilder.andWhere('order.clientUserId IS NULL');
-    } else if (sendingType === IOrderSendingType.AGENCY) {
-      queryBuilder = queryBuilder.andWhere('order.clientUserId IS NOT NULL');
-    }
+    // 직발송 권한 제어 (역할 기반 + 발송유형 필터)
+    this.applyDirectSendingFilter(queryBuilder, user, sendingType);
 
     if (status) {
       queryBuilder = queryBuilder.andWhere('order.status = :status', { status });
@@ -3705,5 +3697,36 @@ export class OrderService {
       success: true,
       message: '이메일이 성공적으로 발송되었습니다.',
     };
+  }
+
+  /**
+   * 직발송 접근 제어 필터
+   * - SUPER_ADMIN: sendingType 파라미터로 필터링 (전체 접근 가능)
+   * - OPERATION_ADMIN: 대행발송 건 + 본인 배정 직발송 건만 조회
+   * - 기타 (CORPORATE_ADMIN 등): 직발송 건 완전 차단
+   */
+  private applyDirectSendingFilter(
+    queryBuilder: ReturnType<Repository<OrderEntity>['createQueryBuilder']>,
+    user: ILoginUserInfo,
+    sendingType?: IOrderSendingType,
+  ): void {
+    if (user.authority === IUserAuthority.SUPER_ADMIN) {
+      if (sendingType === IOrderSendingType.DIRECT) {
+        queryBuilder.andWhere('order.clientUserId IS NOT NULL');
+      } else if (sendingType === IOrderSendingType.AGENCY) {
+        queryBuilder.andWhere('order.clientUserId IS NULL');
+      }
+      return;
+    }
+
+    if (user.authority === IUserAuthority.OPERATION_ADMIN) {
+      queryBuilder.andWhere(
+        '(order.clientUserId IS NULL OR order.operationUserId = :currentUserId)',
+        { currentUserId: user.id },
+      );
+      return;
+    }
+
+    queryBuilder.andWhere('order.clientUserId IS NULL');
   }
 }
