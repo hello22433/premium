@@ -774,9 +774,8 @@ export class PartnerCompanyExternBatchService {
           });
 
           if (!orderDelivery) {
-            this.logger.warn(
-              `[checkGalaxiaDaily] ${giftKind} 매칭되는 order_delivery 없음: barcode=${transaction.barcode}, ` +
-                `barcodeLength=${transaction.barcode?.length}, barcodeHex=${Buffer.from(transaction.barcode ?? '').toString('hex')}`,
+            this.logger.verbose(
+              `[checkGalaxiaDaily] ${giftKind} 매칭되는 order_delivery 없음: barcode=${transaction.barcode}`,
             );
             continue;
           }
@@ -796,17 +795,7 @@ export class PartnerCompanyExternBatchService {
               dedupQuery.andWhere('log.appNo IS NULL');
             }
 
-            const dedupSql = dedupQuery.getQuery();
-            const dedupParams = dedupQuery.getParameters();
-            this.logger.log(
-              `[checkGalaxiaDaily] dedup SQL: ${dedupSql}, params: ${JSON.stringify(dedupParams)}`,
-            );
-
             const existingLog = await dedupQuery.getOne();
-
-            this.logger.log(
-              `[checkGalaxiaDaily] dedup result for barcode=${transaction.barcode}: existingLog=${existingLog ? `id=${existingLog.id}, barcode=${existingLog.barcode}` : 'null'}`,
-            );
 
             if (!existingLog) {
               await this.galaxiaBarcodeLogRepository.save({

@@ -45,24 +45,6 @@ export class PartnerCompanyBatchSchedule {
     }
   }
 
-   // [일회성] 2026-03-06 15:36 실행 - IsNull() 수정 후 갤럭시아 일대사 재테스트 (20260220)
-  // 실행 완료 후 이 메서드 삭제할 것
-  @Cron('0 3 16 6 3 *')
-  async debugGalaxiaDaily() {
-    const today = new Date();
-    if (today.getFullYear() !== 2026 || today.getMonth() !== 2 || today.getDate() !== 6) {
-      return;
-    }
-
-    this.logger.log('[디버그] checkGalaxiaDaily targetDay=20260220 시작 (dedup SQL 로깅 추가)');
-    try {
-      await this.partnerCompanyExternBatchService.checkGalaxiaDaily('20260220');
-      this.logger.log('[디버그] checkGalaxiaDaily targetDay=20260220 완료');
-    } catch (e) {
-      this.logger.error('[디버그] 오류');
-      this.logger.error(e);
-    }
-  }
 
   // 매일 23:42에 실행 - 갤럭시아 백화점(dept) 상품 사용내역 조회
   // 일대사로 누락되는 네이버페이 등 사용내역을 개별 check API로 감지
