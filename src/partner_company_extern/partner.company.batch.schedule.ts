@@ -45,25 +45,21 @@ export class PartnerCompanyBatchSchedule {
     }
   }
 
-  // [일회성] 2026-03-06 04:00 실행 - 2월 전체 갤럭시아 일대사 재실행 (누락 데이터 보정)
+   // [일회성] 2026-03-06 11:23 실행 - 갤럭시아 일대사 디버깅 (20260220 단일)
   // 실행 완료 후 이 메서드 삭제할 것
-  @Cron('0 0 4 6 3 *')
-  async backfillGalaxiaFeb() {
+  @Cron('0 23 11 6 3 *')
+  async debugGalaxiaDaily() {
     const today = new Date();
     if (today.getFullYear() !== 2026 || today.getMonth() !== 2 || today.getDate() !== 6) {
-      return; // 2026-03-06만 실행
+      return;
     }
 
-    this.logger.log('[일회성] 2월 갤럭시아 일대사 백필 시작');
+    this.logger.log('[디버그] checkGalaxiaDaily targetDay=20260220 시작');
     try {
-      for (let day = 1; day <= 28; day++) {
-        const targetDay = `202602${String(day).padStart(2, '0')}`;
-        this.logger.log(`[백필] checkGalaxiaDaily targetDay=${targetDay}`);
-        await this.partnerCompanyExternBatchService.checkGalaxiaDaily(targetDay);
-      }
-      this.logger.log('[일회성] 2월 갤럭시아 일대사 백필 완료');
+      await this.partnerCompanyExternBatchService.checkGalaxiaDaily('20260220');
+      this.logger.log('[디버그] checkGalaxiaDaily targetDay=20260220 완료');
     } catch (e) {
-      this.logger.error('[일회성] 2월 백필 오류');
+      this.logger.error('[디버그] 오류');
       this.logger.error(e);
     }
   }
