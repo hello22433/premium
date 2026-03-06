@@ -774,8 +774,9 @@ export class PartnerCompanyExternBatchService {
           });
 
           if (!orderDelivery) {
-            this.logger.verbose(
-              `[checkGalaxiaDaily] ${giftKind} 매칭되는 order_delivery 없음: barcode=${transaction.barcode}`,
+            this.logger.warn(
+              `[checkGalaxiaDaily] ${giftKind} 매칭되는 order_delivery 없음: barcode=${transaction.barcode}, ` +
+                `barcodeLength=${transaction.barcode?.length}, barcodeHex=${Buffer.from(transaction.barcode ?? '').toString('hex')}`,
             );
             continue;
           }
