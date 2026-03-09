@@ -372,6 +372,15 @@ export class ProductExcelUploadReqDto {
   file: Express.Multer.File;
 }
 
+export class ProductSharedListUploadReqDto {
+  @ApiProperty({
+    type: 'string',
+    description: '고객사 다운로드용으로 업로드 할 상품리스트 파일',
+    format: 'binary',
+  })
+  file: Express.Multer.File;
+}
+
 export class ProductExcelDownloadReqBodyDto {
   @ApiPropertyOptional({
     description: '협력사 id',

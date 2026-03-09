@@ -1,4 +1,4 @@
-import { BadRequestException, Inject, Injectable } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { ProductEntity } from '../../entity/product.entity';
 import { Brackets, FindOptionsWhere, In, IsNull, Like, Repository } from 'typeorm';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -40,8 +40,9 @@ import { Transactional } from 'typeorm-transactional';
 import { ProductHistoryViewDto } from '../api/dto/product.history.view.dto';
 import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
-import { join } from 'path';
+import { join, parse } from 'path';
 import * as process from 'node:process';
+import * as fs from 'node:fs';
 import * as ExcelJS from 'exceljs';
 import {
   ProductSettleMethodExcelMapping,
@@ -65,6 +66,7 @@ import { ActivityLogService } from '../../activity_log/application/activity.log.
 import { ActivityLogResult } from '../../activity_log/interface/activity.log.result';
 import { IUserSyncProductStatus } from '../../user_sync_product/interface/user.sync.product.status';
 import { IFileStorage } from '../../file/interface/file.storage';
+import { ProductSharedListFileEntity } from '../../entity/product.shared.list.file.entity';
 
 @Injectable()
 export class ProductService {
@@ -87,10 +89,83 @@ export class ProductService {
     private ssgEventRepository: Repository<SsgEventEntity>,
     @InjectRepository(UserEntity)
     private userRepository: Repository<UserEntity>,
+    @InjectRepository(ProductSharedListFileEntity)
+    private productSharedListFileRepository: Repository<ProductSharedListFileEntity>,
     private activityLogService: ActivityLogService,
     @Inject('IFileStorage')
     private fileStorage: IFileStorage,
   ) {}
+
+  private static readonly SHARED_LIST_ALLOWED_EXTENSIONS = ['.xlsx', '.xls', '.csv'];
+
+  async uploadSharedListFile(user: ILoginUserInfo, file: Express.Multer.File) {
+    if (!file) {
+      throw new BadRequestException('업로드할 파일이 존재하지 않습니다.');
+    }
+
+    file.originalname = Buffer.from(file.originalname, 'latin1').toString('utf8');
+
+    const extension = parse(file.originalname).ext.toLowerCase();
+    if (!ProductService.SHARED_LIST_ALLOWED_EXTENSIONS.includes(extension)) {
+      throw new BadRequestException('엑셀 또는 CSV 파일만 업로드할 수 있습니다.');
+    }
+
+    const uploadedFile = await this.fileStorage.uploadFile(file);
+
+    const savedFile = await this.productSharedListFileRepository.save({
+      userId: user.id,
+      fileName: uploadedFile.originalName,
+      fileUrl: uploadedFile.url,
+    });
+
+    return this.toSharedListFileResponse(savedFile);
+  }
+
+  async getSharedListFile() {
+    const sharedFile = await this.findLatestSharedListFile();
+
+    if (!sharedFile) {
+      return { id: null, fileName: null, userId: null, createdAt: null };
+    }
+
+    return this.toSharedListFileResponse(sharedFile);
+  }
+
+  async downloadSharedListFile() {
+    const sharedFile = await this.findLatestSharedListFile();
+
+    if (!sharedFile) {
+      throw new NotFoundException('다운로드 가능한 상품리스트 파일이 존재하지 않습니다.');
+    }
+
+    const key = this.extractStorageKey(sharedFile.fileUrl);
+    const downloadDir = join(process.cwd(), 'public', 'temp', 'product-shared-list');
+    fs.mkdirSync(downloadDir, { recursive: true });
+
+    const filePath = await this.fileStorage.downloadFileToLocalWithPath(
+      downloadDir,
+      `${Date.now()}-${parse(sharedFile.fileName).name}`,
+      key,
+    );
+
+    return { fileName: sharedFile.fileName, filePath };
+  }
+
+  private async findLatestSharedListFile(): Promise<ProductSharedListFileEntity | null> {
+    return this.productSharedListFileRepository.findOne({
+      where: { deletedAt: IsNull() },
+      order: { createdAt: 'DESC' },
+    });
+  }
+
+  private toSharedListFileResponse(file: ProductSharedListFileEntity) {
+    return {
+      id: file.id,
+      fileName: file.fileName,
+      userId: file.userId,
+      createdAt: format(file.createdAt, DateFormatStr),
+    };
+  }
 
   async getTotalList(user: ILoginUserInfo, getQuery: ProductGetTotalListReqQueryDto): Promise<ProductGetListResDto> {
     const {
@@ -1601,6 +1676,15 @@ export class ProductService {
     if (url.includes('epopkon-premium.s3.amazonaws.com')) return false;
 
     return true;
+  }
+
+  private extractStorageKey(fileUrl: string): string {
+    try {
+      const parsedUrl = new URL(fileUrl);
+      return decodeURIComponent(parsedUrl.pathname.replace(/^\/+/, ''));
+    } catch (error) {
+      throw new BadRequestException('올바른 파일 경로가 아닙니다.');
+    }
   }
 
   /**

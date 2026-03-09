@@ -1,5 +1,5 @@
 import { ProductViewDto } from './dto/product.view.dto';
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { GetListResDto } from '../../common/api/dto/get.list.res.dto';
 import { ProductDetailDto } from './dto/product.detail.dto';
 import { ProductHistoryViewDto } from './dto/product.history.view.dto';
@@ -32,4 +32,30 @@ export class ClassificationGetSearchListResDto extends GetListResDto {
     description: '대분류 리스트',
   })
   list: ClassificationViewDto[];
+}
+
+export class ProductSharedListFileResDto {
+  @ApiPropertyOptional({
+    description: '업로드 파일 id',
+    nullable: true,
+  })
+  id: number | null;
+
+  @ApiPropertyOptional({
+    description: '업로드 파일명',
+    nullable: true,
+  })
+  fileName: string | null;
+
+  @ApiPropertyOptional({
+    description: '업로드한 관리자 id',
+    nullable: true,
+  })
+  userId: number | null;
+
+  @ApiPropertyOptional({
+    description: '업로드 일시',
+    nullable: true,
+  })
+  createdAt: string | null;
 }

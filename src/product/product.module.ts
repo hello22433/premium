@@ -14,6 +14,7 @@ import { SsgEventEntity } from '../entity/ssg.event.entity';
 import { UserEntity } from 'src/entity/user.entity';
 import { ActivityLogModule } from '../activity_log/activity.log.module';
 import { FileModule } from '../file/file.module';
+import { ProductSharedListFileEntity } from '../entity/product.shared.list.file.entity';
 
 @Module({
   imports: [
@@ -28,6 +29,7 @@ import { FileModule } from '../file/file.module';
       UserSyncProductEventEntity,
       SsgEventEntity,
       UserEntity,
+      ProductSharedListFileEntity,
     ]),
     ActivityLogModule,
     FileModule,
