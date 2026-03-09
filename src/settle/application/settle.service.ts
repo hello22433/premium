@@ -100,6 +100,7 @@ import { ActivityLogResult } from '../../activity_log/interface/activity.log.res
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { GalaxiaBarcodeLogEntity } from '../../entity/galaxia.barcode.log.entity';
 import { SettleGalaxiaListViewDto } from '../api/dto/settle.galaxia.list.view.dto';
+import { IProductSettleMethod } from '../../product/interface/product.settle.method';
 
 @Injectable()
 export class SettleService {
@@ -137,6 +138,18 @@ export class SettleService {
       startAt: startAt || format(subMonths(now, 1), "yyyy-MM-dd'T'00:00:00"),
       endAt: endAt || format(now, "yyyy-MM-dd'T'23:59:59"),
     };
+  }
+
+  private getGalaxiaSettlementTargetAmount(
+    settleMethod: IProductSettleMethod,
+    usedAmount: number,
+    productPrice: number,
+  ): number {
+    if (settleMethod === 'PER_EXCHANGE') {
+      return productPrice;
+    }
+
+    return usedAmount;
   }
 
   async getOtherList(getQuery: SettleGetOtherServiceSaleGetListReqDto): Promise<SettleGetOtherListResDto> {
@@ -2723,6 +2736,7 @@ export class SettleService {
       { header: '사용처', key: 'appStore', width: 20, style: textStyle },
       { header: '상품권종류', key: 'giftKind', width: 12, style: textStyle },
       { header: '현재잔액', key: 'galaxiaBalance', width: 12, style: textStyle },
+      { header: '정산대상금액', key: 'settlementTargetAmount', width: 15, style: textStyle },
     ];
 
     for (const log of logList) {
@@ -2754,6 +2768,11 @@ export class SettleService {
         appStore: log.appStore ?? '',
         giftKind: log.giftKind,
         galaxiaBalance: orderDelivery.galaxiaBalance ?? 0,
+        settlementTargetAmount: this.getGalaxiaSettlementTargetAmount(
+          displayProduct.settleMethod,
+          log.amount,
+          displayProduct.price,
+        ),
       });
     }
 
