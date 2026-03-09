@@ -702,6 +702,7 @@ export class OrderService {
       userPersonPhoneNumber: billingUser?.personPhoneNumber ?? null,
       userBusinessEmail: billingUser?.email ?? null,
       userPersonName: billingUser?.personName ?? null,
+      documentCompanyType: billingUser?.documentCompanyType ?? CompanyType.ENMAD,
     };
     const now = new Date();
     const today = format(now, 'yyMMdd');
@@ -972,6 +973,7 @@ export class OrderService {
       price,
       vat,
       totalAmount,
+      documentCompanyType: billingUser?.documentCompanyType ?? CompanyType.ENMAD,
       orderDeliveryList,
     };
   }
@@ -1110,6 +1112,7 @@ export class OrderService {
       userPersonPhoneNumber: billingUser?.personPhoneNumber ?? null,
       userBusinessEmail: billingUser?.email ?? null,
       userPersonName: billingUser?.personName ?? null,
+      documentCompanyType: billingUser?.documentCompanyType ?? CompanyType.ENMAD,
     };
 
     const now = new Date();
@@ -1381,6 +1384,7 @@ export class OrderService {
       price,
       vat,
       totalAmount,
+      documentCompanyType: billingUser?.documentCompanyType ?? CompanyType.ENMAD,
       orderDeliveryList,
     };
   }
@@ -3594,10 +3598,13 @@ export class OrderService {
   }
 
   /**
-   * 직발송 접근 제어 필터
+   * 직발송/대행발송 접근 제어 필터
+   * - 직발송: clientUserId IS NULL (고객사 지정 없이 직접 발송)
+   * - 대행발송: clientUserId IS NOT NULL (고객사/담당자가 지정된 대리 주문)
+   *
    * - SUPER_ADMIN: sendingType 파라미터로 필터링 (전체 접근 가능)
-   * - OPERATION_ADMIN: 대행발송 건 + 본인 배정 직발송 건만 조회
-   * - 기타 (CORPORATE_ADMIN 등): 직발송 건 완전 차단
+   * - OPERATION_ADMIN: 직발송 건 + 본인 배정 대행발송 건만 조회
+   * - 기타 (CORPORATE_ADMIN 등): 대행발송 건 완전 차단
    */
   private applyDirectSendingFilter(
     queryBuilder: ReturnType<Repository<OrderEntity>['createQueryBuilder']>,
@@ -3606,9 +3613,9 @@ export class OrderService {
   ): void {
     if (user.authority === IUserAuthority.SUPER_ADMIN) {
       if (sendingType === IOrderSendingType.DIRECT) {
-        queryBuilder.andWhere('order.clientUserId IS NOT NULL');
-      } else if (sendingType === IOrderSendingType.AGENCY) {
         queryBuilder.andWhere('order.clientUserId IS NULL');
+      } else if (sendingType === IOrderSendingType.AGENCY) {
+        queryBuilder.andWhere('order.clientUserId IS NOT NULL');
       }
       return;
     }
