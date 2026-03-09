@@ -59,7 +59,7 @@ export class UserManagementService {
     @Inject('IMailSend')
     private readonly mailSendService: IMailSend,
     private activityLogService: ActivityLogService,
-  ) {}
+  ) { }
 
   /**
    * 회사 레벨 선충전 관리 모드인지 확인
@@ -94,6 +94,8 @@ export class UserManagementService {
 
   async getList(getQuery: UserManagementGetListReqQueryDto): Promise<UserManagementGetListResDto> {
     const {
+      searchType,
+      searchKeyword,
       settleCondition,
       status,
       createdStartAt,
@@ -129,8 +131,44 @@ export class UserManagementService {
       });
     }
 
+    // ===== 통합 검색 (searchType + searchKeyword) =====
+    if (searchKeyword && searchKeyword.length >= 1) {
+      switch (searchType) {
+        case 'email':
+          queryBuilder = queryBuilder.andWhere('user.email LIKE :keyword', {
+            keyword: `%${searchKeyword}%`,
+          });
+          break;
+        case 'businessName':
+          queryBuilder = queryBuilder.andWhere('company.businessName LIKE :keyword', {
+            keyword: `%${searchKeyword}%`,
+          });
+          break;
+        case 'personName':
+          queryBuilder = queryBuilder.andWhere('user.personName LIKE :keyword', {
+            keyword: `%${searchKeyword}%`,
+          });
+          break;
+        case 'personPhoneNumber':
+          queryBuilder = queryBuilder.andWhere('user.personPhoneNumber LIKE :keyword', {
+            keyword: `%${searchKeyword}%`,
+          });
+          break;
+        // 전체 검색 (아무 값이 들어오지 않으면 전체검색으로 인식)
+        default:
+          queryBuilder = queryBuilder.andWhere(
+            `(user.email LIKE :keyword
+              OR company.businessName LIKE :keyword
+              OR user.personName LIKE :keyword
+              OR user.personPhoneNumber LIKE :keyword)`,
+            { keyword: `%${searchKeyword}%` },
+          );
+          break;
+      }
+    }
+
     if (email) {
-      queryBuilder = queryBuilder.andWhere('user.email LIKE :email', { email: `${email}%` });
+      queryBuilder = queryBuilder.andWhere('user.email LIKE :email', { email: `%${email}%` });
     }
 
     if (businessName) {
@@ -244,30 +282,30 @@ export class UserManagementService {
       companyId: user.companyId,
       company: company
         ? {
-            id: company.id,
-            businessName: company.businessName,
-            businessNumber: company.businessNumber,
-            maximumLimit: company.maximumLimit,
-            balance: company.balance,
-            balanceManagementType: company.balanceManagementType,
-          }
+          id: company.id,
+          businessName: company.businessName,
+          businessNumber: company.businessNumber,
+          maximumLimit: company.maximumLimit,
+          balance: company.balance,
+          balanceManagementType: company.balanceManagementType,
+        }
         : null,
       departmentId: user.departmentId,
       department: user.department
         ? {
-            id: user.department.id,
-            name: user.department.name,
-          }
+          id: user.department.id,
+          name: user.department.name,
+        }
         : null,
       viewScope: viewScope
         ? {
-            scopeType: viewScope.scopeType,
-            deptIds: viewScope.getDeptIdList(),
-          }
+          scopeType: viewScope.scopeType,
+          deptIds: viewScope.getDeptIdList(),
+        }
         : {
-            scopeType: ViewScopeType.SELF,
-            deptIds: [],
-          },
+          scopeType: ViewScopeType.SELF,
+          deptIds: [],
+        },
       allowedSendMethods: user.allowedSendMethods ? user.allowedSendMethods.split(',') : ['ALIM_TALK', 'SMS', 'EMAIL'],
     };
   }
