@@ -24,6 +24,7 @@ export class UserManagementGetListReqQueryDto extends PagingReqDto {
   })
   // =============================================================
   @IsOptional()
+  @IsIn(['all', 'email', 'businessName', 'personName', 'personPhoneNumber'])
   searchType?: string;
 
   @ApiPropertyOptional({
@@ -32,7 +33,7 @@ export class UserManagementGetListReqQueryDto extends PagingReqDto {
   // =============================================================
   @IsOptional()
   searchKeyword?: string;
-  
+
   @ApiPropertyOptional({
     description: '정산 조건 ex) 선정산 : PRE_PAYMENT, 후정산: POST_PAYMENT',
   })

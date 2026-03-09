@@ -134,27 +134,27 @@ export class UserManagementService {
     // ===== 통합 검색 (searchType + searchKeyword) =====
     if (searchKeyword && searchKeyword.length >= 1) {
       switch (searchType) {
-        case 'EMAIL':
+        case 'email':
           queryBuilder = queryBuilder.andWhere('user.email LIKE :keyword', {
             keyword: `%${searchKeyword}%`,
           });
           break;
-        case 'BUSINESS_NAME':
+        case 'businessName':
           queryBuilder = queryBuilder.andWhere('company.businessName LIKE :keyword', {
             keyword: `%${searchKeyword}%`,
           });
           break;
-        case 'PERSON_NAME':
+        case 'personName':
           queryBuilder = queryBuilder.andWhere('user.personName LIKE :keyword', {
             keyword: `%${searchKeyword}%`,
           });
           break;
-        case 'PHONE_NUMBER':
+        case 'personPhoneNumber':
           queryBuilder = queryBuilder.andWhere('user.personPhoneNumber LIKE :keyword', {
             keyword: `%${searchKeyword}%`,
           });
           break;
-        case 'ALL':
+        case 'all':
         default:
           queryBuilder = queryBuilder.andWhere(
             `(user.email LIKE :keyword
