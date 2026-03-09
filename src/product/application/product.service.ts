@@ -94,7 +94,7 @@ export class ProductService {
     private activityLogService: ActivityLogService,
     @Inject('IFileStorage')
     private fileStorage: IFileStorage,
-  ) {}
+  ) { }
 
   private static readonly SHARED_LIST_ALLOWED_EXTENSIONS = ['.xlsx', '.xls', '.csv'];
 
@@ -169,6 +169,7 @@ export class ProductService {
 
   async getTotalList(user: ILoginUserInfo, getQuery: ProductGetTotalListReqQueryDto): Promise<ProductGetListResDto> {
     const {
+      searchKeyword,
       partnerCompanyId,
       brandId,
       brandName,
@@ -273,6 +274,16 @@ export class ProductService {
       );
     }
 
+    // ===== 통합 검색 =====
+    if (searchKeyword && searchKeyword.length >= 1) {
+      queryBuilder = queryBuilder.andWhere(
+        `(product.name LIKE :keyword
+      OR product.code LIKE :keyword
+      OR partnerCompany.code LIKE :keyword)`,
+        { keyword: `%${searchKeyword}%` },
+      );
+    }
+
     if (name) {
       // 띄어쓰기 무시 검색: 상품명과 검색어 모두 공백 제거 후 비교
       const searchName = name.replace(/\s/g, '');
@@ -363,6 +374,7 @@ export class ProductService {
 
   async getList(user: ILoginUserInfo, getQuery: ProductGetListReqQueryDto): Promise<ProductGetListResDto> {
     const {
+      searchKeyword,
       partnerCompanyId,
       headPersonUserId,
       brandId,
@@ -491,6 +503,16 @@ export class ProductService {
             { brandName: `%${brandName}%` },
           );
         }),
+      );
+    }
+
+    // ===== 통합 검색 =====
+    if (searchKeyword && searchKeyword.length >= 1) {
+      queryBuilder = queryBuilder.andWhere(
+        `(product.name LIKE :keyword
+      OR product.code LIKE :keyword
+      OR partnerCompany.code LIKE :keyword)`,
+        { keyword: `%${searchKeyword}%` },
       );
     }
 

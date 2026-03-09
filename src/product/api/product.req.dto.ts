@@ -79,6 +79,13 @@ export class ProductGetTotalListReqQueryDto extends PagingReqDto {
   @IsOptional()
   partnerCompanyCode?: string;
 
+  @ApiPropertyOptional({
+    description: '통합 검색 키워드 (상품명, 상품코드, 협력사코드 OR 검색)',
+  })
+  // ================================
+  @IsOptional()
+  searchKeyword?: string;
+
   @ApiProperty({
     description: '찜한 상품 불러오기',
   })
@@ -178,6 +185,13 @@ export class ProductGetListReqQueryDto extends PagingReqDto {
   @IsOptional()
   partnerCompanyCode?: string;
 
+  @ApiPropertyOptional({
+    description: '통합 검색 키워드 (상품명, 상품코드, 협력사코드 OR 검색)',
+  })
+  // ================================
+  @IsOptional()
+  searchKeyword?: string;
+
   @ApiProperty({
     description: '찜한 상품 불러오기',
   })
@@ -232,7 +246,7 @@ export class ProductGetUpdateHistoryReqParamDto {
   id: number;
 }
 
-export class ProductGetUpdateHistoryReqQueryDto extends PagingReqDto {}
+export class ProductGetUpdateHistoryReqQueryDto extends PagingReqDto { }
 
 export class ProductCreateReqDto {
   @ApiProperty({
