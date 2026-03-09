@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as nodemailer from 'nodemailer';
 import type { Transporter } from 'nodemailer';
+import { CompanyType } from '../../common/domain/company.type';
 
 export interface ISmtpMailAttachment {
   filename: string;
@@ -15,6 +16,7 @@ export interface ISmtpMailSendIn {
   subject: string;
   content: string;
   attachments?: ISmtpMailAttachment[];
+  companyType?: CompanyType;
 }
 
 export interface ISmtpMailSendOut {
@@ -23,60 +25,80 @@ export interface ISmtpMailSendOut {
   error?: string;
 }
 
+interface SmtpProfile {
+  transporter: Transporter;
+  fromEmail: string;
+  fromName: string;
+  bccEnvKey: string;
+}
+
 @Injectable()
 export class MailSendSmtp {
-  private transporter: Transporter;
+  private profiles: Record<CompanyType, SmtpProfile>;
   private logger = new Logger('MAIL_SMTP');
-
-  // 발신자 정보 (하드코딩)
-  private readonly FROM_EMAIL = 'service@enmad.com';
-  private readonly FROM_NAME = '(주)모바일이앤엠애드_운영팀';
 
   constructor(private configService: ConfigService) {
     const host = this.configService.get('SMTP_HOST');
-    const port = this.configService.get('SMTP_PORT');
-    const user = this.configService.get('SMTP_ID');
-    const pass = this.configService.get('SMTP_PWD');
+    const port = Number(this.configService.get('SMTP_PORT'));
+    const secure = port === 465;
 
-    this.transporter = nodemailer.createTransport({
-      host,
-      port: Number(port),
-      secure: Number(port) === 465, // 465는 SSL, 587은 TLS
-      auth: {
-        user,
-        pass,
+    // ENMAD (기본)
+    this.profiles = {
+      [CompanyType.ENMAD]: {
+        transporter: nodemailer.createTransport({
+          host,
+          port,
+          secure,
+          auth: {
+            user: this.configService.get('SMTP_ID'),
+            pass: this.configService.get('SMTP_PWD'),
+          },
+        }),
+        fromEmail: 'service@enmad.com',
+        fromName: '(주)모바일이앤엠애드_운영팀',
+        bccEnvKey: 'BCC_EMAIL',
       },
-    });
+      [CompanyType.SYSCUSS]: {
+        transporter: nodemailer.createTransport({
+          host,
+          port,
+          secure,
+          auth: {
+            user: this.configService.get('SYSCUSS_SMTP_ID'),
+            pass: this.configService.get('SYSCUSS_PWD'),
+          },
+        }),
+        fromEmail: 'service@syscuss.com',
+        fromName: '(주)시스커스_운영팀',
+        bccEnvKey: 'SYSCUSS_BCC_EMAIL',
+      },
+    };
   }
 
   async send(obj: ISmtpMailSendIn): Promise<ISmtpMailSendOut> {
     try {
-      // 줄바꿈을 <br>로 변환 (HTML에서 줄바꿈 적용)
-      const htmlContent = obj.content.replace(/\n/g, '<br>');
+      const companyType = obj.companyType || CompanyType.ENMAD;
+      const profile = this.profiles[companyType];
 
       const mailOptions: nodemailer.SendMailOptions = {
         from: {
-          name: this.FROM_NAME,
-          address: this.FROM_EMAIL,
+          name: profile.fromName,
+          address: profile.fromEmail,
         },
         to: obj.to,
+        cc: obj.cc || undefined,
         subject: obj.subject,
-        html: htmlContent,
+        html: obj.content.replace(/\n/g, '<br>'),
       };
 
-      // 참조(CC) 처리
-      if (obj.cc) {
-        mailOptions.cc = obj.cc;
-      }
-
-      // 숨은참조(BCC) 처리 - 환경변수 BCC_EMAIL이 설정되어 있으면 추가
-      const bccEmail = this.configService.get('BCC_EMAIL');
+      // 숨은참조(BCC) 처리 - 회사별 환경변수에서 조회
+      const bccEmail = this.configService.get(profile.bccEnvKey);
       if (bccEmail) {
         mailOptions.bcc = bccEmail;
       }
 
       // 첨부파일 처리
-      if (obj.attachments && obj.attachments.length > 0) {
+      if (obj.attachments?.length) {
         mailOptions.attachments = obj.attachments.map((attachment) => ({
           filename: attachment.filename,
           content: attachment.content,
@@ -84,9 +106,9 @@ export class MailSendSmtp {
         }));
       }
 
-      const result = await this.transporter.sendMail(mailOptions);
+      const result = await profile.transporter.sendMail(mailOptions);
 
-      this.logger.log(`이메일 전송 성공: ${result.messageId}`);
+      this.logger.log(`이메일 전송 성공 [${companyType}]: ${result.messageId}`);
 
       return {
         success: true,
