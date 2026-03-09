@@ -586,6 +586,13 @@ export class SettleGetUserListReqQueryDto extends PagingReqDto {
   // =============================================================
   @IsOptional()
   eventName?: string;
+
+  @ApiPropertyOptional({
+    description: '통합 검색 (고객사명, 담당자명, 이벤트명 OR 조건)',
+  })
+  @IsOptional()
+  searchKeyword?: string;
+
 }
 
 export class SettleGetUserDetailReqParamDto {
@@ -668,6 +675,13 @@ export class SettleGetUserIdsReqQueryDto {
   // =============================================================
   @IsOptional()
   eventName?: string;
+
+  @ApiPropertyOptional({
+    description: '통합 검색 (고객사명, 담당자명, 이벤트명 OR 조건)',
+  })
+  @IsOptional()
+  searchKeyword?: string;
+
 }
 
 export class SettleGetUserExcelDownloadReqDto {
@@ -732,6 +746,13 @@ export class SettleGetUserExcelDownloadReqDto {
   // =============================================================
   @IsNotEmpty()
   downloadReason: string;
+
+  @ApiPropertyOptional({
+    description: '통합 검색 (고객사명, 담당자명, 이벤트명 OR 조건)',
+  })
+  @IsOptional()
+  searchKeyword?: string;
+
 }
 
 export class SettleGetUserPerListReqQueryDto extends PagingReqDto {
