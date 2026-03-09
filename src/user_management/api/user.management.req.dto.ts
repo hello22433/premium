@@ -24,7 +24,7 @@ export class UserManagementGetListReqQueryDto extends PagingReqDto {
   })
   // =============================================================
   @IsOptional()
-  @IsIn(['email', 'businessName', 'personName', 'personPhoneNumber'])
+  @IsIn(['ALL', 'email', 'businessName', 'personName', 'personPhoneNumber'])
   searchType?: string;
 
   @ApiPropertyOptional({
