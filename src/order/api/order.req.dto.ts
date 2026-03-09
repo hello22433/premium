@@ -184,6 +184,13 @@ export class OrderCreateSettleReqDto {
   @IsArray()
   // =============================
   list: OrderSettleCreateDto[];
+
+  @ApiProperty({
+    description: '카드할증 적용 여부',
+    default: false,
+  })
+  @IsOptional()
+  cardSurchargeApplied?: boolean;
 }
 
 export class OrderUpdateSettleReqDto extends OrderCreateSettleReqDto {}

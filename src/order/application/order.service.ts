@@ -121,6 +121,16 @@ import { EmailSendHistoryEntity } from '../../entity/email.send.history.entity';
 import { EmailType } from '../../mail/domain/email.type';
 
 dayjs.extend(utc);
+
+/** 카드할증 비율 (3%) */
+const CARD_SURCHARGE_RATE = 0.03;
+
+/** 카드할증을 적용한 정산금액 계산 */
+function applyCardSurcharge(amount: number, applied: boolean): number {
+  if (!applied) return amount;
+  return amount + Math.floor(amount * CARD_SURCHARGE_RATE);
+}
+
 dayjs.extend(timezone);
 
 @Injectable()
@@ -1404,6 +1414,13 @@ export class OrderService {
       throw new BadRequestException('not found order');
     }
 
+    // 고객사 정산방법 조회 (과금 대상 유저 기준)
+    const billingUserForSettle = await this.userRepository.findOne({
+      where: { id: order.clientUserId ?? order.userId },
+      relations: ['company'],
+    });
+    const settleMethod = billingUserForSettle?.company?.settleMethod ?? null;
+
     // 1. 유저의 주문 상품 조회 (classification 포함)
     const [orderProductList, totalCount] = await this.orderProductMappingRepository.findAndCount({
       where: {
@@ -1511,6 +1528,8 @@ export class OrderService {
       currentPage: page,
       totalCount,
       totalPage,
+      settleMethod,
+      cardSurchargeApplied: order.cardSurchargeApplied,
     };
   }
 
@@ -1567,7 +1586,11 @@ export class OrderService {
     });
 
     await this.orderProductMappingRepository.save(orderProductList);
-    await this.orderRepository.update({ id: orderId }, { settleAmount: settleAmount + settleFee });
+
+    const cardSurchargeApplied = getBody.cardSurchargeApplied ?? false;
+    const newSettleAmount = applyCardSurcharge(settleAmount + settleFee, cardSurchargeApplied);
+
+    await this.orderRepository.update({ id: orderId }, { settleAmount: newSettleAmount, cardSurchargeApplied });
 
     // 환불률 업데이트: 각 orderProductMapping에 해당하는 orderDelivery들의 refundRatio 업데이트
     for (const settle of list) {
@@ -1582,7 +1605,7 @@ export class OrderService {
       // === 새 흐름 ===
       if (order.status === IOrderStatus.DELIVERY_CONFIRMED || order.status === IOrderStatus.DELIVERY_COMPLETE) {
         // 발송확정 후 정산 입력: difference 기반 조정 (updateOrderSettle 패턴)
-        const difference = order.settleAmount - (sendAmount + settleFee);
+        const difference = order.settleAmount - newSettleAmount;
         if (difference !== 0) {
           const oneUser = await this.userRepository.findOneOrFail({
             where: { id: oneUserId },
@@ -1603,9 +1626,9 @@ export class OrderService {
       });
 
       if (isSettleBalance) {
-        oneUser.balance = oneUser.balance + sendAmount - (settleAmount + settleFee);
+        oneUser.balance = oneUser.balance + sendAmount - newSettleAmount;
       } else {
-        oneUser.allSettleAmount = oneUser.allSettleAmount - sendAmount + (settleAmount + settleFee);
+        oneUser.allSettleAmount = oneUser.allSettleAmount - sendAmount + newSettleAmount;
       }
 
       await this.userRepository.save(oneUser);
@@ -1668,8 +1691,10 @@ export class OrderService {
 
     await this.orderProductMappingRepository.save(orderProductList);
 
-    const newSettleAmount = settleAmount + settleFee;
-    await this.orderRepository.update({ id: orderId }, { settleAmount: newSettleAmount });
+    const cardSurchargeApplied = getBody.cardSurchargeApplied ?? false;
+    const newSettleAmount = applyCardSurcharge(settleAmount + settleFee, cardSurchargeApplied);
+
+    await this.orderRepository.update({ id: orderId }, { settleAmount: newSettleAmount, cardSurchargeApplied });
 
     // 환불률 업데이트: 각 orderProductMapping에 해당하는 orderDelivery들의 refundRatio 업데이트
     for (const settle of list) {

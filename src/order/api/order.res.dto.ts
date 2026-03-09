@@ -278,6 +278,17 @@ export class OrderGetSettleGetListResDto extends GetListResDto {
     description: '정산 정보 list',
   })
   list: OrderSettleViewDto[];
+
+  @ApiProperty({
+    description: '고객사 정산방법 ex) CARD, CASH',
+    nullable: true,
+  })
+  settleMethod: string | null;
+
+  @ApiProperty({
+    description: '카드할증 적용 여부',
+  })
+  cardSurchargeApplied: boolean;
 }
 
 export class OrderGetMyOrderHistoryResDto extends OrderDashboardViewDto {}
