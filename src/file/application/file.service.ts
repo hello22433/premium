@@ -27,7 +27,7 @@ export class FileService {
 
   async downloadWithPath(path: string, fileTitle: string, fileUrl: string) {
     try {
-      const key = fileUrl.split('.com/').slice(1).join('');
+      const key = this.extractStorageKey(fileUrl);
       return this.fileStorage.downloadFileToLocalWithPath(path, fileTitle, key);
     } catch (error) {
       throw new Error('올바른 파일 경로가 아닙니다.');
@@ -58,5 +58,10 @@ export class FileService {
     const fileReturn = await this.fileStorage.uploadFile(file);
 
     return { url: fileReturn.url };
+  }
+
+  private extractStorageKey(fileUrl: string): string {
+    const parsedUrl = new URL(fileUrl);
+    return decodeURIComponent(parsedUrl.pathname.replace(/^\/+/, ''));
   }
 }

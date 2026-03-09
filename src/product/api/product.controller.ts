@@ -39,6 +39,7 @@ import {
   ProductGetUpdateHistoryReqParamDto,
   ProductGetUpdateHistoryReqQueryDto,
   ProductSetLikeReqDto,
+  ProductSharedListUploadReqDto,
   ProductSsgReqQueryDto,
   ProductUpdatePartialReqDto,
 } from './product.req.dto';
@@ -48,6 +49,7 @@ import {
   ProductGetDetailResDto,
   ProductGetListResDto,
   ProductGetSsgResDto,
+  ProductSharedListFileResDto,
   ProductGetUpdateHistoryResDto,
 } from './product.res.dto';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
@@ -59,6 +61,9 @@ import { join } from 'path';
 import * as process from 'node:process';
 import { AuthService } from '../../auth/application/auth.service';
 import { UserAuthSubEnum } from '../../user_management/domain/user.auth.enum';
+import { AuthUserSuperAdminGuard } from '../../auth/api/auth.user.super-admin.guard';
+
+const PRODUCT_SHARED_LIST_FILE_MAX_SIZE = 10 * 1024 * 1024;
 
 @ApiBearerAuth()
 @UseGuards(AuthUserAuthorizationGuard)
@@ -279,6 +284,77 @@ export class ProductController {
       const errorMessage = error instanceof Error ? error.message : '알 수 없는 오류가 발생했습니다.';
       sendProgress('error', 0, 0, errorMessage);
       res.end();
+    }
+  }
+
+  @ApiOperation({
+    summary: '고객사 공유 상품리스트 파일 업로드 API',
+    description: '최고관리자가 업로드한 파일을 고객사가 다운로드할 수 있도록 공유 파일을 등록합니다.',
+  })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    type: ProductSharedListUploadReqDto,
+    description: '업로드 하고자 하는 공유 상품리스트 파일',
+  })
+  @ApiOkResponse({
+    type: ProductSharedListFileResDto,
+    description: '성공적으로 업로드한 경우',
+  })
+  @Post('/product/shared-list-file/upload')
+  @UseGuards(AuthUserSuperAdminGuard)
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: {
+        fileSize: PRODUCT_SHARED_LIST_FILE_MAX_SIZE,
+      },
+    }),
+  )
+  uploadSharedListFile(@User() user: ILoginUserInfo, @UploadedFile() file: Express.Multer.File) {
+    return this.productService.uploadSharedListFile(user, file);
+  }
+
+  @ApiOperation({
+    summary: '고객사 공유 상품리스트 파일 정보 조회 API',
+    description: '현재 고객사가 다운로드할 최신 상품리스트 파일 정보를 조회합니다.',
+  })
+  @ApiOkResponse({
+    type: ProductSharedListFileResDto,
+    description: '최신 공유 파일 정보를 조회한 경우',
+  })
+  @Get('/product/shared-list-file')
+  getSharedListFile() {
+    return this.productService.getSharedListFile();
+  }
+
+  @ApiOperation({
+    summary: '고객사 공유 상품리스트 파일 다운로드 API',
+    description: '최고관리자가 업로드한 최신 상품리스트 파일을 다운로드합니다.',
+  })
+  @ApiOkResponse({
+    description: '성공적으로 다운로드한 경우',
+  })
+  @Get('/product/shared-list-file/download')
+  @UseFilters(DownloadExceptionFilter)
+  async downloadSharedListFile(@Res() res: Response) {
+    try {
+      const { fileName, filePath } = await this.productService.downloadSharedListFile();
+
+      const encodedFileName = encodeURIComponent(fileName);
+      res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
+      res.setHeader('Content-Disposition', `attachment; filename=${encodedFileName}`);
+
+      const fileStream = fs.createReadStream(filePath);
+      fileStream.pipe(res);
+
+      fileStream.on('close', async () => {
+        fs.unlink(filePath, (unlinkErr) => {
+          if (unlinkErr) {
+            this.logger.error(`파일 삭제 실패 ${unlinkErr}`);
+          }
+        });
+      });
+    } catch (e) {
+      throw e;
     }
   }
 
