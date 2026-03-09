@@ -154,7 +154,7 @@ export class UserManagementService {
             keyword: `%${searchKeyword}%`,
           });
           break;
-        case 'all':
+        // 전체 검색 (아무 값이 들어오지 않으면 전체검색으로 인식)
         default:
           queryBuilder = queryBuilder.andWhere(
             `(user.email LIKE :keyword
