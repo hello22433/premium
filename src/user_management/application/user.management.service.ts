@@ -43,6 +43,7 @@ import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { ActivityLogEntity } from '../../entity/activity.log.entity';
 import { format } from 'date-fns';
 import { DateFormatStr } from '../../common/domain/date.format.str';
+import { CompanyType } from '../../common/domain/company.type';
 
 @Injectable()
 export class UserManagementService {
@@ -279,6 +280,7 @@ export class UserManagementService {
       authorityList: authorityList,
       industryType: company?.industryType ?? null,
       industryItem: company?.industryItem ?? null,
+      documentCompanyType: user.documentCompanyType ?? CompanyType.ENMAD,
       companyId: user.companyId,
       company: company
         ? {
@@ -598,6 +600,7 @@ export class UserManagementService {
       authorityList: getBody.authorityList.join(','),
       companyId: companyId,
       allowedSendMethods: getBody.allowedSendMethods.join(','),
+      documentCompanyType: getBody.documentCompanyType ?? CompanyType.ENMAD,
     });
 
     // 신규 사용자의 조회 범위 설정 (SUPER_ADMIN만 ALL, 나머지는 SELF)
@@ -693,6 +696,9 @@ export class UserManagementService {
     user.duplicatePhoneLimit = getBody.duplicatePhoneLimit ?? 0;
     user.authorityList = getBody.authorityList.join(',');
     user.allowedSendMethods = getBody.allowedSendMethods.join(',');
+    if (getBody.documentCompanyType) {
+      user.documentCompanyType = getBody.documentCompanyType;
+    }
 
     await this.userRepository.save(user);
 

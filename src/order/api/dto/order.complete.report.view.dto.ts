@@ -1,6 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { IUserSettleCondition } from '../../../user/interface/user.settle.condition';
 import { OrderCompleteReportDeliveryViewDto } from './order.detail.product.dto';
+import { CompanyType } from '../../../common/domain/company.type';
 
 export class OrderCompleteReportViewDto {
   @ApiProperty({
@@ -72,6 +73,12 @@ export class OrderCompleteReportViewDto {
     description: '합계 금액 (공급가액 + 부가세)',
   })
   totalAmount: number;
+
+  @ApiProperty({
+    description: '기본 문서 양식',
+    enum: CompanyType,
+  })
+  documentCompanyType: CompanyType;
 
   @ApiProperty({
     type: [OrderCompleteReportDeliveryViewDto],
