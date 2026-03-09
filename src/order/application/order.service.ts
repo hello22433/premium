@@ -115,6 +115,7 @@ import dayjs from 'dayjs';
 import timezone from 'dayjs/plugin/timezone';
 import utc from 'dayjs/plugin/utc';
 import { MailSendSmtp } from '../../mail/infrastructure/mail-send.smtp';
+import { CompanyType } from '../../common/domain/company.type';
 import { OrderDeliveryCompleteReportEmailReqDto } from '../api/order.req.dto';
 import { EmailSendHistoryEntity } from '../../entity/email.send.history.entity';
 import { EmailType } from '../../mail/domain/email.type';
@@ -3466,14 +3467,23 @@ export class OrderService {
   }
 
   /**
-   * 발송완료리포트 이메일 발송
+   * PDF 리포트 이메일 발송 공통 로직
    */
-  async sendDeliveryCompleteReportEmail(
-    getBody: OrderDeliveryCompleteReportEmailReqDto,
+  private async sendReportEmail(
+    getBody: {
+      orderId: number;
+      to: string;
+      subject: string;
+      content: string;
+      pdfBase64: string;
+      pdfFileName: string;
+      companyType?: CompanyType;
+    },
     user: ILoginUserInfo,
     ipAddress: string,
+    logMeta: { requestUrl: string; actionType: string },
   ): Promise<{ success: boolean; message: string }> {
-    const { orderId, to, subject, content, pdfBase64, pdfFileName } = getBody;
+    const { orderId, to, subject, content, pdfBase64, pdfFileName, companyType } = getBody;
 
     // 주문 존재 여부 확인
     const order = await this.orderRepository.findOne({
@@ -3483,9 +3493,6 @@ export class OrderService {
     if (!order) {
       throw new BadRequestException('해당 주문이 존재하지 않습니다.');
     }
-
-    // base64를 Buffer로 변환
-    const pdfBuffer = Buffer.from(pdfBase64, 'base64');
 
     // 이메일 주소 파싱 (첫번째: to, 나머지: cc)
     const emails = to
@@ -3501,10 +3508,11 @@ export class OrderService {
       cc: ccEmails,
       subject,
       content,
+      companyType,
       attachments: [
         {
           filename: pdfFileName,
-          content: pdfBuffer,
+          content: Buffer.from(pdfBase64, 'base64'),
           contentType: 'application/pdf',
         },
       ],
@@ -3515,8 +3523,8 @@ export class OrderService {
       userId: user.id,
       userEmail: user.email,
       method: 'POST',
-      requestUrl: '/order/delivery-complete/report/email',
-      actionType: 'DELIVERY_COMPLETE_REPORT_EMAIL',
+      requestUrl: logMeta.requestUrl,
+      actionType: logMeta.actionType,
       ipAddress,
       statusCode: result.success ? 200 : 500,
       result: result.success ? ActivityLogResult.SUCCESS : ActivityLogResult.FAILURE,
@@ -3541,6 +3549,20 @@ export class OrderService {
       success: true,
       message: '이메일이 성공적으로 발송되었습니다.',
     };
+  }
+
+  /**
+   * 발송완료리포트 이메일 발송
+   */
+  async sendDeliveryCompleteReportEmail(
+    getBody: OrderDeliveryCompleteReportEmailReqDto,
+    user: ILoginUserInfo,
+    ipAddress: string,
+  ): Promise<{ success: boolean; message: string }> {
+    return this.sendReportEmail(getBody, user, ipAddress, {
+      requestUrl: '/order/delivery-complete/report/email',
+      actionType: 'DELIVERY_COMPLETE_REPORT_EMAIL',
+    });
   }
 
   /**
@@ -3551,74 +3573,10 @@ export class OrderService {
     user: ILoginUserInfo,
     ipAddress: string,
   ): Promise<{ success: boolean; message: string }> {
-    const { orderId, to, subject, content, pdfBase64, pdfFileName } = getBody;
-
-    // 주문 존재 여부 확인
-    const order = await this.orderRepository.findOne({
-      where: { id: orderId },
-    });
-
-    if (!order) {
-      throw new BadRequestException('해당 주문이 존재하지 않습니다.');
-    }
-
-    // base64를 Buffer로 변환
-    const pdfBuffer = Buffer.from(pdfBase64, 'base64');
-
-    // 이메일 주소 파싱 (첫번째: to, 나머지: cc)
-    const emails = to
-      .split(',')
-      .map((email) => email.trim())
-      .filter((email) => email);
-    const toEmail = emails[0];
-    const ccEmails = emails.length > 1 ? emails.slice(1).join(', ') : undefined;
-
-    // 이메일 발송
-    const result = await this.mailSendSmtp.send({
-      to: toEmail,
-      cc: ccEmails,
-      subject,
-      content,
-      attachments: [
-        {
-          filename: pdfFileName,
-          content: pdfBuffer,
-          contentType: 'application/pdf',
-        },
-      ],
-    });
-
-    // 활동 로그 기록
-    await this.activityLogService.createLog({
-      userId: user.id,
-      userEmail: user.email,
-      method: 'POST',
+    return this.sendReportEmail(getBody, user, ipAddress, {
       requestUrl: '/order/transaction-statement/report/email',
       actionType: 'TRANSACTION_STATEMENT_EMAIL',
-      ipAddress,
-      statusCode: result.success ? 200 : 500,
-      result: result.success ? ActivityLogResult.SUCCESS : ActivityLogResult.FAILURE,
-      responseTime: 0,
-      requestParams: {
-        orderId,
-        to: toEmail,
-        cc: ccEmails || null,
-        subject,
-        pdfFileName,
-        messageId: result.messageId,
-        error: result.error,
-      },
-      errorMessage: result.error || undefined,
     });
-
-    if (!result.success) {
-      throw new InternalServerErrorException(result.error || '이메일 발송에 실패했습니다.');
-    }
-
-    return {
-      success: true,
-      message: '이메일이 성공적으로 발송되었습니다.',
-    };
   }
 
   /**
@@ -3629,74 +3587,10 @@ export class OrderService {
     user: ILoginUserInfo,
     ipAddress: string,
   ): Promise<{ success: boolean; message: string }> {
-    const { orderId, to, subject, content, pdfBase64, pdfFileName } = getBody;
-
-    // 주문 존재 여부 확인
-    const order = await this.orderRepository.findOne({
-      where: { id: orderId },
-    });
-
-    if (!order) {
-      throw new BadRequestException('해당 주문이 존재하지 않습니다.');
-    }
-
-    // base64를 Buffer로 변환
-    const pdfBuffer = Buffer.from(pdfBase64, 'base64');
-
-    // 이메일 주소 파싱 (첫번째: to, 나머지: cc)
-    const emails = to
-      .split(',')
-      .map((email) => email.trim())
-      .filter((email) => email);
-    const toEmail = emails[0];
-    const ccEmails = emails.length > 1 ? emails.slice(1).join(', ') : undefined;
-
-    // 이메일 발송
-    const result = await this.mailSendSmtp.send({
-      to: toEmail,
-      cc: ccEmails,
-      subject,
-      content,
-      attachments: [
-        {
-          filename: pdfFileName,
-          content: pdfBuffer,
-          contentType: 'application/pdf',
-        },
-      ],
-    });
-
-    // 활동 로그 기록
-    await this.activityLogService.createLog({
-      userId: user.id,
-      userEmail: user.email,
-      method: 'POST',
+    return this.sendReportEmail(getBody, user, ipAddress, {
       requestUrl: '/order/destruction-certificate/report/email',
       actionType: 'DESTRUCTION_CERTIFICATE_EMAIL',
-      ipAddress,
-      statusCode: result.success ? 200 : 500,
-      result: result.success ? ActivityLogResult.SUCCESS : ActivityLogResult.FAILURE,
-      responseTime: 0,
-      requestParams: {
-        orderId,
-        to: toEmail,
-        cc: ccEmails || null,
-        subject,
-        pdfFileName,
-        messageId: result.messageId,
-        error: result.error,
-      },
-      errorMessage: result.error || undefined,
     });
-
-    if (!result.success) {
-      throw new InternalServerErrorException(result.error || '이메일 발송에 실패했습니다.');
-    }
-
-    return {
-      success: true,
-      message: '이메일이 성공적으로 발송되었습니다.',
-    };
   }
 
   /**
