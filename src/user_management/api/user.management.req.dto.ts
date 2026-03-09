@@ -20,6 +20,20 @@ export class UserManagementGetNameListReqQueryDto {
 
 export class UserManagementGetListReqQueryDto extends PagingReqDto {
   @ApiPropertyOptional({
+    description: '검색 타입 ex) 전체: ALL, 이메일: EMAIL, 고객사명: BUSINESS_NAME, 담당자명: PERSON_NAME, 연락처: PHONE_NUMBER',
+  })
+  // =============================================================
+  @IsOptional()
+  searchType?: string;
+
+  @ApiPropertyOptional({
+    description: '검색어 키워드',
+  })
+  // =============================================================
+  @IsOptional()
+  searchKeyword?: string;
+  
+  @ApiPropertyOptional({
     description: '정산 조건 ex) 선정산 : PRE_PAYMENT, 후정산: POST_PAYMENT',
   })
   // =============================================================
