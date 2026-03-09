@@ -82,6 +82,9 @@ export class OrderEntity extends BaseEntity {
   @Column({ default: true, comment: '신규 과금 흐름 적용 여부 (true: 발송확정 시 차감)' })
   isNewBillingFlow: boolean;
 
+  @Column({ default: false, comment: '카드할증 적용 여부 (3%)' })
+  cardSurchargeApplied: boolean;
+
   @Column({ type: 'text', nullable: true, comment: '주문 취소 사유' })
   cancelReason: string | null;
 
