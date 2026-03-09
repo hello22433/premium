@@ -9,6 +9,7 @@ import { IUserSettleMethod } from '../../user/interface/user.settle.method';
 import { IUserBusinessType } from '../../user/interface/user.business.type';
 import { UserSettlePeriodConditionEnum } from '../../user/interface/user.settle.period.condition.enum';
 import { ViewScopeType } from '../../entity/user.view.scope.entity';
+import { CompanyType } from '../../common/domain/company.type';
 
 export class UserManagementGetNameListResDto {
   @ApiProperty({
@@ -178,6 +179,12 @@ export class UserManagementGetDetailResDto {
     description: '종목',
   })
   industryItem: string | null;
+
+  @ApiProperty({
+    description: '기본 문서 양식',
+    enum: CompanyType,
+  })
+  documentCompanyType: CompanyType;
 
   @ApiProperty({
     description: '소속 회사 ID',

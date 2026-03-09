@@ -57,6 +57,7 @@ import { DeliveryTrackingStatus } from '../../delivery/domain/delivery.tracking.
 import { ActivityLogService } from '../../activity_log/application/activity.log.service';
 import { ActivityLogResult } from '../../activity_log/interface/activity.log.result';
 import { IPublicChargeTaxPaymentType } from '../interface/public.charge.tax.payment.type';
+import { CompanyType } from '../../common/domain/company.type';
 
 /**
  * 제세공과금 계산 함수
@@ -811,6 +812,7 @@ export class OrderRealProductService {
       userPersonPhoneNumber: order.businessUser?.personPhoneNumber ?? null,
       userBusinessEmail: order.businessUser?.email ?? null,
       userPersonName: order.businessUser?.personName ?? null,
+      documentCompanyType: order.businessUser?.documentCompanyType ?? CompanyType.ENMAD,
     };
     const now = new Date();
     const today = format(now, 'yyMMdd');

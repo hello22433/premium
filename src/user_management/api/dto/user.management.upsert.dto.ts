@@ -6,6 +6,7 @@ import { IUserSettleMethod } from '../../../user/interface/user.settle.method';
 import { IUserBusinessType } from '../../../user/interface/user.business.type';
 import { UserSettlePeriodConditionEnum } from '../../../user/interface/user.settle.period.condition.enum';
 import { IOrderSendMethod } from '../../../order/interface/order.send.method';
+import { CompanyType } from '../../../common/domain/company.type';
 
 export class UserManagementUpsertDto {
   @ApiProperty({
@@ -200,6 +201,16 @@ export class UserManagementUpsertDto {
   // ============================
   @IsOptional()
   industryItem: string | null = null;
+
+  @ApiPropertyOptional({
+    description: '기본 문서 양식',
+    enum: CompanyType,
+    default: CompanyType.ENMAD,
+  })
+  // ============================
+  @IsOptional()
+  @IsEnum(CompanyType)
+  documentCompanyType?: CompanyType;
 
   @ApiProperty({
     description: '허용 발신수단 목록 (ALIM_TALK, SMS, EMAIL)',

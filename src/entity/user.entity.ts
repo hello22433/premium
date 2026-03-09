@@ -11,6 +11,7 @@ import { OrderEntity } from './order.entity';
 import { UserCompanyEntity } from './user.company.entity';
 import { DepartmentEntity } from './department.entity';
 import { UserViewScopeEntity } from './user.view.scope.entity';
+import { CompanyType } from '../common/domain/company.type';
 
 @Entity('user')
 export class UserEntity extends BaseEntity {
@@ -145,6 +146,14 @@ export class UserEntity extends BaseEntity {
     comment: '허용 발신수단 목록 (쉼표 구분: ALIM_TALK,SMS,EMAIL)',
   })
   allowedSendMethods: string;
+
+  @Column({
+    type: 'varchar',
+    length: 20,
+    default: CompanyType.ENMAD,
+    comment: '기본 문서 양식 (ENMAD: 모바일이앤엠애드, SYSCUSS: 시스커스)',
+  })
+  documentCompanyType: CompanyType;
 
   @OneToMany(() => OrderEntity, (order) => order.user)
   orders: OrderEntity[];
