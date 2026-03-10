@@ -53,7 +53,7 @@ export class RefundService {
     const [orderDeliveryList, totalCount] = await queryBuilder.getManyAndCount();
 
     const resultList: RefundListViewDto[] = orderDeliveryList.map((orderDelivery) => {
-      const decryptedDeliveryTarget = this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.deliveryTarget);
+      const decryptedDeliveryTarget = this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.deliveryTarget) ?? '';
 
       return {
         id: orderDelivery.id,

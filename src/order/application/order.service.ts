@@ -454,7 +454,7 @@ export class OrderService {
         for (const orderDelivery of orderProductMapping.orderDeliveries) {
           // deliveryTarget 복호화 (originalDeliveryTarget 우선 사용)
           const targetToDecrypt = orderDelivery.originalDeliveryTarget || orderDelivery.deliveryTarget;
-          const decryptedDeliveryTarget = this.cryptoCipher.safeDecryptDeliveryTarget(targetToDecrypt);
+          const decryptedDeliveryTarget = this.cryptoCipher.safeDecryptDeliveryTarget(targetToDecrypt) ?? '';
 
           orderDeliveryList.push({
             id: orderDelivery.id,
@@ -716,7 +716,7 @@ export class OrderService {
         for (const orderDelivery of orderProductMapping.orderDeliveries) {
           // deliveryTarget 복호화 후 마스킹 처리 (originalDeliveryTarget 우선 사용)
           const targetToDecrypt = orderDelivery.originalDeliveryTarget || orderDelivery.deliveryTarget;
-          const decryptedDeliveryTarget = this.cryptoCipher.safeDecryptDeliveryTarget(targetToDecrypt);
+          const decryptedDeliveryTarget = this.cryptoCipher.safeDecryptDeliveryTarget(targetToDecrypt) ?? '';
 
           // 파기된 경우('-')는 마스킹하지 않고 그대로 반환
           let finalDeliveryTarget = decryptedDeliveryTarget;
@@ -1134,7 +1134,7 @@ export class OrderService {
           for (const orderDelivery of orderProductMapping.orderDeliveries) {
             // deliveryTarget 복호화 후 마스킹 처리 (originalDeliveryTarget 우선 사용)
             const targetToDecrypt = orderDelivery.originalDeliveryTarget || orderDelivery.deliveryTarget;
-            const decryptedDeliveryTarget = this.cryptoCipher.safeDecryptDeliveryTarget(targetToDecrypt);
+            const decryptedDeliveryTarget = this.cryptoCipher.safeDecryptDeliveryTarget(targetToDecrypt) ?? '';
 
             let finalDeliveryTarget = decryptedDeliveryTarget;
             if (decryptedDeliveryTarget !== '-') {
