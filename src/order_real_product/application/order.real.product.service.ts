@@ -703,7 +703,7 @@ export class OrderRealProductService {
       queryBuilder = queryBuilder.andWhere(
         new Brackets((qb) => {
           qb.where('businessCompany.businessName LIKE :keyword', { keyword: `%${searchKeyword}%` })
-            .orWhere('user.personName LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('businessUser.personName LIKE :keyword', { keyword: `%${searchKeyword}%` })
             .orWhere('order.eventName LIKE :keyword', { keyword: `%${searchKeyword}%` });
         }),
       );
@@ -721,7 +721,7 @@ export class OrderRealProductService {
     }
 
     if (personName) {
-      queryBuilder = queryBuilder.andWhere('order.user.personName LIKE :personName', {
+      queryBuilder = queryBuilder.andWhere('businessUser.personName LIKE :personName', {
         personName: `%${personName}%`,
       });
     }
@@ -765,7 +765,7 @@ export class OrderRealProductService {
 
         resultList.push({
           id: order.id,
-          userBusinessName: order.businessUser.personName,
+          userBusinessName: order.businessUser.company?.businessName ?? '',
           classification: product.classification?.classification ?? null,
           brandName: brand?.nameKorean || '',
           userPersonName: order.businessUser.personName,
@@ -900,7 +900,7 @@ export class OrderRealProductService {
       queryBuilder = queryBuilder.andWhere(
         new Brackets((qb) => {
           qb.where('businessCompany.businessName LIKE :keyword', { keyword: `%${searchKeyword}%` })
-            .orWhere('user.personName LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('businessUser.personName LIKE :keyword', { keyword: `%${searchKeyword}%` })
             .orWhere('order.eventName LIKE :keyword', { keyword: `%${searchKeyword}%` });
         }),
       );
@@ -918,7 +918,7 @@ export class OrderRealProductService {
     }
 
     if (personName) {
-      queryBuilder = queryBuilder.andWhere('order.user.personName LIKE :personName', {
+      queryBuilder = queryBuilder.andWhere('businessUser.personName LIKE :personName', {
         personName: `%${personName}%`,
       });
     }
@@ -958,7 +958,7 @@ export class OrderRealProductService {
 
         resultList.push({
           id: order.id,
-          userBusinessName: order.businessUser.personName,
+          userBusinessName: order.businessUser.company?.businessName ?? '',
           classification: product.classification?.classification ?? null,
           brandName: brand?.nameKorean || '',
           userPersonName: order.businessUser.personName,
@@ -982,7 +982,8 @@ export class OrderRealProductService {
     sheet.columns = [
       { header: '번호', key: 'id', width: 10 },
       { header: '고객사명', key: 'userBusinessName', width: 32 },
-      { header: '대분류', key: 'userBusinessName', width: 20 },
+      // key 중복
+      { header: '대분류', key: 'classification', width: 20 },
       { header: '브랜드명', key: 'brandName', width: 20 },
       { header: '담당자명', key: 'userPersonName', width: 20 },
       { header: '이벤트명', key: 'eventName', width: 32 },

@@ -217,14 +217,18 @@ export class SsgEventService {
     const eventList = await queryBuilder.getMany();
 
     const ssgEventIdList = eventList.map((event) => event.id);
-    const orderProductMappingList = await this.orderProductMappingRepository
-      .createQueryBuilder('orderProductMapping')
-      .innerJoinAndSelect('orderProductMapping.product', 'product')
-      .innerJoinAndSelect('orderProductMapping.order', 'order')
-      .innerJoinAndSelect('orderProductMapping.orderDeliveries', 'orderDeliveries')
-      .where('orderDeliveries.ssgEventId IN (:...ssgEventIdList)', { ssgEventIdList })
-      .andWhere('order.type = :type', { type: IOrderType.SSG })
-      .getMany();
+
+    // 검색 결과가 0건이면 IN () 쿼리 에러 방지
+    const orderProductMappingList = ssgEventIdList.length > 0
+      ? await this.orderProductMappingRepository
+        .createQueryBuilder('orderProductMapping')
+        .innerJoinAndSelect('orderProductMapping.product', 'product')
+        .innerJoinAndSelect('orderProductMapping.order', 'order')
+        .innerJoinAndSelect('orderProductMapping.orderDeliveries', 'orderDeliveries')
+        .where('orderDeliveries.ssgEventId IN (:...ssgEventIdList)', { ssgEventIdList })
+        .andWhere('order.type = :type', { type: IOrderType.SSG })
+        .getMany()
+      : [];
 
     // <ssgEventId, >
     const ssgEventCountMap = new Map<
