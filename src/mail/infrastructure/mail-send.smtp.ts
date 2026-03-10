@@ -29,15 +29,16 @@ interface SmtpProfile {
   transporter: Transporter;
   fromEmail: string;
   fromName: string;
-  bccEnvKey: string;
 }
 
 @Injectable()
 export class MailSendSmtp {
-  private profiles: Record<CompanyType, SmtpProfile>;
+  private readonly profiles: Record<CompanyType, SmtpProfile>;
+  private readonly bccEmail: string | undefined;
   private logger = new Logger('MAIL_SMTP');
 
   constructor(private configService: ConfigService) {
+    this.bccEmail = this.configService.get('SMTP_ID');
     const host = this.configService.get('SMTP_HOST');
     const port = Number(this.configService.get('SMTP_PORT'));
     const secure = port === 465;
@@ -56,7 +57,6 @@ export class MailSendSmtp {
         }),
         fromEmail: 'service@enmad.com',
         fromName: '(주)모바일이앤엠애드_운영팀',
-        bccEnvKey: 'BCC_EMAIL',
       },
       [CompanyType.SYSCUSS]: {
         transporter: nodemailer.createTransport({
@@ -70,7 +70,6 @@ export class MailSendSmtp {
         }),
         fromEmail: 'service@syscuss.com',
         fromName: '(주)시스커스_운영팀',
-        bccEnvKey: 'SYSCUSS_BCC_EMAIL',
       },
     };
   }
@@ -91,10 +90,9 @@ export class MailSendSmtp {
         html: obj.content.replace(/\n/g, '<br>'),
       };
 
-      // 숨은참조(BCC) 처리 - 회사별 환경변수에서 조회
-      const bccEmail = this.configService.get(profile.bccEnvKey);
-      if (bccEmail) {
-        mailOptions.bcc = bccEmail;
+      // 숨은참조(BCC) - SMTP 계정으로 고정
+      if (this.bccEmail) {
+        mailOptions.bcc = this.bccEmail;
       }
 
       // 첨부파일 처리
