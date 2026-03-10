@@ -230,6 +230,25 @@ export class UserManagementGetCompanyListReqQueryDto extends PagingReqDto {
   businessName?: string;
 }
 
+export class UserManagementChangeEmailReqDto {
+  @ApiProperty({
+    description: '이메일을 변경하고자 하는 유저 id',
+  })
+  // =============================================================
+  @IsNotEmpty()
+  @IsNumber()
+  @Type(() => Number)
+  id: number;
+
+  @ApiProperty({
+    description: '변경할 새 이메일',
+  })
+  // =============================================================
+  @IsNotEmpty()
+  @IsEmail()
+  newEmail: string;
+}
+
 export class UserManagementModifyMaximumLimitReqDto {
   @ApiProperty({
     description: '수정하고자 하는 유저 id',

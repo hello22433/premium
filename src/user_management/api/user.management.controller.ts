@@ -12,6 +12,7 @@ import {
   UserManagementModifyBalanceReqDto,
   UserManagementGetCompanyListReqQueryDto,
   UserManagementModifyMaximumLimitReqDto,
+  UserManagementChangeEmailReqDto,
 } from './user.management.req.dto';
 import {
   UserManagementBalanceViewDto,
@@ -188,6 +189,24 @@ export class UserManagementController {
   @Put('/user-management/maximum-limit')
   modifyMaximumLimit(@User() user: ILoginUserInfo, @Body() getBody: UserManagementModifyMaximumLimitReqDto) {
     return this.userManagementService.modifyMaximumLimit(getBody, user);
+  }
+
+  @ApiOperation({
+    summary: '계정 이메일(ID) 변경 API',
+    description: '최고관리자만 접근 가능합니다. 계정의 로그인 이메일을 변경합니다.',
+  })
+  @ApiBearerAuth()
+  @ApiOkResponse({
+    description: '성공적으로 변경한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '유저가 존재하지 않거나 이메일이 중복된 경우',
+  })
+  // ====================================
+  @UseGuards(AuthUserSuperAdminGuard)
+  @Put('/user-management/email')
+  changeEmail(@Body() getBody: UserManagementChangeEmailReqDto) {
+    return this.userManagementService.changeEmail(getBody);
   }
 
   @ApiOperation({
