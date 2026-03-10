@@ -1,26 +1,13 @@
 import { IOrderStatus } from '../interface/order.status';
 
-export const OrderStatusExcelMapping = (status: IOrderStatus): string => {
-  if (status === 'TEMP') {
-    return '임시 저장';
-  }
-
-  if (status === 'DELIVERY_REQUEST') {
-    return '발송 요청';
-  }
-
-  if (status === 'DELIVERY_CONFIRMED') {
-    return '발송 확정';
-  }
-
-  if (status === 'DELIVERY_COMPLETE') {
-    return '발송 완료';
-  }
-
-  if (status === 'DELIVERY_CANCEL') {
-    return '발송 취소';
-  }
-
-  // 정의되지 않은 상태 처리
-  return '';
+const ORDER_STATUS_LABEL: Record<IOrderStatus, string> = {
+  TEMP: '임시 저장',
+  DELIVERY_REQUEST: '발송 요청',
+  REVIEW_COMPLETE: '검토 완료',
+  DELIVERY_CONFIRMED: '발송 확정',
+  DELIVERY_COMPLETE: '발송 완료',
+  DELIVERY_CANCEL: '발송 취소',
 };
+
+export const OrderStatusExcelMapping = (status: IOrderStatus): string =>
+  ORDER_STATUS_LABEL[status] ?? '';

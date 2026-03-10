@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
+import { parseFilePathList } from '../../util/file.util';
 import { InjectRepository } from '@nestjs/typeorm';
 import { UserDriveEntity } from '../../entity/user.drive.entity';
 import { Repository } from 'typeorm';
@@ -104,7 +105,7 @@ export class UserDriveService {
       title: userDrive.title,
       content: userDrive.content,
       status: userDrive.status,
-      filePathList: userDrive.filePath ? userDrive.filePath.split(',') : [],
+      filePathList: parseFilePathList(userDrive.filePath),
       replyContent: userDrive.replyContent,
     };
   }

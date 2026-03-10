@@ -474,24 +474,6 @@ export class ProductExcelDownloadReqBodyDto {
   downloadReason: string;
 }
 
-export class ProductGetLikeListReqDto {
-  @ApiProperty({
-    description: 'product id',
-  })
-  // =================================
-  @IsNumber()
-  @IsNotEmpty()
-  productId: number;
-
-  @ApiProperty({
-    description: 'isLike',
-  })
-  // =================================
-  @IsBoolean()
-  @IsNotEmpty()
-  isLike: boolean;
-}
-
 export class ProductSetLikeReqDto {
   @ApiProperty({
     description: 'product id',

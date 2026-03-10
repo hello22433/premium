@@ -1,4 +1,5 @@
 import { BadRequestException, Inject, Injectable, InternalServerErrorException } from '@nestjs/common';
+import { applyReplaceCharacters } from '../../common/utils/replace-characters.util';
 import {
   OrderReceiveAlimTalkReqDto,
   OrderReceiveEmailReqDto,
@@ -208,15 +209,7 @@ export class OrderReceiveService {
     if (orderDelivery.orderProductMapping.sendTailText) {
       text += orderDelivery.orderProductMapping.sendTailText;
     }
-    if (orderDelivery.replaceCharacter1) {
-      text = text.replace('{대치문자1}', orderDelivery.replaceCharacter1);
-    }
-    if (orderDelivery.replaceCharacter2) {
-      text = text.replace('{대치문자2}', orderDelivery.replaceCharacter2);
-    }
-    if (orderDelivery.replaceCharacter3) {
-      text = text.replace('{대치문자3}', orderDelivery.replaceCharacter3);
-    }
+    text = applyReplaceCharacters(text, orderDelivery);
 
     // 초이스쿠폰이고 상품을 선택한 경우, 선택된 상품의 정보 사용
     const displayProduct = selectedProductEntity || orderDelivery.orderProductMapping.product;
@@ -318,15 +311,7 @@ export class OrderReceiveService {
     if (testOrderDelivery.orderProductMapping.sendTailText) {
       text += testOrderDelivery.orderProductMapping.sendTailText;
     }
-    if (testOrderDelivery.replaceCharacter1) {
-      text = text.replace('{대치문자1}', testOrderDelivery.replaceCharacter1);
-    }
-    if (testOrderDelivery.replaceCharacter2) {
-      text = text.replace('{대치문자2}', testOrderDelivery.replaceCharacter2);
-    }
-    if (testOrderDelivery.replaceCharacter3) {
-      text = text.replace('{대치문자3}', testOrderDelivery.replaceCharacter3);
-    }
+    text = applyReplaceCharacters(text, testOrderDelivery);
 
     const displayProduct = testOrderDelivery.orderProductMapping.product;
     const displayBrand = testOrderDelivery.orderProductMapping.product.brand;

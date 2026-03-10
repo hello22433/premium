@@ -6,9 +6,7 @@ import { SettleService } from './application/settle.service';
 export class SettleSchedule implements OnApplicationBootstrap {
   constructor(private settleService: SettleService) {}
 
-  onApplicationBootstrap() {
-    // this.settleService.syncSettleOverdue();
-  }
+  onApplicationBootstrap() {}
 
   private logger = new Logger('BATCH');
 
