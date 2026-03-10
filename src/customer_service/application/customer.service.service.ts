@@ -196,14 +196,12 @@ export class CustomerServiceService {
       const product = orderDelivery.orderProductMapping.product;
 
       // deliveryTarget 복호화 및 마스킹 처리
-      const maskedDeliveryTarget = orderDelivery.deliveryTarget
-        ? MaskingUtil.maskDeliveryTarget(this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.deliveryTarget)!)
-        : null;
+      const decryptedDeliveryTarget = this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.deliveryTarget);
+      const maskedDeliveryTarget = decryptedDeliveryTarget ? MaskingUtil.maskDeliveryTarget(decryptedDeliveryTarget) : null;
 
       // emailReceiverPhone 복호화 및 마스킹 처리
-      const maskedEmailReceiverPhone = orderDelivery.emailReceiverPhone
-        ? MaskingUtil.maskDeliveryTarget(this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.emailReceiverPhone)!)
-        : null;
+      const decryptedEmailReceiverPhone = this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.emailReceiverPhone);
+      const maskedEmailReceiverPhone = decryptedEmailReceiverPhone ? MaskingUtil.maskDeliveryTarget(decryptedEmailReceiverPhone) : null;
 
       // 실제 발송 시간 계산 (발송 완료 상태일 때 actualSendAt 사용)
       let actualSendAt: string | null = null;
@@ -320,9 +318,8 @@ export class CustomerServiceService {
         orderDelivery.choiceSelectProduct?.partnerCompany ?? orderDelivery.orderProductMapping.product.partnerCompany;
 
       // emailReceiverPhone 복호화 및 마스킹 처리
-      const maskedEmailReceiverPhone = orderDelivery.emailReceiverPhone
-        ? MaskingUtil.maskDeliveryTarget(this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.emailReceiverPhone)!)
-        : null;
+      const decryptedEmailReceiverPhone = this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.emailReceiverPhone);
+      const maskedEmailReceiverPhone = decryptedEmailReceiverPhone ? MaskingUtil.maskDeliveryTarget(decryptedEmailReceiverPhone) : null;
 
       result.push({
         id: orderDelivery.id,

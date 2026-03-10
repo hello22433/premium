@@ -183,9 +183,8 @@ export class PartnerCompanyExternHistoryService {
     }
 
     // 수신처 마스킹 처리
-    const deliveryTarget = orderDelivery.deliveryTarget
-      ? this.maskDeliveryTarget(this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.deliveryTarget)!)
-      : null;
+    const decryptedDeliveryTarget = this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.deliveryTarget);
+    const deliveryTarget = decryptedDeliveryTarget ? this.maskDeliveryTarget(decryptedDeliveryTarget) : null;
 
     // 주문 정보
     const orderCode = orderDelivery.orderProductMapping?.order?.code || null;

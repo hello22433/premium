@@ -12,13 +12,13 @@ export function applyReplaceCharacters(
 ): string {
   let result = text;
   if (holder.replaceCharacter1) {
-    result = result.replace('{대치문자1}', holder.replaceCharacter1);
+    result = result.replaceAll('{대치문자1}', holder.replaceCharacter1);
   }
   if (holder.replaceCharacter2) {
-    result = result.replace('{대치문자2}', holder.replaceCharacter2);
+    result = result.replaceAll('{대치문자2}', holder.replaceCharacter2);
   }
   if (holder.replaceCharacter3) {
-    result = result.replace('{대치문자3}', holder.replaceCharacter3);
+    result = result.replaceAll('{대치문자3}', holder.replaceCharacter3);
   }
   return result;
 }

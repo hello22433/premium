@@ -52,7 +52,7 @@ export class OrderReceiptService {
 
     const resultList: OrderReceiptViewDto[] = receiptList.map((receipt) => {
       const isFile = !!receipt.filePath;
-      const fileCount = isFile ? receipt.filePath!.split(',').length : 0;
+      const fileCount = parseFilePathList(receipt.filePath).length;
       return {
         id: receipt.id,
         userId: receipt.userId,
