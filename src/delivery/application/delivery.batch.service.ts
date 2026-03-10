@@ -720,7 +720,12 @@ export class DeliveryBatchService {
     // Case 1: PIN 발급/확인 필요
     // - barCode 없음: PIN 재발급 필요
     // - SSG: barCode가 있어도 SSG DB 등록 여부 확인 필요 (SSG는 PIN을 로컬 생성 후 외부 API로 등록하는 구조)
-    const needsIssue = !orderDelivery.barCode || order.type === IOrderType.SSG;
+    // - 단, SSG 발송 완료 건(COMPLETE/COMPLETE_SMS + barCode 존재)은 PIN 재발급 불필요 (CS 재전송 시 기존 barCode 유지)
+    const isSsgAlreadyComplete = order.type === IOrderType.SSG
+      && orderDelivery.barCode
+      && (orderDelivery.status === IOrderDeliveryStatus.COMPLETE
+        || orderDelivery.status === IOrderDeliveryStatus.COMPLETE_SMS);
+    const needsIssue = !orderDelivery.barCode || (order.type === IOrderType.SSG && !isSsgAlreadyComplete);
     if (needsIssue) {
       const hadNoBarCode = !orderDelivery.barCode;
       let ssgEvent: SsgEventEntity | null = null;
