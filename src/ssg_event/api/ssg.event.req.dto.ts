@@ -33,6 +33,12 @@ export class SsgEventGetListReqDto extends PagingReqDto {
   // =============================================================
   @IsOptional()
   code?: string;
+
+  @ApiPropertyOptional({ description: '검색어' })
+  // =============================================================
+  @IsOptional()
+  searchKeyword?: string;
+
 }
 
 export class SsgEventExcelDownloadReqDto extends PagingReqDto {
@@ -79,6 +85,12 @@ export class SsgEventExcelDownloadReqDto extends PagingReqDto {
   // =============================================================
   @IsNotEmpty()
   downloadReason: string;
+
+  @ApiPropertyOptional({ description: '검색어' })
+  // =============================================================
+  @IsOptional()
+  searchKeyword?: string;
+
 }
 
 export class SsgEventCreateReqDto {

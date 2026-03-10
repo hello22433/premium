@@ -86,6 +86,12 @@ export class SettleGetOtherServiceSaleGetListReqDto extends PagingReqDto {
   // =============================================================
   @IsOptional()
   productName?: string;
+
+  @ApiPropertyOptional({ description: '검색어' })
+  // =============================================================
+  @IsOptional()
+  searchKeyword?: string;
+
 }
 
 export class SettleGetOtherServiceSaleGetDetailReqParamDto {
@@ -399,6 +405,10 @@ export class SettleGetMobileListReqQueryDto extends PagingReqDto {
   // =============================================================
   @IsOptional()
   eventName?: string;
+
+  @ApiPropertyOptional({ description: '검색어' })
+  @IsOptional()
+  searchKeyword?: string;
 }
 
 export class SettleMobileExcelDownloadReqDto {
@@ -454,6 +464,10 @@ export class SettleMobileExcelDownloadReqDto {
   // =============================================================
   @IsNotEmpty()
   downloadReason: string;
+
+  @ApiPropertyOptional({ description: '검색어' })
+  @IsOptional()
+  searchKeyword?: string;
 }
 
 export class SettleGetPartnerCompanyListReqQueryDto extends PagingReqDto {

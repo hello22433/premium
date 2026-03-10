@@ -164,6 +164,7 @@ export class SettleService {
       isVat,
       take,
       page,
+      searchKeyword,
     } = getQuery;
     const { startAt, endAt } = defaultDate;
 
@@ -171,9 +172,21 @@ export class SettleService {
       .createQueryBuilder('sale')
       .innerJoinAndSelect('sale.user', 'user')
       .innerJoinAndSelect('sale.businessUser', 'businessUser')
+      .leftJoinAndSelect('businessUser.company', 'businessCompany')
       .innerJoinAndSelect('sale.otherServiceSaleProductMappings', 'otherServiceSaleProductMappings')
       .innerJoinAndSelect('sale.saleType', 'saleType')
       .innerJoinAndSelect('otherServiceSaleProductMappings.otherServiceSaleProduct', 'product');
+
+    if (searchKeyword) {
+      queryBuilder = queryBuilder.andWhere(
+        new Brackets((qb) => {
+          qb.where('user.personName LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('sale.eventName LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('businessCompany.businessName LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('product.name LIKE :keyword', { keyword: `%${searchKeyword}%` });
+        }),
+      );
+    }
 
     if (personName) {
       queryBuilder = queryBuilder.andWhere('user.personName LIKE :personName', {
@@ -188,7 +201,7 @@ export class SettleService {
     }
 
     if (businessName) {
-      queryBuilder = queryBuilder.andWhere('businessUser.businessName LIKE :businessName', {
+      queryBuilder = queryBuilder.andWhere('businessCompany.businessName LIKE :businessName', {
         businessName: `%${businessName}%`,
       });
     }
@@ -203,7 +216,8 @@ export class SettleService {
       queryBuilder = queryBuilder.andWhere('sale.isVat = :isVat', { isVat });
     }
 
-    if (startAt || endAt) {
+    // 등록일자 필터: 사용자가 직접 입력했거나, 다른 날짜 필터가 전혀 없을 때만 기본값 적용
+    if (getQuery.startAt || getQuery.endAt || (!proveStartAt && !proveEndAt)) {
       queryBuilder = QueryBuilderDateCondition(queryBuilder, 'sale', 'createdAt', startAt, endAt);
     }
 
@@ -643,7 +657,7 @@ export class SettleService {
 
   async getMobileList(getQuery: SettleGetMobileListReqQueryDto): Promise<SettleGetMobileListResDto> {
     const defaultDate = this.applyDefaultDateRange(getQuery.startAt, getQuery.endAt);
-    const { personName, businessName, eventName, page, take } = getQuery;
+    const { personName, businessName, eventName, page, take, searchKeyword } = getQuery;
     const { startAt, endAt } = defaultDate;
 
     let queryBuilder = this.orderRepository
@@ -657,6 +671,19 @@ export class SettleService {
       .innerJoinAndSelect('product.brand', 'brand')
       .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
       .where('order.status IN (:...status)', { status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'] });
+
+    if (searchKeyword) {
+      queryBuilder = queryBuilder.andWhere(
+        new Brackets((qb) => {
+          qb.where('userCompany.businessName LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('clientCompany.businessName LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('user.personName LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('clientUser.personName LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('order.eventName LIKE :keyword', { keyword: `%${searchKeyword}%` });
+        }),
+      );
+    }
+
 
     if (personName) {
       queryBuilder = queryBuilder.andWhere(
@@ -764,7 +791,7 @@ export class SettleService {
     await this.activityLogService.verifyPassword(user.id, getQuery.password);
 
     const defaultDate = this.applyDefaultDateRange(getQuery.startAt, getQuery.endAt);
-    const { personName, businessName, eventName, downloadReason } = getQuery;
+    const { personName, businessName, eventName, downloadReason, searchKeyword } = getQuery;
     const { startAt, endAt } = defaultDate;
 
     const now = new Date();
@@ -781,6 +808,18 @@ export class SettleService {
       .innerJoinAndSelect('product.brand', 'brand')
       .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
       .where('order.status IN (:...status)', { status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'] });
+
+    if (searchKeyword) {
+      queryBuilder = queryBuilder.andWhere(
+        new Brackets((qb) => {
+          qb.where('userCompany.businessName LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('clientCompany.businessName LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('user.personName LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('clientUser.personName LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('order.eventName LIKE :keyword', { keyword: `%${searchKeyword}%` });
+        }),
+      );
+    }
 
     if (personName) {
       queryBuilder = queryBuilder.andWhere(

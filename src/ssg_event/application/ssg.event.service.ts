@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable, InternalServerErrorException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { SsgEventEntity } from '../../entity/ssg.event.entity';
-import { Repository } from 'typeorm';
+import { Brackets, Repository } from 'typeorm';
 import {
   SsgEventCreateReqDto,
   SsgEventExcelDownloadReqDto,
@@ -34,15 +34,25 @@ export class SsgEventService {
     @InjectRepository(OrderProductMappingEntity)
     private readonly orderProductMappingRepository: Repository<OrderProductMappingEntity>,
     private readonly activityLogService: ActivityLogService,
-  ) {}
+  ) { }
 
   async getList(getQuery: SsgEventGetListReqDto): Promise<SsgEventGetListResDto> {
-    const { take, page, code, createdEndAt, createdStartAt, name } = getQuery;
+    const { take, page, code, createdEndAt, createdStartAt, name, searchKeyword } = getQuery;
     const skip = (page - 1) * take;
 
     const now = new Date();
 
     let queryBuilder = this.ssgEventRepository.createQueryBuilder('ssg');
+
+    if (searchKeyword) {
+      queryBuilder = queryBuilder.andWhere(
+        new Brackets((qb) => {
+          qb.where('ssg.name LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('ssg.code LIKE :keyword', { keyword: `%${searchKeyword}%` });
+        }),
+      );
+    }
+
 
     if (code) {
       queryBuilder = queryBuilder.andWhere('ssg.code LIKE :code', { code: '%' + code + '%' });
@@ -174,7 +184,7 @@ export class SsgEventService {
 
   async excelDownload(user: ILoginUserInfo, getBody: SsgEventExcelDownloadReqDto) {
     const startTime = Date.now();
-    const { code, createdEndAt, createdStartAt, name, password, downloadReason } = getBody;
+    const { code, createdEndAt, createdStartAt, name, password, downloadReason, searchKeyword } = getBody;
 
     // 비밀번호 검증
     await this.activityLogService.verifyPassword(user.id, password);
@@ -183,6 +193,16 @@ export class SsgEventService {
     const nowString = format(now, 'yyyyMMdd');
 
     let queryBuilder = this.ssgEventRepository.createQueryBuilder('ssg');
+
+    if (searchKeyword) {
+      queryBuilder = queryBuilder.andWhere(
+        new Brackets((qb) => {
+          qb.where('ssg.name LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('ssg.code LIKE :keyword', { keyword: `%${searchKeyword}%` });
+        }),
+      );
+    }
+
 
     if (code) {
       queryBuilder = queryBuilder.andWhere('ssg.code LIKE :code', { code: '%' + code + '%' });

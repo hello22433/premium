@@ -1,5 +1,5 @@
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
+import { Brackets, In, Repository } from 'typeorm';
 import { OrderRealProductEntity } from '../../entity/order.real.product.entity';
 import {
   OrderRealProductGetAdminListResDto,
@@ -121,7 +121,7 @@ export class OrderRealProductService {
     private userRepository: Repository<UserEntity>,
     private deliveryTrackHttp: DeliveryTrackHttp,
     private activityLogService: ActivityLogService,
-  ) {}
+  ) { }
 
   async getList(user: ILoginUserInfo, getQuery: OrderRealProductGetListReqDto): Promise<OrderRealProductGetListResDto> {
     const { page, take, searchType, searchKeyword, startAt, endAt, status, section } = getQuery;
@@ -574,11 +574,11 @@ export class OrderRealProductService {
 
     const lastEventData = response.data.track.lastEvent
       ? {
-          time: response.data.track.lastEvent.time,
-          code: response.data.track.lastEvent.status.code,
-          name: response.data.track.lastEvent.status.name,
-          description: response.data.track.lastEvent.description,
-        }
+        time: response.data.track.lastEvent.time,
+        code: response.data.track.lastEvent.status.code,
+        name: response.data.track.lastEvent.status.name,
+        description: response.data.track.lastEvent.description,
+      }
       : null;
 
     const eventDataList =
@@ -688,15 +688,26 @@ export class OrderRealProductService {
     user: ILoginUserInfo,
     getQuery: OrderRealProductGetSettlementListReqDto,
   ): Promise<OrderRealProductGetSettlementListResDto> {
-    const { eventName, businessName, startAt, personName, endAt, take, page } = getQuery;
+    const { eventName, businessName, startAt, personName, endAt, take, page, searchKeyword } = getQuery;
 
     let queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.businessUser', 'businessUser')
+      .leftJoinAndSelect('businessUser.company', 'businessCompany')
       .innerJoinAndSelect('order.user', 'user')
       .leftJoinAndSelect('order.orderRealProductMappings', 'orderRealProductMappings')
       .leftJoinAndSelect('orderRealProductMappings.product', 'product')
       .leftJoinAndSelect('product.brand', 'brand');
+
+    if (searchKeyword) {
+      queryBuilder = queryBuilder.andWhere(
+        new Brackets((qb) => {
+          qb.where('businessCompany.businessName LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('user.personName LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('order.eventName LIKE :keyword', { keyword: `%${searchKeyword}%` });
+        }),
+      );
+    }
 
     // 운영 관리자 인 경우
     if (user.authority === IUserAuthority.OPERATION_ADMIN) {
@@ -704,7 +715,7 @@ export class OrderRealProductService {
     }
 
     if (businessName) {
-      queryBuilder = queryBuilder.andWhere('order.businessUser.businessName LIKE :businessName', {
+      queryBuilder = queryBuilder.andWhere('businessCompany.businessName LIKE :businessName', {
         businessName: `%${businessName}%`,
       });
     }
@@ -871,7 +882,7 @@ export class OrderRealProductService {
     const now = new Date();
     const nowString = format(now, 'yyyyMMdd');
 
-    const { eventName, businessName, startAt, personName, endAt, password, downloadReason } = getBody;
+    const { eventName, businessName, startAt, personName, endAt, password, downloadReason, searchKeyword } = getBody;
 
     // 비밀번호 검증
     await this.activityLogService.verifyPassword(user.id, password);
@@ -879,10 +890,21 @@ export class OrderRealProductService {
     let queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.businessUser', 'businessUser')
+      .leftJoinAndSelect('businessUser.company', 'businessCompany')
       .innerJoinAndSelect('order.user', 'user')
       .leftJoinAndSelect('order.orderRealProductMappings', 'orderRealProductMappings')
       .leftJoinAndSelect('orderRealProductMappings.product', 'product')
       .leftJoinAndSelect('product.brand', 'brand');
+
+    if (searchKeyword) {
+      queryBuilder = queryBuilder.andWhere(
+        new Brackets((qb) => {
+          qb.where('businessCompany.businessName LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('user.personName LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('order.eventName LIKE :keyword', { keyword: `%${searchKeyword}%` });
+        }),
+      );
+    }
 
     // 운영 관리자 인 경우
     if (user.authority === IUserAuthority.OPERATION_ADMIN) {
@@ -890,7 +912,7 @@ export class OrderRealProductService {
     }
 
     if (businessName) {
-      queryBuilder = queryBuilder.andWhere('order.businessUser.businessName LIKE :businessName', {
+      queryBuilder = queryBuilder.andWhere('businessCompany.businessName LIKE :businessName', {
         businessName: `%${businessName}%`,
       });
     }
