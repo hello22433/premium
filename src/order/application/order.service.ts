@@ -3085,8 +3085,8 @@ export class OrderService {
 
       case IUserAuthority.CORPORATE_ADMIN:
       default:
-        // 본인 주문만
-        queryBuilder.andWhere('o.userId = :uid', { uid: user.id });
+        // 본인 주문 + 본인이 고객으로 지정된 대행발송 건
+        queryBuilder.andWhere('(o.userId = :uid OR o.clientUserId = :uid)', { uid: user.id });
         break;
     }
 
@@ -3576,7 +3576,7 @@ export class OrderService {
    *
    * - SUPER_ADMIN: sendingType 파라미터로 필터링 (전체 접근 가능)
    * - OPERATION_ADMIN: 직발송 건 + 본인 배정 대행발송 건만 조회
-   * - 기타 (CORPORATE_ADMIN 등): 대행발송 건 완전 차단
+   * - 기타 (CORPORATE_ADMIN 등): 직발송 건 + 본인이 고객으로 지정된 대행발송 건만 조회
    */
   private applyDirectSendingFilter(
     queryBuilder: ReturnType<Repository<OrderEntity>['createQueryBuilder']>,
@@ -3600,6 +3600,8 @@ export class OrderService {
       return;
     }
 
-    queryBuilder.andWhere('order.clientUserId IS NULL');
+    queryBuilder.andWhere('(order.clientUserId IS NULL OR order.clientUserId = :currentUserId)', {
+      currentUserId: user.id,
+    });
   }
 }
