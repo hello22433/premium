@@ -34,7 +34,6 @@ export class UserTaskHistoryGetListReqQueryDto extends PagingReqDto {
     description: '유저 아이디 혹은 이메일',
   })
   // =============================================================
-  @IsEmail()
   @IsOptional()
   email?: string;
 
