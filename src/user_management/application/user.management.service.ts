@@ -17,6 +17,7 @@ import {
   UserManagementModifyBalanceReqDto,
   UserManagementGetCompanyListReqQueryDto,
   UserManagementModifyMaximumLimitReqDto,
+  UserManagementChangeEmailReqDto,
 } from '../api/user.management.req.dto';
 import {
   UserManagementGetDetailResDto,
@@ -860,5 +861,32 @@ export class UserManagementService {
         memo: memo || null,
       },
     });
+  }
+
+  async changeEmail(getBody: UserManagementChangeEmailReqDto) {
+    const { id, newEmail } = getBody;
+
+    const user = await this.userRepository.findOne({
+      where: { id },
+    });
+
+    if (!user) {
+      throw new BadRequestException('유저가 존재하지 않습니다.');
+    }
+
+    if (user.email === newEmail) {
+      throw new BadRequestException('현재 이메일과 동일합니다.');
+    }
+
+    const isExistEmail = await this.userRepository.count({
+      where: { email: newEmail },
+    });
+
+    if (isExistEmail) {
+      throw new BadRequestException('이미 사용 중인 이메일입니다.');
+    }
+
+    user.email = newEmail;
+    await this.userRepository.save(user);
   }
 }
