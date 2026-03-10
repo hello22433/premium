@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
-import { io, Socket } from 'socket.io-client';
+
 import { ConfigService } from '@nestjs/config';
 import { format, subDays } from 'date-fns';
 import * as net from 'node:net';
@@ -29,49 +29,11 @@ export class CultureSocket implements ICulture {
     this.environment = this.configService.getOrThrow('ENVIRONMENT');
   }
 
-  private socket: Socket;
   private logger = new Logger('CULTURE_LAND');
 
   private socketIP = '';
   private port = '';
   private environment = '';
-
-  // 모듈 초기화 시 연결 설정
-  onModuleInit() {
-    this.socket = io(`http://${this.socketIP}:${this.socket}`, {
-      transports: ['websocket'], // WebSocket만 사용할 경우 명시적으로 설정
-      query: {
-        // token: 'your_auth_token', // 인증 토큰 또는 필요한 쿼리 추가
-      },
-    });
-
-    this.configureSocketListeners();
-  }
-
-  // 소켓 연결 해제
-  onModuleDestroy() {
-    this.socket.disconnect();
-  }
-
-  // 이벤트 리스너 설정
-  private configureSocketListeners() {
-    this.socket.on('connect', () => {
-      this.logger.log('Connected to external socket server');
-    });
-
-    this.socket.on('disconnect', () => {
-      this.logger.log('Disconnected from external socket server');
-    });
-
-    this.socket.on('someEvent', (data) => {
-      this.logger.log('Data received from external server:', data);
-    });
-  }
-
-  // 메시지 보내기
-  // sendMessage(event: string, data: any) {
-  //   this.socket.emit(event, data);
-  // }
 
   private fillLeft(length: number, str: string, fillZero: boolean): string {
     let padded = str;
@@ -104,7 +66,7 @@ export class CultureSocket implements ICulture {
       const responseChunks: Buffer[] = [];
 
       client.connect(+this.port, this.socketIP, () => {
-        console.log('Connected to server');
+        this.logger.log('Connected to server');
         client.write(message);
       });
 
@@ -120,12 +82,12 @@ export class CultureSocket implements ICulture {
       });
 
       client.on('error', (err) => {
-        console.error('Socket error:', err);
+        this.logger.error('Socket error:', err);
         reject(err);
       });
 
       client.on('close', () => {
-        console.log('Connection closed');
+        this.logger.log('Connection closed');
       });
     });
   }

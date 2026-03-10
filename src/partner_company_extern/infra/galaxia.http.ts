@@ -80,9 +80,6 @@ export class GalaxiaHttp implements IGalaxia {
       this.logger.log(response.data);
       const result = response.data as GalaxiaIssueOut;
 
-      // const resultToJson = (await this.parser().parseStringPromise(response.data)) as unknown as GalaxiaIssueOut;
-
-      // this.logger.log(resultToJson);
       return {
         ...result,
         transactionId: this.cryptoCipher.decrypt(result.transactionId, this.encKey, this.encIv, this.cryptoAlgorithm),
@@ -232,9 +229,6 @@ export class GalaxiaHttp implements IGalaxia {
       'Content-Type': 'application/x-www-form-urlencoded',
       Accept: 'application/json',
     };
-    // const data = new URLSearchParams({
-    //
-    // });
     const body = {
       'order-number': obj.transactionId + 'C', // 거래 요청 번호
       issueDay: obj.sendRequestAt,
@@ -242,11 +236,10 @@ export class GalaxiaHttp implements IGalaxia {
     };
 
     try {
-      const sendUrl = `${url}`;
-      this.logger.log(sendUrl);
+      this.logger.log(url);
       this.logger.log(headers);
 
-      const response = await firstValueFrom(this.httpService.put(`${sendUrl}`, body, { headers }));
+      const response = await firstValueFrom(this.httpService.put(url, body, { headers }));
 
       this.logger.log(response.data);
       const result = response.data as GalaxiaIssueOut;
@@ -254,10 +247,8 @@ export class GalaxiaHttp implements IGalaxia {
       if (result.resCode !== '0000') {
         throw new InternalServerErrorException('핀폐기가 실패했습니다.');
       }
-      // const resultToJson = (await this.parser().parseStringPromise(response.data)) as unknown as GalaxiaIssueOut;
 
       this.logger.log(JSON.stringify(result));
-      // return result as GalaxiaIssueOut;
     } catch (e) {
       this.logger.error(e);
       this.logger.error(JSON.stringify(e));

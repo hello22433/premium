@@ -106,6 +106,19 @@ export class MaskingUtil {
   /**
    * 핀번호 마스킹 처리
    */
+  /**
+   * 바코드 마스킹 처리
+   * 중간 4자리를 *로 치환
+   * 123456789 -> 12****789
+   */
+  static maskBarCode(barCode: string): string {
+    if (barCode.length <= 4) return '*'.repeat(barCode.length);
+    const start = barCode.slice(0, Math.floor((barCode.length - 4) / 2));
+    const masked = '*'.repeat(4);
+    const end = barCode.slice(-Math.ceil((barCode.length - 4) / 2));
+    return `${start}${masked}${end}`;
+  }
+
   static maskPersonalCode(personalCode: string): string {
     // 공백 제거
     const trimmedPhone = personalCode.replace(/\s+/g, '');

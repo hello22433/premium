@@ -53,16 +53,7 @@ export class RefundService {
     const [orderDeliveryList, totalCount] = await queryBuilder.getManyAndCount();
 
     const resultList: RefundListViewDto[] = orderDeliveryList.map((orderDelivery) => {
-      let decryptedDeliveryTarget = orderDelivery.deliveryTarget;
-      if (orderDelivery.deliveryTarget) {
-        try {
-          decryptedDeliveryTarget = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.deliveryTarget);
-        } catch (error) {
-          this.logger.error(`Failed to decrypt deliveryTarget for orderDelivery ${orderDelivery.id}: ${error}`);
-          // 복호화 실패 시 원본 데이터 사용
-          decryptedDeliveryTarget = orderDelivery.deliveryTarget;
-        }
-      }
+      const decryptedDeliveryTarget = this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.deliveryTarget);
 
       return {
         id: orderDelivery.id,

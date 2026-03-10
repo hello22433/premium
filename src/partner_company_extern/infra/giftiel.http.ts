@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
-import { CryptoCipher } from '../../common/infra/crypto.cipher';
+
 import { firstValueFrom } from 'rxjs';
 import {
   GiftielCancelIn,
@@ -17,7 +17,6 @@ export class GiftielHttp implements IGiftiel {
   constructor(
     private httpService: HttpService,
     private configService: ConfigService,
-    private cryptoCipher: CryptoCipher,
   ) {
     this.ciCode = this.configService.getOrThrow('GIFIEL_CI_CODE');
     this.ciPwd = this.configService.getOrThrow('GIFIEL_CI_PWD');

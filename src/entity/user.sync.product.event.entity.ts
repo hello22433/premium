@@ -34,6 +34,9 @@ export class UserSyncProductEventEntity extends BaseEntity {
   @JoinColumn({ name: 'business_user_id' })
   businessUser: UserEntity;
 
+  @Column({ comment: 'FK) 관리자 user.id' })
+  adminUserId: number;
+
   @ManyToOne(() => UserEntity)
   @JoinColumn({ name: 'admin_user_id' })
   adminUser: UserEntity;

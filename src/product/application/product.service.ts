@@ -1654,9 +1654,6 @@ export class ProductService {
     };
   }
 
-  private isValidRow(rowData: Record<string, any>): boolean {
-    return Object.values(rowData).some((value) => value !== null && value !== '');
-  }
 
   /**
    * ExcelJS 셀 값 추출 (수식 셀 처리)

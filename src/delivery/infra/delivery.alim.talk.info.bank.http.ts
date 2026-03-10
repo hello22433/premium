@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { HttpService } from '@nestjs/axios';
 import { firstValueFrom, lastValueFrom } from 'rxjs';
 import { listToMap } from '../../util/map.util';
+import { sleep } from '../../util/time.util';
 
 type InfoBankAuthResponse = {
   schema: string;
@@ -157,7 +158,7 @@ export class DeliveryAlimTalkInfoBankHttp implements DeliveryAlimTalk {
       let reportResult: { success: boolean; reportCode?: string; data?: any; error?: string } | undefined = undefined;
 
       for (let attempt = 1; attempt <= 3; attempt++) {
-        await this.sleep(1000);
+        await sleep(1000);
 
         reportResult = await this.inquiryReport(msgKey);
 
@@ -197,10 +198,6 @@ export class DeliveryAlimTalkInfoBankHttp implements DeliveryAlimTalk {
 
       throw new Error(e);
     }
-  }
-
-  private async sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   private async inquiryReport(msgKey: string): Promise<{

@@ -1,4 +1,5 @@
 import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
+import { parseFilePathList } from '../../util/file.util';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { OrderReceiptEntity } from '../../entity/order.receipt.entity';
@@ -86,7 +87,7 @@ export class OrderReceiptService {
       userName: receipt.user.personName,
       title: receipt.title,
       status: receipt.status,
-      filePathList: receipt.filePath ? receipt.filePath.split(',') : [],
+      filePathList: parseFilePathList(receipt.filePath),
       rejectReason: receipt.rejectReason,
       registerAt: format(receipt.registerAt, DateFormatStr),
       processedAt: receipt.processedAt ? format(receipt.processedAt, DateFormatStr) : null,

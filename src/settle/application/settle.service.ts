@@ -81,7 +81,7 @@ import { SaleTypeViewDto } from '../api/dto/sale.type.view.dto';
 import { AdminListViewDto } from '../api/dto/admin.list.view.dto';
 import { IUserStatus } from '../../user/interface/user.status';
 import { SettleOtherProductDetailDto } from '../api/dto/settle.other.product.dto';
-import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
+import { OrderDeliveryCouponStatus, couponStatusToKorean } from '../../delivery/interface/order.delivery.coupon.status';
 import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { UserDiscountEntity } from '../../entity/user.discount.entity';
@@ -1164,24 +1164,6 @@ export class SettleService {
       };
     };
 
-    // 핀 상태 한글 변환
-    const couponStatusToKorean = (status: string): string => {
-      switch (status) {
-        case 'NOT_USED':
-          return '미사용';
-        case 'USED':
-          return '사용';
-        case 'CANCEL':
-          return '취소';
-        case 'REFUND_CANCEL':
-          return '환불취소';
-        case 'EXPIRED':
-          return '기간만료';
-        default:
-          return status;
-      }
-    };
-
     for (const order of orderList) {
       for (const orderProductMapping of order.orderProductMappings!) {
         const product = orderProductMapping.product;
@@ -1194,14 +1176,7 @@ export class SettleService {
           const displayBrand = orderDelivery.choiceSelectProduct?.brand ?? product.brand;
 
           // 수신번호 복호화
-          let receiverPhone = '';
-          if (orderDelivery.deliveryTarget) {
-            try {
-              receiverPhone = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.deliveryTarget);
-            } catch {
-              receiverPhone = orderDelivery.deliveryTarget;
-            }
-          }
+          const receiverPhone = this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.deliveryTarget) ?? '';
 
           // 유효기간 계산 (기호 없이 yyyyMMdd 형식)
           let validityStartAt = '';
@@ -2129,10 +2104,6 @@ export class SettleService {
 
     if (order.settleStatus === SettleUserOrderDetailEnum.SETTLE_COMPLETE) {
       throw new BadRequestException('이미 정산이 완료된 주문입니다.');
-      // if (settleStatus !== SettleUserOrderDetailEnum.SETTLE_COMPLETE) {
-      //   user.allSettleAmount -= order.settleAmount;
-      //   order.isSettleComplete = false;
-      // }
     }
 
     order.settleStatus = settleStatus;

@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
+import { applyReplaceCharacters } from '../../common/utils/replace-characters.util';
 import {
   CustomerServiceCouponRefreshReqDto,
   CustomerServiceDiscardReqDto,
@@ -27,7 +28,7 @@ import { CustomerServiceDetailViewDto } from '../api/dto/customer.service.detail
 import { CustomerServiceDlvryDetailViewDto } from '../api/dto/customer.service.dlvry.detail.view.dto';
 import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
 import { DeliveryBatchService } from '../../delivery/application/delivery.batch.service';
-import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
+import { OrderDeliveryCouponStatus, couponStatusToKorean } from '../../delivery/interface/order.delivery.coupon.status';
 import { ILoginUserInfo } from 'src/auth/interface/login.user';
 import { OrderHistoryEntity } from 'src/entity/order.history.entity';
 import { User } from 'src/auth/api/user.decorator';
@@ -195,28 +196,14 @@ export class CustomerServiceService {
       const product = orderDelivery.orderProductMapping.product;
 
       // deliveryTarget 복호화 및 마스킹 처리
-      let maskedDeliveryTarget: string | null = null;
-      if (orderDelivery.deliveryTarget) {
-        try {
-          const decryptedTarget = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.deliveryTarget);
-          maskedDeliveryTarget = MaskingUtil.maskDeliveryTarget(decryptedTarget);
-        } catch (error) {
-          // 복호화 실패 시 원본 데이터로 마스킹 시도
-          maskedDeliveryTarget = MaskingUtil.maskDeliveryTarget(orderDelivery.deliveryTarget);
-        }
-      }
+      const maskedDeliveryTarget = orderDelivery.deliveryTarget
+        ? MaskingUtil.maskDeliveryTarget(this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.deliveryTarget)!)
+        : null;
 
       // emailReceiverPhone 복호화 및 마스킹 처리
-      let maskedEmailReceiverPhone: string | null = null;
-      if (orderDelivery.emailReceiverPhone) {
-        try {
-          const decryptedPhone = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.emailReceiverPhone);
-          maskedEmailReceiverPhone = MaskingUtil.maskDeliveryTarget(decryptedPhone);
-        } catch (error) {
-          // 복호화 실패 시 원본 데이터로 마스킹 시도
-          maskedEmailReceiverPhone = MaskingUtil.maskDeliveryTarget(orderDelivery.emailReceiverPhone);
-        }
-      }
+      const maskedEmailReceiverPhone = orderDelivery.emailReceiverPhone
+        ? MaskingUtil.maskDeliveryTarget(this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.emailReceiverPhone)!)
+        : null;
 
       // 실제 발송 시간 계산 (발송 완료 상태일 때 actualSendAt 사용)
       let actualSendAt: string | null = null;
@@ -315,15 +302,7 @@ export class CustomerServiceService {
     const result: CustomerServiceDetailViewDto[] = [];
     for (const orderDelivery of orderDeliveryList) {
       // deliveryTarget 복호화 처리
-      let decryptedDeliveryTarget: string | null = null;
-      if (orderDelivery.deliveryTarget) {
-        try {
-          decryptedDeliveryTarget = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.deliveryTarget);
-        } catch (error) {
-          // 복호화 실패 시 원본 데이터 사용
-          decryptedDeliveryTarget = orderDelivery.deliveryTarget;
-        }
-      }
+      const decryptedDeliveryTarget = this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.deliveryTarget);
 
       // 실제 발송 시간 계산 (발송 완료 상태일 때 actualSendAt 사용)
       let actualSendAt: string | null = null;
@@ -341,16 +320,9 @@ export class CustomerServiceService {
         orderDelivery.choiceSelectProduct?.partnerCompany ?? orderDelivery.orderProductMapping.product.partnerCompany;
 
       // emailReceiverPhone 복호화 및 마스킹 처리
-      let maskedEmailReceiverPhone: string | null = null;
-      if (orderDelivery.emailReceiverPhone) {
-        try {
-          const decryptedPhone = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.emailReceiverPhone);
-          maskedEmailReceiverPhone = MaskingUtil.maskDeliveryTarget(decryptedPhone);
-        } catch (error) {
-          // 복호화 실패 시 원본 데이터로 마스킹 시도
-          maskedEmailReceiverPhone = MaskingUtil.maskDeliveryTarget(orderDelivery.emailReceiverPhone);
-        }
-      }
+      const maskedEmailReceiverPhone = orderDelivery.emailReceiverPhone
+        ? MaskingUtil.maskDeliveryTarget(this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.emailReceiverPhone)!)
+        : null;
 
       result.push({
         id: orderDelivery.id,
@@ -424,15 +396,7 @@ export class CustomerServiceService {
     const displayProduct = queryBuilder.choiceSelectProduct ?? product;
 
     // deliveryTarget 복호화 처리
-    let decryptedDeliveryTarget: string | null = null;
-    if (queryBuilder.deliveryTarget) {
-      try {
-        decryptedDeliveryTarget = this.cryptoCipher.decryptDeliveryTarget(queryBuilder.deliveryTarget);
-      } catch (error) {
-        // 복호화 실패 시 원본 데이터 사용
-        decryptedDeliveryTarget = queryBuilder.deliveryTarget;
-      }
-    }
+    const decryptedDeliveryTarget = this.cryptoCipher.safeDecryptDeliveryTarget(queryBuilder.deliveryTarget);
 
     // emailReceiverPhone 복호화 및 하이픈 포맷 처리 (history 페이지에서는 원문 표시)
     let formattedEmailReceiverPhone: string | null = null;
@@ -457,16 +421,10 @@ export class CustomerServiceService {
     }
 
     // sendContent: order_product_mapping에서 가져오고, 대치문자 처리
-    let sendContent = queryBuilder.orderProductMapping.sendContent ?? '';
-    if (queryBuilder.replaceCharacter1) {
-      sendContent = sendContent.replace('{대치문자1}', queryBuilder.replaceCharacter1);
-    }
-    if (queryBuilder.replaceCharacter2) {
-      sendContent = sendContent.replace('{대치문자2}', queryBuilder.replaceCharacter2);
-    }
-    if (queryBuilder.replaceCharacter3) {
-      sendContent = sendContent.replace('{대치문자3}', queryBuilder.replaceCharacter3);
-    }
+    let sendContent = applyReplaceCharacters(
+      queryBuilder.orderProductMapping.sendContent ?? '',
+      queryBuilder,
+    );
 
     return {
       orderDeliveryId: queryBuilder.id,
@@ -903,15 +861,7 @@ export class CustomerServiceService {
               `/` +
               expireDate;
 
-            let decryptedTarget = '';
-            if (orderDelivery.deliveryTarget) {
-              try {
-                decryptedTarget = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.deliveryTarget);
-              } catch (error) {
-                // 복호화 실패 시 원본 데이터 사용
-                decryptedTarget = orderDelivery.deliveryTarget;
-              }
-            }
+            const decryptedTarget = this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.deliveryTarget) ?? '';
 
             smsEntity = this.gemteckMsgQueueRepository.create({
               msgType: 'S',
@@ -1121,20 +1071,8 @@ export class CustomerServiceService {
         let afterChange = h.afterChange;
 
         if (h.type === '수신정보 변경요청') {
-          if (beforeChange) {
-            try {
-              beforeChange = this.cryptoCipher.decryptDeliveryTarget(beforeChange);
-            } catch (e) {
-              // 복호화 실패 시 원본 유지
-            }
-          }
-          if (afterChange) {
-            try {
-              afterChange = this.cryptoCipher.decryptDeliveryTarget(afterChange);
-            } catch (e) {
-              // 복호화 실패 시 원본 유지
-            }
-          }
+          beforeChange = this.cryptoCipher.safeDecryptDeliveryTarget(beforeChange) ?? beforeChange;
+          afterChange = this.cryptoCipher.safeDecryptDeliveryTarget(afterChange) ?? afterChange;
         }
 
         return {
@@ -1507,26 +1445,10 @@ export class CustomerServiceService {
       const product = orderDelivery.orderProductMapping.product;
 
       // deliveryTarget 복호화 (엑셀 다운로드 시 원문 표시)
-      let decryptedDeliveryTarget: string | null = null;
-      if (orderDelivery.deliveryTarget) {
-        try {
-          decryptedDeliveryTarget = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.deliveryTarget);
-        } catch (error) {
-          // 복호화 실패 시 원본 데이터 사용 (이미 평문일 수 있음)
-          decryptedDeliveryTarget = orderDelivery.deliveryTarget;
-        }
-      }
+      const decryptedDeliveryTarget = this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.deliveryTarget);
 
       // emailReceiverPhone 복호화 (이메일 쿠폰 수령 시 입력한 핸드폰 번호)
-      let decryptedEmailReceiverPhone: string | null = null;
-      if (orderDelivery.emailReceiverPhone) {
-        try {
-          decryptedEmailReceiverPhone = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.emailReceiverPhone);
-        } catch (error) {
-          // 복호화 실패 시 원본 데이터 사용
-          decryptedEmailReceiverPhone = orderDelivery.emailReceiverPhone;
-        }
-      }
+      const decryptedEmailReceiverPhone = this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.emailReceiverPhone);
 
       // 실제 발송 시간 계산
       let actualSendAt: string | null = null;
@@ -1536,15 +1458,6 @@ export class CustomerServiceService {
       ) {
         actualSendAt = format(orderDelivery.actualSendAt, DateFormatStr);
       }
-
-      // 핀상태 한글 변환
-      const couponStatusMap: Record<string, string> = {
-        NOT_USED: '미사용',
-        USED: '사용',
-        CANCEL: '취소',
-        REFUND_CANCEL: '환불취소',
-        EXPIRED: '기간만료',
-      };
 
       // 초이스 쿠폰인 경우 선택된 상품의 가격 사용
       const displayProduct = orderDelivery.choiceSelectProduct ?? product;
@@ -1574,7 +1487,7 @@ export class CustomerServiceService {
         fromPhoneNumber: orderDelivery.orderProductMapping.fromPhoneNumber || '',
         personalCode: orderDelivery.personalCode || '',
         barCode: orderDelivery.barCode || '',
-        couponStatus: couponStatusMap[orderDelivery.couponStatus] || orderDelivery.couponStatus || '',
+        couponStatus: couponStatusToKorean(orderDelivery.couponStatus) || '',
         tradeInfo,
         transactionId: orderDelivery.transactionId || '',
       });

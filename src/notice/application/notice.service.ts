@@ -1,4 +1,5 @@
 import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
+import { parseFilePathList } from '../../util/file.util';
 import { NoticeEntity } from '../../entity/notice.entity';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -71,7 +72,7 @@ export class NoticeService {
       content: notice.content,
       priority: notice.priority,
       registerAt: format(notice.registerAt, DateFormatStr),
-      filePathList: notice.filePath ? notice.filePath.split(',') : [],
+      filePathList: parseFilePathList(notice.filePath),
     };
   }
 

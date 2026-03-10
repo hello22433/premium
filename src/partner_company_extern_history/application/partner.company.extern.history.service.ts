@@ -183,15 +183,9 @@ export class PartnerCompanyExternHistoryService {
     }
 
     // 수신처 마스킹 처리
-    let deliveryTarget: string | null = null;
-    if (orderDelivery.deliveryTarget) {
-      try {
-        const decrypted = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.deliveryTarget);
-        deliveryTarget = this.maskDeliveryTarget(decrypted);
-      } catch {
-        deliveryTarget = this.maskDeliveryTarget(orderDelivery.deliveryTarget);
-      }
-    }
+    const deliveryTarget = orderDelivery.deliveryTarget
+      ? this.maskDeliveryTarget(this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.deliveryTarget)!)
+      : null;
 
     // 주문 정보
     const orderCode = orderDelivery.orderProductMapping?.order?.code || null;
