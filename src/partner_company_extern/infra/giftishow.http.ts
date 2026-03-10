@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
-import { CryptoCipher } from '../../common/infra/crypto.cipher';
+
 import { firstValueFrom } from 'rxjs';
 import { Parser } from 'xml2js';
 import {
@@ -19,7 +19,6 @@ export class GiftishowHttp implements IGiftiShow {
   constructor(
     private httpService: HttpService,
     private configService: ConfigService,
-    private cryptoCipher: CryptoCipher,
   ) {
     this.corpCode = this.configService.getOrThrow('GIFTI_SHOW_CORP_CODE');
     this.authToken = this.configService.getOrThrow('GIFTI_SHOW_CUSTOM_AUTH_TOKEN');

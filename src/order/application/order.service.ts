@@ -99,7 +99,6 @@ import { defaultOrderMidImagePath, defaultOrderTopImagePath } from '../../const'
 import { OrderStatusExcelMapping } from '../domain/order.excel.mapping';
 import { OrderFeeCalculator } from '../domain/order.fee.calculator';
 import { OrderCustomerViewDto } from '../api/dto/order.customer.view.dto';
-import { maskBarCode } from '../../util/mask.barcode.util';
 import { MaskingUtil } from '../../common/utils/masking.util';
 import { CreateCode } from '../../common/domain/create.code';
 import { OrderDigitNumber, OrderPrefixCode } from '../domain/order.code';
@@ -170,15 +169,6 @@ export class OrderService {
     private readonly ssgEventService: SsgEventService,
     private readonly cryptoCipher: CryptoCipher,
 
-    // @Inject('DeliveryAlimTalk')
-    // private deliveryAlimTalk: DeliveryAlimTalk,
-    // @Inject('IMailSend')
-    // private mailSend: IMailSend,
-    // @Inject('ISmsSend')
-    // private smsSend: ISmsSend,
-    // private configService: ConfigService,
-    // @Inject('IFileStorage')
-    // private fileStorage: IFileStorage,
     private deliveryBatchService: DeliveryBatchService,
     private activityLogService: ActivityLogService,
     private mailSendSmtp: MailSendSmtp,
@@ -464,15 +454,7 @@ export class OrderService {
         for (const orderDelivery of orderProductMapping.orderDeliveries) {
           // deliveryTarget 복호화 (originalDeliveryTarget 우선 사용)
           const targetToDecrypt = orderDelivery.originalDeliveryTarget || orderDelivery.deliveryTarget;
-          let decryptedDeliveryTarget = targetToDecrypt;
-          if (targetToDecrypt) {
-            try {
-              decryptedDeliveryTarget = this.cryptoCipher.decryptDeliveryTarget(targetToDecrypt);
-            } catch (error) {
-              // 복호화 실패 시 원본 데이터 사용
-              decryptedDeliveryTarget = targetToDecrypt;
-            }
-          }
+          const decryptedDeliveryTarget = this.cryptoCipher.safeDecryptDeliveryTarget(targetToDecrypt) ?? '';
 
           orderDeliveryList.push({
             id: orderDelivery.id,
@@ -734,15 +716,7 @@ export class OrderService {
         for (const orderDelivery of orderProductMapping.orderDeliveries) {
           // deliveryTarget 복호화 후 마스킹 처리 (originalDeliveryTarget 우선 사용)
           const targetToDecrypt = orderDelivery.originalDeliveryTarget || orderDelivery.deliveryTarget;
-          let decryptedDeliveryTarget = targetToDecrypt;
-          if (targetToDecrypt) {
-            try {
-              decryptedDeliveryTarget = this.cryptoCipher.decryptDeliveryTarget(targetToDecrypt);
-            } catch (error) {
-              // 복호화 실패 시 원본 데이터 사용
-              decryptedDeliveryTarget = targetToDecrypt;
-            }
-          }
+          const decryptedDeliveryTarget = this.cryptoCipher.safeDecryptDeliveryTarget(targetToDecrypt) ?? '';
 
           // 파기된 경우('-')는 마스킹하지 않고 그대로 반환
           let finalDeliveryTarget = decryptedDeliveryTarget;
@@ -752,7 +726,7 @@ export class OrderService {
               finalDeliveryTarget = MaskingUtil.maskEmail(decryptedDeliveryTarget);
             } else {
               // 전화번호인 경우 전화번호 마스킹
-              finalDeliveryTarget = maskBarCode(decryptedDeliveryTarget);
+              finalDeliveryTarget = MaskingUtil.maskBarCode(decryptedDeliveryTarget);
             }
           }
 
@@ -762,7 +736,7 @@ export class OrderService {
             actualSendAt: orderDelivery.actualSendAt ? format(orderDelivery.actualSendAt, DateFormatStr) : null,
             productName: orderProductMapping.product.name ?? null,
             amount: orderProductMapping.product.price ?? null,
-            barCode: orderDelivery.barCode ? maskBarCode(orderDelivery.barCode) : null,
+            barCode: orderDelivery.barCode ? MaskingUtil.maskBarCode(orderDelivery.barCode) : null,
             deliveryMethod: orderDelivery.deliveryMethod,
             deliveryTarget: finalDeliveryTarget,
           });
@@ -954,7 +928,6 @@ export class OrderService {
         });
       }
 
-      // vat = Math.floor(price * 0.1);
       totalAmount = price + vat;
     }
 
@@ -1161,21 +1134,14 @@ export class OrderService {
           for (const orderDelivery of orderProductMapping.orderDeliveries) {
             // deliveryTarget 복호화 후 마스킹 처리 (originalDeliveryTarget 우선 사용)
             const targetToDecrypt = orderDelivery.originalDeliveryTarget || orderDelivery.deliveryTarget;
-            let decryptedDeliveryTarget = targetToDecrypt;
-            if (targetToDecrypt) {
-              try {
-                decryptedDeliveryTarget = this.cryptoCipher.decryptDeliveryTarget(targetToDecrypt);
-              } catch (error) {
-                decryptedDeliveryTarget = targetToDecrypt;
-              }
-            }
+            const decryptedDeliveryTarget = this.cryptoCipher.safeDecryptDeliveryTarget(targetToDecrypt) ?? '';
 
             let finalDeliveryTarget = decryptedDeliveryTarget;
             if (decryptedDeliveryTarget !== '-') {
               if (orderProductMapping.sendMethod === 'EMAIL') {
                 finalDeliveryTarget = MaskingUtil.maskEmail(decryptedDeliveryTarget);
               } else {
-                finalDeliveryTarget = maskBarCode(decryptedDeliveryTarget);
+                finalDeliveryTarget = MaskingUtil.maskBarCode(decryptedDeliveryTarget);
               }
             }
 
@@ -1201,7 +1167,7 @@ export class OrderService {
               actualSendAt: orderDelivery.actualSendAt ? format(orderDelivery.actualSendAt, DateFormatStr) : null,
               productName: orderProductMapping.product.name ?? null,
               amount: orderProductMapping.product.price ?? null,
-              barCode: orderDelivery.barCode ? maskBarCode(orderDelivery.barCode) : null,
+              barCode: orderDelivery.barCode ? MaskingUtil.maskBarCode(orderDelivery.barCode) : null,
               deliveryMethod: orderDelivery.deliveryMethod,
               deliveryTarget: finalDeliveryTarget,
             });
@@ -1983,15 +1949,8 @@ export class OrderService {
       orderProduct.orderId = orderId;
       orderProduct.productId = product.productId;
       orderProduct.amount = product.amount;
-      if (!topImagePath) {
-        orderProduct.topImagePath = OrderService.DEFAULT_TOP_IMAGE_PATH;
-      }
-      if (!midImagePath) {
-        orderProduct.midImagePath = OrderService.DEFAULT_MID_IMAGE_PATH;
-      }
-
-      if (topImagePath !== undefined && topImagePath !== null) orderProduct.topImagePath = topImagePath;
-      if (midImagePath !== undefined && midImagePath !== null) orderProduct.midImagePath = midImagePath;
+      orderProduct.topImagePath = topImagePath ?? OrderService.DEFAULT_TOP_IMAGE_PATH;
+      orderProduct.midImagePath = midImagePath ?? OrderService.DEFAULT_MID_IMAGE_PATH;
 
       const isProductImmediate = product.sendType === 'IMMEDIATE';
       const productSendAt = isProductImmediate
@@ -2443,24 +2402,14 @@ export class OrderService {
       // 현재 주문 내 중복 체크
       for (const [phone, count] of currentOrderPhoneCount.entries()) {
         if (count > allowedCount) {
-          let displayPhone = phone;
-          try {
-            displayPhone = this.cryptoCipher.decryptDeliveryTarget(phone);
-          } catch (error) {
-            // 복호화 실패 시 원본 사용
-          }
+          const displayPhone = this.cryptoCipher.safeDecryptDeliveryTarget(phone) ?? phone;
           duplicateErrors.push(`- ${displayPhone}: 현재 주문에 ${count}건 포함 (허용: ${allowedCount}건)`);
         }
       }
 
       // 기존 주문과 중복 체크
       for (const [phone, currentCount] of currentOrderPhoneCount.entries()) {
-        let displayPhone = phone;
-        try {
-          displayPhone = this.cryptoCipher.decryptDeliveryTarget(phone);
-        } catch (error) {
-          // 복호화 실패 시 원본 사용
-        }
+        const displayPhone = this.cryptoCipher.safeDecryptDeliveryTarget(phone) ?? phone;
 
         // 하루 기준 동일상품 동일수신처 발송 횟수
         const existingCount = await this.orderDeliveryRepository
@@ -3136,12 +3085,10 @@ export class OrderService {
 
       case IUserAuthority.CORPORATE_ADMIN:
       default:
-        // 본인 주문만
-        queryBuilder.andWhere('o.userId = :uid', { uid: user.id });
+        // 본인 주문 + 본인이 고객으로 지정된 대행발송 건
+        queryBuilder.andWhere('(o.userId = :uid OR o.clientUserId = :uid)', { uid: user.id });
         break;
     }
-
-    console.log('주문내역조회 API 시작 - 사용자ID:', user.id);
 
     // 6. raw 데이터를 숫자형으로 변환
     const raw = await queryBuilder.getRawOne<Record<string, string>>();
@@ -3629,7 +3576,7 @@ export class OrderService {
    *
    * - SUPER_ADMIN: sendingType 파라미터로 필터링 (전체 접근 가능)
    * - OPERATION_ADMIN: 직발송 건 + 본인 배정 대행발송 건만 조회
-   * - 기타 (CORPORATE_ADMIN 등): 대행발송 건 완전 차단
+   * - 기타 (CORPORATE_ADMIN 등): 직발송 건 + 본인이 고객으로 지정된 대행발송 건만 조회
    */
   private applyDirectSendingFilter(
     queryBuilder: ReturnType<Repository<OrderEntity>['createQueryBuilder']>,
@@ -3653,6 +3600,8 @@ export class OrderService {
       return;
     }
 
-    queryBuilder.andWhere('order.clientUserId IS NULL');
+    queryBuilder.andWhere('(order.clientUserId IS NULL OR order.clientUserId = :currentUserId)', {
+      currentUserId: user.id,
+    });
   }
 }

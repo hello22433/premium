@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
+import { parseFilePathList } from '../../util/file.util';
 import { InquiryEntity } from '../../entity/inquiry.entity';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -82,7 +83,7 @@ export class InquiryService {
       status: inquiry.status,
       title: inquiry.title,
       content: inquiry.content,
-      filePath: inquiry.filePath ? inquiry.filePath.split(',') : [],
+      filePath: parseFilePathList(inquiry.filePath),
       replyContent: inquiry.replyContent,
     };
   }

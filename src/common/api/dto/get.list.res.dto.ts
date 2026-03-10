@@ -7,7 +7,7 @@ export class GetListResDto {
   totalPage: number;
 
   @ApiProperty({
-    description: '전체 페이지 수',
+    description: '전체 데이터 수',
   })
   totalCount: number;
 

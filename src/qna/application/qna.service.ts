@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
+import { parseFilePathList } from '../../util/file.util';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { QnaEntity } from '../../entity/qna.entity';
@@ -91,7 +92,7 @@ export class QnaService {
       userEmail: qna.user.email,
       userPhone: qna.user.personPhoneNumber,
       status: qna.status,
-      filePathList: qna.filePath ? qna.filePath.split(',') : [],
+      filePathList: parseFilePathList(qna.filePath),
       title: qna.title,
       content: qna.content,
       answer: qna.answer ?? null,

@@ -12,6 +12,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { Brackets, Repository } from 'typeorm';
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
+import { parseDateString } from '../../util/date.util';
 import {
   PartnerCompanyType,
   ApiCallResult,
@@ -21,12 +22,6 @@ import {
 import { GalaxiaBarcodeLogEntity } from '../../entity/galaxia.barcode.log.entity';
 
 // ===== 상수 정의 =====
-const COUPON_STATUS_VALUES = {
-  NOT_USED: 'NOT_USED',
-  USED: 'USED',
-  CANCEL: 'CANCEL',
-} as const;
-
 const PARTNER_COMPANY_TYPES = {
   GALAXIA: 'GALAXIA',
   GS_M_BIZ: 'GS_M_BIZ',
@@ -168,7 +163,7 @@ export class PartnerCompanyExternBatchService {
       .where('orderDelivery.id < :lastId', { lastId })
       .andWhere('orderDelivery.status LIKE :status', { status: DELIVERY_STATUS_PATTERN })
       .andWhere('orderDelivery.couponStatus = :couponStatus', {
-        couponStatus: COUPON_STATUS_VALUES.NOT_USED,
+        couponStatus: OrderDeliveryCouponStatus.NOT_USED,
       })
       .andWhere('partnerCompany.type IS NOT NULL')
       .andWhere('orderDelivery.barCode IS NOT NULL')
@@ -322,7 +317,7 @@ export class PartnerCompanyExternBatchService {
       result.couponStatus = galaxiaOut.giftCertificate.isUsed
         ? OrderDeliveryCouponStatus.USED
         : OrderDeliveryCouponStatus.NOT_USED;
-      result.tradeAt = this.parseDateString(galaxiaOut.giftCertificate.usedDate);
+      result.tradeAt = parseDateString(galaxiaOut.giftCertificate.usedDate);
       result.galaxiaBalance = +galaxiaOut.giftCertificate.balance;
     }
 
@@ -371,7 +366,7 @@ export class PartnerCompanyExternBatchService {
         if (pinStatusCd === '02') {
           result.couponStatus = OrderDeliveryCouponStatus.USED;
           if (exchDtm) {
-            result.tradeAt = this.parseDateString(exchDtm);
+            result.tradeAt = parseDateString(exchDtm);
           }
           result.tradePlace = tradeBranchNm || branchNm || useComNm || null;
         } else if (pinStatusCd === '01') {
@@ -451,7 +446,7 @@ export class PartnerCompanyExternBatchService {
         if (daouCheckOut.cpnStatus === '01' || daouCheckOut.cpnStatus === '03') {
           result.couponStatus = OrderDeliveryCouponStatus.USED;
           if (daouCheckOut.useDate) {
-            result.tradeAt = this.parseDateString(daouCheckOut.useDate);
+            result.tradeAt = parseDateString(daouCheckOut.useDate);
           }
           if (daouCheckOut.useBranch) {
             result.tradePlace = daouCheckOut.useBranch;
@@ -507,218 +502,6 @@ export class PartnerCompanyExternBatchService {
     return name.includes('(백화점)') ? 'dept' : 'cpn';
   }
 
-  /**
-   * 날짜 문자열(YYYYMMDD 또는 YYYYMMDDHHmmss)을 Date 객체로 변환
-   */
-  private parseDateString(dateStr: string | null | undefined): Date | null {
-    if (!dateStr || dateStr.length < 8) {
-      return null;
-    }
-
-    const year = parseInt(dateStr.substring(0, 4));
-    const month = parseInt(dateStr.substring(4, 6)) - 1;
-    const day = parseInt(dateStr.substring(6, 8));
-    const hour = dateStr.length >= 10 ? parseInt(dateStr.substring(8, 10)) : 0;
-    const minute = dateStr.length >= 12 ? parseInt(dateStr.substring(10, 12)) : 0;
-    const second = dateStr.length >= 14 ? parseInt(dateStr.substring(12, 14)) : 0;
-
-    return new Date(year, month, day, hour, minute, second);
-  }
-
-  // ===== 기존 check() 메서드 백업 (롤백용) =====
-  async checkLegacy() {
-    const orderDeliveryList = await this.orderDeliveryRepository
-      .createQueryBuilder('orderDelivery')
-      .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
-      .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
-      .innerJoinAndSelect('orderProductMapping.product', 'product')
-      .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
-      .leftJoinAndSelect('orderDelivery.ssgEvent', 'ssgEvent')
-      .where('orderDelivery.status LIKE :status', { status: `COMPLETE%` })
-      .andWhere('orderDelivery.couponStatus = :couponStatus', { couponStatus: 'NOT_USED' })
-      .andWhere('partnerCompany.type IS NOT NULL')
-      .andWhere('orderDelivery.barCode IS NOT NULL')
-      .orderBy('orderDelivery.id', 'DESC')
-      .getMany();
-
-    for (const orderDelivery of orderDeliveryList) {
-      try {
-        const type = orderDelivery.orderProductMapping!.product.partnerCompany!.type;
-
-        this.logger.verbose(type);
-        if (type === 'GALAXIA') {
-          let giftKind: 'dept' | 'cpn' = orderDelivery.orderProductMapping.product.name.includes('(백화점)')
-            ? 'dept'
-            : 'cpn';
-
-          if (orderDelivery.choiceSelectProduct) {
-            giftKind = orderDelivery.choiceSelectProduct.name.includes('(백화점)') ? 'dept' : 'cpn';
-          }
-
-          const galaxiaOut = await this.galaxia.check({
-            giftKind,
-            paramValue: orderDelivery.couponNum!, // trId
-          });
-          orderDelivery.couponStatus = galaxiaOut.giftCertificate.isUsed
-            ? OrderDeliveryCouponStatus.USED
-            : OrderDeliveryCouponStatus.NOT_USED;
-          orderDelivery.tradeAt = galaxiaOut.giftCertificate.usedDate
-            ? new Date(galaxiaOut.giftCertificate.usedDate)
-            : null;
-          orderDelivery.galaxiaBalance = +galaxiaOut.giftCertificate.balance;
-        }
-
-        // 1.1.2 GSMBIZ 쿠폰 조회
-        // GSM쿠폰_전문사양서_고객사_표준V3.4_20200529.pdf
-        if (type === 'GS_M_BIZ') {
-          let partnerCompanyCode = orderDelivery.orderProductMapping.product.partnerCompanyCode!;
-          if (orderDelivery.choiceSelectProduct) {
-            partnerCompanyCode = orderDelivery.choiceSelectProduct.partnerCompanyCode!;
-          }
-
-          const gsMBizOut = await this.gsmbiz.check({
-            transactionId: orderDelivery.transactionId!,
-            partnerCompanyCode: partnerCompanyCode,
-            barCode: orderDelivery.barCode!,
-          });
-          orderDelivery.couponStatus =
-            gsMBizOut.couponInfo.STATE === '10' ? OrderDeliveryCouponStatus.USED : orderDelivery.couponStatus;
-          orderDelivery.tradeAt = gsMBizOut.couponInfo.USE_DT ? new Date(gsMBizOut.couponInfo.USE_DT) : null;
-        }
-
-        // 1.1.3 Giftiel 쿠폰 조회
-        // giftiel(기프티엘)_공통_판매사_연동가이드_v2.1.0.0_20210409.pdf
-        if (type === 'GIFTIEL') {
-          const giftielOut = await this.giftiel.check({
-            partnerCompanyCode: orderDelivery.orderProductMapping.product.partnerCompanyCode!,
-            barCode: orderDelivery.barCode!,
-          });
-
-          orderDelivery.couponStatus =
-            giftielOut.UseYn === 'Y' ? OrderDeliveryCouponStatus.USED : orderDelivery.couponStatus;
-          orderDelivery.tradeAt = giftielOut.UseDate ? new Date(giftielOut.UseDate) : null;
-          orderDelivery.tradePlace = giftielOut.BiName || null;
-        }
-
-        // 1.1.4 giftshow 쿠폰 조회 (V2 API)
-        if (type === 'GIFT_SHOW') {
-          const giftiShowOut = await this.giftiShow.check({
-            transactionId: orderDelivery.transactionId!,
-          });
-
-          if (giftiShowOut.resCode === '0000' && giftiShowOut.couponInfo) {
-            const { pinStatusCd, exchDtm, tradeBranchNm, branchNm, useComNm } = giftiShowOut.couponInfo;
-
-            // pinStatusCd: 01=발행, 02=교환, 07=취소, 08=만료
-            if (pinStatusCd === '02') {
-              orderDelivery.couponStatus = OrderDeliveryCouponStatus.USED;
-              // 교환일시 파싱 (YYYYMMDDHHmmss)
-              if (exchDtm) {
-                const year = parseInt(exchDtm.substring(0, 4));
-                const month = parseInt(exchDtm.substring(4, 6)) - 1;
-                const day = parseInt(exchDtm.substring(6, 8));
-                const hour = parseInt(exchDtm.substring(8, 10));
-                const minute = parseInt(exchDtm.substring(10, 12));
-                const second = parseInt(exchDtm.substring(12, 14));
-                orderDelivery.tradeAt = new Date(year, month, day, hour, minute, second);
-              }
-              // 교환장소: tradeBranchNm > branchNm > useComNm 순으로 사용
-              orderDelivery.tradePlace = tradeBranchNm || branchNm || useComNm || null;
-            } else if (pinStatusCd === '01') {
-              orderDelivery.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
-            }
-          }
-        }
-
-        // 1.1.5 컬쳐랜드 쿠폰 조회
-        // 컬쳐랜드상품권(모바일문화상품권)_구매_연동가이드_V3.0.pdf
-        // 60일 상품은 일대사(07:15 배치)로 처리하므로 제외
-        if (type === 'CULTURELAND') {
-          let expireDay = orderDelivery.orderProductMapping.product.expireDay;
-          if (orderDelivery.choiceSelectProduct) {
-            expireDay = orderDelivery.choiceSelectProduct.expireDay!;
-          }
-
-          // 60일 상품은 일대사로 처리
-          if (expireDay === 60) {
-            continue;
-          }
-
-          const cultureLandOut = await this.culture.check({
-            scrachNo: orderDelivery.barCode!,
-            certNo: orderDelivery.couponNum!, // 상품권 관리번호
-            requestAt: orderDelivery.sendRequestAt!,
-            expireDay,
-          });
-          orderDelivery.couponStatus =
-            cultureLandOut.CancelPossibility == 'N'
-              ? OrderDeliveryCouponStatus.USED
-              : OrderDeliveryCouponStatus.NOT_USED;
-          if (cultureLandOut.CancelPossibility === 'N') {
-            orderDelivery.tradeAt = new Date();
-          }
-        }
-
-        // 1.1.6 신세계 상품권 발행
-        if (type === 'SSG') {
-          if (!orderDelivery.ssgEvent) {
-            throw new Error(
-              `id: ${orderDelivery.id} ssgEventId: ${orderDelivery.ssgEventId} ssg event 가 존재하지 않습니다.`,
-            );
-          }
-          if (!orderDelivery.personalCode) {
-            throw new Error(`personalCode가 존재하지 않습니다.`);
-          }
-
-          const ssgOut = await this.ssgIssue.check({
-            eventNo: orderDelivery.ssgEvent.no,
-            eventSeq: orderDelivery.ssgEvent.order,
-            vno: orderDelivery.personalCode!,
-          });
-          orderDelivery.couponStatus =
-            ssgOut.response.value[0].resultCd[0] == '0400'
-              ? OrderDeliveryCouponStatus.USED
-              : OrderDeliveryCouponStatus.NOT_USED;
-        }
-
-        // 1.1.7 다우기술 쿠폰 조회
-        if (type === 'DAOU') {
-          const daouCheckOut = await this.daou.check({
-            transactionId: orderDelivery.transactionId!,
-          });
-
-          if (daouCheckOut.resultCode === 'S000001') {
-            // CPN_STATUS: 00(미사용), 01(교환완료), 02(기취소), 03(사용중)
-            if (daouCheckOut.cpnStatus === '01' || daouCheckOut.cpnStatus === '03') {
-              // 01: 교환완료, 03: 사용중 - 둘 다 USED로 처리
-              orderDelivery.couponStatus = OrderDeliveryCouponStatus.USED;
-              // 사용일자가 있으면 tradeAt에 설정 (YYYYMMDD 형식)
-              if (daouCheckOut.useDate) {
-                const year = parseInt(daouCheckOut.useDate.substring(0, 4));
-                const month = parseInt(daouCheckOut.useDate.substring(4, 6)) - 1;
-                const day = parseInt(daouCheckOut.useDate.substring(6, 8));
-                orderDelivery.tradeAt = new Date(year, month, day);
-              }
-              // 사용처가 있으면 tradePlace에 설정
-              if (daouCheckOut.useBranch) {
-                orderDelivery.tradePlace = daouCheckOut.useBranch;
-              }
-            } else if (daouCheckOut.cpnStatus === '02') {
-              orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
-            }
-          }
-        }
-
-        await this.orderDeliveryRepository.save(orderDelivery);
-      } catch (e) {
-        this.logger.log(`orderDeliveryId: ${orderDelivery.id} `);
-        this.logger.error(e);
-        this.logger.error(JSON.stringify(e));
-      }
-    }
-
-    return;
-  }
 
   /**
    * 갤럭시아 일대사(Daily Batch) - 전날 사용 내역 조회 후 tradePlace 업데이트
@@ -1108,12 +891,12 @@ export class PartnerCompanyExternBatchService {
       .andWhere(
         new Brackets((qb) => {
           qb.where('orderDelivery.couponStatus = :notUsed', {
-            notUsed: COUPON_STATUS_VALUES.NOT_USED,
+            notUsed: OrderDeliveryCouponStatus.NOT_USED,
           }).orWhere(
             new Brackets((qb2) => {
               qb2
                 .where('orderDelivery.couponStatus = :used', {
-                  used: COUPON_STATUS_VALUES.USED,
+                  used: OrderDeliveryCouponStatus.USED,
                 })
                 .andWhere('orderDelivery.galaxiaBalance > 0');
             }),
@@ -1192,7 +975,7 @@ export class PartnerCompanyExternBatchService {
 
     if (galaxiaOut.giftCertificate.isUsed) {
       updateData.couponStatus = OrderDeliveryCouponStatus.USED;
-      updateData.tradeAt = this.parseDateString(galaxiaOut.giftCertificate.usedDate);
+      updateData.tradeAt = parseDateString(galaxiaOut.giftCertificate.usedDate);
     }
 
     if (galaxiaOut.giftCertificate.couponStatus === 'CANCEL') {

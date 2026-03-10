@@ -1,12 +1,51 @@
 # 이팝콘 프리미엄
 
+이팝콘 프리미엄 백엔드 서버입니다. 주문, 발송, 상품, 협력사 연동, 정산, 고객 대응 기능을 NestJS 기반 API로 제공합니다.
+
 ## 기술 스택
 
-- NestJs 10.0.0
+- Node.js 21.7.3
+- NestJS 10.0.0
+- TypeScript 5.7.2
 - TypeORM 0.3.6
 - MySQL 8.0.40
-- Typescript 5.1.3
-- Node 21.7.3
+- MSSQL (Gemtek SMS 연동)
+- Swagger (`@nestjs/swagger`)
+- Schedule / Event Emitter / AWS S3 / SMTP / 외부 제휴사 API 연동
+
+## 요구 사항
+
+- Node.js 21.x
+- npm
+- MySQL 접속 정보
+- SMS 발송 기능 사용 시 Gemtek MSSQL 접속 정보
+- `.env.example`를 기반으로 한 `.env` 파일
+
+## 주요 실행 정보
+
+- 기본 포트: `3000` (`PORT` 환경 변수로 변경 가능)
+- Swagger 문서: `/api`
+- 정적 파일 서빙 경로: `/public`
+- CORS: 전역 허용
+- 전역 ValidationPipe: `whitelist`, `transform` 활성화
+- 요청 바디 제한
+  - JSON / `application/x-www-form-urlencoded`: `50mb`
+  - XML / text XML: `10mb`
+- 데이터베이스
+  - 메인 DB: MySQL
+  - 문자 발송 DB: Gemtek MSSQL
+
+## 빠른 시작
+
+1. `.env.example`를 참고하여 `.env` 파일을 작성합니다.
+2. 의존성을 설치합니다.
+3. 개발 서버를 실행합니다.
+4. 실행 후 `/api`에서 Swagger 문서를 확인합니다.
+
+```bash
+npm install
+npm run start:dev
+```
 
 # Node 설치
 
@@ -23,28 +62,55 @@ sudo apt-get install nodejs
 node -v
 ```
 
-# .env
+## 환경 변수 가이드
 
-- .env.example 및 세팅 내용 참고
+- 자세한 키 목록은 `.env.example`을 참고합니다.
+- 최소 확인이 필요한 주요 범주는 아래와 같습니다.
+  - 서버: `ENVIRONMENT`, `PORT`
+  - 메인 DB: `DATABASE_HOST`, `DATABASE_PORT`, `DATABASE_USERNAME`, `DATABASE_PASSWORD`, `DATABASE_DATABASE`
+  - DB 옵션: `DATABASE_LOGGING`, `DATABASE_SYNCHRONIZE`
+  - 인증: `TOKEN_SECRET_KEY`, `ACCESS_TOKEN_EXPIRE_SECOND`, `REFRESH_TOKEN_EXPIRE_SECOND`
+  - 메일/문자/알림톡: SMTP 설정, `ALIM_TALK_*`, `DATABASE_GEMTEK_SMS_*`
+  - 프론트 수신 URL: `ALIM_TALK_RECEIVE_URL`, `EMAIL_RECEIVE_URL`, `SMS_CHOICE_URL`
+  - 파일 저장소: `AWS_S3_*`
+  - 제휴사/ERP 연동: Galaxia, Giftishow, CultureLand, GS M Biz, ERP 관련 키
+  - 배치 처리: `BATCH_PAGE_SIZE`, `BATCH_API_TIMEOUT_MS`, `BATCH_RETRY_COUNT`, 파트너사별 `BATCH_CONCURRENCY_*`
+- 민감 정보는 `.env.example` 값을 그대로 사용하지 말고 환경별 실제 값으로 교체해야 합니다.
 
-## Installation
+## 주요 스크립트
 
 ```bash
-$ npm install
+# 개발 실행
+npm run start
+npm run start:dev
+npm run start:debug
+
+# 빌드 / 운영 실행
+npm run build
+npm run start:prod
+
+# 품질 점검
+npm run lint
+npm run test
+npm run test:cov
 ```
 
-## Running the app
+## 주요 모듈
 
-```bash
-# development
-$ npm run start
+- 사용자/권한: `user`, `user_management`, `department`, `auth`
+- 상품/브랜드: `product`, `brand`, `popular_product`, `product_choice`
+- 주문/수신/환불/정산: `order`, `order_receive`, `order_event`, `order_receipt`, `refund`, `settle`
+- 발송/알림: `delivery`, `mail`, `sms`, `notification`, `message_archive`, `email_manual`
+- 외부 연동: `partner_company`, `erp`, `customer_service`, `file`
+- 운영 지원: `activity_log`, `requirement`, `inquiry`, `notice`, `qna`
 
-# watch mode
-$ npm run start:dev
+## 개발 메모
 
-# production mode npm run build 후 실행해야 합니다.
-$ npm run start:prod
-```
+- Swagger는 앱 기동 시 자동 생성되며 Bearer 인증을 지원합니다.
+- 메인 DB 연결에는 snake case 네이밍 전략을 사용합니다.
+- 트랜잭션 처리는 `typeorm-transactional` 기반으로 초기화됩니다.
+- 일정성 작업은 `@nestjs/schedule`로 등록되어 있으며, 발송 배치가 이 구조를 사용합니다.
+- 정적 리소스는 프로젝트 루트 `public` 디렉터리를 `/public`으로 서빙합니다.
 
 # Architecture
 
@@ -153,6 +219,12 @@ npm i -g pm2
 
 2. 애플리케이션 실행
 
+프로덕션 실행 전에는 반드시 빌드가 완료되어 있어야 합니다.
+
+```
+npm run build
+```
+
 ```
 pm2 start npm --name "backend" -- run start:prod
 ```
@@ -172,11 +244,13 @@ pm2 restart {id} # 프로세스 재시작
 pm2 log # 파일 경로 .pm2/logs
 ```
 
-## UTC
+## KST
 
-- 해당 프로젝트의 date 관련한 값은 **전부 UTC 기준으로 개발**되었습니다.
-  - 시간 표기는 프론트에 일임되어있습니다.
-  - 개발 및 데이터 시간 확인시 참고 부탁드립니다.
+- 해당 프로젝트의 date 관련 값은 **전부 KST(UTC+09:00) 기준으로 처리**합니다.
+  - 개발 및 데이터 시간 확인 시 KST 기준으로 확인해 주세요.
+  - 메인 DB 세션 타임존도 `+09:00`으로 설정되어 있습니다.
+  - 일부 만료일/예약일 계산은 `dayjs.tz('Asia/Seoul')` 기준으로 처리합니다.
+  - 시간 표기 방식은 프론트엔드에서 처리합니다.
 
 ## 발송
 

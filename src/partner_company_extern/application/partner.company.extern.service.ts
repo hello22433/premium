@@ -23,26 +23,8 @@ import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delive
 import { CancelCouponResDto } from '../api/CancelCouponResDto';
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
-
-/**
- * YYYYMMDDHHmmss 또는 YYYYMMDD 형식의 날짜 문자열을 Date 객체로 변환
- * @param dateStr - 날짜 문자열 (최소 8자리 이상)
- * @returns 파싱된 Date 객체 또는 null (유효하지 않은 경우)
- */
-function parseDateString(dateStr: string | null | undefined): Date | null {
-  if (!dateStr || dateStr.length < 8) {
-    return null;
-  }
-
-  const year = parseInt(dateStr.substring(0, 4));
-  const month = parseInt(dateStr.substring(4, 6)) - 1;
-  const day = parseInt(dateStr.substring(6, 8));
-  const hour = dateStr.length >= 10 ? parseInt(dateStr.substring(8, 10)) : 0;
-  const minute = dateStr.length >= 12 ? parseInt(dateStr.substring(10, 12)) : 0;
-  const second = dateStr.length >= 14 ? parseInt(dateStr.substring(12, 14)) : 0;
-
-  return new Date(year, month, day, hour, minute, second);
-}
+import { parseDateString } from '../../util/date.util';
+import { applyReplaceCharacters } from '../../common/utils/replace-characters.util';
 
 @Injectable()
 export class PartnerCompanyExternService {
@@ -123,16 +105,7 @@ export class PartnerCompanyExternService {
     const type = orderDelivery.orderProductMapping!.product.partnerCompany!.type;
 
     // deliveryTarget 복호화
-    let decryptedDeliveryTarget = orderDelivery.deliveryTarget;
-    if (orderDelivery.deliveryTarget) {
-      try {
-        decryptedDeliveryTarget = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.deliveryTarget);
-      } catch (error) {
-        this.logger.error(`Failed to decrypt deliveryTarget for orderDelivery ${orderDelivery.id}: ${error}`);
-        // 복호화 실패 시 원본 데이터 사용
-        decryptedDeliveryTarget = orderDelivery.deliveryTarget;
-      }
-    }
+    const decryptedDeliveryTarget = this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.deliveryTarget) ?? orderDelivery.deliveryTarget;
 
     let context = '';
     let isSuccess = true;
@@ -360,15 +333,7 @@ export class PartnerCompanyExternService {
           if (orderDelivery.orderProductMapping.sendTailText) {
             text += orderDelivery.orderProductMapping.sendTailText;
           }
-          if (orderDelivery.replaceCharacter1) {
-            text = text.replace('{대치문자1}', orderDelivery.replaceCharacter1);
-          }
-          if (orderDelivery.replaceCharacter2) {
-            text = text.replace('{대치문자2}', orderDelivery.replaceCharacter2);
-          }
-          if (orderDelivery.replaceCharacter3) {
-            text = text.replace('{대치문자3}', orderDelivery.replaceCharacter3);
-          }
+          text = applyReplaceCharacters(text, orderDelivery);
 
           const textForSsg = text + smsSsgTemplate(orderDelivery);
 

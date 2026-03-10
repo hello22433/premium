@@ -18,7 +18,6 @@ export class CryptoCipher {
     let encrypted = cipher.update(data, 'utf8', 'hex');
     encrypted += cipher.final('hex');
 
-    console.log('encrypted:', encrypted);
     return encrypted; // 암호화된 데이터 반환
   }
 
@@ -127,5 +126,17 @@ export class CryptoCipher {
     decrypted += decipher.final('utf8');
 
     return decrypted;
+  }
+
+  /**
+   * deliveryTarget 안전 복호화 — 실패 시 원본 반환
+   */
+  safeDecryptDeliveryTarget(encryptedData: string | null | undefined): string | null {
+    if (!encryptedData) return null;
+    try {
+      return this.decryptDeliveryTarget(encryptedData);
+    } catch {
+      return encryptedData;
+    }
   }
 }

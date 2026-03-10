@@ -9,6 +9,7 @@ import dayjs from 'dayjs';
 import * as fsPromises from 'fs/promises';
 import * as QRCode from 'qrcode';
 
+import { applyReplaceCharacters } from '../../common/utils/replace-characters.util';
 import { OrderEntity } from '../../entity/order.entity';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { OrderRealProductEntity } from '../../entity/order.real.product.entity';
@@ -113,23 +114,6 @@ export class DeliveryBatchService {
       this.logger.error(`Failed to decrypt ${fieldName} for orderDelivery ${orderDelivery.id}: ${error}`);
       return encryptedValue;
     }
-  }
-
-  /**
-   * 대치문자 치환
-   */
-  private applyReplaceCharacters(text: string, orderDelivery: OrderDeliveryEntity): string {
-    let result = text;
-    if (orderDelivery.replaceCharacter1) {
-      result = result.replace('{대치문자1}', orderDelivery.replaceCharacter1);
-    }
-    if (orderDelivery.replaceCharacter2) {
-      result = result.replace('{대치문자2}', orderDelivery.replaceCharacter2);
-    }
-    if (orderDelivery.replaceCharacter3) {
-      result = result.replace('{대치문자3}', orderDelivery.replaceCharacter3);
-    }
-    return result;
   }
 
   /**
@@ -357,14 +341,7 @@ export class DeliveryBatchService {
     }
 
     // 2. deliveryTarget 복호화
-    let decryptedDeliveryTarget = orderDelivery.deliveryTarget;
-    if (orderDelivery.deliveryTarget) {
-      try {
-        decryptedDeliveryTarget = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.deliveryTarget);
-      } catch (error) {
-        this.logger.error(`Failed to decrypt deliveryTarget for orderDelivery ${orderDelivery.id}: ${error}`);
-      }
-    }
+    const decryptedDeliveryTarget = this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.deliveryTarget) ?? orderDelivery.deliveryTarget;
 
     const title = orderDelivery.orderProductMapping.sendTitle ?? '';
 
@@ -400,7 +377,7 @@ export class DeliveryBatchService {
     if (sendTailText) {
       text += `\n\n${sendTailText}`;
     }
-    text = this.applyReplaceCharacters(text, orderDelivery);
+    text = applyReplaceCharacters(text, orderDelivery);
 
     const deliveryMethod = orderDelivery.deliveryMethod;
     const deliveryHistory = new DeliverySendHistoryEntity();
@@ -912,14 +889,14 @@ export class DeliveryBatchService {
     // 텍스트 빌드
     const title = orderDelivery.orderProductMapping.sendTitle ?? '';
     let text = orderDelivery.orderProductMapping.sendContent ?? '';
-    if (orderDelivery.orderProductMapping.product.memo) {
+    if (orderDelivery.orderProductMapping.product.memo && orderDelivery.orderProductMapping.order.type !== IOrderType.SSG) {
       text += `\n\n${orderDelivery.orderProductMapping.product.memo}`;
     }
     const sendTailText = orderDelivery.orderProductMapping.sendTailText;
     if (sendTailText) {
       text += `\n\n${sendTailText}`;
     }
-    text = this.applyReplaceCharacters(text, orderDelivery);
+    text = applyReplaceCharacters(text, orderDelivery);
 
     const encryptKey = this.cryptoCipher.encryptJson({
       id: orderDelivery.id,
@@ -997,7 +974,11 @@ export class DeliveryBatchService {
     let text = orderDelivery.orderProductMapping.sendContent ?? '';
 
     // 이메일이 아닌 경우에만 상품 유의사항 추가
-    if (orderDelivery.orderProductMapping.product.memo && orderDelivery.deliveryMethod !== IOrderSendMethod.EMAIL) {
+    if (
+      orderDelivery.orderProductMapping.product.memo &&
+      orderDelivery.deliveryMethod !== IOrderSendMethod.EMAIL &&
+      orderDelivery.orderProductMapping.order.type !== IOrderType.SSG
+    ) {
       text += `\n\n${orderDelivery.orderProductMapping.product.memo}`;
     }
 
@@ -1005,7 +986,7 @@ export class DeliveryBatchService {
     if (sendTailText) {
       text += `\n\n${sendTailText}`;
     }
-    text = this.applyReplaceCharacters(text, orderDelivery);
+    text = applyReplaceCharacters(text, orderDelivery);
 
     const deliveryMethod = orderDelivery.deliveryMethod;
     const deliveryHistory = new DeliverySendHistoryEntity();
@@ -1083,12 +1064,7 @@ export class DeliveryBatchService {
       // 이메일 쿠폰이 이미 수령되어 핀이 발급된 경우 (barCode가 있고 emailReceiverPhone이 있는 경우)
       // 이메일 대신 문자로 재발송
       if (orderDelivery.barCode && orderDelivery.emailReceiverPhone) {
-        let decryptedEmailReceiverPhone = orderDelivery.emailReceiverPhone;
-        try {
-          decryptedEmailReceiverPhone = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.emailReceiverPhone);
-        } catch (error) {
-          this.logger.error(`Failed to decrypt emailReceiverPhone for orderDelivery ${orderDelivery.id}: ${error}`);
-        }
+        const decryptedEmailReceiverPhone = this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.emailReceiverPhone) ?? orderDelivery.emailReceiverPhone;
 
         try {
           const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber!;
