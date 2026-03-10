@@ -889,7 +889,7 @@ export class DeliveryBatchService {
     // 텍스트 빌드
     const title = orderDelivery.orderProductMapping.sendTitle ?? '';
     let text = orderDelivery.orderProductMapping.sendContent ?? '';
-    if (orderDelivery.orderProductMapping.product.memo) {
+    if (orderDelivery.orderProductMapping.product.memo && orderDelivery.orderProductMapping.order.type !== IOrderType.SSG) {
       text += `\n\n${orderDelivery.orderProductMapping.product.memo}`;
     }
     const sendTailText = orderDelivery.orderProductMapping.sendTailText;
@@ -974,7 +974,11 @@ export class DeliveryBatchService {
     let text = orderDelivery.orderProductMapping.sendContent ?? '';
 
     // 이메일이 아닌 경우에만 상품 유의사항 추가
-    if (orderDelivery.orderProductMapping.product.memo && orderDelivery.deliveryMethod !== IOrderSendMethod.EMAIL) {
+    if (
+      orderDelivery.orderProductMapping.product.memo &&
+      orderDelivery.deliveryMethod !== IOrderSendMethod.EMAIL &&
+      orderDelivery.orderProductMapping.order.type !== IOrderType.SSG
+    ) {
       text += `\n\n${orderDelivery.orderProductMapping.product.memo}`;
     }
 
