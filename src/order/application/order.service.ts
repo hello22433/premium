@@ -673,7 +673,8 @@ export class OrderService {
       .leftJoinAndSelect('orderProductMappings.product', 'product')
       .leftJoinAndSelect('product.brand', 'brand')
       .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
-      .where('order.id = :id', { id: getQuery.id });
+      .where('order.id = :id', { id: getQuery.id })
+      .addOrderBy('orderDeliveries.id', 'ASC');
 
     const order = await queryBuilder.getOne();
 
@@ -1057,7 +1058,8 @@ export class OrderService {
       .leftJoinAndSelect('orderProductMappings.product', 'product')
       .leftJoinAndSelect('product.brand', 'brand')
       .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
-      .where('order.id IN (:...ids)', { ids: orderIds });
+      .where('order.id IN (:...ids)', { ids: orderIds })
+      .addOrderBy('orderDeliveries.id', 'ASC');
 
     const orders = await queryBuilder.getMany();
 
