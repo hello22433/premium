@@ -279,7 +279,7 @@ export class ProductService {
       queryBuilder = queryBuilder.andWhere(
         `(product.name LIKE :keyword
       OR product.code LIKE :keyword
-      OR partnerCompany.code LIKE :keyword)`,
+      OR product.partnerCompanyCode LIKE :keyword)`,
         { keyword: `%${searchKeyword}%` },
       );
     }
@@ -301,7 +301,7 @@ export class ProductService {
     }
 
     if (partnerCompanyCode) {
-      queryBuilder = queryBuilder.andWhere('partnerCompany.code LIKE :partnerCompanyCode', {
+      queryBuilder = queryBuilder.andWhere('product.partnerCompanyCode LIKE :partnerCompanyCode', {
         partnerCompanyCode: `%${partnerCompanyCode}%`,
       });
     }
@@ -511,7 +511,7 @@ export class ProductService {
       queryBuilder = queryBuilder.andWhere(
         `(product.name LIKE :keyword
       OR product.code LIKE :keyword
-      OR partnerCompany.code LIKE :keyword)`,
+      OR product.partnerCompanyCode LIKE :keyword)`,
         { keyword: `%${searchKeyword}%` },
       );
     }
@@ -533,7 +533,7 @@ export class ProductService {
     }
 
     if (partnerCompanyCode) {
-      queryBuilder = queryBuilder.andWhere('partnerCompany.code LIKE :partnerCompanyCode', {
+      queryBuilder = queryBuilder.andWhere('product.partnerCompanyCode LIKE :partnerCompanyCode', {
         partnerCompanyCode: `%${partnerCompanyCode}%`,
       });
     }
