@@ -381,7 +381,7 @@ export class UserService {
     const code = generateNumericCode(5);
     const expireAt = addMinutes(new Date(), EmailCertifyExpireMinute);
 
-    const messageText = `이팝콘 프리미엄 로그인 인증코드\n[#${code}]`;
+    const messageText = `이팝콘 프리미엄 로그인 인증코드\n[${code}]`;
 
     // 알림톡 발송 시도 → 실패 시 SMS 대체 발송
     try {
