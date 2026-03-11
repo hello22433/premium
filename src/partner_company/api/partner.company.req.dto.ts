@@ -40,6 +40,49 @@ export class PartnerCompanyGetListReqQueryDto extends PagingReqDto {
   @IsOptional()
   @IsIn(['PRE_PAYMENT', 'POST_PAYMENT'])
   settleCondition?: IPartnerCompanySettleCondition;
+
+  @ApiPropertyOptional({
+    description: '검색 타입 ex) 전체: ALL, 이메일: email, 협력사명: businessName',
+  })
+  // ===============================
+  @IsOptional()
+  @IsIn(['ALL', 'email', 'businessName', 'personName'])
+  searchType?: string;
+
+  @ApiPropertyOptional({
+    description: '검색어 키워드',
+  })
+  // ===============================
+  @IsOptional()
+  searchKeyword?: string;
+
+  @ApiPropertyOptional({
+    description: '당사자 이메일',
+  })
+  // ===============================
+  @IsOptional()
+  email?: string;
+
+  @ApiPropertyOptional({
+    description: '협력사명',
+  })
+  // ===============================
+  @IsOptional()
+  businessName?: string;
+
+  @ApiPropertyOptional({
+    description: '담당자명',
+  })
+  // ===============================
+  @IsOptional()
+  personName?: string;
+
+  @ApiPropertyOptional({
+    description: '담당자 연락처',
+  })
+  // ===============================
+  @IsOptional()
+  personPhoneNumber?: string;
 }
 
 export class PartnerCompanyGetDetailReqParamDto {
