@@ -1,4 +1,5 @@
 import { BadRequestException, Inject, Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import {
   UserLoginByEmailPasswordReqDto,
   UserLoginEmailSendReqDto,
@@ -60,6 +61,7 @@ export class UserService {
     private readonly alimTalkService: DeliveryAlimTalk,
     @Inject('ISmsSend')
     private readonly smsSendService: ISmsSend,
+    private configService: ConfigService,
     private activityLogService: ActivityLogService,
   ) {}
 
@@ -381,14 +383,14 @@ export class UserService {
     const code = generateNumericCode(5);
     const expireAt = addMinutes(new Date(), EmailCertifyExpireMinute);
 
-    const messageText = `이팝콘 프리미엄 로그인 인증코드\n[#${code}]`;
+    const messageText = `이팝콘 프리미엄 로그인 인증코드\n[${code}]`;
 
     // 알림톡 발송 시도 → 실패 시 SMS 대체 발송
     try {
       await this.alimTalkService.send({
         to: user.personPhoneNumber,
         text: messageText,
-        templateCode: 'login_auth',
+        templateCode: this.configService.getOrThrow('ALIM_TALK_INFO_BANK_LOGIN_AUTH_TEMPLATE_CODE'),
         msgType: 'AT',
       });
       this.logger.log(`로그인 인증코드 알림톡 발송 성공: userId=${user.id}`);
