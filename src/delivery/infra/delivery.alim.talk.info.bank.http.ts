@@ -131,21 +131,31 @@ export class DeliveryAlimTalkInfoBankHttp implements DeliveryAlimTalk {
         buttonName = '쿠폰 확인하기';
       }
 
-      const body = {
+      const body: {
+        senderKey: string;
+        msgType: string;
+        to: string;
+        templateCode: string;
+        text: string;
+        button?: { type: string; name: string; urlMobile: string }[];
+      } = {
         senderKey: this.infoBankSenderKey,
         msgType: sendObj.msgType || 'AI', // 기본값: 이미지 강조유형(AI)
         to: sendObj.to,
         templateCode: templateCode,
         text: sendObj.text,
-        button: [
+      };
+
+      // encryptKey가 있을 때만 버튼 추가 (쿠폰 발송용)
+      if (sendObj.encryptKey) {
+        body.button = [
           {
             type: 'WL',
             name: buttonName,
-            // urlPc: `${this.receiveUrl}/${sendObj.encryptKey}`,
             urlMobile: `${this.receiveUrl}/${sendObj.encryptKey}`,
           },
-        ],
-      };
+        ];
+      }
 
       const response = await firstValueFrom(this.httpService.post(url, body, { headers }));
 

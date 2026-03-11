@@ -16,6 +16,8 @@ import { UserCompanyEntity } from '../../entity/user.company.entity';
 import { UserViewScopeEntity } from '../../entity/user.view.scope.entity';
 import { PasswordPolicyEntity } from '../../entity/password.policy.entity';
 import { ActivityLogService } from '../../activity_log/application/activity.log.service';
+import { DeliveryAlimTalk } from '../../delivery/interface/delivery.alim.talk';
+import { ISmsSend } from '../../sms/interface/sms.send';
 
 jest.mock('typeorm-transactional', () => ({
   Transactional: () => () => ({}),
@@ -35,6 +37,8 @@ describe('user login service Test', () => {
   const passwordPolicyRepository: MockProxy<Repository<PasswordPolicyEntity>> =
     mock<Repository<PasswordPolicyEntity>>();
   const activityLogService: MockProxy<ActivityLogService> = mock<ActivityLogService>();
+  const alimTalkService: MockProxy<DeliveryAlimTalk> = mock<DeliveryAlimTalk>();
+  const smsSendService: MockProxy<ISmsSend> = mock<ISmsSend>();
 
   const sut = new UserService(
     passwordEncrypt,
@@ -45,6 +49,8 @@ describe('user login service Test', () => {
     emailSendHistoryRepository,
     passwordPolicyRepository,
     mailSendService,
+    alimTalkService,
+    smsSendService,
     activityLogService,
   );
 

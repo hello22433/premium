@@ -208,3 +208,39 @@ export class UserLoginEmailVerifyReqDto {
   @IsNotEmpty()
   readonly code: string;
 }
+
+export class UserLoginPhoneSendReqDto {
+  @ApiProperty({
+    type: String,
+    description: '계정 이메일 (로그인 ID)',
+  })
+  // =================================
+  @IsNotEmpty()
+  @IsEmail()
+  readonly email: string;
+}
+
+export class UserLoginPhoneVerifyReqDto {
+  @ApiProperty({
+    description: '인증 이력 id',
+  })
+  // =================================
+  @IsNotEmpty()
+  @IsNumber()
+  readonly id: number;
+
+  @ApiProperty({
+    description: '계정 이메일 (로그인 ID)',
+  })
+  // =================================
+  @IsNotEmpty()
+  @IsEmail()
+  readonly email: string;
+
+  @ApiProperty({
+    description: '인증 코드',
+  })
+  // =================================
+  @IsNotEmpty()
+  readonly code: string;
+}

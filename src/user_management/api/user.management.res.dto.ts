@@ -10,6 +10,7 @@ import { IUserBusinessType } from '../../user/interface/user.business.type';
 import { UserSettlePeriodConditionEnum } from '../../user/interface/user.settle.period.condition.enum';
 import { ViewScopeType } from '../../entity/user.view.scope.entity';
 import { CompanyType } from '../../common/domain/company.type';
+import { LoginVerifyMethod } from '../../user/interface/login.verify.method';
 
 export class UserManagementGetNameListResDto {
   @ApiProperty({
@@ -221,6 +222,12 @@ export class UserManagementGetDetailResDto {
     example: ['ALIM_TALK', 'SMS', 'EMAIL'],
   })
   allowedSendMethods: string[];
+
+  @ApiProperty({
+    description: '로그인 인증 방식 (EMAIL: 이메일 인증, PHONE: 문자 인증)',
+    enum: LoginVerifyMethod,
+  })
+  loginVerifyMethod: LoginVerifyMethod;
 }
 
 export class UserDepartmentInfoDto {

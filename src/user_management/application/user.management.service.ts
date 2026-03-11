@@ -310,6 +310,7 @@ export class UserManagementService {
           deptIds: [],
         },
       allowedSendMethods: user.allowedSendMethods ? user.allowedSendMethods.split(',') : ['ALIM_TALK', 'SMS', 'EMAIL'],
+      loginVerifyMethod: user.loginVerifyMethod,
     };
   }
 
@@ -602,6 +603,7 @@ export class UserManagementService {
       companyId: companyId,
       allowedSendMethods: getBody.allowedSendMethods.join(','),
       documentCompanyType: getBody.documentCompanyType ?? CompanyType.ENMAD,
+      loginVerifyMethod: getBody.loginVerifyMethod,
     });
 
     // 신규 사용자의 조회 범위 설정 (SUPER_ADMIN만 ALL, 나머지는 SELF)
@@ -699,6 +701,9 @@ export class UserManagementService {
     user.allowedSendMethods = getBody.allowedSendMethods.join(',');
     if (getBody.documentCompanyType) {
       user.documentCompanyType = getBody.documentCompanyType;
+    }
+    if (getBody.loginVerifyMethod) {
+      user.loginVerifyMethod = getBody.loginVerifyMethod;
     }
 
     await this.userRepository.save(user);
