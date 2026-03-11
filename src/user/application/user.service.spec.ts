@@ -18,6 +18,7 @@ import { PasswordPolicyEntity } from '../../entity/password.policy.entity';
 import { ActivityLogService } from '../../activity_log/application/activity.log.service';
 import { DeliveryAlimTalk } from '../../delivery/interface/delivery.alim.talk';
 import { ISmsSend } from '../../sms/interface/sms.send';
+import { ConfigService } from '@nestjs/config';
 
 jest.mock('typeorm-transactional', () => ({
   Transactional: () => () => ({}),
@@ -39,6 +40,7 @@ describe('user login service Test', () => {
   const activityLogService: MockProxy<ActivityLogService> = mock<ActivityLogService>();
   const alimTalkService: MockProxy<DeliveryAlimTalk> = mock<DeliveryAlimTalk>();
   const smsSendService: MockProxy<ISmsSend> = mock<ISmsSend>();
+  const configService: MockProxy<ConfigService> = mock<ConfigService>();
 
   const sut = new UserService(
     passwordEncrypt,
@@ -51,6 +53,7 @@ describe('user login service Test', () => {
     mailSendService,
     alimTalkService,
     smsSendService,
+    configService,
     activityLogService,
   );
 
