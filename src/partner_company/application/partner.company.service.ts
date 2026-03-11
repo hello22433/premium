@@ -31,7 +31,7 @@ export class PartnerCompanyService {
   constructor(
     @InjectRepository(PartnerCompanyEntity)
     private partnerCompanyRepository: Repository<PartnerCompanyEntity>,
-  ) {}
+  ) { }
 
   async getSelectList(): Promise<PartnerCompanyGetSelectListResDto> {
     const partnerCompanyList = await this.partnerCompanyRepository.find({});
@@ -97,9 +97,76 @@ export class PartnerCompanyService {
   }
 
   async getList(getQuery: PartnerCompanyGetListReqQueryDto): Promise<PartnerCompanyGetListResDto> {
-    const { startCreatedAt, endCreatedAt, settleCondition, take, page } = getQuery;
+    const {
+      startCreatedAt,
+      endCreatedAt,
+      settleCondition,
+      searchType,
+      searchKeyword,
+      email,
+      businessName,
+      personName,
+      personPhoneNumber,
+      take,
+      page,
+    } = getQuery;
 
     let queryBuilder = this.partnerCompanyRepository.createQueryBuilder('partnerCompany');
+
+    // 1. 개별 필드 검색 (프론트엔드에서 특정 필드로 꽂아줄 때)
+    if (email) {
+      queryBuilder = queryBuilder.andWhere('partnerCompany.personEmail LIKE :email', { email: `%${email}%` });
+    }
+    if (businessName) {
+      queryBuilder = queryBuilder.andWhere('partnerCompany.businessName LIKE :businessName', {
+        businessName: `%${businessName}%`,
+      });
+    }
+    if (personName) {
+      queryBuilder = queryBuilder.andWhere('partnerCompany.personName LIKE :personName', {
+        personName: `%${personName}%`,
+      });
+    }
+    if (personPhoneNumber) {
+      queryBuilder = queryBuilder.andWhere('partnerCompany.personPhoneNumber LIKE :personPhoneNumber', {
+        personPhoneNumber: `%${personPhoneNumber}%`,
+      });
+    }
+
+    // 2. 통합 검색 (searchType + searchKeyword 조합으로 올 때)
+    if (searchKeyword && searchKeyword.length >= 1) {
+      switch (searchType) {
+        case 'email':
+          queryBuilder = queryBuilder.andWhere('partnerCompany.personEmail LIKE :keyword', {
+            keyword: `%${searchKeyword}%`,
+          });
+          break;
+        case 'businessName':
+          queryBuilder = queryBuilder.andWhere('partnerCompany.businessName LIKE :keyword', {
+            keyword: `%${searchKeyword}%`,
+          });
+          break;
+        case 'personName':
+          queryBuilder = queryBuilder.andWhere('partnerCompany.personName LIKE :keyword', {
+            keyword: `%${searchKeyword}%`,
+          });
+          break;
+        case 'personPhoneNumber':
+          queryBuilder = queryBuilder.andWhere('partnerCompany.personPhoneNumber LIKE :keyword', {
+            keyword: `%${searchKeyword}%`,
+          });
+          break;
+        default: // 'ALL' 이거나 검색 타입이 없을 때 전방위 검색
+          queryBuilder = queryBuilder.andWhere(
+            `(partnerCompany.personEmail LIKE :keyword
+              OR partnerCompany.businessName LIKE :keyword
+              OR partnerCompany.personName LIKE :keyword
+              OR partnerCompany.personPhoneNumber LIKE :keyword)`,
+            { keyword: `%${searchKeyword}%` },
+          );
+          break;
+      }
+    }
 
     if (settleCondition) {
       queryBuilder = queryBuilder.andWhere('partnerCompany.settleCondition = :settleCondition', { settleCondition });
