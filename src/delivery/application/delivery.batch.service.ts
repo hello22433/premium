@@ -12,6 +12,7 @@ import * as QRCode from 'qrcode';
 import { applyReplaceCharacters } from '../../common/utils/replace-characters.util';
 import { OrderEntity } from '../../entity/order.entity';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
+import { OrderProductMappingEntity } from '../../entity/order.product.mapping.entity';
 import { OrderRealProductEntity } from '../../entity/order.real.product.entity';
 import { OrderRealProductMappingEntity } from '../../entity/order.real.product.mapping.entity';
 import { DeliverySendHistoryEntity } from '../../entity/delivery.send.history.entity';
@@ -27,6 +28,7 @@ import { ISmsSend } from '../../sms/interface/sms.send';
 import { IOrderSendMethod } from '../../order/interface/order.send.method';
 import { IOrderStatus } from '../../order/interface/order.status';
 import { IOrderType } from '../../order/interface/order.type';
+import { OrderFeeCalculator, applyCardSurcharge } from '../../order/domain/order.fee.calculator';
 import { IOrderRealProductStatus } from '../../order_real_product/interface/order.real.product.status';
 import { IFileStorage } from '../../file/interface/file.storage';
 import { IProductType } from '../../product/interface/product.type';
@@ -174,32 +176,47 @@ export class DeliveryBatchService {
   }
 
   /**
+   * 매핑의 할인/할증 + 카드할증을 적용한 정산단가 계산
+   * fee/priceAdjustment가 미설정이면 정가 기준, 카드할증은 order에서 판단
+   */
+  private calculateSettlementPrice(mapping: OrderProductMappingEntity, cardSurchargeApplied: boolean): number {
+    let price = mapping.product.price;
+    if (mapping.fee !== null && mapping.priceAdjustment) {
+      price = OrderFeeCalculator({ fee: mapping.fee, priceAdjustment: mapping.priceAdjustment, price });
+    }
+    return applyCardSurcharge(price, cardSurchargeApplied);
+  }
+
+  /**
    * 발송 실패 시 환불 처리 (SSG 이벤트 잔액 복원 + 사용자 잔액/정산 복원)
    * PIN 발급 실패, 메시지 발송 실패 등 delivery가 FAIL이 될 때 호출
    */
   private async refundForFail(orderDelivery: OrderDeliveryEntity): Promise<void> {
     const order = orderDelivery.orderProductMapping.order;
-    const product = orderDelivery.orderProductMapping.product;
-    const productPrice = product.price;
+    const mapping = orderDelivery.orderProductMapping;
+    const productPrice = mapping.product.price;
+    const settlementPrice = this.calculateSettlementPrice(mapping, order.cardSurchargeApplied);
     // 과금 대상 userId (대행주문인 경우 clientUserId, 아니면 userId)
     const userId = order.clientUserId ?? order.user!.id;
 
     try {
+      // SSG 이벤트 잔액 복원은 쿠폰 액면가(productPrice) 기준
       if (order.type === IOrderType.SSG && orderDelivery.ssgEventId) {
         await this.ssgEventService.refundForDeliveryFail(orderDelivery.ssgEventId, order.id, productPrice);
       }
 
+      // 사용자 잔액/정산 복원은 정산단가(settlementPrice) 기준
       if (order.isSettleBalance) {
-        await this.userManagementService.addBalance(userId, productPrice, `발송 실패 환불 (주문번호: ${order.id})`);
+        await this.userManagementService.addBalance(userId, settlementPrice, `발송 실패 환불 (주문번호: ${order.id})`);
       } else {
         const user = await this.userRepository.findOne({ where: { id: userId } });
         if (user) {
-          user.allSettleAmount -= productPrice;
+          user.allSettleAmount -= settlementPrice;
           await this.userRepository.save(user);
         }
       }
 
-      this.logger.log(`[REFUND] 환불 완료 - orderDelivery.id: ${orderDelivery.id}, amount: ${productPrice}`);
+      this.logger.log(`[REFUND] 환불 완료 - orderDelivery.id: ${orderDelivery.id}, amount: ${settlementPrice} (정가: ${productPrice})`);
     } catch (error) {
       this.logger.error(`[REFUND] 환불 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
     }
@@ -819,30 +836,30 @@ export class DeliveryBatchService {
    */
   private async reverseRefundForResend(orderDelivery: OrderDeliveryEntity, skipSsg: boolean = false): Promise<void> {
     const order = orderDelivery.orderProductMapping.order;
-    const product = orderDelivery.orderProductMapping.product;
-    const productPrice = product.price;
+    const mapping = orderDelivery.orderProductMapping;
+    const productPrice = mapping.product.price;
+    const settlementPrice = this.calculateSettlementPrice(mapping, order.cardSurchargeApplied);
     // 과금 대상 userId (대행주문인 경우 clientUserId, 아니면 userId)
     const userId = order.clientUserId ?? order.user!.id;
 
     try {
-      // SSG 주문인 경우: eventBalance 차감 (선차감 완료 시 스킵)
+      // SSG 이벤트 잔액은 쿠폰 액면가(productPrice) 기준
       if (!skipSsg && order.type === IOrderType.SSG && orderDelivery.ssgEventId) {
         await this.ssgEventService.chargeBackForResend(orderDelivery.ssgEventId, order.id, productPrice);
       }
 
-      // 잔액 차감 주문인 경우: 잔액 다시 차감
+      // 사용자 잔액/정산은 정산단가(settlementPrice) 기준
       if (order.isSettleBalance) {
-        await this.userManagementService.deductBalance(userId, productPrice);
+        await this.userManagementService.deductBalance(userId, settlementPrice);
       } else {
-        // 정산 차감인 경우: allSettleAmount 복구
         const user = await this.userRepository.findOne({ where: { id: userId } });
         if (user) {
-          user.allSettleAmount += productPrice;
+          user.allSettleAmount += settlementPrice;
           await this.userRepository.save(user);
         }
       }
 
-      this.logger.log(`[RESEND] 환불 복구 완료 - orderDelivery.id: ${orderDelivery.id}, amount: ${productPrice}`);
+      this.logger.log(`[RESEND] 환불 복구 완료 - orderDelivery.id: ${orderDelivery.id}, amount: ${settlementPrice} (정가: ${productPrice})`);
     } catch (error) {
       this.logger.error(`[RESEND] 환불 복구 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
       // 환불 복구 실패해도 발송은 진행 (로그만 남김)

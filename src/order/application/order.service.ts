@@ -97,7 +97,7 @@ import { SsgEventAmountHistoryEntity } from '../../entity/ssg.event.amount.histo
 import { IProductType } from '../../product/interface/product.type';
 import { defaultOrderMidImagePath, defaultOrderTopImagePath } from '../../const';
 import { OrderStatusExcelMapping } from '../domain/order.excel.mapping';
-import { OrderFeeCalculator } from '../domain/order.fee.calculator';
+import { OrderFeeCalculator, applyCardSurcharge } from '../domain/order.fee.calculator';
 import { OrderCustomerViewDto } from '../api/dto/order.customer.view.dto';
 import { MaskingUtil } from '../../common/utils/masking.util';
 import { CreateCode } from '../../common/domain/create.code';
@@ -120,15 +120,6 @@ import { EmailSendHistoryEntity } from '../../entity/email.send.history.entity';
 import { EmailType } from '../../mail/domain/email.type';
 
 dayjs.extend(utc);
-
-/** 카드할증 비율 (3%) */
-const CARD_SURCHARGE_RATE = 0.03;
-
-/** 카드할증을 적용한 정산금액 계산 */
-function applyCardSurcharge(amount: number, applied: boolean): number {
-  if (!applied) return amount;
-  return amount + Math.floor(amount * CARD_SURCHARGE_RATE);
-}
 
 dayjs.extend(timezone);
 
@@ -2454,8 +2445,8 @@ export class OrderService {
     }
     // ======== 중복번호 제어 체크 끝 ========
 
-    // 최종 정산금액 계산
-    const finalAmount = order.sendAmount + totalSettleFee;
+    // 최종 정산금액 계산 (카드할증 포함)
+    const finalAmount = applyCardSurcharge(order.sendAmount + totalSettleFee, order.cardSurchargeApplied);
 
     if (order.isNewBillingFlow) {
       // === 새 흐름: 발송확정 시 전액 차감 ===
@@ -2585,6 +2576,7 @@ export class OrderService {
         }
       }
 
+      // finalAmount는 카드할증 포함 (applyCardSurcharge 적용됨)
       order.settleAmount = finalAmount;
     }
     // ======== 과금 처리 끝 ========
