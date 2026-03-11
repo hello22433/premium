@@ -127,7 +127,7 @@ export class SettleService {
     private galaxiaBarcodeLogRepository: Repository<GalaxiaBarcodeLogEntity>,
     private activityLogService: ActivityLogService,
     private cryptoCipher: CryptoCipher,
-  ) {}
+  ) { }
 
   /**
    * 기본 조회 기간 적용 (startAt/endAt 미지정 시 최근 1개월)
@@ -164,6 +164,7 @@ export class SettleService {
       isVat,
       take,
       page,
+      searchKeyword,
     } = getQuery;
     const { startAt, endAt } = defaultDate;
 
@@ -171,9 +172,21 @@ export class SettleService {
       .createQueryBuilder('sale')
       .innerJoinAndSelect('sale.user', 'user')
       .innerJoinAndSelect('sale.businessUser', 'businessUser')
+      .leftJoinAndSelect('businessUser.company', 'businessCompany')
       .innerJoinAndSelect('sale.otherServiceSaleProductMappings', 'otherServiceSaleProductMappings')
       .innerJoinAndSelect('sale.saleType', 'saleType')
       .innerJoinAndSelect('otherServiceSaleProductMappings.otherServiceSaleProduct', 'product');
+
+    if (searchKeyword) {
+      queryBuilder = queryBuilder.andWhere(
+        new Brackets((qb) => {
+          qb.where('user.personName LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('sale.eventName LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('businessCompany.businessName LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('product.name LIKE :keyword', { keyword: `%${searchKeyword}%` });
+        }),
+      );
+    }
 
     if (personName) {
       queryBuilder = queryBuilder.andWhere('user.personName LIKE :personName', {
@@ -188,7 +201,7 @@ export class SettleService {
     }
 
     if (businessName) {
-      queryBuilder = queryBuilder.andWhere('businessUser.businessName LIKE :businessName', {
+      queryBuilder = queryBuilder.andWhere('businessCompany.businessName LIKE :businessName', {
         businessName: `%${businessName}%`,
       });
     }
@@ -203,7 +216,8 @@ export class SettleService {
       queryBuilder = queryBuilder.andWhere('sale.isVat = :isVat', { isVat });
     }
 
-    if (startAt || endAt) {
+    // 등록일자 필터: 사용자가 직접 입력했거나, 다른 날짜 필터가 전혀 없을 때만 기본값 적용
+    if (getQuery.startAt || getQuery.endAt || (!proveStartAt && !proveEndAt)) {
       queryBuilder = QueryBuilderDateCondition(queryBuilder, 'sale', 'createdAt', startAt, endAt);
     }
 
@@ -643,7 +657,7 @@ export class SettleService {
 
   async getMobileList(getQuery: SettleGetMobileListReqQueryDto): Promise<SettleGetMobileListResDto> {
     const defaultDate = this.applyDefaultDateRange(getQuery.startAt, getQuery.endAt);
-    const { personName, businessName, eventName, page, take } = getQuery;
+    const { personName, businessName, eventName, page, take, searchKeyword } = getQuery;
     const { startAt, endAt } = defaultDate;
 
     let queryBuilder = this.orderRepository
@@ -657,6 +671,19 @@ export class SettleService {
       .innerJoinAndSelect('product.brand', 'brand')
       .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
       .where('order.status IN (:...status)', { status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'] });
+
+    if (searchKeyword) {
+      queryBuilder = queryBuilder.andWhere(
+        new Brackets((qb) => {
+          qb.where('userCompany.businessName LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('clientCompany.businessName LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('user.personName LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('clientUser.personName LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('order.eventName LIKE :keyword', { keyword: `%${searchKeyword}%` });
+        }),
+      );
+    }
+
 
     if (personName) {
       queryBuilder = queryBuilder.andWhere(
@@ -764,7 +791,7 @@ export class SettleService {
     await this.activityLogService.verifyPassword(user.id, getQuery.password);
 
     const defaultDate = this.applyDefaultDateRange(getQuery.startAt, getQuery.endAt);
-    const { personName, businessName, eventName, downloadReason } = getQuery;
+    const { personName, businessName, eventName, downloadReason, searchKeyword } = getQuery;
     const { startAt, endAt } = defaultDate;
 
     const now = new Date();
@@ -781,6 +808,18 @@ export class SettleService {
       .innerJoinAndSelect('product.brand', 'brand')
       .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
       .where('order.status IN (:...status)', { status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'] });
+
+    if (searchKeyword) {
+      queryBuilder = queryBuilder.andWhere(
+        new Brackets((qb) => {
+          qb.where('userCompany.businessName LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('clientCompany.businessName LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('user.personName LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('clientUser.personName LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('order.eventName LIKE :keyword', { keyword: `%${searchKeyword}%` });
+        }),
+      );
+    }
 
     if (personName) {
       queryBuilder = queryBuilder.andWhere(
@@ -1262,9 +1301,9 @@ export class SettleService {
 
   async getUserList(getQuery: SettleGetUserListReqQueryDto): Promise<SettleGetUserListResDto> {
     const { startAt, endAt } = this.applyDefaultDateRange(getQuery.startAt, getQuery.endAt);
-    const { isPublished, businessName, personName, eventName, page, take } = getQuery;
+    const { isPublished, businessName, personName, eventName, page, take, searchKeyword } = getQuery;
 
-    const filters = { startAt, endAt, isPublished, businessName, personName, eventName };
+    const filters = { startAt, endAt, isPublished, businessName, personName, eventName, searchKeyword };
 
     // 1. 합산 계산용 경량 쿼리 (forSum=true: display용 JOIN 제외)
     const sumOrders = await this.buildUserSettleQueryBuilder(filters, { forSum: true }).getMany();
@@ -1343,9 +1382,9 @@ export class SettleService {
 
   async getUserIds(getQuery: SettleGetUserIdsReqQueryDto): Promise<SettleGetUserIdsResDto> {
     const { startAt, endAt } = this.applyDefaultDateRange(getQuery.startAt, getQuery.endAt);
-    const { isPublished, businessName, personName, eventName } = getQuery;
+    const { isPublished, businessName, personName, eventName, searchKeyword } = getQuery;
 
-    const filters = { startAt, endAt, isPublished, businessName, personName, eventName };
+    const filters = { startAt, endAt, isPublished, businessName, personName, eventName, searchKeyword };
     const orders = await this.buildUserSettleQueryBuilder(filters).getMany();
 
     if (orders.length > 1000) {
@@ -1415,13 +1454,13 @@ export class SettleService {
 
         const product = orderProductMapping.product
           ? {
-              id: orderProductMapping.product.id,
-              code: orderProductMapping.product.code,
-              brandName: orderProductMapping.product.brand?.nameKorean ?? '',
-              name: orderProductMapping.product.name,
-              price: adjustedPrice, // 할인/할증 적용된 단가
-              amount: orderProductMapping.amount,
-            }
+            id: orderProductMapping.product.id,
+            code: orderProductMapping.product.code,
+            brandName: orderProductMapping.product.brand?.nameKorean ?? '',
+            name: orderProductMapping.product.name,
+            price: adjustedPrice, // 할인/할증 적용된 단가
+            amount: orderProductMapping.amount,
+          }
           : null;
         productList.push({
           id: orderProductMapping.id,
@@ -1606,7 +1645,7 @@ export class SettleService {
     await this.activityLogService.verifyPassword(user.id, getBody.password);
 
     const defaultDate = this.applyDefaultDateRange(getBody.startAt, getBody.endAt);
-    const { isPublished, businessName, personName, eventName, downloadReason } = getBody;
+    const { isPublished, businessName, personName, eventName, downloadReason, searchKeyword } = getBody;
     const { startAt, endAt } = defaultDate;
 
     let queryBuilder = this.orderRepository
@@ -1628,6 +1667,18 @@ export class SettleService {
     if (isPublished === false) {
       queryBuilder.andWhere('order.deliveryCompleteReportCount = 0');
       queryBuilder.andWhere('order.orderCompleteReportCount = 0');
+    }
+
+    if (searchKeyword) {
+      queryBuilder = queryBuilder.andWhere(
+        new Brackets((qb: SelectQueryBuilder<any>) => {
+          qb.where('userCompany.businessName LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('clientCompany.businessName LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('user.personName LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('clientUser.personName LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('order.eventName LIKE :keyword', { keyword: `%${searchKeyword}%` });
+        }),
+      );
     }
 
     if (businessName) {
@@ -2348,11 +2399,12 @@ export class SettleService {
       businessName?: string;
       personName?: string;
       eventName?: string;
+      searchKeyword?: string;
     },
     options?: { forSum?: boolean },
   ) {
     const forSum = options?.forSum ?? false;
-    const { startAt, endAt, isPublished, businessName, personName, eventName } = filters;
+    const { startAt, endAt, isPublished, businessName, personName, eventName, searchKeyword } = filters;
 
     let queryBuilder = this.orderRepository
       .createQueryBuilder('order')
@@ -2402,6 +2454,19 @@ export class SettleService {
       queryBuilder = queryBuilder
         .andWhere('order.deliveryCompleteReportCount = 0')
         .andWhere('order.orderCompleteReportCount = 0');
+    }
+
+    // 통합 검색 (searchKeyword) 처리
+    if (searchKeyword) {
+      queryBuilder = queryBuilder.andWhere(
+        new Brackets((qb: SelectQueryBuilder<any>) => {
+          qb.where('userCompany.businessName LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('clientCompany.businessName LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('user.personName LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('clientUser.personName LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('order.eventName LIKE :keyword', { keyword: `%${searchKeyword}%` });
+        }),
+      );
     }
 
     if (businessName) {

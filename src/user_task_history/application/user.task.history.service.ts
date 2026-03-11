@@ -29,7 +29,7 @@ export class UserTaskHistoryService {
     private readonly userRepository: Repository<UserEntity>,
     @InjectRepository(OrderEntity)
     private readonly orderRepository: Repository<OrderEntity>,
-  ) {}
+  ) { }
 
   async getList(getQuery: UserTaskHistoryGetListReqQueryDto): Promise<UserTaskHistoryGetListResDto> {
     const {

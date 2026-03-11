@@ -7,24 +7,25 @@ export const QueryBuilderDateCondition = <T extends ObjectLiteral>(
   startAt: string | undefined,
   endAt: string | undefined,
 ): SelectQueryBuilder<T> => {
-  if (startAt && endAt) {
-    queryBuilder = queryBuilder.andWhere(`${alias}.${columnName} >= :startAt`, {
-      startAt: new Date(startAt),
-    });
-    queryBuilder = queryBuilder.andWhere(`${alias}.${columnName} <= :endAt`, {
-      endAt: new Date(endAt),
+  // 파라미터 이름이 충돌나지 않도록 컬럼명을 포함시킨 키 생성 (예: proveAtStartAt)
+  const startKey = `${columnName}StartAt`;
+  const endKey = `${columnName}EndAt`;
+
+  if (startAt) {
+    // 프론트엔드 및 DTO 규격에서 시간(yyyy-MM-ddTHH:mm:ss)을 포함하여 보내므로 명시된 시간을 존중
+    const formattedStart = startAt.replace('T', ' ');
+
+    queryBuilder = queryBuilder.andWhere(`${alias}.${columnName} >= :${startKey}`, {
+      [startKey]: formattedStart,
     });
   }
 
-  if (startAt && !endAt) {
-    queryBuilder = queryBuilder.andWhere(`${alias}.${columnName} >= :startAt`, {
-      startAt: new Date(startAt),
-    });
-  }
+  if (endAt) {
+    // 프론트엔드 및 DTO 규격에서 시간(yyyy-MM-ddTHH:mm:ss)을 포함하여 보내므로 명시된 시간을 존중
+    const formattedEnd = endAt.replace('T', ' ');
 
-  if (!startAt && endAt) {
-    queryBuilder = queryBuilder.andWhere(`${alias}.${columnName} <= :endAt`, {
-      endAt: new Date(endAt),
+    queryBuilder = queryBuilder.andWhere(`${alias}.${columnName} <= :${endKey}`, {
+      [endKey]: formattedEnd,
     });
   }
 

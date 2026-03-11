@@ -313,6 +313,11 @@ export class OrderRealProductGetSettlementListReqDto extends PagingReqDto {
   // ================================
   @IsOptional()
   eventName?: string;
+
+  @ApiPropertyOptional({ description: '검색어' })
+  @IsOptional()
+  searchKeyword?: string;
+
 }
 
 export class OrderRealProductGetSettlementExcelDownloadReqDto {
@@ -364,6 +369,11 @@ export class OrderRealProductGetSettlementExcelDownloadReqDto {
   // ================================
   @IsNotEmpty()
   downloadReason: string;
+
+  @ApiPropertyOptional({ description: '검색어' })
+  @IsOptional()
+  searchKeyword?: string;
+
 }
 
 export class OrderRealProductGetDeliveryCompleteReportReqDto {
@@ -459,4 +469,4 @@ export class OrderRealProductMappingGetDetailReqParamDto {
   id: number;
 }
 
-export class OrderRealProductMappingUpdateReqDto extends OrderRealProductMappingDto {}
+export class OrderRealProductMappingUpdateReqDto extends OrderRealProductMappingDto { }

@@ -71,7 +71,6 @@ export class UserManagementGetListReqQueryDto extends PagingReqDto {
   })
   // =============================================================
   @IsOptional()
-  @IsEmail()
   email?: string;
 
   @ApiPropertyOptional({
