@@ -28,7 +28,7 @@ export class PartnerCompanyController {
   constructor(
     private partnerCompanyService: PartnerCompanyService,
     private authService: AuthService,
-  ) {}
+  ) { }
 
   @ApiOperation({
     summary: '협력사 Select 리스트 조회 API',
