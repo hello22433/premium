@@ -1,8 +1,10 @@
-import { BadRequestException, Inject, Injectable } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, Logger } from '@nestjs/common';
 import {
   UserLoginByEmailPasswordReqDto,
   UserLoginEmailSendReqDto,
   UserLoginEmailVerifyReqDto,
+  UserLoginPhoneSendReqDto,
+  UserLoginPhoneVerifyReqDto,
   UserSignUpReqDto,
 } from '../api/user.req.dto';
 import { PasswordBcryptEncrypt } from '../../auth/infrastructure/password.bcrypt.encrypt';
@@ -20,7 +22,7 @@ import { EmailSendHistoryEntity } from '../../entity/email.send.history.entity';
 import { IMailSend } from '../../mail/interface/mail-send';
 import { EmailType } from '../../mail/domain/email.type';
 import { addMinutes, differenceInDays } from 'date-fns';
-import { generateRandomCode } from '../../user_find/domain/code.generate';
+import { generateRandomCode, generateNumericCode } from '../../user_find/domain/code.generate';
 import { EmailCertifyExpireMinute } from '../../const';
 import { userLoginTemplateHtml } from '../domain/user.login.template.html';
 import { IUserAuthority } from '../interface/user.authority';
@@ -30,6 +32,11 @@ import { IUserSettleMethod } from '../interface/user.settle.method';
 import { ActivityLogService } from '../../activity_log/application/activity.log.service';
 import { ActivityLogActionType } from '../../activity_log/interface/activity.log.action.type';
 import { ActivityLogResult } from '../../activity_log/interface/activity.log.result';
+import { LoginVerifyMethod } from '../interface/login.verify.method';
+import { DeliveryAlimTalk } from '../../delivery/interface/delivery.alim.talk';
+import { ISmsSend } from '../../sms/interface/sms.send';
+import { defaultFromPhoneNumber } from '../../const';
+import { MaskingUtil } from '../../common/utils/masking.util';
 
 @Injectable()
 export class UserService {
@@ -49,8 +56,14 @@ export class UserService {
     private passwordPolicyRepository: Repository<PasswordPolicyEntity>,
     @Inject('IMailSend')
     private readonly mailSendService: IMailSend,
+    @Inject('DeliveryAlimTalk')
+    private readonly alimTalkService: DeliveryAlimTalk,
+    @Inject('ISmsSend')
+    private readonly smsSendService: ISmsSend,
     private activityLogService: ActivityLogService,
   ) {}
+
+  private logger = new Logger('UserService');
 
   async isExistEmail(email: string) {
     const dupEmailUser = await this.userRepository.findOne({
@@ -261,22 +274,11 @@ export class UserService {
       },
     });
 
-    if (emailCodeCount === 0) {
-      return {
-        ...this.loginTokenValidator.issuance(loginUserInfo),
-        userId: user.id,
-        authority: user.authority,
-        personName: user.personName,
-        email: user.email,
-        isPasswordReset: shouldResetPassword,
-        passwordResetReason,
-        isEmailVerify: false,
-        passwordChangedAt: user.passwordChangedAt,
-        passwordExpiryDays: passwordPolicy?.passwordExpiryDays ?? null,
-        personEmails,
-        needEmailSelection: personEmails.length > 1,
-      };
-    }
+    // 인증 방식에 따른 공통 응답 필드
+    const loginVerifyMethod = user.loginVerifyMethod ?? LoginVerifyMethod.EMAIL;
+    const maskedPhone = MaskingUtil.maskPhoneNumber(user.personPhoneNumber);
+
+    const isEmailVerify = emailCodeCount > 0;
 
     return {
       ...this.loginTokenValidator.issuance(loginUserInfo),
@@ -286,11 +288,13 @@ export class UserService {
       email: user.email,
       isPasswordReset: shouldResetPassword,
       passwordResetReason,
-      isEmailVerify: true,
+      isEmailVerify,
       passwordChangedAt: user.passwordChangedAt,
       passwordExpiryDays: passwordPolicy?.passwordExpiryDays ?? null,
       personEmails,
-      needEmailSelection: false,
+      needEmailSelection: !isEmailVerify && loginVerifyMethod === LoginVerifyMethod.EMAIL && personEmails.length > 1,
+      loginVerifyMethod,
+      maskedPhoneNumber: maskedPhone,
     };
   }
 
@@ -359,44 +363,110 @@ export class UserService {
     return { id: emailSendHistory.id };
   }
 
-  async loginEmailVerify(getBody: UserLoginEmailVerifyReqDto) {
-    const { id, code, email } = getBody;
-
-    const emailSendHistory = await this.emailSendHistoryRepository.findOne({
-      where: {
-        id: id,
-        type: EmailType.LOGIN,
-      },
-    });
-
-    if (!emailSendHistory) {
-      throw new BadRequestException('이메일 전송 데이터가 없습니다.');
-    }
-
-    if (emailSendHistory.expireAt && emailSendHistory.expireAt < new Date()) {
-      throw new BadRequestException('만료된 이메일 인증 코드입니다.');
-    }
-
-    if (emailSendHistory.code !== code) {
-      throw new BadRequestException('코드가 일치하지 않습니다.');
-    }
-
-    if (emailSendHistory.isCertified) {
-      throw new BadRequestException('이미 인증 완료된 코드입니다.');
-    }
+  async loginPhoneSend(getBody: UserLoginPhoneSendReqDto) {
+    const { email } = getBody;
 
     const user = await this.userRepository.findOne({
-      where: {
-        email: email,
-      },
+      where: { email },
     });
 
     if (!user) {
       throw new BadRequestException('해당 이메일의 유저가 존재하지 않습니다.');
     }
 
-    emailSendHistory.isCertified = true;
-    await this.emailSendHistoryRepository.save(emailSendHistory);
+    if (!user.personPhoneNumber) {
+      throw new BadRequestException('등록된 연락처가 없습니다. 관리자에게 문의해주세요.');
+    }
+
+    const code = generateNumericCode(5);
+    const expireAt = addMinutes(new Date(), EmailCertifyExpireMinute);
+
+    const messageText = `이팝콘 프리미엄 로그인 인증코드\n[#${code}]`;
+
+    // 알림톡 발송 시도 → 실패 시 SMS 대체 발송
+    try {
+      await this.alimTalkService.send({
+        to: user.personPhoneNumber,
+        text: messageText,
+        templateCode: 'login_auth',
+        msgType: 'AT',
+      });
+      this.logger.log(`로그인 인증코드 알림톡 발송 성공: userId=${user.id}`);
+    } catch (alimTalkError) {
+      this.logger.warn(`로그인 인증코드 알림톡 발송 실패, SMS 대체 발송: userId=${user.id}, error=${alimTalkError.message}`);
+
+      try {
+        await this.smsSendService.send({
+          msgType: 'S',
+          to: user.personPhoneNumber,
+          from: user.fromPhoneNumber || defaultFromPhoneNumber,
+          subject: '',
+          text: messageText,
+          filePath: [],
+        });
+        this.logger.log(`로그인 인증코드 SMS 발송 성공: userId=${user.id}`);
+      } catch (smsError) {
+        this.logger.error(`로그인 인증코드 SMS 발송 실패: userId=${user.id}, error=${smsError.message}`);
+        throw new BadRequestException('인증코드 발송에 실패했습니다. 잠시 후 다시 시도해주세요.');
+      }
+    }
+
+    // 발송 성공 후 인증 이력 저장
+    const sendHistory = new EmailSendHistoryEntity();
+    sendHistory.userId = user.id;
+    sendHistory.email = user.personPhoneNumber; // 전화번호를 식별값으로 저장
+    sendHistory.type = EmailType.LOGIN;
+    sendHistory.expireAt = expireAt;
+    sendHistory.code = code;
+
+    await this.emailSendHistoryRepository.save(sendHistory);
+
+    return { id: sendHistory.id };
+  }
+
+  async loginPhoneVerify(getBody: UserLoginPhoneVerifyReqDto) {
+    await this.verifyLoginCode(getBody.id, getBody.code, getBody.email);
+  }
+
+  async loginEmailVerify(getBody: UserLoginEmailVerifyReqDto) {
+    await this.verifyLoginCode(getBody.id, getBody.code, getBody.email);
+  }
+
+  private async verifyLoginCode(id: number, code: string, email: string) {
+    const sendHistory = await this.emailSendHistoryRepository.findOne({
+      where: {
+        id: id,
+        type: EmailType.LOGIN,
+      },
+    });
+
+    if (!sendHistory) {
+      throw new BadRequestException('인증 데이터가 없습니다.');
+    }
+
+    if (sendHistory.expireAt && sendHistory.expireAt < new Date()) {
+      throw new BadRequestException('만료된 인증 코드입니다.');
+    }
+
+    if (sendHistory.code !== code) {
+      throw new BadRequestException('코드가 일치하지 않습니다.');
+    }
+
+    if (sendHistory.isCertified) {
+      throw new BadRequestException('이미 인증 완료된 코드입니다.');
+    }
+
+    // userId로 소유권 검증
+    const user = await this.userRepository.findOne({
+      where: { email },
+    });
+
+    if (!user || user.id !== sendHistory.userId) {
+      throw new BadRequestException('유효하지 않은 인증 요청입니다.');
+    }
+
+    sendHistory.isCertified = true;
+    await this.emailSendHistoryRepository.save(sendHistory);
   }
 
   async getAccessByRefresh(token: string) {

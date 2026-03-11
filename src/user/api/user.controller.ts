@@ -19,12 +19,15 @@ import {
   UserLoginByEmailPasswordReqDto,
   UserLoginEmailSendReqDto,
   UserLoginEmailVerifyReqDto,
+  UserLoginPhoneSendReqDto,
+  UserLoginPhoneVerifyReqDto,
   UserSignUpReqDto,
 } from './user.req.dto';
 import {
   UserAccessByRefreshResDto,
   UserLoginByEmailPasswordResDto,
   UserLoginEmailResDto,
+  UserLoginPhoneResDto,
   UserRefreshByRefreshResDto,
 } from './user.res.dto';
 import { Request } from 'express';
@@ -112,6 +115,44 @@ export class UserController {
   @Post('/user/login/email/verify')
   async loginEmailVerify(@Body() getBody: UserLoginEmailVerifyReqDto): Promise<void> {
     await this.userService.loginEmailVerify(getBody);
+    return;
+  }
+
+  @ApiOperation({
+    summary: '로그인 인증 문자 전송 API',
+    description: '등록된 담당자 연락처로 알림톡/SMS 인증코드를 발송합니다.',
+  })
+  @ApiOkResponse({
+    type: UserLoginPhoneResDto,
+    description: '문자 인증코드 발송 성공',
+  })
+  @ApiBadRequestResponse({
+    description: '유저가 존재하지 않는 경우<br>등록된 연락처가 없는 경우<br>인증코드 발송 실패',
+  })
+  // ============================================
+  @Post('/user/login/phone/send')
+  async loginPhoneSend(@Body() getBody: UserLoginPhoneSendReqDto): Promise<UserLoginPhoneResDto> {
+    return this.userService.loginPhoneSend(getBody);
+  }
+
+  @ApiOperation({
+    summary: '로그인 인증 문자 인증 API',
+    description: '문자로 받은 인증코드를 검증합니다.',
+  })
+  @ApiOkResponse({
+    description: '인증이 완료된 경우 다시 /user/login-email-password 를 호출해주세요.',
+  })
+  @ApiBadRequestResponse({
+    description:
+      '인증 데이터가 없는 경우<br>' +
+      '만료된 인증 코드인 경우<br>' +
+      '코드가 일치하지 않을 경우<br>' +
+      '이미 인증 완료된 코드인 경우',
+  })
+  // ============================================
+  @Post('/user/login/phone/verify')
+  async loginPhoneVerify(@Body() getBody: UserLoginPhoneVerifyReqDto): Promise<void> {
+    await this.userService.loginPhoneVerify(getBody);
     return;
   }
 

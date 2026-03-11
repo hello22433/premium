@@ -12,6 +12,7 @@ import { UserCompanyEntity } from './user.company.entity';
 import { DepartmentEntity } from './department.entity';
 import { UserViewScopeEntity } from './user.view.scope.entity';
 import { CompanyType } from '../common/domain/company.type';
+import { LoginVerifyMethod } from '../user/interface/login.verify.method';
 
 @Entity('user')
 export class UserEntity extends BaseEntity {
@@ -72,6 +73,14 @@ export class UserEntity extends BaseEntity {
 
   @Column({ type: 'varchar', length: 100, default: 'GENERAL', comment: '담당자 분류, 고객 상담 내역' }) // TODO
   personCategory: string;
+
+  @Column({
+    type: 'varchar',
+    length: 10,
+    default: LoginVerifyMethod.EMAIL,
+    comment: '로그인 인증 방식 (EMAIL, PHONE)',
+  })
+  loginVerifyMethod: LoginVerifyMethod;
 
   @Column({
     type: 'enum',

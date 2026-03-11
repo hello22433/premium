@@ -1,6 +1,7 @@
 import { LoginTokenResDto, TokenDto } from '../../auth/api/token.res.dto';
 import { ApiProperty } from '@nestjs/swagger';
 import { IUserAuthority } from '../interface/user.authority';
+import { LoginVerifyMethod } from '../interface/login.verify.method';
 
 export class UserLoginByEmailPasswordResDto {
   @ApiProperty({
@@ -89,6 +90,25 @@ export class UserLoginByEmailPasswordResDto {
     description: '이메일 선택 필요 여부 (담당자 이메일이 2개 이상이고 미인증 시 true)',
   })
   readonly needEmailSelection: boolean;
+
+  @ApiProperty({
+    enum: LoginVerifyMethod,
+    description: '로그인 인증 방식 (EMAIL: 이메일 인증, PHONE: 문자 인증)',
+  })
+  readonly loginVerifyMethod: LoginVerifyMethod;
+
+  @ApiProperty({
+    type: String,
+    description: '마스킹된 담당자 연락처 (예: *******1234)',
+  })
+  readonly maskedPhoneNumber: string;
+}
+
+export class UserLoginPhoneResDto {
+  @ApiProperty({
+    description: '인증 이력 id',
+  })
+  id: number;
 }
 
 export class UserLoginEmailResDto {

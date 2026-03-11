@@ -7,6 +7,7 @@ import { IUserBusinessType } from '../../../user/interface/user.business.type';
 import { UserSettlePeriodConditionEnum } from '../../../user/interface/user.settle.period.condition.enum';
 import { IOrderSendMethod } from '../../../order/interface/order.send.method';
 import { CompanyType } from '../../../common/domain/company.type';
+import { LoginVerifyMethod } from '../../../user/interface/login.verify.method';
 
 export class UserManagementUpsertDto {
   @ApiProperty({
@@ -221,4 +222,14 @@ export class UserManagementUpsertDto {
   @ArrayNotEmpty({ message: '발신수단은 최소 1개 이상 선택해야 합니다.' })
   @IsEnum(IOrderSendMethod, { each: true, message: '유효하지 않은 발신수단입니다.' })
   allowedSendMethods: IOrderSendMethod[] = [IOrderSendMethod.ALIM_TALK, IOrderSendMethod.SMS, IOrderSendMethod.EMAIL];
+
+  @ApiPropertyOptional({
+    description: '로그인 인증 방식 (EMAIL: 이메일 인증, PHONE: 문자 인증)',
+    enum: LoginVerifyMethod,
+    default: LoginVerifyMethod.EMAIL,
+  })
+  // ============================
+  @IsOptional()
+  @IsEnum(LoginVerifyMethod)
+  loginVerifyMethod: LoginVerifyMethod = LoginVerifyMethod.EMAIL;
 }
