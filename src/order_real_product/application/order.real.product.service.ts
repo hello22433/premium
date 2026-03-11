@@ -704,7 +704,8 @@ export class OrderRealProductService {
         new Brackets((qb) => {
           qb.where('businessCompany.businessName LIKE :keyword', { keyword: `%${searchKeyword}%` })
             .orWhere('businessUser.personName LIKE :keyword', { keyword: `%${searchKeyword}%` })
-            .orWhere('order.eventName LIKE :keyword', { keyword: `%${searchKeyword}%` });
+            .orWhere('order.eventName LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('product.name LIKE :keyword', { keyword: `%${searchKeyword}%` });
         }),
       );
     }
@@ -901,7 +902,8 @@ export class OrderRealProductService {
         new Brackets((qb) => {
           qb.where('businessCompany.businessName LIKE :keyword', { keyword: `%${searchKeyword}%` })
             .orWhere('businessUser.personName LIKE :keyword', { keyword: `%${searchKeyword}%` })
-            .orWhere('order.eventName LIKE :keyword', { keyword: `%${searchKeyword}%` });
+            .orWhere('order.eventName LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('product.name LIKE :keyword', { keyword: `%${searchKeyword}%` });
         }),
       );
     }

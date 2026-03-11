@@ -12,8 +12,8 @@ export const QueryBuilderDateCondition = <T extends ObjectLiteral>(
   const endKey = `${columnName}EndAt`;
 
   if (startAt) {
-    // 길이가 10(YYYY-MM-DD)이면 시작 시간(00:00:00)을 직접 명시, 시간이 포함되어 들어오면 원래의 시간을 존중
-    const formattedStart = startAt.length === 10 ? `${startAt} 00:00:00` : startAt.replace('T', ' ').replace('Z', '');
+    // 프론트엔드 및 DTO 규격에서 시간(yyyy-MM-ddTHH:mm:ss)을 포함하여 보내므로 명시된 시간을 존중
+    const formattedStart = startAt.replace('T', ' ');
 
     queryBuilder = queryBuilder.andWhere(`${alias}.${columnName} >= :${startKey}`, {
       [startKey]: formattedStart,
@@ -21,8 +21,8 @@ export const QueryBuilderDateCondition = <T extends ObjectLiteral>(
   }
 
   if (endAt) {
-    // 길이가 10(YYYY-MM-DD)이면 마지막 시간(23:59:59.999)으로 확장, 시간이 포함된 경우는 명시된 종료 시간을 존중
-    const formattedEnd = endAt.length === 10 ? `${endAt} 23:59:59.999` : endAt.replace('T', ' ').replace('Z', '');
+    // 프론트엔드 및 DTO 규격에서 시간(yyyy-MM-ddTHH:mm:ss)을 포함하여 보내므로 명시된 시간을 존중
+    const formattedEnd = endAt.replace('T', ' ');
 
     queryBuilder = queryBuilder.andWhere(`${alias}.${columnName} <= :${endKey}`, {
       [endKey]: formattedEnd,
