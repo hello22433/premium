@@ -10,11 +10,15 @@ import { EmailSendHistoryEntity } from '../entity/email.send.history.entity';
 import { MailModule } from '../mail/mail.module';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ActivityLogModule } from '../activity_log/activity.log.module';
+import { DeliveryModule } from '../delivery/delivery.module';
+import { SmsModule } from '../sms/sms.module';
 
 @Module({
   imports: [
     AuthModule,
     MailModule,
+    DeliveryModule,
+    SmsModule,
     TypeOrmModule.forFeature([UserEntity, UserCompanyEntity, UserViewScopeEntity, PasswordPolicyEntity, EmailSendHistoryEntity]),
     ActivityLogModule,
   ],
