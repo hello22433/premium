@@ -396,7 +396,6 @@ export class SsgEventService {
     return;
   }
 
-  /* 충전 기능 미사용으로 주석처리
   async updateAmount(getBody: SsgEventUpdateAmountReqDto) {
     const { id, amount } = getBody;
 
@@ -410,28 +409,18 @@ export class SsgEventService {
       throw new BadRequestException('존재하지 않는 이벤트입니다.');
     }
 
-    const lastHistory = await this.amountHistoryRepository.findOne({
-      where: {
-        ssgEventId: id,
-      },
-      order: {
-        createdAt: 'DESC',
-      },
-    });
-
-    const lastBalance = lastHistory ? lastHistory.balance : 0;
-    const newBalance = lastBalance + amount;
+    const newBalance = ssgEvent.eventBalance + amount;
 
     const ssgEventAmountHistory = this.amountHistoryRepository.create({
       ssgEventId: ssgEvent.id,
       amount: amount,
       balance: newBalance,
     });
+    ssgEvent.eventPrice += amount;
     ssgEvent.eventBalance = newBalance;
     await this.amountHistoryRepository.save(ssgEventAmountHistory);
     await this.ssgEventRepository.save(ssgEvent);
   }
-  */
 
   async getValidList(getQuery: SsgEventGetValidListReqDto): Promise<SsgEventGetValidListResDto> {
     const { couponExpiration } = getQuery;

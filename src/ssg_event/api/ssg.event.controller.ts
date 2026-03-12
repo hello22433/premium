@@ -111,7 +111,6 @@ export class SsgEventController {
     return this.ssgEventService.create(getBody);
   }
 
-  /* 충전 기능 미사용으로 주석처리
   @ApiOperation({
     summary: '신세계 행사 금액 충전',
     description: '금액을 충전합니다.',
@@ -127,5 +126,4 @@ export class SsgEventController {
   updateAmount(@Body() getBody: SsgEventUpdateAmountReqDto) {
     return this.ssgEventService.updateAmount(getBody);
   }
-  */
 }
