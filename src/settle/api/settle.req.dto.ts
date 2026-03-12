@@ -1,5 +1,5 @@
 import { PagingReqDto } from '../../common/api/dto/pagination.req.dto';
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional, OmitType } from '@nestjs/swagger';
 import {
   IsArray,
   IsBoolean,
@@ -608,6 +608,8 @@ export class SettleGetUserListReqQueryDto extends PagingReqDto {
   searchKeyword?: string;
 
 }
+
+export class SettleGetUserSummaryReqQueryDto extends OmitType(SettleGetUserListReqQueryDto, ['page', 'take'] as const) {}
 
 export class SettleGetUserDetailReqParamDto {
   @ApiProperty({

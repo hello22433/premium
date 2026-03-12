@@ -21,6 +21,7 @@ import {
   SettleGetUserDetailResDto,
   SettleGetUserDetailMultipleResDto,
   SettleGetUserListResDto,
+  SettleGetUserSummaryResDto,
   SettleGetUserIdsResDto,
   SettleGetGalaxiaListResDto,
 } from './settle.res.dto';
@@ -41,6 +42,7 @@ import {
   SettleGetUserIdsReqQueryDto,
   SettleGetUserExcelDownloadReqDto,
   SettleGetUserListReqQueryDto,
+  SettleGetUserSummaryReqQueryDto,
   SettleGetUserPerDetailReqQueryDto,
   SettleGetUserPerListReqQueryDto,
   SettleMobileExcelDownloadReqDto,
@@ -286,6 +288,20 @@ export class SettleController {
   async getUserList(@User() user: ILoginUserInfo, @Query() getQuery: SettleGetUserListReqQueryDto) {
     await this.authService.authorityValidator(user, UserAuthSubEnum.SETTLE_USER);
     return this.settleService.getUserList(getQuery);
+  }
+
+  @ApiOperation({
+    summary: '정산관리 > 고객사 정산 > 합계 조회',
+    description: '검색 조건에 해당하는 전체 발송수량/발송금액/정산금액 합계를 반환 (필터 변경 시에만 호출)',
+  })
+  @ApiOkResponse({
+    type: SettleGetUserSummaryResDto,
+  })
+  // =====================================
+  @Get('settle/user/summary')
+  async getUserSummary(@User() user: ILoginUserInfo, @Query() getQuery: SettleGetUserSummaryReqQueryDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.SETTLE_USER);
+    return this.settleService.getUserSummary(getQuery);
   }
 
   @ApiOperation({
