@@ -2,6 +2,42 @@ import { format } from 'date-fns';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { ssgIssueUserName } from '../../const';
 
+/**
+ * 금액을 한글 단위로 변환 (예: 5000 → "5천", 100000 → "10만", 2155000 → "215만5천")
+ */
+export function formatAmountKorean(amount: number): string {
+  const man = Math.floor(amount / 10000);
+  const cheon = Math.floor((amount % 10000) / 1000);
+
+  let result = '';
+  if (man > 0) result += `${man}만`;
+  if (cheon > 0) result += `${cheon}천`;
+
+  return result || '0';
+}
+
+/**
+ * SSG 상품명에서 금액을 추출하여 한글로 변환
+ * "신세계 상품권 2,155,000원" → "215만5천"
+ */
+const SSG_AMOUNT_REGEX = /([\d,]+)원/;
+
+function extractSsgAmountKorean(productName: string): string {
+  const match = productName.match(SSG_AMOUNT_REGEX);
+  if (!match) return '0';
+  const amount = parseInt(match[1].replace(/,/g, ''), 10);
+  return formatAmountKorean(amount);
+}
+
+/**
+ * SSG SMS 전용 짧은 템플릿 (90byte 이내)
+ * 예: "신세계5천원\n쿠폰번호:01300000000\n인증번호:00000000\n26/12/31까지"
+ */
+export const smsSsgShortTemplate = (orderDelivery: OrderDeliveryEntity) => {
+  const amountKorean = extractSsgAmountKorean(orderDelivery.orderProductMapping.product.name);
+  return `신세계${amountKorean}원\n쿠폰번호:${orderDelivery.personalCode}\n인증번호:${orderDelivery.barCode}\n${format(orderDelivery.expireAt!, 'yy/MM/dd')}까지`;
+};
+
 export const smsSsgTemplate = (orderDelivery: OrderDeliveryEntity) => {
   return `
   
