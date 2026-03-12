@@ -36,6 +36,13 @@ export class OrderReceiptEntity extends BaseEntity {
   })
   rejectReason: string | null;
 
+  @Column({
+    type: 'text',
+    nullable: true,
+    comment: '확인사항 메모 (운영관리자 기재)',
+  })
+  memo: string | null;
+
   @Column({ comment: '등록 일' })
   registerAt: Date;
 

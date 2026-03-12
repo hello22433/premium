@@ -6,6 +6,8 @@ import {
   OrderReceiptGetDetailReqParamDto,
   OrderReceiptGetListReqQueryDto,
   OrderReceiptRejectReqDto,
+  OrderReceiptUpdateReqDto,
+  OrderReceiptUpdateMemoReqDto,
 } from './order.receipt.req.dto';
 import { OrderReceiptGetDetailResDto, OrderReceiptGetListResDto } from './order.receipt.res.dto';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
@@ -104,6 +106,27 @@ export class OrderReceiptController {
   }
 
   @ApiOperation({
+    summary: '주문접수 확인사항 메모 수정 API',
+  })
+  @ApiBearerAuth()
+  @ApiOkResponse({
+    description: '확인사항 메모 수정에 성공한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '주문접수 건이 존재하지 않는 경우',
+  })
+  // ===================================================
+  @Put('/order-receipt/:id/memo')
+  async updateMemo(
+    @User() user: ILoginUserInfo,
+    @Param() getParam: OrderReceiptGetDetailReqParamDto,
+    @Body() getBody: OrderReceiptUpdateMemoReqDto,
+  ) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.ORDER_RECEIPT);
+    return this.orderReceiptService.updateMemo(user, getParam.id, getBody);
+  }
+
+  @ApiOperation({
     summary: '주문접수 삭제 API',
   })
   @ApiBearerAuth()
@@ -118,5 +141,27 @@ export class OrderReceiptController {
   async delete(@User() user: ILoginUserInfo, @Param() getParam: OrderReceiptGetDetailReqParamDto) {
     await this.authService.authorityValidator(user, UserAuthSubEnum.ORDER_RECEIPT);
     return this.orderReceiptService.delete(user, getParam.id);
+  }
+
+  @ApiOperation({
+    summary: '주문접수 수정 API',
+  })
+  @ApiBearerAuth()
+  @ApiOkResponse({
+    description: '주문접수 수정에 성공한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '주문접수 건이 존재하지 않거나 접수 상태가 아닌 경우',
+  })
+  // ===================================================
+  // Note: PUT /:id 는 /:id/approve, /:id/reject, /:id/memo 뒤에 배치해야 라우트 충돌 방지
+  @Put('/order-receipt/:id')
+  async update(
+    @User() user: ILoginUserInfo,
+    @Param() getParam: OrderReceiptGetDetailReqParamDto,
+    @Body() getBody: OrderReceiptUpdateReqDto,
+  ) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.ORDER_RECEIPT);
+    return this.orderReceiptService.update(user, getParam.id, getBody);
   }
 }

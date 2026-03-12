@@ -23,6 +23,9 @@ export class OrderReceiptDetailDto {
   @ApiProperty({ description: '반려 사유', nullable: true })
   rejectReason: string | null;
 
+  @ApiProperty({ description: '확인사항 메모', nullable: true })
+  memo: string | null;
+
   @ApiProperty({ description: '등록일 ex) yyyy-MM-ddTHH:mm:ss' })
   registerAt: string;
 

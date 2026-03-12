@@ -51,3 +51,30 @@ export class OrderReceiptRejectReqDto {
   @IsString()
   rejectReason: string;
 }
+
+export class OrderReceiptUpdateReqDto {
+  @ApiProperty({
+    description: '주문접수 제목',
+  })
+  // =================================
+  @IsNotEmpty()
+  @IsString()
+  title: string;
+
+  @ApiProperty({
+    description: '첨부파일 url list',
+  })
+  // =================================
+  @IsArray()
+  filePath: string[];
+}
+
+export class OrderReceiptUpdateMemoReqDto {
+  @ApiProperty({
+    description: '확인사항 메모',
+  })
+  // =================================
+  @IsNotEmpty()
+  @IsString()
+  memo: string;
+}

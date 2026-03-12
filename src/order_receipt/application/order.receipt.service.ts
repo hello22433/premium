@@ -8,6 +8,8 @@ import {
   OrderReceiptGetDetailReqParamDto,
   OrderReceiptGetListReqQueryDto,
   OrderReceiptRejectReqDto,
+  OrderReceiptUpdateReqDto,
+  OrderReceiptUpdateMemoReqDto,
 } from '../api/order.receipt.req.dto';
 import { OrderReceiptGetDetailResDto, OrderReceiptGetListResDto } from '../api/order.receipt.res.dto';
 import { OrderReceiptViewDto } from '../api/dto/order.receipt.view.dto';
@@ -89,6 +91,7 @@ export class OrderReceiptService {
       status: receipt.status,
       filePathList: parseFilePathList(receipt.filePath),
       rejectReason: receipt.rejectReason,
+      memo: receipt.memo,
       registerAt: format(receipt.registerAt, DateFormatStr),
       processedAt: receipt.processedAt ? format(receipt.processedAt, DateFormatStr) : null,
       processedUserName: receipt.processedUser?.personName ?? null,
@@ -155,6 +158,38 @@ export class OrderReceiptService {
     }
 
     await this.orderReceiptRepository.softDelete(id);
+  }
+
+  async update(user: ILoginUserInfo, id: number, getBody: OrderReceiptUpdateReqDto) {
+    const receipt = await this.findReceiptOrThrow(id);
+
+    if (receipt.status !== OrderReceiptStatus.RECEIVED) {
+      throw new BadRequestException('접수 상태인 건만 수정할 수 있습니다.');
+    }
+
+    if (receipt.userId !== user.id) {
+      throw new ForbiddenException('등록자만 수정할 수 있습니다.');
+    }
+
+    if (getBody.filePath.length === 0) {
+      throw new BadRequestException('첨부파일을 등록해주세요.');
+    }
+
+    receipt.title = getBody.title;
+    receipt.filePath = getBody.filePath.join(',');
+    await this.orderReceiptRepository.save(receipt);
+  }
+
+  async updateMemo(user: ILoginUserInfo, id: number, getBody: OrderReceiptUpdateMemoReqDto) {
+    const receipt = await this.findReceiptOrThrow(id);
+
+    const isAdmin = [IUserAuthority.SUPER_ADMIN, IUserAuthority.OPERATION_ADMIN].includes(user.authority as IUserAuthority);
+    if (!isAdmin) {
+      throw new ForbiddenException('운영관리자 이상만 확인사항을 작성할 수 있습니다.');
+    }
+
+    receipt.memo = getBody.memo;
+    await this.orderReceiptRepository.save(receipt);
   }
 
   private async findReceiptOrThrow(id: number): Promise<OrderReceiptEntity> {
