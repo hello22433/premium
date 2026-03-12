@@ -37,7 +37,7 @@ import { AlimTalkTemplate } from '../domain/alim.talk.template';
 import { AlimTalkEncourageTemplate } from '../domain/alim.talk.encourage.template';
 import { EmailEncourageTemplate } from '../domain/email.encourage.template';
 import { EmailDeliveryTemplate } from '../domain/email.delivery.template';
-import { smsSsgTemplate } from '../domain/sms.ssg.template';
+import { smsSsgShortTemplate } from '../domain/sms.ssg.template';
 import { smsEncourageTemplate } from '../domain/sms.encourage.template';
 import { SmsChoiceProductTemplate } from '../domain/sms.choice.product.template';
 import { smsCouponInfoTemplate } from '../domain/sms.coupon.info.template';
@@ -672,7 +672,7 @@ export class DeliveryBatchService {
     const orderType = orderDelivery.orderProductMapping.order.type;
     const productType = orderDelivery.orderProductMapping.product.type;
 
-    let smsText = orderType === IOrderType.SSG ? text + smsSsgTemplate(orderDelivery) : text;
+    let smsText = orderType === IOrderType.SSG ? smsSsgShortTemplate(orderDelivery) : text;
     smsText = SmsChoiceProductTemplate(
       orderDelivery,
       `${this.configService.getOrThrow('SMS_CHOICE_URL')}/${encryptKey}`,
