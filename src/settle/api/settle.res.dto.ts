@@ -56,9 +56,16 @@ export class SettleGetUserListResDto extends GetListResDto {
     description: '고객사별 정산 데이터 list',
   })
   list: SettleUserListViewDto[];
+}
+
+export class SettleGetUserSummaryResDto {
+  @ApiProperty({
+    description: '검색 조건 전체의 총 데이터 수',
+  })
+  totalCount: number;
 
   @ApiProperty({
-    description: '검색 조건 전체의 총 발송수량 합계 (페이지 무관)',
+    description: '검색 조건 전체의 총 발송수량 합계',
   })
   totalAmountSum: number;
 

@@ -11,6 +11,7 @@ import {
   SettleGetShippingStorageListResDto,
   SettleGetUserDetailResDto,
   SettleGetUserListResDto,
+  SettleGetUserSummaryResDto,
   SettleGetUserIdsResDto,
   SettleGetUserIdsItemDto,
   SettleGetGalaxiaListResDto,
@@ -36,6 +37,7 @@ import {
   SettleGetUserIdsReqQueryDto,
   SettleGetUserExcelDownloadReqDto,
   SettleGetUserListReqQueryDto,
+  SettleGetUserSummaryReqQueryDto,
   SettleGetUserPerDetailReqQueryDto,
   SettleGetUserPerListReqQueryDto,
   SettleMobileExcelDownloadReqDto,
@@ -1305,33 +1307,15 @@ export class SettleService {
 
     const filters = { startAt, endAt, isPublished, businessName, personName, eventName, searchKeyword };
 
-    // 1. 합산 계산용 경량 쿼리 (forSum=true: display용 JOIN 제외)
-    const sumOrders = await this.buildUserSettleQueryBuilder(filters, { forSum: true }).getMany();
-
-    let totalAmountSum = 0;
-    let totalDeliveryPriceSum = 0;
-    let totalSettlePriceSum = 0;
-
-    for (const order of sumOrders) {
-      totalDeliveryPriceSum += order.sendAmount;
-      const billingUser = order.clientUser ?? order.user;
-      const userDiscounts = billingUser?.userDiscounts || [];
-
-      for (const mapping of order.orderProductMappings!) {
-        totalAmountSum += mapping.amount;
-        totalSettlePriceSum += this.calculateMappingSettlePrice(mapping, userDiscounts);
-      }
-    }
-
-    const totalCount = sumOrders.length;
-    const totalPage = Math.ceil(totalCount / take);
-
-    // 2. 현재 페이지 데이터만 DB 페이지네이션으로 조회 (전체 JOIN 포함)
     const skip = (page - 1) * take;
-    const orderList = await this.buildUserSettleQueryBuilder(filters)
+
+    // 페이지 데이터 + 전체 건수를 한 번에 조회
+    const [orderList, totalCount] = await this.buildUserSettleQueryBuilder(filters)
       .skip(skip)
       .take(take)
-      .getMany();
+      .getManyAndCount();
+
+    const totalPage = Math.ceil(totalCount / take);
 
     const resultList: SettleUserListViewDto[] = orderList.map((order) => {
       const billingUser = order.clientUser ?? order.user;
@@ -1374,6 +1358,34 @@ export class SettleService {
       totalPage,
       totalCount,
       currentPage: page,
+    };
+  }
+
+  async getUserSummary(getQuery: SettleGetUserSummaryReqQueryDto): Promise<SettleGetUserSummaryResDto> {
+    const { startAt, endAt } = this.applyDefaultDateRange(getQuery.startAt, getQuery.endAt);
+    const { isPublished, businessName, personName, eventName, searchKeyword } = getQuery;
+
+    const filters = { startAt, endAt, isPublished, businessName, personName, eventName, searchKeyword };
+
+    const sumOrders = await this.buildUserSettleQueryBuilder(filters, { forSum: true }).getMany();
+
+    let totalAmountSum = 0;
+    let totalDeliveryPriceSum = 0;
+    let totalSettlePriceSum = 0;
+
+    for (const order of sumOrders) {
+      totalDeliveryPriceSum += order.sendAmount;
+      const billingUser = order.clientUser ?? order.user;
+      const userDiscounts = billingUser?.userDiscounts || [];
+
+      for (const mapping of order.orderProductMappings!) {
+        totalAmountSum += mapping.amount;
+        totalSettlePriceSum += this.calculateMappingSettlePrice(mapping, userDiscounts);
+      }
+    }
+
+    return {
+      totalCount: sumOrders.length,
       totalAmountSum,
       totalDeliveryPriceSum,
       totalSettlePriceSum,
@@ -2433,9 +2445,9 @@ export class SettleService {
 
     queryBuilder = queryBuilder.leftJoinAndSelect('product.brand', 'brand');
 
-    if (forSum) {
-      queryBuilder = queryBuilder.innerJoin('orderProductMappings.orderDeliveries', 'orderDeliveries');
-    } else {
+    // forSum: orderDeliveries JOIN 제거 — status 필터로 이미 확정된 주문만 조회되므로 불필요
+    // 이 JOIN이 매핑당 배송건수만큼 행을 증폭시켜 성능 저하의 주원인이었음
+    if (!forSum) {
       queryBuilder = queryBuilder.innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries');
     }
 
