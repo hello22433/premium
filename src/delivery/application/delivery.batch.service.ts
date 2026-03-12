@@ -679,9 +679,9 @@ export class DeliveryBatchService {
       smsText,
     );
 
-    // 비SSG, 비초이스 상품에 쿠폰 정보 추가 (barCode가 있는 경우만)
+    // 비SSG, 비초이스 상품에 쿠폰 정보를 본문 앞에 배치 (barCode가 있는 경우만)
     if (orderType !== IOrderType.SSG && productType !== IProductType.CHOICE && orderDelivery.barCode) {
-      smsText += smsCouponInfoTemplate(orderDelivery);
+      smsText = smsCouponInfoTemplate(orderDelivery) + '\n\n' + smsText;
     }
 
     return smsText;

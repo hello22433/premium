@@ -5,8 +5,6 @@ export const smsCouponInfoTemplate = (orderDelivery: OrderDeliveryEntity): strin
   const product = orderDelivery.orderProductMapping.product;
   const expireAt = orderDelivery.expireAt ? format(orderDelivery.expireAt, 'yyyy-MM-dd') : '';
 
-  return `
-
-▷상품명: ${product.name}${expireAt ? `\n▷유효기간: ${expireAt} 까지` : ''}
-▷쿠폰번호: ${orderDelivery.barCode}`;
+  return `▷상품명: ${product.name}
+▷쿠폰번호: ${orderDelivery.barCode}${expireAt ? `\n▷유효기간: ${expireAt} 까지` : ''}`;
 };
