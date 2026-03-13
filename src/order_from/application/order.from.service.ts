@@ -33,10 +33,13 @@ export class OrderFromService {
     user: ILoginUserInfo,
     getQuery: OrderFromGetPhoneReqQueryDto,
   ): Promise<OrderFromGetPhoneListResDto> {
-    const orderFromDefinitionList = await this.orderFromDefinitionRepository.find({
+    const targetUserId = getQuery.userId ? getQuery.userId : user.id;
+
+    // 1. 본인 발신번호 조회
+    const ownList = await this.orderFromDefinitionRepository.find({
       where: {
         type: OrderFromDefinitionType.PHONE,
-        userId: getQuery.userId ? getQuery.userId : user.id,
+        userId: targetUserId,
         requestStatus: OrderFromRequestStatus.APPROVED,
       },
       order: {
@@ -45,15 +48,63 @@ export class OrderFromService {
       },
     });
 
-    const phoneList = orderFromDefinitionList.map((orderFromDefinition) => {
-      return {
-        id: orderFromDefinition.id,
-        from: orderFromDefinition.from,
-        isDefault: orderFromDefinition.isDefault,
-      };
+    if (ownList.length > 0) {
+      return { list: this.toPhoneViewList(ownList) };
+    }
+
+    // 2. 본인 발신번호가 없으면 같은 회사의 다른 계정 발신번호 조회
+    const targetUser = await this.userRepository.findOne({
+      where: { id: targetUserId },
+      select: ['id', 'companyId'],
     });
 
+    if (!targetUser?.companyId) {
+      return { list: [] };
+    }
+
+    const companyUsers = await this.userRepository.find({
+      where: { companyId: targetUser.companyId },
+      select: ['id'],
+    });
+
+    if (companyUsers.length === 0) {
+      return { list: [] };
+    }
+
+    const companyList = await this.orderFromDefinitionRepository.find({
+      where: {
+        type: OrderFromDefinitionType.PHONE,
+        userId: In(companyUsers.map((u) => u.id)),
+        requestStatus: OrderFromRequestStatus.APPROVED,
+      },
+      order: {
+        id: 'ASC',
+      },
+    });
+
+    // 중복 번호 제거, 타 계정 번호이므로 isDefault는 false
+    const seen = new Set<string>();
+    const phoneList = companyList
+      .filter((item) => {
+        if (seen.has(item.from)) return false;
+        seen.add(item.from);
+        return true;
+      })
+      .map((item) => ({
+        id: item.id,
+        from: item.from,
+        isDefault: false,
+      }));
+
     return { list: phoneList };
+  }
+
+  private toPhoneViewList(list: OrderFromDefinitionEntity[]) {
+    return list.map((item) => ({
+      id: item.id,
+      from: item.from,
+      isDefault: item.isDefault,
+    }));
   }
 
   async createPhone(user: ILoginUserInfo, getBody: OrderFromCreatePhoneReqDto) {
