@@ -17,3 +17,22 @@ export function parseDateString(dateStr: string | null | undefined): Date | null
 
   return new Date(year, month, day, hour, minute, second);
 }
+
+/**
+ * Date를 YYYYMMDD 형식 문자열로 변환
+ */
+export function formatDateYMD(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}${m}${d}`;
+}
+
+/**
+ * YYYYMMDD 형식 만료일이 오늘 기준 만료됐는지 판단
+ * 만료일 당일까지 유효 → 만료일 다음날부터 만료
+ */
+export function isExpiredYMD(validTo: string): boolean {
+  if (!validTo) return false;
+  return formatDateYMD(new Date()) > validTo;
+}

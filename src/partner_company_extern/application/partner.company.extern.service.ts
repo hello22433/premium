@@ -23,7 +23,7 @@ import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delive
 import { CancelCouponResDto } from '../api/CancelCouponResDto';
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
-import { parseDateString } from '../../util/date.util';
+import { parseDateString, isExpiredYMD } from '../../util/date.util';
 import { applyReplaceCharacters } from '../../common/utils/replace-characters.util';
 
 @Injectable()
@@ -547,10 +547,14 @@ export class PartnerCompanyExternService {
         } else if (giftCertificate.couponStatus === 'INACTIVE') {
           orderDelivery.couponStatus = OrderDeliveryCouponStatus.EXPIRED;
         } else {
-          // ACTIVE 상태일 때 isUsed로 사용여부 판단
-          orderDelivery.couponStatus = giftCertificate.isUsed
-            ? OrderDeliveryCouponStatus.USED
-            : OrderDeliveryCouponStatus.NOT_USED;
+          // ACTIVE 상태일 때 isUsed + validTo로 판단
+          if (giftCertificate.isUsed) {
+            orderDelivery.couponStatus = OrderDeliveryCouponStatus.USED;
+          } else if (isExpiredYMD(giftCertificate.validTo)) {
+            orderDelivery.couponStatus = OrderDeliveryCouponStatus.EXPIRED;
+          } else {
+            orderDelivery.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
+          }
         }
         orderDelivery.tradeAt = parseDateString(giftCertificate.usedDate);
         orderDelivery.galaxiaBalance = Number(giftCertificate.balance);
