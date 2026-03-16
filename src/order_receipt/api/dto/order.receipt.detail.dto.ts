@@ -14,7 +14,7 @@ export class OrderReceiptDetailDto {
   @ApiProperty({ description: '제목' })
   title: string;
 
-  @ApiProperty({ description: '상태 ex) RECEIVED, APPROVED, REJECTED' })
+  @ApiProperty({ description: '상태 ex) RECEIVED, REVIEWING, APPROVED, REJECTED' })
   status: OrderReceiptStatus;
 
   @ApiProperty({ description: '파일 url list' })
@@ -23,8 +23,11 @@ export class OrderReceiptDetailDto {
   @ApiProperty({ description: '반려 사유', nullable: true })
   rejectReason: string | null;
 
-  @ApiProperty({ description: '확인사항 메모', nullable: true })
-  memo: string | null;
+  @ApiProperty({ description: '요청사항', nullable: true })
+  requestNote: string | null;
+
+  @ApiProperty({ description: '확인사항', nullable: true })
+  confirmNote: string | null;
 
   @ApiProperty({ description: '등록일 ex) yyyy-MM-ddTHH:mm:ss' })
   registerAt: string;

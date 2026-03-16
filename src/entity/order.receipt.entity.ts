@@ -17,7 +17,7 @@ export class OrderReceiptEntity extends BaseEntity {
   @Column({
     type: 'varchar',
     length: 50,
-    comment: '상태 ex) 접수: RECEIVED, 승인: APPROVED, 반려: REJECTED',
+    comment: '상태 ex) 접수: RECEIVED, 확인중: REVIEWING, 승인: APPROVED, 반려: REJECTED',
   })
   status: OrderReceiptStatus;
 
@@ -36,12 +36,11 @@ export class OrderReceiptEntity extends BaseEntity {
   })
   rejectReason: string | null;
 
-  @Column({
-    type: 'text',
-    nullable: true,
-    comment: '확인사항 메모 (운영관리자 기재)',
-  })
-  memo: string | null;
+  @Column({ type: 'text', nullable: true, comment: '요청사항 (기업관리자 작성)' })
+  requestNote: string | null;
+
+  @Column({ type: 'text', nullable: true, comment: '확인사항 (운영관리자 작성)' })
+  confirmNote: string | null;
 
   @Column({ comment: '등록 일' })
   registerAt: Date;
