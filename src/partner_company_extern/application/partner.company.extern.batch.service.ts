@@ -12,7 +12,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { Brackets, Repository } from 'typeorm';
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
-import { parseDateString } from '../../util/date.util';
+import { parseDateString, isExpiredYMD } from '../../util/date.util';
 import {
   PartnerCompanyType,
   ApiCallResult,
@@ -314,9 +314,13 @@ export class PartnerCompanyExternBatchService {
         paramValue: orderDelivery.couponNum!,
       });
 
-      result.couponStatus = galaxiaOut.giftCertificate.isUsed
-        ? OrderDeliveryCouponStatus.USED
-        : OrderDeliveryCouponStatus.NOT_USED;
+      if (galaxiaOut.giftCertificate.isUsed) {
+        result.couponStatus = OrderDeliveryCouponStatus.USED;
+      } else if (isExpiredYMD(galaxiaOut.giftCertificate.validTo)) {
+        result.couponStatus = OrderDeliveryCouponStatus.EXPIRED;
+      } else {
+        result.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
+      }
       result.tradeAt = parseDateString(galaxiaOut.giftCertificate.usedDate);
       result.galaxiaBalance = +galaxiaOut.giftCertificate.balance;
     }
