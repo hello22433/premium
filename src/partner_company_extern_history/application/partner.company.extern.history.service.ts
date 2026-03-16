@@ -331,7 +331,8 @@ export class PartnerCompanyExternHistoryService {
       const needsPinIssue = !pinIssued || partnerCompanyType === IPartnerCompanyType.SSG;
 
       // 재발급이 필요한 경우 transactionId 갱신 (협력사 거래번호 중복 방지)
-      if (needsPinIssue) {
+      // 컬처랜드는 실패 응답에도 내부적으로 PIN이 발급된 상태이므로 기존 transactionId 유지
+      if (needsPinIssue && partnerCompanyType !== IPartnerCompanyType.CULTURELAND) {
         const orderId = orderDelivery.orderProductMapping?.order?.id;
         if (!orderId) {
           return {
