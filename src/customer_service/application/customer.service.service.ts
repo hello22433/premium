@@ -28,6 +28,8 @@ import { CustomerServiceDetailViewDto } from '../api/dto/customer.service.detail
 import { CustomerServiceDlvryDetailViewDto } from '../api/dto/customer.service.dlvry.detail.view.dto';
 import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
 import { DeliveryBatchService } from '../../delivery/application/delivery.batch.service';
+import { IOrderType } from '../../order/interface/order.type';
+import { smsSsgShortTemplate } from '../../delivery/domain/sms.ssg.template';
 import { OrderDeliveryCouponStatus, couponStatusToKorean } from '../../delivery/interface/order.delivery.coupon.status';
 import { ILoginUserInfo } from 'src/auth/interface/login.user';
 import { OrderHistoryEntity } from 'src/entity/order.history.entity';
@@ -843,20 +845,27 @@ export class CustomerServiceService {
       case '재전송': {
         switch (getBody.extraType) {
           case 'sms': {
-            const expireDate = dayjs(orderDelivery.sendRequestAt)
-              .tz('Asia/Seoul')
-              .add(orderDelivery.orderProductMapping.product.expireDay, 'day')
-              .format('YYYY-MM-DD');
+            const orderType = orderDelivery.orderProductMapping.order.type;
 
-            const text =
-              `[모바일상품권]` +
-              orderDelivery.orderProductMapping.product.name +
-              `/교환처:` +
-              orderDelivery.orderProductMapping.product.brand?.nameKorean +
-              `/쿠폰번호:` +
-              orderDelivery.barCode +
-              `/` +
-              expireDate;
+            let text: string;
+            if (orderType === IOrderType.SSG) {
+              text = smsSsgShortTemplate(orderDelivery);
+            } else {
+              const expireDate = dayjs(orderDelivery.sendRequestAt)
+                .tz('Asia/Seoul')
+                .add(orderDelivery.orderProductMapping.product.expireDay, 'day')
+                .format('YYYY-MM-DD');
+
+              text =
+                `[모바일상품권]` +
+                orderDelivery.orderProductMapping.product.name +
+                `/교환처:` +
+                orderDelivery.orderProductMapping.product.brand?.nameKorean +
+                `/쿠폰번호:` +
+                orderDelivery.barCode +
+                `/` +
+                expireDate;
+            }
 
             const decryptedTarget = this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.deliveryTarget) ?? '';
 
@@ -864,7 +873,7 @@ export class CustomerServiceService {
               msgType: 'S',
               dstAddr: decryptedTarget,
               callback: orderDelivery.orderProductMapping.fromPhoneNumber ?? '',
-              text: text ?? '',
+              text,
             });
             break;
           }

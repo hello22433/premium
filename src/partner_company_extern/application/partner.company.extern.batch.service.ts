@@ -12,7 +12,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { Brackets, Repository } from 'typeorm';
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
-import { parseDateString, isExpiredYMD } from '../../util/date.util';
+import { parseDateString, isExpiredYMD, formatDateYMD } from '../../util/date.util';
 import {
   PartnerCompanyType,
   ApiCallResult,
@@ -955,7 +955,7 @@ export class PartnerCompanyExternBatchService {
 
     // 5. 사용 감지 - galaxia_barcode_log 저장
     const now = new Date();
-    const appDay = this.formatDateYMD(now);
+    const appDay = formatDateYMD(now);
     const appTime = this.formatTimeHMS(now);
     const usedAmount = previousBalance - currentBalance;
     const appNo = `chk${orderDelivery.barCode!.slice(-5)}${appTime}${this.randomString(3)}`;
@@ -996,12 +996,6 @@ export class PartnerCompanyExternBatchService {
     return 'updated';
   }
 
-  private formatDateYMD(date: Date): string {
-    const y = date.getFullYear();
-    const m = String(date.getMonth() + 1).padStart(2, '0');
-    const d = String(date.getDate()).padStart(2, '0');
-    return `${y}${m}${d}`;
-  }
 
   private formatTimeHMS(date: Date): string {
     const h = String(date.getHours()).padStart(2, '0');
