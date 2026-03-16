@@ -640,12 +640,21 @@ export class PartnerCompanyExternService {
           expireDay,
         });
 
-        orderDelivery.couponStatus =
-          cultureLandOut.CancelPossibility === 'N'
+        // ResultCode 9006: 유효기간 만료된 상품권
+        if (cultureLandOut.ResultCode === '9006') {
+          orderDelivery.couponStatus = OrderDeliveryCouponStatus.EXPIRED;
+        } else if (cultureLandOut.ResultCode === '0000') {
+          const isUsed = cultureLandOut.CancelPossibility === 'N';
+          orderDelivery.couponStatus = isUsed
             ? OrderDeliveryCouponStatus.USED
             : OrderDeliveryCouponStatus.NOT_USED;
-        if (cultureLandOut.CancelPossibility === 'N') {
-          orderDelivery.tradeAt = new Date();
+          if (isUsed) {
+            orderDelivery.tradeAt = new Date();
+          }
+        } else {
+          this.logger.warn(
+            `CULTURELAND check 실패 - ResultCode: ${cultureLandOut.ResultCode}, ErrMsg: ${cultureLandOut.ErrMsg}`,
+          );
         }
         break;
       }
