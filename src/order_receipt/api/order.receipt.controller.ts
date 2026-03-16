@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Post, Put, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Put, Query, UseGuards } from '@nestjs/common';
 import { ApiBadRequestResponse, ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { OrderReceiptService } from '../application/order.receipt.service';
 import {
@@ -7,7 +7,9 @@ import {
   OrderReceiptGetListReqQueryDto,
   OrderReceiptRejectReqDto,
   OrderReceiptUpdateReqDto,
-  OrderReceiptUpdateMemoReqDto,
+  OrderReceiptUpdateRequestNoteReqDto,
+  OrderReceiptUpdateConfirmNoteReqDto,
+  OrderReceiptChangeStatusReqDto,
 } from './order.receipt.req.dto';
 import { OrderReceiptGetDetailResDto, OrderReceiptGetListResDto } from './order.receipt.res.dto';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
@@ -106,24 +108,69 @@ export class OrderReceiptController {
   }
 
   @ApiOperation({
-    summary: '주문접수 확인사항 메모 수정 API',
+    summary: '주문접수 요청사항 수정 API',
+    description: '기업관리자만 접수 상태인 건의 요청사항을 수정할 수 있습니다.',
   })
   @ApiBearerAuth()
   @ApiOkResponse({
-    description: '확인사항 메모 수정에 성공한 경우',
+    description: '요청사항 수정에 성공한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '주문접수 건이 존재하지 않거나 접수 상태가 아닌 경우',
+  })
+  // ===================================================
+  @Put('/order-receipt/:id/request-note')
+  async updateRequestNote(
+    @User() user: ILoginUserInfo,
+    @Param() getParam: OrderReceiptGetDetailReqParamDto,
+    @Body() getBody: OrderReceiptUpdateRequestNoteReqDto,
+  ) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.ORDER_RECEIPT);
+    return this.orderReceiptService.updateRequestNote(user, getParam.id, getBody);
+  }
+
+  @ApiOperation({
+    summary: '주문접수 확인사항 수정 API',
+    description: '운영관리자 이상만 확인사항을 수정할 수 있습니다. 상태와 무관하게 수정 가능.',
+  })
+  @ApiBearerAuth()
+  @ApiOkResponse({
+    description: '확인사항 수정에 성공한 경우',
   })
   @ApiBadRequestResponse({
     description: '주문접수 건이 존재하지 않는 경우',
   })
   // ===================================================
-  @Put('/order-receipt/:id/memo')
-  async updateMemo(
+  @Put('/order-receipt/:id/confirm-note')
+  async updateConfirmNote(
     @User() user: ILoginUserInfo,
     @Param() getParam: OrderReceiptGetDetailReqParamDto,
-    @Body() getBody: OrderReceiptUpdateMemoReqDto,
+    @Body() getBody: OrderReceiptUpdateConfirmNoteReqDto,
   ) {
     await this.authService.authorityValidator(user, UserAuthSubEnum.ORDER_RECEIPT);
-    return this.orderReceiptService.updateMemo(user, getParam.id, getBody);
+    return this.orderReceiptService.updateConfirmNote(user, getParam.id, getBody);
+  }
+
+  @ApiOperation({
+    summary: '주문접수 상태 변경 API',
+    description: '운영관리자 이상만 상태를 자유롭게 변경할 수 있습니다.',
+  })
+  @ApiBearerAuth()
+  @ApiOkResponse({
+    description: '상태 변경에 성공한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '주문접수 건이 존재하지 않는 경우',
+  })
+  // ===================================================
+  @Patch('/order-receipt/:id/status')
+  async changeStatus(
+    @User() user: ILoginUserInfo,
+    @Param() getParam: OrderReceiptGetDetailReqParamDto,
+    @Body() getBody: OrderReceiptChangeStatusReqDto,
+  ) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.ORDER_RECEIPT);
+    return this.orderReceiptService.changeStatus(user, getParam.id, getBody);
   }
 
   @ApiOperation({
@@ -154,7 +201,7 @@ export class OrderReceiptController {
     description: '주문접수 건이 존재하지 않거나 접수 상태가 아닌 경우',
   })
   // ===================================================
-  // Note: PUT /:id 는 /:id/approve, /:id/reject, /:id/memo 뒤에 배치해야 라우트 충돌 방지
+  // Note: PUT /:id 는 /:id/approve, /:id/reject 등 뒤에 배치해야 라우트 충돌 방지
   @Put('/order-receipt/:id')
   async update(
     @User() user: ILoginUserInfo,

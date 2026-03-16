@@ -1,5 +1,6 @@
 export enum OrderReceiptStatus {
   RECEIVED = 'RECEIVED',
+  REVIEWING = 'REVIEWING',
   APPROVED = 'APPROVED',
   REJECTED = 'REJECTED',
 }

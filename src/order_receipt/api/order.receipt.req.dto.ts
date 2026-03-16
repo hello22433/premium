@@ -1,12 +1,12 @@
 import { Type } from 'class-transformer';
 import { PagingReqDto } from '../../common/api/dto/pagination.req.dto';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsArray, IsIn, IsNotEmpty, IsNumber, IsOptional, IsString } from 'class-validator';
+import { IsArray, IsEnum, IsIn, IsNotEmpty, IsNumber, IsOptional, IsString } from 'class-validator';
 import { OrderReceiptStatus } from '../interface/order.receipt.status';
 
 export class OrderReceiptGetListReqQueryDto extends PagingReqDto {
   @ApiPropertyOptional({
-    description: '상태 필터 ex) RECEIVED, APPROVED, REJECTED',
+    description: '상태 필터 ex) RECEIVED, REVIEWING, APPROVED, REJECTED',
   })
   // =================================
   @IsOptional()
@@ -40,6 +40,14 @@ export class OrderReceiptCreateReqDto {
   // =================================
   @IsArray()
   filePath: string[];
+
+  @ApiPropertyOptional({
+    description: '요청사항',
+  })
+  // =================================
+  @IsOptional()
+  @IsString()
+  requestNote?: string;
 }
 
 export class OrderReceiptRejectReqDto {
@@ -67,14 +75,43 @@ export class OrderReceiptUpdateReqDto {
   // =================================
   @IsArray()
   filePath: string[];
+
+  @ApiPropertyOptional({
+    description: '요청사항',
+  })
+  // =================================
+  @IsOptional()
+  @IsString()
+  requestNote?: string;
 }
 
-export class OrderReceiptUpdateMemoReqDto {
+export class OrderReceiptUpdateRequestNoteReqDto {
   @ApiProperty({
-    description: '확인사항 메모',
+    description: '요청사항',
   })
   // =================================
   @IsNotEmpty()
   @IsString()
-  memo: string;
+  requestNote: string;
+}
+
+export class OrderReceiptUpdateConfirmNoteReqDto {
+  @ApiProperty({
+    description: '확인사항',
+  })
+  // =================================
+  @IsNotEmpty()
+  @IsString()
+  confirmNote: string;
+}
+
+export class OrderReceiptChangeStatusReqDto {
+  @ApiProperty({
+    description: '변경할 상태 ex) RECEIVED, REVIEWING, APPROVED, REJECTED',
+    enum: OrderReceiptStatus,
+  })
+  // =================================
+  @IsNotEmpty()
+  @IsEnum(OrderReceiptStatus)
+  status: OrderReceiptStatus;
 }

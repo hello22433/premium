@@ -9,7 +9,9 @@ import {
   OrderReceiptGetListReqQueryDto,
   OrderReceiptRejectReqDto,
   OrderReceiptUpdateReqDto,
-  OrderReceiptUpdateMemoReqDto,
+  OrderReceiptUpdateRequestNoteReqDto,
+  OrderReceiptUpdateConfirmNoteReqDto,
+  OrderReceiptChangeStatusReqDto,
 } from '../api/order.receipt.req.dto';
 import { OrderReceiptGetDetailResDto, OrderReceiptGetListResDto } from '../api/order.receipt.res.dto';
 import { OrderReceiptViewDto } from '../api/dto/order.receipt.view.dto';
@@ -91,7 +93,8 @@ export class OrderReceiptService {
       status: receipt.status,
       filePathList: parseFilePathList(receipt.filePath),
       rejectReason: receipt.rejectReason,
-      memo: receipt.memo,
+      requestNote: receipt.requestNote,
+      confirmNote: receipt.confirmNote,
       registerAt: format(receipt.registerAt, DateFormatStr),
       processedAt: receipt.processedAt ? format(receipt.processedAt, DateFormatStr) : null,
       processedUserName: receipt.processedUser?.personName ?? null,
@@ -99,7 +102,7 @@ export class OrderReceiptService {
   }
 
   async create(user: ILoginUserInfo, getBody: OrderReceiptCreateReqDto) {
-    const { title, filePath } = getBody;
+    const { title, filePath, requestNote } = getBody;
 
     if (filePath.length === 0) {
       throw new BadRequestException('첨부파일을 등록해주세요.');
@@ -110,6 +113,7 @@ export class OrderReceiptService {
       title,
       status: OrderReceiptStatus.RECEIVED,
       filePath: filePath.join(','),
+      requestNote: requestNote ?? null,
       registerAt: new Date(),
     });
   }
@@ -177,19 +181,67 @@ export class OrderReceiptService {
 
     receipt.title = getBody.title;
     receipt.filePath = getBody.filePath.join(',');
+    if (getBody.requestNote !== undefined) {
+      receipt.requestNote = getBody.requestNote ?? null;
+    }
     await this.orderReceiptRepository.save(receipt);
   }
 
-  async updateMemo(user: ILoginUserInfo, id: number, getBody: OrderReceiptUpdateMemoReqDto) {
+  async updateRequestNote(user: ILoginUserInfo, id: number, getBody: OrderReceiptUpdateRequestNoteReqDto) {
     const receipt = await this.findReceiptOrThrow(id);
 
-    const isAdmin = [IUserAuthority.SUPER_ADMIN, IUserAuthority.OPERATION_ADMIN].includes(user.authority as IUserAuthority);
-    if (!isAdmin) {
-      throw new ForbiddenException('운영관리자 이상만 확인사항을 작성할 수 있습니다.');
+    // 기업관리자만 작성 가능
+    if (user.authority !== IUserAuthority.CORPORATE_ADMIN) {
+      throw new ForbiddenException('기업관리자만 요청사항을 작성할 수 있습니다.');
     }
 
-    receipt.memo = getBody.memo;
+    // 본인 건만 수정 가능
+    if (receipt.userId !== user.id) {
+      throw new ForbiddenException('등록자만 요청사항을 수정할 수 있습니다.');
+    }
+
+    // 접수 상태에서만 수정 가능
+    if (receipt.status !== OrderReceiptStatus.RECEIVED) {
+      throw new BadRequestException('접수 상태인 건만 요청사항을 수정할 수 있습니다.');
+    }
+
+    receipt.requestNote = getBody.requestNote;
     await this.orderReceiptRepository.save(receipt);
+  }
+
+  async updateConfirmNote(user: ILoginUserInfo, id: number, getBody: OrderReceiptUpdateConfirmNoteReqDto) {
+    this.validateAdminAuthority(user, '운영관리자 이상만 확인사항을 작성할 수 있습니다.');
+
+    const receipt = await this.findReceiptOrThrow(id);
+    receipt.confirmNote = getBody.confirmNote;
+    await this.orderReceiptRepository.save(receipt);
+  }
+
+  async changeStatus(user: ILoginUserInfo, id: number, getBody: OrderReceiptChangeStatusReqDto) {
+    this.validateAdminAuthority(user, '운영관리자 이상만 상태를 변경할 수 있습니다.');
+
+    const receipt = await this.findReceiptOrThrow(id);
+
+    receipt.status = getBody.status;
+
+    // 접수 상태로 되돌리는 경우 처리 이력 초기화
+    if (getBody.status === OrderReceiptStatus.RECEIVED) {
+      receipt.processedAt = null;
+      receipt.processedUserId = null;
+      receipt.rejectReason = null;
+    } else {
+      receipt.processedAt = new Date();
+      receipt.processedUserId = user.id;
+    }
+
+    await this.orderReceiptRepository.save(receipt);
+  }
+
+  private validateAdminAuthority(user: ILoginUserInfo, message: string) {
+    const isAdmin = [IUserAuthority.SUPER_ADMIN, IUserAuthority.OPERATION_ADMIN].includes(user.authority as IUserAuthority);
+    if (!isAdmin) {
+      throw new ForbiddenException(message);
+    }
   }
 
   private async findReceiptOrThrow(id: number): Promise<OrderReceiptEntity> {
