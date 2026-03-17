@@ -1406,6 +1406,11 @@ export class OrderService {
       );
     });
 
+    // 발송 완료/확정 건은 UserDiscount 폴백 없이 매핑 저장값만 사용
+    // (새로 등록된 할인조건이 이미 완료된 주문에 소급 적용되는 것을 방지)
+    const isOrderCompleted =
+      order.status === IOrderStatus.DELIVERY_CONFIRMED || order.status === IOrderStatus.DELIVERY_COMPLETE;
+
     const resultList: OrderSettleViewDto[] = orderProductList.map((orderProduct) => {
       let priceAdjustment = orderProduct.priceAdjustment;
       let fee = orderProduct.fee;
@@ -1415,7 +1420,7 @@ export class OrderService {
       let discountTotalPrice = orderProduct.product.price * orderProduct.amount;
 
       // 3. 할인 정보가 null 일 경우 상품에 맞는 할인 옵션 찾기
-      if (!priceAdjustment || fee === null) {
+      if ((!priceAdjustment || fee === null) && !isOrderCompleted) {
         this.logger.debug(
           `[getOrderSettle] product: id=${orderProduct.product.id}, name=${orderProduct.product.name}, category='${orderProduct.product.category}', price=${orderProduct.product.price}, brand=${orderProduct.product.brand?.nameKorean ?? 'null'}`,
         );
@@ -1442,6 +1447,8 @@ export class OrderService {
           fee = fee ?? matchingDiscount.pricePercent;
         }
         fee = fee ?? 0;
+      } else if (fee === null) {
+        fee = 0;
       }
 
       // fee 유효성 검사 (0은 허용)
