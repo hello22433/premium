@@ -40,6 +40,7 @@ import { EmailDeliveryTemplate } from '../domain/email.delivery.template';
 import { smsEncourageTemplate } from '../domain/sms.encourage.template';
 import { SmsChoiceProductTemplate } from '../domain/sms.choice.product.template';
 import { smsCouponInfoTemplate } from '../domain/sms.coupon.info.template';
+import { smsSsgTemplate } from '../domain/sms.ssg.template';
 import { DeliveryTrackingStatus } from '../domain/delivery.tracking.status';
 import { OrderEmailSendType } from '../../order/domain/order.email.send.type';
 import { EmailType } from '../../mail/domain/email.type';
@@ -677,6 +678,11 @@ export class DeliveryBatchService {
       `${this.configService.getOrThrow('SMS_CHOICE_URL')}/${encryptKey}`,
       smsText,
     );
+
+    // SSG 상품: 쿠폰번호, 인증번호, 교환처 등 상세 정보 추가
+    if (orderType === IOrderType.SSG) {
+      smsText += smsSsgTemplate(orderDelivery);
+    }
 
     // 비SSG, 비초이스 상품에 쿠폰 정보를 본문 앞에 배치 (barCode가 있는 경우만)
     if (orderType !== IOrderType.SSG && productType !== IProductType.CHOICE && orderDelivery.barCode) {
