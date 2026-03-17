@@ -7,8 +7,6 @@ import {
   OrderReceiptGetListReqQueryDto,
   OrderReceiptRejectReqDto,
   OrderReceiptUpdateReqDto,
-  OrderReceiptUpdateRequestNoteReqDto,
-  OrderReceiptUpdateConfirmNoteReqDto,
   OrderReceiptChangeStatusReqDto,
 } from './order.receipt.req.dto';
 import { OrderReceiptGetDetailResDto, OrderReceiptGetListResDto } from './order.receipt.res.dto';
@@ -108,50 +106,6 @@ export class OrderReceiptController {
   }
 
   @ApiOperation({
-    summary: '주문접수 요청사항 수정 API',
-    description: '기업관리자만 접수 상태인 건의 요청사항을 수정할 수 있습니다.',
-  })
-  @ApiBearerAuth()
-  @ApiOkResponse({
-    description: '요청사항 수정에 성공한 경우',
-  })
-  @ApiBadRequestResponse({
-    description: '주문접수 건이 존재하지 않거나 접수 상태가 아닌 경우',
-  })
-  // ===================================================
-  @Put('/order-receipt/:id/request-note')
-  async updateRequestNote(
-    @User() user: ILoginUserInfo,
-    @Param() getParam: OrderReceiptGetDetailReqParamDto,
-    @Body() getBody: OrderReceiptUpdateRequestNoteReqDto,
-  ) {
-    await this.authService.authorityValidator(user, UserAuthSubEnum.ORDER_RECEIPT);
-    return this.orderReceiptService.updateRequestNote(user, getParam.id, getBody);
-  }
-
-  @ApiOperation({
-    summary: '주문접수 확인사항 수정 API',
-    description: '운영관리자 이상만 확인사항을 수정할 수 있습니다. 상태와 무관하게 수정 가능.',
-  })
-  @ApiBearerAuth()
-  @ApiOkResponse({
-    description: '확인사항 수정에 성공한 경우',
-  })
-  @ApiBadRequestResponse({
-    description: '주문접수 건이 존재하지 않는 경우',
-  })
-  // ===================================================
-  @Put('/order-receipt/:id/confirm-note')
-  async updateConfirmNote(
-    @User() user: ILoginUserInfo,
-    @Param() getParam: OrderReceiptGetDetailReqParamDto,
-    @Body() getBody: OrderReceiptUpdateConfirmNoteReqDto,
-  ) {
-    await this.authService.authorityValidator(user, UserAuthSubEnum.ORDER_RECEIPT);
-    return this.orderReceiptService.updateConfirmNote(user, getParam.id, getBody);
-  }
-
-  @ApiOperation({
     summary: '주문접수 상태 변경 API',
     description: '운영관리자 이상만 상태를 자유롭게 변경할 수 있습니다.',
   })
@@ -191,14 +145,18 @@ export class OrderReceiptController {
   }
 
   @ApiOperation({
-    summary: '주문접수 수정 API',
+    summary: '주문접수 수정 API (통합)',
+    description:
+      '기업관리자 본인(접수 상태): title, filePath, requestNote 수정 가능. ' +
+      '운영관리자 이상: confirmNote 수정 가능(상태 무관). ' +
+      '각 권한에 해당하는 필드만 전송하면 됩니다.',
   })
   @ApiBearerAuth()
   @ApiOkResponse({
     description: '주문접수 수정에 성공한 경우',
   })
   @ApiBadRequestResponse({
-    description: '주문접수 건이 존재하지 않거나 접수 상태가 아닌 경우',
+    description: '주문접수 건이 존재하지 않거나 수정 권한이 없는 경우',
   })
   // ===================================================
   // Note: PUT /:id 는 /:id/approve, /:id/reject 등 뒤에 배치해야 라우트 충돌 방지

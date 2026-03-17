@@ -9,8 +9,6 @@ import {
   OrderReceiptGetListReqQueryDto,
   OrderReceiptRejectReqDto,
   OrderReceiptUpdateReqDto,
-  OrderReceiptUpdateRequestNoteReqDto,
-  OrderReceiptUpdateConfirmNoteReqDto,
   OrderReceiptChangeStatusReqDto,
 } from '../api/order.receipt.req.dto';
 import { OrderReceiptGetDetailResDto, OrderReceiptGetListResDto } from '../api/order.receipt.res.dto';
@@ -167,53 +165,37 @@ export class OrderReceiptService {
   async update(user: ILoginUserInfo, id: number, getBody: OrderReceiptUpdateReqDto) {
     const receipt = await this.findReceiptOrThrow(id);
 
-    if (receipt.status !== OrderReceiptStatus.RECEIVED) {
-      throw new BadRequestException('접수 상태인 건만 수정할 수 있습니다.');
+    const isAdmin = this.isAdminUser(user);
+    const isOwner = receipt.userId === user.id;
+    const isReceived = receipt.status === OrderReceiptStatus.RECEIVED;
+    const canEditCorporateFields = isOwner && isReceived;
+
+    // 수정 권한 검증 (fail fast)
+    if (!canEditCorporateFields && !isAdmin) {
+      throw new ForbiddenException('수정 권한이 없습니다.');
     }
 
-    if (receipt.userId !== user.id) {
-      throw new ForbiddenException('등록자만 수정할 수 있습니다.');
+    // 기업관리자 본인 + 접수 상태: title, filePath, requestNote 수정 가능
+    if (canEditCorporateFields) {
+      if (getBody.title !== undefined) {
+        receipt.title = getBody.title;
+      }
+      if (getBody.filePath !== undefined) {
+        if (getBody.filePath.length === 0) {
+          throw new BadRequestException('첨부파일을 등록해주세요.');
+        }
+        receipt.filePath = getBody.filePath.join(',');
+      }
+      if (getBody.requestNote !== undefined) {
+        receipt.requestNote = getBody.requestNote ?? null;
+      }
     }
 
-    if (getBody.filePath.length === 0) {
-      throw new BadRequestException('첨부파일을 등록해주세요.');
+    // 운영관리자 이상: confirmNote 수정 가능 (상태 무관)
+    if (isAdmin && getBody.confirmNote !== undefined) {
+      receipt.confirmNote = getBody.confirmNote;
     }
 
-    receipt.title = getBody.title;
-    receipt.filePath = getBody.filePath.join(',');
-    if (getBody.requestNote !== undefined) {
-      receipt.requestNote = getBody.requestNote ?? null;
-    }
-    await this.orderReceiptRepository.save(receipt);
-  }
-
-  async updateRequestNote(user: ILoginUserInfo, id: number, getBody: OrderReceiptUpdateRequestNoteReqDto) {
-    const receipt = await this.findReceiptOrThrow(id);
-
-    // 기업관리자만 작성 가능
-    if (user.authority !== IUserAuthority.CORPORATE_ADMIN) {
-      throw new ForbiddenException('기업관리자만 요청사항을 작성할 수 있습니다.');
-    }
-
-    // 본인 건만 수정 가능
-    if (receipt.userId !== user.id) {
-      throw new ForbiddenException('등록자만 요청사항을 수정할 수 있습니다.');
-    }
-
-    // 접수 상태에서만 수정 가능
-    if (receipt.status !== OrderReceiptStatus.RECEIVED) {
-      throw new BadRequestException('접수 상태인 건만 요청사항을 수정할 수 있습니다.');
-    }
-
-    receipt.requestNote = getBody.requestNote;
-    await this.orderReceiptRepository.save(receipt);
-  }
-
-  async updateConfirmNote(user: ILoginUserInfo, id: number, getBody: OrderReceiptUpdateConfirmNoteReqDto) {
-    this.validateAdminAuthority(user, '운영관리자 이상만 확인사항을 작성할 수 있습니다.');
-
-    const receipt = await this.findReceiptOrThrow(id);
-    receipt.confirmNote = getBody.confirmNote;
     await this.orderReceiptRepository.save(receipt);
   }
 
@@ -237,9 +219,12 @@ export class OrderReceiptService {
     await this.orderReceiptRepository.save(receipt);
   }
 
+  private isAdminUser(user: ILoginUserInfo): boolean {
+    return [IUserAuthority.SUPER_ADMIN, IUserAuthority.OPERATION_ADMIN].includes(user.authority as IUserAuthority);
+  }
+
   private validateAdminAuthority(user: ILoginUserInfo, message: string) {
-    const isAdmin = [IUserAuthority.SUPER_ADMIN, IUserAuthority.OPERATION_ADMIN].includes(user.authority as IUserAuthority);
-    if (!isAdmin) {
+    if (!this.isAdminUser(user)) {
       throw new ForbiddenException(message);
     }
   }

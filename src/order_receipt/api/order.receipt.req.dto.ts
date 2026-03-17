@@ -61,48 +61,37 @@ export class OrderReceiptRejectReqDto {
 }
 
 export class OrderReceiptUpdateReqDto {
-  @ApiProperty({
-    description: '주문접수 제목',
+  @ApiPropertyOptional({
+    description: '주문접수 제목 (기업관리자 본인, 접수 상태)',
   })
   // =================================
-  @IsNotEmpty()
+  @IsOptional()
   @IsString()
-  title: string;
-
-  @ApiProperty({
-    description: '첨부파일 url list',
-  })
-  // =================================
-  @IsArray()
-  filePath: string[];
+  title?: string;
 
   @ApiPropertyOptional({
-    description: '요청사항',
+    description: '첨부파일 url list (기업관리자 본인, 접수 상태)',
+  })
+  // =================================
+  @IsOptional()
+  @IsArray()
+  filePath?: string[];
+
+  @ApiPropertyOptional({
+    description: '요청사항 (기업관리자 본인, 접수 상태)',
   })
   // =================================
   @IsOptional()
   @IsString()
   requestNote?: string;
-}
 
-export class OrderReceiptUpdateRequestNoteReqDto {
-  @ApiProperty({
-    description: '요청사항',
+  @ApiPropertyOptional({
+    description: '확인사항 (운영관리자 이상, 상태 무관)',
   })
   // =================================
-  @IsNotEmpty()
+  @IsOptional()
   @IsString()
-  requestNote: string;
-}
-
-export class OrderReceiptUpdateConfirmNoteReqDto {
-  @ApiProperty({
-    description: '확인사항',
-  })
-  // =================================
-  @IsNotEmpty()
-  @IsString()
-  confirmNote: string;
+  confirmNote?: string;
 }
 
 export class OrderReceiptChangeStatusReqDto {
