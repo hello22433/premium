@@ -1319,7 +1319,6 @@ export class SettleService {
 
     const resultList: SettleUserListViewDto[] = orderList.map((order) => {
       const billingUser = order.clientUser ?? order.user;
-      const userDiscounts = billingUser?.userDiscounts || [];
 
       const productNameList: string[] = [];
       let amount = 0;
@@ -1328,7 +1327,7 @@ export class SettleService {
       for (const mapping of order.orderProductMappings!) {
         productNameList.push(mapping.product.name);
         amount += mapping.amount;
-        finalSettlePrice += this.calculateMappingSettlePrice(mapping, userDiscounts);
+        finalSettlePrice += this.calculateMappingSettlePrice(mapping);
       }
 
       const firstDelivery = order.orderProductMappings?.[0]?.orderDeliveries?.[0];
@@ -1375,12 +1374,10 @@ export class SettleService {
 
     for (const order of sumOrders) {
       totalDeliveryPriceSum += order.sendAmount;
-      const billingUser = order.clientUser ?? order.user;
-      const userDiscounts = billingUser?.userDiscounts || [];
 
       for (const mapping of order.orderProductMappings!) {
         totalAmountSum += mapping.amount;
-        totalSettlePriceSum += this.calculateMappingSettlePrice(mapping, userDiscounts);
+        totalSettlePriceSum += this.calculateMappingSettlePrice(mapping);
       }
     }
 
@@ -1408,11 +1405,10 @@ export class SettleService {
 
     const items: SettleGetUserIdsItemDto[] = orders.map((order) => {
       const billingUser = order.clientUser ?? order.user;
-      const userDiscounts = billingUser?.userDiscounts || [];
 
       let finalSettlePrice = 0;
       for (const mapping of order.orderProductMappings!) {
-        finalSettlePrice += this.calculateMappingSettlePrice(mapping, userDiscounts);
+        finalSettlePrice += this.calculateMappingSettlePrice(mapping);
       }
 
       return {
@@ -2365,12 +2361,13 @@ export class SettleService {
   }
 
   /**
-   * orderProductMapping에 저장된 fee/priceAdjustment 또는 userDiscounts에서 매칭되는 할인을 적용하여
-   * 해당 매핑의 정산금액을 계산한다.
+   * orderProductMapping에 저장된 fee/priceAdjustment를 적용하여 해당 매핑의 정산금액을 계산한다.
+   * 정산 리스트는 완료건(DELIVERY_CONFIRMED/DELIVERY_COMPLETE)만 조회하므로
+   * 현재 UserDiscount로 폴백하지 않고 매핑에 저장된 값만 사용한다.
+   * (새로 등록된 할인조건이 이미 완료된 주문에 소급 적용되는 것을 방지)
    */
   private calculateMappingSettlePrice(
     mapping: { fee: number | null; priceAdjustment: IPriceAdjustment | null; amount: number; product: { price: number; category: string; brand?: { nameKorean: string } | null } },
-    userDiscounts: UserDiscountEntity[],
   ): number {
     const productTotalPrice = mapping.product.price * mapping.amount;
 
@@ -2386,11 +2383,8 @@ export class SettleService {
       return adjustedPrice;
     }
 
-    const matchingDiscount = this.findMatchingDiscount(
-      { price: mapping.product.price, category: mapping.product.category, brand: mapping.product.brand },
-      userDiscounts,
-    );
-    return this.applyDiscount(productTotalPrice, matchingDiscount);
+    // 매핑에 할인 정보가 없으면 정가 반환
+    return productTotalPrice;
   }
 
   /**
@@ -2452,8 +2446,6 @@ export class SettleService {
     }
 
     queryBuilder = queryBuilder
-      .leftJoinAndSelect('user.userDiscounts', 'userDiscounts')
-      .leftJoinAndSelect('clientUser.userDiscounts', 'clientUserDiscounts')
       .where('order.status IN (:...status)', { status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'] });
 
     if (isPublished === true) {
