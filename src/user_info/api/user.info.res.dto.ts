@@ -15,7 +15,7 @@ export class UserGetAuthListResDto {
 
   @ApiProperty({
     description: '허용 발신수단 목록',
-    example: ['ALIM_TALK', 'SMS', 'EMAIL'],
+    example: ['ALIM_TALK', 'MMS', 'EMAIL'],
     enum: IOrderSendMethod,
     isArray: true,
   })

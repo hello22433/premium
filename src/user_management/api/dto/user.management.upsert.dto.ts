@@ -214,14 +214,14 @@ export class UserManagementUpsertDto {
   documentCompanyType?: CompanyType;
 
   @ApiProperty({
-    description: '허용 발신수단 목록 (ALIM_TALK, SMS, EMAIL)',
-    example: ['ALIM_TALK', 'SMS', 'EMAIL'],
+    description: '허용 발신수단 목록 (ALIM_TALK, MMS, EMAIL)',
+    example: ['ALIM_TALK', 'MMS', 'EMAIL'],
   })
   // ============================
   @IsArray()
   @ArrayNotEmpty({ message: '발신수단은 최소 1개 이상 선택해야 합니다.' })
   @IsEnum(IOrderSendMethod, { each: true, message: '유효하지 않은 발신수단입니다.' })
-  allowedSendMethods: IOrderSendMethod[] = [IOrderSendMethod.ALIM_TALK, IOrderSendMethod.SMS, IOrderSendMethod.EMAIL];
+  allowedSendMethods: IOrderSendMethod[] = [IOrderSendMethod.ALIM_TALK, IOrderSendMethod.MMS, IOrderSendMethod.EMAIL];
 
   @ApiPropertyOptional({
     description: '로그인 인증 방식 (EMAIL: 이메일 인증, PHONE: 문자 인증)',

@@ -92,7 +92,7 @@ export class CustomerServiceDetailViewDto {
   apiErrorMessage: string | null;
 
   @ApiProperty({
-    description: '발송 방법 ex) 이메일: EMAIL, 문자: SMS, 알림톡: ALIM_TALK',
+    description: '발송 방법 ex) 이메일: EMAIL, 문자: MMS, 알림톡: ALIM_TALK',
     enum: IOrderDeliveryMethod,
   })
   method: IOrderSendMethod;

@@ -57,10 +57,9 @@ dayjs.extend(timezone);
 
 @Injectable()
 export class CustomerServiceService {
-  // DB값은 'SMS'이지만 실제 MMS 발송. Task 2(SMS→MMS 명칭 정리)에서 enum/DB 변경 예정
   private static readonly DELIVERY_METHOD_DISPLAY: Record<string, string> = {
     [IOrderSendMethod.ALIM_TALK]: '알림톡',
-    [IOrderSendMethod.SMS]: 'MMS',
+    [IOrderSendMethod.MMS]: 'MMS',
     [IOrderSendMethod.EMAIL]: '이메일',
   };
 
@@ -931,7 +930,8 @@ export class CustomerServiceService {
         case 'forced_mms':
           sendMethod = 'MMS';
           break;
-        case 'mms':
+        case 'mms': // 하위호환 (프론트 배포 후 Phase B에서 의미 변경 예정)
+        case 'original':
           sendMethod = displayMethod;
           break;
       }
@@ -974,7 +974,8 @@ export class CustomerServiceService {
             await this.deliveryBatchService.csResendAsMms(map.orderDeliveryId);
             break;
           }
-          case 'mms': {
+          case 'mms': // 하위호환 (프론트 배포 후 Phase B에서 의미 변경 예정)
+          case 'original': {
             const resendDto = new CustomerServiceReSendReqDto();
             resendDto.orderDeliveryId = map.orderDeliveryId;
 

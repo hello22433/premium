@@ -37,7 +37,7 @@ export const OrderValidation = (order: OrderEntity) => {
 
     // 각 상품별 발송 방법 검증
     const sendMethod = orderProduct.sendMethod;
-    if (sendMethod === IOrderSendMethod.SMS || sendMethod === IOrderSendMethod.ALIM_TALK) {
+    if (sendMethod === IOrderSendMethod.MMS || sendMethod === IOrderSendMethod.ALIM_TALK) {
       if (!orderProduct.fromPhoneNumber) {
         throw new BadRequestException('발신 번호를 입력해 주세요.');
       }
