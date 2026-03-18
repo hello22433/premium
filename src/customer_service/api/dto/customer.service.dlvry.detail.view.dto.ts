@@ -160,6 +160,12 @@ export class CustomerServiceDlvryDetailViewDto {
   validityStartsNextDay: boolean;
 
   @ApiProperty({
+    description: '유효기간 만료일 (YYYY-MM-DD)',
+    nullable: true,
+  })
+  expireAt: string | null;
+
+  @ApiProperty({
     description: '이메일 쿠폰 발급 상태 (SEND: 발급완료, PIN_ISSUED: 문자발송실패, FAIL: 핀발급실패)',
     enum: OrderDeliveryEmailCouponStatus,
     nullable: true,

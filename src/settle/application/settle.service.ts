@@ -1219,12 +1219,18 @@ export class SettleService {
           // 수신번호 복호화
           const receiverPhone = this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.deliveryTarget) ?? '';
 
-          // 유효기간 계산 (기호 없이 yyyyMMdd 형식)
+          // 유효기간 계산 (기호 없이 yyyyMMdd 형식): 저장된 expireAt 직접 사용
           let validityStartAt = '';
           let validityEndAt = '';
-          if (orderDelivery.actualSendAt) {
+          if (orderDelivery.expireAt) {
+            const endDate = new Date(orderDelivery.expireAt);
+            // 시작일 = 종료일 - (유효기간일수 - 1)
+            const startDate = new Date(endDate.getTime() - (displayProduct.expireDay - 1) * 24 * 60 * 60 * 1000);
+            validityStartAt = format(startDate, DateCompactStr);
+            validityEndAt = format(endDate, DateCompactStr);
+          } else if (orderDelivery.actualSendAt) {
+            // fallback: expireAt 없는 레거시 데이터
             const sendDateObj = new Date(orderDelivery.actualSendAt);
-            // 협력사 설정에 따라 시작일 계산 (초이스쿠폰 선택 시 선택된 상품의 협력사 설정 사용)
             const startDate = displayPartnerCompany.validityStartsNextDay
               ? new Date(sendDateObj.getTime() + 24 * 60 * 60 * 1000)
               : sendDateObj;

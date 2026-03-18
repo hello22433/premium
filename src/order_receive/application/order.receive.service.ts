@@ -240,6 +240,7 @@ export class OrderReceiveService {
       userBusinessName,
       partnerCompany: displayProduct.partnerCompany?.type || null,
       validityStartsNextDay: displayProduct.partnerCompany?.validityStartsNextDay,
+      expireAt: orderDelivery.expireAt ? dayjs(orderDelivery.expireAt).format('YYYY-MM-DD') : null,
     };
   }
 
@@ -341,6 +342,7 @@ export class OrderReceiveService {
       userBusinessName,
       partnerCompany: displayProduct.partnerCompany?.type || null,
       validityStartsNextDay: displayProduct.partnerCompany?.validityStartsNextDay,
+      expireAt: null, // 테스트 발송은 expireAt 미설정
     };
   }
 
