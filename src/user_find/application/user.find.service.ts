@@ -8,9 +8,10 @@ import {
 } from '../api/user.find.req.dto';
 import { UserFindIdResDto, UserFindResetPasswordSendResDto } from '../api/user.find.res.dto';
 import { IMailSend } from '../../mail/interface/mail-send';
-import { BadRequestException, Inject } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { EmailSendHistoryEntity } from '../../entity/email.send.history.entity';
-import { EmailCertifyExpireMinute } from '../../const';
+import { EmailCertifyExpireMinute, defaultFromPhoneNumber } from '../../const';
 import { addMinutes } from 'date-fns';
 import { EmailType } from '../../mail/domain/email.type';
 import { PasswordBcryptEncrypt } from '../../auth/infrastructure/password.bcrypt.encrypt';
@@ -18,8 +19,14 @@ import { UserResetPasswordVerifyTemplateHtml } from '../domain/user.reset.passwo
 import { generateRandomCode } from '../domain/code.generate';
 import { generateRandomPassword } from '../domain/user.password.regex';
 import { userResetPasswordTemplate } from '../domain/user.reset.password.template.html';
+import { LoginVerifyMethod } from '../../user/interface/login.verify.method';
+import { DeliveryAlimTalk } from '../../delivery/interface/delivery.alim.talk';
+import { ISmsSend } from '../../sms/interface/sms.send';
 
+@Injectable()
 export class UserFindService {
+  private readonly logger = new Logger('UserFindService');
+
   constructor(
     @InjectRepository(UserEntity)
     private userRepository: Repository<UserEntity>,
@@ -28,7 +35,44 @@ export class UserFindService {
     @Inject('IMailSend')
     private readonly mailSendService: IMailSend,
     private readonly passwordEncrypt: PasswordBcryptEncrypt,
+    @Inject('DeliveryAlimTalk')
+    private readonly alimTalkService: DeliveryAlimTalk,
+    @Inject('ISmsSend')
+    private readonly smsSendService: ISmsSend,
+    private readonly configService: ConfigService,
   ) {}
+
+  private readonly loginAuthTemplateCode = this.configService.getOrThrow<string>('ALIM_TALK_INFO_BANK_LOGIN_AUTH_TEMPLATE_CODE');
+  private readonly initPasswordTemplateCode = this.configService.getOrThrow<string>('ALIM_TALK_INFO_BANK_INIT_PASSWORD_TEMPLATE_CODE');
+
+  private async sendViaAlimTalkWithSmsFallback(
+    to: string,
+    text: string,
+    templateCode: string,
+    fromPhone: string | null,
+    logContext: string,
+  ): Promise<void> {
+    try {
+      await this.alimTalkService.send({ to, text, templateCode, msgType: 'AT' });
+      this.logger.log(`${logContext} 알림톡 발송 성공`);
+    } catch (alimTalkError) {
+      this.logger.warn(`${logContext} 알림톡 발송 실패, SMS 대체 발송: ${alimTalkError.message}`);
+      try {
+        await this.smsSendService.send({
+          msgType: 'S',
+          to,
+          from: fromPhone || defaultFromPhoneNumber,
+          subject: '',
+          text,
+          filePath: [],
+        });
+        this.logger.log(`${logContext} SMS 발송 성공`);
+      } catch (smsError) {
+        this.logger.error(`${logContext} SMS 발송 실패: ${smsError.message}`);
+        throw new BadRequestException('발송에 실패했습니다. 잠시 후 다시 시도해주세요.');
+      }
+    }
+  }
 
   async findId(getBody: UserFindIdReqDto): Promise<UserFindIdResDto> {
     const user = await this.userRepository.findOne({
@@ -67,24 +111,44 @@ export class UserFindService {
     const code = generateRandomCode();
     const expireAt = addMinutes(new Date(), EmailCertifyExpireMinute);
 
-    // 이메일 전송한 history record 생성하기
-    const emailSendHistory = new EmailSendHistoryEntity();
+    const loginVerifyMethod = user.loginVerifyMethod ?? LoginVerifyMethod.EMAIL;
 
-    emailSendHistory.email = getBody.email;
+    // history record 생성
+    const emailSendHistory = new EmailSendHistoryEntity();
     emailSendHistory.type = EmailType.PASSWORD;
     emailSendHistory.expireAt = expireAt;
     emailSendHistory.code = code;
 
-    const { title, content } = UserResetPasswordVerifyTemplateHtml(code, EmailCertifyExpireMinute);
+    if (loginVerifyMethod === LoginVerifyMethod.PHONE) {
+      if (!user.personPhoneNumber) {
+        throw new BadRequestException('등록된 연락처가 없습니다. 관리자에게 문의해주세요.');
+      }
 
-    await this.mailSendService.send({
-      saveSentMail: 'N',
-      bcc: undefined,
-      cc: undefined,
-      content: content,
-      subject: title,
-      to: email,
-    });
+      emailSendHistory.email = user.personPhoneNumber;
+
+      const messageText = `이팝콘 프리미엄 비밀번호 찾기 인증코드\n[${code}]`;
+
+      await this.sendViaAlimTalkWithSmsFallback(
+        user.personPhoneNumber,
+        messageText,
+        this.loginAuthTemplateCode,
+        user.fromPhoneNumber,
+        `비밀번호찾기 인증코드 userId=${user.id}`,
+      );
+    } else {
+      emailSendHistory.email = getBody.email;
+
+      const { title, content } = UserResetPasswordVerifyTemplateHtml(code, EmailCertifyExpireMinute);
+
+      await this.mailSendService.send({
+        saveSentMail: 'N',
+        bcc: undefined,
+        cc: undefined,
+        content: content,
+        subject: title,
+        to: email,
+      });
+    }
 
     await this.emailSendHistoryRepository.save(emailSendHistory);
 
@@ -102,11 +166,11 @@ export class UserFindService {
     });
 
     if (!emailSendHistory) {
-      throw new BadRequestException('이메일 전송 데이터가 없습니다.');
+      throw new BadRequestException('인증 데이터가 없습니다.');
     }
 
     if (emailSendHistory.expireAt && emailSendHistory.expireAt < new Date()) {
-      throw new BadRequestException('만료된 이메일 인증 코드입니다.');
+      throw new BadRequestException('만료된 인증 코드입니다.');
     }
 
     if (emailSendHistory.code !== code) {
@@ -128,17 +192,34 @@ export class UserFindService {
     }
 
     const tempPassword = generateRandomPassword();
+    const loginVerifyMethod = user.loginVerifyMethod ?? LoginVerifyMethod.EMAIL;
 
-    const { title, content } = userResetPasswordTemplate(tempPassword);
+    if (loginVerifyMethod === LoginVerifyMethod.PHONE) {
+      if (!user.personPhoneNumber) {
+        throw new BadRequestException('등록된 연락처가 없습니다. 관리자에게 문의해주세요.');
+      }
 
-    await this.mailSendService.send({
-      saveSentMail: 'N',
-      bcc: undefined,
-      cc: undefined,
-      content: content,
-      subject: title,
-      to: email,
-    });
+      const messageText = `이팝콘 프리미엄 임시 비밀번호\n[${tempPassword}]`;
+
+      await this.sendViaAlimTalkWithSmsFallback(
+        user.personPhoneNumber,
+        messageText,
+        this.initPasswordTemplateCode,
+        user.fromPhoneNumber,
+        `임시비밀번호 userId=${user.id}`,
+      );
+    } else {
+      const { title, content } = userResetPasswordTemplate(tempPassword);
+
+      await this.mailSendService.send({
+        saveSentMail: 'N',
+        bcc: undefined,
+        cc: undefined,
+        content: content,
+        subject: title,
+        to: email,
+      });
+    }
 
     user.password = await this.passwordEncrypt.encrypt(tempPassword);
     user.isPasswordReset = true;

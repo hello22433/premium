@@ -224,7 +224,7 @@ export class UserManagementUpsertDto {
   allowedSendMethods: IOrderSendMethod[] = [IOrderSendMethod.ALIM_TALK, IOrderSendMethod.MMS, IOrderSendMethod.EMAIL];
 
   @ApiPropertyOptional({
-    description: '로그인 인증 방식 (EMAIL: 이메일 인증, PHONE: 문자 인증)',
+    description: '로그인 인증 방식 (EMAIL: 이메일 인증, PHONE: 휴대번호 인증)',
     enum: LoginVerifyMethod,
     default: LoginVerifyMethod.EMAIL,
   })

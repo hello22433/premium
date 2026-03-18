@@ -6,9 +6,11 @@ import { UserFindController } from './api/user.find.controller';
 import { UserFindService } from './application/user.find.service';
 import { EmailSendHistoryEntity } from '../entity/email.send.history.entity';
 import { AuthModule } from '../auth/auth.module';
+import { DeliveryModule } from '../delivery/delivery.module';
+import { SmsModule } from '../sms/sms.module';
 
 @Module({
-  imports: [AuthModule, MailModule, TypeOrmModule.forFeature([UserEntity, EmailSendHistoryEntity])],
+  imports: [AuthModule, MailModule, DeliveryModule, SmsModule, TypeOrmModule.forFeature([UserEntity, EmailSendHistoryEntity])],
   controllers: [UserFindController],
   providers: [UserFindService],
 })

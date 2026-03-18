@@ -1,4 +1,4 @@
-import { BadRequestException, Inject, Injectable } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, Logger } from '@nestjs/common';
 import { UserEntity } from '../../entity/user.entity';
 import { IUserStatus } from '../../user/interface/user.status';
 import { UserCompanyEntity } from '../../entity/user.company.entity';
@@ -45,9 +45,16 @@ import { ActivityLogEntity } from '../../entity/activity.log.entity';
 import { format } from 'date-fns';
 import { DateFormatStr } from '../../common/domain/date.format.str';
 import { CompanyType } from '../../common/domain/company.type';
+import { ConfigService } from '@nestjs/config';
+import { LoginVerifyMethod } from '../../user/interface/login.verify.method';
+import { DeliveryAlimTalk } from '../../delivery/interface/delivery.alim.talk';
+import { ISmsSend } from '../../sms/interface/sms.send';
+import { defaultFromPhoneNumber } from '../../const';
 
 @Injectable()
 export class UserManagementService {
+  private readonly logger = new Logger('UserManagementService');
+
   constructor(
     @InjectRepository(UserEntity)
     private userRepository: Repository<UserEntity>,
@@ -61,7 +68,43 @@ export class UserManagementService {
     @Inject('IMailSend')
     private readonly mailSendService: IMailSend,
     private activityLogService: ActivityLogService,
+    @Inject('DeliveryAlimTalk')
+    private readonly alimTalkService: DeliveryAlimTalk,
+    @Inject('ISmsSend')
+    private readonly smsSendService: ISmsSend,
+    private readonly configService: ConfigService,
   ) { }
+
+  private readonly initPasswordTemplateCode = this.configService.getOrThrow<string>('ALIM_TALK_INFO_BANK_INIT_PASSWORD_TEMPLATE_CODE');
+
+  private async sendViaAlimTalkWithSmsFallback(
+    to: string,
+    text: string,
+    templateCode: string,
+    fromPhone: string | null,
+    logContext: string,
+  ): Promise<void> {
+    try {
+      await this.alimTalkService.send({ to, text, templateCode, msgType: 'AT' });
+      this.logger.log(`${logContext} 알림톡 발송 성공`);
+    } catch (alimTalkError) {
+      this.logger.warn(`${logContext} 알림톡 발송 실패, SMS 대체 발송: ${alimTalkError.message}`);
+      try {
+        await this.smsSendService.send({
+          msgType: 'S',
+          to,
+          from: fromPhone || defaultFromPhoneNumber,
+          subject: '',
+          text,
+          filePath: [],
+        });
+        this.logger.log(`${logContext} SMS 발송 성공`);
+      } catch (smsError) {
+        this.logger.error(`${logContext} SMS 발송 실패: ${smsError.message}`);
+        throw new BadRequestException('발송에 실패했습니다. 잠시 후 다시 시도해주세요.');
+      }
+    }
+  }
 
   /**
    * 회사 레벨 선충전 관리 모드인지 확인
@@ -743,17 +786,34 @@ export class UserManagementService {
       throw new BadRequestException('해당 이메일의 유저가 존재하지 않습니다.');
     }
     const tempPassword = generateRandomPassword();
+    const loginVerifyMethod = user.loginVerifyMethod ?? LoginVerifyMethod.EMAIL;
 
-    const { title, content } = userResetPasswordTemplate(tempPassword);
+    if (loginVerifyMethod === LoginVerifyMethod.PHONE) {
+      if (!user.personPhoneNumber) {
+        throw new BadRequestException('등록된 연락처가 없습니다. 관리자에게 문의해주세요.');
+      }
 
-    await this.mailSendService.send({
-      saveSentMail: 'N',
-      bcc: undefined,
-      cc: undefined,
-      content: content,
-      subject: title,
-      to: user.email,
-    });
+      const messageText = `이팝콘 프리미엄 임시 비밀번호\n[${tempPassword}]`;
+
+      await this.sendViaAlimTalkWithSmsFallback(
+        user.personPhoneNumber,
+        messageText,
+        this.initPasswordTemplateCode,
+        user.fromPhoneNumber,
+        `비밀번호 초기화 userId=${user.id}`,
+      );
+    } else {
+      const { title, content } = userResetPasswordTemplate(tempPassword);
+
+      await this.mailSendService.send({
+        saveSentMail: 'N',
+        bcc: undefined,
+        cc: undefined,
+        content: content,
+        subject: title,
+        to: user.email,
+      });
+    }
 
     user.password = await this.passwordEncrypt.encrypt(tempPassword);
     user.isPasswordReset = true;
