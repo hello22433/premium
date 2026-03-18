@@ -228,12 +228,10 @@ export class CustomerServiceService {
       const displayProduct = orderDelivery.choiceSelectProduct ?? product;
       const displayPartnerCompany = orderDelivery.choiceSelectProduct?.partnerCompany ?? product.partnerCompany;
 
-      // 유효기간 만료일 계산
-      const expireAt = this.calculateExpireAt(
-        orderDelivery.actualSendAt ?? orderDelivery.sendRequestAt,
-        displayProduct.expireDay,
-        displayPartnerCompany?.validityStartsNextDay ?? true,
-      );
+      // 유효기간 만료일: 발송 시점에 계산되어 저장된 expireAt 직접 사용
+      const expireAt = orderDelivery.expireAt
+        ? dayjs(orderDelivery.expireAt).format('YYYY-MM-DD')
+        : null;
 
       // sendRequestAt 포맷팅
       let formattedSendRequestAt = '';
@@ -465,6 +463,7 @@ export class CustomerServiceService {
       expireDay: displayProduct.expireDay.toString(),
       transactionId: queryBuilder.transactionId || null,
       validityStartsNextDay: displayPartnerCompany?.validityStartsNextDay ?? true,
+      expireAt: queryBuilder.expireAt ? dayjs(queryBuilder.expireAt).format('YYYY-MM-DD') : null,
       emailCouponStatus: queryBuilder.emailCouponStatus ?? null,
       emailReceiverPhone: formattedEmailReceiverPhone,
     };
@@ -1576,24 +1575,4 @@ export class CustomerServiceService {
     res.end();
   }
 
-  /**
-   * 유효기간 만료일 계산
-   * @param baseDate 기준일 (actualSendAt 또는 sendRequestAt)
-   * @param expireDay 유효기간 일수
-   * @param validityStartsNextDay true면 다음날부터, false면 당일부터 계산
-   * @returns YYYY-MM-DD 형식의 만료일 또는 null
-   */
-  private calculateExpireAt(
-    baseDate: Date | null | undefined,
-    expireDay: number,
-    validityStartsNextDay: boolean,
-  ): string | null {
-    if (!baseDate) {
-      return null;
-    }
-    // validityStartsNextDay가 true면 다음날부터 계산 (+expireDay)
-    // validityStartsNextDay가 false면 발송당일부터 계산 (+expireDay - 1)
-    const adjustedExpireDay = validityStartsNextDay ? expireDay : expireDay - 1;
-    return dayjs(baseDate).add(adjustedExpireDay, 'day').format('YYYY-MM-DD');
-  }
 }

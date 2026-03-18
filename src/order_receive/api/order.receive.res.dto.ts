@@ -112,6 +112,13 @@ export class OrderReceiveAlimTalkResDto {
     required: false,
   })
   validityStartsNextDay?: boolean;
+
+  @ApiProperty({
+    description: '유효기간 만료일 (YYYY-MM-DD)',
+    required: false,
+    nullable: true,
+  })
+  expireAt?: string | null;
 }
 
 export class OrderReceiveEmailResDto {
