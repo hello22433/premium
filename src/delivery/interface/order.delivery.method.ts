@@ -1,5 +1,5 @@
 export enum IOrderDeliveryMethod {
   EMAIL = 'EMAIL',
-  SMS = 'SMS',
+  MMS = 'MMS',
   ALIM_TALK = 'ALIM_TALK',
 }

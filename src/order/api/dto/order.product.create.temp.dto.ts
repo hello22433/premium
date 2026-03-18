@@ -31,7 +31,7 @@ export class OrderProductCreateTempDto {
   amount: number;
 
   @ApiPropertyOptional({
-    description: '전송 방식 ex) 알림톡: ALIM_TALK, 문자: SMS, 이메일: EMAIL',
+    description: '전송 방식 ex) 알림톡: ALIM_TALK, 문자: MMS, 이메일: EMAIL',
   })
   // =================================================
   @IsEnum(IOrderSendMethod)

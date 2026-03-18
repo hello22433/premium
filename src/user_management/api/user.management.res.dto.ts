@@ -218,8 +218,8 @@ export class UserManagementGetDetailResDto {
   viewScope?: UserViewScopeInfoDto | null;
 
   @ApiProperty({
-    description: '허용 발신수단 목록 (ALIM_TALK, SMS, EMAIL)',
-    example: ['ALIM_TALK', 'SMS', 'EMAIL'],
+    description: '허용 발신수단 목록 (ALIM_TALK, MMS, EMAIL)',
+    example: ['ALIM_TALK', 'MMS', 'EMAIL'],
   })
   allowedSendMethods: string[];
 

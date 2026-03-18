@@ -411,7 +411,7 @@ export class DeliveryBatchService {
     // 5. 발송 채널별 처리
     if (deliveryMethod === IOrderSendMethod.ALIM_TALK) {
       await this.sendAlimTalk(orderDelivery, decryptedDeliveryTarget, encryptKey, title, text, filePathList, deliveryHistory);
-    } else if (deliveryMethod === IOrderSendMethod.SMS) {
+    } else if (deliveryMethod === IOrderSendMethod.MMS) {
       await this.sendSms(orderDelivery, decryptedDeliveryTarget, encryptKey, title, text, filePathList, deliveryHistory);
     } else if (deliveryMethod === IOrderSendMethod.EMAIL) {
       await this.sendEmail(orderDelivery, decryptedDeliveryTarget, encryptKey, title, text, deliveryHistory);
@@ -1064,7 +1064,7 @@ export class DeliveryBatchService {
     }
 
     // SMS 발송
-    if (deliveryMethod === IOrderSendMethod.SMS) {
+    if (deliveryMethod === IOrderSendMethod.MMS) {
       const smsText = this.buildSmsText(orderDelivery, encryptKey, text);
 
       try {
@@ -1314,7 +1314,7 @@ export class DeliveryBatchService {
       }
 
       // 2. SMS 발송
-      if (orderDelivery.deliveryMethod === IOrderSendMethod.SMS) {
+      if (orderDelivery.deliveryMethod === IOrderSendMethod.MMS) {
         try {
           const smsText = smsEncourageTemplate(orderDelivery);
           await this.smsSend.send({

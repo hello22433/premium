@@ -309,7 +309,7 @@ export class UserManagementService {
           scopeType: ViewScopeType.SELF,
           deptIds: [],
         },
-      allowedSendMethods: user.allowedSendMethods ? user.allowedSendMethods.split(',') : ['ALIM_TALK', 'SMS', 'EMAIL'],
+      allowedSendMethods: user.allowedSendMethods ? user.allowedSendMethods.split(',').map(m => m === 'SMS' ? 'MMS' : m) : ['ALIM_TALK', 'MMS', 'EMAIL'],
       loginVerifyMethod: user.loginVerifyMethod,
     };
   }

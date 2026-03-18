@@ -1710,8 +1710,8 @@ export class OrderService {
       throw new BadRequestException('사용자 정보를 찾을 수 없습니다.');
     }
     const allowedMethods = userEntity.allowedSendMethods
-      ? userEntity.allowedSendMethods.split(',')
-      : ['ALIM_TALK', 'SMS', 'EMAIL'];
+      ? userEntity.allowedSendMethods.split(',').map(m => m === 'SMS' ? 'MMS' : m)
+      : ['ALIM_TALK', 'MMS', 'EMAIL'];
 
     for (const product of orderProductList) {
       if (product.sendMethod && !allowedMethods.includes(product.sendMethod)) {
