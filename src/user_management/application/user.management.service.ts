@@ -76,7 +76,7 @@ export class UserManagementService {
     let queryBuilder = this.userRepository
       .createQueryBuilder('user')
       .leftJoinAndSelect('user.company', 'company')
-      .where('user.status != :leaveStatus', { leaveStatus: IUserStatus.LEAVE });
+      .where('user.status = :activeStatus', { activeStatus: IUserStatus.USED });
 
     if (authority) {
       queryBuilder = queryBuilder.andWhere('user.authority = :authority', { authority });
