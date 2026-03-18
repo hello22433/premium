@@ -119,12 +119,12 @@ export class UserController {
   }
 
   @ApiOperation({
-    summary: '로그인 인증 문자 전송 API',
+    summary: '로그인 휴대번호 인증 전송 API',
     description: '등록된 담당자 연락처로 알림톡/SMS 인증코드를 발송합니다.',
   })
   @ApiOkResponse({
     type: UserLoginPhoneResDto,
-    description: '문자 인증코드 발송 성공',
+    description: '휴대번호 인증코드 발송 성공',
   })
   @ApiBadRequestResponse({
     description: '유저가 존재하지 않는 경우<br>등록된 연락처가 없는 경우<br>인증코드 발송 실패',
@@ -136,8 +136,8 @@ export class UserController {
   }
 
   @ApiOperation({
-    summary: '로그인 인증 문자 인증 API',
-    description: '문자로 받은 인증코드를 검증합니다.',
+    summary: '로그인 휴대번호 인증 검증 API',
+    description: '알림톡/문자로 받은 인증코드를 검증합니다.',
   })
   @ApiOkResponse({
     description: '인증이 완료된 경우 다시 /user/login-email-password 를 호출해주세요.',
