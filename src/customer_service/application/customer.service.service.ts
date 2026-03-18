@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { applyReplaceCharacters } from '../../common/utils/replace-characters.util';
 import {
   CustomerServiceCouponRefreshReqDto,
@@ -41,6 +42,8 @@ import { CryptoCipher } from 'src/common/infra/crypto.cipher';
 import { PhoneUtil } from 'src/common/utils/phone.util';
 import { OrderDeliveryRefundStatusEnum } from '../../delivery/interface/order.delivery.refund.status.enum';
 import { IOrderSendMethod } from '../../order/interface/order.send.method';
+import { IProductType } from '../../product/interface/product.type';
+import { OrderEncryptKey } from '../../order_receive/interface/order.encrypt.key';
 import { ActivityLogService } from 'src/activity_log/application/activity.log.service';
 import { ActivityLogActionType } from 'src/activity_log/interface/activity.log.action.type';
 import { ActivityLogResult } from 'src/activity_log/interface/activity.log.result';
@@ -75,6 +78,7 @@ export class CustomerServiceService {
     private smsGemtekSend: SmsGemtekSend,
     private readonly cryptoCipher: CryptoCipher,
     private readonly activityLogService: ActivityLogService,
+    private readonly configService: ConfigService,
   ) {}
 
   async getList(getQuery: CustomerServiceGetListReqDto): Promise<CustomerServiceGetListResDto> {
@@ -853,10 +857,19 @@ export class CustomerServiceService {
         switch (getBody.extraType) {
           case 'sms': {
             const orderType = orderDelivery.orderProductMapping.order.type;
+            const productType = orderDelivery.orderProductMapping.product.type;
 
             let text: string;
             if (orderType === IOrderType.SSG) {
               text = smsSsgShortTemplate(orderDelivery);
+            } else if (productType === IProductType.CHOICE) {
+              // 초이스쿠폰: 선택 링크 발송
+              const encryptKey = this.cryptoCipher.encryptJson({
+                id: orderDelivery.id,
+                transactionId: orderDelivery.transactionId,
+              } as OrderEncryptKey);
+              const choiceUrl = `${this.configService.getOrThrow('SMS_CHOICE_URL')}/${encryptKey}`;
+              text = `초이스 쿠폰 받기 링크 : ${choiceUrl}`;
             } else {
               const expireDate = dayjs(orderDelivery.sendRequestAt)
                 .tz('Asia/Seoul')
@@ -875,9 +888,10 @@ export class CustomerServiceService {
             }
 
             const decryptedTarget = this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.deliveryTarget) ?? '';
+            const textBytes = Buffer.byteLength(text, 'utf8');
 
             smsEntity = this.gemteckMsgQueueRepository.create({
-              msgType: 'S',
+              msgType: textBytes <= 90 ? 'S' : 'L',
               dstAddr: decryptedTarget,
               callback: orderDelivery.orderProductMapping.fromPhoneNumber ?? '',
               text,
