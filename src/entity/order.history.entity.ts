@@ -20,6 +20,9 @@ export class OrderHistoryEntity extends BaseEntity {
   @Column({ type: 'text', nullable: true })
   content: string | null;
 
+  @Column({ type: 'varchar', length: 20, nullable: true, comment: '발송 수단 (알림톡/SMS/MMS/이메일)' })
+  sendMethod: string | null;
+
   @Column({ type: 'text', nullable: true })
   beforeChange: string | null;
 

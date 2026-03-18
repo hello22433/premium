@@ -54,6 +54,13 @@ dayjs.extend(timezone);
 
 @Injectable()
 export class CustomerServiceService {
+  // DB값은 'SMS'이지만 실제 MMS 발송. Task 2(SMS→MMS 명칭 정리)에서 enum/DB 변경 예정
+  private static readonly DELIVERY_METHOD_DISPLAY: Record<string, string> = {
+    [IOrderSendMethod.ALIM_TALK]: '알림톡',
+    [IOrderSendMethod.SMS]: 'MMS',
+    [IOrderSendMethod.EMAIL]: '이메일',
+  };
+
   constructor(
     @InjectRepository(OrderEntity)
     private orderRepository: Repository<OrderEntity>,
@@ -898,6 +905,26 @@ export class CustomerServiceService {
       getBody.afterChange = getBody.afterChange?.replace(/[^0-9]/g, '').trim();
     }
 
+    // 발송 수단 매핑
+    const displayMethod = CustomerServiceService.DELIVERY_METHOD_DISPLAY[orderDelivery.deliveryMethod] ?? null;
+
+    let sendMethod: string | null = null;
+    if (getBody.type === '재전송') {
+      switch (getBody.extraType) {
+        case 'sms':
+          sendMethod = 'SMS';
+          break;
+        case 'forced_mms':
+          sendMethod = 'MMS';
+          break;
+        case 'mms':
+          sendMethod = displayMethod;
+          break;
+      }
+    } else if (getBody.type === '수신정보 변경요청') {
+      sendMethod = displayMethod;
+    }
+
     return {
       orderDeliveryId: getBody.orderDeliveryId,
       userId: user.id,
@@ -906,6 +933,7 @@ export class CustomerServiceService {
       content: getBody.content || '',
       beforeChange: beforeChange || '',
       afterChange: getBody.afterChange || '',
+      sendMethod,
       orderDelivery,
       smsEntity,
     };
@@ -1023,6 +1051,7 @@ export class CustomerServiceService {
       userId: map.userId,
       type: map.type,
       content: map.content,
+      sendMethod: map.sendMethod,
       beforeChange: map.beforeChange,
       afterChange: afterChange,
     });
@@ -1087,6 +1116,7 @@ export class CustomerServiceService {
           createdAt: h.createdAt ? format(h.createdAt, DateFormatStr) : null,
           personName: h.user?.personName ?? '',
           content: h.content,
+          sendMethod: h.sendMethod ?? null,
           beforeChange,
           afterChange,
         };
