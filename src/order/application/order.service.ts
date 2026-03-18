@@ -2029,10 +2029,9 @@ export class OrderService {
     if (mappingList.length > 0) {
       const mappingIds = mappingList.map((mp) => mp.id);
 
-      // 3-2. order_delivery soft delete
-      await this.orderDeliveryRepository.softDelete({
-        orderProductMappingId: In(mappingIds),
-      });
+      // 3-2. order_delivery는 삭제하지 않음
+      // - 테스트 발송 후 coupon-view 페이지에서 쿠폰 조회가 가능해야 함
+      // - 다른 조회에서는 INNER JOIN 또는 deletedAt 필터로 자연 제외됨
 
       // 3-3. order_product_mapping soft delete
       await this.orderProductMappingRepository.softDelete({
