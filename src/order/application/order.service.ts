@@ -114,7 +114,7 @@ import dayjs from 'dayjs';
 import timezone from 'dayjs/plugin/timezone';
 import utc from 'dayjs/plugin/utc';
 import { MailSendSmtp } from '../../mail/infrastructure/mail-send.smtp';
-import { CompanyType } from '../../common/domain/company.type';
+import { CompanyType, ENMAD_BUSINESS_NUMBER } from '../../common/domain/company.type';
 import { OrderDeliveryCompleteReportEmailReqDto } from '../api/order.req.dto';
 import { EmailSendHistoryEntity } from '../../entity/email.send.history.entity';
 import { EmailType } from '../../mail/domain/email.type';
@@ -3570,13 +3570,16 @@ export class OrderService {
   }
 
   /**
-   * 직발송/대행발송 접근 제어 필터
-   * - 직발송: clientUserId IS NULL (고객사 지정 없이 직접 발송)
+   * 직발송/대행발송/이앤엠애드 접근 제어 필터
+   * - 직발송: clientUserId IS NULL AND 주문자 회사가 이앤엠애드가 아닌 건
    * - 대행발송: clientUserId IS NOT NULL (고객사/담당자가 지정된 대리 주문)
+   * - 이앤엠애드: clientUserId IS NULL AND 주문자 회사가 이앤엠애드인 건
    *
    * - SUPER_ADMIN: sendingType 파라미터로 필터링 (전체 접근 가능)
    * - OPERATION_ADMIN: 직발송 건 + 본인 배정 대행발송 건만 조회
    * - 기타 (CORPORATE_ADMIN 등): 직발송 건 + 본인이 고객으로 지정된 대행발송 건만 조회
+   *
+   * 이앤엠애드 식별: userCompany.businessNumber로 판별 (COMPANY_INFO 상수 참조)
    */
   private applyDirectSendingFilter(
     queryBuilder: ReturnType<Repository<OrderEntity>['createQueryBuilder']>,
@@ -3584,10 +3587,19 @@ export class OrderService {
     sendingType?: IOrderSendingType,
   ): void {
     if (user.authority === IUserAuthority.SUPER_ADMIN) {
-      if (sendingType === IOrderSendingType.DIRECT) {
-        queryBuilder.andWhere('order.clientUserId IS NULL');
-      } else if (sendingType === IOrderSendingType.AGENCY) {
+      if (sendingType === IOrderSendingType.AGENCY) {
         queryBuilder.andWhere('order.clientUserId IS NOT NULL');
+      } else if (sendingType === IOrderSendingType.DIRECT) {
+        queryBuilder.andWhere('order.clientUserId IS NULL');
+        queryBuilder.andWhere(
+          '(userCompany.businessNumber IS NULL OR userCompany.businessNumber != :enmadBizNo)',
+          { enmadBizNo: ENMAD_BUSINESS_NUMBER },
+        );
+      } else if (sendingType === IOrderSendingType.ENMAD) {
+        queryBuilder.andWhere('order.clientUserId IS NULL');
+        queryBuilder.andWhere('userCompany.businessNumber = :enmadBizNo', {
+          enmadBizNo: ENMAD_BUSINESS_NUMBER,
+        });
       }
       return;
     }

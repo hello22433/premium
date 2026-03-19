@@ -89,6 +89,15 @@ export const COMPANY_INFO: Record<CompanyType, ICompanyInfo> = {
 export const DEFAULT_COMPANY_TYPE = CompanyType.ENMAD;
 
 /**
+ * 모바일이앤엠애드 사업자등록번호 (DB 저장 형식: 하이픈 없음)
+ * DB에는 하이픈 제거 후 저장되므로 쿼리 비교용으로 사용
+ */
+export const ENMAD_BUSINESS_NUMBER = COMPANY_INFO[CompanyType.ENMAD].businessNumber.replace(
+  /-/g,
+  '',
+);
+
+/**
  * 회사 정보 조회 헬퍼 함수
  */
 export function getCompanyInfo(companyType: CompanyType): ICompanyInfo {
