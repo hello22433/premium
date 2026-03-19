@@ -1700,12 +1700,17 @@ export class OrderService {
     // 발송요청 상태(DELIVERY_REQUEST)인 경우 balance 조정은 deliveryConfirmed에서 수행됨
   }
 
-  @Transactional()
-  async createTemp(user: ILoginUserInfo, getBody: OrderCreateTempReqDto): Promise<OrderCreateTempResDto> {
-    const { type, eventName, topImagePath, midImagePath, orderProductList } = getBody;
-
-    // 사용자의 허용 발신수단 검증
-    const userEntity = await this.userRepository.findOne({ where: { id: user.id } });
+  /**
+   * 주어진 유저의 허용 발신수단으로 주문 상품의 sendMethod를 검증한다.
+   * 대행주문인 경우 clientUser, 직접주문인 경우 주문등록자의 설정을 사용한다.
+   */
+  private async validateSendMethods(
+    clientUserId: number | null,
+    currentUserId: number,
+    orderProductList: { sendMethod?: string }[],
+  ): Promise<void> {
+    const targetUserId = clientUserId ?? currentUserId;
+    const userEntity = await this.userRepository.findOne({ where: { id: targetUserId } });
     if (!userEntity) {
       throw new BadRequestException('사용자 정보를 찾을 수 없습니다.');
     }
@@ -1718,6 +1723,15 @@ export class OrderService {
         throw new BadRequestException(`허용되지 않은 발신수단입니다: ${product.sendMethod}`);
       }
     }
+  }
+
+  @Transactional()
+  async createTemp(user: ILoginUserInfo, getBody: OrderCreateTempReqDto): Promise<OrderCreateTempResDto> {
+    const { type, eventName, topImagePath, midImagePath, orderProductList } = getBody;
+
+    // 대행주문인 경우 clientUser의 허용 발신수단으로 검증
+    const clientUserId = getBody.clientUserId ?? null;
+    await this.validateSendMethods(clientUserId, user.id, orderProductList);
 
     const productIdList = orderProductList.map((product) => product.productId);
     const uniqueProductId = new Set(productIdList);
@@ -1768,8 +1782,7 @@ export class OrderService {
             throw new BadRequestException('sendRequestAt 누락');
           })();
 
-    // 대행주문인 경우 clientUserId 설정 및 operationUserId 자동 배정
-    const clientUserId = getBody.clientUserId ?? null;
+    // 대행주문인 경우 operationUserId 자동 배정
     const operationUserId = clientUserId ? user.id : null;
 
     const orderInsertResult = await this.orderRepository.insert({
@@ -1878,6 +1891,10 @@ export class OrderService {
       order.canceledAt = null;
     }
 
+    // 대행주문인 경우 clientUser의 허용 발신수단으로 검증
+    const clientUserId = getBody.clientUserId ?? null;
+    await this.validateSendMethods(clientUserId, user.id, orderProductList);
+
     const productIdList = orderProductList.map((orderProduct) => orderProduct.productId);
     const uniqueProductId = new Set(productIdList);
 
@@ -1919,7 +1936,6 @@ export class OrderService {
     order.settleAmount = sendAmount;
 
     // 대행주문 관련 정보 업데이트
-    const clientUserId = getBody.clientUserId ?? null;
     order.clientUserId = clientUserId;
     if (clientUserId) {
       // 대행주문인 경우 현재 관리자를 운영 담당자로 자동 배정 (createTemp와 동일 로직)
