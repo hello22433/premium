@@ -2200,10 +2200,12 @@ export class SettleService {
     const userMap = new Map(userList.map((u) => [u.id, u]));
 
     // 2. 해당 사용자들의 미정산 주문을 단일 쿼리로 조회 (N+1 방지)
+    // UNSETTLE_OVERDUE도 포함하여 리셋 대상 판별
     // 대행주문 포함: clientUserId 또는 (clientUserId가 없는 경우) userId 기준
     const allOrders = await this.orderRepository
       .createQueryBuilder('order')
       .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
+      .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
       .where(
         new Brackets((wb) => {
           wb.where('order.clientUserId IN (:...userIds)', { userIds }).orWhere(
@@ -2215,9 +2217,13 @@ export class SettleService {
       )
       .andWhere(
         new Brackets((qb) => {
-          qb.where('order.settleStatus IS NULL').orWhere('order.settleStatus = :settleStatus', {
-            settleStatus: SettleUserOrderDetailEnum.UNSETTLE_NORMAL,
-          });
+          qb.where('order.settleStatus IS NULL')
+            .orWhere('order.settleStatus = :settleNormal', {
+              settleNormal: SettleUserOrderDetailEnum.UNSETTLE_NORMAL,
+            })
+            .orWhere('order.settleStatus = :settleOverdue', {
+              settleOverdue: SettleUserOrderDetailEnum.UNSETTLE_OVERDUE,
+            });
         }),
       )
       .andWhere('order.status = :status', { status: 'DELIVERY_COMPLETE' })
@@ -2233,9 +2239,10 @@ export class SettleService {
       ordersByUserId.get(billingUserId)!.push(order);
     }
 
-    // 4. 사용자별 정산기일 초과 주문 판별
+    // 4. 사용자별 정산기일 초과 주문 판별 (actualSendAt 기준)
     const now = new Date();
-    const allUpdateOrderIds: number[] = [];
+    const overdueOrderIds: number[] = [];
+    const resetOrderIds: number[] = [];
 
     for (const [userId, orderList] of ordersByUserId) {
       const user = userMap.get(userId);
@@ -2260,34 +2267,55 @@ export class SettleService {
           break;
       }
 
-      const conditionDate = condition !== UserSettlePeriodConditionEnum.DELIVERY_DATE
-        ? new Date(now.getFullYear(), now.getMonth() + monthOffset, count)
-        : null;
-
       for (const order of orderList) {
-        const sendRequestAt = order.orderProductMappings?.[0]?.sendRequestAt;
-        if (!sendRequestAt) continue;
+        // actualSendAt 확보: orderDeliveries 중 가장 빠른 실제발송일
+        const deliveryDates = (order.orderProductMappings ?? [])
+          .flatMap((m) => m.orderDeliveries ?? [])
+          .map((d) => d.actualSendAt)
+          .filter((d): d is Date => d != null);
 
+        const actualSendAt = deliveryDates.length > 0
+          ? new Date(Math.min(...deliveryDates.map((d) => d.getTime())))
+          : null;
+
+        if (!actualSendAt) continue;
+
+        let deadline: Date;
         if (condition === UserSettlePeriodConditionEnum.DELIVERY_DATE) {
-          const deliveryConditionDate = new Date(
-            sendRequestAt.getFullYear(),
-            sendRequestAt.getMonth(),
-            sendRequestAt.getDate() + count,
+          deadline = new Date(
+            actualSendAt.getFullYear(),
+            actualSendAt.getMonth(),
+            actualSendAt.getDate() + count,
           );
+        } else {
+          deadline = new Date(
+            actualSendAt.getFullYear(),
+            actualSendAt.getMonth() + monthOffset,
+            count,
+          );
+        }
 
-          if (now >= deliveryConditionDate) {
-            allUpdateOrderIds.push(order.id);
-          }
-        } else if (conditionDate! >= sendRequestAt) {
-          allUpdateOrderIds.push(order.id);
+        const isOverdue = now >= deadline;
+
+        if (isOverdue && order.settleStatus !== SettleUserOrderDetailEnum.UNSETTLE_OVERDUE) {
+          overdueOrderIds.push(order.id);
+        } else if (!isOverdue && order.settleStatus === SettleUserOrderDetailEnum.UNSETTLE_OVERDUE) {
+          resetOrderIds.push(order.id);
         }
       }
     }
 
     // 5. 초과 주문 일괄 업데이트
-    if (allUpdateOrderIds.length > 0) {
-      await this.orderRepository.update(allUpdateOrderIds, {
+    if (overdueOrderIds.length > 0) {
+      await this.orderRepository.update(overdueOrderIds, {
         settleStatus: SettleUserOrderDetailEnum.UNSETTLE_OVERDUE,
+      });
+    }
+
+    // 6. 잘못 마킹된 주문 리셋 (마감일 전인데 OVERDUE인 주문 → NORMAL로)
+    if (resetOrderIds.length > 0) {
+      await this.orderRepository.update(resetOrderIds, {
+        settleStatus: SettleUserOrderDetailEnum.UNSETTLE_NORMAL,
       });
     }
   }
