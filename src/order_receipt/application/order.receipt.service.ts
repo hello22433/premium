@@ -178,17 +178,26 @@ export class OrderReceiptService {
 
     // 기업관리자 본인 + 접수 상태: title, filePath, requestNote 수정 가능
     if (canEditCorporateFields) {
+      let modified = false;
+
       if (getBody.title !== undefined) {
         receipt.title = getBody.title;
+        modified = true;
       }
       if (getBody.filePath !== undefined) {
         if (getBody.filePath.length === 0) {
           throw new BadRequestException('첨부파일을 등록해주세요.');
         }
         receipt.filePath = getBody.filePath.join(',');
+        modified = true;
       }
       if (getBody.requestNote !== undefined) {
         receipt.requestNote = getBody.requestNote ?? null;
+        modified = true;
+      }
+
+      if (modified) {
+        receipt.registerAt = new Date();
       }
     }
 
