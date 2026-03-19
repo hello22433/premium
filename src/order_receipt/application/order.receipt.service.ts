@@ -76,7 +76,7 @@ export class OrderReceiptService {
 
     const receipt = await this.orderReceiptRepository.findOne({
       where: { id },
-      relations: ['user', 'processedUser'],
+      relations: ['user', 'user.company', 'processedUser'],
     });
 
     if (!receipt) {
@@ -87,6 +87,7 @@ export class OrderReceiptService {
       id: receipt.id,
       userId: receipt.userId,
       userName: receipt.user.personName,
+      userCompanyName: receipt.user.company?.businessName ?? null,
       title: receipt.title,
       status: receipt.status,
       filePathList: parseFilePathList(receipt.filePath),
@@ -194,6 +195,14 @@ export class OrderReceiptService {
     // 운영관리자 이상: confirmNote 수정 가능 (상태 무관)
     if (isAdmin && getBody.confirmNote !== undefined) {
       receipt.confirmNote = getBody.confirmNote;
+    }
+
+    // 운영관리자 이상: rejectReason 수정 가능 (반려 상태만)
+    if (isAdmin && getBody.rejectReason !== undefined) {
+      if (receipt.status !== OrderReceiptStatus.REJECTED) {
+        throw new BadRequestException('반려 상태인 건만 반려사유를 수정할 수 있습니다.');
+      }
+      receipt.rejectReason = getBody.rejectReason;
     }
 
     await this.orderReceiptRepository.save(receipt);

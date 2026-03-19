@@ -92,6 +92,14 @@ export class OrderReceiptUpdateReqDto {
   @IsOptional()
   @IsString()
   confirmNote?: string;
+
+  @ApiPropertyOptional({
+    description: '반려 사유 수정 (운영관리자 이상, 반려 상태)',
+  })
+  // =================================
+  @IsOptional()
+  @IsString()
+  rejectReason?: string;
 }
 
 export class OrderReceiptChangeStatusReqDto {

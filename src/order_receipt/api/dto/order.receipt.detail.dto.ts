@@ -11,6 +11,9 @@ export class OrderReceiptDetailDto {
   @ApiProperty({ description: '등록자명' })
   userName: string;
 
+  @ApiProperty({ description: '등록자 고객사명', nullable: true })
+  userCompanyName: string | null;
+
   @ApiProperty({ description: '제목' })
   title: string;
 
