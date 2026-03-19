@@ -10,6 +10,7 @@ import { SmsModule } from '../sms/sms.module';
 import { EmailSendHistoryEntity } from '../entity/email.send.history.entity';
 import { ProductChoiceMappingEntity } from '../entity/product.choice.mapping.entity';
 import { PartnerCompanyExternModule } from '../partner_company_extern/partner.company.extern.module';
+import { DeliveryModule } from '../delivery/delivery.module';
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { PartnerCompanyExternModule } from '../partner_company_extern/partner.co
     TypeOrmModule.forFeature([EmailSendHistoryEntity, OrderDeliveryEntity, TestOrderDeliveryEntity, OrderEntity, ProductChoiceMappingEntity]),
     SmsModule,
     PartnerCompanyExternModule,
+    DeliveryModule,
   ],
   controllers: [OrderReceiveController],
   providers: [OrderReceiveService],
