@@ -18,7 +18,6 @@ import { EmailSendHistoryEntity } from '../../entity/email.send.history.entity';
 import { OrderSendEncryptKey } from '../interface/order.send.encrypt.key';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 import { IOrderSendMethod } from '../../order/interface/order.send.method';
-import { OrderReceiveSmsTemplate } from '../domain/order.receive.sms.template';
 import { ISmsSend } from '../../sms/interface/sms.send';
 import { defaultFromPhoneNumber } from '../../const';
 import { OrderDeliveryEmailCouponStatus } from '../../delivery/interface/order.delivery.email.coupon.status';
@@ -27,8 +26,12 @@ import { ProductChoiceMappingEntity } from '../../entity/product.choice.mapping.
 import { IProductType } from '../../product/interface/product.type';
 import { OrderReceiveChoiceDto } from '../api/dto/order.receive.choice.dto';
 import { DeliveryCreateCouponImage } from '../../delivery/infra/delivery.create.coupon.image';
-import { OrderReceiveChoiceSmsTemplate } from '../domain/order.receive.choice.sms.template';
 import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
+import { DeliveryAlimTalk } from '../../delivery/interface/delivery.alim.talk';
+import { AlimTalkTemplate } from '../../delivery/domain/alim.talk.template';
+import { smsCouponInfoTemplate } from '../../delivery/domain/sms.coupon.info.template';
+import { smsSsgTemplate } from '../../delivery/domain/sms.ssg.template';
+import { IOrderType } from '../../order/interface/order.type';
 import { format } from 'date-fns';
 import { normalizeLineBreaks } from '../../delivery/domain/email.delivery.template';
 import { DateFormatStr } from '../../common/domain/date.format.str';
@@ -56,6 +59,8 @@ export class OrderReceiveService {
     private productChoiceMappingRepository: Repository<ProductChoiceMappingEntity>,
     @Inject('ISmsSend')
     private smsSend: ISmsSend,
+    @Inject('DeliveryAlimTalk')
+    private deliveryAlimTalk: DeliveryAlimTalk,
     private partnerCompanyExternService: PartnerCompanyExternService,
   ) {}
 
@@ -93,7 +98,7 @@ export class OrderReceiveService {
     }
 
     // 이메일 경로: 상품 선택만 저장, PIN 발급은 sendToMMS()에서 전화번호 입력 후 처리
-    // 알림톡/SMS 경로: 기존대로 즉시 PIN 발급
+    // 알림톡/MMS 경로: 기존대로 즉시 PIN 발급
     if (!isEmailPath) {
       // 선택된 상품의 협력사 정보로 쿠폰 발급을 위해 임시로 product 교체
       const originalProduct = orderDelivery.orderProductMapping.product;
@@ -564,6 +569,10 @@ export class OrderReceiveService {
       .innerJoinAndSelect('orderProductMapping.product', 'product')
       .innerJoinAndSelect('product.brand', 'brand')
       .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('user.company', 'userCompany')
+      .leftJoinAndSelect('order.clientUser', 'clientUser')
+      .leftJoinAndSelect('clientUser.company', 'clientCompany')
       .where('orderDelivery.id = :id', { id: obj.orderDeliveryId })
       .getOne();
     if (!orderDelivery) {
@@ -653,26 +662,62 @@ export class OrderReceiveService {
       filePathList.push(orderDelivery.imagePath);
     }
 
-    const text =
-      orderDelivery.orderProductMapping.product.type !== IProductType.CHOICE
-        ? OrderReceiveSmsTemplate(orderDelivery)
-        : OrderReceiveChoiceSmsTemplate(orderDelivery);
-
     let status = IOrderDeliveryStatus.COMPLETE;
     let emailCouponStatus = OrderDeliveryEmailCouponStatus.SEND;
+
     try {
-      await this.smsSend.send({
-        msgType: 'M',
+      // 1차: 알림톡 발송 시도 (기존 등록 템플릿 사용)
+      const alimTalkText = AlimTalkTemplate(orderDelivery);
+      const { report } = await this.deliveryAlimTalk.send({
         to: getBody.phoneNumber,
-        from: defaultFromPhoneNumber,
-        subject: title,
-        text: text,
-        filePath: filePathList,
+        text: alimTalkText,
+        encryptKey: getBody.sendEncryptKey,
       });
-    } catch (e) {
-      status = IOrderDeliveryStatus.FAIL;
-      // 핀은 발급됐지만 문자 발송 실패
-      emailCouponStatus = OrderDeliveryEmailCouponStatus.PIN_ISSUED;
+
+      if (report.code !== 'A000') {
+        throw new Error('AlimTalk Send Error');
+      }
+    } catch (alimTalkError) {
+      // 2차: 알림톡 실패 시 MMS 폴백 (배치 문자 발송 패턴과 동일)
+      let mmsText = orderDelivery.orderProductMapping.sendContent ?? '';
+
+      if (orderDelivery.orderProductMapping.product.memo
+          && orderDelivery.orderProductMapping.order.type !== IOrderType.SSG) {
+        mmsText += `\n\n${orderDelivery.orderProductMapping.product.memo}`;
+      }
+
+      const sendTailText = orderDelivery.orderProductMapping.sendTailText;
+      if (sendTailText) {
+        mmsText += `\n\n${sendTailText}`;
+      }
+
+      mmsText = applyReplaceCharacters(mmsText, orderDelivery);
+
+      const orderType = orderDelivery.orderProductMapping.order.type;
+      const productType = orderDelivery.orderProductMapping.product.type;
+
+      if (orderType === IOrderType.SSG) {
+        mmsText += smsSsgTemplate(orderDelivery);
+      }
+
+      if (orderType !== IOrderType.SSG && productType !== IProductType.CHOICE && orderDelivery.barCode) {
+        mmsText = smsCouponInfoTemplate(orderDelivery) + '\n\n' + mmsText;
+      }
+
+      try {
+        await this.smsSend.send({
+          msgType: 'M',
+          to: getBody.phoneNumber,
+          from: defaultFromPhoneNumber,
+          subject: title,
+          text: mmsText,
+          filePath: filePathList,
+        });
+      } catch (mmsError) {
+        // 알림톡, MMS 모두 실패
+        status = IOrderDeliveryStatus.FAIL;
+        emailCouponStatus = OrderDeliveryEmailCouponStatus.PIN_ISSUED;
+      }
     }
 
     await this.orderDeliveryRepository.update(orderDelivery.id, {
@@ -696,6 +741,7 @@ export class OrderReceiveService {
       .innerJoinAndSelect('orderProductMapping.order', 'order')
       .innerJoinAndSelect('orderProductMapping.product', 'product')
       .innerJoinAndSelect('product.brand', 'brand')
+      .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .where('testOrderDelivery.id = :id', { id: obj.orderDeliveryId })
       .getOne();
 
@@ -730,8 +776,17 @@ export class OrderReceiveService {
     const title = testOrderDelivery.orderProductMapping.sendTitle ?? '';
     const filePathList: string[] = [path];
 
-    // 테스트용 SMS 템플릿 생성
-    const text = `[테스트 발송]\n상품명: ${product.name}\n바코드: ${testBarcode}\n유효기간: ${expireDate || '없음'}`;
+    // 테스트용 MMS 텍스트 생성 (sendContent 기반, 배치 문자 발송 패턴과 동일)
+    let text = testOrderDelivery.orderProductMapping.sendContent ?? '';
+    if (product.memo) {
+      text += `\n\n${product.memo}`;
+    }
+    const sendTailText = testOrderDelivery.orderProductMapping.sendTailText;
+    if (sendTailText) {
+      text += `\n\n${sendTailText}`;
+    }
+    text = applyReplaceCharacters(text, testOrderDelivery);
+    text = `[테스트 발송]\n▷상품명: ${product.name}\n▷쿠폰번호: ${testBarcode}\n▷유효기간: ${expireDate || '없음'}\n\n${text}`;
 
     try {
       await this.smsSend.send({
