@@ -1707,7 +1707,7 @@ export class OrderService {
   private async validateSendMethods(
     clientUserId: number | null,
     currentUserId: number,
-    orderProductList: { sendMethod?: string }[],
+    orderProductList: { sendMethod?: string | null }[],
   ): Promise<void> {
     const targetUserId = clientUserId ?? currentUserId;
     const userEntity = await this.userRepository.findOne({ where: { id: targetUserId } });
