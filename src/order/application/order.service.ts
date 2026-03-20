@@ -118,6 +118,8 @@ import { CompanyType, ENMAD_BUSINESS_NUMBER } from '../../common/domain/company.
 import { OrderDeliveryCompleteReportEmailReqDto } from '../api/order.req.dto';
 import { EmailSendHistoryEntity } from '../../entity/email.send.history.entity';
 import { EmailType } from '../../mail/domain/email.type';
+import { OrderManualEntryEntity } from '../../entity/order.manual.entry.entity';
+import { ManualEntryItemDto, ManualEntryViewDto } from '../api/dto/order.manual.entry.dto';
 
 dayjs.extend(utc);
 
@@ -165,7 +167,25 @@ export class OrderService {
     private mailSendSmtp: MailSendSmtp,
     @InjectRepository(EmailSendHistoryEntity)
     private emailSendHistoryRepository: Repository<EmailSendHistoryEntity>,
+    @InjectRepository(OrderManualEntryEntity)
+    private orderManualEntryRepository: Repository<OrderManualEntryEntity>,
   ) {}
+
+  private buildManualEntries(orderId: number, list: ManualEntryItemDto[]): OrderManualEntryEntity[] {
+    return list.map((entry, index) => {
+      const entity = new OrderManualEntryEntity();
+      entity.orderId = orderId;
+      entity.rowIndex = index;
+      entity.phoneNumber = this.cryptoCipher.encryptDeliveryTarget(
+        PhoneUtil.normalizeDeliveryTarget(entry.phoneNumber),
+      );
+      entity.sendAmount = entry.sendAmount;
+      entity.replaceCharacter1 = entry.replaceCharacter1 ?? null;
+      entity.replaceCharacter2 = entry.replaceCharacter2 ?? null;
+      entity.replaceCharacter3 = entry.replaceCharacter3 ?? null;
+      return entity;
+    });
+  }
 
   async getList(user: ILoginUserInfo, getQuery: OrderGetListReqDto): Promise<OrderGetListResDto> {
     const { section, type, status, startAt, endAt, searchType, searchKeyword, page, take, sendingType } = getQuery;
@@ -1855,6 +1875,12 @@ export class OrderService {
 
     await this.orderDeliveryRepository.insert(orderDeliveryCreateList);
 
+    // 수기등록 원본 데이터 저장
+    if (getBody.manualEntryList?.length) {
+      const manualEntries = this.buildManualEntries(orderId, getBody.manualEntryList);
+      await this.orderManualEntryRepository.insert(manualEntries);
+    }
+
     return { id: orderId };
   }
 
@@ -1955,6 +1981,8 @@ export class OrderService {
     const deleteOrderProductIdList = deleteOrderProductMappingList.map((orderProduct) => orderProduct.id);
     await this.orderProductMappingRepository.delete({ id: In(deleteOrderProductIdList) });
     await this.orderDeliveryRepository.delete({ orderProductMappingId: In(deleteOrderProductIdList) });
+    // 수기등록 원본 데이터 삭제
+    await this.orderManualEntryRepository.delete({ orderId });
 
     // 3. 신규 order delivery, product 생성
     const orderDeliveryCreateList: OrderDeliveryEntity[] = [];
@@ -2013,6 +2041,12 @@ export class OrderService {
 
     await this.orderDeliveryRepository.insert(orderDeliveryCreateList);
 
+    // 수기등록 원본 데이터 재생성
+    if (getBody.manualEntryList?.length) {
+      const manualEntries = this.buildManualEntries(orderId, getBody.manualEntryList);
+      await this.orderManualEntryRepository.insert(manualEntries);
+    }
+
     return;
   }
 
@@ -2055,7 +2089,36 @@ export class OrderService {
       });
     }
 
+    // 수기등록 원본 데이터 삭제
+    await this.orderManualEntryRepository.delete({ orderId: id });
+
     return;
+  }
+
+  async getManualEntries(user: ILoginUserInfo, orderId: number): Promise<ManualEntryViewDto[]> {
+    const order = await this.orderRepository.findOne({
+      where: { id: orderId },
+      select: ['id', 'userId'],
+    });
+    if (!order) {
+      throw new BadRequestException('존재하지 않는 주문입니다.');
+    }
+    if (user.authority !== IUserAuthority.SUPER_ADMIN && order.userId !== user.id) {
+      throw new ForbiddenException('해당 주문에 대한 권한이 없습니다.');
+    }
+
+    const entries = await this.orderManualEntryRepository.find({
+      where: { orderId },
+      order: { rowIndex: 'ASC' },
+    });
+    return entries.map((entry) => ({
+      rowIndex: entry.rowIndex,
+      phoneNumber: this.cryptoCipher.safeDecryptDeliveryTarget(entry.phoneNumber) ?? '',
+      sendAmount: entry.sendAmount,
+      replaceCharacter1: entry.replaceCharacter1,
+      replaceCharacter2: entry.replaceCharacter2,
+      replaceCharacter3: entry.replaceCharacter3,
+    }));
   }
 
   @Transactional()

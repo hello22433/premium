@@ -16,6 +16,7 @@ import { UserViewScopeEntity } from '../entity/user.view.scope.entity';
 import { SsgEventEntity } from '../entity/ssg.event.entity';
 import { SsgEventAmountHistoryEntity } from '../entity/ssg.event.amount.history.entity';
 import { EmailSendHistoryEntity } from '../entity/email.send.history.entity';
+import { OrderManualEntryEntity } from '../entity/order.manual.entry.entity';
 import { UserManagementModule } from '../user_management/user.management.module';
 import { SsgEventModule } from '../ssg_event/ssg.event.module';
 import { DeliveryModule } from '../delivery/delivery.module';
@@ -38,6 +39,7 @@ import { MailModule } from '../mail/mail.module';
       SsgEventEntity,
       SsgEventAmountHistoryEntity,
       EmailSendHistoryEntity,
+      OrderManualEntryEntity,
     ]),
     PartnerCompanyExternModule,
     forwardRef(() => UserManagementModule),
