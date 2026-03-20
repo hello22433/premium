@@ -151,15 +151,24 @@ export class OrderReceiveService {
       throw new BadRequestException('존재하지 않는 주문 정보입니다.');
     }
 
-    // deliveryTarget 복호화 후 비교
-    let decryptedDeliveryTarget = orderDelivery.deliveryTarget;
+    // 이메일 발송 건: emailReceiverPhone과 비교, 일반 발송 건: deliveryTarget과 비교
+    const isEmailDelivery = orderDelivery.deliveryMethod === IOrderSendMethod.EMAIL;
+    const encryptedPhone = isEmailDelivery
+      ? orderDelivery.emailReceiverPhone
+      : orderDelivery.deliveryTarget;
+
+    if (!encryptedPhone) {
+      throw new BadRequestException('전화번호 정보가 없습니다.');
+    }
+
+    let decryptedPhone: string;
     try {
-      decryptedDeliveryTarget = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.deliveryTarget);
+      decryptedPhone = this.cryptoCipher.decryptDeliveryTarget(encryptedPhone);
     } catch (error) {
       throw new BadRequestException('전화번호 복호화에 실패했습니다.');
     }
 
-    if (decryptedDeliveryTarget !== getQuery.phoneNumber) {
+    if (decryptedPhone !== getQuery.phoneNumber) {
       throw new BadRequestException('전화번호가 일치하지 않습니다.');
     }
 
