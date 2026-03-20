@@ -1,7 +1,8 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsArray, IsNumber, IsOptional, IsString } from 'class-validator';
+import { IsArray, IsNumber, IsOptional, IsString, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 import { OrderProductCreateTempDto } from './order.product.create.temp.dto';
+import { ManualEntryItemDto } from './order.manual.entry.dto';
 
 export class OrderCreateDto {
   @ApiPropertyOptional({
@@ -41,4 +42,14 @@ export class OrderCreateDto {
   @IsArray() // 배열임을 검증
   @Type(() => OrderProductCreateTempDto)
   orderProductList: OrderProductCreateTempDto[];
+
+  @ApiPropertyOptional({
+    description: '수기등록 원본 데이터 목록',
+  })
+  // =================================
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ManualEntryItemDto)
+  manualEntryList?: ManualEntryItemDto[];
 }

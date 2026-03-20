@@ -387,6 +387,19 @@ export class OrderController {
   }
 
   @ApiOperation({
+    summary: '수기등록 원본 데이터 조회 API',
+    description: '주문의 수기등록 원본 데이터를 읽기전용으로 조회합니다. 주문 소유자 또는 관리자만 조회 가능.',
+  })
+  @ApiOkResponse({
+    description: '수기등록 원본 데이터 목록',
+  })
+  // ====================================================
+  @Get('/order/:id/manual-entries')
+  getManualEntries(@User() user: ILoginUserInfo, @Param() getParam: OrderGetDetailReqParamDto) {
+    return this.orderService.getManualEntries(user, getParam.id);
+  }
+
+  @ApiOperation({
     summary: '주문 완료(발송 요청) API',
     description: '임시 저장된 주문 중에 주문 완료으로 변환합니다. ',
   })
