@@ -22,6 +22,47 @@ export class PartnerCompanyBatchController {
     return { message: 'checkGalaxiaDaily 실행 완료' };
   }
 
+  @ApiOperation({ summary: '[임시] 갤럭시아 일대사 기간 일괄 실행 (startDay~endDay)' })
+  @Post('batch/galaxia-daily-range')
+  async triggerGalaxiaDailyRange(
+    @Query('startDay') startDay: string,
+    @Query('endDay') endDay: string,
+  ) {
+    if (!startDay || !endDay || startDay.length !== 8 || endDay.length !== 8) {
+      return { message: 'startDay, endDay를 YYYYMMDD 형식으로 입력해주세요.' };
+    }
+    if (startDay > endDay) {
+      return { message: 'startDay가 endDay보다 클 수 없습니다.' };
+    }
+
+    this.logger.log(`[수동실행] checkGalaxiaDaily 기간 실행: ${startDay} ~ ${endDay}`);
+
+    const results: Array<{ day: string; status: string }> = [];
+    let current = startDay;
+
+    while (current <= endDay) {
+      try {
+        await this.partnerCompanyExternBatchService.checkGalaxiaDaily(current);
+        results.push({ day: current, status: 'OK' });
+      } catch (e) {
+        this.logger.error(`[수동실행] checkGalaxiaDaily 실패: ${current}`, e);
+        results.push({ day: current, status: 'FAIL' });
+      }
+
+      // 다음 날짜로 이동
+      const year = parseInt(current.substring(0, 4));
+      const month = parseInt(current.substring(4, 6)) - 1;
+      const day = parseInt(current.substring(6, 8));
+      const nextDate = new Date(year, month, day + 1);
+      current = nextDate.getFullYear().toString() +
+        (nextDate.getMonth() + 1).toString().padStart(2, '0') +
+        nextDate.getDate().toString().padStart(2, '0');
+    }
+
+    this.logger.log(`[수동실행] checkGalaxiaDaily 기간 실행 완료: ${results.length}일 처리`);
+    return { message: `${results.length}일 처리 완료`, results };
+  }
+
   @ApiOperation({ summary: '갤럭시아 백화점(dept) 사용내역 배치 수동 실행' })
   @Post('batch/galaxia-dept-usage')
   async triggerGalaxiaDeptUsage() {
