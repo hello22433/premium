@@ -14,4 +14,5 @@ export enum ActivityLogActionType {
   MAXIMUM_LIMIT_MODIFY = 'MAXIMUM_LIMIT_MODIFY', // 최대서비스한도(여신한도) 수정
   DELIVERY_COMPLETE_REPORT = 'DELIVERY_COMPLETE_REPORT', // 발송완료리포트 다운로드
   TRANSACTION_STATEMENT = 'TRANSACTION_STATEMENT', // 거래명세서 다운로드
+  DISCARD_RESTORE = 'DISCARD_RESTORE', // 폐기 복구 (선충전 잔액 / 여신)
 }

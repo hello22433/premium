@@ -57,4 +57,10 @@ export class SettleUserPerDetailViewDto {
     description: '확정 여부',
   })
   isSettleComplete: boolean;
+
+  @ApiProperty({
+    description: '폐기(할인가) - 해당 주문에서 폐기 복구된 총액',
+    nullable: true,
+  })
+  discardRestoreAmount: number | null;
 }

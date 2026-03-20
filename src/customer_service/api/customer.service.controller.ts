@@ -168,8 +168,8 @@ export class CustomerServiceController {
   })
   // ===============================================
   @Post('/customer-service/pin-discard')
-  pinDiscard(@Body() getBody: CustomerServiceDiscardReqDto) {
-    return this.customerServiceService.pinDiscard(getBody);
+  pinDiscard(@User() user: ILoginUserInfo, @Body() getBody: CustomerServiceDiscardReqDto) {
+    return this.customerServiceService.pinDiscard(user, getBody);
   }
 
   @ApiOperation({ description: '개별 쿠폰 상태 실시간 갱신 API' })

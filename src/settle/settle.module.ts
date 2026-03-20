@@ -16,6 +16,7 @@ import { OrderDeliveryEntity } from '../entity/order.delivery.entity';
 import { SettleSchedule } from './settle.schedule';
 import { ActivityLogModule } from '../activity_log/activity.log.module';
 import { GalaxiaBarcodeLogEntity } from '../entity/galaxia.barcode.log.entity';
+import { ActivityLogEntity } from '../entity/activity.log.entity';
 
 @Module({
   imports: [
@@ -32,6 +33,7 @@ import { GalaxiaBarcodeLogEntity } from '../entity/galaxia.barcode.log.entity';
       UserDiscountEntity,
       UserEntity,
       GalaxiaBarcodeLogEntity,
+      ActivityLogEntity,
     ]),
   ],
   providers: [SettleService, SettleSchedule],
