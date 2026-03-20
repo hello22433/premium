@@ -46,7 +46,7 @@ import { smsSsgTemplate } from '../domain/sms.ssg.template';
 import { DeliveryTrackingStatus } from '../domain/delivery.tracking.status';
 import { OrderEmailSendType } from '../../order/domain/order.email.send.type';
 import { EmailType } from '../../mail/domain/email.type';
-import { EmailCertifyExpireDay } from '../../const';
+import { EmailCertifyExpireDay, defaultFromPhoneNumber } from '../../const';
 
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { OrderEncryptKey } from '../../order_receive/interface/order.encrypt.key';
@@ -977,7 +977,7 @@ export class DeliveryBatchService {
       filePathList.push(orderDelivery.imagePath);
     }
 
-    const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber!;
+    const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber || defaultFromPhoneNumber;
     await this.smsSend.send({
       msgType: 'M',
       to: phoneNumber,
