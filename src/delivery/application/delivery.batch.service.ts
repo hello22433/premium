@@ -28,6 +28,8 @@ import { ISmsSend } from '../../sms/interface/sms.send';
 import { IOrderSendMethod } from '../../order/interface/order.send.method';
 import { IOrderStatus } from '../../order/interface/order.status';
 import { IOrderType } from '../../order/interface/order.type';
+import { IUserSettleCondition } from '../../user/interface/user.settle.condition';
+import { SettleUserOrderDetailEnum } from '../../settle/interface/settle.user.order.detail';
 import { OrderFeeCalculator, applyCardSurcharge } from '../../order/domain/order.fee.calculator';
 import { IOrderRealProductStatus } from '../../order_real_product/interface/order.real.product.status';
 import { IFileStorage } from '../../file/interface/file.storage';
@@ -290,7 +292,45 @@ export class DeliveryBatchService {
       await this.orderRepository.update({ id: In(orderIdList) }, { status: IOrderStatus.DELIVERY_COMPLETE });
     }
 
+    // 선정산(PRE_PAYMENT) 고객사 주문 자동 정산완료 처리
+    try {
+      await this.autoSettlePrePaymentOrders(orderIdList);
+    } catch (error) {
+      this.logger.error(`[BATCH] Auto-settle pre-payment orders failed for orderIds=[${orderIdList}]: ${error}`);
+    }
+
     this.logger.log(`[BATCH] Completed. Total: ${uniqueDeliveryList.length}, Success: ${deliveryHistoryList.length}`);
+  }
+
+  /**
+   * 선정산(PRE_PAYMENT) 고객사 주문의 settleStatus를 자동으로 SETTLE_COMPLETE로 설정
+   * - 대행주문(clientUserId)인 경우 clientUser의 settleCondition 기준으로 판단
+   * - settleStatus만 변경, isSettleComplete/allSettleAmount는 변경하지 않음
+   */
+  private async autoSettlePrePaymentOrders(orderIdList: number[]): Promise<void> {
+    if (orderIdList.length === 0) return;
+
+    const orders = await this.orderRepository.find({
+      where: { id: In(orderIdList) },
+      relations: ['user', 'clientUser'],
+    });
+
+    // 과금 대상 user의 settleCondition이 PRE_PAYMENT인 주문 필터링
+    // 대행주문(clientUserId)인 경우 clientUser 기준으로 판단
+    const prePaymentOrderIds = orders
+      .filter((order) => {
+        const billingUser = order.clientUser ?? order.user;
+        return billingUser?.settleCondition === IUserSettleCondition.PRE_PAYMENT;
+      })
+      .map((o) => o.id);
+
+    if (prePaymentOrderIds.length > 0) {
+      await this.orderRepository.update(
+        { id: In(prePaymentOrderIds) },
+        { settleStatus: SettleUserOrderDetailEnum.SETTLE_COMPLETE },
+      );
+      this.logger.log(`[BATCH] Auto-settled ${prePaymentOrderIds.length} pre-payment orders`);
+    }
   }
 
   /**
