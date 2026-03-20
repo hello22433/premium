@@ -60,6 +60,7 @@ import { RequirementCommentEntity } from '../entity/requirement.comment.entity';
 import { RequirementAttachmentEntity } from '../entity/requirement.attachment.entity';
 import { OrderReceiptEntity } from '../entity/order.receipt.entity';
 import { ProductSharedListFileEntity } from '../entity/product.shared.list.file.entity';
+import { OrderManualEntryEntity } from '../entity/order.manual.entry.entity';
 
 @Module({
   imports: [
@@ -124,6 +125,7 @@ import { ProductSharedListFileEntity } from '../entity/product.shared.list.file.
           RequirementAttachmentEntity,
           OrderReceiptEntity,
           ProductSharedListFileEntity,
+          OrderManualEntryEntity,
         ],
         timezone: '+09:00',
         logger: configService.get('DATABASE_LOGGING') === 'true' ? new SqlLogger() : undefined,
