@@ -2167,6 +2167,21 @@ export class SettleService {
       throw new InternalServerErrorException('과금 대상 유저가 존재하지 않습니다.');
     }
 
+    // 선정산(PRE_PAYMENT): 토글 허용, 금액 로직 스킵
+    if (user.settleCondition === IUserSettleCondition.PRE_PAYMENT) {
+      const allowedForPrePayment = [
+        SettleUserOrderDetailEnum.SETTLE_COMPLETE,
+        SettleUserOrderDetailEnum.UNSETTLE_NORMAL,
+      ];
+      if (!allowedForPrePayment.includes(settleStatus)) {
+        throw new BadRequestException('선정산 주문에 허용되지 않는 정산 상태입니다.');
+      }
+      order.settleStatus = settleStatus;
+      await this.orderRepository.save(order);
+      return;
+    }
+
+    // 후정산(POST_PAYMENT): 기존 로직 그대로
     if (order.settleStatus === SettleUserOrderDetailEnum.SETTLE_COMPLETE) {
       throw new BadRequestException('이미 정산이 완료된 주문입니다.');
     }
