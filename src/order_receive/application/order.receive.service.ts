@@ -67,7 +67,7 @@ export class OrderReceiveService {
   async selectChoiceProduct(getBody: OrderReceiveSelectChoiceProductReqDto) {
     const orderDecrypt = this.cryptoCipher.decryptJson(getBody.encryptKey) as OrderEncryptKey & { emailSendHistoryId?: number };
 
-    const orderDeliveryId = orderDecrypt.id ? orderDecrypt.id : orderDecrypt.orderDeliveryId;
+    const orderDeliveryId = orderDecrypt.id ?? orderDecrypt.orderDeliveryId;
     const isEmailPath = !!orderDecrypt.emailSendHistoryId;
 
     const orderDelivery = await this.orderDeliveryRepository
@@ -133,6 +133,9 @@ export class OrderReceiveService {
       return this.alimTalkForTest(orderDecrypt, getQuery.phoneNumber);
     }
 
+    // 이메일 경로(OrderSendEncryptKey)에서는 id가 없고 orderDeliveryId만 있음
+    const orderDeliveryId = orderDecrypt.id ?? orderDecrypt.orderDeliveryId;
+
     const orderDelivery = await this.orderDeliveryRepository
       .createQueryBuilder('orderDelivery')
       .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
@@ -144,7 +147,7 @@ export class OrderReceiveService {
       .leftJoinAndSelect('user.company', 'userCompany')
       .leftJoinAndSelect('order.clientUser', 'clientUser')
       .leftJoinAndSelect('clientUser.company', 'clientCompany')
-      .where('orderDelivery.id = :id', { id: orderDecrypt.id })
+      .where('orderDelivery.id = :id', { id: orderDeliveryId })
       .getOne();
 
     if (!orderDelivery) {
@@ -265,6 +268,8 @@ export class OrderReceiveService {
     orderDecrypt: OrderEncryptKey,
     phoneNumber: string,
   ): Promise<OrderReceiveAlimTalkResDto> {
+    const orderDeliveryId = orderDecrypt.id ?? orderDecrypt.orderDeliveryId;
+
     const testOrderDelivery = await this.testOrderDeliveryRepository
       .createQueryBuilder('testOrderDelivery')
       .innerJoinAndSelect('testOrderDelivery.orderProductMapping', 'orderProductMapping')
@@ -276,7 +281,7 @@ export class OrderReceiveService {
       .leftJoinAndSelect('user.company', 'userCompany')
       .leftJoinAndSelect('order.clientUser', 'clientUser')
       .leftJoinAndSelect('clientUser.company', 'clientCompany')
-      .where('testOrderDelivery.id = :id', { id: orderDecrypt.id })
+      .where('testOrderDelivery.id = :id', { id: orderDeliveryId })
       .getOne();
 
     if (!testOrderDelivery) {
