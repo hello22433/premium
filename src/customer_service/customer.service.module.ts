@@ -12,6 +12,8 @@ import { OrderHistoryEntity } from 'src/entity/order.history.entity';
 import { GemteckMsgQueueEntity } from 'src/entity/gemtek/msg.queue.entity';
 import { SmsModule } from 'src/sms/sms.module';
 import { ActivityLogModule } from 'src/activity_log/activity.log.module';
+import { UserEntity } from 'src/entity/user.entity';
+import { UserCompanyEntity } from 'src/entity/user.company.entity';
 
 @Module({
   imports: [
@@ -22,6 +24,8 @@ import { ActivityLogModule } from 'src/activity_log/activity.log.module';
       OrderProductMappingEntity,
       OrderHistoryEntity,
       GemteckMsgQueueEntity,
+      UserEntity,
+      UserCompanyEntity,
     ]),
     PartnerCompanyExternModule,
     DeliveryModule,

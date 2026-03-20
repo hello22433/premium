@@ -98,7 +98,9 @@ import { SettleUserOrderDetailEnum } from '../interface/settle.user.order.detail
 import { UserSettlePeriodConditionEnum } from '../../user/interface/user.settle.period.condition.enum';
 import { IUserSettleCondition } from '../../user/interface/user.settle.condition';
 import { ActivityLogService } from '../../activity_log/application/activity.log.service';
+import { ActivityLogActionType } from '../../activity_log/interface/activity.log.action.type';
 import { ActivityLogResult } from '../../activity_log/interface/activity.log.result';
+import { ActivityLogEntity } from '../../entity/activity.log.entity';
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { GalaxiaBarcodeLogEntity } from '../../entity/galaxia.barcode.log.entity';
 import { SettleGalaxiaListViewDto } from '../api/dto/settle.galaxia.list.view.dto';
@@ -127,6 +129,8 @@ export class SettleService {
     private userRepository: Repository<UserEntity>,
     @InjectRepository(GalaxiaBarcodeLogEntity)
     private galaxiaBarcodeLogRepository: Repository<GalaxiaBarcodeLogEntity>,
+    @InjectRepository(ActivityLogEntity)
+    private activityLogRepository: Repository<ActivityLogEntity>,
     private activityLogService: ActivityLogService,
     private cryptoCipher: CryptoCipher,
   ) { }
@@ -2093,10 +2097,11 @@ export class SettleService {
 
     const orderList = await queryBuilder.getMany();
 
+    const orderIds = orderList.length > 0 ? orderList.map((o) => o.id) : [];
+
     // actualSendAt 별도 조회 (주문별 첫 번째 배송건의 actualSendAt)
     const actualSendAtMap = new Map<number, Date | null>();
-    if (orderList.length > 0) {
-      const orderIds = orderList.map((o) => o.id);
+    if (orderIds.length > 0) {
       const sendDates = await this.orderDeliveryRepository
         .createQueryBuilder('od')
         .select('opm.orderId', 'orderId')
@@ -2108,6 +2113,24 @@ export class SettleService {
 
       for (const row of sendDates) {
         actualSendAtMap.set(Number(row.orderId), row.actualSendAt ? new Date(row.actualSendAt) : null);
+      }
+    }
+
+    // 폐기 복구 금액 조회 (DISCARD_RESTORE ActivityLog에서 orderId별 합산)
+    const discardRestoreMap = new Map<number, number>();
+    if (orderIds.length > 0) {
+      const restoreLogs = await this.activityLogRepository
+        .createQueryBuilder('al')
+        .select("JSON_EXTRACT(al.requestParams, '$.orderId')", 'orderId')
+        .addSelect("SUM(JSON_EXTRACT(al.requestParams, '$.restoreAmount'))", 'totalRestore')
+        .where('al.actionType = :actionType', { actionType: ActivityLogActionType.DISCARD_RESTORE })
+        .andWhere("JSON_EXTRACT(al.requestParams, '$.orderId') IN (:...orderIds)", { orderIds })
+        .andWhere('al.deletedAt IS NULL')
+        .groupBy("JSON_EXTRACT(al.requestParams, '$.orderId')")
+        .getRawMany();
+
+      for (const row of restoreLogs) {
+        discardRestoreMap.set(Number(row.orderId), Number(row.totalRestore) || 0);
       }
     }
 
@@ -2136,6 +2159,7 @@ export class SettleService {
         isOrderCompleteReport: order.orderCompleteReportCount > 0,
         settleStatus: order.settleStatus,
         isSettleComplete: order.isSettleComplete,
+        discardRestoreAmount: discardRestoreMap.get(order.id) ?? null,
       };
     });
 

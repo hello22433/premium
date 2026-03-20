@@ -18,7 +18,7 @@ import {
 } from '../api/customer.service.req.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { OrderEntity } from '../../entity/order.entity';
-import { IsNull, Repository } from 'typeorm';
+import { DataSource, IsNull, QueryRunner, Repository } from 'typeorm';
 import { CustomerServiceGetListResDto } from '../api/customer.service.res.dto';
 import { DateFormatStr } from '../../common/domain/date.format.str';
 import { format } from 'date-fns';
@@ -47,6 +47,10 @@ import { OrderEncryptKey } from '../../order_receive/interface/order.encrypt.key
 import { ActivityLogService } from 'src/activity_log/application/activity.log.service';
 import { ActivityLogActionType } from 'src/activity_log/interface/activity.log.action.type';
 import { ActivityLogResult } from 'src/activity_log/interface/activity.log.result';
+import { UserEntity } from 'src/entity/user.entity';
+import { UserCompanyEntity } from 'src/entity/user.company.entity';
+import { OrderFeeCalculator, applyCardSurcharge } from '../../order/domain/order.fee.calculator';
+import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 import { Response } from 'express';
 import * as ExcelJS from 'exceljs';
 
@@ -78,7 +82,101 @@ export class CustomerServiceService {
     private readonly cryptoCipher: CryptoCipher,
     private readonly activityLogService: ActivityLogService,
     private readonly configService: ConfigService,
+    @InjectRepository(UserEntity)
+    private readonly userRepository: Repository<UserEntity>,
+    @InjectRepository(UserCompanyEntity)
+    private readonly userCompanyRepository: Repository<UserCompanyEntity>,
+    private readonly dataSource: DataSource,
   ) {}
+
+  /**
+   * 폐기 시 정산금액(할인가) 기준으로 예치금/여신 복구
+   * - FAIL/FAIL_SMS: 이미 refundForFail()로 환불됨 → 스킵
+   * - isSettleBalance=true: balance 복구 (company/account mode 분기)
+   * - isSettleBalance=false: allSettleAmount 차감 (여신 복구)
+   */
+  private async restoreBalanceOnDiscard(
+    orderDelivery: OrderDeliveryEntity,
+    operatorUser: ILoginUserInfo,
+    queryRunner: QueryRunner,
+  ): Promise<void> {
+    const mapping = orderDelivery.orderProductMapping;
+    const order = mapping.order;
+
+    // 이중 복구 방지: FAIL/FAIL_SMS는 refundForFail()에서 이미 환불됨
+    if (
+      orderDelivery.status === IOrderDeliveryStatus.FAIL ||
+      orderDelivery.status === IOrderDeliveryStatus.FAIL_SMS
+    ) {
+      return;
+    }
+
+    // 정산금액 계산 (calculateSettlementPrice 패턴 - delivery.batch.service.ts:182-188)
+    let price = mapping.product.price;
+    if (mapping.fee !== null && mapping.priceAdjustment) {
+      price = OrderFeeCalculator({ fee: mapping.fee, priceAdjustment: mapping.priceAdjustment, price });
+    }
+    const restoreAmount = applyCardSurcharge(price, order.cardSurchargeApplied);
+
+    // 과금 대상 사용자 (대행주문 시 clientUserId)
+    const billingUserId = order.clientUserId ?? order.userId;
+    const user = await queryRunner.manager.findOne(UserEntity, {
+      where: { id: billingUserId },
+      relations: ['company'],
+    });
+    if (!user) return;
+
+    let beforeBalance: number;
+    let afterBalance: number;
+
+    if (order.isSettleBalance) {
+      // 선정산 or 정산완료 → balance 복구
+      const company = user.company;
+      if (company?.balanceManagementType === 'COMPANY') {
+        beforeBalance = company.balance;
+        company.balance += restoreAmount;
+        afterBalance = company.balance;
+        await queryRunner.manager.save(UserCompanyEntity, company);
+      } else {
+        beforeBalance = user.balance;
+        user.balance += restoreAmount;
+        afterBalance = user.balance;
+        await queryRunner.manager.save(UserEntity, user);
+      }
+    } else {
+      // 후정산 미정산 → allSettleAmount 차감 (여신 복구)
+      beforeBalance = user.allSettleAmount;
+      user.allSettleAmount -= restoreAmount;
+      afterBalance = user.allSettleAmount;
+      await queryRunner.manager.save(UserEntity, user);
+    }
+
+    // ActivityLog 기록 (DISCARD_RESTORE)
+    await this.activityLogService.createLog({
+      userId: operatorUser.id,
+      userEmail: operatorUser.email,
+      method: 'POST',
+      requestUrl: '/customer-service/discard-restore',
+      actionType: ActivityLogActionType.DISCARD_RESTORE,
+      ipAddress: '',
+      statusCode: 200,
+      result: ActivityLogResult.SUCCESS,
+      responseTime: 0,
+      requestParams: {
+        targetUserId: billingUserId,
+        targetUserEmail: user.email,
+        targetBusinessName: user.company?.businessName ?? '',
+        targetCompanyId: user.company?.id ?? null,
+        orderDeliveryId: orderDelivery.id,
+        orderId: order.id,
+        restoreAmount,
+        isSettleBalance: order.isSettleBalance,
+        beforeBalance,
+        afterBalance,
+        memo: `폐기복구/ ${restoreAmount}원/ orderDelivery:${orderDelivery.id}`,
+      },
+    });
+  }
 
   async getList(getQuery: CustomerServiceGetListReqDto): Promise<CustomerServiceGetListResDto> {
     const {
@@ -499,13 +597,14 @@ export class CustomerServiceService {
     return;
   }
 
-  async pinDiscard(getBody: CustomerServiceDiscardReqDto) {
+  async pinDiscard(user: ILoginUserInfo, getBody: CustomerServiceDiscardReqDto) {
     const { orderDeliveryId, couponStatus } = getBody;
 
     const orderDelivery = await this.orderDeliveryRepository
       .createQueryBuilder('orderDelivery')
       .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
       .innerJoinAndSelect('orderProductMapping.product', 'product')
+      .innerJoinAndSelect('orderProductMapping.order', 'order')
       .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .innerJoinAndSelect('product.brand', 'brand')
       .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
@@ -523,6 +622,7 @@ export class CustomerServiceService {
       orderDelivery.orderProductMapping?.product.partnerCompany?.type;
     const beforeChange = orderDelivery.couponStatus;
 
+    // 외부 API 폐기 처리 (트랜잭션 밖에서 실행)
     switch (partnerType) {
       case 'GS_M_BIZ':
       case 'GIFT_SHOW':
@@ -540,10 +640,7 @@ export class CustomerServiceService {
         ) {
           const result = await this.partnerCompanyExternService.cancel(orderDelivery);
 
-          if (result.message === '폐기 완료') {
-            orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
-            await this.orderDeliveryRepository.save(orderDelivery);
-          } else {
+          if (result.message !== '폐기 완료') {
             throw new InternalServerErrorException(result.message);
           }
         } else {
@@ -557,20 +654,47 @@ export class CustomerServiceService {
         }
 
         if (
-          couponStatus === OrderDeliveryCouponStatus.CANCEL ||
-          couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL
+          couponStatus !== OrderDeliveryCouponStatus.CANCEL &&
+          couponStatus !== OrderDeliveryCouponStatus.REFUND_CANCEL
         ) {
-          orderDelivery.couponStatus = couponStatus;
-          await this.orderDeliveryRepository.save(orderDelivery);
-        } else {
           throw new BadRequestException('변경을 할 수 없는 핀상태입니다.');
         }
         break;
       }
-      default: {
-        orderDelivery.couponStatus = couponStatus;
-        await this.orderDeliveryRepository.save(orderDelivery);
-      }
+      default:
+        break;
+    }
+
+    // 트랜잭션: couponStatus 저장 + 복구 + order_history
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+    try {
+      orderDelivery.couponStatus = couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL
+        ? OrderDeliveryCouponStatus.REFUND_CANCEL
+        : OrderDeliveryCouponStatus.CANCEL;
+      await queryRunner.manager.save(OrderDeliveryEntity, orderDelivery);
+
+      // 예치금/여신 복구
+      await this.restoreBalanceOnDiscard(orderDelivery, user, queryRunner);
+
+      // order_history 저장 (기존 pinDiscard에 없던 것 추가)
+      const history = this.orderHistoryRepository.create({
+        orderDeliveryId: orderDelivery.id,
+        userId: user.id,
+        type: '폐기',
+        content: `핀폐기 처리`,
+        beforeChange: beforeChange,
+        afterChange: orderDelivery.couponStatus,
+      });
+      await queryRunner.manager.save(OrderHistoryEntity, history);
+
+      await queryRunner.commitTransaction();
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      throw error;
+    } finally {
+      await queryRunner.release();
     }
   }
 
@@ -652,6 +776,7 @@ export class CustomerServiceService {
       type: '핀상태 변경',
       content: '핀상태 변경',
       userId: user.id,
+      user,
       orderDelivery,
     };
   }
@@ -1040,7 +1165,7 @@ export class CustomerServiceService {
         pinDiscardDto.orderDeliveryId = map.orderDeliveryId;
         pinDiscardDto.couponStatus = map.afterChange;
 
-        await this.pinDiscard(pinDiscardDto);
+        await this.pinDiscard(map.user, pinDiscardDto);
 
         afterChange = OrderDeliveryCouponStatus.CANCEL;
         break;
@@ -1050,7 +1175,7 @@ export class CustomerServiceService {
         pinDiscardDto.orderDeliveryId = map.orderDeliveryId;
         pinDiscardDto.couponStatus = map.afterChange;
 
-        await this.pinDiscard(pinDiscardDto);
+        await this.pinDiscard(map.user, pinDiscardDto);
 
         afterChange = OrderDeliveryCouponStatus.REFUND_CANCEL;
         break;
@@ -1231,98 +1356,116 @@ export class CustomerServiceService {
     const success: number[] = [];
     const failed: { id: number; reason: string }[] = [];
 
-    for (const orderDeliveryId of orderDeliveryIds) {
-      try {
-        // 1. orderDelivery 조회
-        const orderDelivery = await this.orderDeliveryRepository.findOne({
-          where: {
-            id: orderDeliveryId,
-            deletedAt: IsNull(),
-          },
-          relations: [
-            'orderProductMapping',
-            'orderProductMapping.product',
-            'orderProductMapping.product.partnerCompany',
-            'choiceSelectProduct',
-            'choiceSelectProduct.partnerCompany',
-          ],
-        });
+    // QueryRunner를 루프 밖에서 생성하여 커넥션 풀 효율화
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
 
-        if (!orderDelivery) {
-          failed.push({ id: orderDeliveryId, reason: '존재하지 않는 발송 정보입니다.' });
-          continue;
-        }
+    try {
+      for (const orderDeliveryId of orderDeliveryIds) {
+        try {
+          // 1. orderDelivery 조회 (order relation 추가 - 복구 로직에 필요)
+          const orderDelivery = await this.orderDeliveryRepository.findOne({
+            where: {
+              id: orderDeliveryId,
+              deletedAt: IsNull(),
+            },
+            relations: [
+              'orderProductMapping',
+              'orderProductMapping.product',
+              'orderProductMapping.product.partnerCompany',
+              'orderProductMapping.order',
+              'choiceSelectProduct',
+              'choiceSelectProduct.partnerCompany',
+            ],
+          });
 
-        // 2. 현재 핀 상태 확인 - 이미 폐기된 경우 스킵
-        if (
-          orderDelivery.couponStatus === OrderDeliveryCouponStatus.CANCEL ||
-          orderDelivery.couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL
-        ) {
-          failed.push({ id: orderDeliveryId, reason: '이미 폐기된 상태입니다.' });
-          continue;
-        }
+          if (!orderDelivery) {
+            failed.push({ id: orderDeliveryId, reason: '존재하지 않는 발송 정보입니다.' });
+            continue;
+          }
 
-        // 3. 교환 또는 기간만료 상태인 경우 폐기 불가
-        if (
-          orderDelivery.couponStatus === OrderDeliveryCouponStatus.USED ||
-          orderDelivery.couponStatus === OrderDeliveryCouponStatus.EXPIRED
-        ) {
-          failed.push({ id: orderDeliveryId, reason: '교환 또는 기간만료 상태는 폐기할 수 없습니다.' });
-          continue;
-        }
+          // 2. 현재 핀 상태 확인 - 이미 폐기된 경우 스킵
+          if (
+            orderDelivery.couponStatus === OrderDeliveryCouponStatus.CANCEL ||
+            orderDelivery.couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL
+          ) {
+            failed.push({ id: orderDeliveryId, reason: '이미 폐기된 상태입니다.' });
+            continue;
+          }
 
-        const beforeChange = orderDelivery.couponStatus;
-        // 초이스쿠폰의 경우 선택한 상품의 협력사를 우선 사용
-        const partnerCompanyName =
-          orderDelivery.choiceSelectProduct?.partnerCompany?.businessName ??
-          orderDelivery.orderProductMapping?.product?.partnerCompany?.businessName;
+          // 3. 교환 또는 기간만료 상태인 경우 폐기 불가
+          if (
+            orderDelivery.couponStatus === OrderDeliveryCouponStatus.USED ||
+            orderDelivery.couponStatus === OrderDeliveryCouponStatus.EXPIRED
+          ) {
+            failed.push({ id: orderDeliveryId, reason: '교환 또는 기간만료 상태는 폐기할 수 없습니다.' });
+            continue;
+          }
 
-        // 4. 협력사별 폐기 처리
-        switch (partnerCompanyName) {
-          case 'GS엠비즈':
-          case '대홍기획':
-          case '컬쳐랜드':
-          case '갤럭시아':
-          case '케이티알파':
-          case '주식회사 다우기술': {
-            // 외부 API를 통한 폐기 처리
-            const result = await this.partnerCompanyExternService.cancel(orderDelivery);
-            if (result.message !== '폐기 완료') {
-              failed.push({ id: orderDeliveryId, reason: result.message || '외부 API 폐기 실패' });
-              continue;
+          const beforeChange = orderDelivery.couponStatus;
+          // 초이스쿠폰의 경우 선택한 상품의 협력사를 우선 사용
+          const partnerCompanyName =
+            orderDelivery.choiceSelectProduct?.partnerCompany?.businessName ??
+            orderDelivery.orderProductMapping?.product?.partnerCompany?.businessName;
+
+          // 4. 협력사별 폐기 처리 (외부 API - 트랜잭션 밖에서 실행)
+          switch (partnerCompanyName) {
+            case 'GS엠비즈':
+            case '대홍기획':
+            case '컬쳐랜드':
+            case '갤럭시아':
+            case '케이티알파':
+            case '주식회사 다우기술': {
+              const result = await this.partnerCompanyExternService.cancel(orderDelivery);
+              if (result.message !== '폐기 완료') {
+                failed.push({ id: orderDeliveryId, reason: result.message || '외부 API 폐기 실패' });
+                continue;
+              }
+              orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
+              break;
             }
-            orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
-            break;
+            case 'SSG':
+            default: {
+              orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
+              break;
+            }
           }
-          case 'SSG':
-          default: {
-            // 내부 DB만 업데이트
-            orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
-            break;
+
+          // 5. 트랜잭션: couponStatus 저장 + 복구 + CS 히스토리 (건별 트랜잭션)
+          await queryRunner.startTransaction();
+          try {
+            await queryRunner.manager.save(OrderDeliveryEntity, orderDelivery);
+
+            // 예치금/여신 복구
+            await this.restoreBalanceOnDiscard(orderDelivery, user, queryRunner);
+
+            // CS 히스토리 저장
+            const history = this.orderHistoryRepository.create({
+              orderDeliveryId: orderDelivery.id,
+              userId: user.id,
+              type: '폐기',
+              content: content,
+              beforeChange: beforeChange,
+              afterChange: OrderDeliveryCouponStatus.CANCEL,
+            });
+            await queryRunner.manager.save(OrderHistoryEntity, history);
+
+            await queryRunner.commitTransaction();
+          } catch (txError) {
+            await queryRunner.rollbackTransaction();
+            throw txError;
           }
+
+          success.push(orderDeliveryId);
+        } catch (error: any) {
+          failed.push({
+            id: orderDeliveryId,
+            reason: error.message || '폐기 처리 중 오류가 발생했습니다.',
+          });
         }
-
-        // 5. orderDelivery 저장
-        await this.orderDeliveryRepository.save(orderDelivery);
-
-        // 6. CS 히스토리 저장
-        const history = this.orderHistoryRepository.create({
-          orderDeliveryId: orderDelivery.id,
-          userId: user.id,
-          type: '폐기',
-          content: content,
-          beforeChange: beforeChange,
-          afterChange: OrderDeliveryCouponStatus.CANCEL,
-        });
-        await this.orderHistoryRepository.save(history);
-
-        success.push(orderDeliveryId);
-      } catch (error: any) {
-        failed.push({
-          id: orderDeliveryId,
-          reason: error.message || '폐기 처리 중 오류가 발생했습니다.',
-        });
       }
+    } finally {
+      await queryRunner.release();
     }
 
     return { success, failed };
