@@ -4,7 +4,7 @@ import { In, MoreThan, Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { Transactional } from 'typeorm-transactional';
 import { randomUUID } from 'crypto';
-import { addDays, subDays } from 'date-fns';
+import { addDays, format, subDays } from 'date-fns';
 import dayjs from 'dayjs';
 import * as fsPromises from 'fs/promises';
 import * as QRCode from 'qrcode';
@@ -42,7 +42,7 @@ import { EmailDeliveryTemplate } from '../domain/email.delivery.template';
 import { smsEncourageTemplate } from '../domain/sms.encourage.template';
 import { SmsChoiceProductTemplate } from '../domain/sms.choice.product.template';
 import { smsCouponInfoTemplate } from '../domain/sms.coupon.info.template';
-import { smsSsgTemplate } from '../domain/sms.ssg.template';
+import { smsSsgShortTemplate, smsSsgTemplate } from '../domain/sms.ssg.template';
 import { DeliveryTrackingStatus } from '../domain/delivery.tracking.status';
 import { OrderEmailSendType } from '../../order/domain/order.email.send.type';
 import { EmailType } from '../../mail/domain/email.type';
@@ -908,6 +908,55 @@ export class DeliveryBatchService {
     if (report.code !== 'A000') {
       throw new Error('알림톡 발송에 실패했습니다.');
     }
+  }
+
+  async csResendAsSms(orderDeliveryId: number): Promise<void> {
+    const orderDelivery = await this.orderDeliveryRepository
+      .createQueryBuilder('orderDelivery')
+      .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
+      .innerJoinAndSelect('orderProductMapping.order', 'order')
+      .innerJoinAndSelect('orderProductMapping.product', 'product')
+      .innerJoinAndSelect('product.brand', 'brand')
+      .where('orderDelivery.id = :id', { id: orderDeliveryId })
+      .getOne();
+
+    if (!orderDelivery) {
+      throw new Error('발송 데이터가 존재하지 않습니다.');
+    }
+
+    if (!orderDelivery.barCode) {
+      throw new Error('쿠폰이 발급되지 않은 건은 SMS 재발송이 불가능합니다.');
+    }
+
+    // 수신 전화번호 결정
+    const phoneNumber = orderDelivery.deliveryMethod === IOrderSendMethod.EMAIL && orderDelivery.emailReceiverPhone
+      ? this.decryptDeliveryTarget(orderDelivery, 'emailReceiverPhone')
+      : this.decryptDeliveryTarget(orderDelivery);
+
+    // SMS 텍스트: SSG는 전용 짧은 템플릿, 일반상품은 쿠폰명/번호/유효기간
+    const orderType = orderDelivery.orderProductMapping.order.type;
+    let text: string;
+    if (orderType === IOrderType.SSG) {
+      text = smsSsgShortTemplate(orderDelivery);
+    } else {
+      const productName = orderDelivery.orderProductMapping.product.name;
+      const brandName = orderDelivery.orderProductMapping.product.brand?.nameKorean ?? '';
+      const expireDate = orderDelivery.expireAt ? format(orderDelivery.expireAt, 'yy/MM/dd') : '';
+      text = `[${productName}]\n교환처:${brandName}\n쿠폰번호:${orderDelivery.barCode}\n${expireDate}까지`;
+    }
+
+    const textBytes = Buffer.byteLength(text, 'utf8');
+    const msgType: 'S' | 'L' = textBytes <= 90 ? 'S' : 'L';
+    const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber || defaultFromPhoneNumber;
+
+    await this.smsSend.send({
+      msgType,
+      to: phoneNumber,
+      from: fromPhoneNumber,
+      subject: msgType === 'L' ? ' ' : '',
+      text,
+      filePath: [],
+    });
   }
 
   async oneSend(orderDelivery: OrderDeliveryEntity, isSave: boolean = true, testOrderDeliveryId?: number): Promise<boolean> {
