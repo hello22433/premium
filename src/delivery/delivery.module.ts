@@ -4,6 +4,7 @@ import { HttpModule } from '@nestjs/axios';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { DeliverySendHistoryEntity } from '../entity/delivery.send.history.entity';
 import { DeliveryBatchService } from './application/delivery.batch.service';
+import { DeliverySendService } from './application/delivery.send.service';
 import { OrderDeliveryEntity } from '../entity/order.delivery.entity';
 import { DeliveryBatchSchedule } from './delivery.batch.schedule';
 import { MailModule } from '../mail/mail.module';
@@ -48,6 +49,7 @@ import { UserManagementModule } from '../user_management/user.management.module'
       useClass: DeliveryAlimTalkInfoBankHttp,
     },
     DeliveryTrackHttp,
+    DeliverySendService,
     DeliveryBatchService,
     DeliveryBatchSchedule,
   ],
@@ -57,6 +59,7 @@ import { UserManagementModule } from '../user_management/user.management.module'
       useClass: DeliveryAlimTalkInfoBankHttp,
     },
     DeliveryTrackHttp,
+    DeliverySendService,
     DeliveryBatchService,
   ],
 })

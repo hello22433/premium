@@ -57,6 +57,7 @@ import { DeliveryCreateCouponImage } from '../infra/delivery.create.coupon.image
 import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
 import { SsgEventService } from '../../ssg_event/application/ssg.event.service';
 import { UserManagementService } from '../../user_management/application/user.management.service';
+import { DeliverySendService } from './delivery.send.service';
 
 @Injectable()
 export class DeliveryBatchService {
@@ -91,6 +92,7 @@ export class DeliveryBatchService {
     private partnerCompanyExternService: PartnerCompanyExternService,
     private ssgEventService: SsgEventService,
     private userManagementService: UserManagementService,
+    private deliverySendService: DeliverySendService,
   ) {}
 
   private readonly logger = new Logger('batch');
@@ -124,20 +126,14 @@ export class DeliveryBatchService {
    * 발송 성공 시 actualSendAt 설정
    */
   private markSendSuccess(orderDelivery: OrderDeliveryEntity, status: IOrderDeliveryStatus): void {
-    orderDelivery.status = status;
-    if (!orderDelivery.actualSendAt) {
-      orderDelivery.actualSendAt = new Date();
-    }
+    this.deliverySendService.markSendSuccess(orderDelivery, status);
   }
 
   /**
    * 발송 실패 시 failedAt 설정
    */
   private markSendFail(orderDelivery: OrderDeliveryEntity, status: IOrderDeliveryStatus): void {
-    orderDelivery.status = status;
-    if (!orderDelivery.failedAt) {
-      orderDelivery.failedAt = new Date();
-    }
+    this.deliverySendService.markSendFail(orderDelivery, status);
   }
 
   /**
@@ -480,34 +476,7 @@ export class DeliveryBatchService {
     filePathList: string[],
     deliveryHistory: DeliverySendHistoryEntity,
   ): Promise<void> {
-    try {
-      const alimTalk = AlimTalkTemplate(orderDelivery);
-      const { responseData, report } = await this.deliveryAlimTalk.send({
-        to: decryptedDeliveryTarget,
-        text: alimTalk,
-        encryptKey: encryptKey,
-      });
-
-      deliveryHistory.context = JSON.stringify(responseData);
-      deliveryHistory.etcContext = JSON.stringify(report);
-
-      if (report.code !== 'A000') {
-        throw new Error('AlimTalk Send Error');
-      }
-
-      this.markSendSuccess(orderDelivery, IOrderDeliveryStatus.COMPLETE);
-    } catch (e) {
-      deliveryHistory.context = JSON.stringify(e);
-      deliveryHistory.isSuccess = false;
-      const resultSms = await this.handleAlimTalkFail(orderDelivery, title, text, filePathList, decryptedDeliveryTarget, encryptKey);
-      if (resultSms === IOrderDeliveryStatus.COMPLETE_SMS) {
-        deliveryHistory.isSuccess = true;
-        this.markSendSuccess(orderDelivery, IOrderDeliveryStatus.COMPLETE_SMS);
-      } else {
-        deliveryHistory.context += JSON.stringify(resultSms);
-        this.markSendFail(orderDelivery, IOrderDeliveryStatus.FAIL);
-      }
-    }
+    return this.deliverySendService.sendAlimTalk(orderDelivery, decryptedDeliveryTarget, encryptKey, title, text, filePathList, deliveryHistory);
   }
 
   /**
@@ -522,25 +491,7 @@ export class DeliveryBatchService {
     filePathList: string[],
     deliveryHistory: DeliverySendHistoryEntity,
   ): Promise<void> {
-    const smsText = this.buildSmsText(orderDelivery, encryptKey, text);
-
-    try {
-      const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber!;
-      await this.smsSend.send({
-        msgType: 'M',
-        to: decryptedDeliveryTarget,
-        from: fromPhoneNumber,
-        subject: title,
-        text: smsText,
-        filePath: filePathList,
-      });
-      this.markSendSuccess(orderDelivery, IOrderDeliveryStatus.COMPLETE);
-      deliveryHistory.context = text;
-    } catch (e) {
-      this.markSendFail(orderDelivery, IOrderDeliveryStatus.FAIL);
-      deliveryHistory.context = JSON.stringify(e);
-      deliveryHistory.isSuccess = false;
-    }
+    return this.deliverySendService.sendSms(orderDelivery, decryptedDeliveryTarget, encryptKey, title, text, filePathList, deliveryHistory);
   }
 
   /**
@@ -554,62 +505,7 @@ export class DeliveryBatchService {
     text: string,
     deliveryHistory: DeliverySendHistoryEntity,
   ): Promise<void> {
-    const emailSendHistory = new EmailSendHistoryEntity();
-    emailSendHistory.orderDeliveryId = orderDelivery.id;
-    emailSendHistory.email = decryptedDeliveryTarget;
-    emailSendHistory.type = EmailType.COUPON;
-    emailSendHistory.code = generateRandomCode();
-    emailSendHistory.expireAt = addDays(new Date(), EmailCertifyExpireDay);
-    await this.emailSendHistoryRepository.save(emailSendHistory);
-
-    const encryptKeyEmail = this.cryptoCipher.encryptJson({
-      id: orderDelivery.id,
-      transactionId: orderDelivery.transactionId,
-      emailHistoryId: emailSendHistory.id,
-    } as OrderEncryptKey);
-
-    const url = `${this.configService.getOrThrow('EMAIL_RECEIVE_URL')}/${encryptKeyEmail}`;
-    let qrCodeImagePath = undefined;
-    const emailSendType = orderDelivery.orderProductMapping.emailSendType;
-    if (emailSendType === OrderEmailSendType.QR) {
-      const qrCodeBuffer = await QRCode.toBuffer(url);
-      const uuid = randomUUID();
-      const fileName = `qr-codes/${uuid}.png`;
-      const originalName = `${uuid}.png`;
-      const fileUrl = await this.fileStorage.uploadImageFileWithBuffer(qrCodeBuffer, fileName, originalName);
-      qrCodeImagePath = fileUrl.url;
-    }
-
-    const useEmailContent = orderDelivery.orderProductMapping.useEmailContent ?? '';
-
-    const emailText = EmailDeliveryTemplate({
-      topImagePath: orderDelivery.orderProductMapping.topImagePath,
-      productImagePath: orderDelivery.orderProductMapping.product.imagePath,
-      text,
-      url: url,
-      code: emailSendHistory.code!,
-      useEmailContent,
-      qrCodeImagePath,
-    });
-
-    try {
-      const fromEmail = orderDelivery.orderProductMapping.fromEmail;
-      await this.mailSend.send({
-        saveSentMail: 'N',
-        bcc: undefined,
-        cc: undefined,
-        content: emailText,
-        subject: title,
-        to: decryptedDeliveryTarget,
-        fromEmail: fromEmail,
-      });
-      this.markSendSuccess(orderDelivery, IOrderDeliveryStatus.COMPLETE);
-      deliveryHistory.context = text;
-    } catch (e) {
-      this.markSendFail(orderDelivery, IOrderDeliveryStatus.FAIL);
-      deliveryHistory.context = JSON.stringify(e);
-      deliveryHistory.isSuccess = false;
-    }
+    return this.deliverySendService.sendEmail(orderDelivery, decryptedDeliveryTarget, encryptKey, title, text, deliveryHistory);
   }
 
   async updateDeliveryStatusFromTracking(): Promise<void> {
@@ -709,27 +605,7 @@ export class DeliveryBatchService {
    * SMS 발송 텍스트 구성 (SSG 템플릿 + 초이스 쿠폰 URL 적용)
    */
   private buildSmsText(orderDelivery: OrderDeliveryEntity, encryptKey: string, text: string): string {
-    const orderType = orderDelivery.orderProductMapping.order.type;
-    const productType = orderDelivery.orderProductMapping.product.type;
-
-    let smsText = text;
-    smsText = SmsChoiceProductTemplate(
-      orderDelivery,
-      `${this.configService.getOrThrow('SMS_CHOICE_URL')}/${encryptKey}`,
-      smsText,
-    );
-
-    // SSG 상품: 쿠폰번호, 인증번호, 교환처 등 상세 정보 추가
-    if (orderType === IOrderType.SSG) {
-      smsText += smsSsgTemplate(orderDelivery);
-    }
-
-    // 비SSG, 비초이스 상품에 쿠폰 정보를 본문 앞에 배치 (barCode가 있는 경우만)
-    if (orderType !== IOrderType.SSG && productType !== IProductType.CHOICE && orderDelivery.barCode) {
-      smsText = smsCouponInfoTemplate(orderDelivery) + '\n\n' + smsText;
-    }
-
-    return smsText;
+    return this.deliverySendService.buildSmsText(orderDelivery, encryptKey, text);
   }
 
   /**

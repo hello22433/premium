@@ -148,6 +148,9 @@ export class UserEntity extends BaseEntity {
   @Column({ type: 'varchar', nullable: true, length: 1024, comment: '페이지 접근 허용 list' })
   authorityList: string | null;
 
+  @Column({ type: 'varchar', length: 64, nullable: true, unique: true, comment: '외부 API 키 (SHA-256 해시)' })
+  apiKeyHash: string | null;
+
   @Column({
     type: 'varchar',
     length: 100,
