@@ -1076,9 +1076,8 @@ export class CustomerServiceService {
         case 'forced_mms':
           sendMethod = 'MMS';
           break;
-        case 'mms': // 하위호환 (프론트 배포 후 Phase B에서 의미 변경 예정)
-        case 'original':
-          sendMethod = displayMethod;
+        case 'alimtalk':
+          sendMethod = '알림톡';
           break;
       }
     } else if (getBody.type === '수신정보 변경요청') {
@@ -1121,12 +1120,8 @@ export class CustomerServiceService {
             await this.deliveryBatchService.csResendAsMms(map.orderDeliveryId);
             break;
           }
-          case 'mms': // 하위호환 (프론트 배포 후 Phase B에서 의미 변경 예정)
-          case 'original': {
-            const resendDto = new CustomerServiceReSendReqDto();
-            resendDto.orderDeliveryId = map.orderDeliveryId;
-
-            await this.reSend(resendDto);
+          case 'alimtalk': {
+            await this.deliveryBatchService.csResendAsAlimTalk(map.orderDeliveryId);
             break;
           }
           default: {

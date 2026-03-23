@@ -864,6 +864,52 @@ export class DeliveryBatchService {
     });
   }
 
+  async csResendAsAlimTalk(orderDeliveryId: number): Promise<void> {
+    const orderDelivery = await this.orderDeliveryRepository
+      .createQueryBuilder('orderDelivery')
+      .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
+      .innerJoinAndSelect('orderProductMapping.order', 'order')
+      .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('user.company', 'company')
+      .leftJoinAndSelect('order.clientUser', 'clientUser')
+      .leftJoinAndSelect('clientUser.company', 'clientCompany')
+      .innerJoinAndSelect('orderProductMapping.product', 'product')
+      .innerJoinAndSelect('product.brand', 'brand')
+      .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .where('orderDelivery.id = :id', { id: orderDeliveryId })
+      .getOne();
+
+    if (!orderDelivery) {
+      throw new Error('발송 데이터가 존재하지 않습니다.');
+    }
+
+    if (!orderDelivery.barCode) {
+      throw new Error('쿠폰이 발급되지 않은 건은 알림톡 재발송이 불가능합니다.');
+    }
+
+    // 수신 전화번호 결정
+    const phoneNumber = orderDelivery.deliveryMethod === IOrderSendMethod.EMAIL && orderDelivery.emailReceiverPhone
+      ? this.decryptDeliveryTarget(orderDelivery, 'emailReceiverPhone')
+      : this.decryptDeliveryTarget(orderDelivery);
+
+    const alimTalk = AlimTalkTemplate(orderDelivery);
+
+    const encryptKey = this.cryptoCipher.encryptJson({
+      id: orderDelivery.id,
+      transactionId: orderDelivery.transactionId,
+    } as OrderEncryptKey);
+
+    const { report } = await this.deliveryAlimTalk.send({
+      to: phoneNumber,
+      text: alimTalk,
+      encryptKey: encryptKey,
+    });
+
+    if (report.code !== 'A000') {
+      throw new Error('알림톡 발송에 실패했습니다.');
+    }
+  }
+
   async oneSend(orderDelivery: OrderDeliveryEntity, isSave: boolean = true, testOrderDeliveryId?: number): Promise<boolean> {
     // 재발송인 경우 chargeBack 후 발송 실패 시 재환불이 필요한지 판단하기 위해 이전 상태 저장
     const wasFailBefore = !testOrderDeliveryId && orderDelivery.status === IOrderDeliveryStatus.FAIL;
