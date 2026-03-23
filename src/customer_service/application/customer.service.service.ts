@@ -236,7 +236,8 @@ export class CustomerServiceService {
           OR product.code LIKE :keyword
           OR orderProductMapping.sendTitle LIKE :keyword
           OR order.eventName LIKE :keyword
-          OR orderDelivery.deliveryTarget = :encryptedKeyword)`,
+          OR orderDelivery.deliveryTarget = :encryptedKeyword
+          OR orderDelivery.emailReceiverPhone = :encryptedKeyword)`,
         { keyword: `%${keyword}%`, encryptedKeyword },
       );
     }
@@ -266,11 +267,14 @@ export class CustomerServiceService {
       queryBuilder.andWhere('product.code LIKE :productCode', { productCode: `%${productCode}%` });
     }
 
-    // 수신정보 (전문검색 - 암호화하여 비교)
+    // 수신정보 (전문검색 - 암호화하여 비교, 이메일쿠폰 수령 핸드폰번호도 포함)
     if (deliveryTarget) {
       const normalizedTarget = PhoneUtil.normalizeDeliveryTarget(deliveryTarget);
       const encryptedTarget = this.cryptoCipher.encryptDeliveryTarget(normalizedTarget);
-      queryBuilder.andWhere('orderDelivery.deliveryTarget = :deliveryTarget', { deliveryTarget: encryptedTarget });
+      queryBuilder.andWhere(
+        '(orderDelivery.deliveryTarget = :deliveryTarget OR orderDelivery.emailReceiverPhone = :deliveryTarget)',
+        { deliveryTarget: encryptedTarget },
+      );
     }
 
     // MMS제목 (부분검색)
@@ -1548,10 +1552,14 @@ export class CustomerServiceService {
       queryBuilder.andWhere('product.code LIKE :productCode', { productCode: `%${productCode}%` });
     }
 
+    // 수신정보 (전문검색 - 암호화하여 비교, 이메일쿠폰 수령 핸드폰번호도 포함)
     if (deliveryTarget) {
       const normalizedTarget = PhoneUtil.normalizeDeliveryTarget(deliveryTarget);
       const encryptedTarget = this.cryptoCipher.encryptDeliveryTarget(normalizedTarget);
-      queryBuilder.andWhere('orderDelivery.deliveryTarget = :deliveryTarget', { deliveryTarget: encryptedTarget });
+      queryBuilder.andWhere(
+        '(orderDelivery.deliveryTarget = :deliveryTarget OR orderDelivery.emailReceiverPhone = :deliveryTarget)',
+        { deliveryTarget: encryptedTarget },
+      );
     }
 
     if (sendTitle) {
@@ -1572,7 +1580,8 @@ export class CustomerServiceService {
           OR product.code LIKE :keyword
           OR orderProductMapping.sendTitle LIKE :keyword
           OR order.eventName LIKE :keyword
-          OR orderDelivery.deliveryTarget = :encryptedKeyword)`,
+          OR orderDelivery.deliveryTarget = :encryptedKeyword
+          OR orderDelivery.emailReceiverPhone = :encryptedKeyword)`,
         { keyword: `%${keyword}%`, encryptedKeyword },
       );
     }
