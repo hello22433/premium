@@ -191,7 +191,6 @@ export class ExternalApiService {
 
     return ExternalApiResponse.success<OrderResponseData>({
       trId: dto.trId,
-      orderId: order.id,
       barCode: orderDelivery.barCode || undefined,
       couponNum: orderDelivery.couponNum || undefined,
       validStartDate: orderDelivery.expireAt ? dayjs().format('YYYY-MM-DD') : undefined,
@@ -206,7 +205,7 @@ export class ExternalApiService {
   private async phaseA_createAndDeduct(user: UserEntity, dto: CreateExternalOrderDto) {
     // 1. 트랜잭션 ID 중복 체크
     const existing = await this.orderDeliveryRepository.findOne({
-      where: { transactionId: dto.trId },
+      where: { externalTrId: dto.trId },
     });
     if (existing) {
       throw new ExternalApiException('2003', '중복 트랜잭션 ID');
@@ -265,7 +264,7 @@ export class ExternalApiService {
     });
     await this.orderProductMappingRepository.save(mapping);
 
-    // 7. 배송 건 생성 (transactionId를 create에서 설정)
+    // 7. 배송 건 생성 (externalTrId를 create에서 설정)
     const orderDelivery = this.orderDeliveryRepository.create({
       orderProductMappingId: mapping.id,
       status: IOrderDeliveryStatus.WAIT,
@@ -273,7 +272,7 @@ export class ExternalApiService {
       deliveryTarget: this.cryptoCipher.encryptDeliveryTarget(dto.recipientPhone),
       originalDeliveryTarget: this.cryptoCipher.encryptDeliveryTarget(dto.recipientPhone),
       sendRequestAt: new Date(),
-      transactionId: dto.trId,
+      externalTrId: dto.trId,
     });
     await this.orderDeliveryRepository.save(orderDelivery);
 
@@ -479,7 +478,6 @@ export class ExternalApiService {
 
     return ExternalApiResponse.success<OrderResponseData>({
       trId: dto.trId,
-      orderId: order.id,
       barCode: orderDelivery.barCode || undefined,
       couponNum: orderDelivery.couponNum || undefined,
       validStartDate: orderDelivery.expireAt ? dayjs().format('YYYY-MM-DD') : undefined,
@@ -492,7 +490,7 @@ export class ExternalApiService {
   private async phaseA_createSsgAndDeduct(user: UserEntity, dto: CreateExternalSsgOrderDto) {
     // 1. 트랜잭션 ID 중복 체크
     const existing = await this.orderDeliveryRepository.findOne({
-      where: { transactionId: dto.trId },
+      where: { externalTrId: dto.trId },
     });
     if (existing) {
       throw new ExternalApiException('2003', '중복 트랜잭션 ID');
@@ -560,7 +558,7 @@ export class ExternalApiService {
     });
     await this.orderProductMappingRepository.save(mapping);
 
-    // 8. 배송 건 생성 (transactionId를 create에서 설정)
+    // 8. 배송 건 생성 (externalTrId를 create에서 설정)
     const orderDelivery = this.orderDeliveryRepository.create({
       orderProductMappingId: mapping.id,
       status: IOrderDeliveryStatus.WAIT,
@@ -569,7 +567,7 @@ export class ExternalApiService {
       originalDeliveryTarget: this.cryptoCipher.encryptDeliveryTarget(dto.recipientPhone),
       sendRequestAt: new Date(),
       ssgEventId: ssgEvent.eventId,
-      transactionId: dto.trId,
+      externalTrId: dto.trId,
     });
     await this.orderDeliveryRepository.save(orderDelivery);
 
@@ -589,7 +587,7 @@ export class ExternalApiService {
 
   private async findOrderDeliveryByTrId(user: UserEntity, trId: string): Promise<OrderDeliveryEntity> {
     const orderDelivery = await this.orderDeliveryRepository.findOne({
-      where: { transactionId: trId },
+      where: { externalTrId: trId },
       relations: [
         'orderProductMapping',
         'orderProductMapping.order',
