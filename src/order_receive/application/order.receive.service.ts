@@ -272,6 +272,7 @@ export class OrderReceiveService {
 
     const testOrderDelivery = await this.testOrderDeliveryRepository
       .createQueryBuilder('testOrderDelivery')
+      .withDeleted()
       .innerJoinAndSelect('testOrderDelivery.orderProductMapping', 'orderProductMapping')
       .innerJoinAndSelect('orderProductMapping.order', 'order')
       .innerJoinAndSelect('orderProductMapping.product', 'product')
