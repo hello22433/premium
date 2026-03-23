@@ -959,6 +959,98 @@ export class DeliveryBatchService {
     });
   }
 
+  async csResendAsEmail(orderDeliveryId: number): Promise<void> {
+    const orderDelivery = await this.orderDeliveryRepository
+      .createQueryBuilder('orderDelivery')
+      .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
+      .innerJoinAndSelect('orderProductMapping.order', 'order')
+      .innerJoinAndSelect('orderProductMapping.product', 'product')
+      .innerJoinAndSelect('product.brand', 'brand')
+      .where('orderDelivery.id = :id', { id: orderDeliveryId })
+      .getOne();
+
+    if (!orderDelivery) {
+      throw new Error('발송 데이터가 존재하지 않습니다.');
+    }
+
+    if (orderDelivery.deliveryMethod !== IOrderSendMethod.EMAIL) {
+      throw new Error('이메일 발송 건만 이메일 재발송이 가능합니다.');
+    }
+
+    if (orderDelivery.barCode && orderDelivery.emailReceiverPhone) {
+      throw new Error('이미 수령된 쿠폰은 이메일 재발송이 불가능합니다.');
+    }
+
+    const decryptedEmail = this.decryptDeliveryTarget(orderDelivery);
+    const title = orderDelivery.orderProductMapping.sendTitle ?? '';
+    let text = orderDelivery.orderProductMapping.sendContent ?? '';
+    const sendTailText = orderDelivery.orderProductMapping.sendTailText;
+    if (sendTailText) {
+      text += `\n\n${sendTailText}`;
+    }
+    text = applyReplaceCharacters(text, orderDelivery);
+
+    // 기존 인증코드 재사용 (미인증 & 미만료)
+    let emailSendHistory = await this.emailSendHistoryRepository.findOne({
+      where: {
+        orderDeliveryId: orderDelivery.id,
+        type: EmailType.COUPON,
+        isCertified: false,
+        expireAt: MoreThan(new Date()),
+      },
+    });
+
+    if (!emailSendHistory) {
+      emailSendHistory = new EmailSendHistoryEntity();
+      emailSendHistory.orderDeliveryId = orderDelivery.id;
+      emailSendHistory.email = decryptedEmail;
+      emailSendHistory.type = EmailType.COUPON;
+      emailSendHistory.code = generateRandomCode();
+      emailSendHistory.expireAt = addDays(new Date(), EmailCertifyExpireDay);
+      await this.emailSendHistoryRepository.save(emailSendHistory);
+    }
+
+    const encryptKeyEmail = this.cryptoCipher.encryptJson({
+      id: orderDelivery.id,
+      transactionId: orderDelivery.transactionId,
+      emailHistoryId: emailSendHistory.id,
+    } as OrderEncryptKey);
+
+    const url = `${this.configService.getOrThrow('EMAIL_RECEIVE_URL')}/${encryptKeyEmail}`;
+    let qrCodeImagePath = undefined;
+    const emailSendType = orderDelivery.orderProductMapping.emailSendType;
+    if (emailSendType === OrderEmailSendType.QR) {
+      const qrCodeBuffer = await QRCode.toBuffer(url);
+      const uuid = randomUUID();
+      const fileName = `qr-codes/${uuid}.png`;
+      const originalName = `${uuid}.png`;
+      const fileUrl = await this.fileStorage.uploadImageFileWithBuffer(qrCodeBuffer, fileName, originalName);
+      qrCodeImagePath = fileUrl.url;
+    }
+
+    const useEmailContent = orderDelivery.orderProductMapping.useEmailContent ?? '';
+    const emailText = EmailDeliveryTemplate({
+      topImagePath: orderDelivery.orderProductMapping.topImagePath,
+      productImagePath: orderDelivery.orderProductMapping.product.imagePath,
+      text,
+      url,
+      code: emailSendHistory.code!,
+      useEmailContent,
+      qrCodeImagePath,
+    });
+
+    const fromEmail = orderDelivery.orderProductMapping.fromEmail;
+    await this.mailSend.send({
+      saveSentMail: 'N',
+      bcc: undefined,
+      cc: undefined,
+      content: emailText,
+      subject: title,
+      to: decryptedEmail,
+      fromEmail,
+    });
+  }
+
   async oneSend(orderDelivery: OrderDeliveryEntity, isSave: boolean = true, testOrderDeliveryId?: number): Promise<boolean> {
     // 재발송인 경우 chargeBack 후 발송 실패 시 재환불이 필요한지 판단하기 위해 이전 상태 저장
     const wasFailBefore = !testOrderDeliveryId && orderDelivery.status === IOrderDeliveryStatus.FAIL;
