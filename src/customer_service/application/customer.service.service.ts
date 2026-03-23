@@ -1032,7 +1032,10 @@ export class CustomerServiceService {
                 expireDate;
             }
 
-            const decryptedTarget = this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.deliveryTarget) ?? '';
+            // EMAIL 발송 건에서 핀이 발급된 경우: emailReceiverPhone(전화번호)으로 발송
+            const decryptedTarget = orderDelivery.deliveryMethod === IOrderSendMethod.EMAIL && orderDelivery.emailReceiverPhone
+              ? this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.emailReceiverPhone) ?? ''
+              : this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.deliveryTarget) ?? '';
             const textBytes = Buffer.byteLength(text, 'utf8');
 
             smsEntity = this.gemteckMsgQueueRepository.create({
