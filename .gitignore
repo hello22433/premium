@@ -59,3 +59,4 @@ public/*.jpeg
 
 .serena.worktrees/
 .worktrees/
+.omc/
