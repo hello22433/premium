@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, ParseIntPipe, Post, Put, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseIntPipe, Post, Put, Query, UseGuards } from '@nestjs/common';
 import { ApiBadRequestResponse, ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { UserManagementService } from '../application/user.management.service';
 import {
@@ -271,5 +271,22 @@ export class UserManagementController {
   @Get('/user-management/company/list')
   getCompanyList(@Query() getQuery: UserManagementGetCompanyListReqQueryDto) {
     return this.userManagementService.getCompanyList(getQuery);
+  }
+
+  @Post(':id/api-key')
+  @UseGuards(AuthUserAuthorizationGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'API Key 발급/재발급' })
+  async generateApiKey(@Param('id') id: number): Promise<{ apiKey: string }> {
+    const apiKey = await this.userManagementService.generateApiKey(id);
+    return { apiKey };
+  }
+
+  @Delete(':id/api-key')
+  @UseGuards(AuthUserAuthorizationGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'API Key 비활성화' })
+  async revokeApiKey(@Param('id') id: number): Promise<void> {
+    await this.userManagementService.revokeApiKey(id);
   }
 }

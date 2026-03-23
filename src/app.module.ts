@@ -46,6 +46,7 @@ import { PopularProductModule } from './popular_product/popular.product.module';
 import { RequirementModule } from './requirement/requirement.module';
 import { NotificationModule } from './notification/notification.module';
 import { OrderReceiptModule } from './order_receipt/order.receipt.module';
+import { ExternalApiModule } from './external_api/external.api.module';
 
 @Module({
   imports: [
@@ -98,6 +99,7 @@ import { OrderReceiptModule } from './order_receipt/order.receipt.module';
     RequirementModule,
     NotificationModule,
     OrderReceiptModule,
+    ExternalApiModule,
   ],
   controllers: [AppController],
   providers: [],

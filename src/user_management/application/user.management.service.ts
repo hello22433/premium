@@ -1,3 +1,4 @@
+import { randomBytes, createHash } from 'crypto';
 import { BadRequestException, Inject, Injectable, Logger } from '@nestjs/common';
 import { UserEntity } from '../../entity/user.entity';
 import { IUserStatus } from '../../user/interface/user.status';
@@ -953,5 +954,22 @@ export class UserManagementService {
 
     user.email = newEmail;
     await this.userRepository.save(user);
+  }
+
+  async generateApiKey(userId: number): Promise<string> {
+    const user = await this.userRepository.findOne({ where: { id: userId } });
+    if (!user) {
+      throw new BadRequestException('사용자를 찾을 수 없습니다.');
+    }
+
+    const rawKey = randomBytes(32).toString('hex');
+    const keyHash = createHash('sha256').update(rawKey).digest('hex');
+    await this.userRepository.update(userId, { apiKeyHash: keyHash });
+
+    return rawKey; // 1회만 반환, 이후 조회 불가
+  }
+
+  async revokeApiKey(userId: number): Promise<void> {
+    await this.userRepository.update(userId, { apiKeyHash: null });
   }
 }

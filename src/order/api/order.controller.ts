@@ -76,6 +76,7 @@ import {
   OrderGetReportHistoryResDto,
 } from './order.res.dto';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
+import { IOrderType } from '../interface/order.type';
 import { User } from '../../auth/api/user.decorator';
 import { AuthUserSuperAdminGuard } from '../../auth/api/auth.user.super-admin.guard';
 import * as fs from 'fs';
@@ -129,6 +130,19 @@ export class OrderController {
     }
 
     return this.orderService.getList(user, getQuery);
+  }
+
+  @ApiOperation({
+    summary: '외부주문 목록 조회',
+  })
+  @ApiOkResponse({
+    type: OrderGetListResDto,
+    description: '성공적으로 조회한 경우',
+  })
+  // ====================================================
+  @Get('/order/external/list')
+  async getExternalOrderList(@User() user: ILoginUserInfo, @Query() getQuery: OrderGetListReqDto) {
+    return this.orderService.getList(user, { ...getQuery, type: IOrderType.EXTERNAL } as OrderGetListReqDto);
   }
 
   @ApiOperation({
