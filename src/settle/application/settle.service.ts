@@ -2839,6 +2839,7 @@ export class SettleService {
       { header: '상품명', key: 'productName', width: 30, style: textStyle },
       { header: '상품 정상가', key: 'productPrice', width: 12, style: textStyle },
       { header: '바코드', key: 'barcode', width: 25, style: textStyle },
+      { header: '업체거래번호', key: 'transactionId', width: 25, style: textStyle },
       { header: '거래구분', key: 'appDivName', width: 12, style: textStyle },
       { header: '발송일자', key: 'sendDate', width: 12, style: textStyle },
       { header: '발송시간', key: 'sendTime', width: 10, style: textStyle },
@@ -2867,6 +2868,7 @@ export class SettleService {
         productName: displayProduct.name,
         productPrice: displayProduct.price,
         barcode: log.barcode,
+        transactionId: orderDelivery.transactionId ?? '',
         appDivName: this.getAppDivName(log.appDiv),
         sendDate: orderDelivery.actualSendAt
           ? format(orderDelivery.actualSendAt, DateCompactStr)
