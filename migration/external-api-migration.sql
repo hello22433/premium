@@ -5,9 +5,10 @@
 ALTER TABLE `user` ADD COLUMN `api_key_hash` VARCHAR(64) NULL UNIQUE
   COMMENT '외부 API 키 (SHA-256 해시)' AFTER `authority_list`;
 
--- 2. order_delivery 테이블에 transaction_id unique index 추가
--- 기존 배치 생성 transactionId는 UUID 기반이므로 충돌 없음
-ALTER TABLE `order_delivery` ADD UNIQUE INDEX `idx_order_delivery_transaction_id` (`transaction_id`);
+-- 2. order_delivery 테이블에 external_tr_id 컬럼 + unique index 추가
+ALTER TABLE `order_delivery` ADD COLUMN `external_tr_id` VARCHAR(40) NULL
+  COMMENT '외부 API 트랜잭션 ID' AFTER `transaction_id`;
+ALTER TABLE `order_delivery` ADD UNIQUE INDEX `idx_order_delivery_external_tr_id` (`external_tr_id`);
 
 -- 3. order 테이블에 type 인덱스 추가 (외부주문 조회 성능)
 ALTER TABLE `order` ADD INDEX `idx_order_type` (`type`);

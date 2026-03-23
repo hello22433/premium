@@ -24,7 +24,6 @@ export class ExternalApiResponse<T = any> {
 
 export class OrderResponseData {
   trId: string;
-  orderId: number;
   barCode?: string;
   couponNum?: string;
   validStartDate?: string;
