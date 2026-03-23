@@ -1066,6 +1066,7 @@ export class CustomerServiceService {
     return {
       orderDeliveryId: getBody.orderDeliveryId,
       userId: user.id,
+      user,
       type: getBody.type,
       extraType: getBody.extraType || '',
       content: getBody.content || '',
