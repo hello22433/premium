@@ -601,9 +601,16 @@ export class CustomerServiceService {
     return;
   }
 
-  async pinDiscard(user: ILoginUserInfo, getBody: CustomerServiceDiscardReqDto) {
-    const { orderDeliveryId, couponStatus } = getBody;
-
+  /**
+   * 폐기 실행 (외부 API 호출 + 상태 변경 + 잔액 복구)
+   * historyData가 전달되면 트랜잭션 안에서 history도 기록
+   */
+  private async execDiscard(
+    user: ILoginUserInfo,
+    orderDeliveryId: number,
+    couponStatus: OrderDeliveryCouponStatus,
+    historyData?: { type: string; content: string },
+  ): Promise<{ orderDelivery: OrderDeliveryEntity; beforeChange: string }> {
     const orderDelivery = await this.orderDeliveryRepository
       .createQueryBuilder('orderDelivery')
       .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
@@ -669,29 +676,28 @@ export class CustomerServiceService {
         break;
     }
 
-    // 트랜잭션: couponStatus 저장 + 복구 + order_history
+    // 트랜잭션: couponStatus 저장 + 잔액 복구
     const queryRunner = this.dataSource.createQueryRunner();
     await queryRunner.connect();
     await queryRunner.startTransaction();
     try {
-      orderDelivery.couponStatus = couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL
-        ? OrderDeliveryCouponStatus.REFUND_CANCEL
-        : OrderDeliveryCouponStatus.CANCEL;
+      orderDelivery.couponStatus = couponStatus;
       await queryRunner.manager.save(OrderDeliveryEntity, orderDelivery);
 
       // 예치금/여신 복구
       await this.restoreBalanceOnDiscard(orderDelivery, user, queryRunner);
 
-      // order_history 저장 (기존 pinDiscard에 없던 것 추가)
-      const history = this.orderHistoryRepository.create({
-        orderDeliveryId: orderDelivery.id,
-        userId: user.id,
-        type: '폐기',
-        content: `핀폐기 처리`,
-        beforeChange: beforeChange,
-        afterChange: orderDelivery.couponStatus,
-      });
-      await queryRunner.manager.save(OrderHistoryEntity, history);
+      if (historyData) {
+        const history = this.orderHistoryRepository.create({
+          orderDeliveryId: orderDelivery.id,
+          userId: user.id,
+          type: historyData.type,
+          content: historyData.content,
+          beforeChange,
+          afterChange: orderDelivery.couponStatus,
+        });
+        await queryRunner.manager.save(OrderHistoryEntity, history);
+      }
 
       await queryRunner.commitTransaction();
     } catch (error) {
@@ -700,6 +706,18 @@ export class CustomerServiceService {
     } finally {
       await queryRunner.release();
     }
+
+    return { orderDelivery, beforeChange };
+  }
+
+  /**
+   * 핀폐기 API (직접 호출용) — 폐기 실행 + history 기록
+   */
+  async pinDiscard(user: ILoginUserInfo, getBody: CustomerServiceDiscardReqDto) {
+    await this.execDiscard(user, getBody.orderDeliveryId, getBody.couponStatus, {
+      type: '폐기',
+      content: '핀폐기 처리',
+    });
   }
 
   async refreshCoupon(getQuery: CustomerServiceCouponRefreshReqDto) {
@@ -1166,23 +1184,13 @@ export class CustomerServiceService {
         break;
       }
       case '폐기': {
-        const pinDiscardDto = new CustomerServiceDiscardReqDto();
-        pinDiscardDto.orderDeliveryId = map.orderDeliveryId;
-        pinDiscardDto.couponStatus = map.afterChange;
-
-        await this.pinDiscard(map.user, pinDiscardDto);
-
-        afterChange = OrderDeliveryCouponStatus.CANCEL;
+        const { orderDelivery: discarded } = await this.execDiscard(map.user, map.orderDeliveryId, OrderDeliveryCouponStatus.CANCEL);
+        afterChange = discarded.couponStatus;
         break;
       }
       case '환불폐기': {
-        const pinDiscardDto = new CustomerServiceDiscardReqDto();
-        pinDiscardDto.orderDeliveryId = map.orderDeliveryId;
-        pinDiscardDto.couponStatus = map.afterChange;
-
-        await this.pinDiscard(map.user, pinDiscardDto);
-
-        afterChange = OrderDeliveryCouponStatus.REFUND_CANCEL;
+        const { orderDelivery: discarded } = await this.execDiscard(map.user, map.orderDeliveryId, OrderDeliveryCouponStatus.REFUND_CANCEL);
+        afterChange = discarded.couponStatus;
         break;
       }
       default: {

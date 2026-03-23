@@ -15,6 +15,7 @@ import { ApiKeyGuard } from './api/external.api.key.guard';
 import { PartnerCompanyExternModule } from '../partner_company_extern/partner.company.extern.module';
 import { SsgEventModule } from '../ssg_event/ssg.event.module';
 import { DeliveryModule } from '../delivery/delivery.module';
+import { CryptoCipher } from '../common/infra/crypto.cipher';
 
 @Module({
   imports: [
@@ -31,6 +32,6 @@ import { DeliveryModule } from '../delivery/delivery.module';
     DeliveryModule,
   ],
   controllers: [ExternalApiController],
-  providers: [ExternalApiService, ApiKeyGuard],
+  providers: [ExternalApiService, ApiKeyGuard, CryptoCipher],
 })
 export class ExternalApiModule {}
