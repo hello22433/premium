@@ -80,13 +80,13 @@ export class UserDiscountCreateReqDto {
   @IsOptional()
   range: string | null;
 
-  @ApiProperty({
-    description: '비교조건 ex) MORE_THAN: 초과, MORE: 이상, LESS_THAN: 미만, LESS: 이하',
+  @ApiPropertyOptional({
+    description: '비교조건 ex) ALL: 전체(일괄), MORE_THAN: 초과, MORE: 이상, LESS_THAN: 미만, LESS: 이하. 일괄(BULK) 방식일 때 미입력 시 자동으로 ALL 설정',
   })
   // =============================================================
-  @IsNotEmpty()
+  @IsOptional()
   @IsEnum(ICompareCondition)
-  compareCondition: ICompareCondition;
+  compareCondition?: ICompareCondition;
 
   @ApiProperty({
     description: '할인/할증',

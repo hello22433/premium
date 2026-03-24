@@ -164,31 +164,88 @@ export class UserDiscountService {
       throw new BadRequestException(`User does not exist`);
     }
 
-    // 구간(SECTION) 방식일 때 구간 충돌 검증
-    if (method === IUserDiscountMethod.SECTION) {
-      await this.validateSectionDiscount({
-        userId,
-        partnerCompanyId,
-        category,
-        group: group ?? undefined,
-        primaryCategory: primaryCategory ?? undefined,
-        compareCondition,
-        range: range ?? undefined,
-      });
-    }
-
-    await this.userDiscountRepository.insert({
+    const baseInsertData = {
       userId,
       partnerCompanyId,
       method,
       group,
       category,
       primaryCategory,
-      range,
       priceAdjustment,
-      compareCondition,
       pricePercent,
-    });
+    };
+
+    if (method === IUserDiscountMethod.BULK) {
+      await this.validateBulkDiscount({
+        userId,
+        partnerCompanyId,
+        category,
+        group: group ?? undefined,
+        primaryCategory: primaryCategory ?? undefined,
+      });
+
+      await this.userDiscountRepository.insert({
+        ...baseInsertData,
+        range: null,
+        compareCondition: ICompareCondition.ALL,
+      });
+    } else {
+      await this.validateSectionDiscount({
+        userId,
+        partnerCompanyId,
+        category,
+        group: group ?? undefined,
+        primaryCategory: primaryCategory ?? undefined,
+        compareCondition: compareCondition!,
+        range: range ?? undefined,
+      });
+
+      await this.userDiscountRepository.insert({
+        ...baseInsertData,
+        range,
+        compareCondition,
+      });
+    }
+  }
+
+  /**
+   * 일괄(BULK) 할인 옵션 등록 시 중복 검증
+   * - 같은 상품군/대분류에 이미 일괄 할인이 등록되어 있으면 차단
+   */
+  private async validateBulkDiscount(params: {
+    userId?: number;
+    partnerCompanyId?: number;
+    category: IUserDiscountCategory;
+    group?: string;
+    primaryCategory?: string;
+  }) {
+    const { userId, partnerCompanyId, category, group, primaryCategory } = params;
+
+    let queryBuilder = this.userDiscountRepository
+      .createQueryBuilder('discount')
+      .where('discount.method = :method', { method: IUserDiscountMethod.BULK })
+      .andWhere('discount.category = :category', { category });
+
+    if (userId) {
+      queryBuilder = queryBuilder.andWhere('discount.userId = :userId', { userId });
+    }
+    if (partnerCompanyId) {
+      queryBuilder = queryBuilder.andWhere('discount.partnerCompanyId = :partnerCompanyId', { partnerCompanyId });
+    }
+
+    if (category === IUserDiscountCategory.CATEGORY && group) {
+      queryBuilder = queryBuilder.andWhere('discount.group = :group', { group });
+    } else if (category === IUserDiscountCategory.CLASSIFICATION && primaryCategory) {
+      queryBuilder = queryBuilder.andWhere('discount.primaryCategory = :primaryCategory', { primaryCategory });
+    }
+
+    const existing = await queryBuilder.getOne();
+
+    if (existing) {
+      const targetName =
+        category === IUserDiscountCategory.CATEGORY ? `상품군 ${group}` : `대분류 ${primaryCategory}`;
+      throw new BadRequestException(`${targetName}에 이미 일괄 할인이 등록되어 있습니다.`);
+    }
   }
 
   /**
