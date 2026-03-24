@@ -88,9 +88,7 @@ import { IPartnerCompanyType } from '../../partner_company/interface/partner.com
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { UserDiscountEntity } from '../../entity/user.discount.entity';
 import { IPriceAdjustment } from '../../user_discount/interface/price.adjustment';
-import { IUserDiscountCategory } from '../../user_discount/interface/user.discount.category';
-import { IUserDiscountMethod } from '../../user_discount/interface/user.discount.method';
-import { ICompareCondition } from '../../user_discount/interface/compare.condition';
+import { findMatchingDiscount } from '../../user_discount/domain/discount.matcher';
 import { SettleUserPerListViewDto } from '../api/dto/settle.user.per.list.view.dto';
 import { SettleUserStatusEnum } from '../interface/settle.user.status';
 import { SettleUserPerDetailViewDto } from '../api/dto/settle.user.per.detail.view.dto';
@@ -1063,7 +1061,7 @@ export class SettleService {
       const partnerDiscounts = partnerCompany.userDiscounts || [];
 
       // 협력사 할인옵션에서 매칭되는 할인 찾기
-      const matchingDiscount = this.findMatchingDiscount(
+      const matchingDiscount = findMatchingDiscount(
         {
           price: product.price,
           category: product.category,
@@ -2575,101 +2573,7 @@ export class SettleService {
     return queryBuilder;
   }
 
-  /**
-   * 상품에 맞는 할인/할증 설정을 찾는 헬퍼 함수
-   * - BULK(일괄): 구간 없이 해당 상품군/대분류 전체에 적용
-   * - SECTION(구간): 상품 단가가 속하는 구간의 할인율을 전체 가격에 적용
-   *   예: 5000원이하 10%, 10000원이하 2% → 6000원 상품은 2% 할인 (전체 6000원에 적용)
-   */
-  private findMatchingDiscount(
-    product: { price: number; category: string; brand?: { nameKorean: string } | null },
-    userDiscounts: UserDiscountEntity[],
-  ): UserDiscountEntity | null {
-    if (!userDiscounts || userDiscounts.length === 0) {
-      return null;
-    }
-
-    // 1. BULK(일괄) 방식 먼저 찾기 - 구간 없이 바로 적용
-    const bulkDiscount = userDiscounts.find((d) => {
-      if (d.method !== IUserDiscountMethod.BULK) return false;
-
-      if (d.category === IUserDiscountCategory.CATEGORY) {
-        return d.group === product.category;
-      }
-      if (d.category === IUserDiscountCategory.CLASSIFICATION) {
-        // primaryCategory는 브랜드명을 저장하므로 brand.nameKorean과 비교
-        return d.primaryCategory === product.brand?.nameKorean;
-      }
-      return false;
-    });
-
-    if (bulkDiscount) {
-      return bulkDiscount;
-    }
-
-    // 2. SECTION(구간) 방식 - 상품 단가 기준으로 해당 구간 찾기
-    const sectionDiscounts = userDiscounts.filter((d) => {
-      if (d.method !== IUserDiscountMethod.SECTION) return false;
-      if (!d.range) return false;
-
-      if (d.category === IUserDiscountCategory.CATEGORY) {
-        return d.group === product.category;
-      }
-      if (d.category === IUserDiscountCategory.CLASSIFICATION) {
-        // primaryCategory는 브랜드명을 저장하므로 brand.nameKorean과 비교
-        return d.primaryCategory === product.brand?.nameKorean;
-      }
-      return false;
-    });
-
-    if (sectionDiscounts.length === 0) {
-      return null;
-    }
-
-    // range 값으로 오름차순 정렬
-    const sortedDiscounts = sectionDiscounts.sort((a, b) => {
-      return parseInt(a.range || '0', 10) - parseInt(b.range || '0', 10);
-    });
-
-    const productPrice = product.price;
-    let previousUpperBound = 0;
-
-    // 누적 구간: [0~5000], [5001~10000], [10001~20000] ...
-    for (const discount of sortedDiscounts) {
-      const rangeValue = parseInt(discount.range || '0', 10);
-
-      // 비교조건에 따른 범위 체크
-      let isInRange = false;
-
-      switch (discount.compareCondition) {
-        case ICompareCondition.LESS: // 이하 (<=)
-          isInRange = productPrice > previousUpperBound && productPrice <= rangeValue;
-          break;
-        case ICompareCondition.LESS_THAN: // 미만 (<)
-          isInRange = productPrice > previousUpperBound && productPrice < rangeValue;
-          break;
-        case ICompareCondition.MORE: // 이상 (>=)
-          isInRange = productPrice >= rangeValue;
-          break;
-        case ICompareCondition.MORE_THAN: // 초과 (>)
-          isInRange = productPrice > rangeValue;
-          break;
-      }
-
-      if (isInRange) {
-        return discount;
-      }
-
-      // 다음 구간을 위해 이전 상한값 업데이트 (이하/미만 조건일 때)
-      if (discount.compareCondition === ICompareCondition.LESS) {
-        previousUpperBound = rangeValue;
-      } else if (discount.compareCondition === ICompareCondition.LESS_THAN) {
-        previousUpperBound = rangeValue - 1;
-      }
-    }
-
-    return null;
-  }
+  // findMatchingDiscount는 user_discount/domain/discount.matcher.ts 공통 함수 사용
 
   /**
    * 상품 가격에 할인/할증 적용

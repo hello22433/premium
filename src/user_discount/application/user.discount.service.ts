@@ -209,8 +209,9 @@ export class UserDiscountService {
   }
 
   /**
-   * 일괄(BULK) 할인 옵션 등록 시 중복 검증
+   * 일괄(BULK) 할인 옵션 등록 시 검증
    * - 같은 상품군/대분류에 이미 일괄 할인이 등록되어 있으면 차단
+   * - 같은 상품군/대분류에 구간 할인이 등록되어 있으면 차단 (일괄/구간 동시 등록 불가)
    */
   private async validateBulkDiscount(params: {
     userId?: number;
@@ -221,9 +222,11 @@ export class UserDiscountService {
   }) {
     const { userId, partnerCompanyId, category, group, primaryCategory } = params;
 
+    const targetName =
+      category === IUserDiscountCategory.CATEGORY ? `상품군 ${group}` : `대분류 ${primaryCategory}`;
+
     let queryBuilder = this.userDiscountRepository
       .createQueryBuilder('discount')
-      .where('discount.method = :method', { method: IUserDiscountMethod.BULK })
       .andWhere('discount.category = :category', { category });
 
     if (userId) {
@@ -242,16 +245,20 @@ export class UserDiscountService {
     const existing = await queryBuilder.getOne();
 
     if (existing) {
-      const targetName =
-        category === IUserDiscountCategory.CATEGORY ? `상품군 ${group}` : `대분류 ${primaryCategory}`;
-      throw new BadRequestException(`${targetName}에 이미 일괄 할인이 등록되어 있습니다.`);
+      if (existing.method === IUserDiscountMethod.BULK) {
+        throw new BadRequestException(`${targetName}에 이미 일괄 할인이 등록되어 있습니다.`);
+      }
+      if (existing.method === IUserDiscountMethod.SECTION) {
+        throw new BadRequestException(
+          `${targetName}에 이미 구간 할인이 등록되어 있습니다. 삭제 후 등록해주세요.`,
+        );
+      }
     }
   }
 
   /**
-   * 구간(SECTION) 할인 옵션 등록 시 구간 충돌 검증
-   * - 같은 상품군/대분류에서 비교조건 방향이 혼합되면 안 됨
-   * - 이하/미만 (상한 기준) vs 이상/초과 (하한 기준) 혼합 불가
+   * 구간(SECTION) 할인 옵션 등록 시 검증
+   * - 같은 상품군/대분류에 일괄 할인이 등록되어 있으면 차단 (일괄/구간 동시 등록 불가)
    * - 같은 구간 값에 대한 중복 등록 불가
    */
   private async validateSectionDiscount(params: {
@@ -265,10 +272,12 @@ export class UserDiscountService {
   }) {
     const { userId, partnerCompanyId, category, group, primaryCategory, compareCondition, range } = params;
 
-    // 같은 유저/협력사의 기존 구간 할인 옵션 조회
+    const targetName =
+      category === IUserDiscountCategory.CATEGORY ? `상품군 ${group}` : `대분류 ${primaryCategory}`;
+
+    // 같은 유저/협력사의 기존 할인 옵션 조회 (BULK 포함)
     let queryBuilder = this.userDiscountRepository
       .createQueryBuilder('discount')
-      .where('discount.method = :method', { method: IUserDiscountMethod.SECTION })
       .andWhere('discount.category = :category', { category });
 
     if (userId) {
@@ -291,33 +300,17 @@ export class UserDiscountService {
       return; // 기존 할인 옵션이 없으면 검증 통과
     }
 
-    // 비교조건 방향 분류
-    const isUpperBound = (condition: ICompareCondition) =>
-      condition === ICompareCondition.LESS || condition === ICompareCondition.LESS_THAN;
-    const isLowerBound = (condition: ICompareCondition) =>
-      condition === ICompareCondition.MORE || condition === ICompareCondition.MORE_THAN;
+    // 1. 일괄 할인 존재 시 구간 등록 차단
+    const existingBulk = existingDiscounts.find((d) => d.method === IUserDiscountMethod.BULK);
+    if (existingBulk) {
+      throw new BadRequestException(
+        `${targetName}에 이미 일괄 할인이 등록되어 있습니다. 삭제 후 등록해주세요.`,
+      );
+    }
 
-    const newIsUpperBound = isUpperBound(compareCondition);
-    const newIsLowerBound = isLowerBound(compareCondition);
-
+    // 2. 같은 구간 값 중복 검사 (값과 조건이 모두 같을 때만 차단)
     for (const existing of existingDiscounts) {
-      // 1. 비교조건 방향 혼합 검사 (이하/미만 vs 이상/초과) - 구간 설정 유연성을 위해 제거
-      /*
-      const existingIsUpperBound = isUpperBound(existing.compareCondition);
-      const existingIsLowerBound = isLowerBound(existing.compareCondition);
-
-      if ((newIsUpperBound && existingIsLowerBound) || (newIsLowerBound && existingIsUpperBound)) {
-        const targetName = category === IUserDiscountCategory.CATEGORY ? `상품군 ${group}` : `대분류 ${primaryCategory}`;
-        throw new BadRequestException(
-          `${targetName}에 이미 다른 방향의 비교조건이 등록되어 있습니다. ` +
-            `이하/미만과 이상/초과를 혼합하여 사용할 수 없습니다.`,
-        );
-      }
-      */
-
-      // 2. 같은 구간 값 중복 검사 (값과 조건이 모두 같을 때만 차단)
       if (existing.range === range && existing.compareCondition === compareCondition) {
-        const targetName = category === IUserDiscountCategory.CATEGORY ? `상품군 ${group}` : `대분류 ${primaryCategory}`;
         throw new BadRequestException(`${targetName}에 이미 같은 구간(${range}원) 및 조건이 등록되어 있습니다.`);
       }
     }
