@@ -273,7 +273,7 @@ export class UserManagementController {
     return this.userManagementService.getCompanyList(getQuery);
   }
 
-  @Post(':id/api-key')
+  @Post('/user-management/:id/api-key')
   @UseGuards(AuthUserAuthorizationGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'API Key 발급/재발급' })
@@ -282,7 +282,7 @@ export class UserManagementController {
     return { apiKey };
   }
 
-  @Delete(':id/api-key')
+  @Delete('/user-management/:id/api-key')
   @UseGuards(AuthUserAuthorizationGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'API Key 비활성화' })
