@@ -7,6 +7,7 @@ import { Parser } from 'xml2js';
 import {
   GifitiShowCancelIn,
   GifitiShowCheckIn,
+  GiftiShowAllGoodsOut,
   GiftiShowCheckOut,
   GiftiShowCouponInfo,
   GiftiShowIssueIn,
@@ -140,6 +141,31 @@ export class GiftishowHttp implements IGiftiShow {
       };
 
       return out;
+    } catch (e) {
+      this.logger.error(e);
+      this.logger.error(JSON.stringify(e));
+      throw e;
+    }
+  }
+
+  async getAllGoods(): Promise<GiftiShowAllGoodsOut> {
+    const headers = {
+      api_code: '0101',
+      custom_auth_code: this.corpCode,
+      custom_auth_token: this.authToken,
+      custom_enc_flag: 'N',
+      Accept: 'application/json',
+    };
+
+    const url = `${this.url}/goods`;
+
+    try {
+      this.logger.log('[GiftiShow] getAllGoods → ', url);
+      const { data } = await firstValueFrom(this.httpService.get(url, { headers }));
+
+      this.logger.log(`[GiftiShow] getAllGoods response: listNum=${data.listNum}`);
+
+      return { ...data, goodsList: data.goodsList ?? [] };
     } catch (e) {
       this.logger.error(e);
       this.logger.error(JSON.stringify(e));

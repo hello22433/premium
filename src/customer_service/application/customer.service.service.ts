@@ -1029,6 +1029,9 @@ export class CustomerServiceService {
         case 'alimtalk':
           sendMethod = '알림톡';
           break;
+        case 'email':
+          sendMethod = '이메일';
+          break;
       }
     } else if (getBody.type === '수신정보 변경요청') {
       sendMethod = displayMethod;
@@ -1071,6 +1074,10 @@ export class CustomerServiceService {
           }
           case 'alimtalk': {
             await this.deliveryBatchService.csResendAsAlimTalk(map.orderDeliveryId);
+            break;
+          }
+          case 'email': {
+            await this.deliveryBatchService.csResendAsEmail(map.orderDeliveryId);
             break;
           }
           default: {
