@@ -87,9 +87,7 @@ import * as process from 'node:process';
 import * as ExcelJS from 'exceljs';
 import { OrderSettleViewDto } from '../api/dto/order.settle.view.dto';
 import { UserDiscountEntity } from '../../entity/user.discount.entity';
-import { IUserDiscountCategory } from '../../user_discount/interface/user.discount.category';
-import { IUserDiscountMethod } from '../../user_discount/interface/user.discount.method';
-import { ICompareCondition } from '../../user_discount/interface/compare.condition';
+import { findMatchingDiscount } from '../../user_discount/domain/discount.matcher';
 import { IPriceAdjustment } from '../../user_discount/interface/price.adjustment';
 import { IOrderType } from '../interface/order.type';
 import { SsgEventEntity } from '../../entity/ssg.event.entity';
@@ -1448,7 +1446,7 @@ export class OrderService {
           `[getOrderSettle] stored values: fee=${orderProduct.fee}, priceAdjustment=${orderProduct.priceAdjustment}`,
         );
 
-        const matchingDiscount = this.findMatchingDiscount(
+        const matchingDiscount = findMatchingDiscount(
           {
             price: orderProduct.product.price,
             category: orderProduct.product.category,
@@ -2388,7 +2386,7 @@ export class OrderService {
 
       // fee 또는 priceAdjustment가 설정되지 않은 경우 할인 옵션에서 찾기
       if (fee === null || priceAdjustment === null) {
-        const matchingDiscount = this.findMatchingDiscount(
+        const matchingDiscount = findMatchingDiscount(
           {
             price: mapping.product.price,
             category: mapping.product.category,
@@ -3435,91 +3433,7 @@ export class OrderService {
    * - BULK(일괄): 구간 없이 해당 상품군/대분류 전체에 적용
    * - SECTION(구간): 상품 단가가 속하는 구간의 할인율을 전체 가격에 적용
    */
-  private findMatchingDiscount(
-    product: { price: number; category: string; brand?: { nameKorean: string } | null },
-    userDiscounts: UserDiscountEntity[],
-  ): UserDiscountEntity | null {
-    if (!userDiscounts || userDiscounts.length === 0) {
-      return null;
-    }
-
-    // 1. BULK(일괄) 방식 먼저 찾기
-    const bulkDiscount = userDiscounts.find((d) => {
-      if (d.method !== IUserDiscountMethod.BULK) return false;
-
-      if (d.category === IUserDiscountCategory.CATEGORY) {
-        return d.group === product.category;
-      }
-      if (d.category === IUserDiscountCategory.CLASSIFICATION) {
-        // primaryCategory는 브랜드명을 저장하므로 brand.nameKorean과 비교
-        return d.primaryCategory === product.brand?.nameKorean;
-      }
-      return false;
-    });
-
-    if (bulkDiscount) {
-      return bulkDiscount;
-    }
-
-    // 2. SECTION(구간) 방식 - 상품 단가 기준으로 해당 구간 찾기
-    const sectionDiscounts = userDiscounts.filter((d) => {
-      if (d.method !== IUserDiscountMethod.SECTION) return false;
-      if (!d.range) return false;
-
-      if (d.category === IUserDiscountCategory.CATEGORY) {
-        return d.group === product.category;
-      }
-      if (d.category === IUserDiscountCategory.CLASSIFICATION) {
-        // primaryCategory는 브랜드명을 저장하므로 brand.nameKorean과 비교
-        return d.primaryCategory === product.brand?.nameKorean;
-      }
-      return false;
-    });
-
-    if (sectionDiscounts.length === 0) {
-      return null;
-    }
-
-    // range 값으로 오름차순 정렬
-    const sortedDiscounts = sectionDiscounts.sort((a, b) => {
-      return parseInt(a.range || '0', 10) - parseInt(b.range || '0', 10);
-    });
-
-    const productPrice = product.price;
-    let previousUpperBound = 0;
-
-    for (const discount of sortedDiscounts) {
-      const rangeValue = parseInt(discount.range || '0', 10);
-      let isInRange = false;
-
-      switch (discount.compareCondition) {
-        case ICompareCondition.LESS: // 이하
-          isInRange = productPrice > previousUpperBound && productPrice <= rangeValue;
-          break;
-        case ICompareCondition.LESS_THAN: // 미만
-          isInRange = productPrice > previousUpperBound && productPrice < rangeValue;
-          break;
-        case ICompareCondition.MORE: // 이상
-          isInRange = productPrice >= rangeValue;
-          break;
-        case ICompareCondition.MORE_THAN: // 초과
-          isInRange = productPrice > rangeValue;
-          break;
-      }
-
-      if (isInRange) {
-        return discount;
-      }
-
-      if (discount.compareCondition === ICompareCondition.LESS) {
-        previousUpperBound = rangeValue;
-      } else if (discount.compareCondition === ICompareCondition.LESS_THAN) {
-        previousUpperBound = rangeValue - 1;
-      }
-    }
-
-    return null;
-  }
+  // findMatchingDiscount는 user_discount/domain/discount.matcher.ts 공통 함수 사용
 
   /**
    * PDF 리포트 이메일 발송 공통 로직
