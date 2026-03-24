@@ -174,3 +174,22 @@ export class SettleGetRemainServiceAmountResDto {
   })
   remainServiceAmount: number;
 }
+
+export class SettleBatchConfirmFailedItemDto {
+  @ApiProperty({ description: '실패한 주문 ID' })
+  orderId: number;
+
+  @ApiProperty({ description: '실패 사유' })
+  reason: string;
+}
+
+export class SettleBatchConfirmOrdersResDto {
+  @ApiProperty({ description: '성공한 주문 ID 목록', type: [Number] })
+  success: number[];
+
+  @ApiProperty({ description: '실패한 주문 목록', type: [SettleBatchConfirmFailedItemDto] })
+  failed: SettleBatchConfirmFailedItemDto[];
+
+  @ApiProperty({ description: '이미 정산완료로 제외된 주문 ID 목록', type: [Number] })
+  skipped: number[];
+}

@@ -24,6 +24,7 @@ import {
   SettleGetUserSummaryResDto,
   SettleGetUserIdsResDto,
   SettleGetGalaxiaListResDto,
+  SettleBatchConfirmOrdersResDto,
 } from './settle.res.dto';
 import {
   SettleCreateOtherSaleReqDto,
@@ -51,6 +52,7 @@ import {
   SettleUpdateUserPerOrderReqDto,
   SettleGetGalaxiaListReqQueryDto,
   SettleGalaxiaExcelDownloadReqDto,
+  SettleBatchConfirmOrdersReqDto,
 } from './settle.req.dto';
 import { SettleUserDetailMultipleDto } from './dto/settle.user.detail.multiple.dto';
 import * as fs from 'fs';
@@ -438,6 +440,23 @@ export class SettleController {
   @Put('settle/user-per/order')
   updateUserPerOrder(@Body() getDto: SettleUpdateUserPerOrderReqDto) {
     return this.settleService.updateUserPerOrder(getDto);
+  }
+
+  @ApiOperation({
+    summary: '정산관리 > 고객사별 정산관리 > 일괄 확정 API',
+    description: '선택된 미정산 건들을 일괄로 정산완료(SETTLE_COMPLETE)로 변경',
+  })
+  @ApiOkResponse({
+    type: SettleBatchConfirmOrdersResDto,
+  })
+  // =====================================
+  @Put('settle/user-per/orders/batch-confirm')
+  async batchConfirmUserPerOrders(
+    @User() user: ILoginUserInfo,
+    @Body() body: SettleBatchConfirmOrdersReqDto,
+  ) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.SETTLE_USER_MANAGE);
+    return this.settleService.batchConfirmUserPerOrders(body.orderIds);
   }
 
   @ApiOperation({

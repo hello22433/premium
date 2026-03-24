@@ -1,6 +1,8 @@
 import { PagingReqDto } from '../../common/api/dto/pagination.req.dto';
 import { ApiProperty, ApiPropertyOptional, OmitType } from '@nestjs/swagger';
 import {
+  ArrayMaxSize,
+  ArrayMinSize,
   IsArray,
   IsBoolean,
   IsEnum,
@@ -968,4 +970,18 @@ export class SettleGalaxiaExcelDownloadReqDto {
   // =============================================================
   @IsNotEmpty()
   downloadReason: string;
+}
+
+export class SettleBatchConfirmOrdersReqDto {
+  @ApiProperty({
+    description: '일괄 확정할 주문 ID 배열',
+    example: [1, 2, 3],
+  })
+  // =============================================================
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(500)
+  @IsInt({ each: true })
+  @Type(() => Number)
+  orderIds: number[];
 }

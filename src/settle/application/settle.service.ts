@@ -2221,6 +2221,83 @@ export class SettleService {
     return;
   }
 
+  async batchConfirmUserPerOrders(orderIds: number[]) {
+    const success: number[] = [];
+    const failed: { orderId: number; reason: string }[] = [];
+    const skipped: number[] = [];
+
+    // 주문 일괄 조회
+    const orders = await this.orderRepository.find({
+      where: { id: In(orderIds) },
+    });
+    const orderMap = new Map(orders.map((o) => [o.id, o]));
+
+    // 존재하지 않는 주문 처리
+    for (const id of orderIds) {
+      if (!orderMap.has(id)) {
+        failed.push({ orderId: id, reason: '주문이 존재하지 않습니다.' });
+      }
+    }
+
+    // billing user 일괄 조회 (N+1 방지)
+    const billingUserIds = [...new Set(
+      orders
+        .filter((o) => o.settleStatus !== SettleUserOrderDetailEnum.SETTLE_COMPLETE)
+        .map((o) => o.clientUserId ?? o.userId),
+    )];
+    const users = billingUserIds.length > 0
+      ? await this.userRepository.find({ where: { id: In(billingUserIds) } })
+      : [];
+    const userMap = new Map<number, UserEntity>(users.map((u) => [u.id, u]));
+
+    for (const order of orders) {
+      try {
+        // 이미 정산완료인 건은 스킵
+        if (order.settleStatus === SettleUserOrderDetailEnum.SETTLE_COMPLETE) {
+          skipped.push(order.id);
+          continue;
+        }
+
+        // 과금 대상 사용자 결정
+        const billingUserId = order.clientUserId ?? order.userId;
+        const user = userMap.get(billingUserId);
+
+        if (!user) {
+          failed.push({ orderId: order.id, reason: '과금 대상 유저가 존재하지 않습니다.' });
+          continue;
+        }
+
+        // 선정산(PRE_PAYMENT): settleStatus만 변경
+        if (user.settleCondition === IUserSettleCondition.PRE_PAYMENT) {
+          order.settleStatus = SettleUserOrderDetailEnum.SETTLE_COMPLETE;
+          await this.orderRepository.save(order);
+          success.push(order.id);
+          continue;
+        }
+
+        // 후정산(POST_PAYMENT): settleStatus + isSettleComplete + allSettleAmount 차감
+        order.settleStatus = SettleUserOrderDetailEnum.SETTLE_COMPLETE;
+        order.isSettleComplete = true;
+        await this.orderRepository.save(order);
+        user.allSettleAmount -= order.settleAmount;
+        success.push(order.id);
+      } catch (e) {
+        failed.push({ orderId: order.id, reason: e.message || '처리 중 오류가 발생했습니다.' });
+      }
+    }
+
+    // 변경된 user 일괄 저장 (allSettleAmount 누적 차감 반영)
+    for (const user of userMap.values()) {
+      try {
+        await this.userRepository.save(user);
+      } catch (e) {
+        console.error(`[batchConfirmUserPerOrders] user save 실패 (userId: ${user.id}):`, e.message);
+      }
+    }
+
+    return { success, failed, skipped };
+  }
+
   @Transactional()
   async syncSettleOverdue() {
     // 1. 정산기일 설정이 있는 사용자 목록 조회
