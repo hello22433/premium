@@ -1357,6 +1357,7 @@ export class SettleService {
         deliveryReportStatus: this.formatReportStatus(order.deliveryCompleteReportCount, order.deliveryReportLastSource),
         transactionStatementStatus: this.formatReportStatus(order.orderCompleteReportCount, order.transactionStatementLastSource),
         companyId: billingUser?.companyId ?? undefined,
+        isCreditExcess: order.isCreditExcess ?? false,
       };
     });
 
@@ -1503,6 +1504,7 @@ export class SettleService {
       sendRequestAt: sendRequestAt,
       status: order.status,
       productList: productList,
+      isCreditExcess: order.isCreditExcess ?? false,
     };
   }
 
@@ -2490,6 +2492,7 @@ export class SettleService {
       overdueAmount,
       allSettleAmount: userEntity.allSettleAmount,
       remainServiceAmount,
+      creditExcessAmount: remainServiceAmount < 0 ? Math.abs(remainServiceAmount) : 0,
     };
   }
 

@@ -1,5 +1,5 @@
 import { OrderViewDto } from './dto/order.view.dto';
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { GetListResDto } from '../../common/api/dto/get.list.res.dto';
 import { IOrderType } from '../interface/order.type';
 import { OrderDetailProductDto, OrderPdfDetailProductDto } from './dto/order.detail.product.dto';
@@ -268,9 +268,21 @@ export class OrderGetOrderCompleteReportResDto extends OrderCompleteReportViewDt
 
 export class OrderDeliveryConfirmed {
   @ApiProperty({
-    description: '메세지 ex) 전체 성공 : success, 일부 실패가 존재하는 경우 : fail',
+    description: '메세지 ex) 전체 성공 : success, 일부 실패가 존재하는 경우 : fail, 한도 초과 : credit_excess',
   })
   message: string;
+
+  @ApiPropertyOptional({ description: '한도 초과 여부' })
+  creditExcess?: boolean;
+
+  @ApiPropertyOptional({ description: '초과 금액' })
+  excessAmount?: number;
+
+  @ApiPropertyOptional({ description: '잔여 한도' })
+  remainServiceAmount?: number;
+
+  @ApiPropertyOptional({ description: '필요 금액' })
+  finalAmount?: number;
 }
 
 export class OrderGetSettleGetListResDto extends GetListResDto {
