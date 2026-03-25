@@ -289,6 +289,12 @@ export class OrderGetSettleGetListResDto extends GetListResDto {
     description: '카드할증 적용 여부',
   })
   cardSurchargeApplied: boolean;
+
+  @ApiProperty({
+    description: 'SSG 가상 행 포함 총 건수 (페이지네이션 참고용)',
+    required: false,
+  })
+  virtualTotalCount?: number;
 }
 
 export class OrderGetMyOrderHistoryResDto extends OrderDashboardViewDto {}
