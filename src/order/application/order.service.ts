@@ -2065,6 +2065,7 @@ export class OrderService {
       throw new ForbiddenException('타 유저의 주문입니다.');
     }
 
+    // NOTE: deleteTemp에도 동일한 검증 패턴 존재 — 변경 시 양쪽 모두 업데이트할 것
     if (order.status !== IOrderStatus.TEMP && order.status !== IOrderStatus.DELIVERY_CANCEL) {
       throw new BadRequestException('임시저장 또는 발송취소 상태가 아닐경우 수정할 수 없습니다.');
     }
@@ -2214,17 +2215,23 @@ export class OrderService {
   async deleteTemp(user: ILoginUserInfo, getBody: OrderDeleteTempReqDto): Promise<void> {
     const { id } = getBody;
 
-    // 1. 주문 존재 여부와 TEMP 상태 확인
+    // NOTE: updateTemp에도 동일한 검증 패턴 존재 — 변경 시 양쪽 모두 업데이트할 것
     const order = await this.orderRepository.findOne({
       where: {
         id: id,
-        userId: user.id,
-        status: IOrderStatus.TEMP,
       },
     });
 
     if (!order) {
-      throw new BadRequestException('존재하지 않거나 임시저장 상태가 아닌 주문입니다.');
+      throw new BadRequestException('존재하지 않는 주문입니다.');
+    }
+
+    if (user.authority !== IUserAuthority.SUPER_ADMIN && order.userId !== user.id) {
+      throw new ForbiddenException('타 유저의 주문입니다.');
+    }
+
+    if (order.status !== IOrderStatus.TEMP && order.status !== IOrderStatus.DELIVERY_CANCEL) {
+      throw new BadRequestException('임시저장 또는 발송취소 상태가 아닌 주문은 삭제할 수 없습니다.');
     }
 
     // 2. 주문 자체 soft delete (deleted_at에 now() 기록)
