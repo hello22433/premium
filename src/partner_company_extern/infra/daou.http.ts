@@ -8,6 +8,8 @@ import {
   DaouCancelOut,
   DaouCheckIn,
   DaouCheckOut,
+  DaouGoodsInfoItem,
+  DaouGoodsInfoOut,
   DaouIssueIn,
   DaouIssueOut,
   IDaou,
@@ -46,6 +48,7 @@ export class DaouHttp implements IDaou {
   private readonly ACTION_ISSUE = 'CI112_ONLY_ISSUECPN_WITHPAY'; // 쿠폰 발급
   private readonly ACTION_CANCEL = 'CI104_DISUSECPN'; // 쿠폰 취소
   private readonly ACTION_CHECK = 'CI07113_QUERY_COOPERORDER_WITHPAY'; // 쿠폰 상태 조회
+  private readonly ACTION_GOODS_INFO = 'CC01_DOWN_ALL_GOODSINFO'; // 전체 상품 정보 조회 (GET)
 
   /**
    * TLS 1.2를 사용하는 HTTPS Agent 생성
@@ -264,6 +267,83 @@ export class DaouHttp implements IDaou {
     } catch (error) {
       this.logger.error(`DAOU Cancel Error: ${JSON.stringify(error)}`);
       throw new InternalServerErrorException('다우기술 쿠폰 취소 실패');
+    }
+  }
+
+  /**
+   * 전체 상품 정보 조회
+   * API 스펙에서 HTTP GET 명시 — 기존 issue/check/cancel은 POST
+   */
+  async goodsInfo(): Promise<DaouGoodsInfoOut> {
+    try {
+      // URL 파라미터 구성 (인증 정보만 사용)
+      const params = new URLSearchParams({
+        COOPER_ID: this.cooperId,
+        COOPER_PW: this.cooperPw,
+        SITE_ID: this.siteId,
+      });
+
+      // URL 구성: baseUrl + ACTION + 파라미터
+      const url = `${this.baseUrl}${this.ACTION_GOODS_INFO}&${params.toString()}`;
+
+      this.logger.log(`DAOU GoodsInfo URL: ${url}`);
+
+      // TLS 1.2 Agent 사용
+      const httpsAgent = this.createHttpsAgent();
+
+      // GET 요청 (API 스펙 명시 — 기존 메서드의 POST와 다름)
+      const response = await firstValueFrom(
+        this.httpService.get(url, { httpsAgent }),
+      );
+
+      this.logger.log(`DAOU GoodsInfo Response: ${response.data}`);
+
+      // XML 응답 파싱 (배열 구조 전용 파서)
+      const parsed = await this.xmlParser.parseGoodsInfo(response.data);
+
+      // 성공 응답인지 확인
+      if (parsed.rt === 'S000001') {
+        // XML 키 → 시맨틱 camelCase 매핑
+        const goods: DaouGoodsInfoItem[] = parsed.goodsList.map((item) => ({
+          reqNo: item.NO_REQ || '',
+          reqName: item.NM_REQ || '',
+          goodsNo: item.NO_GOODS || '',
+          goodsName: item.NM_GOODS || '',
+          goodsCompany: item.GOODS_COMPANY || '',
+          goodsCompanyName: item.NM_GOODS_COMPANY || '',
+          goodsPrice: item.GOODS_PRICE || '',
+          cpnPrice: item.CPN_PRICE || '',
+          goodsImage: item.GOODS_IMAGE || '',
+          category: item.CATEGORY || '',
+          validStart: item.VALID_START || '',
+          validEnd: item.VALID_END || '',
+          siteId: item.SITE_ID || '',
+          goodsCompanyCharge: item.GOODS_COMPANY_CHARGE || '',
+          goodsCnt: item.GOODS_CNT || '',
+          discountPrice: item.DISCOUNT_PRICE || '',
+          goodsDiscount: item.GOODS_DISCOUNT || '',
+          isChanged: item.YN_CHANGED || '',
+          changedDate: item.CHANGED_DATE || '',
+          regDate: item.REG_DATE || '',
+        }));
+
+        return {
+          resultCode: parsed.rt,
+          resultMessage: parsed.rtmsg || '정상처리',
+          listCount: parsed.listCount,
+          goods,
+        };
+      } else {
+        return {
+          resultCode: parsed.rt || '-1',
+          resultMessage: parsed.rtmsg || '상품 정보 조회에 실패하였습니다.',
+          listCount: 0,
+          goods: [],
+        };
+      }
+    } catch (error) {
+      this.logger.error(`DAOU GoodsInfo Error: ${JSON.stringify(error)}`);
+      throw new InternalServerErrorException('다우기술 상품 정보 조회 실패');
     }
   }
 }
