@@ -1543,7 +1543,7 @@ export class OrderService {
 
     const orderId = existingOrderProducts[0].orderId;
     const settleAmount = existingOrderProducts[0].order.sendAmount;
-    const oneUserId = existingOrderProducts[0].order.userId;
+    const oneUserId = existingOrderProducts[0].order.clientUserId ?? existingOrderProducts[0].order.userId;
     const sendAmount = existingOrderProducts[0].order.sendAmount;
     const isSettleBalance = existingOrderProducts[0].order.isSettleBalance;
     let settleFee = 0;
@@ -1645,7 +1645,7 @@ export class OrderService {
 
     const orderId = existingOrderProducts[0].orderId;
     const settleAmount = existingOrderProducts[0].order.sendAmount;
-    const oneUserId = existingOrderProducts[0].order.userId;
+    const oneUserId = existingOrderProducts[0].order.clientUserId ?? existingOrderProducts[0].order.userId;
 
     const beforeSettleAmount = existingOrderProducts[0].order.settleAmount;
     const isSettleBalance = existingOrderProducts[0].order.isSettleBalance;
