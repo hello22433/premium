@@ -2497,9 +2497,8 @@ export class OrderService {
 
     OrderValidation(order);
 
-    // 신세계 상품 검증 및 차감 확정
+    // 신세계 상품 검증 (confirmEventBalance는 한도 체크 이후에 실행)
     if (order.type === IOrderType.SSG) {
-      // 배송건에 SSG 이벤트가 할당되어 있는지 확인
       const hasSsgEvent = order.orderProductMappings!.some((mapping) =>
         mapping.orderDeliveries.some((delivery) => delivery.ssgEventId != null),
       );
@@ -2507,9 +2506,6 @@ export class OrderService {
       if (!hasSsgEvent) {
         throw new BadRequestException('SSG 이벤트가 선택되지 않았습니다.');
       }
-
-      // 가차감을 확정으로 변경 (isTemporary: true -> false)
-      await this.ssgEventService.confirmEventBalance(order.id);
     }
 
     let message = 'success';
@@ -2714,11 +2710,28 @@ export class OrderService {
         remainServiceAmount = effectiveBalance - oneUser.allSettleAmount;
       }
 
-      // 3. 한도 체크
+      // 3. 한도 체크 + 신용초과 분기
       if (finalAmount > remainServiceAmount) {
-        throw new BadRequestException(
-          `잔여발송한도가 부족하여 발송확정할 수 없습니다. (필요: ${finalAmount.toLocaleString()}원, 가능: ${remainServiceAmount.toLocaleString()}원)`,
+        if (!getBody.forceConfirm) {
+          // 1차 호출: 초과 정보 응답 반환 (SSG confirmEventBalance 미실행)
+          return {
+            message: 'credit_excess',
+            creditExcess: true,
+            excessAmount: finalAmount - remainServiceAmount,
+            remainServiceAmount,
+            finalAmount,
+          };
+        }
+        // 2차 호출 (forceConfirm=true): 초과 허용, 신용초과 마킹
+        order.isCreditExcess = true;
+        this.logger.warn(
+          `신용초과 발송확정: orderId=${order.id}, 초과액=${(finalAmount - remainServiceAmount).toLocaleString()}원, 필요=${finalAmount.toLocaleString()}원, 가능=${remainServiceAmount.toLocaleString()}원`,
         );
+      }
+
+      // 3-1. SSG 가차감 확정 (진행 결정 후에만 실행)
+      if (order.type === IOrderType.SSG) {
+        await this.ssgEventService.confirmEventBalance(order.id);
       }
 
       // 4. isSettleBalance 결정 + 차감

@@ -77,4 +77,9 @@ export class SettleUserListViewDto {
     description: '고객사 ID',
   })
   companyId?: number;
+
+  @ApiProperty({
+    description: '신용초과발송 여부',
+  })
+  isCreditExcess: boolean;
 }

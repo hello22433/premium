@@ -85,6 +85,9 @@ export class OrderEntity extends BaseEntity {
   @Column({ default: false, comment: '카드할증 적용 여부 (3%)' })
   cardSurchargeApplied: boolean;
 
+  @Column({ default: false, comment: '신용초과발송 여부' })
+  isCreditExcess: boolean;
+
   @Column({ type: 'text', nullable: true, comment: '주문 취소 사유' })
   cancelReason: string | null;
 

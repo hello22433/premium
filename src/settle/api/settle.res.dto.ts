@@ -173,6 +173,12 @@ export class SettleGetRemainServiceAmountResDto {
     example: 13500000,
   })
   remainServiceAmount: number;
+
+  @ApiProperty({
+    description: '신용초과금 (잔여한도가 음수일 때 절대값)',
+    example: 0,
+  })
+  creditExcessAmount: number;
 }
 
 export class SettleBatchConfirmFailedItemDto {

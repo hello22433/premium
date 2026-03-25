@@ -1,5 +1,5 @@
 import { IOrderStatus } from '../interface/order.status';
-import { IsArray, IsEnum, IsIn, IsNotEmpty, IsNumber, IsOptional, IsString, Matches, MaxLength } from 'class-validator';
+import { IsArray, IsBoolean, IsEnum, IsIn, IsNotEmpty, IsNumber, IsOptional, IsString, Matches, MaxLength } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { dateAtRegexp } from '../../common/domain/date.regexp';
 import { PagingReqDto } from '../../common/api/dto/pagination.req.dto';
@@ -233,6 +233,14 @@ export class OrderDeliveryConfirmedReqDto {
   @IsNotEmpty()
   @IsNumber()
   id: number;
+
+  @ApiPropertyOptional({
+    description: '한도 초과 시 강제 진행 여부',
+  })
+  // ==================================
+  @IsOptional()
+  @IsBoolean()
+  forceConfirm?: boolean;
 }
 
 export class OrderReviewCompleteReqDto {

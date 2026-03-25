@@ -55,4 +55,9 @@ export class SettleUserDetailDto {
     description: '상품 정보 리스트',
   })
   productList: SettleProductViewDto[];
+
+  @ApiProperty({
+    description: '신용초과발송 여부',
+  })
+  isCreditExcess: boolean;
 }
