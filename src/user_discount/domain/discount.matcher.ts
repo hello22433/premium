@@ -17,6 +17,7 @@ type DiscountMatchProduct = {
 export function findMatchingDiscount(
   product: DiscountMatchProduct,
   userDiscounts: UserDiscountEntity[],
+  priceOverride?: number,
 ): UserDiscountEntity | null {
   if (!userDiscounts || userDiscounts.length === 0) {
     return null;
@@ -29,7 +30,7 @@ export function findMatchingDiscount(
   );
 
   if (brandDiscounts.length > 0) {
-    return findDiscountByMethod(product, brandDiscounts);
+    return findDiscountByMethod(product, brandDiscounts, priceOverride);
   }
 
   const categoryDiscounts = userDiscounts.filter(
@@ -38,7 +39,7 @@ export function findMatchingDiscount(
       d.group === product.category,
   );
 
-  return findDiscountByMethod(product, categoryDiscounts);
+  return findDiscountByMethod(product, categoryDiscounts, priceOverride);
 }
 
 /**
@@ -47,6 +48,7 @@ export function findMatchingDiscount(
 function findDiscountByMethod(
   product: DiscountMatchProduct,
   discounts: UserDiscountEntity[],
+  priceOverride?: number,
 ): UserDiscountEntity | null {
   if (discounts.length === 0) {
     return null;
@@ -69,7 +71,7 @@ function findDiscountByMethod(
     return parseInt(a.range || '0', 10) - parseInt(b.range || '0', 10);
   });
 
-  const productPrice = product.price;
+  const productPrice = priceOverride ?? product.price;
   let previousUpperBound = 0;
 
   for (const discount of sortedDiscounts) {

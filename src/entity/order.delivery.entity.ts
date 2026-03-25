@@ -9,6 +9,8 @@ import { OrderDeliveryEmailCouponStatus } from '../delivery/interface/order.deli
 import { ProductEntity } from './product.entity';
 import { OrderHistoryEntity } from './order.history.entity';
 import { OrderDeliveryRefundStatusEnum } from '../delivery/interface/order.delivery.refund.status.enum';
+import { IPriceAdjustment } from '../user_discount/interface/price.adjustment';
+import { IOrderSettleDiscountType } from '../order/interface/order.settle.discount.type';
 
 @Entity('order_delivery')
 export class OrderDeliveryEntity extends BaseEntity {
@@ -107,6 +109,15 @@ export class OrderDeliveryEntity extends BaseEntity {
 
   @Column({ type: 'int', nullable: true, comment: '환불 률 1~100 으로 저장 및 사용' })
   refundRatio: number | null;
+
+  @Column({ type: 'decimal', precision: 5, scale: 2, nullable: true, comment: '정산 수수료(%)' })
+  settleFee: number | null;
+
+  @Column({ type: 'varchar', length: 20, nullable: true, comment: '정산 할인/할증 구분' })
+  settlePriceAdjustment: IPriceAdjustment | null;
+
+  @Column({ type: 'varchar', length: 50, nullable: true, comment: '정산 할인 구분' })
+  settleDiscountType: IOrderSettleDiscountType | null;
 
   @Column({ type: 'datetime', nullable: true, comment: '환불 접수 일자' })
   refundRegisterAt: Date | null;

@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsEnum, IsNotEmpty, IsNumber, IsOptional, Max, Min } from 'class-validator';
+import { IsArray, IsEnum, IsNotEmpty, IsNumber, IsOptional, Max, Min } from 'class-validator';
 import { Type } from 'class-transformer';
 import { IOrderSettleDiscountType } from '../../interface/order.settle.discount.type';
 import { IPriceAdjustment } from '../../../user_discount/interface/price.adjustment';
@@ -36,7 +36,7 @@ export class OrderSettleCreateDto {
   // =============================
   @IsNumber()
   @IsNotEmpty()
-  @Min(1, { message: '수수료는 최소 1% 이상이어야 합니다.' })
+  @Min(0, { message: '수수료는 최소 0% 이상이어야 합니다.' })
   @Max(100, { message: '수수료는 최대 100% 이하여야 합니다.' })
   fee: number;
 
@@ -51,4 +51,14 @@ export class OrderSettleCreateDto {
   @Max(100, { message: '환불률은 최대 100% 이하여야 합니다.' })
   @Type(() => Number)
   refund?: number | null;
+
+  @ApiProperty({
+    description: 'SSG 가상 분리 행의 delivery ID 목록',
+    required: false,
+  })
+  // =============================
+  @IsOptional()
+  @IsArray()
+  @IsNumber({}, { each: true })
+  deliveryIds?: number[];
 }

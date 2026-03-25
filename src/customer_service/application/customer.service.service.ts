@@ -46,6 +46,7 @@ import { ActivityLogResult } from 'src/activity_log/interface/activity.log.resul
 import { UserEntity } from 'src/entity/user.entity';
 import { UserCompanyEntity } from 'src/entity/user.company.entity';
 import { OrderFeeCalculator, applyCardSurcharge } from '../../order/domain/order.fee.calculator';
+import { getEffectiveFee, getEffectivePriceAdjustment } from '../../util/settle-fee.util';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 import { Response } from 'express';
 import * as ExcelJS from 'exceljs';
@@ -107,10 +108,11 @@ export class CustomerServiceService {
       return;
     }
 
-    // 정산금액 계산 (calculateSettlementPrice 패턴 - delivery.batch.service.ts:182-188)
     let price = mapping.product.price;
-    if (mapping.fee !== null && mapping.priceAdjustment) {
-      price = OrderFeeCalculator({ fee: mapping.fee, priceAdjustment: mapping.priceAdjustment, price });
+    const effectiveFee = getEffectiveFee(orderDelivery, mapping);
+    const effectivePriceAdjustment = getEffectivePriceAdjustment(orderDelivery, mapping);
+    if (effectiveFee !== null && effectivePriceAdjustment) {
+      price = OrderFeeCalculator({ fee: effectiveFee, priceAdjustment: effectivePriceAdjustment, price });
     }
     const restoreAmount = applyCardSurcharge(price, order.cardSurchargeApplied);
 

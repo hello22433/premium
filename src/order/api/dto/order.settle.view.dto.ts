@@ -75,4 +75,20 @@ export class OrderSettleViewDto {
   })
   // =================================
   refund: number | null;
+
+  @ApiProperty({
+    description: 'SSG 가상 분리 행의 delivery ID 목록',
+    nullable: true,
+    required: false,
+  })
+  // =================================
+  deliveryIds?: number[] | null;
+
+  @ApiProperty({
+    description: 'SSG 가상 분리 행 여부',
+    nullable: true,
+    required: false,
+  })
+  // =================================
+  isSubRow?: boolean;
 }

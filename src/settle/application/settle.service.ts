@@ -2515,8 +2515,31 @@ export class SettleService {
    * (새로 등록된 할인조건이 이미 완료된 주문에 소급 적용되는 것을 방지)
    */
   private calculateMappingSettlePrice(
-    mapping: { fee: number | null; priceAdjustment: IPriceAdjustment | null; amount: number; product: { price: number; category: string; brand?: { nameKorean: string } | null } },
+    mapping: { fee: number | null; priceAdjustment: IPriceAdjustment | null; amount: number; product: { price: number; category: string; brand?: { nameKorean: string } | null }; orderDeliveries?: { settleFee: number | null; settlePriceAdjustment: string | null }[] },
   ): number {
+    // SSG 중복할인: delivery에 settleFee가 있으면 delivery별로 계산 후 합산
+    const deliveries = mapping.orderDeliveries ?? [];
+    const hasDeliveryFee = deliveries.some((d) => d.settleFee !== null);
+
+    if (hasDeliveryFee) {
+      let total = 0;
+      for (const delivery of deliveries) {
+        const fee = delivery.settleFee ?? mapping.fee;
+        const priceAdjustment = delivery.settlePriceAdjustment ?? mapping.priceAdjustment;
+        let price = mapping.product.price;
+        if (fee !== null && fee > 0 && priceAdjustment !== null) {
+          if (priceAdjustment === IPriceAdjustment.DISCOUNT) {
+            price = Math.ceil((mapping.product.price * (100 - fee)) / 100);
+          } else if (priceAdjustment === IPriceAdjustment.ADDITIONAL) {
+            price = Math.ceil((mapping.product.price * (100 + fee)) / 100);
+          }
+        }
+        total += price;
+      }
+      return total;
+    }
+
+    // 기존 로직: 매핑 레벨 fee 사용
     const productTotalPrice = mapping.product.price * mapping.amount;
 
     if (mapping.fee !== null && mapping.priceAdjustment !== null) {

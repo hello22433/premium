@@ -31,6 +31,7 @@ import { IOrderType } from '../../order/interface/order.type';
 import { IUserSettleCondition } from '../../user/interface/user.settle.condition';
 import { SettleUserOrderDetailEnum } from '../../settle/interface/settle.user.order.detail';
 import { OrderFeeCalculator, applyCardSurcharge } from '../../order/domain/order.fee.calculator';
+import { getEffectiveFee, getEffectivePriceAdjustment } from '../../util/settle-fee.util';
 import { IOrderRealProductStatus } from '../../order_real_product/interface/order.real.product.status';
 import { IFileStorage } from '../../file/interface/file.storage';
 import { IProductType } from '../../product/interface/product.type';
@@ -177,10 +178,16 @@ export class DeliveryBatchService {
    * 매핑의 할인/할증 + 카드할증을 적용한 정산단가 계산
    * fee/priceAdjustment가 미설정이면 정가 기준, 카드할증은 order에서 판단
    */
-  private calculateSettlementPrice(mapping: OrderProductMappingEntity, cardSurchargeApplied: boolean): number {
+  private calculateSettlementPrice(
+    mapping: OrderProductMappingEntity,
+    cardSurchargeApplied: boolean,
+    delivery?: OrderDeliveryEntity,
+  ): number {
     let price = mapping.product.price;
-    if (mapping.fee !== null && mapping.priceAdjustment) {
-      price = OrderFeeCalculator({ fee: mapping.fee, priceAdjustment: mapping.priceAdjustment, price });
+    const fee = getEffectiveFee(delivery, mapping);
+    const priceAdjustment = getEffectivePriceAdjustment(delivery, mapping);
+    if (fee !== null && priceAdjustment) {
+      price = OrderFeeCalculator({ fee, priceAdjustment, price });
     }
     return applyCardSurcharge(price, cardSurchargeApplied);
   }
@@ -193,7 +200,7 @@ export class DeliveryBatchService {
     const order = orderDelivery.orderProductMapping.order;
     const mapping = orderDelivery.orderProductMapping;
     const productPrice = mapping.product.price;
-    const settlementPrice = this.calculateSettlementPrice(mapping, order.cardSurchargeApplied);
+    const settlementPrice = this.calculateSettlementPrice(mapping, order.cardSurchargeApplied, orderDelivery);
     // 과금 대상 userId (대행주문인 경우 clientUserId, 아니면 userId)
     const userId = order.clientUserId ?? order.user!.id;
 
@@ -759,7 +766,7 @@ export class DeliveryBatchService {
     const order = orderDelivery.orderProductMapping.order;
     const mapping = orderDelivery.orderProductMapping;
     const productPrice = mapping.product.price;
-    const settlementPrice = this.calculateSettlementPrice(mapping, order.cardSurchargeApplied);
+    const settlementPrice = this.calculateSettlementPrice(mapping, order.cardSurchargeApplied, orderDelivery);
     // 과금 대상 userId (대행주문인 경우 clientUserId, 아니면 userId)
     const userId = order.clientUserId ?? order.user!.id;
 

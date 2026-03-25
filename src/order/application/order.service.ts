@@ -90,6 +90,7 @@ import { UserDiscountEntity } from '../../entity/user.discount.entity';
 import { findMatchingDiscount } from '../../user_discount/domain/discount.matcher';
 import { IPriceAdjustment } from '../../user_discount/interface/price.adjustment';
 import { IOrderType } from '../interface/order.type';
+import { IOrderSettleDiscountType } from '../interface/order.settle.discount.type';
 import { SsgEventEntity } from '../../entity/ssg.event.entity';
 import { SsgEventAmountHistoryEntity } from '../../entity/ssg.event.amount.history.entity';
 import { IProductType } from '../../product/interface/product.type';
@@ -1429,81 +1430,199 @@ export class OrderService {
     const isOrderCompleted =
       order.status === IOrderStatus.DELIVERY_CONFIRMED || order.status === IOrderStatus.DELIVERY_COMPLETE;
 
-    const resultList: OrderSettleViewDto[] = orderProductList.map((orderProduct) => {
-      let priceAdjustment = orderProduct.priceAdjustment;
-      let fee = orderProduct.fee;
+    // SSG 주문: 수신번호별 합산 할인 로직
+    const isSsgOrder = order.type === IOrderType.SSG;
+    let resultList: OrderSettleViewDto[] = [];
+    let virtualTotalCount = 0;
 
-      let discountPrice = orderProduct.product.price;
-      const totalPrice = orderProduct.product.price * orderProduct.amount;
-      let discountTotalPrice = orderProduct.product.price * orderProduct.amount;
+    if (isSsgOrder) {
+      for (const orderProduct of orderProductList) {
+        const productPrice = orderProduct.product.price;
+        const product = orderProduct.product;
 
-      // 3. 할인 정보가 null 일 경우 상품에 맞는 할인 옵션 찾기
-      if ((!priceAdjustment || fee === null) && !isOrderCompleted) {
-        this.logger.debug(
-          `[getOrderSettle] product: id=${orderProduct.product.id}, name=${orderProduct.product.name}, category='${orderProduct.product.category}', price=${orderProduct.product.price}, brand=${orderProduct.product.brand?.nameKorean ?? 'null'}`,
-        );
-        this.logger.debug(
-          `[getOrderSettle] stored values: fee=${orderProduct.fee}, priceAdjustment=${orderProduct.priceAdjustment}`,
-        );
+        // delivery ID → entity 매핑 (O(1) lookup용)
+        const deliveryMap = new Map((orderProduct.orderDeliveries ?? []).map((d) => [d.id, d]));
 
-        const matchingDiscount = findMatchingDiscount(
-          {
-            price: orderProduct.product.price,
-            category: orderProduct.product.category,
-            brand: orderProduct.product.brand,
-          },
-          userDiscounts,
-        );
-
-        this.logger.debug(
-          `[getOrderSettle] matchingDiscount: ${matchingDiscount ? `id=${matchingDiscount.id}, category=${matchingDiscount.category}, method=${matchingDiscount.method}, group='${matchingDiscount.group}', range=${matchingDiscount.range}, compareCondition=${matchingDiscount.compareCondition}, priceAdjustment=${matchingDiscount.priceAdjustment}, pricePercent=${matchingDiscount.pricePercent}` : 'null (no match found)'}`,
-        );
-
-        // 4. 할인 정보가 존재하면 null 값만 채우기
-        if (matchingDiscount) {
-          priceAdjustment = priceAdjustment ?? matchingDiscount.priceAdjustment;
-          fee = fee ?? matchingDiscount.pricePercent;
+        // 수신번호별 delivery 그룹핑
+        const targetGroups = new Map<string, typeof orderProduct.orderDeliveries>();
+        for (const delivery of orderProduct.orderDeliveries ?? []) {
+          const decrypted = this.cryptoCipher.safeDecryptDeliveryTarget(
+            delivery.originalDeliveryTarget || delivery.deliveryTarget,
+          );
+          // null 복호화는 개별 처리 (같은 그룹으로 묶이지 않도록)
+          const key = decrypted !== null ? decrypted : `__null_${delivery.id}`;
+          const group = targetGroups.get(key) ?? [];
+          group.push(delivery);
+          targetGroups.set(key, group);
         }
-        fee = fee ?? 0;
-      } else if (fee === null) {
-        fee = 0;
+
+        // 할인율별 그룹핑 (같은 할인율이면 합침)
+        const discountGroups = new Map<string, {
+          fee: number;
+          priceAdjustment: IPriceAdjustment | null;
+          settleDiscountType: IOrderSettleDiscountType | null;
+          deliveryIds: number[];
+          count: number;
+        }>();
+
+        for (const [, deliveries] of targetGroups) {
+          const totalAmount = productPrice * deliveries.length;
+          let fee: number;
+          let priceAdjustment: IPriceAdjustment | null;
+          let settleDiscountType: IOrderSettleDiscountType | null = orderProduct.settleDiscountType ?? null;
+
+          // 소급 방지: 완료 주문이고 delivery에 settleFee가 있으면 저장값 사용
+          if (isOrderCompleted && deliveries[0].settleFee != null) {
+            fee = deliveries[0].settleFee;
+            priceAdjustment = deliveries[0].settlePriceAdjustment ?? null;
+            settleDiscountType = deliveries[0].settleDiscountType ?? settleDiscountType;
+          } else if (!isOrderCompleted) {
+            // 합산액으로 할인 구간 매칭
+            const matchingDiscount = findMatchingDiscount(
+              { price: productPrice, category: product.category, brand: product.brand },
+              userDiscounts,
+              totalAmount,
+            );
+            fee = matchingDiscount?.pricePercent ?? 0;
+            priceAdjustment = matchingDiscount?.priceAdjustment ?? null;
+          } else {
+            // 완료 주문 + settleFee 미설정: 매핑 fee 폴백
+            fee = orderProduct.fee ?? 0;
+            priceAdjustment = orderProduct.priceAdjustment;
+          }
+
+          // fee 유효성 검사
+          if (fee < 0 || fee > 100) fee = 0;
+
+          const feeKey = `${fee}-${priceAdjustment}`;
+          const existing = discountGroups.get(feeKey);
+          if (existing) {
+            existing.deliveryIds.push(...deliveries.map((d) => d.id));
+            existing.count += deliveries.length;
+          } else {
+            discountGroups.set(feeKey, {
+              fee,
+              priceAdjustment,
+              settleDiscountType,
+              deliveryIds: deliveries.map((d) => d.id),
+              count: deliveries.length,
+            });
+          }
+        }
+
+        // 할인율별 가상 행 생성
+        let isFirstRow = true;
+        for (const [, group] of discountGroups) {
+          const groupTotalPrice = productPrice * group.count;
+          const discountPrice = group.priceAdjustment
+            ? OrderFeeCalculator({ fee: group.fee, priceAdjustment: group.priceAdjustment, price: productPrice })
+            : productPrice;
+          const discountTotalPrice = group.priceAdjustment
+            ? OrderFeeCalculator({ fee: group.fee, priceAdjustment: group.priceAdjustment, price: groupTotalPrice })
+            : groupTotalPrice;
+
+          const firstDelivery = deliveryMap.get(group.deliveryIds[0]);
+          const refund = firstDelivery?.refundRatio ?? null;
+
+          resultList.push({
+            id: orderProduct.id,
+            brandName: product.brand?.nameKorean ?? null,
+            name: product.name,
+            price: productPrice,
+            amount: group.count,
+            totalPrice: groupTotalPrice,
+            settleDiscountType: group.settleDiscountType,
+            priceAdjustment: group.priceAdjustment,
+            fee: group.fee,
+            discountPrice,
+            discountTotalPrice,
+            refund,
+            deliveryIds: group.deliveryIds,
+            isSubRow: !isFirstRow,
+          });
+          isFirstRow = false;
+          virtualTotalCount++;
+        }
       }
+    } else {
+      // 비SSG: 기존 로직
+      resultList = orderProductList.map((orderProduct) => {
+        let priceAdjustment = orderProduct.priceAdjustment;
+        let fee = orderProduct.fee;
 
-      // fee 유효성 검사 (0은 허용)
-      if (fee === null || fee < 0 || fee > 100) {
-        fee = 0;
-      }
+        let discountPrice = orderProduct.product.price;
+        const totalPrice = orderProduct.product.price * orderProduct.amount;
+        let discountTotalPrice = orderProduct.product.price * orderProduct.amount;
 
-      discountPrice = OrderFeeCalculator({
-        fee: fee!,
-        priceAdjustment: priceAdjustment!,
-        price: orderProduct.product.price,
+        // 3. 할인 정보가 null 일 경우 상품에 맞는 할인 옵션 찾기
+        if ((!priceAdjustment || fee === null) && !isOrderCompleted) {
+          this.logger.debug(
+            `[getOrderSettle] product: id=${orderProduct.product.id}, name=${orderProduct.product.name}, category='${orderProduct.product.category}', price=${orderProduct.product.price}, brand=${orderProduct.product.brand?.nameKorean ?? 'null'}`,
+          );
+          this.logger.debug(
+            `[getOrderSettle] stored values: fee=${orderProduct.fee}, priceAdjustment=${orderProduct.priceAdjustment}`,
+          );
+
+          const matchingDiscount = findMatchingDiscount(
+            {
+              price: orderProduct.product.price,
+              category: orderProduct.product.category,
+              brand: orderProduct.product.brand,
+            },
+            userDiscounts,
+          );
+
+          this.logger.debug(
+            `[getOrderSettle] matchingDiscount: ${matchingDiscount ? `id=${matchingDiscount.id}, category=${matchingDiscount.category}, method=${matchingDiscount.method}, group='${matchingDiscount.group}', range=${matchingDiscount.range}, compareCondition=${matchingDiscount.compareCondition}, priceAdjustment=${matchingDiscount.priceAdjustment}, pricePercent=${matchingDiscount.pricePercent}` : 'null (no match found)'}`,
+          );
+
+          // 4. 할인 정보가 존재하면 null 값만 채우기
+          if (matchingDiscount) {
+            priceAdjustment = priceAdjustment ?? matchingDiscount.priceAdjustment;
+            fee = fee ?? matchingDiscount.pricePercent;
+          }
+          fee = fee ?? 0;
+        } else if (fee === null) {
+          fee = 0;
+        }
+
+        // fee 유효성 검사 (0은 허용)
+        if (fee === null || fee < 0 || fee > 100) {
+          fee = 0;
+        }
+
+        discountPrice = OrderFeeCalculator({
+          fee: fee!,
+          priceAdjustment: priceAdjustment!,
+          price: orderProduct.product.price,
+        });
+        discountTotalPrice = OrderFeeCalculator({
+          fee: fee!,
+          priceAdjustment: priceAdjustment!,
+          price: totalPrice,
+        });
+
+        // 해당 상품의 첫 번째 orderDelivery에서 refundRatio 가져오기
+        const firstDelivery = orderProduct.orderDeliveries?.[0];
+        const refund = firstDelivery?.refundRatio ?? null;
+
+        return {
+          id: orderProduct.id,
+          brandName: orderProduct.product.brand?.nameKorean ?? null,
+          name: orderProduct.product.name,
+          price: orderProduct.product.price,
+          amount: orderProduct.amount,
+          totalPrice: orderProduct.product.price * orderProduct.amount,
+          settleDiscountType: orderProduct.settleDiscountType ?? null,
+          priceAdjustment,
+          fee,
+          discountPrice,
+          discountTotalPrice,
+          refund,
+        };
       });
-      discountTotalPrice = OrderFeeCalculator({
-        fee: fee!,
-        priceAdjustment: priceAdjustment!,
-        price: totalPrice,
-      });
-
-      // 해당 상품의 첫 번째 orderDelivery에서 refundRatio 가져오기
-      const firstDelivery = orderProduct.orderDeliveries?.[0];
-      const refund = firstDelivery?.refundRatio ?? null;
-
-      return {
-        id: orderProduct.id,
-        brandName: orderProduct.product.brand?.nameKorean ?? null,
-        name: orderProduct.product.name,
-        price: orderProduct.product.price,
-        amount: orderProduct.amount,
-        totalPrice: orderProduct.product.price * orderProduct.amount,
-        settleDiscountType: orderProduct.settleDiscountType ?? null,
-        priceAdjustment,
-        fee,
-        discountPrice,
-        discountTotalPrice,
-        refund,
-      };
-    });
+      virtualTotalCount = resultList.length;
+    }
 
     const totalPage = Math.ceil(totalCount / take);
 
@@ -1512,9 +1631,103 @@ export class OrderService {
       currentPage: page,
       totalCount,
       totalPage,
+      virtualTotalCount,
       settleMethod,
       cardSurchargeApplied: order.cardSurchargeApplied,
     };
+  }
+
+  /**
+   * createOrderSettle/updateOrderSettle 공통: SSG 가상 행 처리 + settleFee 계산
+   */
+  private async processSettleList(
+    list: OrderCreateSettleReqDto['list'],
+    existingOrderProductMap: Map<number, any>,
+  ): Promise<{
+    orderProductList: ReturnType<typeof this.orderProductMappingRepository.create>[];
+    settleFee: number;
+  }> {
+    const hasSsgVirtualRows = list.some((settle) => settle.deliveryIds && settle.deliveryIds.length > 0);
+    const processedMappingIds = new Set<number>();
+    const orderProductList: ReturnType<typeof this.orderProductMappingRepository.create>[] = [];
+    let settleFee = 0;
+
+    const deliveryUpdatePromises: Promise<unknown>[] = [];
+
+    for (const settle of list) {
+      const oneOrderProduct = existingOrderProductMap.get(settle.id);
+      if (!oneOrderProduct) {
+        throw new InternalServerErrorException('not exist order product');
+      }
+
+      const count = settle.deliveryIds?.length ?? oneOrderProduct.amount;
+      if (settle.priceAdjustment === IPriceAdjustment.DISCOUNT) {
+        settleFee -= (oneOrderProduct.product.price * count * (settle.fee ?? 0)) / 100;
+      }
+      if (settle.priceAdjustment === IPriceAdjustment.ADDITIONAL) {
+        settleFee += (oneOrderProduct.product.price * count * (settle.fee ?? 0)) / 100;
+      }
+
+      // SSG 가상 행: delivery별 settleFee 저장
+      if (settle.deliveryIds && settle.deliveryIds.length > 0) {
+        deliveryUpdatePromises.push(
+          this.orderDeliveryRepository.update(
+            { id: In(settle.deliveryIds) },
+            {
+              settleFee: settle.fee,
+              settlePriceAdjustment: settle.priceAdjustment,
+              settleDiscountType: settle.settleDiscountType,
+            },
+          ),
+        );
+      }
+
+      // mapping.fee 업데이트: SSG 가상 행은 SKIP (중복 ID 충돌 방지)
+      if (!hasSsgVirtualRows) {
+        orderProductList.push(
+          this.orderProductMappingRepository.create({
+            id: settle.id,
+            settleDiscountType: settle.settleDiscountType,
+            priceAdjustment: settle.priceAdjustment,
+            fee: settle.fee,
+          }),
+        );
+      } else if (!processedMappingIds.has(settle.id)) {
+        processedMappingIds.add(settle.id);
+        orderProductList.push(
+          this.orderProductMappingRepository.create({
+            id: settle.id,
+            settleDiscountType: settle.settleDiscountType,
+          }),
+        );
+      }
+    }
+
+    // SSG delivery 업데이트 병렬 실행
+    if (deliveryUpdatePromises.length > 0) {
+      await Promise.all(deliveryUpdatePromises);
+    }
+
+    // 환불률 업데이트 (병렬)
+    const refundPromises: Promise<unknown>[] = [];
+    for (const settle of list) {
+      if (settle.refund !== undefined) {
+        if (settle.deliveryIds && settle.deliveryIds.length > 0) {
+          refundPromises.push(
+            this.orderDeliveryRepository.update({ id: In(settle.deliveryIds) }, { refundRatio: settle.refund }),
+          );
+        } else {
+          refundPromises.push(
+            this.orderDeliveryRepository.update({ orderProductMappingId: settle.id }, { refundRatio: settle.refund }),
+          );
+        }
+      }
+    }
+    if (refundPromises.length > 0) {
+      await Promise.all(refundPromises);
+    }
+
+    return { orderProductList, settleFee };
   }
 
   @Transactional()
@@ -1546,42 +1759,17 @@ export class OrderService {
     const oneUserId = existingOrderProducts[0].order.clientUserId ?? existingOrderProducts[0].order.userId;
     const sendAmount = existingOrderProducts[0].order.sendAmount;
     const isSettleBalance = existingOrderProducts[0].order.isSettleBalance;
-    let settleFee = 0;
 
-    const orderProductList = list.map((settle) => {
-      const oneOrderProduct = existingOrderProductMap.get(settle.id);
-      if (!oneOrderProduct) {
-        throw new InternalServerErrorException('not exist order product');
-      }
-      if (settle.priceAdjustment === 'DISCOUNT') {
-        settleFee -= (oneOrderProduct.product.price * oneOrderProduct.amount * (settle.fee ?? 0)) / 100;
-      }
+    const { orderProductList, settleFee } = await this.processSettleList(list, existingOrderProductMap);
 
-      if (settle.priceAdjustment === 'ADDITIONAL') {
-        settleFee += (oneOrderProduct.product.price * oneOrderProduct.amount * (settle.fee ?? 0)) / 100;
-      }
-
-      return this.orderProductMappingRepository.create({
-        id: settle.id,
-        settleDiscountType: settle.settleDiscountType,
-        priceAdjustment: settle.priceAdjustment,
-        fee: settle.fee,
-      });
-    });
-
-    await this.orderProductMappingRepository.save(orderProductList);
+    if (orderProductList.length > 0) {
+      await this.orderProductMappingRepository.save(orderProductList);
+    }
 
     const cardSurchargeApplied = getBody.cardSurchargeApplied ?? false;
     const newSettleAmount = applyCardSurcharge(settleAmount + settleFee, cardSurchargeApplied);
 
     await this.orderRepository.update({ id: orderId }, { settleAmount: newSettleAmount, cardSurchargeApplied });
-
-    // 환불률 업데이트: 각 orderProductMapping에 해당하는 orderDelivery들의 refundRatio 업데이트
-    for (const settle of list) {
-      if (settle.refund !== undefined) {
-        await this.orderDeliveryRepository.update({ orderProductMappingId: settle.id }, { refundRatio: settle.refund });
-      }
-    }
 
     const order = existingOrderProducts[0].order;
 
@@ -1649,43 +1837,17 @@ export class OrderService {
 
     const beforeSettleAmount = existingOrderProducts[0].order.settleAmount;
     const isSettleBalance = existingOrderProducts[0].order.isSettleBalance;
-    let settleFee = 0;
 
-    const orderProductList = list.map((settle) => {
-      const oneOrderProduct = existingOrderProductMap.get(settle.id);
-      if (!oneOrderProduct) {
-        throw new InternalServerErrorException('not exist order product');
-      }
+    const { orderProductList, settleFee } = await this.processSettleList(list, existingOrderProductMap);
 
-      if (settle.priceAdjustment === 'DISCOUNT') {
-        settleFee -= (oneOrderProduct.product.price * oneOrderProduct.amount * (settle.fee ?? 0)) / 100;
-      }
-
-      if (settle.priceAdjustment === 'ADDITIONAL') {
-        settleFee += (oneOrderProduct.product.price * oneOrderProduct.amount * (settle.fee ?? 0)) / 100;
-      }
-      // 이미 db에 있는 id 들을 create 에 넣으면 type orm 에서 update 로 동작한다
-      return this.orderProductMappingRepository.create({
-        id: settle.id,
-        settleDiscountType: settle.settleDiscountType,
-        priceAdjustment: settle.priceAdjustment,
-        fee: settle.fee,
-      });
-    });
-
-    await this.orderProductMappingRepository.save(orderProductList);
+    if (orderProductList.length > 0) {
+      await this.orderProductMappingRepository.save(orderProductList);
+    }
 
     const cardSurchargeApplied = getBody.cardSurchargeApplied ?? false;
     const newSettleAmount = applyCardSurcharge(settleAmount + settleFee, cardSurchargeApplied);
 
     await this.orderRepository.update({ id: orderId }, { settleAmount: newSettleAmount, cardSurchargeApplied });
-
-    // 환불률 업데이트: 각 orderProductMapping에 해당하는 orderDelivery들의 refundRatio 업데이트
-    for (const settle of list) {
-      if (settle.refund !== undefined) {
-        await this.orderDeliveryRepository.update({ orderProductMappingId: settle.id }, { refundRatio: settle.refund });
-      }
-    }
 
     // 발송확정 이후(DELIVERY_CONFIRMED, DELIVERY_COMPLETE)에 정산정보를 수정한 경우
     // 이전 정산금액과 새 정산금액의 차이를 balance/allSettleAmount에 반영
