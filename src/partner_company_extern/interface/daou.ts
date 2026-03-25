@@ -40,6 +40,41 @@ export interface DaouCancelOut {
   resultMessage: string; // RTMSG - 결과메시지
 }
 
+// 다우기술 전체 상품 정보 조회 요청 DTO (인증 정보는 클래스 내부 사용)
+export interface DaouGoodsInfoIn {}
+
+// 다우기술 전체 상품 정보 개별 항목 DTO
+export interface DaouGoodsInfoItem {
+  reqNo: string; // NO_REQ - 쿠폰 계약번호
+  reqName: string; // NM_REQ - 요청명(계약명)
+  goodsNo: string; // NO_GOODS - 상품번호
+  goodsName: string; // NM_GOODS - 상품명
+  goodsCompany: string; // GOODS_COMPANY - 상품사 코드
+  goodsCompanyName: string; // NM_GOODS_COMPANY - 상품사명
+  goodsPrice: string; // GOODS_PRICE - 상품가격
+  cpnPrice: string; // CPN_PRICE - 쿠폰가격
+  goodsImage: string; // GOODS_IMAGE - 상품이미지 URL
+  category: string; // CATEGORY - 카테고리
+  validStart: string; // VALID_START - 유효기간 시작 (임의값)
+  validEnd: string; // VALID_END - 유효기간 종료 (임의값)
+  siteId: string; // SITE_ID
+  goodsCompanyCharge: string; // GOODS_COMPANY_CHARGE (임의값)
+  goodsCnt: string; // GOODS_CNT - 상품수량
+  discountPrice: string; // DISCOUNT_PRICE - 할인가격 (임의값)
+  goodsDiscount: string; // GOODS_DISCOUNT - 제휴처 할인금액 (임의값)
+  isChanged: string; // YN_CHANGED - 변경여부 (항상 'N')
+  changedDate: string; // CHANGED_DATE - 변경일
+  regDate: string; // REG_DATE - 등록일
+}
+
+// 다우기술 전체 상품 정보 조회 응답 DTO
+export interface DaouGoodsInfoOut {
+  resultCode: string; // RT - 결과코드
+  resultMessage: string; // RTMSG - 결과메시지
+  listCount: number; // LIST_COUNT - 상품 수
+  goods: DaouGoodsInfoItem[];
+}
+
 // 다우기술 API XML 응답 파싱용 DTO
 export interface DaouXmlResponse {
   RT?: string; // 결과코드
@@ -67,4 +102,9 @@ export interface IDaou {
    * 쿠폰(PIN) 취소
    */
   cancel(obj: DaouCancelIn): Promise<DaouCancelOut>;
+
+  /**
+   * 전체 상품 정보 조회
+   */
+  goodsInfo(): Promise<DaouGoodsInfoOut>;
 }

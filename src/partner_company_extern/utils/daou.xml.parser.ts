@@ -75,4 +75,48 @@ export class DaouXmlParser {
       }
     }
   }
+
+  /**
+   * 전체 상품 정보 XML 응답 파싱
+   * 기존 parse()와 별도 — GOODS_LIST > GOODS_INFO[] 배열 구조 처리
+   */
+  async parseGoodsInfo(
+    xmlString: string,
+  ): Promise<{
+    rt: string;
+    rtmsg: string;
+    listCount: number;
+    goodsList: Record<string, string>[];
+  }> {
+    try {
+      const trimmedXml = xmlString.trim();
+      const result = await this.parser.parseStringPromise(trimmedXml);
+
+      const cjService = result.CJSERVICE;
+      const rt = cjService?.RT || '';
+      const rtmsg = cjService?.RTMSG || '';
+      const listCount = parseInt(cjService?.LIST_COUNT || '0', 10);
+
+      // GOODS_LIST null 가드: 없거나 문자열이면 빈 배열
+      const goodsList = cjService?.GOODS_LIST;
+      if (!goodsList || typeof goodsList !== 'object') {
+        return { rt, rtmsg, listCount, goodsList: [] };
+      }
+
+      // GOODS_INFO 배열 정규화 (explicitArray: false 대응)
+      const rawItems = goodsList.GOODS_INFO;
+      let items: Record<string, string>[];
+      if (!rawItems) {
+        items = [];
+      } else if (Array.isArray(rawItems)) {
+        items = rawItems;
+      } else {
+        items = [rawItems];
+      }
+
+      return { rt, rtmsg, listCount, goodsList: items };
+    } catch (error) {
+      throw new Error(`Failed to parse DAOU GoodsInfo XML: ${error}`);
+    }
+  }
 }
