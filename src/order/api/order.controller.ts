@@ -20,6 +20,7 @@ import {
   ApiBadRequestResponse,
   ApiBearerAuth,
   ApiCreatedResponse,
+  ApiForbiddenResponse,
   ApiInternalServerErrorResponse,
   ApiOkResponse,
   ApiOperation,
@@ -385,14 +386,17 @@ export class OrderController {
   }
 
   @ApiOperation({
-    summary: '임시저장(TEMP) 소프트 삭제 API',
-    description: '임시 저장된 주문의 상태가 TEMP인 경우 soft delete 처리 (deleted_at 업데이트).',
+    summary: '임시저장(TEMP) 또는 발송취소(DELIVERY_CANCEL) 주문 소프트 삭제 API',
+    description: 'TEMP 또는 DELIVERY_CANCEL 상태의 주문을 soft delete 처리 (deleted_at 업데이트). SUPER_ADMIN은 타 유저 주문도 삭제 가능.',
   })
   @ApiOkResponse({
     description: '성공적으로 삭제된 경우',
   })
   @ApiBadRequestResponse({
-    description: '존재하지 않거나 임시 상태가 아닌 주문입니다.',
+    description: '존재하지 않는 주문이거나 삭제 불가 상태인 경우',
+  })
+  @ApiForbiddenResponse({
+    description: '타 유저의 주문입니다.',
   })
   // ====================================================
   @Delete('/order/temp')
