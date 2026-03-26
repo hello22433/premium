@@ -1436,6 +1436,21 @@ export class OrderService {
     let virtualTotalCount = 0;
 
     if (isSsgOrder) {
+      // 크로스 상품 합산: 수신번호별 총 금액 사전 계산 + phoneKey 캐싱 (복호화 1회만 수행)
+      const phoneToTotalAmount = new Map<string, number>();
+      const deliveryPhoneKeyCache = new Map<number, string>();
+      for (const op of orderProductList) {
+        const price = op.product.price;
+        for (const delivery of op.orderDeliveries ?? []) {
+          const decrypted = this.cryptoCipher.safeDecryptDeliveryTarget(
+            delivery.originalDeliveryTarget || delivery.deliveryTarget,
+          );
+          const key = decrypted !== null ? decrypted : `__null_${delivery.id}`;
+          deliveryPhoneKeyCache.set(delivery.id, key);
+          phoneToTotalAmount.set(key, (phoneToTotalAmount.get(key) ?? 0) + price);
+        }
+      }
+
       for (const orderProduct of orderProductList) {
         const productPrice = orderProduct.product.price;
         const product = orderProduct.product;
@@ -1443,14 +1458,10 @@ export class OrderService {
         // delivery ID → entity 매핑 (O(1) lookup용)
         const deliveryMap = new Map((orderProduct.orderDeliveries ?? []).map((d) => [d.id, d]));
 
-        // 수신번호별 delivery 그룹핑
+        // 수신번호별 delivery 그룹핑 (캐싱된 phoneKey 사용)
         const targetGroups = new Map<string, typeof orderProduct.orderDeliveries>();
         for (const delivery of orderProduct.orderDeliveries ?? []) {
-          const decrypted = this.cryptoCipher.safeDecryptDeliveryTarget(
-            delivery.originalDeliveryTarget || delivery.deliveryTarget,
-          );
-          // null 복호화는 개별 처리 (같은 그룹으로 묶이지 않도록)
-          const key = decrypted !== null ? decrypted : `__null_${delivery.id}`;
+          const key = deliveryPhoneKeyCache.get(delivery.id) ?? `__null_${delivery.id}`;
           const group = targetGroups.get(key) ?? [];
           group.push(delivery);
           targetGroups.set(key, group);
@@ -1465,31 +1476,20 @@ export class OrderService {
           count: number;
         }>();
 
-        for (const [, deliveries] of targetGroups) {
-          const totalAmount = productPrice * deliveries.length;
+        for (const [phoneKey, deliveries] of targetGroups) {
+          const totalAmount = phoneToTotalAmount.get(phoneKey) ?? productPrice * deliveries.length;
           let fee: number;
           let priceAdjustment: IPriceAdjustment | null;
           let settleDiscountType: IOrderSettleDiscountType | null = orderProduct.settleDiscountType ?? null;
 
-          // 소급 방지: 완료 주문이고 delivery에 settleFee가 있으면 저장값 사용
-          if (isOrderCompleted && deliveries[0].settleFee != null) {
-            fee = deliveries[0].settleFee;
-            priceAdjustment = deliveries[0].settlePriceAdjustment ?? null;
-            settleDiscountType = deliveries[0].settleDiscountType ?? settleDiscountType;
-          } else if (!isOrderCompleted) {
-            // 합산액으로 할인 구간 매칭
-            const matchingDiscount = findMatchingDiscount(
-              { price: productPrice, category: product.category, brand: product.brand },
-              userDiscounts,
-              totalAmount,
-            );
-            fee = matchingDiscount?.pricePercent ?? 0;
-            priceAdjustment = matchingDiscount?.priceAdjustment ?? null;
-          } else {
-            // 완료 주문 + settleFee 미설정: 매핑 fee 폴백
-            fee = orderProduct.fee ?? 0;
-            priceAdjustment = orderProduct.priceAdjustment;
-          }
+          // 크로스 상품 합산 금액으로 할인 구간 매칭 (완료 주문 포함 항상 재계산)
+          const matchingDiscount = findMatchingDiscount(
+            { price: productPrice, category: product.category, brand: product.brand },
+            userDiscounts,
+            totalAmount,
+          );
+          fee = matchingDiscount?.pricePercent ?? 0;
+          priceAdjustment = matchingDiscount?.priceAdjustment ?? null;
 
           // fee 유효성 검사
           if (fee < 0 || fee > 100) fee = 0;
