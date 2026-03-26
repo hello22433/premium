@@ -2089,7 +2089,7 @@ export class SettleService {
       .leftJoinAndSelect('order.clientUser', 'clientUser')
       .leftJoinAndSelect('clientUser.company', 'clientCompany')
       .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
-      .innerJoinAndSelect('orderProductMappings.product', 'product');
+      .leftJoinAndSelect('orderProductMappings.product', 'product');
 
     applyFilters(queryBuilder);
     queryBuilder.orderBy('order.id', 'DESC');
@@ -2138,7 +2138,7 @@ export class SettleService {
       const mappings = order.orderProductMappings;
       let productName = '';
       if (mappings && mappings.length > 0) {
-        productName = mappings[0].product.name;
+        productName = mappings[0].product?.name ?? '(삭제된 상품)';
         if (mappings.length > 1) {
           productName += `외 ${mappings.length - 1}건`;
         }
