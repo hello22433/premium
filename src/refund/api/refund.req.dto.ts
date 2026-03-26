@@ -82,7 +82,15 @@ export class RefundUpdateReqDto {
   @IsOptional()
   bankAccountOwner?: string;
 
-  @ApiProperty({
+  @ApiPropertyOptional({
+    description: '승인일자',
+  })
+  // ==============================
+  @IsOptional()
+  @Matches(dateAtRegexp)
+  approveAt?: string;
+
+  @ApiPropertyOptional({
     description: '환불일자',
   })
   // ==============================

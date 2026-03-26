@@ -69,6 +69,7 @@ export class RefundService {
         bankAccountOwner: orderDelivery.bankAccountOwner,
         bankName: orderDelivery.bankName,
         bankAccount: orderDelivery.bankAccount,
+        approveAt: orderDelivery.approveAt ? format(orderDelivery.approveAt, DateFormatStr) : null,
         refundStatus: orderDelivery.refundStatus!,
         refundAt: orderDelivery.refundAt ? format(orderDelivery.refundAt, DateFormatStr) : null,
       };
@@ -77,12 +78,14 @@ export class RefundService {
     return { list: resultList, totalPage: Math.ceil(totalCount / take), totalCount, currentPage: page };
   }
 
-  async update(getDto: RefundUpdateReqDto) {
-    const { id, refundAt, refundStatus, bankAccountOwner, bankName, bankAccount } = getDto;
+  private static readonly REFUND_STATUS_ORDER: Record<OrderDeliveryRefundStatusEnum, number> = {
+    [OrderDeliveryRefundStatusEnum.PROGRESS]: 0,
+    [OrderDeliveryRefundStatusEnum.APPROVE]: 1,
+    [OrderDeliveryRefundStatusEnum.COMPLETE]: 2,
+  };
 
-    if (refundStatus === OrderDeliveryRefundStatusEnum.COMPLETE && !refundAt) {
-      throw new BadRequestException('환불 완료 시 일자를 입력해주세요.');
-    }
+  async update(getDto: RefundUpdateReqDto) {
+    const { id, refundAt, refundStatus, bankAccountOwner, bankName, bankAccount, approveAt } = getDto;
 
     const orderDelivery = await this.orderDeliveryRepository.findOne({
       where: { id, refundStatus: Not(IsNull()) },
@@ -92,11 +95,25 @@ export class RefundService {
       throw new BadRequestException('주문이 존재하지 않습니다.');
     }
 
-    orderDelivery.refundAt = refundAt ? new Date(refundAt) : null;
+    const isUpward = RefundService.REFUND_STATUS_ORDER[refundStatus] > RefundService.REFUND_STATUS_ORDER[orderDelivery.refundStatus!];
+
+    if (isUpward) {
+      if (RefundService.REFUND_STATUS_ORDER[refundStatus] >= RefundService.REFUND_STATUS_ORDER[OrderDeliveryRefundStatusEnum.APPROVE]) {
+        if (!bankAccountOwner || !bankName || !bankAccount || !approveAt) {
+          throw new BadRequestException('승인 시 예금주, 은행명, 계좌번호, 승인일자를 입력해주세요.');
+        }
+      }
+      if (refundStatus === OrderDeliveryRefundStatusEnum.COMPLETE && !refundAt) {
+        throw new BadRequestException('환불 완료 시 환불일자를 입력해주세요.');
+      }
+    }
+
     orderDelivery.refundStatus = refundStatus;
     orderDelivery.bankAccountOwner = bankAccountOwner ?? null;
     orderDelivery.bankName = bankName;
     orderDelivery.bankAccount = bankAccount;
+    orderDelivery.approveAt = approveAt ? new Date(approveAt) : orderDelivery.approveAt;
+    orderDelivery.refundAt = refundAt ? new Date(refundAt) : orderDelivery.refundAt;
 
     await this.orderDeliveryRepository.save(orderDelivery);
   }
