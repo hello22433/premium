@@ -1936,7 +1936,7 @@ export class SettleService {
         .select('o.id', 'orderId')
         .addSelect('o.userId', 'userId')
         .addSelect('o.clientUserId', 'clientUserId')
-        .addSelect('o.sendAmount', 'sendAmount')
+        .addSelect('o.settleAmount', 'settleAmount')
         .where(
           new Brackets((wb) => {
             wb.where('o.clientUserId IN (:...pageUserIds)', { pageUserIds }).orWhere(
@@ -1967,12 +1967,12 @@ export class SettleService {
       for (const row of overdueOrders) {
         const userId = Number(row.userId);
         const clientUserId = row.clientUserId ? Number(row.clientUserId) : null;
-        const sendAmount = Number(row.sendAmount);
+        const settleAmount = Number(row.settleAmount);
 
         // 과금 대상에게만 연체 누적 (대행주문이면 clientUserId, 아니면 userId)
         const billingUserId = clientUserId ?? userId;
         if (pageUserIdSet.has(billingUserId)) {
-          this.accumulateOverdue(userOverdueMap, billingUserId, sendAmount);
+          this.accumulateOverdue(userOverdueMap, billingUserId, settleAmount);
         }
       }
 
