@@ -134,6 +134,9 @@ export class OrderDeliveryEntity extends BaseEntity {
   @Column({ type: 'datetime', nullable: true, comment: '환불일자' })
   refundAt: Date | null;
 
+  @Column({ type: 'datetime', nullable: true, comment: '환불 승인 일자' })
+  approveAt: Date | null;
+
   @Column({ name: 'api_error_code', type: 'varchar', length: 256, nullable: true, comment: '외부 api 응답 에러코드' })
   apiErrorCode: string | null;
 

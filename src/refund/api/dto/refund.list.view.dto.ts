@@ -68,6 +68,11 @@ export class RefundListViewDto {
   bankAccount: string | null;
 
   @ApiProperty({
+    description: '환불 승인 일자',
+  })
+  approveAt: string | null;
+
+  @ApiProperty({
     description: '환불상태',
   })
   refundStatus: OrderDeliveryRefundStatusEnum;
