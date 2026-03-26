@@ -2394,7 +2394,12 @@ export class SettleService {
           ? new Date(Math.min(...deliveryDates.map((d) => d.getTime())))
           : null;
 
-        if (!actualSendAt) continue;
+        if (!actualSendAt) {
+          if (order.settleStatus === SettleUserOrderDetailEnum.UNSETTLE_OVERDUE) {
+            resetOrderIds.push(order.id);
+          }
+          continue;
+        }
 
         let deadline: Date;
         if (condition === UserSettlePeriodConditionEnum.DELIVERY_DATE) {
