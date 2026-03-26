@@ -6,11 +6,10 @@ import { firstValueFrom } from 'rxjs';
 import { ErpZoneExternOut } from '../interface/erp.zone.extern';
 import { ErpLoginOut } from '../interface/erp.login.extern';
 import { IErpExtern } from '../interface/erp.extern';
+import { ErpProductListRequest, ErpProductDetailRequest } from '../interface/erp.product.request';
+import { ErpProductListResponse } from '../interface/erp.product.response';
 
-class ErpLoginObject {
-  static sessionId = '';
-  static expireAt: number = 0;
-}
+const SESSION_TTL_MS = 30 * 60 * 1000; // 30분
 
 @Injectable()
 export class ErpExternHttp implements IErpExtern {
@@ -29,50 +28,99 @@ export class ErpExternHttp implements IErpExtern {
   private userId = '';
   private apiCertKey = '';
 
-  // https://oapi{ZONE}.ecount.com/OAPI/V2/Sale/SaveSale?SESSION_ID={SESSION_ID}
-  private url = 'https://oapi{ZONE}.ecount.com/OAPI/V2/Sale/SaveSale?SESSION_ID={SESSION_ID}';
+  private sessionId = '';
+  private zone = '';
+  private expireAt = 0;
+  private loginPromise: Promise<{ zone: string; sessionId: string }> | null = null;
+
+  private saleUrl = 'https://oapi{ZONE}.ecount.com/OAPI/V2/Sale/SaveSale?SESSION_ID={SESSION_ID}';
+  private productListUrl = 'https://oapi{ZONE}.ecount.com/OAPI/V2/InventoryBasic/GetBasicProductsList?SESSION_ID={SESSION_ID}';
+  private productDetailUrl = 'https://oapi{ZONE}.ecount.com/OAPI/V2/InventoryBasic/ViewBasicProduct?SESSION_ID={SESSION_ID}';
   private zoneUrl = 'https://oapi.ecount.com/OAPI/V2/Zone';
   private loginUrl = 'https://oapi{ZONE}.ecount.com/OAPI/V2/OAPILogin';
 
-  async issue(obj: ErpRequestIn) {
-    const data = JSON.parse(JSON.stringify(obj));
+  private async getSessionId(): Promise<{ zone: string; sessionId: string }> {
+    if (this.sessionId && Date.now() < this.expireAt) {
+      return { zone: this.zone, sessionId: this.sessionId };
+    }
 
+    if (!this.loginPromise) {
+      this.loginPromise = this.performLogin().finally(() => {
+        this.loginPromise = null;
+      });
+    }
+    return this.loginPromise;
+  }
+
+  private async performLogin(): Promise<{ zone: string; sessionId: string }> {
+    const zoneOut = await this.getZONE();
+    const zone = zoneOut.Data.ZONE;
+    const loginOut = await this.login(zone);
+    const sessionId = loginOut.Data.Datas.SESSION_ID;
+
+    this.zone = zone;
+    this.sessionId = sessionId;
+    this.expireAt = Date.now() + SESSION_TTL_MS;
+
+    return { zone, sessionId };
+  }
+
+  private buildUrl(template: string, zone: string, sessionId: string): string {
+    return template.replace('{ZONE}', zone).replace('{SESSION_ID}', sessionId);
+  }
+
+  private invalidateSession() {
+    this.sessionId = '';
+    this.expireAt = 0;
+  }
+
+  private async callErpApi<T>(urlTemplate: string, body: unknown): Promise<T> {
     try {
-      const zoneOut = await this.getZONE();
-      const zone = zoneOut.Data.ZONE;
-      const loginOut = await this.login(zone);
-
-      const sessionId = loginOut.Data.Datas.SESSION_ID;
-
-      const url = this.url.replace('{ZONE}', zone).replace('{SESSION_ID}', sessionId);
-      // 판매 입력 API 요청
-      const response = await firstValueFrom(this.httpService.post(url, data, {}));
-
-      const result = response.data;
-      this.logger.log(result);
-      // return result as GiftielIssueOut;
+      const { zone, sessionId } = await this.getSessionId();
+      const url = this.buildUrl(urlTemplate, zone, sessionId);
+      const response = await firstValueFrom(this.httpService.post(url, body, {}));
+      return response.data as T;
     } catch (e) {
+      this.invalidateSession();
       this.logger.error(e);
-      this.logger.error(JSON.stringify(e));
       throw e;
     }
   }
 
+  async issue(obj: ErpRequestIn) {
+    const result = await this.callErpApi(this.saleUrl, obj);
+    this.logger.log(result);
+  }
+
+  async getProductsList(req: ErpProductListRequest): Promise<ErpProductListResponse> {
+    const result = await this.callErpApi<ErpProductListResponse>(this.productListUrl, req);
+    if (result.Status !== '200') {
+      this.logger.error(JSON.stringify(result));
+      this.invalidateSession();
+      throw new Error('ERP 품목 목록 조회 실패');
+    }
+    return result;
+  }
+
+  async getProduct(req: ErpProductDetailRequest): Promise<ErpProductListResponse> {
+    const result = await this.callErpApi<ErpProductListResponse>(this.productDetailUrl, req);
+    if (result.Status !== '200') {
+      this.logger.error(JSON.stringify(result));
+      this.invalidateSession();
+      throw new Error('ERP 품목 단건 조회 실패');
+    }
+    return result;
+  }
+
   private async getZONE(): Promise<ErpZoneExternOut> {
     try {
-      const url = this.zoneUrl;
-      const data = {
-        COM_CODE: this.comCode,
-      };
-      // 판매 입력 API 요청
-      const response = await firstValueFrom(this.httpService.post(url, data, {}));
-
+      const data = { COM_CODE: this.comCode };
+      const response = await firstValueFrom(this.httpService.post(this.zoneUrl, data, {}));
       const result = response.data;
       this.logger.log(result);
       return result as ErpZoneExternOut;
     } catch (e) {
       this.logger.error(e);
-      this.logger.error(JSON.stringify(e));
       throw e;
     }
   }
@@ -87,11 +135,10 @@ export class ErpExternHttp implements IErpExtern {
         LAN_TYPE: 'ko-KR',
         ZONE: zone,
       };
-      // 판매 입력 API 요청
       const response = await firstValueFrom(this.httpService.post(url, data, {}));
-
       const result = response.data as ErpLoginOut;
-      if (result.Status != '200') {
+
+      if (result.Status !== '200') {
         this.logger.error(JSON.stringify(result));
         throw new Error('erp 로그인 실패');
       }
@@ -100,56 +147,12 @@ export class ErpExternHttp implements IErpExtern {
         this.logger.error(JSON.stringify(result));
         throw new Error('erp 로그인 실패');
       }
+
       this.logger.log(result);
-      return result as ErpLoginOut;
+      return result;
     } catch (e) {
       this.logger.error(e);
-      this.logger.error(JSON.stringify(e));
       throw e;
     }
   }
 }
-
-// 예시 json
-// {
-//   "SaleOrderList": [
-//   {
-//     "BulkDatas": {
-//       "U_MEMO1": "김고객",
-//       "CUST_DES": "큰고객사",
-//       "WH_CD": "02",
-//       "U_MEMO4": "큰이벤트",
-//       "TIME_DATE": "20250324",
-//       "ADD_TXT_10_T": "이벤트상세",
-//       "U_TXT1": "특이사항",
-//       "PROD_CD": "00002",
-//       "REMARKS": "큰브랜드명",
-//       "P_REMARKS1": "큰공급처",
-//       "PROD_DES": "큰품목명",
-//       "QTY": "10",
-//       "PRICE": "10000",
-//       "SUPPLY_AMT": "100000",
-//       "P_REMARKS2": "김담당"
-//     }
-//   },
-//   {
-//     "BulkDatas": {
-//       "U_MEMO1": "이고객",
-//       "CUST_DES": "작은고객사",
-//       "WH_CD": "02",
-//       "U_MEMO4": "작은이벤트",
-//       "TIME_DATE": "20250324",
-//       "ADD_TXT_10_T": "이벤트상세",
-//       "U_TXT1": "특이사항",
-//       "PROD_CD": "00002",
-//       "REMARKS": "작은브랜드명",
-//       "P_REMARKS1": "작은공급처",
-//       "PROD_DES": "작은품목명",
-//       "QTY": "10",
-//       "PRICE": "10000",
-//       "SUPPLY_AMT": "100000",
-//       "P_REMARKS2": "이담당"
-//     }
-//   }
-// ]
-// }

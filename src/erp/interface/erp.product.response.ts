@@ -1,0 +1,98 @@
+export interface ErpProductResult {
+  PROD_CD: string;
+  PROD_DES: string;
+  SIZE_FLAG: string;
+  SIZE_DES: string;
+  UNIT: string;
+  PROD_TYPE: string;
+  SET_FLAG: string;
+  BAL_FLAG: string;
+  WH_CD: string;
+  IN_PRICE: string;
+  IN_PRICE_VAT: string;
+  OUT_PRICE: string;
+  OUT_PRICE_VAT: string;
+  REMARKS_WIN: string;
+  CLASS_CD: string;
+  CLASS_CD2: string;
+  CLASS_CD3: string;
+  BAR_CODE: string;
+  TAX: string;
+  VAT_RATE_BY: string;
+  CS_FLAG: string;
+  REMARKS: string;
+  INSPECT_TYPE_CD: string;
+  INSPECT_STATUS: string;
+  SAMPLE_PERCENT: string;
+  CSORD_C0001: string;
+  CSORD_TEXT: string;
+  CSORD_C0003: string;
+  IN_TERM: string;
+  MIN_QTY: string;
+  CUST: string;
+  EXCH_RATE: string;
+  DENO_RATE: string;
+  OUT_PRICE1: string;
+  OUT_PRICE1_VAT_YN: string;
+  OUT_PRICE2: string;
+  OUT_PRICE2_VAT_YN: string;
+  OUT_PRICE3: string;
+  OUT_PRICE3_VAT_YN: string;
+  OUT_PRICE4: string;
+  OUT_PRICE4_VAT_YN: string;
+  OUT_PRICE5: string;
+  OUT_PRICE5_VAT_YN: string;
+  OUT_PRICE6: string;
+  OUT_PRICE6_VAT_YN: string;
+  OUT_PRICE7: string;
+  OUT_PRICE7_VAT_YN: string;
+  OUT_PRICE8: string;
+  OUT_PRICE8_VAT_YN: string;
+  OUT_PRICE9: string;
+  OUT_PRICE9_VAT_YN: string;
+  OUT_PRICE10: string;
+  OUT_PRICE10_VAT_YN: string;
+  OUTSIDE_PRICE: string;
+  OUTSIDE_PRICE_VAT: string;
+  LABOR_WEIGHT: string;
+  EXPENSES_WEIGHT: string;
+  MATERIAL_COST: string;
+  EXPENSE_COST: string;
+  LABOR_COST: string;
+  OUT_COST: string;
+  CONT1: string;
+  CONT2: string;
+  CONT3: string;
+  CONT4: string;
+  CONT5: string;
+  CONT6: string;
+  NO_USER1: string;
+  NO_USER2: string;
+  NO_USER3: string;
+  NO_USER4: string;
+  NO_USER5: string;
+  NO_USER6: string;
+  NO_USER7: string;
+  NO_USER8: string;
+  NO_USER9: string;
+  NO_USER10: string;
+  ITEM_TYPE: string;
+  SERIAL_TYPE: string;
+  PROD_SELL_TYPE: string;
+  PROD_WHMOVE_TYPE: string;
+  QC_BUY_TYPE: string;
+  QC_YN: string;
+}
+
+export interface ErpProductResponseData {
+  EXPIRE_DATE: string;
+  QUANTITY_INFO: string;
+  TRACE_ID: string;
+  Result: ErpProductResult[];
+}
+
+export interface ErpProductListResponse {
+  Status: string;
+  Error: { Code?: string; Message?: string; MessageDetail?: string } | null;
+  Data: ErpProductResponseData | null;
+}
