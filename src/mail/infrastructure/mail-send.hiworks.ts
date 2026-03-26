@@ -31,7 +31,7 @@ export class MailSendHiworks implements IMailSend {
       Authorization: `Bearer ${this.officeToken}`,
     };
 
-    const id = obj.fromEmail ? obj.fromEmail : this.id;
+    const id = obj.fromEmail ? obj.fromEmail.split('@')[0] : this.id;
     const formData = new FormData();
     formData.append('to', obj.to);
     formData.append('user_id', id);
