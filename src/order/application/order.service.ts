@@ -1781,13 +1781,22 @@ export class OrderService {
         if (difference !== 0) {
           const oneUser = await this.userRepository.findOneOrFail({
             where: { id: oneUserId },
+            relations: ['company'],
           });
+          const isCompanyBalanceMode = oneUser.company?.balanceManagementType === 'COMPANY';
+
           if (isSettleBalance) {
-            oneUser.balance += difference;
+            if (isCompanyBalanceMode && oneUser.company) {
+              oneUser.company.balance += difference;
+              await this.userCompanyRepository.save(oneUser.company);
+            } else {
+              oneUser.balance += difference;
+              await this.userRepository.save(oneUser);
+            }
           } else {
             oneUser.allSettleAmount -= difference;
+            await this.userRepository.save(oneUser);
           }
-          await this.userRepository.save(oneUser);
         }
       }
       // DELIVERY_REQUEST, REVIEW_COMPLETE: 정산 정보만 저장 (balance 건드리지 않음)
@@ -1795,15 +1804,22 @@ export class OrderService {
       // === 기존 흐름 ===
       const oneUser = await this.userRepository.findOneOrFail({
         where: { id: oneUserId },
+        relations: ['company'],
       });
+      const isCompanyBalanceMode = oneUser.company?.balanceManagementType === 'COMPANY';
 
       if (isSettleBalance) {
-        oneUser.balance = oneUser.balance + sendAmount - newSettleAmount;
+        if (isCompanyBalanceMode && oneUser.company) {
+          oneUser.company.balance = oneUser.company.balance + sendAmount - newSettleAmount;
+          await this.userCompanyRepository.save(oneUser.company);
+        } else {
+          oneUser.balance = oneUser.balance + sendAmount - newSettleAmount;
+          await this.userRepository.save(oneUser);
+        }
       } else {
         oneUser.allSettleAmount = oneUser.allSettleAmount - sendAmount + newSettleAmount;
+        await this.userRepository.save(oneUser);
       }
-
-      await this.userRepository.save(oneUser);
     }
   }
 
@@ -1858,23 +1874,30 @@ export class OrderService {
       if (difference !== 0) {
         const oneUser = await this.userRepository.findOneOrFail({
           where: { id: oneUserId },
+          relations: ['company'],
         });
+        const isCompanyBalanceMode = oneUser.company?.balanceManagementType === 'COMPANY';
 
         if (isSettleBalance) {
           // 선충전에서 차감된 주문 → balance 조정
-          oneUser.balance += difference;
+          if (isCompanyBalanceMode && oneUser.company) {
+            oneUser.company.balance += difference;
+            await this.userCompanyRepository.save(oneUser.company);
+          } else {
+            oneUser.balance += difference;
+            await this.userRepository.save(oneUser);
+          }
           this.logger.debug(
-            `정산정보 수정 (발송확정 후): orderId=${orderId}, 이전=${beforeSettleAmount}, 새=${newSettleAmount}, 차이=${difference}, balance 조정`,
+            `정산정보 수정 (발송확정 후): orderId=${orderId}, 이전=${beforeSettleAmount}, 새=${newSettleAmount}, 차이=${difference}, balance 조정 (companyMode=${isCompanyBalanceMode})`,
           );
         } else {
           // 한도에서 차감된 주문 → allSettleAmount 조정
           oneUser.allSettleAmount -= difference;
+          await this.userRepository.save(oneUser);
           this.logger.debug(
             `정산정보 수정 (발송확정 후): orderId=${orderId}, 이전=${beforeSettleAmount}, 새=${newSettleAmount}, 차이=${difference}, allSettleAmount 조정`,
           );
         }
-
-        await this.userRepository.save(oneUser);
       }
     }
     // 발송요청 상태(DELIVERY_REQUEST)인 경우 balance 조정은 deliveryConfirmed에서 수행됨
