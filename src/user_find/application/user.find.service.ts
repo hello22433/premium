@@ -199,7 +199,7 @@ export class UserFindService {
         throw new BadRequestException('등록된 연락처가 없습니다. 관리자에게 문의해주세요.');
       }
 
-      const messageText = `이팝콘 프리미엄 임시 비밀번호\n[${tempPassword}]`;
+      const messageText = `임시 비밀번호는 [${tempPassword}] 입니다.`;
 
       await this.sendViaAlimTalkWithSmsFallback(
         user.personPhoneNumber,
