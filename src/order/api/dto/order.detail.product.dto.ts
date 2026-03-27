@@ -229,6 +229,12 @@ export class OrderDetailProductDto {
   encourageDay: number | null;
 
   @ApiProperty({
+    description: 'GALAXIA cpn 유효기간 일수 (null이면 미설정)',
+    nullable: true,
+  })
+  galaxiaDuration: number | null;
+
+  @ApiProperty({
     description: '해당 상품의 발송 실패 건수',
   })
   failCount: number;

@@ -5,6 +5,7 @@ export interface GalaxiaIssueIn {
   fromPhoneNumber: string; //buyer
   giftKind: 'cpn' | 'dept'; // coupon : cpn, 상품권 : dept
   faceValue?: string; // 발행 액면가 (백화점 상품권 필수)
+  duration?: number; // cpn 유효기간 (일수). 미설정 시 0(최대유효기간) 전달
 }
 
 export interface GalaxiaCheckIn {

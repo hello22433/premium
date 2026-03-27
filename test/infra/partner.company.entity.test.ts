@@ -27,5 +27,6 @@ export const PartnerCompanyEntityTest = (): PartnerCompanyEntity => {
     settleMethod: IPartnerCompanySettleMethod['CARD'],
     status: IPartnerCompanyStatus.ACTIVE,
     type: IPartnerCompanyType.GALAXIA,
+    validityStartsNextDay: true,
   };
 };

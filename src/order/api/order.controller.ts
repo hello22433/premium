@@ -53,6 +53,8 @@ import {
   OrderUpdateTempReqDto,
   OrderUpdateEncourageDayReqParamDto,
   OrderUpdateEncourageDayReqBodyDto,
+  OrderUpdateGalaxiaDurationReqParamDto,
+  OrderUpdateGalaxiaDurationReqBodyDto,
   OrderUpdateTailTextReqParamDto,
   OrderUpdateTailTextReqBodyDto,
   OrderUpdateUseEmailContentReqParamDto,
@@ -609,6 +611,27 @@ export class OrderController {
     @Body() getBody: OrderUpdateEncourageDayReqBodyDto,
   ) {
     return this.orderService.updateEncourageDay(user, getParam.id, getBody);
+  }
+
+  @ApiOperation({
+    summary: 'GALAXIA cpn 유효기간 설정 수정 API (발송관리용)',
+    description: 'GALAXIA cpn 상품의 유효기간(duration)을 설정합니다. null이면 미사용(기본 유효기간).',
+  })
+  @ApiBearerAuth()
+  @ApiOkResponse({
+    description: '성공적으로 수정한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: 'GALAXIA cpn 상품이 아니거나 발송 확정 이후인 경우',
+  })
+  // =========================================
+  @Patch('/order/:id/galaxia-duration')
+  async updateGalaxiaDuration(
+    @User() user: ILoginUserInfo,
+    @Param() getParam: OrderUpdateGalaxiaDurationReqParamDto,
+    @Body() getBody: OrderUpdateGalaxiaDurationReqBodyDto,
+  ) {
+    return this.orderService.updateGalaxiaDuration(user, getParam.id, getBody);
   }
 
   @ApiOperation({

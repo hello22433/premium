@@ -464,6 +464,27 @@ export class OrderUpdateEncourageDayReqBodyDto {
   encourageDay: number | null;
 }
 
+export class OrderUpdateGalaxiaDurationReqParamDto {
+  @ApiProperty({
+    description: 'order_product_mapping id (상품별 설정)',
+  })
+  // ===================================
+  @IsNumber()
+  @IsNotEmpty()
+  @Type(() => Number)
+  id: number;
+}
+
+export class OrderUpdateGalaxiaDurationReqBodyDto {
+  @ApiPropertyOptional({
+    description: 'GALAXIA cpn 유효기간 일수 (1~999, null이면 미사용)',
+  })
+  // ===================================
+  @IsOptional()
+  @IsNumber()
+  galaxiaDuration: number | null;
+}
+
 export class OrderUpdateTailTextReqParamDto {
   @ApiProperty({
     description: 'order_product_mapping id (상품별 설정)',

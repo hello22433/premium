@@ -59,7 +59,7 @@ export class GalaxiaHttp implements IGalaxia {
       recipient: this.cryptoCipher.encrypt(obj.fromPhoneNumber, this.encKey, this.encIv, this.cryptoAlgorithm), // 수신자 핸드폰 번호
       saleType: 'B2B',
       saleChannel: 'enmad',
-      duration: '0',
+      duration: String(obj.duration ?? 0),
       'msg-type': 'LMS',
       'msg-callback': callback,
       dept: obj.giftKind, // coupon : cpn, 상품권 : dept
