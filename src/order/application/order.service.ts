@@ -32,6 +32,7 @@ import {
   OrderUpdateSettleReqDto,
   OrderUpdateTempReqDto,
   OrderUpdateEncourageDayReqBodyDto,
+  OrderUpdateGalaxiaDurationReqBodyDto,
   OrderUpdateTailTextReqBodyDto,
   OrderUpdateUseEmailContentReqBodyDto,
   OrderTransactionStatementEmailReqDto,
@@ -99,6 +100,7 @@ import { OrderStatusExcelMapping } from '../domain/order.excel.mapping';
 import { OrderFeeCalculator, applyCardSurcharge } from '../domain/order.fee.calculator';
 import { OrderCustomerViewDto } from '../api/dto/order.customer.view.dto';
 import { MaskingUtil } from '../../common/utils/masking.util';
+import { resolveExpireDays } from '../../common/utils/expire.util';
 import { CreateCode } from '../../common/domain/create.code';
 import { OrderDigitNumber, OrderPrefixCode } from '../domain/order.code';
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
@@ -453,13 +455,15 @@ export class OrderService {
         const expireDate = firstDelivery?.expireAt
           ? dayjs(firstDelivery.expireAt).tz('Asia/Seoul').format('YYYY. MM. DD')
           : (() => {
-              const productExpireDay = orderProductMapping.product.expireDay;
-              const validityStartsNextDay = orderProductMapping.product.partnerCompany?.validityStartsNextDay ?? true;
-              const expireDay = validityStartsNextDay ? productExpireDay : productExpireDay - 1;
+              const expireDays = resolveExpireDays(
+                orderProductMapping.galaxiaDuration,
+                orderProductMapping.product.expireDay,
+                orderProductMapping.product.partnerCompany?.validityStartsNextDay,
+              );
               const baseDate = orderProductMapping.sendType === 'IMMEDIATE'
                 ? dayjs()
                 : dayjs(orderProductMapping.sendRequestAt);
-              return expireDay ? baseDate.tz('Asia/Seoul').add(expireDay, 'day').format('YYYY. MM. DD') : null;
+              return expireDays ? baseDate.tz('Asia/Seoul').add(expireDays, 'day').format('YYYY. MM. DD') : null;
             })();
 
         for (const orderDelivery of orderProductMapping.orderDeliveries) {
@@ -525,6 +529,7 @@ export class OrderService {
           sendType: orderProductMapping.sendType,
           useEmailContent: orderProductMapping.useEmailContent,
           encourageDay: orderProductMapping.encourageDay,
+          galaxiaDuration: orderProductMapping.galaxiaDuration,
           failCount: failCount,
         });
       }
@@ -595,10 +600,12 @@ export class OrderService {
         const expireDate = firstDelivery?.expireAt
           ? dayjs(firstDelivery.expireAt).tz('Asia/Seoul').format('YYYY. MM. DD')
           : (() => {
-              const productExpireDay = orderProductMapping.product.expireDay;
-              const validityStartsNextDay = orderProductMapping.product.partnerCompany?.validityStartsNextDay ?? true;
-              const expireDay = validityStartsNextDay ? productExpireDay : productExpireDay - 1;
-              return expireDay ? dayjs().tz('Asia/Seoul').add(expireDay, 'day').format('YYYY. MM. DD') : null;
+              const expireDays = resolveExpireDays(
+                orderProductMapping.galaxiaDuration,
+                orderProductMapping.product.expireDay,
+                orderProductMapping.product.partnerCompany?.validityStartsNextDay,
+              );
+              return expireDays ? dayjs().tz('Asia/Seoul').add(expireDays, 'day').format('YYYY. MM. DD') : null;
             })();
         topImagePath = orderProductMapping.topImagePath ?? OrderService.DEFAULT_TOP_IMAGE_PATH;
         midImagePath = orderProductMapping.midImagePath ?? OrderService.DEFAULT_MID_IMAGE_PATH;
@@ -640,6 +647,7 @@ export class OrderService {
           sendType: orderProductMapping.sendType,
           useEmailContent: orderProductMapping.useEmailContent,
           encourageDay: orderProductMapping.encourageDay,
+          galaxiaDuration: orderProductMapping.galaxiaDuration,
           failCount: 0, // 이벤트 불러오기 시 발송 정보가 없으므로 0
         });
       }
@@ -3532,11 +3540,13 @@ export class OrderService {
       throw new BadRequestException('테스트발송은 상품당 최대 2회입니다.');
     }
 
-    const productExpireDay = orderProductMapping.product.expireDay || 0;
-    const validityStartsNextDay = orderProductMapping.product.partnerCompany?.validityStartsNextDay ?? true;
-    const expireDay = validityStartsNextDay ? productExpireDay : productExpireDay - 1;
+    const expireDayCalc = resolveExpireDays(
+      orderProductMapping.galaxiaDuration,
+      orderProductMapping.product.expireDay,
+      orderProductMapping.product.partnerCompany?.validityStartsNextDay,
+    );
 
-    const expireDate = expireDay ? dayjs().tz('Asia/Seoul').add(expireDay, 'day').format('YYYY. MM. DD') : null;
+    const expireDate = expireDayCalc ? dayjs().tz('Asia/Seoul').add(expireDayCalc, 'day').format('YYYY. MM. DD') : null;
 
     // 2. 쿠폰이미지 만들기
     const { path: imagePath } = await DeliveryCreateCouponImage(
@@ -3694,6 +3704,58 @@ export class OrderService {
     }
 
     orderProductMapping.encourageDay = encourageDay;
+    await this.orderProductMappingRepository.save(orderProductMapping);
+  }
+
+  /**
+   * GALAXIA cpn 유효기간(duration) 설정 수정 (발송관리용, 상품별)
+   * @param orderProductMappingId order_product_mapping의 id
+   */
+  async updateGalaxiaDuration(
+    user: ILoginUserInfo,
+    orderProductMappingId: number,
+    getBody: OrderUpdateGalaxiaDurationReqBodyDto,
+  ): Promise<void> {
+    const { galaxiaDuration } = getBody;
+
+    const orderProductMapping = await this.orderProductMappingRepository.findOne({
+      where: { id: orderProductMappingId },
+      relations: ['order', 'product', 'product.partnerCompany'],
+    });
+
+    if (!orderProductMapping) {
+      throw new BadRequestException('존재하지 않는 상품입니다.');
+    }
+
+    // 임시저장 상태에서는 설정 불가
+    if (orderProductMapping.order.status === IOrderStatus.TEMP) {
+      throw new BadRequestException('임시저장 상태에서는 유효기간을 설정할 수 없습니다.');
+    }
+
+    // 발송 확정 이후에는 설정 불가 (API에 이미 전달된 duration 변경 방지)
+    const blockedStatuses = [IOrderStatus.DELIVERY_CONFIRMED, IOrderStatus.DELIVERY_COMPLETE, IOrderStatus.DELIVERY_CANCEL];
+    if (blockedStatuses.includes(orderProductMapping.order.status)) {
+      throw new BadRequestException('발송 확정 이후에는 유효기간을 변경할 수 없습니다.');
+    }
+
+    // GALAXIA 상품만 설정 가능
+    if (orderProductMapping.product.partnerCompany?.type !== 'GALAXIA') {
+      throw new BadRequestException('GALAXIA 상품만 유효기간(duration)을 설정할 수 있습니다.');
+    }
+
+    // 백화점(dept) 상품 제외 (cpn만 지원)
+    if (orderProductMapping.product.name.includes('(백화점)')) {
+      throw new BadRequestException('백화점 상품권은 duration 설정을 지원하지 않습니다.');
+    }
+
+    // 범위 검증 (1~999 정수)
+    if (galaxiaDuration !== null) {
+      if (!Number.isInteger(galaxiaDuration) || galaxiaDuration < 1 || galaxiaDuration > 999) {
+        throw new BadRequestException('유효기간은 1~999 사이의 정수여야 합니다.');
+      }
+    }
+
+    orderProductMapping.galaxiaDuration = galaxiaDuration;
     await this.orderProductMappingRepository.save(orderProductMapping);
   }
 

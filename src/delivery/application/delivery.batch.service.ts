@@ -10,6 +10,7 @@ import * as fsPromises from 'fs/promises';
 import * as QRCode from 'qrcode';
 
 import { applyReplaceCharacters } from '../../common/utils/replace-characters.util';
+import { resolveExpireDays } from '../../common/utils/expire.util';
 import { OrderEntity } from '../../entity/order.entity';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { OrderProductMappingEntity } from '../../entity/order.product.mapping.entity';
@@ -155,9 +156,11 @@ export class DeliveryBatchService {
   private async createCouponImage(orderDelivery: OrderDeliveryEntity): Promise<string> {
     const product = orderDelivery.orderProductMapping.product;
     const partnerCompany = product.partnerCompany;
-    const productExpireDay = product.expireDay || 0;
-    const validityStartsNextDay = partnerCompany?.validityStartsNextDay ?? true;
-    const expireDay = validityStartsNextDay ? productExpireDay : productExpireDay - 1;
+    const expireDay = resolveExpireDays(
+      orderDelivery.orderProductMapping.galaxiaDuration,
+      product.expireDay,
+      partnerCompany?.validityStartsNextDay,
+    );
     const expireDate = expireDay ? dayjs().add(expireDay, 'day').format('YYYY. MM. DD') : null;
 
     const { path } = await DeliveryCreateCouponImage(
@@ -407,9 +410,11 @@ export class DeliveryBatchService {
 
     // 3. 유효기간 설정 (재발송 시 기존 expireAt 유지)
     if (order.type !== IOrderType.SSG && !orderDelivery.expireAt) {
-      const partnerCompany = product.partnerCompany;
-      const expireDays =
-        partnerCompany?.validityStartsNextDay === false ? product.expireDay - 1 : product.expireDay;
+      const expireDays = resolveExpireDays(
+        orderDelivery.orderProductMapping.galaxiaDuration,
+        product.expireDay,
+        product.partnerCompany?.validityStartsNextDay,
+      );
 
       orderDelivery.expireAt = addDays(new Date(), expireDays);
       const encourageDay = orderDelivery.orderProductMapping.encourageDay;
@@ -1087,11 +1092,11 @@ export class DeliveryBatchService {
 
     // 유효기간 설정 (재발송 시 기존 expireAt 유지)
     if (orderDelivery.orderProductMapping.order.type !== IOrderType.SSG && !orderDelivery.expireAt) {
-      const partnerCompany = orderDelivery.orderProductMapping.product.partnerCompany;
-      const expireDays =
-        partnerCompany?.validityStartsNextDay === false
-          ? orderDelivery.orderProductMapping.product.expireDay - 1
-          : orderDelivery.orderProductMapping.product.expireDay;
+      const expireDays = resolveExpireDays(
+        orderDelivery.orderProductMapping.galaxiaDuration,
+        orderDelivery.orderProductMapping.product.expireDay,
+        orderDelivery.orderProductMapping.product.partnerCompany?.validityStartsNextDay,
+      );
 
       orderDelivery.expireAt = addDays(new Date(), expireDays);
       // 상품별 독려문자 설정 적용
