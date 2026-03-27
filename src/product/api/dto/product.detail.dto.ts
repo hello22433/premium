@@ -67,6 +67,12 @@ export class ProductDetailDto {
   expireDay: number;
 
   @ApiProperty({
+    description: 'GALAXIA cpn 유효기간 (일수, 1~999)',
+    nullable: true,
+  })
+  galaxiaDuration: number | null;
+
+  @ApiProperty({
     description: '상품 군 A, B, C, D',
   })
   category: string | null;

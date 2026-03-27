@@ -55,6 +55,10 @@ export const ProductUpdateHistoryKeyName = (key: string): string => {
     return '상품 상태';
   }
 
+  if (key === 'galaxiaDuration') {
+    return 'GALAXIA 유효기간';
+  }
+
   if (key === 'reason') {
     return '수정사유';
   }

@@ -140,8 +140,8 @@ export class PartnerCompanyExternService {
           giftKind,
           // 백화점(dept) 상품권의 경우 액면가 필수
           faceValue: giftKind === 'dept' ? String(orderDelivery.orderProductMapping.product.price) : undefined,
-          // cpn의 경우 galaxiaDuration 설정값 전달 (미설정 시 undefined → HTTP 레이어에서 0으로 변환)
-          duration: giftKind === 'cpn' ? (orderDelivery.orderProductMapping.galaxiaDuration ?? undefined) : undefined,
+          // cpn의 경우 duration 전달: OPM override ?? Product 기본값 (미설정 시 undefined → HTTP 레이어에서 0으로 변환)
+          duration: giftKind === 'cpn' ? (orderDelivery.orderProductMapping.galaxiaDuration ?? orderDelivery.orderProductMapping.product.galaxiaDuration ?? undefined) : undefined,
         });
         context = JSON.stringify(galaxiaOut);
 

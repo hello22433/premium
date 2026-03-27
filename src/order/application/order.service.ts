@@ -456,7 +456,7 @@ export class OrderService {
           ? dayjs(firstDelivery.expireAt).tz('Asia/Seoul').format('YYYY. MM. DD')
           : (() => {
               const expireDays = resolveExpireDays(
-                orderProductMapping.galaxiaDuration,
+                orderProductMapping.galaxiaDuration ?? orderProductMapping.product.galaxiaDuration,
                 orderProductMapping.product.expireDay,
                 orderProductMapping.product.partnerCompany?.validityStartsNextDay,
               );
@@ -601,7 +601,7 @@ export class OrderService {
           ? dayjs(firstDelivery.expireAt).tz('Asia/Seoul').format('YYYY. MM. DD')
           : (() => {
               const expireDays = resolveExpireDays(
-                orderProductMapping.galaxiaDuration,
+                orderProductMapping.galaxiaDuration ?? orderProductMapping.product.galaxiaDuration,
                 orderProductMapping.product.expireDay,
                 orderProductMapping.product.partnerCompany?.validityStartsNextDay,
               );
@@ -3541,7 +3541,7 @@ export class OrderService {
     }
 
     const expireDayCalc = resolveExpireDays(
-      orderProductMapping.galaxiaDuration,
+      orderProductMapping.galaxiaDuration ?? orderProductMapping.product.galaxiaDuration,
       orderProductMapping.product.expireDay,
       orderProductMapping.product.partnerCompany?.validityStartsNextDay,
     );

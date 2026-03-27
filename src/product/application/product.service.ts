@@ -748,6 +748,7 @@ export class ProductService {
       name: product.name,
       price: product.price,
       expireDay: product.expireDay,
+      galaxiaDuration: product.galaxiaDuration ?? null,
       category: product.category ?? null,
 
       settleMethod: product.settleMethod,
@@ -815,6 +816,7 @@ export class ProductService {
       name,
       price,
       expireDay,
+      galaxiaDuration,
       category,
       classificationId,
       settlePercent,
@@ -863,6 +865,7 @@ export class ProductService {
       name,
       price,
       expireDay,
+      galaxiaDuration: galaxiaDuration ?? null,
       category,
       classificationId,
       settlePercent,

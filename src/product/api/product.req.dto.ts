@@ -296,6 +296,15 @@ export class ProductCreateReqDto {
   @IsNumber()
   expireDay: number;
 
+  @ApiPropertyOptional({
+    description: 'GALAXIA cpn 유효기간 (일수, 1~999)',
+    nullable: true,
+  })
+  // ================================
+  @IsOptional()
+  @IsNumber()
+  galaxiaDuration?: number | null;
+
   @ApiProperty({
     description: '상품군 ex) A,B,C,D',
   })
