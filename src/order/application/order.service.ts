@@ -1436,7 +1436,7 @@ export class OrderService {
     let virtualTotalCount = 0;
 
     if (isSsgOrder) {
-      // 크로스 상품 합산: 수신번호별 총 금액 사전 계산 + phoneKey 캐싱 (복호화 1회만 수행)
+      // Phase 1: 수신번호별 총 금액 사전 계산 + phoneKey 캐싱 (복호화 1회만 수행)
       const phoneToTotalAmount = new Map<string, number>();
       const deliveryPhoneKeyCache = new Map<number, string>();
       for (const op of orderProductList) {
@@ -1451,23 +1451,43 @@ export class OrderService {
         }
       }
 
+      // Phase 2: 크로스 상품 수신번호 식별 (2개 이상 다른 상품이 가는 번호)
+      const phoneProductIds = new Map<string, Set<number>>();
+      for (const op of orderProductList) {
+        for (const delivery of op.orderDeliveries ?? []) {
+          const phoneKey = deliveryPhoneKeyCache.get(delivery.id)!;
+          const ids = phoneProductIds.get(phoneKey) ?? new Set();
+          ids.add(op.id);
+          phoneProductIds.set(phoneKey, ids);
+        }
+      }
+      const multiProductPhones = new Set(
+        [...phoneProductIds.entries()].filter(([, ids]) => ids.size > 1).map(([phone]) => phone),
+      );
+
+      // Phase 3a: 단일 상품 수신번호 — 기존 로직 (상품 단가 × 수량 표시)
       for (const orderProduct of orderProductList) {
         const productPrice = orderProduct.product.price;
         const product = orderProduct.product;
-
-        // delivery ID → entity 매핑 (O(1) lookup용)
         const deliveryMap = new Map((orderProduct.orderDeliveries ?? []).map((d) => [d.id, d]));
 
-        // 수신번호별 delivery 그룹핑 (캐싱된 phoneKey 사용)
+        // 크로스 상품 번호 제외한 delivery만 필터
+        const singleDeliveries = (orderProduct.orderDeliveries ?? []).filter((d) => {
+          const phoneKey = deliveryPhoneKeyCache.get(d.id)!;
+          return !multiProductPhones.has(phoneKey);
+        });
+        if (singleDeliveries.length === 0) continue;
+
+        // 수신번호별 그룹핑
         const targetGroups = new Map<string, typeof orderProduct.orderDeliveries>();
-        for (const delivery of orderProduct.orderDeliveries ?? []) {
+        for (const delivery of singleDeliveries) {
           const key = deliveryPhoneKeyCache.get(delivery.id) ?? `__null_${delivery.id}`;
           const group = targetGroups.get(key) ?? [];
           group.push(delivery);
           targetGroups.set(key, group);
         }
 
-        // 할인율별 그룹핑 (같은 할인율이면 합침)
+        // 할인율별 그룹핑
         const discountGroups = new Map<string, {
           fee: number;
           priceAdjustment: IPriceAdjustment | null;
@@ -1478,20 +1498,13 @@ export class OrderService {
 
         for (const [phoneKey, deliveries] of targetGroups) {
           const totalAmount = phoneToTotalAmount.get(phoneKey) ?? productPrice * deliveries.length;
-          let fee: number;
-          let priceAdjustment: IPriceAdjustment | null;
-          let settleDiscountType: IOrderSettleDiscountType | null = orderProduct.settleDiscountType ?? null;
-
-          // 크로스 상품 합산 금액으로 할인 구간 매칭 (완료 주문 포함 항상 재계산)
           const matchingDiscount = findMatchingDiscount(
             { price: productPrice, category: product.category, brand: product.brand },
             userDiscounts,
             totalAmount,
           );
-          fee = matchingDiscount?.pricePercent ?? 0;
-          priceAdjustment = matchingDiscount?.priceAdjustment ?? null;
-
-          // fee 유효성 검사
+          let fee = matchingDiscount?.pricePercent ?? 0;
+          const priceAdjustment = matchingDiscount?.priceAdjustment ?? null;
           if (fee < 0 || fee > 100) fee = 0;
 
           const feeKey = `${fee}-${priceAdjustment}`;
@@ -1503,14 +1516,14 @@ export class OrderService {
             discountGroups.set(feeKey, {
               fee,
               priceAdjustment,
-              settleDiscountType,
+              settleDiscountType: orderProduct.settleDiscountType ?? null,
               deliveryIds: deliveries.map((d) => d.id),
               count: deliveries.length,
             });
           }
         }
 
-        // 할인율별 가상 행 생성
+        // 가상 행 생성
         let isFirstRow = true;
         for (const [, group] of discountGroups) {
           const groupTotalPrice = productPrice * group.count;
@@ -1522,8 +1535,6 @@ export class OrderService {
             : groupTotalPrice;
 
           const firstDelivery = deliveryMap.get(group.deliveryIds[0]);
-          const refund = firstDelivery?.refundRatio ?? null;
-
           resultList.push({
             id: orderProduct.id,
             brandName: product.brand?.nameKorean ?? null,
@@ -1536,13 +1547,122 @@ export class OrderService {
             fee: group.fee,
             discountPrice,
             discountTotalPrice,
-            refund,
+            refund: firstDelivery?.refundRatio ?? null,
             deliveryIds: group.deliveryIds,
             isSubRow: !isFirstRow,
           });
           isFirstRow = false;
           virtualTotalCount++;
         }
+      }
+
+      // Phase 3b: 크로스 상품 수신번호 — 합산 행 (상품명 결합 표시)
+      const mergedGroups = new Map<string, {
+        name: string;
+        brandName: string | null;
+        combinedPrice: number;
+        fee: number;
+        priceAdjustment: IPriceAdjustment | null;
+        settleDiscountType: IOrderSettleDiscountType | null;
+        deliveryIds: number[];
+        phoneCount: number;
+        refund: number | null;
+        orderProductId: number;
+      }>();
+
+      for (const phoneKey of multiProductPhones) {
+        const totalAmount = phoneToTotalAmount.get(phoneKey) ?? 0;
+
+        // 이 번호로 가는 모든 delivery 수집
+        const phoneItems: Array<{ orderProduct: typeof orderProductList[0]; deliveryId: number }> = [];
+        for (const orderProduct of orderProductList) {
+          for (const delivery of orderProduct.orderDeliveries ?? []) {
+            if (deliveryPhoneKeyCache.get(delivery.id) === phoneKey) {
+              phoneItems.push({ orderProduct, deliveryId: delivery.id });
+            }
+          }
+        }
+        if (phoneItems.length === 0) continue;
+
+        const firstProduct = phoneItems[0].orderProduct.product;
+        const matchingDiscount = findMatchingDiscount(
+          { price: firstProduct.price, category: firstProduct.category, brand: firstProduct.brand },
+          userDiscounts,
+          totalAmount,
+        );
+        let fee = matchingDiscount?.pricePercent ?? 0;
+        const priceAdjustment = matchingDiscount?.priceAdjustment ?? null;
+        if (fee < 0 || fee > 100) fee = 0;
+
+        // 상품 조합 시그니처 (동일 조합+할인율이면 합산)
+        const productBreakdown = new Map<number, { name: string; count: number }>();
+        for (const { orderProduct } of phoneItems) {
+          const existing = productBreakdown.get(orderProduct.id);
+          if (existing) existing.count++;
+          else productBreakdown.set(orderProduct.id, { name: orderProduct.product.name, count: 1 });
+        }
+        const sortedProducts = [...productBreakdown.entries()].sort(([a], [b]) => a - b);
+        const sig = sortedProducts.map(([id, { count }]) => `${id}:${count}`).join('|');
+        const groupKey = `${sig}-${fee}-${priceAdjustment}`;
+
+        const existingGroup = mergedGroups.get(groupKey);
+        if (existingGroup) {
+          existingGroup.deliveryIds.push(...phoneItems.map((i) => i.deliveryId));
+          existingGroup.phoneCount++;
+        } else {
+          // 상품명 결합: 공통 접두어 추출 후 접미어만 + 로 연결
+          const names = sortedProducts.map(([, v]) => v.name);
+          let prefix = names[0];
+          for (const n of names.slice(1)) {
+            while (!n.startsWith(prefix) && prefix.length > 0) prefix = prefix.slice(0, -1);
+          }
+          const lastSpace = prefix.lastIndexOf(' ');
+          if (lastSpace > 0) prefix = prefix.slice(0, lastSpace + 1);
+          else prefix = '';
+          const mergedName = prefix + names.map((n) => n.slice(prefix.length)).join(' + ');
+
+          mergedGroups.set(groupKey, {
+            name: mergedName,
+            brandName: firstProduct.brand?.nameKorean ?? null,
+            combinedPrice: totalAmount,
+            fee,
+            priceAdjustment,
+            settleDiscountType: phoneItems[0].orderProduct.settleDiscountType ?? null,
+            deliveryIds: phoneItems.map((i) => i.deliveryId),
+            phoneCount: 1,
+            refund: null,
+            orderProductId: phoneItems[0].orderProduct.id,
+          });
+        }
+      }
+
+      // 합산 행 결과 추가
+      for (const [, group] of mergedGroups) {
+        const groupTotalPrice = group.combinedPrice * group.phoneCount;
+        const discountPrice = group.priceAdjustment
+          ? OrderFeeCalculator({ fee: group.fee, priceAdjustment: group.priceAdjustment, price: group.combinedPrice })
+          : group.combinedPrice;
+        const discountTotalPrice = group.priceAdjustment
+          ? OrderFeeCalculator({ fee: group.fee, priceAdjustment: group.priceAdjustment, price: groupTotalPrice })
+          : groupTotalPrice;
+
+        resultList.push({
+          id: group.orderProductId,
+          brandName: group.brandName,
+          name: group.name,
+          price: group.combinedPrice,
+          amount: group.phoneCount,
+          totalPrice: groupTotalPrice,
+          settleDiscountType: group.settleDiscountType,
+          priceAdjustment: group.priceAdjustment,
+          fee: group.fee,
+          discountPrice,
+          discountTotalPrice,
+          refund: group.refund,
+          deliveryIds: group.deliveryIds,
+          isSubRow: false,
+        });
+        virtualTotalCount++;
       }
     } else {
       // 비SSG: 기존 로직
