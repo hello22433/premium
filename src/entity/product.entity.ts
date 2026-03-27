@@ -36,6 +36,9 @@ export class ProductEntity extends BaseEntity {
   @Column({ comment: '유효 기간 (일)' })
   expireDay: number;
 
+  @Column({ type: 'smallint', nullable: true, comment: 'GALAXIA cpn 유효기간 (일수, 1~999)' })
+  galaxiaDuration: number | null;
+
   @Column({ type: 'varchar', length: 50, comment: '상품군 ex) A,B,C,D' })
   category: string;
 

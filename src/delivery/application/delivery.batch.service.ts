@@ -157,7 +157,7 @@ export class DeliveryBatchService {
     const product = orderDelivery.orderProductMapping.product;
     const partnerCompany = product.partnerCompany;
     const expireDay = resolveExpireDays(
-      orderDelivery.orderProductMapping.galaxiaDuration,
+      orderDelivery.orderProductMapping.galaxiaDuration ?? product.galaxiaDuration,
       product.expireDay,
       partnerCompany?.validityStartsNextDay,
     );
@@ -411,7 +411,7 @@ export class DeliveryBatchService {
     // 3. 유효기간 설정 (재발송 시 기존 expireAt 유지)
     if (order.type !== IOrderType.SSG && !orderDelivery.expireAt) {
       const expireDays = resolveExpireDays(
-        orderDelivery.orderProductMapping.galaxiaDuration,
+        orderDelivery.orderProductMapping.galaxiaDuration ?? product.galaxiaDuration,
         product.expireDay,
         product.partnerCompany?.validityStartsNextDay,
       );
@@ -1093,7 +1093,7 @@ export class DeliveryBatchService {
     // 유효기간 설정 (재발송 시 기존 expireAt 유지)
     if (orderDelivery.orderProductMapping.order.type !== IOrderType.SSG && !orderDelivery.expireAt) {
       const expireDays = resolveExpireDays(
-        orderDelivery.orderProductMapping.galaxiaDuration,
+        orderDelivery.orderProductMapping.galaxiaDuration ?? orderDelivery.orderProductMapping.product.galaxiaDuration,
         orderDelivery.orderProductMapping.product.expireDay,
         orderDelivery.orderProductMapping.product.partnerCompany?.validityStartsNextDay,
       );

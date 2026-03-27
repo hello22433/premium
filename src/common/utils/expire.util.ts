@@ -6,7 +6,7 @@ export function resolveExpireDays(
   productExpireDay: number,
   validityStartsNextDay: boolean | null | undefined,
 ): number {
-  if (galaxiaDuration) return galaxiaDuration;
+  if (galaxiaDuration != null) return galaxiaDuration;
   const base = productExpireDay || 0;
   return (validityStartsNextDay ?? true) ? base : base - 1;
 }
