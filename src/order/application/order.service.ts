@@ -1566,6 +1566,7 @@ export class OrderService {
         settleDiscountType: IOrderSettleDiscountType | null;
         deliveryIds: number[];
         phoneCount: number;
+        deliveryCount: number;
         refund: number | null;
         orderProductId: number;
       }>();
@@ -1609,6 +1610,7 @@ export class OrderService {
         if (existingGroup) {
           existingGroup.deliveryIds.push(...phoneItems.map((i) => i.deliveryId));
           existingGroup.phoneCount++;
+          existingGroup.deliveryCount += phoneItems.length;
         } else {
           // 상품명 결합: 공통 접두어 추출 후 접미어만 + 로 연결
           const names = sortedProducts.map(([, v]) => v.name);
@@ -1630,6 +1632,7 @@ export class OrderService {
             settleDiscountType: phoneItems[0].orderProduct.settleDiscountType ?? null,
             deliveryIds: phoneItems.map((i) => i.deliveryId),
             phoneCount: 1,
+            deliveryCount: phoneItems.length,
             refund: null,
             orderProductId: phoneItems[0].orderProduct.id,
           });
@@ -1651,7 +1654,7 @@ export class OrderService {
           brandName: group.brandName,
           name: group.name,
           price: group.combinedPrice,
-          amount: group.phoneCount,
+          amount: group.deliveryCount,
           totalPrice: groupTotalPrice,
           settleDiscountType: group.settleDiscountType,
           priceAdjustment: group.priceAdjustment,
