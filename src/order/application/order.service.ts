@@ -126,6 +126,33 @@ dayjs.extend(utc);
 
 dayjs.extend(timezone);
 
+/**
+ * SSG 가상 행에서 delivery 저장값 우선, 없으면 UserDiscount 폴백
+ */
+function resolveSettleFee(
+  firstDelivery: { settleFee: number | null; settlePriceAdjustment: IPriceAdjustment | null; settleDiscountType: IOrderSettleDiscountType | null },
+  fallbackDiscountType: IOrderSettleDiscountType | null,
+  isOrderCompleted: boolean,
+  computeMatchingDiscount: () => ReturnType<typeof findMatchingDiscount>,
+): { fee: number; priceAdjustment: IPriceAdjustment | null; settleDiscountType: IOrderSettleDiscountType | null } {
+  if (firstDelivery.settleFee != null && firstDelivery.settlePriceAdjustment != null) {
+    return {
+      fee: firstDelivery.settleFee,
+      priceAdjustment: firstDelivery.settlePriceAdjustment,
+      settleDiscountType: firstDelivery.settleDiscountType ?? fallbackDiscountType,
+    };
+  }
+  if (!isOrderCompleted) {
+    const matchingDiscount = computeMatchingDiscount();
+    return {
+      fee: matchingDiscount?.pricePercent ?? 0,
+      priceAdjustment: matchingDiscount?.priceAdjustment ?? null,
+      settleDiscountType: fallbackDiscountType,
+    };
+  }
+  return { fee: 0, priceAdjustment: null, settleDiscountType: fallbackDiscountType };
+}
+
 @Injectable()
 export class OrderService {
   private logger = new Logger('OrderService');
@@ -1506,13 +1533,19 @@ export class OrderService {
 
         for (const [phoneKey, deliveries] of targetGroups) {
           const totalAmount = phoneToTotalAmount.get(phoneKey) ?? productPrice * deliveries.length;
-          const matchingDiscount = findMatchingDiscount(
-            { price: productPrice, category: product.category, brand: product.brand },
-            userDiscounts,
-            totalAmount,
+
+          const resolved = resolveSettleFee(
+            deliveries[0],
+            orderProduct.settleDiscountType ?? null,
+            isOrderCompleted,
+            () => findMatchingDiscount(
+              { price: productPrice, category: product.category, brand: product.brand },
+              userDiscounts,
+              totalAmount,
+            ),
           );
-          let fee = matchingDiscount?.pricePercent ?? 0;
-          const priceAdjustment = matchingDiscount?.priceAdjustment ?? null;
+          let { fee } = resolved;
+          const { priceAdjustment, settleDiscountType } = resolved;
           if (fee < 0 || fee > 100) fee = 0;
 
           const feeKey = `${fee}-${priceAdjustment}`;
@@ -1524,7 +1557,7 @@ export class OrderService {
             discountGroups.set(feeKey, {
               fee,
               priceAdjustment,
-              settleDiscountType: orderProduct.settleDiscountType ?? null,
+              settleDiscountType,
               deliveryIds: deliveries.map((d) => d.id),
               count: deliveries.length,
             });
@@ -1583,24 +1616,31 @@ export class OrderService {
         const totalAmount = phoneToTotalAmount.get(phoneKey) ?? 0;
 
         // 이 번호로 가는 모든 delivery 수집
-        const phoneItems: Array<{ orderProduct: typeof orderProductList[0]; deliveryId: number }> = [];
+        const phoneItems: Array<{ orderProduct: typeof orderProductList[0]; deliveryId: number; delivery: typeof orderProductList[0]['orderDeliveries'][0] }> = [];
         for (const orderProduct of orderProductList) {
           for (const delivery of orderProduct.orderDeliveries ?? []) {
             if (deliveryPhoneKeyCache.get(delivery.id) === phoneKey) {
-              phoneItems.push({ orderProduct, deliveryId: delivery.id });
+              phoneItems.push({ orderProduct, deliveryId: delivery.id, delivery });
             }
           }
         }
         if (phoneItems.length === 0) continue;
 
         const firstProduct = phoneItems[0].orderProduct.product;
-        const matchingDiscount = findMatchingDiscount(
-          { price: firstProduct.price, category: firstProduct.category, brand: firstProduct.brand },
-          userDiscounts,
-          totalAmount,
+
+        const resolved = resolveSettleFee(
+          phoneItems[0].delivery,
+          phoneItems[0].orderProduct.settleDiscountType ?? null,
+          isOrderCompleted,
+          () => findMatchingDiscount(
+            { price: firstProduct.price, category: firstProduct.category, brand: firstProduct.brand },
+            userDiscounts,
+            totalAmount,
+          ),
         );
-        let fee = matchingDiscount?.pricePercent ?? 0;
-        const priceAdjustment = matchingDiscount?.priceAdjustment ?? null;
+        let { fee } = resolved;
+        const { priceAdjustment, settleDiscountType } = resolved;
+
         if (fee < 0 || fee > 100) fee = 0;
 
         // 상품 조합 시그니처 (동일 조합+할인율이면 합산)
@@ -1637,7 +1677,7 @@ export class OrderService {
             combinedPrice: totalAmount,
             fee,
             priceAdjustment,
-            settleDiscountType: phoneItems[0].orderProduct.settleDiscountType ?? null,
+            settleDiscountType,
             deliveryIds: phoneItems.map((i) => i.deliveryId),
             phoneCount: 1,
             deliveryCount: phoneItems.length,
@@ -1829,6 +1869,8 @@ export class OrderService {
           this.orderProductMappingRepository.create({
             id: settle.id,
             settleDiscountType: settle.settleDiscountType,
+            priceAdjustment: settle.priceAdjustment,
+            fee: settle.fee,
           }),
         );
       }
