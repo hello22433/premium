@@ -1550,7 +1550,7 @@ export class OrderService {
             { fee: orderProduct.fee, priceAdjustment: orderProduct.priceAdjustment, settleDiscountType: orderProduct.settleDiscountType ?? null },
             isOrderCompleted,
             () => findMatchingDiscount(
-              { price: productPrice, category: product.category, brand: product.brand },
+              { price: productPrice, category: product.category, classificationId: product.classificationId, brand: product.brand },
               userDiscounts,
               totalAmount,
             ),
@@ -1645,7 +1645,7 @@ export class OrderService {
           { fee: firstOrderProduct.fee, priceAdjustment: firstOrderProduct.priceAdjustment, settleDiscountType: firstOrderProduct.settleDiscountType ?? null },
           isOrderCompleted,
           () => findMatchingDiscount(
-            { price: firstProduct.price, category: firstProduct.category, brand: firstProduct.brand },
+            { price: firstProduct.price, category: firstProduct.category, classificationId: firstProduct.classificationId, brand: firstProduct.brand },
             userDiscounts,
             totalAmount,
           ),
@@ -1750,6 +1750,7 @@ export class OrderService {
             {
               price: orderProduct.product.price,
               category: orderProduct.product.category,
+              classificationId: orderProduct.product.classificationId,
               brand: orderProduct.product.brand,
             },
             userDiscounts,
@@ -2763,6 +2764,7 @@ export class OrderService {
           {
             price: mapping.product.price,
             category: mapping.product.category,
+            classificationId: mapping.product.classificationId,
             brand: mapping.product.brand,
           },
           userDiscounts,
