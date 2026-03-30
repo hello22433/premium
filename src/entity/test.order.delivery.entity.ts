@@ -1,6 +1,7 @@
 import { Column, Entity, JoinColumn, ManyToOne, PrimaryGeneratedColumn } from 'typeorm';
 import { BaseEntity } from '../common/entity/base.entity';
 import { OrderProductMappingEntity } from './order.product.mapping.entity';
+import { ProductEntity } from './product.entity';
 import { IOrderDeliveryStatus } from '../delivery/interface/order.delivery.status';
 import { IOrderSendMethod } from '../order/interface/order.send.method';
 import { OrderDeliveryCouponStatus } from '../delivery/interface/order.delivery.coupon.status';
@@ -53,7 +54,14 @@ export class TestOrderDeliveryEntity extends BaseEntity {
   @Column({ default: OrderDeliveryCouponStatus.NOT_USED })
   couponStatus: OrderDeliveryCouponStatus;
 
+  @Column({ type: 'int', nullable: true, comment: 'FK) product.id 초이스 쿠폰 선택 시' })
+  choiceSelectProductId: number | null;
+
   @ManyToOne(() => OrderProductMappingEntity, { createForeignKeyConstraints: false })
   @JoinColumn({ name: 'order_product_mapping_id' })
   orderProductMapping: OrderProductMappingEntity;
+
+  @ManyToOne(() => ProductEntity, { createForeignKeyConstraints: false })
+  @JoinColumn({ name: 'choice_select_product_id' })
+  choiceSelectProduct?: ProductEntity;
 }
