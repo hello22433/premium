@@ -101,6 +101,9 @@ export class OrderDeliveryEntity extends BaseEntity {
   @Column({ type: 'datetime', nullable: true, comment: '재발송 완료 시각' })
   resendAt: Date | null;
 
+  @Column({ name: 'replaced_from_id', type: 'bigint', nullable: true, comment: '폐기 후 신규 발송 - 원본 OrderDelivery ID' })
+  replacedFromId: number | null;
+
   @Column({ type: 'datetime', nullable: true, comment: '발송 실패 시각' })
   failedAt: Date | null;
 

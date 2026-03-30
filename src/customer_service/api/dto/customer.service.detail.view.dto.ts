@@ -109,4 +109,10 @@ export class CustomerServiceDetailViewDto {
     nullable: true,
   })
   emailReceiverPhone: string | null;
+
+  @ApiProperty({
+    description: '폐기 후 신규 발송 - 원본 OrderDelivery ID',
+    nullable: true,
+  })
+  replacedFromId: number | null;
 }
