@@ -1672,7 +1672,7 @@ export class OrderService {
           existingGroup.phoneCount++;
           existingGroup.deliveryCount += phoneItems.length;
         } else {
-          // 상품명 결합: 공통 접두어 추출 후 접미어만 + 로 연결
+          // 상품명 결합: 공통 접두어 추출 후 접미어만 + 로 연결 (각 권종별 수량 표기)
           const names = sortedProducts.map(([, v]) => v.name);
           let prefix = names[0];
           for (const n of names.slice(1)) {
@@ -1681,7 +1681,10 @@ export class OrderService {
           const lastSpace = prefix.lastIndexOf(' ');
           if (lastSpace > 0) prefix = prefix.slice(0, lastSpace + 1);
           else prefix = '';
-          const mergedName = prefix + names.map((n) => n.slice(prefix.length)).join(' + ');
+          const mergedName = prefix + sortedProducts.map(([, v]) => {
+            const suffix = v.name.slice(prefix.length);
+            return `${suffix}×${v.count}`;
+          }).join(' + ');
 
           mergedGroups.set(groupKey, {
             name: mergedName,
