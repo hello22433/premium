@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, IsNull, Repository } from 'typeorm';
+import { Brackets, In, IsNull, Repository } from 'typeorm';
 import { UserSyncProductEventEntity } from '../../entity/user.sync.product.event.entity';
 import {
   UserSyncProductDeleteProductReqDto,
@@ -46,7 +46,7 @@ export class UserSyncProductService {
   ) {}
 
   async getList(getQuery: UserSyncProductGetListReqDto): Promise<UserSyncProductGetListResDto> {
-    const { take, page, name, businessUserName, startAt, endAt, code, status, productName } = getQuery;
+    const { take, page, name, businessUserName, startAt, endAt, code, status, productName, searchKeyword } = getQuery;
     const skip = (page - 1) * take;
 
     let queryBuilder = this.eventRepository
@@ -54,6 +54,26 @@ export class UserSyncProductService {
     .leftJoinAndSelect('event.userSyncProductEventMappings', 'userSyncProductEventMappings')
     .innerJoinAndSelect('event.businessUser', 'user')
     .leftJoinAndSelect('user.company', 'userCompany');
+
+    if (searchKeyword) {
+      const productSubQuery = queryBuilder
+        .subQuery()
+        .select('mapping.userSyncProductEventId')
+        .from(UserSyncProductEventMappingEntity, 'mapping')
+        .innerJoin(ProductEntity, 'p', 'p.id = mapping.productId')
+        .where('p.name LIKE :keyword')
+        .andWhere('p.deletedAt IS NULL')
+        .andWhere('mapping.deletedAt IS NULL')
+        .getQuery();
+
+      queryBuilder = queryBuilder.andWhere(
+        new Brackets((qb) => {
+          qb.where('event.code LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('event.name LIKE :keyword')
+            .orWhere('event.id IN ' + productSubQuery);
+        }),
+      );
+    }
 
     if (businessUserName) {
       queryBuilder = queryBuilder.andWhere('userCompany.businessName LIKE :businessName', {

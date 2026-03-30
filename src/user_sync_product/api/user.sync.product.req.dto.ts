@@ -68,6 +68,14 @@ export class UserSyncProductGetListReqDto extends PagingReqDto {
   @IsOptional()
   @IsString()
   productName?: string;
+
+  @ApiPropertyOptional({
+    description: '통합 검색 키워드 (이벤트코드, 이벤트명, 상품명 OR 검색)',
+  })
+  // =================================
+  @IsOptional()
+  @IsString()
+  searchKeyword?: string;
 }
 
 export class UserSyncProductUpdateStatusReqDto {
