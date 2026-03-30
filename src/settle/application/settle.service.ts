@@ -1065,6 +1065,7 @@ export class SettleService {
         {
           price: product.price,
           category: product.category,
+          classificationId: product.classificationId,
           brand: product.brand,
         },
         partnerDiscounts,

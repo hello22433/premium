@@ -5,6 +5,7 @@ import { ICompareCondition } from '../user_discount/interface/compare.condition'
 import { IUserDiscountMethod } from '../user_discount/interface/user.discount.method';
 import { UserEntity } from './user.entity';
 import { PartnerCompanyEntity } from './partner.company.entity';
+import { ClassificationEntity } from './classification.entity';
 import { BaseEntity } from '../common/entity/base.entity';
 
 @Entity('user_discount')
@@ -21,9 +22,12 @@ export class UserDiscountEntity extends BaseEntity {
   @Column({
     type: 'enum',
     enum: IUserDiscountCategory,
-    comment: '할인 분류 ex) 상품군: CATEGORY, 대분류: CLASSIFICATION',
+    comment: '할인 분류 ex) 상품군: PRODUCT_GROUP, 카테고리: CATEGORY, 브랜드: BRAND',
   })
   category: IUserDiscountCategory;
+
+  @Column({ nullable: true, comment: 'FK) classification.id 카테고리' })
+  classificationId: number | null;
 
   @Column({
     type: 'enum',
@@ -32,7 +36,7 @@ export class UserDiscountEntity extends BaseEntity {
   })
   method: IUserDiscountMethod;
 
-  @Column({ type: 'varchar', nullable: true, length: 100, comment: '대분류' })
+  @Column({ type: 'varchar', nullable: true, length: 100, comment: '브랜드' })
   primaryCategory: string | null;
 
   @Column({ type: 'varchar', nullable: true, length: 100, comment: '상품군' })
@@ -57,6 +61,10 @@ export class UserDiscountEntity extends BaseEntity {
 
   @Column({ comment: '수수료 (percent)' })
   pricePercent: number;
+
+  @ManyToOne(() => ClassificationEntity, { createForeignKeyConstraints: false })
+  @JoinColumn({ name: 'classification_id' })
+  classification: ClassificationEntity;
 
   @ManyToOne(() => UserEntity, { createForeignKeyConstraints: false })
   @JoinColumn({ name: 'user_id' })

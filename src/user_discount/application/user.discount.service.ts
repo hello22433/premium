@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, SelectQueryBuilder } from 'typeorm';
 import { UserDiscountEntity } from '../../entity/user.discount.entity';
 import {
   UserDiscountCreateReqDto,
@@ -10,6 +10,7 @@ import {
 import { UserDiscountGetListResDto } from '../api/user.discount.res.dto';
 import { UserDiscountViewDto } from '../api/dto/user.discount.view.dto';
 import { UserEntity } from '../../entity/user.entity';
+import { ClassificationEntity } from '../../entity/classification.entity';
 import { IUserDiscountMethod } from '../interface/user.discount.method';
 import { IUserDiscountCategory } from '../interface/user.discount.category';
 import { ICompareCondition } from '../interface/compare.condition';
@@ -21,13 +22,15 @@ export class UserDiscountService {
     private userDiscountRepository: Repository<UserDiscountEntity>,
     @InjectRepository(UserEntity)
     private userRepository: Repository<UserEntity>,
+    @InjectRepository(ClassificationEntity)
+    private classificationRepository: Repository<ClassificationEntity>,
   ) {}
 
   /**
    * 할인 그룹 키 생성 (같은 그룹을 식별하기 위한 키)
    */
   private getDiscountGroupKey(discount: UserDiscountEntity): string {
-    return `${discount.category}-${discount.method}-${discount.primaryCategory || ''}-${discount.group || ''}`;
+    return `${discount.category}-${discount.method}-${discount.primaryCategory || ''}-${discount.group || ''}-${discount.classificationId || ''}`;
   }
 
   async getList(getQuery: UserDiscountGetListReqDto): Promise<UserDiscountGetListResDto> {
@@ -37,7 +40,9 @@ export class UserDiscountService {
       throw new BadRequestException('조회할 id는 한 개만 입력 가능합니다.');
     }
 
-    let queryBuilder = this.userDiscountRepository.createQueryBuilder('discount');
+    let queryBuilder = this.userDiscountRepository
+      .createQueryBuilder('discount')
+      .leftJoinAndSelect('discount.classification', 'classification');
 
     if (userId) {
       queryBuilder = queryBuilder.andWhere('discount.userId = :userId', { userId });
@@ -53,6 +58,7 @@ export class UserDiscountService {
       .addOrderBy('discount.method', 'ASC')
       .addOrderBy('discount.primaryCategory', 'ASC')
       .addOrderBy('discount.group', 'ASC')
+      .addOrderBy('discount.classificationId', 'ASC')
       .addOrderBy('CAST(discount.range AS UNSIGNED)', 'ASC');
 
     // 전체 데이터 조회
@@ -133,6 +139,8 @@ export class UserDiscountService {
         method: discount.method,
         group: discount.group ?? null,
         category: discount.category ?? null,
+        classificationId: discount.classificationId ?? null,
+        classificationName: discount.classification?.classification ?? null,
         primaryCategory: discount.primaryCategory ?? null,
         range: discount.range ?? null,
         compareCondition: discount.compareCondition,
@@ -156,12 +164,30 @@ export class UserDiscountService {
       primaryCategory,
       category,
       group,
+      classificationId,
     } = getBody;
 
     const user = await this.userRepository.findOneBy({ id: userId });
 
     if (!user) {
       throw new BadRequestException(`User does not exist`);
+    }
+
+    // category별 필수값 검증
+    if (category === IUserDiscountCategory.PRODUCT_GROUP && !group) {
+      throw new BadRequestException('상품군 할인 시 상품군(group)은 필수입니다.');
+    }
+    if (category === IUserDiscountCategory.CATEGORY) {
+      if (!classificationId) {
+        throw new BadRequestException('카테고리 할인 시 카테고리(classificationId)는 필수입니다.');
+      }
+      const classification = await this.classificationRepository.findOneBy({ id: classificationId });
+      if (!classification) {
+        throw new BadRequestException('해당 카테고리가 존재하지 않습니다.');
+      }
+    }
+    if (category === IUserDiscountCategory.BRAND && !primaryCategory) {
+      throw new BadRequestException('브랜드 할인 시 브랜드(primaryCategory)는 필수입니다.');
     }
 
     const baseInsertData = {
@@ -171,6 +197,7 @@ export class UserDiscountService {
       group,
       category,
       primaryCategory,
+      classificationId: classificationId ?? null,
       priceAdjustment,
       pricePercent,
     };
@@ -182,6 +209,7 @@ export class UserDiscountService {
         category,
         group: group ?? undefined,
         primaryCategory: primaryCategory ?? undefined,
+        classificationId: classificationId ?? undefined,
       });
 
       await this.userDiscountRepository.insert({
@@ -196,6 +224,7 @@ export class UserDiscountService {
         category,
         group: group ?? undefined,
         primaryCategory: primaryCategory ?? undefined,
+        classificationId: classificationId ?? undefined,
         compareCondition: compareCondition!,
         range: range ?? undefined,
       });
@@ -210,8 +239,8 @@ export class UserDiscountService {
 
   /**
    * 일괄(BULK) 할인 옵션 등록 시 검증
-   * - 같은 상품군/대분류에 이미 일괄 할인이 등록되어 있으면 차단
-   * - 같은 상품군/대분류에 구간 할인이 등록되어 있으면 차단 (일괄/구간 동시 등록 불가)
+   * - 같은 분류에 이미 일괄 할인이 등록되어 있으면 차단
+   * - 같은 분류에 구간 할인이 등록되어 있으면 차단 (일괄/구간 동시 등록 불가)
    */
   private async validateBulkDiscount(params: {
     userId?: number;
@@ -219,11 +248,11 @@ export class UserDiscountService {
     category: IUserDiscountCategory;
     group?: string;
     primaryCategory?: string;
+    classificationId?: number;
   }) {
-    const { userId, partnerCompanyId, category, group, primaryCategory } = params;
+    const { userId, partnerCompanyId, category, group, primaryCategory, classificationId } = params;
 
-    const targetName =
-      category === IUserDiscountCategory.CATEGORY ? `상품군 ${group}` : `대분류 ${primaryCategory}`;
+    const targetName = this.getTargetName(category, group, primaryCategory, classificationId);
 
     let queryBuilder = this.userDiscountRepository
       .createQueryBuilder('discount')
@@ -236,11 +265,7 @@ export class UserDiscountService {
       queryBuilder = queryBuilder.andWhere('discount.partnerCompanyId = :partnerCompanyId', { partnerCompanyId });
     }
 
-    if (category === IUserDiscountCategory.CATEGORY && group) {
-      queryBuilder = queryBuilder.andWhere('discount.group = :group', { group });
-    } else if (category === IUserDiscountCategory.CLASSIFICATION && primaryCategory) {
-      queryBuilder = queryBuilder.andWhere('discount.primaryCategory = :primaryCategory', { primaryCategory });
-    }
+    queryBuilder = this.addCategoryFilter(queryBuilder, category, group, primaryCategory, classificationId);
 
     const existing = await queryBuilder.getOne();
 
@@ -258,7 +283,7 @@ export class UserDiscountService {
 
   /**
    * 구간(SECTION) 할인 옵션 등록 시 검증
-   * - 같은 상품군/대분류에 일괄 할인이 등록되어 있으면 차단 (일괄/구간 동시 등록 불가)
+   * - 같은 분류에 일괄 할인이 등록되어 있으면 차단 (일괄/구간 동시 등록 불가)
    * - 같은 구간 값에 대한 중복 등록 불가
    */
   private async validateSectionDiscount(params: {
@@ -267,15 +292,15 @@ export class UserDiscountService {
     category: IUserDiscountCategory;
     group?: string;
     primaryCategory?: string;
+    classificationId?: number;
     compareCondition: ICompareCondition;
     range?: string;
   }) {
-    const { userId, partnerCompanyId, category, group, primaryCategory, compareCondition, range } = params;
+    const { userId, partnerCompanyId, category, group, primaryCategory, classificationId, compareCondition, range } =
+      params;
 
-    const targetName =
-      category === IUserDiscountCategory.CATEGORY ? `상품군 ${group}` : `대분류 ${primaryCategory}`;
+    const targetName = this.getTargetName(category, group, primaryCategory, classificationId);
 
-    // 같은 유저/협력사의 기존 할인 옵션 조회 (BULK 포함)
     let queryBuilder = this.userDiscountRepository
       .createQueryBuilder('discount')
       .andWhere('discount.category = :category', { category });
@@ -287,20 +312,14 @@ export class UserDiscountService {
       queryBuilder = queryBuilder.andWhere('discount.partnerCompanyId = :partnerCompanyId', { partnerCompanyId });
     }
 
-    // 상품군/대분류 매칭
-    if (category === IUserDiscountCategory.CATEGORY && group) {
-      queryBuilder = queryBuilder.andWhere('discount.group = :group', { group });
-    } else if (category === IUserDiscountCategory.CLASSIFICATION && primaryCategory) {
-      queryBuilder = queryBuilder.andWhere('discount.primaryCategory = :primaryCategory', { primaryCategory });
-    }
+    queryBuilder = this.addCategoryFilter(queryBuilder, category, group, primaryCategory, classificationId);
 
     const existingDiscounts = await queryBuilder.getMany();
 
     if (existingDiscounts.length === 0) {
-      return; // 기존 할인 옵션이 없으면 검증 통과
+      return;
     }
 
-    // 1. 일괄 할인 존재 시 구간 등록 차단
     const existingBulk = existingDiscounts.find((d) => d.method === IUserDiscountMethod.BULK);
     if (existingBulk) {
       throw new BadRequestException(
@@ -308,12 +327,50 @@ export class UserDiscountService {
       );
     }
 
-    // 2. 같은 구간 값 중복 검사 (값과 조건이 모두 같을 때만 차단)
     for (const existing of existingDiscounts) {
       if (existing.range === range && existing.compareCondition === compareCondition) {
         throw new BadRequestException(`${targetName}에 이미 같은 구간(${range}원) 및 조건이 등록되어 있습니다.`);
       }
     }
+  }
+
+  private getTargetName(
+    category: IUserDiscountCategory,
+    group?: string,
+    primaryCategory?: string,
+    classificationId?: number,
+  ): string {
+    switch (category) {
+      case IUserDiscountCategory.PRODUCT_GROUP:
+        return `상품군 ${group}`;
+      case IUserDiscountCategory.CATEGORY:
+        return `카테고리 ${classificationId}`;
+      case IUserDiscountCategory.BRAND:
+        return `브랜드 ${primaryCategory}`;
+    }
+  }
+
+  private addCategoryFilter(
+    queryBuilder: SelectQueryBuilder<UserDiscountEntity>,
+    category: IUserDiscountCategory,
+    group?: string,
+    primaryCategory?: string,
+    classificationId?: number,
+  ) {
+    switch (category) {
+      case IUserDiscountCategory.PRODUCT_GROUP:
+        if (group) queryBuilder = queryBuilder.andWhere('discount.group = :group', { group });
+        break;
+      case IUserDiscountCategory.CATEGORY:
+        if (classificationId)
+          queryBuilder = queryBuilder.andWhere('discount.classificationId = :classificationId', { classificationId });
+        break;
+      case IUserDiscountCategory.BRAND:
+        if (primaryCategory)
+          queryBuilder = queryBuilder.andWhere('discount.primaryCategory = :primaryCategory', { primaryCategory });
+        break;
+    }
+    return queryBuilder;
   }
 
   async delete(getBody: UserDiscountDeleteReqDto) {

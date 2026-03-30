@@ -45,7 +45,7 @@ export class UserDiscountCreateReqDto {
   partnerCompanyId?: number;
 
   @ApiProperty({
-    description: '할인 분류 ex) 상품군: CATEGORY, 대분류: CLASSIFICATION',
+    description: '할인 분류 ex) 상품군: PRODUCT_GROUP, 카테고리: CATEGORY, 브랜드: BRAND',
   })
   // =============================================================
   @IsNotEmpty()
@@ -60,7 +60,15 @@ export class UserDiscountCreateReqDto {
   method: IUserDiscountMethod;
 
   @ApiPropertyOptional({
-    description: '대분류',
+    description: 'FK) classification.id (카테고리 할인 시 필수)',
+  })
+  // =============================================================
+  @IsOptional()
+  @IsNumber()
+  classificationId?: number;
+
+  @ApiPropertyOptional({
+    description: '브랜드',
   })
   // =============================================================
   @IsOptional()

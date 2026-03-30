@@ -6,13 +6,16 @@ import { ICompareCondition } from '../interface/compare.condition';
 type DiscountMatchProduct = {
   price: number;
   category: string;
+  classificationId?: number | null;
   brand?: { nameKorean: string } | null;
 };
 
 /**
  * 상품에 매칭되는 할인 규칙 찾기
- * 우선순위: 브랜드(CLASSIFICATION) > 상품군(CATEGORY)
- * 브랜드 할인 규칙이 존재하면 상품군으로 폴백하지 않음
+ * 우선순위: 브랜드(BRAND) > 카테고리(CATEGORY) = 상품군(PRODUCT_GROUP)
+ * - 브랜드 할인이 구간 일치하면 브랜드 할인 적용
+ * - 브랜드 할인이 없거나 구간 불일치 시 카테고리/상품군 폴백
+ * - 카테고리/상품군 둘 다 매칭 시 더 높은 할인율 적용
  */
 export function findMatchingDiscount(
   product: DiscountMatchProduct,
@@ -23,23 +26,34 @@ export function findMatchingDiscount(
     return null;
   }
 
+  // 1. 브랜드 할인 (최우선)
   const brandDiscounts = userDiscounts.filter(
     (d) =>
-      d.category === IUserDiscountCategory.CLASSIFICATION &&
+      d.category === IUserDiscountCategory.BRAND &&
       d.primaryCategory === product.brand?.nameKorean,
   );
+  const brandMatch = findDiscountByMethod(product, brandDiscounts, priceOverride);
+  if (brandMatch) return brandMatch;
 
-  if (brandDiscounts.length > 0) {
-    return findDiscountByMethod(product, brandDiscounts, priceOverride);
-  }
-
+  // 2. 카테고리 + 상품군 동시 매칭 → 높은 할인율
   const categoryDiscounts = userDiscounts.filter(
     (d) =>
       d.category === IUserDiscountCategory.CATEGORY &&
+      d.classificationId === product.classificationId,
+  );
+  const categoryMatch = findDiscountByMethod(product, categoryDiscounts, priceOverride);
+
+  const groupDiscounts = userDiscounts.filter(
+    (d) =>
+      d.category === IUserDiscountCategory.PRODUCT_GROUP &&
       d.group === product.category,
   );
+  const groupMatch = findDiscountByMethod(product, groupDiscounts, priceOverride);
 
-  return findDiscountByMethod(product, categoryDiscounts, priceOverride);
+  if (categoryMatch && groupMatch) {
+    return categoryMatch.pricePercent >= groupMatch.pricePercent ? categoryMatch : groupMatch;
+  }
+  return categoryMatch || groupMatch || null;
 }
 
 /**

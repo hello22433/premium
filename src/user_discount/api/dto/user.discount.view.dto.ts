@@ -18,7 +18,7 @@ export class UserDiscountViewDto {
   partnerCompanyId: number | null;
 
   @ApiProperty({
-    description: '할인 분류 ex) 상품군: CATEGORY, 대분류: CLASSIFICATION',
+    description: '할인 분류 ex) 상품군: PRODUCT_GROUP, 카테고리: CATEGORY, 브랜드: BRAND',
   })
   category: IUserDiscountCategory;
 
@@ -28,7 +28,17 @@ export class UserDiscountViewDto {
   method: string;
 
   @ApiProperty({
-    description: '대분류',
+    description: 'FK) classification.id 카테고리',
+  })
+  classificationId: number | null;
+
+  @ApiProperty({
+    description: '카테고리명',
+  })
+  classificationName: string | null;
+
+  @ApiProperty({
+    description: '브랜드',
   })
   primaryCategory: string | null;
 
