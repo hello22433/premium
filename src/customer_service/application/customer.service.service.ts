@@ -48,6 +48,7 @@ import { UserCompanyEntity } from 'src/entity/user.company.entity';
 import { OrderFeeCalculator, applyCardSurcharge } from '../../order/domain/order.fee.calculator';
 import { getEffectiveFee, getEffectivePriceAdjustment } from '../../util/settle-fee.util';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
+import { randomUUID } from 'crypto';
 import { Response } from 'express';
 import * as ExcelJS from 'exceljs';
 
@@ -453,6 +454,7 @@ export class CustomerServiceService {
         method: orderDelivery.deliveryMethod,
         emailCouponStatus: orderDelivery.emailCouponStatus,
         emailReceiverPhone: maskedEmailReceiverPhone,
+        replacedFromId: orderDelivery.replacedFromId ?? null,
       });
     }
 
@@ -566,6 +568,7 @@ export class CustomerServiceService {
       expireAt: queryBuilder.expireAt ? dayjs(queryBuilder.expireAt).format('YYYY-MM-DD') : null,
       emailCouponStatus: queryBuilder.emailCouponStatus ?? null,
       emailReceiverPhone: formattedEmailReceiverPhone,
+      replacedFromId: queryBuilder.replacedFromId ?? null,
     };
   }
 
@@ -608,6 +611,7 @@ export class CustomerServiceService {
     orderDeliveryId: number,
     couponStatus: OrderDeliveryCouponStatus,
     historyData?: { type: string; content: string },
+    options?: { skipBalanceRestore?: boolean },
   ): Promise<{ orderDelivery: OrderDeliveryEntity; beforeChange: string }> {
     const orderDelivery = await this.orderDeliveryRepository
       .createQueryBuilder('orderDelivery')
@@ -682,8 +686,10 @@ export class CustomerServiceService {
       orderDelivery.couponStatus = couponStatus;
       await queryRunner.manager.save(OrderDeliveryEntity, orderDelivery);
 
-      // 예치금/여신 복구
-      await this.restoreBalanceOnDiscard(orderDelivery, user, queryRunner);
+      // 예치금/여신 복구 (폐기 후 신규 발송 시에는 스킵 — 핀 교체이므로 잔액 변동 없음)
+      if (!options?.skipBalanceRestore) {
+        await this.restoreBalanceOnDiscard(orderDelivery, user, queryRunner);
+      }
 
       if (historyData) {
         const history = this.orderHistoryRepository.create({
@@ -1007,6 +1013,10 @@ export class CustomerServiceService {
         beforeChange = orderDelivery.couponStatus;
         break;
       }
+      case '폐기 후 신규 발송': {
+        // beforeChange와 afterChange는 execHistory case 블록에서 설정됨
+        break;
+      }
       default: {
         beforeChange = '';
       }
@@ -1035,7 +1045,10 @@ export class CustomerServiceService {
           sendMethod = '이메일';
           break;
       }
-    } else if (getBody.type === '수신정보 변경요청') {
+    } else if (
+      getBody.type === '수신정보 변경요청' ||
+      getBody.type === '폐기 후 신규 발송'
+    ) {
       sendMethod = displayMethod;
     }
 
@@ -1134,6 +1147,113 @@ export class CustomerServiceService {
         await this.reSend(resendDto);
 
         afterChange = encryptedNewTarget;
+        break;
+      }
+      case '폐기 후 신규 발송': {
+        const newTarget = map.afterChange;
+        const orderDelivery = map.orderDelivery as OrderDeliveryEntity;
+
+        if (orderDelivery.deliveryMethod === IOrderSendMethod.EMAIL) {
+          if (!PhoneUtil.isValidEmail(newTarget)) {
+            throw new BadRequestException('유효하지 않은 이메일 주소입니다.');
+          }
+        } else {
+          if (!PhoneUtil.isValidPhone(newTarget)) {
+            throw new BadRequestException('유효하지 않은 전화번호입니다.');
+          }
+        }
+
+        // 잔액 복구 스킵 — 핀 교체이므로 잔액 변동 없음
+        const { orderDelivery: discardedDelivery } = await this.execDiscard(
+          map.user,
+          map.orderDeliveryId,
+          OrderDeliveryCouponStatus.CANCEL,
+          undefined,
+          { skipBalanceRestore: true },
+        );
+
+        const decryptedOldTarget = this.cryptoCipher.safeDecryptDeliveryTarget(discardedDelivery.deliveryTarget);
+        const oldPin = discardedDelivery.barCode || '';
+        map.beforeChange = `${decryptedOldTarget} / ${oldPin}`;
+
+        const newDelivery = new OrderDeliveryEntity();
+        newDelivery.orderProductMappingId = discardedDelivery.orderProductMappingId;
+        newDelivery.status = IOrderDeliveryStatus.WAIT;
+        newDelivery.deliveryMethod = discardedDelivery.deliveryMethod;
+
+        const normalizedTarget = PhoneUtil.normalizeDeliveryTarget(newTarget);
+        const encryptedTarget = this.cryptoCipher.encryptDeliveryTarget(normalizedTarget);
+        newDelivery.deliveryTarget = encryptedTarget;
+        newDelivery.originalDeliveryTarget = encryptedTarget;
+        newDelivery.sendRequestAt = new Date();
+        newDelivery.transactionId = randomUUID();
+        newDelivery.replaceCharacter1 = discardedDelivery.replaceCharacter1;
+        newDelivery.replaceCharacter2 = discardedDelivery.replaceCharacter2;
+        newDelivery.replaceCharacter3 = discardedDelivery.replaceCharacter3;
+        newDelivery.replacedFromId = discardedDelivery.id;
+        newDelivery.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
+
+        if (discardedDelivery.emailReceiverPhone) {
+          newDelivery.emailReceiverPhone = discardedDelivery.emailReceiverPhone;
+        }
+        if (discardedDelivery.ssgEventId) {
+          newDelivery.ssgEventId = discardedDelivery.ssgEventId;
+        }
+        if (discardedDelivery.choiceSelectProductId) {
+          newDelivery.choiceSelectProductId = discardedDelivery.choiceSelectProductId;
+        }
+
+        const savedDelivery = await this.orderDeliveryRepository.save(newDelivery);
+
+        // oneSend() 사용 금지: reverseRefundForResend() 이중 차감 버그
+        const fullDelivery = await this.orderDeliveryRepository.findOne({
+          where: { id: savedDelivery.id },
+          relations: [
+            'orderProductMapping',
+            'orderProductMapping.product',
+            'orderProductMapping.product.partnerCompany',
+            'orderProductMapping.product.brand',
+            'orderProductMapping.order',
+            'choiceSelectProduct',
+            'choiceSelectProduct.partnerCompany',
+            'ssgEvent',
+          ],
+        });
+
+        if (!fullDelivery) {
+          throw new InternalServerErrorException('새 발송 건 조회에 실패했습니다.');
+        }
+
+        const ssgEvent = fullDelivery.ssgEvent ?? null;
+        await this.partnerCompanyExternService.issue(fullDelivery, ssgEvent);
+
+        await this.orderDeliveryRepository.save(fullDelivery);
+
+        if (!fullDelivery.barCode) {
+          throw new InternalServerErrorException('핀 발급에 실패했습니다.');
+        }
+
+        switch (fullDelivery.deliveryMethod) {
+          case IOrderSendMethod.ALIM_TALK:
+            await this.deliveryBatchService.csResendAsAlimTalk(savedDelivery.id);
+            break;
+          case IOrderSendMethod.MMS:
+            await this.deliveryBatchService.csResendAsMms(savedDelivery.id);
+            break;
+          case IOrderSendMethod.EMAIL:
+            await this.deliveryBatchService.csResendAsEmail(savedDelivery.id);
+            break;
+          default:
+            await this.deliveryBatchService.csResendAsSms(savedDelivery.id);
+            break;
+        }
+
+        fullDelivery.status = IOrderDeliveryStatus.COMPLETE;
+        fullDelivery.actualSendAt = new Date();
+        await this.orderDeliveryRepository.save(fullDelivery);
+
+        const newPin = fullDelivery.barCode || '';
+        afterChange = `${normalizedTarget} / ${newPin}`;
         break;
       }
       case '폐기': {
