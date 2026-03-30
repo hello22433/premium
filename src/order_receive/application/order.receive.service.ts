@@ -65,7 +65,12 @@ export class OrderReceiveService {
   ) {}
 
   async selectChoiceProduct(getBody: OrderReceiveSelectChoiceProductReqDto) {
-    const orderDecrypt = this.cryptoCipher.decryptJson(getBody.encryptKey) as OrderEncryptKey & { emailSendHistoryId?: number };
+    const orderDecrypt = this.cryptoCipher.decryptJson(getBody.encryptKey) as OrderEncryptKey & { emailSendHistoryId?: number; isTest?: boolean };
+
+    // 테스트 발송인 경우 test_order_delivery에서 처리
+    if (orderDecrypt.isTest) {
+      return this.selectChoiceProductForTest(orderDecrypt, getBody.productId);
+    }
 
     const orderDeliveryId = orderDecrypt.id ?? orderDecrypt.orderDeliveryId;
     const isEmailPath = !!orderDecrypt.emailSendHistoryId;
@@ -121,6 +126,44 @@ export class OrderReceiveService {
     orderDelivery.choiceSelectProductId = productChoiceMapping.product.id;
 
     await this.orderDeliveryRepository.save(orderDelivery);
+
+    return;
+  }
+
+  /**
+   * 테스트 발송용 초이스 쿠폰 상품 선택
+   * test_order_delivery에서 조회하여 choiceSelectProductId만 저장
+   */
+  private async selectChoiceProductForTest(
+    orderDecrypt: OrderEncryptKey & { emailSendHistoryId?: number; isTest?: boolean },
+    productId: number,
+  ) {
+    const orderDeliveryId = orderDecrypt.id ?? orderDecrypt.orderDeliveryId;
+
+    const testOrderDelivery = await this.testOrderDeliveryRepository
+      .createQueryBuilder('testOrderDelivery')
+      .innerJoinAndSelect('testOrderDelivery.orderProductMapping', 'orderProductMapping')
+      .innerJoinAndSelect('orderProductMapping.product', 'product')
+      .where('testOrderDelivery.id = :id', { id: orderDeliveryId })
+      .getOne();
+
+    if (!testOrderDelivery) {
+      throw new BadRequestException('존재하지 않는 테스트 주문 정보입니다.');
+    }
+
+    const productChoiceMapping = await this.productChoiceMappingRepository
+      .createQueryBuilder('productChoiceMapping')
+      .innerJoinAndSelect('productChoiceMapping.product', 'product')
+      .where('productChoiceMapping.productId = :productId', {
+        productId: productId,
+      })
+      .getOne();
+    if (!productChoiceMapping) {
+      throw new InternalServerErrorException('choice product not exist');
+    }
+
+    testOrderDelivery.choiceSelectProductId = productChoiceMapping.product.id;
+    await this.testOrderDeliveryRepository.save(testOrderDelivery);
 
     return;
   }
@@ -525,6 +568,7 @@ export class OrderReceiveService {
     } as OrderSendEncryptKey);
 
     const choiceProductList: OrderReceiveChoiceDto[] = [];
+    let selectChoiceProduct: OrderReceiveChoiceDto | null = null;
 
     // 초이스 쿠폰일 경우 목록 조회
     if (testOrderDelivery.orderProductMapping.product.type === IProductType.CHOICE) {
@@ -547,6 +591,19 @@ export class OrderReceiveService {
           brandNameKorean: productChoiceMapping.product.brand!.nameKorean,
           brandNameEnglish: productChoiceMapping.product.brand!.nameEnglish,
         });
+
+        // 선택한 초이스 상품이 있을 시
+        if (testOrderDelivery.choiceSelectProductId === productChoiceMapping.product.id) {
+          selectChoiceProduct = {
+            id: productChoiceMapping.product.id,
+            name: productChoiceMapping.product.name,
+            imagePath: productChoiceMapping.product.imagePath,
+            price: productChoiceMapping.product.price,
+            expireDay: productChoiceMapping.product.expireDay,
+            brandNameKorean: productChoiceMapping.product.brand!.nameKorean,
+            brandNameEnglish: productChoiceMapping.product.brand!.nameEnglish,
+          };
+        }
       }
     }
 
@@ -558,7 +615,7 @@ export class OrderReceiveService {
       sendEncryptKey: sendEncryptKey,
       type: testOrderDelivery.orderProductMapping.product.type,
       choiceProductList,
-      selectChoiceProduct: null,
+      selectChoiceProduct,
     };
   }
 
@@ -757,6 +814,8 @@ export class OrderReceiveService {
       .innerJoinAndSelect('orderProductMapping.product', 'product')
       .innerJoinAndSelect('product.brand', 'brand')
       .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .leftJoinAndSelect('testOrderDelivery.choiceSelectProduct', 'choiceSelectProduct')
+      .leftJoinAndSelect('choiceSelectProduct.brand', 'choiceSelectBrand')
       .where('testOrderDelivery.id = :id', { id: obj.orderDeliveryId })
       .getOne();
 
@@ -769,11 +828,19 @@ export class OrderReceiveService {
       throw new BadRequestException('이메일 발송 건이 아닙니다.');
     }
 
+    // 초이스 쿠폰인 경우 선택된 상품 확인
+    const isChoiceCoupon = testOrderDelivery.orderProductMapping.product.type === IProductType.CHOICE;
+    if (isChoiceCoupon && !testOrderDelivery.choiceSelectProductId) {
+      throw new BadRequestException('상품을 먼저 선택해주세요.');
+    }
+
     // 테스트용 바코드 (999999)
     const testBarcode = '999999';
 
-    // 테스트용 쿠폰 이미지 생성
-    const product = testOrderDelivery.orderProductMapping.product;
+    // 초이스 쿠폰이면 선택된 상품, 아니면 기본 상품 사용
+    const product = (isChoiceCoupon && testOrderDelivery.choiceSelectProduct)
+      ? testOrderDelivery.choiceSelectProduct
+      : testOrderDelivery.orderProductMapping.product;
     const productExpireDay = product.expireDay || 0;
     const expireDate = productExpireDay ? dayjs().tz('Asia/Seoul').add(productExpireDay, 'day').format('YYYY. MM. DD') : null;
 
