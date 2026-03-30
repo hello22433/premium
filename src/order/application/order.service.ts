@@ -127,30 +127,41 @@ dayjs.extend(utc);
 dayjs.extend(timezone);
 
 /**
- * SSG 가상 행에서 delivery 저장값 우선, 없으면 UserDiscount 폴백
+ * SSG 가상 행에서 저장값 우선, 없으면 UserDiscount 폴백
+ * 우선순위: delivery 저장값 → mapping 저장값 → findMatchingDiscount
  */
 function resolveSettleFee(
   firstDelivery: { settleFee: number | null; settlePriceAdjustment: IPriceAdjustment | null; settleDiscountType: IOrderSettleDiscountType | null },
-  fallbackDiscountType: IOrderSettleDiscountType | null,
+  mapping: { fee: number | null; priceAdjustment: IPriceAdjustment | null; settleDiscountType: IOrderSettleDiscountType | null },
   isOrderCompleted: boolean,
   computeMatchingDiscount: () => ReturnType<typeof findMatchingDiscount>,
 ): { fee: number; priceAdjustment: IPriceAdjustment | null; settleDiscountType: IOrderSettleDiscountType | null } {
+  // 1. delivery 저장값 (deliveryIds 포함 저장 시)
   if (firstDelivery.settleFee != null && firstDelivery.settlePriceAdjustment != null) {
     return {
       fee: firstDelivery.settleFee,
       priceAdjustment: firstDelivery.settlePriceAdjustment,
-      settleDiscountType: firstDelivery.settleDiscountType ?? fallbackDiscountType,
+      settleDiscountType: firstDelivery.settleDiscountType ?? mapping.settleDiscountType,
     };
   }
+  // 2. mapping 저장값 (deliveryIds 미포함 저장 시)
+  if (mapping.fee != null && mapping.priceAdjustment != null) {
+    return {
+      fee: mapping.fee,
+      priceAdjustment: mapping.priceAdjustment,
+      settleDiscountType: mapping.settleDiscountType,
+    };
+  }
+  // 3. UserDiscount 폴백 (미저장 상태)
   if (!isOrderCompleted) {
     const matchingDiscount = computeMatchingDiscount();
     return {
       fee: matchingDiscount?.pricePercent ?? 0,
       priceAdjustment: matchingDiscount?.priceAdjustment ?? null,
-      settleDiscountType: fallbackDiscountType,
+      settleDiscountType: mapping.settleDiscountType,
     };
   }
-  return { fee: 0, priceAdjustment: null, settleDiscountType: fallbackDiscountType };
+  return { fee: 0, priceAdjustment: null, settleDiscountType: mapping.settleDiscountType };
 }
 
 @Injectable()
@@ -1536,7 +1547,7 @@ export class OrderService {
 
           const resolved = resolveSettleFee(
             deliveries[0],
-            orderProduct.settleDiscountType ?? null,
+            { fee: orderProduct.fee, priceAdjustment: orderProduct.priceAdjustment, settleDiscountType: orderProduct.settleDiscountType ?? null },
             isOrderCompleted,
             () => findMatchingDiscount(
               { price: productPrice, category: product.category, brand: product.brand },
@@ -1628,9 +1639,10 @@ export class OrderService {
 
         const firstProduct = phoneItems[0].orderProduct.product;
 
+        const firstOrderProduct = phoneItems[0].orderProduct;
         const resolved = resolveSettleFee(
           phoneItems[0].delivery,
-          phoneItems[0].orderProduct.settleDiscountType ?? null,
+          { fee: firstOrderProduct.fee, priceAdjustment: firstOrderProduct.priceAdjustment, settleDiscountType: firstOrderProduct.settleDiscountType ?? null },
           isOrderCompleted,
           () => findMatchingDiscount(
             { price: firstProduct.price, category: firstProduct.category, brand: firstProduct.brand },
