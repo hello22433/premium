@@ -1693,7 +1693,7 @@ export class OrderService {
             deliveryIds: phoneItems.map((i) => i.deliveryId),
             phoneCount: 1,
             deliveryCount: phoneItems.length,
-            refund: null,
+            refund: phoneItems[0].delivery?.refundRatio ?? null,
             orderProductId: phoneItems[0].orderProduct.id,
           });
         }
