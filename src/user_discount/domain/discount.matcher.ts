@@ -81,14 +81,15 @@ function findDiscountByMethod(
     return null;
   }
 
-  const sortedDiscounts = sectionDiscounts.sort((a, b) => {
+  const sortedDiscounts = [...sectionDiscounts].sort((a, b) => {
     return parseInt(a.range || '0', 10) - parseInt(b.range || '0', 10);
   });
 
   const productPrice = priceOverride ?? product.price;
   let previousUpperBound = 0;
 
-  for (const discount of sortedDiscounts) {
+  for (let i = 0; i < sortedDiscounts.length; i++) {
+    const discount = sortedDiscounts[i];
     const rangeValue = parseInt(discount.range || '0', 10);
     let isInRange = false;
 
@@ -100,11 +101,31 @@ function findDiscountByMethod(
         isInRange = productPrice > previousUpperBound && productPrice < rangeValue;
         break;
       case ICompareCondition.MORE:
-        isInRange = productPrice >= rangeValue;
+      case ICompareCondition.MORE_THAN: {
+        const lowerCheck =
+          discount.compareCondition === ICompareCondition.MORE
+            ? productPrice >= rangeValue
+            : productPrice > rangeValue;
+
+        const next = sortedDiscounts[i + 1];
+        if (next && (next.compareCondition === ICompareCondition.LESS || next.compareCondition === ICompareCondition.LESS_THAN)) {
+          const upperValue = parseInt(next.range || '0', 10);
+          const upperCheck =
+            next.compareCondition === ICompareCondition.LESS
+              ? productPrice <= upperValue
+              : productPrice < upperValue;
+          isInRange = lowerCheck && upperCheck;
+          i++;
+          if (next.compareCondition === ICompareCondition.LESS) {
+            previousUpperBound = upperValue;
+          } else {
+            previousUpperBound = upperValue - 1;
+          }
+        } else {
+          isInRange = lowerCheck;
+        }
         break;
-      case ICompareCondition.MORE_THAN:
-        isInRange = productPrice > rangeValue;
-        break;
+      }
     }
 
     if (isInRange) {
