@@ -3,12 +3,6 @@ import { IsString, IsNumber, IsOptional, MaxLength, IsEnum, IsNotEmpty } from 'c
 import { IOrderSendMethod } from '../../../order/interface/order.send.method';
 
 export class CreateExternalOrderDto {
-  @ApiProperty({ description: '외부 트랜잭션 ID (고유)', maxLength: 40 })
-  @IsString()
-  @IsNotEmpty()
-  @MaxLength(40)
-  trId: string;
-
   @ApiProperty({ description: '상품 코드' })
   @IsString()
   @IsNotEmpty()
@@ -40,16 +34,6 @@ export class CreateExternalOrderDto {
 }
 
 export class CreateExternalSsgOrderDto {
-  @ApiProperty({ description: '외부 트랜잭션 ID (고유)', maxLength: 40 })
-  @IsString()
-  @IsNotEmpty()
-  @MaxLength(40)
-  trId: string;
-
-  @ApiProperty({ description: 'SSG 이벤트 ID' })
-  @IsNumber()
-  ssgEventId: number;
-
   @ApiProperty({ description: '수신자 전화번호' })
   @IsString()
   @IsNotEmpty()

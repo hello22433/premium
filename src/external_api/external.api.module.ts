@@ -8,10 +8,12 @@ import { ProductEntity } from '../entity/product.entity';
 import { UserEntity } from '../entity/user.entity';
 import { DeliverySendHistoryEntity } from '../entity/delivery.send.history.entity';
 import { UserSyncProductEventMappingEntity } from '../entity/user.sync.product.event.mapping.entity';
+import { IdempotencyKeyEntity } from '../entity/idempotency.key.entity';
 
 import { ExternalApiController } from './api/external.api.controller';
 import { ExternalApiService } from './application/external.api.service';
 import { ApiKeyGuard } from './api/external.api.key.guard';
+import { IdempotencyInterceptor } from './api/idempotency.interceptor';
 
 import { PartnerCompanyExternModule } from '../partner_company_extern/partner.company.extern.module';
 import { SsgEventModule } from '../ssg_event/ssg.event.module';
@@ -28,12 +30,13 @@ import { CryptoCipher } from '../common/infra/crypto.cipher';
       UserEntity,
       DeliverySendHistoryEntity,
       UserSyncProductEventMappingEntity,
+      IdempotencyKeyEntity,
     ]),
     PartnerCompanyExternModule,
     SsgEventModule,
     DeliveryModule,
   ],
   controllers: [ExternalApiController],
-  providers: [ExternalApiService, ApiKeyGuard, CryptoCipher],
+  providers: [ExternalApiService, ApiKeyGuard, IdempotencyInterceptor, CryptoCipher],
 })
 export class ExternalApiModule {}
