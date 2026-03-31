@@ -43,7 +43,6 @@ export class OrderStatusResponseData {
 }
 
 export class ProductResponseData {
-  productId: number;
   productCode: string;
   productName: string;
   brandName: string;

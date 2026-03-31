@@ -11,12 +11,15 @@ import { ProductEntity } from '../../entity/product.entity';
 import { UserEntity } from '../../entity/user.entity';
 import { UserCompanyEntity } from '../../entity/user.company.entity';
 import { DeliverySendHistoryEntity } from '../../entity/delivery.send.history.entity';
+import { UserSyncProductEventMappingEntity } from '../../entity/user.sync.product.event.mapping.entity';
+import { IUserSyncProductStatus } from '../../user_sync_product/interface/user.sync.product.status';
 
 import { IOrderType } from '../../order/interface/order.type';
 import { IOrderStatus } from '../../order/interface/order.status';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 import { IOrderSendMethod } from '../../order/interface/order.send.method';
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
+import { IProductUseStatus } from '../../product/interface/product.status';
 
 import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
 import { DeliverySendService } from '../../delivery/application/delivery.send.service';
@@ -55,6 +58,8 @@ export class ExternalApiService {
     private userRepository: Repository<UserEntity>,
     @InjectRepository(DeliverySendHistoryEntity)
     private deliverySendHistoryRepository: Repository<DeliverySendHistoryEntity>,
+    @InjectRepository(UserSyncProductEventMappingEntity)
+    private syncProductEventMappingRepository: Repository<UserSyncProductEventMappingEntity>,
     private dataSource: DataSource,
     private partnerCompanyExternService: PartnerCompanyExternService,
     private deliverySendService: DeliverySendService,
@@ -87,6 +92,20 @@ export class ExternalApiService {
     } else {
       await this.dataSource.query('UPDATE user SET balance = balance + ? WHERE id = ?', [price, user.id]);
     }
+  }
+
+  // ─── 할당 상품 헬퍼 ─────────────────────────────────────
+
+  private async getAssignedProductIds(userId: number): Promise<number[]> {
+    const mappings = await this.syncProductEventMappingRepository
+      .createQueryBuilder('m')
+      .innerJoin('m.userSyncProductEvent', 'e')
+      .select('m.productId')
+      .where('e.businessUserId = :userId', { userId })
+      .andWhere('e.status = :status', { status: IUserSyncProductStatus.ACTIVE })
+      .andWhere('m.deletedAt IS NULL')
+      .getMany();
+    return mappings.map((m) => m.productId);
   }
 
   // ─── 발송 헬퍼 ──────────────────────────────────────────
@@ -143,20 +162,33 @@ export class ExternalApiService {
 
   // ─── 상품 조회 ──────────────────────────────────────────
 
-  async getProducts(user: UserEntity, productId?: number): Promise<ExternalApiResponse<ProductResponseData[]>> {
+  async getProducts(user: UserEntity, productCode?: string): Promise<ExternalApiResponse<ProductResponseData[]>> {
+    const assignedIds = await this.getAssignedProductIds(user.id);
+
+    if (assignedIds.length === 0) {
+      if (productCode) {
+        throw new ExternalApiException('3001', '올바르지 못한 요청입니다');
+      }
+      return ExternalApiResponse.success([]);
+    }
+
     const qb = this.productRepository
       .createQueryBuilder('product')
       .leftJoinAndSelect('product.brand', 'brand')
-      .where('product.useStatus = :useStatus', { useStatus: 'USE' });
+      .where('product.useStatus = :useStatus', { useStatus: 'USE' })
+      .andWhere('product.id IN (:...assignedIds)', { assignedIds });
 
-    if (productId) {
-      qb.andWhere('product.id = :productId', { productId });
+    if (productCode) {
+      qb.andWhere('product.code = :productCode', { productCode });
     }
 
     const products = await qb.getMany();
 
+    if (productCode && products.length === 0) {
+      throw new ExternalApiException('3001', '올바르지 못한 요청입니다');
+    }
+
     const data: ProductResponseData[] = products.map((p) => ({
-      productId: p.id,
       productCode: p.code,
       productName: p.name,
       brandName: p.brand?.nameKorean ?? '',
@@ -211,13 +243,18 @@ export class ExternalApiService {
       throw new ExternalApiException('2003', '중복 트랜잭션 ID');
     }
 
-    // 2. 상품 조회 + 검증
+    // 2. 상품 조회 + 할당 검증
     const product = await this.productRepository.findOne({
-      where: { id: dto.productId },
+      where: { code: dto.productCode, useStatus: IProductUseStatus.USE },
       relations: ['partnerCompany', 'brand'],
     });
     if (!product) {
-      throw new ExternalApiException('3001', '상품 없음');
+      throw new ExternalApiException('3001', '올바르지 못한 요청입니다');
+    }
+
+    const assignedIds = await this.getAssignedProductIds(user.id);
+    if (!assignedIds.includes(product.id)) {
+      throw new ExternalApiException('3001', '올바르지 못한 요청입니다');
     }
 
     const price = product.price;
