@@ -19,7 +19,7 @@ export class ExternalApiController {
   @Get('products')
   @ApiOperation({ summary: '상품 목록 조회' })
   async getProducts(@Req() req: Request, @Query() query: ExternalProductQueryDto) {
-    return this.externalApiService.getProducts((req as any).apiUser as UserEntity, query.productId);
+    return this.externalApiService.getProducts((req as any).apiUser as UserEntity, query.productCode);
   }
 
   @Post('orders')

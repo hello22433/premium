@@ -9,9 +9,10 @@ export class CreateExternalOrderDto {
   @MaxLength(40)
   trId: string;
 
-  @ApiProperty({ description: '상품 ID' })
-  @IsNumber()
-  productId: number;
+  @ApiProperty({ description: '상품 코드' })
+  @IsString()
+  @IsNotEmpty()
+  productCode: string;
 
   @ApiProperty({ description: '수신자 전화번호' })
   @IsString()
@@ -75,8 +76,8 @@ export class CreateExternalSsgOrderDto {
 }
 
 export class ExternalProductQueryDto {
-  @ApiPropertyOptional({ description: '상품 ID 필터' })
-  @IsNumber()
+  @ApiPropertyOptional({ description: '상품 코드 필터' })
+  @IsString()
   @IsOptional()
-  productId?: number;
+  productCode?: string;
 }

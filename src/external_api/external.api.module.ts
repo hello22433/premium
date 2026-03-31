@@ -7,6 +7,7 @@ import { OrderProductMappingEntity } from '../entity/order.product.mapping.entit
 import { ProductEntity } from '../entity/product.entity';
 import { UserEntity } from '../entity/user.entity';
 import { DeliverySendHistoryEntity } from '../entity/delivery.send.history.entity';
+import { UserSyncProductEventMappingEntity } from '../entity/user.sync.product.event.mapping.entity';
 
 import { ExternalApiController } from './api/external.api.controller';
 import { ExternalApiService } from './application/external.api.service';
@@ -26,6 +27,7 @@ import { CryptoCipher } from '../common/infra/crypto.cipher';
       ProductEntity,
       UserEntity,
       DeliverySendHistoryEntity,
+      UserSyncProductEventMappingEntity,
     ]),
     PartnerCompanyExternModule,
     SsgEventModule,
