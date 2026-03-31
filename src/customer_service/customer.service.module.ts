@@ -14,6 +14,7 @@ import { SmsModule } from 'src/sms/sms.module';
 import { ActivityLogModule } from 'src/activity_log/activity.log.module';
 import { UserEntity } from 'src/entity/user.entity';
 import { UserCompanyEntity } from 'src/entity/user.company.entity';
+import { UserTaskHistoryEntity } from 'src/entity/user.task.history.entity';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { UserCompanyEntity } from 'src/entity/user.company.entity';
       GemteckMsgQueueEntity,
       UserEntity,
       UserCompanyEntity,
+      UserTaskHistoryEntity,
     ]),
     PartnerCompanyExternModule,
     DeliveryModule,
