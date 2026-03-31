@@ -13,6 +13,7 @@ import { UserCompanyEntity } from '../../entity/user.company.entity';
 import { DeliverySendHistoryEntity } from '../../entity/delivery.send.history.entity';
 import { UserSyncProductEventMappingEntity } from '../../entity/user.sync.product.event.mapping.entity';
 import { IUserSyncProductStatus } from '../../user_sync_product/interface/user.sync.product.status';
+import { IUserAuthority } from '../../user/interface/user.authority';
 
 import { IOrderType } from '../../order/interface/order.type';
 import { IOrderStatus } from '../../order/interface/order.status';
@@ -163,20 +164,25 @@ export class ExternalApiService {
   // ─── 상품 조회 ──────────────────────────────────────────
 
   async getProducts(user: UserEntity, productCode?: string): Promise<ExternalApiResponse<ProductResponseData[]>> {
-    const assignedIds = await this.getAssignedProductIds(user.id);
-
-    if (assignedIds.length === 0) {
-      if (productCode) {
-        throw new ExternalApiException('3001', '올바르지 못한 요청입니다');
-      }
-      return ExternalApiResponse.success([]);
-    }
+    const isSuperAdmin = user.authority === IUserAuthority.SUPER_ADMIN;
 
     const qb = this.productRepository
       .createQueryBuilder('product')
       .leftJoinAndSelect('product.brand', 'brand')
-      .where('product.useStatus = :useStatus', { useStatus: 'USE' })
-      .andWhere('product.id IN (:...assignedIds)', { assignedIds });
+      .where('product.useStatus = :useStatus', { useStatus: 'USE' });
+
+    if (!isSuperAdmin) {
+      const assignedIds = await this.getAssignedProductIds(user.id);
+
+      if (assignedIds.length === 0) {
+        if (productCode) {
+          throw new ExternalApiException('3001', '올바르지 못한 요청입니다');
+        }
+        return ExternalApiResponse.success([]);
+      }
+
+      qb.andWhere('product.id IN (:...assignedIds)', { assignedIds });
+    }
 
     if (productCode) {
       qb.andWhere('product.code = :productCode', { productCode });
