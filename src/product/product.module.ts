@@ -9,6 +9,7 @@ import { BrandEntity } from '../entity/brand.entity';
 import { ClassificationEntity } from '../entity/classification.entity';
 import { ProductUpdateHistoryEntity } from '../entity/product.update.history.entity';
 import { UserSyncProductEventEntity } from '../entity/user.sync.product.event.entity';
+import { UserSyncProductEventMappingEntity } from '../entity/user.sync.product.event.mapping.entity';
 import { ProductLikeEntity } from '../entity/product.like.entity';
 import { SsgEventEntity } from '../entity/ssg.event.entity';
 import { UserEntity } from 'src/entity/user.entity';
@@ -27,6 +28,7 @@ import { ProductSharedListFileEntity } from '../entity/product.shared.list.file.
       ProductLikeEntity,
       ProductUpdateHistoryEntity,
       UserSyncProductEventEntity,
+      UserSyncProductEventMappingEntity,
       SsgEventEntity,
       UserEntity,
       ProductSharedListFileEntity,

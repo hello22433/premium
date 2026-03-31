@@ -50,8 +50,10 @@ import {
   ProductUseStatusExcelMapping,
 } from '../domain/product.excel.mapping';
 import { IProductCategory, IProductType } from '../interface/product.type';
+import { IProductUseStatus } from '../interface/product.status';
 import { IUserAuthority } from '../../user/interface/user.authority';
 import { UserSyncProductEventEntity } from '../../entity/user.sync.product.event.entity';
+import { UserSyncProductEventMappingEntity } from '../../entity/user.sync.product.event.mapping.entity';
 import { ProductLikeEntity } from '../../entity/product.like.entity';
 import { SsgEventEntity } from '../../entity/ssg.event.entity';
 import { validate } from 'class-validator';
@@ -83,6 +85,8 @@ export class ProductService {
     private productUpdateHistoryRepository: Repository<ProductUpdateHistoryEntity>,
     @InjectRepository(UserSyncProductEventEntity)
     private userSyncProductEventRepository: Repository<UserSyncProductEventEntity>,
+    @InjectRepository(UserSyncProductEventMappingEntity)
+    private userSyncProductEventMappingRepository: Repository<UserSyncProductEventMappingEntity>,
     @InjectRepository(ProductLikeEntity)
     private productLikeRepository: Repository<ProductLikeEntity>,
     @InjectRepository(SsgEventEntity)
@@ -975,6 +979,19 @@ export class ProductService {
         // @ts-ignore
         product[key] = getBody[key];
       }
+    }
+
+    // USE → UNUSED 전환 시 고객상품관리 매핑 해제 (전시 취소 + 숨기기)
+    const isDeactivating =
+      product.useStatus === IProductUseStatus.UNUSED &&
+      productUpdateHistoryCreateList.some(
+        (h) => h.key === 'useStatus' && h.beforeValue === IProductUseStatus.USE,
+      );
+
+    if (isDeactivating) {
+      await this.userSyncProductEventMappingRepository.softDelete({
+        productId: id,
+      });
     }
 
     await this.productRepository.save(product);

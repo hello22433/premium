@@ -3,6 +3,7 @@ import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } f
 import { UserSyncProductService } from '../application/user.sync.product.service';
 import {
   UserSyncProductDeleteProductReqDto,
+  UserSyncProductGetCustomersByProductReqParamDto,
   UserSyncProductGetDetailReqParamDto,
   UserSyncProductGetHeadPersonListReqQueryDto,
   UserSyncProductGetListReqDto,
@@ -13,6 +14,7 @@ import {
   UserSyncProductUpdateStatusReqDto,
 } from './user.sync.product.req.dto';
 import {
+  UserSyncProductGetCustomersByProductResDto,
   UserSyncProductGetDetailResDto,
   UserSyncProductGetHeadPersonListResDto,
   UserSyncProductGetListResDto,
@@ -60,6 +62,20 @@ export class UserSyncProductController {
   @Patch('/user-sync-product/status')
   updateStatus(@Body() getBody: UserSyncProductUpdateStatusReqDto) {
     return this.userSyncProductService.updateStatus(getBody);
+  }
+
+  @ApiOperation({
+    summary: '상품 기준 사용 고객사 목록 조회 API',
+    description: '특정 상품을 사용 중인 고객사(ACTIVE 이벤트) 목록을 조회합니다.',
+  })
+  @ApiOkResponse({
+    type: UserSyncProductGetCustomersByProductResDto,
+    description: '성공적으로 조회한 경우',
+  })
+  // =========================================
+  @Get('/user-sync-product/product/:productId/customers')
+  getCustomersByProduct(@Param() getParam: UserSyncProductGetCustomersByProductReqParamDto) {
+    return this.userSyncProductService.getCustomersByProduct(getParam.productId);
   }
 
   @ApiOperation({

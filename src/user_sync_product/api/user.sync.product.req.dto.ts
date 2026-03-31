@@ -242,6 +242,17 @@ export class UserSyncProductGetHeadPersonListReqQueryDto extends PagingReqDto {
   personName?: string;
 }
 
+export class UserSyncProductGetCustomersByProductReqParamDto {
+  @ApiProperty({
+    description: '상품 id',
+  })
+  // =================================
+  @Type(() => Number)
+  @Min(1)
+  @IsNotEmpty()
+  productId: number;
+}
+
 export class UserSyncProductGetPersonsByBusinessReqDto {
   @ApiProperty({
     description: '고객사 user.id',

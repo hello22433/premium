@@ -61,6 +61,31 @@ export class UserSyncProductGetPersonsByBusinessResDto {
   persons: UserSyncProductPersonInfoDto[];
 }
 
+export class UserSyncProductCustomerDto {
+  @ApiProperty({ description: '이벤트 id' })
+  eventId: number;
+
+  @ApiProperty({ description: '고객사 user.id' })
+  userId: number;
+
+  @ApiProperty({ description: '고객사 명' })
+  businessUserName: string;
+
+  @ApiProperty({ description: '담당자 명' })
+  businessPersonName: string;
+}
+
+export class UserSyncProductGetCustomersByProductResDto {
+  @ApiProperty({ description: '상품 id' })
+  productId: number;
+
+  @ApiProperty({ description: '사용 고객사 수' })
+  customerCount: number;
+
+  @ApiProperty({ description: '고객사 목록', type: [UserSyncProductCustomerDto] })
+  list: UserSyncProductCustomerDto[];
+}
+
 export class UserSyncProductGetHeadPersonListResDto extends GetListResDto {
   @ApiProperty({
     description: '고객사 기본 담당자 정보 list',
