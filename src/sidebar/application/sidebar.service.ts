@@ -11,6 +11,7 @@ import { IOrderStatus } from '../../order/interface/order.status';
 import { IOrderType } from '../../order/interface/order.type';
 import { OrderReceiptStatus } from '../../order_receipt/interface/order.receipt.status';
 import { IQnaStatus } from '../../qna/interface/qna.status';
+import { ENMAD_BUSINESS_NUMBER } from '../../common/domain/company.type';
 import { SidebarNotificationsResDto } from '../api/sidebar.res.dto';
 
 @Injectable()
@@ -43,9 +44,13 @@ export class SidebarService {
   private async getOrderCounts(user: ILoginUserInfo): Promise<{ generalCouponCount: number; ssgCount: number }> {
     const qb = this.orderRepository
       .createQueryBuilder('o')
+      .innerJoin('o.user', 'u')
+      .innerJoin('u.company', 'uc')
       .select('SUM(CASE WHEN o.type = :general THEN 1 ELSE 0 END)', 'generalCouponCount')
       .addSelect('SUM(CASE WHEN o.type = :ssg THEN 1 ELSE 0 END)', 'ssgCount')
       .where('o.status = :status', { status: IOrderStatus.DELIVERY_REQUEST })
+      .andWhere('o.clientUserId IS NULL')
+      .andWhere('uc.businessNumber != :enmadBizNo', { enmadBizNo: ENMAD_BUSINESS_NUMBER })
       .setParameter('general', IOrderType.GENERAL)
       .setParameter('ssg', IOrderType.SSG);
 
@@ -59,7 +64,7 @@ export class SidebarService {
 
       case IUserAuthority.CORPORATE_ADMIN:
       default:
-        qb.andWhere('(o.userId = :uid OR o.clientUserId = :uid)', { uid: user.id });
+        qb.andWhere('o.userId = :uid', { uid: user.id });
         break;
     }
 
