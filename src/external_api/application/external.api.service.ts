@@ -43,6 +43,7 @@ import { CreateCode } from '../../common/domain/create.code';
 import { OrderPrefixCode, OrderDigitNumber } from '../../order/domain/order.code';
 import { CreateApiTransactionId } from '../../order/domain/create.transaction.id';
 import { applyReplaceCharacters } from '../../common/utils/replace-characters.util';
+import { ulid } from 'ulid';
 
 @Injectable()
 export class ExternalApiService {
@@ -215,14 +216,14 @@ export class ExternalApiService {
     // Phase A: DB 트랜잭션 — 주문 생성 + 잔액 차감
     const { order, orderDelivery, product } = await this.phaseA_createAndDeduct(user, dto);
 
-    const trId = orderDelivery.transactionId!;
+    const externalTrId = orderDelivery.externalTrId!;
     const price = product.price;
 
     // Phase B: 외부 HTTP — 쿠폰 발행 + 발송 (트랜잭션 없음)
     try {
       await this.phaseB_issueAndSend(orderDelivery, user);
     } catch (error) {
-      this.logger.error(`[createOrder] Phase B 실패 - trId: ${trId}`, error);
+      this.logger.error(`[createOrder] Phase B 실패 - externalTrId: ${externalTrId}`, error);
       await this.phaseC_handleFailure(order, orderDelivery, user, price, error);
       throw new ExternalApiException('3003', '쿠폰 발행 실패', error?.message);
     }
@@ -231,7 +232,7 @@ export class ExternalApiService {
     await this.phaseC_handleSuccess(order, orderDelivery);
 
     return ExternalApiResponse.success<OrderResponseData>({
-      trId,
+      trId: externalTrId,
       barCode: orderDelivery.barCode || undefined,
       validStartDate: orderDelivery.expireAt ? dayjs().format('YYYY-MM-DD') : undefined,
       validEndDate: orderDelivery.expireAt ? dayjs(orderDelivery.expireAt).format('YYYY-MM-DD') : undefined,
@@ -312,9 +313,9 @@ export class ExternalApiService {
     });
     await this.orderDeliveryRepository.save(orderDelivery);
 
-    // 7. transactionId 생성 및 저장 (API{orderId}D{deliveryId})
+    // 7. transactionId + externalTrId 생성 및 저장 (단일 UPDATE)
     orderDelivery.transactionId = CreateApiTransactionId(order.id, orderDelivery.id);
-    await this.orderDeliveryRepository.update(orderDelivery.id, { transactionId: orderDelivery.transactionId });
+    orderDelivery.externalTrId = await this.saveTransactionIds(orderDelivery.id, orderDelivery.transactionId);
 
     // 8. 관계 설정 (phaseB에서 재조립 불필요)
     mapping.product = product;
@@ -412,7 +413,7 @@ export class ExternalApiService {
     const price = product?.price ?? 0;
 
     return ExternalApiResponse.success<OrderStatusResponseData>({
-      trId,
+      trId: orderDelivery.externalTrId!,
       couponStatus: orderDelivery.couponStatus,
       deliveryStatus: orderDelivery.status,
       barCode: orderDelivery.barCode || undefined,
@@ -431,7 +432,7 @@ export class ExternalApiService {
     const price = product?.price ?? 0;
 
     return ExternalApiResponse.success<SsgOrderStatusResponseData>({
-      trId,
+      trId: orderDelivery.externalTrId!,
       couponStatus: orderDelivery.couponStatus,
       deliveryStatus: orderDelivery.status,
       barCode: orderDelivery.barCode || undefined,
@@ -520,14 +521,14 @@ export class ExternalApiService {
     // Phase A: DB 트랜잭션 — 주문 생성 + 잔액 차감
     const { order, orderDelivery, ssgEvent } = await this.phaseA_createSsgAndDeduct(user, dto);
 
-    const trId = orderDelivery.transactionId!;
+    const externalTrId = orderDelivery.externalTrId!;
     const price = dto.amount;
 
     // Phase B: 외부 HTTP — SSG 쿠폰 발행 + 발송
     try {
       await this.phaseB_issueAndSend(orderDelivery, user);
     } catch (error) {
-      this.logger.error(`[createSsgOrder] Phase B 실패 - trId: ${trId}`, error);
+      this.logger.error(`[createSsgOrder] Phase B 실패 - externalTrId: ${externalTrId}`, error);
       await this.phaseC_handleFailure(order, orderDelivery, user, price, error);
       throw new ExternalApiException('3003', 'SSG 쿠폰 발행 실패', error?.message);
     }
@@ -536,7 +537,7 @@ export class ExternalApiService {
     await this.phaseC_handleSuccess(order, orderDelivery);
 
     return ExternalApiResponse.success<SsgOrderResponseData>({
-      trId,
+      trId: externalTrId,
       barCode: orderDelivery.barCode || undefined,
       personalCode: orderDelivery.personalCode || undefined,
       validStartDate: orderDelivery.expireAt ? dayjs().format('YYYY-MM-DD') : undefined,
@@ -621,9 +622,9 @@ export class ExternalApiService {
     });
     await this.orderDeliveryRepository.save(orderDelivery);
 
-    // 8. transactionId 생성 및 저장 (API{orderId}D{deliveryId})
+    // 8. transactionId + externalTrId 생성 및 저장 (단일 UPDATE)
     orderDelivery.transactionId = CreateApiTransactionId(order.id, orderDelivery.id);
-    await this.orderDeliveryRepository.update(orderDelivery.id, { transactionId: orderDelivery.transactionId });
+    orderDelivery.externalTrId = await this.saveTransactionIds(orderDelivery.id, orderDelivery.transactionId);
 
     // 9. SSG 이벤트 잔액 차감
     await this.ssgEventService.deductEventBalanceMultiple(ssgAllocations, order.id, false);
@@ -641,7 +642,7 @@ export class ExternalApiService {
 
   private async findOrderDeliveryByTrId(user: UserEntity, trId: string): Promise<OrderDeliveryEntity> {
     const orderDelivery = await this.orderDeliveryRepository.findOne({
-      where: { transactionId: trId },
+      where: { externalTrId: trId },
       relations: [
         'orderProductMapping',
         'orderProductMapping.order',
@@ -661,5 +662,31 @@ export class ExternalApiService {
     }
 
     return orderDelivery;
+  }
+
+  /**
+   * externalTrId(ULID) 저장. unique 제약 위반 시 재생성 후 retry.
+   */
+  /**
+   * transactionId + externalTrId(ULID) 한 번에 저장. ULID unique 제약 위반 시 재생성 후 retry.
+   */
+  private async saveTransactionIds(
+    orderDeliveryId: number,
+    transactionId: string,
+  ): Promise<string> {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const externalTrId = ulid();
+      try {
+        await this.orderDeliveryRepository.update(orderDeliveryId, { transactionId, externalTrId });
+        return externalTrId;
+      } catch (error) {
+        if (error?.code === 'ER_DUP_ENTRY' && attempt < 2) {
+          this.logger.warn(`[saveTransactionIds] ULID 중복 발생, 재시도 (${attempt + 1}/3)`);
+          continue;
+        }
+        throw error;
+      }
+    }
+    throw new Error('externalTrId 생성 실패');
   }
 }

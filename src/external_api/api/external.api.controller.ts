@@ -4,13 +4,14 @@ import { Request } from 'express';
 
 import { ExternalApiService } from '../application/external.api.service';
 import { ApiKeyGuard } from './external.api.key.guard';
+import { ExternalApiThrottleGuard } from './external.api.throttle.guard';
 import { ExternalApiExceptionFilter } from './external.api.exception.filter';
 import { IdempotencyInterceptor } from './idempotency.interceptor';
 import { CreateExternalOrderDto, CreateExternalSsgOrderDto, ExternalProductQueryDto } from './dto/external.api.request.dto';
 import { UserEntity } from '../../entity/user.entity';
 
 @Controller('api/v1/external')
-@UseGuards(ApiKeyGuard)
+@UseGuards(ApiKeyGuard, ExternalApiThrottleGuard)
 @UseFilters(ExternalApiExceptionFilter)
 @ApiTags('External API')
 @ApiSecurity('api-key')

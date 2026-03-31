@@ -5,10 +5,10 @@
 ALTER TABLE `user` ADD COLUMN `api_key_hash` VARCHAR(64) NULL UNIQUE
   COMMENT '외부 API 키 (SHA-256 해시)' AFTER `authority_list`;
 
--- 2. order_delivery 테이블: external_tr_id 컬럼 제거 (사용하지 않음)
--- 이미 적용된 환경에서만 실행
--- ALTER TABLE `order_delivery` DROP INDEX `idx_order_delivery_external_tr_id`;
--- ALTER TABLE `order_delivery` DROP COLUMN `external_tr_id`;
+-- 2. order_delivery 테이블: external_tr_id 유니크 인덱스 추가 (ULID, 외부 API 식별용)
+ALTER TABLE `order_delivery` MODIFY COLUMN `external_tr_id` VARCHAR(26) NULL
+  COMMENT '외부 API 트랜잭션 ID (ULID)';
+CREATE UNIQUE INDEX `idx_order_delivery_external_tr_id` ON `order_delivery`(`external_tr_id`);
 
 -- 3. order 테이블에 type 인덱스 추가 (외부주문 조회 성능)
 ALTER TABLE `order` ADD INDEX `idx_order_type` (`type`);
