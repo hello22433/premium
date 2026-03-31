@@ -20,7 +20,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { OrderEntity } from '../../entity/order.entity';
 import { DataSource, IsNull, QueryRunner, Repository } from 'typeorm';
 import { CustomerServiceGetListResDto } from '../api/customer.service.res.dto';
-import { DateFormatStr } from '../../common/domain/date.format.str';
+import { DateFormatStr, DateEndMinuteFormatStr } from '../../common/domain/date.format.str';
 import { format } from 'date-fns';
 import { CustomerServiceViewDto } from '../api/dto/customer.service.view.dto';
 import { QueryBuilderDateCondition } from '../../common/infra/query.builder.date.condition';
@@ -38,6 +38,7 @@ import { SmsGemtekSend } from 'src/sms/infra/sms.gemtek.send';
 import { MaskingUtil } from 'src/common/utils/masking.util';
 import { CryptoCipher } from 'src/common/infra/crypto.cipher';
 import { PhoneUtil } from 'src/common/utils/phone.util';
+import { UserTaskHistoryEntity } from 'src/entity/user.task.history.entity';
 import { OrderDeliveryRefundStatusEnum } from '../../delivery/interface/order.delivery.refund.status.enum';
 import { IOrderSendMethod } from '../../order/interface/order.send.method';
 import { ActivityLogService } from 'src/activity_log/application/activity.log.service';
@@ -84,6 +85,8 @@ export class CustomerServiceService {
     private readonly userRepository: Repository<UserEntity>,
     @InjectRepository(UserCompanyEntity)
     private readonly userCompanyRepository: Repository<UserCompanyEntity>,
+    @InjectRepository(UserTaskHistoryEntity)
+    private readonly userTaskHistoryRepository: Repository<UserTaskHistoryEntity>,
     private readonly dataSource: DataSource,
   ) {}
 
@@ -97,6 +100,7 @@ export class CustomerServiceService {
     orderDelivery: OrderDeliveryEntity,
     operatorUser: ILoginUserInfo,
     queryRunner: QueryRunner,
+    operatorName?: string,
   ): Promise<void> {
     const mapping = orderDelivery.orderProductMapping;
     const order = mapping.order;
@@ -174,6 +178,22 @@ export class CustomerServiceService {
         afterBalance,
         memo: `폐기복구/ ${restoreAmount}원/ orderDelivery:${orderDelivery.id}`,
       },
+    });
+
+    // 계정관리 > 이력관리 항목 기록
+    if (!operatorName) {
+      const operatorEntity = await queryRunner.manager.findOne(UserEntity, {
+        where: { id: operatorUser.id },
+      });
+      operatorName = operatorEntity?.personName ?? operatorUser.email;
+    }
+    const contactNumber = this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.deliveryTarget) ?? '-';
+    const now = format(new Date(), DateEndMinuteFormatStr);
+
+    await queryRunner.manager.save(UserTaskHistoryEntity, {
+      userId: billingUserId,
+      adminUserId: operatorUser.id,
+      content: `${operatorName}/ ${restoreAmount.toLocaleString()}원 폐기/ 회수/ ${contactNumber} 폐기/ ${now}`,
     });
   }
 
@@ -1442,6 +1462,10 @@ export class CustomerServiceService {
     const success: number[] = [];
     const failed: { id: number; reason: string }[] = [];
 
+    // operator personName을 루프 밖에서 1회 조회
+    const operatorEntity = await this.userRepository.findOne({ where: { id: user.id } });
+    const operatorName = operatorEntity?.personName ?? user.email;
+
     // QueryRunner를 루프 밖에서 생성하여 커넥션 풀 효율화
     const queryRunner = this.dataSource.createQueryRunner();
     await queryRunner.connect();
@@ -1523,7 +1547,7 @@ export class CustomerServiceService {
             await queryRunner.manager.save(OrderDeliveryEntity, orderDelivery);
 
             // 예치금/여신 복구
-            await this.restoreBalanceOnDiscard(orderDelivery, user, queryRunner);
+            await this.restoreBalanceOnDiscard(orderDelivery, user, queryRunner, operatorName);
 
             // CS 히스토리 저장
             const history = this.orderHistoryRepository.create({
