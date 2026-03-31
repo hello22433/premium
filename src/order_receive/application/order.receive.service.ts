@@ -21,6 +21,7 @@ import { IOrderSendMethod } from '../../order/interface/order.send.method';
 import { ISmsSend } from '../../sms/interface/sms.send';
 import { defaultFromPhoneNumber } from '../../const';
 import { OrderDeliveryEmailCouponStatus } from '../../delivery/interface/order.delivery.email.coupon.status';
+import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
 import { Transactional } from 'typeorm-transactional';
 import { ProductChoiceMappingEntity } from '../../entity/product.choice.mapping.entity';
 import { IProductType } from '../../product/interface/product.type';
@@ -428,6 +429,14 @@ export class OrderReceiveService {
       throw new BadRequestException('존재하지 않는 주문 정보입니다.');
     }
 
+    // 폐기된 쿠폰 차단
+    if (
+      orderDelivery.couponStatus === OrderDeliveryCouponStatus.CANCEL ||
+      orderDelivery.couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL
+    ) {
+      throw new BadRequestException('폐기된 쿠폰입니다.');
+    }
+
     if (!orderDecrypt.emailHistoryId) {
       throw new BadRequestException('올바른 요청이 아닙니다.');
     }
@@ -662,6 +671,14 @@ export class OrderReceiveService {
 
     if (orderDelivery.emailCouponStatus === OrderDeliveryEmailCouponStatus.SEND) {
       throw new BadRequestException('이미 전송한 쿠폰입니다.');
+    }
+
+    // 폐기된 쿠폰 차단 (2차 방어)
+    if (
+      orderDelivery.couponStatus === OrderDeliveryCouponStatus.CANCEL ||
+      orderDelivery.couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL
+    ) {
+      throw new BadRequestException('폐기된 쿠폰입니다.');
     }
 
     const emailSendHistory = await this.emailSendHistoryRepository.findOne({

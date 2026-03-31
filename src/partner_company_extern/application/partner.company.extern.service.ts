@@ -444,6 +444,15 @@ export class PartnerCompanyExternService {
     const productPartnerType = orderDelivery.orderProductMapping?.product?.partnerCompany?.type;
     const type = choicePartnerType ?? productPartnerType;
 
+    // 핀 미발급 건(barCode 없음): 외부 API에 등록된 PIN이 없으므로 호출 생략
+    if (!orderDelivery.barCode) {
+      orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
+      return {
+        code: '',
+        message: '폐기 완료',
+      } as CancelCouponResDto;
+    }
+
     try {
       // 1.1.1 갤럭시아 쿠폰 발급
       // 표준연동발행규격서 v.1.6.8_갤럭시아머니트리.pdf
