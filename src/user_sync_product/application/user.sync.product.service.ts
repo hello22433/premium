@@ -13,6 +13,7 @@ import {
   UserSyncProductUpdateStatusReqDto,
 } from '../api/user.sync.product.req.dto';
 import {
+  UserSyncProductGetCustomersByProductResDto,
   UserSyncProductGetDetailResDto,
   UserSyncProductGetHeadPersonListResDto,
   UserSyncProductGetListResDto,
@@ -454,6 +455,30 @@ export class UserSyncProductService {
       totalCount,
       totalPage,
       currentPage: page,
+    };
+  }
+
+  async getCustomersByProduct(productId: number): Promise<UserSyncProductGetCustomersByProductResDto> {
+    const mappings = await this.eventMappingRepository
+      .createQueryBuilder('mapping')
+      .innerJoinAndSelect('mapping.userSyncProductEvent', 'event')
+      .innerJoinAndSelect('event.businessUser', 'businessUser')
+      .leftJoinAndSelect('businessUser.company', 'company')
+      .where('mapping.productId = :productId', { productId })
+      .andWhere('event.status = :status', { status: IUserSyncProductStatus.ACTIVE })
+      .getMany();
+
+    const list = mappings.map((mapping) => ({
+      eventId: mapping.userSyncProductEvent.id,
+      userId: mapping.userSyncProductEvent.businessUser.id,
+      businessUserName: mapping.userSyncProductEvent.businessUser.company?.businessName ?? '',
+      businessPersonName: mapping.userSyncProductEvent.businessUser.personName,
+    }));
+
+    return {
+      productId,
+      customerCount: list.length,
+      list,
     };
   }
 
