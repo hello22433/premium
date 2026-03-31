@@ -2192,7 +2192,7 @@ export class SettleService {
       throw new InternalServerErrorException('과금 대상 유저가 존재하지 않습니다.');
     }
 
-    // 선정산(PRE_PAYMENT): 토글 허용, 금액 로직 스킵
+    // 선정산(PRE_PAYMENT): 토글 허용
     if (user.settleCondition === IUserSettleCondition.PRE_PAYMENT) {
       const allowedForPrePayment = [
         SettleUserOrderDetailEnum.SETTLE_COMPLETE,
@@ -2201,6 +2201,20 @@ export class SettleService {
       if (!allowedForPrePayment.includes(settleStatus)) {
         throw new BadRequestException('선정산 주문에 허용되지 않는 정산 상태입니다.');
       }
+
+      // isSettleBalance=false(한도 사용 건): allSettleAmount 조정 필요
+      if (!order.isSettleBalance) {
+        if (settleStatus === SettleUserOrderDetailEnum.SETTLE_COMPLETE && order.settleStatus !== SettleUserOrderDetailEnum.SETTLE_COMPLETE) {
+          order.isSettleComplete = true;
+          user.allSettleAmount -= order.settleAmount;
+          await this.userRepository.save(user);
+        } else if (settleStatus === SettleUserOrderDetailEnum.UNSETTLE_NORMAL && order.settleStatus === SettleUserOrderDetailEnum.SETTLE_COMPLETE) {
+          order.isSettleComplete = false;
+          user.allSettleAmount += order.settleAmount;
+          await this.userRepository.save(user);
+        }
+      }
+
       order.settleStatus = settleStatus;
       await this.orderRepository.save(order);
       return;
@@ -2270,9 +2284,13 @@ export class SettleService {
           continue;
         }
 
-        // 선정산(PRE_PAYMENT): settleStatus만 변경
+        // 선정산(PRE_PAYMENT): settleStatus 변경 + 한도 사용 건은 allSettleAmount 차감
         if (user.settleCondition === IUserSettleCondition.PRE_PAYMENT) {
           order.settleStatus = SettleUserOrderDetailEnum.SETTLE_COMPLETE;
+          if (!order.isSettleBalance) {
+            order.isSettleComplete = true;
+            user.allSettleAmount -= order.settleAmount;
+          }
           await this.orderRepository.save(order);
           success.push(order.id);
           continue;

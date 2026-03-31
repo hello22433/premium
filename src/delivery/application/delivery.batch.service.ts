@@ -311,7 +311,8 @@ export class DeliveryBatchService {
   /**
    * 선정산(PRE_PAYMENT) 고객사 주문의 settleStatus를 자동으로 SETTLE_COMPLETE로 설정
    * - 대행주문(clientUserId)인 경우 clientUser의 settleCondition 기준으로 판단
-   * - settleStatus만 변경, isSettleComplete/allSettleAmount는 변경하지 않음
+   * - isSettleBalance=true(선입금 차감 건)만 SETTLE_COMPLETE로 설정
+   * - isSettleBalance=false(한도 사용/신용초과 건)는 UNSETTLE_NORMAL 유지 (관리자 수동 정산)
    */
   private async autoSettlePrePaymentOrders(orderIdList: number[]): Promise<void> {
     if (orderIdList.length === 0) return;
@@ -323,19 +324,28 @@ export class DeliveryBatchService {
 
     // 과금 대상 user의 settleCondition이 PRE_PAYMENT인 주문 필터링
     // 대행주문(clientUserId)인 경우 clientUser 기준으로 판단
-    const prePaymentOrderIds = orders
-      .filter((order) => {
-        const billingUser = order.clientUser ?? order.user;
-        return billingUser?.settleCondition === IUserSettleCondition.PRE_PAYMENT;
-      })
+    // isSettleBalance=false(신용초과 등 한도 사용 건)는 미정산 유지
+    const prePaymentOrders = orders.filter((order) => {
+      const billingUser = order.clientUser ?? order.user;
+      return billingUser?.settleCondition === IUserSettleCondition.PRE_PAYMENT;
+    });
+
+    const settleCompleteIds = prePaymentOrders
+      .filter((o) => o.isSettleBalance)
       .map((o) => o.id);
 
-    if (prePaymentOrderIds.length > 0) {
+    const unsettledCount = prePaymentOrders.length - settleCompleteIds.length;
+
+    if (settleCompleteIds.length > 0) {
       await this.orderRepository.update(
-        { id: In(prePaymentOrderIds) },
+        { id: In(settleCompleteIds) },
         { settleStatus: SettleUserOrderDetailEnum.SETTLE_COMPLETE },
       );
-      this.logger.log(`[BATCH] Auto-settled ${prePaymentOrderIds.length} pre-payment orders`);
+      this.logger.log(`[BATCH] Auto-settled ${settleCompleteIds.length} pre-payment orders (balance-paid)`);
+    }
+
+    if (unsettledCount > 0) {
+      this.logger.log(`[BATCH] Skipped auto-settle for ${unsettledCount} pre-payment orders (credit-excess, kept UNSETTLE_NORMAL)`);
     }
   }
 
