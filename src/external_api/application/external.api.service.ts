@@ -30,7 +30,9 @@ import { ExternalApiException } from '../api/external.api.exception.filter';
 import {
   ExternalApiResponse,
   OrderResponseData,
+  SsgOrderResponseData,
   OrderStatusResponseData,
+  SsgOrderStatusResponseData,
   ProductResponseData,
 } from '../api/dto/external.api.response.dto';
 import { CreateExternalOrderDto, CreateExternalSsgOrderDto } from '../api/dto/external.api.request.dto';
@@ -39,7 +41,7 @@ import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { DeliveryCreateCouponImage } from '../../delivery/infra/delivery.create.coupon.image';
 import { CreateCode } from '../../common/domain/create.code';
 import { OrderPrefixCode, OrderDigitNumber } from '../../order/domain/order.code';
-import { CreateTransactionId } from '../../order/domain/create.transaction.id';
+import { CreateApiTransactionId } from '../../order/domain/create.transaction.id';
 import { applyReplaceCharacters } from '../../common/utils/replace-characters.util';
 
 @Injectable()
@@ -211,15 +213,16 @@ export class ExternalApiService {
 
   async createOrder(user: UserEntity, dto: CreateExternalOrderDto): Promise<ExternalApiResponse<OrderResponseData>> {
     // Phase A: DB 트랜잭션 — 주문 생성 + 잔액 차감
-    const { order, orderDelivery, mapping, product } = await this.phaseA_createAndDeduct(user, dto);
+    const { order, orderDelivery, product } = await this.phaseA_createAndDeduct(user, dto);
 
+    const trId = orderDelivery.transactionId!;
     const price = product.price;
 
     // Phase B: 외부 HTTP — 쿠폰 발행 + 발송 (트랜잭션 없음)
     try {
       await this.phaseB_issueAndSend(orderDelivery, user);
     } catch (error) {
-      this.logger.error(`[createOrder] Phase B 실패 - trId: ${dto.trId}`, error);
+      this.logger.error(`[createOrder] Phase B 실패 - trId: ${trId}`, error);
       await this.phaseC_handleFailure(order, orderDelivery, user, price, error);
       throw new ExternalApiException('3003', '쿠폰 발행 실패', error?.message);
     }
@@ -228,9 +231,8 @@ export class ExternalApiService {
     await this.phaseC_handleSuccess(order, orderDelivery);
 
     return ExternalApiResponse.success<OrderResponseData>({
-      trId: dto.trId,
+      trId,
       barCode: orderDelivery.barCode || undefined,
-      couponNum: orderDelivery.couponNum || undefined,
       validStartDate: orderDelivery.expireAt ? dayjs().format('YYYY-MM-DD') : undefined,
       validEndDate: orderDelivery.expireAt ? dayjs(orderDelivery.expireAt).format('YYYY-MM-DD') : undefined,
       price,
@@ -241,15 +243,7 @@ export class ExternalApiService {
 
   @Transactional()
   private async phaseA_createAndDeduct(user: UserEntity, dto: CreateExternalOrderDto) {
-    // 1. 트랜잭션 ID 중복 체크
-    const existing = await this.orderDeliveryRepository.findOne({
-      where: { externalTrId: dto.trId },
-    });
-    if (existing) {
-      throw new ExternalApiException('2003', '중복 트랜잭션 ID');
-    }
-
-    // 2. 상품 조회 + 할당 검증
+    // 1. 상품 조회 + 할당 검증
     const product = await this.productRepository.findOne({
       where: { code: dto.productCode, useStatus: IProductUseStatus.USE },
       relations: ['partnerCompany', 'brand'],
@@ -265,10 +259,10 @@ export class ExternalApiService {
 
     const price = product.price;
 
-    // 3. 원자적 잔액 차감
+    // 2. 원자적 잔액 차감
     await this.deductBalance(user, price);
 
-    // 4. 주문 코드 생성
+    // 3. 주문 코드 생성
     const prevOrder = await this.orderRepository.findOne({
       where: { code: Like(`${OrderPrefixCode}%`) },
       order: { code: 'DESC' },
@@ -276,13 +270,13 @@ export class ExternalApiService {
     });
     const newCode = CreateCode(prevOrder?.code ?? null, OrderPrefixCode, OrderDigitNumber);
 
-    // 5. 주문 생성
+    // 4. 주문 생성
     const order = this.orderRepository.create({
       userId: user.id,
       code: newCode,
       type: IOrderType.EXTERNAL,
       status: IOrderStatus.DELIVERY_REQUEST,
-      eventName: `외부주문-${dto.trId}`,
+      eventName: `외부주문`,
       registerAt: new Date(),
       sendAmount: price,
       settleAmount: price,
@@ -293,7 +287,7 @@ export class ExternalApiService {
     });
     await this.orderRepository.save(order);
 
-    // 6. 주문-상품 매핑 생성
+    // 5. 주문-상품 매핑 생성
     const mapping = this.orderProductMappingRepository.create({
       orderId: order.id,
       productId: product.id,
@@ -307,7 +301,7 @@ export class ExternalApiService {
     });
     await this.orderProductMappingRepository.save(mapping);
 
-    // 7. 배송 건 생성 (externalTrId를 create에서 설정)
+    // 6. 배송 건 생성
     const orderDelivery = this.orderDeliveryRepository.create({
       orderProductMappingId: mapping.id,
       status: IOrderDeliveryStatus.WAIT,
@@ -315,9 +309,12 @@ export class ExternalApiService {
       deliveryTarget: this.cryptoCipher.encryptDeliveryTarget(dto.recipientPhone),
       originalDeliveryTarget: this.cryptoCipher.encryptDeliveryTarget(dto.recipientPhone),
       sendRequestAt: new Date(),
-      externalTrId: dto.trId,
     });
     await this.orderDeliveryRepository.save(orderDelivery);
+
+    // 7. transactionId 생성 및 저장 (API{orderId}D{deliveryId})
+    orderDelivery.transactionId = CreateApiTransactionId(order.id, orderDelivery.id);
+    await this.orderDeliveryRepository.update(orderDelivery.id, { transactionId: orderDelivery.transactionId });
 
     // 8. 관계 설정 (phaseB에서 재조립 불필요)
     mapping.product = product;
@@ -373,7 +370,6 @@ export class ExternalApiService {
 
   @Transactional()
   private async phaseC_handleSuccess(order: OrderEntity, orderDelivery: OrderDeliveryEntity) {
-    // deliverySendService.markSendSuccess가 이미 status를 설정했으므로 저장만 수행
     if (!orderDelivery.actualSendAt) {
       orderDelivery.actualSendAt = new Date();
     }
@@ -420,7 +416,26 @@ export class ExternalApiService {
       couponStatus: orderDelivery.couponStatus,
       deliveryStatus: orderDelivery.status,
       barCode: orderDelivery.barCode || undefined,
-      couponNum: orderDelivery.couponNum || undefined,
+      validStartDate: orderDelivery.expireAt ? dayjs(orderDelivery.sendRequestAt).format('YYYY-MM-DD') : undefined,
+      validEndDate: orderDelivery.expireAt ? dayjs(orderDelivery.expireAt).format('YYYY-MM-DD') : undefined,
+      price,
+    });
+  }
+
+  // ─── SSG 주문 상태 조회 ─────────────────────────────────
+
+  async getSsgOrderStatus(user: UserEntity, trId: string): Promise<ExternalApiResponse<SsgOrderStatusResponseData>> {
+    const orderDelivery = await this.findOrderDeliveryByTrId(user, trId);
+
+    const product = orderDelivery.orderProductMapping?.product;
+    const price = product?.price ?? 0;
+
+    return ExternalApiResponse.success<SsgOrderStatusResponseData>({
+      trId,
+      couponStatus: orderDelivery.couponStatus,
+      deliveryStatus: orderDelivery.status,
+      barCode: orderDelivery.barCode || undefined,
+      personalCode: orderDelivery.personalCode || undefined,
       validStartDate: orderDelivery.expireAt ? dayjs(orderDelivery.sendRequestAt).format('YYYY-MM-DD') : undefined,
       validEndDate: orderDelivery.expireAt ? dayjs(orderDelivery.expireAt).format('YYYY-MM-DD') : undefined,
       price,
@@ -501,17 +516,18 @@ export class ExternalApiService {
 
   // ─── SSG 주문 생성 ──────────────────────────────────────
 
-  async createSsgOrder(user: UserEntity, dto: CreateExternalSsgOrderDto): Promise<ExternalApiResponse<OrderResponseData>> {
+  async createSsgOrder(user: UserEntity, dto: CreateExternalSsgOrderDto): Promise<ExternalApiResponse<SsgOrderResponseData>> {
     // Phase A: DB 트랜잭션 — 주문 생성 + 잔액 차감
-    const { order, orderDelivery, mapping, product, ssgEvent } = await this.phaseA_createSsgAndDeduct(user, dto);
+    const { order, orderDelivery, ssgEvent } = await this.phaseA_createSsgAndDeduct(user, dto);
 
+    const trId = orderDelivery.transactionId!;
     const price = dto.amount;
 
     // Phase B: 외부 HTTP — SSG 쿠폰 발행 + 발송
     try {
       await this.phaseB_issueAndSend(orderDelivery, user);
     } catch (error) {
-      this.logger.error(`[createSsgOrder] Phase B 실패 - trId: ${dto.trId}`, error);
+      this.logger.error(`[createSsgOrder] Phase B 실패 - trId: ${trId}`, error);
       await this.phaseC_handleFailure(order, orderDelivery, user, price, error);
       throw new ExternalApiException('3003', 'SSG 쿠폰 발행 실패', error?.message);
     }
@@ -519,10 +535,10 @@ export class ExternalApiService {
     // Phase C: 성공 상태 업데이트
     await this.phaseC_handleSuccess(order, orderDelivery);
 
-    return ExternalApiResponse.success<OrderResponseData>({
-      trId: dto.trId,
+    return ExternalApiResponse.success<SsgOrderResponseData>({
+      trId,
       barCode: orderDelivery.barCode || undefined,
-      couponNum: orderDelivery.couponNum || undefined,
+      personalCode: orderDelivery.personalCode || undefined,
       validStartDate: orderDelivery.expireAt ? dayjs().format('YYYY-MM-DD') : undefined,
       validEndDate: orderDelivery.expireAt ? dayjs(orderDelivery.expireAt).format('YYYY-MM-DD') : undefined,
       price,
@@ -531,15 +547,7 @@ export class ExternalApiService {
 
   @Transactional()
   private async phaseA_createSsgAndDeduct(user: UserEntity, dto: CreateExternalSsgOrderDto) {
-    // 1. 트랜잭션 ID 중복 체크
-    const existing = await this.orderDeliveryRepository.findOne({
-      where: { externalTrId: dto.trId },
-    });
-    if (existing) {
-      throw new ExternalApiException('2003', '중복 트랜잭션 ID');
-    }
-
-    // 2. SSG 이벤트 할당
+    // 1. SSG 이벤트 할당
     const price = dto.amount;
     const deliveryPlaceholder = [{ deliveryId: 0, price }];
     const ssgAllocations = await this.ssgEventService.allocateEventsForDeliveries(deliveryPlaceholder, 90);
@@ -549,7 +557,7 @@ export class ExternalApiService {
 
     const ssgEvent = ssgAllocations[0];
 
-    // 3. SSG 이벤트에서 상품 조회
+    // 2. SSG 이벤트에서 상품 조회
     const product = await this.productRepository.findOne({
       where: { type: 'SSG' as any },
       relations: ['partnerCompany', 'brand'],
@@ -558,10 +566,10 @@ export class ExternalApiService {
       throw new ExternalApiException('3001', 'SSG 상품 없음');
     }
 
-    // 4. 잔액 차감
+    // 3. 잔액 차감
     await this.deductBalance(user, price);
 
-    // 5. 주문 코드 생성
+    // 4. 주문 코드 생성
     const prevOrder = await this.orderRepository.findOne({
       where: { code: Like(`${OrderPrefixCode}%`) },
       order: { code: 'DESC' },
@@ -569,13 +577,13 @@ export class ExternalApiService {
     });
     const newCode = CreateCode(prevOrder?.code ?? null, OrderPrefixCode, OrderDigitNumber);
 
-    // 6. 주문 생성
+    // 5. 주문 생성
     const order = this.orderRepository.create({
       userId: user.id,
       code: newCode,
       type: IOrderType.SSG,
       status: IOrderStatus.DELIVERY_REQUEST,
-      eventName: `외부SSG주문-${dto.trId}`,
+      eventName: `외부SSG주문`,
       registerAt: new Date(),
       sendAmount: price,
       settleAmount: price,
@@ -587,7 +595,7 @@ export class ExternalApiService {
     });
     await this.orderRepository.save(order);
 
-    // 7. 주문-상품 매핑
+    // 6. 주문-상품 매핑
     const mapping = this.orderProductMappingRepository.create({
       orderId: order.id,
       productId: product.id,
@@ -601,7 +609,7 @@ export class ExternalApiService {
     });
     await this.orderProductMappingRepository.save(mapping);
 
-    // 8. 배송 건 생성 (externalTrId를 create에서 설정)
+    // 7. 배송 건 생성
     const orderDelivery = this.orderDeliveryRepository.create({
       orderProductMappingId: mapping.id,
       status: IOrderDeliveryStatus.WAIT,
@@ -610,9 +618,12 @@ export class ExternalApiService {
       originalDeliveryTarget: this.cryptoCipher.encryptDeliveryTarget(dto.recipientPhone),
       sendRequestAt: new Date(),
       ssgEventId: ssgEvent.eventId,
-      externalTrId: dto.trId,
     });
     await this.orderDeliveryRepository.save(orderDelivery);
+
+    // 8. transactionId 생성 및 저장 (API{orderId}D{deliveryId})
+    orderDelivery.transactionId = CreateApiTransactionId(order.id, orderDelivery.id);
+    await this.orderDeliveryRepository.update(orderDelivery.id, { transactionId: orderDelivery.transactionId });
 
     // 9. SSG 이벤트 잔액 차감
     await this.ssgEventService.deductEventBalanceMultiple(ssgAllocations, order.id, false);
@@ -630,7 +641,7 @@ export class ExternalApiService {
 
   private async findOrderDeliveryByTrId(user: UserEntity, trId: string): Promise<OrderDeliveryEntity> {
     const orderDelivery = await this.orderDeliveryRepository.findOne({
-      where: { externalTrId: trId },
+      where: { transactionId: trId },
       relations: [
         'orderProductMapping',
         'orderProductMapping.order',

@@ -25,10 +25,13 @@ export class ExternalApiResponse<T = any> {
 export class OrderResponseData {
   trId: string;
   barCode?: string;
-  couponNum?: string;
   validStartDate?: string;
   validEndDate?: string;
   price: number;
+}
+
+export class SsgOrderResponseData extends OrderResponseData {
+  personalCode?: string;
 }
 
 export class OrderStatusResponseData {
@@ -36,10 +39,13 @@ export class OrderStatusResponseData {
   couponStatus: string;
   deliveryStatus: string;
   barCode?: string;
-  couponNum?: string;
   validStartDate?: string;
   validEndDate?: string;
   price: number;
+}
+
+export class SsgOrderStatusResponseData extends OrderStatusResponseData {
+  personalCode?: string;
 }
 
 export class ProductResponseData {

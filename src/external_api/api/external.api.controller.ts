@@ -1,10 +1,11 @@
-import { Controller, Get, Post, Delete, Body, Param, Query, Req, UseGuards, UseFilters } from '@nestjs/common';
+import { Controller, Get, Post, Delete, Body, Param, Query, Req, UseGuards, UseFilters, UseInterceptors } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiSecurity } from '@nestjs/swagger';
 import { Request } from 'express';
 
 import { ExternalApiService } from '../application/external.api.service';
 import { ApiKeyGuard } from './external.api.key.guard';
 import { ExternalApiExceptionFilter } from './external.api.exception.filter';
+import { IdempotencyInterceptor } from './idempotency.interceptor';
 import { CreateExternalOrderDto, CreateExternalSsgOrderDto, ExternalProductQueryDto } from './dto/external.api.request.dto';
 import { UserEntity } from '../../entity/user.entity';
 
@@ -23,6 +24,7 @@ export class ExternalApiController {
   }
 
   @Post('orders')
+  @UseInterceptors(IdempotencyInterceptor)
   @ApiOperation({ summary: '쿠폰 발송 (즉시)' })
   async createOrder(@Req() req: Request, @Body() dto: CreateExternalOrderDto) {
     return this.externalApiService.createOrder((req as any).apiUser as UserEntity, dto);
@@ -47,6 +49,7 @@ export class ExternalApiController {
   }
 
   @Post('orders/ssg')
+  @UseInterceptors(IdempotencyInterceptor)
   @ApiOperation({ summary: 'SSG 쿠폰 발송' })
   async createSsgOrder(@Req() req: Request, @Body() dto: CreateExternalSsgOrderDto) {
     return this.externalApiService.createSsgOrder((req as any).apiUser as UserEntity, dto);
@@ -55,6 +58,6 @@ export class ExternalApiController {
   @Get('orders/ssg/:trId/status')
   @ApiOperation({ summary: 'SSG 주문 상태 확인' })
   async getSsgOrderStatus(@Req() req: Request, @Param('trId') trId: string) {
-    return this.externalApiService.getOrderStatus((req as any).apiUser as UserEntity, trId);
+    return this.externalApiService.getSsgOrderStatus((req as any).apiUser as UserEntity, trId);
   }
 }
