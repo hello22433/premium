@@ -1,4 +1,5 @@
 import { ExceptionFilter, Catch, ArgumentsHost, HttpException, HttpStatus, Logger } from '@nestjs/common';
+import { ThrottlerException } from '@nestjs/throttler';
 import { Response } from 'express';
 
 export class ExternalApiException extends Error {
@@ -47,6 +48,10 @@ export class ExternalApiExceptionFilter implements ExceptionFilter {
         '4002': HttpStatus.NOT_FOUND,
       };
       httpStatus = codeStatusMap[code] ?? HttpStatus.INTERNAL_SERVER_ERROR;
+    } else if (exception instanceof ThrottlerException) {
+      httpStatus = HttpStatus.TOO_MANY_REQUESTS;
+      code = '1003';
+      message = '요청 횟수 초과';
     } else if (exception instanceof HttpException) {
       httpStatus = exception.getStatus();
       if (httpStatus === HttpStatus.UNAUTHORIZED) {

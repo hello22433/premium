@@ -56,7 +56,7 @@ export class OrderDeliveryEntity extends BaseEntity {
   @Column({ type: 'varchar', length: 256, nullable: true, comment: '트랜잭션 id' })
   transactionId: string | null;
 
-  @Column({ type: 'varchar', length: 40, nullable: true, comment: '외부 API 트랜잭션 ID' })
+  @Column({ type: 'varchar', length: 26, nullable: true, comment: '외부 API 트랜잭션 ID (ULID)' })
   externalTrId: string | null;
 
   @Column({ type: 'varchar', length: 256, nullable: true, comment: '전송 바코드' })
