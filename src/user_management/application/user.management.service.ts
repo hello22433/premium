@@ -496,7 +496,7 @@ export class UserManagementService {
       id: log.id,
       createdAt: format(log.createdAt, DateFormatStr),
       actionType: log.actionType,
-      amount: log.requestParams?.chargeAmount ?? log.requestParams?.changeAmount ?? 0,
+      amount: log.requestParams?.chargeAmount ?? log.requestParams?.changeAmount ?? log.requestParams?.restoreAmount ?? 0,
       beforeBalance: log.requestParams?.beforeBalance ?? 0,
       afterBalance: log.requestParams?.afterBalance ?? 0,
       operatorEmail: log.userEmail,
