@@ -256,4 +256,16 @@ export class OrderPdfDetailProductDto {
     description: '발송 상세 list',
   })
   orderDeliveryList: OrderDeliveryCompleteReportViewDto[];
+
+  @ApiProperty({
+    nullable: true,
+    description: '발송 제목 (이벤트명)',
+  })
+  sendTitle: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    description: '발송 내용 (발송문구)',
+  })
+  sendContent: string | null;
 }
