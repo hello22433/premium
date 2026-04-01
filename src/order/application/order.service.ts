@@ -819,6 +819,8 @@ export class OrderService {
           id: orderProductMapping.id,
           product: product,
           orderDeliveryList: orderDeliveryList,
+          sendTitle: orderProductMapping.sendTitle ?? null,
+          sendContent: orderProductMapping.sendContent ?? null,
         });
       }
     }
@@ -1249,6 +1251,8 @@ export class OrderService {
             id: orderProductMapping.id,
             product: product,
             orderDeliveryList: orderDeliveryList,
+            sendTitle: orderProductMapping.sendTitle ?? null,
+            sendContent: orderProductMapping.sendContent ?? null,
           });
         }
       }
