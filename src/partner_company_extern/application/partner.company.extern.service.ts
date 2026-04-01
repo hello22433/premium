@@ -23,6 +23,7 @@ import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delive
 import { CancelCouponResDto } from '../api/CancelCouponResDto';
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
+import { PartnerCompanyEntity } from '../../entity/partner.company.entity';
 import { parseDateString, isExpiredYMD } from '../../util/date.util';
 import { applyReplaceCharacters } from '../../common/utils/replace-characters.util';
 
@@ -47,6 +48,8 @@ export class PartnerCompanyExternService {
     private orderDeliveryRepository: Repository<OrderDeliveryEntity>,
     @InjectRepository(PartnerCompanyExternHistoryEntity)
     private partnerCompanyExternHistoryRepository: Repository<PartnerCompanyExternHistoryEntity>,
+    @InjectRepository(PartnerCompanyEntity)
+    private partnerCompanyRepository: Repository<PartnerCompanyEntity>,
     private cryptoCipher: CryptoCipher,
   ) {}
 
@@ -534,10 +537,22 @@ export class PartnerCompanyExternService {
     // 초이스쿠폰의 경우 선택한 상품의 협력사를 우선 확인
     const choicePartnerType = orderDelivery.choiceSelectProduct?.partnerCompany?.type;
     const productPartnerType = orderDelivery.orderProductMapping.product.partnerCompany?.type;
-    const partnerType = choicePartnerType ?? productPartnerType;
+    let partnerType = choicePartnerType ?? productPartnerType;
 
     if (!partnerType) {
-      throw new Error('협력사 정보를 찾을 수 없습니다. (partnerCompany type is null)');
+      // TypeORM 깊은 relation 로딩 간헐 실패 대비 — 직접 조회 fallback
+      const product = orderDelivery.choiceSelectProduct ?? orderDelivery.orderProductMapping?.product;
+      if (!product?.partnerCompanyId) {
+        throw new Error(`상품 정보를 찾을 수 없습니다. (orderDeliveryId: ${orderDelivery.id})`);
+      }
+      const partnerCompany = await this.partnerCompanyRepository.findOne({
+        where: { id: product.partnerCompanyId },
+      });
+      if (!partnerCompany?.type) {
+        throw new Error(`협력사 정보를 찾을 수 없습니다. (orderDeliveryId: ${orderDelivery.id}, partnerCompanyId: ${product.partnerCompanyId})`);
+      }
+      this.logger.warn(`partnerCompany relation 로딩 누락 fallback 발동 (orderDeliveryId: ${orderDelivery.id})`);
+      partnerType = partnerCompany.type;
     }
 
     switch (partnerType) {

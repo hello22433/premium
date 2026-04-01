@@ -12,6 +12,7 @@ import { OrderDeliveryEntity } from '../entity/order.delivery.entity';
 import { PartnerCompanyExternService } from './application/partner.company.extern.service';
 import { CryptoCipher } from '../common/infra/crypto.cipher';
 import { PartnerCompanyExternHistoryEntity } from '../entity/partner.company.extern.history.entity';
+import { PartnerCompanyEntity } from '../entity/partner.company.entity';
 import { SsgIssue } from './infra/ssg.issue';
 import { PartnerCompanyExternBatchService } from './application/partner.company.extern.batch.service';
 import { PartnerCompanyBatchSchedule } from './partner.company.batch.schedule';
@@ -24,7 +25,7 @@ import { GalaxiaBarcodeLogEntity } from '../entity/galaxia.barcode.log.entity';
   imports: [
     AuthModule,
     HttpModule.register({ timeout: 30000 }),
-    TypeOrmModule.forFeature([OrderDeliveryEntity, PartnerCompanyExternHistoryEntity, GalaxiaBarcodeLogEntity]),
+    TypeOrmModule.forFeature([OrderDeliveryEntity, PartnerCompanyExternHistoryEntity, GalaxiaBarcodeLogEntity, PartnerCompanyEntity]),
   ],
   providers: [
     {
