@@ -9,13 +9,14 @@ import { OrderEntity } from '../entity/order.entity';
 import { SmsModule } from '../sms/sms.module';
 import { EmailSendHistoryEntity } from '../entity/email.send.history.entity';
 import { ProductChoiceMappingEntity } from '../entity/product.choice.mapping.entity';
+import { SsgEventEntity } from '../entity/ssg.event.entity';
 import { PartnerCompanyExternModule } from '../partner_company_extern/partner.company.extern.module';
 import { DeliveryModule } from '../delivery/delivery.module';
 
 @Module({
   imports: [
     AuthModule,
-    TypeOrmModule.forFeature([EmailSendHistoryEntity, OrderDeliveryEntity, TestOrderDeliveryEntity, OrderEntity, ProductChoiceMappingEntity]),
+    TypeOrmModule.forFeature([EmailSendHistoryEntity, OrderDeliveryEntity, TestOrderDeliveryEntity, OrderEntity, ProductChoiceMappingEntity, SsgEventEntity]),
     SmsModule,
     PartnerCompanyExternModule,
     DeliveryModule,

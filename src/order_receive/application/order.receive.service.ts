@@ -33,6 +33,7 @@ import { AlimTalkTemplate } from '../../delivery/domain/alim.talk.template';
 import { smsCouponInfoTemplate } from '../../delivery/domain/sms.coupon.info.template';
 import { smsSsgTemplate } from '../../delivery/domain/sms.ssg.template';
 import { IOrderType } from '../../order/interface/order.type';
+import { SsgEventEntity } from '../../entity/ssg.event.entity';
 import { format } from 'date-fns';
 import { normalizeLineBreaks } from '../../delivery/domain/email.delivery.template';
 import { DateFormatStr } from '../../common/domain/date.format.str';
@@ -63,6 +64,8 @@ export class OrderReceiveService {
     @Inject('DeliveryAlimTalk')
     private deliveryAlimTalk: DeliveryAlimTalk,
     private partnerCompanyExternService: PartnerCompanyExternService,
+    @InjectRepository(SsgEventEntity)
+    private ssgEventRepository: Repository<SsgEventEntity>,
   ) {}
 
   async selectChoiceProduct(getBody: OrderReceiveSelectChoiceProductReqDto) {
@@ -106,11 +109,19 @@ export class OrderReceiveService {
     // 이메일 경로: 상품 선택만 저장, PIN 발급은 sendToMMS()에서 전화번호 입력 후 처리
     // 알림톡/MMS 경로: 기존대로 즉시 PIN 발급
     if (!isEmailPath) {
+      // SSG 행사 정보 조회
+      let ssgEvent: SsgEventEntity | null = null;
+      if (orderDelivery.orderProductMapping.order.type === IOrderType.SSG && orderDelivery.ssgEventId) {
+        ssgEvent = await this.ssgEventRepository.findOne({
+          where: { id: orderDelivery.ssgEventId },
+        });
+      }
+
       // 선택된 상품의 협력사 정보로 쿠폰 발급을 위해 임시로 product 교체
       const originalProduct = orderDelivery.orderProductMapping.product;
       orderDelivery.orderProductMapping.product = productChoiceMapping.product;
 
-      await this.partnerCompanyExternService.issue(orderDelivery, null);
+      await this.partnerCompanyExternService.issue(orderDelivery, ssgEvent);
 
       // 원래 product로 복원 (초이스쿠폰 상품)
       orderDelivery.orderProductMapping.product = originalProduct;
@@ -723,11 +734,19 @@ export class OrderReceiveService {
         issueProduct = choiceProductMapping.product;
       }
 
+      // SSG 행사 정보 조회 (배치 발송 경로와 동일)
+      let ssgEvent: SsgEventEntity | null = null;
+      if (orderDelivery.orderProductMapping.order.type === IOrderType.SSG && orderDelivery.ssgEventId) {
+        ssgEvent = await this.ssgEventRepository.findOne({
+          where: { id: orderDelivery.ssgEventId },
+        });
+      }
+
       // PIN 발급 (초이스쿠폰은 선택된 상품으로 임시 교체 후 발급)
       const originalProduct = orderDelivery.orderProductMapping.product;
       orderDelivery.orderProductMapping.product = issueProduct;
       try {
-        await this.partnerCompanyExternService.issue(orderDelivery, null);
+        await this.partnerCompanyExternService.issue(orderDelivery, ssgEvent);
       } catch (e) {
         orderDelivery.orderProductMapping.product = originalProduct;
         await this.orderDeliveryRepository.update(orderDelivery.id, {
