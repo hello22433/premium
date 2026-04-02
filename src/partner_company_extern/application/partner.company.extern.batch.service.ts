@@ -424,7 +424,13 @@ export class PartnerCompanyExternBatchService {
       });
 
       const isExchanged = ssgOut.response.value[0].resultCd[0] === '0400';
-      result.couponStatus = isExchanged ? OrderDeliveryCouponStatus.USED : OrderDeliveryCouponStatus.NOT_USED;
+      if (isExchanged) {
+        result.couponStatus = OrderDeliveryCouponStatus.USED;
+      } else if (orderDelivery.expireAt && isExpiredYMD(formatDateYMD(orderDelivery.expireAt))) {
+        result.couponStatus = OrderDeliveryCouponStatus.EXPIRED;
+      } else {
+        result.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
+      }
 
       // 교환 완료 시 교환장소(payaccntNm)와 교환일시(executeDate) 저장
       if (isExchanged) {

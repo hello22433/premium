@@ -24,7 +24,7 @@ import { CancelCouponResDto } from '../api/CancelCouponResDto';
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
 import { PartnerCompanyEntity } from '../../entity/partner.company.entity';
-import { parseDateString, isExpiredYMD } from '../../util/date.util';
+import { parseDateString, isExpiredYMD, formatDateYMD } from '../../util/date.util';
 import { applyReplaceCharacters } from '../../common/utils/replace-characters.util';
 
 @Injectable()
@@ -715,7 +715,13 @@ export class PartnerCompanyExternService {
 
         const resultCd = ssgOut.response.value[0].resultCd[0];
         const isExchanged = resultCd === '0400';
-        orderDelivery.couponStatus = isExchanged ? OrderDeliveryCouponStatus.USED : OrderDeliveryCouponStatus.NOT_USED;
+        if (isExchanged) {
+          orderDelivery.couponStatus = OrderDeliveryCouponStatus.USED;
+        } else if (orderDelivery.expireAt && isExpiredYMD(formatDateYMD(orderDelivery.expireAt))) {
+          orderDelivery.couponStatus = OrderDeliveryCouponStatus.EXPIRED;
+        } else {
+          orderDelivery.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
+        }
 
         // 교환 완료 시 교환장소(payaccntNm)와 교환일시(executeDate) 저장
         if (isExchanged) {
