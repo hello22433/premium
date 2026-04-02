@@ -156,12 +156,19 @@ export class DeliveryBatchService {
   private async createCouponImage(orderDelivery: OrderDeliveryEntity): Promise<string> {
     const product = orderDelivery.orderProductMapping.product;
     const partnerCompany = product.partnerCompany;
-    const expireDay = resolveExpireDays(
-      orderDelivery.orderProductMapping.galaxiaDuration ?? product.galaxiaDuration,
-      product.expireDay,
-      partnerCompany?.validityStartsNextDay,
-    );
-    const expireDate = expireDay ? dayjs().add(expireDay, 'day').format('YYYY. MM. DD') : null;
+
+    // 유효기간: expireAt이 이미 설정되어 있으면 사용 (재발송 시 최초 발송 기준 유지)
+    let expireDate: string | null = null;
+    if (orderDelivery.expireAt) {
+      expireDate = dayjs(orderDelivery.expireAt).format('YYYY. MM. DD');
+    } else {
+      const expireDay = resolveExpireDays(
+        orderDelivery.orderProductMapping.galaxiaDuration ?? product.galaxiaDuration,
+        product.expireDay,
+        partnerCompany?.validityStartsNextDay,
+      );
+      expireDate = expireDay ? dayjs().add(expireDay, 'day').format('YYYY. MM. DD') : null;
+    }
 
     const { path } = await DeliveryCreateCouponImage(
       product.imagePath,
