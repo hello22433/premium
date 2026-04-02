@@ -1,4 +1,4 @@
-import { Controller, Logger, Post, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Logger, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
 import { AuthUserSuperAdminGuard } from '../../auth/api/auth.user.super-admin.guard';
@@ -73,7 +73,7 @@ export class PartnerCompanyBatchController {
   }
 
   @ApiOperation({ summary: '갤럭시아 바코드 로그 백필 (일대사 누락분)' })
-  @Post('batch/galaxia-backfill')
+  @Get('batch/galaxia-backfill')
   async triggerGalaxiaBackfill() {
     this.logger.log('[수동실행] backfillMissingGalaxiaLogs 시작');
     const result = await this.partnerCompanyExternBatchService.backfillMissingGalaxiaLogs();
