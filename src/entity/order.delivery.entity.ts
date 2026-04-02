@@ -83,6 +83,9 @@ export class OrderDeliveryEntity extends BaseEntity {
   @Column({ type: 'int', nullable: true, comment: 'FK) product.id 초이스 쿠폰 시' })
   choiceSelectProductId: number | null;
 
+  @Column({ type: 'datetime', nullable: true, comment: '초이스 쿠폰 상품 선택 일시' })
+  choiceSelectedAt: Date | null;
+
   @Column({ type: 'varchar', length: 100, nullable: true, comment: '기타 외부 협력사 코드 정보' })
   couponNum: string | null;
 

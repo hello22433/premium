@@ -34,8 +34,9 @@ import { smsCouponInfoTemplate } from '../../delivery/domain/sms.coupon.info.tem
 import { smsSsgTemplate } from '../../delivery/domain/sms.ssg.template';
 import { IOrderType } from '../../order/interface/order.type';
 import { SsgEventEntity } from '../../entity/ssg.event.entity';
-import { format } from 'date-fns';
+import { addDays, format, subDays } from 'date-fns';
 import { normalizeLineBreaks } from '../../delivery/domain/email.delivery.template';
+import { resolveExpireDays } from '../../common/utils/expire.util';
 import { DateFormatStr } from '../../common/domain/date.format.str';
 
 import dayjs from 'dayjs';
@@ -129,6 +130,9 @@ export class OrderReceiveService {
       orderDelivery.orderProductMapping.product = productChoiceMapping.product;
 
       await this.partnerCompanyExternService.issue(orderDelivery, ssgEvent);
+
+      // 선택한 상품 기준 유효기간 재계산
+      this.updateChoiceExpiration(orderDelivery, productChoiceMapping.product);
 
       // 원래 product로 복원 (초이스쿠폰 상품)
       orderDelivery.orderProductMapping.product = originalProduct;
@@ -764,8 +768,11 @@ export class OrderReceiveService {
       }
       orderDelivery.orderProductMapping.product = originalProduct;
 
-      // PIN 발급 성공 시 쿠폰 이미지 생성
+      // PIN 발급 성공 시 쿠폰 이미지 생성 + 유효기간 재계산
       if (orderDelivery.barCode) {
+        if (isChoiceCoupon) {
+          this.updateChoiceExpiration(orderDelivery, issueProduct);
+        }
         orderDelivery.imagePath = await this.createCouponImage(issueProduct, orderDelivery);
         await this.orderDeliveryRepository.save(orderDelivery);
       }
@@ -930,13 +937,45 @@ export class OrderReceiveService {
   }
 
   /**
+   * 초이스 쿠폰 선택 후 유효기간 재계산
+   * SSG는 issue() 내부에서 expireAt/encourageAt을 설정하므로 choiceSelectedAt만 기록
+   */
+  private updateChoiceExpiration(
+    orderDelivery: OrderDeliveryEntity,
+    selectedProduct: { galaxiaDuration?: number | null; expireDay: number; partnerCompany?: { validityStartsNextDay?: boolean | null } | null },
+  ): void {
+    const now = new Date();
+    orderDelivery.choiceSelectedAt = now;
+
+    const isSsg = orderDelivery.orderProductMapping.order.type === IOrderType.SSG;
+    if (!isSsg) {
+      const expireDays = resolveExpireDays(
+        orderDelivery.orderProductMapping.galaxiaDuration ?? selectedProduct.galaxiaDuration,
+        selectedProduct.expireDay,
+        selectedProduct.partnerCompany?.validityStartsNextDay,
+      );
+      orderDelivery.expireAt = addDays(now, expireDays);
+
+      const encourageDay = orderDelivery.orderProductMapping.encourageDay;
+      if (encourageDay) {
+        orderDelivery.encourageAt = subDays(orderDelivery.expireAt, encourageDay);
+      }
+    }
+  }
+
+  /**
    * 쿠폰 이미지 생성 - 주어진 product 정보로 만료일 계산 후 이미지 생성
    */
   private async createCouponImage(product: any, orderDelivery: OrderDeliveryEntity): Promise<string> {
-    const productExpireDay = product.expireDay || 0;
-    const validityStartsNextDay = product.partnerCompany?.validityStartsNextDay ?? true;
-    const expireDay = validityStartsNextDay ? productExpireDay : productExpireDay - 1;
-    const expireDate = expireDay ? dayjs().tz('Asia/Seoul').add(expireDay, 'day').format('YYYY. MM. DD') : null;
+    let expireDate: string | null = null;
+    if (orderDelivery.expireAt) {
+      expireDate = dayjs(orderDelivery.expireAt).tz('Asia/Seoul').format('YYYY. MM. DD');
+    } else {
+      const productExpireDay = product.expireDay || 0;
+      const validityStartsNextDay = product.partnerCompany?.validityStartsNextDay ?? true;
+      const expireDay = validityStartsNextDay ? productExpireDay : productExpireDay - 1;
+      expireDate = expireDay ? dayjs().tz('Asia/Seoul').add(expireDay, 'day').format('YYYY. MM. DD') : null;
+    }
 
     const { path } = await DeliveryCreateCouponImage(
       product.imagePath,
