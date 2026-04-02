@@ -1015,4 +1015,173 @@ export class PartnerCompanyExternBatchService {
       .toString(36)
       .substring(2, 2 + length);
   }
+
+  // ===== 갤럭시아 바코드 로그 백필 =====
+
+  /**
+   * 사용(USED) 상태인데 galaxia_barcode_log가 없는 GALAXIA 주문을
+   * 개별 check API로 조회하여 바코드 로그를 채운다.
+   * 일대사 API에서 누락된 상품(SK모바일주유권, 다이소, 네이버페이 등) 대상.
+   */
+  async backfillMissingGalaxiaLogs(): Promise<{
+    totalProcessed: number;
+    totalCreated: number;
+    totalSkipped: number;
+    totalFailed: number;
+  }> {
+    this.logger.log('[backfillGalaxia] 백필 시작');
+
+    let lastId = Number.MAX_SAFE_INTEGER;
+    let hasMore = true;
+    let totalProcessed = 0;
+    let totalCreated = 0;
+    let totalSkipped = 0;
+    let totalFailed = 0;
+
+    try {
+      while (hasMore) {
+        const batch = await this.fetchMissingGalaxiaLogBatch(lastId, this.pageSize);
+
+        if (batch.length === 0) break;
+
+        this.logger.log(
+          `[backfillGalaxia] 페이지 처리: lastId=${lastId}, count=${batch.length}`,
+        );
+
+        const concurrency = this.getConcurrencyLimit('GALAXIA');
+
+        for (let i = 0; i < batch.length; i += concurrency) {
+          const chunk = batch.slice(i, i + concurrency);
+          const results = await Promise.allSettled(
+            chunk.map((item) => this.processBackfillItem(item)),
+          );
+
+          for (let j = 0; j < results.length; j++) {
+            totalProcessed++;
+            const result = results[j];
+
+            if (result.status === 'fulfilled') {
+              if (result.value === 'created') totalCreated++;
+              else totalSkipped++;
+            } else {
+              totalFailed++;
+              this.logger.error(
+                `[backfillGalaxia] 처리 실패: id=${chunk[j].id}`,
+              );
+              this.logger.error(result.reason);
+            }
+          }
+        }
+
+        lastId = batch[batch.length - 1].id;
+        hasMore = batch.length === this.pageSize;
+      }
+    } catch (e) {
+      this.logger.error('[backfillGalaxia] 배치 처리 중 예외 발생');
+      this.logger.error(e);
+    }
+
+    const summary = { totalProcessed, totalCreated, totalSkipped, totalFailed };
+    this.logger.log(
+      `[backfillGalaxia] 백필 완료 - 처리: ${totalProcessed}, 생성: ${totalCreated}, ` +
+        `스킵: ${totalSkipped}, 실패: ${totalFailed}`,
+    );
+    return summary;
+  }
+
+  /**
+   * GALAXIA + USED + barCode/couponNum 있음 + galaxia_barcode_log 없음 대상 조회
+   */
+  private async fetchMissingGalaxiaLogBatch(
+    lastId: number,
+    limit: number,
+  ): Promise<OrderDeliveryEntity[]> {
+    return this.orderDeliveryRepository
+      .createQueryBuilder('orderDelivery')
+      .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
+      .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
+      .innerJoinAndSelect('orderProductMapping.product', 'product')
+      .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .leftJoin('galaxia_barcode_log', 'gbl', 'gbl.order_delivery_id = orderDelivery.id')
+      .where('orderDelivery.id < :lastId', { lastId })
+      .andWhere('orderDelivery.status LIKE :status', { status: DELIVERY_STATUS_PATTERN })
+      .andWhere('orderDelivery.barCode IS NOT NULL')
+      .andWhere('orderDelivery.couponNum IS NOT NULL')
+      .andWhere('partnerCompany.type = :type', { type: PARTNER_COMPANY_TYPES.GALAXIA })
+      .andWhere('orderDelivery.couponStatus IN (:...statuses)', {
+        statuses: [OrderDeliveryCouponStatus.USED, OrderDeliveryCouponStatus.CANCEL],
+      })
+      .andWhere('gbl.id IS NULL')
+      .orderBy('orderDelivery.id', 'DESC')
+      .take(limit)
+      .getMany();
+  }
+
+  /**
+   * 개별 order_delivery에 대해 check API 호출 → 사용내역이면 barcode_log 생성
+   */
+  private async processBackfillItem(
+    orderDelivery: OrderDeliveryEntity,
+  ): Promise<'created' | 'skipped'> {
+    const giftKind = this.resolveGalaxiaGiftKind(orderDelivery);
+
+    const galaxiaOut = await this.galaxia.check({
+      giftKind,
+      paramValue: orderDelivery.couponNum!,
+    });
+
+    if (!galaxiaOut.giftCertificate.isUsed && galaxiaOut.giftCertificate.couponStatus !== 'CANCEL') {
+      return 'skipped';
+    }
+
+    const faceValue = +galaxiaOut.giftCertificate.faceValue;
+    const balance = +galaxiaOut.giftCertificate.balance;
+    const usedAmount = faceValue - balance;
+
+    if (usedAmount <= 0) {
+      return 'skipped';
+    }
+
+    // usedDate에서 appDay/appTime 추출 (형식: YYYYMMDDHHmmss)
+    const usedDate = galaxiaOut.giftCertificate.usedDate || '';
+    const appDay = usedDate.substring(0, 8) || formatDateYMD(new Date());
+    const appTime = usedDate.substring(8, 14) || this.formatTimeHMS(new Date());
+
+    const appNo = `bkf${orderDelivery.barCode!.slice(-5)}${appTime}${this.randomString(3)}`;
+
+    // 중복 체크
+    const existing = await this.galaxiaBarcodeLogRepository
+      .createQueryBuilder('log')
+      .where('log.orderDeliveryId = :odId', { odId: orderDelivery.id })
+      .getOne();
+
+    if (existing) {
+      return 'skipped';
+    }
+
+    await this.galaxiaBarcodeLogRepository.save({
+      orderDeliveryId: orderDelivery.id,
+      barcode: orderDelivery.barCode!,
+      appDiv: '10',
+      appDay,
+      appTime,
+      amount: usedAmount,
+      appNo,
+      appStore: null,
+      giftKind,
+    });
+
+    // galaxiaBalance도 업데이트
+    await this.orderDeliveryRepository.update(
+      { id: orderDelivery.id },
+      { galaxiaBalance: balance },
+    );
+
+    this.logger.log(
+      `[backfillGalaxia] 로그 생성: id=${orderDelivery.id}, ` +
+        `appDay=${appDay}, amount=${usedAmount}, giftKind=${giftKind}`,
+    );
+
+    return 'created';
+  }
 }

@@ -71,4 +71,13 @@ export class PartnerCompanyBatchController {
     this.logger.log('[수동실행] checkGalaxiaDeptUsage 완료');
     return { message: 'checkGalaxiaDeptUsage 실행 완료' };
   }
+
+  @ApiOperation({ summary: '갤럭시아 바코드 로그 백필 (일대사 누락분)' })
+  @Post('batch/galaxia-backfill')
+  async triggerGalaxiaBackfill() {
+    this.logger.log('[수동실행] backfillMissingGalaxiaLogs 시작');
+    const result = await this.partnerCompanyExternBatchService.backfillMissingGalaxiaLogs();
+    this.logger.log('[수동실행] backfillMissingGalaxiaLogs 완료');
+    return { message: '백필 실행 완료', ...result };
+  }
 }
