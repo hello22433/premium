@@ -838,12 +838,13 @@ export class DeliveryBatchService {
       throw new Error('발송 데이터가 존재하지 않습니다.');
     }
 
-    if (!orderDelivery.barCode) {
+    const isUnselectedChoiceCoupon = orderDelivery.orderProductMapping.product.type === IProductType.CHOICE && !orderDelivery.choiceSelectProductId;
+    if (!orderDelivery.barCode && !isUnselectedChoiceCoupon) {
       throw new Error('쿠폰이 발급되지 않은 건은 MMS 재발송이 불가능합니다.');
     }
 
-    // 이미지 없으면 기존 barCode로 생성
-    if (!orderDelivery.imagePath) {
+    // 이미지 없으면 기존 barCode로 생성 (초이스쿠폰 미선택 시 이미지 불필요)
+    if (!orderDelivery.imagePath && !isUnselectedChoiceCoupon) {
       try {
         const path = await this.createCouponImage(orderDelivery);
         orderDelivery.imagePath = path;
@@ -912,7 +913,8 @@ export class DeliveryBatchService {
       throw new Error('발송 데이터가 존재하지 않습니다.');
     }
 
-    if (!orderDelivery.barCode) {
+    const isUnselectedChoiceCoupon = orderDelivery.orderProductMapping.product.type === IProductType.CHOICE && !orderDelivery.choiceSelectProductId;
+    if (!orderDelivery.barCode && !isUnselectedChoiceCoupon) {
       throw new Error('쿠폰이 발급되지 않은 건은 알림톡 재발송이 불가능합니다.');
     }
 
@@ -953,7 +955,8 @@ export class DeliveryBatchService {
       throw new Error('발송 데이터가 존재하지 않습니다.');
     }
 
-    if (!orderDelivery.barCode) {
+    const isUnselectedChoiceCoupon = orderDelivery.orderProductMapping.product.type === IProductType.CHOICE && !orderDelivery.choiceSelectProductId;
+    if (!orderDelivery.barCode && !isUnselectedChoiceCoupon) {
       throw new Error('쿠폰이 발급되지 않은 건은 SMS 재발송이 불가능합니다.');
     }
 
@@ -962,10 +965,18 @@ export class DeliveryBatchService {
       ? this.decryptDeliveryTarget(orderDelivery, 'emailReceiverPhone')
       : this.decryptDeliveryTarget(orderDelivery);
 
-    // SMS 텍스트: SSG는 전용 짧은 템플릿, 일반상품은 쿠폰명/번호/유효기간
+    // SMS 텍스트
     const orderType = orderDelivery.orderProductMapping.order.type;
     let text: string;
-    if (orderType === IOrderType.SSG) {
+    if (isUnselectedChoiceCoupon) {
+      // 초이스쿠폰 미선택: 상품선택 링크 재발송
+      const encryptKey = this.cryptoCipher.encryptJson({
+        id: orderDelivery.id,
+        transactionId: orderDelivery.transactionId,
+      } as OrderEncryptKey);
+      const choiceUrl = this.configService.getOrThrow('SMS_CHOICE_URL');
+      text = `초이스 쿠폰 받기 링크 : ${choiceUrl}/${encryptKey}`;
+    } else if (orderType === IOrderType.SSG) {
       text = smsSsgShortTemplate(orderDelivery);
     } else {
       const productName = orderDelivery.orderProductMapping.product.name;
