@@ -93,6 +93,13 @@ export class OrderReceiveService {
       throw new BadRequestException('존재하지 않는 주문 정보입니다.');
     }
 
+    if (orderDelivery.expireAt) {
+      const expireEnd = dayjs(orderDelivery.expireAt).tz('Asia/Seoul').endOf('day');
+      if (dayjs().tz('Asia/Seoul').isAfter(expireEnd)) {
+        throw new BadRequestException('유효기간이 만료된 쿠폰입니다.');
+      }
+    }
+
     const productChoiceMapping = await this.productChoiceMappingRepository
       .createQueryBuilder('productChoiceMapping')
       .innerJoinAndSelect('productChoiceMapping.product', 'product')
