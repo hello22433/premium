@@ -115,8 +115,8 @@ export class OrderReceiveService {
     }
 
     // 이메일 경로: 상품 선택만 저장, PIN 발급은 sendToMMS()에서 전화번호 입력 후 처리
-    // 알림톡/MMS 경로: 기존대로 즉시 PIN 발급
-    if (!isEmailPath) {
+    // 알림톡/MMS 경로: 기존대로 즉시 PIN 발급 (이미 발급된 경우 건너뜀)
+    if (!isEmailPath && !orderDelivery.barCode) {
       // SSG 행사 정보 조회
       let ssgEvent: SsgEventEntity | null = null;
       if (orderDelivery.orderProductMapping.order.type === IOrderType.SSG && orderDelivery.ssgEventId) {
@@ -132,7 +132,7 @@ export class OrderReceiveService {
       await this.partnerCompanyExternService.issue(orderDelivery, ssgEvent);
 
       // 선택한 상품 기준 유효기간 재계산
-      this.updateChoiceExpiration(orderDelivery, productChoiceMapping.product);
+      this.updateCouponExpiration(orderDelivery, productChoiceMapping.product);
 
       // 원래 product로 복원 (초이스쿠폰 상품)
       orderDelivery.orderProductMapping.product = originalProduct;
@@ -768,11 +768,9 @@ export class OrderReceiveService {
       }
       orderDelivery.orderProductMapping.product = originalProduct;
 
-      // PIN 발급 성공 시 쿠폰 이미지 생성 + 유효기간 재계산
+      // PIN 발급 성공 시 유효기간 재계산 + 쿠폰 이미지 생성
       if (orderDelivery.barCode) {
-        if (isChoiceCoupon) {
-          this.updateChoiceExpiration(orderDelivery, issueProduct);
-        }
+        this.updateCouponExpiration(orderDelivery, issueProduct);
         orderDelivery.imagePath = await this.createCouponImage(issueProduct, orderDelivery);
         await this.orderDeliveryRepository.save(orderDelivery);
       }
@@ -937,15 +935,15 @@ export class OrderReceiveService {
   }
 
   /**
-   * 초이스 쿠폰 선택 후 유효기간 재계산
-   * SSG는 issue() 내부에서 expireAt/encourageAt을 설정하므로 choiceSelectedAt만 기록
+   * 실제 쿠폰 발급 시점 기준 유효기간 재계산 (초이스 선택 / 이메일 전화번호 입력)
+   * SSG는 issue() 내부에서 expireAt/encourageAt을 설정하므로 couponIssuedAt만 기록
    */
-  private updateChoiceExpiration(
+  private updateCouponExpiration(
     orderDelivery: OrderDeliveryEntity,
     selectedProduct: { galaxiaDuration?: number | null; expireDay: number; partnerCompany?: { validityStartsNextDay?: boolean | null } | null },
   ): void {
     const now = new Date();
-    orderDelivery.choiceSelectedAt = now;
+    orderDelivery.couponIssuedAt = now;
 
     const isSsg = orderDelivery.orderProductMapping.order.type === IOrderType.SSG;
     if (!isSsg) {
