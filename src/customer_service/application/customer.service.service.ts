@@ -210,6 +210,7 @@ export class CustomerServiceService {
       deliveryTarget,
       sendTitle,
       partnerCompanyId,
+      barCode,
       keyword,
       eventName,
       page,
@@ -304,6 +305,14 @@ export class CustomerServiceService {
     // 협력사
     if (partnerCompanyId) {
       queryBuilder.andWhere('product.partnerCompanyId = :partnerCompanyId', { partnerCompanyId });
+    }
+
+    // 핀번호 (barCode + personalCode OR 조건 부분검색)
+    if (barCode) {
+      queryBuilder.andWhere(
+        '(orderDelivery.barCode LIKE :barCode OR orderDelivery.personalCode LIKE :barCode)',
+        { barCode: `%${barCode}%` },
+      );
     }
 
     // 날짜 조건을 실제 발송일(actualSendAt) 기준으로 변경
@@ -1603,6 +1612,7 @@ export class CustomerServiceService {
       deliveryTarget,
       sendTitle,
       partnerCompanyId,
+      barCode,
       eventName,
     } = searchParams;
 
@@ -1674,6 +1684,14 @@ export class CustomerServiceService {
 
     if (partnerCompanyId) {
       queryBuilder.andWhere('product.partnerCompanyId = :partnerCompanyId', { partnerCompanyId });
+    }
+
+    // 핀번호 (barCode + personalCode OR 조건 부분검색)
+    if (barCode) {
+      queryBuilder.andWhere(
+        '(orderDelivery.barCode LIKE :barCode OR orderDelivery.personalCode LIKE :barCode)',
+        { barCode: `%${barCode}%` },
+      );
     }
 
     // 통합검색 (주문번호, 상품명, 상품코드, MMS제목, 수신정보를 OR 조건으로 검색)

@@ -111,6 +111,14 @@ export class CustomerServiceGetListReqDto extends PagingReqDto {
   partnerCompanyId?: number;
 
   @ApiPropertyOptional({
+    description: '핀번호 검색 (barCode, personalCode OR 조건 부분검색)',
+  })
+  // =============================================================
+  @IsOptional()
+  @IsString()
+  barCode?: string;
+
+  @ApiPropertyOptional({
     description: '통합검색 키워드 (주문번호, 상품명, 상품코드, MMS제목, 수신정보, 이벤트명을 OR 조건으로 검색)',
   })
   // =============================================================
@@ -420,6 +428,14 @@ export class CustomerServiceExcelDownloadReqDto {
   @IsNumber()
   @Type(() => Number)
   partnerCompanyId?: number;
+
+  @ApiPropertyOptional({
+    description: '핀번호 검색 (barCode, personalCode OR 조건 부분검색)',
+  })
+  // =============================================================
+  @IsOptional()
+  @IsString()
+  barCode?: string;
 
   @ApiPropertyOptional({
     description: '통합검색 키워드 (주문번호, 상품명, 상품코드, MMS제목, 수신정보, 이벤트명을 OR 조건으로 검색)',
