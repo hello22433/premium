@@ -1,5 +1,6 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IQnaStatus } from '../../interface/qna.status';
+import { IQnaMainCategory, IQnaSubCategory } from '../../interface/qna.category';
 
 export class QnaDetailDto {
   @ApiProperty({
@@ -56,4 +57,26 @@ export class QnaDetailDto {
     description: '관리자 답변',
   })
   answer: string | null;
+
+  @ApiProperty({
+    description: '문의 유형',
+    enum: IQnaMainCategory,
+  })
+  mainCategory: IQnaMainCategory;
+
+  @ApiProperty({
+    description: '문의 유형 한글',
+  })
+  mainCategoryKo: string;
+
+  @ApiPropertyOptional({
+    description: '상세항목',
+    enum: IQnaSubCategory,
+  })
+  subCategory: IQnaSubCategory | null;
+
+  @ApiPropertyOptional({
+    description: '상세항목 한글',
+  })
+  subCategoryKo: string | null;
 }

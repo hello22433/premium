@@ -1,4 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
+import { IQnaMainCategory } from '../../interface/qna.category';
 
 export class QnaViewDto {
   @ApiProperty({
@@ -35,4 +36,15 @@ export class QnaViewDto {
     description: '답변 유무',
   })
   isAnswer: boolean;
+
+  @ApiProperty({
+    description: '문의 유형',
+    enum: IQnaMainCategory,
+  })
+  mainCategory: IQnaMainCategory;
+
+  @ApiProperty({
+    description: '문의 유형 한글',
+  })
+  mainCategoryKo: string;
 }

@@ -2,6 +2,7 @@ import { BaseEntity } from '../common/entity/base.entity';
 import { Column, Entity, ManyToOne, PrimaryGeneratedColumn } from 'typeorm';
 import { UserEntity } from './user.entity';
 import { IQnaStatus } from '../qna/interface/qna.status';
+import { IQnaMainCategory, IQnaSubCategory } from '../qna/interface/qna.category';
 
 @Entity('qna')
 export class QnaEntity extends BaseEntity {
@@ -36,6 +37,22 @@ export class QnaEntity extends BaseEntity {
     comment: '파일 url path N 개는 , 로 표기',
   })
   filePath: string | null;
+
+  @Column({
+    type: 'enum',
+    enum: IQnaMainCategory,
+    default: IQnaMainCategory.ETC,
+    comment: '문의 유형',
+  })
+  mainCategory: IQnaMainCategory;
+
+  @Column({
+    type: 'enum',
+    enum: IQnaSubCategory,
+    nullable: true,
+    comment: '상세항목',
+  })
+  subCategory: IQnaSubCategory | null;
 
   @ManyToOne(() => UserEntity, { createForeignKeyConstraints: false })
   user: UserEntity;
