@@ -589,6 +589,7 @@ export class CustomerServiceService {
       emailCouponStatus: queryBuilder.emailCouponStatus ?? null,
       emailReceiverPhone: formattedEmailReceiverPhone,
       replacedFromId: queryBuilder.replacedFromId ?? null,
+      couponIssuedAt: queryBuilder.couponIssuedAt ? format(queryBuilder.couponIssuedAt, DateFormatStr) : null,
     };
   }
 

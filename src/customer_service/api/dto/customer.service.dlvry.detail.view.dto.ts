@@ -183,4 +183,10 @@ export class CustomerServiceDlvryDetailViewDto {
     nullable: true,
   })
   replacedFromId: number | null;
+
+  @ApiProperty({
+    description: '실제 쿠폰 발급 일시 (초이스 선택/이메일 전화번호 입력 시점) ex) yyyy-MM-ddTHH:mm:ss',
+    nullable: true,
+  })
+  couponIssuedAt: string | null;
 }
