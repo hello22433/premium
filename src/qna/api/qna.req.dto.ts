@@ -1,9 +1,19 @@
 import { PagingReqDto } from '../../common/api/dto/pagination.req.dto';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsArray, IsNotEmpty, IsNumber, IsOptional, IsString } from 'class-validator';
+import { IsArray, IsEnum, IsNotEmpty, IsNumber, IsOptional, IsString } from 'class-validator';
 import { Type } from 'class-transformer';
+import { IQnaMainCategory, IQnaSubCategory } from '../interface/qna.category';
 
-export class QnaGetListReqDto extends PagingReqDto {}
+export class QnaGetListReqDto extends PagingReqDto {
+  @ApiPropertyOptional({
+    description: '문의 유형 필터',
+    enum: IQnaMainCategory,
+  })
+  // =================================
+  @IsOptional()
+  @IsEnum(IQnaMainCategory)
+  mainCategory?: IQnaMainCategory;
+}
 export class QnaGetDetailReqParamDto {
   @ApiProperty({
     description: 'qna id',
@@ -27,6 +37,24 @@ export class QnaAnswerReqDto extends QnaGetDetailReqParamDto {
 export class QnaUpdateAnswerReqDto extends QnaAnswerReqDto {}
 
 export class QnaCreateReqDto {
+  @ApiProperty({
+    description: '문의 유형',
+    enum: IQnaMainCategory,
+  })
+  // =================================
+  @IsNotEmpty()
+  @IsEnum(IQnaMainCategory)
+  mainCategory: IQnaMainCategory;
+
+  @ApiPropertyOptional({
+    description: '상세항목 (CS접수 시 필수)',
+    enum: IQnaSubCategory,
+  })
+  // =================================
+  @IsOptional()
+  @IsEnum(IQnaSubCategory)
+  subCategory?: IQnaSubCategory;
+
   @ApiProperty({
     description: '제목',
   })
