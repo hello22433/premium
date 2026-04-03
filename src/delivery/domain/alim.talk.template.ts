@@ -11,8 +11,12 @@ export const AlimTalkTemplate = (orderDelivery: OrderDeliveryEntity) => {
   const order = orderDelivery.orderProductMapping.order;
   const product = orderDelivery.orderProductMapping.product;
 
+  // 선택 완료된 초이스쿠폰이면 선택된 상품 정보 사용
+  const displayProduct = orderDelivery.choiceSelectProduct ?? product;
+  const displayBrand = (orderDelivery.choiceSelectProduct?.brand ?? product.brand)!;
+
   const brandKoreanName =
-    product.brand!.nameKorean === '신세계' ? '이마트' : product.brand!.nameKorean;
+    displayBrand.nameKorean === '신세계' ? '이마트' : displayBrand.nameKorean;
 
   // 발행자: 대행주문인 경우 clientUser의 회사명, 아니면 주문자의 회사명
   const publisherName = order.clientUser?.company?.businessName ?? order.user!.company?.businessName ?? '';
@@ -23,17 +27,22 @@ export const AlimTalkTemplate = (orderDelivery: OrderDeliveryEntity) => {
   const templateCode = process.env.ALIM_TALK_INFO_BANK_TEMPLATE_CODE || '';
   const isTestTemplate = templateCode.toLowerCase().includes('dev');
 
-  // 유효기간 계산: 재발송 시 최초 발송일(actualSendAt) 기준, 최초 발송 시 현재 시점 기준
-  const validityStartsNextDay = product.partnerCompany?.validityStartsNextDay ?? true;
-  const expireDays = validityStartsNextDay ? product.expireDay : product.expireDay - 1;
-  const baseDate = orderDelivery.actualSendAt ? dayjs(orderDelivery.actualSendAt) : dayjs();
-  const expireDateStr = baseDate.add(expireDays, 'day').format('YYYY. MM. DD');
+  // 유효기간: expireAt이 저장되어 있으면 그대로 사용 (재전송 시 재계산 방지)
+  let expireDateStr: string;
+  if (orderDelivery.expireAt) {
+    expireDateStr = dayjs(orderDelivery.expireAt).format('YYYY. MM. DD');
+  } else {
+    const validityStartsNextDay = displayProduct.partnerCompany?.validityStartsNextDay ?? true;
+    const expireDays = validityStartsNextDay ? displayProduct.expireDay : displayProduct.expireDay - 1;
+    const baseDate = orderDelivery.actualSendAt ? dayjs(orderDelivery.actualSendAt) : dayjs();
+    expireDateStr = baseDate.add(expireDays, 'day').format('YYYY. MM. DD');
+  }
 
   // 테스트 환경일 경우 [TEST] 접두사와 테스트 메시지 추가
   if (isTestTemplate) {
     return `[TEST]
 [모바일쿠폰] 이팝콘 도착
-상품명 : ${product.name}
+상품명 : ${displayProduct.name}
 유효기간 : ~ ${expireDateStr}
 쿠폰번호 : ${couponCode}
 사용처(교환처) : ${brandKoreanName}
@@ -51,7 +60,7 @@ ${sendTitle} 당첨을 축하드립니다.
   
 ${sendTitle}
 
-▶상품명 : ${product.name}
+▶상품명 : ${displayProduct.name}
 ▶유효기간 : ~ ${expireDateStr}
 ▶쿠폰번호 : ${couponCode}
 ▶사용처(교환처) : ${brandKoreanName}

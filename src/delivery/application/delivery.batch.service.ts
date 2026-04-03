@@ -831,6 +831,8 @@ export class DeliveryBatchService {
       .innerJoinAndSelect('orderProductMapping.product', 'product')
       .innerJoinAndSelect('product.brand', 'brand')
       .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
+      .leftJoinAndSelect('choiceSelectProduct.brand', 'choiceBrand')
       .where('orderDelivery.id = :id', { id: orderDeliveryId })
       .getOne();
 
@@ -906,6 +908,8 @@ export class DeliveryBatchService {
       .innerJoinAndSelect('orderProductMapping.product', 'product')
       .innerJoinAndSelect('product.brand', 'brand')
       .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
+      .leftJoinAndSelect('choiceSelectProduct.brand', 'choiceBrand')
       .where('orderDelivery.id = :id', { id: orderDeliveryId })
       .getOne();
 
@@ -948,6 +952,8 @@ export class DeliveryBatchService {
       .innerJoinAndSelect('orderProductMapping.order', 'order')
       .innerJoinAndSelect('orderProductMapping.product', 'product')
       .innerJoinAndSelect('product.brand', 'brand')
+      .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
+      .leftJoinAndSelect('choiceSelectProduct.brand', 'choiceBrand')
       .where('orderDelivery.id = :id', { id: orderDeliveryId })
       .getOne();
 
@@ -979,8 +985,9 @@ export class DeliveryBatchService {
     } else if (orderType === IOrderType.SSG) {
       text = smsSsgShortTemplate(orderDelivery);
     } else {
-      const productName = orderDelivery.orderProductMapping.product.name;
-      const brandName = orderDelivery.orderProductMapping.product.brand?.nameKorean ?? '';
+      const displayProduct = orderDelivery.choiceSelectProduct ?? orderDelivery.orderProductMapping.product;
+      const productName = displayProduct.name;
+      const brandName = (orderDelivery.choiceSelectProduct?.brand ?? orderDelivery.orderProductMapping.product.brand)?.nameKorean ?? '';
       const expireDate = orderDelivery.expireAt ? format(orderDelivery.expireAt, 'yy/MM/dd') : '';
       text = `[${productName}]\n교환처:${brandName}\n쿠폰번호:${orderDelivery.barCode}\n${expireDate}까지`;
     }
