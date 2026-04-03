@@ -257,7 +257,9 @@ export class CustomerServiceService {
           OR orderProductMapping.sendTitle LIKE :keyword
           OR order.eventName LIKE :keyword
           OR orderDelivery.deliveryTarget = :encryptedKeyword
-          OR orderDelivery.emailReceiverPhone = :encryptedKeyword)`,
+          OR orderDelivery.emailReceiverPhone = :encryptedKeyword
+          OR orderDelivery.barCode LIKE :keyword
+          OR orderDelivery.personalCode LIKE :keyword)`,
         { keyword: `%${keyword}%`, encryptedKeyword },
       );
     }
@@ -1705,7 +1707,9 @@ export class CustomerServiceService {
           OR orderProductMapping.sendTitle LIKE :keyword
           OR order.eventName LIKE :keyword
           OR orderDelivery.deliveryTarget = :encryptedKeyword
-          OR orderDelivery.emailReceiverPhone = :encryptedKeyword)`,
+          OR orderDelivery.emailReceiverPhone = :encryptedKeyword
+          OR orderDelivery.barCode LIKE :keyword
+          OR orderDelivery.personalCode LIKE :keyword)`,
         { keyword: `%${keyword}%`, encryptedKeyword },
       );
     }
