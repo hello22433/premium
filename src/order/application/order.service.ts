@@ -115,7 +115,7 @@ import dayjs from 'dayjs';
 import timezone from 'dayjs/plugin/timezone';
 import utc from 'dayjs/plugin/utc';
 import { MailSendSmtp } from '../../mail/infrastructure/mail-send.smtp';
-import { CompanyType, ENMAD_BUSINESS_NUMBER } from '../../common/domain/company.type';
+import { CompanyType, INTERNAL_BUSINESS_NUMBERS } from '../../common/domain/company.type';
 import { OrderDeliveryCompleteReportEmailReqDto } from '../api/order.req.dto';
 import { EmailSendHistoryEntity } from '../../entity/email.send.history.entity';
 import { EmailType } from '../../mail/domain/email.type';
@@ -4038,13 +4038,13 @@ export class OrderService {
       } else if (sendingType === IOrderSendingType.DIRECT) {
         queryBuilder.andWhere('order.clientUserId IS NULL');
         queryBuilder.andWhere(
-          '(userCompany.businessNumber IS NULL OR userCompany.businessNumber != :enmadBizNo)',
-          { enmadBizNo: ENMAD_BUSINESS_NUMBER },
+          '(userCompany.businessNumber IS NULL OR userCompany.businessNumber NOT IN (:...internalBizNos))',
+          { internalBizNos: INTERNAL_BUSINESS_NUMBERS },
         );
       } else if (sendingType === IOrderSendingType.ENMAD) {
         queryBuilder.andWhere('order.clientUserId IS NULL');
-        queryBuilder.andWhere('userCompany.businessNumber = :enmadBizNo', {
-          enmadBizNo: ENMAD_BUSINESS_NUMBER,
+        queryBuilder.andWhere('userCompany.businessNumber IN (:...internalBizNos)', {
+          internalBizNos: INTERNAL_BUSINESS_NUMBERS,
         });
       }
       return;
