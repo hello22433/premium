@@ -11,7 +11,7 @@ import { IOrderStatus } from '../../order/interface/order.status';
 import { IOrderType } from '../../order/interface/order.type';
 import { OrderReceiptStatus } from '../../order_receipt/interface/order.receipt.status';
 import { IQnaStatus } from '../../qna/interface/qna.status';
-import { ENMAD_BUSINESS_NUMBER } from '../../common/domain/company.type';
+import { INTERNAL_BUSINESS_NUMBERS } from '../../common/domain/company.type';
 import { SidebarNotificationsResDto } from '../api/sidebar.res.dto';
 
 @Injectable()
@@ -50,7 +50,7 @@ export class SidebarService {
       .addSelect('SUM(CASE WHEN o.type = :ssg THEN 1 ELSE 0 END)', 'ssgCount')
       .where('o.status = :status', { status: IOrderStatus.DELIVERY_REQUEST })
       .andWhere('o.clientUserId IS NULL')
-      .andWhere('uc.businessNumber != :enmadBizNo', { enmadBizNo: ENMAD_BUSINESS_NUMBER })
+      .andWhere('uc.businessNumber NOT IN (:...excludedBizNos)', { excludedBizNos: INTERNAL_BUSINESS_NUMBERS })
       .setParameter('general', IOrderType.GENERAL)
       .setParameter('ssg', IOrderType.SSG);
 

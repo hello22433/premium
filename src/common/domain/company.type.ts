@@ -98,6 +98,17 @@ export const ENMAD_BUSINESS_NUMBER = COMPANY_INFO[CompanyType.ENMAD].businessNum
 );
 
 /**
+ * 시스커스 사업자등록번호 (DB 저장 형식: 하이픈 없음)
+ */
+export const SYSCUSS_BUSINESS_NUMBER = COMPANY_INFO[CompanyType.SYSCUSS].businessNumber.replace(
+  /-/g,
+  '',
+);
+
+/** 사이드바 알림 등에서 제외할 내부 회사 사업자등록번호 목록 */
+export const INTERNAL_BUSINESS_NUMBERS = [ENMAD_BUSINESS_NUMBER, SYSCUSS_BUSINESS_NUMBER];
+
+/**
  * 회사 정보 조회 헬퍼 함수
  */
 export function getCompanyInfo(companyType: CompanyType): ICompanyInfo {
