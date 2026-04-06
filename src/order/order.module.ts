@@ -7,6 +7,9 @@ import { TestOrderDeliveryEntity } from '../entity/test.order.delivery.entity';
 import { OrderProductMappingEntity } from '../entity/order.product.mapping.entity';
 import { OrderController } from './api/order.controller';
 import { OrderService } from './application/order.service';
+import { EarlyDestroyService } from './application/early.destroy.service';
+import { EarlyDestroyRequestEntity } from '../entity/early.destroy.request.entity';
+import { EarlyDestroyRequestItemEntity } from '../entity/early.destroy.request.item.entity';
 import { ProductEntity } from '../entity/product.entity';
 import { PartnerCompanyExternModule } from '../partner_company_extern/partner.company.extern.module';
 import { UserEntity } from '../entity/user.entity';
@@ -40,6 +43,8 @@ import { MailModule } from '../mail/mail.module';
       SsgEventAmountHistoryEntity,
       EmailSendHistoryEntity,
       OrderManualEntryEntity,
+      EarlyDestroyRequestEntity,
+      EarlyDestroyRequestItemEntity,
     ]),
     PartnerCompanyExternModule,
     forwardRef(() => UserManagementModule),
@@ -49,6 +54,6 @@ import { MailModule } from '../mail/mail.module';
     MailModule,
   ],
   controllers: [OrderController],
-  providers: [OrderService],
+  providers: [OrderService, EarlyDestroyService],
 })
 export class OrderModule {}
