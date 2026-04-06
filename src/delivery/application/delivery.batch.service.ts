@@ -1403,7 +1403,10 @@ export class DeliveryBatchService {
         { now },
       )
       .andWhere('order.status = :status', { status: IOrderStatus.DELIVERY_COMPLETE })
-      .andWhere('orderDelivery.deliveryTarget != :destroyValue', { destroyValue })
+      .andWhere(
+        '(orderDelivery.deliveryTarget != :destroyValue OR orderDelivery.originalDeliveryTarget != :destroyValue)',
+        { destroyValue },
+      )
       .getMany();
 
     const destroyIdList = orderDeliveryList.map((od) => od.id);
@@ -1411,7 +1414,7 @@ export class DeliveryBatchService {
     if (destroyIdList.length > 0) {
       await this.orderDeliveryRepository.update(
         { id: In(destroyIdList) },
-        { deliveryTarget: destroyValue },
+        { deliveryTarget: destroyValue, originalDeliveryTarget: destroyValue },
       );
     }
   }

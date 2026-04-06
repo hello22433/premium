@@ -87,6 +87,8 @@ import { Response } from 'express';
 import { AuthUserSuperAndOperationAdminGuard } from '../../auth/api/auth.user.super-operation-admin.guard';
 import { AuthService } from '../../auth/application/auth.service';
 import { UserAuthSubEnum } from '../../user_management/domain/user.auth.enum';
+import { EarlyDestroyService } from '../application/early.destroy.service';
+import { CreateEarlyDestroyRequestDto, UpdateDestroyPersonalInfoDayDto } from './dto/early.destroy.request.dto';
 
 @ApiTags('order')
 @ApiBearerAuth()
@@ -97,6 +99,7 @@ export class OrderController {
     private orderService: OrderService,
     private activityLogService: ActivityLogService,
     private authService: AuthService,
+    private earlyDestroyService: EarlyDestroyService,
   ) {}
 
   private logger = new Logger('ORDER');
@@ -765,5 +768,58 @@ export class OrderController {
   ) {
     const ipAddress = req.ip || req.headers['x-forwarded-for']?.toString() || '';
     return this.orderService.sendDestructionCertificateReportEmail(getBody, user, ipAddress);
+  }
+
+  // =========================================
+  // 조기 개인정보파기
+  // =========================================
+
+  @ApiOperation({ summary: '조기파기 요청 등록' })
+  @ApiCreatedResponse({ description: '요청 등록 성공' })
+  @ApiBadRequestResponse({ description: '주문이 존재하지 않거나 발송 완료 상태가 아닌 경우' })
+  // =========================================
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
+  @Post('/order/:id/early-destroy-request')
+  createEarlyDestroyRequest(
+    @Param('id') orderId: number,
+    @Body() dto: CreateEarlyDestroyRequestDto,
+    @User() user: ILoginUserInfo,
+  ) {
+    return this.earlyDestroyService.createRequest(orderId, dto, user);
+  }
+
+  @ApiOperation({ summary: '조기파기 요청 이력 조회' })
+  @ApiOkResponse({ description: '이력 조회 성공' })
+  // =========================================
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
+  @Get('/order/:id/early-destroy-requests')
+  getEarlyDestroyRequests(@Param('id') orderId: number) {
+    return this.earlyDestroyService.getRequests(orderId);
+  }
+
+  @ApiOperation({ summary: '조기파기 실행 (PENDING → COMPLETED)' })
+  @ApiOkResponse({ description: '파기 실행 성공' })
+  @ApiBadRequestResponse({ description: '요청이 존재하지 않거나 대기 상태가 아닌 경우' })
+  // =========================================
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
+  @Post('/order/early-destroy-request/:requestId/execute')
+  executeEarlyDestroyRequest(
+    @Param('requestId') requestId: number,
+    @User() user: ILoginUserInfo,
+  ) {
+    return this.earlyDestroyService.executeRequest(requestId, user);
+  }
+
+  @ApiOperation({ summary: '상품매핑 개인정보파기일 변경' })
+  @ApiOkResponse({ description: '변경 성공' })
+  @ApiBadRequestResponse({ description: '상품매핑이 존재하지 않는 경우' })
+  // =========================================
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
+  @Patch('/order/product-mapping/:id/destroy-personal-info-day')
+  updateDestroyPersonalInfoDay(
+    @Param('id') orderProductMappingId: number,
+    @Body() dto: UpdateDestroyPersonalInfoDayDto,
+  ) {
+    return this.earlyDestroyService.updateDestroyPersonalInfoDay(orderProductMappingId, dto);
   }
 }
