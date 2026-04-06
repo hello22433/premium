@@ -639,16 +639,28 @@ export class PartnerCompanyExternService {
 
         const { pinStatusCd, exchDtm, tradeBranchNm, branchNm, useComNm } = giftiShowOut.couponInfo;
 
-        // pinStatusCd: 01=발행, 02=교환, 07=취소, 08=만료
+        // pinStatusCd: 01=발행, 02=교환, 07=취소, 08=만료, 11=잔액기간만료(일부 사용 후 잔액 만료)
         switch (pinStatusCd) {
           case '01':
             orderDelivery.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
             break;
           case '02':
             orderDelivery.couponStatus = OrderDeliveryCouponStatus.USED;
-            orderDelivery.tradeAt = parseDateString(exchDtm);
+            if (exchDtm) {
+              orderDelivery.tradeAt = parseDateString(exchDtm);
+            }
             // 교환장소: tradeBranchNm > branchNm > useComNm 순으로 사용
             orderDelivery.tradePlace = tradeBranchNm || branchNm || useComNm || null;
+            break;
+          case '11':
+            // 잔액기간만료: 사용 이력(exchDtm)이 있으면 교환, 없으면 만료
+            if (exchDtm) {
+              orderDelivery.couponStatus = OrderDeliveryCouponStatus.USED;
+              orderDelivery.tradeAt = parseDateString(exchDtm);
+              orderDelivery.tradePlace = tradeBranchNm || branchNm || useComNm || null;
+            } else {
+              orderDelivery.couponStatus = OrderDeliveryCouponStatus.EXPIRED;
+            }
             break;
           case '07':
             orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;

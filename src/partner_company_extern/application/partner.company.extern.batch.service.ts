@@ -157,6 +157,7 @@ export class PartnerCompanyExternBatchService {
       .createQueryBuilder('orderDelivery')
       .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
       .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
+      .leftJoinAndSelect('choiceSelectProduct.partnerCompany', 'choicePartnerCompany')
       .innerJoinAndSelect('orderProductMapping.product', 'product')
       .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .leftJoinAndSelect('orderDelivery.ssgEvent', 'ssgEvent')
@@ -165,7 +166,7 @@ export class PartnerCompanyExternBatchService {
       .andWhere('orderDelivery.couponStatus = :couponStatus', {
         couponStatus: OrderDeliveryCouponStatus.NOT_USED,
       })
-      .andWhere('partnerCompany.type IS NOT NULL')
+      .andWhere('(partnerCompany.type IS NOT NULL OR orderDelivery.choiceSelectProductId IS NOT NULL)')
       .andWhere('orderDelivery.barCode IS NOT NULL')
       .orderBy('orderDelivery.id', 'DESC')
       .take(limit)
@@ -177,7 +178,13 @@ export class PartnerCompanyExternBatchService {
     const groupMap = new Map<PartnerCompanyType, OrderDeliveryEntity[]>();
 
     for (const item of items) {
-      const type = item.orderProductMapping!.product.partnerCompany!.type as PartnerCompanyType;
+      const type = (item.choiceSelectProduct?.partnerCompany?.type ??
+        item.orderProductMapping?.product.partnerCompany?.type) as PartnerCompanyType | undefined;
+
+      if (!type) {
+        this.logger.warn(`[groupByPartnerCompany] partnerCompany.type 없음, skip (id: ${item.id})`);
+        continue;
+      }
 
       if (!groupMap.has(type)) {
         groupMap.set(type, []);
@@ -367,12 +374,26 @@ export class PartnerCompanyExternBatchService {
       if (giftiShowOut.resCode === '0000' && giftiShowOut.couponInfo) {
         const { pinStatusCd, exchDtm, tradeBranchNm, branchNm, useComNm } = giftiShowOut.couponInfo;
 
+        // pinStatusCd: 01=발행, 02=교환, 07=취소, 08=만료, 11=잔액기간만료
         if (pinStatusCd === '02') {
           result.couponStatus = OrderDeliveryCouponStatus.USED;
           if (exchDtm) {
             result.tradeAt = parseDateString(exchDtm);
           }
           result.tradePlace = tradeBranchNm || branchNm || useComNm || null;
+        } else if (pinStatusCd === '11') {
+          // 잔액기간만료: 사용 이력(exchDtm)이 있으면 교환, 없으면 만료
+          if (exchDtm) {
+            result.couponStatus = OrderDeliveryCouponStatus.USED;
+            result.tradeAt = parseDateString(exchDtm);
+            result.tradePlace = tradeBranchNm || branchNm || useComNm || null;
+          } else {
+            result.couponStatus = OrderDeliveryCouponStatus.EXPIRED;
+          }
+        } else if (pinStatusCd === '07') {
+          result.couponStatus = OrderDeliveryCouponStatus.CANCEL;
+        } else if (pinStatusCd === '08') {
+          result.couponStatus = OrderDeliveryCouponStatus.EXPIRED;
         } else if (pinStatusCd === '01') {
           result.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
         }
