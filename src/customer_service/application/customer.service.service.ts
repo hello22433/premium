@@ -694,8 +694,12 @@ export class CustomerServiceService {
         break;
       }
       case 'SSG': {
-        if (beforeChange === 'USED' || beforeChange === 'EXPIRED') {
+        if (beforeChange === 'USED') {
           throw new BadRequestException('현재 변경을 할 수 없는 핀상태입니다.');
+        }
+
+        if (beforeChange === 'EXPIRED' && couponStatus !== OrderDeliveryCouponStatus.REFUND_CANCEL) {
+          throw new BadRequestException('기간만료 상태에서는 환불폐기만 가능합니다.');
         }
 
         if (
