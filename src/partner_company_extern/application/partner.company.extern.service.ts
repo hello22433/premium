@@ -320,15 +320,19 @@ export class PartnerCompanyExternService {
           }
         }
 
-        // 3) 유효기간 설정 (등록 여부와 무관하게 항상 갱신)
-        orderDelivery.ssgTransactionId = SsgTransactionId.makeSsgTrade();
-        orderDelivery.expireAt = addDays(
-          new Date(),
-          orderDelivery.orderProductMapping.product.expireDay - 1,
-        );
-        const encourageDay = orderDelivery.orderProductMapping.encourageDay;
-        if (encourageDay) {
-          orderDelivery.encourageAt = subDays(orderDelivery.expireAt, encourageDay);
+        // 3) 유효기간 및 트랜잭션 ID 설정
+        // needsInsert=false(PIN이 이미 SSG DB에 등록된 경우)일 때는 기존 유효기간 보존
+        // → SSG DB의 실제 유효기간과 안내 유효기간 불일치 방지
+        if (needsInsert) {
+          orderDelivery.ssgTransactionId = SsgTransactionId.makeSsgTrade();
+          orderDelivery.expireAt = addDays(
+            new Date(),
+            orderDelivery.orderProductMapping.product.expireDay - 1,
+          );
+          const encourageDay = orderDelivery.orderProductMapping.encourageDay;
+          if (encourageDay) {
+            orderDelivery.encourageAt = subDays(orderDelivery.expireAt, encourageDay);
+          }
         }
 
         // 4) SSG DB INSERT (필요한 경우에만)
