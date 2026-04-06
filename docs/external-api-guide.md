@@ -24,9 +24,9 @@ X-API-Key: {발급받은 API Key}
 
 ### 응답 형식
 
-모든 응답은 아래 JSON 구조를 따릅니다.
+성공과 에러의 응답 구조가 다릅니다. 연동 시 HTTP 상태 코드(200 vs 4xx/5xx)로 먼저 분기하고, 각 구조에 맞게 파싱하세요.
 
-**성공 응답:**
+**성공 응답 (HTTP 200):**
 
 ```json
 {
@@ -36,7 +36,7 @@ X-API-Key: {발급받은 API Key}
 }
 ```
 
-**에러 응답:**
+**에러 응답 (HTTP 4xx/5xx):**
 
 ```json
 {
@@ -47,6 +47,8 @@ X-API-Key: {발급받은 API Key}
   }
 }
 ```
+
+> **주의**: 성공 응답은 최상위에 `code`, `message`, `data`가 위치하고, 에러 응답은 `result` 객체로 감싸져 있습니다.
 
 ---
 
@@ -451,7 +453,40 @@ curl -X GET "https://{서버주소}/api/v1/external/orders/ssg/01ARZ3NDEKTSV4RRF
   -H "X-API-Key: {API_KEY}"
 ```
 
-Response 형식은 [3. 주문 상태 조회](#3-주문-상태-조회)와 동일합니다.
+### Path Parameters
+
+| 파라미터 | 타입 | 필수 | 설명 |
+|----------|------|------|------|
+| `trId` | string | O | SSG 주문 시 발급받은 트랜잭션 ID |
+
+### Response
+
+```json
+{
+  "code": "0000",
+  "message": "success",
+  "data": {
+    "trId": "01ARZ3NDEKTSV4RRFFQ69G5FBW",
+    "couponStatus": "NOT_USED",
+    "deliveryStatus": "COMPLETE",
+    "barCode": "8809876543210",
+    "personalCode": "1234567890",
+    "validStartDate": "2026-03-31",
+    "validEndDate": "2026-06-29",
+    "price": 50000
+  }
+}
+```
+
+### Response Fields
+
+[3. 주문 상태 조회](#3-주문-상태-조회)의 필드에 아래 필드가 추가됩니다.
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `personalCode` | string? | SSG 개인번호 |
+
+`couponStatus`, `deliveryStatus` 값은 [3. 주문 상태 조회](#3-주문-상태-조회)의 상태 표를 참조하세요.
 
 ---
 
