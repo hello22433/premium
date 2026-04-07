@@ -72,6 +72,15 @@ export class PartnerCompanyBatchController {
     return { message: 'checkGalaxiaDeptUsage 실행 완료' };
   }
 
+  @ApiOperation({ summary: '[임시] 외부사 사용내역 체크 배치 수동 실행 (check)' })
+  @Post('batch/extern-check')
+  async triggerExternCheck() {
+    this.logger.log('[수동실행] check 시작');
+    const stats = await this.partnerCompanyExternBatchService.check();
+    this.logger.log('[수동실행] check 완료');
+    return { message: 'check 실행 완료', stats };
+  }
+
   @ApiOperation({ summary: '갤럭시아 바코드 로그 백필 (일대사 누락분)' })
   @Get('batch/galaxia-backfill')
   async triggerGalaxiaBackfill() {
