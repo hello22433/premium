@@ -41,6 +41,9 @@ import { PhoneUtil } from 'src/common/utils/phone.util';
 import { UserTaskHistoryEntity } from 'src/entity/user.task.history.entity';
 import { OrderDeliveryRefundStatusEnum } from '../../delivery/interface/order.delivery.refund.status.enum';
 import { IOrderSendMethod } from '../../order/interface/order.send.method';
+import { IOrderType } from '../../order/interface/order.type';
+import { resolveExpireDays } from '../../common/utils/expire.util';
+import { addDays, subDays } from 'date-fns';
 import { ActivityLogService } from 'src/activity_log/application/activity.log.service';
 import { ActivityLogActionType } from 'src/activity_log/interface/activity.log.action.type';
 import { ActivityLogResult } from 'src/activity_log/interface/activity.log.result';
@@ -1262,6 +1265,23 @@ export class CustomerServiceService {
 
         const ssgEvent = fullDelivery.ssgEvent ?? null;
         await this.partnerCompanyExternService.issue(fullDelivery, ssgEvent);
+
+        // 폐기 후 신규발송: 새 쿠폰이므로 유효기간 새로 계산
+        // (SSG는 issue() 내부에서 expireAt을 채우므로 제외)
+        // csResendAs* 는 "동일 쿠폰 재전송"용이라 expireAt을 건드리지 않으므로
+        // 본문/DB 일치를 위해 csResend 호출 전에 여기서 세팅한다.
+        if (fullDelivery.orderProductMapping.order.type !== IOrderType.SSG) {
+          const opm = fullDelivery.orderProductMapping;
+          const expireDays = resolveExpireDays(
+            opm.galaxiaDuration ?? opm.product.galaxiaDuration,
+            opm.product.expireDay,
+            opm.product.partnerCompany?.validityStartsNextDay,
+          );
+          fullDelivery.expireAt = addDays(new Date(), expireDays);
+          if (opm.encourageDay) {
+            fullDelivery.encourageAt = subDays(fullDelivery.expireAt, opm.encourageDay);
+          }
+        }
 
         await this.orderDeliveryRepository.save(fullDelivery);
 
