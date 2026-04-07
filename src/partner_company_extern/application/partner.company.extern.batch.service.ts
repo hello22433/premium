@@ -420,12 +420,14 @@ export class PartnerCompanyExternBatchService {
         expireDay,
       });
 
-      result.couponStatus =
-        cultureLandOut.CancelPossibility === 'N'
-          ? OrderDeliveryCouponStatus.USED
-          : OrderDeliveryCouponStatus.NOT_USED;
-      if (cultureLandOut.CancelPossibility === 'N') {
+      // ResultCode 9006 = 유효기간 만료된 상품권
+      if (cultureLandOut.ResultCode === '9006') {
+        result.couponStatus = OrderDeliveryCouponStatus.EXPIRED;
+      } else if (cultureLandOut.CancelPossibility === 'N') {
+        result.couponStatus = OrderDeliveryCouponStatus.USED;
         result.tradeAt = new Date();
+      } else {
+        result.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
       }
     }
 
