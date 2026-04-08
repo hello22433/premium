@@ -534,7 +534,9 @@ export class PartnerCompanyExternBatchService {
       });
 
       if (daouCheckOut.resultCode === 'S000001') {
-        if (daouCheckOut.cpnStatus === '01' || daouCheckOut.cpnStatus === '03') {
+        if (daouCheckOut.cpnStatus === '00') {
+          result.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
+        } else if (daouCheckOut.cpnStatus === '01' || daouCheckOut.cpnStatus === '03') {
           result.couponStatus = OrderDeliveryCouponStatus.USED;
           if (daouCheckOut.useDate) {
             result.tradeAt = parseDateString(daouCheckOut.useDate);
