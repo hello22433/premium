@@ -151,6 +151,63 @@ export class PartnerCompanyExternBatchService {
     return stats;
   }
 
+  // ===== [임시] 특정 orderId의 발송건 전체 상태조회 (일회성) =====
+  async checkByOrderId(orderId: number): Promise<BatchStatistics> {
+    const stats: BatchStatistics = {
+      total: 0,
+      success: 0,
+      failed: 0,
+      skipped: 0,
+      retried: 0,
+      startTime: new Date(),
+    };
+
+    this.logger.log(`[checkByOrderId] 시작 - orderId=${orderId}`);
+
+    try {
+      const items = await this.fetchBatchByOrderId(orderId);
+      this.logger.log(`[checkByOrderId] 대상 건수: ${items.length}`);
+
+      const groups = this.groupByPartnerCompany(items);
+      for (const group of groups) {
+        const groupStats = await this.processGroup(group);
+        stats.total += groupStats.total;
+        stats.success += groupStats.success;
+        stats.failed += groupStats.failed;
+        stats.skipped += groupStats.skipped;
+        stats.retried += groupStats.retried;
+      }
+    } catch (e) {
+      this.logger.error(`[checkByOrderId] 처리 중 예외 - orderId=${orderId}`);
+      this.logger.error(e);
+    }
+
+    stats.endTime = new Date();
+    stats.durationMs = stats.endTime.getTime() - stats.startTime.getTime();
+
+    this.logger.log(
+      `[checkByOrderId] 완료 - orderId=${orderId}, Total: ${stats.total}, Success: ${stats.success}, ` +
+        `Failed: ${stats.failed}, Skipped: ${stats.skipped}, Retried: ${stats.retried}, Duration: ${stats.durationMs}ms`,
+    );
+
+    return stats;
+  }
+
+  // ===== [임시] 특정 orderId 발송건 조회 (필터 최소화) =====
+  private async fetchBatchByOrderId(orderId: number): Promise<OrderDeliveryEntity[]> {
+    return this.orderDeliveryRepository
+      .createQueryBuilder('orderDelivery')
+      .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
+      .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
+      .leftJoinAndSelect('choiceSelectProduct.partnerCompany', 'choicePartnerCompany')
+      .innerJoinAndSelect('orderProductMapping.product', 'product')
+      .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .leftJoinAndSelect('orderDelivery.ssgEvent', 'ssgEvent')
+      .where('orderProductMapping.orderId = :orderId', { orderId })
+      .orderBy('orderDelivery.id', 'ASC')
+      .getMany();
+  }
+
   // ===== 데이터 조회 (Keyset 페이지네이션) =====
   private async fetchBatch(lastId: number, limit: number): Promise<OrderDeliveryEntity[]> {
     return this.orderDeliveryRepository

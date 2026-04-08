@@ -90,6 +90,19 @@ export class PartnerCompanyBatchController {
     return { message: 'check 실행 완료', stats };
   }
 
+  @ApiOperation({ summary: '[임시] 특정 orderId 발송건 전체 상태조회 (일회성)' })
+  @Post('batch/extern-check-by-order')
+  async triggerExternCheckByOrder(@Query('orderId') orderId: string) {
+    const orderIdNum = Number(orderId);
+    if (!orderId || !Number.isInteger(orderIdNum) || orderIdNum <= 0) {
+      return { message: 'orderId를 양의 정수로 입력해주세요.' };
+    }
+    this.logger.log(`[수동실행] checkByOrderId 시작 - orderId=${orderIdNum}`);
+    const stats = await this.partnerCompanyExternBatchService.checkByOrderId(orderIdNum);
+    this.logger.log(`[수동실행] checkByOrderId 완료 - orderId=${orderIdNum}`);
+    return { message: 'checkByOrderId 실행 완료', stats };
+  }
+
   @ApiOperation({ summary: '갤럭시아 바코드 로그 백필 (일대사 누락분)' })
   @Get('batch/galaxia-backfill')
   async triggerGalaxiaBackfill() {
