@@ -20,12 +20,13 @@ import { PartnerCompanyBatchController } from './api/partner.company.batch.contr
 import { GalaxiaPushController } from './api/galaxia.push.controller';
 import { GalaxiaIpGuard } from './api/galaxia.ip.guard';
 import { GalaxiaBarcodeLogEntity } from '../entity/galaxia.barcode.log.entity';
+import { PinIssueDedupEntity } from '../entity/pin.issue.dedup.entity';
 
 @Module({
   imports: [
     AuthModule,
     HttpModule.register({ timeout: 30000 }),
-    TypeOrmModule.forFeature([OrderDeliveryEntity, PartnerCompanyExternHistoryEntity, GalaxiaBarcodeLogEntity, PartnerCompanyEntity]),
+    TypeOrmModule.forFeature([OrderDeliveryEntity, PartnerCompanyExternHistoryEntity, GalaxiaBarcodeLogEntity, PartnerCompanyEntity, PinIssueDedupEntity]),
   ],
   providers: [
     {

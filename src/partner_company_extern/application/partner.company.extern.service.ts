@@ -1,7 +1,8 @@
-import { Inject, Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
+import { ConflictException, Inject, Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
-import { Repository } from 'typeorm';
+import { PinIssueDedupEntity } from '../../entity/pin.issue.dedup.entity';
+import { QueryFailedError, Repository } from 'typeorm';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 import { ICulture } from '../interface/culture';
 import { IGalaxia } from '../interface/galaxia';
@@ -50,6 +51,8 @@ export class PartnerCompanyExternService {
     private partnerCompanyExternHistoryRepository: Repository<PartnerCompanyExternHistoryEntity>,
     @InjectRepository(PartnerCompanyEntity)
     private partnerCompanyRepository: Repository<PartnerCompanyEntity>,
+    @InjectRepository(PinIssueDedupEntity)
+    private pinIssueDedupRepository: Repository<PinIssueDedupEntity>,
     private cryptoCipher: CryptoCipher,
   ) {}
 
@@ -114,6 +117,30 @@ export class PartnerCompanyExternService {
     let isSuccess = true;
     if (!orderDelivery.transactionId) {
       throw new Error('transaction id not exist');
+    }
+
+    // PIN 발급 중복 방지: 같은 transactionId로 동시에 issue()가 두 번 호출되는 것을 차단
+    // (배치 vs 수동 동시 호출 등). CULTURELAND은 0099 복구 프로토콜(동일 trId 재요청 = 기발급 PIN 반환)
+    // 을 사용하므로 dedup 대상에서 제외.
+    if (type && type !== IPartnerCompanyType.CULTURELAND) {
+      try {
+        await this.pinIssueDedupRepository.insert({
+          transactionId: orderDelivery.transactionId,
+          orderDeliveryId: orderDelivery.id,
+          partnerType: type,
+          issuedAt: new Date(),
+        });
+      } catch (e) {
+        if (e instanceof QueryFailedError && (e as QueryFailedError & { code?: string }).code === 'ER_DUP_ENTRY') {
+          this.logger.warn(
+            `[PIN_DEDUP] 중복 발급 요청 차단 - transactionId: ${orderDelivery.transactionId}, orderDeliveryId: ${orderDelivery.id}, type: ${type}`,
+          );
+          throw new ConflictException(
+            `이미 동일 거래번호로 PIN 발급 요청이 진행 중입니다. (transactionId: ${orderDelivery.transactionId})`,
+          );
+        }
+        throw e;
+      }
     }
 
     try {
@@ -400,6 +427,14 @@ export class PartnerCompanyExternService {
       this.logger.log(orderDelivery.barCode);
       if (!orderDelivery.barCode) {
         throw new Error('barCode not exist');
+      }
+
+      // dedup 레코드에 발급된 PIN 기록 (감사용)
+      if (type && type !== IPartnerCompanyType.CULTURELAND) {
+        await this.pinIssueDedupRepository.update(
+          { transactionId: orderDelivery.transactionId },
+          { barCode: orderDelivery.barCode },
+        );
       }
     } catch (e) {
       this.logger.error(e);
