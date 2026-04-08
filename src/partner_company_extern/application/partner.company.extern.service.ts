@@ -766,7 +766,8 @@ export class PartnerCompanyExternService {
       // 7. DAOU
       case 'DAOU': {
         const daouCheckOut = await this.daou.check({
-          transactionId: orderDelivery.transactionId!,
+          barCode: orderDelivery.barCode ?? undefined,
+          transactionId: orderDelivery.transactionId ?? undefined,
         });
 
         // 응답 코드 확인

@@ -472,7 +472,8 @@ export class PartnerCompanyExternBatchService {
     // DAOU 처리
     if (type === 'DAOU') {
       const daouCheckOut = await this.daou.check({
-        transactionId: orderDelivery.transactionId!,
+        barCode: orderDelivery.barCode ?? undefined,
+        transactionId: orderDelivery.transactionId ?? undefined,
       });
 
       if (daouCheckOut.resultCode === 'S000001') {

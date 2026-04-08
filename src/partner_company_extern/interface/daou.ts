@@ -16,8 +16,10 @@ export interface DaouIssueOut {
 }
 
 // 다우기술 PIN 상태조회 요청 DTO
+// barCode가 있으면 NO_CPN으로 조회(CI06_QUERY_NOCPN), 없으면 COOPER_ORDER로 조회(CI07113_QUERY_COOPERORDER_WITHPAY)
 export interface DaouCheckIn {
-  transactionId: string; // 제휴처 주문번호 - COOPER_ORDER
+  transactionId?: string; // 제휴처 주문번호 - COOPER_ORDER
+  barCode?: string; // 쿠폰번호(핀번호) - NO_CPN
 }
 
 // 다우기술 PIN 상태조회 응답 DTO
