@@ -47,7 +47,8 @@ export class DaouHttp implements IDaou {
   // ACTION 파라미터 값들
   private readonly ACTION_ISSUE = 'CI112_ONLY_ISSUECPN_WITHPAY'; // 쿠폰 발급
   private readonly ACTION_CANCEL = 'CI104_DISUSECPN'; // 쿠폰 취소
-  private readonly ACTION_CHECK = 'CI07113_QUERY_COOPERORDER_WITHPAY'; // 쿠폰 상태 조회
+  private readonly ACTION_CHECK = 'CI07113_QUERY_COOPERORDER_WITHPAY'; // 쿠폰 상태 조회 (COOPER_ORDER 기준)
+  private readonly ACTION_CHECK_NOCPN = 'CI06_QUERY_NOCPN'; // 쿠폰 상태 조회 (NO_CPN 기준)
   private readonly ACTION_GOODS_INFO = 'CC01_DOWN_ALL_GOODSINFO'; // 전체 상품 정보 조회 (GET)
 
   /**
@@ -156,16 +157,22 @@ export class DaouHttp implements IDaou {
    */
   async check(obj: DaouCheckIn): Promise<DaouCheckOut> {
     try {
-      // URL 파라미터 구성
+      if (!obj.barCode && !obj.transactionId) {
+        throw new Error('DAOU check: barCode 또는 transactionId 중 하나는 필수입니다.');
+      }
+
+      // barCode가 있으면 NO_CPN 조회 우선, 없으면 COOPER_ORDER 조회
+      const useBarCode = !!obj.barCode;
+      const action = useBarCode ? this.ACTION_CHECK_NOCPN : this.ACTION_CHECK;
       const params = new URLSearchParams({
         COOPER_ID: this.cooperId,
         COOPER_PW: this.cooperPw,
         SITE_ID: this.siteId,
-        COOPER_ORDER: obj.transactionId,
+        ...(useBarCode ? { NO_CPN: obj.barCode! } : { COOPER_ORDER: obj.transactionId! }),
       });
 
       // URL 구성: baseUrl + ACTION + 파라미터
-      const url = `${this.baseUrl}${this.ACTION_CHECK}&${params.toString()}`;
+      const url = `${this.baseUrl}${action}&${params.toString()}`;
 
       this.logger.log(`DAOU Check URL: ${url}`);
 
