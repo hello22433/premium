@@ -786,8 +786,7 @@ export class PartnerCompanyExternBatchService {
       this.logger.log(`[checkCulturelandDaily] 조회된 certNo 건수: ${dailyResult.certNoList.length}`);
 
       if (dailyResult.certNoList.length === 0) {
-        this.logger.log('[checkCulturelandDaily] 처리할 사용 내역이 없습니다.');
-        return;
+        this.logger.log('[checkCulturelandDaily] 처리할 사용 내역 없음 - 만료 처리만 진행합니다.');
       }
 
       // 각 certNo에 대해 order_delivery 매칭 및 교환 처리
