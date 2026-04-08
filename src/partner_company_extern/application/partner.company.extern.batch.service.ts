@@ -10,7 +10,7 @@ import { ISsgIssue } from '../interface/ssg.issue';
 import { IDaou } from '../interface/daou';
 import { InjectRepository } from '@nestjs/typeorm';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
-import { Brackets, Repository } from 'typeorm';
+import { Brackets, In, Repository } from 'typeorm';
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
 import { parseDateString, isExpiredYMD, formatDateYMD } from '../../util/date.util';
 import {
@@ -829,6 +829,31 @@ export class PartnerCompanyExternBatchService {
           this.logger.error(`[checkCulturelandDaily] 처리 오류: certNo=${certNo}`);
           this.logger.error(e);
         }
+      }
+
+      // 60일 컬쳐랜드 NOT_USED 중 expire_at 지난 건 EXPIRED 처리
+      const expiredTargets = await this.orderDeliveryRepository
+        .createQueryBuilder('od')
+        .select('od.id', 'id')
+        .innerJoin('od.orderProductMapping', 'opm')
+        .innerJoin('opm.product', 'p')
+        .innerJoin('p.partnerCompany', 'pc')
+        .where('od.couponStatus = :status', { status: OrderDeliveryCouponStatus.NOT_USED })
+        .andWhere('pc.type = :type', { type: 'CULTURELAND' })
+        .andWhere('p.expireDay = :expireDay', { expireDay: 60 })
+        .andWhere('od.expireAt IS NOT NULL')
+        .andWhere('od.expireAt < NOW()')
+        .getRawMany<{ id: number }>();
+
+      if (expiredTargets.length > 0) {
+        const expiredIds = expiredTargets.map((t) => t.id);
+        await this.orderDeliveryRepository.update(
+          { id: In(expiredIds) },
+          { couponStatus: OrderDeliveryCouponStatus.EXPIRED },
+        );
+        this.logger.log(`[checkCulturelandDaily] 만료 처리 건수: ${expiredIds.length}`);
+      } else {
+        this.logger.log('[checkCulturelandDaily] 만료 처리 대상 없음');
       }
 
       this.logger.log('[checkCulturelandDaily] 완료');
