@@ -72,6 +72,15 @@ export class PartnerCompanyBatchController {
     return { message: 'checkGalaxiaDeptUsage 실행 완료' };
   }
 
+  @ApiOperation({ summary: '[임시] 컬쳐랜드 일대사 수동 실행 (60일 상품 만료 처리 포함)' })
+  @Post('batch/cultureland-daily')
+  async triggerCulturelandDaily(@Query('useDate') useDate?: string) {
+    this.logger.log(`[수동실행] checkCulturelandDaily 시작 - useDate: ${useDate ?? '어제'}`);
+    await this.partnerCompanyExternBatchService.checkCulturelandDaily(useDate);
+    this.logger.log('[수동실행] checkCulturelandDaily 완료');
+    return { message: 'checkCulturelandDaily 실행 완료' };
+  }
+
   @ApiOperation({ summary: '[임시] 외부사 사용내역 체크 배치 수동 실행 (check)' })
   @Post('batch/extern-check')
   async triggerExternCheck() {
