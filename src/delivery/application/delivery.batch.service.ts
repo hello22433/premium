@@ -237,9 +237,42 @@ export class DeliveryBatchService {
     }
   }
 
+  /**
+   * 비정상 종료로 claimed_at이 남아있는 WAIT 행을 해제한다.
+   * 부팅 시 1회만 호출된다 (PM2 단일 인스턴스 전제).
+   */
+  async releaseStaleClaims(): Promise<number> {
+    const result = await this.orderDeliveryRepository
+      .createQueryBuilder()
+      .update(OrderDeliveryEntity)
+      .set({ claimedAt: null })
+      .where('status = :status', { status: IOrderDeliveryStatus.WAIT })
+      .andWhere('claimedAt IS NOT NULL')
+      .execute();
+    return result.affected ?? 0;
+  }
+
   async issueAndSend() {
-    // 현재 이전 시간에 대기중인 모든 쿠폰 발행 및 발송 진행
-    const now = new Date();
+    // 다른 배치가 동시에 돌더라도 UPDATE는 DB에서 직렬화되므로
+    // claimed_at IS NULL 조건에 걸린 행만 이 배치가 소유하게 된다.
+    // claimedAt 값은 이번 배치의 식별자로도 사용해서 뒤의 SELECT가 우리 몫만 가져오도록 한다.
+    const claimedAt = new Date();
+    const claimResult = await this.orderDeliveryRepository
+      .createQueryBuilder()
+      .update(OrderDeliveryEntity)
+      .set({ claimedAt })
+      .where('status = :status', { status: IOrderDeliveryStatus.WAIT })
+      .andWhere('sendRequestAt < :now', { now: claimedAt })
+      .andWhere('claimedAt IS NULL')
+      .execute();
+
+    const claimedCount = claimResult.affected ?? 0;
+    this.logger.log(`[BATCH] Claimed ${claimedCount} deliveries at ${claimedAt.toISOString()}`);
+
+    if (claimedCount === 0) {
+      return;
+    }
+
     const queryBuilder = this.orderDeliveryRepository
       .createQueryBuilder('orderDelivery')
       .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
@@ -249,12 +282,12 @@ export class DeliveryBatchService {
       .innerJoinAndSelect('orderProductMapping.product', 'product')
       .innerJoinAndSelect('product.brand', 'brand')
       .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
-      .where('orderDelivery.sendRequestAt < :now', { now })
-      .andWhere('orderDelivery.status = :status', { status: 'WAIT' });
+      .where('orderDelivery.status = :status', { status: IOrderDeliveryStatus.WAIT })
+      .andWhere('orderDelivery.claimedAt = :claimedAt', { claimedAt });
 
     const orderDeliveryList = await queryBuilder.getMany();
 
-    this.logger.log(`[BATCH] Found ${orderDeliveryList.length} deliveries to send at ${now.toISOString()}`);
+    this.logger.log(`[BATCH] Found ${orderDeliveryList.length} deliveries to send at ${claimedAt.toISOString()}`);
 
     if (orderDeliveryList.length === 0) {
       return;

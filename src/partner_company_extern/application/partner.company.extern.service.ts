@@ -181,6 +181,15 @@ export class PartnerCompanyExternService {
         });
 
         context = JSON.stringify(giftielOut);
+
+        // GIFTIEL 응답 가드: 실패 응답(예: 0227 중복)일 때 CouponList가 비어있어
+        // 기존 코드(CouponList[0].CouponNum)가 TypeError를 내면서 실제 원인이 묻혔다.
+        // 협력사 응답 코드/메시지가 history에 그대로 남도록 명시적으로 throw한다.
+        if (giftielOut.ResultCode !== '0000' || !giftielOut.CouponList?.length) {
+          throw new Error(
+            `GIFTIEL 발급 실패: ${giftielOut.ResultCode} - ${giftielOut.ResultMsg}`,
+          );
+        }
         orderDelivery.barCode = giftielOut.CouponList[0].CouponNum;
       }
 

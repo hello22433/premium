@@ -8,38 +8,40 @@ import { Cron } from '@nestjs/schedule';
 export class DeliveryBatchSchedule implements OnApplicationBootstrap {
   constructor(private deliveryBatchService: DeliveryBatchService) {}
 
-  onApplicationBootstrap() {
-    // this.deliveryBatchService.deliveryDeliveryTargetDestroy();
-    // TEST;
-    // this.deliveryBatchService.issueAndSend();
-    // this.handleStatusUpdateBatch();
+  async onApplicationBootstrap() {
+    // 비정상 종료로 claimed_at이 남아있는 WAIT 행을 해제한다.
+    // PM2 단일 인스턴스 전제: 부팅 시점에는 진행 중인 배치가 있을 수 없다.
+    try {
+      const released = await this.deliveryBatchService.releaseStaleClaims();
+      if (released > 0) {
+        this.logger.warn(
+          `[BATCH] 부팅 시 stale 클레임 ${released}건 해제 (이전 프로세스 비정상 종료 흔적)`,
+        );
+      }
+    } catch (e) {
+      this.logger.error('[BATCH] stale 클레임 해제 실패', e);
+    }
   }
 
   private logger = new Logger('BATCH');
 
-  // 동시 실행 방지 플래그 (타임스탬프)
+  // 동시 실행 방지 플래그 (단순 중복실행 방지용, 강제 리셋 없음)
+  // 이전 배치가 종료되기 전까지 새 cron 틱은 무조건 스킵한다.
+  // row-level claim(claimed_at)이 이미 있으므로 강제 리셋이 필요하지 않다.
   private issueAndSendStartedAt: Date | null = null;
-  private readonly MAX_BATCH_DURATION = 30 * 60 * 1000; // 30분
 
   // 5분 마다 실행
   @Cron('0 */5 * * * *')
   async issueAndSend() {
-    const now = new Date();
     if (this.issueAndSendStartedAt) {
-      const elapsed = now.getTime() - this.issueAndSendStartedAt.getTime();
-
-      if (elapsed > this.MAX_BATCH_DURATION) {
-        this.logger.warn(
-          `[BATCH] issueAndSend가 ${Math.floor(elapsed / 60000)}분 동안 실행 중. 강제 리셋합니다.`,
-        );
-        this.issueAndSendStartedAt = null;
-      } else {
-        this.logger.warn('[BATCH] issueAndSend 이전 배치가 실행 중입니다. 스킵합니다.');
-        return;
-      }
+      const elapsed = Date.now() - this.issueAndSendStartedAt.getTime();
+      this.logger.warn(
+        `[BATCH] issueAndSend 이전 배치가 ${Math.floor(elapsed / 60000)}분 동안 실행 중. 이번 틱은 스킵합니다.`,
+      );
+      return;
     }
 
-    this.issueAndSendStartedAt = now;
+    this.issueAndSendStartedAt = new Date();
     try {
       await this.deliveryBatchService.issueAndSend();
       this.logger.log('Complete Delivery');
