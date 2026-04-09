@@ -38,6 +38,8 @@ import { DeliveryAlimTalk } from '../../delivery/interface/delivery.alim.talk';
 import { ISmsSend } from '../../sms/interface/sms.send';
 import { defaultFromPhoneNumber } from '../../const';
 import { MaskingUtil } from '../../common/utils/masking.util';
+import { AuthErrorCode } from '../exception/auth-error-code';
+import { AuthException } from '../exception/auth.exception';
 
 @Injectable()
 export class UserService {
@@ -178,14 +180,14 @@ export class UserService {
     });
 
     if (!user) {
-      throw new BadRequestException('USER_DOES_NOT_EXIST');
+      throw new AuthException(AuthErrorCode.USER_NOT_FOUND);
     }
     if (user.status === IUserStatus.NOT_APPROVED) {
-      throw new BadRequestException('승인후 사용 가능합니다.');
+      throw new AuthException(AuthErrorCode.USER_NOT_APPROVED);
     }
     const isPasswordMatch = await this.passwordEncrypt.compare(password, user.password);
     if (!isPasswordMatch) {
-      throw new BadRequestException('USER_DO_NOT_MATCH_PASSWORD');
+      throw new AuthException(AuthErrorCode.INVALID_PASSWORD);
     }
 
     // password_policy에서 최신 정책 조회 (soft delete 제외)
@@ -231,7 +233,7 @@ export class UserService {
       console.log({ reqAllowedIp, splitAllowed });
 
       if (!allowedIpList.includes(reqAllowedIp)) {
-        throw new BadRequestException('허용된 IP가 아닙니다.');
+        throw new AuthException(AuthErrorCode.IP_NOT_ALLOWED);
       }
     }
 
@@ -310,7 +312,7 @@ export class UserService {
     });
 
     if (!user) {
-      throw new BadRequestException('해당 이메일의 유저가 존재하지 않습니다.');
+      throw new AuthException(AuthErrorCode.USER_NOT_FOUND);
     }
 
     // 담당자 이메일 파싱
@@ -329,10 +331,10 @@ export class UserService {
     } else {
       // 2개 이상일 때는 targetEmail 필수
       if (!targetEmail) {
-        throw new BadRequestException('담당자 이메일이 2개 이상일 때는 targetEmail이 필수입니다.');
+        throw new AuthException(AuthErrorCode.TARGET_EMAIL_REQUIRED);
       }
       if (!personEmails.includes(targetEmail)) {
-        throw new BadRequestException('유효하지 않은 담당자 이메일입니다.');
+        throw new AuthException(AuthErrorCode.INVALID_TARGET_EMAIL);
       }
       sendToEmail = targetEmail;
     }
@@ -373,11 +375,11 @@ export class UserService {
     });
 
     if (!user) {
-      throw new BadRequestException('해당 이메일의 유저가 존재하지 않습니다.');
+      throw new AuthException(AuthErrorCode.USER_NOT_FOUND);
     }
 
     if (!user.personPhoneNumber) {
-      throw new BadRequestException('등록된 연락처가 없습니다. 관리자에게 문의해주세요.');
+      throw new AuthException(AuthErrorCode.PHONE_NOT_REGISTERED);
     }
 
     const code = generateNumericCode(5);
@@ -409,7 +411,7 @@ export class UserService {
         this.logger.log(`로그인 인증코드 SMS 발송 성공: userId=${user.id}`);
       } catch (smsError) {
         this.logger.error(`로그인 인증코드 SMS 발송 실패: userId=${user.id}, error=${smsError.message}`);
-        throw new BadRequestException('인증코드 발송에 실패했습니다. 잠시 후 다시 시도해주세요.');
+        throw new AuthException(AuthErrorCode.SEND_FAILED);
       }
     }
 
@@ -443,19 +445,19 @@ export class UserService {
     });
 
     if (!sendHistory) {
-      throw new BadRequestException('인증 데이터가 없습니다.');
+      throw new AuthException(AuthErrorCode.VERIFY_DATA_NOT_FOUND);
     }
 
     if (sendHistory.expireAt && sendHistory.expireAt < new Date()) {
-      throw new BadRequestException('만료된 인증 코드입니다.');
+      throw new AuthException(AuthErrorCode.EXPIRED_VERIFY_CODE);
     }
 
     if (sendHistory.code !== code.trim()) {
-      throw new BadRequestException('코드가 일치하지 않습니다.');
+      throw new AuthException(AuthErrorCode.INVALID_VERIFY_CODE);
     }
 
     if (sendHistory.isCertified) {
-      throw new BadRequestException('이미 인증 완료된 코드입니다.');
+      throw new AuthException(AuthErrorCode.ALREADY_VERIFIED);
     }
 
     // userId로 소유권 검증
@@ -464,7 +466,7 @@ export class UserService {
     });
 
     if (!user || user.id !== sendHistory.userId) {
-      throw new BadRequestException('유효하지 않은 인증 요청입니다.');
+      throw new AuthException(AuthErrorCode.INVALID_VERIFY_REQUEST);
     }
 
     sendHistory.isCertified = true;

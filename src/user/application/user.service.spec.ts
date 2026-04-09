@@ -19,6 +19,8 @@ import { ActivityLogService } from '../../activity_log/application/activity.log.
 import { DeliveryAlimTalk } from '../../delivery/interface/delivery.alim.talk';
 import { ISmsSend } from '../../sms/interface/sms.send';
 import { ConfigService } from '@nestjs/config';
+import { AuthException } from '../exception/auth.exception';
+import { AuthErrorCode } from '../exception/auth-error-code';
 
 jest.mock('typeorm-transactional', () => ({
   Transactional: () => () => ({}),
@@ -162,7 +164,7 @@ describe('user login service Test', () => {
 
       await expect(async () => {
         await sut.loginByEmailPassword(givenLoginDto, '127.0.0.1');
-      }).rejects.toThrow(new BadRequestException('USER_DOES_NOT_EXIST'));
+      }).rejects.toThrow(new AuthException(AuthErrorCode.USER_NOT_FOUND));
     });
 
     it('비밀번호가 일치하지 않는 경우', async () => {
@@ -188,7 +190,7 @@ describe('user login service Test', () => {
 
       await expect(async () => {
         await sut.loginByEmailPassword(givenLoginDto, '127.0.0.1');
-      }).rejects.toThrow(new BadRequestException('USER_DO_NOT_MATCH_PASSWORD'));
+      }).rejects.toThrow(new AuthException(AuthErrorCode.INVALID_PASSWORD));
     });
   });
 
