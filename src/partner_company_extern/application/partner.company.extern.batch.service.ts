@@ -1207,6 +1207,7 @@ export class PartnerCompanyExternBatchService {
       .createQueryBuilder('orderDelivery')
       .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
       .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
+      .leftJoinAndSelect('choiceSelectProduct.partnerCompany', 'choicePartnerCompany')
       .innerJoinAndSelect('orderProductMapping.product', 'product')
       .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .leftJoin('galaxia_barcode_log', 'gbl', 'gbl.order_delivery_id = orderDelivery.id')
@@ -1214,7 +1215,13 @@ export class PartnerCompanyExternBatchService {
       .andWhere('orderDelivery.status LIKE :status', { status: DELIVERY_STATUS_PATTERN })
       .andWhere('orderDelivery.barCode IS NOT NULL')
       .andWhere('orderDelivery.couponNum IS NOT NULL')
-      .andWhere('partnerCompany.type = :type', { type: PARTNER_COMPANY_TYPES.GALAXIA })
+      .andWhere(
+        new Brackets((qb) =>
+          qb
+            .where('partnerCompany.type = :galaxiaType', { galaxiaType: PARTNER_COMPANY_TYPES.GALAXIA })
+            .orWhere('choicePartnerCompany.type = :galaxiaType', { galaxiaType: PARTNER_COMPANY_TYPES.GALAXIA }),
+        ),
+      )
       .andWhere('orderDelivery.couponStatus IN (:...statuses)', {
         statuses: [OrderDeliveryCouponStatus.USED, OrderDeliveryCouponStatus.CANCEL],
       })
