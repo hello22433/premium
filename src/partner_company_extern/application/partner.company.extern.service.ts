@@ -122,18 +122,42 @@ export class PartnerCompanyExternService {
     // PIN 발급 중복 방지: 같은 transactionId로 동시에 issue()가 두 번 호출되는 것을 차단
     // (배치 vs 수동 동시 호출 등). CULTURELAND은 0099 복구 프로토콜(동일 trId 재요청 = 기발급 PIN 반환)
     // 을 사용하므로 dedup 대상에서 제외.
+    //
+    // 2단계: conflict 발생 시 즉시 throw하지 않고, 먼저 끝난 트랜잭션의 bar_code를 읽어와
+    // 그대로 이어받는다(인라인 recovery). InnoDB row lock 특성상 B가 ER_DUP_ENTRY를 보는 시점에는
+    // A가 이미 commit 완료 상태이므로 A의 bar_code는 반드시 존재함이 보장된다.
     if (type && type !== IPartnerCompanyType.CULTURELAND) {
       try {
         await this.pinIssueDedupRepository.insert({
           transactionId: orderDelivery.transactionId,
           orderDeliveryId: orderDelivery.id,
           partnerType: type,
+          recoveredFrom: 'FRESH_ISSUE',
           issuedAt: new Date(),
         });
       } catch (e) {
         if (e instanceof QueryFailedError && (e as QueryFailedError & { code?: string }).code === 'ER_DUP_ENTRY') {
-          this.logger.warn(
-            `[PIN_DEDUP] 중복 발급 요청 차단 - transactionId: ${orderDelivery.transactionId}, orderDeliveryId: ${orderDelivery.id}, type: ${type}`,
+          const existing = await this.pinIssueDedupRepository.findOne({
+            where: { transactionId: orderDelivery.transactionId },
+          });
+
+          if (existing?.barCode) {
+            // 상대 트랜잭션이 이미 성공 완료한 상태 → 그 bar_code를 그대로 이어받고 협력사 호출 생략
+            this.logger.warn(
+              `[PIN_DEDUP] 중복 감지 - 기존 발급 이어받음. transactionId: ${orderDelivery.transactionId}, orderDeliveryId: ${orderDelivery.id}, type: ${type}, barCode: ${existing.barCode}`,
+            );
+            orderDelivery.barCode = existing.barCode;
+            await this.pinIssueDedupRepository.update(
+              { transactionId: orderDelivery.transactionId },
+              { recoveredFrom: 'DEDUP' },
+            );
+            return;
+          }
+
+          // 이론상 도달 불가 경로(conflict 시점에는 상대가 성공 커밋되어 bar_code가 있어야 함).
+          // 안전 가드로 ConflictException 유지 — 운영 중 발생하면 로그로 조사 가능.
+          this.logger.error(
+            `[PIN_DEDUP] 중복 감지되었으나 기존 bar_code 복구 실패 - transactionId: ${orderDelivery.transactionId}, orderDeliveryId: ${orderDelivery.id}, type: ${type}`,
           );
           throw new ConflictException(
             `이미 동일 거래번호로 PIN 발급 요청이 진행 중입니다. (transactionId: ${orderDelivery.transactionId})`,
