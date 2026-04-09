@@ -193,8 +193,8 @@ describe('PartnerCompanyExternService - PIN dedup recovery', () => {
     });
   });
 
-  describe('CULTURELAND 우회', () => {
-    it('CULTURELAND 발송은 dedup INSERT를 수행하지 않는다', async () => {
+  describe('CULTURELAND 포함', () => {
+    it('CULTURELAND 발송도 dedup INSERT를 수행한다 (모든 협력사 동일 로직)', async () => {
       const orderDelivery = buildOrderDelivery({
         orderProductMapping: {
           product: {
@@ -207,15 +207,22 @@ describe('PartnerCompanyExternService - PIN dedup recovery', () => {
           },
         },
       });
-      // culture.issue 모킹을 위해 모듈에서 ICulture 인스턴스를 가져올 수 있게 설정된 mock이 필요함.
-      // 본 테스트는 INSERT 호출 여부만 확인하고, 협력사 호출은 throw 허용.
+      // culture.issue가 정의되지 않은 mock이라 이후 단계에서 throw됨.
+      // 본 테스트는 CULTURELAND에 대해서도 dedup INSERT가 호출되는지만 검증한다.
       try {
         await sut.issue(orderDelivery, null);
       } catch {
-        // culture mock이 미정의라 에러 가능 — INSERT 우회만 검증
+        // culture mock이 미정의라 이후 단계에서 에러 가능 — INSERT 호출 여부만 검증
       }
 
-      expect(pinIssueDedupRepository.insert).not.toHaveBeenCalled();
+      expect(pinIssueDedupRepository.insert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          transactionId: 'ENM1D1001',
+          orderDeliveryId: 1001,
+          partnerType: 'CULTURELAND',
+          recoveredFrom: 'FRESH_ISSUE',
+        }),
+      );
     });
   });
 });

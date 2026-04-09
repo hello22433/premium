@@ -120,13 +120,16 @@ export class PartnerCompanyExternService {
     }
 
     // PIN 발급 중복 방지: 같은 transactionId로 동시에 issue()가 두 번 호출되는 것을 차단
-    // (배치 vs 수동 동시 호출 등). CULTURELAND은 0099 복구 프로토콜(동일 trId 재요청 = 기발급 PIN 반환)
-    // 을 사용하므로 dedup 대상에서 제외.
+    // (배치 vs 수동 동시 호출 등). 모든 협력사가 동일 로직으로 관리된다.
     //
-    // 2단계: conflict 발생 시 즉시 throw하지 않고, 먼저 끝난 트랜잭션의 bar_code를 읽어와
+    // CULTURELAND의 0099 복구 프로토콜도 dedup과 호환된다:
+    // 1차 실패(0099 throw) → @Transactional 롤백 → dedup row 자동 삭제
+    // 2차 재시도(동일 trId) → INSERT 정상 → 협력사가 기존 PIN 반환(0000) → 성공
+    //
+    // conflict 발생 시 즉시 throw하지 않고, 먼저 끝난 트랜잭션의 bar_code를 읽어와
     // 그대로 이어받는다(인라인 recovery). InnoDB row lock 특성상 B가 ER_DUP_ENTRY를 보는 시점에는
     // A가 이미 commit 완료 상태이므로 A의 bar_code는 반드시 존재함이 보장된다.
-    if (type && type !== IPartnerCompanyType.CULTURELAND) {
+    if (type) {
       try {
         await this.pinIssueDedupRepository.insert({
           transactionId: orderDelivery.transactionId,
@@ -454,7 +457,7 @@ export class PartnerCompanyExternService {
       }
 
       // dedup 레코드에 발급된 PIN 기록 (감사용)
-      if (type && type !== IPartnerCompanyType.CULTURELAND) {
+      if (type) {
         await this.pinIssueDedupRepository.update(
           { transactionId: orderDelivery.transactionId },
           { barCode: orderDelivery.barCode },
