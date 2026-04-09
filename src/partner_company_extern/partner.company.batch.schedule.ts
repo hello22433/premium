@@ -58,4 +58,17 @@ export class PartnerCompanyBatchSchedule {
       this.logger.error(e);
     }
   }
+
+  // 매일 04:00에 실행 - 갤럭시아 바코드 로그 백필
+  // 일대사/개별조회에서 놓친 USED 건(초이스쿠폰 갤럭시아 포함)을 보정하여 galaxia_barcode_log 생성
+  @Cron('0 0 4 * * *')
+  async backfillMissingGalaxiaLogs() {
+    try {
+      this.logger.log('Start backfillMissingGalaxiaLogs');
+      await this.partnerCompanyExternBatchService.backfillMissingGalaxiaLogs();
+      this.logger.log('Complete backfillMissingGalaxiaLogs');
+    } catch (e) {
+      this.logger.error(e);
+    }
+  }
 }
