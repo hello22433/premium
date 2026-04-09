@@ -2991,40 +2991,50 @@ export class OrderService {
       const addEffectiveBalance = (amount: number) => setEffectiveBalance(getEffectiveBalance() + amount);
       const subtractEffectiveBalance = (amount: number) => setEffectiveBalance(getEffectiveBalance() - amount);
 
-      if (totalSettleFee !== 0) {
-        if (totalSettleFee < 0) {
-          const discountAmount = Math.abs(totalSettleFee);
+      // applyCardSurcharge가 floor 처리한 실제 카드할증 금액 (미적용 시 0)
+      const cardSurchargeDelta = finalAmount - (order.sendAmount + totalSettleFee);
+      // 기존 흐름은 createTemp에서 sendAmount가 이미 차감된 상태이므로 차액(netDelta)만 반영하면 finalAmount와 장부가 일치
+      const netDelta = totalSettleFee + cardSurchargeDelta;
+
+      if (netDelta !== 0) {
+        const deltaBreakdown = `할인/할증=${totalSettleFee}, 카드할증=${cardSurchargeDelta}`;
+
+        if (netDelta < 0) {
+          // 순 환급 (할인이 카드할증보다 큼)
+          const refundAmount = Math.abs(netDelta);
           if (order.isSettleBalance) {
-            addEffectiveBalance(discountAmount);
+            addEffectiveBalance(refundAmount);
           } else {
-            oneUser.allSettleAmount -= discountAmount;
+            oneUser.allSettleAmount -= refundAmount;
           }
           this.logger.debug(
-            `할인 적용: orderId=${order.id}, 할인액=${discountAmount}, isSettleBalance=${order.isSettleBalance}`,
+            `정산 차액 환급: orderId=${order.id}, 환급액=${refundAmount} (${deltaBreakdown}), isSettleBalance=${order.isSettleBalance}`,
           );
-        } else if (totalSettleFee > 0) {
-          const additionalAmount = totalSettleFee;
+        } else {
+          // 순 추가 차감 (할증 + 카드할증이 할인을 초과)
           const currentBalance = getEffectiveBalance();
 
           if (order.isSettleBalance) {
-            if (currentBalance >= additionalAmount) {
-              subtractEffectiveBalance(additionalAmount);
-              this.logger.debug(`할증 적용 (balance 차감): orderId=${order.id}, 할증액=${additionalAmount}`);
+            if (currentBalance >= netDelta) {
+              subtractEffectiveBalance(netDelta);
+              this.logger.debug(
+                `정산 차액 차감 (balance): orderId=${order.id}, 추가액=${netDelta} (${deltaBreakdown})`,
+              );
             } else {
               const companyMaximumLimit = oneUser.company?.maximumLimit ?? 0;
               const remainingLimit = companyMaximumLimit - oneUser.allSettleAmount;
-              const neededFromLimit = additionalAmount - currentBalance;
+              const neededFromLimit = netDelta - currentBalance;
 
               if (remainingLimit >= neededFromLimit) {
                 oneUser.allSettleAmount += neededFromLimit;
                 setEffectiveBalance(0);
                 message = 'warning: 잔여발송한도가 부족하여 한도에서 추가 차감되었습니다.';
                 this.logger.debug(
-                  `할증 적용 (한도 추가 차감): orderId=${order.id}, 할증액=${additionalAmount}, 한도사용=${neededFromLimit}`,
+                  `정산 차액 차감 (한도 추가): orderId=${order.id}, 추가액=${netDelta} (${deltaBreakdown}), 한도사용=${neededFromLimit}`,
                 );
               } else {
                 throw new BadRequestException(
-                  `잔여발송한도가 부족하여 발송을 진행할 수 없습니다. (필요 금액: ${additionalAmount.toLocaleString()}원, 사용 가능: ${(currentBalance + remainingLimit).toLocaleString()}원)`,
+                  `잔여발송한도가 부족하여 발송을 진행할 수 없습니다. (필요 금액: ${netDelta.toLocaleString()}원[할증/카드할증 포함], 사용 가능: ${(currentBalance + remainingLimit).toLocaleString()}원)`,
                 );
               }
             }
@@ -3032,21 +3042,23 @@ export class OrderService {
             const companyMaxLimit = oneUser.company?.maximumLimit ?? 0;
             const remainingLimit = companyMaxLimit - oneUser.allSettleAmount;
 
-            if (remainingLimit >= additionalAmount) {
-              oneUser.allSettleAmount += additionalAmount;
-              message = 'warning: 할증 금액이 추가되었습니다.';
-              this.logger.debug(`할증 적용 (한도 차감): orderId=${order.id}, 할증액=${additionalAmount}`);
-            } else if (currentBalance >= additionalAmount - remainingLimit) {
-              const neededFromBalance = additionalAmount - remainingLimit;
+            if (remainingLimit >= netDelta) {
+              oneUser.allSettleAmount += netDelta;
+              message = 'warning: 정산 차액(할증/카드할증)이 추가되었습니다.';
+              this.logger.debug(
+                `정산 차액 차감 (한도): orderId=${order.id}, 추가액=${netDelta} (${deltaBreakdown})`,
+              );
+            } else if (currentBalance >= netDelta - remainingLimit) {
+              const neededFromBalance = netDelta - remainingLimit;
               oneUser.allSettleAmount = companyMaxLimit;
               subtractEffectiveBalance(neededFromBalance);
               message = 'warning: 한도가 부족하여 선충전 잔액에서 추가 차감되었습니다.';
               this.logger.debug(
-                `할증 적용 (선충전 추가 차감): orderId=${order.id}, 할증액=${additionalAmount}, 선충전사용=${neededFromBalance}`,
+                `정산 차액 차감 (선충전 추가): orderId=${order.id}, 추가액=${netDelta} (${deltaBreakdown}), 선충전사용=${neededFromBalance}`,
               );
             } else {
               throw new BadRequestException(
-                `잔여발송한도가 부족하여 발송을 진행할 수 없습니다. (필요 금액: ${additionalAmount.toLocaleString()}원, 사용 가능: ${(currentBalance + remainingLimit).toLocaleString()}원)`,
+                `잔여발송한도가 부족하여 발송을 진행할 수 없습니다. (필요 금액: ${netDelta.toLocaleString()}원[할증/카드할증 포함], 사용 가능: ${(currentBalance + remainingLimit).toLocaleString()}원)`,
               );
             }
           }
@@ -3058,7 +3070,6 @@ export class OrderService {
         }
       }
 
-      // finalAmount는 카드할증 포함 (applyCardSurcharge 적용됨)
       order.settleAmount = finalAmount;
     }
     // ======== 과금 처리 끝 ========
