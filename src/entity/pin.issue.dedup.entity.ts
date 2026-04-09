@@ -25,6 +25,15 @@ export class PinIssueDedupEntity {
   @Column({ type: 'varchar', length: 64, name: 'bar_code', nullable: true, comment: '발급된 PIN (성공 시 기록, 감사용)' })
   barCode: string | null;
 
+  @Column({
+    type: 'enum',
+    enum: ['DEDUP', 'CHECK_API', 'HISTORY_LOG', 'FRESH_ISSUE'],
+    name: 'recovered_from',
+    default: 'FRESH_ISSUE',
+    comment: 'PIN 복구 경로 (감사용)',
+  })
+  recoveredFrom: 'DEDUP' | 'CHECK_API' | 'HISTORY_LOG' | 'FRESH_ISSUE';
+
   @Column({ type: 'datetime', precision: 6, name: 'issued_at', comment: 'issue() 진입 시각' })
   issuedAt: Date;
 }
