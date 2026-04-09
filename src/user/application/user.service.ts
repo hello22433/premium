@@ -23,7 +23,7 @@ import { EmailSendHistoryEntity } from '../../entity/email.send.history.entity';
 import { IMailSend } from '../../mail/interface/mail-send';
 import { EmailType } from '../../mail/domain/email.type';
 import { addMinutes, differenceInDays } from 'date-fns';
-import { generateRandomCode, generateNumericCode } from '../../user_find/domain/code.generate';
+import { generateLoginVerifyCode, generateNumericCode } from '../../user_find/domain/code.generate';
 import { EmailCertifyExpireMinute } from '../../const';
 import { userLoginTemplateHtml } from '../domain/user.login.template.html';
 import { IUserAuthority } from '../interface/user.authority';
@@ -337,7 +337,7 @@ export class UserService {
       sendToEmail = targetEmail;
     }
 
-    const code = generateRandomCode();
+    const code = generateLoginVerifyCode();
     const expireAt = addMinutes(new Date(), EmailCertifyExpireMinute);
 
     // 이메일 전송한 history record 생성하기
@@ -450,7 +450,7 @@ export class UserService {
       throw new BadRequestException('만료된 인증 코드입니다.');
     }
 
-    if (sendHistory.code !== code) {
+    if (sendHistory.code !== code.trim()) {
       throw new BadRequestException('코드가 일치하지 않습니다.');
     }
 
