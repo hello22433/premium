@@ -62,6 +62,10 @@ import { OrderReceiptEntity } from '../entity/order.receipt.entity';
 import { ProductSharedListFileEntity } from '../entity/product.shared.list.file.entity';
 import { OrderManualEntryEntity } from '../entity/order.manual.entry.entity';
 import { PinIssueDedupEntity } from '../entity/pin.issue.dedup.entity';
+import { EarlyDestroyRequestEntity } from '../entity/early.destroy.request.entity';
+import { EarlyDestroyRequestItemEntity } from '../entity/early.destroy.request.item.entity';
+import { IdempotencyKeyEntity } from '../entity/idempotency.key.entity';
+import { PopularProductEntity } from '../entity/popular.product.entity';
 
 @Module({
   imports: [
@@ -128,6 +132,10 @@ import { PinIssueDedupEntity } from '../entity/pin.issue.dedup.entity';
           ProductSharedListFileEntity,
           OrderManualEntryEntity,
           PinIssueDedupEntity,
+          EarlyDestroyRequestEntity,
+          EarlyDestroyRequestItemEntity,
+          IdempotencyKeyEntity,
+          PopularProductEntity,
         ],
         timezone: '+09:00',
         logger: configService.get('DATABASE_LOGGING') === 'true' ? new SqlLogger() : undefined,
