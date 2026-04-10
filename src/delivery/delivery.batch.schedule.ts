@@ -25,30 +25,14 @@ export class DeliveryBatchSchedule implements OnApplicationBootstrap {
 
   private logger = new Logger('BATCH');
 
-  // 동시 실행 방지 플래그 (단순 중복실행 방지용, 강제 리셋 없음)
-  // 이전 배치가 종료되기 전까지 새 cron 틱은 무조건 스킵한다.
-  // row-level claim(claimed_at)이 이미 있으므로 강제 리셋이 필요하지 않다.
-  private issueAndSendStartedAt: Date | null = null;
-
-  // 5분 마다 실행
+  // 5분 마다 실행 (배치 간 병렬 실행 — claimed_at으로 행 단위 격리)
   @Cron('0 */5 * * * *')
   async issueAndSend() {
-    if (this.issueAndSendStartedAt) {
-      const elapsed = Date.now() - this.issueAndSendStartedAt.getTime();
-      this.logger.warn(
-        `[BATCH] issueAndSend 이전 배치가 ${Math.floor(elapsed / 60000)}분 동안 실행 중. 이번 틱은 스킵합니다.`,
-      );
-      return;
-    }
-
-    this.issueAndSendStartedAt = new Date();
     try {
       await this.deliveryBatchService.issueAndSend();
       this.logger.log('Complete Delivery');
     } catch (e) {
       this.logger.error(e);
-    } finally {
-      this.issueAndSendStartedAt = null;
     }
   }
 

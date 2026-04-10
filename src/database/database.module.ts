@@ -137,6 +137,9 @@ import { PopularProductEntity } from '../entity/popular.product.entity';
           IdempotencyKeyEntity,
           PopularProductEntity,
         ],
+        extra: {
+          connectionLimit: +configService.get('DATABASE_CONNECTION_LIMIT', 50),
+        },
         timezone: '+09:00',
         logger: configService.get('DATABASE_LOGGING') === 'true' ? new SqlLogger() : undefined,
         namingStrategy: new SnakeNamingStrategy(),
