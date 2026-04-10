@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Req } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Headers, Param, Post, Req } from '@nestjs/common';
 import { UserService } from '../application/user.service';
 import {
   ApiBadRequestResponse,
@@ -13,6 +13,7 @@ import {
   ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
 import {
+  E2eSessionReqDto,
   UserExistEmailReqDto,
   UserGetAccessByRefreshReqDto,
   UserGetRefreshByRefreshReqDto,
@@ -23,6 +24,7 @@ import {
   UserLoginPhoneVerifyReqDto,
   UserSignUpReqDto,
 } from './user.req.dto';
+import { ConfigService } from '@nestjs/config';
 import {
   UserAccessByRefreshResDto,
   UserLoginByEmailPasswordResDto,
@@ -35,7 +37,10 @@ import { Request } from 'express';
 @ApiTags('user')
 @Controller('')
 export class UserController {
-  constructor(private userService: UserService) {}
+  constructor(
+    private userService: UserService,
+    private configService: ConfigService,
+  ) {}
 
   @ApiOperation({
     summary: '이메일 중복 검사 API',
@@ -208,5 +213,49 @@ export class UserController {
   @Post('/user/refresh-by-refresh')
   getRefreshByToken(@Body() getBody: UserGetRefreshByRefreshReqDto) {
     return this.userService.getLoginTokenByRefresh(getBody.token);
+  }
+
+  // ============================================
+  // E2E 테스트 전용 엔드포인트 (비상용 환경만)
+  // ============================================
+
+  @ApiOperation({
+    summary: '[E2E] 테스트 전용 세션 bootstrap',
+    description: '비상용 환경에서 allowlist E2E 계정에 대해 인증 과정 없이 토큰을 즉시 발급합니다.',
+  })
+  @ApiOkResponse({
+    type: UserLoginByEmailPasswordResDto,
+  })
+  // ============================================
+  @Post('/user/testing/e2e-session')
+  e2eSession(
+    @Body() body: E2eSessionReqDto,
+    @Headers('x-e2e-secret') secret: string,
+  ) {
+    this.validateE2eSecret(secret);
+    return this.userService.e2eSession(body.email);
+  }
+
+  @ApiOperation({
+    summary: '[E2E] UI 로그인 smoke용 사전 인증 seed',
+    description: '비상용 환경에서 allowlist E2E 계정의 오늘 로그인 인증 완료 상태를 주입합니다.',
+  })
+  @ApiOkResponse()
+  // ============================================
+  @Post('/user/testing/seed-login-verification')
+  async e2eSeedLoginVerification(
+    @Body() body: E2eSessionReqDto,
+    @Headers('x-e2e-secret') secret: string,
+  ) {
+    this.validateE2eSecret(secret);
+    await this.userService.e2eSeedLoginVerification(body.email);
+    return;
+  }
+
+  private validateE2eSecret(secret: string): void {
+    const expected = this.configService.get<string>('E2E_SECRET_KEY', '');
+    if (!expected || secret !== expected) {
+      throw new BadRequestException('INVALID_E2E_SECRET');
+    }
   }
 }

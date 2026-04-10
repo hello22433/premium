@@ -237,10 +237,7 @@ export class UserService {
       }
     }
 
-    // 담당자 이메일 파싱 (쉼표 구분)
-    const personEmails = user.personEmail
-      ? user.personEmail.split(',').map((e) => e.trim()).filter((e) => e)
-      : [];
+    const personEmails = this.parsePersonEmails(user.personEmail);
 
     // KST 기준으로 오늘 날짜 비교
     // MySQL 세션 타임존이 +09:00(KST)로 설정되어 있으므로
@@ -315,10 +312,7 @@ export class UserService {
       throw new AuthException(AuthErrorCode.USER_NOT_FOUND);
     }
 
-    // 담당자 이메일 파싱
-    const personEmails = user.personEmail
-      ? user.personEmail.split(',').map((e) => e.trim()).filter((e) => e)
-      : [];
+    const personEmails = this.parsePersonEmails(user.personEmail);
 
     // 발송할 이메일 결정
     // - 담당자 이메일이 1개일 때: 계정 이메일로 발송
@@ -515,6 +509,104 @@ export class UserService {
     };
 
     return this.loginTokenValidator.issuance(loginUserInfo);
+  }
+
+  /**
+   * E2E 테스트 전용: 인증 과정 없이 세션(토큰)을 즉시 발급한다.
+   * ENVIRONMENT=prod 에서는 호출 불가.
+   */
+  async e2eSession(email: string): Promise<UserLoginByEmailPasswordResDto> {
+    const user = await this.findE2eUser(email);
+
+    const loginUserInfo: ILoginUserInfo = {
+      id: user.id,
+      email: user.email,
+      authority: user.authority,
+    };
+
+    const personEmails = this.parsePersonEmails(user.personEmail);
+    const loginVerifyMethod = user.loginVerifyMethod ?? LoginVerifyMethod.EMAIL;
+    const maskedPhone = MaskingUtil.maskPhoneNumber(user.personPhoneNumber);
+
+    this.logger.warn(`[E2E] e2e-session issued for ${email} (userId=${user.id})`);
+
+    return {
+      ...this.loginTokenValidator.issuance(loginUserInfo),
+      userId: user.id,
+      authority: user.authority,
+      personName: user.personName,
+      email: user.email,
+      isPasswordReset: false,
+      passwordResetReason: null,
+      isEmailVerify: true,
+      passwordChangedAt: user.passwordChangedAt,
+      passwordExpiryDays: null,
+      personEmails,
+      needEmailSelection: false,
+      loginVerifyMethod,
+      maskedPhoneNumber: maskedPhone,
+    };
+  }
+
+  /**
+   * E2E 테스트 전용: 해당 계정의 오늘 로그인 인증 완료 상태를 주입한다.
+   * UI 로그인 smoke 테스트에서 인증코드 분기를 건너뛰기 위한 용도.
+   */
+  async e2eSeedLoginVerification(email: string): Promise<void> {
+    const user = await this.findE2eUser(email);
+
+    // 오늘 이미 인증 완료 이력이 있으면 중복 생성하지 않음
+    const existingCount = await this.emailSendHistoryRepository.count({
+      where: {
+        userId: user.id,
+        type: EmailType.LOGIN,
+        isCertified: true,
+        createdAt: Raw((alias) => `DATE(${alias}) = CURDATE()`),
+      },
+    });
+
+    if (existingCount > 0) {
+      this.logger.warn(`[E2E] seed-login-verification skipped (already seeded) for ${email}`);
+      return;
+    }
+
+    await this.emailSendHistoryRepository.insert({
+      userId: user.id,
+      email: this.parsePersonEmails(user.personEmail)[0] || email,
+      type: EmailType.LOGIN,
+      code: '000000',
+      isCertified: true,
+      expireAt: addMinutes(new Date(), 5),
+    });
+
+    this.logger.warn(`[E2E] seed-login-verification created for ${email} (userId=${user.id})`);
+  }
+
+  /** 비상용 환경 + allowlist 검증 후 E2E 계정 조회 */
+  private async findE2eUser(email: string): Promise<UserEntity> {
+    const env = this.configService.getOrThrow('ENVIRONMENT');
+    if (env === 'prod') {
+      throw new BadRequestException('NOT_AVAILABLE');
+    }
+
+    const allowedRaw = this.configService.get<string>('E2E_ALLOWED_EMAILS', '');
+    const allowedEmails = allowedRaw.split(',').map((e) => e.trim()).filter((e) => e);
+    if (!allowedEmails.includes(email)) {
+      throw new BadRequestException('E2E_ACCOUNT_NOT_ALLOWED');
+    }
+
+    const user = await this.userRepository.findOne({ where: { email } });
+    if (!user) {
+      throw new AuthException(AuthErrorCode.USER_NOT_FOUND);
+    }
+
+    return user;
+  }
+
+  private parsePersonEmails(personEmail: string | null): string[] {
+    return personEmail
+      ? personEmail.split(',').map((e) => e.trim()).filter((e) => e)
+      : [];
   }
 
   async delete(user: ILoginUserInfo) {

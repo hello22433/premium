@@ -220,6 +220,17 @@ export class UserLoginPhoneSendReqDto {
   readonly email: string;
 }
 
+export class E2eSessionReqDto {
+  @ApiProperty({
+    type: String,
+    description: 'E2E 테스트 계정 이메일',
+  })
+  // =================================
+  @IsNotEmpty()
+  @IsEmail()
+  readonly email: string;
+}
+
 export class UserLoginPhoneVerifyReqDto {
   @ApiProperty({
     description: '인증 이력 id',
