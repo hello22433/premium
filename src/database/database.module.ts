@@ -62,6 +62,7 @@ import { OrderReceiptEntity } from '../entity/order.receipt.entity';
 import { ProductSharedListFileEntity } from '../entity/product.shared.list.file.entity';
 import { OrderManualEntryEntity } from '../entity/order.manual.entry.entity';
 import { PinIssueDedupEntity } from '../entity/pin.issue.dedup.entity';
+import { SsgIssueLogEntity } from '../entity/ssg.issue.log.entity';
 import { EarlyDestroyRequestEntity } from '../entity/early.destroy.request.entity';
 import { EarlyDestroyRequestItemEntity } from '../entity/early.destroy.request.item.entity';
 import { IdempotencyKeyEntity } from '../entity/idempotency.key.entity';
@@ -132,6 +133,7 @@ import { PopularProductEntity } from '../entity/popular.product.entity';
           ProductSharedListFileEntity,
           OrderManualEntryEntity,
           PinIssueDedupEntity,
+          SsgIssueLogEntity,
           EarlyDestroyRequestEntity,
           EarlyDestroyRequestItemEntity,
           IdempotencyKeyEntity,

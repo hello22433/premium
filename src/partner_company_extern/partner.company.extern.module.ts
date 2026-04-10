@@ -21,12 +21,13 @@ import { GalaxiaPushController } from './api/galaxia.push.controller';
 import { GalaxiaIpGuard } from './api/galaxia.ip.guard';
 import { GalaxiaBarcodeLogEntity } from '../entity/galaxia.barcode.log.entity';
 import { PinIssueDedupEntity } from '../entity/pin.issue.dedup.entity';
+import { SsgIssueLogEntity } from '../entity/ssg.issue.log.entity';
 
 @Module({
   imports: [
     AuthModule,
     HttpModule.register({ timeout: 30000 }),
-    TypeOrmModule.forFeature([OrderDeliveryEntity, PartnerCompanyExternHistoryEntity, GalaxiaBarcodeLogEntity, PartnerCompanyEntity, PinIssueDedupEntity]),
+    TypeOrmModule.forFeature([OrderDeliveryEntity, PartnerCompanyExternHistoryEntity, GalaxiaBarcodeLogEntity, PartnerCompanyEntity, PinIssueDedupEntity, SsgIssueLogEntity]),
   ],
   providers: [
     {

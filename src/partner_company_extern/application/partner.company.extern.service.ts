@@ -2,6 +2,7 @@ import { ConflictException, Inject, Injectable, InternalServerErrorException, Lo
 import { InjectRepository } from '@nestjs/typeorm';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { PinIssueDedupEntity } from '../../entity/pin.issue.dedup.entity';
+import { SsgIssueLogEntity } from '../../entity/ssg.issue.log.entity';
 import { QueryFailedError, Repository } from 'typeorm';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 import { ICulture } from '../interface/culture';
@@ -53,6 +54,8 @@ export class PartnerCompanyExternService {
     private partnerCompanyRepository: Repository<PartnerCompanyEntity>,
     @InjectRepository(PinIssueDedupEntity)
     private pinIssueDedupRepository: Repository<PinIssueDedupEntity>,
+    @InjectRepository(SsgIssueLogEntity)
+    private ssgIssueLogRepository: Repository<SsgIssueLogEntity>,
     private cryptoCipher: CryptoCipher,
   ) {}
 
@@ -308,12 +311,14 @@ export class PartnerCompanyExternService {
       }
 
       // 1.1.6 신세계 상품권 발행
+      // PIN 생성~중복확인~INSERT 전체를 Mutex로 직렬화하여 동시 요청 간 PIN 충돌 방지
+      // (PM2 단일 인스턴스 전제)
       if (type === 'SSG') {
         if (!ssgEvent) {
           throw new InternalServerErrorException('ssg event 가 존재하지 않습니다.');
         }
 
-        // 1) 기존 PIN이 있으면 SSG DB 등록 여부 확인
+        // 1) 기존 PIN이 있으면 SSG DB 등록 여부 확인 (mutex 불필요: 새 PIN 생성과 경쟁하지 않음)
         let needsInsert = true;
         if (orderDelivery.barCode && orderDelivery.personalCode) {
           try {
@@ -345,73 +350,98 @@ export class PartnerCompanyExternService {
           }
         }
 
-        // 2) 새 PIN 생성 (최초 발송 또는 INSERT 실패 시) + 중복 확인
-        if (!orderDelivery.barCode || !orderDelivery.personalCode) {
-          const maxRetries = 5;
-          let generated = false;
-          for (let i = 0; i < maxRetries; i++) {
-            const { barCode, personalCode } = this.ssgIssue.generateSsgIssue();
+        // 2~4단계를 Mutex로 직렬화: PIN 생성~중복확인~INSERT 간 경쟁 조건 방지
+        context = await this.withSsgMutex(async () => {
+          // 2) 새 PIN 생성 (최초 발송 또는 INSERT 실패 시) + 2중 중복 확인
+          if (!orderDelivery.barCode || !orderDelivery.personalCode) {
+            const maxRetries = 5;
+            let generated = false;
+            for (let i = 0; i < maxRetries; i++) {
+              const { barCode, personalCode } = this.ssgIssue.generateSsgIssue();
 
-            // 생성한 PIN이 SSG DB에 이미 존재하는지 중복 확인
-            try {
-              await this.checkSsgWithRetry({
-                eventNo: ssgEvent.no,
-                eventSeq: ssgEvent.order,
-                vno: personalCode,
+              // 1차 중복 확인: 로컬 ssg_issue_log (빠름)
+              const localDuplicate = await this.ssgIssueLogRepository.findOne({
+                where: [
+                  { barCode },
+                  { personalCode },
+                ],
               });
-              // 조회 성공 = 중복
-              this.logger.warn(
-                `[SSG] PIN 중복 감지 - personalCode: ${personalCode}, 재생성 시도 (${i + 1}/${maxRetries})`,
-              );
-              continue;
-            } catch (e) {
-              if (e instanceof SsgCheckNotFoundError) {
-                // API 정상 응답 + 미등록 = 사용 가능
-                orderDelivery.barCode = barCode;
-                orderDelivery.personalCode = personalCode;
-                generated = true;
-                this.logger.log(`[SSG] PIN 생성 완료 - barCode: ${barCode}, personalCode: ${personalCode}`);
-                break;
+              if (localDuplicate) {
+                this.logger.warn(
+                  `[SSG] 로컬 블랙리스트 중복 감지 - barCode: ${barCode}, personalCode: ${personalCode}, 재생성 시도 (${i + 1}/${maxRetries})`,
+                );
+                continue;
               }
-              // 네트워크 에러 → 중복 여부 불명 → 안전을 위해 중단
-              this.logger.error(`[SSG] PIN 중복 확인 중 네트워크 오류 발생 - personalCode: ${personalCode}, 안전을 위해 중단`);
-              throw e;
+
+              // 2차 중복 확인: SSG DB (느림)
+              try {
+                await this.checkSsgWithRetry({
+                  eventNo: ssgEvent.no,
+                  eventSeq: ssgEvent.order,
+                  vno: personalCode,
+                });
+                // 조회 성공 = 중복
+                this.logger.warn(
+                  `[SSG] SSG DB 중복 감지 - personalCode: ${personalCode}, 재생성 시도 (${i + 1}/${maxRetries})`,
+                );
+                continue;
+              } catch (e) {
+                if (e instanceof SsgCheckNotFoundError) {
+                  // API 정상 응답 + 미등록 = 사용 가능
+                  orderDelivery.barCode = barCode;
+                  orderDelivery.personalCode = personalCode;
+                  generated = true;
+                  this.logger.log(`[SSG] PIN 생성 완료 - barCode: ${barCode}, personalCode: ${personalCode}`);
+                  break;
+                }
+                // 네트워크 에러 → 중복 여부 불명 → 안전을 위해 중단
+                this.logger.error(`[SSG] PIN 중복 확인 중 네트워크 오류 발생 - personalCode: ${personalCode}, 안전을 위해 중단`);
+                throw e;
+              }
+            }
+            if (!generated) {
+              throw new Error(`SSG PIN 생성 ${maxRetries}회 시도 후에도 중복 발생`);
             }
           }
-          if (!generated) {
-            throw new Error(`SSG PIN 생성 ${maxRetries}회 시도 후에도 중복 발생`);
+
+          // 3) 유효기간 및 트랜잭션 ID 설정
+          // needsInsert=false(PIN이 이미 SSG DB에 등록된 경우)일 때는 기존 유효기간 보존
+          // → SSG DB의 실제 유효기간과 안내 유효기간 불일치 방지
+          if (needsInsert) {
+            orderDelivery.ssgTransactionId = SsgTransactionId.makeSsgTrade();
+            orderDelivery.expireAt = addDays(
+              new Date(),
+              orderDelivery.orderProductMapping.product.expireDay - 1,
+            );
+            const encourageDay = orderDelivery.orderProductMapping.encourageDay;
+            if (encourageDay) {
+              orderDelivery.encourageAt = subDays(orderDelivery.expireAt, encourageDay);
+            }
           }
-        }
 
-        // 3) 유효기간 및 트랜잭션 ID 설정
-        // needsInsert=false(PIN이 이미 SSG DB에 등록된 경우)일 때는 기존 유효기간 보존
-        // → SSG DB의 실제 유효기간과 안내 유효기간 불일치 방지
-        if (needsInsert) {
-          orderDelivery.ssgTransactionId = SsgTransactionId.makeSsgTrade();
-          orderDelivery.expireAt = addDays(
-            new Date(),
-            orderDelivery.orderProductMapping.product.expireDay - 1,
-          );
-          const encourageDay = orderDelivery.orderProductMapping.encourageDay;
-          if (encourageDay) {
-            orderDelivery.encourageAt = subDays(orderDelivery.expireAt, encourageDay);
-          }
-        }
+          // 4) SSG DB INSERT (필요한 경우에만)
+          if (needsInsert) {
+            let text = orderDelivery.orderProductMapping.sendContent ?? '';
 
-        // 4) SSG DB INSERT (필요한 경우에만)
-        if (needsInsert) {
-          let text = orderDelivery.orderProductMapping.sendContent ?? '';
+            if (orderDelivery.orderProductMapping.sendTailText) {
+              text += orderDelivery.orderProductMapping.sendTailText;
+            }
+            text = applyReplaceCharacters(text, orderDelivery);
 
-          if (orderDelivery.orderProductMapping.sendTailText) {
-            text += orderDelivery.orderProductMapping.sendTailText;
-          }
-          text = applyReplaceCharacters(text, orderDelivery);
+            const textForSsg = text + smsSsgTemplate(orderDelivery);
 
-          const textForSsg = text + smsSsgTemplate(orderDelivery);
+            const callBackNumber = orderDelivery.orderProductMapping.fromPhoneNumber || defaultFromPhoneNumber;
 
-          const callBackNumber = orderDelivery.orderProductMapping.fromPhoneNumber || defaultFromPhoneNumber;
-          const response = await this.withSsgMutex(() =>
-            this.ssgIssue.issue({
+            // SSG INSERT 직전: 로컬 블랙리스트에 기록 (REQUIRES_NEW → 롤백 불가)
+            await this.saveSsgIssueLog(
+              orderDelivery.barCode!,
+              orderDelivery.personalCode!,
+              orderDelivery.id,
+              orderDelivery.ssgTransactionId!,
+              ssgEvent.no,
+            );
+
+            const response = await this.ssgIssue.issue({
               eventNo: ssgEvent.no,
               eventSeq: ssgEvent.order,
               eventKey: ssgEvent.code,
@@ -422,10 +452,12 @@ export class PartnerCompanyExternService {
               msgContent: textForSsg,
               trId: orderDelivery.ssgTransactionId!,
               callBack: callBackNumber,
-            }),
-          );
-          context = JSON.stringify(response);
-        }
+            });
+            return JSON.stringify(response);
+          }
+
+          return '';
+        });
 
         // SSG의 SsgCoupon.do는 Oracle INSERT만 수행하며 문자 발송은 하지 않음
         // actualSendAt은 실제 SMS/알림톡 발송 성공 시 delivery.batch.service에서 설정됨
@@ -495,6 +527,28 @@ export class PartnerCompanyExternService {
         });
       }
     }
+  }
+
+  /**
+   * SSG INSERT 시도 전 로컬 블랙리스트에 기록 (메인 트랜잭션 롤백 시에도 유지)
+   * INSERT 성공/실패 여부와 무관하게 이 PIN은 재사용하지 않는다.
+   */
+  @Transactional({ propagation: Propagation.REQUIRES_NEW })
+  private async saveSsgIssueLog(
+    barCode: string,
+    personalCode: string,
+    orderDeliveryId: number,
+    ssgTransactionId: string,
+    eventNo: string,
+  ): Promise<void> {
+    await this.ssgIssueLogRepository.insert({
+      barCode,
+      personalCode,
+      orderDeliveryId,
+      ssgTransactionId,
+      eventNo,
+      insertedAt: new Date(),
+    });
   }
 
   /**
