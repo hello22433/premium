@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
+import { randomInt } from 'crypto';
 import { firstValueFrom } from 'rxjs';
 import * as iconv from 'iconv-lite';
 import { Parser } from 'xml2js';
@@ -79,7 +80,7 @@ export class SsgIssue implements ISsgIssue {
 
   private generateCode(prefix: string, length: number): string {
     const max = Math.pow(10, length);
-    const randomNumber = Math.floor(Math.random() * max);
+    const randomNumber = randomInt(max);
     return prefix + randomNumber.toString().padStart(length, '0');
   }
 
