@@ -1,10 +1,14 @@
 import { Controller, Get, Post, Param, Query, UseGuards, ParseIntPipe } from '@nestjs/common';
 import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
 import { PartnerCompanyExternHistoryService } from '../application/partner.company.extern.history.service';
-import { GetPartnerCompanyExternHistoryListReqDto } from './partner.company.extern.history.req.dto';
+import {
+  GetPartnerCompanyExternHistoryFilterReqDto,
+  GetPartnerCompanyExternHistoryListReqDto,
+} from './partner.company.extern.history.req.dto';
 import {
   GetPartnerCompanyExternHistoryListResDto,
   GetPartnerCompanyTypesResDto,
+  GetResendTargetIdsResDto,
   ResendResultDto,
 } from './partner.company.extern.history.res.dto';
 import { AuthUserSuperAndOperationAdminGuard } from '../../auth/api/auth.user.super-operation-admin.guard';
@@ -51,6 +55,23 @@ export class PartnerCompanyExternHistoryController {
   @Get('/partner-company-extern-history/types')
   async getTypes(): Promise<GetPartnerCompanyTypesResDto> {
     return this.historyService.getPartnerCompanyTypes();
+  }
+
+  @ApiOperation({
+    summary: '재발송 대상 ID 목록 조회',
+    description: '현재 필터 조건에 해당하는 재발송 가능한(실패 + 미재발송) orderDelivery ID 목록을 조회합니다.',
+  })
+  @ApiOkResponse({
+    type: GetResendTargetIdsResDto,
+    description: '재발송 대상 ID 목록',
+  })
+  @Get('/partner-company-extern-history/resend-target-ids')
+  async getResendTargetIds(
+    @User() user: ILoginUserInfo,
+    @Query() dto: GetPartnerCompanyExternHistoryFilterReqDto,
+  ): Promise<GetResendTargetIdsResDto> {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.SEND_FAIL_HISTORY);
+    return this.historyService.getResendTargetIds(dto);
   }
 
   @ApiOperation({

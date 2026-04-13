@@ -90,3 +90,11 @@ export class ResendResultDto {
   @ApiProperty({ description: 'orderDelivery ID', nullable: true })
   orderDeliveryId: number | null;
 }
+
+export class GetResendTargetIdsResDto {
+  @ApiProperty({ description: '재발송 대상 orderDelivery ID 목록', type: [Number] })
+  orderDeliveryIds: number[];
+
+  @ApiProperty({ description: '전체 개수' })
+  totalCount: number;
+}
