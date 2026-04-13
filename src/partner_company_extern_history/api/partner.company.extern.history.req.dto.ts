@@ -3,7 +3,7 @@ import { IsOptional, IsString, IsInt, Min, IsEnum, IsBoolean, IsIn } from 'class
 import { Type, Transform } from 'class-transformer';
 import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
 
-export class GetPartnerCompanyExternHistoryListReqDto {
+export class GetPartnerCompanyExternHistoryFilterReqDto {
   @ApiPropertyOptional({
     description: '시작 날짜 (YYYY-MM-DD)',
     example: '2025-01-01',
@@ -31,6 +31,16 @@ export class GetPartnerCompanyExternHistoryListReqDto {
   type?: IPartnerCompanyType;
 
   @ApiPropertyOptional({
+    description: '검색어 (주문코드, 이벤트명)',
+    example: 'E001',
+  })
+  @IsOptional()
+  @IsString()
+  searchKeyword?: string;
+}
+
+export class GetPartnerCompanyExternHistoryListReqDto extends GetPartnerCompanyExternHistoryFilterReqDto {
+  @ApiPropertyOptional({
     description: '성공/실패 여부',
     example: false,
   })
@@ -48,14 +58,6 @@ export class GetPartnerCompanyExternHistoryListReqDto {
   @IsOptional()
   @IsIn(['FAIL', 'RESEND'])
   sendStatus?: 'FAIL' | 'RESEND';
-
-  @ApiPropertyOptional({
-    description: '검색어 (context 내 키워드, transactionId, 에러코드 등)',
-    example: 'E001',
-  })
-  @IsOptional()
-  @IsString()
-  searchKeyword?: string;
 
   @ApiPropertyOptional({
     description: '페이지 번호',

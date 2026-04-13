@@ -4,9 +4,13 @@ import { Repository } from 'typeorm';
 import { Transactional } from 'typeorm-transactional';
 import { PartnerCompanyExternHistoryEntity } from '../../entity/partner.company.extern.history.entity';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
-import { GetPartnerCompanyExternHistoryListReqDto } from '../api/partner.company.extern.history.req.dto';
+import {
+  GetPartnerCompanyExternHistoryFilterReqDto,
+  GetPartnerCompanyExternHistoryListReqDto,
+} from '../api/partner.company.extern.history.req.dto';
 import {
   GetPartnerCompanyExternHistoryListResDto,
+  GetResendTargetIdsResDto,
   PartnerCompanyExternHistoryViewDto,
   GetPartnerCompanyTypesResDto,
   ResendResultDto,
@@ -49,18 +53,13 @@ export class PartnerCompanyExternHistoryService {
   ) {}
 
   /**
-   * 발송 실패 내역 목록 조회
-   * orderDelivery.status = FAIL 기준으로 조회 (중복 없이 최종 실패 건만)
+   * 공통 필터 쿼리빌더 생성
    */
-  async getHistoryList(dto: GetPartnerCompanyExternHistoryListReqDto): Promise<GetPartnerCompanyExternHistoryListResDto> {
-    const { startAt, endAt, type, searchKeyword, page, take } = dto;
+  private createFilteredQueryBuilder(filter: GetPartnerCompanyExternHistoryFilterReqDto) {
+    const { startAt, endAt, type, searchKeyword } = filter;
 
-    // orderDelivery 기준으로 조회 (status = FAIL)
-    // 정렬용 가상 컬럼: actualSendAt 우선, 없으면 updatedAt (핀발급실패 시 actualSendAt이 NULL)
-    const dateCoalesceExpr = 'COALESCE(`orderDelivery`.`actual_send_at`, `orderDelivery`.`failed_at`, `orderDelivery`.`updated_at`)';
-    let queryBuilder = this.orderDeliveryRepository
+    const queryBuilder = this.orderDeliveryRepository
       .createQueryBuilder('orderDelivery')
-      .addSelect(dateCoalesceExpr, 'sortDate')
       .leftJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
       .leftJoinAndSelect('orderProductMapping.order', 'order')
       .leftJoinAndSelect('orderProductMapping.product', 'product')
@@ -68,7 +67,6 @@ export class PartnerCompanyExternHistoryService {
       .where('orderDelivery.deletedAt IS NULL')
       .andWhere('(orderDelivery.status IN (:...statuses) OR orderDelivery.resendAt IS NOT NULL)', { statuses: RESENDABLE_FAIL_STATUSES });
 
-    // 기간 필터 (actualSendAt이 없는 경우 updatedAt으로 대체)
     const dateColumn = 'COALESCE(orderDelivery.actualSendAt, orderDelivery.failedAt, orderDelivery.updatedAt)';
     if (startAt) {
       queryBuilder.andWhere(`${dateColumn} >= :startAt`, { startAt: `${startAt} 00:00:00` });
@@ -77,10 +75,30 @@ export class PartnerCompanyExternHistoryService {
       queryBuilder.andWhere(`${dateColumn} <= :endAt`, { endAt: `${endAt} 23:59:59` });
     }
 
-    // 협력사 타입 필터
     if (type) {
       queryBuilder.andWhere('partnerCompany.type = :type', { type });
     }
+
+    if (searchKeyword) {
+      queryBuilder.andWhere(
+        '(order.code LIKE :searchKeyword OR order.eventName LIKE :searchKeyword)',
+        { searchKeyword: `%${searchKeyword}%` },
+      );
+    }
+
+    return queryBuilder;
+  }
+
+  /**
+   * 발송 실패 내역 목록 조회
+   * orderDelivery.status = FAIL 기준으로 조회 (중복 없이 최종 실패 건만)
+   */
+  async getHistoryList(dto: GetPartnerCompanyExternHistoryListReqDto): Promise<GetPartnerCompanyExternHistoryListResDto> {
+    const { page, take } = dto;
+
+    const dateCoalesceExpr = 'COALESCE(`orderDelivery`.`actual_send_at`, `orderDelivery`.`failed_at`, `orderDelivery`.`updated_at`)';
+    const queryBuilder = this.createFilteredQueryBuilder(dto)
+      .addSelect(dateCoalesceExpr, 'sortDate');
 
     // 발송상태 필터
     if (dto.sendStatus === 'FAIL') {
@@ -90,15 +108,7 @@ export class PartnerCompanyExternHistoryService {
       queryBuilder.andWhere('orderDelivery.resendAt IS NOT NULL');
     }
 
-    // 키워드 검색 (주문코드, 이벤트명)
-    if (searchKeyword) {
-      queryBuilder.andWhere(
-        '(order.code LIKE :searchKeyword OR order.eventName LIKE :searchKeyword)',
-        { searchKeyword: `%${searchKeyword}%` },
-      );
-    }
-
-    // 페이징 및 정렬 (actualSendAt 우선, 없으면 updatedAt)
+    // 페이징 및 정렬
     const skip = (page - 1) * take;
     queryBuilder.orderBy('sortDate', 'DESC').skip(skip).take(take);
 
@@ -120,6 +130,25 @@ export class PartnerCompanyExternHistoryService {
       totalCount,
       totalPage: Math.ceil(totalCount / take),
       currentPage: page,
+    };
+  }
+
+  /**
+   * 재발송 대상 orderDelivery ID 목록 조회
+   * 현재 필터 조건에 해당하는 실패 건(재발송 완료 제외)의 ID만 반환
+   */
+  async getResendTargetIds(dto: GetPartnerCompanyExternHistoryFilterReqDto): Promise<GetResendTargetIdsResDto> {
+    const queryBuilder = this.createFilteredQueryBuilder(dto)
+      .andWhere('orderDelivery.status IN (:...failStatuses)', { failStatuses: RESENDABLE_FAIL_STATUSES })
+      .andWhere('orderDelivery.resendAt IS NULL');
+
+    const rows: { orderDelivery_id: number }[] = await queryBuilder
+      .select('orderDelivery.id')
+      .getRawMany();
+
+    return {
+      orderDeliveryIds: rows.map((row) => row.orderDelivery_id),
+      totalCount: rows.length,
     };
   }
 
