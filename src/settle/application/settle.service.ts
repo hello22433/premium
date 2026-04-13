@@ -2118,22 +2118,7 @@ export class SettleService {
     }
 
     // 폐기 복구 금액 조회 (DISCARD_RESTORE ActivityLog에서 orderId별 합산)
-    const discardRestoreMap = new Map<number, number>();
-    if (orderIds.length > 0) {
-      const restoreLogs = await this.activityLogRepository
-        .createQueryBuilder('al')
-        .select("JSON_EXTRACT(al.requestParams, '$.orderId')", 'orderId')
-        .addSelect("SUM(JSON_EXTRACT(al.requestParams, '$.restoreAmount'))", 'totalRestore')
-        .where('al.actionType = :actionType', { actionType: ActivityLogActionType.DISCARD_RESTORE })
-        .andWhere("JSON_EXTRACT(al.requestParams, '$.orderId') IN (:...orderIds)", { orderIds })
-        .andWhere('al.deletedAt IS NULL')
-        .groupBy("JSON_EXTRACT(al.requestParams, '$.orderId')")
-        .getRawMany();
-
-      for (const row of restoreLogs) {
-        discardRestoreMap.set(Number(row.orderId), Number(row.totalRestore) || 0);
-      }
-    }
+    const discardRestoreMap = await this.getDiscardRestoreAmounts(orderIds);
 
     const resultList: SettleUserPerDetailViewDto[] = orderList.map((order) => {
       const mappings = order.orderProductMappings;
@@ -2192,6 +2177,12 @@ export class SettleService {
       throw new InternalServerErrorException('과금 대상 유저가 존재하지 않습니다.');
     }
 
+    // 폐기 복구 금액 차감 (이중 복구 방지)
+    const discardRestoreMap = !order.isSettleBalance
+      ? await this.getDiscardRestoreAmounts([order.id])
+      : new Map<number, number>();
+    const netSettleAmount = order.settleAmount - (discardRestoreMap.get(order.id) ?? 0);
+
     // 선정산(PRE_PAYMENT): 토글 허용
     if (user.settleCondition === IUserSettleCondition.PRE_PAYMENT) {
       const allowedForPrePayment = [
@@ -2206,11 +2197,11 @@ export class SettleService {
       if (!order.isSettleBalance) {
         if (settleStatus === SettleUserOrderDetailEnum.SETTLE_COMPLETE && order.settleStatus !== SettleUserOrderDetailEnum.SETTLE_COMPLETE) {
           order.isSettleComplete = true;
-          user.allSettleAmount -= order.settleAmount;
+          user.allSettleAmount -= netSettleAmount;
           await this.userRepository.save(user);
         } else if (settleStatus === SettleUserOrderDetailEnum.UNSETTLE_NORMAL && order.settleStatus === SettleUserOrderDetailEnum.SETTLE_COMPLETE) {
           order.isSettleComplete = false;
-          user.allSettleAmount += order.settleAmount;
+          user.allSettleAmount += netSettleAmount;
           await this.userRepository.save(user);
         }
       }
@@ -2229,7 +2220,7 @@ export class SettleService {
 
     if (settleStatus === SettleUserOrderDetailEnum.SETTLE_COMPLETE) {
       order.isSettleComplete = true;
-      user.allSettleAmount -= order.settleAmount;
+      user.allSettleAmount -= netSettleAmount;
     }
 
     await this.userRepository.save(user);
@@ -2267,6 +2258,12 @@ export class SettleService {
       : [];
     const userMap = new Map<number, UserEntity>(users.map((u) => [u.id, u]));
 
+    // 폐기 복구 금액 조회 (이중 복구 방지: 폐기 시 이미 복구된 금액을 확정 복구에서 차감)
+    const confirmTargetOrderIds = orders
+      .filter((o) => o.settleStatus !== SettleUserOrderDetailEnum.SETTLE_COMPLETE && !o.isSettleBalance)
+      .map((o) => o.id);
+    const discardRestoreMap = await this.getDiscardRestoreAmounts(confirmTargetOrderIds);
+
     for (const order of orders) {
       try {
         // 이미 정산완료인 건은 스킵
@@ -2284,12 +2281,16 @@ export class SettleService {
           continue;
         }
 
+        // 폐기 복구 금액 차감: settleAmount에서 이미 복구된 폐기 금액을 뺀 순액만 복구
+        const discardAmount = discardRestoreMap.get(order.id) ?? 0;
+        const netSettleAmount = order.settleAmount - discardAmount;
+
         // 선정산(PRE_PAYMENT): settleStatus 변경 + 한도 사용 건은 allSettleAmount 차감
         if (user.settleCondition === IUserSettleCondition.PRE_PAYMENT) {
           order.settleStatus = SettleUserOrderDetailEnum.SETTLE_COMPLETE;
           if (!order.isSettleBalance) {
             order.isSettleComplete = true;
-            user.allSettleAmount -= order.settleAmount;
+            user.allSettleAmount -= netSettleAmount;
           }
           await this.orderRepository.save(order);
           success.push(order.id);
@@ -2300,7 +2301,7 @@ export class SettleService {
         order.settleStatus = SettleUserOrderDetailEnum.SETTLE_COMPLETE;
         order.isSettleComplete = true;
         await this.orderRepository.save(order);
-        user.allSettleAmount -= order.settleAmount;
+        user.allSettleAmount -= netSettleAmount;
         success.push(order.id);
       } catch (e) {
         failed.push({ orderId: order.id, reason: e.message || '처리 중 오류가 발생했습니다.' });
@@ -2946,5 +2947,28 @@ export class SettleService {
     });
 
     return { fileName, filePath };
+  }
+
+  /**
+   * 주문별 폐기 복구 금액 조회 (DISCARD_RESTORE ActivityLog에서 합산)
+   */
+  private async getDiscardRestoreAmounts(orderIds: number[]): Promise<Map<number, number>> {
+    const map = new Map<number, number>();
+    if (orderIds.length === 0) return map;
+
+    const restoreLogs = await this.activityLogRepository
+      .createQueryBuilder('al')
+      .select("JSON_EXTRACT(al.requestParams, '$.orderId')", 'orderId')
+      .addSelect("SUM(JSON_EXTRACT(al.requestParams, '$.restoreAmount'))", 'totalRestore')
+      .where('al.actionType = :actionType', { actionType: ActivityLogActionType.DISCARD_RESTORE })
+      .andWhere("JSON_EXTRACT(al.requestParams, '$.orderId') IN (:...orderIds)", { orderIds })
+      .andWhere('al.deletedAt IS NULL')
+      .groupBy("JSON_EXTRACT(al.requestParams, '$.orderId')")
+      .getRawMany();
+
+    for (const row of restoreLogs) {
+      map.set(Number(row.orderId), Number(row.totalRestore) || 0);
+    }
+    return map;
   }
 }
