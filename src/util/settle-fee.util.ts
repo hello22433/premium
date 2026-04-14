@@ -1,5 +1,6 @@
 import { OrderDeliveryEntity } from '../entity/order.delivery.entity';
 import { OrderProductMappingEntity } from '../entity/order.product.mapping.entity';
+import { OrderFeeCalculator, applyCardSurcharge } from '../order/domain/order.fee.calculator';
 import { IPriceAdjustment } from '../user_discount/interface/price.adjustment';
 
 /**
@@ -19,4 +20,22 @@ export function getEffectivePriceAdjustment(
   mapping: Pick<OrderProductMappingEntity, 'priceAdjustment'>,
 ): IPriceAdjustment | null {
   return delivery?.settlePriceAdjustment ?? mapping.priceAdjustment;
+}
+
+/**
+ * 정산단가 계산 (할인/할증 + 카드할증 적용)
+ * 폐기/실패 환불, 정산확정 등에서 공통으로 사용
+ */
+export function calculateSettlementPrice(
+  mapping: OrderProductMappingEntity,
+  cardSurchargeApplied: boolean,
+  delivery?: OrderDeliveryEntity,
+): number {
+  let price = mapping.product.price;
+  const fee = getEffectiveFee(delivery, mapping);
+  const priceAdjustment = getEffectivePriceAdjustment(delivery, mapping);
+  if (fee !== null && priceAdjustment) {
+    price = OrderFeeCalculator({ fee, priceAdjustment, price });
+  }
+  return applyCardSurcharge(price, cardSurchargeApplied);
 }
