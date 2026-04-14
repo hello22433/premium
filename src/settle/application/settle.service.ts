@@ -84,6 +84,8 @@ import { AdminListViewDto } from '../api/dto/admin.list.view.dto';
 import { IUserStatus } from '../../user/interface/user.status';
 import { SettleOtherProductDetailDto } from '../api/dto/settle.other.product.dto';
 import { OrderDeliveryCouponStatus, couponStatusToKorean } from '../../delivery/interface/order.delivery.coupon.status';
+import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
+import { calculateSettlementPrice } from '../../util/settle-fee.util';
 import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { UserDiscountEntity } from '../../entity/user.discount.entity';
@@ -103,6 +105,8 @@ import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { GalaxiaBarcodeLogEntity } from '../../entity/galaxia.barcode.log.entity';
 import { SettleGalaxiaListViewDto } from '../api/dto/settle.galaxia.list.view.dto';
 import { IProductSettleMethod } from '../../product/interface/product.settle.method';
+
+const SETTLE_BLOCKED_BY_PENDING_DELIVERY_MSG = '미완료 발송 건이 있어 정산확정할 수 없습니다.';
 
 @Injectable()
 export class SettleService {
@@ -2177,11 +2181,13 @@ export class SettleService {
       throw new InternalServerErrorException('과금 대상 유저가 존재하지 않습니다.');
     }
 
-    // 폐기 복구 금액 차감 (이중 복구 방지)
-    const discardRestoreMap = !order.isSettleBalance
-      ? await this.getDiscardRestoreAmounts([order.id])
-      : new Map<number, number>();
-    const netSettleAmount = order.settleAmount - (discardRestoreMap.get(order.id) ?? 0);
+    // 정산확정 대상 금액 및 미완료 배송 확인 (이중 복구/차감 방지, WAIT/TEMP 가드)
+    const summary = await this.getOrderSettlementSummary([order.id]);
+    const entry = summary.get(order.id);
+    if (settleStatus === SettleUserOrderDetailEnum.SETTLE_COMPLETE && entry?.hasPending) {
+      throw new BadRequestException(SETTLE_BLOCKED_BY_PENDING_DELIVERY_MSG);
+    }
+    const netSettleAmount = entry?.netAmount ?? 0;
 
     // 선정산(PRE_PAYMENT): 토글 허용
     if (user.settleCondition === IUserSettleCondition.PRE_PAYMENT) {
@@ -2258,11 +2264,11 @@ export class SettleService {
       : [];
     const userMap = new Map<number, UserEntity>(users.map((u) => [u.id, u]));
 
-    // 폐기 복구 금액 조회 (이중 복구 방지: 폐기 시 이미 복구된 금액을 확정 복구에서 차감)
+    // 정산확정 대상 금액 및 미완료 배송 확인 (이중 복구/차감 방지, WAIT/TEMP 가드)
     const confirmTargetOrderIds = orders
-      .filter((o) => o.settleStatus !== SettleUserOrderDetailEnum.SETTLE_COMPLETE && !o.isSettleBalance)
+      .filter((o) => o.settleStatus !== SettleUserOrderDetailEnum.SETTLE_COMPLETE)
       .map((o) => o.id);
-    const discardRestoreMap = await this.getDiscardRestoreAmounts(confirmTargetOrderIds);
+    const summaryMap = await this.getOrderSettlementSummary(confirmTargetOrderIds);
 
     for (const order of orders) {
       try {
@@ -2281,9 +2287,13 @@ export class SettleService {
           continue;
         }
 
-        // 폐기 복구 금액 차감: settleAmount에서 이미 복구된 폐기 금액을 뺀 순액만 복구
-        const discardAmount = discardRestoreMap.get(order.id) ?? 0;
-        const netSettleAmount = order.settleAmount - discardAmount;
+        // 미완료 발송 가드
+        const summary = summaryMap.get(order.id);
+        if (summary?.hasPending) {
+          failed.push({ orderId: order.id, reason: SETTLE_BLOCKED_BY_PENDING_DELIVERY_MSG });
+          continue;
+        }
+        const netSettleAmount = summary?.netAmount ?? 0;
 
         // 선정산(PRE_PAYMENT): settleStatus 변경 + 한도 사용 건은 allSettleAmount 차감
         if (user.settleCondition === IUserSettleCondition.PRE_PAYMENT) {
@@ -2968,6 +2978,57 @@ export class SettleService {
 
     for (const row of restoreLogs) {
       map.set(Number(row.orderId), Number(row.totalRestore) || 0);
+    }
+    return map;
+  }
+
+  /**
+   * 주문별 정산확정 대상 금액 및 미완료 배송 여부 조회
+   * - netAmount: 유효 delivery의 정산단가 합계
+   *   (status COMPLETE/COMPLETE_SMS, couponStatus CANCEL/REFUND_CANCEL 제외)
+   * - hasPending: WAIT/TEMP 상태 delivery 존재 여부 (정산확정 차단 판단용)
+   */
+  private async getOrderSettlementSummary(
+    orderIds: number[],
+  ): Promise<Map<number, { netAmount: number; hasPending: boolean }>> {
+    const map = new Map<number, { netAmount: number; hasPending: boolean }>();
+    if (orderIds.length === 0) return map;
+
+    for (const id of orderIds) {
+      map.set(id, { netAmount: 0, hasPending: false });
+    }
+
+    const deliveries = await this.orderDeliveryRepository.find({
+      where: {
+        orderProductMapping: { order: { id: In(orderIds) } },
+        deletedAt: IsNull(),
+      },
+      relations: ['orderProductMapping', 'orderProductMapping.product', 'orderProductMapping.order'],
+    });
+
+    for (const d of deliveries) {
+      const orderId = d.orderProductMapping.order.id;
+      const entry = map.get(orderId);
+      if (!entry) continue;
+
+      if (d.status === IOrderDeliveryStatus.WAIT || d.status === IOrderDeliveryStatus.TEMP) {
+        entry.hasPending = true;
+        continue;
+      }
+
+      if (d.status !== IOrderDeliveryStatus.COMPLETE && d.status !== IOrderDeliveryStatus.COMPLETE_SMS) continue;
+      if (
+        d.couponStatus === OrderDeliveryCouponStatus.CANCEL ||
+        d.couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL
+      ) {
+        continue;
+      }
+
+      entry.netAmount += calculateSettlementPrice(
+        d.orderProductMapping,
+        d.orderProductMapping.order.cardSurchargeApplied,
+        d,
+      );
     }
     return map;
   }

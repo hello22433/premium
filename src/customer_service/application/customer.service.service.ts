@@ -49,8 +49,7 @@ import { ActivityLogActionType } from 'src/activity_log/interface/activity.log.a
 import { ActivityLogResult } from 'src/activity_log/interface/activity.log.result';
 import { UserEntity } from 'src/entity/user.entity';
 import { UserCompanyEntity } from 'src/entity/user.company.entity';
-import { OrderFeeCalculator, applyCardSurcharge } from '../../order/domain/order.fee.calculator';
-import { getEffectiveFee, getEffectivePriceAdjustment } from '../../util/settle-fee.util';
+import { calculateSettlementPrice } from '../../util/settle-fee.util';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 import { randomUUID } from 'crypto';
 import { Response } from 'express';
@@ -116,13 +115,7 @@ export class CustomerServiceService {
       return;
     }
 
-    let price = mapping.product.price;
-    const effectiveFee = getEffectiveFee(orderDelivery, mapping);
-    const effectivePriceAdjustment = getEffectivePriceAdjustment(orderDelivery, mapping);
-    if (effectiveFee !== null && effectivePriceAdjustment) {
-      price = OrderFeeCalculator({ fee: effectiveFee, priceAdjustment: effectivePriceAdjustment, price });
-    }
-    const restoreAmount = applyCardSurcharge(price, order.cardSurchargeApplied);
+    const restoreAmount = calculateSettlementPrice(mapping, order.cardSurchargeApplied, orderDelivery);
 
     // 과금 대상 사용자 (대행주문 시 clientUserId)
     const billingUserId = order.clientUserId ?? order.userId;
