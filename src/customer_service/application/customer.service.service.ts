@@ -95,6 +95,7 @@ export class CustomerServiceService {
   /**
    * 폐기 시 정산금액(할인가) 기준으로 예치금/여신 복구
    * - FAIL/FAIL_SMS: 이미 refundForFail()로 환불됨 → 스킵
+   * - REFUND_CANCEL: 수령 고객 환불 건, 고객사 정산과 무관 → 스킵
    * - isSettleBalance=true: balance 복구 (company/account mode 분기)
    * - isSettleBalance=false: allSettleAmount 차감 (여신 복구)
    */
@@ -112,6 +113,11 @@ export class CustomerServiceService {
       orderDelivery.status === IOrderDeliveryStatus.FAIL ||
       orderDelivery.status === IOrderDeliveryStatus.FAIL_SMS
     ) {
+      return;
+    }
+
+    // 환불폐기는 수령 고객 환불 트랙 (고객사 ↔ 우리 정산과 무관)
+    if (orderDelivery.couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL) {
       return;
     }
 
@@ -1224,6 +1230,9 @@ export class CustomerServiceService {
         newDelivery.replaceCharacter3 = discardedDelivery.replaceCharacter3;
         newDelivery.replacedFromId = discardedDelivery.id;
         newDelivery.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
+        // 원본 정산 조건 보존 (SSG 중복할인 등 delivery 레벨 fee/adjustment)
+        newDelivery.settleFee = discardedDelivery.settleFee;
+        newDelivery.settlePriceAdjustment = discardedDelivery.settlePriceAdjustment;
 
         if (discardedDelivery.emailReceiverPhone) {
           newDelivery.emailReceiverPhone = discardedDelivery.emailReceiverPhone;

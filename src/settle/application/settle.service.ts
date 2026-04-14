@@ -3017,10 +3017,8 @@ export class SettleService {
       }
 
       if (d.status !== IOrderDeliveryStatus.COMPLETE && d.status !== IOrderDeliveryStatus.COMPLETE_SMS) continue;
-      if (
-        d.couponStatus === OrderDeliveryCouponStatus.CANCEL ||
-        d.couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL
-      ) {
+      // CANCEL(고객사 폐기 요청)만 정산 제외. REFUND_CANCEL(수령 고객 환불)은 고객사 정산 100% 유지
+      if (d.couponStatus === OrderDeliveryCouponStatus.CANCEL) {
         continue;
       }
 
