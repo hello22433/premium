@@ -205,11 +205,13 @@ export class DeliveryBatchService {
       if (order.isSettleBalance) {
         await this.userManagementService.addBalance(userId, settlementPrice, `발송 실패 환불 (주문번호: ${order.id})`);
       } else {
-        const user = await this.userRepository.findOne({ where: { id: userId } });
-        if (user) {
-          user.allSettleAmount -= settlementPrice;
-          await this.userRepository.save(user);
-        }
+        await this.userRepository
+          .createQueryBuilder()
+          .update()
+          .set({ allSettleAmount: () => 'all_settle_amount - :amount' })
+          .where('id = :id', { id: userId })
+          .setParameters({ amount: settlementPrice })
+          .execute();
       }
 
       this.logger.log(`[REFUND] 환불 완료 - orderDelivery.id: ${orderDelivery.id}, amount: ${settlementPrice} (정가: ${productPrice})`);
@@ -814,13 +816,15 @@ export class DeliveryBatchService {
 
       // 사용자 잔액/정산은 정산단가(settlementPrice) 기준
       if (order.isSettleBalance) {
-        await this.userManagementService.deductBalance(userId, settlementPrice);
+        await this.userManagementService.deductBalance(userId, settlementPrice, `재발송 역환불 (주문번호: ${order.id})`);
       } else {
-        const user = await this.userRepository.findOne({ where: { id: userId } });
-        if (user) {
-          user.allSettleAmount += settlementPrice;
-          await this.userRepository.save(user);
-        }
+        await this.userRepository
+          .createQueryBuilder()
+          .update()
+          .set({ allSettleAmount: () => 'all_settle_amount + :amount' })
+          .where('id = :id', { id: userId })
+          .setParameters({ amount: settlementPrice })
+          .execute();
       }
 
       this.logger.log(`[RESEND] 환불 복구 완료 - orderDelivery.id: ${orderDelivery.id}, amount: ${settlementPrice} (정가: ${productPrice})`);

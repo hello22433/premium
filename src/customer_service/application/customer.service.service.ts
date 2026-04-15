@@ -131,6 +131,7 @@ export class CustomerServiceService {
     });
     if (!user) return;
 
+    // atomic UPDATE로 동시성 안전하게 금액 조작
     let beforeBalance: number;
     let afterBalance: number;
 
@@ -138,22 +139,40 @@ export class CustomerServiceService {
       // 선정산 or 정산완료 → balance 복구
       const company = user.company;
       if (company?.balanceManagementType === 'COMPANY') {
-        beforeBalance = company.balance;
-        company.balance += restoreAmount;
-        afterBalance = company.balance;
-        await queryRunner.manager.save(UserCompanyEntity, company);
+        await queryRunner.manager
+          .createQueryBuilder()
+          .update(UserCompanyEntity)
+          .set({ balance: () => 'balance + :amount' })
+          .where('id = :id', { id: company.id })
+          .setParameters({ amount: restoreAmount })
+          .execute();
+        const fresh = await queryRunner.manager.findOne(UserCompanyEntity, { where: { id: company.id } });
+        afterBalance = fresh!.balance;
+        beforeBalance = afterBalance - restoreAmount;
       } else {
-        beforeBalance = user.balance;
-        user.balance += restoreAmount;
-        afterBalance = user.balance;
-        await queryRunner.manager.save(UserEntity, user);
+        await queryRunner.manager
+          .createQueryBuilder()
+          .update(UserEntity)
+          .set({ balance: () => 'balance + :amount' })
+          .where('id = :id', { id: user.id })
+          .setParameters({ amount: restoreAmount })
+          .execute();
+        const fresh = await queryRunner.manager.findOne(UserEntity, { where: { id: user.id } });
+        afterBalance = fresh!.balance;
+        beforeBalance = afterBalance - restoreAmount;
       }
     } else {
       // 후정산 미정산 → allSettleAmount 차감 (여신 복구)
-      beforeBalance = user.allSettleAmount;
-      user.allSettleAmount -= restoreAmount;
-      afterBalance = user.allSettleAmount;
-      await queryRunner.manager.save(UserEntity, user);
+      await queryRunner.manager
+        .createQueryBuilder()
+        .update(UserEntity)
+        .set({ allSettleAmount: () => 'all_settle_amount - :amount' })
+        .where('id = :id', { id: user.id })
+        .setParameters({ amount: restoreAmount })
+        .execute();
+      const fresh = await queryRunner.manager.findOne(UserEntity, { where: { id: user.id } });
+      afterBalance = fresh!.allSettleAmount;
+      beforeBalance = afterBalance + restoreAmount;
     }
 
     // ActivityLog 기록 (DISCARD_RESTORE)

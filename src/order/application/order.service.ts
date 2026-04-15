@@ -2736,11 +2736,19 @@ export class OrderService {
     // 과금 대상 userId 결정 (대행주문인 경우 clientUserId, 아니면 userId)
     const billingUserId = order.clientUserId ?? order.userId;
 
-    // 사용자 정보 조회 (중복번호 체크 및 잔액 조정에 필요)
-    const oneUser = await this.userRepository.findOneOrFail({
-      where: { id: billingUserId },
-      relations: ['company'],
-    });
+    // 사용자 정보 조회 (중복번호 체크 및 잔액 조정에 필요) + 동시 잔액 조작 방지용 pessimistic lock
+    const oneUser = await this.userRepository
+      .createQueryBuilder('u')
+      .setLock('pessimistic_write')
+      .where('u.id = :id', { id: billingUserId })
+      .getOneOrFail();
+    if (oneUser.companyId) {
+      oneUser.company = await this.userCompanyRepository
+        .createQueryBuilder('c')
+        .setLock('pessimistic_write')
+        .where('c.id = :id', { id: oneUser.companyId })
+        .getOneOrFail();
+    }
 
     // balanceManagementType에 따른 balance 관리 모드 결정
     const isCompanyBalanceMode = oneUser.company?.balanceManagementType === 'COMPANY';
@@ -2971,11 +2979,17 @@ export class OrderService {
         order.isSettleBalance = false;
       }
 
-      // 5. 저장
+      // 5. 저장 (atomic UPDATE: 특정 필드만 반영해 stale overwrite 방지)
       order.settleAmount = finalAmount;
-      await this.userRepository.save(oneUser);
+      await this.userRepository.update(
+        { id: oneUser.id },
+        { balance: oneUser.balance, allSettleAmount: oneUser.allSettleAmount },
+      );
       if (isCompanyBalanceMode && oneUser.company) {
-        await this.userCompanyRepository.save(oneUser.company);
+        await this.userCompanyRepository.update(
+          { id: oneUser.company.id },
+          { balance: oneUser.company.balance },
+        );
       }
     } else {
       // === 기존 흐름: 차액 조정 ===
@@ -3064,9 +3078,15 @@ export class OrderService {
           }
         }
 
-        await this.userRepository.save(oneUser);
+        await this.userRepository.update(
+          { id: oneUser.id },
+          { balance: oneUser.balance, allSettleAmount: oneUser.allSettleAmount },
+        );
         if (isCompanyBalanceMode && oneUser.company) {
-          await this.userCompanyRepository.save(oneUser.company);
+          await this.userCompanyRepository.update(
+            { id: oneUser.company.id },
+            { balance: oneUser.company.balance },
+          );
         }
       }
 

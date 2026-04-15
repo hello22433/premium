@@ -401,6 +401,7 @@ export class UserManagementService {
 
   /**
    * 잔액 업데이트 공통 로직 (회사/계정 레벨 분기 처리)
+   * atomic UPDATE로 동시성 안전. beforeBalance/afterBalance는 UPDATE 후 재조회로 산출.
    */
   private async updateBalance(
     user: UserEntity,
@@ -408,16 +409,28 @@ export class UserManagementService {
     amount: number,
   ): Promise<{ beforeBalance: number; afterBalance: number }> {
     if (this.isCompanyBalanceMode(company)) {
-      const beforeBalance = company.balance;
-      company.balance += amount;
-      await this.userCompanyRepository.save(company);
-      return { beforeBalance, afterBalance: company.balance };
+      await this.userCompanyRepository
+        .createQueryBuilder()
+        .update()
+        .set({ balance: () => 'balance + :amount' })
+        .where('id = :id', { id: company.id })
+        .setParameters({ amount })
+        .execute();
+      const fresh = await this.userCompanyRepository.findOne({ where: { id: company.id } });
+      const afterBalance = fresh!.balance;
+      return { beforeBalance: afterBalance - amount, afterBalance };
     }
 
-    const beforeBalance = user.balance;
-    user.balance += amount;
-    await this.userRepository.save(user);
-    return { beforeBalance, afterBalance: user.balance };
+    await this.userRepository
+      .createQueryBuilder()
+      .update()
+      .set({ balance: () => 'balance + :amount' })
+      .where('id = :id', { id: user.id })
+      .setParameters({ amount })
+      .execute();
+    const fresh = await this.userRepository.findOne({ where: { id: user.id } });
+    const afterBalance = fresh!.balance;
+    return { beforeBalance: afterBalance - amount, afterBalance };
   }
 
   async modifyBalance(getBody: UserManagementModifyBalanceReqDto, operator: ILoginUserInfo) {
@@ -528,7 +541,10 @@ export class UserManagementService {
     return user.balance;
   }
 
-  async deductBalance(id: number, amount: number): Promise<void> {
+  /**
+   * 잔액 차감 (재발송 시 역환불). atomic conditional UPDATE로 잔액 부족 체크와 차감을 원자적으로 수행.
+   */
+  async deductBalance(id: number, amount: number, memo?: string): Promise<void> {
     const user = await this.userRepository.findOne({
       where: { id },
       relations: ['company'],
@@ -537,12 +553,57 @@ export class UserManagementService {
       throw new BadRequestException('존재하지 않는 계정입니다.');
     }
 
-    const currentBalance = this.getCurrentBalance(user, user.company);
-    if (currentBalance < amount) {
+    const company = user.company;
+    const isCompanyMode = this.isCompanyBalanceMode(company);
+    const targetId = isCompanyMode ? company!.id : user.id;
+
+    const result = isCompanyMode
+      ? await this.userCompanyRepository
+          .createQueryBuilder()
+          .update()
+          .set({ balance: () => 'balance - :amount' })
+          .where('id = :id AND balance >= :amount', { id: targetId, amount })
+          .setParameters({ amount })
+          .execute()
+      : await this.userRepository
+          .createQueryBuilder()
+          .update()
+          .set({ balance: () => 'balance - :amount' })
+          .where('id = :id AND balance >= :amount', { id: targetId, amount })
+          .setParameters({ amount })
+          .execute();
+
+    if (!result.affected) {
       throw new BadRequestException('잔액이 부족합니다.');
     }
 
-    await this.updateBalance(user, user.company, -amount);
+    const afterBalance = isCompanyMode
+      ? (await this.userCompanyRepository.findOne({ where: { id: targetId } }))!.balance
+      : (await this.userRepository.findOne({ where: { id: targetId } }))!.balance;
+    const beforeBalance = afterBalance + amount;
+
+    await this.activityLogService.createLog({
+      userId: 0,
+      userEmail: 'system@epopkon.com',
+      method: 'SYSTEM',
+      requestUrl: '/system/balance/refund-reverse',
+      actionType: ActivityLogActionType.BALANCE_REFUND_REVERSE,
+      ipAddress: '',
+      statusCode: 200,
+      result: ActivityLogResult.SUCCESS,
+      responseTime: 0,
+      requestParams: {
+        targetUserId: id,
+        targetUserEmail: user.email,
+        targetBusinessName: company?.businessName ?? '',
+        targetCompanyId: company?.id ?? null,
+        balanceManagementType: company?.balanceManagementType ?? 'ACCOUNT',
+        deductAmount: amount,
+        beforeBalance,
+        afterBalance,
+        memo: memo || '재발송 역환불',
+      },
+    });
   }
 
   async addBalance(id: number, amount: number, memo?: string): Promise<void> {
