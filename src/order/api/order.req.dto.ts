@@ -116,6 +116,15 @@ export class OrderGetDeliveryCompleteReportReqDto {
   @IsNumber()
   @Type(() => Number)
   id: number;
+
+  @ApiPropertyOptional({
+    description: '수신정보 마스킹 해제 (SUPER_ADMIN/OPERATION_ADMIN만 허용)',
+    default: false,
+  })
+  @IsOptional()
+  @Type(() => Boolean)
+  @IsBoolean()
+  unmasked?: boolean;
 }
 
 export class OrderGetDeliveryCompleteReportPdfReqDto {
@@ -134,6 +143,14 @@ export class OrderGetDeliveryCompleteReportPdfReqDto {
   @IsOptional()
   @IsString()
   source?: string;
+
+  @ApiPropertyOptional({
+    description: '수신정보 마스킹 해제 여부 (감사 로그 기록용)',
+    default: false,
+  })
+  @IsOptional()
+  @IsBoolean()
+  unmasked?: boolean;
 }
 
 export class OrderGetOrderCompleteReportReqDto extends OrderGetDeliveryCompleteReportReqDto {}

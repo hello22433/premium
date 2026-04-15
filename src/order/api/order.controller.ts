@@ -195,8 +195,11 @@ export class OrderController {
   })
   // ====================================================
   @Get('/order/delivery-complete/report')
-  getDeliveryCompleteReport(@Query() getQuery: OrderGetDeliveryCompleteReportReqDto) {
-    return this.orderService.getDeliveryCompleteReport(getQuery);
+  getDeliveryCompleteReport(
+    @Query() getQuery: OrderGetDeliveryCompleteReportReqDto,
+    @User() user: ILoginUserInfo,
+  ) {
+    return this.orderService.getDeliveryCompleteReport(getQuery, user);
   }
 
   @ApiOperation({
@@ -284,8 +287,13 @@ export class OrderController {
   })
   // ====================================================
   @Get('/order/delivery-complete/report-multiple')
-  getDeliveryCompleteReportMultiple(@Query('ids') ids: string, @Query('evidenceDate') evidenceDate?: string) {
-    return this.orderService.getDeliveryCompleteReportMultiple(ids, evidenceDate);
+  getDeliveryCompleteReportMultiple(
+    @Query('ids') ids: string,
+    @User() user: ILoginUserInfo,
+    @Query('evidenceDate') evidenceDate?: string,
+    @Query('unmasked') unmasked?: string,
+  ) {
+    return this.orderService.getDeliveryCompleteReportMultiple(ids, evidenceDate, user, unmasked === 'true');
   }
 
   @ApiOperation({
