@@ -264,7 +264,10 @@ export class CustomerServiceService {
 
     // 고객사 (userCompanyId)
     if (userCompanyId) {
-      queryBuilder.andWhere('user.companyId = :userCompanyId', { userCompanyId });
+      queryBuilder.andWhere(
+        '(user.companyId = :userCompanyId OR clientUser.companyId = :userCompanyId)',
+        { userCompanyId },
+      );
     }
 
     // 통합검색 (주문번호, 상품명, 상품코드, MMS제목, 수신정보를 OR 조건으로 검색)
@@ -1696,7 +1699,10 @@ export class CustomerServiceService {
 
     // 고객사 (userCompanyId)
     if (userCompanyId) {
-      queryBuilder.andWhere('user.companyId = :userCompanyId', { userCompanyId });
+      queryBuilder.andWhere(
+        '(user.companyId = :userCompanyId OR clientUser.companyId = :userCompanyId)',
+        { userCompanyId },
+      );
     }
 
     if (orderNumber) {
