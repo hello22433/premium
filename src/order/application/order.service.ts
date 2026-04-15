@@ -721,9 +721,18 @@ export class OrderService {
     };
   }
 
+  private canUnmaskDeliveryTarget(unmasked: boolean | undefined, user: ILoginUserInfo): boolean {
+    return (
+      unmasked === true &&
+      (user.authority === IUserAuthority.SUPER_ADMIN || user.authority === IUserAuthority.OPERATION_ADMIN)
+    );
+  }
+
   async getDeliveryCompleteReport(
     getQuery: OrderGetDeliveryCompleteReportReqDto,
+    user: ILoginUserInfo,
   ): Promise<OrderGetDeliveryCompleteReportResDto> {
+    const canUnmask = this.canUnmaskDeliveryTarget(getQuery.unmasked, user);
     const queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
@@ -778,14 +787,12 @@ export class OrderService {
           const targetToDecrypt = orderDelivery.originalDeliveryTarget || orderDelivery.deliveryTarget;
           const decryptedDeliveryTarget = this.cryptoCipher.safeDecryptDeliveryTarget(targetToDecrypt) ?? '';
 
-          // 파기된 경우('-')는 마스킹하지 않고 그대로 반환
+          // 파기('-')는 마스킹하지 않고 그대로, canUnmask=true면 원문 유지
           let finalDeliveryTarget = decryptedDeliveryTarget;
-          if (decryptedDeliveryTarget !== '-') {
+          if (decryptedDeliveryTarget !== '-' && !canUnmask) {
             if (orderProductMapping.sendMethod === 'EMAIL') {
-              // 이메일인 경우 이메일 마스킹
               finalDeliveryTarget = MaskingUtil.maskEmail(decryptedDeliveryTarget);
             } else {
-              // 전화번호인 경우 전화번호 마스킹
               finalDeliveryTarget = MaskingUtil.maskBarCode(decryptedDeliveryTarget);
             }
           }
@@ -920,7 +927,7 @@ export class OrderService {
       statusCode: 200,
       result: ActivityLogResult.SUCCESS,
       responseTime: 0,
-      requestParams: { orderId: getBody.id, source: getBody.source },
+      requestParams: { orderId: getBody.id, source: getBody.source, unmasked: getBody.unmasked === true },
     });
 
     return;
@@ -1099,7 +1106,13 @@ export class OrderService {
   /**
    * 다중 주문 발송완료 리포트 조회 (통합)
    */
-  async getDeliveryCompleteReportMultiple(ids: string, evidenceDate?: string): Promise<any> {
+  async getDeliveryCompleteReportMultiple(
+    ids: string,
+    evidenceDate: string | undefined,
+    user: ILoginUserInfo,
+    unmasked: boolean,
+  ): Promise<any> {
+    const canUnmask = this.canUnmaskDeliveryTarget(unmasked, user);
     const orderIds = ids.split(',').map((id) => parseInt(id.trim(), 10));
     // 증빙일자가 있으면 파싱
     const evidenceDateParsed = evidenceDate ? new Date(evidenceDate) : null;
@@ -1197,7 +1210,7 @@ export class OrderService {
             const decryptedDeliveryTarget = this.cryptoCipher.safeDecryptDeliveryTarget(targetToDecrypt) ?? '';
 
             let finalDeliveryTarget = decryptedDeliveryTarget;
-            if (decryptedDeliveryTarget !== '-') {
+            if (decryptedDeliveryTarget !== '-' && !canUnmask) {
               if (orderProductMapping.sendMethod === 'EMAIL') {
                 finalDeliveryTarget = MaskingUtil.maskEmail(decryptedDeliveryTarget);
               } else {
