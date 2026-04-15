@@ -45,6 +45,14 @@ export class OrderEntity extends BaseEntity {
   @Column({ default: 0, comment: '정산 금액' })
   settleAmount: number;
 
+  @Column({
+    type: 'int',
+    nullable: true,
+    name: 'settled_amount_snapshot',
+    comment: '정산확정 시점의 유효 정산금액 스냅샷 (해제 시 역방향 복원에 사용)',
+  })
+  settledAmountSnapshot: number | null;
+
   @Column({ default: 0, comment: '배송 완료 리포트 pdf 카운트' })
   deliveryCompleteReportCount: number;
 

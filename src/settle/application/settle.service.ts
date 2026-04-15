@@ -77,7 +77,7 @@ import { UserEntity } from '../../entity/user.entity';
 import { IUserAuthority } from '../../user/interface/user.authority';
 import { ShippingStorageEntity } from '../../entity/shipping.storage.entity';
 import { OtherServiceSaleTypeEntity } from '../../entity/other.service.sale.type.entity';
-import { Transactional } from 'typeorm-transactional';
+import { Propagation, Transactional } from 'typeorm-transactional';
 import { ShippingStorageViewDto } from '../api/dto/shipping.storage.view.dto';
 import { SaleTypeViewDto } from '../api/dto/sale.type.view.dto';
 import { AdminListViewDto } from '../api/dto/admin.list.view.dto';
@@ -2156,14 +2156,16 @@ export class SettleService {
     return { list: resultList, totalCount, totalPage: Math.ceil(totalCount / take), currentPage: page };
   }
 
+  @Transactional()
   async updateUserPerOrder(getDto: SettleUpdateUserPerOrderReqDto) {
     const { orderId, settleStatus } = getDto;
 
-    const order = await this.orderRepository.findOne({
-      where: {
-        id: orderId,
-      },
-    });
+    // 동시성 방어: 트랜잭션 내에서 order 행 pessimistic lock
+    const order = await this.orderRepository
+      .createQueryBuilder('o')
+      .setLock('pessimistic_write')
+      .where('o.id = :id', { id: orderId })
+      .getOne();
 
     if (!order) {
       throw new BadRequestException('주문이 존재하지 않습니다.');
@@ -2171,68 +2173,105 @@ export class SettleService {
 
     // 과금 대상 사용자 조회 (대행주문인 경우 clientUserId)
     const billingUserId = order.clientUserId ?? order.userId;
-    const user = await this.userRepository.findOne({
-      where: {
-        id: billingUserId,
-      },
-    });
-
+    const user = await this.userRepository.findOne({ where: { id: billingUserId } });
     if (!user) {
       throw new InternalServerErrorException('과금 대상 유저가 존재하지 않습니다.');
     }
 
-    // 정산확정 대상 금액 및 미완료 배송 확인 (이중 복구/차감 방지, WAIT/TEMP 가드)
-    const summary = await this.getOrderSettlementSummary([order.id]);
-    const entry = summary.get(order.id);
-    if (settleStatus === SettleUserOrderDetailEnum.SETTLE_COMPLETE && entry?.hasPending) {
-      throw new BadRequestException(SETTLE_BLOCKED_BY_PENDING_DELIVERY_MSG);
-    }
-    const netSettleAmount = entry?.netAmount ?? 0;
+    const toComplete = settleStatus === SettleUserOrderDetailEnum.SETTLE_COMPLETE;
+    const fromComplete = order.settleStatus === SettleUserOrderDetailEnum.SETTLE_COMPLETE;
 
-    // 선정산(PRE_PAYMENT): 토글 허용
+    // 미완료 발송 가드 (정산확정 방향일 때만)
+    if (toComplete && !fromComplete) {
+      const summary = await this.getOrderSettlementSummary([order.id]);
+      if (summary.get(order.id)?.hasPending) {
+        throw new BadRequestException(SETTLE_BLOCKED_BY_PENDING_DELIVERY_MSG);
+      }
+    }
+
+    // 선정산(PRE_PAYMENT): 양방향 토글 허용
     if (user.settleCondition === IUserSettleCondition.PRE_PAYMENT) {
-      const allowedForPrePayment = [
-        SettleUserOrderDetailEnum.SETTLE_COMPLETE,
-        SettleUserOrderDetailEnum.UNSETTLE_NORMAL,
-      ];
-      if (!allowedForPrePayment.includes(settleStatus)) {
+      const allowed = [SettleUserOrderDetailEnum.SETTLE_COMPLETE, SettleUserOrderDetailEnum.UNSETTLE_NORMAL];
+      if (!allowed.includes(settleStatus)) {
         throw new BadRequestException('선정산 주문에 허용되지 않는 정산 상태입니다.');
       }
-
-      // isSettleBalance=false(한도 사용 건): allSettleAmount 조정 필요
-      if (!order.isSettleBalance) {
-        if (settleStatus === SettleUserOrderDetailEnum.SETTLE_COMPLETE && order.settleStatus !== SettleUserOrderDetailEnum.SETTLE_COMPLETE) {
-          order.isSettleComplete = true;
-          user.allSettleAmount -= netSettleAmount;
-          await this.userRepository.save(user);
-        } else if (settleStatus === SettleUserOrderDetailEnum.UNSETTLE_NORMAL && order.settleStatus === SettleUserOrderDetailEnum.SETTLE_COMPLETE) {
-          order.isSettleComplete = false;
-          user.allSettleAmount += netSettleAmount;
-          await this.userRepository.save(user);
-        }
+    } else {
+      // 후정산(POST_PAYMENT): 확정 상태에서 되돌리기 차단
+      if (fromComplete) {
+        throw new BadRequestException('이미 정산이 완료된 주문입니다.');
       }
+    }
 
-      order.settleStatus = settleStatus;
-      await this.orderRepository.save(order);
+    // 같은 상태로 변경: 멱등 처리
+    if (settleStatus === order.settleStatus) {
       return;
     }
 
-    // 후정산(POST_PAYMENT): 기존 로직 그대로
-    if (order.settleStatus === SettleUserOrderDetailEnum.SETTLE_COMPLETE) {
-      throw new BadRequestException('이미 정산이 완료된 주문입니다.');
+    // 확정 진행 (UNSETTLE_NORMAL → SETTLE_COMPLETE)
+    if (toComplete && !fromComplete) {
+      const summary = await this.getOrderSettlementSummary([order.id]);
+      const netAmount = summary.get(order.id)?.netAmount ?? 0;
+
+      // 여신 건(isSettleBalance=false)만 allSettleAmount 차감 (D-6)
+      if (!order.isSettleBalance) {
+        await this.userRepository
+          .createQueryBuilder()
+          .update()
+          .set({ allSettleAmount: () => 'all_settle_amount - :amount' })
+          .where('id = :id', { id: billingUserId })
+          .setParameters({ amount: netAmount })
+          .execute();
+      }
+
+      // conditional UPDATE: 다른 프로세스가 이미 확정 처리했다면 affectedRows=0으로 멱등
+      await this.orderRepository
+        .createQueryBuilder()
+        .update()
+        .set({
+          settleStatus: SettleUserOrderDetailEnum.SETTLE_COMPLETE,
+          isSettleComplete: true,
+          settledAmountSnapshot: netAmount,
+        })
+        .where('id = :id AND settle_status != :target', {
+          id: order.id,
+          target: SettleUserOrderDetailEnum.SETTLE_COMPLETE,
+        })
+        .execute();
+      return;
     }
 
-    order.settleStatus = settleStatus;
+    // 정산 해제 (SETTLE_COMPLETE → UNSETTLE_NORMAL): snapshot 값으로 역방향 복구
+    if (!toComplete && fromComplete) {
+      const snapshotAmount = order.settledAmountSnapshot ?? 0;
 
-    if (settleStatus === SettleUserOrderDetailEnum.SETTLE_COMPLETE) {
-      order.isSettleComplete = true;
-      user.allSettleAmount -= netSettleAmount;
+      if (!order.isSettleBalance) {
+        await this.userRepository
+          .createQueryBuilder()
+          .update()
+          .set({ allSettleAmount: () => 'all_settle_amount + :amount' })
+          .where('id = :id', { id: billingUserId })
+          .setParameters({ amount: snapshotAmount })
+          .execute();
+      }
+
+      await this.orderRepository
+        .createQueryBuilder()
+        .update()
+        .set({
+          settleStatus,
+          isSettleComplete: false,
+          settledAmountSnapshot: null,
+        })
+        .where('id = :id AND settle_status = :current', {
+          id: order.id,
+          current: SettleUserOrderDetailEnum.SETTLE_COMPLETE,
+        })
+        .execute();
+      return;
     }
 
-    await this.userRepository.save(user);
-    await this.orderRepository.save(order);
-
-    return;
+    // 그 외 상태 변경 (예: UNSETTLE_NORMAL ↔ UNSETTLE_OVERDUE): 상태값만 업데이트
+    await this.orderRepository.update({ id: order.id }, { settleStatus });
   }
 
   async batchConfirmUserPerOrders(orderIds: number[]) {
@@ -2240,94 +2279,84 @@ export class SettleService {
     const failed: { orderId: number; reason: string }[] = [];
     const skipped: number[] = [];
 
-    // 주문 일괄 조회
-    const orders = await this.orderRepository.find({
-      where: { id: In(orderIds) },
-    });
-    const orderMap = new Map(orders.map((o) => [o.id, o]));
+    // N+1 방지: 유효 정산금액과 미완료 발송 가드 정보를 일괄 프리로드
+    const summaryMap = await this.getOrderSettlementSummary(orderIds);
 
-    // 존재하지 않는 주문 처리
-    for (const id of orderIds) {
-      if (!orderMap.has(id)) {
-        failed.push({ orderId: id, reason: '주문이 존재하지 않습니다.' });
-      }
-    }
-
-    // billing user 일괄 조회 (N+1 방지)
-    const billingUserIds = [...new Set(
-      orders
-        .filter((o) => o.settleStatus !== SettleUserOrderDetailEnum.SETTLE_COMPLETE)
-        .map((o) => o.clientUserId ?? o.userId),
-    )];
-    const users = billingUserIds.length > 0
-      ? await this.userRepository.find({ where: { id: In(billingUserIds) } })
-      : [];
-    const userMap = new Map<number, UserEntity>(users.map((u) => [u.id, u]));
-
-    // 정산확정 대상 금액 및 미완료 배송 확인 (이중 복구/차감 방지, WAIT/TEMP 가드)
-    const confirmTargetOrderIds = orders
-      .filter((o) => o.settleStatus !== SettleUserOrderDetailEnum.SETTLE_COMPLETE)
-      .map((o) => o.id);
-    const summaryMap = await this.getOrderSettlementSummary(confirmTargetOrderIds);
-
-    for (const order of orders) {
+    // 주문별 개별 트랜잭션(REQUIRES_NEW)으로 처리. 한 건 실패가 다른 건에 영향 없음.
+    for (const orderId of orderIds) {
       try {
-        // 이미 정산완료인 건은 스킵
-        if (order.settleStatus === SettleUserOrderDetailEnum.SETTLE_COMPLETE) {
-          skipped.push(order.id);
-          continue;
-        }
-
-        // 과금 대상 사용자 결정
-        const billingUserId = order.clientUserId ?? order.userId;
-        const user = userMap.get(billingUserId);
-
-        if (!user) {
-          failed.push({ orderId: order.id, reason: '과금 대상 유저가 존재하지 않습니다.' });
-          continue;
-        }
-
-        // 미완료 발송 가드
-        const summary = summaryMap.get(order.id);
-        if (summary?.hasPending) {
-          failed.push({ orderId: order.id, reason: SETTLE_BLOCKED_BY_PENDING_DELIVERY_MSG });
-          continue;
-        }
-        const netSettleAmount = summary?.netAmount ?? 0;
-
-        // 선정산(PRE_PAYMENT): settleStatus 변경 + 한도 사용 건은 allSettleAmount 차감
-        if (user.settleCondition === IUserSettleCondition.PRE_PAYMENT) {
-          order.settleStatus = SettleUserOrderDetailEnum.SETTLE_COMPLETE;
-          if (!order.isSettleBalance) {
-            order.isSettleComplete = true;
-            user.allSettleAmount -= netSettleAmount;
-          }
-          await this.orderRepository.save(order);
-          success.push(order.id);
-          continue;
-        }
-
-        // 후정산(POST_PAYMENT): settleStatus + isSettleComplete + allSettleAmount 차감
-        order.settleStatus = SettleUserOrderDetailEnum.SETTLE_COMPLETE;
-        order.isSettleComplete = true;
-        await this.orderRepository.save(order);
-        user.allSettleAmount -= netSettleAmount;
-        success.push(order.id);
+        const entry = summaryMap.get(orderId);
+        const result = await this.confirmSingleOrderTx(orderId, entry);
+        if (result === 'success') success.push(orderId);
+        else if (result === 'skipped') skipped.push(orderId);
       } catch (e) {
-        failed.push({ orderId: order.id, reason: e.message || '처리 중 오류가 발생했습니다.' });
-      }
-    }
-
-    // 변경된 user 일괄 저장 (allSettleAmount 누적 차감 반영)
-    for (const user of userMap.values()) {
-      try {
-        await this.userRepository.save(user);
-      } catch (e) {
-        console.error(`[batchConfirmUserPerOrders] user save 실패 (userId: ${user.id}):`, e.message);
+        failed.push({ orderId, reason: e.message || '처리 중 오류가 발생했습니다.' });
       }
     }
 
     return { success, failed, skipped };
+  }
+
+  /**
+   * 개별 주문 정산확정 (독립 트랜잭션 + pessimistic lock + atomic UPDATE)
+   * 이미 정산완료인 주문은 skipped 반환. 호출자에서 summary를 프리로드해 전달해야 N+1 방지.
+   */
+  @Transactional({ propagation: Propagation.REQUIRES_NEW })
+  private async confirmSingleOrderTx(
+    orderId: number,
+    summaryEntry: { netAmount: number; hasPending: boolean } | undefined,
+  ): Promise<'success' | 'skipped'> {
+    const order = await this.orderRepository
+      .createQueryBuilder('o')
+      .setLock('pessimistic_write')
+      .where('o.id = :id', { id: orderId })
+      .getOne();
+
+    if (!order) {
+      throw new BadRequestException('주문이 존재하지 않습니다.');
+    }
+
+    if (order.settleStatus === SettleUserOrderDetailEnum.SETTLE_COMPLETE) {
+      return 'skipped';
+    }
+
+    const billingUserId = order.clientUserId ?? order.userId;
+    const user = await this.userRepository.findOne({ where: { id: billingUserId } });
+    if (!user) {
+      throw new BadRequestException('과금 대상 유저가 존재하지 않습니다.');
+    }
+
+    if (summaryEntry?.hasPending) {
+      throw new BadRequestException(SETTLE_BLOCKED_BY_PENDING_DELIVERY_MSG);
+    }
+    const netAmount = summaryEntry?.netAmount ?? 0;
+
+    // 여신 건(isSettleBalance=false)만 allSettleAmount 차감 (D-6)
+    if (!order.isSettleBalance) {
+      await this.userRepository
+        .createQueryBuilder()
+        .update()
+        .set({ allSettleAmount: () => 'all_settle_amount - :amount' })
+        .where('id = :id', { id: billingUserId })
+        .setParameters({ amount: netAmount })
+        .execute();
+    }
+
+    await this.orderRepository
+      .createQueryBuilder()
+      .update()
+      .set({
+        settleStatus: SettleUserOrderDetailEnum.SETTLE_COMPLETE,
+        isSettleComplete: true,
+        settledAmountSnapshot: netAmount,
+      })
+      .where('id = :id AND settle_status != :target', {
+        id: order.id,
+        target: SettleUserOrderDetailEnum.SETTLE_COMPLETE,
+      })
+      .execute();
+
+    return 'success';
   }
 
   @Transactional()
