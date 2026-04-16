@@ -261,6 +261,120 @@ export class PartnerCompanyExternBatchService {
     };
   }
 
+  // ===== 전체 CANCEL 상태 발송건 협력사 상태 검증 (읽기 전용, SSG 제외) =====
+  async verifyAllCancelled(options?: { partnerType?: PartnerCompanyType }): Promise<VerifyResult> {
+    this.logger.log(`[verifyAllCancelled] 시작 - partnerType=${options?.partnerType ?? 'ALL(비SSG)'}`);
+
+    const mismatches: VerifyItem[] = [];
+    let total = 0;
+    let matched = 0;
+    let errors = 0;
+
+    let lastId = Number.MAX_SAFE_INTEGER;
+    let hasMore = true;
+
+    while (hasMore) {
+      const batch = await this.fetchCancelledBatch(lastId, this.pageSize, options?.partnerType);
+      if (batch.length === 0) break;
+
+      const groups = this.groupByPartnerCompany(batch);
+
+      for (const group of groups) {
+        for (let i = 0; i < group.items.length; i += group.concurrencyLimit) {
+          const chunk = group.items.slice(i, i + group.concurrencyLimit);
+
+          const apiResults = await Promise.allSettled(
+            chunk.map((item) => this.callExternalApiWithTimeout(item, group.type)),
+          );
+
+          for (let j = 0; j < apiResults.length; j++) {
+            const item = chunk[j];
+            const result = apiResults[j];
+
+            if (result.status === 'fulfilled') {
+              if (result.value.skipped) continue;
+              total++;
+              const partnerStatus = result.value.couponStatus ?? null;
+              if (partnerStatus === null || item.couponStatus === partnerStatus) {
+                matched++;
+              } else {
+                mismatches.push({
+                  id: item.id,
+                  barCode: item.barCode ?? null,
+                  localStatus: item.couponStatus,
+                  partnerStatus,
+                  match: false,
+                });
+              }
+            } else {
+              total++;
+              errors++;
+              mismatches.push({
+                id: item.id,
+                barCode: item.barCode ?? null,
+                localStatus: item.couponStatus,
+                partnerStatus: null,
+                match: false,
+                error: result.reason?.message || 'Unknown error',
+              });
+            }
+          }
+        }
+      }
+
+      lastId = batch[batch.length - 1].id;
+      hasMore = batch.length === this.pageSize;
+
+      this.logger.log(
+        `[verifyAllCancelled] 진행 - total=${total}, matched=${matched}, mismatched=${mismatches.length}, errors=${errors}, nextLastId=${lastId}`,
+      );
+    }
+
+    this.logger.log(
+      `[verifyAllCancelled] 완료 - total=${total}, matched=${matched}, mismatched=${mismatches.length}, errors=${errors}`,
+    );
+
+    return {
+      total,
+      matched,
+      mismatched: mismatches.length,
+      errors,
+      mismatches,
+    };
+  }
+
+  // ===== CANCEL 상태 발송건 조회 (Keyset 페이지네이션, SSG 제외) =====
+  private async fetchCancelledBatch(
+    lastId: number,
+    limit: number,
+    partnerType?: PartnerCompanyType,
+  ): Promise<OrderDeliveryEntity[]> {
+    const qb = this.orderDeliveryRepository
+      .createQueryBuilder('orderDelivery')
+      .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
+      .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
+      .leftJoinAndSelect('choiceSelectProduct.partnerCompany', 'choicePartnerCompany')
+      .innerJoinAndSelect('orderProductMapping.product', 'product')
+      .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .leftJoinAndSelect('orderDelivery.ssgEvent', 'ssgEvent')
+      .where('orderDelivery.id < :lastId', { lastId })
+      .andWhere('orderDelivery.couponStatus = :couponStatus', {
+        couponStatus: OrderDeliveryCouponStatus.CANCEL,
+      })
+      .andWhere('orderDelivery.barCode IS NOT NULL')
+      .andWhere('orderDelivery.deletedAt IS NULL');
+
+    if (partnerType) {
+      qb.andWhere('COALESCE(choicePartnerCompany.type, partnerCompany.type) = :partnerType', { partnerType });
+    } else {
+      qb.andWhere('COALESCE(choicePartnerCompany.type, partnerCompany.type) != :ssgType', {
+        ssgType: PARTNER_COMPANY_TYPES.SSG,
+      });
+    }
+
+    return qb.orderBy('orderDelivery.id', 'DESC').take(limit).getMany();
+  }
+
   // ===== [임시] 특정 orderId 발송건 조회 (필터 최소화) =====
   private async fetchBatchByOrderId(orderId: number): Promise<OrderDeliveryEntity[]> {
     return this.orderDeliveryRepository

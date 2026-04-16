@@ -3,6 +3,7 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
 import { AuthUserSuperAdminGuard } from '../../auth/api/auth.user.super-admin.guard';
 import { PartnerCompanyExternBatchService } from '../application/partner.company.extern.batch.service';
+import { PartnerCompanyType } from '../application/partner.company.extern.batch.types';
 
 @Controller('')
 @ApiTags('batch')
@@ -113,6 +114,21 @@ export class PartnerCompanyBatchController {
     this.logger.log(`[검증] verifyByOrderId 시작 - orderId=${orderIdNum}`);
     const result = await this.partnerCompanyExternBatchService.verifyByOrderId(orderIdNum);
     this.logger.log(`[검증] verifyByOrderId 완료 - matched=${result.matched}, mismatched=${result.mismatched}`);
+    return result;
+  }
+
+  @ApiOperation({ summary: '전체 CANCEL 상태 발송건 협력사 상태 검증 (읽기 전용, SSG 제외)' })
+  @Get('batch/verify-all-cancelled')
+  async verifyAllCancelled(@Query('partnerType') partnerType?: string) {
+    const allowedTypes: PartnerCompanyType[] = ['GALAXIA', 'GS_M_BIZ', 'GIFTIEL', 'GIFT_SHOW', 'CULTURELAND', 'DAOU'];
+    if (partnerType && !allowedTypes.includes(partnerType as PartnerCompanyType)) {
+      return { message: `partnerType은 ${allowedTypes.join(', ')} 중 하나여야 합니다.` };
+    }
+    this.logger.log(`[검증] verifyAllCancelled 시작 - partnerType=${partnerType ?? 'ALL'}`);
+    const result = await this.partnerCompanyExternBatchService.verifyAllCancelled({
+      partnerType: partnerType as PartnerCompanyType | undefined,
+    });
+    this.logger.log(`[검증] verifyAllCancelled 완료 - matched=${result.matched}, mismatched=${result.mismatched}`);
     return result;
   }
 
