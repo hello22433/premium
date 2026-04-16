@@ -103,6 +103,19 @@ export class PartnerCompanyBatchController {
     return { message: 'checkByOrderId 실행 완료', stats };
   }
 
+  @ApiOperation({ summary: '특정 orderId 발송건 협력사 상태 검증 (읽기 전용, DB 변경 없음)' })
+  @Get('batch/verify-by-order')
+  async verifyByOrder(@Query('orderId') orderId: string) {
+    const orderIdNum = Number(orderId);
+    if (!orderId || !Number.isInteger(orderIdNum) || orderIdNum <= 0) {
+      return { message: 'orderId를 양의 정수로 입력해주세요.' };
+    }
+    this.logger.log(`[검증] verifyByOrderId 시작 - orderId=${orderIdNum}`);
+    const result = await this.partnerCompanyExternBatchService.verifyByOrderId(orderIdNum);
+    this.logger.log(`[검증] verifyByOrderId 완료 - matched=${result.matched}, mismatched=${result.mismatched}`);
+    return result;
+  }
+
   @ApiOperation({ summary: '갤럭시아 바코드 로그 백필 (일대사 누락분)' })
   @Get('batch/galaxia-backfill')
   async triggerGalaxiaBackfill() {

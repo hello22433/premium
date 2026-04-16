@@ -18,6 +18,8 @@ import {
   ApiCallResult,
   BatchStatistics,
   PartnerCompanyGroup,
+  VerifyItem,
+  VerifyResult,
 } from './partner.company.extern.batch.types';
 import { GalaxiaBarcodeLogEntity } from '../../entity/galaxia.barcode.log.entity';
 
@@ -191,6 +193,72 @@ export class PartnerCompanyExternBatchService {
     );
 
     return stats;
+  }
+
+  // ===== 특정 orderId 발송건 협력사 상태 검증 (읽기 전용, DB 변경 없음) =====
+  async verifyByOrderId(orderId: number): Promise<VerifyResult> {
+    this.logger.log(`[verifyByOrderId] 시작 - orderId=${orderId}`);
+
+    const items = await this.fetchBatchByOrderId(orderId);
+    const groups = this.groupByPartnerCompany(items);
+    const details: VerifyItem[] = [];
+
+    for (const group of groups) {
+      for (let i = 0; i < group.items.length; i += group.concurrencyLimit) {
+        const chunk = group.items.slice(i, i + group.concurrencyLimit);
+
+        const apiResults = await Promise.allSettled(
+          chunk.map((item) => this.callExternalApiWithTimeout(item, group.type)),
+        );
+
+        for (let j = 0; j < apiResults.length; j++) {
+          const item = chunk[j];
+          const result = apiResults[j];
+
+          if (result.status === 'fulfilled') {
+            if (result.value.skipped) continue;
+            const partnerStatus = result.value.couponStatus ?? null;
+            details.push({
+              id: item.id,
+              barCode: item.barCode ?? null,
+              localStatus: item.couponStatus,
+              partnerStatus,
+              match: partnerStatus === null || item.couponStatus === partnerStatus,
+            });
+          } else {
+            details.push({
+              id: item.id,
+              barCode: item.barCode ?? null,
+              localStatus: item.couponStatus,
+              partnerStatus: null,
+              match: false,
+              error: result.reason?.message || 'Unknown error',
+            });
+          }
+        }
+      }
+    }
+
+    let matched = 0;
+    let errors = 0;
+    const mismatches: VerifyItem[] = [];
+    for (const d of details) {
+      if (d.error) errors++;
+      if (d.match) matched++;
+      else mismatches.push(d);
+    }
+
+    this.logger.log(
+      `[verifyByOrderId] 완료 - orderId=${orderId}, total=${details.length}, matched=${matched}, mismatched=${mismatches.length}, errors=${errors}`,
+    );
+
+    return {
+      total: details.length,
+      matched,
+      mismatched: mismatches.length,
+      errors,
+      mismatches,
+    };
   }
 
   // ===== [임시] 특정 orderId 발송건 조회 (필터 최소화) =====

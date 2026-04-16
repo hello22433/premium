@@ -39,3 +39,22 @@ export interface PartnerCompanyGroup {
   items: OrderDeliveryEntity[];
   concurrencyLimit: number;
 }
+
+// 상태 검증 결과 (개별)
+export interface VerifyItem {
+  id: number;
+  barCode: string | null;
+  localStatus: string;
+  partnerStatus: string | null;
+  match: boolean;
+  error?: string;
+}
+
+// 상태 검증 결과 (전체)
+export interface VerifyResult {
+  total: number;
+  matched: number;
+  mismatched: number;
+  errors: number;
+  mismatches: VerifyItem[];
+}
