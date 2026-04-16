@@ -447,6 +447,122 @@ export class PartnerCompanyExternBatchService {
     }
   }
 
+  // ===== 협력사 check API 드라이런 (원본 응답 확인용, DB 변경 없음) =====
+  async testCheckDryRun(orderDeliveryId: number): Promise<any> {
+    const item = await this.orderDeliveryRepository
+      .createQueryBuilder('orderDelivery')
+      .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
+      .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
+      .leftJoinAndSelect('choiceSelectProduct.partnerCompany', 'choicePartnerCompany')
+      .innerJoinAndSelect('orderProductMapping.product', 'product')
+      .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .leftJoinAndSelect('orderDelivery.ssgEvent', 'ssgEvent')
+      .where('orderDelivery.id = :id', { id: orderDeliveryId })
+      .getOne();
+
+    if (!item) {
+      throw new BadRequestException(`orderDelivery ${orderDeliveryId} 를 찾을 수 없습니다.`);
+    }
+
+    const type = (item.choiceSelectProduct?.partnerCompany?.type ??
+      item.orderProductMapping?.product?.partnerCompany?.type) as PartnerCompanyType | undefined;
+
+    if (!type) {
+      throw new BadRequestException(`partnerCompany type 을 확인할 수 없습니다.`);
+    }
+
+    this.logger.log(
+      `[testCheckDryRun] 시작 - id=${orderDeliveryId}, type=${type}, barCode=${item.barCode}, transactionId=${item.transactionId}`,
+    );
+
+    try {
+      let response: any;
+      switch (type) {
+        case 'GALAXIA': {
+          const giftKind = item.orderProductMapping.product.name.includes('(백화점)') ? 'dept' : 'cpn';
+          response = await this.galaxia.check({
+            giftKind,
+            paramValue: item.couponNum!,
+          });
+          break;
+        }
+        case 'CULTURELAND': {
+          const expireDay =
+            item.choiceSelectProduct?.expireDay ?? item.orderProductMapping.product.expireDay;
+          response = await this.culture.check({
+            scrachNo: item.barCode!,
+            certNo: item.couponNum!,
+            requestAt: item.sendRequestAt!,
+            expireDay,
+          });
+          break;
+        }
+        case 'GIFT_SHOW': {
+          response = await this.giftiShow.check({
+            transactionId: item.transactionId!,
+          });
+          break;
+        }
+        case 'GS_M_BIZ': {
+          const partnerCompanyCode =
+            item.choiceSelectProduct?.partnerCompanyCode ??
+            item.orderProductMapping.product.partnerCompanyCode!;
+          response = await this.gsmbiz.check({
+            transactionId: item.transactionId!,
+            partnerCompanyCode,
+            barCode: item.barCode!,
+          });
+          break;
+        }
+        case 'GIFTIEL': {
+          response = await this.giftiel.check({
+            partnerCompanyCode: item.orderProductMapping.product.partnerCompanyCode!,
+            barCode: item.barCode!,
+          });
+          break;
+        }
+        case 'DAOU': {
+          response = await this.daou.check({
+            barCode: item.barCode ?? undefined,
+            transactionId: item.transactionId ?? undefined,
+          });
+          break;
+        }
+        default:
+          throw new BadRequestException(`지원하지 않는 partnerType: ${type}`);
+      }
+
+      this.logger.log(
+        `[testCheckDryRun] 성공 - id=${orderDeliveryId}, response=${JSON.stringify(response)}`,
+      );
+      return {
+        type,
+        barCode: item.barCode ?? null,
+        transactionId: item.transactionId ?? null,
+        localStatus: item.couponStatus,
+        response,
+      };
+    } catch (e: any) {
+      const responseStatus = e?.response?.status;
+      const responseData = e?.response?.data;
+      this.logger.error(
+        `[testCheckDryRun] 실패 - id=${orderDeliveryId}, type=${type}, status=${responseStatus}, data=${JSON.stringify(responseData)}, message=${e?.message}`,
+      );
+      return {
+        type,
+        barCode: item.barCode ?? null,
+        transactionId: item.transactionId ?? null,
+        localStatus: item.couponStatus,
+        message: `check API 호출 실패 (status=${responseStatus ?? 'unknown'})`,
+        error: {
+          status: responseStatus ?? null,
+          data: responseData ?? null,
+          message: e?.message ?? String(e),
+        },
+      };
+    }
+  }
+
   // ===== CANCEL 상태 발송건 조회 (Keyset 페이지네이션, SSG 제외) =====
   private async fetchCancelledBatch(
     lastId: number,
