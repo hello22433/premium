@@ -196,11 +196,17 @@ export class GiftishowHttp implements IGiftiShow {
 
       const result = response.data;
 
-      const resultToJson = (await this.parser().parseStringPromise(result)) as unknown;
+      const resultToJson = (await this.parser().parseStringPromise(result)) as {
+        response: { result: Array<{ StatusCode: string[]; StatusText: string[] }> };
+      };
 
       this.logger.log(result);
       this.logger.log(resultToJson);
-      // this.logger.log(response.toString());
+      const statusCode = resultToJson.response?.result?.[0]?.StatusCode?.[0];
+      const statusText = resultToJson.response?.result?.[0]?.StatusText?.[0];
+      if (statusCode !== '0') {
+        throw new Error(`GIFT_SHOW cancel 실패: ${statusCode} - ${statusText}`);
+      }
       return;
     } catch (e) {
       this.logger.error(e);
