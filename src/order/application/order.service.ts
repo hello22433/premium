@@ -41,6 +41,11 @@ import {
 import {
   OrderCreateTempResDto,
   OrderDeliveryConfirmed,
+  OrderDeliveryAuditDailyDto,
+  OrderDeliveryAuditDuplicateDto,
+  OrderDeliveryAuditSummaryDto,
+  OrderDeliverySsgDuplicateDto,
+  OrderGetDeliveryAuditResDto,
   OrderGetDeliveryCompleteReportResDto,
   OrderGetDetailResDto,
   OrderGetListResDto,
@@ -51,7 +56,7 @@ import {
 } from '../api/order.res.dto';
 import { OrderEntity } from '../../entity/order.entity';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, LessThanOrEqual, Like, MoreThanOrEqual, Repository } from 'typeorm';
+import { In, LessThanOrEqual, Like, MoreThanOrEqual, QueryRunner, Repository } from 'typeorm';
 import { QueryBuilderDateCondition } from '../../common/infra/query.builder.date.condition';
 import { OrderViewDto } from '../api/dto/order.view.dto';
 import { DateDateFormatStr, DateFormatStr } from '../../common/domain/date.format.str';
@@ -604,6 +609,205 @@ export class OrderService {
       operationUserId: order.operationUserId ?? null,
       operationUserName: order.operationUser?.personName ?? null,
     };
+  }
+
+  /**
+   * 발송 중복 검증(감사)
+   * - 주문에 속한 order_delivery 전체를 집계해 중복 발송 흔적을 찾는다.
+   * - 일반 주문: 동일 deliveryTarget 2건 이상 + 일자별 이상 탐지
+   * - SSG 주문: 추가로 ssgTransactionId / barCode 중복 검사
+   */
+  async getDeliveryAudit(orderId: number): Promise<OrderGetDeliveryAuditResDto> {
+    const order = await this.orderRepository.findOne({ where: { id: orderId } });
+    if (!order) {
+      throw new BadRequestException(`해당 주문(${orderId})이 존재하지 않습니다.`);
+    }
+
+    const qr = this.orderRepository.manager.connection.createQueryRunner();
+    await qr.connect();
+    try {
+      // GROUP_CONCAT 기본 1024바이트 한도를 확장해 중복 목록 잘림 방지
+      await qr.query('SET SESSION group_concat_max_len = 1000000');
+
+      const summary = await this.fetchAuditSummary(qr, orderId);
+      const dailyStats = await this.fetchAuditDailyStats(qr, orderId);
+      const duplicates = await this.fetchAuditDuplicates(qr, orderId);
+      const ssgDuplicates =
+        order.type === IOrderType.SSG ? await this.fetchSsgDuplicates(qr, orderId) : [];
+
+      const isDuplicateDetected =
+        duplicates.some((d) => !d.isLegitimate) ||
+        dailyStats.some((d) => d.isSuspicious) ||
+        ssgDuplicates.length > 0;
+
+      return {
+        orderId: order.id,
+        eventName: order.eventName,
+        orderType: order.type,
+        orderStatus: order.status,
+        isDuplicateDetected,
+        summary,
+        dailyStats,
+        duplicates,
+        ssgDuplicates,
+      };
+    } finally {
+      await qr.release();
+    }
+  }
+
+  private static readonly AUDIT_BASE_WHERE = `
+    FROM order_delivery od
+    INNER JOIN order_product_mapping opm ON opm.id = od.order_product_mapping_id
+    WHERE opm.order_id = ?
+      AND od.deleted_at IS NULL
+      AND opm.deleted_at IS NULL`;
+
+  private parseIdList(raw: unknown): number[] {
+    return String(raw ?? '')
+      .split(',')
+      .filter((x) => x !== '')
+      .map(Number);
+  }
+
+  private parseNullableIdList(raw: unknown): (number | null)[] {
+    return String(raw ?? '')
+      .split(',')
+      .map((x) => (x === 'NULL' || x === '' ? null : Number(x)));
+  }
+
+  private parseNullableStringList(raw: unknown): (string | null)[] {
+    return String(raw ?? '')
+      .split(',')
+      .map((x) => (x === '' ? null : x));
+  }
+
+  private async fetchAuditSummary(qr: QueryRunner, orderId: number): Promise<OrderDeliveryAuditSummaryDto> {
+    const S = IOrderDeliveryStatus;
+    const rows: Array<Record<string, unknown>> = await qr.query(
+      `SELECT
+         COUNT(od.id) AS totalDeliveryRows,
+         COUNT(DISTINCT od.delivery_target) AS uniqueTargetCnt,
+         SUM(CASE WHEN od.status = '${S.COMPLETE}' THEN 1 ELSE 0 END) AS completeCnt,
+         SUM(CASE WHEN od.status = '${S.COMPLETE_SMS}' THEN 1 ELSE 0 END) AS completeSmsCnt,
+         SUM(CASE WHEN od.status = '${S.FAIL}' THEN 1 ELSE 0 END) AS failCnt,
+         SUM(CASE WHEN od.status = '${S.FAIL_SMS}' THEN 1 ELSE 0 END) AS failSmsCnt,
+         SUM(CASE WHEN od.status IN ('${S.TEMP}','${S.WAIT}') THEN 1 ELSE 0 END) AS pendingCnt,
+         SUM(CASE WHEN od.status NOT IN ('${S.COMPLETE}','${S.COMPLETE_SMS}','${S.FAIL}','${S.FAIL_SMS}','${S.TEMP}','${S.WAIT}') THEN 1 ELSE 0 END) AS otherCnt,
+         SUM(CASE WHEN od.actual_send_at IS NOT NULL THEN 1 ELSE 0 END) AS sentCnt,
+         SUM(CASE WHEN od.resend_at IS NOT NULL THEN 1 ELSE 0 END) AS resentCnt,
+         SUM(CASE WHEN od.replaced_from_id IS NOT NULL THEN 1 ELSE 0 END) AS replacedCnt
+       ${OrderService.AUDIT_BASE_WHERE}`,
+      [orderId],
+    );
+    const r = rows[0] ?? {};
+    return {
+      totalDeliveryRows: Number(r.totalDeliveryRows ?? 0),
+      uniqueTargetCnt: Number(r.uniqueTargetCnt ?? 0),
+      completeCnt: Number(r.completeCnt ?? 0),
+      completeSmsCnt: Number(r.completeSmsCnt ?? 0),
+      failCnt: Number(r.failCnt ?? 0),
+      failSmsCnt: Number(r.failSmsCnt ?? 0),
+      pendingCnt: Number(r.pendingCnt ?? 0),
+      otherCnt: Number(r.otherCnt ?? 0),
+      sentCnt: Number(r.sentCnt ?? 0),
+      resentCnt: Number(r.resentCnt ?? 0),
+      replacedCnt: Number(r.replacedCnt ?? 0),
+    };
+  }
+
+  private async fetchAuditDailyStats(qr: QueryRunner, orderId: number): Promise<OrderDeliveryAuditDailyDto[]> {
+    const rows: Array<Record<string, unknown>> = await qr.query(
+      `SELECT
+         DATE_FORMAT(od.actual_send_at, '%Y-%m-%d') AS sendDate,
+         COUNT(*) AS sendCnt,
+         COUNT(DISTINCT od.delivery_target) AS uniquePhoneCnt,
+         SUM(CASE WHEN od.resend_at IS NOT NULL THEN 1 ELSE 0 END) AS resentCnt
+       ${OrderService.AUDIT_BASE_WHERE}
+         AND od.actual_send_at IS NOT NULL
+       GROUP BY DATE_FORMAT(od.actual_send_at, '%Y-%m-%d')
+       ORDER BY sendDate ASC`,
+      [orderId],
+    );
+    return rows.map((r) => {
+      const sendCnt = Number(r.sendCnt ?? 0);
+      const uniquePhoneCnt = Number(r.uniquePhoneCnt ?? 0);
+      const resentCnt = Number(r.resentCnt ?? 0);
+      return {
+        sendDate: String(r.sendDate ?? ''),
+        sendCnt,
+        uniquePhoneCnt,
+        resentCnt,
+        isSuspicious: sendCnt - resentCnt > uniquePhoneCnt,
+      };
+    });
+  }
+
+  private async fetchAuditDuplicates(qr: QueryRunner, orderId: number): Promise<OrderDeliveryAuditDuplicateDto[]> {
+    const rows: Array<Record<string, unknown>> = await qr.query(
+      `SELECT
+         od.delivery_target AS deliveryTarget,
+         COUNT(*) AS rowCnt,
+         SUM(CASE WHEN od.actual_send_at IS NOT NULL THEN 1 ELSE 0 END) AS sentCnt,
+         GROUP_CONCAT(od.id ORDER BY od.id) AS deliveryIds,
+         GROUP_CONCAT(od.status ORDER BY od.id) AS statuses,
+         GROUP_CONCAT(IFNULL(DATE_FORMAT(od.actual_send_at, '%Y-%m-%d %H:%i:%s'), '') ORDER BY od.id) AS sendTimes,
+         GROUP_CONCAT(IFNULL(DATE_FORMAT(od.resend_at, '%Y-%m-%d %H:%i:%s'), '') ORDER BY od.id) AS resendTimes,
+         GROUP_CONCAT(IFNULL(od.replaced_from_id, 'NULL') ORDER BY od.id) AS replacedFromIds
+       ${OrderService.AUDIT_BASE_WHERE}
+       GROUP BY od.delivery_target
+       HAVING COUNT(*) >= 2
+       ORDER BY rowCnt DESC`,
+      [orderId],
+    );
+    return rows.map((r) => {
+      const replacedFromIds = this.parseNullableIdList(r.replacedFromIds);
+      const encryptedTarget = String(r.deliveryTarget ?? '');
+      return {
+        deliveryTarget: this.cryptoCipher.safeDecryptDeliveryTarget(encryptedTarget) ?? encryptedTarget,
+        rowCnt: Number(r.rowCnt ?? 0),
+        sentCnt: Number(r.sentCnt ?? 0),
+        deliveryIds: this.parseIdList(r.deliveryIds),
+        statuses: String(r.statuses ?? '').split(',').filter((x) => x !== ''),
+        sendTimes: this.parseNullableStringList(r.sendTimes),
+        resendTimes: this.parseNullableStringList(r.resendTimes),
+        replacedFromIds,
+        // replacedFromId 가 하나라도 채워져 있으면 "폐기 후 신규 발송" 정상 케이스
+        isLegitimate: replacedFromIds.some((v) => v !== null),
+      };
+    });
+  }
+
+  private async fetchSsgDuplicates(qr: QueryRunner, orderId: number): Promise<OrderDeliverySsgDuplicateDto[]> {
+    return [
+      ...(await this.fetchSsgColumnDuplicates(qr, orderId, 'ssg_transaction_id', 'ssgTransactionId')),
+      ...(await this.fetchSsgColumnDuplicates(qr, orderId, 'bar_code', 'barCode')),
+    ];
+  }
+
+  private async fetchSsgColumnDuplicates(
+    qr: QueryRunner,
+    orderId: number,
+    column: 'ssg_transaction_id' | 'bar_code',
+    field: 'ssgTransactionId' | 'barCode',
+  ): Promise<OrderDeliverySsgDuplicateDto[]> {
+    const rows: Array<Record<string, unknown>> = await qr.query(
+      `SELECT
+         od.${column} AS value,
+         COUNT(*) AS cnt,
+         GROUP_CONCAT(od.id ORDER BY od.id) AS deliveryIds
+       ${OrderService.AUDIT_BASE_WHERE}
+         AND od.${column} IS NOT NULL
+       GROUP BY od.${column}
+       HAVING COUNT(*) >= 2`,
+      [orderId],
+    );
+    return rows.map((r) => ({
+      field,
+      value: String(r.value ?? ''),
+      cnt: Number(r.cnt ?? 0),
+      deliveryIds: this.parseIdList(r.deliveryIds),
+    }));
   }
 
   // 이벤트 불러오기 전용 메서드 (수신자 정보 제외)

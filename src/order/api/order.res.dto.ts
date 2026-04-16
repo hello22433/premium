@@ -360,3 +360,150 @@ export class OrderGetReportHistoryResDto {
   })
   list: OrderReportHistoryItemDto[];
 }
+
+// ============================================================
+// 발송 중복 검증(감사) DTO
+// ============================================================
+
+export class OrderDeliveryAuditSummaryDto {
+  @ApiProperty({ description: '전체 order_delivery 레코드 수' })
+  totalDeliveryRows: number;
+
+  @ApiProperty({ description: '고유 수신번호(deliveryTarget) 수' })
+  uniqueTargetCnt: number;
+
+  @ApiProperty({ description: 'COMPLETE 건수' })
+  completeCnt: number;
+
+  @ApiProperty({ description: 'COMPLETE_SMS (알림톡→SMS 대체 성공) 건수' })
+  completeSmsCnt: number;
+
+  @ApiProperty({ description: 'FAIL 건수' })
+  failCnt: number;
+
+  @ApiProperty({ description: 'FAIL_SMS 건수' })
+  failSmsCnt: number;
+
+  @ApiProperty({ description: 'TEMP/WAIT 등 대기 상태 건수' })
+  pendingCnt: number;
+
+  @ApiProperty({ description: '그 외 상태 건수 (CANCEL 등)' })
+  otherCnt: number;
+
+  @ApiProperty({ description: 'actualSendAt 이 채워진 실제 발송 건수' })
+  sentCnt: number;
+
+  @ApiProperty({ description: '재발송 완료(resendAt 존재) 건수' })
+  resentCnt: number;
+
+  @ApiProperty({ description: '폐기 후 신규 발송(replacedFromId 존재) 건수' })
+  replacedCnt: number;
+}
+
+export class OrderDeliveryAuditDailyDto {
+  @ApiProperty({ description: '실제 발송 일자 (yyyy-MM-dd)' })
+  sendDate: string;
+
+  @ApiProperty({ description: '해당 일자 발송 건수' })
+  sendCnt: number;
+
+  @ApiProperty({ description: '해당 일자 고유 수신번호 수' })
+  uniquePhoneCnt: number;
+
+  @ApiProperty({ description: '재발송 포함 건수' })
+  resentCnt: number;
+
+  @ApiProperty({
+    description: '이상 감지 여부 (재발송 제외 발송 건수가 고유 번호 수보다 많을 때 true)',
+  })
+  isSuspicious: boolean;
+}
+
+export class OrderDeliveryAuditDuplicateDto {
+  @ApiProperty({ description: '수신번호(복호화됨)' })
+  deliveryTarget: string;
+
+  @ApiProperty({ description: '같은 수신번호로 존재하는 order_delivery 레코드 수' })
+  rowCnt: number;
+
+  @ApiProperty({ description: '그 중 실제 발송(actualSendAt 채워진) 건수' })
+  sentCnt: number;
+
+  @ApiProperty({ type: [Number], description: 'order_delivery.id 목록' })
+  deliveryIds: number[];
+
+  @ApiProperty({ type: [String], description: '각 레코드의 status' })
+  statuses: string[];
+
+  @ApiProperty({ type: [String], description: '각 레코드의 actualSendAt (null 가능)' })
+  sendTimes: (string | null)[];
+
+  @ApiProperty({ type: [String], description: '각 레코드의 resendAt (null 가능)' })
+  resendTimes: (string | null)[];
+
+  @ApiProperty({
+    type: [Number],
+    description: '각 레코드의 replacedFromId (null 가능). 값이 있으면 "폐기 후 신규 발송"이라 정상 중복',
+  })
+  replacedFromIds: (number | null)[];
+
+  @ApiProperty({
+    description: '정상 중복 여부. replacedFromId 가 하나라도 채워져 있으면 true (정상적인 폐기→재발행)',
+  })
+  isLegitimate: boolean;
+}
+
+export class OrderDeliverySsgDuplicateDto {
+  @ApiProperty({
+    enum: ['ssgTransactionId', 'barCode'],
+    description: '중복 필드',
+  })
+  field: 'ssgTransactionId' | 'barCode';
+
+  @ApiProperty({ description: '중복된 값' })
+  value: string;
+
+  @ApiProperty({ description: '중복 건수' })
+  cnt: number;
+
+  @ApiProperty({ type: [Number], description: 'order_delivery.id 목록' })
+  deliveryIds: number[];
+}
+
+export class OrderGetDeliveryAuditResDto {
+  @ApiProperty({ description: 'order id' })
+  orderId: number;
+
+  @ApiProperty({ description: '이벤트 명' })
+  eventName: string;
+
+  @ApiProperty({ enum: IOrderType, description: '주문 타입' })
+  orderType: IOrderType;
+
+  @ApiProperty({ enum: IOrderStatus, description: '주문 상태' })
+  orderStatus: IOrderStatus;
+
+  @ApiProperty({
+    description:
+      '중복 발송 감지 여부. (비정상 중복 레코드 / 일자별 이상 / SSG PIN 중복 중 하나라도 있으면 true)',
+  })
+  isDuplicateDetected: boolean;
+
+  @ApiProperty({ type: OrderDeliveryAuditSummaryDto, description: '전체 요약 통계' })
+  summary: OrderDeliveryAuditSummaryDto;
+
+  @ApiProperty({ type: [OrderDeliveryAuditDailyDto], description: '일자별 발송 통계' })
+  dailyStats: OrderDeliveryAuditDailyDto[];
+
+  @ApiProperty({
+    type: [OrderDeliveryAuditDuplicateDto],
+    description: '동일 수신번호로 2건 이상 존재하는 레코드 상세',
+  })
+  duplicates: OrderDeliveryAuditDuplicateDto[];
+
+  @ApiProperty({
+    type: [OrderDeliverySsgDuplicateDto],
+    description: 'SSG 주문 한정 — ssgTransactionId / barCode 중복 상세',
+  })
+  ssgDuplicates: OrderDeliverySsgDuplicateDto[];
+}
