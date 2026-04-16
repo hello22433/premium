@@ -69,6 +69,7 @@ import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorizati
 import {
   OrderCreateTempResDto,
   OrderDeliveryConfirmed,
+  OrderGetDeliveryAuditResDto,
   OrderGetDeliveryCompleteReportResDto,
   OrderGetDetailResDto,
   OrderGetListResDto,
@@ -165,6 +166,28 @@ export class OrderController {
   @Get('/order/detail/:id')
   getDetail(@Param() getParam: OrderGetDetailReqParamDto) {
     return this.orderService.getDetail(getParam);
+  }
+
+  @ApiOperation({
+    summary: '발송 중복 검증(감사) API',
+    description:
+      '특정 주문에 대해 서버 중복 발송 여부를 검증합니다.<br>' +
+      '- 전체 요약 + 일자별 통계 + 동일 수신번호 중복 상세 반환<br>' +
+      '- SSG 주문은 ssgTransactionId / barCode 중복까지 추가 검사<br>' +
+      '- 운영관리자 이상만 사용 가능',
+  })
+  @ApiOkResponse({
+    type: OrderGetDeliveryAuditResDto,
+    description: '성공적으로 조회한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '해당 order id 가 존재하지 않는 경우',
+  })
+  // ====================================================
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
+  @Get('/order/:id/delivery-audit')
+  getDeliveryAudit(@Param() getParam: OrderGetDetailReqParamDto): Promise<OrderGetDeliveryAuditResDto> {
+    return this.orderService.getDeliveryAudit(getParam.id);
   }
 
   @ApiOperation({
