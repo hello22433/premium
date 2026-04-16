@@ -58,16 +58,28 @@ export class OrderSettleViewDto {
   fee: number | null;
 
   @ApiProperty({
-    description: '할인 단가 ',
+    description: '할인 단가 (할인/할증 적용 후 단가) — deprecated: finalPrice 사용 권장',
   })
   // =================================
   discountPrice: number;
 
   @ApiProperty({
-    description: '할인 금액 ',
+    description: '할인 금액 (할인/할증 적용 후 금액) — deprecated: finalPrice 사용 권장',
   })
   // =================================
   discountTotalPrice: number;
+
+  @ApiProperty({
+    description: '할인 금액 (정상금액 - 최종금액)',
+  })
+  // =================================
+  discountAmount: number;
+
+  @ApiProperty({
+    description: '최종 금액 (할인/할증 적용 후 금액)',
+  })
+  // =================================
+  finalPrice: number;
 
   @ApiProperty({
     description: '환불률 % (0: 환불불가, 80/90: 환불가능, null: 미설정)',

@@ -2032,9 +2032,18 @@ export class OrderService {
       virtualTotalCount = resultList.length;
     }
 
-    const totalDiscountAmount = resultList.reduce((sum, row) => sum + (row.discountTotalPrice ?? 0), 0);
+    resultList = resultList.map((row) => ({
+      ...row,
+      finalPrice: row.discountTotalPrice ?? 0,
+      discountAmount: (row.totalPrice ?? 0) - (row.discountTotalPrice ?? 0),
+    }));
+
+    const totalDiscountAmount = resultList.reduce((sum, row) => sum + (row.finalPrice ?? 0), 0);
     const pagedList = resultList.slice(skip, skip + take);
     const totalPage = Math.ceil(virtualTotalCount / take);
+
+    const hasSettled = (order.settleAmount ?? 0) > 0;
+    const effectiveCardSurcharge = hasSettled ? order.cardSurchargeApplied : settleMethod === 'CARD';
 
     return {
       list: pagedList,
@@ -2044,7 +2053,7 @@ export class OrderService {
       virtualTotalCount,
       totalDiscountAmount,
       settleMethod,
-      cardSurchargeApplied: order.cardSurchargeApplied,
+      cardSurchargeApplied: effectiveCardSurcharge,
     };
   }
 
