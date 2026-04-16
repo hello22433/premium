@@ -69,6 +69,15 @@ export class OrderReceiveService {
     private ssgEventRepository: Repository<SsgEventEntity>,
   ) {}
 
+  private assertCouponNotDiscarded(orderDelivery: OrderDeliveryEntity): void {
+    if (
+      orderDelivery.couponStatus === OrderDeliveryCouponStatus.CANCEL ||
+      orderDelivery.couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL
+    ) {
+      throw new BadRequestException('폐기된 쿠폰입니다.');
+    }
+  }
+
   async selectChoiceProduct(getBody: OrderReceiveSelectChoiceProductReqDto) {
     const orderDecrypt = this.cryptoCipher.decryptJson(getBody.encryptKey) as OrderEncryptKey & { emailSendHistoryId?: number; isTest?: boolean };
 
@@ -93,6 +102,8 @@ export class OrderReceiveService {
     if (!orderDelivery) {
       throw new BadRequestException('존재하지 않는 주문 정보입니다.');
     }
+
+    this.assertCouponNotDiscarded(orderDelivery);
 
     if (orderDelivery.expireAt) {
       const expireEnd = dayjs(orderDelivery.expireAt).tz('Asia/Seoul').endOf('day');
@@ -219,6 +230,8 @@ export class OrderReceiveService {
     if (!orderDelivery) {
       throw new BadRequestException('존재하지 않는 주문 정보입니다.');
     }
+
+    this.assertCouponNotDiscarded(orderDelivery);
 
     const choiceProductList: OrderReceiveChoiceDto[] = [];
     let selectChoiceProduct: OrderReceiveChoiceDto | null = null;
@@ -417,13 +430,7 @@ export class OrderReceiveService {
       throw new BadRequestException('존재하지 않는 주문 정보입니다.');
     }
 
-    // 폐기된 쿠폰 차단
-    if (
-      orderDelivery.couponStatus === OrderDeliveryCouponStatus.CANCEL ||
-      orderDelivery.couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL
-    ) {
-      throw new BadRequestException('폐기된 쿠폰입니다.');
-    }
+    this.assertCouponNotDiscarded(orderDelivery);
 
     if (!orderDecrypt.emailHistoryId) {
       throw new BadRequestException('올바른 요청이 아닙니다.');
@@ -661,13 +668,7 @@ export class OrderReceiveService {
       throw new BadRequestException('이미 전송한 쿠폰입니다.');
     }
 
-    // 폐기된 쿠폰 차단 (2차 방어)
-    if (
-      orderDelivery.couponStatus === OrderDeliveryCouponStatus.CANCEL ||
-      orderDelivery.couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL
-    ) {
-      throw new BadRequestException('폐기된 쿠폰입니다.');
-    }
+    this.assertCouponNotDiscarded(orderDelivery);
 
     const emailSendHistory = await this.emailSendHistoryRepository.findOne({
       where: {
