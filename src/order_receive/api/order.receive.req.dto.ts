@@ -27,14 +27,6 @@ export class OrderReceiveAlimTalkReqDto {
   @IsNotEmpty()
   @IsString()
   encryptKey: string;
-
-  @ApiProperty({
-    description: '수신 핸드폰 번호',
-  })
-  // ===============================
-  @IsNotEmpty()
-  @IsString()
-  phoneNumber: string;
 }
 
 export class OrderReceiveEmailReqDto {
