@@ -1,4 +1,5 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, Logger } from '@nestjs/common';
+import { format } from 'date-fns';
 import { ConfigService } from '@nestjs/config';
 import { GalaxiaPushRawTransaction, IGalaxia } from '../interface/galaxia';
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
@@ -340,6 +341,90 @@ export class PartnerCompanyExternBatchService {
       mismatched: mismatches.length,
       errors,
       mismatches,
+    };
+  }
+
+  // ===== 협력사 cancel API 드라이런 (DB 변경 없이 호출만, 로그 확인용) =====
+  async testCancelDryRun(orderDeliveryId: number): Promise<{ type: string; barCode: string | null; transactionId: string | null; message: string }> {
+    const item = await this.orderDeliveryRepository
+      .createQueryBuilder('orderDelivery')
+      .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
+      .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
+      .leftJoinAndSelect('choiceSelectProduct.partnerCompany', 'choicePartnerCompany')
+      .innerJoinAndSelect('orderProductMapping.product', 'product')
+      .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .where('orderDelivery.id = :id', { id: orderDeliveryId })
+      .getOne();
+
+    if (!item) {
+      throw new BadRequestException(`orderDelivery ${orderDeliveryId} 를 찾을 수 없습니다.`);
+    }
+
+    const type = (item.choiceSelectProduct?.partnerCompany?.type ??
+      item.orderProductMapping?.product?.partnerCompany?.type) as PartnerCompanyType | undefined;
+
+    if (!type) {
+      throw new BadRequestException(`partnerCompany type 을 확인할 수 없습니다.`);
+    }
+
+    this.logger.log(
+      `[testCancelDryRun] 시작 - id=${orderDeliveryId}, type=${type}, barCode=${item.barCode}, transactionId=${item.transactionId}`,
+    );
+
+    switch (type) {
+      case 'GALAXIA': {
+        const giftKind = item.orderProductMapping.product.name.includes('(백화점)') ? 'dept' : 'cpn';
+        await this.galaxia.cancel({
+          transactionId: item.transactionId!,
+          sendRequestAt: +format(item.sendRequestAt!, 'yyyyMMdd'),
+          giftKind,
+          trId: item.couponNum!,
+        });
+        break;
+      }
+      case 'CULTURELAND': {
+        await this.culture.cancel({
+          barCode: item.barCode!,
+          expireDay: item.orderProductMapping.product.expireDay,
+        });
+        break;
+      }
+      case 'GIFT_SHOW': {
+        await this.giftiShow.cancel({
+          transactionId: item.transactionId!,
+        });
+        break;
+      }
+      case 'GS_M_BIZ': {
+        await this.gsmbiz.cancel({
+          transactionId: item.transactionId!,
+          partnerCompanyCode: item.orderProductMapping.product.partnerCompanyCode!,
+          barCode: item.barCode!,
+        });
+        break;
+      }
+      case 'GIFTIEL': {
+        await this.giftiel.cancel({
+          partnerCompanyCode: item.orderProductMapping.product.partnerCompanyCode!,
+          barCode: item.barCode!,
+        });
+        break;
+      }
+      case 'DAOU': {
+        const out = await this.daou.cancel({ pinNo: item.barCode! });
+        this.logger.log(`[testCancelDryRun] DAOU 응답: ${JSON.stringify(out)}`);
+        break;
+      }
+      default:
+        throw new BadRequestException(`지원하지 않는 partnerType: ${type}`);
+    }
+
+    this.logger.log(`[testCancelDryRun] 완료 - id=${orderDeliveryId}`);
+    return {
+      type,
+      barCode: item.barCode ?? null,
+      transactionId: item.transactionId ?? null,
+      message: '협력사 cancel API 호출 완료. 서버 로그에서 응답 본문을 확인하세요.',
     };
   }
 

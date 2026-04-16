@@ -117,6 +117,19 @@ export class PartnerCompanyBatchController {
     return result;
   }
 
+  @ApiOperation({ summary: '협력사 cancel API 드라이런 (DB 변경 없이 호출만, 로그 확인용)' })
+  @Get('batch/test-cancel-dry-run')
+  async testCancelDryRun(@Query('orderDeliveryId') orderDeliveryId: string) {
+    const id = Number(orderDeliveryId);
+    if (!orderDeliveryId || !Number.isInteger(id) || id <= 0) {
+      return { message: 'orderDeliveryId를 양의 정수로 입력해주세요.' };
+    }
+    this.logger.log(`[테스트] testCancelDryRun 시작 - orderDeliveryId=${id}`);
+    const result = await this.partnerCompanyExternBatchService.testCancelDryRun(id);
+    this.logger.log(`[테스트] testCancelDryRun 완료 - orderDeliveryId=${id}`);
+    return result;
+  }
+
   @ApiOperation({ summary: '전체 CANCEL 상태 발송건 협력사 상태 검증 (읽기 전용, SSG 제외)' })
   @Get('batch/verify-all-cancelled')
   async verifyAllCancelled(@Query('partnerType') partnerType?: string) {
