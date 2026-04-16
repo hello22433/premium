@@ -196,7 +196,7 @@ export class OrderReceiveService {
 
     // 테스트 발송인 경우 test_order_delivery 테이블에서 조회
     if (orderDecrypt.isTest) {
-      return this.alimTalkForTest(orderDecrypt, getQuery.phoneNumber);
+      return this.alimTalkForTest(orderDecrypt);
     }
 
     // 이메일 경로(OrderSendEncryptKey)에서는 id가 없고 orderDeliveryId만 있음
@@ -218,27 +218,6 @@ export class OrderReceiveService {
 
     if (!orderDelivery) {
       throw new BadRequestException('존재하지 않는 주문 정보입니다.');
-    }
-
-    // 이메일 발송 건: emailReceiverPhone과 비교, 일반 발송 건: deliveryTarget과 비교
-    const isEmailDelivery = orderDelivery.deliveryMethod === IOrderSendMethod.EMAIL;
-    const encryptedPhone = isEmailDelivery
-      ? orderDelivery.emailReceiverPhone
-      : orderDelivery.deliveryTarget;
-
-    if (!encryptedPhone) {
-      throw new BadRequestException('전화번호 정보가 없습니다.');
-    }
-
-    let decryptedPhone: string;
-    try {
-      decryptedPhone = this.cryptoCipher.decryptDeliveryTarget(encryptedPhone);
-    } catch (error) {
-      throw new BadRequestException('전화번호 복호화에 실패했습니다.');
-    }
-
-    if (decryptedPhone !== getQuery.phoneNumber) {
-      throw new BadRequestException('전화번호가 일치하지 않습니다.');
     }
 
     const choiceProductList: OrderReceiveChoiceDto[] = [];
@@ -332,7 +311,6 @@ export class OrderReceiveService {
    */
   private async alimTalkForTest(
     orderDecrypt: OrderEncryptKey,
-    phoneNumber: string,
   ): Promise<OrderReceiveAlimTalkResDto> {
     const orderDeliveryId = orderDecrypt.id ?? orderDecrypt.orderDeliveryId;
 
@@ -353,18 +331,6 @@ export class OrderReceiveService {
 
     if (!testOrderDelivery) {
       throw new BadRequestException('존재하지 않는 테스트 주문 정보입니다.');
-    }
-
-    // deliveryTarget 복호화 후 비교
-    let decryptedDeliveryTarget = testOrderDelivery.deliveryTarget;
-    try {
-      decryptedDeliveryTarget = this.cryptoCipher.decryptDeliveryTarget(testOrderDelivery.deliveryTarget);
-    } catch (error) {
-      throw new BadRequestException('전화번호 복호화에 실패했습니다.');
-    }
-
-    if (decryptedDeliveryTarget !== phoneNumber) {
-      throw new BadRequestException('전화번호가 일치하지 않습니다.');
     }
 
     const choiceProductList: OrderReceiveChoiceDto[] = [];
