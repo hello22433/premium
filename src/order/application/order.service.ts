@@ -1820,6 +1820,8 @@ export class OrderService {
             fee: group.fee,
             discountPrice,
             discountTotalPrice,
+            discountAmount: 0,
+            finalPrice: 0,
             refund: firstDelivery?.refundRatio ?? null,
             deliveryIds: group.deliveryIds,
             isSubRow: !isFirstRow,
@@ -1945,6 +1947,8 @@ export class OrderService {
           fee: group.fee,
           discountPrice,
           discountTotalPrice,
+          discountAmount: 0,
+          finalPrice: 0,
           refund: group.refund,
           deliveryIds: group.deliveryIds,
           isSubRow: false,
@@ -2026,6 +2030,8 @@ export class OrderService {
           fee,
           discountPrice,
           discountTotalPrice,
+          discountAmount: 0,
+          finalPrice: 0,
           refund,
         };
       });
