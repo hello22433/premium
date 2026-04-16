@@ -1667,14 +1667,14 @@ export class OrderService {
     const settleMethod = billingUserForSettle?.company?.settleMethod ?? null;
 
     // 1. 유저의 주문 상품 조회 (classification 포함)
-    const [orderProductList, totalCount] = await this.orderProductMappingRepository.findAndCount({
+    // SSG 합산 할인 및 전체 합계 계산을 위해 페이지네이션 없이 전체 조회 후 resultList 생성 후 슬라이스
+    const orderProductList = await this.orderProductMappingRepository.find({
       where: {
         orderId: id,
       },
-      skip,
-      take,
       relations: ['product', 'product.brand', 'product.classification', 'orderDeliveries'],
     });
+    const totalCount = orderProductList.length;
 
     // 2. 유저 및 협력사의 할인 옵션 전체 조회 (대행주문인 경우 clientUser의 할인옵션 사용)
     const billingUserId = order.clientUserId ?? order.userId;
@@ -2032,14 +2032,17 @@ export class OrderService {
       virtualTotalCount = resultList.length;
     }
 
-    const totalPage = Math.ceil(totalCount / take);
+    const totalDiscountAmount = resultList.reduce((sum, row) => sum + (row.discountTotalPrice ?? 0), 0);
+    const pagedList = resultList.slice(skip, skip + take);
+    const totalPage = Math.ceil(virtualTotalCount / take);
 
     return {
-      list: resultList,
+      list: pagedList,
       currentPage: page,
       totalCount,
       totalPage,
       virtualTotalCount,
+      totalDiscountAmount,
       settleMethod,
       cardSurchargeApplied: order.cardSurchargeApplied,
     };
