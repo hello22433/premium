@@ -307,6 +307,11 @@ export class OrderGetSettleGetListResDto extends GetListResDto {
     required: false,
   })
   virtualTotalCount?: number;
+
+  @ApiProperty({
+    description: '전체 할인 후 총 금액 (페이지네이션과 무관한 전체 합계)',
+  })
+  totalDiscountAmount: number;
 }
 
 export class OrderGetMyOrderHistoryResDto extends OrderDashboardViewDto {}
