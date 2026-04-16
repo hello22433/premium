@@ -19,6 +19,18 @@ import { Type } from 'class-transformer';
 import { OrderDeliveryCouponStatus } from 'src/delivery/interface/order.delivery.coupon.status';
 
 export class CustomerServiceGetListReqDto extends PagingReqDto {
+  @ApiPropertyOptional({
+    type: Number,
+    default: 10,
+    description: '가져오고자 하는 데이터 개수 (최대 500)',
+  })
+  // =============================================================
+  @IsOptional()
+  @Min(1)
+  @Max(500)
+  @Type(() => Number)
+  take: number = 10;
+
   @ApiProperty({
     description: '일반 쿠폰주문 CS: GENERAL, 신세계 :SSG',
   })
