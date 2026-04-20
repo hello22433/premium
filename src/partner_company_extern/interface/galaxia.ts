@@ -83,6 +83,7 @@ export interface GalaxiaCheckOut {
     usedDate: string;
     faceValue: string;
     balance: string;
+    barcode: string;
   };
 }
 
