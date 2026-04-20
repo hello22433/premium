@@ -245,7 +245,9 @@ export class GalaxiaHttp implements IGalaxia {
       const result = response.data as GalaxiaIssueOut;
 
       if (result.resCode !== '0000') {
-        throw new InternalServerErrorException('핀폐기가 실패했습니다.');
+        throw new InternalServerErrorException(
+          `GALAXIA cancel 실패: ${result.resCode} - ${result.resMsg}`,
+        );
       }
 
       this.logger.log(JSON.stringify(result));
