@@ -234,8 +234,14 @@ export class CultureSocket implements ICulture {
       }
       this.logger.log(`response : ${response}`);
       this.logger.log(`response : ${JSON.stringify(response)}`);
-      // const cancelOut = this.socketResponseParsing(response, 8120);
-      // this.logger.log(`issueOut : ${JSON.stringify(cancelOut)}`);
+
+      // 응답 레이아웃: HeadNo(0-3) + MessageLength(4-7) + MemberCode(8-14)
+      // + SubMemberCode(15-34) + ResultCode(35-38) + ScrachNo(39-54) + ErrMsg(55-84)
+      const resultCode = response.substring(35, 39);
+      const errMsg = response.substring(55, 85).trim();
+      if (resultCode !== '0000') {
+        throw new Error(`CULTURELAND cancel 실패: ${resultCode} - ${errMsg}`);
+      }
     } catch (e) {
       this.logger.error(e);
       this.logger.error(JSON.stringify(e));
