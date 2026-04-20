@@ -121,7 +121,8 @@ export class GalaxiaHttp implements IGalaxia {
           if (checkResult.resCode === '0000' && checkResult.giftCertificate.couponStatus === 'ACTIVE') {
             this.logger.warn(
               `[issue] 기존 발급 확인됨 - transactionId: ${obj.transactionId}, ` +
-              `trId: ${checkResult.transactionId}, 잔액: ${checkResult.giftCertificate.balance}`,
+              `trId: ${checkResult.transactionId}, 잔액: ${checkResult.giftCertificate.balance}, ` +
+              `barcode: ${checkResult.giftCertificate.barcode || '(없음)'}`,
             );
             return {
               resCode: '0000',
@@ -132,7 +133,7 @@ export class GalaxiaHttp implements IGalaxia {
                 issueDate: '',
                 faceValue: checkResult.giftCertificate.faceValue,
                 pinNumber: '',
-                barcode: '',
+                barcode: checkResult.giftCertificate.barcode,
                 validTo: checkResult.giftCertificate.validTo,
               },
             } as GalaxiaIssueOut;
@@ -192,6 +193,7 @@ export class GalaxiaHttp implements IGalaxia {
           usedDate: giftCert.usedDate?.[0] || '',
           faceValue: giftCert.faceValue[0],
           balance: giftCert.balance[0],
+          barcode: giftCert.barcode?.[0] || '',
         },
       };
 
@@ -215,6 +217,14 @@ export class GalaxiaHttp implements IGalaxia {
             this.encIv,
             this.cryptoAlgorithm,
           ),
+          barcode: parsed.giftCertificate.barcode
+            ? this.cryptoCipher.decrypt(
+                parsed.giftCertificate.barcode,
+                this.encKey,
+                this.encIv,
+                this.cryptoAlgorithm,
+              )
+            : '',
         },
       };
     } catch (e) {
