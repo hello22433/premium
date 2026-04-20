@@ -780,15 +780,20 @@ export class PartnerCompanyExternBatchService {
         paramValue: orderDelivery.couponNum!,
       });
 
-      if (galaxiaOut.giftCertificate.isUsed) {
+      const giftCertificate = galaxiaOut.giftCertificate;
+      if (giftCertificate.couponStatus === 'CANCEL') {
+        result.couponStatus = OrderDeliveryCouponStatus.CANCEL;
+      } else if (giftCertificate.couponStatus === 'INACTIVE') {
+        result.couponStatus = OrderDeliveryCouponStatus.EXPIRED;
+      } else if (giftCertificate.isUsed) {
         result.couponStatus = OrderDeliveryCouponStatus.USED;
-      } else if (isExpiredYMD(galaxiaOut.giftCertificate.validTo)) {
+      } else if (isExpiredYMD(giftCertificate.validTo)) {
         result.couponStatus = OrderDeliveryCouponStatus.EXPIRED;
       } else {
         result.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
       }
-      result.tradeAt = parseDateString(galaxiaOut.giftCertificate.usedDate);
-      result.galaxiaBalance = +galaxiaOut.giftCertificate.balance;
+      result.tradeAt = parseDateString(giftCertificate.usedDate);
+      result.galaxiaBalance = +giftCertificate.balance;
     }
 
     // GS_M_BIZ 처리
