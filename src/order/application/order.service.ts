@@ -244,6 +244,7 @@ export class OrderService {
       .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .leftJoinAndSelect('orderProductMappings.product', 'product')
       .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
+      .withDeleted()
       .where('order.type = :type', { type });
 
     // 현재 사용자 정보 및 조회 범위 설정 조회
@@ -465,6 +466,7 @@ export class OrderService {
       .leftJoinAndSelect('product.brand', 'brand')
       .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
       .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .withDeleted()
       .where('order.id = :id', { id: getParam.id })
       .addOrderBy('orderDeliveries.id', 'ASC');
 
@@ -822,6 +824,7 @@ export class OrderService {
       .leftJoinAndSelect('orderProductMappings.product', 'product')
       .leftJoinAndSelect('product.brand', 'brand')
       .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .withDeleted()
       .where('order.id = :id', { id: getParam.id });
 
     const order = await queryBuilder.getOne();
@@ -948,6 +951,7 @@ export class OrderService {
       .leftJoinAndSelect('orderProductMappings.product', 'product')
       .leftJoinAndSelect('product.brand', 'brand')
       .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
+      .withDeleted()
       .where('order.id = :id', { id: getQuery.id })
       .addOrderBy('orderDeliveries.id', 'ASC');
 
@@ -1151,6 +1155,7 @@ export class OrderService {
       .leftJoinAndSelect('orderProductMappings.product', 'product')
       .leftJoinAndSelect('product.brand', 'brand')
       .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
+      .withDeleted()
       .where('order.id = :id', { id: getQuery.id });
 
     const order = await queryBuilder.getOne();
@@ -1336,6 +1341,7 @@ export class OrderService {
       .leftJoinAndSelect('orderProductMappings.product', 'product')
       .leftJoinAndSelect('product.brand', 'brand')
       .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
+      .withDeleted()
       .where('order.id IN (:...ids)', { ids: orderIds })
       .addOrderBy('orderDeliveries.id', 'ASC');
 
@@ -1529,6 +1535,7 @@ export class OrderService {
       .leftJoinAndSelect('orderProductMappings.product', 'product')
       .leftJoinAndSelect('product.brand', 'brand')
       .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
+      .withDeleted()
       .where('order.id IN (:...ids)', { ids: orderIds });
 
     const orders = await queryBuilder.getMany();
@@ -3600,6 +3607,7 @@ export class OrderService {
       .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .leftJoinAndSelect('orderProductMappings.product', 'product')
       .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
+      .withDeleted()
       .where('order.type = :type', { type });
 
     // 주문 관리 일 경우

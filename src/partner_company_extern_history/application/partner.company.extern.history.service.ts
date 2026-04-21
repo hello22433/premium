@@ -21,6 +21,7 @@ import { DateFormatStr } from '../../common/domain/date.format.str';
 import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
+import { IProductType } from '../../product/interface/product.type';
 import { DeliveryBatchService } from '../../delivery/application/delivery.batch.service';
 import { CreateResendTransactionId } from '../../order/domain/create.transaction.id';
 
@@ -64,6 +65,7 @@ export class PartnerCompanyExternHistoryService {
       .leftJoinAndSelect('orderProductMapping.order', 'order')
       .leftJoinAndSelect('orderProductMapping.product', 'product')
       .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .withDeleted()
       .where('orderDelivery.deletedAt IS NULL')
       .andWhere('(orderDelivery.status IN (:...statuses) OR orderDelivery.resendAt IS NOT NULL)', { statuses: RESENDABLE_FAIL_STATUSES });
 
@@ -328,6 +330,7 @@ export class PartnerCompanyExternHistoryService {
         .leftJoinAndSelect('orderProductMapping.product', 'product')
         .leftJoinAndSelect('product.brand', 'brand')
         .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
+        .withDeleted()
         .where('orderDelivery.id = :id', { id: orderDeliveryId })
         .andWhere('orderDelivery.status IN (:...statuses)', { statuses: RESENDABLE_FAIL_STATUSES })
         .getOne();
@@ -336,6 +339,17 @@ export class PartnerCompanyExternHistoryService {
         return {
           success: false,
           message: '이미 처리 중이거나 재발송 대상이 아닙니다.',
+          orderDeliveryId,
+        };
+      }
+
+      if (
+        orderDelivery.orderProductMapping.product.type === IProductType.CHOICE &&
+        orderDelivery.orderProductMapping.product.deletedAt
+      ) {
+        return {
+          success: false,
+          message: '삭제된 초이스 쿠폰은 재발송할 수 없습니다.',
           orderDeliveryId,
         };
       }

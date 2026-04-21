@@ -6,6 +6,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { ProductEntity } from '../../entity/product.entity';
 import {
   ProductChoiceCreateReqDto,
+  ProductChoiceDeleteReqDto,
   ProductChoiceGetDetailReqParamDto,
   ProductChoiceGetListReqQueryDto,
   ProductChoiceGetProductListReqQueryDto,
@@ -13,11 +14,14 @@ import {
 } from '../api/product.choice.req.dto';
 import { IProductType } from '../../product/interface/product.type';
 import { ProductChoiceMappingEntity } from '../../entity/product.choice.mapping.entity';
+import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
+import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 import { Transactional } from 'typeorm-transactional';
 import { format } from 'date-fns';
 import { DateDateFormatStr } from '../../common/domain/date.format.str';
 import { ProductChoiceProductViewDto } from '../api/dto/product.choice.product.view.dto';
 import {
+  ProductChoiceDeleteCheckResDto,
   ProductChoiceGetDetailResDto,
   ProductChoiceGetListResDto,
   ProductChoiceGetProductListResDto,
@@ -43,6 +47,8 @@ export class ProductChoiceService {
     private productRepository: Repository<ProductEntity>,
     @InjectRepository(ProductChoiceMappingEntity)
     private productChoiceMappingRepository: Repository<ProductChoiceMappingEntity>,
+    @InjectRepository(OrderDeliveryEntity)
+    private orderDeliveryRepository: Repository<OrderDeliveryEntity>,
   ) {}
 
   async getList(getQuery: ProductChoiceGetListReqQueryDto): Promise<ProductChoiceGetListResDto> {
@@ -317,5 +323,56 @@ export class ProductChoiceService {
     await this.productChoiceMappingRepository.insert(productChoiceMappings);
 
     return;
+  }
+
+  async checkDelete(getBody: ProductChoiceDeleteReqDto): Promise<ProductChoiceDeleteCheckResDto> {
+    const { idList } = getBody;
+    await this.assertAllChoiceProductsExist(idList);
+
+    const [waitCount, pendingCustomerCount] = await Promise.all([
+      this.countWaitDeliveries(idList),
+      this.countPendingCustomerDeliveries(idList),
+    ]);
+
+    return { waitCount, pendingCustomerCount };
+  }
+
+  @Transactional()
+  async delete(getBody: ProductChoiceDeleteReqDto): Promise<void> {
+    const { idList } = getBody;
+    await this.assertAllChoiceProductsExist(idList);
+
+    const waitCount = await this.countWaitDeliveries(idList);
+    if (waitCount > 0) {
+      throw new BadRequestException(`발송 대기 중인 쿠폰이 있어 삭제할 수 없습니다. (${waitCount}건)`);
+    }
+
+    await this.productRepository.softDelete({ id: In(idList) });
+  }
+
+  private async assertAllChoiceProductsExist(idList: number[]): Promise<void> {
+    const count = await this.productRepository.countBy({ id: In(idList), type: IProductType.CHOICE });
+    if (count !== idList.length) {
+      throw new BadRequestException('존재하지 않는 초이스쿠폰이 포함되어 있습니다.');
+    }
+  }
+
+  private async countWaitDeliveries(choiceProductIdList: number[]): Promise<number> {
+    return this.orderDeliveryRepository
+      .createQueryBuilder('orderDelivery')
+      .innerJoin('orderDelivery.orderProductMapping', 'orderProductMapping')
+      .where('orderProductMapping.productId IN (:...ids)', { ids: choiceProductIdList })
+      .andWhere('orderDelivery.status = :status', { status: IOrderDeliveryStatus.WAIT })
+      .getCount();
+  }
+
+  private async countPendingCustomerDeliveries(choiceProductIdList: number[]): Promise<number> {
+    return this.orderDeliveryRepository
+      .createQueryBuilder('orderDelivery')
+      .innerJoin('orderDelivery.orderProductMapping', 'orderProductMapping')
+      .where('orderProductMapping.productId IN (:...ids)', { ids: choiceProductIdList })
+      .andWhere('orderDelivery.actualSendAt IS NOT NULL')
+      .andWhere('orderDelivery.choiceSelectProductId IS NULL')
+      .getCount();
   }
 }

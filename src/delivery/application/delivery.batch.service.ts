@@ -133,6 +133,13 @@ export class DeliveryBatchService {
   /**
    * 발송 실패 시 failedAt 설정
    */
+  private assertChoiceProductNotDeletedForCsResend(orderDelivery: OrderDeliveryEntity): void {
+    const product = orderDelivery.orderProductMapping.product;
+    if (product.type === IProductType.CHOICE && product.deletedAt) {
+      throw new Error('삭제된 초이스 쿠폰은 재발송할 수 없습니다.');
+    }
+  }
+
   private markSendFail(orderDelivery: OrderDeliveryEntity, status: IOrderDeliveryStatus): void {
     this.deliverySendService.markSendFail(orderDelivery, status);
   }
@@ -851,12 +858,15 @@ export class DeliveryBatchService {
       .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
       .leftJoinAndSelect('choiceSelectProduct.brand', 'choiceBrand')
+      .withDeleted()
       .where('orderDelivery.id = :id', { id: orderDeliveryId })
       .getOne();
 
     if (!orderDelivery) {
       throw new Error('발송 데이터가 존재하지 않습니다.');
     }
+
+    this.assertChoiceProductNotDeletedForCsResend(orderDelivery);
 
     const isUnselectedChoiceCoupon = orderDelivery.orderProductMapping.product.type === IProductType.CHOICE && !orderDelivery.choiceSelectProductId;
     if (!orderDelivery.barCode && !isUnselectedChoiceCoupon) {
@@ -928,12 +938,15 @@ export class DeliveryBatchService {
       .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
       .leftJoinAndSelect('choiceSelectProduct.brand', 'choiceBrand')
+      .withDeleted()
       .where('orderDelivery.id = :id', { id: orderDeliveryId })
       .getOne();
 
     if (!orderDelivery) {
       throw new Error('발송 데이터가 존재하지 않습니다.');
     }
+
+    this.assertChoiceProductNotDeletedForCsResend(orderDelivery);
 
     const isUnselectedChoiceCoupon = orderDelivery.orderProductMapping.product.type === IProductType.CHOICE && !orderDelivery.choiceSelectProductId;
     if (!orderDelivery.barCode && !isUnselectedChoiceCoupon) {
@@ -972,12 +985,15 @@ export class DeliveryBatchService {
       .innerJoinAndSelect('product.brand', 'brand')
       .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
       .leftJoinAndSelect('choiceSelectProduct.brand', 'choiceBrand')
+      .withDeleted()
       .where('orderDelivery.id = :id', { id: orderDeliveryId })
       .getOne();
 
     if (!orderDelivery) {
       throw new Error('발송 데이터가 존재하지 않습니다.');
     }
+
+    this.assertChoiceProductNotDeletedForCsResend(orderDelivery);
 
     const isUnselectedChoiceCoupon = orderDelivery.orderProductMapping.product.type === IProductType.CHOICE && !orderDelivery.choiceSelectProductId;
     if (!orderDelivery.barCode && !isUnselectedChoiceCoupon) {
@@ -1031,12 +1047,15 @@ export class DeliveryBatchService {
       .innerJoinAndSelect('orderProductMapping.order', 'order')
       .innerJoinAndSelect('orderProductMapping.product', 'product')
       .innerJoinAndSelect('product.brand', 'brand')
+      .withDeleted()
       .where('orderDelivery.id = :id', { id: orderDeliveryId })
       .getOne();
 
     if (!orderDelivery) {
       throw new Error('발송 데이터가 존재하지 않습니다.');
     }
+
+    this.assertChoiceProductNotDeletedForCsResend(orderDelivery);
 
     if (orderDelivery.deliveryMethod !== IOrderSendMethod.EMAIL) {
       throw new Error('이메일 발송 건만 이메일 재발송이 가능합니다.');

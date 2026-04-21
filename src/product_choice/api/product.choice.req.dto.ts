@@ -157,6 +157,17 @@ export class ProductChoiceCreateReqDto {
   useStatus: IProductUseStatus;
 }
 
+export class ProductChoiceDeleteReqDto {
+  @ApiProperty({
+    description: '삭제할 초이스쿠폰 id 리스트',
+  })
+  // ================================
+  @IsNumber({}, { each: true })
+  @ArrayNotEmpty()
+  @IsArray()
+  idList: number[];
+}
+
 export class ProductChoiceUpdateReqDto {
   @ApiProperty({
     description: '수정 product id (초이스쿠폰)',

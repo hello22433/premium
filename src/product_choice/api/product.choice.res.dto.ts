@@ -28,3 +28,15 @@ export class ProductChoiceGetProductListResDto extends GetListResDto {
   })
   list: ProductChoiceProductViewDto[];
 }
+
+export class ProductChoiceDeleteCheckResDto {
+  @ApiProperty({
+    description: '발송 대기(WAIT) 상태 건수. 0이 아니면 삭제 불가',
+  })
+  waitCount: number;
+
+  @ApiProperty({
+    description: '발송 완료 후 고객이 아직 상품을 선택하지 않은 건수 (경고용)',
+  })
+  pendingCustomerCount: number;
+}

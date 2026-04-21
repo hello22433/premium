@@ -1,14 +1,16 @@
-import { Body, Controller, Get, Param, Post, Put, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Post, Put, Query, UseGuards } from '@nestjs/common';
 import { ApiBadRequestResponse, ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { ProductChoiceService } from '../application/product.choice.service';
 import {
   ProductChoiceCreateReqDto,
+  ProductChoiceDeleteReqDto,
   ProductChoiceGetDetailReqParamDto,
   ProductChoiceGetListReqQueryDto,
   ProductChoiceGetProductListReqQueryDto,
   ProductChoiceUpdateReqDto,
 } from './product.choice.req.dto';
 import {
+  ProductChoiceDeleteCheckResDto,
   ProductChoiceGetDetailResDto,
   ProductChoiceGetListResDto,
   ProductChoiceGetProductListResDto,
@@ -106,5 +108,45 @@ export class ProductChoiceController {
   @Put('/product-choice')
   updatePartial(@Body() getBody: ProductChoiceUpdateReqDto) {
     return this.productChoiceService.update(getBody);
+  }
+
+  @ApiOperation({
+    summary: '초이스쿠폰 삭제 사전 체크 API',
+    description:
+      'waitCount: 발송 대기(WAIT) 건수. 0이 아니면 삭제 불가.<br>' +
+      'pendingCustomerCount: 발송 완료 후 고객이 아직 상품을 선택하지 않은 건수 (경고용)',
+  })
+  @ApiOkResponse({
+    type: ProductChoiceDeleteCheckResDto,
+    description: '성공적으로 조회한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '존재하지 않는 초이스쿠폰이 포함된 경우',
+  })
+  // =========================================
+  @Post('/product-choice/delete-check')
+  async checkDelete(
+    @User() user: ILoginUserInfo,
+    @Body() getBody: ProductChoiceDeleteReqDto,
+  ): Promise<ProductChoiceDeleteCheckResDto> {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.PRODUCT_CHOICE);
+    return this.productChoiceService.checkDelete(getBody);
+  }
+
+  @ApiOperation({
+    summary: '초이스쿠폰 삭제 API (soft-delete)',
+  })
+  @ApiOkResponse({
+    description: '성공적으로 삭제한 경우',
+  })
+  @ApiBadRequestResponse({
+    description:
+      '존재하지 않는 초이스쿠폰이 포함된 경우<br>' + '발송 대기(WAIT) 중인 쿠폰이 포함되어 삭제할 수 없는 경우',
+  })
+  // =========================================
+  @Delete('/product-choice')
+  async delete(@User() user: ILoginUserInfo, @Body() getBody: ProductChoiceDeleteReqDto): Promise<void> {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.PRODUCT_CHOICE);
+    return this.productChoiceService.delete(getBody);
   }
 }

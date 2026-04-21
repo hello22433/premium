@@ -78,6 +78,13 @@ export class OrderReceiveService {
     }
   }
 
+  private assertChoiceProductNotDeleted(orderDelivery: OrderDeliveryEntity): void {
+    const product = orderDelivery.orderProductMapping.product;
+    if (product.type === IProductType.CHOICE && product.deletedAt) {
+      throw new BadRequestException('이 쿠폰은 더 이상 제공되지 않습니다. 발송처에 문의해주세요.');
+    }
+  }
+
   async selectChoiceProduct(getBody: OrderReceiveSelectChoiceProductReqDto) {
     const orderDecrypt = this.cryptoCipher.decryptJson(getBody.encryptKey) as OrderEncryptKey & { emailSendHistoryId?: number; isTest?: boolean };
 
@@ -96,6 +103,7 @@ export class OrderReceiveService {
       .innerJoinAndSelect('orderProductMapping.product', 'product')
       .innerJoinAndSelect('product.brand', 'brand')
       .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .withDeleted()
       .where('orderDelivery.id = :id', { id: orderDeliveryId })
       .getOne();
 
@@ -103,6 +111,7 @@ export class OrderReceiveService {
       throw new BadRequestException('존재하지 않는 주문 정보입니다.');
     }
 
+    this.assertChoiceProductNotDeleted(orderDelivery);
     this.assertCouponNotDiscarded(orderDelivery);
 
     if (orderDelivery.expireAt) {
@@ -224,6 +233,7 @@ export class OrderReceiveService {
       .leftJoinAndSelect('user.company', 'userCompany')
       .leftJoinAndSelect('order.clientUser', 'clientUser')
       .leftJoinAndSelect('clientUser.company', 'clientCompany')
+      .withDeleted()
       .where('orderDelivery.id = :id', { id: orderDeliveryId })
       .getOne();
 
@@ -231,6 +241,7 @@ export class OrderReceiveService {
       throw new BadRequestException('존재하지 않는 주문 정보입니다.');
     }
 
+    this.assertChoiceProductNotDeleted(orderDelivery);
     this.assertCouponNotDiscarded(orderDelivery);
 
     const choiceProductList: OrderReceiveChoiceDto[] = [];
@@ -424,12 +435,14 @@ export class OrderReceiveService {
       .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
       .innerJoinAndSelect('orderProductMapping.order', 'order')
       .innerJoinAndSelect('orderProductMapping.product', 'product')
+      .withDeleted()
       .where('orderDelivery.id = :id', { id: orderDecrypt.id })
       .getOne();
     if (!orderDelivery) {
       throw new BadRequestException('존재하지 않는 주문 정보입니다.');
     }
 
+    this.assertChoiceProductNotDeleted(orderDelivery);
     this.assertCouponNotDiscarded(orderDelivery);
 
     if (!orderDecrypt.emailHistoryId) {
