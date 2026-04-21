@@ -25,6 +25,7 @@ import {
 } from './user.management.res.dto';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
 import { AuthUserSuperAdminGuard } from '../../auth/api/auth.user.super-admin.guard';
+import { AuthUserSuperAndOperationAdminGuard } from '../../auth/api/auth.user.super-operation-admin.guard';
 import { UserAuthSubEnum } from '../domain/user.auth.enum';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { AuthService } from '../../auth/application/auth.service';
@@ -273,20 +274,37 @@ export class UserManagementController {
     return this.userManagementService.getCompanyList(getQuery);
   }
 
-  @Post('/user-management/:id/api-key')
+  @Post('/user-management/me/api-key')
   @UseGuards(AuthUserAuthorizationGuard)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'API Key 발급/재발급' })
-  async generateApiKey(@Param('id') id: number): Promise<{ apiKey: string }> {
+  @ApiOperation({ summary: '[본인] 내 API Key 발급/재발급' })
+  async generateMyApiKey(@User() user: ILoginUserInfo): Promise<{ apiKey: string }> {
+    const apiKey = await this.userManagementService.generateApiKey(user.id);
+    return { apiKey };
+  }
+
+  @Delete('/user-management/me/api-key')
+  @UseGuards(AuthUserAuthorizationGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: '[본인] 내 API Key 비활성화' })
+  async revokeMyApiKey(@User() user: ILoginUserInfo): Promise<void> {
+    await this.userManagementService.revokeApiKey(user.id);
+  }
+
+  @Post('/user-management/:id/api-key')
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: '[어드민] 특정 계정의 API Key 발급/재발급' })
+  async generateApiKey(@Param('id', ParseIntPipe) id: number): Promise<{ apiKey: string }> {
     const apiKey = await this.userManagementService.generateApiKey(id);
     return { apiKey };
   }
 
   @Delete('/user-management/:id/api-key')
-  @UseGuards(AuthUserAuthorizationGuard)
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'API Key 비활성화' })
-  async revokeApiKey(@Param('id') id: number): Promise<void> {
+  @ApiOperation({ summary: '[어드민] 특정 계정의 API Key 비활성화' })
+  async revokeApiKey(@Param('id', ParseIntPipe) id: number): Promise<void> {
     await this.userManagementService.revokeApiKey(id);
   }
 }
