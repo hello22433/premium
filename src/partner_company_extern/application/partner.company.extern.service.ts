@@ -12,6 +12,7 @@ import { IGiftiel } from '../interface/giftiel';
 import { IGiftiShow } from '../interface/giftishow';
 import { IDaou } from '../interface/daou';
 import { PartnerCompanyExternHistoryEntity } from '../../entity/partner.company.extern.history.entity';
+import { GiftielExchangeHistoryEntity } from '../../entity/giftiel.exchange.history.entity';
 import { ISsgCheckOut, ISsgIssue } from '../interface/ssg.issue';
 import { SsgCheckNotFoundError } from '../infra/ssg.issue';
 import { Propagation, Transactional } from 'typeorm-transactional';
@@ -56,6 +57,8 @@ export class PartnerCompanyExternService {
     private pinIssueDedupRepository: Repository<PinIssueDedupEntity>,
     @InjectRepository(SsgIssueLogEntity)
     private ssgIssueLogRepository: Repository<SsgIssueLogEntity>,
+    @InjectRepository(GiftielExchangeHistoryEntity)
+    private giftielExchangeHistoryRepository: Repository<GiftielExchangeHistoryEntity>,
     private cryptoCipher: CryptoCipher,
   ) {}
 
@@ -745,10 +748,23 @@ export class PartnerCompanyExternService {
           barCode: orderDelivery.barCode!,
         });
 
-        orderDelivery.couponStatus =
-          giftielOut.UseYn === 'Y' ? OrderDeliveryCouponStatus.USED : OrderDeliveryCouponStatus.NOT_USED;
-        orderDelivery.tradeAt = giftielOut.UseDate ? new Date(giftielOut.UseDate) : null;
-        orderDelivery.tradePlace = giftielOut.BiName || null;
+        if (giftielOut.UseYn === 'Y') {
+          orderDelivery.couponStatus = OrderDeliveryCouponStatus.USED;
+          const latestPush = await this.giftielExchangeHistoryRepository.findOne({
+            where: { orderDeliveryId: orderDelivery.id },
+            order: { authDate: 'DESC' },
+          });
+          if (latestPush?.cmdType !== 'L1') {
+            orderDelivery.tradeAt = giftielOut.UseDate
+              ? parseDateString(giftielOut.UseDate.replace(/[-:\s]/g, ''))
+              : null;
+            orderDelivery.tradePlace = giftielOut.BiName || null;
+          }
+        } else {
+          orderDelivery.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
+          orderDelivery.tradeAt = null;
+          orderDelivery.tradePlace = null;
+        }
         break;
       }
 

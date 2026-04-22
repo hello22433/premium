@@ -22,12 +22,15 @@ import { GalaxiaIpGuard } from './api/galaxia.ip.guard';
 import { GalaxiaBarcodeLogEntity } from '../entity/galaxia.barcode.log.entity';
 import { PinIssueDedupEntity } from '../entity/pin.issue.dedup.entity';
 import { SsgIssueLogEntity } from '../entity/ssg.issue.log.entity';
+import { GiftielExchangeHistoryEntity } from '../entity/giftiel.exchange.history.entity';
+import { GiftielPushController } from './api/giftiel.push.controller';
+import { GiftielIpGuard } from './api/giftiel.ip.guard';
 
 @Module({
   imports: [
     AuthModule,
     HttpModule.register({ timeout: 30000 }),
-    TypeOrmModule.forFeature([OrderDeliveryEntity, PartnerCompanyExternHistoryEntity, GalaxiaBarcodeLogEntity, PartnerCompanyEntity, PinIssueDedupEntity, SsgIssueLogEntity]),
+    TypeOrmModule.forFeature([OrderDeliveryEntity, PartnerCompanyExternHistoryEntity, GalaxiaBarcodeLogEntity, PartnerCompanyEntity, PinIssueDedupEntity, SsgIssueLogEntity, GiftielExchangeHistoryEntity]),
   ],
   providers: [
     {
@@ -63,8 +66,9 @@ import { SsgIssueLogEntity } from '../entity/ssg.issue.log.entity';
     PartnerCompanyExternBatchService,
     PartnerCompanyBatchSchedule,
     GalaxiaIpGuard,
+    GiftielIpGuard,
   ],
-  controllers: [PartnerCompanyBatchController, GalaxiaPushController],
+  controllers: [PartnerCompanyBatchController, GalaxiaPushController, GiftielPushController],
   exports: [PartnerCompanyExternService],
 })
 export class PartnerCompanyExternModule {}
