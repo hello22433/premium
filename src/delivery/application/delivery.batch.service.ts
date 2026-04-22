@@ -135,7 +135,7 @@ export class DeliveryBatchService {
    */
   private assertChoiceProductNotDeletedForCsResend(orderDelivery: OrderDeliveryEntity): void {
     const product = orderDelivery.orderProductMapping.product;
-    if (product.type === IProductType.CHOICE && product.deletedAt) {
+    if (!product || (product.type === IProductType.CHOICE && product.deletedAt)) {
       throw new Error('삭제된 초이스 쿠폰은 재발송할 수 없습니다.');
     }
   }
@@ -853,8 +853,8 @@ export class DeliveryBatchService {
       .createQueryBuilder('orderDelivery')
       .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
       .innerJoinAndSelect('orderProductMapping.order', 'order')
-      .innerJoinAndSelect('orderProductMapping.product', 'product')
-      .innerJoinAndSelect('product.brand', 'brand')
+      .leftJoinAndSelect('orderProductMapping.product', 'product')
+      .leftJoinAndSelect('product.brand', 'brand')
       .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
       .leftJoinAndSelect('choiceSelectProduct.brand', 'choiceBrand')
@@ -933,8 +933,8 @@ export class DeliveryBatchService {
       .leftJoinAndSelect('user.company', 'company')
       .leftJoinAndSelect('order.clientUser', 'clientUser')
       .leftJoinAndSelect('clientUser.company', 'clientCompany')
-      .innerJoinAndSelect('orderProductMapping.product', 'product')
-      .innerJoinAndSelect('product.brand', 'brand')
+      .leftJoinAndSelect('orderProductMapping.product', 'product')
+      .leftJoinAndSelect('product.brand', 'brand')
       .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
       .leftJoinAndSelect('choiceSelectProduct.brand', 'choiceBrand')
@@ -981,8 +981,8 @@ export class DeliveryBatchService {
       .createQueryBuilder('orderDelivery')
       .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
       .innerJoinAndSelect('orderProductMapping.order', 'order')
-      .innerJoinAndSelect('orderProductMapping.product', 'product')
-      .innerJoinAndSelect('product.brand', 'brand')
+      .leftJoinAndSelect('orderProductMapping.product', 'product')
+      .leftJoinAndSelect('product.brand', 'brand')
       .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
       .leftJoinAndSelect('choiceSelectProduct.brand', 'choiceBrand')
       .withDeleted()
@@ -1045,8 +1045,8 @@ export class DeliveryBatchService {
       .createQueryBuilder('orderDelivery')
       .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
       .innerJoinAndSelect('orderProductMapping.order', 'order')
-      .innerJoinAndSelect('orderProductMapping.product', 'product')
-      .innerJoinAndSelect('product.brand', 'brand')
+      .leftJoinAndSelect('orderProductMapping.product', 'product')
+      .leftJoinAndSelect('product.brand', 'brand')
       .withDeleted()
       .where('orderDelivery.id = :id', { id: orderDeliveryId })
       .getOne();

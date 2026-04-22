@@ -80,7 +80,7 @@ export class OrderReceiveService {
 
   private assertChoiceProductNotDeleted(orderDelivery: OrderDeliveryEntity): void {
     const product = orderDelivery.orderProductMapping.product;
-    if (product.type === IProductType.CHOICE && product.deletedAt) {
+    if (!product || (product.type === IProductType.CHOICE && product.deletedAt)) {
       throw new BadRequestException('이 쿠폰은 더 이상 제공되지 않습니다. 발송처에 문의해주세요.');
     }
   }
@@ -100,9 +100,9 @@ export class OrderReceiveService {
       .createQueryBuilder('orderDelivery')
       .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
       .innerJoinAndSelect('orderProductMapping.order', 'order')
-      .innerJoinAndSelect('orderProductMapping.product', 'product')
-      .innerJoinAndSelect('product.brand', 'brand')
-      .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .leftJoinAndSelect('orderProductMapping.product', 'product')
+      .leftJoinAndSelect('product.brand', 'brand')
+      .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .withDeleted()
       .where('orderDelivery.id = :id', { id: orderDeliveryId })
       .getOne();
@@ -226,9 +226,9 @@ export class OrderReceiveService {
       .createQueryBuilder('orderDelivery')
       .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
       .innerJoinAndSelect('orderProductMapping.order', 'order')
-      .innerJoinAndSelect('orderProductMapping.product', 'product')
-      .innerJoinAndSelect('product.brand', 'brand')
-      .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .leftJoinAndSelect('orderProductMapping.product', 'product')
+      .leftJoinAndSelect('product.brand', 'brand')
+      .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .innerJoinAndSelect('order.user', 'user')
       .leftJoinAndSelect('user.company', 'userCompany')
       .leftJoinAndSelect('order.clientUser', 'clientUser')
@@ -434,7 +434,7 @@ export class OrderReceiveService {
       .createQueryBuilder('orderDelivery')
       .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
       .innerJoinAndSelect('orderProductMapping.order', 'order')
-      .innerJoinAndSelect('orderProductMapping.product', 'product')
+      .leftJoinAndSelect('orderProductMapping.product', 'product')
       .withDeleted()
       .where('orderDelivery.id = :id', { id: orderDecrypt.id })
       .getOne();
