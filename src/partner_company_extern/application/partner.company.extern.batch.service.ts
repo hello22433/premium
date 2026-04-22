@@ -23,6 +23,9 @@ import {
   VerifyResult,
 } from './partner.company.extern.batch.types';
 import { GalaxiaBarcodeLogEntity } from '../../entity/galaxia.barcode.log.entity';
+import { GiftielExchangeHistoryEntity, GiftielExchangeMatchedBy } from '../../entity/giftiel.exchange.history.entity';
+import { GiftielExchangeReqDto } from '../api/dto/giftiel.exchange.req.dto';
+import { Propagation, Transactional } from 'typeorm-transactional';
 
 // ===== 상수 정의 =====
 const PARTNER_COMPANY_TYPES = {
@@ -58,6 +61,8 @@ export class PartnerCompanyExternBatchService {
     private orderDeliveryRepository: Repository<OrderDeliveryEntity>,
     @InjectRepository(GalaxiaBarcodeLogEntity)
     private galaxiaBarcodeLogRepository: Repository<GalaxiaBarcodeLogEntity>,
+    @InjectRepository(GiftielExchangeHistoryEntity)
+    private giftielExchangeHistoryRepository: Repository<GiftielExchangeHistoryEntity>,
     private configService: ConfigService,
     private cryptoCipher: CryptoCipher,
   ) {
@@ -824,9 +829,16 @@ export class PartnerCompanyExternBatchService {
 
       if (giftielOut.UseYn === 'Y') {
         result.couponStatus = OrderDeliveryCouponStatus.USED;
+        const latestPush = await this.findLatestGiftielPushEvent(orderDelivery.id);
+        if (latestPush?.cmdType !== 'L1') {
+          result.tradeAt = this.parseGiftielDate(giftielOut.UseDate);
+          result.tradePlace = giftielOut.BiName || null;
+        }
+      } else {
+        result.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
+        result.tradeAt = null;
+        result.tradePlace = null;
       }
-      result.tradeAt = giftielOut.UseDate ? new Date(giftielOut.UseDate) : null;
-      result.tradePlace = giftielOut.BiName || null;
     }
 
     // GIFT_SHOW 처리
@@ -1704,5 +1716,119 @@ export class PartnerCompanyExternBatchService {
     );
 
     return 'created';
+  }
+
+  // ===== Giftiel push (webhook) 처리 =====
+  /**
+   * Giftiel이 교환/교환취소 이벤트를 webhook으로 push 전송할 때 처리
+   *
+   * - 이력은 항상 저장 (매칭 실패해도 감사용 보존, 중복은 UNIQUE 제약으로 스킵)
+   * - 매칭: TrID 1순위 → CouponNumber 2순위 fallback
+   * - 상태 가드: CANCEL/REFUND_CANCEL/EXPIRED 상태에서는 order_delivery 변경 안 함
+   * - L1(교환): couponStatus=USED, tradeAt=AuthDate, tradePlace=BiName
+   * - L2(교환취소): couponStatus=NOT_USED, tradeAt/tradePlace=null (발행 상태 복귀)
+   *
+   * @Transactional: 이력 insert와 order_delivery update를 원자적으로 처리.
+   *   Giftiel 재시도 시 이전 실패한 insert의 UNIQUE가 새 트랜잭션을 영구 차단하는
+   *   문제를 방지 (부분 성공 시 롤백 → 재시도가 온전히 다시 시도됨).
+   */
+  @Transactional({ propagation: Propagation.REQUIRED })
+  async processGiftielPush(
+    req: GiftielExchangeReqDto,
+    requestIp: string,
+  ): Promise<'saved' | 'duplicate' | 'unmatched'> {
+    const authDate = this.parseGiftielDate(req.AuthDate);
+    if (!authDate) {
+      throw new Error(`Invalid AuthDate format: ${req.AuthDate}`);
+    }
+
+    let orderDelivery: OrderDeliveryEntity | null = await this.orderDeliveryRepository.findOne({
+      where: { transactionId: req.TrID },
+    });
+    let matchedBy: GiftielExchangeMatchedBy = orderDelivery ? 'TR_ID' : 'NONE';
+
+    if (!orderDelivery) {
+      orderDelivery = await this.orderDeliveryRepository.findOne({ where: { barCode: req.CouponNumber } });
+      if (orderDelivery) matchedBy = 'COUPON_NUMBER';
+    }
+
+    try {
+      await this.giftielExchangeHistoryRepository.save({
+        orderDeliveryId: orderDelivery?.id ?? null,
+        matchedBy,
+        trId: req.TrID,
+        couponNumber: req.CouponNumber,
+        cmdType: req.CmdType,
+        servCode: req.ServCode,
+        authCode: req.AuthCode ?? null,
+        authDate,
+        usePrice: req.UsePrice ?? null,
+        balPrice: req.BalPrice ?? null,
+        couponType: req.CouponType ?? null,
+        biCode: req.BiCode ?? null,
+        biName: req.BiName ?? null,
+        dateTime: req.DateTime ?? null,
+        resultCode: req.ResultCode ?? null,
+        resultMsg: req.ResultMsg ?? null,
+        requestIp,
+      });
+    } catch (e: any) {
+      if (this.isDuplicateError(e)) {
+        this.logger.warn(
+          `[giftielPush] 중복 이벤트: trId=${req.TrID}, cmdType=${req.CmdType}, authDate=${req.AuthDate}`,
+        );
+        return 'duplicate';
+      }
+      throw e;
+    }
+
+    if (!orderDelivery) {
+      this.logger.warn(
+        `[giftielPush] 매칭 실패: trId=${req.TrID}, couponNumber=${req.CouponNumber}, cmdType=${req.CmdType}`,
+      );
+      return 'unmatched';
+    }
+
+    const frozenStatuses: OrderDeliveryCouponStatus[] = [
+      OrderDeliveryCouponStatus.CANCEL,
+      OrderDeliveryCouponStatus.REFUND_CANCEL,
+      OrderDeliveryCouponStatus.EXPIRED,
+    ];
+    if (frozenStatuses.includes(orderDelivery.couponStatus)) {
+      this.logger.warn(
+        `[giftielPush] ${orderDelivery.couponStatus} 상태에 ${req.CmdType} 수신 - order_delivery 변경 skip. id=${orderDelivery.id}`,
+      );
+      return 'saved';
+    }
+
+    const update: Partial<OrderDeliveryEntity> =
+      req.CmdType === 'L1'
+        ? { couponStatus: OrderDeliveryCouponStatus.USED, tradeAt: authDate, tradePlace: req.BiName ?? null }
+        : { couponStatus: OrderDeliveryCouponStatus.NOT_USED, tradeAt: null, tradePlace: null };
+    await this.orderDeliveryRepository.update({ id: orderDelivery.id }, update);
+
+    return 'saved';
+  }
+
+  private async findLatestGiftielPushEvent(orderDeliveryId: number): Promise<GiftielExchangeHistoryEntity | null> {
+    return this.giftielExchangeHistoryRepository.findOne({
+      where: { orderDeliveryId },
+      order: { authDate: 'DESC' },
+    });
+  }
+
+  /**
+   * Giftiel 날짜 문자열 파서.
+   * AuthDate(webhook): "yyyy-MM-dd HH:mm:ss" 19자
+   * UseDate(check API): 문서와 달리 실제로는 "yyyy-MM-dd" 10자 (date-only)
+   * 둘 다 구분자 제거 후 parseDateString이 길이에 맞춰 처리.
+   */
+  private parseGiftielDate(s: string | null | undefined): Date | null {
+    if (!s) return null;
+    return parseDateString(s.replace(/[-:\s]/g, ''));
+  }
+
+  private isDuplicateError(e: any): boolean {
+    return e?.code === 'ER_DUP_ENTRY' || e?.driverError?.code === 'ER_DUP_ENTRY';
   }
 }

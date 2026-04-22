@@ -30,7 +30,7 @@ export interface GiftielCheckOut {
   SendGubun: 'B' | 'C' | 'O'; // B:B2B, C:B2C, O:온라인몰
 
   UseYn: 'Y' | 'N'; // Y: 사용, N: 미사용
-  UseDate: string; // 사용일시(yyyy-MM-dd HH:mm:ss)
+  UseDate: string; // 사용일자(yyyy-MM-dd) - 문서는 HH:mm:ss 포함이라고 되어 있으나 실제 응답은 날짜만 옴. 초단위는 push(L1 webhook)의 AuthDate 참조
   BiName: string; // 사용매장명
 
   IsCancel: 'Y' | 'N'; // 취소 가능 여부
