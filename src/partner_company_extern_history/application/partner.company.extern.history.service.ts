@@ -343,10 +343,8 @@ export class PartnerCompanyExternHistoryService {
         };
       }
 
-      if (
-        orderDelivery.orderProductMapping.product.type === IProductType.CHOICE &&
-        orderDelivery.orderProductMapping.product.deletedAt
-      ) {
+      const product = orderDelivery.orderProductMapping.product;
+      if (!product || (product.type === IProductType.CHOICE && product.deletedAt)) {
         return {
           success: false,
           message: '삭제된 초이스 쿠폰은 재발송할 수 없습니다.',
