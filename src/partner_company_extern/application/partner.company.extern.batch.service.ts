@@ -899,11 +899,19 @@ export class PartnerCompanyExternBatchService {
       // ResultCode 9006 = 유효기간 만료된 상품권
       if (cultureLandOut.ResultCode === '9006') {
         result.couponStatus = OrderDeliveryCouponStatus.EXPIRED;
-      } else if (cultureLandOut.CancelPossibility === 'N') {
-        result.couponStatus = OrderDeliveryCouponStatus.USED;
-        result.tradeAt = new Date();
+      } else if (cultureLandOut.ResultCode === '0000') {
+        if (cultureLandOut.CancelPossibility === 'N') {
+          result.couponStatus = OrderDeliveryCouponStatus.USED;
+          result.tradeAt = new Date();
+        } else {
+          result.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
+        }
       } else {
-        result.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
+        // 9901(전문형식 에러)/9902·0099(COM 에러)/9000(파라미터 오류)/9003(잘못된 PIN) 등
+        // 알 수 없는 응답을 정상으로 간주해 NOT_USED로 덮어쓰지 않도록 실패로 분류한다
+        throw new Error(
+          `CULTURELAND check failed - ResultCode: ${cultureLandOut.ResultCode}, ErrMsg: ${cultureLandOut.ErrMsg}`,
+        );
       }
     }
 

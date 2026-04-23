@@ -835,7 +835,9 @@ export class PartnerCompanyExternService {
           orderDelivery.couponStatus = isUsed
             ? OrderDeliveryCouponStatus.USED
             : OrderDeliveryCouponStatus.NOT_USED;
-          if (isUsed) {
+          // 컬쳐랜드 check API는 사용일시를 제공하지 않으므로
+          // 첫 USED 전환 시점만 기록하고, 이후 재조회로 갱신하지 않는다
+          if (isUsed && !orderDelivery.tradeAt) {
             orderDelivery.tradeAt = new Date();
           }
         } else {
