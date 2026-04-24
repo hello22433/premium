@@ -962,7 +962,11 @@ export class PartnerCompanyExternBatchService {
 
       if (daouCheckOut.resultCode === 'S000001') {
         if (daouCheckOut.cpnStatus === '00') {
-          result.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
+          // DAOU는 만료 상태를 별도로 내려주지 않으므로 CPN_END로 보정
+          result.couponStatus =
+            daouCheckOut.cpnEnd && isExpiredYMD(daouCheckOut.cpnEnd)
+              ? OrderDeliveryCouponStatus.EXPIRED
+              : OrderDeliveryCouponStatus.NOT_USED;
         } else if (daouCheckOut.cpnStatus === '01' || daouCheckOut.cpnStatus === '03') {
           result.couponStatus = OrderDeliveryCouponStatus.USED;
           if (daouCheckOut.useDate) {

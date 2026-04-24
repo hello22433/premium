@@ -908,7 +908,11 @@ export class PartnerCompanyExternService {
         if (daouCheckOut.resultCode === 'S000001') {
           // CPN_STATUS: 00(미사용), 01(교환완료), 02(기취소), 03(사용중)
           if (daouCheckOut.cpnStatus === '00') {
-            orderDelivery.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
+            // DAOU는 만료 상태를 별도로 내려주지 않으므로 CPN_END로 보정
+            orderDelivery.couponStatus =
+              daouCheckOut.cpnEnd && isExpiredYMD(daouCheckOut.cpnEnd)
+                ? OrderDeliveryCouponStatus.EXPIRED
+                : OrderDeliveryCouponStatus.NOT_USED;
           } else if (daouCheckOut.cpnStatus === '01' || daouCheckOut.cpnStatus === '03') {
             // 01: 교환완료, 03: 사용중 - 둘 다 USED로 처리
             orderDelivery.couponStatus = OrderDeliveryCouponStatus.USED;
