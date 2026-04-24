@@ -44,9 +44,9 @@ export class GalaxiaPushController {
       }
 
       const parsed = await this.xmlParser.parseStringPromise(body);
-      const root = parsed?.root;
+      const root = parsed?.Result;
       if (!root) {
-        this.logger.error('XML 파싱 실패: root 없음');
+        this.logger.error(`XML 파싱 실패: <Result> 없음, keys=${Object.keys(parsed ?? {}).join(',')}`);
         res.status(200).send(errorXml('Invalid XML'));
         return;
       }
