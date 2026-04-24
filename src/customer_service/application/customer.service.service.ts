@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, InternalServerErrorException, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { applyReplaceCharacters } from '../../common/utils/replace-characters.util';
 import {
@@ -30,6 +30,7 @@ import { CustomerServiceDlvryDetailViewDto } from '../api/dto/customer.service.d
 import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
 import { DeliveryBatchService } from '../../delivery/application/delivery.batch.service';
 import { OrderDeliveryCouponStatus, couponStatusToKorean } from '../../delivery/interface/order.delivery.coupon.status';
+import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
 import { ILoginUserInfo } from 'src/auth/interface/login.user';
 import { OrderHistoryEntity } from 'src/entity/order.history.entity';
 import { User } from 'src/auth/api/user.decorator';
@@ -62,6 +63,8 @@ dayjs.extend(timezone);
 
 @Injectable()
 export class CustomerServiceService {
+  private readonly logger = new Logger(CustomerServiceService.name);
+
   private static readonly DELIVERY_METHOD_DISPLAY: Record<string, string> = {
     [IOrderSendMethod.ALIM_TALK]: '알림톡',
     [IOrderSendMethod.MMS]: 'MMS',
@@ -685,10 +688,7 @@ export class CustomerServiceService {
       throw new BadRequestException('존재하지 않는 주문 건입니다.');
     }
 
-    // 초이스쿠폰의 경우 선택한 상품의 협력사를 우선 사용
-    const partnerType =
-      orderDelivery.choiceSelectProduct?.partnerCompany?.type ??
-      orderDelivery.orderProductMapping?.product.partnerCompany?.type;
+    const partnerType = this.getPartnerType(orderDelivery);
     const beforeChange = orderDelivery.couponStatus;
 
     // 외부 API 폐기 처리 (트랜잭션 밖에서 실행)
@@ -710,7 +710,9 @@ export class CustomerServiceService {
           const result = await this.partnerCompanyExternService.cancel(orderDelivery);
 
           if (result.message !== '폐기 완료') {
-            throw new InternalServerErrorException(result.message);
+            const syncedStatus = await this.syncCouponStatusAfterDiscardFailure(orderDelivery);
+            const statusSuffix = syncedStatus ? ` (현재 쿠폰상태: ${syncedStatus})` : '';
+            throw new InternalServerErrorException(`${result.message}${statusSuffix}`);
           }
         } else {
           throw new BadRequestException('변경을 할 수 없는 핀상태입니다.');
@@ -1509,6 +1511,42 @@ export class CustomerServiceService {
   }
 
   /**
+   * 초이스쿠폰의 경우 선택한 상품의 협력사 type을 우선 반환.
+   */
+  private getPartnerType(orderDelivery: OrderDeliveryEntity): IPartnerCompanyType | null | undefined {
+    return (
+      orderDelivery.choiceSelectProduct?.partnerCompany?.type ??
+      orderDelivery.orderProductMapping?.product?.partnerCompany?.type
+    );
+  }
+
+  /**
+   * 폐기 실패 시 협력사 check API로 쿠폰 상태를 재동기화.
+   * SSG는 기존 로직 유지(외부 check 없음)이며, 그 외 협력사는 refreshCouponStatus()로
+   * couponStatus / tradeAt / tradePlace를 실제 상태에 맞게 업데이트한다.
+   * 동기화 자체가 실패하면 null 반환(호출측은 기존 실패 처리 유지).
+   */
+  private async syncCouponStatusAfterDiscardFailure(
+    orderDelivery: OrderDeliveryEntity,
+  ): Promise<OrderDeliveryCouponStatus | null> {
+    if (this.getPartnerType(orderDelivery) === IPartnerCompanyType.SSG) {
+      return null;
+    }
+
+    try {
+      const updated = await this.partnerCompanyExternService.refreshCouponStatus(orderDelivery);
+      return updated.couponStatus;
+    } catch (error) {
+      this.logger.warn(
+        `폐기 실패 후 쿠폰 상태 재동기화 실패 (orderDeliveryId: ${orderDelivery.id}): ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return null;
+    }
+  }
+
+  /**
    * 다중 폐기 API
    * @param user 로그인 사용자 정보
    * @param orderDeliveryIds 폐기할 order_delivery ID 목록
@@ -1518,9 +1556,12 @@ export class CustomerServiceService {
     user: ILoginUserInfo,
     orderDeliveryIds: number[],
     content: string,
-  ): Promise<{ success: number[]; failed: { id: number; reason: string }[] }> {
+  ): Promise<{
+    success: number[];
+    failed: { id: number; reason: string; syncedStatus?: OrderDeliveryCouponStatus }[];
+  }> {
     const success: number[] = [];
-    const failed: { id: number; reason: string }[] = [];
+    const failed: { id: number; reason: string; syncedStatus?: OrderDeliveryCouponStatus }[] = [];
 
     // operator personName을 루프 밖에서 1회 조회
     const operatorEntity = await this.userRepository.findOne({ where: { id: user.id } });
@@ -1559,7 +1600,11 @@ export class CustomerServiceService {
             orderDelivery.couponStatus === OrderDeliveryCouponStatus.CANCEL ||
             orderDelivery.couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL
           ) {
-            failed.push({ id: orderDeliveryId, reason: '이미 폐기된 상태입니다.' });
+            failed.push({
+              id: orderDeliveryId,
+              reason: '이미 폐기된 상태입니다.',
+              syncedStatus: orderDelivery.couponStatus,
+            });
             continue;
           }
 
@@ -1568,7 +1613,11 @@ export class CustomerServiceService {
             orderDelivery.couponStatus === OrderDeliveryCouponStatus.USED ||
             orderDelivery.couponStatus === OrderDeliveryCouponStatus.EXPIRED
           ) {
-            failed.push({ id: orderDeliveryId, reason: '교환 또는 기간만료 상태는 폐기할 수 없습니다.' });
+            failed.push({
+              id: orderDeliveryId,
+              reason: '교환 또는 기간만료 상태는 폐기할 수 없습니다.',
+              syncedStatus: orderDelivery.couponStatus,
+            });
             continue;
           }
 
@@ -1588,7 +1637,12 @@ export class CustomerServiceService {
             case '주식회사 다우기술': {
               const result = await this.partnerCompanyExternService.cancel(orderDelivery);
               if (result.message !== '폐기 완료') {
-                failed.push({ id: orderDeliveryId, reason: result.message || '외부 API 폐기 실패' });
+                const syncedStatus = await this.syncCouponStatusAfterDiscardFailure(orderDelivery);
+                failed.push({
+                  id: orderDeliveryId,
+                  reason: result.message || '외부 API 폐기 실패',
+                  syncedStatus: syncedStatus ?? undefined,
+                });
                 continue;
               }
               orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
