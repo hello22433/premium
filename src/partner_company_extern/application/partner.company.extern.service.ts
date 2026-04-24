@@ -761,7 +761,12 @@ export class PartnerCompanyExternService {
             orderDelivery.tradePlace = giftielOut.BiName || null;
           }
         } else {
-          orderDelivery.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
+          // GIFTIEL은 만료 상태를 별도로 내려주지 않으므로 DayEnd(yyyy-MM-dd)로 보정
+          const dayEndYMD = giftielOut.DayEnd?.replace(/-/g, '');
+          orderDelivery.couponStatus =
+            dayEndYMD && isExpiredYMD(dayEndYMD)
+              ? OrderDeliveryCouponStatus.EXPIRED
+              : OrderDeliveryCouponStatus.NOT_USED;
           orderDelivery.tradeAt = null;
           orderDelivery.tradePlace = null;
         }
