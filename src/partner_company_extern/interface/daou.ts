@@ -27,6 +27,7 @@ export interface DaouCheckOut {
   resultCode: string; // RT - 결과코드
   resultMessage: string; // RTMSG - 결과메시지
   cpnStatus?: string; // CPN_STATUS - 쿠폰상태 (00: 미사용, 01: 교환완료, 02: 기취소, 03: 사용중)
+  cpnEnd?: string; // CPN_END - 쿠폰 유효기간 종료일 (YYYYMMDD)
   useDate?: string; // USE_DATE - 사용일자
   useBranch?: string; // USE_STORE - 사용처
 }
@@ -84,6 +85,7 @@ export interface DaouXmlResponse {
   NO_CPN?: string; // 쿠폰번호
   TS_ID?: string; // 파트너키
   CPN_STATUS?: string; // 쿠폰상태 (00: 미사용, 01: 교환완료, 02: 기취소, 03: 사용중)
+  CPN_END?: string; // 쿠폰 유효기간 종료일 (YYYYMMDD)
   USE_DATE?: string; // 사용일자 (YYYYMMDD)
   USE_STORE?: string; // 사용처
 }
