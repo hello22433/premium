@@ -30,7 +30,7 @@ export class GalaxiaPushController {
 
   constructor(private readonly batchService: PartnerCompanyExternBatchService) {}
 
-  @Post('galaxia.do')
+  @Post('external/galaxia/usage')
   @UseGuards(GalaxiaIpGuard)
   async handlePush(@Req() req: Request, @Res() res: Response) {
     res.set('Content-Type', 'application/xml');
