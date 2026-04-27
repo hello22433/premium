@@ -113,6 +113,7 @@ import { PhoneUtil } from '../../common/utils/phone.util';
 import { DeliveryBatchService } from '../../delivery/application/delivery.batch.service';
 import { IOrderSendMethod } from '../interface/order.send.method';
 import { IOrderSendingType } from '../interface/order.sending.type';
+import { IOrderDateType } from '../interface/order.date.type';
 import { OrderEncryptKey } from '../../order_receive/interface/order.encrypt.key';
 import { ActivityLogService } from '../../activity_log/application/activity.log.service';
 import { ActivityLogResult } from '../../activity_log/interface/activity.log.result';
@@ -232,7 +233,7 @@ export class OrderService {
   }
 
   async getList(user: ILoginUserInfo, getQuery: OrderGetListReqDto): Promise<OrderGetListResDto> {
-    const { section, type, status, startAt, endAt, searchType, searchKeyword, page, take, sendingType } = getQuery;
+    const { section, type, status, startAt, endAt, searchType, searchKeyword, page, take, sendingType, dateType } = getQuery;
 
     let queryBuilder = this.orderRepository
       .createQueryBuilder('order')
@@ -367,7 +368,7 @@ export class OrderService {
       }
     }
 
-    queryBuilder = QueryBuilderDateCondition(queryBuilder, 'order', 'registerAt', startAt, endAt);
+    queryBuilder = this.applyOrderDateCondition(queryBuilder, dateType, startAt, endAt);
 
     queryBuilder = queryBuilder.orderBy('order.id', 'DESC');
 
@@ -3588,7 +3589,7 @@ export class OrderService {
 
   async excelDownload(user: ILoginUserInfo, getBody: OrderExcelDownloadReqBodyDto) {
     const startTime = Date.now();
-    const { searchType, searchKeyword, type, status, startAt, endAt, section, password, downloadReason, sendingType } = getBody;
+    const { searchType, searchKeyword, type, status, startAt, endAt, section, password, downloadReason, sendingType, dateType } = getBody;
 
     // 비밀번호 검증
     await this.activityLogService.verifyPassword(user.id, password);
@@ -3683,7 +3684,7 @@ export class OrderService {
       }
     }
 
-    queryBuilder = QueryBuilderDateCondition(queryBuilder, 'order', 'registerAt', startAt, endAt);
+    queryBuilder = this.applyOrderDateCondition(queryBuilder, dateType, startAt, endAt);
 
     const orderList = await queryBuilder.getMany();
 
@@ -4287,6 +4288,48 @@ export class OrderService {
       requestUrl: '/order/destruction-certificate/report/email',
       actionType: 'DESTRUCTION_CERTIFICATE_EMAIL',
     });
+  }
+
+  /**
+   * 주문 목록 기간 검색 기준 적용
+   * - REGISTER (기본): order.register_at 기준
+   * - SEND: 해당 주문에 속한 order_delivery.actual_send_at 중 하나라도 범위 내면 포함 (EXISTS)
+   *   → 발송 이력이 없는 주문은 자연 제외, LEFT JOIN 행 중복으로 인한 페이징 부정확 회피
+   */
+  private applyOrderDateCondition(
+    queryBuilder: ReturnType<Repository<OrderEntity>['createQueryBuilder']>,
+    dateType: IOrderDateType | undefined,
+    startAt: string | undefined,
+    endAt: string | undefined,
+  ): ReturnType<Repository<OrderEntity>['createQueryBuilder']> {
+    if (dateType !== IOrderDateType.SEND) {
+      return QueryBuilderDateCondition(queryBuilder, 'order', 'registerAt', startAt, endAt);
+    }
+
+    const conditions: string[] = [];
+    const params: Record<string, string> = {};
+    if (startAt) {
+      conditions.push('od_send.actual_send_at >= :sendStartAt');
+      params.sendStartAt = startAt.replace('T', ' ');
+    }
+    if (endAt) {
+      conditions.push('od_send.actual_send_at <= :sendEndAt');
+      params.sendEndAt = endAt.replace('T', ' ');
+    }
+    if (conditions.length === 0) {
+      return queryBuilder;
+    }
+
+    return queryBuilder.andWhere(
+      `EXISTS (
+        SELECT 1
+        FROM order_delivery od_send
+        INNER JOIN order_product_mapping opm_send ON opm_send.id = od_send.order_product_mapping_id
+        WHERE opm_send.order_id = order.id
+          AND ${conditions.join(' AND ')}
+      )`,
+      params,
+    );
   }
 
   /**
