@@ -797,7 +797,17 @@ export class PartnerCompanyExternBatchService {
       } else {
         result.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
       }
-      result.tradeAt = parseDateString(giftCertificate.usedDate);
+      // tradeAt: 푸시/일대사가 이미 정확한 시각을 박아둔 경우 덮어쓰지 않음 (push가 초 단위로 더 정밀)
+      const apiTradeAt = parseDateString(giftCertificate.usedDate);
+      if (!orderDelivery.tradeAt) {
+        result.tradeAt = apiTradeAt;
+      } else if (apiTradeAt && apiTradeAt.getTime() !== orderDelivery.tradeAt.getTime()) {
+        this.logger.warn(
+          `[GALAXIA tradeAt 가드] orderDeliveryId=${orderDelivery.id}, ` +
+            `localTradeAt=${orderDelivery.tradeAt.toISOString()}, ` +
+            `apiUsedDate="${giftCertificate.usedDate}" - 푸시/일대사 우선으로 갱신 스킵`,
+        );
+      }
       result.galaxiaBalance = +giftCertificate.balance;
     }
 
@@ -1528,7 +1538,10 @@ export class PartnerCompanyExternBatchService {
 
     if (galaxiaOut.giftCertificate.isUsed) {
       updateData.couponStatus = OrderDeliveryCouponStatus.USED;
-      updateData.tradeAt = parseDateString(galaxiaOut.giftCertificate.usedDate);
+      // tradeAt: 첫 사용 감지(NOT_USED→USED) 시에만 채움. 추가 사용(이미 USED) 시엔 푸시/일대사가 박아둔 첫 사용 시각 유지.
+      if (!orderDelivery.tradeAt) {
+        updateData.tradeAt = parseDateString(galaxiaOut.giftCertificate.usedDate);
+      }
     }
 
     if (galaxiaOut.giftCertificate.couponStatus === 'CANCEL') {
