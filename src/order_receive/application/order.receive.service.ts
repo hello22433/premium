@@ -801,7 +801,7 @@ export class OrderReceiveService {
       }
 
       if (orderType !== IOrderType.SSG && productType !== IProductType.CHOICE && orderDelivery.barCode) {
-        mmsText = smsCouponInfoTemplate(orderDelivery) + '\n\n' + mmsText;
+        mmsText += '\n\n' + smsCouponInfoTemplate(orderDelivery);
       }
 
       try {
