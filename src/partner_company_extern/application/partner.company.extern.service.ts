@@ -29,6 +29,7 @@ import { IPartnerCompanyType } from '../../partner_company/interface/partner.com
 import { PartnerCompanyEntity } from '../../entity/partner.company.entity';
 import { parseDateString, isExpiredYMD, formatDateYMD } from '../../util/date.util';
 import { applyReplaceCharacters } from '../../common/utils/replace-characters.util';
+import { sleep } from '../../util/time.util';
 
 @Injectable()
 export class PartnerCompanyExternService {
@@ -570,6 +571,44 @@ export class PartnerCompanyExternService {
       type,
       orderDeliveryId,
     });
+  }
+
+  /**
+   * 외부 API 전용 취소.
+   * 5xx / 네트워크 타임아웃에 한해 1·2·4·8·16초 backoff로 최대 5회 재시도.
+   * 4xx 등 비-재시도 에러는 즉시 throw.
+   * 멱등성: 협력사 cancel API는 동일 trId 재호출에 안전하다는 가정.
+   */
+  async cancelByExternalApi(orderDelivery: OrderDeliveryEntity): Promise<CancelCouponResDto> {
+    const delays = [1000, 2000, 4000, 8000, 16000];
+    const maxAttempts = delays.length;
+    let lastError: any;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        return await this.cancel(orderDelivery);
+      } catch (error: any) {
+        lastError = error;
+        if (!this.isRetryableCancelError(error) || attempt === maxAttempts - 1) {
+          throw error;
+        }
+        this.logger.warn(
+          `[cancelByExternalApi] 재시도 ${attempt + 1}/${maxAttempts} - delay ${delays[attempt]}ms - ${error?.message ?? error}`,
+        );
+        await sleep(delays[attempt]);
+      }
+    }
+
+    throw lastError;
+  }
+
+  private isRetryableCancelError(error: any): boolean {
+    const code = error?.code;
+    if (code === 'ETIMEDOUT' || code === 'ECONNRESET' || code === 'ECONNABORTED') {
+      return true;
+    }
+    const status = error?.response?.status ?? error?.status;
+    return typeof status === 'number' && status >= 500 && status < 600;
   }
 
   @Transactional({ propagation: Propagation.REQUIRED })

@@ -74,6 +74,9 @@ export class ProductEntity extends BaseEntity {
   @Column({ comment: '상품 사용 상태 ex) 사용: USE 미사용: UNUSED 영구 미사용: PERMANENTLY_UNUSED' })
   useStatus: IProductUseStatus;
 
+  @Column({ type: 'boolean', default: true, comment: '외부 API 주문 취소 가능 여부' })
+  isCancelable: boolean;
+
   @Column({ type: 'varchar', nullable: true, length: 100, comment: '실물상품 색상 ' })
   color: string | null;
 
