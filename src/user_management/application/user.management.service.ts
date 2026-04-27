@@ -1,12 +1,25 @@
 import { randomBytes, createHash } from 'crypto';
-import { BadRequestException, Inject, Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { UserEntity } from '../../entity/user.entity';
 import { IUserStatus } from '../../user/interface/user.status';
 import { UserCompanyEntity } from '../../entity/user.company.entity';
 import { UserViewScopeEntity, ViewScopeType } from '../../entity/user.view.scope.entity';
 import { DepartmentEntity } from '../../entity/department.entity';
+import { ExternalApiAccountEntity } from '../../entity/external.api.account.entity';
+import { ExternalApiAllowedIpEntity } from '../../entity/external.api.allowed.ip.entity';
+import { ExternalApiSsgRequestEntity } from '../../entity/external.api.ssg.request.entity';
+import { IExternalApiSsgRequestStatus } from '../../external_api/interface/external.api.ssg.request.status';
 import { Repository } from 'typeorm';
+import { Transactional } from 'typeorm-transactional';
 import { InjectRepository } from '@nestjs/typeorm';
+import {
+  ApiKeyInfoResDto,
+  GenerateApiKeyByAdminReqDto,
+  GenerateApiKeyReqDto,
+  SsgRequestResDto,
+  UpdateAllowedIpsReqDto,
+  UpdateApiKeySettingsReqDto,
+} from '../api/dto/user.management.api.key.dto';
 import {
   UserManagementChargeBalanceReqDto,
   UserManagementCreateReqDto,
@@ -65,6 +78,12 @@ export class UserManagementService {
     private userViewScopeRepository: Repository<UserViewScopeEntity>,
     @InjectRepository(DepartmentEntity)
     private departmentRepository: Repository<DepartmentEntity>,
+    @InjectRepository(ExternalApiAccountEntity)
+    private externalApiAccountRepository: Repository<ExternalApiAccountEntity>,
+    @InjectRepository(ExternalApiAllowedIpEntity)
+    private externalApiAllowedIpRepository: Repository<ExternalApiAllowedIpEntity>,
+    @InjectRepository(ExternalApiSsgRequestEntity)
+    private externalApiSsgRequestRepository: Repository<ExternalApiSsgRequestEntity>,
     private passwordEncrypt: PasswordBcryptEncrypt,
     @Inject('IMailSend')
     private readonly mailSendService: IMailSend,
@@ -1017,7 +1036,20 @@ export class UserManagementService {
     await this.userRepository.save(user);
   }
 
-  async generateApiKey(userId: number): Promise<string> {
+  // ─── 외부 API 계정: 발급/회수 ────────────────────────────
+
+  /**
+   * 외부 API 계정 발급/재발급. user 단위 1:1.
+   * 재발급 시: ssgEnabled=false 강제, PENDING SSG 요청은 모두 CANCELLED 처리.
+   *           resendMaxCount는 유지. allowedIps는 resetAllowedIps에 따라 비움/유지.
+   * 어드민 발급일 때만 resendMaxCount 초기 설정 가능.
+   */
+  @Transactional()
+  async generateApiKey(
+    userId: number,
+    options: GenerateApiKeyReqDto | GenerateApiKeyByAdminReqDto = {},
+    isAdmin = false,
+  ): Promise<string> {
     const user = await this.userRepository.findOne({ where: { id: userId } });
     if (!user) {
       throw new BadRequestException('사용자를 찾을 수 없습니다.');
@@ -1025,12 +1057,276 @@ export class UserManagementService {
 
     const rawKey = randomBytes(32).toString('hex');
     const keyHash = createHash('sha256').update(rawKey).digest('hex');
-    await this.userRepository.update(userId, { apiKeyHash: keyHash });
 
-    return rawKey; // 1회만 반환, 이후 조회 불가
+    const existing = await this.externalApiAccountRepository.findOne({ where: { userId }, withDeleted: true });
+
+    if (existing) {
+      existing.apiKeyHash = keyHash;
+      existing.isActive = true;
+      existing.ssgEnabled = false;
+      if (isAdmin && 'resendMaxCount' in options) {
+        existing.resendMaxCount = options.resendMaxCount ?? null;
+      }
+      existing.deletedAt = null;
+      await this.externalApiAccountRepository.save(existing);
+
+      if (options.resetAllowedIps) {
+        await this.externalApiAllowedIpRepository.delete({ accountId: existing.id });
+      }
+
+      await this.cancelPendingSsgRequests(existing.id);
+    } else {
+      const account = this.externalApiAccountRepository.create({
+        userId,
+        apiKeyHash: keyHash,
+        isActive: true,
+        ssgEnabled: false,
+        resendMaxCount: isAdmin && 'resendMaxCount' in options ? options.resendMaxCount ?? null : null,
+      });
+      await this.externalApiAccountRepository.save(account);
+    }
+
+    return rawKey;
   }
 
+  @Transactional()
   async revokeApiKey(userId: number): Promise<void> {
-    await this.userRepository.update(userId, { apiKeyHash: null });
+    const account = await this.externalApiAccountRepository.findOne({ where: { userId } });
+    if (!account) {
+      return;
+    }
+    await this.externalApiAccountRepository.softRemove(account);
+    await this.cancelPendingSsgRequests(account.id);
+  }
+
+  // ─── 외부 API 계정: 조회/설정 ────────────────────────────
+
+  async getApiKeyInfo(userId: number): Promise<ApiKeyInfoResDto> {
+    const account = await this.externalApiAccountRepository.findOne({
+      where: { userId },
+      relations: ['allowedIps'],
+    });
+
+    if (!account) {
+      return { exists: false };
+    }
+
+    return {
+      exists: true,
+      accountId: account.id,
+      isActive: account.isActive,
+      ssgEnabled: account.ssgEnabled,
+      resendMaxCount: account.resendMaxCount,
+      allowedIps: (account.allowedIps ?? []).map((ip) => ({
+        id: ip.id,
+        ip: ip.ipAddress,
+        description: ip.description,
+      })),
+    };
+  }
+
+  @Transactional()
+  async replaceAllowedIps(accountId: string, dto: UpdateAllowedIpsReqDto): Promise<void> {
+    const account = await this.externalApiAccountRepository.findOne({
+      where: { id: accountId },
+      select: { id: true },
+    });
+    if (!account) {
+      throw new NotFoundException('계정을 찾을 수 없습니다.');
+    }
+    await this.replaceAllowedIpsForAccount(account.id, dto);
+  }
+
+  @Transactional()
+  async replaceAllowedIpsByUserId(userId: number, dto: UpdateAllowedIpsReqDto): Promise<void> {
+    const account = await this.externalApiAccountRepository.findOne({
+      where: { userId },
+      select: { id: true },
+    });
+    if (!account) {
+      throw new BadRequestException('API 계정이 발급되어 있지 않습니다.');
+    }
+    await this.replaceAllowedIpsForAccount(account.id, dto);
+  }
+
+  private async replaceAllowedIpsForAccount(accountId: string, dto: UpdateAllowedIpsReqDto): Promise<void> {
+    await this.externalApiAllowedIpRepository.delete({ accountId });
+    if (dto.ips.length > 0) {
+      const rows = dto.ips.map((entry) =>
+        this.externalApiAllowedIpRepository.create({
+          accountId,
+          ipAddress: entry.ip,
+          description: entry.description ?? null,
+        }),
+      );
+      await this.externalApiAllowedIpRepository.save(rows);
+    }
+  }
+
+  /**
+   * 어드민 전용 설정 토글.
+   * ssgEnabled=true 직접 세팅도 허용하나, 권장 흐름은 SSG 요청 승인.
+   */
+  async updateApiKeySettings(accountId: string, dto: UpdateApiKeySettingsReqDto): Promise<void> {
+    const account = await this.externalApiAccountRepository.findOne({ where: { id: accountId } });
+    if (!account) {
+      throw new NotFoundException('계정을 찾을 수 없습니다.');
+    }
+
+    if (dto.isActive !== undefined) account.isActive = dto.isActive;
+    if (dto.ssgEnabled !== undefined) account.ssgEnabled = dto.ssgEnabled;
+    if (dto.resendMaxCount !== undefined) account.resendMaxCount = dto.resendMaxCount;
+
+    await this.externalApiAccountRepository.save(account);
+  }
+
+  // ─── 외부 API: SSG 활성화 요청 ──────────────────────────
+
+  async createSsgRequest(userId: number, reason: string): Promise<SsgRequestResDto> {
+    const account = await this.externalApiAccountRepository.findOne({ where: { userId } });
+    if (!account) {
+      throw new BadRequestException('API 계정이 발급되어 있지 않습니다.');
+    }
+    if (account.ssgEnabled) {
+      throw new BadRequestException('이미 SSG가 활성화되어 있습니다.');
+    }
+
+    const pending = await this.externalApiSsgRequestRepository.findOne({
+      where: { accountId: account.id, status: IExternalApiSsgRequestStatus.PENDING },
+    });
+    if (pending) {
+      throw new BadRequestException('이미 처리 대기 중인 요청이 있습니다.');
+    }
+
+    const created = this.externalApiSsgRequestRepository.create({
+      accountId: account.id,
+      requestedByUserId: userId,
+      reason,
+      status: IExternalApiSsgRequestStatus.PENDING,
+    });
+    const saved = await this.externalApiSsgRequestRepository.save(created);
+    return this.toSsgRequestDto(saved);
+  }
+
+  async cancelSsgRequest(userId: number, requestId: string): Promise<void> {
+    const request = await this.externalApiSsgRequestRepository.findOne({ where: { id: requestId } });
+    if (!request) {
+      throw new NotFoundException('요청을 찾을 수 없습니다.');
+    }
+    if (request.requestedByUserId !== userId) {
+      throw new ForbiddenException('본인 요청만 취소할 수 있습니다.');
+    }
+    if (request.status !== IExternalApiSsgRequestStatus.PENDING) {
+      throw new BadRequestException('PENDING 상태만 취소할 수 있습니다.');
+    }
+    request.status = IExternalApiSsgRequestStatus.CANCELLED;
+    await this.externalApiSsgRequestRepository.save(request);
+  }
+
+  async getMySsgRequests(userId: number): Promise<SsgRequestResDto[]> {
+    const account = await this.externalApiAccountRepository.findOne({ where: { userId } });
+    if (!account) {
+      return [];
+    }
+    const list = await this.externalApiSsgRequestRepository.find({
+      where: { accountId: account.id },
+      relations: ['requestedByUser', 'decidedByUser'],
+      order: { createdAt: 'DESC' },
+    });
+    return list.map((r) => this.toSsgRequestDto(r));
+  }
+
+  async listSsgRequests(filters: { status?: IExternalApiSsgRequestStatus; accountId?: string }): Promise<SsgRequestResDto[]> {
+    const where: any = {};
+    if (filters.status) where.status = filters.status;
+    if (filters.accountId) where.accountId = filters.accountId;
+
+    const list = await this.externalApiSsgRequestRepository.find({
+      where,
+      relations: ['requestedByUser', 'decidedByUser'],
+      order: { createdAt: 'DESC' },
+    });
+    return list.map((r) => this.toSsgRequestDto(r));
+  }
+
+  @Transactional()
+  async approveSsgRequest(requestId: string, decidedByUserId: number, note?: string): Promise<SsgRequestResDto> {
+    const request = await this.externalApiSsgRequestRepository.findOne({
+      where: { id: requestId },
+      relations: ['requestedByUser'],
+    });
+    if (!request) {
+      throw new NotFoundException('요청을 찾을 수 없습니다.');
+    }
+    if (request.status !== IExternalApiSsgRequestStatus.PENDING) {
+      throw new BadRequestException('PENDING 상태만 처리할 수 있습니다.');
+    }
+
+    const account = await this.externalApiAccountRepository.findOne({ where: { id: request.accountId } });
+    if (!account) {
+      throw new NotFoundException('대상 계정을 찾을 수 없습니다.');
+    }
+
+    request.status = IExternalApiSsgRequestStatus.APPROVED;
+    request.decidedByUserId = decidedByUserId;
+    request.decidedAt = new Date();
+    request.decisionNote = note ?? null;
+    await this.externalApiSsgRequestRepository.save(request);
+
+    account.ssgEnabled = true;
+    await this.externalApiAccountRepository.save(account);
+
+    const decidedByUser = await this.userRepository.findOne({ where: { id: decidedByUserId } });
+    request.decidedByUser = decidedByUser ?? null;
+    return this.toSsgRequestDto(request);
+  }
+
+  @Transactional()
+  async rejectSsgRequest(requestId: string, decidedByUserId: number, note?: string): Promise<SsgRequestResDto> {
+    const request = await this.externalApiSsgRequestRepository.findOne({
+      where: { id: requestId },
+      relations: ['requestedByUser'],
+    });
+    if (!request) {
+      throw new NotFoundException('요청을 찾을 수 없습니다.');
+    }
+    if (request.status !== IExternalApiSsgRequestStatus.PENDING) {
+      throw new BadRequestException('PENDING 상태만 처리할 수 있습니다.');
+    }
+
+    request.status = IExternalApiSsgRequestStatus.REJECTED;
+    request.decidedByUserId = decidedByUserId;
+    request.decidedAt = new Date();
+    request.decisionNote = note ?? null;
+    await this.externalApiSsgRequestRepository.save(request);
+
+    const decidedByUser = await this.userRepository.findOne({ where: { id: decidedByUserId } });
+    request.decidedByUser = decidedByUser ?? null;
+    return this.toSsgRequestDto(request);
+  }
+
+  // ─── 헬퍼 ──────────────────────────────────────────────
+
+  private async cancelPendingSsgRequests(accountId: string): Promise<void> {
+    await this.externalApiSsgRequestRepository.update(
+      { accountId, status: IExternalApiSsgRequestStatus.PENDING },
+      { status: IExternalApiSsgRequestStatus.CANCELLED },
+    );
+  }
+
+  private toSsgRequestDto(request: ExternalApiSsgRequestEntity): SsgRequestResDto {
+    return {
+      id: request.id,
+      accountId: request.accountId,
+      requestedByUserId: request.requestedByUserId,
+      requestedByUserName: request.requestedByUser?.personName,
+      reason: request.reason,
+      status: request.status,
+      decidedByUserId: request.decidedByUserId,
+      decidedByUserName: request.decidedByUser?.personName ?? null,
+      decidedAt: request.decidedAt,
+      decisionNote: request.decisionNote,
+      createdAt: request.createdAt,
+    };
   }
 }

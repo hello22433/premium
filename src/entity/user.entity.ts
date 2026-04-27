@@ -148,7 +148,11 @@ export class UserEntity extends BaseEntity {
   @Column({ type: 'varchar', nullable: true, length: 1024, comment: '페이지 접근 허용 list' })
   authorityList: string | null;
 
-  @Column({ type: 'varchar', length: 64, nullable: true, unique: true, comment: '외부 API 키 (SHA-256 해시)' })
+  /**
+   * @deprecated external_api_account 테이블로 이관됨. 안정화 후 별도 마이그레이션에서 DROP 예정.
+   * 신규 코드에서는 ExternalApiAccountEntity.apiKeyHash를 사용한다.
+   */
+  @Column({ type: 'varchar', length: 64, nullable: true, unique: true, comment: '외부 API 키 (SHA-256 해시) - DEPRECATED' })
   apiKeyHash: string | null;
 
   @Column({

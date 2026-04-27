@@ -39,7 +39,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
       throw new ExternalApiException('2001', '잘못된 요청', 'Idempotency-Key는 최대 64자입니다');
     }
 
-    const userId = (request as any).apiUser?.id;
+    const userId = (request as any).apiAccount?.user?.id;
     const endpoint = `${request.method} ${request.route?.path || request.path}`;
     const requestHash = createHash('sha256').update(JSON.stringify(request.body)).digest('hex');
 

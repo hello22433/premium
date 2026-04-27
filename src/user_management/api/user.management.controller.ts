@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, ParseIntPipe, Post, Put, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, Put, Query, UseGuards } from '@nestjs/common';
 import { ApiBadRequestResponse, ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { UserManagementService } from '../application/user.management.service';
 import {
@@ -30,6 +30,17 @@ import { UserAuthSubEnum } from '../domain/user.auth.enum';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { AuthService } from '../../auth/application/auth.service';
 import { User } from '../../auth/api/user.decorator';
+import {
+  ApiKeyInfoResDto,
+  CreateSsgRequestReqDto,
+  DecideSsgRequestReqDto,
+  GenerateApiKeyByAdminReqDto,
+  GenerateApiKeyReqDto,
+  SsgRequestResDto,
+  UpdateAllowedIpsReqDto,
+  UpdateApiKeySettingsReqDto,
+} from './dto/user.management.api.key.dto';
+import { IExternalApiSsgRequestStatus } from '../../external_api/interface/external.api.ssg.request.status';
 
 @ApiTags('user-management')
 @Controller('')
@@ -274,12 +285,17 @@ export class UserManagementController {
     return this.userManagementService.getCompanyList(getQuery);
   }
 
+  // ─── 외부 API Key: 본인 ───────────────────────────────
+
   @Post('/user-management/me/api-key')
   @UseGuards(AuthUserAuthorizationGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: '[본인] 내 API Key 발급/재발급' })
-  async generateMyApiKey(@User() user: ILoginUserInfo): Promise<{ apiKey: string }> {
-    const apiKey = await this.userManagementService.generateApiKey(user.id);
+  async generateMyApiKey(
+    @User() user: ILoginUserInfo,
+    @Body() body: GenerateApiKeyReqDto,
+  ): Promise<{ apiKey: string }> {
+    const apiKey = await this.userManagementService.generateApiKey(user.id, body, false);
     return { apiKey };
   }
 
@@ -291,12 +307,36 @@ export class UserManagementController {
     await this.userManagementService.revokeApiKey(user.id);
   }
 
+  @Get('/user-management/me/api-key')
+  @UseGuards(AuthUserAuthorizationGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: '[본인] 내 API Key 메타 조회 (raw key 노출 X)' })
+  async getMyApiKeyInfo(@User() user: ILoginUserInfo): Promise<ApiKeyInfoResDto> {
+    return this.userManagementService.getApiKeyInfo(user.id);
+  }
+
+  @Put('/user-management/me/api-key/allowed-ips')
+  @UseGuards(AuthUserAuthorizationGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: '[본인] 내 API Key의 허용 IP 목록 통째 교체' })
+  async replaceMyAllowedIps(
+    @User() user: ILoginUserInfo,
+    @Body() body: UpdateAllowedIpsReqDto,
+  ): Promise<void> {
+    await this.userManagementService.replaceAllowedIpsByUserId(user.id, body);
+  }
+
+  // ─── 외부 API Key: 어드민 ─────────────────────────────
+
   @Post('/user-management/:id/api-key')
   @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: '[어드민] 특정 계정의 API Key 발급/재발급' })
-  async generateApiKey(@Param('id', ParseIntPipe) id: number): Promise<{ apiKey: string }> {
-    const apiKey = await this.userManagementService.generateApiKey(id);
+  async generateApiKey(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: GenerateApiKeyByAdminReqDto,
+  ): Promise<{ apiKey: string }> {
+    const apiKey = await this.userManagementService.generateApiKey(id, body, true);
     return { apiKey };
   }
 
@@ -306,5 +346,94 @@ export class UserManagementController {
   @ApiOperation({ summary: '[어드민] 특정 계정의 API Key 비활성화' })
   async revokeApiKey(@Param('id', ParseIntPipe) id: number): Promise<void> {
     await this.userManagementService.revokeApiKey(id);
+  }
+
+  @Patch('/user-management/api-keys/:accountId')
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: '[어드민] API Key 설정 토글 (isActive/ssgEnabled/resendMaxCount)' })
+  async updateApiKeySettings(
+    @Param('accountId') accountId: string,
+    @Body() body: UpdateApiKeySettingsReqDto,
+  ): Promise<void> {
+    await this.userManagementService.updateApiKeySettings(accountId, body);
+  }
+
+  @Put('/user-management/api-keys/:accountId/allowed-ips')
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: '[어드민] 특정 계정의 허용 IP 목록 통째 교체' })
+  async replaceAllowedIps(
+    @Param('accountId') accountId: string,
+    @Body() body: UpdateAllowedIpsReqDto,
+  ): Promise<void> {
+    await this.userManagementService.replaceAllowedIps(accountId, body);
+  }
+
+  // ─── 외부 API Key: SSG 활성화 요청 ─────────────────────
+
+  @Post('/user-management/me/api-key/ssg-requests')
+  @UseGuards(AuthUserAuthorizationGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: '[본인] SSG 활성화 신청' })
+  async createMySsgRequest(
+    @User() user: ILoginUserInfo,
+    @Body() body: CreateSsgRequestReqDto,
+  ): Promise<SsgRequestResDto> {
+    return this.userManagementService.createSsgRequest(user.id, body.reason);
+  }
+
+  @Delete('/user-management/me/api-key/ssg-requests/:requestId')
+  @UseGuards(AuthUserAuthorizationGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: '[본인] SSG 활성화 신청 취소 (PENDING만)' })
+  async cancelMySsgRequest(
+    @User() user: ILoginUserInfo,
+    @Param('requestId') requestId: string,
+  ): Promise<void> {
+    await this.userManagementService.cancelSsgRequest(user.id, requestId);
+  }
+
+  @Get('/user-management/me/api-key/ssg-requests')
+  @UseGuards(AuthUserAuthorizationGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: '[본인] SSG 활성화 신청 이력 조회' })
+  async listMySsgRequests(@User() user: ILoginUserInfo): Promise<SsgRequestResDto[]> {
+    return this.userManagementService.getMySsgRequests(user.id);
+  }
+
+  @Get('/user-management/api-keys/ssg-requests')
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: '[어드민] SSG 활성화 신청 전체 조회' })
+  async listSsgRequests(
+    @Query('status') status?: IExternalApiSsgRequestStatus,
+    @Query('accountId') accountId?: string,
+  ): Promise<SsgRequestResDto[]> {
+    return this.userManagementService.listSsgRequests({ status, accountId });
+  }
+
+  @Post('/user-management/api-keys/ssg-requests/:requestId/approve')
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: '[어드민] SSG 활성화 신청 승인' })
+  async approveSsgRequest(
+    @User() admin: ILoginUserInfo,
+    @Param('requestId') requestId: string,
+    @Body() body: DecideSsgRequestReqDto,
+  ): Promise<SsgRequestResDto> {
+    return this.userManagementService.approveSsgRequest(requestId, admin.id, body.note);
+  }
+
+  @Post('/user-management/api-keys/ssg-requests/:requestId/reject')
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: '[어드민] SSG 활성화 신청 거부' })
+  async rejectSsgRequest(
+    @User() admin: ILoginUserInfo,
+    @Param('requestId') requestId: string,
+    @Body() body: DecideSsgRequestReqDto,
+  ): Promise<SsgRequestResDto> {
+    return this.userManagementService.rejectSsgRequest(requestId, admin.id, body.note);
   }
 }

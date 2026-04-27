@@ -34,6 +34,8 @@ export class ExternalApiExceptionFilter implements ExceptionFilter {
       const codeStatusMap: Record<string, number> = {
         '1001': HttpStatus.UNAUTHORIZED,
         '1002': HttpStatus.FORBIDDEN,
+        '1004': HttpStatus.FORBIDDEN,
+        '1005': HttpStatus.FORBIDDEN,
         '2001': HttpStatus.BAD_REQUEST,
         '2002': HttpStatus.BAD_REQUEST,
         '2004': HttpStatus.UNPROCESSABLE_ENTITY,
@@ -44,6 +46,9 @@ export class ExternalApiExceptionFilter implements ExceptionFilter {
         '3004': HttpStatus.INTERNAL_SERVER_ERROR,
         '3005': HttpStatus.CONFLICT,
         '3006': HttpStatus.CONFLICT,
+        '3007': HttpStatus.CONFLICT,
+        '3008': HttpStatus.CONFLICT,
+        '3009': HttpStatus.CONFLICT,
         '4001': HttpStatus.NOT_FOUND,
         '4002': HttpStatus.NOT_FOUND,
       };
