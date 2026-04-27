@@ -89,18 +89,18 @@ export class DeliverySendService {
       smsText += smsSsgTemplate(orderDelivery);
     }
 
-    // 비SSG, 비초이스 상품에 쿠폰 정보를 본문 앞에 배치 (barCode가 있는 경우만)
+    // 비SSG, 비초이스 상품에 쿠폰 정보를 본문 뒤에 배치 (barCode가 있는 경우만)
     if (orderType !== IOrderType.SSG && productType !== IProductType.CHOICE && orderDelivery.barCode) {
-      smsText = smsCouponInfoTemplate(orderDelivery) + '\n\n' + smsText;
+      smsText += '\n\n' + smsCouponInfoTemplate(orderDelivery);
     }
 
-    // 선택 완료된 초이스쿠폰: 선택된 상품의 쿠폰 정보를 앞에 배치
+    // 선택 완료된 초이스쿠폰: 선택된 상품의 쿠폰 정보를 본문 뒤에 배치
     if (productType === IProductType.CHOICE && orderDelivery.choiceSelectProductId && orderDelivery.barCode) {
       const brand = orderDelivery.choiceSelectProduct?.brand ?? orderDelivery.orderProductMapping.product.brand;
       const brandName = brand?.nameKorean ?? '';
       const formattedExpireAt = orderDelivery.expireAt ? format(orderDelivery.expireAt, 'yyyy.MM.dd') : '';
-      const couponHeader = `쿠폰번호 : ${orderDelivery.barCode}\n유효기간 : ~ ${formattedExpireAt}\n사용처 : ${brandName}\n고객센터 : 1644-3614`;
-      smsText = couponHeader + '\n\n' + smsText;
+      const couponFooter = `쿠폰번호 : ${orderDelivery.barCode}\n유효기간 : ~ ${formattedExpireAt}\n사용처 : ${brandName}\n고객센터 : 1644-3614`;
+      smsText += '\n\n' + couponFooter;
     }
 
     return smsText;
