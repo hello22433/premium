@@ -10,6 +10,7 @@ import { Type } from 'class-transformer';
 import { OrderSettleCreateDto } from './dto/order.settle.create.dto';
 import { IOrderSendMethod } from '../interface/order.send.method';
 import { IOrderSendingType } from '../interface/order.sending.type';
+import { IOrderDateType } from '../interface/order.date.type';
 import { CompanyType } from '../../common/domain/company.type';
 
 export class OrderGetListReqDto extends PagingReqDto {
@@ -44,7 +45,17 @@ export class OrderGetListReqDto extends PagingReqDto {
   status?: IOrderStatus;
 
   @ApiPropertyOptional({
-    description: '발송 시간 조회 시작 날짜 ex) yyyy-MM-ddTHH:mm:ss',
+    description: '기간 검색 기준 ex) REGISTER: 등록일자(기본), SEND: 발송일자(actual_send_at)',
+    enum: IOrderDateType,
+    default: IOrderDateType.REGISTER,
+  })
+  // ===================================
+  @IsOptional()
+  @IsEnum(IOrderDateType)
+  dateType?: IOrderDateType = IOrderDateType.REGISTER;
+
+  @ApiPropertyOptional({
+    description: '기간 조회 시작 날짜 ex) yyyy-MM-ddTHH:mm:ss',
   })
   // ===================================
   @IsOptional()
@@ -52,7 +63,7 @@ export class OrderGetListReqDto extends PagingReqDto {
   startAt?: string;
 
   @ApiPropertyOptional({
-    description: '발송 시간 조회 끝 날짜 ex) yyyy-MM-ddTHH:mm:ss',
+    description: '기간 조회 끝 날짜 ex) yyyy-MM-ddTHH:mm:ss',
   })
   // ===================================
   @IsOptional()
@@ -358,7 +369,17 @@ export class OrderExcelDownloadReqBodyDto {
   status?: IOrderStatus;
 
   @ApiPropertyOptional({
-    description: '발송 시간 조회 시작 날짜 ex) yyyy-MM-ddTHH:mm:ss',
+    description: '기간 검색 기준 ex) REGISTER: 등록일자(기본), SEND: 발송일자(actual_send_at)',
+    enum: IOrderDateType,
+    default: IOrderDateType.REGISTER,
+  })
+  // ===================================
+  @IsOptional()
+  @IsEnum(IOrderDateType)
+  dateType?: IOrderDateType = IOrderDateType.REGISTER;
+
+  @ApiPropertyOptional({
+    description: '기간 조회 시작 날짜 ex) yyyy-MM-ddTHH:mm:ss',
   })
   // ===================================
   @IsOptional()
@@ -366,7 +387,7 @@ export class OrderExcelDownloadReqBodyDto {
   startAt?: string;
 
   @ApiPropertyOptional({
-    description: '발송 시간 조회 끝 날짜 ex) yyyy-MM-ddTHH:mm:ss',
+    description: '기간 조회 끝 날짜 ex) yyyy-MM-ddTHH:mm:ss',
   })
   // ===================================
   @IsOptional()
