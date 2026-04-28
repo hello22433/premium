@@ -1,4 +1,4 @@
-import { Column, Entity, JoinColumn, ManyToOne, PrimaryGeneratedColumn } from 'typeorm';
+import { Column, Entity, Index, JoinColumn, ManyToOne, PrimaryGeneratedColumn } from 'typeorm';
 import { IUserDiscountCategory } from '../user_discount/interface/user.discount.category';
 import { IPriceAdjustment } from '../user_discount/interface/price.adjustment';
 import { ICompareCondition } from '../user_discount/interface/compare.condition';
@@ -9,6 +9,8 @@ import { ClassificationEntity } from './classification.entity';
 import { BaseEntity } from '../common/entity/base.entity';
 
 @Entity('user_discount')
+@Index('idx_user_discount_user', ['userId'])
+@Index('idx_user_discount_partner', ['partnerCompanyId'])
 export class UserDiscountEntity extends BaseEntity {
   @PrimaryGeneratedColumn()
   id: number;

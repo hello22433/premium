@@ -27,7 +27,10 @@ export class OrderResponseData {
   barCode?: string;
   validStartDate?: string;
   validEndDate?: string;
+  /** 정가 (할인/할증 미반영, 카드할증 미반영) */
   price: number;
+  /** 실제 차감/결제 금액 (할인/할증 + 카드할증 반영) */
+  settleAmount: number;
 }
 
 export class SsgOrderResponseData extends OrderResponseData {
@@ -41,7 +44,10 @@ export class OrderStatusResponseData {
   barCode?: string;
   validStartDate?: string;
   validEndDate?: string;
+  /** 정가 (할인/할증 미반영, 카드할증 미반영) */
   price: number;
+  /** 실제 차감/결제 금액 (할인/할증 + 카드할증 반영) */
+  settleAmount: number;
 }
 
 export class SsgOrderStatusResponseData extends OrderStatusResponseData {

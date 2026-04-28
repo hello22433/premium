@@ -13,8 +13,13 @@ import { DeliverySendHistoryEntity } from '../../entity/delivery.send.history.en
 import { UserSyncProductEventMappingEntity } from '../../entity/user.sync.product.event.mapping.entity';
 import { ExternalApiAccountEntity } from '../../entity/external.api.account.entity';
 import { SsgEventEntity } from '../../entity/ssg.event.entity';
+import { UserDiscountEntity } from '../../entity/user.discount.entity';
 import { IUserSyncProductStatus } from '../../user_sync_product/interface/user.sync.product.status';
 import { IUserAuthority } from '../../user/interface/user.authority';
+import { IUserSettleMethod } from '../../user/interface/user.settle.method';
+import { IPriceAdjustment } from '../../user_discount/interface/price.adjustment';
+import { findMatchingDiscount } from '../../user_discount/domain/discount.matcher';
+import { OrderFeeCalculator, applyCardSurcharge } from '../../order/domain/order.fee.calculator';
 
 import { IOrderType } from '../../order/interface/order.type';
 import { IOrderStatus } from '../../order/interface/order.status';
@@ -68,6 +73,8 @@ export class ExternalApiService {
     private deliverySendHistoryRepository: Repository<DeliverySendHistoryEntity>,
     @InjectRepository(UserSyncProductEventMappingEntity)
     private syncProductEventMappingRepository: Repository<UserSyncProductEventMappingEntity>,
+    @InjectRepository(UserDiscountEntity)
+    private userDiscountRepository: Repository<UserDiscountEntity>,
     private dataSource: DataSource,
     private partnerCompanyExternService: PartnerCompanyExternService,
     private deliverySendService: DeliverySendService,
@@ -105,6 +112,66 @@ export class ExternalApiService {
     } else {
       await this.dataSource.query('UPDATE user SET balance = balance + ? WHERE id = ?', [price, user.id]);
     }
+  }
+
+  // ─── 정산 헬퍼 ──────────────────────────────────────────
+  // 일반 주문(order.service.ts)과 동일한 정산 모델을 외부 API에도 적용.
+  //  - 카드할증 여부: COMPANY 모드는 user_company.settleMethod, 그 외는 user.settleMethod ('CARD'면 true)
+  //  - 할인/할증: user_discount 자동 매칭(findMatchingDiscount). 매칭 없으면 정가 그대로
+  //  - settleAmount = applyCardSurcharge(OrderFeeCalculator(...), cardSurchargeApplied)
+
+  private resolveCardSurchargeApplied(account: ExternalApiAccountEntity): boolean {
+    const user = account.user;
+    const isCompanyMode = user.company?.balanceManagementType === 'COMPANY';
+    const settleMethod = isCompanyMode
+      ? user.company?.settleMethod
+      : user.settleMethod;
+    return settleMethod === IUserSettleMethod.CARD;
+  }
+
+  private async computeSettlement(
+    account: ExternalApiAccountEntity,
+    product: ProductEntity,
+    sendAmount: number,
+  ): Promise<{
+    fee: number | null;
+    priceAdjustment: IPriceAdjustment | null;
+    settleAmount: number;
+    cardSurchargeApplied: boolean;
+  }> {
+    const where: Array<{ userId?: number; partnerCompanyId?: number }> = [
+      { userId: account.user.id },
+    ];
+    if (product.partnerCompanyId != null) {
+      where.push({ partnerCompanyId: product.partnerCompanyId });
+    }
+    const userDiscounts = await this.userDiscountRepository.find({ where });
+
+    // SSG처럼 dto.amount로 sendAmount가 product.price와 다른 경우에도 정확히 매칭하도록
+    // sendAmount를 priceOverride로 일관되게 전달.
+    const matched = findMatchingDiscount(
+      {
+        price: product.price,
+        category: product.category,
+        classificationId: product.classificationId,
+        brand: product.brand,
+      },
+      userDiscounts,
+      sendAmount,
+    );
+
+    const fee = matched?.pricePercent ?? null;
+    const priceAdjustment = matched?.priceAdjustment ?? null;
+
+    const unitPrice =
+      fee != null && priceAdjustment != null
+        ? OrderFeeCalculator({ fee, priceAdjustment, price: sendAmount })
+        : sendAmount;
+
+    const cardSurchargeApplied = this.resolveCardSurchargeApplied(account);
+    const settleAmount = applyCardSurcharge(unitPrice, cardSurchargeApplied);
+
+    return { fee, priceAdjustment, settleAmount, cardSurchargeApplied };
   }
 
   // ─── 할당 상품 헬퍼 ─────────────────────────────────────
@@ -227,13 +294,12 @@ export class ExternalApiService {
     const { order, orderDelivery, product } = await this.phaseA_createAndDeduct(account, dto);
 
     const externalTrId = orderDelivery.externalTrId!;
-    const price = product.price;
 
     try {
       await this.phaseB_issueAndSend(orderDelivery);
     } catch (error) {
       this.logger.error(`[createOrder] Phase B 실패 - externalTrId: ${externalTrId}`, error);
-      await this.phaseC_handleFailure(order, orderDelivery, account, price, error);
+      await this.phaseC_handleFailure(order, orderDelivery, account, error);
       throw new ExternalApiException('3003', '쿠폰 발행 실패', error?.message);
     }
 
@@ -246,7 +312,8 @@ export class ExternalApiService {
       barCode: orderDelivery.barCode || undefined,
       validStartDate,
       validEndDate,
-      price,
+      price: order.sendAmount,
+      settleAmount: order.settleAmount,
     });
   }
 
@@ -256,28 +323,33 @@ export class ExternalApiService {
   private async phaseA_createAndDeduct(account: ExternalApiAccountEntity, dto: CreateExternalOrderDto) {
     const user = account.user;
 
-    const product = await this.productRepository.findOne({
-      where: { code: dto.productCode, useStatus: IProductUseStatus.USE },
-      relations: ['partnerCompany', 'brand'],
-    });
+    // 독립 쿼리(상품 조회 / 할당 상품 ID / 직전 주문 코드)는 병렬화하여 round-trip 절약
+    const [product, assignedIds, prevOrder] = await Promise.all([
+      this.productRepository.findOne({
+        where: { code: dto.productCode, useStatus: IProductUseStatus.USE },
+        relations: ['partnerCompany', 'brand'],
+      }),
+      this.getAssignedProductIds(user.id),
+      this.orderRepository.findOne({
+        where: { code: Like(`${OrderPrefixCode}%`) },
+        order: { code: 'DESC' },
+        withDeleted: true,
+      }),
+    ]);
+
     if (!product) {
       throw new ExternalApiException('3001', '올바르지 못한 요청입니다');
     }
-
-    const assignedIds = await this.getAssignedProductIds(user.id);
     if (!assignedIds.includes(product.id)) {
       throw new ExternalApiException('3001', '올바르지 못한 요청입니다');
     }
 
-    const price = product.price;
+    const sendAmount = product.price;
+    const { fee, priceAdjustment, settleAmount, cardSurchargeApplied } =
+      await this.computeSettlement(account, product, sendAmount);
 
-    await this.deductBalance(account, price);
+    await this.deductBalance(account, settleAmount);
 
-    const prevOrder = await this.orderRepository.findOne({
-      where: { code: Like(`${OrderPrefixCode}%`) },
-      order: { code: 'DESC' },
-      withDeleted: true,
-    });
     const newCode = CreateCode(prevOrder?.code ?? null, OrderPrefixCode, OrderDigitNumber);
 
     const order = this.orderRepository.create({
@@ -287,8 +359,9 @@ export class ExternalApiService {
       status: IOrderStatus.DELIVERY_REQUEST,
       eventName: `외부주문`,
       registerAt: new Date(),
-      sendAmount: price,
-      settleAmount: price,
+      sendAmount,
+      settleAmount,
+      cardSurchargeApplied,
       isNewBillingFlow: false,
       isSettleBalance: true,
       isSettleComplete: false,
@@ -304,6 +377,8 @@ export class ExternalApiService {
       sendTitle: dto.title || product.name,
       fromPhoneNumber: dto.senderPhone,
       sendMethod: dto.deliveryMethod as IOrderSendMethod,
+      fee,
+      priceAdjustment,
       topImagePath: '',
       midImagePath: '',
     });
@@ -398,7 +473,6 @@ export class ExternalApiService {
     order: OrderEntity,
     orderDelivery: OrderDeliveryEntity,
     account: ExternalApiAccountEntity,
-    price: number,
     error: any,
   ) {
     orderDelivery.status = IOrderDeliveryStatus.FAIL;
@@ -411,16 +485,18 @@ export class ExternalApiService {
     order.status = IOrderStatus.DELIVERY_CANCEL;
     await this.orderRepository.save(order);
 
-    await this.refundBalance(account, price);
+    await this.refundBalance(account, order.settleAmount);
   }
 
   // ─── 주문 상태 조회 ─────────────────────────────────────
 
   async getOrderStatus(account: ExternalApiAccountEntity, trId: string): Promise<ExternalApiResponse<OrderStatusResponseData>> {
     const orderDelivery = await this.findOrderDeliveryByTrId(account, trId);
-
-    const product = orderDelivery.orderProductMapping?.product;
+    const mapping = orderDelivery.orderProductMapping;
+    const product = mapping?.product;
+    const order = mapping?.order;
     const price = product?.price ?? 0;
+    const settleAmount = order?.settleAmount ?? 0;
     const { validStartDate, validEndDate } = this.resolveValidDates(orderDelivery);
 
     return ExternalApiResponse.success<OrderStatusResponseData>({
@@ -431,6 +507,7 @@ export class ExternalApiService {
       validStartDate,
       validEndDate,
       price,
+      settleAmount,
     });
   }
 
@@ -438,9 +515,9 @@ export class ExternalApiService {
 
   async getSsgOrderStatus(account: ExternalApiAccountEntity, trId: string): Promise<ExternalApiResponse<SsgOrderStatusResponseData>> {
     const orderDelivery = await this.findOrderDeliveryByTrId(account, trId);
-
-    const product = orderDelivery.orderProductMapping?.product;
-    const price = product?.price ?? 0;
+    const order = orderDelivery.orderProductMapping?.order;
+    const price = order?.sendAmount ?? 0;
+    const settleAmount = order?.settleAmount ?? 0;
     const { validStartDate, validEndDate } = this.resolveValidDates(orderDelivery);
 
     return ExternalApiResponse.success<SsgOrderStatusResponseData>({
@@ -452,6 +529,7 @@ export class ExternalApiService {
       validStartDate,
       validEndDate,
       price,
+      settleAmount,
     });
   }
 
@@ -462,7 +540,6 @@ export class ExternalApiService {
     const mapping = orderDelivery.orderProductMapping;
     const order = mapping.order;
     const product = mapping.product;
-    const price = product?.price ?? 0;
 
     if (orderDelivery.status === IOrderDeliveryStatus.CANCEL) {
       throw new ExternalApiException('3005', '이미 취소된 주문');
@@ -489,7 +566,7 @@ export class ExternalApiService {
       }
     }
 
-    await this.processCancelRefund(order, orderDelivery, account, price);
+    await this.processCancelRefund(order, orderDelivery, account);
 
     return ExternalApiResponse.success();
   }
@@ -499,7 +576,6 @@ export class ExternalApiService {
     order: OrderEntity,
     orderDelivery: OrderDeliveryEntity,
     account: ExternalApiAccountEntity,
-    price: number,
   ) {
     orderDelivery.status = IOrderDeliveryStatus.CANCEL;
     orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
@@ -508,7 +584,7 @@ export class ExternalApiService {
     order.status = IOrderStatus.DELIVERY_CANCEL;
     await this.orderRepository.save(order);
 
-    await this.refundBalance(account, price);
+    await this.refundBalance(account, order.settleAmount);
   }
 
   // ─── 재발송 ─────────────────────────────────────────────
@@ -550,13 +626,12 @@ export class ExternalApiService {
     const { order, orderDelivery, ssgEvent } = await this.phaseA_createSsgAndDeduct(account, dto);
 
     const externalTrId = orderDelivery.externalTrId!;
-    const price = dto.amount;
 
     try {
       await this.phaseB_issueAndSend(orderDelivery, ssgEvent);
     } catch (error) {
       this.logger.error(`[createSsgOrder] Phase B 실패 - externalTrId: ${externalTrId}`, error);
-      await this.phaseC_handleFailure(order, orderDelivery, account, price, error);
+      await this.phaseC_handleFailure(order, orderDelivery, account, error);
       throw new ExternalApiException('3003', 'SSG 쿠폰 발행 실패', error?.message);
     }
 
@@ -570,36 +645,44 @@ export class ExternalApiService {
       personalCode: orderDelivery.personalCode || undefined,
       validStartDate,
       validEndDate,
-      price,
+      price: order.sendAmount,
+      settleAmount: order.settleAmount,
     });
   }
 
   @Transactional()
   private async phaseA_createSsgAndDeduct(account: ExternalApiAccountEntity, dto: CreateExternalSsgOrderDto) {
     const user = account.user;
-    const price = dto.amount;
+    const sendAmount = dto.amount;
 
-    const product = await this.productRepository.findOne({
-      where: { type: IProductType.SSG },
-      relations: ['partnerCompany', 'brand'],
-    });
+    // 독립 쿼리(SSG 상품 / 직전 주문 코드)는 병렬화. SSG 이벤트는 product.expireDay 의존이라 이후 처리.
+    const [product, prevOrder] = await Promise.all([
+      this.productRepository.findOne({
+        where: { type: IProductType.SSG },
+        relations: ['partnerCompany', 'brand'],
+      }),
+      this.orderRepository.findOne({
+        where: { code: Like(`${OrderPrefixCode}%`) },
+        order: { code: 'DESC' },
+        withDeleted: true,
+      }),
+    ]);
+
     if (!product) {
       throw new ExternalApiException('3001', 'SSG 상품 없음');
     }
 
-    // SSG 이벤트의 couponExpiration은 product.expireDay와 매칭되어야 함 (일반 주문 흐름과 동일)
-    const ssgEvent = await this.ssgEventService.selectEventForOrder(price, product.expireDay);
+    // SSG 이벤트는 sendAmount(정가) 기준으로 매칭/차감 (할인/할증/카드할증과 무관)
+    const ssgEvent = await this.ssgEventService.selectEventForOrder(sendAmount, product.expireDay);
     if (!ssgEvent) {
       throw new ExternalApiException('3002', 'SSG 이벤트 잔액 부족');
     }
 
-    await this.deductBalance(account, price);
+    const { fee, priceAdjustment, settleAmount, cardSurchargeApplied } =
+      await this.computeSettlement(account, product, sendAmount);
 
-    const prevOrder = await this.orderRepository.findOne({
-      where: { code: Like(`${OrderPrefixCode}%`) },
-      order: { code: 'DESC' },
-      withDeleted: true,
-    });
+    await this.deductBalance(account, settleAmount);
+
     const newCode = CreateCode(prevOrder?.code ?? null, OrderPrefixCode, OrderDigitNumber);
 
     const order = this.orderRepository.create({
@@ -609,8 +692,9 @@ export class ExternalApiService {
       status: IOrderStatus.DELIVERY_REQUEST,
       eventName: `외부SSG주문`,
       registerAt: new Date(),
-      sendAmount: price,
-      settleAmount: price,
+      sendAmount,
+      settleAmount,
+      cardSurchargeApplied,
       isNewBillingFlow: false,
       isSettleBalance: true,
       isSettleComplete: false,
@@ -627,6 +711,8 @@ export class ExternalApiService {
       sendTitle: product.name,
       fromPhoneNumber: dto.senderPhone || null,
       sendMethod: IOrderSendMethod.ALIM_TALK,
+      fee,
+      priceAdjustment,
       topImagePath: '',
       midImagePath: '',
     });
@@ -646,7 +732,7 @@ export class ExternalApiService {
     orderDelivery.transactionId = CreateApiTransactionId(order.id, orderDelivery.id);
     orderDelivery.externalTrId = await this.saveTransactionIds(orderDelivery.id, orderDelivery.transactionId);
 
-    await this.ssgEventService.deductEventBalance(ssgEvent.id, price, order.id, false);
+    await this.ssgEventService.deductEventBalance(ssgEvent.id, sendAmount, order.id, false);
 
     mapping.product = product;
     mapping.order = order;
