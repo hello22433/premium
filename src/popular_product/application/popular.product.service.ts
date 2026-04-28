@@ -71,7 +71,7 @@ export class PopularProductService {
     const now = new Date();
 
     await this.dataSource.transaction(async (manager) => {
-      await manager.delete(PopularProductEntity, {});
+      await manager.createQueryBuilder().delete().from(PopularProductEntity).execute();
 
       const entities = results.map((row, index) => {
         const entity = new PopularProductEntity();
