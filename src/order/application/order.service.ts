@@ -503,9 +503,9 @@ export class OrderService {
           ? dayjs(firstDelivery.expireAt).tz('Asia/Seoul').format('YYYY. MM. DD')
           : (() => {
               const expireDays = resolveExpireDays(
-                orderProductMapping.galaxiaDuration ?? orderProductMapping.product.galaxiaDuration,
-                orderProductMapping.product.expireDay,
-                orderProductMapping.product.partnerCompany?.validityStartsNextDay,
+                orderProductMapping.galaxiaDuration ?? orderProductMapping.product?.galaxiaDuration,
+                orderProductMapping.product?.expireDay ?? 0,
+                orderProductMapping.product?.partnerCompany?.validityStartsNextDay,
               );
               const baseDate = orderProductMapping.sendType === 'IMMEDIATE'
                 ? dayjs()
@@ -545,11 +545,18 @@ export class OrderService {
               brandName: orderProductMapping.product.brand?.nameKorean ?? '',
               partnerCompanyName: orderProductMapping.product.partnerCompany?.businessName ?? '',
             }
-          : null;
-
-        if (!product) {
-          continue;
-        }
+          : {
+              id: orderProductMapping.productId,
+              name: '(삭제된 상품)',
+              price: 0,
+              expireDay: 0,
+              expireDate: null,
+              amount: orderProductMapping.amount,
+              imagePath: '',
+              brandId: 0,
+              brandName: '',
+              partnerCompanyName: '',
+            };
 
         // 해당 상품의 발송 실패 건수 계산
         const failCount = orderProductMapping.orderDeliveries.filter(
@@ -586,7 +593,7 @@ export class OrderService {
     const totalFailCount = productList.reduce((acc, product) => acc + product.failCount, 0);
 
     let couponExpiration: number | null = null;
-    if (order.type === IOrderType.SSG) {
+    if (order.type === IOrderType.SSG && productList.length > 0) {
       couponExpiration = productList[0].product?.expireDay ?? null;
     }
 
@@ -848,9 +855,9 @@ export class OrderService {
           ? dayjs(firstDelivery.expireAt).tz('Asia/Seoul').format('YYYY. MM. DD')
           : (() => {
               const expireDays = resolveExpireDays(
-                orderProductMapping.galaxiaDuration ?? orderProductMapping.product.galaxiaDuration,
-                orderProductMapping.product.expireDay,
-                orderProductMapping.product.partnerCompany?.validityStartsNextDay,
+                orderProductMapping.galaxiaDuration ?? orderProductMapping.product?.galaxiaDuration,
+                orderProductMapping.product?.expireDay ?? 0,
+                orderProductMapping.product?.partnerCompany?.validityStartsNextDay,
               );
               return expireDays ? dayjs().tz('Asia/Seoul').add(expireDays, 'day').format('YYYY. MM. DD') : null;
             })();
@@ -869,11 +876,17 @@ export class OrderService {
               brandId: orderProductMapping.product.brandId,
               brandName: orderProductMapping.product.brand?.nameKorean ?? '',
             }
-          : null;
-
-        if (!product) {
-          continue;
-        }
+          : {
+              id: orderProductMapping.productId,
+              name: '(삭제된 상품)',
+              price: 0,
+              expireDay: 0,
+              expireDate: null,
+              amount: orderProductMapping.amount,
+              imagePath: '',
+              brandId: 0,
+              brandName: '',
+            };
 
         productList.push({
           id: orderProductMapping.id,
@@ -901,7 +914,7 @@ export class OrderService {
     }
 
     let couponExpiration: number | null = null;
-    if (order.type === IOrderType.SSG) {
+    if (order.type === IOrderType.SSG && productList.length > 0) {
       couponExpiration = productList[0].product?.expireDay ?? null;
     }
 
@@ -1011,8 +1024,8 @@ export class OrderService {
             id: orderDelivery.id,
             sendRequestAt: orderDelivery.sendRequestAt ? format(orderDelivery.sendRequestAt, DateFormatStr) : null,
             actualSendAt: orderDelivery.actualSendAt ? format(orderDelivery.actualSendAt, DateFormatStr) : null,
-            productName: orderProductMapping.product.name ?? null,
-            amount: orderProductMapping.product.price ?? null,
+            productName: orderProductMapping.product?.name ?? '(삭제된 상품)',
+            amount: orderProductMapping.product?.price ?? 0,
             barCode: orderDelivery.barCode ? MaskingUtil.maskBarCode(orderDelivery.barCode) : null,
             deliveryMethod: orderDelivery.deliveryMethod,
             deliveryTarget: finalDeliveryTarget,
@@ -1031,7 +1044,17 @@ export class OrderService {
               brandId: orderProductMapping.product.brandId,
               brandName: orderProductMapping.product.brand?.nameKorean ?? '',
             }
-          : null;
+          : {
+              id: orderProductMapping.productId,
+              name: '(삭제된 상품)',
+              price: 0,
+              expireDay: 0,
+              amount: orderProductMapping.amount,
+              expireDate: null,
+              imagePath: '',
+              brandId: 0,
+              brandName: '',
+            };
         productList.push({
           id: orderProductMapping.id,
           product: product,
@@ -1043,7 +1066,7 @@ export class OrderService {
     }
 
     let couponExpiration: number | null = null;
-    if (order.type === IOrderType.SSG) {
+    if (order.type === IOrderType.SSG && productList.length > 0) {
       couponExpiration = productList[0].product?.expireDay ?? null;
     }
 
