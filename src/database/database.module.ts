@@ -68,6 +68,9 @@ import { EarlyDestroyRequestItemEntity } from '../entity/early.destroy.request.i
 import { IdempotencyKeyEntity } from '../entity/idempotency.key.entity';
 import { PopularProductEntity } from '../entity/popular.product.entity';
 import { GiftielExchangeHistoryEntity } from '../entity/giftiel.exchange.history.entity';
+import { ExternalApiAccountEntity } from '../entity/external.api.account.entity';
+import { ExternalApiAllowedIpEntity } from '../entity/external.api.allowed.ip.entity';
+import { ExternalApiSsgRequestEntity } from '../entity/external.api.ssg.request.entity';
 
 @Module({
   imports: [
@@ -140,6 +143,9 @@ import { GiftielExchangeHistoryEntity } from '../entity/giftiel.exchange.history
           IdempotencyKeyEntity,
           PopularProductEntity,
           GiftielExchangeHistoryEntity,
+          ExternalApiAccountEntity,
+          ExternalApiAllowedIpEntity,
+          ExternalApiSsgRequestEntity,
         ],
         extra: {
           connectionLimit: +configService.get('DATABASE_CONNECTION_LIMIT', 50),
