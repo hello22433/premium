@@ -216,6 +216,26 @@ export class OrderService {
     private orderManualEntryRepository: Repository<OrderManualEntryEntity>,
   ) {}
 
+  /**
+   * TypeORM .withDeleted()가 LEFT JOIN된 product에 적용되지 않는 문제 우회.
+   * 메인 쿼리 후 product가 null인 매핑에 대해 소프트 삭제된 상품을 보조 쿼리로 복구.
+   */
+  private async recoverDeletedProducts(orderProductMappings?: OrderProductMappingEntity[]): Promise<void> {
+    if (!orderProductMappings) return;
+    for (const mapping of orderProductMappings) {
+      if (!mapping.product && mapping.productId) {
+        const recovered = await this.productRepository.findOne({
+          where: { id: mapping.productId },
+          withDeleted: true,
+          relations: ['brand', 'partnerCompany'],
+        });
+        if (recovered) {
+          mapping.product = recovered;
+        }
+      }
+    }
+  }
+
   private buildManualEntries(orderId: number, list: ManualEntryItemDto[]): OrderManualEntryEntity[] {
     return list.map((entry, index) => {
       const entity = new OrderManualEntryEntity();
@@ -487,6 +507,8 @@ export class OrderService {
     if (!user) {
       throw new InternalServerErrorException('');
     }
+
+    await this.recoverDeletedProducts(order.orderProductMappings);
 
     const productList: OrderDetailProductDto[] = [];
 
@@ -844,6 +866,8 @@ export class OrderService {
 
     const productList: OrderDetailProductDto[] = [];
 
+    await this.recoverDeletedProducts(order.orderProductMappings);
+
     let topImagePath;
     let midImagePath;
 
@@ -979,6 +1003,8 @@ export class OrderService {
     if (order.status !== IOrderStatus.DELIVERY_COMPLETE) {
       throw new BadRequestException('발송 완료된 건에 대해서만 조회 가능합니다.');
     }
+
+    await this.recoverDeletedProducts(order.orderProductMappings);
 
     const productList: OrderPdfDetailProductDto[] = [];
     // 대행주문인 경우 clientUser, 아니면 user 정보 사용
