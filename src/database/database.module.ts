@@ -67,6 +67,7 @@ import { EarlyDestroyRequestEntity } from '../entity/early.destroy.request.entit
 import { EarlyDestroyRequestItemEntity } from '../entity/early.destroy.request.item.entity';
 import { IdempotencyKeyEntity } from '../entity/idempotency.key.entity';
 import { PopularProductEntity } from '../entity/popular.product.entity';
+import { GiftielExchangeHistoryEntity } from '../entity/giftiel.exchange.history.entity';
 
 @Module({
   imports: [
@@ -138,6 +139,7 @@ import { PopularProductEntity } from '../entity/popular.product.entity';
           EarlyDestroyRequestItemEntity,
           IdempotencyKeyEntity,
           PopularProductEntity,
+          GiftielExchangeHistoryEntity,
         ],
         extra: {
           connectionLimit: +configService.get('DATABASE_CONNECTION_LIMIT', 50),
