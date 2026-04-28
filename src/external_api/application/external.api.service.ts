@@ -12,6 +12,7 @@ import { UserEntity } from '../../entity/user.entity';
 import { DeliverySendHistoryEntity } from '../../entity/delivery.send.history.entity';
 import { UserSyncProductEventMappingEntity } from '../../entity/user.sync.product.event.mapping.entity';
 import { ExternalApiAccountEntity } from '../../entity/external.api.account.entity';
+import { SsgEventEntity } from '../../entity/ssg.event.entity';
 import { IUserSyncProductStatus } from '../../user_sync_product/interface/user.sync.product.status';
 import { IUserAuthority } from '../../user/interface/user.authority';
 
@@ -236,11 +237,13 @@ export class ExternalApiService {
 
     await this.phaseC_handleSuccess(order, orderDelivery);
 
+    const { validStartDate, validEndDate } = this.resolveValidDates(orderDelivery);
+
     return ExternalApiResponse.success<OrderResponseData>({
       trId: externalTrId,
       barCode: orderDelivery.barCode || undefined,
-      validStartDate: orderDelivery.expireAt ? dayjs().format('YYYY-MM-DD') : undefined,
-      validEndDate: orderDelivery.expireAt ? dayjs(orderDelivery.expireAt).format('YYYY-MM-DD') : undefined,
+      validStartDate,
+      validEndDate,
       price,
     });
   }
@@ -327,11 +330,14 @@ export class ExternalApiService {
 
   // ─── Phase B: 쿠폰 발행 + 발송 (트랜잭션 없음) ──────────
 
-  private async phaseB_issueAndSend(orderDelivery: OrderDeliveryEntity) {
+  private async phaseB_issueAndSend(
+    orderDelivery: OrderDeliveryEntity,
+    ssgEvent: SsgEventEntity | null = null,
+  ) {
     const mapping = orderDelivery.orderProductMapping;
     const product = mapping.product;
 
-    await this.partnerCompanyExternService.issue(orderDelivery, null);
+    await this.partnerCompanyExternService.issue(orderDelivery, ssgEvent);
 
     if (orderDelivery.barCode) {
       const expireDate = orderDelivery.expireAt
@@ -402,14 +408,15 @@ export class ExternalApiService {
 
     const product = orderDelivery.orderProductMapping?.product;
     const price = product?.price ?? 0;
+    const { validStartDate, validEndDate } = this.resolveValidDates(orderDelivery);
 
     return ExternalApiResponse.success<OrderStatusResponseData>({
       trId: orderDelivery.externalTrId!,
       couponStatus: orderDelivery.couponStatus,
       deliveryStatus: orderDelivery.status,
       barCode: orderDelivery.barCode || undefined,
-      validStartDate: orderDelivery.expireAt ? dayjs(orderDelivery.sendRequestAt).format('YYYY-MM-DD') : undefined,
-      validEndDate: orderDelivery.expireAt ? dayjs(orderDelivery.expireAt).format('YYYY-MM-DD') : undefined,
+      validStartDate,
+      validEndDate,
       price,
     });
   }
@@ -421,6 +428,7 @@ export class ExternalApiService {
 
     const product = orderDelivery.orderProductMapping?.product;
     const price = product?.price ?? 0;
+    const { validStartDate, validEndDate } = this.resolveValidDates(orderDelivery);
 
     return ExternalApiResponse.success<SsgOrderStatusResponseData>({
       trId: orderDelivery.externalTrId!,
@@ -428,8 +436,8 @@ export class ExternalApiService {
       deliveryStatus: orderDelivery.status,
       barCode: orderDelivery.barCode || undefined,
       personalCode: orderDelivery.personalCode || undefined,
-      validStartDate: orderDelivery.expireAt ? dayjs(orderDelivery.sendRequestAt).format('YYYY-MM-DD') : undefined,
-      validEndDate: orderDelivery.expireAt ? dayjs(orderDelivery.expireAt).format('YYYY-MM-DD') : undefined,
+      validStartDate,
+      validEndDate,
       price,
     });
   }
@@ -526,13 +534,13 @@ export class ExternalApiService {
       throw new ExternalApiException('1005', 'SSG 미승인 계정');
     }
 
-    const { order, orderDelivery } = await this.phaseA_createSsgAndDeduct(account, dto);
+    const { order, orderDelivery, ssgEvent } = await this.phaseA_createSsgAndDeduct(account, dto);
 
     const externalTrId = orderDelivery.externalTrId!;
     const price = dto.amount;
 
     try {
-      await this.phaseB_issueAndSend(orderDelivery);
+      await this.phaseB_issueAndSend(orderDelivery, ssgEvent);
     } catch (error) {
       this.logger.error(`[createSsgOrder] Phase B 실패 - externalTrId: ${externalTrId}`, error);
       await this.phaseC_handleFailure(order, orderDelivery, account, price, error);
@@ -541,12 +549,14 @@ export class ExternalApiService {
 
     await this.phaseC_handleSuccess(order, orderDelivery);
 
+    const { validStartDate, validEndDate } = this.resolveValidDates(orderDelivery);
+
     return ExternalApiResponse.success<SsgOrderResponseData>({
       trId: externalTrId,
       barCode: orderDelivery.barCode || undefined,
       personalCode: orderDelivery.personalCode || undefined,
-      validStartDate: orderDelivery.expireAt ? dayjs().format('YYYY-MM-DD') : undefined,
-      validEndDate: orderDelivery.expireAt ? dayjs(orderDelivery.expireAt).format('YYYY-MM-DD') : undefined,
+      validStartDate,
+      validEndDate,
       price,
     });
   }
@@ -555,13 +565,6 @@ export class ExternalApiService {
   private async phaseA_createSsgAndDeduct(account: ExternalApiAccountEntity, dto: CreateExternalSsgOrderDto) {
     const user = account.user;
     const price = dto.amount;
-    const deliveryPlaceholder = [{ deliveryId: 0, price }];
-    const ssgAllocations = await this.ssgEventService.allocateEventsForDeliveries(deliveryPlaceholder, 90);
-    if (!ssgAllocations) {
-      throw new ExternalApiException('3002', 'SSG 이벤트 잔액 부족');
-    }
-
-    const ssgEvent = ssgAllocations[0];
 
     const product = await this.productRepository.findOne({
       where: { type: IProductType.SSG },
@@ -569,6 +572,12 @@ export class ExternalApiService {
     });
     if (!product) {
       throw new ExternalApiException('3001', 'SSG 상품 없음');
+    }
+
+    // SSG 이벤트의 couponExpiration은 product.expireDay와 매칭되어야 함 (일반 주문 흐름과 동일)
+    const ssgEvent = await this.ssgEventService.selectEventForOrder(price, product.expireDay);
+    if (!ssgEvent) {
+      throw new ExternalApiException('3002', 'SSG 이벤트 잔액 부족');
     }
 
     await this.deductBalance(account, price);
@@ -592,7 +601,7 @@ export class ExternalApiService {
       isNewBillingFlow: false,
       isSettleBalance: true,
       isSettleComplete: false,
-      ssgEventId: ssgEvent.eventId,
+      ssgEventId: ssgEvent.id,
       clientUserId: null,
     });
     await this.orderRepository.save(order);
@@ -617,14 +626,14 @@ export class ExternalApiService {
       deliveryTarget: this.cryptoCipher.encryptDeliveryTarget(dto.recipientPhone),
       originalDeliveryTarget: this.cryptoCipher.encryptDeliveryTarget(dto.recipientPhone),
       sendRequestAt: new Date(),
-      ssgEventId: ssgEvent.eventId,
+      ssgEventId: ssgEvent.id,
     });
     await this.orderDeliveryRepository.save(orderDelivery);
 
     orderDelivery.transactionId = CreateApiTransactionId(order.id, orderDelivery.id);
     orderDelivery.externalTrId = await this.saveTransactionIds(orderDelivery.id, orderDelivery.transactionId);
 
-    await this.ssgEventService.deductEventBalanceMultiple(ssgAllocations, order.id, false);
+    await this.ssgEventService.deductEventBalance(ssgEvent.id, price, order.id, false);
 
     mapping.product = product;
     mapping.order = order;
@@ -635,6 +644,26 @@ export class ExternalApiService {
   }
 
   // ─── 공통 유틸 ──────────────────────────────────────────
+
+  /**
+   * partnerCompany.validityStartsNextDay 기반 응답 유효기간 산출.
+   * - true(익일 시작): 시작일 = sendRequestAt + 1
+   * - false(당일 포함): 시작일 = sendRequestAt
+   * 종료일은 이미 issue() 시점에 산출된 expireAt을 그대로 사용.
+   */
+  private resolveValidDates(orderDelivery: OrderDeliveryEntity): { validStartDate?: string; validEndDate?: string } {
+    if (!orderDelivery.expireAt) {
+      return { validStartDate: undefined, validEndDate: undefined };
+    }
+    const partnerCompany = orderDelivery.orderProductMapping?.product?.partnerCompany;
+    const startsNextDay = partnerCompany?.validityStartsNextDay ?? true;
+    const base = orderDelivery.sendRequestAt ?? new Date();
+    const start = startsNextDay ? dayjs(base).add(1, 'day') : dayjs(base);
+    return {
+      validStartDate: start.format('YYYY-MM-DD'),
+      validEndDate: dayjs(orderDelivery.expireAt).format('YYYY-MM-DD'),
+    };
+  }
 
   private async findOrderDeliveryByTrId(account: ExternalApiAccountEntity, trId: string): Promise<OrderDeliveryEntity> {
     const orderDelivery = await this.orderDeliveryRepository.findOne({
