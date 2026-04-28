@@ -246,7 +246,8 @@ export class OrderService {
       .leftJoinAndSelect('orderProductMappings.product', 'product')
       .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
       .withDeleted()
-      .where('order.type = :type', { type });
+      .where('order.type = :type', { type })
+      .andWhere('order.deletedAt IS NULL');
 
     // 현재 사용자 정보 및 조회 범위 설정 조회
     const currentUser = await this.userRepository.findOne({
