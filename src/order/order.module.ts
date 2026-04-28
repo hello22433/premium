@@ -10,6 +10,7 @@ import { OrderService } from './application/order.service';
 import { EarlyDestroyService } from './application/early.destroy.service';
 import { EarlyDestroyRequestEntity } from '../entity/early.destroy.request.entity';
 import { EarlyDestroyRequestItemEntity } from '../entity/early.destroy.request.item.entity';
+import { OrderHistoryEntity } from '../entity/order.history.entity';
 import { ProductEntity } from '../entity/product.entity';
 import { PartnerCompanyExternModule } from '../partner_company_extern/partner.company.extern.module';
 import { UserEntity } from '../entity/user.entity';
@@ -45,6 +46,7 @@ import { MailModule } from '../mail/mail.module';
       OrderManualEntryEntity,
       EarlyDestroyRequestEntity,
       EarlyDestroyRequestItemEntity,
+      OrderHistoryEntity,
     ]),
     PartnerCompanyExternModule,
     forwardRef(() => UserManagementModule),
