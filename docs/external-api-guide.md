@@ -226,7 +226,8 @@ curl -X POST "https://{서버주소}/api/v1/external/orders" \
     "barCode": "8801234567890",
     "validStartDate": "2026-03-31",
     "validEndDate": "2026-07-01",
-    "price": 4500
+    "price": 4500,
+    "settleAmount": 4500
   }
 }
 ```
@@ -239,7 +240,10 @@ curl -X POST "https://{서버주소}/api/v1/external/orders" \
 | `barCode` | string? | 쿠폰 핀번호 (협력사에 따라 없을 수 있음) |
 | `validStartDate` | string? | 쿠폰 유효기간 시작일 (YYYY-MM-DD) |
 | `validEndDate` | string? | 쿠폰 유효기간 종료일 (YYYY-MM-DD) |
-| `price` | number | 결제 금액 (원) |
+| `price` | number | 정가 (원). 할인/할증 및 카드할증 미반영 |
+| `settleAmount` | number | 실제 차감/결제 금액 (원). 계정의 할인/할증 정책 + 카드할증(현금/카드 정산방법)이 반영된 최종 금액 |
+
+> **참고**: `settleAmount`는 계정에 사전 등록된 할인/할증 규칙과 정산방법(현금/카드)에 따라 계산됩니다. 일반 운영 콘솔에서 등록하는 것과 동일한 정책이 자동 적용됩니다.
 
 ---
 
@@ -277,7 +281,8 @@ curl -X GET "https://{서버주소}/api/v1/external/orders/01ARZ3NDEKTSV4RRFFQ69
     "barCode": "8801234567890",
     "validStartDate": "2026-03-31",
     "validEndDate": "2026-07-01",
-    "price": 4500
+    "price": 4500,
+    "settleAmount": 4500
   }
 }
 ```
@@ -292,7 +297,8 @@ curl -X GET "https://{서버주소}/api/v1/external/orders/01ARZ3NDEKTSV4RRFFQ69
 | `barCode` | string? | 쿠폰 핀번호 |
 | `validStartDate` | string? | 유효기간 시작일 |
 | `validEndDate` | string? | 유효기간 종료일 |
-| `price` | number | 결제 금액 |
+| `price` | number | 정가 (할인/할증 미반영) |
+| `settleAmount` | number | 실제 차감/결제 금액 (할인/할증 + 카드할증 반영) |
 
 **쿠폰 상태 (`couponStatus`):**
 
@@ -445,7 +451,8 @@ curl -X POST "https://{서버주소}/api/v1/external/orders/ssg" \
     "personalCode": "1234567890",
     "validStartDate": "2026-03-31",
     "validEndDate": "2026-06-29",
-    "price": 50000
+    "price": 50000,
+    "settleAmount": 50000
   }
 }
 ```
@@ -459,7 +466,8 @@ curl -X POST "https://{서버주소}/api/v1/external/orders/ssg" \
 | `personalCode` | string? | 개인번호 |
 | `validStartDate` | string? | 유효기간 시작일 (YYYY-MM-DD) |
 | `validEndDate` | string? | 유효기간 종료일 (YYYY-MM-DD) |
-| `price` | number | 결제 금액 (원) |
+| `price` | number | 정가 (요청한 `amount` 그대로) |
+| `settleAmount` | number | 실제 차감/결제 금액 (할인/할증 + 카드할증 반영) |
 
 ---
 
@@ -498,7 +506,8 @@ curl -X GET "https://{서버주소}/api/v1/external/orders/ssg/01ARZ3NDEKTSV4RRF
     "personalCode": "1234567890",
     "validStartDate": "2026-03-31",
     "validEndDate": "2026-06-29",
-    "price": 50000
+    "price": 50000,
+    "settleAmount": 50000
   }
 }
 ```

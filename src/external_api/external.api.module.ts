@@ -12,6 +12,7 @@ import { UserSyncProductEventMappingEntity } from '../entity/user.sync.product.e
 import { IdempotencyKeyEntity } from '../entity/idempotency.key.entity';
 import { ExternalApiAccountEntity } from '../entity/external.api.account.entity';
 import { ExternalApiAllowedIpEntity } from '../entity/external.api.allowed.ip.entity';
+import { UserDiscountEntity } from '../entity/user.discount.entity';
 
 import { ExternalApiController } from './api/external.api.controller';
 import { ExternalApiService } from './application/external.api.service';
@@ -37,6 +38,7 @@ import { CryptoCipher } from '../common/infra/crypto.cipher';
       IdempotencyKeyEntity,
       ExternalApiAccountEntity,
       ExternalApiAllowedIpEntity,
+      UserDiscountEntity,
     ]),
     ThrottlerModule.forRoot([{
       ttl: 60000,   // 1분
