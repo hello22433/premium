@@ -45,6 +45,8 @@ import { CreateCode } from '../../common/domain/create.code';
 import { OrderPrefixCode, OrderDigitNumber } from '../../order/domain/order.code';
 import { CreateApiTransactionId } from '../../order/domain/create.transaction.id';
 import { applyReplaceCharacters } from '../../common/utils/replace-characters.util';
+import { resolveExpireDays } from '../../common/utils/expire.util';
+import { addDays } from 'date-fns';
 import { ulid } from 'ulid';
 
 @Injectable()
@@ -338,6 +340,17 @@ export class ExternalApiService {
     const product = mapping.product;
 
     await this.partnerCompanyExternService.issue(orderDelivery, ssgEvent);
+
+    // SSG는 issue() 내부에서 expireAt을 설정하고, 그 외 협력사는 설정하지 않으므로
+    // External API에서 직접 산출. partnerCompany.validityStartsNextDay 정책을 따른다.
+    if (!orderDelivery.expireAt && product.expireDay) {
+      const expireDays = resolveExpireDays(
+        mapping.galaxiaDuration ?? product.galaxiaDuration,
+        product.expireDay,
+        product.partnerCompany?.validityStartsNextDay,
+      );
+      orderDelivery.expireAt = addDays(new Date(), expireDays);
+    }
 
     if (orderDelivery.barCode) {
       const expireDate = orderDelivery.expireAt
