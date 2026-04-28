@@ -1,15 +1,20 @@
-import { IsArray, IsDateString, IsEmail, IsNotEmpty, IsNumber, IsOptional, IsString, Min, Max } from 'class-validator';
+import {
+  ArrayNotEmpty,
+  IsArray,
+  IsDateString,
+  IsEmail,
+  IsInt,
+  IsNotEmpty,
+  IsNumber,
+  IsOptional,
+  IsString,
+  Min,
+  Max,
+} from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { EarlyDestroyRequestStatus } from '../../../entity/early.destroy.request.entity';
 
-// 조기파기 요청 등록
-export class CreateEarlyDestroyRequestDto {
-  @ApiProperty({ description: '대상 orderProductMapping ID 배열' })
-  @IsArray()
-  @IsNumber({}, { each: true })
-  @IsNotEmpty()
-  orderProductMappingIds: number[];
-
+export class EarlyDestroyRequestMetaDto {
   @ApiPropertyOptional({ description: '고객사명' })
   @IsOptional()
   @IsString()
@@ -56,7 +61,31 @@ export class CreateEarlyDestroyRequestDto {
   referenceNotes?: string;
 }
 
-// 조기파기 요청 응답
+export class CreateEarlyDestroyRequestDto extends EarlyDestroyRequestMetaDto {
+  @ApiProperty({ description: '대상 orderProductMapping ID 배열' })
+  @IsArray()
+  @IsNumber({}, { each: true })
+  @IsNotEmpty()
+  orderProductMappingIds: number[];
+}
+
+export class CreateWholeOrderEarlyDestroyRequestDto extends EarlyDestroyRequestMetaDto {}
+
+export class CreateDeliveryEarlyDestroyRequestDto extends EarlyDestroyRequestMetaDto {
+  @ApiProperty({ description: '대상 orderDelivery ID' })
+  @IsInt()
+  @IsNotEmpty()
+  orderDeliveryId: number;
+}
+
+export class CreateDeliveriesEarlyDestroyRequestDto extends EarlyDestroyRequestMetaDto {
+  @ApiProperty({ description: '대상 orderDelivery ID 배열' })
+  @IsArray()
+  @IsInt({ each: true })
+  @ArrayNotEmpty()
+  orderDeliveryIds: number[];
+}
+
 export class EarlyDestroyRequestViewDto {
   id: number;
   orderId: number;
@@ -77,9 +106,9 @@ export class EarlyDestroyRequestViewDto {
   executedByEmail: string | null;
   executedAt: Date | null;
   orderProductMappingIds: number[];
+  orderDeliveryIds: number[];
 }
 
-// 파기일 변경
 export class UpdateDestroyPersonalInfoDayDto {
   @ApiProperty({ description: '변경할 개인정보파기 요청일 (일수)' })
   @IsNumber()

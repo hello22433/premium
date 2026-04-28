@@ -7,15 +7,24 @@ import { EarlyDestroyRequestItemEntity } from '../../entity/early.destroy.reques
 import { OrderEntity } from '../../entity/order.entity';
 import { OrderProductMappingEntity } from '../../entity/order.product.mapping.entity';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
+import { OrderHistoryEntity } from '../../entity/order.history.entity';
+import { OrderDeliveryRefundStatusEnum } from '../../delivery/interface/order.delivery.refund.status.enum';
 import { IOrderStatus } from '../interface/order.status';
 import {
+  CreateDeliveriesEarlyDestroyRequestDto,
+  CreateDeliveryEarlyDestroyRequestDto,
   CreateEarlyDestroyRequestDto,
+  CreateWholeOrderEarlyDestroyRequestDto,
+  EarlyDestroyRequestMetaDto,
   EarlyDestroyRequestViewDto,
   UpdateDestroyPersonalInfoDayDto,
 } from '../api/dto/early.destroy.request.dto';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 
 const DESTROY_VALUE = '-';
+const REFUND_IN_PROGRESS_MESSAGE = '환불 진행 중인 건으로 파기 실패했습니다. 고객센터(1644-3614)로 문의해주세요.';
+
+type RequestItemSeed = Pick<EarlyDestroyRequestItemEntity, 'orderProductMappingId' | 'orderDeliveryId'>;
 
 @Injectable()
 export class EarlyDestroyService {
@@ -32,17 +41,17 @@ export class EarlyDestroyService {
     private orderProductMappingRepository: Repository<OrderProductMappingEntity>,
     @InjectRepository(OrderDeliveryEntity)
     private orderDeliveryRepository: Repository<OrderDeliveryEntity>,
+    @InjectRepository(OrderHistoryEntity)
+    private orderHistoryRepository: Repository<OrderHistoryEntity>,
   ) {}
 
   @Transactional()
-  async createRequest(orderId: number, dto: CreateEarlyDestroyRequestDto, user: ILoginUserInfo): Promise<EarlyDestroyRequestEntity> {
-    const order = await this.orderRepository.findOne({ where: { id: orderId } });
-    if (!order) {
-      throw new BadRequestException('주문이 존재하지 않습니다.');
-    }
-    if (order.status !== IOrderStatus.DELIVERY_COMPLETE) {
-      throw new BadRequestException('발송 완료된 주문만 조기파기 요청이 가능합니다.');
-    }
+  async createRequest(
+    orderId: number,
+    dto: CreateEarlyDestroyRequestDto,
+    user: ILoginUserInfo,
+  ): Promise<EarlyDestroyRequestEntity> {
+    await this.assertOrderDeliveryComplete(orderId);
 
     const mappings = await this.orderProductMappingRepository.find({
       where: { id: In(dto.orderProductMappingIds), orderId },
@@ -51,7 +60,6 @@ export class EarlyDestroyService {
       throw new BadRequestException('유효하지 않은 상품매핑 ID가 포함되어 있습니다.');
     }
 
-    // 이미 파기된 상품매핑 확인 (단일 쿼리)
     const nonDestroyedCounts = await this.orderDeliveryRepository
       .createQueryBuilder('od')
       .select('od.orderProductMappingId', 'mappingId')
@@ -68,33 +76,106 @@ export class EarlyDestroyService {
       }
     }
 
-    const request = this.earlyDestroyRequestRepository.create({
+    return this.saveRequest(
       orderId,
-      clientCompany: dto.clientCompany ?? null,
-      contactPerson: dto.contactPerson ?? null,
-      contactEmail: dto.contactEmail ?? null,
-      salesReceipt: dto.salesReceipt ?? null,
-      eventName: dto.eventName ?? null,
-      productInfo: dto.productInfo ?? null,
-      specialNotes: dto.specialNotes ?? null,
-      desiredCompletionDate: dto.desiredCompletionDate ? new Date(dto.desiredCompletionDate) : null,
-      referenceNotes: dto.referenceNotes ?? null,
-      status: EarlyDestroyRequestStatus.PENDING,
-      requestedBy: user.id,
-      requestedAt: new Date(),
-    });
-
-    const savedRequest = await this.earlyDestroyRequestRepository.save(request);
-
-    const items = dto.orderProductMappingIds.map((mappingId) =>
-      this.earlyDestroyRequestItemRepository.create({
-        earlyDestroyRequestId: savedRequest.id,
+      dto,
+      user,
+      dto.orderProductMappingIds.map((mappingId) => ({
         orderProductMappingId: mappingId,
-      }),
+        orderDeliveryId: null,
+      })),
     );
-    await this.earlyDestroyRequestItemRepository.save(items);
+  }
 
-    return savedRequest;
+  @Transactional()
+  async createRequestForOrder(
+    orderId: number,
+    dto: CreateWholeOrderEarlyDestroyRequestDto,
+    user: ILoginUserInfo,
+  ): Promise<EarlyDestroyRequestEntity> {
+    await this.assertOrderDeliveryComplete(orderId);
+
+    const mappings = await this.orderProductMappingRepository.find({ where: { orderId } });
+    if (mappings.length === 0) {
+      throw new BadRequestException('해당 주문에 상품매핑이 없습니다.');
+    }
+
+    const mappingIds = mappings.map((m) => m.id);
+    const nonDestroyedCount = await this.orderDeliveryRepository
+      .createQueryBuilder('od')
+      .where('od.orderProductMappingId IN (:...ids)', { ids: mappingIds })
+      .andWhere('(od.deliveryTarget != :v OR od.originalDeliveryTarget != :v)', { v: DESTROY_VALUE })
+      .getCount();
+    if (nonDestroyedCount === 0) {
+      throw new BadRequestException('해당 주문은 이미 모든 발송건이 파기되었습니다.');
+    }
+
+    return this.saveRequest(
+      orderId,
+      dto,
+      user,
+      mappings.map((m) => ({
+        orderProductMappingId: m.id,
+        orderDeliveryId: null,
+      })),
+    );
+  }
+
+  async createRequestForDelivery(
+    dto: CreateDeliveryEarlyDestroyRequestDto,
+    user: ILoginUserInfo,
+  ): Promise<EarlyDestroyRequestEntity> {
+    const { orderDeliveryId, ...meta } = dto;
+    return this.createRequestForDeliveries(
+      { ...meta, orderDeliveryIds: [orderDeliveryId] } as CreateDeliveriesEarlyDestroyRequestDto,
+      user,
+    );
+  }
+
+  @Transactional()
+  async createRequestForDeliveries(
+    dto: CreateDeliveriesEarlyDestroyRequestDto,
+    user: ILoginUserInfo,
+  ): Promise<EarlyDestroyRequestEntity> {
+    const uniqueIds = Array.from(new Set(dto.orderDeliveryIds));
+    if (uniqueIds.length === 0) {
+      throw new BadRequestException('발송건 ID가 비어 있습니다.');
+    }
+
+    const deliveries = await this.orderDeliveryRepository.find({
+      where: { id: In(uniqueIds) },
+      relations: ['orderProductMapping'],
+    });
+    if (deliveries.length !== uniqueIds.length) {
+      throw new BadRequestException('유효하지 않은 발송건 ID가 포함되어 있습니다.');
+    }
+
+    const orderIds = new Set(deliveries.map((d) => d.orderProductMapping.orderId));
+    if (orderIds.size > 1) {
+      throw new BadRequestException('서로 다른 주문의 발송건은 한 번에 파기할 수 없습니다.');
+    }
+    const orderId = deliveries[0].orderProductMapping.orderId;
+
+    await this.assertOrderDeliveryComplete(orderId);
+
+    const alreadyDestroyed = deliveries.filter(
+      (d) => d.deliveryTarget === DESTROY_VALUE && d.originalDeliveryTarget === DESTROY_VALUE,
+    );
+    if (alreadyDestroyed.length > 0) {
+      throw new BadRequestException(
+        `이미 파기된 발송건이 포함되어 있습니다. (id: ${alreadyDestroyed.map((d) => d.id).join(', ')})`,
+      );
+    }
+
+    return this.saveRequest(
+      orderId,
+      dto,
+      user,
+      deliveries.map((d) => ({
+        orderProductMappingId: d.orderProductMappingId,
+        orderDeliveryId: d.id,
+      })),
+    );
   }
 
   async getRequests(orderId: number): Promise<EarlyDestroyRequestViewDto[]> {
@@ -124,6 +205,9 @@ export class EarlyDestroyService {
       executedByEmail: r.executedByUser?.email ?? null,
       executedAt: r.executedAt,
       orderProductMappingIds: r.items.map((item) => item.orderProductMappingId),
+      orderDeliveryIds: r.items
+        .map((item) => item.orderDeliveryId)
+        .filter((id): id is number => id !== null),
     }));
   }
 
@@ -141,28 +225,84 @@ export class EarlyDestroyService {
       throw new BadRequestException('대기 중인 요청만 실행할 수 있습니다.');
     }
 
-    const mappingIds = request.items.map((item) => item.orderProductMappingId);
+    const targetDeliveryIds: number[] = [];
+    const targetMappingIds: number[] = [];
+    for (const item of request.items) {
+      if (item.orderDeliveryId !== null) {
+        targetDeliveryIds.push(item.orderDeliveryId);
+      } else {
+        targetMappingIds.push(item.orderProductMappingId);
+      }
+    }
 
-    // 파기 UPDATE + 상태 UPDATE 병렬 실행
-    await Promise.all([
-      this.orderDeliveryRepository
+    const affectedDeliveryIds = [...targetDeliveryIds];
+    if (targetMappingIds.length > 0) {
+      const mappingDeliveries = await this.orderDeliveryRepository.find({
+        where: { orderProductMappingId: In(targetMappingIds) },
+        select: ['id'],
+      });
+      affectedDeliveryIds.push(...mappingDeliveries.map((d) => d.id));
+    }
+
+    if (affectedDeliveryIds.length > 0) {
+      const inProgressCount = await this.orderDeliveryRepository.count({
+        where: {
+          id: In(affectedDeliveryIds),
+          refundStatus: In([
+            OrderDeliveryRefundStatusEnum.PROGRESS,
+            OrderDeliveryRefundStatusEnum.APPROVE,
+          ]),
+        },
+      });
+      if (inProgressCount > 0) {
+        throw new BadRequestException(REFUND_IN_PROGRESS_MESSAGE);
+      }
+    }
+
+    const piiPayload = {
+      deliveryTarget: DESTROY_VALUE,
+      originalDeliveryTarget: DESTROY_VALUE,
+      emailReceiverPhone: DESTROY_VALUE,
+      bankAccount: DESTROY_VALUE,
+      bankAccountOwner: DESTROY_VALUE,
+    };
+
+    const deliveryUpdateConditions: Array<[string, number[]]> = [];
+    if (targetDeliveryIds.length > 0) deliveryUpdateConditions.push(['id', targetDeliveryIds]);
+    if (targetMappingIds.length > 0) deliveryUpdateConditions.push(['orderProductMappingId', targetMappingIds]);
+    for (const [column, ids] of deliveryUpdateConditions) {
+      await this.orderDeliveryRepository
         .createQueryBuilder()
         .update(OrderDeliveryEntity)
-        .set({ deliveryTarget: DESTROY_VALUE, originalDeliveryTarget: DESTROY_VALUE })
-        .where('orderProductMappingId IN (:...ids)', { ids: mappingIds })
-        .andWhere('(deliveryTarget != :v OR originalDeliveryTarget != :v)', { v: DESTROY_VALUE })
-        .execute(),
-      this.earlyDestroyRequestRepository.update(requestId, {
-        status: EarlyDestroyRequestStatus.COMPLETED,
-        executedBy: user.id,
-        executedAt: new Date(),
-      }),
-    ]);
+        .set(piiPayload)
+        .where(`${column} IN (:...ids)`, { ids })
+        .execute();
+    }
 
-    this.logger.log(`조기파기 실행 완료: requestId=${requestId}, executedBy=${user.email}`);
+    if (affectedDeliveryIds.length > 0) {
+      await this.orderHistoryRepository
+        .createQueryBuilder()
+        .update(OrderHistoryEntity)
+        .set({ beforeChange: DESTROY_VALUE, afterChange: DESTROY_VALUE })
+        .where('orderDeliveryId IN (:...ids)', { ids: affectedDeliveryIds })
+        .execute();
+    }
+
+    await this.earlyDestroyRequestRepository.update(requestId, {
+      status: EarlyDestroyRequestStatus.COMPLETED,
+      executedBy: user.id,
+      executedAt: new Date(),
+    });
+
+    this.logger.log(
+      `조기파기 실행 완료: requestId=${requestId}, deliveries=${affectedDeliveryIds.length}, executedBy=${user.email}`,
+    );
   }
 
-  async updateDestroyPersonalInfoDay(orderProductMappingId: number, dto: UpdateDestroyPersonalInfoDayDto): Promise<void> {
+  async updateDestroyPersonalInfoDay(
+    orderProductMappingId: number,
+    dto: UpdateDestroyPersonalInfoDayDto,
+  ): Promise<void> {
     const result = await this.orderProductMappingRepository.update(orderProductMappingId, {
       requestToDestroyPersonalInfoDay: dto.requestToDestroyPersonalInfoDay,
     });
@@ -170,5 +310,51 @@ export class EarlyDestroyService {
     if (result.affected === 0) {
       throw new BadRequestException('상품매핑이 존재하지 않습니다.');
     }
+  }
+
+  private async assertOrderDeliveryComplete(orderId: number): Promise<void> {
+    const order = await this.orderRepository.findOne({ where: { id: orderId } });
+    if (!order) {
+      throw new BadRequestException('주문이 존재하지 않습니다.');
+    }
+    if (order.status !== IOrderStatus.DELIVERY_COMPLETE) {
+      throw new BadRequestException('발송 완료된 주문만 조기파기 요청이 가능합니다.');
+    }
+  }
+
+  private async saveRequest(
+    orderId: number,
+    meta: EarlyDestroyRequestMetaDto,
+    user: ILoginUserInfo,
+    items: RequestItemSeed[],
+  ): Promise<EarlyDestroyRequestEntity> {
+    const request = this.earlyDestroyRequestRepository.create({
+      orderId,
+      clientCompany: meta.clientCompany ?? null,
+      contactPerson: meta.contactPerson ?? null,
+      contactEmail: meta.contactEmail ?? null,
+      salesReceipt: meta.salesReceipt ?? null,
+      eventName: meta.eventName ?? null,
+      productInfo: meta.productInfo ?? null,
+      specialNotes: meta.specialNotes ?? null,
+      desiredCompletionDate: meta.desiredCompletionDate ? new Date(meta.desiredCompletionDate) : null,
+      referenceNotes: meta.referenceNotes ?? null,
+      status: EarlyDestroyRequestStatus.PENDING,
+      requestedBy: user.id,
+      requestedAt: new Date(),
+    });
+
+    const savedRequest = await this.earlyDestroyRequestRepository.save(request);
+
+    const itemEntities = items.map((seed) =>
+      this.earlyDestroyRequestItemRepository.create({
+        earlyDestroyRequestId: savedRequest.id,
+        orderProductMappingId: seed.orderProductMappingId,
+        orderDeliveryId: seed.orderDeliveryId,
+      }),
+    );
+    await this.earlyDestroyRequestItemRepository.save(itemEntities);
+
+    return savedRequest;
   }
 }

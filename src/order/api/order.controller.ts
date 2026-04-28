@@ -89,7 +89,13 @@ import { AuthUserSuperAndOperationAdminGuard } from '../../auth/api/auth.user.su
 import { AuthService } from '../../auth/application/auth.service';
 import { UserAuthSubEnum } from '../../user_management/domain/user.auth.enum';
 import { EarlyDestroyService } from '../application/early.destroy.service';
-import { CreateEarlyDestroyRequestDto, UpdateDestroyPersonalInfoDayDto } from './dto/early.destroy.request.dto';
+import {
+  CreateDeliveriesEarlyDestroyRequestDto,
+  CreateDeliveryEarlyDestroyRequestDto,
+  CreateEarlyDestroyRequestDto,
+  CreateWholeOrderEarlyDestroyRequestDto,
+  UpdateDestroyPersonalInfoDayDto,
+} from './dto/early.destroy.request.dto';
 
 @ApiTags('order')
 @ApiBearerAuth()
@@ -805,7 +811,7 @@ export class OrderController {
   // 조기 개인정보파기
   // =========================================
 
-  @ApiOperation({ summary: '조기파기 요청 등록' })
+  @ApiOperation({ summary: '조기파기 요청 등록 (매핑 단위)' })
   @ApiCreatedResponse({ description: '요청 등록 성공' })
   @ApiBadRequestResponse({ description: '주문이 존재하지 않거나 발송 완료 상태가 아닌 경우' })
   // =========================================
@@ -817,6 +823,46 @@ export class OrderController {
     @User() user: ILoginUserInfo,
   ) {
     return this.earlyDestroyService.createRequest(orderId, dto, user);
+  }
+
+  @ApiOperation({ summary: '조기파기 요청 등록 (주문 단위 — 모든 매핑 자동 포함)' })
+  @ApiCreatedResponse({ description: '요청 등록 성공' })
+  @ApiBadRequestResponse({ description: '주문이 존재하지 않거나 발송 완료 상태가 아닌 경우' })
+  // =========================================
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
+  @Post('/order/:id/early-destroy-request/whole')
+  createWholeOrderEarlyDestroyRequest(
+    @Param('id') orderId: number,
+    @Body() dto: CreateWholeOrderEarlyDestroyRequestDto,
+    @User() user: ILoginUserInfo,
+  ) {
+    return this.earlyDestroyService.createRequestForOrder(orderId, dto, user);
+  }
+
+  @ApiOperation({ summary: '조기파기 요청 등록 (발송건 단건)' })
+  @ApiCreatedResponse({ description: '요청 등록 성공' })
+  @ApiBadRequestResponse({ description: '발송건이 존재하지 않거나 이미 파기된 경우' })
+  // =========================================
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
+  @Post('/order/early-destroy-request/delivery')
+  createDeliveryEarlyDestroyRequest(
+    @Body() dto: CreateDeliveryEarlyDestroyRequestDto,
+    @User() user: ILoginUserInfo,
+  ) {
+    return this.earlyDestroyService.createRequestForDelivery(dto, user);
+  }
+
+  @ApiOperation({ summary: '조기파기 요청 등록 (발송건 복수)' })
+  @ApiCreatedResponse({ description: '요청 등록 성공' })
+  @ApiBadRequestResponse({ description: '발송건이 존재하지 않거나 이미 파기된 경우' })
+  // =========================================
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
+  @Post('/order/early-destroy-request/deliveries')
+  createDeliveriesEarlyDestroyRequest(
+    @Body() dto: CreateDeliveriesEarlyDestroyRequestDto,
+    @User() user: ILoginUserInfo,
+  ) {
+    return this.earlyDestroyService.createRequestForDeliveries(dto, user);
   }
 
   @ApiOperation({ summary: '조기파기 요청 이력 조회' })
