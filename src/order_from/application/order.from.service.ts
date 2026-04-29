@@ -2,10 +2,11 @@ import { BadRequestException, Inject, Injectable } from '@nestjs/common';
 import { OrderFromDefinitionEntity } from '../../entity/order.from.definition.entity';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, IsNull, Repository } from 'typeorm';
-import { OrderFromDefinitionType, OrderFromRequestStatus } from '../interface/order.from.definition.type';
-import { OrderFromGetEmailListResDto, OrderFromGetPhoneListResDto } from '../api/order.from.res.dto';
+import { OrderFromDefinitionType, OrderFromRequestStatus, TelecomCertType } from '../interface/order.from.definition.type';
+import { OrderFromGetEmailListResDto, OrderFromGetPhoneListResDto, OrderFromPhoneManageListResDto } from '../api/order.from.res.dto';
 import {
   OrderFromAdminGetListReqDto,
+  OrderFromAdminUpdateCertReqDto,
   OrderFromCreateEmailReqDto,
   OrderFromCreatePhoneReqDto,
   OrderFromGetPhoneReqQueryDto,
@@ -94,9 +95,29 @@ export class OrderFromService {
         id: item.id,
         from: item.from,
         isDefault: false,
+        requestStatus: item.requestStatus,
+        telecomCertType: item.telecomCertType,
+        telecomCertFile: item.telecomCertFile,
+        rejectReason: item.rejectReason,
+        createdAt: item.createdAt,
       }));
 
     return { list: phoneList };
+  }
+
+  async getPhoneManageList(user: ILoginUserInfo): Promise<OrderFromPhoneManageListResDto> {
+    const list = await this.orderFromDefinitionRepository.find({
+      where: {
+        type: OrderFromDefinitionType.PHONE,
+        userId: user.id,
+        deletedAt: IsNull(),
+      },
+      order: {
+        createdAt: 'DESC',
+      },
+    });
+
+    return { list: this.toPhoneViewList(list) };
   }
 
   private toPhoneViewList(list: OrderFromDefinitionEntity[]) {
@@ -104,11 +125,16 @@ export class OrderFromService {
       id: item.id,
       from: item.from,
       isDefault: item.isDefault,
+      requestStatus: item.requestStatus,
+      telecomCertType: item.telecomCertType,
+      telecomCertFile: item.telecomCertFile,
+      rejectReason: item.rejectReason,
+      createdAt: item.createdAt,
     }));
   }
 
   async createPhone(user: ILoginUserInfo, getBody: OrderFromCreatePhoneReqDto) {
-    const { from, userId } = getBody;
+    const { from, userId, telecomCertType, telecomCertFile } = getBody;
     const targetUserId = userId ? userId : user.id;
 
     const existFromPhone = await this.orderFromDefinitionRepository.existsBy({
@@ -132,6 +158,8 @@ export class OrderFromService {
       type: OrderFromDefinitionType.PHONE,
       userId: targetUserId,
       requestStatus,
+      telecomCertType: telecomCertType ?? null,
+      telecomCertFile: telecomCertFile ?? null,
     });
   }
 
@@ -206,9 +234,6 @@ export class OrderFromService {
 
   // ==================== 관리자용 메소드 ====================
 
-  /**
-   * 관리자용 전체 조회 (삭제/거절 제외)
-   */
   async getAdminList(getQuery: OrderFromAdminGetListReqDto) {
     const page = getQuery.page ?? 1;
     const take = getQuery.take ?? 10;
@@ -241,6 +266,9 @@ export class OrderFromService {
         from: item.from,
         userEmail: item.userId ? userEmailMap.get(item.userId) ?? '' : '',
         requestStatus: item.requestStatus,
+        telecomCertType: item.telecomCertType,
+        telecomCertFile: item.telecomCertFile,
+        rejectReason: item.rejectReason,
         createdAt: item.createdAt,
       })),
       totalCount,
@@ -249,9 +277,6 @@ export class OrderFromService {
     };
   }
 
-  /**
-   * 관리자용 삭제 (soft delete)
-   */
   async adminDelete(id: number) {
     const item = await this.orderFromDefinitionRepository.findOne({
       where: {
@@ -267,9 +292,6 @@ export class OrderFromService {
     await this.orderFromDefinitionRepository.softDelete(id);
   }
 
-  /**
-   * 관리자용 승인 (PENDING → APPROVED)
-   */
   async adminApprove(id: number) {
     const item = await this.orderFromDefinitionRepository.findOne({
       where: {
@@ -288,10 +310,7 @@ export class OrderFromService {
     });
   }
 
-  /**
-   * 관리자용 거절 (PENDING → REJECTED)
-   */
-  async adminReject(id: number) {
+  async adminReject(id: number, rejectReason?: string) {
     const item = await this.orderFromDefinitionRepository.findOne({
       where: {
         id,
@@ -306,12 +325,29 @@ export class OrderFromService {
 
     await this.orderFromDefinitionRepository.update(id, {
       requestStatus: OrderFromRequestStatus.REJECTED,
+      rejectReason: rejectReason ?? null,
     });
   }
 
-  /**
-   * 기본 발신번호 설정
-   */
+  async adminUpdateCert(body: OrderFromAdminUpdateCertReqDto) {
+    const item = await this.orderFromDefinitionRepository.findOne({
+      where: {
+        id: body.id,
+        deletedAt: IsNull(),
+      },
+    });
+
+    if (!item) {
+      throw new BadRequestException('존재하지 않는 발신번호입니다.');
+    }
+
+    const updateData: Partial<Pick<OrderFromDefinitionEntity, 'telecomCertType' | 'telecomCertFile'>> = {};
+    if (body.telecomCertType !== undefined) updateData.telecomCertType = body.telecomCertType;
+    if (body.telecomCertFile !== undefined) updateData.telecomCertFile = body.telecomCertFile;
+
+    await this.orderFromDefinitionRepository.update(body.id, updateData);
+  }
+
   async setDefault(user: ILoginUserInfo, getBody: OrderFromSetDefaultReqDto) {
     const { id, userId } = getBody;
     const targetUserId = userId ? userId : user.id;

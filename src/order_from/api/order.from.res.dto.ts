@@ -1,7 +1,7 @@
 import { OrderFromPhoneViewDto } from './dto/order.from.phone.view.dto';
 import { ApiProperty } from '@nestjs/swagger';
 import { OrderFromEmailViewDto } from './dto/order.from.email.view.dto';
-import { OrderFromDefinitionType, OrderFromRequestStatus } from '../interface/order.from.definition.type';
+import { OrderFromDefinitionType, OrderFromRequestStatus, TelecomCertType } from '../interface/order.from.definition.type';
 
 export class OrderFromGetPhoneListResDto {
   @ApiProperty({
@@ -35,6 +35,15 @@ export class OrderFromAdminViewDto {
   @ApiProperty({ description: '요청 상태 (PENDING/APPROVED/REJECTED)' })
   requestStatus: OrderFromRequestStatus;
 
+  @ApiProperty({ description: '통신이용증명 유형', enum: TelecomCertType, nullable: true })
+  telecomCertType: TelecomCertType | null;
+
+  @ApiProperty({ description: '통신이용증명 파일 URL', nullable: true })
+  telecomCertFile: string | null;
+
+  @ApiProperty({ description: '거절 사유', nullable: true })
+  rejectReason: string | null;
+
   @ApiProperty({ description: '생성일' })
   createdAt: Date;
 }
@@ -54,4 +63,14 @@ export class OrderFromAdminListResDto {
 
   @ApiProperty({ description: '현재 페이지' })
   currentPage: number;
+}
+
+// ==================== 사용자 관리탭 응답 DTO ====================
+
+export class OrderFromPhoneManageListResDto {
+  @ApiProperty({
+    description: '발신번호 관리 리스트 (모든 상태 포함)',
+    type: [OrderFromPhoneViewDto],
+  })
+  list: OrderFromPhoneViewDto[];
 }

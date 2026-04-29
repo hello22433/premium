@@ -1,6 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsNotEmpty, IsNumber, IsOptional } from 'class-validator';
+import { IsEnum, IsNotEmpty, IsNumber, IsOptional, IsString } from 'class-validator';
 import { Type } from 'class-transformer';
+import { TelecomCertType } from '../interface/order.from.definition.type';
 
 export class OrderFromGetPhoneReqQueryDto {
   @ApiProperty({
@@ -14,20 +15,32 @@ export class OrderFromGetPhoneReqQueryDto {
 }
 
 export class OrderFromCreatePhoneReqDto {
-  @ApiProperty({
-    description: '발신 핸드폰 번호',
-  })
+  @ApiProperty({ description: '발신 핸드폰 번호' })
   // ==============================
   @IsNotEmpty()
   from: string;
 
-  @ApiProperty({
-    description: 'user id',
-  })
+  @ApiProperty({ description: 'user id' })
   // ==============================
   @IsOptional()
   @IsNumber()
   userId?: number;
+
+  @ApiProperty({
+    description: '통신이용증명 유형 (FILE_ATTACHED: 파일첨부, PRE_DELIVERED: 기전달)',
+    enum: TelecomCertType,
+    required: false,
+  })
+  // ==============================
+  @IsOptional()
+  @IsEnum(TelecomCertType)
+  telecomCertType?: TelecomCertType;
+
+  @ApiProperty({ description: '통신이용증명 파일 URL (telecomCertType이 FILE_ATTACHED일 때)', required: false })
+  // ==============================
+  @IsOptional()
+  @IsString()
+  telecomCertFile?: string;
 }
 
 export class OrderFromCreateEmailReqDto {
@@ -83,14 +96,43 @@ export class OrderFromAdminApproveReqDto {
 }
 
 export class OrderFromAdminRejectReqDto {
-  @ApiProperty({
-    description: '발신번호/이메일 ID',
-  })
+  @ApiProperty({ description: '발신번호/이메일 ID' })
   // ==============================
   @IsNotEmpty()
   @IsNumber()
   @Type(() => Number)
   id: number;
+
+  @ApiProperty({ description: '거절 사유', required: false })
+  // ==============================
+  @IsOptional()
+  @IsString()
+  rejectReason?: string;
+}
+
+export class OrderFromAdminUpdateCertReqDto {
+  @ApiProperty({ description: '발신번호 ID' })
+  // ==============================
+  @IsNotEmpty()
+  @IsNumber()
+  @Type(() => Number)
+  id: number;
+
+  @ApiProperty({
+    description: '통신이용증명 유형 (FILE_ATTACHED: 파일첨부, PRE_DELIVERED: 기전달)',
+    enum: TelecomCertType,
+    required: false,
+  })
+  // ==============================
+  @IsOptional()
+  @IsEnum(TelecomCertType)
+  telecomCertType?: TelecomCertType;
+
+  @ApiProperty({ description: '통신이용증명 파일 URL', required: false })
+  // ==============================
+  @IsOptional()
+  @IsString()
+  telecomCertFile?: string;
 }
 
 export class OrderFromAdminGetListReqDto {
