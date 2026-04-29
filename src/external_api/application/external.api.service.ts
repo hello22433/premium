@@ -283,6 +283,9 @@ export class ExternalApiService {
       salePrice: p.price,
       imageUrl: p.imagePath,
       validDays: p.expireDay,
+      type: p.type,
+      memo: p.memo,
+      isCancelable: p.isCancelable,
     }));
 
     return ExternalApiResponse.success(data);
