@@ -2,7 +2,7 @@ import { BadRequestException, Inject, Injectable } from '@nestjs/common';
 import { OrderFromDefinitionEntity } from '../../entity/order.from.definition.entity';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, IsNull, Repository } from 'typeorm';
-import { OrderFromDefinitionType, OrderFromRequestStatus, TelecomCertType } from '../interface/order.from.definition.type';
+import { OrderFromDefinitionType, OrderFromRequestStatus } from '../interface/order.from.definition.type';
 import { OrderFromGetEmailListResDto, OrderFromGetPhoneListResDto, OrderFromPhoneManageListResDto } from '../api/order.from.res.dto';
 import {
   OrderFromAdminGetListReqDto,
@@ -91,16 +91,7 @@ export class OrderFromService {
         seen.add(item.from);
         return true;
       })
-      .map((item) => ({
-        id: item.id,
-        from: item.from,
-        isDefault: false,
-        requestStatus: item.requestStatus,
-        telecomCertType: item.telecomCertType,
-        telecomCertFile: item.telecomCertFile,
-        rejectReason: item.rejectReason,
-        createdAt: item.createdAt,
-      }));
+      .map((item) => ({ ...this.toPhoneView(item), isDefault: false }));
 
     return { list: phoneList };
   }
@@ -120,8 +111,8 @@ export class OrderFromService {
     return { list: this.toPhoneViewList(list) };
   }
 
-  private toPhoneViewList(list: OrderFromDefinitionEntity[]) {
-    return list.map((item) => ({
+  private toPhoneView(item: OrderFromDefinitionEntity) {
+    return {
       id: item.id,
       from: item.from,
       isDefault: item.isDefault,
@@ -130,7 +121,11 @@ export class OrderFromService {
       telecomCertFile: item.telecomCertFile,
       rejectReason: item.rejectReason,
       createdAt: item.createdAt,
-    }));
+    };
+  }
+
+  private toPhoneViewList(list: OrderFromDefinitionEntity[]) {
+    return list.map((item) => this.toPhoneView(item));
   }
 
   async createPhone(user: ILoginUserInfo, getBody: OrderFromCreatePhoneReqDto) {
@@ -141,6 +136,7 @@ export class OrderFromService {
       from,
       type: OrderFromDefinitionType.PHONE,
       userId: targetUserId,
+      deletedAt: IsNull(),
     });
 
     if (existFromPhone) {
@@ -330,22 +326,20 @@ export class OrderFromService {
   }
 
   async adminUpdateCert(body: OrderFromAdminUpdateCertReqDto) {
-    const item = await this.orderFromDefinitionRepository.findOne({
-      where: {
-        id: body.id,
-        deletedAt: IsNull(),
-      },
-    });
-
-    if (!item) {
-      throw new BadRequestException('존재하지 않는 발신번호입니다.');
-    }
-
     const updateData: Partial<Pick<OrderFromDefinitionEntity, 'telecomCertType' | 'telecomCertFile'>> = {};
     if (body.telecomCertType !== undefined) updateData.telecomCertType = body.telecomCertType;
     if (body.telecomCertFile !== undefined) updateData.telecomCertFile = body.telecomCertFile;
 
-    await this.orderFromDefinitionRepository.update(body.id, updateData);
+    if (Object.keys(updateData).length === 0) return;
+
+    const result = await this.orderFromDefinitionRepository.update(
+      { id: body.id, deletedAt: IsNull() },
+      updateData,
+    );
+
+    if (!result.affected) {
+      throw new BadRequestException('존재하지 않는 발신번호입니다.');
+    }
   }
 
   async setDefault(user: ILoginUserInfo, getBody: OrderFromSetDefaultReqDto) {
