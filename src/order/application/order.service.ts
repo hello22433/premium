@@ -68,7 +68,7 @@ import { Transactional } from 'typeorm-transactional';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { TestOrderDeliveryEntity } from '../../entity/test.order.delivery.entity';
 import { ProductEntity } from '../../entity/product.entity';
-import { OrderValidation } from '../domain/order.validation';
+import { OrderValidation, validateSsgReservationWindow } from '../domain/order.validation';
 import { listToMap, listToMapValue } from '../../util/map.util';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 import { CreateTransactionId } from '../domain/create.transaction.id';
@@ -2422,6 +2422,8 @@ export class OrderService {
     const clientUserId = getBody.clientUserId ?? null;
     await this.validateSendMethods(clientUserId, user.id, orderProductList);
 
+    validateSsgReservationWindow(type, orderProductList);
+
     const productIdList = orderProductList.map((product) => product.productId);
     const uniqueProductId = new Set(productIdList);
 
@@ -2590,6 +2592,8 @@ export class OrderService {
     // 대행주문인 경우 clientUser의 허용 발신수단으로 검증
     const clientUserId = getBody.clientUserId ?? null;
     await this.validateSendMethods(clientUserId, user.id, orderProductList);
+
+    validateSsgReservationWindow(order.type, orderProductList);
 
     const productIdList = orderProductList.map((orderProduct) => orderProduct.productId);
     const uniqueProductId = new Set(productIdList);
@@ -2828,6 +2832,8 @@ export class OrderService {
         throw new BadRequestException('발송 상세를 입력하지 않았습니다.');
       }
     }
+
+    validateSsgReservationWindow(order.type, order.orderProductMappings!);
 
     OrderValidation(order);
 
