@@ -4400,20 +4400,7 @@ export class OrderService {
     sendingType?: IOrderSendingType,
   ): void {
     if (user.authority === IUserAuthority.SUPER_ADMIN) {
-      if (sendingType === IOrderSendingType.AGENCY) {
-        queryBuilder.andWhere('order.clientUserId IS NOT NULL');
-      } else if (sendingType === IOrderSendingType.DIRECT) {
-        queryBuilder.andWhere('order.clientUserId IS NULL');
-        queryBuilder.andWhere(
-          '(userCompany.businessNumber IS NULL OR userCompany.businessNumber NOT IN (:...internalBizNos))',
-          { internalBizNos: INTERNAL_BUSINESS_NUMBERS },
-        );
-      } else if (sendingType === IOrderSendingType.ENMAD) {
-        queryBuilder.andWhere('order.clientUserId IS NULL');
-        queryBuilder.andWhere('userCompany.businessNumber IN (:...internalBizNos)', {
-          internalBizNos: INTERNAL_BUSINESS_NUMBERS,
-        });
-      }
+      this.applySendingTypeFilter(queryBuilder, sendingType);
       return;
     }
 
@@ -4422,11 +4409,32 @@ export class OrderService {
         '(order.clientUserId IS NULL OR order.operationUserId = :currentUserId)',
         { currentUserId: user.id },
       );
+      this.applySendingTypeFilter(queryBuilder, sendingType);
       return;
     }
 
     queryBuilder.andWhere('(order.clientUserId IS NULL OR order.clientUserId = :currentUserId)', {
       currentUserId: user.id,
     });
+  }
+
+  private applySendingTypeFilter(
+    queryBuilder: ReturnType<Repository<OrderEntity>['createQueryBuilder']>,
+    sendingType?: IOrderSendingType,
+  ): void {
+    if (sendingType === IOrderSendingType.AGENCY) {
+      queryBuilder.andWhere('order.clientUserId IS NOT NULL');
+    } else if (sendingType === IOrderSendingType.DIRECT) {
+      queryBuilder.andWhere('order.clientUserId IS NULL');
+      queryBuilder.andWhere(
+        '(userCompany.businessNumber IS NULL OR userCompany.businessNumber NOT IN (:...internalBizNos))',
+        { internalBizNos: INTERNAL_BUSINESS_NUMBERS },
+      );
+    } else if (sendingType === IOrderSendingType.ENMAD) {
+      queryBuilder.andWhere('order.clientUserId IS NULL');
+      queryBuilder.andWhere('userCompany.businessNumber IN (:...internalBizNos)', {
+        internalBizNos: INTERNAL_BUSINESS_NUMBERS,
+      });
+    }
   }
 }
