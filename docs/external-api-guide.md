@@ -30,29 +30,21 @@ X-API-Key: {발급받은 API Key}
 
 ### 응답 형식
 
-성공과 에러의 응답 구조가 다릅니다. **HTTP 상태 코드(200 vs 4xx/5xx)로 먼저 분기**한 후, 각 구조에 맞게 파싱해야 합니다.
+성공과 에러 모두 동일하게 `result` 객체로 감싸진 구조로 반환됩니다. **HTTP 상태 코드(200 vs 4xx/5xx)로 성공/에러를 판단**한 후 `result` 안의 필드를 파싱하세요.
 
 **성공 응답 (HTTP 200):**
 
-최상위에 `code`, `message`, `data` 필드가 위치합니다.
-
 ```json
 {
-  "code": "0000",
-  "message": "success",
-  "data": { ... }
+  "result": {
+    "code": "0000",
+    "message": "success",
+    "data": { ... }
+  }
 }
 ```
 
-| 필드 | 타입 | 설명 |
-|------|------|------|
-| `code` | string | 결과 코드 (성공 시 항상 `"0000"`) |
-| `message` | string | 결과 메시지 |
-| `data` | object/array | 응답 데이터 (엔드포인트별 상이) |
-
 **에러 응답 (HTTP 4xx/5xx):**
-
-`result` 객체로 감싸져 있습니다. 성공 응답과 **구조가 다르므로** 별도 파싱이 필요합니다.
 
 ```json
 {
@@ -66,17 +58,10 @@ X-API-Key: {발급받은 API Key}
 
 | 필드 | 타입 | 설명 |
 |------|------|------|
-| `result.code` | string | 에러 코드 (에러 코드표 참조) |
-| `result.message` | string | 에러 메시지 |
-| `result.detail` | string? | 상세 내용 (유효성 검증 실패 시 구체적 사유 등) |
-
-**파싱 분기 로직:**
-
-```
-HTTP 상태 코드 확인
-├─ 200     → 최상위 code / message / data 파싱
-└─ 4xx/5xx → result.code / result.message / result.detail 파싱
-```
+| `result.code` | string | 결과 코드 (성공 시 `"0000"`, 에러 시 에러 코드표 참조) |
+| `result.message` | string | 결과 메시지 |
+| `result.data` | object/array | 응답 데이터 (성공 시, 엔드포인트별 상이) |
+| `result.detail` | string? | 에러 상세 내용 (유효성 검증 실패 시 구체적 사유 등) |
 
 ---
 
@@ -120,19 +105,21 @@ curl -X GET "https://{서버주소}/api/v1/external/products" \
 
 ```json
 {
-  "code": "0000",
-  "message": "success",
-  "data": [
-    {
-      "productCode": "PRD001",
-      "productName": "스타벅스 아메리카노 T",
-      "brandName": "스타벅스",
-      "price": 4500,
-      "salePrice": 4500,
-      "imageUrl": "/uploads/products/starbucks-americano.jpg",
-      "validDays": 93
-    }
-  ]
+  "result": {
+    "code": "0000",
+    "message": "success",
+    "data": [
+      {
+        "productCode": "PRD001",
+        "productName": "스타벅스 아메리카노 T",
+        "brandName": "스타벅스",
+        "price": 4500,
+        "salePrice": 4500,
+        "imageUrl": "/uploads/products/starbucks-americano.jpg",
+        "validDays": 93
+      }
+    ]
+  }
 }
 ```
 
@@ -225,15 +212,17 @@ curl -X POST "https://{서버주소}/api/v1/external/orders" \
 
 ```json
 {
-  "code": "0000",
-  "message": "success",
-  "data": {
-    "trId": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-    "barCode": "8801234567890",
-    "validStartDate": "2026-03-31",
-    "validEndDate": "2026-07-01",
-    "price": 4500,
-    "settleAmount": 4500
+  "result": {
+    "code": "0000",
+    "message": "success",
+    "data": {
+      "trId": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "barCode": "8801234567890",
+      "validStartDate": "2026-03-31",
+      "validEndDate": "2026-07-01",
+      "price": 4500,
+      "settleAmount": 4500
+    }
   }
 }
 ```
@@ -278,17 +267,19 @@ curl -X GET "https://{서버주소}/api/v1/external/orders/01ARZ3NDEKTSV4RRFFQ69
 
 ```json
 {
-  "code": "0000",
-  "message": "success",
-  "data": {
-    "trId": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-    "couponStatus": "NOT_USED",
-    "deliveryStatus": "COMPLETE",
-    "barCode": "8801234567890",
-    "validStartDate": "2026-03-31",
-    "validEndDate": "2026-07-01",
-    "price": 4500,
-    "settleAmount": 4500
+  "result": {
+    "code": "0000",
+    "message": "success",
+    "data": {
+      "trId": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "couponStatus": "NOT_USED",
+      "deliveryStatus": "COMPLETE",
+      "barCode": "8801234567890",
+      "validStartDate": "2026-03-31",
+      "validEndDate": "2026-07-01",
+      "price": 4500,
+      "settleAmount": 4500
+    }
   }
 }
 ```
@@ -354,8 +345,10 @@ curl -X POST "https://{서버주소}/api/v1/external/orders/01ARZ3NDEKTSV4RRFFQ6
 
 ```json
 {
-  "code": "0000",
-  "message": "success"
+  "result": {
+    "code": "0000",
+    "message": "success"
+  }
 }
 ```
 
@@ -392,8 +385,10 @@ curl -X DELETE "https://{서버주소}/api/v1/external/orders/01ARZ3NDEKTSV4RRFF
 
 ```json
 {
-  "code": "0000",
-  "message": "success"
+  "result": {
+    "code": "0000",
+    "message": "success"
+  }
 }
 ```
 
@@ -449,16 +444,18 @@ curl -X POST "https://{서버주소}/api/v1/external/orders/ssg" \
 
 ```json
 {
-  "code": "0000",
-  "message": "success",
-  "data": {
-    "trId": "01ARZ3NDEKTSV4RRFFQ69G5FBW",
-    "barCode": "8809876543210",
-    "personalCode": "1234567890",
-    "validStartDate": "2026-03-31",
-    "validEndDate": "2026-06-29",
-    "price": 50000,
-    "settleAmount": 50000
+  "result": {
+    "code": "0000",
+    "message": "success",
+    "data": {
+      "trId": "01ARZ3NDEKTSV4RRFFQ69G5FBW",
+      "barCode": "8809876543210",
+      "personalCode": "1234567890",
+      "validStartDate": "2026-03-31",
+      "validEndDate": "2026-06-29",
+      "price": 50000,
+      "settleAmount": 50000
+    }
   }
 }
 ```
@@ -502,18 +499,20 @@ curl -X GET "https://{서버주소}/api/v1/external/orders/ssg/01ARZ3NDEKTSV4RRF
 
 ```json
 {
-  "code": "0000",
-  "message": "success",
-  "data": {
-    "trId": "01ARZ3NDEKTSV4RRFFQ69G5FBW",
-    "couponStatus": "NOT_USED",
-    "deliveryStatus": "COMPLETE",
-    "barCode": "8809876543210",
-    "personalCode": "1234567890",
-    "validStartDate": "2026-03-31",
-    "validEndDate": "2026-06-29",
-    "price": 50000,
-    "settleAmount": 50000
+  "result": {
+    "code": "0000",
+    "message": "success",
+    "data": {
+      "trId": "01ARZ3NDEKTSV4RRFFQ69G5FBW",
+      "couponStatus": "NOT_USED",
+      "deliveryStatus": "COMPLETE",
+      "barCode": "8809876543210",
+      "personalCode": "1234567890",
+      "validStartDate": "2026-03-31",
+      "validEndDate": "2026-06-29",
+      "price": 50000,
+      "settleAmount": 50000
+    }
   }
 }
 ```

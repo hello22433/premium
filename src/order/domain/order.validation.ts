@@ -2,6 +2,35 @@ import { OrderEntity } from '../../entity/order.entity';
 import { BadRequestException } from '@nestjs/common';
 import { IOrderSendMethod } from '../interface/order.send.method';
 import { IOrderStatus } from '../interface/order.status';
+import { IOrderType } from '../interface/order.type';
+import dayjs from 'dayjs';
+import utc from 'dayjs/plugin/utc';
+import timezone from 'dayjs/plugin/timezone';
+
+dayjs.extend(utc);
+dayjs.extend(timezone);
+
+type SsgReservationCandidate = {
+  sendType?: string | null;
+  sendRequestAt?: string | Date | null;
+};
+
+export const validateSsgReservationWindow = (
+  type: IOrderType | null | undefined,
+  products: SsgReservationCandidate[],
+) => {
+  if (type !== IOrderType.SSG) return;
+
+  const monthEndKst = dayjs().tz('Asia/Seoul').endOf('month');
+
+  for (const product of products) {
+    if (product.sendType !== 'RESERVE' || !product.sendRequestAt) continue;
+
+    if (dayjs.tz(product.sendRequestAt, 'Asia/Seoul').isAfter(monthEndKst)) {
+      throw new BadRequestException('예약발송은 이번 달 내에서만 가능합니다.');
+    }
+  }
+};
 
 export const OrderValidation = (order: OrderEntity) => {
   // let now = new Date();
