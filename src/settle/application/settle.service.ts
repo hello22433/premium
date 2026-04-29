@@ -2207,36 +2207,11 @@ export class SettleService {
       return;
     }
 
-    // 확정 진행 (UNSETTLE_NORMAL → SETTLE_COMPLETE)
+    // 확정 진행 (null 또는 UNSETTLE_NORMAL → SETTLE_COMPLETE)
     if (toComplete && !fromComplete) {
       const summary = await this.getOrderSettlementSummary([order.id]);
       const netAmount = summary.get(order.id)?.netAmount ?? 0;
-
-      // 여신 건(isSettleBalance=false)만 allSettleAmount 차감 (D-6)
-      if (!order.isSettleBalance) {
-        await this.userRepository
-          .createQueryBuilder()
-          .update()
-          .set({ allSettleAmount: () => 'all_settle_amount - :amount' })
-          .where('id = :id', { id: billingUserId })
-          .setParameters({ amount: netAmount })
-          .execute();
-      }
-
-      // conditional UPDATE: 다른 프로세스가 이미 확정 처리했다면 affectedRows=0으로 멱등
-      await this.orderRepository
-        .createQueryBuilder()
-        .update()
-        .set({
-          settleStatus: SettleUserOrderDetailEnum.SETTLE_COMPLETE,
-          isSettleComplete: true,
-          settledAmountSnapshot: netAmount,
-        })
-        .where('id = :id AND settle_status != :target', {
-          id: order.id,
-          target: SettleUserOrderDetailEnum.SETTLE_COMPLETE,
-        })
-        .execute();
+      await this.tryAtomicSettleConfirm(order, billingUserId, netAmount);
       return;
     }
 
@@ -2297,6 +2272,40 @@ export class SettleService {
     return { success, failed, skipped };
   }
 
+  private async tryAtomicSettleConfirm(
+    order: { id: number; isSettleBalance: boolean },
+    billingUserId: number,
+    netAmount: number,
+  ): Promise<boolean> {
+    const result = await this.orderRepository
+      .createQueryBuilder()
+      .update()
+      .set({
+        settleStatus: SettleUserOrderDetailEnum.SETTLE_COMPLETE,
+        isSettleComplete: true,
+        settledAmountSnapshot: netAmount,
+      })
+      .where('id = :id AND (settle_status IS NULL OR settle_status != :target)', {
+        id: order.id,
+        target: SettleUserOrderDetailEnum.SETTLE_COMPLETE,
+      })
+      .execute();
+
+    if (!result.affected) return false;
+
+    if (!order.isSettleBalance) {
+      await this.userRepository
+        .createQueryBuilder()
+        .update()
+        .set({ allSettleAmount: () => 'all_settle_amount - :amount' })
+        .where('id = :id', { id: billingUserId })
+        .setParameters({ amount: netAmount })
+        .execute();
+    }
+
+    return true;
+  }
+
   /**
    * 개별 주문 정산확정 (독립 트랜잭션 + pessimistic lock + atomic UPDATE)
    * 이미 정산완료인 주문은 skipped 반환. 호출자에서 summary를 프리로드해 전달해야 N+1 방지.
@@ -2331,32 +2340,8 @@ export class SettleService {
     }
     const netAmount = summaryEntry?.netAmount ?? 0;
 
-    // 여신 건(isSettleBalance=false)만 allSettleAmount 차감 (D-6)
-    if (!order.isSettleBalance) {
-      await this.userRepository
-        .createQueryBuilder()
-        .update()
-        .set({ allSettleAmount: () => 'all_settle_amount - :amount' })
-        .where('id = :id', { id: billingUserId })
-        .setParameters({ amount: netAmount })
-        .execute();
-    }
-
-    await this.orderRepository
-      .createQueryBuilder()
-      .update()
-      .set({
-        settleStatus: SettleUserOrderDetailEnum.SETTLE_COMPLETE,
-        isSettleComplete: true,
-        settledAmountSnapshot: netAmount,
-      })
-      .where('id = :id AND settle_status != :target', {
-        id: order.id,
-        target: SettleUserOrderDetailEnum.SETTLE_COMPLETE,
-      })
-      .execute();
-
-    return 'success';
+    const confirmed = await this.tryAtomicSettleConfirm(order, billingUserId, netAmount);
+    return confirmed ? 'success' : 'skipped';
   }
 
   @Transactional()
