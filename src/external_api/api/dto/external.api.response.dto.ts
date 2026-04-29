@@ -1,3 +1,5 @@
+import { IProductType } from '../../../product/interface/product.type';
+
 export class ExternalApiResponse<T = any> {
   code: string;
   message: string;
@@ -62,4 +64,7 @@ export class ProductResponseData {
   salePrice: number;
   imageUrl: string;
   validDays: number;
+  type: IProductType;
+  memo: string | null;
+  isCancelable: boolean;
 }
