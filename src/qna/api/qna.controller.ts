@@ -1,15 +1,18 @@
 import { ApiBadRequestResponse, ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { Body, Controller, Get, Param, Post, Put, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Post, Put, Query, UseGuards } from '@nestjs/common';
 import { QnaService } from '../application/qna.service';
 import {
   QnaAnswerReqDto,
+  QnaBulkDeleteReqDto,
   QnaCreateReqDto,
+  QnaDeleteReqParamDto,
   QnaGetDetailReqParamDto,
   QnaGetListReqDto,
   QnaUpdateAnswerReqDto,
 } from './qna.req.dto';
-import { QnaGetDetailResDto, QnaGetListResDto, QnaGetMyQnaHistoryResDto } from './qna.res.dto';
+import { QnaBulkDeleteResDto, QnaGetDetailResDto, QnaGetListResDto, QnaGetMyQnaHistoryResDto } from './qna.res.dto';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
+import { AuthUserSuperAdminGuard } from '../../auth/api/auth.user.super-admin.guard';
 import { User } from '../../auth/api/user.decorator';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { AuthService } from '../../auth/application/auth.service';
@@ -108,5 +111,37 @@ export class QnaController {
   @Get('/qna/my/dashboard')
   getMyQnaHistory(@User() user: ILoginUserInfo) {
     return this.qnaService.getMyQnaHistory(user);
+  }
+
+  @ApiOperation({
+    summary: '1대1 문의 일괄 삭제 API (최고관리자 전용)',
+    description: 'soft delete 처리. 존재하지 않는 id는 무시되며, 실제 삭제된 건수만 응답에 반환됩니다.',
+  })
+  @ApiOkResponse({
+    type: QnaBulkDeleteResDto,
+    description: '삭제 처리 결과',
+  })
+  // ===================================================
+  @UseGuards(AuthUserSuperAdminGuard)
+  @Post('/qna/bulk-delete')
+  bulkDelete(@Body() getBody: QnaBulkDeleteReqDto): Promise<QnaBulkDeleteResDto> {
+    return this.qnaService.deleteMany(getBody);
+  }
+
+  @ApiOperation({
+    summary: '1대1 문의 단건 삭제 API (최고관리자 전용)',
+    description: 'soft delete 처리됩니다.',
+  })
+  @ApiOkResponse({
+    description: '삭제에 성공한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '1대1 문의가 존재하지 않는 경우',
+  })
+  // ===================================================
+  @UseGuards(AuthUserSuperAdminGuard)
+  @Delete('/qna/:id')
+  deleteOne(@Param() getParam: QnaDeleteReqParamDto): Promise<void> {
+    return this.qnaService.deleteOne(getParam);
   }
 }

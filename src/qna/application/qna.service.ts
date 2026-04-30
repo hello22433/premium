@@ -1,16 +1,18 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { parseFilePathList } from '../../util/file.util';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { QnaEntity } from '../../entity/qna.entity';
 import {
   QnaAnswerReqDto,
+  QnaBulkDeleteReqDto,
   QnaCreateReqDto,
+  QnaDeleteReqParamDto,
   QnaGetDetailReqParamDto,
   QnaGetListReqDto,
   QnaUpdateAnswerReqDto,
 } from '../api/qna.req.dto';
-import { QnaGetDetailResDto, QnaGetListResDto, QnaGetMyQnaHistoryResDto } from '../api/qna.res.dto';
+import { QnaBulkDeleteResDto, QnaGetDetailResDto, QnaGetListResDto, QnaGetMyQnaHistoryResDto } from '../api/qna.res.dto';
 import { QnaViewDto } from '../api/dto/qna.view.dto';
 import { format } from 'date-fns';
 import { DateDateFormatStr } from '../../common/domain/date.format.str';
@@ -207,6 +209,39 @@ export class QnaService {
       waitCount,
       completeCount,
       deadlineCount: 0, // TODO
+    };
+  }
+
+  async deleteOne(getParam: QnaDeleteReqParamDto): Promise<void> {
+    const { id } = getParam;
+
+    const qna = await this.qnaRepository.findOne({ where: { id } });
+
+    if (!qna) {
+      throw new BadRequestException('1대1 문의가 존재하지 않습니다.');
+    }
+
+    await this.qnaRepository.softDelete({ id });
+  }
+
+  async deleteMany(getBody: QnaBulkDeleteReqDto): Promise<QnaBulkDeleteResDto> {
+    const { ids } = getBody;
+
+    const existingList = await this.qnaRepository.find({
+      where: { id: In(ids) },
+      select: ['id'],
+    });
+    const existingIds = existingList.map((qna) => qna.id);
+
+    if (existingIds.length === 0) {
+      return { deletedCount: 0, deletedIds: [] };
+    }
+
+    await this.qnaRepository.softDelete({ id: In(existingIds) });
+
+    return {
+      deletedCount: existingIds.length,
+      deletedIds: existingIds,
     };
   }
 }

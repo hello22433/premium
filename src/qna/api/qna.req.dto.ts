@@ -1,6 +1,6 @@
 import { PagingReqDto } from '../../common/api/dto/pagination.req.dto';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsArray, IsEnum, IsNotEmpty, IsNumber, IsOptional, IsString } from 'class-validator';
+import { ArrayNotEmpty, IsArray, IsEnum, IsNotEmpty, IsNumber, IsOptional, IsString } from 'class-validator';
 import { Type } from 'class-transformer';
 import { IQnaMainCategory, IQnaSubCategory } from '../interface/qna.category';
 
@@ -35,6 +35,21 @@ export class QnaAnswerReqDto extends QnaGetDetailReqParamDto {
 }
 
 export class QnaUpdateAnswerReqDto extends QnaAnswerReqDto {}
+
+export class QnaDeleteReqParamDto extends QnaGetDetailReqParamDto {}
+
+export class QnaBulkDeleteReqDto {
+  @ApiProperty({
+    description: '삭제할 qna id 목록',
+    type: [Number],
+  })
+  // =================================
+  @IsArray()
+  @ArrayNotEmpty()
+  @IsNumber({}, { each: true })
+  @Type(() => Number)
+  ids: number[];
+}
 
 export class QnaCreateReqDto {
   @ApiProperty({
