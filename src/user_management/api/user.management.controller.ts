@@ -31,6 +31,7 @@ import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { AuthService } from '../../auth/application/auth.service';
 import { User } from '../../auth/api/user.decorator';
 import {
+  AddAllowedIpReqDto,
   ApiKeyInfoResDto,
   CreateSsgRequestReqDto,
   DecideSsgRequestReqDto,
@@ -368,6 +369,50 @@ export class UserManagementController {
     @Body() body: UpdateAllowedIpsReqDto,
   ): Promise<void> {
     await this.userManagementService.replaceAllowedIps(accountId, body);
+  }
+
+  @Post('/user-management/me/api-key/allowed-ips')
+  @UseGuards(AuthUserAuthorizationGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: '[본인] 내 API Key 허용 IP 단건 추가' })
+  async addMyAllowedIp(
+    @User() user: ILoginUserInfo,
+    @Body() body: AddAllowedIpReqDto,
+  ): Promise<{ id: string }> {
+    return this.userManagementService.addAllowedIpByUserId(user.id, body);
+  }
+
+  @Delete('/user-management/me/api-key/allowed-ips/:ipId')
+  @UseGuards(AuthUserAuthorizationGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: '[본인] 내 API Key 허용 IP 단건 삭제' })
+  async deleteMyAllowedIp(
+    @User() user: ILoginUserInfo,
+    @Param('ipId') ipId: string,
+  ): Promise<void> {
+    await this.userManagementService.deleteAllowedIpByUserId(user.id, ipId);
+  }
+
+  @Post('/user-management/api-keys/:accountId/allowed-ips')
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: '[어드민] 특정 계정의 허용 IP 단건 추가' })
+  async addAllowedIp(
+    @Param('accountId') accountId: string,
+    @Body() body: AddAllowedIpReqDto,
+  ): Promise<{ id: string }> {
+    return this.userManagementService.addAllowedIp(accountId, body);
+  }
+
+  @Delete('/user-management/api-keys/:accountId/allowed-ips/:ipId')
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: '[어드민] 특정 계정의 허용 IP 단건 삭제' })
+  async deleteAllowedIp(
+    @Param('accountId') accountId: string,
+    @Param('ipId') ipId: string,
+  ): Promise<void> {
+    await this.userManagementService.deleteAllowedIp(accountId, ipId);
   }
 
   // ─── 외부 API Key: SSG 활성화 요청 ─────────────────────

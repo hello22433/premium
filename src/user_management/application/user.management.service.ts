@@ -1,5 +1,5 @@
 import { randomBytes, createHash } from 'crypto';
-import { BadRequestException, ForbiddenException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { UserEntity } from '../../entity/user.entity';
 import { IUserStatus } from '../../user/interface/user.status';
 import { UserCompanyEntity } from '../../entity/user.company.entity';
@@ -13,6 +13,7 @@ import { Repository } from 'typeorm';
 import { Transactional } from 'typeorm-transactional';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
+  AddAllowedIpReqDto,
   ApiKeyInfoResDto,
   GenerateApiKeyByAdminReqDto,
   GenerateApiKeyReqDto,
@@ -1160,6 +1161,85 @@ export class UserManagementService {
         }),
       );
       await this.externalApiAllowedIpRepository.save(rows);
+    }
+  }
+
+  @Transactional()
+  async addAllowedIp(accountId: string, dto: AddAllowedIpReqDto): Promise<{ id: string }> {
+    const account = await this.externalApiAccountRepository.findOne({
+      where: { id: accountId },
+      select: { id: true },
+    });
+    if (!account) {
+      throw new NotFoundException('계정을 찾을 수 없습니다.');
+    }
+    return this.addAllowedIpForAccount(account.id, dto);
+  }
+
+  @Transactional()
+  async addAllowedIpByUserId(userId: number, dto: AddAllowedIpReqDto): Promise<{ id: string }> {
+    const account = await this.externalApiAccountRepository.findOne({
+      where: { userId },
+      select: { id: true },
+    });
+    if (!account) {
+      throw new BadRequestException('API 계정이 발급되어 있지 않습니다.');
+    }
+    return this.addAllowedIpForAccount(account.id, dto);
+  }
+
+  private async addAllowedIpForAccount(accountId: string, dto: AddAllowedIpReqDto): Promise<{ id: string }> {
+    const count = await this.externalApiAllowedIpRepository.count({ where: { accountId } });
+    if (count >= 50) {
+      throw new BadRequestException('허용 IP는 최대 50개까지 등록할 수 있습니다.');
+    }
+    const exists = await this.externalApiAllowedIpRepository.findOne({
+      where: { accountId, ipAddress: dto.ip },
+      select: { id: true },
+    });
+    if (exists) {
+      throw new ConflictException('이미 등록된 IP입니다.');
+    }
+    const entity = this.externalApiAllowedIpRepository.create({
+      accountId,
+      ipAddress: dto.ip,
+      description: dto.description ?? null,
+    });
+    const saved = await this.externalApiAllowedIpRepository.save(entity);
+    return { id: saved.id };
+  }
+
+  @Transactional()
+  async deleteAllowedIp(accountId: string, ipId: string): Promise<void> {
+    const account = await this.externalApiAccountRepository.findOne({
+      where: { id: accountId },
+      select: { id: true },
+    });
+    if (!account) {
+      throw new NotFoundException('계정을 찾을 수 없습니다.');
+    }
+    await this.deleteAllowedIpForAccount(account.id, ipId);
+  }
+
+  @Transactional()
+  async deleteAllowedIpByUserId(userId: number, ipId: string): Promise<void> {
+    const account = await this.externalApiAccountRepository.findOne({
+      where: { userId },
+      select: { id: true },
+    });
+    if (!account) {
+      throw new BadRequestException('API 계정이 발급되어 있지 않습니다.');
+    }
+    await this.deleteAllowedIpForAccount(account.id, ipId);
+  }
+
+  private async deleteAllowedIpForAccount(accountId: string, ipId: string): Promise<void> {
+    const result = await this.externalApiAllowedIpRepository.delete({
+      id: ipId,
+      accountId,
+    });
+    if (!result.affected) {
+      throw new NotFoundException('해당 IP를 찾을 수 없습니다.');
     }
   }
 
