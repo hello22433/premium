@@ -51,6 +51,8 @@ export class UpdateAllowedIpsReqDto {
   ips: ApiKeyAllowedIpDto[];
 }
 
+export class AddAllowedIpReqDto extends ApiKeyAllowedIpDto {}
+
 export class UpdateApiKeySettingsReqDto {
   @ApiPropertyOptional()
   @IsOptional()
