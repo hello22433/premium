@@ -2430,7 +2430,9 @@ export class OrderService {
     const clientUserId = getBody.clientUserId ?? null;
     await this.validateSendMethods(clientUserId, user.id, orderProductList);
 
-    validateSsgReservationWindow(type, orderProductList);
+    const ssgReservationRange =
+      type === IOrderType.SSG ? await this.ssgEventService.getReservationRange() : null;
+    validateSsgReservationWindow(type, orderProductList, ssgReservationRange);
 
     const productIdList = orderProductList.map((product) => product.productId);
     const uniqueProductId = new Set(productIdList);
@@ -2619,7 +2621,9 @@ export class OrderService {
     const clientUserId = getBody.clientUserId ?? null;
     await this.validateSendMethods(clientUserId, user.id, orderProductList);
 
-    validateSsgReservationWindow(order.type, orderProductList);
+    const ssgReservationRange =
+      order.type === IOrderType.SSG ? await this.ssgEventService.getReservationRange() : null;
+    validateSsgReservationWindow(order.type, orderProductList, ssgReservationRange);
 
     const productIdList = orderProductList.map((orderProduct) => orderProduct.productId);
     const uniqueProductId = new Set(productIdList);
@@ -2859,7 +2863,9 @@ export class OrderService {
       }
     }
 
-    validateSsgReservationWindow(order.type, order.orderProductMappings!);
+    const ssgReservationRange =
+      order.type === IOrderType.SSG ? await this.ssgEventService.getReservationRange() : null;
+    validateSsgReservationWindow(order.type, order.orderProductMappings!, ssgReservationRange);
 
     OrderValidation(order);
 
@@ -2937,8 +2943,19 @@ export class OrderService {
         }
       }
 
+      // 예약발송이면 예약일 기준으로 행사 매칭, 즉시발송이면 현재 시점 기준
+      const firstMapping = order.orderProductMappings![0];
+      const reserveDate =
+        firstMapping?.sendType === 'RESERVE' && firstMapping?.sendRequestAt
+          ? new Date(firstMapping.sendRequestAt as unknown as string)
+          : undefined;
+
       // 배송건별 행사 할당 (All or Nothing)
-      ssgAllocations = await this.ssgEventService.allocateEventsForDeliveries(deliveries, couponExpiration);
+      ssgAllocations = await this.ssgEventService.allocateEventsForDeliveries(
+        deliveries,
+        couponExpiration,
+        reserveDate,
+      );
 
       if (!ssgAllocations) {
         throw new BadRequestException('사용 가능한 SSG 이벤트가 없습니다. (잔액 부족)');

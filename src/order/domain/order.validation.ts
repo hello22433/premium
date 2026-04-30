@@ -15,19 +15,39 @@ type SsgReservationCandidate = {
   sendRequestAt?: string | Date | null;
 };
 
+export type SsgReservationRangeBoundary = {
+  startDate: Date;
+  endDate: Date;
+};
+
 export const validateSsgReservationWindow = (
   type: IOrderType | null | undefined,
   products: SsgReservationCandidate[],
+  range?: SsgReservationRangeBoundary | null,
 ) => {
   if (type !== IOrderType.SSG) return;
 
+  // range 설정 있음: 그 범위 내 검증
+  // range 설정 없음(폴백): 기존 당월 검증
+  const rangeStartKst = range ? dayjs.tz(range.startDate, 'Asia/Seoul').startOf('day') : null;
+  const rangeEndKst = range ? dayjs.tz(range.endDate, 'Asia/Seoul').endOf('day') : null;
   const monthEndKst = dayjs().tz('Asia/Seoul').endOf('month');
 
   for (const product of products) {
     if (product.sendType !== 'RESERVE' || !product.sendRequestAt) continue;
 
-    if (dayjs.tz(product.sendRequestAt, 'Asia/Seoul').isAfter(monthEndKst)) {
-      throw new BadRequestException('예약발송은 이번 달 내에서만 가능합니다.');
+    const sendAt = dayjs.tz(product.sendRequestAt, 'Asia/Seoul');
+
+    if (range) {
+      if (sendAt.isBefore(rangeStartKst) || sendAt.isAfter(rangeEndKst)) {
+        const startStr = rangeStartKst!.format('YYYY-MM-DD');
+        const endStr = rangeEndKst!.format('YYYY-MM-DD');
+        throw new BadRequestException(`예약발송은 ${startStr} ~ ${endStr} 범위 내에서만 가능합니다.`);
+      }
+    } else {
+      if (sendAt.isAfter(monthEndKst)) {
+        throw new BadRequestException('예약발송은 이번 달 내에서만 가능합니다.');
+      }
     }
   }
 };
