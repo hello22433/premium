@@ -20,6 +20,11 @@ import { IUserSettleMethod } from '../../user/interface/user.settle.method';
 import { IPriceAdjustment } from '../../user_discount/interface/price.adjustment';
 import { findMatchingDiscount } from '../../user_discount/domain/discount.matcher';
 import { OrderFeeCalculator, applyCardSurcharge } from '../../order/domain/order.fee.calculator';
+import {
+  buildOrderClientUserSnapshot,
+  buildOrderOperationUserSnapshot,
+  buildOrderUserSnapshot,
+} from '../../order/util/order.snapshot.builder';
 
 import { IOrderType } from '../../order/interface/order.type';
 import { IOrderStatus } from '../../order/interface/order.status';
@@ -369,6 +374,9 @@ export class ExternalApiService {
       isSettleBalance: true,
       isSettleComplete: false,
       clientUserId: null,
+      ...buildOrderUserSnapshot(user),
+      ...buildOrderClientUserSnapshot(null),
+      ...buildOrderOperationUserSnapshot(null),
     });
     await this.orderRepository.save(order);
 
@@ -703,6 +711,9 @@ export class ExternalApiService {
       isSettleComplete: false,
       ssgEventId: ssgEvent.id,
       clientUserId: null,
+      ...buildOrderUserSnapshot(user),
+      ...buildOrderClientUserSnapshot(null),
+      ...buildOrderOperationUserSnapshot(null),
     });
     await this.orderRepository.save(order);
 

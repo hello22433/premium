@@ -76,6 +76,15 @@ import { PartnerCompanyExternService } from '../../partner_company_extern/applic
 import { DeliveryCreateCouponImage } from '../../delivery/infra/delivery.create.coupon.image';
 import { UserEntity } from '../../entity/user.entity';
 import { UserCompanyEntity } from '../../entity/user.company.entity';
+import {
+  buildOrderClientUserSnapshot,
+  buildOrderOperationUserSnapshot,
+  buildOrderUserSnapshot,
+  readBillingView,
+  readClientUserView,
+  readOperationPersonName,
+  readUserView,
+} from '../util/order.snapshot.builder';
 import { UserViewScopeEntity, ViewScopeType } from '../../entity/user.view.scope.entity';
 import { IUserAuthority } from '../../user/interface/user.authority';
 import { IUserSettleCondition } from '../../user/interface/user.settle.condition';
@@ -350,20 +359,21 @@ export class OrderService {
       switch (searchType) {
         case 'CUSTOMER':
           queryBuilder = queryBuilder.andWhere(
-            '(userCompany.businessName LIKE :keyword OR clientCompany.businessName LIKE :keyword)',
+            '(COALESCE(order.snapshotBusinessName, userCompany.businessName) LIKE :keyword OR COALESCE(order.snapshotClientBusinessName, clientCompany.businessName) LIKE :keyword)',
             { keyword: `%${searchKeyword}%` },
           );
           break;
         case 'MANAGER':
           queryBuilder = queryBuilder.andWhere(
-            '(user.personName LIKE :keyword OR clientUser.personName LIKE :keyword)',
+            '(COALESCE(order.snapshotPersonName, user.personName) LIKE :keyword OR COALESCE(order.snapshotClientPersonName, clientUser.personName) LIKE :keyword)',
             { keyword: `%${searchKeyword}%` },
           );
           break;
         case 'OPERATION_ADMIN':
-          queryBuilder = queryBuilder.andWhere('operationUser.personName LIKE :keyword', {
-            keyword: `%${searchKeyword}%`,
-          });
+          queryBuilder = queryBuilder.andWhere(
+            'COALESCE(order.snapshotOperationPersonName, operationUser.personName) LIKE :keyword',
+            { keyword: `%${searchKeyword}%` },
+          );
           break;
         case 'EVENT':
           queryBuilder = queryBuilder.andWhere('order.eventName LIKE :keyword', { keyword: `%${searchKeyword}%` });
@@ -375,11 +385,11 @@ export class OrderService {
         default:
           queryBuilder = queryBuilder.andWhere(
             `(${[
-              'userCompany.businessName LIKE :keyword',
-              'clientCompany.businessName LIKE :keyword',
-              'user.personName LIKE :keyword',
-              'clientUser.personName LIKE :keyword',
-              'operationUser.personName LIKE :keyword',
+              'COALESCE(order.snapshotBusinessName, userCompany.businessName) LIKE :keyword',
+              'COALESCE(order.snapshotClientBusinessName, clientCompany.businessName) LIKE :keyword',
+              'COALESCE(order.snapshotPersonName, user.personName) LIKE :keyword',
+              'COALESCE(order.snapshotClientPersonName, clientUser.personName) LIKE :keyword',
+              'COALESCE(order.snapshotOperationPersonName, operationUser.personName) LIKE :keyword',
               'order.eventName LIKE :keyword',
               'product.name LIKE :keyword',
             ].join(' OR ')})`,
@@ -450,11 +460,14 @@ export class OrderService {
       // sendRequestAt: 예약 발송 요청 시간 (actualSendAt이 없을 때 폴백용)
       const sendRequestAt = firstMapping?.sendRequestAt ? format(firstMapping.sendRequestAt, DateFormatStr) : null;
 
+      // 주문 시점 스냅샷 우선, NULL이면 clientUser ?? user FK로 fallback
+      const billing = readBillingView(order);
+
       return {
         id: order.id,
         registerAt: format(order.registerAt, DateFormatStr),
-        userBusinessName: order.clientUser?.company?.businessName ?? order.user!.company?.businessName ?? '',
-        userPersonName: order.clientUser?.personName ?? order.user!.personName,
+        userBusinessName: billing.businessName,
+        userPersonName: billing.personName,
         eventName: order.eventName,
         productName: productName,
         totalProductCount: totalProductCount,
@@ -463,7 +476,7 @@ export class OrderService {
         sendRequestAt: sendRequestAt,
         actualSendAt: actualSendAt,
         operationUserId: order.operationUserId,
-        operationUserName: order.operationUser?.personName ?? null,
+        operationUserName: readOperationPersonName(order),
         deliveryPrice: order.sendAmount,
         settlePrice: order.settleAmount,
         requestToDestroyPersonalInfoDay: firstMapping?.requestToDestroyPersonalInfoDay ?? 0,
@@ -496,16 +509,6 @@ export class OrderService {
 
     if (!order) {
       throw new BadRequestException('주문이 존재하지 않습니다.');
-    }
-
-    const user = await this.userRepository.findOne({
-      where: {
-        id: order.userId,
-      },
-    });
-
-    if (!user) {
-      throw new InternalServerErrorException('');
     }
 
     await this.recoverDeletedProducts(order.orderProductMappings);
@@ -619,6 +622,8 @@ export class OrderService {
       couponExpiration = productList[0].product?.expireDay ?? null;
     }
 
+    const clientView = readClientUserView(order);
+
     return {
       id: order.id,
       registerAt: format(order.registerAt, DateFormatStr),
@@ -629,18 +634,18 @@ export class OrderService {
       status: order.status,
       couponExpiration: couponExpiration,
       productList: productList,
-      settlePeriodCondition: user.settlePeriodCondition,
-      settlePeriodCount: user.settlePeriodCount,
-      isPreSettle: user.settleCondition === IUserSettleCondition.PRE_PAYMENT,
+      settlePeriodCondition: order.user!.settlePeriodCondition,
+      settlePeriodCount: order.user!.settlePeriodCount,
+      isPreSettle: order.user!.settleCondition === IUserSettleCondition.PRE_PAYMENT,
       cancelReason: order.cancelReason,
       canceledAt: order.canceledAt ? format(order.canceledAt, DateFormatStr) : null,
       totalFailCount: totalFailCount,
-      // 대행주문 관련 정보
+      // 대행주문 관련 정보 (주문 시점 스냅샷 우선)
       clientUserId: order.clientUserId ?? null,
-      clientUserName: order.clientUser?.personName ?? null,
-      clientCompanyName: order.clientUser?.company?.businessName ?? null,
+      clientUserName: clientView?.personName ?? null,
+      clientCompanyName: clientView?.businessName ?? null,
       operationUserId: order.operationUserId ?? null,
-      operationUserName: order.operationUser?.personName ?? null,
+      operationUserName: readOperationPersonName(order),
     };
   }
 
@@ -942,6 +947,8 @@ export class OrderService {
       couponExpiration = productList[0].product?.expireDay ?? null;
     }
 
+    const clientView = readClientUserView(order);
+
     return {
       id: order.id,
       registerAt: format(order.registerAt, DateFormatStr),
@@ -958,12 +965,12 @@ export class OrderService {
       cancelReason: order.cancelReason,
       canceledAt: order.canceledAt ? format(order.canceledAt, DateFormatStr) : null,
       totalFailCount: 0, // 이벤트 불러오기 시 발송 정보가 없으므로 0
-      // 대행주문 관련 정보
+      // 대행주문 관련 정보 (주문 시점 스냅샷 우선)
       clientUserId: order.clientUserId ?? null,
-      clientUserName: order.clientUser?.personName ?? null,
-      clientCompanyName: order.clientUser?.company?.businessName ?? null,
+      clientUserName: clientView?.personName ?? null,
+      clientCompanyName: clientView?.businessName ?? null,
       operationUserId: order.operationUserId ?? null,
-      operationUserName: order.operationUser?.personName ?? null,
+      operationUserName: readOperationPersonName(order),
     };
   }
 
@@ -1007,19 +1014,20 @@ export class OrderService {
     await this.recoverDeletedProducts(order.orderProductMappings);
 
     const productList: OrderPdfDetailProductDto[] = [];
-    // 대행주문인 경우 clientUser, 아니면 user 정보 사용
-    const billingUser = order.clientUser ?? order.user;
+    // 발송완료 리포트: 주문 시점 스냅샷 우선, NULL이면 clientUser ?? user FK로 fallback
+    const billing = readBillingView(order);
+    const billingUserId = order.clientUserId ?? order.userId;
     const userInfo: OrderCustomerViewDto = {
-      id: billingUser?.id ?? null,
-      userBusinessName: billingUser?.company?.businessName ?? null,
-      userPersonPhoneNumber: billingUser?.personPhoneNumber ?? null,
-      userBusinessEmail: billingUser?.email ?? null,
-      userPersonName: billingUser?.personName ?? null,
-      documentCompanyType: billingUser?.documentCompanyType ?? CompanyType.ENMAD,
+      id: billingUserId,
+      userBusinessName: billing.businessName || null,
+      userPersonPhoneNumber: billing.personPhoneNumber,
+      userBusinessEmail: billing.email,
+      userPersonName: billing.personName || null,
+      documentCompanyType: billing.documentCompanyType,
     };
     const now = new Date();
     const today = format(now, 'yyMMdd');
-    const fileName: string = `${billingUser?.company?.businessName ?? ''}_발송완료리포트_${today}`;
+    const fileName: string = `${billing.businessName}_발송완료리포트_${today}`;
 
     if (order.orderProductMappings && order.orderProductMappings.length > 0) {
       for (const orderProductMapping of order.orderProductMappings) {
@@ -1267,25 +1275,25 @@ export class OrderService {
         ? format(firstMapping.sendRequestAt!, DateFormatStr)
         : null;
 
-    // 대행주문인 경우 clientUser, 아니면 user 정보 사용
-    const billingUser = order.clientUser ?? order.user;
+    // 거래명세서: 주문 시점 스냅샷 우선, NULL이면 clientUser ?? user FK로 fallback
+    const billing = readBillingView(order);
 
     return {
       fileName,
       serialNumber,
-      userSettleCondition: billingUser!.settleCondition,
-      businessName: billingUser!.company?.businessName ?? '',
-      businessNumber: billingUser!.company?.businessNumber ?? '',
-      personName: billingUser!.personName,
-      businessAddress: billingUser?.company?.businessAddress ?? null,
-      businessType: billingUser?.company?.industryType ?? null,
-      businessItem: billingUser?.company?.industryItem ?? null,
+      userSettleCondition: billing.settleCondition,
+      businessName: billing.businessName,
+      businessNumber: billing.businessNumber,
+      personName: billing.personName,
+      businessAddress: billing.businessAddress,
+      businessType: billing.industryType,
+      businessItem: billing.industryItem,
       eventName: order.eventName,
       sendRequestAt: sendRequestAt ?? null,
       price,
       vat,
       totalAmount,
-      documentCompanyType: billingUser?.documentCompanyType ?? CompanyType.ENMAD,
+      documentCompanyType: billing.documentCompanyType,
       orderDeliveryList,
     };
   }
@@ -1422,22 +1430,22 @@ export class OrderService {
       }
     }
 
-    // 첫 번째 주문 기준으로 기본 정보 설정
+    // 첫 번째 주문 기준으로 기본 정보 설정 (주문 시점 스냅샷 우선)
     const firstOrder = orders[0];
-    // 대행주문인 경우 clientUser, 아니면 user 정보 사용
-    const billingUser = firstOrder.clientUser ?? firstOrder.user;
+    const billing = readBillingView(firstOrder);
+    const billingUserId = firstOrder.clientUserId ?? firstOrder.userId;
     const userInfo: OrderCustomerViewDto = {
-      id: billingUser?.id ?? null,
-      userBusinessName: billingUser?.company?.businessName ?? null,
-      userPersonPhoneNumber: billingUser?.personPhoneNumber ?? null,
-      userBusinessEmail: billingUser?.email ?? null,
-      userPersonName: billingUser?.personName ?? null,
-      documentCompanyType: billingUser?.documentCompanyType ?? CompanyType.ENMAD,
+      id: billingUserId,
+      userBusinessName: billing.businessName || null,
+      userPersonPhoneNumber: billing.personPhoneNumber,
+      userBusinessEmail: billing.email,
+      userPersonName: billing.personName || null,
+      documentCompanyType: billing.documentCompanyType,
     };
 
     const now = new Date();
     const today = format(now, 'yyMMdd');
-    const fileName: string = `${billingUser?.company?.businessName ?? ''}_발송완료리포트_${today}`;
+    const fileName: string = `${billing.businessName}_발송완료리포트_${today}`;
 
     // 이벤트명 통합 (여러 개면 "a 외 n건" 형식)
     const eventNames = [...new Set(orders.map((o) => o.eventName))];
@@ -1678,26 +1686,26 @@ export class OrderService {
 
     totalAmount = price + vat;
 
-    // 대행주문인 경우 clientUser, 아니면 user 정보 사용
-    const billingUser = firstOrder.clientUser ?? firstOrder.user;
+    // 다중 거래명세서: 첫 주문의 스냅샷 우선, NULL이면 clientUser ?? user FK로 fallback
+    const billing = readBillingView(firstOrder);
 
     return {
       orderIds: orderIds,
       fileName,
       serialNumber,
-      userSettleCondition: billingUser!.settleCondition,
-      businessName: billingUser!.company?.businessName ?? '',
-      businessNumber: billingUser!.company?.businessNumber ?? '',
-      personName: billingUser!.personName,
-      businessAddress: billingUser?.company?.businessAddress ?? null,
-      businessType: billingUser?.company?.industryType ?? null,
-      businessItem: billingUser?.company?.industryItem ?? null,
+      userSettleCondition: billing.settleCondition,
+      businessName: billing.businessName,
+      businessNumber: billing.businessNumber,
+      personName: billing.personName,
+      businessAddress: billing.businessAddress,
+      businessType: billing.industryType,
+      businessItem: billing.industryItem,
       eventName: eventName,
       sendRequestAt: sendRequestAt ?? null,
       price,
       vat,
       totalAmount,
-      documentCompanyType: billingUser?.documentCompanyType ?? CompanyType.ENMAD,
+      documentCompanyType: billing.documentCompanyType,
       orderDeliveryList,
     };
   }
@@ -2476,6 +2484,21 @@ export class OrderService {
     // 대행주문인 경우 operationUserId 자동 배정
     const operationUserId = clientUserId ? user.id : null;
 
+    // 주문 시점의 사용자/회사 정보 스냅샷 저장
+    // 계정관리에서 user 정보가 변경되어도 과거 주문 정보는 당시 값으로 유지
+    const userEntity = await this.userRepository.findOneOrFail({
+      where: { id: user.id },
+      relations: ['company'],
+    });
+    const clientUserEntity = clientUserId
+      ? await this.userRepository.findOneOrFail({
+          where: { id: clientUserId },
+          relations: ['company'],
+        })
+      : null;
+    // operationUserId는 대행주문 시 user.id와 동일하므로 동일 엔티티 재사용
+    const operationUserEntity = operationUserId === user.id ? userEntity : null;
+
     const orderInsertResult = await this.orderRepository.insert({
       userId: user.id,
       status: IOrderStatus.TEMP,
@@ -2487,6 +2510,9 @@ export class OrderService {
       registerAt: new Date(),
       clientUserId,
       operationUserId,
+      ...buildOrderUserSnapshot(userEntity),
+      ...buildOrderClientUserSnapshot(clientUserEntity),
+      ...buildOrderOperationUserSnapshot(operationUserEntity),
     });
     const orderId: number = orderInsertResult.identifiers[0].id;
 
@@ -3638,6 +3664,8 @@ export class OrderService {
     }
 
     order.operationUserId = operationUserId;
+    // 운영 담당자 재할당은 의도적 변경이므로 스냅샷도 새 담당자명으로 갱신
+    order.snapshotOperationPersonName = operationUser.personName;
 
     await this.orderRepository.save(order);
     return;
@@ -3706,13 +3734,13 @@ export class OrderService {
       switch (searchType) {
         case 'CUSTOMER':
           queryBuilder = queryBuilder.andWhere(
-            '(userCompany.businessName LIKE :keyword OR clientCompany.businessName LIKE :keyword)',
+            '(COALESCE(order.snapshotBusinessName, userCompany.businessName) LIKE :keyword OR COALESCE(order.snapshotClientBusinessName, clientCompany.businessName) LIKE :keyword)',
             { keyword: `%${searchKeyword}%` },
           );
           break;
         case 'MANAGER':
           queryBuilder = queryBuilder.andWhere(
-            '(user.personName LIKE :keyword OR clientUser.personName LIKE :keyword)',
+            '(COALESCE(order.snapshotPersonName, user.personName) LIKE :keyword OR COALESCE(order.snapshotClientPersonName, clientUser.personName) LIKE :keyword)',
             { keyword: `%${searchKeyword}%` },
           );
           break;
@@ -3726,11 +3754,11 @@ export class OrderService {
         default:
           queryBuilder = queryBuilder.andWhere(
             `(${[
-              'userCompany.businessName LIKE :keyword',
-              'clientCompany.businessName LIKE :keyword',
-              'user.personName LIKE :keyword',
-              'clientUser.personName LIKE :keyword',
-              'operationUser.personName LIKE :keyword',
+              'COALESCE(order.snapshotBusinessName, userCompany.businessName) LIKE :keyword',
+              'COALESCE(order.snapshotClientBusinessName, clientCompany.businessName) LIKE :keyword',
+              'COALESCE(order.snapshotPersonName, user.personName) LIKE :keyword',
+              'COALESCE(order.snapshotClientPersonName, clientUser.personName) LIKE :keyword',
+              'COALESCE(order.snapshotOperationPersonName, operationUser.personName) LIKE :keyword',
               'order.eventName LIKE :keyword',
               'product.name LIKE :keyword',
             ].join(' OR ')})`,
@@ -3802,11 +3830,14 @@ export class OrderService {
       // 첫 번째 상품의 발송 정보 사용
       const firstMapping = order.orderProductMappings?.[0];
 
+      // 엑셀 출력: 주문 시점 스냅샷 우선, NULL이면 clientUser ?? user FK로 fallback
+      const billing = readBillingView(order);
+
       sheet.addRow({
         id: id,
         registerAt: format(order.registerAt, 'yyyy-MM-dd HH:mm'),
-        userBusinessName: order.clientUser?.company?.businessName ?? order.user!.company?.businessName ?? '',
-        userPersonName: order.clientUser?.personName ?? order.user!.personName,
+        userBusinessName: billing.businessName,
+        userPersonName: billing.personName,
         eventName: order.eventName,
         productName: productName,
         totalAmount: totalAmount,
