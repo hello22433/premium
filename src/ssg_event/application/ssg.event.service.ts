@@ -28,6 +28,7 @@ import { QueryBuilderDateCondition } from '../../common/infra/query.builder.date
 import { ActivityLogService } from '../../activity_log/application/activity.log.service';
 import { ActivityLogResult } from '../../activity_log/interface/activity.log.result';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
+import { Transactional } from 'typeorm-transactional';
 
 @Injectable()
 export class SsgEventService {
@@ -112,7 +113,6 @@ export class SsgEventService {
         }),
       );
     }
-
 
     if (code) {
       queryBuilder = queryBuilder.andWhere('ssg.code LIKE :code', { code: '%' + code + '%' });
@@ -262,7 +262,6 @@ export class SsgEventService {
         }),
       );
     }
-
 
     if (code) {
       queryBuilder = queryBuilder.andWhere('ssg.code LIKE :code', { code: '%' + code + '%' });
@@ -453,17 +452,28 @@ export class SsgEventService {
       eventPrice,
       eventBalance: eventPrice, // 등록 시 행사금액을 초기 잔액으로 설정
     });
-    return;
   }
 
+  /**
+   * SSG 행사 잔액 관리 — 비관적 락으로 단일 행 조회.
+   *
+   * 반드시 @Transactional() (Propagation.REQUIRED 기본) 데코레이터가 적용된
+   * 메서드 안에서만 호출해야 한다. 락은 호출 측 트랜잭션 종료 시 해제된다.
+   * typeorm-transactional 컨텍스트 외부에서 호출하면 락이 무의미해진다.
+   */
+  private async findSsgEventForUpdate(id: number): Promise<SsgEventEntity | null> {
+    return this.ssgEventRepository
+      .createQueryBuilder('ssg')
+      .setLock('pessimistic_write')
+      .where('ssg.id = :id', { id })
+      .getOne();
+  }
+
+  @Transactional()
   async updateAmount(getBody: SsgEventUpdateAmountReqDto) {
     const { id, amount } = getBody;
 
-    const ssgEvent = await this.ssgEventRepository.findOne({
-      where: {
-        id,
-      },
-    });
+    const ssgEvent = await this.findSsgEventForUpdate(id);
 
     if (!ssgEvent) {
       throw new BadRequestException('존재하지 않는 이벤트입니다.');
@@ -620,6 +630,7 @@ export class SsgEventService {
    * @param orderId 주문 ID
    * @param isTemporary 가차감 여부
    */
+  @Transactional()
   async deductEventBalanceMultiple(
     allocations: { deliveryId: number; eventId: number; price: number }[],
     orderId: number,
@@ -633,10 +644,11 @@ export class SsgEventService {
     }
 
     // 각 행사에서 차감
-    for (const [eventId, totalAmount] of eventDeductions) {
-      const ssgEvent = await this.ssgEventRepository.findOne({
-        where: { id: eventId },
-      });
+    // eventId 오름차순으로 락 획득 순서를 결정화하여 데드락 방지
+    // (호출자가 임의 순서로 allocations를 만들어도 안전)
+    const sortedDeductions = [...eventDeductions.entries()].sort(([a], [b]) => a - b);
+    for (const [eventId, totalAmount] of sortedDeductions) {
+      const ssgEvent = await this.findSsgEventForUpdate(eventId);
 
       if (!ssgEvent) {
         throw new BadRequestException(`유효한 이벤트가 없습니다. (eventId: ${eventId})`);
@@ -662,15 +674,14 @@ export class SsgEventService {
     }
   }
 
+  @Transactional()
   async deductEventBalance(
     eventId: number,
     amount: number,
     orderId: number,
     isTemporary: boolean = true,
   ): Promise<void> {
-    const ssgEvent = await this.ssgEventRepository.findOne({
-      where: { id: eventId },
-    });
+    const ssgEvent = await this.findSsgEventForUpdate(eventId);
 
     if (!ssgEvent) {
       throw new BadRequestException('유효한 이벤트가 없습니다.');
@@ -695,9 +706,13 @@ export class SsgEventService {
     await this.ssgEventRepository.save(ssgEvent);
   }
 
+  @Transactional()
   async restoreEventBalance(orderId: number): Promise<void> {
+    // ssgEventId 오름차순으로 락 획득 순서를 결정화하여 데드락 방지
+    // (동일 주문이 다중 행사를 갖고 동시에 cancel/refund되는 경우 대비)
     const histories = await this.amountHistoryRepository.find({
       where: { orderId },
+      order: { ssgEventId: 'ASC' },
     });
 
     for (const history of histories) {
@@ -705,9 +720,7 @@ export class SsgEventService {
         continue;
       }
 
-      const ssgEvent = await this.ssgEventRepository.findOne({
-        where: { id: history.ssgEventId },
-      });
+      const ssgEvent = await this.findSsgEventForUpdate(history.ssgEventId);
 
       if (!ssgEvent) {
         continue;
@@ -739,10 +752,9 @@ export class SsgEventService {
    * @param orderId 주문 ID
    * @param amount 환불할 금액 (상품 가격)
    */
+  @Transactional()
   async refundForDeliveryFail(ssgEventId: number, orderId: number, amount: number): Promise<void> {
-    const ssgEvent = await this.ssgEventRepository.findOne({
-      where: { id: ssgEventId },
-    });
+    const ssgEvent = await this.findSsgEventForUpdate(ssgEventId);
 
     if (!ssgEvent) {
       return;
@@ -770,10 +782,9 @@ export class SsgEventService {
    * @param orderId 주문 ID
    * @param amount 차감할 금액 (상품 가격)
    */
+  @Transactional()
   async chargeBackForResend(ssgEventId: number, orderId: number, amount: number): Promise<void> {
-    const ssgEvent = await this.ssgEventRepository.findOne({
-      where: { id: ssgEventId },
-    });
+    const ssgEvent = await this.findSsgEventForUpdate(ssgEventId);
 
     if (!ssgEvent) {
       return;
