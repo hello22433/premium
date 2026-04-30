@@ -21,6 +21,13 @@ function createImageFromBuffer(buffer: Buffer): Promise<any> {
 // 기본 플레이스홀더 이미지 URL
 const DEFAULT_PLACEHOLDER_IMAGE_URL = 'https://premium.epopkon.com/img/upload-plz.jpg';
 
+// 쿠폰 이미지 합성 시 원본 비율 유지 + 중앙 정렬 (잘림 방지)
+const COUPON_IMAGE_RESIZE_OPTIONS: sharp.ResizeOptions = {
+  fit: 'contain',
+  position: 'center',
+  background: { r: 255, g: 255, b: 255, alpha: 1 },
+};
+
 async function fetchImageBufferFromURL(url: string): Promise<Buffer> {
   // URL이 없거나 유효하지 않은 경우 기본 이미지 URL 사용
   let targetUrl = url;
@@ -76,15 +83,19 @@ export const DeliveryCreateCouponImage = async (
     ctx.lineTo(canvasWidth, 200);
     ctx.stroke();
 
-    // 상품 이미지 삽입
+    // 상품 이미지 삽입 (원본 비율 유지 + 중앙 정렬, 남는 공간은 흰 배경)
     const productImageBuffer = await fetchImageBufferFromURL(productImagePath);
-    const productImage = await sharp(productImageBuffer).resize(300, 300).toBuffer();
+    const productImage = await sharp(productImageBuffer)
+      .resize(300, 300, COUPON_IMAGE_RESIZE_OPTIONS)
+      .toBuffer();
     const product = await createImageFromBuffer(productImage);
     ctx.drawImage(product, 0, 200);
 
-    // 중간 이미지 삽입
+    // 중간 이미지 삽입 (원본 비율 유지 + 중앙 정렬, 남는 공간은 흰 배경)
     const midImageBuffer = await fetchImageBufferFromURL(middleImagePath);
-    const midImageResize = await sharp(midImageBuffer).resize(300, 300).toBuffer();
+    const midImageResize = await sharp(midImageBuffer)
+      .resize(300, 300, COUPON_IMAGE_RESIZE_OPTIONS)
+      .toBuffer();
     const midImage = await createImageFromBuffer(midImageResize);
     ctx.drawImage(midImage, 300, 200);
 
