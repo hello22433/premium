@@ -13,3 +13,16 @@ export class QnaGetListResDto extends GetListResDto {
 
 export class QnaGetDetailResDto extends QnaDetailDto {}
 export class QnaGetMyQnaHistoryResDto extends QnaDashboardViewDto {}
+
+export class QnaBulkDeleteResDto {
+  @ApiProperty({
+    description: '실제 삭제된 건수',
+  })
+  deletedCount: number;
+
+  @ApiProperty({
+    description: '실제 삭제된 qna id 목록',
+    type: [Number],
+  })
+  deletedIds: number[];
+}
