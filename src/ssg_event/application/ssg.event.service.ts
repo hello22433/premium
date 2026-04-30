@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, InternalServerErrorException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { SsgEventEntity } from '../../entity/ssg.event.entity';
+import { SsgReservationRangeEntity } from '../../entity/ssg.reservation.range.entity';
 import { Brackets, Repository } from 'typeorm';
 import {
   SsgEventCreateReqDto,
@@ -9,7 +10,11 @@ import {
   SsgEventGetValidListReqDto,
   SsgEventUpdateAmountReqDto,
 } from '../api/ssg.event.req.dto';
-import { SsgEventGetListResDto, SsgEventGetValidListResDto } from '../api/ssg.event.res.dto';
+import {
+  SsgEventGetListResDto,
+  SsgEventGetValidListResDto,
+  SsgReservationRangeViewResDto,
+} from '../api/ssg.event.res.dto';
 import { SsgEventViewDto } from '../api/dto/ssg.event.view.dto';
 import { DateDateFormatStr, DateFormatStr } from '../../common/domain/date.format.str';
 import { format } from 'date-fns';
@@ -33,8 +38,63 @@ export class SsgEventService {
     private readonly amountHistoryRepository: Repository<SsgEventAmountHistoryEntity>,
     @InjectRepository(OrderProductMappingEntity)
     private readonly orderProductMappingRepository: Repository<OrderProductMappingEntity>,
+    @InjectRepository(SsgReservationRangeEntity)
+    private readonly reservationRangeRepository: Repository<SsgReservationRangeEntity>,
     private readonly activityLogService: ActivityLogService,
   ) { }
+
+  /**
+   * SSG 예약발송 가능 범위 조회 (단일 row 운용 - 가장 최신 1건만 사용)
+   * @returns 설정된 range 또는 null (미설정 시 호출자가 폴백 처리)
+   */
+  async getReservationRange(): Promise<SsgReservationRangeEntity | null> {
+    return await this.reservationRangeRepository.findOne({
+      where: {},
+      order: { id: 'DESC' },
+    });
+  }
+
+  /**
+   * SSG 예약발송 가능 범위 조회 (응답용 DTO)
+   */
+  async getReservationRangeView(): Promise<SsgReservationRangeViewResDto> {
+    const range = await this.getReservationRange();
+    return {
+      startDate: range ? format(range.startDate, DateDateFormatStr) : null,
+      endDate: range ? format(range.endDate, DateDateFormatStr) : null,
+    };
+  }
+
+  /**
+   * SSG 예약발송 가능 범위 갱신 (단일 row, 최고관리자 전용)
+   */
+  async updateReservationRange(
+    startDateStr: string,
+    endDateStr: string,
+    userId: number,
+  ): Promise<void> {
+    const startDate = new Date(`${startDateStr}T00:00:00+09:00`);
+    const endDate = new Date(`${endDateStr}T00:00:00+09:00`);
+
+    if (endDate < startDate) {
+      throw new BadRequestException('종료일은 시작일 이후여야 합니다.');
+    }
+
+    const existing = await this.getReservationRange();
+
+    if (existing) {
+      existing.startDate = startDate;
+      existing.endDate = endDate;
+      existing.updatedBy = userId;
+      await this.reservationRangeRepository.save(existing);
+    } else {
+      await this.reservationRangeRepository.insert({
+        startDate,
+        endDate,
+        updatedBy: userId,
+      });
+    }
+  }
 
   async getList(getQuery: SsgEventGetListReqDto): Promise<SsgEventGetListResDto> {
     const { take, page, code, createdEndAt, createdStartAt, name, searchKeyword } = getQuery;
@@ -423,13 +483,13 @@ export class SsgEventService {
   }
 
   async getValidList(getQuery: SsgEventGetValidListReqDto): Promise<SsgEventGetValidListResDto> {
-    const { couponExpiration } = getQuery;
-    const now = new Date();
+    const { couponExpiration, reserveDate } = getQuery;
+    const referenceDate = reserveDate ? new Date(`${reserveDate}T00:00:00+09:00`) : new Date();
 
     let queryBuilder = this.ssgEventRepository
       .createQueryBuilder('ssg')
-      .where('ssg.startAt <= :now', { now })
-      .andWhere('ssg.endAt >= :now', { now })
+      .where('ssg.startAt <= :referenceDate', { referenceDate })
+      .andWhere('ssg.endAt >= :referenceDate', { referenceDate })
       .andWhere('ssg.eventBalance > 0')
       .orderBy('ssg.id', 'ASC');
 
@@ -460,13 +520,17 @@ export class SsgEventService {
     return { list: resultList };
   }
 
-  async selectEventForOrder(orderAmount: number, couponExpiration?: number): Promise<SsgEventEntity | null> {
-    const now = new Date();
+  async selectEventForOrder(
+    orderAmount: number,
+    couponExpiration?: number,
+    reserveDate?: Date,
+  ): Promise<SsgEventEntity | null> {
+    const referenceDate = reserveDate ?? new Date();
 
     let queryBuilder = this.ssgEventRepository
       .createQueryBuilder('ssg')
-      .where('ssg.startAt <= :now', { now })
-      .andWhere('ssg.endAt >= :now', { now })
+      .where('ssg.startAt <= :referenceDate', { referenceDate })
+      .andWhere('ssg.endAt >= :referenceDate', { referenceDate })
       .andWhere('ssg.eventBalance >= :orderAmount', { orderAmount })
       .orderBy('ssg.id', 'ASC');
 
@@ -489,14 +553,15 @@ export class SsgEventService {
   async allocateEventsForDeliveries(
     deliveries: { deliveryId: number; price: number }[],
     couponExpiration?: number,
+    reserveDate?: Date,
   ): Promise<{ deliveryId: number; eventId: number; price: number }[] | null> {
-    const now = new Date();
+    const referenceDate = reserveDate ?? new Date();
 
     // 유효한 행사 목록 조회 (id 기준 정렬 - 먼저 등록한 행사 우선, 잔액 > 0)
     let queryBuilder = this.ssgEventRepository
       .createQueryBuilder('ssg')
-      .where('ssg.startAt <= :now', { now })
-      .andWhere('ssg.endAt >= :now', { now })
+      .where('ssg.startAt <= :referenceDate', { referenceDate })
+      .andWhere('ssg.endAt >= :referenceDate', { referenceDate })
       .andWhere('ssg.eventBalance > 0')
       .orderBy('ssg.id', 'ASC');
 

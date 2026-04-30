@@ -1,14 +1,20 @@
 import { ApiBadRequestResponse, ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Body, Controller, Get, Logger, Post, Put, Query, Res, UseFilters, UseGuards } from '@nestjs/common';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
+import { AuthUserSuperAdminGuard } from '../../auth/api/auth.user.super-admin.guard';
 import { SsgEventService } from '../application/ssg.event.service';
-import { SsgEventGetListResDto, SsgEventGetValidListResDto } from './ssg.event.res.dto';
+import {
+  SsgEventGetListResDto,
+  SsgEventGetValidListResDto,
+  SsgReservationRangeViewResDto,
+} from './ssg.event.res.dto';
 import {
   SsgEventCreateReqDto,
   SsgEventExcelDownloadReqDto,
   SsgEventGetListReqDto,
   SsgEventGetValidListReqDto,
   SsgEventUpdateAmountReqDto,
+  SsgReservationRangeUpdateReqDto,
 } from './ssg.event.req.dto';
 import * as fs from 'fs';
 import { Response } from 'express';
@@ -77,26 +83,22 @@ export class SsgEventController {
     @Body() getBody: SsgEventExcelDownloadReqDto,
     @Res() res: Response,
   ) {
-    try {
-      const { fileName, filePath } = await this.ssgEventService.excelDownload(user, getBody);
+    const { fileName, filePath } = await this.ssgEventService.excelDownload(user, getBody);
 
-      const encodedFileName = encodeURIComponent(fileName);
-      res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
-      res.setHeader('Content-Disposition', `attachment; filename=${encodedFileName}`);
+    const encodedFileName = encodeURIComponent(fileName);
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
+    res.setHeader('Content-Disposition', `attachment; filename=${encodedFileName}`);
 
-      const fileStream = fs.createReadStream(filePath);
-      fileStream.pipe(res);
+    const fileStream = fs.createReadStream(filePath);
+    fileStream.pipe(res);
 
-      fileStream.on('close', async () => {
-        fs.unlink(filePath, (unlinkErr) => {
-          if (unlinkErr) {
-            this.logger.error(`파일 삭제 실패 ${unlinkErr}`);
-          }
-        });
+    fileStream.on('close', () => {
+      fs.unlink(filePath, (unlinkErr) => {
+        if (unlinkErr) {
+          this.logger.error(`파일 삭제 실패 ${unlinkErr}`);
+        }
       });
-    } catch (e) {
-      throw e;
-    }
+    });
   }
 
   @ApiOperation({
@@ -125,5 +127,39 @@ export class SsgEventController {
   @Put('/ssg-event/amount')
   updateAmount(@Body() getBody: SsgEventUpdateAmountReqDto) {
     return this.ssgEventService.updateAmount(getBody);
+  }
+
+  @ApiOperation({
+    summary: 'SSG 예약발송 가능 범위 조회',
+    description: '최고관리자가 설정한 SSG 예약발송 가능 시작일/종료일을 조회합니다. 미설정 시 null 반환',
+  })
+  @ApiOkResponse({
+    type: SsgReservationRangeViewResDto,
+    description: '성공적으로 조회한 경우',
+  })
+  // =====================================
+  @Get('/ssg-event/reservation-range')
+  getReservationRange(): Promise<SsgReservationRangeViewResDto> {
+    return this.ssgEventService.getReservationRangeView();
+  }
+
+  @ApiOperation({
+    summary: 'SSG 예약발송 가능 범위 설정',
+    description: '최고관리자만 SSG 예약발송 가능 시작일/종료일을 설정할 수 있습니다.',
+  })
+  @ApiOkResponse({
+    description: '성공적으로 설정한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '종료일이 시작일보다 이전인 경우',
+  })
+  // =====================================
+  @Put('/ssg-event/reservation-range')
+  @UseGuards(AuthUserSuperAdminGuard)
+  updateReservationRange(
+    @User() user: ILoginUserInfo,
+    @Body() getBody: SsgReservationRangeUpdateReqDto,
+  ) {
+    return this.ssgEventService.updateReservationRange(getBody.startDate, getBody.endDate, user.id);
   }
 }

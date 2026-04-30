@@ -7,6 +7,7 @@ import { SsgEventService } from './application/ssg.event.service';
 import { SsgEventAmountHistoryEntity } from '../entity/ssg.event.amount.history.entity';
 import { OrderDeliveryEntity } from '../entity/order.delivery.entity';
 import { OrderProductMappingEntity } from '../entity/order.product.mapping.entity';
+import { SsgReservationRangeEntity } from '../entity/ssg.reservation.range.entity';
 import { ActivityLogModule } from '../activity_log/activity.log.module';
 
 @Module({
@@ -17,6 +18,7 @@ import { ActivityLogModule } from '../activity_log/activity.log.module';
       OrderDeliveryEntity,
       SsgEventEntity,
       SsgEventAmountHistoryEntity,
+      SsgReservationRangeEntity,
     ]),
     ActivityLogModule,
   ],

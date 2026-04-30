@@ -30,6 +30,7 @@ import { EmailSendHistoryEntity } from '../entity/email.send.history.entity';
 import { SqlLogger } from '../common/api/sql.logger';
 import { SsgEventAmountHistoryEntity } from '../entity/ssg.event.amount.history.entity';
 import { SsgEventEntity } from '../entity/ssg.event.entity';
+import { SsgReservationRangeEntity } from '../entity/ssg.reservation.range.entity';
 import { GemteckMsgQueueEntity } from '../entity/gemtek/msg.queue.entity';
 import { QnaEntity } from '../entity/qna.entity';
 import { UserDriveEntity } from '../entity/user.drive.entity';
@@ -110,6 +111,7 @@ import { ExternalApiSsgRequestEntity } from '../entity/external.api.ssg.request.
           EmailSendHistoryEntity,
           SsgEventAmountHistoryEntity,
           SsgEventEntity,
+          SsgReservationRangeEntity,
           QnaEntity,
           UserDriveEntity,
           UserSyncProductEventEntity,

@@ -23,3 +23,17 @@ export class SsgEventGetValidListResDto {
   })
   list: SsgEventViewDto[];
 }
+
+export class SsgReservationRangeViewResDto {
+  @ApiProperty({
+    description: 'SSG 예약발송 가능 시작일 (yyyy-MM-dd). 미설정 시 null',
+    nullable: true,
+  })
+  startDate: string | null;
+
+  @ApiProperty({
+    description: 'SSG 예약발송 가능 종료일 (yyyy-MM-dd). 미설정 시 null',
+    nullable: true,
+  })
+  endDate: string | null;
+}
