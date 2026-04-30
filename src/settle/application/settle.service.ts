@@ -18,6 +18,10 @@ import {
 } from '../api/settle.res.dto';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { OrderEntity } from '../../entity/order.entity';
+import {
+  readBillingView,
+  readOperationPersonName,
+} from '../../order/util/order.snapshot.builder';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Brackets, In, IsNull, Not, Repository, SelectQueryBuilder } from 'typeorm';
 import {
@@ -683,10 +687,10 @@ export class SettleService {
     if (searchKeyword) {
       queryBuilder = queryBuilder.andWhere(
         new Brackets((qb) => {
-          qb.where('userCompany.businessName LIKE :keyword', { keyword: `%${searchKeyword}%` })
-            .orWhere('clientCompany.businessName LIKE :keyword', { keyword: `%${searchKeyword}%` })
-            .orWhere('user.personName LIKE :keyword', { keyword: `%${searchKeyword}%` })
-            .orWhere('clientUser.personName LIKE :keyword', { keyword: `%${searchKeyword}%` })
+          qb.where('COALESCE(order.snapshotBusinessName, userCompany.businessName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('COALESCE(order.snapshotClientBusinessName, clientCompany.businessName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('COALESCE(order.snapshotPersonName, user.personName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('COALESCE(order.snapshotClientPersonName, clientUser.personName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
             .orWhere('order.eventName LIKE :keyword', { keyword: `%${searchKeyword}%` });
         }),
       );
@@ -695,7 +699,7 @@ export class SettleService {
 
     if (personName) {
       queryBuilder = queryBuilder.andWhere(
-        '(user.personName LIKE :personName OR clientUser.personName LIKE :personName)',
+        '(COALESCE(order.snapshotPersonName, user.personName) LIKE :personName OR COALESCE(order.snapshotClientPersonName, clientUser.personName) LIKE :personName)',
         { personName: `%${personName}%` },
       );
     }
@@ -708,7 +712,7 @@ export class SettleService {
 
     if (businessName) {
       queryBuilder = queryBuilder.andWhere(
-        '(userCompany.businessName LIKE :businessName OR clientCompany.businessName LIKE :businessName)',
+        '(COALESCE(order.snapshotBusinessName, userCompany.businessName) LIKE :businessName OR COALESCE(order.snapshotClientBusinessName, clientCompany.businessName) LIKE :businessName)',
         { businessName: `%${businessName}%` },
       );
     }
@@ -820,10 +824,10 @@ export class SettleService {
     if (searchKeyword) {
       queryBuilder = queryBuilder.andWhere(
         new Brackets((qb) => {
-          qb.where('userCompany.businessName LIKE :keyword', { keyword: `%${searchKeyword}%` })
-            .orWhere('clientCompany.businessName LIKE :keyword', { keyword: `%${searchKeyword}%` })
-            .orWhere('user.personName LIKE :keyword', { keyword: `%${searchKeyword}%` })
-            .orWhere('clientUser.personName LIKE :keyword', { keyword: `%${searchKeyword}%` })
+          qb.where('COALESCE(order.snapshotBusinessName, userCompany.businessName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('COALESCE(order.snapshotClientBusinessName, clientCompany.businessName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('COALESCE(order.snapshotPersonName, user.personName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('COALESCE(order.snapshotClientPersonName, clientUser.personName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
             .orWhere('order.eventName LIKE :keyword', { keyword: `%${searchKeyword}%` });
         }),
       );
@@ -831,7 +835,7 @@ export class SettleService {
 
     if (personName) {
       queryBuilder = queryBuilder.andWhere(
-        '(user.personName LIKE :personName OR clientUser.personName LIKE :personName)',
+        '(COALESCE(order.snapshotPersonName, user.personName) LIKE :personName OR COALESCE(order.snapshotClientPersonName, clientUser.personName) LIKE :personName)',
         { personName: `%${personName}%` },
       );
     }
@@ -844,7 +848,7 @@ export class SettleService {
 
     if (businessName) {
       queryBuilder = queryBuilder.andWhere(
-        '(userCompany.businessName LIKE :businessName OR clientCompany.businessName LIKE :businessName)',
+        '(COALESCE(order.snapshotBusinessName, userCompany.businessName) LIKE :businessName OR COALESCE(order.snapshotClientBusinessName, clientCompany.businessName) LIKE :businessName)',
         { businessName: `%${businessName}%` },
       );
     }
@@ -1331,7 +1335,9 @@ export class SettleService {
     const totalPage = Math.ceil(totalCount / take);
 
     const resultList: SettleUserListViewDto[] = orderList.map((order) => {
-      const billingUser = order.clientUser ?? order.user;
+      // 표시용 정보는 주문 시점 스냅샷 우선 (companyId는 현재 회사 매칭용으로 FK 유지)
+      const billing = readBillingView(order);
+      const billingUserFk = order.clientUser ?? order.user;
 
       const productNameList: string[] = [];
       let amount = 0;
@@ -1349,8 +1355,8 @@ export class SettleService {
       return {
         id: order.id,
         registeredAt: format(order.registerAt, DateFormatStr),
-        businessName: billingUser?.company?.businessName ?? '',
-        personName: billingUser?.personName ?? '',
+        businessName: billing.businessName,
+        personName: billing.personName,
         eventName: order.eventName,
         productNameList,
         amount,
@@ -1361,7 +1367,7 @@ export class SettleService {
         sendRequestAt,
         deliveryReportStatus: this.formatReportStatus(order.deliveryCompleteReportCount, order.deliveryReportLastSource),
         transactionStatementStatus: this.formatReportStatus(order.orderCompleteReportCount, order.transactionStatementLastSource),
-        companyId: billingUser?.companyId ?? undefined,
+        companyId: billingUserFk?.companyId ?? undefined,
         isCreditExcess: order.isCreditExcess ?? false,
       };
     });
@@ -1418,7 +1424,9 @@ export class SettleService {
     }
 
     const items: SettleGetUserIdsItemDto[] = orders.map((order) => {
-      const billingUser = order.clientUser ?? order.user;
+      // 표시용은 스냅샷 우선, companyId는 현재 회사 매칭용으로 FK 유지
+      const billing = readBillingView(order);
+      const billingUserFk = order.clientUser ?? order.user;
 
       let finalSettlePrice = 0;
       for (const mapping of order.orderProductMappings!) {
@@ -1428,8 +1436,8 @@ export class SettleService {
       return {
         id: order.id,
         settlePrice: finalSettlePrice,
-        businessName: billingUser?.company?.businessName ?? '',
-        companyId: billingUser?.companyId ?? 0,
+        businessName: billing.businessName,
+        companyId: billingUserFk?.companyId ?? 0,
       };
     });
 
@@ -1495,15 +1503,15 @@ export class SettleService {
     const firstDelivery = order.orderProductMappings?.[0]?.orderDeliveries?.[0];
     const sendRequestAt = firstDelivery?.actualSendAt ? format(firstDelivery.actualSendAt, DateFormatStr) : null;
 
-    // 과금 대상 사용자 (대행주문인 경우 clientUser, 아니면 user)
-    const billingUser = order.clientUser ?? order.user;
+    // 정산 상세: 주문 시점 스냅샷 우선, NULL이면 clientUser ?? user FK로 fallback
+    const billing = readBillingView(order);
 
     return {
       id: order.id,
       userId: order.clientUserId ?? order.userId,
-      userPersonName: billingUser!.personName,
-      userBusinessName: billingUser!.company?.businessName ?? '',
-      operationPersonName: order.operationUser?.personName ?? null,
+      userPersonName: billing.personName,
+      userBusinessName: billing.businessName,
+      operationPersonName: readOperationPersonName(order),
       eventName: order.eventName,
       type: order.type,
       sendRequestAt: sendRequestAt,
@@ -1560,23 +1568,23 @@ export class SettleService {
       throw new BadRequestException('주문이 존재하지 않습니다.');
     }
 
-    // 과금 대상 사용자 (대행주문인 경우 clientUser, 아니면 user)
-    const getBillingUser = (order: OrderEntity) => order.clientUser ?? order.user;
+    // 과금 대상 사용자 FK (회사 매칭용)
+    const getBillingUserFk = (order: OrderEntity) => order.clientUser ?? order.user;
 
-    // 고객사 검증: 동일한 고객사의 주문만 함께 조회 가능
-    const billingCompanyIds = [...new Set(orders.map((order) => getBillingUser(order)!.companyId))];
+    // 고객사 검증: 동일한 고객사의 주문만 함께 조회 가능 (현재 companyId 기준)
+    const billingCompanyIds = [...new Set(orders.map((order) => getBillingUserFk(order)!.companyId))];
     if (billingCompanyIds.length > 1) {
       throw new BadRequestException('동일한 고객사의 주문만 함께 조회할 수 있습니다.');
     }
 
-    // 담당자 목록 수집 (중복 제거)
+    // 담당자 목록 수집 (중복 제거): personName은 주문 시점 스냅샷 우선
     const managersMap = new Map<number, { userId: number; personName: string }>();
     for (const order of orders) {
-      const billingUser = getBillingUser(order);
-      if (billingUser && !managersMap.has(billingUser.id)) {
-        managersMap.set(billingUser.id, {
-          userId: billingUser.id,
-          personName: billingUser.personName,
+      const billingUserId = order.clientUserId ?? order.userId;
+      if (!managersMap.has(billingUserId)) {
+        managersMap.set(billingUserId, {
+          userId: billingUserId,
+          personName: readBillingView(order).personName,
         });
       }
     }
@@ -1642,17 +1650,17 @@ export class SettleService {
     }
     const sendRequestAt = latestActualSendAt ? format(latestActualSendAt, DateFormatStr) : null;
 
-    // 첫 번째 주문 기준으로 기본 정보 설정
+    // 첫 번째 주문 기준으로 기본 정보 설정 (스냅샷 우선)
     const firstOrder = orders[0];
-    const billingUser = getBillingUser(firstOrder);
+    const firstBilling = readBillingView(firstOrder);
 
     return {
       orderIds: orders.map((o) => o.id),
       userId: firstOrder.clientUserId ?? firstOrder.userId,
-      userPersonName: billingUser!.personName,
+      userPersonName: firstBilling.personName,
       managers,
-      userBusinessName: billingUser!.company?.businessName ?? '',
-      operationPersonName: firstOrder.operationUser?.personName ?? null,
+      userBusinessName: firstBilling.businessName,
+      operationPersonName: readOperationPersonName(firstOrder),
       eventName,
       type: firstOrder.type,
       sendRequestAt,
@@ -1695,10 +1703,10 @@ export class SettleService {
     if (searchKeyword) {
       queryBuilder = queryBuilder.andWhere(
         new Brackets((qb: SelectQueryBuilder<any>) => {
-          qb.where('userCompany.businessName LIKE :keyword', { keyword: `%${searchKeyword}%` })
-            .orWhere('clientCompany.businessName LIKE :keyword', { keyword: `%${searchKeyword}%` })
-            .orWhere('user.personName LIKE :keyword', { keyword: `%${searchKeyword}%` })
-            .orWhere('clientUser.personName LIKE :keyword', { keyword: `%${searchKeyword}%` })
+          qb.where('COALESCE(order.snapshotBusinessName, userCompany.businessName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('COALESCE(order.snapshotClientBusinessName, clientCompany.businessName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('COALESCE(order.snapshotPersonName, user.personName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('COALESCE(order.snapshotClientPersonName, clientUser.personName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
             .orWhere('order.eventName LIKE :keyword', { keyword: `%${searchKeyword}%` });
         }),
       );
@@ -1706,14 +1714,14 @@ export class SettleService {
 
     if (businessName) {
       queryBuilder = queryBuilder.andWhere(
-        '(userCompany.businessName LIKE :businessName OR clientCompany.businessName LIKE :businessName)',
+        '(COALESCE(order.snapshotBusinessName, userCompany.businessName) LIKE :businessName OR COALESCE(order.snapshotClientBusinessName, clientCompany.businessName) LIKE :businessName)',
         { businessName: `%${businessName}%` },
       );
     }
 
     if (personName) {
       queryBuilder = queryBuilder.andWhere(
-        '(user.personName LIKE :personName OR clientUser.personName LIKE :personName)',
+        '(COALESCE(order.snapshotPersonName, user.personName) LIKE :personName OR COALESCE(order.snapshotClientPersonName, clientUser.personName) LIKE :personName)',
         { personName: `%${personName}%` },
       );
     }
@@ -2048,13 +2056,13 @@ export class SettleService {
 
       if (userBusinessName) {
         qb.andWhere(
-          '(userCompany.businessName LIKE :userBusinessName OR clientCompany.businessName LIKE :userBusinessName)',
+          '(COALESCE(order.snapshotBusinessName, userCompany.businessName) LIKE :userBusinessName OR COALESCE(order.snapshotClientBusinessName, clientCompany.businessName) LIKE :userBusinessName)',
           { userBusinessName: `%${userBusinessName}%` },
         );
       }
       if (userPersonName) {
         qb.andWhere(
-          '(user.personName LIKE :userPersonName OR clientUser.personName LIKE :userPersonName)',
+          '(COALESCE(order.snapshotPersonName, user.personName) LIKE :userPersonName OR COALESCE(order.snapshotClientPersonName, clientUser.personName) LIKE :userPersonName)',
           { userPersonName: `%${userPersonName}%` },
         );
       }
@@ -2687,10 +2695,10 @@ export class SettleService {
     if (searchKeyword) {
       queryBuilder = queryBuilder.andWhere(
         new Brackets((qb: SelectQueryBuilder<any>) => {
-          qb.where('userCompany.businessName LIKE :keyword', { keyword: `%${searchKeyword}%` })
-            .orWhere('clientCompany.businessName LIKE :keyword', { keyword: `%${searchKeyword}%` })
-            .orWhere('user.personName LIKE :keyword', { keyword: `%${searchKeyword}%` })
-            .orWhere('clientUser.personName LIKE :keyword', { keyword: `%${searchKeyword}%` })
+          qb.where('COALESCE(order.snapshotBusinessName, userCompany.businessName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('COALESCE(order.snapshotClientBusinessName, clientCompany.businessName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('COALESCE(order.snapshotPersonName, user.personName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('COALESCE(order.snapshotClientPersonName, clientUser.personName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
             .orWhere('order.eventName LIKE :keyword', { keyword: `%${searchKeyword}%` });
         }),
       );
@@ -2698,14 +2706,14 @@ export class SettleService {
 
     if (businessName) {
       queryBuilder = queryBuilder.andWhere(
-        '(userCompany.businessName LIKE :businessName OR clientCompany.businessName LIKE :businessName)',
+        '(COALESCE(order.snapshotBusinessName, userCompany.businessName) LIKE :businessName OR COALESCE(order.snapshotClientBusinessName, clientCompany.businessName) LIKE :businessName)',
         { businessName: `%${businessName}%` },
       );
     }
 
     if (personName) {
       queryBuilder = queryBuilder.andWhere(
-        '(user.personName LIKE :personName OR clientUser.personName LIKE :personName)',
+        '(COALESCE(order.snapshotPersonName, user.personName) LIKE :personName OR COALESCE(order.snapshotClientPersonName, clientUser.personName) LIKE :personName)',
         { personName: `%${personName}%` },
       );
     }
@@ -2787,9 +2795,10 @@ export class SettleService {
     }
 
     if (businessName) {
-      queryBuilder = queryBuilder.andWhere('userCompany.businessName LIKE :businessName', {
-        businessName: `%${businessName}%`,
-      });
+      queryBuilder = queryBuilder.andWhere(
+        'COALESCE(order.snapshotBusinessName, userCompany.businessName) LIKE :businessName',
+        { businessName: `%${businessName}%` },
+      );
     }
 
     if (appDiv) {
@@ -2870,9 +2879,10 @@ export class SettleService {
     }
 
     if (businessName) {
-      queryBuilder = queryBuilder.andWhere('userCompany.businessName LIKE :businessName', {
-        businessName: `%${businessName}%`,
-      });
+      queryBuilder = queryBuilder.andWhere(
+        'COALESCE(order.snapshotBusinessName, userCompany.businessName) LIKE :businessName',
+        { businessName: `%${businessName}%` },
+      );
     }
 
     if (appDiv) {

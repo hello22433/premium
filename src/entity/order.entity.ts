@@ -6,6 +6,8 @@ import { BaseEntity } from '../common/entity/base.entity';
 import { IOrderType } from '../order/interface/order.type';
 import { OrderLikeEntity } from './order.like.entity';
 import { SettleUserOrderDetailEnum } from '../settle/interface/settle.user.order.detail';
+import { IUserSettleCondition } from '../user/interface/user.settle.condition';
+import { CompanyType } from '../common/domain/company.type';
 
 @Entity('order')
 export class OrderEntity extends BaseEntity {
@@ -101,6 +103,75 @@ export class OrderEntity extends BaseEntity {
 
   @Column({ type: 'datetime', nullable: true, comment: '주문 취소 일시' })
   canceledAt: Date | null;
+
+  // ───────────────────────────────────────────────────────────
+  // 사용자/회사 정보 스냅샷 (주문 생성 시점 고정)
+  // 계정관리에서 user 정보가 변경되어도 과거 주문의 거래명세서/정산은 당시 정보로 유지하기 위함.
+  // 조회 시 snapshot 우선, NULL이면 user FK join 값으로 fallback.
+  // ───────────────────────────────────────────────────────────
+
+  @Column({ type: 'varchar', length: 100, nullable: true, comment: '주문 시점의 user.personName 스냅샷' })
+  snapshotPersonName: string | null;
+
+  @Column({ type: 'varchar', length: 20, nullable: true, comment: '주문 시점의 user.personPhoneNumber 스냅샷' })
+  snapshotPersonPhone: string | null;
+
+  @Column({ type: 'varchar', length: 100, nullable: true, comment: '주문 시점의 user.email 스냅샷' })
+  snapshotEmail: string | null;
+
+  @Column({ type: 'varchar', length: 100, nullable: true, comment: '주문 시점의 user.company.businessName 스냅샷' })
+  snapshotBusinessName: string | null;
+
+  @Column({ type: 'varchar', length: 100, nullable: true, comment: '주문 시점의 user.company.businessNumber 스냅샷' })
+  snapshotBusinessNumber: string | null;
+
+  @Column({ type: 'varchar', length: 255, nullable: true, comment: '주문 시점의 user.company.businessAddress 스냅샷' })
+  snapshotBusinessAddress: string | null;
+
+  @Column({ type: 'varchar', length: 100, nullable: true, comment: '주문 시점의 user.company.industryType 스냅샷' })
+  snapshotIndustryType: string | null;
+
+  @Column({ type: 'varchar', length: 100, nullable: true, comment: '주문 시점의 user.company.industryItem 스냅샷' })
+  snapshotIndustryItem: string | null;
+
+  @Column({ type: 'varchar', length: 20, nullable: true, comment: '주문 시점의 user.settleCondition 스냅샷' })
+  snapshotSettleCondition: IUserSettleCondition | null;
+
+  @Column({ type: 'varchar', length: 20, nullable: true, comment: '주문 시점의 user.documentCompanyType 스냅샷' })
+  snapshotDocumentCompanyType: CompanyType | null;
+
+  @Column({ type: 'varchar', length: 100, nullable: true, comment: '주문 시점의 clientUser.personName 스냅샷' })
+  snapshotClientPersonName: string | null;
+
+  @Column({ type: 'varchar', length: 20, nullable: true, comment: '주문 시점의 clientUser.personPhoneNumber 스냅샷' })
+  snapshotClientPersonPhone: string | null;
+
+  @Column({ type: 'varchar', length: 100, nullable: true, comment: '주문 시점의 clientUser.email 스냅샷' })
+  snapshotClientEmail: string | null;
+
+  @Column({ type: 'varchar', length: 100, nullable: true, comment: '주문 시점의 clientUser.company.businessName 스냅샷' })
+  snapshotClientBusinessName: string | null;
+
+  @Column({ type: 'varchar', length: 100, nullable: true, comment: '주문 시점의 clientUser.company.businessNumber 스냅샷' })
+  snapshotClientBusinessNumber: string | null;
+
+  @Column({ type: 'varchar', length: 255, nullable: true, comment: '주문 시점의 clientUser.company.businessAddress 스냅샷' })
+  snapshotClientBusinessAddress: string | null;
+
+  @Column({ type: 'varchar', length: 100, nullable: true, comment: '주문 시점의 clientUser.company.industryType 스냅샷' })
+  snapshotClientIndustryType: string | null;
+
+  @Column({ type: 'varchar', length: 100, nullable: true, comment: '주문 시점의 clientUser.company.industryItem 스냅샷' })
+  snapshotClientIndustryItem: string | null;
+
+  @Column({ type: 'varchar', length: 20, nullable: true, comment: '주문 시점의 clientUser.settleCondition 스냅샷' })
+  snapshotClientSettleCondition: IUserSettleCondition | null;
+
+  @Column({ type: 'varchar', length: 20, nullable: true, comment: '주문 시점의 clientUser.documentCompanyType 스냅샷' })
+  snapshotClientDocumentCompanyType: CompanyType | null;
+
+  @Column({ type: 'varchar', length: 100, nullable: true, comment: '주문 시점의 operationUser.personName 스냅샷' })
+  snapshotOperationPersonName: string | null;
 
   @ManyToOne(() => UserEntity, { createForeignKeyConstraints: false })
   @JoinColumn({ name: 'user_id' })
