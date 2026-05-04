@@ -97,6 +97,19 @@ export class SsgEventService {
     }
   }
 
+  /**
+   * SSG 예약발송 가능 범위 해제 (단일 row, 최고관리자 전용)
+   * 활성 row가 있으면 soft delete, 없으면 no-op (멱등)
+   * 해제 후에는 폴백 정책(당월 말일까지)으로 동작
+   */
+  async deleteReservationRange(): Promise<void> {
+    const existing = await this.getReservationRange();
+    if (!existing) {
+      return;
+    }
+    await this.reservationRangeRepository.softRemove(existing);
+  }
+
   async getList(getQuery: SsgEventGetListReqDto): Promise<SsgEventGetListResDto> {
     const { take, page, code, createdEndAt, createdStartAt, name, searchKeyword } = getQuery;
     const skip = (page - 1) * take;

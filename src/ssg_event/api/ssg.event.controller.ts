@@ -1,5 +1,5 @@
 import { ApiBadRequestResponse, ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { Body, Controller, Get, Logger, Post, Put, Query, Res, UseFilters, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Logger, Post, Put, Query, Res, UseFilters, UseGuards } from '@nestjs/common';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
 import { AuthUserSuperAdminGuard } from '../../auth/api/auth.user.super-admin.guard';
 import { SsgEventService } from '../application/ssg.event.service';
@@ -161,5 +161,20 @@ export class SsgEventController {
     @Body() getBody: SsgReservationRangeUpdateReqDto,
   ) {
     return this.ssgEventService.updateReservationRange(getBody.startDate, getBody.endDate, user.id);
+  }
+
+  @ApiOperation({
+    summary: 'SSG 예약발송 가능 범위 해제',
+    description:
+      '최고관리자만 SSG 예약발송 가능 범위를 해제할 수 있습니다. 해제 후에는 폴백 정책(당월 말일까지)으로 동작합니다. 이미 미설정이어도 200 OK (멱등).',
+  })
+  @ApiOkResponse({
+    description: '성공적으로 해제한 경우',
+  })
+  // =====================================
+  @Delete('/ssg-event/reservation-range')
+  @UseGuards(AuthUserSuperAdminGuard)
+  deleteReservationRange() {
+    return this.ssgEventService.deleteReservationRange();
   }
 }
