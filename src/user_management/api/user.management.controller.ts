@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, Put, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, ForbiddenException, Get, Param, ParseIntPipe, Patch, Post, Put, Query, UseGuards } from '@nestjs/common';
 import { ApiBadRequestResponse, ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { UserManagementService } from '../application/user.management.service';
 import {
@@ -42,6 +42,7 @@ import {
   UpdateApiKeySettingsReqDto,
 } from './dto/user.management.api.key.dto';
 import { IExternalApiSsgRequestStatus } from '../../external_api/interface/external.api.ssg.request.status';
+import { IUserAuthority } from '../../user/interface/user.authority';
 
 @ApiTags('user-management')
 @Controller('')
@@ -328,6 +329,25 @@ export class UserManagementController {
   }
 
   // ─── 외부 API Key: 어드민 ─────────────────────────────
+
+  @Get('/user-management/:id/api-key')
+  @UseGuards(AuthUserAuthorizationGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: '특정 계정의 API Key 메타 조회 (본인 또는 어드민)' })
+  async getApiKeyInfoById(
+    @User() user: ILoginUserInfo,
+    @Param('id', ParseIntPipe) id: number,
+  ): Promise<ApiKeyInfoResDto> {
+    const adminRoles = [IUserAuthority.SUPER_ADMIN, IUserAuthority.OPERATION_ADMIN];
+    const isOwner = user.id === id;
+    const isAdmin = adminRoles.includes(user.authority);
+
+    if (!isOwner && !isAdmin) {
+      throw new ForbiddenException('권한이 없습니다.');
+    }
+
+    return this.userManagementService.getApiKeyInfo(id);
+  }
 
   @Post('/user-management/:id/api-key')
   @UseGuards(AuthUserSuperAndOperationAdminGuard)
