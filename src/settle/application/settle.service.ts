@@ -1254,14 +1254,10 @@ export class SettleService {
           const sendDateTime = formatCompactDateTime(orderDelivery.actualSendAt);
           const tradeDateTime = formatCompactDateTime(orderDelivery.tradeAt);
 
-          // 폐기시간 (취소/환불 시) - 상태 변경 시점인 updatedAt 사용
-          let discardAt = '';
-          if (
-            orderDelivery.updatedAt &&
-            (orderDelivery.couponStatus === 'CANCEL' || orderDelivery.couponStatus === 'REFUND_CANCEL')
-          ) {
-            discardAt = format(orderDelivery.updatedAt, DateFormatStr);
-          }
+          // 폐기시간 (취소/환불 시) - execDiscard 트랜잭션에서 세팅한 discardedAt 사용
+          const discardAt = orderDelivery.discardedAt
+            ? format(orderDelivery.discardedAt, DateFormatStr)
+            : '';
 
           sheet.addRow({
             partnerCompanyName: displayPartnerCompany.businessName,
