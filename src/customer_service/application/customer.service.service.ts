@@ -1315,28 +1315,67 @@ export class CustomerServiceService {
           throw new InternalServerErrorException('핀 발급에 실패했습니다.');
         }
 
-        switch (fullDelivery.deliveryMethod) {
-          case IOrderSendMethod.ALIM_TALK:
-            await this.deliveryBatchService.csResendAsAlimTalk(savedDelivery.id);
-            break;
-          case IOrderSendMethod.MMS:
-            await this.deliveryBatchService.csResendAsMms(savedDelivery.id);
-            break;
-          case IOrderSendMethod.EMAIL:
-            await this.deliveryBatchService.csResendAsEmail(savedDelivery.id);
-            break;
-          default:
-            await this.deliveryBatchService.csResendAsSms(savedDelivery.id);
-            break;
+        const newPin = fullDelivery.barCode;
+        afterChange = `${normalizedTarget} / ${newPin}`;
+
+        // 발송 시도 — 실패해도 history는 OLD/NEW 양쪽에 기록
+        let sendStatus: IOrderDeliveryStatus = IOrderDeliveryStatus.COMPLETE;
+        let sendError: unknown = null;
+        try {
+          switch (fullDelivery.deliveryMethod) {
+            case IOrderSendMethod.ALIM_TALK:
+              sendStatus = await this.deliveryBatchService.csResendAsAlimTalk(savedDelivery.id);
+              break;
+            case IOrderSendMethod.MMS:
+              await this.deliveryBatchService.csResendAsMms(savedDelivery.id);
+              break;
+            case IOrderSendMethod.EMAIL:
+              await this.deliveryBatchService.csResendAsEmail(savedDelivery.id);
+              break;
+            default:
+              await this.deliveryBatchService.csResendAsSms(savedDelivery.id);
+              break;
+          }
+        } catch (e) {
+          sendError = e;
+          sendStatus = IOrderDeliveryStatus.FAIL_SMS;
         }
 
-        fullDelivery.status = IOrderDeliveryStatus.COMPLETE;
-        fullDelivery.actualSendAt = new Date();
+        fullDelivery.status = sendStatus;
+        if (sendStatus === IOrderDeliveryStatus.COMPLETE || sendStatus === IOrderDeliveryStatus.COMPLETE_SMS) {
+          fullDelivery.actualSendAt = new Date();
+        } else {
+          fullDelivery.failedAt = new Date();
+        }
         await this.orderDeliveryRepository.save(fullDelivery);
 
-        const newPin = fullDelivery.barCode || '';
-        afterChange = `${normalizedTarget} / ${newPin}`;
-        break;
+        // history 양쪽(OLD/NEW)에 기록 — 발송 실패 여부와 무관하게 보장
+        const sharedHistoryFields = {
+          userId: map.userId,
+          type: map.type,
+          content: map.content,
+          sendMethod: map.sendMethod,
+          beforeChange: map.beforeChange,
+          afterChange: afterChange,
+        };
+        await this.orderHistoryRepository.save([
+          this.orderHistoryRepository.create({
+            ...sharedHistoryFields,
+            orderDeliveryId: map.orderDelivery.id,
+          }),
+          this.orderHistoryRepository.create({
+            ...sharedHistoryFields,
+            orderDeliveryId: savedDelivery.id,
+          }),
+        ]);
+
+        if (sendError) {
+          throw new InternalServerErrorException(
+            `신규 PIN ${newPin}이(가) 발급되었으나 발송에 실패했습니다. 발송실패내역에서 재발송해 주세요.`,
+          );
+        }
+
+        return;
       }
       case '폐기': {
         const { orderDelivery: discarded } = await this.execDiscard(map.user, map.orderDeliveryId, OrderDeliveryCouponStatus.CANCEL);

@@ -204,8 +204,13 @@ export class ExternalApiService {
     const decryptedTarget =
       this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.deliveryTarget) ?? orderDelivery.deliveryTarget;
 
-    let text = mapping.sendContent || '';
-    text = applyReplaceCharacters(text, orderDelivery);
+    const body = applyReplaceCharacters(mapping.sendContent || '', orderDelivery);
+    const memoRaw = product.memo;
+    const memo = memoRaw && orderDelivery.deliveryMethod !== IOrderSendMethod.EMAIL && mapping.order?.type !== IOrderType.SSG
+      ? applyReplaceCharacters(memoRaw, orderDelivery)
+      : null;
+    const tailRaw = mapping.sendTailText;
+    const tailText = tailRaw ? applyReplaceCharacters(tailRaw, orderDelivery) : null;
 
     const encryptKey = this.cryptoCipher.encryptJson({
       id: orderDelivery.id,
@@ -223,15 +228,16 @@ export class ExternalApiService {
 
     if (orderDelivery.deliveryMethod === IOrderSendMethod.ALIM_TALK) {
       await this.deliverySendService.sendAlimTalk(
-        orderDelivery, decryptedTarget, encryptKey, title, text, filePathList, deliveryHistory,
+        orderDelivery, decryptedTarget, encryptKey, title, body, memo, tailText, filePathList, deliveryHistory,
       );
     } else if (orderDelivery.deliveryMethod === IOrderSendMethod.MMS) {
       await this.deliverySendService.sendSms(
-        orderDelivery, decryptedTarget, encryptKey, title, text, filePathList, deliveryHistory,
+        orderDelivery, decryptedTarget, encryptKey, title, body, memo, tailText, filePathList, deliveryHistory,
       );
     } else if (orderDelivery.deliveryMethod === IOrderSendMethod.EMAIL) {
+      const emailText = tailText ? `${body}\n\n${tailText}` : body;
       await this.deliverySendService.sendEmail(
-        orderDelivery, decryptedTarget, encryptKey, title, text, deliveryHistory,
+        orderDelivery, decryptedTarget, encryptKey, title, emailText, deliveryHistory,
       );
     }
 
