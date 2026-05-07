@@ -738,20 +738,18 @@ export class PartnerCompanyExternService {
           paramValue: orderDelivery.couponNum!,
         });
 
-        // couponStatus 우선 확인: CANCEL, INACTIVE 상태 처리
+        // couponStatus: CANCEL > INACTIVE > isUsed > validTo 만료 순으로 판단
         if (giftCertificate.couponStatus === 'CANCEL') {
           orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
+          orderDelivery.discardedAt = new Date();
         } else if (giftCertificate.couponStatus === 'INACTIVE') {
           orderDelivery.couponStatus = OrderDeliveryCouponStatus.EXPIRED;
+        } else if (giftCertificate.isUsed) {
+          orderDelivery.couponStatus = OrderDeliveryCouponStatus.USED;
+        } else if (isExpiredYMD(giftCertificate.validTo)) {
+          orderDelivery.couponStatus = OrderDeliveryCouponStatus.EXPIRED;
         } else {
-          // ACTIVE 상태일 때 isUsed + validTo로 판단
-          if (giftCertificate.isUsed) {
-            orderDelivery.couponStatus = OrderDeliveryCouponStatus.USED;
-          } else if (isExpiredYMD(giftCertificate.validTo)) {
-            orderDelivery.couponStatus = OrderDeliveryCouponStatus.EXPIRED;
-          } else {
-            orderDelivery.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
-          }
+          orderDelivery.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
         }
         orderDelivery.tradeAt = parseDateString(giftCertificate.usedDate);
         orderDelivery.galaxiaBalance = Number(giftCertificate.balance);
@@ -849,6 +847,7 @@ export class PartnerCompanyExternService {
             break;
           case '07':
             orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
+            orderDelivery.discardedAt = new Date();
             break;
           case '08':
             orderDelivery.couponStatus = OrderDeliveryCouponStatus.EXPIRED;
@@ -967,6 +966,7 @@ export class PartnerCompanyExternService {
             }
           } else if (daouCheckOut.cpnStatus === '02') {
             orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
+            orderDelivery.discardedAt = new Date();
           }
         } else {
           throw new Error(`DAOU 쿠폰 상태 조회 실패: ${daouCheckOut.resultMessage}`);

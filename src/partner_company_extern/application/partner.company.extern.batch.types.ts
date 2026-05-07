@@ -19,6 +19,7 @@ export interface ApiCallResult {
   tradeAt?: Date | null;
   tradePlace?: string | null;
   galaxiaBalance?: number | null;
+  discardedAt?: Date | null;
 }
 
 // 배치 통계

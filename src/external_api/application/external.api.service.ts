@@ -596,6 +596,7 @@ export class ExternalApiService {
   ) {
     orderDelivery.status = IOrderDeliveryStatus.CANCEL;
     orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
+    orderDelivery.discardedAt = new Date();
     await this.orderDeliveryRepository.save(orderDelivery);
 
     order.status = IOrderStatus.DELIVERY_CANCEL;

@@ -746,6 +746,7 @@ export class CustomerServiceService {
     await queryRunner.startTransaction();
     try {
       orderDelivery.couponStatus = couponStatus;
+      orderDelivery.discardedAt = new Date();
       await queryRunner.manager.save(OrderDeliveryEntity, orderDelivery);
 
       // 예치금/여신 복구 (폐기 후 신규 발송 시에는 스킵 — 핀 교체이므로 잔액 변동 없음)
@@ -892,6 +893,7 @@ export class CustomerServiceService {
 
           if ((await result).message === '폐기 완료') {
             orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
+            orderDelivery.discardedAt = new Date();
 
             await this.orderDeliveryRepository.save(orderDelivery);
 
@@ -920,6 +922,7 @@ export class CustomerServiceService {
 
         if (afterChange === 'CANCEL' || afterChange === 'REFUND_CANCEL') {
           orderDelivery.couponStatus = afterChange;
+          orderDelivery.discardedAt = new Date();
 
           await this.orderDeliveryRepository.save(orderDelivery);
 
@@ -1685,11 +1688,13 @@ export class CustomerServiceService {
                 continue;
               }
               orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
+              orderDelivery.discardedAt = new Date();
               break;
             }
             case 'SSG':
             default: {
               orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
+              orderDelivery.discardedAt = new Date();
               break;
             }
           }

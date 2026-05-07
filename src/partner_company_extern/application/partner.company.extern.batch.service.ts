@@ -752,6 +752,9 @@ export class PartnerCompanyExternBatchService {
     if (result.galaxiaBalance !== undefined && result.galaxiaBalance !== null) {
       updateData.galaxiaBalance = result.galaxiaBalance;
     }
+    if (result.discardedAt !== undefined) {
+      updateData.discardedAt = result.discardedAt;
+    }
 
     await this.orderDeliveryRepository.update({ id: result.id }, updateData);
   }
@@ -788,6 +791,7 @@ export class PartnerCompanyExternBatchService {
       const giftCertificate = galaxiaOut.giftCertificate;
       if (giftCertificate.couponStatus === 'CANCEL') {
         result.couponStatus = OrderDeliveryCouponStatus.CANCEL;
+        result.discardedAt = new Date();
       } else if (giftCertificate.couponStatus === 'INACTIVE') {
         result.couponStatus = OrderDeliveryCouponStatus.EXPIRED;
       } else if (giftCertificate.isUsed) {
@@ -883,6 +887,7 @@ export class PartnerCompanyExternBatchService {
           }
         } else if (pinStatusCd === '07') {
           result.couponStatus = OrderDeliveryCouponStatus.CANCEL;
+          result.discardedAt = new Date();
         } else if (pinStatusCd === '08') {
           result.couponStatus = OrderDeliveryCouponStatus.EXPIRED;
         } else if (pinStatusCd === '01') {
@@ -992,6 +997,7 @@ export class PartnerCompanyExternBatchService {
           }
         } else if (daouCheckOut.cpnStatus === '02') {
           result.couponStatus = OrderDeliveryCouponStatus.CANCEL;
+          result.discardedAt = new Date();
         }
       }
     }
@@ -1249,6 +1255,7 @@ export class PartnerCompanyExternBatchService {
         break;
       case '81': // 환불등록
         orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
+        orderDelivery.discardedAt = new Date();
         orderDelivery.galaxiaBalance = 0;
         break;
     }
@@ -1546,6 +1553,7 @@ export class PartnerCompanyExternBatchService {
 
     if (galaxiaOut.giftCertificate.couponStatus === 'CANCEL') {
       updateData.couponStatus = OrderDeliveryCouponStatus.CANCEL;
+      updateData.discardedAt = new Date();
     }
 
     await this.orderDeliveryRepository.update({ id: orderDelivery.id }, updateData);
