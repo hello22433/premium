@@ -1,28 +1,23 @@
 import { IProductType } from '../../../product/interface/product.type';
 
-export class ExternalApiResponse<T = any> {
+/**
+ * 외부 API 응답 본문 타입.
+ * 글로벌 `TransformResInterceptor`가 `{ result: <body> }`로 한 번 래핑하므로
+ * 컨트롤러는 평면 객체(code/message/data)만 반환한다.
+ */
+export interface ExternalApiResponse<T = any> {
   code: string;
   message: string;
   data?: T;
-
-  static success<T>(data?: T): ExternalApiResponse<T> {
-    const res = new ExternalApiResponse<T>();
-    res.code = '0000';
-    res.message = 'success';
-    res.data = data;
-    return res;
-  }
-
-  static error(code: string, message: string, detail?: string): ExternalApiResponse {
-    const res = new ExternalApiResponse();
-    res.code = code;
-    res.message = message;
-    if (detail) {
-      (res as any).detail = detail;
-    }
-    return res;
-  }
 }
+
+export const ExternalApiResponse = {
+  success<T>(data?: T): ExternalApiResponse<T> {
+    const body: ExternalApiResponse<T> = { code: '0000', message: 'success' };
+    if (data !== undefined) body.data = data;
+    return body;
+  },
+};
 
 export class OrderResponseData {
   trId: string;
@@ -39,17 +34,9 @@ export class SsgOrderResponseData extends OrderResponseData {
   personalCode?: string;
 }
 
-export class OrderStatusResponseData {
-  trId: string;
+export class OrderStatusResponseData extends OrderResponseData {
   couponStatus: string;
   deliveryStatus: string;
-  barCode?: string;
-  validStartDate?: string;
-  validEndDate?: string;
-  /** 정가 (할인/할증 미반영, 카드할증 미반영) */
-  price: number;
-  /** 실제 차감/결제 금액 (할인/할증 + 카드할증 반영) */
-  settleAmount: number;
 }
 
 export class SsgOrderStatusResponseData extends OrderStatusResponseData {
