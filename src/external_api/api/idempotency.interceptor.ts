@@ -105,15 +105,25 @@ export class IdempotencyInterceptor implements NestInterceptor {
           return responseBody;
         }),
       ),
-      catchError((err) =>
-        defer(async () => {
+      catchError((err) => {
+        this.logger.warn(
+          `[DEBUG] interceptor catchError ENTER type=${err?.constructor?.name} ` +
+            `code=${err?.code} msg=${err?.errorMessage ?? err?.message}`,
+        );
+        return defer(async () => {
+          this.logger.warn('[DEBUG] interceptor cleanup defer running');
           try {
             await this.idempotencyKeyRepository.remove(newKey);
           } catch (removeErr) {
             this.logger.warn(`멱등키 제거 실패 - key: ${idempotencyKey}`, removeErr);
           }
-        }).pipe(concatMap(() => throwError(() => err))),
-      ),
+        }).pipe(
+          concatMap(() => {
+            this.logger.warn('[DEBUG] interceptor re-throwing');
+            return throwError(() => err);
+          }),
+        );
+      }),
     );
   }
 }

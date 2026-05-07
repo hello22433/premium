@@ -20,6 +20,13 @@ export class ExternalApiExceptionFilter implements ExceptionFilter {
     const ctx = host.switchToHttp();
     const response = ctx.getResponse<Response>();
 
+    this.logger.warn(
+      `[DEBUG] filter ENTER type=${(exception as any)?.constructor?.name} ` +
+        `code=${(exception as any)?.code} ` +
+        `msg=${(exception as any)?.errorMessage ?? (exception as any)?.message} ` +
+        `headersSent=${response.headersSent}`,
+    );
+
     let httpStatus = HttpStatus.INTERNAL_SERVER_ERROR;
     let code = '9999';
     let message = '시스템 오류';
