@@ -39,11 +39,6 @@ export class CreateExternalSsgOrderDto {
   @IsNotEmpty()
   recipientPhone: string;
 
-  @ApiProperty({ description: '수신자 이름' })
-  @IsString()
-  @IsNotEmpty()
-  recipientName: string;
-
   @ApiProperty({ description: '금액' })
   @IsNumber()
   amount: number;

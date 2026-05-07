@@ -116,7 +116,10 @@ curl -X GET "https://{서버주소}/api/v1/external/products" \
         "price": 4500,
         "salePrice": 4500,
         "imageUrl": "/uploads/products/starbucks-americano.jpg",
-        "validDays": 93
+        "validDays": 93,
+        "type": "GENERAL",
+        "memo": null,
+        "isCancelable": true
       }
     ]
   }
@@ -134,6 +137,9 @@ curl -X GET "https://{서버주소}/api/v1/external/products" \
 | `salePrice` | number | 판매가 (원) |
 | `imageUrl` | string | 상품 이미지 경로 |
 | `validDays` | number | 쿠폰 유효기간 (일) |
+| `type` | string | 상품 종류 (`GENERAL`, `SSG` 등) |
+| `memo` | string? | 운영 메모 (없으면 `null`) |
+| `isCancelable` | boolean | 취소 허용 여부 (`false`이면 주문 취소 시 에러 코드 `3009`) |
 
 ### 주의사항
 
@@ -419,7 +425,6 @@ curl -X POST "https://{서버주소}/api/v1/external/orders/ssg" \
   -H "Content-Type: application/json" \
   -d '{
     "recipientPhone": "01012345678",
-    "recipientName": "홍길동",
     "amount": 50000,
     "senderPhone": "01098765432",
     "message": "감사합니다"
@@ -435,7 +440,6 @@ curl -X POST "https://{서버주소}/api/v1/external/orders/ssg" \
 | 파라미터 | 타입 | 필수 | 설명 |
 |----------|------|------|------|
 | `recipientPhone` | string | O | 수신자 전화번호 |
-| `recipientName` | string | O | 수신자 이름 |
 | `amount` | number | O | 금액 (원) |
 | `senderPhone` | string | X | 발신자 전화번호 |
 | `message` | string | X | 메시지 내용 |
