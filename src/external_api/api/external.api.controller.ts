@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Delete, Body, Param, Query, Req, UseGuards, UseFilters, UseInterceptors } from '@nestjs/common';
+import { Controller, Get, Post, Delete, Body, Param, Query, Req, UseGuards, UseFilters, UseInterceptors, HttpCode } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiSecurity } from '@nestjs/swagger';
 import { Request } from 'express';
 
@@ -29,6 +29,7 @@ export class ExternalApiController {
   }
 
   @Post('orders')
+  @HttpCode(200)
   @UseInterceptors(IdempotencyInterceptor)
   @ApiOperation({ summary: '쿠폰 발송 (즉시)' })
   async createOrder(@Req() req: Request, @Body() dto: CreateExternalOrderDto) {
@@ -36,6 +37,7 @@ export class ExternalApiController {
   }
 
   @Post('orders/:trId/resend')
+  @HttpCode(200)
   @ApiOperation({ summary: '재발송' })
   async resendOrder(@Req() req: Request, @Param('trId') trId: string) {
     return this.externalApiService.resendOrder(this.getAccount(req), trId);
@@ -54,6 +56,7 @@ export class ExternalApiController {
   }
 
   @Post('orders/ssg')
+  @HttpCode(200)
   @UseInterceptors(IdempotencyInterceptor)
   @ApiOperation({ summary: 'SSG 쿠폰 발송' })
   async createSsgOrder(@Req() req: Request, @Body() dto: CreateExternalSsgOrderDto) {
