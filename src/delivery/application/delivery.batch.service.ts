@@ -447,6 +447,7 @@ export class DeliveryBatchService {
     const decryptedDeliveryTarget = this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.deliveryTarget) ?? orderDelivery.deliveryTarget;
 
     const title = orderDelivery.orderProductMapping.sendTitle ?? '';
+    const deliveryMethod = orderDelivery.deliveryMethod;
 
     // 3. 유효기간 설정 (재발송 시 기존 expireAt 유지)
     if (order.type !== IOrderType.SSG && !orderDelivery.expireAt) {
@@ -463,28 +464,30 @@ export class DeliveryBatchService {
       }
     }
 
-    // 4. 발송 텍스트 준비
+    // 4. 이미지 보강: barCode 있는데 imagePath 없는 재처리 케이스 대응
+    if (!isChoiceCoupon && !isEmailDelivery && orderDelivery.barCode && !orderDelivery.imagePath) {
+      try {
+        orderDelivery.imagePath = await this.createCouponImage(orderDelivery);
+        this.logger.log(`[BATCH] 이미지 재생성 - orderDelivery.id: ${orderDelivery.id}, imagePath: ${orderDelivery.imagePath}`);
+      } catch (error) {
+        this.logger.error(`[BATCH] 이미지 재생성 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
+      }
+    }
+
+    // 5. 발송 텍스트 준비
     const filePathList: string[] = [];
     if (orderDelivery.imagePath) {
       filePathList.push(orderDelivery.imagePath);
     }
-    let text = orderDelivery.orderProductMapping.sendContent ?? '';
 
-    if (
-      orderDelivery.orderProductMapping.product.memo &&
-      orderDelivery.orderProductMapping.order.type !== IOrderType.SSG &&
-      orderDelivery.deliveryMethod !== IOrderSendMethod.EMAIL
-    ) {
-      text += `\n\n${orderDelivery.orderProductMapping.product.memo}`;
-    }
+    const body = applyReplaceCharacters(orderDelivery.orderProductMapping.sendContent ?? '', orderDelivery);
+    const memoRaw = orderDelivery.orderProductMapping.product.memo;
+    const memo = memoRaw && order.type !== IOrderType.SSG && deliveryMethod !== IOrderSendMethod.EMAIL
+      ? applyReplaceCharacters(memoRaw, orderDelivery)
+      : null;
+    const tailRaw = orderDelivery.orderProductMapping.sendTailText;
+    const tailText = tailRaw ? applyReplaceCharacters(tailRaw, orderDelivery) : null;
 
-    const sendTailText = orderDelivery.orderProductMapping.sendTailText;
-    if (sendTailText) {
-      text += `\n\n${sendTailText}`;
-    }
-    text = applyReplaceCharacters(text, orderDelivery);
-
-    const deliveryMethod = orderDelivery.deliveryMethod;
     const deliveryHistory = new DeliverySendHistoryEntity();
     deliveryHistory.context = '{}';
     deliveryHistory.isSuccess = true;
@@ -496,13 +499,14 @@ export class DeliveryBatchService {
       transactionId: orderDelivery.transactionId,
     } as OrderEncryptKey);
 
-    // 5. 발송 채널별 처리
+    // 6. 발송 채널별 처리
     if (deliveryMethod === IOrderSendMethod.ALIM_TALK) {
-      await this.sendAlimTalk(orderDelivery, decryptedDeliveryTarget, encryptKey, title, text, filePathList, deliveryHistory);
+      await this.deliverySendService.sendAlimTalk(orderDelivery, decryptedDeliveryTarget, encryptKey, title, body, memo, tailText, filePathList, deliveryHistory);
     } else if (deliveryMethod === IOrderSendMethod.MMS) {
-      await this.sendSms(orderDelivery, decryptedDeliveryTarget, encryptKey, title, text, filePathList, deliveryHistory);
+      await this.deliverySendService.sendSms(orderDelivery, decryptedDeliveryTarget, encryptKey, title, body, memo, tailText, filePathList, deliveryHistory);
     } else if (deliveryMethod === IOrderSendMethod.EMAIL) {
-      await this.sendEmail(orderDelivery, decryptedDeliveryTarget, encryptKey, title, text, deliveryHistory);
+      const emailText = tailText ? `${body}\n\n${tailText}` : body;
+      await this.deliverySendService.sendEmail(orderDelivery, decryptedDeliveryTarget, encryptKey, title, emailText, deliveryHistory);
     }
 
     // 6. 발송 실패 시 환불 처리
@@ -514,50 +518,6 @@ export class DeliveryBatchService {
     await this.orderDeliveryRepository.save(orderDelivery);
 
     return { deliveryHistory, orderId: order.id };
-  }
-
-  /**
-   * 알림톡 발송
-   */
-  private async sendAlimTalk(
-    orderDelivery: OrderDeliveryEntity,
-    decryptedDeliveryTarget: string,
-    encryptKey: string,
-    title: string,
-    text: string,
-    filePathList: string[],
-    deliveryHistory: DeliverySendHistoryEntity,
-  ): Promise<void> {
-    return this.deliverySendService.sendAlimTalk(orderDelivery, decryptedDeliveryTarget, encryptKey, title, text, filePathList, deliveryHistory);
-  }
-
-  /**
-   * SMS 발송
-   */
-  private async sendSms(
-    orderDelivery: OrderDeliveryEntity,
-    decryptedDeliveryTarget: string,
-    encryptKey: string,
-    title: string,
-    text: string,
-    filePathList: string[],
-    deliveryHistory: DeliverySendHistoryEntity,
-  ): Promise<void> {
-    return this.deliverySendService.sendSms(orderDelivery, decryptedDeliveryTarget, encryptKey, title, text, filePathList, deliveryHistory);
-  }
-
-  /**
-   * 이메일 발송
-   */
-  private async sendEmail(
-    orderDelivery: OrderDeliveryEntity,
-    decryptedDeliveryTarget: string,
-    encryptKey: string,
-    title: string,
-    text: string,
-    deliveryHistory: DeliverySendHistoryEntity,
-  ): Promise<void> {
-    return this.deliverySendService.sendEmail(orderDelivery, decryptedDeliveryTarget, encryptKey, title, text, deliveryHistory);
   }
 
   async updateDeliveryStatusFromTracking(): Promise<void> {
@@ -654,10 +614,17 @@ export class DeliveryBatchService {
   }
 
   /**
-   * SMS 발송 텍스트 구성 (SSG 템플릿 + 초이스 쿠폰 URL 적용)
+   * SMS 발송 텍스트 구성
+   * 순서: body(발신내용) → 핀번호/유효기간 → memo(상품유의사항) → tailText(꼬리 광고)
    */
-  private buildSmsText(orderDelivery: OrderDeliveryEntity, encryptKey: string, text: string): string {
-    return this.deliverySendService.buildSmsText(orderDelivery, encryptKey, text);
+  private buildSmsText(
+    orderDelivery: OrderDeliveryEntity,
+    encryptKey: string,
+    body: string,
+    memo?: string | null,
+    tailText?: string | null,
+  ): string {
+    return this.deliverySendService.buildSmsText(orderDelivery, encryptKey, body, memo, tailText);
   }
 
   /**
@@ -666,13 +633,15 @@ export class DeliveryBatchService {
   private async handleAlimTalkFail(
     orderDelivery: OrderDeliveryEntity,
     title: string,
-    text: string,
+    body: string,
+    memo: string | null,
+    tailText: string | null,
     filePathList: string[],
     decryptedDeliveryTarget: string,
     encryptKey: string,
   ): Promise<IOrderDeliveryStatus.COMPLETE_SMS | unknown> {
     try {
-      const smsText = this.buildSmsText(orderDelivery, encryptKey, text);
+      const smsText = this.buildSmsText(orderDelivery, encryptKey, body, memo, tailText);
       const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber!;
       await this.smsSend.send({
         msgType: 'M',
@@ -891,22 +860,20 @@ export class DeliveryBatchService {
 
     // 텍스트 빌드
     const title = orderDelivery.orderProductMapping.sendTitle ?? '';
-    let text = orderDelivery.orderProductMapping.sendContent ?? '';
-    if (orderDelivery.orderProductMapping.product.memo && orderDelivery.orderProductMapping.order.type !== IOrderType.SSG) {
-      text += `\n\n${orderDelivery.orderProductMapping.product.memo}`;
-    }
-    const sendTailText = orderDelivery.orderProductMapping.sendTailText;
-    if (sendTailText) {
-      text += `\n\n${sendTailText}`;
-    }
-    text = applyReplaceCharacters(text, orderDelivery);
+    const body = applyReplaceCharacters(orderDelivery.orderProductMapping.sendContent ?? '', orderDelivery);
+    const memoRaw = orderDelivery.orderProductMapping.product.memo;
+    const memo = memoRaw && orderDelivery.orderProductMapping.order.type !== IOrderType.SSG
+      ? applyReplaceCharacters(memoRaw, orderDelivery)
+      : null;
+    const tailRaw = orderDelivery.orderProductMapping.sendTailText;
+    const tailText = tailRaw ? applyReplaceCharacters(tailRaw, orderDelivery) : null;
 
     const encryptKey = this.cryptoCipher.encryptJson({
       id: orderDelivery.id,
       transactionId: orderDelivery.transactionId,
     } as OrderEncryptKey);
 
-    const smsText = this.buildSmsText(orderDelivery, encryptKey, text);
+    const smsText = this.buildSmsText(orderDelivery, encryptKey, body, memo, tailText);
 
     const filePathList: string[] = [];
     if (orderDelivery.imagePath) {
@@ -924,7 +891,7 @@ export class DeliveryBatchService {
     });
   }
 
-  async csResendAsAlimTalk(orderDeliveryId: number): Promise<void> {
+  async csResendAsAlimTalk(orderDeliveryId: number): Promise<IOrderDeliveryStatus.COMPLETE | IOrderDeliveryStatus.COMPLETE_SMS> {
     const orderDelivery = await this.orderDeliveryRepository
       .createQueryBuilder('orderDelivery')
       .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
@@ -953,6 +920,17 @@ export class DeliveryBatchService {
       throw new Error('쿠폰이 발급되지 않은 건은 알림톡 재발송이 불가능합니다.');
     }
 
+    // 폴백 대비: 이미지 없으면 기존 barCode로 생성
+    if (!orderDelivery.imagePath && !isUnselectedChoiceCoupon) {
+      try {
+        const path = await this.createCouponImage(orderDelivery);
+        orderDelivery.imagePath = path;
+        await this.orderDeliveryRepository.update(orderDelivery.id, { imagePath: path });
+      } catch (error) {
+        this.logger.error(`[CS_RESEND] 이미지 재생성 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
+      }
+    }
+
     // 수신 전화번호 결정
     const phoneNumber = orderDelivery.deliveryMethod === IOrderSendMethod.EMAIL && orderDelivery.emailReceiverPhone
       ? this.decryptDeliveryTarget(orderDelivery, 'emailReceiverPhone')
@@ -965,15 +943,50 @@ export class DeliveryBatchService {
       transactionId: orderDelivery.transactionId,
     } as OrderEncryptKey);
 
-    const { report } = await this.deliveryAlimTalk.send({
+    // 알림톡 시도
+    let alimTalkSucceeded = false;
+    try {
+      const { report } = await this.deliveryAlimTalk.send({
+        to: phoneNumber,
+        text: alimTalk,
+        encryptKey: encryptKey,
+      });
+      alimTalkSucceeded = report.code === 'A000';
+    } catch (e) {
+      this.logger.warn(`[CS_RESEND] 알림톡 발송 실패, MMS 폴백 시도 - orderDelivery.id: ${orderDelivery.id}, error: ${e}`);
+    }
+
+    if (alimTalkSucceeded) {
+      return IOrderDeliveryStatus.COMPLETE;
+    }
+
+    // 폴백: MMS 발송
+    const title = orderDelivery.orderProductMapping.sendTitle ?? '';
+    const body = applyReplaceCharacters(orderDelivery.orderProductMapping.sendContent ?? '', orderDelivery);
+    const memoRaw = orderDelivery.orderProductMapping.product.memo;
+    const memo = memoRaw && orderDelivery.orderProductMapping.order.type !== IOrderType.SSG
+      ? applyReplaceCharacters(memoRaw, orderDelivery)
+      : null;
+    const tailRaw = orderDelivery.orderProductMapping.sendTailText;
+    const tailText = tailRaw ? applyReplaceCharacters(tailRaw, orderDelivery) : null;
+
+    const smsText = this.buildSmsText(orderDelivery, encryptKey, body, memo, tailText);
+    const filePathList: string[] = [];
+    if (orderDelivery.imagePath) {
+      filePathList.push(orderDelivery.imagePath);
+    }
+    const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber || defaultFromPhoneNumber;
+
+    await this.smsSend.send({
+      msgType: 'M',
       to: phoneNumber,
-      text: alimTalk,
-      encryptKey: encryptKey,
+      from: fromPhoneNumber,
+      subject: title,
+      text: smsText,
+      filePath: filePathList,
     });
 
-    if (report.code !== 'A000') {
-      throw new Error('알림톡 발송에 실패했습니다.');
-    }
+    return IOrderDeliveryStatus.COMPLETE_SMS;
   }
 
   async csResendAsSms(orderDeliveryId: number): Promise<void> {
@@ -1185,26 +1198,18 @@ export class DeliveryBatchService {
     if (orderDelivery.imagePath) {
       filePathList.push(orderDelivery.imagePath);
     }
-    let text = orderDelivery.orderProductMapping.sendContent ?? '';
-
-    // 이메일이 아닌 경우에만 상품 유의사항 추가
-    if (
-      orderDelivery.orderProductMapping.product.memo &&
-      orderDelivery.deliveryMethod !== IOrderSendMethod.EMAIL &&
-      orderDelivery.orderProductMapping.order.type !== IOrderType.SSG
-    ) {
-      text += `\n\n${orderDelivery.orderProductMapping.product.memo}`;
-    }
-
-    const sendTailText = orderDelivery.orderProductMapping.sendTailText;
-    if (sendTailText) {
-      text += `\n\n${sendTailText}`;
-    }
-    text = applyReplaceCharacters(text, orderDelivery);
 
     const deliveryMethod = orderDelivery.deliveryMethod;
-    const deliveryHistory = new DeliverySendHistoryEntity();
 
+    const body = applyReplaceCharacters(orderDelivery.orderProductMapping.sendContent ?? '', orderDelivery);
+    const memoRaw = orderDelivery.orderProductMapping.product.memo;
+    const memo = memoRaw && deliveryMethod !== IOrderSendMethod.EMAIL && orderDelivery.orderProductMapping.order.type !== IOrderType.SSG
+      ? applyReplaceCharacters(memoRaw, orderDelivery)
+      : null;
+    const tailRaw = orderDelivery.orderProductMapping.sendTailText;
+    const tailText = tailRaw ? applyReplaceCharacters(tailRaw, orderDelivery) : null;
+
+    const deliveryHistory = new DeliverySendHistoryEntity();
     deliveryHistory.context = '{}';
     deliveryHistory.isSuccess = true;
     deliveryHistory.target = decryptedDeliveryTarget;
@@ -1238,7 +1243,7 @@ export class DeliveryBatchService {
       } catch (e) {
         deliveryHistory.context = JSON.stringify(e);
         deliveryHistory.isSuccess = false;
-        const resultSms = await this.handleAlimTalkFail(orderDelivery, title, text, filePathList, decryptedDeliveryTarget, encryptKey);
+        const resultSms = await this.handleAlimTalkFail(orderDelivery, title, body, memo, tailText, filePathList, decryptedDeliveryTarget, encryptKey);
 
         if (resultSms === IOrderDeliveryStatus.COMPLETE_SMS) {
           deliveryHistory.isSuccess = true;
@@ -1252,7 +1257,7 @@ export class DeliveryBatchService {
 
     // SMS 발송
     if (deliveryMethod === IOrderSendMethod.MMS) {
-      const smsText = this.buildSmsText(orderDelivery, encryptKey, text);
+      const smsText = this.buildSmsText(orderDelivery, encryptKey, body, memo, tailText);
 
       try {
         const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber!;
@@ -1265,7 +1270,7 @@ export class DeliveryBatchService {
           filePath: filePathList,
         });
         this.markSendSuccess(orderDelivery, IOrderDeliveryStatus.COMPLETE);
-        deliveryHistory.context = text;
+        deliveryHistory.context = smsText;
       } catch (e) {
         this.markSendFail(orderDelivery, IOrderDeliveryStatus.FAIL);
         deliveryHistory.context = JSON.stringify(e);
@@ -1275,6 +1280,8 @@ export class DeliveryBatchService {
 
     // 이메일 발송
     if (deliveryMethod === IOrderSendMethod.EMAIL) {
+      const emailText = tailText ? `${body}\n\n${tailText}` : body;
+
       // 이메일 쿠폰이 이미 수령되어 핀이 발급된 경우 (barCode가 있고 emailReceiverPhone이 있는 경우)
       // 이메일 대신 문자로 재발송
       if (orderDelivery.barCode && orderDelivery.emailReceiverPhone) {
@@ -1287,11 +1294,11 @@ export class DeliveryBatchService {
             to: decryptedEmailReceiverPhone,
             from: fromPhoneNumber,
             subject: title,
-            text: text,
+            text: emailText,
             filePath: filePathList,
           });
           this.markSendSuccess(orderDelivery, IOrderDeliveryStatus.COMPLETE);
-          deliveryHistory.context = text;
+          deliveryHistory.context = emailText;
           deliveryHistory.target = decryptedEmailReceiverPhone;
         } catch (e) {
           this.markSendFail(orderDelivery, IOrderDeliveryStatus.FAIL);
@@ -1345,10 +1352,10 @@ export class DeliveryBatchService {
         }
 
         const useEmailContent = orderDelivery.orderProductMapping.useEmailContent ?? '';
-        const emailText = EmailDeliveryTemplate({
+        const renderedEmail = EmailDeliveryTemplate({
           topImagePath: orderDelivery.orderProductMapping.topImagePath,
           productImagePath: orderDelivery.orderProductMapping.product.imagePath,
-          text,
+          text: emailText,
           url: url,
           code: emailSendHistory.code!,
           useEmailContent,
@@ -1361,13 +1368,13 @@ export class DeliveryBatchService {
             saveSentMail: 'N',
             bcc: undefined,
             cc: undefined,
-            content: emailText,
+            content: renderedEmail,
             subject: title,
             to: decryptedDeliveryTarget,
             fromEmail: fromEmail,
           });
           this.markSendSuccess(orderDelivery, IOrderDeliveryStatus.COMPLETE);
-          deliveryHistory.context = text;
+          deliveryHistory.context = emailText;
         } catch (e) {
           this.markSendFail(orderDelivery, IOrderDeliveryStatus.FAIL);
           deliveryHistory.context = JSON.stringify(e);

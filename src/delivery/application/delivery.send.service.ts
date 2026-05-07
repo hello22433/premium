@@ -71,17 +71,23 @@ export class DeliverySendService {
   }
 
   /**
-   * SMS 발송 텍스트 구성 (SSG 템플릿 + 초이스 쿠폰 URL 적용)
+   * SMS 발송 텍스트 구성
+   * 순서: body(발신내용) → 핀번호/유효기간 → memo(상품유의사항) → tailText(꼬리 광고)
    */
-  buildSmsText(orderDelivery: OrderDeliveryEntity, encryptKey: string, text: string): string {
+  buildSmsText(
+    orderDelivery: OrderDeliveryEntity,
+    encryptKey: string,
+    body: string,
+    memo?: string | null,
+    tailText?: string | null,
+  ): string {
     const orderType = orderDelivery.orderProductMapping.order.type;
     const productType = orderDelivery.orderProductMapping.product.type;
 
-    let smsText = text;
-    smsText = SmsChoiceProductTemplate(
+    let smsText = SmsChoiceProductTemplate(
       orderDelivery,
       `${this.configService.getOrThrow('SMS_CHOICE_URL')}/${encryptKey}`,
-      smsText,
+      body,
     );
 
     // SSG 상품: 쿠폰번호, 인증번호, 교환처 등 상세 정보 추가
@@ -103,6 +109,16 @@ export class DeliverySendService {
       smsText += '\n\n' + couponFooter;
     }
 
+    // 상품 유의사항 (핀번호/유효기간 다음 위치)
+    if (memo) {
+      smsText += `\n\n${memo}`;
+    }
+
+    // 꼬리 광고
+    if (tailText) {
+      smsText += `\n\n${tailText}`;
+    }
+
     return smsText;
   }
 
@@ -114,7 +130,9 @@ export class DeliverySendService {
     decryptedDeliveryTarget: string,
     encryptKey: string,
     title: string,
-    text: string,
+    body: string,
+    memo: string | null,
+    tailText: string | null,
     filePathList: string[],
     deliveryHistory: DeliverySendHistoryEntity,
   ): Promise<void> {
@@ -137,7 +155,7 @@ export class DeliverySendService {
     } catch (e) {
       deliveryHistory.context = JSON.stringify(e);
       deliveryHistory.isSuccess = false;
-      const resultSms = await this.handleAlimTalkFail(orderDelivery, title, text, filePathList, decryptedDeliveryTarget, encryptKey);
+      const resultSms = await this.handleAlimTalkFail(orderDelivery, title, body, memo, tailText, filePathList, decryptedDeliveryTarget, encryptKey);
       if (resultSms === IOrderDeliveryStatus.COMPLETE_SMS) {
         deliveryHistory.isSuccess = true;
         this.markSendSuccess(orderDelivery, IOrderDeliveryStatus.COMPLETE_SMS);
@@ -156,11 +174,13 @@ export class DeliverySendService {
     decryptedDeliveryTarget: string,
     encryptKey: string,
     title: string,
-    text: string,
+    body: string,
+    memo: string | null,
+    tailText: string | null,
     filePathList: string[],
     deliveryHistory: DeliverySendHistoryEntity,
   ): Promise<void> {
-    const smsText = this.buildSmsText(orderDelivery, encryptKey, text);
+    const smsText = this.buildSmsText(orderDelivery, encryptKey, body, memo, tailText);
 
     try {
       const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber!;
@@ -173,7 +193,7 @@ export class DeliverySendService {
         filePath: filePathList,
       });
       this.markSendSuccess(orderDelivery, IOrderDeliveryStatus.COMPLETE);
-      deliveryHistory.context = text;
+      deliveryHistory.context = smsText;
     } catch (e) {
       this.markSendFail(orderDelivery, IOrderDeliveryStatus.FAIL);
       deliveryHistory.context = JSON.stringify(e);
@@ -256,13 +276,15 @@ export class DeliverySendService {
   private async handleAlimTalkFail(
     orderDelivery: OrderDeliveryEntity,
     title: string,
-    text: string,
+    body: string,
+    memo: string | null,
+    tailText: string | null,
     filePathList: string[],
     decryptedDeliveryTarget: string,
     encryptKey: string,
   ): Promise<IOrderDeliveryStatus.COMPLETE_SMS | unknown> {
     try {
-      const smsText = this.buildSmsText(orderDelivery, encryptKey, text);
+      const smsText = this.buildSmsText(orderDelivery, encryptKey, body, memo, tailText);
       const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber!;
       await this.smsSend.send({
         msgType: 'M',
