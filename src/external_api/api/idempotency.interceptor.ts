@@ -7,8 +7,8 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { Observable, of, throwError } from 'rxjs';
-import { tap, catchError } from 'rxjs/operators';
+import { Observable, defer, of, throwError } from 'rxjs';
+import { catchError, concatMap } from 'rxjs/operators';
 import { createHash } from 'crypto';
 import { Request, Response } from 'express';
 
@@ -34,7 +34,6 @@ export class IdempotencyInterceptor implements NestInterceptor {
     if (!idempotencyKey) {
       throw new ExternalApiException('2001', '잘못된 요청', 'Idempotency-Key 헤더가 필요합니다');
     }
-
     if (idempotencyKey.length > 64) {
       throw new ExternalApiException('2001', '잘못된 요청', 'Idempotency-Key는 최대 64자입니다');
     }
@@ -43,7 +42,6 @@ export class IdempotencyInterceptor implements NestInterceptor {
     const endpoint = `${request.method} ${request.route?.path || request.path}`;
     const requestHash = createHash('sha256').update(JSON.stringify(request.body)).digest('hex');
 
-    // 기존 키 조회
     const existing = await this.idempotencyKeyRepository.findOne({
       where: { idempotencyKey, userId, endpoint },
     });
@@ -52,16 +50,14 @@ export class IdempotencyInterceptor implements NestInterceptor {
       if (existing.requestHash !== requestHash) {
         throw new ExternalApiException('2004', '멱등키 요청 불일치');
       }
-
       if (existing.status === IdempotencyKeyStatus.PROCESSING) {
         throw new ExternalApiException('2005', '요청 처리 중');
       }
 
-      // 만료 체크
-      if (existing.expiresAt && new Date() > existing.expiresAt) {
+      const isExpired = existing.expiresAt && new Date() > existing.expiresAt;
+      if (isExpired) {
         await this.idempotencyKeyRepository.remove(existing);
       } else {
-        // 캐싱된 응답 반환
         if (existing.responseStatus) {
           response.status(existing.responseStatus);
         }
@@ -69,9 +65,8 @@ export class IdempotencyInterceptor implements NestInterceptor {
       }
     }
 
-    // 새 키 등록 (PROCESSING 상태)
-    const now = new Date();
-    const expiresAt = new Date(now.getTime() + IDEMPOTENCY_KEY_TTL_HOURS * 60 * 60 * 1000);
+    const createdAt = new Date();
+    const expiresAt = new Date(createdAt.getTime() + IDEMPOTENCY_KEY_TTL_HOURS * 60 * 60 * 1000);
 
     const newKey = this.idempotencyKeyRepository.create({
       idempotencyKey,
@@ -79,40 +74,46 @@ export class IdempotencyInterceptor implements NestInterceptor {
       endpoint,
       requestHash,
       status: IdempotencyKeyStatus.PROCESSING,
-      createdAt: now,
+      createdAt,
       expiresAt,
     });
 
     try {
       await this.idempotencyKeyRepository.save(newKey);
     } catch (error) {
-      // unique 제약 위반 → 동시 요청
       if (error?.code === 'ER_DUP_ENTRY') {
+        // unique 제약 위반 → 동시 요청
         throw new ExternalApiException('2005', '요청 처리 중');
       }
       throw error;
     }
 
+    // selector를 async 로 두면 Promise<Observable>이 next emission으로 흘러나와
+    // ExceptionFilter가 우회되고 빈 본문 + HTTP 200으로 응답된다.
+    // 동기 selector + defer로 비동기 작업을 감싸 emission 순서와 예외 전파를 보장한다.
     return next.handle().pipe(
-      tap(async (responseBody) => {
-        try {
-          newKey.status = IdempotencyKeyStatus.COMPLETE;
-          newKey.responseBody = responseBody;
-          newKey.responseStatus = response.statusCode;
-          await this.idempotencyKeyRepository.save(newKey);
-        } catch (err) {
-          this.logger.warn(`멱등키 응답 캐싱 실패 - key: ${idempotencyKey}`, err);
-        }
-      }),
-      catchError(async (err) => {
-        // 핸들러 실패 시 PROCESSING 키 제거 → 클라이언트가 재시도 가능
-        try {
-          await this.idempotencyKeyRepository.remove(newKey);
-        } catch (removeErr) {
-          this.logger.warn(`멱등키 제거 실패 - key: ${idempotencyKey}`, removeErr);
-        }
-        return throwError(() => err);
-      }),
+      concatMap((responseBody) =>
+        defer(async () => {
+          try {
+            newKey.status = IdempotencyKeyStatus.COMPLETE;
+            newKey.responseBody = responseBody;
+            newKey.responseStatus = response.statusCode;
+            await this.idempotencyKeyRepository.save(newKey);
+          } catch (err) {
+            this.logger.warn(`멱등키 응답 캐싱 실패 - key: ${idempotencyKey}`, err);
+          }
+          return responseBody;
+        }),
+      ),
+      catchError((err) =>
+        defer(async () => {
+          try {
+            await this.idempotencyKeyRepository.remove(newKey);
+          } catch (removeErr) {
+            this.logger.warn(`멱등키 제거 실패 - key: ${idempotencyKey}`, removeErr);
+          }
+        }).pipe(concatMap(() => throwError(() => err))),
+      ),
     );
   }
 }
