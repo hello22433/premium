@@ -1204,7 +1204,8 @@ export class DeliveryBatchService {
     const deliveryMethod = orderDelivery.deliveryMethod;
 
     const body = applyReplaceCharacters(orderDelivery.orderProductMapping.sendContent ?? '', orderDelivery);
-    const memoRaw = orderDelivery.orderProductMapping.product.memo;
+    const memoSourceProduct = orderDelivery.choiceSelectProduct ?? orderDelivery.orderProductMapping.product;
+    const memoRaw = memoSourceProduct.memo;
     const memo = memoRaw && deliveryMethod !== IOrderSendMethod.EMAIL && orderDelivery.orderProductMapping.order.type !== IOrderType.SSG
       ? applyReplaceCharacters(memoRaw, orderDelivery)
       : null;
