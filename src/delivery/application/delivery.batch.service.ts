@@ -861,7 +861,8 @@ export class DeliveryBatchService {
     // 텍스트 빌드
     const title = orderDelivery.orderProductMapping.sendTitle ?? '';
     const body = applyReplaceCharacters(orderDelivery.orderProductMapping.sendContent ?? '', orderDelivery);
-    const memoRaw = orderDelivery.orderProductMapping.product.memo;
+    const memoSourceProduct = orderDelivery.choiceSelectProduct ?? orderDelivery.orderProductMapping.product;
+    const memoRaw = memoSourceProduct.memo;
     const memo = memoRaw && orderDelivery.orderProductMapping.order.type !== IOrderType.SSG
       ? applyReplaceCharacters(memoRaw, orderDelivery)
       : null;
@@ -963,7 +964,8 @@ export class DeliveryBatchService {
     // 폴백: MMS 발송
     const title = orderDelivery.orderProductMapping.sendTitle ?? '';
     const body = applyReplaceCharacters(orderDelivery.orderProductMapping.sendContent ?? '', orderDelivery);
-    const memoRaw = orderDelivery.orderProductMapping.product.memo;
+    const memoSourceProduct = orderDelivery.choiceSelectProduct ?? orderDelivery.orderProductMapping.product;
+    const memoRaw = memoSourceProduct.memo;
     const memo = memoRaw && orderDelivery.orderProductMapping.order.type !== IOrderType.SSG
       ? applyReplaceCharacters(memoRaw, orderDelivery)
       : null;
