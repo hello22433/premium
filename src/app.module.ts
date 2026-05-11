@@ -47,6 +47,7 @@ import { RequirementModule } from './requirement/requirement.module';
 import { NotificationModule } from './notification/notification.module';
 import { OrderReceiptModule } from './order_receipt/order.receipt.module';
 import { ExternalApiModule } from './external_api/external.api.module';
+import { ExternalApiWebhookModule } from './external_api/webhook/external.api.webhook.module';
 import { SidebarModule } from './sidebar/sidebar.module';
 
 @Module({
@@ -101,6 +102,7 @@ import { SidebarModule } from './sidebar/sidebar.module';
     NotificationModule,
     OrderReceiptModule,
     ExternalApiModule,
+    ExternalApiWebhookModule,
     SidebarModule,
   ],
   controllers: [AppController],

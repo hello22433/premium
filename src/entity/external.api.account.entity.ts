@@ -27,6 +27,12 @@ export class ExternalApiAccountEntity extends BaseEntity {
   @Column({ type: 'int', nullable: true, comment: '재발송 최대 횟수 (NULL=시스템 기본값)' })
   resendMaxCount: number | null;
 
+  @Column({ type: 'varchar', length: 512, nullable: true, comment: '폐기 통보 수신 URL (HTTPS, NULL=비활성)' })
+  cancelWebhookUrl: string | null;
+
+  @Column({ type: 'boolean', default: false, comment: 'webhook 활성화 토글' })
+  cancelWebhookEnabled: boolean;
+
   @OneToMany(() => ExternalApiAllowedIpEntity, (ip) => ip.account)
   allowedIps: ExternalApiAllowedIpEntity[];
 }

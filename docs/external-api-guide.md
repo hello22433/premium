@@ -77,6 +77,12 @@ X-API-Key: {발급받은 API Key}
 | POST | `/orders/ssg` | SSG 쿠폰 주문 및 발송 |
 | GET | `/orders/ssg/:trId/status` | SSG 주문 상태 조회 |
 
+**수신(Webhook):**
+
+| Direction | Endpoint | 설명 |
+|-----------|----------|------|
+| ePOPKON → 외부 | `POST {등록 URL}` | 쿠폰 폐기/취소 실시간 통보 ([8. Webhook](#8-수신-쿠폰-폐기-통보-webhook)) |
+
 ---
 
 ## 1. 상품 목록 조회
@@ -530,6 +536,73 @@ curl -X GET "https://{서버주소}/api/v1/external/orders/ssg/01ARZ3NDEKTSV4RRF
 | `personalCode` | string? | SSG 개인번호 |
 
 `couponStatus`, `deliveryStatus` 값은 [3. 주문 상태 조회](#3-주문-상태-조회)의 상태 표를 참조하세요.
+
+---
+
+## 8. (수신) 쿠폰 폐기 통보 Webhook
+
+ePOPKON이 외부 고객사 시스템으로 쿠폰의 폐기/취소 사실을 실시간 통보하는 단방향 Webhook입니다. 위 1~7번 API와 달리 **ePOPKON이 외부 고객사 서버로 HTTP POST를 호출하는 방향**입니다.
+
+### 사용 시나리오
+
+- 외부 API로 발급받은 쿠폰이 폐기/취소 상태(`CANCEL`, `REFUND_CANCEL`)로 변경되었을 때 즉시 통지받고 싶은 경우
+- 사용/만료 등 다른 상태 전이는 통보되지 않습니다 (현재는 폐기/취소만 지원)
+
+### 등록 절차
+
+1. 외부 고객사는 수신 URL을 준비합니다 (HTTPS 필수).
+2. ePOPKON 관리자에게 URL 등록을 요청합니다.
+3. 동시에 ePOPKON 호출 IP를 안내해 드리니, 고객사 측 방화벽에서 해당 IP를 허용해 주세요.
+
+> 외부 API 본인 콘솔에서 직접 등록하는 기능은 제공하지 않습니다 (관리자 등록 전용).
+
+### Request (ePOPKON → 외부 고객사)
+
+```
+POST {등록한 URL}
+Content-Type: application/json
+```
+
+```json
+{
+  "eventType": "COUPON_CANCEL",
+  "eventId": "8b1a2c4d-3e5f-6789-abcd-ef0123456789",
+  "trId": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  "couponStatus": "CANCEL",
+  "cancelledAt": "2026-05-11T03:00:00.000Z"
+}
+```
+
+### Request Fields
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `eventType` | string | 이벤트 종류. 현재는 `COUPON_CANCEL`만 지원 |
+| `eventId` | string | 이벤트 고유 ID (UUID v4). 중복 수신 시 식별·무시용 |
+| `trId` | string | 폐기된 쿠폰의 트랜잭션 ID |
+| `couponStatus` | string | `CANCEL` 또는 `REFUND_CANCEL` |
+| `cancelledAt` | string | 폐기 발생 시각 (ISO 8601, UTC) |
+
+> 폐기 사유(외부 API 취소·관리자 폐기·환불·SSG 재발송 등)는 ePOPKON 내부 컨텍스트라 통보 페이로드에는 포함되지 않습니다. 상세 정보가 필요하면 [3. 주문 상태 조회](#3-주문-상태-조회) API로 `trId`를 조회하세요.
+
+### Expected Response (외부 고객사 → ePOPKON)
+
+- HTTP 상태 코드 `2xx`로 응답해 주세요. 응답 본문은 사용하지 않습니다.
+- 응답 본문이 있는 경우 최대 2KB까지만 호출 이력에 기록됩니다.
+- **10초 이내** 응답이 오지 않으면 타임아웃으로 처리됩니다.
+
+### 발송 정책
+
+- **시도 횟수**: 1회. 실패(타임아웃·5xx·4xx·네트워크 오류 등) 시 재시도하지 않습니다.
+- **순서 보장**: 단일 시도이므로 통상 순서가 뒤집힐 일은 없으나, 외부 측에서 `cancelledAt`을 기준으로 정렬할 것을 권장합니다.
+- **중복 수신**: 현재는 한 이벤트당 한 번만 발송되지만, 운영 정책 변경에 대비해 `eventId`로 멱등 처리할 것을 권장합니다.
+- **호출 이력**: ePOPKON 측에 1년간 보관됩니다. 운영 콘솔에서 조회 가능합니다.
+
+### 보안
+
+- 통보 URL은 **HTTPS만 허용**됩니다. http URL은 등록되지 않습니다.
+- 사설망/loopback IP는 등록되지 않습니다 (SSRF 방지).
+- 페이로드에는 쿠폰의 핀번호(`barCode`, `personalCode`)가 포함되지 않습니다. 상세 정보는 [3. 주문 상태 조회](#3-주문-상태-조회) API를 사용해 `trId`로 조회하세요.
 
 ---
 
