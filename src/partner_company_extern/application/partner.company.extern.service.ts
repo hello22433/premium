@@ -106,7 +106,7 @@ export class PartnerCompanyExternService {
           this.logger.warn(
             `[SSG] check() 실패, ${attempt}차 재시도 예정 (${attempt}/${maxAttempts}): ${e instanceof Error ? e.message : e}`,
           );
-          await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
+          await sleep(1000 * attempt);
         }
       }
     }
@@ -152,11 +152,27 @@ export class PartnerCompanyExternService {
           });
 
           if (existing?.barCode) {
-            // 상대 트랜잭션이 이미 성공 완료한 상태 → 그 bar_code를 그대로 이어받고 협력사 호출 생략
+            // 상대 트랜잭션이 이미 성공 완료한 상태 → 그 bar_code를 그대로 이어받고 협력사 호출 생략.
+            // issue() 내부 save(Fix #3) 덕분에 DB의 order_delivery row에도 PIN 관련 필드가 반영되어 있으므로
+            // 메모리상 entity에 fresh DB 값을 모두 복원해 caller가 일관된 상태로 진행하도록 한다.
+            // (이전에는 barCode만 복원해서 SSG의 personalCode/ssgTransactionId/expireAt이 누락되는 버그가 있었음)
             this.logger.warn(
               `[PIN_DEDUP] 중복 감지 - 기존 발급 이어받음. transactionId: ${orderDelivery.transactionId}, orderDeliveryId: ${orderDelivery.id}, type: ${type}, barCode: ${existing.barCode}`,
             );
-            orderDelivery.barCode = existing.barCode;
+            const fresh = await this.orderDeliveryRepository.findOne({
+              where: { id: orderDelivery.id },
+            });
+            if (fresh?.barCode) {
+              orderDelivery.barCode = fresh.barCode;
+              orderDelivery.personalCode = fresh.personalCode;
+              orderDelivery.couponNum = fresh.couponNum;
+              orderDelivery.ssgTransactionId = fresh.ssgTransactionId;
+              orderDelivery.expireAt = fresh.expireAt;
+              orderDelivery.encourageAt = fresh.encourageAt;
+            } else {
+              // Fix #3 적용 전 발급된 dedup row 등 fresh entity에 PIN이 없을 경우의 안전 폴백
+              orderDelivery.barCode = existing.barCode;
+            }
             await this.pinIssueDedupRepository.update(
               { transactionId: orderDelivery.transactionId },
               { recoveredFrom: 'DEDUP' },
@@ -499,6 +515,23 @@ export class PartnerCompanyExternService {
           { barCode: orderDelivery.barCode },
         );
       }
+
+      // PIN 발급 결과를 order_delivery에도 즉시 반영한다.
+      // caller(배치/수동 발송)가 issue() 반환 이후 createCouponImage/save 등에서 throw하면
+      // entity 메모리에만 들고 있던 barCode/personalCode 등이 DB에 남지 않아
+      // 외부 SSG에는 INSERT 됐는데 사내 DB는 NULL인 불일치 상태가 발생한다(orphan PIN).
+      // @Transactional 안에서 update하므로 issue() 자체가 throw하면 함께 롤백된다.
+      await this.orderDeliveryRepository.update(
+        { id: orderDelivery.id },
+        {
+          barCode: orderDelivery.barCode,
+          personalCode: orderDelivery.personalCode,
+          couponNum: orderDelivery.couponNum,
+          ssgTransactionId: orderDelivery.ssgTransactionId,
+          expireAt: orderDelivery.expireAt,
+          encourageAt: orderDelivery.encourageAt,
+        },
+      );
     } catch (e) {
       this.logger.error(e);
 
