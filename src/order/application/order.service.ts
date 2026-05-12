@@ -60,7 +60,7 @@ import { In, LessThanOrEqual, Like, MoreThanOrEqual, QueryRunner, Repository } f
 import { QueryBuilderDateCondition } from '../../common/infra/query.builder.date.condition';
 import { OrderViewDto } from '../api/dto/order.view.dto';
 import { DateDateFormatStr, DateFormatStr } from '../../common/domain/date.format.str';
-import { format } from 'date-fns';
+import { addDays, format } from 'date-fns';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { IOrderStatus } from '../interface/order.status';
 import { OrderProductMappingEntity } from '../../entity/order.product.mapping.entity';
@@ -4022,8 +4022,10 @@ export class OrderService {
     testOrderDelivery.deliveryMethod = deliveryMethod;
     testOrderDelivery.deliveryTarget = encryptedDeliveryTarget;
     testOrderDelivery.imagePath = imagePath;
+    const expireAt = addDays(new Date(), expireDayCalc);
+
     testOrderDelivery.sendRequestAt = new Date();
-    testOrderDelivery.expireAt = new Date();
+    testOrderDelivery.expireAt = expireAt;
     testOrderDelivery.barCode = barCode;
     testOrderDelivery.personalCode = barCode;
 
@@ -4038,7 +4040,7 @@ export class OrderService {
     orderDelivery.personalCode = barCode;
     orderDelivery.orderProductMapping = orderProductMapping;
     orderDelivery.imagePath = imagePath;
-    orderDelivery.expireAt = new Date();
+    orderDelivery.expireAt = expireAt;
 
     // 3. 전송 (testOrderDeliveryId로 테스트 발송임을 전달하여 PIN 재발급 스킵)
     const isSuccess = await this.deliveryBatchService.oneSend(orderDelivery, false, testOrderDeliveryId);
