@@ -99,7 +99,13 @@ export class RefundLedgerService {
     repo: Repository<OrderDeliveryRefundEntity>,
     orderDeliveryId: number,
   ): Promise<void> {
-    await repo.delete({ orderDeliveryId });
+    const result = await repo.delete({ orderDeliveryId });
+    if (!result.affected) {
+      this.logger.warn(`환불 해제 중복 차단: orderDeliveryId=${orderDeliveryId} (ledger row 없음)`);
+      throw new BadRequestException(
+        `이미 해제된 환불 ledger입니다. (orderDeliveryId: ${orderDeliveryId})`,
+      );
+    }
   }
 
   private async markRefundedAt(
