@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, MoreThan, Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
@@ -243,7 +243,11 @@ export class DeliveryBatchService {
 
       this.logger.log(`[REFUND] 환불 완료 - orderDelivery.id: ${orderDelivery.id}, amount: ${settlementPrice} (정가: ${productPrice})`);
     } catch (error) {
-      this.logger.error(`[REFUND] 환불 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
+      if (error instanceof BadRequestException) {
+        this.logger.warn(`[REFUND] 환불 중복 차단 (정상) - orderDelivery.id: ${orderDelivery.id}, message: ${error.message}`);
+      } else {
+        this.logger.error(`[REFUND] 환불 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
+      }
     }
   }
 
@@ -832,7 +836,11 @@ export class DeliveryBatchService {
 
       this.logger.log(`[RESEND] 환불 복구 완료 - orderDelivery.id: ${orderDelivery.id}, amount: ${settlementPrice} (정가: ${productPrice})`);
     } catch (error) {
-      this.logger.error(`[RESEND] 환불 복구 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
+      if (error instanceof BadRequestException) {
+        this.logger.warn(`[RESEND] 환불 복구 중복 차단 (정상) - orderDelivery.id: ${orderDelivery.id}, message: ${error.message}`);
+      } else {
+        this.logger.error(`[RESEND] 환불 복구 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
+      }
     }
   }
 

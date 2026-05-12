@@ -17,6 +17,7 @@ import {
   CustomerServiceUnmaskedDeliveryTargetReqDto,
 } from '../api/customer.service.req.dto';
 import { InjectRepository } from '@nestjs/typeorm';
+import { Transactional } from 'typeorm-transactional';
 import { OrderEntity } from '../../entity/order.entity';
 import { DataSource, IsNull, QueryRunner, Repository } from 'typeorm';
 import { CustomerServiceGetListResDto } from '../api/customer.service.res.dto';
@@ -667,11 +668,23 @@ export class CustomerServiceService {
     };
   }
 
+  /**
+   * CS 재전송.
+   *
+   * 비관적 락(SELECT FOR UPDATE)으로 동시 재발송 race 차단:
+   * - 첫 번째 요청: 락 획득 → oneSend 수행 → status 변경 → 커밋 → 락 해제
+   * - 두 번째 요청: 락 대기 → 획득 후 status 확인 → 재발송 대상 아닌 상태로 변했거나
+   *   여전히 대상이지만 oneSend 내부 reverseRefundForResend/refundForFail은 이미
+   *   처리되어 ledger 멱등 락에 의해 차단된다.
+   * partner_company_extern_history.service.resendFailedDelivery 와 동일 패턴.
+   */
+  @Transactional()
   async reSend(getBody: CustomerServiceReSendReqDto) {
     const { orderDeliveryId } = getBody;
 
-    const queryBuilder = this.orderDeliveryRepository
+    const orderDelivery = await this.orderDeliveryRepository
       .createQueryBuilder('orderDelivery')
+      .setLock('pessimistic_write')
       .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
       .innerJoinAndSelect('orderProductMapping.order', 'order')
       .innerJoinAndSelect('order.user', 'user')
@@ -682,9 +695,8 @@ export class CustomerServiceService {
       .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
       .leftJoinAndSelect('choiceSelectProduct.brand', 'choiceSelectBrand')
       .andWhere('orderDelivery.status IN (:...status)', { status: ['COMPLETE', 'FAIL', 'COMPLETE_SMS', 'FAIL_SMS'] })
-      .andWhere('orderDelivery.id = :orderDeliveryId', { orderDeliveryId: orderDeliveryId });
-
-    const orderDelivery = await queryBuilder.getOne();
+      .andWhere('orderDelivery.id = :orderDeliveryId', { orderDeliveryId: orderDeliveryId })
+      .getOne();
 
     if (!orderDelivery) {
       throw new BadRequestException('주문 발송가 존재하지 않습니다.');
@@ -695,8 +707,6 @@ export class CustomerServiceService {
     }
 
     await this.deliveryBatchService.oneSend(orderDelivery);
-
-    return;
   }
 
   /**
