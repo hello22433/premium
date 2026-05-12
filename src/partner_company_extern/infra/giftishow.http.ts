@@ -205,7 +205,7 @@ export class GiftishowHttp implements IGiftiShow {
       const statusCode = resultToJson.response?.result?.[0]?.StatusCode?.[0];
       const statusText = resultToJson.response?.result?.[0]?.StatusText?.[0];
       if (statusCode !== '0') {
-        throw new Error(`GIFT_SHOW cancel 실패: ${statusCode} - ${statusText}`);
+        throw new Error(`[GIFT_SHOW:${statusCode}] ${statusText}`);
       }
       return;
     } catch (e) {

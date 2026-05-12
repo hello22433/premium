@@ -141,10 +141,15 @@ export class GiftielHttp implements IGiftiel {
 
       const result = response.data;
       this.logger.log(result);
-      return;
+
+      if (!result?.ResultCode) {
+        throw new Error('[GIFTIEL] 비정상 응답: ResultCode 없음');
+      }
+      if (result.ResultCode !== '0000') {
+        throw new Error(`[GIFTIEL:${result.ResultCode}] ${result.ResultMsg}`);
+      }
     } catch (e) {
       this.logger.error(e);
-      this.logger.error(JSON.stringify(e));
       throw e;
     }
   }

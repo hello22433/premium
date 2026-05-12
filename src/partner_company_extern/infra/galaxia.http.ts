@@ -256,14 +256,13 @@ export class GalaxiaHttp implements IGalaxia {
 
       if (result.resCode !== '0000') {
         throw new InternalServerErrorException(
-          `GALAXIA cancel 실패: ${result.resCode} - ${result.resMsg}`,
+          `[GALAXIA:${result.resCode}] ${result.resMsg}`,
         );
       }
 
       this.logger.log(JSON.stringify(result));
     } catch (e) {
       this.logger.error(e);
-      this.logger.error(JSON.stringify(e));
       throw e;
     }
   }
@@ -329,7 +328,6 @@ export class GalaxiaHttp implements IGalaxia {
       };
     } catch (e) {
       this.logger.error(e);
-      this.logger.error(JSON.stringify(e));
       throw e;
     }
   }

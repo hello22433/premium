@@ -261,20 +261,18 @@ export class DaouHttp implements IDaou {
       const xmlResponse = await this.xmlParser.parse(response.data);
 
       // 응답 처리
-      if (xmlResponse.RT === 'S000001') {
-        return {
-          resultCode: xmlResponse.RT,
-          resultMessage: xmlResponse.RTMSG || '정상처리',
-        };
-      } else {
-        return {
-          resultCode: xmlResponse.RT || '-1',
-          resultMessage: xmlResponse.RTMSG || '쿠폰취소에 실패하였습니다.',
-        };
+      if (xmlResponse.RT !== 'S000001') {
+        throw new Error(
+          `[DAOU:${xmlResponse.RT || '-1'}] ${xmlResponse.RTMSG || '쿠폰취소에 실패하였습니다.'}`,
+        );
       }
+      return {
+        resultCode: xmlResponse.RT,
+        resultMessage: xmlResponse.RTMSG || '정상처리',
+      };
     } catch (error) {
-      this.logger.error(`DAOU Cancel Error: ${JSON.stringify(error)}`);
-      throw new InternalServerErrorException('다우기술 쿠폰 취소 실패');
+      this.logger.error(`DAOU Cancel Error: ${error instanceof Error ? error.message : JSON.stringify(error)}`);
+      throw error;
     }
   }
 
