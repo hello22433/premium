@@ -114,7 +114,7 @@ export class DeliveryBatchService {
       : orderDelivery.deliveryTarget;
 
     if (!encryptedValue) {
-      return encryptedValue ?? '';
+      return '';
     }
 
     try {
@@ -125,16 +125,10 @@ export class DeliveryBatchService {
     }
   }
 
-  /**
-   * 발송 성공 시 actualSendAt 설정
-   */
   private markSendSuccess(orderDelivery: OrderDeliveryEntity, status: IOrderDeliveryStatus): void {
     this.deliverySendService.markSendSuccess(orderDelivery, status);
   }
 
-  /**
-   * 발송 실패 시 failedAt 설정
-   */
   private assertChoiceProductNotDeletedForCsResend(orderDelivery: OrderDeliveryEntity): void {
     const product = orderDelivery.orderProductMapping.product;
     if (!product || (product.type === IProductType.CHOICE && product.deletedAt)) {
@@ -405,6 +399,10 @@ export class DeliveryBatchService {
 
   /**
    * 단일 배송건 처리 (배치용) - PIN 발급 + 발송 + DB 저장
+   *
+   * 예외 발생 시 status=WAIT 행의 claimedAt을 해제해 다음 cron에서 재시도되게 한다.
+   * 해제 안 하면 row가 영구 stale claim 상태로 빠져 부팅 시 releaseStaleClaims만이
+   * 풀 수 있는 사고가 된다. status가 이미 FAIL/COMPLETE면 건드리지 않음.
    */
   private async processOneDeliveryForBatch(
     orderDelivery: OrderDeliveryEntity,
@@ -414,6 +412,16 @@ export class DeliveryBatchService {
       return result;
     } catch (error) {
       this.logger.error(`[BATCH] Failed to process orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
+      try {
+        await this.orderDeliveryRepository.update(
+          { id: orderDelivery.id, status: IOrderDeliveryStatus.WAIT },
+          { claimedAt: null },
+        );
+      } catch (resetError) {
+        this.logger.error(
+          `[BATCH] claimedAt reset 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${resetError}`,
+        );
+      }
       return null;
     }
   }
@@ -532,6 +540,32 @@ export class DeliveryBatchService {
       const emailText = tailText ? `${body}\n\n${tailText}` : body;
       await this.deliverySendService.sendEmail(orderDelivery, decryptedDeliveryTarget, encryptKey, title, emailText, deliveryHistory);
     }
+
+    // 발송 결과(성공/실패)를 즉시 DB에 마커로 반영. 이후 refund/save가 실패해도
+    // outer catch의 claimedAt reset은 status=WAIT 조건만 풀기 때문에 이미 COMPLETE/FAIL로
+    // 반영된 행은 재시도되지 않아 중복 발송이 방지된다.
+    // (이전에는 발송은 성공했는데 save가 실패하면 row가 WAIT 상태로 남아 다음 cron이 재발송했음)
+    //
+    // status update와 부가 컬럼 update를 분리한다.
+    // - 1차(짧음): status/actualSendAt/failedAt만 갱신 → idx_order_delivery_claim 락을 짧게 잡고 빠르게 commit
+    // - 2차: 나머지 부가 컬럼은 idx_order_delivery_claim에 무관하므로 락 footprint가 작음
+    // 이렇게 분리해야 후속 cron의 claim 쿼리와 락 경쟁 시간을 최소화해 데드락 가능성을 줄인다.
+    await this.orderDeliveryRepository.update(
+      { id: orderDelivery.id },
+      {
+        status: orderDelivery.status,
+        actualSendAt: orderDelivery.actualSendAt,
+        failedAt: orderDelivery.failedAt,
+      },
+    );
+    await this.orderDeliveryRepository.update(
+      { id: orderDelivery.id },
+      {
+        imagePath: orderDelivery.imagePath,
+        expireAt: orderDelivery.expireAt,
+        encourageAt: orderDelivery.encourageAt,
+      },
+    );
 
     // 6. 발송 실패 시 환불 처리
     if (orderDelivery.status === IOrderDeliveryStatus.FAIL) {
@@ -721,7 +755,13 @@ export class DeliveryBatchService {
         }
 
         // SSG FAIL 재발송: 잔액 충분한 행사 재선택 + 잔액 선차감
-        if (order.type === IOrderType.SSG && orderDelivery.status === IOrderDeliveryStatus.FAIL) {
+        // refundedAt 가드: 실제 환불이 발생한 경우(SSG event balance가 복원된 경우)만 재차감한다.
+        // 환불 이력이 없는 FAIL은 잔액이 차감된 상태 그대로이므로 재차감하면 이중차감이 된다.
+        if (
+          order.type === IOrderType.SSG
+          && orderDelivery.status === IOrderDeliveryStatus.FAIL
+          && orderDelivery.refundedAt
+        ) {
           const newEvent = await this.ssgEventService.selectEventForOrder(
             product.price,
             product.expireDay,
@@ -760,7 +800,9 @@ export class DeliveryBatchService {
 
         // 이전 실패로 환불된 금액 재차감 (PIN 실패든 발송 실패든)
         // SSG 선차감이 이미 완료된 경우 skipSsg=true
-        if (hadNoBarCode || orderDelivery.status === IOrderDeliveryStatus.FAIL) {
+        // refundedAt 가드: 실제 환불이 발생한 경우만 역차감. 환불 이력이 없으면 차감 상태 그대로이므로
+        // 재차감하면 사용자 balance/allSettleAmount/SSG event balance가 이중차감된다.
+        if ((hadNoBarCode || orderDelivery.status === IOrderDeliveryStatus.FAIL) && orderDelivery.refundedAt) {
           await this.reverseRefundForResend(orderDelivery, resendDeducted);
         }
 
