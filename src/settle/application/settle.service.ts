@@ -1876,11 +1876,23 @@ export class SettleService {
     const allUsers = await qb.getMany();
 
     // Phase 2: 동일 회사별 allSettleAmount 합산
+    // 검색/표시 필터(personName, businessName)와 무관하게 회사 전체 사용자 기준으로 합산.
+    // (검색필터를 그대로 적용하면 companyTotal이 부분집합이 되어 remainServiceAmount/신용초과액이 과다 계산됨)
+    const companyIds = [
+      ...new Set(allUsers.map((u) => u.companyId).filter((id): id is number => id != null)),
+    ];
     const companyAllSettleMap = new Map<number, number>();
-    for (const user of allUsers) {
-      if (!user.companyId) continue;
-      const current = companyAllSettleMap.get(user.companyId) ?? 0;
-      companyAllSettleMap.set(user.companyId, current + user.allSettleAmount);
+    if (companyIds.length > 0) {
+      const companyTotals = await this.userRepository
+        .createQueryBuilder('u')
+        .select('u.companyId', 'companyId')
+        .addSelect('SUM(u.allSettleAmount)', 'total')
+        .where('u.companyId IN (:...companyIds)', { companyIds })
+        .groupBy('u.companyId')
+        .getRawMany<{ companyId: number; total: string }>();
+      for (const row of companyTotals) {
+        companyAllSettleMap.set(Number(row.companyId), Number(row.total));
+      }
     }
 
     // Phase 3: remainServiceAmount 계산 및 결과 생성
