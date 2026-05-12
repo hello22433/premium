@@ -1054,13 +1054,17 @@ export class OrderService {
             }
           }
 
+          // 초이스 쿠폰은 고객사 전달용 리포트에서 핀코드/쿠폰번호를 노출하지 않는다.
+          const isChoiceProduct = orderProductMapping.product?.type === IProductType.CHOICE;
+          const maskedBarCode =
+            !isChoiceProduct && orderDelivery.barCode ? MaskingUtil.maskBarCode(orderDelivery.barCode) : null;
           orderDeliveryList.push({
             id: orderDelivery.id,
             sendRequestAt: orderDelivery.sendRequestAt ? format(orderDelivery.sendRequestAt, DateFormatStr) : null,
             actualSendAt: orderDelivery.actualSendAt ? format(orderDelivery.actualSendAt, DateFormatStr) : null,
             productName: orderProductMapping.product?.name ?? '(삭제된 상품)',
             amount: orderProductMapping.product?.price ?? 0,
-            barCode: orderDelivery.barCode ? MaskingUtil.maskBarCode(orderDelivery.barCode) : null,
+            barCode: maskedBarCode,
             deliveryMethod: orderDelivery.deliveryMethod,
             deliveryTarget: finalDeliveryTarget,
           });
@@ -1503,13 +1507,17 @@ export class OrderService {
                 ? format(orderDelivery.actualSendAt, DateFormatStr)
                 : null;
 
+            // 초이스 쿠폰은 고객사 전달용 리포트에서 핀코드/쿠폰번호를 노출하지 않는다.
+            const isChoiceProduct = orderProductMapping.product?.type === IProductType.CHOICE;
+            const maskedBarCode =
+              !isChoiceProduct && orderDelivery.barCode ? MaskingUtil.maskBarCode(orderDelivery.barCode) : null;
             orderDeliveryList.push({
               id: orderDelivery.id,
               sendRequestAt: deliverySendRequestAt,
               actualSendAt: orderDelivery.actualSendAt ? format(orderDelivery.actualSendAt, DateFormatStr) : null,
               productName: orderProductMapping.product.name ?? null,
               amount: orderProductMapping.product.price ?? null,
-              barCode: orderDelivery.barCode ? MaskingUtil.maskBarCode(orderDelivery.barCode) : null,
+              barCode: maskedBarCode,
               deliveryMethod: orderDelivery.deliveryMethod,
               deliveryTarget: finalDeliveryTarget,
             });
