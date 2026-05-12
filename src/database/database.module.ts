@@ -72,6 +72,7 @@ import { GiftielExchangeHistoryEntity } from '../entity/giftiel.exchange.history
 import { ExternalApiAccountEntity } from '../entity/external.api.account.entity';
 import { ExternalApiAllowedIpEntity } from '../entity/external.api.allowed.ip.entity';
 import { ExternalApiSsgRequestEntity } from '../entity/external.api.ssg.request.entity';
+import { ExternalApiWebhookLogEntity } from '../entity/external.api.webhook.log.entity';
 
 @Module({
   imports: [
@@ -148,6 +149,7 @@ import { ExternalApiSsgRequestEntity } from '../entity/external.api.ssg.request.
           ExternalApiAccountEntity,
           ExternalApiAllowedIpEntity,
           ExternalApiSsgRequestEntity,
+          ExternalApiWebhookLogEntity,
         ],
         extra: {
           connectionLimit: +configService.get('DATABASE_CONNECTION_LIMIT', 50),
