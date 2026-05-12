@@ -134,6 +134,31 @@ export class UserManagementService {
     return company?.balanceManagementType === 'COMPANY';
   }
 
+  /**
+   * 잔액 행 잠금 (SELECT FOR UPDATE) 후 현재 잔액 반환.
+   * 반드시 @Transactional() 컨텍스트 안에서 호출해야 잠금이 유효함.
+   */
+  private async lockBalance(user: UserEntity, company: UserCompanyEntity | null): Promise<number> {
+    if (this.isCompanyBalanceMode(company)) {
+      const locked = await this.userCompanyRepository.findOne({
+        where: { id: company.id },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!locked) {
+        throw new NotFoundException('잔액 처리 중 회사 정보를 찾을 수 없습니다.');
+      }
+      return locked.balance;
+    }
+    const locked = await this.userRepository.findOne({
+      where: { id: user.id },
+      lock: { mode: 'pessimistic_write' },
+    });
+    if (!locked) {
+      throw new NotFoundException('잔액 처리 중 계정 정보를 찾을 수 없습니다.');
+    }
+    return locked.balance;
+  }
+
   async getNameList(getQuery: UserManagementGetNameListReqQueryDto): Promise<UserManagementGetNameListResDto> {
     const { authority } = getQuery;
 
@@ -378,6 +403,7 @@ export class UserManagementService {
     };
   }
 
+  @Transactional()
   async chargeBalance(getBody: UserManagementChargeBalanceReqDto, operator: ILoginUserInfo) {
     const { id, chargeAmount, memo } = getBody;
 
@@ -421,13 +447,16 @@ export class UserManagementService {
 
   /**
    * 잔액 업데이트 공통 로직 (회사/계정 레벨 분기 처리)
-   * atomic UPDATE로 동시성 안전. beforeBalance/afterBalance는 UPDATE 후 재조회로 산출.
+   * SELECT FOR UPDATE로 행 잠금 후 beforeBalance 기록, atomic UPDATE로 잔액 변경.
+   * 호출부에 @Transactional()이 있어야 잠금이 트랜잭션 범위 안에서 동작함.
    */
   private async updateBalance(
     user: UserEntity,
     company: UserCompanyEntity | null,
     amount: number,
   ): Promise<{ beforeBalance: number; afterBalance: number }> {
+    const beforeBalance = await this.lockBalance(user, company);
+
     if (this.isCompanyBalanceMode(company)) {
       await this.userCompanyRepository
         .createQueryBuilder()
@@ -436,9 +465,7 @@ export class UserManagementService {
         .where('id = :id', { id: company.id })
         .setParameters({ amount })
         .execute();
-      const fresh = await this.userCompanyRepository.findOne({ where: { id: company.id } });
-      const afterBalance = fresh!.balance;
-      return { beforeBalance: afterBalance - amount, afterBalance };
+      return { beforeBalance, afterBalance: beforeBalance + amount };
     }
 
     await this.userRepository
@@ -448,11 +475,10 @@ export class UserManagementService {
       .where('id = :id', { id: user.id })
       .setParameters({ amount })
       .execute();
-    const fresh = await this.userRepository.findOne({ where: { id: user.id } });
-    const afterBalance = fresh!.balance;
-    return { beforeBalance: afterBalance - amount, afterBalance };
+    return { beforeBalance, afterBalance: beforeBalance + amount };
   }
 
+  @Transactional()
   async modifyBalance(getBody: UserManagementModifyBalanceReqDto, operator: ILoginUserInfo) {
     const { id, newBalance, memo } = getBody;
 
@@ -497,22 +523,22 @@ export class UserManagementService {
 
   /**
    * 잔액을 특정 값으로 설정하는 공통 로직 (회사/계정 레벨 분기 처리)
+   * SELECT FOR UPDATE로 행 잠금 후 beforeBalance 기록, balance 컬럼만 UPDATE.
+   * 호출부에 @Transactional()이 있어야 잠금이 트랜잭션 범위 안에서 동작함.
    */
   private async setBalance(
     user: UserEntity,
     company: UserCompanyEntity | null,
     newBalance: number,
   ): Promise<{ beforeBalance: number }> {
+    const beforeBalance = await this.lockBalance(user, company);
+
     if (this.isCompanyBalanceMode(company)) {
-      const beforeBalance = company.balance;
-      company.balance = newBalance;
-      await this.userCompanyRepository.save(company);
+      await this.userCompanyRepository.update({ id: company.id }, { balance: newBalance });
       return { beforeBalance };
     }
 
-    const beforeBalance = user.balance;
-    user.balance = newBalance;
-    await this.userRepository.save(user);
+    await this.userRepository.update({ id: user.id }, { balance: newBalance });
     return { beforeBalance };
   }
 
@@ -564,6 +590,7 @@ export class UserManagementService {
   /**
    * 잔액 차감 (재발송 시 역환불). atomic conditional UPDATE로 잔액 부족 체크와 차감을 원자적으로 수행.
    */
+  @Transactional()
   async deductBalance(id: number, amount: number, memo?: string): Promise<void> {
     const user = await this.userRepository.findOne({
       where: { id },
@@ -576,6 +603,8 @@ export class UserManagementService {
     const company = user.company;
     const isCompanyMode = this.isCompanyBalanceMode(company);
     const targetId = isCompanyMode ? company!.id : user.id;
+
+    const beforeBalance = await this.lockBalance(user, company);
 
     const result = isCompanyMode
       ? await this.userCompanyRepository
@@ -597,10 +626,7 @@ export class UserManagementService {
       throw new BadRequestException('잔액이 부족합니다.');
     }
 
-    const afterBalance = isCompanyMode
-      ? (await this.userCompanyRepository.findOne({ where: { id: targetId } }))!.balance
-      : (await this.userRepository.findOne({ where: { id: targetId } }))!.balance;
-    const beforeBalance = afterBalance + amount;
+    const afterBalance = beforeBalance - amount;
 
     await this.activityLogService.createLog({
       userId: 0,
@@ -626,6 +652,7 @@ export class UserManagementService {
     });
   }
 
+  @Transactional()
   async addBalance(id: number, amount: number, memo?: string): Promise<void> {
     const user = await this.userRepository.findOne({
       where: { id },

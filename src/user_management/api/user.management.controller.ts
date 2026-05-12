@@ -1,4 +1,17 @@
-import { Body, Controller, Delete, ForbiddenException, Get, Param, ParseIntPipe, Patch, Post, Put, Query, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  ForbiddenException,
+  Get,
+  Param,
+  ParseIntPipe,
+  Patch,
+  Post,
+  Put,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { ApiBadRequestResponse, ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { UserManagementService } from '../application/user.management.service';
 import {
@@ -114,7 +127,7 @@ export class UserManagementController {
     description: '해당 계정이 존재하지 않는 경우',
   })
   // ====================================
-  @UseGuards(AuthUserAuthorizationGuard)
+  @UseGuards(AuthUserSuperAdminGuard)
   @Put('/user-management/balance')
   chargeBalance(@User() user: ILoginUserInfo, @Body() getBody: UserManagementChargeBalanceReqDto) {
     return this.userManagementService.chargeBalance(getBody, user);
@@ -143,8 +156,17 @@ export class UserManagementController {
   @ApiOkResponse({ type: UserManagementBalanceViewDto, description: '성공적으로 조회된 경우' })
   @ApiBadRequestResponse({ description: '해당 계정이 존재하지 않는 경우' })
   // ====================================
+  @UseGuards(AuthUserAuthorizationGuard)
   @Get('/user-management/:id/balance')
-  async getBalance(@Param('id', ParseIntPipe) id: number): Promise<UserManagementBalanceViewDto> {
+  async getBalance(
+    @User() user: ILoginUserInfo,
+    @Param('id', ParseIntPipe) id: number,
+  ): Promise<UserManagementBalanceViewDto> {
+    const isOwner = user.id === id;
+    const isAdmin = user.authority === IUserAuthority.SUPER_ADMIN;
+    if (!isOwner && !isAdmin) {
+      throw new ForbiddenException('권한이 없습니다.');
+    }
     const balance = await this.userManagementService.getBalance(id);
     return { balance };
   }
@@ -164,7 +186,12 @@ export class UserManagementController {
   // ====================================
   @UseGuards(AuthUserAuthorizationGuard)
   @Get('/user-management/:id/balance/history')
-  getBalanceHistory(@Param('id', ParseIntPipe) id: number) {
+  getBalanceHistory(@User() user: ILoginUserInfo, @Param('id', ParseIntPipe) id: number) {
+    const isOwner = user.id === id;
+    const isAdmin = user.authority === IUserAuthority.SUPER_ADMIN;
+    if (!isOwner && !isAdmin) {
+      throw new ForbiddenException('권한이 없습니다.');
+    }
     return this.userManagementService.getBalanceHistory(id);
   }
 
@@ -183,7 +210,12 @@ export class UserManagementController {
   // ====================================
   @UseGuards(AuthUserAuthorizationGuard)
   @Get('/user-management/:id/maximum-limit/history')
-  getMaximumLimitHistory(@Param('id', ParseIntPipe) id: number) {
+  getMaximumLimitHistory(@User() user: ILoginUserInfo, @Param('id', ParseIntPipe) id: number) {
+    const isOwner = user.id === id;
+    const isAdmin = user.authority === IUserAuthority.SUPER_ADMIN;
+    if (!isOwner && !isAdmin) {
+      throw new ForbiddenException('권한이 없습니다.');
+    }
     return this.userManagementService.getMaximumLimitHistory(id);
   }
 
@@ -321,10 +353,7 @@ export class UserManagementController {
   @UseGuards(AuthUserAuthorizationGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: '[본인] 내 API Key의 허용 IP 목록 통째 교체' })
-  async replaceMyAllowedIps(
-    @User() user: ILoginUserInfo,
-    @Body() body: UpdateAllowedIpsReqDto,
-  ): Promise<void> {
+  async replaceMyAllowedIps(@User() user: ILoginUserInfo, @Body() body: UpdateAllowedIpsReqDto): Promise<void> {
     await this.userManagementService.replaceAllowedIpsByUserId(user.id, body);
   }
 
@@ -384,10 +413,7 @@ export class UserManagementController {
   @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: '[어드민] 특정 계정의 허용 IP 목록 통째 교체' })
-  async replaceAllowedIps(
-    @Param('accountId') accountId: string,
-    @Body() body: UpdateAllowedIpsReqDto,
-  ): Promise<void> {
+  async replaceAllowedIps(@Param('accountId') accountId: string, @Body() body: UpdateAllowedIpsReqDto): Promise<void> {
     await this.userManagementService.replaceAllowedIps(accountId, body);
   }
 
@@ -395,10 +421,7 @@ export class UserManagementController {
   @UseGuards(AuthUserAuthorizationGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: '[본인] 내 API Key 허용 IP 단건 추가' })
-  async addMyAllowedIp(
-    @User() user: ILoginUserInfo,
-    @Body() body: AddAllowedIpReqDto,
-  ): Promise<{ id: string }> {
+  async addMyAllowedIp(@User() user: ILoginUserInfo, @Body() body: AddAllowedIpReqDto): Promise<{ id: string }> {
     return this.userManagementService.addAllowedIpByUserId(user.id, body);
   }
 
@@ -406,10 +429,7 @@ export class UserManagementController {
   @UseGuards(AuthUserAuthorizationGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: '[본인] 내 API Key 허용 IP 단건 삭제' })
-  async deleteMyAllowedIp(
-    @User() user: ILoginUserInfo,
-    @Param('ipId') ipId: string,
-  ): Promise<void> {
+  async deleteMyAllowedIp(@User() user: ILoginUserInfo, @Param('ipId') ipId: string): Promise<void> {
     await this.userManagementService.deleteAllowedIpByUserId(user.id, ipId);
   }
 
@@ -417,10 +437,7 @@ export class UserManagementController {
   @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: '[어드민] 특정 계정의 허용 IP 단건 추가' })
-  async addAllowedIp(
-    @Param('accountId') accountId: string,
-    @Body() body: AddAllowedIpReqDto,
-  ): Promise<{ id: string }> {
+  async addAllowedIp(@Param('accountId') accountId: string, @Body() body: AddAllowedIpReqDto): Promise<{ id: string }> {
     return this.userManagementService.addAllowedIp(accountId, body);
   }
 
@@ -428,10 +445,7 @@ export class UserManagementController {
   @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: '[어드민] 특정 계정의 허용 IP 단건 삭제' })
-  async deleteAllowedIp(
-    @Param('accountId') accountId: string,
-    @Param('ipId') ipId: string,
-  ): Promise<void> {
+  async deleteAllowedIp(@Param('accountId') accountId: string, @Param('ipId') ipId: string): Promise<void> {
     await this.userManagementService.deleteAllowedIp(accountId, ipId);
   }
 
@@ -452,10 +466,7 @@ export class UserManagementController {
   @UseGuards(AuthUserAuthorizationGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: '[본인] SSG 활성화 신청 취소 (PENDING만)' })
-  async cancelMySsgRequest(
-    @User() user: ILoginUserInfo,
-    @Param('requestId') requestId: string,
-  ): Promise<void> {
+  async cancelMySsgRequest(@User() user: ILoginUserInfo, @Param('requestId') requestId: string): Promise<void> {
     await this.userManagementService.cancelSsgRequest(user.id, requestId);
   }
 

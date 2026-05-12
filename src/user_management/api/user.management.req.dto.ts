@@ -1,12 +1,25 @@
 import { PagingReqDto } from '../../common/api/dto/pagination.req.dto';
 import { IUserSettleCondition } from '../../user/interface/user.settle.condition';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsEmail, IsEnum, IsIn, IsNotEmpty, IsNumber, IsOptional, Matches } from 'class-validator';
+import {
+  IsEmail,
+  IsEnum,
+  IsIn,
+  IsInt,
+  IsNotEmpty,
+  IsNumber,
+  IsOptional,
+  IsPositive,
+  Matches,
+  Max,
+} from 'class-validator';
 import { IUserStatus } from '../../user/interface/user.status';
 import { dateAtRegexp } from '../../common/domain/date.regexp';
 import { UserManagementUpsertDto } from './dto/user.management.upsert.dto';
 import { IUserAuthority } from '../../user/interface/user.authority';
 import { Type } from 'class-transformer';
+
+const MYSQL_INT_MAX = 2_147_483_647;
 
 export class UserManagementGetNameListReqQueryDto {
   @ApiPropertyOptional({
@@ -20,7 +33,8 @@ export class UserManagementGetNameListReqQueryDto {
 
 export class UserManagementGetListReqQueryDto extends PagingReqDto {
   @ApiPropertyOptional({
-    description: '검색 타입 ex) 전체: ALL, 이메일: EMAIL, 고객사명: BUSINESS_NAME, 담당자명: PERSON_NAME, 연락처: PHONE_NUMBER',
+    description:
+      '검색 타입 ex) 전체: ALL, 이메일: EMAIL, 고객사명: BUSINESS_NAME, 담당자명: PERSON_NAME, 연락처: PHONE_NUMBER',
   })
   // =============================================================
   @IsOptional()
@@ -112,6 +126,7 @@ export class UserManagementChargeBalanceReqDto {
   })
   // =============================================================
   @IsNotEmpty()
+  @IsInt()
   id: number;
 
   @ApiProperty({
@@ -119,6 +134,9 @@ export class UserManagementChargeBalanceReqDto {
   })
   // =============================================================
   @IsNotEmpty()
+  @IsInt()
+  @IsPositive()
+  @Max(MYSQL_INT_MAX)
   chargeAmount: number;
 
   @ApiPropertyOptional({
