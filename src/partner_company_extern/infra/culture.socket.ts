@@ -189,7 +189,6 @@ export class CultureSocket implements ICulture {
       return issueOut as CultureIssueOut;
     } catch (e) {
       this.logger.error(e);
-      this.logger.error(JSON.stringify(e));
       throw e;
     }
   }
@@ -233,18 +232,16 @@ export class CultureSocket implements ICulture {
         throw new Error('not exist response');
       }
       this.logger.log(`response : ${response}`);
-      this.logger.log(`response : ${JSON.stringify(response)}`);
 
       // 응답 레이아웃: HeadNo(0-3) + MessageLength(4-7) + MemberCode(8-14)
       // + SubMemberCode(15-34) + ResultCode(35-38) + ScrachNo(39-54) + ErrMsg(55-84)
       const resultCode = response.substring(35, 39);
       const errMsg = response.substring(55, 85).trim();
       if (resultCode !== '0000') {
-        throw new Error(`CULTURELAND cancel 실패: ${resultCode} - ${errMsg}`);
+        throw new Error(`[CULTURELAND:${resultCode}] ${errMsg}`);
       }
     } catch (e) {
       this.logger.error(e);
-      this.logger.error(JSON.stringify(e));
       throw e;
     }
   }
@@ -289,7 +286,6 @@ export class CultureSocket implements ICulture {
       return parsed as CultureCheckOut;
     } catch (e) {
       this.logger.error(e);
-      this.logger.error(JSON.stringify(e));
       throw e;
     }
   }
@@ -353,7 +349,6 @@ export class CultureSocket implements ICulture {
       };
     } catch (e) {
       this.logger.error(`[checkDaily] Error: ${e}`);
-      this.logger.error(JSON.stringify(e));
       throw e;
     }
   }

@@ -582,13 +582,11 @@ export class PartnerCompanyExternService {
   async cancelByExternalApi(orderDelivery: OrderDeliveryEntity): Promise<CancelCouponResDto> {
     const delays = [1000, 2000, 4000, 8000, 16000];
     const maxAttempts = delays.length;
-    let lastError: any;
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       try {
         return await this.cancel(orderDelivery);
       } catch (error: any) {
-        lastError = error;
         if (!this.isRetryableCancelError(error) || attempt === maxAttempts - 1) {
           throw error;
         }
@@ -599,7 +597,8 @@ export class PartnerCompanyExternService {
       }
     }
 
-    throw lastError;
+    // 루프가 항상 throw로 종료되므로 이 줄에 도달하지 않음 (TypeScript 반환 타입 충족용)
+    throw new Error('cancelByExternalApi: unreachable');
   }
 
   private isRetryableCancelError(error: any): boolean {
@@ -627,81 +626,68 @@ export class PartnerCompanyExternService {
       } as CancelCouponResDto;
     }
 
-    try {
-      // 1.1.1 갤럭시아 쿠폰 발급
-      // 표준연동발행규격서 v.1.6.8_갤럭시아머니트리.pdf
-      if (type === 'GALAXIA') {
-        const giftKind = orderDelivery.orderProductMapping.product.name.includes('(백화점)') ? 'dept' : 'cpn';
-        await this.galaxia.cancel({
-          transactionId: orderDelivery.transactionId!,
-          sendRequestAt: +format(orderDelivery.sendRequestAt, 'yyyyMMdd'),
-          giftKind,
-          trId: orderDelivery.couponNum!,
-        });
-      }
-
-      // 1.1.2 GSMBIZ 쿠폰 발급
-      // GSM쿠폰_전문사양서_고객사_표준V3.4_20200529.pdf
-      if (type === 'GS_M_BIZ') {
-        await this.gsmbiz.cancel({
-          transactionId: orderDelivery.transactionId!,
-          partnerCompanyCode: orderDelivery.orderProductMapping.product.partnerCompanyCode!,
-          barCode: orderDelivery.barCode!,
-        });
-      }
-
-      // 1.1.3 Giftiel 쿠폰 발급
-      // giftiel(기프티엘)_공통_판매사_연동가이드_v2.1.0.0_20210409.pdf
-      if (type === 'GIFTIEL') {
-        await this.giftiel.cancel({
-          partnerCompanyCode: orderDelivery.orderProductMapping.product.partnerCompanyCode!,
-          barCode: orderDelivery.barCode!,
-        });
-      }
-
-      // 1.1.4 giftshow 쿠폰 발급
-      // 기프티쇼_매체_연동규격서_v1.9.1.2.pdf
-      if (type === 'GIFT_SHOW') {
-        await this.giftiShow.cancel({
-          transactionId: orderDelivery.transactionId!,
-        });
-      }
-
-      // 1.1.5 컬쳐랜드 쿠폰 발급
-      // 컬쳐랜드상품권(모바일문화상품권)_구매_연동가이드_V3.0.pdf
-      if (type === 'CULTURELAND') {
-        await this.culture.cancel({
-          barCode: orderDelivery.barCode!,
-          expireDay: orderDelivery.orderProductMapping.product.expireDay,
-        });
-      }
-
-      // 1.1.7 다우기술 쿠폰 취소
-      if (type === 'DAOU') {
-        const daouCancelOut = await this.daou.cancel({
-          pinNo: orderDelivery.barCode!,
-        });
-
-        // 취소 실패 시 에러 발생
-        if (daouCancelOut.resultCode !== 'S000001') {
-          throw new Error(daouCancelOut.resultMessage || '다우기술 쿠폰 취소 실패');
-        }
-      }
-
-      // 1.1.6 신세계 및 없는 type 은 타입만 수정
-      orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
-
-      return {
-        code: '',
-        message: '폐기 완료',
-      } as CancelCouponResDto;
-    } catch (e) {
-      this.logger.error(e);
-      return {
-        code: '',
-        message: '잠시 후 다시 시도해 주세요.',
-      } as CancelCouponResDto;
+    // 1.1.1 갤럭시아 쿠폰 발급
+    // 표준연동발행규격서 v.1.6.8_갤럭시아머니트리.pdf
+    if (type === 'GALAXIA') {
+      const giftKind = orderDelivery.orderProductMapping.product.name.includes('(백화점)') ? 'dept' : 'cpn';
+      await this.galaxia.cancel({
+        transactionId: orderDelivery.transactionId!,
+        sendRequestAt: +format(orderDelivery.sendRequestAt, 'yyyyMMdd'),
+        giftKind,
+        trId: orderDelivery.couponNum!,
+      });
     }
+
+    // 1.1.2 GSMBIZ 쿠폰 발급
+    // GSM쿠폰_전문사양서_고객사_표준V3.4_20200529.pdf
+    if (type === 'GS_M_BIZ') {
+      await this.gsmbiz.cancel({
+        transactionId: orderDelivery.transactionId!,
+        partnerCompanyCode: orderDelivery.orderProductMapping.product.partnerCompanyCode!,
+        barCode: orderDelivery.barCode!,
+      });
+    }
+
+    // 1.1.3 Giftiel 쿠폰 발급
+    // giftiel(기프티엘)_공통_판매사_연동가이드_v2.1.0.0_20210409.pdf
+    if (type === 'GIFTIEL') {
+      await this.giftiel.cancel({
+        partnerCompanyCode: orderDelivery.orderProductMapping.product.partnerCompanyCode!,
+        barCode: orderDelivery.barCode!,
+      });
+    }
+
+    // 1.1.4 giftshow 쿠폰 발급
+    // 기프티쇼_매체_연동규격서_v1.9.1.2.pdf
+    if (type === 'GIFT_SHOW') {
+      await this.giftiShow.cancel({
+        transactionId: orderDelivery.transactionId!,
+      });
+    }
+
+    // 1.1.5 컬쳐랜드 쿠폰 발급
+    // 컬쳐랜드상품권(모바일문화상품권)_구매_연동가이드_V3.0.pdf
+    if (type === 'CULTURELAND') {
+      await this.culture.cancel({
+        barCode: orderDelivery.barCode!,
+        expireDay: orderDelivery.orderProductMapping.product.expireDay,
+      });
+    }
+
+    // 1.1.7 다우기술 쿠폰 취소
+    if (type === 'DAOU') {
+      await this.daou.cancel({
+        pinNo: orderDelivery.barCode!,
+      });
+    }
+
+    // 1.1.6 신세계 및 없는 type 은 타입만 수정
+    orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
+
+    return {
+      code: '',
+      message: '폐기 완료',
+    } as CancelCouponResDto;
   }
 
   async refreshCouponStatus(orderDelivery: OrderDeliveryEntity): Promise<OrderDeliveryEntity> {

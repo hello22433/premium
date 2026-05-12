@@ -211,12 +211,12 @@ export class GsmbizHttp implements IGsmbiz {
         throw new Error('응답 파싱 실패');
       }
 
-      const returnCode = returnData?.returnCode ?? '';
-      const returnMsg = returnData?.returnMsg ?? '';
-      const encOut = returnData?.encOut ?? '';
+      const returnCode = returnData.returnCode ?? '';
+      const returnMsg = returnData.returnMsg ?? '';
+      const encOut = returnData.encOut ?? '';
 
       if (returnCode !== '00000') {
-        throw new Error(`취소 실패: ${returnCode} - ${returnMsg}`);
+        throw new Error(`[GS_M_BIZ:${returnCode}] ${returnMsg}`);
       }
 
       // 복호화된 내용 안에서 Issu_Cncl_Dt 파싱 필요 시

@@ -558,8 +558,12 @@ export class ExternalApiService {
     const order = mapping.order;
     const product = mapping.product;
 
-    if (orderDelivery.status === IOrderDeliveryStatus.CANCEL) {
-      throw new ExternalApiException('3005', '이미 취소된 주문');
+    if (
+      orderDelivery.status === IOrderDeliveryStatus.CANCEL ||
+      orderDelivery.couponStatus === OrderDeliveryCouponStatus.CANCEL ||
+      orderDelivery.couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL
+    ) {
+      throw new ExternalApiException('3005', '이미 폐기/취소된 주문');
     }
 
     if (orderDelivery.couponStatus === OrderDeliveryCouponStatus.USED) {
@@ -628,7 +632,7 @@ export class ExternalApiService {
     }
 
     orderDelivery.resendAt = new Date();
-    orderDelivery.resendCount = orderDelivery.resendCount + 1;
+    orderDelivery.resendCount += 1;
     await this.orderDeliveryRepository.save(orderDelivery);
 
     return ExternalApiResponse.success();
