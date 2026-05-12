@@ -36,6 +36,7 @@ import { IProductType } from '../../product/interface/product.type';
 
 import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
 import { DeliverySendService } from '../../delivery/application/delivery.send.service';
+import { RefundLedgerService } from '../../delivery/application/refund-ledger.service';
 import { SsgEventService } from '../../ssg_event/application/ssg.event.service';
 
 import { ExternalApiException } from '../api/external.api.exception.filter';
@@ -85,6 +86,7 @@ export class ExternalApiService {
     private deliverySendService: DeliverySendService,
     private ssgEventService: SsgEventService,
     private cryptoCipher: CryptoCipher,
+    private refundLedgerService: RefundLedgerService,
   ) {}
 
   // ─── 잔액 헬퍼 ──────────────────────────────────────────
@@ -502,6 +504,19 @@ export class ExternalApiService {
     order.status = IOrderStatus.DELIVERY_CANCEL;
     await this.orderRepository.save(order);
 
+    const isCompanyMode = account.user.company?.balanceManagementType === 'COMPANY';
+    await this.refundLedgerService.claim({
+      orderDeliveryId: orderDelivery.id,
+      userId: account.user.id,
+      refundAmount: order.settleAmount,
+      restoreType: isCompanyMode ? 'COMPANY_BALANCE' : 'BALANCE',
+      isSettleComplete: order.isSettleComplete,
+      isSettleBalance: order.isSettleBalance,
+      sourcePath: 'EXTERNAL_FAIL',
+      operatorUserId: null,
+      memo: `외부 API 발송 실패 환불 (주문번호: ${order.id})`,
+    });
+
     await this.refundBalance(account, order.settleAmount);
   }
 
@@ -605,6 +620,19 @@ export class ExternalApiService {
 
     order.status = IOrderStatus.DELIVERY_CANCEL;
     await this.orderRepository.save(order);
+
+    const isCompanyMode = account.user.company?.balanceManagementType === 'COMPANY';
+    await this.refundLedgerService.claim({
+      orderDeliveryId: orderDelivery.id,
+      userId: account.user.id,
+      refundAmount: order.settleAmount,
+      restoreType: isCompanyMode ? 'COMPANY_BALANCE' : 'BALANCE',
+      isSettleComplete: order.isSettleComplete,
+      isSettleBalance: order.isSettleBalance,
+      sourcePath: 'EXTERNAL_CANCEL',
+      operatorUserId: null,
+      memo: `외부 API 취소 환불 (주문번호: ${order.id})`,
+    });
 
     await this.refundBalance(account, order.settleAmount);
   }

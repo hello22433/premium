@@ -59,6 +59,7 @@ import { PartnerCompanyExternService } from '../../partner_company_extern/applic
 import { SsgEventService } from '../../ssg_event/application/ssg.event.service';
 import { UserManagementService } from '../../user_management/application/user.management.service';
 import { DeliverySendService } from './delivery.send.service';
+import { RefundLedgerService } from './refund-ledger.service';
 
 @Injectable()
 export class DeliveryBatchService {
@@ -94,6 +95,7 @@ export class DeliveryBatchService {
     private ssgEventService: SsgEventService,
     private userManagementService: UserManagementService,
     private deliverySendService: DeliverySendService,
+    private refundLedgerService: RefundLedgerService,
   ) {}
 
   private readonly logger = new Logger('batch');
@@ -191,25 +193,43 @@ export class DeliveryBatchService {
   }
 
   /**
-   * 발송 실패 시 환불 처리 (SSG 이벤트 잔액 복원 + 사용자 잔액/정산 복원)
-   * PIN 발급 실패, 메시지 발송 실패 등 delivery가 FAIL이 될 때 호출
+   * 발송 실패 시 환불 처리 (SSG 이벤트 잔액 복원 + 사용자 잔액/정산 복원).
+   * PIN 발급 실패, 메시지 발송 실패 등 delivery가 FAIL이 될 때 호출.
+   *
+   * 환불 라우팅:
+   * - 정산확정 후(isSettleComplete=true) → 선입금(balance)으로 복원
+   *   (한도 사용분도 정산확정 시 allSettleAmount가 이미 0으로 차감됐으므로 음수 방지)
+   * - 미정산 + isSettleBalance=true → balance 복원
+   * - 미정산 + isSettleBalance=false → allSettleAmount 차감 (여신 복구)
+   *
+   * 멱등성: order_delivery_refund UNIQUE 제약으로 중복 환불 차단.
    */
   private async refundForFail(orderDelivery: OrderDeliveryEntity): Promise<void> {
     const order = orderDelivery.orderProductMapping.order;
     const mapping = orderDelivery.orderProductMapping;
     const productPrice = mapping.product.price;
     const settlementPrice = calculateSettlementPrice(mapping, order.cardSurchargeApplied, orderDelivery);
-    // 과금 대상 userId (대행주문인 경우 clientUserId, 아니면 userId)
     const userId = order.clientUserId ?? order.user!.id;
+    const shouldRestoreBalance = order.isSettleComplete || order.isSettleBalance;
 
     try {
-      // SSG 이벤트 잔액 복원은 쿠폰 액면가(productPrice) 기준
       if (order.type === IOrderType.SSG && orderDelivery.ssgEventId) {
         await this.ssgEventService.refundForDeliveryFail(orderDelivery.ssgEventId, order.id, productPrice);
       }
 
-      // 사용자 잔액/정산 복원은 정산단가(settlementPrice) 기준
-      if (order.isSettleBalance) {
+      await this.refundLedgerService.claim({
+        orderDeliveryId: orderDelivery.id,
+        userId,
+        refundAmount: settlementPrice,
+        restoreType: shouldRestoreBalance ? 'BALANCE' : 'ALL_SETTLE_AMOUNT',
+        isSettleComplete: order.isSettleComplete,
+        isSettleBalance: order.isSettleBalance,
+        sourcePath: 'BATCH_FAIL',
+        operatorUserId: null,
+        memo: `발송 실패 환불 (주문번호: ${order.id})`,
+      });
+
+      if (shouldRestoreBalance) {
         await this.userManagementService.addBalance(userId, settlementPrice, `발송 실패 환불 (주문번호: ${order.id})`);
       } else {
         await this.userRepository
@@ -772,8 +792,15 @@ export class DeliveryBatchService {
   }
 
   /**
-   * 환불 복구 (PIN 재발급 성공 시)
-   * 최초 발송 실패 시 환불된 금액을 다시 차감
+   * 환불 복구 (PIN 재발급 성공 시).
+   * 최초 발송 실패 시 환불된 금액을 다시 차감하고 ledger row를 DELETE 하여
+   * 향후 또 실패할 경우 다시 환불할 수 있도록 멱등 플래그를 해제한다.
+   *
+   * 라우팅은 refundForFail()과 동일한 기준을 역방향으로 적용:
+   * - 정산확정 후(isSettleComplete=true) → balance에서 차감
+   * - 미정산 + isSettleBalance=true → balance에서 차감
+   * - 미정산 + isSettleBalance=false → allSettleAmount 가산
+   *
    * @param skipSsg SSG 선차감이 이미 완료된 경우 true (SSG chargeBack 스킵)
    */
   private async reverseRefundForResend(orderDelivery: OrderDeliveryEntity, skipSsg: boolean = false): Promise<void> {
@@ -781,17 +808,15 @@ export class DeliveryBatchService {
     const mapping = orderDelivery.orderProductMapping;
     const productPrice = mapping.product.price;
     const settlementPrice = calculateSettlementPrice(mapping, order.cardSurchargeApplied, orderDelivery);
-    // 과금 대상 userId (대행주문인 경우 clientUserId, 아니면 userId)
     const userId = order.clientUserId ?? order.user!.id;
+    const shouldRestoreBalance = order.isSettleComplete || order.isSettleBalance;
 
     try {
-      // SSG 이벤트 잔액은 쿠폰 액면가(productPrice) 기준
       if (!skipSsg && order.type === IOrderType.SSG && orderDelivery.ssgEventId) {
         await this.ssgEventService.chargeBackForResend(orderDelivery.ssgEventId, order.id, productPrice);
       }
 
-      // 사용자 잔액/정산은 정산단가(settlementPrice) 기준
-      if (order.isSettleBalance) {
+      if (shouldRestoreBalance) {
         await this.userManagementService.deductBalance(userId, settlementPrice, `재발송 역환불 (주문번호: ${order.id})`);
       } else {
         await this.userRepository
@@ -803,10 +828,11 @@ export class DeliveryBatchService {
           .execute();
       }
 
+      await this.refundLedgerService.release(orderDelivery.id);
+
       this.logger.log(`[RESEND] 환불 복구 완료 - orderDelivery.id: ${orderDelivery.id}, amount: ${settlementPrice} (정가: ${productPrice})`);
     } catch (error) {
       this.logger.error(`[RESEND] 환불 복구 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
-      // 환불 복구 실패해도 발송은 진행 (로그만 남김)
     }
   }
 

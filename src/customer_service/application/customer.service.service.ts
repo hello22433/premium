@@ -29,6 +29,8 @@ import { CustomerServiceDetailViewDto } from '../api/dto/customer.service.detail
 import { CustomerServiceDlvryDetailViewDto } from '../api/dto/customer.service.dlvry.detail.view.dto';
 import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
 import { DeliveryBatchService } from '../../delivery/application/delivery.batch.service';
+import { RefundLedgerService } from '../../delivery/application/refund-ledger.service';
+import { OrderDeliveryRefundRestoreType } from '../../entity/order.delivery.refund.entity';
 import { OrderDeliveryCouponStatus, couponStatusToKorean } from '../../delivery/interface/order.delivery.coupon.status';
 import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
 import { ILoginUserInfo } from 'src/auth/interface/login.user';
@@ -78,6 +80,7 @@ export class CustomerServiceService {
     private orderDeliveryRepository: Repository<OrderDeliveryEntity>,
     private partnerCompanyExternService: PartnerCompanyExternService,
     private deliveryBatchService: DeliveryBatchService,
+    private refundLedgerService: RefundLedgerService,
     @InjectRepository(OrderHistoryEntity)
     private readonly orderHistoryRepository: Repository<OrderHistoryEntity>,
     @InjectRepository(GemteckMsgQueueEntity, 'gemtek_sms')
@@ -96,11 +99,20 @@ export class CustomerServiceService {
   ) {}
 
   /**
-   * 폐기 시 정산금액(할인가) 기준으로 예치금/여신 복구
-   * - FAIL/FAIL_SMS: 이미 refundForFail()로 환불됨 → 스킵
-   * - REFUND_CANCEL: 수령 고객 환불 건, 고객사 정산과 무관 → 스킵
-   * - isSettleBalance=true: balance 복구 (company/account mode 분기)
-   * - isSettleBalance=false: allSettleAmount 차감 (여신 복구)
+   * 폐기 시 정산금액(할인가) 기준으로 예치금/여신 복구.
+   *
+   * 환불 라우팅:
+   * - 정산확정 후(isSettleComplete=true) → 선입금(balance)으로 복원
+   *   (한도 사용분도 정산확정 시 allSettleAmount가 이미 0으로 차감됐으므로
+   *    여기서 또 차감하면 음수가 된다. 정산확정된 환불은 선입금 환불로 처리)
+   * - 미정산 + isSettleBalance=true → balance 복원 (기존 로직)
+   * - 미정산 + isSettleBalance=false → allSettleAmount 차감 (여신 복구, 기존 로직)
+   *
+   * 멱등성: order_delivery_refund UNIQUE 제약으로 동일 발송건의 두 번째 환불 시도 차단.
+   *
+   * 스킵 조건:
+   * - FAIL/FAIL_SMS: 이미 refundForFail()로 환불됨
+   * - REFUND_CANCEL: 수령 고객 환불 건, 고객사 정산과 무관
    */
   private async restoreBalanceOnDiscard(
     orderDelivery: OrderDeliveryEntity,
@@ -111,7 +123,6 @@ export class CustomerServiceService {
     const mapping = orderDelivery.orderProductMapping;
     const order = mapping.order;
 
-    // 이중 복구 방지: FAIL/FAIL_SMS는 refundForFail()에서 이미 환불됨
     if (
       orderDelivery.status === IOrderDeliveryStatus.FAIL ||
       orderDelivery.status === IOrderDeliveryStatus.FAIL_SMS
@@ -119,14 +130,12 @@ export class CustomerServiceService {
       return;
     }
 
-    // 환불폐기는 수령 고객 환불 트랙 (고객사 ↔ 우리 정산과 무관)
     if (orderDelivery.couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL) {
       return;
     }
 
     const restoreAmount = calculateSettlementPrice(mapping, order.cardSurchargeApplied, orderDelivery);
 
-    // 과금 대상 사용자 (대행주문 시 clientUserId)
     const billingUserId = order.clientUserId ?? order.userId;
     const user = await queryRunner.manager.findOne(UserEntity, {
       where: { id: billingUserId },
@@ -134,14 +143,35 @@ export class CustomerServiceService {
     });
     if (!user) return;
 
-    // atomic UPDATE로 동시성 안전하게 금액 조작
+    const company = user.company;
+    const isCompanyBalanceMode = company?.balanceManagementType === 'COMPANY';
+    const shouldRestoreBalance = order.isSettleComplete || order.isSettleBalance;
+    let restoreType: OrderDeliveryRefundRestoreType;
+    if (!shouldRestoreBalance) {
+      restoreType = 'ALL_SETTLE_AMOUNT';
+    } else if (isCompanyBalanceMode) {
+      restoreType = 'COMPANY_BALANCE';
+    } else {
+      restoreType = 'BALANCE';
+    }
+
+    await this.refundLedgerService.claimWithManager(queryRunner.manager, {
+      orderDeliveryId: orderDelivery.id,
+      userId: billingUserId,
+      refundAmount: restoreAmount,
+      restoreType,
+      isSettleComplete: order.isSettleComplete,
+      isSettleBalance: order.isSettleBalance,
+      sourcePath: 'CS_DISCARD',
+      operatorUserId: operatorUser.id,
+      memo: `폐기복구/${restoreAmount}원`,
+    });
+
     let beforeBalance: number;
     let afterBalance: number;
 
-    if (order.isSettleBalance) {
-      // 선정산 or 정산완료 → balance 복구
-      const company = user.company;
-      if (company?.balanceManagementType === 'COMPANY') {
+    if (shouldRestoreBalance) {
+      if (isCompanyBalanceMode && company) {
         await queryRunner.manager
           .createQueryBuilder()
           .update(UserCompanyEntity)
@@ -165,7 +195,6 @@ export class CustomerServiceService {
         beforeBalance = afterBalance - restoreAmount;
       }
     } else {
-      // 후정산 미정산 → allSettleAmount 차감 (여신 복구)
       await queryRunner.manager
         .createQueryBuilder()
         .update(UserEntity)
@@ -178,7 +207,12 @@ export class CustomerServiceService {
       beforeBalance = afterBalance + restoreAmount;
     }
 
-    // ActivityLog 기록 (DISCARD_RESTORE)
+    const refundRouteMemo = order.isSettleComplete
+      ? '정산확정후폐기/선입금환불'
+      : order.isSettleBalance
+        ? '미정산/선입금환불'
+        : '미정산/여신복구';
+
     await this.activityLogService.createLog({
       userId: operatorUser.id,
       userEmail: operatorUser.email,
@@ -192,15 +226,17 @@ export class CustomerServiceService {
       requestParams: {
         targetUserId: billingUserId,
         targetUserEmail: user.email,
-        targetBusinessName: user.company?.businessName ?? '',
-        targetCompanyId: user.company?.id ?? null,
+        targetBusinessName: company?.businessName ?? '',
+        targetCompanyId: company?.id ?? null,
         orderDeliveryId: orderDelivery.id,
         orderId: order.id,
         restoreAmount,
         isSettleBalance: order.isSettleBalance,
+        isSettleComplete: order.isSettleComplete,
+        restoreType,
         beforeBalance,
         afterBalance,
-        memo: `폐기복구/ ${restoreAmount}원/ orderDelivery:${orderDelivery.id}`,
+        memo: `폐기복구(${refundRouteMemo})/ ${restoreAmount}원/ orderDelivery:${orderDelivery.id}`,
       },
     });
 

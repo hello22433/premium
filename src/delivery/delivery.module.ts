@@ -6,7 +6,9 @@ import { DeliverySendHistoryEntity } from '../entity/delivery.send.history.entit
 import { DeliveryBatchService } from './application/delivery.batch.service';
 import { DeliverySendService } from './application/delivery.send.service';
 import { OrderDeliveryEntity } from '../entity/order.delivery.entity';
+import { OrderDeliveryRefundEntity } from '../entity/order.delivery.refund.entity';
 import { DeliveryBatchSchedule } from './delivery.batch.schedule';
+import { RefundLedgerService } from './application/refund-ledger.service';
 import { MailModule } from '../mail/mail.module';
 import { SmsModule } from '../sms/sms.module';
 import { OrderEntity } from '../entity/order.entity';
@@ -29,6 +31,7 @@ import { UserManagementModule } from '../user_management/user.management.module'
     TypeOrmModule.forFeature([
       OrderEntity,
       OrderDeliveryEntity,
+      OrderDeliveryRefundEntity,
       OrderRealProductEntity,
       OrderRealProductMappingEntity,
       DeliverySendHistoryEntity,
@@ -52,6 +55,7 @@ import { UserManagementModule } from '../user_management/user.management.module'
     DeliverySendService,
     DeliveryBatchService,
     DeliveryBatchSchedule,
+    RefundLedgerService,
   ],
   exports: [
     {
@@ -61,6 +65,7 @@ import { UserManagementModule } from '../user_management/user.management.module'
     DeliveryTrackHttp,
     DeliverySendService,
     DeliveryBatchService,
+    RefundLedgerService,
   ],
 })
 export class DeliveryModule {}
