@@ -34,9 +34,13 @@ export class SsgOrderResponseData extends OrderResponseData {
   personalCode?: string;
 }
 
+export enum ExternalCouponStatus {
+  ISSUED = 'ISSUED',
+  DISCARDED = 'DISCARDED',
+}
+
 export class OrderStatusResponseData extends OrderResponseData {
-  couponStatus: string;
-  deliveryStatus: string;
+  couponStatus: ExternalCouponStatus;
 }
 
 export class SsgOrderStatusResponseData extends OrderStatusResponseData {
