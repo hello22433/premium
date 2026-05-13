@@ -1,4 +1,6 @@
 import { randomBytes, createHash } from 'crypto';
+
+const MYSQL_INT_MAX = 2_147_483_647;
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { UserEntity } from '../../entity/user.entity';
 import { IUserStatus } from '../../user/interface/user.status';
@@ -456,6 +458,10 @@ export class UserManagementService {
     amount: number,
   ): Promise<{ beforeBalance: number; afterBalance: number }> {
     const beforeBalance = await this.lockBalance(user, company);
+
+    if (beforeBalance + amount > MYSQL_INT_MAX) {
+      throw new BadRequestException('충전 후 잔액이 최대 허용 금액(2,147,483,647)을 초과합니다.');
+    }
 
     if (this.isCompanyBalanceMode(company)) {
       await this.userCompanyRepository
