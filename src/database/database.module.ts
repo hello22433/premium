@@ -22,6 +22,7 @@ import { OrderEntity } from '../entity/order.entity';
 import { OrderProductMappingEntity } from '../entity/order.product.mapping.entity';
 import { PartnerCompanyEntity } from '../entity/partner.company.entity';
 import { OrderDeliveryEntity } from '../entity/order.delivery.entity';
+import { OrderDeliveryRefundEntity } from '../entity/order.delivery.refund.entity';
 import { TestOrderDeliveryEntity } from '../entity/test.order.delivery.entity';
 import { DeliverySendHistoryEntity } from '../entity/delivery.send.history.entity';
 import { PartnerCompanyExternHistoryEntity } from '../entity/partner.company.extern.history.entity';
@@ -105,6 +106,7 @@ import { ExternalApiWebhookLogEntity } from '../entity/external.api.webhook.log.
           OrderRealProductMappingEntity,
           PartnerCompanyEntity,
           OrderDeliveryEntity,
+          OrderDeliveryRefundEntity,
           TestOrderDeliveryEntity,
           DeliverySendHistoryEntity,
           PartnerCompanyExternHistoryEntity,
