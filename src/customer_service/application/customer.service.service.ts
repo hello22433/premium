@@ -711,7 +711,16 @@ export class CustomerServiceService {
 
   /**
    * 폐기 실행 (외부 API 호출 + 상태 변경 + 잔액 복구)
-   * historyData가 전달되면 트랜잭션 안에서 history도 기록
+   * historyData가 전달되면 Tx1 안에서 history도 기록
+   *
+   * 트랜잭션 분리:
+   * - Tx1: couponStatus / discardedAt / (옵션) historyData → 무조건 commit 필요
+   * - Tx2: 환불 처리 (restoreBalanceOnDiscard) → 실패 허용
+   *
+   * 사유: 외부 cancel 성공 후 환불 단계 실패 시, 폐기 사실이 DB에 반영되지 않으면
+   * 사용자는 쿠폰이 여전히 활성 상태로 인지하게 되고, 갤럭시아 측은 이미 CANCEL이라
+   * 재시도 시 "이미 취소됨" 응답을 받게 됨. 폐기 사실은 항상 저장하고,
+   * 환불 실패는 별도 신호로 caller가 처리하도록 한다.
    */
   private async execDiscard(
     user: ILoginUserInfo,
@@ -719,7 +728,12 @@ export class CustomerServiceService {
     couponStatus: OrderDeliveryCouponStatus,
     historyData?: { type: string; content: string },
     options?: { skipBalanceRestore?: boolean },
-  ): Promise<{ orderDelivery: OrderDeliveryEntity; beforeChange: string }> {
+  ): Promise<{
+    orderDelivery: OrderDeliveryEntity;
+    beforeChange: string;
+    refundStatus: 'SUCCESS' | 'FAILED' | 'SKIPPED';
+    refundError?: Error;
+  }> {
     const orderDelivery = await this.orderDeliveryRepository
       .createQueryBuilder('orderDelivery')
       .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
@@ -788,19 +802,16 @@ export class CustomerServiceService {
         break;
     }
 
-    // 트랜잭션: couponStatus 저장 + 잔액 복구
-    const queryRunner = this.dataSource.createQueryRunner();
-    await queryRunner.connect();
-    await queryRunner.startTransaction();
+    // Tx1: 폐기 상태 + (옵션) historyData 저장
+    // 외부 cancel 이 이미 성공한 상태이므로 DB 반영 실패는 곧 상태 불일치를 의미한다.
+    // Tx1 실패는 caller 에서 인지할 수 있도록 그대로 throw 한다.
+    const tx1 = this.dataSource.createQueryRunner();
+    await tx1.connect();
+    await tx1.startTransaction();
     try {
       orderDelivery.couponStatus = couponStatus;
       orderDelivery.discardedAt = new Date();
-      await queryRunner.manager.save(OrderDeliveryEntity, orderDelivery);
-
-      // 예치금/여신 복구 (폐기 후 신규 발송 시에는 스킵 — 핀 교체이므로 잔액 변동 없음)
-      if (!options?.skipBalanceRestore) {
-        await this.restoreBalanceOnDiscard(orderDelivery, user, queryRunner);
-      }
+      await tx1.manager.save(OrderDeliveryEntity, orderDelivery);
 
       if (historyData) {
         const history = this.orderHistoryRepository.create({
@@ -811,28 +822,61 @@ export class CustomerServiceService {
           beforeChange,
           afterChange: orderDelivery.couponStatus,
         });
-        await queryRunner.manager.save(OrderHistoryEntity, history);
+        await tx1.manager.save(OrderHistoryEntity, history);
       }
 
-      await queryRunner.commitTransaction();
+      await tx1.commitTransaction();
     } catch (error) {
-      await queryRunner.rollbackTransaction();
+      await tx1.rollbackTransaction();
       throw error;
     } finally {
-      await queryRunner.release();
+      await tx1.release();
     }
 
-    return { orderDelivery, beforeChange };
+    // Tx2: 예치금/여신 복구 (실패 허용)
+    // 폐기 후 신규 발송 시에는 스킵 — 핀 교체이므로 잔액 변동 없음
+    let refundStatus: 'SUCCESS' | 'FAILED' | 'SKIPPED' = 'SKIPPED';
+    let refundError: Error | undefined;
+
+    if (!options?.skipBalanceRestore) {
+      const tx2 = this.dataSource.createQueryRunner();
+      await tx2.connect();
+      await tx2.startTransaction();
+      try {
+        await this.restoreBalanceOnDiscard(orderDelivery, user, tx2);
+        await tx2.commitTransaction();
+        refundStatus = 'SUCCESS';
+      } catch (error) {
+        await tx2.rollbackTransaction();
+        refundStatus = 'FAILED';
+        refundError = error instanceof Error ? error : new Error(String(error));
+        this.logger.error(
+          `[execDiscard] 폐기는 완료(orderDeliveryId=${orderDelivery.id})되었으나 환불 처리 실패: ${refundError.message}`,
+          refundError.stack,
+        );
+      } finally {
+        await tx2.release();
+      }
+    }
+
+    return { orderDelivery, beforeChange, refundStatus, refundError };
   }
 
   /**
    * 핀폐기 API (직접 호출용) — 폐기 실행 + history 기록
+   * 환불 실패 시 폐기 사실은 이미 저장된 상태로 명시적 에러 메시지를 반환한다.
    */
   async pinDiscard(user: ILoginUserInfo, getBody: CustomerServiceDiscardReqDto) {
-    await this.execDiscard(user, getBody.orderDeliveryId, getBody.couponStatus, {
+    const result = await this.execDiscard(user, getBody.orderDeliveryId, getBody.couponStatus, {
       type: '폐기',
       content: '핀폐기 처리',
     });
+
+    if (result.refundStatus === 'FAILED') {
+      throw new InternalServerErrorException(
+        `폐기는 완료되었으나 환불 처리 중 오류가 발생했습니다. 운영팀에 문의해주세요. (${result.refundError?.message ?? 'unknown'})`,
+      );
+    }
   }
 
   async refreshCoupon(getQuery: CustomerServiceCouponRefreshReqDto) {
@@ -1185,6 +1229,7 @@ export class CustomerServiceService {
    */
   async execHistory(map: any) {
     let afterChange = '';
+    let pendingRefundError: Error | null = null;
 
     switch (map.type) {
       case '단순문의': {
@@ -1429,13 +1474,19 @@ export class CustomerServiceService {
         return;
       }
       case '폐기': {
-        const { orderDelivery: discarded } = await this.execDiscard(map.user, map.orderDeliveryId, OrderDeliveryCouponStatus.CANCEL);
-        afterChange = discarded.couponStatus;
+        const result = await this.execDiscard(map.user, map.orderDeliveryId, OrderDeliveryCouponStatus.CANCEL);
+        afterChange = result.orderDelivery.couponStatus;
+        if (result.refundStatus === 'FAILED' && result.refundError) {
+          pendingRefundError = result.refundError;
+        }
         break;
       }
       case '환불폐기': {
-        const { orderDelivery: discarded } = await this.execDiscard(map.user, map.orderDeliveryId, OrderDeliveryCouponStatus.REFUND_CANCEL);
-        afterChange = discarded.couponStatus;
+        const result = await this.execDiscard(map.user, map.orderDeliveryId, OrderDeliveryCouponStatus.REFUND_CANCEL);
+        afterChange = result.orderDelivery.couponStatus;
+        if (result.refundStatus === 'FAILED' && result.refundError) {
+          pendingRefundError = result.refundError;
+        }
         break;
       }
       default: {
@@ -1454,6 +1505,14 @@ export class CustomerServiceService {
     });
 
     await this.orderHistoryRepository.save(history);
+
+    // 환불 실패는 폐기 상태/이력 저장 이후에 명시적으로 통보한다.
+    // 사용자에게 "폐기 자체는 완료되었음"을 응답 메시지로 알려서 동일 발송건의 무의미한 재시도를 막는다.
+    if (pendingRefundError) {
+      throw new InternalServerErrorException(
+        `폐기는 완료되었으나 환불 처리 중 오류가 발생했습니다. 운영팀에 문의해주세요. (${pendingRefundError.message})`,
+      );
+    }
   }
 
   /**
