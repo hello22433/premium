@@ -40,6 +40,7 @@ import { RefundLedgerService } from '../../delivery/application/refund-ledger.se
 import { SsgEventService } from '../../ssg_event/application/ssg.event.service';
 
 import { ExternalApiException } from '../api/external.api.exception.filter';
+import { translatePartnerError } from './partner.error.translator';
 import {
   ExternalApiResponse,
   OrderResponseData,
@@ -316,7 +317,7 @@ export class ExternalApiService {
     } catch (error) {
       this.logger.error(`[createOrder] Phase B 실패 - externalTrId: ${externalTrId}`, error);
       await this.phaseC_handleFailure(order, orderDelivery, account, error);
-      throw new ExternalApiException('3003', '쿠폰 발행 실패', error?.message);
+      throw translatePartnerError(error, 'issue');
     }
 
     await this.phaseC_handleSuccess(order, orderDelivery);
@@ -598,7 +599,7 @@ export class ExternalApiService {
         await this.partnerCompanyExternService.cancelByExternalApi(orderDelivery);
       } catch (error) {
         this.logger.error(`[cancelOrder] 쿠폰 취소 실패 - trId: ${trId}`, error);
-        throw new ExternalApiException('3004', '쿠폰 취소 실패', error?.message);
+        throw translatePartnerError(error, 'cancel');
       }
     }
 
@@ -682,7 +683,7 @@ export class ExternalApiService {
     } catch (error) {
       this.logger.error(`[createSsgOrder] Phase B 실패 - externalTrId: ${externalTrId}`, error);
       await this.phaseC_handleFailure(order, orderDelivery, account, error);
-      throw new ExternalApiException('3003', 'SSG 쿠폰 발행 실패', error?.message);
+      throw translatePartnerError(error, 'issue');
     }
 
     await this.phaseC_handleSuccess(order, orderDelivery);
