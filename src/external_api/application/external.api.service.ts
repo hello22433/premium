@@ -43,6 +43,7 @@ import { ExternalApiException } from '../api/external.api.exception.filter';
 import { translatePartnerError } from './partner.error.translator';
 import {
   ExternalApiResponse,
+  ExternalCouponStatus,
   OrderResponseData,
   SsgOrderResponseData,
   OrderStatusResponseData,
@@ -534,8 +535,7 @@ export class ExternalApiService {
 
     return ExternalApiResponse.success<OrderStatusResponseData>({
       trId: orderDelivery.externalTrId!,
-      couponStatus: orderDelivery.couponStatus,
-      deliveryStatus: orderDelivery.status,
+      couponStatus: this.toExternalCouponStatus(orderDelivery.couponStatus),
       barCode: orderDelivery.barCode || undefined,
       validStartDate,
       validEndDate,
@@ -555,8 +555,7 @@ export class ExternalApiService {
 
     return ExternalApiResponse.success<SsgOrderStatusResponseData>({
       trId: orderDelivery.externalTrId!,
-      couponStatus: orderDelivery.couponStatus,
-      deliveryStatus: orderDelivery.status,
+      couponStatus: this.toExternalCouponStatus(orderDelivery.couponStatus),
       barCode: orderDelivery.barCode || undefined,
       personalCode: orderDelivery.personalCode || undefined,
       validStartDate,
@@ -590,7 +589,7 @@ export class ExternalApiService {
       throw new ExternalApiException('3007', '만료된 쿠폰');
     }
 
-    if (product && product.isCancelable === false) {
+    if (product?.isCancelable === false) {
       throw new ExternalApiException('3009', '취소 불가 상품');
     }
 
@@ -797,6 +796,17 @@ export class ExternalApiService {
   }
 
   // ─── 공통 유틸 ──────────────────────────────────────────
+
+  /**
+   * 내부 쿠폰 상태를 외부 노출용으로 축약.
+   * 고객사는 발행/폐기 두 상태만 알면 충분하므로 USED/EXPIRED/REFUND_CANCEL은 ISSUED로 합친다.
+   * (REFUND_CANCEL은 고객사의 고객과 자사 간 정산 결과로, 고객사 입장에서는 발행된 쿠폰으로 본다.)
+   */
+  private toExternalCouponStatus(status: OrderDeliveryCouponStatus): ExternalCouponStatus {
+    return status === OrderDeliveryCouponStatus.CANCEL
+      ? ExternalCouponStatus.DISCARDED
+      : ExternalCouponStatus.ISSUED;
+  }
 
   /**
    * partnerCompany.validityStartsNextDay 기반 응답 유효기간 산출.
