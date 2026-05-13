@@ -145,12 +145,44 @@ export class GiftielHttp implements IGiftiel {
       if (!result?.ResultCode) {
         throw new Error('[GIFTIEL] 비정상 응답: ResultCode 없음');
       }
-      if (result.ResultCode !== '0000') {
-        throw new Error(`[GIFTIEL:${result.ResultCode}] ${result.ResultMsg}`);
+      if (result.ResultCode === '0000') {
+        return;
       }
+
+      // 0219: 이미 취소처리된 쿠폰번호 → check 로 멱등 검증
+      if (result.ResultCode === '0219') {
+        await this.verifyCancelIdempotent(obj, `0219: ${result.ResultMsg}`);
+        return;
+      }
+
+      throw new Error(`[GIFTIEL:${result.ResultCode}] ${result.ResultMsg}`);
     } catch (e) {
       this.logger.error(e);
       throw e;
     }
+  }
+
+  /**
+   * cancel 0219(이미 취소처리된 쿠폰번호) 응답 검증.
+   * check 로 IsCancel='Y' 인지 확인하여 멱등 처리한다.
+   * (Giftiel check 는 ResultCode 가 0000 이 아니면 throw 하므로 try/catch 로 감싸지 않음)
+   */
+  private async verifyCancelIdempotent(obj: GiftielCancelIn, reason: string): Promise<void> {
+    this.logger.warn(
+      `[cancel] 이미 취소 시그널(${reason}) - check 로 검증. barCode: ${obj.barCode}`,
+    );
+    const checkResult = await this.check({
+      partnerCompanyCode: obj.partnerCompanyCode,
+      barCode: obj.barCode,
+    });
+    if (checkResult.IsCancel === 'Y') {
+      this.logger.warn(
+        `[cancel] check 결과 IsCancel=Y 확인 - 멱등 처리. barCode: ${obj.barCode}`,
+      );
+      return;
+    }
+    throw new Error(
+      `[GIFTIEL] cancel 이미 취소 응답(${reason})이나 check IsCancel=${checkResult.IsCancel} - barCode: ${obj.barCode}`,
+    );
   }
 }

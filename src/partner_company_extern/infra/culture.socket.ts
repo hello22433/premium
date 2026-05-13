@@ -237,13 +237,55 @@ export class CultureSocket implements ICulture {
       // + SubMemberCode(15-34) + ResultCode(35-38) + ScrachNo(39-54) + ErrMsg(55-84)
       const resultCode = response.substring(35, 39);
       const errMsg = response.substring(55, 85).trim();
-      if (resultCode !== '0000') {
-        throw new Error(`[CULTURELAND:${resultCode}] ${errMsg}`);
+      if (resultCode === '0000') {
+        return;
       }
+
+      // 9104: 사용정지 되었거나 취소된 → check 로 멱등 검증
+      if (resultCode === '9104') {
+        await this.verifyCancelIdempotent(obj, `9104: ${errMsg}`);
+        return;
+      }
+
+      throw new Error(`[CULTURELAND:${resultCode}] ${errMsg}`);
     } catch (e) {
       this.logger.error(e);
       throw e;
     }
+  }
+
+  /**
+   * cancel 9104(사용정지/취소된) 응답 검증.
+   * check 응답에서 다음 경우는 외부 상태가 활성 아님 → 멱등 처리:
+   * - ResultCode 9003 (잘못된 상품권 번호) — 이미 사라진 상태
+   * - ResultCode 0000 + CancelPossibility='N' — 사용/취소/사용정지로 활성 아님
+   */
+  private async verifyCancelIdempotent(obj: CultureCancelIn, reason: string): Promise<void> {
+    this.logger.warn(
+      `[cancel] 9104 감지(${reason}) - check 로 멱등 검증. barCode: ${obj.barCode}`,
+    );
+    const checkResult = await this.check({
+      scrachNo: obj.barCode,
+      certNo: obj.certNo,
+      expireDay: obj.expireDay,
+    });
+
+    if (checkResult.ResultCode === '9003') {
+      this.logger.warn(
+        `[cancel] check ResultCode=9003 (잘못된 상품권 번호) - 이미 제거된 상태로 멱등 처리. barCode: ${obj.barCode}`,
+      );
+      return;
+    }
+    if (checkResult.ResultCode === '0000' && checkResult.CancelPossibility === 'N') {
+      this.logger.warn(
+        `[cancel] check CancelPossibility=N (활성 아님) - 멱등 처리. barCode: ${obj.barCode}`,
+      );
+      return;
+    }
+
+    throw new Error(
+      `[CULTURELAND] cancel 9104(${reason})이나 check ResultCode=${checkResult.ResultCode}, CancelPossibility=${checkResult.CancelPossibility ?? 'undefined'} - barCode: ${obj.barCode}`,
+    );
   }
 
   async check(obj: CultureCheckIn): Promise<CultureCheckOut> {

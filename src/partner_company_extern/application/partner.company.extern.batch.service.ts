@@ -392,6 +392,7 @@ export class PartnerCompanyExternBatchService {
           await this.culture.cancel({
             barCode: item.barCode!,
             expireDay: item.orderProductMapping.product.expireDay,
+            certNo: item.couponNum!, // cancel 9104 시 check 멱등 검증용
           });
           break;
         }

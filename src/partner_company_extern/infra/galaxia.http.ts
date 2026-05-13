@@ -254,12 +254,33 @@ export class GalaxiaHttp implements IGalaxia {
       this.logger.log(response.data);
       const result = response.data as GalaxiaIssueOut;
 
-      if (result.resCode !== '0000') {
-        throw new InternalServerErrorException(
-          `[GALAXIA:${result.resCode}] ${result.resMsg}`,
-        );
+      if (result.resCode === '0000') {
+        return;
       }
+
+      // 2204: 이미 취소된 쿠폰 → check 로 검증 후 멱등 처리
+      if (result.resCode === '2204') {
+        await this.verifyCancelIdempotent(obj, `2204: ${result.resMsg}`);
+        return;
+      }
+
+      throw new InternalServerErrorException(
+        `[GALAXIA:${result.resCode}] ${result.resMsg}`,
+      );
     } catch (e) {
+      // 409 + 4900: cancel order-number 중복 = 이전 cancel 호출 성공의 증거. check 로 검증 후 멱등 처리
+      if (e.response?.status === 409 && e.response?.data?.resCode === '4900') {
+        try {
+          await this.verifyCancelIdempotent(obj, `409+4900: ${e.response.data.resMsg}`);
+          return;
+        } catch (verifyError) {
+          this.logger.error(
+            `[cancel] 4900 후 check 검증 실패: ${verifyError instanceof Error ? verifyError.message : verifyError}`,
+          );
+          throw verifyError;
+        }
+      }
+
       this.logger.error(`[cancel] Galaxia API 에러: ${e instanceof Error ? e.message : e}`);
       if (e.response) {
         this.logger.error(
@@ -268,6 +289,27 @@ export class GalaxiaHttp implements IGalaxia {
       }
       throw e;
     }
+  }
+
+  /**
+   * cancel "이미 취소" 시그널(2204 / 409+4900) 검증.
+   * check 로 갤럭시아 측 couponStatus 가 실제 CANCEL 인지 확인하여 멱등 처리한다.
+   */
+  private async verifyCancelIdempotent(obj: GalaxiaCancelIn, reason: string): Promise<void> {
+    this.logger.warn(
+      `[cancel] 이미 취소 시그널(${reason}) - check 로 검증. trId: ${obj.trId}, transactionId: ${obj.transactionId}`,
+    );
+    const checkResult = await this.check({
+      giftKind: obj.giftKind,
+      paramValue: obj.trId,
+    });
+    if (checkResult.giftCertificate.couponStatus === 'CANCEL') {
+      this.logger.warn(`[cancel] check 결과 CANCEL 확인 - 멱등 처리. trId: ${obj.trId}`);
+      return;
+    }
+    throw new Error(
+      `Galaxia cancel 이미 취소 응답(${reason})을 받았으나 check 상태가 ${checkResult.giftCertificate.couponStatus} - trId: ${obj.trId}`,
+    );
   }
 
   /**

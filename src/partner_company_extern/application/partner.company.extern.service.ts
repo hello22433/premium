@@ -704,6 +704,7 @@ export class PartnerCompanyExternService {
       await this.culture.cancel({
         barCode: orderDelivery.barCode!,
         expireDay: orderDelivery.orderProductMapping.product.expireDay,
+        certNo: orderDelivery.couponNum!, // cancel 9104 시 check 멱등 검증용
       });
     }
 
@@ -890,8 +891,16 @@ export class PartnerCompanyExternService {
         });
 
         // ResultCode 9006: 유효기간 만료된 상품권
+        // ResultCode 9003: 잘못된 상품권 번호 → 컬쳐랜드 측에서 더 이상 조회되지 않는 상태
+        //   = 취소 완료 후 제거된 상품권으로 간주 (취소 처리 시 별도 "취소됨" 응답 코드가 없는
+        //   컬쳐랜드 API 특성상 9003 을 CANCEL 시그널로 매핑)
         if (cultureLandOut.ResultCode === '9006') {
           orderDelivery.couponStatus = OrderDeliveryCouponStatus.EXPIRED;
+        } else if (cultureLandOut.ResultCode === '9003') {
+          orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
+          if (!orderDelivery.discardedAt) {
+            orderDelivery.discardedAt = new Date();
+          }
         } else if (cultureLandOut.ResultCode === '0000') {
           const isUsed = cultureLandOut.CancelPossibility === 'N';
           orderDelivery.couponStatus = isUsed
