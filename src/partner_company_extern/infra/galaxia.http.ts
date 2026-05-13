@@ -262,7 +262,12 @@ export class GalaxiaHttp implements IGalaxia {
 
       this.logger.log(JSON.stringify(result));
     } catch (e) {
-      this.logger.error(e);
+      this.logger.error(`[cancel] Galaxia API 에러: ${e instanceof Error ? e.message : e}`);
+      if (e.response) {
+        this.logger.error(
+          `[cancel] Galaxia API 응답 status: ${e.response.status}, data: ${JSON.stringify(e.response.data)}`,
+        );
+      }
       throw e;
     }
   }
