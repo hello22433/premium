@@ -225,6 +225,15 @@ export class OrderService {
     private orderManualEntryRepository: Repository<OrderManualEntryEntity>,
   ) {}
 
+  private async getDefaultCardSurchargeApplied(order: OrderEntity): Promise<boolean> {
+    const billingUser = await this.userRepository.findOne({
+      where: { id: order.clientUserId ?? order.userId },
+      relations: ['company'],
+    });
+
+    return billingUser?.company?.settleMethod === 'CARD';
+  }
+
   /**
    * TypeORM .withDeleted()가 LEFT JOIN된 product에 적용되지 않는 문제 우회.
    * 메인 쿼리 후 product가 null인 매핑에 대해 소프트 삭제된 상품을 보조 쿼리로 복구.
@@ -2268,12 +2277,12 @@ export class OrderService {
       await this.orderProductMappingRepository.save(orderProductList);
     }
 
-    const cardSurchargeApplied = getBody.cardSurchargeApplied ?? false;
+    const order = existingOrderProducts[0].order;
+    const defaultCardSurchargeApplied = await this.getDefaultCardSurchargeApplied(order);
+    const cardSurchargeApplied = getBody.cardSurchargeApplied ?? defaultCardSurchargeApplied;
     const newSettleAmount = applyCardSurcharge(settleAmount + settleFee, cardSurchargeApplied);
 
     await this.orderRepository.update({ id: orderId }, { settleAmount: newSettleAmount, cardSurchargeApplied });
-
-    const order = existingOrderProducts[0].order;
 
     if (order.isNewBillingFlow) {
       // === 새 흐름 ===
@@ -2362,7 +2371,9 @@ export class OrderService {
       await this.orderProductMappingRepository.save(orderProductList);
     }
 
-    const cardSurchargeApplied = getBody.cardSurchargeApplied ?? false;
+    const order = existingOrderProducts[0].order;
+    const defaultCardSurchargeApplied = await this.getDefaultCardSurchargeApplied(order);
+    const cardSurchargeApplied = getBody.cardSurchargeApplied ?? order.cardSurchargeApplied ?? defaultCardSurchargeApplied;
     const newSettleAmount = applyCardSurcharge(settleAmount + settleFee, cardSurchargeApplied);
 
     await this.orderRepository.update({ id: orderId }, { settleAmount: newSettleAmount, cardSurchargeApplied });
