@@ -2138,18 +2138,6 @@ export class OrderService {
   }
 
   /**
-   * 정산 저장/수정 시 카드할증 여부는 요청값이 아니라 과금 대상 회사의 정산방법으로 결정한다.
-   */
-  private async resolveCardSurchargeApplied(billingUserId: number): Promise<boolean> {
-    const billingUser = await this.userRepository.findOne({
-      where: { id: billingUserId },
-      relations: ['company'],
-    });
-
-    return billingUser?.company?.settleMethod === 'CARD';
-  }
-
-  /**
    * createOrderSettle/updateOrderSettle 공통: SSG 가상 행 처리 + settleFee 계산
    */
   private async processSettleList(
@@ -2280,7 +2268,7 @@ export class OrderService {
       await this.orderProductMappingRepository.save(orderProductList);
     }
 
-    const cardSurchargeApplied = await this.resolveCardSurchargeApplied(oneUserId);
+    const cardSurchargeApplied = getBody.cardSurchargeApplied ?? false;
     const newSettleAmount = applyCardSurcharge(settleAmount + settleFee, cardSurchargeApplied);
 
     await this.orderRepository.update({ id: orderId }, { settleAmount: newSettleAmount, cardSurchargeApplied });
@@ -2374,7 +2362,7 @@ export class OrderService {
       await this.orderProductMappingRepository.save(orderProductList);
     }
 
-    const cardSurchargeApplied = await this.resolveCardSurchargeApplied(oneUserId);
+    const cardSurchargeApplied = getBody.cardSurchargeApplied ?? false;
     const newSettleAmount = applyCardSurcharge(settleAmount + settleFee, cardSurchargeApplied);
 
     await this.orderRepository.update({ id: orderId }, { settleAmount: newSettleAmount, cardSurchargeApplied });
