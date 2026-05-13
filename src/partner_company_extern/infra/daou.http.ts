@@ -261,19 +261,45 @@ export class DaouHttp implements IDaou {
       const xmlResponse = await this.xmlParser.parse(response.data);
 
       // 응답 처리
-      if (xmlResponse.RT !== 'S000001') {
-        throw new Error(
-          `[DAOU:${xmlResponse.RT || '-1'}] ${xmlResponse.RTMSG || '쿠폰취소에 실패하였습니다.'}`,
-        );
+      if (xmlResponse.RT === 'S000001') {
+        return {
+          resultCode: xmlResponse.RT,
+          resultMessage: xmlResponse.RTMSG || '정상처리',
+        };
       }
-      return {
-        resultCode: xmlResponse.RT,
-        resultMessage: xmlResponse.RTMSG || '정상처리',
-      };
+
+      // cancel 실패 → check 로 멱등 검증 (cpnStatus=02 = 기취소)
+      return await this.verifyCancelIdempotent(
+        obj,
+        `${xmlResponse.RT || '-1'}: ${xmlResponse.RTMSG || '쿠폰취소에 실패하였습니다.'}`,
+      );
     } catch (error) {
       this.logger.error(`DAOU Cancel Error: ${error instanceof Error ? error.message : JSON.stringify(error)}`);
       throw error;
     }
+  }
+
+  /**
+   * cancel 실패 응답 검증.
+   * check 로 cpnStatus 가 '02'(기취소) 인지 확인하여 멱등 처리한다.
+   */
+  private async verifyCancelIdempotent(obj: DaouCancelIn, reason: string): Promise<DaouCancelOut> {
+    this.logger.warn(
+      `[cancel] 에러(${reason}) - check 로 멱등 검증. pinNo: ${obj.pinNo}`,
+    );
+    const checkResult = await this.check({ barCode: obj.pinNo });
+    if (checkResult.cpnStatus === '02') {
+      this.logger.warn(
+        `[cancel] check 결과 cpnStatus=02 (기취소) 확인 - 멱등 처리. pinNo: ${obj.pinNo}`,
+      );
+      return {
+        resultCode: 'S000001',
+        resultMessage: '이미 취소된 쿠폰 (멱등 처리)',
+      };
+    }
+    throw new Error(
+      `[DAOU] cancel 에러(${reason})이나 check cpnStatus=${checkResult.cpnStatus ?? 'undefined'} - pinNo: ${obj.pinNo}`,
+    );
   }
 
   /**

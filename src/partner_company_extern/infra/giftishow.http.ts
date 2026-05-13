@@ -179,8 +179,8 @@ export class GiftishowHttp implements IGiftiShow {
       custom_auth_code: this.corpCode,
       custom_auth_token: this.authToken,
       custom_enc_flag: 'N',
-      'Content-Type': 'application/xml', // XML로 요청을 보내기 위한 Content-Type
-      Accept: 'application/xml', // XML 응답을 수신하기 위함
+      'Content-Type': 'application/xml',
+      Accept: 'application/xml',
     };
     const queryParams = new URLSearchParams({
       MDCODE: this.corpCode,
@@ -204,14 +204,36 @@ export class GiftishowHttp implements IGiftiShow {
       this.logger.log(resultToJson);
       const statusCode = resultToJson.response?.result?.[0]?.StatusCode?.[0];
       const statusText = resultToJson.response?.result?.[0]?.StatusText?.[0];
-      if (statusCode !== '0') {
-        throw new Error(`[GIFT_SHOW:${statusCode}] ${statusText}`);
+      if (statusCode === '0') {
+        return;
       }
-      return;
+
+      // cancel 실패 → check 로 멱등 검증 (pinStatusCd=07 이면 이미 취소된 쿠폰)
+      await this.verifyCancelIdempotent(obj, `${statusCode}: ${statusText}`);
     } catch (e) {
       this.logger.error(e);
       this.logger.error(JSON.stringify(e));
       throw e;
     }
+  }
+
+  /**
+   * cancel 실패 응답 검증.
+   * check 로 V2 pinStatusCd 가 '07'(취소) 인지 확인하여 멱등 처리한다.
+   */
+  private async verifyCancelIdempotent(obj: GifitiShowCancelIn, reason: string): Promise<void> {
+    this.logger.warn(
+      `[cancel] 에러(${reason}) - check 로 멱등 검증. transactionId: ${obj.transactionId}`,
+    );
+    const checkResult = await this.check({ transactionId: obj.transactionId });
+    if (checkResult.couponInfo?.pinStatusCd === '07') {
+      this.logger.warn(
+        `[cancel] check 결과 pinStatusCd=07 (취소) 확인 - 멱등 처리. transactionId: ${obj.transactionId}`,
+      );
+      return;
+    }
+    throw new Error(
+      `[GIFT_SHOW] cancel 에러(${reason})이나 check pinStatusCd=${checkResult.couponInfo?.pinStatusCd ?? 'undefined'} - transactionId: ${obj.transactionId}`,
+    );
   }
 }

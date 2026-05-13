@@ -8,6 +8,7 @@ export interface CultureIssueIn {
 export interface CultureCancelIn {
   barCode: string;
   expireDay: number;
+  certNo: string; // 상품권 관리번호 — cancel 실패 시 check 멱등 검증용
 }
 
 export interface CultureCheckIn {
