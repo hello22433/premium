@@ -160,6 +160,25 @@ describe('OrderService card surcharge settlement priority', () => {
     );
   });
 
+  it('updateOrderSettle: body false면 기존 저장값이 true여도 false로 덮어쓴다', async () => {
+    const { service, order, settleFee } = createService({
+      settleMethod: 'CARD',
+      orderOverrides: {
+        cardSurchargeApplied: true,
+      },
+    });
+
+    await service.updateOrderSettle(createBody({ cardSurchargeApplied: false }));
+
+    expect(service.orderRepository.update).toHaveBeenCalledWith(
+      { id: order.id },
+      {
+        settleAmount: applyCardSurcharge(order.sendAmount + settleFee, false),
+        cardSurchargeApplied: false,
+      },
+    );
+  });
+
   it('updateOrderSettle: body 값이 없으면 기존 저장값을 settleMethod보다 우선한다', async () => {
     const { service, order, settleFee } = createService({
       settleMethod: 'CARD',
