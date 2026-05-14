@@ -225,6 +225,15 @@ export class OrderService {
     private orderManualEntryRepository: Repository<OrderManualEntryEntity>,
   ) {}
 
+  private async getDefaultCardSurchargeApplied(order: OrderEntity): Promise<boolean> {
+    const billingUser = await this.userRepository.findOne({
+      where: { id: order.clientUserId ?? order.userId },
+      relations: ['company'],
+    });
+
+    return billingUser?.company?.settleMethod === 'CARD';
+  }
+
   /**
    * TypeORM .withDeleted()가 LEFT JOIN된 product에 적용되지 않는 문제 우회.
    * 메인 쿼리 후 product가 null인 매핑에 대해 소프트 삭제된 상품을 보조 쿼리로 복구.
@@ -2138,18 +2147,6 @@ export class OrderService {
   }
 
   /**
-   * 정산 저장/수정 시 카드할증 여부는 요청값이 아니라 과금 대상 회사의 정산방법으로 결정한다.
-   */
-  private async resolveCardSurchargeApplied(billingUserId: number): Promise<boolean> {
-    const billingUser = await this.userRepository.findOne({
-      where: { id: billingUserId },
-      relations: ['company'],
-    });
-
-    return billingUser?.company?.settleMethod === 'CARD';
-  }
-
-  /**
    * createOrderSettle/updateOrderSettle 공통: SSG 가상 행 처리 + settleFee 계산
    */
   private async processSettleList(
@@ -2280,12 +2277,12 @@ export class OrderService {
       await this.orderProductMappingRepository.save(orderProductList);
     }
 
-    const cardSurchargeApplied = await this.resolveCardSurchargeApplied(oneUserId);
+    const order = existingOrderProducts[0].order;
+    const defaultCardSurchargeApplied = await this.getDefaultCardSurchargeApplied(order);
+    const cardSurchargeApplied = getBody.cardSurchargeApplied ?? defaultCardSurchargeApplied;
     const newSettleAmount = applyCardSurcharge(settleAmount + settleFee, cardSurchargeApplied);
 
     await this.orderRepository.update({ id: orderId }, { settleAmount: newSettleAmount, cardSurchargeApplied });
-
-    const order = existingOrderProducts[0].order;
 
     if (order.isNewBillingFlow) {
       // === 새 흐름 ===
@@ -2374,7 +2371,9 @@ export class OrderService {
       await this.orderProductMappingRepository.save(orderProductList);
     }
 
-    const cardSurchargeApplied = await this.resolveCardSurchargeApplied(oneUserId);
+    const order = existingOrderProducts[0].order;
+    const defaultCardSurchargeApplied = await this.getDefaultCardSurchargeApplied(order);
+    const cardSurchargeApplied = getBody.cardSurchargeApplied ?? order.cardSurchargeApplied ?? defaultCardSurchargeApplied;
     const newSettleAmount = applyCardSurcharge(settleAmount + settleFee, cardSurchargeApplied);
 
     await this.orderRepository.update({ id: orderId }, { settleAmount: newSettleAmount, cardSurchargeApplied });
