@@ -28,6 +28,7 @@ import { IProductType } from '../../product/interface/product.type';
 import { OrderReceiveChoiceDto } from '../api/dto/order.receive.choice.dto';
 import { DeliveryCreateCouponImage } from '../../delivery/infra/delivery.create.coupon.image';
 import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
+import { DeliverySendService } from '../../delivery/application/delivery.send.service';
 import { DeliveryAlimTalk } from '../../delivery/interface/delivery.alim.talk';
 import { AlimTalkTemplate } from '../../delivery/domain/alim.talk.template';
 import { smsCouponInfoTemplate } from '../../delivery/domain/sms.coupon.info.template';
@@ -65,6 +66,7 @@ export class OrderReceiveService {
     @Inject('DeliveryAlimTalk')
     private deliveryAlimTalk: DeliveryAlimTalk,
     private partnerCompanyExternService: PartnerCompanyExternService,
+    private deliverySendService: DeliverySendService,
     @InjectRepository(SsgEventEntity)
     private ssgEventRepository: Repository<SsgEventEntity>,
   ) {}
@@ -113,6 +115,10 @@ export class OrderReceiveService {
 
     this.assertChoiceProductNotDeleted(orderDelivery);
     this.assertCouponNotDiscarded(orderDelivery);
+
+    if (orderDelivery.choiceSelectProductId) {
+      throw new BadRequestException('선택이 완료된 쿠폰입니다.');
+    }
 
     if (orderDelivery.expireAt) {
       const expireEnd = dayjs(orderDelivery.expireAt).tz('Asia/Seoul').endOf('day');
@@ -170,7 +176,38 @@ export class OrderReceiveService {
 
     await this.orderDeliveryRepository.save(orderDelivery);
 
-    return;
+    const isAlimTalkDelivered =
+      orderDelivery.deliveryMethod === IOrderSendMethod.ALIM_TALK &&
+      orderDelivery.status === IOrderDeliveryStatus.COMPLETE;
+
+    if (!isEmailPath && orderDelivery.barCode && !isAlimTalkDelivered) {
+      try {
+        orderDelivery.choiceSelectProduct = productChoiceMapping.product;
+        const decryptedPhone = this.cryptoCipher.decryptDeliveryTarget(orderDelivery.deliveryTarget);
+        const body = applyReplaceCharacters(orderDelivery.orderProductMapping.sendContent ?? '', orderDelivery);
+        const memoSourceProduct = orderDelivery.choiceSelectProduct ?? orderDelivery.orderProductMapping.product;
+        const memoRaw = memoSourceProduct.memo;
+        const memo = memoRaw && orderDelivery.orderProductMapping.order.type !== IOrderType.SSG
+          ? applyReplaceCharacters(memoRaw, orderDelivery)
+          : null;
+        const tailRaw = orderDelivery.orderProductMapping.sendTailText;
+        const tailText = tailRaw ? applyReplaceCharacters(tailRaw, orderDelivery) : null;
+        const smsText = this.deliverySendService.buildSmsText(orderDelivery, getBody.encryptKey, body, memo, tailText);
+        const filePathList: string[] = orderDelivery.imagePath ? [orderDelivery.imagePath] : [];
+        const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber ?? defaultFromPhoneNumber;
+        const title = orderDelivery.orderProductMapping.sendTitle ?? '';
+        await this.smsSend.send({
+          msgType: 'M',
+          to: decryptedPhone,
+          from: fromPhoneNumber,
+          subject: title,
+          text: smsText,
+          filePath: filePathList,
+        });
+      } catch (e) {
+        console.error('초이스 쿠폰 선택 후 SMS 발송 실패', orderDelivery.id, e);
+      }
+    }
   }
 
   /**
@@ -194,12 +231,14 @@ export class OrderReceiveService {
       throw new BadRequestException('존재하지 않는 테스트 주문 정보입니다.');
     }
 
+    if (testOrderDelivery.choiceSelectProductId) {
+      throw new BadRequestException('선택이 완료된 쿠폰입니다.');
+    }
+
     const productChoiceMapping = await this.productChoiceMappingRepository
       .createQueryBuilder('productChoiceMapping')
       .innerJoinAndSelect('productChoiceMapping.product', 'product')
-      .where('productChoiceMapping.productId = :productId', {
-        productId: productId,
-      })
+      .where('productChoiceMapping.productId = :productId', { productId })
       .getOne();
     if (!productChoiceMapping) {
       throw new InternalServerErrorException('choice product not exist');
@@ -207,8 +246,6 @@ export class OrderReceiveService {
 
     testOrderDelivery.choiceSelectProductId = productChoiceMapping.product.id;
     await this.testOrderDeliveryRepository.save(testOrderDelivery);
-
-    return;
   }
 
   async alimTalk(getQuery: OrderReceiveAlimTalkReqDto): Promise<OrderReceiveAlimTalkResDto> {
