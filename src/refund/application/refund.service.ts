@@ -10,20 +10,32 @@ import { DateFormatStr } from '../../common/domain/date.format.str';
 import { format } from 'date-fns';
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { MaskingUtil } from '../../common/utils/masking.util';
+import { PhoneUtil } from '../../common/utils/phone.util';
 import { OrderDeliveryRefundStatusEnum } from '../../delivery/interface/order.delivery.refund.status.enum';
+import { ActivityLogService } from '../../activity_log/application/activity.log.service';
+import { ActivityLogActionType } from '../../activity_log/interface/activity.log.action.type';
+import { ActivityLogResult } from '../../activity_log/interface/activity.log.result';
+import { ILoginUserInfo } from '../../auth/interface/login.user';
+
+export type RefundGetListAuditContext = {
+  user: ILoginUserInfo;
+  ipAddress: string;
+  userAgent?: string;
+};
 
 @Injectable()
 export class RefundService {
   constructor(
     private cryptoCipher: CryptoCipher,
+    private activityLogService: ActivityLogService,
     @InjectRepository(OrderDeliveryEntity)
     private orderDeliveryRepository: Repository<OrderDeliveryEntity>,
   ) {}
 
   private logger = new Logger('REFUND_SERVICE');
 
-  async getList(getDto: RefundGetListReqQueryDto): Promise<RefundGetListResDto> {
-    const { startAt, endAt, userBusinessName, userPersonName, refundStatus, page, take } = getDto;
+  async getList(getDto: RefundGetListReqQueryDto, auditContext: RefundGetListAuditContext): Promise<RefundGetListResDto> {
+    const { startAt, endAt, userBusinessName, userPersonName, refundStatus, deliveryTarget, page, take } = getDto;
 
     const queryBuilder = this.orderDeliveryRepository
       .createQueryBuilder('orderDelivery')
@@ -46,6 +58,18 @@ export class RefundService {
 
     if (refundStatus) {
       queryBuilder.andWhere('orderDelivery.refundStatus = :refundStatus', { refundStatus });
+    }
+
+    const trimmedDeliveryTarget = deliveryTarget?.trim();
+    if (trimmedDeliveryTarget) {
+      const normalizedTarget = PhoneUtil.normalizeDeliveryTarget(trimmedDeliveryTarget);
+      const encryptedTarget = this.cryptoCipher.encryptDeliveryTarget(normalizedTarget);
+      queryBuilder.andWhere(
+        '(orderDelivery.deliveryTarget = :encryptedDeliveryTarget OR orderDelivery.emailReceiverPhone = :encryptedDeliveryTarget)',
+        { encryptedDeliveryTarget: encryptedTarget },
+      );
+
+      await this.recordPiiSearchLog(trimmedDeliveryTarget, auditContext);
     }
 
     const skip = (page - 1) * take;
@@ -76,6 +100,33 @@ export class RefundService {
     });
 
     return { list: resultList, totalPage: Math.ceil(totalCount / take), totalCount, currentPage: page };
+  }
+
+  private async recordPiiSearchLog(rawKeyword: string, auditContext: RefundGetListAuditContext): Promise<void> {
+    const { user, ipAddress, userAgent } = auditContext;
+    const maskedKeyword = MaskingUtil.maskDeliveryTarget(rawKeyword);
+
+    try {
+      await this.activityLogService.createLog({
+        userId: user.id,
+        userEmail: user.email,
+        method: 'GET',
+        requestUrl: '/settle/refund/list',
+        actionType: ActivityLogActionType.PII_SEARCH,
+        ipAddress,
+        userAgent,
+        statusCode: 200,
+        result: ActivityLogResult.SUCCESS,
+        responseTime: 0,
+        requestParams: {
+          screen: 'CUSTOMER_REFUND',
+          searchType: 'deliveryTarget',
+          maskedKeyword,
+        },
+      });
+    } catch (error) {
+      this.logger.error('Failed to record PII_SEARCH activity log', error instanceof Error ? error.stack : error);
+    }
   }
 
   private static readonly REFUND_STATUS_ORDER: Record<OrderDeliveryRefundStatusEnum, number> = {

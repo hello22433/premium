@@ -16,4 +16,5 @@ export enum ActivityLogActionType {
   DELIVERY_COMPLETE_REPORT = 'DELIVERY_COMPLETE_REPORT', // 발송완료리포트 다운로드
   TRANSACTION_STATEMENT = 'TRANSACTION_STATEMENT', // 거래명세서 다운로드
   DISCARD_RESTORE = 'DISCARD_RESTORE', // 폐기 복구 (선충전 잔액 / 여신)
+  PII_SEARCH = 'PII_SEARCH', // 개인정보(수신정보) 검색
 }
