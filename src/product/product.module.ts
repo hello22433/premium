@@ -38,5 +38,6 @@ import { ProductSharedListFileEntity } from '../entity/product.shared.list.file.
   ],
   controllers: [ProductController],
   providers: [ProductService],
+  exports: [ProductService],
 })
 export class ProductModule {}

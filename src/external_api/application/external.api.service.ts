@@ -32,12 +32,12 @@ import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.st
 import { IOrderSendMethod } from '../../order/interface/order.send.method';
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
 import { IProductUseStatus } from '../../product/interface/product.status';
-import { IProductType } from '../../product/interface/product.type';
 
 import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
 import { DeliverySendService } from '../../delivery/application/delivery.send.service';
 import { RefundLedgerService } from '../../delivery/application/refund-ledger.service';
 import { SsgEventService } from '../../ssg_event/application/ssg.event.service';
+import { ProductService } from '../../product/application/product.service';
 
 import { ExternalApiException } from '../api/external.api.exception.filter';
 import { translatePartnerError } from './partner.error.translator';
@@ -89,6 +89,7 @@ export class ExternalApiService {
     private ssgEventService: SsgEventService,
     private cryptoCipher: CryptoCipher,
     private refundLedgerService: RefundLedgerService,
+    private productService: ProductService,
   ) {}
 
   // ─── 잔액 헬퍼 ──────────────────────────────────────────
@@ -709,22 +710,19 @@ export class ExternalApiService {
     const user = account.user;
     const sendAmount = dto.amount;
 
-    // 독립 쿼리(SSG 상품 / 직전 주문 코드)는 병렬화. SSG 이벤트는 product.expireDay 의존이라 이후 처리.
-    const [product, prevOrder] = await Promise.all([
-      this.productRepository.findOne({
-        where: { type: IProductType.SSG },
-        relations: ['partnerCompany', 'brand'],
-      }),
-      this.orderRepository.findOne({
-        where: { code: Like(`${OrderPrefixCode}%`) },
-        order: { code: 'DESC' },
-        withDeleted: true,
-      }),
-    ]);
+    // 요청 금액과 일치하는 SSG 상품을 확정(없으면 템플릿으로 생성).
+    // 내부 admin /order/ssg 흐름과 동일한 resolver를 사용해 sendAmount === product.price 보장.
+    const product = await this.productService
+      .findOrCreateSsgProductByPrice(sendAmount)
+      .catch(() => {
+        throw new ExternalApiException('3001', 'SSG 상품 없음');
+      });
 
-    if (!product) {
-      throw new ExternalApiException('3001', 'SSG 상품 없음');
-    }
+    const prevOrder = await this.orderRepository.findOne({
+      where: { code: Like(`${OrderPrefixCode}%`) },
+      order: { code: 'DESC' },
+      withDeleted: true,
+    });
 
     // SSG 이벤트는 sendAmount(정가) 기준으로 매칭/차감 (할인/할증/카드할증과 무관)
     const ssgEvent = await this.ssgEventService.selectEventForOrder(sendAmount, product.expireDay);

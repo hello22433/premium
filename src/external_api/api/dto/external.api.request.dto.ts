@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsString, IsNumber, IsOptional, MaxLength, IsEnum, IsNotEmpty } from 'class-validator';
+import { IsString, IsOptional, IsEnum, IsNotEmpty, IsInt, Min } from 'class-validator';
 import { IOrderSendMethod } from '../../../order/interface/order.send.method';
 
 export class CreateExternalOrderDto {
@@ -39,8 +39,9 @@ export class CreateExternalSsgOrderDto {
   @IsNotEmpty()
   recipientPhone: string;
 
-  @ApiProperty({ description: '금액' })
-  @IsNumber()
+  @ApiProperty({ description: '금액 (양의 정수, 원 단위)' })
+  @IsInt()
+  @Min(1)
   amount: number;
 
   @ApiPropertyOptional({ description: '발신자 전화번호' })
