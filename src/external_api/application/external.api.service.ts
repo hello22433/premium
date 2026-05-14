@@ -573,6 +573,10 @@ export class ExternalApiService {
     const order = mapping.order;
     const product = mapping.product;
 
+    if (order.type === IOrderType.SSG) {
+      throw new ExternalApiException('3009', '신세계 상품권은 폐기할 수 없습니다');
+    }
+
     if (
       orderDelivery.status === IOrderDeliveryStatus.CANCEL ||
       orderDelivery.couponStatus === OrderDeliveryCouponStatus.CANCEL ||
