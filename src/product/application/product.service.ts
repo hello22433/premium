@@ -609,10 +609,27 @@ export class ProductService {
   }
 
   async getSsg(getQuery: ProductSsgReqQueryDto): Promise<ProductGetSsgResDto> {
-    const { price } = getQuery;
+    const product = await this.findOrCreateSsgProductByPrice(getQuery.price);
+    return {
+      id: product.id,
+      partnerCompanyId: product.partnerCompanyId,
+      partnerCompanyName: product.partnerCompany!.businessName,
+      classification: product.classification?.classification ?? null,
+      brandId: product.brandId,
+      brandName: product.brand!.nameKorean,
+      name: product.name,
+      price: product.price,
+      expireDay: product.expireDay,
+      imagePath: product.imagePath,
+    };
+  }
 
-    // 먼저 해당 가격의 기존 SSG 상품을 찾아봄
-    let product = await this.productRepository
+  /**
+   * 주어진 price에 해당하는 SSG 상품을 반환. 없으면 가장 오래된 SSG 상품을 템플릿 삼아 새로 생성한다.
+   * 내부 admin/외부 API 양쪽에서 sendAmount === product.price 보장을 위해 공유한다.
+   */
+  async findOrCreateSsgProductByPrice(price: number): Promise<ProductEntity> {
+    const existing = await this.productRepository
       .createQueryBuilder('product')
       .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .innerJoinAndSelect('product.brand', 'brand')
@@ -622,23 +639,10 @@ export class ProductService {
       .andWhere('partnerCompany.type = :type', { type: IPartnerCompanyType.SSG })
       .getOne();
 
-    // 기존 상품이 있으면 바로 반환
-    if (product) {
-      return {
-        id: product.id,
-        partnerCompanyId: product.partnerCompanyId,
-        partnerCompanyName: product.partnerCompany!.businessName,
-        classification: product.classification?.classification ?? null,
-        brandId: product.brandId,
-        brandName: product.brand!.nameKorean,
-        name: product.name,
-        price: product.price,
-        expireDay: product.expireDay,
-        imagePath: product.imagePath,
-      };
+    if (existing) {
+      return existing;
     }
 
-    // 기존 상품이 없으면 템플릿으로 사용할 기존 SSG 상품을 찾음
     const templateProduct = await this.productRepository
       .createQueryBuilder('product')
       .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
@@ -646,15 +650,13 @@ export class ProductService {
       .leftJoinAndSelect('product.classification', 'classification')
       .where('product.type = :type', { type: IProductType.SSG })
       .andWhere('partnerCompany.type = :type', { type: IPartnerCompanyType.SSG })
-      .orderBy('product.id', 'ASC') // 가장 오래된 SSG 상품을 템플릿으로 사용
+      .orderBy('product.id', 'ASC')
       .getOne();
 
     if (!templateProduct) {
       throw new BadRequestException('SSG 상품 템플릿을 찾을 수 없습니다.');
     }
 
-    // 새로운 상품 코드 생성 (12자리: EP + 10자리 숫자)
-    // 숫자 부분을 정수로 변환하여 최대값을 찾음
     const latestProduct = await this.productRepository
       .createQueryBuilder('product')
       .where('product.code LIKE :codePattern', { codePattern: 'EP%' })
@@ -662,21 +664,12 @@ export class ProductService {
       .getOne();
 
     let nextCodeNumber = 1;
-    if (latestProduct && latestProduct.code.match(/EP(\d+)/)) {
-      const currentNumber = parseInt(latestProduct.code.match(/EP(\d+)/)![1]);
-      nextCodeNumber = currentNumber + 1;
+    const codeMatch = latestProduct?.code.match(/EP(\d+)/);
+    if (codeMatch) {
+      nextCodeNumber = parseInt(codeMatch[1]) + 1;
     }
     const newCode = `EP${nextCodeNumber.toString().padStart(10, '0')}`;
 
-    // 새로운 SSG 상품 생성
-    const newProduct = new ProductEntity();
-    newProduct.code = newCode;
-    newProduct.partnerCompanyId = templateProduct.partnerCompanyId;
-    newProduct.partnerCompanyCode = templateProduct.partnerCompanyCode;
-    newProduct.brandId = templateProduct.brandId;
-    newProduct.name = `신세계 상품권 ${price.toLocaleString()}원`;
-    newProduct.price = price;
-    // SSG 이벤트의 쿠폰 유효기간을 조회하여 사용
     const currentSsgEvent = await this.ssgEventRepository
       .createQueryBuilder('ssgEvent')
       .where('ssgEvent.startAt <= :now', { now: new Date() })
@@ -684,7 +677,14 @@ export class ProductService {
       .orderBy('ssgEvent.id', 'DESC')
       .getOne();
 
-    newProduct.expireDay = currentSsgEvent?.couponExpiration || 60; // SSG 이벤트의 쿠폰 유효기간 또는 기본값 60일
+    const newProduct = new ProductEntity();
+    newProduct.code = newCode;
+    newProduct.partnerCompanyId = templateProduct.partnerCompanyId;
+    newProduct.partnerCompanyCode = templateProduct.partnerCompanyCode;
+    newProduct.brandId = templateProduct.brandId;
+    newProduct.name = `신세계 상품권 ${price.toLocaleString()}원`;
+    newProduct.price = price;
+    newProduct.expireDay = currentSsgEvent?.couponExpiration || 60;
     newProduct.category = templateProduct.category;
     newProduct.classificationId = templateProduct.classificationId;
     newProduct.settleMethod = templateProduct.settleMethod;
@@ -697,11 +697,9 @@ export class ProductService {
     newProduct.color = templateProduct.color;
     newProduct.status = templateProduct.status;
 
-    // 데이터베이스에 새 상품 저장
     const savedProduct = await this.productRepository.save(newProduct);
 
-    // 저장된 상품을 다시 조회하여 관계 데이터와 함께 반환
-    const newProductWithRelations = await this.productRepository
+    const reloaded = await this.productRepository
       .createQueryBuilder('product')
       .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .innerJoinAndSelect('product.brand', 'brand')
@@ -709,18 +707,11 @@ export class ProductService {
       .where('product.id = :id', { id: savedProduct.id })
       .getOne();
 
-    return {
-      id: newProductWithRelations!.id,
-      partnerCompanyId: newProductWithRelations!.partnerCompanyId,
-      partnerCompanyName: newProductWithRelations!.partnerCompany!.businessName,
-      classification: newProductWithRelations!.classification?.classification ?? null,
-      brandId: newProductWithRelations!.brandId,
-      brandName: newProductWithRelations!.brand!.nameKorean,
-      name: newProductWithRelations!.name,
-      price: newProductWithRelations!.price,
-      expireDay: newProductWithRelations!.expireDay,
-      imagePath: newProductWithRelations!.imagePath,
-    };
+    if (!reloaded) {
+      throw new BadRequestException('SSG 상품 생성 후 재조회 실패');
+    }
+
+    return reloaded;
   }
 
   async getDetail(getParam: ProductGetDetailReqParamDto): Promise<ProductGetDetailResDto> {

@@ -23,6 +23,7 @@ import { IdempotencyInterceptor } from './api/idempotency.interceptor';
 import { PartnerCompanyExternModule } from '../partner_company_extern/partner.company.extern.module';
 import { SsgEventModule } from '../ssg_event/ssg.event.module';
 import { DeliveryModule } from '../delivery/delivery.module';
+import { ProductModule } from '../product/product.module';
 import { CryptoCipher } from '../common/infra/crypto.cipher';
 
 @Module({
@@ -47,6 +48,7 @@ import { CryptoCipher } from '../common/infra/crypto.cipher';
     PartnerCompanyExternModule,
     SsgEventModule,
     DeliveryModule,
+    ProductModule,
   ],
   controllers: [ExternalApiController],
   providers: [ExternalApiService, ApiKeyGuard, ExternalApiThrottleGuard, IdempotencyInterceptor, CryptoCipher],
