@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Put, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Put, Query, Req, UseGuards } from '@nestjs/common';
+import { Request } from 'express';
 import { RefundService } from '../application/refund.service';
 import { ApiBadRequestResponse, ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { RefundGetListResDto } from './refund.res.dto';
@@ -27,10 +28,14 @@ export class RefundController {
   })
   // =================================
   @Get('/settle/refund/list')
-  async getList(@User() user: ILoginUserInfo, @Query() getDto: RefundGetListReqQueryDto) {
+  async getList(@User() user: ILoginUserInfo, @Query() getDto: RefundGetListReqQueryDto, @Req() req: Request) {
     await this.authService.authorityValidator(user, UserAuthSubEnum.CUSTOMER_REFUND);
 
-    return this.refundService.getList(getDto);
+    return this.refundService.getList(getDto, {
+      user,
+      ipAddress: req.ip || '',
+      userAgent: req.headers['user-agent'],
+    });
   }
 
   @ApiOperation({

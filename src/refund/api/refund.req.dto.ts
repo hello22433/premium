@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsEnum, IsNotEmpty, IsNumber, IsOptional, Matches } from 'class-validator';
+import { IsEnum, IsNotEmpty, IsNumber, IsOptional, IsString, Matches } from 'class-validator';
 import { dateAtRegexp } from '../../common/domain/date.regexp';
 import { OrderDeliveryRefundStatusEnum } from '../../delivery/interface/order.delivery.refund.status.enum';
 import { PagingReqDto } from '../../common/api/dto/pagination.req.dto';
@@ -42,6 +42,15 @@ export class RefundGetListReqQueryDto extends PagingReqDto {
   @IsOptional()
   @IsEnum(OrderDeliveryRefundStatusEnum)
   refundStatus?: OrderDeliveryRefundStatusEnum;
+
+  @ApiPropertyOptional({
+    description: '수신정보 검색 키워드 (전화번호 또는 이메일). 정규화 후 정확 일치 검색',
+    example: '01012345678',
+  })
+  // ==============================
+  @IsOptional()
+  @IsString()
+  deliveryTarget?: string;
 }
 
 export class RefundUpdateReqDto {
