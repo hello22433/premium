@@ -22,6 +22,7 @@ import { OrderRealProductMappingEntity } from '../entity/order.real.product.mapp
 import { UserEntity } from '../entity/user.entity';
 import { SsgEventEntity } from '../entity/ssg.event.entity';
 import { SsgIssueLogEntity } from '../entity/ssg.issue.log.entity';
+import { OrderDeliverySsgInsertStateEntity } from '../entity/order.delivery.ssg.insert.state.entity';
 import { PartnerCompanyExternModule } from '../partner_company_extern/partner.company.extern.module';
 import { SsgEventModule } from '../ssg_event/ssg.event.module';
 import { UserManagementModule } from '../user_management/user.management.module';
@@ -41,6 +42,7 @@ import { UserManagementModule } from '../user_management/user.management.module'
       UserEntity,
       SsgEventEntity,
       SsgIssueLogEntity,
+      OrderDeliverySsgInsertStateEntity,
     ]),
     MailModule,
     SmsModule,

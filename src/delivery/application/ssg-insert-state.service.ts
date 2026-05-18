@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Propagation, Transactional } from 'typeorm-transactional';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
+import { OrderDeliverySsgInsertStateEntity } from '../../entity/order.delivery.ssg.insert.state.entity';
 import { SsgIssueLogEntity } from '../../entity/ssg.issue.log.entity';
 import { SsgInsertState } from '../interface/ssg.insert.state';
 
@@ -22,7 +23,8 @@ export interface SsgAttemptPayload {
 
 /**
  * markConfirmed 입력: SSG 응답 1000 받은 후 order_delivery에 반영해야 할 PIN/메타.
- * state 전이와 같은 트랜잭션 안에서 commit되어 orphan(state=CONFIRMED인데 PIN 정보 없음) 방지.
+ * order_delivery 컬럼은 save() 덮어쓰기 위험이 있으나, 신호(state) 자체는 별 테이블에서 무결.
+ * 진실의 원천 PIN payload는 ssg_issue_log (markAttempted에서 저장).
  */
 export interface SsgConfirmInfo {
   barCode: string;
@@ -37,29 +39,29 @@ export interface SsgConfirmInfo {
  * SSG INSERT durable state 전이 helper.
  * plans/ssg-balance-refactor.md PR1.
  *
- * 모든 mark*() 호출은 REQUIRES_NEW 트랜잭션으로 격리되어, 호출자 트랜잭션이 롤백돼도
- * state + 그에 필요한 payload/PIN 정보는 함께 commit된다. SSG 행사 한도가 gross 모델
- * (시도 누계)이라 "INSERT 시도 사실"을 영구 기록해야 하기 때문이다.
+ * 신호 데이터는 `order_delivery_ssg_insert_state` 별 테이블에 보관한다 (signal column 무결성 정책).
+ * `order_delivery.save()`가 메모리 stale 값으로 신호를 덮어쓸 수 없도록 별 row로 격리.
  *
- * state machine (엄격):
- *   NONE → ATTEMPTED   (markAttempted)
- *   ATTEMPTED → CONFIRMED   (markConfirmed)
- *   ATTEMPTED → FAILED      (markFailed)
- * terminal(CONFIRMED/FAILED)은 변경 불가. NONE에서 terminal 직행도 차단(durable payload 누락 방지).
+ * 모든 mark*() 호출은 REQUIRES_NEW 트랜잭션으로 격리되어, 호출자 트랜잭션이 롤백돼도
+ * state + 그에 필요한 payload/PIN 정보는 함께 commit된다.
+ *
+ * state machine (Lazy):
+ *   (row 없음 = NONE) → ATTEMPTED → (CONFIRMED | FAILED)
+ *   FAILED → ATTEMPTED 재시도 허용 (재발송 새 PIN 발급)
+ * CONFIRMED 만 진짜 terminal. NONE에서 terminal 직행 차단(durable payload 누락 방지).
  *
  * helper는 state 전이 + 그에 필요한 durable 데이터를 같은 REQUIRES_NEW에서 같이 처리한다:
- *   - markAttempted: ssg_issue_log INSERT (payload) + order_delivery state ATTEMPTED
- *   - markConfirmed: order_delivery PIN 정보(barCode/personalCode/couponNum/ssgTransactionId/
- *                    expireAt/encourageAt) 저장 + state CONFIRMED
- *   - markFailed:    state FAILED만 (실패에는 보존할 PIN 데이터 없음)
- *
- * PR1에서는 helper 정의만 한다. 실제 호출은 PR2 (issue() flow, orphan resolver).
+ *   - markAttempted: state row UPSERT (NONE→ATTEMPTED, FAILED→ATTEMPTED) + ssg_issue_log payload INSERT
+ *   - markConfirmed: state row UPDATE (ATTEMPTED→CONFIRMED) + order_delivery PIN 컬럼 best-effort 저장
+ *   - markFailed:    state row UPDATE (ATTEMPTED→FAILED)
  */
 @Injectable()
 export class SsgInsertStateService {
   private readonly logger = new Logger(SsgInsertStateService.name);
 
   constructor(
+    @InjectRepository(OrderDeliverySsgInsertStateEntity)
+    private readonly stateRepository: Repository<OrderDeliverySsgInsertStateEntity>,
     @InjectRepository(OrderDeliveryEntity)
     private readonly deliveryRepository: Repository<OrderDeliveryEntity>,
     @InjectRepository(SsgIssueLogEntity)
@@ -67,24 +69,44 @@ export class SsgInsertStateService {
   ) {}
 
   /**
-   * NONE → ATTEMPTED. 같은 REQUIRES_NEW에서 state 전이 + ssg_issue_log payload INSERT를 commit.
+   * (row 없음 = NONE) → ATTEMPTED, 또는 FAILED → ATTEMPTED 재시도.
    *
-   * 순서가 중요: 먼저 state UPDATE(NONE → ATTEMPTED)를 시도하고, affected=1인 경우에만 log INSERT.
-   * 이미 ATTEMPTED 이상이면 state WHERE 가드가 0 affected를 반환 → INSERT도 skip → idempotent.
-   * (역순으로 INSERT 먼저 하면 재호출 시 state skip돼도 log row만 중복 쌓인다.)
+   * 두 단계 전이 (같은 REQUIRES_NEW 안):
+   *   1) INSERT IGNORE state row with ATTEMPTED — row 없으면 신규 INSERT (affected=1).
+   *   2) row 이미 있으면 (1)에서 affected=0 → UPDATE WHERE state=FAILED 시도.
+   *      재발송 새 PIN 발급은 FAILED 재시도이므로 ATTEMPTED로 복원.
+   *      이미 ATTEMPTED(중복 호출) 또는 CONFIRMED(terminal)면 두 단계 모두 affected=0 → idempotent skip.
+   *   3) 둘 중 하나라도 전이 성공 시 ssg_issue_log 새 attempt payload INSERT.
+   *      payload는 attempt 단위로 누적되어 orphan resolver가 최신순 후보 lookup 가능.
    */
   @Transactional({ propagation: Propagation.REQUIRES_NEW })
   async markAttempted(orderDeliveryId: number, payload: SsgAttemptPayload): Promise<void> {
-    const result = await this.deliveryRepository
+    const insertResult = await this.stateRepository
       .createQueryBuilder()
-      .update(OrderDeliveryEntity)
-      .set({ ssgInsertState: SsgInsertState.ATTEMPTED })
-      .where('id = :id', { id: orderDeliveryId })
-      .andWhere('ssg_insert_state = :prev', { prev: SsgInsertState.NONE })
+      .insert()
+      .into(OrderDeliverySsgInsertStateEntity)
+      .values({ orderDeliveryId, state: SsgInsertState.ATTEMPTED })
+      .orIgnore()
       .execute();
 
-    if (!result.affected) {
-      this.logger.debug(`markAttempted skipped (already ATTEMPTED or terminal): id=${orderDeliveryId}`);
+    const insertAffected = ((insertResult.raw as { affectedRows?: number } | undefined)?.affectedRows ?? 0) > 0;
+
+    let transitioned = insertAffected;
+    if (!insertAffected) {
+      const updateResult = await this.stateRepository
+        .createQueryBuilder()
+        .update(OrderDeliverySsgInsertStateEntity)
+        .set({ state: SsgInsertState.ATTEMPTED })
+        .where('order_delivery_id = :id', { id: orderDeliveryId })
+        .andWhere('state = :prev', { prev: SsgInsertState.FAILED })
+        .execute();
+      transitioned = (updateResult.affected ?? 0) > 0;
+    }
+
+    if (!transitioned) {
+      this.logger.debug(
+        `markAttempted skipped (state row already ATTEMPTED or CONFIRMED): id=${orderDeliveryId}`,
+      );
       return;
     }
 
@@ -96,17 +118,33 @@ export class SsgInsertStateService {
   }
 
   /**
-   * ATTEMPTED → CONFIRMED. PIN 정보를 order_delivery에 저장 + state 전이를 한 REQUIRES_NEW에서 commit.
-   * NONE/FAILED 에서는 전이하지 않음 (state machine 엄격: durable payload 없는 상태에서 terminal 진입 방지).
-   * 같은 attempt에 대해 이미 CONFIRMED 면 silently skip (idempotent).
+   * ATTEMPTED → CONFIRMED.
+   *
+   * state 전이 우선 (WHERE state=ATTEMPTED 가드). 전이 성공 시 order_delivery PIN 컬럼 best-effort 저장.
+   * order_delivery 컬럼은 caller save()로 덮일 수 있으나, 신호(state)는 별 테이블에 무결.
+   * 진실의 원천 PIN payload는 ssg_issue_log (markAttempted에서 이미 저장됨).
    */
   @Transactional({ propagation: Propagation.REQUIRES_NEW })
   async markConfirmed(orderDeliveryId: number, pinInfo: SsgConfirmInfo): Promise<void> {
-    const result = await this.deliveryRepository
+    const stateResult = await this.stateRepository
+      .createQueryBuilder()
+      .update(OrderDeliverySsgInsertStateEntity)
+      .set({ state: SsgInsertState.CONFIRMED })
+      .where('order_delivery_id = :id', { id: orderDeliveryId })
+      .andWhere('state = :prev', { prev: SsgInsertState.ATTEMPTED })
+      .execute();
+
+    if (!stateResult.affected) {
+      this.logger.warn(
+        `markConfirmed skipped: id=${orderDeliveryId}. state row가 ATTEMPTED 아님 (row 없음/CONFIRMED/FAILED). 호출 순서 검토 필요.`,
+      );
+      return;
+    }
+
+    await this.deliveryRepository
       .createQueryBuilder()
       .update(OrderDeliveryEntity)
       .set({
-        ssgInsertState: SsgInsertState.CONFIRMED,
         barCode: pinInfo.barCode,
         personalCode: pinInfo.personalCode,
         ssgTransactionId: pinInfo.ssgTransactionId,
@@ -115,46 +153,35 @@ export class SsgInsertStateService {
         encourageAt: pinInfo.encourageAt,
       })
       .where('id = :id', { id: orderDeliveryId })
-      .andWhere('ssg_insert_state = :prev', { prev: SsgInsertState.ATTEMPTED })
       .execute();
-
-    if (!result.affected) {
-      this.logger.warn(
-        `markConfirmed skipped: id=${orderDeliveryId}. ATTEMPTED 아닌 state에서 호출됨 (durable payload 누락 가능, 호출 순서 검토 필요).`,
-      );
-    }
   }
 
   /**
    * ATTEMPTED → FAILED. state 만 전이 (실패에는 보존할 PIN 데이터 없음).
-   * NONE/CONFIRMED 에서는 전이하지 않음 (state machine 엄격).
+   * row 없음(NONE) / CONFIRMED 에서는 전이하지 않음 (state machine 엄격).
    */
   @Transactional({ propagation: Propagation.REQUIRES_NEW })
   async markFailed(orderDeliveryId: number): Promise<void> {
-    const result = await this.deliveryRepository
+    const result = await this.stateRepository
       .createQueryBuilder()
-      .update(OrderDeliveryEntity)
-      .set({ ssgInsertState: SsgInsertState.FAILED })
-      .where('id = :id', { id: orderDeliveryId })
-      .andWhere('ssg_insert_state = :prev', { prev: SsgInsertState.ATTEMPTED })
+      .update(OrderDeliverySsgInsertStateEntity)
+      .set({ state: SsgInsertState.FAILED })
+      .where('order_delivery_id = :id', { id: orderDeliveryId })
+      .andWhere('state = :prev', { prev: SsgInsertState.ATTEMPTED })
       .execute();
 
     if (!result.affected) {
       this.logger.warn(
-        `markFailed skipped: id=${orderDeliveryId}. ATTEMPTED 아닌 state에서 호출됨 (CONFIRMED 역행 시도 또는 NONE 직행 시도).`,
+        `markFailed skipped: id=${orderDeliveryId}. state row가 ATTEMPTED 아님 (row 없음/CONFIRMED/FAILED).`,
       );
     }
   }
 
   /**
-   * 현재 state 조회.
+   * 현재 state 조회. row 없으면 NONE 반환 (Lazy 정책).
    */
-  async getState(orderDeliveryId: number): Promise<SsgInsertState | null> {
-    const row = await this.deliveryRepository
-      .createQueryBuilder('od')
-      .select('od.ssgInsertState', 'state')
-      .where('od.id = :id', { id: orderDeliveryId })
-      .getRawOne<{ state: SsgInsertState }>();
-    return row?.state ?? null;
+  async getState(orderDeliveryId: number): Promise<SsgInsertState> {
+    const row = await this.stateRepository.findOne({ where: { orderDeliveryId } });
+    return row?.state ?? SsgInsertState.NONE;
   }
 }
