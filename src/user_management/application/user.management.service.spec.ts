@@ -268,6 +268,17 @@ describe('user management service test', () => {
       expect(queryBuilder.andWhere).toHaveBeenCalledWith('company.id = :companyId', { companyId: 10 });
     });
 
+    it('CORPORATE_ADMIN: businessName 검색 시 companyId + businessName 필터 모두 적용', async () => {
+      userRepository.findOne.mockResolvedValue({ companyId: 10 });
+
+      await sut.getCompanyList({ page: 1, take: 10, businessName: '테스트' }, CORPORATE_ADMIN_USER);
+
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith('company.id = :companyId', { companyId: 10 });
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith('company.businessName LIKE :businessName', {
+        businessName: '%테스트%',
+      });
+    });
+
     it('OPERATION_ADMIN: companyId 필터 없음', async () => {
       await sut.getCompanyList({ page: 1, take: 10 }, OPERATION_ADMIN_USER);
 
