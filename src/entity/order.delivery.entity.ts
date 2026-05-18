@@ -11,6 +11,7 @@ import { OrderHistoryEntity } from './order.history.entity';
 import { OrderDeliveryRefundStatusEnum } from '../delivery/interface/order.delivery.refund.status.enum';
 import { IPriceAdjustment } from '../user_discount/interface/price.adjustment';
 import { IOrderSettleDiscountType } from '../order/interface/order.settle.discount.type';
+import { SsgInsertState } from '../delivery/interface/ssg.insert.state';
 
 @Entity('order_delivery')
 export class OrderDeliveryEntity extends BaseEntity {
@@ -67,6 +68,15 @@ export class OrderDeliveryEntity extends BaseEntity {
 
   @Column({ type: 'int', nullable: true, comment: 'FK) ssg_event.id' })
   ssgEventId: number | null;
+
+  @Column({
+    type: 'enum',
+    enum: SsgInsertState,
+    default: SsgInsertState.NONE,
+    name: 'ssg_insert_state',
+    comment: 'SSG INSERT durable state (NONE/ATTEMPTED/CONFIRMED/FAILED, monotonic)',
+  })
+  ssgInsertState: SsgInsertState;
 
   @Column({ default: OrderDeliveryCouponStatus.NOT_USED })
   couponStatus: OrderDeliveryCouponStatus;

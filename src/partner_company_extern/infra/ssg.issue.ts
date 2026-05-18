@@ -18,6 +18,34 @@ export class SsgCheckNotFoundError extends Error {
   }
 }
 
+/**
+ * SSG issue API가 정상 응답을 돌려줬지만 코드가 1000이 아닌 경우 (신세계 측 거절 확정).
+ * plans/ssg-balance-refactor.md PR1 — typed error 정의(PR2에서 issue()가 throw 적용).
+ *
+ * 이 에러는 "INSERT 결과 = 실패 확정" 시그널이다. 호출자는 SsgInsertState.FAILED로 마킹하고
+ * SSG 행사 잔액 복구 분기로 진입해도 된다.
+ */
+export class SsgIssueRejectedError extends Error {
+  constructor(public readonly code: string | null, reason: string) {
+    super(reason);
+    this.name = 'SsgIssueRejectedError';
+  }
+}
+
+/**
+ * SSG issue API 호출 자체가 실패한 경우 (네트워크 오류, timeout, parsing 실패 등).
+ * plans/ssg-balance-refactor.md PR1 — typed error 정의(PR2에서 throw wrap 적용).
+ *
+ * 이 에러는 "INSERT 결과 = 미확정" 시그널이다. 호출자는 SsgInsertState.ATTEMPTED를 유지하고
+ * orphan resolver가 SSG check로 실제 등록 여부를 확정한 뒤 분기해야 한다.
+ */
+export class SsgIssueUnknownError extends Error {
+  constructor(reason: string, public readonly cause?: unknown) {
+    super(reason);
+    this.name = 'SsgIssueUnknownError';
+  }
+}
+
 @Injectable()
 export class SsgIssue implements ISsgIssue {
   constructor(
@@ -32,13 +60,11 @@ export class SsgIssue implements ISsgIssue {
     }
   }
 
-  private logger = new Logger('SSG');
+  private readonly logger = new Logger('SSG');
 
   private url = 'https://tapi.epopkon.com';
 
-  private parser() {
-    return new Parser();
-  }
+  private readonly parser = new Parser();
 
   generateSsgIssue(): ISsgIssueCode {
     const barCode = this.generateCode('8', 7);
@@ -67,7 +93,7 @@ export class SsgIssue implements ISsgIssue {
     const response = await firstValueFrom(this.httpService.get(sendUrl));
     this.logger.log(response.data);
 
-    const resultToJson = (await this.parser().parseStringPromise(response.data)) as unknown as ISsgIssueOut;
+    const resultToJson = (await this.parser.parseStringPromise(response.data)) as unknown as ISsgIssueOut;
     this.logger.log(resultToJson);
 
     const code = resultToJson?.response?.result?.[0]?.code?.[0];
@@ -107,7 +133,7 @@ export class SsgIssue implements ISsgIssue {
     const response = await firstValueFrom(this.httpService.get(sendUrl));
     this.logger.log(response.data);
 
-    const resultToJson = (await this.parser().parseStringPromise(response.data)) as unknown as ISsgCheckOut;
+    const resultToJson = (await this.parser.parseStringPromise(response.data)) as unknown as ISsgCheckOut;
 
     // value.result 필드 인코딩 복원 (EUC-KR → UTF-8)
     if (resultToJson.response.value?.[0]?.result?.[0]) {
