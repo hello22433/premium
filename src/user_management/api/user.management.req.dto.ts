@@ -12,6 +12,7 @@ import {
   IsPositive,
   Matches,
   Max,
+  Min,
 } from 'class-validator';
 import { IUserStatus } from '../../user/interface/user.status';
 import { dateAtRegexp } from '../../common/domain/date.regexp';
@@ -282,6 +283,7 @@ export class UserManagementModifyMaximumLimitReqDto {
   // =============================================================
   @IsNotEmpty()
   @IsNumber()
+  @Min(0)
   @Type(() => Number)
   newMaximumLimit: number;
 

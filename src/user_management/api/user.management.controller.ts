@@ -77,8 +77,11 @@ export class UserManagementController {
   // ====================================
   @UseGuards(AuthUserAuthorizationGuard)
   @Get('/user-management/name/list')
-  getNameList(@Query() getQuery: UserManagementGetNameListReqQueryDto) {
-    return this.userManagementService.getNameList(getQuery);
+  async getNameList(@User() user: ILoginUserInfo, @Query() getQuery: UserManagementGetNameListReqQueryDto) {
+    if (user.authority !== 'CORPORATE_ADMIN') {
+      await this.authService.authorityValidator(user, UserAuthSubEnum.ACCOUNT);
+    }
+    return this.userManagementService.getNameList(getQuery, user);
   }
 
   @ApiOperation({
@@ -112,7 +115,14 @@ export class UserManagementController {
   // ====================================
   @UseGuards(AuthUserAuthorizationGuard)
   @Get('/user-management/detail/:id')
-  getDetail(@Param() getParam: UserManagementGetDetailReqParamDto) {
+  async getDetail(@User() user: ILoginUserInfo, @Param() getParam: UserManagementGetDetailReqParamDto) {
+    if (user.authority === 'CORPORATE_ADMIN') {
+      if (getParam.id !== user.id) {
+        throw new ForbiddenException('권한이 없습니다.');
+      }
+    } else {
+      await this.authService.authorityValidator(user, UserAuthSubEnum.ACCOUNT);
+    }
     return this.userManagementService.getDetail(getParam);
   }
 
@@ -315,8 +325,11 @@ export class UserManagementController {
   // ====================================
   @UseGuards(AuthUserAuthorizationGuard)
   @Get('/user-management/company/list')
-  getCompanyList(@Query() getQuery: UserManagementGetCompanyListReqQueryDto) {
-    return this.userManagementService.getCompanyList(getQuery);
+  async getCompanyList(@User() user: ILoginUserInfo, @Query() getQuery: UserManagementGetCompanyListReqQueryDto) {
+    if (user.authority !== 'CORPORATE_ADMIN') {
+      await this.authService.authorityValidator(user, UserAuthSubEnum.ACCOUNT);
+    }
+    return this.userManagementService.getCompanyList(getQuery, user);
   }
 
   // ─── 외부 API Key: 본인 ───────────────────────────────

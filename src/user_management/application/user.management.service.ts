@@ -1,7 +1,15 @@
 import { randomBytes, createHash } from 'crypto';
 
 const MYSQL_INT_MAX = 2_147_483_647;
-import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  Inject,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { UserEntity } from '../../entity/user.entity';
 import { IUserStatus } from '../../user/interface/user.status';
 import { UserCompanyEntity } from '../../entity/user.company.entity';
@@ -58,6 +66,7 @@ import { ActivityLogService } from '../../activity_log/application/activity.log.
 import { ActivityLogActionType } from '../../activity_log/interface/activity.log.action.type';
 import { ActivityLogResult } from '../../activity_log/interface/activity.log.result';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
+import { IUserAuthority } from '../../user/interface/user.authority';
 import { ActivityLogEntity } from '../../entity/activity.log.entity';
 import { format } from 'date-fns';
 import { DateFormatStr } from '../../common/domain/date.format.str';
@@ -96,9 +105,11 @@ export class UserManagementService {
     @Inject('ISmsSend')
     private readonly smsSendService: ISmsSend,
     private readonly configService: ConfigService,
-  ) { }
+  ) {}
 
-  private readonly initPasswordTemplateCode = this.configService.getOrThrow<string>('ALIM_TALK_INFO_BANK_INIT_PASSWORD_TEMPLATE_CODE');
+  private readonly initPasswordTemplateCode = this.configService.getOrThrow<string>(
+    'ALIM_TALK_INFO_BANK_INIT_PASSWORD_TEMPLATE_CODE',
+  );
 
   private async sendViaAlimTalkWithSmsFallback(
     to: string,
@@ -161,13 +172,20 @@ export class UserManagementService {
     return locked.balance;
   }
 
-  async getNameList(getQuery: UserManagementGetNameListReqQueryDto): Promise<UserManagementGetNameListResDto> {
+  async getNameList(
+    getQuery: UserManagementGetNameListReqQueryDto,
+    loginUser: ILoginUserInfo,
+  ): Promise<UserManagementGetNameListResDto> {
     const { authority } = getQuery;
 
     let queryBuilder = this.userRepository
       .createQueryBuilder('user')
       .leftJoinAndSelect('user.company', 'company')
       .where('user.status = :activeStatus', { activeStatus: IUserStatus.USED });
+
+    if (loginUser.authority === IUserAuthority.CORPORATE_ADMIN) {
+      queryBuilder = queryBuilder.andWhere('user.id = :id', { id: loginUser.id });
+    }
 
     if (authority) {
       queryBuilder = queryBuilder.andWhere('user.authority = :authority', { authority });
@@ -201,9 +219,7 @@ export class UserManagementService {
       take,
     } = getQuery;
 
-    let queryBuilder = this.userRepository
-      .createQueryBuilder('user')
-      .leftJoinAndSelect('user.company', 'company');
+    let queryBuilder = this.userRepository.createQueryBuilder('user').leftJoinAndSelect('user.company', 'company');
 
     if (settleCondition) {
       queryBuilder = queryBuilder.andWhere('user.settleCondition = :settleCondition', { settleCondition });
@@ -376,31 +392,33 @@ export class UserManagementService {
       companyId: user.companyId,
       company: company
         ? {
-          id: company.id,
-          businessName: company.businessName,
-          businessNumber: company.businessNumber,
-          maximumLimit: company.maximumLimit,
-          balance: company.balance,
-          balanceManagementType: company.balanceManagementType,
-        }
+            id: company.id,
+            businessName: company.businessName,
+            businessNumber: company.businessNumber,
+            maximumLimit: company.maximumLimit,
+            balance: company.balance,
+            balanceManagementType: company.balanceManagementType,
+          }
         : null,
       departmentId: user.departmentId,
       department: user.department
         ? {
-          id: user.department.id,
-          name: user.department.name,
-        }
+            id: user.department.id,
+            name: user.department.name,
+          }
         : null,
       viewScope: viewScope
         ? {
-          scopeType: viewScope.scopeType,
-          deptIds: viewScope.getDeptIdList(),
-        }
+            scopeType: viewScope.scopeType,
+            deptIds: viewScope.getDeptIdList(),
+          }
         : {
-          scopeType: ViewScopeType.SELF,
-          deptIds: [],
-        },
-      allowedSendMethods: user.allowedSendMethods ? user.allowedSendMethods.split(',').map(m => m === 'SMS' ? 'MMS' : m) : ['ALIM_TALK', 'MMS', 'EMAIL'],
+            scopeType: ViewScopeType.SELF,
+            deptIds: [],
+          },
+      allowedSendMethods: user.allowedSendMethods
+        ? user.allowedSendMethods.split(',').map((m) => (m === 'SMS' ? 'MMS' : m))
+        : ['ALIM_TALK', 'MMS', 'EMAIL'],
       loginVerifyMethod: user.loginVerifyMethod,
     };
   }
@@ -561,7 +579,8 @@ export class UserManagementService {
       id: log.id,
       createdAt: format(log.createdAt, DateFormatStr),
       actionType: log.actionType,
-      amount: log.requestParams?.chargeAmount ?? log.requestParams?.changeAmount ?? log.requestParams?.restoreAmount ?? 0,
+      amount:
+        log.requestParams?.chargeAmount ?? log.requestParams?.changeAmount ?? log.requestParams?.restoreAmount ?? 0,
       beforeBalance: log.requestParams?.beforeBalance ?? 0,
       afterBalance: log.requestParams?.afterBalance ?? 0,
       operatorEmail: log.userEmail,
@@ -766,10 +785,7 @@ export class UserManagementService {
 
     // 신규 사용자의 조회 범위 설정 (SUPER_ADMIN만 ALL, 나머지는 SELF)
     const newUserId = insertResult.identifiers[0].id;
-    const scopeType =
-      getBody.authority === 'SUPER_ADMIN'
-        ? ViewScopeType.ALL
-        : ViewScopeType.SELF;
+    const scopeType = getBody.authority === 'SUPER_ADMIN' ? ViewScopeType.ALL : ViewScopeType.SELF;
     await this.userViewScopeRepository.insert({
       userId: newUserId,
       scopeType: scopeType,
@@ -867,10 +883,7 @@ export class UserManagementService {
     await this.userRepository.save(user);
 
     // 권한에 따른 user_view_scope 자동 설정 (SUPER_ADMIN만 ALL, 나머지는 SELF)
-    const scopeType =
-      getBody.authority === 'SUPER_ADMIN'
-        ? ViewScopeType.ALL
-        : ViewScopeType.SELF;
+    const scopeType = getBody.authority === 'SUPER_ADMIN' ? ViewScopeType.ALL : ViewScopeType.SELF;
 
     const existingViewScope = await this.userViewScopeRepository.findOne({
       where: { userId: getBody.id },
@@ -943,14 +956,18 @@ export class UserManagementService {
    * 고객사(회사) 목록 조회 API
    * user_company 테이블 기준으로 중복 없이 고객사 목록을 반환
    */
-  async getCompanyList(getQuery: UserManagementGetCompanyListReqQueryDto) {
+  async getCompanyList(getQuery: UserManagementGetCompanyListReqQueryDto, loginUser: ILoginUserInfo) {
     const { businessName, page, take } = getQuery;
 
-    let queryBuilder = this.userCompanyRepository
-      .createQueryBuilder('company')
-      .where('company.deletedAt IS NULL');
+    let queryBuilder = this.userCompanyRepository.createQueryBuilder('company').where('company.deletedAt IS NULL');
 
-    if (businessName) {
+    if (loginUser.authority === IUserAuthority.CORPORATE_ADMIN) {
+      const self = await this.userRepository.findOne({
+        where: { id: loginUser.id },
+        select: ['companyId'],
+      });
+      queryBuilder = queryBuilder.andWhere('company.id = :companyId', { companyId: self?.companyId ?? -1 });
+    } else if (businessName) {
       queryBuilder = queryBuilder.andWhere('company.businessName LIKE :businessName', {
         businessName: `%${businessName}%`,
       });
@@ -999,6 +1016,7 @@ export class UserManagementService {
    * 최대서비스한도(여신한도) 단독 수정 API
    * 팝업에서 바로 적용되는 용도
    */
+  @Transactional()
   async modifyMaximumLimit(getBody: UserManagementModifyMaximumLimitReqDto, operator: ILoginUserInfo) {
     const { id, newMaximumLimit, memo } = getBody;
 
@@ -1115,7 +1133,7 @@ export class UserManagementService {
         apiKeyHash: keyHash,
         isActive: true,
         ssgEnabled: false,
-        resendMaxCount: isAdmin && 'resendMaxCount' in options ? options.resendMaxCount ?? null : null,
+        resendMaxCount: isAdmin && 'resendMaxCount' in options ? (options.resendMaxCount ?? null) : null,
       });
       await this.externalApiAccountRepository.save(account);
     }
@@ -1349,7 +1367,10 @@ export class UserManagementService {
     return list.map((r) => this.toSsgRequestDto(r));
   }
 
-  async listSsgRequests(filters: { status?: IExternalApiSsgRequestStatus; accountId?: string }): Promise<SsgRequestResDto[]> {
+  async listSsgRequests(filters: {
+    status?: IExternalApiSsgRequestStatus;
+    accountId?: string;
+  }): Promise<SsgRequestResDto[]> {
     const where: any = {};
     if (filters.status) where.status = filters.status;
     if (filters.accountId) where.accountId = filters.accountId;
