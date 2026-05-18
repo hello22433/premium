@@ -967,7 +967,9 @@ export class UserManagementService {
         select: ['companyId'],
       });
       queryBuilder = queryBuilder.andWhere('company.id = :companyId', { companyId: self?.companyId ?? -1 });
-    } else if (businessName) {
+    }
+
+    if (businessName) {
       queryBuilder = queryBuilder.andWhere('company.businessName LIKE :businessName', {
         businessName: `%${businessName}%`,
       });

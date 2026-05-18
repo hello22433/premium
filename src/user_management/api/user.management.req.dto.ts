@@ -282,8 +282,9 @@ export class UserManagementModifyMaximumLimitReqDto {
   })
   // =============================================================
   @IsNotEmpty()
-  @IsNumber()
+  @IsInt()
   @Min(0)
+  @Max(MYSQL_INT_MAX)
   @Type(() => Number)
   newMaximumLimit: number;
 
