@@ -92,6 +92,7 @@ describe('RefundLedgerService', () => {
     refundRepository = {
       createQueryBuilder: jest.fn(),
       delete: jest.fn(),
+      count: jest.fn(),
     } as unknown as jest.Mocked<Repository<OrderDeliveryRefundEntity>>;
 
     deliveryRepository = {
@@ -252,6 +253,27 @@ describe('RefundLedgerService', () => {
       expect(refundRepository.delete).toHaveBeenCalledTimes(2);
       // 첫 번째 release 후 clearRefundedAt은 1회만 실행됐어야 한다 (두 번째는 BadRequestException 전에 차단)
       expect(deliveryRepository.update).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('exists()', () => {
+    it('ledger row가 있으면 true 반환', async () => {
+      (refundRepository.count as jest.Mock).mockResolvedValue(1);
+
+      const result = await sut.exists(baseInput.orderDeliveryId);
+
+      expect(result).toBe(true);
+      expect(refundRepository.count).toHaveBeenCalledWith({
+        where: { orderDeliveryId: baseInput.orderDeliveryId },
+      });
+    });
+
+    it('ledger row가 없으면 false 반환', async () => {
+      (refundRepository.count as jest.Mock).mockResolvedValue(0);
+
+      const result = await sut.exists(baseInput.orderDeliveryId);
+
+      expect(result).toBe(false);
     });
   });
 

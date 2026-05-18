@@ -755,12 +755,15 @@ export class DeliveryBatchService {
         }
 
         // SSG FAIL 재발송: 잔액 충분한 행사 재선택 + 잔액 선차감
-        // refundedAt 가드: 실제 환불이 발생한 경우(SSG event balance가 복원된 경우)만 재차감한다.
-        // 환불 이력이 없는 FAIL은 잔액이 차감된 상태 그대로이므로 재차감하면 이중차감이 된다.
+        // ledger row 가드: orderDelivery.refundedAt은 다른 save/update 흐름에서 NULL로 덮어쓰일 수 있어
+        // 환불 발생 판정의 신뢰 가능한 단일 소스인 order_delivery_refund ledger를 사용한다.
+        // 두 가드 사이 issue() 실행 중 다른 흐름이 release()를 끝낼 수 있으므로
+        // 각 가드 시점에 새로 조회한다 (stale 캐시 사용 시 이중 차감/역환불 위험).
+        const hasRefundLedgerForResendDeduct = await this.refundLedgerService.exists(orderDelivery.id);
         if (
           order.type === IOrderType.SSG
           && orderDelivery.status === IOrderDeliveryStatus.FAIL
-          && orderDelivery.refundedAt
+          && hasRefundLedgerForResendDeduct
         ) {
           const newEvent = await this.ssgEventService.selectEventForOrder(
             product.price,
@@ -800,9 +803,11 @@ export class DeliveryBatchService {
 
         // 이전 실패로 환불된 금액 재차감 (PIN 실패든 발송 실패든)
         // SSG 선차감이 이미 완료된 경우 skipSsg=true
-        // refundedAt 가드: 실제 환불이 발생한 경우만 역차감. 환불 이력이 없으면 차감 상태 그대로이므로
+        // ledger row 가드: 실제 환불이 발생한 경우만 역차감. 환불 이력이 없으면 차감 상태 그대로이므로
         // 재차감하면 사용자 balance/allSettleAmount/SSG event balance가 이중차감된다.
-        if ((hadNoBarCode || orderDelivery.status === IOrderDeliveryStatus.FAIL) && orderDelivery.refundedAt) {
+        // issue() 동안 다른 흐름이 release()를 끝냈을 수 있으므로 최신 상태로 재조회한다.
+        const hasRefundLedgerForReverse = await this.refundLedgerService.exists(orderDelivery.id);
+        if ((hadNoBarCode || orderDelivery.status === IOrderDeliveryStatus.FAIL) && hasRefundLedgerForReverse) {
           await this.reverseRefundForResend(orderDelivery, resendDeducted);
         }
 

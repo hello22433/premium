@@ -51,6 +51,16 @@ export class RefundLedgerService {
     await this.clearRefundedAt(this.deliveryRepository, orderDeliveryId);
   }
 
+  /**
+   * 환불 ledger row 존재 여부 확인.
+   * order_delivery.refunded_at은 다른 save/update 흐름에서 NULL로 덮어쓰일 수 있어
+   * 환불 발생 판정의 신뢰 가능한 단일 소스로 사용한다.
+   */
+  async exists(orderDeliveryId: number): Promise<boolean> {
+    const count = await this.refundRepository.count({ where: { orderDeliveryId } });
+    return count > 0;
+  }
+
   async claimWithManager(manager: EntityManager, input: ClaimRefundInput): Promise<void> {
     await this.insertLedger(manager.getRepository(OrderDeliveryRefundEntity), input);
     await this.markRefundedAt(manager.getRepository(OrderDeliveryEntity), input.orderDeliveryId);
