@@ -12,6 +12,7 @@ import {
   IsPositive,
   Matches,
   Max,
+  Min,
 } from 'class-validator';
 import { IUserStatus } from '../../user/interface/user.status';
 import { dateAtRegexp } from '../../common/domain/date.regexp';
@@ -281,7 +282,9 @@ export class UserManagementModifyMaximumLimitReqDto {
   })
   // =============================================================
   @IsNotEmpty()
-  @IsNumber()
+  @IsInt()
+  @Min(0)
+  @Max(MYSQL_INT_MAX)
   @Type(() => Number)
   newMaximumLimit: number;
 
