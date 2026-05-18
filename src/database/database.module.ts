@@ -65,6 +65,7 @@ import { ProductSharedListFileEntity } from '../entity/product.shared.list.file.
 import { OrderManualEntryEntity } from '../entity/order.manual.entry.entity';
 import { PinIssueDedupEntity } from '../entity/pin.issue.dedup.entity';
 import { SsgIssueLogEntity } from '../entity/ssg.issue.log.entity';
+import { OrderDeliverySsgInsertStateEntity } from '../entity/order.delivery.ssg.insert.state.entity';
 import { EarlyDestroyRequestEntity } from '../entity/early.destroy.request.entity';
 import { EarlyDestroyRequestItemEntity } from '../entity/early.destroy.request.item.entity';
 import { IdempotencyKeyEntity } from '../entity/idempotency.key.entity';
@@ -143,6 +144,7 @@ import { ExternalApiWebhookLogEntity } from '../entity/external.api.webhook.log.
           OrderManualEntryEntity,
           PinIssueDedupEntity,
           SsgIssueLogEntity,
+          OrderDeliverySsgInsertStateEntity,
           EarlyDestroyRequestEntity,
           EarlyDestroyRequestItemEntity,
           IdempotencyKeyEntity,
