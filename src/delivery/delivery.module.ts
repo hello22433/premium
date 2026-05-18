@@ -9,6 +9,7 @@ import { OrderDeliveryEntity } from '../entity/order.delivery.entity';
 import { OrderDeliveryRefundEntity } from '../entity/order.delivery.refund.entity';
 import { DeliveryBatchSchedule } from './delivery.batch.schedule';
 import { RefundLedgerService } from './application/refund-ledger.service';
+import { SsgInsertStateService } from './application/ssg-insert-state.service';
 import { MailModule } from '../mail/mail.module';
 import { SmsModule } from '../sms/sms.module';
 import { OrderEntity } from '../entity/order.entity';
@@ -20,6 +21,7 @@ import { OrderRealProductEntity } from '../entity/order.real.product.entity';
 import { OrderRealProductMappingEntity } from '../entity/order.real.product.mapping.entity';
 import { UserEntity } from '../entity/user.entity';
 import { SsgEventEntity } from '../entity/ssg.event.entity';
+import { SsgIssueLogEntity } from '../entity/ssg.issue.log.entity';
 import { PartnerCompanyExternModule } from '../partner_company_extern/partner.company.extern.module';
 import { SsgEventModule } from '../ssg_event/ssg.event.module';
 import { UserManagementModule } from '../user_management/user.management.module';
@@ -38,6 +40,7 @@ import { UserManagementModule } from '../user_management/user.management.module'
       EmailSendHistoryEntity,
       UserEntity,
       SsgEventEntity,
+      SsgIssueLogEntity,
     ]),
     MailModule,
     SmsModule,
@@ -56,6 +59,7 @@ import { UserManagementModule } from '../user_management/user.management.module'
     DeliveryBatchService,
     DeliveryBatchSchedule,
     RefundLedgerService,
+    SsgInsertStateService,
   ],
   exports: [
     {
@@ -66,6 +70,7 @@ import { UserManagementModule } from '../user_management/user.management.module'
     DeliverySendService,
     DeliveryBatchService,
     RefundLedgerService,
+    SsgInsertStateService,
   ],
 })
 export class DeliveryModule {}
