@@ -29,8 +29,8 @@ export class UserTaskHistoryController {
   @UseGuards(AuthUserAuthorizationGuard)
   // ====================================
   @Get('/user-task-history/list')
-  getList(@Query() getQuery: UserTaskHistoryGetListReqQueryDto) {
-    return this.userTaskHistoryService.getList(getQuery);
+  getList(@User() user: ILoginUserInfo, @Query() getQuery: UserTaskHistoryGetListReqQueryDto) {
+    return this.userTaskHistoryService.getList(user, getQuery);
   }
 
   @ApiOperation({
@@ -45,8 +45,8 @@ export class UserTaskHistoryController {
   @UseGuards(AuthUserAuthorizationGuard)
   // ====================================
   @Get('/user-task-history/detail/:id')
-  getDetail(@Param() getParam: UserTaskHistoryGetDetailReqParamDto) {
-    return this.userTaskHistoryService.getDetail(getParam);
+  getDetail(@User() user: ILoginUserInfo, @Param() getParam: UserTaskHistoryGetDetailReqParamDto) {
+    return this.userTaskHistoryService.getDetail(user, getParam);
   }
 
   @ApiOperation({
@@ -71,10 +71,10 @@ export class UserTaskHistoryController {
   @ApiOkResponse({
     description: '성공적으로 삭제한 경우',
   })
-  // @UseGuards(AuthUserAuthorizationGuard)
+  @UseGuards(AuthUserAuthorizationGuard)
   // ===================================================
   @Delete('/user-task-history')
-  delete(@Body() deleteBody: UserTaskHistoryDeleteReqDto) {
-    return this.userTaskHistoryService.delete(deleteBody);
+  delete(@User() user: ILoginUserInfo, @Body() deleteBody: UserTaskHistoryDeleteReqDto) {
+    return this.userTaskHistoryService.delete(user, deleteBody);
   }
 }

@@ -70,12 +70,4 @@ export class UserFindResetPasswordVerifyReqDto {
   // ===============================
   @IsNotEmpty()
   code: string;
-
-  @ApiProperty({
-    description: '계정 email',
-  })
-  // ===============================
-  @IsNotEmpty()
-  @IsEmail()
-  email: string;
 }

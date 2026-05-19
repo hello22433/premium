@@ -31,6 +31,7 @@ import { ConfigService } from '@nestjs/config';
 
 describe('user management service test', () => {
   let userRepository: any = mock<Repository<UserEntity>>();
+  let userCompanyRepository: any;
   let passwordEncrypt: any = mock<PasswordBcryptEncrypt>();
   let queryBuilder = createMockQueryBuilder();
 
@@ -82,6 +83,7 @@ describe('user management service test', () => {
 
     sut = module.get<UserManagementService>(UserManagementService);
     userRepository = module.get<Repository<UserEntity>>(getRepositoryToken(UserEntity));
+    userCompanyRepository = module.get(getRepositoryToken(UserCompanyEntity));
     passwordEncrypt = module.get<PasswordBcryptEncrypt>(PasswordBcryptEncrypt);
   });
 
@@ -202,6 +204,7 @@ describe('user management service test', () => {
         personPhoneNumber: '010-1111-2222',
         personEmail: 'oldperson@example.com',
       });
+      userCompanyRepository.findOne.mockResolvedValue({ id: 10, businessNumber: '1234567890' });
 
       await sut.update(givenUpdateBody as any);
 

@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsEnum, IsNotEmpty, IsNumber, IsOptional } from 'class-validator';
+import { IsEnum, IsNotEmpty, IsNumber, IsOptional, Max, Min } from 'class-validator';
 import { Type } from 'class-transformer';
 import { PagingReqDto } from '../../common/api/dto/pagination.req.dto';
 import { IUserDiscountCategory } from '../interface/user.discount.category';
@@ -110,6 +110,8 @@ export class UserDiscountCreateReqDto {
   // =============================================================
   @IsNumber()
   @IsNotEmpty()
+  @Min(0)
+  @Max(100)
   pricePercent: number;
 }
 

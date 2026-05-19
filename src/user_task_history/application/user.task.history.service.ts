@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { UserEntity } from '../../entity/user.entity';
 import { In, Repository } from 'typeorm';
@@ -17,6 +17,7 @@ import { IOrderStatus } from '../../order/interface/order.status';
 import { UserTaskHistoryEntity } from '../../entity/user.task.history.entity';
 import { UserTaskHistoryDetailViewDto } from '../api/dto/user.task.history.detail.view.dto';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
+import { IUserAuthority } from '../../user/interface/user.authority';
 import { QueryBuilderDateCondition } from '../../common/infra/query.builder.date.condition';
 import { MaskingUtil } from '../../common/utils/masking.util';
 
@@ -31,7 +32,10 @@ export class UserTaskHistoryService {
     private readonly orderRepository: Repository<OrderEntity>,
   ) { }
 
-  async getList(getQuery: UserTaskHistoryGetListReqQueryDto): Promise<UserTaskHistoryGetListResDto> {
+  async getList(loginUser: ILoginUserInfo, getQuery: UserTaskHistoryGetListReqQueryDto): Promise<UserTaskHistoryGetListResDto> {
+    if (loginUser.authority === IUserAuthority.CORPORATE_ADMIN) {
+      throw new ForbiddenException();
+    }
     const {
       createdStartAt,
       createdEndAt,
@@ -133,7 +137,10 @@ export class UserTaskHistoryService {
     return { list: resultList, totalCount, totalPage, currentPage: page };
   }
 
-  async getDetail(getParam: UserTaskHistoryGetDetailReqParamDto): Promise<UserTaskHistoryGetDetailResDto> {
+  async getDetail(loginUser: ILoginUserInfo, getParam: UserTaskHistoryGetDetailReqParamDto): Promise<UserTaskHistoryGetDetailResDto> {
+    if (loginUser.authority === IUserAuthority.CORPORATE_ADMIN) {
+      throw new ForbiddenException();
+    }
     const { id } = getParam;
 
     const user = await this.userRepository.findOne({
@@ -183,19 +190,25 @@ export class UserTaskHistoryService {
     };
   }
 
-  async create(user: ILoginUserInfo, getBody: UserTaskHistoryCreateReqDto) {
+  async create(loginUser: ILoginUserInfo, getBody: UserTaskHistoryCreateReqDto) {
+    if (loginUser.authority === IUserAuthority.CORPORATE_ADMIN) {
+      throw new ForbiddenException();
+    }
     const { userId, content } = getBody;
 
     await this.userTaskHistoryRepository.insert({
       userId: userId,
-      adminUserId: user.id,
+      adminUserId: loginUser.id,
       content: content,
     });
 
     return true;
   }
 
-  async delete(deleteBody: UserTaskHistoryDeleteReqDto) {
+  async delete(loginUser: ILoginUserInfo, deleteBody: UserTaskHistoryDeleteReqDto) {
+    if (loginUser.authority === IUserAuthority.CORPORATE_ADMIN) {
+      throw new ForbiddenException();
+    }
     const { id } = deleteBody;
 
     const taskHistory = await this.userTaskHistoryRepository.findOne({

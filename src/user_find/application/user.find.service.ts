@@ -150,13 +150,14 @@ export class UserFindService {
       });
     }
 
+    emailSendHistory.userId = user.id;
     await this.emailSendHistoryRepository.save(emailSendHistory);
 
     return { id: emailSendHistory.id };
   }
 
   async resetPasswordVerify(getBody: UserFindResetPasswordVerifyReqDto) {
-    const { id, code, email } = getBody;
+    const { id, code } = getBody;
 
     const emailSendHistory = await this.emailSendHistoryRepository.findOne({
       where: {
@@ -181,9 +182,13 @@ export class UserFindService {
       throw new BadRequestException('이미 인증 완료된 코드입니다.');
     }
 
+    if (!emailSendHistory.userId) {
+      throw new BadRequestException('인증 데이터가 유효하지 않습니다.');
+    }
+
     const user = await this.userRepository.findOne({
       where: {
-        email: email,
+        id: emailSendHistory.userId,
       },
     });
 
@@ -217,7 +222,7 @@ export class UserFindService {
         cc: undefined,
         content: content,
         subject: title,
-        to: email,
+        to: user.email,
       });
     }
 

@@ -4,6 +4,8 @@ import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorizati
 import { UserDiscountService } from '../application/user.discount.service';
 import { UserDiscountGetListResDto } from './user.discount.res.dto';
 import { UserDiscountCreateReqDto, UserDiscountDeleteReqDto, UserDiscountGetListReqDto } from './user.discount.req.dto';
+import { User } from '../../auth/api/user.decorator';
+import { ILoginUserInfo } from '../../auth/interface/login.user';
 
 @ApiTags('user-management')
 @Controller('')
@@ -45,8 +47,8 @@ export class UserDiscountController {
   // ====================================
   @UseGuards(AuthUserAuthorizationGuard)
   @Post('/user-management/discount')
-  create(@Body() getBody: UserDiscountCreateReqDto) {
-    return this.userDiscountService.create(getBody);
+  create(@User() user: ILoginUserInfo, @Body() getBody: UserDiscountCreateReqDto) {
+    return this.userDiscountService.create(user, getBody);
   }
 
   @ApiBearerAuth()
@@ -62,7 +64,7 @@ export class UserDiscountController {
   // ====================================
   @UseGuards(AuthUserAuthorizationGuard)
   @Delete('/user-management/discount')
-  delete(@Body() getBody: UserDiscountDeleteReqDto) {
-    return this.userDiscountService.delete(getBody);
+  delete(@User() user: ILoginUserInfo, @Body() getBody: UserDiscountDeleteReqDto) {
+    return this.userDiscountService.delete(user, getBody);
   }
 }

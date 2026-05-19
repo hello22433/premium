@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
 import { parseFilePathList } from '../../util/file.util';
 import { InjectRepository } from '@nestjs/typeorm';
 import { UserDriveEntity } from '../../entity/user.drive.entity';
@@ -17,6 +17,7 @@ import { format } from 'date-fns';
 import { DateFormatStr } from '../../common/domain/date.format.str';
 import { UserEntity } from '../../entity/user.entity';
 import { IUserDriveStatus } from '../interface/user.drive.status';
+import { IUserAuthority } from '../../user/interface/user.authority';
 
 @Injectable()
 export class UserDriveService {
@@ -155,6 +156,10 @@ export class UserDriveService {
 
     if (!userDrive) {
       throw new BadRequestException('문서가 존재하지 않습니다.');
+    }
+
+    if (user.authority === IUserAuthority.OPERATION_ADMIN && userDrive.senderId !== user.id) {
+      throw new ForbiddenException();
     }
 
     const receiver = await this.userRepository.findOne({
