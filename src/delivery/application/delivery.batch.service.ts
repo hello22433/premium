@@ -60,6 +60,10 @@ import { SsgEventService } from '../../ssg_event/application/ssg.event.service';
 import { UserManagementService } from '../../user_management/application/user.management.service';
 import { DeliverySendService } from './delivery.send.service';
 import { RefundLedgerService } from './refund-ledger.service';
+import { SsgInsertStateService } from './ssg-insert-state.service';
+import { SsgInsertState } from '../interface/ssg.insert.state';
+import { SsgRefundResolverService } from './ssg-refund.resolver';
+import { SsgRefundOutcome } from '../interface/ssg.refund.resolve';
 
 @Injectable()
 export class DeliveryBatchService {
@@ -96,6 +100,8 @@ export class DeliveryBatchService {
     private userManagementService: UserManagementService,
     private deliverySendService: DeliverySendService,
     private refundLedgerService: RefundLedgerService,
+    private ssgRefundResolverService: SsgRefundResolverService,
+    private ssgInsertStateService: SsgInsertStateService,
   ) {}
 
   private readonly logger = new Logger('batch');
@@ -197,6 +203,12 @@ export class DeliveryBatchService {
    * - 미정산 + isSettleBalance=false → allSettleAmount 차감 (여신 복구)
    *
    * 멱등성: order_delivery_refund UNIQUE 제약으로 중복 환불 차단.
+   *
+   * 순서 (plans/ssg-balance-refactor.md PR3 D):
+   * 1) refundLedgerService.claim() 먼저 호출 — 중복 호출이면 BadRequestException 으로 즉시 차단
+   * 2) claim 성공 시에만 SSG 행사 잔액 복구 + 사용자 잔액/정산 복구
+   * 이렇게 해야 ledger가 한 번만 진입하는 게이트로 동작해 SSG 잔액 중복 복구를 막는다.
+   * (이전 순서: SSG 먼저 → ledger 가 막더라도 SSG 잔액은 이미 복구됨 = 중복 위험.)
    */
   private async refundForFail(orderDelivery: OrderDeliveryEntity): Promise<void> {
     const order = orderDelivery.orderProductMapping.order;
@@ -206,11 +218,8 @@ export class DeliveryBatchService {
     const userId = order.clientUserId ?? order.user!.id;
     const shouldRestoreBalance = order.isSettleComplete || order.isSettleBalance;
 
+    const isSsg = order.type === IOrderType.SSG && !!orderDelivery.ssgEventId;
     try {
-      if (order.type === IOrderType.SSG && orderDelivery.ssgEventId) {
-        await this.ssgEventService.refundForDeliveryFail(orderDelivery.ssgEventId, order.id, productPrice);
-      }
-
       await this.refundLedgerService.claim({
         orderDeliveryId: orderDelivery.id,
         userId,
@@ -221,7 +230,27 @@ export class DeliveryBatchService {
         sourcePath: 'BATCH_FAIL',
         operatorUserId: null,
         memo: `발송 실패 환불 (주문번호: ${order.id})`,
+        // SSG 주문이면 ledger 의 ssg_balance_settled 를 false 로 시작.
+        // resolver 가 RESTORED/SKIPPED_CONFIRMED 반환 시 markSsgSettled 로 true 갱신.
+        // DEFERRED 면 false 유지 → 다음 재발송 가드 차단 (이중 차감 방지).
+        ssgPending: isSsg,
       });
+
+      // ledger claim 성공 후 SSG 행사 잔액 복구.
+      // resolver 가 throw 흡수 + outcome 반환 — caller try/catch 불필요. 보정 실패는 ledger 신호로 후속 전달.
+      if (isSsg) {
+        const outcome = await this.ssgRefundResolverService.resolveAndRefundIfNeeded({
+          orderDeliveryId: orderDelivery.id,
+          ssgEventId: orderDelivery.ssgEventId!,
+          refundAmount: productPrice,
+          orderId: order.id,
+        });
+        if (outcome === SsgRefundOutcome.DEFERRED) {
+          this.logger.error(
+            `[REFUND] SSG 잔액 보정 DEFERRED — ledger.ssg_balance_settled=false 유지. 운영 점검 필요. orderDelivery.id: ${orderDelivery.id}`,
+          );
+        }
+      }
 
       if (shouldRestoreBalance) {
         await this.userManagementService.addBalance(userId, settlementPrice, `발송 실패 환불 (주문번호: ${order.id})`);
@@ -754,16 +783,54 @@ export class DeliveryBatchService {
           });
         }
 
-        // SSG FAIL 재발송: 잔액 충분한 행사 재선택 + 잔액 선차감
-        // ledger row 가드: orderDelivery.refundedAt은 다른 save/update 흐름에서 NULL로 덮어쓰일 수 있어
-        // 환불 발생 판정의 신뢰 가능한 단일 소스인 order_delivery_refund ledger를 사용한다.
-        // 두 가드 사이 issue() 실행 중 다른 흐름이 release()를 끝낼 수 있으므로
-        // 각 가드 시점에 새로 조회한다 (stale 캐시 사용 시 이중 차감/역환불 위험).
+        // SSG FAIL 재발송: 잔액 충분한 행사 재선택 + 잔액 선차감.
+        // plans/ssg-balance-refactor.md PR3.B + PR3 보강.
+        // 세 신호 AND 가드 — 어느 하나도 빠지면 안 됨:
+        //  (1) ledger exists           : 고객사 환불 발생 사실
+        //  (2) state in NONE/FAILED    : SSG 등록 안 됐거나 실패 확정 (CONFIRMED 면 기존 PIN 재사용)
+        //  (3) ledger.ssg_balance_settled : 이전 refundForFail() SSG 잔액 보정이 완료됨 (보강)
+        // (3) 이 추가된 이유 — resolver 가 DEFERRED 반환했는데 새 행사에 또 선차감하면
+        // 기존 행사 미복구 + 새 행사 차감 = SSG 측 잔액 이중. 보정 완료된 경우만 다음 선차감 허용.
+        // 두 가드 사이 issue() 실행 중 다른 흐름이 release()/state 전이/markSsgSettled 를 끝낼 수
+        // 있으므로 각 가드 시점에 새로 조회한다 (stale 캐시 사용 시 이중 차감/역환불 위험).
         const hasRefundLedgerForResendDeduct = await this.refundLedgerService.exists(orderDelivery.id);
+        const ssgBalanceSettledForResendDeduct = hasRefundLedgerForResendDeduct
+          ? await this.refundLedgerService.isSsgSettled(orderDelivery.id)
+          : false;
+        const stateForResendDeduct = await this.ssgInsertStateService.getState(orderDelivery.id);
+        const canDeductNewEvent = stateForResendDeduct === SsgInsertState.NONE
+          || stateForResendDeduct === SsgInsertState.FAILED;
+        // 비정상 케이스 감지 — status=FAIL + state=NONE/FAILED 인데 ledger 가 없는 경우.
+        // 정상 흐름이라면 refundForFail() 이 호출되어 ledger 가 있어야 한다.
+        // 운영에서 이 케이스가 나오면 "환불 ledger 누락" 또는 "기존 local SSG 차감 잔존" 별도 조사 대상.
+        if (
+          order.type === IOrderType.SSG
+          && orderDelivery.status === IOrderDeliveryStatus.FAIL
+          && canDeductNewEvent
+          && !hasRefundLedgerForResendDeduct
+        ) {
+          this.logger.warn(
+            `[RESEND] 비정상 — status=FAIL + state=${stateForResendDeduct} + ledger 없음. 환불 ledger 누락 또는 local SSG 차감 잔존 조사 필요. orderDelivery.id=${orderDelivery.id}`,
+          );
+        }
+        // SSG 잔액 보정 미완료 케이스 — 새 선차감 차단 + 운영 알림.
         if (
           order.type === IOrderType.SSG
           && orderDelivery.status === IOrderDeliveryStatus.FAIL
           && hasRefundLedgerForResendDeduct
+          && canDeductNewEvent
+          && !ssgBalanceSettledForResendDeduct
+        ) {
+          this.logger.error(
+            `[RESEND] SSG 잔액 보정 미완료(ssg_balance_settled=false) — 새 선차감 차단. 운영 점검 필요. orderDelivery.id=${orderDelivery.id}`,
+          );
+        }
+        if (
+          order.type === IOrderType.SSG
+          && orderDelivery.status === IOrderDeliveryStatus.FAIL
+          && hasRefundLedgerForResendDeduct
+          && canDeductNewEvent
+          && ssgBalanceSettledForResendDeduct
         ) {
           const newEvent = await this.ssgEventService.selectEventForOrder(
             product.price,
@@ -784,13 +851,8 @@ export class DeliveryBatchService {
 
         if (!orderDelivery.barCode) {
           this.logger.error(`[RESEND] PIN 재발급 실패 - orderDelivery.id: ${orderDelivery.id}`);
-          // PIN 실패 시 선차감 환불
           if (resendDeducted && ssgEvent) {
-            try {
-              await this.ssgEventService.refundForDeliveryFail(ssgEvent.id, order.id, product.price);
-            } catch (refundError) {
-              this.logger.error(`[RESEND] 선차감 환불 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${refundError}`);
-            }
+            await this.refundResendDeduct(orderDelivery, ssgEvent.id, product.price, order.id);
             resendDeducted = false;
           }
           return false;
@@ -814,13 +876,9 @@ export class DeliveryBatchService {
         this.logger.log(`[RESEND] PIN 발급/확인 성공 - orderDelivery.id: ${orderDelivery.id}, barCode: ${orderDelivery.barCode}`);
       } catch (error) {
         this.logger.error(`[RESEND] PIN 발급/확인 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
-        // issue() throw 시에도 선차감 환불
+        // issue() throw 시에도 선차감 환불 (shared resolver — state 기준 분기)
         if (resendDeducted && ssgEvent) {
-          try {
-            await this.ssgEventService.refundForDeliveryFail(ssgEvent.id, order.id, product.price);
-          } catch (refundError) {
-            this.logger.error(`[RESEND] 선차감 환불 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${refundError}`);
-          }
+          await this.refundResendDeduct(orderDelivery, ssgEvent.id, product.price, order.id);
         }
         return false;
       }
@@ -843,6 +901,31 @@ export class DeliveryBatchService {
   }
 
   /**
+   * 재발송 선차감 환불 (PIN 발급 실패 또는 issue() throw 시).
+   * shared resolver 를 통해 state 기준으로 SSG 행사 잔액을 복구한다.
+   */
+  private async refundResendDeduct(
+    orderDelivery: OrderDeliveryEntity,
+    ssgEventId: number,
+    refundAmount: number,
+    orderId: number,
+  ): Promise<void> {
+    // resolver 는 throw 흡수 + outcome 반환. DEFERRED 시 ledger.ssg_balance_settled 가 false 로
+    // 남거나 markSsgSettled 가 호출 안 됨 → 다음 재발송 가드에서 차단.
+    const outcome = await this.ssgRefundResolverService.resolveAndRefundIfNeeded({
+      orderDeliveryId: orderDelivery.id,
+      ssgEventId,
+      refundAmount,
+      orderId,
+    });
+    if (outcome === SsgRefundOutcome.DEFERRED) {
+      this.logger.error(
+        `[RESEND] 선차감 환불 DEFERRED — 운영 점검 필요. orderDelivery.id: ${orderDelivery.id}`,
+      );
+    }
+  }
+
+  /**
    * 환불 복구 (PIN 재발급 성공 시).
    * 최초 발송 실패 시 환불된 금액을 다시 차감하고 ledger row를 DELETE 하여
    * 향후 또 실패할 경우 다시 환불할 수 있도록 멱등 플래그를 해제한다.
@@ -851,6 +934,12 @@ export class DeliveryBatchService {
    * - 정산확정 후(isSettleComplete=true) → balance에서 차감
    * - 미정산 + isSettleBalance=true → balance에서 차감
    * - 미정산 + isSettleBalance=false → allSettleAmount 가산
+   *
+   * 신호 분리 (plans/ssg-balance-refactor.md PR3.B):
+   * - 고객사 환불 역처리 (balance/allSettleAmount 재차감): caller 가 ledger exists 가드로 진입 결정 → 항상 진행
+   * - SSG 행사 chargeBack: SSG 분기 안에서 state + skipSsg 신호 독립 평가
+   *     state=CONFIRMED → chargeBack X (등록 확정, 행사 잔액 손대지 않음)
+   *     skipSsg=true   → chargeBack X (이미 새 행사로 선차감 이동, 기존 행사 손대지 않음)
    *
    * @param skipSsg SSG 선차감이 이미 완료된 경우 true (SSG chargeBack 스킵)
    */
@@ -863,8 +952,24 @@ export class DeliveryBatchService {
     const shouldRestoreBalance = order.isSettleComplete || order.isSettleBalance;
 
     try {
+      // SSG chargeBack 신호 영역 — state 기반 분기.
+      // 신호 분리 정책 (PR3) — SSG chargeBack 실패는 고객 재차감을 막지 않는다.
+      // throw 흡수 + error 로그만 남기고 아래 deductBalance/allSettleAmount 가산 계속.
       if (!skipSsg && order.type === IOrderType.SSG && orderDelivery.ssgEventId) {
-        await this.ssgEventService.chargeBackForResend(orderDelivery.ssgEventId, order.id, productPrice);
+        try {
+          const state = await this.ssgInsertStateService.getState(orderDelivery.id);
+          if (state === SsgInsertState.CONFIRMED) {
+            this.logger.log(
+              `[RESEND] SSG chargeBack skip — state=CONFIRMED. orderDelivery.id=${orderDelivery.id}`,
+            );
+          } else {
+            await this.ssgEventService.chargeBackForResend(orderDelivery.ssgEventId, order.id, productPrice);
+          }
+        } catch (ssgError) {
+          this.logger.error(
+            `[RESEND] SSG chargeBack 실패 — 고객 재차감은 계속 진행. orderDelivery.id=${orderDelivery.id}, error: ${ssgError}`,
+          );
+        }
       }
 
       if (shouldRestoreBalance) {

@@ -18,6 +18,13 @@ export interface ClaimRefundInput {
   sourcePath: OrderDeliveryRefundSourcePath;
   operatorUserId?: number | null;
   memo?: string | null;
+  /**
+   * SSG 잔액 보정이 아직 안 끝났음을 표시. SSG 주문은 claim 시점에 true 로 줘서
+   * `ssg_balance_settled=false` 로 INSERT 한다. resolver 가 RESTORED/SKIPPED_CONFIRMED 반환 시
+   * `markSsgSettled()` 호출로 true 로 갱신. 비-SSG 주문이면 생략(기본 false → settled=true default).
+   * plans/ssg-balance-refactor.md PR3 보강.
+   */
+  ssgPending?: boolean;
 }
 
 /**
@@ -61,6 +68,39 @@ export class RefundLedgerService {
     return count > 0;
   }
 
+  /**
+   * SSG 행사 잔액 보정 완료 여부 확인. ledger row 가 없으면 false 반환.
+   * 재발송 가드에서 `exists() AND isSsgSettled()` 둘 다 통과해야 새 선차감 진행.
+   * plans/ssg-balance-refactor.md PR3 보강.
+   */
+  async isSsgSettled(orderDeliveryId: number): Promise<boolean> {
+    const row = await this.refundRepository.findOne({
+      where: { orderDeliveryId },
+      select: ['ssgBalanceSettled'],
+    });
+    return row?.ssgBalanceSettled ?? false;
+  }
+
+  /**
+   * SSG resolver 가 RESTORED 또는 SKIPPED_CONFIRMED 반환 시 호출.
+   * ledger row 의 `ssg_balance_settled` 를 true 로 갱신한다.
+   * row 가 없으면 silently skip (정상 흐름이라면 claim 이 먼저 일어났어야 함).
+   * plans/ssg-balance-refactor.md PR3 보강.
+   */
+  async markSsgSettled(orderDeliveryId: number): Promise<void> {
+    const result = await this.refundRepository
+      .createQueryBuilder()
+      .update(OrderDeliveryRefundEntity)
+      .set({ ssgBalanceSettled: true })
+      .where('order_delivery_id = :id', { id: orderDeliveryId })
+      .execute();
+    if (!result.affected) {
+      this.logger.warn(
+        `markSsgSettled: ledger row 없음 (skip). orderDeliveryId=${orderDeliveryId}`,
+      );
+    }
+  }
+
   async claimWithManager(manager: EntityManager, input: ClaimRefundInput): Promise<void> {
     await this.insertLedger(manager.getRepository(OrderDeliveryRefundEntity), input);
     await this.markRefundedAt(manager.getRepository(OrderDeliveryEntity), input.orderDeliveryId);
@@ -90,6 +130,9 @@ export class RefundLedgerService {
           sourcePath: input.sourcePath,
           operatorUserId: input.operatorUserId ?? null,
           memo: input.memo ?? null,
+          // SSG 주문은 보정 완료 신호 false 로 시작 → resolver 성공 시 markSsgSettled 로 true.
+          // 그 외 (비-SSG) 는 true (의미 없음, 가드에서 SSG type 분기로 영향 X).
+          ssgBalanceSettled: !input.ssgPending,
         })
         .execute();
     } catch (e: any) {

@@ -62,4 +62,13 @@ export class OrderDeliveryRefundEntity {
     default: () => 'CURRENT_TIMESTAMP(6)',
   })
   refundedAt: Date;
+
+  /**
+   * SSG 행사 잔액 보정 완료 여부 (plans/ssg-balance-refactor.md PR3 보강).
+   * SsgRefundResolverService 가 RESTORED/SKIPPED_CONFIRMED 반환 시 true로 마킹.
+   * resolver 가 DEFERRED(미확정/실패)면 false 유지 → 재발송 가드가 새 선차감 차단.
+   * 비-SSG 주문은 의미 없음 (true default).
+   */
+  @Column({ type: 'boolean', name: 'ssg_balance_settled', default: true })
+  ssgBalanceSettled: boolean;
 }
