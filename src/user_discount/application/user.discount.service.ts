@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, SelectQueryBuilder } from 'typeorm';
 import { UserDiscountEntity } from '../../entity/user.discount.entity';
@@ -7,6 +7,8 @@ import {
   UserDiscountDeleteReqDto,
   UserDiscountGetListReqDto,
 } from '../api/user.discount.req.dto';
+import { ILoginUserInfo } from '../../auth/interface/login.user';
+import { IUserAuthority } from '../../user/interface/user.authority';
 import { UserDiscountGetListResDto } from '../api/user.discount.res.dto';
 import { UserDiscountViewDto } from '../api/dto/user.discount.view.dto';
 import { UserEntity } from '../../entity/user.entity';
@@ -152,7 +154,11 @@ export class UserDiscountService {
     return { list: resultList, totalCount, totalPage, currentPage: page };
   }
 
-  async create(getBody: UserDiscountCreateReqDto) {
+  async create(loginUser: ILoginUserInfo, getBody: UserDiscountCreateReqDto) {
+    if (loginUser.authority === IUserAuthority.CORPORATE_ADMIN) {
+      throw new ForbiddenException('할인 옵션 등록 권한이 없습니다.');
+    }
+
     const {
       userId,
       partnerCompanyId,
@@ -166,6 +172,13 @@ export class UserDiscountService {
       group,
       classificationId,
     } = getBody;
+
+    if (!Number.isFinite(pricePercent)) {
+      throw new BadRequestException('할인율은 숫자여야 합니다.');
+    }
+    if (pricePercent < 0 || pricePercent > 100) {
+      throw new BadRequestException('할인율은 0~100 사이여야 합니다.');
+    }
 
     const user = await this.userRepository.findOneBy({ id: userId });
 
@@ -373,7 +386,11 @@ export class UserDiscountService {
     return queryBuilder;
   }
 
-  async delete(getBody: UserDiscountDeleteReqDto) {
+  async delete(loginUser: ILoginUserInfo, getBody: UserDiscountDeleteReqDto) {
+    if (loginUser.authority === IUserAuthority.CORPORATE_ADMIN) {
+      throw new ForbiddenException('할인 옵션 삭제 권한이 없습니다.');
+    }
+
     const { id } = getBody;
 
     const discount = await this.userDiscountRepository.findOne({

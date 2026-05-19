@@ -31,6 +31,7 @@ import { ConfigService } from '@nestjs/config';
 
 describe('user management service test', () => {
   let userRepository: any = mock<Repository<UserEntity>>();
+  let userCompanyRepository: any;
   let passwordEncrypt: any = mock<PasswordBcryptEncrypt>();
   let queryBuilder = createMockQueryBuilder();
 
@@ -82,6 +83,7 @@ describe('user management service test', () => {
 
     sut = module.get<UserManagementService>(UserManagementService);
     userRepository = module.get<Repository<UserEntity>>(getRepositoryToken(UserEntity));
+    userCompanyRepository = module.get(getRepositoryToken(UserCompanyEntity));
     passwordEncrypt = module.get<PasswordBcryptEncrypt>(PasswordBcryptEncrypt);
   });
 
@@ -202,6 +204,7 @@ describe('user management service test', () => {
         personPhoneNumber: '010-1111-2222',
         personEmail: 'oldperson@example.com',
       });
+      userCompanyRepository.findOne.mockResolvedValue({ id: 10, businessNumber: '1234567890' });
 
       await sut.update(givenUpdateBody as any);
 
@@ -266,6 +269,17 @@ describe('user management service test', () => {
       await sut.getCompanyList({ page: 1, take: 10 }, CORPORATE_ADMIN_USER);
 
       expect(queryBuilder.andWhere).toHaveBeenCalledWith('company.id = :companyId', { companyId: 10 });
+    });
+
+    it('CORPORATE_ADMIN: businessName 검색 시 companyId + businessName 필터 모두 적용', async () => {
+      userRepository.findOne.mockResolvedValue({ companyId: 10 });
+
+      await sut.getCompanyList({ page: 1, take: 10, businessName: '테스트' }, CORPORATE_ADMIN_USER);
+
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith('company.id = :companyId', { companyId: 10 });
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith('company.businessName LIKE :businessName', {
+        businessName: '%테스트%',
+      });
     });
 
     it('OPERATION_ADMIN: companyId 필터 없음', async () => {
