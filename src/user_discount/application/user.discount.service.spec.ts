@@ -78,6 +78,18 @@ describe('UserDiscountService', () => {
         new BadRequestException('할인율은 0~100 사이여야 합니다.'),
       );
     });
+
+    it('undefined 입력 시 BadRequestException', async () => {
+      await expect(
+        sut.create(OPERATION_ADMIN_USER as any, { ...baseBody, pricePercent: undefined } as any),
+      ).rejects.toThrow(new BadRequestException('할인율은 숫자여야 합니다.'));
+    });
+
+    it('NaN 입력 시 BadRequestException', async () => {
+      await expect(sut.create(OPERATION_ADMIN_USER as any, { ...baseBody, pricePercent: NaN } as any)).rejects.toThrow(
+        new BadRequestException('할인율은 숫자여야 합니다.'),
+      );
+    });
   });
 
   describe('delete 권한 검증', () => {

@@ -173,6 +173,9 @@ export class UserDiscountService {
       classificationId,
     } = getBody;
 
+    if (!Number.isFinite(pricePercent)) {
+      throw new BadRequestException('할인율은 숫자여야 합니다.');
+    }
     if (pricePercent < 0 || pricePercent > 100) {
       throw new BadRequestException('할인율은 0~100 사이여야 합니다.');
     }
