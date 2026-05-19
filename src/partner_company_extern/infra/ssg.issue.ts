@@ -46,6 +46,36 @@ export class SsgIssueUnknownError extends Error {
   }
 }
 
+/**
+ * SSG INSERT 시도 중복 — 이미 ATTEMPTED state row 존재.
+ * plans/ssg-balance-refactor.md PR2.
+ *
+ * markAttempted()가 SKIPPED_ACTIVE 를 반환했을 때 caller가 외부 INSERT 호출을 막기 위해 throw.
+ * 실패 확정이 아니라 "미확정 시도가 진행 중"이므로 markFailed() 대상 아님.
+ * orphan resolver가 SSG check로 실제 등록 여부를 확정해야 한다.
+ */
+export class SsgIssueAttemptAlreadyActiveError extends Error {
+  constructor(public readonly orderDeliveryId: number) {
+    super(`SSG INSERT 시도가 이미 진행 중 (ATTEMPTED). orderDeliveryId=${orderDeliveryId}`);
+    this.name = 'SsgIssueAttemptAlreadyActiveError';
+  }
+}
+
+/**
+ * SSG INSERT 시도 invariant violation — 이미 CONFIRMED state 인데 새 INSERT 시도.
+ * plans/ssg-balance-refactor.md PR2.
+ *
+ * 정상 경로라면 기존 PIN 확인 단계(`needsInsert=false`)에서 걸렸어야 한다.
+ * markAttempted()가 SKIPPED_TERMINAL 을 반환하면 호출자는 이 에러로 중단해 운영 알림을 유도한다.
+ * markFailed() 대상 아님 (이미 성공한 상태를 망가뜨리지 않음).
+ */
+export class SsgIssueAlreadyConfirmedError extends Error {
+  constructor(public readonly orderDeliveryId: number) {
+    super(`SSG INSERT 가 이미 CONFIRMED 상태인데 새 시도 호출됨. orderDeliveryId=${orderDeliveryId}`);
+    this.name = 'SsgIssueAlreadyConfirmedError';
+  }
+}
+
 @Injectable()
 export class SsgIssue implements ISsgIssue {
   constructor(
@@ -98,8 +128,18 @@ export class SsgIssue implements ISsgIssue {
 
     const code = resultToJson?.response?.result?.[0]?.code?.[0];
     const reason = resultToJson?.response?.result?.[0]?.reason?.[0];
+    if (code == null) {
+      // 응답 schema가 망가져 code 자체를 못 읽음 (malformed XML, 부분 응답, 예상 밖 구조 등).
+      // INSERT 결과 자체가 미확정이므로 거절 확정으로 처리해서는 안 된다 (FAILED 마킹 금지).
+      // ATTEMPTED 유지 → orphan resolver가 SSG check로 확정해야 한다.
+      throw new SsgIssueUnknownError(
+        reason ?? 'SSG 등록 응답에서 code를 파싱하지 못했습니다 (응답 schema 비정상).',
+      );
+    }
     if (code !== '1000') {
-      throw new Error(reason ?? `SSG 등록 실패 (code: ${code ?? 'null'})`);
+      // 정상 응답이지만 신세계 측 거절 확정.
+      // 호출자는 이 에러를 catch해 SsgInsertState.FAILED로 마킹하고 SSG 행사 잔액 복구 분기를 탈 수 있다.
+      throw new SsgIssueRejectedError(code, reason ?? `SSG 등록 실패 (code: ${code})`);
     }
     return resultToJson;
   }
