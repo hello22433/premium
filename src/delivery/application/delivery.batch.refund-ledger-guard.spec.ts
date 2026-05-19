@@ -26,9 +26,12 @@ import { UserManagementService } from '../../user_management/application/user.ma
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { DeliveryTrackHttp } from '../infra/delivery.track.http';
 import { IOrderDeliveryStatus } from '../interface/order.delivery.status';
+import { SsgInsertState } from '../interface/ssg.insert.state';
 import { DeliveryBatchService } from './delivery.batch.service';
 import { DeliverySendService } from './delivery.send.service';
 import { RefundLedgerService } from './refund-ledger.service';
+import { SsgInsertStateService } from './ssg-insert-state.service';
+import { SsgRefundResolverService } from './ssg-refund.resolver';
 
 /**
  * 이번 핫픽스 회귀 테스트:
@@ -54,6 +57,8 @@ describe('DeliveryBatchService.reissuePinAndCreateImageIfNeeded - refund ledger 
   let partnerCompanyExternService: jest.Mocked<PartnerCompanyExternService>;
   let userManagementService: jest.Mocked<UserManagementService>;
   let ssgEventRepository: jest.Mocked<Repository<SsgEventEntity>>;
+  let ssgInsertStateService: { getState: jest.Mock };
+  let ssgRefundResolverService: { resolveAndRefundIfNeeded: jest.Mock };
 
   const ssgEvent = {
     id: 36,
@@ -104,6 +109,9 @@ describe('DeliveryBatchService.reissuePinAndCreateImageIfNeeded - refund ledger 
       exists: jest.fn(),
       claim: jest.fn(),
       release: jest.fn(),
+      // PR3 보강 — SSG 보정 완료 신호. 기본 true (보정 완료된 정상 흐름 가정).
+      isSsgSettled: jest.fn().mockResolvedValue(true),
+      markSsgSettled: jest.fn().mockResolvedValue(undefined),
     } as unknown as jest.Mocked<RefundLedgerService>;
 
     ssgEventService = {
@@ -138,6 +146,15 @@ describe('DeliveryBatchService.reissuePinAndCreateImageIfNeeded - refund ledger 
       findOne: jest.fn().mockResolvedValue(ssgEvent),
     } as unknown as jest.Mocked<Repository<SsgEventEntity>>;
 
+    // PR3 — state 신호 mock. 기본 NONE (가드 통과). 케이스별 override.
+    ssgInsertStateService = {
+      getState: jest.fn().mockResolvedValue(SsgInsertState.NONE),
+    };
+    // shared resolver는 본 spec 케이스에서는 호출 자체를 검증하지 않으므로 jest.fn 만.
+    ssgRefundResolverService = {
+      resolveAndRefundIfNeeded: jest.fn().mockResolvedValue('RESTORED'),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         DeliveryBatchService,
@@ -161,6 +178,8 @@ describe('DeliveryBatchService.reissuePinAndCreateImageIfNeeded - refund ledger 
         { provide: UserManagementService, useValue: userManagementService },
         { provide: DeliverySendService, useValue: {} },
         { provide: RefundLedgerService, useValue: refundLedgerService },
+        { provide: SsgInsertStateService, useValue: ssgInsertStateService },
+        { provide: SsgRefundResolverService, useValue: ssgRefundResolverService },
       ],
     }).compile();
 
@@ -186,9 +205,11 @@ describe('DeliveryBatchService.reissuePinAndCreateImageIfNeeded - refund ledger 
       );
     });
 
-    it('refund ledger가 없으면 새 행사 선차감을 하지 않는다', async () => {
+    it('refund ledger 없음 + state=NONE → 새 선차감 X + warn 로그 (비정상 케이스 감지)', async () => {
       const od = buildFailNoBarCode();
       refundLedgerService.exists.mockResolvedValue(false);
+      ssgInsertStateService.getState.mockResolvedValue(SsgInsertState.NONE);
+      const warnSpy = jest.spyOn((sut as any).logger, 'warn');
 
       const result = await (sut as any).reissuePinAndCreateImageIfNeeded(od);
 
@@ -196,6 +217,65 @@ describe('DeliveryBatchService.reissuePinAndCreateImageIfNeeded - refund ledger 
       // ledger row 없음 = 환불 이력 없음 = 선차감하면 이중차감
       expect(ssgEventService.selectEventForOrder).not.toHaveBeenCalled();
       expect(ssgEventService.deductEventBalance).not.toHaveBeenCalled();
+      // 정상 흐름이라면 status=FAIL 이면 refundForFail() 이 호출되어 ledger 있어야 함.
+      // 비정상 케이스 — 운영 조사 대상이므로 warn 로그 필수.
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('환불 ledger 누락 또는 local SSG 차감 잔존'),
+      );
+    });
+
+    /**
+     * PR3.B — state CONFIRMED 면 ledger 가 있어도 새 선차감 X.
+     * CONFIRMED = SSG 등록 확정 → 기존 PIN 재사용해야지 새 행사로 옮기면 이중 차감.
+     * 두 신호 (ledger + state) AND 가드의 핵심 케이스.
+     */
+    it('refund ledger 있어도 state=CONFIRMED 면 새 행사 선차감을 하지 않는다 (PR3.B)', async () => {
+      const od = buildFailNoBarCode();
+      refundLedgerService.exists.mockResolvedValue(true);
+      ssgInsertStateService.getState.mockResolvedValue(SsgInsertState.CONFIRMED);
+
+      const result = await (sut as any).reissuePinAndCreateImageIfNeeded(od);
+
+      expect(result).toBe(true);
+      expect(ssgEventService.selectEventForOrder).not.toHaveBeenCalled();
+      expect(ssgEventService.deductEventBalance).not.toHaveBeenCalled();
+    });
+
+    it('ledger 없음 + state=CONFIRMED → 아무 보정 안 함, warn 도 없음 (정상 — 이미 발송됨)', async () => {
+      const od = buildFailNoBarCode();
+      refundLedgerService.exists.mockResolvedValue(false);
+      ssgInsertStateService.getState.mockResolvedValue(SsgInsertState.CONFIRMED);
+      const warnSpy = jest.spyOn((sut as any).logger, 'warn');
+
+      const result = await (sut as any).reissuePinAndCreateImageIfNeeded(od);
+
+      expect(result).toBe(true);
+      expect(ssgEventService.selectEventForOrder).not.toHaveBeenCalled();
+      expect(ssgEventService.deductEventBalance).not.toHaveBeenCalled();
+      expect(warnSpy).not.toHaveBeenCalledWith(
+        expect.stringContaining('환불 ledger 누락'),
+      );
+    });
+
+    /**
+     * PR3 보강 — ledger=true + state=NONE/FAILED 이어도 ssg_balance_settled=false 면 새 선차감 차단.
+     * 이전 refundForFail 의 SSG resolver 가 DEFERRED 반환했을 경우 후속 가드에서 이중 차감 방지.
+     */
+    it('ledger=true + state=NONE + ssg_balance_settled=false → 새 선차감 차단 + error 로그', async () => {
+      const od = buildFailNoBarCode();
+      refundLedgerService.exists.mockResolvedValue(true);
+      (refundLedgerService.isSsgSettled as jest.Mock).mockResolvedValue(false);
+      ssgInsertStateService.getState.mockResolvedValue(SsgInsertState.NONE);
+      const errorSpy = jest.spyOn((sut as any).logger, 'error');
+
+      const result = await (sut as any).reissuePinAndCreateImageIfNeeded(od);
+
+      expect(result).toBe(true);
+      expect(ssgEventService.selectEventForOrder).not.toHaveBeenCalled();
+      expect(ssgEventService.deductEventBalance).not.toHaveBeenCalled();
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringContaining('SSG 잔액 보정 미완료'),
+      );
     });
   });
 
@@ -223,6 +303,44 @@ describe('DeliveryBatchService.reissuePinAndCreateImageIfNeeded - refund ledger 
       expect(result).toBe(true);
       expect(ssgEventService.chargeBackForResend).not.toHaveBeenCalled();
       expect(refundLedgerService.release).not.toHaveBeenCalled();
+    });
+
+    /**
+     * PR3.B 핵심 — 신호 분리.
+     * state CONFIRMED + ledger exists → 고객사 환불 역처리(release)는 진행하되 SSG chargeBack은 skip.
+     * (CONFIRMED 는 SSG 등록 확정 상태이므로 행사 잔액을 손대지 않는다.)
+     */
+    it('state CONFIRMED 면 ledger 있어도 chargeBackForResend skip, release는 호출된다 (신호 분리)', async () => {
+      const od = buildWaitNoBarCode();
+      refundLedgerService.exists.mockResolvedValue(true);
+      ssgInsertStateService.getState.mockResolvedValue(SsgInsertState.CONFIRMED);
+
+      const result = await (sut as any).reissuePinAndCreateImageIfNeeded(od);
+
+      expect(result).toBe(true);
+      // SSG 행사 잔액은 손대지 않음
+      expect(ssgEventService.chargeBackForResend).not.toHaveBeenCalled();
+      // 고객사 환불 역처리는 진행 (ledger release)
+      expect(refundLedgerService.release).toHaveBeenCalledWith(od.id);
+    });
+
+    /**
+     * PR3 신호 분리 — SSG chargeBack 이 throw 해도 고객 재차감/ledger release 는 계속 진행.
+     * SSG 보정 영역 실패가 고객 환불/역환불 영역을 막으면 안 된다.
+     */
+    it('SSG chargeBackForResend 가 throw 해도 release 와 deductBalance 는 호출된다 (신호 분리 격리)', async () => {
+      const od = buildWaitNoBarCode();
+      refundLedgerService.exists.mockResolvedValue(true);
+      ssgInsertStateService.getState.mockResolvedValue(SsgInsertState.NONE);
+      ssgEventService.chargeBackForResend.mockRejectedValue(new Error('SSG event balance not found'));
+
+      const result = await (sut as any).reissuePinAndCreateImageIfNeeded(od);
+
+      expect(result).toBe(true);
+      expect(ssgEventService.chargeBackForResend).toHaveBeenCalled();
+      // SSG chargeBack 실패해도 고객 측 처리는 진행
+      expect(refundLedgerService.release).toHaveBeenCalledWith(od.id);
+      expect(userManagementService.deductBalance).toHaveBeenCalled();
     });
   });
 

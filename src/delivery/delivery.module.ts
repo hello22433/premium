@@ -9,6 +9,7 @@ import { OrderDeliveryEntity } from '../entity/order.delivery.entity';
 import { OrderDeliveryRefundEntity } from '../entity/order.delivery.refund.entity';
 import { DeliveryBatchSchedule } from './delivery.batch.schedule';
 import { RefundLedgerService } from './application/refund-ledger.service';
+import { SsgRefundResolverService } from './application/ssg-refund.resolver';
 import { SsgInsertStateModule } from './ssg.insert.state.module';
 import { MailModule } from '../mail/mail.module';
 import { SmsModule } from '../sms/sms.module';
@@ -60,6 +61,7 @@ import { UserManagementModule } from '../user_management/user.management.module'
     DeliveryBatchService,
     DeliveryBatchSchedule,
     RefundLedgerService,
+    SsgRefundResolverService,
   ],
   exports: [
     {
@@ -70,6 +72,7 @@ import { UserManagementModule } from '../user_management/user.management.module'
     DeliverySendService,
     DeliveryBatchService,
     RefundLedgerService,
+    SsgRefundResolverService,
     SsgInsertStateModule,
   ],
 })

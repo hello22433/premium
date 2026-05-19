@@ -36,6 +36,8 @@ import { IProductUseStatus } from '../../product/interface/product.status';
 import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
 import { DeliverySendService } from '../../delivery/application/delivery.send.service';
 import { RefundLedgerService } from '../../delivery/application/refund-ledger.service';
+import { SsgRefundResolverService } from '../../delivery/application/ssg-refund.resolver';
+import { SsgRefundOutcome } from '../../delivery/interface/ssg.refund.resolve';
 import { SsgEventService } from '../../ssg_event/application/ssg.event.service';
 import { ProductService } from '../../product/application/product.service';
 
@@ -90,6 +92,7 @@ export class ExternalApiService {
     private cryptoCipher: CryptoCipher,
     private refundLedgerService: RefundLedgerService,
     private productService: ProductService,
+    private ssgRefundResolverService: SsgRefundResolverService,
   ) {}
 
   // ─── 잔액 헬퍼 ──────────────────────────────────────────
@@ -508,6 +511,7 @@ export class ExternalApiService {
     await this.orderRepository.save(order);
 
     const isCompanyMode = account.user.company?.balanceManagementType === 'COMPANY';
+    const isSsg = order.type === IOrderType.SSG && !!orderDelivery.ssgEventId;
     await this.refundLedgerService.claim({
       orderDeliveryId: orderDelivery.id,
       userId: account.user.id,
@@ -518,7 +522,27 @@ export class ExternalApiService {
       sourcePath: 'EXTERNAL_FAIL',
       operatorUserId: null,
       memo: `외부 API 발송 실패 환불 (주문번호: ${order.id})`,
+      // SSG 주문은 ledger.ssg_balance_settled 를 false 로 시작 → resolver 가 RESTORED/SKIPPED_CONFIRMED
+      // 반환 시 markSsgSettled 로 true 갱신. DEFERRED 면 false 유지 → 다음 재발송 가드 차단.
+      ssgPending: isSsg,
     });
+
+    // plans/ssg-balance-refactor.md PR3.C — 외부 API SSG 주문도 Phase B 실패 시 SSG 행사 잔액 분기 적용.
+    // resolver 가 throw 흡수 + outcome 반환 — caller try/catch 불필요.
+    // DEFERRED 면 ledger.ssg_balance_settled 가 false 로 남아 다음 재발송 가드가 차단.
+    if (isSsg) {
+      const outcome = await this.ssgRefundResolverService.resolveAndRefundIfNeeded({
+        orderDeliveryId: orderDelivery.id,
+        ssgEventId: orderDelivery.ssgEventId!,
+        refundAmount: order.sendAmount,
+        orderId: order.id,
+      });
+      if (outcome === SsgRefundOutcome.DEFERRED) {
+        this.logger.error(
+          `[EXTERNAL_FAIL] SSG 잔액 보정 DEFERRED — ledger.ssg_balance_settled=false 유지. 운영 점검 필요. orderDelivery.id: ${orderDelivery.id}`,
+        );
+      }
+    }
 
     await this.refundBalance(account, order.settleAmount);
   }
