@@ -17,6 +17,9 @@ import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { PartnerCompanyEntity } from '../../entity/partner.company.entity';
 import { PartnerCompanyExternHistoryEntity } from '../../entity/partner.company.extern.history.entity';
 import { PinIssueDedupEntity } from '../../entity/pin.issue.dedup.entity';
+import { SsgIssueLogEntity } from '../../entity/ssg.issue.log.entity';
+import { GiftielExchangeHistoryEntity } from '../../entity/giftiel.exchange.history.entity';
+import { SsgInsertStateService } from '../../delivery/application/ssg-insert-state.service';
 import { PartnerCompanyExternService } from './partner.company.extern.service';
 
 // 공유 헬퍼(createMockRepositoryMethod)는 jest.fn() 인스턴스를 repo 간에 공유시키므로,
@@ -107,7 +110,24 @@ describe('PartnerCompanyExternService - PIN dedup recovery', () => {
           provide: getRepositoryToken(PinIssueDedupEntity),
           useValue: { ...mock<Repository<PinIssueDedupEntity>>(), ...makeRepoMock() },
         },
+        {
+          provide: getRepositoryToken(SsgIssueLogEntity),
+          useValue: { ...mock<Repository<SsgIssueLogEntity>>(), ...makeRepoMock() },
+        },
+        {
+          provide: getRepositoryToken(GiftielExchangeHistoryEntity),
+          useValue: { ...mock<Repository<GiftielExchangeHistoryEntity>>(), ...makeRepoMock() },
+        },
         { provide: CryptoCipher, useValue: mockCrypto },
+        {
+          provide: SsgInsertStateService,
+          useValue: {
+            markAttempted: jest.fn(),
+            markConfirmed: jest.fn(),
+            markFailed: jest.fn(),
+            getState: jest.fn(),
+          },
+        },
       ],
     }).compile();
 

@@ -20,3 +20,18 @@ export enum SsgInsertState {
   CONFIRMED = 'CONFIRMED',
   FAILED = 'FAILED',
 }
+
+/**
+ * `markAttempted()` 결과. caller는 TRANSITIONED 일 때만 SSG INSERT 진행해야 한다.
+ * SKIPPED_* 는 state/log row를 만들지 못한 상태이므로 INSERT 호출 시 "state 없는 INSERT" 위험.
+ * caller는 결과에 따라 typed error throw로 중단 책임.
+ *
+ * - TRANSITIONED       : NONE→ATTEMPTED 또는 FAILED→ATTEMPTED 재시도 성공. INSERT 진행.
+ * - SKIPPED_ACTIVE     : 이미 ATTEMPTED (미확정 시도 진행 중). orphan resolver 영역.
+ * - SKIPPED_TERMINAL   : 이미 CONFIRMED (terminal). 정상 경로라면 기존 PIN 확인 단계에서 걸렀어야 함 = invariant violation.
+ */
+export enum MarkAttemptedResult {
+  TRANSITIONED = 'TRANSITIONED',
+  SKIPPED_ACTIVE = 'SKIPPED_ACTIVE',
+  SKIPPED_TERMINAL = 'SKIPPED_TERMINAL',
+}

@@ -25,12 +25,22 @@ import { SsgIssueLogEntity } from '../entity/ssg.issue.log.entity';
 import { GiftielExchangeHistoryEntity } from '../entity/giftiel.exchange.history.entity';
 import { GiftielPushController } from './api/giftiel.push.controller';
 import { GiftielIpGuard } from './api/giftiel.ip.guard';
+import { SsgInsertStateModule } from '../delivery/ssg.insert.state.module';
 
 @Module({
   imports: [
     AuthModule,
     HttpModule.register({ timeout: 30000 }),
-    TypeOrmModule.forFeature([OrderDeliveryEntity, PartnerCompanyExternHistoryEntity, GalaxiaBarcodeLogEntity, PartnerCompanyEntity, PinIssueDedupEntity, SsgIssueLogEntity, GiftielExchangeHistoryEntity]),
+    TypeOrmModule.forFeature([
+      OrderDeliveryEntity,
+      PartnerCompanyExternHistoryEntity,
+      GalaxiaBarcodeLogEntity,
+      PartnerCompanyEntity,
+      PinIssueDedupEntity,
+      SsgIssueLogEntity,
+      GiftielExchangeHistoryEntity,
+    ]),
+    SsgInsertStateModule,
   ],
   providers: [
     {

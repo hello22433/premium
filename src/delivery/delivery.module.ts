@@ -9,7 +9,7 @@ import { OrderDeliveryEntity } from '../entity/order.delivery.entity';
 import { OrderDeliveryRefundEntity } from '../entity/order.delivery.refund.entity';
 import { DeliveryBatchSchedule } from './delivery.batch.schedule';
 import { RefundLedgerService } from './application/refund-ledger.service';
-import { SsgInsertStateService } from './application/ssg-insert-state.service';
+import { SsgInsertStateModule } from './ssg.insert.state.module';
 import { MailModule } from '../mail/mail.module';
 import { SmsModule } from '../sms/sms.module';
 import { OrderEntity } from '../entity/order.entity';
@@ -22,7 +22,6 @@ import { OrderRealProductMappingEntity } from '../entity/order.real.product.mapp
 import { UserEntity } from '../entity/user.entity';
 import { SsgEventEntity } from '../entity/ssg.event.entity';
 import { SsgIssueLogEntity } from '../entity/ssg.issue.log.entity';
-import { OrderDeliverySsgInsertStateEntity } from '../entity/order.delivery.ssg.insert.state.entity';
 import { PartnerCompanyExternModule } from '../partner_company_extern/partner.company.extern.module';
 import { SsgEventModule } from '../ssg_event/ssg.event.module';
 import { UserManagementModule } from '../user_management/user.management.module';
@@ -42,7 +41,6 @@ import { UserManagementModule } from '../user_management/user.management.module'
       UserEntity,
       SsgEventEntity,
       SsgIssueLogEntity,
-      OrderDeliverySsgInsertStateEntity,
     ]),
     MailModule,
     SmsModule,
@@ -50,6 +48,7 @@ import { UserManagementModule } from '../user_management/user.management.module'
     PartnerCompanyExternModule,
     SsgEventModule,
     UserManagementModule,
+    SsgInsertStateModule,
   ],
   providers: [
     {
@@ -61,7 +60,6 @@ import { UserManagementModule } from '../user_management/user.management.module'
     DeliveryBatchService,
     DeliveryBatchSchedule,
     RefundLedgerService,
-    SsgInsertStateService,
   ],
   exports: [
     {
@@ -72,7 +70,7 @@ import { UserManagementModule } from '../user_management/user.management.module'
     DeliverySendService,
     DeliveryBatchService,
     RefundLedgerService,
-    SsgInsertStateService,
+    SsgInsertStateModule,
   ],
 })
 export class DeliveryModule {}

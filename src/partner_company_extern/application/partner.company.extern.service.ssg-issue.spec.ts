@@ -1,0 +1,274 @@
+// 실제 DB 연결 없는 단위 테스트이므로 typeorm-transactional 데코레이터를 no-op으로 mock한다.
+jest.mock('typeorm-transactional', () => ({
+  Transactional: () => (_target: unknown, _key: unknown, _descriptor: unknown) => _descriptor,
+  Propagation: { REQUIRED: 'REQUIRED', REQUIRES_NEW: 'REQUIRES_NEW' },
+  initializeTransactionalContext: jest.fn(),
+  addTransactionalDataSources: jest.fn(),
+}));
+
+import { Test, TestingModule } from '@nestjs/testing';
+import { getRepositoryToken } from '@nestjs/typeorm';
+import { mock } from 'jest-mock-extended';
+import { Repository } from 'typeorm';
+import { CryptoCipher } from '../../common/infra/crypto.cipher';
+import { SsgInsertStateService } from '../../delivery/application/ssg-insert-state.service';
+import { MarkAttemptedResult } from '../../delivery/interface/ssg.insert.state';
+import { GiftielExchangeHistoryEntity } from '../../entity/giftiel.exchange.history.entity';
+import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
+import { PartnerCompanyEntity } from '../../entity/partner.company.entity';
+import { PartnerCompanyExternHistoryEntity } from '../../entity/partner.company.extern.history.entity';
+import { PinIssueDedupEntity } from '../../entity/pin.issue.dedup.entity';
+import { SsgEventEntity } from '../../entity/ssg.event.entity';
+import { SsgIssueLogEntity } from '../../entity/ssg.issue.log.entity';
+import {
+  SsgCheckNotFoundError,
+  SsgIssueAlreadyConfirmedError,
+  SsgIssueAttemptAlreadyActiveError,
+  SsgIssueRejectedError,
+  SsgIssueUnknownError,
+} from '../infra/ssg.issue';
+import { PartnerCompanyExternService } from './partner.company.extern.service';
+
+/**
+ * SSG issue() flow + state 통합 단위 테스트
+ * plans/ssg-balance-refactor.md PR2.
+ *
+ * 검증 범위:
+ *  - TRANSITIONED → ssgIssue.issue() → markConfirmed
+ *  - SsgIssueRejectedError → markFailed + re-throw
+ *  - SsgIssueUnknownError → state 유지 + re-throw (markFailed 호출 X)
+ *  - SKIPPED_ACTIVE → SsgIssueAttemptAlreadyActiveError throw, issue() 호출 X
+ *  - SKIPPED_TERMINAL → SsgIssueAlreadyConfirmedError throw, issue() 호출 X
+ *  - 기존 PIN check 성공 → markConfirmed (legacy/orphan 동기화)
+ */
+describe('PartnerCompanyExternService - SSG issue flow + state', () => {
+  let sut: PartnerCompanyExternService;
+  let ssgIssue: { check: jest.Mock; issue: jest.Mock; generateSsgIssue: jest.Mock };
+  let pinIssueDedupRepository: any;
+  let ssgIssueLogRepository: jest.Mocked<Repository<SsgIssueLogEntity>>;
+  let orderDeliveryRepository: any;
+  let partnerCompanyExternHistoryRepository: any;
+  let ssgInsertStateService: {
+    getState: jest.Mock;
+    markAttempted: jest.Mock;
+    markConfirmed: jest.Mock;
+    markFailed: jest.Mock;
+  };
+
+  const makeRepoMock = () => ({
+    create: jest.fn(),
+    save: jest.fn(),
+    insert: jest.fn().mockResolvedValue({}),
+    update: jest.fn().mockResolvedValue({}),
+    softDelete: jest.fn(),
+    count: jest.fn(),
+    find: jest.fn().mockResolvedValue([]),
+    findOne: jest.fn(),
+    query: jest.fn(),
+  });
+
+  const buildSsgEvent = (overrides: Partial<SsgEventEntity> = {}): SsgEventEntity =>
+    ({
+      id: 42,
+      code: 'EK1',
+      no: 'EV1',
+      order: 1,
+      name: '테스트 행사',
+      startAt: new Date(),
+      endAt: new Date(),
+      couponExpiration: 30,
+      eventPrice: 1000000,
+      eventBalance: 1000000,
+      ...overrides,
+    }) as SsgEventEntity;
+
+  const buildOrderDelivery = (overrides: Partial<any> = {}): OrderDeliveryEntity =>
+    ({
+      id: 9001,
+      transactionId: 'ENM-SSG-9001',
+      deliveryTarget: 'encrypted-target',
+      barCode: null,
+      personalCode: null,
+      ssgTransactionId: null,
+      couponNum: null,
+      expireAt: null,
+      encourageAt: null,
+      orderProductMapping: {
+        sendContent: 'hello',
+        sendTailText: '',
+        fromPhoneNumber: null,
+        encourageDay: null,
+        product: {
+          type: 'COUPON',
+          name: 'SSG 테스트 상품',
+          price: 5000,
+          expireDay: 30,
+          partnerCompanyCode: 'TEST-SSG',
+          partnerCompany: { type: 'SSG' },
+        },
+      },
+      ...overrides,
+    }) as unknown as OrderDeliveryEntity;
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    ssgIssue = {
+      check: jest.fn(),
+      issue: jest.fn(),
+      generateSsgIssue: jest.fn().mockReturnValue({ barCode: '80000001', personalCode: '01312345678' }),
+    };
+    ssgIssueLogRepository = { ...mock<Repository<SsgIssueLogEntity>>(), ...makeRepoMock() } as unknown as jest.Mocked<Repository<SsgIssueLogEntity>>;
+    pinIssueDedupRepository = { ...mock<Repository<PinIssueDedupEntity>>(), ...makeRepoMock() };
+    orderDeliveryRepository = { ...mock<Repository<OrderDeliveryEntity>>(), ...makeRepoMock() };
+    partnerCompanyExternHistoryRepository = { ...mock<Repository<PartnerCompanyExternHistoryEntity>>(), ...makeRepoMock() };
+    ssgInsertStateService = {
+      getState: jest.fn(),
+      markAttempted: jest.fn(),
+      markConfirmed: jest.fn().mockResolvedValue(true),
+      markFailed: jest.fn().mockResolvedValue(true),
+    };
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        PartnerCompanyExternService,
+        { provide: 'IGalaxia', useValue: mock<any>() },
+        { provide: 'IGsmbiz', useValue: mock<any>() },
+        { provide: 'IGiftiel', useValue: mock<any>() },
+        { provide: 'IGiftiShow', useValue: mock<any>() },
+        { provide: 'ICulture', useValue: mock<any>() },
+        { provide: 'ISsgIssue', useValue: ssgIssue },
+        { provide: 'IDaou', useValue: mock<any>() },
+        { provide: getRepositoryToken(OrderDeliveryEntity), useValue: orderDeliveryRepository },
+        { provide: getRepositoryToken(PartnerCompanyExternHistoryEntity), useValue: partnerCompanyExternHistoryRepository },
+        { provide: getRepositoryToken(PartnerCompanyEntity), useValue: makeRepoMock() },
+        { provide: getRepositoryToken(PinIssueDedupEntity), useValue: pinIssueDedupRepository },
+        { provide: getRepositoryToken(SsgIssueLogEntity), useValue: ssgIssueLogRepository },
+        { provide: getRepositoryToken(GiftielExchangeHistoryEntity), useValue: makeRepoMock() },
+        { provide: CryptoCipher, useValue: { safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01000000000') } },
+        { provide: SsgInsertStateService, useValue: ssgInsertStateService },
+      ],
+    }).compile();
+
+    sut = module.get(PartnerCompanyExternService);
+  });
+
+  describe('markAttempted 결과 분기', () => {
+    it('TRANSITIONED → ssgIssue.issue() 호출 → markConfirmed 호출', async () => {
+      const orderDelivery = buildOrderDelivery();
+      const ssgEvent = buildSsgEvent();
+      // 새 PIN 생성 단계에서 SSG DB 중복 확인 = NotFound (사용 가능)
+      ssgIssue.check.mockRejectedValue(new SsgCheckNotFoundError('미등록'));
+      ssgInsertStateService.markAttempted.mockResolvedValue(MarkAttemptedResult.TRANSITIONED);
+      ssgIssue.issue.mockResolvedValue({ response: { result: [{ code: ['1000'], reason: ['ok'] }] } });
+
+      await sut.issue(orderDelivery, ssgEvent);
+
+      expect(ssgInsertStateService.markAttempted).toHaveBeenCalledTimes(1);
+      expect(ssgIssue.issue).toHaveBeenCalledTimes(1);
+      expect(ssgInsertStateService.markConfirmed).toHaveBeenCalledWith(
+        orderDelivery.id,
+        expect.objectContaining({
+          barCode: '80000001',
+          personalCode: '01312345678',
+        }),
+      );
+      expect(ssgInsertStateService.markFailed).not.toHaveBeenCalled();
+    });
+
+    it('SKIPPED_ACTIVE → SsgIssueAttemptAlreadyActiveError throw, ssgIssue.issue() 호출 안 됨', async () => {
+      const orderDelivery = buildOrderDelivery();
+      const ssgEvent = buildSsgEvent();
+      ssgIssue.check.mockRejectedValue(new SsgCheckNotFoundError('미등록'));
+      ssgInsertStateService.markAttempted.mockResolvedValue(MarkAttemptedResult.SKIPPED_ACTIVE);
+
+      await expect(sut.issue(orderDelivery, ssgEvent)).rejects.toBeInstanceOf(SsgIssueAttemptAlreadyActiveError);
+      expect(ssgIssue.issue).not.toHaveBeenCalled();
+      expect(ssgInsertStateService.markConfirmed).not.toHaveBeenCalled();
+      expect(ssgInsertStateService.markFailed).not.toHaveBeenCalled();
+    });
+
+    it('SKIPPED_TERMINAL → SsgIssueAlreadyConfirmedError throw, ssgIssue.issue() 호출 안 됨', async () => {
+      const orderDelivery = buildOrderDelivery();
+      const ssgEvent = buildSsgEvent();
+      ssgIssue.check.mockRejectedValue(new SsgCheckNotFoundError('미등록'));
+      ssgInsertStateService.markAttempted.mockResolvedValue(MarkAttemptedResult.SKIPPED_TERMINAL);
+
+      await expect(sut.issue(orderDelivery, ssgEvent)).rejects.toBeInstanceOf(SsgIssueAlreadyConfirmedError);
+      expect(ssgIssue.issue).not.toHaveBeenCalled();
+      expect(ssgInsertStateService.markFailed).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('issue() throw 분기', () => {
+    it('SsgIssueRejectedError → markFailed + re-throw', async () => {
+      const orderDelivery = buildOrderDelivery();
+      const ssgEvent = buildSsgEvent();
+      ssgIssue.check.mockRejectedValue(new SsgCheckNotFoundError('미등록'));
+      ssgInsertStateService.markAttempted.mockResolvedValue(MarkAttemptedResult.TRANSITIONED);
+      ssgIssue.issue.mockRejectedValue(new SsgIssueRejectedError('9999', '한도 초과'));
+
+      await expect(sut.issue(orderDelivery, ssgEvent)).rejects.toBeInstanceOf(SsgIssueRejectedError);
+      expect(ssgInsertStateService.markFailed).toHaveBeenCalledWith(orderDelivery.id);
+      expect(ssgInsertStateService.markConfirmed).not.toHaveBeenCalled();
+    });
+
+    it('SsgIssueUnknownError → state 유지 (markFailed 호출 X) + re-throw', async () => {
+      const orderDelivery = buildOrderDelivery();
+      const ssgEvent = buildSsgEvent();
+      ssgIssue.check.mockRejectedValue(new SsgCheckNotFoundError('미등록'));
+      ssgInsertStateService.markAttempted.mockResolvedValue(MarkAttemptedResult.TRANSITIONED);
+      ssgIssue.issue.mockRejectedValue(new SsgIssueUnknownError('XML 파싱 실패'));
+
+      await expect(sut.issue(orderDelivery, ssgEvent)).rejects.toBeInstanceOf(SsgIssueUnknownError);
+      expect(ssgInsertStateService.markFailed).not.toHaveBeenCalled();
+      expect(ssgInsertStateService.markConfirmed).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('기존 PIN 동기화', () => {
+    it('기존 PIN check 성공 → markConfirmed 호출, ssgIssue.issue() 호출 안 됨', async () => {
+      const orderDelivery = buildOrderDelivery({
+        barCode: '8EXIST01',
+        personalCode: '01300001234',
+        ssgTransactionId: 'tr-existing',
+      });
+      const ssgEvent = buildSsgEvent();
+      // checkSsgWithRetry 성공 응답
+      ssgIssue.check.mockResolvedValue({ response: { result: [{ code: ['1001'], reason: ['ok'] }] } });
+
+      await sut.issue(orderDelivery, ssgEvent);
+
+      expect(ssgInsertStateService.markConfirmed).toHaveBeenCalledWith(
+        orderDelivery.id,
+        expect.objectContaining({
+          barCode: '8EXIST01',
+          personalCode: '01300001234',
+          ssgTransactionId: 'tr-existing',
+        }),
+      );
+      expect(ssgInsertStateService.markAttempted).not.toHaveBeenCalled();
+      expect(ssgIssue.issue).not.toHaveBeenCalled();
+    });
+
+    it('기존 PIN check NotFound → 새 PIN 생성 경로 진입 → markAttempted + issue() 호출', async () => {
+      const orderDelivery = buildOrderDelivery({
+        barCode: '8EXIST01',
+        personalCode: '01300001234',
+        ssgTransactionId: 'tr-existing',
+      });
+      const ssgEvent = buildSsgEvent();
+      ssgInsertStateService.markAttempted.mockResolvedValue(MarkAttemptedResult.TRANSITIONED);
+      // 기존 PIN check → NotFound. 새 PIN 생성 단계 SSG DB check → NotFound = 사용 가능
+      ssgIssue.check
+        .mockRejectedValueOnce(new SsgCheckNotFoundError('미등록'))
+        .mockRejectedValueOnce(new SsgCheckNotFoundError('미등록'));
+      ssgIssue.issue.mockResolvedValue({ response: { result: [{ code: ['1000'], reason: ['ok'] }] } });
+
+      await sut.issue(orderDelivery, ssgEvent);
+
+      expect(ssgInsertStateService.markAttempted).toHaveBeenCalledTimes(1);
+      expect(ssgIssue.issue).toHaveBeenCalledTimes(1);
+      expect(ssgInsertStateService.markConfirmed).toHaveBeenCalled();
+    });
+  });
+});

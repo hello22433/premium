@@ -14,7 +14,15 @@ import { IDaou } from '../interface/daou';
 import { PartnerCompanyExternHistoryEntity } from '../../entity/partner.company.extern.history.entity';
 import { GiftielExchangeHistoryEntity } from '../../entity/giftiel.exchange.history.entity';
 import { ISsgCheckOut, ISsgIssue } from '../interface/ssg.issue';
-import { SsgCheckNotFoundError } from '../infra/ssg.issue';
+import {
+  SsgCheckNotFoundError,
+  SsgIssueAlreadyConfirmedError,
+  SsgIssueAttemptAlreadyActiveError,
+  SsgIssueRejectedError,
+} from '../infra/ssg.issue';
+import { SsgInsertStateService, SsgAttemptPayload } from '../../delivery/application/ssg-insert-state.service';
+import { MarkAttemptedResult, SsgInsertState } from '../../delivery/interface/ssg.insert.state';
+import { SsgOrphanResolveOutcome } from '../interface/ssg.orphan.resolve';
 import { Propagation, Transactional } from 'typeorm-transactional';
 import { orderBarcodeGenerate } from '../../order/domain/order.code.generate';
 import { SsgEventEntity } from '../../entity/ssg.event.entity';
@@ -61,6 +69,7 @@ export class PartnerCompanyExternService {
     @InjectRepository(GiftielExchangeHistoryEntity)
     private giftielExchangeHistoryRepository: Repository<GiftielExchangeHistoryEntity>,
     private cryptoCipher: CryptoCipher,
+    private ssgInsertStateService: SsgInsertStateService,
   ) {}
 
   private logger = new Logger('PARTNER_COMPANY_EXTERN');
@@ -352,6 +361,21 @@ export class PartnerCompanyExternService {
             this.logger.log(
               `[SSG] 기존 PIN이 SSG DB에 등록됨 - barCode: ${orderDelivery.barCode}, INSERT 건너뜀`,
             );
+            // state ATTEMPTED → CONFIRMED 동기화.
+            // plans/ssg-balance-refactor.md PR2 — backfill 된 ATTEMPTED+barCode 행이나 orphan 복원 대상이
+            // 이 경로를 타도 state가 정합되어야 한다. markConfirmed 는 WHERE state=ATTEMPTED 가드라
+            // NONE/이미 CONFIRMED 면 silently skip.
+            // ssgTransactionId 가 NULL 인 legacy row 는 markConfirmed 호출 자체를 skip (NOT NULL 타입 보호).
+            if (orderDelivery.ssgTransactionId) {
+              await this.ssgInsertStateService.markConfirmed(orderDelivery.id, {
+                barCode: orderDelivery.barCode,
+                personalCode: orderDelivery.personalCode,
+                ssgTransactionId: orderDelivery.ssgTransactionId,
+                couponNum: orderDelivery.couponNum ?? null,
+                expireAt: orderDelivery.expireAt ?? null,
+                encourageAt: orderDelivery.encourageAt ?? null,
+              });
+            }
           } catch (e) {
             if (e instanceof SsgCheckNotFoundError) {
               // API 정상 응답 + code ≠ 1001 → PIN 미등록 확정 → 새 PIN 생성
@@ -452,27 +476,63 @@ export class PartnerCompanyExternService {
 
             const callBackNumber = orderDelivery.orderProductMapping.fromPhoneNumber || defaultFromPhoneNumber;
 
-            // SSG INSERT 직전: 로컬 블랙리스트에 기록 (REQUIRES_NEW → 롤백 불가)
-            await this.saveSsgIssueLog(
-              orderDelivery.barCode!,
-              orderDelivery.personalCode!,
-              orderDelivery.id,
-              orderDelivery.ssgTransactionId!,
-              ssgEvent.no,
-            );
-
-            const response = await this.ssgIssue.issue({
+            // SSG INSERT 직전: durable state ATTEMPTED + ssg_issue_log payload 기록 (REQUIRES_NEW).
+            // plans/ssg-balance-refactor.md PR2.
+            // markAttempted 결과가 TRANSITIONED 가 아니면 외부 INSERT 호출 금지 (state/log 없는 INSERT 위험).
+            const attemptPayload: SsgAttemptPayload = {
+              barCode: orderDelivery.barCode!,
+              personalCode: orderDelivery.personalCode!,
+              ssgTransactionId: orderDelivery.ssgTransactionId!,
               eventNo: ssgEvent.no,
               eventSeq: ssgEvent.order,
-              eventKey: ssgEvent.code,
-              vno: orderDelivery.personalCode!,
-              pinNo: orderDelivery.barCode!,
-              userName: ssgIssueUserName,
-              userAmount: String(orderDelivery.orderProductMapping.product.price),
-              msgContent: textForSsg,
-              trId: orderDelivery.ssgTransactionId!,
-              callBack: callBackNumber,
+              ssgEventId: ssgEvent.id,
+              expireAt: orderDelivery.expireAt ?? null,
+              encourageAt: orderDelivery.encourageAt ?? null,
+              couponNum: orderDelivery.couponNum ?? null,
+            };
+            const markResult = await this.ssgInsertStateService.markAttempted(orderDelivery.id, attemptPayload);
+            if (markResult === MarkAttemptedResult.SKIPPED_ACTIVE) {
+              // 이미 ATTEMPTED 진행 중. 실패 확정이 아니므로 markFailed 대상 아님. orphan resolver가 확정해야 함.
+              throw new SsgIssueAttemptAlreadyActiveError(orderDelivery.id);
+            }
+            if (markResult === MarkAttemptedResult.SKIPPED_TERMINAL) {
+              // CONFIRMED 인데 새 INSERT 호출 = invariant violation. 정상 경로라면 기존 PIN 확인 단계에서 걸렸어야 함.
+              throw new SsgIssueAlreadyConfirmedError(orderDelivery.id);
+            }
+
+            let response: Awaited<ReturnType<ISsgIssue['issue']>>;
+            try {
+              response = await this.ssgIssue.issue({
+                eventNo: ssgEvent.no,
+                eventSeq: ssgEvent.order,
+                eventKey: ssgEvent.code,
+                vno: orderDelivery.personalCode!,
+                pinNo: orderDelivery.barCode!,
+                userName: ssgIssueUserName,
+                userAmount: String(orderDelivery.orderProductMapping.product.price),
+                msgContent: textForSsg,
+                trId: orderDelivery.ssgTransactionId!,
+                callBack: callBackNumber,
+              });
+            } catch (e) {
+              if (e instanceof SsgIssueRejectedError) {
+                // 신세계 거절 확정 → state FAILED 마킹 후 throw (caller가 SSG 행사 잔액 복구 분기 진입 가능).
+                await this.ssgInsertStateService.markFailed(orderDelivery.id);
+              }
+              // 그 외 throw (네트워크/timeout 등) → state ATTEMPTED 유지. orphan resolver 영역.
+              throw e;
+            }
+
+            // INSERT 성공 → durable state CONFIRMED 마킹 (PIN 정보 best-effort 저장).
+            await this.ssgInsertStateService.markConfirmed(orderDelivery.id, {
+              barCode: orderDelivery.barCode!,
+              personalCode: orderDelivery.personalCode!,
+              ssgTransactionId: orderDelivery.ssgTransactionId!,
+              couponNum: orderDelivery.couponNum ?? null,
+              expireAt: orderDelivery.expireAt ?? null,
+              encourageAt: orderDelivery.encourageAt ?? null,
             });
+
             return JSON.stringify(response);
           }
 
@@ -564,28 +624,6 @@ export class PartnerCompanyExternService {
         });
       }
     }
-  }
-
-  /**
-   * SSG INSERT 시도 전 로컬 블랙리스트에 기록 (메인 트랜잭션 롤백 시에도 유지)
-   * INSERT 성공/실패 여부와 무관하게 이 PIN은 재사용하지 않는다.
-   */
-  @Transactional({ propagation: Propagation.REQUIRES_NEW })
-  private async saveSsgIssueLog(
-    barCode: string,
-    personalCode: string,
-    orderDeliveryId: number,
-    ssgTransactionId: string,
-    eventNo: string,
-  ): Promise<void> {
-    await this.ssgIssueLogRepository.insert({
-      barCode,
-      personalCode,
-      orderDeliveryId,
-      ssgTransactionId,
-      eventNo,
-      insertedAt: new Date(),
-    });
   }
 
   /**
@@ -1009,5 +1047,94 @@ export class PartnerCompanyExternService {
 
     // 저장
     return this.orderDeliveryRepository.save(orderDelivery);
+  }
+
+  /**
+   * SSG orphan resolver — ATTEMPTED state row의 실제 등록 여부 확정.
+   * plans/ssg-balance-refactor.md PR2.
+   *
+   * orderDelivery.id 기준 `ssg_issue_log` 후보를 최신순으로 lookup 하고, 각 후보에 대해
+   * SSG `check` API 호출. 등록된 PIN 발견 시 `markConfirmed`, 모두 NotFound 면 `markFailed`.
+   *
+   * 안전 정책:
+   * - check 도중 네트워크/파싱 오류 발생 → `NETWORK_UNKNOWN` 반환 (ATTEMPTED 유지, FAILED 마킹 X)
+   * - eventSeq 가 NULL 인 legacy ssg_issue_log row → skip (check 호출 파라미터 불완전)
+   * - 입력 state 가 ATTEMPTED 가 아니면 즉시 SKIPPED_NOT_ATTEMPTED 반환
+   *
+   * PR3 refund resolver 및 재발송 가드가 caller. 결과에 따라 SSG 행사 잔액 분기 결정.
+   */
+  async resolveSsgOrphan(orderDeliveryId: number): Promise<SsgOrphanResolveOutcome> {
+    const currentState = await this.ssgInsertStateService.getState(orderDeliveryId);
+    if (currentState !== SsgInsertState.ATTEMPTED) {
+      return SsgOrphanResolveOutcome.SKIPPED_NOT_ATTEMPTED;
+    }
+
+    const candidates = await this.ssgIssueLogRepository.find({
+      where: { orderDeliveryId },
+      order: { id: 'DESC' },
+    });
+    const usable = candidates.filter((c) => c.eventSeq !== null);
+    if (usable.length === 0) {
+      this.logger.warn(
+        `[SSG_ORPHAN] eventSeq 채워진 후보 없음 - orderDeliveryId=${orderDeliveryId}, candidates=${candidates.length}`,
+      );
+      return SsgOrphanResolveOutcome.SKIPPED_NO_CANDIDATES;
+    }
+
+    let confirmedCandidate: SsgIssueLogEntity | null = null;
+    for (const candidate of usable) {
+      try {
+        await this.withSsgMutex(() =>
+          this.checkSsgWithRetry({
+            eventNo: candidate.eventNo,
+            eventSeq: candidate.eventSeq!,
+            vno: candidate.personalCode,
+          }),
+        );
+        // 1001 = 등록 확정
+        confirmedCandidate = candidate;
+        break;
+      } catch (e) {
+        if (e instanceof SsgCheckNotFoundError) {
+          // 정상 NotFound — 다음 후보 시도
+          continue;
+        }
+        // 네트워크/파싱 오류 등 — ATTEMPTED 유지, 부분 정보로 FAILED 마킹 금지
+        this.logger.error(
+          `[SSG_ORPHAN] check 도중 네트워크/파싱 오류 - orderDeliveryId=${orderDeliveryId}, vno=${candidate.personalCode}: ${e instanceof Error ? e.message : e}`,
+        );
+        return SsgOrphanResolveOutcome.NETWORK_UNKNOWN;
+      }
+    }
+
+    if (confirmedCandidate) {
+      const transitioned = await this.ssgInsertStateService.markConfirmed(orderDeliveryId, {
+        barCode: confirmedCandidate.barCode,
+        personalCode: confirmedCandidate.personalCode,
+        ssgTransactionId: confirmedCandidate.ssgTransactionId,
+        couponNum: confirmedCandidate.couponNum,
+        expireAt: confirmedCandidate.expireAt,
+        encourageAt: confirmedCandidate.encourageAt,
+      });
+      if (!transitioned) {
+        // 같은 시점 다른 흐름이 state 를 바꿔서 전이를 못 한 경우 — outcome 모호. 보수적으로 NETWORK_UNKNOWN.
+        // caller 가 다시 resolveSsgOrphan 또는 별 분기 로직으로 확정해야 한다.
+        this.logger.warn(
+          `[SSG_ORPHAN] markConfirmed silent skip - orderDeliveryId=${orderDeliveryId}. race 가능성, NETWORK_UNKNOWN 처리.`,
+        );
+        return SsgOrphanResolveOutcome.NETWORK_UNKNOWN;
+      }
+      return SsgOrphanResolveOutcome.CONFIRMED;
+    }
+
+    // 모든 후보 정상 NotFound → 실패 확정
+    const failedTransitioned = await this.ssgInsertStateService.markFailed(orderDeliveryId);
+    if (!failedTransitioned) {
+      this.logger.warn(
+        `[SSG_ORPHAN] markFailed silent skip - orderDeliveryId=${orderDeliveryId}. race 가능성, NETWORK_UNKNOWN 처리.`,
+      );
+      return SsgOrphanResolveOutcome.NETWORK_UNKNOWN;
+    }
+    return SsgOrphanResolveOutcome.FAILED;
   }
 }
