@@ -12,7 +12,7 @@ import { Repository } from 'typeorm';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { OrderDeliverySsgInsertStateEntity } from '../../entity/order.delivery.ssg.insert.state.entity';
 import { SsgIssueLogEntity } from '../../entity/ssg.issue.log.entity';
-import { SsgInsertState } from '../interface/ssg.insert.state';
+import { MarkAttemptedResult, SsgInsertState } from '../interface/ssg.insert.state';
 import { SsgAttemptPayload, SsgConfirmInfo, SsgInsertStateService } from './ssg-insert-state.service';
 
 /**
@@ -63,6 +63,8 @@ describe('SsgInsertStateService', () => {
     personalCode: '01312345678',
     ssgTransactionId: 'tr-1',
     eventNo: 'EV1',
+    eventSeq: 1,
+    ssgEventId: 42,
     expireAt: new Date('2026-07-18T00:00:00Z'),
     encourageAt: new Date('2026-06-01T00:00:00Z'),
     couponNum: 'CN-1',
@@ -106,12 +108,13 @@ describe('SsgInsertStateService', () => {
   });
 
   describe('markAttempted (row 없음 또는 FAILED → ATTEMPTED)', () => {
-    it('row 없음 → INSERT IGNORE affected=1 → log INSERT', async () => {
+    it('row 없음 → INSERT IGNORE affected=1 → log INSERT → TRANSITIONED 반환', async () => {
       const chain = makeInsertChain(async () => ({ raw: { affectedRows: 1 } }));
       (stateRepository.createQueryBuilder as jest.Mock).mockReturnValue(chain);
 
-      await sut.markAttempted(123, samplePayload);
+      const result = await sut.markAttempted(123, samplePayload);
 
+      expect(result).toBe(MarkAttemptedResult.TRANSITIONED);
       expect(chain.values).toHaveBeenCalledWith({
         orderDeliveryId: 123,
         state: SsgInsertState.ATTEMPTED,
@@ -124,6 +127,8 @@ describe('SsgInsertStateService', () => {
           personalCode: samplePayload.personalCode,
           ssgTransactionId: samplePayload.ssgTransactionId,
           eventNo: samplePayload.eventNo,
+          eventSeq: samplePayload.eventSeq,
+          ssgEventId: samplePayload.ssgEventId,
           expireAt: samplePayload.expireAt,
           encourageAt: samplePayload.encourageAt,
           couponNum: samplePayload.couponNum,
@@ -131,15 +136,16 @@ describe('SsgInsertStateService', () => {
       );
     });
 
-    it('FAILED row 존재 → INSERT 0 affected → UPDATE FAILED→ATTEMPTED 성공 → 새 log INSERT (재시도)', async () => {
+    it('FAILED row 존재 → INSERT 0 affected → UPDATE FAILED→ATTEMPTED 성공 → 새 log INSERT + TRANSITIONED 반환', async () => {
       const insertChain = makeInsertChain(async () => ({ raw: { affectedRows: 0 } }));
       const updateChain = makeUpdateChain(async () => ({ affected: 1 }));
       (stateRepository.createQueryBuilder as jest.Mock)
         .mockReturnValueOnce(insertChain)
         .mockReturnValueOnce(updateChain);
 
-      await sut.markAttempted(123, samplePayload);
+      const result = await sut.markAttempted(123, samplePayload);
 
+      expect(result).toBe(MarkAttemptedResult.TRANSITIONED);
       expect(updateChain.set).toHaveBeenCalledWith({ state: SsgInsertState.ATTEMPTED });
       expect(updateChain.andWhere).toHaveBeenCalledWith('state = :prev', { prev: SsgInsertState.FAILED });
       expect(issueLogRepository.insert).toHaveBeenCalledWith(
@@ -147,40 +153,51 @@ describe('SsgInsertStateService', () => {
       );
     });
 
-    it('ATTEMPTED row 존재 (중복 호출) → 두 단계 모두 0 affected → log INSERT 건너뜀 (idempotent)', async () => {
+    it('ATTEMPTED row 존재 (중복 호출) → SKIPPED_ACTIVE 반환, log INSERT 건너뜀', async () => {
       const insertChain = makeInsertChain(async () => ({ raw: { affectedRows: 0 } }));
       const updateChain = makeUpdateChain(async () => ({ affected: 0 }));
       (stateRepository.createQueryBuilder as jest.Mock)
         .mockReturnValueOnce(insertChain)
         .mockReturnValueOnce(updateChain);
+      stateRepository.findOne = jest.fn().mockResolvedValue({
+        orderDeliveryId: 123,
+        state: SsgInsertState.ATTEMPTED,
+      });
 
-      await sut.markAttempted(123, samplePayload);
+      const result = await sut.markAttempted(123, samplePayload);
 
+      expect(result).toBe(MarkAttemptedResult.SKIPPED_ACTIVE);
       expect(issueLogRepository.insert).not.toHaveBeenCalled();
     });
 
-    it('CONFIRMED row 존재 (terminal) → 두 단계 모두 0 affected → log INSERT 건너뜀', async () => {
+    it('CONFIRMED row 존재 (terminal) → SKIPPED_TERMINAL 반환, log INSERT 건너뜀', async () => {
       const insertChain = makeInsertChain(async () => ({ raw: { affectedRows: 0 } }));
       const updateChain = makeUpdateChain(async () => ({ affected: 0 }));
       (stateRepository.createQueryBuilder as jest.Mock)
         .mockReturnValueOnce(insertChain)
         .mockReturnValueOnce(updateChain);
+      stateRepository.findOne = jest.fn().mockResolvedValue({
+        orderDeliveryId: 123,
+        state: SsgInsertState.CONFIRMED,
+      });
 
-      await sut.markAttempted(123, samplePayload);
+      const result = await sut.markAttempted(123, samplePayload);
 
+      expect(result).toBe(MarkAttemptedResult.SKIPPED_TERMINAL);
       expect(issueLogRepository.insert).not.toHaveBeenCalled();
     });
   });
 
   describe('markConfirmed (ATTEMPTED → CONFIRMED)', () => {
-    it('state UPDATE WHERE state=ATTEMPTED 가드 + delivery PIN 컬럼 저장', async () => {
+    it('state UPDATE WHERE state=ATTEMPTED 가드 + delivery PIN 컬럼 저장 + true 반환', async () => {
       const stateChain = makeUpdateChain(async () => ({ affected: 1 }));
       const deliveryChain = makeUpdateChain(async () => ({ affected: 1 }));
       (stateRepository.createQueryBuilder as jest.Mock).mockReturnValue(stateChain);
       (deliveryRepository.createQueryBuilder as jest.Mock).mockReturnValue(deliveryChain);
 
-      await sut.markConfirmed(123, sampleConfirm);
+      const result = await sut.markConfirmed(123, sampleConfirm);
 
+      expect(result).toBe(true);
       expect(stateChain.set).toHaveBeenCalledWith({ state: SsgInsertState.CONFIRMED });
       expect(stateChain.andWhere).toHaveBeenCalledWith('state = :prev', { prev: SsgInsertState.ATTEMPTED });
       expect(deliveryChain.set).toHaveBeenCalledWith({
@@ -193,33 +210,35 @@ describe('SsgInsertStateService', () => {
       });
     });
 
-    it('row 없음/CONFIRMED/FAILED 에서 호출 시 state affected=0 → delivery UPDATE 건너뜀', async () => {
+    it('row 없음/CONFIRMED/FAILED 에서 호출 시 state affected=0 → delivery UPDATE 건너뜀 + false 반환', async () => {
       const stateChain = makeUpdateChain(async () => ({ affected: 0 }));
       (stateRepository.createQueryBuilder as jest.Mock).mockReturnValue(stateChain);
 
-      await sut.markConfirmed(123, sampleConfirm);
+      const result = await sut.markConfirmed(123, sampleConfirm);
 
+      expect(result).toBe(false);
       // deliveryRepository.createQueryBuilder 는 호출되지 않아야 한다
       expect(deliveryRepository.createQueryBuilder).not.toHaveBeenCalled();
     });
   });
 
   describe('markFailed (ATTEMPTED → FAILED)', () => {
-    it('state 만 UPDATE (실패에는 PIN 보존 데이터 없음)', async () => {
+    it('state 만 UPDATE (실패에는 PIN 보존 데이터 없음) + true 반환', async () => {
       const chain = makeUpdateChain(async () => ({ affected: 1 }));
       (stateRepository.createQueryBuilder as jest.Mock).mockReturnValue(chain);
 
-      await sut.markFailed(123);
+      const result = await sut.markFailed(123);
 
+      expect(result).toBe(true);
       expect(chain.set).toHaveBeenCalledWith({ state: SsgInsertState.FAILED });
       expect(chain.andWhere).toHaveBeenCalledWith('state = :prev', { prev: SsgInsertState.ATTEMPTED });
     });
 
-    it('row 없음/CONFIRMED 역행 시도 → affected=0 → silently skip', async () => {
+    it('row 없음/CONFIRMED 역행 시도 → affected=0 → silently skip + false 반환', async () => {
       const chain = makeUpdateChain(async () => ({ affected: 0 }));
       (stateRepository.createQueryBuilder as jest.Mock).mockReturnValue(chain);
 
-      await expect(sut.markFailed(123)).resolves.toBeUndefined();
+      await expect(sut.markFailed(123)).resolves.toBe(false);
     });
   });
 

@@ -27,6 +27,7 @@ export class SsgIssueLogEntity {
   @Column({ type: 'varchar', length: 32, name: 'personal_code', comment: 'SSG INSERT 시도한 personalCode' })
   personalCode: string;
 
+  @Index('idx_ssg_issue_log_order_delivery_id')
   @Column({ type: 'int', name: 'order_delivery_id', comment: 'FK) order_delivery.id' })
   orderDeliveryId: number;
 
@@ -35,6 +36,20 @@ export class SsgIssueLogEntity {
 
   @Column({ type: 'varchar', length: 32, name: 'event_no', comment: 'SSG 이벤트 번호' })
   eventNo: string;
+
+  /**
+   * SSG check() 파라미터 완성용. ssg_event.order 값.
+   * legacy row 호환을 위해 nullable. PR2 신규 INSERT 부터는 항상 값 채움.
+   * orphan resolver는 NULL 후보를 skip한다.
+   */
+  @Column({ type: 'int', name: 'event_seq', nullable: true, comment: 'SSG 행사 순번 (ssg_event.order)' })
+  eventSeq: number | null;
+
+  /**
+   * orphan resolver 복원용 ssg_event FK. legacy row 호환 위해 nullable.
+   */
+  @Column({ type: 'int', name: 'ssg_event_id', nullable: true, comment: 'FK) ssg_event.id' })
+  ssgEventId: number | null;
 
   @Column({ type: 'datetime', precision: 6, name: 'inserted_at', comment: 'SSG INSERT 시도 시각' })
   insertedAt: Date;
