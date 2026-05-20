@@ -2183,12 +2183,9 @@ export class OrderService {
     const processedMappingIds = new Set<number>();
     const deliveryUpdatePromises: Promise<unknown>[] = [];
     const refundPromises: Promise<unknown>[] = [];
-
-    const deliveryToOrderProduct = new Map<number, any>();
     const deliveryById = new Map<number, OrderDeliveryEntity>();
     for (const orderProduct of existingOrderProductMap.values()) {
       for (const delivery of orderProduct.orderDeliveries ?? []) {
-        deliveryToOrderProduct.set(delivery.id, orderProduct);
         deliveryById.set(delivery.id, delivery);
       }
     }
@@ -2200,76 +2197,62 @@ export class OrderService {
       }
 
       if (settle.deliveryIds && settle.deliveryIds.length > 0) {
-        const deliveryIdsByMappingId = new Map<number, number[]>();
-
         for (const deliveryId of settle.deliveryIds) {
-          const deliveryOrderProduct = deliveryToOrderProduct.get(deliveryId);
-          if (!deliveryOrderProduct) {
+          if (!deliveryById.has(deliveryId)) {
             throw new BadRequestException('정산 항목에 존재하지 않는 배송 ID가 포함되어 있습니다.');
           }
-
-          const deliveryIds = deliveryIdsByMappingId.get(deliveryOrderProduct.id) ?? [];
-          deliveryIds.push(deliveryId);
-          deliveryIdsByMappingId.set(deliveryOrderProduct.id, deliveryIds);
         }
 
-        for (const [mappingId, deliveryIds] of deliveryIdsByMappingId) {
-          const deliveryOrderProduct = existingOrderProductMap.get(mappingId);
-          if (!deliveryOrderProduct) {
-            throw new InternalServerErrorException('not exist order product');
-          }
+        deliveryUpdatePromises.push(
+          this.orderDeliveryRepository.update(
+            { id: In(settle.deliveryIds) },
+            {
+              settleFee: settle.fee,
+              settlePriceAdjustment: settle.priceAdjustment,
+              settleDiscountType: settle.settleDiscountType,
+            },
+          ),
+        );
 
-          deliveryUpdatePromises.push(
-            this.orderDeliveryRepository.update(
-              { id: In(deliveryIds) },
-              {
-                settleFee: settle.fee,
-                settlePriceAdjustment: settle.priceAdjustment,
-                settleDiscountType: settle.settleDiscountType,
-              },
-            ),
+        for (const deliveryId of settle.deliveryIds) {
+          const delivery = deliveryById.get(deliveryId);
+          if (!delivery) continue;
+          delivery.settleFee = settle.fee;
+          delivery.settlePriceAdjustment = settle.priceAdjustment;
+          delivery.settleDiscountType = settle.settleDiscountType;
+        }
+
+        if (settle.refund !== undefined) {
+          refundPromises.push(this.orderDeliveryRepository.update({ id: In(settle.deliveryIds) }, { refundRatio: settle.refund }));
+          for (const deliveryId of settle.deliveryIds) {
+            const delivery = deliveryById.get(deliveryId);
+            if (delivery) delivery.refundRatio = settle.refund;
+          }
+        }
+
+        const mappingDeliveries = oneOrderProduct.orderDeliveries ?? [];
+        const shouldSyncMapping =
+          mappingDeliveries.length > 0 &&
+          mappingDeliveries.every(
+            (delivery: OrderDeliveryEntity) =>
+              delivery.settleFee === settle.fee &&
+              delivery.settlePriceAdjustment === settle.priceAdjustment &&
+              delivery.settleDiscountType === settle.settleDiscountType,
           );
 
-          for (const deliveryId of deliveryIds) {
-            const delivery = deliveryById.get(deliveryId);
-            if (!delivery) continue;
-            delivery.settleFee = settle.fee;
-            delivery.settlePriceAdjustment = settle.priceAdjustment;
-            delivery.settleDiscountType = settle.settleDiscountType;
-          }
-
-          if (settle.refund !== undefined) {
-            refundPromises.push(this.orderDeliveryRepository.update({ id: In(deliveryIds) }, { refundRatio: settle.refund }));
-            for (const deliveryId of deliveryIds) {
-              const delivery = deliveryById.get(deliveryId);
-              if (delivery) delivery.refundRatio = settle.refund;
-            }
-          }
-
-          const mappingDeliveries = deliveryOrderProduct.orderDeliveries ?? [];
-          const shouldSyncMapping =
-            mappingDeliveries.length > 0 &&
-            mappingDeliveries.every(
-              (delivery: OrderDeliveryEntity) =>
-                delivery.settleFee === settle.fee &&
-                delivery.settlePriceAdjustment === settle.priceAdjustment &&
-                delivery.settleDiscountType === settle.settleDiscountType,
-            );
-
-          if (shouldSyncMapping && !processedMappingIds.has(mappingId)) {
-            processedMappingIds.add(mappingId);
-            deliveryOrderProduct.settleDiscountType = settle.settleDiscountType;
-            deliveryOrderProduct.priceAdjustment = settle.priceAdjustment;
-            deliveryOrderProduct.fee = settle.fee;
-            orderProductList.push(
-              this.orderProductMappingRepository.create({
-                id: mappingId,
-                settleDiscountType: settle.settleDiscountType,
-                priceAdjustment: settle.priceAdjustment,
-                fee: settle.fee,
-              }),
-            );
-          }
+        if (shouldSyncMapping && !processedMappingIds.has(settle.id)) {
+          processedMappingIds.add(settle.id);
+          oneOrderProduct.settleDiscountType = settle.settleDiscountType;
+          oneOrderProduct.priceAdjustment = settle.priceAdjustment;
+          oneOrderProduct.fee = settle.fee;
+          orderProductList.push(
+            this.orderProductMappingRepository.create({
+              id: settle.id,
+              settleDiscountType: settle.settleDiscountType,
+              priceAdjustment: settle.priceAdjustment,
+              fee: settle.fee,
+            }),
+          );
         }
         continue;
       }

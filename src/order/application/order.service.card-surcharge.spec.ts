@@ -402,7 +402,7 @@ describe('OrderService SSG settlement row validation', () => {
     expect(deliveries[1]).toMatchObject({ settleFee: null, settlePriceAdjustment: null });
   });
 
-  it('다른 mapping의 deliveryId가 섞인 cross row도 실제 mapping별 delivery에 나눠 저장한다', async () => {
+  it('cross row deliveryIds가 와도 mapping별 재분배 없이 전달된 deliveryIds 그대로 저장한다', async () => {
     const service = createService();
     const { map } = createOrderProductMap();
     const crossDelivery = { id: 99, settleFee: null, settlePriceAdjustment: null, settleDiscountType: null };
@@ -421,15 +421,16 @@ describe('OrderService SSG settlement row validation', () => {
       map,
     );
 
-    expect(result.orderProductList).toEqual([
+    expect(result.orderProductList).toEqual([]);
+    expect(service.orderDeliveryRepository.update).toHaveBeenCalledTimes(1);
+    expect(service.orderDeliveryRepository.update).toHaveBeenCalledWith(
+      { id: expect.anything() },
       {
-        id: 11,
+        settleFee: 5,
+        settlePriceAdjustment: IPriceAdjustment.DISCOUNT,
         settleDiscountType: undefined,
-        priceAdjustment: IPriceAdjustment.DISCOUNT,
-        fee: 5,
       },
-    ]);
-    expect(service.orderDeliveryRepository.update).toHaveBeenCalledTimes(2);
+    );
     expect(crossDelivery).toMatchObject({ settleFee: 5, settlePriceAdjustment: IPriceAdjustment.DISCOUNT });
   });
 
