@@ -2197,12 +2197,6 @@ export class OrderService {
       }
 
       if (settle.deliveryIds && settle.deliveryIds.length > 0) {
-        for (const deliveryId of settle.deliveryIds) {
-          if (!deliveryById.has(deliveryId)) {
-            throw new BadRequestException('정산 항목에 존재하지 않는 배송 ID가 포함되어 있습니다.');
-          }
-        }
-
         deliveryUpdatePromises.push(
           this.orderDeliveryRepository.update(
             { id: In(settle.deliveryIds) },
