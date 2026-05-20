@@ -402,6 +402,27 @@ describe('OrderService SSG settlement row validation', () => {
     expect(deliveries[1]).toMatchObject({ settleFee: null, settlePriceAdjustment: null });
   });
 
+  it('다른 mapping의 deliveryId가 섞인 cross row 저장을 거부한다', async () => {
+    const service = createService();
+    const { map } = createOrderProductMap();
+    map.set(11, {
+      id: 11,
+      amount: 1,
+      fee: null,
+      priceAdjustment: null,
+      settleDiscountType: null,
+      product: { price: 20000 },
+      orderDeliveries: [{ id: 99, settleFee: null, settlePriceAdjustment: null, settleDiscountType: null }],
+    });
+
+    await expect(
+      service.processSettleList(
+        [{ id: 10, deliveryIds: [1, 99], fee: 5, priceAdjustment: IPriceAdjustment.DISCOUNT }],
+        map,
+      ),
+    ).rejects.toThrow('여러 상품이 묶인 정산 항목은 상품별로 분리해서 저장해주세요.');
+  });
+
   it('정상 SSG 가상 row는 mapping 전체 배송과 mapping 대표값을 같은 정산값으로 동기화한다', async () => {
     const service = createService();
     const { deliveries, map } = createOrderProductMap();

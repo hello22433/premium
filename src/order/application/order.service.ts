@@ -2183,12 +2183,6 @@ export class OrderService {
     const processedMappingIds = new Set<number>();
     const deliveryUpdatePromises: Promise<unknown>[] = [];
     const refundPromises: Promise<unknown>[] = [];
-    const deliveryById = new Map<number, OrderDeliveryEntity>();
-    for (const orderProduct of existingOrderProductMap.values()) {
-      for (const delivery of orderProduct.orderDeliveries ?? []) {
-        deliveryById.set(delivery.id, delivery);
-      }
-    }
 
     for (const settle of list) {
       const oneOrderProduct = existingOrderProductMap.get(settle.id);
@@ -2197,6 +2191,16 @@ export class OrderService {
       }
 
       if (settle.deliveryIds && settle.deliveryIds.length > 0) {
+        const mappingDeliveryById = new Map<number, OrderDeliveryEntity>(
+          (oneOrderProduct.orderDeliveries ?? []).map((delivery: OrderDeliveryEntity) => [delivery.id, delivery]),
+        );
+
+        for (const deliveryId of settle.deliveryIds) {
+          if (!mappingDeliveryById.has(deliveryId)) {
+            throw new BadRequestException('여러 상품이 묶인 정산 항목은 상품별로 분리해서 저장해주세요.');
+          }
+        }
+
         deliveryUpdatePromises.push(
           this.orderDeliveryRepository.update(
             { id: In(settle.deliveryIds) },
@@ -2209,7 +2213,7 @@ export class OrderService {
         );
 
         for (const deliveryId of settle.deliveryIds) {
-          const delivery = deliveryById.get(deliveryId);
+          const delivery = mappingDeliveryById.get(deliveryId);
           if (!delivery) continue;
           delivery.settleFee = settle.fee;
           delivery.settlePriceAdjustment = settle.priceAdjustment;
@@ -2219,7 +2223,7 @@ export class OrderService {
         if (settle.refund !== undefined) {
           refundPromises.push(this.orderDeliveryRepository.update({ id: In(settle.deliveryIds) }, { refundRatio: settle.refund }));
           for (const deliveryId of settle.deliveryIds) {
-            const delivery = deliveryById.get(deliveryId);
+            const delivery = mappingDeliveryById.get(deliveryId);
             if (delivery) delivery.refundRatio = settle.refund;
           }
         }
