@@ -1,4 +1,5 @@
 import { OrderDeliveryEntity } from '../entity/order.delivery.entity';
+import { OrderEntity } from '../entity/order.entity';
 import { OrderProductMappingEntity } from '../entity/order.product.mapping.entity';
 import { OrderFeeCalculator, applyCardSurcharge } from '../order/domain/order.fee.calculator';
 import { IPriceAdjustment } from '../user_discount/interface/price.adjustment';
@@ -38,4 +39,31 @@ export function calculateSettlementPrice(
     price = OrderFeeCalculator({ fee, priceAdjustment, price });
   }
   return applyCardSurcharge(price, cardSurchargeApplied);
+}
+
+export function calculateMappingSettlementBaseAmount(mapping: OrderProductMappingEntity): number {
+  const deliveries = mapping.orderDeliveries ?? [];
+  const hasDeliveryFee = deliveries.some((delivery) => delivery.settleFee !== null);
+
+  if (hasDeliveryFee) {
+    return deliveries.reduce((total, delivery) => {
+      return total + calculateSettlementPrice(mapping, false, delivery);
+    }, 0);
+  }
+
+  return calculateSettlementPrice(mapping, false) * mapping.amount;
+}
+
+/**
+ * 주문 전체 정산금액 계산.
+ * 정산 저장/수정과 발송확정 차감액이 같은 기준을 사용하도록 주문 전체에 카드할증을 1회 적용한다.
+ */
+export function calculateOrderSettlementAmount(
+  order: Pick<OrderEntity, 'cardSurchargeApplied' | 'orderProductMappings'>,
+  cardSurchargeApplied: boolean = order.cardSurchargeApplied,
+): number {
+  const baseAmount = (order.orderProductMappings ?? []).reduce((orderTotal, mapping) => {
+    return orderTotal + calculateMappingSettlementBaseAmount(mapping);
+  }, 0);
+  return applyCardSurcharge(baseAmount, cardSurchargeApplied);
 }
