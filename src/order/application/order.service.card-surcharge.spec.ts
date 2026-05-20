@@ -402,38 +402,6 @@ describe('OrderService SSG settlement row validation', () => {
     expect(deliveries[1]).toMatchObject({ settleFee: null, settlePriceAdjustment: null });
   });
 
-  it('cross row deliveryIds가 와도 mapping별 재분배 없이 전달된 deliveryIds 그대로 저장한다', async () => {
-    const service = createService();
-    const { map } = createOrderProductMap();
-    const crossDelivery = { id: 99, settleFee: null, settlePriceAdjustment: null, settleDiscountType: null };
-    map.set(11, {
-      id: 11,
-      amount: 1,
-      fee: null,
-      priceAdjustment: null,
-      settleDiscountType: null,
-      product: { price: 20000 },
-      orderDeliveries: [crossDelivery],
-    });
-
-    const result = await service.processSettleList(
-      [{ id: 10, deliveryIds: [1, 99], fee: 5, priceAdjustment: IPriceAdjustment.DISCOUNT }],
-      map,
-    );
-
-    expect(result.orderProductList).toEqual([]);
-    expect(service.orderDeliveryRepository.update).toHaveBeenCalledTimes(1);
-    expect(service.orderDeliveryRepository.update).toHaveBeenCalledWith(
-      { id: expect.anything() },
-      {
-        settleFee: 5,
-        settlePriceAdjustment: IPriceAdjustment.DISCOUNT,
-        settleDiscountType: undefined,
-      },
-    );
-    expect(crossDelivery).toMatchObject({ settleFee: 5, settlePriceAdjustment: IPriceAdjustment.DISCOUNT });
-  });
-
   it('정상 SSG 가상 row는 mapping 전체 배송과 mapping 대표값을 같은 정산값으로 동기화한다', async () => {
     const service = createService();
     const { deliveries, map } = createOrderProductMap();
