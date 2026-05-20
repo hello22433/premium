@@ -112,6 +112,7 @@ import { IProductType } from '../../product/interface/product.type';
 import { defaultOrderMidImagePath, defaultOrderTopImagePath } from '../../const';
 import { OrderStatusExcelMapping } from '../domain/order.excel.mapping';
 import { OrderFeeCalculator, applyCardSurcharge } from '../domain/order.fee.calculator';
+import { calculateOrderSettlementAmount } from '../../util/settle-fee.util';
 import { OrderCustomerViewDto } from '../api/dto/order.customer.view.dto';
 import { MaskingUtil } from '../../common/utils/masking.util';
 import { resolveExpireDays } from '../../common/utils/expire.util';
@@ -1919,6 +1920,7 @@ export class OrderService {
         name: string;
         brandName: string | null;
         combinedPrice: number;
+        discountCombinedPrice: number;
         fee: number;
         priceAdjustment: IPriceAdjustment | null;
         settleDiscountType: IOrderSettleDiscountType | null;
@@ -1943,25 +1945,6 @@ export class OrderService {
         }
         if (phoneItems.length === 0) continue;
 
-        const firstProduct = phoneItems[0].orderProduct.product;
-
-        const firstOrderProduct = phoneItems[0].orderProduct;
-        const resolved = resolveSettleFee(
-          phoneItems[0].delivery,
-          { fee: firstOrderProduct.fee, priceAdjustment: firstOrderProduct.priceAdjustment, settleDiscountType: firstOrderProduct.settleDiscountType ?? null },
-          isOrderCompleted,
-          () => findMatchingDiscount(
-            { price: firstProduct.price, category: firstProduct.category, classificationId: firstProduct.classificationId, brand: firstProduct.brand },
-            userDiscounts,
-            totalAmount,
-          ),
-        );
-        let { fee } = resolved;
-        const { priceAdjustment, settleDiscountType } = resolved;
-
-        if (fee < 0 || fee > 100) fee = 0;
-
-        // 상품 조합 시그니처 (동일 조합+할인율이면 합산)
         const productBreakdown = new Map<number, { name: string; count: number }>();
         for (const { orderProduct } of phoneItems) {
           const existing = productBreakdown.get(orderProduct.id);
@@ -1970,7 +1953,50 @@ export class OrderService {
         }
         const sortedProducts = [...productBreakdown.entries()].sort(([a], [b]) => a - b);
         const sig = sortedProducts.map(([id, { count }]) => `${id}:${count}`).join('|');
-        const groupKey = `${sig}-${fee}-${priceAdjustment}`;
+
+        const itemSettles = phoneItems.map(({ orderProduct, delivery }) => {
+          const product = orderProduct.product;
+          const resolved = resolveSettleFee(
+            delivery,
+            { fee: orderProduct.fee, priceAdjustment: orderProduct.priceAdjustment, settleDiscountType: orderProduct.settleDiscountType ?? null },
+            isOrderCompleted,
+            () => findMatchingDiscount(
+              { price: product.price, category: product.category, classificationId: product.classificationId, brand: product.brand },
+              userDiscounts,
+              totalAmount,
+            ),
+          );
+          let { fee } = resolved;
+          if (fee < 0 || fee > 100) fee = 0;
+          const priceAdjustment = resolved.priceAdjustment;
+          const discountPrice = priceAdjustment
+            ? OrderFeeCalculator({ fee, priceAdjustment, price: product.price })
+            : product.price;
+          return {
+            orderProductId: orderProduct.id,
+            fee,
+            priceAdjustment,
+            settleDiscountType: resolved.settleDiscountType,
+            discountPrice,
+          };
+        });
+
+        const settleSig = itemSettles
+          .map((item) => `${item.orderProductId}:${item.fee}:${item.priceAdjustment ?? ''}:${item.settleDiscountType ?? ''}`)
+          .sort()
+          .join('|');
+        const groupKey = `${sig}-${settleSig}`;
+
+        const firstSettle = itemSettles[0];
+        const hasSameSettle = itemSettles.every((item) =>
+          item.fee === firstSettle.fee &&
+          item.priceAdjustment === firstSettle.priceAdjustment &&
+          item.settleDiscountType === firstSettle.settleDiscountType,
+        );
+        const fee = hasSameSettle ? firstSettle.fee : 0;
+        const priceAdjustment = hasSameSettle ? firstSettle.priceAdjustment : null;
+        const settleDiscountType = hasSameSettle ? firstSettle.settleDiscountType : null;
+        const discountCombinedPrice = itemSettles.reduce((sum, item) => sum + item.discountPrice, 0);
 
         const existingGroup = mergedGroups.get(groupKey);
         if (existingGroup) {
@@ -1994,8 +2020,9 @@ export class OrderService {
 
           mergedGroups.set(groupKey, {
             name: mergedName,
-            brandName: firstProduct.brand?.nameKorean ?? null,
+            brandName: phoneItems[0].orderProduct.product.brand?.nameKorean ?? null,
             combinedPrice: totalAmount,
+            discountCombinedPrice,
             fee,
             priceAdjustment,
             settleDiscountType,
@@ -2011,12 +2038,8 @@ export class OrderService {
       // 합산 행 결과 추가
       for (const [, group] of mergedGroups) {
         const groupTotalPrice = group.combinedPrice * group.phoneCount;
-        const discountPrice = group.priceAdjustment
-          ? OrderFeeCalculator({ fee: group.fee, priceAdjustment: group.priceAdjustment, price: group.combinedPrice })
-          : group.combinedPrice;
-        const discountTotalPrice = group.priceAdjustment
-          ? OrderFeeCalculator({ fee: group.fee, priceAdjustment: group.priceAdjustment, price: groupTotalPrice })
-          : groupTotalPrice;
+        const discountPrice = group.discountCombinedPrice;
+        const discountTotalPrice = group.discountCombinedPrice * group.phoneCount;
 
         resultList.push({
           id: group.orderProductId,
@@ -2154,14 +2177,12 @@ export class OrderService {
     existingOrderProductMap: Map<number, any>,
   ): Promise<{
     orderProductList: ReturnType<typeof this.orderProductMappingRepository.create>[];
-    settleFee: number;
   }> {
-    const hasSsgVirtualRows = list.some((settle) => settle.deliveryIds && settle.deliveryIds.length > 0);
-    const processedMappingIds = new Set<number>();
+    const hasDeliveryScopedRows = list.some((settle) => settle.deliveryIds && settle.deliveryIds.length > 0);
     const orderProductList: ReturnType<typeof this.orderProductMappingRepository.create>[] = [];
-    let settleFee = 0;
-
+    const processedMappingIds = new Set<number>();
     const deliveryUpdatePromises: Promise<unknown>[] = [];
+    const refundPromises: Promise<unknown>[] = [];
 
     for (const settle of list) {
       const oneOrderProduct = existingOrderProductMap.get(settle.id);
@@ -2169,16 +2190,17 @@ export class OrderService {
         throw new InternalServerErrorException('not exist order product');
       }
 
-      const count = settle.deliveryIds?.length ?? oneOrderProduct.amount;
-      if (settle.priceAdjustment === IPriceAdjustment.DISCOUNT) {
-        settleFee -= (oneOrderProduct.product.price * count * (settle.fee ?? 0)) / 100;
-      }
-      if (settle.priceAdjustment === IPriceAdjustment.ADDITIONAL) {
-        settleFee += (oneOrderProduct.product.price * count * (settle.fee ?? 0)) / 100;
-      }
-
-      // SSG 가상 행: delivery별 settleFee 저장
       if (settle.deliveryIds && settle.deliveryIds.length > 0) {
+        const mappingDeliveryById = new Map<number, OrderDeliveryEntity>(
+          (oneOrderProduct.orderDeliveries ?? []).map((delivery: OrderDeliveryEntity) => [delivery.id, delivery]),
+        );
+
+        for (const deliveryId of settle.deliveryIds) {
+          if (!mappingDeliveryById.has(deliveryId)) {
+            throw new BadRequestException('여러 상품이 묶인 정산 항목은 상품별로 분리해서 저장해주세요.');
+          }
+        }
+
         deliveryUpdatePromises.push(
           this.orderDeliveryRepository.update(
             { id: In(settle.deliveryIds) },
@@ -2189,20 +2211,55 @@ export class OrderService {
             },
           ),
         );
+
+        for (const deliveryId of settle.deliveryIds) {
+          const delivery = mappingDeliveryById.get(deliveryId);
+          if (!delivery) continue;
+          delivery.settleFee = settle.fee;
+          delivery.settlePriceAdjustment = settle.priceAdjustment;
+          delivery.settleDiscountType = settle.settleDiscountType;
+        }
+
+        if (settle.refund !== undefined) {
+          refundPromises.push(this.orderDeliveryRepository.update({ id: In(settle.deliveryIds) }, { refundRatio: settle.refund }));
+          for (const deliveryId of settle.deliveryIds) {
+            const delivery = mappingDeliveryById.get(deliveryId);
+            if (delivery) delivery.refundRatio = settle.refund;
+          }
+        }
+
+        const mappingDeliveries = oneOrderProduct.orderDeliveries ?? [];
+        const shouldSyncMapping =
+          mappingDeliveries.length > 0 &&
+          mappingDeliveries.every(
+            (delivery: OrderDeliveryEntity) =>
+              delivery.settleFee === settle.fee &&
+              delivery.settlePriceAdjustment === settle.priceAdjustment &&
+              delivery.settleDiscountType === settle.settleDiscountType,
+          );
+
+        if (shouldSyncMapping && !processedMappingIds.has(settle.id)) {
+          processedMappingIds.add(settle.id);
+          oneOrderProduct.settleDiscountType = settle.settleDiscountType;
+          oneOrderProduct.priceAdjustment = settle.priceAdjustment;
+          oneOrderProduct.fee = settle.fee;
+          orderProductList.push(
+            this.orderProductMappingRepository.create({
+              id: settle.id,
+              settleDiscountType: settle.settleDiscountType,
+              priceAdjustment: settle.priceAdjustment,
+              fee: settle.fee,
+            }),
+          );
+        }
+        continue;
       }
 
-      // mapping.fee 업데이트: SSG 가상 행은 SKIP (중복 ID 충돌 방지)
-      if (!hasSsgVirtualRows) {
-        orderProductList.push(
-          this.orderProductMappingRepository.create({
-            id: settle.id,
-            settleDiscountType: settle.settleDiscountType,
-            priceAdjustment: settle.priceAdjustment,
-            fee: settle.fee,
-          }),
-        );
-      } else if (!processedMappingIds.has(settle.id)) {
+      if (!hasDeliveryScopedRows && !processedMappingIds.has(settle.id)) {
         processedMappingIds.add(settle.id);
+        oneOrderProduct.settleDiscountType = settle.settleDiscountType;
+        oneOrderProduct.priceAdjustment = settle.priceAdjustment;
+        oneOrderProduct.fee = settle.fee;
         orderProductList.push(
           this.orderProductMappingRepository.create({
             id: settle.id,
@@ -2211,6 +2268,15 @@ export class OrderService {
             fee: settle.fee,
           }),
         );
+      }
+
+      if (settle.refund !== undefined) {
+        refundPromises.push(
+          this.orderDeliveryRepository.update({ orderProductMappingId: settle.id }, { refundRatio: settle.refund }),
+        );
+        for (const delivery of oneOrderProduct.orderDeliveries ?? []) {
+          delivery.refundRatio = settle.refund;
+        }
       }
     }
 
@@ -2219,26 +2285,21 @@ export class OrderService {
       await Promise.all(deliveryUpdatePromises);
     }
 
-    // 환불률 업데이트 (병렬)
-    const refundPromises: Promise<unknown>[] = [];
-    for (const settle of list) {
-      if (settle.refund !== undefined) {
-        if (settle.deliveryIds && settle.deliveryIds.length > 0) {
-          refundPromises.push(
-            this.orderDeliveryRepository.update({ id: In(settle.deliveryIds) }, { refundRatio: settle.refund }),
-          );
-        } else {
-          refundPromises.push(
-            this.orderDeliveryRepository.update({ orderProductMappingId: settle.id }, { refundRatio: settle.refund }),
-          );
-        }
-      }
-    }
     if (refundPromises.length > 0) {
       await Promise.all(refundPromises);
     }
 
-    return { orderProductList, settleFee };
+    return { orderProductList };
+  }
+
+  private async getOrderProductsForSettlementAmount(orderId: number) {
+    return this.orderProductMappingRepository
+      .createQueryBuilder('orderProductMapping')
+      .innerJoinAndSelect('orderProductMapping.product', 'product')
+      .innerJoinAndSelect('orderProductMapping.order', 'order')
+      .leftJoinAndSelect('orderProductMapping.orderDeliveries', 'orderDeliveries')
+      .where('orderProductMapping.orderId = :orderId', { orderId })
+      .getMany();
   }
 
   @Transactional()
@@ -2255,6 +2316,7 @@ export class OrderService {
       .createQueryBuilder('orderProductMapping')
       .innerJoinAndSelect('orderProductMapping.product', 'product')
       .innerJoinAndSelect('orderProductMapping.order', 'order')
+      .leftJoinAndSelect('orderProductMapping.orderDeliveries', 'orderDeliveries')
       .where('orderProductMapping.id IN (:...orderProductIds)', { orderProductIds })
       .getMany();
 
@@ -2266,12 +2328,17 @@ export class OrderService {
     }
 
     const orderId = existingOrderProducts[0].orderId;
-    const settleAmount = existingOrderProducts[0].order.sendAmount;
+    const hasDifferentOrder = existingOrderProducts.some((orderProduct) => orderProduct.orderId !== orderId);
+    if (hasDifferentOrder) {
+      throw new BadRequestException('하나의 주문에 대해서만 정산 정보를 입력할 수 있습니다');
+    }
+    const allOrderProducts = await this.getOrderProductsForSettlementAmount(orderId);
+    const allOrderProductMap = new Map(allOrderProducts.map((order) => [order.id, order]));
     const oneUserId = existingOrderProducts[0].order.clientUserId ?? existingOrderProducts[0].order.userId;
     const sendAmount = existingOrderProducts[0].order.sendAmount;
     const isSettleBalance = existingOrderProducts[0].order.isSettleBalance;
 
-    const { orderProductList, settleFee } = await this.processSettleList(list, existingOrderProductMap);
+    const { orderProductList } = await this.processSettleList(list, allOrderProductMap);
 
     if (orderProductList.length > 0) {
       await this.orderProductMappingRepository.save(orderProductList);
@@ -2280,7 +2347,10 @@ export class OrderService {
     const order = existingOrderProducts[0].order;
     const defaultCardSurchargeApplied = await this.getDefaultCardSurchargeApplied(order);
     const cardSurchargeApplied = getBody.cardSurchargeApplied ?? defaultCardSurchargeApplied;
-    const newSettleAmount = applyCardSurcharge(settleAmount + settleFee, cardSurchargeApplied);
+    const newSettleAmount = calculateOrderSettlementAmount(
+      { cardSurchargeApplied, orderProductMappings: allOrderProducts },
+      cardSurchargeApplied,
+    );
 
     await this.orderRepository.update({ id: orderId }, { settleAmount: newSettleAmount, cardSurchargeApplied });
 
@@ -2348,6 +2418,7 @@ export class OrderService {
       .createQueryBuilder('orderProductMapping')
       .innerJoinAndSelect('orderProductMapping.product', 'product')
       .innerJoinAndSelect('orderProductMapping.order', 'order')
+      .leftJoinAndSelect('orderProductMapping.orderDeliveries', 'orderDeliveries')
       .where('orderProductMapping.id IN (:...orderProductIds)', { orderProductIds })
       .getMany();
 
@@ -2359,13 +2430,18 @@ export class OrderService {
     }
 
     const orderId = existingOrderProducts[0].orderId;
-    const settleAmount = existingOrderProducts[0].order.sendAmount;
+    const hasDifferentOrder = existingOrderProducts.some((orderProduct) => orderProduct.orderId !== orderId);
+    if (hasDifferentOrder) {
+      throw new BadRequestException('하나의 주문에 대해서만 정산 정보를 수정할 수 있습니다');
+    }
+    const allOrderProducts = await this.getOrderProductsForSettlementAmount(orderId);
+    const allOrderProductMap = new Map(allOrderProducts.map((order) => [order.id, order]));
     const oneUserId = existingOrderProducts[0].order.clientUserId ?? existingOrderProducts[0].order.userId;
 
     const beforeSettleAmount = existingOrderProducts[0].order.settleAmount;
     const isSettleBalance = existingOrderProducts[0].order.isSettleBalance;
 
-    const { orderProductList, settleFee } = await this.processSettleList(list, existingOrderProductMap);
+    const { orderProductList } = await this.processSettleList(list, allOrderProductMap);
 
     if (orderProductList.length > 0) {
       await this.orderProductMappingRepository.save(orderProductList);
@@ -2374,7 +2450,10 @@ export class OrderService {
     const order = existingOrderProducts[0].order;
     const defaultCardSurchargeApplied = await this.getDefaultCardSurchargeApplied(order);
     const cardSurchargeApplied = getBody.cardSurchargeApplied ?? order.cardSurchargeApplied ?? defaultCardSurchargeApplied;
-    const newSettleAmount = applyCardSurcharge(settleAmount + settleFee, cardSurchargeApplied);
+    const newSettleAmount = calculateOrderSettlementAmount(
+      { cardSurchargeApplied, orderProductMappings: allOrderProducts },
+      cardSurchargeApplied,
+    );
 
     await this.orderRepository.update({ id: orderId }, { settleAmount: newSettleAmount, cardSurchargeApplied });
 
@@ -3124,7 +3203,6 @@ export class OrderService {
       where: [{ userId: billingUserId }, { partnerCompanyId: In(partnerCompanyIds) }],
     });
 
-    let totalSettleFee = 0;
     const mappingsToUpdate: OrderProductMappingEntity[] = [];
 
     // 각 매핑별 할인/할증 상태 저장 (중복번호 체크에 사용)
@@ -3159,16 +3237,6 @@ export class OrderService {
 
       // 할인/할증 상태 저장
       mappingPriceAdjustments.set(mapping.id, priceAdjustment);
-
-      // 할인/할증 계산
-      if (fee !== null && fee > 0 && priceAdjustment) {
-        const productTotalPrice = mapping.product.price * mapping.amount;
-        if (priceAdjustment === IPriceAdjustment.DISCOUNT) {
-          totalSettleFee -= (productTotalPrice * fee) / 100;
-        } else if (priceAdjustment === IPriceAdjustment.ADDITIONAL) {
-          totalSettleFee += (productTotalPrice * fee) / 100;
-        }
-      }
     }
 
     // 업데이트할 매핑이 있으면 저장
@@ -3279,8 +3347,8 @@ export class OrderService {
     }
     // ======== 중복번호 제어 체크 끝 ========
 
-    // 최종 정산금액 계산 (카드할증 포함)
-    const finalAmount = applyCardSurcharge(order.sendAmount + totalSettleFee, order.cardSurchargeApplied);
+    // 최종 정산금액 계산 (배송별 정산값 우선, 주문 전체 카드할증 1회 적용)
+    const finalAmount = calculateOrderSettlementAmount(order, order.cardSurchargeApplied);
 
     if (order.isNewBillingFlow) {
       // === 새 흐름: 발송확정 시 전액 차감 ===
@@ -3366,13 +3434,11 @@ export class OrderService {
       const addEffectiveBalance = (amount: number) => setEffectiveBalance(getEffectiveBalance() + amount);
       const subtractEffectiveBalance = (amount: number) => setEffectiveBalance(getEffectiveBalance() - amount);
 
-      // applyCardSurcharge가 floor 처리한 실제 카드할증 금액 (미적용 시 0)
-      const cardSurchargeDelta = finalAmount - (order.sendAmount + totalSettleFee);
-      // 기존 흐름은 createTemp에서 sendAmount가 이미 차감된 상태이므로 차액(netDelta)만 반영하면 finalAmount와 장부가 일치
-      const netDelta = totalSettleFee + cardSurchargeDelta;
+      // 기존 흐름은 createTemp에서 sendAmount가 이미 차감된 상태이므로 최종 정산금액과 정가 차액만 반영하면 장부가 일치
+      const netDelta = finalAmount - order.sendAmount;
 
       if (netDelta !== 0) {
-        const deltaBreakdown = `할인/할증=${totalSettleFee}, 카드할증=${cardSurchargeDelta}`;
+        const deltaBreakdown = `최종정산=${finalAmount}, 발송정가=${order.sendAmount}`;
 
         if (netDelta < 0) {
           // 순 환급 (할인이 카드할증보다 큼)
