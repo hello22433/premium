@@ -41,7 +41,7 @@ export class DepartmentService {
 
   async createDepartment(dto: DepartmentCreateReqDto, user: ILoginUserInfo): Promise<void> {
     if (user.authority === IUserAuthority.CORPORATE_ADMIN) {
-      const userEntity = await this.userRepository.findOne({ where: { id: user.id } });
+      const userEntity = await this.findUserEntityById(user.id);
       if (!userEntity || dto.companyId !== userEntity.companyId || !userEntity.isHeadPerson) {
         throw new ForbiddenException();
       }
@@ -78,7 +78,7 @@ export class DepartmentService {
     }
 
     if (user.authority === IUserAuthority.CORPORATE_ADMIN) {
-      const userEntity = await this.userRepository.findOne({ where: { id: user.id } });
+      const userEntity = await this.findUserEntityById(user.id);
       if (!userEntity || department.companyId !== userEntity.companyId || !userEntity.isHeadPerson) {
         throw new ForbiddenException();
       }
@@ -111,7 +111,7 @@ export class DepartmentService {
     }
 
     if (user.authority === IUserAuthority.CORPORATE_ADMIN) {
-      const userEntity = await this.userRepository.findOne({ where: { id: user.id } });
+      const userEntity = await this.findUserEntityById(user.id);
       if (!userEntity || department.companyId !== userEntity.companyId || !userEntity.isHeadPerson) {
         throw new ForbiddenException();
       }
@@ -133,7 +133,7 @@ export class DepartmentService {
 
   async getDepartmentList(dto: DepartmentGetListReqDto, user: ILoginUserInfo): Promise<DepartmentGetListResDto> {
     if (user.authority === IUserAuthority.CORPORATE_ADMIN) {
-      const userEntity = await this.userRepository.findOne({ where: { id: user.id } });
+      const userEntity = await this.findUserEntityById(user.id);
       dto.companyId = userEntity?.companyId ?? undefined;
     }
     const queryBuilder = this.departmentRepository
@@ -176,7 +176,7 @@ export class DepartmentService {
     }
 
     if (user.authority === IUserAuthority.CORPORATE_ADMIN) {
-      const userEntity = await this.userRepository.findOne({ where: { id: user.id } });
+      const userEntity = await this.findUserEntityById(user.id);
       if (!userEntity || department.companyId !== userEntity.companyId) {
         throw new ForbiddenException();
       }
@@ -312,5 +312,10 @@ export class DepartmentService {
     }
 
     await this.userViewScopeRepository.save(viewScope);
+  }
+
+  // ILoginUserInfo에 companyId·isHeadPerson 미포함 — companyId 검증 시 DB 조회 필요
+  private async findUserEntityById(userId: number) {
+    return this.userRepository.findOne({ where: { id: userId } });
   }
 }
