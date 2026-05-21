@@ -45,7 +45,8 @@ export class ActivityLogController {
     description: '성공적으로 조회한 경우',
   })
   @Get('/activity-log/action-types')
-  async getActionTypes(): Promise<GetActionTypesResDto> {
+  async getActionTypes(@User() user: ILoginUserInfo): Promise<GetActionTypesResDto> {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.ACTIVITY_LOG);
     return this.activityLogService.getActionTypes();
   }
 

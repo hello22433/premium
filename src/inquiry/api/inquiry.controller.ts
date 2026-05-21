@@ -72,7 +72,8 @@ export class InquiryController {
   // ===================================================
   @UseGuards(AuthUserAuthorizationGuard)
   @Post('/inquiry')
-  create(@User() user: ILoginUserInfo, @Body() getBody: InquiryCreateReqDto) {
+  async create(@User() user: ILoginUserInfo, @Body() getBody: InquiryCreateReqDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.QNA);
     return this.inquiryService.create(user, getBody);
   }
 
@@ -87,7 +88,8 @@ export class InquiryController {
   // ===================================================
   @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @Post('/inquiry/reply')
-  reply(@User() user: ILoginUserInfo, @Body() getBody: InquiryReplyReqDto) {
+  async reply(@User() user: ILoginUserInfo, @Body() getBody: InquiryReplyReqDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.QNA);
     return this.inquiryService.reply(user, getBody);
   }
 }
