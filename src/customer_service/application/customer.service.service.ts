@@ -1,4 +1,12 @@
-import { BadRequestException, Injectable, InternalServerErrorException, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  InternalServerErrorException,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
+import { RefundPoolService } from '../../wallet/application/refund-pool.service';
+import { OrderPaymentRefundEventType } from '../../entity/order.payment.refund.event.entity';
 import { ConfigService } from '@nestjs/config';
 import { applyReplaceCharacters } from '../../common/utils/replace-characters.util';
 import {
@@ -97,7 +105,22 @@ export class CustomerServiceService {
     @InjectRepository(UserTaskHistoryEntity)
     private readonly userTaskHistoryRepository: Repository<UserTaskHistoryEntity>,
     private readonly dataSource: DataSource,
+    private readonly refundPoolService: RefundPoolService,
   ) {}
+
+  /** PR2 wallet discard hook (legacy 병행 갱신, phase A). 실패 시 legacy 진행. */
+  private async tryWalletDiscardRefund(orderId: number, deliveryIds: number[]): Promise<void> {
+    try {
+      await this.refundPoolService.refund({
+        orderId,
+        eventType: OrderPaymentRefundEventType.DISCARD_REFUND,
+        targetDeliveryIds: deliveryIds,
+        idempotencyKeyPrefix: `discard_refund:${orderId}:${deliveryIds.join(',')}:cs-${Date.now()}`,
+      });
+    } catch (err) {
+      // legacy 흐름 우선. 다음 backfill 에서 정정.
+    }
+  }
 
   /**
    * 폐기 시 정산금액(할인가) 기준으로 예치금/여신 복구.
@@ -124,10 +147,7 @@ export class CustomerServiceService {
     const mapping = orderDelivery.orderProductMapping;
     const order = mapping.order;
 
-    if (
-      orderDelivery.status === IOrderDeliveryStatus.FAIL ||
-      orderDelivery.status === IOrderDeliveryStatus.FAIL_SMS
-    ) {
+    if (orderDelivery.status === IOrderDeliveryStatus.FAIL || orderDelivery.status === IOrderDeliveryStatus.FAIL_SMS) {
       return;
     }
 
@@ -289,7 +309,12 @@ export class CustomerServiceService {
       .leftJoinAndSelect('choiceSelectProduct.partnerCompany', 'choicePartnerCompany')
       .leftJoinAndMapOne('order.user', 'user', 'user', 'user.id = order.user_id AND user.deleted_at IS NULL')
       .leftJoinAndSelect('user.company', 'userCompany')
-      .leftJoinAndMapOne('order.clientUser', 'user', 'clientUser', 'clientUser.id = order.client_user_id AND clientUser.deleted_at IS NULL')
+      .leftJoinAndMapOne(
+        'order.clientUser',
+        'user',
+        'clientUser',
+        'clientUser.id = order.client_user_id AND clientUser.deleted_at IS NULL',
+      )
       .leftJoinAndSelect('clientUser.company', 'clientCompany')
       .andWhere('orderDelivery.status IN (:...deliveryStatus)', { deliveryStatus: ['COMPLETE', 'COMPLETE_SMS'] })
       .andWhere('orderDelivery.deletedAt IS NULL');
@@ -304,10 +329,9 @@ export class CustomerServiceService {
 
     // 고객사 (userCompanyId)
     if (userCompanyId) {
-      queryBuilder.andWhere(
-        '(user.companyId = :userCompanyId OR clientUser.companyId = :userCompanyId)',
-        { userCompanyId },
-      );
+      queryBuilder.andWhere('(user.companyId = :userCompanyId OR clientUser.companyId = :userCompanyId)', {
+        userCompanyId,
+      });
     }
 
     // 통합검색 (주문번호, 상품명, 상품코드, MMS제목, 수신정보를 OR 조건으로 검색)
@@ -375,10 +399,9 @@ export class CustomerServiceService {
 
     // 핀번호 (barCode + personalCode OR 조건 부분검색)
     if (barCode) {
-      queryBuilder.andWhere(
-        '(orderDelivery.barCode LIKE :barCode OR orderDelivery.personalCode LIKE :barCode)',
-        { barCode: `%${barCode}%` },
-      );
+      queryBuilder.andWhere('(orderDelivery.barCode LIKE :barCode OR orderDelivery.personalCode LIKE :barCode)', {
+        barCode: `%${barCode}%`,
+      });
     }
 
     // 날짜 조건을 실제 발송일(actualSendAt) 기준으로 변경
@@ -405,11 +428,15 @@ export class CustomerServiceService {
 
       // deliveryTarget 복호화 및 마스킹 처리
       const decryptedDeliveryTarget = this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.deliveryTarget);
-      const maskedDeliveryTarget = decryptedDeliveryTarget ? MaskingUtil.maskDeliveryTarget(decryptedDeliveryTarget) : null;
+      const maskedDeliveryTarget = decryptedDeliveryTarget
+        ? MaskingUtil.maskDeliveryTarget(decryptedDeliveryTarget)
+        : null;
 
       // emailReceiverPhone 복호화 및 마스킹 처리
       const decryptedEmailReceiverPhone = this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.emailReceiverPhone);
-      const maskedEmailReceiverPhone = decryptedEmailReceiverPhone ? MaskingUtil.maskDeliveryTarget(decryptedEmailReceiverPhone) : null;
+      const maskedEmailReceiverPhone = decryptedEmailReceiverPhone
+        ? MaskingUtil.maskDeliveryTarget(decryptedEmailReceiverPhone)
+        : null;
 
       // 실제 발송 시간 계산 (발송 완료 상태일 때 actualSendAt 사용)
       let actualSendAt: string | null = null;
@@ -425,9 +452,7 @@ export class CustomerServiceService {
       const displayPartnerCompany = orderDelivery.choiceSelectProduct?.partnerCompany ?? product.partnerCompany;
 
       // 유효기간 만료일: 발송 시점에 계산되어 저장된 expireAt 직접 사용
-      const expireAt = orderDelivery.expireAt
-        ? dayjs(orderDelivery.expireAt).format('YYYY-MM-DD')
-        : null;
+      const expireAt = orderDelivery.expireAt ? dayjs(orderDelivery.expireAt).format('YYYY-MM-DD') : null;
 
       // sendRequestAt 포맷팅
       let formattedSendRequestAt = '';
@@ -525,7 +550,9 @@ export class CustomerServiceService {
 
       // emailReceiverPhone 복호화 및 마스킹 처리
       const decryptedEmailReceiverPhone = this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.emailReceiverPhone);
-      const maskedEmailReceiverPhone = decryptedEmailReceiverPhone ? MaskingUtil.maskDeliveryTarget(decryptedEmailReceiverPhone) : null;
+      const maskedEmailReceiverPhone = decryptedEmailReceiverPhone
+        ? MaskingUtil.maskDeliveryTarget(decryptedEmailReceiverPhone)
+        : null;
 
       result.push({
         id: orderDelivery.id,
@@ -625,10 +652,7 @@ export class CustomerServiceService {
     }
 
     // sendContent: order_product_mapping에서 가져오고, 대치문자 처리
-    let sendContent = applyReplaceCharacters(
-      queryBuilder.orderProductMapping.sendContent ?? '',
-      queryBuilder,
-    );
+    const sendContent = applyReplaceCharacters(queryBuilder.orderProductMapping.sendContent ?? '', queryBuilder);
 
     return {
       orderDeliveryId: queryBuilder.id,
@@ -1202,10 +1226,7 @@ export class CustomerServiceService {
           sendMethod = '이메일';
           break;
       }
-    } else if (
-      getBody.type === '수신정보 변경요청' ||
-      getBody.type === '폐기 후 신규 발송'
-    ) {
+    } else if (getBody.type === '수신정보 변경요청' || getBody.type === '폐기 후 신규 발송') {
       sendMethod = displayMethod;
     }
 
@@ -1656,6 +1677,18 @@ export class CustomerServiceService {
     orderDelivery.refundStatus = OrderDeliveryRefundStatusEnum.PROGRESS;
 
     await this.orderDeliveryRepository.save(orderDelivery);
+
+    // PR2 wallet discard hook (legacy 병행 갱신, phase A)
+    const mapping = await this.orderDeliveryRepository
+      .createQueryBuilder('d')
+      .innerJoinAndSelect('d.orderProductMapping', 'm')
+      .innerJoinAndSelect('m.order', 'o')
+      .where('d.id = :id', { id: orderDeliveryId })
+      .getOne();
+    const orderId = mapping?.orderProductMapping?.order?.id;
+    if (orderId) {
+      await this.tryWalletDiscardRefund(orderId, [orderDeliveryId]);
+    }
     return;
   }
 
@@ -1884,7 +1917,12 @@ export class CustomerServiceService {
       .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
       .leftJoinAndMapOne('order.user', 'user', 'user', 'user.id = order.user_id AND user.deleted_at IS NULL')
       .leftJoinAndSelect('user.company', 'userCompany')
-      .leftJoinAndMapOne('order.clientUser', 'user', 'clientUser', 'clientUser.id = order.client_user_id AND clientUser.deleted_at IS NULL')
+      .leftJoinAndMapOne(
+        'order.clientUser',
+        'user',
+        'clientUser',
+        'clientUser.id = order.client_user_id AND clientUser.deleted_at IS NULL',
+      )
       .leftJoinAndSelect('clientUser.company', 'clientCompany')
       .andWhere('orderDelivery.status IN (:...deliveryStatus)', { deliveryStatus: ['COMPLETE', 'COMPLETE_SMS'] })
       .andWhere('orderDelivery.deletedAt IS NULL');
@@ -1904,10 +1942,9 @@ export class CustomerServiceService {
 
     // 고객사 (userCompanyId)
     if (userCompanyId) {
-      queryBuilder.andWhere(
-        '(user.companyId = :userCompanyId OR clientUser.companyId = :userCompanyId)',
-        { userCompanyId },
-      );
+      queryBuilder.andWhere('(user.companyId = :userCompanyId OR clientUser.companyId = :userCompanyId)', {
+        userCompanyId,
+      });
     }
 
     if (orderNumber) {
@@ -1946,10 +1983,9 @@ export class CustomerServiceService {
 
     // 핀번호 (barCode + personalCode OR 조건 부분검색)
     if (barCode) {
-      queryBuilder.andWhere(
-        '(orderDelivery.barCode LIKE :barCode OR orderDelivery.personalCode LIKE :barCode)',
-        { barCode: `%${barCode}%` },
-      );
+      queryBuilder.andWhere('(orderDelivery.barCode LIKE :barCode OR orderDelivery.personalCode LIKE :barCode)', {
+        barCode: `%${barCode}%`,
+      });
     }
 
     // 통합검색 (주문번호, 상품명, 상품코드, MMS제목, 수신정보를 OR 조건으로 검색)
@@ -2111,5 +2147,4 @@ export class CustomerServiceService {
     await workbook.xlsx.write(res);
     res.end();
   }
-
 }

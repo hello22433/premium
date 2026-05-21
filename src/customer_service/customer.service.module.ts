@@ -15,6 +15,7 @@ import { ActivityLogModule } from 'src/activity_log/activity.log.module';
 import { UserEntity } from 'src/entity/user.entity';
 import { UserCompanyEntity } from 'src/entity/user.company.entity';
 import { UserTaskHistoryEntity } from 'src/entity/user.task.history.entity';
+import { WalletModule } from 'src/wallet/wallet.module';
 
 @Module({
   imports: [
@@ -33,6 +34,7 @@ import { UserTaskHistoryEntity } from 'src/entity/user.task.history.entity';
     DeliveryModule,
     SmsModule,
     ActivityLogModule,
+    WalletModule,
   ],
   controllers: [CustomerServiceController],
   providers: [CustomerServiceService],

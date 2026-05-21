@@ -112,7 +112,18 @@ import { IProductType } from '../../product/interface/product.type';
 import { defaultOrderMidImagePath, defaultOrderTopImagePath } from '../../const';
 import { OrderStatusExcelMapping } from '../domain/order.excel.mapping';
 import { OrderFeeCalculator, applyCardSurcharge } from '../domain/order.fee.calculator';
-import { calculateOrderSettlementAmount } from '../../util/settle-fee.util';
+import {
+  calculateMappingSettlementBaseAmount,
+  calculateOrderSettlementAmount,
+  calculateSettlementPrice,
+  getEffectiveFee,
+  getEffectivePriceAdjustment,
+} from '../../util/settle-fee.util';
+import { OrderConfirmationWalletService } from '../../wallet/application/order-confirmation-wallet.service';
+import { PaymentAllocationService, AllocationLineInput } from '../../wallet/application/payment-allocation.service';
+import { WalletAccountResolverService } from '../../wallet/application/wallet-account-resolver.service';
+import { PointPolicyService } from '../../wallet/application/point-policy.service';
+import { PointPolicyEffect } from '../../wallet/interface/point-policy-scope';
 import { OrderCustomerViewDto } from '../api/dto/order.customer.view.dto';
 import { MaskingUtil } from '../../common/utils/masking.util';
 import { resolveExpireDays } from '../../common/utils/expire.util';
@@ -147,8 +158,16 @@ dayjs.extend(timezone);
  * 우선순위: delivery 저장값 → mapping 저장값 → findMatchingDiscount
  */
 function resolveSettleFee(
-  firstDelivery: { settleFee: number | null; settlePriceAdjustment: IPriceAdjustment | null; settleDiscountType: IOrderSettleDiscountType | null },
-  mapping: { fee: number | null; priceAdjustment: IPriceAdjustment | null; settleDiscountType: IOrderSettleDiscountType | null },
+  firstDelivery: {
+    settleFee: number | null;
+    settlePriceAdjustment: IPriceAdjustment | null;
+    settleDiscountType: IOrderSettleDiscountType | null;
+  },
+  mapping: {
+    fee: number | null;
+    priceAdjustment: IPriceAdjustment | null;
+    settleDiscountType: IOrderSettleDiscountType | null;
+  },
   isOrderCompleted: boolean,
   computeMatchingDiscount: () => ReturnType<typeof findMatchingDiscount>,
 ): { fee: number; priceAdjustment: IPriceAdjustment | null; settleDiscountType: IOrderSettleDiscountType | null } {
@@ -224,7 +243,83 @@ export class OrderService {
     private emailSendHistoryRepository: Repository<EmailSendHistoryEntity>,
     @InjectRepository(OrderManualEntryEntity)
     private orderManualEntryRepository: Repository<OrderManualEntryEntity>,
+    private readonly walletResolverService: WalletAccountResolverService,
+    private readonly paymentAllocationService: PaymentAllocationService,
+    private readonly pointPolicyService: PointPolicyService,
+    private readonly orderConfirmationWalletService: OrderConfirmationWalletService,
   ) {}
+
+  /**
+   * PR2 wallet allocation hook (Cross-Cutting Invariants §4 트랜잭션 경계 + §5 카드할증 풀).
+   * 발송확정 legacy 흐름 직후 호출. wallet 통합 실패해도 legacy 흐름은 진행 (phase A 병행 갱신).
+   * PR5 에서 legacy 컬럼 DROP 시 catch 제거.
+   */
+  private async persistWalletAllocationFromOrder(order: OrderEntity, billingUserId: number): Promise<void> {
+    try {
+      const wallet = await this.walletResolverService.resolveByUserId(billingUserId);
+      const lines: AllocationLineInput[] = [];
+      for (const mapping of order.orderProductMappings ?? []) {
+        for (const delivery of mapping.orderDeliveries ?? []) {
+          const fee = getEffectiveFee(delivery, mapping);
+          const priceAdjustment = getEffectivePriceAdjustment(delivery, mapping);
+          const gross = calculateSettlementPrice(mapping, false, delivery);
+          const policyEffect = await this.pointPolicyService.evaluate({
+            companyId: order.userId,
+            scope: {
+              productId: mapping.product?.id ?? null,
+              brandId: mapping.product?.brand?.id ?? null,
+              category: mapping.product?.classification?.name ?? null,
+              partnerCompanyCode: mapping.product?.partnerCompany?.name ?? null,
+              orderType: order.type,
+            },
+          });
+          lines.push({
+            orderProductMappingId: mapping.id,
+            orderDeliveryId: delivery.id,
+            productId: mapping.product?.id ?? null,
+            brandId: mapping.product?.brand?.id ?? null,
+            category: mapping.product?.classification?.name ?? null,
+            partnerCompanyId: mapping.product?.partnerCompany?.id ?? null,
+            orderType: order.type,
+            grossSettlementAmount: gross,
+            appliedFeePercent: fee,
+            appliedPriceAdjustment: (priceAdjustment as 'DISCOUNT' | 'ADDITIONAL' | null) ?? null,
+            pointPolicyEffect: policyEffect === PointPolicyEffect.DENY ? 'DENY' : 'ALLOW',
+          });
+        }
+      }
+      if (lines.length === 0) return;
+
+      const allocation = this.paymentAllocationService.allocate({
+        orderId: order.id,
+        walletAccountId: wallet.id,
+        lines,
+        cardSurchargeApplied: order.cardSurchargeApplied,
+        requestedPointAmount: 0,
+        requestedDepositAmount: order.isSettleBalance ? order.settleAmount : 0,
+        availableDeposit: wallet.depositBalance + (order.isSettleBalance ? order.settleAmount : 0),
+        creditLimit: wallet.creditLimit,
+        creditUsedAmountBefore: wallet.creditUsedAmount,
+        isPrePayment: order.isSettleBalance,
+      });
+
+      const deliveryIds = (order.orderProductMappings ?? []).flatMap((m) => m.orderDeliveries ?? []).map((d) => d.id);
+
+      await this.orderConfirmationWalletService.persistAllocation({
+        orderId: order.id,
+        allocation,
+        pointUsages: [],
+        cardSurchargeAppliedSnapshot: order.cardSurchargeApplied,
+        hasDiscountSnapshot: allocation.hasDiscount,
+        settleMethodSnapshot: order.cardSurchargeApplied ? 'CARD' : 'CASH',
+        deliveryIdsForAttempt: deliveryIds,
+      });
+    } catch (err) {
+      this.logger.warn(
+        `[PR2 phase A] wallet allocation persist failed for orderId=${order.id}: ${(err as Error).message}. legacy flow proceeds.`,
+      );
+    }
+  }
 
   private async getDefaultCardSurchargeApplied(order: OrderEntity): Promise<boolean> {
     const billingUser = await this.userRepository.findOne({
@@ -272,7 +367,8 @@ export class OrderService {
   }
 
   async getList(user: ILoginUserInfo, getQuery: OrderGetListReqDto): Promise<OrderGetListResDto> {
-    const { section, type, status, startAt, endAt, searchType, searchKeyword, page, take, sendingType, dateType } = getQuery;
+    const { section, type, status, startAt, endAt, searchType, searchKeyword, page, take, sendingType, dateType } =
+      getQuery;
 
     let queryBuilder = this.orderRepository
       .createQueryBuilder('order')
@@ -453,17 +549,19 @@ export class OrderService {
       }
 
       // 발송 실패 건 포함 여부 확인
-      const hasFailedDelivery = order.orderProductMappings?.some((mapping) =>
-        mapping.orderDeliveries?.some(
-          (delivery) =>
-            delivery.status === IOrderDeliveryStatus.FAIL || delivery.status === IOrderDeliveryStatus.FAIL_SMS,
-        ),
-      ) ?? false;
+      const hasFailedDelivery =
+        order.orderProductMappings?.some((mapping) =>
+          mapping.orderDeliveries?.some(
+            (delivery) =>
+              delivery.status === IOrderDeliveryStatus.FAIL || delivery.status === IOrderDeliveryStatus.FAIL_SMS,
+          ),
+        ) ?? false;
 
       // 재발송 완료 건 포함 여부 확인
-      const hasResentDelivery = order.orderProductMappings?.some((mapping) =>
-        mapping.orderDeliveries?.some((delivery) => delivery.resendAt != null),
-      ) ?? false;
+      const hasResentDelivery =
+        order.orderProductMappings?.some((mapping) =>
+          mapping.orderDeliveries?.some((delivery) => delivery.resendAt != null),
+        ) ?? false;
 
       // 첫 번째 상품의 발송 정보 사용
       const firstMapping = order.orderProductMappings?.[0];
@@ -542,9 +640,8 @@ export class OrderService {
                 orderProductMapping.product?.expireDay ?? 0,
                 orderProductMapping.product?.partnerCompany?.validityStartsNextDay,
               );
-              const baseDate = orderProductMapping.sendType === 'IMMEDIATE'
-                ? dayjs()
-                : dayjs(orderProductMapping.sendRequestAt);
+              const baseDate =
+                orderProductMapping.sendType === 'IMMEDIATE' ? dayjs() : dayjs(orderProductMapping.sendRequestAt);
               return expireDays ? baseDate.tz('Asia/Seoul').add(expireDays, 'day').format('YYYY. MM. DD') : null;
             })();
 
@@ -680,13 +777,10 @@ export class OrderService {
       const summary = await this.fetchAuditSummary(qr, orderId);
       const dailyStats = await this.fetchAuditDailyStats(qr, orderId);
       const duplicates = await this.fetchAuditDuplicates(qr, orderId);
-      const ssgDuplicates =
-        order.type === IOrderType.SSG ? await this.fetchSsgDuplicates(qr, orderId) : [];
+      const ssgDuplicates = order.type === IOrderType.SSG ? await this.fetchSsgDuplicates(qr, orderId) : [];
 
       const isDuplicateDetected =
-        duplicates.some((d) => !d.isLegitimate) ||
-        dailyStats.some((d) => d.isSuspicious) ||
-        ssgDuplicates.length > 0;
+        duplicates.some((d) => !d.isLegitimate) || dailyStats.some((d) => d.isSuspicious) || ssgDuplicates.length > 0;
 
       return {
         orderId: order.id,
@@ -816,7 +910,9 @@ export class OrderService {
         rowCnt: Number(r.rowCnt ?? 0),
         sentCnt: Number(r.sentCnt ?? 0),
         deliveryIds: this.parseIdList(r.deliveryIds),
-        statuses: String(r.statuses ?? '').split(',').filter((x) => x !== ''),
+        statuses: String(r.statuses ?? '')
+          .split(',')
+          .filter((x) => x !== ''),
         sendTimes: this.parseNullableStringList(r.sendTimes),
         resendTimes: this.parseNullableStringList(r.resendTimes),
         replacedFromIds,
@@ -1246,7 +1342,7 @@ export class OrderService {
     const orderDeliveryList: OrderCompleteReportDeliveryViewDto[] = [];
 
     let price = 0;
-    let vat = 0;
+    const vat = 0;
     let totalAmount = 0;
 
     if (order.orderProductMappings && order.orderProductMappings.length > 0) {
@@ -1654,7 +1750,7 @@ export class OrderService {
 
     const orderDeliveryList: OrderCompleteReportDeliveryViewDto[] = [];
     let price = 0;
-    let vat = 0;
+    const vat = 0;
     let totalAmount = 0;
     // 거래일자: 증빙일자가 있으면 증빙일자 사용
     let sendRequestAt: string | null = evidenceDateParsed ? format(evidenceDateParsed, DateFormatStr) : null;
@@ -1767,7 +1863,9 @@ export class OrderService {
       where: [{ userId: billingUserId }, { partnerCompanyId: In(partnerCompanyIds) }],
     });
 
-    this.logger.debug(`[getOrderSettle] orderId=${id}, billingUserId=${billingUserId} (clientUserId=${order.clientUserId}, userId=${order.userId})`);
+    this.logger.debug(
+      `[getOrderSettle] orderId=${id}, billingUserId=${billingUserId} (clientUserId=${order.clientUserId}, userId=${order.userId})`,
+    );
     this.logger.debug(`[getOrderSettle] partnerCompanyIds=${JSON.stringify(partnerCompanyIds)}`);
     this.logger.debug(`[getOrderSettle] userDiscounts count=${userDiscounts.length}`);
     userDiscounts.forEach((d) => {
@@ -1839,26 +1937,39 @@ export class OrderService {
         }
 
         // 할인율별 그룹핑
-        const discountGroups = new Map<string, {
-          fee: number;
-          priceAdjustment: IPriceAdjustment | null;
-          settleDiscountType: IOrderSettleDiscountType | null;
-          deliveryIds: number[];
-          count: number;
-        }>();
+        const discountGroups = new Map<
+          string,
+          {
+            fee: number;
+            priceAdjustment: IPriceAdjustment | null;
+            settleDiscountType: IOrderSettleDiscountType | null;
+            deliveryIds: number[];
+            count: number;
+          }
+        >();
 
         for (const [phoneKey, deliveries] of targetGroups) {
           const totalAmount = phoneToTotalAmount.get(phoneKey) ?? productPrice * deliveries.length;
 
           const resolved = resolveSettleFee(
             deliveries[0],
-            { fee: orderProduct.fee, priceAdjustment: orderProduct.priceAdjustment, settleDiscountType: orderProduct.settleDiscountType ?? null },
+            {
+              fee: orderProduct.fee,
+              priceAdjustment: orderProduct.priceAdjustment,
+              settleDiscountType: orderProduct.settleDiscountType ?? null,
+            },
             isOrderCompleted,
-            () => findMatchingDiscount(
-              { price: productPrice, category: product.category, classificationId: product.classificationId, brand: product.brand },
-              userDiscounts,
-              totalAmount,
-            ),
+            () =>
+              findMatchingDiscount(
+                {
+                  price: productPrice,
+                  category: product.category,
+                  classificationId: product.classificationId,
+                  brand: product.brand,
+                },
+                userDiscounts,
+                totalAmount,
+              ),
           );
           let { fee } = resolved;
           const { priceAdjustment, settleDiscountType } = resolved;
@@ -1916,26 +2027,33 @@ export class OrderService {
       }
 
       // Phase 3b: 크로스 상품 수신번호 — 합산 행 (상품명 결합 표시)
-      const mergedGroups = new Map<string, {
-        name: string;
-        brandName: string | null;
-        combinedPrice: number;
-        discountCombinedPrice: number;
-        fee: number;
-        priceAdjustment: IPriceAdjustment | null;
-        settleDiscountType: IOrderSettleDiscountType | null;
-        deliveryIds: number[];
-        phoneCount: number;
-        deliveryCount: number;
-        refund: number | null;
-        orderProductId: number;
-      }>();
+      const mergedGroups = new Map<
+        string,
+        {
+          name: string;
+          brandName: string | null;
+          combinedPrice: number;
+          discountCombinedPrice: number;
+          fee: number;
+          priceAdjustment: IPriceAdjustment | null;
+          settleDiscountType: IOrderSettleDiscountType | null;
+          deliveryIds: number[];
+          phoneCount: number;
+          deliveryCount: number;
+          refund: number | null;
+          orderProductId: number;
+        }
+      >();
 
       for (const phoneKey of multiProductPhones) {
         const totalAmount = phoneToTotalAmount.get(phoneKey) ?? 0;
 
         // 이 번호로 가는 모든 delivery 수집
-        const phoneItems: Array<{ orderProduct: typeof orderProductList[0]; deliveryId: number; delivery: typeof orderProductList[0]['orderDeliveries'][0] }> = [];
+        const phoneItems: Array<{
+          orderProduct: (typeof orderProductList)[0];
+          deliveryId: number;
+          delivery: (typeof orderProductList)[0]['orderDeliveries'][0];
+        }> = [];
         for (const orderProduct of orderProductList) {
           for (const delivery of orderProduct.orderDeliveries ?? []) {
             if (deliveryPhoneKeyCache.get(delivery.id) === phoneKey) {
@@ -1958,13 +2076,23 @@ export class OrderService {
           const product = orderProduct.product;
           const resolved = resolveSettleFee(
             delivery,
-            { fee: orderProduct.fee, priceAdjustment: orderProduct.priceAdjustment, settleDiscountType: orderProduct.settleDiscountType ?? null },
+            {
+              fee: orderProduct.fee,
+              priceAdjustment: orderProduct.priceAdjustment,
+              settleDiscountType: orderProduct.settleDiscountType ?? null,
+            },
             isOrderCompleted,
-            () => findMatchingDiscount(
-              { price: product.price, category: product.category, classificationId: product.classificationId, brand: product.brand },
-              userDiscounts,
-              totalAmount,
-            ),
+            () =>
+              findMatchingDiscount(
+                {
+                  price: product.price,
+                  category: product.category,
+                  classificationId: product.classificationId,
+                  brand: product.brand,
+                },
+                userDiscounts,
+                totalAmount,
+              ),
           );
           let { fee } = resolved;
           if (fee < 0 || fee > 100) fee = 0;
@@ -1982,16 +2110,20 @@ export class OrderService {
         });
 
         const settleSig = itemSettles
-          .map((item) => `${item.orderProductId}:${item.fee}:${item.priceAdjustment ?? ''}:${item.settleDiscountType ?? ''}`)
+          .map(
+            (item) =>
+              `${item.orderProductId}:${item.fee}:${item.priceAdjustment ?? ''}:${item.settleDiscountType ?? ''}`,
+          )
           .sort()
           .join('|');
         const groupKey = `${sig}-${settleSig}`;
 
         const firstSettle = itemSettles[0];
-        const hasSameSettle = itemSettles.every((item) =>
-          item.fee === firstSettle.fee &&
-          item.priceAdjustment === firstSettle.priceAdjustment &&
-          item.settleDiscountType === firstSettle.settleDiscountType,
+        const hasSameSettle = itemSettles.every(
+          (item) =>
+            item.fee === firstSettle.fee &&
+            item.priceAdjustment === firstSettle.priceAdjustment &&
+            item.settleDiscountType === firstSettle.settleDiscountType,
         );
         const fee = hasSameSettle ? firstSettle.fee : 0;
         const priceAdjustment = hasSameSettle ? firstSettle.priceAdjustment : null;
@@ -2013,10 +2145,14 @@ export class OrderService {
           const lastSpace = prefix.lastIndexOf(' ');
           if (lastSpace > 0) prefix = prefix.slice(0, lastSpace + 1);
           else prefix = '';
-          const mergedName = prefix + sortedProducts.map(([, v]) => {
-            const suffix = v.name.slice(prefix.length);
-            return `${suffix}×${v.count}`;
-          }).join(' + ');
+          const mergedName =
+            prefix +
+            sortedProducts
+              .map(([, v]) => {
+                const suffix = v.name.slice(prefix.length);
+                return `${suffix}×${v.count}`;
+              })
+              .join(' + ');
 
           mergedGroups.set(groupKey, {
             name: mergedName,
@@ -2221,7 +2357,9 @@ export class OrderService {
         }
 
         if (settle.refund !== undefined) {
-          refundPromises.push(this.orderDeliveryRepository.update({ id: In(settle.deliveryIds) }, { refundRatio: settle.refund }));
+          refundPromises.push(
+            this.orderDeliveryRepository.update({ id: In(settle.deliveryIds) }, { refundRatio: settle.refund }),
+          );
           for (const deliveryId of settle.deliveryIds) {
             const delivery = mappingDeliveryById.get(deliveryId);
             if (delivery) delivery.refundRatio = settle.refund;
@@ -2449,7 +2587,8 @@ export class OrderService {
 
     const order = existingOrderProducts[0].order;
     const defaultCardSurchargeApplied = await this.getDefaultCardSurchargeApplied(order);
-    const cardSurchargeApplied = getBody.cardSurchargeApplied ?? order.cardSurchargeApplied ?? defaultCardSurchargeApplied;
+    const cardSurchargeApplied =
+      getBody.cardSurchargeApplied ?? order.cardSurchargeApplied ?? defaultCardSurchargeApplied;
     const newSettleAmount = calculateOrderSettlementAmount(
       { cardSurchargeApplied, orderProductMappings: allOrderProducts },
       cardSurchargeApplied,
@@ -2510,7 +2649,7 @@ export class OrderService {
       throw new BadRequestException('사용자 정보를 찾을 수 없습니다.');
     }
     const allowedMethods = userEntity.allowedSendMethods
-      ? userEntity.allowedSendMethods.split(',').map(m => m === 'SMS' ? 'MMS' : m)
+      ? userEntity.allowedSendMethods.split(',').map((m) => (m === 'SMS' ? 'MMS' : m))
       : ['ALIM_TALK', 'MMS', 'EMAIL'];
 
     for (const product of orderProductList) {
@@ -2528,8 +2667,7 @@ export class OrderService {
     const clientUserId = getBody.clientUserId ?? null;
     await this.validateSendMethods(clientUserId, user.id, orderProductList);
 
-    const ssgReservationRange =
-      type === IOrderType.SSG ? await this.ssgEventService.getReservationRange() : null;
+    const ssgReservationRange = type === IOrderType.SSG ? await this.ssgEventService.getReservationRange() : null;
     validateSsgReservationWindow(type, orderProductList, ssgReservationRange);
 
     const productIdList = orderProductList.map((product) => product.productId);
@@ -2719,8 +2857,7 @@ export class OrderService {
     const clientUserId = getBody.clientUserId ?? null;
     await this.validateSendMethods(clientUserId, user.id, orderProductList);
 
-    const ssgReservationRange =
-      order.type === IOrderType.SSG ? await this.ssgEventService.getReservationRange() : null;
+    const ssgReservationRange = order.type === IOrderType.SSG ? await this.ssgEventService.getReservationRange() : null;
     validateSsgReservationWindow(order.type, orderProductList, ssgReservationRange);
 
     const productIdList = orderProductList.map((orderProduct) => orderProduct.productId);
@@ -2961,8 +3098,7 @@ export class OrderService {
       }
     }
 
-    const ssgReservationRange =
-      order.type === IOrderType.SSG ? await this.ssgEventService.getReservationRange() : null;
+    const ssgReservationRange = order.type === IOrderType.SSG ? await this.ssgEventService.getReservationRange() : null;
     validateSsgReservationWindow(order.type, order.orderProductMappings!, ssgReservationRange);
 
     OrderValidation(order);
@@ -2992,9 +3128,7 @@ export class OrderService {
 
     // 과금 모드 결정 (두 블록에서 공통 사용)
     const isCompanyBalanceMode = oneUser.company?.balanceManagementType === 'COMPANY';
-    const effectiveBalance = isCompanyBalanceMode && oneUser.company
-      ? oneUser.company.balance
-      : oneUser.balance;
+    const effectiveBalance = isCompanyBalanceMode && oneUser.company ? oneUser.company.balance : oneUser.balance;
 
     if (!order.isNewBillingFlow) {
       // === 기존 흐름: 발송요청 시 잔액/한도 체크 ===
@@ -3354,9 +3488,7 @@ export class OrderService {
       // === 새 흐름: 발송확정 시 전액 차감 ===
 
       // 1. effectiveBalance 결정
-      const effectiveBalance = isCompanyBalanceMode && oneUser.company
-        ? oneUser.company.balance
-        : oneUser.balance;
+      const effectiveBalance = isCompanyBalanceMode && oneUser.company ? oneUser.company.balance : oneUser.balance;
 
       // 2. 잔여한도 계산
       let remainServiceAmount: number;
@@ -3415,10 +3547,7 @@ export class OrderService {
         { balance: oneUser.balance, allSettleAmount: oneUser.allSettleAmount },
       );
       if (isCompanyBalanceMode && oneUser.company) {
-        await this.userCompanyRepository.update(
-          { id: oneUser.company.id },
-          { balance: oneUser.company.balance },
-        );
+        await this.userCompanyRepository.update({ id: oneUser.company.id }, { balance: oneUser.company.balance });
       }
     } else {
       // === 기존 흐름: 차액 조정 ===
@@ -3486,9 +3615,7 @@ export class OrderService {
             if (remainingLimit >= netDelta) {
               oneUser.allSettleAmount += netDelta;
               message = 'warning: 정산 차액(할증/카드할증)이 추가되었습니다.';
-              this.logger.debug(
-                `정산 차액 차감 (한도): orderId=${order.id}, 추가액=${netDelta} (${deltaBreakdown})`,
-              );
+              this.logger.debug(`정산 차액 차감 (한도): orderId=${order.id}, 추가액=${netDelta} (${deltaBreakdown})`);
             } else if (currentBalance >= netDelta - remainingLimit) {
               const neededFromBalance = netDelta - remainingLimit;
               oneUser.allSettleAmount = companyMaxLimit;
@@ -3510,10 +3637,7 @@ export class OrderService {
           { balance: oneUser.balance, allSettleAmount: oneUser.allSettleAmount },
         );
         if (isCompanyBalanceMode && oneUser.company) {
-          await this.userCompanyRepository.update(
-            { id: oneUser.company.id },
-            { balance: oneUser.company.balance },
-          );
+          await this.userCompanyRepository.update({ id: oneUser.company.id }, { balance: oneUser.company.balance });
         }
       }
 
@@ -3533,6 +3657,9 @@ export class OrderService {
 
     order.status = IOrderStatus.DELIVERY_CONFIRMED;
     await this.orderRepository.save(order);
+
+    // PR2 wallet allocation hook (legacy 병행 갱신, phase A)
+    await this.persistWalletAllocationFromOrder(order, billingUserId);
 
     return { message: message };
   }
@@ -3775,7 +3902,19 @@ export class OrderService {
 
   async excelDownload(user: ILoginUserInfo, getBody: OrderExcelDownloadReqBodyDto) {
     const startTime = Date.now();
-    const { searchType, searchKeyword, type, status, startAt, endAt, section, password, downloadReason, sendingType, dateType } = getBody;
+    const {
+      searchType,
+      searchKeyword,
+      type,
+      status,
+      startAt,
+      endAt,
+      section,
+      password,
+      downloadReason,
+      sendingType,
+      dateType,
+    } = getBody;
 
     // 비밀번호 검증
     await this.activityLogService.verifyPassword(user.id, password);
@@ -4262,7 +4401,11 @@ export class OrderService {
     }
 
     // 발송 확정 이후에는 설정 불가 (API에 이미 전달된 duration 변경 방지)
-    const blockedStatuses = [IOrderStatus.DELIVERY_CONFIRMED, IOrderStatus.DELIVERY_COMPLETE, IOrderStatus.DELIVERY_CANCEL];
+    const blockedStatuses = [
+      IOrderStatus.DELIVERY_CONFIRMED,
+      IOrderStatus.DELIVERY_COMPLETE,
+      IOrderStatus.DELIVERY_CANCEL,
+    ];
     if (blockedStatuses.includes(orderProductMapping.order.status)) {
       throw new BadRequestException('발송 확정 이후에는 유효기간을 변경할 수 없습니다.');
     }
@@ -4546,10 +4689,9 @@ export class OrderService {
     }
 
     if (user.authority === IUserAuthority.OPERATION_ADMIN) {
-      queryBuilder.andWhere(
-        '(order.clientUserId IS NULL OR order.operationUserId = :currentUserId)',
-        { currentUserId: user.id },
-      );
+      queryBuilder.andWhere('(order.clientUserId IS NULL OR order.operationUserId = :currentUserId)', {
+        currentUserId: user.id,
+      });
       this.applySendingTypeFilter(queryBuilder, sendingType);
       return;
     }

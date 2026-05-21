@@ -25,6 +25,7 @@ import { SsgEventModule } from '../ssg_event/ssg.event.module';
 import { DeliveryModule } from '../delivery/delivery.module';
 import { ProductModule } from '../product/product.module';
 import { CryptoCipher } from '../common/infra/crypto.cipher';
+import { WalletModule } from '../wallet/wallet.module';
 
 @Module({
   imports: [
@@ -41,14 +42,17 @@ import { CryptoCipher } from '../common/infra/crypto.cipher';
       ExternalApiAllowedIpEntity,
       UserDiscountEntity,
     ]),
-    ThrottlerModule.forRoot([{
-      ttl: 60000,   // 1분
-      limit: 60,    // API Key당 분당 60회
-    }]),
+    ThrottlerModule.forRoot([
+      {
+        ttl: 60000, // 1분
+        limit: 60, // API Key당 분당 60회
+      },
+    ]),
     PartnerCompanyExternModule,
     SsgEventModule,
     DeliveryModule,
     ProductModule,
+    WalletModule,
   ],
   controllers: [ExternalApiController],
   providers: [ExternalApiService, ApiKeyGuard, ExternalApiThrottleGuard, IdempotencyInterceptor, CryptoCipher],

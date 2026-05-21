@@ -26,6 +26,7 @@ import { SsgIssueLogEntity } from '../entity/ssg.issue.log.entity';
 import { PartnerCompanyExternModule } from '../partner_company_extern/partner.company.extern.module';
 import { SsgEventModule } from '../ssg_event/ssg.event.module';
 import { UserManagementModule } from '../user_management/user.management.module';
+import { WalletModule } from '../wallet/wallet.module';
 
 @Module({
   imports: [
@@ -50,6 +51,7 @@ import { UserManagementModule } from '../user_management/user.management.module'
     SsgEventModule,
     UserManagementModule,
     SsgInsertStateModule,
+    WalletModule,
   ],
   providers: [
     {

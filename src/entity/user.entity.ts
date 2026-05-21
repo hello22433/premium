@@ -26,6 +26,14 @@ export class UserEntity extends BaseEntity {
   @JoinColumn({ name: 'company_id' })
   company: UserCompanyEntity;
 
+  @Column({
+    type: 'varchar',
+    length: 50,
+    default: '',
+    comment: 'wallet_account.owner_id 매핑 키 (default: company-{companyId})',
+  })
+  settlementCode: string;
+
   @Column({ type: 'int', nullable: true, comment: 'FK) department.id' })
   departmentId: number | null;
 
@@ -121,7 +129,11 @@ export class UserEntity extends BaseEntity {
   @Column({ type: 'varchar', length: 100, comment: '카드 번호' })
   cardNumber: string;
 
-  @Column({ default: 0, comment: '잔액' })
+  /**
+   * @deprecated PR1+ wallet_account.deposit_balance 사용. PR5에서 DROP 예정.
+   * 신규 코드에서는 WalletAccountResolverService로 settlement_code 단위 잔액을 조회한다.
+   */
+  @Column({ default: 0, comment: '잔액 (DEPRECATED — wallet_account.deposit_balance 사용)' })
   balance: number;
 
   @Column({ type: 'varchar', length: 100, default: 'S+', comment: '고객사등급' })
@@ -152,7 +164,13 @@ export class UserEntity extends BaseEntity {
    * @deprecated external_api_account 테이블로 이관됨. 안정화 후 별도 마이그레이션에서 DROP 예정.
    * 신규 코드에서는 ExternalApiAccountEntity.apiKeyHash를 사용한다.
    */
-  @Column({ type: 'varchar', length: 64, nullable: true, unique: true, comment: '외부 API 키 (SHA-256 해시) - DEPRECATED' })
+  @Column({
+    type: 'varchar',
+    length: 64,
+    nullable: true,
+    unique: true,
+    comment: '외부 API 키 (SHA-256 해시) - DEPRECATED',
+  })
   apiKeyHash: string | null;
 
   @Column({

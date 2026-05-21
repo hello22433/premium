@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { WalletAccountResolverService } from '../../wallet/application/wallet-account-resolver.service';
 import { DataSource, Like, Repository } from 'typeorm';
 import { Transactional } from 'typeorm-transactional';
 import dayjs from 'dayjs';
@@ -93,7 +94,23 @@ export class ExternalApiService {
     private refundLedgerService: RefundLedgerService,
     private productService: ProductService,
     private ssgRefundResolverService: SsgRefundResolverService,
+    private readonly walletResolverService: WalletAccountResolverService,
   ) {}
+
+  /** PR5 wallet allocation snapshot read (legacy isSettleBalance 병행). 실패 시 legacy 값 반환. */
+  private async resolvePayableResource(userId: number): Promise<'DEPOSIT' | 'CREDIT' | 'MIXED' | null> {
+    try {
+      const wallet = await this.walletResolverService.resolveByUserId(userId);
+      const hasDeposit = wallet.depositBalance > 0;
+      const hasCredit = wallet.creditUsedAmount > 0 || wallet.creditExcessAmount > 0;
+      if (hasDeposit && hasCredit) return 'MIXED';
+      if (hasDeposit) return 'DEPOSIT';
+      if (hasCredit) return 'CREDIT';
+      return null;
+    } catch {
+      return null;
+    }
+  }
 
   // ─── 잔액 헬퍼 ──────────────────────────────────────────
   // 잔액 차감 위치는 user.company.balanceManagementType으로 분기.
@@ -104,14 +121,16 @@ export class ExternalApiService {
     const user = account.user;
     const isCompany = user.company?.balanceManagementType === 'COMPANY';
     const result = isCompany
-      ? await this.dataSource.query(
-          'UPDATE user_company SET balance = balance - ? WHERE id = ? AND balance >= ?',
-          [price, user.companyId, price],
-        )
-      : await this.dataSource.query(
-          'UPDATE user SET balance = balance - ? WHERE id = ? AND balance >= ?',
-          [price, user.id, price],
-        );
+      ? await this.dataSource.query('UPDATE user_company SET balance = balance - ? WHERE id = ? AND balance >= ?', [
+          price,
+          user.companyId,
+          price,
+        ])
+      : await this.dataSource.query('UPDATE user SET balance = balance - ? WHERE id = ? AND balance >= ?', [
+          price,
+          user.id,
+          price,
+        ]);
     if (result.affectedRows === 0) {
       throw new ExternalApiException('3002', '잔액 부족');
     }
@@ -121,7 +140,10 @@ export class ExternalApiService {
     const user = account.user;
     const isCompany = user.company?.balanceManagementType === 'COMPANY';
     if (isCompany) {
-      await this.dataSource.query('UPDATE user_company SET balance = balance + ? WHERE id = ?', [price, user.companyId]);
+      await this.dataSource.query('UPDATE user_company SET balance = balance + ? WHERE id = ?', [
+        price,
+        user.companyId,
+      ]);
     } else {
       await this.dataSource.query('UPDATE user SET balance = balance + ? WHERE id = ?', [price, user.id]);
     }
@@ -136,9 +158,7 @@ export class ExternalApiService {
   private resolveCardSurchargeApplied(account: ExternalApiAccountEntity): boolean {
     const user = account.user;
     const isCompanyMode = user.company?.balanceManagementType === 'COMPANY';
-    const settleMethod = isCompanyMode
-      ? user.company?.settleMethod
-      : user.settleMethod;
+    const settleMethod = isCompanyMode ? user.company?.settleMethod : user.settleMethod;
     return settleMethod === IUserSettleMethod.CARD;
   }
 
@@ -152,9 +172,7 @@ export class ExternalApiService {
     settleAmount: number;
     cardSurchargeApplied: boolean;
   }> {
-    const where: Array<{ userId?: number; partnerCompanyId?: number }> = [
-      { userId: account.user.id },
-    ];
+    const where: Array<{ userId?: number; partnerCompanyId?: number }> = [{ userId: account.user.id }];
     if (product.partnerCompanyId != null) {
       where.push({ partnerCompanyId: product.partnerCompanyId });
     }
@@ -203,9 +221,7 @@ export class ExternalApiService {
 
   // ─── 발송 헬퍼 ──────────────────────────────────────────
 
-  private async dispatchSend(
-    orderDelivery: OrderDeliveryEntity,
-  ): Promise<DeliverySendHistoryEntity> {
+  private async dispatchSend(orderDelivery: OrderDeliveryEntity): Promise<DeliverySendHistoryEntity> {
     const mapping = orderDelivery.orderProductMapping;
     const product = mapping.product;
 
@@ -214,9 +230,10 @@ export class ExternalApiService {
 
     const body = applyReplaceCharacters(mapping.sendContent || '', orderDelivery);
     const memoRaw = product.memo;
-    const memo = memoRaw && orderDelivery.deliveryMethod !== IOrderSendMethod.EMAIL && mapping.order?.type !== IOrderType.SSG
-      ? applyReplaceCharacters(memoRaw, orderDelivery)
-      : null;
+    const memo =
+      memoRaw && orderDelivery.deliveryMethod !== IOrderSendMethod.EMAIL && mapping.order?.type !== IOrderType.SSG
+        ? applyReplaceCharacters(memoRaw, orderDelivery)
+        : null;
     const tailRaw = mapping.sendTailText;
     const tailText = tailRaw ? applyReplaceCharacters(tailRaw, orderDelivery) : null;
 
@@ -236,16 +253,37 @@ export class ExternalApiService {
 
     if (orderDelivery.deliveryMethod === IOrderSendMethod.ALIM_TALK) {
       await this.deliverySendService.sendAlimTalk(
-        orderDelivery, decryptedTarget, encryptKey, title, body, memo, tailText, filePathList, deliveryHistory,
+        orderDelivery,
+        decryptedTarget,
+        encryptKey,
+        title,
+        body,
+        memo,
+        tailText,
+        filePathList,
+        deliveryHistory,
       );
     } else if (orderDelivery.deliveryMethod === IOrderSendMethod.MMS) {
       await this.deliverySendService.sendSms(
-        orderDelivery, decryptedTarget, encryptKey, title, body, memo, tailText, filePathList, deliveryHistory,
+        orderDelivery,
+        decryptedTarget,
+        encryptKey,
+        title,
+        body,
+        memo,
+        tailText,
+        filePathList,
+        deliveryHistory,
       );
     } else if (orderDelivery.deliveryMethod === IOrderSendMethod.EMAIL) {
       const emailText = tailText ? `${body}\n\n${tailText}` : body;
       await this.deliverySendService.sendEmail(
-        orderDelivery, decryptedTarget, encryptKey, title, emailText, deliveryHistory,
+        orderDelivery,
+        decryptedTarget,
+        encryptKey,
+        title,
+        emailText,
+        deliveryHistory,
       );
     }
 
@@ -262,7 +300,10 @@ export class ExternalApiService {
 
   // ─── 상품 조회 ──────────────────────────────────────────
 
-  async getProducts(account: ExternalApiAccountEntity, productCode?: string): Promise<ExternalApiResponse<ProductResponseData[]>> {
+  async getProducts(
+    account: ExternalApiAccountEntity,
+    productCode?: string,
+  ): Promise<ExternalApiResponse<ProductResponseData[]>> {
     const user = account.user;
     const isSuperAdmin = user.authority === IUserAuthority.SUPER_ADMIN;
 
@@ -312,7 +353,10 @@ export class ExternalApiService {
 
   // ─── 주문 생성 (3-phase) ────────────────────────────────
 
-  async createOrder(account: ExternalApiAccountEntity, dto: CreateExternalOrderDto): Promise<ExternalApiResponse<OrderResponseData>> {
+  async createOrder(
+    account: ExternalApiAccountEntity,
+    dto: CreateExternalOrderDto,
+  ): Promise<ExternalApiResponse<OrderResponseData>> {
     const { order, orderDelivery, product } = await this.phaseA_createAndDeduct(account, dto);
 
     const externalTrId = orderDelivery.externalTrId!;
@@ -367,8 +411,11 @@ export class ExternalApiService {
     }
 
     const sendAmount = product.price;
-    const { fee, priceAdjustment, settleAmount, cardSurchargeApplied } =
-      await this.computeSettlement(account, product, sendAmount);
+    const { fee, priceAdjustment, settleAmount, cardSurchargeApplied } = await this.computeSettlement(
+      account,
+      product,
+      sendAmount,
+    );
 
     await this.deductBalance(account, settleAmount);
 
@@ -432,10 +479,7 @@ export class ExternalApiService {
 
   // ─── Phase B: 쿠폰 발행 + 발송 (트랜잭션 없음) ──────────
 
-  private async phaseB_issueAndSend(
-    orderDelivery: OrderDeliveryEntity,
-    ssgEvent: SsgEventEntity | null = null,
-  ) {
+  private async phaseB_issueAndSend(orderDelivery: OrderDeliveryEntity, ssgEvent: SsgEventEntity | null = null) {
     const mapping = orderDelivery.orderProductMapping;
     const product = mapping.product;
 
@@ -453,9 +497,7 @@ export class ExternalApiService {
     }
 
     if (orderDelivery.barCode) {
-      const expireDate = orderDelivery.expireAt
-        ? dayjs(orderDelivery.expireAt).format('YYYY. MM. DD')
-        : null;
+      const expireDate = orderDelivery.expireAt ? dayjs(orderDelivery.expireAt).format('YYYY. MM. DD') : null;
       const { path } = await DeliveryCreateCouponImage(
         product.imagePath,
         product.name,
@@ -549,7 +591,10 @@ export class ExternalApiService {
 
   // ─── 주문 상태 조회 ─────────────────────────────────────
 
-  async getOrderStatus(account: ExternalApiAccountEntity, trId: string): Promise<ExternalApiResponse<OrderStatusResponseData>> {
+  async getOrderStatus(
+    account: ExternalApiAccountEntity,
+    trId: string,
+  ): Promise<ExternalApiResponse<OrderStatusResponseData>> {
     const orderDelivery = await this.findOrderDeliveryByTrId(account, trId);
     const mapping = orderDelivery.orderProductMapping;
     const product = mapping?.product;
@@ -571,7 +616,10 @@ export class ExternalApiService {
 
   // ─── SSG 주문 상태 조회 ─────────────────────────────────
 
-  async getSsgOrderStatus(account: ExternalApiAccountEntity, trId: string): Promise<ExternalApiResponse<SsgOrderStatusResponseData>> {
+  async getSsgOrderStatus(
+    account: ExternalApiAccountEntity,
+    trId: string,
+  ): Promise<ExternalApiResponse<SsgOrderStatusResponseData>> {
     const orderDelivery = await this.findOrderDeliveryByTrId(account, trId);
     const order = orderDelivery.orderProductMapping?.order;
     const price = order?.sendAmount ?? 0;
@@ -677,10 +725,7 @@ export class ExternalApiService {
 
     const max = this.resolveResendMax(account);
     if (orderDelivery.resendCount >= max) {
-      throw new ExternalApiException(
-        '3008',
-        `재발송 횟수 초과 (${orderDelivery.resendCount}/${max})`,
-      );
+      throw new ExternalApiException('3008', `재발송 횟수 초과 (${orderDelivery.resendCount}/${max})`);
     }
 
     const history = await this.dispatchSend(orderDelivery);
@@ -697,7 +742,10 @@ export class ExternalApiService {
 
   // ─── SSG 주문 생성 ──────────────────────────────────────
 
-  async createSsgOrder(account: ExternalApiAccountEntity, dto: CreateExternalSsgOrderDto): Promise<ExternalApiResponse<SsgOrderResponseData>> {
+  async createSsgOrder(
+    account: ExternalApiAccountEntity,
+    dto: CreateExternalSsgOrderDto,
+  ): Promise<ExternalApiResponse<SsgOrderResponseData>> {
     if (!account.ssgEnabled) {
       throw new ExternalApiException('1005', 'SSG 미승인 계정');
     }
@@ -736,11 +784,9 @@ export class ExternalApiService {
 
     // 요청 금액과 일치하는 SSG 상품을 확정(없으면 템플릿으로 생성).
     // 내부 admin /order/ssg 흐름과 동일한 resolver를 사용해 sendAmount === product.price 보장.
-    const product = await this.productService
-      .findOrCreateSsgProductByPrice(sendAmount)
-      .catch(() => {
-        throw new ExternalApiException('3001', 'SSG 상품 없음');
-      });
+    const product = await this.productService.findOrCreateSsgProductByPrice(sendAmount).catch(() => {
+      throw new ExternalApiException('3001', 'SSG 상품 없음');
+    });
 
     const prevOrder = await this.orderRepository.findOne({
       where: { code: Like(`${OrderPrefixCode}%`) },
@@ -754,8 +800,11 @@ export class ExternalApiService {
       throw new ExternalApiException('3002', 'SSG 이벤트 잔액 부족');
     }
 
-    const { fee, priceAdjustment, settleAmount, cardSurchargeApplied } =
-      await this.computeSettlement(account, product, sendAmount);
+    const { fee, priceAdjustment, settleAmount, cardSurchargeApplied } = await this.computeSettlement(
+      account,
+      product,
+      sendAmount,
+    );
 
     await this.deductBalance(account, settleAmount);
 
@@ -829,9 +878,7 @@ export class ExternalApiService {
    * (REFUND_CANCEL은 고객사의 고객과 자사 간 정산 결과로, 고객사 입장에서는 발행된 쿠폰으로 본다.)
    */
   private toExternalCouponStatus(status: OrderDeliveryCouponStatus): ExternalCouponStatus {
-    return status === OrderDeliveryCouponStatus.CANCEL
-      ? ExternalCouponStatus.DISCARDED
-      : ExternalCouponStatus.ISSUED;
+    return status === OrderDeliveryCouponStatus.CANCEL ? ExternalCouponStatus.DISCARDED : ExternalCouponStatus.ISSUED;
   }
 
   /**
@@ -881,10 +928,7 @@ export class ExternalApiService {
   /**
    * transactionId + externalTrId(ULID) 한 번에 저장. ULID unique 제약 위반 시 재생성 후 retry.
    */
-  private async saveTransactionIds(
-    orderDeliveryId: number,
-    transactionId: string,
-  ): Promise<string> {
+  private async saveTransactionIds(orderDeliveryId: number, transactionId: string): Promise<string> {
     for (let attempt = 0; attempt < 3; attempt++) {
       const externalTrId = ulid();
       try {

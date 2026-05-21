@@ -26,6 +26,7 @@ import { SsgEventModule } from '../ssg_event/ssg.event.module';
 import { DeliveryModule } from '../delivery/delivery.module';
 import { ActivityLogModule } from '../activity_log/activity.log.module';
 import { MailModule } from '../mail/mail.module';
+import { WalletModule } from '../wallet/wallet.module';
 
 @Module({
   imports: [
@@ -54,6 +55,7 @@ import { MailModule } from '../mail/mail.module';
     DeliveryModule,
     ActivityLogModule,
     MailModule,
+    WalletModule,
   ],
   controllers: [OrderController],
   providers: [OrderService, EarlyDestroyService],
