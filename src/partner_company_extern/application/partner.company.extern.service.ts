@@ -12,6 +12,7 @@ import { IGiftiel } from '../interface/giftiel';
 import { IGiftiShow } from '../interface/giftishow';
 import { IDaou } from '../interface/daou';
 import { PartnerCompanyExternHistoryEntity } from '../../entity/partner.company.extern.history.entity';
+import { GalaxiaBarcodeLogEntity } from '../../entity/galaxia.barcode.log.entity';
 import { GiftielExchangeHistoryEntity } from '../../entity/giftiel.exchange.history.entity';
 import { ISsgCheckOut, ISsgIssue } from '../interface/ssg.issue';
 import {
@@ -68,6 +69,8 @@ export class PartnerCompanyExternService {
     private ssgIssueLogRepository: Repository<SsgIssueLogEntity>,
     @InjectRepository(GiftielExchangeHistoryEntity)
     private giftielExchangeHistoryRepository: Repository<GiftielExchangeHistoryEntity>,
+    @InjectRepository(GalaxiaBarcodeLogEntity)
+    private galaxiaBarcodeLogRepository: Repository<GalaxiaBarcodeLogEntity>,
     private cryptoCipher: CryptoCipher,
     private ssgInsertStateService: SsgInsertStateService,
   ) {}
@@ -801,7 +804,20 @@ export class PartnerCompanyExternService {
           orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
           orderDelivery.discardedAt = new Date();
         } else if (giftCertificate.couponStatus === 'INACTIVE') {
-          orderDelivery.couponStatus = OrderDeliveryCouponStatus.EXPIRED;
+          // INACTIVE는 자연 만료와 81 환불(End User 직접 환불)이 합쳐져 응답될 수 있음.
+          // galaxia_barcode_log 에 app_div='81' 기록이 있으면 환불폐기로, 없으면 만료로 분류.
+          const has81Refund = await this.galaxiaBarcodeLogRepository.existsBy({
+            orderDeliveryId: orderDelivery.id,
+            appDiv: '81',
+          });
+          if (has81Refund) {
+            orderDelivery.couponStatus = OrderDeliveryCouponStatus.REFUND_CANCEL;
+            if (!orderDelivery.discardedAt) {
+              orderDelivery.discardedAt = new Date();
+            }
+          } else {
+            orderDelivery.couponStatus = OrderDeliveryCouponStatus.EXPIRED;
+          }
         } else if (giftCertificate.isUsed) {
           orderDelivery.couponStatus = OrderDeliveryCouponStatus.USED;
         } else if (isExpiredYMD(giftCertificate.validTo)) {

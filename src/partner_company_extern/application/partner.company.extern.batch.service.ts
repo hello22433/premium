@@ -794,7 +794,20 @@ export class PartnerCompanyExternBatchService {
         result.couponStatus = OrderDeliveryCouponStatus.CANCEL;
         result.discardedAt = new Date();
       } else if (giftCertificate.couponStatus === 'INACTIVE') {
-        result.couponStatus = OrderDeliveryCouponStatus.EXPIRED;
+        // INACTIVE는 자연 만료와 81 환불(End User 직접 환불)이 합쳐져 응답될 수 있음.
+        // galaxia_barcode_log 에 app_div='81' 기록이 있으면 환불폐기로, 없으면 만료로 분류.
+        const has81Refund = await this.galaxiaBarcodeLogRepository.existsBy({
+          orderDeliveryId: orderDelivery.id,
+          appDiv: '81',
+        });
+        if (has81Refund) {
+          result.couponStatus = OrderDeliveryCouponStatus.REFUND_CANCEL;
+          if (!orderDelivery.discardedAt) {
+            result.discardedAt = new Date();
+          }
+        } else {
+          result.couponStatus = OrderDeliveryCouponStatus.EXPIRED;
+        }
       } else if (giftCertificate.isUsed) {
         result.couponStatus = OrderDeliveryCouponStatus.USED;
       } else if (isExpiredYMD(giftCertificate.validTo)) {
@@ -1254,8 +1267,8 @@ export class PartnerCompanyExternBatchService {
         orderDelivery.tradeAt = null;
         orderDelivery.galaxiaBalance = galaxiaBalance;
         break;
-      case '81': // 환불등록
-        orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
+      case '81': // 환불등록 (End User 직접 환불 → REFUND_CANCEL = 수령 고객 환불폐기)
+        orderDelivery.couponStatus = OrderDeliveryCouponStatus.REFUND_CANCEL;
         orderDelivery.discardedAt = new Date();
         orderDelivery.galaxiaBalance = 0;
         break;
