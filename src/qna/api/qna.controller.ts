@@ -13,6 +13,7 @@ import {
 import { QnaBulkDeleteResDto, QnaGetDetailResDto, QnaGetListResDto, QnaGetMyQnaHistoryResDto } from './qna.res.dto';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
 import { AuthUserSuperAdminGuard } from '../../auth/api/auth.user.super-admin.guard';
+import { AuthUserSuperAndOperationAdminGuard } from '../../auth/api/auth.user.super-operation-admin.guard';
 import { User } from '../../auth/api/user.decorator';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { AuthService } from '../../auth/application/auth.service';
@@ -36,6 +37,7 @@ export class QnaController {
     description: '리스트 조회에 성공한 경우',
   })
   // ===================================================
+  @UseGuards(AuthUserAuthorizationGuard)
   @Get('/qna/list')
   async getList(@User() user: ILoginUserInfo, @Query() getQuery: QnaGetListReqDto) {
     await this.authService.authorityValidator(user, UserAuthSubEnum.QNA);
@@ -53,8 +55,10 @@ export class QnaController {
     description: '1대1 문의가 존재하지 않는 경우',
   })
   // ===================================================
+  @UseGuards(AuthUserAuthorizationGuard)
   @Get('/qna/:id')
-  getDetail(@User() user: ILoginUserInfo, @Param() getParam: QnaGetDetailReqParamDto) {
+  async getDetail(@User() user: ILoginUserInfo, @Param() getParam: QnaGetDetailReqParamDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.QNA);
     return this.qnaService.getDetail(user, getParam);
   }
 
@@ -68,8 +72,10 @@ export class QnaController {
     description: '1대1 문의가 존재하지 않는 경우',
   })
   // ===================================================
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @Post('/qna/answer')
-  answer(@User() user: ILoginUserInfo, @Body() getBody: QnaAnswerReqDto) {
+  async answer(@User() user: ILoginUserInfo, @Body() getBody: QnaAnswerReqDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.QNA);
     return this.qnaService.answer(user, getBody);
   }
 
@@ -83,8 +89,10 @@ export class QnaController {
     description: '1대1 문의가 존재하지 않는 경우',
   })
   // ===================================================
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @Put('/qna/answer')
-  update(@User() user: ILoginUserInfo, @Body() getBody: QnaUpdateAnswerReqDto) {
+  async update(@User() user: ILoginUserInfo, @Body() getBody: QnaUpdateAnswerReqDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.QNA);
     return this.qnaService.update(user, getBody);
   }
 
@@ -95,8 +103,10 @@ export class QnaController {
     description: '문의 등록에 성공한 경우',
   })
   // ===================================================
+  @UseGuards(AuthUserAuthorizationGuard)
   @Post('/qna')
-  create(@User() user: ILoginUserInfo, @Body() getBody: QnaCreateReqDto) {
+  async create(@User() user: ILoginUserInfo, @Body() getBody: QnaCreateReqDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.QNA);
     return this.qnaService.create(user, getBody);
   }
 
@@ -108,8 +118,10 @@ export class QnaController {
     description: '성공적으로 조회한 경우',
   })
   // ====================================================
+  @UseGuards(AuthUserAuthorizationGuard)
   @Get('/qna/my/dashboard')
-  getMyQnaHistory(@User() user: ILoginUserInfo) {
+  async getMyQnaHistory(@User() user: ILoginUserInfo) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.QNA);
     return this.qnaService.getMyQnaHistory(user);
   }
 

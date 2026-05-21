@@ -45,7 +45,8 @@ export class ActivityLogController {
     description: '성공적으로 조회한 경우',
   })
   @Get('/activity-log/action-types')
-  async getActionTypes(): Promise<GetActionTypesResDto> {
+  async getActionTypes(@User() user: ILoginUserInfo): Promise<GetActionTypesResDto> {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.ACTIVITY_LOG);
     return this.activityLogService.getActionTypes();
   }
 
@@ -58,6 +59,7 @@ export class ActivityLogController {
     @Res() res: Response,
     @User() user: ILoginUserInfo,
   ): Promise<void> {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.ACTIVITY_LOG);
     // 엑셀 다운로드 로그 기록
     await this.activityLogService.createLog({
       userId: user.id,
