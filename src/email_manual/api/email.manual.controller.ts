@@ -4,6 +4,7 @@ import { EmailManualService } from '../application/email.manual.service';
 import { EmailManualUpsertReqDto } from './email.manual.req.dto';
 import { EmailManualGetResDto } from './email.manual.res.dto';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
+import { AuthUserSuperAdminGuard } from '../../auth/api/auth.user.super-admin.guard';
 import { User } from '../../auth/api/user.decorator';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 
@@ -32,7 +33,7 @@ export class EmailManualController {
     description: '이메일 사용방법 기본값을 저장하거나 수정합니다.',
   })
   @ApiBearerAuth()
-  @UseGuards(AuthUserAuthorizationGuard)
+  @UseGuards(AuthUserSuperAdminGuard)
   @Put()
   async upsert(@User() user: ILoginUserInfo, @Body() dto: EmailManualUpsertReqDto): Promise<void> {
     return this.emailManualService.upsert(user, dto);

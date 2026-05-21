@@ -269,6 +269,13 @@ export class RequirementService {
       throw new BadRequestException('요구사항이 존재하지 않습니다.');
     }
 
+    const isSuperAdmin = user.authority === IUserAuthority.SUPER_ADMIN;
+    const isOwner = requirement.userId === user.id;
+
+    if (!isSuperAdmin && !isOwner) {
+      throw new ForbiddenException('상태 변경 권한이 없습니다.');
+    }
+
     requirement.status = getBody.status;
     await this.requirementRepository.save(requirement);
 

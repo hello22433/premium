@@ -95,14 +95,18 @@ export class NoticeService {
     const { id, title, content, priority, filePath } = getBody;
 
     const notice = await this.noticeRepository.findOne({
-      where: {
-        id,
-        userId: user.id,
-      },
+      where: { id },
     });
 
     if (!notice) {
       throw new BadRequestException('공지사항이 존재하지 않습니다.');
+    }
+
+    const isSuperAdmin = user.authority === IUserAuthority.SUPER_ADMIN;
+    const isOwner = notice.userId === user.id;
+
+    if (!isSuperAdmin && !isOwner) {
+      throw new ForbiddenException('수정 권한이 없습니다.');
     }
 
     notice.title = title;
