@@ -107,14 +107,26 @@ export class UserEntity extends BaseEntity {
   @Column({ type: 'varchar', nullable: true, length: 100, comment: '허용 IP' })
   ip: string | null;
 
+  /**
+   * @deprecated PR1+ wallet_account.settle_condition 사용. settlement_code 단위 정책.
+   * PR5 에서 DROP 예정. legacy display fallback only.
+   */
   @Column({
     type: 'enum',
     enum: IUserSettleCondition,
-    comment: '정산 조건 ex) 선정산 : PRE_PAYMENT, 후정산: POST_PAYMENT',
+    comment: '정산 조건 (DEPRECATED — wallet_account.settle_condition 사용)',
   })
   settleCondition: IUserSettleCondition;
 
-  @Column({ type: 'varchar', length: 100, comment: '정산 방법 ex) 카드: CARD, 현금: CASH' })
+  /**
+   * @deprecated PR1+ wallet_account.settle_method 사용. settlement_code 단위 정책.
+   * PR5 에서 DROP 예정.
+   */
+  @Column({
+    type: 'varchar',
+    length: 100,
+    comment: '정산 방법 (DEPRECATED — wallet_account.settle_method 사용)',
+  })
   settleMethod: IUserSettleMethod;
 
   @Column({ type: 'varchar', length: 100, comment: '은행 명' })

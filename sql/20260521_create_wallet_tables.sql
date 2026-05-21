@@ -10,6 +10,8 @@ CREATE TABLE `wallet_account` (
   `credit_limit` INT NOT NULL DEFAULT 0 COMMENT '여신 한도',
   `credit_used_amount` INT NOT NULL DEFAULT 0 COMMENT '여신 사용액',
   `credit_excess_amount` INT NOT NULL DEFAULT 0 COMMENT '신용초과 사용액',
+  `settle_condition` VARCHAR(20) NOT NULL DEFAULT 'POST_PAYMENT' COMMENT 'PRE_PAYMENT(선정산) / POST_PAYMENT(후정산). settlement_code 단위 정책.',
+  `settle_method` VARCHAR(20) NOT NULL DEFAULT 'CASH' COMMENT 'CARD / CASH. settlement_code 단위 정책.',
   `created_at` DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
   `updated_at` DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
   UNIQUE KEY `uq_wallet_owner` (`owner_type`, `owner_id`),

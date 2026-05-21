@@ -27,6 +27,22 @@ export class WalletAccountEntity {
   @Column({ type: 'int', default: 0, comment: '신용초과 사용액' })
   creditExcessAmount: number;
 
+  @Column({
+    type: 'varchar',
+    length: 20,
+    default: 'POST_PAYMENT',
+    comment: 'PRE_PAYMENT(선정산) / POST_PAYMENT(후정산). settlement_code 단위 정책.',
+  })
+  settleCondition: 'PRE_PAYMENT' | 'POST_PAYMENT';
+
+  @Column({
+    type: 'varchar',
+    length: 20,
+    default: 'CASH',
+    comment: 'CARD / CASH. settlement_code 단위 정책.',
+  })
+  settleMethod: 'CARD' | 'CASH';
+
   @CreateDateColumn({ type: 'datetime', precision: 6 })
   createdAt: Date;
 

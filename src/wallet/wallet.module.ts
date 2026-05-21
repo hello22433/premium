@@ -20,10 +20,17 @@ import { CreditExcessApprovalService } from './application/credit-excess-approva
 import { OrderConfirmationWalletService } from './application/order-confirmation-wallet.service';
 import { RefundPoolService } from './application/refund-pool.service';
 import { SettleConfirmationWalletService } from './application/settle-confirmation-wallet.service';
-import { WalletAdminController } from './api/wallet.admin.controller';
-import { AllocationPreviewController } from './api/allocation-preview.controller';
 import { SettlementCodeScopeGuard } from './api/settlement-code-scope.guard';
 
+/**
+ * PR1 — schema + entity + service skeleton.
+ *
+ * **운영 wallet write 0 보장**: 본 PR 머지 시점에는 admin write endpoint / hook 호출 0건.
+ * AllocationPreviewController / WalletAdminController 는 PR2 hook 통합 PR 에서 별 추가.
+ *
+ * service skeleton (Resolver/Policy/Allocation/Ledger/CreditExcessApproval/OrderConfirmation/RefundPool/SettleConfirmation)
+ * 은 PR2 단계에서 fail-closed 또는 동일 트랜잭션 흡수 설계에 따라 호출 통합.
+ */
 @Module({
   imports: [
     AuthModule,
@@ -41,7 +48,7 @@ import { SettlementCodeScopeGuard } from './api/settlement-code-scope.guard';
       UserEntity,
     ]),
   ],
-  controllers: [WalletAdminController, AllocationPreviewController],
+  controllers: [],
   providers: [
     WalletAccountResolverService,
     PointPolicyService,

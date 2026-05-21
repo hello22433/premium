@@ -48,6 +48,16 @@ module.exports = {
         property: 'balanceManagementType',
         message: 'DEPRECATED — settlement_code로 통합.',
       },
+      {
+        object: 'user',
+        property: 'settleCondition',
+        message: 'DEPRECATED — wallet_account.settle_condition 사용. settlement_code 단위 정책.',
+      },
+      {
+        object: 'user',
+        property: 'settleMethod',
+        message: 'DEPRECATED — wallet_account.settle_method 사용. settlement_code 단위 정책.',
+      },
     ],
   },
   overrides: [

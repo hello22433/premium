@@ -18,7 +18,10 @@ import {
 } from '../api/settle.res.dto';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { OrderEntity } from '../../entity/order.entity';
-import { readBillingView, readOperationPersonName } from '../../order/util/order.snapshot.builder';
+import {
+  readBillingView,
+  readOperationPersonName,
+} from '../../order/util/order.snapshot.builder';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Brackets, In, IsNull, Not, Repository, SelectQueryBuilder } from 'typeorm';
 import {
@@ -106,7 +109,6 @@ import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { GalaxiaBarcodeLogEntity } from '../../entity/galaxia.barcode.log.entity';
 import { SettleGalaxiaListViewDto } from '../api/dto/settle.galaxia.list.view.dto';
 import { IProductSettleMethod } from '../../product/interface/product.settle.method';
-import { SettleConfirmationWalletService } from '../../wallet/application/settle-confirmation-wallet.service';
 
 const SETTLE_BLOCKED_BY_PENDING_DELIVERY_MSG = '미완료 발송 건이 있어 정산확정할 수 없습니다.';
 
@@ -137,8 +139,7 @@ export class SettleService {
     private activityLogRepository: Repository<ActivityLogEntity>,
     private activityLogService: ActivityLogService,
     private cryptoCipher: CryptoCipher,
-    private readonly settleConfirmationWalletService: SettleConfirmationWalletService,
-  ) {}
+  ) { }
 
   /**
    * 기본 조회 기간 적용 (startAt/endAt 미지정 시 최근 1개월)
@@ -686,22 +687,15 @@ export class SettleService {
     if (searchKeyword) {
       queryBuilder = queryBuilder.andWhere(
         new Brackets((qb) => {
-          qb.where('COALESCE(order.snapshotBusinessName, userCompany.businessName) LIKE :keyword', {
-            keyword: `%${searchKeyword}%`,
-          })
-            .orWhere('COALESCE(order.snapshotClientBusinessName, clientCompany.businessName) LIKE :keyword', {
-              keyword: `%${searchKeyword}%`,
-            })
-            .orWhere('COALESCE(order.snapshotPersonName, user.personName) LIKE :keyword', {
-              keyword: `%${searchKeyword}%`,
-            })
-            .orWhere('COALESCE(order.snapshotClientPersonName, clientUser.personName) LIKE :keyword', {
-              keyword: `%${searchKeyword}%`,
-            })
+          qb.where('COALESCE(order.snapshotBusinessName, userCompany.businessName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('COALESCE(order.snapshotClientBusinessName, clientCompany.businessName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('COALESCE(order.snapshotPersonName, user.personName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('COALESCE(order.snapshotClientPersonName, clientUser.personName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
             .orWhere('order.eventName LIKE :keyword', { keyword: `%${searchKeyword}%` });
         }),
       );
     }
+
 
     if (personName) {
       queryBuilder = queryBuilder.andWhere(
@@ -830,18 +824,10 @@ export class SettleService {
     if (searchKeyword) {
       queryBuilder = queryBuilder.andWhere(
         new Brackets((qb) => {
-          qb.where('COALESCE(order.snapshotBusinessName, userCompany.businessName) LIKE :keyword', {
-            keyword: `%${searchKeyword}%`,
-          })
-            .orWhere('COALESCE(order.snapshotClientBusinessName, clientCompany.businessName) LIKE :keyword', {
-              keyword: `%${searchKeyword}%`,
-            })
-            .orWhere('COALESCE(order.snapshotPersonName, user.personName) LIKE :keyword', {
-              keyword: `%${searchKeyword}%`,
-            })
-            .orWhere('COALESCE(order.snapshotClientPersonName, clientUser.personName) LIKE :keyword', {
-              keyword: `%${searchKeyword}%`,
-            })
+          qb.where('COALESCE(order.snapshotBusinessName, userCompany.businessName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('COALESCE(order.snapshotClientBusinessName, clientCompany.businessName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('COALESCE(order.snapshotPersonName, user.personName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('COALESCE(order.snapshotClientPersonName, clientUser.personName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
             .orWhere('order.eventName LIKE :keyword', { keyword: `%${searchKeyword}%` });
         }),
       );
@@ -1067,7 +1053,10 @@ export class SettleService {
 
     // DB 레벨 페이징 적용
     const skip = (page - 1) * take;
-    queryBuilder = queryBuilder.orderBy('orderDelivery.id', 'DESC').skip(skip).take(take);
+    queryBuilder = queryBuilder
+      .orderBy('orderDelivery.id', 'DESC')
+      .skip(skip)
+      .take(take);
 
     const orderDeliveryList = await queryBuilder.getMany();
 
@@ -1106,7 +1095,9 @@ export class SettleService {
 
       // 협력사 정산: 소수점 발생 시 올림 처리
       const settlePrice =
-        priceAdjustment === 'DISCOUNT' ? Math.ceil(product.price - feePrice) : Math.ceil(product.price + feePrice);
+        priceAdjustment === 'DISCOUNT'
+          ? Math.ceil(product.price - feePrice)
+          : Math.ceil(product.price + feePrice);
 
       return {
         id: order.id,
@@ -1264,7 +1255,9 @@ export class SettleService {
           const tradeDateTime = formatCompactDateTime(orderDelivery.tradeAt);
 
           // 폐기시간 (취소/환불 시) - execDiscard 트랜잭션에서 세팅한 discardedAt 사용
-          const discardAt = orderDelivery.discardedAt ? format(orderDelivery.discardedAt, DateFormatStr) : '';
+          const discardAt = orderDelivery.discardedAt
+            ? format(orderDelivery.discardedAt, DateFormatStr)
+            : '';
 
           sheet.addRow({
             partnerCompanyName: displayPartnerCompany.businessName,
@@ -1368,14 +1361,8 @@ export class SettleService {
         settlePrice: finalSettlePrice,
         status: order.status,
         sendRequestAt,
-        deliveryReportStatus: this.formatReportStatus(
-          order.deliveryCompleteReportCount,
-          order.deliveryReportLastSource,
-        ),
-        transactionStatementStatus: this.formatReportStatus(
-          order.orderCompleteReportCount,
-          order.transactionStatementLastSource,
-        ),
+        deliveryReportStatus: this.formatReportStatus(order.deliveryCompleteReportCount, order.deliveryReportLastSource),
+        transactionStatementStatus: this.formatReportStatus(order.orderCompleteReportCount, order.transactionStatementLastSource),
         companyId: billingUserFk?.companyId ?? undefined,
         isCreditExcess: order.isCreditExcess ?? false,
       };
@@ -1493,13 +1480,13 @@ export class SettleService {
 
         const product = orderProductMapping.product
           ? {
-              id: orderProductMapping.product.id,
-              code: orderProductMapping.product.code,
-              brandName: orderProductMapping.product.brand?.nameKorean ?? '',
-              name: orderProductMapping.product.name,
-              price: adjustedPrice, // 할인/할증 적용된 단가
-              amount: orderProductMapping.amount,
-            }
+            id: orderProductMapping.product.id,
+            code: orderProductMapping.product.code,
+            brandName: orderProductMapping.product.brand?.nameKorean ?? '',
+            name: orderProductMapping.product.name,
+            price: adjustedPrice, // 할인/할증 적용된 단가
+            amount: orderProductMapping.amount,
+          }
           : null;
         productList.push({
           id: orderProductMapping.id,
@@ -1543,9 +1530,7 @@ export class SettleService {
     return this.getUserDetailMultipleByOrderIds(orderIds);
   }
 
-  async getUserDetailMultipleByBody(
-    body: SettlePostUserDetailMultipleReqBodyDto,
-  ): Promise<SettleUserDetailMultipleDto> {
+  async getUserDetailMultipleByBody(body: SettlePostUserDetailMultipleReqBodyDto): Promise<SettleUserDetailMultipleDto> {
     const orderIds = [...new Set(body.orderIds)];
 
     if (orderIds.length === 0) {
@@ -1714,18 +1699,10 @@ export class SettleService {
     if (searchKeyword) {
       queryBuilder = queryBuilder.andWhere(
         new Brackets((qb: SelectQueryBuilder<any>) => {
-          qb.where('COALESCE(order.snapshotBusinessName, userCompany.businessName) LIKE :keyword', {
-            keyword: `%${searchKeyword}%`,
-          })
-            .orWhere('COALESCE(order.snapshotClientBusinessName, clientCompany.businessName) LIKE :keyword', {
-              keyword: `%${searchKeyword}%`,
-            })
-            .orWhere('COALESCE(order.snapshotPersonName, user.personName) LIKE :keyword', {
-              keyword: `%${searchKeyword}%`,
-            })
-            .orWhere('COALESCE(order.snapshotClientPersonName, clientUser.personName) LIKE :keyword', {
-              keyword: `%${searchKeyword}%`,
-            })
+          qb.where('COALESCE(order.snapshotBusinessName, userCompany.businessName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('COALESCE(order.snapshotClientBusinessName, clientCompany.businessName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('COALESCE(order.snapshotPersonName, user.personName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('COALESCE(order.snapshotClientPersonName, clientUser.personName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
             .orWhere('order.eventName LIKE :keyword', { keyword: `%${searchKeyword}%` });
         }),
       );
@@ -1901,7 +1878,9 @@ export class SettleService {
     // Phase 2: 동일 회사별 allSettleAmount 합산
     // 검색/표시 필터(personName, businessName)와 무관하게 회사 전체 사용자 기준으로 합산.
     // (검색필터를 그대로 적용하면 companyTotal이 부분집합이 되어 remainServiceAmount/신용초과액이 과다 계산됨)
-    const companyIds = [...new Set(allUsers.map((u) => u.companyId).filter((id): id is number => id != null))];
+    const companyIds = [
+      ...new Set(allUsers.map((u) => u.companyId).filter((id): id is number => id != null)),
+    ];
     const companyAllSettleMap = new Map<number, number>();
     if (companyIds.length > 0) {
       const companyTotals = await this.userRepository
@@ -1920,7 +1899,8 @@ export class SettleService {
     const allResults: SettleUserPerListViewDto[] = allUsers.map((user) => {
       const companyMaximumLimit = Number(user.company?.maximumLimit ?? 0);
 
-      const effectiveBalance = user.company?.balanceManagementType === 'COMPANY' ? user.company.balance : user.balance;
+      const effectiveBalance =
+        user.company?.balanceManagementType === 'COMPANY' ? user.company.balance : user.balance;
 
       const companyTotal = user.companyId ? companyAllSettleMap.get(user.companyId) : undefined;
       const remainServiceAmount =
@@ -1982,9 +1962,7 @@ export class SettleService {
           new Brackets((wb) => {
             wb.where('o.clientUserId IN (:...pageUserIds)', { pageUserIds }).orWhere(
               new Brackets((wb2) => {
-                wb2
-                  .where('o.clientUserId IS NULL')
-                  .andWhere('o.userId IN (:...pageUserIds2)', { pageUserIds2: pageUserIds });
+                wb2.where('o.clientUserId IS NULL').andWhere('o.userId IN (:...pageUserIds2)', { pageUserIds2: pageUserIds });
               }),
             );
           }),
@@ -2061,7 +2039,11 @@ export class SettleService {
     return { clause, params };
   }
 
-  private accumulateOverdue(map: Map<number, { count: number; amount: number }>, userId: number, amount: number): void {
+  private accumulateOverdue(
+    map: Map<number, { count: number; amount: number }>,
+    userId: number,
+    amount: number,
+  ): void {
     const entry = map.get(userId) ?? { count: 0, amount: 0 };
     entry.count += 1;
     entry.amount += amount;
@@ -2072,13 +2054,11 @@ export class SettleService {
     const { userId, startAt, endAt, userBusinessName, userPersonName, settleStatus, take, page } = getDto;
 
     // 대행주문은 과금대상(clientUserId)의 정산에만 귀속
-    const billingUserCondition =
-      '(order.clientUserId = :userId OR (order.clientUserId IS NULL AND order.userId = :userId))';
+    const billingUserCondition = '(order.clientUserId = :userId OR (order.clientUserId IS NULL AND order.userId = :userId))';
 
     const applyFilters = (qb: SelectQueryBuilder<OrderEntity>) => {
-      qb.where(billingUserCondition, { userId }).andWhere('order.status IN (:...status)', {
-        status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'],
-      });
+      qb.where(billingUserCondition, { userId })
+        .andWhere('order.status IN (:...status)', { status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'] });
 
       QueryBuilderDateCondition(qb, 'orderProductMappings', 'sendRequestAt', startAt, endAt);
 
@@ -2099,7 +2079,9 @@ export class SettleService {
         if (settleStatus === 'UNSETTLE_NORMAL') {
           qb.andWhere(
             new Brackets((wb) => {
-              wb.where('order.settleStatus = :settleStatus', { settleStatus }).orWhere('order.settleStatus IS NULL');
+              wb.where('order.settleStatus = :settleStatus', { settleStatus }).orWhere(
+                'order.settleStatus IS NULL',
+              );
             }),
           );
         } else {
@@ -2337,13 +2319,6 @@ export class SettleService {
         .execute();
     }
 
-    // PR2 wallet hook (legacy 병행 갱신, phase A)
-    try {
-      await this.settleConfirmationWalletService.confirmSettlement(order.id, `cycle-${Date.now()}-${order.id}`);
-    } catch (err) {
-      // wallet 통합 실패 시 legacy 흐름은 진행, 다음 backfill 에서 정정
-    }
-
     return true;
   }
 
@@ -2475,8 +2450,9 @@ export class SettleService {
           .map((d) => d.actualSendAt)
           .filter((d): d is Date => d != null);
 
-        const actualSendAt =
-          deliveryDates.length > 0 ? new Date(Math.min(...deliveryDates.map((d) => d.getTime()))) : null;
+        const actualSendAt = deliveryDates.length > 0
+          ? new Date(Math.min(...deliveryDates.map((d) => d.getTime())))
+          : null;
 
         if (!actualSendAt) {
           if (order.settleStatus === SettleUserOrderDetailEnum.UNSETTLE_OVERDUE) {
@@ -2487,9 +2463,17 @@ export class SettleService {
 
         let deadline: Date;
         if (condition === UserSettlePeriodConditionEnum.DELIVERY_DATE) {
-          deadline = new Date(actualSendAt.getFullYear(), actualSendAt.getMonth(), actualSendAt.getDate() + count);
+          deadline = new Date(
+            actualSendAt.getFullYear(),
+            actualSendAt.getMonth(),
+            actualSendAt.getDate() + count,
+          );
         } else {
-          deadline = new Date(actualSendAt.getFullYear(), actualSendAt.getMonth() + monthOffset, count);
+          deadline = new Date(
+            actualSendAt.getFullYear(),
+            actualSendAt.getMonth() + monthOffset,
+            count,
+          );
         }
 
         const isOverdue = now >= deadline;
@@ -2559,8 +2543,9 @@ export class SettleService {
     }
 
     // balanceManagementType에 따른 실제 balance 결정
-    const effectiveBalance =
-      userEntity.company?.balanceManagementType === 'COMPANY' ? userEntity.company.balance : userEntity.balance;
+    const effectiveBalance = userEntity.company?.balanceManagementType === 'COMPANY'
+      ? userEntity.company.balance
+      : userEntity.balance;
 
     // 잔여발송한도 = 회사최대한도 + effectiveBalance - 회사전체allSettleAmount
     const remainServiceAmount = companyMaximumLimit + effectiveBalance - totalAllSettleAmount;
@@ -2597,13 +2582,9 @@ export class SettleService {
    * 현재 UserDiscount로 폴백하지 않고 매핑에 저장된 값만 사용한다.
    * (새로 등록된 할인조건이 이미 완료된 주문에 소급 적용되는 것을 방지)
    */
-  private calculateMappingSettlePrice(mapping: {
-    fee: number | null;
-    priceAdjustment: IPriceAdjustment | null;
-    amount: number;
-    product: { price: number; category: string; brand?: { nameKorean: string } | null };
-    orderDeliveries?: { settleFee: number | null; settlePriceAdjustment: string | null }[];
-  }): number {
+  private calculateMappingSettlePrice(
+    mapping: { fee: number | null; priceAdjustment: IPriceAdjustment | null; amount: number; product: { price: number; category: string; brand?: { nameKorean: string } | null }; orderDeliveries?: { settleFee: number | null; settlePriceAdjustment: string | null }[] },
+  ): number {
     // SSG 중복할인: delivery에 settleFee가 있으면 delivery별로 계산 후 합산
     const deliveries = mapping.orderDeliveries ?? [];
     const hasDeliveryFee = deliveries.some((d) => d.settleFee !== null);
@@ -2670,7 +2651,9 @@ export class SettleService {
     const forSum = options?.forSum ?? false;
     const { startAt, endAt, isPublished, businessName, personName, eventName, searchKeyword } = filters;
 
-    let queryBuilder = this.orderRepository.createQueryBuilder('order').innerJoinAndSelect('order.user', 'user');
+    let queryBuilder = this.orderRepository
+      .createQueryBuilder('order')
+      .innerJoinAndSelect('order.user', 'user');
 
     // forSum: company는 필터용 JOIN만, classification/orderDeliveries는 SELECT 제외
     if (forSum) {
@@ -2701,9 +2684,8 @@ export class SettleService {
       queryBuilder = queryBuilder.innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries');
     }
 
-    queryBuilder = queryBuilder.where('order.status IN (:...status)', {
-      status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'],
-    });
+    queryBuilder = queryBuilder
+      .where('order.status IN (:...status)', { status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'] });
 
     if (isPublished === true) {
       queryBuilder = queryBuilder
@@ -2721,18 +2703,10 @@ export class SettleService {
     if (searchKeyword) {
       queryBuilder = queryBuilder.andWhere(
         new Brackets((qb: SelectQueryBuilder<any>) => {
-          qb.where('COALESCE(order.snapshotBusinessName, userCompany.businessName) LIKE :keyword', {
-            keyword: `%${searchKeyword}%`,
-          })
-            .orWhere('COALESCE(order.snapshotClientBusinessName, clientCompany.businessName) LIKE :keyword', {
-              keyword: `%${searchKeyword}%`,
-            })
-            .orWhere('COALESCE(order.snapshotPersonName, user.personName) LIKE :keyword', {
-              keyword: `%${searchKeyword}%`,
-            })
-            .orWhere('COALESCE(order.snapshotClientPersonName, clientUser.personName) LIKE :keyword', {
-              keyword: `%${searchKeyword}%`,
-            })
+          qb.where('COALESCE(order.snapshotBusinessName, userCompany.businessName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('COALESCE(order.snapshotClientBusinessName, clientCompany.businessName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('COALESCE(order.snapshotPersonName, user.personName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
+            .orWhere('COALESCE(order.snapshotClientPersonName, clientUser.personName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
             .orWhere('order.eventName LIKE :keyword', { keyword: `%${searchKeyword}%` });
         }),
       );
@@ -2970,8 +2944,12 @@ export class SettleService {
         barcode: log.barcode,
         transactionId: orderDelivery.transactionId ?? '',
         appDivName: this.getAppDivName(log.appDiv),
-        sendDate: orderDelivery.actualSendAt ? format(orderDelivery.actualSendAt, DateCompactStr) : '',
-        sendTime: orderDelivery.actualSendAt ? format(orderDelivery.actualSendAt, TimeCompactStr) : '',
+        sendDate: orderDelivery.actualSendAt
+          ? format(orderDelivery.actualSendAt, DateCompactStr)
+          : '',
+        sendTime: orderDelivery.actualSendAt
+          ? format(orderDelivery.actualSendAt, TimeCompactStr)
+          : '',
         appDay: log.appDay,
         appTime: log.appTime,
         amount: log.amount,

@@ -5,11 +5,6 @@ import { OrderEntity } from '../entity/order.entity';
 import { SettleService } from './application/settle.service';
 import { SettleController } from './api/settle.controller';
 import { SettleUserController } from './api/settle.user.controller';
-import { SettleAdminController } from './api/settle.admin.controller';
-import { SettleAdminReadService } from './application/settle.admin-read.service';
-import { WalletAccountEntity } from '../entity/wallet.account.entity';
-import { PointGrantEntity } from '../entity/point.grant.entity';
-import { UserCompanyEntity } from '../entity/user.company.entity';
 import { OtherServiceSaleEntity } from '../entity/other.service.sale.entity';
 import { OtherServiceSaleProductEntity } from '../entity/other.service.sale.product.entity';
 import { OtherServiceSaleProductMappingEntity } from '../entity/other.service.sale.product.mapping.entity';
@@ -22,13 +17,11 @@ import { SettleSchedule } from './settle.schedule';
 import { ActivityLogModule } from '../activity_log/activity.log.module';
 import { GalaxiaBarcodeLogEntity } from '../entity/galaxia.barcode.log.entity';
 import { ActivityLogEntity } from '../entity/activity.log.entity';
-import { WalletModule } from '../wallet/wallet.module';
 
 @Module({
   imports: [
     AuthModule,
     ActivityLogModule,
-    WalletModule,
     TypeOrmModule.forFeature([
       OrderEntity,
       OrderDeliveryEntity,
@@ -39,14 +32,11 @@ import { WalletModule } from '../wallet/wallet.module';
       ShippingStorageEntity,
       UserDiscountEntity,
       UserEntity,
-      UserCompanyEntity,
-      WalletAccountEntity,
-      PointGrantEntity,
       GalaxiaBarcodeLogEntity,
       ActivityLogEntity,
     ]),
   ],
-  providers: [SettleService, SettleSchedule, SettleAdminReadService],
-  controllers: [SettleController, SettleUserController, SettleAdminController],
+  providers: [SettleService, SettleSchedule],
+  controllers: [SettleController, SettleUserController],
 })
 export class SettleModule {}

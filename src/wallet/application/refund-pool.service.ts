@@ -9,7 +9,10 @@ import {
 } from '../../entity/order.payment.refund.event.entity';
 import { OrderPointUsageEntity } from '../../entity/order.point.usage.entity';
 import { PointGrantEntity } from '../../entity/point.grant.entity';
+import { WalletAccountEntity } from '../../entity/wallet.account.entity';
+import { WalletTransactionEntity } from '../../entity/wallet.transaction.entity';
 import { PaymentAllocationService } from './payment-allocation.service';
+import { WalletResourceType } from '../interface/wallet-resource-type';
 
 export interface RefundEventInput {
   orderId: number;
@@ -160,6 +163,85 @@ export class RefundPoolService {
 
         if (refundRemaining !== 0) {
           throw new BadRequestException(`refund invariant violation: refundRemaining=${refundRemaining}`);
+        }
+
+        // 2-5. wallet_account 잔액 복구 + wallet_transaction row split (resource 별 1 row)
+        // POINT 는 point_grant.remaining_amount 가 이미 갱신됨 (2-1 단계). wallet_transaction 만 추가.
+        const walletTxBase = {
+          walletAccountId: alloc.walletAccountId,
+          orderId: input.orderId,
+          orderDeliveryId: line.orderDeliveryId,
+          type: input.eventType.toUpperCase(),
+          memo: null as string | null,
+        };
+        const keyPrefix = `${input.idempotencyKeyPrefix}:line:${line.id}`;
+
+        if (restoreDeposit > 0) {
+          const wallet = await manager
+            .getRepository(WalletAccountEntity)
+            .createQueryBuilder('w')
+            .setLock('pessimistic_write')
+            .where('w.id = :id', { id: alloc.walletAccountId })
+            .getOne();
+          if (wallet) {
+            wallet.depositBalance += restoreDeposit;
+            await manager.save(WalletAccountEntity, wallet);
+            await manager.save(WalletTransactionEntity, {
+              ...walletTxBase,
+              resourceType: WalletResourceType.DEPOSIT,
+              amount: restoreDeposit,
+              balanceAfter: wallet.depositBalance,
+              idempotencyKey: `${keyPrefix}:deposit`,
+            });
+          }
+        }
+        if (restoreCredit > 0) {
+          const wallet = await manager
+            .getRepository(WalletAccountEntity)
+            .createQueryBuilder('w')
+            .setLock('pessimistic_write')
+            .where('w.id = :id', { id: alloc.walletAccountId })
+            .getOne();
+          if (wallet) {
+            wallet.creditUsedAmount -= restoreCredit;
+            await manager.save(WalletAccountEntity, wallet);
+            await manager.save(WalletTransactionEntity, {
+              ...walletTxBase,
+              resourceType: WalletResourceType.CREDIT,
+              amount: -restoreCredit,
+              balanceAfter: wallet.creditUsedAmount,
+              idempotencyKey: `${keyPrefix}:credit`,
+            });
+          }
+        }
+        if (restoreExcess > 0) {
+          const wallet = await manager
+            .getRepository(WalletAccountEntity)
+            .createQueryBuilder('w')
+            .setLock('pessimistic_write')
+            .where('w.id = :id', { id: alloc.walletAccountId })
+            .getOne();
+          if (wallet) {
+            wallet.creditExcessAmount -= restoreExcess;
+            await manager.save(WalletAccountEntity, wallet);
+            await manager.save(WalletTransactionEntity, {
+              ...walletTxBase,
+              resourceType: WalletResourceType.CREDIT_EXCESS,
+              amount: -restoreExcess,
+              balanceAfter: wallet.creditExcessAmount,
+              idempotencyKey: `${keyPrefix}:credit_excess`,
+            });
+          }
+        }
+        if (restorablePoint > 0) {
+          // grant remaining_amount 는 이미 2-1 단계에서 갱신됨. wallet_transaction 만 audit log 로 insert.
+          await manager.save(WalletTransactionEntity, {
+            ...walletTxBase,
+            resourceType: WalletResourceType.POINT,
+            amount: restorablePoint,
+            balanceAfter: null,
+            idempotencyKey: `${keyPrefix}:point`,
+          });
         }
 
         // 3. ledger insert

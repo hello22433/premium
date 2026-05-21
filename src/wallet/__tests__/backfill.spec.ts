@@ -56,15 +56,14 @@ describe('PR1a backfill SQL — 구조 검증', () => {
     expect(executable).not.toMatch(/balance_management_type/i);
   });
 
-  it('credit_used / credit_excess 는 0 으로 INSERT 한다 (legacy 미존재)', () => {
-    // INSERT 절의 마지막 두 컬럼은 credit_used_amount, credit_excess_amount
-    // 값이 0 으로 들어가야 함
+  it('credit_used_amount 는 Σ user.allSettleAmount per company 이관, credit_excess_amount 는 0', () => {
     const insertBlock = sql.split(/INSERT INTO/)[1] ?? '';
     expect(insertBlock).toMatch(/credit_used_amount/);
     expect(insertBlock).toMatch(/credit_excess_amount/);
-    // SELECT 절에서 ... 0, 0 (각각 credit_used / credit_excess)
-    expect(sql).toMatch(/0,\s*--\s*credit_used_amount/i);
-    expect(sql).toMatch(/0\s+--\s*credit_excess_amount/i);
+    // credit_used_amount: SUM(u.allSettleAmount) per companyId
+    expect(sql).toMatch(/SUM\(u\.allSettleAmount\)/);
+    // credit_excess_amount: 여전히 0 (legacy 미존재, PR2 누적)
+    expect(sql).toMatch(/0,?\s*--\s*credit_excess_amount/i);
   });
 
   it('4종 검증 쿼리 모두 존재한다', () => {
@@ -74,8 +73,10 @@ describe('PR1a backfill SQL — 구조 검증', () => {
     // 3-2 credit_limit equality
     expect(sql).toMatch(/legacy_credit_limit/);
     expect(sql).toMatch(/wallet_credit_limit/);
-    // 3-3 credit_used / credit_excess wallet=0
-    expect(sql).toMatch(/wallet_credit_used_should_be_0/);
+    // 3-3 credit_used equality (legacy_all_settle_amount → wallet_credit_used)
+    expect(sql).toMatch(/legacy_all_settle_amount/);
+    expect(sql).toMatch(/wallet_credit_used/);
+    // 3-3b credit_excess wallet=0 검증
     expect(sql).toMatch(/wallet_credit_excess_should_be_0/);
   });
 

@@ -3,94 +3,88 @@ import { getDataSourceToken } from '@nestjs/typeorm';
 import { DataSource, QueryFailedError } from 'typeorm';
 import { WalletAccountEntity } from '../../entity/wallet.account.entity';
 import { WalletTransactionEntity } from '../../entity/wallet.transaction.entity';
-import { PointGrantEntity } from '../../entity/point.grant.entity';
 import { WalletResourceType } from '../interface/wallet-resource-type';
 import { WalletLedgerService } from './wallet-ledger.service';
 
-describe('WalletLedgerService — idempotency_key UNIQUE + row split', () => {
+describe('WalletLedgerService — idempotency + 한도 invariant + row split', () => {
   let sut: WalletLedgerService;
-  let mockManager: any;
-  let mockTransactionFn: jest.Mock;
 
-  const wallet = (overrides: Partial<WalletAccountEntity> = {}): WalletAccountEntity =>
-    ({
+  // shared state
+  let existingTxByKey: Record<string, Partial<WalletTransactionEntity> | undefined>;
+  let walletState: Partial<WalletAccountEntity>;
+  let txInsertBehavior: 'ok' | 'dup';
+  let nextTxId = 1;
+
+  const fakeManager = () => ({
+    getRepository: (target: any) => {
+      if (target === WalletAccountEntity) {
+        return {
+          createQueryBuilder: () => ({
+            setLock: () => ({
+              where: () => ({ getOne: async () => walletState }),
+            }),
+          }),
+        };
+      }
+      if (target === WalletTransactionEntity) {
+        return {
+          save: jest.fn(async (row: any) => {
+            if (txInsertBehavior === 'dup') {
+              const err: any = new QueryFailedError('', [], new Error());
+              err.driverError = { code: 'ER_DUP_ENTRY', errno: 1062 };
+              throw err;
+            }
+            return { id: `tx${nextTxId++}`, ...row };
+          }),
+          findOne: jest.fn(async ({ where }: any) => existingTxByKey[where.idempotencyKey]),
+        };
+      }
+      return { save: jest.fn(), findOne: jest.fn() };
+    },
+    save: jest.fn(async (target: any, obj: any) => {
+      if (target === WalletAccountEntity || obj?.depositBalance != null) {
+        walletState = obj;
+        return obj;
+      }
+      return { id: `inserted-${nextTxId++}`, ...obj };
+    }),
+    findOne: jest.fn(async () => null),
+  });
+
+  const fakeDataSource = {
+    getRepository: (target: any) => {
+      if (target === WalletTransactionEntity) {
+        return {
+          findOne: jest.fn(async ({ where }: any) => existingTxByKey[where.idempotencyKey]),
+        };
+      }
+      return { findOne: jest.fn() };
+    },
+    transaction: jest.fn(async (cb: (m: any) => any) => cb(fakeManager())),
+  };
+
+  beforeEach(async () => {
+    existingTxByKey = {};
+    walletState = {
       id: '1',
-      ownerType: 'SETTLEMENT_CODE',
-      ownerId: 'company-1',
       depositBalance: 10000,
       creditLimit: 100000,
       creditUsedAmount: 0,
       creditExcessAmount: 0,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      ...overrides,
-    }) as WalletAccountEntity;
-
-  beforeEach(async () => {
-    const txQb = {
-      setLock: jest.fn().mockReturnThis(),
-      where: jest.fn().mockReturnThis(),
-      getOne: jest.fn(),
     };
-    const walletSavedRef: { value: WalletAccountEntity | null } = { value: null };
-    const txRepo = {
-      createQueryBuilder: jest.fn().mockReturnValue(txQb),
-      save: jest.fn(),
-      findOne: jest.fn(),
-    };
-    mockManager = {
-      getRepository: jest.fn((target: any) => {
-        if (target === WalletAccountEntity) {
-          return {
-            createQueryBuilder: () => ({
-              ...txQb,
-              getOne: () => walletSavedRef.value ?? wallet(),
-            }),
-          };
-        }
-        if (target === WalletTransactionEntity) return txRepo;
-        return { save: jest.fn() };
-      }),
-      save: jest.fn(async (_target: any, obj: any) => {
-        if (_target === WalletAccountEntity || obj?.depositBalance != null) {
-          walletSavedRef.value = obj;
-          return obj;
-        }
-        return { id: 'g1', ...obj };
-      }),
-      findOne: jest.fn(),
-      createQueryBuilder: jest.fn(),
-    };
-    mockTransactionFn = jest.fn(async (cb: (m: any) => any) => cb(mockManager));
+    txInsertBehavior = 'ok';
+    nextTxId = 1;
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         WalletLedgerService,
-        { provide: getDataSourceToken(), useValue: { transaction: mockTransactionFn } as Partial<DataSource> },
+        { provide: getDataSourceToken(), useValue: fakeDataSource as unknown as DataSource },
       ],
     }).compile();
     sut = module.get(WalletLedgerService);
   });
 
-  it('DEPOSIT 차감 시 wallet_transaction row 생성', async () => {
-    const w = wallet({ depositBalance: 10000 });
-    mockManager.getRepository = jest.fn((t: any) => {
-      if (t === WalletAccountEntity) {
-        return {
-          createQueryBuilder: () => ({
-            setLock: jest.fn().mockReturnThis(),
-            where: jest.fn().mockReturnThis(),
-            getOne: () => w,
-          }),
-        };
-      }
-      if (t === WalletTransactionEntity) {
-        return { save: jest.fn(async (row: any) => ({ id: 'tx1', ...row })) };
-      }
-      return { save: jest.fn() };
-    });
-    mockManager.save = jest.fn(async (_target: any, obj: any) => obj ?? _target);
-
+  it('DEPOSIT 차감 시 wallet_transaction row 생성 + balance after 계산', async () => {
     const r = await sut.recordTransaction({
       walletAccountId: '1',
       type: 'CONFIRM',
@@ -98,37 +92,16 @@ describe('WalletLedgerService — idempotency_key UNIQUE + row split', () => {
       amount: -3000,
       idempotencyKey: 'confirm:1:100:deposit',
     });
-    expect(r.transactionId).toBe('tx1');
-    expect(r.balanceAfter).toBe(7000);
     expect(r.isDuplicate).toBe(false);
+    expect(r.balanceAfter).toBe(7000);
+    expect(r.transactionId).toMatch(/^tx/);
   });
 
-  it('idempotency_key 중복 (ER_DUP_ENTRY) → success no-op + isDuplicate=true', async () => {
-    const w = wallet();
-    const existing = { id: 'tx-existing', balanceAfter: 7000 } as WalletTransactionEntity;
-    const txRepo = {
-      save: jest.fn().mockRejectedValue(
-        Object.assign(new QueryFailedError('', [], new Error()), {
-          driverError: { code: 'ER_DUP_ENTRY', errno: 1062 },
-        }),
-      ),
-      findOne: jest.fn().mockResolvedValue(existing),
+  it('fast-path: 이미 처리된 idempotency_key → 잔액 변경 없이 isDuplicate=true', async () => {
+    existingTxByKey['confirm:1:100:deposit'] = {
+      id: 'tx-existing',
+      balanceAfter: 7000,
     };
-    mockManager.getRepository = jest.fn((t: any) => {
-      if (t === WalletAccountEntity) {
-        return {
-          createQueryBuilder: () => ({
-            setLock: jest.fn().mockReturnThis(),
-            where: jest.fn().mockReturnThis(),
-            getOne: () => w,
-          }),
-        };
-      }
-      if (t === WalletTransactionEntity) return txRepo;
-      return { save: jest.fn() };
-    });
-    mockManager.save = jest.fn(async (_t: any, obj: any) => obj);
-
     const r = await sut.recordTransaction({
       walletAccountId: '1',
       type: 'CONFIRM',
@@ -138,6 +111,25 @@ describe('WalletLedgerService — idempotency_key UNIQUE + row split', () => {
     });
     expect(r.isDuplicate).toBe(true);
     expect(r.transactionId).toBe('tx-existing');
+    // 잔액 변경 안 됨
+    expect(walletState.depositBalance).toBe(10000);
+  });
+
+  it('race: insert 시점 UNIQUE 위반 → rollback → 기존 row return', async () => {
+    txInsertBehavior = 'dup';
+    existingTxByKey['confirm:1:100:deposit'] = {
+      id: 'tx-race-winner',
+      balanceAfter: 7000,
+    };
+    const r = await sut.recordTransaction({
+      walletAccountId: '1',
+      type: 'CONFIRM',
+      resourceType: WalletResourceType.DEPOSIT,
+      amount: -3000,
+      idempotencyKey: 'confirm:1:100:deposit',
+    });
+    expect(r.isDuplicate).toBe(true);
+    expect(r.transactionId).toBe('tx-race-winner');
   });
 
   it('POINT 자원 + point_grant_id 누락 → 에러', async () => {
@@ -152,25 +144,47 @@ describe('WalletLedgerService — idempotency_key UNIQUE + row split', () => {
     ).rejects.toThrow('point_grant_id required');
   });
 
-  it('CREDIT_EXCESS 자원도 wallet_account 잔액 갱신', async () => {
-    const w = wallet({ creditExcessAmount: 0 });
-    mockManager.getRepository = jest.fn((t: any) => {
-      if (t === WalletAccountEntity) {
-        return {
-          createQueryBuilder: () => ({
-            setLock: jest.fn().mockReturnThis(),
-            where: jest.fn().mockReturnThis(),
-            getOne: () => w,
-          }),
-        };
-      }
-      if (t === WalletTransactionEntity) {
-        return { save: jest.fn(async (row: any) => ({ id: 'tx2', ...row })) };
-      }
-      return { save: jest.fn() };
-    });
-    mockManager.save = jest.fn(async (_t: any, obj: any) => obj);
+  it('CREDIT 가산 시 한도 invariant 위반 → BadRequestException', async () => {
+    walletState = { id: '1', depositBalance: 0, creditLimit: 100000, creditUsedAmount: 95000, creditExcessAmount: 0 };
+    await expect(
+      sut.recordTransaction({
+        walletAccountId: '1',
+        type: 'CONFIRM',
+        resourceType: WalletResourceType.CREDIT,
+        amount: 10000,
+        idempotencyKey: 'confirm:1:100:credit',
+      }),
+    ).rejects.toThrow(/credit_limit_exceeded/);
+  });
 
+  it('CREDIT 가산 한도 내 → 잔액 갱신 성공', async () => {
+    walletState = { id: '1', depositBalance: 0, creditLimit: 100000, creditUsedAmount: 50000, creditExcessAmount: 0 };
+    const r = await sut.recordTransaction({
+      walletAccountId: '1',
+      type: 'CONFIRM',
+      resourceType: WalletResourceType.CREDIT,
+      amount: 30000,
+      idempotencyKey: 'confirm:1:100:credit',
+    });
+    expect(r.isDuplicate).toBe(false);
+    expect(r.balanceAfter).toBe(80000);
+  });
+
+  it('DEPOSIT 차감 시 underflow → BadRequestException', async () => {
+    walletState = { id: '1', depositBalance: 1000, creditLimit: 100000, creditUsedAmount: 0, creditExcessAmount: 0 };
+    await expect(
+      sut.recordTransaction({
+        walletAccountId: '1',
+        type: 'FAIL_REFUND',
+        resourceType: WalletResourceType.DEPOSIT,
+        amount: -5000,
+        idempotencyKey: 'fail:1:100:deposit',
+      }),
+    ).rejects.toThrow(/deposit_underflow/);
+  });
+
+  it('CREDIT_EXCESS 자원도 wallet_account 잔액 갱신 (한도 검증 X)', async () => {
+    walletState = { id: '1', depositBalance: 0, creditLimit: 100000, creditUsedAmount: 100000, creditExcessAmount: 0 };
     const r = await sut.recordTransaction({
       walletAccountId: '1',
       type: 'CONFIRM',

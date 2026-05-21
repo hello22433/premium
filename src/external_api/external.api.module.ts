@@ -25,7 +25,6 @@ import { SsgEventModule } from '../ssg_event/ssg.event.module';
 import { DeliveryModule } from '../delivery/delivery.module';
 import { ProductModule } from '../product/product.module';
 import { CryptoCipher } from '../common/infra/crypto.cipher';
-import { WalletModule } from '../wallet/wallet.module';
 
 @Module({
   imports: [
@@ -52,7 +51,6 @@ import { WalletModule } from '../wallet/wallet.module';
     SsgEventModule,
     DeliveryModule,
     ProductModule,
-    WalletModule,
   ],
   controllers: [ExternalApiController],
   providers: [ExternalApiService, ApiKeyGuard, ExternalApiThrottleGuard, IdempotencyInterceptor, CryptoCipher],
