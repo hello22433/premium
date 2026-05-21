@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { IsNull, Repository } from 'typeorm';
 import { DepartmentEntity } from '../../entity/department.entity';
@@ -19,6 +19,8 @@ import {
 } from '../api/department.res.dto';
 import { format } from 'date-fns';
 import { DateFormatStr } from '../../common/domain/date.format.str';
+import { ILoginUserInfo } from '../../auth/interface/login.user';
+import { IUserAuthority } from '../../user/interface/user.authority';
 
 @Injectable()
 export class DepartmentService {
@@ -37,7 +39,14 @@ export class DepartmentService {
   // 부서 CRUD
   // ============================================
 
-  async createDepartment(dto: DepartmentCreateReqDto): Promise<void> {
+  async createDepartment(dto: DepartmentCreateReqDto, user: ILoginUserInfo): Promise<void> {
+    if (user.authority === IUserAuthority.CORPORATE_ADMIN) {
+      const userEntity = await this.userRepository.findOne({ where: { id: user.id } });
+      if (!userEntity || dto.companyId !== userEntity.companyId || !userEntity.isHeadPerson) {
+        throw new ForbiddenException();
+      }
+    }
+
     // 중복 체크 (같은 회사 내 동일 부서명)
     const existing = await this.departmentRepository.findOne({
       where: {
@@ -59,13 +68,20 @@ export class DepartmentService {
     await this.departmentRepository.save(department);
   }
 
-  async updateDepartment(dto: DepartmentUpdateReqDto): Promise<void> {
+  async updateDepartment(dto: DepartmentUpdateReqDto, user: ILoginUserInfo): Promise<void> {
     const department = await this.departmentRepository.findOne({
       where: { id: dto.id, deletedAt: IsNull() },
     });
 
     if (!department) {
       throw new BadRequestException('부서를 찾을 수 없습니다.');
+    }
+
+    if (user.authority === IUserAuthority.CORPORATE_ADMIN) {
+      const userEntity = await this.userRepository.findOne({ where: { id: user.id } });
+      if (!userEntity || department.companyId !== userEntity.companyId || !userEntity.isHeadPerson) {
+        throw new ForbiddenException();
+      }
     }
 
     // 같은 회사 내 중복 체크
@@ -85,13 +101,20 @@ export class DepartmentService {
     await this.departmentRepository.save(department);
   }
 
-  async deleteDepartment(id: number): Promise<void> {
+  async deleteDepartment(id: number, user: ILoginUserInfo): Promise<void> {
     const department = await this.departmentRepository.findOne({
       where: { id, deletedAt: IsNull() },
     });
 
     if (!department) {
       throw new BadRequestException('부서를 찾을 수 없습니다.');
+    }
+
+    if (user.authority === IUserAuthority.CORPORATE_ADMIN) {
+      const userEntity = await this.userRepository.findOne({ where: { id: user.id } });
+      if (!userEntity || department.companyId !== userEntity.companyId || !userEntity.isHeadPerson) {
+        throw new ForbiddenException();
+      }
     }
 
     // 소속 사용자가 있는지 확인
@@ -108,7 +131,11 @@ export class DepartmentService {
     await this.departmentRepository.save(department);
   }
 
-  async getDepartmentList(dto: DepartmentGetListReqDto): Promise<DepartmentGetListResDto> {
+  async getDepartmentList(dto: DepartmentGetListReqDto, user: ILoginUserInfo): Promise<DepartmentGetListResDto> {
+    if (user.authority === IUserAuthority.CORPORATE_ADMIN) {
+      const userEntity = await this.userRepository.findOne({ where: { id: user.id } });
+      dto.companyId = userEntity?.companyId ?? undefined;
+    }
     const queryBuilder = this.departmentRepository
       .createQueryBuilder('department')
       .leftJoinAndSelect('department.company', 'company')
@@ -138,7 +165,7 @@ export class DepartmentService {
     return { list };
   }
 
-  async getDepartmentDetail(id: number): Promise<DepartmentGetDetailResDto> {
+  async getDepartmentDetail(id: number, user: ILoginUserInfo): Promise<DepartmentGetDetailResDto> {
     const department = await this.departmentRepository.findOne({
       where: { id, deletedAt: IsNull() },
       relations: ['company', 'users'],
@@ -146,6 +173,13 @@ export class DepartmentService {
 
     if (!department) {
       throw new BadRequestException('부서를 찾을 수 없습니다.');
+    }
+
+    if (user.authority === IUserAuthority.CORPORATE_ADMIN) {
+      const userEntity = await this.userRepository.findOne({ where: { id: user.id } });
+      if (!userEntity || department.companyId !== userEntity.companyId) {
+        throw new ForbiddenException();
+      }
     }
 
     const activeUsers = (department.users || []).filter((u) => !u.deletedAt);

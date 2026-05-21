@@ -9,6 +9,7 @@ import {
 } from './notice.req.dto';
 import { NoticeGetDetailResDto, NoticeGetListResDto } from './notice.res.dto';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
+import { AuthUserSuperAndOperationAdminGuard } from '../../auth/api/auth.user.super-operation-admin.guard';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { User } from '../../auth/api/user.decorator';
 import { AuthService } from '../../auth/application/auth.service';
@@ -46,7 +47,8 @@ export class NoticeController {
   })
   // ===================================================
   @Get('/notice/:id')
-  getDetail(@Param() getParam: NoticeGetDetailReqParamDto) {
+  async getDetail(@User() user: ILoginUserInfo, @Param() getParam: NoticeGetDetailReqParamDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.NOTICE);
     return this.noticeService.getDetail(getParam);
   }
 
@@ -58,9 +60,10 @@ export class NoticeController {
     description: '공지사항 생성에 성공한 경우',
   })
   // ===================================================
-  @UseGuards(AuthUserAuthorizationGuard)
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @Post('/notice')
-  create(@User() user: ILoginUserInfo, @Body() getBody: NoticeCreateReqDto) {
+  async create(@User() user: ILoginUserInfo, @Body() getBody: NoticeCreateReqDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.NOTICE);
     return this.noticeService.create(user, getBody);
   }
 
@@ -75,9 +78,10 @@ export class NoticeController {
     description: '공지사항이 존재하지 않는 경우',
   })
   // ===================================================
-  @UseGuards(AuthUserAuthorizationGuard)
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @Put('/notice')
-  update(@User() user: ILoginUserInfo, @Body() getBody: NoticeUpdateReqDto) {
+  async update(@User() user: ILoginUserInfo, @Body() getBody: NoticeUpdateReqDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.NOTICE);
     return this.noticeService.update(user, getBody);
   }
 
@@ -92,9 +96,10 @@ export class NoticeController {
     description: '공지사항이 존재하지 않는 경우',
   })
   // ===================================================
-  @UseGuards(AuthUserAuthorizationGuard)
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @Delete('/notice/:id')
-  delete(@User() user: ILoginUserInfo, @Param() getParam: NoticeGetDetailReqParamDto) {
+  async delete(@User() user: ILoginUserInfo, @Param() getParam: NoticeGetDetailReqParamDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.NOTICE);
     return this.noticeService.delete(user, getParam.id);
   }
 }

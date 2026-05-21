@@ -16,6 +16,7 @@ import {
 } from './inquiry.req.dto';
 import { InquiryGetDetailResDto, InquiryGetListResDto } from './inquiry.res.dto';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
+import { AuthUserSuperAndOperationAdminGuard } from '../../auth/api/auth.user.super-operation-admin.guard';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { User } from '../../auth/api/user.decorator';
 import { UserAuthSubEnum } from '../../user_management/domain/user.auth.enum';
@@ -56,7 +57,8 @@ export class InquiryController {
   })
   // ===================================================
   @Get('/inquiry/detail/:id')
-  getDetail(@Param() getParam: InquiryGetDetailReqParamDto) {
+  async getDetail(@User() user: ILoginUserInfo, @Param() getParam: InquiryGetDetailReqParamDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.QNA);
     return this.inquiryService.getDetail(getParam);
   }
 
@@ -83,7 +85,7 @@ export class InquiryController {
   })
   @ApiBadRequestResponse({ description: '1:1문의가 존재하지 않는 경우' })
   // ===================================================
-  @UseGuards(AuthUserAuthorizationGuard)
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @Post('/inquiry/reply')
   reply(@User() user: ILoginUserInfo, @Body() getBody: InquiryReplyReqDto) {
     return this.inquiryService.reply(user, getBody);

@@ -58,6 +58,7 @@ export class ActivityLogController {
     @Res() res: Response,
     @User() user: ILoginUserInfo,
   ): Promise<void> {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.ACTIVITY_LOG);
     // 엑셀 다운로드 로그 기록
     await this.activityLogService.createLog({
       userId: user.id,

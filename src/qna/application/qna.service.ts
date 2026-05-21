@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
 import { parseFilePathList } from '../../util/file.util';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
@@ -93,6 +93,10 @@ export class QnaService {
       throw new BadRequestException('1대1 문의가 존재하지 않습니다.');
     }
 
+    if (user.authority === IUserAuthority.CORPORATE_ADMIN && qna.userId !== user.id) {
+      throw new ForbiddenException();
+    }
+
     return {
       id: qna.id,
       registerDate: format(qna.registerDate, DateDateFormatStr),
@@ -143,9 +147,9 @@ export class QnaService {
   async update(user: ILoginUserInfo, getBody: QnaUpdateAnswerReqDto) {
     const { id, answer } = getBody;
 
-    // if (user.authority === 'CORPORATE_ADMIN') {
-    //   throw new BadRequestException('관리자만 접근 가능합니다.');
-    // }
+    if (user.authority === IUserAuthority.CORPORATE_ADMIN) {
+      throw new ForbiddenException('관리자만 접근 가능합니다.');
+    }
 
     const qna = await this.qnaRepository.findOne({
       where: {

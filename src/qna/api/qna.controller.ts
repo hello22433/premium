@@ -54,7 +54,8 @@ export class QnaController {
   })
   // ===================================================
   @Get('/qna/:id')
-  getDetail(@User() user: ILoginUserInfo, @Param() getParam: QnaGetDetailReqParamDto) {
+  async getDetail(@User() user: ILoginUserInfo, @Param() getParam: QnaGetDetailReqParamDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.QNA);
     return this.qnaService.getDetail(user, getParam);
   }
 

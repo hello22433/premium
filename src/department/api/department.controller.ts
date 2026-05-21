@@ -32,6 +32,8 @@ import {
 } from './department.res.dto';
 import { AuthUserSuperAdminGuard } from '../../auth/api/auth.user.super-admin.guard';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
+import { ILoginUserInfo } from '../../auth/interface/login.user';
+import { User } from '../../auth/api/user.decorator';
 
 @ApiTags('department')
 @Controller('')
@@ -53,8 +55,8 @@ export class DepartmentController {
   })
   @UseGuards(AuthUserAuthorizationGuard)
   @Get('/department/list')
-  getDepartmentList(@Query() dto: DepartmentGetListReqDto): Promise<DepartmentGetListResDto> {
-    return this.departmentService.getDepartmentList(dto);
+  getDepartmentList(@Query() dto: DepartmentGetListReqDto, @User() user: ILoginUserInfo): Promise<DepartmentGetListResDto> {
+    return this.departmentService.getDepartmentList(dto, user);
   }
 
   @ApiOperation({
@@ -71,8 +73,8 @@ export class DepartmentController {
   })
   @UseGuards(AuthUserAuthorizationGuard)
   @Get('/department/:id')
-  getDepartmentDetail(@Param('id', ParseIntPipe) id: number): Promise<DepartmentGetDetailResDto> {
-    return this.departmentService.getDepartmentDetail(id);
+  getDepartmentDetail(@Param('id', ParseIntPipe) id: number, @User() user: ILoginUserInfo): Promise<DepartmentGetDetailResDto> {
+    return this.departmentService.getDepartmentDetail(id, user);
   }
 
   @ApiOperation({
@@ -86,10 +88,10 @@ export class DepartmentController {
   @ApiBadRequestResponse({
     description: '동일한 부서명이 이미 존재하는 경우',
   })
-  @UseGuards(AuthUserSuperAdminGuard)
+  @UseGuards(AuthUserAuthorizationGuard)
   @Post('/department')
-  createDepartment(@Body() dto: DepartmentCreateReqDto): Promise<void> {
-    return this.departmentService.createDepartment(dto);
+  createDepartment(@Body() dto: DepartmentCreateReqDto, @User() user: ILoginUserInfo): Promise<void> {
+    return this.departmentService.createDepartment(dto, user);
   }
 
   @ApiOperation({
@@ -103,10 +105,10 @@ export class DepartmentController {
   @ApiBadRequestResponse({
     description: '부서를 찾을 수 없거나 동일한 부서명이 이미 존재하는 경우',
   })
-  @UseGuards(AuthUserSuperAdminGuard)
+  @UseGuards(AuthUserAuthorizationGuard)
   @Put('/department')
-  updateDepartment(@Body() dto: DepartmentUpdateReqDto): Promise<void> {
-    return this.departmentService.updateDepartment(dto);
+  updateDepartment(@Body() dto: DepartmentUpdateReqDto, @User() user: ILoginUserInfo): Promise<void> {
+    return this.departmentService.updateDepartment(dto, user);
   }
 
   @ApiOperation({
@@ -120,10 +122,10 @@ export class DepartmentController {
   @ApiBadRequestResponse({
     description: '부서를 찾을 수 없거나 소속 사용자가 존재하는 경우',
   })
-  @UseGuards(AuthUserSuperAdminGuard)
+  @UseGuards(AuthUserAuthorizationGuard)
   @Delete('/department/:id')
-  deleteDepartment(@Param('id', ParseIntPipe) id: number): Promise<void> {
-    return this.departmentService.deleteDepartment(id);
+  deleteDepartment(@Param('id', ParseIntPipe) id: number, @User() user: ILoginUserInfo): Promise<void> {
+    return this.departmentService.deleteDepartment(id, user);
   }
 
   // ============================================
