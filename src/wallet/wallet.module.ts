@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { ConfigModule } from '@nestjs/config';
 import { AuthModule } from '../auth/auth.module';
 import { WalletAccountEntity } from '../entity/wallet.account.entity';
 import { WalletTransactionEntity } from '../entity/wallet.transaction.entity';
@@ -18,8 +19,13 @@ import { PaymentAllocationService } from './application/payment-allocation.servi
 import { WalletLedgerService } from './application/wallet-ledger.service';
 import { CreditExcessApprovalService } from './application/credit-excess-approval.service';
 import { OrderConfirmationWalletService } from './application/order-confirmation-wallet.service';
+import { OrderConfirmationReleaseService } from './application/order-confirmation-release.service';
 import { RefundPoolService } from './application/refund-pool.service';
 import { SettleConfirmationWalletService } from './application/settle-confirmation-wallet.service';
+import { WalletManagedPredicate } from './application/wallet-managed.predicate';
+import { WalletCutoverBundleBootstrap } from './application/wallet-cutover-bundle.bootstrap';
+import { ShadowMismatchClassifierService } from './application/shadow-mismatch-classifier.service';
+import { WalletCutoverConfig } from './config/wallet-cutover.config';
 import { SettlementCodeScopeGuard } from './api/settlement-code-scope.guard';
 
 /**
@@ -34,6 +40,7 @@ import { SettlementCodeScopeGuard } from './api/settlement-code-scope.guard';
 @Module({
   imports: [
     AuthModule,
+    ConfigModule,
     TypeOrmModule.forFeature([
       WalletAccountEntity,
       WalletTransactionEntity,
@@ -56,8 +63,13 @@ import { SettlementCodeScopeGuard } from './api/settlement-code-scope.guard';
     WalletLedgerService,
     CreditExcessApprovalService,
     OrderConfirmationWalletService,
+    OrderConfirmationReleaseService,
     RefundPoolService,
     SettleConfirmationWalletService,
+    WalletManagedPredicate,
+    WalletCutoverConfig,
+    WalletCutoverBundleBootstrap,
+    ShadowMismatchClassifierService,
     SettlementCodeScopeGuard,
   ],
   exports: [
@@ -67,8 +79,12 @@ import { SettlementCodeScopeGuard } from './api/settlement-code-scope.guard';
     WalletLedgerService,
     CreditExcessApprovalService,
     OrderConfirmationWalletService,
+    OrderConfirmationReleaseService,
     RefundPoolService,
     SettleConfirmationWalletService,
+    WalletManagedPredicate,
+    WalletCutoverConfig,
+    ShadowMismatchClassifierService,
     SettlementCodeScopeGuard,
   ],
 })

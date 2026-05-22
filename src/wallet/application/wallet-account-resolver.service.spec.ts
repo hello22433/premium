@@ -1,6 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 import { NotFoundException } from '@nestjs/common';
 import { WalletAccountEntity } from '../../entity/wallet.account.entity';
 import { UserEntity } from '../../entity/user.entity';
@@ -15,6 +15,7 @@ describe('WalletAccountResolverService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         WalletAccountResolverService,
+        { provide: DataSource, useValue: { manager: {} } },
         { provide: getRepositoryToken(WalletAccountEntity), useValue: { findOne: jest.fn() } },
         { provide: getRepositoryToken(UserEntity), useValue: { findOne: jest.fn() } },
       ],
@@ -62,5 +63,45 @@ describe('WalletAccountResolverService', () => {
   it('user.settlement_code 비어있으면 NotFoundException (backfill 누락 케이스)', async () => {
     userRepo.findOne.mockResolvedValue({ id: 1, settlementCode: '' } as UserEntity);
     await expect(sut.resolveByUserId(1)).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('resolveForOrder: clientUserId 있으면 그 user 의 wallet (대행주문 호환)', async () => {
+    userRepo.findOne.mockImplementation(
+      async ({ where }: any) =>
+        ({
+          id: where.id,
+          settlementCode: `company-${where.id}`,
+        }) as UserEntity,
+    );
+    walletRepo.findOne.mockImplementation(
+      async ({ where }: any) =>
+        ({
+          id: 'w-' + where.ownerId,
+          ownerId: where.ownerId,
+        }) as WalletAccountEntity,
+    );
+
+    const wallet = await sut.resolveForOrder({ userId: 1, clientUserId: 99 });
+    expect(wallet.id).toBe('w-company-99');
+  });
+
+  it('resolveForOrder: clientUserId null 이면 userId 의 wallet (일반 주문)', async () => {
+    userRepo.findOne.mockImplementation(
+      async ({ where }: any) =>
+        ({
+          id: where.id,
+          settlementCode: `company-${where.id}`,
+        }) as UserEntity,
+    );
+    walletRepo.findOne.mockImplementation(
+      async ({ where }: any) =>
+        ({
+          id: 'w-' + where.ownerId,
+          ownerId: where.ownerId,
+        }) as WalletAccountEntity,
+    );
+
+    const wallet = await sut.resolveForOrder({ userId: 7, clientUserId: null });
+    expect(wallet.id).toBe('w-company-7');
   });
 });
