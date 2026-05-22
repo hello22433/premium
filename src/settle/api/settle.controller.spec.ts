@@ -33,7 +33,7 @@ describe('SettleController', () => {
   };
 
   describe('updateUserPerOrder', () => {
-    it('requires SETTLE_USER_MANAGE authority before updating settlement status', async () => {
+    it('정산상태 변경 전 SETTLE_USER_MANAGE 권한을 검증한다', async () => {
       const { controller, settleService, authService } = createController();
 
       await controller.updateUserPerOrder(user, dto);
@@ -42,7 +42,7 @@ describe('SettleController', () => {
       expect(settleService.updateUserPerOrder).toHaveBeenCalledWith(dto);
     });
 
-    it('does not update settlement status when authority validation fails', async () => {
+    it('권한 검증에 실패하면 정산상태 변경을 실행하지 않는다', async () => {
       const { controller, settleService, authService } = createController();
       authService.authorityValidator.mockRejectedValue(new ForbiddenException('권한이 없습니다.'));
 
