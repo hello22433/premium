@@ -109,7 +109,8 @@ export class SsgEventController {
   })
   // =====================================
   @Post('/ssg-event')
-  create(@Body() getBody: SsgEventCreateReqDto) {
+  async create(@User() user: ILoginUserInfo, @Body() getBody: SsgEventCreateReqDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.REFILL_SSG);
     return this.ssgEventService.create(getBody);
   }
 
@@ -125,7 +126,8 @@ export class SsgEventController {
   })
   // =====================================
   @Put('/ssg-event/amount')
-  updateAmount(@Body() getBody: SsgEventUpdateAmountReqDto) {
+  async updateAmount(@User() user: ILoginUserInfo, @Body() getBody: SsgEventUpdateAmountReqDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.REFILL_SSG);
     return this.ssgEventService.updateAmount(getBody);
   }
 

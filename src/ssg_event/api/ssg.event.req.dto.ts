@@ -96,6 +96,7 @@ export class SsgEventCreateReqDto {
   @ApiProperty({ description: '행사 금액' })
   @IsNotEmpty()
   @IsNumber()
+  @Min(1)
   eventPrice: number;
 }
 
@@ -108,6 +109,7 @@ export class SsgEventUpdateAmountReqDto {
   @ApiProperty({ description: '충전할 금액' })
   @IsNotEmpty()
   @IsNumber()
+  @Min(1)
   amount: number;
 }
 
