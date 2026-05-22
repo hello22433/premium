@@ -64,8 +64,8 @@ describe('PR1a backfill SQL — 구조 검증', () => {
     const insertBlock = sql.split(/INSERT INTO/)[1] ?? '';
     expect(insertBlock).toMatch(/credit_used_amount/);
     expect(insertBlock).toMatch(/credit_excess_amount/);
-    // credit_used_amount: SUM(u.allSettleAmount) per companyId
-    expect(sql).toMatch(/SUM\(u\.allSettleAmount\)/);
+    // credit_used_amount: SUM(u.all_settle_amount) per companyId (SnakeNamingStrategy)
+    expect(sql).toMatch(/SUM\(u\.all_settle_amount\)/);
     // credit_excess_amount: 여전히 0 (legacy 미존재, PR2 누적)
     expect(sql).toMatch(/0,?\s*--\s*credit_excess_amount/i);
   });
@@ -89,11 +89,19 @@ describe('PR1a backfill SQL — 구조 검증', () => {
     expect(sql).toMatch(/HAVING\s+COUNT\(\*\)\s*>\s*1/i);
   });
 
-  it('user_company.maximumLimit 를 credit_limit 으로 매핑한다 (consensus plan verified)', () => {
-    expect(sql).toMatch(/maximumLimit/);
-    expect(sql).toMatch(/credit_limit/);
+  it('user_company.maximum_limit 를 credit_limit 으로 매핑한다 (SnakeNamingStrategy)', () => {
+    // 실행 SQL 만 검사 (comment 제외)
+    const executable = sql
+      .split('\n')
+      .map((l) => l.replace(/--.*$/, ''))
+      .join('\n');
+    expect(executable).toMatch(/maximum_limit/);
+    expect(executable).toMatch(/credit_limit/);
+    // camelCase 잔존 금지 (DB 컬럼명은 snake_case)
+    expect(executable).not.toMatch(/maximumLimit/);
+    expect(executable).not.toMatch(/allSettleAmount/);
     // 잘못된 컬럼명 (legacy 미존재) 사용 금지
-    expect(sql).not.toMatch(/c\.credit_limit/);
-    expect(sql).not.toMatch(/c\.credit_used/);
+    expect(executable).not.toMatch(/c\.credit_limit/);
+    expect(executable).not.toMatch(/c\.credit_used/);
   });
 });
