@@ -40,16 +40,17 @@ describe('SsgEventService', () => {
       eventPrice: 10000,
     } as any;
 
-    it('rejects zero or negative event price', async () => {
+    it('행사 금액이 양의 정수가 아니면 거절한다', async () => {
       const { service, ssgEventRepository } = createService();
 
       await expect(service.create({ ...dto, eventPrice: 0 })).rejects.toBeInstanceOf(BadRequestException);
       await expect(service.create({ ...dto, eventPrice: -1 })).rejects.toBeInstanceOf(BadRequestException);
+      await expect(service.create({ ...dto, eventPrice: 1.5 })).rejects.toBeInstanceOf(BadRequestException);
 
       expect(ssgEventRepository.insert).not.toHaveBeenCalled();
     });
 
-    it('stores event price as the initial event balance', async () => {
+    it('행사 금액을 초기 행사 잔액으로 저장한다', async () => {
       const { service, ssgEventRepository } = createService();
 
       await service.create(dto);
@@ -64,11 +65,12 @@ describe('SsgEventService', () => {
   });
 
   describe('updateAmount', () => {
-    it('rejects zero or negative charge amount before loading the event', async () => {
+    it('충전 금액이 양의 정수가 아니면 이벤트 조회 전에 거절한다', async () => {
       const { service, ssgEventRepository } = createService();
 
       await expect(service.updateAmount({ id: 1, amount: 0 })).rejects.toBeInstanceOf(BadRequestException);
       await expect(service.updateAmount({ id: 1, amount: -1 })).rejects.toBeInstanceOf(BadRequestException);
+      await expect(service.updateAmount({ id: 1, amount: 1.5 })).rejects.toBeInstanceOf(BadRequestException);
 
       expect(ssgEventRepository.createQueryBuilder).not.toHaveBeenCalled();
     });

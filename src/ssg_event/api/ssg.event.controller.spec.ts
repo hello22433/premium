@@ -43,7 +43,7 @@ describe('SsgEventController', () => {
   };
 
   describe('create', () => {
-    it('requires REFILL_SSG authority before creating an SSG event', async () => {
+    it('SSG 이벤트 생성 전 REFILL_SSG 권한을 검증한다', async () => {
       const { controller, ssgEventService, authService } = createController();
 
       await controller.create(user, createDto);
@@ -52,7 +52,7 @@ describe('SsgEventController', () => {
       expect(ssgEventService.create).toHaveBeenCalledWith(createDto);
     });
 
-    it('does not create an SSG event when authority validation fails', async () => {
+    it('권한 검증에 실패하면 SSG 이벤트를 생성하지 않는다', async () => {
       const { controller, ssgEventService, authService } = createController();
       authService.authorityValidator.mockRejectedValue(new ForbiddenException('권한이 없습니다.'));
 
@@ -63,7 +63,7 @@ describe('SsgEventController', () => {
   });
 
   describe('updateAmount', () => {
-    it('requires REFILL_SSG authority before updating SSG event amount', async () => {
+    it('SSG 이벤트 금액 수정 전 REFILL_SSG 권한을 검증한다', async () => {
       const { controller, ssgEventService, authService } = createController();
 
       await controller.updateAmount(user, updateAmountDto);
@@ -72,7 +72,7 @@ describe('SsgEventController', () => {
       expect(ssgEventService.updateAmount).toHaveBeenCalledWith(updateAmountDto);
     });
 
-    it('does not update SSG event amount when authority validation fails', async () => {
+    it('권한 검증에 실패하면 SSG 이벤트 금액을 수정하지 않는다', async () => {
       const { controller, ssgEventService, authService } = createController();
       authService.authorityValidator.mockRejectedValue(new ForbiddenException('권한이 없습니다.'));
 
