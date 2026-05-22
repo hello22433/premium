@@ -42,9 +42,9 @@ SELECT
     (SELECT SUM(u.balance) FROM `user` u WHERE u.company_id = c.id),
     0
   ),
-  IFNULL(c.maximumLimit, 0),
+  IFNULL(c.maximum_limit, 0),
   IFNULL(
-    (SELECT SUM(u.allSettleAmount) FROM `user` u WHERE u.company_id = c.id),
+    (SELECT SUM(u.all_settle_amount) FROM `user` u WHERE u.company_id = c.id),
     0
   ),
   0,  -- credit_excess_amount: legacy 미존재. PR2 발송확정에서 누적
@@ -64,9 +64,9 @@ ON DUPLICATE KEY UPDATE
     (SELECT SUM(u.balance) FROM `user` u WHERE u.company_id = c.id),
     0
   ),
-  credit_limit = IFNULL(c.maximumLimit, 0),
+  credit_limit = IFNULL(c.maximum_limit, 0),
   credit_used_amount = IFNULL(
-    (SELECT SUM(u.allSettleAmount) FROM `user` u WHERE u.company_id = c.id),
+    (SELECT SUM(u.all_settle_amount) FROM `user` u WHERE u.company_id = c.id),
     0
   );
 
@@ -89,12 +89,12 @@ SELECT
 
 -- 3-2. credit_limit 보존
 SELECT
-  (SELECT IFNULL(SUM(maximumLimit), 0) FROM `user_company`) AS legacy_credit_limit,
+  (SELECT IFNULL(SUM(maximum_limit), 0) FROM `user_company`) AS legacy_credit_limit,
   (SELECT IFNULL(SUM(credit_limit), 0) FROM `wallet_account`) AS wallet_credit_limit;
 
 -- 3-3. credit_used 보존 (legacy user.allSettleAmount 이관 검증)
 SELECT
-  (SELECT IFNULL(SUM(allSettleAmount), 0) FROM `user`) AS legacy_all_settle_amount,
+  (SELECT IFNULL(SUM(all_settle_amount), 0) FROM `user`) AS legacy_all_settle_amount,
   (SELECT IFNULL(SUM(credit_used_amount), 0) FROM `wallet_account`) AS wallet_credit_used;
 -- legacy_all_settle_amount == wallet_credit_used 여야 함.
 
