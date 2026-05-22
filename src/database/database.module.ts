@@ -2,10 +2,7 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
 import { DataSource } from 'typeorm';
-import {
-  addTransactionalDataSource,
-  getDataSourceByName,
-} from 'typeorm-transactional';
+import { addTransactionalDataSource, getDataSourceByName } from 'typeorm-transactional';
 import { SnakeNamingStrategy } from 'typeorm-naming-strategies';
 import { UserEntity } from '../entity/user.entity';
 import { UserCompanyEntity } from '../entity/user.company.entity';
@@ -75,6 +72,16 @@ import { ExternalApiAccountEntity } from '../entity/external.api.account.entity'
 import { ExternalApiAllowedIpEntity } from '../entity/external.api.allowed.ip.entity';
 import { ExternalApiSsgRequestEntity } from '../entity/external.api.ssg.request.entity';
 import { ExternalApiWebhookLogEntity } from '../entity/external.api.webhook.log.entity';
+import { WalletAccountEntity } from '../entity/wallet.account.entity';
+import { WalletTransactionEntity } from '../entity/wallet.transaction.entity';
+import { PointGrantEntity } from '../entity/point.grant.entity';
+import { PointPolicyRuleEntity } from '../entity/point.policy.rule.entity';
+import { OrderPaymentAllocationEntity } from '../entity/order.payment.allocation.entity';
+import { OrderPaymentAllocationLineEntity } from '../entity/order.payment.allocation.line.entity';
+import { OrderPointUsageEntity } from '../entity/order.point.usage.entity';
+import { CreditExcessApprovalEntity } from '../entity/credit.excess.approval.entity';
+import { OrderPaymentRefundEventEntity } from '../entity/order.payment.refund.event.entity';
+import { OrderDeliveryAttemptEntity } from '../entity/order.delivery.attempt.entity';
 
 @Module({
   imports: [
@@ -154,6 +161,16 @@ import { ExternalApiWebhookLogEntity } from '../entity/external.api.webhook.log.
           ExternalApiAllowedIpEntity,
           ExternalApiSsgRequestEntity,
           ExternalApiWebhookLogEntity,
+          WalletAccountEntity,
+          WalletTransactionEntity,
+          PointGrantEntity,
+          PointPolicyRuleEntity,
+          OrderPaymentAllocationEntity,
+          OrderPaymentAllocationLineEntity,
+          OrderPointUsageEntity,
+          CreditExcessApprovalEntity,
+          OrderPaymentRefundEventEntity,
+          OrderDeliveryAttemptEntity,
         ],
         extra: {
           connectionLimit: +configService.get('DATABASE_CONNECTION_LIMIT', 50),

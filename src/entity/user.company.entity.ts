@@ -32,14 +32,25 @@ export class UserCompanyEntity extends BaseEntity {
   @Column({ type: 'int', default: 0, comment: '여신 한도' })
   maximumLimit: number;
 
-  @Column({ type: 'int', default: 0, comment: '선충전잔액 (회사 레벨)' })
+  /**
+   * @deprecated PR1+ wallet_account.deposit_balance 사용. PR5에서 DROP 예정.
+   */
+  @Column({
+    type: 'int',
+    default: 0,
+    comment: '선충전잔액 (회사 레벨) (DEPRECATED — wallet_account.deposit_balance 사용)',
+  })
   balance: number;
 
+  /**
+   * @deprecated PR1+ 폐지. ACCOUNT/COMPANY 분기 없이 모든 user를 `company-${id}` 공유 settlement_code로 통합.
+   * PR5에서 DROP 예정.
+   */
   @Column({
     type: 'varchar',
     length: 20,
     default: 'COMPANY',
-    comment: '선충전 관리 방식: COMPANY(회사별 공유), ACCOUNT(계정별 개별)',
+    comment: '선충전 관리 방식 (DEPRECATED — settlement_code로 통합)',
   })
   balanceManagementType: 'COMPANY' | 'ACCOUNT';
 
