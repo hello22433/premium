@@ -32,6 +32,8 @@ import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.st
 import { IOrderSendMethod } from '../../order/interface/order.send.method';
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
 import { IProductUseStatus } from '../../product/interface/product.status';
+import { IProductType } from '../../product/interface/product.type';
+import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
 
 import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
 import { DeliverySendService } from '../../delivery/application/delivery.send.service';
@@ -269,7 +271,10 @@ export class ExternalApiService {
     const qb = this.productRepository
       .createQueryBuilder('product')
       .leftJoinAndSelect('product.brand', 'brand')
-      .where('product.useStatus = :useStatus', { useStatus: 'USE' });
+      .innerJoin('product.partnerCompany', 'partnerCompany')
+      .where('product.useStatus = :useStatus', { useStatus: 'USE' })
+      .andWhere('product.type != :ssgType', { ssgType: IProductType.SSG })
+      .andWhere('partnerCompany.type != :ssgPartnerType', { ssgPartnerType: IPartnerCompanyType.SSG });
 
     if (!isSuperAdmin) {
       const assignedIds = await this.getAssignedProductIds(user.id);
