@@ -15,6 +15,12 @@ export interface AllocationLineInput {
   pointPolicyEffect: 'ALLOW' | 'DENY';
 }
 
+export interface AllocationInputGrant {
+  pointGrantId: string;
+  remainingAmount: number;
+  expiresAt: Date | null; // null = 만료 없음, 후순위
+}
+
 export interface AllocationInput {
   orderId: number;
   walletAccountId: string;
@@ -26,11 +32,24 @@ export interface AllocationInput {
   creditLimit: number;
   creditUsedAmountBefore: number;
   isPrePayment: boolean; // 선정산 여부
+  grants?: AllocationInputGrant[]; // 사용 가능 포인트 grant 목록 (만료 임박순 + FIFO 자동 선택)
+}
+
+export interface AllocationPointUsage {
+  orderDeliveryId: number | null;
+  pointGrantId: string;
+  usedAmount: number;
+  expiresAtSnapshot: Date | null;
 }
 
 export interface AllocationLineResult {
   orderProductMappingId: number;
   orderDeliveryId: number | null;
+  productId: number | null;
+  brandId: number | null;
+  category: string | null;
+  partnerCompanyId: number | null;
+  orderType: string;
   grossSettlementAmount: number;
   pointUsedAmount: number;
   payableBase: number;
@@ -55,6 +74,7 @@ export interface AllocationResult {
   cardSurchargeApplied: boolean;
   hasDiscount: boolean;
   lines: AllocationLineResult[];
+  pointUsages: AllocationPointUsage[]; // 라인 별 grant 차감 산출 (consensus plan §6 만료 임박순 + FIFO)
   resourceBreakdown: Record<WalletResourceType, number>;
 }
 
@@ -93,6 +113,7 @@ export class PaymentAllocationService {
     }
     // 잔여 (rounding) → 마지막 ALLOW 라인 흡수
     if (pointRemaining > 0) {
+      // intentional fallthrough — closing block below
       for (let i = lines.length - 1; i >= 0; i--) {
         if (input.lines[i].pointPolicyEffect === 'ALLOW') {
           lines[i].pointUsedAmount += pointRemaining;
@@ -103,6 +124,51 @@ export class PaymentAllocationService {
     }
 
     const pointUsedAmount = lines.reduce((s, l) => s + l.pointUsedAmount, 0);
+
+    // 1-b. grant 별 차감 + pointUsages 산출 (consensus plan §6 — 만료 임박순 + FIFO)
+    const pointUsages: AllocationPointUsage[] = [];
+    if (pointUsedAmount > 0) {
+      if (!input.grants || input.grants.length === 0) {
+        throw new BadRequestException(
+          `point_grant_missing: pointUsedAmount=${pointUsedAmount} but no grants supplied (drift guard)`,
+        );
+      }
+      const sortedGrants = [...input.grants].sort((a, b) => {
+        const ax = a.expiresAt ? a.expiresAt.getTime() : Number.MAX_SAFE_INTEGER;
+        const bx = b.expiresAt ? b.expiresAt.getTime() : Number.MAX_SAFE_INTEGER;
+        if (ax !== bx) return ax - bx;
+        // 동일 만료일 (또는 둘 다 null) → FIFO (id 숫자 비교, localeCompare 사용 시 "10" < "2" 버그)
+        const an = BigInt(a.pointGrantId);
+        const bn = BigInt(b.pointGrantId);
+        return an < bn ? -1 : an > bn ? 1 : 0;
+      });
+      const grantRemain: Record<string, number> = {};
+      for (const g of sortedGrants) grantRemain[g.pointGrantId] = g.remainingAmount;
+
+      for (const line of lines) {
+        if (line.pointUsedAmount <= 0) continue;
+        let pointToConsume = line.pointUsedAmount;
+        for (const g of sortedGrants) {
+          if (pointToConsume <= 0) break;
+          const remain = grantRemain[g.pointGrantId] ?? 0;
+          if (remain <= 0) continue;
+          const portion = Math.min(pointToConsume, remain);
+          pointUsages.push({
+            orderDeliveryId: line.orderDeliveryId,
+            pointGrantId: g.pointGrantId,
+            usedAmount: portion,
+            expiresAtSnapshot: g.expiresAt,
+          });
+          grantRemain[g.pointGrantId] = remain - portion;
+          pointToConsume -= portion;
+        }
+        if (pointToConsume > 0) {
+          throw new BadRequestException(
+            `point_grant_insufficient: line ${line.orderProductMappingId} needs ${pointToConsume} more after grant pool exhausted`,
+          );
+        }
+      }
+    }
 
     // 2. 주문 단위 카드할증 (1회 계산)
     const cardSurchargeBase = grossSettlementAmount - pointUsedAmount;
@@ -120,12 +186,17 @@ export class PaymentAllocationService {
 
     const depositUsed = Math.min(payableSettlementAmount, depositCap);
     const need = payableSettlementAmount - depositUsed;
-    const availableCredit = Math.max(0, input.creditLimit - input.creditUsedAmountBefore);
-    const creditUsed = Math.min(need, availableCredit);
-    const creditExcess = need - creditUsed;
 
-    if (input.isPrePayment && creditUsed + creditExcess > 0) {
-      // 선정산 + 예치금 부족 → 신용초과 흐름 (Step A~D). 발송확정 호출자가 ApprovalId 확인 후 진입.
+    let creditUsed: number;
+    let creditExcess: number;
+    if (input.isPrePayment) {
+      // 선정산 정책: 예치금만 사용. 부족 시 일반 여신 사용 안 함 → 전부 신용초과 (4단계 워크플로 트리거).
+      creditUsed = 0;
+      creditExcess = need;
+    } else {
+      const availableCredit = Math.max(0, input.creditLimit - input.creditUsedAmountBefore);
+      creditUsed = Math.min(need, availableCredit);
+      creditExcess = need - creditUsed;
     }
 
     // 라인별 비율 분배 (정보용)
@@ -158,6 +229,7 @@ export class PaymentAllocationService {
       cardSurchargeApplied: input.cardSurchargeApplied,
       hasDiscount: input.lines.some((l) => l.appliedPriceAdjustment != null),
       lines,
+      pointUsages,
       resourceBreakdown: {
         [WalletResourceType.POINT]: pointUsedAmount,
         [WalletResourceType.DEPOSIT]: depositUsed,
@@ -178,6 +250,11 @@ export class PaymentAllocationService {
     return {
       orderProductMappingId: input.orderProductMappingId,
       orderDeliveryId: input.orderDeliveryId ?? null,
+      productId: input.productId ?? null,
+      brandId: input.brandId ?? null,
+      category: input.category ?? null,
+      partnerCompanyId: input.partnerCompanyId ?? null,
+      orderType: input.orderType,
       grossSettlementAmount: input.grossSettlementAmount,
       pointUsedAmount: 0,
       payableBase: input.grossSettlementAmount,

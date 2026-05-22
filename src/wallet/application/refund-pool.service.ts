@@ -45,7 +45,25 @@ export class RefundPoolService {
   ) {}
 
   async refund(input: RefundEventInput): Promise<RefundEventResult> {
-    return this.dataSource.transaction(async (manager) => {
+    // READ COMMITTED 명시 — MySQL 기본 REPEATABLE READ 에서는 lock 획득 후 plain SELECT 가 트랜잭션 시작 시점의
+    // consistent snapshot 을 보아 방금 다른 트랜잭션이 commit 한 refund ledger 를 못 볼 수 있다.
+    // lock 후 same-prefix 재조회 (HIGH 2 fix) 가 의도대로 동작하려면 isolation 을 낮춰 current read 가 보이게 해야 한다.
+    return this.dataSource.transaction('READ COMMITTED', async (manager) => {
+      // 0. retry idempotency: 동일 idempotencyKeyPrefix 으로 이미 ledger row 가 만들어졌으면 기존 결과 return.
+      //    overlap 검사보다 먼저 — 같은 prefix retry 는 정상 처리됐던 결과를 BadRequest 가 아닌 200 으로 돌려야 worker 가 멈춤.
+      const existingForPrefix = await manager
+        .getRepository(OrderPaymentRefundEventEntity)
+        .createQueryBuilder('e')
+        .where('e.idempotencyKey LIKE :prefix', { prefix: `${input.idempotencyKeyPrefix}:line:%` })
+        .getMany();
+      if (existingForPrefix.length > 0) {
+        const totalRefundedAmount = existingForPrefix.reduce(
+          (s, e) => s + e.refundedGrossBase + e.refundedCardSurchargeAmount,
+          0,
+        );
+        return { ledgerIds: existingForPrefix.map((e) => e.id), totalRefundedAmount };
+      }
+
       const alloc = await manager
         .getRepository(OrderPaymentAllocationEntity)
         .createQueryBuilder('a')
@@ -56,7 +74,22 @@ export class RefundPoolService {
         throw new BadRequestException(`allocation not found for orderId=${input.orderId}`);
       }
 
-      // already_refunded 체크
+      // 0-b. lock 획득 후 same-prefix 재조회 — 동시 retry 2건 race 차단.
+      //      첫 retry 가 lock 보유하면서 ledger 만들고 commit, 두 번째가 lock 받자마자 동일 prefix ledger 보면 success return.
+      const existingAfterLock = await manager
+        .getRepository(OrderPaymentRefundEventEntity)
+        .createQueryBuilder('e')
+        .where('e.idempotencyKey LIKE :prefix', { prefix: `${input.idempotencyKeyPrefix}:line:%` })
+        .getMany();
+      if (existingAfterLock.length > 0) {
+        const totalRefundedAmount = existingAfterLock.reduce(
+          (s, e) => s + e.refundedGrossBase + e.refundedCardSurchargeAmount,
+          0,
+        );
+        return { ledgerIds: existingAfterLock.map((e) => e.id), totalRefundedAmount };
+      }
+
+      // already_refunded 체크 (different prefix — 진짜 중복 요청)
       const activeEvents = await manager.find(OrderPaymentRefundEventEntity, {
         where: { allocationId: alloc.id, reversedAt: IsNull() },
       });
@@ -90,6 +123,20 @@ export class RefundPoolService {
       let depositRestoredTotal = alloc.depositRestoredAmount;
       let pointSkippedTotal = alloc.pointSkippedExpiredAmount;
 
+      // 포인트는 allocation pool 기반 복구 (§8). 라인 단위 분배 아님.
+      // 만료 임박순 (expires_at ASC, null 후순위) 으로 정렬해 만료 임박 grant 먼저 복구.
+      const allUsages = await manager.find(OrderPointUsageEntity, { where: { allocationId: alloc.id } });
+      const usagesWithGrant: Array<{ usage: OrderPointUsageEntity; grant: PointGrantEntity | null }> = [];
+      for (const usage of allUsages) {
+        const grant = await manager.findOne(PointGrantEntity, { where: { id: usage.pointGrantId } });
+        usagesWithGrant.push({ usage, grant });
+      }
+      usagesWithGrant.sort((a, b) => {
+        const ax = a.grant?.expiresAt ? a.grant.expiresAt.getTime() : Number.MAX_SAFE_INTEGER;
+        const bx = b.grant?.expiresAt ? b.grant.expiresAt.getTime() : Number.MAX_SAFE_INTEGER;
+        return ax - bx;
+      });
+
       for (const line of lines) {
         // 1. base + 카드할증 delta
         const remainingPayableBaseBefore = alloc.grossSettlementAmount - alloc.pointUsedAmount - activePayableSum;
@@ -111,18 +158,21 @@ export class RefundPoolService {
 
         let refundRemaining = thisGrossBase + thisSurcharge;
 
-        // 2. 우선순위 풀 차감 복구
-        // 2-1 포인트 (이 라인의 point_used_amount 한정 + 만료 grant skip)
+        // 2. 우선순위 풀 차감 복구 (§8)
+        // 2-1 포인트 — allocation pool 기반. 라인 line.pointUsedAmount 와 무관하게
+        //           allocation 전체 사용 포인트 풀에서 만료 임박순으로 차감 복구.
+        //   grant.remaining_amount 는 read-modify-save 가 아닌 조건부 UPDATE + affectedRows 검증 —
+        //   서로 다른 allocation 이 같은 grant 를 동시에 복구할 때 lost update 방지.
+        //   복구는 grant 단위로 집계 → grant 별 wallet_transaction row + balance_after 기록.
         let restorablePoint = 0;
         let skippedPoint = 0;
-        if (line.pointUsedAmount > 0 && refundRemaining > 0 && line.orderDeliveryId != null) {
-          const usages = await manager.find(OrderPointUsageEntity, {
-            where: { orderDeliveryId: line.orderDeliveryId, allocationId: alloc.id },
-          });
-          let pointToConsume = Math.min(refundRemaining, line.pointUsedAmount);
-          for (const usage of usages) {
+        const restoredByGrant: Record<string, { amount: number; balanceAfter: number }> = {};
+        if (refundRemaining > 0) {
+          const allocPointRemaining = alloc.pointUsedAmount - pointRestoredTotal - pointSkippedTotal;
+          let pointToConsume = Math.min(refundRemaining, allocPointRemaining);
+          for (const slot of usagesWithGrant) {
             if (pointToConsume <= 0) break;
-            const grant = await manager.findOne(PointGrantEntity, { where: { id: usage.pointGrantId } });
+            const { usage, grant } = slot;
             if (!grant) continue;
             const usageRemaining = usage.usedAmount - usage.restoredAmount - usage.skippedExpiredAmount;
             if (usageRemaining <= 0) continue;
@@ -132,10 +182,25 @@ export class RefundPoolService {
               skippedPoint += portion;
               usage.skippedExpiredAmount += portion;
             } else {
+              const upd = await manager
+                .createQueryBuilder()
+                .update(PointGrantEntity)
+                .set({ remainingAmount: () => `remaining_amount + ${portion}` })
+                .where('id = :id AND active = 1', { id: grant.id })
+                .execute();
+              if (upd.affected !== 1) {
+                throw new BadRequestException(
+                  `point_grant restore conflict (id=${grant.id}, portion=${portion})`,
+                );
+              }
+              const refreshed = await manager.findOne(PointGrantEntity, { where: { id: grant.id } });
               restorablePoint += portion;
               usage.restoredAmount += portion;
-              grant.remainingAmount += portion;
-              await manager.save(PointGrantEntity, grant);
+              const prev = restoredByGrant[grant.id]?.amount ?? 0;
+              restoredByGrant[grant.id] = {
+                amount: prev + portion,
+                balanceAfter: refreshed?.remainingAmount ?? 0,
+              };
             }
             await manager.save(OrderPointUsageEntity, usage);
             pointToConsume -= portion;
@@ -176,71 +241,77 @@ export class RefundPoolService {
         };
         const keyPrefix = `${input.idempotencyKeyPrefix}:line:${line.id}`;
 
-        if (restoreDeposit > 0) {
-          const wallet = await manager
+        // wallet 단일 lock 후 재사용 — wallet 부재 시 drift 우려로 throw (silent skip 금지).
+        let wallet: WalletAccountEntity | null = null;
+        if (restoreDeposit > 0 || restoreCredit > 0 || restoreExcess > 0) {
+          wallet = await manager
             .getRepository(WalletAccountEntity)
             .createQueryBuilder('w')
             .setLock('pessimistic_write')
             .where('w.id = :id', { id: alloc.walletAccountId })
             .getOne();
-          if (wallet) {
-            wallet.depositBalance += restoreDeposit;
-            await manager.save(WalletAccountEntity, wallet);
-            await manager.save(WalletTransactionEntity, {
-              ...walletTxBase,
-              resourceType: WalletResourceType.DEPOSIT,
-              amount: restoreDeposit,
-              balanceAfter: wallet.depositBalance,
-              idempotencyKey: `${keyPrefix}:deposit`,
-            });
+          if (!wallet) {
+            throw new BadRequestException(
+              `wallet_account not found for allocation ${alloc.id} (walletAccountId=${alloc.walletAccountId}). refund aborted to avoid drift.`,
+            );
           }
         }
-        if (restoreCredit > 0) {
-          const wallet = await manager
-            .getRepository(WalletAccountEntity)
-            .createQueryBuilder('w')
-            .setLock('pessimistic_write')
-            .where('w.id = :id', { id: alloc.walletAccountId })
-            .getOne();
-          if (wallet) {
-            wallet.creditUsedAmount -= restoreCredit;
-            await manager.save(WalletAccountEntity, wallet);
-            await manager.save(WalletTransactionEntity, {
-              ...walletTxBase,
-              resourceType: WalletResourceType.CREDIT,
-              amount: -restoreCredit,
-              balanceAfter: wallet.creditUsedAmount,
-              idempotencyKey: `${keyPrefix}:credit`,
-            });
-          }
-        }
-        if (restoreExcess > 0) {
-          const wallet = await manager
-            .getRepository(WalletAccountEntity)
-            .createQueryBuilder('w')
-            .setLock('pessimistic_write')
-            .where('w.id = :id', { id: alloc.walletAccountId })
-            .getOne();
-          if (wallet) {
-            wallet.creditExcessAmount -= restoreExcess;
-            await manager.save(WalletAccountEntity, wallet);
-            await manager.save(WalletTransactionEntity, {
-              ...walletTxBase,
-              resourceType: WalletResourceType.CREDIT_EXCESS,
-              amount: -restoreExcess,
-              balanceAfter: wallet.creditExcessAmount,
-              idempotencyKey: `${keyPrefix}:credit_excess`,
-            });
-          }
-        }
-        if (restorablePoint > 0) {
-          // grant remaining_amount 는 이미 2-1 단계에서 갱신됨. wallet_transaction 만 audit log 로 insert.
+
+        if (restoreDeposit > 0 && wallet) {
+          wallet.depositBalance += restoreDeposit;
+          await manager.save(WalletAccountEntity, wallet);
           await manager.save(WalletTransactionEntity, {
             ...walletTxBase,
+            resourceType: WalletResourceType.DEPOSIT,
+            amount: restoreDeposit,
+            balanceAfter: wallet.depositBalance,
+            idempotencyKey: `${keyPrefix}:deposit`,
+          });
+        }
+        if (restoreCredit > 0 && wallet) {
+          wallet.creditUsedAmount -= restoreCredit;
+          await manager.save(WalletAccountEntity, wallet);
+          await manager.save(WalletTransactionEntity, {
+            ...walletTxBase,
+            resourceType: WalletResourceType.CREDIT,
+            amount: -restoreCredit,
+            balanceAfter: wallet.creditUsedAmount,
+            idempotencyKey: `${keyPrefix}:credit`,
+          });
+        }
+        if (restoreExcess > 0 && wallet) {
+          wallet.creditExcessAmount -= restoreExcess;
+          await manager.save(WalletAccountEntity, wallet);
+          await manager.save(WalletTransactionEntity, {
+            ...walletTxBase,
+            resourceType: WalletResourceType.CREDIT_EXCESS,
+            amount: -restoreExcess,
+            balanceAfter: wallet.creditExcessAmount,
+            idempotencyKey: `${keyPrefix}:credit_excess`,
+          });
+        }
+        if (restorablePoint > 0) {
+          // grant remaining_amount 는 이미 2-1 단계에서 갱신됨. grant 별 wallet_transaction row split + balance_after 기록.
+          for (const [grantId, info] of Object.entries(restoredByGrant)) {
+            await manager.save(WalletTransactionEntity, {
+              ...walletTxBase,
+              resourceType: WalletResourceType.POINT,
+              amount: info.amount,
+              balanceAfter: info.balanceAfter,
+              idempotencyKey: `${keyPrefix}:point:${grantId}`,
+            });
+          }
+        }
+        if (skippedPoint > 0) {
+          // 만료 포인트 skip 도 audit row 남김 (plans/01_Wallet.md §8 RESTORE_SKIPPED_EXPIRED).
+          await manager.save(WalletTransactionEntity, {
+            ...walletTxBase,
+            type: 'RESTORE_SKIPPED_EXPIRED',
             resourceType: WalletResourceType.POINT,
-            amount: restorablePoint,
+            amount: 0,
             balanceAfter: null,
-            idempotencyKey: `${keyPrefix}:point`,
+            memo: `expired_point_skipped=${skippedPoint}`,
+            idempotencyKey: `${keyPrefix}:point_skipped_expired`,
           });
         }
 
@@ -282,31 +353,12 @@ export class RefundPoolService {
     });
   }
 
-  /** 재발송 역환불: 기존 ledger 금액 그대로 차감 복구 (재계산 금지). */
-  async reverseRefund(ledgerId: string, reversedByWalletTransactionId: string): Promise<void> {
-    await this.dataSource.transaction(async (manager) => {
-      const ledger = await manager
-        .getRepository(OrderPaymentRefundEventEntity)
-        .createQueryBuilder('l')
-        .setLock('pessimistic_write')
-        .where('l.id = :id AND l.reversedAt IS NULL', { id: ledgerId })
-        .getOne();
-      if (!ledger) {
-        throw new BadRequestException(`ledger not found or already reversed: ${ledgerId}`);
-      }
-      const alloc = await manager.findOne(OrderPaymentAllocationEntity, { where: { id: ledger.allocationId } });
-      if (!alloc) throw new BadRequestException('allocation missing');
-
-      alloc.pointRestoredAmount -= ledger.refundedPointAmount;
-      alloc.creditExcessRestoredAmount -= ledger.refundedCreditExcessAmount;
-      alloc.creditUsedRestoredAmount -= ledger.refundedCreditUsedAmount;
-      alloc.depositRestoredAmount -= ledger.refundedDepositAmount;
-      alloc.pointSkippedExpiredAmount -= ledger.pointSkippedExpiredAmount;
-      await manager.save(OrderPaymentAllocationEntity, alloc);
-
-      ledger.reversedAt = new Date();
-      ledger.reversedByWalletTransactionId = reversedByWalletTransactionId;
-      await manager.save(OrderPaymentRefundEventEntity, ledger);
-    });
+  /**
+   * 재발송 역환불 — PR1 scope 외. PR2 재발송 hook 작업에서 wallet/grant rollback + wallet_transaction row split 까지 함께 구현.
+   * caller 없음 → stub throw 로 두어 실수로 호출되면 즉시 검출.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  async reverseRefund(_ledgerId: string, _reversedByWalletTransactionId: string): Promise<void> {
+    throw new BadRequestException('reverseRefund not implemented in PR1 — see PR2 resend hook');
   }
 }

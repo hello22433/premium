@@ -1,6 +1,6 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
-import { DataSource, IsNull, Repository } from 'typeorm';
+import { DataSource, EntityManager, IsNull, Repository } from 'typeorm';
 import { CreditExcessApprovalEntity, CreditExcessApprovalStatus } from '../../entity/credit.excess.approval.entity';
 
 /**
@@ -67,9 +67,21 @@ export class CreditExcessApprovalService {
   /**
    * 발송확정 트랜잭션 안에서 호출. 조건부 UPDATE로 1회만 사용 보장.
    * affectedRows=0 (이미 사용됐거나 status 변동) → ForbiddenException.
+   *
+   * externalManager 지정 시 그 트랜잭션 안에서 실행 (same-tx 보장).
+   * 미지정 시 default repository (별 트랜잭션) — PR1 caller 없음, PR2 이후 발송확정 hook 에서 manager 주입 필수.
    */
-  async consume(approvalId: string, orderId: number, expectedCreditExcessAmount: number): Promise<void> {
-    const approval = await this.approvalRepository.findOne({
+  async consume(
+    approvalId: string,
+    orderId: number,
+    expectedCreditExcessAmount: number,
+    externalManager?: EntityManager,
+  ): Promise<void> {
+    const approvalRepo = externalManager
+      ? externalManager.getRepository(CreditExcessApprovalEntity)
+      : this.approvalRepository;
+
+    const approval = await approvalRepo.findOne({
       where: { id: approvalId, status: CreditExcessApprovalStatus.APPROVED, consumedAt: IsNull() },
     });
     if (!approval) {
@@ -84,7 +96,7 @@ export class CreditExcessApprovalService {
       );
     }
 
-    const result = await this.approvalRepository
+    const result = await approvalRepo
       .createQueryBuilder()
       .update(CreditExcessApprovalEntity)
       .set({ consumedAt: () => 'NOW(6)' })

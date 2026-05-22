@@ -33,9 +33,13 @@ describe('PR1a backfill SQL — 구조 검증', () => {
     expect(sql).toMatch(/u\.settlement_code\s*=\s*''/);
   });
 
-  it('wallet_account INSERT 가 NOT EXISTS 가드로 멱등성 보장한다', () => {
+  it('wallet_account INSERT 가 ON DUPLICATE KEY UPDATE 로 멱등성 + 재실행 갱신 보장한다', () => {
     expect(sql).toMatch(/INSERT INTO\s+`?wallet_account`?/i);
-    expect(sql).toMatch(/NOT EXISTS\s*\(\s*SELECT\s+1\s+FROM\s+`?wallet_account`?/i);
+    expect(sql).toMatch(/ON DUPLICATE KEY UPDATE/i);
+    // 재실행 시 갱신되는 컬럼들
+    expect(sql).toMatch(/deposit_balance\s*=/i);
+    expect(sql).toMatch(/credit_limit\s*=/i);
+    expect(sql).toMatch(/credit_used_amount\s*=/i);
   });
 
   it('owner_type = SETTLEMENT_CODE 단일값으로 INSERT 한다', () => {

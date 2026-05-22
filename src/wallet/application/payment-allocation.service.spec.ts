@@ -94,6 +94,7 @@ describe('PaymentAllocationService', () => {
         availableDeposit: 100000,
         isPrePayment: true,
         requestedPointAmount: 3000,
+        grants: [{ pointGrantId: '1', remainingAmount: 5000, expiresAt: null }],
       }),
     );
     expect(r.pointUsedAmount).toBe(3000);
@@ -128,6 +129,7 @@ describe('PaymentAllocationService', () => {
         requestedDepositAmount: 5000,
         requestedPointAmount: 1000,
         creditLimit: 100000,
+        grants: [{ pointGrantId: '1', remainingAmount: 2000, expiresAt: null }],
       }),
     );
     const sum =
@@ -136,6 +138,34 @@ describe('PaymentAllocationService', () => {
       r.resourceBreakdown[WalletResourceType.CREDIT] +
       r.resourceBreakdown[WalletResourceType.CREDIT_EXCESS];
     expect(sum).toBe(r.pointUsedAmount + r.payableSettlementAmount);
+  });
+
+  it('포인트 사용액 > 0 + grants 누락 → fail-closed (drift guard)', () => {
+    expect(() =>
+      sut.allocate(
+        baseInput({
+          availableDeposit: 100000,
+          isPrePayment: true,
+          requestedPointAmount: 1000,
+          // grants 미지정
+        }),
+      ),
+    ).toThrow(BadRequestException);
+  });
+
+  it('동일 만료일 grants → FIFO id 숫자 비교 ("10" > "2")', () => {
+    const r = sut.allocate(
+      baseInput({
+        availableDeposit: 100000,
+        isPrePayment: true,
+        requestedPointAmount: 1500,
+        grants: [
+          { pointGrantId: '10', remainingAmount: 5000, expiresAt: null },
+          { pointGrantId: '2', remainingAmount: 5000, expiresAt: null },
+        ],
+      }),
+    );
+    expect(r.pointUsages[0].pointGrantId).toBe('2');
   });
 
   it('applyCardSurcharge: 카드할증 적용 시 10원 절사 식', () => {

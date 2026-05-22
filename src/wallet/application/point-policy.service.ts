@@ -7,6 +7,7 @@ import { PointPolicyEffect, PointPolicyOwnerType, PointPolicyScopeType } from '.
 export interface PointPolicyScopeInput {
   productId?: number | null;
   brandId?: number | null;
+  brandName?: string | null;
   category?: string | null;
   partnerCompanyCode?: string | null;
   orderType?: string | null;
@@ -68,7 +69,7 @@ export class PointPolicyService {
         return scope.productId != null && rule.scopeId === String(scope.productId);
       case PointPolicyScopeType.BRAND:
         if (scope.brandId != null && rule.scopeId === String(scope.brandId)) return true;
-        return rule.scopeCode != null && rule.scopeCode === (scope.partnerCompanyCode ?? null);
+        return rule.scopeCode != null && scope.brandName != null && rule.scopeCode === scope.brandName;
       case PointPolicyScopeType.CATEGORY:
         return scope.category != null && rule.scopeCode === scope.category;
       case PointPolicyScopeType.PARTNER_COMPANY:

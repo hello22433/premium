@@ -22,23 +22,41 @@ describe('RefundPoolService — §8 환불 알고리즘', () => {
   let ledger: OrderPaymentRefundEventEntity[];
 
   const ds: any = {
-    transaction: jest.fn(async (cb: (m: any) => any) => {
+    // transaction 은 isolationLevel 1st arg + callback 또는 callback 단독 둘 다 지원
+    transaction: jest.fn(async (...args: any[]) => {
+      const cb = (typeof args[0] === 'function' ? args[0] : args[1]) as (m: any) => any;
       const manager = {
         getRepository: (target: any) => ({
-          createQueryBuilder: (alias: string) => {
+          createQueryBuilder: (_alias: string) => {
+            // where 조건을 캡처해서 prefix LIKE 분기 처리
+            let wherePrefix: string | null = null;
             const builder: any = {
               setLock: () => builder,
-              where: () => builder,
+              where: (cond: string, params?: any) => {
+                if (typeof cond === 'string' && cond.includes('LIKE') && params?.prefix) {
+                  wherePrefix = String(params.prefix).replace(/%$/, '');
+                }
+                return builder;
+              },
               andWhere: () => builder,
               orderBy: () => builder,
               addOrderBy: () => builder,
               getOne: async () => Object.values(allocations)[0],
-              getMany: async () => lines,
+              getMany: async () => {
+                if (target === OrderPaymentRefundEventEntity) {
+                  if (wherePrefix) {
+                    return ledger.filter((l) => (l.idempotencyKey ?? '').startsWith(wherePrefix as string));
+                  }
+                  return ledger.filter((l) => l.reversedAt === null);
+                }
+                if (target === OrderPaymentAllocationLineEntity) return lines;
+                return [];
+              },
             };
             return builder;
           },
         }),
-        find: async (target: any, where: any) => {
+        find: async (target: any, _where: any) => {
           if (target === OrderPaymentRefundEventEntity) return ledger.filter((l) => l.reversedAt === null);
           return [];
         },
@@ -164,5 +182,40 @@ describe('RefundPoolService — §8 환불 알고리즘', () => {
         idempotencyKeyPrefix: 'fail_refund:100:100:1',
       }),
     ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('동일 idempotencyKeyPrefix retry → throw 없이 기존 ledger return (retry idempotency)', async () => {
+    ledger.push({
+      id: 'pre1',
+      allocationId: '1',
+      orderId: 100,
+      eventType: OrderPaymentRefundEventType.FAIL_REFUND,
+      affectedDeliveryIds: [100],
+      refundedGrossBase: 10000,
+      refundedPayableBase: 10000,
+      refundedCardSurchargeAmount: 0,
+      refundedPointAmount: 0,
+      refundedDepositAmount: 0,
+      refundedCreditUsedAmount: 5000,
+      refundedCreditExcessAmount: 5000,
+      pointSkippedExpiredAmount: 0,
+      idempotencyKey: 'fail_refund:100:100:1:line:10',
+      reversedAt: null,
+      reversedByWalletTransactionId: null,
+      createdAt: new Date(),
+    } as OrderPaymentRefundEventEntity);
+
+    const r = await sut.refund({
+      orderId: 100,
+      eventType: OrderPaymentRefundEventType.FAIL_REFUND,
+      targetDeliveryIds: [100],
+      idempotencyKeyPrefix: 'fail_refund:100:100:1',
+    });
+    expect(r.ledgerIds).toEqual(['pre1']);
+    expect(r.totalRefundedAmount).toBe(10000);
+  });
+
+  it('reverseRefund → PR1 stub throw', async () => {
+    await expect(sut.reverseRefund('any', 'tx')).rejects.toBeInstanceOf(BadRequestException);
   });
 });

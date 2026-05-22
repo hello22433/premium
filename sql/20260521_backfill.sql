@@ -57,11 +57,18 @@ SELECT
     'CASH'
   )
 FROM `user_company` c
-WHERE NOT EXISTS (
-  SELECT 1 FROM `wallet_account` w
-   WHERE w.owner_type = 'SETTLEMENT_CODE'
-     AND w.owner_id = CONCAT('company-', c.id)
-);
+ON DUPLICATE KEY UPDATE
+  -- 재실행 시 deposit / credit_limit / credit_used 만 갱신 (drift 정정).
+  -- credit_excess_amount / settle_condition / settle_method 는 발송확정 흐름이 갱신하므로 보존.
+  deposit_balance = IFNULL(c.balance, 0) + IFNULL(
+    (SELECT SUM(u.balance) FROM `user` u WHERE u.company_id = c.id),
+    0
+  ),
+  credit_limit = IFNULL(c.maximumLimit, 0),
+  credit_used_amount = IFNULL(
+    (SELECT SUM(u.allSettleAmount) FROM `user` u WHERE u.company_id = c.id),
+    0
+  );
 
 -- 4. Mixed settleCondition 검증 (운영자 후속 조치 대상 식별)
 SELECT c.id AS company_id,
