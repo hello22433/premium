@@ -13,7 +13,77 @@
 -- balanceManagementType 분기 폐지 (ACCOUNT 모드 user도 회사 단위 wallet 공유)
 --
 -- 실행: 단일 트랜잭션. assertion 불일치 시 ROLLBACK + 알림.
+-- 사전 게이트: 20260527_wallet_legacy_reconcile.sql 의 검사 항목을 stored proc 에서 재실행해
+--   drift / 음수 / over_limit row 가 1개라도 있으면 SIGNAL 로 abort.
+--   클린 통과 안 되면 백필 자체가 시작 안 됨 → wallet 시드 오염 사전 차단.
+-- 실행 권장: mysql --abort-source-on-error < 20260521_backfill.sql
 
+-- ============================================================================
+-- GATE: legacy cleansing 검증
+-- ============================================================================
+DROP PROCEDURE IF EXISTS check_legacy_clean_for_backfill;
+DELIMITER //
+CREATE PROCEDURE check_legacy_clean_for_backfill()
+BEGIN
+  DECLARE negative_count INT DEFAULT 0;
+  DECLARE drift_user_count INT DEFAULT 0;
+  DECLARE over_limit_company_count INT DEFAULT 0;
+
+  -- 1) 음수 all_settle_amount
+  SELECT COUNT(*) INTO negative_count
+    FROM `user`
+   WHERE all_settle_amount < 0;
+
+  -- 2) 주문 합계 vs all_settle_amount drift (사용자 단위)
+  SELECT COUNT(*) INTO drift_user_count
+    FROM (
+      WITH order_active AS (
+        SELECT
+          COALESCE(o.client_user_id, o.user_id) AS billing_user_id,
+          o.settle_amount
+        FROM `order` o
+        WHERE o.status NOT IN ('TEMP', 'DELIVERY_CANCEL', 'DELETED')
+          AND o.is_settle_complete = 0
+          AND (o.is_settle_balance = 0 OR o.is_credit_excess = 1)
+      ),
+      expected_per_user AS (
+        SELECT billing_user_id, SUM(settle_amount) AS expected_all_settle
+          FROM order_active GROUP BY billing_user_id
+      )
+      SELECT u.id
+        FROM `user` u
+        LEFT JOIN expected_per_user e ON e.billing_user_id = u.id
+       WHERE u.all_settle_amount != COALESCE(e.expected_all_settle, 0)
+    ) t;
+
+  -- 3) 회사 단위 maximum_limit 초과
+  SELECT COUNT(*) INTO over_limit_company_count
+    FROM (
+      SELECT c.id
+        FROM `user_company` c
+        JOIN `user` u ON u.company_id = c.id
+       GROUP BY c.id, c.maximum_limit
+      HAVING SUM(u.all_settle_amount) > c.maximum_limit
+    ) t;
+
+  IF negative_count > 0 OR drift_user_count > 0 OR over_limit_company_count > 0 THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT =
+      CONCAT(
+        'legacy cleansing required before wallet backfill: negative_users=', negative_count,
+        ' drift_users=', drift_user_count,
+        ' over_limit_companies=', over_limit_company_count,
+        '. 20260527_wallet_legacy_reconcile.sql 실행 후 운영자 보정 → 본 SQL 재실행.'
+      );
+  END IF;
+END //
+DELIMITER ;
+
+CALL check_legacy_clean_for_backfill();
+DROP PROCEDURE IF EXISTS check_legacy_clean_for_backfill;
+
+-- ============================================================================
+-- 본 백필 (GATE 통과 후에만 도달)
+-- ============================================================================
 BEGIN;
 
 -- 1. 모든 user에 settlement_code 부여 (회사 단위 공유)

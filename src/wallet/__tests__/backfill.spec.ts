@@ -21,10 +21,28 @@ describe('PR1a backfill SQL — 구조 검증', () => {
   });
 
   it('단일 트랜잭션으로 감싸져 있다', () => {
-    const beginCount = (sql.match(/\bBEGIN\b/gi) ?? []).length;
+    // 트랜잭션 BEGIN 은 'BEGIN;' (세미콜론 종결). stored procedure 의 BEGIN/END 블록은
+    // 세미콜론 없이 키워드만 — 게이트 procedure 의 procedure-body BEGIN 은 카운트 제외.
+    const txBeginCount = (sql.match(/\bBEGIN\s*;/gi) ?? []).length;
     const commitCount = (sql.match(/\bCOMMIT\b/gi) ?? []).length;
-    expect(beginCount).toBe(1);
+    expect(txBeginCount).toBe(1);
     expect(commitCount).toBe(1);
+  });
+
+  it('legacy cleansing gate (procedure + SIGNAL) 가 트랜잭션 시작 전에 있다', () => {
+    // 게이트 procedure 가 정의되어 있어야 함
+    expect(sql).toMatch(/CREATE\s+PROCEDURE\s+check_legacy_clean_for_backfill/i);
+    // SIGNAL SQLSTATE 로 abort 트리거
+    expect(sql).toMatch(/SIGNAL\s+SQLSTATE\s+'45000'/i);
+    // drift 검사 (3종): 음수 / drift / over_limit
+    expect(sql).toMatch(/negative_count/i);
+    expect(sql).toMatch(/drift_user_count/i);
+    expect(sql).toMatch(/over_limit_company_count/i);
+    // CALL 후 BEGIN; (트랜잭션) 진입
+    const callIdx = sql.search(/CALL\s+check_legacy_clean_for_backfill\s*\(\s*\)\s*;/i);
+    const txBeginIdx = sql.search(/\bBEGIN\s*;/);
+    expect(callIdx).toBeGreaterThanOrEqual(0);
+    expect(txBeginIdx).toBeGreaterThan(callIdx);
   });
 
   it('모든 user에 settlement_code = company-{companyId} 부여 UPDATE 가 있다', () => {
