@@ -100,30 +100,73 @@ export class CreditExcessApprovalService {
     });
   }
 
+  /**
+   * Step C - approve / reject: 조건부 UPDATE (status=PENDING) + affectedRows=1 검증.
+   * findOne + save 패턴은 approve/reject 동시 호출 시 race — 둘 다 PENDING 을 읽고 마지막 save 가
+   * 최종 상태 덮어쓰는 lost-update 가능. WHERE 절에 status=PENDING 조건 포함 + affectedRows
+   * 확인으로 race-free 보장.
+   */
   async approve(approvalId: string, approverUserId: number): Promise<CreditExcessApprovalEntity> {
-    const approval = await this.findOrThrow(approvalId);
-    if (approval.status !== CreditExcessApprovalStatus.PENDING) {
-      throw new BadRequestException(`approval status is ${approval.status}, cannot approve`);
+    const now = new Date();
+    const result = await this.approvalRepository
+      .createQueryBuilder()
+      .update(CreditExcessApprovalEntity)
+      .set({
+        status: CreditExcessApprovalStatus.APPROVED,
+        approvedBy: approverUserId,
+        approvedAt: now,
+      })
+      .where('id = :id AND status = :pending', {
+        id: approvalId,
+        pending: CreditExcessApprovalStatus.PENDING,
+      })
+      .execute();
+
+    if (result.affected !== 1) {
+      // 실패 원인 구분 — not found vs status 이미 변경됨
+      const existing = await this.approvalRepository.findOne({ where: { id: approvalId } });
+      if (!existing) {
+        throw new NotFoundException(`approval not found id=${approvalId}`);
+      }
+      throw new BadRequestException(`approval status is ${existing.status}, cannot approve`);
     }
-    approval.status = CreditExcessApprovalStatus.APPROVED;
-    approval.approvedBy = approverUserId;
-    approval.approvedAt = new Date();
-    return this.approvalRepository.save(approval);
+
+    return (await this.approvalRepository.findOne({ where: { id: approvalId } }))!;
   }
 
-  async reject(approvalId: string, approverUserId: number, rejectReason: string): Promise<CreditExcessApprovalEntity> {
+  async reject(
+    approvalId: string,
+    approverUserId: number,
+    rejectReason: string,
+  ): Promise<CreditExcessApprovalEntity> {
     if (!rejectReason || rejectReason.trim().length === 0) {
       throw new BadRequestException('rejectReason required');
     }
-    const approval = await this.findOrThrow(approvalId);
-    if (approval.status !== CreditExcessApprovalStatus.PENDING) {
-      throw new BadRequestException(`approval status is ${approval.status}, cannot reject`);
+    const now = new Date();
+    const result = await this.approvalRepository
+      .createQueryBuilder()
+      .update(CreditExcessApprovalEntity)
+      .set({
+        status: CreditExcessApprovalStatus.REJECTED,
+        approvedBy: approverUserId,
+        approvedAt: now,
+        rejectReason,
+      })
+      .where('id = :id AND status = :pending', {
+        id: approvalId,
+        pending: CreditExcessApprovalStatus.PENDING,
+      })
+      .execute();
+
+    if (result.affected !== 1) {
+      const existing = await this.approvalRepository.findOne({ where: { id: approvalId } });
+      if (!existing) {
+        throw new NotFoundException(`approval not found id=${approvalId}`);
+      }
+      throw new BadRequestException(`approval status is ${existing.status}, cannot reject`);
     }
-    approval.status = CreditExcessApprovalStatus.REJECTED;
-    approval.approvedBy = approverUserId;
-    approval.approvedAt = new Date();
-    approval.rejectReason = rejectReason;
-    return this.approvalRepository.save(approval);
+
+    return (await this.approvalRepository.findOne({ where: { id: approvalId } }))!;
   }
 
   /**
