@@ -126,7 +126,9 @@ describe('PartnerCompanyExternBatchService.checkGalaxiaDaily — 81 환불 상�
       expect(orderDeliveryRepository.save).toHaveBeenCalled();
       const saved = orderDeliveryRepository.save.mock.calls[0][0];
       expect(saved.couponStatus).toBe(OrderDeliveryCouponStatus.REFUND_CANCEL);
+      // discardedAt은 배치 실행 시각이 아니라 환불 이벤트 시각(appDay=20260520, appTime=120000)
       expect(saved.discardedAt).toBeInstanceOf(Date);
+      expect(saved.discardedAt.getTime()).toBe(new Date(2026, 4, 20, 12, 0, 0).getTime());
       expect(saved.galaxiaBalance).toBe(0);
     });
 
