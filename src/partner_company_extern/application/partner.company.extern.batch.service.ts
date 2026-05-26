@@ -794,7 +794,25 @@ export class PartnerCompanyExternBatchService {
         result.couponStatus = OrderDeliveryCouponStatus.CANCEL;
         result.discardedAt = new Date();
       } else if (giftCertificate.couponStatus === 'INACTIVE') {
-        result.couponStatus = OrderDeliveryCouponStatus.EXPIRED;
+        // INACTIVE는 자연 만료와 81 환불(End User 직접 환불)이 합쳐져 응답될 수 있음.
+        // check API 응답에는 거래구분(appDiv)이 없어 INACTIVE만으로는 환불/만료 구분 불가.
+        // 81 로그는 push(또는 daily)로 채워지므로 push 유실 시 비어 있을 수 있다(영구 EXPIRED 오분류).
+        // → 유효기간(validTo)을 주신호로 사용: 아직 유효기간이 남았는데 INACTIVE면 자연 만료가
+        //   불가능하므로 환불(REFUND_CANCEL)로 본다. 81 로그가 있으면(=push/daily 도착) 그 역시 환불 근거.
+        //   둘 중 하나라도 성립하면 REFUND_CANCEL, 아니면(유효기간 지남 & 81 로그 없음) 만료.
+        const stillValid = !!giftCertificate.validTo && !isExpiredYMD(giftCertificate.validTo);
+        const has81Refund = await this.galaxiaBarcodeLogRepository.existsBy({
+          orderDeliveryId: orderDelivery.id,
+          appDiv: '81',
+        });
+        if (stillValid || has81Refund) {
+          result.couponStatus = OrderDeliveryCouponStatus.REFUND_CANCEL;
+          if (!orderDelivery.discardedAt) {
+            result.discardedAt = new Date();
+          }
+        } else {
+          result.couponStatus = OrderDeliveryCouponStatus.EXPIRED;
+        }
       } else if (giftCertificate.isUsed) {
         result.couponStatus = OrderDeliveryCouponStatus.USED;
       } else if (isExpiredYMD(giftCertificate.validTo)) {
@@ -1150,6 +1168,24 @@ export class PartnerCompanyExternBatchService {
             this.logger.error(logError);
           }
 
+          // 81(환불등록) 거래는 로그 저장에 그치지 않고 couponStatus까지 즉시 보정한다.
+          // check 응답은 거래구분을 주지 않으므로(INACTIVE만), push가 유실되면 daily가 81을
+          // 알려주는 유일한 채널이 된다. push 81 핸들러(processGalaxiaPush case '81')와 동일하게
+          // REFUND_CANCEL로 정정하되, discardedAt은 기존 시각이 있으면 보존한다.
+          if (transaction.appDiv === '81') {
+            orderDelivery.couponStatus = OrderDeliveryCouponStatus.REFUND_CANCEL;
+            if (!orderDelivery.discardedAt) {
+              // 폐기 시각은 배치 실행 시각이 아니라 환불 이벤트 시각(appDay+appTime)으로 박는다.
+              orderDelivery.discardedAt = this.parseGalaxiaDateTime(transaction.appDay, transaction.appTime);
+            }
+            orderDelivery.galaxiaBalance = 0;
+            await this.orderDeliveryRepository.save(orderDelivery);
+
+            this.logger.log(
+              `[checkGalaxiaDaily] ${giftKind} 81 환불 상태 보정: orderDeliveryId=${orderDelivery.id} → REFUND_CANCEL`,
+            );
+          }
+
           // tradePlace 업데이트 (기존 로직 유지)
           if (transaction.appStore && transaction.appStore.trim()) {
             orderDelivery.tradePlace = transaction.appStore.trim();
@@ -1254,9 +1290,10 @@ export class PartnerCompanyExternBatchService {
         orderDelivery.tradeAt = null;
         orderDelivery.galaxiaBalance = galaxiaBalance;
         break;
-      case '81': // 환불등록
-        orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
-        orderDelivery.discardedAt = new Date();
+      case '81': // 환불등록 (End User 직접 환불 → REFUND_CANCEL = 수령 고객 환불폐기)
+        orderDelivery.couponStatus = OrderDeliveryCouponStatus.REFUND_CANCEL;
+        // 폐기 시각은 push 수신 시각이 아니라 환불 이벤트 시각(appday+apptime)으로 박는다.
+        orderDelivery.discardedAt = this.parseGalaxiaDateTime(raw.appday, raw.apptime);
         orderDelivery.galaxiaBalance = 0;
         break;
     }
@@ -1504,6 +1541,41 @@ export class PartnerCompanyExternBatchService {
 
     const currentBalance = +galaxiaOut.giftCertificate.balance;
 
+    // 2-1. CANCEL/INACTIVE는 "사용"이 아니므로 합성 사용로그(appDiv='10')를 만들지 않고 상태만 정정한다.
+    //   (이걸 안 막으면 환불로 인한 잔액 감소가 가짜 사용 기록으로 남아 매출/사용률 통계를 왜곡한다.)
+    //   INACTIVE 환불/만료 구분은 check() 분기와 동일하게 validTo·81 로그를 사용한다.
+    //   (discardedAt: check 경로는 환불/취소 이벤트 시각이 없어 처리 시각 fallback — push/daily는 이벤트 시각 사용)
+    const galaxiaCouponStatus = galaxiaOut.giftCertificate.couponStatus;
+    if (galaxiaCouponStatus === 'CANCEL' || galaxiaCouponStatus === 'INACTIVE') {
+      const updateData: Partial<OrderDeliveryEntity> = { galaxiaBalance: currentBalance };
+      if (galaxiaCouponStatus === 'CANCEL') {
+        updateData.couponStatus = OrderDeliveryCouponStatus.CANCEL;
+        if (!orderDelivery.discardedAt) {
+          updateData.discardedAt = new Date();
+        }
+      } else {
+        const stillValid =
+          !!galaxiaOut.giftCertificate.validTo && !isExpiredYMD(galaxiaOut.giftCertificate.validTo);
+        const has81Refund = await this.galaxiaBarcodeLogRepository.existsBy({
+          orderDeliveryId: orderDelivery.id,
+          appDiv: '81',
+        });
+        if (stillValid || has81Refund) {
+          updateData.couponStatus = OrderDeliveryCouponStatus.REFUND_CANCEL;
+          if (!orderDelivery.discardedAt) {
+            updateData.discardedAt = new Date();
+          }
+        } else {
+          updateData.couponStatus = OrderDeliveryCouponStatus.EXPIRED;
+        }
+      }
+      await this.orderDeliveryRepository.update({ id: orderDelivery.id }, updateData);
+      this.logger.log(
+        `[checkGalaxiaDeptUsage] ${galaxiaCouponStatus} 처리: id=${orderDelivery.id} → ${updateData.couponStatus}`,
+      );
+      return 'updated';
+    }
+
     // 3. 이전 잔액 결정
     let previousBalance: number;
     if (orderDelivery.couponStatus === OrderDeliveryCouponStatus.NOT_USED) {
@@ -1552,11 +1624,7 @@ export class PartnerCompanyExternBatchService {
       }
     }
 
-    if (galaxiaOut.giftCertificate.couponStatus === 'CANCEL') {
-      updateData.couponStatus = OrderDeliveryCouponStatus.CANCEL;
-      updateData.discardedAt = new Date();
-    }
-
+    // CANCEL/INACTIVE는 위 2-1에서 이미 early-return 처리됨. 여기는 정상 사용(ACTIVE) 경로만 도달.
     await this.orderDeliveryRepository.update({ id: orderDelivery.id }, updateData);
 
     this.logger.log(

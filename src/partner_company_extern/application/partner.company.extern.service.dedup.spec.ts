@@ -13,6 +13,7 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { mock } from 'jest-mock-extended';
 import { QueryFailedError, Repository } from 'typeorm';
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
+import { GalaxiaBarcodeLogEntity } from '../../entity/galaxia.barcode.log.entity';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { PartnerCompanyEntity } from '../../entity/partner.company.entity';
 import { PartnerCompanyExternHistoryEntity } from '../../entity/partner.company.extern.history.entity';
@@ -117,6 +118,10 @@ describe('PartnerCompanyExternService - PIN dedup recovery', () => {
         {
           provide: getRepositoryToken(GiftielExchangeHistoryEntity),
           useValue: { ...mock<Repository<GiftielExchangeHistoryEntity>>(), ...makeRepoMock() },
+        },
+        {
+          provide: getRepositoryToken(GalaxiaBarcodeLogEntity),
+          useValue: { ...mock<Repository<GalaxiaBarcodeLogEntity>>(), ...makeRepoMock() },
         },
         { provide: CryptoCipher, useValue: mockCrypto },
         {

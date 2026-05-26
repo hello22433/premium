@@ -2,6 +2,9 @@ import { Column, Entity, Index, JoinColumn, ManyToOne, PrimaryGeneratedColumn } 
 import { BaseEntity } from '../common/entity/base.entity';
 import { OrderDeliveryEntity } from './order.delivery.entity';
 
+// INACTIVE 환불/만료 구분 시 existsBy({ orderDeliveryId, appDiv: '81' }) 조회가
+// 야간 batch에서 건마다 실행되므로 (order_delivery_id, app_div) 복합 인덱스로 full scan을 방지한다.
+@Index('idx_galaxia_barcode_log_delivery_appdiv', ['orderDeliveryId', 'appDiv'])
 @Entity('galaxia_barcode_log')
 export class GalaxiaBarcodeLogEntity extends BaseEntity {
   @PrimaryGeneratedColumn()
