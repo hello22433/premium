@@ -2,7 +2,7 @@ import {
   Body,
   Controller,
   Param,
-  ParseUUIDPipe,
+  ParseIntPipe,
   Post,
   UseGuards,
 } from '@nestjs/common';
@@ -25,6 +25,10 @@ export class CreditExcessApprovalRequestReqDto {
   @Min(1)
   orderId: number;
 
+  /**
+   * wallet_account 의 BIGINT PK (string 으로 직렬화 가능).
+   * 클라이언트는 deliveryConfirmed 1차 응답의 walletAccountId 를 전달한다.
+   */
   @IsString()
   @IsNotEmpty()
   walletAccountId: string;
@@ -57,25 +61,38 @@ export class CreditExcessApprovalRejectReqDto {
 export class CreditExcessApprovalController {
   constructor(private readonly service: CreditExcessApprovalService) {}
 
+  /**
+   * Step B — 기업관리자가 사유 입력 후 사전 승인 요청 (PENDING row 생성).
+   * 권한: 모든 인증 사용자 (기업관리자 본인 또는 운영자 대행).
+   */
   @Post()
-  @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @ApiOperation({
     summary: '신용초과 사전 승인 요청 (Step B)',
-    description: 'PENDING 상태 row 생성. 발송확정 forceConfirm 흐름 직전 호출.',
+    description:
+      'PENDING 상태 row 생성. 발송확정 1차 호출이 credit_excess_pending_approval 응답 반환 시 ' +
+      '기업관리자가 reasonText 입력 후 본 endpoint 호출. 운영자 approve 이후 ' +
+      'forceConfirm + creditExcessApprovalId 로 발송확정 2차 호출.',
   })
   async request(@User() user: ILoginUserInfo, @Body() body: CreditExcessApprovalRequestReqDto) {
     return this.service.request({ ...body, requestedBy: user.id });
   }
 
+  /**
+   * Step C - approve: 운영관리자 권한.
+   * Approval ID 는 BIGINT AUTO_INCREMENT (string 으로 직렬화).
+   */
   @Post(':id/approve')
   @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @ApiOperation({
     summary: '신용초과 사전 승인 처리 (Step C - approve)',
   })
-  async approve(@User() user: ILoginUserInfo, @Param('id', new ParseUUIDPipe()) id: string) {
-    return this.service.approve(id, user.id);
+  async approve(@User() user: ILoginUserInfo, @Param('id', ParseIntPipe) id: number) {
+    return this.service.approve(String(id), user.id);
   }
 
+  /**
+   * Step C - reject: 운영관리자 권한.
+   */
   @Post(':id/reject')
   @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @ApiOperation({
@@ -83,9 +100,9 @@ export class CreditExcessApprovalController {
   })
   async reject(
     @User() user: ILoginUserInfo,
-    @Param('id', new ParseUUIDPipe()) id: string,
+    @Param('id', ParseIntPipe) id: number,
     @Body() body: CreditExcessApprovalRejectReqDto,
   ) {
-    return this.service.reject(id, user.id, body.rejectReason);
+    return this.service.reject(String(id), user.id, body.rejectReason);
   }
 }
