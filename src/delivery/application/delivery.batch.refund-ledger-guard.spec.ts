@@ -32,6 +32,9 @@ import { DeliverySendService } from './delivery.send.service';
 import { RefundLedgerService } from './refund-ledger.service';
 import { SsgInsertStateService } from './ssg-insert-state.service';
 import { SsgRefundResolverService } from './ssg-refund.resolver';
+import { WalletManagedPredicate } from '../../wallet/application/wallet-managed.predicate';
+import { RefundPoolService } from '../../wallet/application/refund-pool.service';
+import { OrderDeliveryAttemptEntity } from '../../entity/order.delivery.attempt.entity';
 
 /**
  * 이번 핫픽스 회귀 테스트:
@@ -180,6 +183,10 @@ describe('DeliveryBatchService.reissuePinAndCreateImageIfNeeded - refund ledger 
         { provide: RefundLedgerService, useValue: refundLedgerService },
         { provide: SsgInsertStateService, useValue: ssgInsertStateService },
         { provide: SsgRefundResolverService, useValue: ssgRefundResolverService },
+        // PR2-006 wallet hook DI — default non-wallet path (isWalletManaged=false)
+        { provide: WalletManagedPredicate, useValue: { isWalletManaged: jest.fn().mockResolvedValue(false) } },
+        { provide: RefundPoolService, useValue: { refund: jest.fn() } },
+        { provide: getRepositoryToken(OrderDeliveryAttemptEntity), useValue: { findOne: jest.fn() } },
       ],
     }).compile();
 

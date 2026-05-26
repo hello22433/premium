@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { DeliveryAlimTalkInfoBankHttp } from './infra/delivery.alim.talk.info.bank.http';
 import { HttpModule } from '@nestjs/axios';
 import { TypeOrmModule } from '@nestjs/typeorm';
@@ -7,6 +7,7 @@ import { DeliveryBatchService } from './application/delivery.batch.service';
 import { DeliverySendService } from './application/delivery.send.service';
 import { OrderDeliveryEntity } from '../entity/order.delivery.entity';
 import { OrderDeliveryRefundEntity } from '../entity/order.delivery.refund.entity';
+import { OrderDeliveryAttemptEntity } from '../entity/order.delivery.attempt.entity';
 import { DeliveryBatchSchedule } from './delivery.batch.schedule';
 import { RefundLedgerService } from './application/refund-ledger.service';
 import { SsgRefundResolverService } from './application/ssg-refund.resolver';
@@ -26,6 +27,7 @@ import { SsgIssueLogEntity } from '../entity/ssg.issue.log.entity';
 import { PartnerCompanyExternModule } from '../partner_company_extern/partner.company.extern.module';
 import { SsgEventModule } from '../ssg_event/ssg.event.module';
 import { UserManagementModule } from '../user_management/user.management.module';
+import { WalletModule } from '../wallet/wallet.module';
 
 @Module({
   imports: [
@@ -35,6 +37,7 @@ import { UserManagementModule } from '../user_management/user.management.module'
       OrderEntity,
       OrderDeliveryEntity,
       OrderDeliveryRefundEntity,
+      OrderDeliveryAttemptEntity,
       OrderRealProductEntity,
       OrderRealProductMappingEntity,
       DeliverySendHistoryEntity,
@@ -50,6 +53,7 @@ import { UserManagementModule } from '../user_management/user.management.module'
     SsgEventModule,
     UserManagementModule,
     SsgInsertStateModule,
+    forwardRef(() => WalletModule),
   ],
   providers: [
     {

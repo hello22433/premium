@@ -20,6 +20,11 @@ import { DeliverySendHistoryEntity } from '../../entity/delivery.send.history.en
 import { EmailSendHistoryEntity } from '../../entity/email.send.history.entity';
 import { UserEntity } from '../../entity/user.entity';
 import { SsgEventEntity } from '../../entity/ssg.event.entity';
+import {
+  OrderDeliveryAttemptEntity,
+  OrderDeliveryAttemptType,
+} from '../../entity/order.delivery.attempt.entity';
+import { OrderPaymentRefundEventType } from '../../entity/order.payment.refund.event.entity';
 
 import { DeliveryAlimTalk } from '../interface/delivery.alim.talk';
 import { IOrderDeliveryStatus } from '../interface/order.delivery.status';
@@ -64,6 +69,8 @@ import { SsgInsertStateService } from './ssg-insert-state.service';
 import { SsgInsertState } from '../interface/ssg.insert.state';
 import { SsgRefundResolverService } from './ssg-refund.resolver';
 import { SsgRefundOutcome } from '../interface/ssg.refund.resolve';
+import { WalletManagedPredicate } from '../../wallet/application/wallet-managed.predicate';
+import { RefundPoolService } from '../../wallet/application/refund-pool.service';
 
 @Injectable()
 export class DeliveryBatchService {
@@ -102,6 +109,10 @@ export class DeliveryBatchService {
     private refundLedgerService: RefundLedgerService,
     private ssgRefundResolverService: SsgRefundResolverService,
     private ssgInsertStateService: SsgInsertStateService,
+    private readonly walletManagedPredicate: WalletManagedPredicate,
+    private readonly refundPoolService: RefundPoolService,
+    @InjectRepository(OrderDeliveryAttemptEntity)
+    private readonly orderDeliveryAttemptRepository: Repository<OrderDeliveryAttemptEntity>,
   ) {}
 
   private readonly logger = new Logger('batch');
@@ -252,19 +263,45 @@ export class DeliveryBatchService {
         }
       }
 
-      if (shouldRestoreBalance) {
-        await this.userManagementService.addBalance(userId, settlementPrice, `발송 실패 환불 (주문번호: ${order.id})`);
+      const isWalletManaged = await this.walletManagedPredicate.isWalletManaged(order.id);
+      if (isWalletManaged) {
+        const initialAttempt = await this.orderDeliveryAttemptRepository.findOne({
+          where: {
+            orderDeliveryId: orderDelivery.id,
+            attemptType: OrderDeliveryAttemptType.INITIAL,
+          },
+        });
+        if (!initialAttempt) {
+          // drift: wallet 분기 진입했는데 PR2-005 deliveryConfirmed hook 이 INITIAL attempt 를 남기지 않은 상황.
+          // BadRequestException 으로 던지면 outer catch 의 "중복 차단 (정상)" warn 분기로 흡수되므로,
+          // 일반 Error 로 surface 해 error 로그 + 운영 점검 신호로 떨어지게 한다.
+          throw new Error(
+            `wallet-managed delivery ${orderDelivery.id} missing INITIAL attempt — drift, aborting refund`,
+          );
+        }
+        await this.refundPoolService.refund({
+          orderId: order.id,
+          eventType: OrderPaymentRefundEventType.FAIL_REFUND,
+          targetDeliveryIds: [orderDelivery.id],
+          idempotencyKeyPrefix: `fail_refund:${order.id}:${orderDelivery.id}:${initialAttempt.id}`,
+        });
+        this.logger.log(
+          `[REFUND] wallet path complete - orderDelivery.id: ${orderDelivery.id}, attemptId: ${initialAttempt.id}`,
+        );
       } else {
-        await this.userRepository
-          .createQueryBuilder()
-          .update()
-          .set({ allSettleAmount: () => 'all_settle_amount - :amount' })
-          .where('id = :id', { id: userId })
-          .setParameters({ amount: settlementPrice })
-          .execute();
+        if (shouldRestoreBalance) {
+          await this.userManagementService.addBalance(userId, settlementPrice, `발송 실패 환불 (주문번호: ${order.id})`);
+        } else {
+          await this.userRepository
+            .createQueryBuilder()
+            .update()
+            .set({ allSettleAmount: () => 'all_settle_amount - :amount' })
+            .where('id = :id', { id: userId })
+            .setParameters({ amount: settlementPrice })
+            .execute();
+        }
+        this.logger.log(`[REFUND] legacy path complete - orderDelivery.id: ${orderDelivery.id}, amount: ${settlementPrice} (정가: ${productPrice})`);
       }
-
-      this.logger.log(`[REFUND] 환불 완료 - orderDelivery.id: ${orderDelivery.id}, amount: ${settlementPrice} (정가: ${productPrice})`);
     } catch (error) {
       if (error instanceof BadRequestException) {
         this.logger.warn(`[REFUND] 환불 중복 차단 (정상) - orderDelivery.id: ${orderDelivery.id}, message: ${error.message}`);
