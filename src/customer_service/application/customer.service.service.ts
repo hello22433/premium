@@ -31,6 +31,13 @@ import { CustomerServiceDlvryDetailViewDto } from '../api/dto/customer.service.d
 import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
 import { DeliveryBatchService } from '../../delivery/application/delivery.batch.service';
 import { RefundLedgerService } from '../../delivery/application/refund-ledger.service';
+import { WalletManagedPredicate } from '../../wallet/application/wallet-managed.predicate';
+import { RefundPoolService } from '../../wallet/application/refund-pool.service';
+import {
+  OrderDeliveryAttemptEntity,
+  OrderDeliveryAttemptType,
+} from '../../entity/order.delivery.attempt.entity';
+import { OrderPaymentRefundEventType } from '../../entity/order.payment.refund.event.entity';
 import { OrderDeliveryRefundRestoreType } from '../../entity/order.delivery.refund.entity';
 import { OrderDeliveryCouponStatus, couponStatusToKorean } from '../../delivery/interface/order.delivery.coupon.status';
 import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
@@ -97,6 +104,8 @@ export class CustomerServiceService {
     @InjectRepository(UserTaskHistoryEntity)
     private readonly userTaskHistoryRepository: Repository<UserTaskHistoryEntity>,
     private readonly dataSource: DataSource,
+    private readonly walletManagedPredicate: WalletManagedPredicate,
+    private readonly refundPoolService: RefundPoolService,
   ) {}
 
   /**
@@ -256,6 +265,28 @@ export class CustomerServiceService {
       adminUserId: operatorUser.id,
       content: `${operatorName}/ ${restoreAmount.toLocaleString()}원 폐기/ 회수/ ${contactNumber} 폐기/ ${now}`,
     });
+
+    // Wallet Cutover Bundle PR4 — wallet-managed 주문이면 wallet_account + wallet ledger 갱신.
+    // legacy 잔액 mirror (위 balance/allSettleAmount UPDATE) 는 그대로 유지 → wallet/legacy 합계 일관.
+    // 멱등키 = discard_refund:{orderId}:{deliveryId}:{attemptId} — same delivery 동일 attempt 재호출 시 멱등.
+    const isWalletManaged = await this.walletManagedPredicate.isWalletManaged(order.id, queryRunner.manager);
+    if (isWalletManaged) {
+      const latestAttempt = await queryRunner.manager.findOne(OrderDeliveryAttemptEntity, {
+        where: { orderDeliveryId: orderDelivery.id, attemptType: OrderDeliveryAttemptType.INITIAL },
+        order: { id: 'DESC' },
+      });
+      if (!latestAttempt) {
+        throw new Error(
+          `wallet-managed delivery ${orderDelivery.id} missing INITIAL attempt — drift, aborting discard refund`,
+        );
+      }
+      await this.refundPoolService.refund({
+        orderId: order.id,
+        eventType: OrderPaymentRefundEventType.DISCARD_REFUND,
+        targetDeliveryIds: [orderDelivery.id],
+        idempotencyKeyPrefix: `discard_refund:${order.id}:${orderDelivery.id}:${latestAttempt.id}`,
+      });
+    }
   }
 
   async getList(getQuery: CustomerServiceGetListReqDto): Promise<CustomerServiceGetListResDto> {
