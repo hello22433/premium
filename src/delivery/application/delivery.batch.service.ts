@@ -286,20 +286,29 @@ export class DeliveryBatchService {
       }
     }
 
-    // 2) SSG 행사 잔액 복구. 첫 진입 시에만 실행.
-    //    claim 중복 (wallet retry) 시에는 SSG 측이 이미 1차 시도에서 처리됐을 가능성 높음 → 재실행 차단.
-    //    SSG resolver 가 자체 state-based 멱등을 가지지만, 보수적으로 첫 진입에만 호출.
-    //    DEFERRED 신호는 ledger.ssg_balance_settled=false 로 남아 다음 재발송 가드에서 차단됨.
-    if (isSsg && !claimWasDuplicate) {
-      const outcome = await this.ssgRefundResolverService.resolveAndRefundIfNeeded({
-        orderDeliveryId: orderDelivery.id,
-        ssgEventId: orderDelivery.ssgEventId!,
-        refundAmount: productPrice,
-        orderId: order.id,
-      });
-      if (outcome === SsgRefundOutcome.DEFERRED) {
-        this.logger.error(
-          `[REFUND] SSG 잔액 보정 DEFERRED — ledger.ssg_balance_settled=false 유지. 운영 점검 필요. orderDelivery.id: ${orderDelivery.id}`,
+    // 2) SSG 행사 잔액 복구.
+    //    claim 중복 (wallet retry) 케이스에서도 ledger.ssg_balance_settled=false 면 SSG 측이
+    //    아직 보정되지 않은 상태이므로 resolver 재실행해야 한다 (DEFERRED / crash 회복 시나리오).
+    //    true 면 이미 SSG 처리 완료 → skip (이중 복구 차단).
+    if (isSsg) {
+      const ssgAlreadySettled = claimWasDuplicate
+        ? await this.refundLedgerService.isSsgSettled(orderDelivery.id)
+        : false;
+      if (!ssgAlreadySettled) {
+        const outcome = await this.ssgRefundResolverService.resolveAndRefundIfNeeded({
+          orderDeliveryId: orderDelivery.id,
+          ssgEventId: orderDelivery.ssgEventId!,
+          refundAmount: productPrice,
+          orderId: order.id,
+        });
+        if (outcome === SsgRefundOutcome.DEFERRED) {
+          this.logger.error(
+            `[REFUND] SSG 잔액 보정 DEFERRED — ledger.ssg_balance_settled=false 유지. 운영 점검 필요. orderDelivery.id: ${orderDelivery.id}`,
+          );
+        }
+      } else {
+        this.logger.log(
+          `[REFUND] SSG 보정 skip — ssg_balance_settled=true (이미 보정 완료). orderDelivery.id: ${orderDelivery.id}`,
         );
       }
     }
@@ -1015,6 +1024,7 @@ export class DeliveryBatchService {
    *
    * @param skipSsg SSG 선차감이 이미 완료된 경우 true (SSG chargeBack 스킵)
    */
+  @Transactional()
   private async reverseRefundForResend(orderDelivery: OrderDeliveryEntity, skipSsg: boolean = false): Promise<void> {
     const order = orderDelivery.orderProductMapping.order;
     const mapping = orderDelivery.orderProductMapping;
@@ -1023,27 +1033,28 @@ export class DeliveryBatchService {
     const userId = order.clientUserId ?? order.user!.id;
     const shouldRestoreBalance = order.isSettleComplete || order.isSettleBalance;
 
-    try {
-      // SSG chargeBack 신호 영역 — state 기반 분기.
-      // 신호 분리 정책 (PR3) — SSG chargeBack 실패는 고객 재차감을 막지 않는다.
-      // throw 흡수 + error 로그만 남기고 아래 deductBalance/allSettleAmount 가산 계속.
-      if (!skipSsg && order.type === IOrderType.SSG && orderDelivery.ssgEventId) {
-        try {
-          const state = await this.ssgInsertStateService.getState(orderDelivery.id);
-          if (state === SsgInsertState.CONFIRMED) {
-            this.logger.log(
-              `[RESEND] SSG chargeBack skip — state=CONFIRMED. orderDelivery.id=${orderDelivery.id}`,
-            );
-          } else {
-            await this.ssgEventService.chargeBackForResend(orderDelivery.ssgEventId, order.id, productPrice);
-          }
-        } catch (ssgError) {
-          this.logger.error(
-            `[RESEND] SSG chargeBack 실패 — 고객 재차감은 계속 진행. orderDelivery.id=${orderDelivery.id}, error: ${ssgError}`,
+    // SSG chargeBack — external SSG-side state change. cls TX 밖 effect 라 try/흡수 (실패가 고객 재차감을 막지 않음).
+    if (!skipSsg && order.type === IOrderType.SSG && orderDelivery.ssgEventId) {
+      try {
+        const state = await this.ssgInsertStateService.getState(orderDelivery.id);
+        if (state === SsgInsertState.CONFIRMED) {
+          this.logger.log(
+            `[RESEND] SSG chargeBack skip — state=CONFIRMED. orderDelivery.id=${orderDelivery.id}`,
           );
+        } else {
+          await this.ssgEventService.chargeBackForResend(orderDelivery.ssgEventId, order.id, productPrice);
         }
+      } catch (ssgError) {
+        this.logger.error(
+          `[RESEND] SSG chargeBack 실패 — 고객 재차감은 계속 진행. orderDelivery.id=${orderDelivery.id}, error: ${ssgError}`,
+        );
       }
+    }
 
+    // legacy mirror + wallet ledger/잔액 atomic — 본 메소드 @Transactional() 데코레이터 cls TX 사용.
+    // userManagementService/refundLedgerService 가 cls-tracked manager 를 통해 자동으로 같은 TX 에 흡수.
+    // 어느 단계라도 throw 시 전체 rollback → wallet/legacy drift 방지.
+    try {
       if (shouldRestoreBalance) {
         await this.userManagementService.deductBalance(userId, settlementPrice, `재발송 역환불 (주문번호: ${order.id})`);
       } else {
@@ -1058,22 +1069,25 @@ export class DeliveryBatchService {
 
       await this.refundLedgerService.release(orderDelivery.id);
 
-      this.logger.log(`[RESEND] 환불 복구 완료 (legacy) - orderDelivery.id: ${orderDelivery.id}, amount: ${settlementPrice} (정가: ${productPrice})`);
+      // wallet 재차감 + refund ledger 역처리 — this.orderRepository.manager (cls-tracked) 로 same TX.
+      const isWalletManaged = await this.walletManagedPredicate.isWalletManaged(
+        order.id,
+        this.orderRepository.manager,
+      );
+      if (isWalletManaged) {
+        await this.applyWalletReverseRefundForResendOnManager(orderDelivery, this.orderRepository.manager);
+      }
+
+      this.logger.log(
+        `[RESEND] 환불 복구 완료 (atomic) - orderDelivery.id: ${orderDelivery.id}, amount: ${settlementPrice} (정가: ${productPrice})`,
+      );
     } catch (error) {
       if (error instanceof BadRequestException) {
         this.logger.warn(`[RESEND] 환불 복구 중복 차단 (정상) - orderDelivery.id: ${orderDelivery.id}, message: ${error.message}`);
         return;
       }
-      // legacy 단계 throw 는 outer batch handler 에서 claimedAt reset → 재시도.
+      // legacy + wallet 단계 throw → @Transactional cls TX rollback + outer batch handler 에서 claimedAt reset → 재시도.
       throw error;
-    }
-
-    // Wallet Cutover Bundle PR4 — wallet-managed 주문은 wallet 잔액 재차감 + refund ledger 역처리.
-    // try/catch 밖에서 호출해 wallet 실패가 caller (reissuePinAndCreateImageIfNeeded) 까지 전파되도록 한다
-    // (plan §4 / qa D2-11: 내부 환불/차감 실패는 silent swallow 금지).
-    const isWalletManaged = await this.walletManagedPredicate.isWalletManaged(order.id);
-    if (isWalletManaged) {
-      await this.applyWalletReverseRefundForResend(orderDelivery);
     }
   }
 
@@ -1089,61 +1103,62 @@ export class DeliveryBatchService {
    * 다중 active ledger 안전 가드: candidates 안에 delivery 매칭 row 가 2건 이상이면 silent
    * 잘못된 reverse 위험 → explicit throw (부분환불 도입 시점에 검토 필요).
    */
-  private async applyWalletReverseRefundForResend(orderDelivery: OrderDeliveryEntity): Promise<void> {
+  private async applyWalletReverseRefundForResendOnManager(
+    orderDelivery: OrderDeliveryEntity,
+    manager: import('typeorm').EntityManager,
+  ): Promise<void> {
     const order = orderDelivery.orderProductMapping.order;
 
-    await this.dataSource.transaction(async (manager) => {
-      // 1) RESEND attempt row 생성 — cycle id 사용
-      const attempt = await manager.save(OrderDeliveryAttemptEntity, {
-        orderDeliveryId: orderDelivery.id,
-        attemptType: OrderDeliveryAttemptType.RESEND,
-        status: OrderDeliveryAttemptStatus.DEDUCTED,
-        deductedAt: new Date(),
-      });
-
-      // 2) 최신 active refund ledger row lookup (allocation 기준 + affectedDeliveryIds 포함)
-      const allocation = await manager.findOne(OrderPaymentAllocationEntity, {
-        where: { orderId: order.id },
-      });
-      if (!allocation) {
-        throw new Error(`wallet-managed but allocation row missing for orderId=${order.id}`);
-      }
-      const candidates = await manager.find(OrderPaymentRefundEventEntity, {
-        where: { allocationId: allocation.id, reversedAt: IsNull() },
-        order: { id: 'DESC' },
-      });
-      const matchingLedgers = candidates.filter(
-        (c) => Array.isArray(c.affectedDeliveryIds) && c.affectedDeliveryIds.includes(orderDelivery.id),
-      );
-      if (matchingLedgers.length === 0) {
-        throw new Error(
-          `wallet-managed reverseRefundForResend: no active refund ledger for delivery=${orderDelivery.id}`,
-        );
-      }
-      if (matchingLedgers.length > 1) {
-        // 부분환불/다중 ledger 도입 시점에 명시 정책 필요. 현재 단일 ledger invariant 위반 시 abort.
-        throw new Error(
-          `wallet-managed reverseRefundForResend: multiple active ledgers for delivery=${orderDelivery.id} ` +
-            `(count=${matchingLedgers.length}). aborting to avoid silent mis-reverse.`,
-        );
-      }
-      const ledger = matchingLedgers[0];
-
-      // 3) reverseRefund + resendDeduct (same TX)
-      await this.refundPoolService.reverseRefund(ledger.id, attempt.id, manager);
-      await this.resendDeductService.resendDeduct(
-        {
-          orderId: order.id,
-          orderDeliveryId: orderDelivery.id,
-          attemptId: attempt.id,
-        },
-        manager,
-      );
-
-      this.logger.log(
-        `[RESEND] wallet path complete - orderDelivery.id=${orderDelivery.id}, attemptId=${attempt.id}, ledgerId=${ledger.id}`,
-      );
+    // 1) RESEND attempt row 생성 — cycle id 사용
+    const attempt = await manager.save(OrderDeliveryAttemptEntity, {
+      orderDeliveryId: orderDelivery.id,
+      attemptType: OrderDeliveryAttemptType.RESEND,
+      status: OrderDeliveryAttemptStatus.DEDUCTED,
+      deductedAt: new Date(),
     });
+
+    // 2) 최신 active refund ledger row lookup (allocation 기준 + affectedDeliveryIds 포함)
+    const allocation = await manager.findOne(OrderPaymentAllocationEntity, {
+      where: { orderId: order.id },
+    });
+    if (!allocation) {
+      throw new Error(`wallet-managed but allocation row missing for orderId=${order.id}`);
+    }
+    const candidates = await manager.find(OrderPaymentRefundEventEntity, {
+      where: { allocationId: allocation.id, reversedAt: IsNull() },
+      order: { id: 'DESC' },
+    });
+    const matchingLedgers = candidates.filter(
+      (c) => Array.isArray(c.affectedDeliveryIds) && c.affectedDeliveryIds.includes(orderDelivery.id),
+    );
+    if (matchingLedgers.length === 0) {
+      throw new Error(
+        `wallet-managed reverseRefundForResend: no active refund ledger for delivery=${orderDelivery.id}`,
+      );
+    }
+    if (matchingLedgers.length > 1) {
+      // 부분환불/다중 ledger 도입 시점에 명시 정책 필요. 현재 단일 ledger invariant 위반 시 abort.
+      throw new Error(
+        `wallet-managed reverseRefundForResend: multiple active ledgers for delivery=${orderDelivery.id} ` +
+          `(count=${matchingLedgers.length}). aborting to avoid silent mis-reverse.`,
+      );
+    }
+    const ledger = matchingLedgers[0];
+
+    // 3) reverseRefund + resendDeduct — caller TX manager 그대로 전파
+    await this.refundPoolService.reverseRefund(ledger.id, attempt.id, manager);
+    await this.resendDeductService.resendDeduct(
+      {
+        orderId: order.id,
+        orderDeliveryId: orderDelivery.id,
+        attemptId: attempt.id,
+      },
+      manager,
+    );
+
+    this.logger.log(
+      `[RESEND] wallet path complete - orderDelivery.id=${orderDelivery.id}, attemptId=${attempt.id}, ledgerId=${ledger.id}`,
+    );
   }
 
   /**
