@@ -36,13 +36,17 @@ export class FileService {
 
   async createPdf(file: Express.Multer.File) {
     if (!file) {
-      throw new BadRequestException('not exist image file');
+      throw new BadRequestException('not exist pdf file');
     }
 
     // 한글 깨짐 방지
     file.originalname = Buffer.from(file.originalname, 'latin1').toString('utf8');
 
-    const fileReturn = await this.fileStorage.uploadImageFile(file);
+    if (file.mimetype !== 'application/pdf') {
+      throw new BadRequestException('PDF 파일만 업로드 가능합니다.');
+    }
+
+    const fileReturn = await this.fileStorage.uploadFile(file);
 
     return { url: fileReturn.url };
   }

@@ -62,6 +62,7 @@ import * as process from 'node:process';
 import { AuthService } from '../../auth/application/auth.service';
 import { UserAuthSubEnum } from '../../user_management/domain/user.auth.enum';
 import { AuthUserSuperAdminGuard } from '../../auth/api/auth.user.super-admin.guard';
+import { AuthUserSuperAndOperationAdminGuard } from '../../auth/api/auth.user.super-operation-admin.guard';
 
 const PRODUCT_SHARED_LIST_FILE_MAX_SIZE = 10 * 1024 * 1024;
 
@@ -243,6 +244,7 @@ export class ProductController {
     description: '업로드 하고자 하는 엑셀 파일',
   })
   // =========================================
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @Post('/product/excel-upload')
   @UseInterceptors(FileInterceptor('file'))
   excelUpload(@User() user: ILoginUserInfo, @UploadedFile() file: Express.Multer.File) {
@@ -259,6 +261,7 @@ export class ProductController {
     description: '업로드 하고자 하는 엑셀 파일',
   })
   // =========================================
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @Post('/product/excel-upload-with-progress')
   @UseInterceptors(FileInterceptor('file'))
   async excelUploadWithProgress(

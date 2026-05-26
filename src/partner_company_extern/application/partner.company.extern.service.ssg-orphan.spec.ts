@@ -13,6 +13,7 @@ import { Repository } from 'typeorm';
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { SsgInsertStateService } from '../../delivery/application/ssg-insert-state.service';
 import { SsgInsertState } from '../../delivery/interface/ssg.insert.state';
+import { GalaxiaBarcodeLogEntity } from '../../entity/galaxia.barcode.log.entity';
 import { GiftielExchangeHistoryEntity } from '../../entity/giftiel.exchange.history.entity';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { PartnerCompanyEntity } from '../../entity/partner.company.entity';
@@ -102,6 +103,7 @@ describe('PartnerCompanyExternService - SSG orphan resolver', () => {
         { provide: getRepositoryToken(PinIssueDedupEntity), useValue: makeRepoMock() },
         { provide: getRepositoryToken(SsgIssueLogEntity), useValue: ssgIssueLogRepository },
         { provide: getRepositoryToken(GiftielExchangeHistoryEntity), useValue: makeRepoMock() },
+        { provide: getRepositoryToken(GalaxiaBarcodeLogEntity), useValue: makeRepoMock() },
         { provide: CryptoCipher, useValue: { safeDecryptDeliveryTarget: jest.fn() } },
         { provide: SsgInsertStateService, useValue: ssgInsertStateService },
       ],

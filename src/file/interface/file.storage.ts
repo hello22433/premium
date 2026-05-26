@@ -19,5 +19,5 @@ export interface IFileStorage {
    * @param imageUrl 외부 이미지 URL
    * @returns S3에 저장된 이미지 URL
    */
-  copyImageFromUrl(imageUrl: string): Promise<IFileUploadFileReturn>;
+  copyImageFromUrl(imageUrl: string, safeIp: string): Promise<IFileUploadFileReturn>;
 }

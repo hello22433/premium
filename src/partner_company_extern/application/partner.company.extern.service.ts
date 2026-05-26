@@ -12,6 +12,7 @@ import { IGiftiel } from '../interface/giftiel';
 import { IGiftiShow } from '../interface/giftishow';
 import { IDaou } from '../interface/daou';
 import { PartnerCompanyExternHistoryEntity } from '../../entity/partner.company.extern.history.entity';
+import { GalaxiaBarcodeLogEntity } from '../../entity/galaxia.barcode.log.entity';
 import { GiftielExchangeHistoryEntity } from '../../entity/giftiel.exchange.history.entity';
 import { ISsgCheckOut, ISsgIssue } from '../interface/ssg.issue';
 import {
@@ -68,6 +69,8 @@ export class PartnerCompanyExternService {
     private ssgIssueLogRepository: Repository<SsgIssueLogEntity>,
     @InjectRepository(GiftielExchangeHistoryEntity)
     private giftielExchangeHistoryRepository: Repository<GiftielExchangeHistoryEntity>,
+    @InjectRepository(GalaxiaBarcodeLogEntity)
+    private galaxiaBarcodeLogRepository: Repository<GalaxiaBarcodeLogEntity>,
     private cryptoCipher: CryptoCipher,
     private ssgInsertStateService: SsgInsertStateService,
   ) {}
@@ -801,7 +804,25 @@ export class PartnerCompanyExternService {
           orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
           orderDelivery.discardedAt = new Date();
         } else if (giftCertificate.couponStatus === 'INACTIVE') {
-          orderDelivery.couponStatus = OrderDeliveryCouponStatus.EXPIRED;
+          // INACTIVE는 자연 만료와 81 환불(End User 직접 환불)이 합쳐져 응답될 수 있음.
+          // check API 응답에는 거래구분(appDiv)이 없어 INACTIVE만으로는 환불/만료 구분 불가.
+          // 81 로그는 push(또는 daily)로 채워지므로 push 유실 시 비어 있을 수 있다(영구 EXPIRED 오분류).
+          // → 유효기간(validTo)을 주신호로 사용: 아직 유효기간이 남았는데 INACTIVE면 자연 만료가
+          //   불가능하므로 환불(REFUND_CANCEL)로 본다. 81 로그가 있으면(=push/daily 도착) 그 역시 환불 근거.
+          //   둘 중 하나라도 성립하면 REFUND_CANCEL, 아니면(유효기간 지남 & 81 로그 없음) 만료.
+          const stillValid = !!giftCertificate.validTo && !isExpiredYMD(giftCertificate.validTo);
+          const has81Refund = await this.galaxiaBarcodeLogRepository.existsBy({
+            orderDeliveryId: orderDelivery.id,
+            appDiv: '81',
+          });
+          if (stillValid || has81Refund) {
+            orderDelivery.couponStatus = OrderDeliveryCouponStatus.REFUND_CANCEL;
+            if (!orderDelivery.discardedAt) {
+              orderDelivery.discardedAt = new Date();
+            }
+          } else {
+            orderDelivery.couponStatus = OrderDeliveryCouponStatus.EXPIRED;
+          }
         } else if (giftCertificate.isUsed) {
           orderDelivery.couponStatus = OrderDeliveryCouponStatus.USED;
         } else if (isExpiredYMD(giftCertificate.validTo)) {
