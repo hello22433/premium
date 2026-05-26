@@ -17,11 +17,13 @@ import { SettleSchedule } from './settle.schedule';
 import { ActivityLogModule } from '../activity_log/activity.log.module';
 import { GalaxiaBarcodeLogEntity } from '../entity/galaxia.barcode.log.entity';
 import { ActivityLogEntity } from '../entity/activity.log.entity';
+import { WalletModule } from '../wallet/wallet.module';
 
 @Module({
   imports: [
     AuthModule,
     ActivityLogModule,
+    WalletModule,
     TypeOrmModule.forFeature([
       OrderEntity,
       OrderDeliveryEntity,

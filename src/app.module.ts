@@ -49,6 +49,7 @@ import { OrderReceiptModule } from './order_receipt/order.receipt.module';
 import { ExternalApiModule } from './external_api/external.api.module';
 import { ExternalApiWebhookModule } from './external_api/webhook/external.api.webhook.module';
 import { SidebarModule } from './sidebar/sidebar.module';
+import { WalletModule } from './wallet/wallet.module';
 
 @Module({
   imports: [
@@ -104,6 +105,7 @@ import { SidebarModule } from './sidebar/sidebar.module';
     ExternalApiModule,
     ExternalApiWebhookModule,
     SidebarModule,
+    WalletModule,
   ],
   controllers: [AppController],
   providers: [],

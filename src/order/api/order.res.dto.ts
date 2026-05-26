@@ -268,21 +268,36 @@ export class OrderGetOrderCompleteReportResDto extends OrderCompleteReportViewDt
 
 export class OrderDeliveryConfirmed {
   @ApiProperty({
-    description: '메세지 ex) 전체 성공 : success, 일부 실패가 존재하는 경우 : fail, 한도 초과 : credit_excess',
+    description:
+      '메세지 ex) 전체 성공 : success, 일부 실패가 존재하는 경우 : fail, 한도 초과(1차) : credit_excess, ' +
+      '신용초과 사전 승인 필요(WALLET 모드 2차) : credit_excess_pending_approval',
   })
   message: string;
 
   @ApiPropertyOptional({ description: '한도 초과 여부' })
   creditExcess?: boolean;
 
-  @ApiPropertyOptional({ description: '초과 금액' })
+  @ApiPropertyOptional({ description: '초과 금액 (= requestedCreditExcessAmount)' })
   excessAmount?: number;
 
   @ApiPropertyOptional({ description: '잔여 한도' })
   remainServiceAmount?: number;
 
-  @ApiPropertyOptional({ description: '필요 금액' })
+  @ApiPropertyOptional({ description: '필요 금액 (= requestedAmount)' })
   finalAmount?: number;
+
+  /**
+   * WALLET 모드 credit_excess_pending_approval 응답 시 함께 반환.
+   * 클라이언트는 본 값들을 POST /credit-excess-approvals 요청 body 에 그대로 전달.
+   */
+  @ApiPropertyOptional({ description: 'wallet_account ID (BIGINT 직렬화 string)' })
+  walletAccountId?: string;
+
+  @ApiPropertyOptional({ description: '신용초과 사전 승인 요청 금액 (= excessAmount)' })
+  requestedCreditExcessAmount?: number;
+
+  @ApiPropertyOptional({ description: '신용초과 사전 승인 총 청구 금액 (= finalAmount)' })
+  requestedAmount?: number;
 }
 
 export class OrderGetSettleGetListResDto extends GetListResDto {

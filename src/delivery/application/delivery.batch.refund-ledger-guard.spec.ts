@@ -8,7 +8,7 @@ jest.mock('typeorm-transactional', () => ({
 
 import { ConfigService } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
-import { getRepositoryToken } from '@nestjs/typeorm';
+import { getRepositoryToken, getDataSourceToken } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { DeliverySendHistoryEntity } from '../../entity/delivery.send.history.entity';
 import { EmailSendHistoryEntity } from '../../entity/email.send.history.entity';
@@ -32,6 +32,12 @@ import { DeliverySendService } from './delivery.send.service';
 import { RefundLedgerService } from './refund-ledger.service';
 import { SsgInsertStateService } from './ssg-insert-state.service';
 import { SsgRefundResolverService } from './ssg-refund.resolver';
+import { WalletManagedPredicate } from '../../wallet/application/wallet-managed.predicate';
+import { RefundPoolService } from '../../wallet/application/refund-pool.service';
+import { ResendDeductService } from '../../wallet/application/resend-deduct.service';
+import { OrderDeliveryAttemptEntity } from '../../entity/order.delivery.attempt.entity';
+import { OrderPaymentRefundEventEntity } from '../../entity/order.payment.refund.event.entity';
+import { OrderPaymentAllocationEntity } from '../../entity/order.payment.allocation.entity';
 
 /**
  * 이번 핫픽스 회귀 테스트:
@@ -180,6 +186,14 @@ describe('DeliveryBatchService.reissuePinAndCreateImageIfNeeded - refund ledger 
         { provide: RefundLedgerService, useValue: refundLedgerService },
         { provide: SsgInsertStateService, useValue: ssgInsertStateService },
         { provide: SsgRefundResolverService, useValue: ssgRefundResolverService },
+        // PR2-006 wallet hook DI — default non-wallet path (isWalletManaged=false)
+        { provide: WalletManagedPredicate, useValue: { isWalletManaged: jest.fn().mockResolvedValue(false) } },
+        { provide: RefundPoolService, useValue: { refund: jest.fn(), reverseRefund: jest.fn() } },
+        { provide: ResendDeductService, useValue: { resendDeduct: jest.fn(), resendUndo: jest.fn() } },
+        { provide: getRepositoryToken(OrderDeliveryAttemptEntity), useValue: { findOne: jest.fn(), save: jest.fn() } },
+        { provide: getRepositoryToken(OrderPaymentRefundEventEntity), useValue: { find: jest.fn().mockResolvedValue([]), findOne: jest.fn() } },
+        { provide: getRepositoryToken(OrderPaymentAllocationEntity), useValue: { findOne: jest.fn() } },
+        { provide: getDataSourceToken(), useValue: { transaction: jest.fn() } },
       ],
     }).compile();
 

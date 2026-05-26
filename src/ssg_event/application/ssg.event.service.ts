@@ -450,6 +450,10 @@ export class SsgEventService {
     const { code, no, order, name, startAt, endAt, couponExpiration, eventPrice } = getBody;
     const orderInsert = order ? order : 1;
 
+    if (!Number.isInteger(eventPrice) || eventPrice < 1) {
+      throw new BadRequestException('행사 금액은 1원 이상의 정수여야 합니다.');
+    }
+
     // endAt을 해당 날짜의 23:59:59로 설정
     const endAtDate = new Date(endAt);
     endAtDate.setHours(23, 59, 59);
@@ -485,6 +489,10 @@ export class SsgEventService {
   @Transactional()
   async updateAmount(getBody: SsgEventUpdateAmountReqDto) {
     const { id, amount } = getBody;
+
+    if (!Number.isInteger(amount) || amount < 1) {
+      throw new BadRequestException('충전 금액은 1원 이상의 정수여야 합니다.');
+    }
 
     const ssgEvent = await this.findSsgEventForUpdate(id);
 

@@ -1,0 +1,42 @@
+-- PR5 Wallet (최종): legacy 컬럼 DROP (DRAFT — 본 PR 에서는 실행 안 함)
+--
+-- ⚠️  본 파일은 별 PR (`20260601_pr5_drop_legacy_columns_final.sql`) 으로 분리 예정 ⚠️
+--     본 commit (feature/wallet-pr1-to-pr5) 머지 시점에는 RENAME 도 실행하지 않는다.
+--     entity 정의 (`balance` / `balanceManagementType` / `isSettleBalance` / `isCreditExcess`) 가
+--     아직 legacy 이름을 그대로 사용하고 6 caller 96 ref 가 그대로 참조하므로
+--     RENAME 즉시 실행 시 TypeORM 매핑 + 컴파일 단계에서 모두 깨진다.
+--
+-- ─── 실행 조건 (별 PR 머지 시점) ────────────────────────────────────
+--   1. PR1a~PR4 develop 머지 완료 + staging 1주 모니터링 무이상
+--   2. ESLint allowlist 비어있음 (`npm run lint` 통과 + `.eslintrc.js` overrides 6 caller 빈 배열)
+--   3. external_api 이관 완료 (resolvePayableResource() 활성 + isSettleBalance 응답 deprecated)
+--   4. wallet_account 무드리프트 (backfill SUM 검증 통과)
+--   5. 백업 완료
+--   6. 별 PR 에서 entity 컬럼 정의 동시 갱신 + 6 caller 96 ref 동시 이관
+--
+-- ─── 사전 검증 SQL (별도 실행) ─────────────────────────────────────
+-- SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'wallet_account';  -- = 1
+-- SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'wallet_transaction'; -- = 1
+-- SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'order_payment_allocation'; -- = 1
+-- SELECT IFNULL(SUM(deposit_balance), 0) FROM wallet_account; -- == Σ user.balance + Σ user_company.balance
+--
+-- ─── Phase 1: RENAME (별 PR에서 활성. 본 PR 에서는 주석 처리) ───────
+-- ALTER TABLE `user`
+--   CHANGE COLUMN `balance` `legacy_balance` INT NOT NULL DEFAULT 0 COMMENT 'PR5 DEPRECATED, deferred DROP',
+--   CHANGE COLUMN `allSettleAmount` `legacy_all_settle_amount` INT NOT NULL DEFAULT 0 COMMENT 'PR5 DEPRECATED, deferred DROP';
+--
+-- ALTER TABLE `user_company`
+--   CHANGE COLUMN `balance` `legacy_balance` INT NOT NULL DEFAULT 0 COMMENT 'PR5 DEPRECATED, deferred DROP',
+--   CHANGE COLUMN `balanceManagementType` `legacy_balance_management_type` VARCHAR(20) NOT NULL DEFAULT 'COMPANY' COMMENT 'PR5 DEPRECATED, deferred DROP';
+--
+-- ALTER TABLE `order`
+--   CHANGE COLUMN `isSettleBalance` `legacy_is_settle_balance` TINYINT(1) NOT NULL DEFAULT 0 COMMENT 'PR5 DEPRECATED, deferred DROP',
+--   CHANGE COLUMN `isCreditExcess` `legacy_is_credit_excess` TINYINT(1) NOT NULL DEFAULT 0 COMMENT 'PR5 DEPRECATED, deferred DROP';
+--
+-- ─── Phase 2: 최종 DROP (Phase 1 적용 + 1주 모니터링 무이상 후 별 마이그레이션) ─
+-- ALTER TABLE `user` DROP COLUMN `legacy_balance`, DROP COLUMN `legacy_all_settle_amount`;
+-- ALTER TABLE `user_company` DROP COLUMN `legacy_balance`, DROP COLUMN `legacy_balance_management_type`;
+-- ALTER TABLE `order` DROP COLUMN `legacy_is_settle_balance`, DROP COLUMN `legacy_is_credit_excess`;
+--
+-- 실행 시 ESLint 규칙도 제거 (`.eslintrc.js` no-restricted-properties 블록 삭제).
+-- entity 정의의 deprecated 컬럼도 삭제 + database.module 등록 정리.

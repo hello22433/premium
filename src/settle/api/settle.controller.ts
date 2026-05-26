@@ -438,7 +438,8 @@ export class SettleController {
   })
   // =====================================
   @Put('settle/user-per/order')
-  updateUserPerOrder(@Body() getDto: SettleUpdateUserPerOrderReqDto) {
+  async updateUserPerOrder(@User() user: ILoginUserInfo, @Body() getDto: SettleUpdateUserPerOrderReqDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.SETTLE_USER_MANAGE);
     return this.settleService.updateUserPerOrder(getDto);
   }
 

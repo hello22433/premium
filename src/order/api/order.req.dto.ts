@@ -269,6 +269,16 @@ export class OrderDeliveryConfirmedReqDto {
   @IsOptional()
   @IsBoolean()
   forceConfirm?: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      '신용초과 사전 승인 ID (CreditExcessApprovalService.request/approve 단계에서 발급). ' +
+      'WALLET 모드 + forceConfirm=true 케이스에서 credit_excess_amount > 0 이면 필수. ' +
+      '미주입 시 persistAllocation 가 credit_excess_approval_required 로 throw → TX rollback.',
+  })
+  @IsOptional()
+  @IsString()
+  creditExcessApprovalId?: string;
 }
 
 export class OrderReviewCompleteReqDto {
