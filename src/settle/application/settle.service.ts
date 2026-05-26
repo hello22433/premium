@@ -3056,6 +3056,11 @@ export class SettleService {
         deletedAt: IsNull(),
       },
       relations: ['orderProductMapping', 'orderProductMapping.product', 'orderProductMapping.order'],
+      // 소프트 삭제된 상품도 정산은 주문 당시 가격으로 계산해야 하므로 product를 포함한다.
+      // (find + relations는 relation에도 deletedAt 필터를 적용해 삭제된 product가 null이 됨)
+      // 주의: withDeleted는 order/orderProductMapping relation 필터까지 해제한다. root delivery는
+      // where의 deletedAt: IsNull()로 계속 필터되며, 호출부가 소프트삭제 주문 ID를 넘기지 않는다는 전제에 의존한다.
+      withDeleted: true,
     });
 
     for (const d of deliveries) {
@@ -3068,11 +3073,9 @@ export class SettleService {
         continue;
       }
 
-      if (d.status !== IOrderDeliveryStatus.COMPLETE && d.status !== IOrderDeliveryStatus.COMPLETE_SMS) continue;
+      const isComplete = d.status === IOrderDeliveryStatus.COMPLETE || d.status === IOrderDeliveryStatus.COMPLETE_SMS;
       // CANCEL(고객사 폐기 요청)만 정산 제외. REFUND_CANCEL(수령 고객 환불)은 고객사 정산 100% 유지
-      if (d.couponStatus === OrderDeliveryCouponStatus.CANCEL) {
-        continue;
-      }
+      if (!isComplete || d.couponStatus === OrderDeliveryCouponStatus.CANCEL) continue;
 
       entry.netAmount += calculateSettlementPrice(
         d.orderProductMapping,
