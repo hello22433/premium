@@ -20,6 +20,19 @@ import { DeliverySendHistoryEntity } from '../../entity/delivery.send.history.en
 import { EmailSendHistoryEntity } from '../../entity/email.send.history.entity';
 import { UserEntity } from '../../entity/user.entity';
 import { SsgEventEntity } from '../../entity/ssg.event.entity';
+import {
+  OrderDeliveryAttemptEntity,
+  OrderDeliveryAttemptType,
+  OrderDeliveryAttemptStatus,
+} from '../../entity/order.delivery.attempt.entity';
+import {
+  OrderPaymentRefundEventEntity,
+  OrderPaymentRefundEventType,
+} from '../../entity/order.payment.refund.event.entity';
+import { OrderPaymentAllocationEntity } from '../../entity/order.payment.allocation.entity';
+import { ResendDeductService } from '../../wallet/application/resend-deduct.service';
+import { DataSource, IsNull } from 'typeorm';
+import { InjectDataSource } from '@nestjs/typeorm';
 
 import { DeliveryAlimTalk } from '../interface/delivery.alim.talk';
 import { IOrderDeliveryStatus } from '../interface/order.delivery.status';
@@ -64,6 +77,8 @@ import { SsgInsertStateService } from './ssg-insert-state.service';
 import { SsgInsertState } from '../interface/ssg.insert.state';
 import { SsgRefundResolverService } from './ssg-refund.resolver';
 import { SsgRefundOutcome } from '../interface/ssg.refund.resolve';
+import { WalletManagedPredicate } from '../../wallet/application/wallet-managed.predicate';
+import { RefundPoolService } from '../../wallet/application/refund-pool.service';
 
 @Injectable()
 export class DeliveryBatchService {
@@ -102,6 +117,16 @@ export class DeliveryBatchService {
     private refundLedgerService: RefundLedgerService,
     private ssgRefundResolverService: SsgRefundResolverService,
     private ssgInsertStateService: SsgInsertStateService,
+    private readonly walletManagedPredicate: WalletManagedPredicate,
+    private readonly refundPoolService: RefundPoolService,
+    private readonly resendDeductService: ResendDeductService,
+    @InjectRepository(OrderDeliveryAttemptEntity)
+    private readonly orderDeliveryAttemptRepository: Repository<OrderDeliveryAttemptEntity>,
+    @InjectRepository(OrderPaymentRefundEventEntity)
+    private readonly orderPaymentRefundEventRepository: Repository<OrderPaymentRefundEventEntity>,
+    @InjectRepository(OrderPaymentAllocationEntity)
+    private readonly orderPaymentAllocationRepository: Repository<OrderPaymentAllocationEntity>,
+    @InjectDataSource() private readonly dataSource: DataSource,
   ) {}
 
   private readonly logger = new Logger('batch');
@@ -219,6 +244,14 @@ export class DeliveryBatchService {
     const shouldRestoreBalance = order.isSettleComplete || order.isSettleBalance;
 
     const isSsg = order.type === IOrderType.SSG && !!orderDelivery.ssgEventId;
+    const isWalletManaged = await this.walletManagedPredicate.isWalletManaged(order.id);
+
+    // 1) ledger.claim — 멱등 게이트.
+    //    - legacy path: 중복이면 이전 처리 성공이므로 short-circuit return.
+    //    - wallet path: claim 만 commit 되고 wallet 차감 실패한 retry 케이스 가능 → wallet 재시도 진행.
+    //      RefundPoolService.refund 가 idempotencyKeyPrefix 기반 동시 race 차단 + 기존 ledger return.
+    //    plan §4 / qa D2-11: 내부 환불 실패는 반드시 throw 전파 (claim 중복 분기만 흡수).
+    let claimWasDuplicate = false;
     try {
       await this.refundLedgerService.claim({
         orderDeliveryId: orderDelivery.id,
@@ -235,10 +268,33 @@ export class DeliveryBatchService {
         // DEFERRED 면 false 유지 → 다음 재발송 가드 차단 (이중 차감 방지).
         ssgPending: isSsg,
       });
+    } catch (error) {
+      if (error instanceof BadRequestException) {
+        if (isWalletManaged) {
+          this.logger.warn(
+            `[REFUND] claim 중복 — wallet path 멱등 재시도 진행. orderDelivery.id: ${orderDelivery.id}, message: ${error.message}`,
+          );
+          claimWasDuplicate = true;
+        } else {
+          this.logger.warn(
+            `[REFUND] 환불 중복 차단 (정상, legacy) - orderDelivery.id: ${orderDelivery.id}, message: ${error.message}`,
+          );
+          return;
+        }
+      } else {
+        throw error;
+      }
+    }
 
-      // ledger claim 성공 후 SSG 행사 잔액 복구.
-      // resolver 가 throw 흡수 + outcome 반환 — caller try/catch 불필요. 보정 실패는 ledger 신호로 후속 전달.
-      if (isSsg) {
+    // 2) SSG 행사 잔액 복구.
+    //    claim 중복 (wallet retry) 케이스에서도 ledger.ssg_balance_settled=false 면 SSG 측이
+    //    아직 보정되지 않은 상태이므로 resolver 재실행해야 한다 (DEFERRED / crash 회복 시나리오).
+    //    true 면 이미 SSG 처리 완료 → skip (이중 복구 차단).
+    if (isSsg) {
+      const ssgAlreadySettled = claimWasDuplicate
+        ? await this.refundLedgerService.isSsgSettled(orderDelivery.id)
+        : false;
+      if (!ssgAlreadySettled) {
         const outcome = await this.ssgRefundResolverService.resolveAndRefundIfNeeded({
           orderDeliveryId: orderDelivery.id,
           ssgEventId: orderDelivery.ssgEventId!,
@@ -250,8 +306,38 @@ export class DeliveryBatchService {
             `[REFUND] SSG 잔액 보정 DEFERRED — ledger.ssg_balance_settled=false 유지. 운영 점검 필요. orderDelivery.id: ${orderDelivery.id}`,
           );
         }
+      } else {
+        this.logger.log(
+          `[REFUND] SSG 보정 skip — ssg_balance_settled=true (이미 보정 완료). orderDelivery.id: ${orderDelivery.id}`,
+        );
       }
+    }
 
+    // 3) wallet / legacy 잔액 복구. 실패는 throw 전파 → caller (processOneDeliveryForBatch outer catch) 에서
+    //    claimedAt reset 후 다음 batch 재시도. wallet 은 attemptId prefix 로 멱등 → 안전 재실행.
+    if (isWalletManaged) {
+      const initialAttempt = await this.orderDeliveryAttemptRepository.findOne({
+        where: {
+          orderDeliveryId: orderDelivery.id,
+          attemptType: OrderDeliveryAttemptType.INITIAL,
+        },
+      });
+      if (!initialAttempt) {
+        // drift: wallet 분기 진입했는데 PR2-005 deliveryConfirmed hook 이 INITIAL attempt 를 남기지 않은 상황.
+        throw new Error(
+          `wallet-managed delivery ${orderDelivery.id} missing INITIAL attempt — drift, aborting refund`,
+        );
+      }
+      await this.refundPoolService.refund({
+        orderId: order.id,
+        eventType: OrderPaymentRefundEventType.FAIL_REFUND,
+        targetDeliveryIds: [orderDelivery.id],
+        idempotencyKeyPrefix: `fail_refund:${order.id}:${orderDelivery.id}:${initialAttempt.id}`,
+      });
+      this.logger.log(
+        `[REFUND] wallet path complete - orderDelivery.id: ${orderDelivery.id}, attemptId: ${initialAttempt.id}`,
+      );
+    } else {
       if (shouldRestoreBalance) {
         await this.userManagementService.addBalance(userId, settlementPrice, `발송 실패 환불 (주문번호: ${order.id})`);
       } else {
@@ -263,14 +349,9 @@ export class DeliveryBatchService {
           .setParameters({ amount: settlementPrice })
           .execute();
       }
-
-      this.logger.log(`[REFUND] 환불 완료 - orderDelivery.id: ${orderDelivery.id}, amount: ${settlementPrice} (정가: ${productPrice})`);
-    } catch (error) {
-      if (error instanceof BadRequestException) {
-        this.logger.warn(`[REFUND] 환불 중복 차단 (정상) - orderDelivery.id: ${orderDelivery.id}, message: ${error.message}`);
-      } else {
-        this.logger.error(`[REFUND] 환불 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
-      }
+      this.logger.log(
+        `[REFUND] legacy path complete - orderDelivery.id: ${orderDelivery.id}, amount: ${settlementPrice} (정가: ${productPrice})`,
+      );
     }
   }
 
@@ -943,6 +1024,7 @@ export class DeliveryBatchService {
    *
    * @param skipSsg SSG 선차감이 이미 완료된 경우 true (SSG chargeBack 스킵)
    */
+  @Transactional()
   private async reverseRefundForResend(orderDelivery: OrderDeliveryEntity, skipSsg: boolean = false): Promise<void> {
     const order = orderDelivery.orderProductMapping.order;
     const mapping = orderDelivery.orderProductMapping;
@@ -951,27 +1033,28 @@ export class DeliveryBatchService {
     const userId = order.clientUserId ?? order.user!.id;
     const shouldRestoreBalance = order.isSettleComplete || order.isSettleBalance;
 
-    try {
-      // SSG chargeBack 신호 영역 — state 기반 분기.
-      // 신호 분리 정책 (PR3) — SSG chargeBack 실패는 고객 재차감을 막지 않는다.
-      // throw 흡수 + error 로그만 남기고 아래 deductBalance/allSettleAmount 가산 계속.
-      if (!skipSsg && order.type === IOrderType.SSG && orderDelivery.ssgEventId) {
-        try {
-          const state = await this.ssgInsertStateService.getState(orderDelivery.id);
-          if (state === SsgInsertState.CONFIRMED) {
-            this.logger.log(
-              `[RESEND] SSG chargeBack skip — state=CONFIRMED. orderDelivery.id=${orderDelivery.id}`,
-            );
-          } else {
-            await this.ssgEventService.chargeBackForResend(orderDelivery.ssgEventId, order.id, productPrice);
-          }
-        } catch (ssgError) {
-          this.logger.error(
-            `[RESEND] SSG chargeBack 실패 — 고객 재차감은 계속 진행. orderDelivery.id=${orderDelivery.id}, error: ${ssgError}`,
+    // SSG chargeBack — external SSG-side state change. cls TX 밖 effect 라 try/흡수 (실패가 고객 재차감을 막지 않음).
+    if (!skipSsg && order.type === IOrderType.SSG && orderDelivery.ssgEventId) {
+      try {
+        const state = await this.ssgInsertStateService.getState(orderDelivery.id);
+        if (state === SsgInsertState.CONFIRMED) {
+          this.logger.log(
+            `[RESEND] SSG chargeBack skip — state=CONFIRMED. orderDelivery.id=${orderDelivery.id}`,
           );
+        } else {
+          await this.ssgEventService.chargeBackForResend(orderDelivery.ssgEventId, order.id, productPrice);
         }
+      } catch (ssgError) {
+        this.logger.error(
+          `[RESEND] SSG chargeBack 실패 — 고객 재차감은 계속 진행. orderDelivery.id=${orderDelivery.id}, error: ${ssgError}`,
+        );
       }
+    }
 
+    // legacy mirror + wallet ledger/잔액 atomic — 본 메소드 @Transactional() 데코레이터 cls TX 사용.
+    // userManagementService/refundLedgerService 가 cls-tracked manager 를 통해 자동으로 같은 TX 에 흡수.
+    // 어느 단계라도 throw 시 전체 rollback → wallet/legacy drift 방지.
+    try {
       if (shouldRestoreBalance) {
         await this.userManagementService.deductBalance(userId, settlementPrice, `재발송 역환불 (주문번호: ${order.id})`);
       } else {
@@ -986,14 +1069,96 @@ export class DeliveryBatchService {
 
       await this.refundLedgerService.release(orderDelivery.id);
 
-      this.logger.log(`[RESEND] 환불 복구 완료 - orderDelivery.id: ${orderDelivery.id}, amount: ${settlementPrice} (정가: ${productPrice})`);
+      // wallet 재차감 + refund ledger 역처리 — this.orderRepository.manager (cls-tracked) 로 same TX.
+      const isWalletManaged = await this.walletManagedPredicate.isWalletManaged(
+        order.id,
+        this.orderRepository.manager,
+      );
+      if (isWalletManaged) {
+        await this.applyWalletReverseRefundForResendOnManager(orderDelivery, this.orderRepository.manager);
+      }
+
+      this.logger.log(
+        `[RESEND] 환불 복구 완료 (atomic) - orderDelivery.id: ${orderDelivery.id}, amount: ${settlementPrice} (정가: ${productPrice})`,
+      );
     } catch (error) {
       if (error instanceof BadRequestException) {
         this.logger.warn(`[RESEND] 환불 복구 중복 차단 (정상) - orderDelivery.id: ${orderDelivery.id}, message: ${error.message}`);
-      } else {
-        this.logger.error(`[RESEND] 환불 복구 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
+        return;
       }
+      // legacy + wallet 단계 throw → @Transactional cls TX rollback + outer batch handler 에서 claimedAt reset → 재시도.
+      throw error;
     }
+  }
+
+  /**
+   * 재발송 wallet 처리 — 단일 트랜잭션으로 attempt INSERT + reverseRefund + resendDeduct atomic.
+   *   1) RESEND attempt row INSERT (cycle id 발급).
+   *   2) 최신 active refund ledger row 찾기 → reverseRefund (counters 복원 + reversed_at set).
+   *   3) ResendDeductService.resendDeduct (wallet_account 재차감 + wallet_transaction row split).
+   *
+   * dataSource.transaction 으로 한 묶음 — reverseRefund/resendDeduct 어느 단계라도 실패 시
+   * 전체 rollback. caller (reissuePinAndCreateImageIfNeeded) 에 throw 전파해 발송 진행 중단.
+   *
+   * 다중 active ledger 안전 가드: candidates 안에 delivery 매칭 row 가 2건 이상이면 silent
+   * 잘못된 reverse 위험 → explicit throw (부분환불 도입 시점에 검토 필요).
+   */
+  private async applyWalletReverseRefundForResendOnManager(
+    orderDelivery: OrderDeliveryEntity,
+    manager: import('typeorm').EntityManager,
+  ): Promise<void> {
+    const order = orderDelivery.orderProductMapping.order;
+
+    // 1) RESEND attempt row 생성 — cycle id 사용
+    const attempt = await manager.save(OrderDeliveryAttemptEntity, {
+      orderDeliveryId: orderDelivery.id,
+      attemptType: OrderDeliveryAttemptType.RESEND,
+      status: OrderDeliveryAttemptStatus.DEDUCTED,
+      deductedAt: new Date(),
+    });
+
+    // 2) 최신 active refund ledger row lookup (allocation 기준 + affectedDeliveryIds 포함)
+    const allocation = await manager.findOne(OrderPaymentAllocationEntity, {
+      where: { orderId: order.id },
+    });
+    if (!allocation) {
+      throw new Error(`wallet-managed but allocation row missing for orderId=${order.id}`);
+    }
+    const candidates = await manager.find(OrderPaymentRefundEventEntity, {
+      where: { allocationId: allocation.id, reversedAt: IsNull() },
+      order: { id: 'DESC' },
+    });
+    const matchingLedgers = candidates.filter(
+      (c) => Array.isArray(c.affectedDeliveryIds) && c.affectedDeliveryIds.includes(orderDelivery.id),
+    );
+    if (matchingLedgers.length === 0) {
+      throw new Error(
+        `wallet-managed reverseRefundForResend: no active refund ledger for delivery=${orderDelivery.id}`,
+      );
+    }
+    if (matchingLedgers.length > 1) {
+      // 부분환불/다중 ledger 도입 시점에 명시 정책 필요. 현재 단일 ledger invariant 위반 시 abort.
+      throw new Error(
+        `wallet-managed reverseRefundForResend: multiple active ledgers for delivery=${orderDelivery.id} ` +
+          `(count=${matchingLedgers.length}). aborting to avoid silent mis-reverse.`,
+      );
+    }
+    const ledger = matchingLedgers[0];
+
+    // 3) reverseRefund + resendDeduct — caller TX manager 그대로 전파
+    await this.refundPoolService.reverseRefund(ledger.id, attempt.id, manager);
+    await this.resendDeductService.resendDeduct(
+      {
+        orderId: order.id,
+        orderDeliveryId: orderDelivery.id,
+        attemptId: attempt.id,
+      },
+      manager,
+    );
+
+    this.logger.log(
+      `[RESEND] wallet path complete - orderDelivery.id=${orderDelivery.id}, attemptId=${attempt.id}, ledgerId=${ledger.id}`,
+    );
   }
 
   /**

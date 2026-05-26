@@ -114,3 +114,145 @@ git grep -n 'settlement_group' src/
 #    wallet service 는 src/wallet 안에만 존재해야 함. src/wallet 외부에서 wallet 서비스 import 시 신 wallet 쓰기 hook 진입.
 git grep -nE "from .*wallet/application/(wallet-ledger|order-confirmation-wallet|settle-confirmation-wallet|refund-pool|credit-excess-approval|payment-allocation)" src/ | grep -v "^src/wallet/"
 ```
+
+---
+
+# Wallet Cutover Bundle (PR2+PR3+PR4) — RUNBOOK
+
+PR1a 후속. Cutover Bundle 은 발송 생명주기(PR2) + 정산(PR3) + CS/재발송(PR4) 을 한 번에 prod 배포 + 단계적 wallet activation.
+
+Plan 참조: `.omc/plans/wallet-cutover-bundle-consensus-plan.md` (v2.1 APPROVED)
+
+## 9. Cutover Bundle 마이그레이션 순서
+
+```
+0. PR1a (위 1~9 단계) 사전 완료 + 1주 staging 모니터링 + invariant 4종 통과.
+10. 20260523_alter_order_payment_allocation_add_released.sql    ← F-001
+    - ADD COLUMN released_at DATETIME(6) NULL, release_reason VARCHAR(200) NULL
+    - ALGORITHM=INPLACE, LOCK=NONE (MySQL 8.0.29+)
+    - 사전 측정: SELECT VERSION(); SELECT COUNT(*) FROM order_payment_allocation;
+    - 예상 duration < 5min @ 1M rows
+```
+
+10번은 schema-only DDL, backfill 불필요 (default NULL = "active wallet-managed", 신규 보상 시 채워짐).
+
+## 10. PR2~PR4 prod 배포 + flag staging
+
+PR2~PR4 코드는 **하나의 머지 윈도우** 에 prod 배포. 배포 직후 기본값:
+
+```bash
+WALLET_PR2_DELIVERY_LIFECYCLE_MODE=legacy
+WALLET_PR3_SETTLE_MODE=legacy
+WALLET_PR4_CS_RESEND_MODE=legacy
+```
+
+이 상태에서는 wallet write 0건. 기존 legacy path 그대로 동작. 배포 회귀 검증 (PR1 76 test + PR2/PR3/PR4 mini e2e + Bundle lifecycle e2e + deadlock spec 모두 staging 통과 확인 후 prod).
+
+## 11. Activation gate (단계적 cutover)
+
+### 11.1 Staging 검증
+
+```
+1. WALLET_PR{2,3,4}_*_MODE=shadow
+   - deliveryConfirmed 동기 preview 비교 로그 활성화
+   - wallet write 여전히 0건
+   - wallet_cutover_shadow_mismatch_total{class=*} 카운터 관찰 (real_drift = 0 목표)
+
+2. WALLET_PR2_DELIVERY_LIFECYCLE_MODE=wallet (staging only)
+   - Startup gate: PR3/PR4 hook 코드 prod 배포 여부 검증 (DI 충족 → boot 성공)
+   - 신규 발송확정 = wallet path + allocation 생성
+   - 기존 발송 = legacy path 유지
+   - mini e2e + Bundle lifecycle e2e 회귀
+
+3. WALLET_PR3_SETTLE_MODE=wallet → WALLET_PR4_CS_RESEND_MODE=wallet 순차 전환
+```
+
+### 11.2 Prod 진입
+
+Staging 1주 모니터링 + mismatch real_drift=0 확인 후:
+
+```
+1. prod WALLET_PR{2,3,4}_*_MODE=shadow (1~2일)
+2. prod WALLET_PR2_DELIVERY_LIFECYCLE_MODE=wallet
+3. prod WALLET_PR3_SETTLE_MODE=wallet
+4. prod WALLET_PR4_CS_RESEND_MODE=wallet
+5. 1~2주 안정화 후 flag 제거 PR (default wallet 하드코딩).
+```
+
+## 12. Manual recovery (Startup gate 실패 시)
+
+PR2 mode=WALLET 인 상태에서 NestJS bootstrap 이 `wallet_cutover_activation_gate_blocked` 로 throw + process exit 1 발생 시:
+
+1. **운영자 즉시 조치**:
+   ```bash
+   # 1.1 현재 ENV 확인
+   echo "PR2=$WALLET_PR2_DELIVERY_LIFECYCLE_MODE PR3=$WALLET_PR3_SETTLE_MODE PR4=$WALLET_PR4_CS_RESEND_MODE"
+
+   # 1.2 PR2 를 legacy 로 즉시 복귀 (PR3/PR4 hook 미배포 상태)
+   #     systemd / docker / k8s deployment 설정 갱신
+   export WALLET_PR2_DELIVERY_LIFECYCLE_MODE=legacy
+
+   # 1.3 service 재시작 (bootstrap 통과 확인)
+   ```
+
+2. **PagerDuty 알림** (`WALLET_CUTOVER_PD_SERVICE_KEY`, severity=critical):
+   - "Activation gate blocked: PR{N} hook DI missing"
+   - Wallet Squad on-call 즉시 응답.
+
+3. **근본 원인 분석**:
+   - PR3 또는 PR4 hook 코드 prod 배포 누락 (CI/CD 실패) → 재배포.
+   - DI provider 등록 누락 (app.module.ts) → 코드 fix → 재배포.
+   - **자동 fallback 절대 도입 안 함** — fail-closed 원칙 (옵션 C 금지).
+
+4. **복구 후 재진입**:
+   - PR3+PR4 hook DI 충족 확인.
+   - Startup gate 재통과 후 PR2 mode=wallet 재시도 (위 11 단계).
+
+## 13. Flag rollback (`wallet` → `legacy`) 정책
+
+PR2 mode=wallet 운영 중 critical drift 또는 incident 발생 시:
+
+1. **즉시 조치**:
+   ```bash
+   export WALLET_PR2_DELIVERY_LIFECYCLE_MODE=legacy
+   # service rolling restart
+   ```
+
+2. **결과**:
+   - 신규 주문은 legacy path (wallet write 없음).
+   - **기존 wallet-managed 주문 (allocation 존재 + released_at IS NULL) 은 후속 hook 에서 여전히 wallet path 진입** (allocation routing > flag, Round 5 결정).
+   - 따라서 PR3+PR4 hook 코드는 prod 에 계속 배포돼 있어야 함 (flag legacy 상태에서도).
+
+3. **재진입 (`legacy` → `wallet`) 절차**:
+   - PR1 backfill 합산식 (`user_company.balance + SUM(user.balance) → wallet_account.deposit_balance`) account-level reconciliation 재실행 (off 기간 legacy 변동분 sync).
+   - 주문별 allocation 재구성 backfill 불필요 (off 기간 신규 주문은 끝까지 legacy).
+   - Staging shadow 재확인 후 prod wallet 재전환.
+
+## 14. F-001 migration 사전 검증
+
+```bash
+# 1. prod MySQL 버전 확인 (8.0.29+ 필수)
+mysql -e "SELECT VERSION();"
+
+# 2. row count + 예상 duration 측정
+mysql -e "SELECT COUNT(*) FROM order_payment_allocation;"
+
+# 3. staging dry-run
+mysql staging_db < sql/20260523_alter_order_payment_allocation_add_released.sql
+mysql staging_db -e "DESCRIBE order_payment_allocation;" | grep -E "released_at|release_reason"
+
+# 4. 예상 INPLACE 가능 여부 확인
+mysql -e "SELECT * FROM INFORMATION_SCHEMA.INNODB_METRICS WHERE NAME LIKE '%ddl%';"
+```
+
+## 15. `package.json` test:e2e 경로 사전 검증
+
+PR2 mini e2e 실행 전 `package.json` 의 `test:e2e` script 경로 확인:
+
+```bash
+cat package.json | grep test:e2e
+# 기대: "jest --config ./test/jest-e2e.json"
+# 실측 오타 가능성: "jest --config ./test/jest-e2 e.json" (공백 포함)
+# 오타 발견 시 별도 chore PR 로 분리 수정 (본 Bundle 범위 밖)
+```
+

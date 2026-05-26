@@ -58,6 +58,24 @@ export class OrderPaymentAllocationEntity {
   @Column({ type: 'int', default: 0, comment: '만료로 복구 안 한 누적 (audit)' })
   pointSkippedExpiredAmount: number;
 
+  @Column({
+    type: 'datetime',
+    precision: 6,
+    nullable: true,
+    default: null,
+    comment: 'OrderConfirmationReleaseService 가 보상 TX 로 allocation 을 무효화한 시각. NULL = active wallet-managed (PR2 F-001).',
+  })
+  releasedAt: Date | null;
+
+  @Column({
+    type: 'varchar',
+    length: 200,
+    nullable: true,
+    default: null,
+    comment: '보상 사유 (external API timeout / message enqueue failed / manual rollback 등)',
+  })
+  releaseReason: string | null;
+
   @CreateDateColumn({ type: 'datetime', precision: 6 })
   createdAt: Date;
 

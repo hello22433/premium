@@ -4,6 +4,7 @@ import { IOrderStatus } from '../interface/order.status';
 import { addTransactionalDataSource, deleteDataSourceByName, initializeTransactionalContext } from 'typeorm-transactional';
 import { IPriceAdjustment } from '../../user_discount/interface/price.adjustment';
 import { IOrderType } from '../interface/order.type';
+import { WalletCutoverMode } from '../../wallet/config/wallet-cutover.config';
 
 describe('OrderService card surcharge settlement priority', () => {
   beforeAll(() => {
@@ -570,6 +571,20 @@ describe('OrderService deliveryConfirmed settlement amount', () => {
       debug: jest.fn(),
       warn: jest.fn(),
     };
+    service.cryptoCipher = { safeDecryptDeliveryTarget: (v: string) => v };
+    service.ssgEventService = { confirmEventBalance: jest.fn() };
+    // Wallet Cutover Bundle (PR2-005) — LEGACY mode 로 기존 path 유지
+    service.walletCutoverConfig = {
+      get pr2DeliveryLifecycleMode() {
+        return WalletCutoverMode.LEGACY;
+      },
+    };
+    service.walletManagedPredicate = { isWalletManaged: jest.fn().mockResolvedValue(false) };
+    service.walletAccountResolverService = { resolveForOrder: jest.fn() };
+    service.paymentAllocationService = { allocate: jest.fn() };
+    service.orderConfirmationWalletService = { persistAllocation: jest.fn() };
+    service.orderConfirmationReleaseService = { releaseConfirmation: jest.fn() };
+    service.shadowMismatchClassifierService = { classify: jest.fn() };
 
     await service.deliveryConfirmed({ id: 1 } as any, { id: order.id } as any);
 

@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
-import { DataSource } from 'typeorm';
+import { DataSource, EntityManager } from 'typeorm';
 import { OrderPaymentAllocationEntity } from '../../entity/order.payment.allocation.entity';
 import { OrderPaymentAllocationLineEntity } from '../../entity/order.payment.allocation.line.entity';
 import { OrderPointUsageEntity } from '../../entity/order.point.usage.entity';
@@ -57,8 +57,34 @@ export class OrderConfirmationWalletService {
     private readonly creditExcessApproval: CreditExcessApprovalService,
   ) {}
 
-  async persistAllocation(input: PersistAllocationInput): Promise<PersistAllocationResult> {
-    return this.dataSource.transaction(async (manager) => {
+  /**
+   * 발송확정 통합 orchestrator.
+   *
+   * @param input allocation/snapshot 입력
+   * @param externalManager 호출자가 같은 트랜잭션 안에서 legacy mirror 와 함께 묶고 싶을 때 전달.
+   *   - 미전달 시 자체 트랜잭션 열음 (PR1 호환).
+   *   - 전달 시 nested transaction 없이 이 manager 위에서 실행 (PR2 hook same-tx 보장).
+   */
+  async persistAllocation(
+    input: PersistAllocationInput,
+    externalManager?: EntityManager,
+  ): Promise<PersistAllocationResult> {
+    if (externalManager) {
+      return this.runOnManager(input, externalManager);
+    }
+    return this.dataSource.transaction(async (manager) => this.runOnManager(input, manager));
+  }
+
+  private async runOnManager(input: PersistAllocationInput, manager: EntityManager): Promise<PersistAllocationResult> {
+    // legacy 안내: 본 body 는 기존 transaction callback 의 코드를 그대로 사용.
+    // externalManager 전달 시 nested tx 회피 + same-tx mirror 보장.
+    return this.persistAllocationInTx(input, manager);
+  }
+
+  private async persistAllocationInTx(
+    input: PersistAllocationInput,
+    manager: EntityManager,
+  ): Promise<PersistAllocationResult> {
       // 1. wallet FOR UPDATE — race 차단 + 잔액 재검증
       const wallet = await manager
         .getRepository(WalletAccountEntity)
@@ -259,6 +285,5 @@ export class OrderConfirmationWalletService {
       }
 
       return { allocationId: alloc.id, lineIds, attemptIds, walletTransactionIds: walletTxIds };
-    });
   }
 }
