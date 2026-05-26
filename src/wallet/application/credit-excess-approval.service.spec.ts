@@ -98,23 +98,42 @@ describe('CreditExcessApprovalService — 4단계 워크플로', () => {
     expect(repo.save).toHaveBeenCalled();
   });
 
-  it('Step C approve — PENDING → APPROVED + approvedBy/approvedAt 갱신', async () => {
-    repo.findOne.mockResolvedValue({ id: 'a1', status: CreditExcessApprovalStatus.PENDING } as any);
+  it('Step C approve — PENDING → APPROVED (조건부 UPDATE + affectedRows=1)', async () => {
+    // 조건부 UPDATE 성공 (affected=1) + 갱신 후 findOne 으로 APPROVED 엔티티 반환
+    repo.findOne.mockResolvedValue({
+      id: 'a1',
+      status: CreditExcessApprovalStatus.APPROVED,
+      approvedBy: 99,
+    } as any);
     const r = await sut.approve('a1', 99);
     expect(r.status).toBe(CreditExcessApprovalStatus.APPROVED);
-    expect(repo.save).toHaveBeenCalledWith(
-      expect.objectContaining({ status: CreditExcessApprovalStatus.APPROVED, approvedBy: 99 }),
-    );
+    expect(repo.createQueryBuilder).toHaveBeenCalled();
   });
 
-  it('이미 APPROVED 상태에서 approve 재호출 → BadRequest', async () => {
-    repo.findOne.mockResolvedValue({ id: 'a1', status: CreditExcessApprovalStatus.APPROVED } as any);
+  it('이미 APPROVED 상태에서 approve 재호출 → BadRequest (UPDATE affected=0)', async () => {
+    // 조건부 UPDATE 가 status=PENDING 절 때문에 affected=0 반환
+    repo.createQueryBuilder = jest.fn().mockReturnValue({
+      update: jest.fn().mockReturnThis(),
+      set: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      execute: jest.fn().mockResolvedValue({ affected: 0 }),
+    });
+    // 이미 APPROVED 인 entity 가 존재 → status 변경 안 됐다는 message 로 BadRequest
+    repo.findOne.mockResolvedValue({
+      id: 'a1',
+      status: CreditExcessApprovalStatus.APPROVED,
+    } as any);
     await expect(sut.approve('a1', 99)).rejects.toBeInstanceOf(BadRequestException);
   });
 
-  it('Step C reject — reject_reason 필수', async () => {
-    repo.findOne.mockResolvedValue({ id: 'a1', status: CreditExcessApprovalStatus.PENDING } as any);
+  it('Step C reject — reject_reason 필수 + 조건부 UPDATE', async () => {
     await expect(sut.reject('a1', 99, '')).rejects.toBeInstanceOf(BadRequestException);
+    // affected=1 성공 + findOne 으로 REJECTED 반환
+    repo.findOne.mockResolvedValue({
+      id: 'a1',
+      status: CreditExcessApprovalStatus.REJECTED,
+      rejectReason: '한도 부족',
+    } as any);
     const r = await sut.reject('a1', 99, '한도 부족');
     expect(r.status).toBe(CreditExcessApprovalStatus.REJECTED);
     expect(r.rejectReason).toBe('한도 부족');
