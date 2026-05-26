@@ -44,11 +44,22 @@ export class RefundPoolService {
     private readonly allocation: PaymentAllocationService,
   ) {}
 
-  async refund(input: RefundEventInput): Promise<RefundEventResult> {
+  async refund(input: RefundEventInput, externalManager?: EntityManager): Promise<RefundEventResult> {
+    if (externalManager) {
+      // caller 가 이미 트랜잭션 안 → same manager 로 실행. isolation 은 caller TX 설정 따름.
+      // (caller 가 READ COMMITTED 보장 필요 — wallet path 진입부에서 알림.)
+      return this.runRefund(input, externalManager);
+    }
     // READ COMMITTED 명시 — MySQL 기본 REPEATABLE READ 에서는 lock 획득 후 plain SELECT 가 트랜잭션 시작 시점의
     // consistent snapshot 을 보아 방금 다른 트랜잭션이 commit 한 refund ledger 를 못 볼 수 있다.
     // lock 후 same-prefix 재조회 (HIGH 2 fix) 가 의도대로 동작하려면 isolation 을 낮춰 current read 가 보이게 해야 한다.
-    return this.dataSource.transaction('READ COMMITTED', async (manager) => {
+    return this.dataSource.transaction('READ COMMITTED', async (m) => this.runRefund(input, m));
+  }
+
+  private async runRefund(input: RefundEventInput, manager: EntityManager): Promise<RefundEventResult> {
+    // 본 메소드는 항상 외부에서 (또는 dataSource.transaction 콜백) manager 컨텍스트 안에서 호출된다.
+    // 아래 코드는 기존 transaction callback body 그대로 — 동작 변화 없음.
+    {
       // 0. retry idempotency: 동일 idempotencyKeyPrefix 으로 이미 ledger row 가 만들어졌으면 기존 결과 return.
       //    overlap 검사보다 먼저 — 같은 prefix retry 는 정상 처리됐던 결과를 BadRequest 가 아닌 200 으로 돌려야 worker 가 멈춤.
       const existingForPrefix = await manager
@@ -360,7 +371,7 @@ export class RefundPoolService {
       await manager.save(OrderPaymentAllocationEntity, alloc);
 
       return { ledgerIds, totalRefundedAmount: totalRefund };
-    });
+    }
   }
 
   /**

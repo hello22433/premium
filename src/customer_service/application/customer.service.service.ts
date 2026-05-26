@@ -280,12 +280,15 @@ export class CustomerServiceService {
           `wallet-managed delivery ${orderDelivery.id} missing INITIAL attempt — drift, aborting discard refund`,
         );
       }
-      await this.refundPoolService.refund({
-        orderId: order.id,
-        eventType: OrderPaymentRefundEventType.DISCARD_REFUND,
-        targetDeliveryIds: [orderDelivery.id],
-        idempotencyKeyPrefix: `discard_refund:${order.id}:${orderDelivery.id}:${latestAttempt.id}`,
-      });
+      await this.refundPoolService.refund(
+        {
+          orderId: order.id,
+          eventType: OrderPaymentRefundEventType.DISCARD_REFUND,
+          targetDeliveryIds: [orderDelivery.id],
+          idempotencyKeyPrefix: `discard_refund:${order.id}:${orderDelivery.id}:${latestAttempt.id}`,
+        },
+        queryRunner.manager,
+      );
     }
   }
 
