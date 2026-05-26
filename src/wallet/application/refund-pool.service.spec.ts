@@ -47,6 +47,10 @@ describe('RefundPoolService — §8 환불 알고리즘', () => {
                 if (target === WalletAccountEntity) {
                   return Object.values(wallets)[0] ?? null;
                 }
+                if (target === OrderPaymentRefundEventEntity) {
+                  // reverseRefund 의 ledger lookup — 본 spec 은 missing 시나리오만 검증
+                  return null;
+                }
                 return Object.values(allocations)[0];
               },
               getMany: async () => {
@@ -251,7 +255,9 @@ describe('RefundPoolService — §8 환불 알고리즘', () => {
     expect(r.totalRefundedAmount).toBe(10000);
   });
 
-  it('reverseRefund → PR1 stub throw', async () => {
-    await expect(sut.reverseRefund('any', 'tx')).rejects.toBeInstanceOf(BadRequestException);
+  it('reverseRefund: ledger 미존재 → BadRequest', async () => {
+    await expect(sut.reverseRefund('missing-ledger', 'tx-1')).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
   });
 });

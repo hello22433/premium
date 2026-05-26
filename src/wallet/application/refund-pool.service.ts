@@ -1,6 +1,6 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
-import { DataSource, IsNull } from 'typeorm';
+import { DataSource, EntityManager, IsNull } from 'typeorm';
 import { OrderPaymentAllocationEntity } from '../../entity/order.payment.allocation.entity';
 import { OrderPaymentAllocationLineEntity } from '../../entity/order.payment.allocation.line.entity';
 import {
@@ -364,11 +364,77 @@ export class RefundPoolService {
   }
 
   /**
-   * 재발송 역환불 — PR1 scope 외. PR2 재발송 hook 작업에서 wallet/grant rollback + wallet_transaction row split 까지 함께 구현.
-   * caller 없음 → stub throw 로 두어 실수로 호출되면 즉시 검출.
+   * 재발송 역환불 (Cross-Cutting Invariants §8 재발송 역환불).
+   *
+   * caller (재발송 흐름 TX1) 가 호출: ledger row 의 reversed_at 갱신 + allocation counters 복원.
+   * wallet_account 잔액 재차감은 호출자가 ResendDeductService.resendDeduct 로 별도 처리.
+   *
+   * 멱등: ledger.reversed_at 이미 set → no-op return (정상).
+   * 사양: ledger 금액 그대로 사용 — 재계산 금지.
    */
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  async reverseRefund(_ledgerId: string, _reversedByWalletTransactionId: string): Promise<void> {
-    throw new BadRequestException('reverseRefund not implemented in PR1 — see PR2 resend hook');
+  async reverseRefund(
+    ledgerId: string,
+    reversedByWalletTransactionId: string,
+    externalManager?: EntityManager,
+  ): Promise<{ alreadyReversed: boolean; ledgerId: string }> {
+    if (externalManager) {
+      return this.runReverseRefund(ledgerId, reversedByWalletTransactionId, externalManager);
+    }
+    return this.dataSource.transaction(async (m) =>
+      this.runReverseRefund(ledgerId, reversedByWalletTransactionId, m),
+    );
+  }
+
+  private async runReverseRefund(
+    ledgerId: string,
+    reversedByWalletTransactionId: string,
+    manager: EntityManager,
+  ): Promise<{ alreadyReversed: boolean; ledgerId: string }> {
+    const ledger = await manager
+      .getRepository(OrderPaymentRefundEventEntity)
+      .createQueryBuilder('e')
+      .setLock('pessimistic_write')
+      .where('e.id = :id', { id: ledgerId })
+      .getOne();
+    if (!ledger) {
+      throw new BadRequestException(`reverseRefund: ledger not found id=${ledgerId}`);
+    }
+    if (ledger.reversedAt != null) {
+      return { alreadyReversed: true, ledgerId };
+    }
+
+    const alloc = await manager
+      .getRepository(OrderPaymentAllocationEntity)
+      .createQueryBuilder('a')
+      .setLock('pessimistic_write')
+      .where('a.id = :id', { id: ledger.allocationId })
+      .getOne();
+    if (!alloc) {
+      throw new BadRequestException(`reverseRefund: allocation not found id=${ledger.allocationId}`);
+    }
+
+    // allocation counters 복원 (ledger 금액 그대로 — 재계산 금지)
+    alloc.pointRestoredAmount = Math.max(0, alloc.pointRestoredAmount - ledger.refundedPointAmount);
+    alloc.creditExcessRestoredAmount = Math.max(
+      0,
+      alloc.creditExcessRestoredAmount - ledger.refundedCreditExcessAmount,
+    );
+    alloc.creditUsedRestoredAmount = Math.max(
+      0,
+      alloc.creditUsedRestoredAmount - ledger.refundedCreditUsedAmount,
+    );
+    alloc.depositRestoredAmount = Math.max(0, alloc.depositRestoredAmount - ledger.refundedDepositAmount);
+    alloc.pointSkippedExpiredAmount = Math.max(
+      0,
+      alloc.pointSkippedExpiredAmount - ledger.pointSkippedExpiredAmount,
+    );
+    await manager.save(OrderPaymentAllocationEntity, alloc);
+
+    // ledger 표시
+    ledger.reversedAt = new Date();
+    ledger.reversedByWalletTransactionId = reversedByWalletTransactionId;
+    await manager.save(OrderPaymentRefundEventEntity, ledger);
+
+    return { alreadyReversed: false, ledgerId };
   }
 }
