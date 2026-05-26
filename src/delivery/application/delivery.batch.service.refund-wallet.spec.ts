@@ -34,6 +34,7 @@ import { DeliveryBatchService } from './delivery.batch.service';
 import { ResendDeductService } from '../../wallet/application/resend-deduct.service';
 import { OrderPaymentRefundEventEntity } from '../../entity/order.payment.refund.event.entity';
 import { OrderPaymentAllocationEntity } from '../../entity/order.payment.allocation.entity';
+import { getDataSourceToken } from '@nestjs/typeorm';
 import { DeliverySendService } from './delivery.send.service';
 import { RefundLedgerService } from './refund-ledger.service';
 import { SsgInsertStateService } from './ssg-insert-state.service';
@@ -155,6 +156,7 @@ describe('DeliveryBatchService.refundForFail - wallet path', () => {
         { provide: ResendDeductService, useValue: { resendDeduct: jest.fn(), resendUndo: jest.fn() } },
         { provide: getRepositoryToken(OrderPaymentRefundEventEntity), useValue: { find: jest.fn(), findOne: jest.fn() } },
         { provide: getRepositoryToken(OrderPaymentAllocationEntity), useValue: { findOne: jest.fn() } },
+        { provide: getDataSourceToken(), useValue: { transaction: jest.fn() } },
       ],
     }).compile();
 
