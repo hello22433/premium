@@ -26,18 +26,33 @@ describe('CreditExcessApprovalService — 4단계 워크플로', () => {
     // Default: order owned by user 7 (matches requestedBy), wallet id matches '1'.
     orderRepo = {
       findOne: jest.fn().mockResolvedValue({ id: 1, userId: 7, clientUserId: null }),
+      createQueryBuilder: jest.fn().mockReturnValue({
+        setLock: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue({ id: 1, userId: 7, clientUserId: null }),
+      }),
     };
     walletAccountResolver = {
       resolveForOrder: jest.fn().mockResolvedValue({ id: '1' }),
+    };
+    // transaction mock — invoke callback with manager that returns approval/order repos.
+    const txManager = {
+      getRepository: jest.fn((target: any) => {
+        if (target?.name === 'OrderEntity' || (target?.options?.name === 'order')) {
+          return orderRepo;
+        }
+        return repo;
+      }),
+    };
+    const dataSourceMock = {
+      transaction: jest.fn(async (cb: any) => cb(txManager)),
+      getRepository: jest.fn(() => orderRepo),
     };
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         CreditExcessApprovalService,
         { provide: getRepositoryToken(CreditExcessApprovalEntity), useValue: repo },
-        {
-          provide: getDataSourceToken(),
-          useValue: { getRepository: jest.fn(() => orderRepo) },
-        },
+        { provide: getDataSourceToken(), useValue: dataSourceMock },
         { provide: WalletAccountResolverService, useValue: walletAccountResolver },
       ],
     }).compile();

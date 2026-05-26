@@ -1,8 +1,8 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Param,
-  ParseIntPipe,
   Post,
   UseGuards,
 } from '@nestjs/common';
@@ -79,15 +79,16 @@ export class CreditExcessApprovalController {
 
   /**
    * Step C - approve: 운영관리자 권한.
-   * Approval ID 는 BIGINT AUTO_INCREMENT (string 으로 직렬화).
+   * Approval ID 는 BIGINT AUTO_INCREMENT — 큰 값 정밀도 손실 방지 위해 string 으로 받는다.
+   * 숫자 문자열만 허용 (regex /^\d+$/).
    */
   @Post(':id/approve')
   @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @ApiOperation({
     summary: '신용초과 사전 승인 처리 (Step C - approve)',
   })
-  async approve(@User() user: ILoginUserInfo, @Param('id', ParseIntPipe) id: number) {
-    return this.service.approve(String(id), user.id);
+  async approve(@User() user: ILoginUserInfo, @Param('id') id: string) {
+    return this.service.approve(this.validateApprovalId(id), user.id);
   }
 
   /**
@@ -100,9 +101,16 @@ export class CreditExcessApprovalController {
   })
   async reject(
     @User() user: ILoginUserInfo,
-    @Param('id', ParseIntPipe) id: number,
+    @Param('id') id: string,
     @Body() body: CreditExcessApprovalRejectReqDto,
   ) {
-    return this.service.reject(String(id), user.id, body.rejectReason);
+    return this.service.reject(this.validateApprovalId(id), user.id, body.rejectReason);
+  }
+
+  private validateApprovalId(id: string): string {
+    if (!/^\d+$/.test(id)) {
+      throw new BadRequestException(`approval id must be numeric string, got '${id}'`);
+    }
+    return id;
   }
 }

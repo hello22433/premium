@@ -54,42 +54,49 @@ export class CreditExcessApprovalService {
       );
     }
 
-    // Order ownership + wallet 일치 검증
-    const order = await this.dataSource.getRepository(OrderEntity).findOne({
-      where: { id: input.orderId },
-    });
-    if (!order) {
-      throw new NotFoundException(`order not found id=${input.orderId}`);
-    }
-    const billingUserId = order.clientUserId ?? order.userId;
-    if (billingUserId !== input.requestedBy) {
-      throw new ForbiddenException(
-        `requester(${input.requestedBy}) is not the billing user(${billingUserId}) of order ${input.orderId}`,
-      );
-    }
-    const wallet = await this.walletAccountResolver.resolveForOrder(order);
-    if (String(wallet.id) !== String(input.walletAccountId)) {
-      throw new ForbiddenException(
-        `walletAccountId mismatch (expected=${wallet.id}, actual=${input.walletAccountId}) for order ${input.orderId}`,
-      );
-    }
+    // 단일 트랜잭션 + order FOR UPDATE 로 동시 요청 직렬화 (race 차단).
+    // app-level findOne + save 만으로는 같은 orderId 의 active approval 2건 동시 INSERT 가능 →
+    // order row lock 으로 같은 주문의 request() 호출 순차 처리.
+    return this.dataSource.transaction(async (manager) => {
+      const order = await manager
+        .getRepository(OrderEntity)
+        .createQueryBuilder('o')
+        .setLock('pessimistic_write')
+        .where('o.id = :id', { id: input.orderId })
+        .getOne();
+      if (!order) {
+        throw new NotFoundException(`order not found id=${input.orderId}`);
+      }
+      const billingUserId = order.clientUserId ?? order.userId;
+      if (billingUserId !== input.requestedBy) {
+        throw new ForbiddenException(
+          `requester(${input.requestedBy}) is not the billing user(${billingUserId}) of order ${input.orderId}`,
+        );
+      }
+      const wallet = await this.walletAccountResolver.resolveForOrder(order, manager);
+      if (String(wallet.id) !== String(input.walletAccountId)) {
+        throw new ForbiddenException(
+          `walletAccountId mismatch (expected=${wallet.id}, actual=${input.walletAccountId}) for order ${input.orderId}`,
+        );
+      }
 
-    // 동일 order 미사용 active approval 중복 차단
-    const existingActive = await this.approvalRepository.findOne({
-      where: [
-        { orderId: input.orderId, status: CreditExcessApprovalStatus.PENDING, consumedAt: IsNull() },
-        { orderId: input.orderId, status: CreditExcessApprovalStatus.APPROVED, consumedAt: IsNull() },
-      ],
-    });
-    if (existingActive) {
-      throw new BadRequestException(
-        `order ${input.orderId} already has active approval (id=${existingActive.id}, status=${existingActive.status})`,
-      );
-    }
+      // 동일 order 미사용 active approval 중복 차단 — order lock 보유 상태에서 단일 조회.
+      const existingActive = await manager.getRepository(CreditExcessApprovalEntity).findOne({
+        where: [
+          { orderId: input.orderId, status: CreditExcessApprovalStatus.PENDING, consumedAt: IsNull() },
+          { orderId: input.orderId, status: CreditExcessApprovalStatus.APPROVED, consumedAt: IsNull() },
+        ],
+      });
+      if (existingActive) {
+        throw new BadRequestException(
+          `order ${input.orderId} already has active approval (id=${existingActive.id}, status=${existingActive.status})`,
+        );
+      }
 
-    return this.approvalRepository.save({
-      ...input,
-      status: CreditExcessApprovalStatus.PENDING,
+      return manager.getRepository(CreditExcessApprovalEntity).save({
+        ...input,
+        status: CreditExcessApprovalStatus.PENDING,
+      });
     });
   }
 
