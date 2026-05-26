@@ -3482,8 +3482,9 @@ export class OrderService {
         const allocationInput = this.buildWalletAllocationInput(order, wallet, finalAmount);
         const allocation = this.paymentAllocationService.allocate(allocationInput);
 
-        // 신용초과 사전승인은 PR2-005 범위 밖. forceConfirm 시 persistAllocation 가 throw → TX rollback.
-        // TODO(plans/01_Wallet.md, CreditExcessApprovalService): forceConfirm 시 사전승인 ID 주입.
+        // 신용초과 사전 승인 ID 전달 (CreditExcessApprovalService 4단계 워크플로 Step D).
+        // 신용초과 미발생 시 null. 발생 시 운영자가 사전 발급한 approvalId 필수 — 미주입 시
+        // persistAllocation 가 credit_excess_approval_required 로 throw → TX rollback.
         const deliveryIdsForAttempt: number[] = [];
         for (const mapping of order.orderProductMappings!) {
           for (const delivery of mapping.orderDeliveries) {
@@ -3499,7 +3500,7 @@ export class OrderService {
             hasDiscountSnapshot: allocation.hasDiscount,
             settleMethodSnapshot: oneUser.company?.settleMethod ?? null,
             deliveryIdsForAttempt,
-            creditExcessApprovalId: null,
+            creditExcessApprovalId: getBody.creditExcessApprovalId ?? null,
           },
           externalManager,
         );
@@ -3564,8 +3565,20 @@ export class OrderService {
             const previewInput = this.buildWalletAllocationInput(order, wallet, finalAmount);
             const preview = this.paymentAllocationService.allocate(previewInput);
 
-            const legacyPaid = finalAmount <= effectiveBalance ? finalAmount : 0;
-            const legacyOverflow = finalAmount <= effectiveBalance ? 0 : finalAmount;
+            // legacy 의 4재원 분해:
+            //  - 예치금 = min(finalAmount, effectiveBalance)
+            //  - overflow = max(0, finalAmount - effectiveBalance)
+            //  - 그 중 한도 잔여 (maximumLimit - allSettleAmount) 까지는 credit_used (정상 후정산),
+            //    나머지는 credit_excess (신용초과).
+            //  legacy 가 전부 excess 로 찍히면 정상 credit 사용도 real_drift 분류 → 모니터링 신뢰도 ↓.
+            const legacyDeposit = Math.min(finalAmount, effectiveBalance);
+            const legacyOverflow = Math.max(0, finalAmount - effectiveBalance);
+            const legacyLimitRemain = Math.max(
+              0,
+              (oneUser.company?.maximumLimit ?? 0) - oneUser.allSettleAmount,
+            );
+            const legacyCreditUsed = Math.min(legacyOverflow, legacyLimitRemain);
+            const legacyCreditExcess = legacyOverflow - legacyCreditUsed;
             const mismatch = this.shadowMismatchClassifierService.classify(
               {
                 depositUsedAmount: preview.depositUsedAmount,
@@ -3576,9 +3589,9 @@ export class OrderService {
                 payableSettlementAmount: preview.payableSettlementAmount,
               },
               {
-                depositUsedAmount: legacyPaid,
-                creditUsedAmount: 0,
-                creditExcessAmount: legacyOverflow,
+                depositUsedAmount: legacyDeposit,
+                creditUsedAmount: legacyCreditUsed,
+                creditExcessAmount: legacyCreditExcess,
                 pointUsedAmount: 0,
                 cardSurchargeAmount: 0,
                 payableSettlementAmount: finalAmount,
@@ -3591,7 +3604,12 @@ export class OrderService {
                   credit: preview.creditUsedAmount,
                   excess: preview.creditExcessAmount,
                   payable: preview.payableSettlementAmount,
-                })} legacy=${JSON.stringify({ paid: legacyPaid, overflow: legacyOverflow, finalAmount })}`,
+                })} legacy=${JSON.stringify({
+                  deposit: legacyDeposit,
+                  credit: legacyCreditUsed,
+                  excess: legacyCreditExcess,
+                  finalAmount,
+                })}`,
               );
             }
           } catch (err) {
