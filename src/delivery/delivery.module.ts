@@ -8,6 +8,8 @@ import { DeliverySendService } from './application/delivery.send.service';
 import { OrderDeliveryEntity } from '../entity/order.delivery.entity';
 import { OrderDeliveryRefundEntity } from '../entity/order.delivery.refund.entity';
 import { OrderDeliveryAttemptEntity } from '../entity/order.delivery.attempt.entity';
+import { OrderPaymentRefundEventEntity } from '../entity/order.payment.refund.event.entity';
+import { OrderPaymentAllocationEntity } from '../entity/order.payment.allocation.entity';
 import { DeliveryBatchSchedule } from './delivery.batch.schedule';
 import { RefundLedgerService } from './application/refund-ledger.service';
 import { SsgRefundResolverService } from './application/ssg-refund.resolver';
@@ -38,6 +40,8 @@ import { WalletModule } from '../wallet/wallet.module';
       OrderDeliveryEntity,
       OrderDeliveryRefundEntity,
       OrderDeliveryAttemptEntity,
+      OrderPaymentRefundEventEntity,
+      OrderPaymentAllocationEntity,
       OrderRealProductEntity,
       OrderRealProductMappingEntity,
       DeliverySendHistoryEntity,

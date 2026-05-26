@@ -23,8 +23,15 @@ import { SsgEventEntity } from '../../entity/ssg.event.entity';
 import {
   OrderDeliveryAttemptEntity,
   OrderDeliveryAttemptType,
+  OrderDeliveryAttemptStatus,
 } from '../../entity/order.delivery.attempt.entity';
-import { OrderPaymentRefundEventType } from '../../entity/order.payment.refund.event.entity';
+import {
+  OrderPaymentRefundEventEntity,
+  OrderPaymentRefundEventType,
+} from '../../entity/order.payment.refund.event.entity';
+import { OrderPaymentAllocationEntity } from '../../entity/order.payment.allocation.entity';
+import { ResendDeductService } from '../../wallet/application/resend-deduct.service';
+import { IsNull } from 'typeorm';
 
 import { DeliveryAlimTalk } from '../interface/delivery.alim.talk';
 import { IOrderDeliveryStatus } from '../interface/order.delivery.status';
@@ -111,8 +118,13 @@ export class DeliveryBatchService {
     private ssgInsertStateService: SsgInsertStateService,
     private readonly walletManagedPredicate: WalletManagedPredicate,
     private readonly refundPoolService: RefundPoolService,
+    private readonly resendDeductService: ResendDeductService,
     @InjectRepository(OrderDeliveryAttemptEntity)
     private readonly orderDeliveryAttemptRepository: Repository<OrderDeliveryAttemptEntity>,
+    @InjectRepository(OrderPaymentRefundEventEntity)
+    private readonly orderPaymentRefundEventRepository: Repository<OrderPaymentRefundEventEntity>,
+    @InjectRepository(OrderPaymentAllocationEntity)
+    private readonly orderPaymentAllocationRepository: Repository<OrderPaymentAllocationEntity>,
   ) {}
 
   private readonly logger = new Logger('batch');
@@ -1041,6 +1053,13 @@ export class DeliveryBatchService {
 
       await this.refundLedgerService.release(orderDelivery.id);
 
+      // Wallet Cutover Bundle PR4 — wallet-managed 주문은 wallet 잔액 재차감 + refund ledger 역처리.
+      // legacy mirror (위 deductBalance / allSettleAmount UPDATE) 와 same-tx 흡수 — wallet/legacy 합계 일관.
+      const isWalletManaged = await this.walletManagedPredicate.isWalletManaged(order.id);
+      if (isWalletManaged) {
+        await this.applyWalletReverseRefundForResend(orderDelivery);
+      }
+
       this.logger.log(`[RESEND] 환불 복구 완료 - orderDelivery.id: ${orderDelivery.id}, amount: ${settlementPrice} (정가: ${productPrice})`);
     } catch (error) {
       if (error instanceof BadRequestException) {
@@ -1049,6 +1068,61 @@ export class DeliveryBatchService {
         this.logger.error(`[RESEND] 환불 복구 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
       }
     }
+  }
+
+  /**
+   * 재발송 wallet 처리 — TX0 (attempt INSERT) + TX1 (reverseRefund + resendDeduct) 통합.
+   *   1) RESEND attempt row INSERT (cycle id 발급).
+   *   2) 최신 active refund ledger row 찾기 → reverseRefund (counters 복원 + reversed_at set).
+   *   3) ResendDeductService.resendDeduct (wallet_account 재차감 + wallet_transaction row split).
+   *
+   * plan §4 의 3-TX 분리 (TX0/TX1/TX2) 는 caller 가 outer @Transactional 으로 같은 cls TX 안에서
+   * 호출되어 실질적으로 단일 TX 로 동작. 향후 message enqueue 분리 시 TX2 split.
+   */
+  private async applyWalletReverseRefundForResend(orderDelivery: OrderDeliveryEntity): Promise<void> {
+    const order = orderDelivery.orderProductMapping.order;
+
+    // 1) RESEND attempt row 생성 — cycle id 사용
+    const attempt = await this.orderDeliveryAttemptRepository.save({
+      orderDeliveryId: orderDelivery.id,
+      attemptType: OrderDeliveryAttemptType.RESEND,
+      status: OrderDeliveryAttemptStatus.DEDUCTED,
+      deductedAt: new Date(),
+    });
+
+    // 2) 최신 active refund ledger row lookup (allocation 기준 + affectedDeliveryIds 포함)
+    const allocation = await this.orderPaymentAllocationRepository.findOne({
+      where: { orderId: order.id },
+    });
+    if (!allocation) {
+      throw new Error(
+        `wallet-managed but allocation row missing for orderId=${order.id}`,
+      );
+    }
+    const candidates = await this.orderPaymentRefundEventRepository.find({
+      where: { allocationId: allocation.id, reversedAt: IsNull() },
+      order: { id: 'DESC' },
+    });
+    const ledger = candidates.find((c) =>
+      Array.isArray(c.affectedDeliveryIds) && c.affectedDeliveryIds.includes(orderDelivery.id),
+    );
+    if (!ledger) {
+      throw new Error(
+        `wallet-managed reverseRefundForResend: no active refund ledger for delivery=${orderDelivery.id}`,
+      );
+    }
+
+    // 3) reverseRefund + resendDeduct
+    await this.refundPoolService.reverseRefund(ledger.id, attempt.id);
+    await this.resendDeductService.resendDeduct({
+      orderId: order.id,
+      orderDeliveryId: orderDelivery.id,
+      attemptId: attempt.id,
+    });
+
+    this.logger.log(
+      `[RESEND] wallet path complete - orderDelivery.id=${orderDelivery.id}, attemptId=${attempt.id}, ledgerId=${ledger.id}`,
+    );
   }
 
   /**
