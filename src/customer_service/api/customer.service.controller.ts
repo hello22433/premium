@@ -94,6 +94,8 @@ export class CustomerServiceController {
   @ApiOkResponse({
     description: '성공적으로 return 한 경우',
   })
+  // 운영관리자(자사) 전용 — 고객사(CORPORATE_ADMIN) 접근 차단
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @Put('/customer-service/pin-status/modify')
   async pinStatusModify(@User() user: ILoginUserInfo, @Body() getBody: CustomerServicePinStatusModifyReqDto) {
     // 1. 유효성검사
@@ -101,6 +103,12 @@ export class CustomerServiceController {
 
     // 2. 데이터매핑
     const map = await this.customerServiceService.mapPinStatusModify(user, getBody);
+
+    // 권한검사: 쿠폰 종류(일반/SSG)에 맞는 CS 권한 확인
+    await this.authService.authorityValidator(
+      user,
+      map.orderDelivery.ssgEventId ? UserAuthSubEnum.CUSTOMER_SSG_COUPON : UserAuthSubEnum.CUSTOMER_GENERAL_COUPON,
+    );
 
     // 3. 서비스실행
     return await this.customerServiceService.execPinStatusModify(map);
@@ -112,6 +120,8 @@ export class CustomerServiceController {
   @ApiOkResponse({
     description: '성공적으로 return 한 경우',
   })
+  // 운영관리자(자사) 전용 — 고객사(CORPORATE_ADMIN) 접근 차단
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @Put('/customer-service/pin-status/refresh')
   async pinStatusRefresh(@User() user: ILoginUserInfo, @Body() getBody: CustomerServicePinStatusRefreshReqDto) {
     // 1. 유효성검사
@@ -119,6 +129,12 @@ export class CustomerServiceController {
 
     // 2. 데이터매핑
     const map = await this.customerServiceService.mapPinStatusRefresh(user, getBody);
+
+    // 권한검사: 쿠폰 종류(일반/SSG)에 맞는 CS 권한 확인
+    await this.authService.authorityValidator(
+      user,
+      map.orderDelivery.ssgEventId ? UserAuthSubEnum.CUSTOMER_SSG_COUPON : UserAuthSubEnum.CUSTOMER_GENERAL_COUPON,
+    );
 
     // 3. 서비스실행
     return await this.customerServiceService.execPinStatusRefresh(map);
