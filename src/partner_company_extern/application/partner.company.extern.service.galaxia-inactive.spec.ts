@@ -142,10 +142,16 @@ describe('PartnerCompanyExternService.refreshCouponStatus — GALAXIA INACTIVE �
     orderDeliveryRepository.save.mockImplementation((entity: any) => Promise.resolve(entity));
   });
 
-  describe('app_div=81 로그가 존재할 때 (= 81 환불 사건)', () => {
-    it('INACTIVE → REFUND_CANCEL 로 매핑하고 discardedAt 을 새로 박는다', async () => {
+  // 유효기간이 지난(만료된) 쿠폰: validTo가 과거 → isExpiredYMD=true → stillValid=false.
+  // 이 경우엔 81 로그 유무만으로 환불/만료를 가른다.
+  const EXPIRED_VALID_TO = '20200101';
+
+  describe('app_div=81 로그가 존재할 때 (= 81 환불 push 도착)', () => {
+    it('유효기간이 지났어도 81 로그가 있으면 REFUND_CANCEL 로 매핑하고 discardedAt 을 새로 박는다', async () => {
       const orderDelivery = buildOrderDelivery({ discardedAt: null });
-      galaxia.check.mockResolvedValue({ giftCertificate: buildGiftCertificate() });
+      galaxia.check.mockResolvedValue({
+        giftCertificate: buildGiftCertificate({ validTo: EXPIRED_VALID_TO }),
+      });
       galaxiaBarcodeLogRepository.existsBy.mockResolvedValue(true);
 
       const result = await sut.refreshCouponStatus(orderDelivery);
@@ -161,7 +167,9 @@ describe('PartnerCompanyExternService.refreshCouponStatus — GALAXIA INACTIVE �
     it('이미 discardedAt 이 박혀 있으면 기존 시각을 보존한다 (push 81 → check 순서 방어)', async () => {
       const existingDiscardedAt = new Date('2026-05-15T10:00:00Z');
       const orderDelivery = buildOrderDelivery({ discardedAt: existingDiscardedAt });
-      galaxia.check.mockResolvedValue({ giftCertificate: buildGiftCertificate() });
+      galaxia.check.mockResolvedValue({
+        giftCertificate: buildGiftCertificate({ validTo: EXPIRED_VALID_TO }),
+      });
       galaxiaBarcodeLogRepository.existsBy.mockResolvedValue(true);
 
       const result = await sut.refreshCouponStatus(orderDelivery);
@@ -171,10 +179,26 @@ describe('PartnerCompanyExternService.refreshCouponStatus — GALAXIA INACTIVE �
     });
   });
 
-  describe('app_div=81 로그가 없을 때 (= 자연 만료 또는 미상)', () => {
-    it('INACTIVE → EXPIRED 로 매핑한다 (현행 보수 처리 유지)', async () => {
+  describe('유효기간이 남았는데 INACTIVE 인 경우 (= push 누락 환불 보정, H1)', () => {
+    it('81 로그가 없어도 유효기간 내면 REFUND_CANCEL 로 매핑한다 (자연 만료 불가능)', async () => {
+      // validTo=99991231(기본) → 아직 유효기간 내. push 누락으로 81 로그는 없는 상태.
       const orderDelivery = buildOrderDelivery({ discardedAt: null });
       galaxia.check.mockResolvedValue({ giftCertificate: buildGiftCertificate() });
+      galaxiaBarcodeLogRepository.existsBy.mockResolvedValue(false);
+
+      const result = await sut.refreshCouponStatus(orderDelivery);
+
+      expect(result.couponStatus).toBe(OrderDeliveryCouponStatus.REFUND_CANCEL);
+      expect(result.discardedAt).toBeInstanceOf(Date);
+    });
+  });
+
+  describe('유효기간이 지났고 81 로그도 없을 때 (= 자연 만료)', () => {
+    it('INACTIVE → EXPIRED 로 매핑한다', async () => {
+      const orderDelivery = buildOrderDelivery({ discardedAt: null });
+      galaxia.check.mockResolvedValue({
+        giftCertificate: buildGiftCertificate({ validTo: EXPIRED_VALID_TO }),
+      });
       galaxiaBarcodeLogRepository.existsBy.mockResolvedValue(false);
 
       const result = await sut.refreshCouponStatus(orderDelivery);

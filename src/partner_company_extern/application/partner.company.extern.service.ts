@@ -805,12 +805,17 @@ export class PartnerCompanyExternService {
           orderDelivery.discardedAt = new Date();
         } else if (giftCertificate.couponStatus === 'INACTIVE') {
           // INACTIVE는 자연 만료와 81 환불(End User 직접 환불)이 합쳐져 응답될 수 있음.
-          // galaxia_barcode_log 에 app_div='81' 기록이 있으면 환불폐기로, 없으면 만료로 분류.
+          // 갤럭시아 check/daily는 81 거래구분을 직접 내려주지 않고 push로만 오므로,
+          // push 누락 시 galaxia_barcode_log의 81 기록만으로는 환불을 놓칠 수 있다(영구 EXPIRED 오분류).
+          // → 유효기간(validTo)을 주신호로 사용: 아직 유효기간이 남았는데 INACTIVE면 자연 만료가
+          //   불가능하므로 환불(REFUND_CANCEL)로 본다. 81 로그가 있으면(=push 도착) 그 역시 환불 근거.
+          //   둘 중 하나라도 성립하면 REFUND_CANCEL, 아니면(유효기간 지남 & 81 로그 없음) 만료.
+          const stillValid = !!giftCertificate.validTo && !isExpiredYMD(giftCertificate.validTo);
           const has81Refund = await this.galaxiaBarcodeLogRepository.existsBy({
             orderDeliveryId: orderDelivery.id,
             appDiv: '81',
           });
-          if (has81Refund) {
+          if (stillValid || has81Refund) {
             orderDelivery.couponStatus = OrderDeliveryCouponStatus.REFUND_CANCEL;
             if (!orderDelivery.discardedAt) {
               orderDelivery.discardedAt = new Date();
