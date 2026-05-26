@@ -43,6 +43,8 @@ import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { join, parse } from 'path';
 import * as process from 'node:process';
 import * as fs from 'node:fs';
+import dns from 'node:dns/promises';
+import ipaddr from 'ipaddr.js';
 import * as ExcelJS from 'exceljs';
 import {
   ProductSettleMethodExcelMapping,
@@ -1281,15 +1283,18 @@ export class ProductService {
         let imagePath = rowData.imagePath;
         if (!imagePath || !imagePath.trim()) {
           imagePath = '/img/upload-plz.jpg';
-        } else if (this.isExternalImageUrl(imagePath)) {
-          try {
-            console.log(`[엑셀업로드] 행 ${rowIndex} - 외부 이미지 복사 시작: ${imagePath}`);
-            const result = await this.fileStorage.copyImageFromUrl(imagePath);
-            imagePath = result.url;
-            console.log(`[엑셀업로드] 행 ${rowIndex} - 외부 이미지 복사 완료: ${imagePath}`);
-          } catch (e) {
-            console.error(`행 ${rowIndex}: 이미지 복사 실패 - ${e.message}`);
-            // 이미지 복사 실패 시 원본 URL 유지
+        } else {
+          const safeIp = await this.getSafeIp(imagePath);
+          if (safeIp) {
+            try {
+              console.log(`[엑셀업로드] 행 ${rowIndex} - 외부 이미지 복사 시작: ${imagePath}`);
+              const result = await this.fileStorage.copyImageFromUrl(imagePath, safeIp);
+              imagePath = result.url;
+              console.log(`[엑셀업로드] 행 ${rowIndex} - 외부 이미지 복사 완료: ${imagePath}`);
+            } catch (e) {
+              console.error(`행 ${rowIndex}: 이미지 복사 실패 - ${e.message}`);
+              // 이미지 복사 실패 시 원본 URL 유지
+            }
           }
         }
 
@@ -1476,12 +1481,15 @@ export class ProductService {
         let imagePath = rowData.imagePath;
         if (!imagePath || !imagePath.trim()) {
           imagePath = '/img/upload-plz.jpg';
-        } else if (this.isExternalImageUrl(imagePath)) {
-          try {
-            const result = await this.fileStorage.copyImageFromUrl(imagePath);
-            imagePath = result.url;
-          } catch (e) {
-            console.error(`행 ${rowIndex}: 이미지 복사 실패 - ${e.message}`);
+        } else {
+          const safeIp = await this.getSafeIp(imagePath);
+          if (safeIp) {
+            try {
+              const result = await this.fileStorage.copyImageFromUrl(imagePath, safeIp);
+              imagePath = result.url;
+            } catch (e) {
+              console.error(`행 ${rowIndex}: 이미지 복사 실패 - ${e.message}`);
+            }
           }
         }
 
@@ -1693,19 +1701,34 @@ export class ProductService {
     return value;
   }
 
-  /**
-   * 외부 이미지 URL인지 확인 (자체 S3가 아닌 외부 URL)
-   */
-  private isExternalImageUrl(url: string): boolean {
-    if (!url || typeof url !== 'string') return false;
+  private async getSafeIp(url: string): Promise<string | null> {
+    if (!url || typeof url !== 'string') return null;
+    if (!url.startsWith('http://') && !url.startsWith('https://')) return null;
+    if (url.includes('epopkon-premium.s3.amazonaws.com')) return null;
 
-    // http:// 또는 https://로 시작하는지 확인
-    if (!url.startsWith('http://') && !url.startsWith('https://')) return false;
+    let hostname: string;
+    try {
+      hostname = new URL(url).hostname;
+    } catch {
+      return null;
+    }
 
-    // 자체 S3 URL인 경우 외부 URL이 아님
-    if (url.includes('epopkon-premium.s3.amazonaws.com')) return false;
+    let address: string;
+    try {
+      const result = await dns.lookup(hostname);
+      address = result.address;
+    } catch {
+      return null;
+    }
 
-    return true;
+    try {
+      const parsed = ipaddr.parse(address);
+      if (parsed.range() !== 'unicast') return null;
+    } catch {
+      return null;
+    }
+
+    return address;
   }
 
   private extractStorageKey(fileUrl: string): string {

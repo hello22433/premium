@@ -6,6 +6,8 @@ import { Readable } from 'stream';
 import { join } from 'path';
 import process from 'node:process';
 import fs from 'node:fs';
+import http from 'node:http';
+import https from 'node:https';
 import axios from 'axios';
 
 @Injectable()
@@ -22,10 +24,14 @@ export class FileStorageS3 implements IFileStorage {
     });
   }
 
+  private sanitizeFileName(name: string): string {
+    return name.replace(/[#?%\s/\\]/g, '_');
+  }
+
   async uploadImageFile(file: Express.Multer.File): Promise<IFileUploadFileReturn> {
     const bucketName = this.configService.getOrThrow('AWS_S3_BUCKET');
 
-    const uploadFileName = `image/${Date.now()}-${file.originalname}`;
+    const uploadFileName = `image/${Date.now()}-${this.sanitizeFileName(file.originalname)}`;
 
     const fileData: PutObjectCommandInput = {
       Bucket: bucketName,
@@ -50,7 +56,7 @@ export class FileStorageS3 implements IFileStorage {
   async uploadFile(file: Express.Multer.File): Promise<IFileUploadFileReturn> {
     const bucketName = this.configService.getOrThrow('AWS_S3_BUCKET');
 
-    const uploadFileName = `file/${Date.now()}-${file.originalname}`;
+    const uploadFileName = `file/${Date.now()}-${this.sanitizeFileName(file.originalname)}`;
 
     const fileData: PutObjectCommandInput = {
       Bucket: bucketName,
@@ -155,23 +161,36 @@ export class FileStorageS3 implements IFileStorage {
     throw new Error('Body is not a readable stream');
   }
 
-  async copyImageFromUrl(imageUrl: string): Promise<IFileUploadFileReturn> {
+  async copyImageFromUrl(imageUrl: string, safeIp: string): Promise<IFileUploadFileReturn> {
     const bucketName = this.configService.getOrThrow('AWS_S3_BUCKET');
 
-    // 외부 URL에서 이미지 다운로드
+    // 원본 URL을 그대로 사용해 SNI/인증서 검증을 정상 유지하고, 실제 TCP 연결만 검증된 IP로 강제
+    const family = safeIp.includes(':') ? 6 : 4;
+    const lookup = (
+      _hostname: string,
+      _options: unknown,
+      callback: (err: Error | null, addr: string, family: number) => void,
+    ) => {
+      callback(null, safeIp, family);
+    };
+    const httpAgent = new http.Agent({ lookup } as http.AgentOptions);
+    const httpsAgent = new https.Agent({ lookup } as https.AgentOptions);
+
     const response = await axios.get(imageUrl, {
       responseType: 'arraybuffer',
-      timeout: 30000, // 30초 타임아웃
+      timeout: 30000,
+      maxRedirects: 0,
+      httpAgent,
+      httpsAgent,
     });
 
     const buffer = Buffer.from(response.data);
 
-    // URL에서 파일명 추출 (쿼리스트링 제거)
     const urlPath = new URL(imageUrl).pathname;
     const originalName = decodeURIComponent(urlPath.split('/').pop() || 'image.jpg');
 
     // S3 업로드 경로 생성
-    const uploadFileName = `image/${Date.now()}-${originalName}`;
+    const uploadFileName = `image/${Date.now()}-${this.sanitizeFileName(originalName)}`;
 
     const fileData: PutObjectCommandInput = {
       Bucket: bucketName,
