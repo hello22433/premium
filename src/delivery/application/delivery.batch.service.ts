@@ -230,6 +230,13 @@ export class DeliveryBatchService {
     const shouldRestoreBalance = order.isSettleComplete || order.isSettleBalance;
 
     const isSsg = order.type === IOrderType.SSG && !!orderDelivery.ssgEventId;
+    const isWalletManaged = await this.walletManagedPredicate.isWalletManaged(order.id);
+
+    // 1) ledger.claim — 멱등 게이트.
+    //    - legacy path: 중복이면 이전 처리 성공이므로 short-circuit return.
+    //    - wallet path: claim 만 commit 되고 wallet 차감 실패한 retry 케이스 가능 → wallet 재시도 진행.
+    //      RefundPoolService.refund 가 idempotencyKeyPrefix 기반 동시 race 차단 + 기존 ledger return.
+    //    plan §4 / qa D2-11: 내부 환불 실패는 반드시 throw 전파 (claim 중복 분기만 흡수).
     try {
       await this.refundLedgerService.claim({
         orderDeliveryId: orderDelivery.id,
@@ -246,68 +253,79 @@ export class DeliveryBatchService {
         // DEFERRED 면 false 유지 → 다음 재발송 가드 차단 (이중 차감 방지).
         ssgPending: isSsg,
       });
-
-      // ledger claim 성공 후 SSG 행사 잔액 복구.
-      // resolver 가 throw 흡수 + outcome 반환 — caller try/catch 불필요. 보정 실패는 ledger 신호로 후속 전달.
-      if (isSsg) {
-        const outcome = await this.ssgRefundResolverService.resolveAndRefundIfNeeded({
-          orderDeliveryId: orderDelivery.id,
-          ssgEventId: orderDelivery.ssgEventId!,
-          refundAmount: productPrice,
-          orderId: order.id,
-        });
-        if (outcome === SsgRefundOutcome.DEFERRED) {
-          this.logger.error(
-            `[REFUND] SSG 잔액 보정 DEFERRED — ledger.ssg_balance_settled=false 유지. 운영 점검 필요. orderDelivery.id: ${orderDelivery.id}`,
-          );
-        }
-      }
-
-      const isWalletManaged = await this.walletManagedPredicate.isWalletManaged(order.id);
-      if (isWalletManaged) {
-        const initialAttempt = await this.orderDeliveryAttemptRepository.findOne({
-          where: {
-            orderDeliveryId: orderDelivery.id,
-            attemptType: OrderDeliveryAttemptType.INITIAL,
-          },
-        });
-        if (!initialAttempt) {
-          // drift: wallet 분기 진입했는데 PR2-005 deliveryConfirmed hook 이 INITIAL attempt 를 남기지 않은 상황.
-          // BadRequestException 으로 던지면 outer catch 의 "중복 차단 (정상)" warn 분기로 흡수되므로,
-          // 일반 Error 로 surface 해 error 로그 + 운영 점검 신호로 떨어지게 한다.
-          throw new Error(
-            `wallet-managed delivery ${orderDelivery.id} missing INITIAL attempt — drift, aborting refund`,
-          );
-        }
-        await this.refundPoolService.refund({
-          orderId: order.id,
-          eventType: OrderPaymentRefundEventType.FAIL_REFUND,
-          targetDeliveryIds: [orderDelivery.id],
-          idempotencyKeyPrefix: `fail_refund:${order.id}:${orderDelivery.id}:${initialAttempt.id}`,
-        });
-        this.logger.log(
-          `[REFUND] wallet path complete - orderDelivery.id: ${orderDelivery.id}, attemptId: ${initialAttempt.id}`,
-        );
-      } else {
-        if (shouldRestoreBalance) {
-          await this.userManagementService.addBalance(userId, settlementPrice, `발송 실패 환불 (주문번호: ${order.id})`);
-        } else {
-          await this.userRepository
-            .createQueryBuilder()
-            .update()
-            .set({ allSettleAmount: () => 'all_settle_amount - :amount' })
-            .where('id = :id', { id: userId })
-            .setParameters({ amount: settlementPrice })
-            .execute();
-        }
-        this.logger.log(`[REFUND] legacy path complete - orderDelivery.id: ${orderDelivery.id}, amount: ${settlementPrice} (정가: ${productPrice})`);
-      }
     } catch (error) {
       if (error instanceof BadRequestException) {
-        this.logger.warn(`[REFUND] 환불 중복 차단 (정상) - orderDelivery.id: ${orderDelivery.id}, message: ${error.message}`);
+        if (isWalletManaged) {
+          this.logger.warn(
+            `[REFUND] claim 중복 — wallet path 멱등 재시도 진행. orderDelivery.id: ${orderDelivery.id}, message: ${error.message}`,
+          );
+          // continue — RefundPoolService.refund 가 멱등.
+        } else {
+          this.logger.warn(
+            `[REFUND] 환불 중복 차단 (정상, legacy) - orderDelivery.id: ${orderDelivery.id}, message: ${error.message}`,
+          );
+          return;
+        }
       } else {
-        this.logger.error(`[REFUND] 환불 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
+        throw error;
       }
+    }
+
+    // 2) SSG 행사 잔액 복구. resolver 가 throw 흡수 + outcome 반환 — caller try/catch 불필요.
+    //    DEFERRED 신호는 ledger.ssg_balance_settled=false 로 남아 다음 재발송 가드에서 차단됨.
+    if (isSsg) {
+      const outcome = await this.ssgRefundResolverService.resolveAndRefundIfNeeded({
+        orderDeliveryId: orderDelivery.id,
+        ssgEventId: orderDelivery.ssgEventId!,
+        refundAmount: productPrice,
+        orderId: order.id,
+      });
+      if (outcome === SsgRefundOutcome.DEFERRED) {
+        this.logger.error(
+          `[REFUND] SSG 잔액 보정 DEFERRED — ledger.ssg_balance_settled=false 유지. 운영 점검 필요. orderDelivery.id: ${orderDelivery.id}`,
+        );
+      }
+    }
+
+    // 3) wallet / legacy 잔액 복구. 실패는 throw 전파 → caller (processOneDeliveryForBatch outer catch) 에서
+    //    claimedAt reset 후 다음 batch 재시도. wallet 은 attemptId prefix 로 멱등 → 안전 재실행.
+    if (isWalletManaged) {
+      const initialAttempt = await this.orderDeliveryAttemptRepository.findOne({
+        where: {
+          orderDeliveryId: orderDelivery.id,
+          attemptType: OrderDeliveryAttemptType.INITIAL,
+        },
+      });
+      if (!initialAttempt) {
+        // drift: wallet 분기 진입했는데 PR2-005 deliveryConfirmed hook 이 INITIAL attempt 를 남기지 않은 상황.
+        throw new Error(
+          `wallet-managed delivery ${orderDelivery.id} missing INITIAL attempt — drift, aborting refund`,
+        );
+      }
+      await this.refundPoolService.refund({
+        orderId: order.id,
+        eventType: OrderPaymentRefundEventType.FAIL_REFUND,
+        targetDeliveryIds: [orderDelivery.id],
+        idempotencyKeyPrefix: `fail_refund:${order.id}:${orderDelivery.id}:${initialAttempt.id}`,
+      });
+      this.logger.log(
+        `[REFUND] wallet path complete - orderDelivery.id: ${orderDelivery.id}, attemptId: ${initialAttempt.id}`,
+      );
+    } else {
+      if (shouldRestoreBalance) {
+        await this.userManagementService.addBalance(userId, settlementPrice, `발송 실패 환불 (주문번호: ${order.id})`);
+      } else {
+        await this.userRepository
+          .createQueryBuilder()
+          .update()
+          .set({ allSettleAmount: () => 'all_settle_amount - :amount' })
+          .where('id = :id', { id: userId })
+          .setParameters({ amount: settlementPrice })
+          .execute();
+      }
+      this.logger.log(
+        `[REFUND] legacy path complete - orderDelivery.id: ${orderDelivery.id}, amount: ${settlementPrice} (정가: ${productPrice})`,
+      );
     }
   }
 

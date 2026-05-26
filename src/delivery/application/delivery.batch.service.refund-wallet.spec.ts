@@ -187,19 +187,16 @@ describe('DeliveryBatchService.refundForFail - wallet path', () => {
     expect(userRepoExecute).not.toHaveBeenCalled();
   });
 
-  it('wallet 경로 + INITIAL attempt 부재: drift → error 로그 후 outer try/catch 흡수 (refund 미호출)', async () => {
+  it('wallet 경로 + INITIAL attempt 부재: drift → throw 전파 (refund 미호출, 상위 retry 신호)', async () => {
     const od = buildOrderDelivery();
     walletManagedPredicate.isWalletManaged.mockResolvedValue(true);
     orderDeliveryAttemptRepository.findOne.mockResolvedValue(null);
-    const errorSpy = jest.spyOn((sut as any).logger, 'error');
 
-    await (sut as any).refundForFail(od);
+    await expect((sut as any).refundForFail(od)).rejects.toThrow(
+      /missing INITIAL attempt/,
+    );
 
     expect(refundPoolService.refund).not.toHaveBeenCalled();
     expect(userManagementService.addBalance).not.toHaveBeenCalled();
-    // BadRequestException 은 outer catch 의 warn 경로로 흐를 수 있으므로 error 또는 warn 둘 다 허용.
-    // 본 사양상 drift 는 surface 가 목적이므로 outer catch (BadRequestException → warn '중복 차단')
-    // 가 아닌 error 로 떨어져야 한다.
-    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('환불 실패'));
   });
 });
