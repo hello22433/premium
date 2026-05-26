@@ -22,6 +22,7 @@ import { OrderConfirmationWalletService } from './application/order-confirmation
 import { OrderConfirmationReleaseService } from './application/order-confirmation-release.service';
 import { RefundPoolService } from './application/refund-pool.service';
 import { SettleConfirmationWalletService } from './application/settle-confirmation-wallet.service';
+import { ResendDeductService } from './application/resend-deduct.service';
 import { WalletManagedPredicate } from './application/wallet-managed.predicate';
 import { WalletCutoverBundleBootstrap } from './application/wallet-cutover-bundle.bootstrap';
 import { ShadowMismatchClassifierService } from './application/shadow-mismatch-classifier.service';
@@ -67,6 +68,7 @@ import { CreditExcessApprovalController } from './api/credit-excess-approval.con
     OrderConfirmationReleaseService,
     RefundPoolService,
     SettleConfirmationWalletService,
+    ResendDeductService,
     WalletManagedPredicate,
     WalletCutoverConfig,
     WalletCutoverBundleBootstrap,
@@ -79,6 +81,7 @@ import { CreditExcessApprovalController } from './api/credit-excess-approval.con
     // PR4 의 ResendDeductService 는 본 PR2 범위에 미존재 → alias 미등록 → gate 가 정상적으로 missing 감지.
     { provide: 'SettleConfirmationWalletService', useExisting: SettleConfirmationWalletService },
     { provide: 'RefundPoolService', useExisting: RefundPoolService },
+    { provide: 'ResendDeductService', useExisting: ResendDeductService },
   ],
   exports: [
     WalletAccountResolverService,
@@ -90,6 +93,7 @@ import { CreditExcessApprovalController } from './api/credit-excess-approval.con
     OrderConfirmationReleaseService,
     RefundPoolService,
     SettleConfirmationWalletService,
+    ResendDeductService,
     WalletManagedPredicate,
     WalletCutoverConfig,
     ShadowMismatchClassifierService,
