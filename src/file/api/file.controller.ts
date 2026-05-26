@@ -43,7 +43,7 @@ export class FileController {
     description: '이미지 파일을 업로드 하지 않은 경우',
   })
   // ============================================
-  @UseInterceptors(FileInterceptor('imageFile'))
+  @UseInterceptors(FileInterceptor('imageFile', { limits: { fileSize: 10 * 1024 * 1024 } }))
   @Post('file/image')
   createImage(@UploadedFile() imageFile: Express.Multer.File, @Body() dto: FileUploadImageReqDto) {
     return this.fileService.uploadImageFile(imageFile);
@@ -62,7 +62,7 @@ export class FileController {
   })
   @ApiBadRequestResponse({})
   // ============================================
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 10 * 1024 * 1024 } }))
   @Post('file/pdf')
   createPdf(@UploadedFile() file: Express.Multer.File, @Body() dto: FileUploadPdfReqDto) {
     return this.fileService.createPdf(file);
@@ -84,7 +84,7 @@ export class FileController {
     description: '파일을 업로드 하지 않은 경우',
   })
   // ============================================
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 20 * 1024 * 1024 } }))
   @Post('file/upload')
   uploadFile(@UploadedFile() file: Express.Multer.File, @Body() dto: FileUploadPdfReqDto) {
     return this.fileService.uploadFile(file);

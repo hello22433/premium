@@ -22,10 +22,14 @@ export class FileStorageS3 implements IFileStorage {
     });
   }
 
+  private sanitizeFileName(name: string): string {
+    return name.replace(/[#?%\s/\\]/g, '_');
+  }
+
   async uploadImageFile(file: Express.Multer.File): Promise<IFileUploadFileReturn> {
     const bucketName = this.configService.getOrThrow('AWS_S3_BUCKET');
 
-    const uploadFileName = `image/${Date.now()}-${file.originalname}`;
+    const uploadFileName = `image/${Date.now()}-${this.sanitizeFileName(file.originalname)}`;
 
     const fileData: PutObjectCommandInput = {
       Bucket: bucketName,
@@ -50,7 +54,7 @@ export class FileStorageS3 implements IFileStorage {
   async uploadFile(file: Express.Multer.File): Promise<IFileUploadFileReturn> {
     const bucketName = this.configService.getOrThrow('AWS_S3_BUCKET');
 
-    const uploadFileName = `file/${Date.now()}-${file.originalname}`;
+    const uploadFileName = `file/${Date.now()}-${this.sanitizeFileName(file.originalname)}`;
 
     const fileData: PutObjectCommandInput = {
       Bucket: bucketName,

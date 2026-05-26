@@ -43,6 +43,7 @@ import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { join, parse } from 'path';
 import * as process from 'node:process';
 import * as fs from 'node:fs';
+import dns from 'node:dns/promises';
 import * as ExcelJS from 'exceljs';
 import {
   ProductSettleMethodExcelMapping,
@@ -1281,7 +1282,7 @@ export class ProductService {
         let imagePath = rowData.imagePath;
         if (!imagePath || !imagePath.trim()) {
           imagePath = '/img/upload-plz.jpg';
-        } else if (this.isExternalImageUrl(imagePath)) {
+        } else if (await this.isSafeExternalUrl(imagePath)) {
           try {
             console.log(`[엑셀업로드] 행 ${rowIndex} - 외부 이미지 복사 시작: ${imagePath}`);
             const result = await this.fileStorage.copyImageFromUrl(imagePath);
@@ -1476,7 +1477,7 @@ export class ProductService {
         let imagePath = rowData.imagePath;
         if (!imagePath || !imagePath.trim()) {
           imagePath = '/img/upload-plz.jpg';
-        } else if (this.isExternalImageUrl(imagePath)) {
+        } else if (await this.isSafeExternalUrl(imagePath)) {
           try {
             const result = await this.fileStorage.copyImageFromUrl(imagePath);
             imagePath = result.url;
@@ -1693,19 +1694,33 @@ export class ProductService {
     return value;
   }
 
-  /**
-   * 외부 이미지 URL인지 확인 (자체 S3가 아닌 외부 URL)
-   */
-  private isExternalImageUrl(url: string): boolean {
+  private async isSafeExternalUrl(url: string): Promise<boolean> {
     if (!url || typeof url !== 'string') return false;
-
-    // http:// 또는 https://로 시작하는지 확인
     if (!url.startsWith('http://') && !url.startsWith('https://')) return false;
-
-    // 자체 S3 URL인 경우 외부 URL이 아님
     if (url.includes('epopkon-premium.s3.amazonaws.com')) return false;
 
-    return true;
+    let hostname: string;
+    try {
+      hostname = new URL(url).hostname;
+    } catch {
+      return false;
+    }
+
+    let addresses: string[];
+    try {
+      const result = await dns.lookup(hostname, { all: true });
+      addresses = result.map((r) => r.address);
+    } catch {
+      return false;
+    }
+
+    const PRIVATE_RANGES = [
+      /^127\./, /^10\./, /^192\.168\./,
+      /^172\.(1[6-9]|2\d|3[01])\./, /^169\.254\./,
+      /^0\./, /^::1$/, /^fc00:/,
+    ];
+
+    return addresses.every((ip) => !PRIVATE_RANGES.some((p) => p.test(ip)));
   }
 
   private extractStorageKey(fileUrl: string): string {
