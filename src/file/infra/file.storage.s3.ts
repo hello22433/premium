@@ -6,7 +6,9 @@ import { Readable } from 'stream';
 import { join } from 'path';
 import process from 'node:process';
 import fs from 'node:fs';
+import dns from 'node:dns/promises';
 import axios from 'axios';
+import { BadRequestException } from '@nestjs/common';
 
 @Injectable()
 export class FileStorageS3 implements IFileStorage {
@@ -159,23 +161,42 @@ export class FileStorageS3 implements IFileStorage {
     throw new Error('Body is not a readable stream');
   }
 
+  private readonly PRIVATE_RANGES = [
+    /^127\./,
+    /^10\./,
+    /^192\.168\./,
+    /^172\.(1[6-9]|2\d|3[01])\./,
+    /^169\.254\./,
+    /^0\./,
+    /^::1$/,
+    /^fc00:/,
+  ];
+
   async copyImageFromUrl(imageUrl: string): Promise<IFileUploadFileReturn> {
     const bucketName = this.configService.getOrThrow('AWS_S3_BUCKET');
 
-    // 외부 URL에서 이미지 다운로드
-    const response = await axios.get(imageUrl, {
+    const parsedUrl = new URL(imageUrl);
+    const { address } = await dns.lookup(parsedUrl.hostname);
+
+    if (this.PRIVATE_RANGES.some((p) => p.test(address))) {
+      throw new BadRequestException('허용되지 않는 URL입니다.');
+    }
+
+    const requestUrl = imageUrl.replace(parsedUrl.hostname, address);
+    const response = await axios.get(requestUrl, {
       responseType: 'arraybuffer',
-      timeout: 30000, // 30초 타임아웃
+      timeout: 30000,
+      maxRedirects: 0,
+      headers: { Host: parsedUrl.hostname },
     });
 
     const buffer = Buffer.from(response.data);
 
-    // URL에서 파일명 추출 (쿼리스트링 제거)
-    const urlPath = new URL(imageUrl).pathname;
+    const urlPath = parsedUrl.pathname;
     const originalName = decodeURIComponent(urlPath.split('/').pop() || 'image.jpg');
 
     // S3 업로드 경로 생성
-    const uploadFileName = `image/${Date.now()}-${originalName}`;
+    const uploadFileName = `image/${Date.now()}-${this.sanitizeFileName(originalName)}`;
 
     const fileData: PutObjectCommandInput = {
       Bucket: bucketName,
