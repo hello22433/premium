@@ -795,10 +795,10 @@ export class PartnerCompanyExternBatchService {
         result.discardedAt = new Date();
       } else if (giftCertificate.couponStatus === 'INACTIVE') {
         // INACTIVE는 자연 만료와 81 환불(End User 직접 환불)이 합쳐져 응답될 수 있음.
-        // 갤럭시아 check/daily는 81 거래구분을 직접 내려주지 않고 push로만 오므로,
-        // push 누락 시 galaxia_barcode_log의 81 기록만으로는 환불을 놓칠 수 있다(영구 EXPIRED 오분류).
+        // check API 응답에는 거래구분(appDiv)이 없어 INACTIVE만으로는 환불/만료 구분 불가.
+        // 81 로그는 push(또는 daily)로 채워지므로 push 유실 시 비어 있을 수 있다(영구 EXPIRED 오분류).
         // → 유효기간(validTo)을 주신호로 사용: 아직 유효기간이 남았는데 INACTIVE면 자연 만료가
-        //   불가능하므로 환불(REFUND_CANCEL)로 본다. 81 로그가 있으면(=push 도착) 그 역시 환불 근거.
+        //   불가능하므로 환불(REFUND_CANCEL)로 본다. 81 로그가 있으면(=push/daily 도착) 그 역시 환불 근거.
         //   둘 중 하나라도 성립하면 REFUND_CANCEL, 아니면(유효기간 지남 & 81 로그 없음) 만료.
         const stillValid = !!giftCertificate.validTo && !isExpiredYMD(giftCertificate.validTo);
         const has81Refund = await this.galaxiaBarcodeLogRepository.existsBy({
@@ -1175,7 +1175,8 @@ export class PartnerCompanyExternBatchService {
           if (transaction.appDiv === '81') {
             orderDelivery.couponStatus = OrderDeliveryCouponStatus.REFUND_CANCEL;
             if (!orderDelivery.discardedAt) {
-              orderDelivery.discardedAt = new Date();
+              // 폐기 시각은 배치 실행 시각이 아니라 환불 이벤트 시각(appDay+appTime)으로 박는다.
+              orderDelivery.discardedAt = this.parseGalaxiaDateTime(transaction.appDay, transaction.appTime);
             }
             orderDelivery.galaxiaBalance = 0;
             await this.orderDeliveryRepository.save(orderDelivery);
@@ -1291,7 +1292,8 @@ export class PartnerCompanyExternBatchService {
         break;
       case '81': // 환불등록 (End User 직접 환불 → REFUND_CANCEL = 수령 고객 환불폐기)
         orderDelivery.couponStatus = OrderDeliveryCouponStatus.REFUND_CANCEL;
-        orderDelivery.discardedAt = new Date();
+        // 폐기 시각은 push 수신 시각이 아니라 환불 이벤트 시각(appday+apptime)으로 박는다.
+        orderDelivery.discardedAt = this.parseGalaxiaDateTime(raw.appday, raw.apptime);
         orderDelivery.galaxiaBalance = 0;
         break;
     }
@@ -1542,6 +1544,7 @@ export class PartnerCompanyExternBatchService {
     // 2-1. CANCEL/INACTIVE는 "사용"이 아니므로 합성 사용로그(appDiv='10')를 만들지 않고 상태만 정정한다.
     //   (이걸 안 막으면 환불로 인한 잔액 감소가 가짜 사용 기록으로 남아 매출/사용률 통계를 왜곡한다.)
     //   INACTIVE 환불/만료 구분은 check() 분기와 동일하게 validTo·81 로그를 사용한다.
+    //   (discardedAt: check 경로는 환불/취소 이벤트 시각이 없어 처리 시각 fallback — push/daily는 이벤트 시각 사용)
     const galaxiaCouponStatus = galaxiaOut.giftCertificate.couponStatus;
     if (galaxiaCouponStatus === 'CANCEL' || galaxiaCouponStatus === 'INACTIVE') {
       const updateData: Partial<OrderDeliveryEntity> = { galaxiaBalance: currentBalance };
