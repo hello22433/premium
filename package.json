@@ -48,6 +48,7 @@
     "dayjs": "^1.11.13",
     "exceljs": "^4.4.0",
     "iconv-lite": "^0.6.3",
+    "ipaddr.js": "^2.4.0",
     "jest-mock-extended": "^3.0.7",
     "jsbarcode": "^3.11.6",
     "jsonwebtoken": "^9.0.2",
