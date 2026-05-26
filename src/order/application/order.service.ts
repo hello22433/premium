@@ -3462,12 +3462,21 @@ export class OrderService {
           this.logger.warn(
             `신용초과 사전 승인 누락: orderId=${order.id}, 초과액=${(finalAmount - remainServiceAmount).toLocaleString()}원`,
           );
+          const excessAmount = finalAmount - remainServiceAmount;
+          // 클라이언트가 POST /credit-excess-approvals 호출에 필요한 wallet 식별 + 금액 정보 동봉.
+          const walletForApproval = await this.walletAccountResolverService.resolveForOrder(
+            order,
+            this.orderRepository.manager,
+          );
           return {
             message: 'credit_excess_pending_approval',
             creditExcess: true,
-            excessAmount: finalAmount - remainServiceAmount,
+            excessAmount,
             remainServiceAmount,
             finalAmount,
+            walletAccountId: String(walletForApproval.id),
+            requestedAmount: finalAmount,
+            requestedCreditExcessAmount: excessAmount,
           } as OrderDeliveryConfirmed;
         }
         order.isCreditExcess = true;

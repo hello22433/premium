@@ -4,10 +4,13 @@ import { Repository } from 'typeorm';
 import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { CreditExcessApprovalEntity, CreditExcessApprovalStatus } from '../../entity/credit.excess.approval.entity';
 import { CreditExcessApprovalService } from './credit-excess-approval.service';
+import { WalletAccountResolverService } from './wallet-account-resolver.service';
 
 describe('CreditExcessApprovalService — 4단계 워크플로', () => {
   let sut: CreditExcessApprovalService;
   let repo: any;
+  let orderRepo: any;
+  let walletAccountResolver: any;
 
   beforeEach(async () => {
     repo = {
@@ -20,11 +23,22 @@ describe('CreditExcessApprovalService — 4단계 워크플로', () => {
         execute: jest.fn().mockResolvedValue({ affected: 1 }),
       }),
     };
+    // Default: order owned by user 7 (matches requestedBy), wallet id matches '1'.
+    orderRepo = {
+      findOne: jest.fn().mockResolvedValue({ id: 1, userId: 7, clientUserId: null }),
+    };
+    walletAccountResolver = {
+      resolveForOrder: jest.fn().mockResolvedValue({ id: '1' }),
+    };
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         CreditExcessApprovalService,
         { provide: getRepositoryToken(CreditExcessApprovalEntity), useValue: repo },
-        { provide: getDataSourceToken(), useValue: {} },
+        {
+          provide: getDataSourceToken(),
+          useValue: { getRepository: jest.fn(() => orderRepo) },
+        },
+        { provide: WalletAccountResolverService, useValue: walletAccountResolver },
       ],
     }).compile();
     sut = module.get(CreditExcessApprovalService);

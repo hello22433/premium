@@ -2,6 +2,8 @@ import { BadRequestException, ForbiddenException, Injectable, NotFoundException 
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, IsNull, Repository } from 'typeorm';
 import { CreditExcessApprovalEntity, CreditExcessApprovalStatus } from '../../entity/credit.excess.approval.entity';
+import { OrderEntity } from '../../entity/order.entity';
+import { WalletAccountResolverService } from './wallet-account-resolver.service';
 
 /**
  * 신용초과 4단계 워크플로 (Open Decision 2).
@@ -16,8 +18,19 @@ export class CreditExcessApprovalService {
     @InjectRepository(CreditExcessApprovalEntity)
     private readonly approvalRepository: Repository<CreditExcessApprovalEntity>,
     @InjectDataSource() private readonly dataSource: DataSource,
+    private readonly walletAccountResolver: WalletAccountResolverService,
   ) {}
 
+  /**
+   * Step B — 사전 승인 요청.
+   *
+   * 검증:
+   *  - reasonText 1~200자.
+   *  - orderId 존재 + requestedBy 가 order 의 billing user (clientUserId ?? userId).
+   *  - walletAccountId 가 order 의 wallet 과 일치.
+   *  - requestedCreditExcessAmount > 0, requestedAmount >= requestedCreditExcessAmount.
+   *  - 동일 orderId 의 PENDING/APPROVED 미사용 row 가 이미 있으면 거절 (중복 요청 차단).
+   */
   async request(input: {
     orderId: number;
     walletAccountId: string;
@@ -32,6 +45,48 @@ export class CreditExcessApprovalService {
     if (input.reasonText.length > 200) {
       throw new BadRequestException('reasonText must be <= 200 chars');
     }
+    if (input.requestedCreditExcessAmount <= 0) {
+      throw new BadRequestException('requestedCreditExcessAmount must be > 0');
+    }
+    if (input.requestedAmount < input.requestedCreditExcessAmount) {
+      throw new BadRequestException(
+        `requestedAmount(${input.requestedAmount}) must be >= requestedCreditExcessAmount(${input.requestedCreditExcessAmount})`,
+      );
+    }
+
+    // Order ownership + wallet 일치 검증
+    const order = await this.dataSource.getRepository(OrderEntity).findOne({
+      where: { id: input.orderId },
+    });
+    if (!order) {
+      throw new NotFoundException(`order not found id=${input.orderId}`);
+    }
+    const billingUserId = order.clientUserId ?? order.userId;
+    if (billingUserId !== input.requestedBy) {
+      throw new ForbiddenException(
+        `requester(${input.requestedBy}) is not the billing user(${billingUserId}) of order ${input.orderId}`,
+      );
+    }
+    const wallet = await this.walletAccountResolver.resolveForOrder(order);
+    if (String(wallet.id) !== String(input.walletAccountId)) {
+      throw new ForbiddenException(
+        `walletAccountId mismatch (expected=${wallet.id}, actual=${input.walletAccountId}) for order ${input.orderId}`,
+      );
+    }
+
+    // 동일 order 미사용 active approval 중복 차단
+    const existingActive = await this.approvalRepository.findOne({
+      where: [
+        { orderId: input.orderId, status: CreditExcessApprovalStatus.PENDING, consumedAt: IsNull() },
+        { orderId: input.orderId, status: CreditExcessApprovalStatus.APPROVED, consumedAt: IsNull() },
+      ],
+    });
+    if (existingActive) {
+      throw new BadRequestException(
+        `order ${input.orderId} already has active approval (id=${existingActive.id}, status=${existingActive.status})`,
+      );
+    }
+
     return this.approvalRepository.save({
       ...input,
       status: CreditExcessApprovalStatus.PENDING,
