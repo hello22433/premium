@@ -3440,6 +3440,9 @@ export class OrderService {
         remainServiceAmount = effectiveBalance - oneUser.allSettleAmount;
       }
 
+      // 3-2. Wallet Cutover Bundle (PR2-005) 모드 게이트 (Step B/D 사전 체크 위해 먼저 결정)
+      const cutoverMode = this.walletCutoverConfig.pr2DeliveryLifecycleMode;
+
       // 3. 한도 체크 + 신용초과 분기
       if (finalAmount > remainServiceAmount) {
         if (!getBody.forceConfirm) {
@@ -3452,20 +3455,31 @@ export class OrderService {
             finalAmount,
           };
         }
-        // 2차 호출 (forceConfirm=true): 초과 허용, 신용초과 마킹
+        // 2차 호출 (forceConfirm=true): 초과 허용, 신용초과 마킹.
+        // Step B/D pre-check — WALLET 모드 + forceConfirm 시 사전 승인 ID 필수.
+        // 미주입 시 'credit_excess_pending_approval' 응답으로 빠지고 SSG side effect 차단.
+        if (cutoverMode === WalletCutoverMode.WALLET && !getBody.creditExcessApprovalId) {
+          this.logger.warn(
+            `신용초과 사전 승인 누락: orderId=${order.id}, 초과액=${(finalAmount - remainServiceAmount).toLocaleString()}원`,
+          );
+          return {
+            message: 'credit_excess_pending_approval',
+            creditExcess: true,
+            excessAmount: finalAmount - remainServiceAmount,
+            remainServiceAmount,
+            finalAmount,
+          } as OrderDeliveryConfirmed;
+        }
         order.isCreditExcess = true;
         this.logger.warn(
           `신용초과 발송확정: orderId=${order.id}, 초과액=${(finalAmount - remainServiceAmount).toLocaleString()}원, 필요=${finalAmount.toLocaleString()}원, 가능=${remainServiceAmount.toLocaleString()}원`,
         );
       }
 
-      // 3-1. SSG 가차감 확정 (진행 결정 후에만 실행)
+      // 3-1. SSG 가차감 확정 (진행 결정 + 사전 승인 통과 후에만 실행)
       if (order.type === IOrderType.SSG) {
         await this.ssgEventService.confirmEventBalance(order.id);
       }
-
-      // 3-2. Wallet Cutover Bundle (PR2-005) 모드 게이트
-      const cutoverMode = this.walletCutoverConfig.pr2DeliveryLifecycleMode;
 
       if (cutoverMode === WalletCutoverMode.WALLET) {
         // === WALLET: wallet primary + legacy mirror (user.balance 미기록) ===
