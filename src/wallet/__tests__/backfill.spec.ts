@@ -53,8 +53,8 @@ describe('PR1a backfill SQL — 구조 검증', () => {
   it('balanceManagementType 분기를 포함하지 않는다 (모든 user 회사 단위 공유)', () => {
     // SQL 주석(-- 로 시작) 은 검사 제외, 실행 코드만 검사
     const executable = sql
-      .split('\n')
-      .map((l) => l.replace(/--.*$/, ''))
+      .split(/\r?\n/)
+      .map((l) => l.replace(/--.*/, ''))
       .join('\n');
     expect(executable).not.toMatch(/balanceManagementType/i);
     expect(executable).not.toMatch(/balance_management_type/i);
@@ -92,8 +92,8 @@ describe('PR1a backfill SQL — 구조 검증', () => {
   it('user_company.maximum_limit 를 credit_limit 으로 매핑한다 (SnakeNamingStrategy)', () => {
     // 실행 SQL 만 검사 (comment 제외)
     const executable = sql
-      .split('\n')
-      .map((l) => l.replace(/--.*$/, ''))
+      .split(/\r?\n/)
+      .map((l) => l.replace(/--.*/, ''))
       .join('\n');
     expect(executable).toMatch(/maximum_limit/);
     expect(executable).toMatch(/credit_limit/);

@@ -106,6 +106,8 @@ import { ActivityLogActionType } from '../../activity_log/interface/activity.log
 import { ActivityLogResult } from '../../activity_log/interface/activity.log.result';
 import { ActivityLogEntity } from '../../entity/activity.log.entity';
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
+import { WalletManagedPredicate } from '../../wallet/application/wallet-managed.predicate';
+import { SettleConfirmationWalletService } from '../../wallet/application/settle-confirmation-wallet.service';
 import { GalaxiaBarcodeLogEntity } from '../../entity/galaxia.barcode.log.entity';
 import { SettleGalaxiaListViewDto } from '../api/dto/settle.galaxia.list.view.dto';
 import { IProductSettleMethod } from '../../product/interface/product.settle.method';
@@ -139,6 +141,8 @@ export class SettleService {
     private activityLogRepository: Repository<ActivityLogEntity>,
     private activityLogService: ActivityLogService,
     private cryptoCipher: CryptoCipher,
+    private readonly walletManagedPredicate: WalletManagedPredicate,
+    private readonly settleConfirmationWalletService: SettleConfirmationWalletService,
   ) { }
 
   /**
@@ -2235,7 +2239,13 @@ export class SettleService {
     if (!toComplete && fromComplete) {
       const snapshotAmount = order.settledAmountSnapshot ?? 0;
 
-      if (!order.isSettleBalance) {
+      // Wallet Cutover Bundle PR3 — wallet-managed 주문은 wallet path 로 위임.
+      // undoSettlement 가 마지막 settle_release cycle 을 lookup 해 동일 amount 복원 + mirror 증가.
+      const externalManager = this.orderRepository.manager;
+      const isWalletManaged = await this.walletManagedPredicate.isWalletManaged(order.id, externalManager);
+      if (isWalletManaged) {
+        await this.settleConfirmationWalletService.undoSettlement(order.id, externalManager);
+      } else if (!order.isSettleBalance) {
         await this.userRepository
           .createQueryBuilder()
           .update()
@@ -2308,6 +2318,16 @@ export class SettleService {
       .execute();
 
     if (!result.affected) return false;
+
+    // Wallet Cutover Bundle PR3 — allocation routing > flag (plan v2.1).
+    // wallet-managed 주문이면 SettleConfirmationWalletService 가 wallet_account 잔액 + legacy mirror
+    // (user.allSettleAmount, billing user owner) 를 same-tx 로 갱신. legacy 분기 skip.
+    const externalManager = this.orderRepository.manager;
+    const isWalletManaged = await this.walletManagedPredicate.isWalletManaged(order.id, externalManager);
+    if (isWalletManaged) {
+      await this.settleConfirmationWalletService.confirmSettlement(order.id, externalManager);
+      return true;
+    }
 
     if (!order.isSettleBalance) {
       await this.userRepository

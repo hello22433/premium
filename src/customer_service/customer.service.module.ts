@@ -15,10 +15,12 @@ import { ActivityLogModule } from 'src/activity_log/activity.log.module';
 import { UserEntity } from 'src/entity/user.entity';
 import { UserCompanyEntity } from 'src/entity/user.company.entity';
 import { UserTaskHistoryEntity } from 'src/entity/user.task.history.entity';
+import { WalletModule } from '../wallet/wallet.module';
 
 @Module({
   imports: [
     AuthModule,
+    WalletModule,
     TypeOrmModule.forFeature([
       OrderEntity,
       OrderDeliveryEntity,
