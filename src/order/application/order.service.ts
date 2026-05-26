@@ -112,7 +112,7 @@ import { IProductType } from '../../product/interface/product.type';
 import { defaultOrderMidImagePath, defaultOrderTopImagePath } from '../../const';
 import { OrderStatusExcelMapping } from '../domain/order.excel.mapping';
 import { OrderFeeCalculator, applyCardSurcharge } from '../domain/order.fee.calculator';
-import { calculateOrderSettlementAmount } from '../../util/settle-fee.util';
+import { calculateOrderSettlementAmount, calculateSettlementPrice } from '../../util/settle-fee.util';
 import { OrderCustomerViewDto } from '../api/dto/order.customer.view.dto';
 import { MaskingUtil } from '../../common/utils/masking.util';
 import { resolveExpireDays } from '../../common/utils/expire.util';
@@ -127,6 +127,19 @@ import { IOrderDateType } from '../interface/order.date.type';
 import { OrderEncryptKey } from '../../order_receive/interface/order.encrypt.key';
 import { ActivityLogService } from '../../activity_log/application/activity.log.service';
 import { ActivityLogResult } from '../../activity_log/interface/activity.log.result';
+import { WalletCutoverConfig, WalletCutoverMode } from '../../wallet/config/wallet-cutover.config';
+import { WalletManagedPredicate } from '../../wallet/application/wallet-managed.predicate';
+import { WalletAccountResolverService } from '../../wallet/application/wallet-account-resolver.service';
+import {
+  AllocationInput,
+  AllocationLineInput,
+  AllocationResult,
+  PaymentAllocationService,
+} from '../../wallet/application/payment-allocation.service';
+import { OrderConfirmationWalletService } from '../../wallet/application/order-confirmation-wallet.service';
+import { OrderConfirmationReleaseService } from '../../wallet/application/order-confirmation-release.service';
+import { ShadowMismatchClassifierService } from '../../wallet/application/shadow-mismatch-classifier.service';
+import { OrderPaymentAllocationEntity } from '../../entity/order.payment.allocation.entity';
 import dayjs from 'dayjs';
 import timezone from 'dayjs/plugin/timezone';
 import utc from 'dayjs/plugin/utc';
@@ -224,7 +237,63 @@ export class OrderService {
     private emailSendHistoryRepository: Repository<EmailSendHistoryEntity>,
     @InjectRepository(OrderManualEntryEntity)
     private orderManualEntryRepository: Repository<OrderManualEntryEntity>,
+    private readonly walletCutoverConfig: WalletCutoverConfig,
+    private readonly walletManagedPredicate: WalletManagedPredicate,
+    private readonly walletAccountResolverService: WalletAccountResolverService,
+    private readonly paymentAllocationService: PaymentAllocationService,
+    private readonly orderConfirmationWalletService: OrderConfirmationWalletService,
+    private readonly orderConfirmationReleaseService: OrderConfirmationReleaseService,
+    private readonly shadowMismatchClassifierService: ShadowMismatchClassifierService,
   ) {}
+
+  /**
+   * Wallet Cutover Bundle (PR2-005) — order → AllocationInput 변환.
+   *
+   * 라인 단위 gross 는 `calculateSettlementPrice(mapping, false, delivery)` 를 사용.
+   * 카드할증은 주문 단위 1회 적용 (PaymentAllocationService 내부) → false 로 계산.
+   *
+   * - pointPolicyEffect: PR2-005 범위에서는 'ALLOW' default. 정책 평가는 PR2-008+ 통합.
+   *   TODO(src/wallet/application/point-policy.service.ts): 라인별 PointPolicyService.evaluate 호출.
+   * - requestedPointAmount: 현재 UI 미노출 → 0. TODO(plans/01_Wallet.md): 포인트 UI 통합.
+   * - grants: requestedPointAmount=0 이므로 빈 배열.
+   */
+  private buildWalletAllocationInput(
+    order: OrderEntity,
+    wallet: { id: string; depositBalance: number; creditLimit: number; creditUsedAmount: number; settleCondition: 'PRE_PAYMENT' | 'POST_PAYMENT' },
+    finalAmount: number,
+  ): AllocationInput {
+    void finalAmount; // allocate() 가 라인 합으로 다시 계산 — 호출자가 일관성 검증용으로만 사용
+    const lines: AllocationLineInput[] = [];
+    for (const mapping of order.orderProductMappings ?? []) {
+      for (const delivery of mapping.orderDeliveries) {
+        lines.push({
+          orderProductMappingId: mapping.id,
+          orderDeliveryId: delivery.id,
+          productId: mapping.productId,
+          brandId: mapping.product?.brandId ?? null,
+          category: mapping.product?.category ?? null,
+          partnerCompanyId: mapping.product?.partnerCompanyId ?? null,
+          orderType: order.type as unknown as string,
+          grossSettlementAmount: calculateSettlementPrice(mapping, false, delivery),
+          appliedFeePercent: mapping.fee,
+          appliedPriceAdjustment: mapping.priceAdjustment as 'DISCOUNT' | 'ADDITIONAL' | null,
+          pointPolicyEffect: 'ALLOW',
+        });
+      }
+    }
+    return {
+      orderId: order.id,
+      walletAccountId: wallet.id,
+      lines,
+      cardSurchargeApplied: order.cardSurchargeApplied,
+      requestedPointAmount: 0,
+      availableDeposit: wallet.depositBalance,
+      creditLimit: wallet.creditLimit,
+      creditUsedAmountBefore: wallet.creditUsedAmount,
+      isPrePayment: wallet.settleCondition === 'PRE_PAYMENT',
+      grants: [],
+    };
+  }
 
   private async getDefaultCardSurchargeApplied(order: OrderEntity): Promise<boolean> {
     const billingUser = await this.userRepository.findOne({
@@ -3395,30 +3464,143 @@ export class OrderService {
         await this.ssgEventService.confirmEventBalance(order.id);
       }
 
-      // 4. isSettleBalance 결정 + 차감
-      if (finalAmount <= effectiveBalance) {
-        if (isCompanyBalanceMode && oneUser.company) {
-          oneUser.company.balance -= finalAmount;
-        } else {
-          oneUser.balance -= finalAmount;
-        }
-        order.isSettleBalance = true;
-      } else {
-        oneUser.allSettleAmount += finalAmount;
-        order.isSettleBalance = false;
-      }
+      // 3-2. Wallet Cutover Bundle (PR2-005) 모드 게이트
+      const cutoverMode = this.walletCutoverConfig.pr2DeliveryLifecycleMode;
 
-      // 5. 저장 (atomic UPDATE: 특정 필드만 반영해 stale overwrite 방지)
-      order.settleAmount = finalAmount;
-      await this.userRepository.update(
-        { id: oneUser.id },
-        { balance: oneUser.balance, allSettleAmount: oneUser.allSettleAmount },
-      );
-      if (isCompanyBalanceMode && oneUser.company) {
-        await this.userCompanyRepository.update(
-          { id: oneUser.company.id },
-          { balance: oneUser.company.balance },
+      if (cutoverMode === WalletCutoverMode.WALLET) {
+        // === WALLET: wallet primary + legacy mirror (user.balance 미기록) ===
+        // typeorm-transactional cls TX 안에서 동작 — manager 공유로 same-tx 보장
+        const externalManager = this.orderRepository.manager;
+
+        // 멱등 가드: 이미 wallet-managed (released_at IS NULL) → 재호출 차단
+        const alreadyManaged = await this.walletManagedPredicate.isWalletManaged(order.id, externalManager);
+        if (alreadyManaged) {
+          throw new BadRequestException('order already wallet-confirmed');
+        }
+
+        const wallet = await this.walletAccountResolverService.resolveForOrder(order, externalManager);
+        const allocationInput = this.buildWalletAllocationInput(order, wallet, finalAmount);
+        const allocation = this.paymentAllocationService.allocate(allocationInput);
+
+        // 신용초과 사전승인은 PR2-005 범위 밖. forceConfirm 시 persistAllocation 가 throw → TX rollback.
+        // TODO(plans/01_Wallet.md, CreditExcessApprovalService): forceConfirm 시 사전승인 ID 주입.
+        const deliveryIdsForAttempt: number[] = [];
+        for (const mapping of order.orderProductMappings!) {
+          for (const delivery of mapping.orderDeliveries) {
+            deliveryIdsForAttempt.push(delivery.id);
+          }
+        }
+
+        await this.orderConfirmationWalletService.persistAllocation(
+          {
+            orderId: order.id,
+            allocation,
+            cardSurchargeAppliedSnapshot: order.cardSurchargeApplied,
+            hasDiscountSnapshot: allocation.hasDiscount,
+            settleMethodSnapshot: oneUser.company?.settleMethod ?? null,
+            deliveryIdsForAttempt,
+            creditExcessApprovalId: null,
+          },
+          externalManager,
         );
+
+        // 4'. legacy mirror (same TX, user.balance 제외)
+        order.settleAmount = allocation.payableSettlementAmount;
+        order.isSettleBalance = allocation.creditUsedAmount === 0 && allocation.creditExcessAmount === 0;
+        order.isCreditExcess = allocation.creditExcessAmount > 0;
+
+        if (isCompanyBalanceMode && oneUser.company) {
+          oneUser.company.balance -= allocation.depositUsedAmount;
+        }
+        oneUser.allSettleAmount += allocation.creditUsedAmount + allocation.creditExcessAmount;
+
+        // 5'. 저장 — user.balance 는 *기록하지 않음* (wallet ledger 가 진실의 원천)
+        await this.userRepository.update(
+          { id: oneUser.id },
+          { allSettleAmount: oneUser.allSettleAmount },
+        );
+        if (isCompanyBalanceMode && oneUser.company) {
+          await this.userCompanyRepository.update(
+            { id: oneUser.company.id },
+            { balance: oneUser.company.balance },
+          );
+        }
+      } else {
+        // === LEGACY 또는 SHADOW: 기존 path 유지 ===
+
+        // 4. isSettleBalance 결정 + 차감
+        if (finalAmount <= effectiveBalance) {
+          if (isCompanyBalanceMode && oneUser.company) {
+            oneUser.company.balance -= finalAmount;
+          } else {
+            oneUser.balance -= finalAmount;
+          }
+          order.isSettleBalance = true;
+        } else {
+          oneUser.allSettleAmount += finalAmount;
+          order.isSettleBalance = false;
+        }
+
+        // 5. 저장 (atomic UPDATE: 특정 필드만 반영해 stale overwrite 방지)
+        order.settleAmount = finalAmount;
+        await this.userRepository.update(
+          { id: oneUser.id },
+          { balance: oneUser.balance, allSettleAmount: oneUser.allSettleAmount },
+        );
+        if (isCompanyBalanceMode && oneUser.company) {
+          await this.userCompanyRepository.update(
+            { id: oneUser.company.id },
+            { balance: oneUser.company.balance },
+          );
+        }
+
+        if (cutoverMode === WalletCutoverMode.SHADOW) {
+          // wallet preview (pure compute, no DB write) + mismatch 비교 로그
+          try {
+            const wallet = await this.walletAccountResolverService.resolveForOrder(
+              order,
+              this.orderRepository.manager,
+            );
+            const previewInput = this.buildWalletAllocationInput(order, wallet, finalAmount);
+            const preview = this.paymentAllocationService.allocate(previewInput);
+
+            const legacyPaid = finalAmount <= effectiveBalance ? finalAmount : 0;
+            const legacyOverflow = finalAmount <= effectiveBalance ? 0 : finalAmount;
+            const mismatch = this.shadowMismatchClassifierService.classify(
+              {
+                depositUsedAmount: preview.depositUsedAmount,
+                creditUsedAmount: preview.creditUsedAmount,
+                creditExcessAmount: preview.creditExcessAmount,
+                pointUsedAmount: preview.pointUsedAmount,
+                cardSurchargeAmount: preview.cardSurchargeAmount,
+                payableSettlementAmount: preview.payableSettlementAmount,
+              },
+              {
+                depositUsedAmount: legacyPaid,
+                creditUsedAmount: 0,
+                creditExcessAmount: legacyOverflow,
+                pointUsedAmount: 0,
+                cardSurchargeAmount: 0,
+                payableSettlementAmount: finalAmount,
+              },
+            );
+            if (mismatch) {
+              this.logger.warn(
+                `wallet_shadow_mismatch orderId=${order.id} class=${mismatch} preview=${JSON.stringify({
+                  deposit: preview.depositUsedAmount,
+                  credit: preview.creditUsedAmount,
+                  excess: preview.creditExcessAmount,
+                  payable: preview.payableSettlementAmount,
+                })} legacy=${JSON.stringify({ paid: legacyPaid, overflow: legacyOverflow, finalAmount })}`,
+              );
+            }
+          } catch (err) {
+            // shadow 비교 실패는 legacy path 를 막지 않음
+            this.logger.warn(
+              `wallet_shadow_preview_failed orderId=${order.id} err=${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
+        }
       }
     } else {
       // === 기존 흐름: 차액 조정 ===
@@ -3712,7 +3894,44 @@ export class OrderService {
       refundAmount = totalPrice;
     }
 
-    if (refundAmount > 0) {
+    // Wallet Cutover Bundle (PR2-005) — wallet-managed 주문은 OrderConfirmationReleaseService 로 일괄 보상.
+    // 라우팅: allocation 존재 + released_at IS NULL → wallet path (flag mode 무관, allocation routing > flag).
+    const externalManager = this.orderRepository.manager;
+    const isWalletManaged =
+      refundAmount > 0 &&
+      (await this.walletManagedPredicate.isWalletManaged(order.id, externalManager));
+
+    if (isWalletManaged) {
+      const allocation = await externalManager.findOne(OrderPaymentAllocationEntity, {
+        where: { orderId: order.id },
+      });
+      if (!allocation) {
+        throw new InternalServerErrorException(
+          `wallet-managed but allocation row missing for orderId=${order.id}`,
+        );
+      }
+      const depositRefund = allocation.depositUsedAmount - allocation.depositRestoredAmount;
+      const creditRefund = allocation.creditUsedAmount - allocation.creditUsedRestoredAmount;
+      const excessRefund = allocation.creditExcessAmount - allocation.creditExcessRestoredAmount;
+
+      await this.orderConfirmationReleaseService.releaseConfirmation(
+        {
+          orderId: order.id,
+          reason: 'order_cancel',
+          failedDeliveryIds: null,
+        },
+        externalManager,
+      );
+
+      // legacy mirror reverse (wallet path — user.balance 미기록).
+      if (isCompanyBalanceMode && oneUser.company) {
+        oneUser.company.balance += depositRefund;
+      }
+      oneUser.allSettleAmount -= creditRefund + excessRefund;
+      order.settleAmount = 0;
+      order.isSettleBalance = false;
+      order.isCreditExcess = false;
+    } else if (refundAmount > 0) {
       if (order.isSettleBalance) {
         if (isCompanyBalanceMode && oneUser.company) {
           oneUser.company.balance += refundAmount;
@@ -3733,7 +3952,15 @@ export class OrderService {
       { orderProductMappingId: In(orderProductMappingIdList) },
       { status: IOrderDeliveryStatus.CANCEL },
     );
-    await this.userRepository.save(oneUser);
+    if (isWalletManaged) {
+      // wallet path 는 user.balance 를 건드리지 않으므로 update 로 좁혀 stale overwrite 차단.
+      await this.userRepository.update(
+        { id: oneUser.id },
+        { allSettleAmount: oneUser.allSettleAmount },
+      );
+    } else {
+      await this.userRepository.save(oneUser);
+    }
     // 회사 레벨 balance 변경 시 company도 저장
     if (isCompanyBalanceMode && oneUser.company) {
       await this.userCompanyRepository.save(oneUser.company);
