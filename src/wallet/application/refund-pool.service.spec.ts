@@ -8,6 +8,7 @@ import {
   OrderPaymentRefundEventEntity,
   OrderPaymentRefundEventType,
 } from '../../entity/order.payment.refund.event.entity';
+import { WalletAccountEntity } from '../../entity/wallet.account.entity';
 import { PaymentAllocationService } from './payment-allocation.service';
 import { RefundPoolService } from './refund-pool.service';
 
@@ -20,6 +21,7 @@ describe('RefundPoolService — §8 환불 알고리즘', () => {
   let allocations: Record<string, OrderPaymentAllocationEntity>;
   let lines: OrderPaymentAllocationLineEntity[];
   let ledger: OrderPaymentRefundEventEntity[];
+  let wallets: Record<string, WalletAccountEntity>;
 
   const ds: any = {
     // transaction 은 isolationLevel 1st arg + callback 또는 callback 단독 둘 다 지원
@@ -41,7 +43,12 @@ describe('RefundPoolService — §8 환불 알고리즘', () => {
               andWhere: () => builder,
               orderBy: () => builder,
               addOrderBy: () => builder,
-              getOne: async () => Object.values(allocations)[0],
+              getOne: async () => {
+                if (target === WalletAccountEntity) {
+                  return Object.values(wallets)[0] ?? null;
+                }
+                return Object.values(allocations)[0];
+              },
               getMany: async () => {
                 if (target === OrderPaymentRefundEventEntity) {
                   if (wherePrefix) {
@@ -60,7 +67,17 @@ describe('RefundPoolService — §8 환불 알고리즘', () => {
           if (target === OrderPaymentRefundEventEntity) return ledger.filter((l) => l.reversedAt === null);
           return [];
         },
-        findOne: async (_t: any, _w: any) => null,
+        findOne: async (target: any, opts: any) => {
+          if (target === OrderPaymentAllocationEntity) {
+            if (opts?.where?.orderId !== undefined) {
+              return (
+                Object.values(allocations).find((a) => a.orderId === opts.where.orderId) ?? null
+              );
+            }
+            return Object.values(allocations)[0] ?? null;
+          }
+          return null;
+        },
         save: jest.fn(async (target: any, obj: any) => {
           if (target === OrderPaymentRefundEventEntity || obj?.refundedGrossBase != null) {
             const row = { id: String(ledger.length + 1), ...obj } as OrderPaymentRefundEventEntity;
@@ -69,6 +86,10 @@ describe('RefundPoolService — §8 환불 알고리즘', () => {
           }
           if (target === OrderPaymentAllocationEntity || obj?.grossSettlementAmount != null) {
             allocations[obj.id] = obj;
+            return obj;
+          }
+          if (target === WalletAccountEntity || obj?.depositBalance != null) {
+            wallets[obj.id] = obj;
             return obj;
           }
           return obj;
@@ -127,6 +148,21 @@ describe('RefundPoolService — §8 환불 알고리즘', () => {
       } as OrderPaymentAllocationLineEntity,
     ];
     ledger = [];
+    wallets = {
+      '5': {
+        id: '5',
+        ownerType: 'SETTLEMENT_CODE',
+        settlementCode: 'company-1',
+        depositBalance: 0,
+        creditLimit: 100000,
+        creditUsedAmount: 15000,
+        creditExcessAmount: 5000,
+        settleCondition: 'POST_PAYMENT',
+        settleMethod: 'CASH',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      } as unknown as WalletAccountEntity,
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [

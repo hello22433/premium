@@ -64,6 +64,29 @@ export class RefundPoolService {
         return { ledgerIds: existingForPrefix.map((e) => e.id), totalRefundedAmount };
       }
 
+      // Plan §3 lock 순서: wallet_account → allocation → wallet_transaction.
+      // walletAccountId 확보를 위해 peek 후 표준 순서대로 lock.
+      const peekAlloc = await manager.findOne(OrderPaymentAllocationEntity, {
+        where: { orderId: input.orderId },
+      });
+      if (!peekAlloc) {
+        throw new BadRequestException(`allocation not found for orderId=${input.orderId}`);
+      }
+
+      // 1) wallet_account FOR UPDATE — lock 표준 §3 우선순위 1.
+      const walletLock = await manager
+        .getRepository(WalletAccountEntity)
+        .createQueryBuilder('w')
+        .setLock('pessimistic_write')
+        .where('w.id = :id', { id: peekAlloc.walletAccountId })
+        .getOne();
+      if (!walletLock) {
+        throw new BadRequestException(
+          `wallet_account not found id=${peekAlloc.walletAccountId} for allocation ${peekAlloc.id}`,
+        );
+      }
+
+      // 2) allocation FOR UPDATE — lock 표준 §3 우선순위 2.
       const alloc = await manager
         .getRepository(OrderPaymentAllocationEntity)
         .createQueryBuilder('a')
@@ -71,7 +94,9 @@ export class RefundPoolService {
         .where('a.orderId = :orderId', { orderId: input.orderId })
         .getOne();
       if (!alloc) {
-        throw new BadRequestException(`allocation not found for orderId=${input.orderId}`);
+        throw new BadRequestException(
+          `allocation disappeared after peek (orderId=${input.orderId})`,
+        );
       }
 
       // 0-b. lock 획득 후 same-prefix 재조회 — 동시 retry 2건 race 차단.
@@ -241,52 +266,37 @@ export class RefundPoolService {
         };
         const keyPrefix = `${input.idempotencyKeyPrefix}:line:${line.id}`;
 
-        // wallet 단일 lock 후 재사용 — wallet 부재 시 drift 우려로 throw (silent skip 금지).
-        let wallet: WalletAccountEntity | null = null;
-        if (restoreDeposit > 0 || restoreCredit > 0 || restoreExcess > 0) {
-          wallet = await manager
-            .getRepository(WalletAccountEntity)
-            .createQueryBuilder('w')
-            .setLock('pessimistic_write')
-            .where('w.id = :id', { id: alloc.walletAccountId })
-            .getOne();
-          if (!wallet) {
-            throw new BadRequestException(
-              `wallet_account not found for allocation ${alloc.id} (walletAccountId=${alloc.walletAccountId}). refund aborted to avoid drift.`,
-            );
-          }
-        }
-
-        if (restoreDeposit > 0 && wallet) {
-          wallet.depositBalance += restoreDeposit;
-          await manager.save(WalletAccountEntity, wallet);
+        // wallet 은 transaction 진입 직후 walletLock 으로 lock 됨 (lock 표준 §3). 재 lock 금지.
+        if (restoreDeposit > 0) {
+          walletLock.depositBalance += restoreDeposit;
+          await manager.save(WalletAccountEntity, walletLock);
           await manager.save(WalletTransactionEntity, {
             ...walletTxBase,
             resourceType: WalletResourceType.DEPOSIT,
             amount: restoreDeposit,
-            balanceAfter: wallet.depositBalance,
+            balanceAfter: walletLock.depositBalance,
             idempotencyKey: `${keyPrefix}:deposit`,
           });
         }
-        if (restoreCredit > 0 && wallet) {
-          wallet.creditUsedAmount -= restoreCredit;
-          await manager.save(WalletAccountEntity, wallet);
+        if (restoreCredit > 0) {
+          walletLock.creditUsedAmount -= restoreCredit;
+          await manager.save(WalletAccountEntity, walletLock);
           await manager.save(WalletTransactionEntity, {
             ...walletTxBase,
             resourceType: WalletResourceType.CREDIT,
             amount: -restoreCredit,
-            balanceAfter: wallet.creditUsedAmount,
+            balanceAfter: walletLock.creditUsedAmount,
             idempotencyKey: `${keyPrefix}:credit`,
           });
         }
-        if (restoreExcess > 0 && wallet) {
-          wallet.creditExcessAmount -= restoreExcess;
-          await manager.save(WalletAccountEntity, wallet);
+        if (restoreExcess > 0) {
+          walletLock.creditExcessAmount -= restoreExcess;
+          await manager.save(WalletAccountEntity, walletLock);
           await manager.save(WalletTransactionEntity, {
             ...walletTxBase,
             resourceType: WalletResourceType.CREDIT_EXCESS,
             amount: -restoreExcess,
-            balanceAfter: wallet.creditExcessAmount,
+            balanceAfter: walletLock.creditExcessAmount,
             idempotencyKey: `${keyPrefix}:credit_excess`,
           });
         }

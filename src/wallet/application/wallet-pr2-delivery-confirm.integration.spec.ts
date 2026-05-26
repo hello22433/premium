@@ -91,6 +91,12 @@ describe('PR2-007 wallet-pr2-delivery-confirm integration', () => {
         if (entity === PointGrantEntity) {
           return grantsRef.find((g) => g.id === opts.where.id) ?? null;
         }
+        if (entity === OrderPaymentAllocationEntity) {
+          if (opts?.where?.orderId === undefined || opts.where.orderId === allocationRef.orderId) {
+            return allocationRef;
+          }
+          return null;
+        }
         return null;
       },
       find: async (entity: any) => {

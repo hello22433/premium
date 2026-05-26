@@ -73,7 +73,38 @@ export class OrderConfirmationReleaseService {
     input: ReleaseConfirmationInput,
     manager: EntityManager,
   ): Promise<ReleaseConfirmationResult> {
-    // 1. allocation FOR UPDATE
+    // 0. peek allocation (no lock — walletAccountId 확보용).
+    //    Plan §3 lock 순서: wallet_account → allocation. 두 row 모두 단일 트랜잭션 안에서 잡으려면
+    //    walletAccountId 를 먼저 알아야 하므로 peek 후 표준 순서대로 lock 한다.
+    const peekAlloc = await manager.findOne(OrderPaymentAllocationEntity, {
+      where: { orderId: input.orderId },
+    });
+    if (!peekAlloc) {
+      throw new BadRequestException(
+        `OrderConfirmationReleaseService: allocation not found for orderId=${input.orderId} (drift — confirm hook 실행 안 됨?)`,
+      );
+    }
+    if (peekAlloc.releasedAt != null) {
+      this.logger.warn(
+        `confirm_release idempotent no-op: orderId=${input.orderId} releasedAt=${peekAlloc.releasedAt.toISOString()} reason='${peekAlloc.releaseReason}'`,
+      );
+      return { alreadyReleased: true, walletTransactionIds: [], rolledBackAttemptIds: [] };
+    }
+
+    // 1. wallet_account FOR UPDATE (lock 표준 §3 — wallet 먼저)
+    const wallet = await manager
+      .getRepository(WalletAccountEntity)
+      .createQueryBuilder('w')
+      .setLock('pessimistic_write')
+      .where('w.id = :id', { id: peekAlloc.walletAccountId })
+      .getOne();
+    if (!wallet) {
+      throw new BadRequestException(
+        `OrderConfirmationReleaseService: wallet_account not found id=${peekAlloc.walletAccountId}`,
+      );
+    }
+
+    // 2. allocation FOR UPDATE (lock 표준 §3 — wallet 다음)
     const alloc = await manager
       .getRepository(OrderPaymentAllocationEntity)
       .createQueryBuilder('a')
@@ -82,41 +113,22 @@ export class OrderConfirmationReleaseService {
       .getOne();
     if (!alloc) {
       throw new BadRequestException(
-        `OrderConfirmationReleaseService: allocation not found for orderId=${input.orderId} (drift — confirm hook 실행 안 됨?)`,
+        `OrderConfirmationReleaseService: allocation disappeared after peek (orderId=${input.orderId})`,
       );
     }
-
-    // 2. 이미 released → idempotent
     if (alloc.releasedAt != null) {
+      // race: peek 와 lock 사이에 다른 TX 가 release. idempotent return.
       this.logger.warn(
-        `confirm_release idempotent no-op: orderId=${input.orderId} releasedAt=${alloc.releasedAt.toISOString()} reason='${alloc.releaseReason}'`,
+        `confirm_release idempotent (race after lock): orderId=${input.orderId} releasedAt=${alloc.releasedAt.toISOString()}`,
       );
       return { alreadyReleased: true, walletTransactionIds: [], rolledBackAttemptIds: [] };
     }
 
-    // 3. wallet_account 복구 (Lock 순서: wallet_account → allocation 은 이미 위에서 alloc 먼저. 본 서비스는
-    //    allocation 단위 보상이라 alloc 먼저 잡음 — 정상 confirm path 와 반대지만 confirm_release 는
-    //    confirm 후 commit 됐던 상태에서만 호출되므로 deadlock 가능성 없음. wallet 은 단일 조회만.)
     const walletTransactionIds: string[] = [];
-    let wallet: WalletAccountEntity | null = null;
 
     const restoreDeposit = alloc.depositUsedAmount - alloc.depositRestoredAmount;
     const restoreCredit = alloc.creditUsedAmount - alloc.creditUsedRestoredAmount;
     const restoreExcess = alloc.creditExcessAmount - alloc.creditExcessRestoredAmount;
-
-    if (restoreDeposit > 0 || restoreCredit > 0 || restoreExcess > 0) {
-      wallet = await manager
-        .getRepository(WalletAccountEntity)
-        .createQueryBuilder('w')
-        .setLock('pessimistic_write')
-        .where('w.id = :id', { id: alloc.walletAccountId })
-        .getOne();
-      if (!wallet) {
-        throw new BadRequestException(
-          `OrderConfirmationReleaseService: wallet_account not found id=${alloc.walletAccountId}`,
-        );
-      }
-    }
 
     const orderSentinelId: null = null; // confirm_release 는 주문 단위 보상 — deliveryId sentinel='ORDER'
 
