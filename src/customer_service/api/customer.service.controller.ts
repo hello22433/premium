@@ -29,6 +29,7 @@ import { User } from '../../auth/api/user.decorator';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
 import { UserAuthSubEnum } from '../../user_management/domain/user.auth.enum';
 import { AuthService } from '../../auth/application/auth.service';
+import { IProductType } from '../../product/interface/product.type';
 import { Response } from 'express';
 
 @Controller('')
@@ -107,7 +108,9 @@ export class CustomerServiceController {
     // 권한검사: 쿠폰 종류(일반/SSG)에 맞는 CS 권한 확인
     await this.authService.authorityValidator(
       user,
-      map.orderDelivery.ssgEventId ? UserAuthSubEnum.CUSTOMER_SSG_COUPON : UserAuthSubEnum.CUSTOMER_GENERAL_COUPON,
+      map.orderDelivery.orderProductMapping.product.type === IProductType.SSG
+        ? UserAuthSubEnum.CUSTOMER_SSG_COUPON
+        : UserAuthSubEnum.CUSTOMER_GENERAL_COUPON,
     );
 
     // 3. 서비스실행
@@ -133,7 +136,9 @@ export class CustomerServiceController {
     // 권한검사: 쿠폰 종류(일반/SSG)에 맞는 CS 권한 확인
     await this.authService.authorityValidator(
       user,
-      map.orderDelivery.ssgEventId ? UserAuthSubEnum.CUSTOMER_SSG_COUPON : UserAuthSubEnum.CUSTOMER_GENERAL_COUPON,
+      map.orderDelivery.orderProductMapping.product.type === IProductType.SSG
+        ? UserAuthSubEnum.CUSTOMER_SSG_COUPON
+        : UserAuthSubEnum.CUSTOMER_GENERAL_COUPON,
     );
 
     // 3. 서비스실행
