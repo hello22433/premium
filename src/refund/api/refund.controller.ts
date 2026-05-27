@@ -4,7 +4,7 @@ import { RefundService } from '../application/refund.service';
 import { ApiBadRequestResponse, ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { RefundGetListResDto } from './refund.res.dto';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
-import { RefundGetListReqQueryDto, RefundUpdateReqDto } from './refund.req.dto';
+import { RefundGetListReqQueryDto, RefundResetReqDto, RefundUpdateReqDto } from './refund.req.dto';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { User } from '../../auth/api/user.decorator';
 import { UserAuthSubEnum } from '../../user_management/domain/user.auth.enum';
@@ -51,5 +51,20 @@ export class RefundController {
   @Put('/settle/refund')
   update(@Body() getDto: RefundUpdateReqDto) {
     return this.refundService.update(getDto);
+  }
+
+  @ApiOperation({
+    summary: '고객관리 > 환불관리 진행중 행 입력값 초기화 API',
+  })
+  @ApiOkResponse({
+    type: '',
+  })
+  @ApiBadRequestResponse({
+    description: '주문이 존재하지 않거나, 진행중 상태가 아닌 경우',
+  })
+  // =================================
+  @Put('/settle/refund/reset')
+  reset(@Body() getDto: RefundResetReqDto) {
+    return this.refundService.reset(getDto);
   }
 }

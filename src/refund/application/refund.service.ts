@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
-import { RefundGetListReqQueryDto, RefundUpdateReqDto } from '../api/refund.req.dto';
+import { RefundGetListReqQueryDto, RefundResetReqDto, RefundUpdateReqDto } from '../api/refund.req.dto';
 import { IsNull, Not, Repository } from 'typeorm';
 import { QueryBuilderDateCondition } from '../../common/infra/query.builder.date.condition';
 import { RefundGetListResDto } from '../api/refund.res.dto';
@@ -165,6 +165,30 @@ export class RefundService {
     orderDelivery.bankAccount = bankAccount;
     orderDelivery.approveAt = approveAt ? new Date(approveAt) : orderDelivery.approveAt;
     orderDelivery.refundAt = refundAt ? new Date(refundAt) : orderDelivery.refundAt;
+
+    await this.orderDeliveryRepository.save(orderDelivery);
+  }
+
+  async reset(getDto: RefundResetReqDto) {
+    const { id } = getDto;
+
+    const orderDelivery = await this.orderDeliveryRepository.findOne({
+      where: { id, refundStatus: Not(IsNull()) },
+    });
+
+    if (!orderDelivery) {
+      throw new BadRequestException('주문이 존재하지 않습니다.');
+    }
+
+    if (orderDelivery.refundStatus !== OrderDeliveryRefundStatusEnum.PROGRESS) {
+      throw new BadRequestException('진행중 상태의 환불만 초기화할 수 있습니다.');
+    }
+
+    orderDelivery.bankAccountOwner = null;
+    orderDelivery.bankName = null;
+    orderDelivery.bankAccount = null;
+    orderDelivery.approveAt = null;
+    orderDelivery.refundAt = null;
 
     await this.orderDeliveryRepository.save(orderDelivery);
   }
