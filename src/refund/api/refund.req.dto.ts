@@ -107,3 +107,13 @@ export class RefundUpdateReqDto {
   @Matches(dateAtRegexp)
   refundAt?: string;
 }
+
+export class RefundResetReqDto {
+  @ApiProperty({
+    description: 'order delivery id',
+  })
+  // ==============================
+  @IsNumber()
+  @IsNotEmpty()
+  id: number;
+}
