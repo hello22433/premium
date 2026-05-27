@@ -72,6 +72,12 @@ export class RefundService {
       await this.recordPiiSearchLog(trimmedDeliveryTarget, auditContext);
     }
 
+    // 정렬: 접수일자 최신순(refundRegisterAt DESC), 동률 시 id DESC 보조키로 안정적 페이지네이션 보장
+    // (MySQL은 DESC 정렬에서 NULL을 자동으로 뒤로 정렬하므로 NULLS LAST 절 불요)
+    queryBuilder
+      .orderBy('orderDelivery.refundRegisterAt', 'DESC')
+      .addOrderBy('orderDelivery.id', 'DESC');
+
     const skip = (page - 1) * take;
     queryBuilder.skip(skip).take(take);
     const [orderDeliveryList, totalCount] = await queryBuilder.getManyAndCount();
