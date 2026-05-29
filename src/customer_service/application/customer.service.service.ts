@@ -41,6 +41,10 @@ import { OrderPaymentRefundEventType } from '../../entity/order.payment.refund.e
 import { OrderDeliveryRefundRestoreType } from '../../entity/order.delivery.refund.entity';
 import { OrderDeliveryCouponStatus, couponStatusToKorean } from '../../delivery/interface/order.delivery.coupon.status';
 import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
+import { IProductType } from '../../product/interface/product.type';
+import { AuthService } from '../../auth/application/auth.service';
+import { UserAuthSubEnum } from '../../user_management/domain/user.auth.enum';
+import { UserAuthListDefault } from '../../user_info/domain/user.auth.list.default';
 import { ILoginUserInfo } from 'src/auth/interface/login.user';
 import { OrderHistoryEntity } from 'src/entity/order.history.entity';
 import { User } from 'src/auth/api/user.decorator';
@@ -106,6 +110,7 @@ export class CustomerServiceService {
     private readonly dataSource: DataSource,
     private readonly walletManagedPredicate: WalletManagedPredicate,
     private readonly refundPoolService: RefundPoolService,
+    private readonly authService: AuthService,
   ) {}
 
   /**
@@ -783,6 +788,16 @@ export class CustomerServiceService {
     if (!orderDelivery) {
       throw new BadRequestException('존재하지 않는 주문 건입니다.');
     }
+
+    // 권한검사: 폐기는 쿠폰 종류(일반/SSG)에 맞는 CS 권한을 요구 (pin-status 분기 기준과 동일)
+    // execDiscard 를 거치는 경로(pin-discard / history 폐기류)에 일괄 적용된다.
+    // (주의: bulk-discard 는 execDiscard 를 거치지 않고 자체 폐기 로직을 가지므로 별도 검사 필요)
+    await this.authService.authorityValidator(
+      user,
+      orderDelivery.orderProductMapping?.product?.type === IProductType.SSG
+        ? UserAuthSubEnum.CUSTOMER_SSG_COUPON
+        : UserAuthSubEnum.CUSTOMER_GENERAL_COUPON,
+    );
 
     const partnerType = this.getPartnerType(orderDelivery);
     const beforeChange = orderDelivery.couponStatus;
@@ -1750,6 +1765,11 @@ export class CustomerServiceService {
     const operatorEntity = await this.userRepository.findOne({ where: { id: user.id } });
     const operatorName = operatorEntity?.personName ?? user.email;
 
+    // 권한 목록도 루프 밖에서 1회 계산 (건별 product.type 에 따라 메모리에서 비교 — N회 DB 조회 방지)
+    const userAuthList = operatorEntity
+      ? UserAuthListDefault(operatorEntity.authority, operatorEntity.authorityList)
+      : [];
+
     // QueryRunner를 루프 밖에서 생성하여 커넥션 풀 효율화
     const queryRunner = this.dataSource.createQueryRunner();
     await queryRunner.connect();
@@ -1775,6 +1795,17 @@ export class CustomerServiceService {
 
           if (!orderDelivery) {
             failed.push({ id: orderDeliveryId, reason: '존재하지 않는 발송 정보입니다.' });
+            continue;
+          }
+
+          // 1-2. 권한검사: 쿠폰 종류(일반/SSG)에 맞는 CS 권한 확인 (건별 — 혼합 건은 권한 없는 건만 skip)
+          // getList 분류 기준과 동일: product.type === 'SSG' → SSG, 그 외(GENERAL/CHOICE) → 일반
+          const requiredAuth =
+            orderDelivery.orderProductMapping?.product?.type === IProductType.SSG
+              ? UserAuthSubEnum.CUSTOMER_SSG_COUPON
+              : UserAuthSubEnum.CUSTOMER_GENERAL_COUPON;
+          if (!userAuthList.includes(requiredAuth)) {
+            failed.push({ id: orderDeliveryId, reason: '해당 쿠폰 종류에 대한 폐기 권한이 없습니다.' });
             continue;
           }
 
