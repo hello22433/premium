@@ -418,15 +418,34 @@ export class RefundPoolService {
       throw new BadRequestException(`reverseRefund: allocation not found id=${ledger.allocationId}`);
     }
 
-    // allocation counters 복원 (ledger 금액 그대로 — 재계산 금지)
-    alloc.pointRestoredAmount = Math.max(0, alloc.pointRestoredAmount - ledger.refundedPointAmount);
-    alloc.creditExcessRestoredAmount = Math.max(
-      0,
-      alloc.creditExcessRestoredAmount - ledger.refundedCreditExcessAmount,
+    // allocation counters 복원 (ledger 금액 그대로 — 재계산 금지).
+    // counter < ledger 금액이면 invariant 위반(복구 누적이 ledger 보다 작음) = data drift.
+    // 0 으로 조용히 clamp 하면 같은 포인트/금액이 2번 복구될 수 있어, fail-fast 로 노출한다.
+    const subtractRestored = (label: string, current: number, delta: number): number => {
+      if (current < delta) {
+        throw new Error(
+          `reverseRefund invariant 위반: ${label} ${current} < ledger ${delta} (ledgerId=${ledgerId}). data drift — 수동 점검 필요.`,
+        );
+      }
+      return current - delta;
+    };
+    alloc.pointRestoredAmount = subtractRestored('pointRestored', alloc.pointRestoredAmount, ledger.refundedPointAmount);
+    alloc.creditExcessRestoredAmount = subtractRestored(
+      'creditExcessRestored',
+      alloc.creditExcessRestoredAmount,
+      ledger.refundedCreditExcessAmount,
     );
-    alloc.creditUsedRestoredAmount = Math.max(0, alloc.creditUsedRestoredAmount - ledger.refundedCreditUsedAmount);
-    alloc.depositRestoredAmount = Math.max(0, alloc.depositRestoredAmount - ledger.refundedDepositAmount);
-    alloc.pointSkippedExpiredAmount = Math.max(0, alloc.pointSkippedExpiredAmount - ledger.pointSkippedExpiredAmount);
+    alloc.creditUsedRestoredAmount = subtractRestored(
+      'creditUsedRestored',
+      alloc.creditUsedRestoredAmount,
+      ledger.refundedCreditUsedAmount,
+    );
+    alloc.depositRestoredAmount = subtractRestored('depositRestored', alloc.depositRestoredAmount, ledger.refundedDepositAmount);
+    alloc.pointSkippedExpiredAmount = subtractRestored(
+      'pointSkippedExpired',
+      alloc.pointSkippedExpiredAmount,
+      ledger.pointSkippedExpiredAmount,
+    );
     await manager.save(OrderPaymentAllocationEntity, alloc);
 
     // ledger 표시

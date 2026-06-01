@@ -6,6 +6,7 @@ jest.mock('typeorm-transactional', () => ({
   addTransactionalDataSources: jest.fn(),
 }));
 
+import { BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken, getDataSourceToken } from '@nestjs/typeorm';
@@ -355,6 +356,46 @@ describe('DeliveryBatchService.reissuePinAndCreateImageIfNeeded - refund ledger 
       // SSG chargeBack 실패해도 고객 측 처리는 진행
       expect(refundLedgerService.release).toHaveBeenCalledWith(od.id);
       expect(userManagementService.deductBalance).toHaveBeenCalled();
+    });
+
+    /**
+     * MEDIUM 3 — catch 축소. reverseRefundForResend 의 광범위 catch 가 release 중복 외의
+     * BadRequest(여기선 release 전 단계인 deductBalance)까지 "중복 차단 정상"으로 삼켜
+     * @Transactional 이 부분 wallet 상태를 commit + resend 를 '성공(true)'으로 보고하던 문제.
+     * 수정 후: 해당 BadRequest 는 reverseRefundForResend 밖으로 전파 → @Transactional 롤백 →
+     * 상위 catch 가 받아 resend 를 '실패(false)'로 보고. 잘못된 성공 보고 + 부분 커밋이 사라진다.
+     */
+    it('release 외 단계(deductBalance)의 BadRequestException 은 중복으로 흡수되지 않아 resend 가 false 로 보고된다', async () => {
+      const od = buildWaitNoBarCode();
+      refundLedgerService.exists.mockResolvedValue(true);
+      ssgInsertStateService.getState.mockResolvedValue(SsgInsertState.NONE);
+      userManagementService.deductBalance.mockRejectedValue(new BadRequestException('잔액 부족'));
+
+      const result = await (sut as any).reissuePinAndCreateImageIfNeeded(od);
+
+      // 과거엔 내부 catch 가 삼켜 true 반환. 이제 전파 → 상위 catch → false.
+      expect(result).toBe(false);
+      // release 는 idempotency 가드로 가장 먼저 성공한 뒤, 그 다음 deductBalance 가 throw 한다.
+      expect(refundLedgerService.release).toHaveBeenCalledWith(od.id);
+    });
+
+    /**
+     * HIGH (재리뷰) — release 순서. release() 중복(BadRequest)이면 어떤 side effect 도 실행 전에
+     * early return 해야 한다. release 가 side effect 뒤에 있으면 dup/race 시 선행 재차감이 commit 된다.
+     */
+    it('release 중복(BadRequest) 시 재차감/chargeBack 등 side effect 실행 전에 early return 한다', async () => {
+      const od = buildWaitNoBarCode();
+      refundLedgerService.exists.mockResolvedValue(true);
+      ssgInsertStateService.getState.mockResolvedValue(SsgInsertState.NONE);
+      refundLedgerService.release.mockRejectedValue(new BadRequestException('이미 해제된 환불 ledger'));
+
+      const result = await (sut as any).reissuePinAndCreateImageIfNeeded(od);
+
+      // 이미 해제됨 = 다른 흐름이 재발송 처리 완료 → resend 는 그대로 진행(true)
+      expect(result).toBe(true);
+      // release 가 가드로 먼저 throw → 재차감/SSG chargeBack 도달 안 함
+      expect(userManagementService.deductBalance).not.toHaveBeenCalled();
+      expect(ssgEventService.chargeBackForResend).not.toHaveBeenCalled();
     });
   });
 
