@@ -126,7 +126,8 @@ export class CustomerServiceService {
    * 멱등성: order_delivery_refund UNIQUE 제약으로 동일 발송건의 두 번째 환불 시도 차단.
    *
    * 스킵 조건:
-   * - FAIL/FAIL_SMS: 이미 refundForFail()로 환불됨
+   * - refund ledger 존재(exists): 이미 환불됨 (financial SoT). status===FAIL 프록시 대신 사용 —
+   *   FAIL 이어도 ledger 없으면(보류) 복구 수행, FAIL 아니어도 ledger 있으면 이중 복구 차단
    * - REFUND_CANCEL: 수령 고객 환불 건, 고객사 정산과 무관
    */
   private async restoreBalanceOnDiscard(
@@ -138,10 +139,10 @@ export class CustomerServiceService {
     const mapping = orderDelivery.orderProductMapping;
     const order = mapping.order;
 
-    if (
-      orderDelivery.status === IOrderDeliveryStatus.FAIL ||
-      orderDelivery.status === IOrderDeliveryStatus.FAIL_SMS
-    ) {
+    // 이미 환불됨이면 폐기 복구 skip. 판단 기준은 financial SoT = refund ledger 존재 여부(exists)이며,
+    // status===FAIL 프록시를 쓰지 않는다. FAIL 이어도 ledger 가 없으면(보류: 차감 유지, 발송 미성립)
+    // 폐기 시 복구해야 하고, 반대로 FAIL 이 아니어도 이미 환불 ledger 가 있으면 이중 복구를 막아야 한다.
+    if (await this.refundLedgerService.exists(orderDelivery.id)) {
       return;
     }
 
