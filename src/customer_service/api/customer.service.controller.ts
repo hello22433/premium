@@ -200,6 +200,8 @@ export class CustomerServiceController {
     description: '성공적으로 return 한 경우',
   })
   // ===============================================
+  // 운영관리자 이상(SUPER_ADMIN·OPERATION_ADMIN) 전용 — 고객사(CORPORATE_ADMIN) 접근 차단
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @Post('/customer-service/pin-discard')
   pinDiscard(@User() user: ILoginUserInfo, @Body() getBody: CustomerServiceDiscardReqDto) {
     return this.customerServiceService.pinDiscard(user, getBody);
@@ -244,8 +246,12 @@ export class CustomerServiceController {
     description: '성공적으로 return 한 경우',
   })
   // ===============================================
+  // 운영관리자 이상(SUPER_ADMIN·OPERATION_ADMIN) 전용 — 고객사(CORPORATE_ADMIN) 접근 차단
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @Put('/customer-service/refund')
-  refund(@Body() getDto: CustomerServiceRefundReqDto) {
+  async refund(@User() user: ILoginUserInfo, @Body() getDto: CustomerServiceRefundReqDto) {
+    // 권한검사: 환불 관리 권한
+    await this.authService.authorityValidator(user, UserAuthSubEnum.CUSTOMER_REFUND);
     return this.customerServiceService.refund(getDto);
   }
 
@@ -277,6 +283,8 @@ export class CustomerServiceController {
     },
   })
   // ===============================================
+  // 운영관리자 이상(SUPER_ADMIN·OPERATION_ADMIN) 전용 — 고객사(CORPORATE_ADMIN) 접근 차단
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @Post('/customer-service/bulk-discard')
   bulkDiscard(@User() user: ILoginUserInfo, @Body() getBody: CustomerServiceBulkDiscardReqDto) {
     return this.customerServiceService.bulkDiscard(user, getBody.orderDeliveryIds, getBody.content);
