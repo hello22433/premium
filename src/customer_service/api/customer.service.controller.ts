@@ -95,7 +95,7 @@ export class CustomerServiceController {
   @ApiOkResponse({
     description: '성공적으로 return 한 경우',
   })
-  // 운영관리자(자사) 전용 — 고객사(CORPORATE_ADMIN) 접근 차단
+  // 운영관리자 이상(SUPER_ADMIN·OPERATION_ADMIN) 전용 — 고객사(CORPORATE_ADMIN) 접근 차단
   @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @Put('/customer-service/pin-status/modify')
   async pinStatusModify(@User() user: ILoginUserInfo, @Body() getBody: CustomerServicePinStatusModifyReqDto) {
@@ -108,7 +108,7 @@ export class CustomerServiceController {
     // 권한검사: 쿠폰 종류(일반/SSG)에 맞는 CS 권한 확인
     await this.authService.authorityValidator(
       user,
-      map.orderDelivery.orderProductMapping.product.type === IProductType.SSG
+      map.orderDelivery.orderProductMapping?.product?.type === IProductType.SSG
         ? UserAuthSubEnum.CUSTOMER_SSG_COUPON
         : UserAuthSubEnum.CUSTOMER_GENERAL_COUPON,
     );
@@ -123,7 +123,7 @@ export class CustomerServiceController {
   @ApiOkResponse({
     description: '성공적으로 return 한 경우',
   })
-  // 운영관리자(자사) 전용 — 고객사(CORPORATE_ADMIN) 접근 차단
+  // 운영관리자 이상(SUPER_ADMIN·OPERATION_ADMIN) 전용 — 고객사(CORPORATE_ADMIN) 접근 차단
   @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @Put('/customer-service/pin-status/refresh')
   async pinStatusRefresh(@User() user: ILoginUserInfo, @Body() getBody: CustomerServicePinStatusRefreshReqDto) {
@@ -136,7 +136,7 @@ export class CustomerServiceController {
     // 권한검사: 쿠폰 종류(일반/SSG)에 맞는 CS 권한 확인
     await this.authService.authorityValidator(
       user,
-      map.orderDelivery.orderProductMapping.product.type === IProductType.SSG
+      map.orderDelivery.orderProductMapping?.product?.type === IProductType.SSG
         ? UserAuthSubEnum.CUSTOMER_SSG_COUPON
         : UserAuthSubEnum.CUSTOMER_GENERAL_COUPON,
     );
