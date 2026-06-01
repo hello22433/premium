@@ -316,26 +316,27 @@ export class DeliveryBatchService {
     // 3) wallet / legacy 잔액 복구. 실패는 throw 전파 → caller (processOneDeliveryForBatch outer catch) 에서
     //    claimedAt reset 후 다음 batch 재시도. wallet 은 attemptId prefix 로 멱등 → 안전 재실행.
     if (isWalletManaged) {
-      const initialAttempt = await this.orderDeliveryAttemptRepository.findOne({
-        where: {
-          orderDeliveryId: orderDelivery.id,
-          attemptType: OrderDeliveryAttemptType.INITIAL,
-        },
+      // fail_refund cycle = 현재 발송 사이클의 active attempt PK (§2/§4). 최초 실패는 INITIAL,
+      // 재발송 후 재실패는 직전 RESEND attempt 가 active 다. INITIAL 고정 시 재발송→재실패가
+      // 이전 reversed ledger 와 같은 prefix 를 만들어 refund 가 silent no-op 된다 → 최신 attempt 사용.
+      const activeAttempt = await this.orderDeliveryAttemptRepository.findOne({
+        where: { orderDeliveryId: orderDelivery.id },
+        order: { id: 'DESC' },
       });
-      if (!initialAttempt) {
-        // drift: wallet 분기 진입했는데 PR2-005 deliveryConfirmed hook 이 INITIAL attempt 를 남기지 않은 상황.
+      if (!activeAttempt) {
+        // drift: wallet 분기 진입했는데 deliveryConfirmed/재발송 hook 이 attempt 를 남기지 않은 상황.
         throw new Error(
-          `wallet-managed delivery ${orderDelivery.id} missing INITIAL attempt — drift, aborting refund`,
+          `wallet-managed delivery ${orderDelivery.id} missing attempt — drift, aborting refund`,
         );
       }
       await this.refundPoolService.refund({
         orderId: order.id,
         eventType: OrderPaymentRefundEventType.FAIL_REFUND,
         targetDeliveryIds: [orderDelivery.id],
-        idempotencyKeyPrefix: `fail_refund:${order.id}:${orderDelivery.id}:${initialAttempt.id}`,
+        idempotencyKeyPrefix: `fail_refund:${order.id}:${orderDelivery.id}:${activeAttempt.id}`,
       });
       this.logger.log(
-        `[REFUND] wallet path complete - orderDelivery.id: ${orderDelivery.id}, attemptId: ${initialAttempt.id}`,
+        `[REFUND] wallet path complete - orderDelivery.id: ${orderDelivery.id}, attemptId: ${activeAttempt.id}`,
       );
     } else {
       if (shouldRestoreBalance) {
@@ -1145,13 +1146,18 @@ export class DeliveryBatchService {
     }
     const ledger = matchingLedgers[0];
 
-    // 3) reverseRefund + resendDeduct — caller TX manager 그대로 전파
+    // 3) reverseRefund + resendDeduct — caller TX manager 그대로 전파.
+    //    재차감 금액은 line 분배가 아니라 reversed ledger 의 실제 복구 재원별 금액을 그대로 사용한다.
+    //    (풀 기반 환불은 line 의 발송확정 분배와 다른 재원을 복구할 수 있어, line 사용 시 재원별 잔액 drift.)
     await this.refundPoolService.reverseRefund(ledger.id, attempt.id, manager);
     await this.resendDeductService.resendDeduct(
       {
         orderId: order.id,
         orderDeliveryId: orderDelivery.id,
         attemptId: attempt.id,
+        depositAmount: ledger.refundedDepositAmount,
+        creditAmount: ledger.refundedCreditUsedAmount,
+        excessAmount: ledger.refundedCreditExcessAmount,
       },
       manager,
     );
