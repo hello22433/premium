@@ -375,8 +375,27 @@ describe('DeliveryBatchService.reissuePinAndCreateImageIfNeeded - refund ledger 
 
       // 과거엔 내부 catch 가 삼켜 true 반환. 이제 전파 → 상위 catch → false.
       expect(result).toBe(false);
-      // deductBalance(release 전 단계)에서 throw → release 도달 안 함
-      expect(refundLedgerService.release).not.toHaveBeenCalled();
+      // release 는 idempotency 가드로 가장 먼저 성공한 뒤, 그 다음 deductBalance 가 throw 한다.
+      expect(refundLedgerService.release).toHaveBeenCalledWith(od.id);
+    });
+
+    /**
+     * HIGH (재리뷰) — release 순서. release() 중복(BadRequest)이면 어떤 side effect 도 실행 전에
+     * early return 해야 한다. release 가 side effect 뒤에 있으면 dup/race 시 선행 재차감이 commit 된다.
+     */
+    it('release 중복(BadRequest) 시 재차감/chargeBack 등 side effect 실행 전에 early return 한다', async () => {
+      const od = buildWaitNoBarCode();
+      refundLedgerService.exists.mockResolvedValue(true);
+      ssgInsertStateService.getState.mockResolvedValue(SsgInsertState.NONE);
+      refundLedgerService.release.mockRejectedValue(new BadRequestException('이미 해제된 환불 ledger'));
+
+      const result = await (sut as any).reissuePinAndCreateImageIfNeeded(od);
+
+      // 이미 해제됨 = 다른 흐름이 재발송 처리 완료 → resend 는 그대로 진행(true)
+      expect(result).toBe(true);
+      // release 가 가드로 먼저 throw → 재차감/SSG chargeBack 도달 안 함
+      expect(userManagementService.deductBalance).not.toHaveBeenCalled();
+      expect(ssgEventService.chargeBackForResend).not.toHaveBeenCalled();
     });
   });
 
