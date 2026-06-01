@@ -1055,41 +1055,45 @@ export class DeliveryBatchService {
     // legacy mirror + wallet ledger/잔액 atomic — 본 메소드 @Transactional() 데코레이터 cls TX 사용.
     // userManagementService/refundLedgerService 가 cls-tracked manager 를 통해 자동으로 같은 TX 에 흡수.
     // 어느 단계라도 throw 시 전체 rollback → wallet/legacy drift 방지.
+    if (shouldRestoreBalance) {
+      await this.userManagementService.deductBalance(userId, settlementPrice, `재발송 역환불 (주문번호: ${order.id})`);
+    } else {
+      await this.userRepository
+        .createQueryBuilder()
+        .update()
+        .set({ allSettleAmount: () => 'all_settle_amount + :amount' })
+        .where('id = :id', { id: userId })
+        .setParameters({ amount: settlementPrice })
+        .execute();
+    }
+
+    // refund ledger release 의 중복(이미 해제 = 이미 재발송 처리됨)만 정상으로 흡수하고 early return 한다.
+    // 그 외 단계(legacy 잔액 복구, wallet 재차감)의 BadRequestException 은 실제 오류이므로
+    // 삼키지 않고 전파 → @Transactional cls TX rollback + outer batch handler 에서 claimedAt reset → 재시도.
     try {
-      if (shouldRestoreBalance) {
-        await this.userManagementService.deductBalance(userId, settlementPrice, `재발송 역환불 (주문번호: ${order.id})`);
-      } else {
-        await this.userRepository
-          .createQueryBuilder()
-          .update()
-          .set({ allSettleAmount: () => 'all_settle_amount + :amount' })
-          .where('id = :id', { id: userId })
-          .setParameters({ amount: settlementPrice })
-          .execute();
-      }
-
       await this.refundLedgerService.release(orderDelivery.id);
-
-      // wallet 재차감 + refund ledger 역처리 — this.orderRepository.manager (cls-tracked) 로 same TX.
-      const isWalletManaged = await this.walletManagedPredicate.isWalletManaged(
-        order.id,
-        this.orderRepository.manager,
-      );
-      if (isWalletManaged) {
-        await this.applyWalletReverseRefundForResendOnManager(orderDelivery, this.orderRepository.manager);
-      }
-
-      this.logger.log(
-        `[RESEND] 환불 복구 완료 (atomic) - orderDelivery.id: ${orderDelivery.id}, amount: ${settlementPrice} (정가: ${productPrice})`,
-      );
     } catch (error) {
       if (error instanceof BadRequestException) {
-        this.logger.warn(`[RESEND] 환불 복구 중복 차단 (정상) - orderDelivery.id: ${orderDelivery.id}, message: ${error.message}`);
+        this.logger.warn(
+          `[RESEND] 환불 복구 중복 차단 (정상) - orderDelivery.id: ${orderDelivery.id}, message: ${error.message}`,
+        );
         return;
       }
-      // legacy + wallet 단계 throw → @Transactional cls TX rollback + outer batch handler 에서 claimedAt reset → 재시도.
       throw error;
     }
+
+    // wallet 재차감 + refund ledger 역처리 — this.orderRepository.manager (cls-tracked) 로 same TX.
+    const isWalletManaged = await this.walletManagedPredicate.isWalletManaged(
+      order.id,
+      this.orderRepository.manager,
+    );
+    if (isWalletManaged) {
+      await this.applyWalletReverseRefundForResendOnManager(orderDelivery, this.orderRepository.manager);
+    }
+
+    this.logger.log(
+      `[RESEND] 환불 복구 완료 (atomic) - orderDelivery.id: ${orderDelivery.id}, amount: ${settlementPrice} (정가: ${productPrice})`,
+    );
   }
 
   /**

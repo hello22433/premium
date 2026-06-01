@@ -6,6 +6,7 @@ jest.mock('typeorm-transactional', () => ({
   addTransactionalDataSources: jest.fn(),
 }));
 
+import { BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken, getDataSourceToken } from '@nestjs/typeorm';
@@ -355,6 +356,27 @@ describe('DeliveryBatchService.reissuePinAndCreateImageIfNeeded - refund ledger 
       // SSG chargeBack 실패해도 고객 측 처리는 진행
       expect(refundLedgerService.release).toHaveBeenCalledWith(od.id);
       expect(userManagementService.deductBalance).toHaveBeenCalled();
+    });
+
+    /**
+     * MEDIUM 3 — catch 축소. reverseRefundForResend 의 광범위 catch 가 release 중복 외의
+     * BadRequest(여기선 release 전 단계인 deductBalance)까지 "중복 차단 정상"으로 삼켜
+     * @Transactional 이 부분 wallet 상태를 commit + resend 를 '성공(true)'으로 보고하던 문제.
+     * 수정 후: 해당 BadRequest 는 reverseRefundForResend 밖으로 전파 → @Transactional 롤백 →
+     * 상위 catch 가 받아 resend 를 '실패(false)'로 보고. 잘못된 성공 보고 + 부분 커밋이 사라진다.
+     */
+    it('release 외 단계(deductBalance)의 BadRequestException 은 중복으로 흡수되지 않아 resend 가 false 로 보고된다', async () => {
+      const od = buildWaitNoBarCode();
+      refundLedgerService.exists.mockResolvedValue(true);
+      ssgInsertStateService.getState.mockResolvedValue(SsgInsertState.NONE);
+      userManagementService.deductBalance.mockRejectedValue(new BadRequestException('잔액 부족'));
+
+      const result = await (sut as any).reissuePinAndCreateImageIfNeeded(od);
+
+      // 과거엔 내부 catch 가 삼켜 true 반환. 이제 전파 → 상위 catch → false.
+      expect(result).toBe(false);
+      // deductBalance(release 전 단계)에서 throw → release 도달 안 함
+      expect(refundLedgerService.release).not.toHaveBeenCalled();
     });
   });
 

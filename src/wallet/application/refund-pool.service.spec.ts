@@ -22,6 +22,8 @@ describe('RefundPoolService — §8 환불 알고리즘', () => {
   let lines: OrderPaymentAllocationLineEntity[];
   let ledger: OrderPaymentRefundEventEntity[];
   let wallets: Record<string, WalletAccountEntity>;
+  // reverseRefund 의 ledger lookup(getOne) 이 반환할 fixture. 기본 null = ledger 미존재.
+  let reverseLedger: OrderPaymentRefundEventEntity | null;
 
   const ds: any = {
     // transaction 은 isolationLevel 1st arg + callback 또는 callback 단독 둘 다 지원
@@ -48,8 +50,8 @@ describe('RefundPoolService — §8 환불 알고리즘', () => {
                   return Object.values(wallets)[0] ?? null;
                 }
                 if (target === OrderPaymentRefundEventEntity) {
-                  // reverseRefund 의 ledger lookup — 본 spec 은 missing 시나리오만 검증
-                  return null;
+                  // reverseRefund 의 ledger lookup. reverseLedger fixture 반환 (기본 null = 미존재).
+                  return reverseLedger;
                 }
                 return Object.values(allocations)[0];
               },
@@ -152,6 +154,7 @@ describe('RefundPoolService — §8 환불 알고리즘', () => {
       } as OrderPaymentAllocationLineEntity,
     ];
     ledger = [];
+    reverseLedger = null;
     wallets = {
       '5': {
         id: '5',
@@ -259,5 +262,49 @@ describe('RefundPoolService — §8 환불 알고리즘', () => {
     await expect(sut.reverseRefund('missing-ledger', 'tx-1')).rejects.toBeInstanceOf(
       BadRequestException,
     );
+  });
+
+  it('reverseRefund: ledger 금액 > allocation 복구 counter 면 invariant 위반 throw (clamp 금지)', async () => {
+    // alloc.pointRestoredAmount=0(default) 인데 ledger.refundedPointAmount=5000 → data drift.
+    // 과거엔 Math.max(0,...) 로 조용히 0 clamp 됐으나 이제 fail-fast.
+    reverseLedger = {
+      id: 'lg-1',
+      allocationId: '1',
+      orderId: 100,
+      refundedPointAmount: 5000,
+      refundedCreditExcessAmount: 0,
+      refundedCreditUsedAmount: 0,
+      refundedDepositAmount: 0,
+      pointSkippedExpiredAmount: 0,
+      reversedAt: null,
+      reversedByWalletTransactionId: null,
+    } as OrderPaymentRefundEventEntity;
+
+    await expect(sut.reverseRefund('lg-1', 'tx-9')).rejects.toThrow(/invariant/);
+  });
+
+  it('reverseRefund: 정상 — ledger 금액만큼 복구 counter 차감 + reversedAt set', async () => {
+    allocations['1'].creditUsedRestoredAmount = 5000;
+    allocations['1'].creditExcessRestoredAmount = 5000;
+    reverseLedger = {
+      id: 'lg-2',
+      allocationId: '1',
+      orderId: 100,
+      refundedPointAmount: 0,
+      refundedCreditExcessAmount: 5000,
+      refundedCreditUsedAmount: 5000,
+      refundedDepositAmount: 0,
+      pointSkippedExpiredAmount: 0,
+      reversedAt: null,
+      reversedByWalletTransactionId: null,
+    } as OrderPaymentRefundEventEntity;
+
+    const r = await sut.reverseRefund('lg-2', 'tx-10');
+
+    expect(r.alreadyReversed).toBe(false);
+    expect(allocations['1'].creditUsedRestoredAmount).toBe(0);
+    expect(allocations['1'].creditExcessRestoredAmount).toBe(0);
+    expect(reverseLedger!.reversedAt).not.toBeNull();
+    expect(reverseLedger!.reversedByWalletTransactionId).toBe('tx-10');
   });
 });
