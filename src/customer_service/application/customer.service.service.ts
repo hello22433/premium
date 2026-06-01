@@ -789,15 +789,14 @@ export class CustomerServiceService {
       throw new BadRequestException('존재하지 않는 주문 건입니다.');
     }
 
-    // 권한검사: 폐기는 쿠폰 종류(일반/SSG)에 맞는 CS 권한을 요구 (pin-status 분기 기준과 동일)
+    // 권한검사: 폐기는 쿠폰 종류(일반/SSG)에 맞는 CS 권한을 요구 (getList 분류 기준과 동일)
     // execDiscard 를 거치는 경로(pin-discard / history 폐기류)에 일괄 적용된다.
     // (주의: bulk-discard 는 execDiscard 를 거치지 않고 자체 폐기 로직을 가지므로 별도 검사 필요)
-    await this.authService.authorityValidator(
-      user,
-      orderDelivery.orderProductMapping?.product?.type === IProductType.SSG
-        ? UserAuthSubEnum.CUSTOMER_SSG_COUPON
-        : UserAuthSubEnum.CUSTOMER_GENERAL_COUPON,
-    );
+    const requiredAuth = this.resolveCsCouponAuthority(orderDelivery.orderProductMapping?.product?.type);
+    if (!requiredAuth) {
+      throw new BadRequestException('폐기 대상이 아닌 상품 유형입니다.');
+    }
+    await this.authService.authorityValidator(user, requiredAuth);
 
     const partnerType = this.getPartnerType(orderDelivery);
     const beforeChange = orderDelivery.couponStatus;
@@ -1719,6 +1718,22 @@ export class CustomerServiceService {
   }
 
   /**
+   * 쿠폰 종류(product.type)에 맞는 CS 권한을 반환한다. (getList 분류 기준과 동일)
+   * - SSG → CUSTOMER_SSG_COUPON
+   * - GENERAL / CHOICE → CUSTOMER_GENERAL_COUPON
+   * - 그 외(DELIVERY/SELF/REAL 등)는 CS 폐기 대상이 아니므로 null (호출측이 거부/skip 처리)
+   */
+  private resolveCsCouponAuthority(productType?: IProductType): UserAuthSubEnum | null {
+    if (productType === IProductType.SSG) {
+      return UserAuthSubEnum.CUSTOMER_SSG_COUPON;
+    }
+    if (productType === IProductType.GENERAL || productType === IProductType.CHOICE) {
+      return UserAuthSubEnum.CUSTOMER_GENERAL_COUPON;
+    }
+    return null;
+  }
+
+  /**
    * 폐기 실패 시 협력사 check API로 쿠폰 상태를 재동기화.
    * SSG는 기존 로직 유지(외부 check 없음)이며, 그 외 협력사는 refreshCouponStatus()로
    * couponStatus / tradeAt / tradePlace를 실제 상태에 맞게 업데이트한다.
@@ -1799,11 +1814,12 @@ export class CustomerServiceService {
           }
 
           // 1-2. 권한검사: 쿠폰 종류(일반/SSG)에 맞는 CS 권한 확인 (건별 — 혼합 건은 권한 없는 건만 skip)
-          // getList 분류 기준과 동일: product.type === 'SSG' → SSG, 그 외(GENERAL/CHOICE) → 일반
-          const requiredAuth =
-            orderDelivery.orderProductMapping?.product?.type === IProductType.SSG
-              ? UserAuthSubEnum.CUSTOMER_SSG_COUPON
-              : UserAuthSubEnum.CUSTOMER_GENERAL_COUPON;
+          // getList 분류 기준과 동일: SSG→SSG, GENERAL/CHOICE→일반, 그 외(DELIVERY/SELF/REAL)는 대상 아님
+          const requiredAuth = this.resolveCsCouponAuthority(orderDelivery.orderProductMapping?.product?.type);
+          if (!requiredAuth) {
+            failed.push({ id: orderDeliveryId, reason: '폐기 대상이 아닌 상품 유형입니다.' });
+            continue;
+          }
           if (!userAuthList.includes(requiredAuth)) {
             failed.push({ id: orderDeliveryId, reason: '해당 쿠폰 종류에 대한 폐기 권한이 없습니다.' });
             continue;
