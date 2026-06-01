@@ -49,7 +49,9 @@ export class RefundController {
   })
   // =================================
   @Put('/settle/refund')
-  update(@Body() getDto: RefundUpdateReqDto) {
+  async update(@User() user: ILoginUserInfo, @Body() getDto: RefundUpdateReqDto) {
+    // 권한검사: 환불 관리 권한 (getList 와 동일 — 쓰기도 동일 권한 요구)
+    await this.authService.authorityValidator(user, UserAuthSubEnum.CUSTOMER_REFUND);
     return this.refundService.update(getDto);
   }
 
@@ -64,7 +66,9 @@ export class RefundController {
   })
   // =================================
   @Put('/settle/refund/reset')
-  reset(@Body() getDto: RefundResetReqDto) {
+  async reset(@User() user: ILoginUserInfo, @Body() getDto: RefundResetReqDto) {
+    // 권한검사: 환불 관리 권한 (getList 와 동일 — 쓰기도 동일 권한 요구)
+    await this.authService.authorityValidator(user, UserAuthSubEnum.CUSTOMER_REFUND);
     return this.refundService.reset(getDto);
   }
 }
