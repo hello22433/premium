@@ -1,5 +1,5 @@
 import { CustomerServiceService } from '../application/customer.service.service';
-import { Body, Controller, Get, Post, Put, Query, Res, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Post, Put, Query, Res, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AuthUserSuperAndOperationAdminGuard } from '../../auth/api/auth.user.super-operation-admin.guard';
 import {
@@ -41,6 +41,22 @@ export class CustomerServiceController {
     private customerServiceService: CustomerServiceService,
     private authService: AuthService,
   ) {}
+
+  /**
+   * 쿠폰 종류(product.type)에 맞는 CS 권한을 반환한다. (getList 분류 기준과 동일)
+   * - SSG → CUSTOMER_SSG_COUPON
+   * - GENERAL / CHOICE → CUSTOMER_GENERAL_COUPON
+   * - 그 외(DELIVERY/SELF/REAL 등)는 CS 핀상태 대상이 아니므로 거부
+   */
+  private resolveCsCouponAuthority(productType?: IProductType): UserAuthSubEnum {
+    if (productType === IProductType.SSG) {
+      return UserAuthSubEnum.CUSTOMER_SSG_COUPON;
+    }
+    if (productType === IProductType.GENERAL || productType === IProductType.CHOICE) {
+      return UserAuthSubEnum.CUSTOMER_GENERAL_COUPON;
+    }
+    throw new BadRequestException('CS 핀상태 대상이 아닌 상품 유형입니다.');
+  }
 
   @ApiOperation({
     description: '일반쿠폰, 신세계 주문 CS API',
@@ -105,12 +121,10 @@ export class CustomerServiceController {
     // 2. 데이터매핑
     const map = await this.customerServiceService.mapPinStatusModify(user, getBody);
 
-    // 권한검사: 쿠폰 종류(일반/SSG)에 맞는 CS 권한 확인
+    // 권한검사: 쿠폰 종류(일반/SSG)에 맞는 CS 권한 확인 (getList 분류 기준과 동일, 그 외 타입은 거부)
     await this.authService.authorityValidator(
       user,
-      map.orderDelivery.orderProductMapping?.product?.type === IProductType.SSG
-        ? UserAuthSubEnum.CUSTOMER_SSG_COUPON
-        : UserAuthSubEnum.CUSTOMER_GENERAL_COUPON,
+      this.resolveCsCouponAuthority(map.orderDelivery.orderProductMapping?.product?.type),
     );
 
     // 3. 서비스실행
@@ -133,12 +147,10 @@ export class CustomerServiceController {
     // 2. 데이터매핑
     const map = await this.customerServiceService.mapPinStatusRefresh(user, getBody);
 
-    // 권한검사: 쿠폰 종류(일반/SSG)에 맞는 CS 권한 확인
+    // 권한검사: 쿠폰 종류(일반/SSG)에 맞는 CS 권한 확인 (getList 분류 기준과 동일, 그 외 타입은 거부)
     await this.authService.authorityValidator(
       user,
-      map.orderDelivery.orderProductMapping?.product?.type === IProductType.SSG
-        ? UserAuthSubEnum.CUSTOMER_SSG_COUPON
-        : UserAuthSubEnum.CUSTOMER_GENERAL_COUPON,
+      this.resolveCsCouponAuthority(map.orderDelivery.orderProductMapping?.product?.type),
     );
 
     // 3. 서비스실행
