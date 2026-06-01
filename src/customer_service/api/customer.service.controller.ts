@@ -46,7 +46,7 @@ export class CustomerServiceController {
    * 쿠폰 종류(product.type)에 맞는 CS 권한을 반환한다. (getList 분류 기준과 동일)
    * - SSG → CUSTOMER_SSG_COUPON
    * - GENERAL / CHOICE → CUSTOMER_GENERAL_COUPON
-   * - 그 외(DELIVERY/SELF/REAL 등)는 CS 핀상태 대상이 아니므로 거부
+   * - 그 외(DELIVERY/SELF/REAL 등)·누락은 CS 대상이 아니므로 거부 (fail closed)
    */
   private resolveCsCouponAuthority(productType?: IProductType): UserAuthSubEnum {
     if (productType === IProductType.SSG) {
@@ -55,7 +55,7 @@ export class CustomerServiceController {
     if (productType === IProductType.GENERAL || productType === IProductType.CHOICE) {
       return UserAuthSubEnum.CUSTOMER_GENERAL_COUPON;
     }
-    throw new BadRequestException('CS 핀상태 대상이 아닌 상품 유형입니다.');
+    throw new BadRequestException('CS 대상이 아닌 상품 유형입니다.');
   }
 
   @ApiOperation({
@@ -163,6 +163,8 @@ export class CustomerServiceController {
   @ApiOkResponse({
     description: '성공적으로 return 한 경우',
   })
+  // 운영관리자 이상(SUPER_ADMIN·OPERATION_ADMIN) 전용 — 고객사(CORPORATE_ADMIN) 접근 차단
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @Post('/customer-service/history')
   async history(@User() user: ILoginUserInfo, @Body() getBody: CustomerServiceHistoryReqDto) {
     // 1. 유효성검사
@@ -170,6 +172,14 @@ export class CustomerServiceController {
 
     // 2. 데이터매핑
     const map = await this.customerServiceService.mapHistory(user, getBody);
+
+    // 권한검사: 쿠폰 종류(일반/SSG)에 맞는 CS 권한 확인 (getList 분류 기준과 동일, 그 외 타입은 거부)
+    // 이 한 곳에서 모든 type(재전송·수신정보변경·폐기 등)을 일괄 보호한다.
+    // (고객사 문의는 별도 채널 QNA가 담당하며, 고객사는 CS 쿠폰 권한이 없어 여기서 자연 차단됨)
+    await this.authService.authorityValidator(
+      user,
+      this.resolveCsCouponAuthority(map.orderDelivery.orderProductMapping?.product?.type),
+    );
 
     // 3. 서비스실행
     return await this.customerServiceService.execHistory(map);
