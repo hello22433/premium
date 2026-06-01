@@ -548,6 +548,13 @@ export class DeliveryBatchService {
     const isChoiceCoupon = product.type === IProductType.CHOICE;
     const isEmailDelivery = orderDelivery.deliveryMethod === IOrderSendMethod.EMAIL;
 
+    // B1: 최초 발송(비-SSG)의 실패는 환불을 보류한다(구매/발송 미성립 → 복구 이벤트 미생성).
+    // 진입 시점(발송 전) status 로 최초/재발송을 구분한다. 재발송이면 직전이 FAIL/FAIL_SMS.
+    // SSG 는 B1 범위 밖이라 기존대로 환불한다.
+    const shouldHoldRefund = order.type !== IOrderType.SSG
+      && orderDelivery.status !== IOrderDeliveryStatus.FAIL
+      && orderDelivery.status !== IOrderDeliveryStatus.FAIL_SMS;
+
     // 1. PIN 발급 (barCode가 없는 경우)
     if (!orderDelivery.barCode && !isChoiceCoupon && !isEmailDelivery) {
       try {
@@ -570,7 +577,10 @@ export class DeliveryBatchService {
       } catch (error) {
         this.logger.error(`[BATCH] PIN 발급 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
 
-        await this.refundForFail(orderDelivery);
+        // B1: 최초 발송(비-SSG) 실패는 환불 보류. 재발송 실패와 SSG 는 기존대로 환불.
+        if (!shouldHoldRefund) {
+          await this.refundForFail(orderDelivery);
+        }
 
         this.markSendFail(orderDelivery, IOrderDeliveryStatus.FAIL);
         await this.orderDeliveryRepository.save(orderDelivery);
@@ -678,8 +688,8 @@ export class DeliveryBatchService {
       },
     );
 
-    // 6. 발송 실패 시 환불 처리
-    if (orderDelivery.status === IOrderDeliveryStatus.FAIL) {
+    // 6. 발송 실패 시 환불 처리 (B1: 최초 발송(비-SSG) 실패는 보류, 재발송/SSG 는 환불)
+    if (orderDelivery.status === IOrderDeliveryStatus.FAIL && !shouldHoldRefund) {
       await this.refundForFail(orderDelivery);
     }
 
@@ -1514,8 +1524,21 @@ export class DeliveryBatchService {
   }
 
   async oneSend(orderDelivery: OrderDeliveryEntity, isSave: boolean = true, testOrderDeliveryId?: number): Promise<boolean> {
-    // 재발송인 경우 chargeBack 후 발송 실패 시 재환불이 필요한지 판단하기 위해 이전 상태 저장
-    const wasFailBefore = !testOrderDeliveryId && orderDelivery.status === IOrderDeliveryStatus.FAIL;
+    const order = orderDelivery.orderProductMapping.order;
+    // 재발송인 경우 chargeBack 후 발송 실패 시 재환불이 필요한지 판단하기 위해 이전 상태 저장 (FAIL_SMS 포함)
+    const wasFailBefore = !testOrderDeliveryId
+      && (orderDelivery.status === IOrderDeliveryStatus.FAIL
+        || orderDelivery.status === IOrderDeliveryStatus.FAIL_SMS);
+
+    // B1: 비-SSG 실패 재발송 — 보류(환불 미생성)/환불됨 분기. 두 snapshot 은 reissue 호출 *전* 에 잡는다
+    // (reissue 내부 reverseRefundForResend 가 ledger 를 release 해 exists() 가 뒤집히기 때문).
+    const isB1FailureResend = wasFailBefore && order.type !== IOrderType.SSG;
+    const isWalletManaged = isB1FailureResend
+      ? await this.walletManagedPredicate.isWalletManaged(order.id)
+      : false;
+    const refundLedgerBeforeReissue = isB1FailureResend
+      ? await this.refundLedgerService.exists(orderDelivery.id)
+      : false;
 
     // PIN 재발급 및 이미지 재생성 (barCode나 imagePath가 없는 경우)
     // 테스트 발송은 mock 데이터(barCode='999999')를 사용하므로 PIN 재발급 불필요
@@ -1534,6 +1557,28 @@ export class DeliveryBatchService {
         }
         await this.deliverySendHistoryRepository.save(deliveryHistory);
         return false;
+      }
+    }
+
+    // B1: reissue 성공 후, 발송 dispatch 전 — 비-SSG 실패 재발송 보정.
+    if (isB1FailureResend) {
+      if (refundLedgerBeforeReissue) {
+        // 환불됨 재발송 (legacy+wallet 공통). reissue 의 needsIssue=false(barCode 보유) 케이스는
+        // 내부 reverseRefundForResend 가 skip 되어 exists() 가 여전히 true → 명시 호출로
+        // legacy mirror 복원 / wallet 재차감 / RESEND attempt 를 보강한다. 이미 reissue 내부에서
+        // 실행됐으면 exists() 가 false 로 뒤집혀 skip (release 도 멱등 early-return).
+        if (await this.refundLedgerService.exists(orderDelivery.id)) {
+          await this.reverseRefundForResend(orderDelivery, false);
+        }
+      } else if (isWalletManaged) {
+        // 보류 재발송 (환불 미생성, wallet) → RESEND attempt slot 선발급.
+        // 재실패 시 refundForFail 의 fail_refund cycle 이 최신 RESEND attempt 를 가리키게 한다.
+        await this.orderDeliveryAttemptRepository.save({
+          orderDeliveryId: orderDelivery.id,
+          attemptType: OrderDeliveryAttemptType.RESEND,
+          status: OrderDeliveryAttemptStatus.DEDUCTED,
+          deductedAt: new Date(),
+        });
       }
     }
 
@@ -1749,8 +1794,10 @@ export class DeliveryBatchService {
       }
     }
 
-    // 재발송 시 chargeBack 후 발송이 다시 실패한 경우: 환불 복구
-    if (wasFailBefore && orderDelivery.status === IOrderDeliveryStatus.FAIL) {
+    // 재발송 시 chargeBack 후 발송이 다시 실패한 경우: 환불 복구 (FAIL_SMS 포함)
+    if (wasFailBefore
+      && (orderDelivery.status === IOrderDeliveryStatus.FAIL
+        || orderDelivery.status === IOrderDeliveryStatus.FAIL_SMS)) {
       await this.refundForFail(orderDelivery);
     }
 
