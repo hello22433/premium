@@ -14,6 +14,13 @@ export interface ResendDeductInput {
   orderId: number;
   orderDeliveryId: number;
   attemptId: string;
+  /**
+   * 재차감 금액 = 직전 환불 ledger 의 실제 복구 재원별 금액 (refunded{Deposit,CreditUsed,CreditExcess}Amount).
+   * 풀 기반 환불이라 line 의 발송확정 시점 분배와 다를 수 있어, 반드시 reversed ledger 금액을 그대로 사용한다.
+   */
+  depositAmount: number;
+  creditAmount: number;
+  excessAmount: number;
 }
 
 export interface ResendDeductResult {
@@ -34,8 +41,9 @@ export interface ResendDeductResult {
  * 멱등키: resend_deduct:{orderId}:{deliveryId}:{resource}:{attemptId}.
  * attemptId 가 cycle id 라 같은 attempt 재호출 시 멱등.
  *
- * 차감 금액 = 해당 line 의 deposit_used / credit_used / credit_excess. 라인은 발송확정 시점에
- * 결정된 분배 그대로 사용 (재발송 시 재계산 안 함).
+ * 차감 금액 = caller 가 전달한 직전 환불 ledger 의 실제 복구 재원별 금액
+ * (refunded{Deposit,CreditUsed,CreditExcess}Amount). 풀 기반 환불이라 line 분배와 다를 수 있어,
+ * line 이 아닌 reversed ledger 금액을 그대로 재차감한다 (§8 재계산 금지).
  */
 @Injectable()
 export class ResendDeductService {
@@ -43,35 +51,26 @@ export class ResendDeductService {
 
   constructor(@InjectDataSource() private readonly dataSource: DataSource) {}
 
-  async resendDeduct(
-    input: ResendDeductInput,
-    externalManager?: EntityManager,
-  ): Promise<ResendDeductResult> {
+  async resendDeduct(input: ResendDeductInput, externalManager?: EntityManager): Promise<ResendDeductResult> {
     if (externalManager) {
       return this.runDeduct(input, externalManager);
     }
     return this.dataSource.transaction(async (m) => this.runDeduct(input, m));
   }
 
-  async resendUndo(
-    input: ResendDeductInput,
-    externalManager?: EntityManager,
-  ): Promise<ResendDeductResult> {
+  async resendUndo(input: ResendDeductInput, externalManager?: EntityManager): Promise<ResendDeductResult> {
     if (externalManager) {
       return this.runUndo(input, externalManager);
     }
     return this.dataSource.transaction(async (m) => this.runUndo(input, m));
   }
 
-  private async runDeduct(
-    input: ResendDeductInput,
-    manager: EntityManager,
-  ): Promise<ResendDeductResult> {
-    const { alloc, walletLock, line } = await this.lockChainAndLoad(input.orderId, input.orderDeliveryId, manager);
+  private async runDeduct(input: ResendDeductInput, manager: EntityManager): Promise<ResendDeductResult> {
+    const { alloc, walletLock } = await this.lockChainAndLoad(input.orderId, input.orderDeliveryId, manager);
 
-    const depositAmt = line.depositUsedAmount;
-    const creditAmt = line.creditUsedAmount;
-    const excessAmt = line.creditExcessAmount;
+    const depositAmt = input.depositAmount;
+    const creditAmt = input.creditAmount;
+    const excessAmt = input.excessAmount;
     const walletTransactionIds: string[] = [];
     const keyBase = `resend_deduct:${input.orderId}:${input.orderDeliveryId}`;
 
@@ -137,15 +136,12 @@ export class ResendDeductService {
     };
   }
 
-  private async runUndo(
-    input: ResendDeductInput,
-    manager: EntityManager,
-  ): Promise<ResendDeductResult> {
-    const { alloc, walletLock, line } = await this.lockChainAndLoad(input.orderId, input.orderDeliveryId, manager);
+  private async runUndo(input: ResendDeductInput, manager: EntityManager): Promise<ResendDeductResult> {
+    const { alloc, walletLock } = await this.lockChainAndLoad(input.orderId, input.orderDeliveryId, manager);
 
-    const depositAmt = line.depositUsedAmount;
-    const creditAmt = line.creditUsedAmount;
-    const excessAmt = line.creditExcessAmount;
+    const depositAmt = input.depositAmount;
+    const creditAmt = input.creditAmount;
+    const excessAmt = input.excessAmount;
     const walletTransactionIds: string[] = [];
     const keyBase = `resend_undo:${input.orderId}:${input.orderDeliveryId}`;
 
@@ -213,13 +209,10 @@ export class ResendDeductService {
   ): Promise<{
     alloc: OrderPaymentAllocationEntity;
     walletLock: WalletAccountEntity;
-    line: OrderPaymentAllocationLineEntity;
   }> {
     const peekAlloc = await manager.findOne(OrderPaymentAllocationEntity, { where: { orderId } });
     if (!peekAlloc) {
-      throw new BadRequestException(
-        `ResendDeductService: allocation not found for orderId=${orderId}`,
-      );
+      throw new BadRequestException(`ResendDeductService: allocation not found for orderId=${orderId}`);
     }
 
     const walletLock = await manager
@@ -229,9 +222,7 @@ export class ResendDeductService {
       .where('w.id = :id', { id: peekAlloc.walletAccountId })
       .getOne();
     if (!walletLock) {
-      throw new BadRequestException(
-        `ResendDeductService: wallet_account not found id=${peekAlloc.walletAccountId}`,
-      );
+      throw new BadRequestException(`ResendDeductService: wallet_account not found id=${peekAlloc.walletAccountId}`);
     }
 
     const alloc = await manager
@@ -241,9 +232,7 @@ export class ResendDeductService {
       .where('a.orderId = :orderId', { orderId })
       .getOne();
     if (!alloc) {
-      throw new BadRequestException(
-        `ResendDeductService: allocation disappeared after peek (orderId=${orderId})`,
-      );
+      throw new BadRequestException(`ResendDeductService: allocation disappeared after peek (orderId=${orderId})`);
     }
 
     const line = await manager.findOne(OrderPaymentAllocationLineEntity, {
@@ -255,6 +244,6 @@ export class ResendDeductService {
       );
     }
 
-    return { alloc, walletLock, line };
+    return { alloc, walletLock };
   }
 }

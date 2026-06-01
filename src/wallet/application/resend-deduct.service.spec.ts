@@ -11,7 +11,7 @@ import { WalletResourceType } from '../interface/wallet-resource-type';
 /**
  * PR4 ResendDeductService — 재발송 차감 / undo (plan §2 resend_deduct/resend_undo).
  *   - attemptId cycle 멱등 (같은 attempt 재호출 = 같은 idempotencyKey).
- *   - 라인의 deposit/credit/credit_excess 분배 그대로 사용 (재계산 X).
+ *   - 차감 금액은 caller 가 전달한 reversed ledger 금액 그대로 사용 (line 분배 아님, §8 재계산 X).
  *   - Lock 표준 §3 (wallet_account → allocation → wallet_transaction).
  */
 describe('ResendDeductService', () => {
@@ -81,15 +81,23 @@ describe('ResendDeductService', () => {
   it('resendDeduct: deposit/credit/excess 재차감 + wallet_transaction 3 row + cycle=attemptId', async () => {
     fx.alloc = { id: 'a-1', walletAccountId: 'w-1' };
     fx.wallet = { id: 'w-1', depositBalance: 10000, creditUsedAmount: 0, creditExcessAmount: 0 };
+    // line 은 존재 가드용으로만 필요 (금액은 입력으로 전달). line 분배 값은 의도적으로 입력과 다르게 둠.
     fx.line = {
       allocationId: 'a-1',
       orderDeliveryId: 101,
-      depositUsedAmount: 5000,
-      creditUsedAmount: 3000,
-      creditExcessAmount: 1000,
+      depositUsedAmount: 1,
+      creditUsedAmount: 1,
+      creditExcessAmount: 1,
     };
 
-    const r = await sut.resendDeduct({ orderId: 777, orderDeliveryId: 101, attemptId: 'att-42' });
+    const r = await sut.resendDeduct({
+      orderId: 777,
+      orderDeliveryId: 101,
+      attemptId: 'att-42',
+      depositAmount: 5000,
+      creditAmount: 3000,
+      excessAmount: 1000,
+    });
 
     expect(r.deducted).toEqual({ deposit: 5000, credit: 3000, excess: 1000 });
     expect(r.walletTransactionIds).toHaveLength(3);
@@ -112,15 +120,16 @@ describe('ResendDeductService', () => {
   it('resendUndo: deposit/credit/excess 복원 (resendDeduct 의 역)', async () => {
     fx.alloc = { id: 'a-1', walletAccountId: 'w-1' };
     fx.wallet = { id: 'w-1', depositBalance: 5000, creditUsedAmount: 3000, creditExcessAmount: 1000 };
-    fx.line = {
-      allocationId: 'a-1',
-      orderDeliveryId: 101,
-      depositUsedAmount: 5000,
-      creditUsedAmount: 3000,
-      creditExcessAmount: 1000,
-    };
+    fx.line = { allocationId: 'a-1', orderDeliveryId: 101, depositUsedAmount: 1, creditUsedAmount: 1, creditExcessAmount: 1 };
 
-    const r = await sut.resendUndo({ orderId: 777, orderDeliveryId: 101, attemptId: 'att-42' });
+    const r = await sut.resendUndo({
+      orderId: 777,
+      orderDeliveryId: 101,
+      attemptId: 'att-42',
+      depositAmount: 5000,
+      creditAmount: 3000,
+      excessAmount: 1000,
+    });
 
     expect(r.deducted).toEqual({ deposit: 5000, credit: 3000, excess: 1000 });
     expect(fx.wallet!.depositBalance).toBe(10000);
@@ -134,7 +143,7 @@ describe('ResendDeductService', () => {
   it('allocation 미존재 → BadRequest', async () => {
     fx.alloc = null;
     await expect(
-      sut.resendDeduct({ orderId: 999, orderDeliveryId: 1, attemptId: 'a' }),
+      sut.resendDeduct({ orderId: 999, orderDeliveryId: 1, attemptId: 'a', depositAmount: 1, creditAmount: 0, excessAmount: 0 }),
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
@@ -143,7 +152,7 @@ describe('ResendDeductService', () => {
     fx.wallet = { id: 'w-1' };
     fx.line = null;
     await expect(
-      sut.resendDeduct({ orderId: 777, orderDeliveryId: 999, attemptId: 'a' }),
+      sut.resendDeduct({ orderId: 777, orderDeliveryId: 999, attemptId: 'a', depositAmount: 1, creditAmount: 0, excessAmount: 0 }),
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 });

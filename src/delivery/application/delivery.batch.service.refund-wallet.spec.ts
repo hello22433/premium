@@ -176,32 +176,38 @@ describe('DeliveryBatchService.refundForFail - wallet path', () => {
     expect(orderDeliveryAttemptRepository.findOne).not.toHaveBeenCalled();
   });
 
-  it('wallet 경로: isWalletManaged=true → RefundPoolService.refund 호출 (fail_refund 멱등키 + INITIAL attempt.id), addBalance 미호출', async () => {
+  it('wallet 경로: isWalletManaged=true → RefundPoolService.refund 호출 (fail_refund 멱등키 = active attempt.id), addBalance 미호출', async () => {
     const od = buildOrderDelivery();
     walletManagedPredicate.isWalletManaged.mockResolvedValue(true);
-    orderDeliveryAttemptRepository.findOne.mockResolvedValue({ id: '42' });
+    // 재발송 후 재실패: 최신 attempt 는 RESEND(id=99). INITIAL 고정이면 이전 prefix 충돌로 no-op.
+    orderDeliveryAttemptRepository.findOne.mockResolvedValue({ id: '99' });
 
     await (sut as any).refundForFail(od);
 
+    // attemptType=INITIAL 필터가 아니라 최신(id DESC) attempt 를 조회해야 한다 (HIGH 2).
+    expect(orderDeliveryAttemptRepository.findOne).toHaveBeenCalledWith({
+      where: { orderDeliveryId: od.id },
+      order: { id: 'DESC' },
+    });
     expect(refundLedgerService.claim).toHaveBeenCalledTimes(1);
     expect(refundPoolService.refund).toHaveBeenCalledTimes(1);
     expect(refundPoolService.refund).toHaveBeenCalledWith({
       orderId: od.orderProductMapping.order.id,
       eventType: OrderPaymentRefundEventType.FAIL_REFUND,
       targetDeliveryIds: [od.id],
-      idempotencyKeyPrefix: `fail_refund:${od.orderProductMapping.order.id}:${od.id}:42`,
+      idempotencyKeyPrefix: `fail_refund:${od.orderProductMapping.order.id}:${od.id}:99`,
     });
     expect(userManagementService.addBalance).not.toHaveBeenCalled();
     expect(userRepoExecute).not.toHaveBeenCalled();
   });
 
-  it('wallet 경로 + INITIAL attempt 부재: drift → throw 전파 (refund 미호출, 상위 retry 신호)', async () => {
+  it('wallet 경로 + attempt 부재: drift → throw 전파 (refund 미호출, 상위 retry 신호)', async () => {
     const od = buildOrderDelivery();
     walletManagedPredicate.isWalletManaged.mockResolvedValue(true);
     orderDeliveryAttemptRepository.findOne.mockResolvedValue(null);
 
     await expect((sut as any).refundForFail(od)).rejects.toThrow(
-      /missing INITIAL attempt/,
+      /missing attempt/,
     );
 
     expect(refundPoolService.refund).not.toHaveBeenCalled();
