@@ -63,13 +63,19 @@ describe('CryptoCipher', () => {
       expect(() => sut.decryptJson(expiredToken)).toThrow(BadRequestException);
     });
 
-    test('authTag가 변조된 토큰을 복호화하면 에러를 던진다', () => {
+    test('authTag가 변조된 v2 토큰을 복호화하면 BadRequestException을 던진다', () => {
       const token = sut.encryptJson({ id: 1 });
       const buf = Buffer.from(token.slice(3), 'base64url');
       buf[12] ^= 0xff; // authTag 첫 바이트 변조 (nonce 12B 이후)
       const tampered = 'v2:' + buf.toString('base64url');
 
-      expect(() => sut.decryptJson(tampered)).toThrow();
+      expect(() => sut.decryptJson(tampered)).toThrow(BadRequestException);
+    });
+
+    test('손상된 v2 토큰(복호화 불가)을 복호화하면 BadRequestException을 던진다', () => {
+      const garbage = 'v2:' + Buffer.from('not-a-valid-token').toString('base64url');
+
+      expect(() => sut.decryptJson(garbage)).toThrow(BadRequestException);
     });
 
     test('레거시 ECB 토큰을 복호화하면 원본 데이터를 반환한다', () => {

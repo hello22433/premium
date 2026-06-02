@@ -82,17 +82,24 @@ export class CryptoCipher {
   decryptJson(encryptedData: string): object {
     if (encryptedData.startsWith('v2:')) {
       const key = this.configService.getOrThrow('CRYPTO_SECRET_KEY');
-      const buf = Buffer.from(encryptedData.slice(3), 'base64url');
 
-      const nonce = buf.subarray(0, 12);
-      const authTag = buf.subarray(12, 28);
-      const ciphertext = buf.subarray(28);
+      let parsed: Record<string, unknown>;
+      try {
+        const buf = Buffer.from(encryptedData.slice(3), 'base64url');
 
-      const decipher = crypto.createDecipheriv('aes-128-gcm', key, nonce);
-      decipher.setAuthTag(authTag);
-      const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+        const nonce = buf.subarray(0, 12);
+        const authTag = buf.subarray(12, 28);
+        const ciphertext = buf.subarray(28);
 
-      const parsed = JSON.parse(decrypted.toString('utf8')) as Record<string, unknown>;
+        const decipher = crypto.createDecipheriv('aes-128-gcm', key, nonce);
+        decipher.setAuthTag(authTag);
+        const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+
+        parsed = JSON.parse(decrypted.toString('utf8')) as Record<string, unknown>;
+      } catch {
+        throw new BadRequestException('올바르지 않은 링크입니다.');
+      }
+
       if (typeof parsed._exp === 'number' && Date.now() > parsed._exp) {
         throw new BadRequestException('만료된 링크입니다.');
       }
