@@ -123,6 +123,10 @@ import { PhoneUtil } from '../../common/utils/phone.util';
 import { DeliveryBatchService } from '../../delivery/application/delivery.batch.service';
 import { IOrderSendMethod } from '../interface/order.send.method';
 import { IOrderSendingType } from '../interface/order.sending.type';
+import {
+  canForceConfirmDelivery,
+  canTransitionDelivery,
+} from '../domain/order.delivery-transition-authority.helper';
 import { IOrderDateType } from '../interface/order.date.type';
 import { OrderEncryptKey } from '../../order_receive/interface/order.encrypt.key';
 import { ActivityLogService } from '../../activity_log/application/activity.log.service';
@@ -3197,6 +3201,10 @@ export class OrderService {
       throw new BadRequestException('해당 주문건은 존재하지 않거나, 주문완료 상태가 아닙니다.');
     }
 
+    if (!canTransitionDelivery(user, order)) {
+      throw new ForbiddenException('해당 주문에 대한 권한이 없습니다.');
+    }
+
     order.status = IOrderStatus.REVIEW_COMPLETE;
     await this.orderRepository.save(order);
 
@@ -3225,6 +3233,14 @@ export class OrderService {
 
     if (!order) {
       throw new BadRequestException('해당 주문건은 존재하지 않거나, 검토완료 상태가 아닙니다.');
+    }
+
+    if (!canTransitionDelivery(user, order)) {
+      throw new ForbiddenException('해당 주문에 대한 권한이 없습니다.');
+    }
+
+    if (getBody.forceConfirm && !canForceConfirmDelivery(user)) {
+      throw new ForbiddenException('강제 발송확정 권한이 없습니다.');
     }
 
     OrderValidation(order);

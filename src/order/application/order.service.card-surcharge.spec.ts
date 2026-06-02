@@ -513,6 +513,7 @@ describe('OrderService deliveryConfirmed settlement amount', () => {
       id: 77,
       userId: 1,
       clientUserId: 2,
+      operationUserId: 1,
       eventName: 'event',
       type: IOrderType.GENERAL,
       status: IOrderStatus.REVIEW_COMPLETE,

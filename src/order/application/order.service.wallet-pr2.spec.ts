@@ -43,6 +43,7 @@ describe('OrderService deliveryConfirmed wallet PR2-005 gating', () => {
       id: 77,
       userId: 1,
       clientUserId: 2,
+      operationUserId: 1,
       eventName: 'event',
       type: IOrderType.GENERAL,
       status: IOrderStatus.REVIEW_COMPLETE,
