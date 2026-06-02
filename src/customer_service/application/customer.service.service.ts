@@ -515,7 +515,7 @@ export class CustomerServiceService {
     };
   }
 
-  async getDetailList(getQuery: CustomerServiceGetDetailListReqDto) {
+  async getDetailList(user: ILoginUserInfo, getQuery: CustomerServiceGetDetailListReqDto) {
     const { orderId, page, take } = getQuery;
 
     const queryBuilder = this.orderDeliveryRepository
@@ -540,6 +540,20 @@ export class CustomerServiceService {
     queryBuilder.take(take).skip(skip);
 
     const [orderDeliveryList, totalCount] = await queryBuilder.getManyAndCount();
+
+    // 권한검사: 조회된 발송들의 쿠폰 종류(일반/SSG)별 CS 권한을 모두 요구
+    // (주문은 단일 타입이라 통상 1개. getList 분류 기준과 동일, 그 외 타입은 거부)
+    const requiredAuths = new Set<UserAuthSubEnum>();
+    for (const orderDelivery of orderDeliveryList) {
+      const auth = this.resolveCsCouponAuthority(orderDelivery.orderProductMapping?.product?.type);
+      if (!auth) {
+        throw new BadRequestException('CS 대상이 아닌 상품 유형입니다.');
+      }
+      requiredAuths.add(auth);
+    }
+    for (const auth of requiredAuths) {
+      await this.authService.authorityValidator(user, auth);
+    }
 
     const totalPage = Math.ceil(totalCount / take);
 
@@ -601,7 +615,7 @@ export class CustomerServiceService {
     };
   }
 
-  async getDetail(getQuery: CustomerServiceGetDetailReqDto): Promise<CustomerServiceDlvryDetailViewDto> {
+  async getDetail(user: ILoginUserInfo, getQuery: CustomerServiceGetDetailReqDto): Promise<CustomerServiceDlvryDetailViewDto> {
     const { orderDeliveryId } = getQuery;
 
     const queryBuilder = await this.orderDeliveryRepository
@@ -628,6 +642,13 @@ export class CustomerServiceService {
     if (!queryBuilder) {
       throw new BadRequestException('존재하지 않는 발송 정보입니다.');
     }
+
+    // 권한검사: 쿠폰 종류(일반/SSG)에 맞는 CS 권한 (getList 분류 기준과 동일, 그 외 타입은 거부)
+    const requiredAuth = this.resolveCsCouponAuthority(queryBuilder.orderProductMapping?.product?.type);
+    if (!requiredAuth) {
+      throw new BadRequestException('CS 대상이 아닌 상품 유형입니다.');
+    }
+    await this.authService.authorityValidator(user, requiredAuth);
 
     const product = queryBuilder.orderProductMapping.product;
     const partnerCompany = product.partnerCompany;
@@ -1591,7 +1612,21 @@ export class CustomerServiceService {
    * @param getQuery
    * @returns
    */
-  async mapStatusList(getQuery: CustomerServiceStatusListReqDto) {
+  async mapStatusList(user: ILoginUserInfo, getQuery: CustomerServiceStatusListReqDto) {
+    // 권한검사: 변경내역은 발송건(orderDeliveryId)에 종속되므로, 해당 발송의 쿠폰 종류 권한을 요구
+    const orderDelivery = await this.orderDeliveryRepository.findOne({
+      where: { id: getQuery.orderDeliveryId },
+      relations: ['orderProductMapping', 'orderProductMapping.product'],
+    });
+    if (!orderDelivery) {
+      throw new BadRequestException('존재하지 않는 발송 정보입니다.');
+    }
+    const requiredAuth = this.resolveCsCouponAuthority(orderDelivery.orderProductMapping?.product?.type);
+    if (!requiredAuth) {
+      throw new BadRequestException('CS 대상이 아닌 상품 유형입니다.');
+    }
+    await this.authService.authorityValidator(user, requiredAuth);
+
     return {
       orderDeliveryId: getQuery.orderDeliveryId,
       page: getQuery.page,
