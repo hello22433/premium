@@ -93,6 +93,51 @@ describe('CustomerServiceService.execDiscard — terminal 차단 / CAS 멱등', 
     });
   });
 
+  describe('(C) bulkDiscard — 조건부 UPDATE(CAS) 사용 검증', () => {
+    // 운영자: authorityList 에 CUSTOMER_GENERAL_COUPON 부여 → 권한검사 통과
+    const operatorEntity = { id: 9, personName: 'OP', authority: 'OPERATION_ADMIN', authorityList: 'CUSTOMER_GENERAL_COUPON' };
+
+    // couponStatus=NOT_USED(폐기 가능), product.type=GENERAL(권한 통과),
+    // partnerCompany 없음 → partnerCompanyName=undefined → switch default(외부 cancel 없음)
+    const buildBulkOrderDelivery = () =>
+      ({
+        id: 8001,
+        couponStatus: OrderDeliveryCouponStatus.NOT_USED,
+        orderProductMapping: { product: { type: 'GENERAL', partnerCompany: undefined }, order: {} },
+        choiceSelectProduct: undefined,
+      }) as any;
+
+    const makeBulkSut = (txAffected: number) => {
+      const sut: any = Object.create(CustomerServiceService.prototype);
+      sut.userRepository = { findOne: jest.fn().mockResolvedValue(operatorEntity) };
+      sut.orderDeliveryRepository = { findOne: jest.fn().mockResolvedValue(buildBulkOrderDelivery()) };
+      sut.dataSource = { createQueryRunner: jest.fn(() => makeTxRunner(txAffected)) };
+      sut.orderHistoryRepository = { create: jest.fn(() => ({})) };
+      sut.restoreBalanceOnDiscard = jest.fn().mockResolvedValue(undefined);
+      return sut;
+    };
+
+    it('CAS affected=1 이면 성공 처리 + 잔액복구 호출', async () => {
+      const sut = makeBulkSut(1);
+
+      const result = await sut.bulkDiscard(operator, [8001], '일괄폐기');
+
+      expect(result.success).toEqual([8001]);
+      expect(result.failed).toHaveLength(0);
+      expect(sut.restoreBalanceOnDiscard).toHaveBeenCalledTimes(1);
+    });
+
+    it('CAS affected=0(경합)이면 failed 로 skip + 잔액복구 미호출 (동시 REFUND_CANCEL 덮어쓰기 차단)', async () => {
+      const sut = makeBulkSut(0);
+
+      const result = await sut.bulkDiscard(operator, [8001], '일괄폐기');
+
+      expect(result.success).toHaveLength(0);
+      expect(result.failed).toEqual([{ id: 8001, reason: '동시에 상태가 변경되어 폐기하지 못했습니다.' }]);
+      expect(sut.restoreBalanceOnDiscard).not.toHaveBeenCalled();
+    });
+  });
+
   // queryRunner mock — manager.createQueryBuilder().update().set().where().execute() => {affected}
   function makeTxRunner(affected: number) {
     const ub: any = {};
