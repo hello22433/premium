@@ -1,5 +1,18 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsEnum, IsNotEmpty, IsNumber, IsOptional, IsString, Matches } from 'class-validator';
+import {
+  ArrayMaxSize,
+  ArrayMinSize,
+  IsArray,
+  IsEnum,
+  IsInt,
+  IsNotEmpty,
+  IsOptional,
+  IsPositive,
+  IsString,
+  Matches,
+  ValidateNested,
+} from 'class-validator';
+import { Type } from 'class-transformer';
 import { dateAtRegexp } from '../../common/domain/date.regexp';
 import { OrderDeliveryRefundStatusEnum } from '../../delivery/interface/order.delivery.refund.status.enum';
 import { PagingReqDto } from '../../common/api/dto/pagination.req.dto';
@@ -58,8 +71,8 @@ export class RefundUpdateReqDto {
     description: 'order delivery id',
   })
   // ==============================
-  @IsNumber()
-  @IsNotEmpty()
+  @IsInt()
+  @IsPositive()
   id: number;
 
   @ApiProperty({
@@ -74,6 +87,7 @@ export class RefundUpdateReqDto {
     description: '은행 명',
   })
   // ==============================
+  @IsString()
   @IsNotEmpty()
   bankName: string;
 
@@ -81,6 +95,7 @@ export class RefundUpdateReqDto {
     description: '계좌번호',
   })
   // ==============================
+  @IsString()
   @IsNotEmpty()
   bankAccount: string;
 
@@ -89,6 +104,7 @@ export class RefundUpdateReqDto {
   })
   // ==============================
   @IsOptional()
+  @IsString()
   bankAccountOwner?: string;
 
   @ApiPropertyOptional({
@@ -113,7 +129,36 @@ export class RefundResetReqDto {
     description: 'order delivery id',
   })
   // ==============================
-  @IsNumber()
-  @IsNotEmpty()
+  @IsInt()
+  @IsPositive()
   id: number;
+}
+
+export class RefundResetBatchReqDto {
+  @ApiProperty({
+    description: '일괄 초기화할 order delivery id 배열 (하나라도 실패 시 전체 롤백)',
+    example: [1, 2, 3],
+  })
+  // ==============================
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(500)
+  @IsInt({ each: true })
+  @IsPositive({ each: true })
+  @Type(() => Number)
+  ids: number[];
+}
+
+export class RefundUpdateBatchReqDto {
+  @ApiProperty({
+    description: '일괄 저장할 환불 항목 배열 (하나라도 실패 시 전체 롤백)',
+    type: [RefundUpdateReqDto],
+  })
+  // ==============================
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(500)
+  @ValidateNested({ each: true })
+  @Type(() => RefundUpdateReqDto)
+  items: RefundUpdateReqDto[];
 }
