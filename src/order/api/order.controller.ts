@@ -34,6 +34,7 @@ import {
   OrderDeleteTempReqDto,
   OrderDeliveryCancelReqDto,
   OrderDeliveryConfirmedReqDto,
+  OrderAllocationPreviewReqDto,
   OrderDeliveryRequestReqDto,
   OrderReviewCompleteReqDto,
   OrderDeliverySsgCouponExpireChangeReqDto,
@@ -69,6 +70,7 @@ import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorizati
 import {
   OrderCreateTempResDto,
   OrderDeliveryConfirmed,
+  OrderAllocationPreviewResDto,
   OrderGetDeliveryAuditResDto,
   OrderGetDeliveryCompleteReportResDto,
   OrderGetDetailResDto,
@@ -511,6 +513,24 @@ export class OrderController {
   @Post('/order/delivery-confirmed')
   deliveryConfirmed(@User() user: ILoginUserInfo, @Body() getBody: OrderDeliveryConfirmedReqDto) {
     return this.orderService.deliveryConfirmed(user, getBody);
+  }
+
+  @ApiOperation({
+    summary: '발송확정 분배 미리보기 (dry-run) API',
+    description:
+      '발송확정(DB 차감) 전, 포인트/예치금/여신/신용초과/카드할증 분배 결과를 계산만 하여 반환합니다. ' +
+      'DB 차감 없음. 사용 가능 한도 초과 입력 시 400. 발송확정과 동일 권한·상태(검토완료) 검증.',
+  })
+  @ApiOkResponse({
+    type: OrderAllocationPreviewResDto,
+    description: '분배 미리보기 계산 결과',
+  })
+  @ApiBadRequestResponse({
+    description: '주문이 검토완료 상태가 아니거나, 사용 가능 포인트/예치금을 초과한 경우',
+  })
+  @Post('/order/delivery/allocation-preview')
+  previewAllocation(@User() user: ILoginUserInfo, @Body() getBody: OrderAllocationPreviewReqDto) {
+    return this.orderService.previewAllocation(user, getBody);
   }
 
   @ApiOperation({
