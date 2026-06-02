@@ -539,13 +539,26 @@ export class CustomerServiceService {
     const skip = (page - 1) * take;
     queryBuilder.take(take).skip(skip);
 
-    const [orderDeliveryList, totalCount] = await queryBuilder.getManyAndCount();
+    // 권한검사: 페이지와 무관하게 "주문 전체 발송"의 쿠폰 종류(일반/SSG)별 CS 권한을 모두 요구.
+    // 페이지네이션된 결과로 검사하면 빈 페이지(범위 밖) 요청 시 requiredAuths 가 비어 검사가 스킵되고,
+    // totalCount/totalPage 로 주문 존재·발송 건수가 노출된다. → distinct product.type 조회를 pagination 과 분리.
+    // (getList 분류 기준과 동일, 그 외 타입은 거부)
+    const productTypeRows = await this.orderDeliveryRepository
+      .createQueryBuilder('orderDelivery')
+      .innerJoin('orderDelivery.orderProductMapping', 'orderProductMapping')
+      .innerJoin('orderProductMapping.order', 'order')
+      .innerJoin('orderProductMapping.product', 'product')
+      .where('order.id = :orderId', { orderId })
+      .select('DISTINCT product.type', 'type')
+      .getRawMany<{ type: IProductType }>();
 
-    // 권한검사: 조회된 발송들의 쿠폰 종류(일반/SSG)별 CS 권한을 모두 요구
-    // (주문은 단일 타입이라 통상 1개. getList 분류 기준과 동일, 그 외 타입은 거부)
+    if (productTypeRows.length === 0) {
+      throw new BadRequestException('존재하지 않는 주문입니다.');
+    }
+
     const requiredAuths = new Set<UserAuthSubEnum>();
-    for (const orderDelivery of orderDeliveryList) {
-      const auth = this.resolveCsCouponAuthority(orderDelivery.orderProductMapping?.product?.type);
+    for (const row of productTypeRows) {
+      const auth = this.resolveCsCouponAuthority(row.type);
       if (!auth) {
         throw new BadRequestException('CS 대상이 아닌 상품 유형입니다.');
       }
@@ -554,6 +567,8 @@ export class CustomerServiceService {
     for (const auth of requiredAuths) {
       await this.authService.authorityValidator(user, auth);
     }
+
+    const [orderDeliveryList, totalCount] = await queryBuilder.getManyAndCount();
 
     const totalPage = Math.ceil(totalCount / take);
 
@@ -653,7 +668,8 @@ export class CustomerServiceService {
     const product = queryBuilder.orderProductMapping.product;
     const partnerCompany = product.partnerCompany;
     const order = queryBuilder.orderProductMapping.order;
-    const user = queryBuilder.orderProductMapping.order.user;
+    // 주의: 파라미터 user(로그인 운영자)와 충돌 방지를 위해 주문자(고객사)는 orderUser 로 둔다.
+    const orderUser = queryBuilder.orderProductMapping.order.user;
 
     // 초이스 쿠폰인 경우 선택된 상품의 brand와 partnerCompany 사용
     const displayBrand = queryBuilder.choiceSelectProduct?.brand ?? product.brand;
@@ -694,8 +710,8 @@ export class CustomerServiceService {
     return {
       orderDeliveryId: queryBuilder.id,
       eventName: order.eventName,
-      businessName: user?.company?.businessName ?? '',
-      personName: user?.personName ?? '',
+      businessName: orderUser?.company?.businessName ?? '',
+      personName: orderUser?.personName ?? '',
       sendContent: sendContent,
       sendTitle: queryBuilder.orderProductMapping.sendTitle ?? null,
       deliveryTarget: decryptedDeliveryTarget ?? '',
@@ -1685,7 +1701,7 @@ export class CustomerServiceService {
    * 마스킹되지 않은 수신정보 조회 API
    * @param getQuery
    */
-  async getUnmaskedDeliveryTarget(getQuery: CustomerServiceUnmaskedDeliveryTargetReqDto) {
+  async getUnmaskedDeliveryTarget(user: ILoginUserInfo, getQuery: CustomerServiceUnmaskedDeliveryTargetReqDto) {
     const { orderDeliveryId } = getQuery;
 
     const orderDelivery = await this.orderDeliveryRepository.findOne({
@@ -1693,11 +1709,20 @@ export class CustomerServiceService {
         id: orderDeliveryId,
         deletedAt: IsNull(),
       },
+      relations: ['orderProductMapping', 'orderProductMapping.product'],
     });
 
     if (!orderDelivery) {
       throw new NotFoundException('존재하지 않는 발송 정보입니다.');
     }
+
+    // 권한검사: 복호화된 수신정보(개인정보)를 반환하므로, 쿠폰 종류(일반/SSG)에 맞는 CS 권한을 요구
+    // (getList 분류 기준과 동일, 그 외 타입은 거부)
+    const requiredAuth = this.resolveCsCouponAuthority(orderDelivery.orderProductMapping?.product?.type);
+    if (!requiredAuth) {
+      throw new BadRequestException('CS 대상이 아닌 상품 유형입니다.');
+    }
+    await this.authService.authorityValidator(user, requiredAuth);
 
     // 이메일 발송 건에서 핀이 발급된 경우: emailReceiverPhone 반환
     // 그 외의 경우: deliveryTarget 반환
