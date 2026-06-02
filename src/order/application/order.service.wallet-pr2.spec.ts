@@ -110,7 +110,12 @@ describe('OrderService deliveryConfirmed wallet PR2-005 gating', () => {
       manager: managedManager,
     };
     service.userRepository = {
-      findOne: jest.fn().mockResolvedValue({ id: 1, authority: 'OPERATION_ADMIN' }),
+      findOne: jest.fn().mockResolvedValue({
+        id: 1,
+        authority: 'OPERATION_ADMIN',
+        status: 'USED',
+        authorityList: null,
+      }),
       createQueryBuilder: jest.fn().mockReturnValue(createQueryBuilder(billingUser)),
       update: jest.fn().mockResolvedValue({ affected: 1 }),
     };

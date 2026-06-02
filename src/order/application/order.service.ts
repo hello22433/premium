@@ -4028,10 +4028,12 @@ export class OrderService {
     return;
   }
 
-  private async getCurrentDeliveryTransitionUser(userId: number): Promise<Pick<UserEntity, 'id' | 'authority'>> {
+  private async getCurrentDeliveryTransitionUser(
+    userId: number,
+  ): Promise<Pick<UserEntity, 'id' | 'authority' | 'status' | 'authorityList'>> {
     const user = await this.userRepository.findOne({
       where: { id: userId },
-      select: ['id', 'authority'],
+      select: ['id', 'authority', 'status', 'authorityList'],
     });
     if (!user) {
       throw new ForbiddenException('유저가 존재하지 않습니다.');
