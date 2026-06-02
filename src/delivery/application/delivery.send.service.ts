@@ -28,6 +28,7 @@ import { EmailType } from '../../mail/domain/email.type';
 import { EmailCertifyExpireDay } from '../../const';
 
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
+import { couponTokenExpiry } from '../../common/utils/expire.util';
 import { OrderEncryptKey } from '../../order_receive/interface/order.encrypt.key';
 import { generateRandomCode } from '../../user_find/domain/code.generate';
 
@@ -224,7 +225,7 @@ export class DeliverySendService {
       id: orderDelivery.id,
       transactionId: orderDelivery.transactionId,
       emailHistoryId: emailSendHistory.id,
-    } as OrderEncryptKey);
+    } as OrderEncryptKey, couponTokenExpiry(orderDelivery.expireAt));
 
     const url = `${this.configService.getOrThrow('EMAIL_RECEIVE_URL')}/${encryptKeyEmail}`;
     let qrCodeImagePath = undefined;

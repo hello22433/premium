@@ -22,6 +22,28 @@ describe('CryptoCipher', () => {
 
       expect(token1).not.toBe(token2);
     });
+
+    test('expiresAt을 전달하면 _exp가 그 시각으로 설정된다', () => {
+      const expiresAt = new Date('2027-01-01T00:00:00.000Z');
+
+      const token = sut.encryptJson({ id: 1 }, expiresAt);
+      const result = sut.decryptJson(token) as Record<string, unknown>;
+
+      expect(result._exp).toBe(expiresAt.getTime());
+    });
+
+    test('expiresAt 미전달 시 _exp 기본값은 약 5년 후이다', () => {
+      const before = sut.decryptJson(sut.encryptJson({ id: 1 })) as Record<string, unknown>;
+
+      const fourYears = Date.now() + 4 * 365 * 24 * 60 * 60 * 1000;
+      const sixYears = Date.now() + 6 * 365 * 24 * 60 * 60 * 1000;
+      expect(before._exp as number).toBeGreaterThan(fourYears);
+      expect(before._exp as number).toBeLessThan(sixYears);
+    });
+
+    test('expiresAt이 유효하지 않은 Date면 BadRequestException을 던진다', () => {
+      expect(() => sut.encryptJson({ id: 1 }, new Date('invalid'))).toThrow(BadRequestException);
+    });
   });
 
   describe('decryptJson', () => {
@@ -36,9 +58,7 @@ describe('CryptoCipher', () => {
     });
 
     test('만료된 토큰을 복호화하면 BadRequestException을 던진다', () => {
-      const pastTime = Date.now() - 181 * 24 * 60 * 60 * 1000 - 1000;
-      jest.spyOn(Date, 'now').mockReturnValueOnce(pastTime);
-      const expiredToken = sut.encryptJson({ id: 1 });
+      const expiredToken = sut.encryptJson({ id: 1 }, new Date(Date.now() - 1000));
 
       expect(() => sut.decryptJson(expiredToken)).toThrow(BadRequestException);
     });

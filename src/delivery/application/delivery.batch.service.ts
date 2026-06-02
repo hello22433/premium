@@ -10,7 +10,7 @@ import * as fsPromises from 'fs/promises';
 import * as QRCode from 'qrcode';
 
 import { applyReplaceCharacters } from '../../common/utils/replace-characters.util';
-import { resolveExpireDays } from '../../common/utils/expire.util';
+import { resolveExpireDays, couponTokenExpiry } from '../../common/utils/expire.util';
 import { OrderEntity } from '../../entity/order.entity';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { OrderProductMappingEntity } from '../../entity/order.product.mapping.entity';
@@ -650,7 +650,7 @@ export class DeliveryBatchService {
     const encryptKey = this.cryptoCipher.encryptJson({
       id: orderDelivery.id,
       transactionId: orderDelivery.transactionId,
-    } as OrderEncryptKey);
+    } as OrderEncryptKey, couponTokenExpiry(orderDelivery.expireAt));
 
     // 6. 발송 채널별 처리
     if (deliveryMethod === IOrderSendMethod.ALIM_TALK) {
@@ -1245,7 +1245,7 @@ export class DeliveryBatchService {
     const encryptKey = this.cryptoCipher.encryptJson({
       id: orderDelivery.id,
       transactionId: orderDelivery.transactionId,
-    } as OrderEncryptKey);
+    } as OrderEncryptKey, couponTokenExpiry(orderDelivery.expireAt));
 
     const smsText = this.buildSmsText(orderDelivery, encryptKey, body, memo, tailText);
 
@@ -1315,7 +1315,7 @@ export class DeliveryBatchService {
     const encryptKey = this.cryptoCipher.encryptJson({
       id: orderDelivery.id,
       transactionId: orderDelivery.transactionId,
-    } as OrderEncryptKey);
+    } as OrderEncryptKey, couponTokenExpiry(orderDelivery.expireAt));
 
     // 알림톡 시도
     let alimTalkSucceeded = false;
@@ -1401,7 +1401,7 @@ export class DeliveryBatchService {
       const encryptKey = this.cryptoCipher.encryptJson({
         id: orderDelivery.id,
         transactionId: orderDelivery.transactionId,
-      } as OrderEncryptKey);
+      } as OrderEncryptKey, couponTokenExpiry(orderDelivery.expireAt));
       const choiceUrl = this.configService.getOrThrow('SMS_CHOICE_URL');
       text = `초이스 쿠폰 받기 링크 : ${choiceUrl}/${encryptKey}`;
     } else if (orderType === IOrderType.SSG) {
@@ -1486,7 +1486,7 @@ export class DeliveryBatchService {
       id: orderDelivery.id,
       transactionId: orderDelivery.transactionId,
       emailHistoryId: emailSendHistory.id,
-    } as OrderEncryptKey);
+    } as OrderEncryptKey, couponTokenExpiry(orderDelivery.expireAt));
 
     const url = `${this.configService.getOrThrow('EMAIL_RECEIVE_URL')}/${encryptKeyEmail}`;
     let qrCodeImagePath = undefined;
@@ -1631,7 +1631,7 @@ export class DeliveryBatchService {
       id: testOrderDeliveryId ?? orderDelivery.id,
       transactionId: orderDelivery.transactionId,
       isTest: !!testOrderDeliveryId,
-    } as OrderEncryptKey);
+    } as OrderEncryptKey, couponTokenExpiry(orderDelivery.expireAt));
 
     // 알림톡 발송
     if (deliveryMethod === IOrderSendMethod.ALIM_TALK) {
@@ -1745,7 +1745,7 @@ export class DeliveryBatchService {
           transactionId: orderDelivery.transactionId,
           emailHistoryId: emailSendHistory.id,
           isTest: !!testOrderDeliveryId,
-        } as OrderEncryptKey);
+        } as OrderEncryptKey, couponTokenExpiry(orderDelivery.expireAt));
 
         const url = `${this.configService.getOrThrow('EMAIL_RECEIVE_URL')}/${encryptKeyEmail}`;
         let qrCodeImagePath = undefined;
@@ -1901,7 +1901,7 @@ export class DeliveryBatchService {
       const encryptKey = this.cryptoCipher.encryptJson({
         id: orderDelivery.id,
         transactionId: orderDelivery.transactionId,
-      } as OrderEncryptKey);
+      } as OrderEncryptKey, couponTokenExpiry(orderDelivery.expireAt));
 
       // 1. 알림톡 발송
       if (orderDelivery.deliveryMethod === IOrderSendMethod.ALIM_TALK) {

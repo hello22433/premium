@@ -1,4 +1,5 @@
 import * as crypto from 'crypto';
+import { addYears } from 'date-fns';
 import { ConfigService } from '@nestjs/config';
 import { BadRequestException, Injectable } from '@nestjs/common';
 
@@ -60,9 +61,13 @@ export class CryptoCipher {
   }
 
   // JSON 데이터를 암호화하는 함수 (AES-128-GCM, v2 토큰)
-  encryptJson(data: object): string {
+  encryptJson(data: object, expiresAt?: Date): string {
     const key = this.configService.getOrThrow('CRYPTO_SECRET_KEY');
-    const exp = Date.now() + 181 * 24 * 60 * 60 * 1000;
+    if (expiresAt && Number.isNaN(expiresAt.getTime())) {
+      throw new BadRequestException('올바른 만료일이 아닙니다.');
+    }
+    // 만료: expiresAt 있으면 그 시각, 없으면 5년 폴백(윤년 안전). 호출부가 쿠폰 유효기간+1일을 전달.
+    const exp = expiresAt ? expiresAt.getTime() : addYears(new Date(), 5).getTime();
     const jsonString = JSON.stringify({ ...data, _exp: exp });
 
     const nonce = crypto.randomBytes(12);
