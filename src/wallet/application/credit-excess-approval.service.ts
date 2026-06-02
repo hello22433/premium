@@ -1,8 +1,9 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
-import { DataSource, EntityManager, IsNull, Repository } from 'typeorm';
+import { DataSource, EntityManager, In, IsNull, Repository } from 'typeorm';
 import { CreditExcessApprovalEntity, CreditExcessApprovalStatus } from '../../entity/credit.excess.approval.entity';
 import { OrderEntity } from '../../entity/order.entity';
+import { UserEntity } from '../../entity/user.entity';
 import { WalletAccountResolverService } from './wallet-account-resolver.service';
 
 /**
@@ -17,9 +18,84 @@ export class CreditExcessApprovalService {
   constructor(
     @InjectRepository(CreditExcessApprovalEntity)
     private readonly approvalRepository: Repository<CreditExcessApprovalEntity>,
+    @InjectRepository(UserEntity)
+    private readonly userRepository: Repository<UserEntity>,
     @InjectDataSource() private readonly dataSource: DataSource,
     private readonly walletAccountResolver: WalletAccountResolverService,
   ) {}
+
+  /**
+   * Step C — 사전 승인 목록 조회 (운영자). status 기본 PENDING. 요청자/승인자 이름·회사명은 user 조인.
+   */
+  async list(query: {
+    status?: CreditExcessApprovalStatus;
+    page?: number;
+    take?: number;
+  }): Promise<{
+    list: Array<{
+      id: string;
+      orderId: number;
+      requesterName: string;
+      requesterCompanyName: string;
+      requestedAt: string;
+      requestedAmount: number;
+      requestedCreditExcessAmount: number;
+      reasonText: string;
+      status: CreditExcessApprovalStatus;
+      approverName: string | null;
+      rejectReason: string | null;
+    }>;
+    totalCount: number;
+    totalPage: number;
+    currentPage: number;
+  }> {
+    const status = query.status ?? CreditExcessApprovalStatus.PENDING;
+    const page = query.page && query.page > 0 ? query.page : 1;
+    const take = query.take && query.take > 0 ? query.take : 10;
+
+    const [rows, totalCount] = await this.approvalRepository.findAndCount({
+      where: { status },
+      order: { requestedAt: 'DESC' },
+      skip: (page - 1) * take,
+      take,
+    });
+
+    // 요청자/승인자 user 조인 (이름 + 회사명). 현재 entity 는 user_id 만 보유.
+    const userIds = [
+      ...new Set(
+        rows.flatMap((r) => [r.requestedBy, r.approvedBy].filter((x): x is number => x != null)),
+      ),
+    ];
+    const users = userIds.length
+      ? await this.userRepository.find({ where: { id: In(userIds) }, relations: ['company'] })
+      : [];
+    const userMap = new Map(users.map((u) => [u.id, u]));
+
+    const list = rows.map((r) => {
+      const requester = userMap.get(r.requestedBy);
+      const approver = r.approvedBy != null ? userMap.get(r.approvedBy) : null;
+      return {
+        id: r.id,
+        orderId: r.orderId,
+        requesterName: requester?.personName ?? '',
+        requesterCompanyName: requester?.company?.businessName ?? '',
+        requestedAt: r.requestedAt.toISOString(),
+        requestedAmount: r.requestedAmount,
+        requestedCreditExcessAmount: r.requestedCreditExcessAmount,
+        reasonText: r.reasonText,
+        status: r.status,
+        approverName: approver?.personName ?? null,
+        rejectReason: r.rejectReason,
+      };
+    });
+
+    return {
+      list,
+      totalCount,
+      totalPage: Math.ceil(totalCount / take),
+      currentPage: page,
+    };
+  }
 
   /**
    * Step B — 사전 승인 요청.
@@ -180,6 +256,7 @@ export class CreditExcessApprovalService {
     approvalId: string,
     orderId: number,
     expectedCreditExcessAmount: number,
+    expectedRequestedAmount: number,
     externalManager?: EntityManager,
   ): Promise<void> {
     const approvalRepo = externalManager
@@ -198,6 +275,13 @@ export class CreditExcessApprovalService {
     if (approval.requestedCreditExcessAmount !== expectedCreditExcessAmount) {
       throw new ForbiddenException(
         `approval amount mismatch (expected=${expectedCreditExcessAmount}, actual=${approval.requestedCreditExcessAmount})`,
+      );
+    }
+    // 총 청구액 대조 — 포인트/예치금 입력으로 확정 시점 총액이 승인 시점과 달라지면 차단.
+    // requestedCreditExcessAmount 만으로는 "승인받은 분배 ≠ 확정 분배" (총액 변화) 를 못 잡음.
+    if (approval.requestedAmount !== expectedRequestedAmount) {
+      throw new ForbiddenException(
+        `approval requestedAmount mismatch (expected=${expectedRequestedAmount}, actual=${approval.requestedAmount})`,
       );
     }
 

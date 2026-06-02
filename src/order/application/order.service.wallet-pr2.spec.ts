@@ -133,6 +133,8 @@ describe('OrderService deliveryConfirmed wallet PR2-005 gating', () => {
       },
     };
     service.walletManagedPredicate = { isWalletManaged: jest.fn().mockResolvedValue(false) };
+    service.pointPolicyService = { evaluate: jest.fn().mockResolvedValue('ALLOW') };
+    service.pointGrantRepository = { find: jest.fn().mockResolvedValue([]) };
     service.walletAccountResolverService = {
       resolveForOrder: jest.fn().mockResolvedValue({
         id: 'wallet-1',
@@ -168,6 +170,24 @@ describe('OrderService deliveryConfirmed wallet PR2-005 gating', () => {
           lineIds: [],
           attemptIds: [],
           walletTransactionIds: [],
+          // lock 후 재계산 결과 — allocate() mock 과 동일 totals (deposit 10000, 초과 0).
+          finalAllocation: {
+            orderId: 1,
+            walletAccountId: 'w-1',
+            grossSettlementAmount: 10000,
+            pointUsedAmount: 0,
+            cardSurchargeBase: 10000,
+            cardSurchargeAmount: 0,
+            payableSettlementAmount: 10000,
+            depositUsedAmount: 10000,
+            creditUsedAmount: 0,
+            creditExcessAmount: 0,
+            cardSurchargeApplied: false,
+            hasDiscount: false,
+            lines: [],
+            pointUsages: [],
+            resourceBreakdown: { DEPOSIT: 10000, CREDIT: 0, CREDIT_EXCESS: 0, POINT: 0 },
+          },
         })),
       ),
     };

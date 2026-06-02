@@ -34,6 +34,12 @@ export interface PersistAllocationResult {
   lineIds: string[];
   attemptIds: string[];
   walletTransactionIds: string[];
+  /**
+   * lock 이후 wallet 잔여 기준으로 재계산된 최종 allocation (deposit/credit/excess 재분배 반영).
+   * 호출자는 응답/legacy mirror 에 *반드시 이 값* 을 써야 한다. 입력 allocation(pre-lock)은
+   * 동시 주문으로 stale 일 수 있어 persisted state 와 어긋난다.
+   */
+  finalAllocation: AllocationResult;
 }
 
 /**
@@ -138,6 +144,7 @@ export class OrderConfirmationWalletService {
           input.creditExcessApprovalId,
           input.orderId,
           a.creditExcessAmount,
+          a.payableSettlementAmount,
           manager,
         );
       }
@@ -284,6 +291,6 @@ export class OrderConfirmationWalletService {
         if (r.transactionId) walletTxIds.push(r.transactionId);
       }
 
-      return { allocationId: alloc.id, lineIds, attemptIds, walletTransactionIds: walletTxIds };
+      return { allocationId: alloc.id, lineIds, attemptIds, walletTransactionIds: walletTxIds, finalAllocation: a };
   }
 }
