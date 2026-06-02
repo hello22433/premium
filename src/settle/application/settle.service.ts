@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, InternalServerErrorException, Logger, NotFoundException } from '@nestjs/common';
 import {
   SettleGetAdminUserListResDto,
   SettleGetMobileListResDto,
@@ -108,6 +108,8 @@ import { ActivityLogEntity } from '../../entity/activity.log.entity';
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { WalletManagedPredicate } from '../../wallet/application/wallet-managed.predicate';
 import { SettleConfirmationWalletService } from '../../wallet/application/settle-confirmation-wallet.service';
+import { WalletAccountResolverService } from '../../wallet/application/wallet-account-resolver.service';
+import { WalletCutoverConfig, WalletCutoverMode } from '../../wallet/config/wallet-cutover.config';
 import { GalaxiaBarcodeLogEntity } from '../../entity/galaxia.barcode.log.entity';
 import { SettleGalaxiaListViewDto } from '../api/dto/settle.galaxia.list.view.dto';
 import { IProductSettleMethod } from '../../product/interface/product.settle.method';
@@ -116,6 +118,8 @@ const SETTLE_BLOCKED_BY_PENDING_DELIVERY_MSG = '미완료 발송 건이 있어 �
 
 @Injectable()
 export class SettleService {
+  private readonly logger = new Logger(SettleService.name);
+
   constructor(
     @InjectRepository(OrderEntity)
     private orderRepository: Repository<OrderEntity>,
@@ -143,6 +147,8 @@ export class SettleService {
     private cryptoCipher: CryptoCipher,
     private readonly walletManagedPredicate: WalletManagedPredicate,
     private readonly settleConfirmationWalletService: SettleConfirmationWalletService,
+    private readonly walletAccountResolverService: WalletAccountResolverService,
+    private readonly walletCutoverConfig: WalletCutoverConfig,
   ) { }
 
   /**
@@ -2622,14 +2628,9 @@ export class SettleService {
     }
 
     // 정산기일 초과 금액 계산
-    let overdueAmount = 0;
-    if (userEntity.orders) {
-      for (const order of userEntity.orders) {
-        if (order.status === 'DELIVERY_COMPLETE' && order.settleStatus === 'UNSETTLE_OVERDUE') {
-          overdueAmount += order.sendAmount;
-        }
-      }
-    }
+    const overdueAmount = (userEntity.orders ?? [])
+      .filter(o => o.status === 'DELIVERY_COMPLETE' && o.settleStatus === 'UNSETTLE_OVERDUE')
+      .reduce((sum, o) => sum + o.sendAmount, 0);
 
     const companyMaximumLimit = userEntity.company?.maximumLimit ?? 0;
 
@@ -2648,17 +2649,72 @@ export class SettleService {
       ? userEntity.company.balance
       : userEntity.balance;
 
-    // 잔여발송한도 = 회사최대한도 + effectiveBalance - 회사전체allSettleAmount
+    // 잔여발송한도 = 회사최대한도 + effectiveBalance - 회사전체allSettleAmount (legacy 계산)
     const remainServiceAmount = companyMaximumLimit + effectiveBalance - totalAllSettleAmount;
 
-    return {
+    const legacyResult: SettleGetRemainServiceAmountResDto = {
       maximumLimit: companyMaximumLimit,
       balance: effectiveBalance,
       serviceAmount: userEntity.serviceAmount,
       overdueAmount,
       allSettleAmount: userEntity.allSettleAmount,
       remainServiceAmount,
-      creditExcessAmount: remainServiceAmount < 0 ? Math.abs(remainServiceAmount) : 0,
+      creditExcessAmount: Math.max(0, -remainServiceAmount),
+    };
+
+    // Wallet Cutover Bundle — 잔여 한도 read 경로 mode 전환.
+    //  - LEGACY: legacy 그대로.
+    //  - SHADOW: legacy 반환 + wallet 계산 비교 로그 (wallet write 없으므로 MIRROR_LAG 예상).
+    //  - WALLET: wallet_account (SoT) 기준 반환. fail-closed (wallet 미존재 시 throw).
+    const mode = this.walletCutoverConfig.pr3SettleMode;
+    if (mode === WalletCutoverMode.LEGACY) {
+      return legacyResult;
+    }
+
+    if (mode === WalletCutoverMode.SHADOW) {
+      try {
+        const walletResult = await this.computeWalletRemainServiceAmount(userEntity, overdueAmount);
+        if (walletResult.remainServiceAmount !== legacyResult.remainServiceAmount) {
+          this.logger.warn(
+            `wallet_shadow_mismatch_remain userId=${userEntity.id} ` +
+              `wallet=${walletResult.remainServiceAmount} legacy=${legacyResult.remainServiceAmount} ` +
+              `delta=${walletResult.remainServiceAmount - legacyResult.remainServiceAmount}`,
+          );
+        }
+      } catch (err) {
+        // shadow 비교 실패는 legacy 응답을 막지 않음
+        this.logger.warn(
+          `wallet_shadow_remain_failed userId=${userEntity.id} err=${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      return legacyResult;
+    }
+
+    // WALLET mode: wallet_account 기준 (SoT 전환)
+    return this.computeWalletRemainServiceAmount(userEntity, overdueAmount);
+  }
+
+  /**
+   * wallet_account (settlement_code 단위) 기준 잔여 서비스 한도 계산.
+   * remainServiceAmount = creditLimit + depositBalance - creditUsedAmount - creditExcessAmount.
+   * serviceAmount/overdueAmount 는 order 파생값이라 legacy 그대로 사용.
+   */
+  private async computeWalletRemainServiceAmount(
+    userEntity: UserEntity,
+    overdueAmount: number,
+  ): Promise<SettleGetRemainServiceAmountResDto> {
+    const wallet = await this.walletAccountResolverService.resolveByUserId(userEntity.id);
+    const remainServiceAmount =
+      wallet.creditLimit + wallet.depositBalance - wallet.creditUsedAmount - wallet.creditExcessAmount;
+
+    return {
+      maximumLimit: wallet.creditLimit,
+      balance: wallet.depositBalance,
+      serviceAmount: userEntity.serviceAmount,
+      overdueAmount,
+      allSettleAmount: wallet.creditUsedAmount + wallet.creditExcessAmount,
+      remainServiceAmount,
+      creditExcessAmount: wallet.creditExcessAmount,
     };
   }
 
