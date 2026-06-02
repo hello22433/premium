@@ -26,6 +26,7 @@ import {
   UserManagementGetCompanyListReqQueryDto,
   UserManagementModifyMaximumLimitReqDto,
   UserManagementChangeEmailReqDto,
+  UserManagementGetWalletHistoryReqQueryDto,
 } from './user.management.req.dto';
 import {
   UserManagementBalanceViewDto,
@@ -35,6 +36,7 @@ import {
   UserManagementGetBalanceHistoryResDto,
   UserManagementGetCompanyListResDto,
   UserManagementGetMaximumLimitHistoryResDto,
+  UserManagementGetWalletHistoryResDto,
 } from './user.management.res.dto';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
 import { AuthUserSuperAdminGuard } from '../../auth/api/auth.user.super-admin.guard';
@@ -203,6 +205,36 @@ export class UserManagementController {
       throw new ForbiddenException('권한이 없습니다.');
     }
     return this.userManagementService.getBalanceHistory(id);
+  }
+
+  @ApiOperation({
+    summary: 'wallet 이력 조회 API (resourceType 별)',
+    description:
+      'wallet_transaction 기반 이력을 resourceType(DEPOSIT/CREDIT/CREDIT_EXCESS/POINT) 별로 조회합니다. ' +
+      '예치금/여신/포인트 탭 분리에 사용합니다. activity_log 기반 /balance/history 와는 별개입니다.',
+  })
+  @ApiBearerAuth()
+  @ApiOkResponse({
+    type: UserManagementGetWalletHistoryResDto,
+    description: '성공적으로 조회한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '해당 계정이 존재하지 않는 경우',
+  })
+  // ====================================
+  @UseGuards(AuthUserAuthorizationGuard)
+  @Get('/user-management/:id/wallet-history')
+  getWalletHistory(
+    @User() user: ILoginUserInfo,
+    @Param('id', ParseIntPipe) id: number,
+    @Query() query: UserManagementGetWalletHistoryReqQueryDto,
+  ) {
+    const isOwner = user.id === id;
+    const isAdmin = user.authority === IUserAuthority.SUPER_ADMIN;
+    if (!isOwner && !isAdmin) {
+      throw new ForbiddenException('권한이 없습니다.');
+    }
+    return this.userManagementService.getWalletHistory(id, query.resourceType);
   }
 
   @ApiOperation({

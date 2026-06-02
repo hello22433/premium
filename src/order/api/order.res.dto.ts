@@ -327,6 +327,21 @@ export class OrderGetSettleGetListResDto extends GetListResDto {
     description: '전체 할인 후 총 금액 (페이지네이션과 무관한 전체 합계)',
   })
   totalDiscountAmount: number;
+
+  @ApiProperty({
+    description: '카드할증 산정 기준액 (할인 후 총액 = totalDiscountAmount)',
+  })
+  cardSurchargeBase: number;
+
+  @ApiProperty({
+    description: '카드할증액 (10원 절사 포함). 미적용 시 0',
+  })
+  cardSurchargeAmount: number;
+
+  @ApiProperty({
+    description: '카드할증 포함 최종 결제 금액 (= cardSurchargeBase + cardSurchargeAmount)',
+  })
+  payableSettlementAmount: number;
 }
 
 export class OrderGetMyOrderHistoryResDto extends OrderDashboardViewDto {}

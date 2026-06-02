@@ -7,6 +7,8 @@ import { DepartmentEntity } from '../../entity/department.entity';
 import { ExternalApiAccountEntity } from '../../entity/external.api.account.entity';
 import { ExternalApiAllowedIpEntity } from '../../entity/external.api.allowed.ip.entity';
 import { ExternalApiSsgRequestEntity } from '../../entity/external.api.ssg.request.entity';
+import { WalletAccountEntity } from '../../entity/wallet.account.entity';
+import { WalletTransactionEntity } from '../../entity/wallet.transaction.entity';
 import { UserManagementService } from './user.management.service';
 import { createMockQueryBuilder } from '../../common/test/mock.query.builder';
 import { Test, TestingModule } from '@nestjs/testing';
@@ -66,6 +68,8 @@ describe('user management service test', () => {
         { provide: getRepositoryToken(ExternalApiAccountEntity), useValue: createMockRepositoryMethod() },
         { provide: getRepositoryToken(ExternalApiAllowedIpEntity), useValue: createMockRepositoryMethod() },
         { provide: getRepositoryToken(ExternalApiSsgRequestEntity), useValue: createMockRepositoryMethod() },
+        { provide: getRepositoryToken(WalletAccountEntity), useValue: createMockRepositoryMethod() },
+        { provide: getRepositoryToken(WalletTransactionEntity), useValue: createMockRepositoryMethod() },
         { provide: 'IMailSend', useValue: { send: jest.fn() } },
         { provide: 'DeliveryAlimTalk', useValue: { send: jest.fn() } },
         { provide: 'ISmsSend', useValue: { send: jest.fn() } },

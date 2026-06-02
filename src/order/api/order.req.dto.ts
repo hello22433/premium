@@ -219,6 +219,14 @@ export class OrderCreateSettleReqDto {
   })
   @IsOptional()
   cardSurchargeApplied?: boolean;
+
+  @ApiProperty({
+    description: '결제수단 (주문 단위) CARD|CASH. 지정 시 cardSurchargeApplied 를 강제 (CARD→true, CASH→false)',
+    required: false,
+  })
+  @IsOptional()
+  @IsIn(['CARD', 'CASH'])
+  settleMethod?: 'CARD' | 'CASH';
 }
 
 export class OrderUpdateSettleReqDto extends OrderCreateSettleReqDto {}

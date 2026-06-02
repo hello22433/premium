@@ -19,8 +19,18 @@ import { dateAtRegexp } from '../../common/domain/date.regexp';
 import { UserManagementUpsertDto } from './dto/user.management.upsert.dto';
 import { IUserAuthority } from '../../user/interface/user.authority';
 import { Type } from 'class-transformer';
+import { WalletResourceType } from '../../wallet/interface/wallet-resource-type';
 
 const MYSQL_INT_MAX = 2_147_483_647;
+
+export class UserManagementGetWalletHistoryReqQueryDto {
+  @ApiProperty({
+    description: '조회 리소스 타입 (DEPOSIT: 예치금, CREDIT/CREDIT_EXCESS: 여신, POINT: 포인트)',
+    enum: WalletResourceType,
+  })
+  @IsEnum(WalletResourceType)
+  resourceType: WalletResourceType;
+}
 
 export class UserManagementGetNameListReqQueryDto {
   @ApiPropertyOptional({
