@@ -2230,6 +2230,14 @@ export class OrderService {
     const hasSettled = (order.settleAmount ?? 0) > 0;
     const effectiveCardSurcharge = hasSettled ? order.cardSurchargeApplied : settleMethod === 'CARD';
 
+    // 카드할증 산정 (백엔드 산식 단일화: 프론트 자체계산 제거)
+    const cardSurchargeBase = totalDiscountAmount;
+    const payableSettlementAmount = applyCardSurcharge(cardSurchargeBase, effectiveCardSurcharge);
+    const cardSurchargeAmount = payableSettlementAmount - cardSurchargeBase;
+
+    // settleMethod: 정산 입력됨(hasSettled)이면 저장된 cardSurchargeApplied 에서 파생, 아니면 회사 정책값
+    const effectiveSettleMethod = hasSettled ? (order.cardSurchargeApplied ? 'CARD' : 'CASH') : settleMethod;
+
     return {
       list: pagedList,
       currentPage: page,
@@ -2237,8 +2245,11 @@ export class OrderService {
       totalPage,
       virtualTotalCount,
       totalDiscountAmount,
-      settleMethod,
+      settleMethod: effectiveSettleMethod,
       cardSurchargeApplied: effectiveCardSurcharge,
+      cardSurchargeBase,
+      cardSurchargeAmount,
+      payableSettlementAmount,
     };
   }
 
@@ -2419,7 +2430,10 @@ export class OrderService {
 
     const order = existingOrderProducts[0].order;
     const defaultCardSurchargeApplied = await this.getDefaultCardSurchargeApplied(order);
-    const cardSurchargeApplied = getBody.cardSurchargeApplied ?? defaultCardSurchargeApplied;
+    // settleMethod(주문 단위) 가 들어오면 cardSurchargeApplied 를 강제. CARD→true, CASH→false.
+    const cardSurchargeApplied = getBody.settleMethod
+      ? getBody.settleMethod === 'CARD'
+      : getBody.cardSurchargeApplied ?? defaultCardSurchargeApplied;
     const newSettleAmount = calculateOrderSettlementAmount(
       { cardSurchargeApplied, orderProductMappings: allOrderProducts },
       cardSurchargeApplied,
@@ -2522,7 +2536,10 @@ export class OrderService {
 
     const order = existingOrderProducts[0].order;
     const defaultCardSurchargeApplied = await this.getDefaultCardSurchargeApplied(order);
-    const cardSurchargeApplied = getBody.cardSurchargeApplied ?? order.cardSurchargeApplied ?? defaultCardSurchargeApplied;
+    // settleMethod(주문 단위) 가 들어오면 cardSurchargeApplied 를 강제. CARD→true, CASH→false.
+    const cardSurchargeApplied = getBody.settleMethod
+      ? getBody.settleMethod === 'CARD'
+      : getBody.cardSurchargeApplied ?? order.cardSurchargeApplied ?? defaultCardSurchargeApplied;
     const newSettleAmount = calculateOrderSettlementAmount(
       { cardSurchargeApplied, orderProductMappings: allOrderProducts },
       cardSurchargeApplied,

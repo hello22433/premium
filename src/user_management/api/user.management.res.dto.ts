@@ -309,6 +309,39 @@ export class UserManagementGetBalanceHistoryResDto {
   list: BalanceHistoryItemDto[];
 }
 
+export class WalletHistoryItemDto {
+  @ApiProperty({ description: '이력 ID (wallet_transaction.id)' })
+  id: string;
+
+  @ApiProperty({ description: '일시 (yyyy-MM-ddTHH:mm:ss)' })
+  createdAt: string;
+
+  @ApiProperty({ description: '리소스 타입 (DEPOSIT | CREDIT | CREDIT_EXCESS | POINT)' })
+  resourceType: string;
+
+  @ApiProperty({
+    description: '거래 유형 (CONFIRM | CANCEL | FAIL_REFUND | DISCARD_REFUND | RESEND_DEDUCT | SETTLE_RELEASE | SETTLE_UNDO | GRANT 등)',
+  })
+  type: string;
+
+  @ApiProperty({ description: '변동액 (차감 음수, 적립/복구 양수)' })
+  amount: number;
+
+  @ApiProperty({ description: '변동 후 해당 리소스 잔액', nullable: true })
+  balanceAfter: number | null;
+
+  @ApiProperty({ description: '주문 ID', nullable: true })
+  orderId: number | null;
+
+  @ApiProperty({ description: '메모/사유', nullable: true })
+  memo: string | null;
+}
+
+export class UserManagementGetWalletHistoryResDto {
+  @ApiProperty({ description: 'wallet_transaction 이력 목록', type: [WalletHistoryItemDto] })
+  list: WalletHistoryItemDto[];
+}
+
 export class UserCompanyViewDto {
   @ApiProperty({ description: '회사 ID (user_company.id)' })
   id: number;

@@ -18,6 +18,9 @@ import { DepartmentEntity } from '../../entity/department.entity';
 import { ExternalApiAccountEntity } from '../../entity/external.api.account.entity';
 import { ExternalApiAllowedIpEntity } from '../../entity/external.api.allowed.ip.entity';
 import { ExternalApiSsgRequestEntity } from '../../entity/external.api.ssg.request.entity';
+import { WalletAccountEntity } from '../../entity/wallet.account.entity';
+import { WalletTransactionEntity } from '../../entity/wallet.transaction.entity';
+import { WalletResourceType } from '../../wallet/interface/wallet-resource-type';
 import { IExternalApiSsgRequestStatus } from '../../external_api/interface/external.api.ssg.request.status';
 import { Repository } from 'typeorm';
 import { Transactional } from 'typeorm-transactional';
@@ -52,6 +55,8 @@ import {
   BalanceHistoryItemDto,
   UserManagementGetMaximumLimitHistoryResDto,
   MaximumLimitHistoryItemDto,
+  UserManagementGetWalletHistoryResDto,
+  WalletHistoryItemDto,
 } from '../api/user.management.res.dto';
 import { UserManagementViewDto } from '../api/dto/user.management.view.dto';
 import { PasswordBcryptEncrypt } from '../../auth/infrastructure/password.bcrypt.encrypt';
@@ -96,6 +101,10 @@ export class UserManagementService {
     private externalApiAllowedIpRepository: Repository<ExternalApiAllowedIpEntity>,
     @InjectRepository(ExternalApiSsgRequestEntity)
     private externalApiSsgRequestRepository: Repository<ExternalApiSsgRequestEntity>,
+    @InjectRepository(WalletAccountEntity)
+    private walletAccountRepository: Repository<WalletAccountEntity>,
+    @InjectRepository(WalletTransactionEntity)
+    private walletTransactionRepository: Repository<WalletTransactionEntity>,
     private passwordEncrypt: PasswordBcryptEncrypt,
     @Inject('IMailSend')
     private readonly mailSendService: IMailSend,
@@ -585,6 +594,52 @@ export class UserManagementService {
       afterBalance: log.requestParams?.afterBalance ?? 0,
       operatorEmail: log.userEmail,
       memo: log.requestParams?.memo || null,
+    }));
+
+    return { list };
+  }
+
+  /**
+   * wallet_transaction 기반 이력 조회 (resourceType 별).
+   * user.settlement_code → wallet_account(ownerType=SETTLEMENT_CODE, ownerId) → wallet_transaction.
+   * 예치금/여신/포인트 이력을 resource_type 으로 분리해 탭별 조회를 지원한다.
+   * activity_log 기반 getBalanceHistory(예치금 충전/수정 운영자 이력)와는 별개 데이터 소스.
+   */
+  async getWalletHistory(
+    userId: number,
+    resourceType: WalletResourceType,
+  ): Promise<UserManagementGetWalletHistoryResDto> {
+    const user = await this.userRepository.findOne({ where: { id: userId } });
+    if (!user) {
+      throw new BadRequestException('존재하지 않는 계정입니다.');
+    }
+
+    // settlement_code 미부여 계정은 wallet_account 가 없으므로 빈 목록 반환
+    if (!user.settlementCode) {
+      return { list: [] };
+    }
+
+    const walletAccount = await this.walletAccountRepository.findOne({
+      where: { ownerType: 'SETTLEMENT_CODE', ownerId: user.settlementCode },
+    });
+    if (!walletAccount) {
+      return { list: [] };
+    }
+
+    const transactions = await this.walletTransactionRepository.find({
+      where: { walletAccountId: walletAccount.id, resourceType },
+      order: { createdAt: 'DESC', id: 'DESC' },
+    });
+
+    const list: WalletHistoryItemDto[] = transactions.map((tx) => ({
+      id: tx.id,
+      createdAt: format(tx.createdAt, DateFormatStr),
+      resourceType: tx.resourceType,
+      type: tx.type,
+      amount: tx.amount,
+      balanceAfter: tx.balanceAfter,
+      orderId: tx.orderId,
+      memo: tx.memo,
     }));
 
     return { list };
