@@ -220,21 +220,24 @@ describe('DeliveryBatchService.reissuePinAndCreateImageIfNeeded - refund ledger 
       );
     });
 
-    it('refund ledger 없음 + state=NONE → 새 선차감 X + warn 로그 (비정상 케이스 감지)', async () => {
+    it('refund ledger 없음 + state=NONE → 새 선차감 X + 보류 재발송 info 로그 (B3 보류=정상)', async () => {
       const od = buildFailNoBarCode();
       refundLedgerService.exists.mockResolvedValue(false);
       ssgInsertStateService.getState.mockResolvedValue(SsgInsertState.NONE);
+      const logSpy = jest.spyOn((sut as any).logger, 'log');
       const warnSpy = jest.spyOn((sut as any).logger, 'warn');
 
       const result = await (sut as any).reissuePinAndCreateImageIfNeeded(od);
 
       expect(result).toBe(true);
-      // ledger row 없음 = 환불 이력 없음 = 선차감하면 이중차감
+      // ledger row 없음 = 보류(최초실패 환불 미생성) = 선차감하면 이중차감 → 선차감 X (불변).
       expect(ssgEventService.selectEventForOrder).not.toHaveBeenCalled();
       expect(ssgEventService.deductEventBalance).not.toHaveBeenCalled();
-      // 정상 흐름이라면 status=FAIL 이면 refundForFail() 이 호출되어 ledger 있어야 함.
-      // 비정상 케이스 — 운영 조사 대상이므로 warn 로그 필수.
-      expect(warnSpy).toHaveBeenCalledWith(
+      // B3: ledger 없음 = 보류 정상 → 구버전 "비정상 warn" 은 info 로 강등.
+      expect(logSpy).toHaveBeenCalledWith(
+        expect.stringContaining('SSG 보류 재발송'),
+      );
+      expect(warnSpy).not.toHaveBeenCalledWith(
         expect.stringContaining('환불 ledger 누락 또는 local SSG 차감 잔존'),
       );
     });
