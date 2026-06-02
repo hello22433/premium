@@ -24,7 +24,7 @@ describe('CryptoCipher', () => {
     });
 
     test('expiresAt을 전달하면 _exp가 그 시각으로 설정된다', () => {
-      const expiresAt = new Date('2027-01-01T00:00:00.000Z');
+      const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 1일 후 (만료 안 됨)
 
       const token = sut.encryptJson({ id: 1 }, expiresAt);
       const result = sut.decryptJson(token) as Record<string, unknown>;
