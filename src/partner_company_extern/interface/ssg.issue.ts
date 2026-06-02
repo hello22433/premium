@@ -50,10 +50,49 @@ export type ISsgCheckOut = {
   };
 };
 
+export type ISsgAmountIn = {
+  eventNo: string;
+  eventSeq: number;
+};
+
+/**
+ * GetSsgAmount.do 원시 응답.
+ * 서버 XML value 태그는 camelCase(eventNo/eventSeq/tryAmt/successAmt/failAmt) 이며 xml2js로 string[] 파싱된다.
+ * (ISsgCheckOut.value 의 snake_case 와 다르므로 복사하지 말 것)
+ */
+export type ISsgAmountOut = {
+  response: {
+    result: {
+      code: string[]; // 코드 값
+      reason: string[]; // 응답 메시지
+    }[];
+    value?: {
+      eventNo: string[];
+      eventSeq: string[];
+      tryAmt: string[]; // 주문시도 총액
+      successAmt: string[]; // 발급성공 총액
+      failAmt: string[]; // 발급실패 총액
+    }[];
+  };
+};
+
+/**
+ * getAmount() 의 가공 결과 (호출 측 반환용).
+ * pendingAmt = tryAmt - successAmt - failAmt (미처리 금액)
+ */
+export type ISsgAmountResult = {
+  tryAmt: number;
+  successAmt: number;
+  failAmt: number;
+  pendingAmt: number;
+};
+
 export interface ISsgIssue {
   generateSsgIssue(): ISsgIssueCode;
 
   issue(obj: ISsgIssueIn): Promise<ISsgIssueOut>;
 
   check(obj: ISsgCheckIn): Promise<ISsgCheckOut>;
+
+  getAmount(obj: ISsgAmountIn): Promise<ISsgAmountResult>;
 }

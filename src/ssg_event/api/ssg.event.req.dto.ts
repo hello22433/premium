@@ -115,6 +115,13 @@ export class SsgEventUpdateAmountReqDto {
   amount: number;
 }
 
+export class SsgEventRemoteAmountReqDto {
+  @ApiProperty({ description: 'event id (ssg_event PK)' })
+  @IsNotEmpty()
+  @IsNumber()
+  id: number;
+}
+
 export class SsgEventGetValidListReqDto {
   @ApiPropertyOptional({ description: '요청한 쿠폰 유효기간(일)으로 필터링' })
   @IsOptional()

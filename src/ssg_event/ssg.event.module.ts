@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { HttpModule } from '@nestjs/axios';
 import { AuthModule } from '../auth/auth.module';
+import { SsgIssue } from '../partner_company_extern/infra/ssg.issue';
 import { SsgEventEntity } from '../entity/ssg.event.entity';
 import { SsgEventController } from './api/ssg.event.controller';
 import { SsgEventService } from './application/ssg.event.service';
@@ -13,6 +15,7 @@ import { ActivityLogModule } from '../activity_log/activity.log.module';
 @Module({
   imports: [
     AuthModule,
+    HttpModule.register({ timeout: 30000 }),
     TypeOrmModule.forFeature([
       OrderProductMappingEntity,
       OrderDeliveryEntity,
@@ -23,7 +26,7 @@ import { ActivityLogModule } from '../activity_log/activity.log.module';
     ActivityLogModule,
   ],
   controllers: [SsgEventController],
-  providers: [SsgEventService],
+  providers: [SsgEventService, { provide: 'ISsgIssue', useClass: SsgIssue }],
   exports: [SsgEventService],
 })
 export class SsgEventModule {}

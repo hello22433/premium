@@ -6,6 +6,7 @@ import { SsgEventService } from '../application/ssg.event.service';
 import {
   SsgEventGetListResDto,
   SsgEventGetValidListResDto,
+  SsgRemoteAmountResDto,
   SsgReservationRangeViewResDto,
 } from './ssg.event.res.dto';
 import {
@@ -13,6 +14,7 @@ import {
   SsgEventExcelDownloadReqDto,
   SsgEventGetListReqDto,
   SsgEventGetValidListReqDto,
+  SsgEventRemoteAmountReqDto,
   SsgEventUpdateAmountReqDto,
   SsgReservationRangeUpdateReqDto,
 } from './ssg.event.req.dto';
@@ -51,6 +53,28 @@ export class SsgEventController {
   async getList(@User() user: ILoginUserInfo, @Query() getQuery: SsgEventGetListReqDto) {
     await this.authService.authorityValidator(user, UserAuthSubEnum.REFILL_SSG);
     return this.ssgEventService.getList(getQuery);
+  }
+
+  @ApiOperation({
+    summary: '신세계 행사 금액 집계 조회 API',
+    description:
+      '신세계 측 GetSsgAmount 를 호출해 행사 단위 주문시도/발급성공/발급실패/미처리 금액을 실시간 조회합니다.',
+  })
+  @ApiOkResponse({
+    type: SsgRemoteAmountResDto,
+    description: '성공적으로 조회한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '존재하지 않는 행사인 경우',
+  })
+  // =====================================
+  @Get('/ssg-event/remote-amount')
+  async getRemoteAmount(
+    @User() user: ILoginUserInfo,
+    @Query() getQuery: SsgEventRemoteAmountReqDto,
+  ): Promise<SsgRemoteAmountResDto> {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.REFILL_SSG);
+    return this.ssgEventService.getRemoteAmount(getQuery.id);
   }
 
   @ApiOperation({
