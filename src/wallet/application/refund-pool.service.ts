@@ -448,11 +448,167 @@ export class RefundPoolService {
     );
     await manager.save(OrderPaymentAllocationEntity, alloc);
 
+    // POINT 대칭 역복구 (HIGH2). alloc 카운터는 위에서 차감됨. 여기서 grant/usage/wallet_tx 를 forward 의
+    // 정확한 역연산으로 되돌린다 — 그래야 재발송 후 다음 재실패 refund 가 skip 을 깨끗이 재도출한다.
+    await this.reversePointRestored(ledger, alloc, reversedByWalletTransactionId, manager);
+    await this.reversePointSkipped(ledger, alloc, reversedByWalletTransactionId, manager);
+
     // ledger 표시
     ledger.reversedAt = new Date();
     ledger.reversedByWalletTransactionId = reversedByWalletTransactionId;
     await manager.save(OrderPaymentRefundEventEntity, ledger);
 
     return { alreadyReversed: false, ledgerId };
+  }
+
+  /**
+   * restored point 역복구 (per-grant). forward 가 남긴 POINT wallet_transaction(grant별 양수 row)에서
+   * grant 별 portion 을 재구성해 point_grant.remaining 재차감 + order_point_usage.restored 역복구 +
+   * POINT 역행 wallet_transaction(resend_deduct cycle) 기록.
+   *
+   * 소스 = wallet_tx (ledger 엔 aggregate refundedPointAmount 만, per-grant 분해 없음).
+   *   key = `${ledger.idempotencyKey}:point:${grantId}` (refund() :319). _ / % 는 LIKE wildcard 라 escape.
+   * (allocation, point_grant) 는 unique 가 없어 usage 가 라인별 다중행일 수 있다 → id ASC greedy 분배.
+   */
+  private async reversePointRestored(
+    ledger: OrderPaymentRefundEventEntity,
+    alloc: OrderPaymentAllocationEntity,
+    reversedByWalletTransactionId: string,
+    manager: EntityManager,
+  ): Promise<void> {
+    if (ledger.refundedPointAmount <= 0) return;
+    const deliveryId = ledger.affectedDeliveryIds?.[0] ?? null;
+
+    const escapeLike = (s: string) => s.replace(/([\\%_])/g, '\\$1');
+    const rows = await manager
+      .getRepository(WalletTransactionEntity)
+      .createQueryBuilder('t')
+      .where('t.orderId = :orderId', { orderId: ledger.orderId })
+      .andWhere('t.orderDeliveryId = :did', { did: deliveryId })
+      .andWhere('t.resourceType = :rt', { rt: WalletResourceType.POINT })
+      .andWhere('t.amount > 0') // 역행/skip(amount<=0) 제외
+      .andWhere("t.idempotencyKey LIKE :pat ESCAPE '\\\\'", {
+        pat: `${escapeLike(ledger.idempotencyKey)}:point:%`,
+      })
+      .getMany();
+
+    const prefix = `${ledger.idempotencyKey}:point:`;
+    let reconstructed = 0;
+    for (const tx of rows) {
+      const grantId = tx.idempotencyKey.slice(prefix.length);
+      const portion = tx.amount; // amount > 0 필터는 getMany WHERE 절에서 이미 보장됨
+      reconstructed += portion;
+
+      // 1) point_grant.remaining_amount -= portion (조건부 UPDATE). forward :220-228 대칭.
+      //    active=0 또는 remaining<portion 이면 affected!=1 → fail-fast (음수/이중역복구/drift 노출).
+      const upd = await manager
+        .createQueryBuilder()
+        .update(PointGrantEntity)
+        .set({ remainingAmount: () => `remaining_amount - ${portion}` })
+        .where('id = :id AND active = 1 AND remaining_amount >= :portion', { id: grantId, portion })
+        .execute();
+      if (upd.affected !== 1) {
+        throw new Error(
+          `reverseRefund POINT 역복구 conflict (grantId=${grantId}, portion=${portion}, ledgerId=${ledger.id}). ` +
+            `active=0 또는 remaining<portion — drift, 수동 점검 필요.`,
+        );
+      }
+      const refreshed = await manager.findOne(PointGrantEntity, { where: { id: grantId } });
+
+      // 2) order_point_usage.restored_amount -= portion. (allocation, grant) 다중행 → id ASC greedy.
+      const usages = await manager.find(OrderPointUsageEntity, {
+        where: { allocationId: alloc.id, pointGrantId: grantId },
+        order: { id: 'ASC' },
+      });
+      let remaining = portion;
+      for (const u of usages) {
+        if (remaining <= 0) break;
+        const dec = Math.min(remaining, u.restoredAmount);
+        if (dec <= 0) continue;
+        u.restoredAmount -= dec;
+        await manager.save(OrderPointUsageEntity, u);
+        remaining -= dec;
+      }
+      if (remaining > 0) {
+        throw new Error(
+          `reverseRefund POINT usage 역복구 부족 (grantId=${grantId}, 남은 ${remaining}/${portion}, ledgerId=${ledger.id}). ` +
+            `Σ usage.restored < portion — drift.`,
+        );
+      }
+
+      // 3) POINT 역행 wallet_transaction 1행 (resendDeduct deposit/credit/excess 와 동일 cycle/type).
+      await manager.save(WalletTransactionEntity, {
+        walletAccountId: alloc.walletAccountId,
+        orderId: ledger.orderId,
+        orderDeliveryId: deliveryId,
+        type: 'RESEND_DEDUCT',
+        resourceType: WalletResourceType.POINT,
+        amount: -portion,
+        balanceAfter: refreshed?.remainingAmount ?? null,
+        memo: `resend_deduct point reverse grant=${grantId}`,
+        idempotencyKey: `resend_deduct:${ledger.orderId}:${deliveryId}:point:${grantId}:${reversedByWalletTransactionId}`,
+      });
+    }
+
+    if (reconstructed !== ledger.refundedPointAmount) {
+      throw new Error(
+        `reverseRefund POINT 재구성 합계 불일치 (Σ ${reconstructed} !== ledger.refundedPointAmount ` +
+          `${ledger.refundedPointAmount}, ledgerId=${ledger.id}). wallet_tx 재구성 누락/중복 — drift.`,
+      );
+    }
+  }
+
+  /**
+   * skipped-expired point 역복구. forward 는 만료 grant 마다 usage.skipped + alloc.skipped 를 동시에 올린다.
+   * reverse 가 alloc 만 내리면 usageRemaining = used - restored - skipped 가 영구 understate 되어, 재발송으로
+   * deduction 이 복원됐는데도 만료분이 "해소됨"으로 남아 다음 재실패 refund 가 포인트 대신 deposit/credit 을
+   * 환불하거나 invariant 가 깨진다. resend = 원 deduction 복원 → usageRemaining 은 used 로 복귀해야 한다.
+   *
+   * skip wallet_tx 는 line 당 1행 amount=0 memo total 뿐이라 grant/usage 분해가 없다 → grant scope 불가.
+   * allocation usage 중 skippedExpiredAmount>0 행에 합계(ledger.pointSkippedExpiredAmount)를 id ASC greedy 분배.
+   * (alloc.pointSkippedExpiredAmount 차감은 runReverseRefund 의 subtractRestored 에서 이미 처리됨.)
+   */
+  private async reversePointSkipped(
+    ledger: OrderPaymentRefundEventEntity,
+    alloc: OrderPaymentAllocationEntity,
+    reversedByWalletTransactionId: string,
+    manager: EntityManager,
+  ): Promise<void> {
+    const skipped = ledger.pointSkippedExpiredAmount;
+    if (skipped <= 0) return;
+    const deliveryId = ledger.affectedDeliveryIds?.[0] ?? null;
+
+    const usages = await manager.find(OrderPointUsageEntity, {
+      where: { allocationId: alloc.id },
+      order: { id: 'ASC' },
+    });
+    let remaining = skipped;
+    for (const u of usages) {
+      if (remaining <= 0) break;
+      const dec = Math.min(remaining, u.skippedExpiredAmount);
+      if (dec <= 0) continue;
+      u.skippedExpiredAmount -= dec;
+      await manager.save(OrderPointUsageEntity, u);
+      remaining -= dec;
+    }
+    if (remaining > 0) {
+      throw new Error(
+        `reverseRefund POINT skip 역복구 부족 (남은 ${remaining}/${skipped}, ledgerId=${ledger.id}). ` +
+          `Σ usage.skipped < ledger — drift.`,
+      );
+    }
+
+    // audit row (forward refund() :323-333 parity). amount=0, balance 무영향.
+    await manager.save(WalletTransactionEntity, {
+      walletAccountId: alloc.walletAccountId,
+      orderId: ledger.orderId,
+      orderDeliveryId: deliveryId,
+      type: 'RESEND_DEDUCT',
+      resourceType: WalletResourceType.POINT,
+      amount: 0,
+      balanceAfter: null,
+      memo: `expired_point_reskip=${skipped}`,
+      idempotencyKey: `resend_deduct:${ledger.orderId}:${deliveryId}:point_skipped_expired:${reversedByWalletTransactionId}`,
+    });
   }
 }
