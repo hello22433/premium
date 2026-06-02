@@ -39,6 +39,17 @@ export class DaouXmlParser {
     }
   }
 
+  private static readonly EXTRACT_KEYS = new Set<keyof DaouXmlResponse>([
+    'RT',
+    'RTMSG',
+    'NO_CPN',
+    'TS_ID',
+    'CPN_STATUS',
+    'CPN_END',
+    'USE_DATE',
+    'USE_STORE',
+  ]);
+
   /**
    * 재귀적으로 XML 객체를 순회하며 필요한 값 추출
    * Java의 daouXmlParser 재귀 로직 구현
@@ -48,28 +59,17 @@ export class DaouXmlParser {
       return;
     }
 
-    // 객체의 모든 키 순회
     for (const key in obj) {
       const value = obj[key];
 
-      // 원하는 키를 찾으면 response에 저장
-      if (key === 'RT' && value && typeof value === 'string') {
-        response.RT = value.trim();
-      } else if (key === 'RTMSG' && value && typeof value === 'string') {
-        response.RTMSG = value.trim();
-      } else if (key === 'NO_CPN' && value && typeof value === 'string') {
-        response.NO_CPN = value.trim();
-      } else if (key === 'TS_ID' && value && typeof value === 'string') {
-        response.TS_ID = value.trim();
-      } else if (key === 'CPN_STATUS' && value && typeof value === 'string') {
-        response.CPN_STATUS = value.trim();
-      } else if (key === 'USE_DATE' && value && typeof value === 'string') {
-        response.USE_DATE = value.trim();
-      } else if (key === 'USE_STORE' && value && typeof value === 'string') {
-        response.USE_STORE = value.trim();
+      if (
+        DaouXmlParser.EXTRACT_KEYS.has(key as keyof DaouXmlResponse) &&
+        value &&
+        typeof value === 'string'
+      ) {
+        response[key as keyof DaouXmlResponse] = value.trim();
       }
 
-      // 값이 객체이거나 배열이면 재귀 호출
       if (typeof value === 'object') {
         this.extractValues(value, response);
       }

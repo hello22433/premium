@@ -513,6 +513,7 @@ describe('OrderService deliveryConfirmed settlement amount', () => {
       id: 77,
       userId: 1,
       clientUserId: 2,
+      operationUserId: 1,
       eventName: 'event',
       type: IOrderType.GENERAL,
       status: IOrderStatus.REVIEW_COMPLETE,
@@ -552,6 +553,12 @@ describe('OrderService deliveryConfirmed settlement amount', () => {
       save: jest.fn().mockResolvedValue(order),
     };
     service.userRepository = {
+      findOne: jest.fn().mockResolvedValue({
+        id: 1,
+        authority: 'OPERATION_ADMIN',
+        status: 'USED',
+        authorityList: null,
+      }),
       createQueryBuilder: jest.fn().mockReturnValue(createQueryBuilder(billingUser)),
       update: jest.fn().mockResolvedValue({ affected: 1 }),
     };

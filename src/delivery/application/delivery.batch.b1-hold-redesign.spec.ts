@@ -68,6 +68,7 @@ describe('DeliveryBatchService - B1 settlement-hold redesign', () => {
     sendEmail: jest.Mock;
   };
   let partnerCompanyExternService: jest.Mocked<PartnerCompanyExternService>;
+  let ssgInsertStateService: { getState: jest.Mock };
 
   // smsSend.send 가 status 를 직접 바꾸지 않으므로 markSend* mock 으로 status 를 세팅한다.
   const wireStatusMarkers = () => {
@@ -160,6 +161,8 @@ describe('DeliveryBatchService - B1 settlement-hold redesign', () => {
       }),
     } as unknown as jest.Mocked<PartnerCompanyExternService>;
 
+    ssgInsertStateService = { getState: jest.fn().mockResolvedValue(SsgInsertState.NONE) };
+
     const cryptoCipher = {
       safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01012345678'),
       decryptDeliveryTarget: jest.fn().mockReturnValue('01012345678'),
@@ -199,7 +202,7 @@ describe('DeliveryBatchService - B1 settlement-hold redesign', () => {
         { provide: UserManagementService, useValue: userManagementService },
         { provide: DeliverySendService, useValue: deliverySendService },
         { provide: RefundLedgerService, useValue: refundLedgerService },
-        { provide: SsgInsertStateService, useValue: { getState: jest.fn().mockResolvedValue(SsgInsertState.NONE) } },
+        { provide: SsgInsertStateService, useValue: ssgInsertStateService },
         { provide: SsgRefundResolverService, useValue: { resolveAndRefundIfNeeded: jest.fn().mockResolvedValue('RESTORED') } },
         { provide: WalletManagedPredicate, useValue: walletManagedPredicate },
         { provide: RefundPoolService, useValue: { refund: jest.fn(), reverseRefund: jest.fn() } },
@@ -229,15 +232,44 @@ describe('DeliveryBatchService - B1 settlement-hold redesign', () => {
       expect(refundLedgerService.claim).not.toHaveBeenCalled();
     });
 
-    it('SSG 최초 발송 실패 → refundForFail 호출 (기존 유지, ledger.claim 됨)', async () => {
+    it('SSG 최초 발송 실패 + state=NONE → refundForFail 미호출 (B3 보류)', async () => {
       const od = buildDelivery({ status: IOrderDeliveryStatus.WAIT, ssgEventId: 36 });
       (od.orderProductMapping.order as any).type = IOrderType.SSG;
+      ssgInsertStateService.getState.mockResolvedValue(SsgInsertState.NONE);
       deliverySendService.sendSms.mockImplementation(async (d: OrderDeliveryEntity) => {
         d.status = IOrderDeliveryStatus.FAIL;
       });
 
       await (sut as any).processOneDeliveryInternal(od);
 
+      // B3: 행사잔액 주문시점 차감 → 최초실패 보류(고객+행사 유지). refundForFail 미호출.
+      expect(refundLedgerService.claim).not.toHaveBeenCalled();
+    });
+
+    it('SSG 최초 발송 실패 + state=CONFIRMED → refundForFail 미호출 (B3 보류, PIN 등록됨 메시지만 실패)', async () => {
+      const od = buildDelivery({ status: IOrderDeliveryStatus.WAIT, ssgEventId: 36 });
+      (od.orderProductMapping.order as any).type = IOrderType.SSG;
+      ssgInsertStateService.getState.mockResolvedValue(SsgInsertState.CONFIRMED);
+      deliverySendService.sendSms.mockImplementation(async (d: OrderDeliveryEntity) => {
+        d.status = IOrderDeliveryStatus.FAIL;
+      });
+
+      await (sut as any).processOneDeliveryInternal(od);
+
+      expect(refundLedgerService.claim).not.toHaveBeenCalled();
+    });
+
+    it('SSG 최초 발송 실패 + state=ATTEMPTED → refundForFail 호출 (보류 제외, resolver 경로)', async () => {
+      const od = buildDelivery({ status: IOrderDeliveryStatus.WAIT, ssgEventId: 36 });
+      (od.orderProductMapping.order as any).type = IOrderType.SSG;
+      ssgInsertStateService.getState.mockResolvedValue(SsgInsertState.ATTEMPTED);
+      deliverySendService.sendSms.mockImplementation(async (d: OrderDeliveryEntity) => {
+        d.status = IOrderDeliveryStatus.FAIL;
+      });
+
+      await (sut as any).processOneDeliveryInternal(od);
+
+      // ATTEMPTED(INSERT 응답 미확정)는 보류 제외 → 기존 refundForFail→resolver.
       expect(refundLedgerService.claim).toHaveBeenCalled();
     });
 
@@ -282,6 +314,26 @@ describe('DeliveryBatchService - B1 settlement-hold redesign', () => {
         }),
       );
       // 환불 미생성 상태이므로 reverse(=ledger release) 는 일어나면 안 됨
+      expect(refundLedgerService.release).not.toHaveBeenCalled();
+    });
+
+    it('SSG held wallet 재발송(FAIL+exists=false+wallet) → RESEND attempt slot 발급 (B3)', async () => {
+      const od = buildDelivery({ status: IOrderDeliveryStatus.FAIL, ssgEventId: 36 });
+      (od.orderProductMapping.order as any).type = IOrderType.SSG;
+      refundLedgerService.exists.mockResolvedValue(false);
+      walletManagedPredicate.isWalletManaged.mockResolvedValue(true);
+      ssgInsertStateService.getState.mockResolvedValue(SsgInsertState.NONE);
+
+      await sut.oneSend(od);
+
+      // B3: SSG held resend(wallet)도 slot 발급 — 미발급 시 cycle 이 INITIAL 로 떨어져 환불 누락.
+      expect(attemptRepository.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          attemptType: OrderDeliveryAttemptType.RESEND,
+          status: OrderDeliveryAttemptStatus.DEDUCTED,
+        }),
+      );
+      // 보류라 reverse(ledger release) 미실행
       expect(refundLedgerService.release).not.toHaveBeenCalled();
     });
 

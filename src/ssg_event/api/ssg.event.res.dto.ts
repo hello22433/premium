@@ -24,6 +24,20 @@ export class SsgEventGetValidListResDto {
   list: SsgEventViewDto[];
 }
 
+export class SsgRemoteAmountResDto {
+  @ApiProperty({ description: '주문시도 총액 (CUST_INFO 전체 SETAMT 합)' })
+  tryAmt: number;
+
+  @ApiProperty({ description: '발급성공 총액 (처리구분01 + 결과00)' })
+  successAmt: number;
+
+  @ApiProperty({ description: '발급실패 총액 (처리구분01 + 결과≠00)' })
+  failAmt: number;
+
+  @ApiProperty({ description: '미처리 총액 (tryAmt - successAmt - failAmt)' })
+  pendingAmt: number;
+}
+
 export class SsgReservationRangeViewResDto {
   @ApiProperty({
     description: 'SSG 예약발송 가능 시작일 (yyyy-MM-dd). 미설정 시 null',

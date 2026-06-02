@@ -5,7 +5,17 @@ import { randomInt } from 'crypto';
 import { firstValueFrom } from 'rxjs';
 import * as iconv from 'iconv-lite';
 import { Parser } from 'xml2js';
-import { ISsgCheckIn, ISsgCheckOut, ISsgIssue, ISsgIssueCode, ISsgIssueIn, ISsgIssueOut } from '../interface/ssg.issue';
+import {
+  ISsgAmountIn,
+  ISsgAmountOut,
+  ISsgAmountResult,
+  ISsgCheckIn,
+  ISsgCheckOut,
+  ISsgIssue,
+  ISsgIssueCode,
+  ISsgIssueIn,
+  ISsgIssueOut,
+} from '../interface/ssg.issue';
 
 /**
  * SSG 조회 API가 정상 응답했지만 PIN이 미등록(code ≠ 1001)인 경우 전용 에러
@@ -188,5 +198,52 @@ export class SsgIssue implements ISsgIssue {
       throw new SsgCheckNotFoundError(reason ?? `SSG 조회 실패 (code: ${code ?? 'null'})`);
     }
     return resultToJson;
+  }
+
+  /**
+   * GetSsgAmount.do — 행사 단위 주문시도/발급성공/발급실패 금액 집계 조회.
+   *
+   * check()와 동일 패턴(성공코드 1001)이나 응답은 전부 숫자라 인코딩 복원(fixMojibake) 불필요.
+   * 주문이 0건인 행사는 서버가 code=8021(데이터 없음)을 반환하므로 에러가 아닌 0집계로 정규화한다.
+   * 그 외 1001이 아닌 코드만 실패로 throw 한다.
+   */
+  async getAmount(obj: ISsgAmountIn): Promise<ISsgAmountResult> {
+    const data = new URLSearchParams({
+      event_no: obj.eventNo,
+      event_seq: String(obj.eventSeq),
+    });
+
+    const sendUrl = `${this.url}/GetSsgAmount.do?${data.toString()}`;
+    this.logger.log(sendUrl);
+
+    const response = await firstValueFrom(this.httpService.get(sendUrl));
+    this.logger.log(response.data);
+
+    const resultToJson = (await this.parser.parseStringPromise(response.data)) as unknown as ISsgAmountOut;
+    this.logger.log(resultToJson);
+
+    const result = resultToJson?.response?.result?.[0];
+    const code = result?.code?.[0];
+    const reason = result?.reason?.[0];
+
+    // 해당 행사에 주문이 0건이면 서버가 8021(데이터 없음) 반환 → 0집계 정상 처리
+    if (code === '8021') {
+      return { tryAmt: 0, successAmt: 0, failAmt: 0, pendingAmt: 0 };
+    }
+    if (code !== '1001') {
+      throw new Error(reason ?? `SSG 금액 집계 조회 실패 (code: ${code ?? 'null'})`);
+    }
+
+    const value = resultToJson.response.value?.[0];
+    const tryAmt = Number(value?.tryAmt?.[0] ?? 0) || 0;
+    const successAmt = Number(value?.successAmt?.[0] ?? 0) || 0;
+    const failAmt = Number(value?.failAmt?.[0] ?? 0) || 0;
+
+    return {
+      tryAmt,
+      successAmt,
+      failAmt,
+      pendingAmt: tryAmt - successAmt - failAmt,
+    };
   }
 }
