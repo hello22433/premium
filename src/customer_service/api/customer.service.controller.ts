@@ -219,9 +219,11 @@ export class CustomerServiceController {
 
   @ApiOperation({ description: '개별 쿠폰 상태 실시간 갱신 API' })
   @ApiOkResponse({ description: '갱신 성공 시 최신 couponStatus 반환' })
+  // 운영관리자 이상(SUPER_ADMIN·OPERATION_ADMIN) 전용 — 고객사(CORPORATE_ADMIN) 접근 차단
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @Get('/customer-service/coupon/refresh')
-  refreshCoupon(@Query() getQuery: CustomerServiceCouponRefreshReqDto) {
-    return this.customerServiceService.refreshCoupon(getQuery);
+  refreshCoupon(@User() user: ILoginUserInfo, @Query() getQuery: CustomerServiceCouponRefreshReqDto) {
+    return this.customerServiceService.refreshCoupon(user, getQuery);
   }
 
   @ApiOperation({
@@ -231,9 +233,11 @@ export class CustomerServiceController {
     description: '성공적으로 return 한 경우',
   })
   // ===============================================
+  // 운영관리자 이상(SUPER_ADMIN·OPERATION_ADMIN) 전용 — 고객사(CORPORATE_ADMIN) 접근 차단
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @Post('/customer-service/re-send')
-  reSend(@Body() getBody: CustomerServiceReSendReqDto) {
-    return this.customerServiceService.reSend(getBody);
+  reSend(@User() user: ILoginUserInfo, @Body() getBody: CustomerServiceReSendReqDto) {
+    return this.customerServiceService.reSend(user, getBody);
   }
 
   @ApiOperation({

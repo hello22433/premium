@@ -719,7 +719,7 @@ export class CustomerServiceService {
    * partner_company_extern_history.service.resendFailedDelivery 와 동일 패턴.
    */
   @Transactional()
-  async reSend(getBody: CustomerServiceReSendReqDto) {
+  async reSend(user: ILoginUserInfo, getBody: CustomerServiceReSendReqDto) {
     const { orderDeliveryId } = getBody;
 
     const orderDelivery = await this.orderDeliveryRepository
@@ -741,6 +741,13 @@ export class CustomerServiceService {
     if (!orderDelivery) {
       throw new BadRequestException('주문 발송가 존재하지 않습니다.');
     }
+
+    // 권한검사: 쿠폰 종류(일반/SSG)에 맞는 CS 권한 (getList 분류 기준과 동일, 그 외 타입은 거부)
+    const requiredAuth = this.resolveCsCouponAuthority(orderDelivery.orderProductMapping?.product?.type);
+    if (!requiredAuth) {
+      throw new BadRequestException('CS 대상이 아닌 상품 유형입니다.');
+    }
+    await this.authService.authorityValidator(user, requiredAuth);
 
     if (orderDelivery.deliveryTarget === '-') {
       throw new BadRequestException('파기된 발송 정보입니다.');
@@ -928,7 +935,7 @@ export class CustomerServiceService {
     }
   }
 
-  async refreshCoupon(getQuery: CustomerServiceCouponRefreshReqDto) {
+  async refreshCoupon(user: ILoginUserInfo, getQuery: CustomerServiceCouponRefreshReqDto) {
     const { orderDeliveryId } = getQuery;
 
     const orderDelivery = await this.orderDeliveryRepository
@@ -944,6 +951,13 @@ export class CustomerServiceService {
     if (!orderDelivery) {
       throw new BadRequestException('존재하지 않는 orderDelivery 입니다.');
     }
+
+    // 권한검사: 쿠폰 종류(일반/SSG)에 맞는 CS 권한 (getList 분류 기준과 동일, 그 외 타입은 거부)
+    const requiredAuth = this.resolveCsCouponAuthority(orderDelivery.orderProductMapping?.product?.type);
+    if (!requiredAuth) {
+      throw new BadRequestException('CS 대상이 아닌 상품 유형입니다.');
+    }
+    await this.authService.authorityValidator(user, requiredAuth);
 
     // 실시간 외부사 조회 → couponStatus 갱신
     const updated = await this.partnerCompanyExternService.refreshCouponStatus(orderDelivery);
@@ -1351,7 +1365,7 @@ export class CustomerServiceService {
         const resendDto = new CustomerServiceReSendReqDto();
         resendDto.orderDeliveryId = map.orderDeliveryId;
 
-        await this.reSend(resendDto);
+        await this.reSend(map.user, resendDto);
 
         afterChange = encryptedNewTarget;
         break;
