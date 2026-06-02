@@ -156,6 +156,17 @@ export class SettleService {
     };
   }
 
+  /** 엑셀 다운로드 기간 상한 가드 (최대 3년). 초과 시 400. */
+  private assertExcelRangeWithinYears(startAt: string, endAt: string, maxYears = 3): void {
+    const start = new Date(startAt);
+    const end = new Date(endAt);
+    const limit = new Date(start);
+    limit.setFullYear(limit.getFullYear() + maxYears);
+    if (end > limit) {
+      throw new BadRequestException(`엑셀 다운로드 기간은 최대 ${maxYears}년까지 가능합니다.`);
+    }
+  }
+
   private getGalaxiaSettlementTargetAmount(
     settleMethod: IProductSettleMethod,
     usedAmount: number,
@@ -809,128 +820,70 @@ export class SettleService {
     const defaultDate = this.applyDefaultDateRange(getQuery.startAt, getQuery.endAt);
     const { personName, businessName, eventName, downloadReason, searchKeyword } = getQuery;
     const { startAt, endAt } = defaultDate;
+    this.assertExcelRangeWithinYears(startAt, endAt);
 
     const now = new Date();
     const nowString = format(now, 'yyyyMMdd');
 
-    let queryBuilder = this.orderRepository
-      .createQueryBuilder('order')
-      .innerJoinAndSelect('order.user', 'user')
-      .leftJoinAndSelect('user.company', 'userCompany')
-      .leftJoinAndSelect('order.clientUser', 'clientUser')
-      .leftJoinAndSelect('clientUser.company', 'clientCompany')
-      .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
-      .innerJoinAndSelect('orderProductMappings.product', 'product')
-      .innerJoinAndSelect('product.brand', 'brand')
-      .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
-      .where('order.status IN (:...status)', { status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'] });
+    // 동일 필터를 id수집 QB와 graph QB 양쪽에 동일 적용하기 위한 빌더
+    const applyMobileFilters = <T extends SelectQueryBuilder<any>>(qb: T): T => {
+      qb.where('order.status IN (:...status)', { status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'] });
 
-    if (searchKeyword) {
-      queryBuilder = queryBuilder.andWhere(
-        new Brackets((qb) => {
-          qb.where('COALESCE(order.snapshotBusinessName, userCompany.businessName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
-            .orWhere('COALESCE(order.snapshotClientBusinessName, clientCompany.businessName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
-            .orWhere('COALESCE(order.snapshotPersonName, user.personName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
-            .orWhere('COALESCE(order.snapshotClientPersonName, clientUser.personName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
-            .orWhere('order.eventName LIKE :keyword', { keyword: `%${searchKeyword}%` });
-        }),
-      );
-    }
-
-    if (personName) {
-      queryBuilder = queryBuilder.andWhere(
-        '(COALESCE(order.snapshotPersonName, user.personName) LIKE :personName OR COALESCE(order.snapshotClientPersonName, clientUser.personName) LIKE :personName)',
-        { personName: `%${personName}%` },
-      );
-    }
-
-    if (eventName) {
-      queryBuilder = queryBuilder.andWhere('order.eventName LIKE :eventName', {
-        eventName: `%${eventName}%`,
-      });
-    }
-
-    if (businessName) {
-      queryBuilder = queryBuilder.andWhere(
-        '(COALESCE(order.snapshotBusinessName, userCompany.businessName) LIKE :businessName OR COALESCE(order.snapshotClientBusinessName, clientCompany.businessName) LIKE :businessName)',
-        { businessName: `%${businessName}%` },
-      );
-    }
-
-    queryBuilder = QueryBuilderDateCondition(queryBuilder, 'order', 'createdAt', startAt, endAt);
-    queryBuilder = queryBuilder.orderBy('order.id', 'DESC');
-
-    const orderList = await queryBuilder.getMany();
-
-    const workbook = new ExcelJS.Workbook();
-    const sheet = workbook.addWorksheet(`sheet1`);
-
-    const resultList: SettleMobileListViewDto[] = [];
-
-    // TODO 카드 수수료, mms 수수료
-    const cardFeePercent = 0;
-    const mmsFee = 0;
-
-    for (const order of orderList) {
-      for (const orderProductMapping of order.orderProductMappings!) {
-        const deliveryAmount = orderProductMapping.amount;
-        let tradeAmount = 0;
-        let discardAmount = 0;
-        let tradeRate = 0;
-        let refundAmount = 0;
-        let unExchangedAmount = 0;
-        let unExchangedPrice = 0;
-        let refundPrice = 0;
-        let cardFee = 0;
-        let deliveryFee = 0;
-        let profitAmount = 0;
-        let profitRate = 0;
-
-        for (const orderDelivery of orderProductMapping.orderDeliveries!) {
-          if (orderDelivery.couponStatus === 'USED') {
-            tradeAmount++;
-          }
-          if (orderDelivery.couponStatus === 'NOT_USED') {
-            unExchangedAmount++;
-          }
-          if (orderDelivery.couponStatus === 'CANCEL') {
-            discardAmount++;
-            refundAmount++;
-          }
-        }
-        const totalAmount = deliveryAmount * orderProductMapping.product.price;
-        tradeRate = +((tradeAmount / deliveryAmount) * 100).toFixed(1);
-        unExchangedPrice = orderProductMapping.product.price * unExchangedAmount;
-        refundPrice = orderProductMapping.product.price * refundAmount;
-        cardFee = totalAmount * (cardFeePercent / 100);
-        deliveryFee = totalAmount * (mmsFee / 100);
-        profitAmount = unExchangedPrice - (deliveryFee + cardFee);
-        profitRate = +((profitAmount / totalAmount) * 100).toFixed(1);
-
-        resultList.push({
-          id: order.id,
-          businessName: order.clientUser?.company?.businessName ?? order.user!.company?.businessName ?? '',
-          productClassification: orderProductMapping.product.classification?.classification ?? '',
-          brandNameKorean: orderProductMapping.product.brand!.nameKorean,
-          brandNameEnglish: orderProductMapping.product.brand!.nameEnglish,
-          personName: order.clientUser?.personName ?? order.user!.personName,
-          eventName: order.eventName,
-          productName: orderProductMapping.product.name,
-          deliveryAmount: deliveryAmount,
-          tradeAmount: tradeAmount,
-          discardAmount: discardAmount,
-          tradeRate: tradeRate,
-          refundAmount: refundAmount,
-          deliveryPrice: order.sendAmount,
-          unExchangedPrice: unExchangedPrice,
-          refundPrice: refundPrice,
-          cardFee: cardFee,
-          deliveryFee: deliveryFee,
-          profitAmount: profitAmount,
-          profitRate: profitRate,
-        });
+      if (searchKeyword) {
+        qb.andWhere(
+          new Brackets((b) => {
+            b.where('COALESCE(order.snapshotBusinessName, userCompany.businessName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
+              .orWhere('COALESCE(order.snapshotClientBusinessName, clientCompany.businessName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
+              .orWhere('COALESCE(order.snapshotPersonName, user.personName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
+              .orWhere('COALESCE(order.snapshotClientPersonName, clientUser.personName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
+              .orWhere('order.eventName LIKE :keyword', { keyword: `%${searchKeyword}%` });
+          }),
+        );
       }
-    }
+
+      if (personName) {
+        qb.andWhere(
+          '(COALESCE(order.snapshotPersonName, user.personName) LIKE :personName OR COALESCE(order.snapshotClientPersonName, clientUser.personName) LIKE :personName)',
+          { personName: `%${personName}%` },
+        );
+      }
+
+      if (eventName) {
+        qb.andWhere('order.eventName LIKE :eventName', { eventName: `%${eventName}%` });
+      }
+
+      if (businessName) {
+        qb.andWhere(
+          '(COALESCE(order.snapshotBusinessName, userCompany.businessName) LIKE :businessName OR COALESCE(order.snapshotClientBusinessName, clientCompany.businessName) LIKE :businessName)',
+          { businessName: `%${businessName}%` },
+        );
+      }
+
+      QueryBuilderDateCondition(qb, 'order', 'createdAt', startAt, endAt);
+      return qb;
+    };
+
+    // 1) id 수집 (경량: select 없이 join만, 부모 order.id distinct)
+    let idQueryBuilder = this.orderRepository
+      .createQueryBuilder('order')
+      .innerJoin('order.user', 'user')
+      .leftJoin('user.company', 'userCompany')
+      .leftJoin('order.clientUser', 'clientUser')
+      .leftJoin('clientUser.company', 'clientCompany')
+      .innerJoin('order.orderProductMappings', 'orderProductMappings')
+      .innerJoin('orderProductMappings.product', 'product')
+      .innerJoin('product.brand', 'brand')
+      .innerJoin('orderProductMappings.orderDeliveries', 'orderDeliveries');
+    idQueryBuilder = applyMobileFilters(idQueryBuilder);
+    idQueryBuilder = idQueryBuilder.select('order.id', 'id').distinct(true).orderBy('order.id', 'DESC');
+    const idRows = await idQueryBuilder.getRawMany();
+    const ids = idRows.map((r) => Number(r.id));
+
+    const fileName = `수익률_모바일_리스트_${nowString}.xlsx`;
+    const filePath = join(process.cwd(), '.', 'public', fileName);
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({ filename: filePath });
+    const sheet = workbook.addWorksheet(`sheet1`);
 
     sheet.columns = [
       { header: '번호', key: 'id', width: 10 },
@@ -954,36 +907,103 @@ export class SettleService {
       { header: '수익률', key: 'profitRate', width: 20 },
     ];
 
+    // TODO 카드 수수료, mms 수수료
+    const cardFeePercent = 0;
+    const mmsFee = 0;
+
+    // 2) 청크 단위로 graph QB 로드 (ids 순서 보존), 행 즉시 commit
+    const CHUNK = 500;
     let id = 1;
-    for (const result of resultList) {
-      sheet.addRow({
-        id: id,
-        businessName: result.businessName,
-        productClassification: result.productClassification,
-        brandNameKorean: result.brandNameKorean,
-        personName: result.personName,
-        eventName: result.eventName,
-        productName: result.productName,
-        deliveryAmount: result.deliveryAmount,
-        tradeAmount: result.tradeAmount,
-        discardAmount: result.discardAmount,
-        tradeRate: result.tradeRate,
-        refundAmount: result.refundAmount,
-        deliveryPrice: result.deliveryPrice,
-        unExchangedPrice: result.unExchangedPrice,
-        refundPrice: result.refundPrice,
-        cardFee: result.cardFee,
-        deliveryFee: result.deliveryFee,
-        profitAmount: result.profitAmount,
-        profitRate: result.profitRate,
-      });
-      id++;
+    let recordCount = 0;
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const chunkIds = ids.slice(i, i + CHUNK);
+
+      const chunkList = await this.orderRepository
+        .createQueryBuilder('order')
+        .innerJoinAndSelect('order.user', 'user')
+        .leftJoinAndSelect('user.company', 'userCompany')
+        .leftJoinAndSelect('order.clientUser', 'clientUser')
+        .leftJoinAndSelect('clientUser.company', 'clientCompany')
+        .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
+        .innerJoinAndSelect('orderProductMappings.product', 'product')
+        .innerJoinAndSelect('product.brand', 'brand')
+        .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
+        .whereInIds(chunkIds)
+        .orderBy('order.id', 'DESC')
+        .getMany();
+
+      // chunkIds 순서대로 정렬 (whereInIds는 순서를 보장하지 않음)
+      const chunkMap = new Map(chunkList.map((o) => [o.id, o]));
+
+      for (const orderId of chunkIds) {
+        const order = chunkMap.get(orderId);
+        if (!order) continue;
+        for (const orderProductMapping of order.orderProductMappings!) {
+          const deliveryAmount = orderProductMapping.amount;
+          let tradeAmount = 0;
+          let discardAmount = 0;
+          let tradeRate = 0;
+          let refundAmount = 0;
+          let unExchangedAmount = 0;
+          let unExchangedPrice = 0;
+          let refundPrice = 0;
+          let cardFee = 0;
+          let deliveryFee = 0;
+          let profitAmount = 0;
+          let profitRate = 0;
+
+          for (const orderDelivery of orderProductMapping.orderDeliveries!) {
+            if (orderDelivery.couponStatus === 'USED') {
+              tradeAmount++;
+            }
+            if (orderDelivery.couponStatus === 'NOT_USED') {
+              unExchangedAmount++;
+            }
+            if (orderDelivery.couponStatus === 'CANCEL') {
+              discardAmount++;
+              refundAmount++;
+            }
+          }
+          const totalAmount = deliveryAmount * orderProductMapping.product.price;
+          tradeRate = +((tradeAmount / deliveryAmount) * 100).toFixed(1);
+          unExchangedPrice = orderProductMapping.product.price * unExchangedAmount;
+          refundPrice = orderProductMapping.product.price * refundAmount;
+          cardFee = totalAmount * (cardFeePercent / 100);
+          deliveryFee = totalAmount * (mmsFee / 100);
+          profitAmount = unExchangedPrice - (deliveryFee + cardFee);
+          profitRate = +((profitAmount / totalAmount) * 100).toFixed(1);
+
+          sheet
+            .addRow({
+              id: id,
+              businessName: order.clientUser?.company?.businessName ?? order.user!.company?.businessName ?? '',
+              productClassification: orderProductMapping.product.classification?.classification ?? '',
+              brandNameKorean: orderProductMapping.product.brand!.nameKorean,
+              personName: order.clientUser?.personName ?? order.user!.personName,
+              eventName: order.eventName,
+              productName: orderProductMapping.product.name,
+              deliveryAmount: deliveryAmount,
+              tradeAmount: tradeAmount,
+              discardAmount: discardAmount,
+              tradeRate: tradeRate,
+              refundAmount: refundAmount,
+              deliveryPrice: order.sendAmount,
+              unExchangedPrice: unExchangedPrice,
+              refundPrice: refundPrice,
+              cardFee: cardFee,
+              deliveryFee: deliveryFee,
+              profitAmount: profitAmount,
+              profitRate: profitRate,
+            })
+            .commit();
+          id++;
+          recordCount++;
+        }
+      }
     }
 
-    const fileName = `수익률_모바일_리스트_${nowString}.xlsx`;
-    const filePath = join(process.cwd(), '.', 'public', fileName);
-
-    await workbook.xlsx.writeFile(filePath);
+    await sheet.commit();
+    await workbook.commit();
 
     const endTime = Date.now();
     const responseTime = endTime - startTime;
@@ -1000,7 +1020,7 @@ export class SettleService {
       result: ActivityLogResult.SUCCESS,
       responseTime,
       downloadReason,
-      recordCount: resultList.length,
+      recordCount,
       requestParams: { startAt, endAt, personName, businessName, eventName },
     });
 
@@ -1134,52 +1154,64 @@ export class SettleService {
     const defaultDate = this.applyDefaultDateRange(body.startAt, body.endAt);
     const { settleMethod, businessName, downloadReason } = body;
     const { startAt, endAt } = defaultDate;
+    this.assertExcelRangeWithinYears(startAt, endAt);
 
     const now = new Date();
     const nowString = format(now, 'yyyyMMdd');
 
-    let queryBuilder = this.orderRepository
+    // 동일 필터를 id수집 QB와 graph QB 양쪽에 동일 적용
+    const applyPartnerFilters = <T extends SelectQueryBuilder<any>>(qb: T): T => {
+      qb.where('order.status IN (:...status)', { status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'] })
+        .andWhere(
+          new Brackets((b) =>
+            b
+              .where('partnerCompany.type != :galaxiaType', { galaxiaType: IPartnerCompanyType.GALAXIA })
+              .orWhere('partnerCompany.type IS NULL'),
+          ),
+        );
+
+      if (settleMethod) {
+        qb.andWhere('partnerCompany.settleMethod LIKE :settleMethod', {
+          settleMethod: `%${settleMethod}%`,
+        });
+      }
+
+      if (businessName) {
+        qb.andWhere('partnerCompany.businessName LIKE :businessName', {
+          businessName: `%${businessName}%`,
+        });
+      }
+
+      QueryBuilderDateCondition(qb, 'order', 'createdAt', startAt, endAt);
+      return qb;
+    };
+
+    // 1) id 수집 (경량: select 없이 join만, 부모 order.id distinct)
+    let idQueryBuilder = this.orderRepository
       .createQueryBuilder('order')
-      .innerJoinAndSelect('order.user', 'user')
-      .leftJoinAndSelect('user.company', 'userCompany')
-      .leftJoinAndSelect('order.clientUser', 'clientUser')
-      .leftJoinAndSelect('clientUser.company', 'clientCompany')
-      .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
-      .innerJoinAndSelect('orderProductMappings.product', 'product')
-      .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
-      .leftJoinAndSelect('partnerCompany.userDiscounts', 'partnerDiscounts')
-      .leftJoinAndSelect('product.brand', 'brand')
-      .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
-      .leftJoinAndSelect('orderDeliveries.choiceSelectProduct', 'choiceSelectProduct')
-      .leftJoinAndSelect('choiceSelectProduct.partnerCompany', 'choicePartnerCompany')
-      .leftJoinAndSelect('choiceSelectProduct.brand', 'choiceBrand')
-      .where('order.status IN (:...status)', { status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'] })
-      .andWhere(
-        new Brackets((qb) =>
-          qb
-            .where('partnerCompany.type != :galaxiaType', { galaxiaType: IPartnerCompanyType.GALAXIA })
-            .orWhere('partnerCompany.type IS NULL'),
-        ),
-      );
+      .innerJoin('order.user', 'user')
+      .leftJoin('user.company', 'userCompany')
+      .leftJoin('order.clientUser', 'clientUser')
+      .leftJoin('clientUser.company', 'clientCompany')
+      .innerJoin('order.orderProductMappings', 'orderProductMappings')
+      .innerJoin('orderProductMappings.product', 'product')
+      .innerJoin('product.partnerCompany', 'partnerCompany')
+      .leftJoin('partnerCompany.userDiscounts', 'partnerDiscounts')
+      .leftJoin('product.brand', 'brand')
+      .innerJoin('orderProductMappings.orderDeliveries', 'orderDeliveries')
+      .leftJoin('orderDeliveries.choiceSelectProduct', 'choiceSelectProduct')
+      .leftJoin('choiceSelectProduct.partnerCompany', 'choicePartnerCompany')
+      .leftJoin('choiceSelectProduct.brand', 'choiceBrand');
+    idQueryBuilder = applyPartnerFilters(idQueryBuilder);
+    idQueryBuilder = idQueryBuilder.select('order.id', 'id').distinct(true).orderBy('order.id', 'DESC');
+    const idRows = await idQueryBuilder.getRawMany();
+    const ids = idRows.map((r) => Number(r.id));
 
-    if (settleMethod) {
-      queryBuilder = queryBuilder.andWhere('partnerCompany.settleMethod LIKE :settleMethod', {
-        settleMethod: `%${settleMethod}%`,
-      });
-    }
+    const fileName = `협력사별정산_${nowString}.xlsx`;
+    const filePath = join(process.cwd(), '.', 'public', fileName);
 
-    if (businessName) {
-      queryBuilder = queryBuilder.andWhere('partnerCompany.businessName LIKE :businessName', {
-        businessName: `%${businessName}%`,
-      });
-    }
-
-    queryBuilder = QueryBuilderDateCondition(queryBuilder, 'order', 'createdAt', startAt, endAt);
-    queryBuilder = queryBuilder.orderBy('order.id', 'DESC');
-
-    const orderList = await queryBuilder.getMany();
-
-    const workbook = new ExcelJS.Workbook();
+    // useStyles: true — 컬럼 textStyle(numFmt '@') 보존 (스트리밍 기본값 false)
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({ filename: filePath, useStyles: true });
     const sheet = workbook.addWorksheet('협력사별정산');
 
     // 엑셀 컬럼 정의 (모든 컬럼 텍스트 형식으로 지정하여 자동 변환 방지)
@@ -1220,81 +1252,113 @@ export class SettleService {
       };
     };
 
-    for (const order of orderList) {
-      for (const orderProductMapping of order.orderProductMappings!) {
-        const product = orderProductMapping.product;
-        const partnerCompany = product.partnerCompany!;
+    // 2) 청크 단위로 graph QB 로드 (ids 순서 보존), 행 즉시 commit
+    const CHUNK = 500;
+    let recordCount = 0;
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const chunkIds = ids.slice(i, i + CHUNK);
 
-        for (const orderDelivery of orderProductMapping.orderDeliveries!) {
-          // 초이스쿠폰 선택 시 선택된 상품 정보 사용
-          const displayProduct = orderDelivery.choiceSelectProduct ?? product;
-          const displayPartnerCompany = orderDelivery.choiceSelectProduct?.partnerCompany ?? partnerCompany;
-          const displayBrand = orderDelivery.choiceSelectProduct?.brand ?? product.brand;
+      const chunkList = await this.orderRepository
+        .createQueryBuilder('order')
+        .innerJoinAndSelect('order.user', 'user')
+        .leftJoinAndSelect('user.company', 'userCompany')
+        .leftJoinAndSelect('order.clientUser', 'clientUser')
+        .leftJoinAndSelect('clientUser.company', 'clientCompany')
+        .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
+        .innerJoinAndSelect('orderProductMappings.product', 'product')
+        .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
+        .leftJoinAndSelect('partnerCompany.userDiscounts', 'partnerDiscounts')
+        .leftJoinAndSelect('product.brand', 'brand')
+        .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
+        .leftJoinAndSelect('orderDeliveries.choiceSelectProduct', 'choiceSelectProduct')
+        .leftJoinAndSelect('choiceSelectProduct.partnerCompany', 'choicePartnerCompany')
+        .leftJoinAndSelect('choiceSelectProduct.brand', 'choiceBrand')
+        .whereInIds(chunkIds)
+        .orderBy('order.id', 'DESC')
+        .getMany();
 
-          // 수신번호 복호화
-          const receiverPhone = this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.deliveryTarget) ?? '';
+      // chunkIds 순서대로 정렬 (whereInIds는 순서를 보장하지 않음)
+      const chunkMap = new Map(chunkList.map((o) => [o.id, o]));
 
-          // 유효기간 계산 (기호 없이 yyyyMMdd 형식): 저장된 expireAt 직접 사용
-          let validityStartAt = '';
-          let validityEndAt = '';
-          if (orderDelivery.expireAt) {
-            const endDate = new Date(orderDelivery.expireAt);
-            // 시작일 = 종료일 - (유효기간일수 - 1)
-            const startDate = new Date(endDate.getTime() - (displayProduct.expireDay - 1) * 24 * 60 * 60 * 1000);
-            validityStartAt = format(startDate, DateCompactStr);
-            validityEndAt = format(endDate, DateCompactStr);
-          } else if (orderDelivery.actualSendAt) {
-            // fallback: expireAt 없는 레거시 데이터
-            const sendDateObj = new Date(orderDelivery.actualSendAt);
-            const startDate = displayPartnerCompany.validityStartsNextDay
-              ? new Date(sendDateObj.getTime() + 24 * 60 * 60 * 1000)
-              : sendDateObj;
-            const endDate = new Date(startDate.getTime() + displayProduct.expireDay * 24 * 60 * 60 * 1000);
-            validityStartAt = format(startDate, DateCompactStr);
-            validityEndAt = format(endDate, DateCompactStr);
+      for (const orderId of chunkIds) {
+        const order = chunkMap.get(orderId);
+        if (!order) continue;
+        for (const orderProductMapping of order.orderProductMappings!) {
+          const product = orderProductMapping.product;
+          const partnerCompany = product.partnerCompany!;
+
+          for (const orderDelivery of orderProductMapping.orderDeliveries!) {
+            // 초이스쿠폰 선택 시 선택된 상품 정보 사용
+            const displayProduct = orderDelivery.choiceSelectProduct ?? product;
+            const displayPartnerCompany = orderDelivery.choiceSelectProduct?.partnerCompany ?? partnerCompany;
+            const displayBrand = orderDelivery.choiceSelectProduct?.brand ?? product.brand;
+
+            // 수신번호 복호화
+            const receiverPhone = this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.deliveryTarget) ?? '';
+
+            // 유효기간 계산 (기호 없이 yyyyMMdd 형식): 저장된 expireAt 직접 사용
+            let validityStartAt = '';
+            let validityEndAt = '';
+            if (orderDelivery.expireAt) {
+              const endDate = new Date(orderDelivery.expireAt);
+              // 시작일 = 종료일 - (유효기간일수 - 1)
+              const startDate = new Date(endDate.getTime() - (displayProduct.expireDay - 1) * 24 * 60 * 60 * 1000);
+              validityStartAt = format(startDate, DateCompactStr);
+              validityEndAt = format(endDate, DateCompactStr);
+            } else if (orderDelivery.actualSendAt) {
+              // fallback: expireAt 없는 레거시 데이터
+              const sendDateObj = new Date(orderDelivery.actualSendAt);
+              const startDate = displayPartnerCompany.validityStartsNextDay
+                ? new Date(sendDateObj.getTime() + 24 * 60 * 60 * 1000)
+                : sendDateObj;
+              const endDate = new Date(startDate.getTime() + displayProduct.expireDay * 24 * 60 * 60 * 1000);
+              validityStartAt = format(startDate, DateCompactStr);
+              validityEndAt = format(endDate, DateCompactStr);
+            }
+
+            // 발송일/시간, 교환일/시간 (기호 없이 yyyyMMdd, HHmmss 형식)
+            const sendDateTime = formatCompactDateTime(orderDelivery.actualSendAt);
+            const tradeDateTime = formatCompactDateTime(orderDelivery.tradeAt);
+
+            // 폐기시간 (취소/환불 시) - execDiscard 트랜잭션에서 세팅한 discardedAt 사용
+            const discardAt = orderDelivery.discardedAt
+              ? format(orderDelivery.discardedAt, DateFormatStr)
+              : '';
+
+            sheet
+              .addRow({
+                partnerCompanyName: displayPartnerCompany.businessName,
+                userBusinessName: order.clientUser?.company?.businessName ?? order.user!.company?.businessName ?? '',
+                productCode: displayProduct.code,
+                sendTitle: orderProductMapping.sendTitle ?? '',
+                eventName: order.eventName,
+                productName: displayProduct.name,
+                brandName: displayBrand?.nameKorean ?? '',
+                price: displayProduct.price,
+                balance: orderDelivery.galaxiaBalance ?? 0,
+                expireDay: displayProduct.expireDay,
+                validityStartAt,
+                validityEndAt,
+                receiverPhone,
+                senderPhone: orderProductMapping.fromPhoneNumber ?? '',
+                tradeDate: tradeDateTime.date,
+                tradeTime: tradeDateTime.time,
+                sendDate: sendDateTime.date,
+                sendTime: sendDateTime.time,
+                pinStatus: couponStatusToKorean(orderDelivery.couponStatus),
+                pinNumber: orderDelivery.barCode ?? '',
+                discardAt,
+                transactionId: orderDelivery.transactionId ?? '',
+              })
+              .commit();
+            recordCount++;
           }
-
-          // 발송일/시간, 교환일/시간 (기호 없이 yyyyMMdd, HHmmss 형식)
-          const sendDateTime = formatCompactDateTime(orderDelivery.actualSendAt);
-          const tradeDateTime = formatCompactDateTime(orderDelivery.tradeAt);
-
-          // 폐기시간 (취소/환불 시) - execDiscard 트랜잭션에서 세팅한 discardedAt 사용
-          const discardAt = orderDelivery.discardedAt
-            ? format(orderDelivery.discardedAt, DateFormatStr)
-            : '';
-
-          sheet.addRow({
-            partnerCompanyName: displayPartnerCompany.businessName,
-            userBusinessName: order.clientUser?.company?.businessName ?? order.user!.company?.businessName ?? '',
-            productCode: displayProduct.code,
-            sendTitle: orderProductMapping.sendTitle ?? '',
-            eventName: order.eventName,
-            productName: displayProduct.name,
-            brandName: displayBrand?.nameKorean ?? '',
-            price: displayProduct.price,
-            balance: orderDelivery.galaxiaBalance ?? 0,
-            expireDay: displayProduct.expireDay,
-            validityStartAt,
-            validityEndAt,
-            receiverPhone,
-            senderPhone: orderProductMapping.fromPhoneNumber ?? '',
-            tradeDate: tradeDateTime.date,
-            tradeTime: tradeDateTime.time,
-            sendDate: sendDateTime.date,
-            sendTime: sendDateTime.time,
-            pinStatus: couponStatusToKorean(orderDelivery.couponStatus),
-            pinNumber: orderDelivery.barCode ?? '',
-            discardAt,
-            transactionId: orderDelivery.transactionId ?? '',
-          });
         }
       }
     }
 
-    const fileName = `협력사별정산_${nowString}.xlsx`;
-    const filePath = join(process.cwd(), '.', 'public', fileName);
-
-    await workbook.xlsx.writeFile(filePath);
+    await sheet.commit();
+    await workbook.commit();
 
     const endTime = Date.now();
     const responseTime = endTime - startTime;
@@ -1311,7 +1375,7 @@ export class SettleService {
       result: ActivityLogResult.SUCCESS,
       responseTime,
       downloadReason,
-      recordCount: sheet.rowCount - 1, // 헤더 제외
+      recordCount, // 헤더 제외
       requestParams: { startAt, endAt, settleMethod, businessName },
     });
 
@@ -1678,97 +1742,78 @@ export class SettleService {
     const defaultDate = this.applyDefaultDateRange(getBody.startAt, getBody.endAt);
     const { isPublished, businessName, personName, eventName, downloadReason, searchKeyword } = getBody;
     const { startAt, endAt } = defaultDate;
+    this.assertExcelRangeWithinYears(startAt, endAt);
 
-    let queryBuilder = this.orderRepository
-      .createQueryBuilder('order')
-      .innerJoinAndSelect('order.user', 'user')
-      .leftJoinAndSelect('user.company', 'userCompany')
-      .leftJoinAndSelect('order.clientUser', 'clientUser')
-      .leftJoinAndSelect('clientUser.company', 'clientCompany')
-      .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
-      .innerJoinAndSelect('orderProductMappings.product', 'product')
-      .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
-      .where('order.status IN (:...status)', { status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'] });
+    // 동일 필터를 id수집 QB와 graph QB 양쪽에 동일 적용
+    const applyUserExcelFilters = <T extends SelectQueryBuilder<any>>(qb: T): T => {
+      qb.where('order.status IN (:...status)', { status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'] });
 
-    if (isPublished === true) {
-      queryBuilder.andWhere('order.deliveryCompleteReportCount > 0');
-      queryBuilder.andWhere('order.orderCompleteReportCount > 0');
-    }
-
-    if (isPublished === false) {
-      queryBuilder.andWhere('order.deliveryCompleteReportCount = 0');
-      queryBuilder.andWhere('order.orderCompleteReportCount = 0');
-    }
-
-    if (searchKeyword) {
-      queryBuilder = queryBuilder.andWhere(
-        new Brackets((qb: SelectQueryBuilder<any>) => {
-          qb.where('COALESCE(order.snapshotBusinessName, userCompany.businessName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
-            .orWhere('COALESCE(order.snapshotClientBusinessName, clientCompany.businessName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
-            .orWhere('COALESCE(order.snapshotPersonName, user.personName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
-            .orWhere('COALESCE(order.snapshotClientPersonName, clientUser.personName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
-            .orWhere('order.eventName LIKE :keyword', { keyword: `%${searchKeyword}%` });
-        }),
-      );
-    }
-
-    if (businessName) {
-      queryBuilder = queryBuilder.andWhere(
-        '(COALESCE(order.snapshotBusinessName, userCompany.businessName) LIKE :businessName OR COALESCE(order.snapshotClientBusinessName, clientCompany.businessName) LIKE :businessName)',
-        { businessName: `%${businessName}%` },
-      );
-    }
-
-    if (personName) {
-      queryBuilder = queryBuilder.andWhere(
-        '(COALESCE(order.snapshotPersonName, user.personName) LIKE :personName OR COALESCE(order.snapshotClientPersonName, clientUser.personName) LIKE :personName)',
-        { personName: `%${personName}%` },
-      );
-    }
-
-    if (eventName) {
-      queryBuilder = queryBuilder.andWhere('order.eventName LIKE :eventName', {
-        eventName: `%${eventName}%`,
-      });
-    }
-
-    queryBuilder = QueryBuilderDateCondition(queryBuilder, 'order', 'createdAt', startAt, endAt);
-    queryBuilder = queryBuilder.orderBy('order.id', 'DESC');
-
-    const orderList = await queryBuilder.getMany();
-
-    const resultList = orderList.map((order) => {
-      const productNameList: string[] = [];
-      let amount: number = 0;
-
-      for (const orderProductMapping of order.orderProductMappings!) {
-        productNameList.push(orderProductMapping.product.name);
-        amount += orderProductMapping.amount;
+      if (isPublished === true) {
+        qb.andWhere('order.deliveryCompleteReportCount > 0');
+        qb.andWhere('order.orderCompleteReportCount > 0');
       }
 
-      // 첫 번째 배송의 실제 발송 시간 사용
-      const firstDelivery = order.orderProductMappings?.[0]?.orderDeliveries?.[0];
-      const sendRequestAt = firstDelivery?.actualSendAt
-        ? format(firstDelivery.actualSendAt, DateEndMinuteFormatStr)
-        : null;
+      if (isPublished === false) {
+        qb.andWhere('order.deliveryCompleteReportCount = 0');
+        qb.andWhere('order.orderCompleteReportCount = 0');
+      }
 
-      return {
-        id: order.id,
-        registeredAt: format(order.registerAt, DateDateFormatStr),
-        businessName: order.clientUser?.company?.businessName ?? order.user!.company?.businessName ?? '',
-        personName: order.clientUser?.personName ?? order.user!.personName,
-        eventName: order.eventName,
-        productNameList: productNameList,
-        amount: amount,
-        deliveryPrice: order.sendAmount,
-        settlePrice: order.settleAmount,
-        originalSettlePrice: order.settleAmount,
-        status: order.status,
-        sendRequestAt: sendRequestAt,
-      };
-    });
+      if (searchKeyword) {
+        qb.andWhere(
+          new Brackets((qb2: SelectQueryBuilder<any>) => {
+            qb2.where('COALESCE(order.snapshotBusinessName, userCompany.businessName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
+              .orWhere('COALESCE(order.snapshotClientBusinessName, clientCompany.businessName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
+              .orWhere('COALESCE(order.snapshotPersonName, user.personName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
+              .orWhere('COALESCE(order.snapshotClientPersonName, clientUser.personName) LIKE :keyword', { keyword: `%${searchKeyword}%` })
+              .orWhere('order.eventName LIKE :keyword', { keyword: `%${searchKeyword}%` });
+          }),
+        );
+      }
 
-    const workbook = new ExcelJS.Workbook();
+      if (businessName) {
+        qb.andWhere(
+          '(COALESCE(order.snapshotBusinessName, userCompany.businessName) LIKE :businessName OR COALESCE(order.snapshotClientBusinessName, clientCompany.businessName) LIKE :businessName)',
+          { businessName: `%${businessName}%` },
+        );
+      }
+
+      if (personName) {
+        qb.andWhere(
+          '(COALESCE(order.snapshotPersonName, user.personName) LIKE :personName OR COALESCE(order.snapshotClientPersonName, clientUser.personName) LIKE :personName)',
+          { personName: `%${personName}%` },
+        );
+      }
+
+      if (eventName) {
+        qb.andWhere('order.eventName LIKE :eventName', { eventName: `%${eventName}%` });
+      }
+
+      QueryBuilderDateCondition(qb, 'order', 'createdAt', startAt, endAt);
+      return qb;
+    };
+
+    // 1) id 수집 (경량: select 없이 join만, 부모 order.id distinct)
+    let idQueryBuilder = this.orderRepository
+      .createQueryBuilder('order')
+      .innerJoin('order.user', 'user')
+      .leftJoin('user.company', 'userCompany')
+      .leftJoin('order.clientUser', 'clientUser')
+      .leftJoin('clientUser.company', 'clientCompany')
+      .innerJoin('order.orderProductMappings', 'orderProductMappings')
+      .innerJoin('orderProductMappings.product', 'product')
+      .innerJoin('orderProductMappings.orderDeliveries', 'orderDeliveries');
+    idQueryBuilder = applyUserExcelFilters(idQueryBuilder);
+    idQueryBuilder = idQueryBuilder.select('order.id', 'id').distinct(true).orderBy('order.id', 'DESC');
+    const idRows = await idQueryBuilder.getRawMany();
+    const ids = idRows.map((r) => Number(r.id));
+
+    const now = new Date();
+    const nowString = format(now, 'yyyyMMdd');
+
+    const fileName = `고객사별_정산_리스트_${nowString}.xlsx`;
+    const filePath = join(process.cwd(), '.', 'public', fileName);
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({ filename: filePath });
     const sheet = workbook.addWorksheet(`sheet1`);
 
     sheet.columns = [
@@ -1785,40 +1830,76 @@ export class SettleService {
       { header: '발송시각', key: 'sendRequestAt', width: 20 },
     ];
 
+    // 2) 청크 단위로 graph QB 로드 (ids 순서 보존), order당 1행 즉시 commit
+    const CHUNK = 500;
     let id = 1;
-    for (const result of resultList) {
-      let statusMapping = '';
-      if (result.status === 'DELIVERY_COMPLETE') {
-        statusMapping = '발송완료';
-      }
+    let recordCount = 0;
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const chunkIds = ids.slice(i, i + CHUNK);
 
-      if (result.status === 'DELIVERY_CONFIRMED') {
-        statusMapping = '발송확정';
-      }
+      const chunkList = await this.orderRepository
+        .createQueryBuilder('order')
+        .innerJoinAndSelect('order.user', 'user')
+        .leftJoinAndSelect('user.company', 'userCompany')
+        .leftJoinAndSelect('order.clientUser', 'clientUser')
+        .leftJoinAndSelect('clientUser.company', 'clientCompany')
+        .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
+        .innerJoinAndSelect('orderProductMappings.product', 'product')
+        .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
+        .whereInIds(chunkIds)
+        .orderBy('order.id', 'DESC')
+        .getMany();
 
-      sheet.addRow({
-        id: id,
-        registeredAt: result.registeredAt,
-        businessName: result.businessName,
-        personName: result.personName,
-        eventName: result.eventName,
-        productNameList: result.productNameList[0] + `외 ${result.productNameList.length - 1} 건`,
-        amount: result.amount,
-        deliveryPrice: result.deliveryPrice,
-        settlePrice: result.settlePrice,
-        status: statusMapping,
-        sendRequestAt: result.sendRequestAt,
-      });
-      id++;
+      // chunkIds 순서대로 정렬 (whereInIds는 순서를 보장하지 않음)
+      const chunkMap = new Map(chunkList.map((o) => [o.id, o]));
+
+      for (const orderId of chunkIds) {
+        const order = chunkMap.get(orderId);
+        if (!order) continue;
+
+        const productNameList: string[] = [];
+        let amount: number = 0;
+
+        for (const orderProductMapping of order.orderProductMappings!) {
+          productNameList.push(orderProductMapping.product.name);
+          amount += orderProductMapping.amount;
+        }
+
+        // 첫 번째 배송의 실제 발송 시간 사용
+        const firstDelivery = order.orderProductMappings?.[0]?.orderDeliveries?.[0];
+        const sendRequestAt = firstDelivery?.actualSendAt
+          ? format(firstDelivery.actualSendAt, DateEndMinuteFormatStr)
+          : null;
+
+        let statusMapping = '';
+        if (order.status === 'DELIVERY_COMPLETE') {
+          statusMapping = '발송완료';
+        } else if (order.status === 'DELIVERY_CONFIRMED') {
+          statusMapping = '발송확정';
+        }
+
+        sheet
+          .addRow({
+            id: id,
+            registeredAt: format(order.registerAt, DateDateFormatStr),
+            businessName: order.clientUser?.company?.businessName ?? order.user!.company?.businessName ?? '',
+            personName: order.clientUser?.personName ?? order.user!.personName,
+            eventName: order.eventName,
+            productNameList: productNameList[0] + `외 ${productNameList.length - 1} 건`,
+            amount: amount,
+            deliveryPrice: order.sendAmount,
+            settlePrice: order.settleAmount,
+            status: statusMapping,
+            sendRequestAt: sendRequestAt,
+          })
+          .commit();
+        id++;
+        recordCount++;
+      }
     }
 
-    const now = new Date();
-    const nowString = format(now, 'yyyyMMdd');
-
-    const fileName = `고객사별_정산_리스트_${nowString}.xlsx`;
-    const filePath = join(process.cwd(), '.', 'public', fileName);
-
-    await workbook.xlsx.writeFile(filePath);
+    await sheet.commit();
+    await workbook.commit();
 
     const endTime = Date.now();
     const responseTime = endTime - startTime;
@@ -1835,11 +1916,11 @@ export class SettleService {
       result: ActivityLogResult.SUCCESS,
       responseTime,
       downloadReason,
-      recordCount: resultList.length,
+      recordCount,
       requestParams: { startAt, endAt, isPublished, businessName, personName, eventName },
     });
 
-    return { fileName, filePath, recordCount: resultList.length };
+    return { fileName, filePath, recordCount: recordCount };
   }
 
   async getUserPerList(getDto: SettleGetUserPerListReqQueryDto) {
@@ -2881,47 +2962,61 @@ export class SettleService {
     const defaultDate = this.applyDefaultDateRange(body.startAt, body.endAt);
     const { businessName, appDiv, downloadReason } = body;
     const { startAt, endAt } = defaultDate;
+    this.assertExcelRangeWithinYears(startAt, endAt);
 
     const now = new Date();
     const nowString = format(now, 'yyyyMMdd');
 
-    let queryBuilder = this.galaxiaBarcodeLogRepository
+    // 동일 필터를 id수집 QB와 graph QB 양쪽에 동일 적용
+    const applyGalaxiaFilters = <T extends SelectQueryBuilder<any>>(qb: T): T => {
+      if (startAt) {
+        const startDay = startAt.replace(/[-T:]/g, '').substring(0, 8);
+        qb.andWhere('log.appDay >= :startDay', { startDay });
+      }
+      if (endAt) {
+        const endDay = endAt.replace(/[-T:]/g, '').substring(0, 8);
+        qb.andWhere('log.appDay <= :endDay', { endDay });
+      }
+
+      if (businessName) {
+        qb.andWhere(
+          'COALESCE(order.snapshotBusinessName, userCompany.businessName) LIKE :businessName',
+          { businessName: `%${businessName}%` },
+        );
+      }
+
+      if (appDiv) {
+        qb.andWhere('log.appDiv = :appDiv', { appDiv });
+      }
+      return qb;
+    };
+
+    // 1) id 수집 (log은 leaf라 곱연산 없음 → distinct 불필요).
+    //    원본과 동일 정렬(appDay DESC, appTime DESC)로 id 순서 확정.
+    let idQueryBuilder = this.galaxiaBarcodeLogRepository
       .createQueryBuilder('log')
-      .innerJoinAndSelect('log.orderDelivery', 'orderDelivery')
-      .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
-      .innerJoinAndSelect('orderProductMapping.order', 'order')
-      .innerJoinAndSelect('order.user', 'user')
-      .leftJoinAndSelect('user.company', 'userCompany')
-      .innerJoinAndSelect('orderProductMapping.product', 'product')
-      .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
-      .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
-      .leftJoinAndSelect('choiceSelectProduct.partnerCompany', 'choicePartnerCompany');
+      .innerJoin('log.orderDelivery', 'orderDelivery')
+      .innerJoin('orderDelivery.orderProductMapping', 'orderProductMapping')
+      .innerJoin('orderProductMapping.order', 'order')
+      .innerJoin('order.user', 'user')
+      .leftJoin('user.company', 'userCompany')
+      .innerJoin('orderProductMapping.product', 'product')
+      .innerJoin('product.partnerCompany', 'partnerCompany')
+      .leftJoin('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
+      .leftJoin('choiceSelectProduct.partnerCompany', 'choicePartnerCompany');
+    idQueryBuilder = applyGalaxiaFilters(idQueryBuilder);
+    idQueryBuilder = idQueryBuilder
+      .select('log.id', 'id')
+      .orderBy('log.appDay', 'DESC')
+      .addOrderBy('log.appTime', 'DESC');
+    const idRows = await idQueryBuilder.getRawMany();
+    const ids = idRows.map((r) => Number(r.id));
 
-    if (startAt) {
-      const startDay = startAt.replace(/[-T:]/g, '').substring(0, 8);
-      queryBuilder = queryBuilder.andWhere('log.appDay >= :startDay', { startDay });
-    }
-    if (endAt) {
-      const endDay = endAt.replace(/[-T:]/g, '').substring(0, 8);
-      queryBuilder = queryBuilder.andWhere('log.appDay <= :endDay', { endDay });
-    }
+    const fileName = `갤럭시아정산_${nowString}.xlsx`;
+    const filePath = join(process.cwd(), '.', 'public', fileName);
 
-    if (businessName) {
-      queryBuilder = queryBuilder.andWhere(
-        'COALESCE(order.snapshotBusinessName, userCompany.businessName) LIKE :businessName',
-        { businessName: `%${businessName}%` },
-      );
-    }
-
-    if (appDiv) {
-      queryBuilder = queryBuilder.andWhere('log.appDiv = :appDiv', { appDiv });
-    }
-
-    queryBuilder = queryBuilder.orderBy('log.appDay', 'DESC').addOrderBy('log.appTime', 'DESC');
-
-    const logList = await queryBuilder.getMany();
-
-    const workbook = new ExcelJS.Workbook();
+    // useStyles: true — 컬럼 textStyle(numFmt '@') 보존 (스트리밍 기본값 false)
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({ filename: filePath, useStyles: true });
     const sheet = workbook.addWorksheet('갤럭시아정산');
 
     const textStyle = { numFmt: '@' };
@@ -2947,48 +3042,77 @@ export class SettleService {
       { header: '정산대상금액', key: 'settlementTargetAmount', width: 15, style: textStyle },
     ];
 
-    for (const log of logList) {
-      const orderDelivery = log.orderDelivery;
-      const orderProductMapping = orderDelivery.orderProductMapping;
-      const order = orderProductMapping.order;
-      const product = orderProductMapping.product;
-      const displayProduct = orderDelivery.choiceSelectProduct ?? product;
+    // 2) 청크 단위로 graph QB 로드 (ids 순서 보존), log당 1행 즉시 commit
+    const CHUNK = 500;
+    let recordCount = 0;
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const chunkIds = ids.slice(i, i + CHUNK);
 
-      sheet.addRow({
-        userBusinessName: order.user?.company?.businessName ?? '',
-        eventName: order.eventName,
-        code: displayProduct.code,
-        partnerCompanyName: displayProduct.partnerCompany?.businessName ?? '',
-        productName: displayProduct.name,
-        productPrice: displayProduct.price,
-        barcode: log.barcode,
-        transactionId: orderDelivery.transactionId ?? '',
-        appDivName: this.getAppDivName(log.appDiv),
-        sendDate: orderDelivery.actualSendAt
-          ? format(orderDelivery.actualSendAt, DateCompactStr)
-          : '',
-        sendTime: orderDelivery.actualSendAt
-          ? format(orderDelivery.actualSendAt, TimeCompactStr)
-          : '',
-        appDay: log.appDay,
-        appTime: log.appTime,
-        amount: log.amount,
-        appNo: log.appNo,
-        appStore: log.appStore ?? '',
-        giftKind: log.giftKind,
-        galaxiaBalance: orderDelivery.galaxiaBalance ?? 0,
-        settlementTargetAmount: this.getGalaxiaSettlementTargetAmount(
-          displayProduct.settleMethod,
-          log.amount,
-          displayProduct.price,
-        ),
-      });
+      const chunkList = await this.galaxiaBarcodeLogRepository
+        .createQueryBuilder('log')
+        .innerJoinAndSelect('log.orderDelivery', 'orderDelivery')
+        .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
+        .innerJoinAndSelect('orderProductMapping.order', 'order')
+        .innerJoinAndSelect('order.user', 'user')
+        .leftJoinAndSelect('user.company', 'userCompany')
+        .innerJoinAndSelect('orderProductMapping.product', 'product')
+        .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
+        .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
+        .leftJoinAndSelect('choiceSelectProduct.partnerCompany', 'choicePartnerCompany')
+        .whereInIds(chunkIds)
+        .orderBy('log.appDay', 'DESC')
+        .addOrderBy('log.appTime', 'DESC')
+        .getMany();
+
+      // chunkIds 순서대로 정렬 (whereInIds는 순서를 보장하지 않음)
+      const chunkMap = new Map(chunkList.map((l) => [l.id, l]));
+
+      for (const logId of chunkIds) {
+        const log = chunkMap.get(logId);
+        if (!log) continue;
+        const orderDelivery = log.orderDelivery;
+        const orderProductMapping = orderDelivery.orderProductMapping;
+        const order = orderProductMapping.order;
+        const product = orderProductMapping.product;
+        const displayProduct = orderDelivery.choiceSelectProduct ?? product;
+
+        sheet
+          .addRow({
+            userBusinessName: order.user?.company?.businessName ?? '',
+            eventName: order.eventName,
+            code: displayProduct.code,
+            partnerCompanyName: displayProduct.partnerCompany?.businessName ?? '',
+            productName: displayProduct.name,
+            productPrice: displayProduct.price,
+            barcode: log.barcode,
+            transactionId: orderDelivery.transactionId ?? '',
+            appDivName: this.getAppDivName(log.appDiv),
+            sendDate: orderDelivery.actualSendAt
+              ? format(orderDelivery.actualSendAt, DateCompactStr)
+              : '',
+            sendTime: orderDelivery.actualSendAt
+              ? format(orderDelivery.actualSendAt, TimeCompactStr)
+              : '',
+            appDay: log.appDay,
+            appTime: log.appTime,
+            amount: log.amount,
+            appNo: log.appNo,
+            appStore: log.appStore ?? '',
+            giftKind: log.giftKind,
+            galaxiaBalance: orderDelivery.galaxiaBalance ?? 0,
+            settlementTargetAmount: this.getGalaxiaSettlementTargetAmount(
+              displayProduct.settleMethod,
+              log.amount,
+              displayProduct.price,
+            ),
+          })
+          .commit();
+        recordCount++;
+      }
     }
 
-    const fileName = `갤럭시아정산_${nowString}.xlsx`;
-    const filePath = join(process.cwd(), '.', 'public', fileName);
-
-    await workbook.xlsx.writeFile(filePath);
+    await sheet.commit();
+    await workbook.commit();
 
     const endTime = Date.now();
     const responseTime = endTime - startTime;
@@ -3004,7 +3128,7 @@ export class SettleService {
       result: ActivityLogResult.SUCCESS,
       responseTime,
       downloadReason,
-      recordCount: sheet.rowCount - 1,
+      recordCount,
       requestParams: { startAt, endAt, businessName, appDiv },
     });
 
