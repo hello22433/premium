@@ -3201,7 +3201,8 @@ export class OrderService {
       throw new BadRequestException('해당 주문건은 존재하지 않거나, 주문완료 상태가 아닙니다.');
     }
 
-    if (!canTransitionDelivery(user, order)) {
+    const currentUser = await this.getCurrentDeliveryTransitionUser(user.id);
+    if (!canTransitionDelivery(currentUser, order)) {
       throw new ForbiddenException('해당 주문에 대한 권한이 없습니다.');
     }
 
@@ -3235,11 +3236,12 @@ export class OrderService {
       throw new BadRequestException('해당 주문건은 존재하지 않거나, 검토완료 상태가 아닙니다.');
     }
 
-    if (!canTransitionDelivery(user, order)) {
+    const currentUser = await this.getCurrentDeliveryTransitionUser(user.id);
+    if (!canTransitionDelivery(currentUser, order)) {
       throw new ForbiddenException('해당 주문에 대한 권한이 없습니다.');
     }
 
-    if (getBody.forceConfirm && !canForceConfirmDelivery(user)) {
+    if (getBody.forceConfirm && !canForceConfirmDelivery(currentUser)) {
       throw new ForbiddenException('강제 발송확정 권한이 없습니다.');
     }
 
@@ -4024,6 +4026,17 @@ export class OrderService {
     }
 
     return;
+  }
+
+  private async getCurrentDeliveryTransitionUser(userId: number): Promise<Pick<UserEntity, 'id' | 'authority'>> {
+    const user = await this.userRepository.findOne({
+      where: { id: userId },
+      select: ['id', 'authority'],
+    });
+    if (!user) {
+      throw new ForbiddenException('유저가 존재하지 않습니다.');
+    }
+    return user;
   }
 
   async updateOperationUser(getBody: OrderUpdateOperationUserReqDto) {

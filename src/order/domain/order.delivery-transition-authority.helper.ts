@@ -20,8 +20,8 @@ export function canTransitionDelivery(
   }
 
   return order.clientUserId !== null
-    ? order.operationUserId === user.id
-    : order.userId === user.id;
+    ? user.authority === IUserAuthority.OPERATION_ADMIN && order.operationUserId === user.id
+    : user.authority === IUserAuthority.OPERATION_ADMIN;
 }
 
 export function canForceConfirmDelivery(user: DeliveryTransitionUser): boolean {

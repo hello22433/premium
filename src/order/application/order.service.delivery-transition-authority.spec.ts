@@ -35,7 +35,7 @@ describe('OrderService delivery transition authority', () => {
     getOne: jest.fn().mockResolvedValue(result),
   });
 
-  it('reviewComplete: 타인 직발송 주문의 상태 전환을 차단한다', async () => {
+  it('reviewComplete: 고객사 관리자의 직발송 상태 전환을 차단한다', async () => {
     const service = Object.create(OrderService.prototype) as any;
     service.orderRepository = {
       createQueryBuilder: jest.fn().mockReturnValue(
@@ -43,14 +43,40 @@ describe('OrderService delivery transition authority', () => {
       ),
       save: jest.fn(),
     };
+    service.userRepository = {
+      findOne: jest.fn().mockResolvedValue({ id: 10, authority: IUserAuthority.CORPORATE_ADMIN }),
+    };
 
     await expect(
       service.reviewComplete(
-        { id: 11, authority: IUserAuthority.CORPORATE_ADMIN },
+        { id: 10, authority: IUserAuthority.CORPORATE_ADMIN },
         { id: 77 },
       ),
     ).rejects.toBeInstanceOf(ForbiddenException);
     expect(service.orderRepository.save).not.toHaveBeenCalled();
+  });
+
+  it('reviewComplete: JWT 권한이 고객사 관리자여도 DB 최신 권한이 운영 관리자이면 직발송 상태 전환을 허용한다', async () => {
+    const service = Object.create(OrderService.prototype) as any;
+    const order = { userId: 10, clientUserId: null, operationUserId: null };
+    service.orderRepository = {
+      createQueryBuilder: jest.fn().mockReturnValue(createQueryBuilder(order)),
+      save: jest.fn(),
+    };
+    service.userRepository = {
+      findOne: jest.fn().mockResolvedValue({ id: 20, authority: IUserAuthority.OPERATION_ADMIN }),
+    };
+
+    await service.reviewComplete(
+      { id: 20, authority: IUserAuthority.CORPORATE_ADMIN },
+      { id: 77 },
+    );
+
+    expect(service.userRepository.findOne).toHaveBeenCalledWith({
+      where: { id: 20 },
+      select: ['id', 'authority'],
+    });
+    expect(service.orderRepository.save).toHaveBeenCalledWith(order);
   });
 
   it('deliveryConfirmed: 배정되지 않은 운영 담당자의 대행발송 확정을 차단한다', async () => {
@@ -60,7 +86,10 @@ describe('OrderService delivery transition authority', () => {
         createQueryBuilder({ userId: 20, clientUserId: 30, operationUserId: 20 }),
       ),
     };
-    service.userRepository = { createQueryBuilder: jest.fn() };
+    service.userRepository = {
+      findOne: jest.fn().mockResolvedValue({ id: 21, authority: IUserAuthority.OPERATION_ADMIN }),
+      createQueryBuilder: jest.fn(),
+    };
 
     await expect(
       service.deliveryConfirmed(
@@ -78,7 +107,10 @@ describe('OrderService delivery transition authority', () => {
         createQueryBuilder({ userId: 10, clientUserId: null, operationUserId: null }),
       ),
     };
-    service.userRepository = { createQueryBuilder: jest.fn() };
+    service.userRepository = {
+      findOne: jest.fn().mockResolvedValue({ id: 10, authority: IUserAuthority.CORPORATE_ADMIN }),
+      createQueryBuilder: jest.fn(),
+    };
 
     await expect(
       service.deliveryConfirmed(
@@ -86,6 +118,31 @@ describe('OrderService delivery transition authority', () => {
         { id: 77, forceConfirm: true },
       ),
     ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(service.userRepository.createQueryBuilder).not.toHaveBeenCalled();
+  });
+
+  it('deliveryConfirmed: JWT 권한이 운영 관리자여도 DB 최신 권한이 고객사 관리자이면 대행발송 확정을 차단한다', async () => {
+    const service = Object.create(OrderService.prototype) as any;
+    service.orderRepository = {
+      createQueryBuilder: jest.fn().mockReturnValue(
+        createQueryBuilder({ userId: 20, clientUserId: 30, operationUserId: 20 }),
+      ),
+    };
+    service.userRepository = {
+      findOne: jest.fn().mockResolvedValue({ id: 20, authority: IUserAuthority.CORPORATE_ADMIN }),
+      createQueryBuilder: jest.fn(),
+    };
+
+    await expect(
+      service.deliveryConfirmed(
+        { id: 20, authority: IUserAuthority.OPERATION_ADMIN },
+        { id: 77 },
+      ),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(service.userRepository.findOne).toHaveBeenCalledWith({
+      where: { id: 20 },
+      select: ['id', 'authority'],
+    });
     expect(service.userRepository.createQueryBuilder).not.toHaveBeenCalled();
   });
 });

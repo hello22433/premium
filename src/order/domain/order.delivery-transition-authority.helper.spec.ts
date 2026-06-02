@@ -6,10 +6,11 @@ import {
 
 describe('order delivery transition authority', () => {
   describe('canTransitionDelivery', () => {
-    it('직발송은 주문 생성자만 허용한다', () => {
+    it('직발송은 운영 관리자만 허용한다', () => {
       const order = { userId: 10, clientUserId: null, operationUserId: null };
 
-      expect(canTransitionDelivery({ id: 10, authority: IUserAuthority.CORPORATE_ADMIN }, order)).toBe(true);
+      expect(canTransitionDelivery({ id: 10, authority: IUserAuthority.CORPORATE_ADMIN }, order)).toBe(false);
+      expect(canTransitionDelivery({ id: 11, authority: IUserAuthority.OPERATION_ADMIN }, order)).toBe(true);
       expect(canTransitionDelivery({ id: 11, authority: IUserAuthority.CORPORATE_ADMIN }, order)).toBe(false);
     });
 
@@ -17,6 +18,7 @@ describe('order delivery transition authority', () => {
       const order = { userId: 20, clientUserId: 30, operationUserId: 20 };
 
       expect(canTransitionDelivery({ id: 20, authority: IUserAuthority.OPERATION_ADMIN }, order)).toBe(true);
+      expect(canTransitionDelivery({ id: 20, authority: IUserAuthority.CORPORATE_ADMIN }, order)).toBe(false);
       expect(canTransitionDelivery({ id: 30, authority: IUserAuthority.CORPORATE_ADMIN }, order)).toBe(false);
       expect(canTransitionDelivery({ id: 21, authority: IUserAuthority.OPERATION_ADMIN }, order)).toBe(false);
     });

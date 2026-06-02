@@ -553,6 +553,7 @@ describe('OrderService deliveryConfirmed settlement amount', () => {
       save: jest.fn().mockResolvedValue(order),
     };
     service.userRepository = {
+      findOne: jest.fn().mockResolvedValue({ id: 1, authority: 'OPERATION_ADMIN' }),
       createQueryBuilder: jest.fn().mockReturnValue(createQueryBuilder(billingUser)),
       update: jest.fn().mockResolvedValue({ affected: 1 }),
     };
