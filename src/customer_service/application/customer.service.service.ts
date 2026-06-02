@@ -858,9 +858,24 @@ export class CustomerServiceService {
     await tx1.connect();
     await tx1.startTransaction();
     try {
+      // 메모리 값 갱신 (Tx2 restoreBalanceOnDiscard 등 후속 로직이 orderDelivery.couponStatus 를 읽음)
       orderDelivery.couponStatus = couponStatus;
       orderDelivery.discardedAt = new Date();
-      await tx1.manager.save(OrderDeliveryEntity, orderDelivery);
+
+      // 상태 전이는 조건부 UPDATE(CAS)로 저장 — coupon_status 가 아직 beforeChange 일 때만 반영.
+      // 동시 폐기 요청 시 둘 다 save 로 덮어쓰는 레이스를 affected=0 으로 감지·차단(멱등).
+      // (코드베이스 관례: settle.service 상태전이, ssg-insert-state.markAttempted 와 동일 패턴)
+      const transition = await tx1.manager
+        .createQueryBuilder()
+        .update(OrderDeliveryEntity)
+        .set({ couponStatus, discardedAt: orderDelivery.discardedAt })
+        .where('id = :id AND coupon_status = :before', { id: orderDelivery.id, before: beforeChange })
+        .execute();
+
+      if (transition.affected === 0) {
+        // 다른 요청이 먼저 폐기를 반영함 → 늦은 요청은 중복 처리 차단
+        throw new BadRequestException('이미 폐기 처리된 발송입니다.');
+      }
 
       if (historyData) {
         const history = this.orderHistoryRepository.create({
