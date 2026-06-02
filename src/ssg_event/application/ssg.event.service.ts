@@ -1,5 +1,6 @@
-import { BadRequestException, Injectable, InternalServerErrorException } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, InternalServerErrorException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { ISsgAmountResult, ISsgIssue } from '../../partner_company_extern/interface/ssg.issue';
 import { SsgEventEntity } from '../../entity/ssg.event.entity';
 import { SsgReservationRangeEntity } from '../../entity/ssg.reservation.range.entity';
 import { Brackets, Repository } from 'typeorm';
@@ -42,7 +43,29 @@ export class SsgEventService {
     @InjectRepository(SsgReservationRangeEntity)
     private readonly reservationRangeRepository: Repository<SsgReservationRangeEntity>,
     private readonly activityLogService: ActivityLogService,
+    @Inject('ISsgIssue')
+    private readonly ssgIssue: ISsgIssue,
   ) { }
+
+  /**
+   * 신세계 측 행사 금액 집계 실시간 조회 (GetSsgAmount.do).
+   * ssg_event PK 로 엔티티를 로드해 no→event_no, order→event_seq 로 매핑한 뒤
+   * 신세계 API 를 호출한다. (issue/check 와 동일 매핑)
+   * @param id ssg_event PK
+   * @returns 주문시도/발급성공/발급실패/미처리 금액
+   */
+  async getRemoteAmount(id: number): Promise<ISsgAmountResult> {
+    const ssgEvent = await this.ssgEventRepository.findOne({ where: { id } });
+
+    if (!ssgEvent) {
+      throw new BadRequestException('존재하지 않는 이벤트입니다.');
+    }
+
+    return this.ssgIssue.getAmount({
+      eventNo: ssgEvent.no,
+      eventSeq: ssgEvent.order,
+    });
+  }
 
   /**
    * SSG 예약발송 가능 범위 조회 (단일 row 운용 - 가장 최신 1건만 사용)
