@@ -538,6 +538,20 @@ export class DeliveryBatchService {
   }
 
   /**
+   * 최초 발송 실패 시 환불 보류 여부 (B1/B3).
+   * 비-SSG 는 보류(B1). SSG 는 발송 후 SsgInsertState 로 판단 — CONFIRMED/NONE/FAILED 는 보류,
+   * ATTEMPTED(INSERT 응답 미확정)만 보류 제외(기존 refundForFail → resolver outcome 경로 유지).
+   * SSG 행사잔액은 주문 시점 차감이라 최초실패 시점엔 고객+행사 차감이 둘 다 완료 → 보류 시 둘 다 유지된다.
+   */
+  private async shouldHoldRefundForFail(orderDelivery: OrderDeliveryEntity, order: OrderEntity): Promise<boolean> {
+    if (order.type !== IOrderType.SSG) {
+      return true;
+    }
+    const state = await this.ssgInsertStateService.getState(orderDelivery.id);
+    return state !== SsgInsertState.ATTEMPTED;
+  }
+
+  /**
    * 단일 배송건 내부 처리 로직
    */
   private async processOneDeliveryInternal(
@@ -548,11 +562,11 @@ export class DeliveryBatchService {
     const isChoiceCoupon = product.type === IProductType.CHOICE;
     const isEmailDelivery = orderDelivery.deliveryMethod === IOrderSendMethod.EMAIL;
 
-    // B1: 최초 발송(비-SSG)의 실패는 환불을 보류한다(구매/발송 미성립 → 복구 이벤트 미생성).
+    // B1/B3: 최초 발송 실패는 환불을 보류한다(구매/발송 미성립 → 복구 이벤트 미생성).
     // 진입 시점(발송 전) status 로 최초/재발송을 구분한다. 재발송이면 직전이 FAIL/FAIL_SMS.
-    // SSG 는 B1 범위 밖이라 기존대로 환불한다.
-    const shouldHoldRefund = order.type !== IOrderType.SSG
-      && orderDelivery.status !== IOrderDeliveryStatus.FAIL
+    // SSG 보류 여부는 발송 후 SsgInsertState 에 달려 있어(issue() 후 전이) refund 지점에서
+    // shouldHoldRefundForFail() 로 재평가한다 (여기선 최초 발송 여부만 snapshot).
+    const isInitialSend = orderDelivery.status !== IOrderDeliveryStatus.FAIL
       && orderDelivery.status !== IOrderDeliveryStatus.FAIL_SMS;
 
     // 1. PIN 발급 (barCode가 없는 경우)
@@ -577,8 +591,9 @@ export class DeliveryBatchService {
       } catch (error) {
         this.logger.error(`[BATCH] PIN 발급 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
 
-        // B1: 최초 발송(비-SSG) 실패는 환불 보류. 재발송 실패와 SSG 는 기존대로 환불.
-        if (!shouldHoldRefund) {
+        // B1/B3: 최초 발송 실패는 환불 보류. SSG 는 ATTEMPTED 만 환불, 재발송 실패는 환불.
+        const shouldHold = isInitialSend && (await this.shouldHoldRefundForFail(orderDelivery, order));
+        if (!shouldHold) {
           await this.refundForFail(orderDelivery);
         }
 
@@ -688,9 +703,12 @@ export class DeliveryBatchService {
       },
     );
 
-    // 6. 발송 실패 시 환불 처리 (B1: 최초 발송(비-SSG) 실패는 보류, 재발송/SSG 는 환불)
-    if (orderDelivery.status === IOrderDeliveryStatus.FAIL && !shouldHoldRefund) {
-      await this.refundForFail(orderDelivery);
+    // 6. 발송 실패 시 환불 처리 (B1/B3: 최초 발송 실패는 보류, SSG 는 ATTEMPTED 만 환불, 재발송은 환불)
+    if (orderDelivery.status === IOrderDeliveryStatus.FAIL) {
+      const shouldHold = isInitialSend && (await this.shouldHoldRefundForFail(orderDelivery, order));
+      if (!shouldHold) {
+        await this.refundForFail(orderDelivery);
+      }
     }
 
     // 7. DB 저장
@@ -892,38 +910,27 @@ export class DeliveryBatchService {
         const stateForResendDeduct = await this.ssgInsertStateService.getState(orderDelivery.id);
         const canDeductNewEvent = stateForResendDeduct === SsgInsertState.NONE
           || stateForResendDeduct === SsgInsertState.FAILED;
-        // 비정상 케이스 감지 — status=FAIL + state=NONE/FAILED 인데 ledger 가 없는 경우.
-        // 정상 흐름이라면 refundForFail() 이 호출되어 ledger 가 있어야 한다.
-        // 운영에서 이 케이스가 나오면 "환불 ledger 누락" 또는 "기존 local SSG 차감 잔존" 별도 조사 대상.
-        if (
-          order.type === IOrderType.SSG
+        // B3: SSG FAIL 재발송에서 새 행사 선차감이 적용되는 케이스를 공통 가드로 묶는다.
+        // (세 신호 AND: SSG + FAIL + canDeductNewEvent)
+        const isSsgFailResendDeduct = order.type === IOrderType.SSG
           && orderDelivery.status === IOrderDeliveryStatus.FAIL
-          && canDeductNewEvent
-          && !hasRefundLedgerForResendDeduct
-        ) {
-          this.logger.warn(
-            `[RESEND] 비정상 — status=FAIL + state=${stateForResendDeduct} + ledger 없음. 환불 ledger 누락 또는 local SSG 차감 잔존 조사 필요. orderDelivery.id=${orderDelivery.id}`,
+          && canDeductNewEvent;
+
+        // B3: status=FAIL + state=NONE/FAILED + ledger 없음 = 보류(최초실패 환불 미생성) 정상 케이스.
+        // 재발송은 기존 ssgEventId 로 PIN 재시도(새 행사 select·재차감 없음). 구버전 "비정상 경고"는
+        // 보류 도입 후 오발이라 info 로 강등한다.
+        if (isSsgFailResendDeduct && !hasRefundLedgerForResendDeduct) {
+          this.logger.log(
+            `[RESEND] SSG 보류 재발송 — status=FAIL + state=${stateForResendDeduct} + ledger 없음(정상). 기존 ssgEventId 로 PIN 재시도. orderDelivery.id=${orderDelivery.id}`,
           );
         }
         // SSG 잔액 보정 미완료 케이스 — 새 선차감 차단 + 운영 알림.
-        if (
-          order.type === IOrderType.SSG
-          && orderDelivery.status === IOrderDeliveryStatus.FAIL
-          && hasRefundLedgerForResendDeduct
-          && canDeductNewEvent
-          && !ssgBalanceSettledForResendDeduct
-        ) {
+        if (isSsgFailResendDeduct && hasRefundLedgerForResendDeduct && !ssgBalanceSettledForResendDeduct) {
           this.logger.error(
             `[RESEND] SSG 잔액 보정 미완료(ssg_balance_settled=false) — 새 선차감 차단. 운영 점검 필요. orderDelivery.id=${orderDelivery.id}`,
           );
         }
-        if (
-          order.type === IOrderType.SSG
-          && orderDelivery.status === IOrderDeliveryStatus.FAIL
-          && hasRefundLedgerForResendDeduct
-          && canDeductNewEvent
-          && ssgBalanceSettledForResendDeduct
-        ) {
+        if (isSsgFailResendDeduct && hasRefundLedgerForResendDeduct && ssgBalanceSettledForResendDeduct) {
           const newEvent = await this.ssgEventService.selectEventForOrder(
             product.price,
             product.expireDay,
@@ -1530,13 +1537,13 @@ export class DeliveryBatchService {
       && (orderDelivery.status === IOrderDeliveryStatus.FAIL
         || orderDelivery.status === IOrderDeliveryStatus.FAIL_SMS);
 
-    // B1: 비-SSG 실패 재발송 — 보류(환불 미생성)/환불됨 분기. 두 snapshot 은 reissue 호출 *전* 에 잡는다
+    // B1/B3: 실패 재발송 — 보류(환불 미생성)/환불됨 분기. snapshot 은 reissue 호출 *전* 에 잡는다
     // (reissue 내부 reverseRefundForResend 가 ledger 를 release 해 exists() 가 뒤집히기 때문).
-    const isB1FailureResend = wasFailBefore && order.type !== IOrderType.SSG;
-    const isWalletManaged = isB1FailureResend
+    // refunded reverse 보강은 비-SSG 만(SSG refunded 는 reissue 내부에서 처리), held-slot 발급은 SSG 포함 wallet 전체.
+    const isWalletManaged = wasFailBefore
       ? await this.walletManagedPredicate.isWalletManaged(order.id)
       : false;
-    const refundLedgerBeforeReissue = isB1FailureResend
+    const refundLedgerBeforeReissue = wasFailBefore
       ? await this.refundLedgerService.exists(orderDelivery.id)
       : false;
 
@@ -1560,19 +1567,20 @@ export class DeliveryBatchService {
       }
     }
 
-    // B1: reissue 성공 후, 발송 dispatch 전 — 비-SSG 실패 재발송 보정.
-    if (isB1FailureResend) {
+    // B1/B3: reissue 성공 후, 발송 dispatch 전 — 실패 재발송 보정.
+    if (wasFailBefore) {
       if (refundLedgerBeforeReissue) {
-        // 환불됨 재발송 (legacy+wallet 공통). reissue 의 needsIssue=false(barCode 보유) 케이스는
-        // 내부 reverseRefundForResend 가 skip 되어 exists() 가 여전히 true → 명시 호출로
-        // legacy mirror 복원 / wallet 재차감 / RESEND attempt 를 보강한다. 이미 reissue 내부에서
-        // 실행됐으면 exists() 가 false 로 뒤집혀 skip (release 도 멱등 early-return).
-        if (await this.refundLedgerService.exists(orderDelivery.id)) {
+        // 환불됨 재발송. 비-SSG 만 여기서 보강한다 — reissue 의 needsIssue=false(barCode 보유) 케이스는
+        // 내부 reverseRefundForResend 가 skip 되어 exists() 가 여전히 true → 명시 호출로 legacy mirror /
+        // wallet 재차감 / RESEND attempt 를 보강한다. SSG refunded 는 reissue 내부(needsIssue=true)에서
+        // reverseRefundForResend + RESEND attempt 를 생성하므로 여기서 중복 호출하지 않는다.
+        if (order.type !== IOrderType.SSG && (await this.refundLedgerService.exists(orderDelivery.id))) {
           await this.reverseRefundForResend(orderDelivery, false);
         }
       } else if (isWalletManaged) {
-        // 보류 재발송 (환불 미생성, wallet) → RESEND attempt slot 선발급.
-        // 재실패 시 refundForFail 의 fail_refund cycle 이 최신 RESEND attempt 를 가리키게 한다.
+        // 보류 재발송 (환불 미생성, wallet, SSG 포함) → RESEND attempt slot 선발급.
+        // 미발급 시 재실패 refundForFail 의 fail_refund cycle 이 latest INITIAL attempt 로 떨어져
+        // 이전 reversed ledger 와 같은 prefix → silent no-op(환불 누락) → 최신 RESEND attempt 를 가리키게 한다.
         await this.orderDeliveryAttemptRepository.save({
           orderDeliveryId: orderDelivery.id,
           attemptType: OrderDeliveryAttemptType.RESEND,
