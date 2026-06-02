@@ -37,7 +37,7 @@ import { IOrderType } from '../../order/interface/order.type';
 import { SsgEventEntity } from '../../entity/ssg.event.entity';
 import { addDays, format, subDays } from 'date-fns';
 import { normalizeLineBreaks } from '../../delivery/domain/email.delivery.template';
-import { resolveExpireDays } from '../../common/utils/expire.util';
+import { resolveExpireDays, couponTokenExpiry } from '../../common/utils/expire.util';
 import { DateFormatStr } from '../../common/domain/date.format.str';
 
 import dayjs from 'dayjs';
@@ -192,7 +192,12 @@ export class OrderReceiveService {
           : null;
         const tailRaw = orderDelivery.orderProductMapping.sendTailText;
         const tailText = tailRaw ? applyReplaceCharacters(tailRaw, orderDelivery) : null;
-        const smsText = this.deliverySendService.buildSmsText(orderDelivery, getBody.encryptKey, body, memo, tailText);
+        // 만료 재계산(updateCouponExpiration) 후이므로 토큰 _exp도 새 쿠폰 expireAt 기준으로 재발급
+        const refreshedEncryptKey = this.cryptoCipher.encryptJson(
+          orderDecrypt,
+          couponTokenExpiry(orderDelivery.expireAt),
+        );
+        const smsText = this.deliverySendService.buildSmsText(orderDelivery, refreshedEncryptKey, body, memo, tailText);
         const filePathList: string[] = orderDelivery.imagePath ? [orderDelivery.imagePath] : [];
         const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber ?? defaultFromPhoneNumber;
         const title = orderDelivery.orderProductMapping.sendTitle ?? '';
@@ -509,7 +514,7 @@ export class OrderReceiveService {
     const sendEncryptKey = this.cryptoCipher.encryptJson({
       emailSendHistoryId: emailSendHistory.id,
       orderDeliveryId: orderDelivery.id,
-    } as OrderSendEncryptKey);
+    } as OrderSendEncryptKey, couponTokenExpiry(orderDelivery.expireAt));
 
     const choiceProductList: OrderReceiveChoiceDto[] = [];
     let selectChoiceProduct: OrderReceiveChoiceDto | null = null;
@@ -802,13 +807,19 @@ export class OrderReceiveService {
     let status = IOrderDeliveryStatus.COMPLETE;
     let emailCouponStatus = OrderDeliveryEmailCouponStatus.SEND;
 
+    // 만료 재계산(updateCouponExpiration) 후이므로 토큰 _exp도 새 쿠폰 expireAt 기준으로 재발급
+    const refreshedSendEncryptKey = this.cryptoCipher.encryptJson(
+      obj,
+      couponTokenExpiry(orderDelivery.expireAt),
+    );
+
     try {
       // 1차: 알림톡 발송 시도 (기존 등록 템플릿 사용)
       const alimTalkText = AlimTalkTemplate(orderDelivery);
       const { report } = await this.deliveryAlimTalk.send({
         to: getBody.phoneNumber,
         text: alimTalkText,
-        encryptKey: getBody.sendEncryptKey,
+        encryptKey: refreshedSendEncryptKey,
       });
 
       if (report.code !== 'A000') {

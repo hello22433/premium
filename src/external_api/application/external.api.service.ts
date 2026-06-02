@@ -62,7 +62,7 @@ import { CreateCode } from '../../common/domain/create.code';
 import { OrderPrefixCode, OrderDigitNumber } from '../../order/domain/order.code';
 import { CreateApiTransactionId } from '../../order/domain/create.transaction.id';
 import { applyReplaceCharacters } from '../../common/utils/replace-characters.util';
-import { resolveExpireDays } from '../../common/utils/expire.util';
+import { resolveExpireDays, couponTokenExpiry } from '../../common/utils/expire.util';
 import { addDays } from 'date-fns';
 import { ulid } from 'ulid';
 
@@ -225,7 +225,7 @@ export class ExternalApiService {
     const encryptKey = this.cryptoCipher.encryptJson({
       id: orderDelivery.id,
       transactionId: orderDelivery.transactionId,
-    });
+    }, couponTokenExpiry(orderDelivery.expireAt));
 
     const deliveryHistory = new DeliverySendHistoryEntity();
     deliveryHistory.context = '{}';

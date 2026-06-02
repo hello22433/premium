@@ -1,4 +1,4 @@
-import { IsNotEmpty, IsNumber, IsString } from 'class-validator';
+import { IsNotEmpty, IsNumber, IsString, MaxLength } from 'class-validator';
 import { PagingReqDto } from '../../common/api/dto/pagination.req.dto';
 import { ApiProperty } from '@nestjs/swagger';
 
@@ -9,14 +9,18 @@ export class MessageArchiveCreateReqDto {
     description: '제목',
   })
   // =======================
+  @IsNotEmpty()
   @IsString()
+  @MaxLength(20)
   title: string;
 
   @ApiProperty({
     description: '내용',
   })
   // =======================
+  @IsNotEmpty()
   @IsString()
+  @MaxLength(200)
   content: string;
 }
 

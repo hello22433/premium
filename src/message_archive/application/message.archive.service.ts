@@ -54,6 +54,11 @@ export class MessageArchiveService {
   async create(user: ILoginUserInfo, getBody: MessageArchiveCreateReqDto) {
     const { title, content } = getBody;
 
+    if (!title?.trim()) throw new BadRequestException('제목을 입력해주세요.');
+    if (title.length > 20) throw new BadRequestException('제목은 20자를 초과할 수 없습니다.');
+    if (!content?.trim()) throw new BadRequestException('내용을 입력해주세요.');
+    if (content.length > 200) throw new BadRequestException('내용은 200자를 초과할 수 없습니다.');
+
     await this.messageArchiveRepository.insert({
       userId: user.id,
       title: title,
