@@ -38,6 +38,7 @@ describe('OrderService delivery transition authority', () => {
   const createQueryBuilder = (result: unknown) => ({
     innerJoinAndSelect: jest.fn().mockReturnThis(),
     leftJoinAndSelect: jest.fn().mockReturnThis(),
+    setLock: jest.fn().mockReturnThis(),
     where: jest.fn().mockReturnThis(),
     andWhere: jest.fn().mockReturnThis(),
     getOne: jest.fn().mockResolvedValue(result),
