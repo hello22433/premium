@@ -88,8 +88,8 @@ export class CustomerServiceController {
   })
   // ===============================================
   @Get('/customer-service/detail/list')
-  getDetailList(@Query() getQuery: CustomerServiceGetDetailListReqDto) {
-    return this.customerServiceService.getDetailList(getQuery);
+  getDetailList(@User() user: ILoginUserInfo, @Query() getQuery: CustomerServiceGetDetailListReqDto) {
+    return this.customerServiceService.getDetailList(user, getQuery);
   }
 
   @ApiOperation({
@@ -101,8 +101,8 @@ export class CustomerServiceController {
   })
   // ===============================================
   @Get('/customer-service/detail')
-  getDetail(@Query() getQuery: CustomerServiceGetDetailReqDto) {
-    return this.customerServiceService.getDetail(getQuery);
+  getDetail(@User() user: ILoginUserInfo, @Query() getQuery: CustomerServiceGetDetailReqDto) {
+    return this.customerServiceService.getDetail(user, getQuery);
   }
 
   @ApiOperation({
@@ -192,12 +192,12 @@ export class CustomerServiceController {
     description: '성공적으로 return 한 경우',
   })
   @Get('/customer-service/status/list')
-  async statusList(@Query() getQuery: CustomerServiceStatusListReqDto) {
+  async statusList(@User() user: ILoginUserInfo, @Query() getQuery: CustomerServiceStatusListReqDto) {
     // 1. 유효성검사
     await this.customerServiceService.validStatusList(getQuery);
 
-    // 2. 데이터매핑
-    const map = await this.customerServiceService.mapStatusList(getQuery);
+    // 2. 데이터매핑 (권한검사 포함)
+    const map = await this.customerServiceService.mapStatusList(user, getQuery);
 
     // 3. 서비스실행
     return await this.customerServiceService.execStatusList(map);
@@ -219,9 +219,11 @@ export class CustomerServiceController {
 
   @ApiOperation({ description: '개별 쿠폰 상태 실시간 갱신 API' })
   @ApiOkResponse({ description: '갱신 성공 시 최신 couponStatus 반환' })
+  // 운영관리자 이상(SUPER_ADMIN·OPERATION_ADMIN) 전용 — 고객사(CORPORATE_ADMIN) 접근 차단
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @Get('/customer-service/coupon/refresh')
-  refreshCoupon(@Query() getQuery: CustomerServiceCouponRefreshReqDto) {
-    return this.customerServiceService.refreshCoupon(getQuery);
+  refreshCoupon(@User() user: ILoginUserInfo, @Query() getQuery: CustomerServiceCouponRefreshReqDto) {
+    return this.customerServiceService.refreshCoupon(user, getQuery);
   }
 
   @ApiOperation({
@@ -231,9 +233,11 @@ export class CustomerServiceController {
     description: '성공적으로 return 한 경우',
   })
   // ===============================================
+  // 운영관리자 이상(SUPER_ADMIN·OPERATION_ADMIN) 전용 — 고객사(CORPORATE_ADMIN) 접근 차단
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @Post('/customer-service/re-send')
-  reSend(@Body() getBody: CustomerServiceReSendReqDto) {
-    return this.customerServiceService.reSend(getBody);
+  reSend(@User() user: ILoginUserInfo, @Body() getBody: CustomerServiceReSendReqDto) {
+    return this.customerServiceService.reSend(user, getBody);
   }
 
   @ApiOperation({
@@ -245,8 +249,8 @@ export class CustomerServiceController {
   })
   // ===============================================
   @Get('/customer-service/unmasked-delivery-target')
-  getUnmaskedDeliveryTarget(@Query() getQuery: CustomerServiceUnmaskedDeliveryTargetReqDto) {
-    return this.customerServiceService.getUnmaskedDeliveryTarget(getQuery);
+  getUnmaskedDeliveryTarget(@User() user: ILoginUserInfo, @Query() getQuery: CustomerServiceUnmaskedDeliveryTargetReqDto) {
+    return this.customerServiceService.getUnmaskedDeliveryTarget(user, getQuery);
   }
 
   @ApiOperation({
