@@ -143,6 +143,21 @@ export class PartnerCompanyBatchController {
     return result;
   }
 
+  @ApiOperation({ summary: '컬쳐랜드 일대사 사용목록 드라이런 (읽기 전용, DB 변경 없음)' })
+  @Get('batch/test-cultureland-daily-dry-run')
+  async testCulturelandDailyDryRun(
+    @Query('useDate') useDate?: string,
+    @Query('couponNum') couponNum?: string,
+  ) {
+    if (useDate && !/^\d{8}$/.test(useDate)) {
+      return { message: 'useDate를 YYYYMMDD 형식으로 입력해주세요.' };
+    }
+    this.logger.log(`[테스트] testCulturelandDailyDryRun 시작 - useDate=${useDate ?? '어제'}, couponNum=${couponNum ?? '-'}`);
+    const result = await this.partnerCompanyExternBatchService.testCulturelandDailyDryRun(useDate, couponNum);
+    this.logger.log(`[테스트] testCulturelandDailyDryRun 완료 - count=${result.count}`);
+    return result;
+  }
+
   @ApiOperation({ summary: '전체 CANCEL 상태 발송건 협력사 상태 검증 (읽기 전용, SSG 제외)' })
   @Get('batch/verify-all-cancelled')
   async verifyAllCancelled(@Query('partnerType') partnerType?: string) {

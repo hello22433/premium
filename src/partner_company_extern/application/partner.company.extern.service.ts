@@ -954,7 +954,15 @@ export class PartnerCompanyExternService {
         //   = 취소 완료 후 제거된 상품권으로 간주 (취소 처리 시 별도 "취소됨" 응답 코드가 없는
         //   컬쳐랜드 API 특성상 9003 을 CANCEL 시그널로 매핑)
         if (cultureLandOut.ResultCode === '9006') {
-          orderDelivery.couponStatus = OrderDeliveryCouponStatus.EXPIRED;
+          // 만료 응답(9006)엔 사용여부 정보가 없다(FaceValue/Balance/CancelPossibility 빈값).
+          // 이미 확정된 terminal(USED/CANCEL/REFUND_CANCEL) 상태는 만료가 덮어쓰지 않는다.
+          const isTerminal =
+            orderDelivery.couponStatus === OrderDeliveryCouponStatus.USED ||
+            orderDelivery.couponStatus === OrderDeliveryCouponStatus.CANCEL ||
+            orderDelivery.couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL;
+          if (!isTerminal) {
+            orderDelivery.couponStatus = OrderDeliveryCouponStatus.EXPIRED;
+          }
         } else if (cultureLandOut.ResultCode === '9003') {
           orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
           if (!orderDelivery.discardedAt) {

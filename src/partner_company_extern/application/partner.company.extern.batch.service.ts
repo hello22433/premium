@@ -569,6 +569,39 @@ export class PartnerCompanyExternBatchService {
     }
   }
 
+  // ===== 컬쳐랜드 일대사 사용목록 드라이런 (읽기 전용, DB 변경 없음) =====
+  async testCulturelandDailyDryRun(
+    useDate?: string,
+    couponNum?: string,
+  ): Promise<{
+    useDate: string;
+    count: number;
+    certNoList: string[];
+    match?: { exact: boolean; stripped: boolean };
+  }> {
+    this.logger.log(
+      `[testCulturelandDailyDryRun] 시작 - useDate=${useDate ?? '어제'}, couponNum=${couponNum ?? '-'}`,
+    );
+
+    const dailyResult = await this.culture.checkDaily({ useDate });
+    const { certNoList, useDate: resolvedUseDate } = dailyResult;
+
+    let match: { exact: boolean; stripped: boolean } | undefined;
+    if (couponNum) {
+      const strippedTarget = couponNum.replace(/\s/g, '');
+      match = {
+        exact: certNoList.includes(couponNum),
+        stripped: certNoList.some((c) => c.replace(/\s/g, '') === strippedTarget),
+      };
+    }
+
+    this.logger.log(
+      `[testCulturelandDailyDryRun] 완료 - useDate=${resolvedUseDate}, count=${certNoList.length}, match=${JSON.stringify(match)}`,
+    );
+
+    return { useDate: resolvedUseDate, count: certNoList.length, certNoList, match };
+  }
+
   // ===== CANCEL 상태 발송건 조회 (Keyset 페이지네이션, SSG 제외) =====
   private async fetchCancelledBatch(
     lastId: number,
