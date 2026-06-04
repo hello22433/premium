@@ -46,7 +46,7 @@ export class LoggerMiddleware implements NestMiddleware {
     if (lower.includes('bank') || lower.includes('card')) return '***';
     // 사업자등록번호 등 식별번호. 'business' 단독은 businessName(공개 상호) 과잉가림이라 조각 한정.
     if (lower.includes('businessnumber')) return MaskingUtil.maskBusinessNumber(value);
-    if (lower.includes('address') && !lower.includes('ip') && !lower.includes('mac')) return '***';
+    if (lower.includes('address') && !lower.includes('ip') && !lower.includes('mac') && !lower.includes('email')) return '***';
     if (lower.includes('phone') || lower.includes('mobile')) return MaskingUtil.maskPhoneNumber(value);
     if (lower === 'deliverytarget') return MaskingUtil.maskDeliveryTarget(value);
     if (lower.includes('email')) {
