@@ -173,6 +173,74 @@ describe('CustomerServiceService.execPinStatusModify — terminal / CAS / 트랜
     });
   });
 
+  describe('(E) mapPinStatusModify — 초이스쿠폰 businessName 라우팅 (F1)', () => {
+    const operator = { id: 9 } as any;
+    const makeMapSut = (orderDelivery: any) => {
+      const sut: any = Object.create(CustomerServiceService.prototype);
+      sut.orderDeliveryRepository = { findOne: jest.fn().mockResolvedValue(orderDelivery) };
+      return sut;
+    };
+
+    it('초이스쿠폰은 선택 상품 협력사를 businessName 으로 반환(원상품 아님) — 외부 cancel 분기로 정확히 라우팅', async () => {
+      const sut = makeMapSut({
+        couponStatus: OrderDeliveryCouponStatus.NOT_USED,
+        orderProductMapping: { product: { partnerCompany: { businessName: 'SSG' } } },
+        choiceSelectProduct: { partnerCompany: { businessName: '갤럭시아' } },
+      });
+
+      const map = await sut.mapPinStatusModify(operator, { orderDeliveryId: 5001, afterChange: 'CANCEL' });
+
+      // 원상품(SSG) 이 아니라 선택 상품(갤럭시아 = 실제 PIN 발행처) 으로 라우팅돼야 함
+      expect(map.businessName).toBe('갤럭시아');
+    });
+
+    it('초이스 없으면 원상품 협력사로 폴백', async () => {
+      const sut = makeMapSut({
+        couponStatus: OrderDeliveryCouponStatus.NOT_USED,
+        orderProductMapping: { product: { partnerCompany: { businessName: '컬쳐랜드' } } },
+        choiceSelectProduct: null,
+      });
+
+      const map = await sut.mapPinStatusModify(operator, { orderDeliveryId: 5001, afterChange: 'CANCEL' });
+
+      expect(map.businessName).toBe('컬쳐랜드');
+    });
+  });
+
+  describe('(F) default 분기 — 허용 상태 제한 (F2)', () => {
+    it('default 에서 afterChange 가 CANCEL/REFUND_CANCEL 이 아니면 거부 + Tx 미진입(상태컬럼 오염 방지)', async () => {
+      const { sut } = makeSut(1);
+
+      await expect(
+        sut.execPinStatusModify(
+          buildMap({
+            businessName: '알수없는협력사',
+            beforeChange: OrderDeliveryCouponStatus.NOT_USED,
+            afterChange: 'USED', // 임의/비허용 상태
+          }),
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+
+      expect(sut.dataSource.createQueryRunner).not.toHaveBeenCalled();
+    });
+
+    it('default 에서 CANCEL 은 정상 처리(CAS commit)', async () => {
+      const { sut, tx } = makeSut(1);
+
+      await expect(
+        sut.execPinStatusModify(
+          buildMap({
+            businessName: '알수없는협력사',
+            beforeChange: OrderDeliveryCouponStatus.NOT_USED,
+            afterChange: 'CANCEL',
+          }),
+        ),
+      ).resolves.toBeUndefined();
+
+      expect(tx.commitTransaction).toHaveBeenCalled();
+    });
+  });
+
   // queryRunner mock — manager.createQueryBuilder().update().set().where().execute() => {affected}
   function makeTxRunner(affected: number) {
     const ub: any = {};

@@ -1023,7 +1023,11 @@ export class CustomerServiceService {
     }
 
     return {
-      businessName: orderDelivery?.orderProductMapping?.product?.partnerCompany?.businessName,
+      // 초이스쿠폰은 선택 상품의 협력사가 실제 PIN 발행처 → choice 우선(외부 cancel/getPartnerType 과 동일 기준).
+      // 원상품만 보면 choice 발행처와 다른 분기로 라우팅돼 외부 cancel 없이 내부 상태만 바뀔 수 있음.
+      businessName: (
+        orderDelivery.choiceSelectProduct?.partnerCompany ?? orderDelivery.orderProductMapping?.product?.partnerCompany
+      )?.businessName,
       beforeChange: orderDelivery.couponStatus,
       afterChange: getBody.afterChange,
       type: '핀상태 변경',
@@ -1155,7 +1159,12 @@ export class CustomerServiceService {
 
         break;
       default:
-        // 협력사 미지정 등 — 상태만 보정(이력 없음, 현행 동작 보존). 경합 방지를 위해 CAS 적용.
+        // 협력사 미지정 등 — 상태만 보정(이력 없음). 허용 상태(CANCEL/REFUND_CANCEL)만 명시 제한:
+        // DTO @IsEnum 1차 차단 + 여기서 폐기/환불폐기로 2차 제한 → 임의 문자열의 상태 컬럼 오염 방지.
+        if (afterChange !== 'CANCEL' && afterChange !== 'REFUND_CANCEL') {
+          throw new BadRequestException('변경을 할 수 없는 핀상태입니다.');
+        }
+        // 경합 방지를 위해 CAS 적용.
         await this.commitPinStatusTransition(orderDelivery.id, beforeChange, { couponStatus: afterChange });
     }
 
