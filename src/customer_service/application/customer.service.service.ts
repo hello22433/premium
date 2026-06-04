@@ -408,8 +408,8 @@ export class CustomerServiceService {
       queryBuilder.andWhere('orderProductMapping.sendTitle LIKE :sendTitle', { sendTitle: `%${sendTitle}%` });
     }
 
-    // 협력사
-    if (partnerCompanyId) {
+    // 협력사 (초이스쿠폰은 partnerCompanyId=0 sentinel이므로 undefined/null만 미필터 처리)
+    if (partnerCompanyId != null) {
       queryBuilder.andWhere('product.partnerCompanyId = :partnerCompanyId', { partnerCompanyId });
     }
 
@@ -2057,7 +2057,8 @@ export class CustomerServiceService {
       queryBuilder.andWhere('orderProductMapping.sendTitle LIKE :sendTitle', { sendTitle: `%${sendTitle}%` });
     }
 
-    if (partnerCompanyId) {
+    // 협력사 (초이스쿠폰은 partnerCompanyId=0 sentinel이므로 undefined/null만 미필터 처리)
+    if (partnerCompanyId != null) {
       queryBuilder.andWhere('product.partnerCompanyId = :partnerCompanyId', { partnerCompanyId });
     }
 
