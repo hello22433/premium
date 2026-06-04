@@ -3423,6 +3423,7 @@ export class OrderService {
       .innerJoinAndSelect('product.brand', 'brand')
       .leftJoinAndSelect('product.classification', 'classification')
       .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
+      .setLock('pessimistic_write')
       .where('order.id = :id', { id })
       // .andWhere('order.userId = :userId', { userId: user.id })
       .andWhere('order.status = :status', { status: IOrderStatus.REVIEW_COMPLETE })

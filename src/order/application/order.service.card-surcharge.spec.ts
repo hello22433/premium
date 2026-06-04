@@ -595,6 +595,8 @@ describe('OrderService deliveryConfirmed settlement amount', () => {
 
     await service.deliveryConfirmed({ id: 1 } as any, { id: order.id } as any);
 
+    const orderQueryBuilder = service.orderRepository.createQueryBuilder.mock.results[0].value;
+    expect(orderQueryBuilder.setLock).toHaveBeenCalledWith('pessimistic_write');
     expect(order.settleAmount).toBe(18498);
     expect(service.userRepository.update).toHaveBeenCalledWith(
       { id: billingUser.id },
