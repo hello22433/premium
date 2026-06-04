@@ -1038,8 +1038,71 @@ export class CustomerServiceService {
    * 핀상태변경 API 서비스실행
    * @param map
    */
+  /**
+   * 핀상태 상태 전이 저장 — 조건부 UPDATE(CAS) + (옵션) 이력을 한 트랜잭션으로.
+   *
+   * - CAS: coupon_status 가 아직 beforeChange 일 때만 반영. 동시 요청이 save 로 서로 덮어쓰는
+   *   레이스(예: REFUND_CANCEL 을 CANCEL 로 둔갑)를 affected=0 으로 감지·차단(멱등).
+   * - 상태 전이와 이력을 한 트랜잭션으로 묶어 "상태만 바뀌고 이력 누락" 부분완료를 방지.
+   * - 폐기 execDiscard Tx1(상태 전이 CAS + history) 과 동일 패턴.
+   *   (외부 협력사 cancel 은 호출자가 트랜잭션 밖에서 선행 — HTTP 는 롤백 불가)
+   */
+  private async commitPinStatusTransition(
+    orderDeliveryId: number,
+    beforeChange: string,
+    set: { couponStatus: OrderDeliveryCouponStatus; discardedAt?: Date },
+    history?: { userId: number; type: string; content: string; afterChange: OrderDeliveryCouponStatus },
+  ): Promise<void> {
+    const qr = this.dataSource.createQueryRunner();
+    await qr.connect();
+    await qr.startTransaction();
+    try {
+      const transition = await qr.manager
+        .createQueryBuilder()
+        .update(OrderDeliveryEntity)
+        .set(set)
+        .where('id = :id AND coupon_status = :before', { id: orderDeliveryId, before: beforeChange })
+        .execute();
+
+      if (transition.affected === 0) {
+        // 다른 요청이 먼저 상태를 바꿈 → 늦은 요청은 덮어쓰지 않고 멱등 차단
+        throw new BadRequestException('이미 처리되어 변경할 수 없는 핀상태입니다.');
+      }
+
+      if (history) {
+        const historyEntity = this.orderHistoryRepository.create({
+          orderDeliveryId,
+          userId: history.userId,
+          type: history.type,
+          content: history.content,
+          beforeChange,
+          afterChange: history.afterChange,
+        });
+        await qr.manager.save(OrderHistoryEntity, historyEntity);
+      }
+
+      await qr.commitTransaction();
+    } catch (error) {
+      await qr.rollbackTransaction();
+      throw error;
+    } finally {
+      await qr.release();
+    }
+  }
+
   async execPinStatusModify(map: any) {
     const { businessName, beforeChange, afterChange, type, content, orderDelivery } = map;
+
+    // [공통 terminal 가드] 끝난 상태(USED/CANCEL/REFUND_CANCEL)는 어떤 협력사 분기든 재진입 금지.
+    // switch 앞에 두어 default 분기까지 전 경로를 덮는다 — 분기별 가드의 누락(REFUND_CANCEL 등)을 봉합.
+    // (EXPIRED 는 협력사=차단 / SSG=현행 보존으로 분기별 별도 처리. 폐기 execDiscard 와 동일 패턴)
+    if (
+      beforeChange === OrderDeliveryCouponStatus.USED ||
+      beforeChange === OrderDeliveryCouponStatus.CANCEL ||
+      beforeChange === OrderDeliveryCouponStatus.REFUND_CANCEL
+    ) {
+      throw new BadRequestException('현재 변경을 할 수 없는 핀상태입니다.');
+    }
 
     switch (businessName) {
       case 'GS엠비즈':
@@ -1048,31 +1111,24 @@ export class CustomerServiceService {
       case '갤럭시아':
       case '케이티알파':
       case '주식회사 다우기술':
-        if (beforeChange === 'USED' || beforeChange === 'CANCEL' || beforeChange === 'EXPIRED') {
+        // 협력사 쿠폰은 기간만료(EXPIRED)도 변경 불가 (terminal 공통 차단은 switch 앞에서 수행)
+        if (beforeChange === OrderDeliveryCouponStatus.EXPIRED) {
           throw new BadRequestException('현재 변경을 할 수 없는 핀상태입니다.');
         }
 
         if (afterChange === 'CANCEL' || afterChange === 'REFUND_CANCEL') {
-          const result = this.partnerCompanyExternService.cancel(orderDelivery);
+          // 외부 cancel 은 트랜잭션 밖에서 선행(HTTP 롤백 불가). 성공 응답 후에만 DB 반영.
+          const result = await this.partnerCompanyExternService.cancel(orderDelivery);
 
-          if ((await result).message === '폐기 완료') {
-            orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
-            orderDelivery.discardedAt = new Date();
-
-            await this.orderDeliveryRepository.save(orderDelivery);
-
-            const history = this.orderHistoryRepository.create({
-              orderDeliveryId: orderDelivery.id,
-              userId: map.userId,
-              type: type,
-              content: content,
-              beforeChange: beforeChange,
-              afterChange: OrderDeliveryCouponStatus.CANCEL,
-            });
-
-            await this.orderHistoryRepository.save(history);
+          if (result.message === '폐기 완료') {
+            await this.commitPinStatusTransition(
+              orderDelivery.id,
+              beforeChange,
+              { couponStatus: OrderDeliveryCouponStatus.CANCEL, discardedAt: new Date() },
+              { userId: map.userId, type, content, afterChange: OrderDeliveryCouponStatus.CANCEL },
+            );
           } else {
-            throw new InternalServerErrorException((await result).message);
+            throw new InternalServerErrorException(result.message);
           }
         } else {
           throw new BadRequestException('변경을 할 수 없는 핀상태입니다.');
@@ -1080,34 +1136,27 @@ export class CustomerServiceService {
 
         break;
       case 'SSG':
-        if (beforeChange === 'USED' || beforeChange === 'EXPIRED') {
+        // SSG 기간만료 정책은 현행 보존(전면 차단). 폐기(만료→환불폐기 허용)와의 비대칭은
+        // 의도/누락 확인이 필요한 별도 사안 — 본 작업(가드/CAS/트랜잭션)에서 동작 변경하지 않음.
+        if (beforeChange === OrderDeliveryCouponStatus.EXPIRED) {
           throw new BadRequestException('현재 변경을 할 수 없는 핀상태입니다.');
         }
 
         if (afterChange === 'CANCEL' || afterChange === 'REFUND_CANCEL') {
-          orderDelivery.couponStatus = afterChange;
-          orderDelivery.discardedAt = new Date();
-
-          await this.orderDeliveryRepository.save(orderDelivery);
-
-          const history = this.orderHistoryRepository.create({
-            orderDeliveryId: orderDelivery.id,
-            userId: orderDelivery.userId,
-            type: type,
-            content: content,
-            beforeChange: beforeChange,
-            afterChange: afterChange,
-          });
-
-          await this.orderHistoryRepository.save(history);
+          await this.commitPinStatusTransition(
+            orderDelivery.id,
+            beforeChange,
+            { couponStatus: afterChange, discardedAt: new Date() },
+            { userId: orderDelivery.userId, type, content, afterChange },
+          );
         } else {
           throw new BadRequestException('변경을 할 수 없는 핀상태입니다.');
         }
 
         break;
       default:
-        orderDelivery.couponStatus = afterChange;
-        await this.orderDeliveryRepository.save(orderDelivery);
+        // 협력사 미지정 등 — 상태만 보정(이력 없음, 현행 동작 보존). 경합 방지를 위해 CAS 적용.
+        await this.commitPinStatusTransition(orderDelivery.id, beforeChange, { couponStatus: afterChange });
     }
 
     return;
