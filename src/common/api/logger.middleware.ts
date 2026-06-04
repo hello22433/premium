@@ -16,7 +16,7 @@ export class LoggerMiddleware implements NestMiddleware {
   // 일회용 인증코드(body.code)를 쓰는 경로. 'code'는 productCode 등과 충돌하므로 이 경로에서만 redact.
   private authCodePaths = ['/user-find/reset-password/verify', '/user/login/email/verify', '/user/login/phone/verify'];
   // URL 쿼리스트링에서 값 redact할 민감 파라미터(소문자). encryptKey/code 등은 링크로 외부 전달되나 로그 집적 방지.
-  private sensitiveQueryParams = new Set(['encryptkey', 'sendencryptkey', 'code', 'token']);
+  private sensitiveQueryParams = new Set(['encryptkey', 'sendencryptkey', 'code', 'token', 'email']);
 
   private except(originalUrl: string) {
     return this.blacklist.includes(originalUrl);
@@ -28,33 +28,30 @@ export class LoggerMiddleware implements NestMiddleware {
   }
 
   /**
-   * 이름 부분 마스킹: 첫 글자만 노출, 나머지는 *
-   */
-  private maskName(name: string): string {
-    if (name.length <= 1) return '*';
-    return name.charAt(0) + '*'.repeat(name.length - 1);
-  }
-
-  /**
    * 키 이름 기반 PII 마스킹. 마스킹 대상이 아니면 undefined 반환.
    * - name류: 'name' 단독은 광범위 오탐 → 'personname' 등 2단어 합성어 조각 substring만.
    * - phone/email/token/bank: 충돌 적은 substring 매칭(소문자). 'tel'/'mail' 같은 짧은 조각은
    *   제외('phone'이 telephone, 'email'이 *Email을 이미 커버) → hotel/mailingAddress 오탐 차단.
-   * - email은 비이메일 값(@ 없음, 예: emailTitle/emailContent)에 maskEmail이 '' 반환해 소실되므로 redact.
+   * - address: ip/mac 제외(기술적 식별자) 후 물리 주소 전부 redact.
+   * - email: 정규식으로 이메일 패턴 추출 후 인플레이스 마스킹. 패턴 없으면 마스킹 안 함.
    */
   private maskByKey(key: string, value: unknown): string | undefined {
     if (typeof value !== 'string' || value.length === 0) return undefined;
     const lower = key.toLowerCase();
 
-    if (this.nameKeyParts.some((p) => lower.includes(p))) return this.maskName(value);
+    if (this.nameKeyParts.some((p) => lower.includes(p))) return MaskingUtil.maskPersonName(value);
     if (lower.includes('encryptkey') || lower.includes('token')) return '***';
-    if (lower.includes('bank')) return '***';
+    if (lower.includes('cardname') || lower.includes('bankname')) return MaskingUtil.maskBrandName(value);
+    if (lower.includes('cardnumber')) return MaskingUtil.maskCardNumber(value);
+    if (lower.includes('bank') || lower.includes('card')) return '***';
     // 사업자등록번호 등 식별번호. 'business' 단독은 businessName(공개 상호) 과잉가림이라 조각 한정.
-    if (lower.includes('businessnumber')) return '***';
+    if (lower.includes('businessnumber')) return MaskingUtil.maskBusinessNumber(value);
+    if (lower.includes('address') && !lower.includes('ip') && !lower.includes('mac')) return '***';
     if (lower.includes('phone') || lower.includes('mobile')) return MaskingUtil.maskPhoneNumber(value);
     if (lower === 'deliverytarget') return MaskingUtil.maskDeliveryTarget(value);
     if (lower.includes('email')) {
-      return value.includes('@') ? MaskingUtil.maskEmail(value) : '***';
+      const emailPattern = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g;
+      return emailPattern.test(value) ? value.replace(emailPattern, (m) => MaskingUtil.maskEmail(m)) : undefined;
     }
     return undefined;
   }
