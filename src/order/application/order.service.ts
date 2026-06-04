@@ -3415,6 +3415,27 @@ export class OrderService {
   ): Promise<OrderDeliveryConfirmed> {
     const { id } = getBody;
 
+    const lockedOrder = await this.orderRepository
+      .createQueryBuilder('order')
+      .setLock('pessimistic_write')
+      .where('order.id = :id', { id })
+      // .andWhere('order.userId = :userId', { userId: user.id })
+      .andWhere('order.status = :status', { status: IOrderStatus.REVIEW_COMPLETE })
+      .getOne();
+
+    if (!lockedOrder) {
+      throw new BadRequestException('해당 주문건은 존재하지 않거나, 검토완료 상태가 아닙니다.');
+    }
+
+    const currentUser = await this.getCurrentDeliveryTransitionUser(user.id);
+    if (!canTransitionDelivery(currentUser, lockedOrder)) {
+      throw new ForbiddenException('해당 주문에 대한 권한이 없습니다.');
+    }
+
+    if (getBody.forceConfirm && !canForceConfirmDelivery(currentUser)) {
+      throw new ForbiddenException('강제 발송확정 권한이 없습니다.');
+    }
+
     const order = await this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
@@ -3423,7 +3444,6 @@ export class OrderService {
       .innerJoinAndSelect('product.brand', 'brand')
       .leftJoinAndSelect('product.classification', 'classification')
       .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
-      .setLock('pessimistic_write')
       .where('order.id = :id', { id })
       // .andWhere('order.userId = :userId', { userId: user.id })
       .andWhere('order.status = :status', { status: IOrderStatus.REVIEW_COMPLETE })
@@ -3431,15 +3451,6 @@ export class OrderService {
 
     if (!order) {
       throw new BadRequestException('해당 주문건은 존재하지 않거나, 검토완료 상태가 아닙니다.');
-    }
-
-    const currentUser = await this.getCurrentDeliveryTransitionUser(user.id);
-    if (!canTransitionDelivery(currentUser, order)) {
-      throw new ForbiddenException('해당 주문에 대한 권한이 없습니다.');
-    }
-
-    if (getBody.forceConfirm && !canForceConfirmDelivery(currentUser)) {
-      throw new ForbiddenException('강제 발송확정 권한이 없습니다.');
     }
 
     OrderValidation(order);

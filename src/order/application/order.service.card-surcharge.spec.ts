@@ -5,6 +5,7 @@ import { addTransactionalDataSource, deleteDataSourceByName, initializeTransacti
 import { IPriceAdjustment } from '../../user_discount/interface/price.adjustment';
 import { IOrderType } from '../interface/order.type';
 import { WalletCutoverMode } from '../../wallet/config/wallet-cutover.config';
+import { BadRequestException } from '@nestjs/common';
 
 describe('OrderService card surcharge settlement priority', () => {
   beforeAll(() => {
@@ -548,8 +549,13 @@ describe('OrderService deliveryConfirmed settlement amount', () => {
       companyId: null,
     };
 
+    const lockedOrderQueryBuilder = createQueryBuilder(order);
+    const orderRelationQueryBuilder = createQueryBuilder(order);
+
     service.orderRepository = {
-      createQueryBuilder: jest.fn().mockReturnValue(createQueryBuilder(order)),
+      createQueryBuilder: jest.fn()
+        .mockReturnValueOnce(lockedOrderQueryBuilder)
+        .mockReturnValueOnce(orderRelationQueryBuilder),
       save: jest.fn().mockResolvedValue(order),
     };
     service.userRepository = {
@@ -595,13 +601,168 @@ describe('OrderService deliveryConfirmed settlement amount', () => {
 
     await service.deliveryConfirmed({ id: 1 } as any, { id: order.id } as any);
 
-    const orderQueryBuilder = service.orderRepository.createQueryBuilder.mock.results[0].value;
-    expect(orderQueryBuilder.setLock).toHaveBeenCalledWith('pessimistic_write');
+    expect(service.orderRepository.createQueryBuilder).toHaveBeenCalledTimes(2);
+    expect(lockedOrderQueryBuilder.setLock).toHaveBeenCalledWith('pessimistic_write');
+    expect(lockedOrderQueryBuilder.innerJoinAndSelect).not.toHaveBeenCalled();
+    expect(lockedOrderQueryBuilder.leftJoinAndSelect).not.toHaveBeenCalled();
+    expect(orderRelationQueryBuilder.setLock).not.toHaveBeenCalled();
+    expect(orderRelationQueryBuilder.innerJoinAndSelect).toHaveBeenCalledWith(
+      'order.orderProductMappings',
+      'orderProductMappings',
+    );
     expect(order.settleAmount).toBe(18498);
     expect(service.userRepository.update).toHaveBeenCalledWith(
       { id: billingUser.id },
       { balance: 50000 - 18498, allSettleAmount: 0 },
     );
     expect(order.settleAmount).not.toBe(18999);
+  });
+
+  it('deliveryConfirmed: 동일 주문 확정이 겹치면 상태 조건으로 두 번째 차감을 차단한다', async () => {
+    const service = Object.create(OrderService.prototype) as any;
+    const deliveries = [
+      {
+        id: 1,
+        deliveryTarget: '01011112222',
+        settleFee: 5,
+        settlePriceAdjustment: IPriceAdjustment.DISCOUNT,
+      },
+    ];
+    const order = {
+      id: 77,
+      userId: 1,
+      clientUserId: 2,
+      operationUserId: 1,
+      eventName: 'event',
+      type: IOrderType.GENERAL,
+      status: IOrderStatus.REVIEW_COMPLETE,
+      sendAmount: 9999,
+      cardSurchargeApplied: false,
+      isNewBillingFlow: true,
+      orderProductMappings: [
+        {
+          id: 10,
+          productId: 100,
+          amount: 1,
+          fee: 5,
+          priceAdjustment: IPriceAdjustment.DISCOUNT,
+          sendTitle: 'title',
+          sendContent: 'content',
+          product: {
+            price: 9999,
+            useStatus: 'USE',
+            partnerCompanyId: 20,
+            partnerCompany: {},
+            brand: {},
+          },
+          orderDeliveries: deliveries,
+        },
+      ],
+    } as any;
+    const billingUser = {
+      id: 2,
+      balance: 50000,
+      allSettleAmount: 0,
+      duplicatePhoneLimit: 0,
+      companyId: null,
+    };
+    let persistedStatus = IOrderStatus.REVIEW_COMPLETE;
+    let firstSaveFinished!: () => void;
+    const firstSaveFinishedPromise = new Promise<void>((resolve) => {
+      firstSaveFinished = resolve;
+    });
+
+    const createLockedOrderQueryBuilder = (waitBeforeRead = false) => ({
+      innerJoinAndSelect: jest.fn().mockReturnThis(),
+      leftJoinAndSelect: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      setLock: jest.fn().mockReturnThis(),
+      getOne: jest.fn().mockImplementation(async () => {
+        if (waitBeforeRead) {
+          await firstSaveFinishedPromise;
+        }
+
+        return persistedStatus === IOrderStatus.REVIEW_COMPLETE
+          ? { ...order, orderProductMappings: undefined }
+          : null;
+      }),
+      getOneOrFail: jest.fn(),
+    });
+    const relationQueryBuilder = createQueryBuilder(order);
+    const lockedQueryBuilders = [
+      createLockedOrderQueryBuilder(),
+      createLockedOrderQueryBuilder(true),
+    ];
+    let orderQueryCount = 0;
+
+    service.orderRepository = {
+      createQueryBuilder: jest.fn().mockImplementation(() => {
+        orderQueryCount += 1;
+        if (orderQueryCount === 1) {
+          return lockedQueryBuilders[0];
+        }
+        if (orderQueryCount === 2) {
+          return lockedQueryBuilders[1];
+        }
+        return relationQueryBuilder;
+      }),
+      save: jest.fn().mockImplementation(async (savedOrder) => {
+        persistedStatus = savedOrder.status;
+        firstSaveFinished();
+        return savedOrder;
+      }),
+    };
+    service.userRepository = {
+      findOne: jest.fn().mockResolvedValue({
+        id: 1,
+        authority: 'OPERATION_ADMIN',
+        status: 'USED',
+        authorityList: null,
+      }),
+      createQueryBuilder: jest.fn().mockReturnValue(createQueryBuilder(billingUser)),
+      update: jest.fn().mockResolvedValue({ affected: 1 }),
+    };
+    service.userCompanyRepository = {
+      update: jest.fn(),
+    };
+    service.userDiscountRepository = {
+      find: jest.fn().mockResolvedValue([]),
+    };
+    service.orderProductMappingRepository = {
+      save: jest.fn(),
+    };
+    service.orderDeliveryRepository = {
+      save: jest.fn().mockResolvedValue(undefined),
+    };
+    service.logger = {
+      debug: jest.fn(),
+      warn: jest.fn(),
+    };
+    service.cryptoCipher = { safeDecryptDeliveryTarget: (v: string) => v };
+    service.ssgEventService = { confirmEventBalance: jest.fn() };
+    service.walletCutoverConfig = {
+      get pr2DeliveryLifecycleMode() {
+        return WalletCutoverMode.LEGACY;
+      },
+    };
+    service.walletManagedPredicate = { isWalletManaged: jest.fn().mockResolvedValue(false) };
+    service.walletAccountResolverService = { resolveForOrder: jest.fn() };
+    service.paymentAllocationService = { allocate: jest.fn() };
+    service.orderConfirmationWalletService = { persistAllocation: jest.fn() };
+    service.orderConfirmationReleaseService = { releaseConfirmation: jest.fn() };
+    service.shadowMismatchClassifierService = { classify: jest.fn() };
+
+    const results = await Promise.allSettled([
+      service.deliveryConfirmed({ id: 1 } as any, { id: order.id } as any),
+      service.deliveryConfirmed({ id: 1 } as any, { id: order.id } as any),
+    ]);
+
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    const rejected = results.find((result) => result.status === 'rejected') as PromiseRejectedResult;
+    expect(rejected.reason).toBeInstanceOf(BadRequestException);
+    expect(service.userRepository.update).toHaveBeenCalledTimes(1);
+    expect(service.orderRepository.save).toHaveBeenCalledTimes(1);
+    expect(persistedStatus).toBe(IOrderStatus.DELIVERY_CONFIRMED);
   });
 });
