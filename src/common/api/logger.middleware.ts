@@ -16,7 +16,7 @@ export class LoggerMiddleware implements NestMiddleware {
   // 일회용 인증코드(body.code)를 쓰는 경로. 'code'는 productCode 등과 충돌하므로 이 경로에서만 redact.
   private authCodePaths = ['/user-find/reset-password/verify', '/user/login/email/verify', '/user/login/phone/verify'];
   // URL 쿼리스트링에서 값 redact할 민감 파라미터(소문자). encryptKey/code 등은 링크로 외부 전달되나 로그 집적 방지.
-  private sensitiveQueryParams = new Set(['encryptkey', 'sendencryptkey', 'code', 'token', 'email']);
+  private sensitiveQueryParams = new Set(['encryptkey', 'sendencryptkey', 'code', 'token']);
 
   private except(originalUrl: string) {
     return this.blacklist.includes(originalUrl);
@@ -33,7 +33,8 @@ export class LoggerMiddleware implements NestMiddleware {
    * - phone/email/token/bank: 충돌 적은 substring 매칭(소문자). 'tel'/'mail' 같은 짧은 조각은
    *   제외('phone'이 telephone, 'email'이 *Email을 이미 커버) → hotel/mailingAddress 오탐 차단.
    * - address: ip/mac 제외(기술적 식별자) 후 물리 주소 전부 redact.
-   * - email: 정규식으로 이메일 패턴 추출 후 인플레이스 마스킹. 패턴 없으면 마스킹 안 함.
+   * - email: 키가 'email'로 끝날 때만(endsWith). 정규식으로 이메일 주소 추출 후 인플레이스 마스킹.
+   *   패턴 없으면 undefined 반환(원문 보존). emailTitle 등 이메일 메타 필드 오탐 차단.
    */
   private maskByKey(key: string, value: unknown): string | undefined {
     if (typeof value !== 'string' || value.length === 0) return undefined;
@@ -43,15 +44,17 @@ export class LoggerMiddleware implements NestMiddleware {
     if (lower.includes('encryptkey') || lower.includes('token')) return '***';
     if (lower.includes('cardname') || lower.includes('bankname')) return MaskingUtil.maskBrandName(value);
     if (lower.includes('cardnumber')) return MaskingUtil.maskCardNumber(value);
-    if (lower.includes('bank') || lower.includes('card')) return '***';
+    if (lower.includes('bank') || lower.includes('card')) return MaskingUtil.maskBrandName(value);
     // 사업자등록번호 등 식별번호. 'business' 단독은 businessName(공개 상호) 과잉가림이라 조각 한정.
     if (lower.includes('businessnumber')) return MaskingUtil.maskBusinessNumber(value);
-    if (lower.includes('address') && !lower.includes('ip') && !lower.includes('mac') && !lower.includes('email')) return '***';
+    // 'mailing' 접두사는 공개 우편주소로 취급 → 오탐 제외.
+    if (lower.includes('address') && !lower.includes('ip') && !lower.includes('mac') && !lower.includes('email') && !lower.startsWith('mailing')) return '***';
     if (lower.includes('phone') || lower.includes('mobile')) return MaskingUtil.maskPhoneNumber(value);
     if (lower === 'deliverytarget') return MaskingUtil.maskDeliveryTarget(value);
-    if (lower.includes('email')) {
+    if (lower.endsWith('email')) {
       const emailPattern = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g;
-      return emailPattern.test(value) ? value.replace(emailPattern, (m) => MaskingUtil.maskEmail(m)) : undefined;
+      if (!emailPattern.test(value)) return undefined;
+      return value.replace(emailPattern, (m) => MaskingUtil.maskEmail(m));
     }
     return undefined;
   }
@@ -118,7 +121,8 @@ export class LoggerMiddleware implements NestMiddleware {
 
   /**
    * URL 쿼리스트링의 민감 파라미터 값을 redact (운영 한정 호출).
-   * encryptKey 등은 링크로 외부 전달되는 capability 토큰이나, 로그 집적 시 일괄 유출 방지.
+   * 1) sensitiveQueryParams: encryptKey 등 capability 토큰 → 무조건 redact.
+   * 2) maskByKey fallback: personName/personPhoneNumber/deliveryTarget 등 PII 필드 → 키 기반 마스킹.
    */
   private maskUrl(originalUrl: string): string {
     const q = originalUrl.indexOf('?');
@@ -131,17 +135,31 @@ export class LoggerMiddleware implements NestMiddleware {
         const eq = pair.indexOf('=');
         if (eq === -1) return pair;
         const k = pair.slice(0, eq);
-        return this.sensitiveQueryParams.has(this.decodeKey(k)) ? `${k}=***` : pair;
+        const decodedKey = this.decodeKey(k);
+        if (this.sensitiveQueryParams.has(decodedKey)) return `${k}=***`;
+        const rawVal = pair.slice(eq + 1);
+        let decodedVal: string;
+        try {
+          decodedVal = decodeURIComponent(rawVal);
+        } catch {
+          decodedVal = rawVal;
+        }
+        const maskedVal = this.maskByKey(decodedKey, decodedVal);
+        return maskedVal !== undefined ? `${k}=${maskedVal}` : pair;
       })
       .join('&');
     return `${path}?${masked}`;
   }
 
-  /** path 세그먼트 중 이메일(@ 또는 %40 포함)은 redact. 이메일은 명확 신호라 ID 오탐 없음. */
+  /** path 세그먼트 중 이메일(@ 또는 %40 포함)은 redact. /user-biz/:bizNo 세그먼트도 redact. */
   private maskPathSegments(path: string): string {
-    return path
-      .split('/')
-      .map((seg) => (seg.includes('@') || seg.toLowerCase().includes('%40') ? '***' : seg))
+    const segs = path.split('/');
+    return segs
+      .map((seg, i) => {
+        if (seg.includes('@') || seg.toLowerCase().includes('%40')) return '***';
+        if (i > 0 && segs[i - 1] === 'user-biz') return MaskingUtil.maskBusinessNumber(seg);
+        return seg;
+      })
       .join('/');
   }
 

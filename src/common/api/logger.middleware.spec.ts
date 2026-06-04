@@ -30,10 +30,11 @@ describe('LoggerMiddleware 마스킹', () => {
     });
 
     test('비밀번호 계열은 값 제거 후 has* 플래그만 남긴다', () => {
-      const r = sanitize({ password: 'pw', newPassword: 'np', confirmPassword: 'cp' });
+      const r = sanitize({ password: 'pw', newPassword: 'np', oldPassword: 'op', confirmPassword: 'cp' });
       expect(r.password).toBeUndefined();
       expect(r.hasPassword).toBe(true);
       expect(r.hasNewPassword).toBe(true);
+      expect(r.hasOldPassword).toBe(true);
       expect(r.hasConfirmPassword).toBe(true);
     });
 
@@ -50,9 +51,9 @@ describe('LoggerMiddleware 마스킹', () => {
       expect(r.newEmail).toContain('@test.com');
     });
 
-    test('이메일 키지만 @ 없는 값은 ***로 redact한다 (빈문자열 소실 방지)', () => {
-      const r = sanitize({ emailTitle: '가입을 축하합니다' });
-      expect(r.emailTitle).toBe('***');
+    test('email로 끝나는 키라도 @ 없으면 원문 보존한다', () => {
+      const r = sanitize({ userEmail: '이메일아님' });
+      expect(r.userEmail).toBe('이메일아님');
     });
 
     test('이름류(접두사 변형 포함)를 부분 마스킹한다', () => {
@@ -62,11 +63,38 @@ describe('LoggerMiddleware 마스킹', () => {
       expect(r.bankAccountOwner).toBe('이**');
     });
 
+    test('주소 필드를 redact한다', () => {
+      const r = sanitize({ homeAddress: '서울시 강남구', mailingAddress: '서울시' });
+      expect(r.homeAddress).toBe('***');
+      expect(r.mailingAddress).toBe('서울시');
+    });
+
+    test('카드번호를 부분 마스킹한다', () => {
+      const r = sanitize({ cardNumber: '1234-5678-9012-3456' });
+      expect(r.cardNumber).toBe('1234-****-****-3456');
+    });
+
+    test('deliveryTarget(전화번호)을 마스킹한다', () => {
+      const r = sanitize({ deliveryTarget: '01012345678' });
+      expect(r.deliveryTarget).toBe('010-****-5678');
+    });
+
+    test('deliveryTarget(이메일)을 마스킹한다', () => {
+      const r = sanitize({ deliveryTarget: 'hong@example.com' });
+      expect(r.deliveryTarget).not.toBe('hong@example.com');
+      expect(r.deliveryTarget).toContain('@example.com');
+    });
+
+    test('mobile 접두사 전화번호를 마스킹한다', () => {
+      const r = sanitize({ mobileNumber: '01012345678' });
+      expect(r.mobileNumber).toBe('010-****-5678');
+    });
+
     test('토큰/은행 필드를 redact한다', () => {
       const r = sanitize({ accessToken: 'abc.def', encryptKey: 'deadbeef', bankNumber: '110-123-456' });
       expect(r.accessToken).toBe('***');
       expect(r.encryptKey).toBe('***');
-      expect(r.bankNumber).toBe('***');
+      expect(r.bankNumber).toBe('*********56');
     });
 
     test('사업자등록번호는 redact, 상호(businessName)는 보존한다', () => {
@@ -75,7 +103,7 @@ describe('LoggerMiddleware 마스킹', () => {
         businessName: '이팝콘',
         businessPhoneNumber: '01012345678',
       });
-      expect(r.businessNumber).toBe('***');
+      expect(r.businessNumber).toBe('123-45-*****');
       expect(r.businessName).toBe('이팝콘');
       expect(r.businessPhoneNumber).toBe('010-****-5678');
     });
@@ -87,6 +115,7 @@ describe('LoggerMiddleware 마스킹', () => {
         hotelName: '신라호텔',
         mailingAddress: '서울시',
         fileName: 'a.png',
+        emailTitle: '가입을 축하합니다',
       };
       expect(sanitize(body)).toEqual(body);
     });
@@ -149,6 +178,63 @@ describe('LoggerMiddleware 마스킹', () => {
     test('percent-encoding으로 키를 숨겨도 디코드 후 redact한다 (우회 차단)', () => {
       // encrypt%4Bey => encryptKey
       expect(maskUrl('/x?encrypt%4Bey=secret')).toBe('/x?encrypt%4Bey=***');
+    });
+
+    test('sendEncryptKey 쿼리 파라미터를 redact한다', () => {
+      expect(maskUrl('/x?sendEncryptKey=abc123')).toBe('/x?sendEncryptKey=***');
+    });
+
+    test('email 쿼리 파라미터는 @ 있으면 부분 마스킹한다', () => {
+      const out = maskUrl('/user?email=hong@example.com');
+      expect(out).not.toContain('hong@example.com');
+      expect(out).toContain('@example.com');
+    });
+
+    test('email 쿼리 파라미터는 @ 없으면 원문 보존한다', () => {
+      expect(maskUrl('/x?email=invalid')).toBe('/x?email=invalid');
+    });
+
+    test('personName 쿼리 파라미터를 부분 마스킹한다', () => {
+      const out = maskUrl('/user-management?personName=홍길동&page=1');
+      expect(out).toContain('personName=홍**');
+      expect(out).toContain('page=1');
+    });
+
+    test('userPersonName 쿼리 파라미터를 부분 마스킹한다', () => {
+      const out = maskUrl('/user-management?userPersonName=김철수&page=1');
+      expect(out).toContain('userPersonName=김**');
+      expect(out).toContain('page=1');
+    });
+
+    test('personPhoneNumber 쿼리 파라미터를 마스킹한다', () => {
+      const out = maskUrl('/user-management?personPhoneNumber=01012345678');
+      expect(out).toContain('personPhoneNumber=010-****-5678');
+    });
+
+    test('deliveryTarget 쿼리 파라미터를 마스킹한다', () => {
+      const out = maskUrl('/customer-service?deliveryTarget=01012345678&status=COMPLETE');
+      expect(out).toContain('deliveryTarget=');
+      expect(out).not.toContain('01012345678');
+      expect(out).toContain('status=COMPLETE');
+    });
+
+    test('businessNumber 쿼리 파라미터를 부분 마스킹한다', () => {
+      const out = maskUrl('/corp?businessNumber=123-45-67890');
+      expect(out).toContain('businessNumber=123-45-*****');
+    });
+
+    test('cardNumber 쿼리 파라미터를 부분 마스킹한다', () => {
+      const out = maskUrl('/payment?cardNumber=1234567890123456');
+      expect(out).toContain('cardNumber=1234-****-****-3456');
+    });
+
+    test('/user-biz/:bizNo path 세그먼트를 redact한다', () => {
+      expect(maskUrl('/user-biz/123-45-67890')).toBe('/user-biz/123-45-*****');
+    });
+
+    test('/user-biz/:bizNo에 쿼리도 붙은 경우 path만 redact한다', () => {
+      const out = maskUrl('/user-biz/123-45-67890?foo=bar');
+      expect(out).toBe('/user-biz/123-45-*****?foo=bar');
     });
   });
 });
