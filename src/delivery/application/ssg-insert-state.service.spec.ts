@@ -42,6 +42,7 @@ describe('SsgInsertStateService', () => {
       into: jest.fn(() => chain),
       values: jest.fn(() => chain),
       orIgnore: jest.fn(() => chain),
+      updateEntity: jest.fn(() => chain),
       execute: jest.fn(executeImpl),
     };
     return chain;
@@ -120,6 +121,7 @@ describe('SsgInsertStateService', () => {
         state: SsgInsertState.ATTEMPTED,
       });
       expect(chain.orIgnore).toHaveBeenCalled();
+      expect(chain.updateEntity).toHaveBeenCalledWith(false);
       expect(issueLogRepository.insert).toHaveBeenCalledWith(
         expect.objectContaining({
           orderDeliveryId: 123,
@@ -217,7 +219,6 @@ describe('SsgInsertStateService', () => {
       const result = await sut.markConfirmed(123, sampleConfirm);
 
       expect(result).toBe(false);
-      // deliveryRepository.createQueryBuilder 는 호출되지 않아야 한다
       expect(deliveryRepository.createQueryBuilder).not.toHaveBeenCalled();
     });
   });

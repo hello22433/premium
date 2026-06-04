@@ -94,10 +94,17 @@ export class SsgInsertStateService {
       .into(OrderDeliverySsgInsertStateEntity)
       .values({ orderDeliveryId, state: SsgInsertState.ATTEMPTED })
       .orIgnore()
+      // orIgnore 가 기존 row 를 스킵하면 insertId 가 없다. createdAt/updatedAt 같은
+      // CreateDate/UpdateDate 컬럼 때문에 TypeORM 이 INSERT 후 entity 를 id 로 재조회하려다
+      // "Cannot update entity because entity id is not set" 로 throw 한다.
+      // 여기선 affectedRows 만 쓰므로 entity 갱신을 끈다 (재발송=FAILED row 존재 시 터지던 버그).
+      .updateEntity(false)
       .execute();
 
-    let transitioned = ((insertResult.raw as { affectedRows?: number } | undefined)?.affectedRows ?? 0) > 0;
-    if (!transitioned) {
+    const insertAffected = ((insertResult.raw as { affectedRows?: number } | undefined)?.affectedRows ?? 0) > 0;
+
+    let transitioned = insertAffected;
+    if (!insertAffected) {
       const updateResult = await this.stateRepository
         .createQueryBuilder()
         .update(OrderDeliverySsgInsertStateEntity)
