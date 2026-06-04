@@ -1,7 +1,6 @@
 import { Inject, Injectable, Logger, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { Transactional } from 'typeorm-transactional';
 import { PartnerCompanyExternHistoryEntity } from '../../entity/partner.company.extern.history.entity';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import {
@@ -24,6 +23,10 @@ import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.st
 import { IProductType } from '../../product/interface/product.type';
 import { DeliveryBatchService } from '../../delivery/application/delivery.batch.service';
 import { CreateResendTransactionId } from '../../order/domain/create.transaction.id';
+import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
+import { SsgInsertStateService } from '../../delivery/application/ssg-insert-state.service';
+import { SsgInsertState } from '../../delivery/interface/ssg.insert.state';
+import { SsgOrphanResolveOutcome } from '../../partner_company_extern/interface/ssg.orphan.resolve';
 
 // 재발송 가능한 실패 상태 목록
 const RESENDABLE_FAIL_STATUSES = [IOrderDeliveryStatus.FAIL, IOrderDeliveryStatus.FAIL_SMS];
@@ -51,6 +54,8 @@ export class PartnerCompanyExternHistoryService {
     private cryptoCipher: CryptoCipher,
     @Inject(forwardRef(() => DeliveryBatchService))
     private deliveryBatchService: DeliveryBatchService,
+    private readonly partnerCompanyExternService: PartnerCompanyExternService,
+    private readonly ssgInsertStateService: SsgInsertStateService,
   ) {}
 
   /**
@@ -308,98 +313,110 @@ export class PartnerCompanyExternHistoryService {
   }
 
   /**
-   * 발송 실패 건 재발송
-   * - PIN 미발급 (barCode 없음): issue() + oneSend() - 핀 발급 후 발송
-   * - PIN 발급됨 (barCode 있음): oneSend() 만 - 발송만 재시도
+   * 발송 실패 건 재발송 (배치 동시성 모델).
    *
-   * 비관적 락(SELECT FOR UPDATE)으로 동시 재발송 Race Condition 방지:
-   * - 첫 번째 요청: 락 획득 → 재발송 처리 → status 변경 → 커밋 → 락 해제
-   * - 두 번째 요청: 락 대기 → 획득 후 status 확인 → 이미 COMPLETE → 재발송 불가 반환
+   * 기존 SELECT FOR UPDATE + @Transactional 은 order_delivery 행을 잠근 채 oneSend()→issue() 의
+   * REQUIRES_NEW(markAttempted FK / markConfirmed order_delivery UPDATE) 를 호출해 self-deadlock 을
+   * 유발했다(lock wait timeout). 배치처럼 짧은 원자적 claimedAt 게이트로 동시성을 차단하고,
+   * 락 없는 상태로 oneSend() 를 호출한다.
+   *
+   * - claim: app 생성 claimAt 토큰을 저장. 30분 self-heal(크래시로 finally 못 탄 stale claim 만 재claim).
+   * - 모든 해제(성공/실패/예외/게이트 거부)는 owner guard(claimed_at=:claimAt) 조건부.
+   * - status 는 claim 중에도 FAIL/FAIL_SMS 유지(oneSend 의 wasFailBefore/환불 분기 보존).
+   * - SSG 재진입은 getState 로 분기(ATTEMPTED→orphan resolver, CONFIRMED→PIN 무결성, NONE/FAILED→새 PIN).
    */
-  @Transactional()
   async resendFailedDelivery(orderDeliveryId: number): Promise<ResendResultDto> {
+    // 1. 대상 조회 (락 없음). 동시 재발송은 아래 원자적 claim 으로 차단.
+    const target = await this.buildResendQuery(orderDeliveryId).getOne();
+    if (!target) {
+      return { success: false, message: '이미 처리 중이거나 재발송 대상이 아닙니다.', orderDeliveryId };
+    }
+
+    const product = target.orderProductMapping.product;
+    if (!product || (product.type === IProductType.CHOICE && product.deletedAt)) {
+      return { success: false, message: '삭제된 초이스 쿠폰은 재발송할 수 없습니다.', orderDeliveryId };
+    }
+
+    // 2. barCode 에 한글(=에러 메시지 저장값) → 미발급 취급
+    if (target.barCode && /[가-힣]/.test(target.barCode)) {
+      this.logger.warn(
+        `[resendFailedDelivery] barCode에 잘못된 값 감지, 초기화: "${target.barCode}" (orderDeliveryId: ${orderDeliveryId})`,
+      );
+      target.barCode = null;
+    }
+    const pinIssued = !!target.barCode;
+    const partnerCompanyType = target.orderProductMapping?.product?.partnerCompany?.type;
+    const isSsg = partnerCompanyType === IPartnerCompanyType.SSG;
+
+    this.logger.log(
+      `[resendFailedDelivery] orderDeliveryId: ${orderDeliveryId}, pinIssued: ${pinIssued}, partnerCompanyType: ${partnerCompanyType}`,
+    );
+
+    // SSG 는 barCode 있어도 SSG DB 미등록일 수 있으므로 oneSend 내부에서 재확인
+    const needsPinIssue = !pinIssued || isSsg;
+
+    // 3. 재발급 필요 시 transactionId 갱신(협력사 거래번호 중복 방지). 컬처랜드는 기존 유지.
+    let newTransactionId: string | undefined;
+    if (needsPinIssue && partnerCompanyType !== IPartnerCompanyType.CULTURELAND) {
+      const orderId = target.orderProductMapping?.order?.id;
+      if (!orderId) {
+        return { success: false, message: '주문 정보를 찾을 수 없습니다.', orderDeliveryId };
+      }
+      const retryMatch = target.transactionId?.match(/R(\d+)$/);
+      const retryCount = retryMatch ? parseInt(retryMatch[1], 10) + 1 : 1;
+      newTransactionId = CreateResendTransactionId(orderId, orderDeliveryId, retryCount);
+    }
+
+    // 4. 원자적 claim (owner 토큰 = app 생성 claimAt). 30분 self-heal: 크래시로 남은 stale claim 만 재claim.
+    const claimAt = new Date();
+    const staleThreshold = new Date(claimAt.getTime() - 30 * 60 * 1000);
+    const claimSet = { claimedAt: claimAt, ...(newTransactionId && { transactionId: newTransactionId }) };
+    const claimResult = await this.orderDeliveryRepository
+      .createQueryBuilder()
+      .update(OrderDeliveryEntity)
+      .set(claimSet)
+      .where('id = :id', { id: orderDeliveryId })
+      .andWhere('status IN (:...statuses)', { statuses: RESENDABLE_FAIL_STATUSES })
+      .andWhere('(claimedAt IS NULL OR claimedAt < :stale)', { stale: staleThreshold })
+      .execute();
+    if (!claimResult.affected) {
+      return { success: false, message: '이미 처리 중이거나 재발송 대상이 아닙니다.', orderDeliveryId };
+    }
+
+    // claim 소유. 모든 종료 경로에서 owner-guarded 해제 보장.
     try {
-      // 1. 비관적 락으로 orderDelivery 조회 (동시 재발송 방지)
-      // WHERE 조건에 실패 상태 포함 → 이미 처리된 건은 조회되지 않음
-      const orderDelivery = await this.orderDeliveryRepository
-        .createQueryBuilder('orderDelivery')
-        .setLock('pessimistic_write')
-        .leftJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
-        .leftJoinAndSelect('orderProductMapping.order', 'order')
-        .leftJoinAndSelect('order.user', 'user')
-        .leftJoinAndSelect('orderProductMapping.product', 'product')
-        .leftJoinAndSelect('product.brand', 'brand')
-        .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
-        .withDeleted()
-        .where('orderDelivery.id = :id', { id: orderDeliveryId })
-        .andWhere('orderDelivery.status IN (:...statuses)', { statuses: RESENDABLE_FAIL_STATUSES })
-        .getOne();
-
+      let orderDelivery = await this.buildResendQuery(orderDeliveryId).getOne();
       if (!orderDelivery) {
-        return {
-          success: false,
-          message: '이미 처리 중이거나 재발송 대상이 아닙니다.',
-          orderDeliveryId,
-        };
+        throw new Error('claim 후 재조회 실패');
       }
-
-      const product = orderDelivery.orderProductMapping.product;
-      if (!product || (product.type === IProductType.CHOICE && product.deletedAt)) {
-        return {
-          success: false,
-          message: '삭제된 초이스 쿠폰은 재발송할 수 없습니다.',
-          orderDeliveryId,
-        };
-      }
-
-      // 2. 핀 발급 여부 판단 (barCode 유무 + 유효성 확인)
-      // barCode에 한글이 포함된 경우 에러 메시지가 저장된 것이므로 무효 처리
+      // 한글 barCode 는 메모리에서도 미발급 취급 (oneSend/gate 판정용)
       if (orderDelivery.barCode && /[가-힣]/.test(orderDelivery.barCode)) {
-        this.logger.warn(
-          `[resendFailedDelivery] barCode에 잘못된 값 감지, 초기화: "${orderDelivery.barCode}" (orderDeliveryId: ${orderDeliveryId})`,
-        );
         orderDelivery.barCode = null;
       }
-      const pinIssued = !!orderDelivery.barCode;
-      const partnerCompanyType = orderDelivery.orderProductMapping?.product?.partnerCompany?.type;
 
-      this.logger.log(
-        `[resendFailedDelivery] orderDeliveryId: ${orderDeliveryId}, pinIssued: ${pinIssued}, partnerCompanyType: ${partnerCompanyType}`,
-      );
-
-      // 3. 재발송 처리
-      // SSG는 barCode가 있어도 SSG DB에 미등록 상태일 수 있으므로 oneSend() 내부에서 재확인
-      const needsPinIssue = !pinIssued || partnerCompanyType === IPartnerCompanyType.SSG;
-
-      // 재발급이 필요한 경우 transactionId 갱신 (협력사 거래번호 중복 방지)
-      // 컬처랜드는 실패 응답에도 내부적으로 PIN이 발급된 상태이므로 기존 transactionId 유지
-      if (needsPinIssue && partnerCompanyType !== IPartnerCompanyType.CULTURELAND) {
-        const orderId = orderDelivery.orderProductMapping?.order?.id;
-        if (!orderId) {
-          return {
-            success: false,
-            message: '주문 정보를 찾을 수 없습니다.',
-            orderDeliveryId,
-          };
+      // 5. SSG 재진입 게이트 (락 없음)
+      if (isSsg) {
+        const gate = await this.runSsgResendGate(orderDelivery);
+        if (!gate.proceed) {
+          await this.releaseClaim(orderDeliveryId, claimAt);
+          return { success: false, message: gate.message ?? '재발송을 진행할 수 없습니다.', orderDeliveryId };
         }
-        const retryMatch = orderDelivery.transactionId?.match(/R(\d+)$/);
-        const retryCount = retryMatch ? parseInt(retryMatch[1], 10) + 1 : 1;
-        orderDelivery.transactionId = CreateResendTransactionId(orderId, orderDeliveryId, retryCount);
-
-        this.logger.log(
-          `[resendFailedDelivery] transactionId 갱신: ${orderDelivery.transactionId}`,
-        );
+        if (gate.reloaded) {
+          orderDelivery = gate.reloaded;
+        }
       }
 
-      // oneSend()가 PIN 발급(필요시) + 이미지 생성 + 실제 발송을 모두 처리
-      // - PIN 미발급: reissuePinAndCreateImageIfNeeded() → issue() → 이미지 생성 → 발송
-      // - SSG: SSG DB 등록 여부 확인 후 필요시 INSERT → 이미지 생성 → 발송
-      // - PIN 발급됨 (비SSG): 이미지 확인 → 발송만 재시도
+      // 6. 발송 (락 없는 상태). oneSend 가 PIN 발급/확인 + 이미지 + 실제 발송 처리.
       const sendSuccess = await this.deliveryBatchService.oneSend(orderDelivery);
 
       if (sendSuccess) {
-        orderDelivery.resendAt = new Date();
-        await this.orderDeliveryRepository.save(orderDelivery);
+        // 부분 update(owner guard) — oneSend 가 중간 저장한 PIN/status/imagePath 를 stale entity 로 덮어쓰지 않음
+        await this.orderDeliveryRepository.update(
+          { id: orderDeliveryId, claimedAt: claimAt },
+          { resendAt: new Date(), claimedAt: null },
+        );
+      } else {
+        await this.releaseClaim(orderDeliveryId, claimAt);
       }
 
       let message: string;
@@ -412,16 +429,87 @@ export class PartnerCompanyExternHistoryService {
       } else {
         message = '발송 실패 - 알림톡/SMS/이메일 발송에 실패했습니다.';
       }
-
       return { success: sendSuccess, message, orderDeliveryId };
     } catch (e) {
+      await this.releaseClaim(orderDeliveryId, claimAt);
       const error = e instanceof Error ? e : new Error(String(e));
       this.logger.error(`[resendFailedDelivery] 재발송 실패: ${error.message}`, error.stack);
-      return {
-        success: false,
-        message: error.message || '재발송 중 오류가 발생했습니다.',
-        orderDeliveryId,
-      };
+      return { success: false, message: error.message || '재발송 중 오류가 발생했습니다.', orderDeliveryId };
     }
+  }
+
+  /** 재발송 대상 조회 쿼리(relation 포함, 재발송 가능 상태 필터). 락 없음. */
+  private buildResendQuery(orderDeliveryId: number) {
+    return this.orderDeliveryRepository
+      .createQueryBuilder('orderDelivery')
+      .leftJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
+      .leftJoinAndSelect('orderProductMapping.order', 'order')
+      .leftJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('orderProductMapping.product', 'product')
+      .leftJoinAndSelect('product.brand', 'brand')
+      .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .withDeleted()
+      .where('orderDelivery.id = :id', { id: orderDeliveryId })
+      .andWhere('orderDelivery.status IN (:...statuses)', { statuses: RESENDABLE_FAIL_STATUSES });
+  }
+
+  /** claim 해제 (owner guard). 내가 소유한 claim(claimedAt=:claimAt)만 해제. */
+  private async releaseClaim(orderDeliveryId: number, claimAt: Date): Promise<void> {
+    await this.orderDeliveryRepository.update(
+      { id: orderDeliveryId, claimedAt: claimAt },
+      { claimedAt: null },
+    );
+  }
+
+  /**
+   * SSG 재진입 게이트. oneSend() 전에 state 로 분기해 중복 INSERT / ATTEMPTED limbo / CONFIRMED PIN 유실을 처리.
+   * @returns proceed=false 면 caller 가 claim 해제 후 실패 반환. reloaded 있으면 그 엔티티로 oneSend.
+   */
+  private async runSsgResendGate(
+    orderDelivery: OrderDeliveryEntity,
+  ): Promise<{ proceed: boolean; message?: string; reloaded?: OrderDeliveryEntity }> {
+    const id = orderDelivery.id;
+    const state = await this.ssgInsertStateService.getState(id);
+
+    if (state === SsgInsertState.ATTEMPTED) {
+      // INSERT 응답 미확정. 새 PIN/INSERT 전에 SSG check 로 실제 등록 여부 확정.
+      const outcome = await this.partnerCompanyExternService.resolveSsgOrphan(id);
+      switch (outcome) {
+        case SsgOrphanResolveOutcome.CONFIRMED:
+          // markConfirmed 가 order_delivery PIN 복원 → 메모리 반영 위해 reload 후 기존 PIN 발송
+          return { proceed: true, reloaded: (await this.buildResendQuery(id).getOne()) ?? undefined };
+        case SsgOrphanResolveOutcome.FAILED:
+          // SSG 미등록 확정 → 새 PIN/INSERT 재시도
+          return { proceed: true };
+        default:
+          // NETWORK_UNKNOWN / SKIPPED_NO_CANDIDATES / SKIPPED_NOT_ATTEMPTED(race) → 미확정, 새 INSERT 금지
+          this.logger.warn(
+            `[resendFailedDelivery] SSG ATTEMPTED resolver outcome=${outcome} - 발송 보류. orderDeliveryId=${id}`,
+          );
+          return {
+            proceed: false,
+            message: 'SSG 등록 여부를 확정할 수 없습니다. 잠시 후 다시 시도하거나 운영 점검이 필요합니다.',
+          };
+      }
+    }
+
+    if (state === SsgInsertState.CONFIRMED) {
+      // SSG 등록 확정. PIN 정상이면 기존 PIN 발송(issue step1 이 SSG check 로 최종 검증).
+      if (orderDelivery.barCode && orderDelivery.personalCode) {
+        return { proceed: true };
+      }
+      // PIN 유실/깨짐 → ssg_issue_log(진실원천)에서 복원. 없으면 발송 보류(운영 점검).
+      const restored = await this.ssgInsertStateService.restoreConfirmedPinFromIssueLog(id);
+      if (restored) {
+        return { proceed: true, reloaded: (await this.buildResendQuery(id).getOne()) ?? undefined };
+      }
+      this.logger.error(
+        `[resendFailedDelivery] CONFIRMED 인데 PIN 유실 + 복원 후보 없음 - 운영 점검 필요. orderDeliveryId=${id}`,
+      );
+      return { proceed: false, message: 'PIN 정보가 유실되어 재발송할 수 없습니다. 운영 점검이 필요합니다.' };
+    }
+
+    // NONE / FAILED → 새 PIN 정상 경로
+    return { proceed: true };
   }
 }
