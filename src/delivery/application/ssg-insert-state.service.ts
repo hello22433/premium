@@ -206,4 +206,43 @@ export class SsgInsertStateService {
     const row = await this.stateRepository.findOne({ where: { orderDeliveryId } });
     return row?.state ?? SsgInsertState.NONE;
   }
+
+  /**
+   * CONFIRMED state 인데 order_delivery 의 PIN 컬럼이 유실/무효된 경우, 진실의 원천인
+   * ssg_issue_log(markAttempted 가 attempt 단위로 보존) 최신 usable row 로 order_delivery 를 복원한다.
+   *
+   * order_delivery.save() 가 stale 메모리 값으로 PIN 컬럼을 덮어쓸 수 있어(별 테이블 격리 정책의 배경),
+   * state=CONFIRMED 인데 barCode 가 비는 상황이 가능하다. 재발송이 이 상태로 issue() 를 타면 새 PIN 생성 →
+   * markAttempted SKIPPED_TERMINAL → SsgIssueAlreadyConfirmedError 로 stuck 되므로, 발송 전에 복원한다.
+   *
+   * @returns true = 복원 완료(usable row 존재), false = 복원 후보 없음(운영 점검 필요)
+   */
+  async restoreConfirmedPinFromIssueLog(orderDeliveryId: number): Promise<boolean> {
+    const candidates = await this.issueLogRepository.find({
+      where: { orderDeliveryId },
+      order: { id: 'DESC' },
+    });
+    const usable = candidates.find((c) => c.eventSeq !== null && c.barCode !== null && c.personalCode !== null);
+    if (!usable) {
+      this.logger.warn(
+        `[SSG_RESTORE] CONFIRMED PIN 복원 후보 없음 - orderDeliveryId=${orderDeliveryId}, candidates=${candidates.length}`,
+      );
+      return false;
+    }
+
+    await this.deliveryRepository
+      .createQueryBuilder()
+      .update(OrderDeliveryEntity)
+      .set({
+        barCode: usable.barCode,
+        personalCode: usable.personalCode,
+        ssgTransactionId: usable.ssgTransactionId,
+        couponNum: usable.couponNum,
+        expireAt: usable.expireAt,
+        encourageAt: usable.encourageAt,
+      })
+      .where('id = :id', { id: orderDeliveryId })
+      .execute();
+    return true;
+  }
 }
