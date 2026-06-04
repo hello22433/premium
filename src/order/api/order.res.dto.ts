@@ -298,6 +298,72 @@ export class OrderDeliveryConfirmed {
 
   @ApiPropertyOptional({ description: '신용초과 사전 승인 총 청구 금액 (= finalAmount)' })
   requestedAmount?: number;
+
+  // ===== Wallet PR3: success 응답 분배 상세 (WALLET 모드). LEGACY 는 0/null 통일 =====
+  @ApiPropertyOptional({ description: '적용된 포인트 사용액' })
+  pointUsedAmount?: number;
+
+  @ApiPropertyOptional({ description: '적용된 예치금 사용액' })
+  depositUsedAmount?: number;
+
+  @ApiPropertyOptional({ description: '여신 사용액' })
+  creditUsedAmount?: number;
+
+  @ApiPropertyOptional({ description: '신용초과 금액' })
+  creditExcessAmount?: number;
+
+  @ApiPropertyOptional({ description: '카드할증 기준 금액' })
+  cardSurchargeBase?: number;
+
+  @ApiPropertyOptional({ description: '카드할증 금액' })
+  cardSurchargeAmount?: number;
+
+  @ApiPropertyOptional({ description: '최종 결제 금액 (= base + surcharge)' })
+  payableSettlementAmount?: number;
+}
+
+export class OrderAllocationPreviewResDto {
+  @ApiProperty({ description: 'wallet_account ID (BIGINT 직렬화 string)' })
+  walletAccountId: string;
+
+  @ApiProperty({ description: '선/후정산', enum: ['PRE_PAYMENT', 'POST_PAYMENT'] })
+  settleCondition: 'PRE_PAYMENT' | 'POST_PAYMENT';
+
+  @ApiProperty({ description: '총 정산 기준금액' })
+  grossSettlementAmount: number;
+
+  @ApiProperty({ description: '포인트 사용 가능 금액 (ALLOW 라인 합)' })
+  pointAllowableAmount: number;
+
+  @ApiProperty({ description: '포인트 사용 불가 금액 (DENY 라인 합)' })
+  pointDeniedAmount: number;
+
+  @ApiProperty({ description: '적용된 포인트 사용액' })
+  pointUsedAmount: number;
+
+  @ApiProperty({ description: '예치금 현재 잔액' })
+  depositBalance: number;
+
+  @ApiProperty({ description: '적용된 예치금 사용액' })
+  depositUsedAmount: number;
+
+  @ApiProperty({ description: '여신 사용액' })
+  creditUsedAmount: number;
+
+  @ApiProperty({ description: '신용초과 금액' })
+  creditExcessAmount: number;
+
+  @ApiProperty({ description: '카드할증 적용 여부' })
+  cardSurchargeApplied: boolean;
+
+  @ApiProperty({ description: '카드할증 기준 금액' })
+  cardSurchargeBase: number;
+
+  @ApiProperty({ description: '카드할증 금액' })
+  cardSurchargeAmount: number;
+
+  @ApiProperty({ description: '최종 결제 금액 (= base + surcharge)' })
+  payableSettlementAmount: number;
 }
 
 export class OrderGetSettleGetListResDto extends GetListResDto {
@@ -327,6 +393,21 @@ export class OrderGetSettleGetListResDto extends GetListResDto {
     description: '전체 할인 후 총 금액 (페이지네이션과 무관한 전체 합계)',
   })
   totalDiscountAmount: number;
+
+  @ApiProperty({
+    description: '카드할증 산정 기준액 (할인 후 총액 = totalDiscountAmount)',
+  })
+  cardSurchargeBase: number;
+
+  @ApiProperty({
+    description: '카드할증액 (10원 절사 포함). 미적용 시 0',
+  })
+  cardSurchargeAmount: number;
+
+  @ApiProperty({
+    description: '카드할증 포함 최종 결제 금액 (= cardSurchargeBase + cardSurchargeAmount)',
+  })
+  payableSettlementAmount: number;
 }
 
 export class OrderGetMyOrderHistoryResDto extends OrderDashboardViewDto {}

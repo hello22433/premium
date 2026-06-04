@@ -2,6 +2,7 @@ import { PagingReqDto } from '../../common/api/dto/pagination.req.dto';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IsInt, IsNotEmpty, IsNumber, IsOptional, Matches, Min } from 'class-validator';
 import { dateAtRegexp } from '../../common/domain/date.regexp';
+import { Type } from 'class-transformer';
 
 export class SsgEventGetListReqDto extends PagingReqDto {
   @ApiPropertyOptional({ description: '생성 시작일 ex) yyyy-MM-ddTHH:mm:ss' })
@@ -118,6 +119,7 @@ export class SsgEventUpdateAmountReqDto {
 export class SsgEventRemoteAmountReqDto {
   @ApiProperty({ description: 'event id (ssg_event PK)' })
   @IsNotEmpty()
+  @Type(() => Number)
   @IsNumber()
   id: number;
 }

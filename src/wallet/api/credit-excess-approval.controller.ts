@@ -2,17 +2,22 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Get,
   Param,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { IsInt, IsNotEmpty, IsString, MaxLength, Min } from 'class-validator';
+import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiProperty, ApiPropertyOptional, ApiTags } from '@nestjs/swagger';
+import { IsEnum, IsInt, IsNotEmpty, IsOptional, IsString, MaxLength, Min } from 'class-validator';
 import { User } from '../../auth/api/user.decorator';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
 import { AuthUserSuperAndOperationAdminGuard } from '../../auth/api/auth.user.super-operation-admin.guard';
 import { CreditExcessApprovalService } from '../application/credit-excess-approval.service';
+import { CreditExcessApprovalStatus } from '../../entity/credit.excess.approval.entity';
+import { PagingReqDto } from '../../common/api/dto/pagination.req.dto';
+import { GetListResDto } from '../../common/api/dto/get.list.res.dto';
 
 /**
  * 신용초과 4단계 워크플로 API (plan v2.1 Open Decision 2 + PR2 Critic HIGH 2 fix).
@@ -54,12 +59,73 @@ export class CreditExcessApprovalRejectReqDto {
   rejectReason: string;
 }
 
+export class CreditExcessApprovalListReqDto extends PagingReqDto {
+  @ApiPropertyOptional({
+    enum: CreditExcessApprovalStatus,
+    description: '상태 필터 (기본 PENDING)',
+  })
+  @IsOptional()
+  @IsEnum(CreditExcessApprovalStatus)
+  status?: CreditExcessApprovalStatus;
+}
+
+export class CreditExcessApprovalListItemResDto {
+  @ApiProperty({ description: '승인 ID' })
+  id: string;
+
+  @ApiProperty({ description: '주문 ID' })
+  orderId: number;
+
+  @ApiProperty({ description: '요청자 이름' })
+  requesterName: string;
+
+  @ApiProperty({ description: '요청자 회사명' })
+  requesterCompanyName: string;
+
+  @ApiProperty({ description: '요청 시각 (ISO, UTC)' })
+  requestedAt: string;
+
+  @ApiProperty({ description: '총 청구 금액' })
+  requestedAmount: number;
+
+  @ApiProperty({ description: '신용초과 금액' })
+  requestedCreditExcessAmount: number;
+
+  @ApiProperty({ description: '사유' })
+  reasonText: string;
+
+  @ApiProperty({ enum: CreditExcessApprovalStatus, description: '상태' })
+  status: CreditExcessApprovalStatus;
+
+  @ApiPropertyOptional({ description: '승인/거절자 이름', nullable: true })
+  approverName?: string | null;
+
+  @ApiPropertyOptional({ description: '거절 사유', nullable: true })
+  rejectReason?: string | null;
+}
+
+export class CreditExcessApprovalListResDto extends GetListResDto {
+  @ApiProperty({ type: [CreditExcessApprovalListItemResDto], description: '승인 목록' })
+  list: CreditExcessApprovalListItemResDto[];
+}
+
 @ApiBearerAuth()
 @ApiTags('credit-excess-approvals')
 @Controller('credit-excess-approvals')
 @UseGuards(AuthUserAuthorizationGuard)
 export class CreditExcessApprovalController {
   constructor(private readonly service: CreditExcessApprovalService) {}
+
+  /**
+   * Step C — 사전 승인 목록 조회 (운영관리자). status 기본 PENDING.
+   */
+  @Get()
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
+  @ApiOperation({ summary: '신용초과 사전 승인 목록 조회 (Step C)' })
+  @ApiOkResponse({ type: CreditExcessApprovalListResDto, description: '승인 목록 + 페이지네이션 메타' })
+  list(@Query() query: CreditExcessApprovalListReqDto): Promise<CreditExcessApprovalListResDto> {
+    return this.service.list(query);
+  }
 
   /**
    * Step B — 기업관리자가 사유 입력 후 사전 승인 요청 (PENDING row 생성).

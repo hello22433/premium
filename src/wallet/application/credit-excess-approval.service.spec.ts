@@ -144,10 +144,11 @@ describe('CreditExcessApprovalService — 4단계 워크플로', () => {
       id: 'a1',
       orderId: 1,
       requestedCreditExcessAmount: 5000,
+      requestedAmount: 10000,
       status: CreditExcessApprovalStatus.APPROVED,
       consumedAt: null,
     } as any);
-    await expect(sut.consume('a1', 1, 5000)).resolves.toBeUndefined();
+    await expect(sut.consume('a1', 1, 5000, 10000)).resolves.toBeUndefined();
   });
 
   it('Step D consume — orderId 불일치 → Forbidden', async () => {
@@ -155,10 +156,11 @@ describe('CreditExcessApprovalService — 4단계 워크플로', () => {
       id: 'a1',
       orderId: 1,
       requestedCreditExcessAmount: 5000,
+      requestedAmount: 10000,
       status: CreditExcessApprovalStatus.APPROVED,
       consumedAt: null,
     } as any);
-    await expect(sut.consume('a1', 999, 5000)).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(sut.consume('a1', 999, 5000, 10000)).rejects.toBeInstanceOf(ForbiddenException);
   });
 
   it('Step D consume — amount 불일치 → Forbidden', async () => {
@@ -166,10 +168,11 @@ describe('CreditExcessApprovalService — 4단계 워크플로', () => {
       id: 'a1',
       orderId: 1,
       requestedCreditExcessAmount: 5000,
+      requestedAmount: 10000,
       status: CreditExcessApprovalStatus.APPROVED,
       consumedAt: null,
     } as any);
-    await expect(sut.consume('a1', 1, 9999)).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(sut.consume('a1', 1, 9999, 10000)).rejects.toBeInstanceOf(ForbiddenException);
   });
 
   it('Step D consume — 이미 consumed → Forbidden (race) 시 affectedRows=0', async () => {
@@ -177,6 +180,7 @@ describe('CreditExcessApprovalService — 4단계 워크플로', () => {
       id: 'a1',
       orderId: 1,
       requestedCreditExcessAmount: 5000,
+      requestedAmount: 10000,
       status: CreditExcessApprovalStatus.APPROVED,
       consumedAt: null,
     } as any);
@@ -186,6 +190,18 @@ describe('CreditExcessApprovalService — 4단계 워크플로', () => {
       where: jest.fn().mockReturnThis(),
       execute: jest.fn().mockResolvedValue({ affected: 0 }),
     });
-    await expect(sut.consume('a1', 1, 5000)).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(sut.consume('a1', 1, 5000, 10000)).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('Step D consume — requestedAmount(총액) 불일치 → Forbidden', async () => {
+    repo.findOne.mockResolvedValue({
+      id: 'a1',
+      orderId: 1,
+      requestedCreditExcessAmount: 5000,
+      requestedAmount: 10000,
+      status: CreditExcessApprovalStatus.APPROVED,
+      consumedAt: null,
+    } as any);
+    await expect(sut.consume('a1', 1, 5000, 99999)).rejects.toBeInstanceOf(ForbiddenException);
   });
 });

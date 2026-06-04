@@ -408,8 +408,8 @@ export class CustomerServiceService {
       queryBuilder.andWhere('orderProductMapping.sendTitle LIKE :sendTitle', { sendTitle: `%${sendTitle}%` });
     }
 
-    // 협력사
-    if (partnerCompanyId) {
+    // 협력사 (초이스쿠폰은 partnerCompanyId=0 sentinel이므로 undefined/null만 미필터 처리)
+    if (partnerCompanyId != null) {
       queryBuilder.andWhere('product.partnerCompanyId = :partnerCompanyId', { partnerCompanyId });
     }
 
@@ -802,6 +802,16 @@ export class CustomerServiceService {
     const partnerType = this.getPartnerType(orderDelivery);
     const beforeChange = orderDelivery.couponStatus;
 
+    // terminal 상태(USED/CANCEL/REFUND_CANCEL)는 모든 협력사 분기 공통으로 차단 — 이미 폐기/사용된 건의 재진입 방지.
+    // (EXPIRED 는 협력사=차단 / SSG=환불폐기 허용으로 분기별 별도 처리. default 분기 누락 방지를 위해 switch 앞에 둔다)
+    if (
+      beforeChange === OrderDeliveryCouponStatus.USED ||
+      beforeChange === OrderDeliveryCouponStatus.CANCEL ||
+      beforeChange === OrderDeliveryCouponStatus.REFUND_CANCEL
+    ) {
+      throw new BadRequestException('현재 변경을 할 수 없는 핀상태입니다.');
+    }
+
     // 외부 API 폐기 처리 (트랜잭션 밖에서 실행)
     switch (partnerType) {
       case 'GS_M_BIZ':
@@ -810,7 +820,8 @@ export class CustomerServiceService {
       case 'GALAXIA':
       case 'GIFTIEL':
       case 'DAOU': {
-        if (beforeChange === 'USED' || beforeChange === 'CANCEL' || beforeChange === 'EXPIRED') {
+        // 협력사 쿠폰은 EXPIRED(기간만료)도 폐기 불가 (terminal 공통 차단은 switch 앞에서 이미 수행)
+        if (beforeChange === 'EXPIRED') {
           throw new BadRequestException('현재 변경을 할 수 없는 핀상태입니다.');
         }
 
@@ -831,10 +842,7 @@ export class CustomerServiceService {
         break;
       }
       case 'SSG': {
-        if (beforeChange === 'USED') {
-          throw new BadRequestException('현재 변경을 할 수 없는 핀상태입니다.');
-        }
-
+        // terminal 공통 차단은 switch 앞에서 수행. SSG는 EXPIRED 일 때 환불폐기(REFUND_CANCEL)만 허용
         if (beforeChange === 'EXPIRED' && couponStatus !== OrderDeliveryCouponStatus.REFUND_CANCEL) {
           throw new BadRequestException('기간만료 상태에서는 환불폐기만 가능합니다.');
         }
@@ -858,9 +866,24 @@ export class CustomerServiceService {
     await tx1.connect();
     await tx1.startTransaction();
     try {
+      // 메모리 값 갱신 (Tx2 restoreBalanceOnDiscard 등 후속 로직이 orderDelivery.couponStatus 를 읽음)
       orderDelivery.couponStatus = couponStatus;
       orderDelivery.discardedAt = new Date();
-      await tx1.manager.save(OrderDeliveryEntity, orderDelivery);
+
+      // 상태 전이는 조건부 UPDATE(CAS)로 저장 — coupon_status 가 아직 beforeChange 일 때만 반영.
+      // 동시 폐기 요청 시 둘 다 save 로 덮어쓰는 레이스를 affected=0 으로 감지·차단(멱등).
+      // (코드베이스 관례: settle.service 상태전이, ssg-insert-state.markAttempted 와 동일 패턴)
+      const transition = await tx1.manager
+        .createQueryBuilder()
+        .update(OrderDeliveryEntity)
+        .set({ couponStatus, discardedAt: orderDelivery.discardedAt })
+        .where('id = :id AND coupon_status = :before', { id: orderDelivery.id, before: beforeChange })
+        .execute();
+
+      if (transition.affected === 0) {
+        // 다른 요청이 먼저 폐기를 반영함 → 늦은 요청은 중복 처리 차단
+        throw new BadRequestException('이미 폐기 처리된 발송입니다.');
+      }
 
       if (historyData) {
         const history = this.orderHistoryRepository.create({
@@ -1891,7 +1914,19 @@ export class CustomerServiceService {
           // 5. 트랜잭션: couponStatus 저장 + 복구 + CS 히스토리 (건별 트랜잭션)
           await queryRunner.startTransaction();
           try {
-            await queryRunner.manager.save(OrderDeliveryEntity, orderDelivery);
+            // 상태 전이는 조건부 UPDATE(CAS) — coupon_status 가 아직 beforeChange 일 때만 반영.
+            // bulk 와 pin/history 폐기 경합 시 stale save 가 동시 REFUND_CANCEL 을 CANCEL 로 덮는 것을 차단(멱등).
+            const transition = await queryRunner.manager
+              .createQueryBuilder()
+              .update(OrderDeliveryEntity)
+              .set({ couponStatus: OrderDeliveryCouponStatus.CANCEL, discardedAt: orderDelivery.discardedAt })
+              .where('id = :id AND coupon_status = :before', { id: orderDelivery.id, before: beforeChange })
+              .execute();
+
+            if (transition.affected === 0) {
+              // 다른 요청이 먼저 상태를 바꿈 → 덮어쓰지 않고 이 건만 실패 처리(아래 catch 로 전파)
+              throw new BadRequestException('동시에 상태가 변경되어 폐기하지 못했습니다.');
+            }
 
             // 예치금/여신 복구
             await this.restoreBalanceOnDiscard(orderDelivery, user, queryRunner, operatorName);
@@ -2022,7 +2057,8 @@ export class CustomerServiceService {
       queryBuilder.andWhere('orderProductMapping.sendTitle LIKE :sendTitle', { sendTitle: `%${sendTitle}%` });
     }
 
-    if (partnerCompanyId) {
+    // 협력사 (초이스쿠폰은 partnerCompanyId=0 sentinel이므로 undefined/null만 미필터 처리)
+    if (partnerCompanyId != null) {
       queryBuilder.andWhere('product.partnerCompanyId = :partnerCompanyId', { partnerCompanyId });
     }
 

@@ -37,6 +37,7 @@ import {
   OrderUpdateUseEmailContentReqBodyDto,
   OrderTransactionStatementEmailReqDto,
   OrderDestructionCertificateEmailReqDto,
+  OrderAllocationPreviewReqDto,
 } from '../api/order.req.dto';
 import {
   OrderCreateTempResDto,
@@ -53,10 +54,11 @@ import {
   OrderGetOrderCompleteReportResDto,
   OrderGetPreviousContentResDto,
   OrderGetSettleGetListResDto,
+  OrderAllocationPreviewResDto,
 } from '../api/order.res.dto';
 import { OrderEntity } from '../../entity/order.entity';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, LessThanOrEqual, Like, MoreThanOrEqual, QueryRunner, Repository } from 'typeorm';
+import { In, LessThanOrEqual, Like, MoreThan, MoreThanOrEqual, QueryRunner, Repository } from 'typeorm';
 import { QueryBuilderDateCondition } from '../../common/infra/query.builder.date.condition';
 import { OrderViewDto } from '../api/dto/order.view.dto';
 import { DateDateFormatStr, DateFormatStr } from '../../common/domain/date.format.str';
@@ -136,10 +138,14 @@ import { WalletManagedPredicate } from '../../wallet/application/wallet-managed.
 import { WalletAccountResolverService } from '../../wallet/application/wallet-account-resolver.service';
 import {
   AllocationInput,
+  AllocationInputGrant,
   AllocationLineInput,
   AllocationResult,
   PaymentAllocationService,
 } from '../../wallet/application/payment-allocation.service';
+import { PointPolicyService } from '../../wallet/application/point-policy.service';
+import { PointPolicyEffect } from '../../wallet/interface/point-policy-scope';
+import { PointGrantEntity } from '../../entity/point.grant.entity';
 import { OrderConfirmationWalletService } from '../../wallet/application/order-confirmation-wallet.service';
 import { OrderConfirmationReleaseService } from '../../wallet/application/order-confirmation-release.service';
 import { ShadowMismatchClassifierService } from '../../wallet/application/shadow-mismatch-classifier.service';
@@ -248,27 +254,53 @@ export class OrderService {
     private readonly orderConfirmationWalletService: OrderConfirmationWalletService,
     private readonly orderConfirmationReleaseService: OrderConfirmationReleaseService,
     private readonly shadowMismatchClassifierService: ShadowMismatchClassifierService,
+    private readonly pointPolicyService: PointPolicyService,
+    @InjectRepository(PointGrantEntity)
+    private readonly pointGrantRepository: Repository<PointGrantEntity>,
   ) {}
 
   /**
-   * Wallet Cutover Bundle (PR2-005) — order → AllocationInput 변환.
+   * Wallet Cutover Bundle — order → AllocationInput 변환.
    *
-   * 라인 단위 gross 는 `calculateSettlementPrice(mapping, false, delivery)` 를 사용.
-   * 카드할증은 주문 단위 1회 적용 (PaymentAllocationService 내부) → false 로 계산.
-   *
-   * - pointPolicyEffect: PR2-005 범위에서는 'ALLOW' default. 정책 평가는 PR2-008+ 통합.
-   *   TODO(src/wallet/application/point-policy.service.ts): 라인별 PointPolicyService.evaluate 호출.
-   * - requestedPointAmount: 현재 UI 미노출 → 0. TODO(plans/01_Wallet.md): 포인트 UI 통합.
-   * - grants: requestedPointAmount=0 이므로 빈 배열.
+   * - 라인 단위 gross: `calculateSettlementPrice(mapping, false, delivery)`
+   * - 카드할증: 주문 단위 1회 적용 (PaymentAllocationService 내부) → false 로 계산
+   * - pointPolicyEffect: PointPolicyService.evaluate 로 라인별 ALLOW/DENY 평가
+   * - 예치금: 선정산 = 자동 전액, 후정산 = depositUseEnabled 토글 기준
+   * - grants: requestedPointAmount > 0 일 때만 DB 조회
    */
-  private buildWalletAllocationInput(
+  private async buildWalletAllocationInput(
     order: OrderEntity,
     wallet: { id: string; depositBalance: number; creditLimit: number; creditUsedAmount: number; settleCondition: 'PRE_PAYMENT' | 'POST_PAYMENT' },
     finalAmount: number,
-  ): AllocationInput {
+    opts: {
+      requestedPointAmount?: number;
+      depositUseEnabled?: boolean;
+      depositUseAmount?: number;
+      companyId: number | null;
+    },
+  ): Promise<AllocationInput> {
     void finalAmount; // allocate() 가 라인 합으로 다시 계산 — 호출자가 일관성 검증용으로만 사용
+    const isPrePayment = wallet.settleCondition === 'PRE_PAYMENT';
+
+    // 라인별 포인트 정책(ALLOW/DENY) 평가. 같은 매핑은 scope 동일 → 매핑 단위 캐시로 중복 쿼리 방지.
+    const effectByMapping = new Map<number, PointPolicyEffect>();
     const lines: AllocationLineInput[] = [];
     for (const mapping of order.orderProductMappings ?? []) {
+      let effect = effectByMapping.get(mapping.id);
+      if (effect === undefined) {
+        effect = await this.pointPolicyService.evaluate({
+          companyId: opts.companyId,
+          scope: {
+            productId: mapping.productId,
+            brandId: mapping.product?.brandId ?? null,
+            brandName: mapping.product?.brand?.nameKorean ?? null,
+            category: mapping.product?.category ?? null,
+            partnerCompanyCode: mapping.product?.partnerCompany?.code ?? null,
+            orderType: order.type as unknown as string,
+          },
+        });
+        effectByMapping.set(mapping.id, effect);
+      }
       for (const delivery of mapping.orderDeliveries) {
         lines.push({
           orderProductMappingId: mapping.id,
@@ -281,21 +313,168 @@ export class OrderService {
           grossSettlementAmount: calculateSettlementPrice(mapping, false, delivery),
           appliedFeePercent: mapping.fee,
           appliedPriceAdjustment: mapping.priceAdjustment as 'DISCOUNT' | 'ADDITIONAL' | null,
-          pointPolicyEffect: 'ALLOW',
+          pointPolicyEffect: effect === PointPolicyEffect.DENY ? 'DENY' : 'ALLOW',
         });
       }
     }
+
+    const requestedPointAmount = opts.requestedPointAmount ?? 0;
+
+    // 예치금: 선정산 = 자동 전액(입력 무시), 후정산 = 토글 ON 일 때만 (금액 미지정 시 잔액 한도까지).
+    let requestedDepositAmount: number | null;
+    if (isPrePayment) {
+      requestedDepositAmount = null; // allocate() 가 availableDeposit 까지 자동 사용
+    } else if (opts.depositUseEnabled) {
+      requestedDepositAmount = opts.depositUseAmount ?? wallet.depositBalance;
+    } else {
+      requestedDepositAmount = 0;
+    }
+
     return {
       orderId: order.id,
       walletAccountId: wallet.id,
       lines,
       cardSurchargeApplied: order.cardSurchargeApplied,
-      requestedPointAmount: 0,
+      requestedPointAmount,
+      requestedDepositAmount,
       availableDeposit: wallet.depositBalance,
       creditLimit: wallet.creditLimit,
       creditUsedAmountBefore: wallet.creditUsedAmount,
-      isPrePayment: wallet.settleCondition === 'PRE_PAYMENT',
-      grants: [],
+      isPrePayment,
+      grants: requestedPointAmount > 0 ? await this.loadPointGrants(wallet.id) : [],
+    };
+  }
+
+  /** 포인트 사용 가능 grant 목록 (active + 잔여>0). allocate() 가 만료임박순 + FIFO 로 소비. */
+  private async loadPointGrants(walletAccountId: string): Promise<AllocationInputGrant[]> {
+    const grants = await this.pointGrantRepository.find({
+      where: { walletAccountId, active: 1, remainingAmount: MoreThan(0) },
+    });
+    return grants.map((g) => ({
+      pointGrantId: g.id,
+      remainingAmount: g.remainingAmount,
+      expiresAt: g.expiresAt,
+    }));
+  }
+
+  /**
+   * 사용액 입력 검증 (clamp 금지). allocate() 의 Math.min 은 초과분을 조용히 잘라내므로
+   * 운영자가 모르는 채 확정하는 것을 막기 위해 allocate() 전에 명시 검증한다.
+   */
+  private assertUsageWithinLimits(
+    input: AllocationInput,
+    getBody: { pointUseAmount?: number; depositUseAmount?: number; depositUseEnabled?: boolean },
+  ): void {
+    if (getBody.pointUseAmount != null) {
+      const pointAllowable = input.lines
+        .filter((l) => l.pointPolicyEffect === 'ALLOW')
+        .reduce((s, l) => s + l.grossSettlementAmount, 0);
+      if (getBody.pointUseAmount > pointAllowable) {
+        throw new BadRequestException('사용 가능 포인트를 초과했습니다.');
+      }
+    }
+    // 예치금: 선정산은 자동 사용(입력 무시) → 검증 안 함. 후정산만 잔액 한도 검증.
+    if (!input.isPrePayment && getBody.depositUseAmount != null && getBody.depositUseAmount > input.availableDeposit) {
+      throw new BadRequestException('사용 가능 예치금을 초과했습니다.');
+    }
+  }
+
+  /** 분배 상세 7필드 (요청2 success / 신용초과 응답 공통). null = LEGACY → 0 통일. */
+  private allocationDetail(allocation: AllocationResult | null): {
+    pointUsedAmount: number;
+    depositUsedAmount: number;
+    creditUsedAmount: number;
+    creditExcessAmount: number;
+    cardSurchargeBase: number;
+    cardSurchargeAmount: number;
+    payableSettlementAmount: number;
+  } {
+    return {
+      pointUsedAmount: allocation?.pointUsedAmount ?? 0,
+      depositUsedAmount: allocation?.depositUsedAmount ?? 0,
+      creditUsedAmount: allocation?.creditUsedAmount ?? 0,
+      creditExcessAmount: allocation?.creditExcessAmount ?? 0,
+      cardSurchargeBase: allocation?.cardSurchargeBase ?? 0,
+      cardSurchargeAmount: allocation?.cardSurchargeAmount ?? 0,
+      payableSettlementAmount: allocation?.payableSettlementAmount ?? 0,
+    };
+  }
+
+  /**
+   * 요청1 — 분배 미리보기 (dry-run). DB 차감/allocation row 생성 없음 (allocate 는 순수 함수).
+   * 발송확정과 동일한 buildWalletAllocationInput + allocate 경로를 거쳐 미리보기/확정 계산 일치 보장.
+   * 권한·상태 검증도 발송확정과 동일 (타 주문 wallet/잔액 정보 노출 차단).
+   */
+  async previewAllocation(
+    user: ILoginUserInfo,
+    getBody: OrderAllocationPreviewReqDto,
+  ): Promise<OrderAllocationPreviewResDto> {
+    const { id } = getBody;
+
+    const order = await this.orderRepository
+      .createQueryBuilder('order')
+      .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
+      .innerJoinAndSelect('orderProductMappings.product', 'product')
+      .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .innerJoinAndSelect('product.brand', 'brand')
+      .leftJoinAndSelect('product.classification', 'classification')
+      .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
+      .where('order.id = :id', { id })
+      .andWhere('order.status = :status', { status: IOrderStatus.REVIEW_COMPLETE })
+      .getOne();
+
+    if (!order) {
+      throw new BadRequestException('해당 주문건은 존재하지 않거나, 검토완료 상태가 아닙니다.');
+    }
+
+    // 발송확정과 동일 service-level 권한 검증
+    const currentUser = await this.getCurrentDeliveryTransitionUser(user.id);
+    if (!canTransitionDelivery(currentUser, order)) {
+      throw new ForbiddenException('해당 주문에 대한 권한이 없습니다.');
+    }
+
+    const billingUserId = order.clientUserId ?? order.userId;
+    const billingUser = await this.userRepository.findOne({
+      where: { id: billingUserId },
+      select: ['id', 'companyId'],
+    });
+
+    const wallet = await this.walletAccountResolverService.resolveForOrder(order);
+    const finalAmount = calculateOrderSettlementAmount(order, order.cardSurchargeApplied);
+
+    const allocationInput = await this.buildWalletAllocationInput(order, wallet, finalAmount, {
+      requestedPointAmount: getBody.pointUseAmount,
+      depositUseEnabled: getBody.depositUseEnabled,
+      depositUseAmount: getBody.depositUseAmount,
+      companyId: billingUser?.companyId ?? null,
+    });
+    // clamp 금지 — 초과 입력은 400 (확정과 동일 규칙)
+    this.assertUsageWithinLimits(allocationInput, getBody);
+
+    const allocation = this.paymentAllocationService.allocate(allocationInput);
+
+    const pointAllowableAmount = allocationInput.lines
+      .filter((l) => l.pointPolicyEffect === 'ALLOW')
+      .reduce((s, l) => s + l.grossSettlementAmount, 0);
+    const pointDeniedAmount = allocationInput.lines
+      .filter((l) => l.pointPolicyEffect === 'DENY')
+      .reduce((s, l) => s + l.grossSettlementAmount, 0);
+
+    return {
+      walletAccountId: String(wallet.id),
+      settleCondition: wallet.settleCondition,
+      grossSettlementAmount: allocation.grossSettlementAmount,
+      pointAllowableAmount,
+      pointDeniedAmount,
+      pointUsedAmount: allocation.pointUsedAmount,
+      depositBalance: wallet.depositBalance,
+      depositUsedAmount: allocation.depositUsedAmount,
+      creditUsedAmount: allocation.creditUsedAmount,
+      creditExcessAmount: allocation.creditExcessAmount,
+      cardSurchargeApplied: allocation.cardSurchargeApplied,
+      cardSurchargeBase: allocation.cardSurchargeBase,
+      cardSurchargeAmount: allocation.cardSurchargeAmount,
+      payableSettlementAmount: allocation.payableSettlementAmount,
     };
   }
 
@@ -2230,6 +2409,14 @@ export class OrderService {
     const hasSettled = (order.settleAmount ?? 0) > 0;
     const effectiveCardSurcharge = hasSettled ? order.cardSurchargeApplied : settleMethod === 'CARD';
 
+    // 카드할증 산정 (백엔드 산식 단일화: 프론트 자체계산 제거)
+    const cardSurchargeBase = totalDiscountAmount;
+    const payableSettlementAmount = applyCardSurcharge(cardSurchargeBase, effectiveCardSurcharge);
+    const cardSurchargeAmount = payableSettlementAmount - cardSurchargeBase;
+
+    // settleMethod: 정산 입력됨(hasSettled)이면 저장된 cardSurchargeApplied 에서 파생, 아니면 회사 정책값
+    const effectiveSettleMethod = hasSettled ? (order.cardSurchargeApplied ? 'CARD' : 'CASH') : settleMethod;
+
     return {
       list: pagedList,
       currentPage: page,
@@ -2237,8 +2424,11 @@ export class OrderService {
       totalPage,
       virtualTotalCount,
       totalDiscountAmount,
-      settleMethod,
+      settleMethod: effectiveSettleMethod,
       cardSurchargeApplied: effectiveCardSurcharge,
+      cardSurchargeBase,
+      cardSurchargeAmount,
+      payableSettlementAmount,
     };
   }
 
@@ -2419,7 +2609,10 @@ export class OrderService {
 
     const order = existingOrderProducts[0].order;
     const defaultCardSurchargeApplied = await this.getDefaultCardSurchargeApplied(order);
-    const cardSurchargeApplied = getBody.cardSurchargeApplied ?? defaultCardSurchargeApplied;
+    // settleMethod(주문 단위) 가 들어오면 cardSurchargeApplied 를 강제. CARD→true, CASH→false.
+    const cardSurchargeApplied = getBody.settleMethod
+      ? getBody.settleMethod === 'CARD'
+      : getBody.cardSurchargeApplied ?? defaultCardSurchargeApplied;
     const newSettleAmount = calculateOrderSettlementAmount(
       { cardSurchargeApplied, orderProductMappings: allOrderProducts },
       cardSurchargeApplied,
@@ -2522,7 +2715,10 @@ export class OrderService {
 
     const order = existingOrderProducts[0].order;
     const defaultCardSurchargeApplied = await this.getDefaultCardSurchargeApplied(order);
-    const cardSurchargeApplied = getBody.cardSurchargeApplied ?? order.cardSurchargeApplied ?? defaultCardSurchargeApplied;
+    // settleMethod(주문 단위) 가 들어오면 cardSurchargeApplied 를 강제. CARD→true, CASH→false.
+    const cardSurchargeApplied = getBody.settleMethod
+      ? getBody.settleMethod === 'CARD'
+      : getBody.cardSurchargeApplied ?? order.cardSurchargeApplied ?? defaultCardSurchargeApplied;
     const newSettleAmount = calculateOrderSettlementAmount(
       { cardSurchargeApplied, orderProductMappings: allOrderProducts },
       cardSurchargeApplied,
@@ -3259,6 +3455,8 @@ export class OrderService {
     }
 
     let message = 'success';
+    // WALLET 모드 분배 결과 (요청2 success 응답 분배 상세). LEGACY/SHADOW 는 null → 0 통일.
+    let walletAllocation: AllocationResult | null = null;
 
     // 과금 대상 userId 결정 (대행주문인 경우 clientUserId, 아니면 userId)
     const billingUserId = order.clientUserId ?? order.userId;
@@ -3461,53 +3659,10 @@ export class OrderService {
       // 3-2. Wallet Cutover Bundle (PR2-005) 모드 게이트 (Step B/D 사전 체크 위해 먼저 결정)
       const cutoverMode = this.walletCutoverConfig.pr2DeliveryLifecycleMode;
 
-      // 3. 한도 체크 + 신용초과 분기
-      if (finalAmount > remainServiceAmount) {
-        if (!getBody.forceConfirm) {
-          // 1차 호출: 초과 정보 응답 반환 (SSG confirmEventBalance 미실행)
-          return {
-            message: 'credit_excess',
-            creditExcess: true,
-            excessAmount: finalAmount - remainServiceAmount,
-            remainServiceAmount,
-            finalAmount,
-          };
-        }
-        // 2차 호출 (forceConfirm=true): 초과 허용, 신용초과 마킹.
-        // Step B/D pre-check — WALLET 모드 + forceConfirm 시 사전 승인 ID 필수.
-        // 미주입 시 'credit_excess_pending_approval' 응답으로 빠지고 SSG side effect 차단.
-        if (cutoverMode === WalletCutoverMode.WALLET && !getBody.creditExcessApprovalId) {
-          this.logger.warn(
-            `신용초과 사전 승인 누락: orderId=${order.id}, 초과액=${(finalAmount - remainServiceAmount).toLocaleString()}원`,
-          );
-          const excessAmount = finalAmount - remainServiceAmount;
-          // 클라이언트가 POST /credit-excess-approvals 호출에 필요한 wallet 식별 + 금액 정보 동봉.
-          const walletForApproval = await this.walletAccountResolverService.resolveForOrder(
-            order,
-            this.orderRepository.manager,
-          );
-          return {
-            message: 'credit_excess_pending_approval',
-            creditExcess: true,
-            excessAmount,
-            remainServiceAmount,
-            finalAmount,
-            walletAccountId: String(walletForApproval.id),
-            requestedAmount: finalAmount,
-            requestedCreditExcessAmount: excessAmount,
-          } as OrderDeliveryConfirmed;
-        }
-        order.isCreditExcess = true;
-        this.logger.warn(
-          `신용초과 발송확정: orderId=${order.id}, 초과액=${(finalAmount - remainServiceAmount).toLocaleString()}원, 필요=${finalAmount.toLocaleString()}원, 가능=${remainServiceAmount.toLocaleString()}원`,
-        );
-      }
-
-      // 3-1. SSG 가차감 확정 (진행 결정 + 사전 승인 통과 후에만 실행)
-      if (order.type === IOrderType.SSG) {
-        await this.ssgEventService.confirmEventBalance(order.id);
-      }
-
+      // 3. 신용초과 분기 + 분배 계산
+      //  - WALLET: allocate() 를 먼저 계산하고 allocation.creditExcessAmount 기준으로 신용초과 판정
+      //    (포인트/예치금 입력으로 초과가 해소되면 승인 워크플로 미트리거 — 요청4 판정 이동).
+      //  - LEGACY/SHADOW: 기존 finalAmount > remainServiceAmount 기준 유지 (else 브랜치).
       if (cutoverMode === WalletCutoverMode.WALLET) {
         // === WALLET: wallet primary + legacy mirror (user.balance 미기록) ===
         // typeorm-transactional cls TX 안에서 동작 — manager 공유로 same-tx 보장
@@ -3520,8 +3675,56 @@ export class OrderService {
         }
 
         const wallet = await this.walletAccountResolverService.resolveForOrder(order, externalManager);
-        const allocationInput = this.buildWalletAllocationInput(order, wallet, finalAmount);
+        const allocationInput = await this.buildWalletAllocationInput(order, wallet, finalAmount, {
+          requestedPointAmount: getBody.pointUseAmount,
+          depositUseEnabled: getBody.depositUseEnabled,
+          depositUseAmount: getBody.depositUseAmount,
+          companyId: oneUser.companyId,
+        });
+        // 사용액 입력 검증 (clamp 금지 — 사용 가능 한도 초과 시 400)
+        this.assertUsageWithinLimits(allocationInput, getBody);
         const allocation = this.paymentAllocationService.allocate(allocationInput);
+
+        // 신용초과 판정 = allocation.creditExcessAmount 기준 (finalAmount 아님)
+        if (allocation.creditExcessAmount > 0) {
+          if (!getBody.forceConfirm) {
+            // 1차 호출: 신용초과 미리보기 응답 (SSG confirmEventBalance 미실행, DB 차감 없음)
+            return {
+              message: 'credit_excess',
+              creditExcess: true,
+              excessAmount: allocation.creditExcessAmount,
+              remainServiceAmount,
+              finalAmount: allocation.payableSettlementAmount,
+              ...this.allocationDetail(allocation),
+            } as OrderDeliveryConfirmed;
+          }
+          // 2차 호출 (forceConfirm=true) + 사전 승인 ID 미주입 → 승인 대기 응답 (SSG side effect 차단).
+          if (!getBody.creditExcessApprovalId) {
+            this.logger.warn(
+              `신용초과 사전 승인 누락: orderId=${order.id}, 초과액=${allocation.creditExcessAmount.toLocaleString()}원`,
+            );
+            return {
+              message: 'credit_excess_pending_approval',
+              creditExcess: true,
+              excessAmount: allocation.creditExcessAmount,
+              remainServiceAmount,
+              finalAmount: allocation.payableSettlementAmount,
+              walletAccountId: String(wallet.id),
+              requestedAmount: allocation.payableSettlementAmount,
+              requestedCreditExcessAmount: allocation.creditExcessAmount,
+              ...this.allocationDetail(allocation),
+            } as OrderDeliveryConfirmed;
+          }
+          order.isCreditExcess = true;
+          this.logger.warn(
+            `신용초과 발송확정: orderId=${order.id}, 초과액=${allocation.creditExcessAmount.toLocaleString()}원, 결제=${allocation.payableSettlementAmount.toLocaleString()}원`,
+          );
+        }
+
+        // 3-1. SSG 가차감 확정 (진행 결정 + 사전 승인 통과 후에만 실행)
+        if (order.type === IOrderType.SSG) {
+          await this.ssgEventService.confirmEventBalance(order.id);
+        }
 
         // 신용초과 사전 승인 ID 전달 (CreditExcessApprovalService 4단계 워크플로 Step D).
         // 신용초과 미발생 시 null. 발생 시 운영자가 사전 발급한 approvalId 필수 — 미주입 시
@@ -3533,7 +3736,7 @@ export class OrderService {
           }
         }
 
-        await this.orderConfirmationWalletService.persistAllocation(
+        const persistResult = await this.orderConfirmationWalletService.persistAllocation(
           {
             orderId: order.id,
             allocation,
@@ -3545,16 +3748,18 @@ export class OrderService {
           },
           externalManager,
         );
+        // persistAllocation 이 lock 후 재계산한 최종 allocation 사용 (pre-lock allocation 은 stale 가능).
+        const finalAllocation = persistResult.finalAllocation;
 
         // 4'. legacy mirror (same TX, user.balance 제외)
-        order.settleAmount = allocation.payableSettlementAmount;
-        order.isSettleBalance = allocation.creditUsedAmount === 0 && allocation.creditExcessAmount === 0;
-        order.isCreditExcess = allocation.creditExcessAmount > 0;
+        order.settleAmount = finalAllocation.payableSettlementAmount;
+        order.isSettleBalance = finalAllocation.creditUsedAmount === 0 && finalAllocation.creditExcessAmount === 0;
+        order.isCreditExcess = finalAllocation.creditExcessAmount > 0;
 
         if (isCompanyBalanceMode && oneUser.company) {
-          oneUser.company.balance -= allocation.depositUsedAmount;
+          oneUser.company.balance -= finalAllocation.depositUsedAmount;
         }
-        oneUser.allSettleAmount += allocation.creditUsedAmount + allocation.creditExcessAmount;
+        oneUser.allSettleAmount += finalAllocation.creditUsedAmount + finalAllocation.creditExcessAmount;
 
         // 5'. 저장 — user.balance 는 *기록하지 않음* (wallet ledger 가 진실의 원천)
         await this.userRepository.update(
@@ -3567,8 +3772,31 @@ export class OrderService {
             { balance: oneUser.company.balance },
           );
         }
+
+        walletAllocation = finalAllocation;
       } else {
-        // === LEGACY 또는 SHADOW: 기존 path 유지 ===
+        // === LEGACY 또는 SHADOW: finalAmount 기준 신용초과 판정 유지 ===
+        if (finalAmount > remainServiceAmount) {
+          if (!getBody.forceConfirm) {
+            // 1차 호출: 초과 정보 응답 반환 (SSG confirmEventBalance 미실행)
+            return {
+              message: 'credit_excess',
+              creditExcess: true,
+              excessAmount: finalAmount - remainServiceAmount,
+              remainServiceAmount,
+              finalAmount,
+            };
+          }
+          order.isCreditExcess = true;
+          this.logger.warn(
+            `신용초과 발송확정: orderId=${order.id}, 초과액=${(finalAmount - remainServiceAmount).toLocaleString()}원, 필요=${finalAmount.toLocaleString()}원, 가능=${remainServiceAmount.toLocaleString()}원`,
+          );
+        }
+
+        // 3-1. SSG 가차감 확정 (진행 결정 통과 후에만 실행)
+        if (order.type === IOrderType.SSG) {
+          await this.ssgEventService.confirmEventBalance(order.id);
+        }
 
         // 4. isSettleBalance 결정 + 차감
         if (finalAmount <= effectiveBalance) {
@@ -3603,7 +3831,9 @@ export class OrderService {
               order,
               this.orderRepository.manager,
             );
-            const previewInput = this.buildWalletAllocationInput(order, wallet, finalAmount);
+            const previewInput = await this.buildWalletAllocationInput(order, wallet, finalAmount, {
+              companyId: oneUser.companyId,
+            });
             const preview = this.paymentAllocationService.allocate(previewInput);
 
             // legacy 의 4재원 분해:
@@ -3775,7 +4005,7 @@ export class OrderService {
     order.status = IOrderStatus.DELIVERY_CONFIRMED;
     await this.orderRepository.save(order);
 
-    return { message: message };
+    return { message: message, ...this.allocationDetail(walletAllocation) };
   }
 
   @Transactional()

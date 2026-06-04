@@ -1,5 +1,5 @@
 import { IOrderStatus } from '../interface/order.status';
-import { IsArray, IsBoolean, IsEnum, IsIn, IsNotEmpty, IsNumber, IsOptional, IsString, Matches, MaxLength } from 'class-validator';
+import { IsArray, IsBoolean, IsEnum, IsIn, IsInt, IsNotEmpty, IsNumber, IsOptional, IsString, Matches, MaxLength, Min } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { dateAtRegexp } from '../../common/domain/date.regexp';
 import { PagingReqDto } from '../../common/api/dto/pagination.req.dto';
@@ -219,6 +219,14 @@ export class OrderCreateSettleReqDto {
   })
   @IsOptional()
   cardSurchargeApplied?: boolean;
+
+  @ApiProperty({
+    description: '결제수단 (주문 단위) CARD|CASH. 지정 시 cardSurchargeApplied 를 강제 (CARD→true, CASH→false)',
+    required: false,
+  })
+  @IsOptional()
+  @IsIn(['CARD', 'CASH'])
+  settleMethod?: 'CARD' | 'CASH';
 }
 
 export class OrderUpdateSettleReqDto extends OrderCreateSettleReqDto {}
@@ -279,6 +287,54 @@ export class OrderDeliveryConfirmedReqDto {
   @IsOptional()
   @IsString()
   creditExcessApprovalId?: string;
+
+  // ===== Wallet PR3: 운영자 사용액 입력 (WALLET 모드 분배 반영) =====
+  @ApiPropertyOptional({
+    description: '포인트 사용 요청액. 미입력 시 0(포인트 미사용). 사용 가능 포인트(ALLOW 합) 초과 시 400.',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  pointUseAmount?: number;
+
+  @ApiPropertyOptional({
+    description: '후정산 고객사 예치금 사용 토글. 선정산은 무시(항상 자동 사용).',
+  })
+  @IsOptional()
+  @IsBoolean()
+  depositUseEnabled?: boolean;
+
+  @ApiPropertyOptional({
+    description: '후정산 고객사 예치금 사용 요청액. 예치금 잔액 초과 시 400.',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  depositUseAmount?: number;
+}
+
+export class OrderAllocationPreviewReqDto {
+  @ApiProperty({ description: 'order id' })
+  @IsNotEmpty()
+  @IsNumber()
+  id: number;
+
+  @ApiPropertyOptional({ description: '포인트 사용 요청액 (미입력 시 0). 사용 가능 포인트 초과 시 400.' })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  pointUseAmount?: number;
+
+  @ApiPropertyOptional({ description: '후정산 고객사 예치금 사용 토글. 선정산은 무시.' })
+  @IsOptional()
+  @IsBoolean()
+  depositUseEnabled?: boolean;
+
+  @ApiPropertyOptional({ description: '후정산 고객사 예치금 사용 요청액. 예치금 잔액 초과 시 400.' })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  depositUseAmount?: number;
 }
 
 export class OrderReviewCompleteReqDto {
