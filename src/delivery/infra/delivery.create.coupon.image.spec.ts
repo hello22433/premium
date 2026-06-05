@@ -61,6 +61,7 @@ jest.mock('sharp', () => {
 
 jest.mock('fs/promises', () => ({
   writeFile: jest.fn(async () => undefined),
+  mkdir: jest.fn(async () => undefined),
 }));
 
 jest.mock('axios', () => ({
@@ -116,5 +117,35 @@ describe('DeliveryCreateCouponImage 파일명 무작위화', () => {
   it('SSG 타입(바코드 미생성 경로)도 동일한 무작위 형식이다', async () => {
     const { fileName } = await callGen(IProductType.SSG);
     expect(fileName).toMatch(new RegExp(`^\\d+-${UUID_RE}-coupon\\.jpeg$`, 'i'));
+  });
+});
+
+describe('DeliveryCreateCouponImage 저장 디렉터리 (COUPON_IMAGE_DIR)', () => {
+  const origDir = process.env.COUPON_IMAGE_DIR;
+  afterEach(() => {
+    if (origDir === undefined) delete process.env.COUPON_IMAGE_DIR;
+    else process.env.COUPON_IMAGE_DIR = origDir;
+    jest.restoreAllMocks();
+    jest.clearAllMocks();
+  });
+
+  it('기본(미설정)은 기존 동작 유지 — public/ 아래에 저장', async () => {
+    delete process.env.COUPON_IMAGE_DIR;
+    const { path } = await callGen();
+    expect(path.endsWith(`/public/`)).toBe(false); // 파일명 포함되어야 함
+    expect(path.includes('/public/')).toBe(true);
+    expect(fsPromises.writeFile).toHaveBeenCalledWith(path, expect.anything());
+  });
+
+  it('COUPON_IMAGE_DIR 설정 시 해당 비공개 디렉터리에 저장 + 디렉터리 생성', async () => {
+    process.env.COUPON_IMAGE_DIR = '/srv/epopkon/storage/coupons';
+    const { fileName, path } = await callGen();
+    // public/ 밖으로 이동되어야 함
+    expect(path.includes('/public/')).toBe(false);
+    expect(path.endsWith(fileName)).toBe(true);
+    expect(path).toContain('storage');
+    expect(path).toContain('coupons');
+    expect(fsPromises.mkdir).toHaveBeenCalledWith(expect.stringContaining('coupons'), { recursive: true });
+    expect(fsPromises.writeFile).toHaveBeenCalledWith(path, expect.anything());
   });
 });
