@@ -3,6 +3,7 @@ import JsBarcode from 'jsbarcode';
 
 import * as fsPromises from 'fs/promises';
 import { join } from 'path';
+import { randomUUID } from 'node:crypto';
 import sharp from 'sharp';
 import * as process from 'node:process';
 import axios from 'axios';
@@ -184,7 +185,9 @@ export const DeliveryCreateCouponImage = async (
     // 최종 이미지 저장 (비동기)
     const outputBuffer = canvas.toBuffer('image/jpeg');
     const now = new Date().getTime();
-    const resultCouponFileName = `${now}-coupon.jpeg`;
+    // 파일명 무작위화(UUIDv4): public/ 정적 노출 하에서 시각 기반 순차 파일명의 열거(brute-force) 차단.
+    // now 접두는 정렬/디버깅용 유지. 소비처는 반환 path/fileName을 그대로 사용하므로 발송 흐름 무영향.
+    const resultCouponFileName = `${now}-${randomUUID()}-coupon.jpeg`;
     const path = `${homeUrl}/public/${resultCouponFileName}`;
     await fsPromises.writeFile(path, outputBuffer);
 
