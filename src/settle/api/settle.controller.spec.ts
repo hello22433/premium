@@ -22,14 +22,19 @@ describe('SettleController', () => {
     const authService = {
       authorityValidator: jest.fn().mockResolvedValue(undefined),
     };
+    const walletReadService = {
+      getSettlementCodeSnapshot: jest.fn(),
+      getSettlementCodeUsage: jest.fn(),
+    };
 
     const controller = new SettleController(
       settleService as any,
       activityLogService as any,
       authService as any,
+      walletReadService as any,
     );
 
-    return { controller, settleService, authService };
+    return { controller, settleService, authService, walletReadService };
   };
 
   describe('updateUserPerOrder', () => {
