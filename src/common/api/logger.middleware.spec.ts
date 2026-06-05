@@ -176,6 +176,75 @@ describe('LoggerMiddleware 마스킹', () => {
     });
   });
 
+  describe('보고서 이메일 경로 처리', () => {
+    const REPORT_URL = '/order/delivery-complete/report/pdf';
+    const OTHER_URL = '/order/detail';
+
+    test('pdfBase64는 환경 무관하게 hasPdfBase64: true로 대체한다 (dev)', () => {
+      process.env.ENVIRONMENT = 'dev';
+      const r = sanitize({ pdfBase64: 'JVBERi0x...', pdfFileName: 'report.pdf' }, REPORT_URL);
+      expect(r.pdfBase64).toBeUndefined();
+      expect(r.hasPdfBase64).toBe(true);
+      expect(r.pdfFileName).toBe('report.pdf');
+    });
+
+    test('pdfBase64는 환경 무관하게 hasPdfBase64: true로 대체한다 (prod)', () => {
+      process.env.ENVIRONMENT = 'prod';
+      const r = sanitize({ pdfBase64: 'JVBERi0x...', pdfFileName: 'report.pdf' }, REPORT_URL);
+      expect(r.pdfBase64).toBeUndefined();
+      expect(r.hasPdfBase64).toBe(true);
+      expect(r.pdfFileName).toBe('report.pdf');
+    });
+
+    test('보고서 경로에서 content를 hasContent: true로 대체한다', () => {
+      process.env.ENVIRONMENT = 'prod';
+      const r = sanitize({ content: '<html>...</html>', subject: '발송완료 리포트' }, REPORT_URL);
+      expect(r.content).toBeUndefined();
+      expect(r.hasContent).toBe(true);
+      expect(r.subject).toBe('발송완료 리포트');
+    });
+
+    test('보고서 경로에서 to 이메일을 마스킹한다', () => {
+      process.env.ENVIRONMENT = 'prod';
+      const r = sanitize({ to: 'client@company.com', subject: '발송완료 리포트' }, REPORT_URL);
+      expect(r.to).not.toBe('client@company.com');
+      expect(r.to).toContain('@company.com');
+    });
+
+    test('보고서 경로에서 to에 콤마 구분 여러 수신자가 있어도 각각 마스킹한다', () => {
+      process.env.ENVIRONMENT = 'prod';
+      const r = sanitize({ to: 'client@company.com, boss@other.com' }, REPORT_URL);
+      expect(r.to).not.toContain('client');
+      expect(r.to).not.toContain('boss');
+      expect(r.to).toContain('@company.com');
+      expect(r.to).toContain('@other.com');
+    });
+
+    test('보고서 경로 외에서는 content를 보존한다', () => {
+      process.env.ENVIRONMENT = 'prod';
+      const r = sanitize({ content: '공지사항 내용입니다.' }, OTHER_URL);
+      expect(r.content).toBe('공지사항 내용입니다.');
+    });
+
+    test('보고서 경로 외에서는 to를 보존한다', () => {
+      process.env.ENVIRONMENT = 'prod';
+      const r = sanitize({ to: 'client@company.com' }, OTHER_URL);
+      expect(r.to).toBe('client@company.com');
+    });
+
+    test('파기확약서 경로에서도 동일하게 적용된다', () => {
+      process.env.ENVIRONMENT = 'prod';
+      const r = sanitize(
+        { to: 'a@b.com', content: '<html/>', pdfBase64: 'abc=', pdfFileName: 'cert.pdf' },
+        '/order/destruction-certificate/pdf',
+      );
+      expect(r.hasPdfBase64).toBe(true);
+      expect(r.hasContent).toBe(true);
+      expect(r.to).not.toBe('a@b.com');
+      expect(r.pdfFileName).toBe('cert.pdf');
+    });
+  });
+
   describe('maskUrl (쿼리스트링 민감 파라미터)', () => {
     const maskUrl = (url: string) => (mw as any).maskUrl(url);
 

@@ -17,6 +17,10 @@ export class LoggerMiddleware implements NestMiddleware {
   private addressKeys = new Set(['businessaddress', 'offlineaddress', 'snapshotbusinessaddress', 'snapshotclientbusinessaddress']);
   // 금융 브랜드/계좌 정보 allowlist (소문자 exact match). includes('bank'/'card')는 discard* 등 오탐 위험.
   private financialBrandKeys = new Set(['cardname', 'bankname', 'paymentbank', 'banknumber']);
+  // base64 파일 등 대용량 페이로드 키 (소문자 exact match). 값 드롭 후 has* 플래그로 대체.
+  private bulkDataKeys = new Set(['pdfbase64']);
+  // 보고서 이메일 발송 경로. 수신자(to) 마스킹 및 HTML 본문(content) 드롭 적용.
+  private reportEmailPaths = ['/report/pdf', '/destruction-certificate/pdf'];
   // 일회용 인증코드(body.code)를 쓰는 경로. 'code'는 productCode 등과 충돌하므로 이 경로에서만 redact.
   private authCodePaths = ['/user-find/reset-password/verify', '/user/login/email/verify', '/user/login/phone/verify'];
   // URL 쿼리스트링에서 값 redact할 민감 파라미터(소문자). encryptKey/code 등은 링크로 외부 전달되나 로그 집적 방지.
@@ -110,22 +114,30 @@ export class LoggerMiddleware implements NestMiddleware {
    * - 개발: 비밀번호 제거 외 마스킹 없이 평문 노출.
    */
   private sanitizeBody(body: any, originalUrl: string): any {
-    const passwordStripped = this.stripPasswords(body);
+    const isReportEmail = this.reportEmailPaths.some((p) => originalUrl.includes(p));
+    const passwordStripped = this.stripPasswords(body, isReportEmail);
     if (!this.isProd()) return passwordStripped;
     const maskCode = this.authCodePaths.some((p) => originalUrl.includes(p));
     return this.maskSensitiveData(passwordStripped, maskCode);
   }
 
-  /** 비밀번호 계열 키를 환경 무관하게 제거하고 has* 플래그로 대체. */
-  private stripPasswords(body: any): any {
-    if (Array.isArray(body)) return body.map((item) => this.stripPasswords(item));
+  /** 비밀번호/대용량 페이로드 키를 환경 무관하게 제거하고 has* 플래그로 대체. 보고서 이메일 경로에서는 수신자(to) 마스킹 및 HTML 본문(content) 드롭 추가. */
+  private stripPasswords(body: any, isReportEmail = false): any {
+    if (Array.isArray(body)) return body.map((item) => this.stripPasswords(item, isReportEmail));
     if (!body || typeof body !== 'object') return body;
     const result: Record<string, any> = {};
     for (const [key, value] of Object.entries(body)) {
-      if (this.passwordKeys.has(key.toLowerCase())) {
-        result[`has${key.charAt(0).toUpperCase() + key.slice(1)}`] = true;
+      const lower = key.toLowerCase();
+      const hasFlag = `has${key.charAt(0).toUpperCase() + key.slice(1)}`;
+      if (this.passwordKeys.has(lower) || this.bulkDataKeys.has(lower)) {
+        result[hasFlag] = true;
+      } else if (isReportEmail && lower === 'content') {
+        result[hasFlag] = true;
+      } else if (isReportEmail && lower === 'to' && typeof value === 'string' && value.includes('@')) {
+        const emailPattern = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g;
+        result[key] = value.replace(emailPattern, (m) => MaskingUtil.maskEmail(m));
       } else if (value && typeof value === 'object') {
-        result[key] = this.stripPasswords(value);
+        result[key] = this.stripPasswords(value, isReportEmail);
       } else {
         result[key] = value;
       }
