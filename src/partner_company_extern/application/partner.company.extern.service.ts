@@ -232,8 +232,16 @@ export class PartnerCompanyExternService {
           giftKind,
           // 백화점(dept) 상품권의 경우 액면가 필수
           faceValue: giftKind === 'dept' ? String(orderDelivery.orderProductMapping.product.price) : undefined,
-          // cpn의 경우 duration 전달: OPM override ?? Product 기본값 (미설정 시 undefined → HTTP 레이어에서 0으로 변환)
-          duration: giftKind === 'cpn' ? (orderDelivery.orderProductMapping.galaxiaDuration ?? orderDelivery.orderProductMapping.product.galaxiaDuration ?? undefined) : undefined,
+          // cpn의 경우 duration(유효일수, raw) 전달. 우선순위: OPM galaxiaDuration ?? Product galaxiaDuration ?? Product expireDay ?? 0.
+          // galaxiaDuration 미구현 단계의 임시방편: 상품 유효기간(expireDay)만 설정해도 발행 유효기간이 반영된다.
+          // 여기엔 validityStartsNextDay 보정을 적용하지 않는다 — 보정은 ePOPKON 내부 expireAt 날짜 계산(addDays) 전용이고,
+          // Galaxia는 raw 유효일수를 받아 자체적으로 만료일을 산출한다. 0은 Galaxia 측 최대 유효기간으로 발행된다.
+          duration: giftKind === 'cpn'
+            ? orderDelivery.orderProductMapping.galaxiaDuration
+                ?? orderDelivery.orderProductMapping.product.galaxiaDuration
+                ?? orderDelivery.orderProductMapping.product.expireDay
+                ?? 0
+            : undefined,
         });
         context = JSON.stringify(galaxiaOut);
 
