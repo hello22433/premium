@@ -27,6 +27,7 @@ import { PartnerCompanyExternService } from '../../partner_company_extern/applic
 import { SsgInsertStateService } from '../../delivery/application/ssg-insert-state.service';
 import { SsgInsertState } from '../../delivery/interface/ssg.insert.state';
 import { SsgOrphanResolveOutcome } from '../../partner_company_extern/interface/ssg.orphan.resolve';
+import { SsgPinVerdict } from '../../partner_company_extern/interface/ssg.issue';
 
 // 재발송 가능한 실패 상태 목록
 const RESENDABLE_FAIL_STATUSES = [IOrderDeliveryStatus.FAIL, IOrderDeliveryStatus.FAIL_SMS];
@@ -469,6 +470,46 @@ export class PartnerCompanyExternHistoryService {
     orderDelivery: OrderDeliveryEntity,
   ): Promise<{ proceed: boolean; message?: string; reloaded?: OrderDeliveryEntity }> {
     const id = orderDelivery.id;
+
+    // SSG 진실원천(cust_info/cust_info_result) 우선 판정 — 기존 PIN 이 있을 때.
+    // GetSsgTry(제출여부) + GetSsgStatus(결과/유효성)로 9999 등 모호 케이스를 정확히 분기한다.
+    if (orderDelivery.barCode && orderDelivery.personalCode) {
+      let verdict: SsgPinVerdict;
+      try {
+        verdict = await this.partnerCompanyExternService.classifySsgResendPin(id, orderDelivery.personalCode);
+      } catch (e) {
+        // getTry/check 네트워크·파싱 오류 → 등록 여부 불명 → 보류 (새 INSERT/재사용 금지)
+        this.logger.error(
+          `[resendFailedDelivery] SSG 판정(classifySsgResendPin) 오류 - 발송 보류. orderDeliveryId=${id}: ${e instanceof Error ? e.message : e}`,
+        );
+        return {
+          proceed: false,
+          message: 'SSG 등록 여부를 확정할 수 없습니다. 잠시 후 다시 시도하거나 운영 점검이 필요합니다.',
+        };
+      }
+
+      switch (verdict) {
+        case SsgPinVerdict.PROCESSING:
+          // cust_info 제출됐으나 result 미반영 = SSG 처리중 → 안내 + 수동 재시도 유도
+          return {
+            proceed: false,
+            message: '신세계 쪽에서 해당 핀번호 처리중입니다. 잠시 후 다시 시도해주세요.',
+          };
+        case SsgPinVerdict.REGISTERED:
+          // 등록 유효 → 기존 PIN 재사용 (issue step1 이 최종 재확인 + markConfirmed)
+          return { proceed: true };
+        case SsgPinVerdict.NOT_SUBMITTED:
+        case SsgPinVerdict.REGISTRATION_FAILED:
+          // 미제출 또는 등록실패 → 기존 PIN 폐기 후 새 PIN 재발급 (메모리 null → issue step2 가 재생성/INSERT)
+          this.logger.log(
+            `[resendFailedDelivery] SSG 기존 PIN 폐기(${verdict}) - 새 PIN 재발급. orderDeliveryId=${id}`,
+          );
+          orderDelivery.barCode = null;
+          orderDelivery.personalCode = null;
+          return { proceed: true, reloaded: orderDelivery };
+      }
+    }
+
     const state = await this.ssgInsertStateService.getState(id);
 
     if (state === SsgInsertState.ATTEMPTED) {
