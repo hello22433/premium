@@ -14,12 +14,13 @@ import { IDaou } from '../interface/daou';
 import { PartnerCompanyExternHistoryEntity } from '../../entity/partner.company.extern.history.entity';
 import { GalaxiaBarcodeLogEntity } from '../../entity/galaxia.barcode.log.entity';
 import { GiftielExchangeHistoryEntity } from '../../entity/giftiel.exchange.history.entity';
-import { ISsgCheckOut, ISsgIssue } from '../interface/ssg.issue';
+import { ISsgCheckOut, ISsgIssue, SsgPinVerdict } from '../interface/ssg.issue';
 import {
   SsgCheckNotFoundError,
   SsgIssueAlreadyConfirmedError,
   SsgIssueAttemptAlreadyActiveError,
   SsgIssueRejectedError,
+  SsgProcessingError,
 } from '../infra/ssg.issue';
 import { SsgInsertStateService, SsgAttemptPayload } from '../../delivery/application/ssg-insert-state.service';
 import { MarkAttemptedResult, SsgInsertState } from '../../delivery/interface/ssg.insert.state';
@@ -123,6 +124,84 @@ export class PartnerCompanyExternService {
       }
     }
     throw lastError;
+  }
+
+  /**
+   * 기존 personalCode 의 SSG 상태 판정.
+   * GetSsgTry(cust_info 제출여부) → 없으면 NOT_SUBMITTED.
+   * 있으면 GetSsgStatus(cust_info_result) → 결과없음(8021)=PROCESSING, resultCd 유효=REGISTERED, 등록실패(01XX≠00)=REGISTRATION_FAILED.
+   * getTry/check 네트워크·파싱 오류는 throw → caller 가 보류 처리(새 INSERT/재사용 금지).
+   */
+  private async classifySsgPin(params: {
+    eventNo: string;
+    eventSeq: number;
+    personalCode: string;
+  }): Promise<SsgPinVerdict> {
+    const tryOut = await this.ssgIssue.getTry({ vno: params.personalCode });
+    const tryYn = tryOut?.response?.value?.[0]?.tryYn?.[0];
+    if (tryYn !== 'Y') {
+      return SsgPinVerdict.NOT_SUBMITTED;
+    }
+
+    try {
+      const checkOut = await this.checkSsgWithRetry({
+        eventNo: params.eventNo,
+        eventSeq: params.eventSeq,
+        vno: params.personalCode,
+      });
+      const resultCd = checkOut?.response?.value?.[0]?.resultCd?.[0];
+      return this.isSsgRegistrationFailed(resultCd)
+        ? SsgPinVerdict.REGISTRATION_FAILED
+        : SsgPinVerdict.REGISTERED;
+    } catch (e) {
+      if (e instanceof SsgCheckNotFoundError) {
+        // cust_info 제출됐으나 cust_info_result 미반영 = SSG 처리중
+        return SsgPinVerdict.PROCESSING;
+      }
+      throw e;
+    }
+  }
+
+  /**
+   * resultCd = 처리구분(2) + 처리결과(2).
+   * 등록시도(01) + 처리결과 ≠ 00 → 등록 실패(미등록행사/잔액부족/행사키오류 등).
+   * 0100(정상) / 02xx(전송) / 04xx(지급) 은 PIN 실존 → 유효.
+   */
+  private isSsgRegistrationFailed(resultCd: string | undefined): boolean {
+    if (!resultCd) {
+      // 1001(found)인데 resultCd 파싱 실패 — 보수적으로 유효(실존) 취급
+      return false;
+    }
+    return resultCd.startsWith('01') && !resultCd.endsWith('00');
+  }
+
+  /**
+   * 재발송 게이트용 — 기존 personalCode 의 SSG 상태 판정 (public).
+   * GetSsgStatus 에 필요한 eventNo/eventSeq 는 ssg_issue_log(최신 후보)에서 도출한다.
+   * getTry/check 네트워크·파싱 오류는 throw → caller(게이트)가 보류 처리.
+   */
+  async classifySsgResendPin(orderDeliveryId: number, personalCode: string): Promise<SsgPinVerdict> {
+    const candidates = await this.ssgIssueLogRepository.find({
+      where: { orderDeliveryId },
+      order: { id: 'DESC' },
+    });
+    const log =
+      candidates.find((c) => c.eventSeq !== null && c.personalCode === personalCode) ??
+      candidates.find((c) => c.eventSeq !== null);
+
+    if (!log) {
+      // ssg_issue_log event 정보 없음 → result 조회 불가. cust_info(getTry) 로 제출여부만 판정.
+      const tryOut = await this.ssgIssue.getTry({ vno: personalCode });
+      return tryOut?.response?.value?.[0]?.tryYn?.[0] === 'Y'
+        ? SsgPinVerdict.PROCESSING // 제출됐으나 event 미상 → 보수적으로 보류
+        : SsgPinVerdict.NOT_SUBMITTED;
+    }
+
+    return this.classifySsgPin({
+      eventNo: log.eventNo,
+      eventSeq: log.eventSeq!,
+      personalCode,
+    });
   }
 
   @Transactional({ propagation: Propagation.REQUIRED })
@@ -358,24 +437,24 @@ export class PartnerCompanyExternService {
           throw new InternalServerErrorException('ssg event 가 존재하지 않습니다.');
         }
 
-        // 1) 기존 PIN이 있으면 SSG DB 등록 여부 확인 (mutex 불필요: 새 PIN 생성과 경쟁하지 않음)
+        // 1) 기존 PIN이 있으면 SSG 상태 판정 (mutex 불필요: 새 PIN 생성과 경쟁하지 않음)
+        //    GetSsgTry(cust_info 제출여부) + GetSsgStatus(cust_info_result 결과/유효성) 조합.
+        //    네트워크/파싱 오류는 classifySsgPin 이 throw → 등록 여부 불명이므로 안전을 위해 중단.
         let needsInsert = true;
         if (orderDelivery.barCode && orderDelivery.personalCode) {
-          try {
-            await this.checkSsgWithRetry({
-              eventNo: ssgEvent.no,
-              eventSeq: ssgEvent.order,
-              vno: orderDelivery.personalCode,
-            });
-            // 조회 성공 → INSERT는 됐고 발송만 실패한 경우
+          const verdict = await this.classifySsgPin({
+            eventNo: ssgEvent.no,
+            eventSeq: ssgEvent.order,
+            personalCode: orderDelivery.personalCode,
+          });
+
+          if (verdict === SsgPinVerdict.REGISTERED) {
+            // result 유효 → INSERT는 됐고 발송만 실패 → 기존 PIN 재사용
             needsInsert = false;
             this.logger.log(
-              `[SSG] 기존 PIN이 SSG DB에 등록됨 - barCode: ${orderDelivery.barCode}, INSERT 건너뜀`,
+              `[SSG] 기존 PIN이 SSG DB에 등록(유효) - barCode: ${orderDelivery.barCode}, INSERT 건너뜀`,
             );
-            // state ATTEMPTED → CONFIRMED 동기화.
-            // plans/ssg-balance-refactor.md PR2 — backfill 된 ATTEMPTED+barCode 행이나 orphan 복원 대상이
-            // 이 경로를 타도 state가 정합되어야 한다. markConfirmed 는 WHERE state=ATTEMPTED 가드라
-            // NONE/이미 CONFIRMED 면 silently skip.
+            // state ATTEMPTED → CONFIRMED 동기화 (markConfirmed 는 WHERE state=ATTEMPTED 가드라 그 외엔 silent skip).
             // ssgTransactionId 가 NULL 인 legacy row 는 markConfirmed 호출 자체를 skip (NOT NULL 타입 보호).
             if (orderDelivery.ssgTransactionId) {
               await this.ssgInsertStateService.markConfirmed(orderDelivery.id, {
@@ -387,21 +466,20 @@ export class PartnerCompanyExternService {
                 encourageAt: orderDelivery.encourageAt ?? null,
               });
             }
-          } catch (e) {
-            if (e instanceof SsgCheckNotFoundError) {
-              // API 정상 응답 + code ≠ 1001 → PIN 미등록 확정 → 새 PIN 생성
-              this.logger.log(
-                `[SSG] 기존 PIN이 SSG DB에 미등록 - barCode: ${orderDelivery.barCode}, 새 PIN 생성`,
-              );
-              orderDelivery.barCode = null;
-              orderDelivery.personalCode = null;
-            } else {
-              // 네트워크 에러, 타임아웃 등 → 등록 여부 불명 → 안전을 위해 중단
-              this.logger.error(
-                `[SSG] SSG DB 조회 중 네트워크 오류 발생 - barCode: ${orderDelivery.barCode}, 안전을 위해 중단`,
-              );
-              throw e;
-            }
+          } else if (verdict === SsgPinVerdict.PROCESSING) {
+            // cust_info 제출됐으나 result 미반영 = SSG 처리중 → 보류 (새 INSERT 금지, markFailed 금지).
+            // 게이트(runSsgResendGate)가 선처리하지만, 비-게이트 경로 안전망으로 throw.
+            this.logger.warn(
+              `[SSG] 기존 PIN SSG 처리중 - barCode: ${orderDelivery.barCode}, 재발송 보류. orderDeliveryId=${orderDelivery.id}`,
+            );
+            throw new SsgProcessingError(orderDelivery.id);
+          } else {
+            // NOT_SUBMITTED(미제출) | REGISTRATION_FAILED(등록실패) → 기존 PIN 폐기 후 새 PIN 생성
+            this.logger.log(
+              `[SSG] 기존 PIN 재사용 불가(${verdict}) - barCode: ${orderDelivery.barCode}, 새 PIN 생성`,
+            );
+            orderDelivery.barCode = null;
+            orderDelivery.personalCode = null;
           }
         }
 
@@ -410,51 +488,48 @@ export class PartnerCompanyExternService {
           // 2) 새 PIN 생성 (최초 발송 또는 INSERT 실패 시) + 2중 중복 확인
           if (!orderDelivery.barCode || !orderDelivery.personalCode) {
             const maxRetries = 5;
-            let generated = false;
-            for (let i = 0; i < maxRetries; i++) {
+            let pinGenerated = false;
+            for (let attempt = 0; attempt < maxRetries; attempt++) {
               const { barCode, personalCode } = this.ssgIssue.generateSsgIssue();
 
               // 1차 중복 확인: 로컬 ssg_issue_log (빠름)
               const localDuplicate = await this.ssgIssueLogRepository.findOne({
-                where: [
-                  { barCode },
-                  { personalCode },
-                ],
+                where: [{ barCode }, { personalCode }],
               });
               if (localDuplicate) {
                 this.logger.warn(
-                  `[SSG] 로컬 블랙리스트 중복 감지 - barCode: ${barCode}, personalCode: ${personalCode}, 재생성 시도 (${i + 1}/${maxRetries})`,
+                  `[SSG] 로컬 블랙리스트 중복 감지 - barCode: ${barCode}, personalCode: ${personalCode}, 재생성 시도 (${attempt + 1}/${maxRetries})`,
                 );
                 continue;
               }
 
-              // 2차 중복 확인: SSG DB (느림)
+              // 2차 중복 확인: SSG cust_info (GetSsgTry). 제출 이력 = 중복.
+              // personalCode 단독(전 행사 합산) 조회라 cust_info_result(GetSsgStatus)보다 중복번호 검출이 정확.
               try {
-                await this.checkSsgWithRetry({
-                  eventNo: ssgEvent.no,
-                  eventSeq: ssgEvent.order,
-                  vno: personalCode,
-                });
-                // 조회 성공 = 중복
-                this.logger.warn(
-                  `[SSG] SSG DB 중복 감지 - personalCode: ${personalCode}, 재생성 시도 (${i + 1}/${maxRetries})`,
-                );
-                continue;
-              } catch (e) {
-                if (e instanceof SsgCheckNotFoundError) {
-                  // API 정상 응답 + 미등록 = 사용 가능
-                  orderDelivery.barCode = barCode;
-                  orderDelivery.personalCode = personalCode;
-                  generated = true;
-                  this.logger.log(`[SSG] PIN 생성 완료 - barCode: ${barCode}, personalCode: ${personalCode}`);
-                  break;
+                const tryOut = await this.ssgIssue.getTry({ vno: personalCode });
+                const tryYn = tryOut?.response?.value?.[0]?.tryYn?.[0];
+                if (tryYn === 'Y') {
+                  // 제출 이력 존재 = 중복
+                  this.logger.warn(
+                    `[SSG] cust_info 중복 감지 - personalCode: ${personalCode}, 재생성 시도 (${attempt + 1}/${maxRetries})`,
+                  );
+                  continue;
                 }
-                // 네트워크 에러 → 중복 여부 불명 → 안전을 위해 중단
-                this.logger.error(`[SSG] PIN 중복 확인 중 네트워크 오류 발생 - personalCode: ${personalCode}, 안전을 위해 중단`);
+                // tryYn === 'N' = 미사용 → 사용 가능
+                orderDelivery.barCode = barCode;
+                orderDelivery.personalCode = personalCode;
+                pinGenerated = true;
+                this.logger.log(`[SSG] PIN 생성 완료 - barCode: ${barCode}, personalCode: ${personalCode}`);
+                break;
+              } catch (e) {
+                // getTry 실패(검증 거절/네트워크/파싱) → 중복 여부 불명 → 안전을 위해 중단
+                this.logger.error(
+                  `[SSG] PIN 중복 확인(GetSsgTry) 오류 - personalCode: ${personalCode}, 안전을 위해 중단: ${e instanceof Error ? e.message : e}`,
+                );
                 throw e;
               }
             }
-            if (!generated) {
+            if (!pinGenerated) {
               throw new Error(`SSG PIN 생성 ${maxRetries}회 시도 후에도 중복 발생`);
             }
           }
@@ -1164,7 +1239,28 @@ export class PartnerCompanyExternService {
       return SsgOrphanResolveOutcome.CONFIRMED;
     }
 
-    // 모든 후보 정상 NotFound → 실패 확정
+    // 모든 후보 cust_info_result(GetSsgStatus) 미반영. 단 cust_info(GetSsgTry)에 제출 이력이 있으면
+    // = SSG 처리중 → markFailed 금지(실패 확정 아님). result 반영될 때까지 보류한다.
+    // 실패 확정으로 마킹하면 환불 + 새 INSERT 가 일어나 SSG 측 중복 등록 위험.
+    for (const candidate of usable) {
+      try {
+        const tryOut = await this.ssgIssue.getTry({ vno: candidate.personalCode });
+        if (tryOut?.response?.value?.[0]?.tryYn?.[0] === 'Y') {
+          this.logger.warn(
+            `[SSG_ORPHAN] cust_info 제출 이력 있음(처리중 추정) - result 미반영. markFailed 보류. orderDeliveryId=${orderDeliveryId}, vno=${candidate.personalCode}`,
+          );
+          return SsgOrphanResolveOutcome.NETWORK_UNKNOWN;
+        }
+      } catch (e) {
+        // getTry 실패 → 제출 여부 불명 → 보수적으로 보류 (markFailed 금지)
+        this.logger.error(
+          `[SSG_ORPHAN] GetSsgTry 오류 - 제출 여부 불명, markFailed 보류. orderDeliveryId=${orderDeliveryId}, vno=${candidate.personalCode}: ${e instanceof Error ? e.message : e}`,
+        );
+        return SsgOrphanResolveOutcome.NETWORK_UNKNOWN;
+      }
+    }
+
+    // cust_info 에도 제출 이력 없음 → 진짜 미제출/실패 확정
     const failedTransitioned = await this.ssgInsertStateService.markFailed(orderDeliveryId);
     if (!failedTransitioned) {
       this.logger.warn(

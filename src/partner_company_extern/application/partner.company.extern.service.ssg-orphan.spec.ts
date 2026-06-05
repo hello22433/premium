@@ -37,7 +37,7 @@ import { PartnerCompanyExternService } from './partner.company.extern.service';
  */
 describe('PartnerCompanyExternService - SSG orphan resolver', () => {
   let sut: PartnerCompanyExternService;
-  let ssgIssue: { check: jest.Mock; issue: jest.Mock; generateSsgIssue: jest.Mock };
+  let ssgIssue: { check: jest.Mock; issue: jest.Mock; generateSsgIssue: jest.Mock; getTry: jest.Mock };
   let ssgIssueLogRepository: jest.Mocked<Repository<SsgIssueLogEntity>>;
   let ssgInsertStateService: {
     getState: jest.Mock;
@@ -71,12 +71,19 @@ describe('PartnerCompanyExternService - SSG orphan resolver', () => {
     save: jest.fn(),
   });
 
+  // GetSsgTry 응답(cust_info 제출여부) mock
+  const tryOut = (tryYn: 'Y' | 'N') => ({
+    response: { result: [{ code: ['1001'], reason: ['ok'] }], value: [{ vno: ['x'], tryYn: [tryYn] }] },
+  });
+
   beforeEach(async () => {
     jest.clearAllMocks();
     ssgIssue = {
       check: jest.fn(),
       issue: jest.fn(),
       generateSsgIssue: jest.fn(),
+      // 기본: 제출 이력 없음(N) → markFailed 가드 통과
+      getTry: jest.fn().mockResolvedValue(tryOut('N')),
     };
     ssgIssueLogRepository = { ...mock<Repository<SsgIssueLogEntity>>(), ...makeRepoMock() } as unknown as jest.Mocked<Repository<SsgIssueLogEntity>>;
     ssgInsertStateService = {
@@ -170,6 +177,19 @@ describe('PartnerCompanyExternService - SSG orphan resolver', () => {
     expect(result).toBe(SsgOrphanResolveOutcome.FAILED);
     expect(ssgIssue.check).toHaveBeenCalledTimes(2);
     expect(ssgInsertStateService.markFailed).toHaveBeenCalledWith(99);
+    expect(ssgInsertStateService.markConfirmed).not.toHaveBeenCalled();
+  });
+
+  it('result 미반영(NotFound)이지만 cust_info 제출 이력 있음(getTry=Y) → 처리중 → NETWORK_UNKNOWN, markFailed 안 부름', async () => {
+    ssgInsertStateService.getState.mockResolvedValue(SsgInsertState.ATTEMPTED);
+    ssgIssueLogRepository.find = jest.fn().mockResolvedValue([buildLog()]);
+    ssgIssue.check.mockRejectedValue(new SsgCheckNotFoundError('미등록'));
+    ssgIssue.getTry.mockResolvedValue(tryOut('Y'));
+
+    const result = await sut.resolveSsgOrphan(99);
+
+    expect(result).toBe(SsgOrphanResolveOutcome.NETWORK_UNKNOWN);
+    expect(ssgInsertStateService.markFailed).not.toHaveBeenCalled();
     expect(ssgInsertStateService.markConfirmed).not.toHaveBeenCalled();
   });
 

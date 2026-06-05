@@ -50,6 +50,42 @@ export type ISsgCheckOut = {
   };
 };
 
+export type ISsgTryIn = {
+  vno: string; // SSG cust_info.HP = personalCode (개인번호)
+};
+
+/**
+ * GetSsgTry.do 원시 응답 (cust_info 시도내역 조회).
+ * 성공 시에만 value 블록이 채워진다(tryYn). 에러(검증 실패 등) 시 result.code 만 존재.
+ */
+export type ISsgTryOut = {
+  response: {
+    result: {
+      code: string[];
+      reason: string[];
+    }[];
+    value?: {
+      vno: string[];
+      tryYn: string[]; // 'Y' = cust_info 에 제출 이력 있음, 'N' = 없음
+      tryCnt?: string[];
+      lastTryDate?: string[];
+      setAmt?: string[];
+      custNm?: string[];
+      trId?: string[];
+    }[];
+  };
+};
+
+/**
+ * SSG PIN 판정 — GetSsgTry(cust_info 제출여부) + GetSsgStatus(cust_info_result 결과/유효성) 조합.
+ */
+export enum SsgPinVerdict {
+  NOT_SUBMITTED = 'NOT_SUBMITTED', // cust_info 에 없음 → 새 PIN INSERT
+  PROCESSING = 'PROCESSING', // cust_info 있으나 result 없음 → SSG 처리중 → 보류
+  REGISTERED = 'REGISTERED', // result 유효(0100/0200/0400) → 기존 PIN 재사용
+  REGISTRATION_FAILED = 'REGISTRATION_FAILED', // result 등록실패(01XX≠00) → 새 PIN INSERT
+}
+
 export type ISsgAmountIn = {
   eventNo: string;
   eventSeq: number;
@@ -93,6 +129,8 @@ export interface ISsgIssue {
   issue(obj: ISsgIssueIn): Promise<ISsgIssueOut>;
 
   check(obj: ISsgCheckIn): Promise<ISsgCheckOut>;
+
+  getTry(obj: ISsgTryIn): Promise<ISsgTryOut>;
 
   getAmount(obj: ISsgAmountIn): Promise<ISsgAmountResult>;
 }
