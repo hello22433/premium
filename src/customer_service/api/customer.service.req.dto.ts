@@ -224,12 +224,13 @@ export class CustomerServicePinStatusModifyReqDto {
   orderDeliveryId: number;
 
   @ApiProperty({
-    description: '변경내역 후',
+    description: '변경내역 후 (핀상태: CANCEL=폐기 / REFUND_CANCEL=환불폐기)',
+    enum: OrderDeliveryCouponStatus,
   })
   // =================================
   @IsOptional()
-  @IsString()
-  afterChange?: string;
+  @IsEnum(OrderDeliveryCouponStatus)
+  afterChange?: OrderDeliveryCouponStatus;
 }
 
 export class CustomerServicePinStatusRefreshReqDto {
