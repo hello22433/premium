@@ -204,11 +204,19 @@ describe('LoggerMiddleware 마스킹', () => {
       expect(r.subject).toBe('발송완료 리포트');
     });
 
-    test('보고서 경로에서 to 이메일을 마스킹한다', () => {
+    test('보고서 경로에서 to 이메일을 마스킹한다 (prod)', () => {
       process.env.ENVIRONMENT = 'prod';
       const r = sanitize({ to: 'client@company.com', subject: '발송완료 리포트' }, REPORT_URL);
       expect(r.to).not.toBe('client@company.com');
       expect(r.to).toContain('@company.com');
+    });
+
+    test('보고서 경로라도 dev에서는 to를 평문 보존한다 (content/pdf는 드롭)', () => {
+      process.env.ENVIRONMENT = 'dev';
+      const r = sanitize({ to: 'client@company.com', content: '<html/>', pdfBase64: 'abc=' }, REPORT_URL);
+      expect(r.to).toBe('client@company.com'); // PII는 dev 평문 철학 유지
+      expect(r.hasContent).toBe(true); // 볼륨 절감은 env 무관
+      expect(r.hasPdfBase64).toBe(true);
     });
 
     test('보고서 경로에서 to에 콤마 구분 여러 수신자가 있어도 각각 마스킹한다', () => {

@@ -115,15 +115,19 @@ export class LoggerMiddleware implements NestMiddleware {
    */
   private sanitizeBody(body: any, originalUrl: string): any {
     const isReportEmail = this.reportEmailPaths.some((p) => originalUrl.includes(p));
-    const passwordStripped = this.stripPasswords(body, isReportEmail);
-    if (!this.isProd()) return passwordStripped;
+    const prepared = this.prepareForLogging(body, isReportEmail);
+    if (!this.isProd()) return prepared;
     const maskCode = this.authCodePaths.some((p) => originalUrl.includes(p));
-    return this.maskSensitiveData(passwordStripped, maskCode);
+    return this.maskSensitiveData(prepared, maskCode);
   }
 
-  /** 비밀번호/대용량 페이로드 키를 환경 무관하게 제거하고 has* 플래그로 대체. 보고서 이메일 경로에서는 수신자(to) 마스킹 및 HTML 본문(content) 드롭 추가. */
-  private stripPasswords(body: any, isReportEmail = false): any {
-    if (Array.isArray(body)) return body.map((item) => this.stripPasswords(item, isReportEmail));
+  /**
+   * 로깅 전 body 전처리 (환경 무관).
+   * - 비밀번호/대용량 페이로드(pdfBase64): 값 제거 후 has* 플래그로 대체.
+   * - 보고서 이메일 경로: HTML 본문(content) 드롭(볼륨 절감, env 무관), 수신자(to)는 운영에서만 마스킹(PII).
+   */
+  private prepareForLogging(body: any, isReportEmail = false): any {
+    if (Array.isArray(body)) return body.map((item) => this.prepareForLogging(item, isReportEmail));
     if (!body || typeof body !== 'object') return body;
     const result: Record<string, any> = {};
     for (const [key, value] of Object.entries(body)) {
@@ -133,11 +137,11 @@ export class LoggerMiddleware implements NestMiddleware {
         result[hasFlag] = true;
       } else if (isReportEmail && lower === 'content') {
         result[hasFlag] = true;
-      } else if (isReportEmail && lower === 'to' && typeof value === 'string' && value.includes('@')) {
+      } else if (isReportEmail && this.isProd() && lower === 'to' && typeof value === 'string' && value.includes('@')) {
         const emailPattern = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g;
         result[key] = value.replace(emailPattern, (m) => MaskingUtil.maskEmail(m));
       } else if (value && typeof value === 'object') {
-        result[key] = this.stripPasswords(value, isReportEmail);
+        result[key] = this.prepareForLogging(value, isReportEmail);
       } else {
         result[key] = value;
       }
