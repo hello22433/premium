@@ -184,7 +184,9 @@ export class EarlyDestroyService {
       );
     }
 
-    await this.assertNoPendingDuplicate(orderId, { deliveryIds: uniqueIds });
+    await this.assertNoPendingDuplicate(orderId, {
+      deliveries: deliveries.map((d) => ({ id: d.id, mappingId: d.orderProductMappingId })),
+    });
 
     return this.saveRequest(
       orderId,
@@ -350,13 +352,15 @@ export class EarlyDestroyService {
   }
 
   /**
-   * 동일 대상에 대한 미완료(PENDING) 요청 중복 등록 차단(L-1).
-   * 같은 단위(매핑↔매핑, 발송건↔발송건) 겹침을 검사한다. (실행은 멱등이라 데이터 위험은 없으나
-   * 중복 요청 레코드가 쌓여 운영 혼란을 유발하므로 등록 단계에서 거부)
+   * 미완료(PENDING) 요청과 **완전히 중복**(새 요청의 모든 대상이 이미 대기 중)인 경우만 거부(L-1).
+   * 더 넓은 범위(상위집합) 신규는 허용한다 — 발송건 1건만 대기 중인데 그 매핑 전체를 새로 파기하려는
+   * 경우, 나머지 발송건을 파기해야 하므로 막지 않는다("물건 하나 때문에 상자 전체 파기 불가"는 모순).
+   *  - 매핑 전체 신규: 그 매핑이 이미 "전체"로 대기 중일 때만 거부.
+   *  - 발송건 신규: 같은 발송건이 대기 중이거나, 그 발송건의 매핑 전체가 대기 중이면 거부.
    */
   private async assertNoPendingDuplicate(
     orderId: number,
-    targets: { mappingIds?: number[]; deliveryIds?: number[] },
+    targets: { mappingIds?: number[]; deliveries?: { id: number; mappingId: number }[] },
   ): Promise<void> {
     const pending = await this.earlyDestroyRequestRepository.find({
       where: { orderId, status: EarlyDestroyRequestStatus.PENDING },
@@ -364,22 +368,27 @@ export class EarlyDestroyService {
     });
     if (pending.length === 0) return;
 
-    const pendingMappingIds = new Set<number>();
-    const pendingDeliveryIds = new Set<number>();
+    const pendingWholeMappingIds = new Set<number>(); // orderDeliveryId IS NULL = 매핑 전체 파기 대기
+    const pendingDeliveryIds = new Set<number>(); // 특정 발송건 파기 대기
     for (const req of pending) {
       for (const item of req.items) {
         if (item.orderDeliveryId !== null) pendingDeliveryIds.add(item.orderDeliveryId);
-        else pendingMappingIds.add(item.orderProductMappingId);
+        else pendingWholeMappingIds.add(item.orderProductMappingId);
       }
     }
 
-    const dupMapping = (targets.mappingIds ?? []).find((m) => pendingMappingIds.has(m));
+    // 매핑 전체 신규: 그 매핑이 이미 "전체"로 대기 중일 때만 거부(완전 중복).
+    // 발송건 일부만 대기 중이면 나머지 발송건 파기를 위해 허용.
+    const dupMapping = (targets.mappingIds ?? []).find((m) => pendingWholeMappingIds.has(m));
     if (dupMapping !== undefined) {
       throw new BadRequestException(`이미 대기 중인 조기파기 요청이 있는 상품매핑입니다. (id: ${dupMapping})`);
     }
-    const dupDelivery = (targets.deliveryIds ?? []).find((d) => pendingDeliveryIds.has(d));
+    // 발송건 신규: 같은 발송건이 대기 중이거나, 그 발송건의 매핑 전체가 대기 중이면 거부(완전 중복).
+    const dupDelivery = (targets.deliveries ?? []).find(
+      (d) => pendingDeliveryIds.has(d.id) || pendingWholeMappingIds.has(d.mappingId),
+    );
     if (dupDelivery !== undefined) {
-      throw new BadRequestException(`이미 대기 중인 조기파기 요청이 있는 발송건입니다. (id: ${dupDelivery})`);
+      throw new BadRequestException(`이미 대기 중인 조기파기 요청이 있는 발송건입니다. (id: ${dupDelivery.id})`);
     }
   }
 

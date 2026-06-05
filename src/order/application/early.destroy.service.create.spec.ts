@@ -83,6 +83,25 @@ describe('EarlyDestroyService.createRequestForDeliveries — 검증/L-1', () => 
     );
   });
 
+  it('매핑 전체 PENDING 이 있으면 그 매핑의 발송건 신규 등록을 거부한다 (L-1 교차 겹침)', async () => {
+    const sut = makeSut({
+      deliveries: [buildDelivery(101)], // mappingId 55
+      pending: [{ items: [{ orderProductMappingId: 55, orderDeliveryId: null }] }], // 매핑 55 전체 대기
+    });
+    await expect(sut.createRequestForDeliveries({ orderDeliveryIds: [101] }, user)).rejects.toThrow(
+      '이미 대기 중인',
+    );
+  });
+
+  it('같은 매핑이라도 서로 다른 발송건 PENDING 은 신규 발송건을 막지 않는다 (과차단 방지)', async () => {
+    const sut = makeSut({
+      deliveries: [buildDelivery(102)], // mappingId 55, 신규는 102
+      pending: [{ items: [{ orderProductMappingId: 55, orderDeliveryId: 101 }] }], // 다른 발송건 101 대기
+    });
+    const result = await sut.createRequestForDeliveries({ orderDeliveryIds: [102] }, user);
+    expect(result).toEqual({ id: 500 }); // 겹치지 않으므로 정상 등록
+  });
+
   it('정상 등록 시 요청 + 항목이 저장된다', async () => {
     const sut = makeSut({ deliveries: [buildDelivery(101), buildDelivery(102)] });
 
@@ -100,5 +119,53 @@ describe('EarlyDestroyService.createRequestForDeliveries — 검증/L-1', () => 
     expect(savedItems[0]).toEqual(
       expect.objectContaining({ earlyDestroyRequestId: 500, orderDeliveryId: 101 }),
     );
+  });
+});
+
+describe('EarlyDestroyService.createRequest(매핑 단위) — L-1 교차 겹침', () => {
+  const user = { id: 9, email: 'op@enmad.com' } as any;
+
+  // createRequest 경로 전용 SUT (orderProductMapping 조회 + nonDestroyed QueryBuilder 포함)
+  const makeMappingSut = (cfg: { mappingIds?: number[]; pending?: any[] } = {}) => {
+    const mappingIds = cfg.mappingIds ?? [55];
+    const sut: any = Object.create(EarlyDestroyService.prototype);
+    sut.orderRepository = {
+      findOne: jest.fn().mockResolvedValue({ id: 77, status: IOrderStatus.DELIVERY_COMPLETE }),
+    };
+    sut.orderProductMappingRepository = {
+      find: jest.fn().mockResolvedValue(mappingIds.map((id) => ({ id }))),
+    };
+    // nonDestroyed 집계: 모든 매핑이 미파기 발송건 보유로 통과
+    const qb: any = {};
+    for (const m of ['select', 'addSelect', 'where', 'andWhere', 'groupBy']) qb[m] = jest.fn(() => qb);
+    qb.getRawMany = jest.fn().mockResolvedValue(mappingIds.map((id) => ({ mappingId: id, cnt: '1' })));
+    sut.orderDeliveryRepository = { createQueryBuilder: jest.fn(() => qb) };
+    sut.earlyDestroyRequestRepository = {
+      find: jest.fn().mockResolvedValue(cfg.pending ?? []),
+      create: jest.fn((x: any) => x),
+      save: jest.fn().mockResolvedValue({ id: 600 }),
+    };
+    sut.earlyDestroyRequestItemRepository = {
+      create: jest.fn((x: any) => x),
+      save: jest.fn().mockResolvedValue(undefined),
+    };
+    return sut;
+  };
+
+  it('경우 A — 매핑 전체 PENDING 이 있으면 같은 매핑 전체 신규를 거부한다', async () => {
+    const sut = makeMappingSut({ pending: [{ items: [{ orderProductMappingId: 55, orderDeliveryId: null }] }] });
+    await expect(sut.createRequest(77, { orderProductMappingIds: [55] }, user)).rejects.toThrow('상품매핑');
+  });
+
+  it('경우 D — 발송건 일부만 PENDING 이면 매핑 전체 신규는 허용한다 (나머지 발송건 파기, 모순 방지)', async () => {
+    const sut = makeMappingSut({ pending: [{ items: [{ orderProductMappingId: 55, orderDeliveryId: 101 }] }] });
+    const result = await sut.createRequest(77, { orderProductMappingIds: [55] }, user);
+    expect(result).toEqual({ id: 600 }); // 상위집합이므로 허용
+  });
+
+  it('다른 매핑의 PENDING 은 영향 없이 통과한다 (과차단 방지)', async () => {
+    const sut = makeMappingSut({ pending: [{ items: [{ orderProductMappingId: 66, orderDeliveryId: null }] }] });
+    const result = await sut.createRequest(77, { orderProductMappingIds: [55] }, user);
+    expect(result).toEqual({ id: 600 });
   });
 });

@@ -69,6 +69,18 @@ describe('DeliveryBatchService.deliveryDeliveryTargetDestroy — H-1 PII 5종 �
     }
   });
 
+  it('환불 진행중(PROGRESS/APPROVE) 제외 조건이 WHERE 에 포함된다 (조기파기 환불 가드 미러링)', async () => {
+    const qb = makeQb([{ id: 1 }]);
+    const sut = makeSut(qb);
+
+    await sut.deliveryDeliveryTargetDestroy();
+
+    const refundGuard = qb.calls.andWhere.find(([sql]: [string]) => sql.includes('refundStatus'));
+    expect(refundGuard).toBeDefined();
+    expect(refundGuard[0]).toContain('IS NULL'); // 환불 없는(NULL) 건은 정상 포함
+    expect(refundGuard[1].activeRefundStatuses).toEqual(expect.arrayContaining(['PROGRESS', 'APPROVE']));
+  });
+
   it('대상이 없으면 update 를 호출하지 않는다(멱등)', async () => {
     const qb = makeQb([]);
     const sut = makeSut(qb);
