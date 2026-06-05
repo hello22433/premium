@@ -13,6 +13,10 @@ export class LoggerMiddleware implements NestMiddleware {
   // 이름류: 'name' 단독 substring은 companyName/productName/fileName 등 광범위 오탐 → 2단어 합성어 조각만.
   // (userPersonName/bankAccountOwner 등 접두사 변형까지 substring으로 포착, 오탐은 없음)
   private nameKeyParts = ['personname', 'receivername', 'recipientname', 'sendername', 'accountowner'];
+  // 물리 주소 필드 allowlist (소문자 exact match). includes 방식은 addressType 등 비PII 오탐 위험.
+  private addressKeys = new Set(['businessaddress', 'offlineaddress', 'snapshotbusinessaddress', 'snapshotclientbusinessaddress']);
+  // 금융 브랜드/계좌 정보 allowlist (소문자 exact match). includes('bank'/'card')는 discard* 등 오탐 위험.
+  private financialBrandKeys = new Set(['cardname', 'bankname', 'paymentbank', 'banknumber']);
   // 일회용 인증코드(body.code)를 쓰는 경로. 'code'는 productCode 등과 충돌하므로 이 경로에서만 redact.
   private authCodePaths = ['/user-find/reset-password/verify', '/user/login/email/verify', '/user/login/phone/verify'];
   // URL 쿼리스트링에서 값 redact할 민감 파라미터(소문자). encryptKey/code 등은 링크로 외부 전달되나 로그 집적 방지.
@@ -32,7 +36,7 @@ export class LoggerMiddleware implements NestMiddleware {
    * - name류: 'name' 단독은 광범위 오탐 → 'personname' 등 2단어 합성어 조각 substring만.
    * - phone/email/token/bank: 충돌 적은 substring 매칭(소문자). 'tel'/'mail' 같은 짧은 조각은
    *   제외('phone'이 telephone, 'email'이 *Email을 이미 커버) → hotel/mailingAddress 오탐 차단.
-   * - address: ip/mac 제외(기술적 식별자) 후 물리 주소 전부 redact.
+   * - address: allowlist(addressKeys) exact match — includes 방식 오탐 방지.
    * - email: 키가 'email'로 끝날 때만(endsWith). 정규식으로 이메일 주소 추출 후 인플레이스 마스킹.
    *   패턴 없으면 undefined 반환(원문 보존). emailTitle 등 이메일 메타 필드 오탐 차단.
    */
@@ -42,19 +46,17 @@ export class LoggerMiddleware implements NestMiddleware {
 
     if (this.nameKeyParts.some((p) => lower.includes(p))) return MaskingUtil.maskPersonName(value);
     if (lower.includes('encryptkey') || lower.includes('token')) return '***';
-    if (lower.includes('cardname') || lower.includes('bankname')) return MaskingUtil.maskBrandName(value);
+    if (this.financialBrandKeys.has(lower)) return MaskingUtil.maskBrandName(value);
     if (lower.includes('cardnumber')) return MaskingUtil.maskCardNumber(value);
-    if (lower.includes('bank') || lower.includes('card')) return MaskingUtil.maskBrandName(value);
     // 사업자등록번호 등 식별번호. 'business' 단독은 businessName(공개 상호) 과잉가림이라 조각 한정.
     if (lower.includes('businessnumber')) return MaskingUtil.maskBusinessNumber(value);
-    // 'mailing' 접두사는 공개 우편주소로 취급 → 오탐 제외.
-    if (lower.includes('address') && !lower.includes('ip') && !lower.includes('mac') && !lower.includes('email') && !lower.startsWith('mailing')) return '***';
+    if (this.addressKeys.has(lower)) return '***';
     if (lower.includes('phone') || lower.includes('mobile')) return MaskingUtil.maskPhoneNumber(value);
     if (lower === 'deliverytarget') return MaskingUtil.maskDeliveryTarget(value);
     if (lower.endsWith('email')) {
       const emailPattern = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g;
-      if (!emailPattern.test(value)) return undefined;
-      return value.replace(emailPattern, (m) => MaskingUtil.maskEmail(m));
+      const masked = value.replace(emailPattern, (m) => MaskingUtil.maskEmail(m));
+      return masked === value ? undefined : masked;
     }
     return undefined;
   }
@@ -76,13 +78,6 @@ export class LoggerMiddleware implements NestMiddleware {
 
     for (const [key, value] of Object.entries(body)) {
       const lower = key.toLowerCase();
-
-      // 비밀번호 계열: 값 제거하고 입력 여부만 기록
-      if (this.passwordKeys.has(lower)) {
-        const hasField = `has${key.charAt(0).toUpperCase() + key.slice(1)}`;
-        sanitized[hasField] = true;
-        continue;
-      }
 
       // 일회용 인증코드: 해당 경로(authCodePaths)에서만 redact (productCode 등 비민감 code는 보존)
       if (maskCode && lower === 'code' && typeof value === 'string') {
@@ -110,13 +105,32 @@ export class LoggerMiddleware implements NestMiddleware {
 
   /**
    * 환경별 body 정제.
-   * - 운영(ENVIRONMENT=prod): 비밀번호/PII 마스킹.
-   * - 개발: 디버깅을 위해 마스킹 없이 평문 노출.
+   * - 비밀번호 계열: 환경 무관 항상 제거.
+   * - 운영(ENVIRONMENT=prod): PII 추가 마스킹.
+   * - 개발: 비밀번호 제거 외 마스킹 없이 평문 노출.
    */
   private sanitizeBody(body: any, originalUrl: string): any {
-    if (!this.isProd()) return body;
+    const passwordStripped = this.stripPasswords(body);
+    if (!this.isProd()) return passwordStripped;
     const maskCode = this.authCodePaths.some((p) => originalUrl.includes(p));
-    return this.maskSensitiveData(body, maskCode);
+    return this.maskSensitiveData(passwordStripped, maskCode);
+  }
+
+  /** 비밀번호 계열 키를 환경 무관하게 제거하고 has* 플래그로 대체. */
+  private stripPasswords(body: any): any {
+    if (Array.isArray(body)) return body.map((item) => this.stripPasswords(item));
+    if (!body || typeof body !== 'object') return body;
+    const result: Record<string, any> = {};
+    for (const [key, value] of Object.entries(body)) {
+      if (this.passwordKeys.has(key.toLowerCase())) {
+        result[`has${key.charAt(0).toUpperCase() + key.slice(1)}`] = true;
+      } else if (value && typeof value === 'object') {
+        result[key] = this.stripPasswords(value);
+      } else {
+        result[key] = value;
+      }
+    }
+    return result;
   }
 
   /**

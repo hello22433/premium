@@ -18,9 +18,18 @@ describe('LoggerMiddleware 마스킹', () => {
       process.env.ENVIRONMENT = 'dev';
     });
 
-    test('비번/PII 포함 전체를 평문 그대로 통과시킨다 (디버깅용)', () => {
-      const body = { password: 'pw1234', personPhoneNumber: '01012345678', personEmail: 'hong@example.com' };
-      expect(sanitize(body)).toEqual(body);
+    test('비밀번호 계열은 dev에서도 제거하고 has* 플래그로 대체한다', () => {
+      const r = sanitize({ password: 'pw1234', personPhoneNumber: '01012345678' });
+      expect(r.password).toBeUndefined();
+      expect(r.hasPassword).toBe(true);
+      expect(r.personPhoneNumber).toBe('01012345678'); // PII는 dev에서 평문 유지
+    });
+
+    test('중첩 객체 안의 비밀번호도 dev에서 제거한다', () => {
+      const r = sanitize({ user: { password: 'pw', name: '홍길동' } });
+      expect(r.user.password).toBeUndefined();
+      expect(r.user.hasPassword).toBe(true);
+      expect(r.user.name).toBe('홍길동');
     });
   });
 
@@ -63,10 +72,24 @@ describe('LoggerMiddleware 마스킹', () => {
       expect(r.bankAccountOwner).toBe('이**');
     });
 
-    test('주소 필드를 redact한다', () => {
-      const r = sanitize({ homeAddress: '서울시 강남구', mailingAddress: '서울시' });
-      expect(r.homeAddress).toBe('***');
+    test('주소 allowlist 필드를 redact한다', () => {
+      const r = sanitize({
+        businessAddress: '서울시 강남구',
+        offlineAddress: '서울시 서초구',
+        snapshotBusinessAddress: '서울시 종로구',
+        snapshotClientBusinessAddress: '서울시 마포구',
+      });
+      expect(r.businessAddress).toBe('***');
+      expect(r.offlineAddress).toBe('***');
+      expect(r.snapshotBusinessAddress).toBe('***');
+      expect(r.snapshotClientBusinessAddress).toBe('***');
+    });
+
+    test('allowlist 외 address 계열 필드는 보존한다 (오탐 방지)', () => {
+      const r = sanitize({ homeAddress: '서울시 강남구', mailingAddress: '서울시', addressType: 'HOME' });
+      expect(r.homeAddress).toBe('서울시 강남구');
       expect(r.mailingAddress).toBe('서울시');
+      expect(r.addressType).toBe('HOME');
     });
 
     test('카드번호를 부분 마스킹한다', () => {
@@ -95,6 +118,12 @@ describe('LoggerMiddleware 마스킹', () => {
       expect(r.accessToken).toBe('***');
       expect(r.encryptKey).toBe('***');
       expect(r.bankNumber).toBe('*********56');
+    });
+
+    test('카드명/은행명 필드를 브랜드 마스킹한다', () => {
+      const r = sanitize({ cardName: '신한카드', bankName: '국민은행' });
+      expect(r.cardName).not.toBe('신한카드');
+      expect(r.bankName).not.toBe('국민은행');
     });
 
     test('사업자등록번호는 redact, 상호(businessName)는 보존한다', () => {
@@ -235,6 +264,16 @@ describe('LoggerMiddleware 마스킹', () => {
     test('/user-biz/:bizNo에 쿼리도 붙은 경우 path만 redact한다', () => {
       const out = maskUrl('/user-biz/123-45-67890?foo=bar');
       expect(out).toBe('/user-biz/123-45-*****?foo=bar');
+    });
+
+    test('address allowlist 쿼리 파라미터를 redact한다', () => {
+      const out = maskUrl('/order?businessAddress=서울시 강남구&page=1');
+      expect(out).toContain('businessAddress=***');
+      expect(out).toContain('page=1');
+    });
+
+    test('allowlist 외 address 쿼리 파라미터는 보존한다', () => {
+      expect(maskUrl('/x?addressType=HOME')).toBe('/x?addressType=HOME');
     });
   });
 });
