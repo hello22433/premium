@@ -13,7 +13,9 @@ import { OrderPointUsageEntity } from '../entity/order.point.usage.entity';
 import { OrderPaymentRefundEventEntity } from '../entity/order.payment.refund.event.entity';
 import { OrderDeliveryAttemptEntity } from '../entity/order.delivery.attempt.entity';
 import { UserEntity } from '../entity/user.entity';
+import { UserCompanyEntity } from '../entity/user.company.entity';
 import { WalletAccountResolverService } from './application/wallet-account-resolver.service';
+import { WalletReadService } from './application/wallet-read.service';
 import { PointPolicyService } from './application/point-policy.service';
 import { PaymentAllocationService } from './application/payment-allocation.service';
 import { WalletLedgerService } from './application/wallet-ledger.service';
@@ -55,11 +57,13 @@ import { CreditExcessApprovalController } from './api/credit-excess-approval.con
       OrderPaymentRefundEventEntity,
       OrderDeliveryAttemptEntity,
       UserEntity,
+      UserCompanyEntity,
     ]),
   ],
   controllers: [CreditExcessApprovalController],
   providers: [
     WalletAccountResolverService,
+    WalletReadService,
     PointPolicyService,
     PaymentAllocationService,
     WalletLedgerService,
@@ -85,6 +89,7 @@ import { CreditExcessApprovalController } from './api/credit-excess-approval.con
   ],
   exports: [
     WalletAccountResolverService,
+    WalletReadService,
     PointPolicyService,
     PaymentAllocationService,
     WalletLedgerService,

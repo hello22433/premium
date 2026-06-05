@@ -1,6 +1,21 @@
 import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { SettleService } from '../application/settle.service';
-import { Body, Controller, Get, Logger, Param, Post, Put, Query, Res, UseFilters, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Logger,
+  Param,
+  ParseIntPipe,
+  Post,
+  Put,
+  Query,
+  Res,
+  UseFilters,
+  UseGuards,
+} from '@nestjs/common';
+import { WalletReadService } from '../../wallet/application/wallet-read.service';
+import { SettleBySettlementCodeResDto, SettleSettlementCodeUsageResDto } from './dto/settle.read.res.dto';
 import { AuthUserSuperAndOperationAdminGuard } from '../../auth/api/auth.user.super-operation-admin.guard';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
 import { User } from '../../auth/api/user.decorator';
@@ -71,7 +86,40 @@ export class SettleController {
     private settleService: SettleService,
     private activityLogService: ActivityLogService,
     private authService: AuthService,
+    private walletReadService: WalletReadService,
   ) {}
+
+  @ApiOperation({
+    summary: '정산관리 > 정산코드 단위 잔액 스냅샷 조회 API',
+    description: '고객사(companyId)의 정산코드별 현재 wallet 잔액/포인트 잔액. wallet 미존재 정산코드는 walletStatus=MISSING.',
+  })
+  @ApiOkResponse({ type: SettleBySettlementCodeResDto })
+  @Get('settle/by-settlement-code')
+  async getBySettlementCode(
+    @User() user: ILoginUserInfo,
+    @Query('companyId', ParseIntPipe) companyId: number,
+  ): Promise<SettleBySettlementCodeResDto> {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.SETTLE_USER_MANAGE);
+    return this.walletReadService.getSettlementCodeSnapshot(companyId);
+  }
+
+  @ApiOperation({
+    summary: '정산관리 > 정산코드 단위 기간 wallet 결제액 조회 API',
+    description:
+      '정산코드별 기간 allocation 집계(walletPaidAmount). 기간 기준 = wallet 차감/발송확정 시점. legacy "정산확정액"과 다른 지표이므로 합산 금지.',
+  })
+  @ApiOkResponse({ type: SettleSettlementCodeUsageResDto })
+  @Get('settle/by-settlement-code/usage')
+  async getBySettlementCodeUsage(
+    @User() user: ILoginUserInfo,
+    @Query('companyId', ParseIntPipe) companyId: number,
+    @Query('from') from: string,
+    @Query('to') to: string,
+    @Query('includeReleased') includeReleased?: string,
+  ): Promise<SettleSettlementCodeUsageResDto> {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.SETTLE_USER_MANAGE);
+    return this.walletReadService.getSettlementCodeUsage(companyId, from, to, includeReleased === 'true');
+  }
 
   @ApiOperation({
     summary: '정산관리 > 기타 서비스 매출 > 리스트 조회 API',
