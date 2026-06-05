@@ -24,6 +24,19 @@ import { ILoginUserInfo } from '../../auth/interface/login.user';
 const DESTROY_VALUE = '-';
 const REFUND_IN_PROGRESS_MESSAGE = '환불 진행 중인 건으로 파기 실패했습니다. 고객센터(1644-3614)로 문의해주세요.';
 
+/**
+ * order_history.beforeChange/afterChange 가 PII(전화번호·이메일·핀번호)를 담는 type 목록.
+ *  - '수신정보 변경요청': beforeChange=옛 수신처, afterChange=새 수신처
+ *  - '폐기 후 신규 발송': afterChange=`새 수신처 / 새 핀번호`
+ * 그 외 type('폐기'/'환불폐기'/'핀상태 변경'/'재전송' 등)의 beforeChange/afterChange 는
+ * couponStatus 전이 감사값(NOT_USED→CANCEL 등)이므로 절대 마스킹하면 안 된다(C-1).
+ *
+ * ⚠️ order_history.type 은 enum 미강제 매직 스트링이다(M-3). writer(customer.service.service.ts
+ * 의 mapHistory/execHistory)가 쓰는 문자열 리터럴과 정확히 일치해야 한다. 향후 단일 소스 enum
+ * 으로 통합 시 본 상수도 함께 이관할 것.
+ */
+export const PII_BEARING_HISTORY_TYPES = ['수신정보 변경요청', '폐기 후 신규 발송'] as const;
+
 type RequestItemSeed = Pick<EarlyDestroyRequestItemEntity, 'orderProductMappingId' | 'orderDeliveryId'>;
 
 @Injectable()
@@ -225,6 +238,10 @@ export class EarlyDestroyService {
       throw new BadRequestException('대기 중인 요청만 실행할 수 있습니다.');
     }
 
+    // M-2 하드닝: 실행 시점에 주문 상태를 재검증한다. 등록~실행 사이 상태가 바뀐 경우(예: 발송취소)
+    // 방어. (이중 실행은 위 PENDING 가드가 차단하므로 멱등 측면은 충분)
+    await this.assertOrderDeliveryComplete(request.orderId);
+
     const targetDeliveryIds: number[] = [];
     const targetMappingIds: number[] = [];
     for (const item of request.items) {
@@ -280,11 +297,15 @@ export class EarlyDestroyService {
     }
 
     if (affectedDeliveryIds.length > 0) {
+      // order_history 의 PII 는 PII_BEARING_HISTORY_TYPES(수신정보 변경요청/폐기 후 신규 발송)의
+      // beforeChange/afterChange 에만 존재한다. 폐기/환불폐기/핀상태 변경 이력의 before/after 는
+      // couponStatus 전이 감사값이므로 type 필터 없이 전 행을 덮으면 상태 감사기록이 파괴된다(C-1).
       await this.orderHistoryRepository
         .createQueryBuilder()
         .update(OrderHistoryEntity)
         .set({ beforeChange: DESTROY_VALUE, afterChange: DESTROY_VALUE })
         .where('orderDeliveryId IN (:...ids)', { ids: affectedDeliveryIds })
+        .andWhere('type IN (:...piiTypes)', { piiTypes: [...PII_BEARING_HISTORY_TYPES] })
         .execute();
     }
 

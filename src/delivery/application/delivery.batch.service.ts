@@ -1869,7 +1869,10 @@ export class DeliveryBatchService {
       )
       .andWhere('order.status = :status', { status: IOrderStatus.DELIVERY_COMPLETE })
       .andWhere(
-        '(orderDelivery.deliveryTarget != :destroyValue OR orderDelivery.originalDeliveryTarget != :destroyValue)',
+        // PII 5종 중 하나라도 미파기면 대상 — 조기파기(executeRequest)와 동일 집합(H-1).
+        // 과거에 일부만 파기된 행(예: deliveryTarget 만 '-')도 backfill.
+        // (NULL 컬럼은 `!= '-'` 가 NULL 이라 이 절로 추가 매칭되지 않음 → 무중단)
+        '(orderDelivery.deliveryTarget != :destroyValue OR orderDelivery.originalDeliveryTarget != :destroyValue OR orderDelivery.emailReceiverPhone != :destroyValue OR orderDelivery.bankAccount != :destroyValue OR orderDelivery.bankAccountOwner != :destroyValue)',
         { destroyValue },
       )
       .getMany();
@@ -1877,9 +1880,17 @@ export class DeliveryBatchService {
     const destroyIdList = orderDeliveryList.map((od) => od.id);
 
     if (destroyIdList.length > 0) {
+      // PII 5종 파기 — 조기파기(executeRequest)와 동일 집합으로 통일(H-1). 운영 정책: 환불 계좌
+      // (bankAccount/bankAccountOwner)도 조기파기가 이미 파기하므로 정기파기 범위도 이를 따른다.
       await this.orderDeliveryRepository.update(
         { id: In(destroyIdList) },
-        { deliveryTarget: destroyValue, originalDeliveryTarget: destroyValue },
+        {
+          deliveryTarget: destroyValue,
+          originalDeliveryTarget: destroyValue,
+          emailReceiverPhone: destroyValue,
+          bankAccount: destroyValue,
+          bankAccountOwner: destroyValue,
+        },
       );
     }
   }
