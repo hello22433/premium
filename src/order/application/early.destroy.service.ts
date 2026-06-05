@@ -89,6 +89,8 @@ export class EarlyDestroyService {
       }
     }
 
+    await this.assertNoPendingDuplicate(orderId, { mappingIds: dto.orderProductMappingIds });
+
     return this.saveRequest(
       orderId,
       dto,
@@ -122,6 +124,8 @@ export class EarlyDestroyService {
     if (nonDestroyedCount === 0) {
       throw new BadRequestException('해당 주문은 이미 모든 발송건이 파기되었습니다.');
     }
+
+    await this.assertNoPendingDuplicate(orderId, { mappingIds });
 
     return this.saveRequest(
       orderId,
@@ -179,6 +183,8 @@ export class EarlyDestroyService {
         `이미 파기된 발송건이 포함되어 있습니다. (id: ${alreadyDestroyed.map((d) => d.id).join(', ')})`,
       );
     }
+
+    await this.assertNoPendingDuplicate(orderId, { deliveryIds: uniqueIds });
 
     return this.saveRequest(
       orderId,
@@ -340,6 +346,40 @@ export class EarlyDestroyService {
     }
     if (order.status !== IOrderStatus.DELIVERY_COMPLETE) {
       throw new BadRequestException('발송 완료된 주문만 조기파기 요청이 가능합니다.');
+    }
+  }
+
+  /**
+   * 동일 대상에 대한 미완료(PENDING) 요청 중복 등록 차단(L-1).
+   * 같은 단위(매핑↔매핑, 발송건↔발송건) 겹침을 검사한다. (실행은 멱등이라 데이터 위험은 없으나
+   * 중복 요청 레코드가 쌓여 운영 혼란을 유발하므로 등록 단계에서 거부)
+   */
+  private async assertNoPendingDuplicate(
+    orderId: number,
+    targets: { mappingIds?: number[]; deliveryIds?: number[] },
+  ): Promise<void> {
+    const pending = await this.earlyDestroyRequestRepository.find({
+      where: { orderId, status: EarlyDestroyRequestStatus.PENDING },
+      relations: ['items'],
+    });
+    if (pending.length === 0) return;
+
+    const pendingMappingIds = new Set<number>();
+    const pendingDeliveryIds = new Set<number>();
+    for (const req of pending) {
+      for (const item of req.items) {
+        if (item.orderDeliveryId !== null) pendingDeliveryIds.add(item.orderDeliveryId);
+        else pendingMappingIds.add(item.orderProductMappingId);
+      }
+    }
+
+    const dupMapping = (targets.mappingIds ?? []).find((m) => pendingMappingIds.has(m));
+    if (dupMapping !== undefined) {
+      throw new BadRequestException(`이미 대기 중인 조기파기 요청이 있는 상품매핑입니다. (id: ${dupMapping})`);
+    }
+    const dupDelivery = (targets.deliveryIds ?? []).find((d) => pendingDeliveryIds.has(d));
+    if (dupDelivery !== undefined) {
+      throw new BadRequestException(`이미 대기 중인 조기파기 요청이 있는 발송건입니다. (id: ${dupDelivery})`);
     }
   }
 
