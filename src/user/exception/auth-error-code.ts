@@ -34,6 +34,11 @@ export const AuthErrorCode = {
     message: '허용된 IP가 아닙니다.',
     status: HttpStatus.BAD_REQUEST,
   },
+  ACCOUNT_LOCKED: {
+    code: 'ACCOUNT_LOCKED',
+    message: '로그인 5회 실패로 계정이 잠겼습니다. 관리자에게 문의해주세요.',
+    status: HttpStatus.BAD_REQUEST,
+  },
   VERIFY_DATA_NOT_FOUND: {
     code: 'VERIFY_DATA_NOT_FOUND',
     message: '인증 데이터가 없습니다.',

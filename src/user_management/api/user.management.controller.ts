@@ -346,6 +346,21 @@ export class UserManagementController {
   }
 
   @ApiOperation({
+    summary: '계정 로그인 잠금 해제 API',
+    description: '로그인 5회 실패로 잠긴 계정의 잠금을 해제합니다. (영구 잠금 → 관리자 수동 해제, 이미 해제된 계정도 성공)',
+  })
+  @ApiBearerAuth()
+  @ApiOkResponse({
+    description: '잠금 해제 성공',
+  })
+  // ====================================
+  @UseGuards(AuthUserSuperAdminGuard)
+  @Post('/user-management/:id/login-unlock')
+  unlockLogin(@Param('id', ParseIntPipe) id: number, @User() user: ILoginUserInfo) {
+    return this.userManagementService.unlockLogin(id, user);
+  }
+
+  @ApiOperation({
     summary: '고객사(회사) 목록 조회 API',
     description: 'user_company 테이블 기준으로 중복 없이 고객사 목록을 반환합니다.',
   })

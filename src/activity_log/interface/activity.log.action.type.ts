@@ -17,4 +17,7 @@ export enum ActivityLogActionType {
   TRANSACTION_STATEMENT = 'TRANSACTION_STATEMENT', // 거래명세서 다운로드
   DISCARD_RESTORE = 'DISCARD_RESTORE', // 폐기 복구 (선충전 잔액 / 여신)
   PII_SEARCH = 'PII_SEARCH', // 개인정보(수신정보) 검색
+  LOGIN_FAIL = 'LOGIN_FAIL', // 로그인 실패
+  ACCOUNT_LOCK = 'ACCOUNT_LOCK', // 로그인 5회 실패 계정 잠금
+  ACCOUNT_UNLOCK = 'ACCOUNT_UNLOCK', // 계정 잠금 해제 (관리자)
 }

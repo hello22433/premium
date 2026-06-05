@@ -8,16 +8,22 @@ import { AuthErrorDefinition } from './auth-error-code';
  * ```json
  * { "statusCode": 400, "errorCode": "EXPIRED_VERIFY_CODE", "message": "만료된 인증 코드입니다." }
  * ```
+ *
+ * `data`를 넘기면 body에 포함된다 (예: 로그인 실패 시 남은 시도 횟수).
+ * ```json
+ * { "statusCode": 400, "errorCode": "INVALID_PASSWORD", "message": "...", "data": { "remainingAttempts": 3 } }
+ * ```
  */
 export class AuthException extends HttpException {
   readonly errorCode: string;
 
-  constructor(error: AuthErrorDefinition) {
+  constructor(error: AuthErrorDefinition, data?: Record<string, unknown>) {
     super(
       {
         statusCode: error.status,
         errorCode: error.code,
         message: error.message,
+        ...(data ? { data } : {}),
       },
       error.status,
     );

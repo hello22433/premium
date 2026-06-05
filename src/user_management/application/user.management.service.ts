@@ -998,13 +998,66 @@ export class UserManagementService {
       });
     }
 
+    const wasLocked = user.isLoginLocked || user.loginFailCount > 0;
+
     user.password = await this.passwordEncrypt.encrypt(tempPassword);
     user.isPasswordReset = true;
     user.passwordChangedAt = null; // 임시 비밀번호이므로 null로 설정
+    user.isLoginLocked = false; // 비밀번호 초기화 시 로그인 잠금 해제
+    user.loginFailCount = 0;
+    user.lockedAt = null;
 
     await this.userRepository.save(user);
 
-    return;
+    // 실제로 잠겨 있었거나 실패 카운트가 있었던 경우만 UNLOCK 로그 (정상 계정 초기화는 노이즈 방지)
+    if (wasLocked) {
+      await this.activityLogService.createLog({
+        userId: user.id,
+        userEmail: user.email,
+        method: 'POST',
+        requestUrl: '/user-management/password-reset',
+        actionType: ActivityLogActionType.ACCOUNT_UNLOCK,
+        ipAddress: '',
+        statusCode: 200,
+        result: ActivityLogResult.SUCCESS,
+        responseTime: 0,
+        requestParams: { method: 'password-reset' },
+      });
+    }
+  }
+
+  /**
+   * 로그인 잠금 해제 (관리자). 영구 잠금된 계정을 다시 로그인 가능하게 한다.
+   * idempotent: 이미 해제된 계정도 200 no-op 성공. 실제 잠금 상태였을 때만 UNLOCK 로그.
+   */
+  async unlockLogin(userId: number, admin: ILoginUserInfo) {
+    const user = await this.userRepository.findOne({ where: { id: userId } });
+    if (!user) {
+      throw new BadRequestException('해당 유저가 존재하지 않습니다.');
+    }
+
+    const wasLocked = user.isLoginLocked || user.loginFailCount > 0;
+
+    if (wasLocked) {
+      await this.userRepository.update(user.id, {
+        isLoginLocked: false,
+        loginFailCount: 0,
+        lockedAt: null,
+      });
+
+      await this.activityLogService.createLog({
+        userId: user.id,
+        userEmail: user.email,
+        method: 'POST',
+        requestUrl: `/user-management/${user.id}/login-unlock`,
+        actionType: ActivityLogActionType.ACCOUNT_UNLOCK,
+        ipAddress: '',
+        statusCode: 200,
+        result: ActivityLogResult.SUCCESS,
+        responseTime: 0,
+        requestParams: { actor: admin?.id, method: 'admin' },
+      });
+    }
   }
 
   /**
