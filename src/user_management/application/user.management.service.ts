@@ -327,6 +327,7 @@ export class UserManagementService {
         maximumLimit: user.company?.maximumLimit ?? 0,
         balance: this.getCurrentBalance(user, user.company),
         status: user.status,
+        isLoginLocked: user.isLoginLocked,
         duplicatePhoneLimit: user.duplicatePhoneLimit,
       };
     });
@@ -367,6 +368,8 @@ export class UserManagementService {
       isPasswordReset: user.isPasswordReset,
       authority: user.authority,
       status: user.status,
+      isLoginLocked: user.isLoginLocked,
+      lockedAt: user.lockedAt?.toISOString() ?? null,
       personName: user.personName,
       personPhoneNumber: user.personPhoneNumber,
       personEmail: user.personEmail,
