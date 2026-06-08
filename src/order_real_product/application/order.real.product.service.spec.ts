@@ -86,7 +86,7 @@ describe('OrderRealProductService 금액 산식', () => {
     expect(orderProductMappingRepository.save).toHaveBeenCalledWith([mapping]);
   });
 
-  it('실물상품 정산 조회는 totalPrice를 부가세 포함 총액으로 보고 공급금액과 부가세를 분리한다', async () => {
+  it('실물상품 정산 조회는 오염된 totalPrice를 신뢰하지 않고 합계금액을 재계산한다', async () => {
     const { service, orderRepository } = createService();
     const order = {
       id: 1,
@@ -98,9 +98,9 @@ describe('OrderRealProductService 금액 산식', () => {
       user: { personName: '관리자' },
       orderRealProductMappings: [
         {
-          quantity: 3,
-          price: 12000,
-          totalPrice: 39600,
+          quantity: 2,
+          price: 10000,
+          totalPrice: 11000,
           product: {
             price: 9000,
             name: '실물상품',
@@ -120,16 +120,16 @@ describe('OrderRealProductService 금액 산식', () => {
 
     expect(result.list).toHaveLength(1);
     expect(result.list[0]).toMatchObject({
-      salePrice: 12000,
-      saleTotalPrice: 36000,
-      tax: 3600,
-      totalAmount: 39600,
-      profitAmount: 9000,
-      profitPercent: 25,
+      salePrice: 10000,
+      saleTotalPrice: 20000,
+      tax: 2000,
+      totalAmount: 22000,
+      profitAmount: 2000,
+      profitPercent: 10,
     });
   });
 
-  it('실물상품 정산 엑셀도 공급금액과 부가세를 분리하고 totalPrice를 합계금액으로 사용한다', async () => {
+  it('실물상품 정산 엑셀도 오염된 totalPrice를 신뢰하지 않고 합계금액을 재계산한다', async () => {
     mockExcelAddRow.mockClear();
     mockExcelWriteFile.mockClear();
 
@@ -144,9 +144,9 @@ describe('OrderRealProductService 금액 산식', () => {
       user: { personName: '관리자' },
       orderRealProductMappings: [
         {
-          quantity: 3,
-          price: 12000,
-          totalPrice: 39600,
+          quantity: 2,
+          price: 10000,
+          totalPrice: 11000,
           product: {
             price: 9000,
             name: '실물상품',
@@ -166,12 +166,12 @@ describe('OrderRealProductService 금액 산식', () => {
 
     expect(mockExcelAddRow).toHaveBeenCalledWith(
       expect.objectContaining({
-        salePrice: 12000,
-        saleTotalPrice: 36000,
-        tax: 3600,
-        totalAmount: 39600,
-        profitAmount: 9000,
-        profitPercent: 25,
+        salePrice: 10000,
+        saleTotalPrice: 20000,
+        tax: 2000,
+        totalAmount: 22000,
+        profitAmount: 2000,
+        profitPercent: 10,
       }),
     );
     expect(mockExcelWriteFile).toHaveBeenCalled();

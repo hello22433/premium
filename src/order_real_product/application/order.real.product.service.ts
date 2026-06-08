@@ -111,7 +111,8 @@ const calculateTax = (
 
 const calculateRealProductSupplyTotal = (price: number, quantity: number): number => price * quantity;
 
-const calculateRealProductVatTotal = (price: number, quantity: number): number => Math.floor(price * 0.1) * quantity;
+const calculateRealProductVatTotal = (price: number, quantity: number): number =>
+  Math.floor(calculateRealProductSupplyTotal(price, quantity) * 0.1);
 
 const calculateRealProductVatIncludedTotal = (price: number, quantity: number): number =>
   calculateRealProductSupplyTotal(price, quantity) + calculateRealProductVatTotal(price, quantity);
@@ -757,13 +758,13 @@ export class OrderRealProductService {
 
         // - 공급금액 = 판매가 * 수량
         // - 부가세 = 판매가 부가세 * 수량
-        // - 합계 금액 = mapping.totalPrice
+        // - 합계 금액 = 공급금액 + 부가세
         // - 수익액 = 공급금액 - (원가 * 수량)
         // - 수익률 = (수익액 / 공급금액) * 100 (공급금액이 0이면 수익률은 0%)
 
         const saleTotalPrice = calculateRealProductSupplyTotal(mapping.price, mapping.quantity);
         const tax = calculateRealProductVatTotal(mapping.price, mapping.quantity);
-        const totalAmount = mapping.totalPrice;
+        const totalAmount = calculateRealProductVatIncludedTotal(mapping.price, mapping.quantity);
         const profitAmount = saleTotalPrice - product.price * mapping.quantity; // 수익액
         const profitPercent = saleTotalPrice > 0 ? Math.round((profitAmount / saleTotalPrice) * 100) : 0; // 수익률
 
@@ -951,13 +952,13 @@ export class OrderRealProductService {
 
         // - 공급금액 = 판매가 * 수량
         // - 부가세 = 판매가 부가세 * 수량
-        // - 합계 금액 = mapping.totalPrice
+        // - 합계 금액 = 공급금액 + 부가세
         // - 수익액 = 공급금액 - (원가 * 수량)
         // - 수익률 = (수익액 / 공급금액) * 100 (공급금액이 0이면 수익률은 0%)
 
         const saleTotalPrice = calculateRealProductSupplyTotal(mapping.price, mapping.quantity);
         const tax = calculateRealProductVatTotal(mapping.price, mapping.quantity);
-        const totalAmount = mapping.totalPrice;
+        const totalAmount = calculateRealProductVatIncludedTotal(mapping.price, mapping.quantity);
         const profitAmount = saleTotalPrice - product.price * mapping.quantity; // 수익액
         const profitPercent = saleTotalPrice > 0 ? Math.round((profitAmount / saleTotalPrice) * 100) : 0; // 수익률
 
