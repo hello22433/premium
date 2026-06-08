@@ -38,6 +38,8 @@ import {
   OrderDeliveryAttemptType,
 } from '../../entity/order.delivery.attempt.entity';
 import { OrderPaymentRefundEventType } from '../../entity/order.payment.refund.event.entity';
+import { buildDiscardRefundKey } from '../../wallet/interface/wallet-idempotency';
+import { WalletResourceType } from '../../wallet/interface/wallet-resource-type';
 import { OrderDeliveryRefundRestoreType } from '../../entity/order.delivery.refund.entity';
 import { OrderDeliveryCouponStatus, couponStatusToKorean } from '../../delivery/interface/order.delivery.coupon.status';
 import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
@@ -286,15 +288,32 @@ export class CustomerServiceService {
           `wallet-managed delivery ${orderDelivery.id} missing INITIAL attempt — drift, aborting discard refund`,
         );
       }
-      await this.refundPoolService.refund(
-        {
-          orderId: order.id,
-          eventType: OrderPaymentRefundEventType.DISCARD_REFUND,
-          targetDeliveryIds: [orderDelivery.id],
-          idempotencyKeyPrefix: `discard_refund:${order.id}:${orderDelivery.id}:${latestAttempt.id}`,
-        },
-        queryRunner.manager,
-      );
+      if (order.isSettleComplete) {
+        await this.refundPoolService.refundSettledDiscardToDeposit(
+          {
+            orderId: order.id,
+            orderDeliveryId: orderDelivery.id,
+            refundAmount: restoreAmount,
+            idempotencyKeyPrefix: buildDiscardRefundKey(
+              order.id,
+              orderDelivery.id,
+              WalletResourceType.DEPOSIT,
+              Number(latestAttempt.id),
+            ),
+          },
+          queryRunner.manager,
+        );
+      } else {
+        await this.refundPoolService.refund(
+          {
+            orderId: order.id,
+            eventType: OrderPaymentRefundEventType.DISCARD_REFUND,
+            targetDeliveryIds: [orderDelivery.id],
+            idempotencyKeyPrefix: `discard_refund:${order.id}:${orderDelivery.id}:${latestAttempt.id}`,
+          },
+          queryRunner.manager,
+        );
+      }
     }
   }
 

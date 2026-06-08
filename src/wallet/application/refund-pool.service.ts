@@ -21,6 +21,13 @@ export interface RefundEventInput {
   idempotencyKeyPrefix: string; // ex) `fail_refund:${orderId}:${deliveryId}:${attempt_id}`
 }
 
+export interface SettledDiscardRefundInput {
+  orderId: number;
+  orderDeliveryId: number;
+  refundAmount: number;
+  idempotencyKeyPrefix: string;
+}
+
 export interface RefundEventResult {
   ledgerIds: string[]; // 라인별 ledger row PK
   totalRefundedAmount: number;
@@ -59,6 +66,124 @@ export class RefundPoolService {
     // consistent snapshot 을 보아 방금 다른 트랜잭션이 commit 한 refund ledger 를 못 볼 수 있다.
     // lock 후 same-prefix 재조회 (HIGH 2 fix) 가 의도대로 동작하려면 isolation 을 낮춰 current read 가 보이게 해야 한다.
     return this.dataSource.transaction('READ COMMITTED', async (m) => this.runRefund(input, m));
+  }
+
+  async refundSettledDiscardToDeposit(
+    input: SettledDiscardRefundInput,
+    externalManager?: EntityManager,
+  ): Promise<RefundEventResult> {
+    if (externalManager) {
+      return this.runSettledDiscardToDeposit(input, externalManager);
+    }
+    return this.dataSource.transaction('READ COMMITTED', async (m) =>
+      this.runSettledDiscardToDeposit(input, m),
+    );
+  }
+
+  private async runSettledDiscardToDeposit(
+    input: SettledDiscardRefundInput,
+    manager: EntityManager,
+  ): Promise<RefundEventResult> {
+    const ledgerKey = `${input.idempotencyKeyPrefix}:settled`;
+    const existingForPrefix = await manager
+      .getRepository(OrderPaymentRefundEventEntity)
+      .createQueryBuilder('e')
+      .where('e.idempotencyKey LIKE :prefix', { prefix: `${ledgerKey}%` })
+      .andWhere('e.reversedAt IS NULL')
+      .getMany();
+    if (existingForPrefix.length > 0) {
+      const totalRefundedAmount = existingForPrefix.reduce(
+        (s, e) => s + e.refundedGrossBase + e.refundedCardSurchargeAmount,
+        0,
+      );
+      return { ledgerIds: existingForPrefix.map((e) => e.id), totalRefundedAmount };
+    }
+
+    const peekAlloc = await manager.findOne(OrderPaymentAllocationEntity, {
+      where: { orderId: input.orderId },
+    });
+    if (!peekAlloc) {
+      throw new BadRequestException(`allocation not found for orderId=${input.orderId}`);
+    }
+
+    const walletLock = await manager
+      .getRepository(WalletAccountEntity)
+      .createQueryBuilder('w')
+      .setLock('pessimistic_write')
+      .where('w.id = :id', { id: peekAlloc.walletAccountId })
+      .getOne();
+    if (!walletLock) {
+      throw new BadRequestException(
+        `wallet_account not found id=${peekAlloc.walletAccountId} for allocation ${peekAlloc.id}`,
+      );
+    }
+
+    const alloc = await manager
+      .getRepository(OrderPaymentAllocationEntity)
+      .createQueryBuilder('a')
+      .setLock('pessimistic_write')
+      .where('a.orderId = :orderId', { orderId: input.orderId })
+      .getOne();
+    if (!alloc) {
+      throw new BadRequestException(`allocation disappeared after peek (orderId=${input.orderId})`);
+    }
+
+    const existingAfterLock = await manager
+      .getRepository(OrderPaymentRefundEventEntity)
+      .createQueryBuilder('e')
+      .where('e.idempotencyKey LIKE :prefix', { prefix: `${ledgerKey}%` })
+      .andWhere('e.reversedAt IS NULL')
+      .getMany();
+    if (existingAfterLock.length > 0) {
+      const totalRefundedAmount = existingAfterLock.reduce(
+        (s, e) => s + e.refundedGrossBase + e.refundedCardSurchargeAmount,
+        0,
+      );
+      return { ledgerIds: existingAfterLock.map((e) => e.id), totalRefundedAmount };
+    }
+
+    const activeEvents = await manager.find(OrderPaymentRefundEventEntity, {
+      where: { allocationId: alloc.id, reversedAt: IsNull() },
+    });
+    for (const ev of activeEvents) {
+      if ((ev.affectedDeliveryIds ?? []).includes(input.orderDeliveryId)) {
+        throw new BadRequestException('already_refunded');
+      }
+    }
+
+    walletLock.depositBalance += input.refundAmount;
+    await manager.save(WalletAccountEntity, walletLock);
+    await manager.save(WalletTransactionEntity, {
+      walletAccountId: alloc.walletAccountId,
+      orderId: input.orderId,
+      orderDeliveryId: input.orderDeliveryId,
+      type: 'DISCARD_REFUND',
+      resourceType: WalletResourceType.DEPOSIT,
+      amount: input.refundAmount,
+      balanceAfter: walletLock.depositBalance,
+      memo: 'settled discard refund to deposit',
+      idempotencyKey: `${ledgerKey}:wallet`,
+    });
+
+    const ledger = await manager.save(OrderPaymentRefundEventEntity, {
+      allocationId: alloc.id,
+      orderId: input.orderId,
+      eventType: OrderPaymentRefundEventType.DISCARD_REFUND,
+      affectedDeliveryIds: [input.orderDeliveryId],
+      refundedGrossBase: input.refundAmount,
+      refundedPayableBase: input.refundAmount,
+      refundedCardSurchargeAmount: 0,
+      refundedPointAmount: 0,
+      refundedDepositAmount: input.refundAmount,
+      refundedCreditUsedAmount: 0,
+      refundedCreditExcessAmount: 0,
+      pointSkippedExpiredAmount: 0,
+      idempotencyKey: ledgerKey,
+      reversedAt: null,
+      reversedByWalletTransactionId: null,
+    });
+
+    return { ledgerIds: [ledger.id], totalRefundedAmount: input.refundAmount };
   }
 
   private async runRefund(input: RefundEventInput, manager: EntityManager): Promise<RefundEventResult> {

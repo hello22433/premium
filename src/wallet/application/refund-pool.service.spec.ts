@@ -9,6 +9,8 @@ import {
   OrderPaymentRefundEventType,
 } from '../../entity/order.payment.refund.event.entity';
 import { WalletAccountEntity } from '../../entity/wallet.account.entity';
+import { WalletTransactionEntity } from '../../entity/wallet.transaction.entity';
+import { WalletResourceType } from '../interface/wallet-resource-type';
 import { PaymentAllocationService } from './payment-allocation.service';
 import { RefundPoolService } from './refund-pool.service';
 
@@ -21,6 +23,7 @@ describe('RefundPoolService — §8 환불 알고리즘', () => {
   let allocations: Record<string, OrderPaymentAllocationEntity>;
   let lines: OrderPaymentAllocationLineEntity[];
   let ledger: OrderPaymentRefundEventEntity[];
+  let walletTxs: WalletTransactionEntity[];
   let wallets: Record<string, WalletAccountEntity>;
   // reverseRefund 의 ledger lookup(getOne) 이 반환할 fixture. 기본 null = ledger 미존재.
   let reverseLedger: OrderPaymentRefundEventEntity | null;
@@ -90,6 +93,11 @@ describe('RefundPoolService — §8 환불 알고리즘', () => {
             ledger.push(row);
             return row;
           }
+          if (target === WalletTransactionEntity || obj?.walletAccountId != null) {
+            const row = { id: String(walletTxs.length + 1), ...obj } as WalletTransactionEntity;
+            walletTxs.push(row);
+            return row;
+          }
           if (target === OrderPaymentAllocationEntity || obj?.grossSettlementAmount != null) {
             allocations[obj.id] = obj;
             return obj;
@@ -154,6 +162,7 @@ describe('RefundPoolService — §8 환불 알고리즘', () => {
       } as OrderPaymentAllocationLineEntity,
     ];
     ledger = [];
+    walletTxs = [];
     reverseLedger = null;
     wallets = {
       '5': {
@@ -256,6 +265,59 @@ describe('RefundPoolService — §8 환불 알고리즘', () => {
     });
     expect(r.ledgerIds).toEqual(['pre1']);
     expect(r.totalRefundedAmount).toBe(10000);
+  });
+
+  it('정산확정 후 폐기 환불은 여신/신용초과를 다시 release하지 않고 예치금으로 환불한다', async () => {
+    wallets['5'].creditUsedAmount = 0;
+    wallets['5'].creditExcessAmount = 0;
+
+    const r = await sut.refundSettledDiscardToDeposit({
+      orderId: 100,
+      orderDeliveryId: 100,
+      refundAmount: 10000,
+      idempotencyKeyPrefix: 'discard_refund:100:100:deposit:1',
+    });
+
+    expect(r.ledgerIds.length).toBe(1);
+    expect(r.totalRefundedAmount).toBe(10000);
+    expect(wallets['5'].depositBalance).toBe(10000);
+    expect(wallets['5'].creditUsedAmount).toBe(0);
+    expect(wallets['5'].creditExcessAmount).toBe(0);
+    expect(allocations['1'].creditUsedRestoredAmount).toBe(0);
+    expect(allocations['1'].creditExcessRestoredAmount).toBe(0);
+    expect(ledger[0]).toEqual(expect.objectContaining({
+      eventType: OrderPaymentRefundEventType.DISCARD_REFUND,
+      affectedDeliveryIds: [100],
+      refundedDepositAmount: 10000,
+      refundedCreditUsedAmount: 0,
+      refundedCreditExcessAmount: 0,
+      idempotencyKey: 'discard_refund:100:100:deposit:1:settled',
+    }));
+    expect(walletTxs[0]).toEqual(expect.objectContaining({
+      type: 'DISCARD_REFUND',
+      resourceType: WalletResourceType.DEPOSIT,
+      amount: 10000,
+      balanceAfter: 10000,
+      idempotencyKey: 'discard_refund:100:100:deposit:1:settled:wallet',
+    }));
+  });
+
+  it('정산확정 후 폐기 환불 retry는 예치금을 중복 증가시키지 않는다', async () => {
+    const input = {
+      orderId: 100,
+      orderDeliveryId: 100,
+      refundAmount: 10000,
+      idempotencyKeyPrefix: 'discard_refund:100:100:deposit:1',
+    };
+
+    await sut.refundSettledDiscardToDeposit(input);
+    const r = await sut.refundSettledDiscardToDeposit(input);
+
+    expect(r.ledgerIds).toEqual(['1']);
+    expect(r.totalRefundedAmount).toBe(10000);
+    expect(wallets['5'].depositBalance).toBe(10000);
+    expect(walletTxs.length).toBe(1);
+    expect(ledger.length).toBe(1);
   });
 
   it('reverseRefund: ledger 미존재 → BadRequest', async () => {
