@@ -105,33 +105,6 @@ export class FileStorageS3 implements IFileStorage {
     }
   }
 
-  async downloadFileToLocal(downloadPath: string): Promise<string> {
-    const bucketName = this.configService.getOrThrow('AWS_S3_BUCKET');
-
-    const command = new GetObjectCommand({
-      Bucket: bucketName,
-      Key: downloadPath,
-    });
-
-    const { Body } = await this.s3Client.send(command);
-
-    if (Body instanceof Readable) {
-      const filePathList = downloadPath.split('/');
-      const filePathList2 = downloadPath.split('/')[filePathList.length - 1].split('-');
-      const filePath = filePathList2.slice(1).join('');
-
-      const localFilePath = join(process.cwd(), '.', 'public', filePath);
-      const writeStream = fs.createWriteStream(localFilePath);
-      Body.pipe(writeStream);
-
-      return new Promise((resolve, reject) => {
-        writeStream.on('finish', () => resolve(localFilePath));
-        writeStream.on('error', reject);
-      });
-    }
-    throw new Error('Body is not a readable stream');
-  }
-
   async downloadFileToLocalWithPath(path: string, fileTitle: string, downloadPath: string): Promise<string> {
     const bucketName = this.configService.getOrThrow('AWS_S3_BUCKET');
 
