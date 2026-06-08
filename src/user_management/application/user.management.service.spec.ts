@@ -1,3 +1,11 @@
+// chargeBalance/modifyBalance 는 @Transactional() — 단위 테스트에서 데코레이터를 no-op 으로 mock 한다.
+jest.mock('typeorm-transactional', () => ({
+  Transactional: () => (_target: unknown, _key: unknown, _descriptor: unknown) => _descriptor,
+  Propagation: { REQUIRED: 'REQUIRED', REQUIRES_NEW: 'REQUIRES_NEW' },
+  initializeTransactionalContext: jest.fn(),
+  addTransactionalDataSources: jest.fn(),
+}));
+
 import { mock, mockReset } from 'jest-mock-extended';
 import { Repository } from 'typeorm';
 import { UserEntity } from '../../entity/user.entity';
@@ -30,14 +38,26 @@ import { IUserStatus } from '../../user/interface/user.status';
 import { IUserBusinessType } from '../../user/interface/user.business.type';
 import { ActivityLogService } from '../../activity_log/application/activity.log.service';
 import { ConfigService } from '@nestjs/config';
+import { WalletLedgerService } from '../../wallet/application/wallet-ledger.service';
+import { WalletAccountResolverService } from '../../wallet/application/wallet-account-resolver.service';
+import { WalletCutoverConfig, WalletCutoverMode } from '../../wallet/config/wallet-cutover.config';
+import { WalletResourceType } from '../../wallet/interface/wallet-resource-type';
+import {
+  UserManagementChargeBalanceReqDto,
+  UserManagementModifyBalanceReqDto,
+} from '../api/user.management.req.dto';
 
 describe('user management service test', () => {
   let userRepository: any = mock<Repository<UserEntity>>();
   let userCompanyRepository: any;
   let passwordEncrypt: any = mock<PasswordBcryptEncrypt>();
-  let queryBuilder = createMockQueryBuilder();
+  let queryBuilder: any = createMockQueryBuilder();
 
   let sut: UserManagementService;
+  let activityLogService: any;
+  let walletLedger: any;
+  let walletResolver: any;
+  let walletCutoverConfig: any;
 
   const CORPORATE_ADMIN_USER = { id: 5, email: 'corp@test.com', authority: IUserAuthority.CORPORATE_ADMIN };
   const OPERATION_ADMIN_USER = { id: 10, email: 'op@test.com', authority: IUserAuthority.OPERATION_ADMIN };
@@ -45,6 +65,11 @@ describe('user management service test', () => {
 
   beforeEach(async () => {
     queryBuilder = createMockQueryBuilder();
+    // 잔액 UPDATE 체인 (update/set/where/setParameters/execute) — balance 충전/수정/차감 경로용
+    queryBuilder.update = jest.fn().mockReturnThis();
+    queryBuilder.set = jest.fn().mockReturnThis();
+    queryBuilder.setParameters = jest.fn().mockReturnThis();
+    queryBuilder.execute = jest.fn().mockResolvedValue({ affected: 1 });
     mockReset(userRepository);
 
     const module: TestingModule = await Test.createTestingModule({
@@ -76,12 +101,16 @@ describe('user management service test', () => {
         {
           provide: ActivityLogService,
           useValue: {
-            createLog: jest.fn(),
+            createLog: jest.fn().mockResolvedValue(777),
             getBalanceHistoryByUserId: jest.fn(),
             getMaximumLimitHistoryByUserId: jest.fn(),
           },
         },
         { provide: ConfigService, useValue: { getOrThrow: jest.fn().mockReturnValue('TEMPLATE_CODE') } },
+        { provide: WalletLedgerService, useValue: { recordTransaction: jest.fn().mockResolvedValue({ transactionId: 'tx-1', balanceAfter: 0, isDuplicate: false }) } },
+        { provide: WalletAccountResolverService, useValue: { resolveByUserId: jest.fn().mockResolvedValue({ id: 'wallet-1' }) } },
+        // 기본 LEGACY — mirror 테스트에서 per-test 로 WALLET 로 변경
+        { provide: WalletCutoverConfig, useValue: { pr2DeliveryLifecycleMode: WalletCutoverMode.LEGACY } },
       ],
     }).compile();
 
@@ -89,6 +118,10 @@ describe('user management service test', () => {
     userRepository = module.get<Repository<UserEntity>>(getRepositoryToken(UserEntity));
     userCompanyRepository = module.get(getRepositoryToken(UserCompanyEntity));
     passwordEncrypt = module.get<PasswordBcryptEncrypt>(PasswordBcryptEncrypt);
+    activityLogService = module.get(ActivityLogService);
+    walletLedger = module.get(WalletLedgerService);
+    walletResolver = module.get(WalletAccountResolverService);
+    walletCutoverConfig = module.get(WalletCutoverConfig);
   });
 
   describe('getList 리스트 조회 테스트', () => {
@@ -318,6 +351,146 @@ describe('user management service test', () => {
       expect(queryBuilder.andWhere).not.toHaveBeenCalledWith('user.id = :id', expect.anything());
     });
   });
+
+  describe('예치금 충전/수정 wallet 미러 테스트', () => {
+    const OPERATOR = { id: 99, email: 'op@test.com' } as any;
+
+    const mockAccountUser = (balance: number) =>
+      userRepository.findOne.mockResolvedValue({
+        id: 1,
+        email: 'u@test.com',
+        balance,
+        company: { id: 10, businessName: 'b', balanceManagementType: 'ACCOUNT' },
+      });
+
+    it('WALLET 모드: 충전 시 wallet DEPOSIT +chargeAmount 미러 (key=balance_charge:{logId}:deposit)', async () => {
+      walletCutoverConfig.pr2DeliveryLifecycleMode = WalletCutoverMode.WALLET;
+      mockAccountUser(1000);
+      activityLogService.createLog.mockResolvedValue(777);
+
+      await sut.chargeBalance({ id: 1, chargeAmount: 5000, memo: 'm' } as any, OPERATOR);
+
+      expect(walletResolver.resolveByUserId).toHaveBeenCalledWith(1, expect.anything());
+      expect(walletLedger.recordTransaction).toHaveBeenCalledWith(
+        expect.objectContaining({
+          walletAccountId: 'wallet-1',
+          resourceType: WalletResourceType.DEPOSIT,
+          amount: 5000,
+          type: 'BALANCE_CHARGE',
+          idempotencyKey: 'balance_charge:777:deposit',
+        }),
+        expect.anything(),
+      );
+    });
+
+    it('WALLET 모드: 수정 +delta → wallet DEPOSIT +delta 미러', async () => {
+      walletCutoverConfig.pr2DeliveryLifecycleMode = WalletCutoverMode.WALLET;
+      mockAccountUser(1000);
+      activityLogService.createLog.mockResolvedValue(777);
+
+      await sut.modifyBalance({ id: 1, newBalance: 3000 } as any, OPERATOR);
+
+      expect(walletLedger.recordTransaction).toHaveBeenCalledWith(
+        expect.objectContaining({
+          amount: 2000,
+          type: 'BALANCE_MODIFY',
+          idempotencyKey: 'balance_modify:777:deposit',
+        }),
+        expect.anything(),
+      );
+    });
+
+    it('WALLET 모드: 수정 -delta → wallet DEPOSIT 음수 미러', async () => {
+      walletCutoverConfig.pr2DeliveryLifecycleMode = WalletCutoverMode.WALLET;
+      mockAccountUser(1000);
+
+      await sut.modifyBalance({ id: 1, newBalance: 200 } as any, OPERATOR);
+
+      expect(walletLedger.recordTransaction).toHaveBeenCalledWith(
+        expect.objectContaining({ amount: -800, type: 'BALANCE_MODIFY' }),
+        expect.anything(),
+      );
+    });
+
+    it('WALLET 모드: 수정 delta=0 → 미러 skip', async () => {
+      walletCutoverConfig.pr2DeliveryLifecycleMode = WalletCutoverMode.WALLET;
+      mockAccountUser(1000);
+
+      await sut.modifyBalance({ id: 1, newBalance: 1000 } as any, OPERATOR);
+
+      expect(walletLedger.recordTransaction).not.toHaveBeenCalled();
+    });
+
+    it('LEGACY 모드: 충전 시 wallet 미호출 (legacy only)', async () => {
+      walletCutoverConfig.pr2DeliveryLifecycleMode = WalletCutoverMode.LEGACY;
+      mockAccountUser(1000);
+
+      await sut.chargeBalance({ id: 1, chargeAmount: 5000 } as any, OPERATOR);
+
+      expect(walletResolver.resolveByUserId).not.toHaveBeenCalled();
+      expect(walletLedger.recordTransaction).not.toHaveBeenCalled();
+    });
+
+    it('WALLET 모드: wallet 미존재(resolve throw) → 충전 reject (tx rollback = fail-closed)', async () => {
+      walletCutoverConfig.pr2DeliveryLifecycleMode = WalletCutoverMode.WALLET;
+      mockAccountUser(1000);
+      walletResolver.resolveByUserId.mockRejectedValue(new BadRequestException('settlement_code missing'));
+
+      await expect(sut.chargeBalance({ id: 1, chargeAmount: 5000 } as any, OPERATOR)).rejects.toThrow();
+      expect(walletLedger.recordTransaction).not.toHaveBeenCalled();
+    });
+
+    it('WALLET 모드: 수정 음수 delta가 wallet deposit underflow → reject (tx rollback)', async () => {
+      walletCutoverConfig.pr2DeliveryLifecycleMode = WalletCutoverMode.WALLET;
+      mockAccountUser(1000); // before=1000, newBalance=200 → amount=-800
+      walletLedger.recordTransaction.mockRejectedValue(new BadRequestException('deposit_underflow'));
+
+      await expect(sut.modifyBalance({ id: 1, newBalance: 200 } as any, OPERATOR)).rejects.toThrow();
+      expect(walletLedger.recordTransaction).toHaveBeenCalledWith(
+        expect.objectContaining({ amount: -800, resourceType: WalletResourceType.DEPOSIT }),
+        expect.anything(),
+      );
+    });
+
+    it('WALLET 모드: addBalance(발송 실패 환불)는 미러 미호출 (이중차감 방지)', async () => {
+      walletCutoverConfig.pr2DeliveryLifecycleMode = WalletCutoverMode.WALLET;
+      mockAccountUser(1000);
+
+      await sut.addBalance(1, 500, 'refund');
+
+      expect(walletLedger.recordTransaction).not.toHaveBeenCalled();
+    });
+
+    it('WALLET 모드: deductBalance(재발송 역환불)는 미러 미호출 (이중차감 방지)', async () => {
+      walletCutoverConfig.pr2DeliveryLifecycleMode = WalletCutoverMode.WALLET;
+      mockAccountUser(1000);
+      queryBuilder.execute.mockResolvedValue({ affected: 1 });
+
+      await sut.deductBalance(1, 500, 'resend-reverse');
+
+      expect(walletLedger.recordTransaction).not.toHaveBeenCalled();
+    });
+
+    it('회사/계정 balance 모드 모두 같은 billing user(=같은 wallet owner)로 resolve', async () => {
+      walletCutoverConfig.pr2DeliveryLifecycleMode = WalletCutoverMode.WALLET;
+      // 계정 모드
+      mockAccountUser(1000);
+      await sut.chargeBalance({ id: 1, chargeAmount: 100 } as any, OPERATOR);
+      // 회사 모드
+      userRepository.findOne.mockResolvedValue({
+        id: 1,
+        email: 'u@test.com',
+        company: { id: 10, businessName: 'b', balanceManagementType: 'COMPANY' },
+      });
+      userCompanyRepository.findOne.mockResolvedValue({ id: 10, balance: 1000 });
+      await sut.chargeBalance({ id: 1, chargeAmount: 100 } as any, OPERATOR);
+
+      // 두 모드 모두 user id 1 로 resolve → 동일 settlement_code wallet 으로 수렴
+      expect(walletResolver.resolveByUserId).toHaveBeenCalledTimes(2);
+      expect(walletResolver.resolveByUserId).toHaveBeenNthCalledWith(1, 1, expect.anything());
+      expect(walletResolver.resolveByUserId).toHaveBeenNthCalledWith(2, 1, expect.anything());
+    });
+  });
 });
 
 describe('UserManagementModifyMaximumLimitReqDto 검증 테스트', () => {
@@ -343,5 +516,25 @@ describe('UserManagementModifyMaximumLimitReqDto 검증 테스트', () => {
     const dto = plainToInstance(UserManagementModifyMaximumLimitReqDto, { id: 1, newMaximumLimit: 2_147_483_648 });
     const errors = await validate(dto);
     expect(errors.some((e) => e.property === 'newMaximumLimit')).toBe(true);
+  });
+});
+
+describe('UserManagementModifyBalanceReqDto 검증 테스트', () => {
+  it('newBalance 음수 입력 시 유효성 검사 오류 반환 (wallet underflow 이전 legacy 음수 차단)', async () => {
+    const dto = plainToInstance(UserManagementModifyBalanceReqDto, { id: 1, newBalance: -1 });
+    const errors = await validate(dto);
+    expect(errors.some((e) => e.property === 'newBalance')).toBe(true);
+  });
+
+  it('newBalance 0 입력 시 유효성 검사 통과', async () => {
+    const dto = plainToInstance(UserManagementModifyBalanceReqDto, { id: 1, newBalance: 0 });
+    const errors = await validate(dto);
+    expect(errors.some((e) => e.property === 'newBalance')).toBe(false);
+  });
+
+  it('newBalance MYSQL_INT_MAX 초과 입력 시 유효성 검사 오류 반환', async () => {
+    const dto = plainToInstance(UserManagementModifyBalanceReqDto, { id: 1, newBalance: 2_147_483_648 });
+    const errors = await validate(dto);
+    expect(errors.some((e) => e.property === 'newBalance')).toBe(true);
   });
 });

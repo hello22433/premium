@@ -40,10 +40,12 @@ export class ActivityLogService {
   ) {}
 
   /**
-   * 활동 로그 생성
+   * 활동 로그 생성.
+   * 생성된 로그 id 를 반환한다 (wallet mirror idempotency_key 생성 등에서 사용).
+   * 호출 트랜잭션이 @Transactional cls 컨텍스트면 같은 트랜잭션 안에서 INSERT 된다.
    */
-  async createLog(dto: CreateActivityLogDto): Promise<void> {
-    await this.activityLogRepository.insert({
+  async createLog(dto: CreateActivityLogDto): Promise<number> {
+    const result = await this.activityLogRepository.insert({
       userId: dto.userId,
       userEmail: dto.userEmail,
       method: dto.method,
@@ -59,6 +61,7 @@ export class ActivityLogService {
       requestParams: dto.requestParams || null,
       errorMessage: dto.errorMessage || null,
     });
+    return Number(result.identifiers[0].id);
   }
 
   /**

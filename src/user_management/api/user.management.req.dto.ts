@@ -226,7 +226,9 @@ export class UserManagementModifyBalanceReqDto {
   })
   // =============================================================
   @IsNotEmpty()
-  @IsNumber()
+  @IsInt()
+  @Min(0)
+  @Max(MYSQL_INT_MAX)
   @Type(() => Number)
   newBalance: number;
 

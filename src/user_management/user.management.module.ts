@@ -16,6 +16,7 @@ import { MailModule } from '../mail/mail.module';
 import { ActivityLogModule } from '../activity_log/activity.log.module';
 import { DeliveryModule } from '../delivery/delivery.module';
 import { SmsModule } from '../sms/sms.module';
+import { WalletModule } from '../wallet/wallet.module';
 
 @Module({
   imports: [
@@ -35,6 +36,7 @@ import { SmsModule } from '../sms/sms.module';
     ActivityLogModule,
     forwardRef(() => DeliveryModule),
     SmsModule,
+    WalletModule,
   ],
   controllers: [UserManagementController],
   providers: [UserManagementService],

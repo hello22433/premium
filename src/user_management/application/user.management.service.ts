@@ -1,6 +1,4 @@
 import { randomBytes, createHash } from 'crypto';
-
-const MYSQL_INT_MAX = 2_147_483_647;
 import {
   BadRequestException,
   ConflictException,
@@ -21,6 +19,9 @@ import { ExternalApiSsgRequestEntity } from '../../entity/external.api.ssg.reque
 import { WalletAccountEntity } from '../../entity/wallet.account.entity';
 import { WalletTransactionEntity } from '../../entity/wallet.transaction.entity';
 import { WalletResourceType } from '../../wallet/interface/wallet-resource-type';
+import { WalletLedgerService } from '../../wallet/application/wallet-ledger.service';
+import { WalletAccountResolverService } from '../../wallet/application/wallet-account-resolver.service';
+import { WalletCutoverConfig, WalletCutoverMode } from '../../wallet/config/wallet-cutover.config';
 import { IExternalApiSsgRequestStatus } from '../../external_api/interface/external.api.ssg.request.status';
 import { Repository } from 'typeorm';
 import { Transactional } from 'typeorm-transactional';
@@ -82,6 +83,8 @@ import { DeliveryAlimTalk } from '../../delivery/interface/delivery.alim.talk';
 import { ISmsSend } from '../../sms/interface/sms.send';
 import { defaultFromPhoneNumber } from '../../const';
 
+const MYSQL_INT_MAX = 2_147_483_647;
+
 @Injectable()
 export class UserManagementService {
   private readonly logger = new Logger('UserManagementService');
@@ -114,6 +117,9 @@ export class UserManagementService {
     @Inject('ISmsSend')
     private readonly smsSendService: ISmsSend,
     private readonly configService: ConfigService,
+    private readonly walletLedger: WalletLedgerService,
+    private readonly walletResolver: WalletAccountResolverService,
+    private readonly walletCutoverConfig: WalletCutoverConfig,
   ) {}
 
   private readonly initPasswordTemplateCode = this.configService.getOrThrow<string>(
@@ -154,6 +160,36 @@ export class UserManagementService {
    */
   private isCompanyBalanceMode(company: UserCompanyEntity | null): company is UserCompanyEntity {
     return company?.balanceManagementType === 'COMPANY';
+  }
+
+  /**
+   * chargeBalance/modifyBalance 용 activity log 공통 필드 조합.
+   */
+  private buildBalanceLogBase(
+    operator: ILoginUserInfo,
+    requestUrl: string,
+    actionType: string,
+    user: UserEntity,
+    company: UserCompanyEntity | null,
+  ) {
+    return {
+      userId: operator.id,
+      userEmail: operator.email,
+      method: 'PUT' as const,
+      requestUrl,
+      actionType,
+      ipAddress: '',
+      statusCode: 200,
+      result: ActivityLogResult.SUCCESS,
+      responseTime: 0,
+      requestParams: {
+        targetUserId: user.id,
+        targetUserEmail: user.email,
+        targetBusinessName: company?.businessName ?? '',
+        targetCompanyId: company?.id ?? null,
+        balanceManagementType: company?.balanceManagementType ?? 'ACCOUNT',
+      },
+    };
   }
 
   /**
@@ -450,28 +486,19 @@ export class UserManagementService {
     const company = user.company;
     const { beforeBalance, afterBalance } = await this.updateBalance(user, company, chargeAmount);
 
-    await this.activityLogService.createLog({
-      userId: operator.id,
-      userEmail: operator.email,
-      method: 'PUT',
-      requestUrl: '/user-management/balance',
-      actionType: ActivityLogActionType.BALANCE_CHARGE,
-      ipAddress: '',
-      statusCode: 200,
-      result: ActivityLogResult.SUCCESS,
-      responseTime: 0,
+    const base = this.buildBalanceLogBase(operator, '/user-management/balance', ActivityLogActionType.BALANCE_CHARGE, user, company);
+    const logId = await this.activityLogService.createLog({
+      ...base,
       requestParams: {
-        targetUserId: id,
-        targetUserEmail: user.email,
-        targetBusinessName: company?.businessName ?? '',
-        targetCompanyId: company?.id ?? null,
-        balanceManagementType: company?.balanceManagementType ?? 'ACCOUNT',
-        chargeAmount: chargeAmount,
-        beforeBalance: beforeBalance,
-        afterBalance: afterBalance,
+        ...base.requestParams,
+        chargeAmount,
+        beforeBalance,
+        afterBalance,
         memo: memo || null,
       },
     });
+
+    await this.mirrorDepositToWallet(id, chargeAmount, 'BALANCE_CHARGE', `balance_charge:${logId}:deposit`, memo);
   }
 
   /**
@@ -490,24 +517,18 @@ export class UserManagementService {
       throw new BadRequestException('충전 후 잔액이 최대 허용 금액(2,147,483,647)을 초과합니다.');
     }
 
-    if (this.isCompanyBalanceMode(company)) {
-      await this.userCompanyRepository
-        .createQueryBuilder()
-        .update()
-        .set({ balance: () => 'balance + :amount' })
-        .where('id = :id', { id: company.id })
-        .setParameters({ amount })
-        .execute();
-      return { beforeBalance, afterBalance: beforeBalance + amount };
-    }
+    const isCompanyMode = this.isCompanyBalanceMode(company);
+    const targetRepo = isCompanyMode ? this.userCompanyRepository : this.userRepository;
+    const targetId = isCompanyMode ? company.id : user.id;
 
-    await this.userRepository
+    await targetRepo
       .createQueryBuilder()
       .update()
       .set({ balance: () => 'balance + :amount' })
-      .where('id = :id', { id: user.id })
+      .where('id = :id', { id: targetId })
       .setParameters({ amount })
       .execute();
+
     return { beforeBalance, afterBalance: beforeBalance + amount };
   }
 
@@ -530,28 +551,63 @@ export class UserManagementService {
     const { beforeBalance } = await this.setBalance(user, company, newBalance);
     const changeAmount = newBalance - beforeBalance;
 
-    await this.activityLogService.createLog({
-      userId: operator.id,
-      userEmail: operator.email,
-      method: 'PUT',
-      requestUrl: '/user-management/balance/modify',
-      actionType: ActivityLogActionType.BALANCE_MODIFY,
-      ipAddress: '',
-      statusCode: 200,
-      result: ActivityLogResult.SUCCESS,
-      responseTime: 0,
+    const base = this.buildBalanceLogBase(operator, '/user-management/balance/modify', ActivityLogActionType.BALANCE_MODIFY, user, company);
+    const logId = await this.activityLogService.createLog({
+      ...base,
       requestParams: {
-        targetUserId: id,
-        targetUserEmail: user.email,
-        targetBusinessName: company?.businessName ?? '',
-        targetCompanyId: company?.id ?? null,
-        balanceManagementType: company?.balanceManagementType ?? 'ACCOUNT',
-        changeAmount: changeAmount,
-        beforeBalance: beforeBalance,
+        ...base.requestParams,
+        changeAmount,
+        beforeBalance,
         afterBalance: newBalance,
         memo: memo || null,
       },
     });
+
+    await this.mirrorDepositToWallet(id, changeAmount, 'BALANCE_MODIFY', `balance_modify:${logId}:deposit`, memo);
+  }
+
+  /**
+   * 예치금 충전/수정을 wallet_account.deposit_balance 에 미러링한다.
+   * WALLET cutover 모드(WALLET_PR2_DELIVERY_LIFECYCLE_MODE=wallet)에서만 동작 — 그 외 모드는 no-op.
+   *
+   * 선정산(PRE) 회사는 WALLET 모드에서 wallet deposit_balance 를 발송확정 시 예치금 상한으로
+   * 직접 읽으므로, 충전이 wallet 에 반영되지 않으면 부족분이 전액 신용초과로 흘러 발송확정이
+   * 차단된다 (하드 블로커). 이 미러가 그 간극을 메운다.
+   *
+   * - resourceType=DEPOSIT, amount=delta (충전 +chargeAmount, 수정 +(newBalance-beforeBalance) 부호 그대로)
+   * - idempotencyKey 는 activity_log id 기반 → op 당 유일 → 반복 충전이 정상 누적
+   * - this.userRepository.manager = @Transactional cls 트랜잭션 매니저 → recordTransaction same-tx 실행.
+   *   wallet 미존재/underflow throw 시 잔액 UPDATE·activity_log INSERT 까지 전체 rollback = fail-closed.
+   * - addBalance/deductBalance(발송 실패 환불·재발송 역환불)는 wallet 카운터파트가 이미 존재하므로
+   *   미러 대상에서 제외 (이중 차감 방지).
+   */
+  private async mirrorDepositToWallet(
+    userId: number,
+    deltaAmount: number,
+    type: 'BALANCE_CHARGE' | 'BALANCE_MODIFY',
+    idempotencyKey: string,
+    memo?: string | null,
+  ): Promise<void> {
+    if (this.walletCutoverConfig.pr2DeliveryLifecycleMode !== WalletCutoverMode.WALLET) {
+      return;
+    }
+    if (deltaAmount === 0) {
+      return;
+    }
+
+    const manager = this.userRepository.manager;
+    const wallet = await this.walletResolver.resolveByUserId(userId, manager);
+    await this.walletLedger.recordTransaction(
+      {
+        walletAccountId: wallet.id,
+        resourceType: WalletResourceType.DEPOSIT,
+        amount: deltaAmount,
+        type,
+        idempotencyKey,
+        memo: memo ?? null,
+      },
+      manager,
+    );
   }
 
   /**
@@ -568,10 +624,10 @@ export class UserManagementService {
 
     if (this.isCompanyBalanceMode(company)) {
       await this.userCompanyRepository.update({ id: company.id }, { balance: newBalance });
-      return { beforeBalance };
+    } else {
+      await this.userRepository.update({ id: user.id }, { balance: newBalance });
     }
 
-    await this.userRepository.update({ id: user.id }, { balance: newBalance });
     return { beforeBalance };
   }
 
@@ -683,24 +739,17 @@ export class UserManagementService {
     const company = user.company;
     const isCompanyMode = this.isCompanyBalanceMode(company);
     const targetId = isCompanyMode ? company!.id : user.id;
+    const targetRepo = isCompanyMode ? this.userCompanyRepository : this.userRepository;
 
     const beforeBalance = await this.lockBalance(user, company);
 
-    const result = isCompanyMode
-      ? await this.userCompanyRepository
-          .createQueryBuilder()
-          .update()
-          .set({ balance: () => 'balance - :amount' })
-          .where('id = :id AND balance >= :amount', { id: targetId, amount })
-          .setParameters({ amount })
-          .execute()
-      : await this.userRepository
-          .createQueryBuilder()
-          .update()
-          .set({ balance: () => 'balance - :amount' })
-          .where('id = :id AND balance >= :amount', { id: targetId, amount })
-          .setParameters({ amount })
-          .execute();
+    const result = await targetRepo
+      .createQueryBuilder()
+      .update()
+      .set({ balance: () => 'balance - :amount' })
+      .where('id = :id AND balance >= :amount', { id: targetId, amount })
+      .setParameters({ amount })
+      .execute();
 
     if (!result.affected) {
       throw new BadRequestException('잔액이 부족합니다.');
