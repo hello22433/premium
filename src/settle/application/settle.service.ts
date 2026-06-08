@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable, InternalServerErrorException, Logger, NotFoundException } from '@nestjs/common';
+import { createExportTempPath } from '../../util/file.util';
 import {
   SettleGetAdminUserListResDto,
   SettleGetMobileListResDto,
@@ -886,7 +887,7 @@ export class SettleService {
     const ids = idRows.map((r) => Number(r.id));
 
     const fileName = `수익률_모바일_리스트_${nowString}.xlsx`;
-    const filePath = join(process.cwd(), '.', 'public', fileName);
+    const filePath = createExportTempPath('xlsx');
 
     const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({ filename: filePath });
     const sheet = workbook.addWorksheet(`sheet1`);
@@ -1214,7 +1215,7 @@ export class SettleService {
     const ids = idRows.map((r) => Number(r.id));
 
     const fileName = `협력사별정산_${nowString}.xlsx`;
-    const filePath = join(process.cwd(), '.', 'public', fileName);
+    const filePath = createExportTempPath('xlsx');
 
     // useStyles: true — 컬럼 textStyle(numFmt '@') 보존 (스트리밍 기본값 false)
     const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({ filename: filePath, useStyles: true });
@@ -1817,7 +1818,7 @@ export class SettleService {
     const nowString = format(now, 'yyyyMMdd');
 
     const fileName = `고객사별_정산_리스트_${nowString}.xlsx`;
-    const filePath = join(process.cwd(), '.', 'public', fileName);
+    const filePath = createExportTempPath('xlsx');
 
     const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({ filename: filePath });
     const sheet = workbook.addWorksheet(`sheet1`);
@@ -3069,7 +3070,7 @@ export class SettleService {
     const ids = idRows.map((r) => Number(r.id));
 
     const fileName = `갤럭시아정산_${nowString}.xlsx`;
-    const filePath = join(process.cwd(), '.', 'public', fileName);
+    const filePath = createExportTempPath('xlsx');
 
     // useStyles: true — 컬럼 textStyle(numFmt '@') 보존 (스트리밍 기본값 false)
     const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({ filename: filePath, useStyles: true });

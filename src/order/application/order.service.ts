@@ -76,6 +76,7 @@ import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.st
 import { CreateTransactionId } from '../domain/create.transaction.id';
 import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
 import { DeliveryCreateCouponImage } from '../../delivery/infra/delivery.create.coupon.image';
+import { createExportTempPath } from '../../util/file.util';
 import { UserEntity } from '../../entity/user.entity';
 import { UserCompanyEntity } from '../../entity/user.company.entity';
 import {
@@ -4493,7 +4494,7 @@ export class OrderService {
     }
 
     const fileName = `${orderType}_리스트_${nowString}.xlsx`;
-    const filePath = join(process.cwd(), '.', 'public', fileName);
+    const filePath = createExportTempPath('xlsx');
 
     await workbook.xlsx.writeFile(filePath);
 

@@ -1,4 +1,5 @@
 import { BadRequestException, Inject, Injectable, InternalServerErrorException } from '@nestjs/common';
+import { createExportTempPath } from '../../util/file.util';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ISsgAmountResult, ISsgIssue } from '../../partner_company_extern/interface/ssg.issue';
 import { SsgEventEntity } from '../../entity/ssg.event.entity';
@@ -440,7 +441,7 @@ export class SsgEventService {
     }
 
     const fileName = `신세계_${nowString}.xlsx`;
-    const filePath = join(process.cwd(), '.', 'public', fileName);
+    const filePath = createExportTempPath('xlsx');
 
     await workbook.xlsx.writeFile(filePath);
 
