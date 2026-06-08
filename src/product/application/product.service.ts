@@ -119,7 +119,8 @@ export class ProductService {
       throw new BadRequestException('엑셀 또는 CSV 파일만 업로드할 수 있습니다.');
     }
 
-    const uploadedFile = await this.fileStorage.uploadFile(file);
+    // 공유리스트는 비공개로 저장(다운로드는 백엔드 스트리밍). public-read 직접 접근 표면 제거.
+    const uploadedFile = await this.fileStorage.uploadPrivateFile(file);
 
     const savedFile = await this.productSharedListFileRepository.save({
       userId: user.id,
