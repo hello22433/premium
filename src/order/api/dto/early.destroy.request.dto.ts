@@ -65,7 +65,7 @@ export class CreateEarlyDestroyRequestDto extends EarlyDestroyRequestMetaDto {
   @ApiProperty({ description: '대상 orderProductMapping ID 배열' })
   @IsArray()
   @IsNumber({}, { each: true })
-  @ArrayNotEmpty() // 빈 배열 [] 거부. (@IsNotEmpty 는 배열 []을 통과시킴 — 형제 DTO 와 동일하게 ArrayNotEmpty 사용)
+  @IsNotEmpty()
   orderProductMappingIds: number[];
 }
 
