@@ -117,6 +117,50 @@ const calculateRealProductVatTotal = (price: number, quantity: number): number =
 const calculateRealProductVatIncludedTotal = (price: number, quantity: number): number =>
   calculateRealProductSupplyTotal(price, quantity) + calculateRealProductVatTotal(price, quantity);
 
+function buildRealProductAndTaxLists(mappings: OrderRealProductMappingEntity[]): {
+  orderRealProductList: RealProductViewDto[];
+  publicChargeTaxList: PublicChargeTaxViewDto[];
+} {
+  const orderRealProductList: RealProductViewDto[] = [];
+  const publicChargeTaxList: PublicChargeTaxViewDto[] = [];
+
+  for (const mapping of mappings) {
+    orderRealProductList.push({
+      mappingId: mapping.id,
+      productId: mapping.product.id,
+      productName: mapping.product.name,
+      code: mapping.product.code,
+      color: mapping.product.color,
+      quantity: mapping.quantity,
+      price: mapping.price,
+      trackingNumber: mapping.trackingNumber,
+      vat: calculateRealProductVatTotal(mapping.price, mapping.quantity),
+      totalAmount: calculateRealProductVatIncludedTotal(mapping.price, mapping.quantity),
+    });
+
+    const { tax, totalTaxAmount } = calculateTax(
+      mapping.standardAmount,
+      mapping.quantity,
+      mapping.publicChargeTaxPayment,
+    );
+    publicChargeTaxList.push({
+      mappingId: mapping.id,
+      productId: mapping.product.id,
+      productName: mapping.product.name,
+      code: mapping.product.code,
+      quantity: mapping.quantity,
+      standardAmount: mapping.standardAmount,
+      tax,
+      totalTaxAmount,
+      publicChargeTaxPaymentType: mapping.publicChargeTaxPayment,
+      processMethod: mapping.processMethod,
+      isProcess: mapping.isProcess,
+    });
+  }
+
+  return { orderRealProductList, publicChargeTaxList };
+}
+
 export class OrderRealProductService {
   constructor(
     @InjectRepository(OrderRealProductEntity)
@@ -388,42 +432,7 @@ export class OrderRealProductService {
       throw new BadRequestException('주문 상세 정보가 없습니다.');
     }
 
-    const orderRealProductList: RealProductViewDto[] = [];
-    const publicChargeTaxList: PublicChargeTaxViewDto[] = [];
-
-    for (const mapping of order.orderRealProductMappings) {
-      orderRealProductList.push({
-        mappingId: mapping.id,
-        productId: mapping.product.id,
-        productName: mapping.product.name,
-        code: mapping.product.code,
-        color: mapping.product.color,
-        quantity: mapping.quantity,
-        price: mapping.price,
-        trackingNumber: mapping.trackingNumber,
-        vat: Math.floor(mapping.price * 0.1),
-        totalAmount: mapping.totalPrice,
-      });
-
-      const { tax, totalTaxAmount } = calculateTax(
-        mapping.standardAmount,
-        mapping.quantity,
-        mapping.publicChargeTaxPayment,
-      );
-      publicChargeTaxList.push({
-        mappingId: mapping.id,
-        productId: mapping.product.id,
-        productName: mapping.product.name,
-        code: mapping.product.code,
-        quantity: mapping.quantity,
-        standardAmount: mapping.standardAmount,
-        tax,
-        totalTaxAmount,
-        publicChargeTaxPaymentType: mapping.publicChargeTaxPayment,
-        processMethod: mapping.processMethod,
-        isProcess: mapping.isProcess,
-      });
-    }
+    const { orderRealProductList, publicChargeTaxList } = buildRealProductAndTaxLists(order.orderRealProductMappings);
 
     return {
       id: order.id,
@@ -432,8 +441,8 @@ export class OrderRealProductService {
       userBusinessName: order.businessUser ? order.businessUser.company?.businessName ?? '' : null,
       userPersonName: order.businessUser ? order.businessUser.personName : null,
       eventName: order.eventName,
-      orderRealProductList: orderRealProductList,
-      publicChargeTaxList: publicChargeTaxList,
+      orderRealProductList,
+      publicChargeTaxList,
     };
   }
 
@@ -819,8 +828,7 @@ export class OrderRealProductService {
       throw new BadRequestException('주문 상세 정보가 없습니다.');
     }
 
-    const orderRealProductList: RealProductViewDto[] = [];
-    const publicChargeTaxList: PublicChargeTaxViewDto[] = [];
+    const { orderRealProductList, publicChargeTaxList } = buildRealProductAndTaxLists(order.orderRealProductMappings);
 
     const userInfo: OrderCustomerViewDto = {
       id: order.businessUser?.id ?? null,
@@ -834,40 +842,6 @@ export class OrderRealProductService {
     const today = format(now, 'yyMMdd');
     const fileName: string = `${order.businessUser?.company?.businessName ?? ''}_발송완료리포트_${today}`;
 
-    for (const mapping of order.orderRealProductMappings) {
-      orderRealProductList.push({
-        mappingId: mapping.id,
-        productId: mapping.product.id,
-        productName: mapping.product.name,
-        code: mapping.product.code,
-        color: mapping.product.color,
-        quantity: mapping.quantity,
-        price: mapping.price,
-        trackingNumber: mapping.trackingNumber,
-        vat: Math.floor(mapping.price * 0.1),
-        totalAmount: mapping.totalPrice,
-      });
-
-      const { tax, totalTaxAmount } = calculateTax(
-        mapping.standardAmount,
-        mapping.quantity,
-        mapping.publicChargeTaxPayment,
-      );
-      publicChargeTaxList.push({
-        mappingId: mapping.id,
-        productId: mapping.product.id,
-        productName: mapping.product.name,
-        code: mapping.product.code,
-        quantity: mapping.quantity,
-        standardAmount: mapping.standardAmount,
-        tax,
-        totalTaxAmount,
-        publicChargeTaxPaymentType: mapping.publicChargeTaxPayment,
-        processMethod: mapping.processMethod,
-        isProcess: mapping.isProcess,
-      });
-    }
-
     return {
       id: order.id,
       status: order.status,
@@ -877,8 +851,8 @@ export class OrderRealProductService {
       registerAt: format(order.createdAt, DateFormatStr),
       userBusinessName: order.businessUser ? order.businessUser.company?.businessName ?? null : null,
       userPersonName: order.businessUser ? order.businessUser.personName : null,
-      orderRealProductList: orderRealProductList,
-      publicChargeTaxList: publicChargeTaxList,
+      orderRealProductList,
+      publicChargeTaxList,
     };
   }
 
