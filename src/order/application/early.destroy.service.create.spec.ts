@@ -102,6 +102,16 @@ describe('EarlyDestroyService.createRequestForDeliveries — 검증/L-1', () => 
     expect(result).toEqual({ id: 500 }); // 겹치지 않으므로 정상 등록
   });
 
+  it('여러 발송건 중 일부만 PENDING 이면 전체 등록을 허용한다 (완전 중복만 거부, every)', async () => {
+    const sut = makeSut({
+      deliveries: [buildDelivery(101), buildDelivery(102)], // 신규 [101, 102]
+      pending: [{ items: [{ orderProductMappingId: 55, orderDeliveryId: 101 }] }], // 101 만 대기
+    });
+    // 102 가 신규이므로 허용. (.find/ANY 였다면 101 때문에 막혔을 것 — 김휘겸 지적 지점)
+    const result = await sut.createRequestForDeliveries({ orderDeliveryIds: [101, 102] }, user);
+    expect(result).toEqual({ id: 500 });
+  });
+
   it('정상 등록 시 요청 + 항목이 저장된다', async () => {
     const sut = makeSut({ deliveries: [buildDelivery(101), buildDelivery(102)] });
 
@@ -166,6 +176,16 @@ describe('EarlyDestroyService.createRequest(매핑 단위) — L-1 교차 겹침
   it('다른 매핑의 PENDING 은 영향 없이 통과한다 (과차단 방지)', async () => {
     const sut = makeMappingSut({ pending: [{ items: [{ orderProductMappingId: 66, orderDeliveryId: null }] }] });
     const result = await sut.createRequest(77, { orderProductMappingIds: [55] }, user);
+    expect(result).toEqual({ id: 600 });
+  });
+
+  it('여러 매핑 중 일부만 전체 PENDING 이면 전체 등록을 허용한다 (완전 중복만 거부, every)', async () => {
+    const sut = makeMappingSut({
+      mappingIds: [55, 66], // 신규 [55, 66]
+      pending: [{ items: [{ orderProductMappingId: 55, orderDeliveryId: null }] }], // 55 만 전체 대기
+    });
+    // 66 이 신규이므로 허용
+    const result = await sut.createRequest(77, { orderProductMappingIds: [55, 66] }, user);
     expect(result).toEqual({ id: 600 });
   });
 });
