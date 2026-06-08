@@ -2,7 +2,8 @@ import { createCanvas, Image } from 'canvas';
 import JsBarcode from 'jsbarcode';
 
 import * as fsPromises from 'fs/promises';
-import { join } from 'path';
+import { join, resolve } from 'path';
+import { randomUUID } from 'node:crypto';
 import sharp from 'sharp';
 import * as process from 'node:process';
 import axios from 'axios';
@@ -184,8 +185,19 @@ export const DeliveryCreateCouponImage = async (
     // 최종 이미지 저장 (비동기)
     const outputBuffer = canvas.toBuffer('image/jpeg');
     const now = new Date().getTime();
-    const resultCouponFileName = `${now}-coupon.jpeg`;
-    const path = `${homeUrl}/public/${resultCouponFileName}`;
+    // 파일명 무작위화(UUIDv4): public/ 정적 노출 하에서 시각 기반 순차 파일명의 열거(brute-force) 차단.
+    // now 접두는 정렬/디버깅용 유지. 소비처는 반환 path/fileName을 그대로 사용하므로 발송 흐름 무영향.
+    const resultCouponFileName = `${now}-${randomUUID()}-coupon.jpeg`;
+    // 저장 디렉터리 — 기본은 의도적으로 기존 `<cwd>/public` 유지(엑셀처럼 tmp로 옮기지 않음).
+    //   이유: 발송사 Gemtek 데몬이 별도 DB(MSG_QUEUE)의 `fileLoc`에 적힌 **이 파일 경로를 직접 참조**해
+    //   MMS 첨부로 읽어간다(`sms.gemtek.send.ts`). 데몬이 다른 머신이거나 `public/`만 공유 마운트된 경우,
+    //   경로를 옮기면 데몬이 파일을 못 찾아 **쿠폰 첨부가 깨진다**. 안전측으로 `public/`에 그대로 둔다.
+    //   (열거 위험은 위의 파일명 UUID 무작위화로 이미 차단됨.)
+    //   COUPON_IMAGE_DIR 는 후속 전환용 스위치 — 데몬의 새 경로 FS 접근을 확증(테스트 발송 1건/마운트 확인)한
+    //   뒤에만 설정. 설정 시에도 소비처는 반환 path를 그대로 쓰므로 경로만 바뀌고 흐름은 동일.
+    const couponDir = process.env.COUPON_IMAGE_DIR?.trim() ? resolve(process.env.COUPON_IMAGE_DIR.trim()) : `${homeUrl}/public`;
+    await fsPromises.mkdir(couponDir, { recursive: true });
+    const path = `${couponDir}/${resultCouponFileName}`;
     await fsPromises.writeFile(path, outputBuffer);
 
     return { fileName: resultCouponFileName, path };
