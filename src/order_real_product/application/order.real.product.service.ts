@@ -1,4 +1,5 @@
 import { InjectRepository } from '@nestjs/typeorm';
+import { createExportTempPath } from '../../util/file.util';
 import { Brackets, In, Repository } from 'typeorm';
 import { OrderRealProductEntity } from '../../entity/order.real.product.entity';
 import {
@@ -1023,7 +1024,7 @@ export class OrderRealProductService {
     }
 
     const fileName = `수익률_조회_기타_정산_${nowString}.xlsx`;
-    const filePath = join(process.cwd(), '.', 'public', fileName);
+    const filePath = createExportTempPath('xlsx');
 
     await workbook.xlsx.writeFile(filePath);
 
@@ -1178,7 +1179,7 @@ export class OrderRealProductService {
     }
 
     const fileName = `실물상품_${orderType}_리스트_${nowString}.xlsx`;
-    const filePath = join(process.cwd(), '.', 'public', fileName);
+    const filePath = createExportTempPath('xlsx');
 
     await workbook.xlsx.writeFile(filePath);
 

@@ -1,4 +1,7 @@
 import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { tmpdir } from 'node:os';
+import { randomUUID } from 'node:crypto';
+import { createExportTempPath } from '../../util/file.util';
 import { ProductEntity } from '../../entity/product.entity';
 import { Brackets, FindOptionsWhere, In, IsNull, Like, Repository } from 'typeorm';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -145,12 +148,13 @@ export class ProductService {
     }
 
     const key = this.extractStorageKey(sharedFile.fileUrl);
-    const downloadDir = join(process.cwd(), 'public', 'temp', 'product-shared-list');
+    // 비공개 임시 디렉터리 + UUID: public/ 노출·예측 파일명·동시 다운로드 충돌 차단(스트리밍 후 삭제됨)
+    const downloadDir = join(tmpdir(), 'epopkon-shared-list');
     fs.mkdirSync(downloadDir, { recursive: true });
 
     const filePath = await this.fileStorage.downloadFileToLocalWithPath(
       downloadDir,
-      `${Date.now()}-${parse(sharedFile.fileName).name}`,
+      `${randomUUID()}-${parse(sharedFile.fileName).name}`,
       key,
     );
 
@@ -1143,7 +1147,7 @@ export class ProductService {
     }
 
     const fileName = `상품_리스트_${nowString}.xlsx`;
-    const filePath = join(process.cwd(), '.', 'public', fileName);
+    const filePath = createExportTempPath('xlsx');
 
     await workbook.xlsx.writeFile(filePath);
 
