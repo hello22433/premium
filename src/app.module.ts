@@ -50,6 +50,7 @@ import { ExternalApiModule } from './external_api/external.api.module';
 import { ExternalApiWebhookModule } from './external_api/webhook/external.api.webhook.module';
 import { SidebarModule } from './sidebar/sidebar.module';
 import { WalletModule } from './wallet/wallet.module';
+import { ForbiddenWordModule } from './forbidden_word/forbidden.word.module';
 
 @Module({
   imports: [
@@ -106,6 +107,7 @@ import { WalletModule } from './wallet/wallet.module';
     ExternalApiWebhookModule,
     SidebarModule,
     WalletModule,
+    ForbiddenWordModule,
   ],
   controllers: [AppController],
   providers: [],

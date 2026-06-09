@@ -28,6 +28,8 @@ import { ActivityLogModule } from '../activity_log/activity.log.module';
 import { MailModule } from '../mail/mail.module';
 import { WalletModule } from '../wallet/wallet.module';
 import { PointGrantEntity } from '../entity/point.grant.entity';
+import { ForbiddenWordModule } from '../forbidden_word/forbidden.word.module';
+import { ForbiddenWordBlockLogEntity } from '../entity/forbidden.word.block.log.entity';
 
 @Module({
   imports: [
@@ -51,6 +53,7 @@ import { PointGrantEntity } from '../entity/point.grant.entity';
       EarlyDestroyRequestItemEntity,
       OrderHistoryEntity,
       PointGrantEntity,
+      ForbiddenWordBlockLogEntity,
     ]),
     PartnerCompanyExternModule,
     forwardRef(() => UserManagementModule),
@@ -58,6 +61,7 @@ import { PointGrantEntity } from '../entity/point.grant.entity';
     DeliveryModule,
     ActivityLogModule,
     MailModule,
+    ForbiddenWordModule,
   ],
   controllers: [OrderController],
   providers: [OrderService, EarlyDestroyService],
