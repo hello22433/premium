@@ -244,6 +244,15 @@ pm2 restart {id} # 프로세스 재시작
 pm2 log # 파일 경로 .pm2/logs
 ```
 
+### ⚠️ 배포/재기동 주의 (필수)
+
+- **단일 인스턴스로만 기동한다.** cluster 모드(`-i`)나 동일 DB를 바라보는 다중 프로세스 동시 기동 금지.
+- **`pm2 reload`(무중단 재시작) 금지. `pm2 restart` 또는 stop-then-start 만 사용한다.**
+  - 부팅 시 HTTP 진입점(`src/main.ts`)에서 비정상 종료로 남은 stale claim(`order_delivery.claimed_at`)을 해제한다.
+  - `reload`는 구·신 프로세스가 잠시 **동시에 떠 있으므로**, 신 프로세스의 부팅 해제 로직이 구 프로세스가 **현재 재발송 중인 FAIL claim**을 풀어 **중복 발송**을 일으킬 수 있다.
+  - `restart`/stop-start는 구 프로세스를 먼저 내린 뒤 신 프로세스를 올려 이 겹침이 없다.
+- 마이그레이션/일회성 스크립트는 가능하면 운영 HTTP 서버가 **재발송·배치를 돌리지 않는 시간대**에 실행한다(standalone AppModule bootstrap도 scheduler를 생성하므로).
+
 ## KST
 
 - 해당 프로젝트의 date 관련 값은 **전부 KST(UTC+09:00) 기준으로 처리**합니다.

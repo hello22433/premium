@@ -32,6 +32,12 @@ import { SsgPinVerdict } from '../../partner_company_extern/interface/ssg.issue'
 // 재발송 가능한 실패 상태 목록
 const RESENDABLE_FAIL_STATUSES = [IOrderDeliveryStatus.FAIL, IOrderDeliveryStatus.FAIL_SMS];
 
+// claim self-heal 임계(ms). 크래시로 finally 못 탄 stale claim 만 재claim 허용.
+// claim 게이트(재claim 조건)와 거부 사유 판정(처리중 여부)이 동일 경계를 쓰도록 공유한다.
+// 값은 "단일 oneSend 최악 소요시간"보다 커야 한다(아니면 진짜 처리 중인데 재claim → 중복 발송).
+// 외부 API 타임아웃 30s/호출 · retry 1회 · SSG check 재시도 기준, 5분이면 충분한 여유가 있다.
+const RESEND_CLAIM_STALE_MS = 5 * 60 * 1000;
+
 // 협력사 타입 한글 매핑
 const PartnerCompanyTypeKo: Record<IPartnerCompanyType, string> = {
   [IPartnerCompanyType.GIFT_SHOW]: 'KT알파 (기프티쇼)',
@@ -321,7 +327,7 @@ export class PartnerCompanyExternHistoryService {
    * 유발했다(lock wait timeout). 배치처럼 짧은 원자적 claimedAt 게이트로 동시성을 차단하고,
    * 락 없는 상태로 oneSend() 를 호출한다.
    *
-   * - claim: app 생성 claimAt 토큰을 저장. 30분 self-heal(크래시로 finally 못 탄 stale claim 만 재claim).
+   * - claim: app 생성 claimAt 토큰을 저장. 5분 self-heal(크래시로 finally 못 탄 stale claim 만 재claim).
    * - 모든 해제(성공/실패/예외/게이트 거부)는 owner guard(claimed_at=:claimAt) 조건부.
    * - status 는 claim 중에도 FAIL/FAIL_SMS 유지(oneSend 의 wasFailBefore/환불 분기 보존).
    * - SSG 재진입은 getState 로 분기(ATTEMPTED→orphan resolver, CONFIRMED→PIN 무결성, NONE/FAILED→새 PIN).
@@ -330,7 +336,7 @@ export class PartnerCompanyExternHistoryService {
     // 1. 대상 조회 (락 없음). 동시 재발송은 아래 원자적 claim 으로 차단.
     const target = await this.buildResendQuery(orderDeliveryId).getOne();
     if (!target) {
-      return { success: false, message: '이미 처리 중이거나 재발송 대상이 아닙니다.', orderDeliveryId };
+      return this.classifyResendRejection(orderDeliveryId);
     }
 
     const product = target.orderProductMapping.product;
@@ -368,9 +374,9 @@ export class PartnerCompanyExternHistoryService {
       newTransactionId = CreateResendTransactionId(orderId, orderDeliveryId, retryCount);
     }
 
-    // 4. 원자적 claim (owner 토큰 = app 생성 claimAt). 30분 self-heal: 크래시로 남은 stale claim 만 재claim.
+    // 4. 원자적 claim (owner 토큰 = app 생성 claimAt). 5분 self-heal: 크래시로 남은 stale claim 만 재claim.
     const claimAt = new Date();
-    const staleThreshold = new Date(claimAt.getTime() - 30 * 60 * 1000);
+    const staleThreshold = new Date(claimAt.getTime() - RESEND_CLAIM_STALE_MS);
     const claimSet = { claimedAt: claimAt, ...(newTransactionId && { transactionId: newTransactionId }) };
     const claimResult = await this.orderDeliveryRepository
       .createQueryBuilder()
@@ -381,7 +387,7 @@ export class PartnerCompanyExternHistoryService {
       .andWhere('(claimedAt IS NULL OR claimedAt < :stale)', { stale: staleThreshold })
       .execute();
     if (!claimResult.affected) {
-      return { success: false, message: '이미 처리 중이거나 재발송 대상이 아닙니다.', orderDeliveryId };
+      return this.classifyResendRejection(orderDeliveryId);
     }
 
     // claim 소유. 모든 종료 경로에서 owner-guarded 해제 보장.
@@ -460,6 +466,57 @@ export class PartnerCompanyExternHistoryService {
       { id: orderDeliveryId, claimedAt: claimAt },
       { claimedAt: null },
     );
+  }
+
+  /**
+   * 비정상 종료로 남은 FAIL/FAIL_SMS 행의 claimedAt 을 해제한다. main.ts 에서 listen() 전 1회 호출.
+   * status/resendAt 은 건드리지 않는다.
+   */
+  async releaseOrphanedResendClaims(): Promise<number> {
+    const result = await this.orderDeliveryRepository
+      .createQueryBuilder()
+      .update(OrderDeliveryEntity)
+      .set({ claimedAt: null })
+      .where('status IN (:...statuses)', { statuses: RESENDABLE_FAIL_STATUSES })
+      .andWhere('claimedAt IS NOT NULL')
+      .execute();
+    return result.affected ?? 0;
+  }
+
+  /**
+   * 재발송 거부 사유를 판정한다. buildResendQuery(상태 필터 포함)는 재사용하지 않고,
+   * status 필터 없이 id/status/claimedAt 만 조회해 현재 상태를 정확히 분류한다.
+   *
+   * 판정 순서 (status 를 claimedAt 보다 먼저 본다):
+   *  1. 행 없음        → 대상 없음
+   *  2. status 비대상   → 이미 완료/대상 아님 (성공 마무리 구간: status=COMPLETE 이지만
+   *                       claimedAt 해제가 아직 안 된 찰나를 '처리 중'으로 오진하지 않음)
+   *  3. 최근 claimedAt  → 재발송 처리 중 (5분 이내)
+   *  4. 그 외          → 상태 변경(새로고침 유도)
+   */
+  private async classifyResendRejection(orderDeliveryId: number): Promise<ResendResultDto> {
+    const row = await this.orderDeliveryRepository
+      .createQueryBuilder('orderDelivery')
+      .select(['orderDelivery.id', 'orderDelivery.status', 'orderDelivery.claimedAt'])
+      .withDeleted()
+      .where('orderDelivery.id = :id', { id: orderDeliveryId })
+      .getOne();
+
+    if (!row) {
+      return { success: false, message: '재발송 대상을 찾을 수 없습니다.', orderDeliveryId };
+    }
+    if (!RESENDABLE_FAIL_STATUSES.includes(row.status)) {
+      return { success: false, message: '이미 완료되었거나 재발송 대상이 아닙니다.', orderDeliveryId };
+    }
+    const staleThreshold = new Date(Date.now() - RESEND_CLAIM_STALE_MS);
+    if (row.claimedAt && row.claimedAt >= staleThreshold) {
+      return { success: false, message: '재발송 처리 중입니다. 잠시 후 다시 시도해주세요.', orderDeliveryId };
+    }
+    return {
+      success: false,
+      message: '재발송 상태가 변경되었습니다. 목록을 새로고침 후 다시 시도해주세요.',
+      orderDeliveryId,
+    };
   }
 
   /**

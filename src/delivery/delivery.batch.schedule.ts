@@ -1,7 +1,7 @@
 // 요청시각에 따른 전송 배치
 
 import { DeliveryBatchService } from './application/delivery.batch.service';
-import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 
 /**
@@ -12,23 +12,11 @@ import { Cron } from '@nestjs/schedule';
 const MAX_BATCH_RUNTIME_MS = 30 * 60 * 1000;
 
 @Injectable()
-export class DeliveryBatchSchedule implements OnApplicationBootstrap {
+export class DeliveryBatchSchedule {
   constructor(private deliveryBatchService: DeliveryBatchService) {}
 
-  async onApplicationBootstrap() {
-    // 비정상 종료로 claimed_at이 남아있는 WAIT 행을 해제한다.
-    // PM2 단일 인스턴스 전제: 부팅 시점에는 진행 중인 배치가 있을 수 없다.
-    try {
-      const released = await this.deliveryBatchService.releaseStaleClaims();
-      if (released > 0) {
-        this.logger.warn(
-          `[BATCH] 부팅 시 stale 클레임 ${released}건 해제 (이전 프로세스 비정상 종료 흔적)`,
-        );
-      }
-    } catch (e) {
-      this.logger.error('[BATCH] stale 클레임 해제 실패', e);
-    }
-  }
+  // 부팅 stale claim 해제는 main.ts(listen() 전)에서만 수행한다. lifecycle 훅은 migration
+  // 스크립트 등 standalone bootstrap 에서도 발화해 살아있는 claim 을 해제할 위험이 있다.
 
   private logger = new Logger('BATCH');
 
