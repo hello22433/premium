@@ -43,7 +43,10 @@ export class OrderFromService {
     user: ILoginUserInfo,
     getQuery: OrderFromGetPhoneReqQueryDto,
   ): Promise<OrderFromGetPhoneListResDto> {
-    const targetUserId = getQuery.userId ?? user.id;
+    // 빈 쿼리(`?userId=`)가 0 으로 변환되어 들어오는 경우까지 본인 조회로 폴백.
+    // (?? 는 0 을 잡지 못하므로 양수만 타 계정 조회로 취급)
+    const targetUserId =
+      getQuery.userId && getQuery.userId > 0 ? getQuery.userId : user.id;
 
     // IDOR 방지: 타 계정 userId는 대리 권한 보유자만 허용
     this.assertCanActForUser(user, targetUserId);
@@ -189,14 +192,9 @@ export class OrderFromService {
       },
     });
 
-    const emailList = orderFromDefinitionList.map((orderFromDefinition) => {
-      return {
-        id: orderFromDefinition.id,
-        from: orderFromDefinition.from,
-      };
-    });
-
-    return { list: emailList };
+    return {
+      list: orderFromDefinitionList.map((item) => ({ id: item.id, from: item.from })),
+    };
   }
 
   async createEmail(getBody: OrderFromCreateEmailReqDto) {
