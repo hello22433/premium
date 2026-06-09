@@ -33,6 +33,11 @@ export class UserSyncProductEventDetailDto {
   code: string;
 
   @ApiProperty({
+    description: '협력사 상품 코드',
+  })
+  partnerCompanyCode: string | null;
+
+  @ApiProperty({
     description: '대분류',
   })
   classification: string | null;

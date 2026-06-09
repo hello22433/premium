@@ -123,4 +123,48 @@ export class MaskingUtil {
     // 패턴에 따라 첫 3자리 + **** + 마지막 4자리로 가리기
     return `${trimmedPhone.slice(0, 3)}****${trimmedPhone.slice(-4)}`;
   }
+
+  /**
+   * 인물 이름 마스킹: 첫 글자만 노출, 나머지는 *
+   * 김민수 → 김**
+   */
+  static maskPersonName(name: string): string {
+    if (name.length <= 1) return '*';
+    return name.charAt(0) + '*'.repeat(name.length - 1);
+  }
+
+  /**
+   * 브랜드명 마스킹: 뒤 2글자(은행/카드 등 식별자)만 노출, 나머지는 *
+   * 현대카드 → **카드, 신한은행 → **은행
+   */
+  static maskBrandName(name: string): string {
+    if (name.length <= 2) return '*'.repeat(name.length);
+    return '*'.repeat(name.length - 2) + name.slice(-2);
+  }
+
+  /**
+   * 사업자등록번호 로그 마스킹: 앞 5자리 노출, 뒷자리 5개 마스킹
+   * 125-05-51212 → 125-05-*****
+   * fallback: 6자리 이상 → 앞 5자리 노출, 2~5자리 → 앞 2자리 노출
+   */
+  static maskBusinessNumber(number: string): string {
+    const clean = number.replace(/[^0-9]/g, '');
+    if (clean.length === 10) return `${clean.slice(0, 3)}-${clean.slice(3, 5)}-*****`;
+    if (clean.length > 5) return `${clean.slice(0, 5)}-${'*'.repeat(clean.length - 5)}`;
+    if (clean.length >= 2) return `${clean.slice(0, 2)}-${'*'.repeat(clean.length - 2)}`;
+    return '***';
+  }
+
+  /**
+   * 카드번호 로그 마스킹: 앞뒤 4자리 노출, 가운데 8자리 마스킹
+   * 1234-5678-9012-3456 → 1234-****-****-3456
+   * fallback: 4자리 이상 → 앞 4자리 노출 후 나머지 마스킹
+   */
+  static maskCardNumber(number: string): string {
+    const clean = number.replace(/[^0-9]/g, '');
+    if (clean.length === 16) return `${clean.slice(0, 4)}-****-****-${clean.slice(12)}`;
+    if (clean.length === 15) return `${clean.slice(0, 4)}-****-****-${clean.slice(11)}`;
+    if (clean.length >= 4) return `${clean.slice(0, 4)}-${'*'.repeat(clean.length - 4)}`;
+    return '***';
+  }
 }
