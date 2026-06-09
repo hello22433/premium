@@ -147,6 +147,9 @@ import {
 import { PointPolicyService } from '../../wallet/application/point-policy.service';
 import { PointPolicyEffect } from '../../wallet/interface/point-policy-scope';
 import { PointGrantEntity } from '../../entity/point.grant.entity';
+import { ForbiddenWordMatcher } from '../../forbidden_word/application/forbidden.word.matcher';
+import { ForbiddenWordBlockLogEntity } from '../../entity/forbidden.word.block.log.entity';
+import { OrderProductCreateTempDto } from '../api/dto/order.product.create.temp.dto';
 import { OrderConfirmationWalletService } from '../../wallet/application/order-confirmation-wallet.service';
 import { OrderConfirmationReleaseService } from '../../wallet/application/order-confirmation-release.service';
 import { ShadowMismatchClassifierService } from '../../wallet/application/shadow-mismatch-classifier.service';
@@ -258,6 +261,9 @@ export class OrderService {
     private readonly pointPolicyService: PointPolicyService,
     @InjectRepository(PointGrantEntity)
     private readonly pointGrantRepository: Repository<PointGrantEntity>,
+    private readonly forbiddenWordMatcher: ForbiddenWordMatcher,
+    @InjectRepository(ForbiddenWordBlockLogEntity)
+    private readonly forbiddenWordBlockLogRepository: Repository<ForbiddenWordBlockLogEntity>,
   ) {}
 
   /**
@@ -2790,9 +2796,70 @@ export class OrderService {
     }
   }
 
+  /**
+   * 임시저장 콘텐츠 금칙어 검사.
+   *
+   * - 검사 대상: 각 상품의 sendContent / useEmailContent / sendTailText,
+   *   각 수신자의 대치문자 1/2/3.
+   * - 빈/null 필드는 skip.
+   * - 적발 시 block_log 기록 후 BadRequestException(FORBIDDEN_WORD) throw.
+   *   block_log insert 실패는 warn 후에도 reject 유지.
+   */
+  private async assertNoForbiddenWord(
+    user: ILoginUserInfo,
+    orderProductList: OrderProductCreateTempDto[],
+    orderId: number | null,
+  ): Promise<void> {
+    const targets: { field: string; text: string }[] = [];
+
+    const pushIfPresent = (field: string, text: string | null | undefined) => {
+      if (text) targets.push({ field, text });
+    };
+
+    for (const product of orderProductList) {
+      pushIfPresent('sendContent', product.sendContent);
+      pushIfPresent('useEmailContent', product.useEmailContent);
+      pushIfPresent('sendTailText', product.sendTailText);
+
+      for (const delivery of product.orderDeliveryList ?? []) {
+        pushIfPresent('replaceCharacter1', delivery.replaceCharacter1);
+        pushIfPresent('replaceCharacter2', delivery.replaceCharacter2);
+        pushIfPresent('replaceCharacter3', delivery.replaceCharacter3);
+      }
+    }
+
+    for (const target of targets) {
+      const matchedWords = this.forbiddenWordMatcher.scan(target.text);
+      if (matchedWords.length === 0) {
+        continue;
+      }
+
+      try {
+        await this.forbiddenWordBlockLogRepository.insert({
+          userId: user.id,
+          userEmail: user.email,
+          matchedWords,
+          field: target.field,
+          contentSnippet: target.text.slice(0, 500),
+          orderId,
+        });
+      } catch (e) {
+        this.logger.warn(`금칙어 차단 로그 기록 실패: ${(e as Error).message}`);
+      }
+
+      throw new BadRequestException({
+        code: 'FORBIDDEN_WORD',
+        words: matchedWords,
+        message: '금칙어가 포함되어 저장할 수 없습니다.',
+      });
+    }
+  }
+
   @Transactional()
   async createTemp(user: ILoginUserInfo, getBody: OrderCreateTempReqDto): Promise<OrderCreateTempResDto> {
     const { type, eventName, topImagePath, midImagePath, orderProductList } = getBody;
+
+    await this.assertNoForbiddenWord(user, orderProductList, null);
 
     // 대행주문인 경우 clientUser의 허용 발신수단으로 검증
     const clientUserId = getBody.clientUserId ?? null;
@@ -2954,6 +3021,8 @@ export class OrderService {
   @Transactional()
   async updateTemp(user: ILoginUserInfo, getBody: OrderUpdateTempReqDto): Promise<void> {
     const { id, eventName, topImagePath, midImagePath, orderProductList } = getBody;
+
+    await this.assertNoForbiddenWord(user, orderProductList, id);
 
     const order = await this.orderRepository.findOne({
       where: {
