@@ -20,7 +20,11 @@ export class LoggerMiddleware implements NestMiddleware {
   // base64 파일 등 대용량 페이로드 키 (소문자 exact match). 값 드롭 후 has* 플래그로 대체.
   private bulkDataKeys = new Set(['pdfbase64']);
   // 보고서 이메일 발송 경로. 수신자(to) 마스킹 및 HTML 본문(content) 드롭 적용.
-  private reportEmailPaths = ['/report/pdf', '/destruction-certificate/pdf'];
+  private reportEmailPaths = [
+    '/order/delivery-complete/report/email',
+    '/order/transaction-statement/report/email',
+    '/order/destruction-certificate/report/email',
+  ];
   // 일회용 인증코드(body.code)를 쓰는 경로. 'code'는 productCode 등과 충돌하므로 이 경로에서만 redact.
   private authCodePaths = ['/user-find/reset-password/verify', '/user/login/email/verify', '/user/login/phone/verify'];
   // URL 쿼리스트링에서 값 redact할 민감 파라미터(소문자). encryptKey/code 등은 링크로 외부 전달되나 로그 집적 방지.
