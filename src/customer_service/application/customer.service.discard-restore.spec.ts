@@ -1,5 +1,6 @@
 import { CustomerServiceService } from './customer.service.service';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
+import { OrderDeliveryAttemptType } from '../../entity/order.delivery.attempt.entity';
 
 /**
  * PR-A — refunded-proxy reader 정규화.
@@ -75,6 +76,58 @@ describe('CustomerServiceService.restoreBalanceOnDiscard — refunded-proxy read
     expect(claim).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ orderDeliveryId: 5001, sourcePath: 'CS_DISCARD' }),
+    );
+  });
+
+  it('wallet 정산완료 폐기 환불은 INITIAL 고정이 아니라 최신 attempt.id 로 멱등키를 만든다', async () => {
+    const sut: any = makeSut(false);
+    const latestAttempt = { id: '44', attemptType: OrderDeliveryAttemptType.RESEND };
+    const user = { id: 5, email: 'buyer@test.local', company: null };
+    const queryRunner = {
+      manager: {
+        findOne: jest.fn(async (_target: any, opts: any) => {
+          if (opts?.where?.orderDeliveryId === 5001) return latestAttempt;
+          return user;
+        }),
+        createQueryBuilder: jest.fn(() => {
+          const builder: any = {
+            update: () => builder,
+            set: () => builder,
+            where: () => builder,
+            setParameters: () => builder,
+            execute: jest.fn().mockResolvedValue({ affected: 1 }),
+          };
+          return builder;
+        }),
+        save: jest.fn().mockResolvedValue(undefined),
+      },
+    } as any;
+    sut.activityLogService = { createLog: jest.fn().mockResolvedValue(undefined) };
+    sut.cryptoCipher = { safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01012345678') };
+    sut.walletManagedPredicate = { isWalletManaged: jest.fn().mockResolvedValue(true) };
+    sut.refundPoolService = {
+      refundSettledDiscardToDeposit: jest.fn().mockResolvedValue({ ledgerIds: ['1'], totalRefundedAmount: 10000 }),
+    };
+
+    const orderDelivery = buildOrderDelivery(IOrderDeliveryStatus.COMPLETE);
+    orderDelivery.orderProductMapping.order.isSettleComplete = true;
+
+    await sut.restoreBalanceOnDiscard(
+      orderDelivery,
+      operator,
+      queryRunner,
+      'operator',
+    );
+
+    const attemptLookup = queryRunner.manager.findOne.mock.calls.find(
+      ([, opts]: [unknown, any]) => opts?.where?.orderDeliveryId === 5001,
+    );
+    expect(attemptLookup?.[1].where).toEqual({ orderDeliveryId: 5001 });
+    expect(sut.refundPoolService.refundSettledDiscardToDeposit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        idempotencyKeyPrefix: 'discard_refund:700:5001:deposit:44',
+      }),
+      queryRunner.manager,
     );
   });
 });
