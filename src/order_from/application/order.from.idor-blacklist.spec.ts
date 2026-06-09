@@ -70,6 +70,28 @@ describe('OrderFromService — IDOR / blacklist / admin 필터 (P0)', () => {
       await sut.getPhoneList(user, { userId: 99 });
       expect(sut.orderFromDefinitionRepository.find).toHaveBeenCalled();
     });
+
+    // 빈 user query(`?userId=`)가 @Type(()=>Number) 로 0 으로 변환되어 들어오는 케이스.
+    // `0 ?? user.id` 가 0 을 흘려 보내 본인 조회가 403/0건으로 깨지던 회귀를 잠근다.
+    it('userId 가 0(빈 쿼리 변환값)이면 본인 조회로 떨어뜨린다 — CORPORATE_ADMIN 도 403 아님', async () => {
+      const sut = makeSut();
+      const user = makeUser(10, IUserAuthority.CORPORATE_ADMIN);
+
+      await sut.getPhoneList(user, { userId: 0 });
+      expect(sut.orderFromDefinitionRepository.find).toHaveBeenCalledWith(
+        expect.objectContaining({ where: expect.objectContaining({ userId: 10 }) }),
+      );
+    });
+
+    it('userId 미전달(undefined)이면 본인 조회한다', async () => {
+      const sut = makeSut();
+      const user = makeUser(10, IUserAuthority.CORPORATE_ADMIN);
+
+      await sut.getPhoneList(user, {});
+      expect(sut.orderFromDefinitionRepository.find).toHaveBeenCalledWith(
+        expect.objectContaining({ where: expect.objectContaining({ userId: 10 }) }),
+      );
+    });
   });
 
   describe('createPhone — IDOR 가드 + 블랙리스트', () => {
