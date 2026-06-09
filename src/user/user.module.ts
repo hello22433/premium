@@ -12,6 +12,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { ActivityLogModule } from '../activity_log/activity.log.module';
 import { DeliveryModule } from '../delivery/delivery.module';
 import { SmsModule } from '../sms/sms.module';
+import { AccountLifecycleModule } from '../account_lifecycle/account.lifecycle.module';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { SmsModule } from '../sms/sms.module';
     SmsModule,
     TypeOrmModule.forFeature([UserEntity, UserCompanyEntity, UserViewScopeEntity, PasswordPolicyEntity, EmailSendHistoryEntity]),
     ActivityLogModule,
+    AccountLifecycleModule,
   ],
   controllers: [UserController],
   providers: [UserService],

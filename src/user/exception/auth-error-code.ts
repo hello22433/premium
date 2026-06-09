@@ -39,6 +39,21 @@ export const AuthErrorCode = {
     message: '로그인 5회 실패로 계정이 잠겼습니다. 관리자에게 문의해주세요.',
     status: HttpStatus.BAD_REQUEST,
   },
+  ACCOUNT_SUSPENDED: {
+    code: 'ACCOUNT_SUSPENDED',
+    message: '장기 미사용으로 휴면 상태입니다. 이메일 본인인증으로 재활성화해주세요.',
+    status: HttpStatus.BAD_REQUEST,
+  },
+  ACCOUNT_WITHDRAWN: {
+    code: 'ACCOUNT_WITHDRAWN',
+    message: '탈퇴한 계정입니다. 재가입 후 이용해주세요.',
+    status: HttpStatus.BAD_REQUEST,
+  },
+  REACTIVATION_NOT_ALLOWED: {
+    code: 'REACTIVATION_NOT_ALLOWED',
+    message: '휴면 상태 계정만 재활성화할 수 있습니다.',
+    status: HttpStatus.BAD_REQUEST,
+  },
   VERIFY_DATA_NOT_FOUND: {
     code: 'VERIFY_DATA_NOT_FOUND',
     message: '인증 데이터가 없습니다.',

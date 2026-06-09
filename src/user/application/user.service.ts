@@ -40,6 +40,8 @@ import { defaultFromPhoneNumber } from '../../const';
 import { MaskingUtil } from '../../common/utils/masking.util';
 import { AuthErrorCode } from '../exception/auth-error-code';
 import { AuthException } from '../exception/auth.exception';
+import { AccountStatusTransitionService } from '../../account_lifecycle/application/account.status.transition.service';
+import { TransitionSource } from '../../account_lifecycle/interface/transition.source';
 
 @Injectable()
 export class UserService {
@@ -65,6 +67,7 @@ export class UserService {
     private readonly smsSendService: ISmsSend,
     private configService: ConfigService,
     private activityLogService: ActivityLogService,
+    private accountStatusTransitionService: AccountStatusTransitionService,
   ) {}
 
   private logger = new Logger('UserService');
@@ -157,6 +160,7 @@ export class UserService {
       cardNumber: '',
       balance: 0,
       companyId: companyId,
+      lastActivityAt: new Date(),
     });
 
     // 신규 사용자의 조회 범위 기본값 설정 (SELF)
@@ -165,6 +169,9 @@ export class UserService {
       userId: newUserId,
       scopeType: ViewScopeType.SELF,
     });
+
+    // 계정 생성 로그 (라이프사이클)
+    await this.accountStatusTransitionService.logAccountCreate(newUserId, signUpDto.email, TransitionSource.MANUAL);
 
     return;
   }
@@ -189,6 +196,12 @@ export class UserService {
     }
     if (user.status === IUserStatus.NOT_APPROVED) {
       throw new AuthException(AuthErrorCode.USER_NOT_APPROVED);
+    }
+    if (user.status === IUserStatus.NOT_USED) {
+      throw new AuthException(AuthErrorCode.ACCOUNT_SUSPENDED); // 휴면 — 이메일 본인인증으로 재활성화 가능
+    }
+    if (user.status === IUserStatus.LEAVE) {
+      throw new AuthException(AuthErrorCode.ACCOUNT_WITHDRAWN); // 탈퇴 — 영구 차단 (재활성화 불가)
     }
     const isPasswordMatch = await this.passwordEncrypt.compare(password, user.password);
     if (!isPasswordMatch) {
@@ -283,6 +296,9 @@ export class UserService {
         businessName: user.company?.businessName ?? '',
       },
     });
+
+    // 활동 시각 갱신 (휴면 판정 기준 = 로그인 OR API. throttle 1일)
+    await this.accountStatusTransitionService.touchLastActivity(user.id, user.lastActivityAt);
 
     // 인증 방식에 따른 공통 응답 필드
     const loginVerifyMethod = user.loginVerifyMethod ?? LoginVerifyMethod.EMAIL;
@@ -387,9 +403,7 @@ export class UserService {
     const { email, targetEmail } = getBody;
 
     const user = await this.userRepository.findOne({
-      where: {
-        email: email,
-      },
+      where: { email },
     });
 
     if (!user) {
@@ -397,25 +411,7 @@ export class UserService {
     }
 
     const personEmails = this.parsePersonEmails(user.personEmail);
-
-    // 발송할 이메일 결정
-    // - 담당자 이메일이 1개일 때: 계정 이메일로 발송
-    // - 담당자 이메일이 2개 이상일 때: 선택한 담당자 이메일로 발송
-    let sendToEmail: string;
-
-    if (personEmails.length <= 1) {
-      // 1개 이하일 때는 계정 이메일로 발송
-      sendToEmail = email;
-    } else {
-      // 2개 이상일 때는 targetEmail 필수
-      if (!targetEmail) {
-        throw new AuthException(AuthErrorCode.TARGET_EMAIL_REQUIRED);
-      }
-      if (!personEmails.includes(targetEmail)) {
-        throw new AuthException(AuthErrorCode.INVALID_TARGET_EMAIL);
-      }
-      sendToEmail = targetEmail;
-    }
+    const sendToEmail = this.resolveTargetEmail(email, personEmails, targetEmail);
 
     const code = generateLoginVerifyCode();
     const expireAt = addMinutes(new Date(), EmailCertifyExpireMinute);
@@ -506,11 +502,11 @@ export class UserService {
     return { id: sendHistory.id };
   }
 
-  async loginPhoneVerify(getBody: UserLoginPhoneVerifyReqDto) {
+  async loginPhoneVerify(getBody: UserLoginPhoneVerifyReqDto): Promise<void> {
     await this.verifyLoginCode(getBody.id, getBody.code, getBody.email);
   }
 
-  async loginEmailVerify(getBody: UserLoginEmailVerifyReqDto) {
+  async loginEmailVerify(getBody: UserLoginEmailVerifyReqDto): Promise<void> {
     await this.verifyLoginCode(getBody.id, getBody.code, getBody.email);
   }
 
@@ -549,6 +545,88 @@ export class UserService {
 
     sendHistory.isCertified = true;
     await this.emailSendHistoryRepository.save(sendHistory);
+  }
+
+  /**
+   * 휴면(NOT_USED) 계정 재활성화 — 본인인증 이메일 코드 발송.
+   * 로그인 인증과 격리하기 위해 EmailType.REACTIVATE 사용.
+   */
+  async reactivateEmailSend(getBody: UserLoginEmailSendReqDto) {
+    const { email, targetEmail } = getBody;
+
+    const user = await this.userRepository.findOne({ where: { email } });
+    if (!user) {
+      throw new AuthException(AuthErrorCode.USER_NOT_FOUND);
+    }
+    if (user.status === IUserStatus.LEAVE) {
+      throw new AuthException(AuthErrorCode.ACCOUNT_WITHDRAWN); // 영구 차단 — 재활성화 불가
+    }
+    if (user.status !== IUserStatus.NOT_USED) {
+      throw new AuthException(AuthErrorCode.REACTIVATION_NOT_ALLOWED); // 휴면 상태만 재활성화 대상
+    }
+
+    const personEmails = this.parsePersonEmails(user.personEmail);
+    const sendToEmail = this.resolveTargetEmail(email, personEmails, targetEmail);
+
+    const code = generateLoginVerifyCode();
+    const expireAt = addMinutes(new Date(), EmailCertifyExpireMinute);
+
+    const emailSendHistory = new EmailSendHistoryEntity();
+    emailSendHistory.userId = user.id;
+    emailSendHistory.email = sendToEmail;
+    emailSendHistory.type = EmailType.REACTIVATE;
+    emailSendHistory.expireAt = expireAt;
+    emailSendHistory.code = code;
+
+    const { title, content } = userLoginTemplateHtml(code, EmailCertifyExpireMinute);
+    await this.mailSendService.send({
+      saveSentMail: 'N',
+      bcc: undefined,
+      cc: undefined,
+      content,
+      subject: title,
+      to: sendToEmail,
+    });
+
+    await this.emailSendHistoryRepository.save(emailSendHistory);
+    return { id: emailSendHistory.id };
+  }
+
+  /**
+   * 휴면 계정 재활성화 — 코드 검증 성공 시 USED 복귀 (last_activity_at=now, suspended_at=null).
+   */
+  async reactivateEmailVerify(getBody: UserLoginEmailVerifyReqDto) {
+    const { id, code, email } = getBody;
+
+    const sendHistory = await this.emailSendHistoryRepository.findOne({
+      where: { id, type: EmailType.REACTIVATE },
+    });
+    if (!sendHistory) {
+      throw new AuthException(AuthErrorCode.VERIFY_DATA_NOT_FOUND);
+    }
+    if (sendHistory.expireAt && sendHistory.expireAt < new Date()) {
+      throw new AuthException(AuthErrorCode.EXPIRED_VERIFY_CODE);
+    }
+    if (sendHistory.code !== code.trim()) {
+      throw new AuthException(AuthErrorCode.INVALID_VERIFY_CODE);
+    }
+    if (sendHistory.isCertified) {
+      throw new AuthException(AuthErrorCode.ALREADY_VERIFIED);
+    }
+
+    const user = await this.userRepository.findOne({ where: { email } });
+    if (!user || user.id !== sendHistory.userId) {
+      throw new AuthException(AuthErrorCode.INVALID_VERIFY_REQUEST);
+    }
+    if (user.status !== IUserStatus.NOT_USED) {
+      throw new AuthException(AuthErrorCode.REACTIVATION_NOT_ALLOWED);
+    }
+
+    sendHistory.isCertified = true;
+    await this.emailSendHistoryRepository.save(sendHistory);
+
+    // USED 복귀 — 휴면 시계 초기화
+    await this.accountStatusTransitionService.transitionToUsed(user.id);
   }
 
   async getAccessByRefresh(token: string) {
@@ -693,6 +771,28 @@ export class UserService {
       : [];
   }
 
+  /**
+   * 발송 대상 이메일 결정.
+   * 담당자 이메일 1개 이하: 계정 이메일(accountEmail) 사용.
+   * 2개 이상: targetEmail 필수 + allowlist 검증.
+   */
+  private resolveTargetEmail(
+    accountEmail: string,
+    personEmails: string[],
+    targetEmail?: string,
+  ): string {
+    if (personEmails.length <= 1) {
+      return accountEmail;
+    }
+    if (!targetEmail) {
+      throw new AuthException(AuthErrorCode.TARGET_EMAIL_REQUIRED);
+    }
+    if (!personEmails.includes(targetEmail)) {
+      throw new AuthException(AuthErrorCode.INVALID_TARGET_EMAIL);
+    }
+    return targetEmail;
+  }
+
   async delete(user: ILoginUserInfo) {
     const oneUser = await this.userRepository.findOne({
       where: {
@@ -704,6 +804,8 @@ export class UserService {
       throw new BadRequestException('USER_DOES_NOT_EXIST');
     }
 
-    await this.userRepository.delete(user.id);
+    // hard delete 대체: LEAVE 전환(withdrawn_at + ACCOUNT_WITHDRAW 로그).
+    // PII 는 거래이력 보존을 위해 즉시 파기하지 않고 +6개월 뒤 휴면배치가 익명화 처리한다.
+    await this.accountStatusTransitionService.transitionToLeave(user.id, TransitionSource.MANUAL);
   }
 }
