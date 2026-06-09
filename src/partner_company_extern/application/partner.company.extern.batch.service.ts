@@ -1448,6 +1448,122 @@ export class PartnerCompanyExternBatchService {
   }
 
   /**
+   * 컬쳐랜드 일대사 백필 진단 (읽기 전용, DB 변경 없음)
+   * startDay~endDay 기간 일대사 API를 날짜별 호출해 사용된 certNo를 수집하고,
+   * 우리 60일 컬쳐랜드 order_delivery 와 대조하여 현재 상태별로 집계한다.
+   * IP 차단(2026-01-01~)으로 누락된 일대사의 피해 규모 파악용.
+   * - EXPIRED 매칭: 고객이 실제 사용했으나 우리 장부엔 만료로 잘못 찍힌 건 (진짜 피해)
+   * - NOT_USED 매칭: 아직 만료 전이라 기존 배치로 USED 보정 가능한 건
+   * - USED 매칭: 이미 올바르게 처리된 건
+   * - 없음: 우리 60일 컬쳐랜드 발급분이 아님 (타 상품/타 계정)
+   */
+  async diagnoseCulturelandDailyRange(
+    startDay: string,
+    endDay: string,
+  ): Promise<{
+    range: { startDay: string; endDay: string };
+    daysQueried: number;
+    failedDays: string[];
+    uniqueCertNos: number;
+    matched: number;
+    notFound: number;
+    byStatus: Record<string, number>;
+    wronglyExpired: Array<{ certNo: string; useDate: string; orderDeliveryId: number }>;
+  }> {
+    this.logger.log(`[diagnoseCulturelandDailyRange] 시작 - ${startDay} ~ ${endDay}`);
+
+    // 1) 기간 내 사용된 certNo 수집 (certNo -> 최초 사용일)
+    const certNoToUseDate = new Map<string, string>();
+    const failedDays: string[] = [];
+    let daysQueried = 0;
+
+    let current = startDay;
+    while (current <= endDay) {
+      try {
+        const dailyResult = await this.culture.checkDaily({ useDate: current });
+        for (const certNo of dailyResult.certNoList) {
+          if (!certNoToUseDate.has(certNo)) {
+            certNoToUseDate.set(certNo, dailyResult.useDate);
+          }
+        }
+        daysQueried += 1;
+      } catch (e) {
+        this.logger.error(`[diagnoseCulturelandDailyRange] 조회 실패: ${current}`);
+        this.logger.error(e);
+        failedDays.push(current);
+      }
+      current = this.addOneDay(current);
+    }
+
+    const uniqueCertNos = [...certNoToUseDate.keys()];
+    this.logger.log(
+      `[diagnoseCulturelandDailyRange] 수집 완료 - 조회 ${daysQueried}일, 실패 ${failedDays.length}일, 고유 certNo ${uniqueCertNos.length}건`,
+    );
+
+    // 2) 우리 60일 컬쳐랜드 order_delivery 와 대조 (IN 청크 조회, status 무관)
+    const byStatus: Record<string, number> = {};
+    const wronglyExpired: Array<{ certNo: string; useDate: string; orderDeliveryId: number }> = [];
+    let matched = 0;
+
+    const CHUNK = 500;
+    for (let i = 0; i < uniqueCertNos.length; i += CHUNK) {
+      const chunk = uniqueCertNos.slice(i, i + CHUNK);
+      const rows = await this.orderDeliveryRepository
+        .createQueryBuilder('od')
+        .select(['od.id', 'od.couponNum', 'od.couponStatus'])
+        .innerJoin('od.orderProductMapping', 'opm')
+        .innerJoin('opm.product', 'p')
+        .innerJoin('p.partnerCompany', 'pc')
+        .where('od.couponNum IN (:...certNos)', { certNos: chunk })
+        .andWhere('pc.type = :type', { type: 'CULTURELAND' })
+        .andWhere('p.expireDay = :expireDay', { expireDay: 60 })
+        .getMany();
+
+      for (const row of rows) {
+        matched += 1;
+        const status = row.couponStatus ?? 'UNKNOWN';
+        byStatus[status] = (byStatus[status] ?? 0) + 1;
+        if (status === OrderDeliveryCouponStatus.EXPIRED && row.couponNum) {
+          wronglyExpired.push({
+            certNo: row.couponNum,
+            useDate: certNoToUseDate.get(row.couponNum) ?? '',
+            orderDeliveryId: row.id,
+          });
+        }
+      }
+    }
+
+    const notFound = uniqueCertNos.length - matched;
+    this.logger.log(
+      `[diagnoseCulturelandDailyRange] 완료 - 매칭 ${matched}, 없음 ${notFound}, EXPIRED(피해) ${wronglyExpired.length}, byStatus=${JSON.stringify(byStatus)}`,
+    );
+
+    return {
+      range: { startDay, endDay },
+      daysQueried,
+      failedDays,
+      uniqueCertNos: uniqueCertNos.length,
+      matched,
+      notFound,
+      byStatus,
+      wronglyExpired,
+    };
+  }
+
+  /** YYYYMMDD 문자열을 하루 증가시킨다. */
+  private addOneDay(yyyymmdd: string): string {
+    const year = parseInt(yyyymmdd.substring(0, 4));
+    const month = parseInt(yyyymmdd.substring(4, 6)) - 1;
+    const day = parseInt(yyyymmdd.substring(6, 8));
+    const next = new Date(year, month, day + 1);
+    return (
+      next.getFullYear().toString() +
+      (next.getMonth() + 1).toString().padStart(2, '0') +
+      next.getDate().toString().padStart(2, '0')
+    );
+  }
+
+  /**
    * 갤럭시아 백화점(dept) 상품 사용내역 야간 배치
    * 매일 23:42에 실행 - 백화점 상품 배송건을 개별 상태조회하여 잔액 변동 감지
    * 일대사(checkGalaxiaDaily)는 cpn 상품에는 충분하지만, dept 상품의 사용내역(네이버페이 등)은 누락됨
