@@ -9,6 +9,7 @@ import { PartnerCompanyExternService } from '../../partner_company_extern/applic
 import { SsgInsertStateService } from '../../delivery/application/ssg-insert-state.service';
 import { SsgInsertState } from '../../delivery/interface/ssg.insert.state';
 import { SsgOrphanResolveOutcome } from '../../partner_company_extern/interface/ssg.orphan.resolve';
+import { SsgPinVerdict } from '../../partner_company_extern/interface/ssg.issue';
 import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 import { IProductType } from '../../product/interface/product.type';
@@ -29,7 +30,7 @@ describe('PartnerCompanyExternHistoryService.resendFailedDelivery', () => {
   let qb: any;
   let orderDeliveryRepository: { createQueryBuilder: jest.Mock; update: jest.Mock };
   let deliveryBatchService: { oneSend: jest.Mock };
-  let partnerCompanyExternService: { resolveSsgOrphan: jest.Mock };
+  let partnerCompanyExternService: { resolveSsgOrphan: jest.Mock; classifySsgResendPin: jest.Mock };
   let ssgInsertStateService: { getState: jest.Mock; restoreConfirmedPinFromIssueLog: jest.Mock };
 
   const SSG = IPartnerCompanyType.SSG;
@@ -72,7 +73,11 @@ describe('PartnerCompanyExternHistoryService.resendFailedDelivery', () => {
       update: jest.fn().mockResolvedValue({ affected: 1 }),
     };
     deliveryBatchService = { oneSend: jest.fn().mockResolvedValue(true) };
-    partnerCompanyExternService = { resolveSsgOrphan: jest.fn() };
+    partnerCompanyExternService = {
+      resolveSsgOrphan: jest.fn(),
+      // 기본: 기존 PIN 등록 유효 → 재사용(proceed). barCode 있는 SSG 재발송은 게이트가 이걸 먼저 호출.
+      classifySsgResendPin: jest.fn().mockResolvedValue(SsgPinVerdict.REGISTERED),
+    };
     ssgInsertStateService = {
       getState: jest.fn().mockResolvedValue(SsgInsertState.NONE),
       restoreConfirmedPinFromIssueLog: jest.fn(),
@@ -224,6 +229,39 @@ describe('PartnerCompanyExternHistoryService.resendFailedDelivery', () => {
     const res = await sut.resendFailedDelivery(584170);
 
     expect(partnerCompanyExternService.resolveSsgOrphan).not.toHaveBeenCalled();
+    expect(deliveryBatchService.oneSend).toHaveBeenCalled();
+    expect(res.success).toBe(true);
+  });
+
+  it('SSG 기존 PIN 처리중(classify=PROCESSING) → 처리중 안내 + claim 해제, oneSend 미호출', async () => {
+    qb.getOne
+      .mockResolvedValueOnce(makeDelivery())
+      .mockResolvedValueOnce(makeDelivery()); // barCode 정상 → verdict 경로
+    partnerCompanyExternService.classifySsgResendPin.mockResolvedValue(SsgPinVerdict.PROCESSING);
+
+    const res = await sut.resendFailedDelivery(584170);
+
+    expect(res.success).toBe(false);
+    expect(res.message).toContain('처리중');
+    expect(deliveryBatchService.oneSend).not.toHaveBeenCalled();
+    const releaseCall = orderDeliveryRepository.update.mock.calls.find(
+      (c) => c[1] && c[1].claimedAt === null,
+    );
+    expect(releaseCall).toBeDefined();
+  });
+
+  it('SSG 기존 PIN 미제출(classify=NOT_SUBMITTED) → PIN 폐기 후 새 PIN 발송 진행', async () => {
+    const reload = makeDelivery();
+    qb.getOne
+      .mockResolvedValueOnce(makeDelivery())
+      .mockResolvedValueOnce(reload);
+    partnerCompanyExternService.classifySsgResendPin.mockResolvedValue(SsgPinVerdict.NOT_SUBMITTED);
+    deliveryBatchService.oneSend.mockResolvedValue(true);
+
+    const res = await sut.resendFailedDelivery(584170);
+
+    expect(reload.barCode).toBeNull();
+    expect(reload.personalCode).toBeNull();
     expect(deliveryBatchService.oneSend).toHaveBeenCalled();
     expect(res.success).toBe(true);
   });

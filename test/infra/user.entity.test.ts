@@ -10,6 +10,10 @@ import { LoginVerifyMethod } from '../../src/user/interface/login.verify.method'
 export const UserEntityTest = (): UserEntity => {
   return {
     id: 0,
+    settlementCode: 'company-0',
+    loginFailCount: 0,
+    isLoginLocked: false,
+    lockedAt: null,
     companyId: null,
     company: null as any,
     departmentId: null,

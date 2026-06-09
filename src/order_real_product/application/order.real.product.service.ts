@@ -1,4 +1,5 @@
 import { InjectRepository } from '@nestjs/typeorm';
+import { createExportTempPath } from '../../util/file.util';
 import { Brackets, In, Repository } from 'typeorm';
 import { OrderRealProductEntity } from '../../entity/order.real.product.entity';
 import {
@@ -108,6 +109,58 @@ const calculateTax = (
     totalTaxAmount: totalStandardAmount,
   };
 };
+
+const calculateRealProductSupplyTotal = (price: number, quantity: number): number => price * quantity;
+
+const calculateRealProductVatTotal = (price: number, quantity: number): number =>
+  Math.floor(calculateRealProductSupplyTotal(price, quantity) * 0.1);
+
+const calculateRealProductVatIncludedTotal = (price: number, quantity: number): number =>
+  calculateRealProductSupplyTotal(price, quantity) + calculateRealProductVatTotal(price, quantity);
+
+function buildRealProductAndTaxLists(mappings: OrderRealProductMappingEntity[]): {
+  orderRealProductList: RealProductViewDto[];
+  publicChargeTaxList: PublicChargeTaxViewDto[];
+} {
+  const orderRealProductList: RealProductViewDto[] = [];
+  const publicChargeTaxList: PublicChargeTaxViewDto[] = [];
+
+  for (const mapping of mappings) {
+    orderRealProductList.push({
+      mappingId: mapping.id,
+      productId: mapping.product.id,
+      productName: mapping.product.name,
+      code: mapping.product.code,
+      color: mapping.product.color,
+      quantity: mapping.quantity,
+      price: mapping.price,
+      trackingNumber: mapping.trackingNumber,
+      vat: calculateRealProductVatTotal(mapping.price, mapping.quantity),
+      totalAmount: calculateRealProductVatIncludedTotal(mapping.price, mapping.quantity),
+    });
+
+    const { tax, totalTaxAmount } = calculateTax(
+      mapping.standardAmount,
+      mapping.quantity,
+      mapping.publicChargeTaxPayment,
+    );
+    publicChargeTaxList.push({
+      mappingId: mapping.id,
+      productId: mapping.product.id,
+      productName: mapping.product.name,
+      code: mapping.product.code,
+      quantity: mapping.quantity,
+      standardAmount: mapping.standardAmount,
+      tax,
+      totalTaxAmount,
+      publicChargeTaxPaymentType: mapping.publicChargeTaxPayment,
+      processMethod: mapping.processMethod,
+      isProcess: mapping.isProcess,
+    });
+  }
+
+  return { orderRealProductList, publicChargeTaxList };
+}
 
 export class OrderRealProductService {
   constructor(
@@ -332,9 +385,6 @@ export class OrderRealProductService {
         throw new BadRequestException('공급가액을 입력해주세요.');
       }
 
-      // 공급가액 + VAT 10% = 총액
-      const totalPrice = price + Math.floor(price * 0.1);
-
       // 상품 정가를 기준가액으로 사용 (제세공과금 계산용)
       const product = productMap.get(realProduct.productId);
       const productStandardAmount = product ? product.price : 0;
@@ -344,7 +394,7 @@ export class OrderRealProductService {
       orderRealProduct.productId = realProduct.productId;
       orderRealProduct.price = price;
       orderRealProduct.quantity = quantity;
-      orderRealProduct.totalPrice = totalPrice * quantity;
+      orderRealProduct.totalPrice = calculateRealProductVatIncludedTotal(price, quantity);
       orderRealProduct.processMethod = processMethod;
       orderRealProduct.standardAmount = productStandardAmount;
       orderRealProduct.totalTaxAmount = totalTaxAmount * quantity;
@@ -383,42 +433,7 @@ export class OrderRealProductService {
       throw new BadRequestException('주문 상세 정보가 없습니다.');
     }
 
-    const orderRealProductList: RealProductViewDto[] = [];
-    const publicChargeTaxList: PublicChargeTaxViewDto[] = [];
-
-    for (const mapping of order.orderRealProductMappings) {
-      orderRealProductList.push({
-        mappingId: mapping.id,
-        productId: mapping.product.id,
-        productName: mapping.product.name,
-        code: mapping.product.code,
-        color: mapping.product.color,
-        quantity: mapping.quantity,
-        price: mapping.price,
-        trackingNumber: mapping.trackingNumber,
-        vat: Math.floor(mapping.price * 0.1),
-        totalAmount: mapping.totalPrice,
-      });
-
-      const { tax, totalTaxAmount } = calculateTax(
-        mapping.standardAmount,
-        mapping.quantity,
-        mapping.publicChargeTaxPayment,
-      );
-      publicChargeTaxList.push({
-        mappingId: mapping.id,
-        productId: mapping.product.id,
-        productName: mapping.product.name,
-        code: mapping.product.code,
-        quantity: mapping.quantity,
-        standardAmount: mapping.standardAmount,
-        tax,
-        totalTaxAmount,
-        publicChargeTaxPaymentType: mapping.publicChargeTaxPayment,
-        processMethod: mapping.processMethod,
-        isProcess: mapping.isProcess,
-      });
-    }
+    const { orderRealProductList, publicChargeTaxList } = buildRealProductAndTaxLists(order.orderRealProductMappings);
 
     return {
       id: order.id,
@@ -427,8 +442,8 @@ export class OrderRealProductService {
       userBusinessName: order.businessUser ? order.businessUser.company?.businessName ?? '' : null,
       userPersonName: order.businessUser ? order.businessUser.personName : null,
       eventName: order.eventName,
-      orderRealProductList: orderRealProductList,
-      publicChargeTaxList: publicChargeTaxList,
+      orderRealProductList,
+      publicChargeTaxList,
     };
   }
 
@@ -665,7 +680,7 @@ export class OrderRealProductService {
 
         if (real.price != null) {
           mapping.price = real.price;
-          mapping.totalPrice = real.price + Math.floor(real.price * 0.1); // VAT 계산
+          mapping.totalPrice = calculateRealProductVatIncludedTotal(real.price, mapping.quantity);
         }
         if (real.trackingNumber) {
           mapping.trackingNumber = real.trackingNumber;
@@ -746,21 +761,20 @@ export class OrderRealProductService {
         const product = mapping.product;
         const brand = product.brand;
 
-        // TODO: 현재 정산 정책
         // product.price: 상품의 원가 (1개당 원가)
         // mapping.price: 실제 판매가 (관리자가 입력한 실제 판매가)
         // mapping.quantity: 발송 건수 (수량)
-        // mapping.totalPrice: 판매가 * 수량 (공급금액)
+        // mapping.totalPrice: 판매가와 부가세를 포함한 총액
 
-        // - 공급금액 = mapping.totalPrice (판매가 * 수량)
-        // - 부가세 = 공급금액의 10%
+        // - 공급금액 = 판매가 * 수량
+        // - 부가세 = 판매가 부가세 * 수량
         // - 합계 금액 = 공급금액 + 부가세
         // - 수익액 = 공급금액 - (원가 * 수량)
         // - 수익률 = (수익액 / 공급금액) * 100 (공급금액이 0이면 수익률은 0%)
 
-        const saleTotalPrice = mapping.totalPrice; // 총 판매가
-        const tax = Math.floor(saleTotalPrice * 0.1); // 부가세
-        const totalAmount = saleTotalPrice + tax; // 총합계
+        const saleTotalPrice = calculateRealProductSupplyTotal(mapping.price, mapping.quantity);
+        const tax = calculateRealProductVatTotal(mapping.price, mapping.quantity);
+        const totalAmount = calculateRealProductVatIncludedTotal(mapping.price, mapping.quantity);
         const profitAmount = saleTotalPrice - product.price * mapping.quantity; // 수익액
         const profitPercent = saleTotalPrice > 0 ? Math.round((profitAmount / saleTotalPrice) * 100) : 0; // 수익률
 
@@ -815,8 +829,7 @@ export class OrderRealProductService {
       throw new BadRequestException('주문 상세 정보가 없습니다.');
     }
 
-    const orderRealProductList: RealProductViewDto[] = [];
-    const publicChargeTaxList: PublicChargeTaxViewDto[] = [];
+    const { orderRealProductList, publicChargeTaxList } = buildRealProductAndTaxLists(order.orderRealProductMappings);
 
     const userInfo: OrderCustomerViewDto = {
       id: order.businessUser?.id ?? null,
@@ -830,40 +843,6 @@ export class OrderRealProductService {
     const today = format(now, 'yyMMdd');
     const fileName: string = `${order.businessUser?.company?.businessName ?? ''}_발송완료리포트_${today}`;
 
-    for (const mapping of order.orderRealProductMappings) {
-      orderRealProductList.push({
-        mappingId: mapping.id,
-        productId: mapping.product.id,
-        productName: mapping.product.name,
-        code: mapping.product.code,
-        color: mapping.product.color,
-        quantity: mapping.quantity,
-        price: mapping.price,
-        trackingNumber: mapping.trackingNumber,
-        vat: Math.floor(mapping.price * 0.1),
-        totalAmount: mapping.totalPrice,
-      });
-
-      const { tax, totalTaxAmount } = calculateTax(
-        mapping.standardAmount,
-        mapping.quantity,
-        mapping.publicChargeTaxPayment,
-      );
-      publicChargeTaxList.push({
-        mappingId: mapping.id,
-        productId: mapping.product.id,
-        productName: mapping.product.name,
-        code: mapping.product.code,
-        quantity: mapping.quantity,
-        standardAmount: mapping.standardAmount,
-        tax,
-        totalTaxAmount,
-        publicChargeTaxPaymentType: mapping.publicChargeTaxPayment,
-        processMethod: mapping.processMethod,
-        isProcess: mapping.isProcess,
-      });
-    }
-
     return {
       id: order.id,
       status: order.status,
@@ -873,8 +852,8 @@ export class OrderRealProductService {
       registerAt: format(order.createdAt, DateFormatStr),
       userBusinessName: order.businessUser ? order.businessUser.company?.businessName ?? null : null,
       userPersonName: order.businessUser ? order.businessUser.personName : null,
-      orderRealProductList: orderRealProductList,
-      publicChargeTaxList: publicChargeTaxList,
+      orderRealProductList,
+      publicChargeTaxList,
     };
   }
 
@@ -944,17 +923,17 @@ export class OrderRealProductService {
         // product.price: 상품의 원가 (1개당 원가)
         // mapping.price: 실제 판매가 (관리자가 입력한 실제 판매가)
         // mapping.quantity: 발송 건수 (수량)
-        // mapping.totalPrice: 판매가 * 수량 (공급금액)
+        // mapping.totalPrice: 판매가와 부가세를 포함한 총액
 
-        // - 공급금액 = mapping.totalPrice (판매가 * 수량)
-        // - 부가세 = 공급금액의 10%
+        // - 공급금액 = 판매가 * 수량
+        // - 부가세 = 판매가 부가세 * 수량
         // - 합계 금액 = 공급금액 + 부가세
         // - 수익액 = 공급금액 - (원가 * 수량)
         // - 수익률 = (수익액 / 공급금액) * 100 (공급금액이 0이면 수익률은 0%)
 
-        const saleTotalPrice = mapping.totalPrice; // 총 판매가
-        const tax = Math.floor(saleTotalPrice * 0.1); // 부가세
-        const totalAmount = saleTotalPrice + tax; // 총합계
+        const saleTotalPrice = calculateRealProductSupplyTotal(mapping.price, mapping.quantity);
+        const tax = calculateRealProductVatTotal(mapping.price, mapping.quantity);
+        const totalAmount = calculateRealProductVatIncludedTotal(mapping.price, mapping.quantity);
         const profitAmount = saleTotalPrice - product.price * mapping.quantity; // 수익액
         const profitPercent = saleTotalPrice > 0 ? Math.round((profitAmount / saleTotalPrice) * 100) : 0; // 수익률
 
@@ -1023,7 +1002,7 @@ export class OrderRealProductService {
     }
 
     const fileName = `수익률_조회_기타_정산_${nowString}.xlsx`;
-    const filePath = join(process.cwd(), '.', 'public', fileName);
+    const filePath = createExportTempPath('xlsx');
 
     await workbook.xlsx.writeFile(filePath);
 
@@ -1178,7 +1157,7 @@ export class OrderRealProductService {
     }
 
     const fileName = `실물상품_${orderType}_리스트_${nowString}.xlsx`;
-    const filePath = join(process.cwd(), '.', 'public', fileName);
+    const filePath = createExportTempPath('xlsx');
 
     await workbook.xlsx.writeFile(filePath);
 

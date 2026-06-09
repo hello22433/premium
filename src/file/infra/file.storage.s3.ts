@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { IFileStorage, IFileUploadFileReturn } from '../interface/file.storage';
 import { GetObjectCommand, PutObjectCommand, PutObjectCommandInput, S3Client } from '@aws-sdk/client-s3';
 import { Readable } from 'stream';
+import { randomUUID } from 'node:crypto';
 import { join } from 'path';
 import process from 'node:process';
 import fs from 'node:fs';
@@ -78,6 +79,33 @@ export class FileStorageS3 implements IFileStorage {
     }
   }
 
+  async uploadPrivateFile(file: Express.Multer.File): Promise<IFileUploadFileReturn> {
+    const bucketName = this.configService.getOrThrow('AWS_S3_BUCKET');
+
+    // 비공개 저장 + 무작위(UUID) key. 다운로드는 백엔드가 자격증명으로 GetObject 하므로 public-read 불필요.
+    // UUID 로 "업로드 시각 + 원본 파일명" 추측 접근을 차단한다. (원본명은 응답/DB 의 originalName 으로 보존)
+    const uploadFileName = `private/${randomUUID()}-${this.sanitizeFileName(file.originalname)}`;
+
+    const fileData: PutObjectCommandInput = {
+      Bucket: bucketName,
+      Key: uploadFileName,
+      Body: file.buffer,
+      ACL: 'private',
+    };
+
+    try {
+      const command = new PutObjectCommand(fileData);
+      await this.s3Client.send(command);
+
+      return {
+        url: `https://${bucketName}.s3.amazonaws.com/${uploadFileName}`,
+        originalName: file.originalname,
+      };
+    } catch (e) {
+      throw new Error(e as any);
+    }
+  }
+
   async uploadImageFileWithBuffer(
     buffer: Buffer,
     fileName: string,
@@ -103,33 +131,6 @@ export class FileStorageS3 implements IFileStorage {
     } catch (e) {
       throw new Error(e as any);
     }
-  }
-
-  async downloadFileToLocal(downloadPath: string): Promise<string> {
-    const bucketName = this.configService.getOrThrow('AWS_S3_BUCKET');
-
-    const command = new GetObjectCommand({
-      Bucket: bucketName,
-      Key: downloadPath,
-    });
-
-    const { Body } = await this.s3Client.send(command);
-
-    if (Body instanceof Readable) {
-      const filePathList = downloadPath.split('/');
-      const filePathList2 = downloadPath.split('/')[filePathList.length - 1].split('-');
-      const filePath = filePathList2.slice(1).join('');
-
-      const localFilePath = join(process.cwd(), '.', 'public', filePath);
-      const writeStream = fs.createWriteStream(localFilePath);
-      Body.pipe(writeStream);
-
-      return new Promise((resolve, reject) => {
-        writeStream.on('finish', () => resolve(localFilePath));
-        writeStream.on('error', reject);
-      });
-    }
-    throw new Error('Body is not a readable stream');
   }
 
   async downloadFileToLocalWithPath(path: string, fileTitle: string, downloadPath: string): Promise<string> {

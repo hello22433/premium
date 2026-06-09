@@ -1,7 +1,7 @@
-import { BadRequestException, Inject, Injectable } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Inject, Injectable } from '@nestjs/common';
 import { OrderFromDefinitionEntity } from '../../entity/order.from.definition.entity';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, IsNull, Repository } from 'typeorm';
+import { In, IsNull, Like, Repository } from 'typeorm';
 import { OrderFromDefinitionType, OrderFromRequestStatus } from '../interface/order.from.definition.type';
 import { OrderFromGetEmailListResDto, OrderFromGetPhoneListResDto, OrderFromPhoneManageListResDto } from '../api/order.from.res.dto';
 import {
@@ -30,11 +30,23 @@ export class OrderFromService {
     private configService: ConfigService,
   ) {}
 
+  // 본인이거나 대리 권한(SUPER_ADMIN/OPERATION_ADMIN)이면 타 계정 userId 허용.
+  // CORPORATE_ADMIN(일반 고객사 계정)은 타 계정 접근 차단 (IDOR 방지).
+  // 프론트 대리주문 권한 경계(authority !== CORPORATE_ADMIN)와 일치.
+  private assertCanActForUser(user: ILoginUserInfo, targetUserId: number): void {
+    if (targetUserId !== user.id && user.authority === IUserAuthority.CORPORATE_ADMIN) {
+      throw new ForbiddenException('접근 권한이 없습니다.');
+    }
+  }
+
   async getPhoneList(
     user: ILoginUserInfo,
     getQuery: OrderFromGetPhoneReqQueryDto,
   ): Promise<OrderFromGetPhoneListResDto> {
-    const targetUserId = getQuery.userId ? getQuery.userId : user.id;
+    const targetUserId = getQuery.userId ?? user.id;
+
+    // IDOR 방지: 타 계정 userId는 대리 권한 보유자만 허용
+    this.assertCanActForUser(user, targetUserId);
 
     // 1. 본인 발신번호 조회
     const ownList = await this.orderFromDefinitionRepository.find({
@@ -130,7 +142,16 @@ export class OrderFromService {
 
   async createPhone(user: ILoginUserInfo, getBody: OrderFromCreatePhoneReqDto) {
     const { from, userId, telecomCertType, telecomCertFile } = getBody;
-    const targetUserId = userId ? userId : user.id;
+    const targetUserId = userId ?? user.id;
+
+    // IDOR 방지: 타 계정 명의 등록은 대리 권한 보유자만 허용
+    this.assertCanActForUser(user, targetUserId);
+
+    // 블랙리스트 차단: 공용 대표번호 등 등록 불가 (숫자만 추출 후 비교)
+    const blacklistedNumbers = ['16443614'];
+    if (blacklistedNumbers.includes(from.replace(/\D/g, ''))) {
+      throw new BadRequestException('등록할 수 없는 발신 번호입니다.');
+    }
 
     const existFromPhone = await this.orderFromDefinitionRepository.existsBy({
       from,
@@ -235,12 +256,22 @@ export class OrderFromService {
     const take = getQuery.take ?? 10;
     const skip = (page - 1) * take;
 
+    const whereCondition: Record<string, unknown> = {
+      type: In([OrderFromDefinitionType.PHONE]),
+      deletedAt: IsNull(),
+      requestStatus: In([OrderFromRequestStatus.PENDING, OrderFromRequestStatus.APPROVED]),
+    };
+
+    if (getQuery.userId !== undefined) {
+      whereCondition.userId = getQuery.userId;
+    }
+
+    if (getQuery.search !== undefined && getQuery.search.trim() !== '') {
+      whereCondition.from = Like(`%${getQuery.search.trim()}%`);
+    }
+
     const [list, totalCount] = await this.orderFromDefinitionRepository.findAndCount({
-      where: {
-        type: In([OrderFromDefinitionType.PHONE]),
-        deletedAt: IsNull(),
-        requestStatus: In([OrderFromRequestStatus.PENDING, OrderFromRequestStatus.APPROVED]),
-      },
+      where: whereCondition,
       order: {
         createdAt: 'DESC',
       },
@@ -344,7 +375,10 @@ export class OrderFromService {
 
   async setDefault(user: ILoginUserInfo, getBody: OrderFromSetDefaultReqDto) {
     const { id, userId } = getBody;
-    const targetUserId = userId ? userId : user.id;
+    const targetUserId = userId ?? user.id;
+
+    // IDOR 방지: 타 계정 기본 발신번호 설정은 대리 권한 보유자만 허용
+    this.assertCanActForUser(user, targetUserId);
 
     const item = await this.orderFromDefinitionRepository.findOne({
       where: {

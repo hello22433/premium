@@ -60,6 +60,11 @@ export class UserManagementViewDto {
   status: IUserStatus;
 
   @ApiProperty({
+    description: '로그인 영구 잠금 여부 (잠김 뱃지 표시용)',
+  })
+  isLoginLocked: boolean;
+
+  @ApiProperty({
     description: '중복번호제어 (0: 중복허용, 1~10: 해당 개수만큼 중복 허용)',
   })
   duplicatePhoneLimit: number;

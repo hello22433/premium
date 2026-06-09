@@ -107,6 +107,15 @@ export class UserEntity extends BaseEntity {
   @Column({ type: 'varchar', nullable: true, length: 100, comment: '허용 IP' })
   ip: string | null;
 
+  @Column({ type: 'int', default: 0, comment: '연속 로그인 실패 횟수' })
+  loginFailCount: number;
+
+  @Column({ type: 'boolean', default: false, comment: '로그인 영구 잠금 여부 (관리자 해제)' })
+  isLoginLocked: boolean;
+
+  @Column({ type: 'datetime', nullable: true, comment: '잠금 발생 시각 (감사용)' })
+  lockedAt: Date | null;
+
   /**
    * @deprecated PR1+ wallet_account.settle_condition 사용. settlement_code 단위 정책.
    * PR5 에서 DROP 예정. legacy display fallback only.

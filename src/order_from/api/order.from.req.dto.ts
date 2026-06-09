@@ -17,6 +17,7 @@ export class OrderFromGetPhoneReqQueryDto {
 export class OrderFromCreatePhoneReqDto {
   @ApiProperty({ description: '발신 핸드폰 번호' })
   // ==============================
+  @IsString()
   @IsNotEmpty()
   from: string;
 
@@ -155,6 +156,25 @@ export class OrderFromAdminGetListReqDto {
   @IsNumber()
   @Type(() => Number)
   take?: number = 10;
+
+  @ApiProperty({
+    description: '사용자 ID (필터링)',
+    required: false,
+  })
+  // ==============================
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  userId?: number;
+
+  @ApiProperty({
+    description: '발신번호 검색 (부분 일치)',
+    required: false,
+  })
+  // ==============================
+  @IsOptional()
+  @IsString()
+  search?: string;
 }
 
 export class OrderFromSetDefaultReqDto {

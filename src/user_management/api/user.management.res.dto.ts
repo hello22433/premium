@@ -46,6 +46,17 @@ export class UserManagementGetDetailResDto {
   status: IUserStatus;
 
   @ApiProperty({
+    description: '로그인 영구 잠금 여부 (5회 실패 잠금)',
+  })
+  isLoginLocked: boolean;
+
+  @ApiProperty({
+    description: '잠금 발생 시각 (UTC, ISO) — 표시용',
+    nullable: true,
+  })
+  lockedAt: string | null;
+
+  @ApiProperty({
     description: '담당자 이름',
   })
   personName: string;

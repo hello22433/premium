@@ -15,6 +15,8 @@ import {
   ISsgIssueCode,
   ISsgIssueIn,
   ISsgIssueOut,
+  ISsgTryIn,
+  ISsgTryOut,
 } from '../interface/ssg.issue';
 
 /**
@@ -83,6 +85,29 @@ export class SsgIssueAlreadyConfirmedError extends Error {
   constructor(public readonly orderDeliveryId: number) {
     super(`SSG INSERT 가 이미 CONFIRMED 상태인데 새 시도 호출됨. orderDeliveryId=${orderDeliveryId}`);
     this.name = 'SsgIssueAlreadyConfirmedError';
+  }
+}
+
+/**
+ * GetSsgTry.do(cust_info 시도내역 조회) 호출 자체 실패 (검증 거절, 네트워크/파싱 오류 등).
+ * "제출 여부 미확정" 시그널 — 호출자는 보수적으로 보류(새 INSERT/재사용 모두 금지)해야 한다.
+ */
+export class SsgTryError extends Error {
+  constructor(reason: string) {
+    super(reason);
+    this.name = 'SsgTryError';
+  }
+}
+
+/**
+ * SSG 가 cust_info 를 아직 cust_info_result 로 옮기지 않음 = 처리중.
+ * (GetSsgTry tryYn=Y 인데 GetSsgStatus 가 결과 없음(8021))
+ * 재발송 보류 후 사용자에게 "잠시 후 재시도" 안내. markFailed 대상 아님.
+ */
+export class SsgProcessingError extends Error {
+  constructor(public readonly orderDeliveryId?: number) {
+    super(`SSG 가 해당 핀번호를 처리중 (cust_info_result 미반영). orderDeliveryId=${orderDeliveryId ?? '?'}`);
+    this.name = 'SsgProcessingError';
   }
 }
 
@@ -196,6 +221,36 @@ export class SsgIssue implements ISsgIssue {
     const reason = resultToJson?.response?.result?.[0]?.reason?.[0];
     if (code !== '1001') {
       throw new SsgCheckNotFoundError(reason ?? `SSG 조회 실패 (code: ${code ?? 'null'})`);
+    }
+    return resultToJson;
+  }
+
+  /**
+   * GetSsgTry.do — cust_info(제출 테이블) 시도내역 조회. personalCode(vno) 단독으로
+   * "이 번호로 제출한 적 있나"를 확인한다 (전 행사 합산, 중복번호 검사 겸용).
+   *
+   * 성공 시에만 value.tryYn 이 채워진다. 검증 거절/오류 시 value 가 없으므로 SsgTryError 로 throw.
+   * (성공 코드 상수는 SSG 측 구현에 의존하므로 tryYn 존재 여부로 성공/실패를 판정한다)
+   */
+  async getTry(obj: ISsgTryIn): Promise<ISsgTryOut> {
+    const data = new URLSearchParams({
+      vno: obj.vno,
+    });
+
+    const sendUrl = `${this.url}/GetSsgTry.do?${data.toString()}`;
+    this.logger.log(sendUrl);
+
+    const response = await firstValueFrom(this.httpService.get(sendUrl));
+    this.logger.log(response.data);
+
+    const resultToJson = (await this.parser.parseStringPromise(response.data)) as unknown as ISsgTryOut;
+    this.logger.log(resultToJson);
+
+    const tryYn = resultToJson?.response?.value?.[0]?.tryYn?.[0];
+    if (tryYn !== 'Y' && tryYn !== 'N') {
+      const code = resultToJson?.response?.result?.[0]?.code?.[0];
+      const reason = resultToJson?.response?.result?.[0]?.reason?.[0];
+      throw new SsgTryError(reason ?? `SSG 시도내역 조회 실패 (code: ${code ?? 'null'})`);
     }
     return resultToJson;
   }

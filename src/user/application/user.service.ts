@@ -69,6 +69,8 @@ export class UserService {
 
   private logger = new Logger('UserService');
 
+  private static readonly MAX_LOGIN_FAIL = 5;
+
   async isExistEmail(email: string) {
     const dupEmailUser = await this.userRepository.findOne({
       where: {
@@ -182,12 +184,20 @@ export class UserService {
     if (!user) {
       throw new AuthException(AuthErrorCode.USER_NOT_FOUND);
     }
+    if (user.isLoginLocked) {
+      throw new AuthException(AuthErrorCode.ACCOUNT_LOCKED); // 영구 잠금 — 관리자 해제까지 차단
+    }
     if (user.status === IUserStatus.NOT_APPROVED) {
       throw new AuthException(AuthErrorCode.USER_NOT_APPROVED);
     }
     const isPasswordMatch = await this.passwordEncrypt.compare(password, user.password);
     if (!isPasswordMatch) {
-      throw new AuthException(AuthErrorCode.INVALID_PASSWORD);
+      const { remaining, locked, justLocked } = await this.registerLoginFailure(user.id);
+      await this.logLoginFailure(user, reqIp, remaining, justLocked);
+      if (locked) {
+        throw new AuthException(AuthErrorCode.ACCOUNT_LOCKED);
+      }
+      throw new AuthException(AuthErrorCode.INVALID_PASSWORD, { remainingAttempts: remaining });
     }
 
     // password_policy에서 최신 정책 조회 (soft delete 제외)
@@ -217,23 +227,17 @@ export class UserService {
 
     if (reqIp != '::1') {
       // IPv6 mapped IPv4 (::ffff:x.x.x.x) 또는 일반 IPv4 (x.x.x.x) 처리
-      let reqAllowedIp: string = reqIp || '';
-      if (reqIp && reqIp.includes('::ffff:')) {
-        reqAllowedIp = reqIp.split(':').pop() || reqIp;
-      }
-
-      console.log(reqIp);
-      console.log(reqAllowedIp);
-      console.log(user.ip);
+      const reqAllowedIp = reqIp?.includes('::ffff:') ? (reqIp.split(':').pop() ?? reqIp) : (reqIp ?? '');
 
       const allowedIpList: string[] = user.ip ? user.ip.split(',').map((ip) => ip.trim()) : [];
 
-      // @ts-ignore
-      const splitAllowed = user.ip.split(',').map((ip) => ip.trim());
-      console.log({ reqAllowedIp, splitAllowed });
-
       if (!allowedIpList.includes(reqAllowedIp)) {
-        throw new AuthException(AuthErrorCode.IP_NOT_ALLOWED);
+        const { remaining, locked, justLocked } = await this.registerLoginFailure(user.id);
+        await this.logLoginFailure(user, reqIp, remaining, justLocked);
+        if (locked) {
+          throw new AuthException(AuthErrorCode.ACCOUNT_LOCKED);
+        }
+        throw new AuthException(AuthErrorCode.IP_NOT_ALLOWED, { remainingAttempts: remaining });
       }
     }
 
@@ -257,6 +261,11 @@ export class UserService {
       email: user.email,
       authority: user.authority,
     };
+
+    // 로그인 성공 — 실패 카운트 리셋 (잠금은 가드에서 이미 통과 = false)
+    if (user.loginFailCount > 0) {
+      await this.userRepository.update(user.id, { loginFailCount: 0, lockedAt: null });
+    }
 
     // 로그인 성공 Activity Log 기록
     await this.activityLogService.createLog({
@@ -297,6 +306,81 @@ export class UserService {
       loginVerifyMethod,
       maskedPhoneNumber: maskedPhone,
     };
+  }
+
+  /**
+   * 로그인 실패 카운트 +1, 5회 도달 시 영구 잠금. 단일 조건부 UPDATE로 원자 처리.
+   * MySQL은 SET 절을 좌→우 평가하므로 is_login_locked를 먼저 평가해 원본 카운트(+1) 기준으로 판단(off-by-one 회피).
+   * WHERE is_login_locked = 0 + UPDATE 행 잠금으로 동시 실패에도 4→5 전이는 정확히 1회만 발생.
+   */
+  private async registerLoginFailure(
+    userId: number,
+  ): Promise<{ remaining: number; locked: boolean; justLocked: boolean }> {
+    const max = UserService.MAX_LOGIN_FAIL;
+
+    const result = await this.userRepository.query(
+      'UPDATE `user` ' +
+        'SET is_login_locked = (login_fail_count + 1 >= ?), ' +
+        'locked_at = IF(login_fail_count + 1 >= ?, NOW(), locked_at), ' +
+        'login_fail_count = LEAST(login_fail_count + 1, ?) ' +
+        'WHERE id = ? AND is_login_locked = 0',
+      [max, max, max, userId],
+    );
+
+    const fresh = await this.userRepository.findOne({
+      where: { id: userId },
+      select: { id: true, loginFailCount: true, isLoginLocked: true },
+    });
+
+    const affected = result?.affectedRows ?? 0;
+    const locked = !!fresh?.isLoginLocked;
+    // affectedRows=1 인 요청만이 4→5 전이를 수행 → LOCK 로그 1회 보장
+    const justLocked = affected === 1 && locked;
+
+    return {
+      remaining: Math.max(0, max - (fresh?.loginFailCount ?? max)),
+      locked,
+      justLocked,
+    };
+  }
+
+  /**
+   * 로그인 실패 activity_log 기록. 방금 잠긴 요청(justLocked)만 ACCOUNT_LOCK 로그를 1회 추가.
+   * requestParams allowlist: password/otp 금지.
+   */
+  private async logLoginFailure(
+    user: UserEntity,
+    reqIp: string | undefined,
+    remaining: number,
+    justLocked: boolean,
+  ): Promise<void> {
+    await this.activityLogService.createLog({
+      userId: user.id,
+      userEmail: user.email,
+      method: 'POST',
+      requestUrl: '/user/login-email-password',
+      actionType: ActivityLogActionType.LOGIN_FAIL,
+      ipAddress: reqIp || '',
+      statusCode: 400,
+      result: ActivityLogResult.FAILURE,
+      responseTime: 0,
+      requestParams: { remaining },
+    });
+
+    if (justLocked) {
+      await this.activityLogService.createLog({
+        userId: user.id,
+        userEmail: user.email,
+        method: 'POST',
+        requestUrl: '/user/login-email-password',
+        actionType: ActivityLogActionType.ACCOUNT_LOCK,
+        ipAddress: reqIp || '',
+        statusCode: 400,
+        result: ActivityLogResult.FAILURE,
+        responseTime: 0,
+        requestParams: { reason: 'PASSWORD_FAIL_5' },
+      });
+    }
   }
 
   async loginEmailSend(getBody: UserLoginEmailSendReqDto) {
