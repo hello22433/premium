@@ -78,6 +78,8 @@ import { format } from 'date-fns';
 import { DateFormatStr } from '../../common/domain/date.format.str';
 import { CompanyType } from '../../common/domain/company.type';
 import { ConfigService } from '@nestjs/config';
+import { AccountStatusTransitionService } from '../../account_lifecycle/application/account.status.transition.service';
+import { TransitionSource } from '../../account_lifecycle/interface/transition.source';
 import { LoginVerifyMethod } from '../../user/interface/login.verify.method';
 import { DeliveryAlimTalk } from '../../delivery/interface/delivery.alim.talk';
 import { ISmsSend } from '../../sms/interface/sms.send';
@@ -120,6 +122,7 @@ export class UserManagementService {
     private readonly walletLedger: WalletLedgerService,
     private readonly walletResolver: WalletAccountResolverService,
     private readonly walletCutoverConfig: WalletCutoverConfig,
+    private readonly accountStatusTransitionService: AccountStatusTransitionService,
   ) {}
 
   private readonly initPasswordTemplateCode = this.configService.getOrThrow<string>(
@@ -814,8 +817,8 @@ export class UserManagementService {
         targetCompanyId: company?.id ?? null,
         balanceManagementType: company?.balanceManagementType ?? 'ACCOUNT',
         chargeAmount: amount,
-        beforeBalance: beforeBalance,
-        afterBalance: afterBalance,
+        beforeBalance,
+        afterBalance,
         memo: memo || '시스템 자동 환불',
       },
     });
@@ -888,6 +891,10 @@ export class UserManagementService {
       allowedSendMethods: getBody.allowedSendMethods.join(','),
       documentCompanyType: getBody.documentCompanyType ?? CompanyType.ENMAD,
       loginVerifyMethod: getBody.loginVerifyMethod,
+      // 라이프사이클 side-column: last_activity_at NOT NULL, 초기 상태에 맞춰 전이시각 세팅 (배치 계산 정합)
+      lastActivityAt: new Date(),
+      ...(getBody.status === IUserStatus.NOT_USED ? { suspendedAt: new Date() } : {}),
+      ...(getBody.status === IUserStatus.LEAVE ? { withdrawnAt: new Date() } : {}),
     });
 
     // 신규 사용자의 조회 범위 설정 (SUPER_ADMIN만 ALL, 나머지는 SELF)
@@ -897,6 +904,9 @@ export class UserManagementService {
       userId: newUserId,
       scopeType: scopeType,
     });
+
+    // 계정 생성 로그 (라이프사이클 — 관리자 경로)
+    await this.accountStatusTransitionService.logAccountCreate(newUserId, getBody.email, TransitionSource.ADMIN);
 
     return;
   }
@@ -912,6 +922,9 @@ export class UserManagementService {
     if (!user) {
       throw new BadRequestException('유저가 존재하지 않습니다.');
     }
+
+    // 상태 전이는 공통 헬퍼로 일원화 (side-column + 로그). 직접 세팅 금지 — prevStatus 보관 후 save 뒤 처리.
+    const prevStatus = user.status;
 
     // 사업자등록번호에서 하이픈 제거
     const businessNumber = getBody.businessNumber ? getBody.businessNumber.replace(/-/g, '') : getBody.businessNumber;
@@ -972,7 +985,7 @@ export class UserManagementService {
     user.bankNumber = getBody.bankNumber;
     user.cardName = getBody.cardName;
     user.cardNumber = getBody.cardNumber;
-    user.status = getBody.status;
+    // user.status 는 여기서 직접 세팅하지 않음 — save 후 accountStatusTransitionService 로 일원화 처리.
     user.fromPhoneNumber = getBody.fromPhoneNumber;
 
     user.settlePeriodCondition = getBody.settlePeriodCondition;
@@ -988,6 +1001,11 @@ export class UserManagementService {
     }
 
     await this.userRepository.save(user);
+
+    // 상태 변경 시 공통 헬퍼로 전이 (side-column + ACCOUNT_WITHDRAW 로그 등 자동배치와 동일 side-effect 보장)
+    if (prevStatus !== getBody.status) {
+      await this.accountStatusTransitionService.adminSetStatus(getBody.id, getBody.status);
+    }
 
     // 권한에 따른 user_view_scope 자동 설정 (SUPER_ADMIN만 ALL, 나머지는 SELF)
     const scopeType = getBody.authority === 'SUPER_ADMIN' ? ViewScopeType.ALL : ViewScopeType.SELF;

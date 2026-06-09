@@ -1,14 +1,18 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Brackets, Repository } from 'typeorm';
+import { Brackets, In, LessThan, Not, Repository } from 'typeorm';
 import { ActivityLogEntity } from '../../entity/activity.log.entity';
 import { ActivityLogResult } from '../interface/activity.log.result';
 import { UserEntity } from '../../entity/user.entity';
 import { PasswordBcryptEncrypt } from '../../auth/infrastructure/password.bcrypt.encrypt';
 import { GetActivityLogListReqDto, DownloadActivityLogExcelReqDto } from '../api/activity.log.req.dto';
 import { GetActivityLogListResDto, GetActionTypesResDto, ActivityLogViewDto } from '../api/activity.log.res.dto';
-import { format } from 'date-fns';
+import { format, subMonths } from 'date-fns';
 import { DateFormatStr } from '../../common/domain/date.format.str';
+import {
+  ACTIVITY_LOG_RETENTION_MONTHS,
+  ACTIVITY_LOG_PURGE_EXCLUDED_ACTION_TYPES,
+} from '../interface/activity.log.retention';
 import { Response } from 'express';
 import * as ExcelJS from 'exceljs';
 
@@ -62,6 +66,20 @@ export class ActivityLogService {
       errorMessage: dto.errorMessage || null,
     });
     return Number(result.identifiers[0].id);
+  }
+
+  /**
+   * 보존기간(24개월) 초과 로그 purge. 정산/감사/계정 라이프사이클 actionType 은 제외(장기 보존).
+   * 일 1회 cron 에서 호출. hard delete.
+   * @returns 삭제 건수
+   */
+  async purgeOldLogs(): Promise<number> {
+    const cutoff = subMonths(new Date(), ACTIVITY_LOG_RETENTION_MONTHS);
+    const result = await this.activityLogRepository.delete({
+      createdAt: LessThan(cutoff),
+      actionType: Not(In(ACTIVITY_LOG_PURGE_EXCLUDED_ACTION_TYPES)),
+    });
+    return result.affected ?? 0;
   }
 
   /**
