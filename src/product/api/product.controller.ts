@@ -373,6 +373,7 @@ export class ProductController {
     description: '성공적으로 다운로드한 경우',
   })
   // ===================================================
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @Get('/product/excel-template-download')
   @UseFilters(DownloadExceptionFilter)
   async excelTemplateDownload(@Res() res: Response) {
