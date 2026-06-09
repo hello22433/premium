@@ -93,14 +93,14 @@ describe('RefundPoolService — §8 환불 알고리즘', () => {
             ledger.push(row);
             return row;
           }
+          if (target === OrderPaymentAllocationEntity || obj?.grossSettlementAmount != null) {
+            allocations[obj.id] = obj;
+            return obj;
+          }
           if (target === WalletTransactionEntity || obj?.walletAccountId != null) {
             const row = { id: String(walletTxs.length + 1), ...obj } as WalletTransactionEntity;
             walletTxs.push(row);
             return row;
-          }
-          if (target === OrderPaymentAllocationEntity || obj?.grossSettlementAmount != null) {
-            allocations[obj.id] = obj;
-            return obj;
           }
           if (target === WalletAccountEntity || obj?.depositBalance != null) {
             wallets[obj.id] = obj;
@@ -285,6 +285,7 @@ describe('RefundPoolService — §8 환불 알고리즘', () => {
     expect(wallets['5'].creditExcessAmount).toBe(0);
     expect(allocations['1'].creditUsedRestoredAmount).toBe(0);
     expect(allocations['1'].creditExcessRestoredAmount).toBe(0);
+    expect(allocations['1'].depositRestoredAmount).toBe(10000);
     expect(ledger[0]).toEqual(expect.objectContaining({
       eventType: OrderPaymentRefundEventType.DISCARD_REFUND,
       affectedDeliveryIds: [100],
@@ -316,8 +317,26 @@ describe('RefundPoolService — §8 환불 알고리즘', () => {
     expect(r.ledgerIds).toEqual(['1']);
     expect(r.totalRefundedAmount).toBe(10000);
     expect(wallets['5'].depositBalance).toBe(10000);
+    expect(allocations['1'].depositRestoredAmount).toBe(10000);
     expect(walletTxs.length).toBe(1);
     expect(ledger.length).toBe(1);
+  });
+
+  it('정산확정 후 폐기 환불은 재발송 reverse 시 deposit counter invariant 를 위반하지 않는다', async () => {
+    await sut.refundSettledDiscardToDeposit({
+      orderId: 100,
+      orderDeliveryId: 100,
+      refundAmount: 10000,
+      idempotencyKeyPrefix: 'discard_refund:100:100:deposit:1',
+    });
+    reverseLedger = ledger[0];
+
+    const r = await sut.reverseRefund('1', 'tx-resend');
+
+    expect(r.alreadyReversed).toBe(false);
+    expect(allocations['1'].depositRestoredAmount).toBe(0);
+    expect(reverseLedger!.reversedAt).not.toBeNull();
+    expect(reverseLedger!.reversedByWalletTransactionId).toBe('tx-resend');
   });
 
   it('reverseRefund: ledger 미존재 → BadRequest', async () => {

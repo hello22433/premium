@@ -165,6 +165,9 @@ export class RefundPoolService {
       idempotencyKey: `${ledgerKey}:wallet`,
     });
 
+    alloc.depositRestoredAmount += input.refundAmount;
+    await manager.save(OrderPaymentAllocationEntity, alloc);
+
     const ledger = await manager.save(OrderPaymentRefundEventEntity, {
       allocationId: alloc.id,
       orderId: input.orderId,
