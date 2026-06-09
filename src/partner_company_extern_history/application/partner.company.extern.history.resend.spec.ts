@@ -302,9 +302,9 @@ describe('PartnerCompanyExternHistoryService.resendFailedDelivery', () => {
   it('claim affected=0 + status 대상 + claimedAt 없음/오래됨 → 상태 변경(새로고침) 안내', async () => {
     qb.getOne
       .mockResolvedValueOnce(makeDelivery())
-      // status FAIL 유지 + claimedAt 31분 전(=stale, 이미 풀렸어야 할 잔재) → fallback
+      // status FAIL 유지 + claimedAt 6분 전(=stale, 이미 풀렸어야 할 잔재) → fallback
       .mockResolvedValueOnce(
-        makeDelivery({ claimedAt: new Date(Date.now() - 31 * 60 * 1000) }),
+        makeDelivery({ claimedAt: new Date(Date.now() - 6 * 60 * 1000) }),
       );
     qb.execute.mockResolvedValueOnce({ affected: 0 });
 
@@ -314,12 +314,12 @@ describe('PartnerCompanyExternHistoryService.resendFailedDelivery', () => {
     expect(res.message).toContain('새로고침');
   });
 
-  describe('30분 경계 (fake timer)', () => {
+  describe('5분 경계 (fake timer)', () => {
     beforeEach(() => jest.useFakeTimers().setSystemTime(new Date('2026-06-09T00:00:00.000Z')));
     afterEach(() => jest.useRealTimers());
 
-    it('정확히 30분 전 claimedAt → 처리 중 (경계 포함)', async () => {
-      const exactlyStale = new Date(Date.now() - 30 * 60 * 1000);
+    it('정확히 5분 전 claimedAt → 처리 중 (경계 포함)', async () => {
+      const exactlyStale = new Date(Date.now() - 5 * 60 * 1000);
       qb.getOne
         .mockResolvedValueOnce(makeDelivery())
         .mockResolvedValueOnce(makeDelivery({ claimedAt: exactlyStale }));
@@ -330,8 +330,8 @@ describe('PartnerCompanyExternHistoryService.resendFailedDelivery', () => {
       expect(res.message).toContain('처리 중'); // claimedAt >= stale → 처리 중
     });
 
-    it('30분+1ms 전 claimedAt → fallback (경계 밖)', async () => {
-      const justStale = new Date(Date.now() - (30 * 60 * 1000 + 1));
+    it('5분+1ms 전 claimedAt → fallback (경계 밖)', async () => {
+      const justStale = new Date(Date.now() - (5 * 60 * 1000 + 1));
       qb.getOne
         .mockResolvedValueOnce(makeDelivery())
         .mockResolvedValueOnce(makeDelivery({ claimedAt: justStale }));
@@ -342,7 +342,7 @@ describe('PartnerCompanyExternHistoryService.resendFailedDelivery', () => {
       expect(res.message).toContain('새로고침'); // claimedAt < stale → fallback
     });
 
-    it('claim 쿼리는 (claimedAt IS NULL OR claimedAt < :stale) 와 now-30분 threshold 를 사용한다', async () => {
+    it('claim 쿼리는 (claimedAt IS NULL OR claimedAt < :stale) 와 now-5분 threshold 를 사용한다', async () => {
       qb.getOne
         .mockResolvedValueOnce(makeDelivery())
         .mockResolvedValueOnce(makeDelivery({ claimedAt: new Date() })); // affected=0 후 재조회
@@ -354,7 +354,7 @@ describe('PartnerCompanyExternHistoryService.resendFailedDelivery', () => {
         /claimedAt IS NULL OR claimedAt < :stale/.test(c[0]),
       );
       expect(staleWhere).toBeDefined();
-      const expectedStale = new Date(Date.now() - 30 * 60 * 1000);
+      const expectedStale = new Date(Date.now() - 5 * 60 * 1000);
       expect((staleWhere![1].stale as Date).getTime()).toBe(expectedStale.getTime());
     });
   });

@@ -43,10 +43,10 @@ async function bootstrap() {
   //    프로세스가 잠시 겹쳐, 신 프로세스가 구 프로세스의 활성 FAIL claim 을 해제 → 중복 발송
   //    위험이 있으므로 금지한다.
   // WAIT/FAIL 복구는 각각 독립 처리한다. 복구 정책은 self-heal 유무로 다르다:
-  //  - WAIT(배치): 30분 self-heal 이 없다(cron 은 claimedAt IS NULL 만 재claim). 해제 실패 시
+  //  - WAIT(배치): 5분 self-heal 이 없다(cron 은 claimedAt IS NULL 만 재claim). 해제 실패 시
   //    해당 행이 다음 재기동까지 정체되므로, 재시도 후에도 실패하면 기동을 중단(throw)해 pm2 가
   //    재시작하도록 한다.
-  //  - FAIL(재발송): 30분 stale 재claim 이 최후 안전망이므로, 실패해도 로그만 남기고 기동 계속.
+  //  - FAIL(재발송): 5분 stale 재claim 이 최후 안전망이므로, 실패해도 로그만 남기고 기동 계속.
   const bootLogger = new Logger('Bootstrap');
 
   const WAIT_RELEASE_ATTEMPTS = 3;
@@ -77,7 +77,7 @@ async function bootstrap() {
       bootLogger.warn(`[BOOT] FAIL 재발송 orphan 클레임 ${released}건 해제 (이전 프로세스 비정상 종료 흔적)`);
     }
   } catch (e) {
-    bootLogger.error('[BOOT] FAIL 재발송 클레임 해제 실패 — 기동 계속 (30분 self-heal 으로 대체)', e);
+    bootLogger.error('[BOOT] FAIL 재발송 클레임 해제 실패 — 기동 계속 (5분 self-heal 으로 대체)', e);
   }
 
   let port = 3000;
