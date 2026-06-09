@@ -82,6 +82,7 @@ import { OrderPointUsageEntity } from '../entity/order.point.usage.entity';
 import { CreditExcessApprovalEntity } from '../entity/credit.excess.approval.entity';
 import { OrderPaymentRefundEventEntity } from '../entity/order.payment.refund.event.entity';
 import { OrderDeliveryAttemptEntity } from '../entity/order.delivery.attempt.entity';
+import { ForbiddenWordEntity } from '../entity/forbidden.word.entity';
 
 @Module({
   imports: [
@@ -171,6 +172,7 @@ import { OrderDeliveryAttemptEntity } from '../entity/order.delivery.attempt.ent
           CreditExcessApprovalEntity,
           OrderPaymentRefundEventEntity,
           OrderDeliveryAttemptEntity,
+          ForbiddenWordEntity,
         ],
         extra: {
           connectionLimit: +configService.get('DATABASE_CONNECTION_LIMIT', 50),
