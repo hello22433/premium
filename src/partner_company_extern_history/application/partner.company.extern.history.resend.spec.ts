@@ -59,6 +59,7 @@ describe('PartnerCompanyExternHistoryService.resendFailedDelivery', () => {
 
     qb = {
       leftJoinAndSelect: jest.fn().mockReturnThis(),
+      select: jest.fn().mockReturnThis(),
       withDeleted: jest.fn().mockReturnThis(),
       where: jest.fn().mockReturnThis(),
       andWhere: jest.fn().mockReturnThis(),
@@ -98,14 +99,16 @@ describe('PartnerCompanyExternHistoryService.resendFailedDelivery', () => {
     sut = module.get(PartnerCompanyExternHistoryService);
   });
 
-  it('claim affected=0 → 이미 처리 중 반환, oneSend 미호출', async () => {
-    qb.getOne.mockResolvedValueOnce(makeDelivery()); // 대상 조회
+  it('claim affected=0 + 최근 claimedAt → 처리 중 안내, oneSend 미호출', async () => {
+    qb.getOne
+      .mockResolvedValueOnce(makeDelivery()) // 대상 조회
+      .mockResolvedValueOnce(makeDelivery({ claimedAt: new Date() })); // 거부 사유 재조회
     qb.execute.mockResolvedValueOnce({ affected: 0 }); // claim 실패
 
     const res = await sut.resendFailedDelivery(584170);
 
     expect(res.success).toBe(false);
-    expect(res.message).toContain('이미 처리 중');
+    expect(res.message).toContain('처리 중');
     expect(deliveryBatchService.oneSend).not.toHaveBeenCalled();
   });
 
@@ -266,13 +269,118 @@ describe('PartnerCompanyExternHistoryService.resendFailedDelivery', () => {
     expect(res.success).toBe(true);
   });
 
-  it('재발송 대상 없음(이미 처리/비대상) → 거부', async () => {
-    qb.getOne.mockResolvedValueOnce(null);
+  it('대상 조회 null + 재조회도 행 없음 → 대상 못 찾음 안내', async () => {
+    qb.getOne
+      .mockResolvedValueOnce(null) // buildResendQuery 대상 없음
+      .mockResolvedValueOnce(null); // 거부 사유 재조회도 없음
 
     const res = await sut.resendFailedDelivery(584170);
 
     expect(res.success).toBe(false);
-    expect(orderDeliveryRepository.createQueryBuilder).toHaveBeenCalled();
+    expect(res.message).toContain('찾을 수 없습니다');
     expect(deliveryBatchService.oneSend).not.toHaveBeenCalled();
+  });
+
+  // --- 거부 사유 판정 (classifyResendRejection): status 를 claimedAt 보다 먼저 본다 ---
+
+  it('claim affected=0 + status 비대상(COMPLETE) → 이미 완료 안내 (claimedAt 남아도 status 우선)', async () => {
+    qb.getOne
+      .mockResolvedValueOnce(makeDelivery())
+      // 성공 마무리 구간: status=COMPLETE 인데 claimedAt 해제만 아직 안 됨
+      .mockResolvedValueOnce(
+        makeDelivery({ status: IOrderDeliveryStatus.COMPLETE, claimedAt: new Date() }),
+      );
+    qb.execute.mockResolvedValueOnce({ affected: 0 });
+
+    const res = await sut.resendFailedDelivery(584170);
+
+    expect(res.success).toBe(false);
+    expect(res.message).toContain('이미 완료');
+    expect(res.message).not.toContain('처리 중');
+  });
+
+  it('claim affected=0 + status 대상 + claimedAt 없음/오래됨 → 상태 변경(새로고침) 안내', async () => {
+    qb.getOne
+      .mockResolvedValueOnce(makeDelivery())
+      // status FAIL 유지 + claimedAt 31분 전(=stale, 이미 풀렸어야 할 잔재) → fallback
+      .mockResolvedValueOnce(
+        makeDelivery({ claimedAt: new Date(Date.now() - 31 * 60 * 1000) }),
+      );
+    qb.execute.mockResolvedValueOnce({ affected: 0 });
+
+    const res = await sut.resendFailedDelivery(584170);
+
+    expect(res.success).toBe(false);
+    expect(res.message).toContain('새로고침');
+  });
+
+  describe('30분 경계 (fake timer)', () => {
+    beforeEach(() => jest.useFakeTimers().setSystemTime(new Date('2026-06-09T00:00:00.000Z')));
+    afterEach(() => jest.useRealTimers());
+
+    it('정확히 30분 전 claimedAt → 처리 중 (경계 포함)', async () => {
+      const exactlyStale = new Date(Date.now() - 30 * 60 * 1000);
+      qb.getOne
+        .mockResolvedValueOnce(makeDelivery())
+        .mockResolvedValueOnce(makeDelivery({ claimedAt: exactlyStale }));
+      qb.execute.mockResolvedValueOnce({ affected: 0 });
+
+      const res = await sut.resendFailedDelivery(584170);
+
+      expect(res.message).toContain('처리 중'); // claimedAt >= stale → 처리 중
+    });
+
+    it('30분+1ms 전 claimedAt → fallback (경계 밖)', async () => {
+      const justStale = new Date(Date.now() - (30 * 60 * 1000 + 1));
+      qb.getOne
+        .mockResolvedValueOnce(makeDelivery())
+        .mockResolvedValueOnce(makeDelivery({ claimedAt: justStale }));
+      qb.execute.mockResolvedValueOnce({ affected: 0 });
+
+      const res = await sut.resendFailedDelivery(584170);
+
+      expect(res.message).toContain('새로고침'); // claimedAt < stale → fallback
+    });
+
+    it('claim 쿼리는 (claimedAt IS NULL OR claimedAt < :stale) 와 now-30분 threshold 를 사용한다', async () => {
+      qb.getOne
+        .mockResolvedValueOnce(makeDelivery())
+        .mockResolvedValueOnce(makeDelivery({ claimedAt: new Date() })); // affected=0 후 재조회
+      qb.execute.mockResolvedValueOnce({ affected: 0 });
+
+      await sut.resendFailedDelivery(584170);
+
+      const staleWhere = qb.andWhere.mock.calls.find((c: any[]) =>
+        /claimedAt IS NULL OR claimedAt < :stale/.test(c[0]),
+      );
+      expect(staleWhere).toBeDefined();
+      const expectedStale = new Date(Date.now() - 30 * 60 * 1000);
+      expect((staleWhere![1].stale as Date).getTime()).toBe(expectedStale.getTime());
+    });
+  });
+
+  // --- 부팅 orphan 해제 (releaseOrphanedResendClaims) ---
+
+  it('releaseOrphanedResendClaims: FAIL/FAIL_SMS + claimedAt NOT NULL 범위, claimedAt만 null (status/resendAt 불변)', async () => {
+    qb.execute.mockResolvedValueOnce({ affected: 3 });
+
+    const released = await sut.releaseOrphanedResendClaims();
+
+    expect(released).toBe(3);
+    // 해제 범위: status IN (FAIL, FAIL_SMS) — WAIT 미포함
+    const statusWhere = qb.where.mock.calls.find((c: any[]) => /status IN/.test(c[0]));
+    expect(statusWhere).toBeDefined();
+    expect(statusWhere![1].statuses).toEqual([
+      IOrderDeliveryStatus.FAIL,
+      IOrderDeliveryStatus.FAIL_SMS,
+    ]);
+    expect(statusWhere![1].statuses).not.toContain(IOrderDeliveryStatus.WAIT);
+    // claimedAt IS NOT NULL 조건
+    expect(qb.andWhere.mock.calls.some((c: any[]) => /claimedAt IS NOT NULL/.test(c[0]))).toBe(true);
+    // 상태 불변: set 은 claimedAt:null 만 (status/resendAt 미포함)
+    const setArg = qb.set.mock.calls[qb.set.mock.calls.length - 1][0];
+    expect(setArg).toEqual({ claimedAt: null });
+    expect(setArg).not.toHaveProperty('status');
+    expect(setArg).not.toHaveProperty('resendAt');
   });
 });

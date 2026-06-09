@@ -357,10 +357,9 @@ export class DeliveryBatchService {
   }
 
   /**
-   * 비정상 종료로 claimed_at이 남아있는 WAIT 행을 해제한다.
-   * 부팅 시 1회만 호출된다 (PM2 단일 인스턴스 전제).
+   * 비정상 종료로 남은 WAIT 행의 claimedAt 을 해제한다. main.ts 에서 listen() 전 1회 호출.
    */
-  async releaseStaleClaims(): Promise<number> {
+  async releaseStaleBatchClaims(): Promise<number> {
     const result = await this.orderDeliveryRepository
       .createQueryBuilder()
       .update(OrderDeliveryEntity)
