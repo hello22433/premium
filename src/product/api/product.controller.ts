@@ -169,6 +169,7 @@ export class ProductController {
     description: 'brand, partnerCompanyId가 존재하지 않는 경우',
   })
   // =========================================
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @Post('/product')
   create(@Body() getBody: ProductCreateReqDto) {
     return this.productService.create(getBody);
@@ -185,6 +186,7 @@ export class ProductController {
     description: '해당 상품이 존재하지 않는 경우<br>' + 'brand, partnerCompanyId가 존재하지 않는 경우',
   })
   // =========================================
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @Patch('/product')
   updatePartial(@User() user: ILoginUserInfo, @Body() getBody: ProductUpdatePartialReqDto) {
     return this.productService.updatePartial(user, getBody);
@@ -408,6 +410,7 @@ export class ProductController {
     description: '',
   })
   // =========================================
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @Delete('/product/list')
   delete(@Body() getDto: ProductDeleteReqDto) {
     return this.productService.delete(getDto);
@@ -437,6 +440,7 @@ export class ProductController {
     description: '이미 존재하는 대분류명인 경우',
   })
   // =========================================
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @Post('/classification')
   createClassification(@Body() getBody: ClassificationCreateReqDto) {
     return this.productService.createClassification(getBody);
