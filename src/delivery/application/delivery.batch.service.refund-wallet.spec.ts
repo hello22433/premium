@@ -18,7 +18,7 @@ import { OrderRealProductEntity } from '../../entity/order.real.product.entity';
 import { OrderRealProductMappingEntity } from '../../entity/order.real.product.mapping.entity';
 import { SsgEventEntity } from '../../entity/ssg.event.entity';
 import { UserEntity } from '../../entity/user.entity';
-import { OrderDeliveryAttemptEntity } from '../../entity/order.delivery.attempt.entity';
+import { OrderDeliveryAttemptEntity, OrderDeliveryAttemptType } from '../../entity/order.delivery.attempt.entity';
 import { OrderPaymentRefundEventType } from '../../entity/order.payment.refund.event.entity';
 import { IOrderSendMethod } from '../../order/interface/order.send.method';
 import { IOrderType } from '../../order/interface/order.type';
@@ -181,8 +181,7 @@ describe('DeliveryBatchService.refundForFail - wallet path', () => {
   it('wallet 경로: isWalletManaged=true → RefundPoolService.refund 호출 (fail_refund 멱등키 = active attempt.id), addBalance 미호출', async () => {
     const od = buildOrderDelivery();
     walletManagedPredicate.isWalletManaged.mockResolvedValue(true);
-    // 재발송 후 재실패: 최신 attempt 는 RESEND(id=99). INITIAL 고정이면 이전 prefix 충돌로 no-op.
-    orderDeliveryAttemptRepository.findOne.mockResolvedValue({ id: '99' });
+    orderDeliveryAttemptRepository.findOne.mockResolvedValue({ id: '99', attemptType: OrderDeliveryAttemptType.INITIAL });
 
     await (sut as any).refundForFail(od);
 
@@ -197,10 +196,30 @@ describe('DeliveryBatchService.refundForFail - wallet path', () => {
       orderId: od.orderProductMapping.order.id,
       eventType: OrderPaymentRefundEventType.FAIL_REFUND,
       targetDeliveryIds: [od.id],
+      attemptId: '99',
+      refundFromAttemptTransactions: false,
       idempotencyKeyPrefix: `fail_refund:${od.orderProductMapping.order.id}:${od.id}:99`,
     });
     expect(userManagementService.addBalance).not.toHaveBeenCalled();
     expect(userRepoExecute).not.toHaveBeenCalled();
+  });
+
+  it('wallet 경로 + RESEND attempt: 재실패 환불을 attempt RESEND_DEDUCT 재원 기준으로 요청한다', async () => {
+    const od = buildOrderDelivery();
+    walletManagedPredicate.isWalletManaged.mockResolvedValue(true);
+    orderDeliveryAttemptRepository.findOne.mockResolvedValue({ id: '100', attemptType: OrderDeliveryAttemptType.RESEND });
+
+    await (sut as any).refundForFail(od);
+
+    expect(refundPoolService.refund).toHaveBeenCalledWith({
+      orderId: od.orderProductMapping.order.id,
+      eventType: OrderPaymentRefundEventType.FAIL_REFUND,
+      targetDeliveryIds: [od.id],
+      attemptId: '100',
+      refundFromAttemptTransactions: true,
+      idempotencyKeyPrefix: `fail_refund:${od.orderProductMapping.order.id}:${od.id}:100`,
+    });
+    expect(userManagementService.addBalance).not.toHaveBeenCalled();
   });
 
   it('wallet 경로 + attempt 부재: drift → throw 전파 (refund 미호출, 상위 retry 신호)', async () => {
