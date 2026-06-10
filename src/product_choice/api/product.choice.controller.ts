@@ -89,7 +89,8 @@ export class ProductChoiceController {
   })
   // =========================================
   @Post('/product-choice')
-  create(@Body() productChoiceCreateReqDto: ProductChoiceCreateReqDto) {
+  async create(@User() user: ILoginUserInfo, @Body() productChoiceCreateReqDto: ProductChoiceCreateReqDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.PRODUCT_CHOICE);
     return this.productChoiceService.create(productChoiceCreateReqDto);
   }
 
@@ -106,7 +107,8 @@ export class ProductChoiceController {
   })
   // =========================================
   @Put('/product-choice')
-  updatePartial(@Body() getBody: ProductChoiceUpdateReqDto) {
+  async updatePartial(@User() user: ILoginUserInfo, @Body() getBody: ProductChoiceUpdateReqDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.PRODUCT_CHOICE);
     return this.productChoiceService.update(getBody);
   }
 
