@@ -19,6 +19,8 @@ export interface RefundEventInput {
   eventType: OrderPaymentRefundEventType;
   targetDeliveryIds: number[]; // 환불 대상 (라인 단위 ledger row 생성)
   idempotencyKeyPrefix: string; // ex) `fail_refund:${orderId}:${deliveryId}:${attempt_id}`
+  attemptId?: string;
+  refundFromAttemptTransactions?: boolean;
 }
 
 export interface SettledDiscardRefundInput {
@@ -195,7 +197,7 @@ export class RefundPoolService {
     const existingForPrefix = await manager
       .getRepository(OrderPaymentRefundEventEntity)
       .createQueryBuilder('e')
-      .where('e.idempotencyKey LIKE :prefix', { prefix: `${input.idempotencyKeyPrefix}:line:%` })
+      .where('e.idempotencyKey LIKE :prefix', { prefix: `${input.idempotencyKeyPrefix}:%` })
       // reversed (재발송으로 역환불된) ledger 는 active 가 아니므로 retry hit 에서 제외.
       // 제외 안 하면 같은 prefix 재실패가 reversed ledger 를 success 로 반환해 새 환불이 no-op 된다.
       .andWhere('e.reversedAt IS NULL')
@@ -246,7 +248,7 @@ export class RefundPoolService {
     const existingAfterLock = await manager
       .getRepository(OrderPaymentRefundEventEntity)
       .createQueryBuilder('e')
-      .where('e.idempotencyKey LIKE :prefix', { prefix: `${input.idempotencyKeyPrefix}:line:%` })
+      .where('e.idempotencyKey LIKE :prefix', { prefix: `${input.idempotencyKeyPrefix}:%` })
       .andWhere('e.reversedAt IS NULL')
       .getMany();
     if (existingAfterLock.length > 0) {
@@ -266,6 +268,10 @@ export class RefundPoolService {
       if (overlap) {
         throw new BadRequestException('already_refunded');
       }
+    }
+
+    if (input.refundFromAttemptTransactions) {
+      return this.runRefundFromResendDeductTransactions(input, alloc, walletLock, manager);
     }
 
     // 환불 대상 라인 조회 + payable_base ASC 정렬 (작은 base 먼저)
@@ -501,6 +507,209 @@ export class RefundPoolService {
     await manager.save(OrderPaymentAllocationEntity, alloc);
 
     return { ledgerIds, totalRefundedAmount: totalRefund, alreadyRefunded: false };
+  }
+
+  private async runRefundFromResendDeductTransactions(
+    input: RefundEventInput,
+    alloc: OrderPaymentAllocationEntity,
+    walletLock: WalletAccountEntity,
+    manager: EntityManager,
+  ): Promise<RefundEventResult> {
+    if (!input.attemptId) {
+      throw new BadRequestException('refundFromAttemptTransactions requires attemptId');
+    }
+    if (input.targetDeliveryIds.length !== 1) {
+      throw new BadRequestException('refundFromAttemptTransactions supports one delivery per attempt refund');
+    }
+    const orderDeliveryId = input.targetDeliveryIds[0];
+    const keyPrefix = `resend_deduct:${input.orderId}:${orderDeliveryId}:`;
+    const attemptSuffix = `:${input.attemptId}`;
+    const resendDeductTxs = await manager
+      .getRepository(WalletTransactionEntity)
+      .createQueryBuilder('tx')
+      .where('tx.orderId = :orderId', { orderId: input.orderId })
+      .andWhere('tx.orderDeliveryId = :orderDeliveryId', { orderDeliveryId })
+      .andWhere('tx.type = :type', { type: 'RESEND_DEDUCT' })
+      .andWhere('tx.idempotencyKey LIKE :prefix', { prefix: `${keyPrefix}%` })
+      .getMany();
+    const attemptTxs = resendDeductTxs.filter((tx) => (tx.idempotencyKey ?? '').endsWith(attemptSuffix));
+    if (attemptTxs.length === 0) {
+      throw new BadRequestException(
+        `RESEND_DEDUCT transaction not found for orderId=${input.orderId}, deliveryId=${orderDeliveryId}, attemptId=${input.attemptId}`,
+      );
+    }
+
+    let refundPoint = 0;
+    let refundDeposit = 0;
+    let refundCredit = 0;
+    let refundExcess = 0;
+    const pointByGrant: Record<string, number> = {};
+    for (const tx of attemptTxs) {
+      const amount = Math.abs(tx.amount);
+      if (tx.resourceType === WalletResourceType.POINT) {
+        refundPoint += amount;
+        const parsed = this.parseResendPointGrantId(tx, input.attemptId);
+        pointByGrant[parsed.grantId] = (pointByGrant[parsed.grantId] ?? 0) + amount;
+      } else if (tx.resourceType === WalletResourceType.DEPOSIT) {
+        refundDeposit += amount;
+      } else if (tx.resourceType === WalletResourceType.CREDIT) {
+        refundCredit += amount;
+      } else if (tx.resourceType === WalletResourceType.CREDIT_EXCESS) {
+        refundExcess += amount;
+      }
+    }
+
+    const totalRefund = refundPoint + refundDeposit + refundCredit + refundExcess;
+    if (totalRefund <= 0) {
+      throw new BadRequestException(
+        `RESEND_DEDUCT refund amount is zero for orderId=${input.orderId}, deliveryId=${orderDeliveryId}, attemptId=${input.attemptId}`,
+      );
+    }
+
+    if (refundDeposit > 0) {
+      walletLock.depositBalance += refundDeposit;
+      await manager.save(WalletAccountEntity, walletLock);
+      await manager.save(WalletTransactionEntity, {
+        walletAccountId: alloc.walletAccountId,
+        orderId: input.orderId,
+        orderDeliveryId,
+        type: input.eventType.toUpperCase(),
+        resourceType: WalletResourceType.DEPOSIT,
+        amount: refundDeposit,
+        balanceAfter: walletLock.depositBalance,
+        memo: `refund_from_resend_deduct attempt=${input.attemptId}`,
+        idempotencyKey: `${input.idempotencyKeyPrefix}:attempt:${orderDeliveryId}:deposit`,
+      });
+    }
+    for (const [grantId, amount] of Object.entries(pointByGrant)) {
+      const grant = await manager.findOne(PointGrantEntity, { where: { id: grantId } });
+      const expired = grant?.expiresAt != null && grant.expiresAt < new Date();
+      if (expired) {
+        throw new BadRequestException(
+          `POINT RESEND_DEDUCT grant expired before refund (grantId=${grantId}, attemptId=${input.attemptId})`,
+        );
+      }
+      const upd = await manager
+        .createQueryBuilder()
+        .update(PointGrantEntity)
+        .set({ remainingAmount: () => `remaining_amount + ${amount}` })
+        .where('id = :id AND active = 1', { id: grantId, portion: amount })
+        .execute();
+      if (upd.affected !== 1) {
+        throw new BadRequestException(
+          `POINT RESEND_DEDUCT grant restore conflict (grantId=${grantId}, amount=${amount}, attemptId=${input.attemptId})`,
+        );
+      }
+      const refreshed = await manager.findOne(PointGrantEntity, { where: { id: grantId } });
+      const usages = await manager.find(OrderPointUsageEntity, {
+        where: { allocationId: alloc.id, pointGrantId: grantId },
+        order: { id: 'ASC' },
+      });
+      let remaining = amount;
+      for (const usage of usages) {
+        if (remaining <= 0) break;
+        const usageRemaining = usage.usedAmount - usage.restoredAmount - usage.skippedExpiredAmount;
+        const portion = Math.min(remaining, usageRemaining);
+        if (portion <= 0) continue;
+        usage.restoredAmount += portion;
+        await manager.save(OrderPointUsageEntity, usage);
+        remaining -= portion;
+      }
+      if (remaining > 0) {
+        throw new BadRequestException(
+          `POINT RESEND_DEDUCT usage restore insufficient (grantId=${grantId}, remaining=${remaining}, attemptId=${input.attemptId})`,
+        );
+      }
+      await manager.save(WalletTransactionEntity, {
+        walletAccountId: alloc.walletAccountId,
+        orderId: input.orderId,
+        orderDeliveryId,
+        type: input.eventType.toUpperCase(),
+        resourceType: WalletResourceType.POINT,
+        amount,
+        balanceAfter: refreshed?.remainingAmount ?? null,
+        memo: `refund_from_resend_deduct point grant=${grantId} attempt=${input.attemptId}`,
+        idempotencyKey: `${input.idempotencyKeyPrefix}:attempt:${orderDeliveryId}:point:${grantId}`,
+      });
+    }
+    if (refundCredit > 0) {
+      walletLock.creditUsedAmount -= refundCredit;
+      await manager.save(WalletAccountEntity, walletLock);
+      await manager.save(WalletTransactionEntity, {
+        walletAccountId: alloc.walletAccountId,
+        orderId: input.orderId,
+        orderDeliveryId,
+        type: input.eventType.toUpperCase(),
+        resourceType: WalletResourceType.CREDIT,
+        amount: -refundCredit,
+        balanceAfter: walletLock.creditUsedAmount,
+        memo: `refund_from_resend_deduct attempt=${input.attemptId}`,
+        idempotencyKey: `${input.idempotencyKeyPrefix}:attempt:${orderDeliveryId}:credit`,
+      });
+    }
+    if (refundExcess > 0) {
+      walletLock.creditExcessAmount -= refundExcess;
+      await manager.save(WalletAccountEntity, walletLock);
+      await manager.save(WalletTransactionEntity, {
+        walletAccountId: alloc.walletAccountId,
+        orderId: input.orderId,
+        orderDeliveryId,
+        type: input.eventType.toUpperCase(),
+        resourceType: WalletResourceType.CREDIT_EXCESS,
+        amount: -refundExcess,
+        balanceAfter: walletLock.creditExcessAmount,
+        memo: `refund_from_resend_deduct attempt=${input.attemptId}`,
+        idempotencyKey: `${input.idempotencyKeyPrefix}:attempt:${orderDeliveryId}:credit_excess`,
+      });
+    }
+
+    alloc.pointRestoredAmount += refundPoint;
+    alloc.depositRestoredAmount += refundDeposit;
+    alloc.creditUsedRestoredAmount += refundCredit;
+    alloc.creditExcessRestoredAmount += refundExcess;
+    await manager.save(OrderPaymentAllocationEntity, alloc);
+
+    const ledger = await manager.save(OrderPaymentRefundEventEntity, {
+      allocationId: alloc.id,
+      orderId: input.orderId,
+      eventType: input.eventType,
+      affectedDeliveryIds: [orderDeliveryId],
+      refundedGrossBase: totalRefund,
+      refundedPayableBase: totalRefund,
+      refundedCardSurchargeAmount: 0,
+      refundedPointAmount: refundPoint,
+      refundedDepositAmount: refundDeposit,
+      refundedCreditUsedAmount: refundCredit,
+      refundedCreditExcessAmount: refundExcess,
+      pointSkippedExpiredAmount: 0,
+      idempotencyKey: `${input.idempotencyKeyPrefix}:attempt:${orderDeliveryId}`,
+      reversedAt: null,
+      reversedByWalletTransactionId: null,
+    });
+
+    return { ledgerIds: [ledger.id], totalRefundedAmount: totalRefund };
+  }
+
+  private parseResendPointGrantId(tx: WalletTransactionEntity, attemptId: string): { grantId: string } {
+    const parts = (tx.idempotencyKey ?? '').split(':');
+    // resend_deduct:{orderId}:{deliveryId}:point:{grantId}:{attemptId}
+    if (
+      parts.length < 6 ||
+      parts[0] !== 'resend_deduct' ||
+      parts[3] !== 'point' ||
+      parts[parts.length - 1] !== attemptId
+    ) {
+      throw new BadRequestException(
+        `POINT RESEND_DEDUCT idempotencyKey is missing grant source (txId=${tx.id}, attemptId=${attemptId})`,
+      );
+    }
+    const grantId = parts.slice(4, -1).join(':');
+    if (!grantId) {
+      throw new BadRequestException(
+        `POINT RESEND_DEDUCT idempotencyKey has empty grant source (txId=${tx.id}, attemptId=${attemptId})`,
+      );
+    }
+    return { grantId };
   }
 
   /**
