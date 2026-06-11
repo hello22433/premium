@@ -628,21 +628,16 @@ export class OrderService {
       where: { userId: user.id },
     });
 
-    // view_scope 기반 조회 조건 적용 (getDetail 과 동일 규칙 공유)
-    const applyScope = () => {
-      queryBuilder = this.applyViewScopeFilter(queryBuilder, user, currentUser, viewScope);
-    };
-
     // 주문 관리 일 경우
     if (section === IOrderSection.ORDER) {
-      applyScope();
+      queryBuilder = this.applyViewScopeFilter(queryBuilder, user, currentUser, viewScope);
     }
 
     // 발송관리 일 경우
     if (section === IOrderSection.SHIPPING) {
       // 발송관리에서는 임시저장 상태 제외
       queryBuilder = queryBuilder.andWhere('order.status != :tempStatus', { tempStatus: IOrderStatus.TEMP });
-      applyScope();
+      queryBuilder = this.applyViewScopeFilter(queryBuilder, user, currentUser, viewScope);
     }
 
     // 직발송 권한 제어 (역할 기반 + 발송유형 필터)
