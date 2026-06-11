@@ -116,7 +116,7 @@ describe('RefundService 일괄(batch)', () => {
       const bad = { ...updateItem(2), bankAccount: '' }; // 승인인데 계좌 누락
       await expect(
         service.updateBatch({ items: [updateItem(1), bad] }),
-      ).rejects.toThrow('승인 시 예금주, 은행명, 계좌번호, 승인일자를 입력해주세요.');
+      ).rejects.toThrow('승인 시 예금주, 은행명, 계좌번호를 입력해주세요.');
       expect(repo.save).not.toHaveBeenCalled();
     });
 

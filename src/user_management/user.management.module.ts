@@ -18,6 +18,7 @@ import { DeliveryModule } from '../delivery/delivery.module';
 import { SmsModule } from '../sms/sms.module';
 import { WalletModule } from '../wallet/wallet.module';
 import { AccountLifecycleModule } from '../account_lifecycle/account.lifecycle.module';
+import { SettleModule } from '../settle/settle.module';
 
 @Module({
   imports: [
@@ -39,6 +40,7 @@ import { AccountLifecycleModule } from '../account_lifecycle/account.lifecycle.m
     SmsModule,
     WalletModule,
     AccountLifecycleModule,
+    SettleModule,
   ],
   controllers: [UserManagementController],
   providers: [UserManagementService],

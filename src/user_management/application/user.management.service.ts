@@ -22,6 +22,7 @@ import { WalletResourceType } from '../../wallet/interface/wallet-resource-type'
 import { WalletLedgerService } from '../../wallet/application/wallet-ledger.service';
 import { WalletAccountResolverService } from '../../wallet/application/wallet-account-resolver.service';
 import { WalletCutoverConfig, WalletCutoverMode } from '../../wallet/config/wallet-cutover.config';
+import { SettleService } from '../../settle/application/settle.service';
 import { IExternalApiSsgRequestStatus } from '../../external_api/interface/external.api.ssg.request.status';
 import { Repository } from 'typeorm';
 import { Transactional } from 'typeorm-transactional';
@@ -123,6 +124,7 @@ export class UserManagementService {
     private readonly walletResolver: WalletAccountResolverService,
     private readonly walletCutoverConfig: WalletCutoverConfig,
     private readonly accountStatusTransitionService: AccountStatusTransitionService,
+    private readonly settleService: SettleService,
   ) {}
 
   private readonly initPasswordTemplateCode = this.configService.getOrThrow<string>(
@@ -401,6 +403,9 @@ export class UserManagementService {
       where: { userId: id },
     });
 
+    // 대상 계정 기준 잔여 발송 한도/신용초과금 (로그인 본인이 아니라 조회 대상 기준)
+    const remain = await this.settleService.getRemainServiceAmountByUserId(id);
+
     return {
       id: user.id,
       email: user.email,
@@ -471,6 +476,8 @@ export class UserManagementService {
         ? user.allowedSendMethods.split(',').map((m) => (m === 'SMS' ? 'MMS' : m))
         : ['ALIM_TALK', 'MMS', 'EMAIL'],
       loginVerifyMethod: user.loginVerifyMethod,
+      remainServiceAmount: remain.remainServiceAmount,
+      creditExcessAmount: remain.creditExcessAmount,
     };
   }
 
