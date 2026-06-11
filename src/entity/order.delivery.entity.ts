@@ -6,6 +6,7 @@ import { IOrderSendMethod } from '../order/interface/order.send.method';
 import { SsgEventEntity } from './ssg.event.entity';
 import { OrderDeliveryCouponStatus } from '../delivery/interface/order.delivery.coupon.status';
 import { OrderDeliveryEmailCouponStatus } from '../delivery/interface/order.delivery.email.coupon.status';
+import { ChoicePostSendStatus } from '../delivery/interface/choice.post.send.status';
 import { ProductEntity } from './product.entity';
 import { OrderHistoryEntity } from './order.history.entity';
 import { OrderDeliveryRefundStatusEnum } from '../delivery/interface/order.delivery.refund.status.enum';
@@ -160,6 +161,45 @@ export class OrderDeliveryEntity extends BaseEntity {
 
   @Column({ type: 'varchar', length: 256, nullable: true, comment: '외부 api 응답 에러메시지' })
   apiErrorMessage: string | null;
+
+  // ── 초이스 쿠폰 선택 후 별도 발송 상태 (재진입 차단용) ──
+  @Column({ type: 'varchar', length: 20, nullable: true, comment: '초이스 선택 후 별도 발송 상태 (NOT_REQUIRED/SENDING/SENT/FAILED). null=legacy' })
+  choicePostSendStatus: ChoicePostSendStatus | null;
+
+  @Column({ type: 'varchar', length: 64, nullable: true, comment: '별도 발송 claim token (SENDING 소유권 판별용 UUID)' })
+  choicePostSendClaimToken: string | null;
+
+  @Column({ type: 'datetime', precision: 6, nullable: true, comment: '별도 발송 claim 획득 시각 (stale 판정용)' })
+  choicePostSendClaimedAt: Date | null;
+
+  @Column({ type: 'datetime', precision: 6, nullable: true, comment: '별도 쿠폰 이미지 발송 성공 시각' })
+  choicePostSentAt: Date | null;
+
+  // ── 초이스 선택 자체의 중복 실행 방지 claim ──
+  @Column({ type: 'varchar', length: 64, nullable: true, comment: '선택 claim token (최초 선택 CAS 소유권 판별용 UUID)' })
+  choiceSelectionClaimToken: string | null;
+
+  @Column({ type: 'datetime', precision: 6, nullable: true, comment: '선택 claim 획득 시각' })
+  choiceSelectionClaimedAt: Date | null;
+
+  @Column({ type: 'varchar', length: 64, nullable: true, comment: '공급사 멱등 발급/조회용 안정 attempt key' })
+  choiceSelectionAttemptKey: string | null;
+
+  @Column({ type: 'datetime', precision: 6, nullable: true, comment: '선택 PIN 발급 결과 불명 → 운영 reconcile 필요 표시' })
+  choiceSelectionReconcileRequiredAt: Date | null;
+
+  // ── EMAIL 쿠폰 발송 동시성 claim ──
+  @Column({ type: 'varchar', length: 64, nullable: true, comment: 'EMAIL 쿠폰 발송 claim token (UUID)' })
+  emailCouponClaimToken: string | null;
+
+  @Column({ type: 'datetime', precision: 6, nullable: true, comment: 'EMAIL 쿠폰 발송 claim 획득 시각' })
+  emailCouponClaimedAt: Date | null;
+
+  @Column({ type: 'varchar', length: 64, nullable: true, comment: 'EMAIL PIN 발급 멱등/조회용 안정 attempt key' })
+  emailCouponAttemptKey: string | null;
+
+  @Column({ type: 'datetime', precision: 6, nullable: true, comment: 'EMAIL PIN 발급 결과 불명 → 운영 reconcile 필요 표시' })
+  emailCouponReconcileRequiredAt: Date | null;
 
   @ManyToOne(() => OrderProductMappingEntity, { createForeignKeyConstraints: false })
   @JoinColumn({ name: 'order_product_mapping_id' })
