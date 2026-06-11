@@ -66,6 +66,52 @@ describe('UserTaskHistoryService', () => {
     });
   });
 
+  describe('getList completionStatus 필터', () => {
+    /**
+     * mock QueryBuilder 는 실제 SQL 을 실행하지 않으므로, 여기서는 andWhere 에 넘어가는
+     * SQL 문자열만 검증한다. 아래는 EXISTS 의 SQL 의미론으로 보장되며 단위 테스트로는 실증 불가:
+     *   - soft-delete 된 이력만 있는 고객 → deleted_at IS NULL 조건이 0건 → INCOMPLETE
+     *   - 한 고객의 이력이 복수여도 EXISTS 는 join 이 아니므로 목록 행/ totalCount 무중복
+     * 위 두 acceptance 는 DB integration test 로만 실증 가능 (현 repo 는 전부 mock).
+     */
+    const findArgWith = (substr: string) =>
+      queryBuilder.andWhere.mock.calls.find((args: any[]) => typeof args[0] === 'string' && args[0].includes(substr));
+
+    beforeEach(() => {
+      queryBuilder.getManyAndCount.mockResolvedValue([[], 0]);
+      orderRepository.find.mockResolvedValue([]);
+    });
+
+    it('COMPLETED → 활성 상담이력 EXISTS 조건이 페이지네이션 전에 적용된다', async () => {
+      await sut.getList(OPERATION_ADMIN_USER, { page: 1, take: 10, completionStatus: 'COMPLETED' });
+
+      const call = findArgWith('EXISTS');
+      expect(call).toBeDefined();
+      expect(call[0]).toContain('user_task_history');
+      expect(call[0]).toContain('deleted_at IS NULL');
+      expect(call[0]).not.toContain('NOT EXISTS');
+      // skip(=페이지네이션)보다 먼저 andWhere 호출
+      const existsOrder = queryBuilder.andWhere.mock.invocationCallOrder.at(-1);
+      const skipOrder = queryBuilder.skip.mock.invocationCallOrder.at(-1);
+      expect(existsOrder).toBeLessThan(skipOrder);
+    });
+
+    it('INCOMPLETE → 활성 상담이력 NOT EXISTS 조건이 적용된다', async () => {
+      await sut.getList(OPERATION_ADMIN_USER, { page: 1, take: 10, completionStatus: 'INCOMPLETE' });
+
+      const call = findArgWith('NOT EXISTS');
+      expect(call).toBeDefined();
+      expect(call[0]).toContain('user_task_history');
+      expect(call[0]).toContain('deleted_at IS NULL');
+    });
+
+    it('completionStatus 미전달 → EXISTS/NOT EXISTS 조건 미적용 (기존 동작 유지)', async () => {
+      await sut.getList(OPERATION_ADMIN_USER, { page: 1, take: 10 });
+
+      expect(findArgWith('EXISTS')).toBeUndefined();
+    });
+  });
+
   describe('getDetail 권한별 접근 제어', () => {
     it('CORPORATE_ADMIN → ForbiddenException', async () => {
       await expect(sut.getDetail(CORPORATE_ADMIN_USER, { id: 1 })).rejects.toThrow(ForbiddenException);

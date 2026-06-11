@@ -44,6 +44,7 @@ export class UserTaskHistoryService {
       personName,
       personPhoneNumber,
       personCategory,
+      completionStatus,
       page,
       take,
     } = getQuery;
@@ -55,37 +56,49 @@ export class UserTaskHistoryService {
     queryBuilder = QueryBuilderDateCondition(queryBuilder, 'user', 'createdAt', createdStartAt, createdEndAt);
 
     if (email) {
-      queryBuilder = queryBuilder.andWhere('user.email LIKE :email', { email: `${email}%` });
+      queryBuilder.andWhere('user.email LIKE :email', { email: `${email}%` });
     }
 
     if (businessName) {
-      queryBuilder = queryBuilder.andWhere('company.businessName LIKE :businessName', {
+      queryBuilder.andWhere('company.businessName LIKE :businessName', {
         businessName: `%${businessName}%`,
       });
     }
 
     if (personName) {
-      queryBuilder = queryBuilder.andWhere('user.personName LIKE :personName', {
+      queryBuilder.andWhere('user.personName LIKE :personName', {
         personName: `%${personName}%`,
       });
     }
 
     if (personPhoneNumber) {
-      queryBuilder = queryBuilder.andWhere('user.personPhoneNumber LIKE :personPhoneNumber', {
+      queryBuilder.andWhere('user.personPhoneNumber LIKE :personPhoneNumber', {
         personPhoneNumber: `%${personPhoneNumber}%`,
       });
     }
 
     if (personCategory) {
-      queryBuilder = queryBuilder.andWhere('user.personCategory LIKE :personCategory', {
+      queryBuilder.andWhere('user.personCategory LIKE :personCategory', {
         personCategory: `%${personCategory}%`,
       });
     }
 
-    queryBuilder = queryBuilder.orderBy('user.id', 'DESC');
+    // 완료 여부: 활성(soft-delete 안 된) 상담이력 존재 여부로 판단.
+    // EXISTS 상관 서브쿼리라 join 이 아니므로 복수 이력에도 목록 행/ totalCount 가 중복되지 않는다.
+    if (completionStatus === 'COMPLETED') {
+      queryBuilder.andWhere(
+        'EXISTS (SELECT 1 FROM user_task_history uth WHERE uth.user_id = user.id AND uth.deleted_at IS NULL)',
+      );
+    } else if (completionStatus === 'INCOMPLETE') {
+      queryBuilder.andWhere(
+        'NOT EXISTS (SELECT 1 FROM user_task_history uth WHERE uth.user_id = user.id AND uth.deleted_at IS NULL)',
+      );
+    }
+
+    queryBuilder.orderBy('user.id', 'DESC');
 
     const skip = (page - 1) * take;
-    queryBuilder = queryBuilder.take(take).skip(skip);
+    queryBuilder.take(take).skip(skip);
 
     const [userList, totalCount] = await queryBuilder.getManyAndCount();
 
@@ -197,9 +210,9 @@ export class UserTaskHistoryService {
     const { userId, content } = getBody;
 
     await this.userTaskHistoryRepository.insert({
-      userId: userId,
+      userId,
       adminUserId: loginUser.id,
-      content: content,
+      content,
     });
 
     return true;
