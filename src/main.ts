@@ -9,8 +9,14 @@ import { Logger, ValidationPipe } from '@nestjs/common';
 import { initializeTransactionalContext } from 'typeorm-transactional';
 import { DeliveryBatchService } from './delivery/application/delivery.batch.service';
 import { PartnerCompanyExternHistoryService } from './partner_company_extern_history/application/partner.company.extern.history.service';
+import { hydrateEnvFromSsm } from './config/hydrate-env-from-ssm';
 
 async function bootstrap() {
+  // SSM Parameter Store의 비밀값을 process.env에 주입한다.
+  // 접두는 ENVIRONMENT에서 자동 유도(prod→/prod, dev→/dev, local→/local). ENVIRONMENT 미설정이면 .env 그대로.
+  // NestFactory.create 이전 호출 필수(모듈이 설정을 읽기 전에 env가 채워져야 함).
+  await hydrateEnvFromSsm();
+
   initializeTransactionalContext();
 
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
