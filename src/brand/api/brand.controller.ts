@@ -2,6 +2,7 @@ import { Body, Controller, Get, Param, Post, Put, Query, UseGuards } from '@nest
 import { BrandService } from '../application/brand.service';
 import { ApiBadRequestResponse, ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
+import { AuthUserSuperAndOperationAdminGuard } from '../../auth/api/auth.user.super-operation-admin.guard';
 import {
   BrandCreateReqDto,
   BrandGetDetailReqParamDto,
@@ -65,6 +66,7 @@ export class BrandController {
   })
   @ApiOkResponse({ description: '성공적으로 생성된 경우' })
   // ===============================================================
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @Post('/brand')
   create(@Body() getBody: BrandCreateReqDto) {
     return this.brandService.create(getBody);
@@ -76,6 +78,7 @@ export class BrandController {
   @ApiOkResponse({ description: '성공적으로 수정된 경우' })
   @ApiBadRequestResponse({ description: 'brand 가 존재하지 않는 경우' })
   // ===============================================================
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @Put('/brand')
   update(@Body() getBody: BrandUpdateReqDto) {
     return this.brandService.update(getBody);
