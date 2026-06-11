@@ -58,7 +58,17 @@ import {
 } from '../api/order.res.dto';
 import { OrderEntity } from '../../entity/order.entity';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, LessThanOrEqual, Like, MoreThan, MoreThanOrEqual, QueryRunner, Repository } from 'typeorm';
+import {
+  In,
+  LessThanOrEqual,
+  Like,
+  MoreThan,
+  MoreThanOrEqual,
+  ObjectLiteral,
+  QueryRunner,
+  Repository,
+  SelectQueryBuilder,
+} from 'typeorm';
 import { QueryBuilderDateCondition } from '../../common/infra/query.builder.date.condition';
 import { OrderViewDto } from '../api/dto/order.view.dto';
 import { DateDateFormatStr, DateFormatStr } from '../../common/domain/date.format.str';
@@ -530,6 +540,67 @@ export class OrderService {
     });
   }
 
+  /**
+   * view_scope 기반 주문 조회 조건을 query builder 에 적용한다.
+   * getList(목록)와 getDetail(상세)이 동일한 조회 범위 규칙을 공유하도록 공통화.
+   * - SELF: 본인 주문 + 배정된 주문 + 담당 고객으로 지정된 주문
+   * - COMPANY: 같은 회사 전체
+   * - DEPARTMENT: 같은 부서 + 추가 부서들
+   * - ALL: 제한 없음
+   */
+  private applyViewScopeFilter<T extends ObjectLiteral>(
+    queryBuilder: SelectQueryBuilder<T>,
+    user: ILoginUserInfo,
+    currentUser: Pick<UserEntity, 'companyId' | 'departmentId'> | null,
+    viewScope: UserViewScopeEntity | null,
+  ): SelectQueryBuilder<T> {
+    const scopeType = viewScope?.scopeType ?? ViewScopeType.SELF;
+
+    // 본인 관련 주문 조회 조건 (본인 주문 + 배정된 주문 + 담당 고객으로 지정된 주문)
+    const applyUserOrderFilter = () => {
+      queryBuilder = queryBuilder.andWhere(
+        '(order.userId = :userId OR order.operationUserId = :userId OR order.clientUserId = :userId)',
+        { userId: user.id },
+      );
+    };
+
+    switch (scopeType) {
+      case ViewScopeType.ALL:
+        // 전체 조회 - 조건 없음
+        break;
+      case ViewScopeType.COMPANY:
+        // 같은 회사 전체 조회
+        if (currentUser?.companyId) {
+          queryBuilder = queryBuilder.andWhere('user.companyId = :companyId', {
+            companyId: currentUser.companyId,
+          });
+        } else {
+          applyUserOrderFilter();
+        }
+        break;
+      case ViewScopeType.DEPARTMENT: {
+        // 같은 부서 + 추가 부서들 조회
+        const deptIds = viewScope?.getDeptIdList() ?? [];
+        const targetDeptIds = currentUser?.departmentId ? [currentUser.departmentId, ...deptIds] : deptIds;
+
+        if (targetDeptIds.length > 0) {
+          queryBuilder = queryBuilder.andWhere('user.departmentId IN (:...deptIds)', {
+            deptIds: targetDeptIds,
+          });
+        } else {
+          applyUserOrderFilter();
+        }
+        break;
+      }
+      case ViewScopeType.SELF:
+      default:
+        applyUserOrderFilter();
+        break;
+    }
+
+    return queryBuilder;
+  }
+
   async getList(user: ILoginUserInfo, getQuery: OrderGetListReqDto): Promise<OrderGetListResDto> {
     const { section, type, status, startAt, endAt, searchType, searchKeyword, page, take, sendingType, dateType } = getQuery;
 
@@ -557,63 +628,16 @@ export class OrderService {
       where: { userId: user.id },
     });
 
-    // view_scope 기반 조회 조건 적용 함수
-    const applyViewScopeFilter = () => {
-      const scopeType = viewScope?.scopeType ?? ViewScopeType.SELF;
-
-      // 본인 관련 주문 조회 조건 (본인 주문 + 배정된 주문 + 담당 고객으로 지정된 주문)
-      const applyUserOrderFilter = () => {
-        queryBuilder = queryBuilder.andWhere(
-          '(order.userId = :userId OR order.operationUserId = :userId OR order.clientUserId = :userId)',
-          { userId: user.id },
-        );
-      };
-
-      switch (scopeType) {
-        case ViewScopeType.ALL:
-          // 전체 조회 - 조건 없음
-          break;
-        case ViewScopeType.COMPANY:
-          // 같은 회사 전체 조회
-          if (currentUser?.companyId) {
-            queryBuilder = queryBuilder.andWhere('user.companyId = :companyId', {
-              companyId: currentUser.companyId,
-            });
-          } else {
-            applyUserOrderFilter();
-          }
-          break;
-        case ViewScopeType.DEPARTMENT: {
-          // 같은 부서 + 추가 부서들 조회
-          const deptIds = viewScope?.getDeptIdList() ?? [];
-          const targetDeptIds = currentUser?.departmentId ? [currentUser.departmentId, ...deptIds] : deptIds;
-
-          if (targetDeptIds.length > 0) {
-            queryBuilder = queryBuilder.andWhere('user.departmentId IN (:...deptIds)', {
-              deptIds: targetDeptIds,
-            });
-          } else {
-            applyUserOrderFilter();
-          }
-          break;
-        }
-        case ViewScopeType.SELF:
-        default:
-          applyUserOrderFilter();
-          break;
-      }
-    };
-
     // 주문 관리 일 경우
     if (section === IOrderSection.ORDER) {
-      applyViewScopeFilter();
+      queryBuilder = this.applyViewScopeFilter(queryBuilder, user, currentUser, viewScope);
     }
 
     // 발송관리 일 경우
     if (section === IOrderSection.SHIPPING) {
       // 발송관리에서는 임시저장 상태 제외
       queryBuilder = queryBuilder.andWhere('order.status != :tempStatus', { tempStatus: IOrderStatus.TEMP });
-      applyViewScopeFilter();
+      queryBuilder = this.applyViewScopeFilter(queryBuilder, user, currentUser, viewScope);
     }
 
     // 직발송 권한 제어 (역할 기반 + 발송유형 필터)
@@ -758,8 +782,8 @@ export class OrderService {
     return { list: resultList, totalPage, totalCount, currentPage: page };
   }
 
-  async getDetail(getParam: OrderGetDetailReqParamDto): Promise<OrderGetDetailResDto> {
-    const queryBuilder = this.orderRepository
+  async getDetail(user: ILoginUserInfo, getParam: OrderGetDetailReqParamDto): Promise<OrderGetDetailResDto> {
+    let queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
       .leftJoinAndSelect('order.operationUser', 'operationUser')
@@ -773,6 +797,17 @@ export class OrderService {
       .withDeleted()
       .where('order.id = :id', { id: getParam.id })
       .addOrderBy('orderDeliveries.id', 'ASC');
+
+    // IDOR 방지: 호출자의 조회 범위(view_scope)를 getList 와 동일하게 적용.
+    // 범위를 벗어난 주문은 조회되지 않아 아래 not-found 처리로 거부된다.
+    const currentUser = await this.userRepository.findOne({
+      where: { id: user.id },
+      select: ['id', 'companyId', 'departmentId'],
+    });
+    const viewScope = await this.userViewScopeRepository.findOne({
+      where: { userId: user.id },
+    });
+    queryBuilder = this.applyViewScopeFilter(queryBuilder, user, currentUser, viewScope);
 
     const order = await queryBuilder.getOne();
 
