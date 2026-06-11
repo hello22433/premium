@@ -117,7 +117,7 @@ export class ForbiddenWordService {
     }
 
     const word = forbiddenWord.word;
-    await this.forbiddenWordRepository.delete(id);
+    await this.forbiddenWordRepository.softDelete(id);
 
     await this.recordHistory(ForbiddenWordAction.DELETE, word, reason, user);
     await this.forbiddenWordMatcher.refreshCache();
