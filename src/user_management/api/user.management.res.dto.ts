@@ -239,6 +239,16 @@ export class UserManagementGetDetailResDto {
     enum: LoginVerifyMethod,
   })
   loginVerifyMethod: LoginVerifyMethod;
+
+  @ApiProperty({
+    description: '대상 계정 기준 잔여 발송 한도 (회사/wallet 과금 계정 기준)',
+  })
+  remainServiceAmount: number;
+
+  @ApiProperty({
+    description: '대상 계정 기준 신용초과금 (잔여 한도가 음수일 때의 초과액, 0 이상)',
+  })
+  creditExcessAmount: number;
 }
 
 export class UserDepartmentInfoDto {

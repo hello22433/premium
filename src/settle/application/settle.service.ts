@@ -2609,18 +2609,22 @@ export class SettleService {
     }
   }
 
+  /** 로그인한 사용자의 잔여 발송 한도 조회. */
+  async getRemainServiceAmount(user: ILoginUserInfo): Promise<SettleGetRemainServiceAmountResDto> {
+    return this.getRemainServiceAmountByUserId(user.id);
+  }
+
   /**
-   * 로그인한 사용자의 잔여 발송 한도 조회
+   * 지정한 사용자 ID 기준 잔여 발송 한도 조회.
+   * 반환값은 사용자 개인 컬럼이 아니라 해당 사용자가 속한 과금 계정(회사/wallet) 기준이다.
    * - 잔여서비스한도 = 회사최대한도 + effectiveBalance - 회사전체allSettleAmount
    * - effectiveBalance: balanceManagementType이 COMPANY이면 company.balance, 아니면 user.balance
    * - 동일 회사의 모든 계정이 한도를 공유함
-   * @param user 로그인한 사용자 정보
-   * @returns 잔여 발송 한도 정보
    */
-  async getRemainServiceAmount(user: ILoginUserInfo): Promise<SettleGetRemainServiceAmountResDto> {
+  async getRemainServiceAmountByUserId(userId: number): Promise<SettleGetRemainServiceAmountResDto> {
     // 사용자 정보 조회
     const userEntity = await this.userRepository.findOne({
-      where: { id: user.id },
+      where: { id: userId },
       relations: ['orders', 'company'],
     });
 
