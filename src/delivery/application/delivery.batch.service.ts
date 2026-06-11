@@ -171,6 +171,13 @@ export class DeliveryBatchService {
     this.deliverySendService.markSendFail(orderDelivery, status);
   }
 
+  private logSendFail(odId: number, method: string, extra: Record<string, unknown>, err: unknown): void {
+    const extraStr = Object.entries(extra)
+      .map(([k, v]) => `${k}=${v ?? 'NULL'}`)
+      .join(' ');
+    this.logger.error(`발송 실패 odId=${odId} method=${method} ${extraStr} msg=${(err as Error)?.message ?? String(err)}`);
+  }
+
   /**
    * QR 코드 이미지 생성 및 업로드
    */
@@ -1659,15 +1666,18 @@ export class DeliveryBatchService {
 
         this.markSendSuccess(orderDelivery, IOrderDeliveryStatus.COMPLETE);
       } catch (e) {
-        deliveryHistory.context = JSON.stringify(e);
+        const errMsg = (e as Error)?.message ?? String(e);
+        deliveryHistory.context = errMsg;
         deliveryHistory.isSuccess = false;
         const resultSms = await this.handleAlimTalkFail(orderDelivery, title, body, memo, tailText, filePathList, decryptedDeliveryTarget, encryptKey);
 
         if (resultSms === IOrderDeliveryStatus.COMPLETE_SMS) {
+          // 알림톡 실패 → SMS 폴백 성공 (정상 흐름이므로 에러 로그 남기지 않음)
           deliveryHistory.isSuccess = true;
           this.markSendSuccess(orderDelivery, IOrderDeliveryStatus.COMPLETE_SMS);
         } else {
-          deliveryHistory.context += JSON.stringify(resultSms);
+          deliveryHistory.context += ` / smsResult=${resultSms}`;
+          this.logSendFail(orderDelivery.id, 'ALIM_TALK', { target: decryptedDeliveryTarget, test: !!testOrderDeliveryId, alimTalkErr: errMsg, smsResult: resultSms }, e);
           this.markSendFail(orderDelivery, IOrderDeliveryStatus.FAIL);
         }
       }
@@ -1676,9 +1686,9 @@ export class DeliveryBatchService {
     // SMS 발송
     if (deliveryMethod === IOrderSendMethod.MMS) {
       const smsText = this.buildSmsText(orderDelivery, encryptKey, body, memo, tailText);
+      const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber!;
 
       try {
-        const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber!;
         await this.smsSend.send({
           msgType: 'M',
           to: decryptedDeliveryTarget,
@@ -1691,7 +1701,8 @@ export class DeliveryBatchService {
         deliveryHistory.context = smsText;
       } catch (e) {
         this.markSendFail(orderDelivery, IOrderDeliveryStatus.FAIL);
-        deliveryHistory.context = JSON.stringify(e);
+        this.logSendFail(orderDelivery.id, 'MMS', { target: decryptedDeliveryTarget, from: fromPhoneNumber, test: !!testOrderDeliveryId }, e);
+        deliveryHistory.context = (e as Error)?.message ?? String(e);
         deliveryHistory.isSuccess = false;
       }
     }
@@ -1704,9 +1715,9 @@ export class DeliveryBatchService {
       // 이메일 대신 문자로 재발송
       if (orderDelivery.barCode && orderDelivery.emailReceiverPhone) {
         const decryptedEmailReceiverPhone = this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.emailReceiverPhone) ?? orderDelivery.emailReceiverPhone;
+        const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber!;
 
         try {
-          const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber!;
           await this.smsSend.send({
             msgType: 'M',
             to: decryptedEmailReceiverPhone,
@@ -1720,7 +1731,8 @@ export class DeliveryBatchService {
           deliveryHistory.target = decryptedEmailReceiverPhone;
         } catch (e) {
           this.markSendFail(orderDelivery, IOrderDeliveryStatus.FAIL);
-          deliveryHistory.context = JSON.stringify(e);
+          this.logSendFail(orderDelivery.id, 'EMAIL_SMS_RESEND', { target: decryptedEmailReceiverPhone, from: fromPhoneNumber, test: !!testOrderDeliveryId }, e);
+          deliveryHistory.context = (e as Error)?.message ?? String(e);
           deliveryHistory.isSuccess = false;
         }
       } else {
@@ -1780,8 +1792,9 @@ export class DeliveryBatchService {
           qrCodeImagePath,
         });
 
+        const fromEmail = orderDelivery.orderProductMapping.fromEmail;
+
         try {
-          const fromEmail = orderDelivery.orderProductMapping.fromEmail;
           await this.mailSend.send({
             saveSentMail: 'N',
             bcc: undefined,
@@ -1795,7 +1808,8 @@ export class DeliveryBatchService {
           deliveryHistory.context = emailText;
         } catch (e) {
           this.markSendFail(orderDelivery, IOrderDeliveryStatus.FAIL);
-          deliveryHistory.context = JSON.stringify(e);
+          this.logSendFail(orderDelivery.id, 'EMAIL', { target: decryptedDeliveryTarget, fromEmail: fromEmail, test: !!testOrderDeliveryId }, e);
+          deliveryHistory.context = (e as Error)?.message ?? String(e);
           deliveryHistory.isSuccess = false;
         }
       }
@@ -1812,7 +1826,11 @@ export class DeliveryBatchService {
       await this.orderDeliveryRepository.save(orderDelivery);
     }
 
-    await this.deliverySendHistoryRepository.save(deliveryHistory);
+    // 테스트 발송은 발송실패내역(delivery_send_history)에 기록하지 않는다.
+    // 실패 원인은 위 catch 블록의 logger.error 로그로만 추적한다.
+    if (!testOrderDeliveryId) {
+      await this.deliverySendHistoryRepository.save(deliveryHistory);
+    }
 
     return orderDelivery.status === IOrderDeliveryStatus.COMPLETE || orderDelivery.status === IOrderDeliveryStatus.COMPLETE_SMS;
   }
