@@ -453,7 +453,7 @@ export class OrderFromService {
    */
   async assertApprovedPhones(
     billingUserId: number,
-    mappings: Array<{ sendMethod: IOrderSendMethod; fromPhoneNumber: string | null }>,
+    mappings: Array<{ sendMethod: IOrderSendMethod | null; fromPhoneNumber: string | null }>,
   ): Promise<void> {
     const needsMms = mappings.some((m) => m.sendMethod === IOrderSendMethod.MMS);
     const approved = needsMms ? await this.getApprovedPhoneSet(billingUserId) : new Set<string>();

@@ -87,6 +87,8 @@ import {
   validateDeliverySendTypes,
   resolveProductDuplicateLimit,
 } from '../domain/order.validation';
+import { OrderFromService } from '../../order_from/application/order.from.service';
+import { getBillingUserId } from '../domain/order.billing-user.helper';
 import { listToMap, listToMapValue } from '../../util/map.util';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 import { CreateTransactionId } from '../domain/create.transaction.id';
@@ -280,6 +282,7 @@ export class OrderService {
     private readonly forbiddenWordMatcher: ForbiddenWordMatcher,
     @InjectRepository(ForbiddenWordBlockLogEntity)
     private readonly forbiddenWordBlockLogRepository: Repository<ForbiddenWordBlockLogEntity>,
+    private readonly orderFromService: OrderFromService,
   ) {}
 
   /**
@@ -3321,6 +3324,13 @@ export class OrderService {
 
     OrderValidation(order);
 
+    if (process.env.FROM_PHONE_SOT_ENFORCE === 'true') {
+      await this.orderFromService.assertApprovedPhones(
+        getBillingUserId(order),
+        order.orderProductMappings!,
+      );
+    }
+
     // 총 주문 금액
     const totalAmount = order.orderProductMappings.reduce((sum, m) => {
       if (!m.product) {
@@ -3542,6 +3552,13 @@ export class OrderService {
     }
 
     OrderValidation(order);
+
+    if (process.env.FROM_PHONE_SOT_ENFORCE === 'true') {
+      await this.orderFromService.assertApprovedPhones(
+        getBillingUserId(order),
+        order.orderProductMappings!,
+      );
+    }
 
     // 신세계 상품 검증 (confirmEventBalance는 한도 체크 이후에 실행)
     if (order.type === IOrderType.SSG) {
