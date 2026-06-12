@@ -80,7 +80,13 @@ import { Transactional } from 'typeorm-transactional';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { TestOrderDeliveryEntity } from '../../entity/test.order.delivery.entity';
 import { ProductEntity } from '../../entity/product.entity';
-import { OrderValidation, validateSsgReservationWindow } from '../domain/order.validation';
+import {
+  OrderValidation,
+  validateSsgReservationWindow,
+  validateSsgUniformSend,
+  validateDeliverySendTypes,
+  resolveProductDuplicateLimit,
+} from '../domain/order.validation';
 import { listToMap, listToMapValue } from '../../util/map.util';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 import { CreateTransactionId } from '../domain/create.transaction.id';
@@ -2887,21 +2893,19 @@ export class OrderService {
     const ssgReservationRange =
       type === IOrderType.SSG ? await this.ssgEventService.getReservationRange() : null;
     validateSsgReservationWindow(type, orderProductList, ssgReservationRange);
+    // SSG 주문은 모든 상품 행의 발송 유형/예약시각이 동일해야 함 (혼합/불일치 400)
+    validateSsgUniformSend(type, orderProductList);
 
-    const productIdList = orderProductList.map((product) => product.productId);
-    const uniqueProductId = new Set(productIdList);
-
-    if (uniqueProductId.size !== productIdList.length) {
-      throw new BadRequestException('중복 상품이 존재합니다.');
-    }
+    // 동일 productId를 여러 행으로 저장할 수 있으므로 상품 조회는 unique 기준으로 수행
+    const uniqueProductIds = [...new Set(orderProductList.map((product) => product.productId))];
 
     const getProductList = await this.productRepository.find({
       where: {
-        id: In(productIdList),
+        id: In(uniqueProductIds),
       },
     });
 
-    if (productIdList.length !== getProductList.length) {
+    if (uniqueProductIds.length !== getProductList.length) {
       throw new BadRequestException('존재하지 않는 상품을 추가하였습니다.');
     }
     const productPriceMap = listToMap(getProductList, (product) => product.id);
@@ -2925,17 +2929,6 @@ export class OrderService {
       const getProduct = productPriceMap.get(orderProduct.productId)!;
       sendAmount += getProduct.price * orderProduct.amount;
     }
-
-    // 첫 번째 상품의 sendType으로 즉시발송 여부 판단
-    const firstProduct = orderProductList[0];
-    const isImmediate = firstProduct?.sendType === 'IMMEDIATE';
-    const defaultSendAt = isImmediate
-      ? new Date()
-      : firstProduct?.sendRequestAt
-        ? new Date(firstProduct.sendRequestAt)
-        : (() => {
-            throw new BadRequestException('sendRequestAt 누락');
-          })();
 
     // 대행주문인 경우 operationUserId 자동 배정
     const operationUserId = clientUserId ? user.id : null;
@@ -2983,12 +2976,19 @@ export class OrderService {
       orderProduct.topImagePath = topImagePath ?? OrderService.DEFAULT_TOP_IMAGE_PATH;
       orderProduct.midImagePath = midImagePath ?? OrderService.DEFAULT_MID_IMAGE_PATH;
 
-      const isProductImmediate = product.sendType === 'IMMEDIATE';
-      const productSendAt = isProductImmediate
-        ? new Date()
-        : product.sendRequestAt
-          ? new Date(product.sendRequestAt)
-          : defaultSendAt;
+      // 행별 발송 시각 결정 (다른 행의 시각을 상속하지 않음)
+      let productSendAt: Date;
+      if (product.sendType === 'IMMEDIATE') {
+        productSendAt = new Date();
+      } else if (product.sendType === 'RESERVE') {
+        if (!product.sendRequestAt) {
+          throw new BadRequestException('예약 발송 상품에는 발송 요청 시각이 필요합니다.');
+        }
+        productSendAt = new Date(product.sendRequestAt);
+      } else {
+        // 임시저장 draft(sendType 미선택): 다른 행 시각 상속 없이 자체 값 또는 현재 시각 사용
+        productSendAt = product.sendRequestAt ? new Date(product.sendRequestAt) : new Date();
+      }
 
       orderProduct.sendMethod = product.sendMethod;
       orderProduct.sendTailText = product.sendTailText;
@@ -3080,21 +3080,19 @@ export class OrderService {
     const ssgReservationRange =
       order.type === IOrderType.SSG ? await this.ssgEventService.getReservationRange() : null;
     validateSsgReservationWindow(order.type, orderProductList, ssgReservationRange);
+    // SSG 주문은 모든 상품 행의 발송 유형/예약시각이 동일해야 함 (혼합/불일치 400)
+    validateSsgUniformSend(order.type, orderProductList);
 
-    const productIdList = orderProductList.map((orderProduct) => orderProduct.productId);
-    const uniqueProductId = new Set(productIdList);
-
-    if (uniqueProductId.size !== productIdList.length) {
-      throw new BadRequestException('중복 상품이 존재합니다.');
-    }
+    // 동일 productId를 여러 행으로 저장할 수 있으므로 상품 조회는 unique 기준으로 수행
+    const uniqueProductIds = [...new Set(orderProductList.map((orderProduct) => orderProduct.productId))];
 
     const getProductList = await this.productRepository.find({
       where: {
-        id: In(productIdList),
+        id: In(uniqueProductIds),
       },
     });
 
-    if (productIdList.length !== getProductList.length) {
+    if (uniqueProductIds.length !== getProductList.length) {
       throw new BadRequestException('존재하지 않는 상품을 추가하였습니다.');
     }
     const productPriceMap = listToMap(getProductList, (product) => product.id);
@@ -3105,17 +3103,6 @@ export class OrderService {
       const getProduct = productPriceMap.get(orderProduct.productId)!;
       sendAmount += getProduct.price * orderProduct.amount;
     }
-
-    // 첫 번째 상품의 sendType으로 즉시발송 여부 판단
-    const firstProduct = orderProductList[0];
-    const isImmediate = firstProduct?.sendType === 'IMMEDIATE';
-    const defaultSendAt = isImmediate
-      ? new Date()
-      : firstProduct?.sendRequestAt
-        ? new Date(firstProduct.sendRequestAt)
-        : (() => {
-            throw new BadRequestException('sendRequestAt 누락');
-          })();
 
     order.eventName = eventName;
     order.sendAmount = sendAmount;
@@ -3156,12 +3143,19 @@ export class OrderService {
       orderProduct.topImagePath = topImagePath ?? OrderService.DEFAULT_TOP_IMAGE_PATH;
       orderProduct.midImagePath = midImagePath ?? OrderService.DEFAULT_MID_IMAGE_PATH;
 
-      const isProductImmediate = product.sendType === 'IMMEDIATE';
-      const productSendAt = isProductImmediate
-        ? new Date()
-        : product.sendRequestAt
-          ? new Date(product.sendRequestAt)
-          : defaultSendAt;
+      // 행별 발송 시각 결정 (다른 행의 시각을 상속하지 않음)
+      let productSendAt: Date;
+      if (product.sendType === 'IMMEDIATE') {
+        productSendAt = new Date();
+      } else if (product.sendType === 'RESERVE') {
+        if (!product.sendRequestAt) {
+          throw new BadRequestException('예약 발송 상품에는 발송 요청 시각이 필요합니다.');
+        }
+        productSendAt = new Date(product.sendRequestAt);
+      } else {
+        // 임시저장 draft(sendType 미선택): 다른 행 시각 상속 없이 자체 값 또는 현재 시각 사용
+        productSendAt = product.sendRequestAt ? new Date(product.sendRequestAt) : new Date();
+      }
 
       orderProduct.sendMethod = product.sendMethod;
       orderProduct.sendTailText = product.sendTailText;
@@ -3322,6 +3316,8 @@ export class OrderService {
     const ssgReservationRange =
       order.type === IOrderType.SSG ? await this.ssgEventService.getReservationRange() : null;
     validateSsgReservationWindow(order.type, order.orderProductMappings!, ssgReservationRange);
+    // 실발송 직전: 모든 행의 sendType 확정 + RESERVE 행 sendRequestAt 필수 (null 행이 즉시발송으로 잘못 차감되는 것 방지)
+    validateDeliverySendTypes(order.orderProductMappings!);
 
     OrderValidation(order);
 
@@ -3378,33 +3374,36 @@ export class OrderService {
     let ssgAllocations: { deliveryId: number; eventId: number; price: number }[] | null = null;
 
     if (order.type === IOrderType.SSG) {
-      const firstProduct = order.orderProductMappings[0].product;
-      if (!firstProduct) {
-        throw new BadRequestException('상품 정보가 존재하지 않습니다.');
-      }
-      const couponExpiration = firstProduct.expireDay;
+      // 발송 유형/예약시각 균일성 검증 (혼합/불일치 400) — 배포 전 생성된 혼합 주문 방어 포함
+      validateSsgUniformSend(order.type, order.orderProductMappings!);
 
-      // 모든 배송건 정보 수집 (각 배송건 = 상품권 1장)
+      // expireDay(상품 유효기간)는 모든 SSG mapping이 동일해야 대표값을 전체에 적용 가능
+      // 배송건 수집과 유효기간 검증을 단일 루프에서 처리
+      const expireDays = new Set<number>();
       const deliveries: { deliveryId: number; price: number }[] = [];
       for (const orderMapping of order.orderProductMappings!) {
         if (!orderMapping.product) {
           throw new BadRequestException('상품 정보가 존재하지 않습니다.');
         }
+        expireDays.add(orderMapping.product.expireDay);
         const price = orderMapping.product.price;
         for (const orderDelivery of orderMapping.orderDeliveries) {
-          deliveries.push({
-            deliveryId: orderDelivery.id,
-            price,
-          });
+          deliveries.push({ deliveryId: orderDelivery.id, price });
         }
       }
+      if (expireDays.size > 1) {
+        throw new BadRequestException('SSG 주문의 상품 유효기간은 모든 상품 행에서 동일해야 합니다.');
+      }
+      const couponExpiration = order.orderProductMappings![0].product!.expireDay;
 
       // 예약발송이면 예약일 기준으로 행사 매칭, 즉시발송이면 현재 시점 기준
-      const firstMapping = order.orderProductMappings![0];
-      const reserveDate =
-        firstMapping?.sendType === 'RESERVE' && firstMapping?.sendRequestAt
-          ? new Date(firstMapping.sendRequestAt as unknown as string)
-          : undefined;
+      // 모든 예약 mapping의 sendRequestAt이 동일함은 위 균일성 검증으로 보장 → 공통 예약시각 사용
+      const reserveMapping = order.orderProductMappings!.find(
+        (mapping) => mapping.sendType === 'RESERVE' && mapping.sendRequestAt,
+      );
+      const reserveDate = reserveMapping
+        ? new Date(reserveMapping.sendRequestAt as unknown as string)
+        : undefined;
 
       // 배송건별 행사 할당 (All or Nothing)
       ssgAllocations = await this.ssgEventService.allocateEventsForDeliveries(
@@ -3639,67 +3638,46 @@ export class OrderService {
     const todayEnd = new Date();
     todayEnd.setHours(23, 59, 59, 999);
 
+    // productId별 그룹 제한 결정 (같은 productId 여러 mapping 중 가장 엄격한 유한 제한 사용)
+    //  - ADDITIONAL(할증): 무제한
+    //  - DISCOUNT(할인): [임시 비활성화] 무제한 취급 (복구 시 allowedCount=1 후보 추가)
+    //  - 할인/할증 없음: duplicatePhoneLimit (0이면 무제한)
+    // 유한 후보가 하나도 없으면(모두 무제한) 해당 productId 그룹은 검사 생략.
+    const productLimit = resolveProductDuplicateLimit(
+      order.orderProductMappings!,
+      mappingPriceAdjustments,
+      oneUser.duplicatePhoneLimit,
+    );
+
+    // 현재 주문 내 productId + 수신처(정규화·암호화된 값) 기준 합산 count
+    // 무제한 mapping(ADDITIONAL 등)의 배송건도 같은 productId에 유한 제한이 있으면 합산 대상에 포함
+    const currentGroupCount = new Map<number, Map<string, number>>();
     for (const orderMapping of order.orderProductMappings!) {
-      const priceAdjustment = mappingPriceAdjustments.get(orderMapping.id);
-
-      // 할증인 경우 중복 체크 스킵 (무제한)
-      if (priceAdjustment === IPriceAdjustment.ADDITIONAL) {
-        this.logger.debug(`상품 ${orderMapping.productId}: 할증 적용, 중복 체크 스킵 (무제한)`);
-        continue;
+      let targetCounts = currentGroupCount.get(orderMapping.productId);
+      if (!targetCounts) {
+        targetCounts = new Map<string, number>();
+        currentGroupCount.set(orderMapping.productId, targetCounts);
       }
-
-      // [임시 비활성화] 할인 상품도 중복 체크 스킵 - 복구 시 이 블록 삭제
-      if (priceAdjustment === IPriceAdjustment.DISCOUNT) {
-        this.logger.debug(`상품 ${orderMapping.productId}: 할인 적용, 중복 체크 임시 비활성화`);
-        continue;
-      }
-
-      // 허용 개수 결정
-      let allowedCount: number;
-      // [임시 비활성화] 할인은 위에서 continue 처리됨, 아래는 할인/할증 없음만 해당
-      // if (priceAdjustment === IPriceAdjustment.DISCOUNT) {
-      //   allowedCount = 1;
-      //   this.logger.debug(`상품 ${orderMapping.productId}: 할인 적용, 중복 허용 1건`);
-      // } else {
-      // 할인/할증 없음인 경우
-      if (oneUser.duplicatePhoneLimit === 0) {
-        // 0이면 무제한
-        this.logger.debug(`상품 ${orderMapping.productId}: 할인/할증 없음, duplicatePhoneLimit=0 (무제한)`);
-        continue;
-      }
-      allowedCount = oneUser.duplicatePhoneLimit;
-      this.logger.debug(`상품 ${orderMapping.productId}: 할인/할증 없음, 중복 허용 ${allowedCount}건`);
-      // }
-
-      // 현재 주문 내 중복 체크
-      const currentOrderPhoneCount = new Map<string, number>();
       for (const od of orderMapping.orderDeliveries) {
-        const phone = od.deliveryTarget;
-        currentOrderPhoneCount.set(phone, (currentOrderPhoneCount.get(phone) || 0) + 1);
+        targetCounts.set(od.deliveryTarget, (targetCounts.get(od.deliveryTarget) || 0) + 1);
       }
+    }
 
-      const duplicateErrors: string[] = [];
+    // 그룹별 제한 검증 (기존 주문 + 현재 주문 합산)
+    const duplicateErrors: string[] = [];
+    for (const [productId, targetCounts] of currentGroupCount.entries()) {
+      const allowedCount = productLimit.get(productId);
+      if (allowedCount === undefined) continue; // 무제한 그룹
 
-      // 현재 주문 내 중복 체크
-      for (const [phone, count] of currentOrderPhoneCount.entries()) {
-        if (count > allowedCount) {
-          const displayPhone = this.cryptoCipher.safeDecryptDeliveryTarget(phone) ?? phone;
-          duplicateErrors.push(`- ${displayPhone}: 현재 주문에 ${count}건 포함 (허용: ${allowedCount}건)`);
-        }
-      }
-
-      // 기존 주문과 중복 체크
-      for (const [phone, currentCount] of currentOrderPhoneCount.entries()) {
-        const displayPhone = this.cryptoCipher.safeDecryptDeliveryTarget(phone) ?? phone;
-
-        // 하루 기준 동일상품 동일수신처 발송 횟수
+      for (const [target, currentCount] of targetCounts.entries()) {
+        // 하루 기준 동일상품 동일수신처 발송 횟수 (기존 주문)
         const existingCount = await this.orderDeliveryRepository
           .createQueryBuilder('od')
           .innerJoin('od.orderProductMapping', 'opm')
           .innerJoin('opm.order', 'o')
           .where('o.userId = :userId', { userId: order.userId })
-          .andWhere('opm.productId = :productId', { productId: orderMapping.productId })
-          .andWhere('od.deliveryTarget = :deliveryTarget', { deliveryTarget: phone })
+          .andWhere('opm.productId = :productId', { productId })
+          .andWhere('od.deliveryTarget = :deliveryTarget', { deliveryTarget: target })
           .andWhere('o.id != :currentOrderId', { currentOrderId: order.id })
           .andWhere('o.status IN (:...statuses)', {
             statuses: [IOrderStatus.DELIVERY_CONFIRMED, IOrderStatus.DELIVERY_COMPLETE],
@@ -3709,9 +3687,10 @@ export class OrderService {
           .getCount();
 
         const totalCount = existingCount + currentCount;
+        const displayPhone = this.cryptoCipher.safeDecryptDeliveryTarget(target) ?? target;
 
         this.logger.debug(
-          `중복 체크: 상품=${orderMapping.productId}, 수신처=${displayPhone}, 기존=${existingCount}, 현재=${currentCount}, 합계=${totalCount}, 허용=${allowedCount}`,
+          `중복 체크: 상품=${productId}, 수신처=${displayPhone}, 기존=${existingCount}, 현재=${currentCount}, 합계=${totalCount}, 허용=${allowedCount}`,
         );
 
         if (totalCount > allowedCount) {
@@ -3720,16 +3699,13 @@ export class OrderService {
           );
         }
       }
+    }
 
-      // 중복 에러가 있으면 발송 거절
-      if (duplicateErrors.length > 0) {
-        // [임시 비활성화] 할인은 위에서 continue 처리되어 여기까지 오지 않음
-        // const statusText = priceAdjustment === IPriceAdjustment.DISCOUNT ? '할인 적용 상품' : '일반 상품';
-        const statusText = '일반 상품';
-        throw new BadRequestException(
-          `${statusText}의 중복발송 제한(${allowedCount}건까지 허용)을 초과한 수신처가 발견되었습니다:\n\n${duplicateErrors.join('\n')}`,
-        );
-      }
+    // 중복 에러가 있으면 발송 거절
+    if (duplicateErrors.length > 0) {
+      throw new BadRequestException(
+        `일반 상품의 중복발송 제한을 초과한 수신처가 발견되었습니다:\n\n${duplicateErrors.join('\n')}`,
+      );
     }
     // ======== 중복번호 제어 체크 끝 ========
 
@@ -4234,9 +4210,13 @@ export class OrderService {
     const isCompanyBalanceMode = oneUser.company?.balanceManagementType === 'COMPANY';
 
     const now = new Date();
-    // 첫 번째 상품의 발송 요청 시간 사용
-    const firstMapping = order.orderProductMappings?.[0];
-    const sendRequestAtTime = firstMapping?.sendRequestAt?.getTime() ?? 0;
+    // 취소 기준 시각: 예약 mapping들의 sendRequestAt 중 가장 이른 시각 사용
+    // 신규 주문은 모든 예약시각이 동일하므로 공통 시각과 같고,
+    // 배포 전 생성된 혼합 예약 주문은 가장 임박한 발송 건을 보호한다.
+    const reserveSendTimes = (order.orderProductMappings ?? [])
+      .filter((mapping) => mapping.sendType === 'RESERVE' && mapping.sendRequestAt)
+      .map((mapping) => mapping.sendRequestAt!.getTime());
+    const sendRequestAtTime = reserveSendTimes.length > 0 ? Math.min(...reserveSendTimes) : 0;
     const nowTime = now.getTime();
     const diffMs = sendRequestAtTime - nowTime;
     const tenMinutesMs = 10 * 60 * 1000;
