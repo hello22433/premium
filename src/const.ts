@@ -7,7 +7,11 @@ export const EmailCertifyExpireMinute = 5;
 
 export const EmailCertifyExpireDay = 30;
 
-export const defaultFromPhoneNumber = '16443614';
+/** 자사(ePOPKON) 대표 발신번호. 시스템 메시지(로그인/비번찾기/계정알림) + ALIM_TALK + 레거시 null 발송 안전망 전용. */
+export const systemFromPhoneNumber = '16443614';
+
+/** @deprecated systemFromPhoneNumber 또는 OrderFromService.resolveSendDefaultPhone 사용. cutover 후 제거 예정. */
+export const defaultFromPhoneNumber = systemFromPhoneNumber;
 
 export const customerName = '모바일이앤엠애드';
 
