@@ -1,6 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
 import { OrderFromService } from './order.from.service';
 import { IOrderSendMethod } from '../../order/interface/order.send.method';
+import { systemFromPhoneNumber } from '../../const';
 
 const makeSut = () => {
   const sut: any = Object.create(OrderFromService.prototype);
@@ -32,7 +33,7 @@ describe('OrderFromService SoT — getApprovedPhoneSet / resolve', () => {
   it('resolveSendDefaultPhone 은 승인번호 없으면 systemFromPhoneNumber', async () => {
     const sut = makeSut();
     sut.orderFromDefinitionRepository.find.mockResolvedValue([]);
-    expect(await sut.resolveSendDefaultPhone(10)).toBe('16443614');
+    expect(await sut.resolveSendDefaultPhone(10)).toBe(systemFromPhoneNumber);
   });
 });
 
@@ -57,6 +58,23 @@ describe('OrderFromService SoT — assertApprovedPhones', () => {
     sut.orderFromDefinitionRepository.find.mockResolvedValue([]);
     await expect(sut.assertApprovedPhones(10, [mapping(IOrderSendMethod.ALIM_TALK, '16443614')])).resolves.toBeUndefined();
     await expect(sut.assertApprovedPhones(10, [mapping(IOrderSendMethod.ALIM_TALK, '01099998888')])).rejects.toThrow(BadRequestException);
+  });
+
+  it('ALIM_TALK 빈값은 차단', async () => {
+    const sut = makeSut();
+    sut.orderFromDefinitionRepository.find.mockResolvedValue([]);
+    await expect(sut.assertApprovedPhones(10, [mapping(IOrderSendMethod.ALIM_TALK, null)])).rejects.toThrow(BadRequestException);
+  });
+
+  it('MMS + ALIM_TALK 혼합 배열은 둘 다 검증 통과', async () => {
+    const sut = makeSut();
+    sut.orderFromDefinitionRepository.find.mockResolvedValue([{ from: '0212345678', isDefault: true, id: 1 }]);
+    await expect(
+      sut.assertApprovedPhones(10, [
+        mapping(IOrderSendMethod.MMS, '0212345678'),
+        mapping(IOrderSendMethod.ALIM_TALK, systemFromPhoneNumber),
+      ]),
+    ).resolves.toBeUndefined();
   });
 
   it('상품 N개라도 find 는 1회만 (Set 재사용)', async () => {

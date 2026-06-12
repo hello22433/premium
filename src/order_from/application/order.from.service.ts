@@ -436,6 +436,7 @@ export class OrderFromService {
       },
       order: { isDefault: 'DESC', id: 'ASC' },
       take: 1,
+      select: ['from'],
     });
     return rows.length > 0 ? rows[0].from : null;
   }
@@ -469,6 +470,9 @@ export class OrderFromService {
           throw new BadRequestException('승인된 발신번호가 아닙니다.');
         }
       } else if (m.sendMethod === IOrderSendMethod.ALIM_TALK) {
+        if (isBlankAfterNormalize(m.fromPhoneNumber)) {
+          throw new BadRequestException('발신 번호를 입력해 주세요.');
+        }
         if (normalizeFromPhone(m.fromPhoneNumber) !== systemNorm) {
           throw new BadRequestException('알림톡 발신번호가 올바르지 않습니다.');
         }
