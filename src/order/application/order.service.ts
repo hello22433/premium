@@ -2480,6 +2480,14 @@ export class OrderService {
     const deliveryUpdatePromises: Promise<unknown>[] = [];
     const refundPromises: Promise<unknown>[] = [];
 
+    // 합산 행(크로스 상품 수신번호) 대응: 주문 전체 delivery 를 한 map 으로 모은다.
+    // 합산 행은 deliveryIds 가 여러 상품에 걸쳐 있어 상품 하나의 deliveries 로는 검증/동기화할 수 없다.
+    const allDeliveryById = new Map<number, OrderDeliveryEntity>(
+      [...existingOrderProductMap.values()].flatMap((orderProduct) =>
+        ((orderProduct.orderDeliveries ?? []) as OrderDeliveryEntity[]).map((d) => [d.id, d]),
+      ),
+    );
+
     for (const settle of list) {
       const oneOrderProduct = existingOrderProductMap.get(settle.id);
       if (!oneOrderProduct) {
@@ -2487,14 +2495,14 @@ export class OrderService {
       }
 
       if (settle.deliveryIds && settle.deliveryIds.length > 0) {
-        const mappingDeliveryById = new Map<number, OrderDeliveryEntity>(
-          (oneOrderProduct.orderDeliveries ?? []).map((delivery: OrderDeliveryEntity) => [delivery.id, delivery]),
-        );
-
         for (const deliveryId of settle.deliveryIds) {
-          if (!mappingDeliveryById.has(deliveryId)) {
-            throw new BadRequestException('여러 상품이 묶인 정산 항목은 상품별로 분리해서 저장해주세요.');
+          if (!allDeliveryById.has(deliveryId)) {
+            throw new BadRequestException('주문에 속하지 않는 발송 내역이 포함되어 있습니다.');
           }
+          const delivery = allDeliveryById.get(deliveryId)!;
+          delivery.settleFee = settle.fee;
+          delivery.settlePriceAdjustment = settle.priceAdjustment;
+          delivery.settleDiscountType = settle.settleDiscountType;
         }
 
         deliveryUpdatePromises.push(
@@ -2508,19 +2516,10 @@ export class OrderService {
           ),
         );
 
-        for (const deliveryId of settle.deliveryIds) {
-          const delivery = mappingDeliveryById.get(deliveryId);
-          if (!delivery) continue;
-          delivery.settleFee = settle.fee;
-          delivery.settlePriceAdjustment = settle.priceAdjustment;
-          delivery.settleDiscountType = settle.settleDiscountType;
-        }
-
         if (settle.refund !== undefined) {
           refundPromises.push(this.orderDeliveryRepository.update({ id: In(settle.deliveryIds) }, { refundRatio: settle.refund }));
           for (const deliveryId of settle.deliveryIds) {
-            const delivery = mappingDeliveryById.get(deliveryId);
-            if (delivery) delivery.refundRatio = settle.refund;
+            allDeliveryById.get(deliveryId)!.refundRatio = settle.refund;
           }
         }
 
@@ -2576,14 +2575,8 @@ export class OrderService {
       }
     }
 
-    // SSG delivery 업데이트 병렬 실행
-    if (deliveryUpdatePromises.length > 0) {
-      await Promise.all(deliveryUpdatePromises);
-    }
-
-    if (refundPromises.length > 0) {
-      await Promise.all(refundPromises);
-    }
+    await Promise.all(deliveryUpdatePromises);
+    await Promise.all(refundPromises);
 
     return { orderProductList };
   }
