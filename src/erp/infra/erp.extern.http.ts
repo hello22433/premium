@@ -34,8 +34,10 @@ export class ErpExternHttp implements IErpExtern {
   private loginPromise: Promise<{ zone: string; sessionId: string }> | null = null;
 
   private saleUrl = 'https://oapi{ZONE}.ecount.com/OAPI/V2/Sale/SaveSale?SESSION_ID={SESSION_ID}';
-  private productListUrl = 'https://oapi{ZONE}.ecount.com/OAPI/V2/InventoryBasic/GetBasicProductsList?SESSION_ID={SESSION_ID}';
-  private productDetailUrl = 'https://oapi{ZONE}.ecount.com/OAPI/V2/InventoryBasic/ViewBasicProduct?SESSION_ID={SESSION_ID}';
+  private productListUrl =
+    'https://oapi{ZONE}.ecount.com/OAPI/V2/InventoryBasic/GetBasicProductsList?SESSION_ID={SESSION_ID}';
+  private productDetailUrl =
+    'https://oapi{ZONE}.ecount.com/OAPI/V2/InventoryBasic/ViewBasicProduct?SESSION_ID={SESSION_ID}';
   private zoneUrl = 'https://oapi.ecount.com/OAPI/V2/Zone';
   private loginUrl = 'https://oapi{ZONE}.ecount.com/OAPI/V2/OAPILogin';
 

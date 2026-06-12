@@ -23,9 +23,7 @@ async function main() {
   const http = ctx.get(HttpService);
   const config = ctx.get(ConfigService);
   const comCode = config.getOrThrow('ERP_COM_CODE');
-  const zoneResp = await firstValueFrom(
-    http.post('https://oapi.ecount.com/OAPI/V2/Zone', { COM_CODE: comCode }, {}),
-  );
+  const zoneResp = await firstValueFrom(http.post('https://oapi.ecount.com/OAPI/V2/Zone', { COM_CODE: comCode }, {}));
   console.log('=== ZONE RAW ===');
   console.log(JSON.stringify(zoneResp.data));
 
