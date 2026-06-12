@@ -1,7 +1,7 @@
 import { BadRequestException, ForbiddenException, Inject, Injectable } from '@nestjs/common';
 import { OrderFromDefinitionEntity } from '../../entity/order.from.definition.entity';
-import { InjectRepository } from '@nestjs/typeorm';
-import { In, IsNull, Like, Repository } from 'typeorm';
+import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
+import { DataSource, EntityManager, In, IsNull, Like, Repository } from 'typeorm';
 import { OrderFromDefinitionType, OrderFromRequestStatus } from '../interface/order.from.definition.type';
 import { OrderFromGetEmailListResDto, OrderFromGetPhoneListResDto, OrderFromPhoneManageListResDto } from '../api/order.from.res.dto';
 import {
@@ -17,6 +17,9 @@ import { ConfigService } from '@nestjs/config';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { IUserAuthority } from '../../user/interface/user.authority';
 import { UserEntity } from '../../entity/user.entity';
+import { normalizeFromPhone, isBlankAfterNormalize } from '../domain/from-phone.normalize';
+import { systemFromPhoneNumber } from '../../const';
+import { IOrderSendMethod } from '../../order/interface/order.send.method';
 
 @Injectable()
 export class OrderFromService {
@@ -28,6 +31,8 @@ export class OrderFromService {
     @Inject('IMailSend')
     private mailSend: IMailSend,
     private configService: ConfigService,
+    @InjectDataSource()
+    private readonly dataSource: DataSource,
   ) {}
 
   // 본인이거나 대리 권한(SUPER_ADMIN/OPERATION_ADMIN)이면 타 계정 userId 허용.
@@ -404,5 +409,70 @@ export class OrderFromService {
 
     // 새로운 기본 발신번호 설정
     await this.orderFromDefinitionRepository.update(id, { isDefault: true });
+  }
+
+  /** 해당 user 의 APPROVED PHONE from 정규화 Set (1회 조회). */
+  async getApprovedPhoneSet(userId: number): Promise<Set<string>> {
+    const rows = await this.orderFromDefinitionRepository.find({
+      where: {
+        type: OrderFromDefinitionType.PHONE,
+        userId,
+        requestStatus: OrderFromRequestStatus.APPROVED,
+        deletedAt: IsNull(),
+      },
+      select: ['from'],
+    });
+    return new Set(rows.map((r) => normalizeFromPhone(r.from)));
+  }
+
+  /** 표시/MMS 용. APPROVED PHONE 기본(isDefault DESC,id ASC) from, 없으면 null. 시스템번호로 대체하지 않는다. */
+  async resolveApprovedDefaultPhone(userId: number): Promise<string | null> {
+    const rows = await this.orderFromDefinitionRepository.find({
+      where: {
+        type: OrderFromDefinitionType.PHONE,
+        userId,
+        requestStatus: OrderFromRequestStatus.APPROVED,
+        deletedAt: IsNull(),
+      },
+      order: { isDefault: 'DESC', id: 'ASC' },
+      take: 1,
+    });
+    return rows.length > 0 ? rows[0].from : null;
+  }
+
+  /** 발송 안전망 전용. 승인 기본번호 없으면 systemFromPhoneNumber. 표시에 사용 금지. */
+  async resolveSendDefaultPhone(userId: number): Promise<string> {
+    return (await this.resolveApprovedDefaultPhone(userId)) ?? systemFromPhoneNumber;
+  }
+
+  /**
+   * 주문 생성 발신번호 정책 검증.
+   * - MMS: billingUserId 의 APPROVED PHONE 에 정규화 매칭 필수.
+   * - ALIM_TALK: systemFromPhoneNumber 만 허용.
+   * - 그 외(EMAIL 등): skip.
+   * APPROVED 목록은 1회 조회 후 Set 재사용.
+   */
+  async assertApprovedPhones(
+    billingUserId: number,
+    mappings: Array<{ sendMethod: IOrderSendMethod; fromPhoneNumber: string | null }>,
+  ): Promise<void> {
+    const needsMms = mappings.some((m) => m.sendMethod === IOrderSendMethod.MMS);
+    const approved = needsMms ? await this.getApprovedPhoneSet(billingUserId) : new Set<string>();
+    const systemNorm = normalizeFromPhone(systemFromPhoneNumber);
+
+    for (const m of mappings) {
+      if (m.sendMethod === IOrderSendMethod.MMS) {
+        if (isBlankAfterNormalize(m.fromPhoneNumber)) {
+          throw new BadRequestException('발신 번호를 입력해 주세요.');
+        }
+        if (!approved.has(normalizeFromPhone(m.fromPhoneNumber))) {
+          throw new BadRequestException('승인된 발신번호가 아닙니다.');
+        }
+      } else if (m.sendMethod === IOrderSendMethod.ALIM_TALK) {
+        if (normalizeFromPhone(m.fromPhoneNumber) !== systemNorm) {
+          throw new BadRequestException('알림톡 발신번호가 올바르지 않습니다.');
+        }
+      }
+    }
   }
 }
