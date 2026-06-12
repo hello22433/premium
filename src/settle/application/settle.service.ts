@@ -857,13 +857,13 @@ export class SettleService {
           }
         }
         const totalAmount = deliveryAmount * orderProductMapping.product.price;
-        tradeRate = +((tradeAmount / deliveryAmount) * 100).toFixed(1);
+        tradeRate = deliveryAmount > 0 ? +((tradeAmount / deliveryAmount) * 100).toFixed(1) : 0;
         unExchangedPrice = orderProductMapping.product.price * unExchangedAmount;
         refundPrice = orderProductMapping.product.price * refundAmount;
         cardFee = totalAmount * (cardFeePercent / 100);
         deliveryFee = totalAmount * (mmsFee / 100);
         profitAmount = unExchangedPrice - (deliveryFee + cardFee);
-        profitRate = +((profitAmount / totalAmount) * 100).toFixed(1);
+        profitRate = totalAmount > 0 ? +((profitAmount / totalAmount) * 100).toFixed(1) : 0;
 
         resultList.push({
           id: order.id,
@@ -1047,13 +1047,13 @@ export class SettleService {
             }
           }
           const totalAmount = deliveryAmount * orderProductMapping.product.price;
-          tradeRate = +((tradeAmount / deliveryAmount) * 100).toFixed(1);
+          tradeRate = deliveryAmount > 0 ? +((tradeAmount / deliveryAmount) * 100).toFixed(1) : 0;
           unExchangedPrice = orderProductMapping.product.price * unExchangedAmount;
           refundPrice = orderProductMapping.product.price * refundAmount;
           cardFee = totalAmount * (cardFeePercent / 100);
           deliveryFee = totalAmount * (mmsFee / 100);
           profitAmount = unExchangedPrice - (deliveryFee + cardFee);
-          profitRate = +((profitAmount / totalAmount) * 100).toFixed(1);
+          profitRate = totalAmount > 0 ? +((profitAmount / totalAmount) * 100).toFixed(1) : 0;
 
           sheet
             .addRow({
