@@ -1,13 +1,13 @@
 import { Controller, Get, Param, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
+import { AuthUserSuperAndOperationAdminGuard } from '../../auth/api/auth.user.super-operation-admin.guard';
 import { ErpProductService } from '../application/erp.product.service';
 import { ErpProductListQueryDto } from './erp.product.query.dto';
 import { ErpProductListResponse } from '../interface/erp.product.response';
 
 @ApiTags('erp')
 @ApiBearerAuth()
-@UseGuards(AuthUserAuthorizationGuard)
+@UseGuards(AuthUserSuperAndOperationAdminGuard)
 @Controller('')
 export class ErpController {
   constructor(private readonly erpProductService: ErpProductService) {}

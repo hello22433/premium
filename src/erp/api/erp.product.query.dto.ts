@@ -1,10 +1,11 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsOptional, IsString, IsIn } from 'class-validator';
+import { IsOptional, IsString, IsIn, MaxLength } from 'class-validator';
 
 export class ErpProductListQueryDto {
   @ApiPropertyOptional({ description: '품목코드 (여러 개: ∬ 구분, 최대 20000자)' })
   @IsOptional()
   @IsString()
+  @MaxLength(20000)
   prodCd?: string;
 
   @ApiPropertyOptional({ description: '콤마 포함 여부', enum: ['Y', 'N'] })
@@ -20,10 +21,12 @@ export class ErpProductListQueryDto {
   @ApiPropertyOptional({ description: '품목코드 범위 시작 (최대 20자)' })
   @IsOptional()
   @IsString()
+  @MaxLength(20)
   fromProdCd?: string;
 
   @ApiPropertyOptional({ description: '품목코드 범위 끝 (최대 20자)' })
   @IsOptional()
   @IsString()
+  @MaxLength(20)
   toProdCd?: string;
 }
