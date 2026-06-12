@@ -18,6 +18,6 @@ export class ErpProductDetailQueryDto {
   @IsOptional()
   @IsString()
   @MaxLength(50)
-  @Matches(PROD_TYPE_PATTERN, { message: 'prodType 은 숫자 코드와 ∬ 구분자만 허용됩니다.' })
+  @Matches(PROD_TYPE_PATTERN, { message: 'prodType 은 허용 코드(0,1,2,3,4,7)를 ∬ 로 연결한 형식만 허용됩니다.' })
   prodType?: string;
 }

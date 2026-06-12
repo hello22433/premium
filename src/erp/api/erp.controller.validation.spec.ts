@@ -86,6 +86,15 @@ describe('ErpController 입력 검증 (HTTP)', () => {
         .set('Authorization', admin)
         .expect(400);
     });
+
+    // ecount 미정의 코드(5/6/8/9) 및 잘못된 구분 형식 (문자 화이트리스트만으론 통과하던 케이스)
+    it.each(['5', '6', '8', '9', '33', '3∬', '∬3', '3∬∬4'])('목록 prodType=%s → 400', async (prodType) => {
+      await request(app.getHttpServer())
+        .get('/erp/products')
+        .query({ prodType })
+        .set('Authorization', admin)
+        .expect(400);
+    });
   });
 
   describe('정상 입력은 통과한다', () => {
