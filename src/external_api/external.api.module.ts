@@ -26,6 +26,7 @@ import { DeliveryModule } from '../delivery/delivery.module';
 import { ProductModule } from '../product/product.module';
 import { CryptoCipher } from '../common/infra/crypto.cipher';
 import { AccountLifecycleModule } from '../account_lifecycle/account.lifecycle.module';
+import { OrderFromModule } from '../order_from/order.from.module';
 
 @Module({
   imports: [
@@ -53,6 +54,7 @@ import { AccountLifecycleModule } from '../account_lifecycle/account.lifecycle.m
     DeliveryModule,
     ProductModule,
     AccountLifecycleModule,
+    OrderFromModule,
   ],
   controllers: [ExternalApiController],
   providers: [ExternalApiService, ApiKeyGuard, ExternalApiThrottleGuard, IdempotencyInterceptor, CryptoCipher],
