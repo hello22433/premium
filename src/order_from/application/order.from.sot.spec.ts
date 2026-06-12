@@ -208,3 +208,61 @@ describe('OrderFromService — createPhone 정규화/블랙리스트', () => {
     await expect(sut.createPhone({ id: 10, authority: 'CORPORATE_ADMIN' }, { from: '---' })).rejects.toThrow(BadRequestException);
   });
 });
+
+describe('OrderFromService — seedApprovedDefaultPhone', () => {
+  const makeSeedSut = (rows: any[] = [], approvedCount = 0) => {
+    const sut: any = Object.create(OrderFromService.prototype);
+    const repo = {
+      count: jest.fn().mockResolvedValue(approvedCount),
+      find: jest.fn().mockResolvedValue(rows),
+      insert: jest.fn().mockResolvedValue({ identifiers: [{ id: 200 }] }),
+      update: jest.fn().mockResolvedValue(undefined),
+    };
+    const userRepo = { update: jest.fn().mockResolvedValue(undefined) };
+    const manager = {
+      getRepository: jest.fn((entity: any) =>
+        entity?.name === 'UserEntity' ? userRepo : repo,
+      ),
+    };
+    sut.dataSource = { transaction: jest.fn(async (cb: any) => cb(manager)) };
+    sut.reconcileDefaultAndMirror = jest.fn().mockResolvedValue(undefined);
+    return { sut, repo, userRepo, manager };
+  };
+
+  it('유효 번호(미존재) → insert + reconcile', async () => {
+    const { sut, repo } = makeSeedSut([]);
+    await sut.seedApprovedDefaultPhone(10, '010-9999-8888', undefined, { blankPolicy: 'clear-if-no-approved' });
+    expect(repo.insert).toHaveBeenCalledWith(
+      expect.objectContaining({ from: '01099998888', requestStatus: 'APPROVED' }),
+    );
+    expect(sut.reconcileDefaultAndMirror).toHaveBeenCalledWith(expect.anything(), 10, 200);
+  });
+
+  it('시스템번호 + APPROVED 0개 (clear-if-no-approved) → mirror null update, insert 없음', async () => {
+    const { sut, repo, userRepo } = makeSeedSut([], 0);
+    await sut.seedApprovedDefaultPhone(10, systemFromPhoneNumber, undefined, { blankPolicy: 'clear-if-no-approved' });
+    expect(userRepo.update).toHaveBeenCalledWith(10, { fromPhoneNumber: null });
+    expect(repo.insert).not.toHaveBeenCalled();
+    expect(sut.reconcileDefaultAndMirror).not.toHaveBeenCalled();
+  });
+
+  it('시스템번호/빈값 + APPROVED >0 (clear-if-no-approved) → 400', async () => {
+    const { sut, userRepo } = makeSeedSut([], 1);
+    await expect(
+      sut.seedApprovedDefaultPhone(10, systemFromPhoneNumber, undefined, { blankPolicy: 'clear-if-no-approved' }),
+    ).rejects.toThrow(BadRequestException);
+    expect(userRepo.update).not.toHaveBeenCalled();
+  });
+
+  it("malformed '--' → 항상 400", async () => {
+    const { sut } = makeSeedSut([]);
+    await expect(
+      sut.seedApprovedDefaultPhone(10, '--', undefined, { blankPolicy: 'clear-if-no-approved' }),
+    ).rejects.toThrow(BadRequestException);
+  });
+
+  it("blankPolicy 'reject' + 빈값 → 400", async () => {
+    const { sut } = makeSeedSut([]);
+    await expect(sut.seedApprovedDefaultPhone(10, '', undefined, { blankPolicy: 'reject' })).rejects.toThrow(BadRequestException);
+  });
+});

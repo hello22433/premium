@@ -2,7 +2,7 @@ import { BadRequestException, ForbiddenException, Inject, Injectable } from '@ne
 import { OrderFromDefinitionEntity } from '../../entity/order.from.definition.entity';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, In, IsNull, Like, Repository } from 'typeorm';
-import { OrderFromDefinitionType, OrderFromRequestStatus } from '../interface/order.from.definition.type';
+import { OrderFromDefinitionType, OrderFromRequestStatus, TelecomCertType } from '../interface/order.from.definition.type';
 import { OrderFromGetEmailListResDto, OrderFromGetPhoneListResDto, OrderFromPhoneManageListResDto } from '../api/order.from.res.dto';
 import {
   OrderFromAdminGetListReqDto,
@@ -475,6 +475,81 @@ export class OrderFromService {
           throw new BadRequestException('알림톡 발신번호가 올바르지 않습니다.');
         }
       }
+    }
+  }
+
+  /**
+   * 온보딩/관리자용: 정규화된 from 을 APPROVED isDefault PHONE 으로 보장하고 mirror 동기화.
+   * @param manager 호출자 트랜잭션. 주어지면 같은 트랜잭션으로 실행(중첩 금지). 없으면 자체 트랜잭션.
+   * @param opts.blankPolicy 'reject'(빈값 400) | 'clear-if-no-approved'(APPROVED 있으면 400, 없으면 mirror NULL)
+   * 정책: 유효번호 → find-or-create APPROVED + reconcile. 빈값/시스템번호 → (clear-if-no-approved & APPROVED 0개)만 mirror NULL, APPROVED 존재 시 400. malformed('---') → 항상 400.
+   */
+  async seedApprovedDefaultPhone(
+    userId: number,
+    rawFrom: string | null | undefined,
+    manager?: EntityManager,
+    opts: { blankPolicy?: 'reject' | 'clear-if-no-approved' } = {},
+  ): Promise<void> {
+    const blankPolicy = opts.blankPolicy ?? 'reject';
+    const normFrom = normalizeFromPhone(rawFrom);
+    const isSystem = normFrom === normalizeFromPhone(systemFromPhoneNumber);
+    const emptyInput = rawFrom === null || rawFrom === undefined || String(rawFrom).trim() === '';
+    const malformed = !emptyInput && normFrom.length === 0;
+
+    if (malformed) {
+      throw new BadRequestException('발신 번호 형식이 올바르지 않습니다.');
+    }
+
+    const isBlankOrSystem = emptyInput || isSystem;
+
+    const run = async (m: EntityManager) => {
+      if (isBlankOrSystem) {
+        if (blankPolicy === 'reject') {
+          throw new BadRequestException('발신 번호를 입력해 주세요.');
+        }
+        const approvedCount = await m.getRepository(OrderFromDefinitionEntity).count({
+          where: {
+            type: OrderFromDefinitionType.PHONE,
+            userId,
+            requestStatus: OrderFromRequestStatus.APPROVED,
+            deletedAt: IsNull(),
+          },
+        });
+        if (approvedCount > 0) {
+          throw new BadRequestException('승인된 발신번호가 있어 발신번호를 비울 수 없습니다.');
+        }
+        await m.getRepository(UserEntity).update(userId, { fromPhoneNumber: null });
+        return;
+      }
+
+      const repo = m.getRepository(OrderFromDefinitionEntity);
+      const rows = await repo.find({
+        where: { type: OrderFromDefinitionType.PHONE, userId, deletedAt: IsNull() },
+      });
+      const match = rows.find((r) => normalizeFromPhone(r.from) === normFrom);
+      if (match) {
+        if (match.requestStatus !== OrderFromRequestStatus.APPROVED) {
+          await repo.update(match.id, { requestStatus: OrderFromRequestStatus.APPROVED });
+        }
+        await this.reconcileDefaultAndMirror(m, userId, match.id);
+      } else {
+        const inserted = await repo.insert({
+          from: normFrom,
+          type: OrderFromDefinitionType.PHONE,
+          userId,
+          requestStatus: OrderFromRequestStatus.APPROVED,
+          isDefault: false,
+          telecomCertType: TelecomCertType.PRE_DELIVERED,
+        });
+        const newId = inserted.identifiers[0].id as number;
+        await this.reconcileDefaultAndMirror(m, userId, newId);
+      }
+    };
+
+    if (manager) {
+      await run(manager);
+    } else {
+      await this.dataSource.transaction(run);
     }
   }
 }
