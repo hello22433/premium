@@ -19,7 +19,8 @@ import { OrderSendEncryptKey } from '../interface/order.send.encrypt.key';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 import { IOrderSendMethod } from '../../order/interface/order.send.method';
 import { ISmsSend } from '../../sms/interface/sms.send';
-import { defaultFromPhoneNumber } from '../../const';
+import { OrderFromService } from '../../order_from/application/order.from.service';
+import { getBillingUserId } from '../../order/domain/order.billing-user.helper';
 import { OrderDeliveryEmailCouponStatus } from '../../delivery/interface/order.delivery.email.coupon.status';
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
 import { Transactional, Propagation } from 'typeorm-transactional';
@@ -72,6 +73,7 @@ export class OrderReceiveService {
     private deliverySendService: DeliverySendService,
     @InjectRepository(SsgEventEntity)
     private ssgEventRepository: Repository<SsgEventEntity>,
+    private orderFromService: OrderFromService,
   ) {}
 
   private assertCouponNotDiscarded(orderDelivery: OrderDeliveryEntity): void {
@@ -381,7 +383,9 @@ export class OrderReceiveService {
       );
       const smsText = this.deliverySendService.buildSmsText(orderDelivery, refreshedEncryptKey, body, memo, tailText);
       const filePathList: string[] = orderDelivery.imagePath ? [orderDelivery.imagePath] : [];
-      const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber ?? defaultFromPhoneNumber;
+      const fromPhoneNumber =
+        orderDelivery.orderProductMapping.fromPhoneNumber ||
+        (await this.orderFromService.resolveSendDefaultPhone(getBillingUserId(orderDelivery.orderProductMapping.order)));
       const title = orderDelivery.orderProductMapping.sendTitle ?? '';
       await this.smsSend.send({
         msgType: 'M',
@@ -1161,6 +1165,10 @@ export class OrderReceiveService {
 
       mmsText = applyReplaceCharacters(mmsText, orderDelivery);
 
+      const mmsFromPhoneNumber = await this.orderFromService.resolveSendDefaultPhone(
+        getBillingUserId(orderDelivery.orderProductMapping.order),
+      );
+
       const orderType = orderDelivery.orderProductMapping.order.type;
       const productType = orderDelivery.orderProductMapping.product.type;
 
@@ -1176,7 +1184,7 @@ export class OrderReceiveService {
         await this.smsSend.send({
           msgType: 'M',
           to: getBody.phoneNumber,
-          from: defaultFromPhoneNumber,
+          from: mmsFromPhoneNumber,
           subject: title,
           text: mmsText,
           filePath: filePathList,
@@ -1273,11 +1281,15 @@ export class OrderReceiveService {
     text = applyReplaceCharacters(text, testOrderDelivery);
     text = `[테스트 발송]\n▷상품명: ${product.name}\n▷쿠폰번호: ${testBarcode}\n▷유효기간: ${expireDate || '없음'}\n\n${text}`;
 
+    const testFromPhoneNumber = await this.orderFromService.resolveSendDefaultPhone(
+      getBillingUserId(testOrderDelivery.orderProductMapping.order),
+    );
+
     try {
       await this.smsSend.send({
         msgType: 'M',
         to: phoneNumber,
-        from: defaultFromPhoneNumber,
+        from: testFromPhoneNumber,
         subject: title,
         text: text,
         filePath: filePathList,

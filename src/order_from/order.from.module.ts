@@ -11,5 +11,6 @@ import { UserEntity } from '../entity/user.entity';
   imports: [AuthModule, MailModule, TypeOrmModule.forFeature([OrderFromDefinitionEntity, UserEntity])],
   controllers: [OrderFromController],
   providers: [OrderFromService],
+  exports: [OrderFromService],
 })
 export class OrderFromModule {}

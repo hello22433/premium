@@ -24,7 +24,7 @@ describe('OrderFromService — IDOR / blacklist / admin 필터 (P0)', () => {
     sut.orderFromDefinitionRepository = {
       find: jest.fn().mockResolvedValue([]),
       existsBy: jest.fn().mockResolvedValue(false),
-      insert: jest.fn().mockResolvedValue(undefined),
+      insert: jest.fn().mockResolvedValue({ identifiers: [{ id: 100 }] }),
       update: jest.fn().mockResolvedValue(undefined),
       findOne: jest.fn().mockResolvedValue(null),
       findAndCount: jest.fn().mockResolvedValue([[], 0]),
@@ -33,6 +33,11 @@ describe('OrderFromService — IDOR / blacklist / admin 필터 (P0)', () => {
       find: jest.fn().mockResolvedValue([]),
       findOne: jest.fn().mockResolvedValue(null),
     };
+    // createPhone 은 이제 트랜잭션 내 manager.getRepository().insert() 로 저장한다.
+    // 트랜잭션 매니저가 동일 repo 스파이를 반환하도록 연결해 INSERT 호출을 검증한다.
+    const manager = { getRepository: jest.fn().mockReturnValue(sut.orderFromDefinitionRepository) };
+    sut.dataSource = { transaction: jest.fn(async (cb: any) => cb(manager)) };
+    sut.reconcileDefaultAndMirror = jest.fn().mockResolvedValue(undefined);
     return sut;
   };
 

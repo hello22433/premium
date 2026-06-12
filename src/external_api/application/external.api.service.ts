@@ -42,6 +42,8 @@ import { SsgRefundResolverService } from '../../delivery/application/ssg-refund.
 import { SsgRefundOutcome } from '../../delivery/interface/ssg.refund.resolve';
 import { SsgEventService } from '../../ssg_event/application/ssg.event.service';
 import { ProductService } from '../../product/application/product.service';
+import { OrderFromService } from '../../order_from/application/order.from.service';
+import { systemFromPhoneNumber } from '../../const';
 
 import { ExternalApiException } from '../api/external.api.exception.filter';
 import { translatePartnerError } from './partner.error.translator';
@@ -95,6 +97,7 @@ export class ExternalApiService {
     private refundLedgerService: RefundLedgerService,
     private productService: ProductService,
     private ssgRefundResolverService: SsgRefundResolverService,
+    private orderFromService: OrderFromService,
   ) {}
 
   // ─── 잔액 헬퍼 ──────────────────────────────────────────
@@ -374,6 +377,12 @@ export class ExternalApiService {
     const sendAmount = product.price;
     const { fee, priceAdjustment, settleAmount, cardSurchargeApplied } =
       await this.computeSettlement(account, product, sendAmount);
+
+    if (process.env.FROM_PHONE_SOT_ENFORCE === 'true') {
+      await this.orderFromService.assertApprovedPhones(user.id, [
+        { sendMethod: dto.deliveryMethod as IOrderSendMethod, fromPhoneNumber: dto.senderPhone ?? null },
+      ]);
+    }
 
     await this.deductBalance(account, settleAmount);
 
@@ -762,6 +771,15 @@ export class ExternalApiService {
     const { fee, priceAdjustment, settleAmount, cardSurchargeApplied } =
       await this.computeSettlement(account, product, sendAmount);
 
+    // senderPhone 미지정 SSG 알림톡 → 자사 대표번호로 확정 (검증/저장 동일값)
+    const effectiveSenderPhone = dto.senderPhone ?? systemFromPhoneNumber;
+
+    if (process.env.FROM_PHONE_SOT_ENFORCE === 'true') {
+      await this.orderFromService.assertApprovedPhones(user.id, [
+        { sendMethod: IOrderSendMethod.ALIM_TALK, fromPhoneNumber: effectiveSenderPhone },
+      ]);
+    }
+
     await this.deductBalance(account, settleAmount);
 
     const newCode = CreateCode(prevOrder?.code ?? null, OrderPrefixCode, OrderDigitNumber);
@@ -793,7 +811,7 @@ export class ExternalApiService {
       amount: 1,
       sendContent: dto.message || '',
       sendTitle: product.name,
-      fromPhoneNumber: dto.senderPhone || null,
+      fromPhoneNumber: effectiveSenderPhone,
       sendMethod: IOrderSendMethod.ALIM_TALK,
       fee,
       priceAdjustment,

@@ -30,6 +30,7 @@ import { WalletModule } from '../wallet/wallet.module';
 import { PointGrantEntity } from '../entity/point.grant.entity';
 import { ForbiddenWordModule } from '../forbidden_word/forbidden.word.module';
 import { ForbiddenWordBlockLogEntity } from '../entity/forbidden.word.block.log.entity';
+import { OrderFromModule } from '../order_from/order.from.module';
 
 @Module({
   imports: [
@@ -62,6 +63,7 @@ import { ForbiddenWordBlockLogEntity } from '../entity/forbidden.word.block.log.
     ActivityLogModule,
     MailModule,
     ForbiddenWordModule,
+    OrderFromModule,
   ],
   controllers: [OrderController],
   providers: [OrderService, EarlyDestroyService],
