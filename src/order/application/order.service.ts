@@ -72,7 +72,7 @@ import {
 import { QueryBuilderDateCondition } from '../../common/infra/query.builder.date.condition';
 import { OrderViewDto } from '../api/dto/order.view.dto';
 import { DateDateFormatStr, DateFormatStr } from '../../common/domain/date.format.str';
-import { addDays, format } from 'date-fns';
+import { format } from 'date-fns';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { IOrderStatus } from '../interface/order.status';
 import { OrderProductMappingEntity } from '../../entity/order.product.mapping.entity';
@@ -826,21 +826,12 @@ export class OrderService {
       for (const orderProductMapping of order.orderProductMappings) {
         const orderDeliveryList: OrderViewDeliveryDto[] = [];
 
-        // 발송 완료된 건: 저장된 expireAt 직접 사용, 미발송건: 기존 계산 유지
+        // 발송 완료된 건: 저장된 expireAt 직접 사용, 미발송건: 예약/즉시 기준 계산
         const firstDelivery = orderProductMapping.orderDeliveries?.[0];
-        const expireDate = firstDelivery?.expireAt
-          ? dayjs(firstDelivery.expireAt).tz('Asia/Seoul').format('YYYY. MM. DD')
-          : (() => {
-              const expireDays = resolveExpireDays(
-                orderProductMapping.galaxiaDuration ?? orderProductMapping.product?.galaxiaDuration,
-                orderProductMapping.product?.expireDay ?? 0,
-                orderProductMapping.product?.partnerCompany?.validityStartsNextDay,
-              );
-              const baseDate = orderProductMapping.sendType === 'IMMEDIATE'
-                ? dayjs()
-                : dayjs(orderProductMapping.sendRequestAt);
-              return expireDays ? baseDate.tz('Asia/Seoul').add(expireDays, 'day').format('YYYY. MM. DD') : null;
-            })();
+        const expireAt = this.resolveOrderExpireAt(orderProductMapping, firstDelivery?.expireAt);
+        const expireDate = expireAt
+          ? dayjs(expireAt).tz('Asia/Seoul').format('YYYY. MM. DD')
+          : null;
 
         for (const orderDelivery of orderProductMapping.orderDeliveries) {
           // deliveryTarget 복호화 (originalDeliveryTarget 우선 사용)
@@ -4687,6 +4678,31 @@ export class OrderService {
     return Object.assign(new OrderGetMyOrderHistoryResDto(), numeric);
   }
 
+  /**
+   * 주문상품의 쿠폰 유효기간(만료시각) 계산.
+   * 우선순위: 발송완료(저장된 expireAt) > 예약발송(sendRequestAt 기준) > 즉시발송(현재시각 기준).
+   * 일수는 resolveExpireDays(galaxiaDuration > product.expireDay ± validityStartsNextDay).
+   */
+  private resolveOrderExpireAt(
+    orderProductMapping: OrderProductMappingEntity,
+    firstDeliveryExpireAt?: Date | null,
+  ): Date | null {
+    if (firstDeliveryExpireAt) return firstDeliveryExpireAt;
+
+    const expireDays = resolveExpireDays(
+      orderProductMapping.galaxiaDuration ?? orderProductMapping.product?.galaxiaDuration,
+      orderProductMapping.product?.expireDay ?? 0,
+      orderProductMapping.product?.partnerCompany?.validityStartsNextDay,
+    );
+    if (!expireDays) return null;
+
+    const baseDate =
+      orderProductMapping.sendType === 'IMMEDIATE'
+        ? dayjs()
+        : dayjs(orderProductMapping.sendRequestAt);
+    return baseDate.tz('Asia/Seoul').add(expireDays, 'day').toDate();
+  }
+
   async testDelivery(user: ILoginUserInfo, getBody: OrderTestDeliveryReqDto) {
     const { orderId, orderProductMappingId, deliveryTarget } = getBody;
 
@@ -4713,13 +4729,12 @@ export class OrderService {
       throw new BadRequestException('테스트발송은 상품당 최대 2회입니다.');
     }
 
-    const expireDayCalc = resolveExpireDays(
-      orderProductMapping.galaxiaDuration ?? orderProductMapping.product.galaxiaDuration,
-      orderProductMapping.product.expireDay,
-      orderProductMapping.product.partnerCompany?.validityStartsNextDay,
-    );
-
-    const expireDate = expireDayCalc ? dayjs().tz('Asia/Seoul').add(expireDayCalc, 'day').format('YYYY. MM. DD') : null;
+    const firstDelivery = await this.orderDeliveryRepository.findOne({
+      where: { orderProductMappingId },
+      order: { id: 'ASC' },
+    });
+    const expireAt = this.resolveOrderExpireAt(orderProductMapping, firstDelivery?.expireAt);
+    const expireDate = expireAt ? dayjs(expireAt).tz('Asia/Seoul').format('YYYY. MM. DD') : null;
 
     // 2. 쿠폰이미지 만들기
     const { path: imagePath } = await DeliveryCreateCouponImage(
@@ -4745,7 +4760,6 @@ export class OrderService {
     testOrderDelivery.deliveryMethod = deliveryMethod;
     testOrderDelivery.deliveryTarget = encryptedDeliveryTarget;
     testOrderDelivery.imagePath = imagePath;
-    const expireAt = addDays(new Date(), expireDayCalc);
 
     testOrderDelivery.sendRequestAt = new Date();
     testOrderDelivery.expireAt = expireAt;
