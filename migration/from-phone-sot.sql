@@ -60,6 +60,12 @@ WHERE u.from_phone_number IS NOT NULL
     SELECT 1 FROM `order_from_definition` o
     WHERE o.user_id = u.id AND o.type = 'PHONE'
       AND o.request_status = 'APPROVED' AND o.deleted_at IS NULL
+  )
+  -- 동일 정규화 from 의 활성행(PENDING/REJECTED 포함)이 있으면 백필 금지 → active_from_key 유니크 충돌 방지
+  AND NOT EXISTS (
+    SELECT 1 FROM `order_from_definition` o
+    WHERE o.user_id = u.id AND o.type = 'PHONE' AND o.deleted_at IS NULL
+      AND REGEXP_REPLACE(o.`from`, '[^0-9]', '') = REGEXP_REPLACE(u.from_phone_number, '[^0-9]', '')
   );
 
 -- ── 4. 기본 재선정: user별 활성 APPROVED PHONE 정확히 1개 ──
@@ -76,6 +82,7 @@ SET is_default = 0
 WHERE type = 'PHONE' AND is_default = 1 AND deleted_at IS NULL;
 
 -- 4c. user별 우선순위(mirror 일치 → 기존 default → id ASC) 1행 기본 설정
+-- tmp_prev_default 는 LEFT JOIN 으로 1회만 읽는다 ("can't reopen temp table" 회피)
 UPDATE `order_from_definition` d
 JOIN (
   SELECT o.id,
@@ -83,11 +90,12 @@ JOIN (
       PARTITION BY o.user_id
       ORDER BY
         (REGEXP_REPLACE(IFNULL(u.from_phone_number,''), '[^0-9]', '') = o.`from`) DESC,
-        (o.id IN (SELECT id FROM `tmp_prev_default`)) DESC,
+        (p.id IS NOT NULL) DESC,
         o.id ASC
     ) AS rn
   FROM `order_from_definition` o
   JOIN `user` u ON u.id = o.user_id
+  LEFT JOIN `tmp_prev_default` p ON p.id = o.id
   WHERE o.type = 'PHONE' AND o.request_status = 'APPROVED' AND o.deleted_at IS NULL
 ) pick ON pick.id = d.id
 SET d.is_default = 1
