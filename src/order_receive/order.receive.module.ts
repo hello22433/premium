@@ -12,6 +12,7 @@ import { ProductChoiceMappingEntity } from '../entity/product.choice.mapping.ent
 import { SsgEventEntity } from '../entity/ssg.event.entity';
 import { PartnerCompanyExternModule } from '../partner_company_extern/partner.company.extern.module';
 import { DeliveryModule } from '../delivery/delivery.module';
+import { OrderFromModule } from '../order_from/order.from.module';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { DeliveryModule } from '../delivery/delivery.module';
     SmsModule,
     PartnerCompanyExternModule,
     DeliveryModule,
+    OrderFromModule,
   ],
   controllers: [OrderReceiveController],
   providers: [OrderReceiveService],

@@ -29,7 +29,7 @@ import { Propagation, Transactional } from 'typeorm-transactional';
 import { orderBarcodeGenerate } from '../../order/domain/order.code.generate';
 import { SsgEventEntity } from '../../entity/ssg.event.entity';
 import { SsgTransactionId } from '../domain/ssg.transaction.id';
-import { defaultFromPhoneNumber, ssgIssueUserName } from '../../const';
+import { systemFromPhoneNumber, ssgIssueUserName } from '../../const';
 import { smsSsgTemplate } from '../../delivery/domain/sms.ssg.template';
 import { addDays, format, subDays } from 'date-fns';
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
@@ -560,7 +560,7 @@ export class PartnerCompanyExternService {
 
             const textForSsg = text + smsSsgTemplate(orderDelivery);
 
-            const callBackNumber = orderDelivery.orderProductMapping.fromPhoneNumber || defaultFromPhoneNumber;
+            const callBackNumber = orderDelivery.orderProductMapping.fromPhoneNumber || systemFromPhoneNumber;
 
             // SSG INSERT 직전: durable state ATTEMPTED + ssg_issue_log payload 기록 (REQUIRES_NEW).
             // plans/ssg-balance-refactor.md PR2.

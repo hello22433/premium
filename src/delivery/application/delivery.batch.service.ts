@@ -60,7 +60,9 @@ import { smsSsgShortTemplate, smsSsgTemplate } from '../domain/sms.ssg.template'
 import { DeliveryTrackingStatus } from '../domain/delivery.tracking.status';
 import { OrderEmailSendType } from '../../order/domain/order.email.send.type';
 import { EmailType } from '../../mail/domain/email.type';
-import { EmailCertifyExpireDay, defaultFromPhoneNumber } from '../../const';
+import { EmailCertifyExpireDay } from '../../const';
+import { OrderFromService } from '../../order_from/application/order.from.service';
+import { getBillingUserId } from '../../order/domain/order.billing-user.helper';
 
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { OrderEncryptKey } from '../../order_receive/interface/order.encrypt.key';
@@ -127,6 +129,7 @@ export class DeliveryBatchService {
     @InjectRepository(OrderPaymentAllocationEntity)
     private readonly orderPaymentAllocationRepository: Repository<OrderPaymentAllocationEntity>,
     @InjectDataSource() private readonly dataSource: DataSource,
+    private readonly orderFromService: OrderFromService,
   ) {}
 
   private readonly logger = new Logger('batch');
@@ -1267,7 +1270,9 @@ export class DeliveryBatchService {
       filePathList.push(orderDelivery.imagePath);
     }
 
-    const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber || defaultFromPhoneNumber;
+    const fromPhoneNumber =
+      orderDelivery.orderProductMapping.fromPhoneNumber ||
+      (await this.orderFromService.resolveSendDefaultPhone(getBillingUserId(orderDelivery.orderProductMapping.order)));
     await this.smsSend.send({
       msgType: 'M',
       to: phoneNumber,
@@ -1363,7 +1368,9 @@ export class DeliveryBatchService {
     if (orderDelivery.imagePath) {
       filePathList.push(orderDelivery.imagePath);
     }
-    const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber || defaultFromPhoneNumber;
+    const fromPhoneNumber =
+      orderDelivery.orderProductMapping.fromPhoneNumber ||
+      (await this.orderFromService.resolveSendDefaultPhone(getBillingUserId(orderDelivery.orderProductMapping.order)));
 
     await this.smsSend.send({
       msgType: 'M',
@@ -1429,7 +1436,9 @@ export class DeliveryBatchService {
 
     const textBytes = Buffer.byteLength(text, 'utf8');
     const msgType: 'S' | 'L' = textBytes <= 90 ? 'S' : 'L';
-    const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber || defaultFromPhoneNumber;
+    const fromPhoneNumber =
+      orderDelivery.orderProductMapping.fromPhoneNumber ||
+      (await this.orderFromService.resolveSendDefaultPhone(getBillingUserId(orderDelivery.orderProductMapping.order)));
 
     await this.smsSend.send({
       msgType,
