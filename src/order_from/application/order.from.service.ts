@@ -308,54 +308,48 @@ export class OrderFromService {
   }
 
   async adminDelete(id: number) {
-    const item = await this.orderFromDefinitionRepository.findOne({
-      where: {
-        id,
-        deletedAt: IsNull(),
-      },
+    await this.dataSource.transaction(async (manager) => {
+      const repo = manager.getRepository(OrderFromDefinitionEntity);
+      const item = await repo.findOne({ where: { id, deletedAt: IsNull() } });
+      if (!item) {
+        throw new BadRequestException('존재하지 않는 발신번호/이메일입니다.');
+      }
+      await repo.softDelete(id);
+      if (item.type === OrderFromDefinitionType.PHONE && item.userId) {
+        await this.reconcileDefaultAndMirror(manager, item.userId);
+      }
     });
-
-    if (!item) {
-      throw new BadRequestException('존재하지 않는 발신번호/이메일입니다.');
-    }
-
-    await this.orderFromDefinitionRepository.softDelete(id);
   }
 
   async adminApprove(id: number) {
-    const item = await this.orderFromDefinitionRepository.findOne({
-      where: {
-        id,
-        deletedAt: IsNull(),
-        requestStatus: OrderFromRequestStatus.PENDING,
-      },
-    });
-
-    if (!item) {
-      throw new BadRequestException('승인할 수 있는 요청이 없습니다.');
-    }
-
-    await this.orderFromDefinitionRepository.update(id, {
-      requestStatus: OrderFromRequestStatus.APPROVED,
+    await this.dataSource.transaction(async (manager) => {
+      const repo = manager.getRepository(OrderFromDefinitionEntity);
+      const item = await repo.findOne({
+        where: { id, deletedAt: IsNull(), requestStatus: OrderFromRequestStatus.PENDING },
+      });
+      if (!item) {
+        throw new BadRequestException('승인할 수 있는 요청이 없습니다.');
+      }
+      await repo.update(id, { requestStatus: OrderFromRequestStatus.APPROVED });
+      if (item.type === OrderFromDefinitionType.PHONE && item.userId) {
+        await this.reconcileDefaultAndMirror(manager, item.userId);
+      }
     });
   }
 
   async adminReject(id: number, rejectReason?: string) {
-    const item = await this.orderFromDefinitionRepository.findOne({
-      where: {
-        id,
-        deletedAt: IsNull(),
-        requestStatus: OrderFromRequestStatus.PENDING,
-      },
-    });
-
-    if (!item) {
-      throw new BadRequestException('거절할 수 있는 요청이 없습니다.');
-    }
-
-    await this.orderFromDefinitionRepository.update(id, {
-      requestStatus: OrderFromRequestStatus.REJECTED,
-      rejectReason: rejectReason ?? null,
+    await this.dataSource.transaction(async (manager) => {
+      const repo = manager.getRepository(OrderFromDefinitionEntity);
+      const item = await repo.findOne({
+        where: { id, deletedAt: IsNull(), requestStatus: OrderFromRequestStatus.PENDING },
+      });
+      if (!item) {
+        throw new BadRequestException('거절할 수 있는 요청이 없습니다.');
+      }
+      await repo.update(id, { requestStatus: OrderFromRequestStatus.REJECTED, rejectReason: rejectReason ?? null });
+      if (item.type === OrderFromDefinitionType.PHONE && item.userId) {
+        await this.reconcileDefaultAndMirror(manager, item.userId);
+      }
     });
   }
 
@@ -376,39 +370,78 @@ export class OrderFromService {
     }
   }
 
+  /**
+   * 단일 트랜잭션에서 user 의 기본 PHONE 을 재정렬하고 user.from_phone_number mirror 를 갱신한다.
+   * 불변식: APPROVED PHONE 있으면 활성 기본 정확히 1개, 없으면 0개 + mirror NULL.
+   * @param preferDefaultId 우선 기본으로 삼을 행 id. 없으면 자동 선정(기존 default → id ASC).
+   */
+  private async reconcileDefaultAndMirror(
+    manager: EntityManager,
+    userId: number,
+    preferDefaultId?: number,
+  ): Promise<void> {
+    const repo = manager.getRepository(OrderFromDefinitionEntity);
+
+    // user row 잠금 (동시성 직렬화)
+    await manager
+      .getRepository(UserEntity)
+      .createQueryBuilder('u')
+      .setLock('pessimistic_write')
+      .where('u.id = :userId', { userId })
+      .getOne();
+
+    const approved = await repo.find({
+      where: {
+        type: OrderFromDefinitionType.PHONE,
+        userId,
+        requestStatus: OrderFromRequestStatus.APPROVED,
+        deletedAt: IsNull(),
+      },
+      order: { isDefault: 'DESC', id: 'ASC' },
+    });
+
+    // 전체 기본 해제
+    await repo.update(
+      { userId, type: OrderFromDefinitionType.PHONE, isDefault: true },
+      { isDefault: false },
+    );
+
+    if (approved.length === 0) {
+      await manager.getRepository(UserEntity).update(userId, { fromPhoneNumber: null });
+      return;
+    }
+
+    const chosen =
+      approved.find((r) => r.id === preferDefaultId) ??
+      approved.find((r) => r.isDefault) ??
+      approved[0];
+
+    await repo.update(chosen.id, { isDefault: true });
+    await manager.getRepository(UserEntity).update(userId, { fromPhoneNumber: chosen.from });
+  }
+
   async setDefault(user: ILoginUserInfo, getBody: OrderFromSetDefaultReqDto) {
     const { id, userId } = getBody;
     const targetUserId = userId ?? user.id;
 
-    // IDOR 방지: 타 계정 기본 발신번호 설정은 대리 권한 보유자만 허용
     this.assertCanActForUser(user, targetUserId);
 
-    const item = await this.orderFromDefinitionRepository.findOne({
-      where: {
-        id,
-        type: OrderFromDefinitionType.PHONE,
-        userId: targetUserId,
-        deletedAt: IsNull(),
-        requestStatus: OrderFromRequestStatus.APPROVED,
-      },
+    await this.dataSource.transaction(async (manager) => {
+      const repo = manager.getRepository(OrderFromDefinitionEntity);
+      const item = await repo.findOne({
+        where: {
+          id,
+          type: OrderFromDefinitionType.PHONE,
+          userId: targetUserId,
+          deletedAt: IsNull(),
+          requestStatus: OrderFromRequestStatus.APPROVED,
+        },
+      });
+      if (!item) {
+        throw new BadRequestException('존재하지 않는 발신번호입니다.');
+      }
+      await this.reconcileDefaultAndMirror(manager, targetUserId, id);
     });
-
-    if (!item) {
-      throw new BadRequestException('존재하지 않는 발신번호입니다.');
-    }
-
-    // 해당 사용자의 기존 기본 발신번호 해제
-    await this.orderFromDefinitionRepository.update(
-      {
-        userId: targetUserId,
-        type: OrderFromDefinitionType.PHONE,
-        isDefault: true,
-      },
-      { isDefault: false },
-    );
-
-    // 새로운 기본 발신번호 설정
-    await this.orderFromDefinitionRepository.update(id, { isDefault: true });
   }
 
   /** 해당 user 의 APPROVED PHONE from 정규화 Set (1회 조회). */

@@ -90,3 +90,51 @@ describe('OrderFromService SoT — assertApprovedPhones', () => {
     expect(sut.orderFromDefinitionRepository.find).not.toHaveBeenCalled();
   });
 });
+
+describe('OrderFromService — reconcile 연결 (admin/setDefault)', () => {
+  const makeTxSut = (item: any) => {
+    const sut: any = Object.create(OrderFromService.prototype);
+    const repo = {
+      findOne: jest.fn().mockResolvedValue(item),
+      update: jest.fn().mockResolvedValue(undefined),
+      softDelete: jest.fn().mockResolvedValue(undefined),
+    };
+    const manager = { getRepository: jest.fn().mockReturnValue(repo) };
+    sut.dataSource = { transaction: jest.fn(async (cb: any) => cb(manager)) };
+    sut.reconcileDefaultAndMirror = jest.fn().mockResolvedValue(undefined);
+    sut.assertCanActForUser = jest.fn();
+    return { sut, repo, manager };
+  };
+
+  it('adminApprove(PHONE) 후 reconcile 호출', async () => {
+    const { sut, repo, manager } = makeTxSut({ id: 7, type: 'PHONE', userId: 10, requestStatus: 'PENDING' });
+    await sut.adminApprove(7);
+    expect(repo.update).toHaveBeenCalledWith(7, { requestStatus: 'APPROVED' });
+    expect(sut.reconcileDefaultAndMirror).toHaveBeenCalledWith(manager, 10);
+  });
+
+  it('adminReject(PHONE) 후 reconcile 호출', async () => {
+    const { sut, manager } = makeTxSut({ id: 7, type: 'PHONE', userId: 10, requestStatus: 'PENDING' });
+    await sut.adminReject(7, '사유');
+    expect(sut.reconcileDefaultAndMirror).toHaveBeenCalledWith(manager, 10);
+  });
+
+  it('adminDelete(PHONE) 후 reconcile 호출', async () => {
+    const { sut, repo, manager } = makeTxSut({ id: 7, type: 'PHONE', userId: 10 });
+    await sut.adminDelete(7);
+    expect(repo.softDelete).toHaveBeenCalledWith(7);
+    expect(sut.reconcileDefaultAndMirror).toHaveBeenCalledWith(manager, 10);
+  });
+
+  it('adminApprove(EMAIL) 는 reconcile 호출 안 함', async () => {
+    const { sut } = makeTxSut({ id: 7, type: 'EMAIL', userId: null, requestStatus: 'PENDING' });
+    await sut.adminApprove(7);
+    expect(sut.reconcileDefaultAndMirror).not.toHaveBeenCalled();
+  });
+
+  it('setDefault 는 항목 검증 후 reconcile(preferId) 호출', async () => {
+    const { sut, manager } = makeTxSut({ id: 5, type: 'PHONE', userId: 10, requestStatus: 'APPROVED' });
+    await sut.setDefault({ id: 99, authority: 'OPERATION_ADMIN' }, { id: 5, userId: 10 });
+    expect(sut.reconcileDefaultAndMirror).toHaveBeenCalledWith(manager, 10, 5);
+  });
+});
