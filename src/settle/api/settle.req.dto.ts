@@ -13,6 +13,7 @@ import {
   IsString,
   Matches,
   Min,
+  ValidateNested,
 } from 'class-validator';
 import { dateAtRegexp, dateRegexp } from '../../common/domain/date.regexp';
 import { Transform, Type } from 'class-transformer';
@@ -181,6 +182,7 @@ export class SettleCreateOtherSaleReqDto {
     description: '상품 정보 리스트',
   })
   @IsArray()
+  @ValidateNested({ each: true })
   @Type(() => SettleOtherProductDto)
   productList: SettleOtherProductDto[];
 }
@@ -226,10 +228,10 @@ export class SettlerUpdateOtherSaleReqDto {
   @IsString()
   eventContent: string;
 
-  @ApiProperty({ description: '특이사항' })
-  @IsNotEmpty()
+  @ApiPropertyOptional({ description: '특이사항' })
+  @IsOptional()
   @IsString()
-  etc: string;
+  etc?: string;
 
   @ApiProperty({ description: '증빙일자 ex) yyyy-MM-dd' })
   @IsNotEmpty()
@@ -241,6 +243,7 @@ export class SettlerUpdateOtherSaleReqDto {
   })
   @IsOptional()
   @IsArray()
+  @ValidateNested({ each: true })
   @Type(() => SettleUpdateProductDto)
   productList?: SettleUpdateProductDto[];
 
@@ -255,24 +258,41 @@ export class SettlerUpdateOtherSaleReqDto {
 
 export class SettleUpdateProductDto {
   @ApiPropertyOptional({ description: '매핑 id (가 있으면 수정)' })
+  @IsOptional()
+  @IsInt()
   mappingId?: number;
 
   @ApiProperty({ description: '품목 코드' })
+  @IsNotEmpty()
+  @IsString()
   code: string;
 
   @ApiProperty({ description: '브랜드 명' })
+  @IsNotEmpty()
+  @IsString()
   brandName: string;
 
   @ApiProperty({ description: '품목명' })
+  @IsNotEmpty()
+  @IsString()
   productName: string;
 
   @ApiProperty({ description: '단가' })
+  @IsNotEmpty()
+  @IsNumber()
+  @Min(1)
   price: number;
 
   @ApiProperty({ description: '수량' })
+  @IsNotEmpty()
+  @IsInt()
+  @Min(1)
   quantity: number;
 
   @ApiProperty({ description: '공급가(수량 x 단가)' })
+  @IsNotEmpty()
+  @IsInt()
+  @Min(1)
   totalPrice: number;
 }
 
