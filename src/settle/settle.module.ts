@@ -40,5 +40,6 @@ import { WalletModule } from '../wallet/wallet.module';
   ],
   providers: [SettleService, SettleSchedule],
   controllers: [SettleController, SettleUserController],
+  exports: [SettleService],
 })
 export class SettleModule {}

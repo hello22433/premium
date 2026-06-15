@@ -102,6 +102,29 @@ export class ProductGetTotalListReqQueryDto extends PagingReqDto {
   @IsOptional()
   @IsEnum(IProductCategory)
   productCategory?: IProductCategory;
+
+  // expireDayMin/Max 는 사용자가 직접 입력하는 값이 아니라 프론트의 유효기간 프리셋 상수로
+  // 전송된다(예: 30일=29/31, 5년=1824/1826). 검증 메시지는 최종 사용자에게 노출될 일이 거의
+  // 없고 프론트 개발자/직접 호출자 디버깅용이므로, 사용자 친화 문구일 필요는 없다.
+  @ApiPropertyOptional({
+    description: '유효기간(일) 하한 — 이 값 이상의 상품만 조회',
+  })
+  // ================================
+  @IsOptional()
+  @IsInt({ message: '유효기간 최소값은 정수로 입력해주세요.' })
+  @Min(0, { message: '유효기간 최소값은 0일 이상으로 입력해주세요.' })
+  @Type(() => Number)
+  expireDayMin?: number;
+
+  @ApiPropertyOptional({
+    description: '유효기간(일) 상한 — 이 값 이하의 상품만 조회',
+  })
+  // ================================
+  @IsOptional()
+  @IsInt({ message: '유효기간 최대값은 정수로 입력해주세요.' })
+  @Min(0, { message: '유효기간 최대값은 0일 이상으로 입력해주세요.' })
+  @Type(() => Number)
+  expireDayMax?: number;
 }
 
 export class ProductGetListReqQueryDto extends PagingReqDto {
@@ -208,6 +231,29 @@ export class ProductGetListReqQueryDto extends PagingReqDto {
   @IsOptional()
   @IsEnum(IProductCategory)
   productCategory?: IProductCategory;
+
+  // expireDayMin/Max 는 사용자가 직접 입력하는 값이 아니라 프론트의 유효기간 프리셋 상수로
+  // 전송된다(예: 30일=29/31, 5년=1824/1826). 검증 메시지는 최종 사용자에게 노출될 일이 거의
+  // 없고 프론트 개발자/직접 호출자 디버깅용이므로, 사용자 친화 문구일 필요는 없다.
+  @ApiPropertyOptional({
+    description: '유효기간(일) 하한 — 이 값 이상의 상품만 조회',
+  })
+  // ================================
+  @IsOptional()
+  @IsInt({ message: '유효기간 최소값은 정수로 입력해주세요.' })
+  @Min(0, { message: '유효기간 최소값은 0일 이상으로 입력해주세요.' })
+  @Type(() => Number)
+  expireDayMin?: number;
+
+  @ApiPropertyOptional({
+    description: '유효기간(일) 상한 — 이 값 이하의 상품만 조회',
+  })
+  // ================================
+  @IsOptional()
+  @IsInt({ message: '유효기간 최대값은 정수로 입력해주세요.' })
+  @Min(0, { message: '유효기간 최대값은 0일 이상으로 입력해주세요.' })
+  @Type(() => Number)
+  expireDayMax?: number;
 }
 
 export class ProductSsgReqQueryDto {

@@ -120,7 +120,33 @@ export class UserController {
   @Post('/user/login/email/verify')
   async loginEmailVerify(@Body() getBody: UserLoginEmailVerifyReqDto): Promise<void> {
     await this.userService.loginEmailVerify(getBody);
-    return;
+  }
+
+  @ApiOperation({
+    summary: '휴면 계정 재활성화 인증 이메일 전송 API',
+    description: '휴면(NOT_USED) 상태 계정에 본인인증 코드를 발송합니다. 탈퇴(LEAVE) 계정은 재활성화 불가.',
+  })
+  @ApiOkResponse({
+    type: UserLoginEmailResDto,
+    description: '재활성화 인증 이메일 전송',
+  })
+  // ============================================
+  @Post('/user/reactivate/email/send')
+  async reactivateEmailSend(@Body() getBody: UserLoginEmailSendReqDto): Promise<UserLoginEmailResDto> {
+    return this.userService.reactivateEmailSend(getBody);
+  }
+
+  @ApiOperation({
+    summary: '휴면 계정 재활성화 인증 코드 검증 API',
+    description: '코드 검증 성공 시 계정을 활성(USED) 상태로 복귀시킵니다.',
+  })
+  @ApiOkResponse({
+    description: '재활성화 완료. 이후 /user/login-email-password 로 로그인 가능.',
+  })
+  // ============================================
+  @Post('/user/reactivate/email/verify')
+  async reactivateEmailVerify(@Body() getBody: UserLoginEmailVerifyReqDto): Promise<void> {
+    await this.userService.reactivateEmailVerify(getBody);
   }
 
   @ApiOperation({
@@ -158,7 +184,6 @@ export class UserController {
   @Post('/user/login/phone/verify')
   async loginPhoneVerify(@Body() getBody: UserLoginPhoneVerifyReqDto): Promise<void> {
     await this.userService.loginPhoneVerify(getBody);
-    return;
   }
 
   @ApiOperation({
@@ -246,10 +271,9 @@ export class UserController {
   async e2eSeedLoginVerification(
     @Body() body: E2eSessionReqDto,
     @Headers('x-e2e-secret') secret: string,
-  ) {
+  ): Promise<void> {
     this.validateE2eSecret(secret);
     await this.userService.e2eSeedLoginVerification(body.email);
-    return;
   }
 
   private validateE2eSecret(secret: string): void {

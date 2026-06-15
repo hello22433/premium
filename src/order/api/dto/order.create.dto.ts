@@ -40,6 +40,7 @@ export class OrderCreateDto {
   })
   // =================================
   @IsArray() // 배열임을 검증
+  @ValidateNested({ each: true })
   @Type(() => OrderProductCreateTempDto)
   orderProductList: OrderProductCreateTempDto[];
 

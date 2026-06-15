@@ -116,6 +116,21 @@ export class UserEntity extends BaseEntity {
   @Column({ type: 'datetime', nullable: true, comment: '잠금 발생 시각 (감사용)' })
   lockedAt: Date | null;
 
+  @Column({
+    type: 'datetime',
+    comment: '마지막 활동 시각 (로그인 OR 외부 API 인증). 휴면 판정 기준 — last_login 아님',
+  })
+  lastActivityAt: Date;
+
+  @Column({ type: 'datetime', nullable: true, comment: '휴면(NOT_USED) 전환 시각. 탈퇴 +6개월 계산 기준' })
+  suspendedAt: Date | null;
+
+  @Column({ type: 'datetime', nullable: true, comment: '탈퇴(LEAVE) 전환 시각. 익명화 +6개월 계산 기준' })
+  withdrawnAt: Date | null;
+
+  @Column({ type: 'datetime', nullable: true, comment: 'PII 익명화 처리 시각. 익명화 멱등성 게이트 (NULL=미처리)' })
+  anonymizedAt: Date | null;
+
   /**
    * @deprecated PR1+ wallet_account.settle_condition 사용. settlement_code 단위 정책.
    * PR5 에서 DROP 예정. legacy display fallback only.
@@ -160,7 +175,8 @@ export class UserEntity extends BaseEntity {
   @Column({ type: 'varchar', length: 100, default: 'S+', comment: '고객사등급' })
   businessGrade: string;
 
-  @Column({ type: 'varchar', nullable: true, length: 20, comment: '발신 번호' })
+  /** @deprecated SoT = order_from_definition. cutover 호환 mirror. 별도 PR 에서 DROP 예정. */
+  @Column({ type: 'varchar', nullable: true, length: 20, comment: '발신 번호 (deprecated mirror, SoT=order_from_definition)' })
   fromPhoneNumber: string | null;
 
   @Column({ type: 'enum', enum: UserSettlePeriodConditionEnum, nullable: true, comment: '정산 기준 지정 월 조건' })

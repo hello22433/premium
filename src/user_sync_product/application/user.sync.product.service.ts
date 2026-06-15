@@ -189,6 +189,7 @@ export class UserSyncProductService {
           productId: mapping.product.id,
           registerAt: format(mapping.product.createdAt, DateFormatStr),
           code: product.code,
+          partnerCompanyCode: product.partnerCompanyCode,
           businessUserName: event.businessUser.company?.businessName ?? '',
           businessPersonName: event.businessUser.personName,
           classification: product.classification?.classification ?? null,

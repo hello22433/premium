@@ -14,6 +14,8 @@ import { OrderPaymentAllocationEntity } from '../entity/order.payment.allocation
 import { DeliveryBatchSchedule } from './delivery.batch.schedule';
 import { RefundLedgerService } from './application/refund-ledger.service';
 import { SsgRefundResolverService } from './application/ssg-refund.resolver';
+import { SsgRecoveryService } from './application/ssg-recovery.service';
+import { SsgRecoverySweepService } from './application/ssg-recovery-sweep.service';
 import { SsgInsertStateModule } from './ssg.insert.state.module';
 import { MailModule } from '../mail/mail.module';
 import { SmsModule } from '../sms/sms.module';
@@ -31,6 +33,7 @@ import { PartnerCompanyExternModule } from '../partner_company_extern/partner.co
 import { SsgEventModule } from '../ssg_event/ssg.event.module';
 import { UserManagementModule } from '../user_management/user.management.module';
 import { WalletModule } from '../wallet/wallet.module';
+import { OrderFromModule } from '../order_from/order.from.module';
 
 @Module({
   imports: [
@@ -59,6 +62,7 @@ import { WalletModule } from '../wallet/wallet.module';
     SsgEventModule,
     UserManagementModule,
     SsgInsertStateModule,
+    OrderFromModule,
     forwardRef(() => WalletModule),
   ],
   providers: [
@@ -72,6 +76,8 @@ import { WalletModule } from '../wallet/wallet.module';
     DeliveryBatchSchedule,
     RefundLedgerService,
     SsgRefundResolverService,
+    SsgRecoveryService,
+    SsgRecoverySweepService,
   ],
   exports: [
     {
@@ -83,6 +89,8 @@ import { WalletModule } from '../wallet/wallet.module';
     DeliveryBatchService,
     RefundLedgerService,
     SsgRefundResolverService,
+    SsgRecoveryService,
+    SsgRecoverySweepService,
     SsgInsertStateModule,
   ],
 })

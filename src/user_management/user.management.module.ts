@@ -17,6 +17,9 @@ import { ActivityLogModule } from '../activity_log/activity.log.module';
 import { DeliveryModule } from '../delivery/delivery.module';
 import { SmsModule } from '../sms/sms.module';
 import { WalletModule } from '../wallet/wallet.module';
+import { AccountLifecycleModule } from '../account_lifecycle/account.lifecycle.module';
+import { SettleModule } from '../settle/settle.module';
+import { OrderFromModule } from '../order_from/order.from.module';
 
 @Module({
   imports: [
@@ -37,6 +40,9 @@ import { WalletModule } from '../wallet/wallet.module';
     forwardRef(() => DeliveryModule),
     SmsModule,
     WalletModule,
+    AccountLifecycleModule,
+    SettleModule,
+    OrderFromModule,
   ],
   controllers: [UserManagementController],
   providers: [UserManagementService],

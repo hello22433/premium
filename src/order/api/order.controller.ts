@@ -172,8 +172,8 @@ export class OrderController {
   })
   // ====================================================
   @Get('/order/detail/:id')
-  getDetail(@Param() getParam: OrderGetDetailReqParamDto) {
-    return this.orderService.getDetail(getParam);
+  getDetail(@User() user: ILoginUserInfo, @Param() getParam: OrderGetDetailReqParamDto) {
+    return this.orderService.getDetail(user, getParam);
   }
 
   @ApiOperation({

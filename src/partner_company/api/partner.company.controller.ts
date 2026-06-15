@@ -15,6 +15,7 @@ import {
   PartnerCompanyUpdateReqDto,
 } from './partner.company.req.dto';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
+import { AuthUserSuperAndOperationAdminGuard } from '../../auth/api/auth.user.super-operation-admin.guard';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { AuthService } from '../../auth/application/auth.service';
 import { User } from '../../auth/api/user.decorator';
@@ -28,7 +29,7 @@ export class PartnerCompanyController {
   constructor(
     private partnerCompanyService: PartnerCompanyService,
     private authService: AuthService,
-  ) { }
+  ) {}
 
   @ApiOperation({
     summary: '협력사 Select 리스트 조회 API',
@@ -39,6 +40,7 @@ export class PartnerCompanyController {
     description: '성공적으로 조회한 경우',
   })
   // =====================================
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @Get('/partner-company/select/list')
   getSelectList() {
     return this.partnerCompanyService.getSelectList();
@@ -82,8 +84,11 @@ export class PartnerCompanyController {
     description: '성공적으로 조회한 경우',
   })
   // =====================================
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @Get('/partner-company/list')
-  getList(@Query() getQuery: PartnerCompanyGetListReqQueryDto) {
+  async getList(@User() user: ILoginUserInfo, @Query() getQuery: PartnerCompanyGetListReqQueryDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.PARTNER);
+
     return this.partnerCompanyService.getList(getQuery);
   }
 
@@ -96,8 +101,11 @@ export class PartnerCompanyController {
     description: '성공적으로 조회한 경우',
   })
   // =====================================
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @Get('/partner-company/detail/:id')
-  getDetail(@Param() getParam: PartnerCompanyGetDetailReqParamDto) {
+  async getDetail(@User() user: ILoginUserInfo, @Param() getParam: PartnerCompanyGetDetailReqParamDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.PARTNER);
+
     return this.partnerCompanyService.getDetail(getParam);
   }
 
@@ -108,8 +116,11 @@ export class PartnerCompanyController {
     description: '성공적으로 등록한 경우',
   })
   // =====================================
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @Post('/partner-company')
-  create(@Body() getBody: PartnerCompanyCreateReqDto) {
+  async create(@User() user: ILoginUserInfo, @Body() getBody: PartnerCompanyCreateReqDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.PARTNER);
+
     return this.partnerCompanyService.create(getBody);
   }
 
@@ -123,8 +134,11 @@ export class PartnerCompanyController {
     description: '해당 협력사가 존재하지 않는 경우',
   })
   // =====================================
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @Put('/partner-company')
-  update(@Body() getBody: PartnerCompanyUpdateReqDto) {
+  async update(@User() user: ILoginUserInfo, @Body() getBody: PartnerCompanyUpdateReqDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.PARTNER);
+
     return this.partnerCompanyService.update(getBody);
   }
 }

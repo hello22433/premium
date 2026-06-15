@@ -108,20 +108,22 @@ export class RefundUpdateReqDto {
   bankAccountOwner?: string;
 
   @ApiPropertyOptional({
-    description: '승인일자',
+    description: '승인일자 (null 전송 시 PROGRESS 상태에서만 비울 수 있음)',
+    nullable: true,
   })
   // ==============================
   @IsOptional()
   @Matches(dateAtRegexp)
-  approveAt?: string;
+  approveAt?: string | null;
 
   @ApiPropertyOptional({
-    description: '환불일자',
+    description: '환불일자 (null 전송 시 PROGRESS 상태에서만 비울 수 있음)',
+    nullable: true,
   })
   // ==============================
   @IsOptional()
   @Matches(dateAtRegexp)
-  refundAt?: string;
+  refundAt?: string | null;
 }
 
 export class RefundResetReqDto {

@@ -22,6 +22,7 @@ import { WalletResourceType } from '../../wallet/interface/wallet-resource-type'
 import { WalletLedgerService } from '../../wallet/application/wallet-ledger.service';
 import { WalletAccountResolverService } from '../../wallet/application/wallet-account-resolver.service';
 import { WalletCutoverConfig, WalletCutoverMode } from '../../wallet/config/wallet-cutover.config';
+import { SettleService } from '../../settle/application/settle.service';
 import { IExternalApiSsgRequestStatus } from '../../external_api/interface/external.api.ssg.request.status';
 import { Repository } from 'typeorm';
 import { Transactional } from 'typeorm-transactional';
@@ -78,10 +79,13 @@ import { format } from 'date-fns';
 import { DateFormatStr } from '../../common/domain/date.format.str';
 import { CompanyType } from '../../common/domain/company.type';
 import { ConfigService } from '@nestjs/config';
+import { AccountStatusTransitionService } from '../../account_lifecycle/application/account.status.transition.service';
+import { TransitionSource } from '../../account_lifecycle/interface/transition.source';
 import { LoginVerifyMethod } from '../../user/interface/login.verify.method';
 import { DeliveryAlimTalk } from '../../delivery/interface/delivery.alim.talk';
 import { ISmsSend } from '../../sms/interface/sms.send';
 import { defaultFromPhoneNumber } from '../../const';
+import { OrderFromService } from '../../order_from/application/order.from.service';
 
 const MYSQL_INT_MAX = 2_147_483_647;
 
@@ -120,6 +124,9 @@ export class UserManagementService {
     private readonly walletLedger: WalletLedgerService,
     private readonly walletResolver: WalletAccountResolverService,
     private readonly walletCutoverConfig: WalletCutoverConfig,
+    private readonly accountStatusTransitionService: AccountStatusTransitionService,
+    private readonly settleService: SettleService,
+    private readonly orderFromService: OrderFromService,
   ) {}
 
   private readonly initPasswordTemplateCode = this.configService.getOrThrow<string>(
@@ -398,6 +405,9 @@ export class UserManagementService {
       where: { userId: id },
     });
 
+    // 대상 계정 기준 잔여 발송 한도/신용초과금 (로그인 본인이 아니라 조회 대상 기준)
+    const remain = await this.settleService.getRemainServiceAmountByUserId(id);
+
     return {
       id: user.id,
       email: user.email,
@@ -428,7 +438,10 @@ export class UserManagementService {
       cardName: user.cardName,
       cardNumber: user.cardNumber,
       balance: this.getCurrentBalance(user, company),
-      fromPhoneNumber: user.fromPhoneNumber,
+      fromPhoneNumber:
+        process.env.FROM_PHONE_SOT_ENFORCE === 'true'
+          ? await this.orderFromService.resolveApprovedDefaultPhone(user.id)
+          : user.fromPhoneNumber,
 
       settlePeriodCondition: user.settlePeriodCondition,
       settlePeriodCount: user.settlePeriodCount,
@@ -468,6 +481,8 @@ export class UserManagementService {
         ? user.allowedSendMethods.split(',').map((m) => (m === 'SMS' ? 'MMS' : m))
         : ['ALIM_TALK', 'MMS', 'EMAIL'],
       loginVerifyMethod: user.loginVerifyMethod,
+      remainServiceAmount: remain.remainServiceAmount,
+      creditExcessAmount: remain.creditExcessAmount,
     };
   }
 
@@ -814,8 +829,8 @@ export class UserManagementService {
         targetCompanyId: company?.id ?? null,
         balanceManagementType: company?.balanceManagementType ?? 'ACCOUNT',
         chargeAmount: amount,
-        beforeBalance: beforeBalance,
-        afterBalance: afterBalance,
+        beforeBalance,
+        afterBalance,
         memo: memo || '시스템 자동 환불',
       },
     });
@@ -888,6 +903,10 @@ export class UserManagementService {
       allowedSendMethods: getBody.allowedSendMethods.join(','),
       documentCompanyType: getBody.documentCompanyType ?? CompanyType.ENMAD,
       loginVerifyMethod: getBody.loginVerifyMethod,
+      // 라이프사이클 side-column: last_activity_at NOT NULL, 초기 상태에 맞춰 전이시각 세팅 (배치 계산 정합)
+      lastActivityAt: new Date(),
+      ...(getBody.status === IUserStatus.NOT_USED ? { suspendedAt: new Date() } : {}),
+      ...(getBody.status === IUserStatus.LEAVE ? { withdrawnAt: new Date() } : {}),
     });
 
     // 신규 사용자의 조회 범위 설정 (SUPER_ADMIN만 ALL, 나머지는 SELF)
@@ -897,6 +916,18 @@ export class UserManagementService {
       userId: newUserId,
       scopeType: scopeType,
     });
+
+    // 계정 생성 로그 (라이프사이클 — 관리자 경로)
+    await this.accountStatusTransitionService.logAccountCreate(newUserId, getBody.email, TransitionSource.ADMIN);
+
+    // 발신번호 SoT 동기화: APPROVED isDefault PHONE 보장 + mirror 갱신(없으면 NULL).
+    // user.insert 가 mirror 를 이미 썼지만 seed 가 마지막 권위 write 로 최종값 확정.
+    await this.orderFromService.seedApprovedDefaultPhone(
+      newUserId,
+      getBody.fromPhoneNumber,
+      undefined,
+      { blankPolicy: 'clear-if-no-approved' },
+    );
 
     return;
   }
@@ -912,6 +943,9 @@ export class UserManagementService {
     if (!user) {
       throw new BadRequestException('유저가 존재하지 않습니다.');
     }
+
+    // 상태 전이는 공통 헬퍼로 일원화 (side-column + 로그). 직접 세팅 금지 — prevStatus 보관 후 save 뒤 처리.
+    const prevStatus = user.status;
 
     // 사업자등록번호에서 하이픈 제거
     const businessNumber = getBody.businessNumber ? getBody.businessNumber.replace(/-/g, '') : getBody.businessNumber;
@@ -972,8 +1006,8 @@ export class UserManagementService {
     user.bankNumber = getBody.bankNumber;
     user.cardName = getBody.cardName;
     user.cardNumber = getBody.cardNumber;
-    user.status = getBody.status;
-    user.fromPhoneNumber = getBody.fromPhoneNumber;
+    // user.status 는 여기서 직접 세팅하지 않음 — save 후 accountStatusTransitionService 로 일원화 처리.
+    // fromPhoneNumber mirror 직접 세팅 제거 — save 이후 seedApprovedDefaultPhone 이 최종 권위 write.
 
     user.settlePeriodCondition = getBody.settlePeriodCondition;
     user.settlePeriodCount = getBody.settlePeriodCount;
@@ -988,6 +1022,22 @@ export class UserManagementService {
     }
 
     await this.userRepository.save(user);
+
+    // 발신번호 SoT 동기화: user save 이후 실행해야 mirror 가 stale 로 덮이지 않음.
+    // seed 가 APPROVED isDefault 보장 + mirror 최종값 확정(없으면 NULL). 이후 user write 금지.
+    if (getBody.fromPhoneNumber !== undefined) {
+      await this.orderFromService.seedApprovedDefaultPhone(
+        user.id,
+        getBody.fromPhoneNumber,
+        undefined,
+        { blankPolicy: 'clear-if-no-approved' },
+      );
+    }
+
+    // 상태 변경 시 공통 헬퍼로 전이 (side-column + ACCOUNT_WITHDRAW 로그 등 자동배치와 동일 side-effect 보장)
+    if (prevStatus !== getBody.status) {
+      await this.accountStatusTransitionService.adminSetStatus(getBody.id, getBody.status);
+    }
 
     // 권한에 따른 user_view_scope 자동 설정 (SUPER_ADMIN만 ALL, 나머지는 SELF)
     const scopeType = getBody.authority === 'SUPER_ADMIN' ? ViewScopeType.ALL : ViewScopeType.SELF;

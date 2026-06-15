@@ -20,4 +20,7 @@ export enum ActivityLogActionType {
   LOGIN_FAIL = 'LOGIN_FAIL', // 로그인 실패
   ACCOUNT_LOCK = 'ACCOUNT_LOCK', // 로그인 5회 실패 계정 잠금
   ACCOUNT_UNLOCK = 'ACCOUNT_UNLOCK', // 계정 잠금 해제 (관리자)
+  ACCOUNT_CREATE = 'ACCOUNT_CREATE', // 신규 계정 생성
+  ACCOUNT_WITHDRAW = 'ACCOUNT_WITHDRAW', // 탈퇴 (LEAVE 전환 시점)
+  ACCOUNT_ANONYMIZE = 'ACCOUNT_ANONYMIZE', // 익명화 (LEAVE +6개월 PII 파기)
 }

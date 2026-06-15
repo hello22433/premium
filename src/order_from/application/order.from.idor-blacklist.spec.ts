@@ -24,7 +24,7 @@ describe('OrderFromService — IDOR / blacklist / admin 필터 (P0)', () => {
     sut.orderFromDefinitionRepository = {
       find: jest.fn().mockResolvedValue([]),
       existsBy: jest.fn().mockResolvedValue(false),
-      insert: jest.fn().mockResolvedValue(undefined),
+      insert: jest.fn().mockResolvedValue({ identifiers: [{ id: 100 }] }),
       update: jest.fn().mockResolvedValue(undefined),
       findOne: jest.fn().mockResolvedValue(null),
       findAndCount: jest.fn().mockResolvedValue([[], 0]),
@@ -33,6 +33,11 @@ describe('OrderFromService — IDOR / blacklist / admin 필터 (P0)', () => {
       find: jest.fn().mockResolvedValue([]),
       findOne: jest.fn().mockResolvedValue(null),
     };
+    // createPhone 은 이제 트랜잭션 내 manager.getRepository().insert() 로 저장한다.
+    // 트랜잭션 매니저가 동일 repo 스파이를 반환하도록 연결해 INSERT 호출을 검증한다.
+    const manager = { getRepository: jest.fn().mockReturnValue(sut.orderFromDefinitionRepository) };
+    sut.dataSource = { transaction: jest.fn(async (cb: any) => cb(manager)) };
+    sut.reconcileDefaultAndMirror = jest.fn().mockResolvedValue(undefined);
     return sut;
   };
 
@@ -69,6 +74,28 @@ describe('OrderFromService — IDOR / blacklist / admin 필터 (P0)', () => {
 
       await sut.getPhoneList(user, { userId: 99 });
       expect(sut.orderFromDefinitionRepository.find).toHaveBeenCalled();
+    });
+
+    // 빈 user query(`?userId=`)가 @Type(()=>Number) 로 0 으로 변환되어 들어오는 케이스.
+    // `0 ?? user.id` 가 0 을 흘려 보내 본인 조회가 403/0건으로 깨지던 회귀를 잠근다.
+    it('userId 가 0(빈 쿼리 변환값)이면 본인 조회로 떨어뜨린다 — CORPORATE_ADMIN 도 403 아님', async () => {
+      const sut = makeSut();
+      const user = makeUser(10, IUserAuthority.CORPORATE_ADMIN);
+
+      await sut.getPhoneList(user, { userId: 0 });
+      expect(sut.orderFromDefinitionRepository.find).toHaveBeenCalledWith(
+        expect.objectContaining({ where: expect.objectContaining({ userId: 10 }) }),
+      );
+    });
+
+    it('userId 미전달(undefined)이면 본인 조회한다', async () => {
+      const sut = makeSut();
+      const user = makeUser(10, IUserAuthority.CORPORATE_ADMIN);
+
+      await sut.getPhoneList(user, {});
+      expect(sut.orderFromDefinitionRepository.find).toHaveBeenCalledWith(
+        expect.objectContaining({ where: expect.objectContaining({ userId: 10 }) }),
+      );
     });
   });
 

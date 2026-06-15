@@ -158,6 +158,34 @@ export class PartnerCompanyBatchController {
     return result;
   }
 
+  @ApiOperation({
+    summary: '컬쳐랜드 일대사 백필 진단 (기간, 읽기 전용, DB 변경 없음)',
+    description:
+      'startDay~endDay 기간 일대사 API로 사용된 certNo를 수집해 우리 60일 컬쳐랜드 발송건과 대조. ' +
+      'EXPIRED 매칭 = 실제 사용됐으나 만료로 잘못 찍힌 피해 건. IP 차단 누락분 규모 파악용.',
+  })
+  @Get('batch/cultureland-daily-diagnose-range')
+  async diagnoseCulturelandDailyRange(
+    @Query('startDay') startDay: string,
+    @Query('endDay') endDay: string,
+  ) {
+    if (!startDay || !endDay || !/^\d{8}$/.test(startDay) || !/^\d{8}$/.test(endDay)) {
+      return { message: 'startDay, endDay를 YYYYMMDD 형식으로 입력해주세요.' };
+    }
+    if (startDay > endDay) {
+      return { message: 'startDay가 endDay보다 클 수 없습니다.' };
+    }
+    this.logger.log(`[진단] diagnoseCulturelandDailyRange 시작 - ${startDay} ~ ${endDay}`);
+    const result = await this.partnerCompanyExternBatchService.diagnoseCulturelandDailyRange(
+      startDay,
+      endDay,
+    );
+    this.logger.log(
+      `[진단] diagnoseCulturelandDailyRange 완료 - matched=${result.matched}, wronglyExpired=${result.wronglyExpired.length}`,
+    );
+    return result;
+  }
+
   @ApiOperation({ summary: '전체 CANCEL 상태 발송건 협력사 상태 검증 (읽기 전용, SSG 제외)' })
   @Get('batch/verify-all-cancelled')
   async verifyAllCancelled(@Query('partnerType') partnerType?: string) {

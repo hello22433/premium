@@ -4,6 +4,7 @@ import { In, MoreThan, Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { Transactional } from 'typeorm-transactional';
 import { randomUUID } from 'crypto';
+import { ulid } from 'ulid';
 import { addDays, format, subDays } from 'date-fns';
 import dayjs from 'dayjs';
 import * as fsPromises from 'fs/promises';
@@ -60,7 +61,9 @@ import { smsSsgShortTemplate } from '../domain/sms.ssg.template';
 import { DeliveryTrackingStatus } from '../domain/delivery.tracking.status';
 import { OrderEmailSendType } from '../../order/domain/order.email.send.type';
 import { EmailType } from '../../mail/domain/email.type';
-import { EmailCertifyExpireDay, defaultFromPhoneNumber } from '../../const';
+import { EmailCertifyExpireDay } from '../../const';
+import { OrderFromService } from '../../order_from/application/order.from.service';
+import { getBillingUserId } from '../../order/domain/order.billing-user.helper';
 
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { OrderEncryptKey } from '../../order_receive/interface/order.encrypt.key';
@@ -129,6 +132,7 @@ export class DeliveryBatchService {
     @InjectRepository(OrderHistoryEntity)
     private readonly orderHistoryRepository: Repository<OrderHistoryEntity>,
     @InjectDataSource() private readonly dataSource: DataSource,
+    private readonly orderFromService: OrderFromService,
   ) {}
 
   private readonly logger = new Logger('batch');
@@ -170,6 +174,15 @@ export class DeliveryBatchService {
 
   private markSendFail(orderDelivery: OrderDeliveryEntity, status: IOrderDeliveryStatus): void {
     this.deliverySendService.markSendFail(orderDelivery, status);
+  }
+
+  private logSendFail(odId: number, method: string, extra: Record<string, unknown>, err: unknown): void {
+    const extraStr = Object.entries(extra)
+      .map(([k, v]) => `${k}=${v ?? 'NULL'}`)
+      .join(' ');
+    this.logger.error(
+      `발송 실패 odId=${odId} method=${method} ${extraStr} msg=${(err as Error)?.message ?? String(err)}`,
+    );
   }
 
   /**
@@ -296,11 +309,15 @@ export class DeliveryBatchService {
         ? await this.refundLedgerService.isSsgSettled(orderDelivery.id)
         : false;
       if (!ssgAlreadySettled) {
+        // claim 직후 이 cycle 의 ledger id 를 캡처해 명시 전달 — resolver→refundForDeliveryFail 의
+        // 재조회(지연 시 cross-cycle 멱등키 오염, HIGH)를 방지한다.
+        const refundLedgerId = await this.refundLedgerService.getLedgerId(orderDelivery.id);
         const outcome = await this.ssgRefundResolverService.resolveAndRefundIfNeeded({
           orderDeliveryId: orderDelivery.id,
           ssgEventId: orderDelivery.ssgEventId!,
           refundAmount: productPrice,
           orderId: order.id,
+          refundLedgerId: refundLedgerId ?? undefined,
         });
         if (outcome === SsgRefundOutcome.DEFERRED) {
           this.logger.error(
@@ -356,10 +373,9 @@ export class DeliveryBatchService {
   }
 
   /**
-   * 비정상 종료로 claimed_at이 남아있는 WAIT 행을 해제한다.
-   * 부팅 시 1회만 호출된다 (PM2 단일 인스턴스 전제).
+   * 비정상 종료로 남은 WAIT 행의 claimedAt 을 해제한다. main.ts 에서 listen() 전 1회 호출.
    */
-  async releaseStaleClaims(): Promise<number> {
+  async releaseStaleBatchClaims(): Promise<number> {
     const result = await this.orderDeliveryRepository
       .createQueryBuilder()
       .update(OrderDeliveryEntity)
@@ -920,6 +936,9 @@ export class DeliveryBatchService {
       const hadNoBarCode = !orderDelivery.barCode;
       let ssgEvent: SsgEventEntity | null = null;
       let resendDeducted = false;
+      // 재발송 선차감 단위 멱등키. deduct 시 발급 → 역복원(refundResendEventDeduction)이 이 키로 멱등 처리.
+      // 원래 발송 실패 환불 cycle 의 refund_ledger_id 와 분리해 recovery_log 충돌(leak) 방지.
+      let resendDeductionId: string | null = null;
       try {
         if (order.type === IOrderType.SSG && orderDelivery.ssgEventId) {
           ssgEvent = await this.ssgEventRepository.findOne({
@@ -971,6 +990,7 @@ export class DeliveryBatchService {
             );
             return false;
           }
+          resendDeductionId = ulid();
           await this.ssgEventService.deductEventBalance(newEvent.id, product.price, order.id, false);
           ssgEvent = newEvent;
           resendDeducted = true;
@@ -981,7 +1001,7 @@ export class DeliveryBatchService {
         if (!orderDelivery.barCode) {
           this.logger.error(`[RESEND] PIN 재발급 실패 - orderDelivery.id: ${orderDelivery.id}`);
           if (resendDeducted && ssgEvent) {
-            await this.refundResendDeduct(orderDelivery, ssgEvent.id, product.price, order.id);
+            await this.refundResendDeduct(orderDelivery, ssgEvent.id, product.price, order.id, resendDeductionId!);
             resendDeducted = false;
           }
           return false;
@@ -1009,7 +1029,7 @@ export class DeliveryBatchService {
         this.logger.error(`[RESEND] PIN 발급/확인 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
         // issue() throw 시에도 선차감 환불 (shared resolver — state 기준 분기)
         if (resendDeducted && ssgEvent) {
-          await this.refundResendDeduct(orderDelivery, ssgEvent.id, product.price, order.id);
+          await this.refundResendDeduct(orderDelivery, ssgEvent.id, product.price, order.id, resendDeductionId!);
         }
         return false;
       }
@@ -1040,14 +1060,16 @@ export class DeliveryBatchService {
     ssgEventId: number,
     refundAmount: number,
     orderId: number,
+    resendDeductionId: string,
   ): Promise<void> {
-    // resolver 는 throw 흡수 + outcome 반환. DEFERRED 시 ledger.ssg_balance_settled 가 false 로
-    // 남거나 markSsgSettled 가 호출 안 됨 → 다음 재발송 가드에서 차단.
+    // resolver 는 throw 흡수 + outcome 반환. resendDeductionId 전달 시 전용 멱등(refundResendEventDeduction)으로
+    // 새 행사 선차감을 역복원 — 원래 환불 cycle 의 recovery_log 키 재사용 충돌(leak) 회피 + settled 미터치.
     const outcome = await this.ssgRefundResolverService.resolveAndRefundIfNeeded({
       orderDeliveryId: orderDelivery.id,
       ssgEventId,
       refundAmount,
       orderId,
+      resendDeductionId,
     });
     if (outcome === SsgRefundOutcome.DEFERRED) {
       this.logger.error(`[RESEND] 선차감 환불 DEFERRED — 운영 점검 필요. orderDelivery.id: ${orderDelivery.id}`);
@@ -1292,7 +1314,9 @@ export class DeliveryBatchService {
       filePathList.push(orderDelivery.imagePath);
     }
 
-    const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber || defaultFromPhoneNumber;
+    const fromPhoneNumber =
+      orderDelivery.orderProductMapping.fromPhoneNumber ||
+      (await this.orderFromService.resolveSendDefaultPhone(getBillingUserId(orderDelivery.orderProductMapping.order)));
     await this.smsSend.send({
       msgType: 'M',
       to: phoneNumber,
@@ -1398,7 +1422,9 @@ export class DeliveryBatchService {
     if (orderDelivery.imagePath) {
       filePathList.push(orderDelivery.imagePath);
     }
-    const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber || defaultFromPhoneNumber;
+    const fromPhoneNumber =
+      orderDelivery.orderProductMapping.fromPhoneNumber ||
+      (await this.orderFromService.resolveSendDefaultPhone(getBillingUserId(orderDelivery.orderProductMapping.order)));
 
     await this.smsSend.send({
       msgType: 'M',
@@ -1470,7 +1496,9 @@ export class DeliveryBatchService {
 
     const textBytes = Buffer.byteLength(text, 'utf8');
     const msgType: 'S' | 'L' = textBytes <= 90 ? 'S' : 'L';
-    const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber || defaultFromPhoneNumber;
+    const fromPhoneNumber =
+      orderDelivery.orderProductMapping.fromPhoneNumber ||
+      (await this.orderFromService.resolveSendDefaultPhone(getBillingUserId(orderDelivery.orderProductMapping.order)));
 
     await this.smsSend.send({
       msgType,
@@ -1713,7 +1741,8 @@ export class DeliveryBatchService {
 
         this.markSendSuccess(orderDelivery, IOrderDeliveryStatus.COMPLETE);
       } catch (e) {
-        deliveryHistory.context = JSON.stringify(e);
+        const errMsg = (e as Error)?.message ?? String(e);
+        deliveryHistory.context = errMsg;
         deliveryHistory.isSuccess = false;
         const resultSms = await this.handleAlimTalkFail(
           orderDelivery,
@@ -1727,10 +1756,17 @@ export class DeliveryBatchService {
         );
 
         if (resultSms === IOrderDeliveryStatus.COMPLETE_SMS) {
+          // 알림톡 실패 → SMS 폴백 성공 (정상 흐름이므로 에러 로그 남기지 않음)
           deliveryHistory.isSuccess = true;
           this.markSendSuccess(orderDelivery, IOrderDeliveryStatus.COMPLETE_SMS);
         } else {
-          deliveryHistory.context += JSON.stringify(resultSms);
+          deliveryHistory.context += ` / smsResult=${resultSms}`;
+          this.logSendFail(
+            orderDelivery.id,
+            'ALIM_TALK',
+            { target: decryptedDeliveryTarget, test: !!testOrderDeliveryId, alimTalkErr: errMsg, smsResult: resultSms },
+            e,
+          );
           this.markSendFail(orderDelivery, IOrderDeliveryStatus.FAIL);
         }
       }
@@ -1739,9 +1775,9 @@ export class DeliveryBatchService {
     // SMS 발송
     if (deliveryMethod === IOrderSendMethod.MMS) {
       const smsText = this.buildSmsText(orderDelivery, encryptKey, body, memo, tailText);
+      const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber!;
 
       try {
-        const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber!;
         await this.smsSend.send({
           msgType: 'M',
           to: decryptedDeliveryTarget,
@@ -1754,7 +1790,13 @@ export class DeliveryBatchService {
         deliveryHistory.context = smsText;
       } catch (e) {
         this.markSendFail(orderDelivery, IOrderDeliveryStatus.FAIL);
-        deliveryHistory.context = JSON.stringify(e);
+        this.logSendFail(
+          orderDelivery.id,
+          'MMS',
+          { target: decryptedDeliveryTarget, from: fromPhoneNumber, test: !!testOrderDeliveryId },
+          e,
+        );
+        deliveryHistory.context = (e as Error)?.message ?? String(e);
         deliveryHistory.isSuccess = false;
       }
     }
@@ -1769,9 +1811,9 @@ export class DeliveryBatchService {
         const decryptedEmailReceiverPhone =
           this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.emailReceiverPhone) ??
           orderDelivery.emailReceiverPhone;
+        const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber!;
 
         try {
-          const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber!;
           await this.smsSend.send({
             msgType: 'M',
             to: decryptedEmailReceiverPhone,
@@ -1785,7 +1827,13 @@ export class DeliveryBatchService {
           deliveryHistory.target = decryptedEmailReceiverPhone;
         } catch (e) {
           this.markSendFail(orderDelivery, IOrderDeliveryStatus.FAIL);
-          deliveryHistory.context = JSON.stringify(e);
+          this.logSendFail(
+            orderDelivery.id,
+            'EMAIL_SMS_RESEND',
+            { target: decryptedEmailReceiverPhone, from: fromPhoneNumber, test: !!testOrderDeliveryId },
+            e,
+          );
+          deliveryHistory.context = (e as Error)?.message ?? String(e);
           deliveryHistory.isSuccess = false;
         }
       } else {
@@ -1848,8 +1896,9 @@ export class DeliveryBatchService {
           qrCodeImagePath,
         });
 
+        const fromEmail = orderDelivery.orderProductMapping.fromEmail;
+
         try {
-          const fromEmail = orderDelivery.orderProductMapping.fromEmail;
           await this.mailSend.send({
             saveSentMail: 'N',
             bcc: undefined,
@@ -1863,7 +1912,13 @@ export class DeliveryBatchService {
           deliveryHistory.context = emailText;
         } catch (e) {
           this.markSendFail(orderDelivery, IOrderDeliveryStatus.FAIL);
-          deliveryHistory.context = JSON.stringify(e);
+          this.logSendFail(
+            orderDelivery.id,
+            'EMAIL',
+            { target: decryptedDeliveryTarget, fromEmail: fromEmail, test: !!testOrderDeliveryId },
+            e,
+          );
+          deliveryHistory.context = (e as Error)?.message ?? String(e);
           deliveryHistory.isSuccess = false;
         }
       }
@@ -1881,7 +1936,11 @@ export class DeliveryBatchService {
       await this.orderDeliveryRepository.save(orderDelivery);
     }
 
-    await this.deliverySendHistoryRepository.save(deliveryHistory);
+    // 테스트 발송은 발송실패내역(delivery_send_history)에 기록하지 않는다.
+    // 실패 원인은 위 catch 블록의 logger.error 로그로만 추적한다.
+    if (!testOrderDeliveryId) {
+      await this.deliverySendHistoryRepository.save(deliveryHistory);
+    }
 
     return (
       orderDelivery.status === IOrderDeliveryStatus.COMPLETE ||

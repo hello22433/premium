@@ -169,16 +169,27 @@ export class RefundService {
   private applyRefundUpdate(orderDelivery: OrderDeliveryEntity, dto: RefundUpdateReqDto): void {
     const { refundAt, refundStatus, bankAccountOwner, bankName, bankAccount, approveAt } = dto;
 
-    const isUpward = RefundService.REFUND_STATUS_ORDER[refundStatus] > RefundService.REFUND_STATUS_ORDER[orderDelivery.refundStatus!];
+    const isProgress = refundStatus === OrderDeliveryRefundStatusEnum.PROGRESS;
 
-    if (isUpward) {
-      if (RefundService.REFUND_STATUS_ORDER[refundStatus] >= RefundService.REFUND_STATUS_ORDER[OrderDeliveryRefundStatusEnum.APPROVE]) {
-        if (!bankAccountOwner || !bankName || !bankAccount || !approveAt) {
-          throw new BadRequestException('승인 시 예금주, 은행명, 계좌번호, 승인일자를 입력해주세요.');
-        }
-      }
-      if (refundStatus === OrderDeliveryRefundStatusEnum.COMPLETE && !refundAt) {
-        throw new BadRequestException('환불 완료 시 환불일자를 입력해주세요.');
+    // 일자 결정: undefined=유지, null=클리어(PROGRESS만), 문자열=해당 날짜 (빈 문자열/형식오류는 DTO @Matches 에서 차단)
+    const resolvedApproveAt = this.resolveRefundDate(approveAt, orderDelivery.approveAt, isProgress, '승인일자');
+    const resolvedRefundAt = this.resolveRefundDate(refundAt, orderDelivery.refundAt, isProgress, '환불일자');
+
+    // 결과 상태 불변조건
+    if (refundStatus === OrderDeliveryRefundStatusEnum.APPROVE && !resolvedApproveAt) {
+      throw new BadRequestException('승인 상태에서는 승인일자가 필요합니다.');
+    }
+    if (refundStatus === OrderDeliveryRefundStatusEnum.COMPLETE && (!resolvedApproveAt || !resolvedRefundAt)) {
+      throw new BadRequestException('환불 완료 상태에서는 승인일자와 환불일자가 모두 필요합니다.');
+    }
+    if (resolvedApproveAt && resolvedRefundAt && resolvedRefundAt.getTime() < resolvedApproveAt.getTime()) {
+      throw new BadRequestException('환불일자는 승인일자보다 빠를 수 없습니다.');
+    }
+
+    // 승인 이상 상태는 예금주/은행명/계좌번호 필수
+    if (RefundService.REFUND_STATUS_ORDER[refundStatus] >= RefundService.REFUND_STATUS_ORDER[OrderDeliveryRefundStatusEnum.APPROVE]) {
+      if (!bankAccountOwner || !bankName || !bankAccount) {
+        throw new BadRequestException('승인 시 예금주, 은행명, 계좌번호를 입력해주세요.');
       }
     }
 
@@ -186,8 +197,32 @@ export class RefundService {
     orderDelivery.bankAccountOwner = bankAccountOwner ?? null;
     orderDelivery.bankName = bankName;
     orderDelivery.bankAccount = bankAccount;
-    orderDelivery.approveAt = approveAt ? new Date(approveAt) : orderDelivery.approveAt;
-    orderDelivery.refundAt = refundAt ? new Date(refundAt) : orderDelivery.refundAt;
+    orderDelivery.approveAt = resolvedApproveAt;
+    orderDelivery.refundAt = resolvedRefundAt;
+  }
+
+  /**
+   * 환불 일자 입력값 해석.
+   * - undefined / 키 미전송: 기존값 유지
+   * - null: 컬럼 클리어. 단 결과 상태가 PROGRESS 일 때만 허용, 아니면 400
+   * - 유효 날짜 문자열(DTO @Matches 통과): 해당 날짜
+   */
+  private resolveRefundDate(
+    incoming: string | null | undefined,
+    current: Date | null,
+    isProgress: boolean,
+    fieldLabel: string,
+  ): Date | null {
+    if (incoming === undefined) {
+      return current;
+    }
+    if (incoming === null) {
+      if (!isProgress) {
+        throw new BadRequestException(`${fieldLabel}는 진행중 상태에서만 비울 수 있습니다.`);
+      }
+      return null;
+    }
+    return new Date(incoming);
   }
 
   /**

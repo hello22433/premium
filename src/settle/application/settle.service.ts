@@ -309,7 +309,9 @@ export class SettleService {
     const productList: SettleOtherProductDetailDto[] = sale.otherServiceSaleProductMappings.map((mapping) => {
       const product = mapping.otherServiceSaleProduct;
       return {
-        id: product.id,
+        mappingId: mapping.id,
+        productId: product.id,
+        id: product.id, // [deprecated] productId 와 동일
         code: product.code,
         brandName: product.brandName,
         productName: product.name,
@@ -333,7 +335,7 @@ export class SettleService {
       isVat: sale.isVat,
       eventName: sale.eventName,
       eventContent: sale.eventContent,
-      etc: sale.etc ?? null,
+      etc: sale.etc,
       proveAt: format(sale.proveAt, DateDateFormatStr),
       productList,
     };
@@ -407,22 +409,21 @@ export class SettleService {
         proveAt: new Date(proveAt),
         eventName,
         eventContent,
-        etc,
+        etc: etc?.trim() || null,
       }),
     );
+
+    // 요청 내 품목 코드 중복 검사 (매출별 스냅샷: 다른 매출의 동일 코드는 허용)
+    const createCodes = productList.map((product) => product.code);
+    const duplicatedCode = createCodes.find((code, index) => createCodes.indexOf(code) !== index);
+    if (duplicatedCode) {
+      throw new BadRequestException(`요청 내 품목 코드가 중복됩니다: ${duplicatedCode}`);
+    }
 
     // 2. 상품 리스트 저장
     for (const product of productList) {
       if (product.price * product.quantity !== product.totalPrice) {
         throw new BadRequestException('상품의 단가와 수량의 합이 합계금액(단가 * 수량)과 일치하지 않습니다');
-      }
-
-      const existProduct = await this.otherSaleProductRepository.findOne({
-        where: { code: product.code },
-      });
-
-      if (existProduct) {
-        throw new BadRequestException('이미 존재하는 품목 코드입니다');
       }
 
       // 상품 저장
@@ -435,15 +436,13 @@ export class SettleService {
         }),
       );
 
-      const totalPrice = Number(product.price) * product.quantity;
-
       // 매핑 저장
       await this.otherSaleProductMappingRepository.save(
         this.otherSaleProductMappingRepository.create({
           otherServiceSaleId: sale.id,
           otherServiceSaleProductId: savedProduct.id,
           quantity: product.quantity,
-          totalPrice,
+          totalPrice: product.totalPrice,
         }),
       );
     }
@@ -466,9 +465,21 @@ export class SettleService {
       deleteMappingIds,
     } = getBody;
 
-    const sale = await this.otherSaleRepository.findOne({ where: { id: saleId } });
+    const sale = await this.otherSaleRepository.findOne({
+      where: { id: saleId },
+      lock: { mode: 'pessimistic_write' },
+    });
     if (!sale) {
       throw new BadRequestException('기타 서비스 매출 정보를 찾을 수 없습니다.');
+    }
+
+    // 수정 대상 매핑이 삭제 대상에도 포함되면 거부
+    const deleteMappingIdSet = new Set(deleteMappingIds ?? []);
+    const conflictMappingId = (productList ?? []).find(
+      (product) => product.mappingId && deleteMappingIdSet.has(product.mappingId),
+    )?.mappingId;
+    if (conflictMappingId) {
+      throw new BadRequestException(`같은 매핑 id 가 수정과 삭제에 동시에 포함되어 있습니다: ${conflictMappingId}`);
     }
 
     // 삭제할 상품이 있다면 삭제
@@ -497,43 +508,107 @@ export class SettleService {
       await this.otherSaleProductMappingRepository.softDelete(deleteMappingIds);
     }
 
-    if (productList) {
+    if (productList && productList.length > 0) {
+      // 합계 금액 검증 + 요청 내 품목 코드 중복 검사 (매출별 스냅샷: 다른 매출의 동일 코드는 허용)
+      const requestCodes: string[] = [];
       for (const product of productList) {
         if (product.price * product.quantity !== product.totalPrice) {
           throw new BadRequestException(`단가와 수량의 합이 합계 금액과 맞지 않습니다.`);
         }
-
-        // 상품 코드 중복 확인
-        if (!product.mappingId) {
-          const existing = await this.otherSaleProductRepository.findOne({
-            where: { code: product.code },
-          });
-          if (existing) {
-            throw new BadRequestException('이미 등록된 품목 코드입니다');
-          }
+        if (requestCodes.includes(product.code)) {
+          throw new BadRequestException(`요청 내 품목 코드가 중복됩니다: ${product.code}`);
         }
+        requestCodes.push(product.code);
+      }
 
-        // 상품 저장(수정 또는 추가)
-        const savedProduct = await this.otherSaleProductRepository.save(
-          this.otherSaleProductRepository.create({
-            code: product.code,
-            brandName: product.brandName,
-            name: product.productName,
-            price: product.price,
-          }),
+      // 수정 대상 매핑 소유권 검증
+      const updateMappingIds = productList
+        .map((product) => product.mappingId)
+        .filter((mappingId): mappingId is number => mappingId != null);
+      const updateMappings =
+        updateMappingIds.length > 0
+          ? await this.otherSaleProductMappingRepository.find({ where: { id: In(updateMappingIds) } })
+          : [];
+      if (updateMappings.length !== updateMappingIds.length) {
+        throw new BadRequestException('존재하지 않는 mapping id 가 포함되어 있습니다.');
+      }
+      const invalidUpdateMappings = updateMappings.filter((mapping) => mapping.otherServiceSaleId !== saleId);
+      if (invalidUpdateMappings.length > 0) {
+        throw new BadRequestException('수정할 매핑 id 중 sale 에 속하지 않는 id 가 있습니다.');
+      }
+      const updateMappingById = new Map(updateMappings.map((mapping) => [mapping.id, mapping]));
+
+      // 매출 내 활성 매핑 조회 (soft-deleted 는 자동 제외 → 삭제 후 동일 코드 재추가 허용)
+      const activeMappings = await this.otherSaleProductMappingRepository.find({
+        where: { otherServiceSaleId: saleId },
+        relations: ['otherServiceSaleProduct'],
+      });
+
+      // 동일 매출 활성 매핑과 코드 중복 검사 (자기 자신 매핑은 제외)
+      for (const product of productList) {
+        const conflict = activeMappings.find(
+          (mapping) => mapping.id !== product.mappingId && mapping.otherServiceSaleProduct?.code === product.code,
         );
+        if (conflict) {
+          throw new BadRequestException(`이미 등록된 품목 코드입니다: ${product.code}`);
+        }
+      }
 
+      for (const product of productList) {
         if (product.mappingId) {
+          // 기존 매핑 수정: 신규 product INSERT 금지
+          const mapping = updateMappingById.get(product.mappingId);
+          if (!mapping) {
+            throw new BadRequestException('존재하지 않는 mapping id 가 포함되어 있습니다.');
+          }
+
+          // 공유 product (활성 매핑 2개 이상이 같은 product 참조) 면 clone-on-write, 단독이면 in-place UPDATE
+          const sharedCount = activeMappings.filter(
+            (active) => active.otherServiceSaleProductId === mapping.otherServiceSaleProductId,
+          ).length;
+
+          let productId: number;
+          if (sharedCount > 1) {
+            const clonedProduct = await this.otherSaleProductRepository.save(
+              this.otherSaleProductRepository.create({
+                code: product.code,
+                brandName: product.brandName,
+                name: product.productName,
+                price: product.price,
+              }),
+            );
+            productId = clonedProduct.id;
+          } else {
+            await this.otherSaleProductRepository.update(
+              { id: mapping.otherServiceSaleProductId },
+              {
+                code: product.code,
+                brandName: product.brandName,
+                name: product.productName,
+                price: product.price,
+              },
+            );
+            productId = mapping.otherServiceSaleProductId;
+          }
+
           await this.otherSaleProductMappingRepository.update(
             { id: product.mappingId },
             {
-              otherServiceSaleId: saleId,
-              otherServiceSaleProductId: savedProduct.id,
+              otherServiceSaleProductId: productId,
               quantity: product.quantity,
               totalPrice: product.totalPrice,
             },
           );
         } else {
+          // 신규 매핑 추가
+          const savedProduct = await this.otherSaleProductRepository.save(
+            this.otherSaleProductRepository.create({
+              code: product.code,
+              brandName: product.brandName,
+              name: product.productName,
+              price: product.price,
+            }),
+          );
           const newMapping = this.otherSaleProductMappingRepository.create({
             otherServiceSaleId: saleId,
             otherServiceSaleProductId: savedProduct.id,
@@ -552,7 +627,7 @@ export class SettleService {
     sale.isVat = isVat;
     sale.eventName = eventName;
     sale.eventContent = eventContent;
-    sale.etc = etc ?? null;
+    sale.etc = etc?.trim() || null;
     sale.proveAt = new Date(proveAt);
 
     await this.otherSaleRepository.save(sale);
@@ -782,13 +857,13 @@ export class SettleService {
           }
         }
         const totalAmount = deliveryAmount * orderProductMapping.product.price;
-        tradeRate = +((tradeAmount / deliveryAmount) * 100).toFixed(1);
+        tradeRate = deliveryAmount > 0 ? +((tradeAmount / deliveryAmount) * 100).toFixed(1) : 0;
         unExchangedPrice = orderProductMapping.product.price * unExchangedAmount;
         refundPrice = orderProductMapping.product.price * refundAmount;
         cardFee = totalAmount * (cardFeePercent / 100);
         deliveryFee = totalAmount * (mmsFee / 100);
         profitAmount = unExchangedPrice - (deliveryFee + cardFee);
-        profitRate = +((profitAmount / totalAmount) * 100).toFixed(1);
+        profitRate = totalAmount > 0 ? +((profitAmount / totalAmount) * 100).toFixed(1) : 0;
 
         resultList.push({
           id: order.id,
@@ -972,13 +1047,13 @@ export class SettleService {
             }
           }
           const totalAmount = deliveryAmount * orderProductMapping.product.price;
-          tradeRate = +((tradeAmount / deliveryAmount) * 100).toFixed(1);
+          tradeRate = deliveryAmount > 0 ? +((tradeAmount / deliveryAmount) * 100).toFixed(1) : 0;
           unExchangedPrice = orderProductMapping.product.price * unExchangedAmount;
           refundPrice = orderProductMapping.product.price * refundAmount;
           cardFee = totalAmount * (cardFeePercent / 100);
           deliveryFee = totalAmount * (mmsFee / 100);
           profitAmount = unExchangedPrice - (deliveryFee + cardFee);
-          profitRate = +((profitAmount / totalAmount) * 100).toFixed(1);
+          profitRate = totalAmount > 0 ? +((profitAmount / totalAmount) * 100).toFixed(1) : 0;
 
           sheet
             .addRow({
@@ -2609,18 +2684,22 @@ export class SettleService {
     }
   }
 
+  /** 로그인한 사용자의 잔여 발송 한도 조회. */
+  async getRemainServiceAmount(user: ILoginUserInfo): Promise<SettleGetRemainServiceAmountResDto> {
+    return this.getRemainServiceAmountByUserId(user.id);
+  }
+
   /**
-   * 로그인한 사용자의 잔여 발송 한도 조회
+   * 지정한 사용자 ID 기준 잔여 발송 한도 조회.
+   * 반환값은 사용자 개인 컬럼이 아니라 해당 사용자가 속한 과금 계정(회사/wallet) 기준이다.
    * - 잔여서비스한도 = 회사최대한도 + effectiveBalance - 회사전체allSettleAmount
    * - effectiveBalance: balanceManagementType이 COMPANY이면 company.balance, 아니면 user.balance
    * - 동일 회사의 모든 계정이 한도를 공유함
-   * @param user 로그인한 사용자 정보
-   * @returns 잔여 발송 한도 정보
    */
-  async getRemainServiceAmount(user: ILoginUserInfo): Promise<SettleGetRemainServiceAmountResDto> {
+  async getRemainServiceAmountByUserId(userId: number): Promise<SettleGetRemainServiceAmountResDto> {
     // 사용자 정보 조회
     const userEntity = await this.userRepository.findOne({
-      where: { id: user.id },
+      where: { id: userId },
       relations: ['orders', 'company'],
     });
 
