@@ -21,6 +21,7 @@ import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { OrderEntity } from '../../entity/order.entity';
 import {
   readBillingView,
+  readLineProductView,
   readOperationPersonName,
 } from '../../order/util/order.snapshot.builder';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -1618,9 +1619,10 @@ export class SettleService {
     if (order.orderProductMappings && order.orderProductMappings.length > 0) {
       for (const orderProductMapping of order.orderProductMappings) {
         // 할인/할증 적용된 단가 계산
-        let adjustedPrice = orderProductMapping.product?.price ?? 0;
+        const lineView = readLineProductView(orderProductMapping);
+        const originalPrice = lineView.price;
+        let adjustedPrice = originalPrice;
         if (orderProductMapping.fee !== null && orderProductMapping.fee > 0 && orderProductMapping.priceAdjustment) {
-          const originalPrice = orderProductMapping.product?.price ?? 0;
           if (orderProductMapping.priceAdjustment === IPriceAdjustment.DISCOUNT) {
             adjustedPrice = Math.ceil((originalPrice * (100 - orderProductMapping.fee)) / 100);
           } else if (orderProductMapping.priceAdjustment === IPriceAdjustment.ADDITIONAL) {
@@ -1632,8 +1634,8 @@ export class SettleService {
           ? {
             id: orderProductMapping.product.id,
             code: orderProductMapping.product.code,
-            brandName: orderProductMapping.product.brand?.nameKorean ?? '',
-            name: orderProductMapping.product.name,
+            brandName: lineView.brandName,
+            name: lineView.name,
             price: adjustedPrice, // 할인/할증 적용된 단가
             amount: orderProductMapping.amount,
           }
@@ -1747,9 +1749,10 @@ export class SettleService {
       if (order.orderProductMappings && order.orderProductMappings.length > 0) {
         for (const mapping of order.orderProductMappings) {
           // 할인/할증 적용된 단가 계산
-          let adjustedPrice = mapping.product?.price ?? 0;
+          const mappingView = readLineProductView(mapping);
+          const originalPrice = mappingView.price;
+          let adjustedPrice = originalPrice;
           if (mapping.fee !== null && mapping.fee > 0 && mapping.priceAdjustment) {
-            const originalPrice = mapping.product?.price ?? 0;
             if (mapping.priceAdjustment === IPriceAdjustment.DISCOUNT) {
               adjustedPrice = Math.ceil((originalPrice * (100 - mapping.fee)) / 100);
             } else if (mapping.priceAdjustment === IPriceAdjustment.ADDITIONAL) {
@@ -1773,8 +1776,8 @@ export class SettleService {
             productMap.set(key, {
               id: mapping.product?.id ?? 0,
               code: mapping.product?.code ?? '',
-              brandName: mapping.product?.brand?.nameKorean ?? '',
-              name: mapping.product?.name ?? '',
+              brandName: mappingView.brandName,
+              name: mappingView.name,
               price: adjustedPrice,
               amount: mapping.amount,
               eventName: order.eventName,
