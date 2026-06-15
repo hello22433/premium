@@ -42,6 +42,15 @@ export interface SsgRefundResolveInput {
    * lease 가 만료/탈취된 stale holder 가 settled 를 마킹하는 것을 차단. 미전달 시 unconditional(동기 호출).
    */
   recoverToken?: string;
+  /**
+   * 재발송 선차감 역복원 식별자. 전달 시 이 복구는 "원래 발송 실패 환불"이 아니라
+   * "재발송 새 행사 선차감의 역복원"이다 →
+   *   - refundForDeliveryFail(refund_ledger_id 키) 대신 refundResendEventDeduction(resendDeductionId 키) 호출
+   *     (기존 recovery_log 키 재사용 시 충돌해 실제 복원 no-op 되는 leak 차단)
+   *   - markSsgSettled 호출 안 함 (원래 환불 ledger 의 settled 신호는 이 deduction 과 무관, 다음 재발송 허용 유지)
+   * orphan/state 분기는 동일하게 적용된다.
+   */
+  resendDeductionId?: string;
 }
 
 @Injectable()
@@ -120,6 +129,25 @@ export class SsgRefundResolverService {
    * 실패 시 DEFERRED 반환.
    */
   private async restoreBalance(input: SsgRefundResolveInput, context: string): Promise<SsgRefundOutcome> {
+    // 재발송 선차감 역복원 — 전용 멱등키(resendDeductionId). 원래 환불 ledger(settled) 는 미터치.
+    if (input.resendDeductionId != null) {
+      try {
+        await this.ssgEventService.refundResendEventDeduction({
+          resendDeductionId: input.resendDeductionId,
+          ssgEventId: input.ssgEventId,
+          orderId: input.orderId,
+          amount: input.refundAmount,
+        });
+      } catch (e) {
+        this.logger.error(
+          `[SSG_REFUND] refundResendEventDeduction 실패 — DEFERRED. orderDeliveryId=${input.orderDeliveryId}, context=${context}, resendDeductionId=${input.resendDeductionId}, error: ${e instanceof Error ? e.message : e}`,
+        );
+        return SsgRefundOutcome.DEFERRED;
+      }
+      return SsgRefundOutcome.RESTORED;
+    }
+
+    // 원래 발송 실패 환불 — refund_ledger_id 키 + markSsgSettled.
     try {
       await this.ssgEventService.refundForDeliveryFail(
         input.ssgEventId,

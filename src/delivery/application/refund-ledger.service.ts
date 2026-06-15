@@ -69,6 +69,20 @@ export class RefundLedgerService {
   }
 
   /**
+   * 현재 활성 환불 ledger row id 조회 (없으면 null).
+   * claim 직후 동기적으로 호출해 "이 cycle 의 ledger id" 를 캡처하는 용도.
+   * resolver→refundForDeliveryFail 에 명시 전달하면, 이후(orphan 네트워크 조회 등으로 지연된) 재조회가
+   * release+재INSERT 된 다른 cycle 의 ledger 를 집어 멱등키를 오염시키는 것을 막는다(HIGH).
+   */
+  async getLedgerId(orderDeliveryId: number): Promise<number | null> {
+    const row = await this.refundRepository.findOne({
+      where: { orderDeliveryId },
+      select: ['id'],
+    });
+    return row?.id ?? null;
+  }
+
+  /**
    * SSG 행사 잔액 보정 완료 여부 확인. ledger row 가 없으면 false 반환.
    * 재발송 가드에서 `exists() AND isSsgSettled()` 둘 다 통과해야 새 선차감 진행.
    * plans/ssg-balance-refactor.md PR3 보강.

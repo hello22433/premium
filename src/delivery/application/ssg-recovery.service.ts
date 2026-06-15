@@ -84,7 +84,18 @@ export class SsgRecoveryService {
       .where('r.order_delivery_id = :odid', { odid: orderDeliveryId })
       .andWhere('r.ssg_recover_token = :tok', { tok: token })
       .getRawOne<{ id: string | number }>();
-    const refundLedgerId = claimed ? Number(claimed.id) : undefined;
+
+    if (!claimed) {
+      // CAS 가 affected=1 로 성공했는데 token 으로 본인 row 를 못 읽음 = invariant 위반
+      // (claim 직후 row 삭제/탈취). refundLedgerId=undefined 로 resolver 진입하면 refundForDeliveryFail 이
+      // lookup fallback 으로 떨어져 cross-cycle 멱등키 오염(HIGH-1) 위험 → 진입 전 중단(DEFERRED).
+      // settled=false 유지 → lease 만료 후 sweep 재claim.
+      this.logger.error(
+        `[SSG_RECOVERY] claim 직후 token-fenced ledger row 조회 실패 — resolver 진입 중단(DEFERRED). orderDeliveryId=${orderDeliveryId}, token=${token}`,
+      );
+      return SsgRecoveryResult.DEFERRED;
+    }
+    const refundLedgerId = Number(claimed.id);
 
     // 3) heartbeat: resolver 가 외부 SSG orphan 조회(네트워크) 로 길어질 수 있어, 수행 중 token-fenced 로
     //    lease 를 주기 연장한다. 만료 전 종료 가정에만 의존하지 않음 (HIGH-3).

@@ -27,7 +27,7 @@ describe('SsgRefundResolverService', () => {
   let sut: SsgRefundResolverService;
   let stateService: { getState: jest.Mock };
   let partnerExternService: { resolveSsgOrphan: jest.Mock };
-  let ssgEventService: { refundForDeliveryFail: jest.Mock };
+  let ssgEventService: { refundForDeliveryFail: jest.Mock; refundResendEventDeduction: jest.Mock };
   let refundLedgerService: { markSsgSettled: jest.Mock };
 
   const baseInput = {
@@ -41,7 +41,10 @@ describe('SsgRefundResolverService', () => {
     jest.clearAllMocks();
     stateService = { getState: jest.fn() };
     partnerExternService = { resolveSsgOrphan: jest.fn() };
-    ssgEventService = { refundForDeliveryFail: jest.fn().mockResolvedValue(undefined) };
+    ssgEventService = {
+      refundForDeliveryFail: jest.fn().mockResolvedValue(undefined),
+      refundResendEventDeduction: jest.fn().mockResolvedValue(undefined),
+    };
     refundLedgerService = { markSsgSettled: jest.fn().mockResolvedValue(undefined) };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -72,6 +75,49 @@ describe('SsgRefundResolverService', () => {
     );
     expect(refundLedgerService.markSsgSettled).toHaveBeenCalledWith(baseInput.orderDeliveryId, undefined);
     expect(partnerExternService.resolveSsgOrphan).not.toHaveBeenCalled();
+  });
+
+  describe('resendDeductionId 전달 (재발송 선차감 역복원)', () => {
+    const resendInput = { ...baseInput, resendDeductionId: 'RDID-1' };
+
+    it('state NONE → refundResendEventDeduction(전용 멱등키) 호출, refundForDeliveryFail/markSsgSettled 미호출', async () => {
+      stateService.getState.mockResolvedValue(SsgInsertState.NONE);
+
+      const outcome = await sut.resolveAndRefundIfNeeded(resendInput);
+
+      expect(outcome).toBe(SsgRefundOutcome.RESTORED);
+      expect(ssgEventService.refundResendEventDeduction).toHaveBeenCalledWith({
+        resendDeductionId: 'RDID-1',
+        ssgEventId: baseInput.ssgEventId,
+        orderId: baseInput.orderId,
+        amount: baseInput.refundAmount,
+      });
+      // 원래 환불 ledger 경로/ settled 신호는 건드리지 않음
+      expect(ssgEventService.refundForDeliveryFail).not.toHaveBeenCalled();
+      expect(refundLedgerService.markSsgSettled).not.toHaveBeenCalled();
+    });
+
+    it('orphan FAILED → refundResendEventDeduction 호출 (markSsgSettled 미호출)', async () => {
+      stateService.getState.mockResolvedValue(SsgInsertState.ATTEMPTED);
+      partnerExternService.resolveSsgOrphan.mockResolvedValue(SsgOrphanResolveOutcome.FAILED);
+
+      const outcome = await sut.resolveAndRefundIfNeeded(resendInput);
+
+      expect(outcome).toBe(SsgRefundOutcome.RESTORED);
+      expect(ssgEventService.refundResendEventDeduction).toHaveBeenCalledTimes(1);
+      expect(ssgEventService.refundForDeliveryFail).not.toHaveBeenCalled();
+      expect(refundLedgerService.markSsgSettled).not.toHaveBeenCalled();
+    });
+
+    it('refundResendEventDeduction throw → DEFERRED', async () => {
+      stateService.getState.mockResolvedValue(SsgInsertState.FAILED);
+      ssgEventService.refundResendEventDeduction.mockRejectedValue(new Error('boom'));
+
+      const outcome = await sut.resolveAndRefundIfNeeded(resendInput);
+
+      expect(outcome).toBe(SsgRefundOutcome.DEFERRED);
+      expect(refundLedgerService.markSsgSettled).not.toHaveBeenCalled();
+    });
   });
 
   it('state FAILED → refundForDeliveryFail + markSsgSettled + RESTORED', async () => {

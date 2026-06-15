@@ -20,6 +20,9 @@ describe('SsgEventService', () => {
     const recoveryLogRepository = {
       createQueryBuilder: jest.fn(),
     };
+    const resendDeductRecoveryRepository = {
+      createQueryBuilder: jest.fn(),
+    };
     const refundLedgerRepository = {
       findOne: jest.fn(),
     };
@@ -32,6 +35,7 @@ describe('SsgEventService', () => {
       orderProductMappingRepository as any,
       reservationRangeRepository as any,
       recoveryLogRepository as any,
+      resendDeductRecoveryRepository as any,
       refundLedgerRepository as any,
       activityLogService as any,
       ssgIssue as any,
@@ -42,8 +46,30 @@ describe('SsgEventService', () => {
       ssgEventRepository,
       amountHistoryRepository,
       recoveryLogRepository,
+      resendDeductRecoveryRepository,
       refundLedgerRepository,
     };
+  };
+
+  /**
+   * resendDeductRecovery INSERT 체인 mocking. resend_deduction_id 별 한 번만 성공, 재시도는 ER_DUP_ENTRY.
+   */
+  const mockResendDeductInsert = (resendDeductRecoveryRepository: any, seen: Set<string>) => {
+    resendDeductRecoveryRepository.createQueryBuilder.mockReturnValue({
+      insert: jest.fn().mockReturnThis(),
+      into: jest.fn().mockReturnThis(),
+      values: jest.fn((v: { resendDeductionId: string }) => ({
+        execute: jest.fn(() => {
+          if (seen.has(v.resendDeductionId)) {
+            const err: any = new Error('ER_DUP_ENTRY');
+            err.code = 'ER_DUP_ENTRY';
+            return Promise.reject(err);
+          }
+          seen.add(v.resendDeductionId);
+          return Promise.resolve(undefined);
+        }),
+      })),
+    });
   };
 
   /**
@@ -175,6 +201,49 @@ describe('SsgEventService', () => {
       mockRecoveryLogInsert(recoveryLogRepository, seen);
 
       await expect(service.refundForDeliveryFail(36, 4145, 10_000, 4145)).rejects.toThrow();
+      expect(seen.size).toBe(0);
+    });
+  });
+
+  describe('refundResendEventDeduction (재발송 선차감 역복원, 전용 멱등키)', () => {
+    const input = { resendDeductionId: 'RDID-9', ssgEventId: 36, orderId: 4145, amount: 10_000 };
+
+    it('최초 호출 → resend_deduction_id INSERT + 행사 잔액 += amount', async () => {
+      const { service, ssgEventRepository, amountHistoryRepository, resendDeductRecoveryRepository } = createService();
+      const event = { id: 36, eventBalance: 100_000 };
+      mockFindSsgEvent(ssgEventRepository, event);
+      const seen = new Set<string>();
+      mockResendDeductInsert(resendDeductRecoveryRepository, seen);
+
+      await service.refundResendEventDeduction(input);
+
+      expect(seen.has('RDID-9')).toBe(true);
+      expect(event.eventBalance).toBe(110_000);
+      expect(amountHistoryRepository.save).toHaveBeenCalledTimes(1);
+      expect(ssgEventRepository.save).toHaveBeenCalledTimes(1);
+    });
+
+    it('동일 resend_deduction_id 재호출 → ER_DUP_ENTRY 흡수, 잔액 미변경(멱등)', async () => {
+      const { service, ssgEventRepository, amountHistoryRepository, resendDeductRecoveryRepository } = createService();
+      const event = { id: 36, eventBalance: 100_000 };
+      mockFindSsgEvent(ssgEventRepository, event);
+      const seen = new Set<string>(['RDID-9']); // 이미 역복원됨
+      mockResendDeductInsert(resendDeductRecoveryRepository, seen);
+
+      await service.refundResendEventDeduction(input);
+
+      expect(event.eventBalance).toBe(100_000);
+      expect(amountHistoryRepository.save).not.toHaveBeenCalled();
+      expect(ssgEventRepository.save).not.toHaveBeenCalled();
+    });
+
+    it('ssgEvent 없음 → throw (멱등키 미소비)', async () => {
+      const { service, ssgEventRepository, resendDeductRecoveryRepository } = createService();
+      mockFindSsgEvent(ssgEventRepository, null);
+      const seen = new Set<string>();
+      mockResendDeductInsert(resendDeductRecoveryRepository, seen);
+
+      await expect(service.refundResendEventDeduction(input)).rejects.toThrow();
       expect(seen.size).toBe(0);
     });
   });

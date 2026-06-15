@@ -100,6 +100,21 @@ describe('SsgRecoveryService', () => {
     expect(chain.getRawOne).toHaveBeenCalledTimes(1);
   });
 
+  it('claim affected=1 인데 token-fenced ledger 조회 null → DEFERRED, resolver 미호출 (HIGH)', async () => {
+    setup([{ affected: 1 }], SsgRefundOutcome.RESTORED, null);
+    await compile();
+
+    const result = await sut.recoverWithLease(
+      baseArgs.orderDeliveryId,
+      baseArgs.ssgEventId,
+      baseArgs.orderId,
+      baseArgs.refundAmount,
+    );
+
+    expect(result).toBe(SsgRecoveryResult.DEFERRED);
+    expect(resolver.resolveAndRefundIfNeeded).not.toHaveBeenCalled();
+  });
+
   it('claim affected=0 (settled=true 또는 lease 미만료) → SKIPPED_NO_CLAIM, resolver 미호출', async () => {
     setup([{ affected: 0 }], SsgRefundOutcome.RESTORED);
     await compile();

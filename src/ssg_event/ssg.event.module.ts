@@ -8,6 +8,7 @@ import { SsgEventController } from './api/ssg.event.controller';
 import { SsgEventService } from './application/ssg.event.service';
 import { SsgEventAmountHistoryEntity } from '../entity/ssg.event.amount.history.entity';
 import { SsgEventRecoveryLogEntity } from '../entity/ssg.event.recovery.log.entity';
+import { SsgResendDeductRecoveryLogEntity } from '../entity/ssg.resend.deduct.recovery.log.entity';
 import { OrderDeliveryRefundEntity } from '../entity/order.delivery.refund.entity';
 import { OrderDeliveryEntity } from '../entity/order.delivery.entity';
 import { OrderProductMappingEntity } from '../entity/order.product.mapping.entity';
@@ -24,6 +25,7 @@ import { ActivityLogModule } from '../activity_log/activity.log.module';
       SsgEventEntity,
       SsgEventAmountHistoryEntity,
       SsgEventRecoveryLogEntity,
+      SsgResendDeductRecoveryLogEntity,
       OrderDeliveryRefundEntity,
       SsgReservationRangeEntity,
     ]),

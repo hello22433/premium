@@ -22,6 +22,7 @@ import { DateDateFormatStr, DateFormatStr } from '../../common/domain/date.forma
 import { format } from 'date-fns';
 import { SsgEventAmountHistoryEntity } from '../../entity/ssg.event.amount.history.entity';
 import { SsgEventRecoveryLogEntity } from '../../entity/ssg.event.recovery.log.entity';
+import { SsgResendDeductRecoveryLogEntity } from '../../entity/ssg.resend.deduct.recovery.log.entity';
 import { OrderDeliveryRefundEntity } from '../../entity/order.delivery.refund.entity';
 import { OrderProductMappingEntity } from '../../entity/order.product.mapping.entity';
 import { IOrderType } from '../../order/interface/order.type';
@@ -47,6 +48,8 @@ export class SsgEventService {
     private readonly reservationRangeRepository: Repository<SsgReservationRangeEntity>,
     @InjectRepository(SsgEventRecoveryLogEntity)
     private readonly recoveryLogRepository: Repository<SsgEventRecoveryLogEntity>,
+    @InjectRepository(SsgResendDeductRecoveryLogEntity)
+    private readonly resendDeductRecoveryRepository: Repository<SsgResendDeductRecoveryLogEntity>,
     @InjectRepository(OrderDeliveryRefundEntity)
     private readonly refundLedgerRepository: Repository<OrderDeliveryRefundEntity>,
     private readonly activityLogService: ActivityLogService,
@@ -869,6 +872,65 @@ export class SsgEventService {
       throw e;
     }
 
+    await this.applyEventBalanceRestore(ssgEvent, amount, orderId);
+  }
+
+  /**
+   * 재발송 새 행사 선차감(deductEventBalance) 역복원 — 전용 멱등 단위.
+   *
+   * 원래 발송 실패 환불(refundForDeliveryFail, refund_ledger_id 키)과 별개 deduction 이므로
+   * 같은 ledger 키를 재사용하면 기존 recovery_log 와 충돌해 실제 복원이 no-op 되는 leak 이 발생한다(HIGH).
+   * 따라서 재발송 선차감마다 발급한 고유 resendDeductionId 를 멱등키(ssg_resend_deduct_recovery UNIQUE)로 사용한다.
+   * INSERT 가 ER_DUP_ENTRY 면 이미 역복원됨 → 잔액 미변경 return(멱등).
+   *
+   * orphan/state 분기는 caller(resolver)가 담당 — 이 메서드는 잔액 역복원만.
+   */
+  @Transactional()
+  async refundResendEventDeduction(input: {
+    resendDeductionId: string;
+    ssgEventId: number;
+    orderId: number;
+    amount: number;
+  }): Promise<void> {
+    const ssgEvent = await this.findSsgEventForUpdate(input.ssgEventId);
+
+    if (!ssgEvent) {
+      throw new InternalServerErrorException(
+        `SSG 이벤트를 찾을 수 없어 재발송 선차감 역복원 실패 (ssgEventId: ${input.ssgEventId}, resendDeductionId: ${input.resendDeductionId})`,
+      );
+    }
+
+    try {
+      await this.resendDeductRecoveryRepository
+        .createQueryBuilder()
+        .insert()
+        .into(SsgResendDeductRecoveryLogEntity)
+        .values({
+          resendDeductionId: input.resendDeductionId,
+          ssgEventId: ssgEvent.id,
+          orderId: input.orderId,
+          amount: input.amount,
+        })
+        .execute();
+    } catch (e: any) {
+      if (e?.code === 'ER_DUP_ENTRY' || e?.errno === 1062) {
+        // 이미 역복원됨 — 잔액 미변경 (멱등).
+        return;
+      }
+      throw e;
+    }
+
+    await this.applyEventBalanceRestore(ssgEvent, input.amount, input.orderId);
+  }
+
+  /**
+   * 행사 잔액 += amount + amount_history 기록. 멱등 가드는 caller 가 수행(여기선 순수 적용).
+   */
+  private async applyEventBalanceRestore(
+    ssgEvent: SsgEventEntity,
+    amount: number,
+    orderId: number,
+  ): Promise<void> {
     const restoredBalance = ssgEvent.eventBalance + amount;
 
     const refundHistory = this.amountHistoryRepository.create({
