@@ -21,6 +21,7 @@ import { IPriceAdjustment } from '../../user_discount/interface/price.adjustment
 import { findMatchingDiscount } from '../../user_discount/domain/discount.matcher';
 import { OrderFeeCalculator, applyCardSurcharge } from '../../order/domain/order.fee.calculator';
 import {
+  buildLineProductSnapshot,
   buildOrderClientUserSnapshot,
   buildOrderOperationUserSnapshot,
   buildOrderUserSnapshot,
@@ -606,6 +607,7 @@ export class ExternalApiService {
       priceAdjustment,
       topImagePath: '',
       midImagePath: '',
+      ...buildLineProductSnapshot(product),
     });
     await this.orderProductMappingRepository.save(mapping);
 
@@ -1080,6 +1082,7 @@ export class ExternalApiService {
       priceAdjustment,
       topImagePath: '',
       midImagePath: '',
+      ...buildLineProductSnapshot(product),
     });
     await this.orderProductMappingRepository.save(mapping);
 
