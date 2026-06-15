@@ -3108,6 +3108,28 @@ export class OrderService {
     }
     const productPriceMap = listToMap(getProductList, (product) => product.id);
 
+    const orderId: number = order.id;
+
+    // mapping id 소유권/중복 검증 — 헤더 저장 이전에 실행하여 뮤테이션 전 400 보장
+    const deleteOrderProductMappingList = await this.orderProductMappingRepository.find({
+      where: {
+        orderId: orderId,
+      },
+    });
+    const ownedMap = new Map<number, OwnedLine>(
+      deleteOrderProductMappingList.map((m) => [m.id, {
+        productId: m.productId,
+        snapshot: {
+          snapshotProductPrice: m.snapshotProductPrice,
+          snapshotProductName: m.snapshotProductName,
+          snapshotProductBrandName: m.snapshotProductBrandName,
+          snapshotProductExpireDay: m.snapshotProductExpireDay,
+          snapshotProductImagePath: m.snapshotProductImagePath,
+        },
+      }]),
+    );
+    assertLineIdsValid(orderProductList, ownedMap);
+
     // 전송 정산 가격 적용
     let sendAmount = 0;
     for (const orderProduct of orderProductList) {
@@ -3128,27 +3150,7 @@ export class OrderService {
 
     await this.orderRepository.save(order);
 
-    const orderId: number = order.id;
-
     // 2. 기존 order product, delivery 삭제
-    const deleteOrderProductMappingList = await this.orderProductMappingRepository.find({
-      where: {
-        orderId: orderId,
-      },
-    });
-    const ownedMap = new Map<number, OwnedLine>(
-      deleteOrderProductMappingList.map((m) => [m.id, {
-        productId: m.productId,
-        snapshot: {
-          snapshotProductPrice: m.snapshotProductPrice,
-          snapshotProductName: m.snapshotProductName,
-          snapshotProductBrandName: m.snapshotProductBrandName,
-          snapshotProductExpireDay: m.snapshotProductExpireDay,
-          snapshotProductImagePath: m.snapshotProductImagePath,
-        },
-      }]),
-    );
-    assertLineIdsValid(orderProductList, ownedMap);
     const deleteOrderProductIdList = deleteOrderProductMappingList.map((orderProduct) => orderProduct.id);
     await this.orderProductMappingRepository.delete({ id: In(deleteOrderProductIdList) });
     await this.orderDeliveryRepository.delete({ orderProductMappingId: In(deleteOrderProductIdList) });

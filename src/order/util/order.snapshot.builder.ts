@@ -150,7 +150,7 @@ export function readOperationPersonName(order: OrderEntity): string | null {
 // 라인(OrderProductMapping) 상품 스냅샷 builder / reader
 // ────────────────────────────────────────────────────────────
 
-type LineProductSnapshotPart = Pick<
+export type LineProductSnapshotPart = Pick<
   OrderProductMappingEntity,
   'snapshotProductPrice' | 'snapshotProductName' | 'snapshotProductBrandName'
   | 'snapshotProductExpireDay' | 'snapshotProductImagePath'

@@ -1,8 +1,8 @@
 import { BadRequestException } from '@nestjs/common';
 import { ProductEntity } from '../../entity/product.entity';
-import { buildLineProductSnapshot } from '../util/order.snapshot.builder';
+import { buildLineProductSnapshot, LineProductSnapshotPart } from '../util/order.snapshot.builder';
 
-export type OwnedLine = { productId: number; snapshot?: any };
+export type OwnedLine = { productId: number; snapshot?: LineProductSnapshotPart };
 
 export function assertLineIdsValid(
   lines: { id?: number; productId: number }[],
