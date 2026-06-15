@@ -98,6 +98,7 @@ import { createExportTempPath } from '../../util/file.util';
 import { UserEntity } from '../../entity/user.entity';
 import { UserCompanyEntity } from '../../entity/user.company.entity';
 import {
+  buildLineProductSnapshot,
   buildOrderClientUserSnapshot,
   buildOrderOperationUserSnapshot,
   buildOrderUserSnapshot,
@@ -2906,6 +2907,7 @@ export class OrderService {
       where: {
         id: In(uniqueProductIds),
       },
+      relations: ['brand'],
     });
 
     if (uniqueProductIds.length !== getProductList.length) {
@@ -3005,6 +3007,10 @@ export class OrderService {
       orderProduct.sendRequestAt = productSendAt;
       orderProduct.sendType = product.sendType;
       orderProduct.encourageDay = product.encourageDay ?? null;
+
+      // 주문 생성 시점 상품 정보 snapshot 박제
+      const liveProduct = productPriceMap.get(product.productId)!;
+      Object.assign(orderProduct, buildLineProductSnapshot(liveProduct));
 
       await this.orderProductMappingRepository.save(orderProduct);
 
