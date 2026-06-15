@@ -1037,6 +1037,27 @@ export class DeliveryBatchService {
   }
 
   /**
+   * SSG 재발급 선차감 역복원 (issue 실패 시). resolver 경유 state 분기 후 outcome 반환.
+   * RESTORED = 미등록 확정(역복원 완료) / SKIPPED_CONFIRMED = 등록 확정(차감 유지) / DEFERRED = 불명.
+   * caller(CS)는 outcome 으로 폐기 역전 여부를 결정한다.
+   */
+  async reverseSsgReissueDeduct(
+    orderDelivery: OrderDeliveryEntity,
+    ssgEventId: number,
+    refundAmount: number,
+    orderId: number,
+    resendDeductionId: string,
+  ): Promise<SsgRefundOutcome> {
+    return this.ssgRefundResolverService.resolveAndRefundIfNeeded({
+      orderDeliveryId: orderDelivery.id,
+      ssgEventId,
+      refundAmount,
+      orderId,
+      resendDeductionId,
+    });
+  }
+
+  /**
    * 재발송 선차감 환불 (PIN 발급 실패 또는 issue() throw 시).
    * shared resolver 를 통해 state 기준으로 SSG 행사 잔액을 복구한다.
    */

@@ -34,10 +34,12 @@ import { OrderFromService } from '../../order_from/application/order.from.servic
 import { WalletManagedPredicate } from '../../wallet/application/wallet-managed.predicate';
 import { RefundPoolService } from '../../wallet/application/refund-pool.service';
 import { ResendDeductService } from '../../wallet/application/resend-deduct.service';
+import { SsgRefundOutcome } from '../interface/ssg.refund.resolve';
 
 describe('DeliveryBatchService', () => {
   let service: DeliveryBatchService;
   let ssgEventService: jest.Mocked<SsgEventService>;
+  let ssgRefundResolverService: jest.Mocked<SsgRefundResolverService>;
 
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -86,6 +88,27 @@ describe('DeliveryBatchService', () => {
 
     service = module.get(DeliveryBatchService);
     ssgEventService = module.get(SsgEventService) as jest.Mocked<SsgEventService>;
+    ssgRefundResolverService = module.get(SsgRefundResolverService) as jest.Mocked<SsgRefundResolverService>;
+  });
+
+  describe('reverseSsgReissueDeduct', () => {
+    it('resolver outcome 을 그대로 반환', async () => {
+      const od = { id: 99 } as OrderDeliveryEntity;
+      const resolveSpy = jest
+        .spyOn(ssgRefundResolverService, 'resolveAndRefundIfNeeded')
+        .mockResolvedValue(SsgRefundOutcome.RESTORED);
+
+      const outcome = await service.reverseSsgReissueDeduct(od, 7, 10000, 42, 'ULID123');
+
+      expect(outcome).toBe(SsgRefundOutcome.RESTORED);
+      expect(resolveSpy).toHaveBeenCalledWith({
+        orderDeliveryId: 99,
+        ssgEventId: 7,
+        refundAmount: 10000,
+        orderId: 42,
+        resendDeductionId: 'ULID123',
+      });
+    });
   });
 
   describe('selectAndDeductSsgEventForReissue', () => {
