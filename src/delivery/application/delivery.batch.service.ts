@@ -4,6 +4,7 @@ import { In, MoreThan, Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { Transactional } from 'typeorm-transactional';
 import { randomUUID } from 'crypto';
+import { ulid } from 'ulid';
 import { addDays, format, subDays } from 'date-fns';
 import dayjs from 'dayjs';
 import * as fsPromises from 'fs/promises';
@@ -305,11 +306,15 @@ export class DeliveryBatchService {
         ? await this.refundLedgerService.isSsgSettled(orderDelivery.id)
         : false;
       if (!ssgAlreadySettled) {
+        // claim 직후 이 cycle 의 ledger id 를 캡처해 명시 전달 — resolver→refundForDeliveryFail 의
+        // 재조회(지연 시 cross-cycle 멱등키 오염, HIGH)를 방지한다.
+        const refundLedgerId = await this.refundLedgerService.getLedgerId(orderDelivery.id);
         const outcome = await this.ssgRefundResolverService.resolveAndRefundIfNeeded({
           orderDeliveryId: orderDelivery.id,
           ssgEventId: orderDelivery.ssgEventId!,
           refundAmount: productPrice,
           orderId: order.id,
+          refundLedgerId: refundLedgerId ?? undefined,
         });
         if (outcome === SsgRefundOutcome.DEFERRED) {
           this.logger.error(
@@ -895,6 +900,9 @@ export class DeliveryBatchService {
       const hadNoBarCode = !orderDelivery.barCode;
       let ssgEvent: SsgEventEntity | null = null;
       let resendDeducted = false;
+      // 재발송 선차감 단위 멱등키. deduct 시 발급 → 역복원(refundResendEventDeduction)이 이 키로 멱등 처리.
+      // 원래 발송 실패 환불 cycle 의 refund_ledger_id 와 분리해 recovery_log 충돌(leak) 방지.
+      let resendDeductionId: string | null = null;
       try {
         if (order.type === IOrderType.SSG && orderDelivery.ssgEventId) {
           ssgEvent = await this.ssgEventRepository.findOne({
@@ -950,6 +958,7 @@ export class DeliveryBatchService {
             );
             return false;
           }
+          resendDeductionId = ulid();
           await this.ssgEventService.deductEventBalance(newEvent.id, product.price, order.id, false);
           ssgEvent = newEvent;
           resendDeducted = true;
@@ -960,7 +969,7 @@ export class DeliveryBatchService {
         if (!orderDelivery.barCode) {
           this.logger.error(`[RESEND] PIN 재발급 실패 - orderDelivery.id: ${orderDelivery.id}`);
           if (resendDeducted && ssgEvent) {
-            await this.refundResendDeduct(orderDelivery, ssgEvent.id, product.price, order.id);
+            await this.refundResendDeduct(orderDelivery, ssgEvent.id, product.price, order.id, resendDeductionId!);
             resendDeducted = false;
           }
           return false;
@@ -986,7 +995,7 @@ export class DeliveryBatchService {
         this.logger.error(`[RESEND] PIN 발급/확인 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
         // issue() throw 시에도 선차감 환불 (shared resolver — state 기준 분기)
         if (resendDeducted && ssgEvent) {
-          await this.refundResendDeduct(orderDelivery, ssgEvent.id, product.price, order.id);
+          await this.refundResendDeduct(orderDelivery, ssgEvent.id, product.price, order.id, resendDeductionId!);
         }
         return false;
       }
@@ -1017,14 +1026,16 @@ export class DeliveryBatchService {
     ssgEventId: number,
     refundAmount: number,
     orderId: number,
+    resendDeductionId: string,
   ): Promise<void> {
-    // resolver 는 throw 흡수 + outcome 반환. DEFERRED 시 ledger.ssg_balance_settled 가 false 로
-    // 남거나 markSsgSettled 가 호출 안 됨 → 다음 재발송 가드에서 차단.
+    // resolver 는 throw 흡수 + outcome 반환. resendDeductionId 전달 시 전용 멱등(refundResendEventDeduction)으로
+    // 새 행사 선차감을 역복원 — 원래 환불 cycle 의 recovery_log 키 재사용 충돌(leak) 회피 + settled 미터치.
     const outcome = await this.ssgRefundResolverService.resolveAndRefundIfNeeded({
       orderDeliveryId: orderDelivery.id,
       ssgEventId,
       refundAmount,
       orderId,
+      resendDeductionId,
     });
     if (outcome === SsgRefundOutcome.DEFERRED) {
       this.logger.error(

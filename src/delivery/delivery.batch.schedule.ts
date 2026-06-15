@@ -1,6 +1,7 @@
 // 요청시각에 따른 전송 배치
 
 import { DeliveryBatchService } from './application/delivery.batch.service';
+import { SsgRecoverySweepService } from './application/ssg-recovery-sweep.service';
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 
@@ -13,7 +14,10 @@ const MAX_BATCH_RUNTIME_MS = 30 * 60 * 1000;
 
 @Injectable()
 export class DeliveryBatchSchedule {
-  constructor(private deliveryBatchService: DeliveryBatchService) {}
+  constructor(
+    private deliveryBatchService: DeliveryBatchService,
+    private ssgRecoverySweepService: SsgRecoverySweepService,
+  ) {}
 
   // 부팅 stale claim 해제는 main.ts(listen() 전)에서만 수행한다. lifecycle 훅은 migration
   // 스크립트 등 standalone bootstrap 에서도 발화해 살아있는 claim 을 해제할 위험이 있다.
@@ -25,6 +29,7 @@ export class DeliveryBatchSchedule {
   private issueAndSendStartedAt: number | null = null;
   private statusUpdateStartedAt: number | null = null;
   private encourageStartedAt: number | null = null;
+  private ssgRecoverySweepStartedAt: number | null = null;
 
   /**
    * 실행 중 플래그를 체크한다. 진행 중이면 true 반환(skip).
@@ -117,6 +122,25 @@ export class DeliveryBatchSchedule {
       this.logger.error(e);
     } finally {
       this.encourageStartedAt = null;
+    }
+  }
+
+  // SSG 행사 잔액 복구 sweep. DEFERRED backlog 를 lease 게이트로 자동 수렴.
+  // docs/plans/2026-06-12-external-api-wallet-integration.md B-7.
+  // 5분마다 실행. 다른 5분 cron 과 동시 trigger 회피를 위해 15초 offset.
+  @Cron('15 */5 * * * *')
+  async handleSsgRecoverySweep() {
+    if (this.isStillRunning(this.ssgRecoverySweepStartedAt, 'handleSsgRecoverySweep')) {
+      this.logger.log('[BATCH] 이전 handleSsgRecoverySweep 진행 중 — skip');
+      return;
+    }
+    this.ssgRecoverySweepStartedAt = Date.now();
+    try {
+      await this.ssgRecoverySweepService.sweepOnce();
+    } catch (e) {
+      this.logger.error(e);
+    } finally {
+      this.ssgRecoverySweepStartedAt = null;
     }
   }
 }

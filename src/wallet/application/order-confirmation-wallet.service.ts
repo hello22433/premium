@@ -13,6 +13,7 @@ import {
 import { AllocationResult } from './payment-allocation.service';
 import { WalletLedgerService } from './wallet-ledger.service';
 import { CreditExcessApprovalService } from './credit-excess-approval.service';
+import { CreditExcessApprovalRequiredError } from './credit-excess-approval-required.error';
 import { WalletResourceType } from '../interface/wallet-resource-type';
 
 export interface PersistAllocationInput {
@@ -136,9 +137,7 @@ export class OrderConfirmationWalletService {
       // 2-b. credit_excess 사용 시 사전 승인 approval 소비 (same-tx 보장). 미승인 시 throw → rollback.
       if (a.creditExcessAmount > 0) {
         if (!input.creditExcessApprovalId) {
-          throw new BadRequestException(
-            `credit_excess_approval_required: creditExcessAmount=${a.creditExcessAmount} but no approvalId supplied`,
-          );
+          throw new CreditExcessApprovalRequiredError(a.creditExcessAmount, input.orderId);
         }
         await this.creditExcessApproval.consume(
           input.creditExcessApprovalId,

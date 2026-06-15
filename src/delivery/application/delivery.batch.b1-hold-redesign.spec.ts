@@ -134,6 +134,7 @@ describe('DeliveryBatchService - B1 settlement-hold redesign', () => {
       release: jest.fn(),
       isSsgSettled: jest.fn().mockResolvedValue(true),
       markSsgSettled: jest.fn().mockResolvedValue(undefined),
+      getLedgerId: jest.fn().mockResolvedValue(123),
     } as unknown as jest.Mocked<RefundLedgerService>;
 
     walletManagedPredicate = { isWalletManaged: jest.fn().mockResolvedValue(false) };

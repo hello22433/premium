@@ -13,6 +13,8 @@ import { OrderPaymentAllocationEntity } from '../entity/order.payment.allocation
 import { DeliveryBatchSchedule } from './delivery.batch.schedule';
 import { RefundLedgerService } from './application/refund-ledger.service';
 import { SsgRefundResolverService } from './application/ssg-refund.resolver';
+import { SsgRecoveryService } from './application/ssg-recovery.service';
+import { SsgRecoverySweepService } from './application/ssg-recovery-sweep.service';
 import { SsgInsertStateModule } from './ssg.insert.state.module';
 import { MailModule } from '../mail/mail.module';
 import { SmsModule } from '../sms/sms.module';
@@ -72,6 +74,8 @@ import { OrderFromModule } from '../order_from/order.from.module';
     DeliveryBatchSchedule,
     RefundLedgerService,
     SsgRefundResolverService,
+    SsgRecoveryService,
+    SsgRecoverySweepService,
   ],
   exports: [
     {
@@ -83,6 +87,8 @@ import { OrderFromModule } from '../order_from/order.from.module';
     DeliveryBatchService,
     RefundLedgerService,
     SsgRefundResolverService,
+    SsgRecoveryService,
+    SsgRecoverySweepService,
     SsgInsertStateModule,
   ],
 })

@@ -85,9 +85,9 @@ describe('SsgRefundResolverService — 시나리오 분기 (PR1~PR3)', () => {
       const outcome = await resolver.resolveAndRefundIfNeeded(baseInput);
 
       expect(outcome).toBe(SsgRefundOutcome.RESTORED);
-      expect(ssgEventService.refundForDeliveryFail).toHaveBeenCalledWith(36, 4145, 10_000);
+      expect(ssgEventService.refundForDeliveryFail).toHaveBeenCalledWith(36, 4145, 10_000, 4145, undefined);
       // ssg_balance_settled 가 true 로 마킹되어 다음 재발송 가드 통과
-      expect(refundLedgerService.markSsgSettled).toHaveBeenCalledWith(4145);
+      expect(refundLedgerService.markSsgSettled).toHaveBeenCalledWith(4145, undefined);
     });
   });
 
@@ -116,7 +116,7 @@ describe('SsgRefundResolverService — 시나리오 분기 (PR1~PR3)', () => {
       // SSG 행사 잔액 건드리지 않음 (gross 모델 정합)
       expect(ssgEventService.refundForDeliveryFail).not.toHaveBeenCalled();
       // ledger.ssg_balance_settled=true 마킹 → 가드 통과 (그러나 state=CONFIRMED 라 새 선차감 X)
-      expect(refundLedgerService.markSsgSettled).toHaveBeenCalledWith(4145);
+      expect(refundLedgerService.markSsgSettled).toHaveBeenCalledWith(4145, undefined);
     });
   });
 
@@ -130,7 +130,7 @@ describe('SsgRefundResolverService — 시나리오 분기 (PR1~PR3)', () => {
       expect(outcome).toBe(SsgRefundOutcome.SKIPPED_CONFIRMED);
       expect(partnerExternService.resolveSsgOrphan).toHaveBeenCalledWith(4145);
       expect(ssgEventService.refundForDeliveryFail).not.toHaveBeenCalled();
-      expect(refundLedgerService.markSsgSettled).toHaveBeenCalledWith(4145);
+      expect(refundLedgerService.markSsgSettled).toHaveBeenCalledWith(4145, undefined);
     });
 
     it('ATTEMPTED + orphan FAILED → refundForDeliveryFail + RESTORED', async () => {
@@ -142,7 +142,7 @@ describe('SsgRefundResolverService — 시나리오 분기 (PR1~PR3)', () => {
 
       expect(outcome).toBe(SsgRefundOutcome.RESTORED);
       expect(ssgEventService.refundForDeliveryFail).toHaveBeenCalled();
-      expect(refundLedgerService.markSsgSettled).toHaveBeenCalledWith(4145);
+      expect(refundLedgerService.markSsgSettled).toHaveBeenCalledWith(4145, undefined);
     });
 
     it('ATTEMPTED + orphan NETWORK_UNKNOWN → DEFERRED (잔액 안 건드림, 다음 시도 보류)', async () => {
@@ -187,7 +187,7 @@ describe('SsgRefundResolverService — 시나리오 분기 (PR1~PR3)', () => {
 
       expect(outcome).toBe(SsgRefundOutcome.RESTORED);
       expect(ssgEventService.refundForDeliveryFail).toHaveBeenCalled();
-      expect(refundLedgerService.markSsgSettled).toHaveBeenCalledWith(4145);
+      expect(refundLedgerService.markSsgSettled).toHaveBeenCalledWith(4145, undefined);
     });
   });
 });
