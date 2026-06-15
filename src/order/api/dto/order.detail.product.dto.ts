@@ -238,6 +238,26 @@ export class OrderDetailProductDto {
     description: '해당 상품의 발송 실패 건수',
   })
   failCount: number;
+
+  @ApiProperty({
+    description: '주문 시점 가격과 현재 상품 가격이 다른지 여부 (자사 운영자 전용, legacy 스냅샷 없거나 삭제 상품이면 false)',
+    required: false,
+  })
+  priceChanged?: boolean;
+
+  @ApiProperty({
+    description: '주문 시점 스냅샷 가격 (자사 운영자 전용, legacy 주문은 null)',
+    nullable: true,
+    required: false,
+  })
+  snapshotPrice?: number | null;
+
+  @ApiProperty({
+    description: '현재 상품 가격 (자사 운영자 전용, 삭제된 상품이면 null)',
+    nullable: true,
+    required: false,
+  })
+  currentPrice?: number | null;
 }
 
 export class OrderPdfDetailProductDto {

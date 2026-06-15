@@ -98,14 +98,18 @@ import { createExportTempPath } from '../../util/file.util';
 import { UserEntity } from '../../entity/user.entity';
 import { UserCompanyEntity } from '../../entity/user.company.entity';
 import {
+  buildLineProductSnapshot,
   buildOrderClientUserSnapshot,
   buildOrderOperationUserSnapshot,
   buildOrderUserSnapshot,
+  buildPriceDivergence,
   readBillingView,
   readClientUserView,
+  readLineProductView,
   readOperationPersonName,
   readUserView,
 } from '../util/order.snapshot.builder';
+import { assertLineIdsValid, OwnedLine, resolveLineSnapshot } from './order.snapshot.update.helper';
 import { UserViewScopeEntity, ViewScopeType } from '../../entity/user.view.scope.entity';
 import { IUserAuthority } from '../../user/interface/user.authority';
 import { IUserSettleCondition } from '../../user/interface/user.settle.condition';
@@ -862,6 +866,11 @@ export class OrderService {
           encourageDay: orderProductMapping.encourageDay,
           galaxiaDuration: orderProductMapping.galaxiaDuration,
           failCount: failCount,
+          // 자사 운영자(SUPER_ADMIN/OPERATION_ADMIN)에게만 가격 divergence 노출.
+          // 고객사(CORPORATE_ADMIN) 또는 미인증 경로에서는 필드 자체를 omit.
+          ...(user.authority === IUserAuthority.SUPER_ADMIN || user.authority === IUserAuthority.OPERATION_ADMIN
+            ? buildPriceDivergence(orderProductMapping)
+            : {}),
         });
       }
     }
@@ -1291,6 +1300,7 @@ export class OrderService {
           ? dayjs(firstDelivery.expireAt).tz('Asia/Seoul').format('YYYY. MM. DD')
           : null;
 
+        const lineView = readLineProductView(orderProductMapping);
         for (const orderDelivery of orderProductMapping.orderDeliveries) {
           // deliveryTarget 복호화 후 마스킹 처리 (originalDeliveryTarget 우선 사용)
           const targetToDecrypt = orderDelivery.originalDeliveryTarget || orderDelivery.deliveryTarget;
@@ -1314,37 +1324,25 @@ export class OrderService {
             id: orderDelivery.id,
             sendRequestAt: orderDelivery.sendRequestAt ? format(orderDelivery.sendRequestAt, DateFormatStr) : null,
             actualSendAt: orderDelivery.actualSendAt ? format(orderDelivery.actualSendAt, DateFormatStr) : null,
-            productName: orderProductMapping.product?.name ?? '(삭제된 상품)',
-            amount: orderProductMapping.product?.price ?? 0,
+            productName: lineView.name,
+            amount: lineView.price,
             barCode: maskedBarCode,
             deliveryMethod: orderDelivery.deliveryMethod,
             deliveryTarget: finalDeliveryTarget,
           });
         }
 
-        const product = orderProductMapping.product
-          ? {
-              id: orderProductMapping.product.id,
-              name: orderProductMapping.product.name,
-              price: orderProductMapping.product.price,
-              expireDay: orderProductMapping.product.expireDay,
-              amount: orderProductMapping.amount,
-              expireDate: expireDate,
-              imagePath: orderProductMapping.product.imagePath,
-              brandId: orderProductMapping.product.brandId,
-              brandName: orderProductMapping.product.brand?.nameKorean ?? '',
-            }
-          : {
-              id: orderProductMapping.productId,
-              name: '(삭제된 상품)',
-              price: 0,
-              expireDay: 0,
-              amount: orderProductMapping.amount,
-              expireDate: null,
-              imagePath: '',
-              brandId: 0,
-              brandName: '',
-            };
+        const product = {
+          id: orderProductMapping.product?.id ?? orderProductMapping.productId,
+          name: lineView.name,
+          price: lineView.price,
+          expireDay: lineView.expireDay,
+          amount: orderProductMapping.amount,
+          expireDate: expireDate,
+          imagePath: lineView.imagePath ?? '',
+          brandId: orderProductMapping.product?.brandId ?? 0,
+          brandName: lineView.brandName,
+        };
         productList.push({
           id: orderProductMapping.id,
           product: product,
@@ -1383,7 +1381,7 @@ export class OrderService {
     const sendInfoList: { productName: string; sendTitle: string | null; sendContent: string | null }[] = [];
     for (const mapping of order.orderProductMappings || []) {
       sendInfoList.push({
-        productName: mapping.product?.name ?? '',
+        productName: readLineProductView(mapping).name,
         sendTitle: mapping.sendTitle ?? null,
         sendContent: mapping.sendContent ?? null,
       });
@@ -1493,7 +1491,8 @@ export class OrderService {
 
     if (order.orderProductMappings && order.orderProductMappings.length > 0) {
       for (const orderProductMapping of order.orderProductMappings) {
-        const originalPrice = orderProductMapping.product.price ?? 0;
+        const lineView = readLineProductView(orderProductMapping);
+        const originalPrice = lineView.price;
         const quantity = orderProductMapping.amount ?? 0;
 
         // 할인/할증 적용된 단가 계산 (소수점 발생 시 올림 처리)
@@ -1514,7 +1513,7 @@ export class OrderService {
         orderDeliveryList.push({
           id: orderProductMapping.id, // orderProductMapping id 사용
           sendRequestAt: firstDelivery?.sendRequestAt ? format(firstDelivery.sendRequestAt, DateFormatStr) : null,
-          productName: orderProductMapping.product.name ?? null,
+          productName: lineView.name,
           quantity, // 수량
           unitPrice: adjustedPrice, // 할인/할증 적용된 단가
           price: total, // 공급가액 (단가 * 수량)
@@ -1729,6 +1728,7 @@ export class OrderService {
             ? dayjs(firstDelivery.expireAt).tz('Asia/Seoul').format('YYYY. MM. DD')
             : null;
 
+          const lineView = readLineProductView(orderProductMapping);
           for (const orderDelivery of orderProductMapping.orderDeliveries) {
             // deliveryTarget 복호화 후 마스킹 처리 (originalDeliveryTarget 우선 사용)
             const targetToDecrypt = orderDelivery.originalDeliveryTarget || orderDelivery.deliveryTarget;
@@ -1767,27 +1767,25 @@ export class OrderService {
               id: orderDelivery.id,
               sendRequestAt: deliverySendRequestAt,
               actualSendAt: orderDelivery.actualSendAt ? format(orderDelivery.actualSendAt, DateFormatStr) : null,
-              productName: orderProductMapping.product.name ?? null,
-              amount: orderProductMapping.product.price ?? null,
+              productName: lineView.name,
+              amount: lineView.price,
               barCode: maskedBarCode,
               deliveryMethod: orderDelivery.deliveryMethod,
               deliveryTarget: finalDeliveryTarget,
             });
           }
 
-          const product = orderProductMapping.product
-            ? {
-                id: orderProductMapping.product.id,
-                name: orderProductMapping.product.name,
-                price: orderProductMapping.product.price,
-                expireDay: orderProductMapping.product.expireDay,
-                amount: orderProductMapping.amount,
-                expireDate: expireDate,
-                imagePath: orderProductMapping.product.imagePath,
-                brandId: orderProductMapping.product.brandId,
-                brandName: orderProductMapping.product.brand?.nameKorean ?? '',
-              }
-            : null;
+          const product = {
+            id: orderProductMapping.product?.id ?? orderProductMapping.productId,
+            name: lineView.name,
+            price: lineView.price,
+            expireDay: lineView.expireDay,
+            amount: orderProductMapping.amount,
+            expireDate: expireDate,
+            imagePath: lineView.imagePath ?? '',
+            brandId: orderProductMapping.product?.brandId ?? 0,
+            brandName: lineView.brandName,
+          };
 
           productList.push({
             id: orderProductMapping.id,
@@ -1904,7 +1902,8 @@ export class OrderService {
     for (const order of orders) {
       if (order.orderProductMappings && order.orderProductMappings.length > 0) {
         for (const orderProductMapping of order.orderProductMappings) {
-          const originalPrice = orderProductMapping.product.price ?? 0;
+          const lineView = readLineProductView(orderProductMapping);
+          const originalPrice = lineView.price;
           const quantity = orderProductMapping.amount ?? 0;
 
           let adjustedPrice = originalPrice;
@@ -1935,7 +1934,7 @@ export class OrderService {
           orderDeliveryList.push({
             id: orderProductMapping.id,
             sendRequestAt: itemSendRequestAt,
-            productName: orderProductMapping.product.name ?? null,
+            productName: lineView.name,
             quantity,
             unitPrice: adjustedPrice,
             price: total,
@@ -2032,7 +2031,7 @@ export class OrderService {
       const phoneToTotalAmount = new Map<string, number>();
       const deliveryPhoneKeyCache = new Map<number, string>();
       for (const op of orderProductList) {
-        const price = op.product.price;
+        const price = readLineProductView(op).price;
         for (const delivery of op.orderDeliveries ?? []) {
           const decrypted = this.cryptoCipher.safeDecryptDeliveryTarget(
             delivery.originalDeliveryTarget || delivery.deliveryTarget,
@@ -2059,7 +2058,8 @@ export class OrderService {
 
       // Phase 3a: 단일 상품 수신번호 — 기존 로직 (상품 단가 × 수량 표시)
       for (const orderProduct of orderProductList) {
-        const productPrice = orderProduct.product.price;
+        const lineView3a = readLineProductView(orderProduct);
+        const productPrice = lineView3a.price;
         const product = orderProduct.product;
         const deliveryMap = new Map((orderProduct.orderDeliveries ?? []).map((d) => [d.id, d]));
 
@@ -2135,8 +2135,8 @@ export class OrderService {
           const firstDelivery = deliveryMap.get(group.deliveryIds[0]);
           resultList.push({
             id: orderProduct.id,
-            brandName: product.brand?.nameKorean ?? null,
-            name: product.name,
+            brandName: lineView3a.brandName ?? null,
+            name: lineView3a.name,
             price: productPrice,
             amount: group.count,
             totalPrice: groupTotalPrice,
@@ -2190,19 +2190,20 @@ export class OrderService {
         for (const { orderProduct } of phoneItems) {
           const existing = productBreakdown.get(orderProduct.id);
           if (existing) existing.count++;
-          else productBreakdown.set(orderProduct.id, { name: orderProduct.product.name, count: 1 });
+          else productBreakdown.set(orderProduct.id, { name: readLineProductView(orderProduct).name, count: 1 });
         }
         const sortedProducts = [...productBreakdown.entries()].sort(([a], [b]) => a - b);
         const sig = sortedProducts.map(([id, { count }]) => `${id}:${count}`).join('|');
 
         const itemSettles = phoneItems.map(({ orderProduct, delivery }) => {
           const product = orderProduct.product;
+          const linePrice = readLineProductView(orderProduct).price;
           const resolved = resolveSettleFee(
             delivery,
             { fee: orderProduct.fee, priceAdjustment: orderProduct.priceAdjustment, settleDiscountType: orderProduct.settleDiscountType ?? null },
             isOrderCompleted,
             () => findMatchingDiscount(
-              { price: product.price, category: product.category, classificationId: product.classificationId, brand: product.brand },
+              { price: linePrice, category: product.category, classificationId: product.classificationId, brand: product.brand },
               userDiscounts,
               totalAmount,
             ),
@@ -2211,8 +2212,8 @@ export class OrderService {
           if (fee < 0 || fee > 100) fee = 0;
           const priceAdjustment = resolved.priceAdjustment;
           const discountPrice = priceAdjustment
-            ? OrderFeeCalculator({ fee, priceAdjustment, price: product.price })
-            : product.price;
+            ? OrderFeeCalculator({ fee, priceAdjustment, price: linePrice })
+            : linePrice;
           return {
             orderProductId: orderProduct.id,
             fee,
@@ -2261,7 +2262,7 @@ export class OrderService {
 
           mergedGroups.set(groupKey, {
             name: mergedName,
-            brandName: phoneItems[0].orderProduct.product.brand?.nameKorean ?? null,
+            brandName: readLineProductView(phoneItems[0].orderProduct).brandName,
             combinedPrice: totalAmount,
             discountCombinedPrice,
             fee,
@@ -2305,17 +2306,19 @@ export class OrderService {
     } else {
       // 비SSG: 기존 로직
       resultList = orderProductList.map((orderProduct) => {
+        const lineViewNonSsg = readLineProductView(orderProduct);
+        const basePrice = lineViewNonSsg.price;
         let priceAdjustment = orderProduct.priceAdjustment;
         let fee = orderProduct.fee;
 
-        let discountPrice = orderProduct.product.price;
-        const totalPrice = orderProduct.product.price * orderProduct.amount;
-        let discountTotalPrice = orderProduct.product.price * orderProduct.amount;
+        let discountPrice = basePrice;
+        const totalPrice = basePrice * orderProduct.amount;
+        let discountTotalPrice = basePrice * orderProduct.amount;
 
         // 3. 할인 정보가 null 일 경우 상품에 맞는 할인 옵션 찾기
         if ((!priceAdjustment || fee === null) && !isOrderCompleted) {
           this.logger.debug(
-            `[getOrderSettle] product: id=${orderProduct.product.id}, name=${orderProduct.product.name}, category='${orderProduct.product.category}', price=${orderProduct.product.price}, brand=${orderProduct.product.brand?.nameKorean ?? 'null'}`,
+            `[getOrderSettle] product: id=${orderProduct.product.id}, name=${orderProduct.product.name}, category='${orderProduct.product.category}', price=${basePrice}, brand=${orderProduct.product.brand?.nameKorean ?? 'null'}`,
           );
           this.logger.debug(
             `[getOrderSettle] stored values: fee=${orderProduct.fee}, priceAdjustment=${orderProduct.priceAdjustment}`,
@@ -2323,7 +2326,7 @@ export class OrderService {
 
           const matchingDiscount = findMatchingDiscount(
             {
-              price: orderProduct.product.price,
+              price: basePrice,
               category: orderProduct.product.category,
               classificationId: orderProduct.product.classificationId,
               brand: orderProduct.product.brand,
@@ -2353,7 +2356,7 @@ export class OrderService {
         discountPrice = OrderFeeCalculator({
           fee: fee!,
           priceAdjustment: priceAdjustment!,
-          price: orderProduct.product.price,
+          price: basePrice,
         });
         discountTotalPrice = OrderFeeCalculator({
           fee: fee!,
@@ -2367,11 +2370,11 @@ export class OrderService {
 
         return {
           id: orderProduct.id,
-          brandName: orderProduct.product.brand?.nameKorean ?? null,
-          name: orderProduct.product.name,
-          price: orderProduct.product.price,
+          brandName: lineViewNonSsg.brandName ?? null,
+          name: lineViewNonSsg.name,
+          price: basePrice,
           amount: orderProduct.amount,
-          totalPrice: orderProduct.product.price * orderProduct.amount,
+          totalPrice: basePrice * orderProduct.amount,
           settleDiscountType: orderProduct.settleDiscountType ?? null,
           priceAdjustment,
           fee,
@@ -2856,6 +2859,7 @@ export class OrderService {
       where: {
         id: In(uniqueProductIds),
       },
+      relations: ['brand'],
     });
 
     if (uniqueProductIds.length !== getProductList.length) {
@@ -2956,6 +2960,10 @@ export class OrderService {
       orderProduct.sendType = product.sendType;
       orderProduct.encourageDay = product.encourageDay ?? null;
 
+      // 주문 생성 시점 상품 정보 snapshot 박제
+      const liveProduct = productPriceMap.get(product.productId)!;
+      Object.assign(orderProduct, buildLineProductSnapshot(liveProduct));
+
       await this.orderProductMappingRepository.save(orderProduct);
 
       // 상품별 발신 수단 사용
@@ -3043,6 +3051,7 @@ export class OrderService {
       where: {
         id: In(uniqueProductIds),
       },
+      relations: ['brand'],
     });
 
     if (uniqueProductIds.length !== getProductList.length) {
@@ -3050,11 +3059,35 @@ export class OrderService {
     }
     const productPriceMap = listToMap(getProductList, (product) => product.id);
 
+    const orderId: number = order.id;
+
+    // mapping id 소유권/중복 검증 — 헤더 저장 이전에 실행하여 뮤테이션 전 400 보장
+    const deleteOrderProductMappingList = await this.orderProductMappingRepository.find({
+      where: {
+        orderId: orderId,
+      },
+    });
+    const ownedMap = new Map<number, OwnedLine>(
+      deleteOrderProductMappingList.map((m) => [m.id, {
+        productId: m.productId,
+        snapshot: {
+          snapshotProductPrice: m.snapshotProductPrice,
+          snapshotProductName: m.snapshotProductName,
+          snapshotProductBrandName: m.snapshotProductBrandName,
+          snapshotProductExpireDay: m.snapshotProductExpireDay,
+          snapshotProductImagePath: m.snapshotProductImagePath,
+        },
+      }]),
+    );
+    assertLineIdsValid(orderProductList, ownedMap);
+
     // 전송 정산 가격 적용
+    // 승계 라인은 기존 snapshot 가격을 사용하여 헤더 금액과 라인 금액이 일치하도록 함
     let sendAmount = 0;
     for (const orderProduct of orderProductList) {
       const getProduct = productPriceMap.get(orderProduct.productId)!;
-      sendAmount += getProduct.price * orderProduct.amount;
+      const resolvedPrice = resolveLineSnapshot(orderProduct, ownedMap, getProduct).snapshotProductPrice ?? getProduct.price;
+      sendAmount += resolvedPrice * orderProduct.amount;
     }
 
     order.eventName = eventName;
@@ -3070,14 +3103,7 @@ export class OrderService {
 
     await this.orderRepository.save(order);
 
-    const orderId: number = order.id;
-
     // 2. 기존 order product, delivery 삭제
-    const deleteOrderProductMappingList = await this.orderProductMappingRepository.find({
-      where: {
-        orderId: orderId,
-      },
-    });
     const deleteOrderProductIdList = deleteOrderProductMappingList.map((orderProduct) => orderProduct.id);
     await this.orderProductMappingRepository.delete({ id: In(deleteOrderProductIdList) });
     await this.orderDeliveryRepository.delete({ orderProductMappingId: In(deleteOrderProductIdList) });
@@ -3122,6 +3148,9 @@ export class OrderService {
       orderProduct.sendRequestAt = productSendAt;
       orderProduct.sendType = product.sendType;
       orderProduct.encourageDay = product.encourageDay ?? null;
+
+      const liveProduct = productPriceMap.get(product.productId)!;
+      Object.assign(orderProduct, resolveLineSnapshot(product, ownedMap, liveProduct));
 
       await this.orderProductMappingRepository.save(orderProduct);
 
