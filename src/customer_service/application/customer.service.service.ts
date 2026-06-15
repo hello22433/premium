@@ -1570,6 +1570,51 @@ export class CustomerServiceService {
         const oldPin = discardedDelivery.barCode || '';
         map.beforeChange = `${decryptedOldTarget} / ${oldPin}`;
 
+        // MEDIUM-2: discardBefore 캐스트 검증 — 잘못된 값이 reverseDiscard 로 전파되지 않도록 방어
+        const discardBeforeValidated = Object.values(OrderDeliveryCouponStatus).includes(discardBefore)
+          ? discardBefore
+          : null;
+        if (!discardBeforeValidated) {
+          this.logger.error(
+            `[폐기후신규발송] discardBefore 가 유효하지 않은 값(${discardBefore}) — reverseDiscard 생략`,
+          );
+        }
+
+        /**
+         * SSG 선차감+폐기 완전 역전 헬퍼.
+         * issue() 호출 전(미등록 확정) 구간에서 공유. 실패는 최선 처리로 로깅만.
+         * @param od - issue() 전 단계라면 fullDelivery 아직 없을 수 있으므로 orderDelivery 사용
+         * @param savedId - 이미 save 한 newDelivery 의 id (없으면 null)
+         */
+        const unwindReissue = async (
+          od: OrderDeliveryEntity,
+          savedId: number | null,
+          outcome: SsgRefundOutcome,
+        ): Promise<void> => {
+          // 1) 폐기 역전(고객 쿠폰 복구) — 먼저
+          if (discardBeforeValidated) {
+            try {
+              await this.reverseDiscard(discardedDelivery.id, discardBeforeValidated);
+            } catch (rdErr) {
+              this.logger.error(
+                `[폐기후신규발송] reverseDiscard 실패(outcome=${outcome}) — orderDeliveryId=${discardedDelivery.id}`,
+                rdErr,
+              );
+            }
+          }
+          // 2) 신규 row soft-delete — 나중에
+          if (savedId != null) {
+            try {
+              await this.orderDeliveryRepository.softDelete(savedId);
+            } catch (sdErr) {
+              this.logger.error(
+                `[폐기후신규발송] softDelete 실패(outcome=${outcome}) — orderDeliveryId=${savedId}`,
+                sdErr,
+              );
+            }
+          }
+        };
+
         const newDelivery = new OrderDeliveryEntity();
         newDelivery.orderProductMappingId = discardedDelivery.orderProductMappingId;
         newDelivery.status = IOrderDeliveryStatus.WAIT;
@@ -1603,25 +1648,38 @@ export class CustomerServiceService {
           newDelivery.choiceSelectProductId = discardedDelivery.choiceSelectProductId;
         }
 
-        const savedDelivery = await this.orderDeliveryRepository.save(newDelivery);
+        // CRITICAL: save/findOne 실패 시에도 SSG 선차감·폐기를 역전해야 한다 (issue 미실행 → 미등록 확정)
+        let savedDelivery: OrderDeliveryEntity | undefined;
+        let fullDelivery: OrderDeliveryEntity | null;
+        try {
+          savedDelivery = await this.orderDeliveryRepository.save(newDelivery);
 
-        // oneSend() 사용 금지: reverseRefundForResend() 이중 차감 버그
-        const fullDelivery = await this.orderDeliveryRepository.findOne({
-          where: { id: savedDelivery.id },
-          relations: [
-            'orderProductMapping',
-            'orderProductMapping.product',
-            'orderProductMapping.product.partnerCompany',
-            'orderProductMapping.product.brand',
-            'orderProductMapping.order',
-            'choiceSelectProduct',
-            'choiceSelectProduct.partnerCompany',
-            'ssgEvent',
-          ],
-        });
+          // oneSend() 사용 금지: reverseRefundForResend() 이중 차감 버그
+          fullDelivery = await this.orderDeliveryRepository.findOne({
+            where: { id: savedDelivery.id },
+            relations: [
+              'orderProductMapping',
+              'orderProductMapping.product',
+              'orderProductMapping.product.partnerCompany',
+              'orderProductMapping.product.brand',
+              'orderProductMapping.order',
+              'choiceSelectProduct',
+              'choiceSelectProduct.partnerCompany',
+              'ssgEvent',
+            ],
+          });
 
-        if (!fullDelivery) {
-          throw new InternalServerErrorException('새 발송 건 조회에 실패했습니다.');
+          if (!fullDelivery) {
+            throw new InternalServerErrorException('새 발송 건 조회에 실패했습니다.');
+          }
+        } catch (preIssueErr) {
+          if (isSsg && reissueEvent && resendDeductionId) {
+            await this.deliveryBatchService.reverseSsgReissueDeduct(
+              orderDelivery, reissueEvent.id, reissuePrice, reissueOrderId, resendDeductionId,
+            );
+            await unwindReissue(orderDelivery, savedDelivery?.id ?? null, SsgRefundOutcome.RESTORED);
+          }
+          throw preIssueErr;
         }
 
         const ssgEvent = fullDelivery.ssgEvent ?? null;
@@ -1635,8 +1693,7 @@ export class CustomerServiceService {
               fullDelivery, reissueEvent.id, reissuePrice, reissueOrderId, resendDeductionId,
             );
             if (outcome === SsgRefundOutcome.RESTORED) {
-              await this.orderDeliveryRepository.softDelete(savedDelivery.id);
-              await this.reverseDiscard(discardedDelivery.id, discardBefore);
+              await unwindReissue(fullDelivery, savedDelivery.id, outcome);
               throw new InternalServerErrorException('신규 발송에 실패하여 폐기를 취소했습니다. 다시 시도해 주세요.');
             }
             this.logger.error(
@@ -1665,7 +1722,23 @@ export class CustomerServiceService {
 
         await this.orderDeliveryRepository.save(fullDelivery);
 
+        // HIGH-2: issue() 성공 후 barCode 없음 — SSG 는 outcome 으로 분기, 비SSG 는 단순 throw
         if (!fullDelivery.barCode) {
+          if (isSsg && reissueEvent && resendDeductionId) {
+            const outcome = await this.deliveryBatchService.reverseSsgReissueDeduct(
+              fullDelivery, reissueEvent.id, reissuePrice, reissueOrderId, resendDeductionId,
+            );
+            if (outcome === SsgRefundOutcome.RESTORED) {
+              await unwindReissue(fullDelivery, savedDelivery.id, outcome);
+              throw new InternalServerErrorException('신규 발송에 실패하여 폐기를 취소했습니다. 다시 시도해 주세요.');
+            }
+            this.logger.error(
+              `[폐기후신규발송] barCode 누락 + SSG 등록 불명/확정(outcome=${outcome}) — 폐기 유지. orderDeliveryId=${savedDelivery.id}`,
+            );
+            throw new InternalServerErrorException(
+              '신규 발송 처리 중 오류가 발생했습니다. 발송실패내역에서 상태를 확인해 주세요.',
+            );
+          }
           throw new InternalServerErrorException('핀 발급에 실패했습니다.');
         }
 

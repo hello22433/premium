@@ -1,4 +1,4 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, InternalServerErrorException } from '@nestjs/common';
 import { CustomerServiceService } from './customer.service.service';
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
 import { SsgRefundOutcome } from '../../delivery/interface/ssg.refund.resolve';
@@ -11,8 +11,12 @@ import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.st
  * 검증 대상:
  *  - SSG: 폐기 전에 발급가능 행사 확보(fail-fast). 없으면 폐기조차 안 함.
  *  - SSG 정상: 새로 확보한 행사 id 로 newDelivery.ssgEventId 세팅.
- *  - issue 실패 + RESTORED(미등록 확정): 선차감 역복원 + softDelete + reverseDiscard(없던 일로).
- *  - issue 실패 + SKIPPED_CONFIRMED(등록 확정): 폐기 유지(reverseDiscard 미호출).
+ *  - issue 실패 + RESTORED: 선차감 역복원 + reverseDiscard + softDelete.
+ *  - issue 실패 + SKIPPED_CONFIRMED: 폐기 유지(reverseDiscard 미호출).
+ *  - issue 실패 + DEFERRED: 폐기 유지(reverseDiscard 미호출).
+ *  - save(newDelivery) 실패(pre-issue): 선차감 역복원 + reverseDiscard.
+ *  - findOne null(pre-issue): 선차감 역복원 + reverseDiscard + softDelete.
+ *  - issue 성공 but barCode 없음 + RESTORED: reverseDiscard + softDelete.
  *  - 비SSG(일반): SSG select/deduct 미호출.
  *
  * 생성자 의존성이 많아 Object.create 로 생성자 우회 후 협력자만 mock 주입한다.
@@ -73,10 +77,10 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
   });
 
   // findOne 이 반환하는 fullDelivery
-  const buildFullDelivery = (orderType: IOrderType, ssgEvent: any) =>
+  const buildFullDelivery = (orderType: IOrderType, ssgEvent: any, barCode?: string) =>
     ({
       id: 8001,
-      barCode: orderType === IOrderType.SSG ? 'PIN123' : 'G1',
+      barCode: barCode !== undefined ? barCode : (orderType === IOrderType.SSG ? 'PIN123' : 'G1'),
       deliveryMethod: 'SMS',
       ssgEvent,
       orderProductMapping: {
@@ -91,6 +95,22 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
         encourageDay: null,
       },
     }) as any;
+
+  // 공통 SSG 선차감 mock 세팅
+  const setupSsgAcquired = () => {
+    deliveryBatchService.selectAndDeductSsgEventForReissue.mockResolvedValue({
+      event: { id: 7 },
+      resendDeductionId: 'ULID1',
+    });
+  };
+
+  // 공통 execDiscard spy 세팅
+  const setupExecDiscard = () =>
+    jest.spyOn(service as any, 'execDiscard').mockResolvedValue({
+      orderDelivery: buildDiscardedDelivery(),
+      beforeChange: OrderDeliveryCouponStatus.NOT_USED,
+      refundStatus: 'SKIPPED',
+    });
 
   beforeEach(() => {
     deliveryBatchService = {
@@ -125,6 +145,8 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
     service.orderDeliveryRepository = orderDeliveryRepository;
     service.orderHistoryRepository = orderHistoryRepository;
     service.cryptoCipher = cryptoCipher;
+    // HIGH-3: Object.create 는 필드 이니셜라이저를 건너뜀 — logger 직접 주입
+    service.logger = { error: jest.fn(), log: jest.fn(), warn: jest.fn() };
   });
 
   describe('reverseDiscard', () => {
@@ -161,15 +183,8 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
     });
 
     it('2) 정상: 새로 확보한 행사 id 로 newDelivery.ssgEventId 세팅', async () => {
-      deliveryBatchService.selectAndDeductSsgEventForReissue.mockResolvedValue({
-        event: { id: 7 },
-        resendDeductionId: 'ULID1',
-      });
-      jest.spyOn(service as any, 'execDiscard').mockResolvedValue({
-        orderDelivery: buildDiscardedDelivery(),
-        beforeChange: OrderDeliveryCouponStatus.NOT_USED,
-        refundStatus: 'SKIPPED',
-      });
+      setupSsgAcquired();
+      setupExecDiscard();
       orderDeliveryRepository.findOne.mockResolvedValue(
         buildFullDelivery(IOrderType.SSG, { id: 7 }),
       );
@@ -182,16 +197,9 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
       expect(firstSavedEntity.ssgEventId).toBe(7);
     });
 
-    it('3) issue 실패 + RESTORED → 선차감 역복원 + softDelete + reverseDiscard', async () => {
-      deliveryBatchService.selectAndDeductSsgEventForReissue.mockResolvedValue({
-        event: { id: 7 },
-        resendDeductionId: 'ULID1',
-      });
-      jest.spyOn(service as any, 'execDiscard').mockResolvedValue({
-        orderDelivery: buildDiscardedDelivery(),
-        beforeChange: OrderDeliveryCouponStatus.NOT_USED,
-        refundStatus: 'SKIPPED',
-      });
+    it('3) issue 실패 + RESTORED → 선차감 역복원 + reverseDiscard(먼저) + softDelete', async () => {
+      setupSsgAcquired();
+      setupExecDiscard();
       orderDeliveryRepository.findOne.mockResolvedValue(
         buildFullDelivery(IOrderType.SSG, { id: 7 }),
       );
@@ -210,20 +218,17 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
         ORDER_ID,
         'ULID1',
       );
+      // MEDIUM-1: reverseDiscard 가 softDelete 보다 먼저 호출돼야 한다
       expect(reverseDiscardSpy).toHaveBeenCalledWith(7001, OrderDeliveryCouponStatus.NOT_USED);
       expect(orderDeliveryRepository.softDelete).toHaveBeenCalled();
+      const reverseOrder = reverseDiscardSpy.mock.invocationCallOrder[0];
+      const softDeleteOrder = orderDeliveryRepository.softDelete.mock.invocationCallOrder[0];
+      expect(reverseOrder).toBeLessThan(softDeleteOrder);
     });
 
-    it('4) issue 실패 + SKIPPED_CONFIRMED → 폐기 유지(reverseDiscard 미호출)', async () => {
-      deliveryBatchService.selectAndDeductSsgEventForReissue.mockResolvedValue({
-        event: { id: 7 },
-        resendDeductionId: 'ULID1',
-      });
-      jest.spyOn(service as any, 'execDiscard').mockResolvedValue({
-        orderDelivery: buildDiscardedDelivery(),
-        beforeChange: OrderDeliveryCouponStatus.NOT_USED,
-        refundStatus: 'SKIPPED',
-      });
+    it('4) issue 실패 + SKIPPED_CONFIRMED → 폐기 유지, InternalServerError(발송실패내역), reverseDiscard 미호출', async () => {
+      setupSsgAcquired();
+      setupExecDiscard();
       orderDeliveryRepository.findOne.mockResolvedValue(
         buildFullDelivery(IOrderType.SSG, { id: 7 }),
       );
@@ -235,17 +240,39 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
         .spyOn(service as any, 'reverseDiscard')
         .mockResolvedValue(undefined);
 
-      await expect(service.execHistory(buildMap(IOrderType.SSG))).rejects.toThrow();
+      await expect(service.execHistory(buildMap(IOrderType.SSG))).rejects.toThrow(
+        InternalServerErrorException,
+      );
+      await expect(service.execHistory(buildMap(IOrderType.SSG))).rejects.toThrow(
+        /발송실패내역/,
+      );
 
       expect(reverseDiscardSpy).not.toHaveBeenCalled();
+      expect(orderDeliveryRepository.softDelete).not.toHaveBeenCalled();
     });
 
-    it('5) 일반쿠폰: SSG select/deduct 미호출', async () => {
-      jest.spyOn(service as any, 'execDiscard').mockResolvedValue({
-        orderDelivery: buildDiscardedDelivery(),
-        beforeChange: OrderDeliveryCouponStatus.NOT_USED,
-        refundStatus: 'SKIPPED',
-      });
+    it('5) issue 실패 + DEFERRED → 폐기 유지(reverseDiscard 미호출)', async () => {
+      setupSsgAcquired();
+      setupExecDiscard();
+      orderDeliveryRepository.findOne.mockResolvedValue(
+        buildFullDelivery(IOrderType.SSG, { id: 7 }),
+      );
+      partnerCompanyExternService.issue.mockRejectedValue(new Error('issue boom'));
+      deliveryBatchService.reverseSsgReissueDeduct.mockResolvedValue(SsgRefundOutcome.DEFERRED);
+      const reverseDiscardSpy = jest
+        .spyOn(service as any, 'reverseDiscard')
+        .mockResolvedValue(undefined);
+
+      await expect(service.execHistory(buildMap(IOrderType.SSG))).rejects.toThrow(
+        InternalServerErrorException,
+      );
+
+      expect(reverseDiscardSpy).not.toHaveBeenCalled();
+      expect(orderDeliveryRepository.softDelete).not.toHaveBeenCalled();
+    });
+
+    it('6) 일반쿠폰: SSG select/deduct 미호출', async () => {
+      setupExecDiscard();
       orderDeliveryRepository.findOne.mockResolvedValue(
         buildFullDelivery(IOrderType.GENERAL, null),
       );
@@ -254,6 +281,77 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
 
       expect(deliveryBatchService.selectAndDeductSsgEventForReissue).not.toHaveBeenCalled();
       expect(partnerCompanyExternService.issue).toHaveBeenCalled();
+    });
+
+    it('7) CRITICAL: save(newDelivery) 실패 → 선차감 역복원 + reverseDiscard 호출', async () => {
+      setupSsgAcquired();
+      setupExecDiscard();
+      orderDeliveryRepository.save.mockRejectedValue(new Error('DB save boom'));
+      deliveryBatchService.reverseSsgReissueDeduct.mockResolvedValue(SsgRefundOutcome.RESTORED);
+      const reverseDiscardSpy = jest
+        .spyOn(service as any, 'reverseDiscard')
+        .mockResolvedValue(undefined);
+
+      await expect(service.execHistory(buildMap(IOrderType.SSG))).rejects.toThrow();
+
+      expect(deliveryBatchService.reverseSsgReissueDeduct).toHaveBeenCalledWith(
+        expect.anything(),
+        7,
+        PRICE,
+        ORDER_ID,
+        'ULID1',
+      );
+      expect(reverseDiscardSpy).toHaveBeenCalledWith(7001, OrderDeliveryCouponStatus.NOT_USED);
+    });
+
+    it('8) CRITICAL: findOne null → 선차감 역복원 + reverseDiscard + softDelete 호출', async () => {
+      setupSsgAcquired();
+      setupExecDiscard();
+      // save 는 성공하되 findOne 은 null 반환
+      orderDeliveryRepository.save.mockResolvedValue({ id: 8001 });
+      orderDeliveryRepository.findOne.mockResolvedValue(null);
+      deliveryBatchService.reverseSsgReissueDeduct.mockResolvedValue(SsgRefundOutcome.RESTORED);
+      const reverseDiscardSpy = jest
+        .spyOn(service as any, 'reverseDiscard')
+        .mockResolvedValue(undefined);
+
+      await expect(service.execHistory(buildMap(IOrderType.SSG))).rejects.toThrow();
+
+      expect(deliveryBatchService.reverseSsgReissueDeduct).toHaveBeenCalledWith(
+        expect.anything(),
+        7,
+        PRICE,
+        ORDER_ID,
+        'ULID1',
+      );
+      expect(reverseDiscardSpy).toHaveBeenCalledWith(7001, OrderDeliveryCouponStatus.NOT_USED);
+      expect(orderDeliveryRepository.softDelete).toHaveBeenCalledWith(8001);
+    });
+
+    it('9) HIGH-2: issue 성공 but barCode 없음 + RESTORED → reverseDiscard + softDelete', async () => {
+      setupSsgAcquired();
+      setupExecDiscard();
+      // barCode 가 빈 문자열인 fullDelivery
+      orderDeliveryRepository.findOne.mockResolvedValue(
+        buildFullDelivery(IOrderType.SSG, { id: 7 }, ''),
+      );
+      partnerCompanyExternService.issue.mockResolvedValue(undefined);
+      deliveryBatchService.reverseSsgReissueDeduct.mockResolvedValue(SsgRefundOutcome.RESTORED);
+      const reverseDiscardSpy = jest
+        .spyOn(service as any, 'reverseDiscard')
+        .mockResolvedValue(undefined);
+
+      await expect(service.execHistory(buildMap(IOrderType.SSG))).rejects.toThrow();
+
+      expect(deliveryBatchService.reverseSsgReissueDeduct).toHaveBeenCalledWith(
+        expect.anything(),
+        7,
+        PRICE,
+        ORDER_ID,
+        'ULID1',
+      );
+      expect(reverseDiscardSpy).toHaveBeenCalledWith(7001, OrderDeliveryCouponStatus.NOT_USED);
+      expect(orderDeliveryRepository.softDelete).toHaveBeenCalled();
     });
   });
 });
