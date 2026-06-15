@@ -188,7 +188,8 @@ export class ExternalApiService {
       allocation,
       cardSurchargeAppliedSnapshot: order.cardSurchargeApplied,
       hasDiscountSnapshot: allocation.hasDiscount,
-      settleMethodSnapshot: user.company?.settleMethod ?? user.settleMethod ?? null,
+      // settleMethodSnapshot SoT 통일: 주문 저장값 우선, 없으면 이미 조회한 wallet SoT (회사/유저 정책 대신)
+      settleMethodSnapshot: order.settleMethod ?? wallet.settleMethod,
       deliveryIdsForAttempt: allocation.lines
         .map((l) => l.orderDeliveryId)
         .filter((id): id is number => id != null),

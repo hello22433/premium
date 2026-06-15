@@ -95,6 +95,14 @@ export class OrderEntity extends BaseEntity {
   @Column({ default: false, comment: '카드할증 적용 여부 (3%)' })
   cardSurchargeApplied: boolean;
 
+  @Column({
+    type: 'enum',
+    enum: ['CARD', 'CASH'],
+    nullable: true,
+    comment: '결제수단 (CARD/CASH). 정산입력 완료 표식. NULL=미입력/레거시(읽기 시 정책 폴백)',
+  })
+  settleMethod: 'CARD' | 'CASH' | null;
+
   @Column({ default: false, comment: '신용초과발송 여부' })
   isCreditExcess: boolean;
 

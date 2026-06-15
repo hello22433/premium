@@ -218,10 +218,12 @@ export class OrderCreateSettleReqDto {
     default: false,
   })
   @IsOptional()
+  @IsBoolean()
   cardSurchargeApplied?: boolean;
 
   @ApiProperty({
-    description: '결제수단 (주문 단위) CARD|CASH. 지정 시 cardSurchargeApplied 를 강제 (CARD→true, CASH→false)',
+    description:
+      '결제수단 (주문 단위) CARD|CASH. cardSurchargeApplied 와 독립 저장(강제 결합 없음). 미전송 시 정책값(WALLET=wallet_account.settleMethod / LEGACY=company.settleMethod)으로 폴백',
     required: false,
   })
   @IsOptional()
