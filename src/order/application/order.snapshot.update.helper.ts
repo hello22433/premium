@@ -28,7 +28,7 @@ export function resolveLineSnapshot(
 ) {
   if (line.id != null) {
     const prev = owned.get(line.id);
-    if (prev && prev.productId === line.productId && prev.snapshot) {
+    if (prev?.productId === line.productId && prev.snapshot) {
       return prev.snapshot;
     }
   }

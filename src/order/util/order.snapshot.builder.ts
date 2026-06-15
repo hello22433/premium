@@ -195,7 +195,7 @@ export type PriceDivergence = {
 // 주문 시점 스냅샷 가격과 현재 상품 가격의 차이를 감지한다.
 // snapshotPrice가 null(legacy)이거나 currentPrice가 null(삭제 상품)이면 priceChanged=false.
 export function buildPriceDivergence(opm: OrderProductMappingEntity): PriceDivergence {
-  const snapshotPrice = opm.snapshotProductPrice ?? null;
+  const snapshotPrice = opm.snapshotProductPrice;
   const currentPrice = opm.product?.price ?? null;
   const priceChanged = snapshotPrice != null && currentPrice != null && snapshotPrice !== currentPrice;
   return { priceChanged, snapshotPrice, currentPrice };
