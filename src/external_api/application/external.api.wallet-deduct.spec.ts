@@ -241,18 +241,44 @@ describe('ExternalApiService wallet 차감 (deductViaWallet)', () => {
     expect(mocks.build).not.toHaveBeenCalled();
   });
 
-  it('settleMethodSnapshot: company.settleMethod 우선, 없으면 user.settleMethod', async () => {
+  const walletWith = (settleMethod: string) =>
+    jest.fn(async () => ({
+      id: 'w-1',
+      depositBalance: 100000,
+      creditLimit: 0,
+      creditUsedAmount: 0,
+      settleCondition: 'PRE_PAYMENT',
+      settleMethod,
+    }));
+
+  it('settleMethodSnapshot: order.settleMethod 가 있으면 우선 사용한다 (회사/wallet 무시)', async () => {
     const allocation = makeAllocation({ payableSettlementAmount: 0 });
     const { svc, mocks } = makeService({
       mode: WalletCutoverMode.WALLET,
       allocation,
       persistResult: { finalAllocation: allocation },
+      resolveByUserId: walletWith('CASH'), // wallet 정책 (무시되어야 함)
     });
-    const account = makeAccount({ isCompany: true, settleMethod: 'CARD' });
-    await (svc as any).deductViaWallet(account, makeOrder(), 0);
+    const account = makeAccount({ isCompany: true, settleMethod: 'CASH' });
+    await (svc as any).deductViaWallet(account, { ...makeOrder(), settleMethod: 'CARD' }, 0);
 
     const persistArg = (mocks.persistAllocation.mock.calls[0] as any[])[0];
-    expect(persistArg.settleMethodSnapshot).toBe('CARD');
+    expect(persistArg.settleMethodSnapshot).toBe('CARD'); // order.settleMethod 우선
+  });
+
+  it('settleMethodSnapshot: order.settleMethod 없으면 wallet SoT 로 폴백한다 (company/user 무시)', async () => {
+    const allocation = makeAllocation({ payableSettlementAmount: 0 });
+    const { svc, mocks } = makeService({
+      mode: WalletCutoverMode.WALLET,
+      allocation,
+      persistResult: { finalAllocation: allocation },
+      resolveByUserId: walletWith('CARD'), // wallet SoT
+    });
+    const account = makeAccount({ isCompany: true, settleMethod: 'CASH' }); // 회사 정책 무시
+    await (svc as any).deductViaWallet(account, makeOrder(), 0); // order.settleMethod 없음
+
+    const persistArg = (mocks.persistAllocation.mock.calls[0] as any[])[0];
+    expect(persistArg.settleMethodSnapshot).toBe('CARD'); // wallet 폴백
     expect(persistArg.creditExcessApprovalId).toBeNull();
     expect(persistArg.deliveryIdsForAttempt).toEqual([55]);
   });

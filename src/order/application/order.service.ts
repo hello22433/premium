@@ -59,6 +59,7 @@ import {
 import { OrderEntity } from '../../entity/order.entity';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
+  EntityManager,
   In,
   LessThanOrEqual,
   Like,
@@ -154,6 +155,7 @@ import { ActivityLogResult } from '../../activity_log/interface/activity.log.res
 import { WalletCutoverConfig, WalletCutoverMode } from '../../wallet/config/wallet-cutover.config';
 import { WalletManagedPredicate } from '../../wallet/application/wallet-managed.predicate';
 import { WalletAccountResolverService } from '../../wallet/application/wallet-account-resolver.service';
+import { WalletAccountEntity } from '../../entity/wallet.account.entity';
 import {
   AllocationInput,
   AllocationResult,
@@ -399,13 +401,64 @@ export class OrderService {
     };
   }
 
-  private async getDefaultCardSurchargeApplied(order: OrderEntity): Promise<boolean> {
+  /**
+   * 정산방법 정책 소스 (cutover mode 분기).
+   * - WALLET: wallet_account.settleMethod (SoT). 미존재 시 fail-closed throw (회사 폴백 금지 — 잘못된 결제수단 영구저장 방지).
+   * - SHADOW: wallet 조회 실패 시 경고 로그 후 회사 정책 폴백.
+   * - LEGACY: 회사 정책.
+   * resolvedWallet 은 호출측에서 재사용(추가 조회 회피)용으로 반환.
+   */
+  private async resolveSettlePolicy(
+    order: Pick<OrderEntity, 'userId' | 'clientUserId'>,
+    company: { settleMethod?: string | null } | null | undefined,
+    manager?: EntityManager,
+  ): Promise<{ policy: 'CARD' | 'CASH' | null; resolvedWallet: WalletAccountEntity | null }> {
+    const mode = this.walletCutoverConfig.pr3SettleMode;
+    const companyPolicy = (company?.settleMethod as 'CARD' | 'CASH' | null) ?? null;
+
+    if (mode === WalletCutoverMode.WALLET) {
+      const wallet = await this.walletAccountResolverService.resolveForOrder(order, manager);
+      return { policy: wallet.settleMethod, resolvedWallet: wallet };
+    }
+    if (mode === WalletCutoverMode.SHADOW) {
+      try {
+        const wallet = await this.walletAccountResolverService.resolveForOrder(order, manager);
+        return { policy: wallet.settleMethod, resolvedWallet: wallet };
+      } catch (e) {
+        this.logger.warn(`[settle policy] SHADOW wallet 조회 실패 → legacy(회사) 폴백: ${(e as Error).message}`);
+        return { policy: companyPolicy, resolvedWallet: null };
+      }
+    }
+    return { policy: companyPolicy, resolvedWallet: null };
+  }
+
+  /**
+   * 정산 입력/수정 공통: billingUser 조회 → 회사 정책 → cutover 정책 → 최종 저장값 결정.
+   * existingCardSurcharge / existingSettleMethod: update 시 기존 order 값(폴백 계층에 삽입). create 시 undefined.
+   */
+  private async resolveSettleInputs(
+    order: Pick<OrderEntity, 'userId' | 'clientUserId' | 'settleMethod' | 'cardSurchargeApplied'>,
+    body: { cardSurchargeApplied?: boolean; settleMethod?: 'CARD' | 'CASH' | null },
+    opts: { useExistingAsMiddleFallback: boolean },
+  ): Promise<{ cardSurchargeApplied: boolean; settleMethod: 'CARD' | 'CASH' | null }> {
     const billingUser = await this.userRepository.findOne({
       where: { id: order.clientUserId ?? order.userId },
       relations: ['company'],
     });
+    const company = billingUser?.company;
+    const defaultCardSurchargeApplied = company?.settleMethod === 'CARD';
+    const { policy: settlePolicy } = await this.resolveSettlePolicy(order, company);
 
-    return billingUser?.company?.settleMethod === 'CARD';
+    const cardSurchargeApplied = opts.useExistingAsMiddleFallback
+      ? (body.cardSurchargeApplied ?? order.cardSurchargeApplied ?? defaultCardSurchargeApplied)
+      : (body.cardSurchargeApplied ?? defaultCardSurchargeApplied);
+
+    // 정책 부재(LEGACY/SHADOW 회사 정책 null)에도 신규 저장은 항상 non-null — 기본값 'CASH'(할증OFF 와 정합).
+    const settleMethod = opts.useExistingAsMiddleFallback
+      ? (body.settleMethod ?? order.settleMethod ?? settlePolicy ?? 'CASH')
+      : (body.settleMethod ?? settlePolicy ?? 'CASH');
+
+    return { cardSurchargeApplied, settleMethod };
   }
 
   /**
@@ -1937,7 +1990,6 @@ export class OrderService {
       where: { id: order.clientUserId ?? order.userId },
       relations: ['company'],
     });
-    const settleMethod = billingUserForSettle?.company?.settleMethod ?? null;
 
     // 1. 유저의 주문 상품 조회 (classification 포함)
     // SSG 합산 할인 및 전체 합계 계산을 위해 페이지네이션 없이 전체 조회 후 resultList 생성 후 슬라이스
@@ -2343,16 +2395,21 @@ export class OrderService {
     const pagedList = resultList.slice(skip, skip + take);
     const totalPage = Math.ceil(virtualTotalCount / take);
 
-    const hasSettled = (order.settleAmount ?? 0) > 0;
-    const effectiveCardSurcharge = hasSettled ? order.cardSurchargeApplied : settleMethod === 'CARD';
+    // 입력완료 표식 = order.settleMethod 존재 (settleAmount>0 의존 제거 — 0원 정산도 입력값 유지)
+    const hasSettleInput = order.settleMethod != null;
+    // 정책 폴백은 미입력일 때만 필요. 읽기 경로는 fail-closed 불필요 → lazy 해석으로 WALLET 불필요 throw/조회 회피.
+    const settlePolicy = hasSettleInput
+      ? null
+      : (await this.resolveSettlePolicy(order, billingUserForSettle?.company)).policy;
+    const effectiveCardSurcharge = hasSettleInput ? order.cardSurchargeApplied : settlePolicy === 'CARD';
 
     // 카드할증 산정 (백엔드 산식 단일화: 프론트 자체계산 제거)
     const cardSurchargeBase = totalDiscountAmount;
     const payableSettlementAmount = applyCardSurcharge(cardSurchargeBase, effectiveCardSurcharge);
     const cardSurchargeAmount = payableSettlementAmount - cardSurchargeBase;
 
-    // settleMethod: 정산 입력됨(hasSettled)이면 저장된 cardSurchargeApplied 에서 파생, 아니면 회사 정책값
-    const effectiveSettleMethod = hasSettled ? (order.cardSurchargeApplied ? 'CARD' : 'CASH') : settleMethod;
+    // settleMethod: 저장값 우선, NULL(미입력/레거시)이면 정책 폴백
+    const effectiveSettleMethod = order.settleMethod ?? settlePolicy;
 
     return {
       list: pagedList,
@@ -2538,17 +2595,16 @@ export class OrderService {
     }
 
     const order = existingOrderProducts[0].order;
-    const defaultCardSurchargeApplied = await this.getDefaultCardSurchargeApplied(order);
-    // settleMethod(주문 단위) 가 들어오면 cardSurchargeApplied 를 강제. CARD→true, CASH→false.
-    const cardSurchargeApplied = getBody.settleMethod
-      ? getBody.settleMethod === 'CARD'
-      : getBody.cardSurchargeApplied ?? defaultCardSurchargeApplied;
+    // create: 기존값 폴백 없음 (order.settleMethod / order.cardSurchargeApplied 무시)
+    const { cardSurchargeApplied, settleMethod } = await this.resolveSettleInputs(order, getBody, {
+      useExistingAsMiddleFallback: false,
+    });
     const newSettleAmount = calculateOrderSettlementAmount(
       { cardSurchargeApplied, orderProductMappings: allOrderProducts },
       cardSurchargeApplied,
     );
 
-    await this.orderRepository.update({ id: orderId }, { settleAmount: newSettleAmount, cardSurchargeApplied });
+    await this.orderRepository.update({ id: orderId }, { settleAmount: newSettleAmount, cardSurchargeApplied, settleMethod });
 
     if (order.isNewBillingFlow) {
       // === 새 흐름 ===
@@ -2644,17 +2700,16 @@ export class OrderService {
     }
 
     const order = existingOrderProducts[0].order;
-    const defaultCardSurchargeApplied = await this.getDefaultCardSurchargeApplied(order);
-    // settleMethod(주문 단위) 가 들어오면 cardSurchargeApplied 를 강제. CARD→true, CASH→false.
-    const cardSurchargeApplied = getBody.settleMethod
-      ? getBody.settleMethod === 'CARD'
-      : getBody.cardSurchargeApplied ?? order.cardSurchargeApplied ?? defaultCardSurchargeApplied;
+    // update: 기존값(order.cardSurchargeApplied / order.settleMethod)을 body와 정책 사이 중간 폴백으로 사용
+    const { cardSurchargeApplied, settleMethod } = await this.resolveSettleInputs(order, getBody, {
+      useExistingAsMiddleFallback: true,
+    });
     const newSettleAmount = calculateOrderSettlementAmount(
       { cardSurchargeApplied, orderProductMappings: allOrderProducts },
       cardSurchargeApplied,
     );
 
-    await this.orderRepository.update({ id: orderId }, { settleAmount: newSettleAmount, cardSurchargeApplied });
+    await this.orderRepository.update({ id: orderId }, { settleAmount: newSettleAmount, cardSurchargeApplied, settleMethod });
 
     // 발송확정 이후(DELIVERY_CONFIRMED, DELIVERY_COMPLETE)에 정산정보를 수정한 경우
     // 이전 정산금액과 새 정산금액의 차이를 balance/allSettleAmount에 반영
@@ -3731,7 +3786,8 @@ export class OrderService {
             allocation,
             cardSurchargeAppliedSnapshot: order.cardSurchargeApplied,
             hasDiscountSnapshot: allocation.hasDiscount,
-            settleMethodSnapshot: oneUser.company?.settleMethod ?? null,
+            // effective: 정산입력된 order.settleMethod 우선, 없으면 이미 조회한 wallet SoT 재사용 (추가 조회 0)
+            settleMethodSnapshot: order.settleMethod ?? wallet.settleMethod,
             deliveryIdsForAttempt,
             creditExcessApprovalId: getBody.creditExcessApprovalId ?? null,
           },
