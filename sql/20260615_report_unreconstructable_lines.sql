@@ -33,7 +33,7 @@ SELECT
       WHERE m3.order_id = opm.order_id
     ) > 1
       THEN 'multi_line'
-    WHEN o.send_amount MOD opm.amount <> 0
+    WHEN o.send_amount MOD NULLIF(opm.amount, 0) <> 0
       THEN 'not_divisible'
     ELSE 'other'
   END                                                                 AS reason
