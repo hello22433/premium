@@ -1060,6 +1060,8 @@ export class DeliveryBatchService {
   /**
    * 재발송 선차감 환불 (PIN 발급 실패 또는 issue() throw 시).
    * shared resolver 를 통해 state 기준으로 SSG 행사 잔액을 복구한다.
+   * resendDeductionId 전달로 전용 멱등 경로(refundResendEventDeduction)를 사용하여
+   * 원래 환불 cycle 의 recovery_log 키 충돌을 회피하고 settled 를 미터치한다.
    */
   private async refundResendDeduct(
     orderDelivery: OrderDeliveryEntity,
@@ -1068,8 +1070,6 @@ export class DeliveryBatchService {
     orderId: number,
     resendDeductionId: string,
   ): Promise<void> {
-    // resolver 는 throw 흡수 + outcome 반환. resendDeductionId 전달 시 전용 멱등(refundResendEventDeduction)으로
-    // 새 행사 선차감을 역복원 — 원래 환불 cycle 의 recovery_log 키 재사용 충돌(leak) 회피 + settled 미터치.
     const outcome = await this.ssgRefundResolverService.resolveAndRefundIfNeeded({
       orderDeliveryId: orderDelivery.id,
       ssgEventId,
