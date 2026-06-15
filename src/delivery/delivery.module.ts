@@ -30,6 +30,7 @@ import { PartnerCompanyExternModule } from '../partner_company_extern/partner.co
 import { SsgEventModule } from '../ssg_event/ssg.event.module';
 import { UserManagementModule } from '../user_management/user.management.module';
 import { WalletModule } from '../wallet/wallet.module';
+import { OrderFromModule } from '../order_from/order.from.module';
 
 @Module({
   imports: [
@@ -57,6 +58,7 @@ import { WalletModule } from '../wallet/wallet.module';
     SsgEventModule,
     UserManagementModule,
     SsgInsertStateModule,
+    OrderFromModule,
     forwardRef(() => WalletModule),
   ],
   providers: [

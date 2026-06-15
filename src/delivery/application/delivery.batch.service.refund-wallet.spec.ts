@@ -39,6 +39,7 @@ import { DeliverySendService } from './delivery.send.service';
 import { RefundLedgerService } from './refund-ledger.service';
 import { SsgInsertStateService } from './ssg-insert-state.service';
 import { SsgRefundResolverService } from './ssg-refund.resolver';
+import { OrderFromService } from '../../order_from/application/order.from.service';
 
 /**
  * PR2-006 — refundForFail wallet path 분기 회귀.
@@ -157,6 +158,7 @@ describe('DeliveryBatchService.refundForFail - wallet path', () => {
         { provide: getRepositoryToken(OrderPaymentRefundEventEntity), useValue: { find: jest.fn(), findOne: jest.fn() } },
         { provide: getRepositoryToken(OrderPaymentAllocationEntity), useValue: { findOne: jest.fn() } },
         { provide: getDataSourceToken(), useValue: { transaction: jest.fn() } },
+        { provide: OrderFromService, useValue: { resolveSendDefaultPhone: jest.fn().mockResolvedValue('16443614') } },
       ],
     }).compile();
 

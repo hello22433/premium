@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsArray, IsEnum, IsNotEmpty, IsNumber, IsOptional, IsString, Matches } from 'class-validator';
+import { IsArray, IsEnum, IsIn, IsNotEmpty, IsNumber, IsOptional, IsString, Matches, ValidateNested } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
 import { IOrderSendMethod } from '../../interface/order.send.method';
 import { OrderEmailSendType } from '../../domain/order.email.send.type';
@@ -116,7 +116,7 @@ export class OrderProductCreateTempDto {
   })
   // =================================================
   @IsOptional()
-  @IsString()
+  @IsIn(['IMMEDIATE', 'RESERVE'])
   sendType: string | null;
 
   @ApiPropertyOptional({
@@ -132,6 +132,7 @@ export class OrderProductCreateTempDto {
   })
   // ===================================
   @IsArray() // 배열임을 검증
+  @ValidateNested({ each: true })
   @Type(() => OrderDeliveryCreateDto)
   orderDeliveryList: OrderDeliveryCreateDto[];
 }
@@ -142,6 +143,7 @@ export class OrderDeliveryCreateDto {
   })
   // =================================
   @IsNotEmpty()
+  @IsString()
   deliveryTarget: string;
 
   @ApiPropertyOptional({
