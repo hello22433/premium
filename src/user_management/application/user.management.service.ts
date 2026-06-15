@@ -85,6 +85,7 @@ import { LoginVerifyMethod } from '../../user/interface/login.verify.method';
 import { DeliveryAlimTalk } from '../../delivery/interface/delivery.alim.talk';
 import { ISmsSend } from '../../sms/interface/sms.send';
 import { defaultFromPhoneNumber } from '../../const';
+import { OrderFromService } from '../../order_from/application/order.from.service';
 
 const MYSQL_INT_MAX = 2_147_483_647;
 
@@ -125,6 +126,7 @@ export class UserManagementService {
     private readonly walletCutoverConfig: WalletCutoverConfig,
     private readonly accountStatusTransitionService: AccountStatusTransitionService,
     private readonly settleService: SettleService,
+    private readonly orderFromService: OrderFromService,
   ) {}
 
   private readonly initPasswordTemplateCode = this.configService.getOrThrow<string>(
@@ -436,7 +438,10 @@ export class UserManagementService {
       cardName: user.cardName,
       cardNumber: user.cardNumber,
       balance: this.getCurrentBalance(user, company),
-      fromPhoneNumber: user.fromPhoneNumber,
+      fromPhoneNumber:
+        process.env.FROM_PHONE_SOT_ENFORCE === 'true'
+          ? await this.orderFromService.resolveApprovedDefaultPhone(user.id)
+          : user.fromPhoneNumber,
 
       settlePeriodCondition: user.settlePeriodCondition,
       settlePeriodCount: user.settlePeriodCount,
@@ -915,6 +920,15 @@ export class UserManagementService {
     // 계정 생성 로그 (라이프사이클 — 관리자 경로)
     await this.accountStatusTransitionService.logAccountCreate(newUserId, getBody.email, TransitionSource.ADMIN);
 
+    // 발신번호 SoT 동기화: APPROVED isDefault PHONE 보장 + mirror 갱신(없으면 NULL).
+    // user.insert 가 mirror 를 이미 썼지만 seed 가 마지막 권위 write 로 최종값 확정.
+    await this.orderFromService.seedApprovedDefaultPhone(
+      newUserId,
+      getBody.fromPhoneNumber,
+      undefined,
+      { blankPolicy: 'clear-if-no-approved' },
+    );
+
     return;
   }
 
@@ -993,7 +1007,7 @@ export class UserManagementService {
     user.cardName = getBody.cardName;
     user.cardNumber = getBody.cardNumber;
     // user.status 는 여기서 직접 세팅하지 않음 — save 후 accountStatusTransitionService 로 일원화 처리.
-    user.fromPhoneNumber = getBody.fromPhoneNumber;
+    // fromPhoneNumber mirror 직접 세팅 제거 — save 이후 seedApprovedDefaultPhone 이 최종 권위 write.
 
     user.settlePeriodCondition = getBody.settlePeriodCondition;
     user.settlePeriodCount = getBody.settlePeriodCount;
@@ -1008,6 +1022,17 @@ export class UserManagementService {
     }
 
     await this.userRepository.save(user);
+
+    // 발신번호 SoT 동기화: user save 이후 실행해야 mirror 가 stale 로 덮이지 않음.
+    // seed 가 APPROVED isDefault 보장 + mirror 최종값 확정(없으면 NULL). 이후 user write 금지.
+    if (getBody.fromPhoneNumber !== undefined) {
+      await this.orderFromService.seedApprovedDefaultPhone(
+        user.id,
+        getBody.fromPhoneNumber,
+        undefined,
+        { blankPolicy: 'clear-if-no-approved' },
+      );
+    }
 
     // 상태 변경 시 공통 헬퍼로 전이 (side-column + ACCOUNT_WITHDRAW 로그 등 자동배치와 동일 side-effect 보장)
     if (prevStatus !== getBody.status) {

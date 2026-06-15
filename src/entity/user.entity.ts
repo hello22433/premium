@@ -175,7 +175,8 @@ export class UserEntity extends BaseEntity {
   @Column({ type: 'varchar', length: 100, default: 'S+', comment: '고객사등급' })
   businessGrade: string;
 
-  @Column({ type: 'varchar', nullable: true, length: 20, comment: '발신 번호' })
+  /** @deprecated SoT = order_from_definition. cutover 호환 mirror. 별도 PR 에서 DROP 예정. */
+  @Column({ type: 'varchar', nullable: true, length: 20, comment: '발신 번호 (deprecated mirror, SoT=order_from_definition)' })
   fromPhoneNumber: string | null;
 
   @Column({ type: 'enum', enum: UserSettlePeriodConditionEnum, nullable: true, comment: '정산 기준 지정 월 조건' })

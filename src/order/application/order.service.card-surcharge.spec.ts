@@ -404,9 +404,10 @@ describe('OrderService SSG settlement row validation', () => {
     expect(deliveries[1]).toMatchObject({ settleFee: null, settlePriceAdjustment: null });
   });
 
-  it('다른 mapping의 deliveryId가 섞인 cross row 저장을 거부한다', async () => {
+  it('합산 행(크로스 상품 수신번호) deliveryId가 같은 주문 안이면 모두 저장한다', async () => {
     const service = createService();
-    const { map } = createOrderProductMap();
+    const { deliveries, map } = createOrderProductMap();
+    const crossDelivery = { id: 99, settleFee: null, settlePriceAdjustment: null, settleDiscountType: null };
     map.set(11, {
       id: 11,
       amount: 1,
@@ -414,15 +415,67 @@ describe('OrderService SSG settlement row validation', () => {
       priceAdjustment: null,
       settleDiscountType: null,
       product: { price: 20000 },
-      orderDeliveries: [{ id: 99, settleFee: null, settlePriceAdjustment: null, settleDiscountType: null }],
+      orderDeliveries: [crossDelivery],
     });
+
+    const result = await service.processSettleList(
+      [{ id: 10, deliveryIds: [1, 99], fee: 5, priceAdjustment: IPriceAdjustment.DISCOUNT, refund: 90 }],
+      map,
+    );
+
+    expect(result.orderProductList).toEqual([]);
+    expect(deliveries[0]).toMatchObject({
+      settleFee: 5,
+      settlePriceAdjustment: IPriceAdjustment.DISCOUNT,
+      refundRatio: 90,
+    });
+    expect(crossDelivery).toMatchObject({
+      settleFee: 5,
+      settlePriceAdjustment: IPriceAdjustment.DISCOUNT,
+      refundRatio: 90,
+    });
+  });
+
+  it('주문에 속하지 않는 deliveryId는 거부한다', async () => {
+    const service = createService();
+    const { map } = createOrderProductMap();
 
     await expect(
       service.processSettleList(
-        [{ id: 10, deliveryIds: [1, 99], fee: 5, priceAdjustment: IPriceAdjustment.DISCOUNT }],
+        [{ id: 10, deliveryIds: [1, 999], fee: 5, priceAdjustment: IPriceAdjustment.DISCOUNT }],
         map,
       ),
-    ).rejects.toThrow('여러 상품이 묶인 정산 항목은 상품별로 분리해서 저장해주세요.');
+    ).rejects.toThrow('주문에 속하지 않는 발송 내역이 포함되어 있습니다.');
+  });
+
+  it('단독 행(10%)과 합산 행(5%)을 같이 저장해도 행별 deliveryIds 에만 적용되고 서로 섞이지 않는다', async () => {
+    // 1만원권 단독 수신자 = delivery 1 / 1만원권+2만원권 크로스 수신자 = delivery 2(1만원권), 3(2만원권)
+    const service = createService();
+    const d1 = { id: 1, settleFee: null, settlePriceAdjustment: null, settleDiscountType: null };
+    const d2 = { id: 2, settleFee: null, settlePriceAdjustment: null, settleDiscountType: null };
+    const d3 = { id: 3, settleFee: null, settlePriceAdjustment: null, settleDiscountType: null };
+    const map = new Map<number, any>([
+      [10, { id: 10, amount: 2, fee: null, priceAdjustment: null, settleDiscountType: null, product: { price: 10000 }, orderDeliveries: [d1, d2] }],
+      [11, { id: 11, amount: 1, fee: null, priceAdjustment: null, settleDiscountType: null, product: { price: 20000 }, orderDeliveries: [d3] }],
+    ]);
+
+    const result = await service.processSettleList(
+      [
+        { id: 10, deliveryIds: [1], fee: 10, priceAdjustment: IPriceAdjustment.DISCOUNT }, // 단독 1만원권 → 10%
+        { id: 10, deliveryIds: [2, 3], fee: 5, priceAdjustment: IPriceAdjustment.DISCOUNT }, // 합산(1만+2만) → 5%
+      ],
+      map,
+    );
+
+    expect(result.orderProductList).toEqual([]);
+    // 단독 1만원권은 10% 유지(합산 행 5%가 침범하지 않음)
+    expect(d1).toMatchObject({ settleFee: 10, settlePriceAdjustment: IPriceAdjustment.DISCOUNT });
+    // 합산 행의 1만원권/2만원권 delivery 둘 다 5%
+    expect(d2).toMatchObject({ settleFee: 5, settlePriceAdjustment: IPriceAdjustment.DISCOUNT });
+    expect(d3).toMatchObject({ settleFee: 5, settlePriceAdjustment: IPriceAdjustment.DISCOUNT });
+    // DB update 도 행별로 각각 호출 (서로 다른 fee)
+    expect(service.orderDeliveryRepository.update).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ settleFee: 10 }));
+    expect(service.orderDeliveryRepository.update).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ settleFee: 5 }));
   });
 
   it('정상 SSG 가상 row는 mapping 전체 배송과 mapping 대표값을 같은 정산값으로 동기화한다', async () => {

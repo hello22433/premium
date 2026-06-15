@@ -42,6 +42,8 @@ import { SsgRecoveryService } from '../../delivery/application/ssg-recovery.serv
 import { SsgRecoveryResult } from '../../delivery/interface/ssg.recovery.result';
 import { SsgEventService } from '../../ssg_event/application/ssg.event.service';
 import { ProductService } from '../../product/application/product.service';
+import { OrderFromService } from '../../order_from/application/order.from.service';
+import { systemFromPhoneNumber } from '../../const';
 
 import { ExternalApiException } from '../api/external.api.exception.filter';
 import { translatePartnerError } from './partner.error.translator';
@@ -120,6 +122,7 @@ export class ExternalApiService {
     private orderConfirmationWalletService: OrderConfirmationWalletService,
     private walletManagedPredicate: WalletManagedPredicate,
     private refundPoolService: RefundPoolService,
+    private orderFromService: OrderFromService,
   ) {}
 
   // ─── 잔액 헬퍼 ──────────────────────────────────────────
@@ -560,6 +563,13 @@ export class ExternalApiService {
     const sendAmount = product.price;
     const { fee, priceAdjustment, settleAmount, cardSurchargeApplied } =
       await this.computeSettlement(account, product, sendAmount);
+
+    // 발신번호 SoT 검증(차감 전, flag gating). 차감은 아래 order 그래프 저장 후 wallet/legacy 분기에서 수행.
+    if (process.env.FROM_PHONE_SOT_ENFORCE === 'true') {
+      await this.orderFromService.assertApprovedPhones(user.id, [
+        { sendMethod: dto.deliveryMethod as IOrderSendMethod, fromPhoneNumber: dto.senderPhone ?? null },
+      ]);
+    }
 
     const newCode = CreateCode(prevOrder?.code ?? null, OrderPrefixCode, OrderDigitNumber);
 
@@ -1024,6 +1034,16 @@ export class ExternalApiService {
     const { fee, priceAdjustment, settleAmount, cardSurchargeApplied } =
       await this.computeSettlement(account, product, sendAmount);
 
+    // senderPhone 미지정 SSG 알림톡 → 자사 대표번호로 확정 (검증/저장 동일값)
+    const effectiveSenderPhone = dto.senderPhone ?? systemFromPhoneNumber;
+
+    // 발신번호 SoT 검증(차감 전, flag gating). 차감은 아래 order 그래프 저장 후 wallet/legacy 분기에서 수행.
+    if (process.env.FROM_PHONE_SOT_ENFORCE === 'true') {
+      await this.orderFromService.assertApprovedPhones(user.id, [
+        { sendMethod: IOrderSendMethod.ALIM_TALK, fromPhoneNumber: effectiveSenderPhone },
+      ]);
+    }
+
     const newCode = CreateCode(prevOrder?.code ?? null, OrderPrefixCode, OrderDigitNumber);
 
     const order = this.orderRepository.create({
@@ -1053,7 +1073,7 @@ export class ExternalApiService {
       amount: 1,
       sendContent: dto.message || '',
       sendTitle: product.name,
-      fromPhoneNumber: dto.senderPhone || null,
+      fromPhoneNumber: effectiveSenderPhone,
       sendMethod: IOrderSendMethod.ALIM_TALK,
       fee,
       priceAdjustment,
