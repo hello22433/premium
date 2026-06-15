@@ -74,22 +74,7 @@ export class SsgRefundResolverService {
       const state = await this.stateService.getState(input.orderDeliveryId);
 
       if (state === SsgInsertState.NONE || state === SsgInsertState.FAILED) {
-        try {
-          await this.ssgEventService.refundForDeliveryFail(
-            input.ssgEventId,
-            input.orderId,
-            input.refundAmount,
-            input.orderDeliveryId,
-            input.refundLedgerId,
-          );
-        } catch (e) {
-          this.logger.error(
-            `[SSG_REFUND] refundForDeliveryFail 실패 — DEFERRED. orderDeliveryId=${input.orderDeliveryId}, state=${state}, error: ${e instanceof Error ? e.message : e}`,
-          );
-          return SsgRefundOutcome.DEFERRED;
-        }
-        await this.refundLedgerService.markSsgSettled(input.orderDeliveryId, input.recoverToken);
-        return SsgRefundOutcome.RESTORED;
+        return this.restoreBalance(input, `state=${state}`);
       }
 
       if (state === SsgInsertState.CONFIRMED) {
@@ -112,22 +97,7 @@ export class SsgRefundResolverService {
       }
 
       if (orphanOutcome === SsgOrphanResolveOutcome.FAILED) {
-        try {
-          await this.ssgEventService.refundForDeliveryFail(
-            input.ssgEventId,
-            input.orderId,
-            input.refundAmount,
-            input.orderDeliveryId,
-            input.refundLedgerId,
-          );
-        } catch (e) {
-          this.logger.error(
-            `[SSG_REFUND] refundForDeliveryFail 실패 (orphan FAILED 이후) — DEFERRED. orderDeliveryId=${input.orderDeliveryId}, error: ${e instanceof Error ? e.message : e}`,
-          );
-          return SsgRefundOutcome.DEFERRED;
-        }
-        await this.refundLedgerService.markSsgSettled(input.orderDeliveryId, input.recoverToken);
-        return SsgRefundOutcome.RESTORED;
+        return this.restoreBalance(input, `orphan=${orphanOutcome}`);
       }
 
       // NETWORK_UNKNOWN / SKIPPED_NOT_ATTEMPTED / SKIPPED_NO_CANDIDATES
@@ -143,5 +113,28 @@ export class SsgRefundResolverService {
       );
       return SsgRefundOutcome.DEFERRED;
     }
+  }
+
+  /**
+   * refundForDeliveryFail 호출 + markSsgSettled. NONE/FAILED 상태와 orphan=FAILED 양쪽에서 공유.
+   * 실패 시 DEFERRED 반환.
+   */
+  private async restoreBalance(input: SsgRefundResolveInput, context: string): Promise<SsgRefundOutcome> {
+    try {
+      await this.ssgEventService.refundForDeliveryFail(
+        input.ssgEventId,
+        input.orderId,
+        input.refundAmount,
+        input.orderDeliveryId,
+        input.refundLedgerId,
+      );
+    } catch (e) {
+      this.logger.error(
+        `[SSG_REFUND] refundForDeliveryFail 실패 — DEFERRED. orderDeliveryId=${input.orderDeliveryId}, context=${context}, error: ${e instanceof Error ? e.message : e}`,
+      );
+      return SsgRefundOutcome.DEFERRED;
+    }
+    await this.refundLedgerService.markSsgSettled(input.orderDeliveryId, input.recoverToken);
+    return SsgRefundOutcome.RESTORED;
   }
 }

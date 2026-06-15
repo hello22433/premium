@@ -75,6 +75,7 @@ import { PaymentAllocationService } from '../../wallet/application/payment-alloc
 import {
   OrderConfirmationWalletService,
   PersistAllocationInput,
+  PersistAllocationResult,
 } from '../../wallet/application/order-confirmation-wallet.service';
 import { CreditExcessApprovalRequiredError } from '../../wallet/application/credit-excess-approval-required.error';
 import { WalletManagedPredicate } from '../../wallet/application/wallet-managed.predicate';
@@ -195,7 +196,7 @@ export class ExternalApiService {
       creditExcessApprovalId: null,
     };
 
-    let persistResult;
+    let persistResult: PersistAllocationResult;
     try {
       persistResult = await this.orderConfirmationWalletService.persistAllocation(
         persistInput,

@@ -101,10 +101,8 @@ export class RefundLedgerService {
     }
     const result = await qb.execute();
     if (!result.affected) {
-      this.logger.warn(
-        `markSsgSettled: 대상 row 없음 (skip). orderDeliveryId=${orderDeliveryId}` +
-          (recoverToken != null ? ` (token-fenced — lease 만료/탈취 가능성)` : ``),
-      );
+      const fenceNote = recoverToken != null ? ' (token-fenced — lease 만료/탈취 가능성)' : '';
+      this.logger.warn(`markSsgSettled: 대상 row 없음 (skip). orderDeliveryId=${orderDeliveryId}${fenceNote}`);
     }
   }
 

@@ -833,8 +833,10 @@ export class SsgEventService {
     //  - 명시 전달(lease 경유, 지연 가능): claim 시점 id 사용 → 재조회로 인한 cross-cycle 멱등키 오염 차단.
     //    (지연된 이전 cycle 이 release+재INSERT 된 새 ledger 의 키를 소비해 새 cycle 복구를 막는 race 방지.)
     //  - 미전달(동기 호출: claim→resolve 원자, 지연 없음): 현재 row 재조회 (race 없음).
-    let ledgerId = refundLedgerId;
-    if (ledgerId == null) {
+    let ledgerId: number;
+    if (refundLedgerId != null) {
+      ledgerId = refundLedgerId;
+    } else {
       const ledger = await this.refundLedgerRepository.findOne({
         where: { orderDeliveryId },
         select: ['id'],

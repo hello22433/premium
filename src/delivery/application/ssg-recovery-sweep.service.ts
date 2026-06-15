@@ -71,6 +71,7 @@ export class SsgRecoverySweepService {
         } else if (result === SsgRecoveryResult.DEFERRED) {
           deferred++;
         } else {
+          // SKIPPED_NO_CLAIM: 다른 actor 가 lease 보유 중 — 다음 주기에 재시도됨.
           skipped++;
         }
       } catch (e) {
