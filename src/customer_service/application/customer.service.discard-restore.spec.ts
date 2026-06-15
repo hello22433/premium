@@ -43,6 +43,7 @@ describe('CustomerServiceService.restoreBalanceOnDiscard — refunded-proxy read
       exists: jest.fn().mockResolvedValue(existsResult),
       claimWithManager: claimImpl ?? jest.fn().mockResolvedValue(undefined),
     };
+    sut.walletManagedPredicate = { isWalletManaged: jest.fn().mockResolvedValue(false) };
     return sut;
   };
 
@@ -129,5 +130,51 @@ describe('CustomerServiceService.restoreBalanceOnDiscard — refunded-proxy read
       }),
       queryRunner.manager,
     );
+  });
+
+  it('wallet 정산완료 폐기 환불은 만료 포인트 제외 후 실제 wallet 복구액으로 고객사 ledger를 기록한다', async () => {
+    const claim = jest.fn().mockResolvedValue(undefined);
+    const sut: any = makeSut(false, claim);
+    const latestAttempt = { id: '44', attemptType: OrderDeliveryAttemptType.RESEND };
+    const user = { id: 5, email: 'buyer@test.local', balance: 7000, company: null };
+    const builder: any = {
+      update: jest.fn(() => builder),
+      set: jest.fn(() => builder),
+      where: jest.fn(() => builder),
+      setParameters: jest.fn(() => builder),
+      execute: jest.fn().mockResolvedValue({ affected: 1 }),
+    };
+    const queryRunner = {
+      manager: {
+        findOne: jest.fn(async (_target: any, opts: any) => {
+          if (opts?.where?.orderDeliveryId === 5001) return latestAttempt;
+          return user;
+        }),
+        createQueryBuilder: jest.fn(() => builder),
+        save: jest.fn().mockResolvedValue(undefined),
+      },
+    } as any;
+    sut.activityLogService = { createLog: jest.fn().mockResolvedValue(undefined) };
+    sut.cryptoCipher = { safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01012345678') };
+    sut.walletManagedPredicate = { isWalletManaged: jest.fn().mockResolvedValue(true) };
+    sut.refundPoolService = {
+      refundSettledDiscardToDeposit: jest.fn().mockResolvedValue({ ledgerIds: ['1'], totalRefundedAmount: 7000 }),
+    };
+
+    const orderDelivery = buildOrderDelivery(IOrderDeliveryStatus.COMPLETE);
+    orderDelivery.orderProductMapping.order.isSettleComplete = true;
+
+    await sut.restoreBalanceOnDiscard(orderDelivery, operator, queryRunner, 'operator');
+
+    expect(claim).toHaveBeenCalledWith(
+      queryRunner.manager,
+      expect.objectContaining({
+        orderDeliveryId: 5001,
+        refundAmount: 7000,
+        isSettleComplete: true,
+        sourcePath: 'CS_DISCARD',
+      }),
+    );
+    expect(builder.setParameters).toHaveBeenCalledWith({ amount: 7000 });
   });
 });

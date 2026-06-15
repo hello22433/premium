@@ -95,7 +95,7 @@ export class RefundPoolService {
       .getMany();
     if (existingForPrefix.length > 0) {
       const totalRefundedAmount = existingForPrefix.reduce(
-        (s, e) => s + e.refundedGrossBase + e.refundedCardSurchargeAmount,
+        (s, e) => s + e.refundedDepositAmount,
         0,
       );
       return { ledgerIds: existingForPrefix.map((e) => e.id), totalRefundedAmount };
@@ -138,7 +138,7 @@ export class RefundPoolService {
       .getMany();
     if (existingAfterLock.length > 0) {
       const totalRefundedAmount = existingAfterLock.reduce(
-        (s, e) => s + e.refundedGrossBase + e.refundedCardSurchargeAmount,
+        (s, e) => s + e.refundedDepositAmount,
         0,
       );
       return { ledgerIds: existingAfterLock.map((e) => e.id), totalRefundedAmount };
@@ -153,21 +153,46 @@ export class RefundPoolService {
       }
     }
 
-    walletLock.depositBalance += input.refundAmount;
-    await manager.save(WalletAccountEntity, walletLock);
-    await manager.save(WalletTransactionEntity, {
-      walletAccountId: alloc.walletAccountId,
-      orderId: input.orderId,
-      orderDeliveryId: input.orderDeliveryId,
-      type: 'DISCARD_REFUND',
-      resourceType: WalletResourceType.DEPOSIT,
-      amount: input.refundAmount,
-      balanceAfter: walletLock.depositBalance,
-      memo: 'settled discard refund to deposit',
-      idempotencyKey: `${ledgerKey}:wallet`,
-    });
+    const expiredPointSkipped = await this.skipExpiredPointsForSettledDiscard(input, alloc, manager);
+    const depositRefundAmount = input.refundAmount - expiredPointSkipped;
+    if (depositRefundAmount < 0) {
+      throw new BadRequestException(
+        `settled discard refund invariant violation: expiredPointSkipped=${expiredPointSkipped} > refundAmount=${input.refundAmount}`,
+      );
+    }
 
-    alloc.depositRestoredAmount += input.refundAmount;
+    if (depositRefundAmount > 0) {
+      walletLock.depositBalance += depositRefundAmount;
+      await manager.save(WalletAccountEntity, walletLock);
+      await manager.save(WalletTransactionEntity, {
+        walletAccountId: alloc.walletAccountId,
+        orderId: input.orderId,
+        orderDeliveryId: input.orderDeliveryId,
+        type: 'DISCARD_REFUND',
+        resourceType: WalletResourceType.DEPOSIT,
+        amount: depositRefundAmount,
+        balanceAfter: walletLock.depositBalance,
+        memo: 'settled discard refund to deposit',
+        idempotencyKey: `${ledgerKey}:wallet`,
+      });
+    }
+
+    if (expiredPointSkipped > 0) {
+      await manager.save(WalletTransactionEntity, {
+        walletAccountId: alloc.walletAccountId,
+        orderId: input.orderId,
+        orderDeliveryId: input.orderDeliveryId,
+        type: 'RESTORE_SKIPPED_EXPIRED',
+        resourceType: WalletResourceType.POINT,
+        amount: 0,
+        balanceAfter: null,
+        memo: `expired_point_skipped=${expiredPointSkipped}`,
+        idempotencyKey: `${ledgerKey}:point_skipped_expired`,
+      });
+    }
+
+    alloc.depositRestoredAmount += depositRefundAmount;
+    alloc.pointSkippedExpiredAmount += expiredPointSkipped;
     await manager.save(OrderPaymentAllocationEntity, alloc);
 
     const ledger = await manager.save(OrderPaymentRefundEventEntity, {
@@ -176,19 +201,47 @@ export class RefundPoolService {
       eventType: OrderPaymentRefundEventType.DISCARD_REFUND,
       affectedDeliveryIds: [input.orderDeliveryId],
       refundedGrossBase: input.refundAmount,
-      refundedPayableBase: input.refundAmount,
+      refundedPayableBase: depositRefundAmount,
       refundedCardSurchargeAmount: 0,
       refundedPointAmount: 0,
-      refundedDepositAmount: input.refundAmount,
+      refundedDepositAmount: depositRefundAmount,
       refundedCreditUsedAmount: 0,
       refundedCreditExcessAmount: 0,
-      pointSkippedExpiredAmount: 0,
+      pointSkippedExpiredAmount: expiredPointSkipped,
       idempotencyKey: ledgerKey,
       reversedAt: null,
       reversedByWalletTransactionId: null,
     });
 
-    return { ledgerIds: [ledger.id], totalRefundedAmount: input.refundAmount };
+    return { ledgerIds: [ledger.id], totalRefundedAmount: depositRefundAmount };
+  }
+
+  private async skipExpiredPointsForSettledDiscard(
+    input: SettledDiscardRefundInput,
+    alloc: OrderPaymentAllocationEntity,
+    manager: EntityManager,
+  ): Promise<number> {
+    const usages = await manager.find(OrderPointUsageEntity, {
+      where: {
+        allocationId: alloc.id,
+        orderDeliveryId: input.orderDeliveryId,
+      },
+      order: { id: 'ASC' },
+    });
+    let skipped = 0;
+    for (const usage of usages) {
+      if (skipped >= input.refundAmount) break;
+      const grant = await manager.findOne(PointGrantEntity, { where: { id: usage.pointGrantId } });
+      const expired = grant?.expiresAt != null && grant.expiresAt < new Date();
+      if (!expired) continue;
+      const usageRemaining = usage.usedAmount - usage.restoredAmount - usage.skippedExpiredAmount;
+      const portion = Math.min(input.refundAmount - skipped, usageRemaining);
+      if (portion <= 0) continue;
+      usage.skippedExpiredAmount += portion;
+      await manager.save(OrderPointUsageEntity, usage);
+      skipped += portion;
+    }
+    return skipped;
   }
 
   private async runRefund(input: RefundEventInput, manager: EntityManager): Promise<RefundEventResult> {

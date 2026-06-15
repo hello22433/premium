@@ -149,7 +149,7 @@ export class CustomerServiceService {
       return;
     }
 
-    const restoreAmount = calculateSettlementPrice(mapping, order.cardSurchargeApplied, orderDelivery);
+    let restoreAmount = calculateSettlementPrice(mapping, order.cardSurchargeApplied, orderDelivery);
 
     const billingUserId = order.clientUserId ?? order.userId;
     const user = await queryRunner.manager.findOne(UserEntity, {
@@ -168,6 +168,35 @@ export class CustomerServiceService {
       restoreType = 'COMPANY_BALANCE';
     } else {
       restoreType = 'BALANCE';
+    }
+
+    const isWalletManaged = await this.walletManagedPredicate.isWalletManaged(order.id, queryRunner.manager);
+    let latestAttempt: OrderDeliveryAttemptEntity | null = null;
+    if (isWalletManaged && order.isSettleComplete) {
+      latestAttempt = await queryRunner.manager.findOne(OrderDeliveryAttemptEntity, {
+        where: { orderDeliveryId: orderDelivery.id },
+        order: { id: 'DESC' },
+      });
+      if (!latestAttempt) {
+        throw new Error(
+          `wallet-managed delivery ${orderDelivery.id} missing delivery attempt — drift, aborting discard refund`,
+        );
+      }
+      const walletRefund = await this.refundPoolService.refundSettledDiscardToDeposit(
+        {
+          orderId: order.id,
+          orderDeliveryId: orderDelivery.id,
+          refundAmount: restoreAmount,
+          idempotencyKeyPrefix: buildDiscardRefundKey(
+            order.id,
+            orderDelivery.id,
+            WalletResourceType.DEPOSIT,
+            Number(latestAttempt.id),
+          ),
+        },
+        queryRunner.manager,
+      );
+      restoreAmount = walletRefund.totalRefundedAmount;
     }
 
     await this.refundLedgerService.claimWithManager(queryRunner.manager, {
@@ -274,32 +303,20 @@ export class CustomerServiceService {
     // Wallet Cutover Bundle PR4 — wallet-managed 주문이면 wallet_account + wallet ledger 갱신.
     // legacy 잔액 mirror (위 balance/allSettleAmount UPDATE) 는 그대로 유지 → wallet/legacy 합계 일관.
     // 멱등키 = discard_refund:{orderId}:{deliveryId}:{attemptId} — attempt cycle 별 멱등.
-    const isWalletManaged = await this.walletManagedPredicate.isWalletManaged(order.id, queryRunner.manager);
     if (isWalletManaged) {
-      const latestAttempt = await queryRunner.manager.findOne(OrderDeliveryAttemptEntity, {
-        where: { orderDeliveryId: orderDelivery.id },
-        order: { id: 'DESC' },
-      });
+      latestAttempt =
+        latestAttempt ??
+        (await queryRunner.manager.findOne(OrderDeliveryAttemptEntity, {
+          where: { orderDeliveryId: orderDelivery.id },
+          order: { id: 'DESC' },
+        }));
       if (!latestAttempt) {
         throw new Error(
           `wallet-managed delivery ${orderDelivery.id} missing delivery attempt — drift, aborting discard refund`,
         );
       }
       if (order.isSettleComplete) {
-        await this.refundPoolService.refundSettledDiscardToDeposit(
-          {
-            orderId: order.id,
-            orderDeliveryId: orderDelivery.id,
-            refundAmount: restoreAmount,
-            idempotencyKeyPrefix: buildDiscardRefundKey(
-              order.id,
-              orderDelivery.id,
-              WalletResourceType.DEPOSIT,
-              Number(latestAttempt.id),
-            ),
-          },
-          queryRunner.manager,
-        );
+        return;
       } else {
         await this.refundPoolService.refund(
           {
