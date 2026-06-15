@@ -381,7 +381,11 @@ export class OrderRealProductService {
       const quantity = realProduct.quantity;
       const price = realProduct.price ?? 0; // 각 상품별 공급가액 (단가)
 
-      if (!price || price <= 0) {
+      if (!Number.isInteger(quantity) || quantity < 1) {
+        throw new BadRequestException('수량은 1개 이상이어야 합니다.');
+      }
+
+      if (!Number.isInteger(price) || price < 1) {
         throw new BadRequestException('공급가액을 입력해주세요.');
       }
 
@@ -679,6 +683,9 @@ export class OrderRealProductService {
         if (!mapping) continue;
 
         if (real.price != null) {
+          if (!Number.isInteger(real.price) || real.price < 1) {
+            throw new BadRequestException('공급가액은 1원 이상이어야 합니다.');
+          }
           mapping.price = real.price;
           mapping.totalPrice = calculateRealProductVatIncludedTotal(real.price, mapping.quantity);
         }
