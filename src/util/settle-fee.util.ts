@@ -3,6 +3,7 @@ import { OrderEntity } from '../entity/order.entity';
 import { OrderProductMappingEntity } from '../entity/order.product.mapping.entity';
 import { OrderFeeCalculator, applyCardSurcharge } from '../order/domain/order.fee.calculator';
 import { IPriceAdjustment } from '../user_discount/interface/price.adjustment';
+import { readLineProductView } from '../order/util/order.snapshot.builder';
 
 /**
  * delivery.settleFee ?? mapping.fee 폴백 규칙 중앙화
@@ -32,7 +33,7 @@ export function calculateSettlementPrice(
   cardSurchargeApplied: boolean,
   delivery?: OrderDeliveryEntity,
 ): number {
-  let price = mapping.product.price;
+  let price = readLineProductView(mapping).price;
   const fee = getEffectiveFee(delivery, mapping);
   const priceAdjustment = getEffectivePriceAdjustment(delivery, mapping);
   if (fee !== null && priceAdjustment) {

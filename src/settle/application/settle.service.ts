@@ -1630,16 +1630,14 @@ export class SettleService {
           }
         }
 
-        const product = orderProductMapping.product
-          ? {
-            id: orderProductMapping.product.id,
-            code: orderProductMapping.product.code,
-            brandName: lineView.brandName,
-            name: lineView.name,
-            price: adjustedPrice, // 할인/할증 적용된 단가
-            amount: orderProductMapping.amount,
-          }
-          : null;
+        const product = {
+          id: orderProductMapping.product?.id ?? orderProductMapping.productId,
+          code: orderProductMapping.product?.code ?? null,
+          brandName: lineView.brandName,
+          name: lineView.name,
+          price: adjustedPrice, // 할인/할증 적용된 단가
+          amount: orderProductMapping.amount,
+        };
         productList.push({
           id: orderProductMapping.id,
           product: product,
