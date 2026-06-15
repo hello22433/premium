@@ -918,7 +918,11 @@ export class OrderService {
           encourageDay: orderProductMapping.encourageDay,
           galaxiaDuration: orderProductMapping.galaxiaDuration,
           failCount: failCount,
-          ...buildPriceDivergence(orderProductMapping),
+          // 자사 운영자(SUPER_ADMIN/OPERATION_ADMIN)에게만 가격 divergence 노출.
+          // 고객사(CORPORATE_ADMIN) 또는 미인증 경로에서는 필드 자체를 omit.
+          ...(user.authority === IUserAuthority.SUPER_ADMIN || user.authority === IUserAuthority.OPERATION_ADMIN
+            ? buildPriceDivergence(orderProductMapping)
+            : {}),
         });
       }
     }
@@ -1247,7 +1251,6 @@ export class OrderService {
           encourageDay: orderProductMapping.encourageDay,
           galaxiaDuration: orderProductMapping.galaxiaDuration,
           failCount: 0, // 이벤트 불러오기 시 발송 정보가 없으므로 0
-          ...buildPriceDivergence(orderProductMapping),
         });
       }
     }
