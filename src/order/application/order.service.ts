@@ -107,6 +107,7 @@ import {
   readOperationPersonName,
   readUserView,
 } from '../util/order.snapshot.builder';
+import { assertLineIdsValid, OwnedLine, resolveLineSnapshot } from './order.snapshot.update.helper';
 import { UserViewScopeEntity, ViewScopeType } from '../../entity/user.view.scope.entity';
 import { IUserAuthority } from '../../user/interface/user.authority';
 import { IUserSettleCondition } from '../../user/interface/user.settle.condition';
@@ -3099,6 +3100,7 @@ export class OrderService {
       where: {
         id: In(uniqueProductIds),
       },
+      relations: ['brand'],
     });
 
     if (uniqueProductIds.length !== getProductList.length) {
@@ -3134,6 +3136,19 @@ export class OrderService {
         orderId: orderId,
       },
     });
+    const ownedMap = new Map<number, OwnedLine>(
+      deleteOrderProductMappingList.map((m) => [m.id, {
+        productId: m.productId,
+        snapshot: {
+          snapshotProductPrice: m.snapshotProductPrice,
+          snapshotProductName: m.snapshotProductName,
+          snapshotProductBrandName: m.snapshotProductBrandName,
+          snapshotProductExpireDay: m.snapshotProductExpireDay,
+          snapshotProductImagePath: m.snapshotProductImagePath,
+        },
+      }]),
+    );
+    assertLineIdsValid(orderProductList, ownedMap);
     const deleteOrderProductIdList = deleteOrderProductMappingList.map((orderProduct) => orderProduct.id);
     await this.orderProductMappingRepository.delete({ id: In(deleteOrderProductIdList) });
     await this.orderDeliveryRepository.delete({ orderProductMappingId: In(deleteOrderProductIdList) });
@@ -3178,6 +3193,9 @@ export class OrderService {
       orderProduct.sendRequestAt = productSendAt;
       orderProduct.sendType = product.sendType;
       orderProduct.encourageDay = product.encourageDay ?? null;
+
+      const liveProduct = productPriceMap.get(product.productId)!;
+      Object.assign(orderProduct, resolveLineSnapshot(product, ownedMap, liveProduct));
 
       await this.orderProductMappingRepository.save(orderProduct);
 
