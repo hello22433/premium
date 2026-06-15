@@ -57,6 +57,8 @@ import { UserTaskHistoryEntity } from 'src/entity/user.task.history.entity';
 import { OrderDeliveryRefundStatusEnum } from '../../delivery/interface/order.delivery.refund.status.enum';
 import { IOrderSendMethod } from '../../order/interface/order.send.method';
 import { IOrderType } from '../../order/interface/order.type';
+import { SsgEventEntity } from '../../entity/ssg.event.entity';
+import { SsgRefundOutcome } from '../../delivery/interface/ssg.refund.resolve';
 import { resolveExpireDays } from '../../common/utils/expire.util';
 import { addDays, subDays } from 'date-fns';
 import { ActivityLogService } from 'src/activity_log/application/activity.log.service';
@@ -979,6 +981,25 @@ export class CustomerServiceService {
   }
 
   /**
+   * 폐기 역전 (폐기 후 신규 발송 롤백용). CAS: 아직 CANCEL 일 때만 originalStatus 로 되돌리고 discardedAt 해제.
+   * SSG 폐기는 외부 cancel 을 호출하지 않으므로(SsgDB 미터치) 상태 플립만으로 안전하게 원복된다.
+   */
+  private async reverseDiscard(
+    orderDeliveryId: number,
+    originalStatus: OrderDeliveryCouponStatus,
+  ): Promise<void> {
+    await this.orderDeliveryRepository
+      .createQueryBuilder()
+      .update(OrderDeliveryEntity)
+      .set({ couponStatus: originalStatus, discardedAt: null })
+      .where('id = :id AND coupon_status = :cancel', {
+        id: orderDeliveryId,
+        cancel: OrderDeliveryCouponStatus.CANCEL,
+      })
+      .execute();
+  }
+
+  /**
    * 핀폐기 API (직접 호출용) — 폐기 실행 + history 기록
    * 환불 실패 시 폐기 사실은 이미 저장된 상태로 명시적 에러 메시지를 반환한다.
    */
@@ -1502,14 +1523,48 @@ export class CustomerServiceService {
           }
         }
 
-        // 잔액 복구 스킵 — 핀 교체이므로 잔액 변동 없음
-        const { orderDelivery: discardedDelivery } = await this.execDiscard(
-          map.user,
-          map.orderDeliveryId,
-          OrderDeliveryCouponStatus.CANCEL,
-          undefined,
-          { skipBalanceRestore: true },
-        );
+        const isSsg = orderDelivery.orderProductMapping.order.type === IOrderType.SSG;
+        const reissuePrice = orderDelivery.orderProductMapping.product.price;
+        const reissueExpireDay = orderDelivery.orderProductMapping.product.expireDay;
+        const reissueOrderId = orderDelivery.orderProductMapping.order.id;
+
+        // SSG: 폐기 전에 발급가능 행사 확보(fail-fast). 없으면 폐기조차 안 함.
+        let reissueEvent: SsgEventEntity | null = null;
+        let resendDeductionId: string | null = null;
+        if (isSsg) {
+          const acquired = await this.deliveryBatchService.selectAndDeductSsgEventForReissue(
+            reissueOrderId,
+            reissuePrice,
+            reissueExpireDay,
+          );
+          if (!acquired) {
+            throw new BadRequestException('발급 가능한 행사가 없습니다. (행사 잔액 부족)');
+          }
+          reissueEvent = acquired.event;
+          resendDeductionId = acquired.resendDeductionId;
+        }
+
+        // 폐기 — 잔액 복구 스킵(핀 교체, SSG는 forfeit)
+        let discardedDelivery: OrderDeliveryEntity;
+        let discardBefore: OrderDeliveryCouponStatus;
+        try {
+          const discardResult = await this.execDiscard(
+            map.user,
+            map.orderDeliveryId,
+            OrderDeliveryCouponStatus.CANCEL,
+            undefined,
+            { skipBalanceRestore: true },
+          );
+          discardedDelivery = discardResult.orderDelivery;
+          discardBefore = discardResult.beforeChange as OrderDeliveryCouponStatus;
+        } catch (e) {
+          if (isSsg && reissueEvent && resendDeductionId) {
+            await this.deliveryBatchService.reverseSsgReissueDeduct(
+              orderDelivery, reissueEvent.id, reissuePrice, reissueOrderId, resendDeductionId,
+            );
+          }
+          throw e;
+        }
 
         const decryptedOldTarget = this.cryptoCipher.safeDecryptDeliveryTarget(discardedDelivery.deliveryTarget);
         const oldPin = discardedDelivery.barCode || '';
@@ -1538,7 +1593,10 @@ export class CustomerServiceService {
         if (discardedDelivery.emailReceiverPhone) {
           newDelivery.emailReceiverPhone = discardedDelivery.emailReceiverPhone;
         }
-        if (discardedDelivery.ssgEventId) {
+        // SSG: 새로 확보한 행사로 발급(동일 행사일 수도, 다른 행사일 수도). 비SSG: 기존 값 승계.
+        if (isSsg && reissueEvent) {
+          newDelivery.ssgEventId = reissueEvent.id;
+        } else if (discardedDelivery.ssgEventId) {
           newDelivery.ssgEventId = discardedDelivery.ssgEventId;
         }
         if (discardedDelivery.choiceSelectProductId) {
@@ -1567,12 +1625,31 @@ export class CustomerServiceService {
         }
 
         const ssgEvent = fullDelivery.ssgEvent ?? null;
-        await this.partnerCompanyExternService.issue(fullDelivery, ssgEvent);
 
-        // 폐기 후 신규발송: 새 쿠폰이므로 유효기간 새로 계산
-        // (SSG는 issue() 내부에서 expireAt을 채우므로 제외)
-        // csResendAs* 는 "동일 쿠폰 재전송"용이라 expireAt을 건드리지 않으므로
-        // 본문/DB 일치를 위해 csResend 호출 전에 여기서 세팅한다.
+        // PIN 발급 — 실패 시 SSG 선차감 역복원 + (미등록 확정이면) 폐기 역전·새 delivery 제거
+        try {
+          await this.partnerCompanyExternService.issue(fullDelivery, ssgEvent);
+        } catch (issueError) {
+          if (isSsg && reissueEvent && resendDeductionId) {
+            const outcome = await this.deliveryBatchService.reverseSsgReissueDeduct(
+              fullDelivery, reissueEvent.id, reissuePrice, reissueOrderId, resendDeductionId,
+            );
+            if (outcome === SsgRefundOutcome.RESTORED) {
+              await this.orderDeliveryRepository.softDelete(savedDelivery.id);
+              await this.reverseDiscard(discardedDelivery.id, discardBefore);
+              throw new InternalServerErrorException('신규 발송에 실패하여 폐기를 취소했습니다. 다시 시도해 주세요.');
+            }
+            this.logger.error(
+              `[폐기후신규발송] issue 실패하나 SSG 등록 불명/확정(outcome=${outcome}) — 폐기 유지. orderDeliveryId=${savedDelivery.id}`,
+            );
+            throw new InternalServerErrorException(
+              '신규 발송 처리 중 오류가 발생했습니다. 발송실패내역에서 상태를 확인해 주세요.',
+            );
+          }
+          throw issueError;
+        }
+
+        // 폐기 후 신규발송: 새 쿠폰이므로 유효기간 새로 계산 (SSG는 issue() 내부에서 expireAt 채움 → 제외)
         if (fullDelivery.orderProductMapping.order.type !== IOrderType.SSG) {
           const opm = fullDelivery.orderProductMapping;
           const expireDays = resolveExpireDays(
