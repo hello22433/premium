@@ -2138,7 +2138,7 @@ export class OrderService {
         for (const { orderProduct } of phoneItems) {
           const existing = productBreakdown.get(orderProduct.id);
           if (existing) existing.count++;
-          else productBreakdown.set(orderProduct.id, { name: orderProduct.product.name, count: 1 });
+          else productBreakdown.set(orderProduct.id, { name: readLineProductView(orderProduct).name, count: 1 });
         }
         const sortedProducts = [...productBreakdown.entries()].sort(([a], [b]) => a - b);
         const sig = sortedProducts.map(([id, { count }]) => `${id}:${count}`).join('|');
@@ -2210,7 +2210,7 @@ export class OrderService {
 
           mergedGroups.set(groupKey, {
             name: mergedName,
-            brandName: phoneItems[0].orderProduct.product.brand?.nameKorean ?? null,
+            brandName: readLineProductView(phoneItems[0].orderProduct).brandName,
             combinedPrice: totalAmount,
             discountCombinedPrice,
             fee,
@@ -3027,10 +3027,12 @@ export class OrderService {
     assertLineIdsValid(orderProductList, ownedMap);
 
     // 전송 정산 가격 적용
+    // 승계 라인은 기존 snapshot 가격을 사용하여 헤더 금액과 라인 금액이 일치하도록 함
     let sendAmount = 0;
     for (const orderProduct of orderProductList) {
       const getProduct = productPriceMap.get(orderProduct.productId)!;
-      sendAmount += getProduct.price * orderProduct.amount;
+      const resolvedPrice = resolveLineSnapshot(orderProduct, ownedMap, getProduct).snapshotProductPrice ?? getProduct.price;
+      sendAmount += resolvedPrice * orderProduct.amount;
     }
 
     order.eventName = eventName;
