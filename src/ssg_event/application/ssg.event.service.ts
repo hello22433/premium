@@ -21,6 +21,8 @@ import { SsgEventViewDto } from '../api/dto/ssg.event.view.dto';
 import { DateDateFormatStr, DateFormatStr } from '../../common/domain/date.format.str';
 import { format } from 'date-fns';
 import { SsgEventAmountHistoryEntity } from '../../entity/ssg.event.amount.history.entity';
+import { SsgEventRecoveryLogEntity } from '../../entity/ssg.event.recovery.log.entity';
+import { OrderDeliveryRefundEntity } from '../../entity/order.delivery.refund.entity';
 import { OrderProductMappingEntity } from '../../entity/order.product.mapping.entity';
 import { IOrderType } from '../../order/interface/order.type';
 import * as ExcelJS from 'exceljs';
@@ -43,6 +45,10 @@ export class SsgEventService {
     private readonly orderProductMappingRepository: Repository<OrderProductMappingEntity>,
     @InjectRepository(SsgReservationRangeEntity)
     private readonly reservationRangeRepository: Repository<SsgReservationRangeEntity>,
+    @InjectRepository(SsgEventRecoveryLogEntity)
+    private readonly recoveryLogRepository: Repository<SsgEventRecoveryLogEntity>,
+    @InjectRepository(OrderDeliveryRefundEntity)
+    private readonly refundLedgerRepository: Repository<OrderDeliveryRefundEntity>,
     private readonly activityLogService: ActivityLogService,
     @Inject('ISsgIssue')
     private readonly ssgIssue: ISsgIssue,
@@ -792,17 +798,73 @@ export class SsgEventService {
   }
 
   /**
-   * 개별 배송건 PIN 발급 실패 시 해당 금액만 환불
+   * 개별 배송건 PIN 발급 실패 시 해당 금액만 환불 (멱등).
+   *
+   * 멱등 보장: 환불 ledger row id(refund_ledger_id) 를 키로 ssg_event_recovery_log 에 INSERT.
+   * UNIQUE 제약(uk_ssg_event_recovery_ledger) 으로 동일 ledger 의 두 번째 복구를 차단한다.
+   * - ssgEvent 없음 → throw (silent return 금지). rollback 으로 멱등키 미소비 → 재시도 가능.
+   * - ledger row 없음 → throw. claim 없이 호출된 비정상 흐름.
+   * - INSERT ER_DUP_ENTRY → 이미 복구됨. 잔액 미변경 return (멱등).
+   *
    * @param ssgEventId SSG 이벤트 ID
    * @param orderId 주문 ID
    * @param amount 환불할 금액 (상품 가격)
+   * @param orderDeliveryId 환불 ledger 조회용 발송건 ID (멱등키 도출, fallback)
+   * @param refundLedgerId 멱등키로 쓸 환불 ledger row id. lease 경유(지연 가능) 호출은
+   *   claim 시점에 token-fenced 로 읽은 id 를 **명시 전달**해야 한다. 미전달 시 orderDeliveryId 로 현재 row 재조회.
    */
   @Transactional()
-  async refundForDeliveryFail(ssgEventId: number, orderId: number, amount: number): Promise<void> {
+  async refundForDeliveryFail(
+    ssgEventId: number,
+    orderId: number,
+    amount: number,
+    orderDeliveryId: number,
+    refundLedgerId?: number,
+  ): Promise<void> {
     const ssgEvent = await this.findSsgEventForUpdate(ssgEventId);
 
     if (!ssgEvent) {
-      return;
+      throw new InternalServerErrorException(
+        `SSG 이벤트를 찾을 수 없어 행사 잔액 복구 실패 (ssgEventId: ${ssgEventId}, orderDeliveryId: ${orderDeliveryId})`,
+      );
+    }
+
+    // 멱등키 = 환불 ledger row id.
+    //  - 명시 전달(lease 경유, 지연 가능): claim 시점 id 사용 → 재조회로 인한 cross-cycle 멱등키 오염 차단.
+    //    (지연된 이전 cycle 이 release+재INSERT 된 새 ledger 의 키를 소비해 새 cycle 복구를 막는 race 방지.)
+    //  - 미전달(동기 호출: claim→resolve 원자, 지연 없음): 현재 row 재조회 (race 없음).
+    let ledgerId = refundLedgerId;
+    if (ledgerId == null) {
+      const ledger = await this.refundLedgerRepository.findOne({
+        where: { orderDeliveryId },
+        select: ['id'],
+      });
+      if (!ledger) {
+        throw new InternalServerErrorException(
+          `환불 ledger 가 없어 행사 잔액 복구 멱등키를 만들 수 없음 (orderDeliveryId: ${orderDeliveryId})`,
+        );
+      }
+      ledgerId = ledger.id;
+    }
+
+    try {
+      await this.recoveryLogRepository
+        .createQueryBuilder()
+        .insert()
+        .into(SsgEventRecoveryLogEntity)
+        .values({
+          refundLedgerId: ledgerId,
+          ssgEventId: ssgEvent.id,
+          orderId,
+          amount,
+        })
+        .execute();
+    } catch (e: any) {
+      if (e?.code === 'ER_DUP_ENTRY' || e?.errno === 1062) {
+        // 이미 복구됨 — 잔액 미변경 (멱등).
+        return;
+      }
+      throw e;
     }
 
     const restoredBalance = ssgEvent.eventBalance + amount;

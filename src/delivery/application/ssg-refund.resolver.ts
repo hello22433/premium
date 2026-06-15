@@ -32,6 +32,16 @@ export interface SsgRefundResolveInput {
   ssgEventId: number;
   refundAmount: number;
   orderId: number;
+  /**
+   * 멱등키로 쓸 환불 ledger row id. lease 경유(지연 가능) 호출이 claim 시점의 token-fenced id 를 전달.
+   * 미전달 시 refundForDeliveryFail 이 orderDeliveryId 로 현재 row 재조회(동기 호출, race 없음).
+   */
+  refundLedgerId?: number;
+  /**
+   * lease token. 전달 시 markSsgSettled 를 token-fenced(본인 소유 lease 한정) 로 수행한다.
+   * lease 가 만료/탈취된 stale holder 가 settled 를 마킹하는 것을 차단. 미전달 시 unconditional(동기 호출).
+   */
+  recoverToken?: string;
 }
 
 @Injectable()
@@ -65,14 +75,20 @@ export class SsgRefundResolverService {
 
       if (state === SsgInsertState.NONE || state === SsgInsertState.FAILED) {
         try {
-          await this.ssgEventService.refundForDeliveryFail(input.ssgEventId, input.orderId, input.refundAmount);
+          await this.ssgEventService.refundForDeliveryFail(
+            input.ssgEventId,
+            input.orderId,
+            input.refundAmount,
+            input.orderDeliveryId,
+            input.refundLedgerId,
+          );
         } catch (e) {
           this.logger.error(
             `[SSG_REFUND] refundForDeliveryFail 실패 — DEFERRED. orderDeliveryId=${input.orderDeliveryId}, state=${state}, error: ${e instanceof Error ? e.message : e}`,
           );
           return SsgRefundOutcome.DEFERRED;
         }
-        await this.refundLedgerService.markSsgSettled(input.orderDeliveryId);
+        await this.refundLedgerService.markSsgSettled(input.orderDeliveryId, input.recoverToken);
         return SsgRefundOutcome.RESTORED;
       }
 
@@ -80,7 +96,7 @@ export class SsgRefundResolverService {
         this.logger.log(
           `[SSG_REFUND] state=CONFIRMED → 행사 잔액 복구 skip. orderDeliveryId=${input.orderDeliveryId}`,
         );
-        await this.refundLedgerService.markSsgSettled(input.orderDeliveryId);
+        await this.refundLedgerService.markSsgSettled(input.orderDeliveryId, input.recoverToken);
         return SsgRefundOutcome.SKIPPED_CONFIRMED;
       }
 
@@ -91,20 +107,26 @@ export class SsgRefundResolverService {
         this.logger.log(
           `[SSG_REFUND] orphan resolver CONFIRMED → 행사 잔액 복구 skip. orderDeliveryId=${input.orderDeliveryId}`,
         );
-        await this.refundLedgerService.markSsgSettled(input.orderDeliveryId);
+        await this.refundLedgerService.markSsgSettled(input.orderDeliveryId, input.recoverToken);
         return SsgRefundOutcome.SKIPPED_CONFIRMED;
       }
 
       if (orphanOutcome === SsgOrphanResolveOutcome.FAILED) {
         try {
-          await this.ssgEventService.refundForDeliveryFail(input.ssgEventId, input.orderId, input.refundAmount);
+          await this.ssgEventService.refundForDeliveryFail(
+            input.ssgEventId,
+            input.orderId,
+            input.refundAmount,
+            input.orderDeliveryId,
+            input.refundLedgerId,
+          );
         } catch (e) {
           this.logger.error(
             `[SSG_REFUND] refundForDeliveryFail 실패 (orphan FAILED 이후) — DEFERRED. orderDeliveryId=${input.orderDeliveryId}, error: ${e instanceof Error ? e.message : e}`,
           );
           return SsgRefundOutcome.DEFERRED;
         }
-        await this.refundLedgerService.markSsgSettled(input.orderDeliveryId);
+        await this.refundLedgerService.markSsgSettled(input.orderDeliveryId, input.recoverToken);
         return SsgRefundOutcome.RESTORED;
       }
 

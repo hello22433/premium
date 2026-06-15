@@ -10,6 +10,7 @@ import { IOrderType } from '../interface/order.type';
 import { IPriceAdjustment } from '../../user_discount/interface/price.adjustment';
 import { WalletCutoverMode } from '../../wallet/config/wallet-cutover.config';
 import { AllocationResult } from '../../wallet/application/payment-allocation.service';
+import { WalletAllocationInputBuilder } from '../../wallet/application/wallet-allocation-input.builder';
 
 /**
  * PR2-005 Wallet hook on deliveryConfirmed.
@@ -133,8 +134,10 @@ describe('OrderService deliveryConfirmed wallet PR2-005 gating', () => {
       },
     };
     service.walletManagedPredicate = { isWalletManaged: jest.fn().mockResolvedValue(false) };
-    service.pointPolicyService = { evaluate: jest.fn().mockResolvedValue('ALLOW') };
-    service.pointGrantRepository = { find: jest.fn().mockResolvedValue([]) };
+    service.walletAllocationInputBuilder = new WalletAllocationInputBuilder(
+      { evaluate: jest.fn().mockResolvedValue('ALLOW') } as any,
+      { find: jest.fn().mockResolvedValue([]) } as any,
+    );
     service.walletAccountResolverService = {
       resolveForOrder: jest.fn().mockResolvedValue({
         id: 'wallet-1',

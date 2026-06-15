@@ -67,8 +67,10 @@ describe('SsgRefundResolverService', () => {
       baseInput.ssgEventId,
       baseInput.orderId,
       baseInput.refundAmount,
+      baseInput.orderDeliveryId,
+      undefined, // refundLedgerId — 동기 호출(미전달)
     );
-    expect(refundLedgerService.markSsgSettled).toHaveBeenCalledWith(baseInput.orderDeliveryId);
+    expect(refundLedgerService.markSsgSettled).toHaveBeenCalledWith(baseInput.orderDeliveryId, undefined);
     expect(partnerExternService.resolveSsgOrphan).not.toHaveBeenCalled();
   });
 
@@ -79,7 +81,7 @@ describe('SsgRefundResolverService', () => {
 
     expect(outcome).toBe(SsgRefundOutcome.RESTORED);
     expect(ssgEventService.refundForDeliveryFail).toHaveBeenCalled();
-    expect(refundLedgerService.markSsgSettled).toHaveBeenCalledWith(baseInput.orderDeliveryId);
+    expect(refundLedgerService.markSsgSettled).toHaveBeenCalledWith(baseInput.orderDeliveryId, undefined);
   });
 
   it('state CONFIRMED → markSsgSettled + SKIPPED_CONFIRMED, refund 안 부름', async () => {
@@ -89,7 +91,7 @@ describe('SsgRefundResolverService', () => {
 
     expect(outcome).toBe(SsgRefundOutcome.SKIPPED_CONFIRMED);
     expect(ssgEventService.refundForDeliveryFail).not.toHaveBeenCalled();
-    expect(refundLedgerService.markSsgSettled).toHaveBeenCalledWith(baseInput.orderDeliveryId);
+    expect(refundLedgerService.markSsgSettled).toHaveBeenCalledWith(baseInput.orderDeliveryId, undefined);
     expect(partnerExternService.resolveSsgOrphan).not.toHaveBeenCalled();
   });
 
@@ -105,7 +107,7 @@ describe('SsgRefundResolverService', () => {
 
       expect(outcome).toBe(SsgRefundOutcome.SKIPPED_CONFIRMED);
       expect(partnerExternService.resolveSsgOrphan).toHaveBeenCalledWith(baseInput.orderDeliveryId);
-      expect(refundLedgerService.markSsgSettled).toHaveBeenCalledWith(baseInput.orderDeliveryId);
+      expect(refundLedgerService.markSsgSettled).toHaveBeenCalledWith(baseInput.orderDeliveryId, undefined);
       expect(ssgEventService.refundForDeliveryFail).not.toHaveBeenCalled();
     });
 
@@ -116,7 +118,7 @@ describe('SsgRefundResolverService', () => {
 
       expect(outcome).toBe(SsgRefundOutcome.RESTORED);
       expect(ssgEventService.refundForDeliveryFail).toHaveBeenCalled();
-      expect(refundLedgerService.markSsgSettled).toHaveBeenCalledWith(baseInput.orderDeliveryId);
+      expect(refundLedgerService.markSsgSettled).toHaveBeenCalledWith(baseInput.orderDeliveryId, undefined);
     });
 
     it('orphan NETWORK_UNKNOWN → DEFERRED, markSsgSettled 안 부름 (ledger 신호로 가드 차단)', async () => {

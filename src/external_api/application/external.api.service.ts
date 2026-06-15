@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Like, Repository } from 'typeorm';
 import { Transactional } from 'typeorm-transactional';
@@ -38,8 +38,8 @@ import { IPartnerCompanyType } from '../../partner_company/interface/partner.com
 import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
 import { DeliverySendService } from '../../delivery/application/delivery.send.service';
 import { RefundLedgerService } from '../../delivery/application/refund-ledger.service';
-import { SsgRefundResolverService } from '../../delivery/application/ssg-refund.resolver';
-import { SsgRefundOutcome } from '../../delivery/interface/ssg.refund.resolve';
+import { SsgRecoveryService } from '../../delivery/application/ssg-recovery.service';
+import { SsgRecoveryResult } from '../../delivery/interface/ssg.recovery.result';
 import { SsgEventService } from '../../ssg_event/application/ssg.event.service';
 import { ProductService } from '../../product/application/product.service';
 
@@ -65,6 +65,24 @@ import { applyReplaceCharacters } from '../../common/utils/replace-characters.ut
 import { resolveExpireDays, couponTokenExpiry } from '../../common/utils/expire.util';
 import { addDays } from 'date-fns';
 import { ulid } from 'ulid';
+
+import { WalletCutoverConfig, WalletCutoverMode } from '../../wallet/config/wallet-cutover.config';
+import { WalletAccountResolverService } from '../../wallet/application/wallet-account-resolver.service';
+import { WalletAllocationInputBuilder } from '../../wallet/application/wallet-allocation-input.builder';
+import { PaymentAllocationService } from '../../wallet/application/payment-allocation.service';
+import {
+  OrderConfirmationWalletService,
+  PersistAllocationInput,
+} from '../../wallet/application/order-confirmation-wallet.service';
+import { CreditExcessApprovalRequiredError } from '../../wallet/application/credit-excess-approval-required.error';
+import { WalletManagedPredicate } from '../../wallet/application/wallet-managed.predicate';
+import { RefundPoolService } from '../../wallet/application/refund-pool.service';
+import { OrderPaymentAllocationEntity } from '../../entity/order.payment.allocation.entity';
+import { OrderPaymentRefundEventType } from '../../entity/order.payment.refund.event.entity';
+import {
+  OrderDeliveryAttemptEntity,
+  OrderDeliveryAttemptType,
+} from '../../entity/order.delivery.attempt.entity';
 
 @Injectable()
 export class ExternalApiService {
@@ -94,7 +112,14 @@ export class ExternalApiService {
     private cryptoCipher: CryptoCipher,
     private refundLedgerService: RefundLedgerService,
     private productService: ProductService,
-    private ssgRefundResolverService: SsgRefundResolverService,
+    private ssgRecoveryService: SsgRecoveryService,
+    private walletCutoverConfig: WalletCutoverConfig,
+    private walletAccountResolverService: WalletAccountResolverService,
+    private walletAllocationInputBuilder: WalletAllocationInputBuilder,
+    private paymentAllocationService: PaymentAllocationService,
+    private orderConfirmationWalletService: OrderConfirmationWalletService,
+    private walletManagedPredicate: WalletManagedPredicate,
+    private refundPoolService: RefundPoolService,
   ) {}
 
   // ─── 잔액 헬퍼 ──────────────────────────────────────────
@@ -119,6 +144,92 @@ export class ExternalApiService {
     }
   }
 
+  // ─── Wallet 차감 (WALLET cutover 모드) ───────────────────
+  // 내부 발송확정 WALLET 경로(order.service.ts deliveryConfirmed)를 그대로 미러.
+  //   resolveByUserId(fail-closed) → builder(POINT=0, 후정산 예치금 미사용)
+  //   → allocate → persistAllocation(same-tx) → R4 legacy mirror(user.balance 미기록).
+  // 선정산 예치금 부족(신용초과+미승인) → CreditExcessApprovalRequiredError → 3002 변환.
+  //
+  // order/mapping/orderDelivery/product 는 이미 저장된 상태여야 하며(R1),
+  // 호출자가 R6 관계그래프(order.orderProductMappings/mapping.orderDeliveries/mapping.product)를
+  // 구성한 뒤 전달한다. ssgEvent 차감(행사잔액)은 wallet 과 독립이므로 호출자 책임.
+  private async deductViaWallet(
+    account: ExternalApiAccountEntity,
+    order: OrderEntity,
+    settleAmount: number,
+  ): Promise<void> {
+    const user = account.user;
+
+    // billingUserId = account.user.id (external 은 대행주문 없음, 1:1). wallet 없으면 fail-closed.
+    let wallet;
+    try {
+      wallet = await this.walletAccountResolverService.resolveByUserId(
+        user.id,
+        this.dataSource.manager,
+      );
+    } catch {
+      throw new ExternalApiException('3002', '잔액 부족');
+    }
+
+    // external 정책: 포인트 사용 0, 후정산 예치금 미사용(선정산은 builder 가 자동 전액).
+    const allocationInput = await this.walletAllocationInputBuilder.build(order, wallet, settleAmount, {
+      requestedPointAmount: 0,
+      depositUseEnabled: false,
+      companyId: user.companyId ?? null,
+    });
+    const allocation = this.paymentAllocationService.allocate(allocationInput);
+
+    const persistInput: PersistAllocationInput = {
+      orderId: order.id,
+      allocation,
+      cardSurchargeAppliedSnapshot: order.cardSurchargeApplied,
+      hasDiscountSnapshot: allocation.hasDiscount,
+      settleMethodSnapshot: user.company?.settleMethod ?? user.settleMethod ?? null,
+      deliveryIdsForAttempt: allocation.lines
+        .map((l) => l.orderDeliveryId)
+        .filter((id): id is number => id != null),
+      // external 은 신용초과 승인 UI 가 없으므로 항상 미전달 → 락 후 excess 발생 시 typed throw.
+      creditExcessApprovalId: null,
+    };
+
+    let persistResult;
+    try {
+      persistResult = await this.orderConfirmationWalletService.persistAllocation(
+        persistInput,
+        this.dataSource.manager,
+      );
+    } catch (error) {
+      // 선정산 예치금 부족 = 신용초과 거절 → 잔액 부족으로 변환 (TX rollback).
+      if (error instanceof CreditExcessApprovalRequiredError) {
+        throw new ExternalApiException('3002', '잔액 부족');
+      }
+      throw error;
+    }
+
+    // R4 legacy mirror (same-tx, user.balance 는 기록하지 않음 — wallet ledger 가 SoT).
+    const finalAllocation = persistResult.finalAllocation;
+    order.settleAmount = finalAllocation.payableSettlementAmount;
+    order.isSettleBalance =
+      finalAllocation.creditUsedAmount === 0 && finalAllocation.creditExcessAmount === 0;
+    order.isCreditExcess = finalAllocation.creditExcessAmount > 0;
+
+    const isCompany = user.company?.balanceManagementType === 'COMPANY';
+    if (isCompany) {
+      await this.dataSource.manager.query(
+        'UPDATE user_company SET balance = balance - ? WHERE id = ?',
+        [finalAllocation.depositUsedAmount, user.companyId],
+      );
+    }
+    const allSettleDelta = finalAllocation.creditUsedAmount + finalAllocation.creditExcessAmount;
+    await this.dataSource.manager.query(
+      'UPDATE user SET allSettleAmount = allSettleAmount + ? WHERE id = ?',
+      [allSettleDelta, user.id],
+    );
+
+    // order 변경분 저장 (mirror 필드: settleAmount/isSettleBalance/isCreditExcess).
+    await this.orderRepository.save(order);
+  }
+
   private async refundBalance(account: ExternalApiAccountEntity, price: number): Promise<void> {
     const user = account.user;
     const isCompany = user.company?.balanceManagementType === 'COMPANY';
@@ -127,6 +238,81 @@ export class ExternalApiService {
     } else {
       await this.dataSource.query('UPDATE user SET balance = balance + ? WHERE id = ?', [price, user.id]);
     }
+  }
+
+  // ─── Wallet 환불 (WALLET cutover 모드) ───────────────────
+  // 내부 환불 경로(delivery.batch.service refundForFail / customer.service restoreBalanceOnDiscard)를 미러.
+  //   latest INITIAL attempt 조회(없으면 throw=drift) → RefundPoolService.refund(same-tx) → R4 차감 mirror 의 역.
+  // RefundPoolService 는 wallet ledger/wallet_account/point_grant/allocation 만 갱신하고
+  // legacy mirror(user_company.balance / user.allSettleAmount)는 건드리지 않으므로(책임 경계) 여기서 별도 복원.
+  // 복원 금액 = allocation 의 원 차감 총액(depositUsedAmount / creditUsedAmount+creditExcessAmount).
+  // 단일 delivery 전액 환불이므로 R4 의 정확한 역연산. user.balance 미기록 원칙 유지.
+  private async refundViaWallet(
+    account: ExternalApiAccountEntity,
+    order: OrderEntity,
+    orderDelivery: OrderDeliveryEntity,
+    eventType: OrderPaymentRefundEventType,
+    idempotencyPrefix: 'fail_refund' | 'discard_refund',
+  ): Promise<void> {
+    const manager = this.dataSource.manager;
+    const user = account.user;
+
+    const latestAttempt = await manager.findOne(OrderDeliveryAttemptEntity, {
+      where: {
+        orderDeliveryId: orderDelivery.id,
+        attemptType: OrderDeliveryAttemptType.INITIAL,
+      },
+      order: { id: 'DESC' },
+    });
+    if (!latestAttempt) {
+      throw new Error(
+        `wallet-managed delivery ${orderDelivery.id} missing INITIAL attempt — drift, aborting external refund`,
+      );
+    }
+
+    // R4 차감 mirror 역복원에 쓸 원 차감 총액. RefundPoolService 는 *RestoredAmount 카운터만 증가시키므로
+    // depositUsedAmount/creditUsedAmount/creditExcessAmount 는 원 차감값 그대로 보존된다.
+    const allocation = await manager.findOne(OrderPaymentAllocationEntity, {
+      where: { orderId: order.id },
+    });
+    if (!allocation) {
+      throw new Error(
+        `wallet-managed order ${order.id} missing allocation — drift, aborting external refund`,
+      );
+    }
+
+    const refundResult = await this.refundPoolService.refund(
+      {
+        orderId: order.id,
+        eventType,
+        targetDeliveryIds: [orderDelivery.id],
+        idempotencyKeyPrefix: `${idempotencyPrefix}:${order.id}:${orderDelivery.id}:${latestAttempt.id}`,
+      },
+      manager,
+    );
+
+    // R4 legacy mirror 역복원 (차감의 정확한 역). RefundPoolService 는 legacy 컬럼 미터치 → 풀 기준 이중복원 없음.
+    // 단, 멱등 retry(alreadyRefunded) 면 refund 는 no-op 인데 mirror 는 무조건 전액 복원해 잔액이 이중 반영된다.
+    // → 신규 환불이 실제 적용된 경우(alreadyRefunded=false)에만 mirror 를 실행한다.
+    if (refundResult.alreadyRefunded) {
+      this.logger.warn(
+        `[EXTERNAL_REFUND] 멱등 retry — 풀 환불 no-op, legacy mirror skip (이중복원 방지). orderDelivery.id: ${orderDelivery.id}`,
+      );
+      return;
+    }
+
+    const isCompany = user.company?.balanceManagementType === 'COMPANY';
+    if (isCompany) {
+      await manager.query('UPDATE user_company SET balance = balance + ? WHERE id = ?', [
+        allocation.depositUsedAmount,
+        user.companyId,
+      ]);
+    }
+    const allSettleDelta = allocation.creditUsedAmount + allocation.creditExcessAmount;
+    await manager.query('UPDATE user SET allSettleAmount = allSettleAmount - ? WHERE id = ?', [
+      allSettleDelta,
+      user.id,
+    ]);
   }
 
   // ─── 정산 헬퍼 ──────────────────────────────────────────
@@ -375,8 +561,6 @@ export class ExternalApiService {
     const { fee, priceAdjustment, settleAmount, cardSurchargeApplied } =
       await this.computeSettlement(account, product, sendAmount);
 
-    await this.deductBalance(account, settleAmount);
-
     const newCode = CreateCode(prevOrder?.code ?? null, OrderPrefixCode, OrderDigitNumber);
 
     const order = this.orderRepository.create({
@@ -431,6 +615,17 @@ export class ExternalApiService {
     mapping.order = order;
     order.user = user;
     orderDelivery.orderProductMapping = mapping;
+
+    // R1: 차감은 order+mapping+orderDelivery 저장 이후. WALLET 모드면 wallet allocation,
+    // 그 외(LEGACY/SHADOW)는 기존 raw deductBalance 유지(회귀 0).
+    if (this.walletCutoverConfig.pr2DeliveryLifecycleMode === WalletCutoverMode.WALLET) {
+      // R6: builder 가 읽는 관계그래프를 in-memory 로 구성.
+      mapping.orderDeliveries = [orderDelivery];
+      order.orderProductMappings = [mapping];
+      await this.deductViaWallet(account, order, settleAmount);
+    } else {
+      await this.deductBalance(account, settleAmount);
+    }
 
     return { order, orderDelivery, mapping, product };
   }
@@ -517,39 +712,78 @@ export class ExternalApiService {
 
     const isCompanyMode = account.user.company?.balanceManagementType === 'COMPANY';
     const isSsg = order.type === IOrderType.SSG && !!orderDelivery.ssgEventId;
-    await this.refundLedgerService.claim({
-      orderDeliveryId: orderDelivery.id,
-      userId: account.user.id,
-      refundAmount: order.settleAmount,
-      restoreType: isCompanyMode ? 'COMPANY_BALANCE' : 'BALANCE',
-      isSettleComplete: order.isSettleComplete,
-      isSettleBalance: order.isSettleBalance,
-      sourcePath: 'EXTERNAL_FAIL',
-      operatorUserId: null,
-      memo: `외부 API 발송 실패 환불 (주문번호: ${order.id})`,
-      // SSG 주문은 ledger.ssg_balance_settled 를 false 로 시작 → resolver 가 RESTORED/SKIPPED_CONFIRMED
-      // 반환 시 markSsgSettled 로 true 갱신. DEFERRED 면 false 유지 → 다음 재발송 가드 차단.
-      ssgPending: isSsg,
-    });
+    const isWalletManaged = await this.walletManagedPredicate.isWalletManaged(
+      order.id,
+      this.dataSource.manager,
+    );
+
+    // R7-A: claim 멱등 게이트 (내부 batch 패턴).
+    //  - legacy: 중복이면 이전 처리 성공이므로 short-circuit return.
+    //  - wallet: claim 만 commit 되고 wallet 환불이 실패한 retry 케이스 가능 → 흡수 후 wallet 재시도 진행.
+    try {
+      await this.refundLedgerService.claim({
+        orderDeliveryId: orderDelivery.id,
+        userId: account.user.id,
+        refundAmount: order.settleAmount,
+        restoreType: isCompanyMode ? 'COMPANY_BALANCE' : 'BALANCE',
+        isSettleComplete: order.isSettleComplete,
+        isSettleBalance: order.isSettleBalance,
+        sourcePath: 'EXTERNAL_FAIL',
+        operatorUserId: null,
+        memo: `외부 API 발송 실패 환불 (주문번호: ${order.id})`,
+        // SSG 주문은 ledger.ssg_balance_settled 를 false 로 시작 → resolver 가 RESTORED/SKIPPED_CONFIRMED
+        // 반환 시 markSsgSettled 로 true 갱신. DEFERRED 면 false 유지 → 다음 재발송 가드 차단.
+        ssgPending: isSsg,
+      });
+    } catch (claimError) {
+      if (claimError instanceof BadRequestException) {
+        if (isWalletManaged) {
+          this.logger.warn(
+            `[EXTERNAL_FAIL] claim 중복 — wallet path 멱등 재시도 진행. orderDelivery.id: ${orderDelivery.id}`,
+          );
+        } else {
+          this.logger.warn(
+            `[EXTERNAL_FAIL] 환불 중복 차단 (정상, legacy) - orderDelivery.id: ${orderDelivery.id}`,
+          );
+          return;
+        }
+      } else {
+        throw claimError;
+      }
+    }
 
     // plans/ssg-balance-refactor.md PR3.C — 외부 API SSG 주문도 Phase B 실패 시 SSG 행사 잔액 분기 적용.
-    // resolver 가 throw 흡수 + outcome 반환 — caller try/catch 불필요.
-    // DEFERRED 면 ledger.ssg_balance_settled 가 false 로 남아 다음 재발송 가드가 차단.
+    // HIGH-2: 실시간 경로도 sweep 과 동일한 단일 CAS 게이트(recoverWithLease)를 경유한다.
+    //   - resolver 직접 호출(우회) 시 sweep 과 race → 별도 게이트 2개. recoverWithLease 가 token-fenced lease 로 단일화.
+    //   - CAS WHERE(settled=false AND lease free)가 "이미 settled/타 actor 진행중"을 거른다 → 별도 isSsgSettled 선체크 불필요.
+    //   - claim 중복(wallet retry) 케이스도 settled=false 면 CAS 가 claim 해 재실행, settled=true 면 SKIPPED_NO_CLAIM.
     if (isSsg) {
-      const outcome = await this.ssgRefundResolverService.resolveAndRefundIfNeeded({
-        orderDeliveryId: orderDelivery.id,
-        ssgEventId: orderDelivery.ssgEventId!,
-        refundAmount: order.sendAmount,
-        orderId: order.id,
-      });
-      if (outcome === SsgRefundOutcome.DEFERRED) {
+      const result = await this.ssgRecoveryService.recoverWithLease(
+        orderDelivery.id,
+        orderDelivery.ssgEventId!,
+        order.id,
+        order.sendAmount,
+      );
+      if (result === SsgRecoveryResult.DEFERRED) {
         this.logger.error(
           `[EXTERNAL_FAIL] SSG 잔액 보정 DEFERRED — ledger.ssg_balance_settled=false 유지. 운영 점검 필요. orderDelivery.id: ${orderDelivery.id}`,
         );
       }
     }
 
-    await this.refundBalance(account, order.settleAmount);
+    // R2: 환불 wallet 분기. wallet-managed 면 풀 기반 환불 + R4 차감 mirror 역복원,
+    // 그 외(LEGACY/SHADOW)는 기존 raw refundBalance 유지(회귀 0).
+    if (isWalletManaged) {
+      await this.refundViaWallet(
+        account,
+        order,
+        orderDelivery,
+        OrderPaymentRefundEventType.FAIL_REFUND,
+        'fail_refund',
+      );
+    } else {
+      await this.refundBalance(account, order.settleAmount);
+    }
   }
 
   // ─── 주문 상태 조회 ─────────────────────────────────────
@@ -656,6 +890,10 @@ export class ExternalApiService {
     await this.orderRepository.save(order);
 
     const isCompanyMode = account.user.company?.balanceManagementType === 'COMPANY';
+    const isWalletManaged = await this.walletManagedPredicate.isWalletManaged(
+      order.id,
+      this.dataSource.manager,
+    );
     await this.refundLedgerService.claim({
       orderDeliveryId: orderDelivery.id,
       userId: account.user.id,
@@ -668,13 +906,37 @@ export class ExternalApiService {
       memo: `외부 API 취소 환불 (주문번호: ${order.id})`,
     });
 
-    await this.refundBalance(account, order.settleAmount);
+    // R2: 취소 환불 wallet 분기. cancel 경로는 SSG 차단(cancelOrder:606)이라 SSG resolver 불필요.
+    if (isWalletManaged) {
+      await this.refundViaWallet(
+        account,
+        order,
+        orderDelivery,
+        OrderPaymentRefundEventType.DISCARD_REFUND,
+        'discard_refund',
+      );
+    } else {
+      await this.refundBalance(account, order.settleAmount);
+    }
   }
 
   // ─── 재발송 ─────────────────────────────────────────────
 
   async resendOrder(account: ExternalApiAccountEntity, trId: string): Promise<ExternalApiResponse> {
     const orderDelivery = await this.findOrderDeliveryByTrId(account, trId);
+    const order = orderDelivery.orderProductMapping?.order;
+
+    // R3: 재발송은 발송 성공(DELIVERY_COMPLETE) 주문만 허용. 실패/취소(DELIVERY_CANCEL)는 거절.
+    // 폐기/취소된 쿠폰(couponStatus CANCEL/REFUND_CANCEL)도 거절. cancelOrder 가드와 대칭.
+    if (order?.status !== IOrderStatus.DELIVERY_COMPLETE) {
+      throw new ExternalApiException('3005', '발송 완료된 주문만 재발송 가능');
+    }
+    if (
+      orderDelivery.couponStatus === OrderDeliveryCouponStatus.CANCEL ||
+      orderDelivery.couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL
+    ) {
+      throw new ExternalApiException('3005', '폐기/취소된 쿠폰은 재발송 불가');
+    }
 
     if (!orderDelivery.barCode) {
       throw new ExternalApiException('3004', '발행된 쿠폰이 없어 재발송 불가');
@@ -762,8 +1024,6 @@ export class ExternalApiService {
     const { fee, priceAdjustment, settleAmount, cardSurchargeApplied } =
       await this.computeSettlement(account, product, sendAmount);
 
-    await this.deductBalance(account, settleAmount);
-
     const newCode = CreateCode(prevOrder?.code ?? null, OrderPrefixCode, OrderDigitNumber);
 
     const order = this.orderRepository.create({
@@ -816,12 +1076,23 @@ export class ExternalApiService {
     orderDelivery.transactionId = CreateApiTransactionId(order.id, orderDelivery.id);
     orderDelivery.externalTrId = await this.saveTransactionIds(orderDelivery.id, orderDelivery.transactionId);
 
+    // SSG 행사잔액(협력사측) 차감은 wallet(자사 정산분)과 독립 — 그대로 유지.
     await this.ssgEventService.deductEventBalance(ssgEvent.id, sendAmount, order.id, false);
 
     mapping.product = product;
     mapping.order = order;
     order.user = user;
     orderDelivery.orderProductMapping = mapping;
+
+    // R1: account 정산분 차감은 저장 이후. WALLET 모드면 wallet allocation, 그 외 raw deductBalance.
+    if (this.walletCutoverConfig.pr2DeliveryLifecycleMode === WalletCutoverMode.WALLET) {
+      // R6: builder 관계그래프 in-memory 구성.
+      mapping.orderDeliveries = [orderDelivery];
+      order.orderProductMappings = [mapping];
+      await this.deductViaWallet(account, order, settleAmount);
+    } else {
+      await this.deductBalance(account, settleAmount);
+    }
 
     return { order, orderDelivery, mapping, product, ssgEvent };
   }

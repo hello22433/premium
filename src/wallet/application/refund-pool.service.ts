@@ -24,6 +24,11 @@ export interface RefundEventInput {
 export interface RefundEventResult {
   ledgerIds: string[]; // 라인별 ledger row PK
   totalRefundedAmount: number;
+  // 이번 호출이 실제로 잔액/ledger 를 변경했는지 여부.
+  //  - false: 신규 환불 적용됨 (wallet/allocation 변경 발생).
+  //  - true : 멱등 retry — 기존 ledger 결과만 반환, 잔액 미변경 (no-op).
+  // caller 가 legacy mirror 같은 ledger 외 부수효과를 멱등하게 가드하는 데 쓴다.
+  alreadyRefunded: boolean;
 }
 
 /**
@@ -72,7 +77,7 @@ export class RefundPoolService {
         (s, e) => s + e.refundedGrossBase + e.refundedCardSurchargeAmount,
         0,
       );
-      return { ledgerIds: existingForPrefix.map((e) => e.id), totalRefundedAmount };
+      return { ledgerIds: existingForPrefix.map((e) => e.id), totalRefundedAmount, alreadyRefunded: true };
     }
 
     // Plan §3 lock 순서: wallet_account → allocation → wallet_transaction.
@@ -121,7 +126,7 @@ export class RefundPoolService {
         (s, e) => s + e.refundedGrossBase + e.refundedCardSurchargeAmount,
         0,
       );
-      return { ledgerIds: existingAfterLock.map((e) => e.id), totalRefundedAmount };
+      return { ledgerIds: existingAfterLock.map((e) => e.id), totalRefundedAmount, alreadyRefunded: true };
     }
 
     // already_refunded 체크 (different prefix — 진짜 중복 요청)
@@ -367,7 +372,7 @@ export class RefundPoolService {
     alloc.pointSkippedExpiredAmount = pointSkippedTotal;
     await manager.save(OrderPaymentAllocationEntity, alloc);
 
-    return { ledgerIds, totalRefundedAmount: totalRefund };
+    return { ledgerIds, totalRefundedAmount: totalRefund, alreadyRefunded: false };
   }
 
   /**
