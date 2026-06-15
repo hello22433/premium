@@ -1018,6 +1018,25 @@ export class DeliveryBatchService {
   }
 
   /**
+   * SSG 재발급용 행사 확보 + 선차감 (fail-fast).
+   * 발급가능(잔액≥price) 행사를 선택하고 즉시 선차감한다. 행사 없으면 null(차감 X).
+   * 반환된 resendDeductionId 는 실패 시 reverseSsgReissueDeduct 의 멱등키로 사용.
+   */
+  async selectAndDeductSsgEventForReissue(
+    orderId: number,
+    price: number,
+    couponExpiration: number,
+  ): Promise<{ event: SsgEventEntity; resendDeductionId: string } | null> {
+    const event = await this.ssgEventService.selectEventForOrder(price, couponExpiration);
+    if (!event) {
+      return null;
+    }
+    const resendDeductionId = ulid();
+    await this.ssgEventService.deductEventBalance(event.id, price, orderId, false);
+    return { event, resendDeductionId };
+  }
+
+  /**
    * 재발송 선차감 환불 (PIN 발급 실패 또는 issue() throw 시).
    * shared resolver 를 통해 state 기준으로 SSG 행사 잔액을 복구한다.
    */
