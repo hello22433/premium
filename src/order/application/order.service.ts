@@ -2105,7 +2105,8 @@ export class OrderService {
 
       // Phase 3a: 단일 상품 수신번호 — 기존 로직 (상품 단가 × 수량 표시)
       for (const orderProduct of orderProductList) {
-        const productPrice = readLineProductView(orderProduct).price;
+        const lineView3a = readLineProductView(orderProduct);
+        const productPrice = lineView3a.price;
         const product = orderProduct.product;
         const deliveryMap = new Map((orderProduct.orderDeliveries ?? []).map((d) => [d.id, d]));
 
@@ -2181,8 +2182,8 @@ export class OrderService {
           const firstDelivery = deliveryMap.get(group.deliveryIds[0]);
           resultList.push({
             id: orderProduct.id,
-            brandName: product.brand?.nameKorean ?? null,
-            name: product.name,
+            brandName: lineView3a.brandName ?? null,
+            name: lineView3a.name,
             price: productPrice,
             amount: group.count,
             totalPrice: groupTotalPrice,
@@ -2352,8 +2353,8 @@ export class OrderService {
     } else {
       // 비SSG: 기존 로직
       resultList = orderProductList.map((orderProduct) => {
-        const lineView = readLineProductView(orderProduct);
-        const basePrice = lineView.price;
+        const lineViewNonSsg = readLineProductView(orderProduct);
+        const basePrice = lineViewNonSsg.price;
         let priceAdjustment = orderProduct.priceAdjustment;
         let fee = orderProduct.fee;
 
@@ -2416,8 +2417,8 @@ export class OrderService {
 
         return {
           id: orderProduct.id,
-          brandName: orderProduct.product.brand?.nameKorean ?? null,
-          name: orderProduct.product.name,
+          brandName: lineViewNonSsg.brandName ?? null,
+          name: lineViewNonSsg.name,
           price: basePrice,
           amount: orderProduct.amount,
           totalPrice: basePrice * orderProduct.amount,
