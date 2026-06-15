@@ -69,6 +69,20 @@ export class RefundLedgerService {
   }
 
   /**
+   * 현재 활성 환불 ledger row id 조회 (없으면 null).
+   * claim 직후 동기적으로 호출해 "이 cycle 의 ledger id" 를 캡처하는 용도.
+   * resolver→refundForDeliveryFail 에 명시 전달하면, 이후(orphan 네트워크 조회 등으로 지연된) 재조회가
+   * release+재INSERT 된 다른 cycle 의 ledger 를 집어 멱등키를 오염시키는 것을 막는다(HIGH).
+   */
+  async getLedgerId(orderDeliveryId: number): Promise<number | null> {
+    const row = await this.refundRepository.findOne({
+      where: { orderDeliveryId },
+      select: ['id'],
+    });
+    return row?.id ?? null;
+  }
+
+  /**
    * SSG 행사 잔액 보정 완료 여부 확인. ledger row 가 없으면 false 반환.
    * 재발송 가드에서 `exists() AND isSsgSettled()` 둘 다 통과해야 새 선차감 진행.
    * plans/ssg-balance-refactor.md PR3 보강.
@@ -86,18 +100,23 @@ export class RefundLedgerService {
    * ledger row 의 `ssg_balance_settled` 를 true 로 갱신한다.
    * row 가 없으면 silently skip (정상 흐름이라면 claim 이 먼저 일어났어야 함).
    * plans/ssg-balance-refactor.md PR3 보강.
+   *
+   * @param recoverToken 전달 시 token-fenced: 본인 소유 lease(ssg_recover_token 일치) row 만 마킹.
+   *   lease 만료/탈취된 stale holder 가 settled 를 마킹하는 것을 차단한다. 미전달 시 unconditional(동기 호출).
    */
-  async markSsgSettled(orderDeliveryId: number): Promise<void> {
-    const result = await this.refundRepository
+  async markSsgSettled(orderDeliveryId: number, recoverToken?: string): Promise<void> {
+    const qb = this.refundRepository
       .createQueryBuilder()
       .update(OrderDeliveryRefundEntity)
       .set({ ssgBalanceSettled: true })
-      .where('order_delivery_id = :id', { id: orderDeliveryId })
-      .execute();
+      .where('order_delivery_id = :id', { id: orderDeliveryId });
+    if (recoverToken != null) {
+      qb.andWhere('ssg_recover_token = :tok', { tok: recoverToken });
+    }
+    const result = await qb.execute();
     if (!result.affected) {
-      this.logger.warn(
-        `markSsgSettled: ledger row 없음 (skip). orderDeliveryId=${orderDeliveryId}`,
-      );
+      const fenceNote = recoverToken != null ? ' (token-fenced — lease 만료/탈취 가능성)' : '';
+      this.logger.warn(`markSsgSettled: 대상 row 없음 (skip). orderDeliveryId=${orderDeliveryId}${fenceNote}`);
     }
   }
 
