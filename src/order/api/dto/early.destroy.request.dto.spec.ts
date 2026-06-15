@@ -1,10 +1,7 @@
 import 'reflect-metadata';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
-import {
-  CreateEarlyDestroyRequestDto,
-  CreateDeliveriesEarlyDestroyRequestDto,
-} from './early.destroy.request.dto';
+import { CreateEarlyDestroyRequestDto, CreateDeliveriesEarlyDestroyRequestDto } from './early.destroy.request.dto';
 
 /**
  * M-1 회귀 테스트 — 조기파기 요청 DTO 의 빈 배열 검증.

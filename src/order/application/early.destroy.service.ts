@@ -20,22 +20,13 @@ import {
   UpdateDestroyPersonalInfoDayDto,
 } from '../api/dto/early.destroy.request.dto';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
+// PII 보유 history type 단일 소스(정기파기 배치와 공유). 재export 로 기존 import 경로 호환 유지.
+import { PII_BEARING_HISTORY_TYPES } from '../interface/order.history.pii.types';
+
+export { PII_BEARING_HISTORY_TYPES };
 
 const DESTROY_VALUE = '-';
 const REFUND_IN_PROGRESS_MESSAGE = '환불 진행 중인 건으로 파기 실패했습니다. 고객센터(1644-3614)로 문의해주세요.';
-
-/**
- * order_history.beforeChange/afterChange 가 PII(전화번호·이메일·핀번호)를 담는 type 목록.
- *  - '수신정보 변경요청': beforeChange=옛 수신처, afterChange=새 수신처
- *  - '폐기 후 신규 발송': afterChange=`새 수신처 / 새 핀번호`
- * 그 외 type('폐기'/'환불폐기'/'핀상태 변경'/'재전송' 등)의 beforeChange/afterChange 는
- * couponStatus 전이 감사값(NOT_USED→CANCEL 등)이므로 절대 마스킹하면 안 된다(C-1).
- *
- * ⚠️ order_history.type 은 enum 미강제 매직 스트링이다(M-3). writer(customer.service.service.ts
- * 의 mapHistory/execHistory)가 쓰는 문자열 리터럴과 정확히 일치해야 한다. 향후 단일 소스 enum
- * 으로 통합 시 본 상수도 함께 이관할 것.
- */
-export const PII_BEARING_HISTORY_TYPES = ['수신정보 변경요청', '폐기 후 신규 발송'] as const;
 
 type RequestItemSeed = Pick<EarlyDestroyRequestItemEntity, 'orderProductMappingId' | 'orderDeliveryId'>;
 
@@ -226,9 +217,7 @@ export class EarlyDestroyService {
       executedByEmail: r.executedByUser?.email ?? null,
       executedAt: r.executedAt,
       orderProductMappingIds: r.items.map((item) => item.orderProductMappingId),
-      orderDeliveryIds: r.items
-        .map((item) => item.orderDeliveryId)
-        .filter((id): id is number => id !== null),
+      orderDeliveryIds: r.items.map((item) => item.orderDeliveryId).filter((id): id is number => id !== null),
     }));
   }
 
@@ -273,10 +262,7 @@ export class EarlyDestroyService {
       const inProgressCount = await this.orderDeliveryRepository.count({
         where: {
           id: In(affectedDeliveryIds),
-          refundStatus: In([
-            OrderDeliveryRefundStatusEnum.PROGRESS,
-            OrderDeliveryRefundStatusEnum.APPROVE,
-          ]),
+          refundStatus: In([OrderDeliveryRefundStatusEnum.PROGRESS, OrderDeliveryRefundStatusEnum.APPROVE]),
         },
       });
       if (inProgressCount > 0) {

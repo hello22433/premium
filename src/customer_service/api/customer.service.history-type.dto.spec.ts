@@ -33,9 +33,9 @@ describe('CustomerServiceHistoryReqDto.type 검증 (M-3 @IsIn)', () => {
   });
 
   it("별도 엔드포인트 소관인 '핀상태 변경' 은 이 DTO 에선 거부한다", async () => {
-    expect(
-      await validatePayload(CustomerServiceHistoryReqDto, { orderDeliveryId: 1, type: '핀상태 변경' }),
-    ).toContain('isIn');
+    expect(await validatePayload(CustomerServiceHistoryReqDto, { orderDeliveryId: 1, type: '핀상태 변경' })).toContain(
+      'isIn',
+    );
   });
 
   it('type 누락은 통과한다(@IsOptional) — 누락 안내는 service 책임', async () => {

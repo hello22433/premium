@@ -55,16 +55,16 @@ describe('EarlyDestroyService.createRequestForDeliveries — 검증/L-1', () => 
 
   it('존재하지 않는 발송건 ID가 섞이면 거부한다', async () => {
     const sut = makeSut({ deliveries: [buildDelivery(101)] }); // 요청은 2개인데 1개만 조회됨
-    await expect(
-      sut.createRequestForDeliveries({ orderDeliveryIds: [101, 999] }, user),
-    ).rejects.toThrow('유효하지 않은 발송건');
+    await expect(sut.createRequestForDeliveries({ orderDeliveryIds: [101, 999] }, user)).rejects.toThrow(
+      '유효하지 않은 발송건',
+    );
   });
 
   it('서로 다른 주문의 발송건이 섞이면 거부한다', async () => {
     const sut = makeSut({ deliveries: [buildDelivery(101, 77), buildDelivery(102, 88)] });
-    await expect(
-      sut.createRequestForDeliveries({ orderDeliveryIds: [101, 102] }, user),
-    ).rejects.toThrow('서로 다른 주문');
+    await expect(sut.createRequestForDeliveries({ orderDeliveryIds: [101, 102] }, user)).rejects.toThrow(
+      '서로 다른 주문',
+    );
   });
 
   it('이미 파기된 발송건이 포함되면 거부한다', async () => {
@@ -78,9 +78,7 @@ describe('EarlyDestroyService.createRequestForDeliveries — 검증/L-1', () => 
       deliveries: [buildDelivery(101)],
       pending: [{ items: [{ orderProductMappingId: 55, orderDeliveryId: 101 }] }],
     });
-    await expect(sut.createRequestForDeliveries({ orderDeliveryIds: [101] }, user)).rejects.toThrow(
-      '이미 대기 중인',
-    );
+    await expect(sut.createRequestForDeliveries({ orderDeliveryIds: [101] }, user)).rejects.toThrow('이미 대기 중인');
   });
 
   it('매핑 전체 PENDING 이 있으면 그 매핑의 발송건 신규 등록을 거부한다 (L-1 교차 겹침)', async () => {
@@ -88,9 +86,7 @@ describe('EarlyDestroyService.createRequestForDeliveries — 검증/L-1', () => 
       deliveries: [buildDelivery(101)], // mappingId 55
       pending: [{ items: [{ orderProductMappingId: 55, orderDeliveryId: null }] }], // 매핑 55 전체 대기
     });
-    await expect(sut.createRequestForDeliveries({ orderDeliveryIds: [101] }, user)).rejects.toThrow(
-      '이미 대기 중인',
-    );
+    await expect(sut.createRequestForDeliveries({ orderDeliveryIds: [101] }, user)).rejects.toThrow('이미 대기 중인');
   });
 
   it('같은 매핑이라도 서로 다른 발송건 PENDING 은 신규 발송건을 막지 않는다 (과차단 방지)', async () => {
@@ -126,9 +122,7 @@ describe('EarlyDestroyService.createRequestForDeliveries — 검증/L-1', () => 
     expect(sut.earlyDestroyRequestItemRepository.save).toHaveBeenCalledTimes(1);
     const savedItems = sut.earlyDestroyRequestItemRepository.save.mock.calls[0][0];
     expect(savedItems).toHaveLength(2);
-    expect(savedItems[0]).toEqual(
-      expect.objectContaining({ earlyDestroyRequestId: 500, orderDeliveryId: 101 }),
-    );
+    expect(savedItems[0]).toEqual(expect.objectContaining({ earlyDestroyRequestId: 500, orderDeliveryId: 101 }));
   });
 });
 
