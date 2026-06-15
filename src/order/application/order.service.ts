@@ -102,6 +102,7 @@ import {
   buildOrderClientUserSnapshot,
   buildOrderOperationUserSnapshot,
   buildOrderUserSnapshot,
+  buildPriceDivergence,
   readBillingView,
   readClientUserView,
   readLineProductView,
@@ -917,6 +918,7 @@ export class OrderService {
           encourageDay: orderProductMapping.encourageDay,
           galaxiaDuration: orderProductMapping.galaxiaDuration,
           failCount: failCount,
+          ...buildPriceDivergence(orderProductMapping),
         });
       }
     }
@@ -1245,6 +1247,7 @@ export class OrderService {
           encourageDay: orderProductMapping.encourageDay,
           galaxiaDuration: orderProductMapping.galaxiaDuration,
           failCount: 0, // 이벤트 불러오기 시 발송 정보가 없으므로 0
+          ...buildPriceDivergence(orderProductMapping),
         });
       }
     }
