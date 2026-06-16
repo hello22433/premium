@@ -22,7 +22,7 @@ describe('CustomerServiceService.execDiscard — terminal 차단 / CAS 멱등', 
     ({
       id: 7001,
       couponStatus,
-      orderProductMapping: { product: { type: 'GENERAL' } },
+      orderProductMapping: { product: { type: 'GENERAL' }, order: { cardSurchargeApplied: false } },
     }) as any;
 
   // orderDeliveryRepository.createQueryBuilder() 의 fluent 체인 mock — getOne 이 대상 반환
