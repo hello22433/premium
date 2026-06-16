@@ -211,8 +211,8 @@ export class OrderController {
   })
   // ====================================================
   @Get('/order/event-detail/:id')
-  getEventDetail(@Param() getParam: OrderGetDetailReqParamDto) {
-    return this.orderService.getEventDetail(getParam);
+  getEventDetail(@User() user: ILoginUserInfo, @Param() getParam: OrderGetDetailReqParamDto) {
+    return this.orderService.getEventDetail(user, getParam);
   }
 
   @ApiOperation({
@@ -266,8 +266,8 @@ export class OrderController {
   })
   // ====================================================
   @Get('/order/order-complete/report')
-  getOrderCompleteReport(@Query() getQuery: OrderGetOrderCompleteReportReqDto) {
-    return this.orderService.getOrderCompleteReport(getQuery);
+  getOrderCompleteReport(@User() user: ILoginUserInfo, @Query() getQuery: OrderGetOrderCompleteReportReqDto) {
+    return this.orderService.getOrderCompleteReport(getQuery, user);
   }
 
   @ApiOperation({
@@ -338,8 +338,12 @@ export class OrderController {
   })
   // ====================================================
   @Get('/order/order-complete/report-multiple')
-  getOrderCompleteReportMultiple(@Query('ids') ids: string, @Query('evidenceDate') evidenceDate?: string) {
-    return this.orderService.getOrderCompleteReportMultiple(ids, evidenceDate);
+  getOrderCompleteReportMultiple(
+    @User() user: ILoginUserInfo,
+    @Query('ids') ids: string,
+    @Query('evidenceDate') evidenceDate?: string,
+  ) {
+    return this.orderService.getOrderCompleteReportMultiple(ids, evidenceDate, user);
   }
 
   @ApiOperation({
@@ -750,9 +754,12 @@ export class OrderController {
   // =========================================
   @Get('/order/:orderId/report-history')
   async getReportHistory(
+    @User() user: ILoginUserInfo,
     @Param() getParam: OrderGetReportHistoryReqParamDto,
     @Query() getQuery: OrderGetReportHistoryReqQueryDto,
   ): Promise<OrderGetReportHistoryResDto> {
+    // IDOR 방지: 조회 대상 주문이 호출자 view_scope 안에 있는지 선검증
+    await this.orderService.assertOrderInViewScope(user, getParam.orderId);
     const list = await this.activityLogService.getOrderReportHistory(
       getParam.orderId,
       getQuery.reportType,

@@ -562,6 +562,32 @@ export class OrderService {
     return queryBuilder;
   }
 
+  /**
+   * 보조 조회(리포트 이력 등)용 소유검증: 주문이 호출자의 view_scope 안에 있지 않으면 거부.
+   * applyViewScopeFilter 와 동일 기준으로 IDOR(타사 주문 id 순회)을 차단한다.
+   */
+  async assertOrderInViewScope(user: ILoginUserInfo, orderId: number): Promise<void> {
+    let queryBuilder = this.orderRepository
+      .createQueryBuilder('order')
+      .innerJoin('order.user', 'user')
+      .withDeleted()
+      .where('order.id = :id', { id: orderId });
+
+    const currentUser = await this.userRepository.findOne({
+      where: { id: user.id },
+      select: ['id', 'companyId', 'departmentId'],
+    });
+    const viewScope = await this.userViewScopeRepository.findOne({
+      where: { userId: user.id },
+    });
+    queryBuilder = this.applyViewScopeFilter(queryBuilder, user, currentUser, viewScope);
+
+    const count = await queryBuilder.getCount();
+    if (count === 0) {
+      throw new BadRequestException('주문이 존재하지 않습니다.');
+    }
+  }
+
   async getList(user: ILoginUserInfo, getQuery: OrderGetListReqDto): Promise<OrderGetListResDto> {
     const { section, type, status, startAt, endAt, searchType, searchKeyword, page, take, sendingType, dateType } = getQuery;
 
@@ -1110,8 +1136,8 @@ export class OrderService {
   }
 
   // 이벤트 불러오기 전용 메서드 (수신자 정보 제외)
-  async getEventDetail(getParam: OrderGetDetailReqParamDto): Promise<OrderGetDetailResDto> {
-    const queryBuilder = this.orderRepository
+  async getEventDetail(user: ILoginUserInfo, getParam: OrderGetDetailReqParamDto): Promise<OrderGetDetailResDto> {
+    let queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
       .leftJoinAndSelect('order.operationUser', 'operationUser')
@@ -1123,6 +1149,16 @@ export class OrderService {
       .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .withDeleted()
       .where('order.id = :id', { id: getParam.id });
+
+    // IDOR 방지: 호출자의 조회 범위(view_scope)를 getDetail 과 동일하게 적용.
+    const currentUser = await this.userRepository.findOne({
+      where: { id: user.id },
+      select: ['id', 'companyId', 'departmentId'],
+    });
+    const viewScope = await this.userViewScopeRepository.findOne({
+      where: { userId: user.id },
+    });
+    queryBuilder = this.applyViewScopeFilter(queryBuilder, user, currentUser, viewScope);
 
     const order = await queryBuilder.getOne();
 
@@ -1247,7 +1283,7 @@ export class OrderService {
     user: ILoginUserInfo,
   ): Promise<OrderGetDeliveryCompleteReportResDto> {
     const canUnmask = this.canUnmaskDeliveryTarget(getQuery.unmasked, user);
-    const queryBuilder = this.orderRepository
+    let queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
       .leftJoinAndSelect('user.company', 'userCompany')
@@ -1261,6 +1297,16 @@ export class OrderService {
       .withDeleted()
       .where('order.id = :id', { id: getQuery.id })
       .addOrderBy('orderDeliveries.id', 'ASC');
+
+    // IDOR 방지: 호출자의 조회 범위(view_scope)를 getDetail 과 동일하게 적용.
+    const currentUser = await this.userRepository.findOne({
+      where: { id: user.id },
+      select: ['id', 'companyId', 'departmentId'],
+    });
+    const viewScope = await this.userViewScopeRepository.findOne({
+      where: { userId: user.id },
+    });
+    queryBuilder = this.applyViewScopeFilter(queryBuilder, user, currentUser, viewScope);
 
     const order = await queryBuilder.getOne();
 
@@ -1456,8 +1502,9 @@ export class OrderService {
 
   async getOrderCompleteReport(
     getQuery: OrderGetOrderCompleteReportReqDto,
+    user: ILoginUserInfo,
   ): Promise<OrderGetOrderCompleteReportResDto> {
-    const queryBuilder = this.orderRepository
+    let queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
       .leftJoinAndSelect('user.company', 'userCompany')
@@ -1470,6 +1517,16 @@ export class OrderService {
       .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
       .withDeleted()
       .where('order.id = :id', { id: getQuery.id });
+
+    // IDOR 방지: 호출자의 조회 범위(view_scope)를 getDetail 과 동일하게 적용.
+    const currentUser = await this.userRepository.findOne({
+      where: { id: user.id },
+      select: ['id', 'companyId', 'departmentId'],
+    });
+    const viewScope = await this.userViewScopeRepository.findOne({
+      where: { userId: user.id },
+    });
+    queryBuilder = this.applyViewScopeFilter(queryBuilder, user, currentUser, viewScope);
 
     const order = await queryBuilder.getOne();
 
@@ -1644,7 +1701,7 @@ export class OrderService {
       throw new BadRequestException('주문 ID가 필요합니다.');
     }
 
-    const queryBuilder = this.orderRepository
+    let queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
       .leftJoinAndSelect('user.company', 'userCompany')
@@ -1658,6 +1715,16 @@ export class OrderService {
       .withDeleted()
       .where('order.id IN (:...ids)', { ids: orderIds })
       .addOrderBy('orderDeliveries.id', 'ASC');
+
+    // IDOR 방지: 호출자 조회 범위(view_scope) 밖 주문은 결과에서 제외 → 타사 주문 통합증빙 차단.
+    const currentUser = await this.userRepository.findOne({
+      where: { id: user.id },
+      select: ['id', 'companyId', 'departmentId'],
+    });
+    const viewScope = await this.userViewScopeRepository.findOne({
+      where: { userId: user.id },
+    });
+    queryBuilder = this.applyViewScopeFilter(queryBuilder, user, currentUser, viewScope);
 
     const orders = await queryBuilder.getMany();
 
@@ -1841,7 +1908,7 @@ export class OrderService {
   /**
    * 다중 주문 거래명세서 조회 (통합)
    */
-  async getOrderCompleteReportMultiple(ids: string, evidenceDate?: string): Promise<any> {
+  async getOrderCompleteReportMultiple(ids: string, evidenceDate: string | undefined, user: ILoginUserInfo): Promise<any> {
     const orderIds = ids.split(',').map((id) => parseInt(id.trim(), 10));
     // 증빙일자가 있으면 파싱
     const evidenceDateParsed = evidenceDate ? new Date(evidenceDate) : null;
@@ -1850,7 +1917,7 @@ export class OrderService {
       throw new BadRequestException('주문 ID가 필요합니다.');
     }
 
-    const queryBuilder = this.orderRepository
+    let queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
       .leftJoinAndSelect('user.company', 'userCompany')
@@ -1863,6 +1930,16 @@ export class OrderService {
       .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
       .withDeleted()
       .where('order.id IN (:...ids)', { ids: orderIds });
+
+    // IDOR 방지: 호출자 조회 범위(view_scope) 밖 주문은 결과에서 제외 → 타사 주문 통합증빙 차단.
+    const currentUser = await this.userRepository.findOne({
+      where: { id: user.id },
+      select: ['id', 'companyId', 'departmentId'],
+    });
+    const viewScope = await this.userViewScopeRepository.findOne({
+      where: { userId: user.id },
+    });
+    queryBuilder = this.applyViewScopeFilter(queryBuilder, user, currentUser, viewScope);
 
     const orders = await queryBuilder.getMany();
 
