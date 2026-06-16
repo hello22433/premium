@@ -4,10 +4,10 @@ import {
   ArrayMinSize,
   IsArray,
   IsBoolean,
+  IsEmail,
   IsEnum,
   IsInt,
   IsNotEmpty,
-  IsNumber,
   IsOptional,
   IsString,
   Matches,
@@ -37,6 +37,7 @@ export class UserSyncProductGetListReqDto extends PagingReqDto {
   })
   // ================================
   @IsOptional()
+  @IsString()
   businessUserName?: string;
 
   @ApiPropertyOptional({
@@ -52,6 +53,7 @@ export class UserSyncProductGetListReqDto extends PagingReqDto {
   })
   // =================================
   @IsOptional()
+  @IsString()
   code?: string;
 
   @ApiPropertyOptional({
@@ -59,6 +61,7 @@ export class UserSyncProductGetListReqDto extends PagingReqDto {
   })
   // =================================
   @IsOptional()
+  @IsString()
   name?: string;
 
   @ApiPropertyOptional({
@@ -83,7 +86,8 @@ export class UserSyncProductUpdateStatusReqDto {
     description: '이벤트 id',
   })
   // =================================
-  @IsNumber()
+  @IsInt()
+  @Min(1)
   @IsNotEmpty()
   id: number;
 
@@ -102,6 +106,7 @@ export class UserSyncProductGetDetailReqParamDto {
   })
   // =================================
   @Type(() => Number)
+  @IsInt()
   @Min(1)
   @IsNotEmpty()
   id: number;
@@ -112,7 +117,9 @@ export class UserSyncProductRegisterEventReqDto {
     description: '고객사 user.id',
   })
   // =================================
-  @IsNumber()
+  @IsInt()
+  @Min(1)
+  @IsNotEmpty()
   userId: number;
 
   @ApiProperty({
@@ -133,6 +140,7 @@ export class UserSyncProductRegisterEventReqDto {
     description: '이벤트명',
   })
   // =================================
+  @IsString()
   @IsNotEmpty()
   name: string;
 
@@ -140,6 +148,7 @@ export class UserSyncProductRegisterEventReqDto {
     description: '이벤트 코드',
   })
   // =================================
+  @IsString()
   @IsNotEmpty()
   code: string;
 
@@ -152,9 +161,10 @@ export class UserSyncProductRegisterEventReqDto {
   status: IUserSyncProductStatus;
 
   @ApiProperty({
-    description: '연락처 (-없이 숫자만)',
+    description: '연락처 (숫자, - 허용)',
   })
   // =================================
+  @Matches(/^[0-9-]{9,13}$/, { message: '연락처는 숫자와 - 만 9~13자리로 입력해야 합니다.' })
   @IsNotEmpty()
   phone: string;
 
@@ -162,6 +172,7 @@ export class UserSyncProductRegisterEventReqDto {
     description: '이메일',
   })
   // =================================
+  @IsEmail()
   @IsNotEmpty()
   email: string;
 }
@@ -171,7 +182,8 @@ export class UserSyncProductInsertProductReqDto {
     description: '상품 등록할 연동 event id',
   })
   // =================================
-  @IsNumber()
+  @IsInt()
+  @Min(1)
   @IsNotEmpty()
   eventId: number;
 
@@ -180,7 +192,8 @@ export class UserSyncProductInsertProductReqDto {
   })
   // =================================
   @IsArray() // 배열 검증
-  @IsInt({ each: true }) // 배열 내 값 number 검증
+  @IsInt({ each: true }) // 배열 내 값 정수 검증
+  @Min(1, { each: true }) // 배열 내 값 양수 검증
   @ArrayMinSize(1, { message: '추가할 상품 id 는 최소 1개 이상의 값이 필요합니다.' })
   productIdList: number[];
 }
@@ -191,7 +204,8 @@ export class UserSyncProductDeleteProductReqDto {
   })
   // =================================
   @IsArray() // 배열 검증
-  @IsInt({ each: true }) // 배열 내 값 number 검증
+  @IsInt({ each: true }) // 배열 내 값 정수 검증
+  @Min(1, { each: true }) // 배열 내 값 양수 검증
   @ArrayMinSize(1, { message: '삭제할 id 는 최소 1개 이상의 값이 필요합니다.' })
   idList: number[];
 }
@@ -201,7 +215,8 @@ export class UserSyncProductSetHeadPersonReqDto {
     description: '기본 담당자로 설정할 user.id',
   })
   // =================================
-  @IsNumber()
+  @IsInt()
+  @Min(1)
   @IsNotEmpty()
   userId: number;
 
@@ -221,7 +236,8 @@ export class UserSyncProductGetHeadPersonListReqQueryDto extends PagingReqDto {
   })
   // =================================
   @IsNotEmpty()
-  @IsNumber()
+  @IsInt()
+  @Min(1)
   @Type(() => Number)
   userId: number;
 
@@ -248,6 +264,7 @@ export class UserSyncProductGetCustomersByProductReqParamDto {
   })
   // =================================
   @Type(() => Number)
+  @IsInt()
   @Min(1)
   @IsNotEmpty()
   productId: number;
@@ -258,7 +275,8 @@ export class UserSyncProductGetPersonsByBusinessReqDto {
     description: '고객사 user.id',
   })
   // =================================
-  @IsNumber()
+  @IsInt()
+  @Min(1)
   @Type(() => Number)
   @IsNotEmpty()
   userId: number;
