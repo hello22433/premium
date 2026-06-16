@@ -4,7 +4,6 @@ import { In, MoreThan, Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { Transactional } from 'typeorm-transactional';
 import { randomUUID } from 'crypto';
-import { ulid } from 'ulid';
 import { addDays, format, subDays } from 'date-fns';
 import dayjs from 'dayjs';
 import * as fsPromises from 'fs/promises';
@@ -992,12 +991,22 @@ export class DeliveryBatchService {
             );
             return false;
           }
-          resendDeductionId = ulid();
-          await this.ssgEventService.deductEventBalance(newEvent.id, product.price, order.id, false);
+          const deduct = await this.ssgEventService.deductForReissueWithPending({
+            ssgEventId: newEvent.id,
+            amount: product.price,
+            orderId: order.id,
+            purpose: 'BATCH_RESEND',
+            issueOrderDeliveryId: orderDelivery.id,
+          });
+          resendDeductionId = deduct.resendDeductionId;
           ssgEvent = newEvent;
           resendDeducted = true;
         }
 
+        // 선차감 pending 에 issue 시도 기록 — sweep 이 W1(미시도 직접 역복원)과 구분하는 phase.
+        if (resendDeducted && resendDeductionId) {
+          await this.ssgEventService.markReissueIssueAttempted(resendDeductionId, orderDelivery.id);
+        }
         await this.partnerCompanyExternService.issue(orderDelivery, ssgEvent);
 
         if (!orderDelivery.barCode) {
@@ -1009,9 +1018,15 @@ export class DeliveryBatchService {
           return false;
         }
 
-        // 성공 시 ssgEventId 업데이트 (다른 행사로 변경된 경우)
+        // 성공 시 ssgEventId 업데이트 (다른 행사로 변경된 경우) + 선차감 pending KEPT 해소
         if (resendDeducted && ssgEvent) {
           orderDelivery.ssgEventId = ssgEvent.id;
+          if (resendDeductionId) {
+            // ssgEventId 를 먼저 durable 반영 후 pending KEPT — 그 사이 크래시 시에도 DB delivery 가
+            // 신규 행사를 가리켜 정합(MEDIUM-4). 미반영 상태로 KEPT 하면 sweep 이 repair 못 해 참조 불일치 잔존.
+            await this.orderDeliveryRepository.update(orderDelivery.id, { ssgEventId: ssgEvent.id });
+            await this.ssgEventService.resolveReissuePending(resendDeductionId, 'KEPT');
+          }
         }
 
         // 이전 실패로 환불된 금액 재차감 (PIN 실패든 발송 실패든)
@@ -1067,8 +1082,15 @@ export class DeliveryBatchService {
     if (!event) {
       return null;
     }
-    const resendDeductionId = ulid();
-    await this.ssgEventService.deductEventBalance(event.id, price, orderId, false);
+    // CS 폐기후신규: 선차감 시점엔 신규 delivery 미존재 → issueOrderDeliveryId=null.
+    // 신규 delivery 저장 후 markReissueIssueAttempted 로 실제 issue 대상 id 를 기록한다.
+    const { resendDeductionId } = await this.ssgEventService.deductForReissueWithPending({
+      ssgEventId: event.id,
+      amount: price,
+      orderId,
+      purpose: 'CS_REISSUE',
+      issueOrderDeliveryId: null,
+    });
     return { event, resendDeductionId };
   }
 
@@ -1084,13 +1106,64 @@ export class DeliveryBatchService {
     orderId: number,
     resendDeductionId: string,
   ): Promise<SsgRefundOutcome> {
-    return this.ssgRefundResolverService.resolveAndRefundIfNeeded({
+    const outcome = await this.ssgRefundResolverService.resolveAndRefundIfNeeded({
       orderDeliveryId: orderDelivery.id,
       ssgEventId,
       refundAmount,
       orderId,
       resendDeductionId,
     });
+    await this.resolveReissuePendingByOutcome(resendDeductionId, outcome);
+    return outcome;
+  }
+
+  /**
+   * issue() 미시도(미등록 확정) 구간 전용 선차감 직접 역복원.
+   * resolver(state 기준)를 타면 기존 폐기 대상 delivery 의 CONFIRMED 를 새 선차감 확정으로 오판해
+   * leak 이 생기므로(HIGH), 이 경로는 state 를 보지 않고 refundResendEventDeduction(멱등) 으로 즉시 역복원한다.
+   * 실패 시 pending 미해소 → sweep(W1, issue_attempted_at IS NULL) 가 재시도.
+   */
+  async reverseReissueDeductDirect(
+    resendDeductionId: string,
+    ssgEventId: number,
+    orderId: number,
+    amount: number,
+  ): Promise<void> {
+    try {
+      await this.ssgEventService.refundResendEventDeduction({ resendDeductionId, ssgEventId, orderId, amount });
+      await this.ssgEventService.resolveReissuePending(resendDeductionId, 'REVERSED');
+    } catch (e) {
+      this.logger.error(
+        `[RESEND] issue 전 선차감 직접 역복원 실패 — pending 미해소(sweep 재시도). resendDeductionId=${resendDeductionId}, error: ${e instanceof Error ? e.message : e}`,
+      );
+    }
+  }
+
+  /**
+   * CS 폐기후신규 경로용 passthrough — 선차감 pending 에 issue 시도(실제 신규 delivery id) 기록.
+   * sweep 이 W1(미시도 직접 역복원)과 issue 시도(state 기준 확정)를 구분하는 phase 마킹.
+   */
+  async markReissueIssueAttempted(resendDeductionId: string, issueOrderDeliveryId: number): Promise<void> {
+    await this.ssgEventService.markReissueIssueAttempted(resendDeductionId, issueOrderDeliveryId);
+  }
+
+  /**
+   * CS 폐기후신규 경로용 passthrough — issue 성공 시 선차감 pending 을 KEPT 로 해소.
+   */
+  async resolveReissuePendingKept(resendDeductionId: string): Promise<void> {
+    await this.ssgEventService.resolveReissuePending(resendDeductionId, 'KEPT');
+  }
+
+  /**
+   * 선차감 pending 을 resolver outcome 으로 해소한다.
+   * RESTORED→REVERSED(역복원됨) / SKIPPED_CONFIRMED→KEPT(등록 확정·차감 유지) / DEFERRED→유지(sweep 재시도).
+   */
+  private async resolveReissuePendingByOutcome(resendDeductionId: string, outcome: SsgRefundOutcome): Promise<void> {
+    if (outcome === SsgRefundOutcome.RESTORED) {
+      await this.ssgEventService.resolveReissuePending(resendDeductionId, 'REVERSED');
+    } else if (outcome === SsgRefundOutcome.SKIPPED_CONFIRMED) {
+      await this.ssgEventService.resolveReissuePending(resendDeductionId, 'KEPT');
+    }
   }
 
   /**
@@ -1113,6 +1186,7 @@ export class DeliveryBatchService {
       orderId,
       resendDeductionId,
     });
+    await this.resolveReissuePendingByOutcome(resendDeductionId, outcome);
     if (outcome === SsgRefundOutcome.DEFERRED) {
       this.logger.error(`[RESEND] 선차감 환불 DEFERRED — 운영 점검 필요. orderDelivery.id: ${orderDelivery.id}`);
     }

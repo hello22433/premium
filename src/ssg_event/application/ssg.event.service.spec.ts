@@ -23,6 +23,9 @@ describe('SsgEventService', () => {
     const resendDeductRecoveryRepository = {
       createQueryBuilder: jest.fn(),
     };
+    const resendDeductPendingRepository = {
+      createQueryBuilder: jest.fn(),
+    };
     const refundLedgerRepository = {
       findOne: jest.fn(),
     };
@@ -36,6 +39,7 @@ describe('SsgEventService', () => {
       reservationRangeRepository as any,
       recoveryLogRepository as any,
       resendDeductRecoveryRepository as any,
+      resendDeductPendingRepository as any,
       refundLedgerRepository as any,
       activityLogService as any,
       ssgIssue as any,
