@@ -4394,12 +4394,32 @@ export class OrderService {
     return;
   }
 
-  async excelDownload(user: ILoginUserInfo, getBody: OrderExcelDownloadReqBodyDto) {
+  /** 엑셀 다운로드 기간 상한 가드 (최대 N년). 범위 미지정 시 통과(스트리밍이 메모리 보호). 초과 시 400. */
+  private assertExcelExportRangeWithinYears(startAt?: string, endAt?: string, maxYears = 3): void {
+    if (!startAt || !endAt) return;
+    const start = new Date(startAt);
+    const end = new Date(endAt);
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) return;
+    const limit = new Date(start);
+    limit.setFullYear(limit.getFullYear() + maxYears);
+    if (end > limit) {
+      throw new BadRequestException(`엑셀 다운로드 기간은 최대 ${maxYears}년까지 가능합니다.`);
+    }
+  }
+
+  async excelDownload(
+    user: ILoginUserInfo,
+    getBody: OrderExcelDownloadReqBodyDto,
+    meta: { ipAddress: string; userAgent: string },
+  ) {
     const startTime = Date.now();
     const { searchType, searchKeyword, type, status, startAt, endAt, section, password, downloadReason, sendingType, dateType } = getBody;
 
     // 비밀번호 검증
     await this.activityLogService.verifyPassword(user.id, password);
+
+    // 기간 상한 가드 (최대 3년) — 폭탄 다운로드 입구 차단
+    this.assertExcelExportRangeWithinYears(startAt, endAt);
 
     const now = new Date();
     const nowString = format(now, 'yyyyMMdd');
@@ -4492,10 +4512,15 @@ export class OrderService {
     }
 
     queryBuilder = this.applyOrderDateCondition(queryBuilder, dateType, startAt, endAt);
+    queryBuilder = queryBuilder.orderBy('order.id', 'DESC');
 
-    const orderList = await queryBuilder.getMany();
+    // 스트리밍(정산 패턴): 조건에 맞는 order.id 만 경량 수집 → 500건 청크 재조회 → 행별 commit (메모리 평탄)
+    const idRows = await queryBuilder.clone().select('order.id', 'id').distinct(true).getRawMany();
+    const ids = idRows.map((r) => Number(r.id));
 
-    const workbook = new ExcelJS.Workbook();
+    const fileName = `${orderType}_리스트_${nowString}.xlsx`;
+    const filePath = createExportTempPath('xlsx');
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({ filename: filePath });
     const sheet = workbook.addWorksheet(`sheet1`);
 
     sheet.columns = [
@@ -4520,66 +4545,73 @@ export class OrderService {
     };
 
     let id = 1;
-    for (const order of orderList) {
-      let totalAmount = 0;
-      let productName = '';
-      let actualSendAt: Date | null = null;
+    let recordCount = 0;
+    const CHUNK = 500;
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const chunkIds = ids.slice(i, i + CHUNK);
+      // 청크 재조회는 queryBuilder(orderBy id DESC) clone 이라 정렬 보존
+      const chunkList = await queryBuilder
+        .clone()
+        .andWhere('order.id IN (:...chunkIds)', { chunkIds })
+        .getMany();
+      for (const order of chunkList) {
+        let totalAmount = 0;
+        let productName = '';
+        let actualSendAt: Date | null = null;
 
-      if (order.orderProductMappings && order.orderProductMappings.length > 0) {
-        totalAmount = order.orderProductMappings.reduce((acc, cur) => {
-          return acc + cur.amount;
-        }, 0);
-        const firstProduct = order.orderProductMappings[0].product;
-        productName = firstProduct ? firstProduct.name : '(삭제된 상품)';
-        const orderProductMappingsLength = order.orderProductMappings.length;
-        if (orderProductMappingsLength - 1 > 0) {
-          productName += `외 ${orderProductMappingsLength - 1}건`;
-        }
+        if (order.orderProductMappings && order.orderProductMappings.length > 0) {
+          totalAmount = order.orderProductMappings.reduce((acc, cur) => {
+            return acc + cur.amount;
+          }, 0);
+          const firstProduct = order.orderProductMappings[0].product;
+          productName = firstProduct ? firstProduct.name : '(삭제된 상품)';
+          const orderProductMappingsLength = order.orderProductMappings.length;
+          if (orderProductMappingsLength - 1 > 0) {
+            productName += `외 ${orderProductMappingsLength - 1}건`;
+          }
 
-        // 실제 발송 시간 추출 (첫 번째 유효한 값 사용)
-        for (const mapping of order.orderProductMappings) {
-          if (mapping.orderDeliveries) {
-            for (const delivery of mapping.orderDeliveries) {
-              if (delivery.actualSendAt) {
-                actualSendAt = delivery.actualSendAt;
-                break;
+          // 실제 발송 시간 추출 (첫 번째 유효한 값 사용)
+          for (const mapping of order.orderProductMappings) {
+            if (mapping.orderDeliveries) {
+              for (const delivery of mapping.orderDeliveries) {
+                if (delivery.actualSendAt) {
+                  actualSendAt = delivery.actualSendAt;
+                  break;
+                }
               }
             }
+            if (actualSendAt) break;
           }
-          if (actualSendAt) break;
         }
+
+        // 엑셀 출력: 주문 시점 스냅샷 우선, NULL이면 clientUser ?? user FK로 fallback
+        const billing = readBillingView(order);
+
+        sheet
+          .addRow({
+            id: id,
+            registerAt: format(order.registerAt, 'yyyy-MM-dd HH:mm'),
+            userBusinessName: billing.businessName,
+            userPersonName: billing.personName,
+            eventName: order.eventName,
+            productName: productName,
+            totalAmount: totalAmount,
+            sendAmount: order.sendAmount,
+            settleAmount: order.settleAmount,
+            status: OrderStatusExcelMapping(order.status),
+            sendRequestAt: getActualSendAt(actualSendAt),
+          })
+          .commit();
+        id++;
+        recordCount++;
       }
-
-      // 첫 번째 상품의 발송 정보 사용
-      const firstMapping = order.orderProductMappings?.[0];
-
-      // 엑셀 출력: 주문 시점 스냅샷 우선, NULL이면 clientUser ?? user FK로 fallback
-      const billing = readBillingView(order);
-
-      sheet.addRow({
-        id: id,
-        registerAt: format(order.registerAt, 'yyyy-MM-dd HH:mm'),
-        userBusinessName: billing.businessName,
-        userPersonName: billing.personName,
-        eventName: order.eventName,
-        productName: productName,
-        totalAmount: totalAmount,
-        sendAmount: order.sendAmount,
-        settleAmount: order.settleAmount,
-        status: OrderStatusExcelMapping(order.status),
-        sendRequestAt: getActualSendAt(actualSendAt),
-      });
-      id++;
     }
 
-    const fileName = `${orderType}_리스트_${nowString}.xlsx`;
-    const filePath = createExportTempPath('xlsx');
-
-    await workbook.xlsx.writeFile(filePath);
+    await sheet.commit();
+    await workbook.commit();
 
     // 성공 로그 저장
     const responseTime = Date.now() - startTime;
-    const recordCount = orderList.length;
     const { password: _, ...requestParams } = getBody;
 
     await this.activityLogService.createLog({
@@ -4588,8 +4620,8 @@ export class OrderService {
       method: 'POST',
       requestUrl: '/order/excel-download',
       actionType: 'EXCEL_DOWNLOAD',
-      ipAddress: '',
-      userAgent: '',
+      ipAddress: meta.ipAddress,
+      userAgent: meta.userAgent,
       statusCode: 200,
       result: ActivityLogResult.SUCCESS,
       responseTime,

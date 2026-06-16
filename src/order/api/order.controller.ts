@@ -599,10 +599,13 @@ export class OrderController {
   async excelDownload(
     @User() user: ILoginUserInfo,
     @Body() getBody: OrderExcelDownloadReqBodyDto,
+    @Req() req: Request,
     @Res() res: Response,
   ) {
     try {
-      const { fileName, filePath } = await this.orderService.excelDownload(user, getBody);
+      const ipAddress = req.ip || req.headers['x-forwarded-for']?.toString() || '';
+      const userAgent = req.headers['user-agent'] || '';
+      const { fileName, filePath } = await this.orderService.excelDownload(user, getBody, { ipAddress, userAgent });
 
       const encodedFileName = encodeURIComponent(fileName);
       res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');

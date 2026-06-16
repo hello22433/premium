@@ -10,6 +10,7 @@ import {
   Post,
   Put,
   Query,
+  Req,
   Res,
   UseFilters,
   UseGuards,
@@ -71,7 +72,7 @@ import {
 } from './settle.req.dto';
 import { SettleUserDetailMultipleDto } from './dto/settle.user.detail.multiple.dto';
 import * as fs from 'fs';
-import { Response } from 'express';
+import { Request, Response } from 'express';
 import { UserAuthSubEnum } from '../../user_management/domain/user.auth.enum';
 import { AuthService } from '../../auth/application/auth.service';
 
@@ -264,10 +265,12 @@ export class SettleController {
   async mobileExcelDownload(
     @User() user: ILoginUserInfo,
     @Body() getBody: SettleMobileExcelDownloadReqDto,
+    @Req() req: Request,
     @Res() res: Response,
   ) {
     try {
-      const { fileName, filePath } = await this.settleService.mobileExcelDownload(user, getBody);
+      const ipAddress = req.ip || req.headers['x-forwarded-for']?.toString() || '';
+      const { fileName, filePath } = await this.settleService.mobileExcelDownload(user, getBody, ipAddress);
 
       const encodedFileName = encodeURIComponent(fileName);
       res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
@@ -310,10 +313,12 @@ export class SettleController {
   async partnerCompanyExcelDownload(
     @User() user: ILoginUserInfo,
     @Body() body: SettlePartnerCompanyExcelDownloadReqDto,
+    @Req() req: Request,
     @Res() res: Response,
   ) {
     await this.authService.authorityValidator(user, UserAuthSubEnum.SETTLE_PARTNER_COMPANY);
-    const { fileName, filePath } = await this.settleService.partnerCompanyExcelDownload(user, body);
+    const ipAddress = req.ip || req.headers['x-forwarded-for']?.toString() || '';
+    const { fileName, filePath } = await this.settleService.partnerCompanyExcelDownload(user, body, ipAddress);
     res.download(filePath, fileName, (err) => {
       if (err) {
         this.logger.error(`Error downloading file: ${err}`);
@@ -424,11 +429,13 @@ export class SettleController {
     @User() user: ILoginUserInfo,
     @Body()
     getBody: SettleGetUserExcelDownloadReqDto,
+    @Req() req: Request,
     @Res()
     res: Response,
   ) {
     try {
-      const { fileName, filePath, recordCount } = await this.settleService.getUserExcelDownload(user, getBody);
+      const ipAddress = req.ip || req.headers['x-forwarded-for']?.toString() || '';
+      const { fileName, filePath, recordCount } = await this.settleService.getUserExcelDownload(user, getBody, ipAddress);
 
       const encodedFileName = encodeURIComponent(fileName);
       res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
@@ -532,10 +539,12 @@ export class SettleController {
   async galaxiaExcelDownload(
     @User() user: ILoginUserInfo,
     @Body() body: SettleGalaxiaExcelDownloadReqDto,
+    @Req() req: Request,
     @Res() res: Response,
   ) {
     await this.authService.authorityValidator(user, UserAuthSubEnum.SETTLE_PARTNER_COMPANY);
-    const { fileName, filePath } = await this.settleService.galaxiaExcelDownload(user, body);
+    const ipAddress = req.ip || req.headers['x-forwarded-for']?.toString() || '';
+    const { fileName, filePath } = await this.settleService.galaxiaExcelDownload(user, body, ipAddress);
     res.download(filePath, fileName, (err) => {
       if (err) {
         this.logger.error(`Error downloading file: ${err}`);
