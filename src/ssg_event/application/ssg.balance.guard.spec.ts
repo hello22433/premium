@@ -66,4 +66,36 @@ describe('evaluateSsgEventSignals', () => {
     const r = evaluateSsgEventSignals({ ...base, eventBalance: 1010, eventPrice: 1000, failAmt: 5, orderAmount: 1 });
     expect(r.reasons.length).toBeGreaterThanOrEqual(2);
   });
+
+  it('B 경계 등호: ssgRemaining===orderAmount 이면 B 경고 안 함(< 이지 <= 아님)', () => {
+    const r = evaluateSsgEventSignals({ ...base, eventPrice: 1000, successAmt: 0, pendingAmt: 0, orderAmount: 1000 });
+    expect(r.signals.B_capacityRisk).toBe(false);
+  });
+
+  it('B 경계 초과: orderAmount가 ssgRemaining보다 1 크면 B 경고', () => {
+    const r = evaluateSsgEventSignals({ ...base, eventPrice: 1000, successAmt: 0, pendingAmt: 0, orderAmount: 1001 });
+    expect(r.signals.B_capacityRisk).toBe(true);
+  });
+
+  it('A2 tol 경계 등호: ρ===tol 이면 A2 경고 안 함(> 이지 >= 아님)', () => {
+    const r = evaluateSsgEventSignals({ ...base, eventBalance: 1005, eventPrice: 1000, orderAmount: 1, tol: 5 });
+    expect(r.signals.A2_overRefund).toBe(false);
+  });
+
+  it('다중신호 동시: 세 플래그 모두 독립적으로 트리거되고 reasons가 3개', () => {
+    // F>0 → A1, ρ>tol → A2(Bal=1010,P=1000,rho=10+5=15>tol=5), ssgRemaining=P-S-Pend=1000-990-0=10<orderAmount=11 → B
+    const r = evaluateSsgEventSignals({
+      ...base,
+      eventBalance: 1010,
+      eventPrice: 1000,
+      successAmt: 990,
+      failAmt: 5,
+      pendingAmt: 0,
+      openTempDeduction: 0,
+      orderAmount: 11,
+      tol: 5,
+    });
+    expect(r.signals).toEqual({ A1_issueFail: true, A2_overRefund: true, B_capacityRisk: true });
+    expect(r.reasons.length).toBe(3);
+  });
 });
