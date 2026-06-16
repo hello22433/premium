@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, InternalServerErrorException, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, InternalServerErrorException, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { applyReplaceCharacters } from '../../common/utils/replace-characters.util';
 import {
@@ -19,7 +19,7 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { Transactional } from 'typeorm-transactional';
 import { OrderEntity } from '../../entity/order.entity';
-import { DataSource, IsNull, QueryRunner, Repository } from 'typeorm';
+import { DataSource, IsNull, MoreThanOrEqual, QueryRunner, Repository } from 'typeorm';
 import { CustomerServiceGetListResDto } from '../api/customer.service.res.dto';
 import { DateFormatStr, DateEndMinuteFormatStr } from '../../common/domain/date.format.str';
 import { format } from 'date-fns';
@@ -1484,6 +1484,79 @@ export class CustomerServiceService {
   }
 
   /**
+   * 재전송 실행 (중복 발송 방어).
+   * 비관락(pessimistic_write)으로 동시·연속 재전송 요청을 직렬화하고,
+   * 락 보유 중 최근 시간창 내 동일 건 '재전송' 이력이 있으면 중복으로 보고 거부한다.
+   * 더블클릭/더블서밋으로 같은 발송 건이 2회 나가던 문제를 막는다.
+   * 발송 성공 후 같은 트랜잭션에서 이력을 저장하므로, 이 이력 자체가 후속 요청의 dedup 마커가 된다.
+   * 발송 실패 시 트랜잭션 롤백 → 이력 미생성 → 거짓 차단 없음.
+   */
+  @Transactional()
+  private async execResend(map: any): Promise<void> {
+    // 같은 건을 이 시간(ms) 내 다시 재전송하면 중복으로 간주하고 차단한다.
+    const RESEND_DEDUP_WINDOW_MS = 10_000;
+
+    // 1. 비관락 — 동시·연속 재전송 요청 직렬화 (reSend 와 동일 패턴)
+    const locked = await this.orderDeliveryRepository
+      .createQueryBuilder('orderDelivery')
+      .setLock('pessimistic_write')
+      .where('orderDelivery.id = :id', { id: map.orderDeliveryId })
+      .getOne();
+    if (!locked) {
+      throw new BadRequestException('존재하지 않는 발송 정보입니다.');
+    }
+
+    // 2. dedup — 락 보유 중 최근 시간창 내 동일 건 재전송 이력 확인
+    const dedupSince = new Date(Date.now() - RESEND_DEDUP_WINDOW_MS);
+    const recentResendCount = await this.orderHistoryRepository.count({
+      where: {
+        orderDeliveryId: map.orderDeliveryId,
+        type: '재전송',
+        createdAt: MoreThanOrEqual(dedupSince),
+      },
+    });
+    if (recentResendCount > 0) {
+      throw new ConflictException('이미 재전송 요청이 처리되었습니다. 잠시 후 다시 시도해주세요.');
+    }
+
+    // 3. 실제 발송
+    switch (map.extraType) {
+      case 'sms': {
+        await this.deliveryBatchService.csResendAsSms(map.orderDeliveryId);
+        break;
+      }
+      case 'forced_mms': {
+        await this.deliveryBatchService.csResendAsMms(map.orderDeliveryId);
+        break;
+      }
+      case 'alimtalk': {
+        await this.deliveryBatchService.csResendAsAlimTalk(map.orderDeliveryId);
+        break;
+      }
+      case 'email': {
+        await this.deliveryBatchService.csResendAsEmail(map.orderDeliveryId);
+        break;
+      }
+      default: {
+        throw new BadRequestException('지원하지 않는 재전송 유형입니다.');
+      }
+    }
+
+    // 4. 이력 저장 — 락 보유 중 커밋되어 후속 중복 요청의 dedup 마커가 된다
+    await this.orderHistoryRepository.save(
+      this.orderHistoryRepository.create({
+        orderDeliveryId: map.orderDeliveryId,
+        userId: map.userId,
+        type: map.type,
+        content: map.content,
+        sendMethod: map.sendMethod,
+        beforeChange: map.beforeChange,
+        afterChange: '',
+      }),
+    );
+  }
+
+  /**
    * CS 등록 API 서비스실행
    * @param map
    */
@@ -1498,28 +1571,10 @@ export class CustomerServiceService {
         break;
       }
       case '재전송': {
-        switch (map.extraType) {
-          case 'sms': {
-            await this.deliveryBatchService.csResendAsSms(map.orderDeliveryId);
-            break;
-          }
-          case 'forced_mms': {
-            await this.deliveryBatchService.csResendAsMms(map.orderDeliveryId);
-            break;
-          }
-          case 'alimtalk': {
-            await this.deliveryBatchService.csResendAsAlimTalk(map.orderDeliveryId);
-            break;
-          }
-          case 'email': {
-            await this.deliveryBatchService.csResendAsEmail(map.orderDeliveryId);
-            break;
-          }
-          default: {
-            throw new BadRequestException('지원하지 않는 재전송 유형입니다.');
-          }
-        }
-        break;
+        // 더블클릭/더블서밋으로 같은 건이 2회 발송되던 문제 방어.
+        // execResend 가 비관락·dedup·발송·이력저장을 한 트랜잭션에서 처리하므로 공통 이력 저장은 건너뛴다.
+        await this.execResend(map);
+        return;
       }
       case '수신정보 변경요청': {
         const orderDelivery = map.orderDelivery as OrderDeliveryEntity;
