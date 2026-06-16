@@ -364,6 +364,19 @@ export class OrderRealProductService {
       throw new BadRequestException('존재하지 않는 상품을 추가하였습니다.');
     }
 
+    for (const realProduct of orderRealProductList) {
+      const quantity = realProduct.quantity;
+      const price = realProduct.price ?? 0;
+
+      if (!Number.isInteger(quantity) || quantity < 1) {
+        throw new BadRequestException('수량은 1개 이상이어야 합니다.');
+      }
+
+      if (!Number.isInteger(price) || price < 1) {
+        throw new BadRequestException('공급가액을 입력해주세요.');
+      }
+    }
+
     const savedOrder = this.orderRepository.create({
       userId: user.id, // 로그인한 관리자 user id
       businessUserId: userBusiness.id, // 고객사 id

@@ -62,12 +62,20 @@ const createService = () => {
     activityLogService as any,
   );
 
-  return { service, orderRepository, orderProductMappingRepository, productRepository, userRepository, activityLogService };
+  return {
+    service,
+    orderRepository,
+    orderProductMappingRepository,
+    productRepository,
+    userRepository,
+    activityLogService,
+  };
 };
 
 describe('OrderRealProductService 금액 산식', () => {
   it.each([0, -1])('실물상품 주문 생성 시 수량이 %s이면 저장하지 않고 실패한다', async (quantity) => {
-    const { service, orderRepository, orderProductMappingRepository, productRepository, userRepository } = createService();
+    const { service, orderRepository, orderProductMappingRepository, productRepository, userRepository } =
+      createService();
 
     userRepository.findOne.mockResolvedValue({ id: 100 });
     productRepository.find.mockResolvedValue([{ id: 200, price: 50000 }]);
@@ -88,6 +96,33 @@ describe('OrderRealProductService 금액 산식', () => {
     ).rejects.toThrow('수량은 1개 이상이어야 합니다.');
 
     expect(orderProductMappingRepository.save).not.toHaveBeenCalled();
+    expect(orderRepository.save).not.toHaveBeenCalled();
+  });
+
+  it.each([0, -10000])('실물상품 주문 생성 시 공급가액이 %s이면 저장하지 않고 실패한다', async (price) => {
+    const { service, orderRepository, orderProductMappingRepository, productRepository, userRepository } =
+      createService();
+
+    userRepository.findOne.mockResolvedValue({ id: 100 });
+    productRepository.find.mockResolvedValue([{ id: 200, price: 50000 }]);
+    orderRepository.create.mockReturnValue({ id: 1 });
+
+    await expect(
+      service.order(
+        { id: 1, authority: IUserAuthority.SUPER_ADMIN } as any,
+        {
+          userId: 100,
+          eventName: '이벤트',
+          publicChargeTaxPayment: 'PERSON',
+          processMethod: 'PRE',
+          isProcess: false,
+          orderRealProductList: [{ productId: 200, quantity: 1, price }],
+        } as any,
+      ),
+    ).rejects.toThrow('공급가액을 입력해주세요.');
+
+    expect(orderProductMappingRepository.save).not.toHaveBeenCalled();
+    expect(orderRepository.save).not.toHaveBeenCalled();
   });
 
   it.each([0, -10000])('실물상품 가격 수정 시 가격이 %s이면 저장하지 않고 실패한다', async (price) => {
