@@ -1,4 +1,11 @@
 {
   "extends": "./tsconfig.json",
-  "exclude": ["node_modules", "test", "dist", "**/*spec.ts"]
+  "exclude": [
+    "node_modules",
+    "test",
+    "dist",
+    "**/*spec.ts",
+    // 수동 ERP 스모크 스크립트. ecount IP 화이트리스트 미등록 머신에선 실패하므로 빌드/테스트에서 제외.
+    "src/erp/erp.smoke.ts"
+  ]
 }

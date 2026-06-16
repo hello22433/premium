@@ -1,6 +1,6 @@
 export interface ErpLoginOut {
   Data: LoginData; // 응답에 포함된 데이터
-  Status: string; // 처리 상태 (예: "200")
+  Status: number | string; // 처리 상태 (예: 200) — ecount 는 number, 방어적으로 string 도 허용
   Error: any | null; // 오류 정보 (null 가능)
   Timestamp: string; // 응답 시간이 기록된 타임스탬프
 }

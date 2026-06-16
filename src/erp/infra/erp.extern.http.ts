@@ -34,8 +34,10 @@ export class ErpExternHttp implements IErpExtern {
   private loginPromise: Promise<{ zone: string; sessionId: string }> | null = null;
 
   private saleUrl = 'https://oapi{ZONE}.ecount.com/OAPI/V2/Sale/SaveSale?SESSION_ID={SESSION_ID}';
-  private productListUrl = 'https://oapi{ZONE}.ecount.com/OAPI/V2/InventoryBasic/GetBasicProductsList?SESSION_ID={SESSION_ID}';
-  private productDetailUrl = 'https://oapi{ZONE}.ecount.com/OAPI/V2/InventoryBasic/ViewBasicProduct?SESSION_ID={SESSION_ID}';
+  private productListUrl =
+    'https://oapi{ZONE}.ecount.com/OAPI/V2/InventoryBasic/GetBasicProductsList?SESSION_ID={SESSION_ID}';
+  private productDetailUrl =
+    'https://oapi{ZONE}.ecount.com/OAPI/V2/InventoryBasic/ViewBasicProduct?SESSION_ID={SESSION_ID}';
   private zoneUrl = 'https://oapi.ecount.com/OAPI/V2/Zone';
   private loginUrl = 'https://oapi{ZONE}.ecount.com/OAPI/V2/OAPILogin';
 
@@ -94,7 +96,7 @@ export class ErpExternHttp implements IErpExtern {
 
   async getProductsList(req: ErpProductListRequest): Promise<ErpProductListResponse> {
     const result = await this.callErpApi<ErpProductListResponse>(this.productListUrl, req);
-    if (result.Status !== '200') {
+    if (Number(result.Status) !== 200) {
       this.logger.error(JSON.stringify(result));
       this.invalidateSession();
       throw new Error('ERP 품목 목록 조회 실패');
@@ -104,7 +106,7 @@ export class ErpExternHttp implements IErpExtern {
 
   async getProduct(req: ErpProductDetailRequest): Promise<ErpProductListResponse> {
     const result = await this.callErpApi<ErpProductListResponse>(this.productDetailUrl, req);
-    if (result.Status !== '200') {
+    if (Number(result.Status) !== 200) {
       this.logger.error(JSON.stringify(result));
       this.invalidateSession();
       throw new Error('ERP 품목 단건 조회 실패');
@@ -138,7 +140,7 @@ export class ErpExternHttp implements IErpExtern {
       const response = await firstValueFrom(this.httpService.post(url, data, {}));
       const result = response.data as ErpLoginOut;
 
-      if (result.Status !== '200') {
+      if (Number(result.Status) !== 200) {
         this.logger.error(JSON.stringify(result));
         throw new Error('erp 로그인 실패');
       }

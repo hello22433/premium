@@ -92,7 +92,7 @@ export interface ErpProductResponseData {
 }
 
 export interface ErpProductListResponse {
-  Status: string;
+  Status: number | string;
   Error: { Code?: string; Message?: string; MessageDetail?: string } | null;
   Data: ErpProductResponseData | null;
 }
