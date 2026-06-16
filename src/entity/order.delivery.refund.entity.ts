@@ -71,4 +71,20 @@ export class OrderDeliveryRefundEntity {
    */
   @Column({ type: 'boolean', name: 'ssg_balance_settled', default: true })
   ssgBalanceSettled: boolean;
+
+  /**
+   * 후속 lease/token/sweep 용 컬럼 (이번 단계는 스키마만 추가, 미사용).
+   * docs/plans/2026-06-12-external-api-wallet-integration.md B-4/B-6.
+   */
+  @Column({ type: 'varchar', length: 26, name: 'ssg_recover_token', nullable: true })
+  ssgRecoverToken: string | null;
+
+  @Column({ type: 'datetime', precision: 6, name: 'ssg_recover_lease_until', nullable: true })
+  ssgRecoverLeaseUntil: Date | null;
+
+  @Column({ type: 'int', name: 'ssg_recover_attempts', default: 0 })
+  ssgRecoverAttempts: number;
+
+  @Column({ type: 'datetime', precision: 6, name: 'ssg_recover_escalated_at', nullable: true })
+  ssgRecoverEscalatedAt: Date | null;
 }

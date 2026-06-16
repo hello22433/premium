@@ -18,6 +18,7 @@ import { WalletAccountResolverService } from './application/wallet-account-resol
 import { WalletReadService } from './application/wallet-read.service';
 import { PointPolicyService } from './application/point-policy.service';
 import { PaymentAllocationService } from './application/payment-allocation.service';
+import { WalletAllocationInputBuilder } from './application/wallet-allocation-input.builder';
 import { WalletLedgerService } from './application/wallet-ledger.service';
 import { CreditExcessApprovalService } from './application/credit-excess-approval.service';
 import { OrderConfirmationWalletService } from './application/order-confirmation-wallet.service';
@@ -66,6 +67,7 @@ import { CreditExcessApprovalController } from './api/credit-excess-approval.con
     WalletReadService,
     PointPolicyService,
     PaymentAllocationService,
+    WalletAllocationInputBuilder,
     WalletLedgerService,
     CreditExcessApprovalService,
     OrderConfirmationWalletService,
@@ -92,6 +94,7 @@ import { CreditExcessApprovalController } from './api/credit-excess-approval.con
     WalletReadService,
     PointPolicyService,
     PaymentAllocationService,
+    WalletAllocationInputBuilder,
     WalletLedgerService,
     CreditExcessApprovalService,
     OrderConfirmationWalletService,

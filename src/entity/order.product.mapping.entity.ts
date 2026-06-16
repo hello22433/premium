@@ -107,6 +107,21 @@ export class OrderProductMappingEntity extends BaseEntity {
   @Column({ type: 'int', default: 0, comment: '테스트 전송 카운트 횟수' })
   testDeliveryCount: number;
 
+  @Column({ type: 'int', nullable: true, comment: '[snapshot] 주문 시점 상품 단가' })
+  snapshotProductPrice: number | null;
+
+  @Column({ type: 'varchar', length: 255, nullable: true, comment: '[snapshot] 주문 시점 상품명' })
+  snapshotProductName: string | null;
+
+  @Column({ type: 'varchar', length: 255, nullable: true, comment: '[snapshot] 주문 시점 브랜드명' })
+  snapshotProductBrandName: string | null;
+
+  @Column({ type: 'int', nullable: true, comment: '[snapshot] 주문 시점 유효기간 일수' })
+  snapshotProductExpireDay: number | null;
+
+  @Column({ type: 'varchar', length: 500, nullable: true, comment: '[snapshot] 주문 시점 상품 이미지 경로' })
+  snapshotProductImagePath: string | null;
+
   @ManyToOne(() => OrderEntity, { createForeignKeyConstraints: false })
   @JoinColumn({ name: 'order_id' })
   order: OrderEntity;

@@ -59,10 +59,10 @@ import {
 import { OrderEntity } from '../../entity/order.entity';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
+  EntityManager,
   In,
   LessThanOrEqual,
   Like,
-  MoreThan,
   MoreThanOrEqual,
   ObjectLiteral,
   QueryRunner,
@@ -98,14 +98,18 @@ import { createExportTempPath } from '../../util/file.util';
 import { UserEntity } from '../../entity/user.entity';
 import { UserCompanyEntity } from '../../entity/user.company.entity';
 import {
+  buildLineProductSnapshot,
   buildOrderClientUserSnapshot,
   buildOrderOperationUserSnapshot,
   buildOrderUserSnapshot,
+  buildPriceDivergence,
   readBillingView,
   readClientUserView,
+  readLineProductView,
   readOperationPersonName,
   readUserView,
 } from '../util/order.snapshot.builder';
+import { assertLineIdsValid, OwnedLine, resolveLineSnapshot } from './order.snapshot.update.helper';
 import { UserViewScopeEntity, ViewScopeType } from '../../entity/user.view.scope.entity';
 import { IUserAuthority } from '../../user/interface/user.authority';
 import { IUserSettleCondition } from '../../user/interface/user.settle.condition';
@@ -133,7 +137,7 @@ import { IProductType } from '../../product/interface/product.type';
 import { defaultOrderMidImagePath, defaultOrderTopImagePath } from '../../const';
 import { OrderStatusExcelMapping } from '../domain/order.excel.mapping';
 import { OrderFeeCalculator, applyCardSurcharge } from '../domain/order.fee.calculator';
-import { calculateOrderSettlementAmount, calculateSettlementPrice } from '../../util/settle-fee.util';
+import { calculateOrderSettlementAmount } from '../../util/settle-fee.util';
 import { OrderCustomerViewDto } from '../api/dto/order.customer.view.dto';
 import { MaskingUtil } from '../../common/utils/masking.util';
 import { resolveExpireDays } from '../../common/utils/expire.util';
@@ -155,16 +159,13 @@ import { ActivityLogResult } from '../../activity_log/interface/activity.log.res
 import { WalletCutoverConfig, WalletCutoverMode } from '../../wallet/config/wallet-cutover.config';
 import { WalletManagedPredicate } from '../../wallet/application/wallet-managed.predicate';
 import { WalletAccountResolverService } from '../../wallet/application/wallet-account-resolver.service';
+import { WalletAccountEntity } from '../../entity/wallet.account.entity';
 import {
   AllocationInput,
-  AllocationInputGrant,
-  AllocationLineInput,
   AllocationResult,
   PaymentAllocationService,
 } from '../../wallet/application/payment-allocation.service';
-import { PointPolicyService } from '../../wallet/application/point-policy.service';
-import { PointPolicyEffect } from '../../wallet/interface/point-policy-scope';
-import { PointGrantEntity } from '../../entity/point.grant.entity';
+import { WalletAllocationInputBuilder } from '../../wallet/application/wallet-allocation-input.builder';
 import { ForbiddenWordMatcher } from '../../forbidden_word/application/forbidden.word.matcher';
 import { ForbiddenWordBlockLogEntity } from '../../entity/forbidden.word.block.log.entity';
 import { OrderProductCreateTempDto } from '../api/dto/order.product.create.temp.dto';
@@ -276,112 +277,12 @@ export class OrderService {
     private readonly orderConfirmationWalletService: OrderConfirmationWalletService,
     private readonly orderConfirmationReleaseService: OrderConfirmationReleaseService,
     private readonly shadowMismatchClassifierService: ShadowMismatchClassifierService,
-    private readonly pointPolicyService: PointPolicyService,
-    @InjectRepository(PointGrantEntity)
-    private readonly pointGrantRepository: Repository<PointGrantEntity>,
+    private readonly walletAllocationInputBuilder: WalletAllocationInputBuilder,
     private readonly forbiddenWordMatcher: ForbiddenWordMatcher,
     @InjectRepository(ForbiddenWordBlockLogEntity)
     private readonly forbiddenWordBlockLogRepository: Repository<ForbiddenWordBlockLogEntity>,
     private readonly orderFromService: OrderFromService,
   ) {}
-
-  /**
-   * Wallet Cutover Bundle — order → AllocationInput 변환.
-   *
-   * - 라인 단위 gross: `calculateSettlementPrice(mapping, false, delivery)`
-   * - 카드할증: 주문 단위 1회 적용 (PaymentAllocationService 내부) → false 로 계산
-   * - pointPolicyEffect: PointPolicyService.evaluate 로 라인별 ALLOW/DENY 평가
-   * - 예치금: 선정산 = 자동 전액, 후정산 = depositUseEnabled 토글 기준
-   * - grants: requestedPointAmount > 0 일 때만 DB 조회
-   */
-  private async buildWalletAllocationInput(
-    order: OrderEntity,
-    wallet: { id: string; depositBalance: number; creditLimit: number; creditUsedAmount: number; settleCondition: 'PRE_PAYMENT' | 'POST_PAYMENT' },
-    finalAmount: number,
-    opts: {
-      requestedPointAmount?: number;
-      depositUseEnabled?: boolean;
-      depositUseAmount?: number;
-      companyId: number | null;
-    },
-  ): Promise<AllocationInput> {
-    void finalAmount; // allocate() 가 라인 합으로 다시 계산 — 호출자가 일관성 검증용으로만 사용
-    const isPrePayment = wallet.settleCondition === 'PRE_PAYMENT';
-
-    // 라인별 포인트 정책(ALLOW/DENY) 평가. 같은 매핑은 scope 동일 → 매핑 단위 캐시로 중복 쿼리 방지.
-    const effectByMapping = new Map<number, PointPolicyEffect>();
-    const lines: AllocationLineInput[] = [];
-    for (const mapping of order.orderProductMappings ?? []) {
-      let effect = effectByMapping.get(mapping.id);
-      if (effect === undefined) {
-        effect = await this.pointPolicyService.evaluate({
-          companyId: opts.companyId,
-          scope: {
-            productId: mapping.productId,
-            brandId: mapping.product?.brandId ?? null,
-            brandName: mapping.product?.brand?.nameKorean ?? null,
-            category: mapping.product?.category ?? null,
-            partnerCompanyCode: mapping.product?.partnerCompany?.code ?? null,
-            orderType: order.type as unknown as string,
-          },
-        });
-        effectByMapping.set(mapping.id, effect);
-      }
-      for (const delivery of mapping.orderDeliveries) {
-        lines.push({
-          orderProductMappingId: mapping.id,
-          orderDeliveryId: delivery.id,
-          productId: mapping.productId,
-          brandId: mapping.product?.brandId ?? null,
-          category: mapping.product?.category ?? null,
-          partnerCompanyId: mapping.product?.partnerCompanyId ?? null,
-          orderType: order.type as unknown as string,
-          grossSettlementAmount: calculateSettlementPrice(mapping, false, delivery),
-          appliedFeePercent: mapping.fee,
-          appliedPriceAdjustment: mapping.priceAdjustment as 'DISCOUNT' | 'ADDITIONAL' | null,
-          pointPolicyEffect: effect === PointPolicyEffect.DENY ? 'DENY' : 'ALLOW',
-        });
-      }
-    }
-
-    const requestedPointAmount = opts.requestedPointAmount ?? 0;
-
-    // 예치금: 선정산 = 자동 전액(입력 무시), 후정산 = 토글 ON 일 때만 (금액 미지정 시 잔액 한도까지).
-    let requestedDepositAmount: number | null;
-    if (isPrePayment) {
-      requestedDepositAmount = null; // allocate() 가 availableDeposit 까지 자동 사용
-    } else if (opts.depositUseEnabled) {
-      requestedDepositAmount = opts.depositUseAmount ?? wallet.depositBalance;
-    } else {
-      requestedDepositAmount = 0;
-    }
-
-    return {
-      orderId: order.id,
-      walletAccountId: wallet.id,
-      lines,
-      cardSurchargeApplied: order.cardSurchargeApplied,
-      requestedPointAmount,
-      requestedDepositAmount,
-      availableDeposit: wallet.depositBalance,
-      creditLimit: wallet.creditLimit,
-      creditUsedAmountBefore: wallet.creditUsedAmount,
-      isPrePayment,
-      grants: requestedPointAmount > 0 ? await this.loadPointGrants(wallet.id) : [],
-    };
-  }
-
-  /** 포인트 사용 가능 grant 목록 (active + 잔여>0). allocate() 가 만료임박순 + FIFO 로 소비. */
-  private async loadPointGrants(walletAccountId: string): Promise<AllocationInputGrant[]> {
-    const grants = await this.pointGrantRepository.find({
-      where: { walletAccountId, active: 1, remainingAmount: MoreThan(0) },
-    });
-    return grants.map((g) => ({
-      pointGrantId: g.id,
-      remainingAmount: g.remainingAmount,
-      expiresAt: g.expiresAt,
-    }));
-  }
 
   /**
    * 사용액 입력 검증 (clamp 금지). allocate() 의 Math.min 은 초과분을 조용히 잘라내므로
@@ -428,7 +329,7 @@ export class OrderService {
 
   /**
    * 요청1 — 분배 미리보기 (dry-run). DB 차감/allocation row 생성 없음 (allocate 는 순수 함수).
-   * 발송확정과 동일한 buildWalletAllocationInput + allocate 경로를 거쳐 미리보기/확정 계산 일치 보장.
+   * 발송확정과 동일한 walletAllocationInputBuilder.build + allocate 경로를 거쳐 미리보기/확정 계산 일치 보장.
    * 권한·상태 검증도 발송확정과 동일 (타 주문 wallet/잔액 정보 노출 차단).
    */
   async previewAllocation(
@@ -468,7 +369,7 @@ export class OrderService {
     const wallet = await this.walletAccountResolverService.resolveForOrder(order);
     const finalAmount = calculateOrderSettlementAmount(order, order.cardSurchargeApplied);
 
-    const allocationInput = await this.buildWalletAllocationInput(order, wallet, finalAmount, {
+    const allocationInput = await this.walletAllocationInputBuilder.build(order, wallet, finalAmount, {
       requestedPointAmount: getBody.pointUseAmount,
       depositUseEnabled: getBody.depositUseEnabled,
       depositUseAmount: getBody.depositUseAmount,
@@ -504,13 +405,64 @@ export class OrderService {
     };
   }
 
-  private async getDefaultCardSurchargeApplied(order: OrderEntity): Promise<boolean> {
+  /**
+   * 정산방법 정책 소스 (cutover mode 분기).
+   * - WALLET: wallet_account.settleMethod (SoT). 미존재 시 fail-closed throw (회사 폴백 금지 — 잘못된 결제수단 영구저장 방지).
+   * - SHADOW: wallet 조회 실패 시 경고 로그 후 회사 정책 폴백.
+   * - LEGACY: 회사 정책.
+   * resolvedWallet 은 호출측에서 재사용(추가 조회 회피)용으로 반환.
+   */
+  private async resolveSettlePolicy(
+    order: Pick<OrderEntity, 'userId' | 'clientUserId'>,
+    company: { settleMethod?: string | null } | null | undefined,
+    manager?: EntityManager,
+  ): Promise<{ policy: 'CARD' | 'CASH' | null; resolvedWallet: WalletAccountEntity | null }> {
+    const mode = this.walletCutoverConfig.pr3SettleMode;
+    const companyPolicy = (company?.settleMethod as 'CARD' | 'CASH' | null) ?? null;
+
+    if (mode === WalletCutoverMode.WALLET) {
+      const wallet = await this.walletAccountResolverService.resolveForOrder(order, manager);
+      return { policy: wallet.settleMethod, resolvedWallet: wallet };
+    }
+    if (mode === WalletCutoverMode.SHADOW) {
+      try {
+        const wallet = await this.walletAccountResolverService.resolveForOrder(order, manager);
+        return { policy: wallet.settleMethod, resolvedWallet: wallet };
+      } catch (e) {
+        this.logger.warn(`[settle policy] SHADOW wallet 조회 실패 → legacy(회사) 폴백: ${(e as Error).message}`);
+        return { policy: companyPolicy, resolvedWallet: null };
+      }
+    }
+    return { policy: companyPolicy, resolvedWallet: null };
+  }
+
+  /**
+   * 정산 입력/수정 공통: billingUser 조회 → 회사 정책 → cutover 정책 → 최종 저장값 결정.
+   * existingCardSurcharge / existingSettleMethod: update 시 기존 order 값(폴백 계층에 삽입). create 시 undefined.
+   */
+  private async resolveSettleInputs(
+    order: Pick<OrderEntity, 'userId' | 'clientUserId' | 'settleMethod' | 'cardSurchargeApplied'>,
+    body: { cardSurchargeApplied?: boolean; settleMethod?: 'CARD' | 'CASH' | null },
+    opts: { useExistingAsMiddleFallback: boolean },
+  ): Promise<{ cardSurchargeApplied: boolean; settleMethod: 'CARD' | 'CASH' | null }> {
     const billingUser = await this.userRepository.findOne({
       where: { id: order.clientUserId ?? order.userId },
       relations: ['company'],
     });
+    const company = billingUser?.company;
+    const defaultCardSurchargeApplied = company?.settleMethod === 'CARD';
+    const { policy: settlePolicy } = await this.resolveSettlePolicy(order, company);
 
-    return billingUser?.company?.settleMethod === 'CARD';
+    const cardSurchargeApplied = opts.useExistingAsMiddleFallback
+      ? (body.cardSurchargeApplied ?? order.cardSurchargeApplied ?? defaultCardSurchargeApplied)
+      : (body.cardSurchargeApplied ?? defaultCardSurchargeApplied);
+
+    // 정책 부재(LEGACY/SHADOW 회사 정책 null)에도 신규 저장은 항상 non-null — 기본값 'CASH'(할증OFF 와 정합).
+    const settleMethod = opts.useExistingAsMiddleFallback
+      ? (body.settleMethod ?? order.settleMethod ?? settlePolicy ?? 'CASH')
+      : (body.settleMethod ?? settlePolicy ?? 'CASH');
+
+    return { cardSurchargeApplied, settleMethod };
   }
 
   /**
@@ -914,6 +866,11 @@ export class OrderService {
           encourageDay: orderProductMapping.encourageDay,
           galaxiaDuration: orderProductMapping.galaxiaDuration,
           failCount: failCount,
+          // 자사 운영자(SUPER_ADMIN/OPERATION_ADMIN)에게만 가격 divergence 노출.
+          // 고객사(CORPORATE_ADMIN) 또는 미인증 경로에서는 필드 자체를 omit.
+          ...(user.authority === IUserAuthority.SUPER_ADMIN || user.authority === IUserAuthority.OPERATION_ADMIN
+            ? buildPriceDivergence(orderProductMapping)
+            : {}),
         });
       }
     }
@@ -1343,6 +1300,7 @@ export class OrderService {
           ? dayjs(firstDelivery.expireAt).tz('Asia/Seoul').format('YYYY. MM. DD')
           : null;
 
+        const lineView = readLineProductView(orderProductMapping);
         for (const orderDelivery of orderProductMapping.orderDeliveries) {
           // deliveryTarget 복호화 후 마스킹 처리 (originalDeliveryTarget 우선 사용)
           const targetToDecrypt = orderDelivery.originalDeliveryTarget || orderDelivery.deliveryTarget;
@@ -1366,37 +1324,25 @@ export class OrderService {
             id: orderDelivery.id,
             sendRequestAt: orderDelivery.sendRequestAt ? format(orderDelivery.sendRequestAt, DateFormatStr) : null,
             actualSendAt: orderDelivery.actualSendAt ? format(orderDelivery.actualSendAt, DateFormatStr) : null,
-            productName: orderProductMapping.product?.name ?? '(삭제된 상품)',
-            amount: orderProductMapping.product?.price ?? 0,
+            productName: lineView.name,
+            amount: lineView.price,
             barCode: maskedBarCode,
             deliveryMethod: orderDelivery.deliveryMethod,
             deliveryTarget: finalDeliveryTarget,
           });
         }
 
-        const product = orderProductMapping.product
-          ? {
-              id: orderProductMapping.product.id,
-              name: orderProductMapping.product.name,
-              price: orderProductMapping.product.price,
-              expireDay: orderProductMapping.product.expireDay,
-              amount: orderProductMapping.amount,
-              expireDate: expireDate,
-              imagePath: orderProductMapping.product.imagePath,
-              brandId: orderProductMapping.product.brandId,
-              brandName: orderProductMapping.product.brand?.nameKorean ?? '',
-            }
-          : {
-              id: orderProductMapping.productId,
-              name: '(삭제된 상품)',
-              price: 0,
-              expireDay: 0,
-              amount: orderProductMapping.amount,
-              expireDate: null,
-              imagePath: '',
-              brandId: 0,
-              brandName: '',
-            };
+        const product = {
+          id: orderProductMapping.product?.id ?? orderProductMapping.productId,
+          name: lineView.name,
+          price: lineView.price,
+          expireDay: lineView.expireDay,
+          amount: orderProductMapping.amount,
+          expireDate: expireDate,
+          imagePath: lineView.imagePath ?? '',
+          brandId: orderProductMapping.product?.brandId ?? 0,
+          brandName: lineView.brandName,
+        };
         productList.push({
           id: orderProductMapping.id,
           product: product,
@@ -1435,7 +1381,7 @@ export class OrderService {
     const sendInfoList: { productName: string; sendTitle: string | null; sendContent: string | null }[] = [];
     for (const mapping of order.orderProductMappings || []) {
       sendInfoList.push({
-        productName: mapping.product?.name ?? '',
+        productName: readLineProductView(mapping).name,
         sendTitle: mapping.sendTitle ?? null,
         sendContent: mapping.sendContent ?? null,
       });
@@ -1545,7 +1491,8 @@ export class OrderService {
 
     if (order.orderProductMappings && order.orderProductMappings.length > 0) {
       for (const orderProductMapping of order.orderProductMappings) {
-        const originalPrice = orderProductMapping.product.price ?? 0;
+        const lineView = readLineProductView(orderProductMapping);
+        const originalPrice = lineView.price;
         const quantity = orderProductMapping.amount ?? 0;
 
         // 할인/할증 적용된 단가 계산 (소수점 발생 시 올림 처리)
@@ -1566,7 +1513,7 @@ export class OrderService {
         orderDeliveryList.push({
           id: orderProductMapping.id, // orderProductMapping id 사용
           sendRequestAt: firstDelivery?.sendRequestAt ? format(firstDelivery.sendRequestAt, DateFormatStr) : null,
-          productName: orderProductMapping.product.name ?? null,
+          productName: lineView.name,
           quantity, // 수량
           unitPrice: adjustedPrice, // 할인/할증 적용된 단가
           price: total, // 공급가액 (단가 * 수량)
@@ -1781,6 +1728,7 @@ export class OrderService {
             ? dayjs(firstDelivery.expireAt).tz('Asia/Seoul').format('YYYY. MM. DD')
             : null;
 
+          const lineView = readLineProductView(orderProductMapping);
           for (const orderDelivery of orderProductMapping.orderDeliveries) {
             // deliveryTarget 복호화 후 마스킹 처리 (originalDeliveryTarget 우선 사용)
             const targetToDecrypt = orderDelivery.originalDeliveryTarget || orderDelivery.deliveryTarget;
@@ -1819,27 +1767,25 @@ export class OrderService {
               id: orderDelivery.id,
               sendRequestAt: deliverySendRequestAt,
               actualSendAt: orderDelivery.actualSendAt ? format(orderDelivery.actualSendAt, DateFormatStr) : null,
-              productName: orderProductMapping.product.name ?? null,
-              amount: orderProductMapping.product.price ?? null,
+              productName: lineView.name,
+              amount: lineView.price,
               barCode: maskedBarCode,
               deliveryMethod: orderDelivery.deliveryMethod,
               deliveryTarget: finalDeliveryTarget,
             });
           }
 
-          const product = orderProductMapping.product
-            ? {
-                id: orderProductMapping.product.id,
-                name: orderProductMapping.product.name,
-                price: orderProductMapping.product.price,
-                expireDay: orderProductMapping.product.expireDay,
-                amount: orderProductMapping.amount,
-                expireDate: expireDate,
-                imagePath: orderProductMapping.product.imagePath,
-                brandId: orderProductMapping.product.brandId,
-                brandName: orderProductMapping.product.brand?.nameKorean ?? '',
-              }
-            : null;
+          const product = {
+            id: orderProductMapping.product?.id ?? orderProductMapping.productId,
+            name: lineView.name,
+            price: lineView.price,
+            expireDay: lineView.expireDay,
+            amount: orderProductMapping.amount,
+            expireDate: expireDate,
+            imagePath: lineView.imagePath ?? '',
+            brandId: orderProductMapping.product?.brandId ?? 0,
+            brandName: lineView.brandName,
+          };
 
           productList.push({
             id: orderProductMapping.id,
@@ -1956,7 +1902,8 @@ export class OrderService {
     for (const order of orders) {
       if (order.orderProductMappings && order.orderProductMappings.length > 0) {
         for (const orderProductMapping of order.orderProductMappings) {
-          const originalPrice = orderProductMapping.product.price ?? 0;
+          const lineView = readLineProductView(orderProductMapping);
+          const originalPrice = lineView.price;
           const quantity = orderProductMapping.amount ?? 0;
 
           let adjustedPrice = originalPrice;
@@ -1987,7 +1934,7 @@ export class OrderService {
           orderDeliveryList.push({
             id: orderProductMapping.id,
             sendRequestAt: itemSendRequestAt,
-            productName: orderProductMapping.product.name ?? null,
+            productName: lineView.name,
             quantity,
             unitPrice: adjustedPrice,
             price: total,
@@ -2042,7 +1989,6 @@ export class OrderService {
       where: { id: order.clientUserId ?? order.userId },
       relations: ['company'],
     });
-    const settleMethod = billingUserForSettle?.company?.settleMethod ?? null;
 
     // 1. 유저의 주문 상품 조회 (classification 포함)
     // SSG 합산 할인 및 전체 합계 계산을 위해 페이지네이션 없이 전체 조회 후 resultList 생성 후 슬라이스
@@ -2085,7 +2031,7 @@ export class OrderService {
       const phoneToTotalAmount = new Map<string, number>();
       const deliveryPhoneKeyCache = new Map<number, string>();
       for (const op of orderProductList) {
-        const price = op.product.price;
+        const price = readLineProductView(op).price;
         for (const delivery of op.orderDeliveries ?? []) {
           const decrypted = this.cryptoCipher.safeDecryptDeliveryTarget(
             delivery.originalDeliveryTarget || delivery.deliveryTarget,
@@ -2112,7 +2058,8 @@ export class OrderService {
 
       // Phase 3a: 단일 상품 수신번호 — 기존 로직 (상품 단가 × 수량 표시)
       for (const orderProduct of orderProductList) {
-        const productPrice = orderProduct.product.price;
+        const lineView3a = readLineProductView(orderProduct);
+        const productPrice = lineView3a.price;
         const product = orderProduct.product;
         const deliveryMap = new Map((orderProduct.orderDeliveries ?? []).map((d) => [d.id, d]));
 
@@ -2188,8 +2135,8 @@ export class OrderService {
           const firstDelivery = deliveryMap.get(group.deliveryIds[0]);
           resultList.push({
             id: orderProduct.id,
-            brandName: product.brand?.nameKorean ?? null,
-            name: product.name,
+            brandName: lineView3a.brandName ?? null,
+            name: lineView3a.name,
             price: productPrice,
             amount: group.count,
             totalPrice: groupTotalPrice,
@@ -2243,19 +2190,20 @@ export class OrderService {
         for (const { orderProduct } of phoneItems) {
           const existing = productBreakdown.get(orderProduct.id);
           if (existing) existing.count++;
-          else productBreakdown.set(orderProduct.id, { name: orderProduct.product.name, count: 1 });
+          else productBreakdown.set(orderProduct.id, { name: readLineProductView(orderProduct).name, count: 1 });
         }
         const sortedProducts = [...productBreakdown.entries()].sort(([a], [b]) => a - b);
         const sig = sortedProducts.map(([id, { count }]) => `${id}:${count}`).join('|');
 
         const itemSettles = phoneItems.map(({ orderProduct, delivery }) => {
           const product = orderProduct.product;
+          const linePrice = readLineProductView(orderProduct).price;
           const resolved = resolveSettleFee(
             delivery,
             { fee: orderProduct.fee, priceAdjustment: orderProduct.priceAdjustment, settleDiscountType: orderProduct.settleDiscountType ?? null },
             isOrderCompleted,
             () => findMatchingDiscount(
-              { price: product.price, category: product.category, classificationId: product.classificationId, brand: product.brand },
+              { price: linePrice, category: product.category, classificationId: product.classificationId, brand: product.brand },
               userDiscounts,
               totalAmount,
             ),
@@ -2264,8 +2212,8 @@ export class OrderService {
           if (fee < 0 || fee > 100) fee = 0;
           const priceAdjustment = resolved.priceAdjustment;
           const discountPrice = priceAdjustment
-            ? OrderFeeCalculator({ fee, priceAdjustment, price: product.price })
-            : product.price;
+            ? OrderFeeCalculator({ fee, priceAdjustment, price: linePrice })
+            : linePrice;
           return {
             orderProductId: orderProduct.id,
             fee,
@@ -2314,7 +2262,7 @@ export class OrderService {
 
           mergedGroups.set(groupKey, {
             name: mergedName,
-            brandName: phoneItems[0].orderProduct.product.brand?.nameKorean ?? null,
+            brandName: readLineProductView(phoneItems[0].orderProduct).brandName,
             combinedPrice: totalAmount,
             discountCombinedPrice,
             fee,
@@ -2358,17 +2306,19 @@ export class OrderService {
     } else {
       // 비SSG: 기존 로직
       resultList = orderProductList.map((orderProduct) => {
+        const lineViewNonSsg = readLineProductView(orderProduct);
+        const basePrice = lineViewNonSsg.price;
         let priceAdjustment = orderProduct.priceAdjustment;
         let fee = orderProduct.fee;
 
-        let discountPrice = orderProduct.product.price;
-        const totalPrice = orderProduct.product.price * orderProduct.amount;
-        let discountTotalPrice = orderProduct.product.price * orderProduct.amount;
+        let discountPrice = basePrice;
+        const totalPrice = basePrice * orderProduct.amount;
+        let discountTotalPrice = basePrice * orderProduct.amount;
 
         // 3. 할인 정보가 null 일 경우 상품에 맞는 할인 옵션 찾기
         if ((!priceAdjustment || fee === null) && !isOrderCompleted) {
           this.logger.debug(
-            `[getOrderSettle] product: id=${orderProduct.product.id}, name=${orderProduct.product.name}, category='${orderProduct.product.category}', price=${orderProduct.product.price}, brand=${orderProduct.product.brand?.nameKorean ?? 'null'}`,
+            `[getOrderSettle] product: id=${orderProduct.product.id}, name=${orderProduct.product.name}, category='${orderProduct.product.category}', price=${basePrice}, brand=${orderProduct.product.brand?.nameKorean ?? 'null'}`,
           );
           this.logger.debug(
             `[getOrderSettle] stored values: fee=${orderProduct.fee}, priceAdjustment=${orderProduct.priceAdjustment}`,
@@ -2376,7 +2326,7 @@ export class OrderService {
 
           const matchingDiscount = findMatchingDiscount(
             {
-              price: orderProduct.product.price,
+              price: basePrice,
               category: orderProduct.product.category,
               classificationId: orderProduct.product.classificationId,
               brand: orderProduct.product.brand,
@@ -2406,7 +2356,7 @@ export class OrderService {
         discountPrice = OrderFeeCalculator({
           fee: fee!,
           priceAdjustment: priceAdjustment!,
-          price: orderProduct.product.price,
+          price: basePrice,
         });
         discountTotalPrice = OrderFeeCalculator({
           fee: fee!,
@@ -2420,11 +2370,11 @@ export class OrderService {
 
         return {
           id: orderProduct.id,
-          brandName: orderProduct.product.brand?.nameKorean ?? null,
-          name: orderProduct.product.name,
-          price: orderProduct.product.price,
+          brandName: lineViewNonSsg.brandName ?? null,
+          name: lineViewNonSsg.name,
+          price: basePrice,
           amount: orderProduct.amount,
-          totalPrice: orderProduct.product.price * orderProduct.amount,
+          totalPrice: basePrice * orderProduct.amount,
           settleDiscountType: orderProduct.settleDiscountType ?? null,
           priceAdjustment,
           fee,
@@ -2448,16 +2398,21 @@ export class OrderService {
     const pagedList = resultList.slice(skip, skip + take);
     const totalPage = Math.ceil(virtualTotalCount / take);
 
-    const hasSettled = (order.settleAmount ?? 0) > 0;
-    const effectiveCardSurcharge = hasSettled ? order.cardSurchargeApplied : settleMethod === 'CARD';
+    // 입력완료 표식 = order.settleMethod 존재 (settleAmount>0 의존 제거 — 0원 정산도 입력값 유지)
+    const hasSettleInput = order.settleMethod != null;
+    // 정책 폴백은 미입력일 때만 필요. 읽기 경로는 fail-closed 불필요 → lazy 해석으로 WALLET 불필요 throw/조회 회피.
+    const settlePolicy = hasSettleInput
+      ? null
+      : (await this.resolveSettlePolicy(order, billingUserForSettle?.company)).policy;
+    const effectiveCardSurcharge = hasSettleInput ? order.cardSurchargeApplied : settlePolicy === 'CARD';
 
     // 카드할증 산정 (백엔드 산식 단일화: 프론트 자체계산 제거)
     const cardSurchargeBase = totalDiscountAmount;
     const payableSettlementAmount = applyCardSurcharge(cardSurchargeBase, effectiveCardSurcharge);
     const cardSurchargeAmount = payableSettlementAmount - cardSurchargeBase;
 
-    // settleMethod: 정산 입력됨(hasSettled)이면 저장된 cardSurchargeApplied 에서 파생, 아니면 회사 정책값
-    const effectiveSettleMethod = hasSettled ? (order.cardSurchargeApplied ? 'CARD' : 'CASH') : settleMethod;
+    // settleMethod: 저장값 우선, NULL(미입력/레거시)이면 정책 폴백
+    const effectiveSettleMethod = order.settleMethod ?? settlePolicy;
 
     return {
       list: pagedList,
@@ -2643,17 +2598,16 @@ export class OrderService {
     }
 
     const order = existingOrderProducts[0].order;
-    const defaultCardSurchargeApplied = await this.getDefaultCardSurchargeApplied(order);
-    // settleMethod(주문 단위) 가 들어오면 cardSurchargeApplied 를 강제. CARD→true, CASH→false.
-    const cardSurchargeApplied = getBody.settleMethod
-      ? getBody.settleMethod === 'CARD'
-      : getBody.cardSurchargeApplied ?? defaultCardSurchargeApplied;
+    // create: 기존값 폴백 없음 (order.settleMethod / order.cardSurchargeApplied 무시)
+    const { cardSurchargeApplied, settleMethod } = await this.resolveSettleInputs(order, getBody, {
+      useExistingAsMiddleFallback: false,
+    });
     const newSettleAmount = calculateOrderSettlementAmount(
       { cardSurchargeApplied, orderProductMappings: allOrderProducts },
       cardSurchargeApplied,
     );
 
-    await this.orderRepository.update({ id: orderId }, { settleAmount: newSettleAmount, cardSurchargeApplied });
+    await this.orderRepository.update({ id: orderId }, { settleAmount: newSettleAmount, cardSurchargeApplied, settleMethod });
 
     if (order.isNewBillingFlow) {
       // === 새 흐름 ===
@@ -2749,17 +2703,16 @@ export class OrderService {
     }
 
     const order = existingOrderProducts[0].order;
-    const defaultCardSurchargeApplied = await this.getDefaultCardSurchargeApplied(order);
-    // settleMethod(주문 단위) 가 들어오면 cardSurchargeApplied 를 강제. CARD→true, CASH→false.
-    const cardSurchargeApplied = getBody.settleMethod
-      ? getBody.settleMethod === 'CARD'
-      : getBody.cardSurchargeApplied ?? order.cardSurchargeApplied ?? defaultCardSurchargeApplied;
+    // update: 기존값(order.cardSurchargeApplied / order.settleMethod)을 body와 정책 사이 중간 폴백으로 사용
+    const { cardSurchargeApplied, settleMethod } = await this.resolveSettleInputs(order, getBody, {
+      useExistingAsMiddleFallback: true,
+    });
     const newSettleAmount = calculateOrderSettlementAmount(
       { cardSurchargeApplied, orderProductMappings: allOrderProducts },
       cardSurchargeApplied,
     );
 
-    await this.orderRepository.update({ id: orderId }, { settleAmount: newSettleAmount, cardSurchargeApplied });
+    await this.orderRepository.update({ id: orderId }, { settleAmount: newSettleAmount, cardSurchargeApplied, settleMethod });
 
     // 발송확정 이후(DELIVERY_CONFIRMED, DELIVERY_COMPLETE)에 정산정보를 수정한 경우
     // 이전 정산금액과 새 정산금액의 차이를 balance/allSettleAmount에 반영
@@ -2906,6 +2859,7 @@ export class OrderService {
       where: {
         id: In(uniqueProductIds),
       },
+      relations: ['brand'],
     });
 
     if (uniqueProductIds.length !== getProductList.length) {
@@ -3006,6 +2960,10 @@ export class OrderService {
       orderProduct.sendType = product.sendType;
       orderProduct.encourageDay = product.encourageDay ?? null;
 
+      // 주문 생성 시점 상품 정보 snapshot 박제
+      const liveProduct = productPriceMap.get(product.productId)!;
+      Object.assign(orderProduct, buildLineProductSnapshot(liveProduct));
+
       await this.orderProductMappingRepository.save(orderProduct);
 
       // 상품별 발신 수단 사용
@@ -3093,6 +3051,7 @@ export class OrderService {
       where: {
         id: In(uniqueProductIds),
       },
+      relations: ['brand'],
     });
 
     if (uniqueProductIds.length !== getProductList.length) {
@@ -3100,11 +3059,35 @@ export class OrderService {
     }
     const productPriceMap = listToMap(getProductList, (product) => product.id);
 
+    const orderId: number = order.id;
+
+    // mapping id 소유권/중복 검증 — 헤더 저장 이전에 실행하여 뮤테이션 전 400 보장
+    const deleteOrderProductMappingList = await this.orderProductMappingRepository.find({
+      where: {
+        orderId: orderId,
+      },
+    });
+    const ownedMap = new Map<number, OwnedLine>(
+      deleteOrderProductMappingList.map((m) => [m.id, {
+        productId: m.productId,
+        snapshot: {
+          snapshotProductPrice: m.snapshotProductPrice,
+          snapshotProductName: m.snapshotProductName,
+          snapshotProductBrandName: m.snapshotProductBrandName,
+          snapshotProductExpireDay: m.snapshotProductExpireDay,
+          snapshotProductImagePath: m.snapshotProductImagePath,
+        },
+      }]),
+    );
+    assertLineIdsValid(orderProductList, ownedMap);
+
     // 전송 정산 가격 적용
+    // 승계 라인은 기존 snapshot 가격을 사용하여 헤더 금액과 라인 금액이 일치하도록 함
     let sendAmount = 0;
     for (const orderProduct of orderProductList) {
       const getProduct = productPriceMap.get(orderProduct.productId)!;
-      sendAmount += getProduct.price * orderProduct.amount;
+      const resolvedPrice = resolveLineSnapshot(orderProduct, ownedMap, getProduct).snapshotProductPrice ?? getProduct.price;
+      sendAmount += resolvedPrice * orderProduct.amount;
     }
 
     order.eventName = eventName;
@@ -3120,14 +3103,7 @@ export class OrderService {
 
     await this.orderRepository.save(order);
 
-    const orderId: number = order.id;
-
     // 2. 기존 order product, delivery 삭제
-    const deleteOrderProductMappingList = await this.orderProductMappingRepository.find({
-      where: {
-        orderId: orderId,
-      },
-    });
     const deleteOrderProductIdList = deleteOrderProductMappingList.map((orderProduct) => orderProduct.id);
     await this.orderProductMappingRepository.delete({ id: In(deleteOrderProductIdList) });
     await this.orderDeliveryRepository.delete({ orderProductMappingId: In(deleteOrderProductIdList) });
@@ -3172,6 +3148,9 @@ export class OrderService {
       orderProduct.sendRequestAt = productSendAt;
       orderProduct.sendType = product.sendType;
       orderProduct.encourageDay = product.encourageDay ?? null;
+
+      const liveProduct = productPriceMap.get(product.productId)!;
+      Object.assign(orderProduct, resolveLineSnapshot(product, ownedMap, liveProduct));
 
       await this.orderProductMappingRepository.save(orderProduct);
 
@@ -3769,7 +3748,7 @@ export class OrderService {
         }
 
         const wallet = await this.walletAccountResolverService.resolveForOrder(order, externalManager);
-        const allocationInput = await this.buildWalletAllocationInput(order, wallet, finalAmount, {
+        const allocationInput = await this.walletAllocationInputBuilder.build(order, wallet, finalAmount, {
           requestedPointAmount: getBody.pointUseAmount,
           depositUseEnabled: getBody.depositUseEnabled,
           depositUseAmount: getBody.depositUseAmount,
@@ -3836,7 +3815,8 @@ export class OrderService {
             allocation,
             cardSurchargeAppliedSnapshot: order.cardSurchargeApplied,
             hasDiscountSnapshot: allocation.hasDiscount,
-            settleMethodSnapshot: oneUser.company?.settleMethod ?? null,
+            // effective: 정산입력된 order.settleMethod 우선, 없으면 이미 조회한 wallet SoT 재사용 (추가 조회 0)
+            settleMethodSnapshot: order.settleMethod ?? wallet.settleMethod,
             deliveryIdsForAttempt,
             creditExcessApprovalId: getBody.creditExcessApprovalId ?? null,
           },
@@ -3925,7 +3905,7 @@ export class OrderService {
               order,
               this.orderRepository.manager,
             );
-            const previewInput = await this.buildWalletAllocationInput(order, wallet, finalAmount, {
+            const previewInput = await this.walletAllocationInputBuilder.build(order, wallet, finalAmount, {
               companyId: oneUser.companyId,
             });
             const preview = this.paymentAllocationService.allocate(previewInput);

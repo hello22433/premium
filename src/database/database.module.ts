@@ -27,6 +27,8 @@ import { ProductUpdateHistoryEntity } from '../entity/product.update.history.ent
 import { EmailSendHistoryEntity } from '../entity/email.send.history.entity';
 import { SqlLogger } from '../common/api/sql.logger';
 import { SsgEventAmountHistoryEntity } from '../entity/ssg.event.amount.history.entity';
+import { SsgEventRecoveryLogEntity } from '../entity/ssg.event.recovery.log.entity';
+import { SsgResendDeductRecoveryLogEntity } from '../entity/ssg.resend.deduct.recovery.log.entity';
 import { SsgEventEntity } from '../entity/ssg.event.entity';
 import { SsgReservationRangeEntity } from '../entity/ssg.reservation.range.entity';
 import { GemteckMsgQueueEntity } from '../entity/gemtek/msg.queue.entity';
@@ -124,6 +126,8 @@ import { ForbiddenWordBlockLogEntity } from '../entity/forbidden.word.block.log.
           ProductUpdateHistoryEntity,
           EmailSendHistoryEntity,
           SsgEventAmountHistoryEntity,
+          SsgEventRecoveryLogEntity,
+          SsgResendDeductRecoveryLogEntity,
           SsgEventEntity,
           SsgReservationRangeEntity,
           QnaEntity,
