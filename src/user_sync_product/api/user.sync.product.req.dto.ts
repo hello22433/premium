@@ -8,7 +8,6 @@ import {
   IsEnum,
   IsInt,
   IsNotEmpty,
-  IsNumber,
   IsOptional,
   IsString,
   Matches,
@@ -87,7 +86,8 @@ export class UserSyncProductUpdateStatusReqDto {
     description: '이벤트 id',
   })
   // =================================
-  @IsNumber()
+  @IsInt()
+  @Min(1)
   @IsNotEmpty()
   id: number;
 
@@ -106,6 +106,7 @@ export class UserSyncProductGetDetailReqParamDto {
   })
   // =================================
   @Type(() => Number)
+  @IsInt()
   @Min(1)
   @IsNotEmpty()
   id: number;
@@ -116,9 +117,9 @@ export class UserSyncProductRegisterEventReqDto {
     description: '고객사 user.id',
   })
   // =================================
-  @IsNumber()
-  @IsNotEmpty()
+  @IsInt()
   @Min(1)
+  @IsNotEmpty()
   userId: number;
 
   @ApiProperty({
@@ -181,7 +182,8 @@ export class UserSyncProductInsertProductReqDto {
     description: '상품 등록할 연동 event id',
   })
   // =================================
-  @IsNumber()
+  @IsInt()
+  @Min(1)
   @IsNotEmpty()
   eventId: number;
 
@@ -190,7 +192,8 @@ export class UserSyncProductInsertProductReqDto {
   })
   // =================================
   @IsArray() // 배열 검증
-  @IsInt({ each: true }) // 배열 내 값 number 검증
+  @IsInt({ each: true }) // 배열 내 값 정수 검증
+  @Min(1, { each: true }) // 배열 내 값 양수 검증
   @ArrayMinSize(1, { message: '추가할 상품 id 는 최소 1개 이상의 값이 필요합니다.' })
   productIdList: number[];
 }
@@ -201,7 +204,8 @@ export class UserSyncProductDeleteProductReqDto {
   })
   // =================================
   @IsArray() // 배열 검증
-  @IsInt({ each: true }) // 배열 내 값 number 검증
+  @IsInt({ each: true }) // 배열 내 값 정수 검증
+  @Min(1, { each: true }) // 배열 내 값 양수 검증
   @ArrayMinSize(1, { message: '삭제할 id 는 최소 1개 이상의 값이 필요합니다.' })
   idList: number[];
 }
@@ -211,7 +215,8 @@ export class UserSyncProductSetHeadPersonReqDto {
     description: '기본 담당자로 설정할 user.id',
   })
   // =================================
-  @IsNumber()
+  @IsInt()
+  @Min(1)
   @IsNotEmpty()
   userId: number;
 
@@ -231,7 +236,8 @@ export class UserSyncProductGetHeadPersonListReqQueryDto extends PagingReqDto {
   })
   // =================================
   @IsNotEmpty()
-  @IsNumber()
+  @IsInt()
+  @Min(1)
   @Type(() => Number)
   userId: number;
 
@@ -258,6 +264,7 @@ export class UserSyncProductGetCustomersByProductReqParamDto {
   })
   // =================================
   @Type(() => Number)
+  @IsInt()
   @Min(1)
   @IsNotEmpty()
   productId: number;
@@ -268,7 +275,8 @@ export class UserSyncProductGetPersonsByBusinessReqDto {
     description: '고객사 user.id',
   })
   // =================================
-  @IsNumber()
+  @IsInt()
+  @Min(1)
   @Type(() => Number)
   @IsNotEmpty()
   userId: number;
