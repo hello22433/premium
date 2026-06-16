@@ -22,14 +22,14 @@ import {
 } from './user.sync.product.res.dto';
 import { User } from '../../auth/api/user.decorator';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
-import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
+import { AuthUserSuperAndOperationAdminGuard } from '../../auth/api/auth.user.super-operation-admin.guard';
 import { UserAuthSubEnum } from '../../user_management/domain/user.auth.enum';
 import { AuthService } from '../../auth/application/auth.service';
 
 @ApiBearerAuth()
-@UseGuards(AuthUserAuthorizationGuard)
+@UseGuards(AuthUserSuperAndOperationAdminGuard)
 @ApiTags('user-sync-product')
-@Controller('')
+@Controller('user-sync-product')
 export class UserSyncProductController {
   constructor(
     private userSyncProductService: UserSyncProductService,
@@ -45,7 +45,7 @@ export class UserSyncProductController {
     description: '성공적으로 조회한 경우',
   })
   // =========================================
-  @Get('/user-sync-product/list')
+  @Get('/list')
   async getList(@User() user: ILoginUserInfo, @Query() getQuery: UserSyncProductGetListReqDto) {
     await this.authService.authorityValidator(user, UserAuthSubEnum.PRODUCT_CUSTOMER_LINK_ITEM);
     return this.userSyncProductService.getList(getQuery);
@@ -59,8 +59,9 @@ export class UserSyncProductController {
     description: '성공적으로 수정한 경우',
   })
   // =========================================
-  @Patch('/user-sync-product/status')
-  updateStatus(@Body() getBody: UserSyncProductUpdateStatusReqDto) {
+  @Patch('/status')
+  async updateStatus(@User() user: ILoginUserInfo, @Body() getBody: UserSyncProductUpdateStatusReqDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.PRODUCT_CUSTOMER_LINK_ITEM);
     return this.userSyncProductService.updateStatus(getBody);
   }
 
@@ -73,8 +74,12 @@ export class UserSyncProductController {
     description: '성공적으로 조회한 경우',
   })
   // =========================================
-  @Get('/user-sync-product/product/:productId/customers')
-  getCustomersByProduct(@Param() getParam: UserSyncProductGetCustomersByProductReqParamDto) {
+  @Get('/product/:productId/customers')
+  async getCustomersByProduct(
+    @User() user: ILoginUserInfo,
+    @Param() getParam: UserSyncProductGetCustomersByProductReqParamDto,
+  ) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.PRODUCT_CUSTOMER_LINK_ITEM);
     return this.userSyncProductService.getCustomersByProduct(getParam.productId);
   }
 
@@ -87,8 +92,9 @@ export class UserSyncProductController {
     description: '성공적으로 조회한 경우',
   })
   // =========================================
-  @Get('/user-sync-product/detail/:id')
-  getDetail(@Param() getParam: UserSyncProductGetDetailReqParamDto) {
+  @Get('/detail/:id')
+  async getDetail(@User() user: ILoginUserInfo, @Param() getParam: UserSyncProductGetDetailReqParamDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.PRODUCT_CUSTOMER_LINK_ITEM);
     return this.userSyncProductService.getDetail(getParam);
   }
 
@@ -100,8 +106,9 @@ export class UserSyncProductController {
     description: '성공적으로 등록한 경우',
   })
   // =========================================
-  @Post('/user-sync-product/event')
-  registerEvent(@Body() getBody: UserSyncProductRegisterEventReqDto) {
+  @Post('/event')
+  async registerEvent(@User() user: ILoginUserInfo, @Body() getBody: UserSyncProductRegisterEventReqDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.PRODUCT_CUSTOMER_LINK_ITEM);
     return this.userSyncProductService.registerEvent(getBody);
   }
 
@@ -113,8 +120,9 @@ export class UserSyncProductController {
     description: '성공적으로 등록한 경우',
   })
   // =========================================
-  @Post('/user-sync-product/event/product')
-  insertProduct(@Body() getBody: UserSyncProductInsertProductReqDto) {
+  @Post('/event/product')
+  async insertProduct(@User() user: ILoginUserInfo, @Body() getBody: UserSyncProductInsertProductReqDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.PRODUCT_CUSTOMER_LINK_ITEM);
     return this.userSyncProductService.insertProduct(getBody);
   }
 
@@ -126,8 +134,9 @@ export class UserSyncProductController {
     description: '성공적으로 삭제한 경우',
   })
   // =========================================
-  @Delete('/user-sync-product/product')
-  deleteProduct(@Body() getBody: UserSyncProductDeleteProductReqDto) {
+  @Delete('/product')
+  async deleteProduct(@User() user: ILoginUserInfo, @Body() getBody: UserSyncProductDeleteProductReqDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.PRODUCT_CUSTOMER_LINK_ITEM);
     return this.userSyncProductService.deleteProduct(getBody);
   }
 
@@ -140,8 +149,12 @@ export class UserSyncProductController {
     description: '성공적으로 조회한 경우',
   })
   // =========================================
-  @Get('/user-sync-product/head-person/list')
-  getHeadPersonList(@Query() getQuery: UserSyncProductGetHeadPersonListReqQueryDto) {
+  @Get('/head-person/list')
+  async getHeadPersonList(
+    @User() user: ILoginUserInfo,
+    @Query() getQuery: UserSyncProductGetHeadPersonListReqQueryDto,
+  ) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.PRODUCT_CUSTOMER_LINK_ITEM);
     return this.userSyncProductService.getHeadPersonList(getQuery);
   }
 
@@ -154,8 +167,12 @@ export class UserSyncProductController {
     description: '성공적으로 조회한 경우',
   })
   // =========================================
-  @Get('/user-sync-product/person/list')
-  getPersonsByBusinessNumber(@Query() getQuery: UserSyncProductGetPersonsByBusinessReqDto) {
+  @Get('/person/list')
+  async getPersonsByBusinessNumber(
+    @User() user: ILoginUserInfo,
+    @Query() getQuery: UserSyncProductGetPersonsByBusinessReqDto,
+  ) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.PRODUCT_CUSTOMER_LINK_ITEM);
     return this.userSyncProductService.getPersonsByBusinessNumber(getQuery.userId);
   }
 
@@ -168,8 +185,9 @@ export class UserSyncProductController {
     description: '성공적으로 지정한 경우',
   })
   // =========================================
-  @Patch('/user-sync-product/person/head')
-  setHeadPerson(@User() user: ILoginUserInfo, @Body() getBody: UserSyncProductSetHeadPersonReqDto) {
+  @Patch('/person/head')
+  async setHeadPerson(@User() user: ILoginUserInfo, @Body() getBody: UserSyncProductSetHeadPersonReqDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.PRODUCT_CUSTOMER_LINK_ITEM);
     return this.userSyncProductService.setHeadPerson(user, getBody);
   }
 }
