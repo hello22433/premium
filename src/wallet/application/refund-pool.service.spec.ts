@@ -403,6 +403,84 @@ describe('RefundPoolService — §8 환불 알고리즘', () => {
     );
   });
 
+  it('정산확정 후 폐기 환불은 만료 안 된 포인트 사용분을 예치금이 아니라 포인트로 복원한다', async () => {
+    wallets['5'].creditUsedAmount = 0;
+    wallets['5'].creditExcessAmount = 0;
+    allocations['1'].pointUsedAmount = 3000;
+    lines[0].grossSettlementAmount = 10000;
+    lines[0].pointUsedAmount = 3000;
+    lines[0].payableBase = 7000;
+    pointGrants['p-active'] = {
+      id: 'p-active',
+      walletAccountId: '5',
+      remainingAmount: 0,
+      active: 1,
+      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as PointGrantEntity;
+    pointUsages.push({
+      id: 'pu-active',
+      allocationId: '1',
+      orderId: 100,
+      orderDeliveryId: 100,
+      pointGrantId: 'p-active',
+      usedAmount: 3000,
+      restoredAmount: 0,
+      skippedExpiredAmount: 0,
+      expiresAtSnapshot: pointGrants['p-active'].expiresAt,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as OrderPointUsageEntity);
+
+    const r = await sut.refundSettledDiscardToDeposit({
+      orderId: 100,
+      orderDeliveryId: 100,
+      refundAmount: 10000,
+      idempotencyKeyPrefix: 'discard_refund:100:100:deposit:1',
+    });
+
+    expect(r.totalRefundedAmount).toBe(10000);
+    expect(wallets['5'].depositBalance).toBe(7000);
+    expect(pointGrants['p-active'].remainingAmount).toBe(3000);
+    expect(pointUsages[0].restoredAmount).toBe(3000);
+    expect(pointUsages[0].skippedExpiredAmount).toBe(0);
+    expect(allocations['1'].depositRestoredAmount).toBe(7000);
+    expect(allocations['1'].pointRestoredAmount).toBe(3000);
+    expect(allocations['1'].pointSkippedExpiredAmount).toBe(0);
+    expect(ledger[0]).toEqual(expect.objectContaining({
+      refundedGrossBase: 10000,
+      refundedPayableBase: 7000,
+      refundedDepositAmount: 7000,
+      refundedPointAmount: 3000,
+      pointSkippedExpiredAmount: 0,
+    }));
+    expect(walletTxs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'DISCARD_REFUND',
+          resourceType: WalletResourceType.DEPOSIT,
+          amount: 7000,
+        }),
+        expect.objectContaining({
+          type: 'DISCARD_REFUND',
+          resourceType: WalletResourceType.POINT,
+          amount: 3000,
+          idempotencyKey: 'discard_refund:100:100:deposit:1:settled:point:p-active',
+        }),
+      ]),
+    );
+
+    const retry = await sut.refundSettledDiscardToDeposit({
+      orderId: 100,
+      orderDeliveryId: 100,
+      refundAmount: 10000,
+      idempotencyKeyPrefix: 'discard_refund:100:100:deposit:1',
+    });
+
+    expect(retry.totalRefundedAmount).toBe(10000);
+  });
+
   it('정산확정 후 폐기 환불 retry는 예치금을 중복 증가시키지 않는다', async () => {
     const input = {
       orderId: 100,
@@ -618,6 +696,84 @@ describe('RefundPoolService — §8 환불 알고리즘', () => {
       amount: 3000,
       idempotencyKey: 'fail_refund:100:100:att-resend-point:attempt:100:point:pg-1',
     }));
+  });
+
+  it('재발송 후 재실패 환불은 만료된 POINT RESEND_DEDUCT 를 throw 하지 않고 skip 처리한다', async () => {
+    allocations['1'].pointUsedAmount = 3000;
+    pointGrants['pg-expired'] = {
+      id: 'pg-expired',
+      walletAccountId: '5',
+      initialAmount: 3000,
+      remainingAmount: 0,
+      expiresAt: new Date(Date.now() - 86_400_000),
+      active: 1,
+    } as unknown as PointGrantEntity;
+    pointUsages.push({
+      id: 'usage-expired',
+      allocationId: '1',
+      pointGrantId: 'pg-expired',
+      usedAmount: 3000,
+      restoredAmount: 0,
+      skippedExpiredAmount: 0,
+    } as OrderPointUsageEntity);
+    resendDeductTxs.push({
+      id: 'tx-resend-point-expired',
+      walletAccountId: '5',
+      orderId: 100,
+      orderDeliveryId: 100,
+      type: 'RESEND_DEDUCT',
+      resourceType: WalletResourceType.POINT,
+      amount: -3000,
+      balanceAfter: 0,
+      memo: 'resend_deduct attempt=att-resend-point-expired',
+      idempotencyKey: 'resend_deduct:100:100:point:pg-expired:att-resend-point-expired',
+    } as WalletTransactionEntity);
+
+    await expect(
+      sut.refund({
+        orderId: 100,
+        eventType: OrderPaymentRefundEventType.FAIL_REFUND,
+        targetDeliveryIds: [100],
+        attemptId: 'att-resend-point-expired',
+        refundFromAttemptTransactions: true,
+        idempotencyKeyPrefix: 'fail_refund:100:100:att-resend-point-expired',
+      }),
+    ).resolves.toEqual({ ledgerIds: ['1'], totalRefundedAmount: 0, alreadyRefunded: false });
+
+    expect(pointGrants['pg-expired'].remainingAmount).toBe(0);
+    expect(pointUsages[0].restoredAmount).toBe(0);
+    expect(pointUsages[0].skippedExpiredAmount).toBe(3000);
+    expect(allocations['1'].pointRestoredAmount).toBe(0);
+    expect(allocations['1'].pointSkippedExpiredAmount).toBe(3000);
+    expect(ledger[0]).toEqual(expect.objectContaining({
+      refundedGrossBase: 3000,
+      refundedPayableBase: 0,
+      refundedPointAmount: 0,
+      refundedDepositAmount: 0,
+      pointSkippedExpiredAmount: 3000,
+    }));
+    expect(walletTxs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'RESTORE_SKIPPED_EXPIRED',
+          resourceType: WalletResourceType.POINT,
+          amount: 0,
+          memo: 'expired_point_skipped=3000',
+          idempotencyKey: 'fail_refund:100:100:att-resend-point-expired:attempt:100:point_skipped_expired',
+        }),
+      ]),
+    );
+
+    await expect(
+      sut.refund({
+        orderId: 100,
+        eventType: OrderPaymentRefundEventType.FAIL_REFUND,
+        targetDeliveryIds: [100],
+        attemptId: 'att-resend-point-expired',
+        refundFromAttemptTransactions: true,
+        idempotencyKeyPrefix: 'fail_refund:100:100:att-resend-point-expired',
+      }),
+    ).resolves.toEqual({ ledgerIds: ['1'], totalRefundedAmount: 0, alreadyRefunded: true });
   });
 
   it('reverseRefund: ledger 미존재 → BadRequest', async () => {

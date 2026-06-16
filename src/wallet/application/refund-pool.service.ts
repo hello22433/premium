@@ -95,10 +95,10 @@ export class RefundPoolService {
       .getMany();
     if (existingForPrefix.length > 0) {
       const totalRefundedAmount = existingForPrefix.reduce(
-        (s, e) => s + e.refundedDepositAmount,
+        (s, e) => s + e.refundedDepositAmount + e.refundedPointAmount,
         0,
       );
-      return { ledgerIds: existingForPrefix.map((e) => e.id), totalRefundedAmount };
+      return { ledgerIds: existingForPrefix.map((e) => e.id), totalRefundedAmount, alreadyRefunded: true };
     }
 
     const peekAlloc = await manager.findOne(OrderPaymentAllocationEntity, {
@@ -138,10 +138,10 @@ export class RefundPoolService {
       .getMany();
     if (existingAfterLock.length > 0) {
       const totalRefundedAmount = existingAfterLock.reduce(
-        (s, e) => s + e.refundedDepositAmount,
+        (s, e) => s + e.refundedDepositAmount + e.refundedPointAmount,
         0,
       );
-      return { ledgerIds: existingAfterLock.map((e) => e.id), totalRefundedAmount };
+      return { ledgerIds: existingAfterLock.map((e) => e.id), totalRefundedAmount, alreadyRefunded: true };
     }
 
     const activeEvents = await manager.find(OrderPaymentRefundEventEntity, {
@@ -153,11 +153,11 @@ export class RefundPoolService {
       }
     }
 
-    const expiredPointSkipped = await this.skipExpiredPointsForSettledDiscard(input, alloc, manager);
-    const depositRefundAmount = input.refundAmount - expiredPointSkipped;
+    const pointRefund = await this.refundPointsForSettledDiscard(input, alloc, manager);
+    const depositRefundAmount = input.refundAmount - pointRefund.restored - pointRefund.skipped;
     if (depositRefundAmount < 0) {
       throw new BadRequestException(
-        `settled discard refund invariant violation: expiredPointSkipped=${expiredPointSkipped} > refundAmount=${input.refundAmount}`,
+        `settled discard refund invariant violation: pointRefund=${pointRefund.restored + pointRefund.skipped} > refundAmount=${input.refundAmount}`,
       );
     }
 
@@ -177,7 +177,21 @@ export class RefundPoolService {
       });
     }
 
-    if (expiredPointSkipped > 0) {
+    for (const [grantId, info] of Object.entries(pointRefund.restoredByGrant)) {
+      await manager.save(WalletTransactionEntity, {
+        walletAccountId: alloc.walletAccountId,
+        orderId: input.orderId,
+        orderDeliveryId: input.orderDeliveryId,
+        type: 'DISCARD_REFUND',
+        resourceType: WalletResourceType.POINT,
+        amount: info.amount,
+        balanceAfter: info.balanceAfter,
+        memo: 'settled discard refund to point',
+        idempotencyKey: `${ledgerKey}:point:${grantId}`,
+      });
+    }
+
+    if (pointRefund.skipped > 0) {
       await manager.save(WalletTransactionEntity, {
         walletAccountId: alloc.walletAccountId,
         orderId: input.orderId,
@@ -186,13 +200,14 @@ export class RefundPoolService {
         resourceType: WalletResourceType.POINT,
         amount: 0,
         balanceAfter: null,
-        memo: `expired_point_skipped=${expiredPointSkipped}`,
+        memo: `expired_point_skipped=${pointRefund.skipped}`,
         idempotencyKey: `${ledgerKey}:point_skipped_expired`,
       });
     }
 
     alloc.depositRestoredAmount += depositRefundAmount;
-    alloc.pointSkippedExpiredAmount += expiredPointSkipped;
+    alloc.pointRestoredAmount += pointRefund.restored;
+    alloc.pointSkippedExpiredAmount += pointRefund.skipped;
     await manager.save(OrderPaymentAllocationEntity, alloc);
 
     const ledger = await manager.save(OrderPaymentRefundEventEntity, {
@@ -203,24 +218,32 @@ export class RefundPoolService {
       refundedGrossBase: input.refundAmount,
       refundedPayableBase: depositRefundAmount,
       refundedCardSurchargeAmount: 0,
-      refundedPointAmount: 0,
+      refundedPointAmount: pointRefund.restored,
       refundedDepositAmount: depositRefundAmount,
       refundedCreditUsedAmount: 0,
       refundedCreditExcessAmount: 0,
-      pointSkippedExpiredAmount: expiredPointSkipped,
+      pointSkippedExpiredAmount: pointRefund.skipped,
       idempotencyKey: ledgerKey,
       reversedAt: null,
       reversedByWalletTransactionId: null,
     });
 
-    return { ledgerIds: [ledger.id], totalRefundedAmount: depositRefundAmount };
+    return {
+      ledgerIds: [ledger.id],
+      totalRefundedAmount: depositRefundAmount + pointRefund.restored,
+      alreadyRefunded: false,
+    };
   }
 
-  private async skipExpiredPointsForSettledDiscard(
+  private async refundPointsForSettledDiscard(
     input: SettledDiscardRefundInput,
     alloc: OrderPaymentAllocationEntity,
     manager: EntityManager,
-  ): Promise<number> {
+  ): Promise<{
+    restored: number;
+    skipped: number;
+    restoredByGrant: Record<string, { amount: number; balanceAfter: number }>;
+  }> {
     const usages = await manager.find(OrderPointUsageEntity, {
       where: {
         allocationId: alloc.id,
@@ -228,20 +251,43 @@ export class RefundPoolService {
       },
       order: { id: 'ASC' },
     });
+    let restored = 0;
     let skipped = 0;
+    const restoredByGrant: Record<string, { amount: number; balanceAfter: number }> = {};
     for (const usage of usages) {
-      if (skipped >= input.refundAmount) break;
+      if (restored + skipped >= input.refundAmount) break;
       const grant = await manager.findOne(PointGrantEntity, { where: { id: usage.pointGrantId } });
       const expired = grant?.expiresAt != null && grant.expiresAt < new Date();
-      if (!expired) continue;
       const usageRemaining = usage.usedAmount - usage.restoredAmount - usage.skippedExpiredAmount;
-      const portion = Math.min(input.refundAmount - skipped, usageRemaining);
+      const portion = Math.min(input.refundAmount - restored - skipped, usageRemaining);
       if (portion <= 0) continue;
-      usage.skippedExpiredAmount += portion;
+      if (expired) {
+        usage.skippedExpiredAmount += portion;
+        skipped += portion;
+      } else {
+        const upd = await manager
+          .createQueryBuilder()
+          .update(PointGrantEntity)
+          .set({ remainingAmount: () => `remaining_amount + ${portion}` })
+          .where('id = :id AND active = 1', { id: usage.pointGrantId, portion })
+          .execute();
+        if (upd.affected !== 1) {
+          throw new BadRequestException(
+            `settled discard point restore conflict (grantId=${usage.pointGrantId}, portion=${portion})`,
+          );
+        }
+        const refreshed = await manager.findOne(PointGrantEntity, { where: { id: usage.pointGrantId } });
+        usage.restoredAmount += portion;
+        restored += portion;
+        const prev = restoredByGrant[usage.pointGrantId]?.amount ?? 0;
+        restoredByGrant[usage.pointGrantId] = {
+          amount: prev + portion,
+          balanceAfter: refreshed?.remainingAmount ?? 0,
+        };
+      }
       await manager.save(OrderPointUsageEntity, usage);
-      skipped += portion;
     }
-    return skipped;
+    return { restored, skipped, restoredByGrant };
   }
 
   private async runRefund(input: RefundEventInput, manager: EntityManager): Promise<RefundEventResult> {
@@ -257,7 +303,7 @@ export class RefundPoolService {
       .getMany();
     if (existingForPrefix.length > 0) {
       const totalRefundedAmount = existingForPrefix.reduce(
-        (s, e) => s + e.refundedGrossBase + e.refundedCardSurchargeAmount,
+        (s, e) => s + this.refundedAmountForRetry(e),
         0,
       );
       return { ledgerIds: existingForPrefix.map((e) => e.id), totalRefundedAmount, alreadyRefunded: true };
@@ -306,7 +352,7 @@ export class RefundPoolService {
       .getMany();
     if (existingAfterLock.length > 0) {
       const totalRefundedAmount = existingAfterLock.reduce(
-        (s, e) => s + e.refundedGrossBase + e.refundedCardSurchargeAmount,
+        (s, e) => s + this.refundedAmountForRetry(e),
         0,
       );
       return { ledgerIds: existingAfterLock.map((e) => e.id), totalRefundedAmount, alreadyRefunded: true };
@@ -593,6 +639,7 @@ export class RefundPoolService {
     }
 
     let refundPoint = 0;
+    let skippedPoint = 0;
     let refundDeposit = 0;
     let refundCredit = 0;
     let refundExcess = 0;
@@ -612,8 +659,8 @@ export class RefundPoolService {
       }
     }
 
-    const totalRefund = refundPoint + refundDeposit + refundCredit + refundExcess;
-    if (totalRefund <= 0) {
+    const totalAttemptRefund = refundPoint + refundDeposit + refundCredit + refundExcess;
+    if (totalAttemptRefund <= 0) {
       throw new BadRequestException(
         `RESEND_DEDUCT refund amount is zero for orderId=${input.orderId}, deliveryId=${orderDeliveryId}, attemptId=${input.attemptId}`,
       );
@@ -637,10 +684,32 @@ export class RefundPoolService {
     for (const [grantId, amount] of Object.entries(pointByGrant)) {
       const grant = await manager.findOne(PointGrantEntity, { where: { id: grantId } });
       const expired = grant?.expiresAt != null && grant.expiresAt < new Date();
-      if (expired) {
+      const usages = await manager.find(OrderPointUsageEntity, {
+        where: { allocationId: alloc.id, pointGrantId: grantId },
+        order: { id: 'ASC' },
+      });
+      let remaining = amount;
+      for (const usage of usages) {
+        if (remaining <= 0) break;
+        const usageRemaining = usage.usedAmount - usage.restoredAmount - usage.skippedExpiredAmount;
+        const portion = Math.min(remaining, usageRemaining);
+        if (portion <= 0) continue;
+        if (expired) {
+          usage.skippedExpiredAmount += portion;
+        } else {
+          usage.restoredAmount += portion;
+        }
+        await manager.save(OrderPointUsageEntity, usage);
+        remaining -= portion;
+      }
+      if (remaining > 0) {
         throw new BadRequestException(
-          `POINT RESEND_DEDUCT grant expired before refund (grantId=${grantId}, attemptId=${input.attemptId})`,
+          `POINT RESEND_DEDUCT usage restore insufficient (grantId=${grantId}, remaining=${remaining}, attemptId=${input.attemptId})`,
         );
+      }
+      if (expired) {
+        skippedPoint += amount;
+        continue;
       }
       const upd = await manager
         .createQueryBuilder()
@@ -654,25 +723,6 @@ export class RefundPoolService {
         );
       }
       const refreshed = await manager.findOne(PointGrantEntity, { where: { id: grantId } });
-      const usages = await manager.find(OrderPointUsageEntity, {
-        where: { allocationId: alloc.id, pointGrantId: grantId },
-        order: { id: 'ASC' },
-      });
-      let remaining = amount;
-      for (const usage of usages) {
-        if (remaining <= 0) break;
-        const usageRemaining = usage.usedAmount - usage.restoredAmount - usage.skippedExpiredAmount;
-        const portion = Math.min(remaining, usageRemaining);
-        if (portion <= 0) continue;
-        usage.restoredAmount += portion;
-        await manager.save(OrderPointUsageEntity, usage);
-        remaining -= portion;
-      }
-      if (remaining > 0) {
-        throw new BadRequestException(
-          `POINT RESEND_DEDUCT usage restore insufficient (grantId=${grantId}, remaining=${remaining}, attemptId=${input.attemptId})`,
-        );
-      }
       await manager.save(WalletTransactionEntity, {
         walletAccountId: alloc.walletAccountId,
         orderId: input.orderId,
@@ -683,6 +733,19 @@ export class RefundPoolService {
         balanceAfter: refreshed?.remainingAmount ?? null,
         memo: `refund_from_resend_deduct point grant=${grantId} attempt=${input.attemptId}`,
         idempotencyKey: `${input.idempotencyKeyPrefix}:attempt:${orderDeliveryId}:point:${grantId}`,
+      });
+    }
+    if (skippedPoint > 0) {
+      await manager.save(WalletTransactionEntity, {
+        walletAccountId: alloc.walletAccountId,
+        orderId: input.orderId,
+        orderDeliveryId,
+        type: 'RESTORE_SKIPPED_EXPIRED',
+        resourceType: WalletResourceType.POINT,
+        amount: 0,
+        balanceAfter: null,
+        memo: `expired_point_skipped=${skippedPoint}`,
+        idempotencyKey: `${input.idempotencyKeyPrefix}:attempt:${orderDeliveryId}:point_skipped_expired`,
       });
     }
     if (refundCredit > 0) {
@@ -716,7 +779,10 @@ export class RefundPoolService {
       });
     }
 
-    alloc.pointRestoredAmount += refundPoint;
+    const restoredPoint = refundPoint - skippedPoint;
+    const refundedPayable = restoredPoint + refundDeposit + refundCredit + refundExcess;
+    alloc.pointRestoredAmount += restoredPoint;
+    alloc.pointSkippedExpiredAmount += skippedPoint;
     alloc.depositRestoredAmount += refundDeposit;
     alloc.creditUsedRestoredAmount += refundCredit;
     alloc.creditExcessRestoredAmount += refundExcess;
@@ -727,20 +793,20 @@ export class RefundPoolService {
       orderId: input.orderId,
       eventType: input.eventType,
       affectedDeliveryIds: [orderDeliveryId],
-      refundedGrossBase: totalRefund,
-      refundedPayableBase: totalRefund,
+      refundedGrossBase: totalAttemptRefund,
+      refundedPayableBase: refundedPayable,
       refundedCardSurchargeAmount: 0,
-      refundedPointAmount: refundPoint,
+      refundedPointAmount: restoredPoint,
       refundedDepositAmount: refundDeposit,
       refundedCreditUsedAmount: refundCredit,
       refundedCreditExcessAmount: refundExcess,
-      pointSkippedExpiredAmount: 0,
+      pointSkippedExpiredAmount: skippedPoint,
       idempotencyKey: `${input.idempotencyKeyPrefix}:attempt:${orderDeliveryId}`,
       reversedAt: null,
       reversedByWalletTransactionId: null,
     });
 
-    return { ledgerIds: [ledger.id], totalRefundedAmount: totalRefund };
+    return { ledgerIds: [ledger.id], totalRefundedAmount: refundedPayable, alreadyRefunded: false };
   }
 
   private parseResendPointGrantId(tx: WalletTransactionEntity, attemptId: string): { grantId: string } {
@@ -763,6 +829,13 @@ export class RefundPoolService {
       );
     }
     return { grantId };
+  }
+
+  private refundedAmountForRetry(e: OrderPaymentRefundEventEntity): number {
+    if ((e.idempotencyKey ?? '').includes(':attempt:')) {
+      return e.refundedPayableBase + e.refundedCardSurchargeAmount;
+    }
+    return e.refundedGrossBase + e.refundedCardSurchargeAmount;
   }
 
   /**

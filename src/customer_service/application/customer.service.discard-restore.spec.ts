@@ -177,4 +177,46 @@ describe('CustomerServiceService.restoreBalanceOnDiscard — refunded-proxy read
     );
     expect(builder.setParameters).toHaveBeenCalledWith({ amount: 7000 });
   });
+
+  it('wallet 정산완료 폐기 환불 retry는 wallet alreadyRefunded 결과로 legacy mirror를 다시 갱신하지 않는다', async () => {
+    const claim = jest.fn().mockResolvedValue(undefined);
+    const sut: any = makeSut(false, claim);
+    const latestAttempt = { id: '44', attemptType: OrderDeliveryAttemptType.RESEND };
+    const user = { id: 5, email: 'buyer@test.local', balance: 10000, company: null };
+    const builder: any = {
+      update: jest.fn(() => builder),
+      set: jest.fn(() => builder),
+      where: jest.fn(() => builder),
+      setParameters: jest.fn(() => builder),
+      execute: jest.fn().mockResolvedValue({ affected: 1 }),
+    };
+    const queryRunner = {
+      manager: {
+        findOne: jest.fn(async (_target: any, opts: any) => {
+          if (opts?.where?.orderDeliveryId === 5001) return latestAttempt;
+          return user;
+        }),
+        createQueryBuilder: jest.fn(() => builder),
+        save: jest.fn().mockResolvedValue(undefined),
+      },
+    } as any;
+    sut.activityLogService = { createLog: jest.fn().mockResolvedValue(undefined) };
+    sut.cryptoCipher = { safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01012345678') };
+    sut.walletManagedPredicate = { isWalletManaged: jest.fn().mockResolvedValue(true) };
+    sut.refundPoolService = {
+      refundSettledDiscardToDeposit: jest.fn().mockResolvedValue({
+        ledgerIds: ['1'],
+        totalRefundedAmount: 10000,
+        alreadyRefunded: true,
+      }),
+    };
+
+    const orderDelivery = buildOrderDelivery(IOrderDeliveryStatus.COMPLETE);
+    orderDelivery.orderProductMapping.order.isSettleComplete = true;
+
+    await sut.restoreBalanceOnDiscard(orderDelivery, operator, queryRunner, 'operator');
+
+    expect(claim).not.toHaveBeenCalled();
+    expect(queryRunner.manager.createQueryBuilder).not.toHaveBeenCalled();
+  });
 });

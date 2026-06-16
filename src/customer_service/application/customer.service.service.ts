@@ -196,6 +196,9 @@ export class CustomerServiceService {
         },
         queryRunner.manager,
       );
+      if (walletRefund.alreadyRefunded) {
+        return;
+      }
       restoreAmount = walletRefund.totalRefundedAmount;
     }
 

@@ -47,6 +47,7 @@ describe('OrderService.deliveryCancel — wallet-managed mirror', () => {
         {
           id: 9001,
           amount: 1,
+          sendType: 'RESERVE',
           sendRequestAt,
           product: { price: 10000 },
         },
