@@ -1,4 +1,4 @@
-import { IsOptional, Min } from 'class-validator';
+import { IsOptional, Max, Min } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 
@@ -22,6 +22,7 @@ export class PagingReqDto {
   // ====================
   @IsOptional()
   @Min(1)
+  @Max(1000)
   @Type(() => Number)
   take: number = 10;
 }
