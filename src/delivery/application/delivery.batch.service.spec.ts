@@ -20,6 +20,7 @@ import { UserEntity } from '../../entity/user.entity';
 import { OrderDeliveryAttemptEntity } from '../../entity/order.delivery.attempt.entity';
 import { OrderPaymentRefundEventEntity } from '../../entity/order.payment.refund.event.entity';
 import { OrderPaymentAllocationEntity } from '../../entity/order.payment.allocation.entity';
+import { OrderHistoryEntity } from '../../entity/order.history.entity';
 import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
 import { SsgEventService } from '../../ssg_event/application/ssg.event.service';
 import { UserManagementService } from '../../user_management/application/user.management.service';
@@ -48,6 +49,10 @@ describe('DeliveryBatchService', () => {
       selectEventForOrder: jest.fn(),
       deductEventBalance: jest.fn(),
       chargeBackForResend: jest.fn(),
+      deductForReissueWithPending: jest.fn().mockResolvedValue({ resendDeductionId: 'ULID-TEST' }),
+      markReissueIssueAttempted: jest.fn().mockResolvedValue(undefined),
+      resolveReissuePending: jest.fn().mockResolvedValue(undefined),
+      refundResendEventDeduction: jest.fn().mockResolvedValue(undefined),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -81,6 +86,7 @@ describe('DeliveryBatchService', () => {
         { provide: getRepositoryToken(OrderDeliveryAttemptEntity), useValue: { findOne: jest.fn(), save: jest.fn() } },
         { provide: getRepositoryToken(OrderPaymentRefundEventEntity), useValue: { find: jest.fn().mockResolvedValue([]), findOne: jest.fn() } },
         { provide: getRepositoryToken(OrderPaymentAllocationEntity), useValue: { findOne: jest.fn() } },
+        { provide: getRepositoryToken(OrderHistoryEntity), useValue: {} },
         { provide: getDataSourceToken(), useValue: { transaction: jest.fn() } },
         { provide: OrderFromService, useValue: { resolveSendDefaultPhone: jest.fn() } },
       ],
@@ -112,22 +118,31 @@ describe('DeliveryBatchService', () => {
   });
 
   describe('selectAndDeductSsgEventForReissue', () => {
-    it('발급가능 행사 있으면 선차감 + resendDeductionId 반환', async () => {
+    it('발급가능 행사 있으면 선차감(deductForReissueWithPending) + resendDeductionId 반환', async () => {
       const event = { id: 7, eventBalance: 100000 } as SsgEventEntity;
       jest.spyOn(ssgEventService, 'selectEventForOrder').mockResolvedValue(event);
-      const deductSpy = jest.spyOn(ssgEventService, 'deductEventBalance').mockResolvedValue(undefined);
+      const deductSpy = jest
+        .spyOn(ssgEventService, 'deductForReissueWithPending')
+        .mockResolvedValue({ resendDeductionId: 'ULID-X' });
 
       const result = await service.selectAndDeductSsgEventForReissue(42, 10000, 30);
 
       expect(result).not.toBeNull();
       expect(result!.event.id).toBe(7);
-      expect(typeof result!.resendDeductionId).toBe('string');
-      expect(deductSpy).toHaveBeenCalledWith(7, 10000, 42, false);
+      expect(result!.resendDeductionId).toBe('ULID-X');
+      // CS 경로: 선차감 시점 신규 delivery 미존재 → issueOrderDeliveryId=null, purpose=CS_REISSUE.
+      expect(deductSpy).toHaveBeenCalledWith({
+        ssgEventId: 7,
+        amount: 10000,
+        orderId: 42,
+        purpose: 'CS_REISSUE',
+        issueOrderDeliveryId: null,
+      });
     });
 
     it('발급가능 행사 없으면 null 반환, 차감 안 함', async () => {
       jest.spyOn(ssgEventService, 'selectEventForOrder').mockResolvedValue(null);
-      const deductSpy = jest.spyOn(ssgEventService, 'deductEventBalance');
+      const deductSpy = jest.spyOn(ssgEventService, 'deductForReissueWithPending');
 
       const result = await service.selectAndDeductSsgEventForReissue(42, 10000, 30);
 

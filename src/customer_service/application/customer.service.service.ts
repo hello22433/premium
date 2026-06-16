@@ -1619,8 +1619,8 @@ export class CustomerServiceService {
           discardBefore = discardResult.beforeChange as OrderDeliveryCouponStatus;
         } catch (e) {
           if (isSsg && reissueEvent && resendDeductionId) {
-            await this.deliveryBatchService.reverseSsgReissueDeduct(
-              orderDelivery, reissueEvent.id, reissuePrice, reissueOrderId, resendDeductionId,
+            await this.deliveryBatchService.reverseReissueDeductDirect(
+              resendDeductionId, reissueEvent.id, reissueOrderId, reissuePrice,
             );
           }
           throw e;
@@ -1734,8 +1734,8 @@ export class CustomerServiceService {
           }
         } catch (preIssueErr) {
           if (isSsg && reissueEvent && resendDeductionId) {
-            await this.deliveryBatchService.reverseSsgReissueDeduct(
-              orderDelivery, reissueEvent.id, reissuePrice, reissueOrderId, resendDeductionId,
+            await this.deliveryBatchService.reverseReissueDeductDirect(
+              resendDeductionId, reissueEvent.id, reissueOrderId, reissuePrice,
             );
             await unwindReissue(orderDelivery, savedDelivery?.id ?? null, SsgRefundOutcome.RESTORED);
           }
@@ -1746,6 +1746,12 @@ export class CustomerServiceService {
 
         // PIN 발급 — 실패 시 SSG 선차감 역복원 + (미등록 확정이면) 폐기 역전·새 delivery 제거
         try {
+          // 선차감 pending 에 issue 시도 기록(실제 신규 delivery id) — sweep W1 구분 phase.
+          // issue try 보상 범위 안에 둬서 이 마킹이 throw 해도 catch(issueError)가 역복원+unwind 하도록 한다(MEDIUM).
+          // (이 시점 fullDelivery 는 미발급 → state=NONE → resolver RESTORED → 안전.)
+          if (isSsg && reissueEvent && resendDeductionId) {
+            await this.deliveryBatchService.markReissueIssueAttempted(resendDeductionId, fullDelivery.id);
+          }
           await this.partnerCompanyExternService.issue(fullDelivery, ssgEvent);
         } catch (issueError) {
           if (isSsg && reissueEvent && resendDeductionId) {
@@ -1765,6 +1771,7 @@ export class CustomerServiceService {
           }
           throw issueError;
         }
+
 
         // 폐기 후 신규발송: 새 쿠폰이므로 유효기간 새로 계산 (SSG는 issue() 내부에서 expireAt 채움 → 제외)
         if (fullDelivery.orderProductMapping.order.type !== IOrderType.SSG) {
@@ -1800,6 +1807,12 @@ export class CustomerServiceService {
             );
           }
           throw new InternalServerErrorException('핀 발급에 실패했습니다.');
+        }
+
+        // issue 성공 + barCode 확인 + durable save 완료 후에야 선차감 pending KEPT 해소(차감 유지 확정).
+        // barCode 검증 이전에 KEPT 하면 이후 !barCode 분기의 DEFERRED 역복원을 sweep 이 재시도 못 함(HIGH).
+        if (isSsg && reissueEvent && resendDeductionId) {
+          await this.deliveryBatchService.resolveReissuePendingKept(resendDeductionId);
         }
 
         const newPin = fullDelivery.barCode;

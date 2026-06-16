@@ -116,6 +116,9 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
     deliveryBatchService = {
       selectAndDeductSsgEventForReissue: jest.fn(),
       reverseSsgReissueDeduct: jest.fn(),
+      reverseReissueDeductDirect: jest.fn().mockResolvedValue(undefined),
+      markReissueIssueAttempted: jest.fn().mockResolvedValue(undefined),
+      resolveReissuePendingKept: jest.fn().mockResolvedValue(undefined),
       csResendAsSms: jest.fn().mockResolvedValue(IOrderDeliveryStatus.COMPLETE),
       csResendAsMms: jest.fn().mockResolvedValue(undefined),
       csResendAsAlimTalk: jest.fn().mockResolvedValue(IOrderDeliveryStatus.COMPLETE),
@@ -294,13 +297,13 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
 
       await expect(service.execHistory(buildMap(IOrderType.SSG))).rejects.toThrow();
 
-      expect(deliveryBatchService.reverseSsgReissueDeduct).toHaveBeenCalledWith(
-        expect.anything(),
-        7,
-        PRICE,
-        ORDER_ID,
+      expect(deliveryBatchService.reverseReissueDeductDirect).toHaveBeenCalledWith(
         'ULID1',
+        7,
+        ORDER_ID,
+        PRICE,
       );
+      expect(deliveryBatchService.reverseSsgReissueDeduct).not.toHaveBeenCalled();
       expect(reverseDiscardSpy).toHaveBeenCalledWith(7001, OrderDeliveryCouponStatus.NOT_USED);
     });
 
@@ -310,20 +313,20 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
       // save 는 성공하되 findOne 은 null 반환
       orderDeliveryRepository.save.mockResolvedValue({ id: 8001 });
       orderDeliveryRepository.findOne.mockResolvedValue(null);
-      deliveryBatchService.reverseSsgReissueDeduct.mockResolvedValue(SsgRefundOutcome.RESTORED);
+      deliveryBatchService.reverseReissueDeductDirect.mockResolvedValue(undefined);
       const reverseDiscardSpy = jest
         .spyOn(service as any, 'reverseDiscard')
         .mockResolvedValue(undefined);
 
       await expect(service.execHistory(buildMap(IOrderType.SSG))).rejects.toThrow();
 
-      expect(deliveryBatchService.reverseSsgReissueDeduct).toHaveBeenCalledWith(
-        expect.anything(),
-        7,
-        PRICE,
-        ORDER_ID,
+      expect(deliveryBatchService.reverseReissueDeductDirect).toHaveBeenCalledWith(
         'ULID1',
+        7,
+        ORDER_ID,
+        PRICE,
       );
+      expect(deliveryBatchService.reverseSsgReissueDeduct).not.toHaveBeenCalled();
       expect(reverseDiscardSpy).toHaveBeenCalledWith(7001, OrderDeliveryCouponStatus.NOT_USED);
       expect(orderDeliveryRepository.softDelete).toHaveBeenCalledWith(8001);
     });

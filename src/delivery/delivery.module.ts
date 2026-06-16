@@ -16,6 +16,8 @@ import { RefundLedgerService } from './application/refund-ledger.service';
 import { SsgRefundResolverService } from './application/ssg-refund.resolver';
 import { SsgRecoveryService } from './application/ssg-recovery.service';
 import { SsgRecoverySweepService } from './application/ssg-recovery-sweep.service';
+import { SsgResendDeductRecoveryService } from './application/ssg-resend-deduct-recovery.service';
+import { SsgResendDeductPendingEntity } from '../entity/ssg.resend.deduct.pending.entity';
 import { SsgInsertStateModule } from './ssg.insert.state.module';
 import { MailModule } from '../mail/mail.module';
 import { SmsModule } from '../sms/sms.module';
@@ -54,6 +56,7 @@ import { OrderFromModule } from '../order_from/order.from.module';
       SsgEventEntity,
       SsgIssueLogEntity,
       OrderHistoryEntity,
+      SsgResendDeductPendingEntity,
     ]),
     MailModule,
     SmsModule,
@@ -78,6 +81,7 @@ import { OrderFromModule } from '../order_from/order.from.module';
     SsgRefundResolverService,
     SsgRecoveryService,
     SsgRecoverySweepService,
+    SsgResendDeductRecoveryService,
   ],
   exports: [
     {
@@ -91,6 +95,7 @@ import { OrderFromModule } from '../order_from/order.from.module';
     SsgRefundResolverService,
     SsgRecoveryService,
     SsgRecoverySweepService,
+    SsgResendDeductRecoveryService,
     SsgInsertStateModule,
   ],
 })
