@@ -14,7 +14,7 @@ import { applyReplaceCharacters } from '../../common/utils/replace-characters.ut
 import { resolveExpireDays, couponTokenExpiry } from '../../common/utils/expire.util';
 import { OrderEntity } from '../../entity/order.entity';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
-import { OrderProductMappingEntity } from '../../entity/order.product.mapping.entity';
+import { OrderHistoryEntity } from '../../entity/order.history.entity';
 import { OrderRealProductEntity } from '../../entity/order.real.product.entity';
 import { OrderRealProductMappingEntity } from '../../entity/order.real.product.mapping.entity';
 import { DeliverySendHistoryEntity } from '../../entity/delivery.send.history.entity';
@@ -38,6 +38,8 @@ import { InjectDataSource } from '@nestjs/typeorm';
 import { DeliveryAlimTalk } from '../interface/delivery.alim.talk';
 import { IOrderDeliveryStatus } from '../interface/order.delivery.status';
 import { OrderDeliveryCouponStatus } from '../interface/order.delivery.coupon.status';
+import { OrderDeliveryRefundStatusEnum } from '../interface/order.delivery.refund.status.enum';
+import { PII_BEARING_HISTORY_TYPES } from '../../order/interface/order.history.pii.types';
 import { IMailSend } from '../../mail/interface/mail-send';
 import { ISmsSend } from '../../sms/interface/sms.send';
 import { IOrderSendMethod } from '../../order/interface/order.send.method';
@@ -55,9 +57,7 @@ import { AlimTalkEncourageTemplate } from '../domain/alim.talk.encourage.templat
 import { EmailEncourageTemplate } from '../domain/email.encourage.template';
 import { EmailDeliveryTemplate } from '../domain/email.delivery.template';
 import { smsEncourageTemplate } from '../domain/sms.encourage.template';
-import { SmsChoiceProductTemplate } from '../domain/sms.choice.product.template';
-import { smsCouponInfoTemplate } from '../domain/sms.coupon.info.template';
-import { smsSsgShortTemplate, smsSsgTemplate } from '../domain/sms.ssg.template';
+import { smsSsgShortTemplate } from '../domain/sms.ssg.template';
 import { DeliveryTrackingStatus } from '../domain/delivery.tracking.status';
 import { OrderEmailSendType } from '../../order/domain/order.email.send.type';
 import { EmailType } from '../../mail/domain/email.type';
@@ -129,6 +129,8 @@ export class DeliveryBatchService {
     private readonly orderPaymentRefundEventRepository: Repository<OrderPaymentRefundEventEntity>,
     @InjectRepository(OrderPaymentAllocationEntity)
     private readonly orderPaymentAllocationRepository: Repository<OrderPaymentAllocationEntity>,
+    @InjectRepository(OrderHistoryEntity)
+    private readonly orderHistoryRepository: Repository<OrderHistoryEntity>,
     @InjectDataSource() private readonly dataSource: DataSource,
     private readonly orderFromService: OrderFromService,
   ) {}
@@ -144,9 +146,8 @@ export class DeliveryBatchService {
    * deliveryTarget 복호화 (실패 시 원본 반환)
    */
   private decryptDeliveryTarget(orderDelivery: OrderDeliveryEntity, fieldName: string = 'deliveryTarget'): string {
-    const encryptedValue = fieldName === 'emailReceiverPhone'
-      ? orderDelivery.emailReceiverPhone
-      : orderDelivery.deliveryTarget;
+    const encryptedValue =
+      fieldName === 'emailReceiverPhone' ? orderDelivery.emailReceiverPhone : orderDelivery.deliveryTarget;
 
     if (!encryptedValue) {
       return '';
@@ -179,7 +180,9 @@ export class DeliveryBatchService {
     const extraStr = Object.entries(extra)
       .map(([k, v]) => `${k}=${v ?? 'NULL'}`)
       .join(' ');
-    this.logger.error(`발송 실패 odId=${odId} method=${method} ${extraStr} msg=${(err as Error)?.message ?? String(err)}`);
+    this.logger.error(
+      `발송 실패 odId=${odId} method=${method} ${extraStr} msg=${(err as Error)?.message ?? String(err)}`,
+    );
   }
 
   /**
@@ -340,9 +343,7 @@ export class DeliveryBatchService {
       });
       if (!activeAttempt) {
         // drift: wallet 분기 진입했는데 deliveryConfirmed/재발송 hook 이 attempt 를 남기지 않은 상황.
-        throw new Error(
-          `wallet-managed delivery ${orderDelivery.id} missing attempt — drift, aborting refund`,
-        );
+        throw new Error(`wallet-managed delivery ${orderDelivery.id} missing attempt — drift, aborting refund`);
       }
       await this.refundPoolService.refund({
         orderId: order.id,
@@ -505,9 +506,7 @@ export class DeliveryBatchService {
       return billingUser?.settleCondition === IUserSettleCondition.PRE_PAYMENT;
     });
 
-    const settleCompleteIds = prePaymentOrders
-      .filter((o) => o.isSettleBalance)
-      .map((o) => o.id);
+    const settleCompleteIds = prePaymentOrders.filter((o) => o.isSettleBalance).map((o) => o.id);
 
     const unsettledCount = prePaymentOrders.length - settleCompleteIds.length;
 
@@ -520,7 +519,9 @@ export class DeliveryBatchService {
     }
 
     if (unsettledCount > 0) {
-      this.logger.log(`[BATCH] Skipped auto-settle for ${unsettledCount} pre-payment orders (credit-excess, kept UNSETTLE_NORMAL)`);
+      this.logger.log(
+        `[BATCH] Skipped auto-settle for ${unsettledCount} pre-payment orders (credit-excess, kept UNSETTLE_NORMAL)`,
+      );
     }
   }
 
@@ -545,9 +546,7 @@ export class DeliveryBatchService {
           { claimedAt: null },
         );
       } catch (resetError) {
-        this.logger.error(
-          `[BATCH] claimedAt reset 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${resetError}`,
-        );
+        this.logger.error(`[BATCH] claimedAt reset 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${resetError}`);
       }
       return null;
     }
@@ -582,8 +581,8 @@ export class DeliveryBatchService {
     // 진입 시점(발송 전) status 로 최초/재발송을 구분한다. 재발송이면 직전이 FAIL/FAIL_SMS.
     // SSG 보류 여부는 발송 후 SsgInsertState 에 달려 있어(issue() 후 전이) refund 지점에서
     // shouldHoldRefundForFail() 로 재평가한다 (여기선 최초 발송 여부만 snapshot).
-    const isInitialSend = orderDelivery.status !== IOrderDeliveryStatus.FAIL
-      && orderDelivery.status !== IOrderDeliveryStatus.FAIL_SMS;
+    const isInitialSend =
+      orderDelivery.status !== IOrderDeliveryStatus.FAIL && orderDelivery.status !== IOrderDeliveryStatus.FAIL_SMS;
 
     // 1. PIN 발급 (barCode가 없는 경우)
     if (!orderDelivery.barCode && !isChoiceCoupon && !isEmailDelivery) {
@@ -603,7 +602,9 @@ export class DeliveryBatchService {
 
         orderDelivery.imagePath = await this.createCouponImage(orderDelivery);
 
-        this.logger.log(`[BATCH] PIN 발급 성공 - orderDelivery.id: ${orderDelivery.id}, barCode: ${orderDelivery.barCode}`);
+        this.logger.log(
+          `[BATCH] PIN 발급 성공 - orderDelivery.id: ${orderDelivery.id}, barCode: ${orderDelivery.barCode}`,
+        );
       } catch (error) {
         this.logger.error(`[BATCH] PIN 발급 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
 
@@ -628,7 +629,8 @@ export class DeliveryBatchService {
     }
 
     // 2. deliveryTarget 복호화
-    const decryptedDeliveryTarget = this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.deliveryTarget) ?? orderDelivery.deliveryTarget;
+    const decryptedDeliveryTarget =
+      this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.deliveryTarget) ?? orderDelivery.deliveryTarget;
 
     const title = orderDelivery.orderProductMapping.sendTitle ?? '';
     const deliveryMethod = orderDelivery.deliveryMethod;
@@ -652,7 +654,9 @@ export class DeliveryBatchService {
     if (!isChoiceCoupon && !isEmailDelivery && orderDelivery.barCode && !orderDelivery.imagePath) {
       try {
         orderDelivery.imagePath = await this.createCouponImage(orderDelivery);
-        this.logger.log(`[BATCH] 이미지 재생성 - orderDelivery.id: ${orderDelivery.id}, imagePath: ${orderDelivery.imagePath}`);
+        this.logger.log(
+          `[BATCH] 이미지 재생성 - orderDelivery.id: ${orderDelivery.id}, imagePath: ${orderDelivery.imagePath}`,
+        );
       } catch (error) {
         this.logger.error(`[BATCH] 이미지 재생성 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
       }
@@ -666,9 +670,10 @@ export class DeliveryBatchService {
 
     const body = applyReplaceCharacters(orderDelivery.orderProductMapping.sendContent ?? '', orderDelivery);
     const memoRaw = orderDelivery.orderProductMapping.product.memo;
-    const memo = memoRaw && order.type !== IOrderType.SSG && deliveryMethod !== IOrderSendMethod.EMAIL
-      ? applyReplaceCharacters(memoRaw, orderDelivery)
-      : null;
+    const memo =
+      memoRaw && order.type !== IOrderType.SSG && deliveryMethod !== IOrderSendMethod.EMAIL
+        ? applyReplaceCharacters(memoRaw, orderDelivery)
+        : null;
     const tailRaw = orderDelivery.orderProductMapping.sendTailText;
     const tailText = tailRaw ? applyReplaceCharacters(tailRaw, orderDelivery) : null;
 
@@ -678,19 +683,49 @@ export class DeliveryBatchService {
     deliveryHistory.target = decryptedDeliveryTarget;
     deliveryHistory.deliveryMethod = deliveryMethod;
 
-    const encryptKey = this.cryptoCipher.encryptJson({
-      id: orderDelivery.id,
-      transactionId: orderDelivery.transactionId,
-    } as OrderEncryptKey, couponTokenExpiry(orderDelivery.expireAt));
+    const encryptKey = this.cryptoCipher.encryptJson(
+      {
+        id: orderDelivery.id,
+        transactionId: orderDelivery.transactionId,
+      } as OrderEncryptKey,
+      couponTokenExpiry(orderDelivery.expireAt),
+    );
 
     // 6. 발송 채널별 처리
     if (deliveryMethod === IOrderSendMethod.ALIM_TALK) {
-      await this.deliverySendService.sendAlimTalk(orderDelivery, decryptedDeliveryTarget, encryptKey, title, body, memo, tailText, filePathList, deliveryHistory);
+      await this.deliverySendService.sendAlimTalk(
+        orderDelivery,
+        decryptedDeliveryTarget,
+        encryptKey,
+        title,
+        body,
+        memo,
+        tailText,
+        filePathList,
+        deliveryHistory,
+      );
     } else if (deliveryMethod === IOrderSendMethod.MMS) {
-      await this.deliverySendService.sendSms(orderDelivery, decryptedDeliveryTarget, encryptKey, title, body, memo, tailText, filePathList, deliveryHistory);
+      await this.deliverySendService.sendSms(
+        orderDelivery,
+        decryptedDeliveryTarget,
+        encryptKey,
+        title,
+        body,
+        memo,
+        tailText,
+        filePathList,
+        deliveryHistory,
+      );
     } else if (deliveryMethod === IOrderSendMethod.EMAIL) {
       const emailText = tailText ? `${body}\n\n${tailText}` : body;
-      await this.deliverySendService.sendEmail(orderDelivery, decryptedDeliveryTarget, encryptKey, title, emailText, deliveryHistory);
+      await this.deliverySendService.sendEmail(
+        orderDelivery,
+        decryptedDeliveryTarget,
+        encryptKey,
+        title,
+        emailText,
+        deliveryHistory,
+      );
     }
 
     // 발송 결과(성공/실패)를 즉시 DB에 마커로 반영. 이후 refund/save가 실패해도
@@ -893,10 +928,11 @@ export class DeliveryBatchService {
     // - barCode 없음: PIN 재발급 필요
     // - SSG: barCode가 있어도 SSG DB 등록 여부 확인 필요 (SSG는 PIN을 로컬 생성 후 외부 API로 등록하는 구조)
     // - 단, SSG 발송 완료 건(COMPLETE/COMPLETE_SMS + barCode 존재)은 PIN 재발급 불필요 (CS 재전송 시 기존 barCode 유지)
-    const isSsgAlreadyComplete = order.type === IOrderType.SSG
-      && orderDelivery.barCode
-      && (orderDelivery.status === IOrderDeliveryStatus.COMPLETE
-        || orderDelivery.status === IOrderDeliveryStatus.COMPLETE_SMS);
+    const isSsgAlreadyComplete =
+      order.type === IOrderType.SSG &&
+      orderDelivery.barCode &&
+      (orderDelivery.status === IOrderDeliveryStatus.COMPLETE ||
+        orderDelivery.status === IOrderDeliveryStatus.COMPLETE_SMS);
     const needsIssue = !orderDelivery.barCode || (order.type === IOrderType.SSG && !isSsgAlreadyComplete);
     if (needsIssue) {
       const hadNoBarCode = !orderDelivery.barCode;
@@ -927,13 +963,12 @@ export class DeliveryBatchService {
           ? await this.refundLedgerService.isSsgSettled(orderDelivery.id)
           : false;
         const stateForResendDeduct = await this.ssgInsertStateService.getState(orderDelivery.id);
-        const canDeductNewEvent = stateForResendDeduct === SsgInsertState.NONE
-          || stateForResendDeduct === SsgInsertState.FAILED;
+        const canDeductNewEvent =
+          stateForResendDeduct === SsgInsertState.NONE || stateForResendDeduct === SsgInsertState.FAILED;
         // B3: SSG FAIL 재발송에서 새 행사 선차감이 적용되는 케이스를 공통 가드로 묶는다.
         // (세 신호 AND: SSG + FAIL + canDeductNewEvent)
-        const isSsgFailResendDeduct = order.type === IOrderType.SSG
-          && orderDelivery.status === IOrderDeliveryStatus.FAIL
-          && canDeductNewEvent;
+        const isSsgFailResendDeduct =
+          order.type === IOrderType.SSG && orderDelivery.status === IOrderDeliveryStatus.FAIL && canDeductNewEvent;
 
         // B3: status=FAIL + state=NONE/FAILED + ledger 없음 = 보류(최초실패 환불 미생성) 정상 케이스.
         // 재발송은 기존 ssgEventId 로 PIN 재시도(새 행사 select·재차감 없음). 구버전 "비정상 경고"는
@@ -950,10 +985,7 @@ export class DeliveryBatchService {
           );
         }
         if (isSsgFailResendDeduct && hasRefundLedgerForResendDeduct && ssgBalanceSettledForResendDeduct) {
-          const newEvent = await this.ssgEventService.selectEventForOrder(
-            product.price,
-            product.expireDay,
-          );
+          const newEvent = await this.ssgEventService.selectEventForOrder(product.price, product.expireDay);
           if (!newEvent) {
             this.logger.warn(
               `[RESEND] 잔액 충분한 SSG 행사 없음 - orderDelivery.id: ${orderDelivery.id}, price: ${product.price}`,
@@ -992,7 +1024,9 @@ export class DeliveryBatchService {
           await this.reverseRefundForResend(orderDelivery, resendDeducted);
         }
 
-        this.logger.log(`[RESEND] PIN 발급/확인 성공 - orderDelivery.id: ${orderDelivery.id}, barCode: ${orderDelivery.barCode}`);
+        this.logger.log(
+          `[RESEND] PIN 발급/확인 성공 - orderDelivery.id: ${orderDelivery.id}, barCode: ${orderDelivery.barCode}`,
+        );
       } catch (error) {
         this.logger.error(`[RESEND] PIN 발급/확인 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
         // issue() throw 시에도 선차감 환불 (shared resolver — state 기준 분기)
@@ -1080,9 +1114,7 @@ export class DeliveryBatchService {
       resendDeductionId,
     });
     if (outcome === SsgRefundOutcome.DEFERRED) {
-      this.logger.error(
-        `[RESEND] 선차감 환불 DEFERRED — 운영 점검 필요. orderDelivery.id: ${orderDelivery.id}`,
-      );
+      this.logger.error(`[RESEND] 선차감 환불 DEFERRED — 운영 점검 필요. orderDelivery.id: ${orderDelivery.id}`);
     }
   }
 
@@ -1135,9 +1167,7 @@ export class DeliveryBatchService {
       try {
         const state = await this.ssgInsertStateService.getState(orderDelivery.id);
         if (state === SsgInsertState.CONFIRMED) {
-          this.logger.log(
-            `[RESEND] SSG chargeBack skip — state=CONFIRMED. orderDelivery.id=${orderDelivery.id}`,
-          );
+          this.logger.log(`[RESEND] SSG chargeBack skip — state=CONFIRMED. orderDelivery.id=${orderDelivery.id}`);
         } else {
           await this.ssgEventService.chargeBackForResend(orderDelivery.ssgEventId, order.id, productPrice);
         }
@@ -1164,10 +1194,7 @@ export class DeliveryBatchService {
     }
 
     // wallet 재차감 + refund ledger 역처리 — this.orderRepository.manager (cls-tracked) 로 same TX.
-    const isWalletManaged = await this.walletManagedPredicate.isWalletManaged(
-      order.id,
-      this.orderRepository.manager,
-    );
+    const isWalletManaged = await this.walletManagedPredicate.isWalletManaged(order.id, this.orderRepository.manager);
     if (isWalletManaged) {
       await this.applyWalletReverseRefundForResendOnManager(orderDelivery, this.orderRepository.manager);
     }
@@ -1279,7 +1306,8 @@ export class DeliveryBatchService {
 
     this.assertChoiceProductNotDeletedForCsResend(orderDelivery);
 
-    const isUnselectedChoiceCoupon = orderDelivery.orderProductMapping.product.type === IProductType.CHOICE && !orderDelivery.choiceSelectProductId;
+    const isUnselectedChoiceCoupon =
+      orderDelivery.orderProductMapping.product.type === IProductType.CHOICE && !orderDelivery.choiceSelectProductId;
     if (!orderDelivery.barCode && !isUnselectedChoiceCoupon) {
       throw new Error('쿠폰이 발급되지 않은 건은 MMS 재발송이 불가능합니다.');
     }
@@ -1296,25 +1324,30 @@ export class DeliveryBatchService {
     }
 
     // 수신 전화번호 결정
-    const phoneNumber = orderDelivery.deliveryMethod === IOrderSendMethod.EMAIL && orderDelivery.emailReceiverPhone
-      ? this.decryptDeliveryTarget(orderDelivery, 'emailReceiverPhone')
-      : this.decryptDeliveryTarget(orderDelivery);
+    const phoneNumber =
+      orderDelivery.deliveryMethod === IOrderSendMethod.EMAIL && orderDelivery.emailReceiverPhone
+        ? this.decryptDeliveryTarget(orderDelivery, 'emailReceiverPhone')
+        : this.decryptDeliveryTarget(orderDelivery);
 
     // 텍스트 빌드
     const title = orderDelivery.orderProductMapping.sendTitle ?? '';
     const body = applyReplaceCharacters(orderDelivery.orderProductMapping.sendContent ?? '', orderDelivery);
     const memoSourceProduct = orderDelivery.choiceSelectProduct ?? orderDelivery.orderProductMapping.product;
     const memoRaw = memoSourceProduct.memo;
-    const memo = memoRaw && orderDelivery.orderProductMapping.order.type !== IOrderType.SSG
-      ? applyReplaceCharacters(memoRaw, orderDelivery)
-      : null;
+    const memo =
+      memoRaw && orderDelivery.orderProductMapping.order.type !== IOrderType.SSG
+        ? applyReplaceCharacters(memoRaw, orderDelivery)
+        : null;
     const tailRaw = orderDelivery.orderProductMapping.sendTailText;
     const tailText = tailRaw ? applyReplaceCharacters(tailRaw, orderDelivery) : null;
 
-    const encryptKey = this.cryptoCipher.encryptJson({
-      id: orderDelivery.id,
-      transactionId: orderDelivery.transactionId,
-    } as OrderEncryptKey, couponTokenExpiry(orderDelivery.expireAt));
+    const encryptKey = this.cryptoCipher.encryptJson(
+      {
+        id: orderDelivery.id,
+        transactionId: orderDelivery.transactionId,
+      } as OrderEncryptKey,
+      couponTokenExpiry(orderDelivery.expireAt),
+    );
 
     const smsText = this.buildSmsText(orderDelivery, encryptKey, body, memo, tailText);
 
@@ -1336,7 +1369,9 @@ export class DeliveryBatchService {
     });
   }
 
-  async csResendAsAlimTalk(orderDeliveryId: number): Promise<IOrderDeliveryStatus.COMPLETE | IOrderDeliveryStatus.COMPLETE_SMS> {
+  async csResendAsAlimTalk(
+    orderDeliveryId: number,
+  ): Promise<IOrderDeliveryStatus.COMPLETE | IOrderDeliveryStatus.COMPLETE_SMS> {
     const orderDelivery = await this.orderDeliveryRepository
       .createQueryBuilder('orderDelivery')
       .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
@@ -1360,7 +1395,8 @@ export class DeliveryBatchService {
 
     this.assertChoiceProductNotDeletedForCsResend(orderDelivery);
 
-    const isUnselectedChoiceCoupon = orderDelivery.orderProductMapping.product.type === IProductType.CHOICE && !orderDelivery.choiceSelectProductId;
+    const isUnselectedChoiceCoupon =
+      orderDelivery.orderProductMapping.product.type === IProductType.CHOICE && !orderDelivery.choiceSelectProductId;
     if (!orderDelivery.barCode && !isUnselectedChoiceCoupon) {
       throw new Error('쿠폰이 발급되지 않은 건은 알림톡 재발송이 불가능합니다.');
     }
@@ -1377,16 +1413,20 @@ export class DeliveryBatchService {
     }
 
     // 수신 전화번호 결정
-    const phoneNumber = orderDelivery.deliveryMethod === IOrderSendMethod.EMAIL && orderDelivery.emailReceiverPhone
-      ? this.decryptDeliveryTarget(orderDelivery, 'emailReceiverPhone')
-      : this.decryptDeliveryTarget(orderDelivery);
+    const phoneNumber =
+      orderDelivery.deliveryMethod === IOrderSendMethod.EMAIL && orderDelivery.emailReceiverPhone
+        ? this.decryptDeliveryTarget(orderDelivery, 'emailReceiverPhone')
+        : this.decryptDeliveryTarget(orderDelivery);
 
     const alimTalk = AlimTalkTemplate(orderDelivery);
 
-    const encryptKey = this.cryptoCipher.encryptJson({
-      id: orderDelivery.id,
-      transactionId: orderDelivery.transactionId,
-    } as OrderEncryptKey, couponTokenExpiry(orderDelivery.expireAt));
+    const encryptKey = this.cryptoCipher.encryptJson(
+      {
+        id: orderDelivery.id,
+        transactionId: orderDelivery.transactionId,
+      } as OrderEncryptKey,
+      couponTokenExpiry(orderDelivery.expireAt),
+    );
 
     // 알림톡 시도
     let alimTalkSucceeded = false;
@@ -1398,7 +1438,9 @@ export class DeliveryBatchService {
       });
       alimTalkSucceeded = report.code === 'A000';
     } catch (e) {
-      this.logger.warn(`[CS_RESEND] 알림톡 발송 실패, MMS 폴백 시도 - orderDelivery.id: ${orderDelivery.id}, error: ${e}`);
+      this.logger.warn(
+        `[CS_RESEND] 알림톡 발송 실패, MMS 폴백 시도 - orderDelivery.id: ${orderDelivery.id}, error: ${e}`,
+      );
     }
 
     if (alimTalkSucceeded) {
@@ -1410,9 +1452,10 @@ export class DeliveryBatchService {
     const body = applyReplaceCharacters(orderDelivery.orderProductMapping.sendContent ?? '', orderDelivery);
     const memoSourceProduct = orderDelivery.choiceSelectProduct ?? orderDelivery.orderProductMapping.product;
     const memoRaw = memoSourceProduct.memo;
-    const memo = memoRaw && orderDelivery.orderProductMapping.order.type !== IOrderType.SSG
-      ? applyReplaceCharacters(memoRaw, orderDelivery)
-      : null;
+    const memo =
+      memoRaw && orderDelivery.orderProductMapping.order.type !== IOrderType.SSG
+        ? applyReplaceCharacters(memoRaw, orderDelivery)
+        : null;
     const tailRaw = orderDelivery.orderProductMapping.sendTailText;
     const tailText = tailRaw ? applyReplaceCharacters(tailRaw, orderDelivery) : null;
 
@@ -1456,25 +1499,30 @@ export class DeliveryBatchService {
 
     this.assertChoiceProductNotDeletedForCsResend(orderDelivery);
 
-    const isUnselectedChoiceCoupon = orderDelivery.orderProductMapping.product.type === IProductType.CHOICE && !orderDelivery.choiceSelectProductId;
+    const isUnselectedChoiceCoupon =
+      orderDelivery.orderProductMapping.product.type === IProductType.CHOICE && !orderDelivery.choiceSelectProductId;
     if (!orderDelivery.barCode && !isUnselectedChoiceCoupon) {
       throw new Error('쿠폰이 발급되지 않은 건은 SMS 재발송이 불가능합니다.');
     }
 
     // 수신 전화번호 결정
-    const phoneNumber = orderDelivery.deliveryMethod === IOrderSendMethod.EMAIL && orderDelivery.emailReceiverPhone
-      ? this.decryptDeliveryTarget(orderDelivery, 'emailReceiverPhone')
-      : this.decryptDeliveryTarget(orderDelivery);
+    const phoneNumber =
+      orderDelivery.deliveryMethod === IOrderSendMethod.EMAIL && orderDelivery.emailReceiverPhone
+        ? this.decryptDeliveryTarget(orderDelivery, 'emailReceiverPhone')
+        : this.decryptDeliveryTarget(orderDelivery);
 
     // SMS 텍스트
     const orderType = orderDelivery.orderProductMapping.order.type;
     let text: string;
     if (isUnselectedChoiceCoupon) {
       // 초이스쿠폰 미선택: 상품선택 링크 재발송
-      const encryptKey = this.cryptoCipher.encryptJson({
-        id: orderDelivery.id,
-        transactionId: orderDelivery.transactionId,
-      } as OrderEncryptKey, couponTokenExpiry(orderDelivery.expireAt));
+      const encryptKey = this.cryptoCipher.encryptJson(
+        {
+          id: orderDelivery.id,
+          transactionId: orderDelivery.transactionId,
+        } as OrderEncryptKey,
+        couponTokenExpiry(orderDelivery.expireAt),
+      );
       const choiceUrl = this.configService.getOrThrow('SMS_CHOICE_URL');
       text = `초이스 쿠폰 받기 링크 : ${choiceUrl}/${encryptKey}`;
     } else if (orderType === IOrderType.SSG) {
@@ -1482,7 +1530,8 @@ export class DeliveryBatchService {
     } else {
       const displayProduct = orderDelivery.choiceSelectProduct ?? orderDelivery.orderProductMapping.product;
       const productName = displayProduct.name;
-      const brandName = (orderDelivery.choiceSelectProduct?.brand ?? orderDelivery.orderProductMapping.product.brand)?.nameKorean ?? '';
+      const brandName =
+        (orderDelivery.choiceSelectProduct?.brand ?? orderDelivery.orderProductMapping.product.brand)?.nameKorean ?? '';
       const expireDate = orderDelivery.expireAt ? format(orderDelivery.expireAt, 'yy/MM/dd') : '';
       text = `[${productName}]\n교환처:${brandName}\n쿠폰번호:${orderDelivery.barCode}\n${expireDate}까지`;
     }
@@ -1557,11 +1606,14 @@ export class DeliveryBatchService {
       await this.emailSendHistoryRepository.save(emailSendHistory);
     }
 
-    const encryptKeyEmail = this.cryptoCipher.encryptJson({
-      id: orderDelivery.id,
-      transactionId: orderDelivery.transactionId,
-      emailHistoryId: emailSendHistory.id,
-    } as OrderEncryptKey, couponTokenExpiry(orderDelivery.expireAt));
+    const encryptKeyEmail = this.cryptoCipher.encryptJson(
+      {
+        id: orderDelivery.id,
+        transactionId: orderDelivery.transactionId,
+        emailHistoryId: emailSendHistory.id,
+      } as OrderEncryptKey,
+      couponTokenExpiry(orderDelivery.expireAt),
+    );
 
     const url = `${this.configService.getOrThrow('EMAIL_RECEIVE_URL')}/${encryptKeyEmail}`;
     let qrCodeImagePath = undefined;
@@ -1598,22 +1650,22 @@ export class DeliveryBatchService {
     });
   }
 
-  async oneSend(orderDelivery: OrderDeliveryEntity, isSave: boolean = true, testOrderDeliveryId?: number): Promise<boolean> {
+  async oneSend(
+    orderDelivery: OrderDeliveryEntity,
+    isSave: boolean = true,
+    testOrderDeliveryId?: number,
+  ): Promise<boolean> {
     const order = orderDelivery.orderProductMapping.order;
     // 재발송인 경우 chargeBack 후 발송 실패 시 재환불이 필요한지 판단하기 위해 이전 상태 저장 (FAIL_SMS 포함)
-    const wasFailBefore = !testOrderDeliveryId
-      && (orderDelivery.status === IOrderDeliveryStatus.FAIL
-        || orderDelivery.status === IOrderDeliveryStatus.FAIL_SMS);
+    const wasFailBefore =
+      !testOrderDeliveryId &&
+      (orderDelivery.status === IOrderDeliveryStatus.FAIL || orderDelivery.status === IOrderDeliveryStatus.FAIL_SMS);
 
     // B1/B3: 실패 재발송 — 보류(환불 미생성)/환불됨 분기. snapshot 은 reissue 호출 *전* 에 잡는다
     // (reissue 내부 reverseRefundForResend 가 ledger 를 release 해 exists() 가 뒤집히기 때문).
     // refunded reverse 보강은 비-SSG 만(SSG refunded 는 reissue 내부에서 처리), held-slot 발급은 SSG 포함 wallet 전체.
-    const isWalletManaged = wasFailBefore
-      ? await this.walletManagedPredicate.isWalletManaged(order.id)
-      : false;
-    const refundLedgerBeforeReissue = wasFailBefore
-      ? await this.refundLedgerService.exists(orderDelivery.id)
-      : false;
+    const isWalletManaged = wasFailBefore ? await this.walletManagedPredicate.isWalletManaged(order.id) : false;
+    const refundLedgerBeforeReissue = wasFailBefore ? await this.refundLedgerService.exists(orderDelivery.id) : false;
 
     // PIN 재발급 및 이미지 재생성 (barCode나 imagePath가 없는 경우)
     // 테스트 발송은 mock 데이터(barCode='999999')를 사용하므로 PIN 재발급 불필요
@@ -1673,10 +1725,7 @@ export class DeliveryBatchService {
       // 상품별 독려문자 설정 적용
       const encourageDay = orderDelivery.orderProductMapping.encourageDay;
       if (encourageDay) {
-        orderDelivery.encourageAt = subDays(
-          orderDelivery.expireAt,
-          encourageDay,
-        );
+        orderDelivery.encourageAt = subDays(orderDelivery.expireAt, encourageDay);
       }
     }
 
@@ -1690,9 +1739,12 @@ export class DeliveryBatchService {
     const body = applyReplaceCharacters(orderDelivery.orderProductMapping.sendContent ?? '', orderDelivery);
     const memoSourceProduct = orderDelivery.choiceSelectProduct ?? orderDelivery.orderProductMapping.product;
     const memoRaw = memoSourceProduct.memo;
-    const memo = memoRaw && deliveryMethod !== IOrderSendMethod.EMAIL && orderDelivery.orderProductMapping.order.type !== IOrderType.SSG
-      ? applyReplaceCharacters(memoRaw, orderDelivery)
-      : null;
+    const memo =
+      memoRaw &&
+      deliveryMethod !== IOrderSendMethod.EMAIL &&
+      orderDelivery.orderProductMapping.order.type !== IOrderType.SSG
+        ? applyReplaceCharacters(memoRaw, orderDelivery)
+        : null;
     const tailRaw = orderDelivery.orderProductMapping.sendTailText;
     const tailText = tailRaw ? applyReplaceCharacters(tailRaw, orderDelivery) : null;
 
@@ -1703,11 +1755,14 @@ export class DeliveryBatchService {
     deliveryHistory.deliveryMethod = deliveryMethod;
 
     // 테스트 발송인 경우 testOrderDeliveryId와 isTest 플래그 사용
-    const encryptKey = this.cryptoCipher.encryptJson({
-      id: testOrderDeliveryId ?? orderDelivery.id,
-      transactionId: orderDelivery.transactionId,
-      isTest: !!testOrderDeliveryId,
-    } as OrderEncryptKey, couponTokenExpiry(orderDelivery.expireAt));
+    const encryptKey = this.cryptoCipher.encryptJson(
+      {
+        id: testOrderDeliveryId ?? orderDelivery.id,
+        transactionId: orderDelivery.transactionId,
+        isTest: !!testOrderDeliveryId,
+      } as OrderEncryptKey,
+      couponTokenExpiry(orderDelivery.expireAt),
+    );
 
     // 알림톡 발송
     if (deliveryMethod === IOrderSendMethod.ALIM_TALK) {
@@ -1731,7 +1786,16 @@ export class DeliveryBatchService {
         const errMsg = (e as Error)?.message ?? String(e);
         deliveryHistory.context = errMsg;
         deliveryHistory.isSuccess = false;
-        const resultSms = await this.handleAlimTalkFail(orderDelivery, title, body, memo, tailText, filePathList, decryptedDeliveryTarget, encryptKey);
+        const resultSms = await this.handleAlimTalkFail(
+          orderDelivery,
+          title,
+          body,
+          memo,
+          tailText,
+          filePathList,
+          decryptedDeliveryTarget,
+          encryptKey,
+        );
 
         if (resultSms === IOrderDeliveryStatus.COMPLETE_SMS) {
           // 알림톡 실패 → SMS 폴백 성공 (정상 흐름이므로 에러 로그 남기지 않음)
@@ -1739,7 +1803,12 @@ export class DeliveryBatchService {
           this.markSendSuccess(orderDelivery, IOrderDeliveryStatus.COMPLETE_SMS);
         } else {
           deliveryHistory.context += ` / smsResult=${resultSms}`;
-          this.logSendFail(orderDelivery.id, 'ALIM_TALK', { target: decryptedDeliveryTarget, test: !!testOrderDeliveryId, alimTalkErr: errMsg, smsResult: resultSms }, e);
+          this.logSendFail(
+            orderDelivery.id,
+            'ALIM_TALK',
+            { target: decryptedDeliveryTarget, test: !!testOrderDeliveryId, alimTalkErr: errMsg, smsResult: resultSms },
+            e,
+          );
           this.markSendFail(orderDelivery, IOrderDeliveryStatus.FAIL);
         }
       }
@@ -1763,7 +1832,12 @@ export class DeliveryBatchService {
         deliveryHistory.context = smsText;
       } catch (e) {
         this.markSendFail(orderDelivery, IOrderDeliveryStatus.FAIL);
-        this.logSendFail(orderDelivery.id, 'MMS', { target: decryptedDeliveryTarget, from: fromPhoneNumber, test: !!testOrderDeliveryId }, e);
+        this.logSendFail(
+          orderDelivery.id,
+          'MMS',
+          { target: decryptedDeliveryTarget, from: fromPhoneNumber, test: !!testOrderDeliveryId },
+          e,
+        );
         deliveryHistory.context = (e as Error)?.message ?? String(e);
         deliveryHistory.isSuccess = false;
       }
@@ -1776,7 +1850,9 @@ export class DeliveryBatchService {
       // 이메일 쿠폰이 이미 수령되어 핀이 발급된 경우 (barCode가 있고 emailReceiverPhone이 있는 경우)
       // 이메일 대신 문자로 재발송
       if (orderDelivery.barCode && orderDelivery.emailReceiverPhone) {
-        const decryptedEmailReceiverPhone = this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.emailReceiverPhone) ?? orderDelivery.emailReceiverPhone;
+        const decryptedEmailReceiverPhone =
+          this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.emailReceiverPhone) ??
+          orderDelivery.emailReceiverPhone;
         const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber!;
 
         try {
@@ -1793,7 +1869,12 @@ export class DeliveryBatchService {
           deliveryHistory.target = decryptedEmailReceiverPhone;
         } catch (e) {
           this.markSendFail(orderDelivery, IOrderDeliveryStatus.FAIL);
-          this.logSendFail(orderDelivery.id, 'EMAIL_SMS_RESEND', { target: decryptedEmailReceiverPhone, from: fromPhoneNumber, test: !!testOrderDeliveryId }, e);
+          this.logSendFail(
+            orderDelivery.id,
+            'EMAIL_SMS_RESEND',
+            { target: decryptedEmailReceiverPhone, from: fromPhoneNumber, test: !!testOrderDeliveryId },
+            e,
+          );
           deliveryHistory.context = (e as Error)?.message ?? String(e);
           deliveryHistory.isSuccess = false;
         }
@@ -1821,12 +1902,15 @@ export class DeliveryBatchService {
         }
 
         // 테스트 발송인 경우 testOrderDeliveryId 사용
-        const encryptKeyEmail = this.cryptoCipher.encryptJson({
-          id: testOrderDeliveryId ?? orderDelivery.id,
-          transactionId: orderDelivery.transactionId,
-          emailHistoryId: emailSendHistory.id,
-          isTest: !!testOrderDeliveryId,
-        } as OrderEncryptKey, couponTokenExpiry(orderDelivery.expireAt));
+        const encryptKeyEmail = this.cryptoCipher.encryptJson(
+          {
+            id: testOrderDeliveryId ?? orderDelivery.id,
+            transactionId: orderDelivery.transactionId,
+            emailHistoryId: emailSendHistory.id,
+            isTest: !!testOrderDeliveryId,
+          } as OrderEncryptKey,
+          couponTokenExpiry(orderDelivery.expireAt),
+        );
 
         const url = `${this.configService.getOrThrow('EMAIL_RECEIVE_URL')}/${encryptKeyEmail}`;
         let qrCodeImagePath = undefined;
@@ -1870,7 +1954,12 @@ export class DeliveryBatchService {
           deliveryHistory.context = emailText;
         } catch (e) {
           this.markSendFail(orderDelivery, IOrderDeliveryStatus.FAIL);
-          this.logSendFail(orderDelivery.id, 'EMAIL', { target: decryptedDeliveryTarget, fromEmail: fromEmail, test: !!testOrderDeliveryId }, e);
+          this.logSendFail(
+            orderDelivery.id,
+            'EMAIL',
+            { target: decryptedDeliveryTarget, fromEmail: fromEmail, test: !!testOrderDeliveryId },
+            e,
+          );
           deliveryHistory.context = (e as Error)?.message ?? String(e);
           deliveryHistory.isSuccess = false;
         }
@@ -1878,9 +1967,10 @@ export class DeliveryBatchService {
     }
 
     // 재발송 시 chargeBack 후 발송이 다시 실패한 경우: 환불 복구 (FAIL_SMS 포함)
-    if (wasFailBefore
-      && (orderDelivery.status === IOrderDeliveryStatus.FAIL
-        || orderDelivery.status === IOrderDeliveryStatus.FAIL_SMS)) {
+    if (
+      wasFailBefore &&
+      (orderDelivery.status === IOrderDeliveryStatus.FAIL || orderDelivery.status === IOrderDeliveryStatus.FAIL_SMS)
+    ) {
       await this.refundForFail(orderDelivery);
     }
 
@@ -1894,7 +1984,10 @@ export class DeliveryBatchService {
       await this.deliverySendHistoryRepository.save(deliveryHistory);
     }
 
-    return orderDelivery.status === IOrderDeliveryStatus.COMPLETE || orderDelivery.status === IOrderDeliveryStatus.COMPLETE_SMS;
+    return (
+      orderDelivery.status === IOrderDeliveryStatus.COMPLETE ||
+      orderDelivery.status === IOrderDeliveryStatus.COMPLETE_SMS
+    );
   }
 
   /**
@@ -1947,8 +2040,17 @@ export class DeliveryBatchService {
         { now },
       )
       .andWhere('order.status = :status', { status: IOrderStatus.DELIVERY_COMPLETE })
+      // 환불 진행중(PROGRESS/APPROVE)인 건은 제외 — 조기파기(executeRequest) 환불 가드 미러링.
+      // 계좌/수신처를 환불 처리 중에 지우면 환불이 깨지므로, 환불 완료(또는 환불 없음) 후 다음 회차에 파기.
       .andWhere(
-        '(orderDelivery.deliveryTarget != :destroyValue OR orderDelivery.originalDeliveryTarget != :destroyValue)',
+        '(orderDelivery.refundStatus IS NULL OR orderDelivery.refundStatus NOT IN (:...activeRefundStatuses))',
+        { activeRefundStatuses: [OrderDeliveryRefundStatusEnum.PROGRESS, OrderDeliveryRefundStatusEnum.APPROVE] },
+      )
+      .andWhere(
+        // PII 5종 중 하나라도 미파기면 대상 — 조기파기(executeRequest)와 동일 집합(H-1).
+        // 과거에 일부만 파기된 행(예: deliveryTarget 만 '-')도 backfill.
+        // (NULL 컬럼은 `!= '-'` 가 NULL 이라 이 절로 추가 매칭되지 않음 → 무중단)
+        '(orderDelivery.deliveryTarget != :destroyValue OR orderDelivery.originalDeliveryTarget != :destroyValue OR orderDelivery.emailReceiverPhone != :destroyValue OR orderDelivery.bankAccount != :destroyValue OR orderDelivery.bankAccountOwner != :destroyValue)',
         { destroyValue },
       )
       .getMany();
@@ -1956,10 +2058,30 @@ export class DeliveryBatchService {
     const destroyIdList = orderDeliveryList.map((od) => od.id);
 
     if (destroyIdList.length > 0) {
+      // PII 5종 파기 — 조기파기(executeRequest)와 동일 집합으로 통일(H-1). 운영 정책: 환불 계좌
+      // (bankAccount/bankAccountOwner)도 조기파기가 이미 파기하므로 정기파기 범위도 이를 따른다.
       await this.orderDeliveryRepository.update(
         { id: In(destroyIdList) },
-        { deliveryTarget: destroyValue, originalDeliveryTarget: destroyValue },
+        {
+          deliveryTarget: destroyValue,
+          originalDeliveryTarget: destroyValue,
+          emailReceiverPhone: destroyValue,
+          bankAccount: destroyValue,
+          bankAccountOwner: destroyValue,
+        },
       );
+
+      // order_history 의 PII 도 함께 파기. '수신정보 변경요청'/'폐기 후 신규 발송' 이력의
+      // beforeChange/afterChange 에는 평문 수신처가 남아 CS 이력 API(execStatusList)로 노출되므로,
+      // 조기파기(executeRequest)와 동일하게 PII type 만 마스킹한다. 상태 감사 이력(폐기/환불폐기/
+      // 핀상태 변경 등)은 couponStatus 전이 기록이므로 보존(제외).
+      await this.orderHistoryRepository
+        .createQueryBuilder()
+        .update(OrderHistoryEntity)
+        .set({ beforeChange: destroyValue, afterChange: destroyValue })
+        .where('orderDeliveryId IN (:...ids)', { ids: destroyIdList })
+        .andWhere('type IN (:...piiTypes)', { piiTypes: [...PII_BEARING_HISTORY_TYPES] })
+        .execute();
     }
   }
 
@@ -1985,10 +2107,13 @@ export class DeliveryBatchService {
     for (const orderDelivery of orderDeliveryList) {
       const decryptedDeliveryTarget = this.decryptDeliveryTarget(orderDelivery);
       const title = '미사용 쿠폰에 대한 유효기간 안내';
-      const encryptKey = this.cryptoCipher.encryptJson({
-        id: orderDelivery.id,
-        transactionId: orderDelivery.transactionId,
-      } as OrderEncryptKey, couponTokenExpiry(orderDelivery.expireAt));
+      const encryptKey = this.cryptoCipher.encryptJson(
+        {
+          id: orderDelivery.id,
+          transactionId: orderDelivery.transactionId,
+        } as OrderEncryptKey,
+        couponTokenExpiry(orderDelivery.expireAt),
+      );
 
       // 1. 알림톡 발송
       if (orderDelivery.deliveryMethod === IOrderSendMethod.ALIM_TALK) {
@@ -2057,10 +2182,7 @@ export class DeliveryBatchService {
    * 배송 목록을 청크로 분할
    * SSG는 Mutex로 보호되므로 별도 분리 없이 일반 청크 처리
    */
-  private createDeliveryChunks(
-    deliveryList: OrderDeliveryEntity[],
-    chunkSize: number,
-  ): OrderDeliveryEntity[][] {
+  private createDeliveryChunks(deliveryList: OrderDeliveryEntity[], chunkSize: number): OrderDeliveryEntity[][] {
     const chunks: OrderDeliveryEntity[][] = [];
 
     for (let i = 0; i < deliveryList.length; i += chunkSize) {

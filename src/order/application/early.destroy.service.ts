@@ -20,6 +20,10 @@ import {
   UpdateDestroyPersonalInfoDayDto,
 } from '../api/dto/early.destroy.request.dto';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
+// PII 보유 history type 단일 소스(정기파기 배치와 공유). 재export 로 기존 import 경로 호환 유지.
+import { PII_BEARING_HISTORY_TYPES } from '../interface/order.history.pii.types';
+
+export { PII_BEARING_HISTORY_TYPES };
 
 const DESTROY_VALUE = '-';
 const REFUND_IN_PROGRESS_MESSAGE = '환불 진행 중인 건으로 파기 실패했습니다. 고객센터(1644-3614)로 문의해주세요.';
@@ -76,6 +80,8 @@ export class EarlyDestroyService {
       }
     }
 
+    await this.assertNoPendingDuplicate(orderId, { mappingIds: dto.orderProductMappingIds });
+
     return this.saveRequest(
       orderId,
       dto,
@@ -109,6 +115,8 @@ export class EarlyDestroyService {
     if (nonDestroyedCount === 0) {
       throw new BadRequestException('해당 주문은 이미 모든 발송건이 파기되었습니다.');
     }
+
+    await this.assertNoPendingDuplicate(orderId, { mappingIds });
 
     return this.saveRequest(
       orderId,
@@ -167,6 +175,10 @@ export class EarlyDestroyService {
       );
     }
 
+    await this.assertNoPendingDuplicate(orderId, {
+      deliveries: deliveries.map((d) => ({ id: d.id, mappingId: d.orderProductMappingId })),
+    });
+
     return this.saveRequest(
       orderId,
       dto,
@@ -205,9 +217,7 @@ export class EarlyDestroyService {
       executedByEmail: r.executedByUser?.email ?? null,
       executedAt: r.executedAt,
       orderProductMappingIds: r.items.map((item) => item.orderProductMappingId),
-      orderDeliveryIds: r.items
-        .map((item) => item.orderDeliveryId)
-        .filter((id): id is number => id !== null),
+      orderDeliveryIds: r.items.map((item) => item.orderDeliveryId).filter((id): id is number => id !== null),
     }));
   }
 
@@ -224,6 +234,10 @@ export class EarlyDestroyService {
     if (request.status !== EarlyDestroyRequestStatus.PENDING) {
       throw new BadRequestException('대기 중인 요청만 실행할 수 있습니다.');
     }
+
+    // M-2 하드닝: 실행 시점에 주문 상태를 재검증한다. 등록~실행 사이 상태가 바뀐 경우(예: 발송취소)
+    // 방어. (이중 실행은 위 PENDING 가드가 차단하므로 멱등 측면은 충분)
+    await this.assertOrderDeliveryComplete(request.orderId);
 
     const targetDeliveryIds: number[] = [];
     const targetMappingIds: number[] = [];
@@ -248,10 +262,7 @@ export class EarlyDestroyService {
       const inProgressCount = await this.orderDeliveryRepository.count({
         where: {
           id: In(affectedDeliveryIds),
-          refundStatus: In([
-            OrderDeliveryRefundStatusEnum.PROGRESS,
-            OrderDeliveryRefundStatusEnum.APPROVE,
-          ]),
+          refundStatus: In([OrderDeliveryRefundStatusEnum.PROGRESS, OrderDeliveryRefundStatusEnum.APPROVE]),
         },
       });
       if (inProgressCount > 0) {
@@ -280,11 +291,15 @@ export class EarlyDestroyService {
     }
 
     if (affectedDeliveryIds.length > 0) {
+      // order_history 의 PII 는 PII_BEARING_HISTORY_TYPES(수신정보 변경요청/폐기 후 신규 발송)의
+      // beforeChange/afterChange 에만 존재한다. 폐기/환불폐기/핀상태 변경 이력의 before/after 는
+      // couponStatus 전이 감사값이므로 type 필터 없이 전 행을 덮으면 상태 감사기록이 파괴된다(C-1).
       await this.orderHistoryRepository
         .createQueryBuilder()
         .update(OrderHistoryEntity)
         .set({ beforeChange: DESTROY_VALUE, afterChange: DESTROY_VALUE })
         .where('orderDeliveryId IN (:...ids)', { ids: affectedDeliveryIds })
+        .andWhere('type IN (:...piiTypes)', { piiTypes: [...PII_BEARING_HISTORY_TYPES] })
         .execute();
     }
 
@@ -319,6 +334,48 @@ export class EarlyDestroyService {
     }
     if (order.status !== IOrderStatus.DELIVERY_COMPLETE) {
       throw new BadRequestException('발송 완료된 주문만 조기파기 요청이 가능합니다.');
+    }
+  }
+
+  /**
+   * 미완료(PENDING) 요청과 **완전히 중복**(새 요청의 모든 대상이 이미 대기 중)인 경우만 거부(L-1).
+   * 더 넓은 범위(상위집합) 신규는 허용한다 — 발송건 1건만 대기 중인데 그 매핑 전체를 새로 파기하려는
+   * 경우, 나머지 발송건을 파기해야 하므로 막지 않는다("물건 하나 때문에 상자 전체 파기 불가"는 모순).
+   *  - 매핑 전체 신규: 그 매핑이 이미 "전체"로 대기 중일 때만 거부.
+   *  - 발송건 신규: 같은 발송건이 대기 중이거나, 그 발송건의 매핑 전체가 대기 중이면 거부.
+   */
+  private async assertNoPendingDuplicate(
+    orderId: number,
+    targets: { mappingIds?: number[]; deliveries?: { id: number; mappingId: number }[] },
+  ): Promise<void> {
+    const pending = await this.earlyDestroyRequestRepository.find({
+      where: { orderId, status: EarlyDestroyRequestStatus.PENDING },
+      relations: ['items'],
+    });
+    if (pending.length === 0) return;
+
+    const pendingWholeMappingIds = new Set<number>(); // orderDeliveryId IS NULL = 매핑 전체 파기 대기
+    const pendingDeliveryIds = new Set<number>(); // 특정 발송건 파기 대기
+    for (const req of pending) {
+      for (const item of req.items) {
+        if (item.orderDeliveryId !== null) pendingDeliveryIds.add(item.orderDeliveryId);
+        else pendingWholeMappingIds.add(item.orderProductMappingId);
+      }
+    }
+
+    // 완전 중복일 때만 거부 = 요청한 대상이 "모두"(every) 이미 대기 중인 경우.
+    // 하나라도 신규 대상이 있으면 그 대상 파기를 위해 등록을 허용한다(일부 겹침은 통과).
+    const mappingIds = targets.mappingIds ?? [];
+    if (mappingIds.length > 0 && mappingIds.every((m) => pendingWholeMappingIds.has(m))) {
+      throw new BadRequestException('요청한 상품매핑이 모두 이미 대기 중인 조기파기 요청에 포함되어 있습니다.');
+    }
+    // 발송건은 "같은 발송건이 대기" 또는 "그 발송건의 매핑 전체가 대기"면 이미 덮인 것으로 본다.
+    const deliveries = targets.deliveries ?? [];
+    if (
+      deliveries.length > 0 &&
+      deliveries.every((d) => pendingDeliveryIds.has(d.id) || pendingWholeMappingIds.has(d.mappingId))
+    ) {
+      throw new BadRequestException('요청한 발송건이 모두 이미 대기 중인 조기파기 요청에 포함되어 있습니다.');
     }
   }
 

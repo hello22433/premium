@@ -241,6 +241,22 @@ export class CustomerServicePinStatusRefreshReqDto {
   orderDeliveryId: number;
 }
 
+/**
+ * CS 이력(order_history) 유형 단일 소스 — customer.service.service.ts 의 execHistory switch 가
+ * 처리하는 유효 type 전체. 미지정 값은 execHistory default 에서 throw 되므로, 본 @IsIn 으로
+ * 검증 진입 시점에 동일하게 차단한다(M-3, enum 미강제 매직스트링 하드닝).
+ * ⚠️ writer switch / 프론트 <option value> / order 모듈 PII_BEARING_HISTORY_TYPES(부분집합)와
+ * 문자열이 정확히 일치해야 한다. ('핀상태 변경'은 별도 엔드포인트(pin-status/modify) 소관이라 제외)
+ */
+export const CS_HISTORY_TYPES = [
+  '단순문의',
+  '재전송',
+  '수신정보 변경요청',
+  '폐기',
+  '환불폐기',
+  '폐기 후 신규 발송',
+] as const;
+
 export class CustomerServiceHistoryReqDto {
   @ApiProperty({ description: 'order_delivery_id' })
   // =============================================================
@@ -258,10 +274,12 @@ export class CustomerServiceHistoryReqDto {
 
   @ApiProperty({
     description: '유형',
+    enum: CS_HISTORY_TYPES,
   })
   // =================================
   @IsOptional()
   @IsString()
+  @IsIn([...CS_HISTORY_TYPES]) // 미정의 type 차단 (M-3). 누락 시엔 service validHistory 가 별도 안내
   type?: string;
 
   @ApiProperty({

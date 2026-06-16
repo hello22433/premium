@@ -6,6 +6,7 @@ import { DeliverySendHistoryEntity } from '../entity/delivery.send.history.entit
 import { DeliveryBatchService } from './application/delivery.batch.service';
 import { DeliverySendService } from './application/delivery.send.service';
 import { OrderDeliveryEntity } from '../entity/order.delivery.entity';
+import { OrderHistoryEntity } from '../entity/order.history.entity';
 import { OrderDeliveryRefundEntity } from '../entity/order.delivery.refund.entity';
 import { OrderDeliveryAttemptEntity } from '../entity/order.delivery.attempt.entity';
 import { OrderPaymentRefundEventEntity } from '../entity/order.payment.refund.event.entity';
@@ -52,6 +53,7 @@ import { OrderFromModule } from '../order_from/order.from.module';
       UserEntity,
       SsgEventEntity,
       SsgIssueLogEntity,
+      OrderHistoryEntity,
     ]),
     MailModule,
     SmsModule,
