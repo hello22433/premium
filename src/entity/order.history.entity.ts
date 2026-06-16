@@ -29,6 +29,12 @@ export class OrderHistoryEntity extends BaseEntity {
   @Column({ type: 'text', nullable: true })
   afterChange: string | null;
 
+  @Column({ type: 'int', nullable: true, comment: '폐기 시 폐기 대상 정산금액(할인가 기준). 폐기/환불폐기 이력만 채움' })
+  destroyAmount: number | null;
+
+  @Column({ type: 'int', nullable: true, comment: '폐기 시 실제 잔액/여신/예치금으로 복원된 금액. 이미 환불/복구 skip 시 null' })
+  restoreAmount: number | null;
+
   @ManyToOne(() => OrderDeliveryEntity, { createForeignKeyConstraints: false })
   @JoinColumn({ name: 'order_delivery_id' })
   orderDelivery: OrderDeliveryEntity;

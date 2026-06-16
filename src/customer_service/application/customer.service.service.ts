@@ -136,7 +136,7 @@ export class CustomerServiceService {
     operatorUser: ILoginUserInfo,
     queryRunner: QueryRunner,
     operatorName?: string,
-  ): Promise<void> {
+  ): Promise<number | null> {
     const mapping = orderDelivery.orderProductMapping;
     const order = mapping.order;
 
@@ -144,11 +144,11 @@ export class CustomerServiceService {
     // status===FAIL 프록시를 쓰지 않는다. FAIL 이어도 ledger 가 없으면(보류: 차감 유지, 발송 미성립)
     // 폐기 시 복구해야 하고, 반대로 FAIL 이 아니어도 이미 환불 ledger 가 있으면 이중 복구를 막아야 한다.
     if (await this.refundLedgerService.exists(orderDelivery.id)) {
-      return;
+      return null;
     }
 
     if (orderDelivery.couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL) {
-      return;
+      return null;
     }
 
     let restoreAmount = calculateSettlementPrice(mapping, order.cardSurchargeApplied, orderDelivery);
@@ -158,7 +158,7 @@ export class CustomerServiceService {
       where: { id: billingUserId },
       relations: ['company'],
     });
-    if (!user) return;
+    if (!user) return null;
 
     const company = user.company;
     const isCompanyBalanceMode = company?.balanceManagementType === 'COMPANY';
@@ -199,7 +199,7 @@ export class CustomerServiceService {
         queryRunner.manager,
       );
       if (walletRefund.alreadyRefunded) {
-        return;
+        return null;
       }
       restoreAmount = walletRefund.totalRefundedAmount;
     }
@@ -321,7 +321,7 @@ export class CustomerServiceService {
         );
       }
       if (order.isSettleComplete) {
-        return;
+        return restoreAmount;
       } else {
         await this.refundPoolService.refund(
           {
@@ -334,6 +334,8 @@ export class CustomerServiceService {
         );
       }
     }
+
+    return restoreAmount;
   }
 
   async getList(getQuery: CustomerServiceGetListReqDto): Promise<CustomerServiceGetListResDto> {
@@ -855,6 +857,8 @@ export class CustomerServiceService {
     beforeChange: string;
     refundStatus: 'SUCCESS' | 'FAILED' | 'SKIPPED';
     refundError?: Error;
+    destroyAmount: number | null;
+    restoreAmount: number | null;
   }> {
     const orderDelivery = await this.orderDeliveryRepository
       .createQueryBuilder('orderDelivery')
@@ -871,6 +875,13 @@ export class CustomerServiceService {
     if (!orderDelivery) {
       throw new BadRequestException('존재하지 않는 주문 건입니다.');
     }
+
+    // 폐기 대상 정산금액(할인가 기준) — 이력 행별 폐기금액으로 기록
+    const destroyAmount = calculateSettlementPrice(
+      orderDelivery.orderProductMapping,
+      orderDelivery.orderProductMapping.order.cardSurchargeApplied,
+      orderDelivery,
+    );
 
     // 권한검사: 폐기는 쿠폰 종류(일반/SSG)에 맞는 CS 권한을 요구 (getList 분류 기준과 동일)
     // execDiscard 를 거치는 경로(pin-discard / history 폐기류)에 일괄 적용된다.
@@ -944,6 +955,7 @@ export class CustomerServiceService {
     // Tx1: 폐기 상태 + (옵션) historyData 저장
     // 외부 cancel 이 이미 성공한 상태이므로 DB 반영 실패는 곧 상태 불일치를 의미한다.
     // Tx1 실패는 caller 에서 인지할 수 있도록 그대로 throw 한다.
+    let savedHistoryId: number | null = null;
     const tx1 = this.dataSource.createQueryRunner();
     await tx1.connect();
     await tx1.startTransaction();
@@ -975,8 +987,10 @@ export class CustomerServiceService {
           content: historyData.content,
           beforeChange,
           afterChange: orderDelivery.couponStatus,
+          destroyAmount,
         });
-        await tx1.manager.save(OrderHistoryEntity, history);
+        const saved = await tx1.manager.save(OrderHistoryEntity, history);
+        savedHistoryId = saved.id;
       }
 
       await tx1.commitTransaction();
@@ -991,13 +1005,14 @@ export class CustomerServiceService {
     // 폐기 후 신규 발송 시에는 스킵 — 핀 교체이므로 잔액 변동 없음
     let refundStatus: 'SUCCESS' | 'FAILED' | 'SKIPPED' = 'SKIPPED';
     let refundError: Error | undefined;
+    let restoreAmount: number | null = null;
 
     if (!options?.skipBalanceRestore) {
       const tx2 = this.dataSource.createQueryRunner();
       await tx2.connect();
       await tx2.startTransaction();
       try {
-        await this.restoreBalanceOnDiscard(orderDelivery, user, tx2);
+        restoreAmount = await this.restoreBalanceOnDiscard(orderDelivery, user, tx2);
         await tx2.commitTransaction();
         refundStatus = 'SUCCESS';
       } catch (error) {
@@ -1013,7 +1028,12 @@ export class CustomerServiceService {
       }
     }
 
-    return { orderDelivery, beforeChange, refundStatus, refundError };
+    // pinDiscard 등 Tx1 에서 이미 history 를 기록한 경로: 복원액은 Tx2 후 확정되므로 보강 update
+    if (savedHistoryId !== null && restoreAmount !== null) {
+      await this.orderHistoryRepository.update(savedHistoryId, { restoreAmount });
+    }
+
+    return { orderDelivery, beforeChange, refundStatus, refundError, destroyAmount, restoreAmount };
   }
 
   /**
@@ -1468,6 +1488,8 @@ export class CustomerServiceService {
   async execHistory(map: any) {
     let afterChange = '';
     let pendingRefundError: Error | null = null;
+    let discardDestroyAmount: number | null = null;
+    let discardRestoreAmount: number | null = null;
 
     switch (map.type) {
       case '단순문의': {
@@ -1843,6 +1865,8 @@ export class CustomerServiceService {
       case '폐기': {
         const result = await this.execDiscard(map.user, map.orderDeliveryId, OrderDeliveryCouponStatus.CANCEL);
         afterChange = result.orderDelivery.couponStatus;
+        discardDestroyAmount = result.destroyAmount;
+        discardRestoreAmount = result.restoreAmount;
         if (result.refundStatus === 'FAILED' && result.refundError) {
           pendingRefundError = result.refundError;
         }
@@ -1851,6 +1875,8 @@ export class CustomerServiceService {
       case '환불폐기': {
         const result = await this.execDiscard(map.user, map.orderDeliveryId, OrderDeliveryCouponStatus.REFUND_CANCEL);
         afterChange = result.orderDelivery.couponStatus;
+        discardDestroyAmount = result.destroyAmount;
+        discardRestoreAmount = result.restoreAmount;
         if (result.refundStatus === 'FAILED' && result.refundError) {
           pendingRefundError = result.refundError;
         }
@@ -1869,6 +1895,8 @@ export class CustomerServiceService {
       sendMethod: map.sendMethod,
       beforeChange: map.beforeChange,
       afterChange: afterChange,
+      destroyAmount: discardDestroyAmount,
+      restoreAmount: discardRestoreAmount,
     });
 
     await this.orderHistoryRepository.save(history);
@@ -1956,6 +1984,8 @@ export class CustomerServiceService {
           sendMethod: h.sendMethod ?? null,
           beforeChange,
           afterChange,
+          destroyAmount: h.destroyAmount ?? null,
+          restoreAmount: h.restoreAmount ?? null,
         };
       }),
       totalCount,
@@ -2247,7 +2277,12 @@ export class CustomerServiceService {
             }
 
             // 예치금/여신 복구
-            await this.restoreBalanceOnDiscard(orderDelivery, user, queryRunner, operatorName);
+            const restoreAmount = await this.restoreBalanceOnDiscard(orderDelivery, user, queryRunner, operatorName);
+            const destroyAmount = calculateSettlementPrice(
+              orderDelivery.orderProductMapping,
+              orderDelivery.orderProductMapping.order.cardSurchargeApplied,
+              orderDelivery,
+            );
 
             // CS 히스토리 저장
             const history = this.orderHistoryRepository.create({
@@ -2257,6 +2292,8 @@ export class CustomerServiceService {
               content: content,
               beforeChange: beforeChange,
               afterChange: OrderDeliveryCouponStatus.CANCEL,
+              destroyAmount,
+              restoreAmount,
             });
             await queryRunner.manager.save(OrderHistoryEntity, history);
 
