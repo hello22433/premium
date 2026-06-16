@@ -1,4 +1,4 @@
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import { PagingReqDto } from '../../common/api/dto/pagination.req.dto';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IsBoolean, IsNotEmpty, IsNumber, IsOptional, IsString } from 'class-validator';
@@ -16,8 +16,12 @@ export class ForbiddenWordGetListReqQueryDto extends PagingReqDto {
 
   @ApiPropertyOptional({ description: '활성 여부 필터 (true: 활성만, false: 비활성만, 미지정: 전체)' })
   @IsOptional()
+  @Transform(({ value }) => {
+    if (value === 'true' || value === true) return true;
+    if (value === 'false' || value === false) return false;
+    return undefined; // 미지정 → 전체
+  })
   @IsBoolean()
-  @Type(() => Boolean)
   isActive?: boolean;
 }
 

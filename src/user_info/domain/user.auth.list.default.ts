@@ -42,6 +42,7 @@ export const UserAuthListDefault = (authority: IUserAuthority, authorityList: st
       UserAuthSubEnum.IMS_PLAN,
       UserAuthSubEnum.ACTIVITY_LOG,
       UserAuthSubEnum.REQUIREMENT,
+      UserAuthSubEnum.FORBIDDEN_WORD,
     ];
   }
 

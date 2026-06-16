@@ -52,4 +52,5 @@ export enum UserAuthSubEnum {
   IMS_PLAN = 'IMS_PLAN', // IMS 추진일정
   ACTIVITY_LOG = 'ACTIVITY_LOG', // 로그 조회
   REQUIREMENT = 'REQUIREMENT', // 개발 요구사항
+  FORBIDDEN_WORD = 'FORBIDDEN_WORD', // 금칙어 관리
 }

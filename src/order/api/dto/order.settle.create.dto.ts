@@ -1,4 +1,4 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IsArray, IsEnum, IsNotEmpty, IsNumber, IsOptional, Max, Min } from 'class-validator';
 import { Type } from 'class-transformer';
 import { IOrderSettleDiscountType } from '../../interface/order.settle.discount.type';
@@ -14,21 +14,21 @@ export class OrderSettleCreateDto {
   @Type(() => Number)
   id: number;
 
-  @ApiProperty({
-    description: '할인 구분 ex) 단건: ONE, 계약: CONTRACT',
+  @ApiPropertyOptional({
+    description: '할인 구분 ex) 단건: ONE, 계약: CONTRACT (없음: null)',
   })
   // =============================
+  @IsOptional()
   @IsEnum(IOrderSettleDiscountType)
-  @IsNotEmpty()
-  settleDiscountType: IOrderSettleDiscountType;
+  settleDiscountType?: IOrderSettleDiscountType | null;
 
-  @ApiProperty({
-    description: '할인 방법 ex) 할인: DISCOUNT, 할증: ADDITIONAL',
+  @ApiPropertyOptional({
+    description: '할인 방법 ex) 할인: DISCOUNT, 할증: ADDITIONAL (없음: null)',
   })
   // =============================
+  @IsOptional()
   @IsEnum(IPriceAdjustment)
-  @IsNotEmpty()
-  priceAdjustment: IPriceAdjustment;
+  priceAdjustment?: IPriceAdjustment | null;
 
   @ApiProperty({
     description: '수수료 %',

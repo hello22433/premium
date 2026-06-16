@@ -118,6 +118,10 @@ export const UserAuthMainMenuAuthList = (userSubmenuAuthList: UserAuthSubEnum[])
     if (subMenu === UserAuthSubEnum.REQUIREMENT) {
       mainMenuSet.add(UserAuthMainEnum.ETC);
     }
+
+    if (subMenu === UserAuthSubEnum.FORBIDDEN_WORD) {
+      mainMenuSet.add(UserAuthMainEnum.ETC);
+    }
   }
 
   return [...mainMenuSet];
