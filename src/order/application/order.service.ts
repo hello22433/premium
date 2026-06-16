@@ -2467,6 +2467,11 @@ export class OrderService {
         throw new InternalServerErrorException('not exist order product');
       }
 
+      // optional 필드 "없음"=null 계약을 한 곳에서 정규화해 delivery 저장/비교/mapping 저장에 동일 적용.
+      // (undefined 누락분이 delivery=null 과 어긋나 mapping 대표값 sync 가 누락되던 회귀 방지)
+      const normSettleDiscountType = settle.settleDiscountType ?? null;
+      const normPriceAdjustment = settle.priceAdjustment ?? null;
+
       if (settle.deliveryIds && settle.deliveryIds.length > 0) {
         for (const deliveryId of settle.deliveryIds) {
           if (!allDeliveryById.has(deliveryId)) {
@@ -2474,8 +2479,8 @@ export class OrderService {
           }
           const delivery = allDeliveryById.get(deliveryId)!;
           delivery.settleFee = settle.fee;
-          delivery.settlePriceAdjustment = settle.priceAdjustment ?? null;
-          delivery.settleDiscountType = settle.settleDiscountType ?? null;
+          delivery.settlePriceAdjustment = normPriceAdjustment;
+          delivery.settleDiscountType = normSettleDiscountType;
         }
 
         deliveryUpdatePromises.push(
@@ -2483,8 +2488,8 @@ export class OrderService {
             { id: In(settle.deliveryIds) },
             {
               settleFee: settle.fee,
-              settlePriceAdjustment: settle.priceAdjustment ?? null,
-              settleDiscountType: settle.settleDiscountType ?? null,
+              settlePriceAdjustment: normPriceAdjustment,
+              settleDiscountType: normSettleDiscountType,
             },
           ),
         );
@@ -2502,20 +2507,20 @@ export class OrderService {
           mappingDeliveries.every(
             (delivery: OrderDeliveryEntity) =>
               delivery.settleFee === settle.fee &&
-              delivery.settlePriceAdjustment === settle.priceAdjustment &&
-              delivery.settleDiscountType === settle.settleDiscountType,
+              delivery.settlePriceAdjustment === normPriceAdjustment &&
+              delivery.settleDiscountType === normSettleDiscountType,
           );
 
         if (shouldSyncMapping && !processedMappingIds.has(settle.id)) {
           processedMappingIds.add(settle.id);
-          oneOrderProduct.settleDiscountType = settle.settleDiscountType;
-          oneOrderProduct.priceAdjustment = settle.priceAdjustment;
+          oneOrderProduct.settleDiscountType = normSettleDiscountType;
+          oneOrderProduct.priceAdjustment = normPriceAdjustment;
           oneOrderProduct.fee = settle.fee;
           orderProductList.push(
             this.orderProductMappingRepository.create({
               id: settle.id,
-              settleDiscountType: settle.settleDiscountType,
-              priceAdjustment: settle.priceAdjustment,
+              settleDiscountType: normSettleDiscountType,
+              priceAdjustment: normPriceAdjustment,
               fee: settle.fee,
             }),
           );
@@ -2525,14 +2530,14 @@ export class OrderService {
 
       if (!hasDeliveryScopedRows && !processedMappingIds.has(settle.id)) {
         processedMappingIds.add(settle.id);
-        oneOrderProduct.settleDiscountType = settle.settleDiscountType;
-        oneOrderProduct.priceAdjustment = settle.priceAdjustment;
+        oneOrderProduct.settleDiscountType = normSettleDiscountType;
+        oneOrderProduct.priceAdjustment = normPriceAdjustment;
         oneOrderProduct.fee = settle.fee;
         orderProductList.push(
           this.orderProductMappingRepository.create({
             id: settle.id,
-            settleDiscountType: settle.settleDiscountType,
-            priceAdjustment: settle.priceAdjustment,
+            settleDiscountType: normSettleDiscountType,
+            priceAdjustment: normPriceAdjustment,
             fee: settle.fee,
           }),
         );

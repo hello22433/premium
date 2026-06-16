@@ -38,6 +38,7 @@ export class OrderSettleCreateDto {
   @IsNotEmpty()
   @Min(0, { message: '수수료는 최소 0% 이상이어야 합니다.' })
   @Max(100, { message: '수수료는 최대 100% 이하여야 합니다.' })
+  @Type(() => Number)
   fee: number;
 
   @ApiProperty({

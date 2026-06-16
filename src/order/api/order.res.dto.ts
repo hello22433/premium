@@ -264,6 +264,14 @@ export class OrderGetDeliveryCompleteReportResDto extends OrderGetDeliveryComple
   sendInfoList: OrderSendInfoItemDto[] | null;
 }
 
+export class OrderGetDeliveryCompleteReportMultipleResDto extends OrderGetDeliveryCompleteReportResDto {
+  @ApiProperty({
+    type: [Number],
+    description: '통합 대상 주문 id 목록',
+  })
+  orderIds: number[];
+}
+
 export class OrderGetOrderCompleteReportResDto extends OrderCompleteReportViewDto {}
 
 export class OrderDeliveryConfirmed {

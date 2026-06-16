@@ -457,8 +457,8 @@ describe('OrderService SSG settlement row validation', () => {
 
     expect(result.orderProductList).toEqual([]);
     expect(deliveries).toEqual([
-      { id: 1, settleFee: 5, settlePriceAdjustment: IPriceAdjustment.DISCOUNT, settleDiscountType: undefined },
-      { id: 2, settleFee: 10, settlePriceAdjustment: IPriceAdjustment.DISCOUNT, settleDiscountType: undefined },
+      { id: 1, settleFee: 5, settlePriceAdjustment: IPriceAdjustment.DISCOUNT, settleDiscountType: null },
+      { id: 2, settleFee: 10, settlePriceAdjustment: IPriceAdjustment.DISCOUNT, settleDiscountType: null },
     ]);
   });
 
@@ -477,7 +477,7 @@ describe('OrderService SSG settlement row validation', () => {
       {
         settleFee: 5,
         settlePriceAdjustment: IPriceAdjustment.DISCOUNT,
-        settleDiscountType: undefined,
+        settleDiscountType: null,
       },
     );
     expect(deliveries[0]).toMatchObject({ settleFee: 5, settlePriceAdjustment: IPriceAdjustment.DISCOUNT });
@@ -573,7 +573,7 @@ describe('OrderService SSG settlement row validation', () => {
     expect(result.orderProductList).toEqual([
       {
         id: 10,
-        settleDiscountType: undefined,
+        settleDiscountType: null,
         priceAdjustment: IPriceAdjustment.DISCOUNT,
         fee: 5,
       },
@@ -583,7 +583,7 @@ describe('OrderService SSG settlement row validation', () => {
       {
         settleFee: 5,
         settlePriceAdjustment: IPriceAdjustment.DISCOUNT,
-        settleDiscountType: undefined,
+        settleDiscountType: null,
       },
     );
     expect(service.orderDeliveryRepository.update).toHaveBeenCalledWith(
@@ -591,8 +591,8 @@ describe('OrderService SSG settlement row validation', () => {
       { refundRatio: 100 },
     );
     expect(deliveries).toEqual([
-      { id: 1, settleFee: 5, settlePriceAdjustment: IPriceAdjustment.DISCOUNT, settleDiscountType: undefined, refundRatio: 100 },
-      { id: 2, settleFee: 5, settlePriceAdjustment: IPriceAdjustment.DISCOUNT, settleDiscountType: undefined, refundRatio: 100 },
+      { id: 1, settleFee: 5, settlePriceAdjustment: IPriceAdjustment.DISCOUNT, settleDiscountType: null, refundRatio: 100 },
+      { id: 2, settleFee: 5, settlePriceAdjustment: IPriceAdjustment.DISCOUNT, settleDiscountType: null, refundRatio: 100 },
     ]);
   });
 });
