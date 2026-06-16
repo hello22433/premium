@@ -126,9 +126,9 @@ export class OrderConfirmationReleaseService {
 
     const walletTransactionIds: string[] = [];
 
-    const restoreDeposit = alloc.depositUsedAmount - alloc.depositRestoredAmount;
-    const restoreCredit = alloc.creditUsedAmount - alloc.creditUsedRestoredAmount;
-    const restoreExcess = alloc.creditExcessAmount - alloc.creditExcessRestoredAmount;
+    const restoreDeposit = Math.max(0, alloc.depositUsedAmount - alloc.depositRestoredAmount);
+    const restoreCredit = Math.max(0, alloc.creditUsedAmount - alloc.creditUsedRestoredAmount);
+    const restoreExcess = Math.max(0, alloc.creditExcessAmount - alloc.creditExcessRestoredAmount);
 
     const orderSentinelId: null = null; // confirm_release 는 주문 단위 보상 — deliveryId sentinel='ORDER'
 

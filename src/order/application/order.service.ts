@@ -4286,9 +4286,9 @@ export class OrderService {
           `wallet-managed but allocation row missing for orderId=${order.id}`,
         );
       }
-      const depositRefund = allocation.depositUsedAmount - allocation.depositRestoredAmount;
-      const creditRefund = allocation.creditUsedAmount - allocation.creditUsedRestoredAmount;
-      const excessRefund = allocation.creditExcessAmount - allocation.creditExcessRestoredAmount;
+      const depositRefund = Math.max(0, allocation.depositUsedAmount - allocation.depositRestoredAmount);
+      const creditRefund = Math.max(0, allocation.creditUsedAmount - allocation.creditUsedRestoredAmount);
+      const excessRefund = Math.max(0, allocation.creditExcessAmount - allocation.creditExcessRestoredAmount);
 
       await this.orderConfirmationReleaseService.releaseConfirmation(
         {

@@ -348,6 +348,8 @@ export class DeliveryBatchService {
         orderId: order.id,
         eventType: OrderPaymentRefundEventType.FAIL_REFUND,
         targetDeliveryIds: [orderDelivery.id],
+        attemptId: activeAttempt.id,
+        refundFromAttemptTransactions: activeAttempt.attemptType === OrderDeliveryAttemptType.RESEND,
         idempotencyKeyPrefix: `fail_refund:${order.id}:${orderDelivery.id}:${activeAttempt.id}`,
       });
       this.logger.log(
