@@ -34,12 +34,19 @@ const createQueryBuilder = (result: unknown, count = 1) => ({
 
 const createService = () => {
   const orderRepository = {
+    create: jest.fn(),
     createQueryBuilder: jest.fn(),
     save: jest.fn(),
   };
   const orderProductMappingRepository = {
     find: jest.fn(),
     save: jest.fn(),
+  };
+  const productRepository = {
+    find: jest.fn(),
+  };
+  const userRepository = {
+    findOne: jest.fn(),
   };
   const activityLogService = {
     verifyPassword: jest.fn().mockResolvedValue(undefined),
@@ -49,16 +56,102 @@ const createService = () => {
   const service = new OrderRealProductService(
     orderRepository as any,
     orderProductMappingRepository as any,
-    {} as any,
-    {} as any,
+    productRepository as any,
+    userRepository as any,
     {} as any,
     activityLogService as any,
   );
 
-  return { service, orderRepository, orderProductMappingRepository, activityLogService };
+  return {
+    service,
+    orderRepository,
+    orderProductMappingRepository,
+    productRepository,
+    userRepository,
+    activityLogService,
+  };
 };
 
 describe('OrderRealProductService 금액 산식', () => {
+  it.each([0, -1])('실물상품 주문 생성 시 수량이 %s이면 저장하지 않고 실패한다', async (quantity) => {
+    const { service, orderRepository, orderProductMappingRepository, productRepository, userRepository } =
+      createService();
+
+    userRepository.findOne.mockResolvedValue({ id: 100 });
+    productRepository.find.mockResolvedValue([{ id: 200, price: 50000 }]);
+    orderRepository.create.mockReturnValue({ id: 1 });
+
+    await expect(
+      service.order(
+        { id: 1, authority: IUserAuthority.SUPER_ADMIN } as any,
+        {
+          userId: 100,
+          eventName: '이벤트',
+          publicChargeTaxPayment: 'PERSON',
+          processMethod: 'PRE',
+          isProcess: false,
+          orderRealProductList: [{ productId: 200, quantity, price: 10000 }],
+        } as any,
+      ),
+    ).rejects.toThrow('수량은 1개 이상이어야 합니다.');
+
+    expect(orderProductMappingRepository.save).not.toHaveBeenCalled();
+    expect(orderRepository.save).not.toHaveBeenCalled();
+  });
+
+  it.each([0, -10000])('실물상품 주문 생성 시 공급가액이 %s이면 저장하지 않고 실패한다', async (price) => {
+    const { service, orderRepository, orderProductMappingRepository, productRepository, userRepository } =
+      createService();
+
+    userRepository.findOne.mockResolvedValue({ id: 100 });
+    productRepository.find.mockResolvedValue([{ id: 200, price: 50000 }]);
+    orderRepository.create.mockReturnValue({ id: 1 });
+
+    await expect(
+      service.order(
+        { id: 1, authority: IUserAuthority.SUPER_ADMIN } as any,
+        {
+          userId: 100,
+          eventName: '이벤트',
+          publicChargeTaxPayment: 'PERSON',
+          processMethod: 'PRE',
+          isProcess: false,
+          orderRealProductList: [{ productId: 200, quantity: 1, price }],
+        } as any,
+      ),
+    ).rejects.toThrow('공급가액을 입력해주세요.');
+
+    expect(orderProductMappingRepository.save).not.toHaveBeenCalled();
+    expect(orderRepository.save).not.toHaveBeenCalled();
+  });
+
+  it.each([0, -10000])('실물상품 가격 수정 시 가격이 %s이면 저장하지 않고 실패한다', async (price) => {
+    const { service, orderRepository, orderProductMappingRepository } = createService();
+    const order = { id: 1, status: 'ORDER_PENDING' };
+    const mapping = {
+      id: 10,
+      realProductOrderId: order.id,
+      price: 10000,
+      quantity: 3,
+      totalPrice: 33000,
+    };
+
+    orderRepository.createQueryBuilder.mockReturnValue(createQueryBuilder(order));
+    orderProductMappingRepository.find.mockResolvedValue([mapping]);
+
+    await expect(
+      service.update(
+        { id: 1, authority: IUserAuthority.SUPER_ADMIN } as any,
+        {
+          realProductOrderId: order.id,
+          realProductOrderInfo: [{ mappingId: mapping.id, price }],
+        } as any,
+      ),
+    ).rejects.toThrow('공급가액은 1원 이상이어야 합니다.');
+
+    expect(orderProductMappingRepository.save).not.toHaveBeenCalled();
+  });
+
   it('실물상품 가격 수정 시 부가세 포함 총액에 수량을 반영한다', async () => {
     const { service, orderRepository, orderProductMappingRepository } = createService();
     const order = { id: 1, status: 'ORDER_PENDING' };

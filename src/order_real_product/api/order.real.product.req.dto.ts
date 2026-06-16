@@ -11,6 +11,7 @@ import {
   IsString,
   Matches,
   Min,
+  ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { dateAtRegexp } from '../../common/domain/date.regexp';
@@ -108,6 +109,7 @@ export class OrderRealProductCreateReqDto {
   })
   // =================================
   @IsArray()
+  @ValidateNested({ each: true })
   @Type(() => OrderRealProductCreateDto)
   orderRealProductList: OrderRealProductCreateDto[];
 
@@ -235,6 +237,8 @@ export class RealProductOrderInfoDto {
   // ==================================
   @Type(() => Number)
   @IsOptional()
+  @IsInt()
+  @Min(1)
   price?: number;
 
   @ApiPropertyOptional({
