@@ -70,6 +70,8 @@ import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.st
 import { randomUUID } from 'crypto';
 import { Response } from 'express';
 import * as ExcelJS from 'exceljs';
+import * as fs from 'fs';
+import { createExportTempPath } from '../../util/file.util';
 
 const dayjs = require('dayjs');
 const timezone = require('dayjs/plugin/timezone');
@@ -2318,6 +2320,19 @@ export class CustomerServiceService {
     return { success, failed };
   }
 
+  /** 엑셀 다운로드 기간 상한 가드 (최대 N년). 범위 미지정 시 통과(스트리밍이 메모리 보호). 초과 시 400. */
+  private assertExcelExportRangeWithinYears(startAt?: string, endAt?: string, maxYears = 3): void {
+    if (!startAt || !endAt) return;
+    const start = new Date(startAt);
+    const end = new Date(endAt);
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) return;
+    const limit = new Date(start);
+    limit.setFullYear(limit.getFullYear() + maxYears);
+    if (end > limit) {
+      throw new BadRequestException(`엑셀 다운로드 기간은 최대 ${maxYears}년까지 가능합니다.`);
+    }
+  }
+
   /**
    * CS 리스트 엑셀 다운로드
    * @param user 로그인 사용자 정보
@@ -2346,7 +2361,10 @@ export class CustomerServiceService {
     // 1. 비밀번호 검증
     await this.activityLogService.verifyPassword(user.id, password);
 
-    // 2. 데이터 조회 (페이징 없이 전체 조회)
+    // 1-1. 기간 상한 가드 (최대 3년) — 폭탄 다운로드 입구 차단
+    this.assertExcelExportRangeWithinYears(startAt, endAt);
+
+    // 2. 데이터 조회 (스트리밍: id 페이지네이션 + 행별 commit 으로 메모리 평탄)
     let queryBuilder = this.orderDeliveryRepository
       .createQueryBuilder('orderDelivery')
       .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
@@ -2450,15 +2468,15 @@ export class CustomerServiceService {
 
     // 날짜 조건을 실제 발송일(actualSendAt) 기준으로 변경
     queryBuilder = QueryBuilderDateCondition(queryBuilder, 'orderDelivery', 'actualSendAt', startAt, endAt);
-    queryBuilder.orderBy('orderDelivery.actualSendAt', 'DESC');
+    // 페이지네이션 안정성: actualSendAt 동일값 타이브레이커로 id 고정
+    queryBuilder.orderBy('orderDelivery.actualSendAt', 'DESC').addOrderBy('orderDelivery.id', 'DESC');
 
-    const orderDeliveryList = await queryBuilder.getMany();
-
-    // 3. 엑셀 워크북 생성
-    const workbook = new ExcelJS.Workbook();
+    // 3. 엑셀 워크북 생성 (스트리밍 — 임시파일로 행별 flush)
     const sheetName = orderType === 'GENERAL' ? '일반쿠폰주문CS' : '신세계CS';
-    const worksheet = workbook.addWorksheet(sheetName);
     const isSSG = orderType === 'SSG';
+    const filePath = createExportTempPath('xlsx');
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({ filename: filePath });
+    const worksheet = workbook.addWorksheet(sheetName);
 
     // 4. 컬럼 정의 (신세계는 개인번호 컬럼 포함)
     const baseColumns = [
@@ -2498,64 +2516,81 @@ export class CustomerServiceService {
       fgColor: { argb: 'FFE0E0E0' },
     };
     headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.commit();
 
-    // 6. 데이터 행 추가
-    for (const orderDelivery of orderDeliveryList) {
-      const order = orderDelivery.orderProductMapping.order;
-      const product = orderDelivery.orderProductMapping.product;
+    // 6. 데이터 행 추가 (500건씩 페이지네이션 — 매 행 commit 으로 메모리 비움)
+    const CHUNK = 500;
+    let offset = 0;
+    let recordCount = 0;
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const chunk = await queryBuilder.clone().skip(offset).take(CHUNK).getMany();
+      if (chunk.length === 0) break;
+      for (const orderDelivery of chunk) {
+        const order = orderDelivery.orderProductMapping.order;
+        const product = orderDelivery.orderProductMapping.product;
 
-      // deliveryTarget 복호화 (엑셀 다운로드 시 원문 표시)
-      const decryptedDeliveryTarget = this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.deliveryTarget);
+        // deliveryTarget 복호화 (엑셀 다운로드 시 원문 표시)
+        const decryptedDeliveryTarget = this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.deliveryTarget);
 
-      // emailReceiverPhone 복호화 (이메일 쿠폰 수령 시 입력한 핸드폰 번호)
-      const decryptedEmailReceiverPhone = this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.emailReceiverPhone);
+        // emailReceiverPhone 복호화 (이메일 쿠폰 수령 시 입력한 핸드폰 번호)
+        const decryptedEmailReceiverPhone = this.cryptoCipher.safeDecryptDeliveryTarget(
+          orderDelivery.emailReceiverPhone,
+        );
 
-      // 실제 발송 시간 계산
-      let actualSendAt: string | null = null;
-      if (
-        (orderDelivery.status === 'COMPLETE' || orderDelivery.status === 'COMPLETE_SMS') &&
-        orderDelivery.actualSendAt
-      ) {
-        actualSendAt = format(orderDelivery.actualSendAt, DateFormatStr);
-      }
-
-      // 초이스 쿠폰인 경우 선택된 상품의 가격 사용
-      const displayProduct = orderDelivery.choiceSelectProduct ?? product;
-
-      // 교환 일시·장소 조합
-      let tradeInfo = '';
-      if (orderDelivery.tradeAt) {
-        tradeInfo = format(orderDelivery.tradeAt, DateFormatStr);
-        if (orderDelivery.tradePlace) {
-          tradeInfo += ` ${orderDelivery.tradePlace}`;
+        // 실제 발송 시간 계산
+        let actualSendAt: string | null = null;
+        if (
+          (orderDelivery.status === 'COMPLETE' || orderDelivery.status === 'COMPLETE_SMS') &&
+          orderDelivery.actualSendAt
+        ) {
+          actualSendAt = format(orderDelivery.actualSendAt, DateFormatStr);
         }
-      } else if (orderDelivery.tradePlace) {
-        tradeInfo = orderDelivery.tradePlace;
-      }
 
-      worksheet.addRow({
-        actualSendAt: actualSendAt || '',
-        businessName: order.clientUser?.company?.businessName ?? order.user?.company?.businessName ?? '',
-        eventName: order.eventName,
-        sendTitle: orderDelivery.orderProductMapping.sendTitle ?? '',
-        productName: orderDelivery.choiceSelectProduct ? orderDelivery.choiceSelectProduct.name : product.name,
-        price: displayProduct.price,
-        productCode: product.code,
-        deliveryTarget: decryptedDeliveryTarget || '',
-        emailReceiverPhone: decryptedEmailReceiverPhone || '',
-        deliveryMethod: orderDelivery.deliveryMethod || '',
-        fromPhoneNumber: orderDelivery.orderProductMapping.fromPhoneNumber || '',
-        personalCode: orderDelivery.personalCode || '',
-        barCode: orderDelivery.barCode || '',
-        couponStatus: couponStatusToKorean(orderDelivery.couponStatus) || '',
-        tradeInfo,
-        transactionId: orderDelivery.transactionId || '',
-      });
+        // 초이스 쿠폰인 경우 선택된 상품의 가격 사용
+        const displayProduct = orderDelivery.choiceSelectProduct ?? product;
+
+        // 교환 일시·장소 조합
+        let tradeInfo = '';
+        if (orderDelivery.tradeAt) {
+          tradeInfo = format(orderDelivery.tradeAt, DateFormatStr);
+          if (orderDelivery.tradePlace) {
+            tradeInfo += ` ${orderDelivery.tradePlace}`;
+          }
+        } else if (orderDelivery.tradePlace) {
+          tradeInfo = orderDelivery.tradePlace;
+        }
+
+        worksheet
+          .addRow({
+            actualSendAt: actualSendAt || '',
+            businessName: order.clientUser?.company?.businessName ?? order.user?.company?.businessName ?? '',
+            eventName: order.eventName,
+            sendTitle: orderDelivery.orderProductMapping.sendTitle ?? '',
+            productName: orderDelivery.choiceSelectProduct ? orderDelivery.choiceSelectProduct.name : product.name,
+            price: displayProduct.price,
+            productCode: product.code,
+            deliveryTarget: decryptedDeliveryTarget || '',
+            emailReceiverPhone: decryptedEmailReceiverPhone || '',
+            deliveryMethod: orderDelivery.deliveryMethod || '',
+            fromPhoneNumber: orderDelivery.orderProductMapping.fromPhoneNumber || '',
+            personalCode: orderDelivery.personalCode || '',
+            barCode: orderDelivery.barCode || '',
+            couponStatus: couponStatusToKorean(orderDelivery.couponStatus) || '',
+            tradeInfo,
+            transactionId: orderDelivery.transactionId || '',
+          })
+          .commit();
+        recordCount++;
+      }
+      offset += CHUNK;
     }
+
+    await worksheet.commit();
+    await workbook.commit();
 
     // 7. Activity Log 기록
     const responseTime = Date.now() - startTime;
-    const recordCount = orderDeliveryList.length;
 
     await this.activityLogService.createLog({
       userId: user.id,
@@ -2573,7 +2608,7 @@ export class CustomerServiceService {
       requestParams: searchParams,
     });
 
-    // 8. 엑셀 파일 전송
+    // 8. 완성된 임시파일을 응답으로 스트리밍 후 삭제
     const nowString = format(new Date(), 'yyyyMMdd_HHmmss');
     const fileName = `${sheetName}_${nowString}.xlsx`;
 
@@ -2581,8 +2616,15 @@ export class CustomerServiceService {
     res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`);
     res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
 
-    await workbook.xlsx.write(res);
-    res.end();
+    const fileStream = fs.createReadStream(filePath);
+    fileStream.pipe(res);
+    fileStream.on('close', () => {
+      fs.unlink(filePath, (unlinkErr) => {
+        if (unlinkErr) {
+          this.logger.error(`엑셀 임시파일 삭제 실패: ${unlinkErr}`);
+        }
+      });
+    });
   }
 
 }
