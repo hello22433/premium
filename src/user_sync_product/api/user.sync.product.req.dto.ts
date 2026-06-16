@@ -4,6 +4,7 @@ import {
   ArrayMinSize,
   IsArray,
   IsBoolean,
+  IsEmail,
   IsEnum,
   IsInt,
   IsNotEmpty,
@@ -37,6 +38,7 @@ export class UserSyncProductGetListReqDto extends PagingReqDto {
   })
   // ================================
   @IsOptional()
+  @IsString()
   businessUserName?: string;
 
   @ApiPropertyOptional({
@@ -52,6 +54,7 @@ export class UserSyncProductGetListReqDto extends PagingReqDto {
   })
   // =================================
   @IsOptional()
+  @IsString()
   code?: string;
 
   @ApiPropertyOptional({
@@ -59,6 +62,7 @@ export class UserSyncProductGetListReqDto extends PagingReqDto {
   })
   // =================================
   @IsOptional()
+  @IsString()
   name?: string;
 
   @ApiPropertyOptional({
@@ -113,6 +117,8 @@ export class UserSyncProductRegisterEventReqDto {
   })
   // =================================
   @IsNumber()
+  @IsNotEmpty()
+  @Min(1)
   userId: number;
 
   @ApiProperty({
@@ -133,6 +139,7 @@ export class UserSyncProductRegisterEventReqDto {
     description: '이벤트명',
   })
   // =================================
+  @IsString()
   @IsNotEmpty()
   name: string;
 
@@ -140,6 +147,7 @@ export class UserSyncProductRegisterEventReqDto {
     description: '이벤트 코드',
   })
   // =================================
+  @IsString()
   @IsNotEmpty()
   code: string;
 
@@ -152,9 +160,10 @@ export class UserSyncProductRegisterEventReqDto {
   status: IUserSyncProductStatus;
 
   @ApiProperty({
-    description: '연락처 (-없이 숫자만)',
+    description: '연락처 (숫자, - 허용)',
   })
   // =================================
+  @Matches(/^[0-9-]{9,13}$/, { message: '연락처는 숫자와 - 만 9~13자리로 입력해야 합니다.' })
   @IsNotEmpty()
   phone: string;
 
@@ -162,6 +171,7 @@ export class UserSyncProductRegisterEventReqDto {
     description: '이메일',
   })
   // =================================
+  @IsEmail()
   @IsNotEmpty()
   email: string;
 }
