@@ -1803,6 +1803,14 @@ export class OrderService {
       couponExpiration = productList[0].product?.expireDay ?? null;
     }
 
+    // 상품별 발송정보 목록 (단일 빌더와 동일 계약 — 무조건 "외" 병합 대신 상품별 구분 제공)
+    const sendInfoList: { productName: string; sendTitle: string | null; sendContent: string | null }[] =
+      allMappings.map((mapping) => ({
+        productName: readLineProductView(mapping).name,
+        sendTitle: mapping.sendTitle ?? null,
+        sendContent: mapping.sendContent ?? null,
+      }));
+
     return {
       id: firstOrder.id,
       orderIds: orderIds,
@@ -1826,6 +1834,7 @@ export class OrderService {
       fromPhoneNumber: firstMapping?.fromPhoneNumber ?? null,
       fromEmail: firstMapping?.fromEmail ?? null,
       encourageDay: firstMapping?.encourageDay ?? null,
+      sendInfoList,
     };
   }
 
@@ -2465,8 +2474,8 @@ export class OrderService {
           }
           const delivery = allDeliveryById.get(deliveryId)!;
           delivery.settleFee = settle.fee;
-          delivery.settlePriceAdjustment = settle.priceAdjustment;
-          delivery.settleDiscountType = settle.settleDiscountType;
+          delivery.settlePriceAdjustment = settle.priceAdjustment ?? null;
+          delivery.settleDiscountType = settle.settleDiscountType ?? null;
         }
 
         deliveryUpdatePromises.push(
@@ -2474,8 +2483,8 @@ export class OrderService {
             { id: In(settle.deliveryIds) },
             {
               settleFee: settle.fee,
-              settlePriceAdjustment: settle.priceAdjustment,
-              settleDiscountType: settle.settleDiscountType,
+              settlePriceAdjustment: settle.priceAdjustment ?? null,
+              settleDiscountType: settle.settleDiscountType ?? null,
             },
           ),
         );

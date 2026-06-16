@@ -13,6 +13,7 @@ import {
   ProductChoiceUpdateReqDto,
 } from '../api/product.choice.req.dto';
 import { IProductType } from '../../product/interface/product.type';
+import { IProductUseStatus } from '../../product/interface/product.status';
 import { ProductChoiceMappingEntity } from '../../entity/product.choice.mapping.entity';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
@@ -89,6 +90,12 @@ export class ProductChoiceService {
     const [productList, totalCount] = await queryBuilder.getManyAndCount();
 
     const resultList = productList.map((product): ProductChoiceViewDto => {
+      const hasUnusedProduct = product.productChoiceMappings.some(
+        (mapping) =>
+          mapping.product?.useStatus === IProductUseStatus.UNUSED ||
+          mapping.product?.useStatus === IProductUseStatus.PERMANENTLY_UNUSED,
+      );
+
       return {
         id: product.id,
         createdDate: format(product.createdAt, DateDateFormatStr),
@@ -99,6 +106,7 @@ export class ProductChoiceService {
         usagePeriod: '2024-01-01~2024-12-31', // TODO:
         useStatus: product.useStatus,
         registrationStatus: '정상', // TODO:
+        hasUnusedProduct,
       };
     });
 

@@ -1,5 +1,5 @@
 import { IOrderStatus } from '../interface/order.status';
-import { IsArray, IsBoolean, IsEnum, IsIn, IsInt, IsNotEmpty, IsNumber, IsOptional, IsString, Matches, MaxLength, Min } from 'class-validator';
+import { IsArray, IsBoolean, IsEnum, IsIn, IsInt, IsNotEmpty, IsNumber, IsOptional, IsString, Matches, MaxLength, Min, ValidateNested } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { dateAtRegexp } from '../../common/domain/date.regexp';
 import { PagingReqDto } from '../../common/api/dto/pagination.req.dto';
@@ -210,6 +210,8 @@ export class OrderCreateSettleReqDto {
     description: '정산 정보 입력 목록 list',
   })
   @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => OrderSettleCreateDto)
   // =============================
   list: OrderSettleCreateDto[];
 
