@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { createExportTempPath } from '../../util/file.util';
 import { ProductEntity } from '../../entity/product.entity';
-import { Brackets, FindOptionsWhere, In, IsNull, Like, Repository } from 'typeorm';
+import { Brackets, FindOptionsWhere, In, IsNull, Like, QueryFailedError, Repository } from 'typeorm';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
   ClassificationCreateReqDto,
@@ -674,11 +674,11 @@ export class ProductService {
   }
 
   /**
-   * 주어진 price에 해당하는 SSG 상품을 반환. 없으면 가장 오래된 SSG 상품을 템플릿 삼아 새로 생성한다.
-   * 내부 admin/외부 API 양쪽에서 sendAmount === product.price 보장을 위해 공유한다.
+   * price 에 해당하는 활성 SSG 상품을 조회. 없으면 null.
+   * findOrCreateSsgProductByPrice 의 fast-path 와 ER_DUP_ENTRY 멱등 재조회에서 공유한다.
    */
-  async findOrCreateSsgProductByPrice(price: number): Promise<ProductEntity> {
-    const existing = await this.productRepository
+  private findSsgProductByPriceOrNull(price: number): Promise<ProductEntity | null> {
+    return this.productRepository
       .createQueryBuilder('product')
       .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .innerJoinAndSelect('product.brand', 'brand')
@@ -687,6 +687,14 @@ export class ProductService {
       .andWhere('product.type = :type ', { type: IProductType.SSG })
       .andWhere('partnerCompany.type = :type', { type: IPartnerCompanyType.SSG })
       .getOne();
+  }
+
+  /**
+   * 주어진 price에 해당하는 SSG 상품을 반환. 없으면 가장 오래된 SSG 상품을 템플릿 삼아 새로 생성한다.
+   * 내부 admin/외부 API 양쪽에서 sendAmount === product.price 보장을 위해 공유한다.
+   */
+  async findOrCreateSsgProductByPrice(price: number): Promise<ProductEntity> {
+    const existing = await this.findSsgProductByPriceOrNull(price);
 
     if (existing) {
       return existing;
@@ -746,7 +754,21 @@ export class ProductService {
     newProduct.color = templateProduct.color;
     newProduct.status = templateProduct.status;
 
-    const savedProduct = await this.productRepository.save(newProduct);
+    let savedProduct: ProductEntity;
+    try {
+      savedProduct = await this.productRepository.save(newProduct);
+    } catch (e) {
+      // 동시 생성 경합(예: 생성 버튼 더블클릭): uq_product_ssg_price(price) 또는 code 유니크 위반.
+      // 먼저 커밋된 row 를 재조회해 그대로 반환(멱등). price row 가 아직 안 보이면
+      // (다른 가격의 EP 채번 충돌) 그대로 throw → 재시도 시 자가치유.
+      if (e instanceof QueryFailedError && (e as QueryFailedError & { code?: string }).code === 'ER_DUP_ENTRY') {
+        const winner = await this.findSsgProductByPriceOrNull(price);
+        if (winner) {
+          return winner;
+        }
+      }
+      throw e;
+    }
 
     const reloaded = await this.productRepository
       .createQueryBuilder('product')
