@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, InternalServerErrorException, Logger, NotFoundException } from '@nestjs/common';
+﻿import { BadRequestException, Injectable, InternalServerErrorException, Logger, NotFoundException } from '@nestjs/common';
 import { createExportTempPath } from '../../util/file.util';
 import {
   SettleGetAdminUserListResDto,
@@ -2398,7 +2398,11 @@ export class SettleService {
     // 확정 진행 (null 또는 UNSETTLE_NORMAL → SETTLE_COMPLETE)
     if (toComplete && !fromComplete) {
       const summary = await this.getOrderSettlementSummary([order.id]);
-      const netAmount = summary.get(order.id)?.netAmount ?? 0;
+      const entry = summary.get(order.id);
+      if (entry?.hasPending) {
+        throw new BadRequestException(SETTLE_BLOCKED_BY_PENDING_DELIVERY_MSG);
+      }
+      const netAmount = entry?.netAmount ?? 0;
       await this.tryAtomicSettleConfirm(order, billingUserId, netAmount);
       return;
     }
@@ -2544,7 +2548,14 @@ export class SettleService {
     if (summaryEntry?.hasPending) {
       throw new BadRequestException(SETTLE_BLOCKED_BY_PENDING_DELIVERY_MSG);
     }
-    const netAmount = summaryEntry?.netAmount ?? 0;
+
+    // lock 후 재계산 — 프리로드와 lock 사이 신규 발송 추가·CS 폐기 경쟁으로 stale 데이터가 확정되는 것을 방어
+    const freshSummary = await this.getOrderSettlementSummary([orderId]);
+    const freshEntry = freshSummary.get(orderId);
+    if (freshEntry?.hasPending) {
+      throw new BadRequestException(SETTLE_BLOCKED_BY_PENDING_DELIVERY_MSG);
+    }
+    const netAmount = freshEntry?.netAmount ?? 0;
 
     const confirmed = await this.tryAtomicSettleConfirm(order, billingUserId, netAmount);
     return confirmed ? 'success' : 'skipped';
@@ -3370,3 +3381,4 @@ export class SettleService {
     return map;
   }
 }
+
