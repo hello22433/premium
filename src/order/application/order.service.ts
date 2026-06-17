@@ -1732,6 +1732,14 @@ export class OrderService {
       throw new BadRequestException('주문이 존재하지 않습니다.');
     }
 
+    // IDOR/정합성: 요청 id 중 조회범위 밖·부재로 빠진 건이 있으면 부분 생성 금지(전부-또는-전무).
+    // (응답 orderIds 는 요청 원본을 그대로 반환하므로, 일부만 조회되면 증빙/일련번호 불일치 발생)
+    const foundIds = new Set(orders.map((order) => order.id));
+    const missingIds = orderIds.filter((id) => !foundIds.has(id));
+    if (missingIds.length > 0) {
+      throw new BadRequestException('조회 권한이 없거나 존재하지 않는 주문이 포함되어 있습니다.');
+    }
+
     // 모든 주문이 발송 완료 상태인지 확인
     for (const order of orders) {
       if (order.status !== IOrderStatus.DELIVERY_COMPLETE) {
@@ -1945,6 +1953,14 @@ export class OrderService {
 
     if (orders.length === 0) {
       throw new BadRequestException('주문이 존재하지 않습니다.');
+    }
+
+    // IDOR/정합성: 요청 id 중 조회범위 밖·부재로 빠진 건이 있으면 부분 생성 금지(전부-또는-전무).
+    // (응답 orderIds·일련번호가 요청 원본을 그대로 쓰므로, 일부만 조회되면 거래명세서 불일치 발생)
+    const foundIds = new Set(orders.map((order) => order.id));
+    const missingIds = orderIds.filter((id) => !foundIds.has(id));
+    if (missingIds.length > 0) {
+      throw new BadRequestException('조회 권한이 없거나 존재하지 않는 주문이 포함되어 있습니다.');
     }
 
     for (const order of orders) {

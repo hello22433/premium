@@ -113,4 +113,20 @@ describe('OrderService 조회 형제 메서드 view-scope (IDOR, D3-19)', () => 
     const owner = { id: 10, email: 'o@o.com', authority: IUserAuthority.CORPORATE_ADMIN };
     await expect(inService.assertOrderInViewScope(owner, 77)).resolves.toBeUndefined();
   });
+
+  it('report-multiple 혼합 요청(내 주문 + 범위 밖 id)은 부분 성공 없이 전체 거부된다', async () => {
+    // owner 는 77 만 소유 → ids=77,88 요청 시 88 이 scope 필터로 결과서 빠짐
+    // → missingIds 검사로 부분 증빙 생성 대신 전체 거부 (응답 orderIds 불일치 방지)
+    const owner = { id: 10, email: 'o@o.com', authority: IUserAuthority.CORPORATE_ADMIN };
+
+    const svcA = buildService(ownedOrder);
+    await expect(svcA.getOrderCompleteReportMultiple('77,88', undefined, owner)).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+
+    const svcB = buildService(ownedOrder);
+    await expect(
+      svcB.getDeliveryCompleteReportMultiple('77,88', undefined, owner, false),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
 });
