@@ -168,6 +168,18 @@ describe('SsgEventService.getSsgBalanceCheckForOrder', () => {
     expect(r!.lookupFailed).toBe(true);
   });
 
+  it('차감이력은 있는데 행사 삭제(내부 불일치)면 lookupFailed=true, 해당 행사 누락 숨기지 않음', async () => {
+    const { service } = createService({
+      historyGroups: [{ ssgEventId: 10, sum: '-500' }],
+      event: null,
+    });
+
+    const r = await service.getSsgBalanceCheckForOrder(123);
+    expect(r).not.toBeNull();
+    expect(r!.lookupFailed).toBe(true);
+    expect(r!.events).toHaveLength(0);
+  });
+
   it('비-SSG 주문(차감이력 없음)이면 null', async () => {
     const { service } = createService({
       historyGroups: [],

@@ -9,7 +9,7 @@ import { OrderCustomerViewDto } from './dto/order.customer.view.dto';
 import { OrderCompleteReportViewDto } from './dto/order.complete.report.view.dto';
 import { OrderDashboardViewDto } from './dto/order.dashboard.view.dto';
 import { UserSettlePeriodConditionEnum } from '../../user/interface/user.settle.period.condition.enum';
-import { SsgBalanceCheckResult } from '../../ssg_event/application/ssg.balance.guard';
+import { SsgBalanceCheckView } from '../../ssg_event/application/ssg.balance.guard';
 
 export class OrderGetListResDto extends GetListResDto {
   @ApiProperty({
@@ -140,7 +140,7 @@ export class OrderGetDetailResDto {
       'SSG 행사잔액 이상 탐지 결과. 발송확정 전(REVIEW_COMPLETE) SSG 주문 + 발송확정 권한자에게만 존재. ' +
       'hasWarning=true면 발송확정 시 팝업 경고(강행 가능). lookupFailed=true면 신세계 조회 불가(수동확인 권장).',
   })
-  ssgBalanceCheck?: SsgBalanceCheckResult;
+  ssgBalanceCheck?: SsgBalanceCheckView;
 }
 
 export class OrderGetDeliveryCompleteReportDetailResDto {

@@ -42,6 +42,9 @@ import {
 } from './ssg.balance.guard';
 import { ulid } from 'ulid';
 
+// 상세조회 임계경로에서 SSG 외부 API(getAmount) 지연이 페이지 로딩을 묶지 않도록 하는 가드 타임아웃
+const SSG_BALANCE_CHECK_TIMEOUT_MS = 3000;
+
 @Injectable()
 export class SsgEventService {
   constructor(
@@ -845,42 +848,18 @@ export class SsgEventService {
       return null;
     }
 
+    // 2. 행사별 판정을 병렬 실행(임계경로 차단 최소화). 다행사 주문이어도 외부 API 직렬 대기 안 함.
+    const results = await Promise.all(groups.map((group) => this.evaluateEventGroup(group)));
+
     const events: SsgEventSignalResult[] = [];
     let lookupFailed = false;
-
-    for (const group of groups) {
-      const ssgEventId = Number(group.ssgEventId);
-      const orderAmount = Math.abs(Number(group.sum ?? 0));
-
-      const event = await this.ssgEventRepository.findOne({ where: { id: ssgEventId } });
-      if (!event) {
-        continue;
-      }
-
-      let amount: ISsgAmountResult;
-      try {
-        amount = await this.ssgIssue.getAmount({ eventNo: event.no, eventSeq: event.order });
-      } catch {
+    for (const r of results) {
+      if (r.lookupFailed) {
         lookupFailed = true;
-        continue;
       }
-
-      const openTempDeduction = await this.getOpenTempDeductionByEvent(ssgEventId);
-
-      events.push(
-        evaluateSsgEventSignals({
-          ssgEventId,
-          eventName: event.name,
-          eventBalance: event.eventBalance,
-          eventPrice: event.eventPrice,
-          successAmt: amount.successAmt,
-          failAmt: amount.failAmt,
-          pendingAmt: amount.pendingAmt,
-          openTempDeduction,
-          orderAmount,
-          tol: 0,
-        }),
-      );
+      if (r.event) {
+        events.push(r.event);
+      }
     }
 
     return {
@@ -888,6 +867,68 @@ export class SsgEventService {
       lookupFailed,
       events,
     };
+  }
+
+  /**
+   * 행사 1건 판정. SSG live 조회 실패/타임아웃은 lookupFailed 로 보고하고 예외를 전파하지 않는다.
+   * 차감이력은 있는데 행사가 사라진 내부 불일치도 누락을 숨기지 않도록 lookupFailed 로 보고한다.
+   */
+  private async evaluateEventGroup(group: {
+    ssgEventId: number;
+    sum: string;
+  }): Promise<{ event: SsgEventSignalResult | null; lookupFailed: boolean }> {
+    const ssgEventId = Number(group.ssgEventId);
+    const orderAmount = Math.abs(Number(group.sum ?? 0));
+
+    const event = await this.ssgEventRepository.findOne({ where: { id: ssgEventId } });
+    if (!event) {
+      return { event: null, lookupFailed: true };
+    }
+
+    let amount: ISsgAmountResult;
+    try {
+      amount = await this.withTimeout(
+        this.ssgIssue.getAmount({ eventNo: event.no, eventSeq: event.order }),
+        SSG_BALANCE_CHECK_TIMEOUT_MS,
+      );
+    } catch {
+      return { event: null, lookupFailed: true };
+    }
+
+    const openTempDeduction = await this.getOpenTempDeductionByEvent(ssgEventId);
+
+    return {
+      event: evaluateSsgEventSignals({
+        ssgEventId,
+        eventName: event.name,
+        eventBalance: event.eventBalance,
+        eventPrice: event.eventPrice,
+        successAmt: amount.successAmt,
+        failAmt: amount.failAmt,
+        pendingAmt: amount.pendingAmt,
+        openTempDeduction,
+        orderAmount,
+        tol: 0,
+      }),
+      lookupFailed: false,
+    };
+  }
+
+  private withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('SSG getAmount timeout')), ms);
+      timer.unref?.();
+      p.then(
+        (v) => {
+          clearTimeout(timer);
+          resolve(v);
+        },
+        (e) => {
+          clearTimeout(timer);
+          reject(e);
+        },
+      );
+    });
   }
 
   /**

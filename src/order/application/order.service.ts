@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import { UserManagementService } from '../../user_management/application/user.management.service';
 import { SsgEventService } from '../../ssg_event/application/ssg.event.service';
-import { SsgBalanceCheckResult } from '../../ssg_event/application/ssg.balance.guard';
+import { SsgBalanceCheckView, toSsgBalanceCheckView } from '../../ssg_event/application/ssg.balance.guard';
 import {
   OrderCreateSettleReqDto,
   OrderCreateTempReqDto,
@@ -890,10 +890,11 @@ export class OrderService {
     // SSG 행사잔액 이상 탐지(읽기전용). 게이트 3중:
     // (1) 타입 SSG (2) 발송확정 전(REVIEW_COMPLETE) (3) 발송확정 권한자(canTransitionDelivery).
     // 민감 재무데이터(행사잔액·SSG 집계금액)라 비권한자(고객사/비소유 운영자)에겐 필드를 omit한다.
-    let ssgBalanceCheck: SsgBalanceCheckResult | undefined;
+    let ssgBalanceCheck: SsgBalanceCheckView | undefined;
     const transitionUser = await this.getCurrentDeliveryTransitionUser(user.id);
     if (shouldExposeSsgBalanceCheck(transitionUser, order)) {
-      ssgBalanceCheck = (await this.ssgEventService.getSsgBalanceCheckForOrder(order.id)) ?? undefined;
+      const result = await this.ssgEventService.getSsgBalanceCheckForOrder(order.id);
+      ssgBalanceCheck = result ? toSsgBalanceCheckView(result) : undefined;
     }
 
     return {

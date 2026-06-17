@@ -1,4 +1,4 @@
-import { evaluateSsgEventSignals } from './ssg.balance.guard';
+import { evaluateSsgEventSignals, toSsgBalanceCheckView } from './ssg.balance.guard';
 
 const base = {
   ssgEventId: 1,
@@ -97,5 +97,41 @@ describe('evaluateSsgEventSignals', () => {
     });
     expect(r.signals).toEqual({ A1_issueFail: true, A2_overRefund: true, B_capacityRisk: true });
     expect(r.reasons.length).toBe(3);
+  });
+});
+
+describe('toSsgBalanceCheckView (응답 전용 매핑)', () => {
+  it('판정 결과의 노출 필드를 그대로 매핑하고 내부 참조를 복사한다', () => {
+    const ev = evaluateSsgEventSignals({
+      ...base,
+      eventBalance: 1010,
+      eventPrice: 1000,
+      successAmt: 990,
+      failAmt: 5,
+      pendingAmt: 0,
+      openTempDeduction: 0,
+      orderAmount: 11,
+      tol: 0,
+    });
+    const view = toSsgBalanceCheckView({ hasWarning: true, lookupFailed: false, events: [ev] });
+
+    expect(view.hasWarning).toBe(true);
+    expect(view.lookupFailed).toBe(false);
+    expect(view.events).toHaveLength(1);
+    expect(view.events[0]).toEqual({
+      ssgEventId: ev.ssgEventId,
+      eventName: ev.eventName,
+      ourBalance: ev.ourBalance,
+      orderAmount: ev.orderAmount,
+      ssg: ev.ssg,
+      rho: ev.rho,
+      ssgRemaining: ev.ssgRemaining,
+      signals: ev.signals,
+      reasons: ev.reasons,
+      hasWarning: ev.hasWarning,
+    });
+    // 내부 배열/객체를 복사해 응답이 내부 상태와 공유되지 않음
+    expect(view.events[0].ssg).not.toBe(ev.ssg);
+    expect(view.events[0].reasons).not.toBe(ev.reasons);
   });
 });
