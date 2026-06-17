@@ -270,7 +270,8 @@ export class SettleController {
   ) {
     try {
       const ipAddress = req.ip || req.headers['x-forwarded-for']?.toString() || '';
-      const { fileName, filePath } = await this.settleService.mobileExcelDownload(user, getBody, ipAddress);
+      const userAgent = req.headers['user-agent'] || '';
+      const { fileName, filePath } = await this.settleService.mobileExcelDownload(user, getBody, ipAddress, userAgent);
 
       const encodedFileName = encodeURIComponent(fileName);
       res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
@@ -318,7 +319,8 @@ export class SettleController {
   ) {
     await this.authService.authorityValidator(user, UserAuthSubEnum.SETTLE_PARTNER_COMPANY);
     const ipAddress = req.ip || req.headers['x-forwarded-for']?.toString() || '';
-    const { fileName, filePath } = await this.settleService.partnerCompanyExcelDownload(user, body, ipAddress);
+    const userAgent = req.headers['user-agent'] || '';
+    const { fileName, filePath } = await this.settleService.partnerCompanyExcelDownload(user, body, ipAddress, userAgent);
     res.download(filePath, fileName, (err) => {
       if (err) {
         this.logger.error(`Error downloading file: ${err}`);
@@ -435,7 +437,8 @@ export class SettleController {
   ) {
     try {
       const ipAddress = req.ip || req.headers['x-forwarded-for']?.toString() || '';
-      const { fileName, filePath, recordCount } = await this.settleService.getUserExcelDownload(user, getBody, ipAddress);
+      const userAgent = req.headers['user-agent'] || '';
+      const { fileName, filePath, recordCount } = await this.settleService.getUserExcelDownload(user, getBody, ipAddress, userAgent);
 
       const encodedFileName = encodeURIComponent(fileName);
       res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
@@ -544,7 +547,8 @@ export class SettleController {
   ) {
     await this.authService.authorityValidator(user, UserAuthSubEnum.SETTLE_PARTNER_COMPANY);
     const ipAddress = req.ip || req.headers['x-forwarded-for']?.toString() || '';
-    const { fileName, filePath } = await this.settleService.galaxiaExcelDownload(user, body, ipAddress);
+    const userAgent = req.headers['user-agent'] || '';
+    const { fileName, filePath } = await this.settleService.galaxiaExcelDownload(user, body, ipAddress, userAgent);
     res.download(filePath, fileName, (err) => {
       if (err) {
         this.logger.error(`Error downloading file: ${err}`);
