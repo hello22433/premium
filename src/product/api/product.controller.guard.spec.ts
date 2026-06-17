@@ -31,6 +31,8 @@ describe('ProductController 인가 가드 (HTTP)', () => {
     createClassification: jest.fn().mockResolvedValue({}),
     excelDownload: jest.fn(),
     excelTemplateDownload: jest.fn(),
+    getDetail: jest.fn().mockResolvedValue({}),
+    getUpdateHistory: jest.fn().mockResolvedValue({}),
   };
 
   // token === authority 문자열로 사용. validateByToken 이 해당 권한 유저를 돌려준다.
@@ -70,6 +72,8 @@ describe('ProductController 인가 가드 (HTTP)', () => {
     ['post', '/classification'], // createClassification (#31)
     ['post', '/product/excel-download'], // excelDownload (#33)
     ['get', '/product/excel-template-download'], // excelTemplateDownload (#34)
+    ['get', '/product/detail/1'], // getDetail (#32)
+    ['get', '/product/update-history/1'], // getUpdateHistory (#32)
   ];
 
   describe('CORPORATE_ADMIN 은 403 으로 차단된다', () => {

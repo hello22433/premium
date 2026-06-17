@@ -135,6 +135,7 @@ export class ProductController {
     description: '해당 product 가 존재하지 않는 경우',
   })
   // =========================================
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @Get('/product/detail/:id')
   getDetail(@Param() getParam: ProductGetDetailReqParamDto) {
     return this.productService.getDetail(getParam);
@@ -151,6 +152,7 @@ export class ProductController {
     description: '해당 product 가 존재하지 않는 경우',
   })
   // =========================================
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @Get('/product/update-history/:id')
   getUpdateHistory(
     @Param() getParam: ProductGetUpdateHistoryReqParamDto,
