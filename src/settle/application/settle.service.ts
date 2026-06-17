@@ -2544,7 +2544,10 @@ export class SettleService {
     if (summaryEntry?.hasPending) {
       throw new BadRequestException(SETTLE_BLOCKED_BY_PENDING_DELIVERY_MSG);
     }
-    const netAmount = summaryEntry?.netAmount ?? 0;
+
+    // lock 후 재계산 — 프리로드와 lock 사이 CS 폐기 경쟁으로 오래된 금액이 확정되는 것을 방어
+    const freshSummary = await this.getOrderSettlementSummary([orderId]);
+    const netAmount = freshSummary.get(orderId)?.netAmount ?? 0;
 
     const confirmed = await this.tryAtomicSettleConfirm(order, billingUserId, netAmount);
     return confirmed ? 'success' : 'skipped';
