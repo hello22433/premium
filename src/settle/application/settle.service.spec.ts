@@ -152,4 +152,27 @@ describe('SettleService — confirmSingleOrderTx (#20 fix)', () => {
     expect(result).toBe('skipped');
     expect(summarySpy).not.toHaveBeenCalled();
   });
+
+  it('프리로드 시점 hasPending=false 였어도 lock 후 재계산에서 hasPending=true 면 400 을 던진다', async () => {
+    const order = { id: ORDER_ID, settleStatus: null, clientUserId: null, userId: 7, isSettleBalance: false };
+
+    const svc = makeService({
+      orderRepository: {
+        createQueryBuilder: jest.fn().mockReturnValue(makeOrderQb(order)),
+        manager: {},
+      },
+      userRepository: {
+        findOne: jest.fn().mockResolvedValue({ id: 7 }),
+        createQueryBuilder: jest.fn(),
+      },
+    });
+
+    jest.spyOn(svc, 'getOrderSettlementSummary').mockResolvedValue(
+      new Map([[ORDER_ID, { netAmount: 5_000, hasPending: true }]]),
+    );
+
+    await expect(
+      (svc as any).confirmSingleOrderTx(ORDER_ID, { netAmount: 5_000, hasPending: false }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
 });
