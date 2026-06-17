@@ -92,8 +92,10 @@ import { SettleOtherProductDetailDto } from '../api/dto/settle.other.product.dto
 import { OrderDeliveryCouponStatus, couponStatusToKorean } from '../../delivery/interface/order.delivery.coupon.status';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 import { calculateSettlementPrice } from '../../util/settle-fee.util';
+import { applyCardSurcharge } from '../../order/domain/order.fee.calculator';
 import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
+import { OrderDeliveryRefundEntity } from '../../entity/order.delivery.refund.entity';
 import { UserDiscountEntity } from '../../entity/user.discount.entity';
 import { IPriceAdjustment } from '../../user_discount/interface/price.adjustment';
 import { findMatchingDiscount } from '../../user_discount/domain/discount.matcher';
@@ -145,6 +147,8 @@ export class SettleService {
     private galaxiaBarcodeLogRepository: Repository<GalaxiaBarcodeLogEntity>,
     @InjectRepository(ActivityLogEntity)
     private activityLogRepository: Repository<ActivityLogEntity>,
+    @InjectRepository(OrderDeliveryRefundEntity)
+    private orderDeliveryRefundRepository: Repository<OrderDeliveryRefundEntity>,
     private activityLogService: ActivityLogService,
     private cryptoCipher: CryptoCipher,
     private readonly walletManagedPredicate: WalletManagedPredicate,
@@ -2413,12 +2417,14 @@ export class SettleService {
       if (isWalletManaged) {
         await this.settleConfirmationWalletService.undoSettlement(order.id, externalManager);
       } else if (!order.isSettleBalance) {
+        const settledDiscardRestoreAmount = await this.getSettledDiscardRestoreAmount(order.id);
+        const restoreAmount = Math.max(0, snapshotAmount - settledDiscardRestoreAmount);
         await this.userRepository
           .createQueryBuilder()
           .update()
           .set({ allSettleAmount: () => 'all_settle_amount + :amount' })
           .where('id = :id', { id: billingUserId })
-          .setParameters({ amount: snapshotAmount })
+          .setParameters({ amount: restoreAmount })
           .execute();
       }
 
@@ -3299,6 +3305,21 @@ export class SettleService {
     return map;
   }
 
+  private async getSettledDiscardRestoreAmount(orderId: number): Promise<number> {
+    const row = await this.orderDeliveryRefundRepository
+      .createQueryBuilder('refund')
+      .innerJoin(OrderDeliveryEntity, 'delivery', 'delivery.id = refund.order_delivery_id')
+      .innerJoin('delivery.orderProductMapping', 'mapping')
+      .select('SUM(refund.refundAmount)', 'totalRestore')
+      .where('mapping.orderId = :orderId', { orderId })
+      .andWhere('refund.sourcePath = :sourcePath', { sourcePath: 'CS_DISCARD' })
+      .andWhere('refund.isSettleComplete = :isSettleComplete', { isSettleComplete: true })
+      .andWhere('refund.restoreType IN (:...restoreTypes)', { restoreTypes: ['BALANCE', 'COMPANY_BALANCE'] })
+      .getRawOne<{ totalRestore?: string | number | null }>();
+
+    return Number(row?.totalRestore) || 0;
+  }
+
   /**
    * 주문별 정산확정 대상 금액 및 미완료 배송 여부 조회
    * - netAmount: 유효 delivery의 정산단가 합계
@@ -3308,7 +3329,7 @@ export class SettleService {
   private async getOrderSettlementSummary(
     orderIds: number[],
   ): Promise<Map<number, { netAmount: number; hasPending: boolean }>> {
-    const map = new Map<number, { netAmount: number; hasPending: boolean }>();
+    const map = new Map<number, { netAmount: number; hasPending: boolean; cardSurchargeApplied?: boolean }>();
     if (orderIds.length === 0) return map;
 
     for (const id of orderIds) {
@@ -3342,11 +3363,13 @@ export class SettleService {
       // CANCEL(고객사 폐기 요청)만 정산 제외. REFUND_CANCEL(수령 고객 환불)은 고객사 정산 100% 유지
       if (!isComplete || d.couponStatus === OrderDeliveryCouponStatus.CANCEL) continue;
 
-      entry.netAmount += calculateSettlementPrice(
-        d.orderProductMapping,
-        d.orderProductMapping.order.cardSurchargeApplied,
-        d,
-      );
+      entry.cardSurchargeApplied = d.orderProductMapping.order.cardSurchargeApplied;
+      entry.netAmount += calculateSettlementPrice(d.orderProductMapping, false, d);
+    }
+
+    for (const entry of map.values()) {
+      entry.netAmount = applyCardSurcharge(entry.netAmount, entry.cardSurchargeApplied ?? false);
+      delete entry.cardSurchargeApplied;
     }
     return map;
   }

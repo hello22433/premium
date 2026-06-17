@@ -37,7 +37,7 @@ import { OrderDeliveryAttemptEntity } from '../../entity/order.delivery.attempt.
 import { OrderPaymentRefundEventType } from '../../entity/order.payment.refund.event.entity';
 import { buildDiscardRefundKey } from '../../wallet/interface/wallet-idempotency';
 import { WalletResourceType } from '../../wallet/interface/wallet-resource-type';
-import { OrderDeliveryRefundRestoreType } from '../../entity/order.delivery.refund.entity';
+import { OrderDeliveryRefundEntity, OrderDeliveryRefundRestoreType } from '../../entity/order.delivery.refund.entity';
 import { OrderDeliveryCouponStatus, couponStatusToKorean } from '../../delivery/interface/order.delivery.coupon.status';
 import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
 import { IProductType } from '../../product/interface/product.type';
@@ -154,6 +154,9 @@ export class CustomerServiceService {
     }
 
     let restoreAmount = calculateSettlementPrice(mapping, order.cardSurchargeApplied, orderDelivery);
+    if (order.isSettleComplete) {
+      restoreAmount = await this.calculateSettledDiscardRestoreAmount(orderDelivery, queryRunner);
+    }
 
     const billingUserId = order.clientUserId ?? order.userId;
     const user = await queryRunner.manager.findOne(UserEntity, {
@@ -879,7 +882,7 @@ export class CustomerServiceService {
     }
 
     // 폐기 대상 정산금액(할인가 기준) — 이력 행별 폐기금액으로 기록
-    const destroyAmount = calculateSettlementPrice(
+    let destroyAmount = calculateSettlementPrice(
       orderDelivery.orderProductMapping,
       orderDelivery.orderProductMapping.order.cardSurchargeApplied,
       orderDelivery,
@@ -1015,6 +1018,9 @@ export class CustomerServiceService {
       await tx2.startTransaction();
       try {
         restoreAmount = await this.restoreBalanceOnDiscard(orderDelivery, user, tx2);
+        if (restoreAmount !== null && orderDelivery.orderProductMapping.order.isSettleComplete) {
+          destroyAmount = restoreAmount;
+        }
         await tx2.commitTransaction();
         refundStatus = 'SUCCESS';
       } catch (error) {
@@ -1032,7 +1038,7 @@ export class CustomerServiceService {
 
     // pinDiscard 등 Tx1 에서 이미 history 를 기록한 경로: 복원액은 Tx2 후 확정되므로 보강 update
     if (savedHistoryId !== null && restoreAmount !== null) {
-      await this.orderHistoryRepository.update(savedHistoryId, { restoreAmount });
+      await this.orderHistoryRepository.update(savedHistoryId, { destroyAmount, restoreAmount });
     }
 
     return { orderDelivery, beforeChange, refundStatus, refundError, destroyAmount, restoreAmount };
@@ -2159,6 +2165,106 @@ export class CustomerServiceService {
     );
   }
 
+  private async calculateSettledDiscardRestoreAmount(
+    orderDelivery: OrderDeliveryEntity,
+    queryRunner: QueryRunner,
+  ): Promise<number> {
+    const mapping = orderDelivery.orderProductMapping;
+    const order = mapping.order;
+    const snapshotAmount = order.settledAmountSnapshot ?? order.settleAmount ?? 0;
+    if (snapshotAmount <= 0) {
+      return 0;
+    }
+
+    const deliveries = await this.getSettlementCompleteDeliveriesForDiscardAllocation(orderDelivery, queryRunner);
+    const deliveryBaseAmounts = deliveries.map((delivery) => ({
+      delivery,
+      baseAmount: calculateSettlementPrice(delivery.orderProductMapping, false, delivery),
+    }));
+    const totalBaseAmount = deliveryBaseAmounts.reduce((sum, entry) => sum + entry.baseAmount, 0);
+    if (totalBaseAmount <= 0) {
+      return 0;
+    }
+
+    const currentBaseAmount =
+      deliveryBaseAmounts.find((entry) => Number(entry.delivery.id) === Number(orderDelivery.id))?.baseAmount ??
+      calculateSettlementPrice(mapping, false, orderDelivery);
+    const alreadyRestoredAmount = await this.getSettledDiscardRestoreAmount(order.id, queryRunner);
+    const remainingAmount = Math.max(0, snapshotAmount - alreadyRestoredAmount);
+    if (deliveryBaseAmounts.length === 1) {
+      return remainingAmount;
+    }
+
+    const allocatedAmount = Math.floor((remainingAmount * currentBaseAmount) / totalBaseAmount);
+    return Math.min(allocatedAmount, remainingAmount);
+  }
+
+  private async getSettlementCompleteDeliveriesForDiscardAllocation(
+    orderDelivery: OrderDeliveryEntity,
+    queryRunner: QueryRunner,
+  ): Promise<OrderDeliveryEntity[]> {
+    const orderDeliveries = orderDelivery.orderProductMapping.orderDeliveries;
+    if (orderDeliveries?.length) {
+      return orderDeliveries.filter((delivery) =>
+        this.isDeliveryIncludedInSettlementSnapshot(delivery, orderDelivery.id),
+      );
+    }
+
+    if (typeof queryRunner.manager.getRepository !== 'function') {
+      return [orderDelivery];
+    }
+
+    const orderId = orderDelivery.orderProductMapping.order.id;
+    return queryRunner.manager
+      .getRepository(OrderDeliveryEntity)
+      .createQueryBuilder('delivery')
+      .innerJoinAndSelect('delivery.orderProductMapping', 'mapping')
+      .leftJoinAndSelect('mapping.product', 'product')
+      .innerJoinAndSelect('mapping.order', 'order')
+      .where('order.id = :orderId', { orderId })
+      .andWhere('delivery.deletedAt IS NULL')
+      .andWhere('delivery.status IN (:...completeStatuses)', {
+        completeStatuses: [IOrderDeliveryStatus.COMPLETE, IOrderDeliveryStatus.COMPLETE_SMS],
+      })
+      .andWhere('(delivery.couponStatus IS NULL OR delivery.couponStatus != :cancelStatus OR delivery.id = :deliveryId)', {
+        cancelStatus: OrderDeliveryCouponStatus.CANCEL,
+        deliveryId: orderDelivery.id,
+      })
+      .getMany();
+  }
+
+  private isDeliveryIncludedInSettlementSnapshot(
+    delivery: OrderDeliveryEntity,
+    currentDeliveryId: number,
+  ): boolean {
+    const isComplete =
+      delivery.status === IOrderDeliveryStatus.COMPLETE || delivery.status === IOrderDeliveryStatus.COMPLETE_SMS;
+    if (!isComplete) {
+      return false;
+    }
+    return delivery.couponStatus !== OrderDeliveryCouponStatus.CANCEL || Number(delivery.id) === Number(currentDeliveryId);
+  }
+
+  private async getSettledDiscardRestoreAmount(orderId: number, queryRunner: QueryRunner): Promise<number> {
+    if (typeof queryRunner.manager.getRepository !== 'function') {
+      return 0;
+    }
+
+    const row = await queryRunner.manager
+      .getRepository(OrderDeliveryRefundEntity)
+      .createQueryBuilder('refund')
+      .innerJoin(OrderDeliveryEntity, 'delivery', 'delivery.id = refund.order_delivery_id')
+      .innerJoin('delivery.orderProductMapping', 'mapping')
+      .select('SUM(refund.refundAmount)', 'totalRestore')
+      .where('mapping.orderId = :orderId', { orderId })
+      .andWhere('refund.sourcePath = :sourcePath', { sourcePath: 'CS_DISCARD' })
+      .andWhere('refund.isSettleComplete = :isSettleComplete', { isSettleComplete: true })
+      .andWhere('refund.restoreType IN (:...restoreTypes)', { restoreTypes: ['BALANCE', 'COMPANY_BALANCE'] })
+      .getRawOne<{ totalRestore?: string | number | null }>();
+
+    return Number(row?.totalRestore) || 0;
+  }
+
   /**
    * 쿠폰 종류(product.type)에 맞는 CS 권한을 반환한다. (getList 분류 기준과 동일)
    * - SSG → CUSTOMER_SSG_COUPON
@@ -2348,11 +2454,14 @@ export class CustomerServiceService {
 
             // 예치금/여신 복구
             const restoreAmount = await this.restoreBalanceOnDiscard(orderDelivery, user, queryRunner, operatorName);
-            const destroyAmount = calculateSettlementPrice(
+            let destroyAmount = calculateSettlementPrice(
               orderDelivery.orderProductMapping,
               orderDelivery.orderProductMapping.order.cardSurchargeApplied,
               orderDelivery,
             );
+            if (restoreAmount !== null && orderDelivery.orderProductMapping.order.isSettleComplete) {
+              destroyAmount = restoreAmount;
+            }
 
             // CS 히스토리 저장
             const history = this.orderHistoryRepository.create({

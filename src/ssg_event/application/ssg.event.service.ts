@@ -35,7 +35,15 @@ import { ActivityLogService } from '../../activity_log/application/activity.log.
 import { ActivityLogResult } from '../../activity_log/interface/activity.log.result';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { Transactional } from 'typeorm-transactional';
+import {
+  evaluateSsgEventSignals,
+  SsgBalanceCheckResult,
+  SsgEventSignalResult,
+} from './ssg.balance.guard';
 import { ulid } from 'ulid';
+
+// 상세조회 임계경로에서 SSG 외부 API(getAmount) 지연이 페이지 로딩을 묶지 않도록 하는 가드 타임아웃
+const SSG_BALANCE_CHECK_TIMEOUT_MS = 3000;
 
 @Injectable()
 export class SsgEventService {
@@ -802,6 +810,118 @@ export class SsgEventService {
 
   async confirmEventBalance(orderId: number): Promise<void> {
     await this.amountHistoryRepository.update({ orderId, isTemporary: true }, { isTemporary: false });
+  }
+
+  async getOpenTempDeductionByEvent(ssgEventId: number): Promise<number> {
+    // R = 검토중 미확정 '선차감'(음수)만. 충전 history는 isTemporary 기본 true + 양수라
+    // amount<0 필터 없으면 R에 섞여 rho 를 왜곡한다.
+    const row = await this.amountHistoryRepository
+      .createQueryBuilder('h')
+      .select('COALESCE(SUM(h.amount), 0)', 'sum')
+      .where('h.ssgEventId = :ssgEventId', { ssgEventId })
+      .andWhere('h.isTemporary = :t', { t: true })
+      .andWhere('h.amount < 0')
+      .getRawOne<{ sum: string }>();
+    return Math.abs(Number(row?.sum ?? 0));
+  }
+
+  /**
+   * 발송확정 전 SSG 주문의 행사잔액 이상 탐지(읽기전용).
+   * 이 주문이 발송요청 당시 차감한(미확정) 이력을 행사별로 모아 A_E 를 구하고,
+   * 행사별 신세계 live 집계(GetSsgAmount.do)·우리 잔액·R 을 모아 신호를 판정한다.
+   * SSG 주문 차감이력이 없으면 null. SSG live 조회 실패는 lookupFailed=true 로 보고하고
+   * 예외를 전파하지 않는다(상세조회를 깨지 않기 위함).
+   */
+  async getSsgBalanceCheckForOrder(orderId: number): Promise<SsgBalanceCheckResult | null> {
+    // 1. 이 주문의 미확정 차감 이력을 행사별로 그룹화 → A_E (발송요청 당시 차감 기준, live 정가 아님)
+    const groups = await this.amountHistoryRepository
+      .createQueryBuilder('h')
+      .select('h.ssgEventId', 'ssgEventId')
+      .addSelect('COALESCE(SUM(h.amount), 0)', 'sum')
+      .where('h.orderId = :orderId', { orderId })
+      .andWhere('h.isTemporary = :t', { t: true })
+      .andWhere('h.amount < 0')
+      .groupBy('h.ssgEventId')
+      .getRawMany<{ ssgEventId: number; sum: string }>();
+
+    if (groups.length === 0) {
+      return null;
+    }
+
+    // 2. 행사별 판정을 병렬 실행(임계경로 차단 최소화). 다행사 주문이어도 외부 API 직렬 대기 안 함.
+    const results = await Promise.all(groups.map((group) => this.evaluateEventGroup(group)));
+
+    const events = results.flatMap((r) => (r.event ? [r.event] : []));
+    const lookupFailed = results.some((r) => r.lookupFailed);
+
+    return {
+      hasWarning: events.some((e) => e.hasWarning),
+      lookupFailed,
+      events,
+    };
+  }
+
+  /**
+   * 행사 1건 판정. SSG live 조회 실패/타임아웃은 lookupFailed 로 보고하고 예외를 전파하지 않는다.
+   * 차감이력은 있는데 행사가 사라진 내부 불일치도 누락을 숨기지 않도록 lookupFailed 로 보고한다.
+   */
+  private async evaluateEventGroup(group: {
+    ssgEventId: number;
+    sum: string;
+  }): Promise<{ event: SsgEventSignalResult | null; lookupFailed: boolean }> {
+    // 임계경로 완전차단 방지(#1 취지). 외부 API 타임아웃뿐 아니라 DB 조회 실패까지 모두
+    // lookupFailed 로 흡수해 상세조회가 깨지지 않게 한다.
+    try {
+      const { ssgEventId } = group;
+      const orderAmount = Math.abs(Number(group.sum ?? 0));
+
+      const event = await this.ssgEventRepository.findOne({ where: { id: ssgEventId } });
+      if (!event) {
+        return { event: null, lookupFailed: true };
+      }
+
+      const amount = await this.withTimeout(
+        this.ssgIssue.getAmount({ eventNo: event.no, eventSeq: event.order }),
+        SSG_BALANCE_CHECK_TIMEOUT_MS,
+      );
+
+      const openTempDeduction = await this.getOpenTempDeductionByEvent(ssgEventId);
+
+      return {
+        event: evaluateSsgEventSignals({
+          ssgEventId,
+          eventName: event.name,
+          eventBalance: event.eventBalance,
+          eventPrice: event.eventPrice,
+          successAmt: amount.successAmt,
+          failAmt: amount.failAmt,
+          pendingAmt: amount.pendingAmt,
+          openTempDeduction,
+          orderAmount,
+          tol: 0,
+        }),
+        lookupFailed: false,
+      };
+    } catch {
+      return { event: null, lookupFailed: true };
+    }
+  }
+
+  private withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('SSG getAmount timeout')), ms);
+      timer.unref?.();
+      p.then(
+        (v) => {
+          clearTimeout(timer);
+          resolve(v);
+        },
+        (e) => {
+          clearTimeout(timer);
+          reject(e);
+        },
+      );
+    });
   }
 
   /**

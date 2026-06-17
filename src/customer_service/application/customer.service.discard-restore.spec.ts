@@ -1,6 +1,9 @@
 import { CustomerServiceService } from './customer.service.service';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
+import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
 import { OrderDeliveryAttemptType } from '../../entity/order.delivery.attempt.entity';
+import { applyCardSurcharge } from '../../order/domain/order.fee.calculator';
+import { IProductType } from '../../product/interface/product.type';
 
 /**
  * PR-A — refunded-proxy reader 정규화.
@@ -178,6 +181,139 @@ describe('CustomerServiceService.restoreBalanceOnDiscard — refunded-proxy read
     expect(builder.setParameters).toHaveBeenCalledWith({ amount: 7000 });
   });
 
+  it('정산완료 카드할증 주문의 폐기 복구 ledger는 배송별 카드할증이 아니라 snapshot 배분 금액을 기록한다', async () => {
+    const claim = jest.fn().mockResolvedValue(undefined);
+    const sut: any = makeSut(false, claim);
+    const user = { id: 5, email: 'buyer@test.local', balance: 0, company: null };
+    const builder: any = {
+      update: jest.fn(() => builder),
+      set: jest.fn(() => builder),
+      where: jest.fn(() => builder),
+      setParameters: jest.fn(() => builder),
+      execute: jest.fn().mockResolvedValue({ affected: 1 }),
+    };
+    const queryRunner = {
+      manager: {
+        findOne: jest.fn().mockResolvedValue(user),
+        createQueryBuilder: jest.fn(() => builder),
+        save: jest.fn().mockResolvedValue(undefined),
+      },
+    } as any;
+    sut.activityLogService = { createLog: jest.fn().mockResolvedValue(undefined) };
+    sut.cryptoCipher = { safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01012345678') };
+
+    const orderDelivery = buildOrderDelivery(IOrderDeliveryStatus.COMPLETE);
+    const order = orderDelivery.orderProductMapping.order;
+    order.isSettleComplete = true;
+    order.cardSurchargeApplied = true;
+    order.settledAmountSnapshot = applyCardSurcharge(9999 + 9999, true);
+
+    orderDelivery.orderProductMapping.product.price = 9999;
+    orderDelivery.orderProductMapping.amount = 2;
+    orderDelivery.orderProductMapping.orderDeliveries = [
+      orderDelivery,
+      {
+        id: 5002,
+        status: IOrderDeliveryStatus.COMPLETE_SMS,
+        couponStatus: null,
+        settleFee: null,
+        settlePriceAdjustment: null,
+        orderProductMapping: orderDelivery.orderProductMapping,
+      },
+    ];
+
+    await sut.restoreBalanceOnDiscard(orderDelivery, operator, queryRunner, 'operator');
+
+    const expectedAllocatedAmount = Math.floor(order.settledAmountSnapshot / 2);
+    expect(claim).toHaveBeenCalledWith(
+      queryRunner.manager,
+      expect.objectContaining({
+        orderDeliveryId: 5001,
+        refundAmount: expectedAllocatedAmount,
+        isSettleComplete: true,
+        sourcePath: 'CS_DISCARD',
+      }),
+    );
+    expect(builder.setParameters).toHaveBeenCalledWith({ amount: expectedAllocatedAmount });
+  });
+
+  it('정산완료 카드할증 주문의 순차 폐기는 남은 snapshot을 남은 배송 base 비율로 배분한다', async () => {
+    const claim = jest.fn().mockResolvedValue(undefined);
+    const sut: any = makeSut(false, claim);
+    const user = { id: 5, email: 'buyer@test.local', balance: 0, company: null };
+    const builder: any = {
+      update: jest.fn(() => builder),
+      set: jest.fn(() => builder),
+      where: jest.fn(() => builder),
+      setParameters: jest.fn(() => builder),
+      execute: jest.fn().mockResolvedValue({ affected: 1 }),
+    };
+    const refundQb: any = {
+      createQueryBuilder: jest.fn(() => refundQb),
+      innerJoin: jest.fn(() => refundQb),
+      select: jest.fn(() => refundQb),
+      where: jest.fn(() => refundQb),
+      andWhere: jest.fn(() => refundQb),
+      getRawOne: jest.fn().mockResolvedValue({ totalRestore: 10300 }),
+    };
+    const queryRunner = {
+      manager: {
+        findOne: jest.fn().mockResolvedValue(user),
+        createQueryBuilder: jest.fn(() => builder),
+        getRepository: jest.fn(() => refundQb),
+        save: jest.fn().mockResolvedValue(undefined),
+      },
+    } as any;
+    sut.activityLogService = { createLog: jest.fn().mockResolvedValue(undefined) };
+    sut.cryptoCipher = { safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01012345678') };
+
+    const order = {
+      id: 700,
+      clientUserId: null,
+      userId: 5,
+      isSettleComplete: true,
+      isSettleBalance: true,
+      cardSurchargeApplied: true,
+      settledAmountSnapshot: applyCardSurcharge(10000 + 20000 + 70000, true),
+    };
+    const makeDelivery = (id: number, baseAmount: number, couponStatus: any) => {
+      const mapping = {
+        fee: null,
+        priceAdjustment: null,
+        product: { price: baseAmount },
+        amount: 1,
+        order,
+      };
+      return {
+        id,
+        status: IOrderDeliveryStatus.COMPLETE,
+        couponStatus,
+        deliveryTarget: 'enc',
+        settleFee: null,
+        settlePriceAdjustment: null,
+        orderProductMapping: mapping,
+      } as any;
+    };
+    const firstDiscarded = makeDelivery(5001, 10000, 'CANCEL');
+    const current = makeDelivery(5002, 20000, 'CANCEL');
+    const remaining = makeDelivery(5003, 70000, null);
+    current.orderProductMapping.orderDeliveries = [firstDiscarded, current, remaining];
+
+    await sut.restoreBalanceOnDiscard(current, operator, queryRunner, 'operator');
+
+    const expectedRestoreAmount = 20600;
+    expect(claim).toHaveBeenCalledWith(
+      queryRunner.manager,
+      expect.objectContaining({
+        orderDeliveryId: 5002,
+        refundAmount: expectedRestoreAmount,
+        isSettleComplete: true,
+        sourcePath: 'CS_DISCARD',
+      }),
+    );
+    expect(builder.setParameters).toHaveBeenCalledWith({ amount: expectedRestoreAmount });
+  });
+
   it('wallet 정산완료 폐기 환불 retry는 wallet alreadyRefunded 결과로 legacy mirror를 다시 갱신하지 않는다', async () => {
     const claim = jest.fn().mockResolvedValue(undefined);
     const sut: any = makeSut(false, claim);
@@ -218,5 +354,66 @@ describe('CustomerServiceService.restoreBalanceOnDiscard — refunded-proxy read
 
     expect(claim).not.toHaveBeenCalled();
     expect(queryRunner.manager.createQueryBuilder).not.toHaveBeenCalled();
+  });
+
+  it('정산완료 폐기 이력은 Tx2 복구액 확정 후 destroyAmount와 restoreAmount를 같은 snapshot 배분액으로 보강한다', async () => {
+    const sut: any = Object.create(CustomerServiceService.prototype);
+    const orderDelivery = buildOrderDelivery(IOrderDeliveryStatus.COMPLETE);
+    orderDelivery.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
+    orderDelivery.orderProductMapping.product.type = IProductType.GENERAL;
+    orderDelivery.orderProductMapping.product.partnerCompany = null;
+    orderDelivery.orderProductMapping.product.brand = {};
+    orderDelivery.orderProductMapping.order.isSettleComplete = true;
+    orderDelivery.orderProductMapping.order.cardSurchargeApplied = true;
+    const queryBuilder: any = {
+      innerJoinAndSelect: jest.fn(() => queryBuilder),
+      leftJoinAndSelect: jest.fn(() => queryBuilder),
+      where: jest.fn(() => queryBuilder),
+      getOne: jest.fn().mockResolvedValue(orderDelivery),
+    };
+    const txUpdateBuilder: any = {
+      update: jest.fn(() => txUpdateBuilder),
+      set: jest.fn(() => txUpdateBuilder),
+      where: jest.fn(() => txUpdateBuilder),
+      execute: jest.fn().mockResolvedValue({ affected: 1 }),
+    };
+    const tx1 = {
+      connect: jest.fn().mockResolvedValue(undefined),
+      startTransaction: jest.fn().mockResolvedValue(undefined),
+      commitTransaction: jest.fn().mockResolvedValue(undefined),
+      rollbackTransaction: jest.fn().mockResolvedValue(undefined),
+      release: jest.fn().mockResolvedValue(undefined),
+      manager: {
+        createQueryBuilder: jest.fn(() => txUpdateBuilder),
+        save: jest.fn().mockResolvedValue({ id: 901 }),
+      },
+    };
+    const tx2 = {
+      connect: jest.fn().mockResolvedValue(undefined),
+      startTransaction: jest.fn().mockResolvedValue(undefined),
+      commitTransaction: jest.fn().mockResolvedValue(undefined),
+      rollbackTransaction: jest.fn().mockResolvedValue(undefined),
+      release: jest.fn().mockResolvedValue(undefined),
+    };
+    sut.orderDeliveryRepository = { createQueryBuilder: jest.fn(() => queryBuilder) };
+    sut.orderHistoryRepository = {
+      create: jest.fn((input) => input),
+      update: jest.fn().mockResolvedValue(undefined),
+    };
+    sut.dataSource = { createQueryRunner: jest.fn().mockReturnValueOnce(tx1).mockReturnValueOnce(tx2) };
+    sut.authService = { authorityValidator: jest.fn().mockResolvedValue(undefined) };
+    sut.restoreBalanceOnDiscard = jest.fn().mockResolvedValue(10295);
+
+    await sut.execDiscard(
+      operator,
+      5001,
+      OrderDeliveryCouponStatus.CANCEL,
+      { type: '폐기', content: '폐기' },
+    );
+
+    expect(sut.orderHistoryRepository.update).toHaveBeenCalledWith(901, {
+      destroyAmount: 10295,
+      restoreAmount: 10295,
+    });
   });
 });

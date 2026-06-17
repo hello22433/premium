@@ -385,7 +385,8 @@ export class SettleController {
   })
   // =====================================
   @Get('settle/user/:orderId')
-  getUserDetail(@Param() getParam: SettleGetUserDetailReqParamDto) {
+  async getUserDetail(@User() user: ILoginUserInfo, @Param() getParam: SettleGetUserDetailReqParamDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.SETTLE_USER);
     return this.settleService.getUserDetail(getParam);
   }
 
@@ -399,7 +400,8 @@ export class SettleController {
   })
   // =====================================
   @Get('settle/user-multiple')
-  getUserDetailMultiple(@Query() getQuery: SettleGetUserDetailMultipleReqQueryDto) {
+  async getUserDetailMultiple(@User() user: ILoginUserInfo, @Query() getQuery: SettleGetUserDetailMultipleReqQueryDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.SETTLE_USER);
     return this.settleService.getUserDetailMultiple(getQuery);
   }
 
@@ -413,7 +415,8 @@ export class SettleController {
   })
   // =====================================
   @Post('settle/user-multiple')
-  postUserDetailMultiple(@Body() body: SettlePostUserDetailMultipleReqBodyDto) {
+  async postUserDetailMultiple(@User() user: ILoginUserInfo, @Body() body: SettlePostUserDetailMultipleReqBodyDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.SETTLE_USER);
     return this.settleService.getUserDetailMultipleByBody(body);
   }
 
@@ -435,6 +438,7 @@ export class SettleController {
     @Res()
     res: Response,
   ) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.SETTLE_USER);
     try {
       const ipAddress = req.ip || req.headers['x-forwarded-for']?.toString() || '';
       const userAgent = req.headers['user-agent'] || '';
