@@ -212,3 +212,111 @@ describe('SsgEventService.getSsgBalanceCheckForOrder', () => {
     expect(r!.lookupFailed).toBe(false);
   });
 });
+
+// ─────────────────────────────────────────────────────────────
+// #1 보강: 다중 행사 병렬 실행 + getAmount timeout 후 응답 반환
+// ─────────────────────────────────────────────────────────────
+describe('SsgEventService.getSsgBalanceCheckForOrder 병렬/타임아웃', () => {
+  /**
+   * getAmount 를 외부에서 제어 가능한 deferred 로 만든 service.
+   * findOne 은 id 별 행사를 반환, R 쿼리는 0 으로 고정.
+   */
+  const buildControllable = (
+    historyGroups: { ssgEventId: number; sum: string }[],
+    getAmountImpl: jest.Mock,
+    events: Record<number, SsgEventEntity | null>,
+  ) => {
+    const groupQb = {
+      select: jest.fn().mockReturnThis(),
+      addSelect: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      groupBy: jest.fn().mockReturnThis(),
+      getRawMany: jest.fn().mockResolvedValue(historyGroups),
+    };
+    const rQb = {
+      select: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      getRawOne: jest.fn().mockResolvedValue({ sum: '0' }),
+    };
+    let callCount = 0;
+    const amountHistoryRepository = {
+      createQueryBuilder: jest.fn().mockImplementation(() => {
+        callCount++;
+        return callCount === 1 ? groupQb : rQb;
+      }),
+    };
+    const ssgEventRepository = {
+      findOne: jest.fn().mockImplementation(({ where: { id } }: any) => Promise.resolve(events[id] ?? null)),
+    };
+    const ssgIssue = { getAmount: getAmountImpl };
+
+    const service = new SsgEventService(
+      ssgEventRepository as any,
+      amountHistoryRepository as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      ssgIssue as any,
+    );
+    return { service, getAmountImpl };
+  };
+
+  const evt = (id: number, no: string, order: number): SsgEventEntity =>
+    ({ id, no, order, name: `행사${id}`, eventBalance: 1000, eventPrice: 1000 } as SsgEventEntity);
+
+  const flush = () => new Promise<void>((r) => setImmediate(r));
+
+  it('다중 행사를 병렬 호출한다(직렬 대기 아님)', async () => {
+    // getAmount 를 deferred 로: 둘 다 미해결인 상태에서 2회 모두 호출됐는지로 병렬 입증
+    const resolvers: ((v: any) => void)[] = [];
+    const getAmount = jest.fn().mockImplementation(
+      () => new Promise((res) => resolvers.push(res)),
+    );
+    const { service } = buildControllable(
+      [
+        { ssgEventId: 10, sum: '-1' },
+        { ssgEventId: 20, sum: '-1' },
+      ],
+      getAmount,
+      { 10: evt(10, 'E10', 1), 20: evt(20, 'E20', 2) },
+    );
+
+    const p = service.getSsgBalanceCheckForOrder(123);
+    await flush(); // findOne(microtask) 통과 후 두 getAmount 디스패치
+
+    // 직렬이면 첫 getAmount 가 resolve 되기 전엔 두번째가 안 불린다 → 2회면 병렬
+    expect(getAmount).toHaveBeenCalledTimes(2);
+
+    resolvers.forEach((res) => res({ tryAmt: 0, successAmt: 0, failAmt: 0, pendingAmt: 0 }));
+    const r = await p;
+    expect(r!.events).toHaveLength(2);
+    expect(r!.lookupFailed).toBe(false);
+  });
+
+  it('getAmount 가 timeout 을 넘기면 lookupFailed=true 로 상세 응답을 반환(무한 대기 아님)', async () => {
+    jest.useFakeTimers();
+    try {
+      const getAmount = jest.fn().mockImplementation(() => new Promise(() => {})); // 영원히 미해결
+      const { service } = buildControllable(
+        [{ ssgEventId: 10, sum: '-1' }],
+        getAmount,
+        { 10: evt(10, 'E10', 1) },
+      );
+
+      const p = service.getSsgBalanceCheckForOrder(123);
+      await jest.advanceTimersByTimeAsync(3001); // SSG_BALANCE_CHECK_TIMEOUT_MS 초과
+      const r = await p;
+
+      expect(r!.lookupFailed).toBe(true);
+      expect(r!.events).toHaveLength(0);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+});

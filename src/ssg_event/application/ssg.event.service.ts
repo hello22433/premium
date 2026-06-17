@@ -877,41 +877,42 @@ export class SsgEventService {
     ssgEventId: number;
     sum: string;
   }): Promise<{ event: SsgEventSignalResult | null; lookupFailed: boolean }> {
-    const ssgEventId = Number(group.ssgEventId);
-    const orderAmount = Math.abs(Number(group.sum ?? 0));
-
-    const event = await this.ssgEventRepository.findOne({ where: { id: ssgEventId } });
-    if (!event) {
-      return { event: null, lookupFailed: true };
-    }
-
-    let amount: ISsgAmountResult;
+    // 임계경로 완전차단 방지(#1 취지). 외부 API 타임아웃뿐 아니라 DB 조회 실패까지 모두
+    // lookupFailed 로 흡수해 상세조회가 깨지지 않게 한다.
     try {
-      amount = await this.withTimeout(
+      const ssgEventId = Number(group.ssgEventId);
+      const orderAmount = Math.abs(Number(group.sum ?? 0));
+
+      const event = await this.ssgEventRepository.findOne({ where: { id: ssgEventId } });
+      if (!event) {
+        return { event: null, lookupFailed: true };
+      }
+
+      const amount = await this.withTimeout(
         this.ssgIssue.getAmount({ eventNo: event.no, eventSeq: event.order }),
         SSG_BALANCE_CHECK_TIMEOUT_MS,
       );
+
+      const openTempDeduction = await this.getOpenTempDeductionByEvent(ssgEventId);
+
+      return {
+        event: evaluateSsgEventSignals({
+          ssgEventId,
+          eventName: event.name,
+          eventBalance: event.eventBalance,
+          eventPrice: event.eventPrice,
+          successAmt: amount.successAmt,
+          failAmt: amount.failAmt,
+          pendingAmt: amount.pendingAmt,
+          openTempDeduction,
+          orderAmount,
+          tol: 0,
+        }),
+        lookupFailed: false,
+      };
     } catch {
       return { event: null, lookupFailed: true };
     }
-
-    const openTempDeduction = await this.getOpenTempDeductionByEvent(ssgEventId);
-
-    return {
-      event: evaluateSsgEventSignals({
-        ssgEventId,
-        eventName: event.name,
-        eventBalance: event.eventBalance,
-        eventPrice: event.eventPrice,
-        successAmt: amount.successAmt,
-        failAmt: amount.failAmt,
-        pendingAmt: amount.pendingAmt,
-        openTempDeduction,
-        orderAmount,
-        tol: 0,
-      }),
-      lookupFailed: false,
-    };
   }
 
   private withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
