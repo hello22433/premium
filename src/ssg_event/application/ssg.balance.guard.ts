@@ -11,6 +11,12 @@ export interface SsgEventSignalInput {
   tol: number; // 기본 0
 }
 
+export interface SsgBalanceCheckResult {
+  hasWarning: boolean;
+  lookupFailed: boolean;
+  events: SsgEventSignalResult[];
+}
+
 export interface SsgEventSignalResult {
   ssgEventId: number;
   eventName: string;

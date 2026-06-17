@@ -34,6 +34,11 @@ import { ActivityLogService } from '../../activity_log/application/activity.log.
 import { ActivityLogResult } from '../../activity_log/interface/activity.log.result';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { Transactional } from 'typeorm-transactional';
+import {
+  evaluateSsgEventSignals,
+  SsgBalanceCheckResult,
+  SsgEventSignalResult,
+} from './ssg.balance.guard';
 
 @Injectable()
 export class SsgEventService {
@@ -798,6 +803,87 @@ export class SsgEventService {
 
   async confirmEventBalance(orderId: number): Promise<void> {
     await this.amountHistoryRepository.update({ orderId, isTemporary: true }, { isTemporary: false });
+  }
+
+  async getOpenTempDeductionByEvent(ssgEventId: number): Promise<number> {
+    // R = 검토중 미확정 '선차감'(음수)만. 충전 history는 isTemporary 기본 true + 양수라
+    // amount<0 필터 없으면 R에 섞여 rho 를 왜곡한다.
+    const row = await this.amountHistoryRepository
+      .createQueryBuilder('h')
+      .select('COALESCE(SUM(h.amount), 0)', 'sum')
+      .where('h.ssgEventId = :ssgEventId', { ssgEventId })
+      .andWhere('h.isTemporary = :t', { t: true })
+      .andWhere('h.amount < 0')
+      .getRawOne<{ sum: string }>();
+    return Math.abs(Number(row?.sum ?? 0));
+  }
+
+  /**
+   * 발송확정 전 SSG 주문의 행사잔액 이상 탐지(읽기전용).
+   * 이 주문이 발송요청 당시 차감한(미확정) 이력을 행사별로 모아 A_E 를 구하고,
+   * 행사별 신세계 live 집계(GetSsgAmount.do)·우리 잔액·R 을 모아 신호를 판정한다.
+   * SSG 주문 차감이력이 없으면 null. SSG live 조회 실패는 lookupFailed=true 로 보고하고
+   * 예외를 전파하지 않는다(상세조회를 깨지 않기 위함).
+   */
+  async getSsgBalanceCheckForOrder(orderId: number): Promise<SsgBalanceCheckResult | null> {
+    // 1. 이 주문의 미확정 차감 이력을 행사별로 그룹화 → A_E (발송요청 당시 차감 기준, live 정가 아님)
+    const groups = await this.amountHistoryRepository
+      .createQueryBuilder('h')
+      .select('h.ssgEventId', 'ssgEventId')
+      .addSelect('COALESCE(SUM(h.amount), 0)', 'sum')
+      .where('h.orderId = :orderId', { orderId })
+      .andWhere('h.isTemporary = :t', { t: true })
+      .andWhere('h.amount < 0')
+      .groupBy('h.ssgEventId')
+      .getRawMany<{ ssgEventId: number; sum: string }>();
+
+    if (groups.length === 0) {
+      return null;
+    }
+
+    const events: SsgEventSignalResult[] = [];
+    let lookupFailed = false;
+
+    for (const group of groups) {
+      const ssgEventId = Number(group.ssgEventId);
+      const orderAmount = Math.abs(Number(group.sum ?? 0));
+
+      const event = await this.ssgEventRepository.findOne({ where: { id: ssgEventId } });
+      if (!event) {
+        continue;
+      }
+
+      let amount: ISsgAmountResult;
+      try {
+        amount = await this.ssgIssue.getAmount({ eventNo: event.no, eventSeq: event.order });
+      } catch {
+        lookupFailed = true;
+        continue;
+      }
+
+      const openTempDeduction = await this.getOpenTempDeductionByEvent(ssgEventId);
+
+      events.push(
+        evaluateSsgEventSignals({
+          ssgEventId,
+          eventName: event.name,
+          eventBalance: event.eventBalance,
+          eventPrice: event.eventPrice,
+          successAmt: amount.successAmt,
+          failAmt: amount.failAmt,
+          pendingAmt: amount.pendingAmt,
+          openTempDeduction,
+          orderAmount,
+          tol: 0,
+        }),
+      );
+    }
+
+    return {
+      hasWarning: events.some((e) => e.hasWarning),
+      lookupFailed,
+      events,
+    };
   }
 
   /**

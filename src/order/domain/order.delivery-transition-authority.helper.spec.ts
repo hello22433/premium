@@ -2,9 +2,11 @@ import { IUserAuthority } from '../../user/interface/user.authority';
 import { IUserStatus } from '../../user/interface/user.status';
 import { UserAuthSubEnum } from '../../user_management/domain/user.auth.enum';
 import { IOrderType } from '../interface/order.type';
+import { IOrderStatus } from '../interface/order.status';
 import {
   canForceConfirmDelivery,
   canTransitionDelivery,
+  shouldExposeSsgBalanceCheck,
 } from './order.delivery-transition-authority.helper';
 
 describe('order delivery transition authority', () => {
@@ -67,6 +69,55 @@ describe('order delivery transition authority', () => {
 
     it('비활성 계정의 강제확정을 차단한다', () => {
       expect(canForceConfirmDelivery({ ...operationAdmin, status: IUserStatus.NOT_USED })).toBe(false);
+    });
+  });
+
+  describe('shouldExposeSsgBalanceCheck', () => {
+    const ssgReviewOrder = {
+      userId: 10,
+      clientUserId: null,
+      operationUserId: null,
+      type: IOrderType.SSG,
+      status: IOrderStatus.REVIEW_COMPLETE,
+    };
+
+    it('SSG + 검토완료 + 발송확정 권한자면 노출(true)', () => {
+      expect(shouldExposeSsgBalanceCheck(operationAdmin, ssgReviewOrder)).toBe(true);
+      expect(
+        shouldExposeSsgBalanceCheck(
+          { ...operationAdmin, id: 99, authority: IUserAuthority.SUPER_ADMIN },
+          ssgReviewOrder,
+        ),
+      ).toBe(true);
+    });
+
+    it('고객사(CORPORATE_ADMIN)에게는 노출 안 함(false) — 민감 재무데이터 방어', () => {
+      expect(
+        shouldExposeSsgBalanceCheck(
+          { ...operationAdmin, authority: IUserAuthority.CORPORATE_ADMIN },
+          ssgReviewOrder,
+        ),
+      ).toBe(false);
+    });
+
+    it('대행주문 비소유 운영자는 노출 안 함(false)', () => {
+      const agencyOrder = { ...ssgReviewOrder, clientUserId: 30, operationUserId: 999 };
+      expect(shouldExposeSsgBalanceCheck({ ...operationAdmin, id: 11 }, agencyOrder)).toBe(false);
+    });
+
+    it('비-SSG 주문은 노출 안 함(false)', () => {
+      expect(
+        shouldExposeSsgBalanceCheck(operationAdmin, { ...ssgReviewOrder, type: IOrderType.GENERAL }),
+      ).toBe(false);
+    });
+
+    it('발송확정 전(REVIEW_COMPLETE)이 아니면 노출 안 함(false)', () => {
+      expect(
+        shouldExposeSsgBalanceCheck(operationAdmin, {
+          ...ssgReviewOrder,
+          status: IOrderStatus.DELIVERY_CONFIRMED,
+        }),
+      ).toBe(false);
     });
   });
 });
