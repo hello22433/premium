@@ -23,6 +23,7 @@ import { format } from 'date-fns';
 import { SsgEventAmountHistoryEntity } from '../../entity/ssg.event.amount.history.entity';
 import { SsgEventRecoveryLogEntity } from '../../entity/ssg.event.recovery.log.entity';
 import { SsgResendDeductRecoveryLogEntity } from '../../entity/ssg.resend.deduct.recovery.log.entity';
+import { SsgResendDeductPendingEntity } from '../../entity/ssg.resend.deduct.pending.entity';
 import { OrderDeliveryRefundEntity } from '../../entity/order.delivery.refund.entity';
 import { OrderProductMappingEntity } from '../../entity/order.product.mapping.entity';
 import { IOrderType } from '../../order/interface/order.type';
@@ -39,6 +40,7 @@ import {
   SsgBalanceCheckResult,
   SsgEventSignalResult,
 } from './ssg.balance.guard';
+import { ulid } from 'ulid';
 
 @Injectable()
 export class SsgEventService {
@@ -55,6 +57,8 @@ export class SsgEventService {
     private readonly recoveryLogRepository: Repository<SsgEventRecoveryLogEntity>,
     @InjectRepository(SsgResendDeductRecoveryLogEntity)
     private readonly resendDeductRecoveryRepository: Repository<SsgResendDeductRecoveryLogEntity>,
+    @InjectRepository(SsgResendDeductPendingEntity)
+    private readonly resendDeductPendingRepository: Repository<SsgResendDeductPendingEntity>,
     @InjectRepository(OrderDeliveryRefundEntity)
     private readonly refundLedgerRepository: Repository<OrderDeliveryRefundEntity>,
     private readonly activityLogService: ActivityLogService,
@@ -1066,5 +1070,73 @@ export class SsgEventService {
     ssgEvent.eventBalance = newBalance;
     await this.amountHistoryRepository.save(chargeHistory);
     await this.ssgEventRepository.save(ssgEvent);
+  }
+
+  /**
+   * 재발급 선차감 + durable pending INSERT 를 **한 트랜잭션**으로 원자 처리 (crash window W1 차단).
+   *
+   * 모든 재발급 선차감 경로(배치 재발송 / CS 폐기후신규)는 deductEventBalance 를 직접 호출하지 말고
+   * 반드시 이 메서드만 사용한다. 선차감만 커밋되고 pending 이 안 남는 구간이 존재하면 크래시 시 leak 복구 단서가 사라진다.
+   *
+   * @returns resendDeductionId — 이후 markReissueIssueAttempted / resolveReissuePending /
+   *   refundResendEventDeduction 의 멱등키.
+   */
+  @Transactional()
+  async deductForReissueWithPending(input: {
+    ssgEventId: number;
+    amount: number;
+    orderId: number;
+    purpose: 'BATCH_RESEND' | 'CS_REISSUE';
+    issueOrderDeliveryId: number | null;
+  }): Promise<{ resendDeductionId: string }> {
+    // 차감은 정규 deductEventBalance(@Transactional REQUIRED) 재사용 — 본 메서드 tx 에 합류해 원자성 유지.
+    // 락/잔액검증/이력기록의 단일 출처(중복 구현 drift 방지). isTemporary=false(즉시 확정 차감).
+    await this.deductEventBalance(input.ssgEventId, input.amount, input.orderId, false);
+
+    const resendDeductionId = ulid();
+    await this.resendDeductPendingRepository.save(
+      this.resendDeductPendingRepository.create({
+        resendDeductionId,
+        ssgEventId: input.ssgEventId,
+        orderId: input.orderId,
+        amount: input.amount,
+        purpose: input.purpose,
+        issueOrderDeliveryId: input.issueOrderDeliveryId,
+      }),
+    );
+
+    return { resendDeductionId };
+  }
+
+  /**
+   * issue() 직전 호출 — pending 에 실제 issue 대상 delivery id 와 시도 시각을 기록한다.
+   * issue_order_delivery_id 는 최초 1회만 고정(COALESCE) — 이후 재호출에도 안전.
+   * 이 마킹이 있어야 sweep 이 W1(미시도 → 직접 역복원)과 issue 시도(state 기준 확정)를 구분한다.
+   */
+  async markReissueIssueAttempted(resendDeductionId: string, issueOrderDeliveryId: number): Promise<void> {
+    await this.resendDeductPendingRepository
+      .createQueryBuilder()
+      .update(SsgResendDeductPendingEntity)
+      .set({
+        issueOrderDeliveryId: () => `COALESCE(issue_order_delivery_id, ${issueOrderDeliveryId})`,
+        issueAttemptedAt: () => 'NOW(6)',
+      })
+      .where('resend_deduction_id = :rid', { rid: resendDeductionId })
+      .andWhere('resolved_at IS NULL')
+      .execute();
+  }
+
+  /**
+   * 재발급 선차감 pending 해소(KEPT=차감 유지 / REVERSED=역복원). resolved_at IS NULL 일 때만 1회.
+   * 해소된 row 는 sweep 후보에서 제외된다.
+   */
+  async resolveReissuePending(resendDeductionId: string, resolution: 'KEPT' | 'REVERSED'): Promise<void> {
+    await this.resendDeductPendingRepository
+      .createQueryBuilder()
+      .update(SsgResendDeductPendingEntity)
+      .set({ resolvedAt: () => 'NOW(6)', resolution })
+      .where('resend_deduction_id = :rid', { rid: resendDeductionId })
+      .andWhere('resolved_at IS NULL')
+      .execute();
   }
 }

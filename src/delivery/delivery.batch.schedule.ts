@@ -2,6 +2,7 @@
 
 import { DeliveryBatchService } from './application/delivery.batch.service';
 import { SsgRecoverySweepService } from './application/ssg-recovery-sweep.service';
+import { SsgResendDeductRecoveryService } from './application/ssg-resend-deduct-recovery.service';
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 
@@ -17,6 +18,7 @@ export class DeliveryBatchSchedule {
   constructor(
     private deliveryBatchService: DeliveryBatchService,
     private ssgRecoverySweepService: SsgRecoverySweepService,
+    private ssgResendDeductRecoveryService: SsgResendDeductRecoveryService,
   ) {}
 
   // 부팅 stale claim 해제는 main.ts(listen() 전)에서만 수행한다. lifecycle 훅은 migration
@@ -30,6 +32,7 @@ export class DeliveryBatchSchedule {
   private statusUpdateStartedAt: number | null = null;
   private encourageStartedAt: number | null = null;
   private ssgRecoverySweepStartedAt: number | null = null;
+  private resendDeductSweepStartedAt: number | null = null;
 
   /**
    * 실행 중 플래그를 체크한다. 진행 중이면 true 반환(skip).
@@ -141,6 +144,24 @@ export class DeliveryBatchSchedule {
       this.logger.error(e);
     } finally {
       this.ssgRecoverySweepStartedAt = null;
+    }
+  }
+
+  // SSG 재발급 선차감 durable pending 복구 sweep. crash 로 누락된 선차감 역복원/유지를 자동 수렴.
+  // plans/wip4-ssg-resend-deduct-durable.md. 5분마다, 다른 5분 cron 과 동시 trigger 회피를 위해 45초 offset.
+  @Cron('45 */5 * * * *')
+  async handleResendDeductSweep() {
+    if (this.isStillRunning(this.resendDeductSweepStartedAt, 'handleResendDeductSweep')) {
+      this.logger.log('[BATCH] 이전 handleResendDeductSweep 진행 중 — skip');
+      return;
+    }
+    this.resendDeductSweepStartedAt = Date.now();
+    try {
+      await this.ssgResendDeductRecoveryService.sweepOnce();
+    } catch (e) {
+      this.logger.error(e);
+    } finally {
+      this.resendDeductSweepStartedAt = null;
     }
   }
 }

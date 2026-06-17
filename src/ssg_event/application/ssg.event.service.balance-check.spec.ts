@@ -24,6 +24,7 @@ describe('SsgEventService.getOpenTempDeductionByEvent', () => {
       {} as any, // reservationRangeRepository
       {} as any, // recoveryLogRepository
       {} as any, // resendDeductRecoveryRepository
+      {} as any, // resendDeductPendingRepository
       {} as any, // refundLedgerRepository
       {} as any, // activityLogService
       {} as any, // ssgIssue
@@ -131,6 +132,7 @@ describe('SsgEventService.getSsgBalanceCheckForOrder', () => {
       {} as any, // reservationRangeRepository
       {} as any, // recoveryLogRepository
       {} as any, // resendDeductRecoveryRepository
+      {} as any, // resendDeductPendingRepository
       {} as any, // refundLedgerRepository
       {} as any, // activityLogService
       ssgIssue as any,
