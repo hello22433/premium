@@ -464,7 +464,9 @@ export class OrderFromService {
         if (isBlankAfterNormalize(m.fromPhoneNumber)) {
           throw new BadRequestException('발신 번호를 입력해 주세요.');
         }
-        if (!approved.has(normalizeFromPhone(m.fromPhoneNumber))) {
+        // 시스템 기본번호(systemFromPhoneNumber)는 전 계정 암묵 승인 → 별도 등록 없이 허용.
+        const norm = normalizeFromPhone(m.fromPhoneNumber);
+        if (norm !== systemNorm && !approved.has(norm)) {
           throw new BadRequestException('승인된 발신번호가 아닙니다.');
         }
       } else if (m.sendMethod === IOrderSendMethod.ALIM_TALK) {
