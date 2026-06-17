@@ -1,6 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
 import { OrderService } from './order.service';
 import { IUserAuthority } from '../../user/interface/user.authority';
+import { IUserStatus } from '../../user/interface/user.status';
 import { ViewScopeType } from '../../entity/user.view.scope.entity';
 
 /**
@@ -98,5 +99,93 @@ describe('OrderService getDetail view-scope (IDOR)', () => {
     const result = await service.getDetail(owner, { id: 77 });
     expect(result).toBeDefined();
     expect(result.id).toBe(77);
+  });
+});
+
+/**
+ * ssgBalanceCheck 노출 게이트 회귀 방지: 민감 재무데이터(행사잔액·SSG 집계금액)는
+ * 발송확정 권한자(운영자/최고관리자)에게만 노출. 고객사/비소유자는 조회 자체를 호출하지
+ * 않고 필드도 omit 되어야 한다. (shouldExposeSsgBalanceCheck 게이트의 service-level 단언)
+ */
+describe('OrderService getDetail ssgBalanceCheck 노출 게이트', () => {
+  // SSG + 검토완료 + userId=10 소유 주문 (호출자 id=10 → scope 통과)
+  const ssgReviewOrder = {
+    id: 77,
+    userId: 10,
+    operationUserId: null,
+    clientUserId: null,
+    companyId: 100,
+    departmentId: 5,
+    orderProductMappings: [],
+    registerAt: new Date('2026-01-01T00:00:00Z'),
+    eventName: 'evt',
+    type: 'SSG',
+    status: 'REVIEW_COMPLETE',
+    cancelReason: null,
+    canceledAt: null,
+    clientUserId2: null,
+    user: { settlePeriodCondition: null, settlePeriodCount: null, settleCondition: null },
+  } as any;
+
+  const buildSsgService = (transitionAuthority: IUserAuthority) => {
+    let inScope = true;
+    const builder: any = {
+      innerJoinAndSelect: jest.fn().mockReturnThis(),
+      leftJoinAndSelect: jest.fn().mockReturnThis(),
+      withDeleted: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      addOrderBy: jest.fn().mockReturnThis(),
+      andWhere: jest.fn((clause: string, params: Record<string, unknown>) => {
+        if (clause.includes('order.userId = :userId')) {
+          const uid = params.userId;
+          inScope =
+            ssgReviewOrder.userId === uid ||
+            ssgReviewOrder.operationUserId === uid ||
+            ssgReviewOrder.clientUserId === uid;
+        }
+        return builder;
+      }),
+      getOne: jest.fn(() => Promise.resolve(inScope ? ssgReviewOrder : null)),
+    };
+    const service = Object.create(OrderService.prototype) as any;
+    service.orderRepository = { createQueryBuilder: jest.fn().mockReturnValue(builder) };
+    service.userViewScopeRepository = {
+      findOne: jest.fn().mockResolvedValue({ scopeType: ViewScopeType.SELF, getDeptIdList: () => [] }),
+    };
+    service.recoverDeletedProducts = jest.fn().mockResolvedValue(undefined);
+    // 게이트가 보는 호출자 권한 (발송확정 권한 판정 입력)
+    service.getCurrentDeliveryTransitionUser = jest.fn().mockResolvedValue({
+      id: 10,
+      authority: transitionAuthority,
+      status: IUserStatus.USED,
+      authorityList: null,
+    });
+    const checkSpy = jest.fn().mockResolvedValue({ hasWarning: true, lookupFailed: false, events: [] });
+    service.ssgEventService = { getSsgBalanceCheckForOrder: checkSpy };
+    // scope 필터 내부 userRepository.findOne (companyId/departmentId 용)
+    service.userRepository = {
+      findOne: jest.fn().mockResolvedValue({ id: 10, companyId: 100, departmentId: 5 }),
+    };
+    return { service, checkSpy };
+  };
+
+  it('발송확정 권한 운영자: ssgBalanceCheck 노출 + getSsgBalanceCheckForOrder 호출', async () => {
+    const { service, checkSpy } = buildSsgService(IUserAuthority.OPERATION_ADMIN);
+    const operator = { id: 10, email: 'op@x.com', authority: IUserAuthority.OPERATION_ADMIN };
+
+    const result = await service.getDetail(operator, { id: 77 });
+
+    expect(checkSpy).toHaveBeenCalledWith(77);
+    expect(result.ssgBalanceCheck).toEqual({ hasWarning: true, lookupFailed: false, events: [] });
+  });
+
+  it('고객사(CORPORATE_ADMIN) 소유자: 미호출 + ssgBalanceCheck omit', async () => {
+    const { service, checkSpy } = buildSsgService(IUserAuthority.CORPORATE_ADMIN);
+    const corp = { id: 10, email: 'c@x.com', authority: IUserAuthority.CORPORATE_ADMIN };
+
+    const result = await service.getDetail(corp, { id: 77 });
+
+    expect(checkSpy).not.toHaveBeenCalled();
+    expect(result.ssgBalanceCheck).toBeUndefined();
   });
 });
