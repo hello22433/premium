@@ -54,6 +54,8 @@ export interface SsgBalanceCheckView {
 }
 
 export function toSsgBalanceCheckView(r: SsgBalanceCheckResult): SsgBalanceCheckView {
+  // 노출 필드를 명시적으로 나열한다(스프레드 금지). 내부 SsgEventSignalResult 에 필드가
+  // 추가돼도 여기서 골라 담은 것만 응답에 실려, 내부 변경이 API 계약으로 자동 누설되지 않는다.
   return {
     hasWarning: r.hasWarning,
     lookupFailed: r.lookupFailed,

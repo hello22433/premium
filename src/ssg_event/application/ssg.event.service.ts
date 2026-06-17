@@ -851,16 +851,8 @@ export class SsgEventService {
     // 2. 행사별 판정을 병렬 실행(임계경로 차단 최소화). 다행사 주문이어도 외부 API 직렬 대기 안 함.
     const results = await Promise.all(groups.map((group) => this.evaluateEventGroup(group)));
 
-    const events: SsgEventSignalResult[] = [];
-    let lookupFailed = false;
-    for (const r of results) {
-      if (r.lookupFailed) {
-        lookupFailed = true;
-      }
-      if (r.event) {
-        events.push(r.event);
-      }
-    }
+    const events = results.flatMap((r) => (r.event ? [r.event] : []));
+    const lookupFailed = results.some((r) => r.lookupFailed);
 
     return {
       hasWarning: events.some((e) => e.hasWarning),
@@ -880,7 +872,7 @@ export class SsgEventService {
     // 임계경로 완전차단 방지(#1 취지). 외부 API 타임아웃뿐 아니라 DB 조회 실패까지 모두
     // lookupFailed 로 흡수해 상세조회가 깨지지 않게 한다.
     try {
-      const ssgEventId = Number(group.ssgEventId);
+      const { ssgEventId } = group;
       const orderAmount = Math.abs(Number(group.sum ?? 0));
 
       const event = await this.ssgEventRepository.findOne({ where: { id: ssgEventId } });
