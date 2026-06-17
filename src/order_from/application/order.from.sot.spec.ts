@@ -53,6 +53,19 @@ describe('OrderFromService SoT — assertApprovedPhones', () => {
     await expect(sut.assertApprovedPhones(10, [mapping(IOrderSendMethod.MMS, '0212345678')])).resolves.toBeUndefined();
   });
 
+  it('MMS 는 승인목록에 없어도 systemFromPhoneNumber(시스템 기본번호)는 통과', async () => {
+    const sut = makeSut();
+    sut.orderFromDefinitionRepository.find.mockResolvedValue([{ from: '0212345678', isDefault: true, id: 1 }]);
+    await expect(
+      sut.assertApprovedPhones(10, [mapping(IOrderSendMethod.MMS, systemFromPhoneNumber)]),
+    ).resolves.toBeUndefined();
+    // 본인 승인번호가 전혀 없어도 통과
+    sut.orderFromDefinitionRepository.find.mockResolvedValue([]);
+    await expect(
+      sut.assertApprovedPhones(10, [mapping(IOrderSendMethod.MMS, '1644-3614')]),
+    ).resolves.toBeUndefined();
+  });
+
   it('ALIM_TALK 은 systemFromPhoneNumber 만 허용', async () => {
     const sut = makeSut();
     sut.orderFromDefinitionRepository.find.mockResolvedValue([]);
