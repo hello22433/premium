@@ -2956,10 +2956,21 @@ export class OrderService {
     }
   }
 
+  private assertPositiveIntegerAmounts(orderProductList: OrderProductCreateTempDto[]): void {
+    const hasInvalidAmount = orderProductList.some(
+      (product) => !Number.isInteger(product.amount) || product.amount < 1,
+    );
+
+    if (hasInvalidAmount) {
+      throw new BadRequestException('상품 수량은 1 이상의 정수여야 합니다.');
+    }
+  }
+
   @Transactional()
   async createTemp(user: ILoginUserInfo, getBody: OrderCreateTempReqDto): Promise<OrderCreateTempResDto> {
     const { type, eventName, topImagePath, midImagePath, orderProductList } = getBody;
 
+    this.assertPositiveIntegerAmounts(orderProductList);
     await this.assertNoForbiddenWord(user, orderProductList, null);
 
     // 대행주문인 경우 clientUser의 허용 발신수단으로 검증
@@ -3122,6 +3133,7 @@ export class OrderService {
   async updateTemp(user: ILoginUserInfo, getBody: OrderUpdateTempReqDto): Promise<void> {
     const { id, eventName, topImagePath, midImagePath, orderProductList } = getBody;
 
+    this.assertPositiveIntegerAmounts(orderProductList);
     await this.assertNoForbiddenWord(user, orderProductList, id);
 
     const order = await this.orderRepository.findOne({
