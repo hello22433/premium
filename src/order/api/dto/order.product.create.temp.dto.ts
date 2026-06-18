@@ -1,5 +1,17 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsArray, IsEnum, IsIn, IsNotEmpty, IsNumber, IsOptional, IsString, Matches, ValidateNested } from 'class-validator';
+import {
+  IsArray,
+  IsEnum,
+  IsIn,
+  IsInt,
+  IsNotEmpty,
+  IsNumber,
+  IsOptional,
+  IsString,
+  Matches,
+  Min,
+  ValidateNested,
+} from 'class-validator';
 import { Transform, Type } from 'class-transformer';
 import { IOrderSendMethod } from '../../interface/order.send.method';
 import { OrderEmailSendType } from '../../domain/order.email.send.type';
@@ -28,6 +40,8 @@ export class OrderProductCreateTempDto {
   // =================================
   @IsNotEmpty()
   @IsNumber()
+  @IsInt()
+  @Min(1)
   amount: number;
 
   @ApiPropertyOptional({
