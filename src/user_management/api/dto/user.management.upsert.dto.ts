@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsEmail, IsEnum, IsNotEmpty, IsNumber, IsOptional, IsArray, ArrayNotEmpty } from 'class-validator';
+import { IsEmail, IsEnum, IsNotEmpty, IsNumber, IsOptional, IsArray, ArrayNotEmpty, IsBoolean } from 'class-validator';
 import { IUserAuthority } from '../../../user/interface/user.authority';
 import { IUserSettleCondition } from '../../../user/interface/user.settle.condition';
 import { IUserSettleMethod } from '../../../user/interface/user.settle.method';
@@ -180,6 +180,15 @@ export class UserManagementUpsertDto {
   @IsOptional()
   @IsNumber()
   duplicatePhoneLimit: number = 0;
+
+  @ApiPropertyOptional({
+    description: 'MMS 발신번호 선택목록에서 시스템 기본번호(1644-3614) 숨김 여부',
+    default: false,
+  })
+  // ============================
+  @IsOptional()
+  @IsBoolean()
+  hideSystemFromPhone?: boolean;
 
   @ApiPropertyOptional({
     description: '권한 허용 list',

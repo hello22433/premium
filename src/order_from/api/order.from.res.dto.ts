@@ -8,6 +8,11 @@ export class OrderFromGetPhoneListResDto {
     description: '발신 핸드폰 번호 리스트',
   })
   list: OrderFromPhoneViewDto[];
+
+  @ApiProperty({
+    description: 'MMS 발신번호 선택목록에서 시스템 기본번호(16443614) 숨김 여부',
+  })
+  hideSystemFromPhone: boolean;
 }
 
 export class OrderFromGetEmailListResDto {
@@ -73,4 +78,9 @@ export class OrderFromPhoneManageListResDto {
     type: [OrderFromPhoneViewDto],
   })
   list: OrderFromPhoneViewDto[];
+
+  @ApiProperty({
+    description: 'MMS 발신번호 선택목록에서 시스템 기본번호(16443614) 숨김 여부',
+  })
+  hideSystemFromPhone: boolean;
 }

@@ -446,6 +446,7 @@ export class UserManagementService {
       settlePeriodCondition: user.settlePeriodCondition,
       settlePeriodCount: user.settlePeriodCount,
       duplicatePhoneLimit: user.duplicatePhoneLimit,
+      hideSystemFromPhone: user.hideSystemFromPhone,
       authorityList: authorityList,
       industryType: company?.industryType ?? null,
       industryItem: company?.industryItem ?? null,
@@ -898,6 +899,7 @@ export class UserManagementService {
       settlePeriodCondition: getBody.settlePeriodCondition,
       settlePeriodCount: getBody.settlePeriodCount,
       duplicatePhoneLimit: getBody.duplicatePhoneLimit ?? 0,
+      hideSystemFromPhone: getBody.hideSystemFromPhone ?? false,
       authorityList: getBody.authorityList.join(','),
       companyId: companyId,
       allowedSendMethods: getBody.allowedSendMethods.join(','),
@@ -1012,6 +1014,10 @@ export class UserManagementService {
     user.settlePeriodCondition = getBody.settlePeriodCondition;
     user.settlePeriodCount = getBody.settlePeriodCount;
     user.duplicatePhoneLimit = getBody.duplicatePhoneLimit ?? 0;
+    // payload 에 없으면(구버전/부분 payload) 셀프서비스 토글 값을 보존한다. 명시 전달 시에만 갱신.
+    if (getBody.hideSystemFromPhone !== undefined) {
+      user.hideSystemFromPhone = getBody.hideSystemFromPhone;
+    }
     user.authorityList = getBody.authorityList.join(',');
     user.allowedSendMethods = getBody.allowedSendMethods.join(',');
     if (getBody.documentCompanyType) {

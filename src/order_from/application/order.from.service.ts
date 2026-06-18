@@ -11,6 +11,7 @@ import {
   OrderFromCreatePhoneReqDto,
   OrderFromGetPhoneReqQueryDto,
   OrderFromSetDefaultReqDto,
+  OrderFromSetHideSystemReqDto,
 } from '../api/order.from.req.dto';
 import { IMailSend } from '../../mail/interface/mail-send';
 import { ConfigService } from '@nestjs/config';
@@ -70,7 +71,8 @@ export class OrderFromService {
     });
 
     // SoT user 단위 확정: 본인 APPROVED 번호만 반환 (회사 fallback 제거).
-    return { list: this.toPhoneViewList(ownList) };
+    const hideSystemFromPhone = await this.getHideSystemFromPhone(targetUserId);
+    return { list: this.toPhoneViewList(ownList), hideSystemFromPhone };
   }
 
   async getPhoneManageList(user: ILoginUserInfo): Promise<OrderFromPhoneManageListResDto> {
@@ -85,7 +87,33 @@ export class OrderFromService {
       },
     });
 
-    return { list: this.toPhoneViewList(list) };
+    const hideSystemFromPhone = await this.getHideSystemFromPhone(user.id);
+    return { list: this.toPhoneViewList(list), hideSystemFromPhone };
+  }
+
+  /** 해당 user 의 시스템 기본번호 숨김 플래그. user 없으면 false. */
+  private async getHideSystemFromPhone(userId: number): Promise<boolean> {
+    const target = await this.userRepository.findOne({
+      where: { id: userId },
+      select: ['hideSystemFromPhone'],
+    });
+    return target?.hideSystemFromPhone ?? false;
+  }
+
+  /** MMS 발신번호 선택목록의 시스템 기본번호 숨김 여부 토글 (표시 전용, 발송 동작 불변). */
+  async setHideSystemFromPhone(
+    user: ILoginUserInfo,
+    getBody: OrderFromSetHideSystemReqDto,
+  ): Promise<void> {
+    const targetUserId = getBody.userId ?? user.id;
+    this.assertCanActForUser(user, targetUserId);
+
+    const result = await this.userRepository.update(targetUserId, {
+      hideSystemFromPhone: getBody.hide,
+    });
+    if (!result.affected) {
+      throw new BadRequestException('존재하지 않는 사용자입니다.');
+    }
   }
 
   private toPhoneView(item: OrderFromDefinitionEntity) {
