@@ -268,6 +268,7 @@ export class SettleController {
     @Req() req: Request,
     @Res() res: Response,
   ) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.PROFIT);
     try {
       const ipAddress = req.ip || req.headers['x-forwarded-for']?.toString() || '';
       const userAgent = req.headers['user-agent'] || '';
