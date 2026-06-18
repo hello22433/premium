@@ -416,4 +416,17 @@ describe('CustomerServiceService.restoreBalanceOnDiscard — refunded-proxy read
       restoreAmount: 10295,
     });
   });
+
+  it('couponStatus=REFUND_CANCEL → null 반환 + claimWithManager 미호출 (환불폐기 잔액 미복구 규칙)', async () => {
+    // exists=false: :148 ledger 체크를 통과시켜 :152 REFUND_CANCEL 분기를 명중시킴
+    // exists=true 면 :148 에서 먼저 null 반환 → REFUND_CANCEL 분기 미검증
+    const sut = makeSut(false);
+    const delivery = buildOrderDelivery(IOrderDeliveryStatus.COMPLETE);
+    delivery.couponStatus = OrderDeliveryCouponStatus.REFUND_CANCEL;
+
+    const result = await sut.restoreBalanceOnDiscard(delivery, operator, {} as any);
+
+    expect(result).toBeNull();
+    expect(sut.refundLedgerService.claimWithManager).not.toHaveBeenCalled();
+  });
 });
