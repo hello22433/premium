@@ -590,6 +590,37 @@ export class OrderService {
     }
   }
 
+  private async findOrderProductMappingInViewScope(
+    user: ILoginUserInfo,
+    orderProductMappingId: number,
+    relations: Array<'product' | 'product.partnerCompany'> = [],
+  ): Promise<OrderProductMappingEntity | null> {
+    let queryBuilder = this.orderProductMappingRepository
+      .createQueryBuilder('orderProductMapping')
+      .innerJoinAndSelect('orderProductMapping.order', 'order')
+      .innerJoinAndSelect('order.user', 'user')
+      .where('orderProductMapping.id = :id', { id: orderProductMappingId });
+
+    if (relations.includes('product') || relations.includes('product.partnerCompany')) {
+      queryBuilder = queryBuilder.leftJoinAndSelect('orderProductMapping.product', 'product');
+    }
+
+    if (relations.includes('product.partnerCompany')) {
+      queryBuilder = queryBuilder.leftJoinAndSelect('product.partnerCompany', 'partnerCompany');
+    }
+
+    const currentUser = await this.userRepository.findOne({
+      where: { id: user.id },
+      select: ['id', 'companyId', 'departmentId'],
+    });
+    const viewScope = await this.userViewScopeRepository.findOne({
+      where: { userId: user.id },
+    });
+
+    queryBuilder = this.applyViewScopeFilter(queryBuilder, user, currentUser, viewScope);
+    return queryBuilder.getOne();
+  }
+
   async getList(user: ILoginUserInfo, getQuery: OrderGetListReqDto): Promise<OrderGetListResDto> {
     const { section, type, status, startAt, endAt, searchType, searchKeyword, page, take, sendingType, dateType } = getQuery;
 
@@ -4536,30 +4567,25 @@ export class OrderService {
       .withDeleted()
       .where('order.type = :type', { type });
 
+    const currentUser = await this.userRepository.findOne({
+      where: { id: user.id },
+      select: ['id', 'companyId', 'departmentId'],
+    });
+
+    const viewScope = await this.userViewScopeRepository.findOne({
+      where: { userId: user.id },
+    });
+
     // 주문 관리 일 경우
     if (section === IOrderSection.ORDER) {
-      if (user.authority === IUserAuthority.CORPORATE_ADMIN) {
-        queryBuilder = queryBuilder.andWhere('order.userId = :userId', { userId: user.id });
-      }
-      if (user.authority === IUserAuthority.OPERATION_ADMIN) {
-        queryBuilder = queryBuilder.andWhere(
-          '(order.userId = :userId OR order.operationUserId = :userId OR order.clientUserId = :userId)',
-          { userId: user.id },
-        );
-      }
+      queryBuilder = this.applyViewScopeFilter(queryBuilder, user, currentUser, viewScope);
       orderType = '주문';
     }
 
     // 발송관리 일 경우
     if (section === IOrderSection.SHIPPING) {
-      if (user.authority === IUserAuthority.CORPORATE_ADMIN) {
-        queryBuilder = queryBuilder.andWhere('order.userId = :userId', { userId: user.id });
-      }
-
-      if (user.authority === IUserAuthority.OPERATION_ADMIN) {
-        queryBuilder = queryBuilder.andWhere('order.operationUserId = :userId', { userId: user.id });
-      }
-
+      queryBuilder = queryBuilder.andWhere('order.status != :tempStatus', { tempStatus: IOrderStatus.TEMP });
+      queryBuilder = this.applyViewScopeFilter(queryBuilder, user, currentUser, viewScope);
       orderType = '발송';
     }
 
@@ -4952,10 +4978,7 @@ export class OrderService {
   ): Promise<void> {
     const { encourageDay } = getBody;
 
-    const orderProductMapping = await this.orderProductMappingRepository.findOne({
-      where: { id: orderProductMappingId },
-      relations: ['order'],
-    });
+    const orderProductMapping = await this.findOrderProductMappingInViewScope(user, orderProductMappingId);
 
     if (!orderProductMapping) {
       throw new BadRequestException('존재하지 않는 상품입니다.');
@@ -5009,10 +5032,10 @@ export class OrderService {
   ): Promise<void> {
     const { galaxiaDuration } = getBody;
 
-    const orderProductMapping = await this.orderProductMappingRepository.findOne({
-      where: { id: orderProductMappingId },
-      relations: ['order', 'product', 'product.partnerCompany'],
-    });
+    const orderProductMapping = await this.findOrderProductMappingInViewScope(user, orderProductMappingId, [
+      'product',
+      'product.partnerCompany',
+    ]);
 
     if (!orderProductMapping) {
       throw new BadRequestException('존재하지 않는 상품입니다.');
@@ -5061,10 +5084,7 @@ export class OrderService {
   ): Promise<void> {
     const { sendTailText } = getBody;
 
-    const orderProductMapping = await this.orderProductMappingRepository.findOne({
-      where: { id: orderProductMappingId },
-      relations: ['order'],
-    });
+    const orderProductMapping = await this.findOrderProductMappingInViewScope(user, orderProductMappingId);
 
     if (!orderProductMapping) {
       throw new BadRequestException('존재하지 않는 상품입니다.');
@@ -5091,10 +5111,7 @@ export class OrderService {
   ): Promise<void> {
     const { useEmailContent } = getBody;
 
-    const orderProductMapping = await this.orderProductMappingRepository.findOne({
-      where: { id: orderProductMappingId },
-      relations: ['order'],
-    });
+    const orderProductMapping = await this.findOrderProductMappingInViewScope(user, orderProductMappingId);
 
     if (!orderProductMapping) {
       throw new BadRequestException('존재하지 않는 상품입니다.');
