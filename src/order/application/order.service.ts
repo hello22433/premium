@@ -618,6 +618,7 @@ export class OrderService {
     });
 
     queryBuilder = this.applyViewScopeFilter(queryBuilder, user, currentUser, viewScope);
+    this.applyDirectSendingFilter(queryBuilder, user);
     return queryBuilder.getOne();
   }
 
@@ -5314,8 +5315,8 @@ export class OrderService {
    *
    * 이앤엠애드 식별: userCompany.businessNumber로 판별 (COMPANY_INFO 상수 참조)
    */
-  private applyDirectSendingFilter(
-    queryBuilder: ReturnType<Repository<OrderEntity>['createQueryBuilder']>,
+  private applyDirectSendingFilter<T extends ObjectLiteral>(
+    queryBuilder: SelectQueryBuilder<T>,
     user: ILoginUserInfo,
     sendingType?: IOrderSendingType,
   ): void {
@@ -5338,8 +5339,8 @@ export class OrderService {
     });
   }
 
-  private applySendingTypeFilter(
-    queryBuilder: ReturnType<Repository<OrderEntity>['createQueryBuilder']>,
+  private applySendingTypeFilter<T extends ObjectLiteral>(
+    queryBuilder: SelectQueryBuilder<T>,
     sendingType?: IOrderSendingType,
   ): void {
     if (sendingType === IOrderSendingType.AGENCY) {

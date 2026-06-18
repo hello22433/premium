@@ -29,6 +29,7 @@ describe('OrderService mapping scope', () => {
 
   const createScopeAwareMappingBuilder = (mapping: typeof baseMapping) => {
     let inScope = true;
+    let directSendingAllowed = true;
     const builder: any = {
       innerJoinAndSelect: jest.fn().mockReturnThis(),
       leftJoinAndSelect: jest.fn().mockReturnThis(),
@@ -39,14 +40,22 @@ describe('OrderService mapping scope', () => {
           const order = mapping.order;
           inScope = order.userId === uid || order.operationUserId === uid || order.clientUserId === uid;
         }
+        if (clause.includes('user.companyId = :companyId')) {
+          inScope = true;
+        }
+        if (clause.includes('order.clientUserId IS NULL OR order.operationUserId = :currentUserId')) {
+          const currentUserId = params.currentUserId;
+          const order = mapping.order;
+          directSendingAllowed = order.clientUserId === null || order.operationUserId === currentUserId;
+        }
         return builder;
       }),
-      getOne: jest.fn(() => Promise.resolve(inScope ? mapping : null)),
+      getOne: jest.fn(() => Promise.resolve(inScope && directSendingAllowed ? mapping : null)),
     };
     return builder;
   };
 
-  const buildService = (mapping: typeof baseMapping) => {
+  const buildService = (mapping: typeof baseMapping, scopeType = ViewScopeType.SELF) => {
     const service = Object.create(OrderService.prototype) as any;
     const builder = createScopeAwareMappingBuilder(mapping);
     service.orderProductMappingRepository = {
@@ -66,7 +75,7 @@ describe('OrderService mapping scope', () => {
       findOne: jest.fn().mockResolvedValue({ id: undefined, companyId: 100, departmentId: 5 }),
     };
     service.userViewScopeRepository = {
-      findOne: jest.fn().mockResolvedValue({ scopeType: ViewScopeType.SELF, getDeptIdList: () => [] }),
+      findOne: jest.fn().mockResolvedValue({ scopeType, getDeptIdList: () => [] }),
     };
     return service;
   };
@@ -97,5 +106,26 @@ describe('OrderService mapping scope', () => {
     expect(service.orderProductMappingRepository.save).toHaveBeenCalledWith(
       expect.objectContaining({ galaxiaDuration: 30 }),
     );
+  });
+
+  it('회사 범위 운영관리자는 다른 운영관리자 담당 대행발송 매핑을 수정할 수 없다', async () => {
+    const operationAdmin = { id: 10, email: 'op@x.com', authority: IUserAuthority.OPERATION_ADMIN };
+    const service = buildService(
+      {
+        ...baseMapping,
+        order: {
+          ...baseMapping.order,
+          userId: 30,
+          operationUserId: 20,
+          clientUserId: 40,
+        },
+      },
+      ViewScopeType.COMPANY,
+    );
+
+    await expect(service.updateEncourageDay(operationAdmin, 77, { encourageDay: 1 })).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(service.orderProductMappingRepository.save).not.toHaveBeenCalled();
   });
 });
