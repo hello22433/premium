@@ -105,7 +105,7 @@ export class ProductChoiceService {
         productCount: product.productChoiceMappings.length,
         usagePeriod: '2024-01-01~2024-12-31', // TODO:
         useStatus: product.useStatus,
-        registrationStatus: '정상', // TODO:
+        registrationStatus: hasUnusedProduct ? '비정상' : '정상',
         hasUnusedProduct,
       };
     });
