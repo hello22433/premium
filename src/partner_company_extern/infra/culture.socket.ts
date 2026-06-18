@@ -373,7 +373,8 @@ export class CultureSocket implements ICulture {
       this.logger.log(`[checkDaily] Response: ${decodedResponse}`);
 
       // XML 파싱
-      const parser = new XMLParser();
+      // XML 파싱 (parseTagValue:false → 모든 leaf 값을 string 유지: usedate/certno 숫자 강제변환 방지)
+      const parser = new XMLParser({ parseTagValue: false });
       const xmlData = parser.parse(decodedResponse);
 
       // certno 목록 추출
