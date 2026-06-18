@@ -1,5 +1,6 @@
 import { BadRequestException, Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import {
   UserLoginByEmailPasswordReqDto,
   UserLoginEmailSendReqDto,
@@ -68,6 +69,7 @@ export class UserService {
     private configService: ConfigService,
     private activityLogService: ActivityLogService,
     private accountStatusTransitionService: AccountStatusTransitionService,
+    private cryptoCipher: CryptoCipher,
   ) {}
 
   private logger = new Logger('UserService');
@@ -420,7 +422,7 @@ export class UserService {
     const emailSendHistory = new EmailSendHistoryEntity();
 
     emailSendHistory.userId = user.id; // 계정별 인증 이력 관리
-    emailSendHistory.email = sendToEmail;
+    emailSendHistory.email = this.cryptoCipher.encryptDeliveryTarget(sendToEmail);
     emailSendHistory.type = EmailType.LOGIN;
     emailSendHistory.expireAt = expireAt;
     emailSendHistory.code = code;
@@ -492,7 +494,7 @@ export class UserService {
     // 발송 성공 후 인증 이력 저장
     const sendHistory = new EmailSendHistoryEntity();
     sendHistory.userId = user.id;
-    sendHistory.email = user.personPhoneNumber; // 전화번호를 식별값으로 저장
+    sendHistory.email = this.cryptoCipher.encryptDeliveryTarget(user.personPhoneNumber); // 전화번호를 식별값으로 암호화 저장
     sendHistory.type = EmailType.LOGIN;
     sendHistory.expireAt = expireAt;
     sendHistory.code = code;
@@ -573,7 +575,7 @@ export class UserService {
 
     const emailSendHistory = new EmailSendHistoryEntity();
     emailSendHistory.userId = user.id;
-    emailSendHistory.email = sendToEmail;
+    emailSendHistory.email = this.cryptoCipher.encryptDeliveryTarget(sendToEmail);
     emailSendHistory.type = EmailType.REACTIVATE;
     emailSendHistory.expireAt = expireAt;
     emailSendHistory.code = code;
@@ -734,7 +736,9 @@ export class UserService {
 
     await this.emailSendHistoryRepository.insert({
       userId: user.id,
-      email: this.parsePersonEmails(user.personEmail)[0] || email,
+      email: this.cryptoCipher.encryptDeliveryTarget(
+        this.parsePersonEmails(user.personEmail)[0] || email,
+      ),
       type: EmailType.LOGIN,
       code: '000000',
       isCertified: true,

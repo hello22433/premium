@@ -20,6 +20,7 @@ import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { IUserAuthority } from '../../user/interface/user.authority';
 import { QueryBuilderDateCondition } from '../../common/infra/query.builder.date.condition';
 import { MaskingUtil } from '../../common/utils/masking.util';
+import { CryptoCipher } from '../../common/infra/crypto.cipher';
 
 @Injectable()
 export class UserTaskHistoryService {
@@ -30,6 +31,7 @@ export class UserTaskHistoryService {
     private readonly userRepository: Repository<UserEntity>,
     @InjectRepository(OrderEntity)
     private readonly orderRepository: Repository<OrderEntity>,
+    private readonly cryptoCipher: CryptoCipher,
   ) { }
 
   async getList(loginUser: ILoginUserInfo, getQuery: UserTaskHistoryGetListReqQueryDto): Promise<UserTaskHistoryGetListResDto> {
@@ -184,7 +186,7 @@ export class UserTaskHistoryService {
         id: task.id,
         adminUserName: adminUserMap.get(task.adminUserId) || null,
         registerAt: format(task.createdAt, DateFormatStr),
-        content: task.content,
+        content: this.cryptoCipher.safeDecryptDeliveryTarget(task.content),
       };
     });
 
@@ -212,7 +214,7 @@ export class UserTaskHistoryService {
     await this.userTaskHistoryRepository.insert({
       userId,
       adminUserId: loginUser.id,
-      content,
+      content: content ? this.cryptoCipher.encryptDeliveryTarget(content) : content,
     });
 
     return true;

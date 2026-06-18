@@ -168,6 +168,7 @@ describe('DeliveryBatchService - B1 settlement-hold redesign', () => {
     const cryptoCipher = {
       safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01012345678'),
       decryptDeliveryTarget: jest.fn().mockReturnValue('01012345678'),
+      encryptDeliveryTarget: jest.fn().mockReturnValue('ENC'),
       encryptJson: jest.fn().mockReturnValue('enc-key'),
     };
 

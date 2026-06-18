@@ -7,7 +7,7 @@ export class DeliverySendHistoryEntity extends BaseEntity {
   @PrimaryGeneratedColumn()
   id: number;
 
-  @Column({ type: 'varchar', length: 128, comment: '전송 대상자' })
+  @Column({ type: 'varchar', length: 255, comment: '전송 대상자 (암호화 저장, encryptDeliveryTarget)' })
   target: string;
 
   @Column({ type: 'text', comment: '전송 내역 history' })

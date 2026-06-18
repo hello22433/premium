@@ -8,6 +8,7 @@ import { OrderEntity } from '../../entity/order.entity';
 import { createMockRepositoryMethod } from '../../common/test/mock.repository.method';
 import { createMockQueryBuilder } from '../../common/test/mock.query.builder';
 import { IUserAuthority } from '../../user/interface/user.authority';
+import { CryptoCipher } from '../../common/infra/crypto.cipher';
 
 describe('UserTaskHistoryService', () => {
   let sut: UserTaskHistoryService;
@@ -32,6 +33,13 @@ describe('UserTaskHistoryService', () => {
           useValue: { ...createMockRepositoryMethod(), createQueryBuilder: jest.fn(() => queryBuilder) },
         },
         { provide: getRepositoryToken(OrderEntity), useValue: createMockRepositoryMethod() },
+        {
+          provide: CryptoCipher,
+          useValue: {
+            encryptDeliveryTarget: jest.fn((v: string) => v),
+            safeDecryptDeliveryTarget: jest.fn((v: string | null) => v),
+          },
+        },
       ],
     }).compile();
 

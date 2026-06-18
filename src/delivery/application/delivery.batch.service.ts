@@ -679,7 +679,7 @@ export class DeliveryBatchService {
     const deliveryHistory = new DeliverySendHistoryEntity();
     deliveryHistory.context = '{}';
     deliveryHistory.isSuccess = true;
-    deliveryHistory.target = decryptedDeliveryTarget;
+    deliveryHistory.target = this.cryptoCipher.encryptDeliveryTarget(decryptedDeliveryTarget);
     deliveryHistory.deliveryMethod = deliveryMethod;
 
     const encryptKey = this.cryptoCipher.encryptJson(
@@ -1673,7 +1673,7 @@ export class DeliveryBatchService {
     if (!emailSendHistory) {
       emailSendHistory = new EmailSendHistoryEntity();
       emailSendHistory.orderDeliveryId = orderDelivery.id;
-      emailSendHistory.email = decryptedEmail;
+      emailSendHistory.email = this.cryptoCipher.encryptDeliveryTarget(decryptedEmail);
       emailSendHistory.type = EmailType.COUPON;
       emailSendHistory.code = generateRandomCode();
       emailSendHistory.expireAt = addDays(new Date(), EmailCertifyExpireDay);
@@ -1825,7 +1825,7 @@ export class DeliveryBatchService {
     const deliveryHistory = new DeliverySendHistoryEntity();
     deliveryHistory.context = '{}';
     deliveryHistory.isSuccess = true;
-    deliveryHistory.target = decryptedDeliveryTarget;
+    deliveryHistory.target = this.cryptoCipher.encryptDeliveryTarget(decryptedDeliveryTarget);
     deliveryHistory.deliveryMethod = deliveryMethod;
 
     // 테스트 발송인 경우 testOrderDeliveryId와 isTest 플래그 사용
@@ -1940,7 +1940,7 @@ export class DeliveryBatchService {
           });
           this.markSendSuccess(orderDelivery, IOrderDeliveryStatus.COMPLETE);
           deliveryHistory.context = emailText;
-          deliveryHistory.target = decryptedEmailReceiverPhone;
+          deliveryHistory.target = this.cryptoCipher.encryptDeliveryTarget(decryptedEmailReceiverPhone);
         } catch (e) {
           this.markSendFail(orderDelivery, IOrderDeliveryStatus.FAIL);
           this.logSendFail(
@@ -1968,7 +1968,7 @@ export class DeliveryBatchService {
           // 기존 인증코드가 없거나 만료된 경우 새로 생성
           emailSendHistory = new EmailSendHistoryEntity();
           emailSendHistory.orderDeliveryId = orderDelivery.id;
-          emailSendHistory.email = decryptedDeliveryTarget;
+          emailSendHistory.email = this.cryptoCipher.encryptDeliveryTarget(decryptedDeliveryTarget);
           emailSendHistory.type = EmailType.COUPON;
           emailSendHistory.code = generateRandomCode();
           emailSendHistory.expireAt = addDays(new Date(), EmailCertifyExpireDay);

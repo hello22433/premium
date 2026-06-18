@@ -307,7 +307,9 @@ export class CustomerServiceService {
     await queryRunner.manager.save(UserTaskHistoryEntity, {
       userId: billingUserId,
       adminUserId: operatorUser.id,
-      content: `${operatorName}/ ${restoreAmount.toLocaleString()}원 폐기/ 회수/ ${contactNumber} 폐기/ ${now}`,
+      content: this.cryptoCipher.encryptDeliveryTarget(
+        `${operatorName}/ ${restoreAmount.toLocaleString()}원 폐기/ 회수/ ${contactNumber} 폐기/ ${now}`,
+      ),
     });
 
     // Wallet Cutover Bundle PR4 — wallet-managed 주문이면 wallet_account + wallet ledger 갱신.

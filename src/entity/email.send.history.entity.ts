@@ -16,7 +16,7 @@ export class EmailSendHistoryEntity extends BaseEntity {
   userId: number | null;
 
   @Index()
-  @Column({ type: 'varchar', length: 200, comment: '이메일' })
+  @Column({ type: 'varchar', length: 512, comment: '이메일/식별값 (암호화 저장, encryptDeliveryTarget)' })
   email: string;
 
   @Column({

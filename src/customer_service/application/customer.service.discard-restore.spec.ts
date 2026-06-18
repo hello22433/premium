@@ -107,7 +107,7 @@ describe('CustomerServiceService.restoreBalanceOnDiscard — refunded-proxy read
       },
     } as any;
     sut.activityLogService = { createLog: jest.fn().mockResolvedValue(undefined) };
-    sut.cryptoCipher = { safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01012345678') };
+    sut.cryptoCipher = { safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01012345678'), encryptDeliveryTarget: jest.fn((v: string) => v) };
     sut.walletManagedPredicate = { isWalletManaged: jest.fn().mockResolvedValue(true) };
     sut.refundPoolService = {
       refundSettledDiscardToDeposit: jest.fn().mockResolvedValue({ ledgerIds: ['1'], totalRefundedAmount: 10000 }),
@@ -158,7 +158,7 @@ describe('CustomerServiceService.restoreBalanceOnDiscard — refunded-proxy read
       },
     } as any;
     sut.activityLogService = { createLog: jest.fn().mockResolvedValue(undefined) };
-    sut.cryptoCipher = { safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01012345678') };
+    sut.cryptoCipher = { safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01012345678'), encryptDeliveryTarget: jest.fn((v: string) => v) };
     sut.walletManagedPredicate = { isWalletManaged: jest.fn().mockResolvedValue(true) };
     sut.refundPoolService = {
       refundSettledDiscardToDeposit: jest.fn().mockResolvedValue({ ledgerIds: ['1'], totalRefundedAmount: 7000 }),
@@ -200,7 +200,7 @@ describe('CustomerServiceService.restoreBalanceOnDiscard — refunded-proxy read
       },
     } as any;
     sut.activityLogService = { createLog: jest.fn().mockResolvedValue(undefined) };
-    sut.cryptoCipher = { safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01012345678') };
+    sut.cryptoCipher = { safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01012345678'), encryptDeliveryTarget: jest.fn((v: string) => v) };
 
     const orderDelivery = buildOrderDelivery(IOrderDeliveryStatus.COMPLETE);
     const order = orderDelivery.orderProductMapping.order;
@@ -265,7 +265,7 @@ describe('CustomerServiceService.restoreBalanceOnDiscard — refunded-proxy read
       },
     } as any;
     sut.activityLogService = { createLog: jest.fn().mockResolvedValue(undefined) };
-    sut.cryptoCipher = { safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01012345678') };
+    sut.cryptoCipher = { safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01012345678'), encryptDeliveryTarget: jest.fn((v: string) => v) };
 
     const order = {
       id: 700,
@@ -337,7 +337,7 @@ describe('CustomerServiceService.restoreBalanceOnDiscard — refunded-proxy read
       },
     } as any;
     sut.activityLogService = { createLog: jest.fn().mockResolvedValue(undefined) };
-    sut.cryptoCipher = { safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01012345678') };
+    sut.cryptoCipher = { safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01012345678'), encryptDeliveryTarget: jest.fn((v: string) => v) };
     sut.walletManagedPredicate = { isWalletManaged: jest.fn().mockResolvedValue(true) };
     sut.refundPoolService = {
       refundSettledDiscardToDeposit: jest.fn().mockResolvedValue({

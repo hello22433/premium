@@ -9,6 +9,7 @@ import { GetActivityLogListReqDto, DownloadActivityLogExcelReqDto } from '../api
 import { GetActivityLogListResDto, GetActionTypesResDto, ActivityLogViewDto } from '../api/activity.log.res.dto';
 import { format, subMonths } from 'date-fns';
 import { DateFormatStr } from '../../common/domain/date.format.str';
+import { MaskingUtil } from '../../common/utils/masking.util';
 import {
   ACTIVITY_LOG_RETENTION_MONTHS,
   ACTIVITY_LOG_PURGE_EXCLUDED_ACTION_TYPES,
@@ -62,7 +63,7 @@ export class ActivityLogService {
       responseTime: dto.responseTime,
       downloadReason: dto.downloadReason || null,
       recordCount: dto.recordCount || null,
-      requestParams: dto.requestParams || null,
+      requestParams: MaskingUtil.maskActivityLogParams(dto.requestParams) as any,
       errorMessage: dto.errorMessage || null,
     });
     return Number(result.identifiers[0].id);

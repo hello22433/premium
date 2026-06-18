@@ -215,7 +215,7 @@ export class DeliverySendService {
   ): Promise<void> {
     const emailSendHistory = new EmailSendHistoryEntity();
     emailSendHistory.orderDeliveryId = orderDelivery.id;
-    emailSendHistory.email = decryptedDeliveryTarget;
+    emailSendHistory.email = this.cryptoCipher.encryptDeliveryTarget(decryptedDeliveryTarget);
     emailSendHistory.type = EmailType.COUPON;
     emailSendHistory.code = generateRandomCode();
     emailSendHistory.expireAt = addDays(new Date(), EmailCertifyExpireDay);
