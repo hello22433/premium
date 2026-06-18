@@ -167,4 +167,33 @@ export class MaskingUtil {
     if (clean.length >= 4) return `${clean.slice(0, 4)}-${'*'.repeat(clean.length - 4)}`;
     return '***';
   }
+  /**
+   * activity_log.requestParams 저장 직전 PII 필드 마스킹.
+   * - 자유입력 검색/수신처 필드만 마스킹(deliveryTarget/keyword/전화번호류/barCode/personalCode)
+   * - 감사·표시용 키(targetUserEmail/to/cc/source/금액/memo 등)는 보존(JSON_EXTRACT 쿼리·로그 표시와 무충돌)
+   * - 객체가 아니면 그대로 반환
+   */
+  static maskActivityLogParams(params: unknown): unknown {
+    if (!params || typeof params !== 'object' || Array.isArray(params)) return params ?? null;
+
+    const PHONE_KEYS = ['recipientPhone', 'phone', 'phoneNumber', 'emailReceiverPhone', 'snapshotPersonPhone'];
+    const masked: Record<string, unknown> = { ...(params as Record<string, unknown>) };
+
+    for (const key of Object.keys(masked)) {
+      const value = masked[key];
+      if (typeof value !== 'string' || value.length === 0) continue;
+
+      if (key === 'deliveryTarget' || key === 'keyword') {
+        masked[key] = this.maskDeliveryTarget(value);
+      } else if (PHONE_KEYS.includes(key)) {
+        masked[key] = this.maskPhoneNumber(value);
+      } else if (key === 'barCode') {
+        masked[key] = this.maskBarCode(value);
+      } else if (key === 'personalCode') {
+        masked[key] = this.maskPersonalCode(value);
+      }
+    }
+
+    return masked;
+  }
 }

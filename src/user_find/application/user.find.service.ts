@@ -10,6 +10,7 @@ import { UserFindIdResDto, UserFindResetPasswordSendResDto } from '../api/user.f
 import { IMailSend } from '../../mail/interface/mail-send';
 import { BadRequestException, Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { EmailSendHistoryEntity } from '../../entity/email.send.history.entity';
 import { EmailCertifyExpireMinute, defaultFromPhoneNumber } from '../../const';
 import { addMinutes } from 'date-fns';
@@ -40,6 +41,7 @@ export class UserFindService {
     @Inject('ISmsSend')
     private readonly smsSendService: ISmsSend,
     private readonly configService: ConfigService,
+    private readonly cryptoCipher: CryptoCipher,
   ) {}
 
   private readonly loginAuthTemplateCode = this.configService.getOrThrow<string>('ALIM_TALK_INFO_BANK_LOGIN_AUTH_TEMPLATE_CODE');
@@ -124,7 +126,7 @@ export class UserFindService {
         throw new BadRequestException('등록된 연락처가 없습니다. 관리자에게 문의해주세요.');
       }
 
-      emailSendHistory.email = user.personPhoneNumber;
+      emailSendHistory.email = this.cryptoCipher.encryptDeliveryTarget(user.personPhoneNumber);
 
       const messageText = `이팝콘 프리미엄 비밀번호 찾기 인증코드\n[${code}]`;
 
@@ -136,7 +138,7 @@ export class UserFindService {
         `비밀번호찾기 인증코드 userId=${user.id}`,
       );
     } else {
-      emailSendHistory.email = getBody.email;
+      emailSendHistory.email = this.cryptoCipher.encryptDeliveryTarget(getBody.email);
 
       const { title, content } = UserResetPasswordVerifyTemplateHtml(code, EmailCertifyExpireMinute);
 

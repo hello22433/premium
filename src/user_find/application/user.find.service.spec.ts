@@ -9,6 +9,7 @@ import { PasswordBcryptEncrypt } from '../../auth/infrastructure/password.bcrypt
 import { EmailType } from '../../mail/domain/email.type';
 import { LoginVerifyMethod } from '../../user/interface/login.verify.method';
 import { ConfigService } from '@nestjs/config';
+import { CryptoCipher } from '../../common/infra/crypto.cipher';
 
 describe('UserFindService', () => {
   let sut: UserFindService;
@@ -27,6 +28,7 @@ describe('UserFindService', () => {
         { provide: 'DeliveryAlimTalk', useValue: { send: jest.fn() } },
         { provide: 'ISmsSend', useValue: { send: jest.fn() } },
         { provide: ConfigService, useValue: { getOrThrow: jest.fn().mockReturnValue('TEMPLATE_CODE') } },
+        { provide: CryptoCipher, useValue: { encryptDeliveryTarget: jest.fn((v: string) => v) } },
       ],
     }).compile();
 

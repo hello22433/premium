@@ -70,7 +70,7 @@ describe('DeliveryBatchService', () => {
         { provide: 'IMailSend', useValue: {} },
         { provide: 'ISmsSend', useValue: { send: jest.fn() } },
         { provide: DeliveryTrackHttp, useValue: {} },
-        { provide: CryptoCipher, useValue: { decryptDeliveryTarget: jest.fn(), encryptJson: jest.fn() } },
+        { provide: CryptoCipher, useValue: { decryptDeliveryTarget: jest.fn(), encryptDeliveryTarget: jest.fn(), encryptJson: jest.fn() } },
         { provide: ConfigService, useValue: { get: jest.fn(), getOrThrow: jest.fn() } },
         { provide: 'IFileStorage', useValue: {} },
         { provide: PartnerCompanyExternService, useValue: { issue: jest.fn() } },

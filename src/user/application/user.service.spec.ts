@@ -21,6 +21,8 @@ import { ISmsSend } from '../../sms/interface/sms.send';
 import { ConfigService } from '@nestjs/config';
 import { AuthException } from '../exception/auth.exception';
 import { AuthErrorCode } from '../exception/auth-error-code';
+import { AccountStatusTransitionService } from '../../account_lifecycle/application/account.status.transition.service';
+import { CryptoCipher } from '../../common/infra/crypto.cipher';
 
 jest.mock('typeorm-transactional', () => ({
   Transactional: () => () => ({}),
@@ -43,6 +45,9 @@ describe('user login service Test', () => {
   const alimTalkService: MockProxy<DeliveryAlimTalk> = mock<DeliveryAlimTalk>();
   const smsSendService: MockProxy<ISmsSend> = mock<ISmsSend>();
   const configService: MockProxy<ConfigService> = mock<ConfigService>();
+  const accountStatusTransitionService: MockProxy<AccountStatusTransitionService> =
+    mock<AccountStatusTransitionService>();
+  const cryptoCipher: MockProxy<CryptoCipher> = mock<CryptoCipher>();
 
   const sut = new UserService(
     passwordEncrypt,
@@ -57,6 +62,8 @@ describe('user login service Test', () => {
     smsSendService,
     configService,
     activityLogService,
+    accountStatusTransitionService,
+    cryptoCipher,
   );
 
   beforeEach(() => {

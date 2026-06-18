@@ -422,7 +422,7 @@ export class ExternalApiService {
     const deliveryHistory = new DeliverySendHistoryEntity();
     deliveryHistory.context = '{}';
     deliveryHistory.isSuccess = true;
-    deliveryHistory.target = decryptedTarget;
+    deliveryHistory.target = this.cryptoCipher.encryptDeliveryTarget(decryptedTarget);
     deliveryHistory.deliveryMethod = orderDelivery.deliveryMethod;
 
     const filePathList = orderDelivery.imagePath ? [orderDelivery.imagePath] : [];
