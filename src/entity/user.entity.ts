@@ -179,6 +179,13 @@ export class UserEntity extends BaseEntity {
   @Column({ type: 'varchar', nullable: true, length: 20, comment: '발신 번호 (deprecated mirror, SoT=order_from_definition)' })
   fromPhoneNumber: string | null;
 
+  @Column({
+    type: 'boolean',
+    default: false,
+    comment: 'MMS 발신번호 선택목록에서 시스템 기본번호(16443614) 숨김 여부',
+  })
+  hideSystemFromPhone: boolean;
+
   @Column({ type: 'enum', enum: UserSettlePeriodConditionEnum, nullable: true, comment: '정산 기준 지정 월 조건' })
   settlePeriodCondition: UserSettlePeriodConditionEnum | null;
 

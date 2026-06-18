@@ -178,6 +178,11 @@ export class UserManagementGetDetailResDto {
   duplicatePhoneLimit: number;
 
   @ApiProperty({
+    description: 'MMS 발신번호 선택목록에서 시스템 기본번호(1644-3614) 숨김 여부',
+  })
+  hideSystemFromPhone: boolean;
+
+  @ApiProperty({
     description: '권한 허용 list',
   })
   authorityList: string[];

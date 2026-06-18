@@ -20,6 +20,7 @@ import {
   OrderFromDeleteEmailReqDto,
   OrderFromGetPhoneReqQueryDto,
   OrderFromSetDefaultReqDto,
+  OrderFromSetHideSystemReqDto,
 } from './order.from.req.dto';
 import { User } from '../../auth/api/user.decorator';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
@@ -89,6 +90,15 @@ export class OrderFromController {
   @Patch('/order-from/phone/default')
   setDefault(@User() user: ILoginUserInfo, @Body() getBody: OrderFromSetDefaultReqDto) {
     return this.orderFromService.setDefault(user, getBody);
+  }
+
+  @ApiOperation({ summary: '시스템 기본번호(1644-3614) MMS 선택목록 숨김 설정' })
+  @ApiOkResponse({ description: '성공적으로 설정한 경우' })
+  @ApiBadRequestResponse({ description: '존재하지 않는 사용자일 경우' })
+  // ====================================================
+  @Patch('/order-from/phone/hide-system')
+  setHideSystemFromPhone(@User() user: ILoginUserInfo, @Body() getBody: OrderFromSetHideSystemReqDto) {
+    return this.orderFromService.setHideSystemFromPhone(user, getBody);
   }
 
   // ==================== 관리자용 API ====================

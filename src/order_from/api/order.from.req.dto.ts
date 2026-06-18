@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsEnum, IsNotEmpty, IsNumber, IsOptional, IsString } from 'class-validator';
+import { IsBoolean, IsEnum, IsNotEmpty, IsNumber, IsOptional, IsString } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
 import { TelecomCertType } from '../interface/order.from.definition.type';
 
@@ -176,6 +176,24 @@ export class OrderFromSetDefaultReqDto {
 
   @ApiProperty({
     description: 'user id (관리자가 다른 사용자의 기본 발신번호를 설정할 때 사용)',
+  })
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  userId?: number;
+}
+
+export class OrderFromSetHideSystemReqDto {
+  @ApiProperty({
+    description: 'MMS 발신번호 선택목록에서 시스템 기본번호(1644-3614) 숨김 여부',
+  })
+  @IsNotEmpty()
+  @IsBoolean()
+  hide: boolean;
+
+  @ApiProperty({
+    description: 'user id (관리자가 다른 사용자의 설정을 변경할 때 사용)',
+    required: false,
   })
   @IsOptional()
   @IsNumber()
