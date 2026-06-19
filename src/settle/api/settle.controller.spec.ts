@@ -101,7 +101,7 @@ describe('SettleController', () => {
         destroy: jest.fn(),
       } as any;
 
-      await controller.mobileExcelDownload(downloadUser, {} as any, res);
+      await controller.mobileExcelDownload(downloadUser, {} as any, downloadReq, res);
       mockStream.emit('error', new Error('디스크 오류'));
 
       expect(res.status).toHaveBeenCalledWith(500);
@@ -122,7 +122,7 @@ describe('SettleController', () => {
         destroy: jest.fn(),
       } as any;
 
-      await controller.mobileExcelDownload(downloadUser, {} as any, res);
+      await controller.mobileExcelDownload(downloadUser, {} as any, downloadReq, res);
       mockStream.emit('error', new Error('디스크 오류'));
 
       expect(res.destroy).toHaveBeenCalled();
@@ -141,7 +141,7 @@ describe('SettleController', () => {
         destroy: jest.fn(),
       } as any;
 
-      await controller.mobileExcelDownload(downloadUser, {} as any, res);
+      await controller.mobileExcelDownload(downloadUser, {} as any, downloadReq, res);
       mockStream.emit('close');
 
       expect(fs.unlink as unknown as jest.Mock).toHaveBeenCalledWith('/tmp/mobile_2026.xlsx', expect.any(Function));
