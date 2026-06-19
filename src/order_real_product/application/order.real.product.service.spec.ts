@@ -36,9 +36,11 @@ const createService = () => {
   const orderRepository = {
     create: jest.fn(),
     createQueryBuilder: jest.fn(),
+    findOne: jest.fn(),
     save: jest.fn(),
   };
   const orderProductMappingRepository = {
+    createQueryBuilder: jest.fn(),
     find: jest.fn(),
     save: jest.fn(),
   };
@@ -268,5 +270,92 @@ describe('OrderRealProductService 금액 산식', () => {
       }),
     );
     expect(mockExcelWriteFile).toHaveBeenCalled();
+  });
+});
+
+describe('OrderRealProductService 실물상품 조회 접근 제어', () => {
+  it('배송 추적 상태 조회는 고객사 계정일 때 본인 고객사 주문으로 제한한다', async () => {
+    const { service, orderRepository } = createService();
+    const queryBuilder = createQueryBuilder({
+      id: 10,
+      createdAt: new Date('2026-06-19T00:00:00.000Z'),
+      eventName: '이벤트',
+      businessUser: { personName: '담당자', company: { businessName: '고객사', businessAddress: '주소' } },
+      orderRealProductMappings: [{ trackingNumber: null, product: { name: '상품' } }],
+    });
+    orderRepository.createQueryBuilder.mockReturnValue(queryBuilder);
+
+    await (service as any).getDeliveryTrackingStatus(
+      { id: 100, authority: IUserAuthority.CORPORATE_ADMIN },
+      { id: 10 },
+    );
+
+    expect(queryBuilder.andWhere).toHaveBeenCalledWith('order.businessUserId = :userId', { userId: 100 });
+  });
+
+  it('배송완료 리포트 조회는 고객사 계정일 때 본인 고객사 주문으로 제한한다', async () => {
+    const { service, orderRepository } = createService();
+    const queryBuilder = createQueryBuilder({
+      id: 10,
+      status: 'ORDER_COMPLETED',
+      createdAt: new Date('2026-06-19T00:00:00.000Z'),
+      eventName: '이벤트',
+      businessUser: {
+        id: 100,
+        personName: '담당자',
+        personPhoneNumber: '010',
+        email: 'user@example.com',
+        company: { businessName: '고객사' },
+      },
+      orderRealProductMappings: [],
+    });
+    orderRepository.createQueryBuilder.mockReturnValue(queryBuilder);
+
+    await (service as any).getDeliveryCompleteReport(
+      { id: 100, authority: IUserAuthority.CORPORATE_ADMIN },
+      { id: 10 },
+    );
+
+    expect(queryBuilder.andWhere).toHaveBeenCalledWith('order.businessUserId = :userId', { userId: 100 });
+  });
+
+  it('발주 상품 상세 조회는 고객사 계정일 때 본인 고객사 주문 매핑으로 제한한다', async () => {
+    const { service, orderProductMappingRepository } = createService();
+    const queryBuilder = createQueryBuilder({
+      id: 20,
+      realProductOrder: {
+        id: 10,
+        businessUserId: 100,
+        businessUser: { bankName: '은행', bankNumber: '123', company: { businessName: '고객사' } },
+        eventName: '이벤트',
+      },
+    });
+    orderProductMappingRepository.createQueryBuilder.mockReturnValue(queryBuilder);
+
+    await (service as any).getOrderProductMappingDetail(
+      { id: 100, authority: IUserAuthority.CORPORATE_ADMIN },
+      { id: 20 },
+    );
+
+    expect(queryBuilder.andWhere).toHaveBeenCalledWith('realProductOrder.businessUserId = :userId', { userId: 100 });
+  });
+
+  it('관리자 계정은 실물상품 주문 조회 시 고객사 제한 조건을 추가하지 않는다', async () => {
+    const { service, orderRepository } = createService();
+    const queryBuilder = createQueryBuilder({
+      id: 10,
+      createdAt: new Date('2026-06-19T00:00:00.000Z'),
+      eventName: '이벤트',
+      businessUser: { personName: '담당자', company: { businessName: '고객사', businessAddress: '주소' } },
+      orderRealProductMappings: [{ trackingNumber: null, product: { name: '상품' } }],
+    });
+    orderRepository.createQueryBuilder.mockReturnValue(queryBuilder);
+
+    await (service as any).getDeliveryTrackingStatus(
+      { id: 1, authority: IUserAuthority.OPERATION_ADMIN },
+      { id: 10 },
+    );
+
+    expect(queryBuilder.andWhere).not.toHaveBeenCalledWith('order.businessUserId = :userId', expect.anything());
   });
 });
