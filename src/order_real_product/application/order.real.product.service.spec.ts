@@ -42,6 +42,7 @@ const createService = () => {
   const orderProductMappingRepository = {
     createQueryBuilder: jest.fn(),
     find: jest.fn(),
+    findOne: jest.fn(),
     save: jest.fn(),
   };
   const productRepository = {
@@ -336,6 +337,21 @@ describe('OrderRealProductService 실물상품 조회 접근 제어', () => {
       { id: 100, authority: IUserAuthority.CORPORATE_ADMIN },
       { id: 20 },
     );
+
+    expect(queryBuilder.andWhere).toHaveBeenCalledWith('realProductOrder.businessUserId = :userId', { userId: 100 });
+  });
+
+  it('배송 추적 상세 조회는 고객사 계정일 때 본인 고객사 주문 매핑으로 제한한다', async () => {
+    const { service, orderProductMappingRepository } = createService();
+    const queryBuilder = createQueryBuilder(null);
+    orderProductMappingRepository.createQueryBuilder.mockReturnValue(queryBuilder);
+
+    await expect(
+      (service as any).getDeliveryTrackingDetail(
+        { id: 100, authority: IUserAuthority.CORPORATE_ADMIN },
+        { id: 20 },
+      ),
+    ).rejects.toThrow('주문 매핑 정보를 찾을 수 없습니다.');
 
     expect(queryBuilder.andWhere).toHaveBeenCalledWith('realProductOrder.businessUserId = :userId', { userId: 100 });
   });

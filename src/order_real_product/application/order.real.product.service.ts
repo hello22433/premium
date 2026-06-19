@@ -602,14 +602,23 @@ export class OrderRealProductService {
   }
 
   async getDeliveryTrackingDetail(
+    user: ILoginUserInfo,
     getParam: OrderRealProductDeliveryTrackingGetDetailReqParamDto,
   ): Promise<OrderRealProductGetDeliveryTrackDetailResDto> {
     const { id } = getParam;
 
-    const mapping = await this.orderProductMappingRepository.findOne({
-      where: { id },
-      relations: ['realProductOrder', 'realProductOrder.user', 'realProductOrder.businessUser', 'realProductOrder.businessUser.company', 'product'],
-    });
+    let queryBuilder = this.orderProductMappingRepository
+      .createQueryBuilder('orderRealProductMapping')
+      .innerJoinAndSelect('orderRealProductMapping.realProductOrder', 'realProductOrder')
+      .leftJoinAndSelect('realProductOrder.user', 'user')
+      .leftJoinAndSelect('realProductOrder.businessUser', 'businessUser')
+      .leftJoinAndSelect('businessUser.company', 'businessUserCompany')
+      .leftJoinAndSelect('orderRealProductMapping.product', 'product')
+      .where('orderRealProductMapping.id = :id', { id });
+
+    queryBuilder = this.applyRealProductOrderAccessScope(queryBuilder, user, 'realProductOrder');
+
+    const mapping = await queryBuilder.getOne();
 
     if (!mapping) {
       throw new BadRequestException('주문 매핑 정보를 찾을 수 없습니다.');

@@ -217,8 +217,11 @@ export class OrderRealProductController {
   // ====================================================
   @Get('/real-product/order/delivery-track/detail/:id')
   @UseGuards(AuthUserAuthorizationGuard)
-  getDeliveryTrackingDetail(@Param() getParam: OrderRealProductDeliveryTrackingGetDetailReqParamDto) {
-    return this.orderRealProductService.getDeliveryTrackingDetail(getParam);
+  getDeliveryTrackingDetail(
+    @User() user: ILoginUserInfo,
+    @Param() getParam: OrderRealProductDeliveryTrackingGetDetailReqParamDto,
+  ) {
+    return this.orderRealProductService.getDeliveryTrackingDetail(user, getParam);
   }
 
   @ApiOperation({
