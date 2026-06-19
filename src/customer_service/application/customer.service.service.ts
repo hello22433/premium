@@ -2,6 +2,7 @@ import { BadRequestException, ConflictException, Injectable, InternalServerError
 import { ConfigService } from '@nestjs/config';
 import { applyReplaceCharacters } from '../../common/utils/replace-characters.util';
 import {
+  CS_HISTORY_TYPE,
   CustomerServiceCouponRefreshReqDto,
   CustomerServiceDiscardReqDto,
   CustomerServiceExcelDownloadReqDto,
@@ -1483,19 +1484,19 @@ export class CustomerServiceService {
 
     let beforeChange = '';
     switch (getBody.type) {
-      case '재전송': {
+      case CS_HISTORY_TYPE.RESEND: {
         break;
       }
-      case '수신정보 변경요청': {
+      case CS_HISTORY_TYPE.RECEIVER_CHANGE: {
         beforeChange = orderDelivery.deliveryTarget;
         break;
       }
-      case '폐기':
-      case '환불폐기': {
+      case CS_HISTORY_TYPE.DISCARD:
+      case CS_HISTORY_TYPE.REFUND_DISCARD: {
         beforeChange = orderDelivery.couponStatus;
         break;
       }
-      case '폐기 후 신규 발송': {
+      case CS_HISTORY_TYPE.DISCARD_REISSUE: {
         // beforeChange와 afterChange는 execHistory case 블록에서 설정됨
         break;
       }
@@ -1528,8 +1529,8 @@ export class CustomerServiceService {
           break;
       }
     } else if (
-      getBody.type === '수신정보 변경요청' ||
-      getBody.type === '폐기 후 신규 발송'
+      getBody.type === CS_HISTORY_TYPE.RECEIVER_CHANGE ||
+      getBody.type === CS_HISTORY_TYPE.DISCARD_REISSUE
     ) {
       sendMethod = displayMethod;
     }
@@ -1632,16 +1633,16 @@ export class CustomerServiceService {
     let discardRestoreAmount: number | null = null;
 
     switch (map.type) {
-      case '단순문의': {
+      case CS_HISTORY_TYPE.SIMPLE_INQUIRY: {
         break;
       }
-      case '재전송': {
+      case CS_HISTORY_TYPE.RESEND: {
         // 더블클릭/더블서밋으로 같은 건이 2회 발송되던 문제 방어.
         // execResend 가 비관락·dedup·발송·이력저장을 한 트랜잭션에서 처리하므로 공통 이력 저장은 건너뛴다.
         await this.execResend(map);
         return;
       }
-      case '수신정보 변경요청': {
+      case CS_HISTORY_TYPE.RECEIVER_CHANGE: {
         const orderDelivery = map.orderDelivery as OrderDeliveryEntity;
         const newTarget = map.afterChange;
         let encryptedNewTarget: string;
@@ -1689,7 +1690,7 @@ export class CustomerServiceService {
         afterChange = encryptedNewTarget;
         break;
       }
-      case '폐기 후 신규 발송': {
+      case CS_HISTORY_TYPE.DISCARD_REISSUE: {
         const newTarget = map.afterChange;
         const orderDelivery = map.orderDelivery as OrderDeliveryEntity;
 
@@ -2009,7 +2010,7 @@ export class CustomerServiceService {
 
         return;
       }
-      case '폐기': {
+      case CS_HISTORY_TYPE.DISCARD: {
         const result = await this.execDiscard(map.user, map.orderDeliveryId, OrderDeliveryCouponStatus.CANCEL);
         afterChange = result.orderDelivery.couponStatus;
         discardDestroyAmount = result.destroyAmount;
@@ -2019,7 +2020,7 @@ export class CustomerServiceService {
         }
         break;
       }
-      case '환불폐기': {
+      case CS_HISTORY_TYPE.REFUND_DISCARD: {
         const result = await this.execDiscard(map.user, map.orderDeliveryId, OrderDeliveryCouponStatus.REFUND_CANCEL);
         afterChange = result.orderDelivery.couponStatus;
         discardDestroyAmount = result.destroyAmount;
@@ -2117,7 +2118,7 @@ export class CustomerServiceService {
         let beforeChange = h.beforeChange;
         let afterChange = h.afterChange;
 
-        if (h.type === '수신정보 변경요청') {
+        if (h.type === CS_HISTORY_TYPE.RECEIVER_CHANGE) {
           beforeChange = this.cryptoCipher.safeDecryptDeliveryTarget(beforeChange) ?? beforeChange;
           afterChange = this.cryptoCipher.safeDecryptDeliveryTarget(afterChange) ?? afterChange;
         }
