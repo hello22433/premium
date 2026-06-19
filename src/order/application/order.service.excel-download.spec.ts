@@ -4,6 +4,7 @@ import { IOrderStatus } from '../interface/order.status';
 import { IOrderType } from '../interface/order.type';
 import { IOrderSection } from '../interface/order.section';
 import { IUserAuthority } from '../../user/interface/user.authority';
+import { ViewScopeType } from '../../entity/user.view.scope.entity';
 
 /**
  * D3-34 스트리밍 전환 검증: id수집→청크재조회 후 행 수·상품명·발송수량 보존
@@ -113,6 +114,12 @@ const setupService = (orders: any[]) => {
 
   const service = Object.create(OrderService.prototype) as any;
   service.orderRepository = { createQueryBuilder: jest.fn().mockReturnValue(qb) };
+  service.userRepository = {
+    findOne: jest.fn().mockResolvedValue({ id: BASE_USER.id, companyId: null, departmentId: null }),
+  };
+  service.userViewScopeRepository = {
+    findOne: jest.fn().mockResolvedValue({ scopeType: ViewScopeType.ALL, getDeptIdList: () => [] }),
+  };
   service.activityLogService = {
     verifyPassword: jest.fn().mockResolvedValue(undefined),
     createLog: createLogMock,
