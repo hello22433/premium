@@ -43,6 +43,7 @@ import { addDays, format, subDays } from 'date-fns';
 import { normalizeLineBreaks } from '../../delivery/domain/email.delivery.template';
 import { resolveExpireDays, couponTokenExpiry } from '../../common/utils/expire.util';
 import { DateFormatStr } from '../../common/domain/date.format.str';
+import { PhoneUtil } from '../../common/utils/phone.util';
 
 import dayjs from 'dayjs';
 import timezone from 'dayjs/plugin/timezone';
@@ -1053,8 +1054,10 @@ export class OrderReceiveService {
       throw new BadRequestException('인증받지 않은 key입니다.');
     }
 
-    // 핸드폰 번호 암호화 저장
-    const encryptedPhoneNumber = this.cryptoCipher.encryptDeliveryTarget(getBody.phoneNumber);
+    // 핸드폰 번호 정규화(하이픈 제거) 후 암호화 저장 — CS 검색은 정규화된 암호문으로 매칭하므로 동일 규칙 적용
+    const encryptedPhoneNumber = this.cryptoCipher.encryptDeliveryTarget(
+      PhoneUtil.normalizeDeliveryTarget(getBody.phoneNumber),
+    );
 
     // EMAIL 쿠폰 발송 동시성 차단: CAS로 claim을 선점한 요청만 PIN 발급/외부 발송을 수행한다.
     // (read-check만으로는 두 요청이 모두 발송 후 늦은 실패가 SEND를 덮어쓸 수 있음)
@@ -1118,7 +1121,14 @@ export class OrderReceiveService {
       if (orderDelivery.barCode) {
         this.updateCouponExpiration(orderDelivery, issueProduct);
         orderDelivery.imagePath = await this.createCouponImage(issueProduct, orderDelivery);
-        await this.orderDeliveryRepository.save(orderDelivery);
+        // 전체 엔티티 save()는 claim 직전 load된 stale emailCouponClaim* 값으로 DB를 덮어써
+        // 최종 update의 WHERE token 매칭을 깨뜨린다(emailReceiverPhone/SEND 누락). 변경 컬럼만 부분 update.
+        await this.orderDeliveryRepository.update(orderDelivery.id, {
+          imagePath: orderDelivery.imagePath,
+          couponIssuedAt: orderDelivery.couponIssuedAt,
+          expireAt: orderDelivery.expireAt,
+          encourageAt: orderDelivery.encourageAt,
+        });
       }
     }
 
