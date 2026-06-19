@@ -13,6 +13,8 @@ import { IdempotencyKeyEntity } from '../entity/idempotency.key.entity';
 import { ExternalApiAccountEntity } from '../entity/external.api.account.entity';
 import { ExternalApiAllowedIpEntity } from '../entity/external.api.allowed.ip.entity';
 import { UserDiscountEntity } from '../entity/user.discount.entity';
+import { ApiAppEntity } from '../entity/api.app.entity';
+import { ApiCredentialEntity } from '../entity/api.credential.entity';
 
 import { ExternalApiController } from './api/external.api.controller';
 import { ExternalApiService } from './application/external.api.service';
@@ -43,6 +45,8 @@ import { OrderFromModule } from '../order_from/order.from.module';
       ExternalApiAccountEntity,
       ExternalApiAllowedIpEntity,
       UserDiscountEntity,
+      ApiAppEntity,
+      ApiCredentialEntity,
     ]),
     ThrottlerModule.forRoot([
       {

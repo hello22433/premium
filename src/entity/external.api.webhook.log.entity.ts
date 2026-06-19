@@ -13,6 +13,10 @@ export class ExternalApiWebhookLogEntity {
   @JoinColumn({ name: 'external_api_account_id' })
   account: ExternalApiAccountEntity;
 
+  @Index()
+  @Column({ type: 'bigint', nullable: true, comment: 'FK) api_app.id (PR2a 신구 병행)' })
+  apiAppId: string | null;
+
   @Column({ type: 'bigint', nullable: true, comment: 'FK) order_delivery.id' })
   orderDeliveryId: number | null;
 

@@ -140,6 +140,9 @@ function makeOrder(): OrderEntity {
   } as any;
 }
 
+// PR2a: phaseA_* 가 ctx 인자(ctx.apiApp.id 등)를 요구. billingUserId 는 account.user.id(=42)와 일치시켜 단순모드 동작 보존.
+const ctx = { apiApp: { id: '1' }, apiCredential: { id: '1' }, billingUserId: 42, externalCustomerId: null } as any;
+
 describe('ExternalApiService wallet 차감 (deductViaWallet)', () => {
   it('선정산 예치금 충분 → allocation 생성 + legacy mirror(company.balance/allSettleAmount), user.balance 불변', async () => {
     const allocation = makeAllocation({
@@ -415,7 +418,7 @@ describe('phaseA_createAndDeduct (R6 관계그래프)', () => {
     const account = makeAccount();
     const dto: any = { productCode: 'P1', deliveryMethod: 'MMS', recipientPhone: '01000000000', message: '', title: 't', senderPhone: '0100' };
 
-    const result = await (svc as any).phaseA_createAndDeduct(account, dto);
+    const result = await (svc as any).phaseA_createAndDeduct(account, dto, ctx);
 
     expect(build).toHaveBeenCalledTimes(1);
     const orderArg = (build.mock.calls[0] as any[])[0];
@@ -464,7 +467,7 @@ describe('phaseA_createSsgAndDeduct (SSG: allocation + ssgEvent 둘 다)', () =>
     const account = makeAccount();
     const dto: any = { amount: 50000, recipientPhone: '01000000000', message: '', senderPhone: '0100' };
 
-    const result = await (svc as any).phaseA_createSsgAndDeduct(account, dto);
+    const result = await (svc as any).phaseA_createSsgAndDeduct(account, dto, ctx);
 
     // ssgEvent 차감 (협력사측, wallet 과 독립)
     expect(deductEventBalance).toHaveBeenCalledTimes(1);
@@ -482,7 +485,7 @@ describe('phaseA_createSsgAndDeduct (SSG: allocation + ssgEvent 둘 다)', () =>
     const account = makeAccount();
     const dto: any = { amount: 50000, recipientPhone: '01000000000', message: '', senderPhone: '0100' };
 
-    await (svc as any).phaseA_createSsgAndDeduct(account, dto);
+    await (svc as any).phaseA_createSsgAndDeduct(account, dto, ctx);
 
     expect((svc as any).deductBalance).toHaveBeenCalledWith(account, 50000);
     expect(deductEventBalance).toHaveBeenCalledTimes(1);

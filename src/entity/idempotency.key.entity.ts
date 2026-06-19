@@ -6,7 +6,7 @@ export enum IdempotencyKeyStatus {
 }
 
 @Entity('idempotency_keys')
-@Unique('idx_idempotency_unique', ['idempotencyKey', 'userId', 'endpoint'])
+@Unique('uq_idempotency', ['idempotencyKey', 'apiAppId', 'endpoint'])
 export class IdempotencyKeyEntity {
   @PrimaryGeneratedColumn()
   id: number;
@@ -16,6 +16,9 @@ export class IdempotencyKeyEntity {
 
   @Column({ type: 'int', comment: 'FK) user.id (API Key 소유자)' })
   userId: number;
+
+  @Column({ type: 'bigint', nullable: true, comment: 'FK) api_app.id (PR2a 멱등 re-key)' })
+  apiAppId: string | null;
 
   @Column({ type: 'varchar', length: 200, comment: 'API 엔드포인트' })
   endpoint: string;

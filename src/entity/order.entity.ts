@@ -92,6 +92,13 @@ export class OrderEntity extends BaseEntity {
   @Column({ default: true, comment: '신규 과금 흐름 적용 여부 (true: 발송확정 시 차감)' })
   isNewBillingFlow: boolean;
 
+  @Index()
+  @Column({ type: 'bigint', nullable: true, comment: 'FK) api_app.id (외부API 호출주체, PR2a)' })
+  apiAppId: string | null;
+
+  @Column({ type: 'bigint', nullable: true, comment: 'FK) api_credential.id (PR2a)' })
+  apiCredentialId: string | null;
+
   @Column({ default: false, comment: '카드할증 적용 여부 (3%)' })
   cardSurchargeApplied: boolean;
 

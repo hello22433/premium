@@ -72,6 +72,8 @@ import { IdempotencyKeyEntity } from '../entity/idempotency.key.entity';
 import { PopularProductEntity } from '../entity/popular.product.entity';
 import { GiftielExchangeHistoryEntity } from '../entity/giftiel.exchange.history.entity';
 import { ExternalApiAccountEntity } from '../entity/external.api.account.entity';
+import { ApiAppEntity } from '../entity/api.app.entity';
+import { ApiCredentialEntity } from '../entity/api.credential.entity';
 import { ExternalApiAllowedIpEntity } from '../entity/external.api.allowed.ip.entity';
 import { ExternalApiSsgRequestEntity } from '../entity/external.api.ssg.request.entity';
 import { ExternalApiWebhookLogEntity } from '../entity/external.api.webhook.log.entity';
@@ -167,6 +169,8 @@ import { ForbiddenWordBlockLogEntity } from '../entity/forbidden.word.block.log.
           PopularProductEntity,
           GiftielExchangeHistoryEntity,
           ExternalApiAccountEntity,
+          ApiAppEntity,
+          ApiCredentialEntity,
           ExternalApiAllowedIpEntity,
           ExternalApiSsgRequestEntity,
           ExternalApiWebhookLogEntity,
