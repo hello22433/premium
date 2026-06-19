@@ -1473,27 +1473,8 @@ export class PartnerCompanyExternBatchService {
     this.logger.log(`[diagnoseCulturelandDailyRange] 시작 - ${startDay} ~ ${endDay}`);
 
     // 1) 기간 내 사용된 certNo 수집 (certNo -> 최초 사용일)
-    const certNoToUseDate = new Map<string, string>();
-    const failedDays: string[] = [];
-    let daysQueried = 0;
-
-    let current = startDay;
-    while (current <= endDay) {
-      try {
-        const dailyResult = await this.culture.checkDaily({ useDate: current });
-        for (const certNo of dailyResult.certNoList) {
-          if (!certNoToUseDate.has(certNo)) {
-            certNoToUseDate.set(certNo, dailyResult.useDate);
-          }
-        }
-        daysQueried += 1;
-      } catch (e) {
-        this.logger.error(`[diagnoseCulturelandDailyRange] 조회 실패: ${current}`);
-        this.logger.error(e);
-        failedDays.push(current);
-      }
-      current = this.addOneDay(current);
-    }
+    const { certNoToUseDate, failedDays, daysQueried } =
+      await this.collectCulturelandUsedCertNos(startDay, endDay);
 
     const uniqueCertNos = [...certNoToUseDate.keys()];
     this.logger.log(
@@ -1548,6 +1529,189 @@ export class PartnerCompanyExternBatchService {
       byStatus,
       wronglyExpired,
     };
+  }
+
+  /**
+   * 컬쳐랜드 일대사 백필 보정 (기간) - 60일 상품 전용
+   * IP 차단(2026-01-01~)으로 누락된 일대사를 사후 재실행해 잘못 처리된 발송건을 정정한다.
+   * startDay~endDay 일대사 API를 날짜별 호출해 사용된 certNo -> 실제 사용일을 수집하고,
+   * 우리 60일 컬쳐랜드 발송건 중 현재 NOT_USED 또는 EXPIRED(만료로 잘못 찍힌 피해)인 건을
+   * USED(교환) + tradeAt(실제 사용일)로 정정한다.
+   * - apply=false(기본): 드라이런. DB 변경 없이 보정 대상만 집계/샘플 반환.
+   * - apply=true: 실제 update 수행.
+   * 정산/지갑은 건드리지 않는다(기존 checkCulturelandDaily 교환처리와 동일하게 상태만 정정).
+   */
+  async backfillCulturelandDailyRange(
+    startDay: string,
+    endDay: string,
+    apply = false,
+  ): Promise<{
+    range: { startDay: string; endDay: string };
+    apply: boolean;
+    daysQueried: number;
+    failedDays: string[];
+    uniqueCertNos: number;
+    matched: number;
+    notFound: number;
+    fromStatus: Record<string, number>;
+    skippedTerminal: number;
+    updated: number;
+    failedUpdates: number;
+    samples: Array<{
+      orderDeliveryId: number;
+      certNo: string;
+      fromStatus: string;
+      useDate: string;
+      tradeAt: string;
+    }>;
+  }> {
+    this.logger.log(
+      `[backfillCulturelandDailyRange] 시작 - ${startDay} ~ ${endDay}, apply=${apply}`,
+    );
+
+    // 1) 기간 내 사용된 certNo 수집 (certNo -> 최초 사용일)
+    const { certNoToUseDate, failedDays, daysQueried } =
+      await this.collectCulturelandUsedCertNos(startDay, endDay);
+
+    const uniqueCertNos = [...certNoToUseDate.keys()];
+    this.logger.log(
+      `[backfillCulturelandDailyRange] 수집 완료 - 조회 ${daysQueried}일, 실패 ${failedDays.length}일, 고유 certNo ${uniqueCertNos.length}건`,
+    );
+
+    // 2) 우리 60일 컬쳐랜드 order_delivery 와 대조 (IN 청크 조회, status 무관)
+    const fromStatusCount: Record<string, number> = {};
+    const samples: Array<{
+      orderDeliveryId: number;
+      certNo: string;
+      fromStatus: string;
+      useDate: string;
+      tradeAt: string;
+    }> = [];
+    let matched = 0;
+    let skippedTerminal = 0;
+    let updated = 0;
+    let failedUpdates = 0;
+    const SAMPLE_LIMIT = 100;
+
+    const CHUNK = 500;
+    for (let i = 0; i < uniqueCertNos.length; i += CHUNK) {
+      const chunk = uniqueCertNos.slice(i, i + CHUNK);
+      const rows = await this.orderDeliveryRepository
+        .createQueryBuilder('od')
+        .select(['od.id', 'od.couponNum', 'od.couponStatus'])
+        .innerJoin('od.orderProductMapping', 'opm')
+        .innerJoin('opm.product', 'p')
+        .innerJoin('p.partnerCompany', 'pc')
+        .where('od.couponNum IN (:...certNos)', { certNos: chunk })
+        .andWhere('pc.type = :type', { type: 'CULTURELAND' })
+        .andWhere('p.expireDay = :expireDay', { expireDay: 60 })
+        .getMany();
+
+      for (const row of rows) {
+        matched += 1;
+        const fromStatus = row.couponStatus ?? 'UNKNOWN';
+
+        // NOT_USED / EXPIRED 만 보정 대상. 이미 USED/CANCEL/REFUND_CANCEL 등은 건드리지 않음.
+        if (
+          fromStatus !== OrderDeliveryCouponStatus.NOT_USED &&
+          fromStatus !== OrderDeliveryCouponStatus.EXPIRED
+        ) {
+          skippedTerminal += 1;
+          continue;
+        }
+
+        const useDateStr = row.couponNum ? certNoToUseDate.get(row.couponNum) : undefined;
+        if (!useDateStr || !row.couponNum) {
+          continue;
+        }
+
+        const tradeAt = new Date(
+          parseInt(useDateStr.substring(0, 4)),
+          parseInt(useDateStr.substring(4, 6)) - 1,
+          parseInt(useDateStr.substring(6, 8)),
+        );
+
+        fromStatusCount[fromStatus] = (fromStatusCount[fromStatus] ?? 0) + 1;
+        if (samples.length < SAMPLE_LIMIT) {
+          samples.push({
+            orderDeliveryId: row.id,
+            certNo: row.couponNum,
+            fromStatus,
+            useDate: useDateStr,
+            tradeAt: format(tradeAt, 'yyyy-MM-dd'),
+          });
+        }
+
+        if (apply) {
+          try {
+            await this.orderDeliveryRepository.update(
+              { id: row.id },
+              { couponStatus: OrderDeliveryCouponStatus.USED, tradeAt },
+            );
+            updated += 1;
+          } catch (e) {
+            // 한 건 실패가 전체 백필을 중단시키지 않도록 격리(재실행 시 이미 USED는 terminal로 skip → 멱등).
+            failedUpdates += 1;
+            this.logger.error(`[backfillCulturelandDailyRange] update 실패: orderDeliveryId=${row.id}`);
+            this.logger.error(e);
+          }
+        }
+      }
+    }
+
+    const notFound = uniqueCertNos.length - matched;
+    const toUpdateTotal = Object.values(fromStatusCount).reduce((a, b) => a + b, 0);
+    this.logger.log(
+      `[backfillCulturelandDailyRange] 완료 - apply=${apply}, 매칭 ${matched}, 없음 ${notFound}, 보정대상 ${toUpdateTotal}, terminal제외 ${skippedTerminal}, 갱신 ${updated}, 갱신실패 ${failedUpdates}, fromStatus=${JSON.stringify(fromStatusCount)}`,
+    );
+
+    return {
+      range: { startDay, endDay },
+      apply,
+      daysQueried,
+      failedDays,
+      uniqueCertNos: uniqueCertNos.length,
+      matched,
+      notFound,
+      fromStatus: fromStatusCount,
+      skippedTerminal,
+      updated,
+      failedUpdates,
+      samples,
+    };
+  }
+
+  /**
+   * 컬쳐랜드 일대사 기간 수집(공용): startDay~endDay 날짜별 checkDaily 호출로
+   * 사용된 certNo -> 최초 사용일(useDate) 맵을 만든다. (diagnose/backfill 공용)
+   */
+  private async collectCulturelandUsedCertNos(
+    startDay: string,
+    endDay: string,
+  ): Promise<{ certNoToUseDate: Map<string, string>; failedDays: string[]; daysQueried: number }> {
+    const certNoToUseDate = new Map<string, string>();
+    const failedDays: string[] = [];
+    let daysQueried = 0;
+
+    let current = startDay;
+    while (current <= endDay) {
+      try {
+        const dailyResult = await this.culture.checkDaily({ useDate: current });
+        for (const certNo of dailyResult.certNoList) {
+          if (!certNoToUseDate.has(certNo)) {
+            certNoToUseDate.set(certNo, dailyResult.useDate);
+          }
+        }
+        daysQueried += 1;
+      } catch (e) {
+        this.logger.error(`[collectCulturelandUsedCertNos] 조회 실패: ${current}`);
+        this.logger.error(e);
+        failedDays.push(current);
+      }
+      current = this.addOneDay(current);
+    }
+
+    return { certNoToUseDate, failedDays, daysQueried };
   }
 
   /** YYYYMMDD 문자열을 하루 증가시킨다. */
