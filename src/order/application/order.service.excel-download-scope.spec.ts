@@ -9,8 +9,10 @@ describe('OrderService excelDownload scope', () => {
 
   const createBuilder = () => {
     const clauses: string[] = [];
+    const orderBys: Array<[string, string]> = [];
     const builder: any = {
       clauses,
+      orderBys,
       innerJoinAndSelect: jest.fn().mockReturnThis(),
       leftJoinAndSelect: jest.fn().mockReturnThis(),
       withDeleted: jest.fn().mockReturnThis(),
@@ -20,6 +22,10 @@ describe('OrderService excelDownload scope', () => {
       }),
       andWhere: jest.fn((clause: string) => {
         clauses.push(clause);
+        return builder;
+      }),
+      orderBy: jest.fn((column: string, direction: string) => {
+        orderBys.push([column, direction]);
         return builder;
       }),
       getMany: jest.fn().mockResolvedValue([]),
@@ -71,9 +77,11 @@ describe('OrderService excelDownload scope', () => {
 
     await service.excelDownload(user, { ...baseBody, section: IOrderSection.ORDER });
 
+    expect(builder.clauses).toContain('order.deletedAt IS NULL');
     expect(builder.clauses).toContain(
       '(order.userId = :userId OR order.operationUserId = :userId OR order.clientUserId = :userId)',
     );
+    expect(builder.orderBys).toContainEqual(['order.id', 'DESC']);
   });
 
   it('발송 엑셀 다운로드는 TEMP 제외 조건과 view_scope 조건을 함께 적용한다', async () => {

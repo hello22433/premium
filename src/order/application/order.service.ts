@@ -228,6 +228,20 @@ function resolveSettleFee(
   return { fee: 0, priceAdjustment: null, settleDiscountType: mapping.settleDiscountType };
 }
 
+type OrderSearchType = 'ALL' | 'CUSTOMER' | 'MANAGER' | 'OPERATION_ADMIN' | 'EVENT' | 'PRODUCT';
+
+type OrderListQueryParams = {
+  section: IOrderSection;
+  type: IOrderType;
+  status?: IOrderStatus;
+  startAt?: string;
+  endAt?: string;
+  searchType?: OrderSearchType;
+  searchKeyword?: string;
+  sendingType?: IOrderSendingType;
+  dateType?: IOrderDateType;
+};
+
 @Injectable()
 export class OrderService {
   private logger = new Logger('OrderService');
@@ -564,6 +578,101 @@ export class OrderService {
     return queryBuilder;
   }
 
+  private applyOrderSearchCondition<T extends ObjectLiteral>(
+    queryBuilder: SelectQueryBuilder<T>,
+    searchType: OrderSearchType | undefined,
+    searchKeyword: string | undefined,
+  ): SelectQueryBuilder<T> {
+    if (!searchKeyword || searchKeyword.length < 1) {
+      return queryBuilder;
+    }
+
+    switch (searchType) {
+      case 'CUSTOMER':
+        return queryBuilder.andWhere(
+          '(COALESCE(order.snapshotBusinessName, userCompany.businessName) LIKE :keyword OR COALESCE(order.snapshotClientBusinessName, clientCompany.businessName) LIKE :keyword)',
+          { keyword: `%${searchKeyword}%` },
+        );
+      case 'MANAGER':
+        return queryBuilder.andWhere(
+          '(COALESCE(order.snapshotPersonName, user.personName) LIKE :keyword OR COALESCE(order.snapshotClientPersonName, clientUser.personName) LIKE :keyword)',
+          { keyword: `%${searchKeyword}%` },
+        );
+      case 'OPERATION_ADMIN':
+        return queryBuilder.andWhere(
+          'COALESCE(order.snapshotOperationPersonName, operationUser.personName) LIKE :keyword',
+          { keyword: `%${searchKeyword}%` },
+        );
+      case 'EVENT':
+        return queryBuilder.andWhere('order.eventName LIKE :keyword', { keyword: `%${searchKeyword}%` });
+      case 'PRODUCT':
+        return queryBuilder.andWhere('product.name LIKE :keyword', { keyword: `%${searchKeyword}%` });
+      case 'ALL':
+      default:
+        return queryBuilder.andWhere(
+          `(${[
+            'COALESCE(order.snapshotBusinessName, userCompany.businessName) LIKE :keyword',
+            'COALESCE(order.snapshotClientBusinessName, clientCompany.businessName) LIKE :keyword',
+            'COALESCE(order.snapshotPersonName, user.personName) LIKE :keyword',
+            'COALESCE(order.snapshotClientPersonName, clientUser.personName) LIKE :keyword',
+            'COALESCE(order.snapshotOperationPersonName, operationUser.personName) LIKE :keyword',
+            'order.eventName LIKE :keyword',
+            'product.name LIKE :keyword',
+          ].join(' OR ')})`,
+          { keyword: `%${searchKeyword}%` },
+        );
+    }
+  }
+
+  private async buildOrderListQuery(
+    user: ILoginUserInfo,
+    params: OrderListQueryParams,
+  ): Promise<SelectQueryBuilder<OrderEntity>> {
+    const { section, type, status, startAt, endAt, searchType, searchKeyword, sendingType, dateType } = params;
+
+    let queryBuilder = this.orderRepository
+      .createQueryBuilder('order')
+      .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('user.company', 'userCompany')
+      .leftJoinAndSelect('order.clientUser', 'clientUser')
+      .leftJoinAndSelect('clientUser.company', 'clientCompany')
+      .leftJoinAndSelect('order.operationUser', 'operationUser')
+      .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
+      .leftJoinAndSelect('orderProductMappings.product', 'product')
+      .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
+      .withDeleted()
+      .where('order.type = :type', { type })
+      .andWhere('order.deletedAt IS NULL');
+
+    const currentUser = await this.userRepository.findOne({
+      where: { id: user.id },
+      select: ['id', 'companyId', 'departmentId'],
+    });
+
+    const viewScope = await this.userViewScopeRepository.findOne({
+      where: { userId: user.id },
+    });
+
+    if (section === IOrderSection.ORDER) {
+      queryBuilder = this.applyViewScopeFilter(queryBuilder, user, currentUser, viewScope);
+    }
+
+    if (section === IOrderSection.SHIPPING) {
+      queryBuilder = queryBuilder.andWhere('order.status != :tempStatus', { tempStatus: IOrderStatus.TEMP });
+      queryBuilder = this.applyViewScopeFilter(queryBuilder, user, currentUser, viewScope);
+    }
+
+    this.applyDirectSendingFilter(queryBuilder, user, sendingType);
+
+    if (status) {
+      queryBuilder = queryBuilder.andWhere('order.status = :status', { status });
+    }
+
+    queryBuilder = this.applyOrderSearchCondition(queryBuilder, searchType, searchKeyword);
+    queryBuilder = this.applyOrderDateCondition(queryBuilder, dateType, startAt, endAt);
+    return queryBuilder.orderBy('order.id', 'DESC');
+  }
+
   /**
    * 보조 조회(리포트 이력 등)용 소유검증: 주문이 호출자의 view_scope 안에 있지 않으면 거부.
    * applyViewScopeFilter 와 동일 기준으로 IDOR(타사 주문 id 순회)을 차단한다.
@@ -623,99 +732,8 @@ export class OrderService {
   }
 
   async getList(user: ILoginUserInfo, getQuery: OrderGetListReqDto): Promise<OrderGetListResDto> {
-    const { section, type, status, startAt, endAt, searchType, searchKeyword, page, take, sendingType, dateType } = getQuery;
-
-    let queryBuilder = this.orderRepository
-      .createQueryBuilder('order')
-      .innerJoinAndSelect('order.user', 'user')
-      .leftJoinAndSelect('user.company', 'userCompany')
-      .leftJoinAndSelect('order.clientUser', 'clientUser')
-      .leftJoinAndSelect('clientUser.company', 'clientCompany')
-      .leftJoinAndSelect('order.operationUser', 'operationUser')
-      .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
-      .leftJoinAndSelect('orderProductMappings.product', 'product')
-      .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
-      .withDeleted()
-      .where('order.type = :type', { type })
-      .andWhere('order.deletedAt IS NULL');
-
-    // 현재 사용자 정보 및 조회 범위 설정 조회
-    const currentUser = await this.userRepository.findOne({
-      where: { id: user.id },
-      select: ['id', 'companyId', 'departmentId'],
-    });
-
-    const viewScope = await this.userViewScopeRepository.findOne({
-      where: { userId: user.id },
-    });
-
-    // 주문 관리 일 경우
-    if (section === IOrderSection.ORDER) {
-      queryBuilder = this.applyViewScopeFilter(queryBuilder, user, currentUser, viewScope);
-    }
-
-    // 발송관리 일 경우
-    if (section === IOrderSection.SHIPPING) {
-      // 발송관리에서는 임시저장 상태 제외
-      queryBuilder = queryBuilder.andWhere('order.status != :tempStatus', { tempStatus: IOrderStatus.TEMP });
-      queryBuilder = this.applyViewScopeFilter(queryBuilder, user, currentUser, viewScope);
-    }
-
-    // 직발송 권한 제어 (역할 기반 + 발송유형 필터)
-    this.applyDirectSendingFilter(queryBuilder, user, sendingType);
-
-    if (status) {
-      queryBuilder = queryBuilder.andWhere('order.status = :status', { status });
-    }
-
-    // 검색 조건 처리 (최소 1자 이상일 때만 검색)
-    if (searchKeyword && searchKeyword.length >= 1) {
-      switch (searchType) {
-        case 'CUSTOMER':
-          queryBuilder = queryBuilder.andWhere(
-            '(COALESCE(order.snapshotBusinessName, userCompany.businessName) LIKE :keyword OR COALESCE(order.snapshotClientBusinessName, clientCompany.businessName) LIKE :keyword)',
-            { keyword: `%${searchKeyword}%` },
-          );
-          break;
-        case 'MANAGER':
-          queryBuilder = queryBuilder.andWhere(
-            '(COALESCE(order.snapshotPersonName, user.personName) LIKE :keyword OR COALESCE(order.snapshotClientPersonName, clientUser.personName) LIKE :keyword)',
-            { keyword: `%${searchKeyword}%` },
-          );
-          break;
-        case 'OPERATION_ADMIN':
-          queryBuilder = queryBuilder.andWhere(
-            'COALESCE(order.snapshotOperationPersonName, operationUser.personName) LIKE :keyword',
-            { keyword: `%${searchKeyword}%` },
-          );
-          break;
-        case 'EVENT':
-          queryBuilder = queryBuilder.andWhere('order.eventName LIKE :keyword', { keyword: `%${searchKeyword}%` });
-          break;
-        case 'PRODUCT':
-          queryBuilder = queryBuilder.andWhere('product.name LIKE :keyword', { keyword: `%${searchKeyword}%` });
-          break;
-        case 'ALL':
-        default:
-          queryBuilder = queryBuilder.andWhere(
-            `(${[
-              'COALESCE(order.snapshotBusinessName, userCompany.businessName) LIKE :keyword',
-              'COALESCE(order.snapshotClientBusinessName, clientCompany.businessName) LIKE :keyword',
-              'COALESCE(order.snapshotPersonName, user.personName) LIKE :keyword',
-              'COALESCE(order.snapshotClientPersonName, clientUser.personName) LIKE :keyword',
-              'COALESCE(order.snapshotOperationPersonName, operationUser.personName) LIKE :keyword',
-              'order.eventName LIKE :keyword',
-              'product.name LIKE :keyword',
-            ].join(' OR ')})`,
-            { keyword: `%${searchKeyword}%` },
-          );
-          break;
-      }
-    }
-
-    queryBuilder = this.applyOrderDateCondition(queryBuilder, dateType, startAt, endAt);
-
-    queryBuilder = queryBuilder.orderBy('order.id', 'DESC');
+    const { page, take } = getQuery;
+    let queryBuilder = await this.buildOrderListQuery(user, getQuery);
 
     const skip = (page - 1) * take;
     queryBuilder = queryBuilder.take(take).skip(skip);
@@ -4546,7 +4564,7 @@ export class OrderService {
 
   async excelDownload(user: ILoginUserInfo, getBody: OrderExcelDownloadReqBodyDto) {
     const startTime = Date.now();
-    const { searchType, searchKeyword, type, status, startAt, endAt, section, password, downloadReason, sendingType, dateType } = getBody;
+    const { section, password, downloadReason } = getBody;
 
     // 비밀번호 검증
     await this.activityLogService.verifyPassword(user.id, password);
@@ -4555,89 +4573,15 @@ export class OrderService {
     const nowString = format(now, 'yyyyMMdd');
     let orderType = '';
 
-    let queryBuilder = this.orderRepository
-      .createQueryBuilder('order')
-      .innerJoinAndSelect('order.user', 'user')
-      .leftJoinAndSelect('user.company', 'userCompany')
-      .leftJoinAndSelect('order.clientUser', 'clientUser')
-      .leftJoinAndSelect('clientUser.company', 'clientCompany')
-      .leftJoinAndSelect('order.operationUser', 'operationUser')
-      .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
-      .leftJoinAndSelect('orderProductMappings.product', 'product')
-      .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
-      .withDeleted()
-      .where('order.type = :type', { type });
-
-    const currentUser = await this.userRepository.findOne({
-      where: { id: user.id },
-      select: ['id', 'companyId', 'departmentId'],
-    });
-
-    const viewScope = await this.userViewScopeRepository.findOne({
-      where: { userId: user.id },
-    });
-
-    // 주문 관리 일 경우
     if (section === IOrderSection.ORDER) {
-      queryBuilder = this.applyViewScopeFilter(queryBuilder, user, currentUser, viewScope);
       orderType = '주문';
     }
 
-    // 발송관리 일 경우
     if (section === IOrderSection.SHIPPING) {
-      queryBuilder = queryBuilder.andWhere('order.status != :tempStatus', { tempStatus: IOrderStatus.TEMP });
-      queryBuilder = this.applyViewScopeFilter(queryBuilder, user, currentUser, viewScope);
       orderType = '발송';
     }
 
-    // 직발송 권한 제어 (역할 기반 + 발송유형 필터)
-    this.applyDirectSendingFilter(queryBuilder, user, sendingType);
-
-    if (status) {
-      queryBuilder = queryBuilder.andWhere('order.status = :status', { status });
-    }
-
-    // 검색 조건 처리 (최소 1자 이상일 때만 검색)
-    if (searchKeyword && searchKeyword.length >= 1) {
-      switch (searchType) {
-        case 'CUSTOMER':
-          queryBuilder = queryBuilder.andWhere(
-            '(COALESCE(order.snapshotBusinessName, userCompany.businessName) LIKE :keyword OR COALESCE(order.snapshotClientBusinessName, clientCompany.businessName) LIKE :keyword)',
-            { keyword: `%${searchKeyword}%` },
-          );
-          break;
-        case 'MANAGER':
-          queryBuilder = queryBuilder.andWhere(
-            '(COALESCE(order.snapshotPersonName, user.personName) LIKE :keyword OR COALESCE(order.snapshotClientPersonName, clientUser.personName) LIKE :keyword)',
-            { keyword: `%${searchKeyword}%` },
-          );
-          break;
-        case 'EVENT':
-          queryBuilder = queryBuilder.andWhere('order.eventName LIKE :keyword', { keyword: `%${searchKeyword}%` });
-          break;
-        case 'PRODUCT':
-          queryBuilder = queryBuilder.andWhere('product.name LIKE :keyword', { keyword: `%${searchKeyword}%` });
-          break;
-        case 'ALL':
-        default:
-          queryBuilder = queryBuilder.andWhere(
-            `(${[
-              'COALESCE(order.snapshotBusinessName, userCompany.businessName) LIKE :keyword',
-              'COALESCE(order.snapshotClientBusinessName, clientCompany.businessName) LIKE :keyword',
-              'COALESCE(order.snapshotPersonName, user.personName) LIKE :keyword',
-              'COALESCE(order.snapshotClientPersonName, clientUser.personName) LIKE :keyword',
-              'COALESCE(order.snapshotOperationPersonName, operationUser.personName) LIKE :keyword',
-              'order.eventName LIKE :keyword',
-              'product.name LIKE :keyword',
-            ].join(' OR ')})`,
-            { keyword: `%${searchKeyword}%` },
-          );
-          break;
-      }
-    }
-
-    queryBuilder = this.applyOrderDateCondition(queryBuilder, dateType, startAt, endAt);
-
+    const queryBuilder = await this.buildOrderListQuery(user, getBody);
     const orderList = await queryBuilder.getMany();
 
     const workbook = new ExcelJS.Workbook();
