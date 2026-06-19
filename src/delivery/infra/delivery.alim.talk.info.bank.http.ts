@@ -164,11 +164,11 @@ export class DeliveryAlimTalkInfoBankHttp implements DeliveryAlimTalk {
 
       this.logger.log(`알림톡 발신 : ${JSON.stringify(responseData)}`);
 
-      // inquiry API로 수신 확인 재시도 (최대 3번, 각 1초 대기)
+      // inquiry API로 수신 확인 재시도 (최대 2번, 각 10초 대기)
       let reportResult: { success: boolean; reportCode?: string; data?: any; error?: string } | undefined = undefined;
 
-      for (let attempt = 1; attempt <= 3; attempt++) {
-        await sleep(1000);
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        await sleep(10000);
 
         reportResult = await this.inquiryReport(msgKey);
 
