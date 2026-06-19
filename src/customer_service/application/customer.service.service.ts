@@ -33,7 +33,9 @@ import { DeliveryBatchService } from '../../delivery/application/delivery.batch.
 import { RefundLedgerService } from '../../delivery/application/refund-ledger.service';
 import { WalletManagedPredicate } from '../../wallet/application/wallet-managed.predicate';
 import { RefundPoolService } from '../../wallet/application/refund-pool.service';
-import { OrderDeliveryAttemptEntity } from '../../entity/order.delivery.attempt.entity';
+import { OrderDeliveryAttemptEntity, OrderDeliveryAttemptType, OrderDeliveryAttemptStatus } from '../../entity/order.delivery.attempt.entity';
+import { OrderPaymentAllocationEntity } from '../../entity/order.payment.allocation.entity';
+import { OrderPaymentAllocationLineEntity } from '../../entity/order.payment.allocation.line.entity';
 import { OrderPaymentRefundEventType } from '../../entity/order.payment.refund.event.entity';
 import { buildDiscardRefundKey } from '../../wallet/interface/wallet-idempotency';
 import { WalletResourceType } from '../../wallet/interface/wallet-resource-type';
@@ -343,6 +345,61 @@ export class CustomerServiceService {
     }
 
     return restoreAmount;
+  }
+
+  /**
+   * 폐기후신규발송(핀교체, 비-SSG) — wallet-managed 주문에서 원본 delivery 의 wallet 장부를
+   * 신규 delivery 로 승계한다.
+   *
+   * 핀교체는 동일 결제를 그대로 승계(원본 폐기 시 환불 skip + 신규 재차감 없음)하므로,
+   * 발송확정 때 원본 delivery 에 매겨진 allocation_line 과 attempt 를 신규 delivery 가 이어받아야 한다.
+   * 승계하지 않으면 신규 delivery 를 폐기할 때:
+   *   - attempt 부재 → restoreBalanceOnDiscard 의 drift 가드가 환불 abort (쿠폰 폐기O/환불X)
+   *   - allocation_line 부재 → RefundPoolService 가 환불 대상 라인을 못 찾음
+   * 가 발생한다.
+   *
+   * same-tx 보장을 위해 line repoint + attempt 생성을 한 트랜잭션으로 묶는다.
+   */
+  private async carryWalletOwnershipToReissuedDelivery(
+    orderId: number,
+    oldDeliveryId: number,
+    newDeliveryId: number,
+  ): Promise<void> {
+    const isWalletManaged = await this.walletManagedPredicate.isWalletManaged(orderId);
+    if (!isWalletManaged) {
+      return;
+    }
+
+    await this.dataSource.transaction(async (manager) => {
+      const allocation = await manager.findOne(OrderPaymentAllocationEntity, {
+        where: { orderId },
+      });
+      if (!allocation) {
+        throw new Error(
+          `reissue wallet carry: wallet-managed 인데 allocation 없음 (orderId=${orderId})`,
+        );
+      }
+
+      // 1) allocation_line repoint (원본 → 신규). 환불 풀이 line.order_delivery_id IN (targetIds) 로 라인을 찾으므로 필수.
+      const lineUpdate = await manager.update(
+        OrderPaymentAllocationLineEntity,
+        { allocationId: allocation.id, orderDeliveryId: oldDeliveryId },
+        { orderDeliveryId: newDeliveryId },
+      );
+
+      // 2) 신규 delivery 에 INITIAL(DEDUCTED) attempt 생성 — 폐기 환불 멱등키 cycle = attempt.id.
+      await manager.save(OrderDeliveryAttemptEntity, {
+        orderDeliveryId: newDeliveryId,
+        attemptType: OrderDeliveryAttemptType.INITIAL,
+        status: OrderDeliveryAttemptStatus.DEDUCTED,
+        deductedAt: new Date(),
+      });
+
+      this.logger.log(
+        `[폐기후신규발송] wallet 장부 승계 - orderId=${orderId} old=${oldDeliveryId} new=${newDeliveryId} ` +
+          `lineRepointed=${lineUpdate.affected ?? 0}`,
+      );
+    });
   }
 
   async getList(getQuery: CustomerServiceGetListReqDto): Promise<CustomerServiceGetListResDto> {
@@ -1876,6 +1933,18 @@ export class CustomerServiceService {
         // barCode 검증 이전에 KEPT 하면 이후 !barCode 분기의 DEFERRED 역복원을 sweep 이 재시도 못 함(HIGH).
         if (isSsg && reissueEvent && resendDeductionId) {
           await this.deliveryBatchService.resolveReissuePendingKept(resendDeductionId);
+        }
+
+        // Wallet Cutover — 비-SSG 핀교체는 "동일 결제를 신규 delivery 로 승계"(폐기 시 환불 skip, 신규 재차감 없음).
+        // wallet-managed 면 원본 delivery 의 allocation_line/attempt 를 신규 delivery 로 이관해야
+        // 이후 신규 delivery 폐기 시 attempt/line 부재로 환불이 drift abort 되는 것을 막는다.
+        // (SSG 는 forfeit+신규 행사 재차감 모델이라 승계 대상 아님 → 별도 처리 필요.)
+        if (!isSsg) {
+          await this.carryWalletOwnershipToReissuedDelivery(
+            reissueOrderId,
+            discardedDelivery.id,
+            savedDelivery.id,
+          );
         }
 
         const newPin = fullDelivery.barCode;
