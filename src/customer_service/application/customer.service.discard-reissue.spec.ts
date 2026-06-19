@@ -150,6 +150,9 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
     service.cryptoCipher = cryptoCipher;
     // HIGH-3: Object.create 는 필드 이니셜라이저를 건너뜀 — logger 직접 주입
     service.logger = { error: jest.fn(), log: jest.fn(), warn: jest.fn() };
+    // wallet 승계 경로 의존성 — 기본은 비-wallet (carry 조기 return)
+    service.walletManagedPredicate = { isWalletManaged: jest.fn().mockResolvedValue(false) };
+    service.dataSource = { transaction: jest.fn() };
   });
 
   describe('reverseDiscard', () => {
@@ -355,6 +358,49 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
       );
       expect(reverseDiscardSpy).toHaveBeenCalledWith(7001, OrderDeliveryCouponStatus.NOT_USED);
       expect(orderDeliveryRepository.softDelete).toHaveBeenCalled();
+    });
+
+    it('10) GENERAL + wallet-managed: 신규 delivery 로 allocation_line repoint + INITIAL attempt 생성', async () => {
+      setupExecDiscard(); // discardedDelivery.id = 7001
+      orderDeliveryRepository.findOne.mockResolvedValue(buildFullDelivery(IOrderType.GENERAL, null)); // id 8001
+      service.walletManagedPredicate.isWalletManaged.mockResolvedValue(true);
+
+      const managerUpdate = jest.fn().mockResolvedValue({ affected: 1 });
+      const manager = {
+        findOne: jest.fn().mockResolvedValue({ id: '12', walletAccountId: '3' }),
+        update: managerUpdate,
+        save: jest.fn().mockResolvedValue({ id: 'A1' }),
+      };
+      service.dataSource.transaction.mockImplementation(async (cb: any) => cb(manager));
+
+      await service.execHistory(buildMap(IOrderType.GENERAL));
+
+      // wallet-managed 판정은 reissueOrderId(=555) 로
+      expect(service.walletManagedPredicate.isWalletManaged).toHaveBeenCalledWith(ORDER_ID);
+      // allocation_line repoint: 원본 7001 → 신규 8001
+      expect(managerUpdate).toHaveBeenCalledWith(
+        expect.anything(),
+        { allocationId: '12', orderDeliveryId: 7001 },
+        { orderDeliveryId: 8001 },
+      );
+      // 신규 delivery 에 INITIAL/DEDUCTED attempt 생성
+      const savedAttempt = manager.save.mock.calls.find(
+        (c: any[]) => c[1] && c[1].attemptType === 'INITIAL',
+      );
+      expect(savedAttempt).toBeDefined();
+      expect(savedAttempt[1].orderDeliveryId).toBe(8001);
+      expect(savedAttempt[1].status).toBe('DEDUCTED');
+    });
+
+    it('11) GENERAL + 비-wallet: carry 트랜잭션 미진입', async () => {
+      setupExecDiscard();
+      orderDeliveryRepository.findOne.mockResolvedValue(buildFullDelivery(IOrderType.GENERAL, null));
+      service.walletManagedPredicate.isWalletManaged.mockResolvedValue(false);
+
+      await service.execHistory(buildMap(IOrderType.GENERAL));
+
+      expect(service.walletManagedPredicate.isWalletManaged).toHaveBeenCalledWith(ORDER_ID);
+      expect(service.dataSource.transaction).not.toHaveBeenCalled();
     });
   });
 });
