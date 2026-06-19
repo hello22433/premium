@@ -2797,6 +2797,17 @@ export class CustomerServiceService {
 
     const fileStream = fs.createReadStream(filePath);
     fileStream.pipe(res);
+
+    fileStream.on('error', (err) => {
+      this.logger.error(`파일 스트림 오류: ${err}`);
+      fs.unlink(filePath, () => {});
+      if (!res.headersSent) {
+        res.status(500).json({ message: '파일 다운로드 중 오류가 발생했습니다.' });
+      } else {
+        res.destroy();
+      }
+    });
+
     fileStream.on('close', () => {
       fs.unlink(filePath, (unlinkErr) => {
         if (unlinkErr) {
