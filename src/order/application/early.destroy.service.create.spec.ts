@@ -183,3 +183,104 @@ describe('EarlyDestroyService.createRequest(매핑 단위) — L-1 교차 겹침
     expect(result).toEqual({ id: 600 });
   });
 });
+
+describe('EarlyDestroyService.createRequestForOrder — 주문 전체 파기 (D3-40)', () => {
+  const user = { id: 7, email: 'op@test.com' } as any;
+
+  const makeQb = (count: number) => {
+    const qb: any = {};
+    for (const m of ['where', 'andWhere']) qb[m] = jest.fn(() => qb);
+    qb.getCount = jest.fn().mockResolvedValue(count);
+    return qb;
+  };
+
+  const makeSut = (cfg: {
+    order?: any;
+    mappings?: any[];
+    nonDestroyedCount?: number;
+    pending?: any[];
+  } = {}) => {
+    const sut: any = Object.create(EarlyDestroyService.prototype);
+    sut.orderRepository = {
+      findOne: jest.fn().mockResolvedValue(
+        'order' in cfg ? cfg.order : { id: 77, status: IOrderStatus.DELIVERY_COMPLETE },
+      ),
+    };
+    sut.orderProductMappingRepository = {
+      find: jest.fn().mockResolvedValue(cfg.mappings ?? [{ id: 55 }, { id: 66 }]),
+    };
+    sut.orderDeliveryRepository = {
+      createQueryBuilder: jest.fn(() => makeQb(cfg.nonDestroyedCount ?? 2)),
+    };
+    sut.earlyDestroyRequestRepository = {
+      find: jest.fn().mockResolvedValue(cfg.pending ?? []),
+      create: jest.fn((x: any) => x),
+      save: jest.fn().mockResolvedValue({ id: 700 }),
+    };
+    sut.earlyDestroyRequestItemRepository = {
+      create: jest.fn((x: any) => x),
+      save: jest.fn().mockResolvedValue(undefined),
+    };
+    return sut;
+  };
+
+  it('주문이 없으면 거부한다', async () => {
+    const sut = makeSut({ order: null });
+    await expect(sut.createRequestForOrder(77, {}, user)).rejects.toThrow('주문이 존재하지 않습니다');
+  });
+
+  it('발송 완료 상태가 아니면 거부한다', async () => {
+    const sut = makeSut({ order: { id: 77, status: 'PROGRESS' } });
+    await expect(sut.createRequestForOrder(77, {}, user)).rejects.toThrow('발송 완료된 주문');
+  });
+
+  it('주문에 상품매핑이 없으면 거부한다', async () => {
+    const sut = makeSut({ mappings: [] });
+    await expect(sut.createRequestForOrder(77, {}, user)).rejects.toThrow('상품매핑이 없습니다');
+  });
+
+  it('모든 발송건이 이미 파기됐으면 거부한다', async () => {
+    const sut = makeSut({ nonDestroyedCount: 0 });
+    await expect(sut.createRequestForOrder(77, {}, user)).rejects.toThrow('이미 모든 발송건이 파기');
+  });
+
+  it('모든 매핑이 전체 파기 대기 중이면 거부한다', async () => {
+    const sut = makeSut({
+      mappings: [{ id: 55 }, { id: 66 }],
+      pending: [
+        {
+          items: [
+            { orderProductMappingId: 55, orderDeliveryId: null },
+            { orderProductMappingId: 66, orderDeliveryId: null },
+          ],
+        },
+      ],
+    });
+    await expect(sut.createRequestForOrder(77, {}, user)).rejects.toThrow('이미 대기 중인');
+  });
+
+  it('일부 매핑만 대기 중이면 허용한다 (상위집합은 통과)', async () => {
+    const sut = makeSut({
+      mappings: [{ id: 55 }, { id: 66 }],
+      pending: [{ items: [{ orderProductMappingId: 55, orderDeliveryId: null }] }],
+    });
+    const result = await sut.createRequestForOrder(77, {}, user);
+    expect(result).toEqual({ id: 700 });
+  });
+
+  it('정상 등록 시 주문의 모든 매핑이 항목(orderDeliveryId=null)으로 저장된다', async () => {
+    const sut = makeSut({ mappings: [{ id: 55 }, { id: 66 }] });
+
+    const result = await sut.createRequestForOrder(77, {}, user);
+
+    expect(result).toEqual({ id: 700 });
+    expect(sut.earlyDestroyRequestRepository.create).toHaveBeenCalledWith(
+      expect.objectContaining({ orderId: 77, status: EarlyDestroyRequestStatus.PENDING, requestedBy: 7 }),
+    );
+    expect(sut.earlyDestroyRequestItemRepository.save).toHaveBeenCalledTimes(1);
+    const savedItems = sut.earlyDestroyRequestItemRepository.save.mock.calls[0][0];
+    expect(savedItems).toHaveLength(2);
+    expect(savedItems.every((item: any) => item.orderDeliveryId === null)).toBe(true);
+    expect(new Set(savedItems.map((item: any) => item.orderProductMappingId))).toEqual(new Set([55, 66]));
+  });
+});
