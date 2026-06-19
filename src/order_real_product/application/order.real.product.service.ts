@@ -176,6 +176,18 @@ export class OrderRealProductService {
     private activityLogService: ActivityLogService,
   ) { }
 
+  private applyRealProductOrderAccessScope<T extends { andWhere: (condition: string, parameters?: object) => T }>(
+    queryBuilder: T,
+    user: ILoginUserInfo,
+    orderAlias: string,
+  ): T {
+    if (user.authority !== IUserAuthority.OPERATION_ADMIN && user.authority !== IUserAuthority.SUPER_ADMIN) {
+      return queryBuilder.andWhere(`${orderAlias}.businessUserId = :userId`, { userId: user.id });
+    }
+
+    return queryBuilder;
+  }
+
   async getList(user: ILoginUserInfo, getQuery: OrderRealProductGetListReqDto): Promise<OrderRealProductGetListResDto> {
     const { page, take, searchType, searchKeyword, startAt, endAt, status, section } = getQuery;
 
@@ -533,16 +545,23 @@ export class OrderRealProductService {
   }
 
   async getDeliveryTrackingStatus(
+    user: ILoginUserInfo,
     getQuery: OrderRealProductDeliveryTrackingReqDto,
   ): Promise<OrderRealProductGetDeliveryTrackingLastEventResDto> {
     const { id } = getQuery;
 
-    const order = await this.orderRepository.findOne({
-      where: {
-        id,
-      },
-      relations: ['orderRealProductMappings', 'orderRealProductMappings.product', 'user', 'businessUser', 'businessUser.company'],
-    });
+    let queryBuilder = this.orderRepository
+      .createQueryBuilder('order')
+      .leftJoinAndSelect('order.orderRealProductMappings', 'orderRealProductMappings')
+      .leftJoinAndSelect('orderRealProductMappings.product', 'product')
+      .leftJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('order.businessUser', 'businessUser')
+      .leftJoinAndSelect('businessUser.company', 'businessUserCompany')
+      .where('order.id = :id', { id });
+
+    queryBuilder = this.applyRealProductOrderAccessScope(queryBuilder, user, 'order');
+
+    const order = await queryBuilder.getOne();
 
     if (!order || order.orderRealProductMappings.length === 0) {
       throw new BadRequestException('존재하지 않는 주문이거나, 주문의 상세 정보가 존재하지 않습니다.');
@@ -583,14 +602,23 @@ export class OrderRealProductService {
   }
 
   async getDeliveryTrackingDetail(
+    user: ILoginUserInfo,
     getParam: OrderRealProductDeliveryTrackingGetDetailReqParamDto,
   ): Promise<OrderRealProductGetDeliveryTrackDetailResDto> {
     const { id } = getParam;
 
-    const mapping = await this.orderProductMappingRepository.findOne({
-      where: { id },
-      relations: ['realProductOrder', 'realProductOrder.user', 'realProductOrder.businessUser', 'realProductOrder.businessUser.company', 'product'],
-    });
+    let queryBuilder = this.orderProductMappingRepository
+      .createQueryBuilder('orderRealProductMapping')
+      .innerJoinAndSelect('orderRealProductMapping.realProductOrder', 'realProductOrder')
+      .leftJoinAndSelect('realProductOrder.user', 'user')
+      .leftJoinAndSelect('realProductOrder.businessUser', 'businessUser')
+      .leftJoinAndSelect('businessUser.company', 'businessUserCompany')
+      .leftJoinAndSelect('orderRealProductMapping.product', 'product')
+      .where('orderRealProductMapping.id = :id', { id });
+
+    queryBuilder = this.applyRealProductOrderAccessScope(queryBuilder, user, 'realProductOrder');
+
+    const mapping = await queryBuilder.getOne();
 
     if (!mapping) {
       throw new BadRequestException('주문 매핑 정보를 찾을 수 없습니다.');
@@ -827,17 +855,21 @@ export class OrderRealProductService {
   }
 
   async getDeliveryCompleteReport(
+    user: ILoginUserInfo,
     getQuery: OrderRealProductGetDeliveryCompleteReportReqDto,
   ): Promise<OrderRealProductGetDeliveryCompleteReportResDto> {
     const { id } = getQuery;
 
-    const queryBuilder = this.orderRepository
+    let queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .leftJoinAndSelect('order.orderRealProductMappings', 'orderRealProductMappings')
       .leftJoinAndSelect('orderRealProductMappings.product', 'product')
       .leftJoinAndSelect('order.businessUser', 'businessUser')
+      .leftJoinAndSelect('businessUser.company', 'businessUserCompany')
       .leftJoinAndSelect('order.user', 'user')
       .where('order.id = :id', { id });
+
+    queryBuilder = this.applyRealProductOrderAccessScope(queryBuilder, user, 'order');
 
     const order = await queryBuilder.getOne();
 
@@ -1207,15 +1239,19 @@ export class OrderRealProductService {
   }
 
   async getOrderProductMappingDetail(
+    user: ILoginUserInfo,
     getParam: OrderRealProductMappingGetDetailReqParamDto,
   ): Promise<OrderRealProductMappingGetDetailResDto> {
     const { id } = getParam;
-    const queryBuilder = this.orderProductMappingRepository
+    let queryBuilder = this.orderProductMappingRepository
       .createQueryBuilder('orderRealProductMapping')
       .innerJoinAndSelect('orderRealProductMapping.realProductOrder', 'realProductOrder')
       .innerJoinAndSelect('realProductOrder.businessUser', 'businessUser')
+      .leftJoinAndSelect('businessUser.company', 'businessUserCompany')
       .leftJoinAndSelect('orderRealProductMapping.partnerCompany', 'partnerCompany')
       .where('orderRealProductMapping.id = :id', { id });
+
+    queryBuilder = this.applyRealProductOrderAccessScope(queryBuilder, user, 'realProductOrder');
 
     const oneOrderProductMapping = await queryBuilder.getOne();
     if (!oneOrderProductMapping) {

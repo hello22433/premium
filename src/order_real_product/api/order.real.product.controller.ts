@@ -92,6 +92,7 @@ export class OrderRealProductController {
   })
   // =====================================
   @Get('/real-product/order/admin/list')
+  @UseGuards(AuthUserAuthorizationGuard)
   getAdminUserList(@Query() getQuery: OrderRealProductGetAdminListReqDto) {
     return this.orderRealProductService.getAdminUserList(getQuery);
   }
@@ -199,8 +200,8 @@ export class OrderRealProductController {
   // ====================================================
   @Get('/real-product/order/delivery-track/last')
   @UseGuards(AuthUserAuthorizationGuard)
-  getDeliveryTrackingStatus(@Query() getQuery: OrderRealProductDeliveryTrackingReqDto) {
-    return this.orderRealProductService.getDeliveryTrackingStatus(getQuery);
+  getDeliveryTrackingStatus(@User() user: ILoginUserInfo, @Query() getQuery: OrderRealProductDeliveryTrackingReqDto) {
+    return this.orderRealProductService.getDeliveryTrackingStatus(user, getQuery);
   }
 
   @ApiOperation({
@@ -216,8 +217,11 @@ export class OrderRealProductController {
   // ====================================================
   @Get('/real-product/order/delivery-track/detail/:id')
   @UseGuards(AuthUserAuthorizationGuard)
-  getDeliveryTrackingDetail(@Param() getParam: OrderRealProductDeliveryTrackingGetDetailReqParamDto) {
-    return this.orderRealProductService.getDeliveryTrackingDetail(getParam);
+  getDeliveryTrackingDetail(
+    @User() user: ILoginUserInfo,
+    @Param() getParam: OrderRealProductDeliveryTrackingGetDetailReqParamDto,
+  ) {
+    return this.orderRealProductService.getDeliveryTrackingDetail(user, getParam);
   }
 
   @ApiOperation({
@@ -265,8 +269,8 @@ export class OrderRealProductController {
   // ====================================================
   @Get('/real-product/order/delivery-complete/report')
   @UseGuards(AuthUserAuthorizationGuard)
-  getDeliveryCompleteReport(@Query() getQuery: OrderRealProductGetDeliveryCompleteReportReqDto) {
-    return this.orderRealProductService.getDeliveryCompleteReport(getQuery);
+  getDeliveryCompleteReport(@User() user: ILoginUserInfo, @Query() getQuery: OrderRealProductGetDeliveryCompleteReportReqDto) {
+    return this.orderRealProductService.getDeliveryCompleteReport(user, getQuery);
   }
 
   @ApiOperation({
@@ -380,8 +384,8 @@ export class OrderRealProductController {
   // ====================================================
   @Get('/real-product/order/order-product-mapping/detail/:id')
   @UseGuards(AuthUserAuthorizationGuard)
-  getOrderProductMappingDetail(@Param() getParam: OrderRealProductMappingGetDetailReqParamDto) {
-    return this.orderRealProductService.getOrderProductMappingDetail(getParam);
+  getOrderProductMappingDetail(@User() user: ILoginUserInfo, @Param() getParam: OrderRealProductMappingGetDetailReqParamDto) {
+    return this.orderRealProductService.getOrderProductMappingDetail(user, getParam);
   }
 
   @ApiOperation({
