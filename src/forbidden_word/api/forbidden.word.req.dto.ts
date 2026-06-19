@@ -44,10 +44,10 @@ export class ForbiddenWordCreateReqDto {
   @IsString()
   category?: string | null;
 
-  @ApiPropertyOptional({ description: '변경 사유' })
-  @IsOptional()
+  @ApiProperty({ description: '변경 사유 (필수)' })
+  @IsNotEmpty()
   @IsString()
-  reason?: string | null;
+  reason: string;
 }
 
 export class ForbiddenWordUpdateReqDto {
@@ -66,17 +66,17 @@ export class ForbiddenWordUpdateReqDto {
   @IsBoolean()
   isActive?: boolean;
 
-  @ApiPropertyOptional({ description: '변경 사유' })
-  @IsOptional()
+  @ApiProperty({ description: '변경 사유 (필수)' })
+  @IsNotEmpty()
   @IsString()
-  reason?: string | null;
+  reason: string;
 }
 
 export class ForbiddenWordDeleteReqDto {
-  @ApiPropertyOptional({ description: '변경 사유' })
-  @IsOptional()
+  @ApiProperty({ description: '변경 사유 (필수)' })
+  @IsNotEmpty()
   @IsString()
-  reason?: string | null;
+  reason: string;
 }
 
 export class ForbiddenWordGetHistoryReqQueryDto extends PagingReqDto {

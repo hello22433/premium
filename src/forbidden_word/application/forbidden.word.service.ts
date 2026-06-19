@@ -74,7 +74,7 @@ export class ForbiddenWordService {
       isActive: 1,
     });
 
-    await this.recordHistory(ForbiddenWordAction.ADD, word, getBody.reason ?? null, user);
+    await this.recordHistory(ForbiddenWordAction.ADD, word, getBody.reason, user);
     await this.forbiddenWordMatcher.refreshCache();
   }
 
@@ -106,11 +106,11 @@ export class ForbiddenWordService {
 
     await this.forbiddenWordRepository.save(forbiddenWord);
 
-    await this.recordHistory(ForbiddenWordAction.UPDATE, forbiddenWord.word, getBody.reason ?? null, user);
+    await this.recordHistory(ForbiddenWordAction.UPDATE, forbiddenWord.word, getBody.reason, user);
     await this.forbiddenWordMatcher.refreshCache();
   }
 
-  async delete(user: ILoginUserInfo, id: number, reason: string | null): Promise<void> {
+  async delete(user: ILoginUserInfo, id: number, reason: string): Promise<void> {
     const forbiddenWord = await this.forbiddenWordRepository.findOne({ where: { id } });
     if (!forbiddenWord) {
       throw new BadRequestException('존재하지 않는 금칙어입니다.');
@@ -189,7 +189,7 @@ export class ForbiddenWordService {
   private async recordHistory(
     action: ForbiddenWordAction,
     word: string,
-    reason: string | null,
+    reason: string,
     user: ILoginUserInfo,
   ): Promise<void> {
     await this.forbiddenWordHistoryRepository.insert({
