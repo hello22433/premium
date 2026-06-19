@@ -1222,6 +1222,10 @@ export class OrderReceiveService {
       .createQueryBuilder('testOrderDelivery')
       .innerJoinAndSelect('testOrderDelivery.orderProductMapping', 'orderProductMapping')
       .innerJoinAndSelect('orderProductMapping.order', 'order')
+      .innerJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('user.company', 'userCompany')
+      .leftJoinAndSelect('order.clientUser', 'clientUser')
+      .leftJoinAndSelect('clientUser.company', 'clientCompany')
       .innerJoinAndSelect('orderProductMapping.product', 'product')
       .innerJoinAndSelect('product.brand', 'brand')
       .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
@@ -1247,6 +1251,10 @@ export class OrderReceiveService {
 
     // 테스트용 바코드 (999999)
     const testBarcode = '999999';
+
+    // 알림톡 템플릿이 쿠폰번호(barCode/personalCode)를 참조하므로 테스트 바코드를 주입
+    testOrderDelivery.barCode = testBarcode;
+    testOrderDelivery.personalCode = testBarcode;
 
     // 초이스 쿠폰이면 선택된 상품, 아니면 기본 상품 사용
     const product = (isChoiceCoupon && testOrderDelivery.choiceSelectProduct)
@@ -1285,17 +1293,35 @@ export class OrderReceiveService {
       getBillingUserId(testOrderDelivery.orderProductMapping.order),
     );
 
+    // 버튼 링크용 암호화 키 (테스트 토큰 재생성)
+    const sendEncryptKey = this.cryptoCipher.encryptJson(obj);
+
     try {
-      await this.smsSend.send({
-        msgType: 'M',
+      // 1차: 알림톡 발송 시도 (실발송과 동일하게 등록 템플릿 사용)
+      const alimTalkText = AlimTalkTemplate(testOrderDelivery as unknown as OrderDeliveryEntity);
+      const { report } = await this.deliveryAlimTalk.send({
         to: phoneNumber,
-        from: testFromPhoneNumber,
-        subject: title,
-        text: text,
-        filePath: filePathList,
+        text: alimTalkText,
+        encryptKey: sendEncryptKey,
       });
-    } catch (e) {
-      throw new InternalServerErrorException('테스트 MMS 발송에 실패했습니다.');
+
+      if (report.code !== 'A000') {
+        throw new Error('AlimTalk Send Error');
+      }
+    } catch (alimTalkError) {
+      // 2차: 알림톡 실패 시 MMS 폴백 (실발송 sendToMMS와 동일 패턴)
+      try {
+        await this.smsSend.send({
+          msgType: 'M',
+          to: phoneNumber,
+          from: testFromPhoneNumber,
+          subject: title,
+          text: text,
+          filePath: filePathList,
+        });
+      } catch (mmsError) {
+        throw new InternalServerErrorException('테스트 발송에 실패했습니다.');
+      }
     }
   }
 
