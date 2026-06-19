@@ -14,6 +14,7 @@ import { Request, Response } from 'express';
 
 import { IdempotencyKeyEntity, IdempotencyKeyStatus } from '../../entity/idempotency.key.entity';
 import { ExternalApiException } from './external.api.exception.filter';
+import { ApiRequestContext } from './api-request-context';
 
 const IDEMPOTENCY_KEY_TTL_HOURS = 24;
 
@@ -38,12 +39,19 @@ export class IdempotencyInterceptor implements NestInterceptor {
       throw new ExternalApiException('2001', '잘못된 요청', 'Idempotency-Key는 최대 64자입니다');
     }
 
-    const userId = (request as any).apiAccount?.user?.id;
+    const ctx = (request as any).apiContext as ApiRequestContext | undefined;
+    const apiAppId = ctx?.apiApp?.id;
+    // 코드가드: 신규행은 항상 apiAppId 보유(가드가 apiContext 설정). 누락 = 인증 비정상.
+    if (!apiAppId) {
+      throw new ExternalApiException('1001', '인증 실패');
+    }
+    // userId는 NOT NULL 컬럼 보존용(전환기). billingUserId = default_billing_user_id.
+    const userId = ctx?.billingUserId ?? (request as any).apiAccount?.user?.id;
     const endpoint = `${request.method} ${request.route?.path || request.path}`;
     const requestHash = createHash('sha256').update(JSON.stringify(request.body)).digest('hex');
 
     const existing = await this.idempotencyKeyRepository.findOne({
-      where: { idempotencyKey, userId, endpoint },
+      where: { idempotencyKey, apiAppId, endpoint },
     });
 
     if (existing) {
@@ -70,6 +78,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
 
     const newKey = this.idempotencyKeyRepository.create({
       idempotencyKey,
+      apiAppId,
       userId,
       endpoint,
       requestHash,
@@ -105,25 +114,15 @@ export class IdempotencyInterceptor implements NestInterceptor {
           return responseBody;
         }),
       ),
-      catchError((err) => {
-        this.logger.warn(
-          `[DEBUG] interceptor catchError ENTER type=${err?.constructor?.name} ` +
-            `code=${err?.code} msg=${err?.errorMessage ?? err?.message}`,
-        );
-        return defer(async () => {
-          this.logger.warn('[DEBUG] interceptor cleanup defer running');
+      catchError((err) =>
+        defer(async () => {
           try {
             await this.idempotencyKeyRepository.remove(newKey);
           } catch (removeErr) {
             this.logger.warn(`멱등키 제거 실패 - key: ${idempotencyKey}`, removeErr);
           }
-        }).pipe(
-          concatMap(() => {
-            this.logger.warn('[DEBUG] interceptor re-throwing');
-            return throwError(() => err);
-          }),
-        );
-      }),
+        }).pipe(concatMap(() => throwError(() => err))),
+      ),
     );
   }
 }

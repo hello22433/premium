@@ -58,6 +58,7 @@ import {
   ProductResponseData,
 } from '../api/dto/external.api.response.dto';
 import { CreateExternalOrderDto, CreateExternalSsgOrderDto } from '../api/dto/external.api.request.dto';
+import { ApiRequestContext } from '../api/api-request-context';
 
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { DeliveryCreateCouponImage } from '../../delivery/infra/delivery.create.coupon.image';
@@ -328,7 +329,11 @@ export class ExternalApiService {
   //  - settleAmount = applyCardSurcharge(OrderFeeCalculator(...), cardSurchargeApplied)
 
   private resolveCardSurchargeApplied(account: ExternalApiAccountEntity): boolean {
-    const user = account.user;
+    return this.resolveCardSurchargeAppliedForUser(account.user);
+  }
+
+  // billingUser 기준 카드할증 판정(account.user 와 동일 로직). 단순모드 billingUser=account.user.
+  private resolveCardSurchargeAppliedForUser(user: UserEntity): boolean {
     const isCompanyMode = user.company?.balanceManagementType === 'COMPANY';
     const settleMethod = isCompanyMode
       ? user.company?.settleMethod
@@ -346,8 +351,26 @@ export class ExternalApiService {
     settleAmount: number;
     cardSurchargeApplied: boolean;
   }> {
+    return this.computeSettlementForBilling(account.user, product, sendAmount, {
+      cardSurchargeApplied: this.resolveCardSurchargeApplied(account),
+    });
+  }
+
+  // billingUser 기준 정산 계산(add-only). 단순모드(billingUser=account.user)는 기존과 비트동일.
+  // 카드할증 등 account 속성은 appOptions로 분리 주입(미지정 시 billingUser 기준 재현).
+  private async computeSettlementForBilling(
+    billingUser: UserEntity,
+    product: ProductEntity,
+    sendAmount: number,
+    appOptions?: { cardSurchargeApplied?: boolean },
+  ): Promise<{
+    fee: number | null;
+    priceAdjustment: IPriceAdjustment | null;
+    settleAmount: number;
+    cardSurchargeApplied: boolean;
+  }> {
     const where: Array<{ userId?: number; partnerCompanyId?: number }> = [
-      { userId: account.user.id },
+      { userId: billingUser.id },
     ];
     if (product.partnerCompanyId != null) {
       where.push({ partnerCompanyId: product.partnerCompanyId });
@@ -375,7 +398,9 @@ export class ExternalApiService {
         ? OrderFeeCalculator({ fee, priceAdjustment, price: sendAmount })
         : sendAmount;
 
-    const cardSurchargeApplied = this.resolveCardSurchargeApplied(account);
+    const cardSurchargeApplied =
+      appOptions?.cardSurchargeApplied ??
+      this.resolveCardSurchargeAppliedForUser(billingUser);
     const settleAmount = applyCardSurcharge(unitPrice, cardSurchargeApplied);
 
     return { fee, priceAdjustment, settleAmount, cardSurchargeApplied };
@@ -384,11 +409,16 @@ export class ExternalApiService {
   // ─── 할당 상품 헬퍼 ─────────────────────────────────────
 
   private async getAssignedProductIds(userId: number): Promise<number[]> {
+    return this.getAssignedProductIdsForBilling(userId);
+  }
+
+  // billingUser 기준 할당 상품 조회(add-only, 본문 이동). 단순모드 billingUserId=user.id 라 동일.
+  private async getAssignedProductIdsForBilling(billingUserId: number): Promise<number[]> {
     const mappings = await this.syncProductEventMappingRepository
       .createQueryBuilder('m')
       .innerJoin('m.userSyncProductEvent', 'e')
       .select('m.productId')
-      .where('e.businessUserId = :userId', { userId })
+      .where('e.businessUserId = :userId', { userId: billingUserId })
       .andWhere('e.status = :status', { status: IUserSyncProductStatus.ACTIVE })
       .andWhere('m.deletedAt IS NULL')
       .getMany();
@@ -457,7 +487,12 @@ export class ExternalApiService {
   // ─── 상품 조회 ──────────────────────────────────────────
 
   async getProducts(account: ExternalApiAccountEntity, productCode?: string): Promise<ExternalApiResponse<ProductResponseData[]>> {
-    const user = account.user;
+    return this.getProductsForBilling(account.user, productCode);
+  }
+
+  // billingUser 기준 상품 조회(add-only, 본문 이동). 단순모드 billingUser=account.user 라 동일.
+  async getProductsForBilling(billingUser: UserEntity, productCode?: string): Promise<ExternalApiResponse<ProductResponseData[]>> {
+    const user = billingUser;
     const isSuperAdmin = user.authority === IUserAuthority.SUPER_ADMIN;
 
     const qb = this.productRepository
@@ -509,8 +544,8 @@ export class ExternalApiService {
 
   // ─── 주문 생성 (3-phase) ────────────────────────────────
 
-  async createOrder(account: ExternalApiAccountEntity, dto: CreateExternalOrderDto): Promise<ExternalApiResponse<OrderResponseData>> {
-    const { order, orderDelivery, product } = await this.phaseA_createAndDeduct(account, dto);
+  async createOrder(account: ExternalApiAccountEntity, dto: CreateExternalOrderDto, ctx: ApiRequestContext): Promise<ExternalApiResponse<OrderResponseData>> {
+    const { order, orderDelivery, product } = await this.phaseA_createAndDeduct(account, dto, ctx);
 
     const externalTrId = orderDelivery.externalTrId!;
 
@@ -539,7 +574,7 @@ export class ExternalApiService {
   // ─── Phase A: 주문 생성 + 잔액 차감 ─────────────────────
 
   @Transactional()
-  private async phaseA_createAndDeduct(account: ExternalApiAccountEntity, dto: CreateExternalOrderDto) {
+  private async phaseA_createAndDeduct(account: ExternalApiAccountEntity, dto: CreateExternalOrderDto, ctx: ApiRequestContext) {
     const user = account.user;
 
     // 독립 쿼리(상품 조회 / 할당 상품 ID / 직전 주문 코드)는 병렬화하여 round-trip 절약
@@ -590,6 +625,9 @@ export class ExternalApiService {
       isSettleBalance: true,
       isSettleComplete: false,
       clientUserId: null,
+      // PR2a: 외부API 호출주체 적재 (단순모드 = credential→app).
+      apiAppId: ctx.apiApp.id,
+      apiCredentialId: ctx.apiCredential.id,
       ...buildOrderUserSnapshot(user),
       ...buildOrderClientUserSnapshot(null),
       ...buildOrderOperationUserSnapshot(null),
@@ -802,8 +840,8 @@ export class ExternalApiService {
 
   // ─── 주문 상태 조회 ─────────────────────────────────────
 
-  async getOrderStatus(account: ExternalApiAccountEntity, trId: string): Promise<ExternalApiResponse<OrderStatusResponseData>> {
-    const orderDelivery = await this.findOrderDeliveryByTrId(account, trId);
+  async getOrderStatus(account: ExternalApiAccountEntity, trId: string, ctx: ApiRequestContext): Promise<ExternalApiResponse<OrderStatusResponseData>> {
+    const orderDelivery = await this.findOrderDeliveryByTrId(account, trId, ctx);
     const mapping = orderDelivery.orderProductMapping;
     const product = mapping?.product;
     const order = mapping?.order;
@@ -824,8 +862,8 @@ export class ExternalApiService {
 
   // ─── SSG 주문 상태 조회 ─────────────────────────────────
 
-  async getSsgOrderStatus(account: ExternalApiAccountEntity, trId: string): Promise<ExternalApiResponse<SsgOrderStatusResponseData>> {
-    const orderDelivery = await this.findOrderDeliveryByTrId(account, trId);
+  async getSsgOrderStatus(account: ExternalApiAccountEntity, trId: string, ctx: ApiRequestContext): Promise<ExternalApiResponse<SsgOrderStatusResponseData>> {
+    const orderDelivery = await this.findOrderDeliveryByTrId(account, trId, ctx);
     const order = orderDelivery.orderProductMapping?.order;
     const price = order?.sendAmount ?? 0;
     const settleAmount = order?.settleAmount ?? 0;
@@ -845,8 +883,8 @@ export class ExternalApiService {
 
   // ─── 주문 취소 ──────────────────────────────────────────
 
-  async cancelOrder(account: ExternalApiAccountEntity, trId: string): Promise<ExternalApiResponse> {
-    const orderDelivery = await this.findOrderDeliveryByTrId(account, trId);
+  async cancelOrder(account: ExternalApiAccountEntity, trId: string, ctx: ApiRequestContext): Promise<ExternalApiResponse> {
+    const orderDelivery = await this.findOrderDeliveryByTrId(account, trId, ctx);
     const mapping = orderDelivery.orderProductMapping;
     const order = mapping.order;
     const product = mapping.product;
@@ -936,8 +974,8 @@ export class ExternalApiService {
 
   // ─── 재발송 ─────────────────────────────────────────────
 
-  async resendOrder(account: ExternalApiAccountEntity, trId: string): Promise<ExternalApiResponse> {
-    const orderDelivery = await this.findOrderDeliveryByTrId(account, trId);
+  async resendOrder(account: ExternalApiAccountEntity, trId: string, ctx: ApiRequestContext): Promise<ExternalApiResponse> {
+    const orderDelivery = await this.findOrderDeliveryByTrId(account, trId, ctx);
     const order = orderDelivery.orderProductMapping?.order;
 
     // R3: 재발송은 발송 성공(DELIVERY_COMPLETE) 주문만 허용. 실패/취소(DELIVERY_CANCEL)는 거절.
@@ -978,12 +1016,13 @@ export class ExternalApiService {
 
   // ─── SSG 주문 생성 ──────────────────────────────────────
 
-  async createSsgOrder(account: ExternalApiAccountEntity, dto: CreateExternalSsgOrderDto): Promise<ExternalApiResponse<SsgOrderResponseData>> {
-    if (!account.ssgEnabled) {
+  async createSsgOrder(account: ExternalApiAccountEntity, dto: CreateExternalSsgOrderDto, ctx: ApiRequestContext): Promise<ExternalApiResponse<SsgOrderResponseData>> {
+    // SSG 게이트 SoT = api_app.ssgEnabled (키회전 보존, A8/S4). account.ssgEnabled 아님.
+    if (!ctx.apiApp.ssgEnabled) {
       throw new ExternalApiException('1005', 'SSG 미승인 계정');
     }
 
-    const { order, orderDelivery, ssgEvent } = await this.phaseA_createSsgAndDeduct(account, dto);
+    const { order, orderDelivery, ssgEvent } = await this.phaseA_createSsgAndDeduct(account, dto, ctx);
 
     const externalTrId = orderDelivery.externalTrId!;
 
@@ -1011,7 +1050,7 @@ export class ExternalApiService {
   }
 
   @Transactional()
-  private async phaseA_createSsgAndDeduct(account: ExternalApiAccountEntity, dto: CreateExternalSsgOrderDto) {
+  private async phaseA_createSsgAndDeduct(account: ExternalApiAccountEntity, dto: CreateExternalSsgOrderDto, ctx: ApiRequestContext) {
     const user = account.user;
     const sendAmount = dto.amount;
 
@@ -1065,6 +1104,9 @@ export class ExternalApiService {
       isSettleComplete: false,
       ssgEventId: ssgEvent.id,
       clientUserId: null,
+      // PR2a: 외부API 호출주체 적재 (단순모드 = credential→app).
+      apiAppId: ctx.apiApp.id,
+      apiCredentialId: ctx.apiCredential.id,
       ...buildOrderUserSnapshot(user),
       ...buildOrderClientUserSnapshot(null),
       ...buildOrderOperationUserSnapshot(null),
@@ -1155,7 +1197,7 @@ export class ExternalApiService {
     };
   }
 
-  private async findOrderDeliveryByTrId(account: ExternalApiAccountEntity, trId: string): Promise<OrderDeliveryEntity> {
+  private async findOrderDeliveryByTrId(account: ExternalApiAccountEntity, trId: string, ctx: ApiRequestContext): Promise<OrderDeliveryEntity> {
     const orderDelivery = await this.orderDeliveryRepository.findOne({
       where: { externalTrId: trId },
       relations: [
@@ -1172,7 +1214,22 @@ export class ExternalApiService {
     }
 
     const order = orderDelivery.orderProductMapping?.order;
-    if (!order || order.userId !== account.user.id) {
+    if (!order) {
+      throw new ExternalApiException('4002', '주문에 대한 접근 권한 없음');
+    }
+    // PR2a 소유권: bigint 비교는 String()으로 통일.
+    const callerApiAppId = String(ctx.apiApp.id);
+    if (order.apiAppId != null) {
+      if (String(order.apiAppId) !== callerApiAppId) {
+        throw new ExternalApiException('4002', '주문에 대한 접근 권한 없음');
+      }
+    } else if (order.clientUserId == null) {
+      // 전환기 NULL 폴백: apiAppId 미적재 레거시 단순모드 주문만 허용(default_billing_user 기준)
+      if (order.userId !== account.user.id) {
+        throw new ExternalApiException('4002', '주문에 대한 접근 권한 없음');
+      }
+    } else {
+      // 매핑모드(clientUserId≠null)인데 apiAppId 미적재 — PR2a에선 비정상, 거절
       throw new ExternalApiException('4002', '주문에 대한 접근 권한 없음');
     }
 

@@ -15,6 +15,8 @@ import { DepartmentEntity } from '../../entity/department.entity';
 import { ExternalApiAccountEntity } from '../../entity/external.api.account.entity';
 import { ExternalApiAllowedIpEntity } from '../../entity/external.api.allowed.ip.entity';
 import { ExternalApiSsgRequestEntity } from '../../entity/external.api.ssg.request.entity';
+import { ApiAppEntity } from '../../entity/api.app.entity';
+import { ApiCredentialEntity } from '../../entity/api.credential.entity';
 import { WalletAccountEntity } from '../../entity/wallet.account.entity';
 import { WalletTransactionEntity } from '../../entity/wallet.transaction.entity';
 import { UserManagementService } from './user.management.service';
@@ -35,6 +37,7 @@ import { IUserSettleMethod } from '../../user/interface/user.settle.method';
 import { BadRequestException } from '@nestjs/common';
 import { IUserAuthority } from '../../user/interface/user.authority';
 import { IUserStatus } from '../../user/interface/user.status';
+import { IExternalApiSsgRequestStatus } from '../../external_api/interface/external.api.ssg.request.status';
 import { IUserBusinessType } from '../../user/interface/user.business.type';
 import { ActivityLogService } from '../../activity_log/application/activity.log.service';
 import { ConfigService } from '@nestjs/config';
@@ -42,6 +45,9 @@ import { WalletLedgerService } from '../../wallet/application/wallet-ledger.serv
 import { WalletAccountResolverService } from '../../wallet/application/wallet-account-resolver.service';
 import { WalletCutoverConfig, WalletCutoverMode } from '../../wallet/config/wallet-cutover.config';
 import { WalletResourceType } from '../../wallet/interface/wallet-resource-type';
+import { AccountStatusTransitionService } from '../../account_lifecycle/application/account.status.transition.service';
+import { SettleService } from '../../settle/application/settle.service';
+import { OrderFromService } from '../../order_from/application/order.from.service';
 import {
   UserManagementChargeBalanceReqDto,
   UserManagementModifyBalanceReqDto,
@@ -58,6 +64,8 @@ describe('user management service test', () => {
   let walletLedger: any;
   let walletResolver: any;
   let walletCutoverConfig: any;
+  let apiAppRepository: any;
+  let apiCredentialRepository: any;
 
   const CORPORATE_ADMIN_USER = { id: 5, email: 'corp@test.com', authority: IUserAuthority.CORPORATE_ADMIN };
   const OPERATION_ADMIN_USER = { id: 10, email: 'op@test.com', authority: IUserAuthority.OPERATION_ADMIN };
@@ -82,6 +90,9 @@ describe('user management service test', () => {
             ...userRepository,
             ...createMockRepositoryMethod(),
             createQueryBuilder: jest.fn(() => queryBuilder),
+            // @Transactional cls 매니저 대용 — chargeBalance/modifyBalance 가 this.userRepository.manager 를
+            // resolveByUserId/recordTransaction 2번째 인자(manager)로 전달(스프레드로 유실되는 lazy proxy 보강).
+            manager: {},
           },
         },
         {
@@ -93,6 +104,8 @@ describe('user management service test', () => {
         { provide: getRepositoryToken(ExternalApiAccountEntity), useValue: createMockRepositoryMethod() },
         { provide: getRepositoryToken(ExternalApiAllowedIpEntity), useValue: createMockRepositoryMethod() },
         { provide: getRepositoryToken(ExternalApiSsgRequestEntity), useValue: createMockRepositoryMethod() },
+        { provide: getRepositoryToken(ApiAppEntity), useValue: { ...createMockRepositoryMethod(), softRemove: jest.fn() } },
+        { provide: getRepositoryToken(ApiCredentialEntity), useValue: createMockRepositoryMethod() },
         { provide: getRepositoryToken(WalletAccountEntity), useValue: createMockRepositoryMethod() },
         { provide: getRepositoryToken(WalletTransactionEntity), useValue: createMockRepositoryMethod() },
         { provide: 'IMailSend', useValue: { send: jest.fn() } },
@@ -111,6 +124,21 @@ describe('user management service test', () => {
         { provide: WalletAccountResolverService, useValue: { resolveByUserId: jest.fn().mockResolvedValue({ id: 'wallet-1' }) } },
         // 기본 LEGACY — mirror 테스트에서 per-test 로 WALLET 로 변경
         { provide: WalletCutoverConfig, useValue: { pr2DeliveryLifecycleMode: WalletCutoverMode.LEGACY } },
+        {
+          provide: AccountStatusTransitionService,
+          useValue: { logAccountCreate: jest.fn(), adminSetStatus: jest.fn(), touchLastActivity: jest.fn() },
+        },
+        {
+          provide: SettleService,
+          useValue: { getRemainServiceAmountByUserId: jest.fn().mockResolvedValue(0) },
+        },
+        {
+          provide: OrderFromService,
+          useValue: {
+            resolveApprovedDefaultPhone: jest.fn().mockResolvedValue(null),
+            seedApprovedDefaultPhone: jest.fn(),
+          },
+        },
       ],
     }).compile();
 
@@ -122,6 +150,8 @@ describe('user management service test', () => {
     walletLedger = module.get(WalletLedgerService);
     walletResolver = module.get(WalletAccountResolverService);
     walletCutoverConfig = module.get(WalletCutoverConfig);
+    apiAppRepository = module.get(getRepositoryToken(ApiAppEntity));
+    apiCredentialRepository = module.get(getRepositoryToken(ApiCredentialEntity));
   });
 
   describe('getList 리스트 조회 테스트', () => {
@@ -489,6 +519,135 @@ describe('user management service test', () => {
       expect(walletResolver.resolveByUserId).toHaveBeenCalledTimes(2);
       expect(walletResolver.resolveByUserId).toHaveBeenNthCalledWith(1, 1, expect.anything());
       expect(walletResolver.resolveByUserId).toHaveBeenNthCalledWith(2, 1, expect.anything());
+    });
+  });
+
+  describe('generateApiKey dual-write (api_app/api_credential) 테스트', () => {
+    beforeEach(() => {
+      userRepository.findOne.mockResolvedValue({ ...UserEntityTest(), id: 1 });
+      // save 는 전달 엔티티를 그대로 반환(app.id 사용 경로 보장)
+      apiAppRepository.save.mockImplementation((a: any) => Promise.resolve({ id: 'app-1', ...a }));
+      apiAppRepository.create.mockImplementation((a: any) => a);
+      apiCredentialRepository.create.mockImplementation((c: any) => c);
+      apiCredentialRepository.save.mockImplementation((c: any) => Promise.resolve(c));
+      apiCredentialRepository.update.mockResolvedValue({ affected: 0 });
+    });
+
+    it('신규 발급 시 api_app + api_credential 을 생성한다', async () => {
+      // 신규 account 경로
+      (sut as any).externalApiAccountRepository.findOne.mockResolvedValue(null);
+      (sut as any).externalApiAccountRepository.save.mockResolvedValue({ id: 'acc-1' });
+      apiAppRepository.findOne.mockResolvedValue(null);
+
+      const rawKey = await sut.generateApiKey(1);
+
+      expect(rawKey).toEqual(expect.any(String));
+      // 레거시 account 보존
+      expect((sut as any).externalApiAccountRepository.save).toHaveBeenCalled();
+      // 신규 app 생성
+      expect(apiAppRepository.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sourceAccountId: 'acc-1',
+          defaultBillingUserId: 1,
+          isActive: true,
+          ssgEnabled: false,
+        }),
+      );
+      // app 룩업은 sourceAccountId(account.id) 결정적 축
+      expect(apiAppRepository.findOne).toHaveBeenCalledWith({
+        where: { sourceAccountId: 'acc-1' },
+        withDeleted: true,
+      });
+      // 신규 credential 생성(활성)
+      expect(apiCredentialRepository.create).toHaveBeenCalledWith(
+        expect.objectContaining({ apiAppId: 'app-1', isActive: true }),
+      );
+      expect(apiCredentialRepository.save).toHaveBeenCalled();
+    });
+
+    it('키회전(재발급) 시 기존 credential 을 비활성화하고 app 속성을 보존한다', async () => {
+      (sut as any).externalApiAccountRepository.findOne.mockResolvedValue({ id: 'acc-1', userId: 1 });
+      (sut as any).externalApiAccountRepository.save.mockResolvedValue({ id: 'acc-1' });
+      // 기존 app: SSG/재발송 설정이 채워져 있음 → 보존되어야 한다
+      apiAppRepository.findOne.mockResolvedValue({
+        id: 'app-1',
+        sourceAccountId: 'acc-1',
+        defaultBillingUserId: 1,
+        isActive: false,
+        ssgEnabled: true,
+        resendMaxCount: 5,
+        deletedAt: new Date(),
+      });
+
+      await sut.generateApiKey(1);
+
+      // app 룩업은 sourceAccountId(account.id) 결정적 축
+      expect(apiAppRepository.findOne).toHaveBeenCalledWith({
+        where: { sourceAccountId: 'acc-1' },
+        withDeleted: true,
+      });
+
+      // app 속성 보존: ssgEnabled/resendMaxCount 덮어쓰지 않음, 재활성화만
+      expect(apiAppRepository.create).not.toHaveBeenCalled();
+      expect(apiAppRepository.save).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'app-1', isActive: true, ssgEnabled: true, resendMaxCount: 5, deletedAt: null }),
+      );
+      // 기존 활성 credential 비활성화(키회전)
+      expect(apiCredentialRepository.update).toHaveBeenCalledWith(
+        { apiAppId: 'app-1', isActive: true },
+        expect.objectContaining({ isActive: false }),
+      );
+      // 신규 credential 추가
+      expect(apiCredentialRepository.create).toHaveBeenCalledWith(
+        expect.objectContaining({ apiAppId: 'app-1', isActive: true }),
+      );
+    });
+  });
+
+  describe('approveSsgRequest app.ssgEnabled 미러 테스트', () => {
+    it('승인 시 api_app.ssgEnabled=true 로 미러 저장한다', async () => {
+      const ssgRepo = (sut as any).externalApiSsgRequestRepository;
+      ssgRepo.findOne.mockResolvedValue({
+        id: 'req-1',
+        accountId: 'acc-1',
+        status: IExternalApiSsgRequestStatus.PENDING,
+      });
+      ssgRepo.save.mockImplementation((r: any) => Promise.resolve(r));
+      (sut as any).externalApiAccountRepository.findOne.mockResolvedValue({ id: 'acc-1', userId: 1 });
+      (sut as any).externalApiAccountRepository.save.mockResolvedValue({ id: 'acc-1' });
+      userRepository.findOne.mockResolvedValue({ id: 10, personName: '관리자' });
+      apiAppRepository.findOne.mockResolvedValue({ id: 'app-1', sourceAccountId: 'acc-1', defaultBillingUserId: 1, ssgEnabled: false });
+      apiAppRepository.save.mockImplementation((a: any) => Promise.resolve(a));
+
+      await sut.approveSsgRequest('req-1', 10);
+
+      // SSG 게이트 SoT = api_app.ssgEnabled → 승인 시 app 에 미러
+      expect(apiAppRepository.findOne).toHaveBeenCalledWith({ where: { sourceAccountId: 'acc-1' } });
+      expect(apiAppRepository.save).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'app-1', ssgEnabled: true }),
+      );
+    });
+  });
+
+  describe('addAllowedIpByUserId apiAppId 적재 테스트', () => {
+    it('신규 IP 행에 해석된 apiAppId 를 채운다 (app 기준 IP 검사용)', async () => {
+      const accountRepo = (sut as any).externalApiAccountRepository;
+      const ipRepo = (sut as any).externalApiAllowedIpRepository;
+      accountRepo.findOne.mockResolvedValue({ id: 'acc-1', userId: 1 });
+      ipRepo.count.mockResolvedValue(0);
+      ipRepo.findOne.mockResolvedValue(null);
+      ipRepo.create.mockImplementation((e: any) => e);
+      ipRepo.save.mockResolvedValue({ id: 'ip-1' });
+      apiAppRepository.findOne.mockResolvedValue({ id: 'app-1', sourceAccountId: 'acc-1', defaultBillingUserId: 1 });
+
+      const result = await sut.addAllowedIpByUserId(1, { ip: '1.2.3.4', description: null } as any);
+
+      expect(result).toEqual({ id: 'ip-1' });
+      expect(ipRepo.create).toHaveBeenCalledWith(
+        expect.objectContaining({ accountId: 'acc-1', apiAppId: 'app-1', ipAddress: '1.2.3.4' }),
+      );
+      // apiAppId 해석은 sourceAccountId(account.id) 결정적 축
+      expect(apiAppRepository.findOne).toHaveBeenCalledWith({ where: { sourceAccountId: 'acc-1' } });
     });
   });
 });

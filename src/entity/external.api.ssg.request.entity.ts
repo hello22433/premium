@@ -1,4 +1,4 @@
-import { Column, Entity, JoinColumn, ManyToOne, PrimaryGeneratedColumn } from 'typeorm';
+import { Column, Entity, Index, JoinColumn, ManyToOne, PrimaryGeneratedColumn } from 'typeorm';
 import { BaseEntity } from '../common/entity/base.entity';
 import { ExternalApiAccountEntity } from './external.api.account.entity';
 import { UserEntity } from './user.entity';
@@ -15,6 +15,10 @@ export class ExternalApiSsgRequestEntity extends BaseEntity {
   @ManyToOne(() => ExternalApiAccountEntity)
   @JoinColumn({ name: 'account_id' })
   account: ExternalApiAccountEntity;
+
+  @Index()
+  @Column({ type: 'bigint', nullable: true, comment: 'FK) api_app.id (PR2a 신구 병행)' })
+  apiAppId: string | null;
 
   @Column({ type: 'int', comment: 'FK) user.id (요청자)' })
   requestedByUserId: number;

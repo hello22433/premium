@@ -10,6 +10,8 @@ import { DepartmentEntity } from '../entity/department.entity';
 import { ExternalApiAccountEntity } from '../entity/external.api.account.entity';
 import { ExternalApiAllowedIpEntity } from '../entity/external.api.allowed.ip.entity';
 import { ExternalApiSsgRequestEntity } from '../entity/external.api.ssg.request.entity';
+import { ApiAppEntity } from '../entity/api.app.entity';
+import { ApiCredentialEntity } from '../entity/api.credential.entity';
 import { WalletAccountEntity } from '../entity/wallet.account.entity';
 import { WalletTransactionEntity } from '../entity/wallet.transaction.entity';
 import { MailModule } from '../mail/mail.module';
@@ -32,6 +34,8 @@ import { OrderFromModule } from '../order_from/order.from.module';
       ExternalApiAccountEntity,
       ExternalApiAllowedIpEntity,
       ExternalApiSsgRequestEntity,
+      ApiAppEntity,
+      ApiCredentialEntity,
       WalletAccountEntity,
       WalletTransactionEntity,
     ]),

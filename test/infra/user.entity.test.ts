@@ -43,6 +43,7 @@ export const UserEntityTest = (): UserEntity => {
     balance: 0,
     businessGrade: 'S+',
     fromPhoneNumber: null,
+    hideSystemFromPhone: false,
     settlePeriodCondition: null,
     settlePeriodCount: null,
     allSettleAmount: 0,

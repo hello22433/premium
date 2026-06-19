@@ -16,6 +16,8 @@ import { DepartmentEntity } from '../../entity/department.entity';
 import { ExternalApiAccountEntity } from '../../entity/external.api.account.entity';
 import { ExternalApiAllowedIpEntity } from '../../entity/external.api.allowed.ip.entity';
 import { ExternalApiSsgRequestEntity } from '../../entity/external.api.ssg.request.entity';
+import { ApiAppEntity } from '../../entity/api.app.entity';
+import { ApiCredentialEntity } from '../../entity/api.credential.entity';
 import { WalletAccountEntity } from '../../entity/wallet.account.entity';
 import { WalletTransactionEntity } from '../../entity/wallet.transaction.entity';
 import { WalletResourceType } from '../../wallet/interface/wallet-resource-type';
@@ -108,6 +110,10 @@ export class UserManagementService {
     private externalApiAllowedIpRepository: Repository<ExternalApiAllowedIpEntity>,
     @InjectRepository(ExternalApiSsgRequestEntity)
     private externalApiSsgRequestRepository: Repository<ExternalApiSsgRequestEntity>,
+    @InjectRepository(ApiAppEntity)
+    private apiAppRepository: Repository<ApiAppEntity>,
+    @InjectRepository(ApiCredentialEntity)
+    private apiCredentialRepository: Repository<ApiCredentialEntity>,
     @InjectRepository(WalletAccountEntity)
     private walletAccountRepository: Repository<WalletAccountEntity>,
     @InjectRepository(WalletTransactionEntity)
@@ -1310,8 +1316,8 @@ export class UserManagementService {
 
   /**
    * 외부 API 계정 발급/재발급. user 단위 1:1.
-   * 재발급 시: ssgEnabled=false 강제, PENDING SSG 요청은 모두 CANCELLED 처리.
-   *           resendMaxCount는 유지. allowedIps는 resetAllowedIps에 따라 비움/유지.
+   * 재발급(키회전) 시: SSG/allowedIps/resendMaxCount 보존(A8/S4 — silent 리셋 안 함).
+   *           allowedIps는 명시 옵션(resetAllowedIps)일 때만 비움. '리셋' 동작은 별도 reset API(PR2b)로 분리.
    * 어드민 발급일 때만 resendMaxCount 초기 설정 가능.
    */
   @Transactional()
@@ -1330,10 +1336,15 @@ export class UserManagementService {
 
     const existing = await this.externalApiAccountRepository.findOne({ where: { userId }, withDeleted: true });
 
+    let newAccountId: string | undefined;
+
+    // A8/S4: 재발급=키회전. SSG 게이트 SoT=api_app.ssgEnabled(createSsgOrder)이고 dualWrite 가
+    //   app.ssgEnabled 를 회전 시 보존하므로, 재발급 후에도 SSG 가 유지된다(silent 리셋 없음).
+    //   account.ssgEnabled 도 동일하게 보존(아래 리셋 미수행)해 account↔app 정합 유지.
     if (existing) {
       existing.apiKeyHash = keyHash;
       existing.isActive = true;
-      existing.ssgEnabled = false;
+
       if (isAdmin && 'resendMaxCount' in options) {
         existing.resendMaxCount = options.resendMaxCount ?? null;
       }
@@ -1343,8 +1354,6 @@ export class UserManagementService {
       if (options.resetAllowedIps) {
         await this.externalApiAllowedIpRepository.delete({ accountId: existing.id });
       }
-
-      await this.cancelPendingSsgRequests(existing.id);
     } else {
       const account = this.externalApiAccountRepository.create({
         userId,
@@ -1353,8 +1362,16 @@ export class UserManagementService {
         ssgEnabled: false,
         resendMaxCount: isAdmin && 'resendMaxCount' in options ? (options.resendMaxCount ?? null) : null,
       });
-      await this.externalApiAccountRepository.save(account);
+      const savedAccount = await this.externalApiAccountRepository.save(account);
+      newAccountId = savedAccount.id;
     }
+
+    // account↔app 결정적 매핑(HIGH-1): dualWrite 가 sourceAccountId 로 app 을 귀속한다.
+    const accountId = existing ? existing.id : newAccountId!;
+
+    // PR2a 호환: guard SoT(api_credential→api_app)에 dual-write.
+    // 신구 동일 tx(@Transactional). 신규 발급 키가 guard 인증을 통과하도록 보장.
+    await this.dualWriteApiAppCredential(userId, accountId, keyHash, isAdmin, options);
 
     return rawKey;
   }
@@ -1362,11 +1379,69 @@ export class UserManagementService {
   @Transactional()
   async revokeApiKey(userId: number): Promise<void> {
     const account = await this.externalApiAccountRepository.findOne({ where: { userId } });
+
+    // PR2a 호환: guard SoT(app/credential) 회수. account↔app 결정적 매핑(sourceAccountId).
+    if (account) {
+      const app = await this.findAppBySourceAccountId(account.id);
+      if (app) {
+        await this.deactivateActiveCredentials(app.id, new Date());
+        // 단순모드(1 app : 1 active credential): 마지막 credential 회수 시 app 비활성 + soft-delete.
+        app.isActive = false;
+        await this.apiAppRepository.softRemove(app);
+      }
+    }
+
     if (!account) {
       return;
     }
     await this.externalApiAccountRepository.softRemove(account);
     await this.cancelPendingSsgRequests(account.id);
+  }
+
+  /**
+   * PR2a 호환 dual-write: guard 인증 SoT(api_credential→api_app)를 발급/재발급 시 동기화.
+   * - app: sourceAccountId=accountId 기준 결정적 단일 취급(account↔app 1:1). 없으면 생성, 있으면
+   *   속성(ssgEnabled/resendMaxCount/webhook/allowedIps) 보존하고 재활성화만(키회전).
+   * - credential: 키회전 시 기존 활성 credential 비활성화(is_active=false+revoked_at) 후 신규 행 추가.
+   */
+  private async dualWriteApiAppCredential(
+    userId: number,
+    accountId: string,
+    keyHash: string,
+    isAdmin: boolean,
+    options: GenerateApiKeyReqDto | GenerateApiKeyByAdminReqDto,
+  ): Promise<void> {
+    const now = new Date();
+
+    let app = await this.findAppBySourceAccountId(accountId, { withDeleted: true });
+
+    if (app) {
+      // 키회전(재발급): app 속성 보존(S4). 재활성화만.
+      app.isActive = true;
+      app.deletedAt = null;
+      app = await this.apiAppRepository.save(app);
+    } else {
+      // 신규 발급: account 와 동일 초기값(ssgEnabled=false). sourceAccountId 로 account 결정적 귀속.
+      app = this.apiAppRepository.create({
+        sourceAccountId: accountId,
+        defaultBillingUserId: userId,
+        isActive: true,
+        ssgEnabled: false,
+        resendMaxCount: isAdmin && 'resendMaxCount' in options ? (options.resendMaxCount ?? null) : null,
+      });
+      app = await this.apiAppRepository.save(app);
+    }
+
+    // 키회전: 기존 활성 credential 비활성화 후 신규 credential 추가.
+    await this.deactivateActiveCredentials(app.id, now);
+
+    const credential = this.apiCredentialRepository.create({
+      apiAppId: app.id,
+      apiKeyHash: keyHash,
+      isActive: true,
+      issuedAt: now,
+    });
+    await this.apiCredentialRepository.save(credential);
   }
 
   // ─── 외부 API 계정: 조회/설정 ────────────────────────────
@@ -1422,15 +1497,42 @@ export class UserManagementService {
   private async replaceAllowedIpsForAccount(accountId: string, dto: UpdateAllowedIpsReqDto): Promise<void> {
     await this.externalApiAllowedIpRepository.delete({ accountId });
     if (dto.ips.length > 0) {
+      // app 기준 IP 검사(guard)를 위해 신규 행에 apiAppId 적재. app 미존재 시 null 허용(안전).
+      const apiAppId = await this.resolveApiAppIdByAccountId(accountId);
       const rows = dto.ips.map((entry) =>
         this.externalApiAllowedIpRepository.create({
           accountId,
+          apiAppId,
           ipAddress: entry.ip,
           description: entry.description ?? null,
         }),
       );
       await this.externalApiAllowedIpRepository.save(rows);
     }
+  }
+
+  // accountId → api_app 결정적 해석(account↔app 1:1, sourceAccountId). app 미존재 시 null.
+  private async findAppBySourceAccountId(
+    accountId: string,
+    opts?: { withDeleted?: boolean },
+  ): Promise<ApiAppEntity | null> {
+    return this.apiAppRepository.findOne({
+      where: { sourceAccountId: accountId },
+      ...(opts?.withDeleted ? { withDeleted: true } : {}),
+    });
+  }
+
+  private async resolveApiAppIdByAccountId(accountId: string): Promise<string | null> {
+    const app = await this.findAppBySourceAccountId(accountId);
+    return app?.id ?? null;
+  }
+
+  // app 의 활성 credential 일괄 비활성화(키회전/회수 공통).
+  private async deactivateActiveCredentials(appId: string, when: Date): Promise<void> {
+    await this.apiCredentialRepository.update(
+      { apiAppId: appId, isActive: true },
+      { isActive: false, revokedAt: when },
+    );
   }
 
   @Transactional()
@@ -1469,8 +1571,10 @@ export class UserManagementService {
     if (exists) {
       throw new ConflictException('이미 등록된 IP입니다.');
     }
+    const apiAppId = await this.resolveApiAppIdByAccountId(accountId);
     const entity = this.externalApiAllowedIpRepository.create({
       accountId,
+      apiAppId,
       ipAddress: dto.ip,
       description: dto.description ?? null,
     });
@@ -1516,6 +1620,7 @@ export class UserManagementService {
    * 어드민 전용 설정 토글.
    * ssgEnabled=true 직접 세팅도 허용하나, 권장 흐름은 SSG 요청 승인.
    */
+  @Transactional()
   async updateApiKeySettings(accountId: string, dto: UpdateApiKeySettingsReqDto): Promise<void> {
     const account = await this.externalApiAccountRepository.findOne({ where: { id: accountId } });
     if (!account) {
@@ -1527,6 +1632,15 @@ export class UserManagementService {
     if (dto.resendMaxCount !== undefined) account.resendMaxCount = dto.resendMaxCount;
 
     await this.externalApiAccountRepository.save(account);
+
+    // PR2a 호환: api_app(guard SoT)에도 설정 미러링해 account 와 싱크 유지.
+    const app = await this.findAppBySourceAccountId(account.id);
+    if (app) {
+      if (dto.isActive !== undefined) app.isActive = dto.isActive;
+      if (dto.ssgEnabled !== undefined) app.ssgEnabled = dto.ssgEnabled;
+      if (dto.resendMaxCount !== undefined) app.resendMaxCount = dto.resendMaxCount;
+      await this.apiAppRepository.save(app);
+    }
   }
 
   // ─── 외부 API: SSG 활성화 요청 ──────────────────────────
@@ -1627,6 +1741,13 @@ export class UserManagementService {
 
     account.ssgEnabled = true;
     await this.externalApiAccountRepository.save(account);
+
+    // SSG 게이트 SoT = api_app.ssgEnabled (createSsgOrder) → 승인도 app 에 미러(미러 누락 시 승인계정 1005).
+    const app = await this.findAppBySourceAccountId(account.id);
+    if (app) {
+      app.ssgEnabled = true;
+      await this.apiAppRepository.save(app);
+    }
 
     const decidedByUser = await this.userRepository.findOne({ where: { id: decidedByUserId } });
     request.decidedByUser = decidedByUser ?? null;
