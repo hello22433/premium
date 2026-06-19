@@ -14,7 +14,7 @@ import {
   UseFilters,
   UseGuards,
 } from '@nestjs/common';
-import { Request } from 'express';
+import { Request, Response } from 'express';
 import { OrderService } from '../application/order.service';
 import {
   ApiBadRequestResponse,
@@ -87,7 +87,6 @@ import { IOrderType } from '../interface/order.type';
 import { User } from '../../auth/api/user.decorator';
 import { AuthUserSuperAdminGuard } from '../../auth/api/auth.user.super-admin.guard';
 import * as fs from 'fs';
-import { Response } from 'express';
 import { AuthUserSuperAndOperationAdminGuard } from '../../auth/api/auth.user.super-operation-admin.guard';
 import { AuthService } from '../../auth/application/auth.service';
 import { UserAuthSubEnum } from '../../user_management/domain/user.auth.enum';
@@ -603,10 +602,13 @@ export class OrderController {
   async excelDownload(
     @User() user: ILoginUserInfo,
     @Body() getBody: OrderExcelDownloadReqBodyDto,
+    @Req() req: Request,
     @Res() res: Response,
   ) {
     try {
-      const { fileName, filePath } = await this.orderService.excelDownload(user, getBody);
+      const ipAddress = req.ip || req.headers['x-forwarded-for']?.toString() || '';
+      const userAgent = req.headers['user-agent'] || '';
+      const { fileName, filePath } = await this.orderService.excelDownload(user, getBody, { ipAddress, userAgent });
 
       const encodedFileName = encodeURIComponent(fileName);
       res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');

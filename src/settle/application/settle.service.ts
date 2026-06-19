@@ -898,7 +898,7 @@ export class SettleService {
     return { list: resultList, totalPage, totalCount, currentPage: page };
   }
 
-  async mobileExcelDownload(user: ILoginUserInfo, getQuery: SettleMobileExcelDownloadReqDto) {
+  async mobileExcelDownload(user: ILoginUserInfo, getQuery: SettleMobileExcelDownloadReqDto, ipAddress = '', userAgent = '') {
     const startTime = Date.now();
 
     // 비밀번호 확인
@@ -1102,7 +1102,8 @@ export class SettleService {
       method: 'POST',
       requestUrl: '/settle/mobile/excel-download',
       actionType: 'EXCEL_DOWNLOAD',
-      ipAddress: '',
+      ipAddress,
+      userAgent,
       statusCode: 200,
       result: ActivityLogResult.SUCCESS,
       responseTime,
@@ -1232,7 +1233,7 @@ export class SettleService {
     return { list: resultList, totalPage, totalCount, currentPage: page };
   }
 
-  async partnerCompanyExcelDownload(user: ILoginUserInfo, body: SettlePartnerCompanyExcelDownloadReqDto) {
+  async partnerCompanyExcelDownload(user: ILoginUserInfo, body: SettlePartnerCompanyExcelDownloadReqDto, ipAddress = '', userAgent = '') {
     const startTime = Date.now();
 
     // 비밀번호 확인
@@ -1457,7 +1458,8 @@ export class SettleService {
       method: 'POST',
       requestUrl: '/settle/partner-company/excel-download',
       actionType: 'EXCEL_DOWNLOAD',
-      ipAddress: '',
+      ipAddress,
+      userAgent,
       statusCode: 200,
       result: ActivityLogResult.SUCCESS,
       responseTime,
@@ -1820,7 +1822,7 @@ export class SettleService {
     };
   }
 
-  async getUserExcelDownload(user: ILoginUserInfo, getBody: SettleGetUserExcelDownloadReqDto) {
+  async getUserExcelDownload(user: ILoginUserInfo, getBody: SettleGetUserExcelDownloadReqDto, ipAddress = '', userAgent = '') {
     const startTime = Date.now();
 
     // 비밀번호 확인
@@ -1998,7 +2000,8 @@ export class SettleService {
       method: 'POST',
       requestUrl: '/settle/user/excel-download',
       actionType: 'EXCEL_DOWNLOAD',
-      ipAddress: '', // Controller에서 추가 필요
+      ipAddress,
+      userAgent,
       statusCode: 200,
       result: ActivityLogResult.SUCCESS,
       responseTime,
@@ -3108,7 +3111,7 @@ export class SettleService {
     return { list: resultList, totalPage, totalCount, currentPage: page };
   }
 
-  async galaxiaExcelDownload(user: ILoginUserInfo, body: SettleGalaxiaExcelDownloadReqDto) {
+  async galaxiaExcelDownload(user: ILoginUserInfo, body: SettleGalaxiaExcelDownloadReqDto, ipAddress = '', userAgent = '') {
     const startTime = Date.now();
 
     await this.activityLogService.verifyPassword(user.id, body.password);
@@ -3277,7 +3280,8 @@ export class SettleService {
       method: 'POST',
       requestUrl: '/settle/galaxia/excel-download',
       actionType: 'EXCEL_DOWNLOAD',
-      ipAddress: '',
+      ipAddress,
+      userAgent,
       statusCode: 200,
       result: ActivityLogResult.SUCCESS,
       responseTime,
