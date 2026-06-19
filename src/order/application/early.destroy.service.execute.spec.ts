@@ -138,3 +138,89 @@ describe('EarlyDestroyService.executeRequest — C-1 order_history type 필터',
     expect(sut.earlyDestroyRequestRepository.update).not.toHaveBeenCalled();
   });
 });
+
+describe('EarlyDestroyService.executeRequest — 환불 가드 + 요청 검증 (D3-41)', () => {
+  const user = { id: 9, email: 'op@enmad.com' } as any;
+
+  const makeQb = () => {
+    const qb: any = {};
+    qb.update = jest.fn(() => qb);
+    qb.set = jest.fn(() => qb);
+    qb.where = jest.fn(() => qb);
+    qb.andWhere = jest.fn(() => qb);
+    qb.execute = jest.fn().mockResolvedValue({ affected: 1 });
+    return qb;
+  };
+
+  const DEFAULT_REQUEST = {
+    id: 1,
+    orderId: 77,
+    status: EarlyDestroyRequestStatus.PENDING,
+    items: [{ orderProductMappingId: 55, orderDeliveryId: 101 }],
+  };
+
+  const makeSut = (cfg: {
+    request?: any;
+    order?: any;
+    refundInProgressCount?: number;
+    mappingDeliveries?: any[];
+  } = {}) => {
+    const sut: any = Object.create(EarlyDestroyService.prototype);
+    sut.earlyDestroyRequestRepository = {
+      findOne: jest.fn().mockResolvedValue('request' in cfg ? cfg.request : DEFAULT_REQUEST),
+      update: jest.fn().mockResolvedValue(undefined),
+    };
+    sut.orderRepository = {
+      findOne: jest.fn().mockResolvedValue(cfg.order ?? { id: 77, status: IOrderStatus.DELIVERY_COMPLETE }),
+    };
+    sut.orderDeliveryRepository = {
+      find: jest.fn().mockResolvedValue(cfg.mappingDeliveries ?? []),
+      count: jest.fn().mockResolvedValue(cfg.refundInProgressCount ?? 0),
+      createQueryBuilder: jest.fn(() => makeQb()),
+    };
+    sut.orderHistoryRepository = { createQueryBuilder: jest.fn(() => makeQb()) };
+    sut.logger = { log: jest.fn() };
+    return sut;
+  };
+
+  it('요청이 없으면 거부한다', async () => {
+    const sut = makeSut({ request: null });
+    await expect(sut.executeRequest(1, user)).rejects.toThrow('조기파기 요청이 존재하지 않습니다');
+  });
+
+  it('PENDING 상태가 아니면 거부한다', async () => {
+    const sut = makeSut({
+      request: { ...DEFAULT_REQUEST, status: EarlyDestroyRequestStatus.COMPLETED },
+    });
+    await expect(sut.executeRequest(1, user)).rejects.toThrow('대기 중인 요청만');
+  });
+
+  it('환불 진행중(PROGRESS/APPROVE)인 발송건이 있으면 파기를 거부한다', async () => {
+    const sut = makeSut({ refundInProgressCount: 1 });
+    await expect(sut.executeRequest(1, user)).rejects.toThrow('환불 진행 중인 건');
+    // 환불 가드 이후 PII 파기·상태전이가 실행되지 않아야 한다
+    expect(sut.orderDeliveryRepository.createQueryBuilder).not.toHaveBeenCalled();
+    expect(sut.orderHistoryRepository.createQueryBuilder).not.toHaveBeenCalled();
+    expect(sut.earlyDestroyRequestRepository.update).not.toHaveBeenCalled();
+  });
+
+  it('매핑 단위 항목은 발송건으로 확장된 뒤 환불 가드가 적용된다', async () => {
+    const sut = makeSut({
+      request: {
+        ...DEFAULT_REQUEST,
+        items: [{ orderProductMappingId: 55, orderDeliveryId: null }], // 매핑 단위
+      },
+      mappingDeliveries: [{ id: 201 }, { id: 202 }], // 확장 결과
+      refundInProgressCount: 1,
+    });
+    await expect(sut.executeRequest(1, user)).rejects.toThrow('환불 진행 중인 건');
+    // 매핑→발송건 확장을 위한 find 가 호출됐는지 확인
+    expect(sut.orderDeliveryRepository.find).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ orderProductMappingId: expect.anything() }) }),
+    );
+    // 확장된 발송건 [201, 202] 을 대상으로 count 가 호출됐는지 확인
+    expect(sut.orderDeliveryRepository.count).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ id: expect.anything() }) }),
+    );
+  });
+});
