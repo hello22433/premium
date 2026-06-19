@@ -2712,6 +2712,38 @@ export class OrderService {
     await Promise.all(deliveryUpdatePromises);
     await Promise.all(refundPromises);
 
+    // 합본행(크로스 수신번호) 후처리: deliveryIds 에만 등장하고 settle.id 로는 한 번도 처리되지 않은
+    // mapping 의 deliveries 가 모두 동일한 정산값으로 갱신됐으면 대표값을 동기화한다.
+    // (settle.id 가 없는 mapping 은 메인 루프에서 shouldSyncMapping 평가 자체가 생략됨 — D3-42)
+    if (hasDeliveryScopedRows) {
+      for (const [mappingId, orderProduct] of existingOrderProductMap.entries()) {
+        if (processedMappingIds.has(mappingId)) continue;
+        const deliveries: OrderDeliveryEntity[] = orderProduct.orderDeliveries ?? [];
+        if (deliveries.length === 0) continue;
+        const first = deliveries[0];
+        const allSame = deliveries.every(
+          (d: OrderDeliveryEntity) =>
+            d.settleFee === first.settleFee &&
+            d.settlePriceAdjustment === first.settlePriceAdjustment &&
+            d.settleDiscountType === first.settleDiscountType,
+        );
+        if (allSame) {
+          processedMappingIds.add(mappingId);
+          orderProduct.fee = first.settleFee;
+          orderProduct.priceAdjustment = first.settlePriceAdjustment;
+          orderProduct.settleDiscountType = first.settleDiscountType;
+          orderProductList.push(
+            this.orderProductMappingRepository.create({
+              id: mappingId,
+              settleDiscountType: first.settleDiscountType,
+              priceAdjustment: first.settlePriceAdjustment,
+              fee: first.settleFee,
+            }),
+          );
+        }
+      }
+    }
+
     return { orderProductList };
   }
 
