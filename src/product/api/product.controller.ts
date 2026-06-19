@@ -34,6 +34,7 @@ import {
   ProductExcelDownloadReqBodyDto,
   ProductExcelUploadReqDto,
   ProductGetDetailReqParamDto,
+  ProductGetLinkAverageExpireDayReqQueryDto,
   ProductGetListReqQueryDto,
   ProductGetTotalListReqQueryDto,
   ProductGetUpdateHistoryReqParamDto,
@@ -47,6 +48,7 @@ import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorizati
 import {
   ClassificationGetSearchListResDto,
   ProductGetDetailResDto,
+  ProductGetLinkAverageExpireDayResDto,
   ProductGetListResDto,
   ProductGetSsgResDto,
   ProductSharedListFileResDto,
@@ -105,6 +107,14 @@ export class ProductController {
   @Get('/product/list')
   async getList(@User() user: ILoginUserInfo, @Query() getQuery: ProductGetListReqQueryDto) {
     return this.productService.getList(user, getQuery);
+  }
+
+  @ApiOperation({ summary: '담당자 연동상품 유효기간 평균 조회 API' })
+  @ApiOkResponse({ type: ProductGetLinkAverageExpireDayResDto })
+  // =========================================
+  @Get('/product/link/average-expire-day')
+  getLinkAverageExpireDay(@Query() query: ProductGetLinkAverageExpireDayReqQueryDto) {
+    return this.productService.getLinkAverageExpireDay(query.headPersonUserId);
   }
 
   @ApiOperation({

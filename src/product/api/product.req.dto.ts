@@ -575,3 +575,12 @@ export class ClassificationCreateReqDto {
   @IsNotEmpty()
   classification: string;
 }
+
+export class ProductGetLinkAverageExpireDayReqQueryDto {
+  @ApiProperty({ description: '담당자 user.id' })
+  // ================================
+  @IsNotEmpty()
+  @IsNumber()
+  @Type(() => Number)
+  headPersonUserId: number;
+}

@@ -34,6 +34,14 @@ export class ClassificationGetSearchListResDto extends GetListResDto {
   list: ClassificationViewDto[];
 }
 
+export class ProductGetLinkAverageExpireDayResDto {
+  @ApiPropertyOptional({
+    description: '연동상품 유효기간 평균 (일). 연동상품 없으면 null',
+    nullable: true,
+  })
+  averageExpireDay: number | null;
+}
+
 export class ProductSharedListFileResDto {
   @ApiPropertyOptional({
     description: '업로드 파일 id',
