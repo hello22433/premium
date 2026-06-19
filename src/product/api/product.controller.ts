@@ -111,6 +111,7 @@ export class ProductController {
 
   @ApiOperation({ summary: '담당자 연동상품 유효기간 평균 조회 API' })
   @ApiOkResponse({ type: ProductGetLinkAverageExpireDayResDto })
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
   // =========================================
   @Get('/product/link/average-expire-day')
   getLinkAverageExpireDay(@Query() query: ProductGetLinkAverageExpireDayReqQueryDto) {

@@ -33,6 +33,7 @@ describe('ProductController 인가 가드 (HTTP)', () => {
     excelTemplateDownload: jest.fn(),
     getDetail: jest.fn().mockResolvedValue({}),
     getUpdateHistory: jest.fn().mockResolvedValue({}),
+    getLinkAverageExpireDay: jest.fn().mockResolvedValue({ averageExpireDay: null }),
   };
 
   // token === authority 문자열로 사용. validateByToken 이 해당 권한 유저를 돌려준다.
@@ -74,6 +75,7 @@ describe('ProductController 인가 가드 (HTTP)', () => {
     ['get', '/product/excel-template-download'], // excelTemplateDownload (#34)
     ['get', '/product/detail/1'], // getDetail (#32)
     ['get', '/product/update-history/1'], // getUpdateHistory (#32)
+    ['get', '/product/link/average-expire-day'], // getLinkAverageExpireDay (D3)
   ];
 
   describe('CORPORATE_ADMIN 은 403 으로 차단된다', () => {

@@ -87,4 +87,4 @@
 ## 참고
 
 - 인증: 기존 Bearer 토큰 그대로 사용
-- 백엔드 구현 브랜치: `fix/excel-stream-error-handler`
+- 백엔드 구현 브랜치: `feat/product-link-average-expire-day`

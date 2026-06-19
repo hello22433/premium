@@ -93,10 +93,7 @@ describe('ProductService.getLinkAverageExpireDay', () => {
 
     await sut.getLinkAverageExpireDay(HEAD_PERSON_USER_ID);
 
-    expect(qb.select).toHaveBeenCalledWith(
-      'AVG(COALESCE(p.galaxia_duration, p.expire_day))',
-      'averageExpireDay',
-    );
+    expect(qb.select).toHaveBeenCalledWith('AVG(COALESCE(p.galaxia_duration, p.expire_day))', 'averageExpireDay');
   });
 
   it('매핑 테이블을 soft-delete 필터와 함께 JOIN한다', async () => {
@@ -104,11 +101,7 @@ describe('ProductService.getLinkAverageExpireDay', () => {
 
     await sut.getLinkAverageExpireDay(HEAD_PERSON_USER_ID);
 
-    expect(qb.innerJoin).toHaveBeenCalledWith(
-      'e.userSyncProductEventMappings',
-      'm',
-      'm.deletedAt IS NULL',
-    );
+    expect(qb.innerJoin).toHaveBeenCalledWith('e.userSyncProductEventMappings', 'm', 'm.deletedAt IS NULL');
   });
 
   it('상품 테이블을 soft-delete + USE 상태 필터와 함께 JOIN한다', async () => {
@@ -116,12 +109,9 @@ describe('ProductService.getLinkAverageExpireDay', () => {
 
     await sut.getLinkAverageExpireDay(HEAD_PERSON_USER_ID);
 
-    expect(qb.innerJoin).toHaveBeenCalledWith(
-      'm.product',
-      'p',
-      'p.deletedAt IS NULL AND p.useStatus = :useStatus',
-      { useStatus: IProductUseStatus.USE },
-    );
+    expect(qb.innerJoin).toHaveBeenCalledWith('m.product', 'p', 'p.deletedAt IS NULL AND p.useStatus = :useStatus', {
+      useStatus: IProductUseStatus.USE,
+    });
   });
 
   it('headPersonUserId로 이벤트를 필터링한다', async () => {
@@ -129,10 +119,9 @@ describe('ProductService.getLinkAverageExpireDay', () => {
 
     await sut.getLinkAverageExpireDay(HEAD_PERSON_USER_ID);
 
-    expect(qb.where).toHaveBeenCalledWith(
-      'e.businessUserId = :headPersonUserId',
-      { headPersonUserId: HEAD_PERSON_USER_ID },
-    );
+    expect(qb.where).toHaveBeenCalledWith('e.businessUserId = :headPersonUserId', {
+      headPersonUserId: HEAD_PERSON_USER_ID,
+    });
   });
 
   it('ACTIVE 이벤트만 포함한다 (STOPPED/CLOSED 제외)', async () => {
@@ -140,10 +129,7 @@ describe('ProductService.getLinkAverageExpireDay', () => {
 
     await sut.getLinkAverageExpireDay(HEAD_PERSON_USER_ID);
 
-    expect(qb.andWhere).toHaveBeenCalledWith(
-      'e.status = :active',
-      { active: IUserSyncProductStatus.ACTIVE },
-    );
+    expect(qb.andWhere).toHaveBeenCalledWith('e.status = :active', { active: IUserSyncProductStatus.ACTIVE });
   });
 
   it('soft-delete된 이벤트를 제외한다', async () => {
