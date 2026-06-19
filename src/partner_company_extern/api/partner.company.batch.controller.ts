@@ -186,6 +186,40 @@ export class PartnerCompanyBatchController {
     return result;
   }
 
+  @ApiOperation({
+    summary: '컬쳐랜드 일대사 백필 보정 (기간) — apply 미지정/false=드라이런, apply=true=실제 정정',
+    description:
+      'startDay~endDay 일대사 API로 사용된 certNo와 실제 사용일을 수집해, 우리 60일 컬쳐랜드 발송건 중 ' +
+      'NOT_USED 또는 EXPIRED(만료로 잘못 찍힌 피해)인 건을 USED(교환)+tradeAt(실제 사용일)로 정정한다. ' +
+      'apply 미지정/false면 DB 변경 없이 대상만 집계(드라이런). 정산/지갑은 건드리지 않음.',
+  })
+  @Post('batch/cultureland-daily-backfill-range')
+  async backfillCulturelandDailyRange(
+    @Query('startDay') startDay: string,
+    @Query('endDay') endDay: string,
+    @Query('apply') apply?: string,
+  ) {
+    if (!startDay || !endDay || !/^\d{8}$/.test(startDay) || !/^\d{8}$/.test(endDay)) {
+      return { message: 'startDay, endDay를 YYYYMMDD 형식으로 입력해주세요.' };
+    }
+    if (startDay > endDay) {
+      return { message: 'startDay가 endDay보다 클 수 없습니다.' };
+    }
+    const doApply = apply === 'true';
+    this.logger.log(
+      `[백필] backfillCulturelandDailyRange 시작 - ${startDay} ~ ${endDay}, apply=${doApply}`,
+    );
+    const result = await this.partnerCompanyExternBatchService.backfillCulturelandDailyRange(
+      startDay,
+      endDay,
+      doApply,
+    );
+    this.logger.log(
+      `[백필] backfillCulturelandDailyRange 완료 - apply=${doApply}, matched=${result.matched}, updated=${result.updated}`,
+    );
+    return result;
+  }
+
   @ApiOperation({ summary: '전체 CANCEL 상태 발송건 협력사 상태 검증 (읽기 전용, SSG 제외)' })
   @Get('batch/verify-all-cancelled')
   async verifyAllCancelled(@Query('partnerType') partnerType?: string) {

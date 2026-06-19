@@ -4,12 +4,27 @@ import { IOrderSection } from '../interface/order.section';
 import { IOrderType } from '../interface/order.type';
 import { ViewScopeType } from '../../entity/user.view.scope.entity';
 
+jest.mock('exceljs');
+jest.mock('../../util/file.util', () => ({
+  createExportTempPath: jest.fn().mockReturnValue('/tmp/test-order.xlsx'),
+}));
+
 describe('OrderService excelDownload scope', () => {
   const user = { id: 10, email: 'owner@test.com', authority: IUserAuthority.CORPORATE_ADMIN };
 
   const createBuilder = () => {
     const clauses: string[] = [];
     const orderBys: Array<[string, string]> = [];
+    const cloneBuilder: any = {
+      select: jest.fn().mockReturnThis(),
+      distinct: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      getRawMany: jest.fn().mockResolvedValue([]),
+      getMany: jest.fn().mockResolvedValue([]),
+      clone: jest.fn(),
+    };
+    cloneBuilder.clone.mockReturnValue(cloneBuilder);
+
     const builder: any = {
       clauses,
       orderBys,
@@ -28,7 +43,7 @@ describe('OrderService excelDownload scope', () => {
         orderBys.push([column, direction]);
         return builder;
       }),
-      getMany: jest.fn().mockResolvedValue([]),
+      clone: jest.fn().mockReturnValue(cloneBuilder),
     };
     return builder;
   };
@@ -48,6 +63,18 @@ describe('OrderService excelDownload scope', () => {
       createLog: jest.fn().mockResolvedValue(undefined),
     };
     service.applyDirectSendingFilter = jest.fn();
+    const ExcelJS = jest.requireMock('exceljs') as any;
+    ExcelJS.stream = {
+      xlsx: {
+        WorkbookWriter: jest.fn().mockImplementation(() => ({
+          addWorksheet: jest.fn().mockReturnValue({
+            set columns(_: any) {},
+            commit: jest.fn().mockResolvedValue(undefined),
+          }),
+          commit: jest.fn().mockResolvedValue(undefined),
+        })),
+      },
+    };
     return { service, builder };
   };
 
@@ -75,7 +102,7 @@ describe('OrderService excelDownload scope', () => {
   it('주문 엑셀 다운로드는 목록 조회와 같은 SELF view_scope 조건을 적용한다', async () => {
     const { service, builder } = buildService(ViewScopeType.SELF);
 
-    await service.excelDownload(user, { ...baseBody, section: IOrderSection.ORDER });
+    await service.excelDownload(user, { ...baseBody, section: IOrderSection.ORDER }, { ipAddress: '', userAgent: '' });
 
     expect(builder.clauses).toContain('order.deletedAt IS NULL');
     expect(builder.clauses).toContain(
@@ -87,7 +114,11 @@ describe('OrderService excelDownload scope', () => {
   it('발송 엑셀 다운로드는 TEMP 제외 조건과 view_scope 조건을 함께 적용한다', async () => {
     const { service, builder } = buildService(ViewScopeType.SELF);
 
-    await service.excelDownload(user, { ...baseBody, section: IOrderSection.SHIPPING });
+    await service.excelDownload(
+      user,
+      { ...baseBody, section: IOrderSection.SHIPPING },
+      { ipAddress: '', userAgent: '' },
+    );
 
     expect(builder.clauses).toContain('order.status != :tempStatus');
     expect(builder.clauses).toContain(
@@ -98,7 +129,7 @@ describe('OrderService excelDownload scope', () => {
   it('회사 범위 엑셀 다운로드는 회사 view_scope 조건을 적용한다', async () => {
     const { service, builder } = buildService(ViewScopeType.COMPANY);
 
-    await service.excelDownload(user, { ...baseBody, section: IOrderSection.ORDER });
+    await service.excelDownload(user, { ...baseBody, section: IOrderSection.ORDER }, { ipAddress: '', userAgent: '' });
 
     expect(builder.clauses).toContain('user.companyId = :companyId');
   });
