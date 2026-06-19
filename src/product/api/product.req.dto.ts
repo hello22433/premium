@@ -292,7 +292,7 @@ export class ProductGetUpdateHistoryReqParamDto {
   id: number;
 }
 
-export class ProductGetUpdateHistoryReqQueryDto extends PagingReqDto { }
+export class ProductGetUpdateHistoryReqQueryDto extends PagingReqDto {}
 
 export class ProductCreateReqDto {
   @ApiProperty({
