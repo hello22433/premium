@@ -13,32 +13,40 @@ import {
 import { AuthUserSuperAndOperationAdminGuard } from '../../auth/api/auth.user.super-operation-admin.guard';
 import { User } from '../../auth/api/user.decorator';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
+import { AuthService } from '../../auth/application/auth.service';
+import { UserAuthSubEnum } from '../../user_management/domain/user.auth.enum';
 
 @ApiTags('forbidden-word')
 @Controller('')
 @ApiBearerAuth()
 @UseGuards(AuthUserSuperAndOperationAdminGuard)
 export class ForbiddenWordController {
-  constructor(private readonly forbiddenWordService: ForbiddenWordService) {}
+  constructor(
+    private readonly forbiddenWordService: ForbiddenWordService,
+    private readonly authService: AuthService,
+  ) {}
 
   @ApiOperation({ summary: '금칙어 목록 조회 API (검색/카테고리/활성 필터, 페이징)' })
   @ApiOkResponse({ description: '목록 조회 성공' })
   @Get('/forbidden-word')
-  async getList(@Query() getQuery: ForbiddenWordGetListReqQueryDto) {
+  async getList(@User() user: ILoginUserInfo, @Query() getQuery: ForbiddenWordGetListReqQueryDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.FORBIDDEN_WORD);
     return this.forbiddenWordService.getList(getQuery);
   }
 
   @ApiOperation({ summary: '금칙어 변경 이력 조회 API' })
   @ApiOkResponse({ description: '이력 조회 성공' })
   @Get('/forbidden-word/history')
-  async getHistory(@Query() getQuery: ForbiddenWordGetHistoryReqQueryDto) {
+  async getHistory(@User() user: ILoginUserInfo, @Query() getQuery: ForbiddenWordGetHistoryReqQueryDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.FORBIDDEN_WORD);
     return this.forbiddenWordService.getHistory(getQuery);
   }
 
   @ApiOperation({ summary: '금칙어 차단 로그 조회 API (운영화면용)' })
   @ApiOkResponse({ description: '차단 로그 조회 성공' })
   @Get('/forbidden-word/block-log')
-  async getBlockLog(@Query() getQuery: ForbiddenWordGetBlockLogReqQueryDto) {
+  async getBlockLog(@User() user: ILoginUserInfo, @Query() getQuery: ForbiddenWordGetBlockLogReqQueryDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.FORBIDDEN_WORD);
     return this.forbiddenWordService.getBlockLog(getQuery);
   }
 
@@ -46,6 +54,7 @@ export class ForbiddenWordController {
   @ApiOkResponse({ description: '금칙어 추가 성공' })
   @Post('/forbidden-word')
   async create(@User() user: ILoginUserInfo, @Body() getBody: ForbiddenWordCreateReqDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.FORBIDDEN_WORD);
     return this.forbiddenWordService.create(user, getBody);
   }
 
@@ -57,6 +66,7 @@ export class ForbiddenWordController {
     @Param() getParam: ForbiddenWordIdParamDto,
     @Body() getBody: ForbiddenWordUpdateReqDto,
   ) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.FORBIDDEN_WORD);
     return this.forbiddenWordService.update(user, getParam.id, getBody);
   }
 
@@ -68,6 +78,7 @@ export class ForbiddenWordController {
     @Param() getParam: ForbiddenWordIdParamDto,
     @Body() getBody: ForbiddenWordDeleteReqDto,
   ) {
-    return this.forbiddenWordService.delete(user, getParam.id, getBody.reason ?? null);
+    await this.authService.authorityValidator(user, UserAuthSubEnum.FORBIDDEN_WORD);
+    return this.forbiddenWordService.delete(user, getParam.id, getBody.reason);
   }
 }
