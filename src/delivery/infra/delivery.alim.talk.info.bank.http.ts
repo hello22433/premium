@@ -164,11 +164,13 @@ export class DeliveryAlimTalkInfoBankHttp implements DeliveryAlimTalk {
 
       this.logger.log(`알림톡 발신 : ${JSON.stringify(responseData)}`);
 
-      // inquiry API로 수신 확인 재시도 (최대 3번, 각 1초 대기)
+      // inquiry API로 수신 확인 재시도
+      const INQUIRY_MAX_ATTEMPTS = 2;
+      const INQUIRY_INTERVAL_MS = 10000;
       let reportResult: { success: boolean; reportCode?: string; data?: any; error?: string } | undefined = undefined;
 
-      for (let attempt = 1; attempt <= 3; attempt++) {
-        await sleep(1000);
+      for (let attempt = 1; attempt <= INQUIRY_MAX_ATTEMPTS; attempt++) {
+        await sleep(INQUIRY_INTERVAL_MS);
 
         reportResult = await this.inquiryReport(msgKey);
 
@@ -177,14 +179,15 @@ export class DeliveryAlimTalkInfoBankHttp implements DeliveryAlimTalk {
           break;
         }
 
-        this.logger.log(`Report inquiry failed on attempt ${attempt}: ${reportResult.error}, retrying...`);
+        const isLast = attempt === INQUIRY_MAX_ATTEMPTS;
+        this.logger.log(`Report inquiry failed on attempt ${attempt}: ${reportResult.error}${isLast ? '' : ', retrying...'}`);
       }
 
       if (!reportResult || !reportResult.success) {
         this.logger.error(`Final inquiry result: ${JSON.stringify(reportResult)}`);
         this.logger.error(`Original send response: ${JSON.stringify(responseData)}`);
         throw new Error(
-          `msgKey "${msgKey}" inquiry failed after 3 attempts: ${reportResult?.error || 'Unknown error'}`,
+          `msgKey "${msgKey}" inquiry failed after ${INQUIRY_MAX_ATTEMPTS} attempts: ${reportResult?.error || 'Unknown error'}`,
         );
       }
 
