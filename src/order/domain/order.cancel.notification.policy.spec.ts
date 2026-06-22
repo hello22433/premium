@@ -35,4 +35,7 @@ describe('isDirectCustomerCancelTarget', () => {
   it('authority 가 CORPORATE_ADMIN 이 아니면 false', () => {
     expect(isDirectCustomerCancelTarget(order(), user({ authority: IUserAuthority.OPERATION_ADMIN }))).toBe(false);
   });
+  it('운영담당자 지정(operationUserId != null)돼도 고객사 직접주문이면 true (operationUserId 무시)', () => {
+    expect(isDirectCustomerCancelTarget(order({ operationUserId: 5 }), user())).toBe(true);
+  });
 });
