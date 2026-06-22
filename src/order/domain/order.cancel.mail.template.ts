@@ -1,11 +1,6 @@
 /** HTML 이메일 인젝션 방지 — 동적 값(이벤트명/사유 등 사용자 입력)은 삽입 전 이스케이프. */
 const escapeHtml = (s: string): string =>
-  s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+  s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
 const wrap = (title: string, bodyHtml: string): { title: string; content: string } => ({
   title,

@@ -23,8 +23,7 @@ export class OrderCancelNotificationService {
         return;
       }
 
-      const companyType =
-        order.snapshotDocumentCompanyType ?? orderUser.documentCompanyType ?? CompanyType.ENMAD;
+      const companyType = order.snapshotDocumentCompanyType ?? orderUser.documentCompanyType ?? CompanyType.ENMAD;
 
       const { title, content } = orderCancelTemplate({
         personName: order.snapshotPersonName ?? orderUser.personName,
