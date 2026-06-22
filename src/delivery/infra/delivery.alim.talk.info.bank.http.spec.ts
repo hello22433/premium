@@ -15,7 +15,17 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { of, throwError } from 'rxjs';
-import { DeliveryAlimTalkInfoBankHttp } from './delivery.alim.talk.info.bank.http';
+import { DeliveryAlimTalkInfoBankHttp, DeliveryInfoBankAuth } from './delivery.alim.talk.info.bank.http';
+
+const makeAuthResponse = () => ({
+  data: {
+    data: {
+      schema: 'Bearer',
+      token: 'tok',
+      expired: new Date(Date.now() + 3600_000).toISOString(),
+    },
+  },
+});
 
 const makeHttpService = (overrides: Partial<HttpService> = {}) =>
   ({
@@ -45,21 +55,15 @@ describe('DeliveryAlimTalkInfoBankHttp — inquiry 재시도 횟수 일치', () 
   let service: DeliveryAlimTalkInfoBankHttp;
   let httpService: HttpService;
 
-  const authResponse = {
-    data: {
-      data: {
-        schema: 'Bearer',
-        token: 'tok',
-        expired: new Date(Date.now() + 3600_000).toISOString(),
-      },
-    },
-  };
-
   const sendResponse = {
     data: { code: 'A000', result: 'Success', msgKey: 'MK-001' },
   };
 
   beforeEach(async () => {
+    DeliveryInfoBankAuth.schema = '';
+    DeliveryInfoBankAuth.token = '';
+    DeliveryInfoBankAuth.expired = 0;
+
     httpService = makeHttpService();
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -74,7 +78,7 @@ describe('DeliveryAlimTalkInfoBankHttp — inquiry 재시도 횟수 일치', () 
 
   it('inquiry 전부 실패 시 inquiryReport 호출 횟수 = INQUIRY_MAX_ATTEMPTS', async () => {
     (httpService.post as jest.Mock)
-      .mockReturnValueOnce(of(authResponse))
+      .mockReturnValueOnce(of(makeAuthResponse()))
       .mockReturnValueOnce(of(sendResponse));
 
     // inquiry 응답: 항상 404 에러
@@ -93,8 +97,8 @@ describe('DeliveryAlimTalkInfoBankHttp — inquiry 재시도 횟수 일치', () 
     const logSpy = jest.spyOn((service as any).logger, 'log').mockImplementation(() => {});
 
     (httpService.post as jest.Mock)
-      .mockReturnValueOnce(of(authResponse)) // getToken
-      .mockReturnValueOnce(of(sendResponse)); // send
+      .mockReturnValueOnce(of(makeAuthResponse()))
+      .mockReturnValueOnce(of(sendResponse));
 
     (httpService.get as jest.Mock).mockReturnValue(
       throwError(() => ({ response: { data: { code: 'E404', result: 'Not Found' } } })),
@@ -120,7 +124,7 @@ describe('DeliveryAlimTalkInfoBankHttp — inquiry 재시도 횟수 일치', () 
 
   it('throw 에러 메시지 내 횟수가 실제 loop 횟수(2)와 일치', async () => {
     (httpService.post as jest.Mock)
-      .mockReturnValueOnce(of(authResponse))
+      .mockReturnValueOnce(of(makeAuthResponse()))
       .mockReturnValueOnce(of(sendResponse));
 
     (httpService.get as jest.Mock).mockReturnValue(
