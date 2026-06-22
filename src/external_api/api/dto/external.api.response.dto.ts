@@ -39,8 +39,19 @@ export enum ExternalCouponStatus {
   DISCARDED = 'DISCARDED',
 }
 
+/**
+ * 발송 결과. 고객사는 "발송에 성공했는지" 만 알면 충분하므로 성공/실패 2상태로 축약한다.
+ * - SUCCESS: 쿠폰이 실제로 발송됨(알림톡 또는 SMS 대체 전송 성공 포함)
+ * - FAIL: 발송 실패(미발송)
+ */
+export enum ExternalDeliveryStatus {
+  SUCCESS = 'SUCCESS',
+  FAIL = 'FAIL',
+}
+
 export class OrderStatusResponseData extends OrderResponseData {
   couponStatus: ExternalCouponStatus;
+  deliveryStatus: ExternalDeliveryStatus;
 }
 
 export class SsgOrderStatusResponseData extends OrderStatusResponseData {
