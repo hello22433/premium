@@ -1129,7 +1129,7 @@ export class CustomerServiceService {
    */
   async pinDiscard(user: ILoginUserInfo, getBody: CustomerServiceDiscardReqDto) {
     const result = await this.execDiscard(user, getBody.orderDeliveryId, getBody.couponStatus, {
-      type: '폐기',
+      type: CS_HISTORY_TYPE.DISCARD,
       content: '핀폐기 처리',
     });
 
@@ -1452,7 +1452,7 @@ export class CustomerServiceService {
     if (!getBody.orderDeliveryId) throw new NotFoundException('데이터 정보가 없습니다.');
     if (!getBody.type) {
       throw new BadRequestException('CS 유형을 선택해 주세요.');
-    } else if (getBody.type === '재전송' && !getBody.extraType) {
+    } else if (getBody.type === CS_HISTORY_TYPE.RESEND && !getBody.extraType) {
       throw new BadRequestException('재전송 유형을 선택해 주세요.');
     }
   }
@@ -1513,7 +1513,7 @@ export class CustomerServiceService {
     const displayMethod = CustomerServiceService.DELIVERY_METHOD_DISPLAY[orderDelivery.deliveryMethod] ?? null;
 
     let sendMethod: string | null = null;
-    if (getBody.type === '재전송') {
+    if (getBody.type === CS_HISTORY_TYPE.RESEND) {
       switch (getBody.extraType) {
         case 'sms':
           sendMethod = 'SMS';
@@ -1574,7 +1574,7 @@ export class CustomerServiceService {
     const recentResendCount = await this.orderHistoryRepository.count({
       where: {
         orderDeliveryId: map.orderDeliveryId,
-        type: '재전송',
+        type: CS_HISTORY_TYPE.RESEND,
         createdAt: MoreThanOrEqual(dedupSince),
       },
     });
@@ -2536,7 +2536,7 @@ export class CustomerServiceService {
             const history = this.orderHistoryRepository.create({
               orderDeliveryId: orderDelivery.id,
               userId: user.id,
-              type: '폐기',
+              type: CS_HISTORY_TYPE.DISCARD,
               content: content,
               beforeChange: beforeChange,
               afterChange: OrderDeliveryCouponStatus.CANCEL,
