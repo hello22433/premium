@@ -284,8 +284,8 @@ curl -X GET "https://{서버주소}/api/v1/external/orders/01ARZ3NDEKTSV4RRFFQ69
     "message": "success",
     "data": {
       "trId": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-      "couponStatus": "NOT_USED",
-      "deliveryStatus": "COMPLETE",
+      "couponStatus": "ISSUED",
+      "deliveryStatus": "SUCCESS",
       "barCode": "8801234567890",
       "validStartDate": "2026-03-31",
       "validEndDate": "2026-07-01",
@@ -302,7 +302,7 @@ curl -X GET "https://{서버주소}/api/v1/external/orders/01ARZ3NDEKTSV4RRFFQ69
 |------|------|------|
 | `trId` | string | 트랜잭션 ID |
 | `couponStatus` | string | 쿠폰 상태 (아래 표 참조) |
-| `deliveryStatus` | string | 발송 상태 (아래 표 참조) |
+| `deliveryStatus` | string | 발송 결과 (아래 표 참조) |
 | `barCode` | string? | 쿠폰 핀번호 |
 | `validStartDate` | string? | 유효기간 시작일 |
 | `validEndDate` | string? | 유효기간 종료일 |
@@ -311,24 +311,21 @@ curl -X GET "https://{서버주소}/api/v1/external/orders/01ARZ3NDEKTSV4RRFFQ69
 
 **쿠폰 상태 (`couponStatus`):**
 
-| 값 | 설명 |
-|----|------|
-| `NOT_USED` | 미사용 (발행 완료) |
-| `USED` | 사용 완료 (교환) |
-| `CANCEL` | 취소 (폐기) |
-| `REFUND_CANCEL` | 환불 취소 |
-| `EXPIRED` | 기간 만료 |
-
-**발송 상태 (`deliveryStatus`):**
+고객사 입장에서 필요한 두 상태로 축약해 제공합니다. 수신자의 사용/만료 여부 등 세부 상태는 노출하지 않습니다.
 
 | 값 | 설명 |
 |----|------|
-| `WAIT` | 발송 대기 |
-| `COMPLETE` | 발송 완료 |
-| `COMPLETE_SMS` | 알림톡 불가로 SMS 전송 성공 |
-| `FAIL` | 발송 실패 |
-| `FAIL_SMS` | 알림톡 불가 + SMS 전송 실패 |
-| `CANCEL` | 취소됨 |
+| `ISSUED` | 발행됨 (정상 발행/발송된 쿠폰) |
+| `DISCARDED` | 폐기됨 (취소·폐기 처리된 쿠폰) |
+
+> 내부적으로 사용 완료(USED)·기간 만료(EXPIRED)·환불 취소(REFUND_CANCEL) 상태인 쿠폰도 고객사에는 모두 `ISSUED`로 반환됩니다. 폐기(CANCEL)된 쿠폰만 `DISCARDED`입니다.
+
+**발송 결과 (`deliveryStatus`):**
+
+| 값 | 설명 |
+|----|------|
+| `SUCCESS` | 발송 성공 (알림톡 또는 SMS 대체 전송 성공 포함) |
+| `FAIL` | 발송 실패 (미발송) |
 
 ---
 
@@ -514,8 +511,8 @@ curl -X GET "https://{서버주소}/api/v1/external/orders/ssg/01ARZ3NDEKTSV4RRF
     "message": "success",
     "data": {
       "trId": "01ARZ3NDEKTSV4RRFFQ69G5FBW",
-      "couponStatus": "NOT_USED",
-      "deliveryStatus": "COMPLETE",
+      "couponStatus": "ISSUED",
+      "deliveryStatus": "SUCCESS",
       "barCode": "8809876543210",
       "personalCode": "1234567890",
       "validStartDate": "2026-03-31",
