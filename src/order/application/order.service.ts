@@ -77,7 +77,9 @@ import { format } from 'date-fns';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { IOrderStatus } from '../interface/order.status';
 import { OrderProductMappingEntity } from '../../entity/order.product.mapping.entity';
-import { Transactional } from 'typeorm-transactional';
+import { Transactional, runOnTransactionCommit } from 'typeorm-transactional';
+import { OrderCancelNotificationService } from './order.cancel.notification.service';
+import { isDirectCustomerCancelTarget } from '../domain/order.cancel.notification.policy';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { TestOrderDeliveryEntity } from '../../entity/test.order.delivery.entity';
 import { ProductEntity } from '../../entity/product.entity';
@@ -295,6 +297,7 @@ export class OrderService {
     private readonly shadowMismatchClassifierService: ShadowMismatchClassifierService,
     private readonly walletAllocationInputBuilder: WalletAllocationInputBuilder,
     private readonly forbiddenWordMatcher: ForbiddenWordMatcher,
+    private readonly orderCancelNotificationService: OrderCancelNotificationService,
     @InjectRepository(ForbiddenWordBlockLogEntity)
     private readonly forbiddenWordBlockLogRepository: Repository<ForbiddenWordBlockLogEntity>,
     private readonly orderFromService: OrderFromService,
@@ -4600,6 +4603,14 @@ export class OrderService {
     // 회사 레벨 balance 변경 시 company도 저장
     if (isCompanyBalanceMode && oneUser.company) {
       await this.userCompanyRepository.save(oneUser.company);
+    }
+
+    // 고객사 직접주문(DIRECT) 취소 시 주문자 대표 이메일로 통지.
+    // ★ deliveryCancel 은 @Transactional() 이므로 커밋 후(runOnTransactionCommit) 발송 — tx 미점유, 롤백 시 미발송. best-effort.
+    if (isDirectCustomerCancelTarget(order, oneUser)) {
+      runOnTransactionCommit(() => {
+        void this.orderCancelNotificationService.notifyDirectOrderCancel(order, oneUser);
+      });
     }
 
     return;

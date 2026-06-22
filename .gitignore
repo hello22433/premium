@@ -61,3 +61,5 @@ public/*.jpeg
 .worktrees/
 .omc/
 plans/
+
+docs/superpowers/
