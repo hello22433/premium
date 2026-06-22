@@ -998,23 +998,74 @@ export class ExternalApiService {
     }
 
     const max = this.resolveResendMax(account);
-    if (orderDelivery.resendCount >= max) {
+
+    // ─ Atomic slot claim ─
+    // 동시 이중 발송(발송 비용 중복)과 resendCount 손실 race 를 차단하기 위해,
+    // 외부 발송 전에 DB 에서 원자적으로 슬롯을 선점한다 (read-then-write save 금지).
+    // WHERE 에 couponStatus 가드를 포함해 SELECT~UPDATE 사이의 취소/폐기 race 도 닫는다.
+    const claim = await this.orderDeliveryRepository
+      .createQueryBuilder()
+      .update(OrderDeliveryEntity)
+      .set({ resendCount: () => 'resend_count + 1' })
+      .where('id = :id', { id: orderDelivery.id })
+      .andWhere('resend_count < :max', { max })
+      .andWhere('coupon_status NOT IN (:...blocked)', {
+        blocked: [OrderDeliveryCouponStatus.CANCEL, OrderDeliveryCouponStatus.REFUND_CANCEL],
+      })
+      .execute();
+
+    if (!claim.affected) {
+      // 한도 도달 또는 직전 취소/폐기. 최신 상태로 정확히 분기.
+      const fresh = await this.orderDeliveryRepository.findOne({
+        where: { id: orderDelivery.id },
+        select: ['resendCount', 'couponStatus'],
+      });
+      if (
+        fresh?.couponStatus === OrderDeliveryCouponStatus.CANCEL ||
+        fresh?.couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL
+      ) {
+        throw new ExternalApiException('3005', '폐기/취소된 쿠폰은 재발송 불가');
+      }
       throw new ExternalApiException(
         '3008',
-        `재발송 횟수 초과 (${orderDelivery.resendCount}/${max})`,
+        `재발송 횟수 초과 (${fresh?.resendCount ?? max}/${max})`,
       );
     }
 
-    const history = await this.dispatchSend(orderDelivery);
-    if (!history.isSuccess) {
-      throw new ExternalApiException('3003', '재발송 실패');
+    // 슬롯 선점 후 외부 발송. 실패(throw 또는 isSuccess=false)하면 선점한 슬롯을 되돌린다
+    // (현행 정책: 성공만 카운트). 단일 catch 로 롤백 경로를 통일한다.
+    try {
+      const history = await this.dispatchSend(orderDelivery);
+      if (!history.isSuccess) {
+        throw new ExternalApiException('3003', '재발송 실패');
+      }
+    } catch (error) {
+      await this.releaseResendSlot(orderDelivery.id);
+      throw error;
     }
 
-    orderDelivery.resendAt = new Date();
-    orderDelivery.resendCount += 1;
-    await this.orderDeliveryRepository.save(orderDelivery);
+    // 성공: resendCount 는 이미 DB 에서 +1 됨(save 로 stale 값 덮지 말 것).
+    // dispatchSend 가 in-memory 로 갱신한 발송 상태만 targeted update.
+    await this.orderDeliveryRepository.update(
+      { id: orderDelivery.id },
+      {
+        resendAt: new Date(),
+        status: orderDelivery.status,
+        actualSendAt: orderDelivery.actualSendAt,
+      },
+    );
 
     return ExternalApiResponse.success();
+  }
+
+  /** 재발송 슬롯 롤백 — 발송 실패 시 선점한 슬롯 1개 반납 (음수 방지). */
+  private async releaseResendSlot(orderDeliveryId: number): Promise<void> {
+    await this.orderDeliveryRepository
+      .createQueryBuilder()
+      .update(OrderDeliveryEntity)
+      .set({ resendCount: () => 'GREATEST(resend_count - 1, 0)' })
+      .where('id = :id', { id: orderDeliveryId })
+      .execute();
   }
 
   // ─── SSG 주문 생성 ──────────────────────────────────────
