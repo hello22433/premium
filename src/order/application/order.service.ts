@@ -2948,37 +2948,84 @@ export class OrderService {
   }
 
   /**
-   * 임시저장 콘텐츠 금칙어 검사.
-   *
-   * - 검사 대상: 각 상품의 sendContent / useEmailContent / sendTailText,
-   *   각 수신자의 대치문자 1/2/3.
+   * 상품 행(임시저장 DTO / 저장된 주문 매핑 공통)에서 금칙어 검사 대상 필드 수집.
+   * - 대상: sendTitle / sendContent / useEmailContent / sendTailText, 수신자별 대치문자 1/2/3.
    * - 빈/null 필드는 skip.
-   * - 적발 시 block_log 기록 후 BadRequestException(FORBIDDEN_WORD) throw.
-   *   block_log insert 실패는 warn 후에도 reject 유지.
+   */
+  private static collectForbiddenWordTargets(
+    rows: {
+      sendTitle?: string | null;
+      sendContent?: string | null;
+      useEmailContent?: string | null;
+      sendTailText?: string | null;
+      deliveries: {
+        replaceCharacter1?: string | null;
+        replaceCharacter2?: string | null;
+        replaceCharacter3?: string | null;
+      }[];
+    }[],
+  ): { field: string; text: string }[] {
+    const targets: { field: string; text: string }[] = [];
+    const push = (field: string, text: string | null | undefined) => {
+      if (text) targets.push({ field, text });
+    };
+
+    for (const row of rows) {
+      push('sendTitle', row.sendTitle);
+      push('sendContent', row.sendContent);
+      push('useEmailContent', row.useEmailContent);
+      push('sendTailText', row.sendTailText);
+
+      for (const delivery of row.deliveries) {
+        push('replaceCharacter1', delivery.replaceCharacter1);
+        push('replaceCharacter2', delivery.replaceCharacter2);
+        push('replaceCharacter3', delivery.replaceCharacter3);
+      }
+    }
+
+    return targets;
+  }
+
+  /**
+   * 임시저장/수정 콘텐츠 금칙어 검사. 적발 시 block_log 기록 후 BadRequestException(FORBIDDEN_WORD).
    */
   private async assertNoForbiddenWord(
     user: ILoginUserInfo,
     orderProductList: OrderProductCreateTempDto[],
     orderId: number | null,
   ): Promise<void> {
-    const targets: { field: string; text: string }[] = [];
+    const targets = OrderService.collectForbiddenWordTargets(
+      orderProductList.map((product) => ({ ...product, deliveries: product.orderDeliveryList ?? [] })),
+    );
+    await this.assertTargetsHaveNoForbiddenWord(user, targets, orderId);
+  }
 
-    const pushIfPresent = (field: string, text: string | null | undefined) => {
-      if (text) targets.push({ field, text });
-    };
+  /**
+   * 발송요청 직전 금칙어 최종 차단(저장된 주문 엔티티 기준).
+   * 임시저장 이후 금칙어 추가, 발송관리 패치(꼬리광고/이메일 사용방법 등)로 인한 우회를 막는다.
+   */
+  private async assertNoForbiddenWordInOrder(
+    user: ILoginUserInfo,
+    order: OrderEntity,
+  ): Promise<void> {
+    const targets = OrderService.collectForbiddenWordTargets(
+      (order.orderProductMappings ?? []).map((mapping) => ({
+        ...mapping,
+        deliveries: mapping.orderDeliveries ?? [],
+      })),
+    );
+    await this.assertTargetsHaveNoForbiddenWord(user, targets, order.id);
+  }
 
-    for (const product of orderProductList) {
-      pushIfPresent('sendContent', product.sendContent);
-      pushIfPresent('useEmailContent', product.useEmailContent);
-      pushIfPresent('sendTailText', product.sendTailText);
-
-      for (const delivery of product.orderDeliveryList ?? []) {
-        pushIfPresent('replaceCharacter1', delivery.replaceCharacter1);
-        pushIfPresent('replaceCharacter2', delivery.replaceCharacter2);
-        pushIfPresent('replaceCharacter3', delivery.replaceCharacter3);
-      }
-    }
-
+  /**
+   * 금칙어 검사 공통 로직: 적발 시 block_log 기록 후 BadRequestException(FORBIDDEN_WORD) throw.
+   * block_log insert 실패는 warn 후에도 reject 유지.
+   */
+  private async assertTargetsHaveNoForbiddenWord(
+    user: ILoginUserInfo,
+    targets: { field: string; text: string }[],
+    orderId: number | null,
+  ): Promise<void> {
     for (const target of targets) {
       const matchedWords = this.forbiddenWordMatcher.scan(target.text);
       if (matchedWords.length === 0) {
@@ -3001,7 +3048,7 @@ export class OrderService {
       throw new BadRequestException({
         code: 'FORBIDDEN_WORD',
         words: matchedWords,
-        message: '금칙어가 포함되어 저장할 수 없습니다.',
+        message: '금칙어가 포함되어 있습니다.',
       });
     }
   }
@@ -3476,6 +3523,9 @@ export class OrderService {
         throw new BadRequestException('발송 상세를 입력하지 않았습니다.');
       }
     }
+
+    // 발송요청 직전 금칙어 최종 차단(저장된 콘텐츠 기준, sendTitle 포함)
+    await this.assertNoForbiddenWordInOrder(user, order);
 
     const ssgReservationRange =
       order.type === IOrderType.SSG ? await this.ssgEventService.getReservationRange() : null;
