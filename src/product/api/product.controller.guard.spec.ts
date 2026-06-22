@@ -9,6 +9,7 @@ import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorizati
 import { AuthUserSuperAdminGuard } from '../../auth/api/auth.user.super-admin.guard';
 import { AuthUserSuperAndOperationAdminGuard } from '../../auth/api/auth.user.super-operation-admin.guard';
 import { IUserAuthority } from '../../user/interface/user.authority';
+import { UserAuthSubEnum } from '../../user_management/domain/user.auth.enum';
 
 /**
  * 상품관리 엔드포인트 인가 가드 회귀 테스트 (audit #31/#33/#34).
@@ -36,6 +37,10 @@ describe('ProductController 인가 가드 (HTTP)', () => {
     getLinkAverageExpireDay: jest.fn().mockResolvedValue({ averageExpireDay: null }),
   };
 
+  const authService = {
+    authorityValidator: jest.fn().mockResolvedValue(undefined),
+  };
+
   // token === authority 문자열로 사용. validateByToken 이 해당 권한 유저를 돌려준다.
   const tokenValidator = {
     validateByToken: jest.fn((token: string) => ({ id: 1, email: 't@test.com', authority: token })),
@@ -47,7 +52,7 @@ describe('ProductController 인가 가드 (HTTP)', () => {
       providers: [
         { provide: ProductService, useValue: productService },
         { provide: ActivityLogService, useValue: { createLog: jest.fn() } },
-        { provide: AuthService, useValue: { authorityValidator: jest.fn() } },
+        { provide: AuthService, useValue: authService },
         AuthUserAuthorizationGuard,
         AuthUserSuperAndOperationAdminGuard,
         AuthUserSuperAdminGuard,
@@ -105,6 +110,47 @@ describe('ProductController 인가 가드 (HTTP)', () => {
         .set('Authorization', auth(IUserAuthority.SUPER_ADMIN))
         .send({})
         .expect(201);
+    });
+  });
+
+  describe('GET /product/link/average-expire-day — 역할가드 + 서브권한 검증', () => {
+    beforeEach(() => jest.clearAllMocks());
+
+    it('CORPORATE_ADMIN → 403 (역할가드 차단)', async () => {
+      await request(app.getHttpServer())
+        .get('/product/link/average-expire-day?headPersonUserId=1')
+        .set('Authorization', auth(IUserAuthority.CORPORATE_ADMIN))
+        .expect(403);
+    });
+
+    it('OPERATION_ADMIN → 가드 통과 후 authorityValidator(LINK_ITEM) 호출', async () => {
+      await request(app.getHttpServer())
+        .get('/product/link/average-expire-day?headPersonUserId=1')
+        .set('Authorization', auth(IUserAuthority.OPERATION_ADMIN))
+        .expect(200);
+
+      expect(authService.authorityValidator).toHaveBeenCalledWith(
+        expect.objectContaining({ authority: IUserAuthority.OPERATION_ADMIN }),
+        UserAuthSubEnum.PRODUCT_CUSTOMER_LINK_ITEM,
+      );
+    });
+
+    it('SUPER_ADMIN → 가드 통과 후 authorityValidator(LINK_ITEM) 호출', async () => {
+      await request(app.getHttpServer())
+        .get('/product/link/average-expire-day?headPersonUserId=1')
+        .set('Authorization', auth(IUserAuthority.SUPER_ADMIN))
+        .expect(200);
+
+      expect(authService.authorityValidator).toHaveBeenCalledWith(
+        expect.objectContaining({ authority: IUserAuthority.SUPER_ADMIN }),
+        UserAuthSubEnum.PRODUCT_CUSTOMER_LINK_ITEM,
+      );
+    });
+
+    it('토큰 없으면 401', async () => {
+      await request(app.getHttpServer())
+        .get('/product/link/average-expire-day?headPersonUserId=1')
+        .expect(401);
     });
   });
 

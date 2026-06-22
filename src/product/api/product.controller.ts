@@ -114,7 +114,11 @@ export class ProductController {
   @UseGuards(AuthUserSuperAndOperationAdminGuard)
   // =========================================
   @Get('/product/link/average-expire-day')
-  getLinkAverageExpireDay(@Query() query: ProductGetLinkAverageExpireDayReqQueryDto) {
+  async getLinkAverageExpireDay(
+    @User() user: ILoginUserInfo,
+    @Query() query: ProductGetLinkAverageExpireDayReqQueryDto,
+  ) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.PRODUCT_CUSTOMER_LINK_ITEM);
     return this.productService.getLinkAverageExpireDay(query.headPersonUserId);
   }
 
