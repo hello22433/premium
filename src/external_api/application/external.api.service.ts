@@ -365,13 +365,10 @@ export class ExternalApiService {
     return this.resolveCardSurchargeAppliedForUser(account.user);
   }
 
-  // billingUser 기준 카드할증 판정(account.user 와 동일 로직). 단순모드 billingUser=account.user.
+  // billingUser 기준 카드할증 판정. company.settleMethod 가 SoT (user.settleMethod 는 deprecated).
+  // balanceManagementType 분기 제거 — PR1+ 모든 user 가 company 단위 공유 settlement_code 로 통합.
   private resolveCardSurchargeAppliedForUser(user: UserEntity): boolean {
-    const isCompanyMode = user.company?.balanceManagementType === 'COMPANY';
-    const settleMethod = isCompanyMode
-      ? user.company?.settleMethod
-      : user.settleMethod;
-    return settleMethod === IUserSettleMethod.CARD;
+    return user.company?.settleMethod === IUserSettleMethod.CARD;
   }
 
   private async computeSettlement(
