@@ -51,6 +51,7 @@ import { translatePartnerError } from './partner.error.translator';
 import {
   ExternalApiResponse,
   ExternalCouponStatus,
+  ExternalDeliveryStatus,
   OrderResponseData,
   SsgOrderResponseData,
   OrderStatusResponseData,
@@ -852,6 +853,7 @@ export class ExternalApiService {
     return ExternalApiResponse.success<OrderStatusResponseData>({
       trId: orderDelivery.externalTrId!,
       couponStatus: this.toExternalCouponStatus(orderDelivery.couponStatus),
+      deliveryStatus: this.toExternalDeliveryStatus(orderDelivery),
       barCode: orderDelivery.barCode || undefined,
       validStartDate,
       validEndDate,
@@ -872,6 +874,7 @@ export class ExternalApiService {
     return ExternalApiResponse.success<SsgOrderStatusResponseData>({
       trId: orderDelivery.externalTrId!,
       couponStatus: this.toExternalCouponStatus(orderDelivery.couponStatus),
+      deliveryStatus: this.toExternalDeliveryStatus(orderDelivery),
       barCode: orderDelivery.barCode || undefined,
       personalCode: orderDelivery.personalCode || undefined,
       validStartDate,
@@ -1175,6 +1178,21 @@ export class ExternalApiService {
     return status === OrderDeliveryCouponStatus.CANCEL
       ? ExternalCouponStatus.DISCARDED
       : ExternalCouponStatus.ISSUED;
+  }
+
+  /**
+   * 내부 발송 상태를 외부 노출용 성공/실패로 축약.
+   * actualSendAt 이 찍혀 있으면(알림톡/SMS 대체 전송 성공 포함) 발송 성공으로 본다.
+   * 명시적 실패(FAIL/FAIL_SMS)이거나 미발송이면 실패.
+   */
+  private toExternalDeliveryStatus(orderDelivery: OrderDeliveryEntity): ExternalDeliveryStatus {
+    if (
+      orderDelivery.status === IOrderDeliveryStatus.FAIL ||
+      orderDelivery.status === IOrderDeliveryStatus.FAIL_SMS
+    ) {
+      return ExternalDeliveryStatus.FAIL;
+    }
+    return orderDelivery.actualSendAt ? ExternalDeliveryStatus.SUCCESS : ExternalDeliveryStatus.FAIL;
   }
 
   /**
