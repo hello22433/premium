@@ -8,6 +8,7 @@ import { OrderProductMappingEntity } from '../entity/order.product.mapping.entit
 import { OrderController } from './api/order.controller';
 import { OrderService } from './application/order.service';
 import { EarlyDestroyService } from './application/early.destroy.service';
+import { OrderCancelNotificationService } from './application/order.cancel.notification.service';
 import { EarlyDestroyRequestEntity } from '../entity/early.destroy.request.entity';
 import { EarlyDestroyRequestItemEntity } from '../entity/early.destroy.request.item.entity';
 import { OrderHistoryEntity } from '../entity/order.history.entity';
@@ -66,6 +67,6 @@ import { OrderFromModule } from '../order_from/order.from.module';
     OrderFromModule,
   ],
   controllers: [OrderController],
-  providers: [OrderService, EarlyDestroyService],
+  providers: [OrderService, EarlyDestroyService, OrderCancelNotificationService],
 })
 export class OrderModule {}
