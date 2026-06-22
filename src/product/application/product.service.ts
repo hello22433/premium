@@ -2047,4 +2047,22 @@ export class ProductService {
 
     return;
   }
+
+  async getLinkAverageExpireDay(headPersonUserId: number): Promise<{ averageExpireDay: number | null }> {
+    const result = await this.userSyncProductEventRepository
+      .createQueryBuilder('e')
+      .select('AVG(COALESCE(p.galaxia_duration, p.expire_day))', 'averageExpireDay')
+      .innerJoin('e.userSyncProductEventMappings', 'm', 'm.deletedAt IS NULL')
+      .innerJoin('m.product', 'p', 'p.deletedAt IS NULL AND p.useStatus = :useStatus', {
+        useStatus: IProductUseStatus.USE,
+      })
+      .where('e.businessUserId = :headPersonUserId', { headPersonUserId })
+      .andWhere('e.status = :active', { active: IUserSyncProductStatus.ACTIVE })
+      .andWhere('e.deletedAt IS NULL')
+      .getRawOne<{ averageExpireDay: string | null }>();
+
+    return {
+      averageExpireDay: result?.averageExpireDay != null ? Number(result.averageExpireDay) : null,
+    };
+  }
 }

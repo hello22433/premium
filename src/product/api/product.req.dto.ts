@@ -292,7 +292,7 @@ export class ProductGetUpdateHistoryReqParamDto {
   id: number;
 }
 
-export class ProductGetUpdateHistoryReqQueryDto extends PagingReqDto { }
+export class ProductGetUpdateHistoryReqQueryDto extends PagingReqDto {}
 
 export class ProductCreateReqDto {
   @ApiProperty({
@@ -574,4 +574,13 @@ export class ClassificationCreateReqDto {
   // ========================================
   @IsNotEmpty()
   classification: string;
+}
+
+export class ProductGetLinkAverageExpireDayReqQueryDto {
+  @ApiProperty({ description: '담당자 user.id' })
+  // ================================
+  @IsNotEmpty()
+  @IsNumber()
+  @Type(() => Number)
+  headPersonUserId: number;
 }
