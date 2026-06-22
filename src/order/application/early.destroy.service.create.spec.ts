@@ -194,17 +194,19 @@ describe('EarlyDestroyService.createRequestForOrder — 주문 전체 파기 (D3
     return qb;
   };
 
-  const makeSut = (cfg: {
-    order?: any;
-    mappings?: any[];
-    nonDestroyedCount?: number;
-    pending?: any[];
-  } = {}) => {
+  const makeSut = (
+    cfg: {
+      order?: any;
+      mappings?: any[];
+      nonDestroyedCount?: number;
+      pending?: any[];
+    } = {},
+  ) => {
     const sut: any = Object.create(EarlyDestroyService.prototype);
     sut.orderRepository = {
-      findOne: jest.fn().mockResolvedValue(
-        'order' in cfg ? cfg.order : { id: 77, status: IOrderStatus.DELIVERY_COMPLETE },
-      ),
+      findOne: jest
+        .fn()
+        .mockResolvedValue('order' in cfg ? cfg.order : { id: 77, status: IOrderStatus.DELIVERY_COMPLETE }),
     };
     sut.orderProductMappingRepository = {
       find: jest.fn().mockResolvedValue(cfg.mappings ?? [{ id: 55 }, { id: 66 }]),
