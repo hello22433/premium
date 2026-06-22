@@ -503,7 +503,11 @@ describe('OrderService SSG settlement row validation', () => {
       map,
     );
 
-    expect(result.orderProductList).toEqual([]);
+    // mapping 10: deliveries [1, 2] 중 1만 이 행에 포함 → d2 값 섞임 → 동기화 안 됨
+    // mapping 11: crossDelivery 하나뿐, fee=5 일치 → 후처리 패스에서 대표값 동기화됨 (D3-42)
+    expect(result.orderProductList).toEqual([
+      { id: 11, settleDiscountType: null, priceAdjustment: IPriceAdjustment.DISCOUNT, fee: 5 },
+    ]);
     expect(deliveries[0]).toMatchObject({
       settleFee: 5,
       settlePriceAdjustment: IPriceAdjustment.DISCOUNT,
@@ -547,7 +551,11 @@ describe('OrderService SSG settlement row validation', () => {
       map,
     );
 
-    expect(result.orderProductList).toEqual([]);
+    // mapping 10: d1=10%, d2=5% → 섞여서 대표값 없음 → 동기화 안 됨
+    // mapping 11: d3=5% 단독 → 후처리 패스에서 대표값 동기화됨 (D3-42)
+    expect(result.orderProductList).toEqual([
+      { id: 11, settleDiscountType: null, priceAdjustment: IPriceAdjustment.DISCOUNT, fee: 5 },
+    ]);
     // 단독 1만원권은 10% 유지(합산 행 5%가 침범하지 않음)
     expect(d1).toMatchObject({ settleFee: 10, settlePriceAdjustment: IPriceAdjustment.DISCOUNT });
     // 합산 행의 1만원권/2만원권 delivery 둘 다 5%

@@ -2606,6 +2606,7 @@ export class OrderService {
     const hasDeliveryScopedRows = list.some((settle) => settle.deliveryIds && settle.deliveryIds.length > 0);
     const orderProductList: ReturnType<typeof this.orderProductMappingRepository.create>[] = [];
     const processedMappingIds = new Set<number>();
+    const updatedDeliveryIds = new Set<number>(); // 이번 call 에서 실제 업데이트된 delivery ID 추적 (D3-42 후처리용)
     const deliveryUpdatePromises: Promise<unknown>[] = [];
     const refundPromises: Promise<unknown>[] = [];
 
@@ -2637,6 +2638,7 @@ export class OrderService {
           delivery.settleFee = settle.fee;
           delivery.settlePriceAdjustment = normPriceAdjustment;
           delivery.settleDiscountType = normSettleDiscountType;
+          updatedDeliveryIds.add(deliveryId);
         }
 
         deliveryUpdatePromises.push(
@@ -2711,6 +2713,41 @@ export class OrderService {
 
     await Promise.all(deliveryUpdatePromises);
     await Promise.all(refundPromises);
+
+    // 합본행(크로스 수신번호) 후처리: deliveryIds 에만 등장하고 settle.id 로는 한 번도 처리되지 않은
+    // mapping 의 deliveries 가 이번 call 에서 모두 동일한 정산값으로 갱신됐으면 대표값을 동기화한다.
+    // - settle.id 가 없는 mapping 은 메인 루프에서 shouldSyncMapping 평가 자체가 생략됨 (D3-42)
+    // - updatedDeliveryIds 조건: 이번 call 에서 건드리지 않은 mapping 은 기존 DB 값으로 오염되지 않도록 제외
+    if (hasDeliveryScopedRows) {
+      for (const [mappingId, orderProduct] of existingOrderProductMap.entries()) {
+        if (processedMappingIds.has(mappingId)) continue;
+        const deliveries: OrderDeliveryEntity[] = orderProduct.orderDeliveries ?? [];
+        if (deliveries.length === 0) continue;
+        // 이번 call 에서 실제로 업데이트된 delivery 가 없으면 skip (관련 없는 mapping 방지)
+        if (!deliveries.some((d: OrderDeliveryEntity) => updatedDeliveryIds.has(d.id))) continue;
+        const first = deliveries[0];
+        const allSame = deliveries.every(
+          (d: OrderDeliveryEntity) =>
+            d.settleFee === first.settleFee &&
+            d.settlePriceAdjustment === first.settlePriceAdjustment &&
+            d.settleDiscountType === first.settleDiscountType,
+        );
+        if (allSame) {
+          processedMappingIds.add(mappingId);
+          orderProduct.fee = first.settleFee;
+          orderProduct.priceAdjustment = first.settlePriceAdjustment;
+          orderProduct.settleDiscountType = first.settleDiscountType;
+          orderProductList.push(
+            this.orderProductMappingRepository.create({
+              id: mappingId,
+              settleDiscountType: first.settleDiscountType,
+              priceAdjustment: first.settlePriceAdjustment,
+              fee: first.settleFee,
+            }),
+          );
+        }
+      }
+    }
 
     return { orderProductList };
   }
