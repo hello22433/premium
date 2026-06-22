@@ -159,12 +159,14 @@ describe('EarlyDestroyService.executeRequest — 환불 가드 + 요청 검증 (
     items: [{ orderProductMappingId: 55, orderDeliveryId: 101 }],
   };
 
-  const makeSut = (cfg: {
-    request?: any;
-    order?: any;
-    refundInProgressCount?: number;
-    mappingDeliveries?: any[];
-  } = {}) => {
+  const makeSut = (
+    cfg: {
+      request?: any;
+      order?: any;
+      refundInProgressCount?: number;
+      mappingDeliveries?: any[];
+    } = {},
+  ) => {
     const sut: any = Object.create(EarlyDestroyService.prototype);
     sut.earlyDestroyRequestRepository = {
       findOne: jest.fn().mockResolvedValue('request' in cfg ? cfg.request : DEFAULT_REQUEST),
