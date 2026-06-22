@@ -1528,10 +1528,7 @@ export class CustomerServiceService {
           sendMethod = '이메일';
           break;
       }
-    } else if (
-      getBody.type === CS_HISTORY_TYPE.RECEIVER_CHANGE ||
-      getBody.type === CS_HISTORY_TYPE.DISCARD_REISSUE
-    ) {
+    } else if (getBody.type === CS_HISTORY_TYPE.RECEIVER_CHANGE || getBody.type === CS_HISTORY_TYPE.DISCARD_REISSUE) {
       sendMethod = displayMethod;
     }
 
