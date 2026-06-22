@@ -938,20 +938,6 @@ export class UserManagementService {
     // 계정 생성 로그 (라이프사이클 — 관리자 경로)
     await this.accountStatusTransitionService.logAccountCreate(newUserId, getBody.email, TransitionSource.ADMIN);
 
-    // settleMethod SoT 동기화: WALLET 모드에서 wallet_account 에도 반영.
-    if (getBody.settleMethod !== undefined) {
-      const settleMethod = getBody.settleMethod as 'CARD' | 'CASH';
-      if (this.walletCutoverConfig.pr3SettleMode === WalletCutoverMode.WALLET) {
-        try {
-          const wallet = await this.walletResolver.resolveByUserId(newUserId);
-          wallet.settleMethod = settleMethod;
-          await this.walletAccountRepository.save(wallet);
-        } catch {
-          // wallet 미존재(backfill 전) 시 무시 — company 동기화로 충분
-        }
-      }
-    }
-
     // 발신번호 SoT 동기화: APPROVED isDefault PHONE 보장 + mirror 갱신(없으면 NULL).
     // user.insert 가 mirror 를 이미 썼지만 seed 가 마지막 권위 write 로 최종값 확정.
     await this.orderFromService.seedApprovedDefaultPhone(
@@ -1066,13 +1052,9 @@ export class UserManagementService {
     if (getBody.settleMethod !== undefined) {
       const settleMethod = getBody.settleMethod as 'CARD' | 'CASH';
       if (this.walletCutoverConfig.pr3SettleMode === WalletCutoverMode.WALLET) {
-        try {
-          const wallet = await this.walletResolver.resolveByUserId(user.id);
-          wallet.settleMethod = settleMethod;
-          await this.walletAccountRepository.save(wallet);
-        } catch {
-          // wallet 미존재(backfill 전) 시 무시 — company 동기화로 충분
-        }
+        const wallet = await this.walletResolver.resolveByUserId(user.id);
+        wallet.settleMethod = settleMethod;
+        await this.walletAccountRepository.save(wallet);
       }
     }
 

@@ -357,7 +357,7 @@ export class ExternalApiService {
 
   // ─── 정산 헬퍼 ──────────────────────────────────────────
   // 일반 주문(order.service.ts)과 동일한 정산 모델을 외부 API에도 적용.
-  //  - 카드할증 여부: COMPANY 모드는 user_company.settleMethod, 그 외는 user.settleMethod ('CARD'면 true)
+  //  - 카드할증 여부: company.settleMethod === 'CARD' (SoT. user.settleMethod 는 deprecated)
   //  - 할인/할증: user_discount 자동 매칭(findMatchingDiscount). 매칭 없으면 정가 그대로
   //  - settleAmount = applyCardSurcharge(OrderFeeCalculator(...), cardSurchargeApplied)
 
