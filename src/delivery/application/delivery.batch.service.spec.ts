@@ -35,6 +35,7 @@ import { OrderFromService } from '../../order_from/application/order.from.servic
 import { WalletManagedPredicate } from '../../wallet/application/wallet-managed.predicate';
 import { RefundPoolService } from '../../wallet/application/refund-pool.service';
 import { ResendDeductService } from '../../wallet/application/resend-deduct.service';
+import { LegacyWalletCreditSyncService } from '../../wallet/application/legacy-wallet-credit-sync.service';
 import { SsgRefundOutcome } from '../interface/ssg.refund.resolve';
 
 describe('DeliveryBatchService', () => {
@@ -83,6 +84,7 @@ describe('DeliveryBatchService', () => {
         { provide: WalletManagedPredicate, useValue: { isWalletManaged: jest.fn() } },
         { provide: RefundPoolService, useValue: { refund: jest.fn(), reverseRefund: jest.fn() } },
         { provide: ResendDeductService, useValue: { resendDeduct: jest.fn(), resendUndo: jest.fn() } },
+        { provide: LegacyWalletCreditSyncService, useValue: { syncCredit: jest.fn() } },
         { provide: getRepositoryToken(OrderDeliveryAttemptEntity), useValue: { findOne: jest.fn(), save: jest.fn() } },
         { provide: getRepositoryToken(OrderPaymentRefundEventEntity), useValue: { find: jest.fn().mockResolvedValue([]), findOne: jest.fn() } },
         { provide: getRepositoryToken(OrderPaymentAllocationEntity), useValue: { findOne: jest.fn() } },

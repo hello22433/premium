@@ -1,4 +1,4 @@
-﻿import { BadRequestException, Injectable, InternalServerErrorException, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, InternalServerErrorException, Logger, NotFoundException } from '@nestjs/common';
 import { createExportTempPath } from '../../util/file.util';
 import {
   SettleGetAdminUserListResDto,
@@ -113,6 +113,7 @@ import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { WalletManagedPredicate } from '../../wallet/application/wallet-managed.predicate';
 import { SettleConfirmationWalletService } from '../../wallet/application/settle-confirmation-wallet.service';
 import { WalletAccountResolverService } from '../../wallet/application/wallet-account-resolver.service';
+import { LegacyWalletCreditSyncService } from '../../wallet/application/legacy-wallet-credit-sync.service';
 import { WalletCutoverConfig, WalletCutoverMode } from '../../wallet/config/wallet-cutover.config';
 import { GalaxiaBarcodeLogEntity } from '../../entity/galaxia.barcode.log.entity';
 import { SettleGalaxiaListViewDto } from '../api/dto/settle.galaxia.list.view.dto';
@@ -155,6 +156,7 @@ export class SettleService {
     private readonly settleConfirmationWalletService: SettleConfirmationWalletService,
     private readonly walletAccountResolverService: WalletAccountResolverService,
     private readonly walletCutoverConfig: WalletCutoverConfig,
+    private readonly legacyWalletCreditSyncService: LegacyWalletCreditSyncService,
   ) { }
 
   /**
@@ -2430,6 +2432,14 @@ export class SettleService {
           .where('id = :id', { id: billingUserId })
           .setParameters({ amount: restoreAmount })
           .execute();
+        // 레거시(allocation 없음) 외상 복원분을 wallet credit_used 에도 동기화 (drift 방지).
+        await this.legacyWalletCreditSyncService.syncCredit(externalManager, {
+          billingUserId,
+          orderId: order.id,
+          delta: restoreAmount,
+          type: 'SETTLE_UNDO',
+          memo: `정산해제 여신 복원 (주문번호: ${order.id})`,
+        });
       }
 
       await this.orderRepository
@@ -2514,6 +2524,14 @@ export class SettleService {
         .where('id = :id', { id: billingUserId })
         .setParameters({ amount: netAmount })
         .execute();
+      // 레거시(allocation 없음) 외상 차감분을 wallet credit_used 에도 동기화 (drift 방지).
+      await this.legacyWalletCreditSyncService.syncCredit(externalManager, {
+        billingUserId,
+        orderId: order.id,
+        delta: -netAmount,
+        type: 'SETTLE_RELEASE',
+        memo: `정산확정 여신 차감 (주문번호: ${order.id})`,
+      });
     }
 
     return true;

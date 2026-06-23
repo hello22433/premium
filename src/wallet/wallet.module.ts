@@ -31,6 +31,7 @@ import { WalletCutoverBundleBootstrap } from './application/wallet-cutover-bundl
 import { ShadowMismatchClassifierService } from './application/shadow-mismatch-classifier.service';
 import { WalletCutoverConfig } from './config/wallet-cutover.config';
 import { SettlementCodeScopeGuard } from './api/settlement-code-scope.guard';
+import { LegacyWalletCreditSyncService } from './application/legacy-wallet-credit-sync.service';
 import { CreditExcessApprovalController } from './api/credit-excess-approval.controller';
 
 /**
@@ -80,6 +81,7 @@ import { CreditExcessApprovalController } from './api/credit-excess-approval.con
     WalletCutoverBundleBootstrap,
     ShadowMismatchClassifierService,
     SettlementCodeScopeGuard,
+    LegacyWalletCreditSyncService,
     // WalletCutoverBundleBootstrap 의 activation gate 가 moduleRef.get(<string-token>)
     // 으로 downstream hook service 등록 여부를 검증한다 (PR3/PR4 hook 누락 → process exit 1).
     // class provider 만 등록 시 string token lookup 이 항상 null → false-negative.
@@ -106,6 +108,7 @@ import { CreditExcessApprovalController } from './api/credit-excess-approval.con
     WalletCutoverConfig,
     ShadowMismatchClassifierService,
     SettlementCodeScopeGuard,
+    LegacyWalletCreditSyncService,
   ],
 })
 export class WalletModule {}
