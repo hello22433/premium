@@ -38,6 +38,11 @@ import {
   UserManagementGetMaximumLimitHistoryResDto,
   UserManagementGetWalletHistoryResDto,
 } from './user.management.res.dto';
+import {
+  CreateCustomerMappingReqDto,
+  UpdateCustomerMappingReqDto,
+  CustomerMappingResDto,
+} from './dto/customer.mapping.dto';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
 import { AuthUserSuperAdminGuard } from '../../auth/api/auth.user.super-admin.guard';
 import { AuthUserSuperAndOperationAdminGuard } from '../../auth/api/auth.user.super-operation-admin.guard';
@@ -507,6 +512,91 @@ export class UserManagementController {
   @ApiOperation({ summary: '[어드민] 특정 계정의 허용 IP 단건 삭제' })
   async deleteAllowedIp(@Param('accountId') accountId: string, @Param('ipId') ipId: string): Promise<void> {
     await this.userManagementService.deleteAllowedIp(accountId, ipId);
+  }
+
+  // ─── 외부 API Key: 다중키/회전 credential 관리 (PR2 Phase 6) ─────────────
+  @Post('/user-management/api-keys/:accountId/credentials')
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: '[어드민] 추가 credential 발급 (다중키, 평문 1회 노출)' })
+  async issueCredential(
+    @Param('accountId') accountId: string,
+  ): Promise<{ apiKey: string; credentialId: string }> {
+    return this.userManagementService.issueCredential(accountId);
+  }
+
+  @Get('/user-management/api-keys/:accountId/credentials')
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: '[어드민] credential 목록 조회 (raw key 미노출)' })
+  async listCredentials(
+    @Param('accountId') accountId: string,
+  ): Promise<Array<{ id: string; isActive: boolean; issuedAt: Date; revokedAt: Date | null }>> {
+    return this.userManagementService.listCredentials(accountId);
+  }
+
+  @Post('/user-management/api-keys/:accountId/credentials/rotate')
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: '[어드민] credential 회전 (기존 활성 전부 회수 + 신규 발급, 평문 1회)' })
+  async rotateCredential(
+    @Param('accountId') accountId: string,
+  ): Promise<{ apiKey: string; credentialId: string }> {
+    return this.userManagementService.rotateCredential(accountId);
+  }
+
+  @Delete('/user-management/api-keys/:accountId/credentials/:credentialId')
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: '[어드민] 특정 credential 회수' })
+  async revokeCredential(
+    @Param('accountId') accountId: string,
+    @Param('credentialId') credentialId: string,
+  ): Promise<void> {
+    await this.userManagementService.revokeCredential(accountId, credentialId);
+  }
+
+  // ─── 외부 API: 3계층 매핑모드 고객 매핑 CRUD (PR2 Phase 7) ─────────────
+  @Post('/user-management/api-keys/:accountId/customer-mappings')
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: '[어드민] 고객 매핑 등록 ((apiApp,externalCustomerId)→billingUser)' })
+  async createCustomerMapping(
+    @Param('accountId') accountId: string,
+    @Body() body: CreateCustomerMappingReqDto,
+  ): Promise<CustomerMappingResDto> {
+    return this.userManagementService.createCustomerMapping(accountId, body);
+  }
+
+  @Get('/user-management/api-keys/:accountId/customer-mappings')
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: '[어드민] 고객 매핑 목록 조회' })
+  async listCustomerMappings(@Param('accountId') accountId: string): Promise<CustomerMappingResDto[]> {
+    return this.userManagementService.listCustomerMappings(accountId);
+  }
+
+  @Patch('/user-management/api-keys/:accountId/customer-mappings/:mappingId')
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: '[어드민] 고객 매핑 billingUser 변경' })
+  async updateCustomerMapping(
+    @Param('accountId') accountId: string,
+    @Param('mappingId') mappingId: string,
+    @Body() body: UpdateCustomerMappingReqDto,
+  ): Promise<CustomerMappingResDto> {
+    return this.userManagementService.updateCustomerMapping(accountId, mappingId, body);
+  }
+
+  @Delete('/user-management/api-keys/:accountId/customer-mappings/:mappingId')
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: '[어드민] 고객 매핑 삭제 (soft)' })
+  async deleteCustomerMapping(
+    @Param('accountId') accountId: string,
+    @Param('mappingId') mappingId: string,
+  ): Promise<void> {
+    await this.userManagementService.deleteCustomerMapping(accountId, mappingId);
   }
 
   // ─── 외부 API Key: SSG 활성화 요청 ─────────────────────

@@ -60,6 +60,10 @@ function makeAccount(over?: { isCompany?: boolean }): ExternalApiAccountEntity {
 function makeOrder(over?: Partial<OrderEntity>): OrderEntity {
   return {
     id: 1,
+    // G004: loadOrderBillingUser(order, account.user) 가 getBillingUserId(order)=clientUserId??userId 로 분기.
+    // userId 를 account.user.id(=42)와 정렬 → fallback(account.user) 재사용(단순모드 비트동일, userRepository 미조회).
+    userId: 42,
+    clientUserId: null,
     type: IOrderType.EXTERNAL,
     status: IOrderStatus.DELIVERY_REQUEST,
     settleAmount: 30000,
@@ -117,6 +121,10 @@ function refundService(opts: {
 
   (svc as any).orderRepository = { save: jest.fn(async (o: any) => o) };
   (svc as any).orderDeliveryRepository = { save: jest.fn(async (o: any) => o) };
+  // G004: loadOrderBillingUser fallback 미스 시 userRepository.findOne 로 재조회. 안전망으로 account.user 반환.
+  (svc as any).userRepository = {
+    findOne: jest.fn(async () => makeAccount().user),
+  };
 
   const claim = jest.fn(async () => {
     if (opts.claimThrows) throw opts.claimThrows;
@@ -332,7 +340,21 @@ describe('resendOrder — R3 가드', () => {
     const dispatchSend = jest.fn(async () => ({ isSuccess: true }));
     (svc as any).dispatchSend = dispatchSend;
     (svc as any).resolveResendMax = jest.fn(() => 3);
-    (svc as any).orderDeliveryRepository = { save: jest.fn(async (o: any) => o) };
+    // 재발송 슬롯 atomic claim 은 createQueryBuilder().update()...execute() 체인 + 성공 후 targeted update 를 사용.
+    // (G004 와 무관한 기존 mock 누락 보강 — 단언/검증 강도는 그대로.)
+    const claimQb: any = {
+      update: () => claimQb,
+      set: () => claimQb,
+      where: () => claimQb,
+      andWhere: () => claimQb,
+      execute: jest.fn(async () => ({ affected: 1 })),
+    };
+    (svc as any).orderDeliveryRepository = {
+      save: jest.fn(async (o: any) => o),
+      update: jest.fn(async () => undefined),
+      findOne: jest.fn(async () => null),
+      createQueryBuilder: jest.fn(() => claimQb),
+    };
     return { svc, dispatchSend };
   }
 

@@ -159,7 +159,7 @@ describe('ExternalApiService wallet 차감 (deductViaWallet)', () => {
     const account = makeAccount({ isCompany: true });
     const order = makeOrder();
 
-    await (svc as any).deductViaWallet(account, order, 30000);
+    await (svc as any).deductViaWallet(account.user, order, 30000);
 
     expect(mocks.resolveByUserId).toHaveBeenCalledWith(42, expect.anything());
     expect(mocks.allocate).toHaveBeenCalledTimes(1);
@@ -198,7 +198,7 @@ describe('ExternalApiService wallet 차감 (deductViaWallet)', () => {
     const account = makeAccount({ isCompany: false });
     const order = makeOrder();
 
-    await (svc as any).deductViaWallet(account, order, 50000);
+    await (svc as any).deductViaWallet(account.user, order, 50000);
 
     expect(order.isSettleBalance).toBe(false);
     expect(order.isCreditExcess).toBe(false);
@@ -218,7 +218,7 @@ describe('ExternalApiService wallet 차감 (deductViaWallet)', () => {
     const account = makeAccount();
     const order = makeOrder();
 
-    await expect((svc as any).deductViaWallet(account, order, 30000)).rejects.toMatchObject({
+    await expect((svc as any).deductViaWallet(account.user, order, 30000)).rejects.toMatchObject({
       code: '3002',
     });
     // mirror/order save 미발생 (rollback 은 TX 가 보장, 여기선 mirror 쿼리 0)
@@ -235,10 +235,10 @@ describe('ExternalApiService wallet 차감 (deductViaWallet)', () => {
     const account = makeAccount();
     const order = makeOrder();
 
-    await expect((svc as any).deductViaWallet(account, order, 30000)).rejects.toBeInstanceOf(
+    await expect((svc as any).deductViaWallet(account.user, order, 30000)).rejects.toBeInstanceOf(
       ExternalApiException,
     );
-    await expect((svc as any).deductViaWallet(account, order, 30000)).rejects.toMatchObject({
+    await expect((svc as any).deductViaWallet(account.user, order, 30000)).rejects.toMatchObject({
       code: '3002',
     });
     expect(mocks.build).not.toHaveBeenCalled();
@@ -263,7 +263,7 @@ describe('ExternalApiService wallet 차감 (deductViaWallet)', () => {
       resolveByUserId: walletWith('CASH'), // wallet 정책 (무시되어야 함)
     });
     const account = makeAccount({ isCompany: true, settleMethod: 'CASH' });
-    await (svc as any).deductViaWallet(account, { ...makeOrder(), settleMethod: 'CARD' }, 0);
+    await (svc as any).deductViaWallet(account.user, { ...makeOrder(), settleMethod: 'CARD' }, 0);
 
     const persistArg = (mocks.persistAllocation.mock.calls[0] as any[])[0];
     expect(persistArg.settleMethodSnapshot).toBe('CARD'); // order.settleMethod 우선
@@ -278,7 +278,7 @@ describe('ExternalApiService wallet 차감 (deductViaWallet)', () => {
       resolveByUserId: walletWith('CARD'), // wallet SoT
     });
     const account = makeAccount({ isCompany: true, settleMethod: 'CASH' }); // 회사 정책 무시
-    await (svc as any).deductViaWallet(account, makeOrder(), 0); // order.settleMethod 없음
+    await (svc as any).deductViaWallet(account.user, makeOrder(), 0); // order.settleMethod 없음
 
     const persistArg = (mocks.persistAllocation.mock.calls[0] as any[])[0];
     expect(persistArg.settleMethodSnapshot).toBe('CARD'); // wallet 폴백
@@ -369,14 +369,30 @@ function phaseAService(mode: Mode) {
   (svc as any).cryptoCipher = { encryptDeliveryTarget: (v: string) => `enc(${v})` };
 
   // computeSettlement / getAssignedProductIds / saveTransactionIds stubbed.
+  // G004: phaseA_createAndDeduct 는 *ForBilling 변형을, SSG phaseA 는 기존 wrapper 를 호출하므로 둘 다 stub.
   (svc as any).computeSettlement = jest.fn(async () => ({
     fee: null,
     priceAdjustment: null,
     settleAmount: 30000,
     cardSurchargeApplied: false,
   }));
+  (svc as any).computeSettlementForBilling = jest.fn(async () => ({
+    fee: null,
+    priceAdjustment: null,
+    settleAmount: 30000,
+    cardSurchargeApplied: false,
+  }));
   (svc as any).getAssignedProductIds = jest.fn(async () => [100]);
+  (svc as any).getAssignedProductIdsForBilling = jest.fn(async () => [100]);
   (svc as any).saveTransactionIds = jest.fn(async () => 'ulid-1');
+  // G004: phaseA_createAndDeduct 가 맨 앞에서 resolveBillingTarget 호출. 단순모드 → billingUser=account.user.
+  (svc as any).mappingResolver = {
+    resolveBillingTarget: jest.fn(async () => ({
+      billingUser: makeAccount().user,
+      clientUserId: null,
+      externalCustomerId: null,
+    })),
+  };
 
   // wallet collaborators
   const allocation = makeAllocation({ payableSettlementAmount: 30000, depositUsedAmount: 30000 });
@@ -430,6 +446,58 @@ describe('phaseA_createAndDeduct (R6 관계그래프)', () => {
     expect(persistAllocation).toHaveBeenCalledTimes(1);
     expect(result.order.settleAmount).toBe(30000);
   });
+  it('externalOrderId 양끝 공백 → 저장 시 trim (조회/저장 정합, 멱등 회귀방지)', async () => {
+    const { svc } = phaseAService(WalletCutoverMode.WALLET);
+    (svc as any).productRepository.findOne = jest.fn(async () => ({
+      id: 100,
+      price: 30000,
+      category: 'CAT',
+      partnerCompany: { code: 'PC' },
+      brand: { nameKorean: 'B' },
+      expireDay: 30,
+    }));
+    const account = makeAccount();
+    const dto: any = {
+      productCode: 'P1',
+      deliveryMethod: 'MMS',
+      recipientPhone: '01000000000',
+      message: '',
+      title: 't',
+      senderPhone: '0100',
+      externalOrderId: '  ORD-1  ',
+    };
+
+    const result = await (svc as any).phaseA_createAndDeduct(account, dto, ctx);
+
+    // 저장값은 trim — resolver.findExistingOrderByExternalOrderId(trim 조회)와 정합 → 재요청 멱등 성립
+    expect(result.order.externalOrderId).toBe('ORD-1');
+  });
+
+  it('externalOrderId 공백만 → null 저장(단순모드 무영향)', async () => {
+    const { svc } = phaseAService(WalletCutoverMode.WALLET);
+    (svc as any).productRepository.findOne = jest.fn(async () => ({
+      id: 100,
+      price: 30000,
+      category: 'CAT',
+      partnerCompany: { code: 'PC' },
+      brand: { nameKorean: 'B' },
+      expireDay: 30,
+    }));
+    const account = makeAccount();
+    const dto: any = {
+      productCode: 'P1',
+      deliveryMethod: 'MMS',
+      recipientPhone: '01000000000',
+      message: '',
+      title: 't',
+      senderPhone: '0100',
+      externalOrderId: '   ',
+    };
+
+    const result = await (svc as any).phaseA_createAndDeduct(account, dto, ctx);
+
+    expect(result.order.externalOrderId).toBeNull();
+  });
 });
 
 describe('phaseA_createSsgAndDeduct (SSG: allocation + ssgEvent 둘 다)', () => {
@@ -451,7 +519,7 @@ describe('phaseA_createSsgAndDeduct (SSG: allocation + ssgEvent 둘 다)', () =>
       selectEventForOrder: jest.fn(async () => ({ id: 7, expireDay: 30 })),
       deductEventBalance,
     };
-    (base.svc as any).computeSettlement = jest.fn(async () => ({
+    (base.svc as any).computeSettlementForBilling = jest.fn(async () => ({
       fee: null,
       priceAdjustment: null,
       settleAmount: 50000,
@@ -487,9 +555,42 @@ describe('phaseA_createSsgAndDeduct (SSG: allocation + ssgEvent 둘 다)', () =>
 
     await (svc as any).phaseA_createSsgAndDeduct(account, dto, ctx);
 
-    expect((svc as any).deductBalance).toHaveBeenCalledWith(account, 50000);
+    expect((svc as any).deductBalance).toHaveBeenCalledWith(account.user, 50000);
     expect(deductEventBalance).toHaveBeenCalledTimes(1);
     expect(build).not.toHaveBeenCalled();
     expect(persistAllocation).not.toHaveBeenCalled();
   });
+  it('매핑모드(WALLET) → clientUserId=매핑 billingUserId 적재 + 매핑 billing wallet 차감(resolveByUserId)', async () => {
+    const { svc, build, allocate, persistAllocation, deductEventBalance } = ssgService(WalletCutoverMode.WALLET);
+    const mappedBillingUser = { id: 99, company: undefined, settleMethod: 'CASH' } as any;
+    (svc as any).mappingResolver.resolveBillingTarget = jest.fn(async () => ({
+      billingUser: mappedBillingUser,
+      clientUserId: 99,
+      externalCustomerId: 'wisead-c1',
+    }));
+    const account = makeAccount();
+    const dto: any = {
+      amount: 50000,
+      recipientPhone: '01000000000',
+      message: '',
+      senderPhone: '0100',
+      externalCustomerId: 'wisead-c1',
+      externalOrderId: 'WA-1',
+    };
+
+    const result = await (svc as any).phaseA_createSsgAndDeduct(account, dto, ctx);
+
+    // 매핑 billing 적재: clientUserId=99, externalCustomerId/externalOrderId 저장, userId 는 default billing 유지
+    expect(result.order.clientUserId).toBe(99);
+    expect(result.order.externalCustomerId).toBe('wisead-c1');
+    expect(result.order.externalOrderId).toBe('WA-1');
+    expect(result.order.userId).toBe(account.user.id);
+    // 매핑 billing wallet 차감 (resolveByUserId(99))
+    expect((svc as any).walletAccountResolverService.resolveByUserId).toHaveBeenCalledWith(99, expect.anything());
+    expect(build).toHaveBeenCalledTimes(1);
+    expect(allocate).toHaveBeenCalledTimes(1);
+    expect(persistAllocation).toHaveBeenCalledTimes(1);
+    expect(deductEventBalance).toHaveBeenCalledTimes(1);
+  });
+
 });

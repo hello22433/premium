@@ -12,6 +12,7 @@ import { ExternalApiAllowedIpEntity } from '../entity/external.api.allowed.ip.en
 import { ExternalApiSsgRequestEntity } from '../entity/external.api.ssg.request.entity';
 import { ApiAppEntity } from '../entity/api.app.entity';
 import { ApiCredentialEntity } from '../entity/api.credential.entity';
+import { ApiCustomerMappingEntity } from '../entity/api.customer.mapping.entity';
 import { WalletAccountEntity } from '../entity/wallet.account.entity';
 import { WalletTransactionEntity } from '../entity/wallet.transaction.entity';
 import { MailModule } from '../mail/mail.module';
@@ -36,6 +37,7 @@ import { OrderFromModule } from '../order_from/order.from.module';
       ExternalApiSsgRequestEntity,
       ApiAppEntity,
       ApiCredentialEntity,
+      ApiCustomerMappingEntity,
       WalletAccountEntity,
       WalletTransactionEntity,
     ]),

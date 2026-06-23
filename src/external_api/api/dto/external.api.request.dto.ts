@@ -1,6 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsString, IsOptional, IsEnum, IsNotEmpty, IsInt, Min, Max } from 'class-validator';
+import { IsString, IsOptional, IsEnum, IsNotEmpty, IsInt, Min, Max, MaxLength } from 'class-validator';
 import { IOrderSendMethod } from '../../../order/interface/order.send.method';
 import { IsDivisibleBy5000 } from '../../../product/api/validator/is-divisible-by-5000.validator';
 
@@ -33,6 +33,22 @@ export class CreateExternalOrderDto {
   @ApiProperty({ description: '발송 방법', enum: IOrderSendMethod })
   @IsEnum(IOrderSendMethod)
   deliveryMethod: IOrderSendMethod;
+
+  @ApiPropertyOptional({
+    description: '외부 고객 식별자 (3계층 매핑모드). 미지정 시 단순모드(default billing).',
+  })
+  @IsString()
+  @IsOptional()
+  @MaxLength(191)
+  externalCustomerId?: string;
+
+  @ApiPropertyOptional({
+    description: '외부 주문번호 (매핑모드 비즈니스 멱등 보조). 동일 (호출주체, externalOrderId) 재요청은 기존 주문 반환.',
+  })
+  @IsString()
+  @IsOptional()
+  @MaxLength(191)
+  externalOrderId?: string;
 }
 
 export class CreateExternalSsgOrderDto {
@@ -58,6 +74,22 @@ export class CreateExternalSsgOrderDto {
   @IsString()
   @IsOptional()
   message?: string;
+
+  @ApiPropertyOptional({
+    description: '외부 고객 식별자 (3계층 매핑모드). 미지정 시 단순모드(default billing).',
+  })
+  @IsString()
+  @IsOptional()
+  @MaxLength(191)
+  externalCustomerId?: string;
+
+  @ApiPropertyOptional({
+    description: '외부 주문번호 (매핑모드 비즈니스 멱등 보조). 동일 (호출주체, externalOrderId) 재요청은 기존 주문 반환.',
+  })
+  @IsString()
+  @IsOptional()
+  @MaxLength(191)
+  externalOrderId?: string;
 }
 
 export class ExternalProductQueryDto {
@@ -65,4 +97,12 @@ export class ExternalProductQueryDto {
   @IsString()
   @IsOptional()
   productCode?: string;
+
+  @ApiPropertyOptional({
+    description: '외부 고객 식별자 (3계층 매핑모드). 지정 시 매핑 billing 계정 할당상품. 미지정이면 default billing.',
+  })
+  @IsString()
+  @IsOptional()
+  @MaxLength(191)
+  externalCustomerId?: string;
 }

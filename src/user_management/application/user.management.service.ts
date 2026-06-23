@@ -18,6 +18,12 @@ import { ExternalApiAllowedIpEntity } from '../../entity/external.api.allowed.ip
 import { ExternalApiSsgRequestEntity } from '../../entity/external.api.ssg.request.entity';
 import { ApiAppEntity } from '../../entity/api.app.entity';
 import { ApiCredentialEntity } from '../../entity/api.credential.entity';
+import { ApiCustomerMappingEntity } from '../../entity/api.customer.mapping.entity';
+import {
+  CreateCustomerMappingReqDto,
+  UpdateCustomerMappingReqDto,
+  CustomerMappingResDto,
+} from '../api/dto/customer.mapping.dto';
 import { WalletAccountEntity } from '../../entity/wallet.account.entity';
 import { WalletTransactionEntity } from '../../entity/wallet.transaction.entity';
 import { WalletResourceType } from '../../wallet/interface/wallet-resource-type';
@@ -114,6 +120,8 @@ export class UserManagementService {
     private apiAppRepository: Repository<ApiAppEntity>,
     @InjectRepository(ApiCredentialEntity)
     private apiCredentialRepository: Repository<ApiCredentialEntity>,
+    @InjectRepository(ApiCustomerMappingEntity)
+    private apiCustomerMappingRepository: Repository<ApiCustomerMappingEntity>,
     @InjectRepository(WalletAccountEntity)
     private walletAccountRepository: Repository<WalletAccountEntity>,
     @InjectRepository(WalletTransactionEntity)
@@ -1535,6 +1543,187 @@ export class UserManagementService {
     );
   }
 
+  // accountId → api_app 결정적 해석. 없으면 NotFound (credential/매핑 관리 공통 가드).
+  private async resolveAppOrThrow(accountId: string): Promise<ApiAppEntity> {
+    const app = await this.findAppBySourceAccountId(accountId);
+    if (!app) {
+      throw new NotFoundException('API 앱을 찾을 수 없습니다.');
+    }
+    return app;
+  }
+
+  // app 에 활성 credential 1건 발급(평문 1회 반환). 발급/회전 공통.
+  private async createCredentialForApp(
+    appId: string,
+    issuedAt: Date = new Date(),
+  ): Promise<{ apiKey: string; credentialId: string }> {
+    const rawKey = randomBytes(32).toString('hex');
+    const keyHash = createHash('sha256').update(rawKey).digest('hex');
+    const credential = this.apiCredentialRepository.create({
+      apiAppId: appId,
+      apiKeyHash: keyHash,
+      isActive: true,
+      issuedAt,
+    });
+    const saved = await this.apiCredentialRepository.save(credential);
+    return { apiKey: rawKey, credentialId: saved.id };
+  }
+
+  // ─── 다중키/회전 credential 관리 (PR2 Phase 6) ───────────
+  // accountId(=external_api_account.id) → api_app(sourceAccountId) 해석 후 credential 발급/조회/회수.
+  // guard 는 credential.apiKeyHash(활성) 단건 조회라 한 app 에 복수 활성 credential 이 동시 인증 가능.
+
+  // 추가 credential 발급(기존 활성키 유지 = 다중키). 평문 1회 반환.
+  @Transactional()
+  async issueCredential(accountId: string): Promise<{ apiKey: string; credentialId: string }> {
+    const app = await this.resolveAppOrThrow(accountId);
+    return this.createCredentialForApp(app.id);
+  }
+
+  // app 의 credential 목록(메타, raw key 미노출).
+  async listCredentials(
+    accountId: string,
+  ): Promise<Array<{ id: string; isActive: boolean; issuedAt: Date; revokedAt: Date | null }>> {
+    const app = await this.resolveAppOrThrow(accountId);
+    const credentials = await this.apiCredentialRepository.find({
+      where: { apiAppId: app.id },
+      order: { issuedAt: 'DESC' },
+    });
+    return credentials.map((c) => ({
+      id: c.id,
+      isActive: c.isActive,
+      issuedAt: c.issuedAt,
+      revokedAt: c.revokedAt,
+    }));
+  }
+
+  // 특정 credential 회수(다중키 중 하나). 이미 회수면 멱등 no-op.
+  @Transactional()
+  async revokeCredential(accountId: string, credentialId: string): Promise<void> {
+    const app = await this.resolveAppOrThrow(accountId);
+    const credential = await this.apiCredentialRepository.findOne({
+      where: { id: credentialId, apiAppId: app.id },
+    });
+    if (!credential) {
+      throw new NotFoundException('자격증명을 찾을 수 없습니다.');
+    }
+    if (!credential.isActive) {
+      return;
+    }
+    credential.isActive = false;
+    credential.revokedAt = new Date();
+    await this.apiCredentialRepository.save(credential);
+  }
+
+  // 회전: 기존 활성 credential 전부 회수 + 신규 1건 발급. 평문 1회 반환.
+  @Transactional()
+  async rotateCredential(accountId: string): Promise<{ apiKey: string; credentialId: string }> {
+    const app = await this.resolveAppOrThrow(accountId);
+    const now = new Date();
+    await this.deactivateActiveCredentials(app.id, now);
+    return this.createCredentialForApp(app.id, now);
+  }
+
+  // ─── 3계층 매핑모드 고객 매핑 CRUD (PR2 Phase 7) ──────────
+  // accountId → api_app(sourceAccountId) 해석 후 (apiAppId, externalCustomerId)→billingUserId 매핑 관리.
+  // active-only unique(generated active_key)로 활성 중복 차단, soft-delete 후 재등록 허용.
+
+  @Transactional()
+  async createCustomerMapping(
+    accountId: string,
+    dto: CreateCustomerMappingReqDto,
+  ): Promise<CustomerMappingResDto> {
+    const app = await this.resolveAppOrThrow(accountId);
+    await this.assertBillingUserAllowed(dto.billingUserId);
+    const externalCustomerId = dto.externalCustomerId.trim();
+    // active 중복(soft-delete 제외) 사전 검사 → 409. DB active_key unique 가 동시성 최종 방어선.
+    const existing = await this.apiCustomerMappingRepository.findOne({
+      where: { apiAppId: app.id, externalCustomerId },
+    });
+    if (existing) {
+      throw new ConflictException('이미 등록된 externalCustomerId 입니다.');
+    }
+    const mapping = this.apiCustomerMappingRepository.create({
+      apiAppId: app.id,
+      externalCustomerId,
+      billingUserId: dto.billingUserId,
+    });
+    let saved: ApiCustomerMappingEntity;
+    try {
+      saved = await this.apiCustomerMappingRepository.save(mapping);
+    } catch (e) {
+      if ((e as { code?: string })?.code === 'ER_DUP_ENTRY') {
+        throw new ConflictException('이미 등록된 externalCustomerId 입니다.');
+      }
+      throw e;
+    }
+    return this.toMappingRes(saved);
+  }
+
+  async listCustomerMappings(accountId: string): Promise<CustomerMappingResDto[]> {
+    const app = await this.resolveAppOrThrow(accountId);
+    const mappings = await this.apiCustomerMappingRepository.find({
+      where: { apiAppId: app.id },
+      order: { id: 'DESC' },
+    });
+    return mappings.map((m) => this.toMappingRes(m));
+  }
+
+  @Transactional()
+  async updateCustomerMapping(
+    accountId: string,
+    mappingId: string,
+    dto: UpdateCustomerMappingReqDto,
+  ): Promise<CustomerMappingResDto> {
+    const app = await this.resolveAppOrThrow(accountId);
+    await this.assertBillingUserAllowed(dto.billingUserId);
+    const mapping = await this.apiCustomerMappingRepository.findOne({
+      where: { id: mappingId, apiAppId: app.id },
+    });
+    if (!mapping) {
+      throw new NotFoundException('매핑을 찾을 수 없습니다.');
+    }
+    mapping.billingUserId = dto.billingUserId;
+    const saved = await this.apiCustomerMappingRepository.save(mapping);
+    return this.toMappingRes(saved);
+  }
+
+  @Transactional()
+  async deleteCustomerMapping(accountId: string, mappingId: string): Promise<void> {
+    const app = await this.resolveAppOrThrow(accountId);
+    const mapping = await this.apiCustomerMappingRepository.findOne({
+      where: { id: mappingId, apiAppId: app.id },
+    });
+    if (!mapping) {
+      throw new NotFoundException('매핑을 찾을 수 없습니다.');
+    }
+    await this.apiCustomerMappingRepository.softRemove(mapping);
+  }
+
+  // billing user 정책범위 검증(PR2 확정 정책):
+  //   SUPER/OPERATION 어드민이 **활성(존재 + NOT_USED/LEAVE 아님)** billing user 를 매핑할 수 있다.
+  //   **회사(company)/계정 범위 제한은 의도적으로 두지 않는다** — 3계층 매핑모드의 목적이 한 호출주체(api_app)가
+  //   서로 다른 회사의 광고주(예: WiseAd 하위 광고주)를 각자 premium 계정에 귀속시키는 것이라, 같은 회사로
+  //   제한하면 핵심 use case 가 깨진다. 따라서 권한 통제는 어드민 가드(SUPER/OPERATION)로, 정합성은 활성상태
+  //   fail-closed 로 보장한다(runtime resolver loadActiveBillingUser 와 동일 기준).
+  private async assertBillingUserAllowed(billingUserId: number): Promise<void> {
+    const user = await this.userRepository.findOne({ where: { id: billingUserId } });
+    if (!user) {
+      throw new BadRequestException('billing user 를 찾을 수 없습니다.');
+    }
+    if (user.status === IUserStatus.NOT_USED || user.status === IUserStatus.LEAVE) {
+      throw new BadRequestException('비활성 billing user 는 매핑할 수 없습니다.');
+    }
+  }
+
+  private toMappingRes(m: ApiCustomerMappingEntity): CustomerMappingResDto {
+    return {
+      id: m.id,
+      apiAppId: m.apiAppId,
+      externalCustomerId: m.externalCustomerId,
+      billingUserId: m.billingUserId,
+    };
+  }
   @Transactional()
   async addAllowedIp(accountId: string, dto: AddAllowedIpReqDto): Promise<{ id: string }> {
     const account = await this.externalApiAccountRepository.findOne({
