@@ -2,7 +2,7 @@ import { mock, MockProxy, mockReset } from 'jest-mock-extended';
 import { PasswordBcryptEncrypt } from '../../auth/infrastructure/password.bcrypt.encrypt';
 import { UserLoginByEmailPasswordReqDto, UserSignUpReqDto } from '../api/user.req.dto';
 import { ILoginTokenValidator } from '../../auth/interface/login.token.validator';
-import { BadRequestException, InternalServerErrorException, UnauthorizedException } from '@nestjs/common';
+import { InternalServerErrorException, UnauthorizedException } from '@nestjs/common';
 import { ILoginToken } from '../../auth/interface/token';
 import { UserEntity } from '../../entity/user.entity';
 import { Repository } from 'typeorm';
@@ -21,6 +21,7 @@ import { ISmsSend } from '../../sms/interface/sms.send';
 import { ConfigService } from '@nestjs/config';
 import { AuthException } from '../exception/auth.exception';
 import { AuthErrorCode } from '../exception/auth-error-code';
+import { IUserStatus } from '../interface/user.status';
 import { AccountStatusTransitionService } from '../../account_lifecycle/application/account.status.transition.service';
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
 
@@ -35,10 +36,8 @@ describe('user login service Test', () => {
   const emailSendHistoryRepository: MockProxy<Repository<EmailSendHistoryEntity>> =
     mock<Repository<EmailSendHistoryEntity>>();
   const mailSendService: MockProxy<IMailSend> = mock<IMailSend>();
-  const userCompanyRepository: MockProxy<Repository<UserCompanyEntity>> =
-    mock<Repository<UserCompanyEntity>>();
-  const userViewScopeRepository: MockProxy<Repository<UserViewScopeEntity>> =
-    mock<Repository<UserViewScopeEntity>>();
+  const userCompanyRepository: MockProxy<Repository<UserCompanyEntity>> = mock<Repository<UserCompanyEntity>>();
+  const userViewScopeRepository: MockProxy<Repository<UserViewScopeEntity>> = mock<Repository<UserViewScopeEntity>>();
   const passwordPolicyRepository: MockProxy<Repository<PasswordPolicyEntity>> =
     mock<Repository<PasswordPolicyEntity>>();
   const activityLogService: MockProxy<ActivityLogService> = mock<ActivityLogService>();
@@ -201,79 +200,6 @@ describe('user login service Test', () => {
     });
   });
 
-  describe('getAccessByRefresh refresh token 으로 access token 재발급 하기 테스트', () => {
-    it('refresh token 값을 입력받아 올바르게 access token이 발급된 경우', async () => {
-      const givenTokenString = 'GIVEN_TOKEN';
-      const givenUserInfo: ILoginUserInfo = {
-        ...LoginUserInfoTest(),
-        id: 1,
-        email: 'test@gmail.com',
-      };
-      const givenToken: ILoginToken = {
-        accessToken: { value: 'token', expiredAt: '2024-09-16T00:00:00' },
-        refreshToken: { value: 'token', expiredAt: '2024-09-16T00:00:00' },
-      };
-
-      loginTokenValidator.validateByToken.calledWith(givenTokenString).mockReturnValue(givenUserInfo);
-
-      userRepository.findOne.mockResolvedValue({
-        ...UserEntityTest(),
-        id: 0,
-        email: 'test@gmail.com',
-        password: 'securePassword',
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        deletedAt: null,
-      });
-      loginTokenValidator.issuance.calledWith(givenUserInfo).mockReturnValue(givenToken);
-
-      const result = await sut.getAccessByRefresh(givenTokenString);
-
-      expect(result.accessToken).toBeDefined();
-    });
-
-    it('refresh token 의 유저가 데이터베이스에 존재하지 않을 경우', async () => {
-      const givenTokenString = 'GIVEN_TOKEN';
-      const givenUserInfo: ILoginUserInfo = {
-        ...LoginUserInfoTest(),
-        id: 1,
-        email: 'test@gmail.com',
-      };
-
-      loginTokenValidator.validateByToken.calledWith(givenTokenString).mockReturnValue(givenUserInfo);
-
-      userRepository.findOne.mockResolvedValue(null);
-
-      await expect(async () => {
-        await sut.getAccessByRefresh(givenTokenString);
-      }).rejects.toThrow(new BadRequestException('USER_DOES_NOT_EXIST'));
-    });
-
-    it('refresh token 이 만료 된 경우', async () => {
-      const givenTokenString = 'GIVEN_TOKEN';
-
-      loginTokenValidator.validateByToken.calledWith(givenTokenString).mockImplementation(() => {
-        throw new Error('토큰만료');
-      });
-
-      await expect(async () => {
-        await sut.getAccessByRefresh(givenTokenString);
-      }).rejects.toThrow(new Error('토큰만료'));
-    });
-
-    it('refresh token 이 올바르지 않을 경우', async () => {
-      const givenTokenString = 'GIVEN_TOKEN';
-
-      loginTokenValidator.validateByToken.calledWith(givenTokenString).mockImplementation(() => {
-        throw new Error('토큰 에러');
-      });
-
-      await expect(async () => {
-        await sut.getAccessByRefresh(givenTokenString);
-      }).rejects.toThrow(new Error('토큰 에러'));
-    });
-  });
-
   describe('getLoginTokenByRefresh refresh token 으로 로그인 토큰 재발급 하기 테스트', () => {
     it('refresh token 값을 입력받아 올바르게 access token이 발급된 경우', async () => {
       const givenTokenString = 'GIVEN_TOKEN';
@@ -286,19 +212,21 @@ describe('user login service Test', () => {
       loginTokenValidator.validateByToken.calledWith(givenTokenString).mockReturnValue(givenUserInfo);
       userRepository.findOne.mockResolvedValue({
         ...UserEntityTest(),
-        id: 0,
-        email: 'test@gmail.com',
+        id: givenUserInfo.id,
+        email: givenUserInfo.email,
+        authority: givenUserInfo.authority,
         password: 'securePassword',
         createdAt: new Date(),
         updatedAt: new Date(),
         deletedAt: null,
       });
-      loginTokenValidator.issuance.calledWith(givenUserInfo).mockReturnValue(givenToken);
+      loginTokenValidator.issuance.mockReturnValue(givenToken);
 
       const result = await sut.getLoginTokenByRefresh(givenTokenString);
 
       expect(result.accessToken).toBeDefined();
       expect(result.refreshToken).toBeDefined();
+      expect(loginTokenValidator.issuance).toHaveBeenCalledWith(givenUserInfo);
     });
 
     it('refresh token 의 유저가 데이터베이스에 존재하지 않을 경우', async () => {
@@ -340,6 +268,40 @@ describe('user login service Test', () => {
       await expect(async () => {
         await sut.getLoginTokenByRefresh(givenTokenString);
       }).rejects.toThrow(new UnauthorizedException('token error'));
+    });
+
+    const gateCases: {
+      label: string;
+      status?: IUserStatus;
+      isLoginLocked?: boolean;
+      errorCode: (typeof AuthErrorCode)[keyof typeof AuthErrorCode];
+    }[] = [
+      { label: '로그인 잠금 계정', isLoginLocked: true, errorCode: AuthErrorCode.ACCOUNT_LOCKED },
+      { label: '미승인 계정', status: IUserStatus.NOT_APPROVED, errorCode: AuthErrorCode.USER_NOT_APPROVED },
+      { label: '휴면 계정', status: IUserStatus.NOT_USED, errorCode: AuthErrorCode.ACCOUNT_SUSPENDED },
+      { label: '탈퇴 계정', status: IUserStatus.LEAVE, errorCode: AuthErrorCode.ACCOUNT_WITHDRAWN },
+    ];
+
+    gateCases.forEach(({ label, status, isLoginLocked, errorCode }) => {
+      it(`${label}은 재발급을 거부한다`, async () => {
+        const givenTokenString = 'GIVEN_TOKEN';
+        const givenUserInfo: ILoginUserInfo = { ...LoginUserInfoTest(), id: 1, email: 'test@gmail.com' };
+
+        loginTokenValidator.validateByToken.calledWith(givenTokenString).mockReturnValue(givenUserInfo);
+        userRepository.findOne.mockResolvedValue({
+          ...UserEntityTest(),
+          id: 1,
+          email: 'test@gmail.com',
+          status: status ?? IUserStatus.USED,
+          isLoginLocked: isLoginLocked ?? false,
+        });
+
+        await expect(async () => {
+          await sut.getLoginTokenByRefresh(givenTokenString);
+        }).rejects.toThrow(new AuthException(errorCode));
+
+        expect(loginTokenValidator.issuance).not.toHaveBeenCalled();
+      });
     });
   });
 });

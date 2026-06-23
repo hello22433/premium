@@ -193,18 +193,7 @@ export class UserService {
     if (!user) {
       throw new AuthException(AuthErrorCode.USER_NOT_FOUND);
     }
-    if (user.isLoginLocked) {
-      throw new AuthException(AuthErrorCode.ACCOUNT_LOCKED); // 영구 잠금 — 관리자 해제까지 차단
-    }
-    if (user.status === IUserStatus.NOT_APPROVED) {
-      throw new AuthException(AuthErrorCode.USER_NOT_APPROVED);
-    }
-    if (user.status === IUserStatus.NOT_USED) {
-      throw new AuthException(AuthErrorCode.ACCOUNT_SUSPENDED); // 휴면 — 이메일 본인인증으로 재활성화 가능
-    }
-    if (user.status === IUserStatus.LEAVE) {
-      throw new AuthException(AuthErrorCode.ACCOUNT_WITHDRAWN); // 탈퇴 — 영구 차단 (재활성화 불가)
-    }
+    this.assertLoginableAccount(user);
     const isPasswordMatch = await this.passwordEncrypt.compare(password, user.password);
     if (!isPasswordMatch) {
       const { remaining, locked, justLocked } = await this.registerLoginFailure(user.id);
@@ -473,7 +462,9 @@ export class UserService {
       });
       this.logger.log(`로그인 인증코드 알림톡 발송 성공: userId=${user.id}`);
     } catch (alimTalkError) {
-      this.logger.warn(`로그인 인증코드 알림톡 발송 실패, SMS 대체 발송: userId=${user.id}, error=${alimTalkError.message}`);
+      this.logger.warn(
+        `로그인 인증코드 알림톡 발송 실패, SMS 대체 발송: userId=${user.id}, error=${alimTalkError.message}`,
+      );
 
       try {
         await this.smsSendService.send({
@@ -631,28 +622,20 @@ export class UserService {
     await this.accountStatusTransitionService.transitionToUsed(user.id);
   }
 
-  async getAccessByRefresh(token: string) {
-    const userDecode = this.loginTokenValidator.validateByToken(token);
-
-    const user = await this.userRepository.findOne({
-      where: { id: userDecode.id },
-    });
-
-    if (!user) {
-      throw new BadRequestException('USER_DOES_NOT_EXIST');
+  // 로그인/토큰 재발급 공통 계정 상태 게이트 (잠금·미승인·휴면·탈퇴 차단)
+  private assertLoginableAccount(user: UserEntity): void {
+    if (user.isLoginLocked) {
+      throw new AuthException(AuthErrorCode.ACCOUNT_LOCKED); // 영구 잠금 — 관리자 해제까지 차단
     }
-
-    const loginUserInfo: ILoginUserInfo = {
-      id: user.id,
-      email: user.email,
-      authority: user.authority,
-    };
-
-    const loginToken = this.loginTokenValidator.issuance(loginUserInfo);
-
-    return {
-      accessToken: loginToken.accessToken,
-    };
+    if (user.status === IUserStatus.NOT_APPROVED) {
+      throw new AuthException(AuthErrorCode.USER_NOT_APPROVED);
+    }
+    if (user.status === IUserStatus.NOT_USED) {
+      throw new AuthException(AuthErrorCode.ACCOUNT_SUSPENDED); // 휴면 — 이메일 본인인증으로 재활성화 가능
+    }
+    if (user.status === IUserStatus.LEAVE) {
+      throw new AuthException(AuthErrorCode.ACCOUNT_WITHDRAWN); // 탈퇴 — 영구 차단 (재활성화 불가)
+    }
   }
 
   async getLoginTokenByRefresh(token: string) {
@@ -665,6 +648,9 @@ export class UserService {
     if (!user) {
       throw new BadRequestException('USER_DOES_NOT_EXIST');
     }
+
+    // 토큰 발급 후 정지·탈퇴·잠금된 계정이 재발급으로 세션을 연장하지 못하도록 차단
+    this.assertLoginableAccount(user);
 
     const loginUserInfo: ILoginUserInfo = {
       id: user.id,
@@ -736,9 +722,7 @@ export class UserService {
 
     await this.emailSendHistoryRepository.insert({
       userId: user.id,
-      email: this.cryptoCipher.encryptDeliveryTarget(
-        this.parsePersonEmails(user.personEmail)[0] || email,
-      ),
+      email: this.cryptoCipher.encryptDeliveryTarget(this.parsePersonEmails(user.personEmail)[0] || email),
       type: EmailType.LOGIN,
       code: '000000',
       isCertified: true,
@@ -756,7 +740,10 @@ export class UserService {
     }
 
     const allowedRaw = this.configService.get<string>('E2E_ALLOWED_EMAILS', '');
-    const allowedEmails = allowedRaw.split(',').map((e) => e.trim()).filter((e) => e);
+    const allowedEmails = allowedRaw
+      .split(',')
+      .map((e) => e.trim())
+      .filter((e) => e);
     if (!allowedEmails.includes(email)) {
       throw new BadRequestException('E2E_ACCOUNT_NOT_ALLOWED');
     }
@@ -771,7 +758,10 @@ export class UserService {
 
   private parsePersonEmails(personEmail: string | null): string[] {
     return personEmail
-      ? personEmail.split(',').map((e) => e.trim()).filter((e) => e)
+      ? personEmail
+          .split(',')
+          .map((e) => e.trim())
+          .filter((e) => e)
       : [];
   }
 
@@ -780,11 +770,7 @@ export class UserService {
    * 담당자 이메일 1개 이하: 계정 이메일(accountEmail) 사용.
    * 2개 이상: targetEmail 필수 + allowlist 검증.
    */
-  private resolveTargetEmail(
-    accountEmail: string,
-    personEmails: string[],
-    targetEmail?: string,
-  ): string {
+  private resolveTargetEmail(accountEmail: string, personEmails: string[], targetEmail?: string): string {
     if (personEmails.length <= 1) {
       return accountEmail;
     }

@@ -56,8 +56,7 @@ export class UserLoginByEmailPasswordResDto {
     type: String,
     nullable: true,
     enum: ['TEMP', 'EXPIRED'],
-    description:
-      '비밀번호 재설정 사유. TEMP: 임시비밀번호 발급, EXPIRED: 비밀번호 변경 기간 만료, null: 재설정 불필요',
+    description: '비밀번호 재설정 사유. TEMP: 임시비밀번호 발급, EXPIRED: 비밀번호 변경 기간 만료, null: 재설정 불필요',
   })
   readonly passwordResetReason: 'TEMP' | 'EXPIRED' | null;
 
@@ -116,15 +115,6 @@ export class UserLoginEmailResDto {
     description: 'email send history id',
   })
   id: number;
-}
-
-export class UserAccessByRefreshResDto {
-  @ApiProperty({
-    type: TokenDto,
-    description: 'access 토큰 정보',
-  })
-  // =====================================================
-  readonly accessToken: TokenDto;
 }
 
 export class UserRefreshByRefreshResDto extends LoginTokenResDto {}
