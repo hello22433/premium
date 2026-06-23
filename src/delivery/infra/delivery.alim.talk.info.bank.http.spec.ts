@@ -83,7 +83,9 @@ describe('DeliveryAlimTalkInfoBankHttp — inquiry 재시도 횟수 일치', () 
 
     // inquiry 응답: 항상 404 에러
     (httpService.get as jest.Mock).mockReturnValue(
-      throwError(() => ({ response: { data: { code: 'E404', result: 'Not Found' } } })),
+      throwError(() => ({
+        response: { data: { code: 'E404', result: 'Not Found' } },
+      })),
     );
 
     await expect(
@@ -101,7 +103,9 @@ describe('DeliveryAlimTalkInfoBankHttp — inquiry 재시도 횟수 일치', () 
       .mockReturnValueOnce(of(sendResponse));
 
     (httpService.get as jest.Mock).mockReturnValue(
-      throwError(() => ({ response: { data: { code: 'E404', result: 'Not Found' } } })),
+      throwError(() => ({
+        response: { data: { code: 'E404', result: 'Not Found' } },
+      })),
     );
 
     await expect(
