@@ -25,6 +25,7 @@ import {
 } from '../../entity/order.delivery.attempt.entity';
 import { OrderPaymentRefundEventEntity } from '../../entity/order.payment.refund.event.entity';
 import { OrderPaymentAllocationEntity } from '../../entity/order.payment.allocation.entity';
+import { OrderHistoryEntity } from '../../entity/order.history.entity';
 import { IOrderSendMethod } from '../../order/interface/order.send.method';
 import { IOrderType } from '../../order/interface/order.type';
 import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
@@ -43,6 +44,7 @@ import { OrderFromService } from '../../order_from/application/order.from.servic
 import { WalletManagedPredicate } from '../../wallet/application/wallet-managed.predicate';
 import { RefundPoolService } from '../../wallet/application/refund-pool.service';
 import { ResendDeductService } from '../../wallet/application/resend-deduct.service';
+import { LegacyWalletCreditSyncService } from '../../wallet/application/legacy-wallet-credit-sync.service';
 
 /**
  * B1: 정산 복구 이벤트 미생성(초기 발송 실패 보류) redesign 회귀 테스트.
@@ -210,9 +212,11 @@ describe('DeliveryBatchService - B1 settlement-hold redesign', () => {
         { provide: WalletManagedPredicate, useValue: walletManagedPredicate },
         { provide: RefundPoolService, useValue: { refund: jest.fn(), reverseRefund: jest.fn() } },
         { provide: ResendDeductService, useValue: { resendDeduct: jest.fn(), resendUndo: jest.fn() } },
+        { provide: LegacyWalletCreditSyncService, useValue: { syncCredit: jest.fn() } },
         { provide: getRepositoryToken(OrderDeliveryAttemptEntity), useValue: attemptRepository },
         { provide: getRepositoryToken(OrderPaymentRefundEventEntity), useValue: { find: jest.fn().mockResolvedValue([]), findOne: jest.fn() } },
         { provide: getRepositoryToken(OrderPaymentAllocationEntity), useValue: { findOne: jest.fn() } },
+        { provide: getRepositoryToken(OrderHistoryEntity), useValue: {} },
         { provide: getDataSourceToken(), useValue: { transaction: jest.fn() } },
         { provide: OrderFromService, useValue: { resolveSendDefaultPhone: jest.fn().mockResolvedValue('16443614') } },
       ],

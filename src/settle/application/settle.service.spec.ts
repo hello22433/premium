@@ -16,6 +16,7 @@ function makeService(overrides: Record<string, any> = {}): any {
     orderDeliveryRepository: { find: jest.fn().mockResolvedValue([]) },
     walletManagedPredicate: { isWalletManaged: jest.fn().mockResolvedValue(false) },
     settleConfirmationWalletService: { confirmSettlement: jest.fn() },
+    legacyWalletCreditSyncService: { syncCredit: jest.fn() },
     ...overrides,
   });
   return svc;
@@ -112,6 +113,38 @@ describe('SettleService — confirmSingleOrderTx (#20 fix)', () => {
 
     expect(userCqb.setParameters).toHaveBeenCalledWith({ amount: 7_000 });
     expect(userCqb.setParameters).not.toHaveBeenCalledWith({ amount: 10_000 });
+    // 레거시 정산확정 → wallet credit_used SETTLE_RELEASE(-fresh netAmount) 동기화
+    expect((svc as any).legacyWalletCreditSyncService.syncCredit).toHaveBeenCalledWith(
+      (svc as any).orderRepository.manager,
+      expect.objectContaining({ billingUserId: 7, orderId: ORDER_ID, delta: -7_000, type: 'SETTLE_RELEASE' }),
+    );
+  });
+
+  it('레거시 정산해제(PRE_PAYMENT)는 wallet credit_used 를 SETTLE_UNDO(+snapshot) 로 동기화한다', async () => {
+    const order = {
+      id: ORDER_ID, settleStatus: 'SETTLE_COMPLETE', clientUserId: null, userId: 7,
+      isSettleBalance: false, isSettleComplete: true, settledAmountSnapshot: 7_000,
+    };
+    const lockQb = makeOrderQb(order);
+    const updateQb = makeAtomicUpdateQb(1);
+    const svc = makeService({
+      orderRepository: {
+        createQueryBuilder: jest.fn().mockReturnValueOnce(lockQb).mockReturnValueOnce(updateQb),
+        manager: { __undo: true },
+      },
+      userRepository: {
+        findOne: jest.fn().mockResolvedValue({ id: 7, settleCondition: 'PRE_PAYMENT' }),
+        createQueryBuilder: jest.fn().mockReturnValue(makeUserCqb()),
+      },
+    });
+    jest.spyOn(svc, 'getSettledDiscardRestoreAmount').mockResolvedValue(0);
+
+    await (svc as any).updateUserPerOrder({ orderId: ORDER_ID, settleStatus: 'UNSETTLE_NORMAL' });
+
+    expect((svc as any).legacyWalletCreditSyncService.syncCredit).toHaveBeenCalledWith(
+      (svc as any).orderRepository.manager,
+      expect.objectContaining({ billingUserId: 7, orderId: ORDER_ID, delta: 7_000, type: 'SETTLE_UNDO' }),
+    );
   });
 
   it('hasPending=true 이면 재계산 없이 400 을 던진다', async () => {

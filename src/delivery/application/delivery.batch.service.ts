@@ -81,6 +81,7 @@ import { SsgRefundResolverService } from './ssg-refund.resolver';
 import { SsgRefundOutcome } from '../interface/ssg.refund.resolve';
 import { WalletManagedPredicate } from '../../wallet/application/wallet-managed.predicate';
 import { RefundPoolService } from '../../wallet/application/refund-pool.service';
+import { LegacyWalletCreditSyncService } from '../../wallet/application/legacy-wallet-credit-sync.service';
 
 @Injectable()
 export class DeliveryBatchService {
@@ -122,6 +123,7 @@ export class DeliveryBatchService {
     private readonly walletManagedPredicate: WalletManagedPredicate,
     private readonly refundPoolService: RefundPoolService,
     private readonly resendDeductService: ResendDeductService,
+    private readonly legacyWalletCreditSyncService: LegacyWalletCreditSyncService,
     @InjectRepository(OrderDeliveryAttemptEntity)
     private readonly orderDeliveryAttemptRepository: Repository<OrderDeliveryAttemptEntity>,
     @InjectRepository(OrderPaymentRefundEventEntity)
@@ -359,18 +361,41 @@ export class DeliveryBatchService {
       if (shouldRestoreBalance) {
         await this.userManagementService.addBalance(userId, settlementPrice, `발송 실패 환불 (주문번호: ${order.id})`);
       } else {
-        await this.userRepository
-          .createQueryBuilder()
-          .update()
-          .set({ allSettleAmount: () => 'all_settle_amount - :amount' })
-          .where('id = :id', { id: userId })
-          .setParameters({ amount: settlementPrice })
-          .execute();
+        await this.applyLegacyFailRefundCredit(userId, order.id, orderDelivery.id, settlementPrice);
       }
       this.logger.log(
         `[REFUND] legacy path complete - orderDelivery.id: ${orderDelivery.id}, amount: ${settlementPrice} (정가: ${productPrice})`,
       );
     }
+  }
+
+  /**
+   * 레거시(allocation 없음) 발송실패 환불의 외상 차감 + wallet credit 동기화를 한 DB TX 로 묶는다.
+   * refundForFail 본체는 @Transactional 이 아니므로(외부 SSG 호출 포함) 이 블록만 원자화한다.
+   * @Transactional REQUIRED — 외부 TX 존재 시 흡수, 없으면 신규 TX. wallet 미존재 throw 시 all_settle 도 롤백.
+   */
+  @Transactional()
+  private async applyLegacyFailRefundCredit(
+    userId: number,
+    orderId: number,
+    orderDeliveryId: number,
+    amount: number,
+  ): Promise<void> {
+    await this.userRepository
+      .createQueryBuilder()
+      .update()
+      .set({ allSettleAmount: () => 'all_settle_amount - :amount' })
+      .where('id = :id', { id: userId })
+      .setParameters({ amount })
+      .execute();
+    await this.legacyWalletCreditSyncService.syncCredit(this.orderRepository.manager, {
+      billingUserId: userId,
+      orderId,
+      orderDeliveryId,
+      delta: -amount,
+      type: 'FAIL_REFUND',
+      memo: `발송 실패 환불 (주문번호: ${orderId})`,
+    });
   }
 
   /**
@@ -1271,6 +1296,16 @@ export class DeliveryBatchService {
     const isWalletManaged = await this.walletManagedPredicate.isWalletManaged(order.id, this.orderRepository.manager);
     if (isWalletManaged) {
       await this.applyWalletReverseRefundForResendOnManager(orderDelivery, this.orderRepository.manager);
+    } else if (!shouldRestoreBalance) {
+      // 레거시(allocation 없음) 외상 재증가분을 wallet credit_used 에도 동기화 (drift 방지).
+      await this.legacyWalletCreditSyncService.syncCredit(this.orderRepository.manager, {
+        billingUserId: userId,
+        orderId: order.id,
+        orderDeliveryId: orderDelivery.id,
+        delta: settlementPrice,
+        type: 'RESEND_DEDUCT',
+        memo: `재발송 역환불 재차감 (주문번호: ${order.id})`,
+      });
     }
 
     this.logger.log(

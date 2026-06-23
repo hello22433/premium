@@ -33,6 +33,7 @@ import { DeliveryBatchService } from '../../delivery/application/delivery.batch.
 import { RefundLedgerService } from '../../delivery/application/refund-ledger.service';
 import { WalletManagedPredicate } from '../../wallet/application/wallet-managed.predicate';
 import { RefundPoolService } from '../../wallet/application/refund-pool.service';
+import { LegacyWalletCreditSyncService } from '../../wallet/application/legacy-wallet-credit-sync.service';
 import { OrderDeliveryAttemptEntity, OrderDeliveryAttemptType, OrderDeliveryAttemptStatus } from '../../entity/order.delivery.attempt.entity';
 import { OrderPaymentAllocationEntity } from '../../entity/order.payment.allocation.entity';
 import { OrderPaymentAllocationLineEntity } from '../../entity/order.payment.allocation.line.entity';
@@ -115,6 +116,7 @@ export class CustomerServiceService {
     private readonly dataSource: DataSource,
     private readonly walletManagedPredicate: WalletManagedPredicate,
     private readonly refundPoolService: RefundPoolService,
+    private readonly legacyWalletCreditSyncService: LegacyWalletCreditSyncService,
     private readonly authService: AuthService,
   ) {}
 
@@ -261,6 +263,17 @@ export class CustomerServiceService {
       const fresh = await queryRunner.manager.findOne(UserEntity, { where: { id: user.id } });
       afterBalance = fresh!.allSettleAmount;
       beforeBalance = afterBalance + restoreAmount;
+      // 레거시(allocation 없음, wallet 미관리) 외상 복구분만 wallet 동기화 (wallet-managed 는 wallet 경로가 처리).
+      if (!isWalletManaged) {
+        await this.legacyWalletCreditSyncService.syncCredit(queryRunner.manager, {
+          billingUserId,
+          orderId: order.id,
+          orderDeliveryId: orderDelivery.id,
+          delta: -restoreAmount,
+          type: 'DISCARD_REFUND',
+          memo: `폐기 여신 복구 (주문번호: ${order.id})`,
+        });
+      }
     }
 
     const refundRouteMemo = order.isSettleComplete

@@ -47,6 +47,7 @@ describe('CustomerServiceService.restoreBalanceOnDiscard — refunded-proxy read
       claimWithManager: claimImpl ?? jest.fn().mockResolvedValue(undefined),
     };
     sut.walletManagedPredicate = { isWalletManaged: jest.fn().mockResolvedValue(false) };
+    sut.legacyWalletCreditSyncService = { syncCredit: jest.fn() };
     return sut;
   };
 
@@ -81,6 +82,64 @@ describe('CustomerServiceService.restoreBalanceOnDiscard — refunded-proxy read
       expect.anything(),
       expect.objectContaining({ orderDeliveryId: 5001, sourcePath: 'CS_DISCARD' }),
     );
+  });
+
+  const legacyDiscardQueryRunner = () => {
+    const builder: any = {
+      update: () => builder,
+      set: () => builder,
+      where: () => builder,
+      setParameters: () => builder,
+      execute: jest.fn().mockResolvedValue({ affected: 1 }),
+    };
+    return {
+      manager: {
+        findOne: jest.fn().mockResolvedValue({ id: 5, company: null, allSettleAmount: 0, balance: 0 }),
+        createQueryBuilder: jest.fn(() => builder),
+        save: jest.fn().mockResolvedValue(undefined),
+      },
+    } as any;
+  };
+
+  it('레거시 미정산 폐기 복구는 wallet credit_used 를 DISCARD_REFUND(-restore) 로 동기화한다', async () => {
+    const sut: any = makeSut(false); // exists=false → 복구 진행, isWalletManaged=false
+    sut.activityLogService = { createLog: jest.fn().mockResolvedValue(undefined) };
+    sut.cryptoCipher = { safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01000000000'), encryptDeliveryTarget: jest.fn((v: string) => v) };
+
+    await sut.restoreBalanceOnDiscard(
+      buildOrderDelivery(IOrderDeliveryStatus.FAIL),
+      operator,
+      legacyDiscardQueryRunner(),
+      'operator',
+    );
+
+    expect(sut.legacyWalletCreditSyncService.syncCredit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        billingUserId: 5,
+        orderId: 700,
+        orderDeliveryId: 5001,
+        delta: -10000,
+        type: 'DISCARD_REFUND',
+      }),
+    );
+  });
+
+  it('wallet-managed 미정산 폐기 복구는 legacy syncCredit 을 호출하지 않는다 (이중차감 방지)', async () => {
+    const sut: any = makeSut(false);
+    sut.walletManagedPredicate = { isWalletManaged: jest.fn().mockResolvedValue(true) };
+    sut.activityLogService = { createLog: jest.fn().mockResolvedValue(undefined) };
+    sut.cryptoCipher = { safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01000000000'), encryptDeliveryTarget: jest.fn((v: string) => v) };
+    sut.refundPoolService = { refund: jest.fn().mockResolvedValue({ ledgerIds: [], totalRefundedAmount: 0 }) };
+
+    await sut.restoreBalanceOnDiscard(
+      buildOrderDelivery(IOrderDeliveryStatus.FAIL),
+      operator,
+      legacyDiscardQueryRunner(),
+      'operator',
+    );
+
+    expect(sut.legacyWalletCreditSyncService.syncCredit).not.toHaveBeenCalled();
   });
 
   it('wallet 정산완료 폐기 환불은 INITIAL 고정이 아니라 최신 attempt.id 로 멱등키를 만든다', async () => {
