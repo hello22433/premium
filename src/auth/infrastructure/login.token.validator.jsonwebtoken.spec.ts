@@ -70,12 +70,12 @@ describe('login token validator With jsonwebtoken 테스트', () => {
       expect(() => sut.validateByToken(result.refreshToken.value)).toThrow(UnauthorizedException);
     });
 
-    it('type 클레임이 없는 레거시 토큰은 grace 로 통과시킨다', () => {
+    it('type 클레임이 없는 레거시 토큰은 access/refresh 양쪽 모두 거부한다', () => {
       setConfig();
       const legacyToken = sign({ id: 1, email: 'test@test.com', authority: givenLoginUser.authority }, SECRET);
 
-      expect(sut.validateByToken(legacyToken).id).toBe(1);
-      expect(sut.validateByToken(legacyToken, 'refresh').id).toBe(1);
+      expect(() => sut.validateByToken(legacyToken)).toThrow(UnauthorizedException);
+      expect(() => sut.validateByToken(legacyToken, 'refresh')).toThrow(UnauthorizedException);
     });
   });
 });

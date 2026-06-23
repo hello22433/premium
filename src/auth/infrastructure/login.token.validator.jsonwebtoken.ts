@@ -67,8 +67,8 @@ export class LoginTokenValidatorJsonwebtoken implements ILoginTokenValidator {
       throw new Error(e);
     }
 
-    // type 클레임이 있고 기대 용도와 다르면 거부. 클레임이 없는 레거시 토큰은 grace 통과
-    if (payload.type !== undefined && payload.type !== expectedType) {
+    // type 클레임이 기대 용도와 다르면 거부 (무타입 레거시 토큰도 거부 — access/refresh 교차사용 차단)
+    if (payload.type !== expectedType) {
       throw new UnauthorizedException('토큰 타입이 올바르지 않습니다.');
     }
 
