@@ -999,12 +999,17 @@ export class CustomerServiceService {
           couponStatus === OrderDeliveryCouponStatus.CANCEL ||
           couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL
         ) {
-          const result = await this.partnerCompanyExternService.cancel(orderDelivery);
-
-          if (result.message !== '폐기 완료') {
+          // 협력사 어댑터 cancel()은 실패를 '반환값'이 아니라 throw 로 알린다(galaxia/giftiel/giftishow/culture/daou 공통).
+          // 따라서 실패는 try/catch 로 받아야 한다. (D3-46: 기존 `result.message !== '폐기 완료'` 분기는
+          // 래퍼가 성공 시 항상 '폐기 완료'만 반환하므로 도달 불가한 데드코드였음)
+          // catch 에서는 추가 logger 를 두지 않는다 — 어댑터가 이미 infra 레벨에서 1회 로깅하므로 중복 방지.
+          try {
+            await this.partnerCompanyExternService.cancel(orderDelivery);
+          } catch (e) {
             const syncedStatus = await this.syncCouponStatusAfterDiscardFailure(orderDelivery);
             const statusSuffix = syncedStatus ? ` (현재 쿠폰상태: ${syncedStatus})` : '';
-            throw new InternalServerErrorException(`${result.message}${statusSuffix}`);
+            const reason = e instanceof Error ? e.message : '폐기 처리 실패';
+            throw new InternalServerErrorException(`${reason}${statusSuffix}`);
           }
         } else {
           throw new BadRequestException('변경을 할 수 없는 핀상태입니다.');
@@ -1330,18 +1335,16 @@ export class CustomerServiceService {
 
         if (afterChange === 'CANCEL' || afterChange === 'REFUND_CANCEL') {
           // 외부 cancel 은 트랜잭션 밖에서 선행(HTTP 롤백 불가). 성공 응답 후에만 DB 반영.
-          const result = await this.partnerCompanyExternService.cancel(orderDelivery);
+          // 협력사 cancel()은 실패 시 throw 로 알리므로(반환값 아님), 여기까지 도달하면 성공이다.
+          // (D3-46: 기존 `if (result.message === '폐기 완료') ... else throw` 의 else 는 도달 불가 데드코드였음)
+          await this.partnerCompanyExternService.cancel(orderDelivery);
 
-          if (result.message === '폐기 완료') {
-            await this.commitPinStatusTransition(
-              orderDelivery.id,
-              beforeChange,
-              { couponStatus: OrderDeliveryCouponStatus.CANCEL, discardedAt: new Date() },
-              { userId: map.userId, type, content, afterChange: OrderDeliveryCouponStatus.CANCEL },
-            );
-          } else {
-            throw new InternalServerErrorException(result.message);
-          }
+          await this.commitPinStatusTransition(
+            orderDelivery.id,
+            beforeChange,
+            { couponStatus: OrderDeliveryCouponStatus.CANCEL, discardedAt: new Date() },
+            { userId: map.userId, type, content, afterChange: OrderDeliveryCouponStatus.CANCEL },
+          );
         } else {
           throw new BadRequestException('변경을 할 수 없는 핀상태입니다.');
         }
@@ -2497,12 +2500,16 @@ export class CustomerServiceService {
             case '갤럭시아':
             case '케이티알파':
             case '주식회사 다우기술': {
-              const result = await this.partnerCompanyExternService.cancel(orderDelivery);
-              if (result.message !== '폐기 완료') {
+              // 협력사 cancel()은 실패를 throw 로 알린다(반환값 아님) → try/catch 로 받아야 함.
+              // (D3-46: 기존 `result.message !== '폐기 완료'` 분기는 도달 불가한 데드코드였음)
+              // catch 에서 추가 logger 없음 — 어댑터가 이미 infra 레벨 1회 로깅(중복 방지).
+              try {
+                await this.partnerCompanyExternService.cancel(orderDelivery);
+              } catch (e) {
                 const syncedStatus = await this.syncCouponStatusAfterDiscardFailure(orderDelivery);
                 failed.push({
                   id: orderDeliveryId,
-                  reason: result.message || '외부 API 폐기 실패',
+                  reason: (e instanceof Error ? e.message : '') || '외부 API 폐기 실패',
                   syncedStatus: syncedStatus ?? undefined,
                 });
                 continue;
