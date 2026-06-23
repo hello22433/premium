@@ -58,6 +58,7 @@ export class ExternalApiExceptionFilter implements ExceptionFilter {
         '3009': HttpStatus.CONFLICT,
         '4001': HttpStatus.NOT_FOUND,
         '4002': HttpStatus.NOT_FOUND,
+        '4003': HttpStatus.NOT_FOUND,
       };
       httpStatus = codeStatusMap[code] ?? HttpStatus.INTERNAL_SERVER_ERROR;
     } else if (exception instanceof ThrottlerException) {

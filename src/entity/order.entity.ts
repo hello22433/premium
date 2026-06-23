@@ -99,6 +99,22 @@ export class OrderEntity extends BaseEntity {
   @Column({ type: 'bigint', nullable: true, comment: 'FK) api_credential.id (PR2a)' })
   apiCredentialId: string | null;
 
+  @Column({
+    type: 'varchar',
+    length: 191,
+    nullable: true,
+    comment: '외부 주문번호 (매핑모드 비즈니스 멱등 보조, api_app 내 유니크, PR2)',
+  })
+  externalOrderId: string | null;
+
+  @Column({
+    type: 'varchar',
+    length: 191,
+    nullable: true,
+    comment: '외부 고객 식별자 (매핑모드 추적/관찰성, PR2)',
+  })
+  externalCustomerId: string | null;
+
   @Column({ default: false, comment: '카드할증 적용 여부 (3%)' })
   cardSurchargeApplied: boolean;
 

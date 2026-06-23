@@ -39,12 +39,20 @@ export class ApiKeyGuard implements CanActivate {
       throw new ExternalApiException('1001', '인증 실패');
     }
 
-    // 전환기: 레거시 account 로딩 유지 — service billing/product/settlement 로직이
-    // account.user/account.ssgEnabled/account.resendMaxCount/account.allowedIps를 읽는다.
-    const account = await this.accountRepository.findOne({
-      where: { apiKeyHash: keyHash, isActive: true },
-      relations: ['user', 'user.company', 'allowedIps'],
-    });
+    // 전환기: 레거시 account 로딩 — service billing/product/settlement/webhook 로직이
+    // account.user/account.resendMaxCount/account.cancelWebhook* 등을 읽는다.
+    // HIGH-4(다중키/회전): account 를 apiKeyHash 가 아닌 apiApp.sourceAccountId(결정적 매핑)로 로드한다.
+    //   → 신규 credential 단독 발급(새 hash) 시에도 account 조회가 깨지지 않음(account 는 구 hash 보유).
+    //   sourceAccountId 미설정(순수 PR2 app)은 defaultBillingUserId 로 폴백.
+    const account = credential.apiApp.sourceAccountId != null
+      ? await this.accountRepository.findOne({
+          where: { id: credential.apiApp.sourceAccountId, isActive: true },
+          relations: ['user', 'user.company', 'allowedIps'],
+        })
+      : await this.accountRepository.findOne({
+          where: { userId: credential.apiApp.defaultBillingUserId, isActive: true },
+          relations: ['user', 'user.company', 'allowedIps'],
+        });
 
     if (!account) {
       throw new ExternalApiException('1001', '인증 실패');

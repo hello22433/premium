@@ -106,7 +106,7 @@ describe('OrderService excelDownload scope', () => {
 
     expect(builder.clauses).toContain('order.deletedAt IS NULL');
     expect(builder.clauses).toContain(
-      '(order.userId = :userId OR order.operationUserId = :userId OR order.clientUserId = :userId)',
+      '(order.userId = :userId OR order.operationUserId = :userId OR (order.clientUserId = :userId AND order.apiAppId IS NULL))',
     );
     expect(builder.orderBys).toContainEqual(['order.id', 'DESC']);
   });
@@ -122,7 +122,7 @@ describe('OrderService excelDownload scope', () => {
 
     expect(builder.clauses).toContain('order.status != :tempStatus');
     expect(builder.clauses).toContain(
-      '(order.userId = :userId OR order.operationUserId = :userId OR order.clientUserId = :userId)',
+      '(order.userId = :userId OR order.operationUserId = :userId OR (order.clientUserId = :userId AND order.apiAppId IS NULL))',
     );
   });
 

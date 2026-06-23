@@ -74,6 +74,7 @@ import { GiftielExchangeHistoryEntity } from '../entity/giftiel.exchange.history
 import { ExternalApiAccountEntity } from '../entity/external.api.account.entity';
 import { ApiAppEntity } from '../entity/api.app.entity';
 import { ApiCredentialEntity } from '../entity/api.credential.entity';
+import { ApiCustomerMappingEntity } from '../entity/api.customer.mapping.entity';
 import { ExternalApiAllowedIpEntity } from '../entity/external.api.allowed.ip.entity';
 import { ExternalApiSsgRequestEntity } from '../entity/external.api.ssg.request.entity';
 import { ExternalApiWebhookLogEntity } from '../entity/external.api.webhook.log.entity';
@@ -171,6 +172,7 @@ import { ForbiddenWordBlockLogEntity } from '../entity/forbidden.word.block.log.
           ExternalApiAccountEntity,
           ApiAppEntity,
           ApiCredentialEntity,
+          ApiCustomerMappingEntity,
           ExternalApiAllowedIpEntity,
           ExternalApiSsgRequestEntity,
           ExternalApiWebhookLogEntity,

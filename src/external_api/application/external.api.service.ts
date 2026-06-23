@@ -60,6 +60,8 @@ import {
 } from '../api/dto/external.api.response.dto';
 import { CreateExternalOrderDto, CreateExternalSsgOrderDto } from '../api/dto/external.api.request.dto';
 import { ApiRequestContext } from '../api/api-request-context';
+import { getBillingUserId } from '../../order/domain/order.billing-user.helper';
+import { ApiCustomerMappingResolver } from './api.customer.mapping.resolver';
 
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { DeliveryCreateCouponImage } from '../../delivery/infra/delivery.create.coupon.image';
@@ -127,15 +129,45 @@ export class ExternalApiService {
     private walletManagedPredicate: WalletManagedPredicate,
     private refundPoolService: RefundPoolService,
     private orderFromService: OrderFromService,
+    private mappingResolver: ApiCustomerMappingResolver,
   ) {}
+
+  // 주문의 billing user(+company) 로드. getBillingUserId(order)=clientUserId ?? userId.
+  //   단순모드 → order.userId(=default billing), 매핑모드 → order.clientUserId(=매핑 billingUser).
+  // refund/cancel/ledger mirror 가 billing user 기준으로 동작하도록 환불·취소 경로에서 사용.
+  // fallback(이미 로드된 동일 user, company relation 포함)이 있으면 재조회 생략(단순모드 비트동일).
+  private async loadOrderBillingUser(order: OrderEntity, fallback?: UserEntity): Promise<UserEntity> {
+    const billingUserId = getBillingUserId(order);
+    if (fallback && fallback.id === billingUserId) {
+      return fallback;
+    }
+    const billingUser = await this.userRepository.findOne({
+      where: { id: billingUserId },
+      relations: ['company'],
+    });
+    if (!billingUser) {
+      throw new ExternalApiException('4003', '등록되지 않은 고객 매핑', `billing user 없음: ${billingUserId}`);
+    }
+    return billingUser;
+  }
+
+  // 관찰성(PR2 Phase 8): 주문 1건을 apiAppId→credential→billingUser→externalCustomer/Order→orderId 로 상관 로깅.
+  // idempotencyKey 는 idempotency_keys(apiAppId, endpoint)로 별도 추적. clientUserId≠null = 매핑모드.
+  private logOrderObservability(order: OrderEntity, ctx: ApiRequestContext): void {
+    this.logger.log(
+      `[EXTERNAL_ORDER] orderId=${order.id} apiAppId=${ctx.apiApp.id} apiCredentialId=${ctx.apiCredential.id} ` +
+        `billingUserId=${getBillingUserId(order)} externalCustomerId=${order.externalCustomerId ?? '-'} ` +
+        `externalOrderId=${order.externalOrderId ?? '-'} mode=${order.clientUserId != null ? 'MAPPING' : 'SIMPLE'}`,
+    );
+  }
 
   // ─── 잔액 헬퍼 ──────────────────────────────────────────
   // 잔액 차감 위치는 user.company.balanceManagementType으로 분기.
   //   COMPANY → user_company.balance (회사 단위 정산)
   //   그 외(PERSONAL) → user.balance (계정 단위 정산)
 
-  private async deductBalance(account: ExternalApiAccountEntity, price: number): Promise<void> {
-    const user = account.user;
+  private async deductBalance(billingUser: UserEntity, price: number): Promise<void> {
+    const user = billingUser;
     const isCompany = user.company?.balanceManagementType === 'COMPANY';
     const result = isCompany
       ? await this.dataSource.query(
@@ -161,11 +193,11 @@ export class ExternalApiService {
   // 호출자가 R6 관계그래프(order.orderProductMappings/mapping.orderDeliveries/mapping.product)를
   // 구성한 뒤 전달한다. ssgEvent 차감(행사잔액)은 wallet 과 독립이므로 호출자 책임.
   private async deductViaWallet(
-    account: ExternalApiAccountEntity,
+    billingUser: UserEntity,
     order: OrderEntity,
     settleAmount: number,
   ): Promise<void> {
-    const user = account.user;
+    const user = billingUser;
 
     // billingUserId = account.user.id (external 은 대행주문 없음, 1:1). wallet 없으면 fail-closed.
     let wallet;
@@ -238,8 +270,8 @@ export class ExternalApiService {
     await this.orderRepository.save(order);
   }
 
-  private async refundBalance(account: ExternalApiAccountEntity, price: number): Promise<void> {
-    const user = account.user;
+  private async refundBalance(billingUser: UserEntity, price: number): Promise<void> {
+    const user = billingUser;
     const isCompany = user.company?.balanceManagementType === 'COMPANY';
     if (isCompany) {
       await this.dataSource.query('UPDATE user_company SET balance = balance + ? WHERE id = ?', [price, user.companyId]);
@@ -256,14 +288,14 @@ export class ExternalApiService {
   // 복원 금액 = allocation 의 원 차감 총액(depositUsedAmount / creditUsedAmount+creditExcessAmount).
   // 단일 delivery 전액 환불이므로 R4 의 정확한 역연산. user.balance 미기록 원칙 유지.
   private async refundViaWallet(
-    account: ExternalApiAccountEntity,
+    billingUser: UserEntity,
     order: OrderEntity,
     orderDelivery: OrderDeliveryEntity,
     eventType: OrderPaymentRefundEventType,
     idempotencyPrefix: 'fail_refund' | 'discard_refund',
   ): Promise<void> {
     const manager = this.dataSource.manager;
-    const user = account.user;
+    const user = billingUser;
 
     const latestAttempt = await manager.findOne(OrderDeliveryAttemptEntity, {
       where: {
@@ -487,8 +519,20 @@ export class ExternalApiService {
 
   // ─── 상품 조회 ──────────────────────────────────────────
 
-  async getProducts(account: ExternalApiAccountEntity, productCode?: string): Promise<ExternalApiResponse<ProductResponseData[]>> {
-    return this.getProductsForBilling(account.user, productCode);
+  // 상품 조회: 매핑모드(externalCustomerId)면 매핑 billing user 기준 할당상품, 미지정이면 default billing(account.user).
+  // 주문 생성과 동일 resolver 사용 — 미등록 externalCustomerId → 4003 fail-closed.
+  async getProducts(
+    account: ExternalApiAccountEntity,
+    ctx: ApiRequestContext,
+    productCode?: string,
+    externalCustomerId?: string,
+  ): Promise<ExternalApiResponse<ProductResponseData[]>> {
+    const { billingUser } = await this.mappingResolver.resolveBillingTarget(
+      ctx.apiApp.id,
+      externalCustomerId,
+      account.user.id,
+    );
+    return this.getProductsForBilling(billingUser, productCode);
   }
 
   // billingUser 기준 상품 조회(add-only, 본문 이동). 단순모드 billingUser=account.user 라 동일.
@@ -546,7 +590,30 @@ export class ExternalApiService {
   // ─── 주문 생성 (3-phase) ────────────────────────────────
 
   async createOrder(account: ExternalApiAccountEntity, dto: CreateExternalOrderDto, ctx: ApiRequestContext): Promise<ExternalApiResponse<OrderResponseData>> {
-    const { order, orderDelivery, product } = await this.phaseA_createAndDeduct(account, dto, ctx);
+    // 비즈니스 멱등(매핑모드 보조): 동일 (apiApp, externalOrderId) 기존 주문이면 그 응답을 반환.
+    // 전송 멱등(Idempotency-Key 헤더)과 직교 — 이건 주문축, 그건 요청축.
+    if (dto.externalOrderId) {
+      const existing = await this.mappingResolver.findExistingOrderByExternalOrderId(ctx.apiApp.id, dto.externalOrderId);
+      if (existing) {
+        return this.buildCreateResponseForExistingOrder(existing);
+      }
+    }
+
+    let order!: OrderEntity;
+    let orderDelivery!: OrderDeliveryEntity;
+    try {
+      ({ order, orderDelivery } = await this.phaseA_createAndDeduct(account, dto, ctx));
+    } catch (error) {
+      // 동시 요청 race: DB UNIQUE(api_app_id, external_order_id) 위반 → 기존 주문 멱등 반환(비500).
+      if (dto.externalOrderId && this.isDuplicateExternalOrderError(error)) {
+        const existing = await this.mappingResolver.findExistingOrderByExternalOrderId(ctx.apiApp.id, dto.externalOrderId);
+        if (existing) {
+          return this.buildCreateResponseForExistingOrder(existing);
+        }
+        throw new ExternalApiException('2005', '요청 처리 중');
+      }
+      throw error;
+    }
 
     const externalTrId = orderDelivery.externalTrId!;
 
@@ -559,6 +626,7 @@ export class ExternalApiService {
     }
 
     await this.phaseC_handleSuccess(order, orderDelivery);
+    this.logOrderObservability(order, ctx);
 
     const { validStartDate, validEndDate } = this.resolveValidDates(orderDelivery);
 
@@ -572,11 +640,56 @@ export class ExternalApiService {
     });
   }
 
+  // 멱등 응답용: 기존 주문의 최신 orderDelivery 로드(없거나 externalTrId 없으면 2005). 일반/SSG 빌더 공통.
+  private async loadExistingOrderDeliveryForResponse(order: OrderEntity): Promise<OrderDeliveryEntity> {
+    const orderDelivery = await this.orderDeliveryRepository.findOne({
+      where: { orderProductMapping: { order: { id: order.id } } },
+      relations: ['orderProductMapping', 'orderProductMapping.order'],
+      order: { id: 'DESC' },
+    });
+    if (!orderDelivery || !orderDelivery.externalTrId) {
+      // 비정상(기존 주문에 delivery 없음) — 멱등 보장 불가, 처리 중으로 응답해 재시도 유도.
+      throw new ExternalApiException('2005', '요청 처리 중');
+    }
+    return orderDelivery;
+  }
+
+  // 동일 (apiApp, externalOrderId) 기존 주문의 주문생성 응답을 재구성(멱등 반환).
+  private async buildCreateResponseForExistingOrder(
+    order: OrderEntity,
+  ): Promise<ExternalApiResponse<OrderResponseData>> {
+    const orderDelivery = await this.loadExistingOrderDeliveryForResponse(order);
+    const { validStartDate, validEndDate } = this.resolveValidDates(orderDelivery);
+    return ExternalApiResponse.success<OrderResponseData>({
+      trId: orderDelivery.externalTrId!,
+      barCode: orderDelivery.barCode || undefined,
+      validStartDate,
+      validEndDate,
+      price: order.sendAmount,
+      settleAmount: order.settleAmount,
+    });
+  }
+
+  // order.external_order_id UNIQUE(uk_order_api_app_external_order) 위반 판별(동시성 dup).
+  private isDuplicateExternalOrderError(error: unknown): boolean {
+    const code = (error as { code?: string; driverError?: { code?: string } })?.code
+      ?? (error as { driverError?: { code?: string } })?.driverError?.code;
+    const message = (error as { message?: string })?.message ?? '';
+    return code === 'ER_DUP_ENTRY' && message.includes('uk_order_api_app_external_order');
+  }
+
   // ─── Phase A: 주문 생성 + 잔액 차감 ─────────────────────
 
   @Transactional()
   private async phaseA_createAndDeduct(account: ExternalApiAccountEntity, dto: CreateExternalOrderDto, ctx: ApiRequestContext) {
     const user = account.user;
+    // 3계층 매핑모드 resolve: externalCustomerId → billing user(+company), clientUserId.
+    // 단순모드(미지정/빈) → billingUser=account.user, clientUserId=null (기존 경로 비트동일).
+    const { billingUser, clientUserId, externalCustomerId } = await this.mappingResolver.resolveBillingTarget(
+      ctx.apiApp.id,
+      dto.externalCustomerId,
+      account.user.id,
+    );
 
     // 독립 쿼리(상품 조회 / 할당 상품 ID / 직전 주문 코드)는 병렬화하여 round-trip 절약
     const [product, assignedIds, prevOrder] = await Promise.all([
@@ -584,7 +697,7 @@ export class ExternalApiService {
         where: { code: dto.productCode, useStatus: IProductUseStatus.USE },
         relations: ['partnerCompany', 'brand'],
       }),
-      this.getAssignedProductIds(user.id),
+      this.getAssignedProductIdsForBilling(billingUser.id),
       this.orderRepository.findOne({
         where: { code: Like(`${OrderPrefixCode}%`) },
         order: { code: 'DESC' },
@@ -600,12 +713,16 @@ export class ExternalApiService {
     }
 
     const sendAmount = product.price;
-    const { fee, priceAdjustment, settleAmount, cardSurchargeApplied } =
-      await this.computeSettlement(account, product, sendAmount);
+    const { fee, priceAdjustment, settleAmount, cardSurchargeApplied } = await this.computeSettlementForBilling(
+      billingUser,
+      product,
+      sendAmount,
+      { cardSurchargeApplied: this.resolveCardSurchargeAppliedForUser(billingUser) },
+    );
 
     // 발신번호 SoT 검증(차감 전, flag gating). 차감은 아래 order 그래프 저장 후 wallet/legacy 분기에서 수행.
     if (process.env.FROM_PHONE_SOT_ENFORCE === 'true') {
-      await this.orderFromService.assertApprovedPhones(user.id, [
+      await this.orderFromService.assertApprovedPhones(billingUser.id, [
         { sendMethod: dto.deliveryMethod as IOrderSendMethod, fromPhoneNumber: dto.senderPhone ?? null },
       ]);
     }
@@ -625,12 +742,14 @@ export class ExternalApiService {
       isNewBillingFlow: false,
       isSettleBalance: true,
       isSettleComplete: false,
-      clientUserId: null,
+      clientUserId,
       // PR2a: 외부API 호출주체 적재 (단순모드 = credential→app).
       apiAppId: ctx.apiApp.id,
       apiCredentialId: ctx.apiCredential.id,
+      externalOrderId: dto.externalOrderId?.trim() || null,
+      externalCustomerId,
       ...buildOrderUserSnapshot(user),
-      ...buildOrderClientUserSnapshot(null),
+      ...buildOrderClientUserSnapshot(clientUserId != null ? billingUser : null),
       ...buildOrderOperationUserSnapshot(null),
     });
     await this.orderRepository.save(order);
@@ -675,9 +794,14 @@ export class ExternalApiService {
       // R6: builder 가 읽는 관계그래프를 in-memory 로 구성.
       mapping.orderDeliveries = [orderDelivery];
       order.orderProductMappings = [mapping];
-      await this.deductViaWallet(account, order, settleAmount);
+      await this.deductViaWallet(billingUser, order, settleAmount);
     } else {
-      await this.deductBalance(account, settleAmount);
+      // 매핑모드(clientUserId≠null)는 WALLET cutover 전제. 레거시 차감경로 진입 시 fail-closed
+      // (매핑 billing 이 아닌 default 로 차감되는 money drift 방지).
+      if (clientUserId != null) {
+        throw new ExternalApiException('9999', '시스템 오류', '매핑모드는 WALLET cutover 전제입니다');
+      }
+      await this.deductBalance(billingUser, settleAmount);
     }
 
     return { order, orderDelivery, mapping, product };
@@ -763,7 +887,10 @@ export class ExternalApiService {
     order.status = IOrderStatus.DELIVERY_CANCEL;
     await this.orderRepository.save(order);
 
-    const isCompanyMode = account.user.company?.balanceManagementType === 'COMPANY';
+    // 매핑모드: 환불/회사모드/ledger claim 을 billing user 기준으로 (단순모드는 account.user=billingUser 동일).
+    const billingUser = await this.loadOrderBillingUser(order, account.user);
+
+    const isCompanyMode = billingUser.company?.balanceManagementType === 'COMPANY';
     const isSsg = order.type === IOrderType.SSG && !!orderDelivery.ssgEventId;
     const isWalletManaged = await this.walletManagedPredicate.isWalletManaged(
       order.id,
@@ -776,7 +903,7 @@ export class ExternalApiService {
     try {
       await this.refundLedgerService.claim({
         orderDeliveryId: orderDelivery.id,
-        userId: account.user.id,
+        userId: billingUser.id,
         refundAmount: order.settleAmount,
         restoreType: isCompanyMode ? 'COMPANY_BALANCE' : 'BALANCE',
         isSettleComplete: order.isSettleComplete,
@@ -828,14 +955,14 @@ export class ExternalApiService {
     // 그 외(LEGACY/SHADOW)는 기존 raw refundBalance 유지(회귀 0).
     if (isWalletManaged) {
       await this.refundViaWallet(
-        account,
+        billingUser,
         order,
         orderDelivery,
         OrderPaymentRefundEventType.FAIL_REFUND,
         'fail_refund',
       );
     } else {
-      await this.refundBalance(account, order.settleAmount);
+      await this.refundBalance(billingUser, order.settleAmount);
     }
   }
 
@@ -944,14 +1071,17 @@ export class ExternalApiService {
     order.status = IOrderStatus.DELIVERY_CANCEL;
     await this.orderRepository.save(order);
 
-    const isCompanyMode = account.user.company?.balanceManagementType === 'COMPANY';
+    // 매핑모드: 취소 환불/회사모드/ledger claim 을 billing user 기준으로 (단순모드 동일).
+    const billingUser = await this.loadOrderBillingUser(order, account.user);
+
+    const isCompanyMode = billingUser.company?.balanceManagementType === 'COMPANY';
     const isWalletManaged = await this.walletManagedPredicate.isWalletManaged(
       order.id,
       this.dataSource.manager,
     );
     await this.refundLedgerService.claim({
       orderDeliveryId: orderDelivery.id,
-      userId: account.user.id,
+      userId: billingUser.id,
       refundAmount: order.settleAmount,
       restoreType: isCompanyMode ? 'COMPANY_BALANCE' : 'BALANCE',
       isSettleComplete: order.isSettleComplete,
@@ -964,14 +1094,14 @@ export class ExternalApiService {
     // R2: 취소 환불 wallet 분기. cancel 경로는 SSG 차단(cancelOrder:606)이라 SSG resolver 불필요.
     if (isWalletManaged) {
       await this.refundViaWallet(
-        account,
+        billingUser,
         order,
         orderDelivery,
         OrderPaymentRefundEventType.DISCARD_REFUND,
         'discard_refund',
       );
     } else {
-      await this.refundBalance(account, order.settleAmount);
+      await this.refundBalance(billingUser, order.settleAmount);
     }
   }
 
@@ -1076,7 +1206,29 @@ export class ExternalApiService {
       throw new ExternalApiException('1005', 'SSG 미승인 계정');
     }
 
-    const { order, orderDelivery, ssgEvent } = await this.phaseA_createSsgAndDeduct(account, dto, ctx);
+    // 비즈니스 멱등(SSG): 동일 (apiApp, externalOrderId) 기존 주문이면 그 응답 반환.
+    if (dto.externalOrderId) {
+      const existing = await this.mappingResolver.findExistingOrderByExternalOrderId(ctx.apiApp.id, dto.externalOrderId);
+      if (existing) {
+        return this.buildSsgCreateResponseForExistingOrder(existing);
+      }
+    }
+
+    let order!: OrderEntity;
+    let orderDelivery!: OrderDeliveryEntity;
+    let ssgEvent!: SsgEventEntity;
+    try {
+      ({ order, orderDelivery, ssgEvent } = await this.phaseA_createSsgAndDeduct(account, dto, ctx));
+    } catch (error) {
+      if (dto.externalOrderId && this.isDuplicateExternalOrderError(error)) {
+        const existing = await this.mappingResolver.findExistingOrderByExternalOrderId(ctx.apiApp.id, dto.externalOrderId);
+        if (existing) {
+          return this.buildSsgCreateResponseForExistingOrder(existing);
+        }
+        throw new ExternalApiException('2005', '요청 처리 중');
+      }
+      throw error;
+    }
 
     const externalTrId = orderDelivery.externalTrId!;
 
@@ -1089,6 +1241,7 @@ export class ExternalApiService {
     }
 
     await this.phaseC_handleSuccess(order, orderDelivery);
+    this.logOrderObservability(order, ctx);
 
     const { validStartDate, validEndDate } = this.resolveValidDates(orderDelivery);
 
@@ -1103,9 +1256,33 @@ export class ExternalApiService {
     });
   }
 
+  // 동일 (apiApp, externalOrderId) 기존 SSG 주문의 주문생성 응답을 재구성(멱등 반환, personalCode 포함).
+  private async buildSsgCreateResponseForExistingOrder(
+    order: OrderEntity,
+  ): Promise<ExternalApiResponse<SsgOrderResponseData>> {
+    const orderDelivery = await this.loadExistingOrderDeliveryForResponse(order);
+    const { validStartDate, validEndDate } = this.resolveValidDates(orderDelivery);
+    return ExternalApiResponse.success<SsgOrderResponseData>({
+      trId: orderDelivery.externalTrId!,
+      barCode: orderDelivery.barCode || undefined,
+      personalCode: orderDelivery.personalCode || undefined,
+      validStartDate,
+      validEndDate,
+      price: order.sendAmount,
+      settleAmount: order.settleAmount,
+    });
+  }
+
   @Transactional()
   private async phaseA_createSsgAndDeduct(account: ExternalApiAccountEntity, dto: CreateExternalSsgOrderDto, ctx: ApiRequestContext) {
     const user = account.user;
+    // 3계층 매핑모드 resolve (SSG): externalCustomerId → billing user(+company), clientUserId.
+    // 단순모드(미지정/빈) → billingUser=account.user, clientUserId=null (기존 SSG 경로 비트동일).
+    const { billingUser, clientUserId, externalCustomerId } = await this.mappingResolver.resolveBillingTarget(
+      ctx.apiApp.id,
+      dto.externalCustomerId,
+      account.user.id,
+    );
     const sendAmount = dto.amount;
 
     // 요청 금액과 일치하는 SSG 상품을 확정(없으면 템플릿으로 생성).
@@ -1128,15 +1305,19 @@ export class ExternalApiService {
       throw new ExternalApiException('3002', 'SSG 이벤트 잔액 부족');
     }
 
-    const { fee, priceAdjustment, settleAmount, cardSurchargeApplied } =
-      await this.computeSettlement(account, product, sendAmount);
+    const { fee, priceAdjustment, settleAmount, cardSurchargeApplied } = await this.computeSettlementForBilling(
+      billingUser,
+      product,
+      sendAmount,
+      { cardSurchargeApplied: this.resolveCardSurchargeAppliedForUser(billingUser) },
+    );
 
     // senderPhone 미지정 SSG 알림톡 → 자사 대표번호로 확정 (검증/저장 동일값)
     const effectiveSenderPhone = dto.senderPhone ?? systemFromPhoneNumber;
 
     // 발신번호 SoT 검증(차감 전, flag gating). 차감은 아래 order 그래프 저장 후 wallet/legacy 분기에서 수행.
     if (process.env.FROM_PHONE_SOT_ENFORCE === 'true') {
-      await this.orderFromService.assertApprovedPhones(user.id, [
+      await this.orderFromService.assertApprovedPhones(billingUser.id, [
         { sendMethod: IOrderSendMethod.ALIM_TALK, fromPhoneNumber: effectiveSenderPhone },
       ]);
     }
@@ -1157,12 +1338,14 @@ export class ExternalApiService {
       isSettleBalance: true,
       isSettleComplete: false,
       ssgEventId: ssgEvent.id,
-      clientUserId: null,
+      clientUserId,
       // PR2a: 외부API 호출주체 적재 (단순모드 = credential→app).
       apiAppId: ctx.apiApp.id,
       apiCredentialId: ctx.apiCredential.id,
+      externalOrderId: dto.externalOrderId?.trim() || null,
+      externalCustomerId,
       ...buildOrderUserSnapshot(user),
-      ...buildOrderClientUserSnapshot(null),
+      ...buildOrderClientUserSnapshot(clientUserId != null ? billingUser : null),
       ...buildOrderOperationUserSnapshot(null),
     });
     await this.orderRepository.save(order);
@@ -1210,9 +1393,13 @@ export class ExternalApiService {
       // R6: builder 관계그래프 in-memory 구성.
       mapping.orderDeliveries = [orderDelivery];
       order.orderProductMappings = [mapping];
-      await this.deductViaWallet(account, order, settleAmount);
+      await this.deductViaWallet(billingUser, order, settleAmount);
     } else {
-      await this.deductBalance(account, settleAmount);
+      // 매핑모드(clientUserId≠null)는 WALLET cutover 전제. 레거시 차감경로 진입 시 fail-closed.
+      if (clientUserId != null) {
+        throw new ExternalApiException('9999', '시스템 오류', '매핑모드는 WALLET cutover 전제입니다');
+      }
+      await this.deductBalance(billingUser, settleAmount);
     }
 
     return { order, orderDelivery, mapping, product, ssgEvent };
@@ -1286,23 +1473,34 @@ export class ExternalApiService {
     if (!order) {
       throw new ExternalApiException('4002', '주문에 대한 접근 권한 없음');
     }
-    // PR2a 소유권: bigint 비교는 String()으로 통일.
+    // PR2 소유권: apiAppId 기준 3분기(공통 헬퍼로 추출).
+    this.assertOrderOwnership(order, account, ctx);
+
+    return orderDelivery;
+  }
+
+  // 외부 API 주문 소유권 검사(apiAppId 기준, PR2). 모든 trId 기반 조회/상태/취소/재발송이 경유한다.
+  //   1) order.apiAppId 적재(신규 주문, 단순+매핑 공통) → 호출 apiApp 과 일치해야 함(불일치 4002).
+  //   2) apiAppId 미적재 + clientUserId null → 레거시 단순모드 주문, default_billing_user 기준 폴백.
+  //   3) apiAppId 미적재 + clientUserId≠null → 매핑모드인데 호출주체 미적재 = 불변식 위반, 거절.
+  private assertOrderOwnership(
+    order: Pick<OrderEntity, 'apiAppId' | 'clientUserId' | 'userId'>,
+    account: ExternalApiAccountEntity,
+    ctx: ApiRequestContext,
+  ): void {
+    // bigint 비교는 String()으로 통일.
     const callerApiAppId = String(ctx.apiApp.id);
     if (order.apiAppId != null) {
       if (String(order.apiAppId) !== callerApiAppId) {
         throw new ExternalApiException('4002', '주문에 대한 접근 권한 없음');
       }
     } else if (order.clientUserId == null) {
-      // 전환기 NULL 폴백: apiAppId 미적재 레거시 단순모드 주문만 허용(default_billing_user 기준)
       if (order.userId !== account.user.id) {
         throw new ExternalApiException('4002', '주문에 대한 접근 권한 없음');
       }
     } else {
-      // 매핑모드(clientUserId≠null)인데 apiAppId 미적재 — PR2a에선 비정상, 거절
       throw new ExternalApiException('4002', '주문에 대한 접근 권한 없음');
     }
-
-    return orderDelivery;
   }
 
   /**

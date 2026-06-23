@@ -539,7 +539,7 @@ export class OrderService {
     // 본인 관련 주문 조회 조건 (본인 주문 + 배정된 주문 + 담당 고객으로 지정된 주문)
     const applyUserOrderFilter = () => {
       queryBuilder = queryBuilder.andWhere(
-        '(order.userId = :userId OR order.operationUserId = :userId OR order.clientUserId = :userId)',
+        '(order.userId = :userId OR order.operationUserId = :userId OR (order.clientUserId = :userId AND order.apiAppId IS NULL))',
         { userId: user.id },
       );
     };
@@ -4866,7 +4866,7 @@ export class OrderService {
       case IUserAuthority.CORPORATE_ADMIN:
       default:
         // 본인 주문 + 본인이 고객으로 지정된 대행발송 건
-        queryBuilder.andWhere('(o.userId = :uid OR o.clientUserId = :uid)', { uid: user.id });
+        queryBuilder.andWhere('(o.userId = :uid OR (o.clientUserId = :uid AND o.apiAppId IS NULL))', { uid: user.id });
         break;
     }
 
@@ -5408,7 +5408,7 @@ export class OrderService {
       return;
     }
 
-    queryBuilder.andWhere('(order.clientUserId IS NULL OR order.clientUserId = :currentUserId)', {
+    queryBuilder.andWhere('(order.clientUserId IS NULL OR (order.clientUserId = :currentUserId AND order.apiAppId IS NULL))', {
       currentUserId: user.id,
     });
   }

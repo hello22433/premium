@@ -449,7 +449,7 @@ export class CustomerServiceService {
     // 고객사 (userCompanyId)
     if (userCompanyId) {
       queryBuilder.andWhere(
-        '(user.companyId = :userCompanyId OR clientUser.companyId = :userCompanyId)',
+        '(user.companyId = :userCompanyId OR (clientUser.companyId = :userCompanyId AND order.apiAppId IS NULL))',
         { userCompanyId },
       );
     }
@@ -2643,7 +2643,7 @@ export class CustomerServiceService {
     // 고객사 (userCompanyId)
     if (userCompanyId) {
       queryBuilder.andWhere(
-        '(user.companyId = :userCompanyId OR clientUser.companyId = :userCompanyId)',
+        '(user.companyId = :userCompanyId OR (clientUser.companyId = :userCompanyId AND order.apiAppId IS NULL))',
         { userCompanyId },
       );
     }

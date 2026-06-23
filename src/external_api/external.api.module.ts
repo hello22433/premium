@@ -15,6 +15,8 @@ import { ExternalApiAllowedIpEntity } from '../entity/external.api.allowed.ip.en
 import { UserDiscountEntity } from '../entity/user.discount.entity';
 import { ApiAppEntity } from '../entity/api.app.entity';
 import { ApiCredentialEntity } from '../entity/api.credential.entity';
+import { ApiCustomerMappingEntity } from '../entity/api.customer.mapping.entity';
+import { ApiCustomerMappingResolver } from './application/api.customer.mapping.resolver';
 
 import { ExternalApiController } from './api/external.api.controller';
 import { ExternalApiService } from './application/external.api.service';
@@ -47,6 +49,7 @@ import { OrderFromModule } from '../order_from/order.from.module';
       UserDiscountEntity,
       ApiAppEntity,
       ApiCredentialEntity,
+      ApiCustomerMappingEntity,
     ]),
     ThrottlerModule.forRoot([
       {
@@ -63,6 +66,13 @@ import { OrderFromModule } from '../order_from/order.from.module';
     OrderFromModule,
   ],
   controllers: [ExternalApiController],
-  providers: [ExternalApiService, ApiKeyGuard, ExternalApiThrottleGuard, IdempotencyInterceptor, CryptoCipher],
+  providers: [
+    ExternalApiService,
+    ApiKeyGuard,
+    ExternalApiThrottleGuard,
+    IdempotencyInterceptor,
+    CryptoCipher,
+    ApiCustomerMappingResolver,
+  ],
 })
 export class ExternalApiModule {}

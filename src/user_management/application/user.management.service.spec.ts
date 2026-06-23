@@ -17,6 +17,7 @@ import { ExternalApiAllowedIpEntity } from '../../entity/external.api.allowed.ip
 import { ExternalApiSsgRequestEntity } from '../../entity/external.api.ssg.request.entity';
 import { ApiAppEntity } from '../../entity/api.app.entity';
 import { ApiCredentialEntity } from '../../entity/api.credential.entity';
+import { ApiCustomerMappingEntity } from '../../entity/api.customer.mapping.entity';
 import { WalletAccountEntity } from '../../entity/wallet.account.entity';
 import { WalletTransactionEntity } from '../../entity/wallet.transaction.entity';
 import { UserManagementService } from './user.management.service';
@@ -66,6 +67,7 @@ describe('user management service test', () => {
   let walletCutoverConfig: any;
   let apiAppRepository: any;
   let apiCredentialRepository: any;
+  let apiCustomerMappingRepository: any;
 
   const CORPORATE_ADMIN_USER = { id: 5, email: 'corp@test.com', authority: IUserAuthority.CORPORATE_ADMIN };
   const OPERATION_ADMIN_USER = { id: 10, email: 'op@test.com', authority: IUserAuthority.OPERATION_ADMIN };
@@ -106,6 +108,7 @@ describe('user management service test', () => {
         { provide: getRepositoryToken(ExternalApiSsgRequestEntity), useValue: createMockRepositoryMethod() },
         { provide: getRepositoryToken(ApiAppEntity), useValue: { ...createMockRepositoryMethod(), softRemove: jest.fn() } },
         { provide: getRepositoryToken(ApiCredentialEntity), useValue: createMockRepositoryMethod() },
+        { provide: getRepositoryToken(ApiCustomerMappingEntity), useValue: { ...createMockRepositoryMethod(), softRemove: jest.fn() } },
         { provide: getRepositoryToken(WalletAccountEntity), useValue: createMockRepositoryMethod() },
         { provide: getRepositoryToken(WalletTransactionEntity), useValue: createMockRepositoryMethod() },
         { provide: 'IMailSend', useValue: { send: jest.fn() } },
@@ -152,6 +155,7 @@ describe('user management service test', () => {
     walletCutoverConfig = module.get(WalletCutoverConfig);
     apiAppRepository = module.get(getRepositoryToken(ApiAppEntity));
     apiCredentialRepository = module.get(getRepositoryToken(ApiCredentialEntity));
+    apiCustomerMappingRepository = module.get(getRepositoryToken(ApiCustomerMappingEntity));
   });
 
   describe('getList 리스트 조회 테스트', () => {
@@ -601,6 +605,156 @@ describe('user management service test', () => {
       expect(apiCredentialRepository.create).toHaveBeenCalledWith(
         expect.objectContaining({ apiAppId: 'app-1', isActive: true }),
       );
+    });
+  });
+
+  describe('다중키/회전 credential 관리 (PR2 Phase 6) 테스트', () => {
+    beforeEach(() => {
+      apiAppRepository.findOne.mockResolvedValue({ id: 'app-1', sourceAccountId: 'acc-1' });
+      apiCredentialRepository.create.mockImplementation((c: any) => c);
+      apiCredentialRepository.save.mockImplementation((c: any) => Promise.resolve({ id: 'cred-new', ...c }));
+      apiCredentialRepository.update.mockResolvedValue({ affected: 1 });
+    });
+
+    it('issueCredential: 기존 활성키 유지하며 추가 credential 발급(평문 1회), deactivate 미호출(다중키)', async () => {
+      const res = await sut.issueCredential('acc-1');
+      expect(res.apiKey).toEqual(expect.any(String));
+      expect(res.credentialId).toBe('cred-new');
+      expect(apiCredentialRepository.create).toHaveBeenCalledWith(
+        expect.objectContaining({ apiAppId: 'app-1', isActive: true }),
+      );
+      expect(apiCredentialRepository.update).not.toHaveBeenCalled();
+    });
+
+    it('issueCredential: app 미존재 → 예외', async () => {
+      apiAppRepository.findOne.mockResolvedValue(null);
+      await expect(sut.issueCredential('acc-x')).rejects.toThrow();
+    });
+
+    it('listCredentials: credential 메타 목록 반환(raw key 미노출)', async () => {
+      apiCredentialRepository.find.mockResolvedValue([
+        { id: 'c1', apiKeyHash: 'h1', isActive: true, issuedAt: new Date(), revokedAt: null },
+        { id: 'c2', apiKeyHash: 'h2', isActive: false, issuedAt: new Date(), revokedAt: new Date() },
+      ]);
+      const res = await sut.listCredentials('acc-1');
+      expect(res).toHaveLength(2);
+      expect(res[0]).toEqual(expect.objectContaining({ id: 'c1', isActive: true }));
+      expect((res[0] as any).apiKeyHash).toBeUndefined();
+    });
+
+    it('revokeCredential: 특정 credential 비활성화', async () => {
+      apiCredentialRepository.findOne.mockResolvedValue({ id: 'c1', apiAppId: 'app-1', isActive: true });
+      await sut.revokeCredential('acc-1', 'c1');
+      expect(apiCredentialRepository.save).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'c1', isActive: false, revokedAt: expect.any(Date) }),
+      );
+    });
+
+    it('revokeCredential: 이미 회수된 credential → 멱등 no-op(save 미호출)', async () => {
+      apiCredentialRepository.findOne.mockResolvedValue({ id: 'c1', apiAppId: 'app-1', isActive: false });
+      await sut.revokeCredential('acc-1', 'c1');
+      expect(apiCredentialRepository.save).not.toHaveBeenCalled();
+    });
+
+    it('revokeCredential: 미존재 credential → 예외', async () => {
+      apiCredentialRepository.findOne.mockResolvedValue(null);
+      await expect(sut.revokeCredential('acc-1', 'cX')).rejects.toThrow();
+    });
+
+    it('rotateCredential: 기존 활성 전부 회수 + 신규 발급(평문 1회)', async () => {
+      const res = await sut.rotateCredential('acc-1');
+      expect(apiCredentialRepository.update).toHaveBeenCalledWith(
+        { apiAppId: 'app-1', isActive: true },
+        expect.objectContaining({ isActive: false }),
+      );
+      expect(apiCredentialRepository.create).toHaveBeenCalledWith(
+        expect.objectContaining({ apiAppId: 'app-1', isActive: true }),
+      );
+      expect(res.apiKey).toEqual(expect.any(String));
+    });
+  });
+
+  describe('고객 매핑 CRUD (PR2 Phase 7) 테스트', () => {
+    beforeEach(() => {
+      apiAppRepository.findOne.mockResolvedValue({ id: 'app-1', sourceAccountId: 'acc-1' });
+      userRepository.findOne.mockResolvedValue({ id: 99, status: IUserStatus.USED });
+      apiCustomerMappingRepository.create.mockImplementation((m: any) => m);
+      apiCustomerMappingRepository.save.mockImplementation((m: any) => Promise.resolve({ id: 'map-1', ...m }));
+      apiCustomerMappingRepository.findOne.mockResolvedValue(null);
+    });
+
+    it('createCustomerMapping: billingUser 검증 후 매핑 생성', async () => {
+      const res = await sut.createCustomerMapping('acc-1', { externalCustomerId: 'wisead-c1', billingUserId: 99 });
+      expect(res).toEqual(expect.objectContaining({ apiAppId: 'app-1', externalCustomerId: 'wisead-c1', billingUserId: 99 }));
+      expect(apiCustomerMappingRepository.create).toHaveBeenCalledWith(
+        expect.objectContaining({ apiAppId: 'app-1', externalCustomerId: 'wisead-c1', billingUserId: 99 }),
+      );
+    });
+
+    it('createCustomerMapping: 활성 중복(externalCustomerId) → 409 Conflict', async () => {
+      apiCustomerMappingRepository.findOne.mockResolvedValue({ id: 'existing', apiAppId: 'app-1' });
+      await expect(
+        sut.createCustomerMapping('acc-1', { externalCustomerId: 'dup', billingUserId: 99 }),
+      ).rejects.toThrow();
+      expect(apiCustomerMappingRepository.save).not.toHaveBeenCalled();
+    });
+
+    it('createCustomerMapping: 비활성(LEAVE) billingUser → 거부', async () => {
+      userRepository.findOne.mockResolvedValue({ id: 99, status: IUserStatus.LEAVE });
+      await expect(
+        sut.createCustomerMapping('acc-1', { externalCustomerId: 'c', billingUserId: 99 }),
+      ).rejects.toThrow();
+    });
+
+    it('createCustomerMapping: 미존재 billingUser → 거부', async () => {
+      userRepository.findOne.mockResolvedValue(null);
+      await expect(
+        sut.createCustomerMapping('acc-1', { externalCustomerId: 'c', billingUserId: 99 }),
+      ).rejects.toThrow();
+    });
+
+    it('createCustomerMapping: ER_DUP_ENTRY(동시성) → 409 Conflict', async () => {
+      apiCustomerMappingRepository.save.mockRejectedValue({ code: 'ER_DUP_ENTRY' });
+      await expect(
+        sut.createCustomerMapping('acc-1', { externalCustomerId: 'race', billingUserId: 99 }),
+      ).rejects.toThrow();
+    });
+
+    it('listCustomerMappings: app 의 매핑 목록 반환', async () => {
+      apiCustomerMappingRepository.find.mockResolvedValue([
+        { id: 'm1', apiAppId: 'app-1', externalCustomerId: 'c1', billingUserId: 99 },
+      ]);
+      const res = await sut.listCustomerMappings('acc-1');
+      expect(res).toHaveLength(1);
+      expect(res[0]).toEqual(expect.objectContaining({ id: 'm1', billingUserId: 99 }));
+    });
+
+    it('updateCustomerMapping: billingUserId 변경', async () => {
+      apiCustomerMappingRepository.findOne.mockResolvedValue({ id: 'm1', apiAppId: 'app-1', externalCustomerId: 'c1', billingUserId: 1 });
+      const res = await sut.updateCustomerMapping('acc-1', 'm1', { billingUserId: 99 });
+      expect(res.billingUserId).toBe(99);
+      expect(apiCustomerMappingRepository.save).toHaveBeenCalledWith(expect.objectContaining({ id: 'm1', billingUserId: 99 }));
+    });
+
+    it('updateCustomerMapping: 미존재 매핑 → 거부', async () => {
+      apiCustomerMappingRepository.findOne.mockResolvedValue(null);
+      await expect(sut.updateCustomerMapping('acc-1', 'mX', { billingUserId: 99 })).rejects.toThrow();
+    });
+
+    it('deleteCustomerMapping: soft-delete', async () => {
+      apiCustomerMappingRepository.findOne.mockResolvedValue({ id: 'm1', apiAppId: 'app-1' });
+      await sut.deleteCustomerMapping('acc-1', 'm1');
+      expect(apiCustomerMappingRepository.softRemove).toHaveBeenCalledWith(expect.objectContaining({ id: 'm1' }));
+    });
+
+    it('deleteCustomerMapping: 미존재 매핑 → 거부', async () => {
+      apiCustomerMappingRepository.findOne.mockResolvedValue(null);
+      await expect(sut.deleteCustomerMapping('acc-1', 'mX')).rejects.toThrow();
+    });
+
+    it('app 미존재 → 거부', async () => {
+      apiAppRepository.findOne.mockResolvedValue(null);
+      await expect(sut.listCustomerMappings('acc-x')).rejects.toThrow();
     });
   });
 
