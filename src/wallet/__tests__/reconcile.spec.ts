@@ -11,7 +11,7 @@ import * as path from 'path';
  *  - read-only (UPDATE/INSERT/DELETE 0건)
  */
 describe('20260527_wallet_legacy_reconcile.sql — 구조 검증', () => {
-  const sqlPath = path.resolve(__dirname, '../../../sql/20260527_wallet_legacy_reconcile.sql');
+  const sqlPath = path.resolve(__dirname, '../../../sql/migrations/20260527_wallet_legacy_reconcile.sql');
   let sql: string;
 
   beforeAll(() => {

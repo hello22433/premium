@@ -10,7 +10,7 @@ import * as path from 'path';
  *  - M2 백필 no-op(sentinel 미생성, default 코드 fallback)
  */
 describe('PR2 api_customer_mapping 마이그레이션 — 구조 검증', () => {
-  const sqlPath = path.resolve(__dirname, '../../../sql/20260622_pr2_customer_mapping.sql');
+  const sqlPath = path.resolve(__dirname, '../../../sql/migrations/20260622_pr2_customer_mapping.sql');
   let sql: string;
 
   beforeAll(() => {

@@ -13,7 +13,7 @@ import * as path from 'path';
  *  - balanceManagementType 분기 없음 (모든 user 동일 처리)
  */
 describe('PR1a backfill SQL — 구조 검증', () => {
-  const sqlPath = path.resolve(__dirname, '../../../sql/20260521_backfill.sql');
+  const sqlPath = path.resolve(__dirname, '../../../sql/migrations/20260521_backfill.sql');
   let sql: string;
 
   beforeAll(() => {

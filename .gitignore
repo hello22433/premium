@@ -60,6 +60,7 @@ public/*.jpeg
 .serena.worktrees/
 .worktrees/
 .omc/
+.gjc/
 plans/
 
 docs/superpowers/
