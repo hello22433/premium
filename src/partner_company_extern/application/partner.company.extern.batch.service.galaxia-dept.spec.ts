@@ -206,5 +206,28 @@ describe('PartnerCompanyExternBatchService.processGalaxiaDeptItem — INACTIVE/C
       expect(galaxiaBarcodeLogRepository.save).not.toHaveBeenCalled();
       expect(orderDeliveryRepository.update).not.toHaveBeenCalled();
     });
+
+    it('isUsed=false 여도 잔액이 줄었으면(부분 사용) USED 로 처리한다', async () => {
+      const orderDelivery = buildOrderDelivery({ couponStatus: OrderDeliveryCouponStatus.NOT_USED });
+      galaxia.check.mockResolvedValue({
+        giftCertificate: buildGiftCertificate({
+          couponStatus: 'ACTIVE',
+          isUsed: false, // 잔액형 부분 사용 시 갤럭시아가 false 로 내려주는 케이스
+          balance: '30000', // 50000 → 30000, 2만원 사용
+          usedDate: '20260520',
+        }),
+      });
+
+      const result = await runItem(orderDelivery);
+
+      expect(result).toBe('updated');
+      expect(galaxiaBarcodeLogRepository.save).toHaveBeenCalledWith(
+        expect.objectContaining({ orderDeliveryId: 4001, appDiv: '10', amount: 20000 }),
+      );
+      expect(orderDeliveryRepository.update).toHaveBeenCalledWith(
+        { id: 4001 },
+        expect.objectContaining({ couponStatus: OrderDeliveryCouponStatus.USED, galaxiaBalance: 30000 }),
+      );
+    });
   });
 });

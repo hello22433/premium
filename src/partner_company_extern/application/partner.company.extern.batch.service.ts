@@ -14,6 +14,7 @@ import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { Brackets, In, Repository } from 'typeorm';
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
 import { parseDateString, isExpiredYMD, formatDateYMD } from '../../util/date.util';
+import { resolveGalaxiaUsage } from '../../common/utils/galaxia.usage.util';
 import {
   PartnerCompanyType,
   ApiCallResult,
@@ -823,6 +824,8 @@ export class PartnerCompanyExternBatchService {
       });
 
       const giftCertificate = galaxiaOut.giftCertificate;
+      // 잔액형 쿠폰 사용 판정(부분 사용 시 isUsed=false 보정). 상세는 resolveGalaxiaUsage 참고.
+      const { balance, isActuallyUsed, fullBalanceRemains } = resolveGalaxiaUsage(giftCertificate);
       if (giftCertificate.couponStatus === 'CANCEL') {
         result.couponStatus = OrderDeliveryCouponStatus.CANCEL;
         result.discardedAt = new Date();
@@ -846,25 +849,31 @@ export class PartnerCompanyExternBatchService {
         } else {
           result.couponStatus = OrderDeliveryCouponStatus.EXPIRED;
         }
-      } else if (giftCertificate.isUsed) {
+      } else if (isActuallyUsed) {
         result.couponStatus = OrderDeliveryCouponStatus.USED;
       } else if (isExpiredYMD(giftCertificate.validTo)) {
         result.couponStatus = OrderDeliveryCouponStatus.EXPIRED;
       } else {
         result.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
       }
-      // tradeAt: 푸시/일대사가 이미 정확한 시각을 박아둔 경우 덮어쓰지 않음 (push가 초 단위로 더 정밀)
-      const apiTradeAt = parseDateString(giftCertificate.usedDate);
-      if (!orderDelivery.tradeAt) {
-        result.tradeAt = apiTradeAt;
-      } else if (apiTradeAt && apiTradeAt.getTime() !== orderDelivery.tradeAt.getTime()) {
-        this.logger.warn(
-          `[GALAXIA tradeAt 가드] orderDeliveryId=${orderDelivery.id}, ` +
-            `localTradeAt=${orderDelivery.tradeAt.toISOString()}, ` +
-            `apiUsedDate="${giftCertificate.usedDate}" - 푸시/일대사 우선으로 갱신 스킵`,
-        );
+      // 교환 일시/장소: 잔액이 전액 남은(미사용/사용취소) 건은 비운다.
+      if (fullBalanceRemains) {
+        result.tradeAt = null;
+        result.tradePlace = null;
+      } else {
+        // tradeAt: 푸시/일대사가 이미 정확한 시각을 박아둔 경우 덮어쓰지 않음 (push가 초 단위로 더 정밀)
+        const apiTradeAt = parseDateString(giftCertificate.usedDate);
+        if (!orderDelivery.tradeAt) {
+          result.tradeAt = apiTradeAt;
+        } else if (apiTradeAt && apiTradeAt.getTime() !== orderDelivery.tradeAt.getTime()) {
+          this.logger.warn(
+            `[GALAXIA tradeAt 가드] orderDeliveryId=${orderDelivery.id}, ` +
+              `localTradeAt=${orderDelivery.tradeAt.toISOString()}, ` +
+              `apiUsedDate="${giftCertificate.usedDate}" - 푸시/일대사 우선으로 갱신 스킵`,
+          );
+        }
       }
-      result.galaxiaBalance = +giftCertificate.balance;
+      result.galaxiaBalance = balance;
     }
 
     // GS_M_BIZ 처리
@@ -1929,12 +1938,12 @@ export class PartnerCompanyExternBatchService {
       galaxiaBalance: currentBalance,
     };
 
-    if (galaxiaOut.giftCertificate.isUsed) {
-      updateData.couponStatus = OrderDeliveryCouponStatus.USED;
-      // tradeAt: 첫 사용 감지(NOT_USED→USED) 시에만 채움. 추가 사용(이미 USED) 시엔 푸시/일대사가 박아둔 첫 사용 시각 유지.
-      if (!orderDelivery.tradeAt) {
-        updateData.tradeAt = parseDateString(galaxiaOut.giftCertificate.usedDate);
-      }
+    // 이 지점은 잔액 감소(currentBalance < previousBalance)가 확정된 경로다(위 4번 가드 통과).
+    // 잔액형 쿠폰은 부분 사용 시 isUsed=false 로 내려오므로, isUsed 와 무관하게 사용(USED)으로 본다.
+    updateData.couponStatus = OrderDeliveryCouponStatus.USED;
+    // tradeAt: 첫 사용 감지(NOT_USED→USED) 시에만 채움. 추가 사용(이미 USED) 시엔 푸시/일대사가 박아둔 첫 사용 시각 유지.
+    if (!orderDelivery.tradeAt) {
+      updateData.tradeAt = parseDateString(galaxiaOut.giftCertificate.usedDate);
     }
 
     // CANCEL/INACTIVE는 위 2-1에서 이미 early-return 처리됨. 여기는 정상 사용(ACTIVE) 경로만 도달.

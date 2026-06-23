@@ -238,4 +238,48 @@ describe('PartnerCompanyExternService.refreshCouponStatus — GALAXIA INACTIVE �
       expect(result.couponStatus).toBe(OrderDeliveryCouponStatus.USED);
     });
   });
+
+  describe('잔액형 부분 사용/사용취소 — faceValue/balance 기반 교환 판정', () => {
+    it('isUsed=false 여도 잔액이 줄었으면(부분 사용) USED 로 매핑하고 교환일시를 기록한다', async () => {
+      const orderDelivery = buildOrderDelivery();
+      galaxia.check.mockResolvedValue({
+        giftCertificate: buildGiftCertificate({
+          couponStatus: 'ACTIVE',
+          isUsed: false,
+          faceValue: '50000',
+          balance: '30000', // 2만원 사용
+          usedDate: '20260520',
+        }),
+      });
+
+      const result = await sut.refreshCouponStatus(orderDelivery);
+
+      expect(result.couponStatus).toBe(OrderDeliveryCouponStatus.USED);
+      expect(result.galaxiaBalance).toBe(30000);
+      expect(result.tradeAt).toBeInstanceOf(Date);
+    });
+
+    it('잔액이 전액 남으면(사용취소 등) NOT_USED 로 매핑하고 교환일시/장소를 비운다', async () => {
+      const orderDelivery = buildOrderDelivery({
+        tradeAt: new Date('2026-05-20T00:00:00Z'),
+        tradePlace: '이전사용지점',
+      });
+      galaxia.check.mockResolvedValue({
+        giftCertificate: buildGiftCertificate({
+          couponStatus: 'ACTIVE',
+          isUsed: false,
+          faceValue: '50000',
+          balance: '50000', // 전액 잔존
+          usedDate: '20260520',
+        }),
+      });
+
+      const result = await sut.refreshCouponStatus(orderDelivery);
+
+      expect(result.couponStatus).toBe(OrderDeliveryCouponStatus.NOT_USED);
+      expect(result.galaxiaBalance).toBe(50000);
+      expect(result.tradeAt).toBeNull();
+      expect(result.tradePlace).toBeNull();
+    });
+  });
 });
