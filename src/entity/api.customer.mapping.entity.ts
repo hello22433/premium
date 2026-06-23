@@ -13,7 +13,7 @@ import { UserEntity } from './user.entity';
  *   삭제 후 동일 externalCustomerId 재등록을 허용한다.
  *   → DB 레벨에서 generated column `active_key`(= CASE WHEN deleted_at IS NULL THEN
  *     external_customer_id ELSE NULL END) + UNIQUE(api_app_id, active_key) 로 구현
- *     (sql/20260622_pr2_customer_mapping.sql). MySQL 은 unique 인덱스에서 NULL 을
+ *     (sql/migrations/20260622_pr2_customer_mapping.sql). MySQL 은 unique 인덱스에서 NULL 을
  *     distinct 로 취급하므로 삭제 행(active_key=NULL)끼리는 충돌하지 않는다.
  * - active_key 는 DB 생성 컬럼이라 애플리케이션에서 쓰지 않는다(insert/update/select 제외).
  */
