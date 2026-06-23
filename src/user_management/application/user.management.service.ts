@@ -950,6 +950,7 @@ export class UserManagementService {
     return;
   }
 
+  @Transactional()
   async update(getBody: UserManagementUpdateReqDto, operator?: ILoginUserInfo) {
     const user = await this.userRepository.findOne({
       where: {
