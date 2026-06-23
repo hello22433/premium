@@ -39,6 +39,7 @@ import { IPartnerCompanyType } from '../../partner_company/interface/partner.com
 import { PartnerCompanyEntity } from '../../entity/partner.company.entity';
 import { parseDateString, isExpiredYMD, formatDateYMD } from '../../util/date.util';
 import { applyReplaceCharacters } from '../../common/utils/replace-characters.util';
+import { resolveGalaxiaUsage } from '../../common/utils/galaxia.usage.util';
 import { sleep } from '../../util/time.util';
 
 @Injectable()
@@ -882,7 +883,10 @@ export class PartnerCompanyExternService {
           paramValue: orderDelivery.couponNum!,
         });
 
-        // couponStatus: CANCEL > INACTIVE > isUsed > validTo 만료 순으로 판단
+        // 잔액형 쿠폰 사용 판정(부분 사용 시 isUsed=false 보정). 상세는 resolveGalaxiaUsage 참고.
+        const { balance, isActuallyUsed, fullBalanceRemains } = resolveGalaxiaUsage(giftCertificate);
+
+        // couponStatus: CANCEL > INACTIVE > 사용(부분포함) > validTo 만료 순으로 판단
         if (giftCertificate.couponStatus === 'CANCEL') {
           orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
           orderDelivery.discardedAt = new Date();
@@ -906,15 +910,21 @@ export class PartnerCompanyExternService {
           } else {
             orderDelivery.couponStatus = OrderDeliveryCouponStatus.EXPIRED;
           }
-        } else if (giftCertificate.isUsed) {
+        } else if (isActuallyUsed) {
           orderDelivery.couponStatus = OrderDeliveryCouponStatus.USED;
         } else if (isExpiredYMD(giftCertificate.validTo)) {
           orderDelivery.couponStatus = OrderDeliveryCouponStatus.EXPIRED;
         } else {
           orderDelivery.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
         }
-        orderDelivery.tradeAt = parseDateString(giftCertificate.usedDate);
-        orderDelivery.galaxiaBalance = Number(giftCertificate.balance);
+        // 교환 일시/장소: 실제 사용액이 있을 때만 유지. 전액 잔존(미사용/사용취소) 시 비운다.
+        if (fullBalanceRemains) {
+          orderDelivery.tradeAt = null;
+          orderDelivery.tradePlace = null;
+        } else {
+          orderDelivery.tradeAt = parseDateString(giftCertificate.usedDate);
+        }
+        orderDelivery.galaxiaBalance = balance;
         break;
       }
 
