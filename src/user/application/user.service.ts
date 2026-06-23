@@ -639,7 +639,7 @@ export class UserService {
   }
 
   async getLoginTokenByRefresh(token: string) {
-    const userDecode = this.loginTokenValidator.validateByToken(token);
+    const userDecode = this.loginTokenValidator.validateByToken(token, 'refresh');
 
     const user = await this.userRepository.findOne({
       where: { id: userDecode.id },

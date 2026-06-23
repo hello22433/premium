@@ -209,7 +209,7 @@ describe('user login service Test', () => {
         refreshToken: { value: 'token', expiredAt: '2024-09-16T00:00:00' },
       };
 
-      loginTokenValidator.validateByToken.calledWith(givenTokenString).mockReturnValue(givenUserInfo);
+      loginTokenValidator.validateByToken.calledWith(givenTokenString, 'refresh').mockReturnValue(givenUserInfo);
       userRepository.findOne.mockResolvedValue({
         ...UserEntityTest(),
         id: givenUserInfo.id,
@@ -237,7 +237,7 @@ describe('user login service Test', () => {
         email: 'test@gmail.com',
       };
 
-      loginTokenValidator.validateByToken.calledWith(givenTokenString).mockReturnValue(givenUserInfo);
+      loginTokenValidator.validateByToken.calledWith(givenTokenString, 'refresh').mockReturnValue(givenUserInfo);
 
       userRepository.findOne.mockResolvedValue(null);
 
@@ -249,7 +249,7 @@ describe('user login service Test', () => {
     it('refresh token 이 만료 된 경우', async () => {
       const givenTokenString = 'GIVEN_TOKEN';
 
-      loginTokenValidator.validateByToken.calledWith(givenTokenString).mockImplementation(() => {
+      loginTokenValidator.validateByToken.calledWith(givenTokenString, 'refresh').mockImplementation(() => {
         throw new UnauthorizedException('expired token');
       });
 
@@ -261,7 +261,7 @@ describe('user login service Test', () => {
     it('refresh token 이 올바르지 않을 경우', async () => {
       const givenTokenString = 'GIVEN_TOKEN';
 
-      loginTokenValidator.validateByToken.calledWith(givenTokenString).mockImplementation(() => {
+      loginTokenValidator.validateByToken.calledWith(givenTokenString, 'refresh').mockImplementation(() => {
         throw new UnauthorizedException('token error');
       });
 
@@ -287,7 +287,7 @@ describe('user login service Test', () => {
         const givenTokenString = 'GIVEN_TOKEN';
         const givenUserInfo: ILoginUserInfo = { ...LoginUserInfoTest(), id: 1, email: 'test@gmail.com' };
 
-        loginTokenValidator.validateByToken.calledWith(givenTokenString).mockReturnValue(givenUserInfo);
+        loginTokenValidator.validateByToken.calledWith(givenTokenString, 'refresh').mockReturnValue(givenUserInfo);
         userRepository.findOne.mockResolvedValue({
           ...UserEntityTest(),
           id: 1,
