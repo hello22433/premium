@@ -3532,6 +3532,58 @@ export class OrderService {
     }));
   }
 
+  /**
+   * 잔액·한도를 바꾸는 발송 경로의 공통 잠금 범위.
+   *
+   * COMPANY 모드는 회사 row를 mutex로 먼저 확보하고, 이어 모든 회사 사용자를
+   * ID 오름차순으로 잠근다. 이 순서는 deliveryRequest/deliveryConfirmed가
+   * 동일하게 사용해야 서로 다른 사용자의 동시 발송에서도 순환 대기가 생기지 않는다.
+   */
+  private async lockBillingScope(billingUserId: number): Promise<{ user: UserEntity; companyUsers: UserEntity[] }> {
+    const billingReference = await this.userRepository.findOne({
+      where: { id: billingUserId },
+      select: ['id', 'companyId'],
+    });
+    if (!billingReference) {
+      throw new InternalServerErrorException('과금 대상 유저가 존재하지 않습니다.');
+    }
+
+    if (!billingReference.companyId) {
+      const user = await this.userRepository
+        .createQueryBuilder('billingUser')
+        .setLock('pessimistic_write')
+        .leftJoinAndSelect('billingUser.company', 'billingCompany')
+        .where('billingUser.id = :id', { id: billingUserId })
+        .getOne();
+      if (!user) {
+        throw new InternalServerErrorException('과금 대상 유저가 존재하지 않습니다.');
+      }
+      return { user, companyUsers: [user] };
+    }
+
+    const company = await this.userCompanyRepository
+      .createQueryBuilder('company')
+      .setLock('pessimistic_write')
+      .where('company.id = :id', { id: billingReference.companyId })
+      .getOne();
+    if (!company) {
+      throw new InternalServerErrorException('회사 잔액 처리 중 회사 정보를 찾을 수 없습니다.');
+    }
+
+    const companyUsers = await this.userRepository
+      .createQueryBuilder('companyUser')
+      .setLock('pessimistic_write')
+      .where('companyUser.companyId = :companyId', { companyId: company.id })
+      .orderBy('companyUser.id', 'ASC')
+      .getMany();
+    const user = companyUsers.find((companyUser) => companyUser.id === billingUserId);
+    if (!user) {
+      throw new InternalServerErrorException('회사 사용자 잠금 처리 중 과금 대상 유저를 찾을 수 없습니다.');
+    }
+    user.company = company;
+    return { user, companyUsers };
+  }
+
   @Transactional()
   async deliveryRequest(user: ILoginUserInfo, getBody: OrderDeliveryRequestReqDto): Promise<void> {
     const { id } = getBody;
@@ -3540,6 +3592,7 @@ export class OrderService {
 
     const order = await this.orderRepository
       .createQueryBuilder('order')
+      .setLock('pessimistic_write')
       .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .leftJoinAndSelect('orderProductMappings.product', 'product')
       .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
@@ -3597,13 +3650,7 @@ export class OrderService {
       `Billing User ID: ${billingUserId} (clientUserId: ${order.clientUserId}, userId: ${order.userId})`,
     );
 
-    const oneUser = await this.userRepository.findOne({
-      where: { id: billingUserId },
-      relations: ['company'],
-    });
-    if (!oneUser) {
-      throw new InternalServerErrorException('과금 대상 유저가 존재하지 않습니다.');
-    }
+    const { user: oneUser, companyUsers } = await this.lockBillingScope(billingUserId);
 
     // 과금 모드 결정 (두 블록에서 공통 사용)
     const isCompanyBalanceMode = oneUser.company?.balanceManagementType === 'COMPANY';
@@ -3615,10 +3662,6 @@ export class OrderService {
       // === 기존 흐름: 발송요청 시 잔액/한도 체크 ===
       let remainServiceAmount: number;
       if (oneUser.companyId && oneUser.company) {
-        const companyUsers = await this.userRepository.find({
-          where: { companyId: oneUser.companyId },
-          select: ['id', 'allSettleAmount'],
-        });
         const totalAllSettleAmount = companyUsers.reduce((sum, u) => sum + u.allSettleAmount, 0);
         remainServiceAmount = oneUser.company.maximumLimit + effectiveBalance - totalAllSettleAmount;
       } else {
@@ -3830,18 +3873,7 @@ export class OrderService {
     const billingUserId = order.clientUserId ?? order.userId;
 
     // 사용자 정보 조회 (중복번호 체크 및 잔액 조정에 필요) + 동시 잔액 조작 방지용 pessimistic lock
-    const oneUser = await this.userRepository
-      .createQueryBuilder('u')
-      .setLock('pessimistic_write')
-      .where('u.id = :id', { id: billingUserId })
-      .getOneOrFail();
-    if (oneUser.companyId) {
-      oneUser.company = await this.userCompanyRepository
-        .createQueryBuilder('c')
-        .setLock('pessimistic_write')
-        .where('c.id = :id', { id: oneUser.companyId })
-        .getOneOrFail();
-    }
+    const { user: oneUser, companyUsers } = await this.lockBillingScope(billingUserId);
 
     // balanceManagementType에 따른 balance 관리 모드 결정
     const isCompanyBalanceMode = oneUser.company?.balanceManagementType === 'COMPANY';
@@ -3991,10 +4023,6 @@ export class OrderService {
       // 2. 잔여한도 계산
       let remainServiceAmount: number;
       if (oneUser.companyId && oneUser.company) {
-        const companyUsers = await this.userRepository.find({
-          where: { companyId: oneUser.companyId },
-          select: ['id', 'allSettleAmount'],
-        });
         const totalAllSettleAmount = companyUsers.reduce((sum, u) => sum + u.allSettleAmount, 0);
         remainServiceAmount = oneUser.company.maximumLimit + effectiveBalance - totalAllSettleAmount;
       } else {
