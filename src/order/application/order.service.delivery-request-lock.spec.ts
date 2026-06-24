@@ -1,4 +1,8 @@
-import { addTransactionalDataSource, deleteDataSourceByName, initializeTransactionalContext } from 'typeorm-transactional';
+import {
+  addTransactionalDataSource,
+  deleteDataSourceByName,
+  initializeTransactionalContext,
+} from 'typeorm-transactional';
 import { OrderService } from './order.service';
 import { IOrderStatus } from '../interface/order.status';
 import { IOrderType } from '../interface/order.type';
@@ -60,9 +64,7 @@ describe('OrderService billing lock — lockBillingScope', () => {
         },
       ],
     } as any;
-    const company = companyMode
-      ? { id: 30, balanceManagementType: 'COMPANY', balance: 50000, maximumLimit: 0 }
-      : null;
+    const company = companyMode ? { id: 30, balanceManagementType: 'COMPANY', balance: 50000, maximumLimit: 0 } : null;
     const billingUser = {
       id: 10,
       companyId: company?.id ?? null,
@@ -154,9 +156,7 @@ describe('OrderService billing lock — lockBillingScope', () => {
       authorityList: null,
     };
 
-    const company = companyMode
-      ? { id: 30, balanceManagementType: 'COMPANY', balance: 50000, maximumLimit: 0 }
-      : null;
+    const company = companyMode ? { id: 30, balanceManagementType: 'COMPANY', balance: 50000, maximumLimit: 0 } : null;
     const billingUser = {
       id: 10,
       companyId: company?.id ?? null,
@@ -174,17 +174,11 @@ describe('OrderService billing lock — lockBillingScope', () => {
 
     const service = Object.create(OrderService.prototype) as any;
     service.orderRepository = {
-      createQueryBuilder: jest
-        .fn()
-        .mockReturnValueOnce(lockedOrderQB)
-        .mockReturnValueOnce(fullOrderQB),
+      createQueryBuilder: jest.fn().mockReturnValueOnce(lockedOrderQB).mockReturnValueOnce(fullOrderQB),
       manager: {},
     };
     service.userRepository = {
-      findOne: jest
-        .fn()
-        .mockResolvedValueOnce(transitionUser)
-        .mockResolvedValueOnce(billingUser),
+      findOne: jest.fn().mockResolvedValueOnce(transitionUser).mockResolvedValueOnce(billingUser),
       createQueryBuilder: jest
         .fn()
         .mockReturnValueOnce(companyMode ? companyUsersQueryBuilder : billingUserQueryBuilder),
