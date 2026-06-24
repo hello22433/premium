@@ -1116,8 +1116,8 @@ export class OrderRealProductService {
         queryBuilder = queryBuilder.andWhere('order.businessUserId = :userId', { userId: user.id });
       }
 
-      // 운영, 최고관리자 인 경우
-      if (user.authority === IUserAuthority.OPERATION_ADMIN || user.authority === IUserAuthority.SUPER_ADMIN) {
+      // 운영관리자인 경우 (최고관리자는 필터 없음 — getList SHIPPING과 동일)
+      if (user.authority === IUserAuthority.OPERATION_ADMIN) {
         queryBuilder = queryBuilder.andWhere('order.userId = :userId', { userId: user.id });
       }
 
