@@ -11,6 +11,7 @@ service skeleton 은 존재하나 **호출자(order/settle/delivery/cs/external_
 backfill 은 `ON DUPLICATE KEY UPDATE` 로 idempotent (재실행 시 drift 갱신).
 
 핵심 invariant:
+
 - legacy `Σ user.balance + Σ user_company.balance` == `Σ wallet_account.deposit_balance`
 - legacy `Σ user_company.maximumLimit` == `Σ wallet_account.credit_limit`
 - `Σ wallet_account.credit_used_amount` == `Σ user.allSettleAmount` (backfill 시점 snapshot, PR2 발송확정에서 누적 갱신)
@@ -55,6 +56,7 @@ ROLLBACK;
 ## 4. Staging 모니터링 (1주)
 
 PR1a 머지 후 staging 에서 **1주 모니터링**:
+
 - `wallet_account` 신규 INSERT 0건 보장 (PR1a 는 schema-only).
 - legacy `user.balance` / `user_company.balance` 변동 추적 (운영 정상 흐름).
 - 1주 후에도 invariant SUM 차이 0 확인.
@@ -75,6 +77,7 @@ PR1a 머지 후 staging 에서 **1주 모니터링**:
 ## 6. PR1a → PR1b 머지 SLA
 
 **48시간 이내** PR1b 머지 완료. 초과 시:
+
 1. legacy `user.balance` / `user_company.balance` 변동 발생 → wallet_account 와 drift 발생 가능.
 2. PR1b 머지 직전 `20260521_backfill.sql` **재실행 강제** (idempotent SQL이므로 안전).
 3. 운영 채널 알림.
@@ -86,6 +89,7 @@ PR2 진입 시점에도 동일 — backfill 재실행 후 PR2 적용.
 ## 7. Rollback
 
 PR1a 자체 rollback 필요 시:
+
 - 신규 10 테이블 DROP (CREATE TABLE 8개에 대응).
 - `user.settlement_code` 컬럼 DROP.
 - entity 정의 + database.module 등록 revert.
@@ -184,6 +188,7 @@ Staging 1주 모니터링 + mismatch real_drift=0 확인 후:
 PR2 mode=WALLET 인 상태에서 NestJS bootstrap 이 `wallet_cutover_activation_gate_blocked` 로 throw + process exit 1 발생 시:
 
 1. **운영자 즉시 조치**:
+
    ```bash
    # 1.1 현재 ENV 확인
    echo "PR2=$WALLET_PR2_DELIVERY_LIFECYCLE_MODE PR3=$WALLET_PR3_SETTLE_MODE PR4=$WALLET_PR4_CS_RESEND_MODE"
@@ -213,6 +218,7 @@ PR2 mode=WALLET 인 상태에서 NestJS bootstrap 이 `wallet_cutover_activation
 PR2 mode=wallet 운영 중 critical drift 또는 incident 발생 시:
 
 1. **즉시 조치**:
+
    ```bash
    export WALLET_PR2_DELIVERY_LIFECYCLE_MODE=legacy
    # service rolling restart
@@ -255,4 +261,3 @@ cat package.json | grep test:e2e
 # 실측 오타 가능성: "jest --config ./test/jest-e2 e.json" (공백 포함)
 # 오타 발견 시 별도 chore PR 로 분리 수정 (본 Bundle 범위 밖)
 ```
-
