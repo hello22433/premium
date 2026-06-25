@@ -143,7 +143,8 @@ export class SettleController {
   })
   // =====================================
   @Post('settle/other-service-sale')
-  createOtherServiceSale(@Body() getBody: SettleCreateOtherSaleReqDto) {
+  async createOtherServiceSale(@User() user: ILoginUserInfo, @Body() getBody: SettleCreateOtherSaleReqDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.SERVICE_SALES);
     return this.settleService.createOtherServiceSale(getBody);
   }
 
@@ -159,7 +160,8 @@ export class SettleController {
   })
   // =====================================
   @Put('settle/other-service-sale')
-  updateOtherServiceSale(@Body() getBody: SettlerUpdateOtherSaleReqDto) {
+  async updateOtherServiceSale(@User() user: ILoginUserInfo, @Body() getBody: SettlerUpdateOtherSaleReqDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.SERVICE_SALES);
     return this.settleService.updateOtherServiceSale(getBody);
   }
 
@@ -172,7 +174,8 @@ export class SettleController {
   })
   // =====================================
   @Get('settle/other-service-sale/storage')
-  getShippingStorageList(@Query() getQuery: SettleGetShippingStorageListReqDto) {
+  async getShippingStorageList(@User() user: ILoginUserInfo, @Query() getQuery: SettleGetShippingStorageListReqDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.SERVICE_SALES);
     return this.settleService.getShippingStorageList(getQuery);
   }
 
@@ -184,7 +187,8 @@ export class SettleController {
   })
   // =====================================
   @Post('settle/other-service-sale/storage')
-  createShippingStorage(@Body() body: SettleCreateShippingStorageReqDto) {
+  async createShippingStorage(@User() user: ILoginUserInfo, @Body() body: SettleCreateShippingStorageReqDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.SERVICE_SALES);
     return this.settleService.createShippingStorage(body);
   }
 
@@ -196,7 +200,8 @@ export class SettleController {
   })
   // =====================================
   @Post('settle/other-service-sale/type')
-  createSaleType(@Body() body: SettleCreateSaleTypeReqDto) {
+  async createSaleType(@User() user: ILoginUserInfo, @Body() body: SettleCreateSaleTypeReqDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.SERVICE_SALES);
     return this.settleService.createSaleType(body);
   }
 
@@ -209,7 +214,8 @@ export class SettleController {
   })
   // =====================================
   @Get('settle/other-service-sale/type')
-  getSaleTypeList(@Query() getQuery: SettleGetSaleTypeListReqDto) {
+  async getSaleTypeList(@User() user: ILoginUserInfo, @Query() getQuery: SettleGetSaleTypeListReqDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.SERVICE_SALES);
     return this.settleService.getSaleTypeList(getQuery);
   }
 
@@ -222,7 +228,8 @@ export class SettleController {
   })
   // =====================================
   @Get('settle/other-service-sale/admin')
-  getAdminUserList(@Query() getQuery: SettleGetAdminListReqDto) {
+  async getAdminUserList(@User() user: ILoginUserInfo, @Query() getQuery: SettleGetAdminListReqDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.SERVICE_SALES);
     return this.settleService.getAdminUserList(getQuery);
   }
 
@@ -234,7 +241,8 @@ export class SettleController {
   })
   // =====================================
   @Get('settle/other-service-sale/:id')
-  getOtherDetail(@Param() getParam: SettleGetOtherServiceSaleGetDetailReqParamDto) {
+  async getOtherDetail(@User() user: ILoginUserInfo, @Param() getParam: SettleGetOtherServiceSaleGetDetailReqParamDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.SERVICE_SALES);
     return this.settleService.getOtherDetail(getParam);
   }
 

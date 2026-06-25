@@ -150,6 +150,102 @@ describe('SettleController', () => {
     });
   });
 
+  const createOtherServiceController = () => {
+    const settleService = {
+      createOtherServiceSale: jest.fn().mockResolvedValue({ id: 1 }),
+      updateOtherServiceSale: jest.fn().mockResolvedValue({ id: 1 }),
+      getShippingStorageList: jest.fn().mockResolvedValue([]),
+      createShippingStorage: jest.fn().mockResolvedValue({ id: 1 }),
+      createSaleType: jest.fn().mockResolvedValue({ id: 1 }),
+      getSaleTypeList: jest.fn().mockResolvedValue([]),
+      getAdminUserList: jest.fn().mockResolvedValue([]),
+      getOtherDetail: jest.fn().mockResolvedValue({ id: 1 }),
+    };
+    const activityLogService = {};
+    const authService = {
+      authorityValidator: jest.fn().mockResolvedValue(undefined),
+    };
+    const walletReadService = {};
+
+    const controller = new SettleController(
+      settleService as any,
+      activityLogService as any,
+      authService as any,
+      walletReadService as any,
+    );
+
+    return { controller, settleService, authService };
+  };
+
+  describe('#35/#38 — SERVICE_SALES 권한 검증', () => {
+    const cases: Array<{
+      label: string;
+      invoke: (ctrl: SettleController) => Promise<any>;
+      serviceFn: keyof ReturnType<typeof createOtherServiceController>['settleService'];
+    }> = [
+      {
+        label: 'createOtherServiceSale',
+        invoke: (ctrl) => ctrl.createOtherServiceSale(user as any, {} as any),
+        serviceFn: 'createOtherServiceSale',
+      },
+      {
+        label: 'updateOtherServiceSale',
+        invoke: (ctrl) => ctrl.updateOtherServiceSale(user as any, {} as any),
+        serviceFn: 'updateOtherServiceSale',
+      },
+      {
+        label: 'getShippingStorageList',
+        invoke: (ctrl) => ctrl.getShippingStorageList(user as any, {} as any),
+        serviceFn: 'getShippingStorageList',
+      },
+      {
+        label: 'createShippingStorage',
+        invoke: (ctrl) => ctrl.createShippingStorage(user as any, {} as any),
+        serviceFn: 'createShippingStorage',
+      },
+      {
+        label: 'createSaleType',
+        invoke: (ctrl) => ctrl.createSaleType(user as any, {} as any),
+        serviceFn: 'createSaleType',
+      },
+      {
+        label: 'getSaleTypeList',
+        invoke: (ctrl) => ctrl.getSaleTypeList(user as any, {} as any),
+        serviceFn: 'getSaleTypeList',
+      },
+      {
+        label: 'getAdminUserList',
+        invoke: (ctrl) => ctrl.getAdminUserList(user as any, {} as any),
+        serviceFn: 'getAdminUserList',
+      },
+      {
+        label: 'getOtherDetail',
+        invoke: (ctrl) => ctrl.getOtherDetail(user as any, {} as any),
+        serviceFn: 'getOtherDetail',
+      },
+    ];
+
+    describe.each(cases)('$label', ({ invoke, serviceFn }) => {
+      it('SERVICE_SALES 권한을 검증한 뒤 서비스를 호출한다', async () => {
+        const { controller, settleService, authService } = createOtherServiceController();
+
+        await invoke(controller);
+
+        expect(authService.authorityValidator).toHaveBeenCalledWith(user, UserAuthSubEnum.SERVICE_SALES);
+        expect(settleService[serviceFn]).toHaveBeenCalled();
+      });
+
+      it('권한 검증 실패 시 서비스를 호출하지 않는다', async () => {
+        const { controller, settleService, authService } = createOtherServiceController();
+        authService.authorityValidator.mockRejectedValue(new ForbiddenException('권한이 없습니다.'));
+
+        await expect(invoke(controller)).rejects.toBeInstanceOf(ForbiddenException);
+
+        expect(settleService[serviceFn]).not.toHaveBeenCalled();
+      });
+    });
+  });
+
   describe('updateUserPerOrder', () => {
     it('정산상태 변경 전 SETTLE_USER_MANAGE 권한을 검증한다', async () => {
       const { controller, settleService, authService } = createController();
