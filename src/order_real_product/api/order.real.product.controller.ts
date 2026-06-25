@@ -338,6 +338,14 @@ export class OrderRealProductController {
     @Body() getBody: OrderRealProductExcelDownloadReqBodyDto,
     @Res() res: Response,
   ) {
+    if (getBody.section === IOrderSection.ORDER) {
+      await this.authService.authorityValidator(user, UserAuthSubEnum.ORDER_REAL_ITEM);
+    }
+
+    if (getBody.section === IOrderSection.SHIPPING) {
+      await this.authService.authorityValidator(user, UserAuthSubEnum.SEND_REAL_ITEM);
+    }
+
     try {
       const { fileName, filePath } = await this.orderRealProductService.excelDownload(user, getBody);
 
