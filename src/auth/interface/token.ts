@@ -1,3 +1,5 @@
+export type TokenType = 'access' | 'refresh';
+
 export type ILoginToken = {
   accessToken: IToken;
   refreshToken: IToken;

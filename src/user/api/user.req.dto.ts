@@ -123,16 +123,6 @@ export class UserSignUpReqDto {
   industryItem: string | null;
 }
 
-export class UserGetAccessByRefreshReqDto {
-  @ApiProperty({
-    type: String,
-    description: '발급받았던 refreshToken',
-  })
-  // ================================
-  @IsNotEmpty()
-  token: string;
-}
-
 export class UserGetRefreshByRefreshReqDto {
   @ApiProperty({
     type: String,
