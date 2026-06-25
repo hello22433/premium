@@ -59,7 +59,9 @@ export class DaouHttp implements IDaou {
     return new https.Agent({
       minVersion: 'TLSv1.2',
       maxVersion: 'TLSv1.2',
-      rejectUnauthorized: false,
+      // rejectUnauthorized 기본값(true) 사용 — 서버 인증서 체인을 검증한다.
+      // donutbook 인증서는 Sectigo Root R46(USERTrust RSA 교차서명)으로,
+      // Node 번들 CA로 검증 통과됨(2026-06 확인).
     });
   }
 
