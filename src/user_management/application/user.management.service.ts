@@ -875,6 +875,7 @@ export class UserManagementService {
       });
 
       if (existingCompany) {
+        // 기존 회사 연결만 — 공유 회사 settleMethod 변경 금지 (타 계정 정산 영향 방지)
         companyId = existingCompany.id;
       } else {
         // 새 회사 생성
@@ -886,6 +887,7 @@ export class UserManagementService {
           industryType: getBody.industryType,
           industryItem: getBody.industryItem,
           maximumLimit: getBody.maximumLimit,
+          settleMethod: getBody.settleMethod ?? null,
         });
         companyId = newCompany.id;
       }
@@ -948,6 +950,7 @@ export class UserManagementService {
     return;
   }
 
+  @Transactional()
   async update(getBody: UserManagementUpdateReqDto, operator?: ILoginUserInfo) {
     const user = await this.userRepository.findOne({
       where: {
@@ -979,7 +982,7 @@ export class UserManagementService {
         });
 
         if (existingCompany) {
-          // 이미 존재하는 회사로 연결
+          // 기존 회사 연결만 — 공유 회사 settleMethod 변경 금지 (타 계정 정산 영향 방지)
           user.companyId = existingCompany.id;
           user.company = existingCompany;
         } else {
@@ -992,6 +995,7 @@ export class UserManagementService {
             industryType: getBody.industryType,
             industryItem: getBody.industryItem,
             maximumLimit: 0,
+            settleMethod: getBody.settleMethod ?? null,
           });
           user.companyId = newCompany.id;
           user.company = newCompany;
@@ -1003,6 +1007,8 @@ export class UserManagementService {
         user.company.businessPhoneNumber = getBody.businessPhoneNumber;
         user.company.industryType = getBody.industryType;
         user.company.industryItem = getBody.industryItem;
+        // settleMethod SoT 동기화 (company.settleMethod 가 정산 계산 소스)
+        user.company.settleMethod = getBody.settleMethod ?? null;
         // maximumLimit은 별도 API로만 수정 가능하므로 여기서는 업데이트하지 않음
         await this.userCompanyRepository.save(user.company);
       }
@@ -1042,6 +1048,16 @@ export class UserManagementService {
     }
 
     await this.userRepository.save(user);
+
+    // settleMethod SoT 동기화: wallet_account(WALLET 모드) 또는 company(LEGACY 모드) 에 반영.
+    if (getBody.settleMethod !== undefined) {
+      const settleMethod = getBody.settleMethod as 'CARD' | 'CASH';
+      if (this.walletCutoverConfig.pr3SettleMode === WalletCutoverMode.WALLET) {
+        const wallet = await this.walletResolver.resolveByUserId(user.id);
+        wallet.settleMethod = settleMethod;
+        await this.walletAccountRepository.save(wallet);
+      }
+    }
 
     // 발신번호 SoT 동기화: user save 이후 실행해야 mirror 가 stale 로 덮이지 않음.
     // seed 가 APPROVED isDefault 보장 + mirror 최종값 확정(없으면 NULL). 이후 user write 금지.

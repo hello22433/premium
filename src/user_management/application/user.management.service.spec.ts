@@ -49,10 +49,7 @@ import { WalletResourceType } from '../../wallet/interface/wallet-resource-type'
 import { AccountStatusTransitionService } from '../../account_lifecycle/application/account.status.transition.service';
 import { SettleService } from '../../settle/application/settle.service';
 import { OrderFromService } from '../../order_from/application/order.from.service';
-import {
-  UserManagementChargeBalanceReqDto,
-  UserManagementModifyBalanceReqDto,
-} from '../api/user.management.req.dto';
+import { UserManagementChargeBalanceReqDto, UserManagementModifyBalanceReqDto } from '../api/user.management.req.dto';
 
 describe('user management service test', () => {
   let userRepository: any = mock<Repository<UserEntity>>();
@@ -65,6 +62,7 @@ describe('user management service test', () => {
   let walletLedger: any;
   let walletResolver: any;
   let walletCutoverConfig: any;
+  let walletAccountRepository: any;
   let apiAppRepository: any;
   let apiCredentialRepository: any;
   let apiCustomerMappingRepository: any;
@@ -106,7 +104,10 @@ describe('user management service test', () => {
         { provide: getRepositoryToken(ExternalApiAccountEntity), useValue: createMockRepositoryMethod() },
         { provide: getRepositoryToken(ExternalApiAllowedIpEntity), useValue: createMockRepositoryMethod() },
         { provide: getRepositoryToken(ExternalApiSsgRequestEntity), useValue: createMockRepositoryMethod() },
-        { provide: getRepositoryToken(ApiAppEntity), useValue: { ...createMockRepositoryMethod(), softRemove: jest.fn() } },
+        {
+          provide: getRepositoryToken(ApiAppEntity),
+          useValue: { ...createMockRepositoryMethod(), softRemove: jest.fn() },
+        },
         { provide: getRepositoryToken(ApiCredentialEntity), useValue: createMockRepositoryMethod() },
         { provide: getRepositoryToken(ApiCustomerMappingEntity), useValue: { ...createMockRepositoryMethod(), softRemove: jest.fn() } },
         { provide: getRepositoryToken(WalletAccountEntity), useValue: createMockRepositoryMethod() },
@@ -123,10 +124,23 @@ describe('user management service test', () => {
           },
         },
         { provide: ConfigService, useValue: { getOrThrow: jest.fn().mockReturnValue('TEMPLATE_CODE') } },
-        { provide: WalletLedgerService, useValue: { recordTransaction: jest.fn().mockResolvedValue({ transactionId: 'tx-1', balanceAfter: 0, isDuplicate: false }) } },
-        { provide: WalletAccountResolverService, useValue: { resolveByUserId: jest.fn().mockResolvedValue({ id: 'wallet-1' }) } },
+        {
+          provide: WalletLedgerService,
+          useValue: {
+            recordTransaction: jest
+              .fn()
+              .mockResolvedValue({ transactionId: 'tx-1', balanceAfter: 0, isDuplicate: false }),
+          },
+        },
+        {
+          provide: WalletAccountResolverService,
+          useValue: { resolveByUserId: jest.fn().mockResolvedValue({ id: 'wallet-1' }) },
+        },
         // 기본 LEGACY — mirror 테스트에서 per-test 로 WALLET 로 변경
-        { provide: WalletCutoverConfig, useValue: { pr2DeliveryLifecycleMode: WalletCutoverMode.LEGACY } },
+        {
+          provide: WalletCutoverConfig,
+          useValue: { pr2DeliveryLifecycleMode: WalletCutoverMode.LEGACY, pr3SettleMode: WalletCutoverMode.LEGACY },
+        },
         {
           provide: AccountStatusTransitionService,
           useValue: { logAccountCreate: jest.fn(), adminSetStatus: jest.fn(), touchLastActivity: jest.fn() },
@@ -153,6 +167,7 @@ describe('user management service test', () => {
     walletLedger = module.get(WalletLedgerService);
     walletResolver = module.get(WalletAccountResolverService);
     walletCutoverConfig = module.get(WalletCutoverConfig);
+    walletAccountRepository = module.get(getRepositoryToken(WalletAccountEntity));
     apiAppRepository = module.get(getRepositoryToken(ApiAppEntity));
     apiCredentialRepository = module.get(getRepositoryToken(ApiCredentialEntity));
     apiCustomerMappingRepository = module.get(getRepositoryToken(ApiCustomerMappingEntity));
@@ -770,16 +785,19 @@ describe('user management service test', () => {
       (sut as any).externalApiAccountRepository.findOne.mockResolvedValue({ id: 'acc-1', userId: 1 });
       (sut as any).externalApiAccountRepository.save.mockResolvedValue({ id: 'acc-1' });
       userRepository.findOne.mockResolvedValue({ id: 10, personName: '관리자' });
-      apiAppRepository.findOne.mockResolvedValue({ id: 'app-1', sourceAccountId: 'acc-1', defaultBillingUserId: 1, ssgEnabled: false });
+      apiAppRepository.findOne.mockResolvedValue({
+        id: 'app-1',
+        sourceAccountId: 'acc-1',
+        defaultBillingUserId: 1,
+        ssgEnabled: false,
+      });
       apiAppRepository.save.mockImplementation((a: any) => Promise.resolve(a));
 
       await sut.approveSsgRequest('req-1', 10);
 
       // SSG 게이트 SoT = api_app.ssgEnabled → 승인 시 app 에 미러
       expect(apiAppRepository.findOne).toHaveBeenCalledWith({ where: { sourceAccountId: 'acc-1' } });
-      expect(apiAppRepository.save).toHaveBeenCalledWith(
-        expect.objectContaining({ id: 'app-1', ssgEnabled: true }),
-      );
+      expect(apiAppRepository.save).toHaveBeenCalledWith(expect.objectContaining({ id: 'app-1', ssgEnabled: true }));
     });
   });
 
@@ -849,5 +867,215 @@ describe('UserManagementModifyBalanceReqDto 검증 테스트', () => {
     const dto = plainToInstance(UserManagementModifyBalanceReqDto, { id: 1, newBalance: 2_147_483_648 });
     const errors = await validate(dto);
     expect(errors.some((e) => e.property === 'newBalance')).toBe(true);
+  });
+});
+
+// settleMethod SoT 동기화 — 메인 describe 와 동일한 NestJS Testing Module 재사용
+describe('settleMethod SoT 동기화 테스트', () => {
+  let sut: UserManagementService;
+  let userRepository: any;
+  let userCompanyRepository: any;
+  let walletAccountRepository: any;
+  let walletResolver: any;
+  let walletCutoverConfig: any;
+
+  beforeEach(async () => {
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        UserManagementService,
+        { provide: PasswordBcryptEncrypt, useValue: { encrypt: jest.fn().mockResolvedValue('hashed') } },
+        {
+          provide: getRepositoryToken(UserEntity),
+          useValue: {
+            ...createMockRepositoryMethod(),
+            manager: {},
+            createQueryBuilder: jest.fn(() => createMockQueryBuilder()),
+          },
+        },
+        { provide: getRepositoryToken(UserCompanyEntity), useValue: createMockRepositoryMethod() },
+        { provide: getRepositoryToken(UserViewScopeEntity), useValue: createMockRepositoryMethod() },
+        { provide: getRepositoryToken(DepartmentEntity), useValue: createMockRepositoryMethod() },
+        { provide: getRepositoryToken(ExternalApiAccountEntity), useValue: createMockRepositoryMethod() },
+        { provide: getRepositoryToken(ExternalApiAllowedIpEntity), useValue: createMockRepositoryMethod() },
+        { provide: getRepositoryToken(ExternalApiSsgRequestEntity), useValue: createMockRepositoryMethod() },
+        {
+          provide: getRepositoryToken(ApiAppEntity),
+          useValue: { ...createMockRepositoryMethod(), softRemove: jest.fn() },
+        },
+        { provide: getRepositoryToken(ApiCredentialEntity), useValue: createMockRepositoryMethod() },
+        { provide: getRepositoryToken(ApiCustomerMappingEntity), useValue: { ...createMockRepositoryMethod(), softRemove: jest.fn() } },
+        { provide: getRepositoryToken(WalletAccountEntity), useValue: createMockRepositoryMethod() },
+        { provide: getRepositoryToken(WalletTransactionEntity), useValue: createMockRepositoryMethod() },
+        { provide: 'IMailSend', useValue: { send: jest.fn() } },
+        { provide: 'DeliveryAlimTalk', useValue: { send: jest.fn() } },
+        { provide: 'ISmsSend', useValue: { send: jest.fn() } },
+        {
+          provide: ActivityLogService,
+          useValue: {
+            createLog: jest.fn().mockResolvedValue(1),
+            getBalanceHistoryByUserId: jest.fn(),
+            getMaximumLimitHistoryByUserId: jest.fn(),
+          },
+        },
+        { provide: ConfigService, useValue: { getOrThrow: jest.fn().mockReturnValue('CODE') } },
+        { provide: WalletLedgerService, useValue: { recordTransaction: jest.fn().mockResolvedValue({}) } },
+        {
+          provide: WalletAccountResolverService,
+          useValue: { resolveByUserId: jest.fn().mockResolvedValue({ id: 'wallet-1', settleMethod: 'CASH' }) },
+        },
+        {
+          provide: WalletCutoverConfig,
+          useValue: { pr2DeliveryLifecycleMode: WalletCutoverMode.LEGACY, pr3SettleMode: WalletCutoverMode.LEGACY },
+        },
+        {
+          provide: AccountStatusTransitionService,
+          useValue: { logAccountCreate: jest.fn(), adminSetStatus: jest.fn(), touchLastActivity: jest.fn() },
+        },
+        { provide: SettleService, useValue: { getRemainServiceAmountByUserId: jest.fn().mockResolvedValue(0) } },
+        {
+          provide: OrderFromService,
+          useValue: {
+            resolveApprovedDefaultPhone: jest.fn().mockResolvedValue(null),
+            seedApprovedDefaultPhone: jest.fn(),
+          },
+        },
+      ],
+    }).compile();
+
+    sut = module.get(UserManagementService);
+    userRepository = module.get(getRepositoryToken(UserEntity));
+    userCompanyRepository = module.get(getRepositoryToken(UserCompanyEntity));
+    walletAccountRepository = module.get(getRepositoryToken(WalletAccountEntity));
+    walletResolver = module.get(WalletAccountResolverService);
+    walletCutoverConfig = module.get(WalletCutoverConfig);
+  });
+
+  const baseUpdateBody = {
+    id: 1,
+    bankName: '',
+    bankNumber: '',
+    businessAddress: '',
+    businessName: 'Biz',
+    businessNumber: '1234567890',
+    businessPhoneNumber: '',
+    cardName: '',
+    cardNumber: '',
+    corporateNumber: null,
+    ip: null,
+    maximumLimit: 0,
+    personEmail: '',
+    personName: '',
+    personPhoneNumber: '',
+    settleCondition: IUserSettleCondition.POST_PAYMENT,
+    authority: IUserAuthority.SUPER_ADMIN,
+    status: IUserStatus.USED,
+    businessType: IUserBusinessType.CORPORATE,
+    authorityList: [],
+    allowedSendMethods: [],
+  };
+
+  it('update: LEGACY 모드 — company.settleMethod 동기화, wallet 미호출', async () => {
+    walletCutoverConfig.pr3SettleMode = WalletCutoverMode.LEGACY;
+    const company = { id: 10, businessNumber: '1234567890', settleMethod: 'CASH' };
+    userRepository.findOne.mockResolvedValue({
+      ...UserEntityTest(),
+      id: 1,
+      company,
+      companyId: 10,
+      status: IUserStatus.USED,
+    });
+    userCompanyRepository.findOne.mockResolvedValue(company);
+
+    await sut.update({ ...baseUpdateBody, settleMethod: IUserSettleMethod.CARD } as any);
+
+    expect(userCompanyRepository.save).toHaveBeenCalledWith(
+      expect.objectContaining({ settleMethod: IUserSettleMethod.CARD }),
+    );
+    expect(walletResolver.resolveByUserId).not.toHaveBeenCalled();
+  });
+
+  it('update: WALLET 모드 — company.settleMethod + wallet_account.settleMethod 동기화', async () => {
+    walletCutoverConfig.pr3SettleMode = WalletCutoverMode.WALLET;
+    const walletAccount = { id: 'wallet-1', settleMethod: 'CASH' };
+    walletResolver.resolveByUserId.mockResolvedValue(walletAccount);
+
+    const company = { id: 10, businessNumber: '1234567890', settleMethod: 'CASH' };
+    userRepository.findOne.mockResolvedValue({
+      ...UserEntityTest(),
+      id: 1,
+      company,
+      companyId: 10,
+      status: IUserStatus.USED,
+    });
+    userCompanyRepository.findOne.mockResolvedValue(company);
+
+    await sut.update({ ...baseUpdateBody, settleMethod: IUserSettleMethod.CARD } as any);
+
+    expect(walletResolver.resolveByUserId).toHaveBeenCalledWith(1);
+    expect(walletAccountRepository.save).toHaveBeenCalledWith(
+      expect.objectContaining({ settleMethod: IUserSettleMethod.CARD }),
+    );
+  });
+
+  it('update: WALLET 모드 — wallet 미존재 시 예외 throw (fail-closed)', async () => {
+    walletCutoverConfig.pr3SettleMode = WalletCutoverMode.WALLET;
+    walletResolver.resolveByUserId.mockRejectedValue(new Error('wallet not found'));
+
+    const company = { id: 10, businessNumber: '1234567890', settleMethod: 'CASH' };
+    userRepository.findOne.mockResolvedValue({
+      ...UserEntityTest(),
+      id: 1,
+      company,
+      companyId: 10,
+      status: IUserStatus.USED,
+    });
+    userCompanyRepository.findOne.mockResolvedValue(company);
+
+    await expect(sut.update({ ...baseUpdateBody, settleMethod: IUserSettleMethod.CARD } as any)).rejects.toThrow(
+      'wallet not found',
+    );
+  });
+
+  it('create: LEGACY 모드 — 신규 company에 settleMethod 포함 저장', async () => {
+    walletCutoverConfig.pr3SettleMode = WalletCutoverMode.LEGACY;
+    userRepository.count.mockResolvedValue(0);
+    userRepository.insert.mockResolvedValue({ identifiers: [{ id: 1 }] });
+    userCompanyRepository.findOne.mockResolvedValue(null);
+    userCompanyRepository.save.mockResolvedValue({ id: 10 });
+
+    await sut.create({
+      ...baseUpdateBody,
+      email: 'new@test.com',
+      password: 'pw123456',
+      settleMethod: IUserSettleMethod.CASH,
+      fromPhoneNumber: null,
+      settlePeriodCondition: null,
+      settlePeriodCount: null,
+      loginVerifyMethod: null,
+    } as any);
+
+    expect(userCompanyRepository.save).toHaveBeenCalledWith(
+      expect.objectContaining({ settleMethod: IUserSettleMethod.CASH }),
+    );
+  });
+
+  it('create: 기존 company 연결 시 company.settleMethod 변경 안 함 (타 계정 보호)', async () => {
+    walletCutoverConfig.pr3SettleMode = WalletCutoverMode.LEGACY;
+    userRepository.count.mockResolvedValue(0);
+    userRepository.insert.mockResolvedValue({ identifiers: [{ id: 1 }] });
+    userCompanyRepository.findOne.mockResolvedValue({ id: 10, businessNumber: '1234567890', settleMethod: 'CASH' });
+
+    await sut.create({
+      ...baseUpdateBody,
+      email: 'new@test.com',
+      password: 'pw123456',
+      settleMethod: IUserSettleMethod.CARD,
+      fromPhoneNumber: null,
+      settlePeriodCondition: null,
+      settlePeriodCount: null,
+      loginVerifyMethod: null,
+    } as any);
+
+    expect(userCompanyRepository.save).not.toHaveBeenCalled();
   });
 });

@@ -357,7 +357,7 @@ export class ExternalApiService {
 
   // ─── 정산 헬퍼 ──────────────────────────────────────────
   // 일반 주문(order.service.ts)과 동일한 정산 모델을 외부 API에도 적용.
-  //  - 카드할증 여부: COMPANY 모드는 user_company.settleMethod, 그 외는 user.settleMethod ('CARD'면 true)
+  //  - 카드할증 여부: company.settleMethod === 'CARD' (SoT. user.settleMethod 는 deprecated)
   //  - 할인/할증: user_discount 자동 매칭(findMatchingDiscount). 매칭 없으면 정가 그대로
   //  - settleAmount = applyCardSurcharge(OrderFeeCalculator(...), cardSurchargeApplied)
 
@@ -365,13 +365,10 @@ export class ExternalApiService {
     return this.resolveCardSurchargeAppliedForUser(account.user);
   }
 
-  // billingUser 기준 카드할증 판정(account.user 와 동일 로직). 단순모드 billingUser=account.user.
+  // billingUser 기준 카드할증 판정. company.settleMethod 가 SoT (user.settleMethod 는 deprecated).
+  // balanceManagementType 분기 제거 — PR1+ 모든 user 가 company 단위 공유 settlement_code 로 통합.
   private resolveCardSurchargeAppliedForUser(user: UserEntity): boolean {
-    const isCompanyMode = user.company?.balanceManagementType === 'COMPANY';
-    const settleMethod = isCompanyMode
-      ? user.company?.settleMethod
-      : user.settleMethod;
-    return settleMethod === IUserSettleMethod.CARD;
+    return user.company?.settleMethod === IUserSettleMethod.CARD;
   }
 
   private async computeSettlement(

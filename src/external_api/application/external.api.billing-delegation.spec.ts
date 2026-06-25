@@ -11,7 +11,7 @@ function makeAccount(): ExternalApiAccountEntity {
       id: 42,
       authority: 'BUSINESS',
       settleMethod: 'CASH',
-      company: undefined,
+      company: { settleMethod: 'CASH' },
     },
   } as any;
 }
@@ -88,7 +88,7 @@ describe('PR2a G003 위임층 behavior-identity', () => {
 
     it('appOptions 미지정 시 billingUser 기준 카드할증 재현(동치)', async () => {
       const account = makeAccount();
-      (account.user as any).settleMethod = 'CARD';
+      (account.user as any).company = { settleMethod: 'CARD' };
       const svc = svcWithDiscounts();
 
       const legacy = await (svc as any).computeSettlement(account, product, 30000);
