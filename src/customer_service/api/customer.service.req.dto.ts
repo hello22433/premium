@@ -242,19 +242,32 @@ export class CustomerServicePinStatusRefreshReqDto {
 }
 
 /**
+ * CS 이력(order_history) 유형 named 상수 (D3-37).
+ * switch case / 비교문에서 이 객체를 참조해 리터럴 중복을 제거한다.
+ * ('핀상태 변경'은 별도 엔드포인트(pin-status/modify) 소관이라 제외)
+ */
+export const CS_HISTORY_TYPE = {
+  SIMPLE_INQUIRY: '단순문의',
+  RESEND: '재전송',
+  RECEIVER_CHANGE: '수신정보 변경요청',
+  DISCARD: '폐기',
+  REFUND_DISCARD: '환불폐기',
+  DISCARD_REISSUE: '폐기 후 신규 발송',
+} as const;
+
+/**
  * CS 이력(order_history) 유형 단일 소스 — customer.service.service.ts 의 execHistory switch 가
  * 처리하는 유효 type 전체. 미지정 값은 execHistory default 에서 throw 되므로, 본 @IsIn 으로
  * 검증 진입 시점에 동일하게 차단한다(M-3, enum 미강제 매직스트링 하드닝).
- * ⚠️ writer switch / 프론트 <option value> / order 모듈 PII_BEARING_HISTORY_TYPES(부분집합)와
- * 문자열이 정확히 일치해야 한다. ('핀상태 변경'은 별도 엔드포인트(pin-status/modify) 소관이라 제외)
+ * ⚠️ PII_BEARING_HISTORY_TYPES(order 모듈, 부분집합)와 문자열이 정확히 일치해야 한다.
  */
 export const CS_HISTORY_TYPES = [
-  '단순문의',
-  '재전송',
-  '수신정보 변경요청',
-  '폐기',
-  '환불폐기',
-  '폐기 후 신규 발송',
+  CS_HISTORY_TYPE.SIMPLE_INQUIRY,
+  CS_HISTORY_TYPE.RESEND,
+  CS_HISTORY_TYPE.RECEIVER_CHANGE,
+  CS_HISTORY_TYPE.DISCARD,
+  CS_HISTORY_TYPE.REFUND_DISCARD,
+  CS_HISTORY_TYPE.DISCARD_REISSUE,
 ] as const;
 
 export class CustomerServiceHistoryReqDto {
