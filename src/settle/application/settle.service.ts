@@ -1198,10 +1198,13 @@ export class SettleService {
       const partnerCompany = product.partnerCompany!;
       const partnerDiscounts = partnerCompany.userDiscounts || [];
 
+      // 주문 시점 스냅샷 우선 (고객사 정산과 동일 기준)
+      const snapshotPrice = readLineProductView(orderProductMapping).price;
+
       // 협력사 할인옵션에서 매칭되는 할인 찾기
       const matchingDiscount = findMatchingDiscount(
         {
-          price: product.price,
+          price: snapshotPrice,
           category: product.category,
           classificationId: product.classificationId,
           brand: product.brand,
@@ -1221,11 +1224,13 @@ export class SettleService {
         priceAdjustment = 'DISCOUNT';
       }
 
-      const feePrice = (product.price * fee) / 100;
+      const feePrice = (snapshotPrice * fee) / 100;
 
       // 협력사 정산: 소수점 발생 시 올림 처리
       const settlePrice =
-        priceAdjustment === 'DISCOUNT' ? Math.ceil(product.price - feePrice) : Math.ceil(product.price + feePrice);
+        priceAdjustment === 'DISCOUNT'
+          ? Math.ceil(snapshotPrice - feePrice)
+          : Math.ceil(snapshotPrice + feePrice);
 
       return {
         id: order.id,
@@ -1235,7 +1240,7 @@ export class SettleService {
         eventName: order.eventName,
         code: order.code,
         productNameList: [product.name],
-        deliveryPrice: product.price,
+        deliveryPrice: snapshotPrice,
         settlePrice: settlePrice,
         fee: fee,
         feePrice: feePrice,
@@ -1440,7 +1445,9 @@ export class SettleService {
                 eventName: order.eventName,
                 productName: displayProduct.name,
                 brandName: displayBrand?.nameKorean ?? '',
-                price: displayProduct.price,
+                price: orderDelivery.choiceSelectProduct
+                  ? orderDelivery.choiceSelectProduct.price
+                  : readLineProductView(orderProductMapping).price,
                 balance: orderDelivery.galaxiaBalance ?? 0,
                 expireDay: displayProduct.expireDay,
                 validityStartAt,
