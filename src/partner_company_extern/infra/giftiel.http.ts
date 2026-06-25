@@ -168,17 +168,13 @@ export class GiftielHttp implements IGiftiel {
    * (Giftiel check 는 ResultCode 가 0000 이 아니면 throw 하므로 try/catch 로 감싸지 않음)
    */
   private async verifyCancelIdempotent(obj: GiftielCancelIn, reason: string): Promise<void> {
-    this.logger.warn(
-      `[cancel] 이미 취소 시그널(${reason}) - check 로 검증. barCode: ${obj.barCode}`,
-    );
+    this.logger.warn(`[cancel] 이미 취소 시그널(${reason}) - check 로 검증. barCode: ${obj.barCode}`);
     const checkResult = await this.check({
       partnerCompanyCode: obj.partnerCompanyCode,
       barCode: obj.barCode,
     });
     if (checkResult.IsCancel === 'Y') {
-      this.logger.warn(
-        `[cancel] check 결과 IsCancel=Y 확인 - 멱등 처리. barCode: ${obj.barCode}`,
-      );
+      this.logger.warn(`[cancel] check 결과 IsCancel=Y 확인 - 멱등 처리. barCode: ${obj.barCode}`);
       return;
     }
     throw new Error(

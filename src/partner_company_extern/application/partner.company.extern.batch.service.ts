@@ -351,7 +351,9 @@ export class PartnerCompanyExternBatchService {
   }
 
   // ===== 협력사 cancel API 드라이런 (DB 변경 없이 호출만, 로그 확인용) =====
-  async testCancelDryRun(orderDeliveryId: number): Promise<{ type: string; barCode: string | null; transactionId: string | null; message: string }> {
+  async testCancelDryRun(
+    orderDeliveryId: number,
+  ): Promise<{ type: string; barCode: string | null; transactionId: string | null; message: string }> {
     const item = await this.orderDeliveryRepository
       .createQueryBuilder('orderDelivery')
       .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
@@ -494,8 +496,7 @@ export class PartnerCompanyExternBatchService {
           break;
         }
         case 'CULTURELAND': {
-          const expireDay =
-            item.choiceSelectProduct?.expireDay ?? item.orderProductMapping.product.expireDay;
+          const expireDay = item.choiceSelectProduct?.expireDay ?? item.orderProductMapping.product.expireDay;
           response = await this.culture.check({
             scrachNo: item.barCode!,
             certNo: item.couponNum!,
@@ -512,8 +513,7 @@ export class PartnerCompanyExternBatchService {
         }
         case 'GS_M_BIZ': {
           const partnerCompanyCode =
-            item.choiceSelectProduct?.partnerCompanyCode ??
-            item.orderProductMapping.product.partnerCompanyCode!;
+            item.choiceSelectProduct?.partnerCompanyCode ?? item.orderProductMapping.product.partnerCompanyCode!;
           response = await this.gsmbiz.check({
             transactionId: item.transactionId!,
             partnerCompanyCode,
@@ -539,9 +539,7 @@ export class PartnerCompanyExternBatchService {
           throw new BadRequestException(`지원하지 않는 partnerType: ${type}`);
       }
 
-      this.logger.log(
-        `[testCheckDryRun] 성공 - id=${orderDeliveryId}, response=${JSON.stringify(response)}`,
-      );
+      this.logger.log(`[testCheckDryRun] 성공 - id=${orderDeliveryId}, response=${JSON.stringify(response)}`);
       return {
         type,
         barCode: item.barCode ?? null,
@@ -580,9 +578,7 @@ export class PartnerCompanyExternBatchService {
     certNoList: string[];
     match?: { exact: boolean; stripped: boolean };
   }> {
-    this.logger.log(
-      `[testCulturelandDailyDryRun] 시작 - useDate=${useDate ?? '어제'}, couponNum=${couponNum ?? '-'}`,
-    );
+    this.logger.log(`[testCulturelandDailyDryRun] 시작 - useDate=${useDate ?? '어제'}, couponNum=${couponNum ?? '-'}`);
 
     const dailyResult = await this.culture.checkDaily({ useDate });
     const { certNoList, useDate: resolvedUseDate } = dailyResult;
@@ -913,9 +909,7 @@ export class PartnerCompanyExternBatchService {
         // GIFTIEL은 만료 상태를 별도로 내려주지 않으므로 DayEnd(yyyy-MM-dd)로 보정
         const dayEndYMD = giftielOut.DayEnd?.replace(/-/g, '');
         result.couponStatus =
-          dayEndYMD && isExpiredYMD(dayEndYMD)
-            ? OrderDeliveryCouponStatus.EXPIRED
-            : OrderDeliveryCouponStatus.NOT_USED;
+          dayEndYMD && isExpiredYMD(dayEndYMD) ? OrderDeliveryCouponStatus.EXPIRED : OrderDeliveryCouponStatus.NOT_USED;
         result.tradeAt = null;
         result.tradePlace = null;
       }
@@ -1103,11 +1097,9 @@ export class PartnerCompanyExternBatchService {
    * 상품명 기반 giftKind 판별 (choiceSelectProduct 우선)
    */
   private resolveGalaxiaGiftKind(orderDelivery: OrderDeliveryEntity): 'dept' | 'cpn' {
-    const name = orderDelivery.choiceSelectProduct?.name
-      ?? orderDelivery.orderProductMapping.product.name;
+    const name = orderDelivery.choiceSelectProduct?.name ?? orderDelivery.orderProductMapping.product.name;
     return name.includes('(백화점)') ? 'dept' : 'cpn';
   }
-
 
   /**
    * 갤럭시아 일대사(Daily Batch) - 전날 사용 내역 조회 후 tradePlace 업데이트
@@ -1139,9 +1131,7 @@ export class PartnerCompanyExternBatchService {
       const dailyResult = await this.galaxia.checkDaily({ giftKind, targetDay });
 
       if (dailyResult.resCode !== '0000') {
-        this.logger.error(
-          `[checkGalaxiaDaily] ${giftKind} API 오류: ${dailyResult.resCode} - ${dailyResult.resMsg}`,
-        );
+        this.logger.error(`[checkGalaxiaDaily] ${giftKind} API 오류: ${dailyResult.resCode} - ${dailyResult.resMsg}`);
         return;
       }
 
@@ -1260,9 +1250,24 @@ export class PartnerCompanyExternBatchService {
     giftKind: 'cpn' | 'dept' | null,
   ): Promise<'saved' | 'skipped'> {
     // 1. 복호화
-    const barcode = this.cryptoCipher.decrypt(raw.barcode, this.galaxiaEncKey, this.galaxiaEncIv, this.galaxiaEncAlgorithm);
-    const amount = this.cryptoCipher.decrypt(raw.amount, this.galaxiaEncKey, this.galaxiaEncIv, this.galaxiaEncAlgorithm);
-    const remainprice = this.cryptoCipher.decrypt(raw.remainprice, this.galaxiaEncKey, this.galaxiaEncIv, this.galaxiaEncAlgorithm);
+    const barcode = this.cryptoCipher.decrypt(
+      raw.barcode,
+      this.galaxiaEncKey,
+      this.galaxiaEncIv,
+      this.galaxiaEncAlgorithm,
+    );
+    const amount = this.cryptoCipher.decrypt(
+      raw.amount,
+      this.galaxiaEncKey,
+      this.galaxiaEncIv,
+      this.galaxiaEncAlgorithm,
+    );
+    const remainprice = this.cryptoCipher.decrypt(
+      raw.remainprice,
+      this.galaxiaEncKey,
+      this.galaxiaEncIv,
+      this.galaxiaEncAlgorithm,
+    );
 
     // 2. storename URL 디코딩
     const storename = raw.storename ? decodeURIComponent(raw.storename) : null;
@@ -1297,9 +1302,7 @@ export class PartnerCompanyExternBatchService {
     const existingLog = await dedupQuery.getOne();
 
     if (existingLog) {
-      this.logger.verbose(
-        `[galaxiaPush] 중복 스킵: barcode=${barcode}, appDiv=${raw.appdiv}, appDay=${raw.appday}`,
-      );
+      this.logger.verbose(`[galaxiaPush] 중복 스킵: barcode=${barcode}, appDiv=${raw.appdiv}, appDay=${raw.appday}`);
       return 'skipped';
     }
 
@@ -1482,8 +1485,7 @@ export class PartnerCompanyExternBatchService {
     this.logger.log(`[diagnoseCulturelandDailyRange] 시작 - ${startDay} ~ ${endDay}`);
 
     // 1) 기간 내 사용된 certNo 수집 (certNo -> 최초 사용일)
-    const { certNoToUseDate, failedDays, daysQueried } =
-      await this.collectCulturelandUsedCertNos(startDay, endDay);
+    const { certNoToUseDate, failedDays, daysQueried } = await this.collectCulturelandUsedCertNos(startDay, endDay);
 
     const uniqueCertNos = [...certNoToUseDate.keys()];
     this.logger.log(
@@ -1574,13 +1576,10 @@ export class PartnerCompanyExternBatchService {
       tradeAt: string;
     }>;
   }> {
-    this.logger.log(
-      `[backfillCulturelandDailyRange] 시작 - ${startDay} ~ ${endDay}, apply=${apply}`,
-    );
+    this.logger.log(`[backfillCulturelandDailyRange] 시작 - ${startDay} ~ ${endDay}, apply=${apply}`);
 
     // 1) 기간 내 사용된 certNo 수집 (certNo -> 최초 사용일)
-    const { certNoToUseDate, failedDays, daysQueried } =
-      await this.collectCulturelandUsedCertNos(startDay, endDay);
+    const { certNoToUseDate, failedDays, daysQueried } = await this.collectCulturelandUsedCertNos(startDay, endDay);
 
     const uniqueCertNos = [...certNoToUseDate.keys()];
     this.logger.log(
@@ -1621,10 +1620,7 @@ export class PartnerCompanyExternBatchService {
         const fromStatus = row.couponStatus ?? 'UNKNOWN';
 
         // NOT_USED / EXPIRED 만 보정 대상. 이미 USED/CANCEL/REFUND_CANCEL 등은 건드리지 않음.
-        if (
-          fromStatus !== OrderDeliveryCouponStatus.NOT_USED &&
-          fromStatus !== OrderDeliveryCouponStatus.EXPIRED
-        ) {
+        if (fromStatus !== OrderDeliveryCouponStatus.NOT_USED && fromStatus !== OrderDeliveryCouponStatus.EXPIRED) {
           skippedTerminal += 1;
           continue;
         }
@@ -1759,17 +1755,13 @@ export class PartnerCompanyExternBatchService {
           break;
         }
 
-        this.logger.log(
-          `[checkGalaxiaDeptUsage] 페이지 처리: lastId=${lastId}, count=${batch.length}`,
-        );
+        this.logger.log(`[checkGalaxiaDeptUsage] 페이지 처리: lastId=${lastId}, count=${batch.length}`);
 
         const concurrency = this.getConcurrencyLimit('GALAXIA');
 
         for (let i = 0; i < batch.length; i += concurrency) {
           const chunk = batch.slice(i, i + concurrency);
-          const results = await Promise.allSettled(
-            chunk.map((item) => this.processGalaxiaDeptItem(item)),
-          );
+          const results = await Promise.allSettled(chunk.map((item) => this.processGalaxiaDeptItem(item)));
 
           for (let j = 0; j < results.length; j++) {
             totalProcessed++;
@@ -1780,9 +1772,7 @@ export class PartnerCompanyExternBatchService {
               else totalSkipped++;
             } else {
               totalFailed++;
-              this.logger.error(
-                `[checkGalaxiaDeptUsage] 처리 실패: id=${chunk[j].id}`,
-              );
+              this.logger.error(`[checkGalaxiaDeptUsage] 처리 실패: id=${chunk[j].id}`);
               this.logger.error(result.reason);
             }
           }
@@ -1849,9 +1839,7 @@ export class PartnerCompanyExternBatchService {
   /**
    * 갤럭시아 백화점 상품 개별 처리 - check API 호출 후 잔액 변동 감지
    */
-  private async processGalaxiaDeptItem(
-    orderDelivery: OrderDeliveryEntity,
-  ): Promise<'updated' | 'skipped'> {
+  private async processGalaxiaDeptItem(orderDelivery: OrderDeliveryEntity): Promise<'updated' | 'skipped'> {
     // 1. giftKind 판별 (choiceSelectProduct 우선)
     const giftKind = this.resolveGalaxiaGiftKind(orderDelivery);
 
@@ -1876,8 +1864,7 @@ export class PartnerCompanyExternBatchService {
           updateData.discardedAt = new Date();
         }
       } else {
-        const stillValid =
-          !!galaxiaOut.giftCertificate.validTo && !isExpiredYMD(galaxiaOut.giftCertificate.validTo);
+        const stillValid = !!galaxiaOut.giftCertificate.validTo && !isExpiredYMD(galaxiaOut.giftCertificate.validTo);
         const has81Refund = await this.galaxiaBarcodeLogRepository.existsBy({
           orderDeliveryId: orderDelivery.id,
           appDiv: '81',
@@ -1957,7 +1944,6 @@ export class PartnerCompanyExternBatchService {
     return 'updated';
   }
 
-
   private formatTimeHMS(date: Date): string {
     const h = String(date.getHours()).padStart(2, '0');
     const m = String(date.getMinutes()).padStart(2, '0');
@@ -1999,17 +1985,13 @@ export class PartnerCompanyExternBatchService {
 
         if (batch.length === 0) break;
 
-        this.logger.log(
-          `[backfillGalaxia] 페이지 처리: lastId=${lastId}, count=${batch.length}`,
-        );
+        this.logger.log(`[backfillGalaxia] 페이지 처리: lastId=${lastId}, count=${batch.length}`);
 
         const concurrency = this.getConcurrencyLimit('GALAXIA');
 
         for (let i = 0; i < batch.length; i += concurrency) {
           const chunk = batch.slice(i, i + concurrency);
-          const results = await Promise.allSettled(
-            chunk.map((item) => this.processBackfillItem(item)),
-          );
+          const results = await Promise.allSettled(chunk.map((item) => this.processBackfillItem(item)));
 
           for (let j = 0; j < results.length; j++) {
             totalProcessed++;
@@ -2020,9 +2002,7 @@ export class PartnerCompanyExternBatchService {
               else totalSkipped++;
             } else {
               totalFailed++;
-              this.logger.error(
-                `[backfillGalaxia] 처리 실패: id=${chunk[j].id}`,
-              );
+              this.logger.error(`[backfillGalaxia] 처리 실패: id=${chunk[j].id}`);
               this.logger.error(result.reason);
             }
           }
@@ -2047,10 +2027,7 @@ export class PartnerCompanyExternBatchService {
   /**
    * GALAXIA + USED + barCode/couponNum 있음 + galaxia_barcode_log 없음 대상 조회
    */
-  private async fetchMissingGalaxiaLogBatch(
-    lastId: number,
-    limit: number,
-  ): Promise<OrderDeliveryEntity[]> {
+  private async fetchMissingGalaxiaLogBatch(lastId: number, limit: number): Promise<OrderDeliveryEntity[]> {
     return this.orderDeliveryRepository
       .createQueryBuilder('orderDelivery')
       .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
@@ -2082,9 +2059,7 @@ export class PartnerCompanyExternBatchService {
   /**
    * 개별 order_delivery에 대해 check API 호출 → 사용내역이면 barcode_log 생성
    */
-  private async processBackfillItem(
-    orderDelivery: OrderDeliveryEntity,
-  ): Promise<'created' | 'skipped'> {
+  private async processBackfillItem(orderDelivery: OrderDeliveryEntity): Promise<'created' | 'skipped'> {
     const giftKind = this.resolveGalaxiaGiftKind(orderDelivery);
 
     const galaxiaOut = await this.galaxia.check({
@@ -2134,10 +2109,7 @@ export class PartnerCompanyExternBatchService {
     });
 
     // galaxiaBalance도 업데이트
-    await this.orderDeliveryRepository.update(
-      { id: orderDelivery.id },
-      { galaxiaBalance: balance },
-    );
+    await this.orderDeliveryRepository.update({ id: orderDelivery.id }, { galaxiaBalance: balance });
 
     this.logger.log(
       `[backfillGalaxia] 로그 생성: id=${orderDelivery.id}, ` +

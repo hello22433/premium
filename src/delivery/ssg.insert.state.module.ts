@@ -18,13 +18,7 @@ import { SsgInsertStateService } from './application/ssg-insert-state.service';
  * 서비스 자체는 SSG INSERT durable state 신호만 다루며 delivery 로직에 의존하지 않는다.
  */
 @Module({
-  imports: [
-    TypeOrmModule.forFeature([
-      OrderDeliveryEntity,
-      OrderDeliverySsgInsertStateEntity,
-      SsgIssueLogEntity,
-    ]),
-  ],
+  imports: [TypeOrmModule.forFeature([OrderDeliveryEntity, OrderDeliverySsgInsertStateEntity, SsgIssueLogEntity])],
   providers: [SsgInsertStateService],
   exports: [SsgInsertStateService],
 })

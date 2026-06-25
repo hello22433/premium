@@ -33,11 +33,7 @@ describe('SsgEventController', () => {
       authorityValidator: jest.fn().mockResolvedValue(undefined),
     };
 
-    const controller = new SsgEventController(
-      ssgEventService as any,
-      activityLogService as any,
-      authService as any,
-    );
+    const controller = new SsgEventController(ssgEventService as any, activityLogService as any, authService as any);
 
     return { controller, ssgEventService, authService };
   };

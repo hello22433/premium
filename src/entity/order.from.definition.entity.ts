@@ -1,5 +1,9 @@
 import { BaseEntity } from '../common/entity/base.entity';
-import { OrderFromDefinitionType, OrderFromRequestStatus, TelecomCertType } from '../order_from/interface/order.from.definition.type';
+import {
+  OrderFromDefinitionType,
+  OrderFromRequestStatus,
+  TelecomCertType,
+} from '../order_from/interface/order.from.definition.type';
 import { Column, Entity, PrimaryGeneratedColumn } from 'typeorm';
 
 @Entity('order_from_definition')

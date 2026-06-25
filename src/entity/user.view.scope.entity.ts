@@ -45,6 +45,9 @@ export class UserViewScopeEntity {
   // Helper method: dept_ids를 배열로 변환
   getDeptIdList(): number[] {
     if (!this.deptIds) return [];
-    return this.deptIds.split(',').map((id) => parseInt(id.trim(), 10)).filter((id) => !isNaN(id));
+    return this.deptIds
+      .split(',')
+      .map((id) => parseInt(id.trim(), 10))
+      .filter((id) => !isNaN(id));
   }
 }

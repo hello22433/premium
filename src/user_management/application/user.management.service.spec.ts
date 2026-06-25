@@ -109,7 +109,10 @@ describe('user management service test', () => {
           useValue: { ...createMockRepositoryMethod(), softRemove: jest.fn() },
         },
         { provide: getRepositoryToken(ApiCredentialEntity), useValue: createMockRepositoryMethod() },
-        { provide: getRepositoryToken(ApiCustomerMappingEntity), useValue: { ...createMockRepositoryMethod(), softRemove: jest.fn() } },
+        {
+          provide: getRepositoryToken(ApiCustomerMappingEntity),
+          useValue: { ...createMockRepositoryMethod(), softRemove: jest.fn() },
+        },
         { provide: getRepositoryToken(WalletAccountEntity), useValue: createMockRepositoryMethod() },
         { provide: getRepositoryToken(WalletTransactionEntity), useValue: createMockRepositoryMethod() },
         { provide: 'IMailSend', useValue: { send: jest.fn() } },
@@ -700,7 +703,9 @@ describe('user management service test', () => {
 
     it('createCustomerMapping: billingUser 검증 후 매핑 생성', async () => {
       const res = await sut.createCustomerMapping('acc-1', { externalCustomerId: 'wisead-c1', billingUserId: 99 });
-      expect(res).toEqual(expect.objectContaining({ apiAppId: 'app-1', externalCustomerId: 'wisead-c1', billingUserId: 99 }));
+      expect(res).toEqual(
+        expect.objectContaining({ apiAppId: 'app-1', externalCustomerId: 'wisead-c1', billingUserId: 99 }),
+      );
       expect(apiCustomerMappingRepository.create).toHaveBeenCalledWith(
         expect.objectContaining({ apiAppId: 'app-1', externalCustomerId: 'wisead-c1', billingUserId: 99 }),
       );
@@ -745,10 +750,17 @@ describe('user management service test', () => {
     });
 
     it('updateCustomerMapping: billingUserId 변경', async () => {
-      apiCustomerMappingRepository.findOne.mockResolvedValue({ id: 'm1', apiAppId: 'app-1', externalCustomerId: 'c1', billingUserId: 1 });
+      apiCustomerMappingRepository.findOne.mockResolvedValue({
+        id: 'm1',
+        apiAppId: 'app-1',
+        externalCustomerId: 'c1',
+        billingUserId: 1,
+      });
       const res = await sut.updateCustomerMapping('acc-1', 'm1', { billingUserId: 99 });
       expect(res.billingUserId).toBe(99);
-      expect(apiCustomerMappingRepository.save).toHaveBeenCalledWith(expect.objectContaining({ id: 'm1', billingUserId: 99 }));
+      expect(apiCustomerMappingRepository.save).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'm1', billingUserId: 99 }),
+      );
     });
 
     it('updateCustomerMapping: 미존재 매핑 → 거부', async () => {
@@ -903,7 +915,10 @@ describe('settleMethod SoT 동기화 테스트', () => {
           useValue: { ...createMockRepositoryMethod(), softRemove: jest.fn() },
         },
         { provide: getRepositoryToken(ApiCredentialEntity), useValue: createMockRepositoryMethod() },
-        { provide: getRepositoryToken(ApiCustomerMappingEntity), useValue: { ...createMockRepositoryMethod(), softRemove: jest.fn() } },
+        {
+          provide: getRepositoryToken(ApiCustomerMappingEntity),
+          useValue: { ...createMockRepositoryMethod(), softRemove: jest.fn() },
+        },
         { provide: getRepositoryToken(WalletAccountEntity), useValue: createMockRepositoryMethod() },
         { provide: getRepositoryToken(WalletTransactionEntity), useValue: createMockRepositoryMethod() },
         { provide: 'IMailSend', useValue: { send: jest.fn() } },

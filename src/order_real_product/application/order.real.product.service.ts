@@ -174,7 +174,7 @@ export class OrderRealProductService {
     private userRepository: Repository<UserEntity>,
     private deliveryTrackHttp: DeliveryTrackHttp,
     private activityLogService: ActivityLogService,
-  ) { }
+  ) {}
 
   private applyRealProductOrderAccessScope<T extends { andWhere: (condition: string, parameters?: object) => T }>(
     queryBuilder: T,
@@ -203,10 +203,9 @@ export class OrderRealProductService {
     // 주문 관리 일 경우(최고관리자가 아닐 경우 자신이 등록한 주문 또는 담당자로 지정된 주문만 조회)
     if (section === IOrderSection.ORDER) {
       if (user.authority !== IUserAuthority.SUPER_ADMIN) {
-        queryBuilder = queryBuilder.andWhere(
-          '(order.userId = :userId OR order.businessUserId = :userId)',
-          { userId: user.id },
-        );
+        queryBuilder = queryBuilder.andWhere('(order.userId = :userId OR order.businessUserId = :userId)', {
+          userId: user.id,
+        });
       }
     }
 
@@ -341,14 +340,7 @@ export class OrderRealProductService {
   }
 
   async order(user: ILoginUserInfo, getBody: OrderRealProductCreateReqDto) {
-    const {
-      publicChargeTaxPayment,
-      processMethod,
-      isProcess,
-      orderRealProductList,
-      userId,
-      eventName,
-    } = getBody;
+    const { publicChargeTaxPayment, processMethod, isProcess, orderRealProductList, userId, eventName } = getBody;
 
     const userBusiness = await this.userRepository.findOne({
       where: {
@@ -468,7 +460,7 @@ export class OrderRealProductService {
       id: order.id,
       status: order.status,
       registerAt: format(order.createdAt, DateFormatStr),
-      userBusinessName: order.businessUser ? order.businessUser.company?.businessName ?? '' : null,
+      userBusinessName: order.businessUser ? (order.businessUser.company?.businessName ?? '') : null,
       userPersonName: order.businessUser ? order.businessUser.personName : null,
       eventName: order.eventName,
       orderRealProductList,
@@ -634,11 +626,11 @@ export class OrderRealProductService {
 
     const lastEventData = response.data.track.lastEvent
       ? {
-        time: response.data.track.lastEvent.time,
-        code: response.data.track.lastEvent.status.code,
-        name: response.data.track.lastEvent.status.name,
-        description: response.data.track.lastEvent.description,
-      }
+          time: response.data.track.lastEvent.time,
+          code: response.data.track.lastEvent.status.code,
+          name: response.data.track.lastEvent.status.name,
+          description: response.data.track.lastEvent.description,
+        }
       : null;
 
     const eventDataList =
@@ -902,7 +894,7 @@ export class OrderRealProductService {
       userInfo,
       eventName: order.eventName,
       registerAt: format(order.createdAt, DateFormatStr),
-      userBusinessName: order.businessUser ? order.businessUser.company?.businessName ?? null : null,
+      userBusinessName: order.businessUser ? (order.businessUser.company?.businessName ?? null) : null,
       userPersonName: order.businessUser ? order.businessUser.personName : null,
       orderRealProductList,
       publicChargeTaxList,

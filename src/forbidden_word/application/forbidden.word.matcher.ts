@@ -38,9 +38,7 @@ export class ForbiddenWordMatcher implements OnModuleInit {
       select: ['word'],
     });
 
-    this.normalizedWords = activeWords
-      .map((row) => this.normalize(row.word))
-      .filter((word) => word.length > 0);
+    this.normalizedWords = activeWords.map((row) => this.normalize(row.word)).filter((word) => word.length > 0);
 
     this.logger.log(`금칙어 캐시 갱신 완료 (활성 단어 ${this.normalizedWords.length}개)`);
   }

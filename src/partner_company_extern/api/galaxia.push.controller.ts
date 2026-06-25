@@ -65,9 +65,7 @@ export class GalaxiaPushController {
       const clientIp = (req as any).galaxiaClientIp || '';
       const giftKind = GalaxiaIpGuard.getGiftKindByIp(clientIp);
 
-      this.logger.log(
-        `Push 수신: ${transactions.length}건, IP=${clientIp}, giftKind=${giftKind}`,
-      );
+      this.logger.log(`Push 수신: ${transactions.length}건, IP=${clientIp}, giftKind=${giftKind}`);
 
       let successCount = 0;
       let skipCount = 0;
@@ -84,9 +82,7 @@ export class GalaxiaPushController {
         }
       }
 
-      this.logger.log(
-        `Push 처리 완료: 저장=${successCount}, 스킵=${skipCount}, 오류=${errorCount}`,
-      );
+      this.logger.log(`Push 처리 완료: 저장=${successCount}, 스킵=${skipCount}, 오류=${errorCount}`);
       res.status(200).send(SUCCESS_XML);
     } catch (e) {
       this.logger.error(`Push 전체 오류: ${e}`);

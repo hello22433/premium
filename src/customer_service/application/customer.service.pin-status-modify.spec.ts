@@ -61,7 +61,9 @@ describe('CustomerServiceService.execPinStatusModify — terminal / CAS / 트랜
       const { sut } = makeSut(1);
 
       await expect(
-        sut.execPinStatusModify(buildMap({ businessName: 'SSG', beforeChange: terminal, afterChange: 'REFUND_CANCEL' })),
+        sut.execPinStatusModify(
+          buildMap({ businessName: 'SSG', beforeChange: terminal, afterChange: 'REFUND_CANCEL' }),
+        ),
       ).rejects.toBeInstanceOf(BadRequestException);
 
       expect(sut.dataSource.createQueryRunner).not.toHaveBeenCalled();
@@ -84,7 +86,9 @@ describe('CustomerServiceService.execPinStatusModify — terminal / CAS / 트랜
       const { sut } = makeSut(1);
 
       await expect(
-        sut.execPinStatusModify(buildMap({ businessName: '갤럭시아', beforeChange: OrderDeliveryCouponStatus.EXPIRED })),
+        sut.execPinStatusModify(
+          buildMap({ businessName: '갤럭시아', beforeChange: OrderDeliveryCouponStatus.EXPIRED }),
+        ),
       ).rejects.toBeInstanceOf(BadRequestException);
 
       expect(sut.partnerCompanyExternService.cancel).not.toHaveBeenCalled();
@@ -127,10 +131,10 @@ describe('CustomerServiceService.execPinStatusModify — terminal / CAS / 트랜
       expect(sut.orderHistoryRepository.create).toHaveBeenCalled();
       expect(tx.manager.save).toHaveBeenCalledTimes(1); // 이력 저장
       // CAS 는 beforeChange 를 조건으로 사용
-      expect(tx.updateBuilder.where).toHaveBeenCalledWith(
-        'id = :id AND coupon_status = :before',
-        { id: 5001, before: OrderDeliveryCouponStatus.NOT_USED },
-      );
+      expect(tx.updateBuilder.where).toHaveBeenCalledWith('id = :id AND coupon_status = :before', {
+        id: 5001,
+        before: OrderDeliveryCouponStatus.NOT_USED,
+      });
     });
 
     it('SSG: 외부 cancel 없이 CAS+이력으로 처리', async () => {
@@ -138,7 +142,11 @@ describe('CustomerServiceService.execPinStatusModify — terminal / CAS / 트랜
 
       await expect(
         sut.execPinStatusModify(
-          buildMap({ businessName: 'SSG', beforeChange: OrderDeliveryCouponStatus.NOT_USED, afterChange: 'REFUND_CANCEL' }),
+          buildMap({
+            businessName: 'SSG',
+            beforeChange: OrderDeliveryCouponStatus.NOT_USED,
+            afterChange: 'REFUND_CANCEL',
+          }),
         ),
       ).resolves.toBeUndefined();
 
@@ -152,7 +160,11 @@ describe('CustomerServiceService.execPinStatusModify — terminal / CAS / 트랜
 
       await expect(
         sut.execPinStatusModify(
-          buildMap({ businessName: '알수없는협력사', beforeChange: OrderDeliveryCouponStatus.NOT_USED, afterChange: 'CANCEL' }),
+          buildMap({
+            businessName: '알수없는협력사',
+            beforeChange: OrderDeliveryCouponStatus.NOT_USED,
+            afterChange: 'CANCEL',
+          }),
         ),
       ).resolves.toBeUndefined();
 

@@ -67,8 +67,7 @@ describe('PartnerCompanyExternBatchService.processGalaxiaDeptItem — INACTIVE/C
     ...overrides,
   });
 
-  const runItem = (orderDelivery: OrderDeliveryEntity) =>
-    (sut as any).processGalaxiaDeptItem(orderDelivery);
+  const runItem = (orderDelivery: OrderDeliveryEntity) => (sut as any).processGalaxiaDeptItem(orderDelivery);
 
   beforeEach(async () => {
     jest.clearAllMocks();

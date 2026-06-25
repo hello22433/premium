@@ -213,7 +213,7 @@ describe('PartnerCompanyExternService.refreshCouponStatus — GALAXIA INACTIVE �
   });
 
   describe('INACTIVE 외 분기는 영향 없음', () => {
-    it("CANCEL 응답은 기존대로 CANCEL 로 매핑하고 existsBy 를 호출하지 않는다", async () => {
+    it('CANCEL 응답은 기존대로 CANCEL 로 매핑하고 existsBy 를 호출하지 않는다', async () => {
       const orderDelivery = buildOrderDelivery({ discardedAt: null });
       galaxia.check.mockResolvedValue({
         giftCertificate: buildGiftCertificate({ couponStatus: 'CANCEL' }),

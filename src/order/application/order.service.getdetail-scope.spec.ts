@@ -57,8 +57,7 @@ describe('OrderService getDetail view-scope (IDOR)', () => {
         // SELF 스코프: 본인/배정/담당 고객만 통과
         if (clause.includes('order.userId = :userId')) {
           const uid = params.userId;
-          inScope =
-            order.userId === uid || order.operationUserId === uid || order.clientUserId === uid;
+          inScope = order.userId === uid || order.operationUserId === uid || order.clientUserId === uid;
         }
         return builder;
       }),

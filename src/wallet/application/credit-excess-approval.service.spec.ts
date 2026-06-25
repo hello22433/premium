@@ -38,7 +38,7 @@ describe('CreditExcessApprovalService — 4단계 워크플로', () => {
     // transaction mock — invoke callback with manager that returns approval/order repos.
     const txManager = {
       getRepository: jest.fn((target: any) => {
-        if (target?.name === 'OrderEntity' || (target?.options?.name === 'order')) {
+        if (target?.name === 'OrderEntity' || target?.options?.name === 'order') {
           return orderRepo;
         }
         return repo;

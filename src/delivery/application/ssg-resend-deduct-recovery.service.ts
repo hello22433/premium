@@ -51,7 +51,13 @@ export class SsgResendDeductRecoveryService {
     private readonly ssgRefundResolverService: SsgRefundResolverService,
   ) {}
 
-  async sweepOnce(): Promise<{ candidates: number; reversed: number; kept: number; deferred: number; skipped: number }> {
+  async sweepOnce(): Promise<{
+    candidates: number;
+    reversed: number;
+    kept: number;
+    deferred: number;
+    skipped: number;
+  }> {
     const migrationAt = this.resolveMigrationAt();
     if (migrationAt === null) {
       this.logger.error(

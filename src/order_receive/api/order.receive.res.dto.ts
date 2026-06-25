@@ -121,7 +121,8 @@ export class OrderReceiveAlimTalkResDto {
   expireAt?: string | null;
 
   @ApiProperty({
-    description: '초이스 선택 후 별도 발송이 완료/처리중이라 재진입(재선택)을 차단해야 하는지. 추가형 필드(기존 프론트는 undefined 시 차단 안 함).',
+    description:
+      '초이스 선택 후 별도 발송이 완료/처리중이라 재진입(재선택)을 차단해야 하는지. 추가형 필드(기존 프론트는 undefined 시 차단 안 함).',
   })
   blockChoiceReentry: boolean;
 }
@@ -159,7 +160,8 @@ export class OrderReceiveEmailResDto {
   selectChoiceProduct: OrderReceiveChoiceDto | null;
 
   @ApiProperty({
-    description: '전화번호 입력 후 실제 쿠폰 발송(emailCouponStatus=SEND)이 완료되었는지. true 면 프론트는 재진입을 차단한다.',
+    description:
+      '전화번호 입력 후 실제 쿠폰 발송(emailCouponStatus=SEND)이 완료되었는지. true 면 프론트는 재진입을 차단한다.',
   })
   isCouponDelivered: boolean;
 }

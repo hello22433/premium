@@ -1,22 +1,5 @@
-import {
-  Body,
-  Controller,
-  Delete,
-  Get,
-  Param,
-  ParseIntPipe,
-  Post,
-  Put,
-  Query,
-  UseGuards,
-} from '@nestjs/common';
-import {
-  ApiBadRequestResponse,
-  ApiBearerAuth,
-  ApiOkResponse,
-  ApiOperation,
-  ApiTags,
-} from '@nestjs/swagger';
+import { Body, Controller, Delete, Get, Param, ParseIntPipe, Post, Put, Query, UseGuards } from '@nestjs/common';
+import { ApiBadRequestResponse, ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { DepartmentService } from '../application/department.service';
 import {
   DepartmentCreateReqDto,
@@ -25,11 +8,7 @@ import {
   UserDepartmentUpdateReqDto,
   ViewScopeUpdateReqDto,
 } from './department.req.dto';
-import {
-  DepartmentGetDetailResDto,
-  DepartmentGetListResDto,
-  ViewScopeGetResDto,
-} from './department.res.dto';
+import { DepartmentGetDetailResDto, DepartmentGetListResDto, ViewScopeGetResDto } from './department.res.dto';
 import { AuthUserSuperAdminGuard } from '../../auth/api/auth.user.super-admin.guard';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
 

@@ -15,11 +15,7 @@ import { CancelWebhookAdminController } from './cancel.webhook.admin.controller'
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([
-      OrderDeliveryEntity,
-      ExternalApiAccountEntity,
-      ExternalApiWebhookLogEntity,
-    ]),
+    TypeOrmModule.forFeature([OrderDeliveryEntity, ExternalApiAccountEntity, ExternalApiWebhookLogEntity]),
     HttpModule.register({ timeout: 10_000 }),
     AuthModule,
   ],

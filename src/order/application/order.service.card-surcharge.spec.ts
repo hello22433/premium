@@ -1,7 +1,11 @@
 import { OrderService } from './order.service';
 import { applyCardSurcharge } from '../domain/order.fee.calculator';
 import { IOrderStatus } from '../interface/order.status';
-import { addTransactionalDataSource, deleteDataSourceByName, initializeTransactionalContext } from 'typeorm-transactional';
+import {
+  addTransactionalDataSource,
+  deleteDataSourceByName,
+  initializeTransactionalContext,
+} from 'typeorm-transactional';
 import { IPriceAdjustment } from '../../user_discount/interface/price.adjustment';
 import { IOrderType } from '../interface/order.type';
 import { WalletCutoverMode } from '../../wallet/config/wallet-cutover.config';
@@ -75,7 +79,8 @@ describe('OrderService card surcharge settlement priority', () => {
       innerJoinAndSelect: jest.fn().mockReturnThis(),
       leftJoinAndSelect: jest.fn().mockReturnThis(),
       where: jest.fn().mockReturnThis(),
-      getMany: jest.fn()
+      getMany: jest
+        .fn()
         .mockResolvedValueOnce([existingOrderProduct])
         .mockResolvedValue([existingOrderProduct, ...extraOrderProducts]),
     };
@@ -539,8 +544,30 @@ describe('OrderService SSG settlement row validation', () => {
     const d2 = { id: 2, settleFee: null, settlePriceAdjustment: null, settleDiscountType: null };
     const d3 = { id: 3, settleFee: null, settlePriceAdjustment: null, settleDiscountType: null };
     const map = new Map<number, any>([
-      [10, { id: 10, amount: 2, fee: null, priceAdjustment: null, settleDiscountType: null, product: { price: 10000 }, orderDeliveries: [d1, d2] }],
-      [11, { id: 11, amount: 1, fee: null, priceAdjustment: null, settleDiscountType: null, product: { price: 20000 }, orderDeliveries: [d3] }],
+      [
+        10,
+        {
+          id: 10,
+          amount: 2,
+          fee: null,
+          priceAdjustment: null,
+          settleDiscountType: null,
+          product: { price: 10000 },
+          orderDeliveries: [d1, d2],
+        },
+      ],
+      [
+        11,
+        {
+          id: 11,
+          amount: 1,
+          fee: null,
+          priceAdjustment: null,
+          settleDiscountType: null,
+          product: { price: 20000 },
+          orderDeliveries: [d3],
+        },
+      ],
     ]);
 
     const result = await service.processSettleList(
@@ -562,8 +589,14 @@ describe('OrderService SSG settlement row validation', () => {
     expect(d2).toMatchObject({ settleFee: 5, settlePriceAdjustment: IPriceAdjustment.DISCOUNT });
     expect(d3).toMatchObject({ settleFee: 5, settlePriceAdjustment: IPriceAdjustment.DISCOUNT });
     // DB update 도 행별로 각각 호출 (서로 다른 fee)
-    expect(service.orderDeliveryRepository.update).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ settleFee: 10 }));
-    expect(service.orderDeliveryRepository.update).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ settleFee: 5 }));
+    expect(service.orderDeliveryRepository.update).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ settleFee: 10 }),
+    );
+    expect(service.orderDeliveryRepository.update).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ settleFee: 5 }),
+    );
   });
 
   it('정상 SSG 가상 row는 mapping 전체 배송과 mapping 대표값을 같은 정산값으로 동기화한다', async () => {
@@ -599,8 +632,20 @@ describe('OrderService SSG settlement row validation', () => {
       { refundRatio: 100 },
     );
     expect(deliveries).toEqual([
-      { id: 1, settleFee: 5, settlePriceAdjustment: IPriceAdjustment.DISCOUNT, settleDiscountType: null, refundRatio: 100 },
-      { id: 2, settleFee: 5, settlePriceAdjustment: IPriceAdjustment.DISCOUNT, settleDiscountType: null, refundRatio: 100 },
+      {
+        id: 1,
+        settleFee: 5,
+        settlePriceAdjustment: IPriceAdjustment.DISCOUNT,
+        settleDiscountType: null,
+        refundRatio: 100,
+      },
+      {
+        id: 2,
+        settleFee: 5,
+        settlePriceAdjustment: IPriceAdjustment.DISCOUNT,
+        settleDiscountType: null,
+        refundRatio: 100,
+      },
     ]);
   });
 });
@@ -694,7 +739,8 @@ describe('OrderService deliveryConfirmed settlement amount', () => {
     const orderRelationQueryBuilder = createQueryBuilder(order);
 
     service.orderRepository = {
-      createQueryBuilder: jest.fn()
+      createQueryBuilder: jest
+        .fn()
         .mockReturnValueOnce(lockedOrderQueryBuilder)
         .mockReturnValueOnce(orderRelationQueryBuilder),
       save: jest.fn().mockResolvedValue(order),
@@ -824,17 +870,12 @@ describe('OrderService deliveryConfirmed settlement amount', () => {
           await firstSaveFinishedPromise;
         }
 
-        return persistedStatus === IOrderStatus.REVIEW_COMPLETE
-          ? { ...order, orderProductMappings: undefined }
-          : null;
+        return persistedStatus === IOrderStatus.REVIEW_COMPLETE ? { ...order, orderProductMappings: undefined } : null;
       }),
       getOneOrFail: jest.fn(),
     });
     const relationQueryBuilder = createQueryBuilder(order);
-    const lockedQueryBuilders = [
-      createLockedOrderQueryBuilder(),
-      createLockedOrderQueryBuilder(true),
-    ];
+    const lockedQueryBuilders = [createLockedOrderQueryBuilder(), createLockedOrderQueryBuilder(true)];
     let orderQueryCount = 0;
 
     service.orderRepository = {

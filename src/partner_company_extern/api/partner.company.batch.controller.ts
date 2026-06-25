@@ -25,10 +25,7 @@ export class PartnerCompanyBatchController {
 
   @ApiOperation({ summary: '[임시] 갤럭시아 일대사 기간 일괄 실행 (startDay~endDay)' })
   @Post('batch/galaxia-daily-range')
-  async triggerGalaxiaDailyRange(
-    @Query('startDay') startDay: string,
-    @Query('endDay') endDay: string,
-  ) {
+  async triggerGalaxiaDailyRange(@Query('startDay') startDay: string, @Query('endDay') endDay: string) {
     if (!startDay || !endDay || startDay.length !== 8 || endDay.length !== 8) {
       return { message: 'startDay, endDay를 YYYYMMDD 형식으로 입력해주세요.' };
     }
@@ -55,7 +52,8 @@ export class PartnerCompanyBatchController {
       const month = parseInt(current.substring(4, 6)) - 1;
       const day = parseInt(current.substring(6, 8));
       const nextDate = new Date(year, month, day + 1);
-      current = nextDate.getFullYear().toString() +
+      current =
+        nextDate.getFullYear().toString() +
         (nextDate.getMonth() + 1).toString().padStart(2, '0') +
         nextDate.getDate().toString().padStart(2, '0');
     }
@@ -145,14 +143,13 @@ export class PartnerCompanyBatchController {
 
   @ApiOperation({ summary: '컬쳐랜드 일대사 사용목록 드라이런 (읽기 전용, DB 변경 없음)' })
   @Get('batch/test-cultureland-daily-dry-run')
-  async testCulturelandDailyDryRun(
-    @Query('useDate') useDate?: string,
-    @Query('couponNum') couponNum?: string,
-  ) {
+  async testCulturelandDailyDryRun(@Query('useDate') useDate?: string, @Query('couponNum') couponNum?: string) {
     if (useDate && !/^\d{8}$/.test(useDate)) {
       return { message: 'useDate를 YYYYMMDD 형식으로 입력해주세요.' };
     }
-    this.logger.log(`[테스트] testCulturelandDailyDryRun 시작 - useDate=${useDate ?? '어제'}, couponNum=${couponNum ?? '-'}`);
+    this.logger.log(
+      `[테스트] testCulturelandDailyDryRun 시작 - useDate=${useDate ?? '어제'}, couponNum=${couponNum ?? '-'}`,
+    );
     const result = await this.partnerCompanyExternBatchService.testCulturelandDailyDryRun(useDate, couponNum);
     this.logger.log(`[테스트] testCulturelandDailyDryRun 완료 - count=${result.count}`);
     return result;
@@ -165,10 +162,7 @@ export class PartnerCompanyBatchController {
       'EXPIRED 매칭 = 실제 사용됐으나 만료로 잘못 찍힌 피해 건. IP 차단 누락분 규모 파악용.',
   })
   @Get('batch/cultureland-daily-diagnose-range')
-  async diagnoseCulturelandDailyRange(
-    @Query('startDay') startDay: string,
-    @Query('endDay') endDay: string,
-  ) {
+  async diagnoseCulturelandDailyRange(@Query('startDay') startDay: string, @Query('endDay') endDay: string) {
     if (!startDay || !endDay || !/^\d{8}$/.test(startDay) || !/^\d{8}$/.test(endDay)) {
       return { message: 'startDay, endDay를 YYYYMMDD 형식으로 입력해주세요.' };
     }
@@ -176,10 +170,7 @@ export class PartnerCompanyBatchController {
       return { message: 'startDay가 endDay보다 클 수 없습니다.' };
     }
     this.logger.log(`[진단] diagnoseCulturelandDailyRange 시작 - ${startDay} ~ ${endDay}`);
-    const result = await this.partnerCompanyExternBatchService.diagnoseCulturelandDailyRange(
-      startDay,
-      endDay,
-    );
+    const result = await this.partnerCompanyExternBatchService.diagnoseCulturelandDailyRange(startDay, endDay);
     this.logger.log(
       `[진단] diagnoseCulturelandDailyRange 완료 - matched=${result.matched}, wronglyExpired=${result.wronglyExpired.length}`,
     );
@@ -206,14 +197,8 @@ export class PartnerCompanyBatchController {
       return { message: 'startDay가 endDay보다 클 수 없습니다.' };
     }
     const doApply = apply === 'true';
-    this.logger.log(
-      `[백필] backfillCulturelandDailyRange 시작 - ${startDay} ~ ${endDay}, apply=${doApply}`,
-    );
-    const result = await this.partnerCompanyExternBatchService.backfillCulturelandDailyRange(
-      startDay,
-      endDay,
-      doApply,
-    );
+    this.logger.log(`[백필] backfillCulturelandDailyRange 시작 - ${startDay} ~ ${endDay}, apply=${doApply}`);
+    const result = await this.partnerCompanyExternBatchService.backfillCulturelandDailyRange(startDay, endDay, doApply);
     this.logger.log(
       `[백필] backfillCulturelandDailyRange 완료 - apply=${doApply}, matched=${result.matched}, updated=${result.updated}`,
     );

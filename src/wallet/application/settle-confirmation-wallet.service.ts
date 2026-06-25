@@ -55,10 +55,7 @@ export class SettleConfirmationWalletService {
 
   constructor(@InjectDataSource() private readonly dataSource: DataSource) {}
 
-  async confirmSettlement(
-    orderId: number,
-    externalManager?: EntityManager,
-  ): Promise<SettleConfirmResult> {
+  async confirmSettlement(orderId: number, externalManager?: EntityManager): Promise<SettleConfirmResult> {
     if (externalManager) {
       return this.runConfirm(orderId, externalManager);
     }
@@ -70,10 +67,7 @@ export class SettleConfirmationWalletService {
    *  - 마지막 cycle 에 매칭되는 settle_undo 가 이미 존재 → idempotent return (cycle id 그대로).
    *  - settle_release 가 한 건도 없으면 throw (정산확정 안 한 주문 undo 시도).
    */
-  async undoSettlement(
-    orderId: number,
-    externalManager?: EntityManager,
-  ): Promise<SettleUndoResult> {
+  async undoSettlement(orderId: number, externalManager?: EntityManager): Promise<SettleUndoResult> {
     if (externalManager) {
       return this.runUndo(orderId, externalManager);
     }
@@ -164,9 +158,7 @@ export class SettleConfirmationWalletService {
       );
     }
     const latestCycle = parseCycleFromIdempotencyKey(releaseTxs[0].idempotencyKey);
-    const cycleReleaseTxs = releaseTxs.filter(
-      (t) => parseCycleFromIdempotencyKey(t.idempotencyKey) === latestCycle,
-    );
+    const cycleReleaseTxs = releaseTxs.filter((t) => parseCycleFromIdempotencyKey(t.idempotencyKey) === latestCycle);
 
     // 멱등 — 이미 같은 cycle 로 undo 된 row 있으면 short-circuit return
     const existingUndo = await manager
@@ -265,9 +257,7 @@ export class SettleConfirmationWalletService {
   ): Promise<{ alloc: OrderPaymentAllocationEntity; walletLock: WalletAccountEntity; order: OrderEntity }> {
     const peekAlloc = await manager.findOne(OrderPaymentAllocationEntity, { where: { orderId } });
     if (!peekAlloc) {
-      throw new BadRequestException(
-        `SettleConfirmationWalletService: allocation not found for orderId=${orderId}`,
-      );
+      throw new BadRequestException(`SettleConfirmationWalletService: allocation not found for orderId=${orderId}`);
     }
 
     const walletLock = await manager

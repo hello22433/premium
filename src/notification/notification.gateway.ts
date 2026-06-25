@@ -1,18 +1,10 @@
 import { Inject, Logger } from '@nestjs/common';
-import {
-  OnGatewayConnection,
-  OnGatewayDisconnect,
-  WebSocketGateway,
-  WebSocketServer,
-} from '@nestjs/websockets';
+import { OnGatewayConnection, OnGatewayDisconnect, WebSocketGateway, WebSocketServer } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import { OnEvent } from '@nestjs/event-emitter';
 import { ILoginTokenValidator } from '../auth/interface/login.token.validator';
 import { IUserAuthority } from '../user/interface/user.authority';
-import {
-  REQUIREMENT_CHANGED_EVENT,
-  RequirementEventPayload,
-} from '../requirement/interface/requirement.event';
+import { REQUIREMENT_CHANGED_EVENT, RequirementEventPayload } from '../requirement/interface/requirement.event';
 
 interface ConnectedClient {
   userId: number;
@@ -45,10 +37,7 @@ export class NotificationGateway implements OnGatewayConnection, OnGatewayDiscon
 
       const user = this.tokenValidator.validateByToken(token);
 
-      if (
-        user.authority !== IUserAuthority.SUPER_ADMIN &&
-        user.authority !== IUserAuthority.OPERATION_ADMIN
-      ) {
+      if (user.authority !== IUserAuthority.SUPER_ADMIN && user.authority !== IUserAuthority.OPERATION_ADMIN) {
         client.disconnect();
         return;
       }

@@ -26,7 +26,8 @@ export class UserInfoController {
 
   @ApiOperation({
     summary: '비밀번호 변경 연기 API',
-    description: 'passwordChangedAt을 현재 날짜로 업데이트하여 비밀번호 변경을 연기합니다. 임시 비밀번호인 경우(passwordChangedAt이 null) 연기 불가.',
+    description:
+      'passwordChangedAt을 현재 날짜로 업데이트하여 비밀번호 변경을 연기합니다. 임시 비밀번호인 경우(passwordChangedAt이 null) 연기 불가.',
   })
   @ApiBearerAuth()
   // =================================================

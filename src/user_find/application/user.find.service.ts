@@ -44,8 +44,12 @@ export class UserFindService {
     private readonly cryptoCipher: CryptoCipher,
   ) {}
 
-  private readonly loginAuthTemplateCode = this.configService.getOrThrow<string>('ALIM_TALK_INFO_BANK_LOGIN_AUTH_TEMPLATE_CODE');
-  private readonly initPasswordTemplateCode = this.configService.getOrThrow<string>('ALIM_TALK_INFO_BANK_INIT_PASSWORD_TEMPLATE_CODE');
+  private readonly loginAuthTemplateCode = this.configService.getOrThrow<string>(
+    'ALIM_TALK_INFO_BANK_LOGIN_AUTH_TEMPLATE_CODE',
+  );
+  private readonly initPasswordTemplateCode = this.configService.getOrThrow<string>(
+    'ALIM_TALK_INFO_BANK_INIT_PASSWORD_TEMPLATE_CODE',
+  );
 
   private async sendViaAlimTalkWithSmsFallback(
     to: string,

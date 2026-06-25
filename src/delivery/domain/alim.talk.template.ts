@@ -15,8 +15,7 @@ export const AlimTalkTemplate = (orderDelivery: OrderDeliveryEntity) => {
   const displayProduct = orderDelivery.choiceSelectProduct ?? product;
   const displayBrand = (orderDelivery.choiceSelectProduct?.brand ?? product.brand)!;
 
-  const brandKoreanName =
-    displayBrand.nameKorean === '신세계' ? '이마트' : displayBrand.nameKorean;
+  const brandKoreanName = displayBrand.nameKorean === '신세계' ? '이마트' : displayBrand.nameKorean;
 
   // 발행자: 대행주문인 경우 clientUser의 회사명, 아니면 주문자의 회사명
   const publisherName = order.clientUser?.company?.businessName ?? order.user!.company?.businessName ?? '';

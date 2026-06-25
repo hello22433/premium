@@ -100,7 +100,9 @@ export class DepartmentService {
     });
 
     if (userCount > 0) {
-      throw new BadRequestException(`해당 부서에 ${userCount}명의 사용자가 소속되어 있습니다. 먼저 사용자를 다른 부서로 이동해주세요.`);
+      throw new BadRequestException(
+        `해당 부서에 ${userCount}명의 사용자가 소속되어 있습니다. 먼저 사용자를 다른 부서로 이동해주세요.`,
+      );
     }
 
     // Soft delete

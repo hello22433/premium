@@ -44,9 +44,7 @@ import { SsgRecoveryResult } from '../../delivery/interface/ssg.recovery.result'
 //   - R3: resendOrder 가드.
 
 function makeAccount(over?: { isCompany?: boolean }): ExternalApiAccountEntity {
-  const company = over?.isCompany
-    ? { id: 9, balanceManagementType: 'COMPANY', settleMethod: 'CASH' }
-    : undefined;
+  const company = over?.isCompany ? { id: 9, balanceManagementType: 'COMPANY', settleMethod: 'CASH' } : undefined;
   return {
     user: {
       id: 42,
@@ -359,38 +357,31 @@ describe('resendOrder — R3 가드', () => {
   }
 
   it('DELIVERY_CANCEL 주문 재발송 → 3005 거절 (dispatch 미호출)', async () => {
-    const { svc, dispatchSend } = resendService(
-      makeOrder({ status: IOrderStatus.DELIVERY_CANCEL }),
-      {},
-    );
+    const { svc, dispatchSend } = resendService(makeOrder({ status: IOrderStatus.DELIVERY_CANCEL }), {});
     await expect((svc as any).resendOrder(makeAccount(), 'tr')).rejects.toMatchObject({ code: '3005' });
     expect(dispatchSend).not.toHaveBeenCalled();
   });
 
   it('couponStatus CANCEL → 3005 거절', async () => {
-    const { svc, dispatchSend } = resendService(
-      makeOrder({ status: IOrderStatus.DELIVERY_COMPLETE }),
-      { couponStatus: OrderDeliveryCouponStatus.CANCEL },
-    );
+    const { svc, dispatchSend } = resendService(makeOrder({ status: IOrderStatus.DELIVERY_COMPLETE }), {
+      couponStatus: OrderDeliveryCouponStatus.CANCEL,
+    });
     await expect((svc as any).resendOrder(makeAccount(), 'tr')).rejects.toMatchObject({ code: '3005' });
     expect(dispatchSend).not.toHaveBeenCalled();
   });
 
   it('DELIVERY_COMPLETE + 정상 쿠폰 → 허용 (재발송 진행)', async () => {
-    const { svc, dispatchSend } = resendService(
-      makeOrder({ status: IOrderStatus.DELIVERY_COMPLETE }),
-      { barCode: 'BC-1', resendCount: 0 },
-    );
+    const { svc, dispatchSend } = resendService(makeOrder({ status: IOrderStatus.DELIVERY_COMPLETE }), {
+      barCode: 'BC-1',
+      resendCount: 0,
+    });
     const res = await (svc as any).resendOrder(makeAccount(), 'tr');
     expect(dispatchSend).toHaveBeenCalledTimes(1);
     expect(res).toBeDefined();
   });
 
   it('DELIVERY_COMPLETE 이지만 barCode 없음 → 3004 (기존 체크 유지)', async () => {
-    const { svc } = resendService(
-      makeOrder({ status: IOrderStatus.DELIVERY_COMPLETE }),
-      { barCode: null as any },
-    );
+    const { svc } = resendService(makeOrder({ status: IOrderStatus.DELIVERY_COMPLETE }), { barCode: null as any });
     await expect((svc as any).resendOrder(makeAccount(), 'tr')).rejects.toMatchObject({ code: '3004' });
   });
 });

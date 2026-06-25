@@ -103,7 +103,13 @@ describe('WalletReadService', () => {
 
     it('point SUM 은 만료/비활성/소진 제외 필터 적용', async () => {
       userRepo.createQueryBuilder.mockReturnValue(makeQb([{ settlementCode: 'company-7' }]));
-      walletRepo.findOne.mockResolvedValue({ id: '11', depositBalance: 0, creditLimit: 0, creditUsedAmount: 0, creditExcessAmount: 0 } as any);
+      walletRepo.findOne.mockResolvedValue({
+        id: '11',
+        depositBalance: 0,
+        creditLimit: 0,
+        creditUsedAmount: 0,
+        creditExcessAmount: 0,
+      } as any);
       const pointQb = makeQb({ total: '900' });
       pointRepo.createQueryBuilder.mockReturnValue(pointQb as any);
       userRepo.find.mockResolvedValue([]);
@@ -154,7 +160,14 @@ describe('WalletReadService', () => {
     it('includeReleased=true → releasedAt 필터 미적용', async () => {
       userRepo.createQueryBuilder.mockReturnValue(makeQb([{ settlementCode: 'company-7' }]));
       walletRepo.findOne.mockResolvedValue({ id: '11' } as any);
-      const allocQb = makeQb({ walletPaidAmount: '0', depositUsedAmount: '0', creditUsedAmount: '0', creditExcessAmount: '0', pointUsedAmount: '0', orderCount: '0' });
+      const allocQb = makeQb({
+        walletPaidAmount: '0',
+        depositUsedAmount: '0',
+        creditUsedAmount: '0',
+        creditExcessAmount: '0',
+        pointUsedAmount: '0',
+        orderCount: '0',
+      });
       allocRepo.createQueryBuilder.mockReturnValue(allocQb as any);
 
       await sut.getSettlementCodeUsage(7, '2026-06-01', '2026-06-30', true);

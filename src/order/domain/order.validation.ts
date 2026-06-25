@@ -60,10 +60,7 @@ export const validateSsgReservationWindow = (
  * - 즉시/예약 혼합 또는 서로 다른 예약시각: 400
  * sendType 미선택(임시저장 draft) 행은 검사 대상에서 제외한다.
  */
-export const validateSsgUniformSend = (
-  type: IOrderType | null | undefined,
-  products: SsgReservationCandidate[],
-) => {
+export const validateSsgUniformSend = (type: IOrderType | null | undefined, products: SsgReservationCandidate[]) => {
   if (type !== IOrderType.SSG) return;
 
   const hasImmediate = products.some((p) => p.sendType === 'IMMEDIATE');
@@ -74,9 +71,7 @@ export const validateSsgUniformSend = (
   }
 
   if (reserveProducts.length > 0) {
-    const reserveTimes = new Set(
-      reserveProducts.map((p) => new Date(p.sendRequestAt as string | Date).getTime()),
-    );
+    const reserveTimes = new Set(reserveProducts.map((p) => new Date(p.sendRequestAt as string | Date).getTime()));
     if (reserveTimes.size > 1) {
       throw new BadRequestException('SSG 주문의 예약 발송 시간은 모든 상품 행에서 동일해야 합니다.');
     }
@@ -121,14 +116,10 @@ export const resolveProductDuplicateLimit = (
   for (const mapping of mappings) {
     const priceAdjustment = priceAdjustments.get(mapping.id);
     const isUnlimited =
-      priceAdjustment === IPriceAdjustment.ADDITIONAL ||
-      priceAdjustment === IPriceAdjustment.DISCOUNT;
+      priceAdjustment === IPriceAdjustment.ADDITIONAL || priceAdjustment === IPriceAdjustment.DISCOUNT;
     if (isUnlimited) continue;
     const prev = productLimit.get(mapping.productId);
-    productLimit.set(
-      mapping.productId,
-      prev === undefined ? duplicatePhoneLimit : Math.min(prev, duplicatePhoneLimit),
-    );
+    productLimit.set(mapping.productId, prev === undefined ? duplicatePhoneLimit : Math.min(prev, duplicatePhoneLimit));
   }
   return productLimit;
 };

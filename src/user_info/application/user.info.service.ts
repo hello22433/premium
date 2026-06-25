@@ -74,7 +74,7 @@ export class UserInfoService {
     const mainMenuList = UserAuthMainMenuAuthList(authList);
 
     const allowedSendMethods = oneUser.allowedSendMethods
-      ? (oneUser.allowedSendMethods.split(',').map(m => m === 'SMS' ? 'MMS' : m) as IOrderSendMethod[])
+      ? (oneUser.allowedSendMethods.split(',').map((m) => (m === 'SMS' ? 'MMS' : m)) as IOrderSendMethod[])
       : [IOrderSendMethod.ALIM_TALK, IOrderSendMethod.MMS, IOrderSendMethod.EMAIL];
 
     return {

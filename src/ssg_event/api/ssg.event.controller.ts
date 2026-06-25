@@ -192,10 +192,7 @@ export class SsgEventController {
   // =====================================
   @Put('/ssg-event/reservation-range')
   @UseGuards(AuthUserSuperAdminGuard)
-  updateReservationRange(
-    @User() user: ILoginUserInfo,
-    @Body() getBody: SsgReservationRangeUpdateReqDto,
-  ) {
+  updateReservationRange(@User() user: ILoginUserInfo, @Body() getBody: SsgReservationRangeUpdateReqDto) {
     return this.ssgEventService.updateReservationRange(getBody.startDate, getBody.endDate, user.id);
   }
 

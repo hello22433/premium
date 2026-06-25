@@ -11,11 +11,7 @@ import { ForbiddenWordMatcher } from './application/forbidden.word.matcher';
 @Module({
   imports: [
     AuthModule,
-    TypeOrmModule.forFeature([
-      ForbiddenWordEntity,
-      ForbiddenWordHistoryEntity,
-      ForbiddenWordBlockLogEntity,
-    ]),
+    TypeOrmModule.forFeature([ForbiddenWordEntity, ForbiddenWordHistoryEntity, ForbiddenWordBlockLogEntity]),
   ],
   controllers: [ForbiddenWordController],
   providers: [ForbiddenWordService, ForbiddenWordMatcher],

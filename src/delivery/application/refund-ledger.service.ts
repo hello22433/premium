@@ -130,10 +130,7 @@ export class RefundLedgerService {
     await this.clearRefundedAt(manager.getRepository(OrderDeliveryEntity), orderDeliveryId);
   }
 
-  private async insertLedger(
-    repo: Repository<OrderDeliveryRefundEntity>,
-    input: ClaimRefundInput,
-  ): Promise<void> {
+  private async insertLedger(repo: Repository<OrderDeliveryRefundEntity>, input: ClaimRefundInput): Promise<void> {
     try {
       await repo
         .createQueryBuilder()
@@ -156,34 +153,22 @@ export class RefundLedgerService {
         .execute();
     } catch (e: any) {
       if (e?.code === 'ER_DUP_ENTRY' || e?.errno === 1062) {
-        this.logger.warn(
-          `환불 중복 차단: orderDeliveryId=${input.orderDeliveryId}, sourcePath=${input.sourcePath}`,
-        );
-        throw new BadRequestException(
-          `이미 환불된 발송건입니다. (orderDeliveryId: ${input.orderDeliveryId})`,
-        );
+        this.logger.warn(`환불 중복 차단: orderDeliveryId=${input.orderDeliveryId}, sourcePath=${input.sourcePath}`);
+        throw new BadRequestException(`이미 환불된 발송건입니다. (orderDeliveryId: ${input.orderDeliveryId})`);
       }
       throw e;
     }
   }
 
-  private async deleteLedger(
-    repo: Repository<OrderDeliveryRefundEntity>,
-    orderDeliveryId: number,
-  ): Promise<void> {
+  private async deleteLedger(repo: Repository<OrderDeliveryRefundEntity>, orderDeliveryId: number): Promise<void> {
     const result = await repo.delete({ orderDeliveryId });
     if (!result.affected) {
       this.logger.warn(`환불 해제 중복 차단: orderDeliveryId=${orderDeliveryId} (ledger row 없음)`);
-      throw new BadRequestException(
-        `이미 해제된 환불 ledger입니다. (orderDeliveryId: ${orderDeliveryId})`,
-      );
+      throw new BadRequestException(`이미 해제된 환불 ledger입니다. (orderDeliveryId: ${orderDeliveryId})`);
     }
   }
 
-  private async markRefundedAt(
-    repo: Repository<OrderDeliveryEntity>,
-    orderDeliveryId: number,
-  ): Promise<void> {
+  private async markRefundedAt(repo: Repository<OrderDeliveryEntity>, orderDeliveryId: number): Promise<void> {
     await repo
       .createQueryBuilder()
       .update(OrderDeliveryEntity)
@@ -192,10 +177,7 @@ export class RefundLedgerService {
       .execute();
   }
 
-  private async clearRefundedAt(
-    repo: Repository<OrderDeliveryEntity>,
-    orderDeliveryId: number,
-  ): Promise<void> {
+  private async clearRefundedAt(repo: Repository<OrderDeliveryEntity>, orderDeliveryId: number): Promise<void> {
     await repo.update({ id: orderDeliveryId }, { refundedAt: null });
   }
 }

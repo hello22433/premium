@@ -100,10 +100,7 @@ describe('ForbiddenWordController 인가 가드 (HTTP)', () => {
         .send({})
         .expect(403);
 
-      expect(authService.authorityValidator).toHaveBeenCalledWith(
-        expect.anything(),
-        UserAuthSubEnum.FORBIDDEN_WORD,
-      );
+      expect(authService.authorityValidator).toHaveBeenCalledWith(expect.anything(), UserAuthSubEnum.FORBIDDEN_WORD);
     });
   });
 
@@ -129,10 +126,7 @@ describe('ForbiddenWordController 인가 가드 (HTTP)', () => {
         .expect(201);
 
       expect(forbiddenWordService.create).toHaveBeenCalled();
-      expect(authService.authorityValidator).toHaveBeenCalledWith(
-        expect.anything(),
-        UserAuthSubEnum.FORBIDDEN_WORD,
-      );
+      expect(authService.authorityValidator).toHaveBeenCalledWith(expect.anything(), UserAuthSubEnum.FORBIDDEN_WORD);
     });
 
     it('SUPER_ADMIN: DELETE /forbidden-word/1 → 통과 + authorityValidator(FORBIDDEN_WORD)', async () => {
@@ -143,10 +137,7 @@ describe('ForbiddenWordController 인가 가드 (HTTP)', () => {
         .expect(200);
 
       expect(forbiddenWordService.delete).toHaveBeenCalled();
-      expect(authService.authorityValidator).toHaveBeenCalledWith(
-        expect.anything(),
-        UserAuthSubEnum.FORBIDDEN_WORD,
-      );
+      expect(authService.authorityValidator).toHaveBeenCalledWith(expect.anything(), UserAuthSubEnum.FORBIDDEN_WORD);
     });
   });
 

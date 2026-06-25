@@ -1,13 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectDataSource } from '@nestjs/typeorm';
-import {
-  DataSource,
-  EntitySubscriberInterface,
-  EventSubscriber,
-  TransactionCommitEvent,
-  UpdateEvent,
-} from 'typeorm';
+import { DataSource, EntitySubscriberInterface, EventSubscriber, TransactionCommitEvent, UpdateEvent } from 'typeorm';
 
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';

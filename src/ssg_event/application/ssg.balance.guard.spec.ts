@@ -9,7 +9,7 @@ const base = {
   failAmt: 0,
   pendingAmt: 0,
   openTempDeduction: 0, // R
-  orderAmount: 0,       // A_E
+  orderAmount: 0, // A_E
   tol: 0,
 };
 

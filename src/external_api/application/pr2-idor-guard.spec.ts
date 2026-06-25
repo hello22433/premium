@@ -11,10 +11,7 @@ import * as path from 'path';
  */
 describe('PR2 IDOR 5축 가시성 가드 — 구조 검증', () => {
   const root = path.resolve(__dirname, '../../..');
-  const orderServiceSrc = fs.readFileSync(
-    path.join(root, 'src/order/application/order.service.ts'),
-    'utf8',
-  );
+  const orderServiceSrc = fs.readFileSync(path.join(root, 'src/order/application/order.service.ts'), 'utf8');
   const csServiceSrc = fs.readFileSync(
     path.join(root, 'src/customer_service/application/customer.service.service.ts'),
     'utf8',

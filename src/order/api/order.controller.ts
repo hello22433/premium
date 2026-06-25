@@ -226,10 +226,7 @@ export class OrderController {
   })
   // ====================================================
   @Get('/order/delivery-complete/report')
-  getDeliveryCompleteReport(
-    @Query() getQuery: OrderGetDeliveryCompleteReportReqDto,
-    @User() user: ILoginUserInfo,
-  ) {
+  getDeliveryCompleteReport(@Query() getQuery: OrderGetDeliveryCompleteReportReqDto, @User() user: ILoginUserInfo) {
     return this.orderService.getDeliveryCompleteReport(getQuery, user);
   }
 
@@ -436,7 +433,8 @@ export class OrderController {
 
   @ApiOperation({
     summary: '임시저장(TEMP) 또는 발송취소(DELIVERY_CANCEL) 주문 소프트 삭제 API',
-    description: 'TEMP 또는 DELIVERY_CANCEL 상태의 주문을 soft delete 처리 (deleted_at 업데이트). SUPER_ADMIN은 타 유저 주문도 삭제 가능.',
+    description:
+      'TEMP 또는 DELIVERY_CANCEL 상태의 주문을 soft delete 처리 (deleted_at 업데이트). SUPER_ADMIN은 타 유저 주문도 삭제 가능.',
   })
   @ApiOkResponse({
     description: '성공적으로 삭제된 경우',
@@ -772,10 +770,7 @@ export class OrderController {
   ): Promise<OrderGetReportHistoryResDto> {
     // IDOR 방지: 조회 대상 주문이 호출자 view_scope 안에 있는지 선검증
     await this.orderService.assertOrderInViewScope(user, getParam.orderId);
-    const list = await this.activityLogService.getOrderReportHistory(
-      getParam.orderId,
-      getQuery.reportType,
-    );
+    const list = await this.activityLogService.getOrderReportHistory(getParam.orderId, getQuery.reportType);
     return { list };
   }
 
@@ -886,10 +881,7 @@ export class OrderController {
   // =========================================
   @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @Post('/order/early-destroy-request/delivery')
-  createDeliveryEarlyDestroyRequest(
-    @Body() dto: CreateDeliveryEarlyDestroyRequestDto,
-    @User() user: ILoginUserInfo,
-  ) {
+  createDeliveryEarlyDestroyRequest(@Body() dto: CreateDeliveryEarlyDestroyRequestDto, @User() user: ILoginUserInfo) {
     return this.earlyDestroyService.createRequestForDelivery(dto, user);
   }
 
@@ -921,10 +913,7 @@ export class OrderController {
   // =========================================
   @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @Post('/order/early-destroy-request/:requestId/execute')
-  executeEarlyDestroyRequest(
-    @Param('requestId') requestId: number,
-    @User() user: ILoginUserInfo,
-  ) {
+  executeEarlyDestroyRequest(@Param('requestId') requestId: number, @User() user: ILoginUserInfo) {
     return this.earlyDestroyService.executeRequest(requestId, user);
   }
 

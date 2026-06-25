@@ -4,10 +4,7 @@ import { buildLineProductSnapshot, LineProductSnapshotPart } from '../util/order
 
 export type OwnedLine = { productId: number; snapshot?: LineProductSnapshotPart };
 
-export function assertLineIdsValid(
-  lines: { id?: number; productId: number }[],
-  owned: Map<number, OwnedLine>,
-): void {
+export function assertLineIdsValid(lines: { id?: number; productId: number }[], owned: Map<number, OwnedLine>): void {
   const seen = new Set<number>();
   for (const line of lines) {
     if (line.id == null) continue;

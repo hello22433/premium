@@ -240,7 +240,8 @@ export class OrderDetailProductDto {
   failCount: number;
 
   @ApiProperty({
-    description: '주문 시점 가격과 현재 상품 가격이 다른지 여부 (자사 운영자 전용, legacy 스냅샷 없거나 삭제 상품이면 false)',
+    description:
+      '주문 시점 가격과 현재 상품 가격이 다른지 여부 (자사 운영자 전용, legacy 스냅샷 없거나 삭제 상품이면 false)',
     required: false,
   })
   priceChanged?: boolean;

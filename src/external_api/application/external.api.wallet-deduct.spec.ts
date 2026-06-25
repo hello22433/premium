@@ -235,9 +235,7 @@ describe('ExternalApiService wallet 차감 (deductViaWallet)', () => {
     const account = makeAccount();
     const order = makeOrder();
 
-    await expect((svc as any).deductViaWallet(account.user, order, 30000)).rejects.toBeInstanceOf(
-      ExternalApiException,
-    );
+    await expect((svc as any).deductViaWallet(account.user, order, 30000)).rejects.toBeInstanceOf(ExternalApiException);
     await expect((svc as any).deductViaWallet(account.user, order, 30000)).rejects.toMatchObject({
       code: '3002',
     });
@@ -299,7 +297,14 @@ describe('ExternalApiService phaseA 분기 라우팅 (WALLET vs LEGACY)', () => 
   }
 
   // phaseA 의 분기 조각을 그대로 재현 (회귀 가드용 — branch 로직 동치성 확인).
-  async function runBranch(svc: ExternalApiService, account: any, order: any, mapping: any, orderDelivery: any, settleAmount: number) {
+  async function runBranch(
+    svc: ExternalApiService,
+    account: any,
+    order: any,
+    mapping: any,
+    orderDelivery: any,
+    settleAmount: number,
+  ) {
     if ((svc as any).walletCutoverConfig.pr2DeliveryLifecycleMode === WalletCutoverMode.WALLET) {
       mapping.orderDeliveries = [orderDelivery];
       order.orderProductMappings = [mapping];
@@ -432,7 +437,14 @@ describe('phaseA_createAndDeduct (R6 관계그래프)', () => {
       expireDay: 30,
     }));
     const account = makeAccount();
-    const dto: any = { productCode: 'P1', deliveryMethod: 'MMS', recipientPhone: '01000000000', message: '', title: 't', senderPhone: '0100' };
+    const dto: any = {
+      productCode: 'P1',
+      deliveryMethod: 'MMS',
+      recipientPhone: '01000000000',
+      message: '',
+      title: 't',
+      senderPhone: '0100',
+    };
 
     const result = await (svc as any).phaseA_createAndDeduct(account, dto, ctx);
 
@@ -529,9 +541,7 @@ describe('phaseA_createSsgAndDeduct (SSG: allocation + ssgEvent 둘 다)', () =>
   }
 
   it('WALLET → wallet allocation 생성 + ssgEvent 차감 둘 다', async () => {
-    const { svc, build, allocate, persistAllocation, deductEventBalance } = ssgService(
-      WalletCutoverMode.WALLET,
-    );
+    const { svc, build, allocate, persistAllocation, deductEventBalance } = ssgService(WalletCutoverMode.WALLET);
     const account = makeAccount();
     const dto: any = { amount: 50000, recipientPhone: '01000000000', message: '', senderPhone: '0100' };
 
@@ -592,5 +602,4 @@ describe('phaseA_createSsgAndDeduct (SSG: allocation + ssgEvent 둘 다)', () =>
     expect(persistAllocation).toHaveBeenCalledTimes(1);
     expect(deductEventBalance).toHaveBeenCalledTimes(1);
   });
-
 });

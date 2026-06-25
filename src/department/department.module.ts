@@ -8,10 +8,7 @@ import { UserViewScopeEntity } from '../entity/user.view.scope.entity';
 import { UserEntity } from '../entity/user.entity';
 
 @Module({
-  imports: [
-    AuthModule,
-    TypeOrmModule.forFeature([DepartmentEntity, UserViewScopeEntity, UserEntity]),
-  ],
+  imports: [AuthModule, TypeOrmModule.forFeature([DepartmentEntity, UserViewScopeEntity, UserEntity])],
   controllers: [DepartmentController],
   providers: [DepartmentService],
   exports: [DepartmentService],

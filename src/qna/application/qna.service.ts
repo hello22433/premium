@@ -12,7 +12,12 @@ import {
   QnaGetListReqDto,
   QnaUpdateAnswerReqDto,
 } from '../api/qna.req.dto';
-import { QnaBulkDeleteResDto, QnaGetDetailResDto, QnaGetListResDto, QnaGetMyQnaHistoryResDto } from '../api/qna.res.dto';
+import {
+  QnaBulkDeleteResDto,
+  QnaGetDetailResDto,
+  QnaGetListResDto,
+  QnaGetMyQnaHistoryResDto,
+} from '../api/qna.res.dto';
 import { QnaViewDto } from '../api/dto/qna.view.dto';
 import { format } from 'date-fns';
 import { DateDateFormatStr } from '../../common/domain/date.format.str';

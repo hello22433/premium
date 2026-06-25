@@ -69,12 +69,9 @@ describe('PR2a G003 위임층 behavior-identity', () => {
       const svc = svcWithDiscounts();
 
       const legacy = await (svc as any).computeSettlement(account, product, 30000);
-      const billing = await (svc as any).computeSettlementForBilling(
-        account.user,
-        product,
-        30000,
-        { cardSurchargeApplied: (svc as any).resolveCardSurchargeApplied(account) },
-      );
+      const billing = await (svc as any).computeSettlementForBilling(account.user, product, 30000, {
+        cardSurchargeApplied: (svc as any).resolveCardSurchargeApplied(account),
+      });
 
       expect(legacy).toEqual(billing);
       // 단순모드 정가(할인 없음) + CASH(카드할증 없음) → settleAmount=sendAmount, cardSurchargeApplied=false

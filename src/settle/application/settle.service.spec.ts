@@ -59,9 +59,7 @@ describe('SettleService — confirmSingleOrderTx (#20 fix)', () => {
 
     const svc = makeService({
       orderRepository: {
-        createQueryBuilder: jest.fn()
-          .mockReturnValueOnce(makeOrderQb(order))
-          .mockReturnValueOnce(atomicQb),
+        createQueryBuilder: jest.fn().mockReturnValueOnce(makeOrderQb(order)).mockReturnValueOnce(atomicQb),
         manager: {},
       },
       userRepository: {
@@ -79,12 +77,8 @@ describe('SettleService — confirmSingleOrderTx (#20 fix)', () => {
 
     expect(summarySpy).toHaveBeenCalledTimes(1);
     expect(summarySpy).toHaveBeenCalledWith([ORDER_ID]);
-    expect(atomicQb.set).toHaveBeenCalledWith(
-      expect.objectContaining({ settledAmountSnapshot: 7_000 }),
-    );
-    expect(atomicQb.set).not.toHaveBeenCalledWith(
-      expect.objectContaining({ settledAmountSnapshot: 10_000 }),
-    );
+    expect(atomicQb.set).toHaveBeenCalledWith(expect.objectContaining({ settledAmountSnapshot: 7_000 }));
+    expect(atomicQb.set).not.toHaveBeenCalledWith(expect.objectContaining({ settledAmountSnapshot: 10_000 }));
   });
 
   it('allSettleAmount 차감에도 stale(10000) 아닌 fresh(7000) 가 전달된다', async () => {
@@ -94,9 +88,7 @@ describe('SettleService — confirmSingleOrderTx (#20 fix)', () => {
 
     const svc = makeService({
       orderRepository: {
-        createQueryBuilder: jest.fn()
-          .mockReturnValueOnce(makeOrderQb(order))
-          .mockReturnValueOnce(atomicQb),
+        createQueryBuilder: jest.fn().mockReturnValueOnce(makeOrderQb(order)).mockReturnValueOnce(atomicQb),
         manager: {},
       },
       userRepository: {
@@ -105,9 +97,9 @@ describe('SettleService — confirmSingleOrderTx (#20 fix)', () => {
       },
     });
 
-    jest.spyOn(svc, 'getOrderSettlementSummary').mockResolvedValue(
-      new Map([[ORDER_ID, { netAmount: 7_000, hasPending: false }]]),
-    );
+    jest
+      .spyOn(svc, 'getOrderSettlementSummary')
+      .mockResolvedValue(new Map([[ORDER_ID, { netAmount: 7_000, hasPending: false }]]));
 
     await (svc as any).confirmSingleOrderTx(ORDER_ID, { netAmount: 10_000, hasPending: false });
 
@@ -122,8 +114,13 @@ describe('SettleService — confirmSingleOrderTx (#20 fix)', () => {
 
   it('레거시 정산해제(PRE_PAYMENT)는 wallet credit_used 를 SETTLE_UNDO(+snapshot) 로 동기화한다', async () => {
     const order = {
-      id: ORDER_ID, settleStatus: 'SETTLE_COMPLETE', clientUserId: null, userId: 7,
-      isSettleBalance: false, isSettleComplete: true, settledAmountSnapshot: 7_000,
+      id: ORDER_ID,
+      settleStatus: 'SETTLE_COMPLETE',
+      clientUserId: null,
+      userId: 7,
+      isSettleBalance: false,
+      isSettleComplete: true,
+      settledAmountSnapshot: 7_000,
     };
     const lockQb = makeOrderQb(order);
     const updateQb = makeAtomicUpdateQb(1);
@@ -200,9 +197,9 @@ describe('SettleService — confirmSingleOrderTx (#20 fix)', () => {
       },
     });
 
-    jest.spyOn(svc, 'getOrderSettlementSummary').mockResolvedValue(
-      new Map([[ORDER_ID, { netAmount: 5_000, hasPending: true }]]),
-    );
+    jest
+      .spyOn(svc, 'getOrderSettlementSummary')
+      .mockResolvedValue(new Map([[ORDER_ID, { netAmount: 5_000, hasPending: true }]]));
 
     await expect(
       (svc as any).confirmSingleOrderTx(ORDER_ID, { netAmount: 5_000, hasPending: false }),

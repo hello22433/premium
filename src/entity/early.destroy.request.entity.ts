@@ -45,7 +45,12 @@ export class EarlyDestroyRequestEntity extends BaseEntity {
   @Column({ type: 'text', nullable: true, comment: '참고사항' })
   referenceNotes: string | null;
 
-  @Column({ type: 'enum', enum: EarlyDestroyRequestStatus, default: EarlyDestroyRequestStatus.PENDING, comment: '요청 상태' })
+  @Column({
+    type: 'enum',
+    enum: EarlyDestroyRequestStatus,
+    default: EarlyDestroyRequestStatus.PENDING,
+    comment: '요청 상태',
+  })
   status: EarlyDestroyRequestStatus;
 
   @Column({ comment: '요청자 FK) user.id' })

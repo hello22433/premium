@@ -89,7 +89,10 @@ export function evaluateSsgEventSignals(i: SsgEventSignalInput): SsgEventSignalR
   const reasons: string[] = [];
   if (A1) reasons.push(`신세계 발급실패 ${F.toLocaleString()}원 존재(미해결). 가짜 쿠폰 위험.`);
   if (A2) reasons.push(`우리 잔액이 신세계 집계보다 ${rho.toLocaleString()}원 부풀어 있습니다(과다환불 의심).`);
-  if (B) reasons.push(`신세계 발급여력(${ssgRemaining.toLocaleString()}원)이 이 주문 금액(${i.orderAmount.toLocaleString()}원)보다 부족합니다.`);
+  if (B)
+    reasons.push(
+      `신세계 발급여력(${ssgRemaining.toLocaleString()}원)이 이 주문 금액(${i.orderAmount.toLocaleString()}원)보다 부족합니다.`,
+    );
 
   return {
     ssgEventId: i.ssgEventId,

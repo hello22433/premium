@@ -1,11 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
 import { IOrderType } from '../interface/order.type';
 import { IPriceAdjustment } from '../../user_discount/interface/price.adjustment';
-import {
-  validateSsgUniformSend,
-  validateDeliverySendTypes,
-  resolveProductDuplicateLimit,
-} from './order.validation';
+import { validateSsgUniformSend, validateDeliverySendTypes, resolveProductDuplicateLimit } from './order.validation';
 
 describe('validateSsgUniformSend', () => {
   const t = '2026-06-15T10:00:00';
@@ -36,10 +32,7 @@ describe('validateSsgUniformSend', () => {
 
   it('SSG 즉시/예약 혼합이면 400을 던진다', () => {
     expect(() =>
-      validateSsgUniformSend(IOrderType.SSG, [
-        { sendType: 'IMMEDIATE' },
-        { sendType: 'RESERVE', sendRequestAt: t },
-      ]),
+      validateSsgUniformSend(IOrderType.SSG, [{ sendType: 'IMMEDIATE' }, { sendType: 'RESERVE', sendRequestAt: t }]),
     ).toThrow(BadRequestException);
   });
 
@@ -53,9 +46,7 @@ describe('validateSsgUniformSend', () => {
   });
 
   it('저장 단계의 sendType 미선택(draft) 행은 무시한다', () => {
-    expect(() =>
-      validateSsgUniformSend(IOrderType.SSG, [{ sendType: null }, { sendType: null }]),
-    ).not.toThrow();
+    expect(() => validateSsgUniformSend(IOrderType.SSG, [{ sendType: null }, { sendType: null }])).not.toThrow();
   });
 });
 
@@ -69,15 +60,15 @@ describe('validateDeliverySendTypes', () => {
   });
 
   it('sendType이 null인 행이 있으면 400을 던진다 (발송요청 직전 차단)', () => {
-    expect(() =>
-      validateDeliverySendTypes([{ sendType: 'IMMEDIATE' }, { sendType: null }]),
-    ).toThrow(BadRequestException);
+    expect(() => validateDeliverySendTypes([{ sendType: 'IMMEDIATE' }, { sendType: null }])).toThrow(
+      BadRequestException,
+    );
   });
 
   it('RESERVE 행에 sendRequestAt이 없으면 400을 던진다', () => {
-    expect(() =>
-      validateDeliverySendTypes([{ sendType: 'RESERVE', sendRequestAt: null }]),
-    ).toThrow(BadRequestException);
+    expect(() => validateDeliverySendTypes([{ sendType: 'RESERVE', sendRequestAt: null }])).toThrow(
+      BadRequestException,
+    );
   });
 });
 

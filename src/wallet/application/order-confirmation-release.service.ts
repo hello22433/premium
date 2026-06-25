@@ -214,7 +214,12 @@ export class OrderConfirmationReleaseService {
         amount,
         balanceAfter: refreshed?.remainingAmount ?? null,
         memo: input.reason.slice(0, 500),
-        idempotencyKey: buildConfirmReleaseKey(input.orderId, orderSentinelId, WalletResourceType.POINT, Number(grantId)),
+        idempotencyKey: buildConfirmReleaseKey(
+          input.orderId,
+          orderSentinelId,
+          WalletResourceType.POINT,
+          Number(grantId),
+        ),
       });
       walletTransactionIds.push(tx.id);
     }

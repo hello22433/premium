@@ -51,12 +51,14 @@ describe('PartnerCompanyExternService - Galaxia issue duration 선택', () => {
    * - product.type='COUPON': SELF(자체 바코드 생성) 분기 제외
    * - 상품명에 '(백화점)' 미포함: giftKind='cpn'
    */
-  const buildOrderDelivery = (overrides: {
-    opmGalaxiaDuration?: number | null;
-    productGalaxiaDuration?: number | null;
-    expireDay?: number;
-    productName?: string;
-  } = {}): OrderDeliveryEntity =>
+  const buildOrderDelivery = (
+    overrides: {
+      opmGalaxiaDuration?: number | null;
+      productGalaxiaDuration?: number | null;
+      expireDay?: number;
+      productName?: string;
+    } = {},
+  ): OrderDeliveryEntity =>
     ({
       id: 7001,
       transactionId: 'ENM-GLX-7001',
@@ -114,20 +116,14 @@ describe('PartnerCompanyExternService - Galaxia issue duration 선택', () => {
   const issuedDuration = () => galaxia.issue.mock.calls[0][0].duration;
 
   it('OPM galaxiaDuration 최우선 (OPM=10, product=20, expireDay=30 → 10)', async () => {
-    await sut.issue(
-      buildOrderDelivery({ opmGalaxiaDuration: 10, productGalaxiaDuration: 20, expireDay: 30 }),
-      null,
-    );
+    await sut.issue(buildOrderDelivery({ opmGalaxiaDuration: 10, productGalaxiaDuration: 20, expireDay: 30 }), null);
     expect(galaxia.issue).toHaveBeenCalledTimes(1);
     expect(galaxia.issue.mock.calls[0][0]).toEqual(expect.objectContaining({ giftKind: 'cpn' }));
     expect(issuedDuration()).toBe(10);
   });
 
   it('OPM 없으면 product.galaxiaDuration (OPM=null, product=20, expireDay=30 → 20)', async () => {
-    await sut.issue(
-      buildOrderDelivery({ opmGalaxiaDuration: null, productGalaxiaDuration: 20, expireDay: 30 }),
-      null,
-    );
+    await sut.issue(buildOrderDelivery({ opmGalaxiaDuration: null, productGalaxiaDuration: 20, expireDay: 30 }), null);
     expect(issuedDuration()).toBe(20);
   });
 
@@ -140,18 +136,12 @@ describe('PartnerCompanyExternService - Galaxia issue duration 선택', () => {
   });
 
   it('galaxiaDuration이 명시적 0이면 0 전달 (nullish 아님 → 폴백 안 함, Galaxia 최대값)', async () => {
-    await sut.issue(
-      buildOrderDelivery({ opmGalaxiaDuration: 0, productGalaxiaDuration: 20, expireDay: 30 }),
-      null,
-    );
+    await sut.issue(buildOrderDelivery({ opmGalaxiaDuration: 0, productGalaxiaDuration: 20, expireDay: 30 }), null);
     expect(issuedDuration()).toBe(0);
   });
 
   it('dept(백화점) 상품은 duration 미전달(undefined), faceValue 전달', async () => {
-    await sut.issue(
-      buildOrderDelivery({ productName: '신세계상품권(백화점)', expireDay: 30 }),
-      null,
-    );
+    await sut.issue(buildOrderDelivery({ productName: '신세계상품권(백화점)', expireDay: 30 }), null);
     expect(galaxia.issue).toHaveBeenCalledTimes(1);
     const payload = galaxia.issue.mock.calls[0][0];
     expect(payload).toEqual(expect.objectContaining({ giftKind: 'dept', faceValue: '10000' }));

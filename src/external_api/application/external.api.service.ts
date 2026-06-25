@@ -87,10 +87,7 @@ import { WalletManagedPredicate } from '../../wallet/application/wallet-managed.
 import { RefundPoolService } from '../../wallet/application/refund-pool.service';
 import { OrderPaymentAllocationEntity } from '../../entity/order.payment.allocation.entity';
 import { OrderPaymentRefundEventType } from '../../entity/order.payment.refund.event.entity';
-import {
-  OrderDeliveryAttemptEntity,
-  OrderDeliveryAttemptType,
-} from '../../entity/order.delivery.attempt.entity';
+import { OrderDeliveryAttemptEntity, OrderDeliveryAttemptType } from '../../entity/order.delivery.attempt.entity';
 
 @Injectable()
 export class ExternalApiService {
@@ -170,14 +167,16 @@ export class ExternalApiService {
     const user = billingUser;
     const isCompany = user.company?.balanceManagementType === 'COMPANY';
     const result = isCompany
-      ? await this.dataSource.query(
-          'UPDATE user_company SET balance = balance - ? WHERE id = ? AND balance >= ?',
-          [price, user.companyId, price],
-        )
-      : await this.dataSource.query(
-          'UPDATE user SET balance = balance - ? WHERE id = ? AND balance >= ?',
-          [price, user.id, price],
-        );
+      ? await this.dataSource.query('UPDATE user_company SET balance = balance - ? WHERE id = ? AND balance >= ?', [
+          price,
+          user.companyId,
+          price,
+        ])
+      : await this.dataSource.query('UPDATE user SET balance = balance - ? WHERE id = ? AND balance >= ?', [
+          price,
+          user.id,
+          price,
+        ]);
     if (result.affectedRows === 0) {
       throw new ExternalApiException('3002', '잔액 부족');
     }
@@ -192,20 +191,13 @@ export class ExternalApiService {
   // order/mapping/orderDelivery/product 는 이미 저장된 상태여야 하며(R1),
   // 호출자가 R6 관계그래프(order.orderProductMappings/mapping.orderDeliveries/mapping.product)를
   // 구성한 뒤 전달한다. ssgEvent 차감(행사잔액)은 wallet 과 독립이므로 호출자 책임.
-  private async deductViaWallet(
-    billingUser: UserEntity,
-    order: OrderEntity,
-    settleAmount: number,
-  ): Promise<void> {
+  private async deductViaWallet(billingUser: UserEntity, order: OrderEntity, settleAmount: number): Promise<void> {
     const user = billingUser;
 
     // billingUserId = account.user.id (external 은 대행주문 없음, 1:1). wallet 없으면 fail-closed.
     let wallet;
     try {
-      wallet = await this.walletAccountResolverService.resolveByUserId(
-        user.id,
-        this.dataSource.manager,
-      );
+      wallet = await this.walletAccountResolverService.resolveByUserId(user.id, this.dataSource.manager);
     } catch {
       throw new ExternalApiException('3002', '잔액 부족');
     }
@@ -225,9 +217,7 @@ export class ExternalApiService {
       hasDiscountSnapshot: allocation.hasDiscount,
       // settleMethodSnapshot SoT 통일: 주문 저장값 우선, 없으면 이미 조회한 wallet SoT (회사/유저 정책 대신)
       settleMethodSnapshot: order.settleMethod ?? wallet.settleMethod,
-      deliveryIdsForAttempt: allocation.lines
-        .map((l) => l.orderDeliveryId)
-        .filter((id): id is number => id != null),
+      deliveryIdsForAttempt: allocation.lines.map((l) => l.orderDeliveryId).filter((id): id is number => id != null),
       // external 은 신용초과 승인 UI 가 없으므로 항상 미전달 → 락 후 excess 발생 시 typed throw.
       creditExcessApprovalId: null,
     };
@@ -249,22 +239,21 @@ export class ExternalApiService {
     // R4 legacy mirror (same-tx, user.balance 는 기록하지 않음 — wallet ledger 가 SoT).
     const finalAllocation = persistResult.finalAllocation;
     order.settleAmount = finalAllocation.payableSettlementAmount;
-    order.isSettleBalance =
-      finalAllocation.creditUsedAmount === 0 && finalAllocation.creditExcessAmount === 0;
+    order.isSettleBalance = finalAllocation.creditUsedAmount === 0 && finalAllocation.creditExcessAmount === 0;
     order.isCreditExcess = finalAllocation.creditExcessAmount > 0;
 
     const isCompany = user.company?.balanceManagementType === 'COMPANY';
     if (isCompany) {
-      await this.dataSource.manager.query(
-        'UPDATE user_company SET balance = balance - ? WHERE id = ?',
-        [finalAllocation.depositUsedAmount, user.companyId],
-      );
+      await this.dataSource.manager.query('UPDATE user_company SET balance = balance - ? WHERE id = ?', [
+        finalAllocation.depositUsedAmount,
+        user.companyId,
+      ]);
     }
     const allSettleDelta = finalAllocation.creditUsedAmount + finalAllocation.creditExcessAmount;
-    await this.dataSource.manager.query(
-      'UPDATE user SET allSettleAmount = allSettleAmount + ? WHERE id = ?',
-      [allSettleDelta, user.id],
-    );
+    await this.dataSource.manager.query('UPDATE user SET allSettleAmount = allSettleAmount + ? WHERE id = ?', [
+      allSettleDelta,
+      user.id,
+    ]);
 
     // order 변경분 저장 (mirror 필드: settleAmount/isSettleBalance/isCreditExcess).
     await this.orderRepository.save(order);
@@ -274,7 +263,10 @@ export class ExternalApiService {
     const user = billingUser;
     const isCompany = user.company?.balanceManagementType === 'COMPANY';
     if (isCompany) {
-      await this.dataSource.query('UPDATE user_company SET balance = balance + ? WHERE id = ?', [price, user.companyId]);
+      await this.dataSource.query('UPDATE user_company SET balance = balance + ? WHERE id = ?', [
+        price,
+        user.companyId,
+      ]);
     } else {
       await this.dataSource.query('UPDATE user SET balance = balance + ? WHERE id = ?', [price, user.id]);
     }
@@ -316,9 +308,7 @@ export class ExternalApiService {
       where: { orderId: order.id },
     });
     if (!allocation) {
-      throw new Error(
-        `wallet-managed order ${order.id} missing allocation — drift, aborting external refund`,
-      );
+      throw new Error(`wallet-managed order ${order.id} missing allocation — drift, aborting external refund`);
     }
 
     const refundResult = await this.refundPoolService.refund(
@@ -399,9 +389,7 @@ export class ExternalApiService {
     settleAmount: number;
     cardSurchargeApplied: boolean;
   }> {
-    const where: Array<{ userId?: number; partnerCompanyId?: number }> = [
-      { userId: billingUser.id },
-    ];
+    const where: Array<{ userId?: number; partnerCompanyId?: number }> = [{ userId: billingUser.id }];
     if (product.partnerCompanyId != null) {
       where.push({ partnerCompanyId: product.partnerCompanyId });
     }
@@ -429,8 +417,7 @@ export class ExternalApiService {
         : sendAmount;
 
     const cardSurchargeApplied =
-      appOptions?.cardSurchargeApplied ??
-      this.resolveCardSurchargeAppliedForUser(billingUser);
+      appOptions?.cardSurchargeApplied ?? this.resolveCardSurchargeAppliedForUser(billingUser);
     const settleAmount = applyCardSurcharge(unitPrice, cardSurchargeApplied);
 
     return { fee, priceAdjustment, settleAmount, cardSurchargeApplied };
@@ -457,9 +444,7 @@ export class ExternalApiService {
 
   // ─── 발송 헬퍼 ──────────────────────────────────────────
 
-  private async dispatchSend(
-    orderDelivery: OrderDeliveryEntity,
-  ): Promise<DeliverySendHistoryEntity> {
+  private async dispatchSend(orderDelivery: OrderDeliveryEntity): Promise<DeliverySendHistoryEntity> {
     const mapping = orderDelivery.orderProductMapping;
     const product = mapping.product;
 
@@ -468,16 +453,20 @@ export class ExternalApiService {
 
     const body = applyReplaceCharacters(mapping.sendContent || '', orderDelivery);
     const memoRaw = product.memo;
-    const memo = memoRaw && orderDelivery.deliveryMethod !== IOrderSendMethod.EMAIL && mapping.order?.type !== IOrderType.SSG
-      ? applyReplaceCharacters(memoRaw, orderDelivery)
-      : null;
+    const memo =
+      memoRaw && orderDelivery.deliveryMethod !== IOrderSendMethod.EMAIL && mapping.order?.type !== IOrderType.SSG
+        ? applyReplaceCharacters(memoRaw, orderDelivery)
+        : null;
     const tailRaw = mapping.sendTailText;
     const tailText = tailRaw ? applyReplaceCharacters(tailRaw, orderDelivery) : null;
 
-    const encryptKey = this.cryptoCipher.encryptJson({
-      id: orderDelivery.id,
-      transactionId: orderDelivery.transactionId,
-    }, couponTokenExpiry(orderDelivery.expireAt));
+    const encryptKey = this.cryptoCipher.encryptJson(
+      {
+        id: orderDelivery.id,
+        transactionId: orderDelivery.transactionId,
+      },
+      couponTokenExpiry(orderDelivery.expireAt),
+    );
 
     const deliveryHistory = new DeliverySendHistoryEntity();
     deliveryHistory.context = '{}';
@@ -490,16 +479,37 @@ export class ExternalApiService {
 
     if (orderDelivery.deliveryMethod === IOrderSendMethod.ALIM_TALK) {
       await this.deliverySendService.sendAlimTalk(
-        orderDelivery, decryptedTarget, encryptKey, title, body, memo, tailText, filePathList, deliveryHistory,
+        orderDelivery,
+        decryptedTarget,
+        encryptKey,
+        title,
+        body,
+        memo,
+        tailText,
+        filePathList,
+        deliveryHistory,
       );
     } else if (orderDelivery.deliveryMethod === IOrderSendMethod.MMS) {
       await this.deliverySendService.sendSms(
-        orderDelivery, decryptedTarget, encryptKey, title, body, memo, tailText, filePathList, deliveryHistory,
+        orderDelivery,
+        decryptedTarget,
+        encryptKey,
+        title,
+        body,
+        memo,
+        tailText,
+        filePathList,
+        deliveryHistory,
       );
     } else if (orderDelivery.deliveryMethod === IOrderSendMethod.EMAIL) {
       const emailText = tailText ? `${body}\n\n${tailText}` : body;
       await this.deliverySendService.sendEmail(
-        orderDelivery, decryptedTarget, encryptKey, title, emailText, deliveryHistory,
+        orderDelivery,
+        decryptedTarget,
+        encryptKey,
+        title,
+        emailText,
+        deliveryHistory,
       );
     }
 
@@ -533,7 +543,10 @@ export class ExternalApiService {
   }
 
   // billingUser 기준 상품 조회(add-only, 본문 이동). 단순모드 billingUser=account.user 라 동일.
-  async getProductsForBilling(billingUser: UserEntity, productCode?: string): Promise<ExternalApiResponse<ProductResponseData[]>> {
+  async getProductsForBilling(
+    billingUser: UserEntity,
+    productCode?: string,
+  ): Promise<ExternalApiResponse<ProductResponseData[]>> {
     const user = billingUser;
     const isSuperAdmin = user.authority === IUserAuthority.SUPER_ADMIN;
 
@@ -586,11 +599,18 @@ export class ExternalApiService {
 
   // ─── 주문 생성 (3-phase) ────────────────────────────────
 
-  async createOrder(account: ExternalApiAccountEntity, dto: CreateExternalOrderDto, ctx: ApiRequestContext): Promise<ExternalApiResponse<OrderResponseData>> {
+  async createOrder(
+    account: ExternalApiAccountEntity,
+    dto: CreateExternalOrderDto,
+    ctx: ApiRequestContext,
+  ): Promise<ExternalApiResponse<OrderResponseData>> {
     // 비즈니스 멱등(매핑모드 보조): 동일 (apiApp, externalOrderId) 기존 주문이면 그 응답을 반환.
     // 전송 멱등(Idempotency-Key 헤더)과 직교 — 이건 주문축, 그건 요청축.
     if (dto.externalOrderId) {
-      const existing = await this.mappingResolver.findExistingOrderByExternalOrderId(ctx.apiApp.id, dto.externalOrderId);
+      const existing = await this.mappingResolver.findExistingOrderByExternalOrderId(
+        ctx.apiApp.id,
+        dto.externalOrderId,
+      );
       if (existing) {
         return this.buildCreateResponseForExistingOrder(existing);
       }
@@ -603,7 +623,10 @@ export class ExternalApiService {
     } catch (error) {
       // 동시 요청 race: DB UNIQUE(api_app_id, external_order_id) 위반 → 기존 주문 멱등 반환(비500).
       if (dto.externalOrderId && this.isDuplicateExternalOrderError(error)) {
-        const existing = await this.mappingResolver.findExistingOrderByExternalOrderId(ctx.apiApp.id, dto.externalOrderId);
+        const existing = await this.mappingResolver.findExistingOrderByExternalOrderId(
+          ctx.apiApp.id,
+          dto.externalOrderId,
+        );
         if (existing) {
           return this.buildCreateResponseForExistingOrder(existing);
         }
@@ -669,8 +692,9 @@ export class ExternalApiService {
 
   // order.external_order_id UNIQUE(uk_order_api_app_external_order) 위반 판별(동시성 dup).
   private isDuplicateExternalOrderError(error: unknown): boolean {
-    const code = (error as { code?: string; driverError?: { code?: string } })?.code
-      ?? (error as { driverError?: { code?: string } })?.driverError?.code;
+    const code =
+      (error as { code?: string; driverError?: { code?: string } })?.code ??
+      (error as { driverError?: { code?: string } })?.driverError?.code;
     const message = (error as { message?: string })?.message ?? '';
     return code === 'ER_DUP_ENTRY' && message.includes('uk_order_api_app_external_order');
   }
@@ -678,7 +702,11 @@ export class ExternalApiService {
   // ─── Phase A: 주문 생성 + 잔액 차감 ─────────────────────
 
   @Transactional()
-  private async phaseA_createAndDeduct(account: ExternalApiAccountEntity, dto: CreateExternalOrderDto, ctx: ApiRequestContext) {
+  private async phaseA_createAndDeduct(
+    account: ExternalApiAccountEntity,
+    dto: CreateExternalOrderDto,
+    ctx: ApiRequestContext,
+  ) {
     const user = account.user;
     // 3계층 매핑모드 resolve: externalCustomerId → billing user(+company), clientUserId.
     // 단순모드(미지정/빈) → billingUser=account.user, clientUserId=null (기존 경로 비트동일).
@@ -806,10 +834,7 @@ export class ExternalApiService {
 
   // ─── Phase B: 쿠폰 발행 + 발송 (트랜잭션 없음) ──────────
 
-  private async phaseB_issueAndSend(
-    orderDelivery: OrderDeliveryEntity,
-    ssgEvent: SsgEventEntity | null = null,
-  ) {
+  private async phaseB_issueAndSend(orderDelivery: OrderDeliveryEntity, ssgEvent: SsgEventEntity | null = null) {
     const mapping = orderDelivery.orderProductMapping;
     const product = mapping.product;
 
@@ -827,9 +852,7 @@ export class ExternalApiService {
     }
 
     if (orderDelivery.barCode) {
-      const expireDate = orderDelivery.expireAt
-        ? dayjs(orderDelivery.expireAt).format('YYYY. MM. DD')
-        : null;
+      const expireDate = orderDelivery.expireAt ? dayjs(orderDelivery.expireAt).format('YYYY. MM. DD') : null;
       const { path } = await DeliveryCreateCouponImage(
         product.imagePath,
         product.name,
@@ -889,10 +912,7 @@ export class ExternalApiService {
 
     const isCompanyMode = billingUser.company?.balanceManagementType === 'COMPANY';
     const isSsg = order.type === IOrderType.SSG && !!orderDelivery.ssgEventId;
-    const isWalletManaged = await this.walletManagedPredicate.isWalletManaged(
-      order.id,
-      this.dataSource.manager,
-    );
+    const isWalletManaged = await this.walletManagedPredicate.isWalletManaged(order.id, this.dataSource.manager);
 
     // R7-A: claim 멱등 게이트 (내부 batch 패턴).
     //  - legacy: 중복이면 이전 처리 성공이므로 short-circuit return.
@@ -919,9 +939,7 @@ export class ExternalApiService {
             `[EXTERNAL_FAIL] claim 중복 — wallet path 멱등 재시도 진행. orderDelivery.id: ${orderDelivery.id}`,
           );
         } else {
-          this.logger.warn(
-            `[EXTERNAL_FAIL] 환불 중복 차단 (정상, legacy) - orderDelivery.id: ${orderDelivery.id}`,
-          );
+          this.logger.warn(`[EXTERNAL_FAIL] 환불 중복 차단 (정상, legacy) - orderDelivery.id: ${orderDelivery.id}`);
           return;
         }
       } else {
@@ -965,7 +983,11 @@ export class ExternalApiService {
 
   // ─── 주문 상태 조회 ─────────────────────────────────────
 
-  async getOrderStatus(account: ExternalApiAccountEntity, trId: string, ctx: ApiRequestContext): Promise<ExternalApiResponse<OrderStatusResponseData>> {
+  async getOrderStatus(
+    account: ExternalApiAccountEntity,
+    trId: string,
+    ctx: ApiRequestContext,
+  ): Promise<ExternalApiResponse<OrderStatusResponseData>> {
     const orderDelivery = await this.findOrderDeliveryByTrId(account, trId, ctx);
     const mapping = orderDelivery.orderProductMapping;
     const product = mapping?.product;
@@ -988,7 +1010,11 @@ export class ExternalApiService {
 
   // ─── SSG 주문 상태 조회 ─────────────────────────────────
 
-  async getSsgOrderStatus(account: ExternalApiAccountEntity, trId: string, ctx: ApiRequestContext): Promise<ExternalApiResponse<SsgOrderStatusResponseData>> {
+  async getSsgOrderStatus(
+    account: ExternalApiAccountEntity,
+    trId: string,
+    ctx: ApiRequestContext,
+  ): Promise<ExternalApiResponse<SsgOrderStatusResponseData>> {
     const orderDelivery = await this.findOrderDeliveryByTrId(account, trId, ctx);
     const order = orderDelivery.orderProductMapping?.order;
     const price = order?.sendAmount ?? 0;
@@ -1010,7 +1036,11 @@ export class ExternalApiService {
 
   // ─── 주문 취소 ──────────────────────────────────────────
 
-  async cancelOrder(account: ExternalApiAccountEntity, trId: string, ctx: ApiRequestContext): Promise<ExternalApiResponse> {
+  async cancelOrder(
+    account: ExternalApiAccountEntity,
+    trId: string,
+    ctx: ApiRequestContext,
+  ): Promise<ExternalApiResponse> {
     const orderDelivery = await this.findOrderDeliveryByTrId(account, trId, ctx);
     const mapping = orderDelivery.orderProductMapping;
     const order = mapping.order;
@@ -1072,10 +1102,7 @@ export class ExternalApiService {
     const billingUser = await this.loadOrderBillingUser(order, account.user);
 
     const isCompanyMode = billingUser.company?.balanceManagementType === 'COMPANY';
-    const isWalletManaged = await this.walletManagedPredicate.isWalletManaged(
-      order.id,
-      this.dataSource.manager,
-    );
+    const isWalletManaged = await this.walletManagedPredicate.isWalletManaged(order.id, this.dataSource.manager);
     await this.refundLedgerService.claim({
       orderDeliveryId: orderDelivery.id,
       userId: billingUser.id,
@@ -1104,7 +1131,11 @@ export class ExternalApiService {
 
   // ─── 재발송 ─────────────────────────────────────────────
 
-  async resendOrder(account: ExternalApiAccountEntity, trId: string, ctx: ApiRequestContext): Promise<ExternalApiResponse> {
+  async resendOrder(
+    account: ExternalApiAccountEntity,
+    trId: string,
+    ctx: ApiRequestContext,
+  ): Promise<ExternalApiResponse> {
     const orderDelivery = await this.findOrderDeliveryByTrId(account, trId, ctx);
     const order = orderDelivery.orderProductMapping?.order;
 
@@ -1153,10 +1184,7 @@ export class ExternalApiService {
       ) {
         throw new ExternalApiException('3005', '폐기/취소된 쿠폰은 재발송 불가');
       }
-      throw new ExternalApiException(
-        '3008',
-        `재발송 횟수 초과 (${fresh?.resendCount ?? max}/${max})`,
-      );
+      throw new ExternalApiException('3008', `재발송 횟수 초과 (${fresh?.resendCount ?? max}/${max})`);
     }
 
     // 슬롯 선점 후 외부 발송. 실패(throw 또는 isSuccess=false)하면 선점한 슬롯을 되돌린다
@@ -1197,7 +1225,11 @@ export class ExternalApiService {
 
   // ─── SSG 주문 생성 ──────────────────────────────────────
 
-  async createSsgOrder(account: ExternalApiAccountEntity, dto: CreateExternalSsgOrderDto, ctx: ApiRequestContext): Promise<ExternalApiResponse<SsgOrderResponseData>> {
+  async createSsgOrder(
+    account: ExternalApiAccountEntity,
+    dto: CreateExternalSsgOrderDto,
+    ctx: ApiRequestContext,
+  ): Promise<ExternalApiResponse<SsgOrderResponseData>> {
     // SSG 게이트 SoT = api_app.ssgEnabled (키회전 보존, A8/S4). account.ssgEnabled 아님.
     if (!ctx.apiApp.ssgEnabled) {
       throw new ExternalApiException('1005', 'SSG 미승인 계정');
@@ -1205,7 +1237,10 @@ export class ExternalApiService {
 
     // 비즈니스 멱등(SSG): 동일 (apiApp, externalOrderId) 기존 주문이면 그 응답 반환.
     if (dto.externalOrderId) {
-      const existing = await this.mappingResolver.findExistingOrderByExternalOrderId(ctx.apiApp.id, dto.externalOrderId);
+      const existing = await this.mappingResolver.findExistingOrderByExternalOrderId(
+        ctx.apiApp.id,
+        dto.externalOrderId,
+      );
       if (existing) {
         return this.buildSsgCreateResponseForExistingOrder(existing);
       }
@@ -1218,7 +1253,10 @@ export class ExternalApiService {
       ({ order, orderDelivery, ssgEvent } = await this.phaseA_createSsgAndDeduct(account, dto, ctx));
     } catch (error) {
       if (dto.externalOrderId && this.isDuplicateExternalOrderError(error)) {
-        const existing = await this.mappingResolver.findExistingOrderByExternalOrderId(ctx.apiApp.id, dto.externalOrderId);
+        const existing = await this.mappingResolver.findExistingOrderByExternalOrderId(
+          ctx.apiApp.id,
+          dto.externalOrderId,
+        );
         if (existing) {
           return this.buildSsgCreateResponseForExistingOrder(existing);
         }
@@ -1271,7 +1309,11 @@ export class ExternalApiService {
   }
 
   @Transactional()
-  private async phaseA_createSsgAndDeduct(account: ExternalApiAccountEntity, dto: CreateExternalSsgOrderDto, ctx: ApiRequestContext) {
+  private async phaseA_createSsgAndDeduct(
+    account: ExternalApiAccountEntity,
+    dto: CreateExternalSsgOrderDto,
+    ctx: ApiRequestContext,
+  ) {
     const user = account.user;
     // 3계층 매핑모드 resolve (SSG): externalCustomerId → billing user(+company), clientUserId.
     // 단순모드(미지정/빈) → billingUser=account.user, clientUserId=null (기존 SSG 경로 비트동일).
@@ -1284,11 +1326,9 @@ export class ExternalApiService {
 
     // 요청 금액과 일치하는 SSG 상품을 확정(없으면 템플릿으로 생성).
     // 내부 admin /order/ssg 흐름과 동일한 resolver를 사용해 sendAmount === product.price 보장.
-    const product = await this.productService
-      .findOrCreateSsgProductByPrice(sendAmount)
-      .catch(() => {
-        throw new ExternalApiException('3001', 'SSG 상품 없음');
-      });
+    const product = await this.productService.findOrCreateSsgProductByPrice(sendAmount).catch(() => {
+      throw new ExternalApiException('3001', 'SSG 상품 없음');
+    });
 
     const prevOrder = await this.orderRepository.findOne({
       where: { code: Like(`${OrderPrefixCode}%`) },
@@ -1410,9 +1450,7 @@ export class ExternalApiService {
    * (REFUND_CANCEL은 고객사의 고객과 자사 간 정산 결과로, 고객사 입장에서는 발행된 쿠폰으로 본다.)
    */
   private toExternalCouponStatus(status: OrderDeliveryCouponStatus): ExternalCouponStatus {
-    return status === OrderDeliveryCouponStatus.CANCEL
-      ? ExternalCouponStatus.DISCARDED
-      : ExternalCouponStatus.ISSUED;
+    return status === OrderDeliveryCouponStatus.CANCEL ? ExternalCouponStatus.DISCARDED : ExternalCouponStatus.ISSUED;
   }
 
   /**
@@ -1421,10 +1459,7 @@ export class ExternalApiService {
    * 명시적 실패(FAIL/FAIL_SMS)이거나 미발송이면 실패.
    */
   private toExternalDeliveryStatus(orderDelivery: OrderDeliveryEntity): ExternalDeliveryStatus {
-    if (
-      orderDelivery.status === IOrderDeliveryStatus.FAIL ||
-      orderDelivery.status === IOrderDeliveryStatus.FAIL_SMS
-    ) {
+    if (orderDelivery.status === IOrderDeliveryStatus.FAIL || orderDelivery.status === IOrderDeliveryStatus.FAIL_SMS) {
       return ExternalDeliveryStatus.FAIL;
     }
     return orderDelivery.actualSendAt ? ExternalDeliveryStatus.SUCCESS : ExternalDeliveryStatus.FAIL;
@@ -1450,7 +1485,11 @@ export class ExternalApiService {
     };
   }
 
-  private async findOrderDeliveryByTrId(account: ExternalApiAccountEntity, trId: string, ctx: ApiRequestContext): Promise<OrderDeliveryEntity> {
+  private async findOrderDeliveryByTrId(
+    account: ExternalApiAccountEntity,
+    trId: string,
+    ctx: ApiRequestContext,
+  ): Promise<OrderDeliveryEntity> {
     const orderDelivery = await this.orderDeliveryRepository.findOne({
       where: { externalTrId: trId },
       relations: [
@@ -1503,10 +1542,7 @@ export class ExternalApiService {
   /**
    * transactionId + externalTrId(ULID) 한 번에 저장. ULID unique 제약 위반 시 재생성 후 retry.
    */
-  private async saveTransactionIds(
-    orderDeliveryId: number,
-    transactionId: string,
-  ): Promise<string> {
+  private async saveTransactionIds(orderDeliveryId: number, transactionId: string): Promise<string> {
     for (let attempt = 0; attempt < 3; attempt++) {
       const externalTrId = ulid();
       try {

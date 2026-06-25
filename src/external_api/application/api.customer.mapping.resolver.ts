@@ -62,11 +62,7 @@ export class ApiCustomerMappingResolver {
     });
     // 미등록 → default fallback 금지, fail-closed 4xx.
     if (!mapping) {
-      throw new ExternalApiException(
-        '4003',
-        '등록되지 않은 고객 매핑',
-        `미등록 externalCustomerId: ${normalized}`,
-      );
+      throw new ExternalApiException('4003', '등록되지 않은 고객 매핑', `미등록 externalCustomerId: ${normalized}`);
     }
 
     const billingUser = await this.loadActiveBillingUser(mapping.billingUserId);

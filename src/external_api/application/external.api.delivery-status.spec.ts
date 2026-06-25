@@ -1,8 +1,5 @@
 import { ExternalApiService } from './external.api.service';
-import {
-  ExternalCouponStatus,
-  ExternalDeliveryStatus,
-} from '../api/dto/external.api.response.dto';
+import { ExternalCouponStatus, ExternalDeliveryStatus } from '../api/dto/external.api.response.dto';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
@@ -55,11 +52,21 @@ function makeService(orderDelivery: OrderDeliveryEntity) {
 describe('ExternalApiService 발송 결과(deliveryStatus) 응답 계약', () => {
   // [status, actualSendAt, 기대값]
   const cases: Array<[string, IOrderDeliveryStatus, Date | null, ExternalDeliveryStatus]> = [
-    ['발송 성공(COMPLETE + actualSendAt) → SUCCESS', IOrderDeliveryStatus.COMPLETE, new Date(), ExternalDeliveryStatus.SUCCESS],
+    [
+      '발송 성공(COMPLETE + actualSendAt) → SUCCESS',
+      IOrderDeliveryStatus.COMPLETE,
+      new Date(),
+      ExternalDeliveryStatus.SUCCESS,
+    ],
     ['발송 실패(FAIL) → FAIL', IOrderDeliveryStatus.FAIL, null, ExternalDeliveryStatus.FAIL],
     ['알림톡불가 SMS 실패(FAIL_SMS) → FAIL', IOrderDeliveryStatus.FAIL_SMS, null, ExternalDeliveryStatus.FAIL],
     ['미발송(WAIT, actualSendAt 없음) → FAIL', IOrderDeliveryStatus.WAIT, null, ExternalDeliveryStatus.FAIL],
-    ['폐기됐지만 이전 발송 성공(CANCEL + actualSendAt) → SUCCESS', IOrderDeliveryStatus.CANCEL, new Date(), ExternalDeliveryStatus.SUCCESS],
+    [
+      '폐기됐지만 이전 발송 성공(CANCEL + actualSendAt) → SUCCESS',
+      IOrderDeliveryStatus.CANCEL,
+      new Date(),
+      ExternalDeliveryStatus.SUCCESS,
+    ],
   ];
 
   it.each(cases)('getOrderStatus: %s', async (_label, status, actualSendAt, expected) => {

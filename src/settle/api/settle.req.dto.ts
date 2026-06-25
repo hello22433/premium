@@ -94,7 +94,6 @@ export class SettleGetOtherServiceSaleGetListReqDto extends PagingReqDto {
   // =============================================================
   @IsOptional()
   searchKeyword?: string;
-
 }
 
 export class SettleGetOtherServiceSaleGetDetailReqParamDto {
@@ -628,10 +627,12 @@ export class SettleGetUserListReqQueryDto extends PagingReqDto {
   })
   @IsOptional()
   searchKeyword?: string;
-
 }
 
-export class SettleGetUserSummaryReqQueryDto extends OmitType(SettleGetUserListReqQueryDto, ['page', 'take'] as const) {}
+export class SettleGetUserSummaryReqQueryDto extends OmitType(SettleGetUserListReqQueryDto, [
+  'page',
+  'take',
+] as const) {}
 
 export class SettleGetUserDetailReqParamDto {
   @ApiProperty({
@@ -719,7 +720,6 @@ export class SettleGetUserIdsReqQueryDto {
   })
   @IsOptional()
   searchKeyword?: string;
-
 }
 
 export class SettleGetUserExcelDownloadReqDto {
@@ -790,7 +790,6 @@ export class SettleGetUserExcelDownloadReqDto {
   })
   @IsOptional()
   searchKeyword?: string;
-
 }
 
 export class SettleGetUserPerListReqQueryDto extends PagingReqDto {

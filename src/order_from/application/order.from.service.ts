@@ -2,8 +2,16 @@ import { BadRequestException, ForbiddenException, Inject, Injectable } from '@ne
 import { OrderFromDefinitionEntity } from '../../entity/order.from.definition.entity';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, In, IsNull, Like, Repository } from 'typeorm';
-import { OrderFromDefinitionType, OrderFromRequestStatus, TelecomCertType } from '../interface/order.from.definition.type';
-import { OrderFromGetEmailListResDto, OrderFromGetPhoneListResDto, OrderFromPhoneManageListResDto } from '../api/order.from.res.dto';
+import {
+  OrderFromDefinitionType,
+  OrderFromRequestStatus,
+  TelecomCertType,
+} from '../interface/order.from.definition.type';
+import {
+  OrderFromGetEmailListResDto,
+  OrderFromGetPhoneListResDto,
+  OrderFromPhoneManageListResDto,
+} from '../api/order.from.res.dto';
 import {
   OrderFromAdminGetListReqDto,
   OrderFromAdminUpdateCertReqDto,
@@ -51,8 +59,7 @@ export class OrderFromService {
   ): Promise<OrderFromGetPhoneListResDto> {
     // 빈 쿼리(`?userId=`)가 0 으로 변환되어 들어오는 경우까지 본인 조회로 폴백.
     // (?? 는 0 을 잡지 못하므로 양수만 타 계정 조회로 취급)
-    const targetUserId =
-      getQuery.userId && getQuery.userId > 0 ? getQuery.userId : user.id;
+    const targetUserId = getQuery.userId && getQuery.userId > 0 ? getQuery.userId : user.id;
 
     // IDOR 방지: 타 계정 userId는 대리 권한 보유자만 허용
     this.assertCanActForUser(user, targetUserId);
@@ -101,10 +108,7 @@ export class OrderFromService {
   }
 
   /** MMS 발신번호 선택목록의 시스템 기본번호 숨김 여부 토글 (표시 전용, 발송 동작 불변). */
-  async setHideSystemFromPhone(
-    user: ILoginUserInfo,
-    getBody: OrderFromSetHideSystemReqDto,
-  ): Promise<void> {
+  async setHideSystemFromPhone(user: ILoginUserInfo, getBody: OrderFromSetHideSystemReqDto): Promise<void> {
     const targetUserId = getBody.userId ?? user.id;
     this.assertCanActForUser(user, targetUserId);
 
@@ -159,9 +163,7 @@ export class OrderFromService {
     }
 
     const requestStatus =
-      user.authority === IUserAuthority.SUPER_ADMIN
-        ? OrderFromRequestStatus.APPROVED
-        : OrderFromRequestStatus.PENDING;
+      user.authority === IUserAuthority.SUPER_ADMIN ? OrderFromRequestStatus.APPROVED : OrderFromRequestStatus.PENDING;
 
     await this.dataSource.transaction(async (manager) => {
       const inserted = await manager.getRepository(OrderFromDefinitionEntity).insert({
@@ -287,7 +289,7 @@ export class OrderFromService {
         id: item.id,
         type: item.type,
         from: item.from,
-        userEmail: item.userId ? userEmailMap.get(item.userId) ?? '' : '',
+        userEmail: item.userId ? (userEmailMap.get(item.userId) ?? '') : '',
         requestStatus: item.requestStatus,
         telecomCertType: item.telecomCertType,
         telecomCertFile: item.telecomCertFile,
@@ -353,10 +355,7 @@ export class OrderFromService {
 
     if (Object.keys(updateData).length === 0) return;
 
-    const result = await this.orderFromDefinitionRepository.update(
-      { id: body.id, deletedAt: IsNull() },
-      updateData,
-    );
+    const result = await this.orderFromDefinitionRepository.update({ id: body.id, deletedAt: IsNull() }, updateData);
 
     if (!result.affected) {
       throw new BadRequestException('존재하지 않는 발신번호입니다.');
@@ -394,20 +393,14 @@ export class OrderFromService {
     });
 
     // 전체 기본 해제
-    await repo.update(
-      { userId, type: OrderFromDefinitionType.PHONE, isDefault: true },
-      { isDefault: false },
-    );
+    await repo.update({ userId, type: OrderFromDefinitionType.PHONE, isDefault: true }, { isDefault: false });
 
     if (approved.length === 0) {
       await manager.getRepository(UserEntity).update(userId, { fromPhoneNumber: null });
       return;
     }
 
-    const chosen =
-      approved.find((r) => r.id === preferDefaultId) ??
-      approved.find((r) => r.isDefault) ??
-      approved[0];
+    const chosen = approved.find((r) => r.id === preferDefaultId) ?? approved.find((r) => r.isDefault) ?? approved[0];
 
     await repo.update(chosen.id, { isDefault: true });
     await manager.getRepository(UserEntity).update(userId, { fromPhoneNumber: chosen.from });

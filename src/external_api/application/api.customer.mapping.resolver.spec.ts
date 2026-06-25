@@ -14,17 +14,13 @@ describe('ApiCustomerMappingResolver (PR2 Phase 2)', () => {
   let resolver: ApiCustomerMappingResolver;
 
   const activeUser = (id: number): UserEntity =>
-    ({ id, status: IUserStatus.USED, company: { id: 9 } } as unknown as UserEntity);
+    ({ id, status: IUserStatus.USED, company: { id: 9 } }) as unknown as UserEntity;
 
   beforeEach(() => {
     mappingRepo = { findOne: jest.fn() };
     userRepo = { findOne: jest.fn() };
     orderRepo = { findOne: jest.fn() };
-    resolver = new ApiCustomerMappingResolver(
-      mappingRepo as any,
-      userRepo as any,
-      orderRepo as any,
-    );
+    resolver = new ApiCustomerMappingResolver(mappingRepo as any, userRepo as any, orderRepo as any);
   });
 
   describe('resolveBillingTarget', () => {

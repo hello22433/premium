@@ -74,7 +74,7 @@ describe('SsgEventService.getSsgBalanceCheckForOrder', () => {
       eventBalance: 995,
       eventPrice: 1000,
       ...overrides,
-    } as SsgEventEntity);
+    }) as SsgEventEntity;
 
   const createService = (options: {
     historyGroups?: { ssgEventId: number; sum: string }[];
@@ -120,9 +120,10 @@ describe('SsgEventService.getSsgBalanceCheckForOrder', () => {
     };
 
     const ssgIssue = {
-      getAmount: getAmountResult instanceof Error
-        ? jest.fn().mockRejectedValue(getAmountResult)
-        : jest.fn().mockResolvedValue(getAmountResult),
+      getAmount:
+        getAmountResult instanceof Error
+          ? jest.fn().mockRejectedValue(getAmountResult)
+          : jest.fn().mockResolvedValue(getAmountResult),
     };
 
     const service = new SsgEventService(
@@ -268,16 +269,14 @@ describe('SsgEventService.getSsgBalanceCheckForOrder 병렬/타임아웃', () =>
   };
 
   const evt = (id: number, no: string, order: number): SsgEventEntity =>
-    ({ id, no, order, name: `행사${id}`, eventBalance: 1000, eventPrice: 1000 } as SsgEventEntity);
+    ({ id, no, order, name: `행사${id}`, eventBalance: 1000, eventPrice: 1000 }) as SsgEventEntity;
 
   const flush = () => new Promise<void>((r) => setImmediate(r));
 
   it('다중 행사를 병렬 호출한다(직렬 대기 아님)', async () => {
     // getAmount 를 deferred 로: 둘 다 미해결인 상태에서 2회 모두 호출됐는지로 병렬 입증
     const resolvers: ((v: any) => void)[] = [];
-    const getAmount = jest.fn().mockImplementation(
-      () => new Promise((res) => resolvers.push(res)),
-    );
+    const getAmount = jest.fn().mockImplementation(() => new Promise((res) => resolvers.push(res)));
     const { service } = buildControllable(
       [
         { ssgEventId: 10, sum: '-1' },
@@ -303,11 +302,7 @@ describe('SsgEventService.getSsgBalanceCheckForOrder 병렬/타임아웃', () =>
     jest.useFakeTimers();
     try {
       const getAmount = jest.fn().mockImplementation(() => new Promise(() => {})); // 영원히 미해결
-      const { service } = buildControllable(
-        [{ ssgEventId: 10, sum: '-1' }],
-        getAmount,
-        { 10: evt(10, 'E10', 1) },
-      );
+      const { service } = buildControllable([{ ssgEventId: 10, sum: '-1' }], getAmount, { 10: evt(10, 'E10', 1) });
 
       const p = service.getSsgBalanceCheckForOrder(123);
       await jest.advanceTimersByTimeAsync(3001); // SSG_BALANCE_CHECK_TIMEOUT_MS 초과

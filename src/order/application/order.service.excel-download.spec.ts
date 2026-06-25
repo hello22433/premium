@@ -181,7 +181,14 @@ describe('OrderService excelDownload — D3-34 스트리밍 전환 검증', () =
   describe('복수 상품 주문', () => {
     it('"외 N건" suffix가 정확히 붙음 (2개 상품 → 외 1건)', async () => {
       const orders = [
-        makeOrder(1, [{ name: '상품A', amount: 1 }, { name: '상품B', amount: 2 }], 30000),
+        makeOrder(
+          1,
+          [
+            { name: '상품A', amount: 1 },
+            { name: '상품B', amount: 2 },
+          ],
+          30000,
+        ),
       ];
       const { service, capturedRows } = setupService(orders);
 
@@ -192,7 +199,15 @@ describe('OrderService excelDownload — D3-34 스트리밍 전환 검증', () =
 
     it('totalAmount가 전체 상품 amount 합계로 기록됨', async () => {
       const orders = [
-        makeOrder(1, [{ name: '상품A', amount: 3 }, { name: '상품B', amount: 4 }, { name: '상품C', amount: 5 }], 60000),
+        makeOrder(
+          1,
+          [
+            { name: '상품A', amount: 3 },
+            { name: '상품B', amount: 4 },
+            { name: '상품C', amount: 5 },
+          ],
+          60000,
+        ),
       ];
       const { service, capturedRows } = setupService(orders);
 
@@ -240,17 +255,13 @@ describe('OrderService excelDownload — D3-34 스트리밍 전환 검증', () =
 
   describe('청크 분리', () => {
     it('501건 주문 시 청크 재조회가 2회 실행됨', async () => {
-      const orders = Array.from({ length: 501 }, (_, i) =>
-        makeOrder(i + 1, [{ name: `상품${i}`, amount: 1 }], 5000),
-      );
+      const orders = Array.from({ length: 501 }, (_, i) => makeOrder(i + 1, [{ name: `상품${i}`, amount: 1 }], 5000));
       // getMany는 청크당 해당 주문만 반환해야 하지만 mock 단순화:
       // 첫 청크(500) / 두 번째 청크(1)만 검증
       const { service, clonedQb } = setupService(orders);
 
       // 첫 getMany: 500건, 두 번째: 1건 반환하도록 순서 지정
-      clonedQb.getMany
-        .mockResolvedValueOnce(orders.slice(0, 500))
-        .mockResolvedValueOnce(orders.slice(500));
+      clonedQb.getMany.mockResolvedValueOnce(orders.slice(0, 500)).mockResolvedValueOnce(orders.slice(500));
 
       await service.excelDownload(BASE_USER, BASE_BODY, BASE_META);
 

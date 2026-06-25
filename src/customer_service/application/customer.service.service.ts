@@ -1,4 +1,11 @@
-import { BadRequestException, ConflictException, Injectable, InternalServerErrorException, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  InternalServerErrorException,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { applyReplaceCharacters } from '../../common/utils/replace-characters.util';
 import {
@@ -35,7 +42,11 @@ import { RefundLedgerService } from '../../delivery/application/refund-ledger.se
 import { WalletManagedPredicate } from '../../wallet/application/wallet-managed.predicate';
 import { RefundPoolService } from '../../wallet/application/refund-pool.service';
 import { LegacyWalletCreditSyncService } from '../../wallet/application/legacy-wallet-credit-sync.service';
-import { OrderDeliveryAttemptEntity, OrderDeliveryAttemptType, OrderDeliveryAttemptStatus } from '../../entity/order.delivery.attempt.entity';
+import {
+  OrderDeliveryAttemptEntity,
+  OrderDeliveryAttemptType,
+  OrderDeliveryAttemptStatus,
+} from '../../entity/order.delivery.attempt.entity';
 import { OrderPaymentAllocationEntity } from '../../entity/order.payment.allocation.entity';
 import { OrderPaymentAllocationLineEntity } from '../../entity/order.payment.allocation.line.entity';
 import { OrderPaymentRefundEventType } from '../../entity/order.payment.refund.event.entity';
@@ -389,9 +400,7 @@ export class CustomerServiceService {
         where: { orderId },
       });
       if (!allocation) {
-        throw new Error(
-          `reissue wallet carry: wallet-managed 인데 allocation 없음 (orderId=${orderId})`,
-        );
+        throw new Error(`reissue wallet carry: wallet-managed 인데 allocation 없음 (orderId=${orderId})`);
       }
 
       // 1) allocation_line repoint (원본 → 신규). 환불 풀이 line.order_delivery_id IN (targetIds) 로 라인을 찾으므로 필수.
@@ -447,7 +456,12 @@ export class CustomerServiceService {
       .leftJoinAndSelect('choiceSelectProduct.partnerCompany', 'choicePartnerCompany')
       .leftJoinAndMapOne('order.user', 'user', 'user', 'user.id = order.user_id AND user.deleted_at IS NULL')
       .leftJoinAndSelect('user.company', 'userCompany')
-      .leftJoinAndMapOne('order.clientUser', 'user', 'clientUser', 'clientUser.id = order.client_user_id AND clientUser.deleted_at IS NULL')
+      .leftJoinAndMapOne(
+        'order.clientUser',
+        'user',
+        'clientUser',
+        'clientUser.id = order.client_user_id AND clientUser.deleted_at IS NULL',
+      )
       .leftJoinAndSelect('clientUser.company', 'clientCompany')
       .andWhere('orderDelivery.status IN (:...deliveryStatus)', { deliveryStatus: ['COMPLETE', 'COMPLETE_SMS'] })
       .andWhere('orderDelivery.deletedAt IS NULL');
@@ -533,10 +547,9 @@ export class CustomerServiceService {
 
     // 핀번호 (barCode + personalCode OR 조건 부분검색)
     if (barCode) {
-      queryBuilder.andWhere(
-        '(orderDelivery.barCode LIKE :barCode OR orderDelivery.personalCode LIKE :barCode)',
-        { barCode: `%${barCode}%` },
-      );
+      queryBuilder.andWhere('(orderDelivery.barCode LIKE :barCode OR orderDelivery.personalCode LIKE :barCode)', {
+        barCode: `%${barCode}%`,
+      });
     }
 
     // 날짜 조건을 실제 발송일(actualSendAt) 기준으로 변경
@@ -563,11 +576,15 @@ export class CustomerServiceService {
 
       // deliveryTarget 복호화 및 마스킹 처리
       const decryptedDeliveryTarget = this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.deliveryTarget);
-      const maskedDeliveryTarget = decryptedDeliveryTarget ? MaskingUtil.maskDeliveryTarget(decryptedDeliveryTarget) : null;
+      const maskedDeliveryTarget = decryptedDeliveryTarget
+        ? MaskingUtil.maskDeliveryTarget(decryptedDeliveryTarget)
+        : null;
 
       // emailReceiverPhone 복호화 및 마스킹 처리
       const decryptedEmailReceiverPhone = this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.emailReceiverPhone);
-      const maskedEmailReceiverPhone = decryptedEmailReceiverPhone ? MaskingUtil.maskDeliveryTarget(decryptedEmailReceiverPhone) : null;
+      const maskedEmailReceiverPhone = decryptedEmailReceiverPhone
+        ? MaskingUtil.maskDeliveryTarget(decryptedEmailReceiverPhone)
+        : null;
 
       // 실제 발송 시간 계산 (발송 완료 상태일 때 actualSendAt 사용)
       let actualSendAt: string | null = null;
@@ -583,9 +600,7 @@ export class CustomerServiceService {
       const displayPartnerCompany = orderDelivery.choiceSelectProduct?.partnerCompany ?? product.partnerCompany;
 
       // 유효기간 만료일: 발송 시점에 계산되어 저장된 expireAt 직접 사용
-      const expireAt = orderDelivery.expireAt
-        ? dayjs(orderDelivery.expireAt).format('YYYY-MM-DD')
-        : null;
+      const expireAt = orderDelivery.expireAt ? dayjs(orderDelivery.expireAt).format('YYYY-MM-DD') : null;
 
       // sendRequestAt 포맷팅
       let formattedSendRequestAt = '';
@@ -712,7 +727,9 @@ export class CustomerServiceService {
 
       // emailReceiverPhone 복호화 및 마스킹 처리
       const decryptedEmailReceiverPhone = this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.emailReceiverPhone);
-      const maskedEmailReceiverPhone = decryptedEmailReceiverPhone ? MaskingUtil.maskDeliveryTarget(decryptedEmailReceiverPhone) : null;
+      const maskedEmailReceiverPhone = decryptedEmailReceiverPhone
+        ? MaskingUtil.maskDeliveryTarget(decryptedEmailReceiverPhone)
+        : null;
 
       result.push({
         id: orderDelivery.id,
@@ -748,7 +765,10 @@ export class CustomerServiceService {
     };
   }
 
-  async getDetail(user: ILoginUserInfo, getQuery: CustomerServiceGetDetailReqDto): Promise<CustomerServiceDlvryDetailViewDto> {
+  async getDetail(
+    user: ILoginUserInfo,
+    getQuery: CustomerServiceGetDetailReqDto,
+  ): Promise<CustomerServiceDlvryDetailViewDto> {
     const { orderDeliveryId } = getQuery;
 
     const queryBuilder = await this.orderDeliveryRepository
@@ -820,10 +840,7 @@ export class CustomerServiceService {
     }
 
     // sendContent: order_product_mapping에서 가져오고, 대치문자 처리
-    let sendContent = applyReplaceCharacters(
-      queryBuilder.orderProductMapping.sendContent ?? '',
-      queryBuilder,
-    );
+    let sendContent = applyReplaceCharacters(queryBuilder.orderProductMapping.sendContent ?? '', queryBuilder);
 
     return {
       orderDeliveryId: queryBuilder.id,
@@ -1126,10 +1143,7 @@ export class CustomerServiceService {
    * 폐기 역전 (폐기 후 신규 발송 롤백용). CAS: 아직 CANCEL 일 때만 originalStatus 로 되돌리고 discardedAt 해제.
    * SSG 폐기는 외부 cancel 을 호출하지 않으므로(SsgDB 미터치) 상태 플립만으로 안전하게 원복된다.
    */
-  private async reverseDiscard(
-    orderDeliveryId: number,
-    originalStatus: OrderDeliveryCouponStatus,
-  ): Promise<void> {
+  private async reverseDiscard(orderDeliveryId: number, originalStatus: OrderDeliveryCouponStatus): Promise<void> {
     await this.orderDeliveryRepository
       .createQueryBuilder()
       .update(OrderDeliveryEntity)
@@ -1754,7 +1768,10 @@ export class CustomerServiceService {
         } catch (e) {
           if (isSsg && reissueEvent && resendDeductionId) {
             await this.deliveryBatchService.reverseReissueDeductDirect(
-              resendDeductionId, reissueEvent.id, reissueOrderId, reissuePrice,
+              resendDeductionId,
+              reissueEvent.id,
+              reissueOrderId,
+              reissuePrice,
             );
           }
           throw e;
@@ -1869,7 +1886,10 @@ export class CustomerServiceService {
         } catch (preIssueErr) {
           if (isSsg && reissueEvent && resendDeductionId) {
             await this.deliveryBatchService.reverseReissueDeductDirect(
-              resendDeductionId, reissueEvent.id, reissueOrderId, reissuePrice,
+              resendDeductionId,
+              reissueEvent.id,
+              reissueOrderId,
+              reissuePrice,
             );
             await unwindReissue(orderDelivery, savedDelivery?.id ?? null, SsgRefundOutcome.RESTORED);
           }
@@ -1890,7 +1910,11 @@ export class CustomerServiceService {
         } catch (issueError) {
           if (isSsg && reissueEvent && resendDeductionId) {
             const outcome = await this.deliveryBatchService.reverseSsgReissueDeduct(
-              fullDelivery, reissueEvent.id, reissuePrice, reissueOrderId, resendDeductionId,
+              fullDelivery,
+              reissueEvent.id,
+              reissuePrice,
+              reissueOrderId,
+              resendDeductionId,
             );
             if (outcome === SsgRefundOutcome.RESTORED) {
               await unwindReissue(fullDelivery, savedDelivery.id, outcome);
@@ -1905,7 +1929,6 @@ export class CustomerServiceService {
           }
           throw issueError;
         }
-
 
         // 폐기 후 신규발송: 새 쿠폰이므로 유효기간 새로 계산 (SSG는 issue() 내부에서 expireAt 채움 → 제외)
         if (fullDelivery.orderProductMapping.order.type !== IOrderType.SSG) {
@@ -1927,7 +1950,11 @@ export class CustomerServiceService {
         if (!fullDelivery.barCode) {
           if (isSsg && reissueEvent && resendDeductionId) {
             const outcome = await this.deliveryBatchService.reverseSsgReissueDeduct(
-              fullDelivery, reissueEvent.id, reissuePrice, reissueOrderId, resendDeductionId,
+              fullDelivery,
+              reissueEvent.id,
+              reissuePrice,
+              reissueOrderId,
+              resendDeductionId,
             );
             if (outcome === SsgRefundOutcome.RESTORED) {
               await unwindReissue(fullDelivery, savedDelivery.id, outcome);
@@ -1954,11 +1981,7 @@ export class CustomerServiceService {
         // 이후 신규 delivery 폐기 시 attempt/line 부재로 환불이 drift abort 되는 것을 막는다.
         // (SSG 는 forfeit+신규 행사 재차감 모델이라 승계 대상 아님 → 별도 처리 필요.)
         if (!isSsg) {
-          await this.carryWalletOwnershipToReissuedDelivery(
-            reissueOrderId,
-            discardedDelivery.id,
-            savedDelivery.id,
-          );
+          await this.carryWalletOwnershipToReissuedDelivery(reissueOrderId, discardedDelivery.id, savedDelivery.id);
         }
 
         const newPin = fullDelivery.barCode;
@@ -2311,23 +2334,25 @@ export class CustomerServiceService {
       .andWhere('delivery.status IN (:...completeStatuses)', {
         completeStatuses: [IOrderDeliveryStatus.COMPLETE, IOrderDeliveryStatus.COMPLETE_SMS],
       })
-      .andWhere('(delivery.couponStatus IS NULL OR delivery.couponStatus != :cancelStatus OR delivery.id = :deliveryId)', {
-        cancelStatus: OrderDeliveryCouponStatus.CANCEL,
-        deliveryId: orderDelivery.id,
-      })
+      .andWhere(
+        '(delivery.couponStatus IS NULL OR delivery.couponStatus != :cancelStatus OR delivery.id = :deliveryId)',
+        {
+          cancelStatus: OrderDeliveryCouponStatus.CANCEL,
+          deliveryId: orderDelivery.id,
+        },
+      )
       .getMany();
   }
 
-  private isDeliveryIncludedInSettlementSnapshot(
-    delivery: OrderDeliveryEntity,
-    currentDeliveryId: number,
-  ): boolean {
+  private isDeliveryIncludedInSettlementSnapshot(delivery: OrderDeliveryEntity, currentDeliveryId: number): boolean {
     const isComplete =
       delivery.status === IOrderDeliveryStatus.COMPLETE || delivery.status === IOrderDeliveryStatus.COMPLETE_SMS;
     if (!isComplete) {
       return false;
     }
-    return delivery.couponStatus !== OrderDeliveryCouponStatus.CANCEL || Number(delivery.id) === Number(currentDeliveryId);
+    return (
+      delivery.couponStatus !== OrderDeliveryCouponStatus.CANCEL || Number(delivery.id) === Number(currentDeliveryId)
+    );
   }
 
   private async getSettledDiscardRestoreAmount(orderId: number, queryRunner: QueryRunner): Promise<number> {
@@ -2640,7 +2665,12 @@ export class CustomerServiceService {
       .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
       .leftJoinAndMapOne('order.user', 'user', 'user', 'user.id = order.user_id AND user.deleted_at IS NULL')
       .leftJoinAndSelect('user.company', 'userCompany')
-      .leftJoinAndMapOne('order.clientUser', 'user', 'clientUser', 'clientUser.id = order.client_user_id AND clientUser.deleted_at IS NULL')
+      .leftJoinAndMapOne(
+        'order.clientUser',
+        'user',
+        'clientUser',
+        'clientUser.id = order.client_user_id AND clientUser.deleted_at IS NULL',
+      )
       .leftJoinAndSelect('clientUser.company', 'clientCompany')
       .andWhere('orderDelivery.status IN (:...deliveryStatus)', { deliveryStatus: ['COMPLETE', 'COMPLETE_SMS'] })
       .andWhere('orderDelivery.deletedAt IS NULL');
@@ -2703,10 +2733,9 @@ export class CustomerServiceService {
 
     // 핀번호 (barCode + personalCode OR 조건 부분검색)
     if (barCode) {
-      queryBuilder.andWhere(
-        '(orderDelivery.barCode LIKE :barCode OR orderDelivery.personalCode LIKE :barCode)',
-        { barCode: `%${barCode}%` },
-      );
+      queryBuilder.andWhere('(orderDelivery.barCode LIKE :barCode OR orderDelivery.personalCode LIKE :barCode)', {
+        barCode: `%${barCode}%`,
+      });
     }
 
     // 통합검색 (주문번호, 상품명, 상품코드, MMS제목, 수신정보를 OR 조건으로 검색)
@@ -2903,5 +2932,4 @@ export class CustomerServiceService {
       });
     });
   }
-
 }

@@ -87,9 +87,7 @@ export class SsgRefundResolverService {
       }
 
       if (state === SsgInsertState.CONFIRMED) {
-        this.logger.log(
-          `[SSG_REFUND] state=CONFIRMED → 행사 잔액 복구 skip. orderDeliveryId=${input.orderDeliveryId}`,
-        );
+        this.logger.log(`[SSG_REFUND] state=CONFIRMED → 행사 잔액 복구 skip. orderDeliveryId=${input.orderDeliveryId}`);
         await this.refundLedgerService.markSsgSettled(input.orderDeliveryId, input.recoverToken);
         return SsgRefundOutcome.SKIPPED_CONFIRMED;
       }

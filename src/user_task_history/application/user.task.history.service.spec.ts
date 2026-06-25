@@ -176,7 +176,9 @@ describe('UserTaskHistoryService', () => {
 
   describe('create 권한별 접근 제어', () => {
     it('CORPORATE_ADMIN → ForbiddenException', async () => {
-      await expect(sut.create(CORPORATE_ADMIN_USER, { userId: 1, content: '테스트' })).rejects.toThrow(ForbiddenException);
+      await expect(sut.create(CORPORATE_ADMIN_USER, { userId: 1, content: '테스트' })).rejects.toThrow(
+        ForbiddenException,
+      );
     });
 
     it('OPERATION_ADMIN → insert 호출, adminUserId는 loginUser.id', async () => {

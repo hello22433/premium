@@ -13,8 +13,17 @@ import { OrderDeliveryEmailCouponStatus } from '../../delivery/interface/order.d
 describe('OrderReceiveService 재진입 차단 판정', () => {
   // 순수 메서드만 호출하므로 의존성은 주입하지 않는다.
   const service = new OrderReceiveService(
-    null as any, null as any, null as any, null as any, null as any,
-    null as any, null as any, null as any, null as any, null as any, null as any,
+    null as any,
+    null as any,
+    null as any,
+    null as any,
+    null as any,
+    null as any,
+    null as any,
+    null as any,
+    null as any,
+    null as any,
+    null as any,
     null as any,
   );
 
@@ -54,18 +63,24 @@ describe('OrderReceiveService 재진입 차단 판정', () => {
 
     it('활성 SENDING → 차단', () => {
       expect(
-        blockChoiceReentry(makeOd({ choicePostSendStatus: ChoicePostSendStatus.SENDING, choicePostSendClaimedAt: fresh() })),
+        blockChoiceReentry(
+          makeOd({ choicePostSendStatus: ChoicePostSendStatus.SENDING, choicePostSendClaimedAt: fresh() }),
+        ),
       ).toBe(true);
     });
 
     it('stale SENDING → 차단 안 함(재선점 허용)', () => {
       expect(
-        blockChoiceReentry(makeOd({ choicePostSendStatus: ChoicePostSendStatus.SENDING, choicePostSendClaimedAt: stale() })),
+        blockChoiceReentry(
+          makeOd({ choicePostSendStatus: ChoicePostSendStatus.SENDING, choicePostSendClaimedAt: stale() }),
+        ),
       ).toBe(false);
     });
 
     it('FAILED → 차단 안 함(재시도 허용)', () => {
-      expect(blockChoiceReentry(makeOd({ choicePostSendStatus: ChoicePostSendStatus.FAILED, barCode: 'B' }))).toBe(false);
+      expect(blockChoiceReentry(makeOd({ choicePostSendStatus: ChoicePostSendStatus.FAILED, barCode: 'B' }))).toBe(
+        false,
+      );
     });
 
     it('NOT_REQUIRED → 차단 안 함', () => {
@@ -74,7 +89,9 @@ describe('OrderReceiveService 재진입 차단 판정', () => {
 
     it('EMAIL 경로는 항상 차단 안 함', () => {
       expect(
-        blockChoiceReentry(makeOd({ deliveryMethod: IOrderSendMethod.EMAIL, choicePostSendStatus: ChoicePostSendStatus.SENT })),
+        blockChoiceReentry(
+          makeOd({ deliveryMethod: IOrderSendMethod.EMAIL, choicePostSendStatus: ChoicePostSendStatus.SENT }),
+        ),
       ).toBe(false);
     });
 
@@ -133,7 +150,11 @@ describe('OrderReceiveService 재진입 차단 판정', () => {
     it('ALIM_TALK+COMPLETE_SMS → 필요', () => {
       expect(
         requiresChoicePostSend(
-          makeOd({ barCode: 'B', deliveryMethod: IOrderSendMethod.ALIM_TALK, status: IOrderDeliveryStatus.COMPLETE_SMS }),
+          makeOd({
+            barCode: 'B',
+            deliveryMethod: IOrderSendMethod.ALIM_TALK,
+            status: IOrderDeliveryStatus.COMPLETE_SMS,
+          }),
         ),
       ).toBe(true);
     });

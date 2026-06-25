@@ -140,10 +140,7 @@ describe('SettleConfirmationWalletService', () => {
     };
 
     const module: TestingModule = await Test.createTestingModule({
-      providers: [
-        SettleConfirmationWalletService,
-        { provide: getDataSourceToken(), useValue: dataSource },
-      ],
+      providers: [SettleConfirmationWalletService, { provide: getDataSourceToken(), useValue: dataSource }],
     }).compile();
     sut = module.get(SettleConfirmationWalletService);
   });

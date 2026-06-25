@@ -34,9 +34,14 @@ describe('CustomerServiceService.getUnmaskedDeliveryTarget — 권한검사(HIGH
   };
 
   it('권한 없는 사용자면 거부하고 복호화하지 않는다', async () => {
-    const sut = makeSut(buildOrderDelivery(IProductType.GENERAL), jest.fn().mockRejectedValue(new ForbiddenException('권한이 없습니다.')));
+    const sut = makeSut(
+      buildOrderDelivery(IProductType.GENERAL),
+      jest.fn().mockRejectedValue(new ForbiddenException('권한이 없습니다.')),
+    );
 
-    await expect(sut.getUnmaskedDeliveryTarget(operator, { orderDeliveryId: 5001 })).rejects.toThrow(ForbiddenException);
+    await expect(sut.getUnmaskedDeliveryTarget(operator, { orderDeliveryId: 5001 })).rejects.toThrow(
+      ForbiddenException,
+    );
     // 권한검사가 복호화보다 먼저 → decrypt 미호출 (개인정보 미노출)
     expect(sut.cryptoCipher.decryptDeliveryTarget).not.toHaveBeenCalled();
   });
@@ -44,8 +49,12 @@ describe('CustomerServiceService.getUnmaskedDeliveryTarget — 권한검사(HIGH
   it('CS 대상이 아닌 상품 유형이면 400, 권한검사도 도달하지 않는다', async () => {
     const sut = makeSut(buildOrderDelivery(undefined)); // product.type 없음 → resolveCsCouponAuthority null
 
-    await expect(sut.getUnmaskedDeliveryTarget(operator, { orderDeliveryId: 5001 })).rejects.toThrow(BadRequestException);
-    await expect(sut.getUnmaskedDeliveryTarget(operator, { orderDeliveryId: 5001 })).rejects.toThrow('CS 대상이 아닌 상품 유형입니다.');
+    await expect(sut.getUnmaskedDeliveryTarget(operator, { orderDeliveryId: 5001 })).rejects.toThrow(
+      BadRequestException,
+    );
+    await expect(sut.getUnmaskedDeliveryTarget(operator, { orderDeliveryId: 5001 })).rejects.toThrow(
+      'CS 대상이 아닌 상품 유형입니다.',
+    );
     expect(sut.authService.authorityValidator).not.toHaveBeenCalled();
     expect(sut.cryptoCipher.decryptDeliveryTarget).not.toHaveBeenCalled();
   });

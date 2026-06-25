@@ -284,14 +284,10 @@ export class DaouHttp implements IDaou {
    * check 로 cpnStatus 가 '02'(기취소) 인지 확인하여 멱등 처리한다.
    */
   private async verifyCancelIdempotent(obj: DaouCancelIn, reason: string): Promise<DaouCancelOut> {
-    this.logger.warn(
-      `[cancel] 에러(${reason}) - check 로 멱등 검증. pinNo: ${obj.pinNo}`,
-    );
+    this.logger.warn(`[cancel] 에러(${reason}) - check 로 멱등 검증. pinNo: ${obj.pinNo}`);
     const checkResult = await this.check({ barCode: obj.pinNo });
     if (checkResult.cpnStatus === '02') {
-      this.logger.warn(
-        `[cancel] check 결과 cpnStatus=02 (기취소) 확인 - 멱등 처리. pinNo: ${obj.pinNo}`,
-      );
+      this.logger.warn(`[cancel] check 결과 cpnStatus=02 (기취소) 확인 - 멱등 처리. pinNo: ${obj.pinNo}`);
       return {
         resultCode: 'S000001',
         resultMessage: '이미 취소된 쿠폰 (멱등 처리)',
@@ -324,9 +320,7 @@ export class DaouHttp implements IDaou {
       const httpsAgent = this.createHttpsAgent();
 
       // GET 요청 (API 스펙 명시 — 기존 메서드의 POST와 다름)
-      const response = await firstValueFrom(
-        this.httpService.get(url, { httpsAgent }),
-      );
+      const response = await firstValueFrom(this.httpService.get(url, { httpsAgent }));
 
       this.logger.log(`DAOU GoodsInfo Response: ${response.data}`);
 

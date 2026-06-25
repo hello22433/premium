@@ -229,10 +229,7 @@ describe('RefundLedgerService', () => {
       await sut.release(baseInput.orderDeliveryId);
 
       expect(refundRepository.delete).toHaveBeenCalledWith({ orderDeliveryId: baseInput.orderDeliveryId });
-      expect(deliveryRepository.update).toHaveBeenCalledWith(
-        { id: baseInput.orderDeliveryId },
-        { refundedAt: null },
-      );
+      expect(deliveryRepository.update).toHaveBeenCalledWith({ id: baseInput.orderDeliveryId }, { refundedAt: null });
     });
 
     /**
@@ -325,10 +322,7 @@ describe('RefundLedgerService', () => {
       await sut.releaseWithManager(manager, baseInput.orderDeliveryId);
 
       expect(refundRepo.delete).toHaveBeenCalledWith({ orderDeliveryId: baseInput.orderDeliveryId });
-      expect(deliveryRepo.update).toHaveBeenCalledWith(
-        { id: baseInput.orderDeliveryId },
-        { refundedAt: null },
-      );
+      expect(deliveryRepo.update).toHaveBeenCalledWith({ id: baseInput.orderDeliveryId }, { refundedAt: null });
     });
   });
 });

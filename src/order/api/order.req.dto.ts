@@ -1,5 +1,19 @@
 import { IOrderStatus } from '../interface/order.status';
-import { IsArray, IsBoolean, IsEnum, IsIn, IsInt, IsNotEmpty, IsNumber, IsOptional, IsString, Matches, MaxLength, Min, ValidateNested } from 'class-validator';
+import {
+  IsArray,
+  IsBoolean,
+  IsEnum,
+  IsIn,
+  IsInt,
+  IsNotEmpty,
+  IsNumber,
+  IsOptional,
+  IsString,
+  Matches,
+  MaxLength,
+  Min,
+  ValidateNested,
+} from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { dateAtRegexp } from '../../common/domain/date.regexp';
 import { PagingReqDto } from '../../common/api/dto/pagination.req.dto';
@@ -640,12 +654,23 @@ export class OrderGetReportHistoryReqQueryDto {
   @ApiProperty({
     description:
       '리포트 타입 ex) DELIVERY_COMPLETE_REPORT: 발송완료리포트, TRANSACTION_STATEMENT: 거래명세서, DELIVERY_COMPLETE_REPORT_EMAIL: 발송완료리포트 이메일 발송, TRANSACTION_STATEMENT_EMAIL: 거래명세서 이메일 발송, DESTRUCTION_CERTIFICATE_EMAIL: 파기확약서 이메일 발송',
-    enum: ['DELIVERY_COMPLETE_REPORT', 'TRANSACTION_STATEMENT', 'DELIVERY_COMPLETE_REPORT_EMAIL', 'TRANSACTION_STATEMENT_EMAIL', 'DESTRUCTION_CERTIFICATE_EMAIL'],
+    enum: [
+      'DELIVERY_COMPLETE_REPORT',
+      'TRANSACTION_STATEMENT',
+      'DELIVERY_COMPLETE_REPORT_EMAIL',
+      'TRANSACTION_STATEMENT_EMAIL',
+      'DESTRUCTION_CERTIFICATE_EMAIL',
+    ],
   })
   // ===================================
   @IsNotEmpty()
   @IsString()
-  reportType: 'DELIVERY_COMPLETE_REPORT' | 'TRANSACTION_STATEMENT' | 'DELIVERY_COMPLETE_REPORT_EMAIL' | 'TRANSACTION_STATEMENT_EMAIL' | 'DESTRUCTION_CERTIFICATE_EMAIL';
+  reportType:
+    | 'DELIVERY_COMPLETE_REPORT'
+    | 'TRANSACTION_STATEMENT'
+    | 'DELIVERY_COMPLETE_REPORT_EMAIL'
+    | 'TRANSACTION_STATEMENT_EMAIL'
+    | 'DESTRUCTION_CERTIFICATE_EMAIL';
 }
 
 export class OrderGetReportHistoryReqParamDto {

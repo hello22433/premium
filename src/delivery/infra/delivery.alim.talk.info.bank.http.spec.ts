@@ -77,9 +77,7 @@ describe('DeliveryAlimTalkInfoBankHttp — inquiry 재시도 횟수 일치', () 
   });
 
   it('inquiry 전부 실패 시 inquiryReport 호출 횟수 = INQUIRY_MAX_ATTEMPTS', async () => {
-    (httpService.post as jest.Mock)
-      .mockReturnValueOnce(of(makeAuthResponse()))
-      .mockReturnValueOnce(of(sendResponse));
+    (httpService.post as jest.Mock).mockReturnValueOnce(of(makeAuthResponse())).mockReturnValueOnce(of(sendResponse));
 
     // inquiry 응답: 항상 404 에러
     (httpService.get as jest.Mock).mockReturnValue(
@@ -88,9 +86,7 @@ describe('DeliveryAlimTalkInfoBankHttp — inquiry 재시도 횟수 일치', () 
       })),
     );
 
-    await expect(
-      service.send({ to: '01012345678', text: '테스트', templateCode: 'TMPL' }),
-    ).rejects.toThrow();
+    await expect(service.send({ to: '01012345678', text: '테스트', templateCode: 'TMPL' })).rejects.toThrow();
 
     expect(httpService.get).toHaveBeenCalledTimes(2);
   });
@@ -98,9 +94,7 @@ describe('DeliveryAlimTalkInfoBankHttp — inquiry 재시도 횟수 일치', () 
   it('마지막 실패 로그에 retrying 없음, 중간 실패 로그에 retrying 있음', async () => {
     const logSpy = jest.spyOn((service as any).logger, 'log').mockImplementation(() => {});
 
-    (httpService.post as jest.Mock)
-      .mockReturnValueOnce(of(makeAuthResponse()))
-      .mockReturnValueOnce(of(sendResponse));
+    (httpService.post as jest.Mock).mockReturnValueOnce(of(makeAuthResponse())).mockReturnValueOnce(of(sendResponse));
 
     (httpService.get as jest.Mock).mockReturnValue(
       throwError(() => ({
@@ -108,9 +102,7 @@ describe('DeliveryAlimTalkInfoBankHttp — inquiry 재시도 횟수 일치', () 
       })),
     );
 
-    await expect(
-      service.send({ to: '01012345678', text: '테스트', templateCode: 'TMPL' }),
-    ).rejects.toThrow();
+    await expect(service.send({ to: '01012345678', text: '테스트', templateCode: 'TMPL' })).rejects.toThrow();
 
     const failLogs = logSpy.mock.calls
       .map(([msg]) => msg as string)
@@ -127,16 +119,14 @@ describe('DeliveryAlimTalkInfoBankHttp — inquiry 재시도 횟수 일치', () 
   });
 
   it('throw 에러 메시지 내 횟수가 실제 loop 횟수(2)와 일치', async () => {
-    (httpService.post as jest.Mock)
-      .mockReturnValueOnce(of(makeAuthResponse()))
-      .mockReturnValueOnce(of(sendResponse));
+    (httpService.post as jest.Mock).mockReturnValueOnce(of(makeAuthResponse())).mockReturnValueOnce(of(sendResponse));
 
     (httpService.get as jest.Mock).mockReturnValue(
       throwError(() => ({ response: { data: { code: 'E404', result: 'Not Found' } } })),
     );
 
-    await expect(
-      service.send({ to: '01012345678', text: '테스트', templateCode: 'TMPL' }),
-    ).rejects.toThrow(/inquiry failed after 2 attempts/);
+    await expect(service.send({ to: '01012345678', text: '테스트', templateCode: 'TMPL' })).rejects.toThrow(
+      /inquiry failed after 2 attempts/,
+    );
   });
 });

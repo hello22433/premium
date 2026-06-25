@@ -41,8 +41,7 @@ describe('OrderService 조회 형제 메서드 view-scope (IDOR, D3-19)', () => 
       andWhere: jest.fn((clause: string, params: Record<string, unknown>) => {
         if (clause.includes('order.userId = :userId')) {
           const uid = params.userId;
-          inScope =
-            order.userId === uid || order.operationUserId === uid || order.clientUserId === uid;
+          inScope = order.userId === uid || order.operationUserId === uid || order.clientUserId === uid;
         }
         return builder;
       }),
@@ -77,37 +76,33 @@ describe('OrderService 조회 형제 메서드 view-scope (IDOR, D3-19)', () => 
 
   it('getDeliveryCompleteReport: 범위 밖 호출자는 거부된다', async () => {
     const service = buildService(ownedOrder);
-    await expect(
-      service.getDeliveryCompleteReport({ id: 77, unmasked: false }, intruder),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.getDeliveryCompleteReport({ id: 77, unmasked: false }, intruder)).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
   });
 
   it('getOrderCompleteReport: 범위 밖 호출자는 거부된다', async () => {
     const service = buildService(ownedOrder);
-    await expect(service.getOrderCompleteReport({ id: 77 }, intruder)).rejects.toBeInstanceOf(
-      BadRequestException,
-    );
+    await expect(service.getOrderCompleteReport({ id: 77 }, intruder)).rejects.toBeInstanceOf(BadRequestException);
   });
 
   it('getDeliveryCompleteReportMultiple: 범위 밖 주문ID 묶음은 결과 0건 → 거부', async () => {
     const service = buildService(ownedOrder);
-    await expect(
-      service.getDeliveryCompleteReportMultiple('77', undefined, intruder, false),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.getDeliveryCompleteReportMultiple('77', undefined, intruder, false)).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
   });
 
   it('getOrderCompleteReportMultiple: 범위 밖 주문ID 묶음은 결과 0건 → 거부', async () => {
     const service = buildService(ownedOrder);
-    await expect(
-      service.getOrderCompleteReportMultiple('77', undefined, intruder),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.getOrderCompleteReportMultiple('77', undefined, intruder)).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
   });
 
   it('assertOrderInViewScope: 범위 밖이면 throw, 범위 안이면 통과 (report-history 가드)', async () => {
     const outService = buildService(ownedOrder);
-    await expect(outService.assertOrderInViewScope(intruder, 77)).rejects.toBeInstanceOf(
-      BadRequestException,
-    );
+    await expect(outService.assertOrderInViewScope(intruder, 77)).rejects.toBeInstanceOf(BadRequestException);
 
     const inService = buildService(ownedOrder);
     const owner = { id: 10, email: 'o@o.com', authority: IUserAuthority.CORPORATE_ADMIN };
@@ -125,8 +120,8 @@ describe('OrderService 조회 형제 메서드 view-scope (IDOR, D3-19)', () => 
     );
 
     const svcB = buildService(ownedOrder);
-    await expect(
-      svcB.getDeliveryCompleteReportMultiple('77,88', undefined, owner, false),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    await expect(svcB.getDeliveryCompleteReportMultiple('77,88', undefined, owner, false)).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
   });
 });

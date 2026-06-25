@@ -86,9 +86,7 @@ describe('RefundPoolService — §8 환불 알고리즘', () => {
         findOne: async (target: any, opts: any) => {
           if (target === OrderPaymentAllocationEntity) {
             if (opts?.where?.orderId !== undefined) {
-              return (
-                Object.values(allocations).find((a) => a.orderId === opts.where.orderId) ?? null
-              );
+              return Object.values(allocations).find((a) => a.orderId === opts.where.orderId) ?? null;
             }
             return Object.values(allocations)[0] ?? null;
           }
@@ -319,21 +317,25 @@ describe('RefundPoolService — §8 환불 알고리즘', () => {
     expect(allocations['1'].creditUsedRestoredAmount).toBe(0);
     expect(allocations['1'].creditExcessRestoredAmount).toBe(0);
     expect(allocations['1'].depositRestoredAmount).toBe(10000);
-    expect(ledger[0]).toEqual(expect.objectContaining({
-      eventType: OrderPaymentRefundEventType.DISCARD_REFUND,
-      affectedDeliveryIds: [100],
-      refundedDepositAmount: 10000,
-      refundedCreditUsedAmount: 0,
-      refundedCreditExcessAmount: 0,
-      idempotencyKey: 'discard_refund:100:100:deposit:1:settled',
-    }));
-    expect(walletTxs[0]).toEqual(expect.objectContaining({
-      type: 'DISCARD_REFUND',
-      resourceType: WalletResourceType.DEPOSIT,
-      amount: 10000,
-      balanceAfter: 10000,
-      idempotencyKey: 'discard_refund:100:100:deposit:1:settled:wallet',
-    }));
+    expect(ledger[0]).toEqual(
+      expect.objectContaining({
+        eventType: OrderPaymentRefundEventType.DISCARD_REFUND,
+        affectedDeliveryIds: [100],
+        refundedDepositAmount: 10000,
+        refundedCreditUsedAmount: 0,
+        refundedCreditExcessAmount: 0,
+        idempotencyKey: 'discard_refund:100:100:deposit:1:settled',
+      }),
+    );
+    expect(walletTxs[0]).toEqual(
+      expect.objectContaining({
+        type: 'DISCARD_REFUND',
+        resourceType: WalletResourceType.DEPOSIT,
+        amount: 10000,
+        balanceAfter: 10000,
+        idempotencyKey: 'discard_refund:100:100:deposit:1:settled:wallet',
+      }),
+    );
   });
 
   it('정산확정 후 폐기 환불은 만료된 포인트 사용분을 예치금으로 바꾸지 않고 skip 처리한다', async () => {
@@ -379,13 +381,15 @@ describe('RefundPoolService — §8 환불 알고리즘', () => {
     expect(pointUsages[0].skippedExpiredAmount).toBe(3000);
     expect(allocations['1'].depositRestoredAmount).toBe(7000);
     expect(allocations['1'].pointSkippedExpiredAmount).toBe(3000);
-    expect(ledger[0]).toEqual(expect.objectContaining({
-      refundedGrossBase: 10000,
-      refundedPayableBase: 7000,
-      refundedDepositAmount: 7000,
-      refundedPointAmount: 0,
-      pointSkippedExpiredAmount: 3000,
-    }));
+    expect(ledger[0]).toEqual(
+      expect.objectContaining({
+        refundedGrossBase: 10000,
+        refundedPayableBase: 7000,
+        refundedDepositAmount: 7000,
+        refundedPointAmount: 0,
+        pointSkippedExpiredAmount: 3000,
+      }),
+    );
     expect(walletTxs).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -448,13 +452,15 @@ describe('RefundPoolService — §8 환불 알고리즘', () => {
     expect(allocations['1'].depositRestoredAmount).toBe(7000);
     expect(allocations['1'].pointRestoredAmount).toBe(3000);
     expect(allocations['1'].pointSkippedExpiredAmount).toBe(0);
-    expect(ledger[0]).toEqual(expect.objectContaining({
-      refundedGrossBase: 10000,
-      refundedPayableBase: 7000,
-      refundedDepositAmount: 7000,
-      refundedPointAmount: 3000,
-      pointSkippedExpiredAmount: 0,
-    }));
+    expect(ledger[0]).toEqual(
+      expect.objectContaining({
+        refundedGrossBase: 10000,
+        refundedPayableBase: 7000,
+        refundedDepositAmount: 7000,
+        refundedPointAmount: 3000,
+        pointSkippedExpiredAmount: 0,
+      }),
+    );
     expect(walletTxs).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -553,12 +559,14 @@ describe('RefundPoolService — §8 환불 알고리즘', () => {
     expect(allocations['1'].depositRestoredAmount).toBe(10000);
     expect(allocations['1'].creditUsedRestoredAmount).toBe(0);
     expect(allocations['1'].creditExcessRestoredAmount).toBe(0);
-    expect(ledger[0]).toEqual(expect.objectContaining({
-      refundedDepositAmount: 10000,
-      refundedCreditUsedAmount: 0,
-      refundedCreditExcessAmount: 0,
-      refundedPointAmount: 0,
-    }));
+    expect(ledger[0]).toEqual(
+      expect.objectContaining({
+        refundedDepositAmount: 10000,
+        refundedCreditUsedAmount: 0,
+        refundedCreditExcessAmount: 0,
+        refundedPointAmount: 0,
+      }),
+    );
   });
 
   it('재발송 후 재실패 환불 retry는 attempt 기반 ledger를 찾아 중복 환불하지 않는다', async () => {
@@ -636,11 +644,13 @@ describe('RefundPoolService — §8 환불 알고리즘', () => {
     expect(wallets['5'].creditExcessAmount).toBe(0);
     expect(allocations['1'].creditUsedRestoredAmount).toBe(5000);
     expect(allocations['1'].creditExcessRestoredAmount).toBe(5000);
-    expect(ledger[0]).toEqual(expect.objectContaining({
-      refundedDepositAmount: 0,
-      refundedCreditUsedAmount: 5000,
-      refundedCreditExcessAmount: 5000,
-    }));
+    expect(ledger[0]).toEqual(
+      expect.objectContaining({
+        refundedDepositAmount: 0,
+        refundedCreditUsedAmount: 5000,
+        refundedCreditExcessAmount: 5000,
+      }),
+    );
   });
 
   it('재발송 후 재실패 환불은 POINT RESEND_DEDUCT 의 grant 재원 그대로 포인트를 복구한다', async () => {
@@ -686,16 +696,20 @@ describe('RefundPoolService — §8 환불 알고리즘', () => {
     expect(pointGrants['pg-1'].remainingAmount).toBe(3000);
     expect(pointUsages[0].restoredAmount).toBe(3000);
     expect(allocations['1'].pointRestoredAmount).toBe(3000);
-    expect(ledger[0]).toEqual(expect.objectContaining({
-      refundedPointAmount: 3000,
-      refundedDepositAmount: 0,
-      refundedCreditUsedAmount: 0,
-      refundedCreditExcessAmount: 0,
-    }));
-    expect(walletTxs.find((tx) => tx.resourceType === WalletResourceType.POINT)).toEqual(expect.objectContaining({
-      amount: 3000,
-      idempotencyKey: 'fail_refund:100:100:att-resend-point:attempt:100:point:pg-1',
-    }));
+    expect(ledger[0]).toEqual(
+      expect.objectContaining({
+        refundedPointAmount: 3000,
+        refundedDepositAmount: 0,
+        refundedCreditUsedAmount: 0,
+        refundedCreditExcessAmount: 0,
+      }),
+    );
+    expect(walletTxs.find((tx) => tx.resourceType === WalletResourceType.POINT)).toEqual(
+      expect.objectContaining({
+        amount: 3000,
+        idempotencyKey: 'fail_refund:100:100:att-resend-point:attempt:100:point:pg-1',
+      }),
+    );
   });
 
   it('재발송 후 재실패 환불은 만료된 POINT RESEND_DEDUCT 를 throw 하지 않고 skip 처리한다', async () => {
@@ -745,13 +759,15 @@ describe('RefundPoolService — §8 환불 알고리즘', () => {
     expect(pointUsages[0].skippedExpiredAmount).toBe(3000);
     expect(allocations['1'].pointRestoredAmount).toBe(0);
     expect(allocations['1'].pointSkippedExpiredAmount).toBe(3000);
-    expect(ledger[0]).toEqual(expect.objectContaining({
-      refundedGrossBase: 3000,
-      refundedPayableBase: 0,
-      refundedPointAmount: 0,
-      refundedDepositAmount: 0,
-      pointSkippedExpiredAmount: 3000,
-    }));
+    expect(ledger[0]).toEqual(
+      expect.objectContaining({
+        refundedGrossBase: 3000,
+        refundedPayableBase: 0,
+        refundedPointAmount: 0,
+        refundedDepositAmount: 0,
+        pointSkippedExpiredAmount: 3000,
+      }),
+    );
     expect(walletTxs).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -777,9 +793,7 @@ describe('RefundPoolService — §8 환불 알고리즘', () => {
   });
 
   it('reverseRefund: ledger 미존재 → BadRequest', async () => {
-    await expect(sut.reverseRefund('missing-ledger', 'tx-1')).rejects.toBeInstanceOf(
-      BadRequestException,
-    );
+    await expect(sut.reverseRefund('missing-ledger', 'tx-1')).rejects.toBeInstanceOf(BadRequestException);
   });
 
   it('reverseRefund: ledger 금액 > allocation 복구 counter 면 invariant 위반 throw (clamp 금지)', async () => {

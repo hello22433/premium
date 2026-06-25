@@ -63,7 +63,8 @@ export class OrderPaymentAllocationEntity {
     precision: 6,
     nullable: true,
     default: null,
-    comment: 'OrderConfirmationReleaseService 가 보상 TX 로 allocation 을 무효화한 시각. NULL = active wallet-managed (PR2 F-001).',
+    comment:
+      'OrderConfirmationReleaseService 가 보상 TX 로 allocation 을 무효화한 시각. NULL = active wallet-managed (PR2 F-001).',
   })
   releasedAt: Date | null;
 

@@ -13,8 +13,6 @@ export class CreditExcessApprovalRequiredError extends BadRequestException {
     public readonly creditExcessAmount: number,
     public readonly orderId?: number,
   ) {
-    super(
-      `credit_excess_approval_required: creditExcessAmount=${creditExcessAmount} but no approvalId supplied`,
-    );
+    super(`credit_excess_approval_required: creditExcessAmount=${creditExcessAmount} but no approvalId supplied`);
   }
 }

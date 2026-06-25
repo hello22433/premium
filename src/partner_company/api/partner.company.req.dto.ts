@@ -91,63 +91,54 @@ export class PartnerCompanyCreateReqDto {
   @ApiPropertyOptional({
     description: '법인 등록 번호',
   })
-
   @IsOptional()
   corporateNumber: string | null = null;
 
   @ApiProperty({
     description: '사업자 등록 번호',
   })
-
   @IsNotEmpty()
   businessNumber: string;
 
   @ApiProperty({
     description: '사업자 명',
   })
-
   @IsNotEmpty()
   businessName: string;
 
   @ApiProperty({
     description: '사업자 주소',
   })
-
   @IsNotEmpty()
   businessAddress: string;
 
   @ApiProperty({
     description: '사업자 연락처',
   })
-
   @IsNotEmpty()
   businessPhoneNumber: string;
 
   @ApiProperty({
     description: '담당자 이름',
   })
-
   @IsNotEmpty()
   personName: string;
 
   @ApiProperty({
     description: '담당자 연락처',
   })
-
   @IsNotEmpty()
   personPhoneNumber: string;
 
   @ApiProperty({
     description: '담당자 이메일',
   })
-
   @IsNotEmpty()
   personEmail: string;
 
   @ApiProperty({
     description: '정산 조건 ex) 선정산 : PRE_PAYMENT, 후정산 : POST_PAYMENT',
   })
-
   @IsNotEmpty()
   @IsIn(['PRE_PAYMENT', 'POST_PAYMENT'])
   settleCondition: IPartnerCompanySettleCondition;
@@ -155,7 +146,6 @@ export class PartnerCompanyCreateReqDto {
   @ApiProperty({
     description: '정산 방법, ex) 카드: CARD, 현금: CASH',
   })
-
   @IsNotEmpty()
   @IsIn(['CARD', 'CASH'])
   settleMethod: IPartnerCompanySettleMethod;
@@ -163,7 +153,6 @@ export class PartnerCompanyCreateReqDto {
   @ApiProperty({
     description: '여신한도',
   })
-
   @IsNotEmpty()
   @IsNumber()
   maximumLimit: number;
@@ -171,21 +160,18 @@ export class PartnerCompanyCreateReqDto {
   @ApiProperty({
     description: '은행 이름',
   })
-
   @IsNotEmpty()
   bankName: string;
 
   @ApiProperty({
     description: '은행 계좌 번호',
   })
-
   @IsNotEmpty()
   bankNumber: string;
 
   @ApiProperty({
     description: '정산 일',
   })
-
   @IsNotEmpty()
   @IsNumber()
   @Min(1)
@@ -195,7 +181,6 @@ export class PartnerCompanyCreateReqDto {
     enum: IPartnerCompanyType,
     description: '협력사 타입',
   })
-
   @IsOptional()
   @IsEnum(IPartnerCompanyType)
   type?: IPartnerCompanyType;
@@ -204,7 +189,6 @@ export class PartnerCompanyCreateReqDto {
     description: '유효기간 시작일 설정 (true: 다음날부터, false: 당일 포함)',
     default: true,
   })
-
   @IsOptional()
   validityStartsNextDay?: boolean;
 }
@@ -213,7 +197,6 @@ export class PartnerCompanyUpdateReqDto extends PartnerCompanyCreateReqDto {
   @ApiProperty({
     description: 'partner company id',
   })
-
   @IsNumber()
   @IsNotEmpty()
   id: number;

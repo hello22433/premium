@@ -15,7 +15,10 @@ export class SettleSettlementCodeSnapshotDto {
   @ApiProperty({ description: 'wallet_account.id. 미존재 시 null', nullable: true })
   walletAccountId: string | null;
 
-  @ApiProperty({ description: 'ACTIVE | MISSING. MISSING = wallet 미생성(잔액0 아님, 데이터 누락 가능)', enum: ['ACTIVE', 'MISSING'] })
+  @ApiProperty({
+    description: 'ACTIVE | MISSING. MISSING = wallet 미생성(잔액0 아님, 데이터 누락 가능)',
+    enum: ['ACTIVE', 'MISSING'],
+  })
   walletStatus: 'ACTIVE' | 'MISSING';
 
   @ApiProperty({ description: '예치금 잔액' })
