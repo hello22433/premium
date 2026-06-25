@@ -14,7 +14,8 @@ const product = {
 };
 
 function discount(
-  overrides: Partial<UserDiscountEntity> & Pick<UserDiscountEntity, 'id' | 'category' | 'priceAdjustment' | 'pricePercent'>,
+  overrides: Partial<UserDiscountEntity> &
+    Pick<UserDiscountEntity, 'id' | 'category' | 'priceAdjustment' | 'pricePercent'>,
 ): UserDiscountEntity {
   return {
     method: IUserDiscountMethod.BULK,
