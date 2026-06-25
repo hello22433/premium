@@ -32,9 +32,12 @@ export class UserTaskHistoryService {
     @InjectRepository(OrderEntity)
     private readonly orderRepository: Repository<OrderEntity>,
     private readonly cryptoCipher: CryptoCipher,
-  ) { }
+  ) {}
 
-  async getList(loginUser: ILoginUserInfo, getQuery: UserTaskHistoryGetListReqQueryDto): Promise<UserTaskHistoryGetListResDto> {
+  async getList(
+    loginUser: ILoginUserInfo,
+    getQuery: UserTaskHistoryGetListReqQueryDto,
+  ): Promise<UserTaskHistoryGetListResDto> {
     if (loginUser.authority === IUserAuthority.CORPORATE_ADMIN) {
       throw new ForbiddenException();
     }
@@ -51,9 +54,7 @@ export class UserTaskHistoryService {
       take,
     } = getQuery;
 
-    let queryBuilder = this.userRepository
-      .createQueryBuilder('user')
-      .leftJoinAndSelect('user.company', 'company');
+    let queryBuilder = this.userRepository.createQueryBuilder('user').leftJoinAndSelect('user.company', 'company');
 
     queryBuilder = QueryBuilderDateCondition(queryBuilder, 'user', 'createdAt', createdStartAt, createdEndAt);
 
@@ -152,7 +153,10 @@ export class UserTaskHistoryService {
     return { list: resultList, totalCount, totalPage, currentPage: page };
   }
 
-  async getDetail(loginUser: ILoginUserInfo, getParam: UserTaskHistoryGetDetailReqParamDto): Promise<UserTaskHistoryGetDetailResDto> {
+  async getDetail(
+    loginUser: ILoginUserInfo,
+    getParam: UserTaskHistoryGetDetailReqParamDto,
+  ): Promise<UserTaskHistoryGetDetailResDto> {
     if (loginUser.authority === IUserAuthority.CORPORATE_ADMIN) {
       throw new ForbiddenException();
     }
@@ -195,9 +199,7 @@ export class UserTaskHistoryService {
       email: user.email,
       personName: user.personName,
       personPhoneNumber: user.personPhoneNumber,
-      personEmail: user.personEmail?.includes(',')
-        ? user.personEmail.split(',')[0].trim()
-        : user.personEmail,
+      personEmail: user.personEmail?.includes(',') ? user.personEmail.split(',')[0].trim() : user.personEmail,
       personCode: user.personCode,
       personCategory: user.personCategory,
       businessGrade: user.businessGrade,

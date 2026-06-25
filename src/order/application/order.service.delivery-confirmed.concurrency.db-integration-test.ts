@@ -63,7 +63,9 @@ describe('OrderService.deliveryConfirmed DB concurrency', () => {
       password: process.env.DATABASE_PASSWORD,
       multipleStatements: false,
     });
-    await connection.query(`CREATE DATABASE IF NOT EXISTS \`${database}\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`);
+    await connection.query(
+      `CREATE DATABASE IF NOT EXISTS \`${database}\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
+    );
     await connection.end();
 
     dataSource = new DataSource({

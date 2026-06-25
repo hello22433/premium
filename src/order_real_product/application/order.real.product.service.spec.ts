@@ -347,10 +347,7 @@ describe('OrderRealProductService 실물상품 조회 접근 제어', () => {
     orderProductMappingRepository.createQueryBuilder.mockReturnValue(queryBuilder);
 
     await expect(
-      (service as any).getDeliveryTrackingDetail(
-        { id: 100, authority: IUserAuthority.CORPORATE_ADMIN },
-        { id: 20 },
-      ),
+      (service as any).getDeliveryTrackingDetail({ id: 100, authority: IUserAuthority.CORPORATE_ADMIN }, { id: 20 }),
     ).rejects.toThrow('주문 매핑 정보를 찾을 수 없습니다.');
 
     expect(queryBuilder.andWhere).toHaveBeenCalledWith('realProductOrder.businessUserId = :userId', { userId: 100 });
@@ -367,10 +364,7 @@ describe('OrderRealProductService 실물상품 조회 접근 제어', () => {
     });
     orderRepository.createQueryBuilder.mockReturnValue(queryBuilder);
 
-    await (service as any).getDeliveryTrackingStatus(
-      { id: 1, authority: IUserAuthority.OPERATION_ADMIN },
-      { id: 10 },
-    );
+    await (service as any).getDeliveryTrackingStatus({ id: 1, authority: IUserAuthority.OPERATION_ADMIN }, { id: 10 });
 
     expect(queryBuilder.andWhere).not.toHaveBeenCalledWith('order.businessUserId = :userId', expect.anything());
   });

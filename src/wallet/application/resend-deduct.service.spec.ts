@@ -70,10 +70,7 @@ describe('ResendDeductService', () => {
       transaction: jest.fn(async (cb: (m: any) => any) => cb(makeManager())),
     };
     const module: TestingModule = await Test.createTestingModule({
-      providers: [
-        ResendDeductService,
-        { provide: getDataSourceToken(), useValue: dataSource },
-      ],
+      providers: [ResendDeductService, { provide: getDataSourceToken(), useValue: dataSource }],
     }).compile();
     sut = module.get(ResendDeductService);
   });
@@ -120,7 +117,13 @@ describe('ResendDeductService', () => {
   it('resendUndo: deposit/credit/excess 복원 (resendDeduct 의 역)', async () => {
     fx.alloc = { id: 'a-1', walletAccountId: 'w-1' };
     fx.wallet = { id: 'w-1', depositBalance: 5000, creditUsedAmount: 3000, creditExcessAmount: 1000 };
-    fx.line = { allocationId: 'a-1', orderDeliveryId: 101, depositUsedAmount: 1, creditUsedAmount: 1, creditExcessAmount: 1 };
+    fx.line = {
+      allocationId: 'a-1',
+      orderDeliveryId: 101,
+      depositUsedAmount: 1,
+      creditUsedAmount: 1,
+      creditExcessAmount: 1,
+    };
 
     const r = await sut.resendUndo({
       orderId: 777,
@@ -143,7 +146,14 @@ describe('ResendDeductService', () => {
   it('allocation 미존재 → BadRequest', async () => {
     fx.alloc = null;
     await expect(
-      sut.resendDeduct({ orderId: 999, orderDeliveryId: 1, attemptId: 'a', depositAmount: 1, creditAmount: 0, excessAmount: 0 }),
+      sut.resendDeduct({
+        orderId: 999,
+        orderDeliveryId: 1,
+        attemptId: 'a',
+        depositAmount: 1,
+        creditAmount: 0,
+        excessAmount: 0,
+      }),
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
@@ -152,7 +162,14 @@ describe('ResendDeductService', () => {
     fx.wallet = { id: 'w-1' };
     fx.line = null;
     await expect(
-      sut.resendDeduct({ orderId: 777, orderDeliveryId: 999, attemptId: 'a', depositAmount: 1, creditAmount: 0, excessAmount: 0 }),
+      sut.resendDeduct({
+        orderId: 777,
+        orderDeliveryId: 999,
+        attemptId: 'a',
+        depositAmount: 1,
+        creditAmount: 0,
+        excessAmount: 0,
+      }),
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 });

@@ -148,9 +148,7 @@ describe('ProductController 인가 가드 (HTTP)', () => {
     });
 
     it('토큰 없으면 401', async () => {
-      await request(app.getHttpServer())
-        .get('/product/link/average-expire-day?headPersonUserId=1')
-        .expect(401);
+      await request(app.getHttpServer()).get('/product/link/average-expire-day?headPersonUserId=1').expect(401);
     });
   });
 

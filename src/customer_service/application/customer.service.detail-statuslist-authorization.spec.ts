@@ -91,11 +91,7 @@ describe('CustomerServiceService — CS 조회 API 권한검사(MEDIUM)', () => 
 
     it('주문에 일반+SSG 발송이 섞이면 두 쿠폰 권한을 모두 요구한다', async () => {
       const validator = jest.fn().mockResolvedValue(undefined);
-      const { sut } = makeSut(
-        [{ type: IProductType.GENERAL }, { type: IProductType.SSG }],
-        [[], 0],
-        validator,
-      );
+      const { sut } = makeSut([{ type: IProductType.GENERAL }, { type: IProductType.SSG }], [[], 0], validator);
 
       await sut.getDetailList(operator, { orderId: 100, page: 1, take: 10 });
 

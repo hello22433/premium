@@ -17,7 +17,14 @@ import { OrderFromModule } from '../order_from/order.from.module';
 @Module({
   imports: [
     AuthModule,
-    TypeOrmModule.forFeature([EmailSendHistoryEntity, OrderDeliveryEntity, TestOrderDeliveryEntity, OrderEntity, ProductChoiceMappingEntity, SsgEventEntity]),
+    TypeOrmModule.forFeature([
+      EmailSendHistoryEntity,
+      OrderDeliveryEntity,
+      TestOrderDeliveryEntity,
+      OrderEntity,
+      ProductChoiceMappingEntity,
+      SsgEventEntity,
+    ]),
     SmsModule,
     PartnerCompanyExternModule,
     DeliveryModule,

@@ -94,9 +94,9 @@ describe('RefundService 일괄(batch)', () => {
     });
 
     it('items에 중복 id가 있으면 400을 던지고 조회/save하지 않는다', async () => {
-      await expect(
-        service.updateBatch({ items: [updateItem(1), updateItem(1)] }),
-      ).rejects.toThrow('중복된 주문 id가 있습니다.');
+      await expect(service.updateBatch({ items: [updateItem(1), updateItem(1)] })).rejects.toThrow(
+        '중복된 주문 id가 있습니다.',
+      );
       expect(repo.find).not.toHaveBeenCalled();
       expect(repo.save).not.toHaveBeenCalled();
     });
@@ -104,9 +104,9 @@ describe('RefundService 일괄(batch)', () => {
     it('존재하지 않는 id가 있으면 400을 던지고 save하지 않는다', async () => {
       repo.find.mockResolvedValue([progressRow(1)]); // 2는 없음
 
-      await expect(
-        service.updateBatch({ items: [updateItem(1), updateItem(2)] }),
-      ).rejects.toThrow('주문이 존재하지 않습니다');
+      await expect(service.updateBatch({ items: [updateItem(1), updateItem(2)] })).rejects.toThrow(
+        '주문이 존재하지 않습니다',
+      );
       expect(repo.save).not.toHaveBeenCalled();
     });
 
@@ -114,9 +114,9 @@ describe('RefundService 일괄(batch)', () => {
       repo.find.mockResolvedValue([progressRow(1), progressRow(2)]);
 
       const bad = { ...updateItem(2), bankAccount: '' }; // 승인인데 계좌 누락
-      await expect(
-        service.updateBatch({ items: [updateItem(1), bad] }),
-      ).rejects.toThrow('승인 시 예금주, 은행명, 계좌번호를 입력해주세요.');
+      await expect(service.updateBatch({ items: [updateItem(1), bad] })).rejects.toThrow(
+        '승인 시 예금주, 은행명, 계좌번호를 입력해주세요.',
+      );
       expect(repo.save).not.toHaveBeenCalled();
     });
 

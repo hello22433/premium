@@ -1,7 +1,11 @@
 import { OrderFromPhoneViewDto } from './dto/order.from.phone.view.dto';
 import { ApiProperty } from '@nestjs/swagger';
 import { OrderFromEmailViewDto } from './dto/order.from.email.view.dto';
-import { OrderFromDefinitionType, OrderFromRequestStatus, TelecomCertType } from '../interface/order.from.definition.type';
+import {
+  OrderFromDefinitionType,
+  OrderFromRequestStatus,
+  TelecomCertType,
+} from '../interface/order.from.definition.type';
 
 export class OrderFromGetPhoneListResDto {
   @ApiProperty({

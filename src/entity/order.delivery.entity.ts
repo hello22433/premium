@@ -108,7 +108,12 @@ export class OrderDeliveryEntity extends BaseEntity {
   @Column({ type: 'int', default: 0, comment: '외부 API 재발송 누적 횟수' })
   resendCount: number;
 
-  @Column({ name: 'replaced_from_id', type: 'bigint', nullable: true, comment: '폐기 후 신규 발송 - 원본 OrderDelivery ID' })
+  @Column({
+    name: 'replaced_from_id',
+    type: 'bigint',
+    nullable: true,
+    comment: '폐기 후 신규 발송 - 원본 OrderDelivery ID',
+  })
   replacedFromId: number | null;
 
   @Column({ type: 'datetime', nullable: true, comment: '발송 실패 시각' })
@@ -163,10 +168,20 @@ export class OrderDeliveryEntity extends BaseEntity {
   apiErrorMessage: string | null;
 
   // ── 초이스 쿠폰 선택 후 별도 발송 상태 (재진입 차단용) ──
-  @Column({ type: 'varchar', length: 20, nullable: true, comment: '초이스 선택 후 별도 발송 상태 (NOT_REQUIRED/SENDING/SENT/FAILED). null=legacy' })
+  @Column({
+    type: 'varchar',
+    length: 20,
+    nullable: true,
+    comment: '초이스 선택 후 별도 발송 상태 (NOT_REQUIRED/SENDING/SENT/FAILED). null=legacy',
+  })
   choicePostSendStatus: ChoicePostSendStatus | null;
 
-  @Column({ type: 'varchar', length: 64, nullable: true, comment: '별도 발송 claim token (SENDING 소유권 판별용 UUID)' })
+  @Column({
+    type: 'varchar',
+    length: 64,
+    nullable: true,
+    comment: '별도 발송 claim token (SENDING 소유권 판별용 UUID)',
+  })
   choicePostSendClaimToken: string | null;
 
   @Column({ type: 'datetime', precision: 6, nullable: true, comment: '별도 발송 claim 획득 시각 (stale 판정용)' })
@@ -176,7 +191,12 @@ export class OrderDeliveryEntity extends BaseEntity {
   choicePostSentAt: Date | null;
 
   // ── 초이스 선택 자체의 중복 실행 방지 claim ──
-  @Column({ type: 'varchar', length: 64, nullable: true, comment: '선택 claim token (최초 선택 CAS 소유권 판별용 UUID)' })
+  @Column({
+    type: 'varchar',
+    length: 64,
+    nullable: true,
+    comment: '선택 claim token (최초 선택 CAS 소유권 판별용 UUID)',
+  })
   choiceSelectionClaimToken: string | null;
 
   @Column({ type: 'datetime', precision: 6, nullable: true, comment: '선택 claim 획득 시각' })
@@ -185,7 +205,12 @@ export class OrderDeliveryEntity extends BaseEntity {
   @Column({ type: 'varchar', length: 64, nullable: true, comment: '공급사 멱등 발급/조회용 안정 attempt key' })
   choiceSelectionAttemptKey: string | null;
 
-  @Column({ type: 'datetime', precision: 6, nullable: true, comment: '선택 PIN 발급 결과 불명 → 운영 reconcile 필요 표시' })
+  @Column({
+    type: 'datetime',
+    precision: 6,
+    nullable: true,
+    comment: '선택 PIN 발급 결과 불명 → 운영 reconcile 필요 표시',
+  })
   choiceSelectionReconcileRequiredAt: Date | null;
 
   // ── EMAIL 쿠폰 발송 동시성 claim ──
@@ -198,7 +223,12 @@ export class OrderDeliveryEntity extends BaseEntity {
   @Column({ type: 'varchar', length: 64, nullable: true, comment: 'EMAIL PIN 발급 멱등/조회용 안정 attempt key' })
   emailCouponAttemptKey: string | null;
 
-  @Column({ type: 'datetime', precision: 6, nullable: true, comment: 'EMAIL PIN 발급 결과 불명 → 운영 reconcile 필요 표시' })
+  @Column({
+    type: 'datetime',
+    precision: 6,
+    nullable: true,
+    comment: 'EMAIL PIN 발급 결과 불명 → 운영 reconcile 필요 표시',
+  })
   emailCouponReconcileRequiredAt: Date | null;
 
   @ManyToOne(() => OrderProductMappingEntity, { createForeignKeyConstraints: false })

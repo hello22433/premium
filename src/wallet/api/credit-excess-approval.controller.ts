@@ -1,13 +1,4 @@
-import {
-  BadRequestException,
-  Body,
-  Controller,
-  Get,
-  Param,
-  Post,
-  Query,
-  UseGuards,
-} from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiProperty, ApiPropertyOptional, ApiTags } from '@nestjs/swagger';
 import { IsEnum, IsInt, IsNotEmpty, IsOptional, IsString, MaxLength, Min } from 'class-validator';
 import { User } from '../../auth/api/user.decorator';
@@ -165,11 +156,7 @@ export class CreditExcessApprovalController {
   @ApiOperation({
     summary: '신용초과 사전 승인 거절 (Step C - reject)',
   })
-  async reject(
-    @User() user: ILoginUserInfo,
-    @Param('id') id: string,
-    @Body() body: CreditExcessApprovalRejectReqDto,
-  ) {
+  async reject(@User() user: ILoginUserInfo, @Param('id') id: string, @Body() body: CreditExcessApprovalRejectReqDto) {
     return this.service.reject(this.validateApprovalId(id), user.id, body.rejectReason);
   }
 

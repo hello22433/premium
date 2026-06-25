@@ -27,11 +27,7 @@ export class CreditExcessApprovalService {
   /**
    * Step C — 사전 승인 목록 조회 (운영자). status 기본 PENDING. 요청자/승인자 이름·회사명은 user 조인.
    */
-  async list(query: {
-    status?: CreditExcessApprovalStatus;
-    page?: number;
-    take?: number;
-  }): Promise<{
+  async list(query: { status?: CreditExcessApprovalStatus; page?: number; take?: number }): Promise<{
     list: Array<{
       id: string;
       orderId: number;
@@ -62,9 +58,7 @@ export class CreditExcessApprovalService {
 
     // 요청자/승인자 user 조인 (이름 + 회사명). 현재 entity 는 user_id 만 보유.
     const userIds = [
-      ...new Set(
-        rows.flatMap((r) => [r.requestedBy, r.approvedBy].filter((x): x is number => x != null)),
-      ),
+      ...new Set(rows.flatMap((r) => [r.requestedBy, r.approvedBy].filter((x): x is number => x != null))),
     ];
     const users = userIds.length
       ? await this.userRepository.find({ where: { id: In(userIds) }, relations: ['company'] })
@@ -210,11 +204,7 @@ export class CreditExcessApprovalService {
     return (await this.approvalRepository.findOne({ where: { id: approvalId } }))!;
   }
 
-  async reject(
-    approvalId: string,
-    approverUserId: number,
-    rejectReason: string,
-  ): Promise<CreditExcessApprovalEntity> {
+  async reject(approvalId: string, approverUserId: number, rejectReason: string): Promise<CreditExcessApprovalEntity> {
     if (!rejectReason || rejectReason.trim().length === 0) {
       throw new BadRequestException('rejectReason required');
     }

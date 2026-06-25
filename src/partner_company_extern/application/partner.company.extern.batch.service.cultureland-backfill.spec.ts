@@ -112,7 +112,12 @@ describe('PartnerCompanyExternBatchService.backfillCulturelandDailyRange', () =>
     // 실제 사용일이 tradeAt 으로 매핑됨
     const expSample = result.samples.find((s) => s.orderDeliveryId === 100);
     expect(expSample).toEqual(
-      expect.objectContaining({ certNo: 'CERT-EXP', fromStatus: OrderDeliveryCouponStatus.EXPIRED, useDate, tradeAt: '2026-01-15' }),
+      expect.objectContaining({
+        certNo: 'CERT-EXP',
+        fromStatus: OrderDeliveryCouponStatus.EXPIRED,
+        useDate,
+        tradeAt: '2026-01-15',
+      }),
     );
   });
 
@@ -135,10 +140,7 @@ describe('PartnerCompanyExternBatchService.backfillCulturelandDailyRange', () =>
       { couponStatus: OrderDeliveryCouponStatus.USED, tradeAt: expectedTradeAt },
     );
     // USED(id 102)는 update 호출되지 않음
-    expect(orderDeliveryRepository.update).not.toHaveBeenCalledWith(
-      { id: 102 },
-      expect.anything(),
-    );
+    expect(orderDeliveryRepository.update).not.toHaveBeenCalledWith({ id: 102 }, expect.anything());
   });
 
   it('일대사에 없는 certNo(매칭 없음)는 보정하지 않는다', async () => {

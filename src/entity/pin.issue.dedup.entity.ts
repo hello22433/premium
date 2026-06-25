@@ -12,7 +12,12 @@ import { Column, Entity, Index, PrimaryColumn } from 'typeorm';
  */
 @Entity('pin_issue_dedup')
 export class PinIssueDedupEntity {
-  @PrimaryColumn({ type: 'varchar', length: 64, name: 'transaction_id', comment: '발급 거래번호 (orderDelivery.transactionId)' })
+  @PrimaryColumn({
+    type: 'varchar',
+    length: 64,
+    name: 'transaction_id',
+    comment: '발급 거래번호 (orderDelivery.transactionId)',
+  })
   transactionId: string;
 
   @Index('idx_order_delivery_id')
@@ -22,7 +27,13 @@ export class PinIssueDedupEntity {
   @Column({ type: 'varchar', length: 32, name: 'partner_type', comment: '협력사 타입' })
   partnerType: string;
 
-  @Column({ type: 'varchar', length: 64, name: 'bar_code', nullable: true, comment: '발급된 PIN (성공 시 기록, 감사용)' })
+  @Column({
+    type: 'varchar',
+    length: 64,
+    name: 'bar_code',
+    nullable: true,
+    comment: '발급된 PIN (성공 시 기록, 감사용)',
+  })
   barCode: string | null;
 
   @Column({

@@ -79,7 +79,9 @@ export class PartnerCompanyExternHistoryService {
       .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .withDeleted()
       .where('orderDelivery.deletedAt IS NULL')
-      .andWhere('(orderDelivery.status IN (:...statuses) OR orderDelivery.resendAt IS NOT NULL)', { statuses: RESENDABLE_FAIL_STATUSES });
+      .andWhere('(orderDelivery.status IN (:...statuses) OR orderDelivery.resendAt IS NOT NULL)', {
+        statuses: RESENDABLE_FAIL_STATUSES,
+      });
 
     const dateColumn = 'COALESCE(orderDelivery.actualSendAt, orderDelivery.failedAt, orderDelivery.updatedAt)';
     if (startAt) {
@@ -94,10 +96,9 @@ export class PartnerCompanyExternHistoryService {
     }
 
     if (searchKeyword) {
-      queryBuilder.andWhere(
-        '(order.code LIKE :searchKeyword OR order.eventName LIKE :searchKeyword)',
-        { searchKeyword: `%${searchKeyword}%` },
-      );
+      queryBuilder.andWhere('(order.code LIKE :searchKeyword OR order.eventName LIKE :searchKeyword)', {
+        searchKeyword: `%${searchKeyword}%`,
+      });
     }
 
     return queryBuilder;
@@ -107,12 +108,14 @@ export class PartnerCompanyExternHistoryService {
    * 발송 실패 내역 목록 조회
    * orderDelivery.status = FAIL 기준으로 조회 (중복 없이 최종 실패 건만)
    */
-  async getHistoryList(dto: GetPartnerCompanyExternHistoryListReqDto): Promise<GetPartnerCompanyExternHistoryListResDto> {
+  async getHistoryList(
+    dto: GetPartnerCompanyExternHistoryListReqDto,
+  ): Promise<GetPartnerCompanyExternHistoryListResDto> {
     const { page, take } = dto;
 
-    const dateCoalesceExpr = 'COALESCE(`orderDelivery`.`actual_send_at`, `orderDelivery`.`failed_at`, `orderDelivery`.`updated_at`)';
-    const queryBuilder = this.createFilteredQueryBuilder(dto)
-      .addSelect(dateCoalesceExpr, 'sortDate');
+    const dateCoalesceExpr =
+      'COALESCE(`orderDelivery`.`actual_send_at`, `orderDelivery`.`failed_at`, `orderDelivery`.`updated_at`)';
+    const queryBuilder = this.createFilteredQueryBuilder(dto).addSelect(dateCoalesceExpr, 'sortDate');
 
     // 발송상태 필터
     if (dto.sendStatus === 'FAIL') {
@@ -130,9 +133,10 @@ export class PartnerCompanyExternHistoryService {
 
     // 최신 history를 배치로 한번에 조회 (N+1 방지)
     const odIds = orderDeliveries.map((od) => od.id);
-    const latestHistoryMap = odIds.length > 0
-      ? await this.batchFetchLatestHistories(odIds)
-      : new Map<number, PartnerCompanyExternHistoryEntity>();
+    const latestHistoryMap =
+      odIds.length > 0
+        ? await this.batchFetchLatestHistories(odIds)
+        : new Map<number, PartnerCompanyExternHistoryEntity>();
 
     // DTO 변환 (배치로 가져온 history 전달)
     const list: PartnerCompanyExternHistoryViewDto[] = orderDeliveries.map((od) =>
@@ -156,9 +160,7 @@ export class PartnerCompanyExternHistoryService {
       .andWhere('orderDelivery.status IN (:...failStatuses)', { failStatuses: RESENDABLE_FAIL_STATUSES })
       .andWhere('orderDelivery.resendAt IS NULL');
 
-    const rows: { orderDelivery_id: number }[] = await queryBuilder
-      .select('orderDelivery.id')
-      .getRawMany();
+    const rows: { orderDelivery_id: number }[] = await queryBuilder.select('orderDelivery.id').getRawMany();
 
     return {
       orderDeliveryIds: rows.map((row) => row.orderDelivery_id),
@@ -243,7 +245,8 @@ export class PartnerCompanyExternHistoryService {
       context = latestHistory.context;
       try {
         const parsedContext = JSON.parse(latestHistory.context);
-        errorCode = parsedContext.errorCode || parsedContext.resultCode || parsedContext.code || parsedContext.resCode || null;
+        errorCode =
+          parsedContext.errorCode || parsedContext.resultCode || parsedContext.code || parsedContext.resCode || null;
         errorMessage =
           parsedContext.errorMessage ||
           parsedContext.resultMessage ||
@@ -259,7 +262,12 @@ export class PartnerCompanyExternHistoryService {
     // SSG 실패유형 보정: SSG는 barCode를 로컬 생성하므로 barCode 유무로 판단 불가
     // SSG API(SsgCoupon.do) 호출 실패 = PIN SSG DB 등록 실패 → 핀발급실패로 표시
     // 단, 재발송 완료 건은 보정하지 않음
-    if (!orderDelivery.resendAt && partnerCompanyType === IPartnerCompanyType.SSG && latestHistory && !latestHistory.isSuccess) {
+    if (
+      !orderDelivery.resendAt &&
+      partnerCompanyType === IPartnerCompanyType.SSG &&
+      latestHistory &&
+      !latestHistory.isSuccess
+    ) {
       failType = FailType.PIN_ISSUE_FAIL;
       failTypeKo = '핀발급실패';
     }
@@ -275,7 +283,7 @@ export class PartnerCompanyExternHistoryService {
       id: orderDelivery.id,
       createdAt: displayDate ? format(displayDate, DateFormatStr) : '',
       type: partnerCompanyType,
-      typeKo: partnerCompanyType ? (PartnerCompanyTypeKo[partnerCompanyType] || partnerCompanyType) : null,
+      typeKo: partnerCompanyType ? PartnerCompanyTypeKo[partnerCompanyType] || partnerCompanyType : null,
       failType,
       failTypeKo,
       errorCode,
@@ -462,10 +470,7 @@ export class PartnerCompanyExternHistoryService {
 
   /** claim 해제 (owner guard). 내가 소유한 claim(claimedAt=:claimAt)만 해제. */
   private async releaseClaim(orderDeliveryId: number, claimAt: Date): Promise<void> {
-    await this.orderDeliveryRepository.update(
-      { id: orderDeliveryId, claimedAt: claimAt },
-      { claimedAt: null },
-    );
+    await this.orderDeliveryRepository.update({ id: orderDeliveryId, claimedAt: claimAt }, { claimedAt: null });
   }
 
   /**

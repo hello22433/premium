@@ -40,7 +40,12 @@ describe('UserFindService', () => {
 
   describe('resetPasswordSend — userId 바인딩', () => {
     it('유저 조회 성공 시 history에 userId 저장', async () => {
-      const givenUser = { id: 42, email: 'user@test.com', personPhoneNumber: '010-0000-0000', loginVerifyMethod: LoginVerifyMethod.EMAIL };
+      const givenUser = {
+        id: 42,
+        email: 'user@test.com',
+        personPhoneNumber: '010-0000-0000',
+        loginVerifyMethod: LoginVerifyMethod.EMAIL,
+      };
       userRepository.findOne.mockResolvedValue(givenUser);
       emailSendHistoryRepository.save.mockResolvedValue({ id: 1 });
 
@@ -51,9 +56,7 @@ describe('UserFindService', () => {
         personPhoneNumber: '010-0000-0000',
       });
 
-      expect(emailSendHistoryRepository.save).toHaveBeenCalledWith(
-        expect.objectContaining({ userId: 42 }),
-      );
+      expect(emailSendHistoryRepository.save).toHaveBeenCalledWith(expect.objectContaining({ userId: 42 }));
     });
   });
 

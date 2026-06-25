@@ -78,8 +78,7 @@ export const COMPANY_INFO: Record<CompanyType, ICompanyInfo> = {
     },
     logo: '/img/syscuss/color_logo_syscuss.jpg',
     stamp: '/img/syscuss/syscuss_stamp.png',
-    description:
-      '(주)시스커스는 글로벌서비스, 모바일솔루션, 모바일시스템을 결합한 통합마케팅 전문기업입니다.',
+    description: '(주)시스커스는 글로벌서비스, 모바일솔루션, 모바일시스템을 결합한 통합마케팅 전문기업입니다.',
   },
 };
 
@@ -92,18 +91,12 @@ export const DEFAULT_COMPANY_TYPE = CompanyType.ENMAD;
  * 모바일이앤엠애드 사업자등록번호 (DB 저장 형식: 하이픈 없음)
  * DB에는 하이픈 제거 후 저장되므로 쿼리 비교용으로 사용
  */
-export const ENMAD_BUSINESS_NUMBER = COMPANY_INFO[CompanyType.ENMAD].businessNumber.replace(
-  /-/g,
-  '',
-);
+export const ENMAD_BUSINESS_NUMBER = COMPANY_INFO[CompanyType.ENMAD].businessNumber.replace(/-/g, '');
 
 /**
  * 시스커스 사업자등록번호 (DB 저장 형식: 하이픈 없음)
  */
-export const SYSCUSS_BUSINESS_NUMBER = COMPANY_INFO[CompanyType.SYSCUSS].businessNumber.replace(
-  /-/g,
-  '',
-);
+export const SYSCUSS_BUSINESS_NUMBER = COMPANY_INFO[CompanyType.SYSCUSS].businessNumber.replace(/-/g, '');
 
 /** 사이드바 알림 등에서 제외할 내부 회사 사업자등록번호 목록 */
 export const INTERNAL_BUSINESS_NUMBERS = [ENMAD_BUSINESS_NUMBER, SYSCUSS_BUSINESS_NUMBER];

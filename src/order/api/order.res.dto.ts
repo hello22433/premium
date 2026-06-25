@@ -601,8 +601,7 @@ export class OrderGetDeliveryAuditResDto {
   orderStatus: IOrderStatus;
 
   @ApiProperty({
-    description:
-      '중복 발송 감지 여부. (비정상 중복 레코드 / 일자별 이상 / SSG PIN 중복 중 하나라도 있으면 true)',
+    description: '중복 발송 감지 여부. (비정상 중복 레코드 / 일자별 이상 / SSG PIN 중복 중 하나라도 있으면 true)',
   })
   isDuplicateDetected: boolean;
 

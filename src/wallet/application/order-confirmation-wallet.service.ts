@@ -92,204 +92,204 @@ export class OrderConfirmationWalletService {
     input: PersistAllocationInput,
     manager: EntityManager,
   ): Promise<PersistAllocationResult> {
-      // 1. wallet FOR UPDATE — race 차단 + 잔액 재검증
-      const wallet = await manager
-        .getRepository(WalletAccountEntity)
-        .createQueryBuilder('w')
-        .setLock('pessimistic_write')
-        .where('w.id = :id', { id: input.allocation.walletAccountId })
-        .getOne();
-      if (!wallet) {
-        throw new BadRequestException(`wallet_account not found id=${input.allocation.walletAccountId}`);
+    // 1. wallet FOR UPDATE — race 차단 + 잔액 재검증
+    const wallet = await manager
+      .getRepository(WalletAccountEntity)
+      .createQueryBuilder('w')
+      .setLock('pessimistic_write')
+      .where('w.id = :id', { id: input.allocation.walletAccountId })
+      .getOne();
+    if (!wallet) {
+      throw new BadRequestException(`wallet_account not found id=${input.allocation.walletAccountId}`);
+    }
+
+    // 2. wallet 잔여 기준 credit/excess 재계산 (stale allocation race 대응).
+    //    예치금/포인트 사용량은 그대로 유지하고 부족분/여신/신용초과 만 wallet-fresh 값으로 재분배.
+    //    같은 정산코드 동시 주문에서 두 번째 요청도 throw 없이 자연스럽게 신용초과로 흡수.
+    //    lines 배열도 깊은 사본 — caller input 변형 방지 + 명시적 재분배 결과 노출.
+    const a = { ...input.allocation, lines: input.allocation.lines.map((l) => ({ ...l })) };
+    const isPrePayment = wallet.settleCondition === 'PRE_PAYMENT';
+
+    // 예치금: wallet 잔여 한도 적용 (stale 시 부족분은 credit/excess 로 이동)
+    const depositCap = Math.min(a.depositUsedAmount, wallet.depositBalance);
+    const depositShortfall = a.depositUsedAmount - depositCap;
+    const carryover = depositShortfall + a.creditUsedAmount + a.creditExcessAmount;
+    a.depositUsedAmount = depositCap;
+
+    if (isPrePayment) {
+      // 선정산: 일반 credit 사용 안 함. 부족분은 전부 신용초과 (4단계 워크플로 트리거).
+      a.creditUsedAmount = 0;
+      a.creditExcessAmount = carryover;
+    } else {
+      const creditLimitRemain = Math.max(0, wallet.creditLimit - wallet.creditUsedAmount);
+      a.creditUsedAmount = Math.min(carryover, creditLimitRemain);
+      a.creditExcessAmount = carryover - a.creditUsedAmount;
+    }
+    // payable_settlement_amount 는 보존 (deposit + credit + credit_excess 합 동일)
+    // resourceBreakdown 도 재계산
+    a.resourceBreakdown = {
+      ...a.resourceBreakdown,
+      DEPOSIT: a.depositUsedAmount,
+      CREDIT: a.creditUsedAmount,
+      CREDIT_EXCESS: a.creditExcessAmount,
+    } as typeof a.resourceBreakdown;
+
+    // 2-b. credit_excess 사용 시 사전 승인 approval 소비 (same-tx 보장). 미승인 시 throw → rollback.
+    if (a.creditExcessAmount > 0) {
+      if (!input.creditExcessApprovalId) {
+        throw new CreditExcessApprovalRequiredError(a.creditExcessAmount, input.orderId);
       }
+      await this.creditExcessApproval.consume(
+        input.creditExcessApprovalId,
+        input.orderId,
+        a.creditExcessAmount,
+        a.payableSettlementAmount,
+        manager,
+      );
+    }
 
-      // 2. wallet 잔여 기준 credit/excess 재계산 (stale allocation race 대응).
-      //    예치금/포인트 사용량은 그대로 유지하고 부족분/여신/신용초과 만 wallet-fresh 값으로 재분배.
-      //    같은 정산코드 동시 주문에서 두 번째 요청도 throw 없이 자연스럽게 신용초과로 흡수.
-      //    lines 배열도 깊은 사본 — caller input 변형 방지 + 명시적 재분배 결과 노출.
-      const a = { ...input.allocation, lines: input.allocation.lines.map((l) => ({ ...l })) };
-      const isPrePayment = wallet.settleCondition === 'PRE_PAYMENT';
+    // 라인 snapshot 도 carryover 적용된 totals 와 일관되게 재분배 (payable_base 비율).
+    // 그렇지 않으면 SUM(lines.deposit/credit/excess) ≠ allocation totals 가 되어 invariant drift.
+    const payableBaseSum = a.lines.reduce((s, l) => s + l.payableBase, 0);
+    let depositRemain = a.depositUsedAmount;
+    let creditRemain = a.creditUsedAmount;
+    let excessRemain = a.creditExcessAmount;
+    for (let i = 0; i < a.lines.length; i++) {
+      const isLast = i === a.lines.length - 1;
+      const ratio = payableBaseSum > 0 ? a.lines[i].payableBase / payableBaseSum : 0;
+      const d = isLast ? depositRemain : Math.min(depositRemain, Math.floor(a.depositUsedAmount * ratio));
+      const c = isLast ? creditRemain : Math.min(creditRemain, Math.floor(a.creditUsedAmount * ratio));
+      const e = isLast ? excessRemain : Math.min(excessRemain, Math.floor(a.creditExcessAmount * ratio));
+      a.lines[i] = { ...a.lines[i], depositUsedAmount: d, creditUsedAmount: c, creditExcessAmount: e };
+      depositRemain -= d;
+      creditRemain -= c;
+      excessRemain -= e;
+    }
 
-      // 예치금: wallet 잔여 한도 적용 (stale 시 부족분은 credit/excess 로 이동)
-      const depositCap = Math.min(a.depositUsedAmount, wallet.depositBalance);
-      const depositShortfall = a.depositUsedAmount - depositCap;
-      const carryover = depositShortfall + a.creditUsedAmount + a.creditExcessAmount;
-      a.depositUsedAmount = depositCap;
+    // 3. allocation row (재계산된 a 기준)
+    const alloc = await manager.save(OrderPaymentAllocationEntity, {
+      orderId: input.orderId,
+      walletAccountId: a.walletAccountId,
+      grossSettlementAmount: a.grossSettlementAmount,
+      pointUsedAmount: a.pointUsedAmount,
+      payableSettlementAmount: a.payableSettlementAmount,
+      depositUsedAmount: a.depositUsedAmount,
+      creditUsedAmount: a.creditUsedAmount,
+      creditExcessAmount: a.creditExcessAmount,
+      cardSurchargeAmount: a.cardSurchargeAmount,
+      cardSurchargeApplied: input.cardSurchargeAppliedSnapshot ? 1 : 0,
+      hasDiscount: input.hasDiscountSnapshot ? 1 : 0,
+      settleMethodSnapshot: input.settleMethodSnapshot,
+    });
 
-      if (isPrePayment) {
-        // 선정산: 일반 credit 사용 안 함. 부족분은 전부 신용초과 (4단계 워크플로 트리거).
-        a.creditUsedAmount = 0;
-        a.creditExcessAmount = carryover;
-      } else {
-        const creditLimitRemain = Math.max(0, wallet.creditLimit - wallet.creditUsedAmount);
-        a.creditUsedAmount = Math.min(carryover, creditLimitRemain);
-        a.creditExcessAmount = carryover - a.creditUsedAmount;
-      }
-      // payable_settlement_amount 는 보존 (deposit + credit + credit_excess 합 동일)
-      // resourceBreakdown 도 재계산
-      a.resourceBreakdown = {
-        ...a.resourceBreakdown,
-        DEPOSIT: a.depositUsedAmount,
-        CREDIT: a.creditUsedAmount,
-        CREDIT_EXCESS: a.creditExcessAmount,
-      } as typeof a.resourceBreakdown;
-
-      // 2-b. credit_excess 사용 시 사전 승인 approval 소비 (same-tx 보장). 미승인 시 throw → rollback.
-      if (a.creditExcessAmount > 0) {
-        if (!input.creditExcessApprovalId) {
-          throw new CreditExcessApprovalRequiredError(a.creditExcessAmount, input.orderId);
-        }
-        await this.creditExcessApproval.consume(
-          input.creditExcessApprovalId,
-          input.orderId,
-          a.creditExcessAmount,
-          a.payableSettlementAmount,
-          manager,
-        );
-      }
-
-      // 라인 snapshot 도 carryover 적용된 totals 와 일관되게 재분배 (payable_base 비율).
-      // 그렇지 않으면 SUM(lines.deposit/credit/excess) ≠ allocation totals 가 되어 invariant drift.
-      const payableBaseSum = a.lines.reduce((s, l) => s + l.payableBase, 0);
-      let depositRemain = a.depositUsedAmount;
-      let creditRemain = a.creditUsedAmount;
-      let excessRemain = a.creditExcessAmount;
-      for (let i = 0; i < a.lines.length; i++) {
-        const isLast = i === a.lines.length - 1;
-        const ratio = payableBaseSum > 0 ? a.lines[i].payableBase / payableBaseSum : 0;
-        const d = isLast ? depositRemain : Math.min(depositRemain, Math.floor(a.depositUsedAmount * ratio));
-        const c = isLast ? creditRemain : Math.min(creditRemain, Math.floor(a.creditUsedAmount * ratio));
-        const e = isLast ? excessRemain : Math.min(excessRemain, Math.floor(a.creditExcessAmount * ratio));
-        a.lines[i] = { ...a.lines[i], depositUsedAmount: d, creditUsedAmount: c, creditExcessAmount: e };
-        depositRemain -= d;
-        creditRemain -= c;
-        excessRemain -= e;
-      }
-
-      // 3. allocation row (재계산된 a 기준)
-      const alloc = await manager.save(OrderPaymentAllocationEntity, {
+    // 4. lines (재분배된 a.lines — top-level totals 와 SUM 일치 보장)
+    const lineIds: string[] = [];
+    for (const line of a.lines) {
+      const saved = await manager.save(OrderPaymentAllocationLineEntity, {
+        allocationId: alloc.id,
         orderId: input.orderId,
-        walletAccountId: a.walletAccountId,
-        grossSettlementAmount: a.grossSettlementAmount,
-        pointUsedAmount: a.pointUsedAmount,
-        payableSettlementAmount: a.payableSettlementAmount,
-        depositUsedAmount: a.depositUsedAmount,
-        creditUsedAmount: a.creditUsedAmount,
-        creditExcessAmount: a.creditExcessAmount,
-        cardSurchargeAmount: a.cardSurchargeAmount,
-        cardSurchargeApplied: input.cardSurchargeAppliedSnapshot ? 1 : 0,
-        hasDiscount: input.hasDiscountSnapshot ? 1 : 0,
-        settleMethodSnapshot: input.settleMethodSnapshot,
+        orderProductMappingId: line.orderProductMappingId,
+        orderDeliveryId: line.orderDeliveryId,
+        productId: line.productId,
+        brandId: line.brandId,
+        category: line.category,
+        partnerCompanyId: line.partnerCompanyId,
+        orderType: line.orderType,
+        grossSettlementAmount: line.grossSettlementAmount,
+        appliedFeePercent: line.appliedFeePercent,
+        appliedPriceAdjustment: line.appliedPriceAdjustment,
+        pointUsedAmount: line.pointUsedAmount,
+        payableBase: line.payableBase,
+        depositUsedAmount: line.depositUsedAmount,
+        creditUsedAmount: line.creditUsedAmount,
+        creditExcessAmount: line.creditExcessAmount,
       });
+      lineIds.push(saved.id);
+    }
 
-      // 4. lines (재분배된 a.lines — top-level totals 와 SUM 일치 보장)
-      const lineIds: string[] = [];
-      for (const line of a.lines) {
-        const saved = await manager.save(OrderPaymentAllocationLineEntity, {
-          allocationId: alloc.id,
+    // 5. point_usage
+    for (const usage of a.pointUsages) {
+      await manager.save(OrderPointUsageEntity, {
+        allocationId: alloc.id,
+        orderId: input.orderId,
+        orderDeliveryId: usage.orderDeliveryId,
+        pointGrantId: usage.pointGrantId,
+        usedAmount: usage.usedAmount,
+        restoredAmount: 0,
+        skippedExpiredAmount: 0,
+        expiresAtSnapshot: usage.expiresAtSnapshot,
+      });
+    }
+
+    // 6. attempt row (INITIAL) per delivery
+    const attemptIds: string[] = [];
+    for (const deliveryId of input.deliveryIdsForAttempt) {
+      const attempt = await manager.save(OrderDeliveryAttemptEntity, {
+        orderDeliveryId: deliveryId,
+        attemptType: OrderDeliveryAttemptType.INITIAL,
+        status: OrderDeliveryAttemptStatus.DEDUCTED,
+        deductedAt: new Date(),
+      });
+      attemptIds.push(attempt.id);
+    }
+
+    // 7. wallet_transaction row split (same manager = same tx 보장, nested 회피)
+    const walletTxIds: string[] = [];
+    const records: Array<{ resource: WalletResourceType; amount: number; suffix: string; grantId?: string }> = [];
+    if (a.depositUsedAmount > 0) {
+      records.push({
+        resource: WalletResourceType.DEPOSIT,
+        amount: -a.depositUsedAmount,
+        suffix: 'deposit',
+      });
+    }
+    if (a.creditUsedAmount > 0) {
+      records.push({
+        resource: WalletResourceType.CREDIT,
+        amount: a.creditUsedAmount,
+        suffix: 'credit',
+      });
+    }
+    if (a.creditExcessAmount > 0) {
+      records.push({
+        resource: WalletResourceType.CREDIT_EXCESS,
+        amount: a.creditExcessAmount,
+        suffix: 'credit_excess',
+      });
+    }
+    // POINT는 grant 별 aggregate. 같은 grant 가 여러 라인에 걸쳐 사용된 경우
+    // suffix(`point:${grantId}`) 중복 → idempotency_key 충돌로 두 번째 차감이 흡수돼버림. grant 합산 후 1 row 만 기록.
+    const pointAgg: Record<string, number> = {};
+    for (const usage of a.pointUsages) {
+      if (usage.usedAmount > 0) {
+        pointAgg[usage.pointGrantId] = (pointAgg[usage.pointGrantId] ?? 0) + usage.usedAmount;
+      }
+    }
+    for (const [grantId, amount] of Object.entries(pointAgg)) {
+      records.push({
+        resource: WalletResourceType.POINT,
+        amount: -amount,
+        suffix: `point:${grantId}`,
+        grantId,
+      });
+    }
+
+    for (const rec of records) {
+      const r = await this.ledger.recordTransaction(
+        {
+          walletAccountId: input.allocation.walletAccountId,
           orderId: input.orderId,
-          orderProductMappingId: line.orderProductMappingId,
-          orderDeliveryId: line.orderDeliveryId,
-          productId: line.productId,
-          brandId: line.brandId,
-          category: line.category,
-          partnerCompanyId: line.partnerCompanyId,
-          orderType: line.orderType,
-          grossSettlementAmount: line.grossSettlementAmount,
-          appliedFeePercent: line.appliedFeePercent,
-          appliedPriceAdjustment: line.appliedPriceAdjustment,
-          pointUsedAmount: line.pointUsedAmount,
-          payableBase: line.payableBase,
-          depositUsedAmount: line.depositUsedAmount,
-          creditUsedAmount: line.creditUsedAmount,
-          creditExcessAmount: line.creditExcessAmount,
-        });
-        lineIds.push(saved.id);
-      }
+          type: 'CONFIRM',
+          resourceType: rec.resource,
+          amount: rec.amount,
+          pointGrantId: rec.grantId ?? null,
+          idempotencyKey: `confirm:${input.orderId}::${rec.suffix}`,
+        },
+        manager, // same-tx 보장
+      );
+      if (r.transactionId) walletTxIds.push(r.transactionId);
+    }
 
-      // 5. point_usage
-      for (const usage of a.pointUsages) {
-        await manager.save(OrderPointUsageEntity, {
-          allocationId: alloc.id,
-          orderId: input.orderId,
-          orderDeliveryId: usage.orderDeliveryId,
-          pointGrantId: usage.pointGrantId,
-          usedAmount: usage.usedAmount,
-          restoredAmount: 0,
-          skippedExpiredAmount: 0,
-          expiresAtSnapshot: usage.expiresAtSnapshot,
-        });
-      }
-
-      // 6. attempt row (INITIAL) per delivery
-      const attemptIds: string[] = [];
-      for (const deliveryId of input.deliveryIdsForAttempt) {
-        const attempt = await manager.save(OrderDeliveryAttemptEntity, {
-          orderDeliveryId: deliveryId,
-          attemptType: OrderDeliveryAttemptType.INITIAL,
-          status: OrderDeliveryAttemptStatus.DEDUCTED,
-          deductedAt: new Date(),
-        });
-        attemptIds.push(attempt.id);
-      }
-
-      // 7. wallet_transaction row split (same manager = same tx 보장, nested 회피)
-      const walletTxIds: string[] = [];
-      const records: Array<{ resource: WalletResourceType; amount: number; suffix: string; grantId?: string }> = [];
-      if (a.depositUsedAmount > 0) {
-        records.push({
-          resource: WalletResourceType.DEPOSIT,
-          amount: -a.depositUsedAmount,
-          suffix: 'deposit',
-        });
-      }
-      if (a.creditUsedAmount > 0) {
-        records.push({
-          resource: WalletResourceType.CREDIT,
-          amount: a.creditUsedAmount,
-          suffix: 'credit',
-        });
-      }
-      if (a.creditExcessAmount > 0) {
-        records.push({
-          resource: WalletResourceType.CREDIT_EXCESS,
-          amount: a.creditExcessAmount,
-          suffix: 'credit_excess',
-        });
-      }
-      // POINT는 grant 별 aggregate. 같은 grant 가 여러 라인에 걸쳐 사용된 경우
-      // suffix(`point:${grantId}`) 중복 → idempotency_key 충돌로 두 번째 차감이 흡수돼버림. grant 합산 후 1 row 만 기록.
-      const pointAgg: Record<string, number> = {};
-      for (const usage of a.pointUsages) {
-        if (usage.usedAmount > 0) {
-          pointAgg[usage.pointGrantId] = (pointAgg[usage.pointGrantId] ?? 0) + usage.usedAmount;
-        }
-      }
-      for (const [grantId, amount] of Object.entries(pointAgg)) {
-        records.push({
-          resource: WalletResourceType.POINT,
-          amount: -amount,
-          suffix: `point:${grantId}`,
-          grantId,
-        });
-      }
-
-      for (const rec of records) {
-        const r = await this.ledger.recordTransaction(
-          {
-            walletAccountId: input.allocation.walletAccountId,
-            orderId: input.orderId,
-            type: 'CONFIRM',
-            resourceType: rec.resource,
-            amount: rec.amount,
-            pointGrantId: rec.grantId ?? null,
-            idempotencyKey: `confirm:${input.orderId}::${rec.suffix}`,
-          },
-          manager, // same-tx 보장
-        );
-        if (r.transactionId) walletTxIds.push(r.transactionId);
-      }
-
-      return { allocationId: alloc.id, lineIds, attemptIds, walletTransactionIds: walletTxIds, finalAllocation: a };
+    return { allocationId: alloc.id, lineIds, attemptIds, walletTransactionIds: walletTxIds, finalAllocation: a };
   }
 }

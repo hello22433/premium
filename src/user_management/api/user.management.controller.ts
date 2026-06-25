@@ -352,7 +352,8 @@ export class UserManagementController {
 
   @ApiOperation({
     summary: '계정 로그인 잠금 해제 API',
-    description: '로그인 5회 실패로 잠긴 계정의 잠금을 해제합니다. (영구 잠금 → 관리자 수동 해제, 이미 해제된 계정도 성공)',
+    description:
+      '로그인 5회 실패로 잠긴 계정의 잠금을 해제합니다. (영구 잠금 → 관리자 수동 해제, 이미 해제된 계정도 성공)',
   })
   @ApiBearerAuth()
   @ApiOkResponse({
@@ -519,9 +520,7 @@ export class UserManagementController {
   @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: '[어드민] 추가 credential 발급 (다중키, 평문 1회 노출)' })
-  async issueCredential(
-    @Param('accountId') accountId: string,
-  ): Promise<{ apiKey: string; credentialId: string }> {
+  async issueCredential(@Param('accountId') accountId: string): Promise<{ apiKey: string; credentialId: string }> {
     return this.userManagementService.issueCredential(accountId);
   }
 
@@ -539,9 +538,7 @@ export class UserManagementController {
   @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: '[어드민] credential 회전 (기존 활성 전부 회수 + 신규 발급, 평문 1회)' })
-  async rotateCredential(
-    @Param('accountId') accountId: string,
-  ): Promise<{ apiKey: string; credentialId: string }> {
+  async rotateCredential(@Param('accountId') accountId: string): Promise<{ apiKey: string; credentialId: string }> {
     return this.userManagementService.rotateCredential(accountId);
   }
 

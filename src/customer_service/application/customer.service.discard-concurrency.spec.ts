@@ -52,9 +52,9 @@ describe('CustomerServiceService.execDiscard — terminal 차단 / CAS 멱등', 
       // 외부 cancel/Tx 가 호출되면 안 되므로, restoreBalanceOnDiscard 를 spy 로 두고 미호출 확인
       sut.restoreBalanceOnDiscard = jest.fn();
 
-      await expect(
-        sut.execDiscard(operator, 7001, OrderDeliveryCouponStatus.CANCEL),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      await expect(sut.execDiscard(operator, 7001, OrderDeliveryCouponStatus.CANCEL)).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
 
       expect(sut.restoreBalanceOnDiscard).not.toHaveBeenCalled();
     });
@@ -68,9 +68,7 @@ describe('CustomerServiceService.execDiscard — terminal 차단 / CAS 멱등', 
       sut.restoreBalanceOnDiscard = jest.fn().mockResolvedValue(undefined);
 
       // terminal 거부 메시지로 던지지 않아야 함 (통과해서 폐기 흐름 진입)
-      await expect(
-        sut.execDiscard(operator, 7001, OrderDeliveryCouponStatus.CANCEL),
-      ).resolves.toBeDefined();
+      await expect(sut.execDiscard(operator, 7001, OrderDeliveryCouponStatus.CANCEL)).resolves.toBeDefined();
     });
   });
 
@@ -82,9 +80,9 @@ describe('CustomerServiceService.execDiscard — terminal 차단 / CAS 멱등', 
       sut.orderHistoryRepository = { create: jest.fn(() => ({})) };
       sut.restoreBalanceOnDiscard = jest.fn().mockResolvedValue(undefined);
 
-      await expect(
-        sut.execDiscard(operator, 7001, OrderDeliveryCouponStatus.CANCEL),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      await expect(sut.execDiscard(operator, 7001, OrderDeliveryCouponStatus.CANCEL)).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
 
       // affected=0 이면 Tx1 에서 throw → Tx2 잔액복구는 실행되지 않아야 함
       expect(sut.restoreBalanceOnDiscard).not.toHaveBeenCalled();
@@ -95,7 +93,12 @@ describe('CustomerServiceService.execDiscard — terminal 차단 / CAS 멱등', 
 
   describe('(C) bulkDiscard — 조건부 UPDATE(CAS) 사용 검증', () => {
     // 운영자: authorityList 에 CUSTOMER_GENERAL_COUPON 부여 → 권한검사 통과
-    const operatorEntity = { id: 9, personName: 'OP', authority: 'OPERATION_ADMIN', authorityList: 'CUSTOMER_GENERAL_COUPON' };
+    const operatorEntity = {
+      id: 9,
+      personName: 'OP',
+      authority: 'OPERATION_ADMIN',
+      authorityList: 'CUSTOMER_GENERAL_COUPON',
+    };
 
     // couponStatus=NOT_USED(폐기 가능), product.type=GENERAL(권한 통과),
     // partnerCompany 없음 → partnerCompanyName=undefined → switch default(외부 cancel 없음)

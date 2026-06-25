@@ -1,5 +1,18 @@
 import { RequirementService } from '../application/requirement.service';
-import { Body, Controller, Delete, ForbiddenException, Get, Param, Patch, Post, Put, Query, Res, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  ForbiddenException,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Put,
+  Query,
+  Res,
+  UseGuards,
+} from '@nestjs/common';
 import { ApiBadRequestResponse, ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import {
   RequirementCommentCreateReqDto,
@@ -150,10 +163,7 @@ export class RequirementController {
   })
   // ===================================================
   @Delete('/requirement/:id/comment/:commentId')
-  async deleteComment(
-    @User() user: ILoginUserInfo,
-    @Param() getParam: RequirementCommentDeleteReqParamDto,
-  ) {
+  async deleteComment(@User() user: ILoginUserInfo, @Param() getParam: RequirementCommentDeleteReqParamDto) {
     await this.authService.authorityValidator(user, UserAuthSubEnum.REQUIREMENT);
     return this.requirementService.deleteComment(user, getParam.id, getParam.commentId);
   }

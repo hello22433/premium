@@ -31,7 +31,7 @@ export class PartnerCompanyService {
   constructor(
     @InjectRepository(PartnerCompanyEntity)
     private partnerCompanyRepository: Repository<PartnerCompanyEntity>,
-  ) { }
+  ) {}
 
   async getSelectList(): Promise<PartnerCompanyGetSelectListResDto> {
     const partnerCompanyList = await this.partnerCompanyRepository.find({});

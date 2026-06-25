@@ -279,13 +279,9 @@ export class RequirementService {
     requirement.status = getBody.status;
     await this.requirementRepository.save(requirement);
 
-    await this.emitRequirementEvent(
-      user,
-      RequirementEventAction.STATUS_CHANGED,
-      id,
-      requirement.title,
-      { newStatus: getBody.status },
-    );
+    await this.emitRequirementEvent(user, RequirementEventAction.STATUS_CHANGED, id, requirement.title, {
+      newStatus: getBody.status,
+    });
   }
 
   async addComment(user: ILoginUserInfo, id: number, getBody: RequirementCommentCreateReqDto) {
@@ -325,12 +321,7 @@ export class RequirementService {
     await this.commentRepository.softDelete(commentId);
 
     const requirement = await this.requirementRepository.findOne({ where: { id } });
-    await this.emitRequirementEvent(
-      user,
-      RequirementEventAction.COMMENT_DELETED,
-      id,
-      requirement?.title || '',
-    );
+    await this.emitRequirementEvent(user, RequirementEventAction.COMMENT_DELETED, id, requirement?.title || '');
   }
 
   async updateComment(user: ILoginUserInfo, id: number, commentId: number, getBody: RequirementCommentUpdateReqDto) {

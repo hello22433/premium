@@ -176,7 +176,12 @@ export class UserEntity extends BaseEntity {
   businessGrade: string;
 
   /** @deprecated SoT = order_from_definition. cutover 호환 mirror. 별도 PR 에서 DROP 예정. */
-  @Column({ type: 'varchar', nullable: true, length: 20, comment: '발신 번호 (deprecated mirror, SoT=order_from_definition)' })
+  @Column({
+    type: 'varchar',
+    nullable: true,
+    length: 20,
+    comment: '발신 번호 (deprecated mirror, SoT=order_from_definition)',
+  })
   fromPhoneNumber: string | null;
 
   @Column({

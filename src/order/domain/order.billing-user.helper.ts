@@ -7,6 +7,8 @@
  *
  * Wallet Cutover Bundle(plan v2.1) F-002. PR3 정산 mirror 와 PR2 보상 release 시 사용.
  */
-export function getBillingUserId(order: Pick<{ userId: number; clientUserId: number | null }, 'userId' | 'clientUserId'>): number {
+export function getBillingUserId(
+  order: Pick<{ userId: number; clientUserId: number | null }, 'userId' | 'clientUserId'>,
+): number {
   return order.clientUserId ?? order.userId;
 }

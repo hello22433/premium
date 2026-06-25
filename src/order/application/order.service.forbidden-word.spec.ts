@@ -104,9 +104,7 @@ describe('OrderService 금칙어 차단', () => {
         ],
       };
 
-      await expect(service.assertNoForbiddenWordInOrder(user, order)).rejects.toBeInstanceOf(
-        BadRequestException,
-      );
+      await expect(service.assertNoForbiddenWordInOrder(user, order)).rejects.toBeInstanceOf(BadRequestException);
       expect(service.forbiddenWordBlockLogRepository.insert).toHaveBeenCalledWith(
         expect.objectContaining({ field: 'replaceCharacter2' }),
       );

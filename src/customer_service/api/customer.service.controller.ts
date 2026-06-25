@@ -249,7 +249,10 @@ export class CustomerServiceController {
   })
   // ===============================================
   @Get('/customer-service/unmasked-delivery-target')
-  getUnmaskedDeliveryTarget(@User() user: ILoginUserInfo, @Query() getQuery: CustomerServiceUnmaskedDeliveryTargetReqDto) {
+  getUnmaskedDeliveryTarget(
+    @User() user: ILoginUserInfo,
+    @Query() getQuery: CustomerServiceUnmaskedDeliveryTargetReqDto,
+  ) {
     return this.customerServiceService.getUnmaskedDeliveryTarget(user, getQuery);
   }
 

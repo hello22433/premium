@@ -197,8 +197,16 @@ dayjs.extend(timezone);
  * 우선순위: delivery 저장값 → mapping 저장값 → findMatchingDiscount
  */
 function resolveSettleFee(
-  firstDelivery: { settleFee: number | null; settlePriceAdjustment: IPriceAdjustment | null; settleDiscountType: IOrderSettleDiscountType | null },
-  mapping: { fee: number | null; priceAdjustment: IPriceAdjustment | null; settleDiscountType: IOrderSettleDiscountType | null },
+  firstDelivery: {
+    settleFee: number | null;
+    settlePriceAdjustment: IPriceAdjustment | null;
+    settleDiscountType: IOrderSettleDiscountType | null;
+  },
+  mapping: {
+    fee: number | null;
+    priceAdjustment: IPriceAdjustment | null;
+    settleDiscountType: IOrderSettleDiscountType | null;
+  },
   isOrderCompleted: boolean,
   computeMatchingDiscount: () => ReturnType<typeof findMatchingDiscount>,
 ): { fee: number; priceAdjustment: IPriceAdjustment | null; settleDiscountType: IOrderSettleDiscountType | null } {
@@ -778,17 +786,19 @@ export class OrderService {
       }
 
       // 발송 실패 건 포함 여부 확인
-      const hasFailedDelivery = order.orderProductMappings?.some((mapping) =>
-        mapping.orderDeliveries?.some(
-          (delivery) =>
-            delivery.status === IOrderDeliveryStatus.FAIL || delivery.status === IOrderDeliveryStatus.FAIL_SMS,
-        ),
-      ) ?? false;
+      const hasFailedDelivery =
+        order.orderProductMappings?.some((mapping) =>
+          mapping.orderDeliveries?.some(
+            (delivery) =>
+              delivery.status === IOrderDeliveryStatus.FAIL || delivery.status === IOrderDeliveryStatus.FAIL_SMS,
+          ),
+        ) ?? false;
 
       // 재발송 완료 건 포함 여부 확인
-      const hasResentDelivery = order.orderProductMappings?.some((mapping) =>
-        mapping.orderDeliveries?.some((delivery) => delivery.resendAt != null),
-      ) ?? false;
+      const hasResentDelivery =
+        order.orderProductMappings?.some((mapping) =>
+          mapping.orderDeliveries?.some((delivery) => delivery.resendAt != null),
+        ) ?? false;
 
       // 첫 번째 상품의 발송 정보 사용
       const firstMapping = order.orderProductMappings?.[0];
@@ -871,9 +881,7 @@ export class OrderService {
         // 발송 완료된 건: 저장된 expireAt 직접 사용, 미발송건: 예약/즉시 기준 계산
         const firstDelivery = orderProductMapping.orderDeliveries?.[0];
         const expireAt = this.resolveOrderExpireAt(orderProductMapping, firstDelivery?.expireAt);
-        const expireDate = expireAt
-          ? dayjs(expireAt).tz('Asia/Seoul').format('YYYY. MM. DD')
-          : null;
+        const expireDate = expireAt ? dayjs(expireAt).tz('Asia/Seoul').format('YYYY. MM. DD') : null;
 
         for (const orderDelivery of orderProductMapping.orderDeliveries) {
           // deliveryTarget 복호화 (originalDeliveryTarget 우선 사용)
@@ -1023,13 +1031,10 @@ export class OrderService {
       const summary = await this.fetchAuditSummary(qr, orderId);
       const dailyStats = await this.fetchAuditDailyStats(qr, orderId);
       const duplicates = await this.fetchAuditDuplicates(qr, orderId);
-      const ssgDuplicates =
-        order.type === IOrderType.SSG ? await this.fetchSsgDuplicates(qr, orderId) : [];
+      const ssgDuplicates = order.type === IOrderType.SSG ? await this.fetchSsgDuplicates(qr, orderId) : [];
 
       const isDuplicateDetected =
-        duplicates.some((d) => !d.isLegitimate) ||
-        dailyStats.some((d) => d.isSuspicious) ||
-        ssgDuplicates.length > 0;
+        duplicates.some((d) => !d.isLegitimate) || dailyStats.some((d) => d.isSuspicious) || ssgDuplicates.length > 0;
 
       return {
         orderId: order.id,
@@ -1159,7 +1164,9 @@ export class OrderService {
         rowCnt: Number(r.rowCnt ?? 0),
         sentCnt: Number(r.sentCnt ?? 0),
         deliveryIds: this.parseIdList(r.deliveryIds),
-        statuses: String(r.statuses ?? '').split(',').filter((x) => x !== ''),
+        statuses: String(r.statuses ?? '')
+          .split(',')
+          .filter((x) => x !== ''),
         sendTimes: this.parseNullableStringList(r.sendTimes),
         resendTimes: this.parseNullableStringList(r.resendTimes),
         replacedFromIds,
@@ -1982,7 +1989,11 @@ export class OrderService {
   /**
    * 다중 주문 거래명세서 조회 (통합)
    */
-  async getOrderCompleteReportMultiple(ids: string, evidenceDate: string | undefined, user: ILoginUserInfo): Promise<any> {
+  async getOrderCompleteReportMultiple(
+    ids: string,
+    evidenceDate: string | undefined,
+    user: ILoginUserInfo,
+  ): Promise<any> {
     const orderIds = ids.split(',').map((id) => parseInt(id.trim(), 10));
     // 증빙일자가 있으면 파싱
     const evidenceDateParsed = evidenceDate ? new Date(evidenceDate) : null;
@@ -2175,7 +2186,9 @@ export class OrderService {
       where: [{ userId: billingUserId }, { partnerCompanyId: In(partnerCompanyIds) }],
     });
 
-    this.logger.debug(`[getOrderSettle] orderId=${id}, billingUserId=${billingUserId} (clientUserId=${order.clientUserId}, userId=${order.userId})`);
+    this.logger.debug(
+      `[getOrderSettle] orderId=${id}, billingUserId=${billingUserId} (clientUserId=${order.clientUserId}, userId=${order.userId})`,
+    );
     this.logger.debug(`[getOrderSettle] partnerCompanyIds=${JSON.stringify(partnerCompanyIds)}`);
     this.logger.debug(`[getOrderSettle] userDiscounts count=${userDiscounts.length}`);
     userDiscounts.forEach((d) => {
@@ -2248,26 +2261,39 @@ export class OrderService {
         }
 
         // 할인율별 그룹핑
-        const discountGroups = new Map<string, {
-          fee: number;
-          priceAdjustment: IPriceAdjustment | null;
-          settleDiscountType: IOrderSettleDiscountType | null;
-          deliveryIds: number[];
-          count: number;
-        }>();
+        const discountGroups = new Map<
+          string,
+          {
+            fee: number;
+            priceAdjustment: IPriceAdjustment | null;
+            settleDiscountType: IOrderSettleDiscountType | null;
+            deliveryIds: number[];
+            count: number;
+          }
+        >();
 
         for (const [phoneKey, deliveries] of targetGroups) {
           const totalAmount = phoneToTotalAmount.get(phoneKey) ?? productPrice * deliveries.length;
 
           const resolved = resolveSettleFee(
             deliveries[0],
-            { fee: orderProduct.fee, priceAdjustment: orderProduct.priceAdjustment, settleDiscountType: orderProduct.settleDiscountType ?? null },
+            {
+              fee: orderProduct.fee,
+              priceAdjustment: orderProduct.priceAdjustment,
+              settleDiscountType: orderProduct.settleDiscountType ?? null,
+            },
             isOrderCompleted,
-            () => findMatchingDiscount(
-              { price: productPrice, category: product.category, classificationId: product.classificationId, brand: product.brand },
-              userDiscounts,
-              totalAmount,
-            ),
+            () =>
+              findMatchingDiscount(
+                {
+                  price: productPrice,
+                  category: product.category,
+                  classificationId: product.classificationId,
+                  brand: product.brand,
+                },
+                userDiscounts,
+                totalAmount,
+              ),
           );
           let { fee } = resolved;
           const { priceAdjustment, settleDiscountType } = resolved;
@@ -2325,26 +2351,33 @@ export class OrderService {
       }
 
       // Phase 3b: 크로스 상품 수신번호 — 합산 행 (상품명 결합 표시)
-      const mergedGroups = new Map<string, {
-        name: string;
-        brandName: string | null;
-        combinedPrice: number;
-        discountCombinedPrice: number;
-        fee: number;
-        priceAdjustment: IPriceAdjustment | null;
-        settleDiscountType: IOrderSettleDiscountType | null;
-        deliveryIds: number[];
-        phoneCount: number;
-        deliveryCount: number;
-        refund: number | null;
-        orderProductId: number;
-      }>();
+      const mergedGroups = new Map<
+        string,
+        {
+          name: string;
+          brandName: string | null;
+          combinedPrice: number;
+          discountCombinedPrice: number;
+          fee: number;
+          priceAdjustment: IPriceAdjustment | null;
+          settleDiscountType: IOrderSettleDiscountType | null;
+          deliveryIds: number[];
+          phoneCount: number;
+          deliveryCount: number;
+          refund: number | null;
+          orderProductId: number;
+        }
+      >();
 
       for (const phoneKey of multiProductPhones) {
         const totalAmount = phoneToTotalAmount.get(phoneKey) ?? 0;
 
         // 이 번호로 가는 모든 delivery 수집
-        const phoneItems: Array<{ orderProduct: typeof orderProductList[0]; deliveryId: number; delivery: typeof orderProductList[0]['orderDeliveries'][0] }> = [];
+        const phoneItems: Array<{
+          orderProduct: (typeof orderProductList)[0];
+          deliveryId: number;
+          delivery: (typeof orderProductList)[0]['orderDeliveries'][0];
+        }> = [];
         for (const orderProduct of orderProductList) {
           for (const delivery of orderProduct.orderDeliveries ?? []) {
             if (deliveryPhoneKeyCache.get(delivery.id) === phoneKey) {
@@ -2368,13 +2401,23 @@ export class OrderService {
           const linePrice = readLineProductView(orderProduct).price;
           const resolved = resolveSettleFee(
             delivery,
-            { fee: orderProduct.fee, priceAdjustment: orderProduct.priceAdjustment, settleDiscountType: orderProduct.settleDiscountType ?? null },
+            {
+              fee: orderProduct.fee,
+              priceAdjustment: orderProduct.priceAdjustment,
+              settleDiscountType: orderProduct.settleDiscountType ?? null,
+            },
             isOrderCompleted,
-            () => findMatchingDiscount(
-              { price: linePrice, category: product.category, classificationId: product.classificationId, brand: product.brand },
-              userDiscounts,
-              totalAmount,
-            ),
+            () =>
+              findMatchingDiscount(
+                {
+                  price: linePrice,
+                  category: product.category,
+                  classificationId: product.classificationId,
+                  brand: product.brand,
+                },
+                userDiscounts,
+                totalAmount,
+              ),
           );
           let { fee } = resolved;
           if (fee < 0 || fee > 100) fee = 0;
@@ -2392,16 +2435,20 @@ export class OrderService {
         });
 
         const settleSig = itemSettles
-          .map((item) => `${item.orderProductId}:${item.fee}:${item.priceAdjustment ?? ''}:${item.settleDiscountType ?? ''}`)
+          .map(
+            (item) =>
+              `${item.orderProductId}:${item.fee}:${item.priceAdjustment ?? ''}:${item.settleDiscountType ?? ''}`,
+          )
           .sort()
           .join('|');
         const groupKey = `${sig}-${settleSig}`;
 
         const firstSettle = itemSettles[0];
-        const hasSameSettle = itemSettles.every((item) =>
-          item.fee === firstSettle.fee &&
-          item.priceAdjustment === firstSettle.priceAdjustment &&
-          item.settleDiscountType === firstSettle.settleDiscountType,
+        const hasSameSettle = itemSettles.every(
+          (item) =>
+            item.fee === firstSettle.fee &&
+            item.priceAdjustment === firstSettle.priceAdjustment &&
+            item.settleDiscountType === firstSettle.settleDiscountType,
         );
         const fee = hasSameSettle ? firstSettle.fee : 0;
         const priceAdjustment = hasSameSettle ? firstSettle.priceAdjustment : null;
@@ -2423,10 +2470,14 @@ export class OrderService {
           const lastSpace = prefix.lastIndexOf(' ');
           if (lastSpace > 0) prefix = prefix.slice(0, lastSpace + 1);
           else prefix = '';
-          const mergedName = prefix + sortedProducts.map(([, v]) => {
-            const suffix = v.name.slice(prefix.length);
-            return `${suffix}×${v.count}`;
-          }).join(' + ');
+          const mergedName =
+            prefix +
+            sortedProducts
+              .map(([, v]) => {
+                const suffix = v.name.slice(prefix.length);
+                return `${suffix}×${v.count}`;
+              })
+              .join(' + ');
 
           mergedGroups.set(groupKey, {
             name: mergedName,
@@ -2656,7 +2707,9 @@ export class OrderService {
         );
 
         if (settle.refund !== undefined) {
-          refundPromises.push(this.orderDeliveryRepository.update({ id: In(settle.deliveryIds) }, { refundRatio: settle.refund }));
+          refundPromises.push(
+            this.orderDeliveryRepository.update({ id: In(settle.deliveryIds) }, { refundRatio: settle.refund }),
+          );
           for (const deliveryId of settle.deliveryIds) {
             allDeliveryById.get(deliveryId)!.refundRatio = settle.refund;
           }
@@ -2817,7 +2870,10 @@ export class OrderService {
       cardSurchargeApplied,
     );
 
-    await this.orderRepository.update({ id: orderId }, { settleAmount: newSettleAmount, cardSurchargeApplied, settleMethod });
+    await this.orderRepository.update(
+      { id: orderId },
+      { settleAmount: newSettleAmount, cardSurchargeApplied, settleMethod },
+    );
 
     if (order.isNewBillingFlow) {
       // === 새 흐름 ===
@@ -2922,7 +2978,10 @@ export class OrderService {
       cardSurchargeApplied,
     );
 
-    await this.orderRepository.update({ id: orderId }, { settleAmount: newSettleAmount, cardSurchargeApplied, settleMethod });
+    await this.orderRepository.update(
+      { id: orderId },
+      { settleAmount: newSettleAmount, cardSurchargeApplied, settleMethod },
+    );
 
     // 발송확정 이후(DELIVERY_CONFIRMED, DELIVERY_COMPLETE)에 정산정보를 수정한 경우
     // 이전 정산금액과 새 정산금액의 차이를 balance/allSettleAmount에 반영
@@ -2977,7 +3036,7 @@ export class OrderService {
       throw new BadRequestException('사용자 정보를 찾을 수 없습니다.');
     }
     const allowedMethods = userEntity.allowedSendMethods
-      ? userEntity.allowedSendMethods.split(',').map(m => m === 'SMS' ? 'MMS' : m)
+      ? userEntity.allowedSendMethods.split(',').map((m) => (m === 'SMS' ? 'MMS' : m))
       : ['ALIM_TALK', 'MMS', 'EMAIL'];
 
     for (const product of orderProductList) {
@@ -3044,10 +3103,7 @@ export class OrderService {
    * 발송요청 직전 금칙어 최종 차단(저장된 주문 엔티티 기준).
    * 임시저장 이후 금칙어 추가, 발송관리 패치(꼬리광고/이메일 사용방법 등)로 인한 우회를 막는다.
    */
-  private async assertNoForbiddenWordInOrder(
-    user: ILoginUserInfo,
-    order: OrderEntity,
-  ): Promise<void> {
+  private async assertNoForbiddenWordInOrder(user: ILoginUserInfo, order: OrderEntity): Promise<void> {
     const targets = OrderService.collectForbiddenWordTargets(
       (order.orderProductMappings ?? []).map((mapping) => ({
         ...mapping,
@@ -3114,8 +3170,7 @@ export class OrderService {
     const clientUserId = getBody.clientUserId ?? null;
     await this.validateSendMethods(clientUserId, user.id, orderProductList);
 
-    const ssgReservationRange =
-      type === IOrderType.SSG ? await this.ssgEventService.getReservationRange() : null;
+    const ssgReservationRange = type === IOrderType.SSG ? await this.ssgEventService.getReservationRange() : null;
     validateSsgReservationWindow(type, orderProductList, ssgReservationRange);
     // SSG 주문은 모든 상품 행의 발송 유형/예약시각이 동일해야 함 (혼합/불일치 400)
     validateSsgUniformSend(type, orderProductList);
@@ -3307,8 +3362,7 @@ export class OrderService {
     const clientUserId = getBody.clientUserId ?? null;
     await this.validateSendMethods(clientUserId, user.id, orderProductList);
 
-    const ssgReservationRange =
-      order.type === IOrderType.SSG ? await this.ssgEventService.getReservationRange() : null;
+    const ssgReservationRange = order.type === IOrderType.SSG ? await this.ssgEventService.getReservationRange() : null;
     validateSsgReservationWindow(order.type, orderProductList, ssgReservationRange);
     // SSG 주문은 모든 상품 행의 발송 유형/예약시각이 동일해야 함 (혼합/불일치 400)
     validateSsgUniformSend(order.type, orderProductList);
@@ -3337,16 +3391,19 @@ export class OrderService {
       },
     });
     const ownedMap = new Map<number, OwnedLine>(
-      deleteOrderProductMappingList.map((m) => [m.id, {
-        productId: m.productId,
-        snapshot: {
-          snapshotProductPrice: m.snapshotProductPrice,
-          snapshotProductName: m.snapshotProductName,
-          snapshotProductBrandName: m.snapshotProductBrandName,
-          snapshotProductExpireDay: m.snapshotProductExpireDay,
-          snapshotProductImagePath: m.snapshotProductImagePath,
+      deleteOrderProductMappingList.map((m) => [
+        m.id,
+        {
+          productId: m.productId,
+          snapshot: {
+            snapshotProductPrice: m.snapshotProductPrice,
+            snapshotProductName: m.snapshotProductName,
+            snapshotProductBrandName: m.snapshotProductBrandName,
+            snapshotProductExpireDay: m.snapshotProductExpireDay,
+            snapshotProductImagePath: m.snapshotProductImagePath,
+          },
         },
-      }]),
+      ]),
     );
     assertLineIdsValid(orderProductList, ownedMap);
 
@@ -3355,7 +3412,8 @@ export class OrderService {
     let sendAmount = 0;
     for (const orderProduct of orderProductList) {
       const getProduct = productPriceMap.get(orderProduct.productId)!;
-      const resolvedPrice = resolveLineSnapshot(orderProduct, ownedMap, getProduct).snapshotProductPrice ?? getProduct.price;
+      const resolvedPrice =
+        resolveLineSnapshot(orderProduct, ownedMap, getProduct).snapshotProductPrice ?? getProduct.price;
       sendAmount += resolvedPrice * orderProduct.amount;
     }
 
@@ -3620,8 +3678,7 @@ export class OrderService {
     // 발송요청 직전 금칙어 최종 차단(저장된 콘텐츠 기준, sendTitle 포함)
     await this.assertNoForbiddenWordInOrder(user, order);
 
-    const ssgReservationRange =
-      order.type === IOrderType.SSG ? await this.ssgEventService.getReservationRange() : null;
+    const ssgReservationRange = order.type === IOrderType.SSG ? await this.ssgEventService.getReservationRange() : null;
     validateSsgReservationWindow(order.type, order.orderProductMappings!, ssgReservationRange);
     // 실발송 직전: 모든 행의 sendType 확정 + RESERVE 행 sendRequestAt 필수 (null 행이 즉시발송으로 잘못 차감되는 것 방지)
     validateDeliverySendTypes(order.orderProductMappings!);
@@ -3629,10 +3686,7 @@ export class OrderService {
     OrderValidation(order);
 
     if (process.env.FROM_PHONE_SOT_ENFORCE === 'true') {
-      await this.orderFromService.assertApprovedPhones(
-        getBillingUserId(order),
-        order.orderProductMappings!,
-      );
+      await this.orderFromService.assertApprovedPhones(getBillingUserId(order), order.orderProductMappings!);
     }
 
     // 총 주문 금액
@@ -3654,9 +3708,7 @@ export class OrderService {
 
     // 과금 모드 결정 (두 블록에서 공통 사용)
     const isCompanyBalanceMode = oneUser.company?.balanceManagementType === 'COMPANY';
-    const effectiveBalance = isCompanyBalanceMode && oneUser.company
-      ? oneUser.company.balance
-      : oneUser.balance;
+    const effectiveBalance = isCompanyBalanceMode && oneUser.company ? oneUser.company.balance : oneUser.balance;
 
     if (!order.isNewBillingFlow) {
       // === 기존 흐름: 발송요청 시 잔액/한도 체크 ===
@@ -3705,9 +3757,7 @@ export class OrderService {
       const reserveMapping = order.orderProductMappings!.find(
         (mapping) => mapping.sendType === 'RESERVE' && mapping.sendRequestAt,
       );
-      const reserveDate = reserveMapping
-        ? new Date(reserveMapping.sendRequestAt as unknown as string)
-        : undefined;
+      const reserveDate = reserveMapping ? new Date(reserveMapping.sendRequestAt as unknown as string) : undefined;
 
       // 배송건별 행사 할당 (All or Nothing)
       ssgAllocations = await this.ssgEventService.allocateEventsForDeliveries(
@@ -3848,10 +3898,7 @@ export class OrderService {
     OrderValidation(order);
 
     if (process.env.FROM_PHONE_SOT_ENFORCE === 'true') {
-      await this.orderFromService.assertApprovedPhones(
-        getBillingUserId(order),
-        order.orderProductMappings!,
-      );
+      await this.orderFromService.assertApprovedPhones(getBillingUserId(order), order.orderProductMappings!);
     }
 
     // 신세계 상품 검증 (confirmEventBalance는 한도 체크 이후에 실행)
@@ -4016,9 +4063,7 @@ export class OrderService {
       // === 새 흐름: 발송확정 시 전액 차감 ===
 
       // 1. effectiveBalance 결정
-      const effectiveBalance = isCompanyBalanceMode && oneUser.company
-        ? oneUser.company.balance
-        : oneUser.balance;
+      const effectiveBalance = isCompanyBalanceMode && oneUser.company ? oneUser.company.balance : oneUser.balance;
 
       // 2. 잔여한도 계산
       let remainServiceAmount: number;
@@ -4136,15 +4181,9 @@ export class OrderService {
         oneUser.allSettleAmount += finalAllocation.creditUsedAmount + finalAllocation.creditExcessAmount;
 
         // 5'. 저장 — user.balance 는 *기록하지 않음* (wallet ledger 가 진실의 원천)
-        await this.userRepository.update(
-          { id: oneUser.id },
-          { allSettleAmount: oneUser.allSettleAmount },
-        );
+        await this.userRepository.update({ id: oneUser.id }, { allSettleAmount: oneUser.allSettleAmount });
         if (isCompanyBalanceMode && oneUser.company) {
-          await this.userCompanyRepository.update(
-            { id: oneUser.company.id },
-            { balance: oneUser.company.balance },
-          );
+          await this.userCompanyRepository.update({ id: oneUser.company.id }, { balance: oneUser.company.balance });
         }
 
         walletAllocation = finalAllocation;
@@ -4192,19 +4231,13 @@ export class OrderService {
           { balance: oneUser.balance, allSettleAmount: oneUser.allSettleAmount },
         );
         if (isCompanyBalanceMode && oneUser.company) {
-          await this.userCompanyRepository.update(
-            { id: oneUser.company.id },
-            { balance: oneUser.company.balance },
-          );
+          await this.userCompanyRepository.update({ id: oneUser.company.id }, { balance: oneUser.company.balance });
         }
 
         if (cutoverMode === WalletCutoverMode.SHADOW) {
           // wallet preview (pure compute, no DB write) + mismatch 비교 로그
           try {
-            const wallet = await this.walletAccountResolverService.resolveForOrder(
-              order,
-              this.orderRepository.manager,
-            );
+            const wallet = await this.walletAccountResolverService.resolveForOrder(order, this.orderRepository.manager);
             const previewInput = await this.walletAllocationInputBuilder.build(order, wallet, finalAmount, {
               companyId: oneUser.companyId,
             });
@@ -4218,10 +4251,7 @@ export class OrderService {
             //  legacy 가 전부 excess 로 찍히면 정상 credit 사용도 real_drift 분류 → 모니터링 신뢰도 ↓.
             const legacyDeposit = Math.min(finalAmount, effectiveBalance);
             const legacyOverflow = Math.max(0, finalAmount - effectiveBalance);
-            const legacyLimitRemain = Math.max(
-              0,
-              (oneUser.company?.maximumLimit ?? 0) - oneUser.allSettleAmount,
-            );
+            const legacyLimitRemain = Math.max(0, (oneUser.company?.maximumLimit ?? 0) - oneUser.allSettleAmount);
             const legacyCreditUsed = Math.min(legacyOverflow, legacyLimitRemain);
             const legacyCreditExcess = legacyOverflow - legacyCreditUsed;
             const mismatch = this.shadowMismatchClassifierService.classify(
@@ -4331,9 +4361,7 @@ export class OrderService {
             if (remainingLimit >= netDelta) {
               oneUser.allSettleAmount += netDelta;
               message = 'warning: 정산 차액(할증/카드할증)이 추가되었습니다.';
-              this.logger.debug(
-                `정산 차액 차감 (한도): orderId=${order.id}, 추가액=${netDelta} (${deltaBreakdown})`,
-              );
+              this.logger.debug(`정산 차액 차감 (한도): orderId=${order.id}, 추가액=${netDelta} (${deltaBreakdown})`);
             } else if (currentBalance >= netDelta - remainingLimit) {
               const neededFromBalance = netDelta - remainingLimit;
               oneUser.allSettleAmount = companyMaxLimit;
@@ -4355,10 +4383,7 @@ export class OrderService {
           { balance: oneUser.balance, allSettleAmount: oneUser.allSettleAmount },
         );
         if (isCompanyBalanceMode && oneUser.company) {
-          await this.userCompanyRepository.update(
-            { id: oneUser.company.id },
-            { balance: oneUser.company.balance },
-          );
+          await this.userCompanyRepository.update({ id: oneUser.company.id }, { balance: oneUser.company.balance });
         }
       }
 
@@ -4565,17 +4590,14 @@ export class OrderService {
     // 라우팅: allocation 존재 + released_at IS NULL → wallet path (flag mode 무관, allocation routing > flag).
     const externalManager = this.orderRepository.manager;
     const isWalletManaged =
-      refundAmount > 0 &&
-      (await this.walletManagedPredicate.isWalletManaged(order.id, externalManager));
+      refundAmount > 0 && (await this.walletManagedPredicate.isWalletManaged(order.id, externalManager));
 
     if (isWalletManaged) {
       const allocation = await externalManager.findOne(OrderPaymentAllocationEntity, {
         where: { orderId: order.id },
       });
       if (!allocation) {
-        throw new InternalServerErrorException(
-          `wallet-managed but allocation row missing for orderId=${order.id}`,
-        );
+        throw new InternalServerErrorException(`wallet-managed but allocation row missing for orderId=${order.id}`);
       }
       const depositRefund = Math.max(0, allocation.depositUsedAmount - allocation.depositRestoredAmount);
       const creditRefund = Math.max(0, allocation.creditUsedAmount - allocation.creditUsedRestoredAmount);
@@ -4621,10 +4643,7 @@ export class OrderService {
     );
     if (isWalletManaged) {
       // wallet path 는 user.balance 를 건드리지 않으므로 update 로 좁혀 stale overwrite 차단.
-      await this.userRepository.update(
-        { id: oneUser.id },
-        { allSettleAmount: oneUser.allSettleAmount },
-      );
+      await this.userRepository.update({ id: oneUser.id }, { allSettleAmount: oneUser.allSettleAmount });
     } else {
       await this.userRepository.save(oneUser);
     }
@@ -4765,10 +4784,7 @@ export class OrderService {
     for (let i = 0; i < ids.length; i += CHUNK) {
       const chunkIds = ids.slice(i, i + CHUNK);
       // 청크 재조회는 queryBuilder(orderBy id DESC) clone 이라 정렬 보존
-      const chunkList = await queryBuilder
-        .clone()
-        .andWhere('order.id IN (:...chunkIds)', { chunkIds })
-        .getMany();
+      const chunkList = await queryBuilder.clone().andWhere('order.id IN (:...chunkIds)', { chunkIds }).getMany();
       for (const order of chunkList) {
         let totalAmount = 0;
         let productName = '';
@@ -4927,10 +4943,7 @@ export class OrderService {
     );
     if (!expireDays) return null;
 
-    const baseDate =
-      orderProductMapping.sendType === 'IMMEDIATE'
-        ? dayjs()
-        : dayjs(orderProductMapping.sendRequestAt);
+    const baseDate = orderProductMapping.sendType === 'IMMEDIATE' ? dayjs() : dayjs(orderProductMapping.sendRequestAt);
     return baseDate.tz('Asia/Seoul').add(expireDays, 'day').toDate();
   }
 
@@ -5150,7 +5163,11 @@ export class OrderService {
     }
 
     // 발송 확정 이후에는 설정 불가 (API에 이미 전달된 duration 변경 방지)
-    const blockedStatuses = [IOrderStatus.DELIVERY_CONFIRMED, IOrderStatus.DELIVERY_COMPLETE, IOrderStatus.DELIVERY_CANCEL];
+    const blockedStatuses = [
+      IOrderStatus.DELIVERY_CONFIRMED,
+      IOrderStatus.DELIVERY_COMPLETE,
+      IOrderStatus.DELIVERY_CANCEL,
+    ];
     if (blockedStatuses.includes(orderProductMapping.order.status)) {
       throw new BadRequestException('발송 확정 이후에는 유효기간을 변경할 수 없습니다.');
     }
@@ -5428,17 +5445,19 @@ export class OrderService {
     }
 
     if (user.authority === IUserAuthority.OPERATION_ADMIN) {
-      queryBuilder.andWhere(
-        '(order.clientUserId IS NULL OR order.operationUserId = :currentUserId)',
-        { currentUserId: user.id },
-      );
+      queryBuilder.andWhere('(order.clientUserId IS NULL OR order.operationUserId = :currentUserId)', {
+        currentUserId: user.id,
+      });
       this.applySendingTypeFilter(queryBuilder, sendingType);
       return;
     }
 
-    queryBuilder.andWhere('(order.clientUserId IS NULL OR (order.clientUserId = :currentUserId AND order.apiAppId IS NULL))', {
-      currentUserId: user.id,
-    });
+    queryBuilder.andWhere(
+      '(order.clientUserId IS NULL OR (order.clientUserId = :currentUserId AND order.apiAppId IS NULL))',
+      {
+        currentUserId: user.id,
+      },
+    );
   }
 
   private applySendingTypeFilter<T extends ObjectLiteral>(

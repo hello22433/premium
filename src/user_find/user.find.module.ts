@@ -10,7 +10,13 @@ import { DeliveryModule } from '../delivery/delivery.module';
 import { SmsModule } from '../sms/sms.module';
 
 @Module({
-  imports: [AuthModule, MailModule, DeliveryModule, SmsModule, TypeOrmModule.forFeature([UserEntity, EmailSendHistoryEntity])],
+  imports: [
+    AuthModule,
+    MailModule,
+    DeliveryModule,
+    SmsModule,
+    TypeOrmModule.forFeature([UserEntity, EmailSendHistoryEntity]),
+  ],
   controllers: [UserFindController],
   providers: [UserFindService],
 })

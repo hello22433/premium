@@ -86,8 +86,10 @@ export class SidebarService {
 
     if (user.authority === IUserAuthority.CORPORATE_ADMIN) {
       const dateLimit = subDays(new Date(), 180);
-      qb.andWhere('orderReceipt.userId = :userId', { userId: user.id })
-        .andWhere('orderReceipt.registerAt >= :dateLimit', { dateLimit });
+      qb.andWhere('orderReceipt.userId = :userId', { userId: user.id }).andWhere(
+        'orderReceipt.registerAt >= :dateLimit',
+        { dateLimit },
+      );
     }
 
     return qb.getCount();
@@ -98,9 +100,7 @@ export class SidebarService {
    * 권한 패턴 참조: qna.service.ts getMyQnaHistory() + getList()
    */
   private async getQnaWaitCount(user: ILoginUserInfo): Promise<number> {
-    const qb = this.qnaRepository
-      .createQueryBuilder('qna')
-      .where('qna.status = :status', { status: IQnaStatus.WAIT });
+    const qb = this.qnaRepository.createQueryBuilder('qna').where('qna.status = :status', { status: IQnaStatus.WAIT });
 
     if (user.authority === IUserAuthority.CORPORATE_ADMIN) {
       qb.andWhere('qna.userId = :userId', { userId: user.id });

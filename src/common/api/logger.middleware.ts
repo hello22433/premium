@@ -14,7 +14,12 @@ export class LoggerMiddleware implements NestMiddleware {
   // (userPersonName/bankAccountOwner 등 접두사 변형까지 substring으로 포착, 오탐은 없음)
   private nameKeyParts = ['personname', 'receivername', 'recipientname', 'sendername', 'accountowner'];
   // 물리 주소 필드 allowlist (소문자 exact match). includes 방식은 addressType 등 비PII 오탐 위험.
-  private addressKeys = new Set(['businessaddress', 'offlineaddress', 'snapshotbusinessaddress', 'snapshotclientbusinessaddress']);
+  private addressKeys = new Set([
+    'businessaddress',
+    'offlineaddress',
+    'snapshotbusinessaddress',
+    'snapshotclientbusinessaddress',
+  ]);
   // 금융 브랜드/계좌 정보 allowlist (소문자 exact match). includes('bank'/'card')는 discard* 등 오탐 위험.
   private financialBrandKeys = new Set(['cardname', 'bankname', 'paymentbank', 'banknumber']);
   // base64 파일 등 대용량 페이로드 키 (소문자 exact match). 값 드롭 후 has* 플래그로 대체.

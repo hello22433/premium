@@ -1,5 +1,4 @@
-export const passwordRegex =
-    /^(?=.*[A-Za-z])(?=.*\d)(?=.*[!@#$%^&*-_])[A-Za-z\d!@#$%^&*-_]{12,60}$/;
+export const passwordRegex = /^(?=.*[A-Za-z])(?=.*\d)(?=.*[!@#$%^&*-_])[A-Za-z\d!@#$%^&*-_]{12,60}$/;
 
 export const generateRandomPassword = (): string => {
   const length = Math.floor(Math.random() * (16 - 12 + 1)) + 12; // 12~16자

@@ -89,7 +89,9 @@ describe('wallet-idempotency helpers', () => {
 
   describe('buildSettleReleaseKey / buildSettleUndoKey (plan §2 예시)', () => {
     it('settle_release:1234::credit:1234_1 (1차 정산)', () => {
-      expect(buildSettleReleaseKey(1234, '1234_1', WalletResourceType.CREDIT)).toBe('settle_release:1234::credit:1234_1');
+      expect(buildSettleReleaseKey(1234, '1234_1', WalletResourceType.CREDIT)).toBe(
+        'settle_release:1234::credit:1234_1',
+      );
     });
 
     it('settle_release 재정산 = 다른 cycleId', () => {

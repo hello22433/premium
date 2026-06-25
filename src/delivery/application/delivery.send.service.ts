@@ -156,7 +156,16 @@ export class DeliverySendService {
     } catch (e) {
       deliveryHistory.context = JSON.stringify(e);
       deliveryHistory.isSuccess = false;
-      const resultSms = await this.handleAlimTalkFail(orderDelivery, title, body, memo, tailText, filePathList, decryptedDeliveryTarget, encryptKey);
+      const resultSms = await this.handleAlimTalkFail(
+        orderDelivery,
+        title,
+        body,
+        memo,
+        tailText,
+        filePathList,
+        decryptedDeliveryTarget,
+        encryptKey,
+      );
       if (resultSms === IOrderDeliveryStatus.COMPLETE_SMS) {
         deliveryHistory.isSuccess = true;
         this.markSendSuccess(orderDelivery, IOrderDeliveryStatus.COMPLETE_SMS);
@@ -221,11 +230,14 @@ export class DeliverySendService {
     emailSendHistory.expireAt = addDays(new Date(), EmailCertifyExpireDay);
     await this.emailSendHistoryRepository.save(emailSendHistory);
 
-    const encryptKeyEmail = this.cryptoCipher.encryptJson({
-      id: orderDelivery.id,
-      transactionId: orderDelivery.transactionId,
-      emailHistoryId: emailSendHistory.id,
-    } as OrderEncryptKey, couponTokenExpiry(orderDelivery.expireAt));
+    const encryptKeyEmail = this.cryptoCipher.encryptJson(
+      {
+        id: orderDelivery.id,
+        transactionId: orderDelivery.transactionId,
+        emailHistoryId: emailSendHistory.id,
+      } as OrderEncryptKey,
+      couponTokenExpiry(orderDelivery.expireAt),
+    );
 
     const url = `${this.configService.getOrThrow('EMAIL_RECEIVE_URL')}/${encryptKeyEmail}`;
     let qrCodeImagePath = undefined;

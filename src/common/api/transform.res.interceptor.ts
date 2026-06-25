@@ -17,10 +17,7 @@ export class TransformResInterceptor<T> implements NestInterceptor<T, Response<T
     return next.handle().pipe(
       map((result) => {
         if (isExternal) {
-          const keys =
-            result && typeof result === 'object'
-              ? Object.keys(result as object).join(',')
-              : 'n/a';
+          const keys = result && typeof result === 'object' ? Object.keys(result as object).join(',') : 'n/a';
           this.logger.warn(
             `[DEBUG] transform map url=${url} resultType=${typeof result} ` +
               `ctor=${(result as any)?.constructor?.name} keys=${keys}`,

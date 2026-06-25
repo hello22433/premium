@@ -8,10 +8,7 @@ import { PopularProductSchedule } from './popular.product.schedule';
 import { AuthModule } from '../auth/auth.module';
 
 @Module({
-  imports: [
-    AuthModule,
-    TypeOrmModule.forFeature([PopularProductEntity, ProductEntity]),
-  ],
+  imports: [AuthModule, TypeOrmModule.forFeature([PopularProductEntity, ProductEntity])],
   controllers: [PopularProductController],
   providers: [PopularProductService, PopularProductSchedule],
   exports: [PopularProductService],

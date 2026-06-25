@@ -34,9 +34,9 @@ describe('PR2-007 wallet-pr2-delivery-confirm integration', () => {
     const savedPointUsages: OrderPointUsageEntity[] = [];
     const allocationRef = { ...overrides.allocation } as OrderPaymentAllocationEntity;
     const walletRef = { ...overrides.wallet } as WalletAccountEntity;
-    const usagesRef = overrides.pointUsages.map((u) => ({ ...u } as OrderPointUsageEntity));
-    const grantsRef = overrides.pointGrants.map((g) => ({ ...g } as PointGrantEntity));
-    const attemptsRef = overrides.attempts.map((a) => ({ ...a } as OrderDeliveryAttemptEntity));
+    const usagesRef = overrides.pointUsages.map((u) => ({ ...u }) as OrderPointUsageEntity);
+    const grantsRef = overrides.pointGrants.map((g) => ({ ...g }) as PointGrantEntity);
+    const attemptsRef = overrides.attempts.map((a) => ({ ...a }) as OrderDeliveryAttemptEntity);
 
     const repoFor = (entity: any) => {
       if (entity === OrderPaymentAllocationEntity) {
@@ -52,8 +52,7 @@ describe('PR2-007 wallet-pr2-delivery-confirm integration', () => {
             select: () => ({
               where: () => ({
                 andWhere: () => ({
-                  getRawMany: async () =>
-                    overrides.lineDeliveries.map((id) => ({ orderDeliveryId: id })),
+                  getRawMany: async () => overrides.lineDeliveries.map((id) => ({ orderDeliveryId: id })),
                 }),
               }),
             }),
@@ -174,13 +173,30 @@ describe('PR2-007 wallet-pr2-delivery-confirm integration', () => {
     },
     wallet: { id: 'w-1', depositBalance: 1000, creditUsedAmount: 3000, creditExcessAmount: 1000 },
     pointUsages: [
-      { id: 'pu-1', allocationId: 'alloc-1', pointGrantId: 'g-1', usedAmount: 2000, restoredAmount: 0, skippedExpiredAmount: 0 },
+      {
+        id: 'pu-1',
+        allocationId: 'alloc-1',
+        pointGrantId: 'g-1',
+        usedAmount: 2000,
+        restoredAmount: 0,
+        skippedExpiredAmount: 0,
+      },
     ],
     pointGrants: [{ id: 'g-1', remainingAmount: 0, active: 1 }],
     lineDeliveries: [101, 102],
     attempts: [
-      { id: 'att-1', orderDeliveryId: 101, attemptType: OrderDeliveryAttemptType.INITIAL, status: OrderDeliveryAttemptStatus.DEDUCTED },
-      { id: 'att-2', orderDeliveryId: 102, attemptType: OrderDeliveryAttemptType.INITIAL, status: OrderDeliveryAttemptStatus.DEDUCTED },
+      {
+        id: 'att-1',
+        orderDeliveryId: 101,
+        attemptType: OrderDeliveryAttemptType.INITIAL,
+        status: OrderDeliveryAttemptStatus.DEDUCTED,
+      },
+      {
+        id: 'att-2',
+        orderDeliveryId: 102,
+        attemptType: OrderDeliveryAttemptType.INITIAL,
+        status: OrderDeliveryAttemptStatus.DEDUCTED,
+      },
     ],
   });
 
@@ -245,10 +261,7 @@ describe('PR2-007 wallet-pr2-delivery-confirm integration', () => {
     const svc = createService();
 
     await expect(
-      svc.releaseConfirmation(
-        { orderId: 777, reason: 'order_cancel', failedDeliveryIds: null },
-        manager,
-      ),
+      svc.releaseConfirmation({ orderId: 777, reason: 'order_cancel', failedDeliveryIds: null }, manager),
     ).rejects.toBeInstanceOf(BadRequestException);
 
     expect(state.savedAllocations).toHaveLength(0);

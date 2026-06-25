@@ -103,7 +103,7 @@ export class ProductService {
     private activityLogService: ActivityLogService,
     @Inject('IFileStorage')
     private fileStorage: IFileStorage,
-  ) { }
+  ) {}
 
   private static readonly SHARED_LIST_ALLOWED_EXTENSIONS = ['.xlsx', '.xls', '.csv'];
 
@@ -1046,9 +1046,7 @@ export class ProductService {
     // USE → UNUSED 전환 시 고객상품관리 매핑 해제 (전시 취소 + 숨기기)
     const isDeactivating =
       product.useStatus === IProductUseStatus.UNUSED &&
-      productUpdateHistoryCreateList.some(
-        (h) => h.key === 'useStatus' && h.beforeValue === IProductUseStatus.USE,
-      );
+      productUpdateHistoryCreateList.some((h) => h.key === 'useStatus' && h.beforeValue === IProductUseStatus.USE);
 
     if (isDeactivating) {
       await this.userSyncProductEventMappingRepository.softDelete({
@@ -1741,7 +1739,6 @@ export class ProductService {
       memo: this.getCellValue(row.getCell(15)),
     };
   }
-
 
   /**
    * ExcelJS 셀 값 추출 (수식 셀 처리)

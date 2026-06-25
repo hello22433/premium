@@ -10,8 +10,7 @@ import { OrderFromGetPhoneReqQueryDto } from './order.from.req.dto';
  * 빈 문자열/공백은 undefined 로 떨어져야 `?? user.id` 가 정상 동작한다.
  */
 describe('OrderFromGetPhoneReqQueryDto — 빈 userId 변환 (P0)', () => {
-  const transform = (raw: unknown) =>
-    plainToInstance(OrderFromGetPhoneReqQueryDto, { userId: raw });
+  const transform = (raw: unknown) => plainToInstance(OrderFromGetPhoneReqQueryDto, { userId: raw });
 
   it('빈 문자열 userId 는 undefined 로 변환한다 (0 이 아님)', () => {
     expect(transform('').userId).toBeUndefined();

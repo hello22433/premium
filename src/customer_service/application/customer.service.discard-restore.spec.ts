@@ -104,7 +104,10 @@ describe('CustomerServiceService.restoreBalanceOnDiscard — refunded-proxy read
   it('레거시 미정산 폐기 복구는 wallet credit_used 를 DISCARD_REFUND(-restore) 로 동기화한다', async () => {
     const sut: any = makeSut(false); // exists=false → 복구 진행, isWalletManaged=false
     sut.activityLogService = { createLog: jest.fn().mockResolvedValue(undefined) };
-    sut.cryptoCipher = { safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01000000000'), encryptDeliveryTarget: jest.fn((v: string) => v) };
+    sut.cryptoCipher = {
+      safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01000000000'),
+      encryptDeliveryTarget: jest.fn((v: string) => v),
+    };
 
     await sut.restoreBalanceOnDiscard(
       buildOrderDelivery(IOrderDeliveryStatus.FAIL),
@@ -129,7 +132,10 @@ describe('CustomerServiceService.restoreBalanceOnDiscard — refunded-proxy read
     const sut: any = makeSut(false);
     sut.walletManagedPredicate = { isWalletManaged: jest.fn().mockResolvedValue(true) };
     sut.activityLogService = { createLog: jest.fn().mockResolvedValue(undefined) };
-    sut.cryptoCipher = { safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01000000000'), encryptDeliveryTarget: jest.fn((v: string) => v) };
+    sut.cryptoCipher = {
+      safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01000000000'),
+      encryptDeliveryTarget: jest.fn((v: string) => v),
+    };
     sut.refundPoolService = { refund: jest.fn().mockResolvedValue({ ledgerIds: [], totalRefundedAmount: 0 }) };
 
     await sut.restoreBalanceOnDiscard(
@@ -166,7 +172,10 @@ describe('CustomerServiceService.restoreBalanceOnDiscard — refunded-proxy read
       },
     } as any;
     sut.activityLogService = { createLog: jest.fn().mockResolvedValue(undefined) };
-    sut.cryptoCipher = { safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01012345678'), encryptDeliveryTarget: jest.fn((v: string) => v) };
+    sut.cryptoCipher = {
+      safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01012345678'),
+      encryptDeliveryTarget: jest.fn((v: string) => v),
+    };
     sut.walletManagedPredicate = { isWalletManaged: jest.fn().mockResolvedValue(true) };
     sut.refundPoolService = {
       refundSettledDiscardToDeposit: jest.fn().mockResolvedValue({ ledgerIds: ['1'], totalRefundedAmount: 10000 }),
@@ -175,12 +184,7 @@ describe('CustomerServiceService.restoreBalanceOnDiscard — refunded-proxy read
     const orderDelivery = buildOrderDelivery(IOrderDeliveryStatus.COMPLETE);
     orderDelivery.orderProductMapping.order.isSettleComplete = true;
 
-    await sut.restoreBalanceOnDiscard(
-      orderDelivery,
-      operator,
-      queryRunner,
-      'operator',
-    );
+    await sut.restoreBalanceOnDiscard(orderDelivery, operator, queryRunner, 'operator');
 
     const attemptLookup = queryRunner.manager.findOne.mock.calls.find(
       ([, opts]: [unknown, any]) => opts?.where?.orderDeliveryId === 5001,
@@ -217,7 +221,10 @@ describe('CustomerServiceService.restoreBalanceOnDiscard — refunded-proxy read
       },
     } as any;
     sut.activityLogService = { createLog: jest.fn().mockResolvedValue(undefined) };
-    sut.cryptoCipher = { safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01012345678'), encryptDeliveryTarget: jest.fn((v: string) => v) };
+    sut.cryptoCipher = {
+      safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01012345678'),
+      encryptDeliveryTarget: jest.fn((v: string) => v),
+    };
     sut.walletManagedPredicate = { isWalletManaged: jest.fn().mockResolvedValue(true) };
     sut.refundPoolService = {
       refundSettledDiscardToDeposit: jest.fn().mockResolvedValue({ ledgerIds: ['1'], totalRefundedAmount: 7000 }),
@@ -259,7 +266,10 @@ describe('CustomerServiceService.restoreBalanceOnDiscard — refunded-proxy read
       },
     } as any;
     sut.activityLogService = { createLog: jest.fn().mockResolvedValue(undefined) };
-    sut.cryptoCipher = { safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01012345678'), encryptDeliveryTarget: jest.fn((v: string) => v) };
+    sut.cryptoCipher = {
+      safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01012345678'),
+      encryptDeliveryTarget: jest.fn((v: string) => v),
+    };
 
     const orderDelivery = buildOrderDelivery(IOrderDeliveryStatus.COMPLETE);
     const order = orderDelivery.orderProductMapping.order;
@@ -324,7 +334,10 @@ describe('CustomerServiceService.restoreBalanceOnDiscard — refunded-proxy read
       },
     } as any;
     sut.activityLogService = { createLog: jest.fn().mockResolvedValue(undefined) };
-    sut.cryptoCipher = { safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01012345678'), encryptDeliveryTarget: jest.fn((v: string) => v) };
+    sut.cryptoCipher = {
+      safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01012345678'),
+      encryptDeliveryTarget: jest.fn((v: string) => v),
+    };
 
     const order = {
       id: 700,
@@ -396,7 +409,10 @@ describe('CustomerServiceService.restoreBalanceOnDiscard — refunded-proxy read
       },
     } as any;
     sut.activityLogService = { createLog: jest.fn().mockResolvedValue(undefined) };
-    sut.cryptoCipher = { safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01012345678'), encryptDeliveryTarget: jest.fn((v: string) => v) };
+    sut.cryptoCipher = {
+      safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01012345678'),
+      encryptDeliveryTarget: jest.fn((v: string) => v),
+    };
     sut.walletManagedPredicate = { isWalletManaged: jest.fn().mockResolvedValue(true) };
     sut.refundPoolService = {
       refundSettledDiscardToDeposit: jest.fn().mockResolvedValue({
@@ -463,12 +479,7 @@ describe('CustomerServiceService.restoreBalanceOnDiscard — refunded-proxy read
     sut.authService = { authorityValidator: jest.fn().mockResolvedValue(undefined) };
     sut.restoreBalanceOnDiscard = jest.fn().mockResolvedValue(10295);
 
-    await sut.execDiscard(
-      operator,
-      5001,
-      OrderDeliveryCouponStatus.CANCEL,
-      { type: '폐기', content: '폐기' },
-    );
+    await sut.execDiscard(operator, 5001, OrderDeliveryCouponStatus.CANCEL, { type: '폐기', content: '폐기' });
 
     expect(sut.orderHistoryRepository.update).toHaveBeenCalledWith(901, {
       destroyAmount: 10295,

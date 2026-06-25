@@ -92,7 +92,8 @@ export class SettleController {
 
   @ApiOperation({
     summary: '정산관리 > 정산코드 단위 잔액 스냅샷 조회 API',
-    description: '고객사(companyId)의 정산코드별 현재 wallet 잔액/포인트 잔액. wallet 미존재 정산코드는 walletStatus=MISSING.',
+    description:
+      '고객사(companyId)의 정산코드별 현재 wallet 잔액/포인트 잔액. wallet 미존재 정산코드는 walletStatus=MISSING.',
   })
   @ApiOkResponse({ type: SettleBySettlementCodeResDto })
   @Get('settle/by-settlement-code')
@@ -339,7 +340,12 @@ export class SettleController {
     await this.authService.authorityValidator(user, UserAuthSubEnum.SETTLE_PARTNER_COMPANY);
     const ipAddress = req.ip || req.headers['x-forwarded-for']?.toString() || '';
     const userAgent = req.headers['user-agent'] || '';
-    const { fileName, filePath } = await this.settleService.partnerCompanyExcelDownload(user, body, ipAddress, userAgent);
+    const { fileName, filePath } = await this.settleService.partnerCompanyExcelDownload(
+      user,
+      body,
+      ipAddress,
+      userAgent,
+    );
     res.download(filePath, fileName, (err) => {
       if (err) {
         this.logger.error(`Error downloading file: ${err}`);
@@ -461,7 +467,12 @@ export class SettleController {
     try {
       const ipAddress = req.ip || req.headers['x-forwarded-for']?.toString() || '';
       const userAgent = req.headers['user-agent'] || '';
-      const { fileName, filePath, recordCount } = await this.settleService.getUserExcelDownload(user, getBody, ipAddress, userAgent);
+      const { fileName, filePath, recordCount } = await this.settleService.getUserExcelDownload(
+        user,
+        getBody,
+        ipAddress,
+        userAgent,
+      );
 
       const encodedFileName = encodeURIComponent(fileName);
       res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
@@ -543,10 +554,7 @@ export class SettleController {
   })
   // =====================================
   @Put('settle/user-per/orders/batch-confirm')
-  async batchConfirmUserPerOrders(
-    @User() user: ILoginUserInfo,
-    @Body() body: SettleBatchConfirmOrdersReqDto,
-  ) {
+  async batchConfirmUserPerOrders(@User() user: ILoginUserInfo, @Body() body: SettleBatchConfirmOrdersReqDto) {
     await this.authService.authorityValidator(user, UserAuthSubEnum.SETTLE_USER_MANAGE);
     return this.settleService.batchConfirmUserPerOrders(body.orderIds);
   }

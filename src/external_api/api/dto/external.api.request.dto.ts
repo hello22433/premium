@@ -43,7 +43,8 @@ export class CreateExternalOrderDto {
   externalCustomerId?: string;
 
   @ApiPropertyOptional({
-    description: '외부 주문번호 (매핑모드 비즈니스 멱등 보조). 동일 (호출주체, externalOrderId) 재요청은 기존 주문 반환.',
+    description:
+      '외부 주문번호 (매핑모드 비즈니스 멱등 보조). 동일 (호출주체, externalOrderId) 재요청은 기존 주문 반환.',
   })
   @IsString()
   @IsOptional()
@@ -84,7 +85,8 @@ export class CreateExternalSsgOrderDto {
   externalCustomerId?: string;
 
   @ApiPropertyOptional({
-    description: '외부 주문번호 (매핑모드 비즈니스 멱등 보조). 동일 (호출주체, externalOrderId) 재요청은 기존 주문 반환.',
+    description:
+      '외부 주문번호 (매핑모드 비즈니스 멱등 보조). 동일 (호출주체, externalOrderId) 재요청은 기존 주문 반환.',
   })
   @IsString()
   @IsOptional()

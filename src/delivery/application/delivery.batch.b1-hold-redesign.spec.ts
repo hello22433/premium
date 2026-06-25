@@ -75,57 +75,54 @@ describe('DeliveryBatchService - B1 settlement-hold redesign', () => {
 
   // smsSend.send 가 status 를 직접 바꾸지 않으므로 markSend* mock 으로 status 를 세팅한다.
   const wireStatusMarkers = () => {
-    deliverySendService.markSendSuccess.mockImplementation(
-      (od: OrderDeliveryEntity, status: IOrderDeliveryStatus) => {
-        od.status = status;
-      },
-    );
-    deliverySendService.markSendFail.mockImplementation(
-      (od: OrderDeliveryEntity, status: IOrderDeliveryStatus) => {
-        od.status = status;
-      },
-    );
+    deliverySendService.markSendSuccess.mockImplementation((od: OrderDeliveryEntity, status: IOrderDeliveryStatus) => {
+      od.status = status;
+    });
+    deliverySendService.markSendFail.mockImplementation((od: OrderDeliveryEntity, status: IOrderDeliveryStatus) => {
+      od.status = status;
+    });
   };
 
-  const buildDelivery = (over: Partial<OrderDeliveryEntity> = {}): OrderDeliveryEntity => ({
-    id: 770001,
-    status: IOrderDeliveryStatus.WAIT,
-    deliveryMethod: IOrderSendMethod.MMS,
-    barCode: '80000000',
-    imagePath: 'mock-image.png',
-    ssgEventId: null,
-    transactionId: 'tx-1',
-    deliveryTarget: 'enc-target',
-    expireAt: new Date('2026-01-01'),
-    emailReceiverPhone: null,
-    orderProductMapping: {
-      id: 1,
-      sendTitle: '제목',
-      sendContent: '내용',
-      sendTailText: null,
-      fromPhoneNumber: '0212345678',
-      galaxiaDuration: null,
-      encourageDay: null,
-      order: {
-        id: 9001,
-        type: IOrderType.GENERAL,
-        isSettleComplete: false,
-        isSettleBalance: true,
-        cardSurchargeApplied: false,
-        clientUserId: null,
-        user: { id: 100 },
-      },
-      product: {
+  const buildDelivery = (over: Partial<OrderDeliveryEntity> = {}): OrderDeliveryEntity =>
+    ({
+      id: 770001,
+      status: IOrderDeliveryStatus.WAIT,
+      deliveryMethod: IOrderSendMethod.MMS,
+      barCode: '80000000',
+      imagePath: 'mock-image.png',
+      ssgEventId: null,
+      transactionId: 'tx-1',
+      deliveryTarget: 'enc-target',
+      expireAt: new Date('2026-01-01'),
+      emailReceiverPhone: null,
+      orderProductMapping: {
         id: 1,
-        price: 10_000,
-        expireDay: 60,
-        type: 'NORMAL',
-        memo: null,
-        partnerCompany: { type: 'NORMAL' },
+        sendTitle: '제목',
+        sendContent: '내용',
+        sendTailText: null,
+        fromPhoneNumber: '0212345678',
+        galaxiaDuration: null,
+        encourageDay: null,
+        order: {
+          id: 9001,
+          type: IOrderType.GENERAL,
+          isSettleComplete: false,
+          isSettleBalance: true,
+          cardSurchargeApplied: false,
+          clientUserId: null,
+          user: { id: 100 },
+        },
+        product: {
+          id: 1,
+          price: 10_000,
+          expireDay: 60,
+          type: 'NORMAL',
+          memo: null,
+          partnerCompany: { type: 'NORMAL' },
+        },
       },
-    },
-    ...over,
-  } as unknown as OrderDeliveryEntity);
+      ...over,
+    }) as unknown as OrderDeliveryEntity;
 
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -190,7 +187,10 @@ describe('DeliveryBatchService - B1 settlement-hold redesign', () => {
         { provide: getRepositoryToken(OrderEntity), useValue: {} },
         { provide: getRepositoryToken(OrderRealProductEntity), useValue: {} },
         { provide: getRepositoryToken(OrderRealProductMappingEntity), useValue: {} },
-        { provide: getRepositoryToken(OrderDeliveryEntity), useValue: { update: jest.fn(), save: jest.fn(), manager: {} } },
+        {
+          provide: getRepositoryToken(OrderDeliveryEntity),
+          useValue: { update: jest.fn(), save: jest.fn(), manager: {} },
+        },
         { provide: getRepositoryToken(DeliverySendHistoryEntity), useValue: { save: jest.fn() } },
         { provide: getRepositoryToken(EmailSendHistoryEntity), useValue: {} },
         { provide: getRepositoryToken(UserEntity), useValue: userRepo },
@@ -203,18 +203,27 @@ describe('DeliveryBatchService - B1 settlement-hold redesign', () => {
         { provide: ConfigService, useValue: { get: jest.fn(), getOrThrow: jest.fn() } },
         { provide: 'IFileStorage', useValue: {} },
         { provide: PartnerCompanyExternService, useValue: partnerCompanyExternService },
-        { provide: SsgEventService, useValue: { selectEventForOrder: jest.fn(), deductEventBalance: jest.fn(), chargeBackForResend: jest.fn() } },
+        {
+          provide: SsgEventService,
+          useValue: { selectEventForOrder: jest.fn(), deductEventBalance: jest.fn(), chargeBackForResend: jest.fn() },
+        },
         { provide: UserManagementService, useValue: userManagementService },
         { provide: DeliverySendService, useValue: deliverySendService },
         { provide: RefundLedgerService, useValue: refundLedgerService },
         { provide: SsgInsertStateService, useValue: ssgInsertStateService },
-        { provide: SsgRefundResolverService, useValue: { resolveAndRefundIfNeeded: jest.fn().mockResolvedValue('RESTORED') } },
+        {
+          provide: SsgRefundResolverService,
+          useValue: { resolveAndRefundIfNeeded: jest.fn().mockResolvedValue('RESTORED') },
+        },
         { provide: WalletManagedPredicate, useValue: walletManagedPredicate },
         { provide: RefundPoolService, useValue: { refund: jest.fn(), reverseRefund: jest.fn() } },
         { provide: ResendDeductService, useValue: { resendDeduct: jest.fn(), resendUndo: jest.fn() } },
         { provide: LegacyWalletCreditSyncService, useValue: { syncCredit: jest.fn() } },
         { provide: getRepositoryToken(OrderDeliveryAttemptEntity), useValue: attemptRepository },
-        { provide: getRepositoryToken(OrderPaymentRefundEventEntity), useValue: { find: jest.fn().mockResolvedValue([]), findOne: jest.fn() } },
+        {
+          provide: getRepositoryToken(OrderPaymentRefundEventEntity),
+          useValue: { find: jest.fn().mockResolvedValue([]), findOne: jest.fn() },
+        },
         { provide: getRepositoryToken(OrderPaymentAllocationEntity), useValue: { findOne: jest.fn() } },
         { provide: getRepositoryToken(OrderHistoryEntity), useValue: {} },
         { provide: getDataSourceToken(), useValue: { transaction: jest.fn() } },

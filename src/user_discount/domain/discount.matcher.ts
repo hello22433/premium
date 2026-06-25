@@ -28,25 +28,19 @@ export function findMatchingDiscount(
 
   // 1. 브랜드 할인 (최우선)
   const brandDiscounts = userDiscounts.filter(
-    (d) =>
-      d.category === IUserDiscountCategory.BRAND &&
-      d.primaryCategory === product.brand?.nameKorean,
+    (d) => d.category === IUserDiscountCategory.BRAND && d.primaryCategory === product.brand?.nameKorean,
   );
   const brandMatch = findDiscountByMethod(product, brandDiscounts, priceOverride);
   if (brandMatch) return brandMatch;
 
   // 2. 카테고리 + 상품군 동시 매칭 → 높은 할인율
   const categoryDiscounts = userDiscounts.filter(
-    (d) =>
-      d.category === IUserDiscountCategory.CATEGORY &&
-      d.classificationId === product.classificationId,
+    (d) => d.category === IUserDiscountCategory.CATEGORY && d.classificationId === product.classificationId,
   );
   const categoryMatch = findDiscountByMethod(product, categoryDiscounts, priceOverride);
 
   const groupDiscounts = userDiscounts.filter(
-    (d) =>
-      d.category === IUserDiscountCategory.PRODUCT_GROUP &&
-      d.group === product.category,
+    (d) => d.category === IUserDiscountCategory.PRODUCT_GROUP && d.group === product.category,
   );
   const groupMatch = findDiscountByMethod(product, groupDiscounts, priceOverride);
 
@@ -73,9 +67,7 @@ function findDiscountByMethod(
     return bulkDiscount;
   }
 
-  const sectionDiscounts = discounts.filter(
-    (d) => d.method === IUserDiscountMethod.SECTION && d.range,
-  );
+  const sectionDiscounts = discounts.filter((d) => d.method === IUserDiscountMethod.SECTION && d.range);
 
   if (sectionDiscounts.length === 0) {
     return null;
@@ -103,17 +95,16 @@ function findDiscountByMethod(
       case ICompareCondition.MORE:
       case ICompareCondition.MORE_THAN: {
         const lowerCheck =
-          discount.compareCondition === ICompareCondition.MORE
-            ? productPrice >= rangeValue
-            : productPrice > rangeValue;
+          discount.compareCondition === ICompareCondition.MORE ? productPrice >= rangeValue : productPrice > rangeValue;
 
         const next = sortedDiscounts[i + 1];
-        if (next && (next.compareCondition === ICompareCondition.LESS || next.compareCondition === ICompareCondition.LESS_THAN)) {
+        if (
+          next &&
+          (next.compareCondition === ICompareCondition.LESS || next.compareCondition === ICompareCondition.LESS_THAN)
+        ) {
           const upperValue = parseInt(next.range || '0', 10);
           const upperCheck =
-            next.compareCondition === ICompareCondition.LESS
-              ? productPrice <= upperValue
-              : productPrice < upperValue;
+            next.compareCondition === ICompareCondition.LESS ? productPrice <= upperValue : productPrice < upperValue;
           isInRange = lowerCheck && upperCheck;
           i++;
           if (next.compareCondition === ICompareCondition.LESS) {

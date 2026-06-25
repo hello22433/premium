@@ -38,7 +38,10 @@ export class SsgCheckNotFoundError extends Error {
  * SSG 행사 잔액 복구 분기로 진입해도 된다.
  */
 export class SsgIssueRejectedError extends Error {
-  constructor(public readonly code: string | null, reason: string) {
+  constructor(
+    public readonly code: string | null,
+    reason: string,
+  ) {
     super(reason);
     this.name = 'SsgIssueRejectedError';
   }
@@ -52,7 +55,10 @@ export class SsgIssueRejectedError extends Error {
  * orphan resolver가 SSG check로 실제 등록 여부를 확정한 뒤 분기해야 한다.
  */
 export class SsgIssueUnknownError extends Error {
-  constructor(reason: string, public readonly cause?: unknown) {
+  constructor(
+    reason: string,
+    public readonly cause?: unknown,
+  ) {
     super(reason);
     this.name = 'SsgIssueUnknownError';
   }
@@ -167,9 +173,7 @@ export class SsgIssue implements ISsgIssue {
       // 응답 schema가 망가져 code 자체를 못 읽음 (malformed XML, 부분 응답, 예상 밖 구조 등).
       // INSERT 결과 자체가 미확정이므로 거절 확정으로 처리해서는 안 된다 (FAILED 마킹 금지).
       // ATTEMPTED 유지 → orphan resolver가 SSG check로 확정해야 한다.
-      throw new SsgIssueUnknownError(
-        reason ?? 'SSG 등록 응답에서 code를 파싱하지 못했습니다 (응답 schema 비정상).',
-      );
+      throw new SsgIssueUnknownError(reason ?? 'SSG 등록 응답에서 code를 파싱하지 못했습니다 (응답 schema 비정상).');
     }
     if (code !== '1000') {
       // 정상 응답이지만 신세계 측 거절 확정.

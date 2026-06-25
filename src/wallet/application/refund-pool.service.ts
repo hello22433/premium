@@ -77,9 +77,7 @@ export class RefundPoolService {
     if (externalManager) {
       return this.runSettledDiscardToDeposit(input, externalManager);
     }
-    return this.dataSource.transaction('READ COMMITTED', async (m) =>
-      this.runSettledDiscardToDeposit(input, m),
-    );
+    return this.dataSource.transaction('READ COMMITTED', async (m) => this.runSettledDiscardToDeposit(input, m));
   }
 
   private async runSettledDiscardToDeposit(
@@ -302,10 +300,7 @@ export class RefundPoolService {
       .andWhere('e.reversedAt IS NULL')
       .getMany();
     if (existingForPrefix.length > 0) {
-      const totalRefundedAmount = existingForPrefix.reduce(
-        (s, e) => s + this.refundedAmountForRetry(e),
-        0,
-      );
+      const totalRefundedAmount = existingForPrefix.reduce((s, e) => s + this.refundedAmountForRetry(e), 0);
       return { ledgerIds: existingForPrefix.map((e) => e.id), totalRefundedAmount, alreadyRefunded: true };
     }
 
@@ -351,10 +346,7 @@ export class RefundPoolService {
       .andWhere('e.reversedAt IS NULL')
       .getMany();
     if (existingAfterLock.length > 0) {
-      const totalRefundedAmount = existingAfterLock.reduce(
-        (s, e) => s + this.refundedAmountForRetry(e),
-        0,
-      );
+      const totalRefundedAmount = existingAfterLock.reduce((s, e) => s + this.refundedAmountForRetry(e), 0);
       return { ledgerIds: existingAfterLock.map((e) => e.id), totalRefundedAmount, alreadyRefunded: true };
     }
 
@@ -897,7 +889,11 @@ export class RefundPoolService {
       }
       return current - delta;
     };
-    alloc.pointRestoredAmount = subtractRestored('pointRestored', alloc.pointRestoredAmount, ledger.refundedPointAmount);
+    alloc.pointRestoredAmount = subtractRestored(
+      'pointRestored',
+      alloc.pointRestoredAmount,
+      ledger.refundedPointAmount,
+    );
     alloc.creditExcessRestoredAmount = subtractRestored(
       'creditExcessRestored',
       alloc.creditExcessRestoredAmount,
@@ -908,7 +904,11 @@ export class RefundPoolService {
       alloc.creditUsedRestoredAmount,
       ledger.refundedCreditUsedAmount,
     );
-    alloc.depositRestoredAmount = subtractRestored('depositRestored', alloc.depositRestoredAmount, ledger.refundedDepositAmount);
+    alloc.depositRestoredAmount = subtractRestored(
+      'depositRestored',
+      alloc.depositRestoredAmount,
+      ledger.refundedDepositAmount,
+    );
     alloc.pointSkippedExpiredAmount = subtractRestored(
       'pointSkippedExpired',
       alloc.pointSkippedExpiredAmount,

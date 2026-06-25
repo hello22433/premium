@@ -107,7 +107,10 @@ export class OrderReceiveService {
   }
 
   async selectChoiceProduct(getBody: OrderReceiveSelectChoiceProductReqDto) {
-    const orderDecrypt = this.cryptoCipher.decryptJson(getBody.encryptKey) as OrderEncryptKey & { emailSendHistoryId?: number; isTest?: boolean };
+    const orderDecrypt = this.cryptoCipher.decryptJson(getBody.encryptKey) as OrderEncryptKey & {
+      emailSendHistoryId?: number;
+      isTest?: boolean;
+    };
 
     // 테스트 발송인 경우 test_order_delivery에서 처리
     if (orderDecrypt.isTest) {
@@ -217,7 +220,9 @@ export class OrderReceiveService {
         })
         .where('id = :id AND choice_selection_claim_token = :token', { id: orderDelivery.id, token: selectionToken })
         .execute();
-      throw new InternalServerErrorException('쿠폰 발급에 실패했습니다. 잠시 후 다시 시도하거나 발송처에 문의해주세요.');
+      throw new InternalServerErrorException(
+        '쿠폰 발급에 실패했습니다. 잠시 후 다시 시도하거나 발송처에 문의해주세요.',
+      );
     }
     this.updateCouponExpiration(orderDelivery, productChoiceMapping.product);
     orderDelivery.orderProductMapping.product = originalProduct;
@@ -243,7 +248,7 @@ export class OrderReceiveService {
         imagePath: orderDelivery.imagePath,
         choicePostSendStatus: requiresPostSend ? ChoicePostSendStatus.SENDING : ChoicePostSendStatus.NOT_REQUIRED,
         choicePostSendClaimToken: postToken,
-        choicePostSendClaimedAt: requiresPostSend ? (() => 'NOW(6)') : null,
+        choicePostSendClaimedAt: requiresPostSend ? () => 'NOW(6)' : null,
         choiceSelectionClaimToken: null,
         choiceSelectionClaimedAt: null,
       })
@@ -372,9 +377,10 @@ export class OrderReceiveService {
       const body = applyReplaceCharacters(orderDelivery.orderProductMapping.sendContent ?? '', orderDelivery);
       const memoSourceProduct = orderDelivery.choiceSelectProduct ?? orderDelivery.orderProductMapping.product;
       const memoRaw = memoSourceProduct.memo;
-      const memo = memoRaw && orderDelivery.orderProductMapping.order.type !== IOrderType.SSG
-        ? applyReplaceCharacters(memoRaw, orderDelivery)
-        : null;
+      const memo =
+        memoRaw && orderDelivery.orderProductMapping.order.type !== IOrderType.SSG
+          ? applyReplaceCharacters(memoRaw, orderDelivery)
+          : null;
       const tailRaw = orderDelivery.orderProductMapping.sendTailText;
       const tailText = tailRaw ? applyReplaceCharacters(tailRaw, orderDelivery) : null;
       // 만료 재계산(updateCouponExpiration) 후이므로 토큰 _exp도 새 쿠폰 expireAt 기준으로 재발급
@@ -386,7 +392,9 @@ export class OrderReceiveService {
       const filePathList: string[] = orderDelivery.imagePath ? [orderDelivery.imagePath] : [];
       const fromPhoneNumber =
         orderDelivery.orderProductMapping.fromPhoneNumber ||
-        (await this.orderFromService.resolveSendDefaultPhone(getBillingUserId(orderDelivery.orderProductMapping.order)));
+        (await this.orderFromService.resolveSendDefaultPhone(
+          getBillingUserId(orderDelivery.orderProductMapping.order),
+        ));
       const title = orderDelivery.orderProductMapping.sendTitle ?? '';
       await this.smsSend.send({
         msgType: 'M',
@@ -468,10 +476,9 @@ export class OrderReceiveService {
         .createQueryBuilder()
         .update(OrderDeliveryEntity)
         .set({ choiceSelectionReconcileRequiredAt: () => 'NOW(6)' })
-        .where(
-          'id = :id AND choice_select_product_id IS NULL AND choice_selection_reconcile_required_at IS NULL',
-          { id },
-        )
+        .where('id = :id AND choice_select_product_id IS NULL AND choice_selection_reconcile_required_at IS NULL', {
+          id,
+        })
         .execute();
       throw new BadRequestException('이전 발급 요청을 확인 중입니다. 잠시 후 다시 시도하거나 발송처에 문의해주세요.');
     }
@@ -687,9 +694,7 @@ export class OrderReceiveService {
   /**
    * 테스트 발송용 알림톡 쿠폰 정보 조회
    */
-  private async alimTalkForTest(
-    orderDecrypt: OrderEncryptKey,
-  ): Promise<OrderReceiveAlimTalkResDto> {
+  private async alimTalkForTest(orderDecrypt: OrderEncryptKey): Promise<OrderReceiveAlimTalkResDto> {
     const orderDeliveryId = orderDecrypt.id ?? orderDecrypt.orderDeliveryId;
 
     const testOrderDelivery = await this.testOrderDeliveryRepository
@@ -824,10 +829,13 @@ export class OrderReceiveService {
     emailSendHistory.isCertified = true;
     await this.emailSendHistoryRepository.save(emailSendHistory);
 
-    const sendEncryptKey = this.cryptoCipher.encryptJson({
-      emailSendHistoryId: emailSendHistory.id,
-      orderDeliveryId: orderDelivery.id,
-    } as OrderSendEncryptKey, couponTokenExpiry(orderDelivery.expireAt));
+    const sendEncryptKey = this.cryptoCipher.encryptJson(
+      {
+        emailSendHistoryId: emailSendHistory.id,
+        orderDeliveryId: orderDelivery.id,
+      } as OrderSendEncryptKey,
+      couponTokenExpiry(orderDelivery.expireAt),
+    );
 
     const choiceProductList: OrderReceiveChoiceDto[] = [];
     let selectChoiceProduct: OrderReceiveChoiceDto | null = null;
@@ -892,10 +900,7 @@ export class OrderReceiveService {
   /**
    * 테스트 발송용 이메일 인증 처리
    */
-  private async emailForTest(
-    orderDecrypt: OrderEncryptKey,
-    code: string,
-  ): Promise<OrderReceiveEmailResDto> {
+  private async emailForTest(orderDecrypt: OrderEncryptKey, code: string): Promise<OrderReceiveEmailResDto> {
     const testOrderDelivery = await this.testOrderDeliveryRepository
       .createQueryBuilder('testOrderDelivery')
       .innerJoinAndSelect('testOrderDelivery.orderProductMapping', 'orderProductMapping')
@@ -1142,10 +1147,7 @@ export class OrderReceiveService {
     let emailCouponStatus = OrderDeliveryEmailCouponStatus.SEND;
 
     // 만료 재계산(updateCouponExpiration) 후이므로 토큰 _exp도 새 쿠폰 expireAt 기준으로 재발급
-    const refreshedSendEncryptKey = this.cryptoCipher.encryptJson(
-      obj,
-      couponTokenExpiry(orderDelivery.expireAt),
-    );
+    const refreshedSendEncryptKey = this.cryptoCipher.encryptJson(obj, couponTokenExpiry(orderDelivery.expireAt));
 
     try {
       // 1차: 알림톡 발송 시도 (기존 등록 템플릿 사용)
@@ -1163,8 +1165,10 @@ export class OrderReceiveService {
       // 2차: 알림톡 실패 시 MMS 폴백 (배치 문자 발송 패턴과 동일)
       let mmsText = orderDelivery.orderProductMapping.sendContent ?? '';
 
-      if (orderDelivery.orderProductMapping.product.memo
-          && orderDelivery.orderProductMapping.order.type !== IOrderType.SSG) {
+      if (
+        orderDelivery.orderProductMapping.product.memo &&
+        orderDelivery.orderProductMapping.order.type !== IOrderType.SSG
+      ) {
         mmsText += `\n\n${orderDelivery.orderProductMapping.product.memo}`;
       }
 
@@ -1267,11 +1271,14 @@ export class OrderReceiveService {
     testOrderDelivery.personalCode = testBarcode;
 
     // 초이스 쿠폰이면 선택된 상품, 아니면 기본 상품 사용
-    const product = (isChoiceCoupon && testOrderDelivery.choiceSelectProduct)
-      ? testOrderDelivery.choiceSelectProduct
-      : testOrderDelivery.orderProductMapping.product;
+    const product =
+      isChoiceCoupon && testOrderDelivery.choiceSelectProduct
+        ? testOrderDelivery.choiceSelectProduct
+        : testOrderDelivery.orderProductMapping.product;
     const productExpireDay = product.expireDay || 0;
-    const expireDate = productExpireDay ? dayjs().tz('Asia/Seoul').add(productExpireDay, 'day').format('YYYY. MM. DD') : null;
+    const expireDate = productExpireDay
+      ? dayjs().tz('Asia/Seoul').add(productExpireDay, 'day').format('YYYY. MM. DD')
+      : null;
 
     const { path } = await DeliveryCreateCouponImage(
       product.imagePath,
@@ -1341,7 +1348,11 @@ export class OrderReceiveService {
    */
   private updateCouponExpiration(
     orderDelivery: OrderDeliveryEntity,
-    selectedProduct: { galaxiaDuration?: number | null; expireDay: number; partnerCompany?: { validityStartsNextDay?: boolean | null } | null },
+    selectedProduct: {
+      galaxiaDuration?: number | null;
+      expireDay: number;
+      partnerCompany?: { validityStartsNextDay?: boolean | null } | null;
+    },
   ): void {
     const now = new Date();
     orderDelivery.couponIssuedAt = now;

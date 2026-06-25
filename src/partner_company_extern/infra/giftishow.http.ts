@@ -222,9 +222,7 @@ export class GiftishowHttp implements IGiftiShow {
    * check 로 V2 pinStatusCd 가 '07'(취소) 인지 확인하여 멱등 처리한다.
    */
   private async verifyCancelIdempotent(obj: GifitiShowCancelIn, reason: string): Promise<void> {
-    this.logger.warn(
-      `[cancel] 에러(${reason}) - check 로 멱등 검증. transactionId: ${obj.transactionId}`,
-    );
+    this.logger.warn(`[cancel] 에러(${reason}) - check 로 멱등 검증. transactionId: ${obj.transactionId}`);
     const checkResult = await this.check({ transactionId: obj.transactionId });
     if (checkResult.couponInfo?.pinStatusCd === '07') {
       this.logger.warn(

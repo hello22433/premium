@@ -86,17 +86,13 @@ export const DeliveryCreateCouponImage = async (
 
     // 상품 이미지 삽입 (원본 비율 유지 + 중앙 정렬, 남는 공간은 흰 배경)
     const productImageBuffer = await fetchImageBufferFromURL(productImagePath);
-    const productImage = await sharp(productImageBuffer)
-      .resize(300, 300, COUPON_IMAGE_RESIZE_OPTIONS)
-      .toBuffer();
+    const productImage = await sharp(productImageBuffer).resize(300, 300, COUPON_IMAGE_RESIZE_OPTIONS).toBuffer();
     const product = await createImageFromBuffer(productImage);
     ctx.drawImage(product, 0, 200);
 
     // 중간 이미지 삽입 (원본 비율 유지 + 중앙 정렬, 남는 공간은 흰 배경)
     const midImageBuffer = await fetchImageBufferFromURL(middleImagePath);
-    const midImageResize = await sharp(midImageBuffer)
-      .resize(300, 300, COUPON_IMAGE_RESIZE_OPTIONS)
-      .toBuffer();
+    const midImageResize = await sharp(midImageBuffer).resize(300, 300, COUPON_IMAGE_RESIZE_OPTIONS).toBuffer();
     const midImage = await createImageFromBuffer(midImageResize);
     ctx.drawImage(midImage, 300, 200);
 
@@ -195,7 +191,9 @@ export const DeliveryCreateCouponImage = async (
     //   (열거 위험은 위의 파일명 UUID 무작위화로 이미 차단됨.)
     //   COUPON_IMAGE_DIR 는 후속 전환용 스위치 — 데몬의 새 경로 FS 접근을 확증(테스트 발송 1건/마운트 확인)한
     //   뒤에만 설정. 설정 시에도 소비처는 반환 path를 그대로 쓰므로 경로만 바뀌고 흐름은 동일.
-    const couponDir = process.env.COUPON_IMAGE_DIR?.trim() ? resolve(process.env.COUPON_IMAGE_DIR.trim()) : `${homeUrl}/public`;
+    const couponDir = process.env.COUPON_IMAGE_DIR?.trim()
+      ? resolve(process.env.COUPON_IMAGE_DIR.trim())
+      : `${homeUrl}/public`;
     await fsPromises.mkdir(couponDir, { recursive: true });
     const path = `${couponDir}/${resultCouponFileName}`;
     await fsPromises.writeFile(path, outputBuffer);

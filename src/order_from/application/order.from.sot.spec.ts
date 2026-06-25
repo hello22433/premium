@@ -44,7 +44,9 @@ describe('OrderFromService SoT — assertApprovedPhones', () => {
   it('MMS 미승인 번호는 차단', async () => {
     const sut = makeSut();
     sut.orderFromDefinitionRepository.find.mockResolvedValue([{ from: '0212345678', isDefault: true, id: 1 }]);
-    await expect(sut.assertApprovedPhones(10, [mapping(IOrderSendMethod.MMS, '01099998888')])).rejects.toThrow(BadRequestException);
+    await expect(sut.assertApprovedPhones(10, [mapping(IOrderSendMethod.MMS, '01099998888')])).rejects.toThrow(
+      BadRequestException,
+    );
   });
 
   it('MMS 승인 번호는 통과 (정규화 매칭)', async () => {
@@ -61,22 +63,26 @@ describe('OrderFromService SoT — assertApprovedPhones', () => {
     ).resolves.toBeUndefined();
     // 본인 승인번호가 전혀 없어도 통과
     sut.orderFromDefinitionRepository.find.mockResolvedValue([]);
-    await expect(
-      sut.assertApprovedPhones(10, [mapping(IOrderSendMethod.MMS, '1644-3614')]),
-    ).resolves.toBeUndefined();
+    await expect(sut.assertApprovedPhones(10, [mapping(IOrderSendMethod.MMS, '1644-3614')])).resolves.toBeUndefined();
   });
 
   it('ALIM_TALK 은 systemFromPhoneNumber 만 허용', async () => {
     const sut = makeSut();
     sut.orderFromDefinitionRepository.find.mockResolvedValue([]);
-    await expect(sut.assertApprovedPhones(10, [mapping(IOrderSendMethod.ALIM_TALK, '16443614')])).resolves.toBeUndefined();
-    await expect(sut.assertApprovedPhones(10, [mapping(IOrderSendMethod.ALIM_TALK, '01099998888')])).rejects.toThrow(BadRequestException);
+    await expect(
+      sut.assertApprovedPhones(10, [mapping(IOrderSendMethod.ALIM_TALK, '16443614')]),
+    ).resolves.toBeUndefined();
+    await expect(sut.assertApprovedPhones(10, [mapping(IOrderSendMethod.ALIM_TALK, '01099998888')])).rejects.toThrow(
+      BadRequestException,
+    );
   });
 
   it('ALIM_TALK 빈값은 차단', async () => {
     const sut = makeSut();
     sut.orderFromDefinitionRepository.find.mockResolvedValue([]);
-    await expect(sut.assertApprovedPhones(10, [mapping(IOrderSendMethod.ALIM_TALK, null)])).rejects.toThrow(BadRequestException);
+    await expect(sut.assertApprovedPhones(10, [mapping(IOrderSendMethod.ALIM_TALK, null)])).rejects.toThrow(
+      BadRequestException,
+    );
   });
 
   it('MMS + ALIM_TALK 혼합 배열은 둘 다 검증 통과', async () => {
@@ -93,7 +99,10 @@ describe('OrderFromService SoT — assertApprovedPhones', () => {
   it('상품 N개라도 find 는 1회만 (Set 재사용)', async () => {
     const sut = makeSut();
     sut.orderFromDefinitionRepository.find.mockResolvedValue([{ from: '0212345678', isDefault: true, id: 1 }]);
-    await sut.assertApprovedPhones(10, [mapping(IOrderSendMethod.MMS, '0212345678'), mapping(IOrderSendMethod.MMS, '0212345678')]);
+    await sut.assertApprovedPhones(10, [
+      mapping(IOrderSendMethod.MMS, '0212345678'),
+      mapping(IOrderSendMethod.MMS, '0212345678'),
+    ]);
     expect(sut.orderFromDefinitionRepository.find).toHaveBeenCalledTimes(1);
   });
 
@@ -169,7 +178,18 @@ describe('OrderFromService — getPhoneList 본인번호만 (회사 fallback 제
   });
 
   it('본인 승인번호 있으면 그대로 반환', async () => {
-    const sut = makeListSut([{ id: 1, from: '0212345678', isDefault: true, requestStatus: 'APPROVED', telecomCertType: null, telecomCertFile: null, rejectReason: null, createdAt: new Date() }]);
+    const sut = makeListSut([
+      {
+        id: 1,
+        from: '0212345678',
+        isDefault: true,
+        requestStatus: 'APPROVED',
+        telecomCertType: null,
+        telecomCertFile: null,
+        rejectReason: null,
+        createdAt: new Date(),
+      },
+    ]);
     const res = await sut.getPhoneList({ id: 10, authority: 'OPERATION_ADMIN' }, { userId: 10 });
     expect(res.list).toHaveLength(1);
     expect(sut.userRepository.find).not.toHaveBeenCalled();
@@ -193,20 +213,26 @@ describe('OrderFromService — createPhone 정규화/블랙리스트', () => {
 
   it('시스템번호(하이픈 포함)는 블랙리스트 차단', async () => {
     const { sut, repo } = makeCreateSut();
-    await expect(sut.createPhone({ id: 10, authority: 'CORPORATE_ADMIN' }, { from: '1644-3614' })).rejects.toThrow(BadRequestException);
+    await expect(sut.createPhone({ id: 10, authority: 'CORPORATE_ADMIN' }, { from: '1644-3614' })).rejects.toThrow(
+      BadRequestException,
+    );
     expect(repo.insert).not.toHaveBeenCalled();
   });
 
   it('정규화 후 중복이면 차단', async () => {
     const { sut, repo } = makeCreateSut([{ from: '02-1234-5678' }]);
-    await expect(sut.createPhone({ id: 10, authority: 'CORPORATE_ADMIN' }, { from: '0212345678' })).rejects.toThrow(BadRequestException);
+    await expect(sut.createPhone({ id: 10, authority: 'CORPORATE_ADMIN' }, { from: '0212345678' })).rejects.toThrow(
+      BadRequestException,
+    );
     expect(repo.insert).not.toHaveBeenCalled();
   });
 
   it('CORPORATE_ADMIN 정상 등록은 PENDING, reconcile 안 함', async () => {
     const { sut, repo } = makeCreateSut();
     await sut.createPhone({ id: 10, authority: 'CORPORATE_ADMIN' }, { from: '010-9999-8888' });
-    expect(repo.insert).toHaveBeenCalledWith(expect.objectContaining({ from: '01099998888', requestStatus: 'PENDING' }));
+    expect(repo.insert).toHaveBeenCalledWith(
+      expect.objectContaining({ from: '01099998888', requestStatus: 'PENDING' }),
+    );
     expect(sut.reconcileDefaultAndMirror).not.toHaveBeenCalled();
   });
 
@@ -218,7 +244,9 @@ describe('OrderFromService — createPhone 정규화/블랙리스트', () => {
 
   it('빈 값 입력은 400', async () => {
     const { sut } = makeCreateSut();
-    await expect(sut.createPhone({ id: 10, authority: 'CORPORATE_ADMIN' }, { from: '---' })).rejects.toThrow(BadRequestException);
+    await expect(sut.createPhone({ id: 10, authority: 'CORPORATE_ADMIN' }, { from: '---' })).rejects.toThrow(
+      BadRequestException,
+    );
   });
 });
 
@@ -233,9 +261,7 @@ describe('OrderFromService — seedApprovedDefaultPhone', () => {
     };
     const userRepo = { update: jest.fn().mockResolvedValue(undefined) };
     const manager = {
-      getRepository: jest.fn((entity: any) =>
-        entity?.name === 'UserEntity' ? userRepo : repo,
-      ),
+      getRepository: jest.fn((entity: any) => (entity?.name === 'UserEntity' ? userRepo : repo)),
     };
     sut.dataSource = { transaction: jest.fn(async (cb: any) => cb(manager)) };
     sut.reconcileDefaultAndMirror = jest.fn().mockResolvedValue(undefined);
@@ -276,6 +302,8 @@ describe('OrderFromService — seedApprovedDefaultPhone', () => {
 
   it("blankPolicy 'reject' + 빈값 → 400", async () => {
     const { sut } = makeSeedSut([]);
-    await expect(sut.seedApprovedDefaultPhone(10, '', undefined, { blankPolicy: 'reject' })).rejects.toThrow(BadRequestException);
+    await expect(sut.seedApprovedDefaultPhone(10, '', undefined, { blankPolicy: 'reject' })).rejects.toThrow(
+      BadRequestException,
+    );
   });
 });

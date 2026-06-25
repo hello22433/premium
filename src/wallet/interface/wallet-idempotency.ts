@@ -35,7 +35,12 @@ function orderLevelDeliverySegment(deliveryId: number | null | undefined): strin
 }
 
 /** plan §2 single-shot: confirm:{orderId}:{deliveryId}:{resource} */
-export function buildConfirmKey(orderId: number, deliveryId: number, resource: WalletResourceType, pointGrantId?: number | null): string {
+export function buildConfirmKey(
+  orderId: number,
+  deliveryId: number,
+  resource: WalletResourceType,
+  pointGrantId?: number | null,
+): string {
   return `confirm:${orderId}:${deliveryId}:${formatResource(resource, pointGrantId)}`;
 }
 

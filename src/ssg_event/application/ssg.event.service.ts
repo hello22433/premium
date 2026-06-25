@@ -35,11 +35,7 @@ import { ActivityLogService } from '../../activity_log/application/activity.log.
 import { ActivityLogResult } from '../../activity_log/interface/activity.log.result';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { Transactional } from 'typeorm-transactional';
-import {
-  evaluateSsgEventSignals,
-  SsgBalanceCheckResult,
-  SsgEventSignalResult,
-} from './ssg.balance.guard';
+import { evaluateSsgEventSignals, SsgBalanceCheckResult, SsgEventSignalResult } from './ssg.balance.guard';
 import { ulid } from 'ulid';
 
 // 상세조회 임계경로에서 SSG 외부 API(getAmount) 지연이 페이지 로딩을 묶지 않도록 하는 가드 타임아웃
@@ -67,7 +63,7 @@ export class SsgEventService {
     private readonly activityLogService: ActivityLogService,
     @Inject('ISsgIssue')
     private readonly ssgIssue: ISsgIssue,
-  ) { }
+  ) {}
 
   /**
    * 신세계 측 행사 금액 집계 실시간 조회 (GetSsgAmount.do).
@@ -114,11 +110,7 @@ export class SsgEventService {
   /**
    * SSG 예약발송 가능 범위 갱신 (단일 row, 최고관리자 전용)
    */
-  async updateReservationRange(
-    startDateStr: string,
-    endDateStr: string,
-    userId: number,
-  ): Promise<void> {
+  async updateReservationRange(startDateStr: string, endDateStr: string, userId: number): Promise<void> {
     const startDate = new Date(`${startDateStr}T00:00:00+09:00`);
     const endDate = new Date(`${endDateStr}T00:00:00+09:00`);
 
@@ -166,8 +158,9 @@ export class SsgEventService {
     if (searchKeyword) {
       queryBuilder = queryBuilder.andWhere(
         new Brackets((qb) => {
-          qb.where('ssg.name LIKE :keyword', { keyword: `%${searchKeyword}%` })
-            .orWhere('ssg.code LIKE :keyword', { keyword: `%${searchKeyword}%` });
+          qb.where('ssg.name LIKE :keyword', { keyword: `%${searchKeyword}%` }).orWhere('ssg.code LIKE :keyword', {
+            keyword: `%${searchKeyword}%`,
+          });
         }),
       );
     }
@@ -182,9 +175,7 @@ export class SsgEventService {
 
     // 조회기간이 설정되지 않은 경우에만 현재 진행 중인 행사 필터 적용
     if (!createdStartAt && !createdEndAt) {
-      queryBuilder = queryBuilder
-        .andWhere('ssg.startAt <= :now', { now })
-        .andWhere('ssg.endAt >= :now', { now });
+      queryBuilder = queryBuilder.andWhere('ssg.startAt <= :now', { now }).andWhere('ssg.endAt >= :now', { now });
     }
 
     queryBuilder = QueryBuilderDateCondition(queryBuilder, 'ssg', 'createdAt', createdStartAt, createdEndAt);
@@ -315,8 +306,9 @@ export class SsgEventService {
     if (searchKeyword) {
       queryBuilder = queryBuilder.andWhere(
         new Brackets((qb) => {
-          qb.where('ssg.name LIKE :keyword', { keyword: `%${searchKeyword}%` })
-            .orWhere('ssg.code LIKE :keyword', { keyword: `%${searchKeyword}%` });
+          qb.where('ssg.name LIKE :keyword', { keyword: `%${searchKeyword}%` }).orWhere('ssg.code LIKE :keyword', {
+            keyword: `%${searchKeyword}%`,
+          });
         }),
       );
     }
@@ -336,16 +328,17 @@ export class SsgEventService {
     const ssgEventIdList = eventList.map((event) => event.id);
 
     // 검색 결과가 0건이면 IN () 쿼리 에러 방지
-    const orderProductMappingList = ssgEventIdList.length > 0
-      ? await this.orderProductMappingRepository
-        .createQueryBuilder('orderProductMapping')
-        .innerJoinAndSelect('orderProductMapping.product', 'product')
-        .innerJoinAndSelect('orderProductMapping.order', 'order')
-        .innerJoinAndSelect('orderProductMapping.orderDeliveries', 'orderDeliveries')
-        .where('orderDeliveries.ssgEventId IN (:...ssgEventIdList)', { ssgEventIdList })
-        .andWhere('order.type = :type', { type: IOrderType.SSG })
-        .getMany()
-      : [];
+    const orderProductMappingList =
+      ssgEventIdList.length > 0
+        ? await this.orderProductMappingRepository
+            .createQueryBuilder('orderProductMapping')
+            .innerJoinAndSelect('orderProductMapping.product', 'product')
+            .innerJoinAndSelect('orderProductMapping.order', 'order')
+            .innerJoinAndSelect('orderProductMapping.orderDeliveries', 'orderDeliveries')
+            .where('orderDeliveries.ssgEventId IN (:...ssgEventIdList)', { ssgEventIdList })
+            .andWhere('order.type = :type', { type: IOrderType.SSG })
+            .getMany()
+        : [];
 
     // <ssgEventId, >
     const ssgEventCountMap = new Map<
@@ -1050,11 +1043,7 @@ export class SsgEventService {
   /**
    * 행사 잔액 += amount + amount_history 기록. 멱등 가드는 caller 가 수행(여기선 순수 적용).
    */
-  private async applyEventBalanceRestore(
-    ssgEvent: SsgEventEntity,
-    amount: number,
-    orderId: number,
-  ): Promise<void> {
+  private async applyEventBalanceRestore(ssgEvent: SsgEventEntity, amount: number, orderId: number): Promise<void> {
     const restoredBalance = ssgEvent.eventBalance + amount;
 
     const refundHistory = this.amountHistoryRepository.create({

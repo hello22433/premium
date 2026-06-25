@@ -19,16 +19,12 @@ type DeliveryTransitionOrder = {
   type: IOrderType;
 };
 
-export function canTransitionDelivery(
-  user: DeliveryTransitionUser,
-  order: DeliveryTransitionOrder,
-): boolean {
+export function canTransitionDelivery(user: DeliveryTransitionUser, order: DeliveryTransitionOrder): boolean {
   if (user.status !== IUserStatus.USED) {
     return false;
   }
 
-  const requiredAuthority =
-    order.type === IOrderType.SSG ? UserAuthSubEnum.SEND_SSG : UserAuthSubEnum.SEND_GENERAL;
+  const requiredAuthority = order.type === IOrderType.SSG ? UserAuthSubEnum.SEND_SSG : UserAuthSubEnum.SEND_GENERAL;
   if (!UserAuthListDefault(user.authority, user.authorityList).includes(requiredAuthority)) {
     return false;
   }
@@ -52,16 +48,13 @@ export function shouldExposeSsgBalanceCheck(
   order: DeliveryTransitionOrder & { status: IOrderStatus },
 ): boolean {
   return (
-    order.type === IOrderType.SSG &&
-    order.status === IOrderStatus.REVIEW_COMPLETE &&
-    canTransitionDelivery(user, order)
+    order.type === IOrderType.SSG && order.status === IOrderStatus.REVIEW_COMPLETE && canTransitionDelivery(user, order)
   );
 }
 
 export function canForceConfirmDelivery(user: DeliveryTransitionUser): boolean {
   return (
     user.status === IUserStatus.USED &&
-    (user.authority === IUserAuthority.SUPER_ADMIN ||
-      user.authority === IUserAuthority.OPERATION_ADMIN)
+    (user.authority === IUserAuthority.SUPER_ADMIN || user.authority === IUserAuthority.OPERATION_ADMIN)
   );
 }

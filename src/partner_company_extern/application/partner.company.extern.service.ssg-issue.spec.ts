@@ -130,10 +130,15 @@ describe('PartnerCompanyExternService - SSG issue flow + state', () => {
       // 기본: 제출 이력 없음(N) → step2 dedup 사용 가능, step1 classify=NOT_SUBMITTED
       getTry: jest.fn().mockResolvedValue(tryOut('N')),
     };
-    ssgIssueLogRepository = { ...mock<Repository<SsgIssueLogEntity>>(), ...makeRepoMock() } as unknown as jest.Mocked<Repository<SsgIssueLogEntity>>;
+    ssgIssueLogRepository = { ...mock<Repository<SsgIssueLogEntity>>(), ...makeRepoMock() } as unknown as jest.Mocked<
+      Repository<SsgIssueLogEntity>
+    >;
     pinIssueDedupRepository = { ...mock<Repository<PinIssueDedupEntity>>(), ...makeRepoMock() };
     orderDeliveryRepository = { ...mock<Repository<OrderDeliveryEntity>>(), ...makeRepoMock() };
-    partnerCompanyExternHistoryRepository = { ...mock<Repository<PartnerCompanyExternHistoryEntity>>(), ...makeRepoMock() };
+    partnerCompanyExternHistoryRepository = {
+      ...mock<Repository<PartnerCompanyExternHistoryEntity>>(),
+      ...makeRepoMock(),
+    };
     ssgInsertStateService = {
       getState: jest.fn(),
       markAttempted: jest.fn(),
@@ -152,7 +157,10 @@ describe('PartnerCompanyExternService - SSG issue flow + state', () => {
         { provide: 'ISsgIssue', useValue: ssgIssue },
         { provide: 'IDaou', useValue: mock<any>() },
         { provide: getRepositoryToken(OrderDeliveryEntity), useValue: orderDeliveryRepository },
-        { provide: getRepositoryToken(PartnerCompanyExternHistoryEntity), useValue: partnerCompanyExternHistoryRepository },
+        {
+          provide: getRepositoryToken(PartnerCompanyExternHistoryEntity),
+          useValue: partnerCompanyExternHistoryRepository,
+        },
         { provide: getRepositoryToken(PartnerCompanyEntity), useValue: makeRepoMock() },
         { provide: getRepositoryToken(PinIssueDedupEntity), useValue: pinIssueDedupRepository },
         { provide: getRepositoryToken(SsgIssueLogEntity), useValue: ssgIssueLogRepository },

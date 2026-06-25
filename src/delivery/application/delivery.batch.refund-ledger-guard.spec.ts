@@ -77,40 +77,42 @@ describe('DeliveryBatchService.reissuePinAndCreateImageIfNeeded - refund ledger 
   } as unknown as SsgEventEntity;
 
   // status=FAIL + barCode=null → 가드(A) 새 행사 선차감 경로
-  const buildFailNoBarCode = (): OrderDeliveryEntity => ({
-    id: 530931,
-    status: IOrderDeliveryStatus.FAIL,
-    deliveryMethod: IOrderSendMethod.MMS,
-    ssgEventId: 36,
-    barCode: null,
-    refundedAt: null,
-    imagePath: 'mock-image.png', // createCouponImage 경로 차단용
-    orderProductMapping: {
-      id: 1,
-      order: {
-        id: 4145,
-        type: IOrderType.SSG,
-        isSettleComplete: false,
-        isSettleBalance: true,
-        cardSurchargeApplied: false,
-        clientUserId: null,
-        user: { id: 100 },
-      },
-      product: {
+  const buildFailNoBarCode = (): OrderDeliveryEntity =>
+    ({
+      id: 530931,
+      status: IOrderDeliveryStatus.FAIL,
+      deliveryMethod: IOrderSendMethod.MMS,
+      ssgEventId: 36,
+      barCode: null,
+      refundedAt: null,
+      imagePath: 'mock-image.png', // createCouponImage 경로 차단용
+      orderProductMapping: {
         id: 1,
-        price: 10_000,
-        expireDay: 60,
-        type: 'NORMAL',
-        partnerCompany: { type: 'SSG' },
+        order: {
+          id: 4145,
+          type: IOrderType.SSG,
+          isSettleComplete: false,
+          isSettleBalance: true,
+          cardSurchargeApplied: false,
+          clientUserId: null,
+          user: { id: 100 },
+        },
+        product: {
+          id: 1,
+          price: 10_000,
+          expireDay: 60,
+          type: 'NORMAL',
+          partnerCompany: { type: 'SSG' },
+        },
       },
-    },
-  } as unknown as OrderDeliveryEntity);
+    }) as unknown as OrderDeliveryEntity;
 
   // status=WAIT + barCode=null → 가드(B) reverseRefundForResend 경로 (선차감 안 일어남)
-  const buildWaitNoBarCode = (): OrderDeliveryEntity => ({
-    ...buildFailNoBarCode(),
-    status: IOrderDeliveryStatus.WAIT,
-  } as unknown as OrderDeliveryEntity);
+  const buildWaitNoBarCode = (): OrderDeliveryEntity =>
+    ({
+      ...buildFailNoBarCode(),
+      status: IOrderDeliveryStatus.WAIT,
+    }) as unknown as OrderDeliveryEntity;
 
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -199,7 +201,10 @@ describe('DeliveryBatchService.reissuePinAndCreateImageIfNeeded - refund ledger 
         { provide: ResendDeductService, useValue: { resendDeduct: jest.fn(), resendUndo: jest.fn() } },
         { provide: LegacyWalletCreditSyncService, useValue: { syncCredit: jest.fn() } },
         { provide: getRepositoryToken(OrderDeliveryAttemptEntity), useValue: { findOne: jest.fn(), save: jest.fn() } },
-        { provide: getRepositoryToken(OrderPaymentRefundEventEntity), useValue: { find: jest.fn().mockResolvedValue([]), findOne: jest.fn() } },
+        {
+          provide: getRepositoryToken(OrderPaymentRefundEventEntity),
+          useValue: { find: jest.fn().mockResolvedValue([]), findOne: jest.fn() },
+        },
         { provide: getRepositoryToken(OrderPaymentAllocationEntity), useValue: { findOne: jest.fn() } },
         { provide: getRepositoryToken(OrderHistoryEntity), useValue: {} },
         { provide: getDataSourceToken(), useValue: { transaction: jest.fn() } },
@@ -245,12 +250,8 @@ describe('DeliveryBatchService.reissuePinAndCreateImageIfNeeded - refund ledger 
       expect(ssgEventService.selectEventForOrder).not.toHaveBeenCalled();
       expect(ssgEventService.deductForReissueWithPending).not.toHaveBeenCalled();
       // B3: ledger 없음 = 보류 정상 → 구버전 "비정상 warn" 은 info 로 강등.
-      expect(logSpy).toHaveBeenCalledWith(
-        expect.stringContaining('SSG 보류 재발송'),
-      );
-      expect(warnSpy).not.toHaveBeenCalledWith(
-        expect.stringContaining('환불 ledger 누락 또는 local SSG 차감 잔존'),
-      );
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('SSG 보류 재발송'));
+      expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('환불 ledger 누락 또는 local SSG 차감 잔존'));
     });
 
     /**
@@ -281,9 +282,7 @@ describe('DeliveryBatchService.reissuePinAndCreateImageIfNeeded - refund ledger 
       expect(result).toBe(true);
       expect(ssgEventService.selectEventForOrder).not.toHaveBeenCalled();
       expect(ssgEventService.deductForReissueWithPending).not.toHaveBeenCalled();
-      expect(warnSpy).not.toHaveBeenCalledWith(
-        expect.stringContaining('환불 ledger 누락'),
-      );
+      expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('환불 ledger 누락'));
     });
 
     /**
@@ -302,9 +301,7 @@ describe('DeliveryBatchService.reissuePinAndCreateImageIfNeeded - refund ledger 
       expect(result).toBe(true);
       expect(ssgEventService.selectEventForOrder).not.toHaveBeenCalled();
       expect(ssgEventService.deductForReissueWithPending).not.toHaveBeenCalled();
-      expect(errorSpy).toHaveBeenCalledWith(
-        expect.stringContaining('SSG 잔액 보정 미완료'),
-      );
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('SSG 잔액 보정 미완료'));
     });
   });
 
@@ -421,9 +418,7 @@ describe('DeliveryBatchService.reissuePinAndCreateImageIfNeeded - refund ledger 
   describe('race: issue() 중 다른 흐름이 ledger를 release한 경우', () => {
     it('exists() 첫 호출 true + 두 번째 호출 false이면 reverseRefundForResend가 호출되지 않는다', async () => {
       const od = buildWaitNoBarCode();
-      refundLedgerService.exists
-        .mockResolvedValueOnce(true)
-        .mockResolvedValueOnce(false);
+      refundLedgerService.exists.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
 
       const result = await (sut as any).reissuePinAndCreateImageIfNeeded(od);
 

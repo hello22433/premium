@@ -152,8 +152,11 @@ export function readOperationPersonName(order: OrderEntity): string | null {
 
 export type LineProductSnapshotPart = Pick<
   OrderProductMappingEntity,
-  'snapshotProductPrice' | 'snapshotProductName' | 'snapshotProductBrandName'
-  | 'snapshotProductExpireDay' | 'snapshotProductImagePath'
+  | 'snapshotProductPrice'
+  | 'snapshotProductName'
+  | 'snapshotProductBrandName'
+  | 'snapshotProductExpireDay'
+  | 'snapshotProductImagePath'
 >;
 
 // 주문 시점 상품 정보 박제. product.brand가 로드된 ProductEntity를 넘겨야 함.

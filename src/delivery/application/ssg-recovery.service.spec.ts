@@ -150,12 +150,7 @@ describe('SsgRecoveryService', () => {
     const chain = setup([{ affected: 1 }], SsgRefundOutcome.RESTORED);
     await compile();
 
-    await sut.recoverWithLease(
-      baseArgs.orderDeliveryId,
-      baseArgs.ssgEventId,
-      baseArgs.orderId,
-      baseArgs.refundAmount,
-    );
+    await sut.recoverWithLease(baseArgs.orderDeliveryId, baseArgs.ssgEventId, baseArgs.orderId, baseArgs.refundAmount);
 
     const whereCalls = [
       ...chain.where.mock.calls.map((c: any[]) => c[0]),
@@ -172,12 +167,7 @@ describe('SsgRecoveryService', () => {
 
     const errorSpy = jest.spyOn((sut as any).logger, 'error').mockImplementation(() => undefined);
 
-    await sut.recoverWithLease(
-      baseArgs.orderDeliveryId,
-      baseArgs.ssgEventId,
-      baseArgs.orderId,
-      baseArgs.refundAmount,
-    );
+    await sut.recoverWithLease(baseArgs.orderDeliveryId, baseArgs.ssgEventId, baseArgs.orderId, baseArgs.refundAmount);
 
     expect(errorSpy).toHaveBeenCalledTimes(1);
     expect(errorSpy.mock.calls[0][0]).toContain('escalation');
@@ -189,12 +179,7 @@ describe('SsgRecoveryService', () => {
 
     const errorSpy = jest.spyOn((sut as any).logger, 'error').mockImplementation(() => undefined);
 
-    await sut.recoverWithLease(
-      baseArgs.orderDeliveryId,
-      baseArgs.ssgEventId,
-      baseArgs.orderId,
-      baseArgs.refundAmount,
-    );
+    await sut.recoverWithLease(baseArgs.orderDeliveryId, baseArgs.ssgEventId, baseArgs.orderId, baseArgs.refundAmount);
 
     expect(errorSpy).not.toHaveBeenCalled();
   });

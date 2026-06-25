@@ -287,9 +287,7 @@ export class UserDiscountService {
         throw new BadRequestException(`${targetName}에 이미 일괄 할인이 등록되어 있습니다.`);
       }
       if (existing.method === IUserDiscountMethod.SECTION) {
-        throw new BadRequestException(
-          `${targetName}에 이미 구간 할인이 등록되어 있습니다. 삭제 후 등록해주세요.`,
-        );
+        throw new BadRequestException(`${targetName}에 이미 구간 할인이 등록되어 있습니다. 삭제 후 등록해주세요.`);
       }
     }
   }
@@ -335,9 +333,7 @@ export class UserDiscountService {
 
     const existingBulk = existingDiscounts.find((d) => d.method === IUserDiscountMethod.BULK);
     if (existingBulk) {
-      throw new BadRequestException(
-        `${targetName}에 이미 일괄 할인이 등록되어 있습니다. 삭제 후 등록해주세요.`,
-      );
+      throw new BadRequestException(`${targetName}에 이미 일괄 할인이 등록되어 있습니다. 삭제 후 등록해주세요.`);
     }
 
     for (const existing of existingDiscounts) {

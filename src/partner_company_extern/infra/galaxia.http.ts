@@ -121,8 +121,8 @@ export class GalaxiaHttp implements IGalaxia {
           if (checkResult.resCode === '0000' && checkResult.giftCertificate.couponStatus === 'ACTIVE') {
             this.logger.warn(
               `[issue] 기존 발급 확인됨 - transactionId: ${obj.transactionId}, ` +
-              `trId: ${checkResult.transactionId}, 잔액: ${checkResult.giftCertificate.balance}, ` +
-              `barcode: ${checkResult.giftCertificate.barcode || '(없음)'}`,
+                `trId: ${checkResult.transactionId}, 잔액: ${checkResult.giftCertificate.balance}, ` +
+                `barcode: ${checkResult.giftCertificate.barcode || '(없음)'}`,
             );
             return {
               resCode: '0000',
@@ -143,15 +143,15 @@ export class GalaxiaHttp implements IGalaxia {
         }
 
         // check 조회 실패 또는 쿠폰이 ACTIVE가 아닌 경우
-        throw new Error(
-          `Galaxia 중복 주문번호(${obj.transactionId}): 이미 처리된 주문입니다. Galaxia resCode: 4900`,
-        );
+        throw new Error(`Galaxia 중복 주문번호(${obj.transactionId}): 이미 처리된 주문입니다. Galaxia resCode: 4900`);
       }
 
       // 409가 아닌 일반 에러 로깅
       this.logger.error(`[issue] Galaxia API 에러: ${e instanceof Error ? e.message : e}`);
       if (e.response) {
-        this.logger.error(`[issue] Galaxia API 응답 status: ${e.response.status}, data: ${JSON.stringify(e.response.data)}`);
+        this.logger.error(
+          `[issue] Galaxia API 응답 status: ${e.response.status}, data: ${JSON.stringify(e.response.data)}`,
+        );
       }
       throw e;
     }
@@ -218,12 +218,7 @@ export class GalaxiaHttp implements IGalaxia {
             this.cryptoAlgorithm,
           ),
           barcode: parsed.giftCertificate.barcode
-            ? this.cryptoCipher.decrypt(
-                parsed.giftCertificate.barcode,
-                this.encKey,
-                this.encIv,
-                this.cryptoAlgorithm,
-              )
+            ? this.cryptoCipher.decrypt(parsed.giftCertificate.barcode, this.encKey, this.encIv, this.cryptoAlgorithm)
             : '',
         },
       };
@@ -264,9 +259,7 @@ export class GalaxiaHttp implements IGalaxia {
         return;
       }
 
-      throw new InternalServerErrorException(
-        `[GALAXIA:${result.resCode}] ${result.resMsg}`,
-      );
+      throw new InternalServerErrorException(`[GALAXIA:${result.resCode}] ${result.resMsg}`);
     } catch (e) {
       // 409 + 4900: cancel order-number 중복 = 이전 cancel 호출 성공의 증거. check 로 검증 후 멱등 처리
       if (e.response?.status === 409 && e.response?.data?.resCode === '4900') {

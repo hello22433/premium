@@ -519,7 +519,13 @@ export class UserManagementService {
     const company = user.company;
     const { beforeBalance, afterBalance } = await this.updateBalance(user, company, chargeAmount);
 
-    const base = this.buildBalanceLogBase(operator, '/user-management/balance', ActivityLogActionType.BALANCE_CHARGE, user, company);
+    const base = this.buildBalanceLogBase(
+      operator,
+      '/user-management/balance',
+      ActivityLogActionType.BALANCE_CHARGE,
+      user,
+      company,
+    );
     const logId = await this.activityLogService.createLog({
       ...base,
       requestParams: {
@@ -584,7 +590,13 @@ export class UserManagementService {
     const { beforeBalance } = await this.setBalance(user, company, newBalance);
     const changeAmount = newBalance - beforeBalance;
 
-    const base = this.buildBalanceLogBase(operator, '/user-management/balance/modify', ActivityLogActionType.BALANCE_MODIFY, user, company);
+    const base = this.buildBalanceLogBase(
+      operator,
+      '/user-management/balance/modify',
+      ActivityLogActionType.BALANCE_MODIFY,
+      user,
+      company,
+    );
     const logId = await this.activityLogService.createLog({
       ...base,
       requestParams: {
@@ -940,12 +952,9 @@ export class UserManagementService {
 
     // 발신번호 SoT 동기화: APPROVED isDefault PHONE 보장 + mirror 갱신(없으면 NULL).
     // user.insert 가 mirror 를 이미 썼지만 seed 가 마지막 권위 write 로 최종값 확정.
-    await this.orderFromService.seedApprovedDefaultPhone(
-      newUserId,
-      getBody.fromPhoneNumber,
-      undefined,
-      { blankPolicy: 'clear-if-no-approved' },
-    );
+    await this.orderFromService.seedApprovedDefaultPhone(newUserId, getBody.fromPhoneNumber, undefined, {
+      blankPolicy: 'clear-if-no-approved',
+    });
 
     return;
   }
@@ -1062,12 +1071,9 @@ export class UserManagementService {
     // 발신번호 SoT 동기화: user save 이후 실행해야 mirror 가 stale 로 덮이지 않음.
     // seed 가 APPROVED isDefault 보장 + mirror 최종값 확정(없으면 NULL). 이후 user write 금지.
     if (getBody.fromPhoneNumber !== undefined) {
-      await this.orderFromService.seedApprovedDefaultPhone(
-        user.id,
-        getBody.fromPhoneNumber,
-        undefined,
-        { blankPolicy: 'clear-if-no-approved' },
-      );
+      await this.orderFromService.seedApprovedDefaultPhone(user.id, getBody.fromPhoneNumber, undefined, {
+        blankPolicy: 'clear-if-no-approved',
+      });
     }
 
     // 상태 변경 시 공통 헬퍼로 전이 (side-column + ACCOUNT_WITHDRAW 로그 등 자동배치와 동일 side-effect 보장)
@@ -1645,10 +1651,7 @@ export class UserManagementService {
   // active-only unique(generated active_key)로 활성 중복 차단, soft-delete 후 재등록 허용.
 
   @Transactional()
-  async createCustomerMapping(
-    accountId: string,
-    dto: CreateCustomerMappingReqDto,
-  ): Promise<CustomerMappingResDto> {
+  async createCustomerMapping(accountId: string, dto: CreateCustomerMappingReqDto): Promise<CustomerMappingResDto> {
     const app = await this.resolveAppOrThrow(accountId);
     await this.assertBillingUserAllowed(dto.billingUserId);
     const externalCustomerId = dto.externalCustomerId.trim();

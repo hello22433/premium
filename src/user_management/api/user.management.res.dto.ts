@@ -346,7 +346,8 @@ export class WalletHistoryItemDto {
   resourceType: string;
 
   @ApiProperty({
-    description: '거래 유형 (CONFIRM | CANCEL | FAIL_REFUND | DISCARD_REFUND | RESEND_DEDUCT | SETTLE_RELEASE | SETTLE_UNDO | GRANT 등)',
+    description:
+      '거래 유형 (CONFIRM | CANCEL | FAIL_REFUND | DISCARD_REFUND | RESEND_DEDUCT | SETTLE_RELEASE | SETTLE_UNDO | GRANT 등)',
   })
   type: string;
 

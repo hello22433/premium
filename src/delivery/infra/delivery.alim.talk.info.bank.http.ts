@@ -180,7 +180,9 @@ export class DeliveryAlimTalkInfoBankHttp implements DeliveryAlimTalk {
         }
 
         const isLast = attempt === INQUIRY_MAX_ATTEMPTS;
-        this.logger.log(`Report inquiry failed on attempt ${attempt}: ${reportResult.error}${isLast ? '' : ', retrying...'}`);
+        this.logger.log(
+          `Report inquiry failed on attempt ${attempt}: ${reportResult.error}${isLast ? '' : ', retrying...'}`,
+        );
       }
 
       if (!reportResult || !reportResult.success) {

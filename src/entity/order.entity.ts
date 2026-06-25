@@ -180,19 +180,44 @@ export class OrderEntity extends BaseEntity {
   @Column({ type: 'varchar', length: 100, nullable: true, comment: '주문 시점의 clientUser.email 스냅샷' })
   snapshotClientEmail: string | null;
 
-  @Column({ type: 'varchar', length: 100, nullable: true, comment: '주문 시점의 clientUser.company.businessName 스냅샷' })
+  @Column({
+    type: 'varchar',
+    length: 100,
+    nullable: true,
+    comment: '주문 시점의 clientUser.company.businessName 스냅샷',
+  })
   snapshotClientBusinessName: string | null;
 
-  @Column({ type: 'varchar', length: 100, nullable: true, comment: '주문 시점의 clientUser.company.businessNumber 스냅샷' })
+  @Column({
+    type: 'varchar',
+    length: 100,
+    nullable: true,
+    comment: '주문 시점의 clientUser.company.businessNumber 스냅샷',
+  })
   snapshotClientBusinessNumber: string | null;
 
-  @Column({ type: 'varchar', length: 255, nullable: true, comment: '주문 시점의 clientUser.company.businessAddress 스냅샷' })
+  @Column({
+    type: 'varchar',
+    length: 255,
+    nullable: true,
+    comment: '주문 시점의 clientUser.company.businessAddress 스냅샷',
+  })
   snapshotClientBusinessAddress: string | null;
 
-  @Column({ type: 'varchar', length: 100, nullable: true, comment: '주문 시점의 clientUser.company.industryType 스냅샷' })
+  @Column({
+    type: 'varchar',
+    length: 100,
+    nullable: true,
+    comment: '주문 시점의 clientUser.company.industryType 스냅샷',
+  })
   snapshotClientIndustryType: string | null;
 
-  @Column({ type: 'varchar', length: 100, nullable: true, comment: '주문 시점의 clientUser.company.industryItem 스냅샷' })
+  @Column({
+    type: 'varchar',
+    length: 100,
+    nullable: true,
+    comment: '주문 시점의 clientUser.company.industryItem 스냅샷',
+  })
   snapshotClientIndustryItem: string | null;
 
   @Column({ type: 'varchar', length: 20, nullable: true, comment: '주문 시점의 clientUser.settleCondition 스냅샷' })

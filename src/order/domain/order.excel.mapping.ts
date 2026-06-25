@@ -9,5 +9,4 @@ const ORDER_STATUS_LABEL: Record<IOrderStatus, string> = {
   DELIVERY_CANCEL: '발송 취소',
 };
 
-export const OrderStatusExcelMapping = (status: IOrderStatus): string =>
-  ORDER_STATUS_LABEL[status] ?? '';
+export const OrderStatusExcelMapping = (status: IOrderStatus): string => ORDER_STATUS_LABEL[status] ?? '';

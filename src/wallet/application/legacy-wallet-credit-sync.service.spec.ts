@@ -157,9 +157,7 @@ describe('LegacyWalletCreditSyncService', () => {
       wallet: { id: 33, creditUsedAmount: 100000 },
     });
 
-    await expect(
-      sut.syncCredit(manager, { ...baseParams, delta: -1000 }),
-    ).rejects.toBeInstanceOf(NotFoundException);
+    await expect(sut.syncCredit(manager, { ...baseParams, delta: -1000 })).rejects.toBeInstanceOf(NotFoundException);
   });
 
   it('wallet_account 미존재 → NotFoundException', async () => {
@@ -168,8 +166,6 @@ describe('LegacyWalletCreditSyncService', () => {
       wallet: null,
     });
 
-    await expect(
-      sut.syncCredit(manager, { ...baseParams, delta: -1000 }),
-    ).rejects.toBeInstanceOf(NotFoundException);
+    await expect(sut.syncCredit(manager, { ...baseParams, delta: -1000 })).rejects.toBeInstanceOf(NotFoundException);
   });
 });

@@ -261,9 +261,7 @@ export class CultureSocket implements ICulture {
    * - ResultCode 0000 + CancelPossibility='N' — 사용/취소/사용정지로 활성 아님
    */
   private async verifyCancelIdempotent(obj: CultureCancelIn, reason: string): Promise<void> {
-    this.logger.warn(
-      `[cancel] 9104 감지(${reason}) - check 로 멱등 검증. barCode: ${obj.barCode}`,
-    );
+    this.logger.warn(`[cancel] 9104 감지(${reason}) - check 로 멱등 검증. barCode: ${obj.barCode}`);
     const checkResult = await this.check({
       scrachNo: obj.barCode,
       certNo: obj.certNo,
@@ -277,9 +275,7 @@ export class CultureSocket implements ICulture {
       return;
     }
     if (checkResult.ResultCode === '0000' && checkResult.CancelPossibility === 'N') {
-      this.logger.warn(
-        `[cancel] check CancelPossibility=N (활성 아님) - 멱등 처리. barCode: ${obj.barCode}`,
-      );
+      this.logger.warn(`[cancel] check CancelPossibility=N (활성 아님) - 멱등 처리. barCode: ${obj.barCode}`);
       return;
     }
 
@@ -356,16 +352,12 @@ export class CultureSocket implements ICulture {
     try {
       // HTTP 요청 (POST)
       const response = await firstValueFrom(
-        this.httpService.post(
-          url,
-          `MemberCode=${memberCode}&SubMemberCode=${subMemberCode}&UseDate=${useDate}`,
-          {
-            headers: {
-              'Content-Type': 'application/x-www-form-urlencoded',
-            },
-            responseType: 'arraybuffer', // euc-kr 인코딩 처리를 위해
+        this.httpService.post(url, `MemberCode=${memberCode}&SubMemberCode=${subMemberCode}&UseDate=${useDate}`, {
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
           },
-        ),
+          responseType: 'arraybuffer', // euc-kr 인코딩 처리를 위해
+        }),
       );
 
       // euc-kr 디코딩

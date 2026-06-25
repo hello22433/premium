@@ -62,11 +62,7 @@ export class DaouXmlParser {
     for (const key in obj) {
       const value = obj[key];
 
-      if (
-        DaouXmlParser.EXTRACT_KEYS.has(key as keyof DaouXmlResponse) &&
-        value &&
-        typeof value === 'string'
-      ) {
+      if (DaouXmlParser.EXTRACT_KEYS.has(key as keyof DaouXmlResponse) && value && typeof value === 'string') {
         response[key as keyof DaouXmlResponse] = value.trim();
       }
 
@@ -80,9 +76,7 @@ export class DaouXmlParser {
    * 전체 상품 정보 XML 응답 파싱
    * 기존 parse()와 별도 — GOODS_LIST > GOODS_INFO[] 배열 구조 처리
    */
-  async parseGoodsInfo(
-    xmlString: string,
-  ): Promise<{
+  async parseGoodsInfo(xmlString: string): Promise<{
     rt: string;
     rtmsg: string;
     listCount: number;

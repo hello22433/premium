@@ -13,7 +13,12 @@ export class GiftielIpGuard implements CanActivate {
 
   constructor(private configService: ConfigService) {
     const envIps = this.configService.get<string>('GIFTIEL_PUSH_ALLOWED_IPS');
-    this.allowedIps = envIps ? envIps.split(',').map((ip) => ip.trim()).filter(Boolean) : [];
+    this.allowedIps = envIps
+      ? envIps
+          .split(',')
+          .map((ip) => ip.trim())
+          .filter(Boolean)
+      : [];
   }
 
   canActivate(context: ExecutionContext): boolean {

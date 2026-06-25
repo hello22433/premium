@@ -151,9 +151,7 @@ export class PartnerCompanyExternService {
         vno: params.personalCode,
       });
       const resultCd = checkOut?.response?.value?.[0]?.resultCd?.[0];
-      return this.isSsgRegistrationFailed(resultCd)
-        ? SsgPinVerdict.REGISTRATION_FAILED
-        : SsgPinVerdict.REGISTERED;
+      return this.isSsgRegistrationFailed(resultCd) ? SsgPinVerdict.REGISTRATION_FAILED : SsgPinVerdict.REGISTERED;
     } catch (e) {
       if (e instanceof SsgCheckNotFoundError) {
         // cust_info 제출됐으나 cust_info_result 미반영 = SSG 처리중
@@ -210,7 +208,8 @@ export class PartnerCompanyExternService {
     const type = orderDelivery.orderProductMapping!.product.partnerCompany!.type;
 
     // deliveryTarget 복호화
-    const decryptedDeliveryTarget = this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.deliveryTarget) ?? orderDelivery.deliveryTarget;
+    const decryptedDeliveryTarget =
+      this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.deliveryTarget) ?? orderDelivery.deliveryTarget;
 
     let context = '';
     let isSuccess = true;
@@ -316,12 +315,13 @@ export class PartnerCompanyExternService {
           // galaxiaDuration 미구현 단계의 임시방편: 상품 유효기간(expireDay)만 설정해도 발행 유효기간이 반영된다.
           // 여기엔 validityStartsNextDay 보정을 적용하지 않는다 — 보정은 ePOPKON 내부 expireAt 날짜 계산(addDays) 전용이고,
           // Galaxia는 raw 유효일수를 받아 자체적으로 만료일을 산출한다. 0은 Galaxia 측 최대 유효기간으로 발행된다.
-          duration: giftKind === 'cpn'
-            ? orderDelivery.orderProductMapping.galaxiaDuration
-                ?? orderDelivery.orderProductMapping.product.galaxiaDuration
-                ?? orderDelivery.orderProductMapping.product.expireDay
-                ?? 0
-            : undefined,
+          duration:
+            giftKind === 'cpn'
+              ? (orderDelivery.orderProductMapping.galaxiaDuration ??
+                orderDelivery.orderProductMapping.product.galaxiaDuration ??
+                orderDelivery.orderProductMapping.product.expireDay ??
+                0)
+              : undefined,
         });
         context = JSON.stringify(galaxiaOut);
 
@@ -333,7 +333,7 @@ export class PartnerCompanyExternService {
           // barcode 없이 couponNum만 복구된 경우 (409 중복 복구)
           this.logger.warn(
             `[GALAXIA] 중복 복구: barcode 없음, couponNum(trId): ${galaxiaOut.transactionId}. ` +
-            `transactionId: ${orderDelivery.transactionId}`,
+              `transactionId: ${orderDelivery.transactionId}`,
           );
         }
       }
@@ -363,9 +363,7 @@ export class PartnerCompanyExternService {
         // 기존 코드(CouponList[0].CouponNum)가 TypeError를 내면서 실제 원인이 묻혔다.
         // 협력사 응답 코드/메시지가 history에 그대로 남도록 명시적으로 throw한다.
         if (giftielOut.ResultCode !== '0000' || !giftielOut.CouponList?.length) {
-          throw new Error(
-            `GIFTIEL 발급 실패: ${giftielOut.ResultCode} - ${giftielOut.ResultMsg}`,
-          );
+          throw new Error(`GIFTIEL 발급 실패: ${giftielOut.ResultCode} - ${giftielOut.ResultMsg}`);
         }
         orderDelivery.barCode = giftielOut.CouponList[0].CouponNum;
       }
@@ -391,7 +389,9 @@ export class PartnerCompanyExternService {
           orderDelivery.barCode = pinNo;
         } else if (responseCode === '3001') {
           // 중복 요청 - 기존 발급된 PIN 조회
-          this.logger.warn(`GIFT_SHOW 중복 요청 감지 - transactionId: ${orderDelivery.transactionId}, 기존 PIN 조회 시도`);
+          this.logger.warn(
+            `GIFT_SHOW 중복 요청 감지 - transactionId: ${orderDelivery.transactionId}, 기존 PIN 조회 시도`,
+          );
           const checkResult = await this.giftiShow.check({
             transactionId: orderDelivery.transactionId,
           });
@@ -402,7 +402,9 @@ export class PartnerCompanyExternService {
             orderDelivery.barCode = checkResult.couponInfo.pinNo;
           } else {
             // 기존 PIN 조회 실패 - 이상한 상황
-            throw new Error(`GIFT_SHOW 중복 요청이나 기존 PIN 조회 실패: ${checkResult.resCode} - ${checkResult.resMsg}`);
+            throw new Error(
+              `GIFT_SHOW 중복 요청이나 기존 PIN 조회 실패: ${checkResult.resCode} - ${checkResult.resMsg}`,
+            );
           }
         } else {
           // 기타 에러
@@ -452,9 +454,7 @@ export class PartnerCompanyExternService {
           if (verdict === SsgPinVerdict.REGISTERED) {
             // result 유효 → INSERT는 됐고 발송만 실패 → 기존 PIN 재사용
             needsInsert = false;
-            this.logger.log(
-              `[SSG] 기존 PIN이 SSG DB에 등록(유효) - barCode: ${orderDelivery.barCode}, INSERT 건너뜀`,
-            );
+            this.logger.log(`[SSG] 기존 PIN이 SSG DB에 등록(유효) - barCode: ${orderDelivery.barCode}, INSERT 건너뜀`);
             // state ATTEMPTED → CONFIRMED 동기화 (markConfirmed 는 WHERE state=ATTEMPTED 가드라 그 외엔 silent skip).
             // ssgTransactionId 가 NULL 인 legacy row 는 markConfirmed 호출 자체를 skip (NOT NULL 타입 보호).
             if (orderDelivery.ssgTransactionId) {
@@ -476,9 +476,7 @@ export class PartnerCompanyExternService {
             throw new SsgProcessingError(orderDelivery.id);
           } else {
             // NOT_SUBMITTED(미제출) | REGISTRATION_FAILED(등록실패) → 기존 PIN 폐기 후 새 PIN 생성
-            this.logger.log(
-              `[SSG] 기존 PIN 재사용 불가(${verdict}) - barCode: ${orderDelivery.barCode}, 새 PIN 생성`,
-            );
+            this.logger.log(`[SSG] 기존 PIN 재사용 불가(${verdict}) - barCode: ${orderDelivery.barCode}, 새 PIN 생성`);
             orderDelivery.barCode = null;
             orderDelivery.personalCode = null;
           }
@@ -540,10 +538,7 @@ export class PartnerCompanyExternService {
           // → SSG DB의 실제 유효기간과 안내 유효기간 불일치 방지
           if (needsInsert) {
             orderDelivery.ssgTransactionId = SsgTransactionId.makeSsgTrade();
-            orderDelivery.expireAt = addDays(
-              new Date(),
-              orderDelivery.orderProductMapping.product.expireDay - 1,
-            );
+            orderDelivery.expireAt = addDays(new Date(), orderDelivery.orderProductMapping.product.expireDay - 1);
             const encourageDay = orderDelivery.orderProductMapping.encourageDay;
             if (encourageDay) {
               orderDelivery.encourageAt = subDays(orderDelivery.expireAt, encourageDay);
@@ -865,7 +860,9 @@ export class PartnerCompanyExternService {
         where: { id: product.partnerCompanyId },
       });
       if (!partnerCompany?.type) {
-        throw new Error(`협력사 정보를 찾을 수 없습니다. (orderDeliveryId: ${orderDelivery.id}, partnerCompanyId: ${product.partnerCompanyId})`);
+        throw new Error(
+          `협력사 정보를 찾을 수 없습니다. (orderDeliveryId: ${orderDelivery.id}, partnerCompanyId: ${product.partnerCompanyId})`,
+        );
       }
       this.logger.warn(`partnerCompany relation 로딩 누락 fallback 발동 (orderDeliveryId: ${orderDelivery.id})`);
       partnerType = partnerCompany.type;
@@ -1063,9 +1060,7 @@ export class PartnerCompanyExternService {
           }
         } else if (cultureLandOut.ResultCode === '0000') {
           const isUsed = cultureLandOut.CancelPossibility === 'N';
-          orderDelivery.couponStatus = isUsed
-            ? OrderDeliveryCouponStatus.USED
-            : OrderDeliveryCouponStatus.NOT_USED;
+          orderDelivery.couponStatus = isUsed ? OrderDeliveryCouponStatus.USED : OrderDeliveryCouponStatus.NOT_USED;
           // 컬쳐랜드 check API는 사용일시를 제공하지 않으므로
           // 첫 USED 전환 시점만 기록하고, 이후 재조회로 갱신하지 않는다
           if (isUsed && !orderDelivery.tradeAt) {

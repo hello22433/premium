@@ -57,9 +57,20 @@ export class SsgIssueLogEntity {
   @Column({ type: 'datetime', name: 'expire_at', nullable: true, comment: 'order_delivery.expire_at (orphan 복원용)' })
   expireAt: Date | null;
 
-  @Column({ type: 'datetime', name: 'encourage_at', nullable: true, comment: 'order_delivery.encourage_at (orphan 복원용)' })
+  @Column({
+    type: 'datetime',
+    name: 'encourage_at',
+    nullable: true,
+    comment: 'order_delivery.encourage_at (orphan 복원용)',
+  })
   encourageAt: Date | null;
 
-  @Column({ type: 'varchar', length: 100, name: 'coupon_num', nullable: true, comment: 'order_delivery.coupon_num (orphan 복원용)' })
+  @Column({
+    type: 'varchar',
+    length: 100,
+    name: 'coupon_num',
+    nullable: true,
+    comment: 'order_delivery.coupon_num (orphan 복원용)',
+  })
   couponNum: string | null;
 }

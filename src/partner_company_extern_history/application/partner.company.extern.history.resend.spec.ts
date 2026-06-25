@@ -123,9 +123,7 @@ describe('PartnerCompanyExternHistoryService.resendFailedDelivery', () => {
 
     expect(res.success).toBe(true);
     // 성공 update 는 owner guard(claimedAt) 조건부, resendAt 세팅 + claimedAt 해제
-    const successCall = orderDeliveryRepository.update.mock.calls.find(
-      (c) => c[1] && 'resendAt' in c[1],
-    );
+    const successCall = orderDeliveryRepository.update.mock.calls.find((c) => c[1] && 'resendAt' in c[1]);
     expect(successCall).toBeDefined();
     expect(successCall![0]).toEqual(expect.objectContaining({ id: 584170 }));
     expect(successCall![0]).toHaveProperty('claimedAt'); // owner guard
@@ -133,9 +131,7 @@ describe('PartnerCompanyExternHistoryService.resendFailedDelivery', () => {
   });
 
   it('oneSend 실패 → owner-guarded claim 해제', async () => {
-    qb.getOne
-      .mockResolvedValueOnce(makeDelivery())
-      .mockResolvedValueOnce(makeDelivery());
+    qb.getOne.mockResolvedValueOnce(makeDelivery()).mockResolvedValueOnce(makeDelivery());
     ssgInsertStateService.getState.mockResolvedValue(SsgInsertState.CONFIRMED);
     deliveryBatchService.oneSend.mockResolvedValue(false);
 
@@ -165,9 +161,7 @@ describe('PartnerCompanyExternHistoryService.resendFailedDelivery', () => {
   });
 
   it('SSG ATTEMPTED + resolver NETWORK_UNKNOWN → 발송 보류 + claim 해제, oneSend 미호출', async () => {
-    qb.getOne
-      .mockResolvedValueOnce(makeDelivery())
-      .mockResolvedValueOnce(makeDelivery({ barCode: null }));
+    qb.getOne.mockResolvedValueOnce(makeDelivery()).mockResolvedValueOnce(makeDelivery({ barCode: null }));
     ssgInsertStateService.getState.mockResolvedValue(SsgInsertState.ATTEMPTED);
     partnerCompanyExternService.resolveSsgOrphan.mockResolvedValue(SsgOrphanResolveOutcome.NETWORK_UNKNOWN);
 
@@ -175,16 +169,12 @@ describe('PartnerCompanyExternHistoryService.resendFailedDelivery', () => {
 
     expect(res.success).toBe(false);
     expect(deliveryBatchService.oneSend).not.toHaveBeenCalled();
-    const releaseCall = orderDeliveryRepository.update.mock.calls.find(
-      (c) => c[1] && c[1].claimedAt === null,
-    );
+    const releaseCall = orderDeliveryRepository.update.mock.calls.find((c) => c[1] && c[1].claimedAt === null);
     expect(releaseCall).toBeDefined();
   });
 
   it('SSG CONFIRMED + barCode 정상 → 복원 안 함, oneSend 진행', async () => {
-    qb.getOne
-      .mockResolvedValueOnce(makeDelivery())
-      .mockResolvedValueOnce(makeDelivery()); // barCode 정상
+    qb.getOne.mockResolvedValueOnce(makeDelivery()).mockResolvedValueOnce(makeDelivery()); // barCode 정상
     ssgInsertStateService.getState.mockResolvedValue(SsgInsertState.CONFIRMED);
 
     const res = await sut.resendFailedDelivery(584170);
@@ -237,9 +227,7 @@ describe('PartnerCompanyExternHistoryService.resendFailedDelivery', () => {
   });
 
   it('SSG 기존 PIN 처리중(classify=PROCESSING) → 처리중 안내 + claim 해제, oneSend 미호출', async () => {
-    qb.getOne
-      .mockResolvedValueOnce(makeDelivery())
-      .mockResolvedValueOnce(makeDelivery()); // barCode 정상 → verdict 경로
+    qb.getOne.mockResolvedValueOnce(makeDelivery()).mockResolvedValueOnce(makeDelivery()); // barCode 정상 → verdict 경로
     partnerCompanyExternService.classifySsgResendPin.mockResolvedValue(SsgPinVerdict.PROCESSING);
 
     const res = await sut.resendFailedDelivery(584170);
@@ -247,17 +235,13 @@ describe('PartnerCompanyExternHistoryService.resendFailedDelivery', () => {
     expect(res.success).toBe(false);
     expect(res.message).toContain('처리중');
     expect(deliveryBatchService.oneSend).not.toHaveBeenCalled();
-    const releaseCall = orderDeliveryRepository.update.mock.calls.find(
-      (c) => c[1] && c[1].claimedAt === null,
-    );
+    const releaseCall = orderDeliveryRepository.update.mock.calls.find((c) => c[1] && c[1].claimedAt === null);
     expect(releaseCall).toBeDefined();
   });
 
   it('SSG 기존 PIN 미제출(classify=NOT_SUBMITTED) → PIN 폐기 후 새 PIN 발송 진행', async () => {
     const reload = makeDelivery();
-    qb.getOne
-      .mockResolvedValueOnce(makeDelivery())
-      .mockResolvedValueOnce(reload);
+    qb.getOne.mockResolvedValueOnce(makeDelivery()).mockResolvedValueOnce(reload);
     partnerCompanyExternService.classifySsgResendPin.mockResolvedValue(SsgPinVerdict.NOT_SUBMITTED);
     deliveryBatchService.oneSend.mockResolvedValue(true);
 
@@ -287,9 +271,7 @@ describe('PartnerCompanyExternHistoryService.resendFailedDelivery', () => {
     qb.getOne
       .mockResolvedValueOnce(makeDelivery())
       // 성공 마무리 구간: status=COMPLETE 인데 claimedAt 해제만 아직 안 됨
-      .mockResolvedValueOnce(
-        makeDelivery({ status: IOrderDeliveryStatus.COMPLETE, claimedAt: new Date() }),
-      );
+      .mockResolvedValueOnce(makeDelivery({ status: IOrderDeliveryStatus.COMPLETE, claimedAt: new Date() }));
     qb.execute.mockResolvedValueOnce({ affected: 0 });
 
     const res = await sut.resendFailedDelivery(584170);
@@ -303,9 +285,7 @@ describe('PartnerCompanyExternHistoryService.resendFailedDelivery', () => {
     qb.getOne
       .mockResolvedValueOnce(makeDelivery())
       // status FAIL 유지 + claimedAt 6분 전(=stale, 이미 풀렸어야 할 잔재) → fallback
-      .mockResolvedValueOnce(
-        makeDelivery({ claimedAt: new Date(Date.now() - 6 * 60 * 1000) }),
-      );
+      .mockResolvedValueOnce(makeDelivery({ claimedAt: new Date(Date.now() - 6 * 60 * 1000) }));
     qb.execute.mockResolvedValueOnce({ affected: 0 });
 
     const res = await sut.resendFailedDelivery(584170);
@@ -320,9 +300,7 @@ describe('PartnerCompanyExternHistoryService.resendFailedDelivery', () => {
 
     it('정확히 5분 전 claimedAt → 처리 중 (경계 포함)', async () => {
       const exactlyStale = new Date(Date.now() - 5 * 60 * 1000);
-      qb.getOne
-        .mockResolvedValueOnce(makeDelivery())
-        .mockResolvedValueOnce(makeDelivery({ claimedAt: exactlyStale }));
+      qb.getOne.mockResolvedValueOnce(makeDelivery()).mockResolvedValueOnce(makeDelivery({ claimedAt: exactlyStale }));
       qb.execute.mockResolvedValueOnce({ affected: 0 });
 
       const res = await sut.resendFailedDelivery(584170);
@@ -332,9 +310,7 @@ describe('PartnerCompanyExternHistoryService.resendFailedDelivery', () => {
 
     it('5분+1ms 전 claimedAt → fallback (경계 밖)', async () => {
       const justStale = new Date(Date.now() - (5 * 60 * 1000 + 1));
-      qb.getOne
-        .mockResolvedValueOnce(makeDelivery())
-        .mockResolvedValueOnce(makeDelivery({ claimedAt: justStale }));
+      qb.getOne.mockResolvedValueOnce(makeDelivery()).mockResolvedValueOnce(makeDelivery({ claimedAt: justStale }));
       qb.execute.mockResolvedValueOnce({ affected: 0 });
 
       const res = await sut.resendFailedDelivery(584170);
@@ -343,9 +319,7 @@ describe('PartnerCompanyExternHistoryService.resendFailedDelivery', () => {
     });
 
     it('claim 쿼리는 (claimedAt IS NULL OR claimedAt < :stale) 와 now-5분 threshold 를 사용한다', async () => {
-      qb.getOne
-        .mockResolvedValueOnce(makeDelivery())
-        .mockResolvedValueOnce(makeDelivery({ claimedAt: new Date() })); // affected=0 후 재조회
+      qb.getOne.mockResolvedValueOnce(makeDelivery()).mockResolvedValueOnce(makeDelivery({ claimedAt: new Date() })); // affected=0 후 재조회
       qb.execute.mockResolvedValueOnce({ affected: 0 });
 
       await sut.resendFailedDelivery(584170);
@@ -370,10 +344,7 @@ describe('PartnerCompanyExternHistoryService.resendFailedDelivery', () => {
     // 해제 범위: status IN (FAIL, FAIL_SMS) — WAIT 미포함
     const statusWhere = qb.where.mock.calls.find((c: any[]) => /status IN/.test(c[0]));
     expect(statusWhere).toBeDefined();
-    expect(statusWhere![1].statuses).toEqual([
-      IOrderDeliveryStatus.FAIL,
-      IOrderDeliveryStatus.FAIL_SMS,
-    ]);
+    expect(statusWhere![1].statuses).toEqual([IOrderDeliveryStatus.FAIL, IOrderDeliveryStatus.FAIL_SMS]);
     expect(statusWhere![1].statuses).not.toContain(IOrderDeliveryStatus.WAIT);
     // claimedAt IS NOT NULL 조건
     expect(qb.andWhere.mock.calls.some((c: any[]) => /claimedAt IS NOT NULL/.test(c[0]))).toBe(true);

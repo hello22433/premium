@@ -6,11 +6,7 @@ import { PointGrantEntity } from '../../entity/point.grant.entity';
 import { calculateSettlementPrice } from '../../util/settle-fee.util';
 import { PointPolicyEffect } from '../interface/point-policy-scope';
 import { PointPolicyService } from './point-policy.service';
-import {
-  AllocationInput,
-  AllocationInputGrant,
-  AllocationLineInput,
-} from './payment-allocation.service';
+import { AllocationInput, AllocationInputGrant, AllocationLineInput } from './payment-allocation.service';
 
 /**
  * order → AllocationInput 변환 (Wallet Cutover Bundle).
@@ -34,7 +30,13 @@ export class WalletAllocationInputBuilder {
 
   async build(
     order: OrderEntity,
-    wallet: { id: string; depositBalance: number; creditLimit: number; creditUsedAmount: number; settleCondition: 'PRE_PAYMENT' | 'POST_PAYMENT' },
+    wallet: {
+      id: string;
+      depositBalance: number;
+      creditLimit: number;
+      creditUsedAmount: number;
+      settleCondition: 'PRE_PAYMENT' | 'POST_PAYMENT';
+    },
     finalAmount: number,
     opts: {
       requestedPointAmount?: number;

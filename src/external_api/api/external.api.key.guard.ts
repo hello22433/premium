@@ -44,15 +44,16 @@ export class ApiKeyGuard implements CanActivate {
     // HIGH-4(다중키/회전): account 를 apiKeyHash 가 아닌 apiApp.sourceAccountId(결정적 매핑)로 로드한다.
     //   → 신규 credential 단독 발급(새 hash) 시에도 account 조회가 깨지지 않음(account 는 구 hash 보유).
     //   sourceAccountId 미설정(순수 PR2 app)은 defaultBillingUserId 로 폴백.
-    const account = credential.apiApp.sourceAccountId != null
-      ? await this.accountRepository.findOne({
-          where: { id: credential.apiApp.sourceAccountId, isActive: true },
-          relations: ['user', 'user.company', 'allowedIps'],
-        })
-      : await this.accountRepository.findOne({
-          where: { userId: credential.apiApp.defaultBillingUserId, isActive: true },
-          relations: ['user', 'user.company', 'allowedIps'],
-        });
+    const account =
+      credential.apiApp.sourceAccountId != null
+        ? await this.accountRepository.findOne({
+            where: { id: credential.apiApp.sourceAccountId, isActive: true },
+            relations: ['user', 'user.company', 'allowedIps'],
+          })
+        : await this.accountRepository.findOne({
+            where: { userId: credential.apiApp.defaultBillingUserId, isActive: true },
+            relations: ['user', 'user.company', 'allowedIps'],
+          });
 
     if (!account) {
       throw new ExternalApiException('1001', '인증 실패');
@@ -100,9 +101,7 @@ export class ApiKeyGuard implements CanActivate {
 
   private resolveCallerIp(request: any): string {
     const forwarded = request.headers['x-forwarded-for'] as string | undefined;
-    const raw = forwarded
-      ? forwarded.split(',')[0].trim()
-      : request.ip || request.connection?.remoteAddress || '';
+    const raw = forwarded ? forwarded.split(',')[0].trim() : request.ip || request.connection?.remoteAddress || '';
     return raw.startsWith('::ffff:') ? raw.slice(7) : raw;
   }
 }

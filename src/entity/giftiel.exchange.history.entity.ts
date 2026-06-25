@@ -20,7 +20,12 @@ export class GiftielExchangeHistoryEntity extends BaseEntity {
   id: number;
 
   @Index('idx_giftiel_exchange_order_delivery')
-  @Column({ type: 'int', name: 'order_delivery_id', nullable: true, comment: 'FK) order_delivery.id (매칭 실패 시 NULL)' })
+  @Column({
+    type: 'int',
+    name: 'order_delivery_id',
+    nullable: true,
+    comment: 'FK) order_delivery.id (매칭 실패 시 NULL)',
+  })
   orderDeliveryId: number | null;
 
   @Column({
@@ -56,13 +61,26 @@ export class GiftielExchangeHistoryEntity extends BaseEntity {
   @Column({ type: 'datetime', name: 'auth_date', comment: '교환일시 / 교환취소일시' })
   authDate: Date;
 
-  @Column({ type: 'decimal', precision: 20, scale: 2, name: 'use_price', nullable: true, comment: '사용금액 / 취소금액' })
+  @Column({
+    type: 'decimal',
+    precision: 20,
+    scale: 2,
+    name: 'use_price',
+    nullable: true,
+    comment: '사용금액 / 취소금액',
+  })
   usePrice: string | null;
 
   @Column({ type: 'decimal', precision: 20, scale: 2, name: 'bal_price', nullable: true, comment: '잔액' })
   balPrice: string | null;
 
-  @Column({ type: 'varchar', length: 2, name: 'coupon_type', nullable: true, comment: '쿠폰 종류 (00: 교환/할인권, 02: 금액권)' })
+  @Column({
+    type: 'varchar',
+    length: 2,
+    name: 'coupon_type',
+    nullable: true,
+    comment: '쿠폰 종류 (00: 교환/할인권, 02: 금액권)',
+  })
   couponType: string | null;
 
   @Column({ type: 'varchar', length: 20, name: 'bi_code', nullable: true, comment: '사용가맹점 코드' })

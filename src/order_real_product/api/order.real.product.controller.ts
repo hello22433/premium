@@ -269,7 +269,10 @@ export class OrderRealProductController {
   // ====================================================
   @Get('/real-product/order/delivery-complete/report')
   @UseGuards(AuthUserAuthorizationGuard)
-  getDeliveryCompleteReport(@User() user: ILoginUserInfo, @Query() getQuery: OrderRealProductGetDeliveryCompleteReportReqDto) {
+  getDeliveryCompleteReport(
+    @User() user: ILoginUserInfo,
+    @Query() getQuery: OrderRealProductGetDeliveryCompleteReportReqDto,
+  ) {
     return this.orderRealProductService.getDeliveryCompleteReport(user, getQuery);
   }
 
@@ -392,7 +395,10 @@ export class OrderRealProductController {
   // ====================================================
   @Get('/real-product/order/order-product-mapping/detail/:id')
   @UseGuards(AuthUserAuthorizationGuard)
-  getOrderProductMappingDetail(@User() user: ILoginUserInfo, @Param() getParam: OrderRealProductMappingGetDetailReqParamDto) {
+  getOrderProductMappingDetail(
+    @User() user: ILoginUserInfo,
+    @Param() getParam: OrderRealProductMappingGetDetailReqParamDto,
+  ) {
     return this.orderRealProductService.getOrderProductMappingDetail(user, getParam);
   }
 

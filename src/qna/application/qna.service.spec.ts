@@ -70,7 +70,12 @@ describe('qna service test', () => {
       qnaRepository.findOne.mockResolvedValue({
         ...QnaEntityMock(),
         userId: 1,
-        user: { company: { businessName: '테스트' }, personName: '홍길동', email: 'test@test.com', personPhoneNumber: '010-0000-0000' },
+        user: {
+          company: { businessName: '테스트' },
+          personName: '홍길동',
+          email: 'test@test.com',
+          personPhoneNumber: '010-0000-0000',
+        },
       });
 
       const result = await sut.getDetail(givenUser, givenParam);

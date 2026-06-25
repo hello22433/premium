@@ -42,7 +42,8 @@ export class RequirementEntity extends BaseEntity {
     type: 'varchar',
     length: 50,
     default: RequirementStatus.NEW,
-    comment: '상태 ex) NEW: 신규, IN_PROGRESS: 진행중, REJECTED: 반려, DEV_COMPLETE: 개발완료, REVIEW_COMPLETE: 검토완료',
+    comment:
+      '상태 ex) NEW: 신규, IN_PROGRESS: 진행중, REJECTED: 반려, DEV_COMPLETE: 개발완료, REVIEW_COMPLETE: 검토완료',
   })
   status: RequirementStatus;
 

@@ -85,7 +85,9 @@ describe('PartnerCompanyExternService - SSG orphan resolver', () => {
       // 기본: 제출 이력 없음(N) → markFailed 가드 통과
       getTry: jest.fn().mockResolvedValue(tryOut('N')),
     };
-    ssgIssueLogRepository = { ...mock<Repository<SsgIssueLogEntity>>(), ...makeRepoMock() } as unknown as jest.Mocked<Repository<SsgIssueLogEntity>>;
+    ssgIssueLogRepository = { ...mock<Repository<SsgIssueLogEntity>>(), ...makeRepoMock() } as unknown as jest.Mocked<
+      Repository<SsgIssueLogEntity>
+    >;
     ssgInsertStateService = {
       getState: jest.fn(),
       markAttempted: jest.fn(),

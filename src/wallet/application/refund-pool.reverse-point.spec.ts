@@ -189,7 +189,16 @@ describe('RefundPoolService.reverseRefund — POINT 대칭 역복구 (PR-B2)', (
     alloc.pointRestoredAmount = 3000;
     ledger.refundedPointAmount = 3000;
     grants['g1'] = { id: 'g1', remainingAmount: 3000, active: 1 } as PointGrantEntity;
-    usages = [{ id: '1', allocationId: '1', pointGrantId: 'g1', usedAmount: 3000, restoredAmount: 3000, skippedExpiredAmount: 0 } as OrderPointUsageEntity];
+    usages = [
+      {
+        id: '1',
+        allocationId: '1',
+        pointGrantId: 'g1',
+        usedAmount: 3000,
+        restoredAmount: 3000,
+        skippedExpiredAmount: 0,
+      } as OrderPointUsageEntity,
+    ];
     fwdPointTx('g1', 3000);
 
     const r = await sut.reverseRefund('lg-1', 'tx-99');
@@ -211,8 +220,22 @@ describe('RefundPoolService.reverseRefund — POINT 대칭 역복구 (PR-B2)', (
     ledger.refundedPointAmount = 3000;
     grants['g1'] = { id: 'g1', remainingAmount: 3000, active: 1 } as PointGrantEntity;
     usages = [
-      { id: '1', allocationId: '1', pointGrantId: 'g1', usedAmount: 2000, restoredAmount: 2000, skippedExpiredAmount: 0 } as OrderPointUsageEntity,
-      { id: '2', allocationId: '1', pointGrantId: 'g1', usedAmount: 1000, restoredAmount: 1000, skippedExpiredAmount: 0 } as OrderPointUsageEntity,
+      {
+        id: '1',
+        allocationId: '1',
+        pointGrantId: 'g1',
+        usedAmount: 2000,
+        restoredAmount: 2000,
+        skippedExpiredAmount: 0,
+      } as OrderPointUsageEntity,
+      {
+        id: '2',
+        allocationId: '1',
+        pointGrantId: 'g1',
+        usedAmount: 1000,
+        restoredAmount: 1000,
+        skippedExpiredAmount: 0,
+      } as OrderPointUsageEntity,
     ];
     fwdPointTx('g1', 3000);
 
@@ -229,8 +252,22 @@ describe('RefundPoolService.reverseRefund — POINT 대칭 역복구 (PR-B2)', (
     grants['g1'] = { id: 'g1', remainingAmount: 3000, active: 1 } as PointGrantEntity;
     grants['g2'] = { id: 'g2', remainingAmount: 2000, active: 1 } as PointGrantEntity;
     usages = [
-      { id: '1', allocationId: '1', pointGrantId: 'g1', usedAmount: 3000, restoredAmount: 3000, skippedExpiredAmount: 0 } as OrderPointUsageEntity,
-      { id: '2', allocationId: '1', pointGrantId: 'g2', usedAmount: 2000, restoredAmount: 2000, skippedExpiredAmount: 0 } as OrderPointUsageEntity,
+      {
+        id: '1',
+        allocationId: '1',
+        pointGrantId: 'g1',
+        usedAmount: 3000,
+        restoredAmount: 3000,
+        skippedExpiredAmount: 0,
+      } as OrderPointUsageEntity,
+      {
+        id: '2',
+        allocationId: '1',
+        pointGrantId: 'g2',
+        usedAmount: 2000,
+        restoredAmount: 2000,
+        skippedExpiredAmount: 0,
+      } as OrderPointUsageEntity,
     ];
     fwdPointTx('g1', 3000);
     fwdPointTx('g2', 2000);
@@ -247,7 +284,16 @@ describe('RefundPoolService.reverseRefund — POINT 대칭 역복구 (PR-B2)', (
   it('skipped-expired 역복구 (Open 1) — usage.skipped 0 + alloc.skipped 차감 + audit row(amount=0)', async () => {
     alloc.pointSkippedExpiredAmount = 1000;
     ledger.pointSkippedExpiredAmount = 1000;
-    usages = [{ id: '1', allocationId: '1', pointGrantId: 'g1', usedAmount: 1000, restoredAmount: 0, skippedExpiredAmount: 1000 } as OrderPointUsageEntity];
+    usages = [
+      {
+        id: '1',
+        allocationId: '1',
+        pointGrantId: 'g1',
+        usedAmount: 1000,
+        restoredAmount: 0,
+        skippedExpiredAmount: 1000,
+      } as OrderPointUsageEntity,
+    ];
 
     await sut.reverseRefund('lg-1', 'tx-99');
 
@@ -267,8 +313,22 @@ describe('RefundPoolService.reverseRefund — POINT 대칭 역복구 (PR-B2)', (
     grants['g1'] = { id: 'g1', remainingAmount: 2000, active: 1 } as PointGrantEntity;
     // u1: 비만료 grant g1 restored. u2: 만료 grant skip.
     usages = [
-      { id: '1', allocationId: '1', pointGrantId: 'g1', usedAmount: 2000, restoredAmount: 2000, skippedExpiredAmount: 0 } as OrderPointUsageEntity,
-      { id: '2', allocationId: '1', pointGrantId: 'g2', usedAmount: 1000, restoredAmount: 0, skippedExpiredAmount: 1000 } as OrderPointUsageEntity,
+      {
+        id: '1',
+        allocationId: '1',
+        pointGrantId: 'g1',
+        usedAmount: 2000,
+        restoredAmount: 2000,
+        skippedExpiredAmount: 0,
+      } as OrderPointUsageEntity,
+      {
+        id: '2',
+        allocationId: '1',
+        pointGrantId: 'g2',
+        usedAmount: 1000,
+        restoredAmount: 0,
+        skippedExpiredAmount: 1000,
+      } as OrderPointUsageEntity,
     ];
     fwdPointTx('g1', 2000);
 
@@ -283,7 +343,16 @@ describe('RefundPoolService.reverseRefund — POINT 대칭 역복구 (PR-B2)', (
     alloc.pointRestoredAmount = 3000;
     ledger.refundedPointAmount = 3000;
     grants['g1'] = { id: 'g1', remainingAmount: 2000, active: 1 } as PointGrantEntity;
-    usages = [{ id: '1', allocationId: '1', pointGrantId: 'g1', usedAmount: 2000, restoredAmount: 2000, skippedExpiredAmount: 0 } as OrderPointUsageEntity];
+    usages = [
+      {
+        id: '1',
+        allocationId: '1',
+        pointGrantId: 'g1',
+        usedAmount: 2000,
+        restoredAmount: 2000,
+        skippedExpiredAmount: 0,
+      } as OrderPointUsageEntity,
+    ];
     fwdPointTx('g1', 2000); // ledger 는 3000 인데 tx 합계 2000
 
     await expect(sut.reverseRefund('lg-1', 'tx-99')).rejects.toThrow(/합계 불일치/);
@@ -293,7 +362,16 @@ describe('RefundPoolService.reverseRefund — POINT 대칭 역복구 (PR-B2)', (
     alloc.pointRestoredAmount = 3000;
     ledger.refundedPointAmount = 3000;
     grants['g1'] = { id: 'g1', remainingAmount: 1000, active: 1 } as PointGrantEntity; // < 3000
-    usages = [{ id: '1', allocationId: '1', pointGrantId: 'g1', usedAmount: 3000, restoredAmount: 3000, skippedExpiredAmount: 0 } as OrderPointUsageEntity];
+    usages = [
+      {
+        id: '1',
+        allocationId: '1',
+        pointGrantId: 'g1',
+        usedAmount: 3000,
+        restoredAmount: 3000,
+        skippedExpiredAmount: 0,
+      } as OrderPointUsageEntity,
+    ];
     fwdPointTx('g1', 3000);
 
     await expect(sut.reverseRefund('lg-1', 'tx-99')).rejects.toThrow(/conflict/);
@@ -303,7 +381,16 @@ describe('RefundPoolService.reverseRefund — POINT 대칭 역복구 (PR-B2)', (
     alloc.pointRestoredAmount = 3000;
     ledger.refundedPointAmount = 3000;
     grants['g1'] = { id: 'g1', remainingAmount: 3000, active: 1 } as PointGrantEntity;
-    usages = [{ id: '1', allocationId: '1', pointGrantId: 'g1', usedAmount: 2000, restoredAmount: 2000, skippedExpiredAmount: 0 } as OrderPointUsageEntity]; // < 3000
+    usages = [
+      {
+        id: '1',
+        allocationId: '1',
+        pointGrantId: 'g1',
+        usedAmount: 2000,
+        restoredAmount: 2000,
+        skippedExpiredAmount: 0,
+      } as OrderPointUsageEntity,
+    ]; // < 3000
     fwdPointTx('g1', 3000);
 
     await expect(sut.reverseRefund('lg-1', 'tx-99')).rejects.toThrow(/usage 역복구 부족/);
@@ -313,7 +400,16 @@ describe('RefundPoolService.reverseRefund — POINT 대칭 역복구 (PR-B2)', (
     ledger.reversedAt = new Date();
     ledger.refundedPointAmount = 3000;
     grants['g1'] = { id: 'g1', remainingAmount: 3000, active: 1 } as PointGrantEntity;
-    usages = [{ id: '1', allocationId: '1', pointGrantId: 'g1', usedAmount: 3000, restoredAmount: 3000, skippedExpiredAmount: 0 } as OrderPointUsageEntity];
+    usages = [
+      {
+        id: '1',
+        allocationId: '1',
+        pointGrantId: 'g1',
+        usedAmount: 3000,
+        restoredAmount: 3000,
+        skippedExpiredAmount: 0,
+      } as OrderPointUsageEntity,
+    ];
     fwdPointTx('g1', 3000);
 
     const r = await sut.reverseRefund('lg-1', 'tx-99');

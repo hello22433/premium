@@ -63,34 +63,35 @@ describe('DeliveryBatchService.refundForFail - wallet path', () => {
   let userRepoExecute: jest.Mock;
 
   // 비-SSG 일반 주문 (SSG 잔액 복구 분기 회피). isSettleBalance=true → balance 환원 경로.
-  const buildOrderDelivery = (): OrderDeliveryEntity => ({
-    id: 770001,
-    status: IOrderDeliveryStatus.FAIL,
-    deliveryMethod: IOrderSendMethod.MMS,
-    ssgEventId: null,
-    barCode: null,
-    refundedAt: null,
-    orderProductMapping: {
-      id: 1,
-      cardSurchargeAmount: 0,
-      order: {
-        id: 8800,
-        type: IOrderType.GENERAL,
-        isSettleComplete: false,
-        isSettleBalance: true,
-        cardSurchargeApplied: false,
-        clientUserId: null,
-        user: { id: 5500 },
-      },
-      product: {
+  const buildOrderDelivery = (): OrderDeliveryEntity =>
+    ({
+      id: 770001,
+      status: IOrderDeliveryStatus.FAIL,
+      deliveryMethod: IOrderSendMethod.MMS,
+      ssgEventId: null,
+      barCode: null,
+      refundedAt: null,
+      orderProductMapping: {
         id: 1,
-        price: 10_000,
-        expireDay: 60,
-        type: 'NORMAL',
-        partnerCompany: { type: 'NORMAL' },
+        cardSurchargeAmount: 0,
+        order: {
+          id: 8800,
+          type: IOrderType.GENERAL,
+          isSettleComplete: false,
+          isSettleBalance: true,
+          cardSurchargeApplied: false,
+          clientUserId: null,
+          user: { id: 5500 },
+        },
+        product: {
+          id: 1,
+          price: 10_000,
+          expireDay: 60,
+          type: 'NORMAL',
+          partnerCompany: { type: 'NORMAL' },
+        },
       },
-    },
-  } as unknown as OrderDeliveryEntity);
+    }) as unknown as OrderDeliveryEntity;
 
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -160,7 +161,10 @@ describe('DeliveryBatchService.refundForFail - wallet path', () => {
         { provide: getRepositoryToken(OrderDeliveryAttemptEntity), useValue: orderDeliveryAttemptRepository },
         { provide: ResendDeductService, useValue: { resendDeduct: jest.fn(), resendUndo: jest.fn() } },
         { provide: LegacyWalletCreditSyncService, useValue: legacyWalletCreditSyncService },
-        { provide: getRepositoryToken(OrderPaymentRefundEventEntity), useValue: { find: jest.fn(), findOne: jest.fn() } },
+        {
+          provide: getRepositoryToken(OrderPaymentRefundEventEntity),
+          useValue: { find: jest.fn(), findOne: jest.fn() },
+        },
         { provide: getRepositoryToken(OrderPaymentAllocationEntity), useValue: { findOne: jest.fn() } },
         { provide: getRepositoryToken(OrderHistoryEntity), useValue: {} },
         { provide: getDataSourceToken(), useValue: { transaction: jest.fn() } },
@@ -225,7 +229,10 @@ describe('DeliveryBatchService.refundForFail - wallet path', () => {
   it('wallet 경로: isWalletManaged=true → RefundPoolService.refund 호출 (fail_refund 멱등키 = active attempt.id), addBalance 미호출', async () => {
     const od = buildOrderDelivery();
     walletManagedPredicate.isWalletManaged.mockResolvedValue(true);
-    orderDeliveryAttemptRepository.findOne.mockResolvedValue({ id: '99', attemptType: OrderDeliveryAttemptType.INITIAL });
+    orderDeliveryAttemptRepository.findOne.mockResolvedValue({
+      id: '99',
+      attemptType: OrderDeliveryAttemptType.INITIAL,
+    });
 
     await (sut as any).refundForFail(od);
 
@@ -252,7 +259,10 @@ describe('DeliveryBatchService.refundForFail - wallet path', () => {
   it('wallet 경로 + RESEND attempt: 재실패 환불을 attempt RESEND_DEDUCT 재원 기준으로 요청한다', async () => {
     const od = buildOrderDelivery();
     walletManagedPredicate.isWalletManaged.mockResolvedValue(true);
-    orderDeliveryAttemptRepository.findOne.mockResolvedValue({ id: '100', attemptType: OrderDeliveryAttemptType.RESEND });
+    orderDeliveryAttemptRepository.findOne.mockResolvedValue({
+      id: '100',
+      attemptType: OrderDeliveryAttemptType.RESEND,
+    });
 
     await (sut as any).refundForFail(od);
 
@@ -272,9 +282,7 @@ describe('DeliveryBatchService.refundForFail - wallet path', () => {
     walletManagedPredicate.isWalletManaged.mockResolvedValue(true);
     orderDeliveryAttemptRepository.findOne.mockResolvedValue(null);
 
-    await expect((sut as any).refundForFail(od)).rejects.toThrow(
-      /missing attempt/,
-    );
+    await expect((sut as any).refundForFail(od)).rejects.toThrow(/missing attempt/);
 
     expect(refundPoolService.refund).not.toHaveBeenCalled();
     expect(userManagementService.addBalance).not.toHaveBeenCalled();
