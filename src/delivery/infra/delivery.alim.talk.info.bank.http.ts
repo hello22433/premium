@@ -12,7 +12,7 @@ type InfoBankAuthResponse = {
   token: string;
 };
 
-class DeliveryInfoBankAuth {
+export class DeliveryInfoBankAuth {
   static schema: string = '';
   static token: string = '';
   static expired: number = 0;
