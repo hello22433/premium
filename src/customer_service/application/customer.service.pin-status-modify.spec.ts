@@ -11,7 +11,7 @@ import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delive
  *      SSG CANCEL·REFUND_CANCEL, default 무가드)을 switch 앞 공통 가드로 봉합.
  *  (B) CAS — 조건부 UPDATE affected=0(경합) 이면 throw + 롤백, commit 미수행.
  *  (C) 정상경로 — affected=1 이면 commit + 이력 저장(한 트랜잭션).
- *  (D) 외부 cancel 미완료 시 InternalServerError + DB 트랜잭션 미진입.
+ *  (D) 외부 cancel 실패(throw) 시 그대로 전파 + DB 트랜잭션 미진입 (D3-46: cancel 은 실패를 throw 로 알림).
  *
  * execPinStatusModify 는 map 을 직접 받으므로(컨트롤러가 mapPinStatusModify 로 구성),
  * 생성자를 Object.create 로 우회하고 dataSource/협력자만 mock 주입한다. (discard-concurrency.spec 관례)
@@ -161,14 +161,20 @@ describe('CustomerServiceService.execPinStatusModify — terminal / CAS / 트랜
     });
   });
 
-  describe('(D) 외부 cancel 미완료', () => {
-    it('협력사: cancel 응답이 "폐기 완료"가 아니면 InternalServerError + DB 트랜잭션 미진입', async () => {
-      const { sut } = makeSut(1, '협력사 오류');
+  describe('(D) 외부 cancel 실패(throw) 전파', () => {
+    it('협력사: cancel 이 throw 하면 그대로 전파 + DB 트랜잭션 미진입 (D3-46)', async () => {
+      const { sut } = makeSut(1);
+      // 어댑터 cancel()은 실패를 '반환값'이 아니라 throw 로 알린다(galaxia/giftiel/giftishow/culture/daou 공통).
+      // 옛 `result.message !== '폐기 완료'` 분기는 cancel 이 성공 시 항상 '폐기 완료'만 반환하므로 데드코드였음.
+      sut.partnerCompanyExternService.cancel = jest
+        .fn()
+        .mockRejectedValue(new InternalServerErrorException('협력사 오류'));
 
       await expect(
         sut.execPinStatusModify(buildMap({ beforeChange: OrderDeliveryCouponStatus.NOT_USED })),
       ).rejects.toBeInstanceOf(InternalServerErrorException);
 
+      // cancel 이 throw → commitPinStatusTransition(=createQueryRunner) 도달 전에 전파
       expect(sut.dataSource.createQueryRunner).not.toHaveBeenCalled();
     });
   });
