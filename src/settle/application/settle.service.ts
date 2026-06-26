@@ -97,6 +97,7 @@ import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { OrderDeliveryRefundEntity } from '../../entity/order.delivery.refund.entity';
 import { UserDiscountEntity } from '../../entity/user.discount.entity';
 import { IPriceAdjustment } from '../../user_discount/interface/price.adjustment';
+import { findMatchingDiscount } from '../../user_discount/domain/discount.matcher';
 import { SettleUserPerListViewDto } from '../api/dto/settle.user.per.list.view.dto';
 import { SettleUserStatusEnum } from '../interface/settle.user.status';
 import { SettleUserPerDetailViewDto } from '../api/dto/settle.user.per.detail.view.dto';
@@ -1153,6 +1154,7 @@ export class SettleService {
       .leftJoinAndSelect('clientUser.company', 'clientCompany')
       .innerJoinAndSelect('orderProductMapping.product', 'product')
       .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .leftJoinAndSelect('partnerCompany.userDiscounts', 'partnerDiscounts')
       .leftJoinAndSelect('product.brand', 'brand')
       .where('order.status IN (:...status)', { status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'] })
       .andWhere(
@@ -1194,14 +1196,33 @@ export class SettleService {
       const order = orderProductMapping.order;
       const product = orderProductMapping.product;
       const partnerCompany = product.partnerCompany!;
+      const partnerDiscounts = partnerCompany.userDiscounts || [];
 
-      // 주문 시점 스냅샷 단가 (고객사 정산과 동일 기준)
+      // 주문 시점 스냅샷 우선 (고객사 정산과 동일 기준)
       const snapshotPrice = readLineProductView(orderProductMapping).price;
 
-      // 발송 시점 저장값 우선 사용 — 현재 협력사 할인 조건 재매칭 시 소급 계산 방지
-      // delivery.settleFee 우선, 없으면 mapping.fee 폴백, 둘 다 없으면 0
-      const fee = orderDelivery.settleFee ?? orderProductMapping.fee ?? 0;
-      const priceAdjustment = orderDelivery.settlePriceAdjustment ?? orderProductMapping.priceAdjustment ?? 'DISCOUNT';
+      // 협력사 할인옵션에서 매칭되는 할인 찾기
+      const matchingDiscount = findMatchingDiscount(
+        {
+          price: snapshotPrice,
+          category: product.category,
+          classificationId: product.classificationId,
+          brand: product.brand,
+        },
+        partnerDiscounts,
+      );
+
+      // 협력사별 정산은 협력사 할인옵션만 적용 (없으면 수수료율 0%)
+      let fee: number;
+      let priceAdjustment: string;
+      if (matchingDiscount) {
+        fee = matchingDiscount.pricePercent;
+        priceAdjustment = matchingDiscount.priceAdjustment;
+      } else {
+        // 협력사 할인옵션이 없으면 수수료 없음 (정상가 = 공급가)
+        fee = 0;
+        priceAdjustment = 'DISCOUNT';
+      }
 
       const feePrice = (snapshotPrice * fee) / 100;
 
