@@ -4105,24 +4105,14 @@ export class OrderService {
 
         // 신용초과 판정 = allocation.creditExcessAmount 기준 (finalAmount 아님)
         if (allocation.creditExcessAmount > 0) {
-          if (!getBody.forceConfirm) {
-            // 1차 호출: 신용초과 미리보기 응답 (SSG confirmEventBalance 미실행, DB 차감 없음)
-            return {
-              message: 'credit_excess',
-              creditExcess: true,
-              excessAmount: allocation.creditExcessAmount,
-              remainServiceAmount,
-              finalAmount: allocation.payableSettlementAmount,
-              ...this.allocationDetail(allocation),
-            } as OrderDeliveryConfirmed;
-          }
-          // 2차 호출 (forceConfirm=true) + 사전 승인 ID 미주입 → 승인 대기 응답 (SSG side effect 차단).
-          if (!getBody.creditExcessApprovalId) {
-            this.logger.warn(
-              `신용초과 사전 승인 누락: orderId=${order.id}, 초과액=${allocation.creditExcessAmount.toLocaleString()}원`,
-            );
-            return {
-              message: 'credit_excess_pending_approval',
+          // 1차/2차 공통 신용초과 응답 빌더. 두 응답이 동일 필드를 내려야 함 —
+          // walletAccountId/requestedAmount/requestedCreditExcessAmount 는 신용초과 사전 승인
+          // (POST /credit-excess-approvals) 요청 body 로 그대로 전달되며, 누락 시 승인 API 400 회귀(요청4).
+          const buildCreditExcessResponse = (
+            message: 'credit_excess' | 'credit_excess_pending_approval',
+          ) =>
+            ({
+              message,
               creditExcess: true,
               excessAmount: allocation.creditExcessAmount,
               remainServiceAmount,
@@ -4131,7 +4121,18 @@ export class OrderService {
               requestedAmount: allocation.payableSettlementAmount,
               requestedCreditExcessAmount: allocation.creditExcessAmount,
               ...this.allocationDetail(allocation),
-            } as OrderDeliveryConfirmed;
+            }) as OrderDeliveryConfirmed;
+
+          if (!getBody.forceConfirm) {
+            // 1차 호출: 신용초과 미리보기 응답 (SSG confirmEventBalance 미실행, DB 차감 없음)
+            return buildCreditExcessResponse('credit_excess');
+          }
+          // 2차 호출 (forceConfirm=true) + 사전 승인 ID 미주입 → 승인 대기 응답 (SSG side effect 차단).
+          if (!getBody.creditExcessApprovalId) {
+            this.logger.warn(
+              `신용초과 사전 승인 누락: orderId=${order.id}, 초과액=${allocation.creditExcessAmount.toLocaleString()}원`,
+            );
+            return buildCreditExcessResponse('credit_excess_pending_approval');
           }
           order.isCreditExcess = true;
           this.logger.warn(
