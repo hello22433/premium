@@ -806,16 +806,33 @@ export class SsgEventService {
   }
 
   async getOpenTempDeductionByEvent(ssgEventId: number): Promise<number> {
-    // R = 검토중 미확정 '선차감'(음수)만. 충전 history는 isTemporary 기본 true + 양수라
-    // amount<0 필터 없으면 R에 섞여 rho 를 왜곡한다.
-    const row = await this.amountHistoryRepository
+    // R = '아직 살아있는' 검토중 선차감의 NET 합.
+    //
+    // (isTemporary=true AND amount<0) 만 gross 로 합산하면 안 된다.
+    // 발송확정 전(검토완료/주문완료) SSG 주문이 취소되면 restoreEventBalance 가 복원분을
+    // 별도 row(+금액, isTemporary=false)로 적재하고 원본 음수 차감 row(isTemporary=true)는 그대로 남긴다.
+    // → gross 합산은 이미 복원(취소)된 차감까지 영구 누적해 R 이 부풀고,
+    //    rho(=Bal-P+R+S+F+Pend)가 실제보다 커져 A2(과다환불) 가짜경보가 난다.
+    //
+    // 그래서 주문 단위 NET(전체 row 합)을 내고, '미확정 음수 차감을 보유'하면서 'NET 이 여전히 음수'인
+    // 주문만 살아있는 선차감으로 본다.
+    //  - 검토중 주문: 음수 차감만 존재 → NET<0 → 포함.
+    //  - 취소(복원)된 주문: 음수(true) + 복원분(+, false) → NET=0 → 제외.
+    //  - 확정 주문: 차감 row 가 isTemporary=false 로 flip → 음수 temp 보유조건 불충족 → 제외.
+    //  - 충전 row: orderId NULL → 제외.
+    const rows = await this.amountHistoryRepository
       .createQueryBuilder('h')
-      .select('COALESCE(SUM(h.amount), 0)', 'sum')
+      .select('COALESCE(SUM(h.amount), 0)', 'net')
       .where('h.ssgEventId = :ssgEventId', { ssgEventId })
-      .andWhere('h.isTemporary = :t', { t: true })
-      .andWhere('h.amount < 0')
-      .getRawOne<{ sum: string }>();
-    return Math.abs(Number(row?.sum ?? 0));
+      .andWhere('h.orderId IS NOT NULL')
+      .groupBy('h.orderId')
+      .having('SUM(CASE WHEN h.isTemporary = :t AND h.amount < 0 THEN 1 ELSE 0 END) > 0 AND SUM(h.amount) < 0', {
+        t: true,
+      })
+      .getRawMany<{ net: string }>();
+
+    const net = rows.reduce((acc, row) => acc + Number(row.net ?? 0), 0);
+    return Math.abs(net);
   }
 
   /**

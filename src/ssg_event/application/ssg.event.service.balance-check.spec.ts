@@ -8,9 +8,12 @@ describe('SsgEventService.getOpenTempDeductionByEvent', () => {
   const createService = () => {
     const qb = {
       select: jest.fn().mockReturnThis(),
+      addSelect: jest.fn().mockReturnThis(),
       where: jest.fn().mockReturnThis(),
       andWhere: jest.fn().mockReturnThis(),
-      getRawOne: jest.fn(),
+      groupBy: jest.fn().mockReturnThis(),
+      having: jest.fn().mockReturnThis(),
+      getRawMany: jest.fn(),
     };
 
     const amountHistoryRepository = {
@@ -33,24 +36,32 @@ describe('SsgEventService.getOpenTempDeductionByEvent', () => {
     return { service, qb };
   };
 
-  it('getOpenTempDeductionByEvent: 미확정(isTemporary=true) 차감 절대값 합', async () => {
+  it('getOpenTempDeductionByEvent: 주문별 NET(음수) 절대값 합', async () => {
     const { service, qb } = createService();
-    qb.getRawOne.mockResolvedValue({ sum: '-300' });
+    // 살아있는 검토중 주문 2건: -200, -100 → R=300
+    qb.getRawMany.mockResolvedValue([
+      { orderId: 1, net: '-200' },
+      { orderId: 2, net: '-100' },
+    ]);
     const r = await service.getOpenTempDeductionByEvent(1);
     expect(r).toBe(300);
   });
 
-  it('이력 없으면 0', async () => {
+  it('살아있는 선차감 없으면 0', async () => {
     const { service, qb } = createService();
-    qb.getRawOne.mockResolvedValue({ sum: null });
+    qb.getRawMany.mockResolvedValue([]);
     expect(await service.getOpenTempDeductionByEvent(1)).toBe(0);
   });
 
-  it('충전 등 양수 history 제외 — amount<0 필터 적용', async () => {
+  it('주문 단위 그룹핑 + HAVING(미복원 음수 차감 보유)으로 집계 — 복원/확정 주문은 SQL에서 제외', async () => {
     const { service, qb } = createService();
-    qb.getRawOne.mockResolvedValue({ sum: '-500' });
+    qb.getRawMany.mockResolvedValue([{ orderId: 1, net: '-500' }]);
     await service.getOpenTempDeductionByEvent(1);
-    expect(qb.andWhere).toHaveBeenCalledWith('h.amount < 0');
+    expect(qb.groupBy).toHaveBeenCalledWith('h.orderId');
+    expect(qb.having).toHaveBeenCalledWith(
+      'SUM(CASE WHEN h.isTemporary = :t AND h.amount < 0 THEN 1 ELSE 0 END) > 0 AND SUM(h.amount) < 0',
+      { t: true },
+    );
   });
 });
 
@@ -99,12 +110,15 @@ describe('SsgEventService.getSsgBalanceCheckForOrder', () => {
       getRawMany: jest.fn().mockResolvedValue(historyGroups),
     };
 
-    // R qb (getOpenTempDeductionByEvent 내부)
+    // R qb (getOpenTempDeductionByEvent 내부) — 주문별 NET getRawMany
     const rQb = {
       select: jest.fn().mockReturnThis(),
+      addSelect: jest.fn().mockReturnThis(),
       where: jest.fn().mockReturnThis(),
       andWhere: jest.fn().mockReturnThis(),
-      getRawOne: jest.fn().mockResolvedValue({ sum: rSum }),
+      groupBy: jest.fn().mockReturnThis(),
+      having: jest.fn().mockReturnThis(),
+      getRawMany: jest.fn().mockResolvedValue(rSum == null ? [] : [{ orderId: 1, net: rSum }]),
     };
 
     let callCount = 0;
@@ -237,9 +251,12 @@ describe('SsgEventService.getSsgBalanceCheckForOrder 병렬/타임아웃', () =>
     };
     const rQb = {
       select: jest.fn().mockReturnThis(),
+      addSelect: jest.fn().mockReturnThis(),
       where: jest.fn().mockReturnThis(),
       andWhere: jest.fn().mockReturnThis(),
-      getRawOne: jest.fn().mockResolvedValue({ sum: '0' }),
+      groupBy: jest.fn().mockReturnThis(),
+      having: jest.fn().mockReturnThis(),
+      getRawMany: jest.fn().mockResolvedValue([]),
     };
     let callCount = 0;
     const amountHistoryRepository = {
