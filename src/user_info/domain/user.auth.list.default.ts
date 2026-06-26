@@ -2,12 +2,15 @@ import { IUserAuthority } from '../../user/interface/user.authority';
 import { UserAuthSubEnum } from '../../user_management/domain/user.auth.enum';
 
 export const UserAuthListDefault = (authority: IUserAuthority, authorityList: string | null): UserAuthSubEnum[] => {
-  if (authorityList !== null) {
-    return authorityList.split(',') as UserAuthSubEnum[];
-  }
-
+  // SUPER_ADMIN은 저장된 authority_list 와 무관하게 항상 전체 권한.
+  // 생성/수정 시 모든 역할이 authority_list 를 CSV 로 기록하므로, null 체크보다 먼저 분기해야
+  // 화면에서 저장된 SUPER_ADMIN 도 전체 권한이 유지되고 신규 메뉴(FORBIDDEN_WORD 등)가 자동 포함된다.
   if (authority === IUserAuthority.SUPER_ADMIN) {
     return Object.values(UserAuthSubEnum);
+  }
+
+  if (authorityList !== null) {
+    return authorityList.split(',') as UserAuthSubEnum[];
   }
 
   if (authority === IUserAuthority.OPERATION_ADMIN) {
