@@ -93,6 +93,10 @@ const timezone = require('dayjs/plugin/timezone');
 
 dayjs.extend(timezone);
 
+// CS 재전송 claim self-heal 임계(ms). 크래시로 finally 못 탄 stale claim 만 재claim 허용.
+// partner_company_extern_history.service 의 RESEND_CLAIM_STALE_MS 와 동일 의미(5분).
+const RESEND_CLAIM_STALE_MS = 5 * 60 * 1000;
+
 @Injectable()
 export class CustomerServiceService {
   private readonly logger = new Logger(CustomerServiceService.name);
@@ -883,20 +887,69 @@ export class CustomerServiceService {
   /**
    * CS 재전송.
    *
-   * 비관적 락(SELECT FOR UPDATE)으로 동시 재발송 race 차단:
-   * - 첫 번째 요청: 락 획득 → oneSend 수행 → status 변경 → 커밋 → 락 해제
-   * - 두 번째 요청: 락 대기 → 획득 후 status 확인 → 재발송 대상 아닌 상태로 변했거나
-   *   여전히 대상이지만 oneSend 내부 reverseRefundForResend/refundForFail은 이미
-   *   처리되어 ledger 멱등 락에 의해 차단된다.
-   * partner_company_extern_history.service.resendFailedDelivery 와 동일 패턴.
+   * 동시 재발송 race 는 원자적 self-heal claim(claimedAt 토큰)으로 직렬화한다.
+   * 기존 비관적 락(SELECT FOR UPDATE)+@Transactional 은 order_delivery 행을 잠근 채
+   * oneSend()→issue() 의 외부 SSG API / REQUIRES_NEW 를 호출해 self-deadlock(lock wait)
+   * 위험이 있었다. partner_company_extern_history.service.resendFailedDelivery 와 동일하게
+   * 짧은 claim 으로 동시성만 차단하고, 락 없는 상태에서 oneSend() 를 호출한다.
+   * - claim: app 생성 claimAt 토큰 저장. 5분 self-heal(크래시로 finally 못 탄 stale claim 만 재claim).
+   * - reSend 상태집합은 COMPLETE/COMPLETE_SMS 를 포함하므로 boot sweep(FAIL 한정)이 커버하지 못한다
+   *   → per-row self-heal(claimedAt<:stale)로 영구 stale 을 차단한다.
+   * - 모든 해제(성공/실패/예외)는 owner guard(claimed_at=:claimAt) 조건부.
    */
-  @Transactional()
   async reSend(user: ILoginUserInfo, getBody: CustomerServiceReSendReqDto) {
     const { orderDeliveryId } = getBody;
+    const statuses = ['COMPLETE', 'FAIL', 'COMPLETE_SMS', 'FAIL_SMS'];
 
-    const orderDelivery = await this.orderDeliveryRepository
+    // 1. 대상 조회 (락 없음). 동시 재발송은 아래 원자적 claim 으로 직렬화.
+    const target = await this.buildReSendQuery(orderDeliveryId, statuses).getOne();
+    if (!target) {
+      throw new BadRequestException('주문 발송가 존재하지 않습니다.');
+    }
+
+    // 권한검사: 쿠폰 종류(일반/SSG)에 맞는 CS 권한 (getList 분류 기준과 동일, 그 외 타입은 거부)
+    const requiredAuth = this.resolveCsCouponAuthority(target.orderProductMapping?.product?.type);
+    if (!requiredAuth) {
+      throw new BadRequestException('CS 대상이 아닌 상품 유형입니다.');
+    }
+    await this.authService.authorityValidator(user, requiredAuth);
+
+    if (target.deliveryTarget === '-') {
+      throw new BadRequestException('파기된 발송 정보입니다.');
+    }
+
+    // 2. 원자적 claim (owner 토큰 = app 생성 claimAt). 동시 재발송 직렬화 + 5분 self-heal.
+    const claimAt = new Date();
+    const staleThreshold = new Date(claimAt.getTime() - RESEND_CLAIM_STALE_MS);
+    const claimResult = await this.orderDeliveryRepository
+      .createQueryBuilder()
+      .update(OrderDeliveryEntity)
+      .set({ claimedAt: claimAt })
+      .where('id = :id', { id: orderDeliveryId })
+      .andWhere('status IN (:...statuses)', { statuses })
+      .andWhere('(claimedAt IS NULL OR claimedAt < :stale)', { stale: staleThreshold })
+      .execute();
+    if (!claimResult.affected) {
+      throw new ConflictException('재발송 처리 중이거나 상태가 변경되었습니다. 잠시 후 다시 시도해주세요.');
+    }
+
+    // 3. 발송 (락 없는 상태). oneSend 가 PIN 발급/확인 + 이미지 + 실제 발송 처리.
+    //    성공/실패/예외 모든 종료 경로에서 owner-guarded(claimed_at=:claimAt) claim 해제(finally).
+    try {
+      const orderDelivery = await this.buildReSendQuery(orderDeliveryId, statuses).getOne();
+      if (!orderDelivery) {
+        throw new Error('claim 후 재조회 실패');
+      }
+      await this.deliveryBatchService.oneSend(orderDelivery);
+    } finally {
+      await this.orderDeliveryRepository.update({ id: orderDeliveryId, claimedAt: claimAt }, { claimedAt: null });
+    }
+  }
+
+  /** CS 재전송 대상 조회(relation 포함, 재발송 가능 상태 필터). 락 없음. */
+  private buildReSendQuery(orderDeliveryId: number, statuses: string[]) {
+    return this.orderDeliveryRepository
       .createQueryBuilder('orderDelivery')
-      .setLock('pessimistic_write')
       .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
       .innerJoinAndSelect('orderProductMapping.order', 'order')
       .innerJoinAndSelect('order.user', 'user')
@@ -906,26 +959,8 @@ export class CustomerServiceService {
       .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
       .leftJoinAndSelect('choiceSelectProduct.brand', 'choiceSelectBrand')
-      .andWhere('orderDelivery.status IN (:...status)', { status: ['COMPLETE', 'FAIL', 'COMPLETE_SMS', 'FAIL_SMS'] })
-      .andWhere('orderDelivery.id = :orderDeliveryId', { orderDeliveryId: orderDeliveryId })
-      .getOne();
-
-    if (!orderDelivery) {
-      throw new BadRequestException('주문 발송가 존재하지 않습니다.');
-    }
-
-    // 권한검사: 쿠폰 종류(일반/SSG)에 맞는 CS 권한 (getList 분류 기준과 동일, 그 외 타입은 거부)
-    const requiredAuth = this.resolveCsCouponAuthority(orderDelivery.orderProductMapping?.product?.type);
-    if (!requiredAuth) {
-      throw new BadRequestException('CS 대상이 아닌 상품 유형입니다.');
-    }
-    await this.authService.authorityValidator(user, requiredAuth);
-
-    if (orderDelivery.deliveryTarget === '-') {
-      throw new BadRequestException('파기된 발송 정보입니다.');
-    }
-
-    await this.deliveryBatchService.oneSend(orderDelivery);
+      .where('orderDelivery.id = :orderDeliveryId', { orderDeliveryId })
+      .andWhere('orderDelivery.status IN (:...statuses)', { statuses });
   }
 
   /**

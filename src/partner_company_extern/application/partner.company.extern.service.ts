@@ -162,6 +162,37 @@ export class PartnerCompanyExternService {
   }
 
   /**
+   * ssg_issue_log 후보(cust_info 등록 확인된 PIN)를 재사용한다: 선택 후보의 PIN 을 메모리 엔티티에 반영하고
+   * state CONFIRMED + order_delivery PIN 컬럼을 best-effort 로 durable 동기화(markConfirmed)한다.
+   * 발송은 메모리 엔티티 기준이므로 markConfirmed 가 state 가드로 skip 되어도 재사용 PIN 으로 정상 발송된다.
+   */
+  private async reuseSsgCandidate(orderDelivery: OrderDeliveryEntity, candidate: SsgIssueLogEntity): Promise<void> {
+    orderDelivery.barCode = candidate.barCode;
+    orderDelivery.personalCode = candidate.personalCode;
+    orderDelivery.ssgTransactionId = candidate.ssgTransactionId;
+    orderDelivery.couponNum = candidate.couponNum;
+    orderDelivery.expireAt = candidate.expireAt;
+    orderDelivery.encourageAt = candidate.encourageAt;
+    // PIN 과 행사 귀속(ssgEventId)을 메모리에 함께 반영. durable 반영은 markConfirmed 의 REQUIRES_NEW 에서
+    // PIN 과 같은 트랜잭션으로 처리한다(귀속 분리 방지). outer REQUIRED tx 에서 order_delivery 를 직접 update 하면
+    // markConfirmed(REQUIRES_NEW)와 동일 row 락 충돌로 self-deadlock 이 나므로 outer-tx update 는 하지 않는다.
+    if (candidate.ssgEventId != null) {
+      orderDelivery.ssgEventId = candidate.ssgEventId;
+    }
+    if (candidate.ssgTransactionId) {
+      await this.ssgInsertStateService.markConfirmed(orderDelivery.id, {
+        barCode: candidate.barCode,
+        personalCode: candidate.personalCode,
+        ssgTransactionId: candidate.ssgTransactionId,
+        couponNum: candidate.couponNum,
+        expireAt: candidate.expireAt,
+        encourageAt: candidate.encourageAt,
+        ssgEventId: candidate.ssgEventId,
+      });
+    }
+  }
+
+  /**
    * resultCd = 처리구분(2) + 처리결과(2).
    * 등록시도(01) + 처리결과 ≠ 00 → 등록 실패(미등록행사/잔액부족/행사키오류 등).
    * 0100(정상) / 02xx(전송) / 04xx(지급) 은 PIN 실존 → 유효.
@@ -260,15 +291,50 @@ export class PartnerCompanyExternService {
               orderDelivery.ssgTransactionId = fresh.ssgTransactionId;
               orderDelivery.expireAt = fresh.expireAt;
               orderDelivery.encourageAt = fresh.encourageAt;
+              await this.pinIssueDedupRepository.update(
+                { transactionId: orderDelivery.transactionId },
+                { recoveredFrom: 'DEDUP' },
+              );
+              return;
+            } else if (type === IPartnerCompanyType.SSG) {
+              // dedup 이 가리키는 '정확한' barCode 의 ssg_issue_log row 에서 전체 payload(행사귀속 포함)를 복원한다.
+              // (barCode 만 복원하면 personalCode/ssgTransactionId/유효기간/ssgEventId 누락. 최신 로그 auto-select 는
+              //  다른 시도의 PIN 을 잘못 복원할 수 있어 정확 매칭으로 한정.)
+              const exact = await this.ssgIssueLogRepository.findOne({
+                where: { orderDeliveryId: orderDelivery.id, barCode: existing.barCode },
+                order: { id: 'DESC' },
+              });
+              if (exact) {
+                orderDelivery.barCode = exact.barCode;
+                orderDelivery.personalCode = exact.personalCode;
+                orderDelivery.couponNum = exact.couponNum;
+                orderDelivery.ssgTransactionId = exact.ssgTransactionId;
+                orderDelivery.expireAt = exact.expireAt;
+                orderDelivery.encourageAt = exact.encourageAt;
+                if (exact.ssgEventId != null) {
+                  orderDelivery.ssgEventId = exact.ssgEventId;
+                }
+                await this.pinIssueDedupRepository.update(
+                  { transactionId: orderDelivery.transactionId },
+                  { recoveredFrom: 'DEDUP' },
+                );
+                return;
+              }
+              // 정확 매칭 없음: barCode-only 성공 반환은 메타데이터 누락 + cust_info 우회라 위험.
+              // dedup row 를 복구표시하지 않고 아래 ConflictException 으로 fail-safe(재시도). 동시 tx 의
+              // order_delivery save 가 전파되면 다음 시도에서 fresh?.barCode 경로가 정상 복구한다.
+              this.logger.warn(
+                `[PIN_DEDUP] SSG dedup exact 매칭 없음 - fail-safe(ConflictException, 재시도 시 fresh 경로 복구). orderDeliveryId=${orderDelivery.id}, barCode=${existing.barCode}`,
+              );
             } else {
-              // Fix #3 적용 전 발급된 dedup row 등 fresh entity에 PIN이 없을 경우의 안전 폴백
+              // 비-SSG 최후 폴백 (ssg_issue_log 진실원천 없음)
               orderDelivery.barCode = existing.barCode;
+              await this.pinIssueDedupRepository.update(
+                { transactionId: orderDelivery.transactionId },
+                { recoveredFrom: 'DEDUP' },
+              );
+              return;
             }
-            await this.pinIssueDedupRepository.update(
-              { transactionId: orderDelivery.transactionId },
-              { recoveredFrom: 'DEDUP' },
-            );
-            return;
           }
 
           // 이론상 도달 불가 경로(conflict 시점에는 상대가 성공 커밋되어 bar_code가 있어야 함).
@@ -480,6 +546,83 @@ export class PartnerCompanyExternService {
             orderDelivery.barCode = null;
             orderDelivery.personalCode = null;
           }
+        }
+
+        // 1b) barCode 없음 → ssg_issue_log 후보(직전 시도 PIN)를 cust_info 진실원천으로 후보별 분류해
+        //     재사용/보류/새발급을 결정한다. 1차 발송 실패가 tx 롤백으로 barCode 를 남기지 못한 고아 PIN 을
+        //     모든 issue() 진입점(배치/CS reSend/재발송)에서 균일 처리(결정점 단일화).
+        //     state 가 아니라 '후보 존재 여부'로 판단한다(Lazy state 도입 전 legacy ssg_issue_log 도 커버).
+        //     resolveSsgOrphan 은 등록실패(resultCd 0103 등)도 CONFIRMED 로 보는 '환불용' 판정이라 재사용엔 쓰지 않고,
+        //     등록실패를 NOT 재사용으로 구분하는 classifySsgPin 으로 후보를 분류한다.
+        //     eventSeq 없는 legacy 후보는 check 파라미터가 부족하므로 getTry(제출여부)만으로 보류 판단한다.
+        if (!orderDelivery.barCode) {
+          const allCandidates = await this.ssgIssueLogRepository.find({
+            where: { orderDeliveryId: orderDelivery.id },
+            order: { id: 'DESC' },
+          });
+          const candidates = allCandidates.filter((c) => !!c.personalCode);
+
+          if (candidates.length > 0) {
+            const registeredList: SsgIssueLogEntity[] = [];
+            let uncertain = false; // PROCESSING / 조회오류 / eventSeq 없이 제출이력(getTry=Y)만 있는 후보
+
+            for (const candidate of candidates) {
+              try {
+                if (candidate.eventSeq !== null) {
+                  const verdict = await this.classifySsgPin({
+                    eventNo: candidate.eventNo,
+                    eventSeq: candidate.eventSeq,
+                    personalCode: candidate.personalCode,
+                  });
+                  if (verdict === SsgPinVerdict.REGISTERED) {
+                    registeredList.push(candidate);
+                  } else if (verdict === SsgPinVerdict.PROCESSING) {
+                    uncertain = true;
+                  }
+                  // NOT_SUBMITTED / REGISTRATION_FAILED → 재사용 불가
+                } else {
+                  // legacy(eventSeq=null): check 파라미터 부족 → getTry 만으로 제출 여부 확인.
+                  // 제출 이력(Y)이면 등록 여부를 확정할 수 없으나 새발급 시 이중발급 위험 → 보류.
+                  const tryOut = await this.ssgIssue.getTry({ vno: candidate.personalCode });
+                  if (tryOut?.response?.value?.[0]?.tryYn?.[0] === 'Y') {
+                    uncertain = true;
+                  }
+                  // tryYn !== 'Y' → 미제출 → 무시
+                }
+              } catch (e) {
+                // getTry/check 네트워크·파싱 오류 → 등록 여부 불명 → 보류 후보
+                uncertain = true;
+                this.logger.error(
+                  `[SSG] barCode 없음 후보 조회 오류 - orderDeliveryId=${orderDelivery.id}, vno=${candidate.personalCode}: ${e instanceof Error ? e.message : e}`,
+                );
+              }
+            }
+
+            if (registeredList.length > 0) {
+              if (registeredList.length > 1) {
+                // 동일 배송건에 등록 PIN 2건 이상 = 잠재 이중등록 → 운영 알림(후속 orphan 취소 검토).
+                this.logger.error(
+                  `[SSG] 다중 등록 PIN 감지(잠재 이중등록, 운영 점검 필요) - orderDeliveryId=${orderDelivery.id}, barCodes=${registeredList
+                    .map((c) => c.barCode)
+                    .join(',')}`,
+                );
+              }
+              // 최신(id DESC 첫 번째) 등록 후보 재사용(선택후보 복원). 새 INSERT 안 함.
+              await this.reuseSsgCandidate(orderDelivery, registeredList[0]);
+              needsInsert = false;
+              this.logger.log(
+                `[SSG] barCode 없음 - 등록 확정 후보 재사용(barCode=${registeredList[0].barCode}). orderDeliveryId=${orderDelivery.id}`,
+              );
+            } else if (uncertain) {
+              // REGISTERED 없음 + (PROCESSING/조회불명/eventSeq없는 제출이력) → 등록 여부 미확정 → 보류(이중발급 차단).
+              this.logger.warn(
+                `[SSG] barCode 없음 - 후보 등록 여부 미확정(처리중/조회불가) - 발송 보류. orderDeliveryId=${orderDelivery.id}`,
+              );
+              throw new SsgProcessingError(orderDelivery.id);
+            }
+            // else: 모든 후보 미제출/미등록 확정 → 새 PIN 정상 경로(아래 Mutex)
+          }
+          // 후보 0건(최초 clean 발송) → 새 PIN. 외부 SSG API 추가호출 없음(hot-path 보존).
         }
 
         // 2~4단계를 Mutex로 직렬화: PIN 생성~중복확인~INSERT 간 경쟁 조건 방지
