@@ -107,6 +107,183 @@ describe('SettleService — getPartnerCompanyList (#54 fix)', () => {
       settlePrice: 1350,
     });
   });
+
+  it('협력사 할인 조건이 변경되어도 저장된 협력사 수수료 스냅샷으로 계산한다', async () => {
+    const orderDelivery = {
+      id: 2,
+      sendRequestAt: new Date('2026-06-19T09:00:00+09:00'),
+      couponStatus: 'UNUSED',
+      orderProductMapping: {
+        snapshotProductPrice: 1000,
+        partnerSettleFee: 5,
+        partnerSettlePriceAdjustment: 'DISCOUNT',
+        order: {
+          id: 43,
+          eventName: '협력사 fee 소급 방지 테스트',
+          code: 'ORD-43',
+          user: { company: { businessName: '고객사' } },
+          clientUser: null,
+        },
+        product: {
+          name: '수수료 변경 상품',
+          price: 1000,
+          category: 'MOBILE_COUPON',
+          classificationId: null,
+          brand: null,
+          partnerCompany: {
+            businessName: '협력사',
+            settleMethod: 'MONTHLY',
+            userDiscounts: [
+              {
+                category: 'PRODUCT_GROUP',
+                method: 'BULK',
+                group: 'MOBILE_COUPON',
+                pricePercent: 20,
+                priceAdjustment: 'DISCOUNT',
+                classificationId: null,
+                brand: null,
+              },
+            ],
+          },
+        },
+      },
+    };
+    const qb = makeSelectQb({
+      getCount: jest.fn().mockResolvedValue(1),
+      getMany: jest.fn().mockResolvedValue([orderDelivery]),
+    });
+    const svc = makeService({
+      orderDeliveryRepository: { createQueryBuilder: jest.fn().mockReturnValue(qb) },
+    });
+
+    const result = await svc.getPartnerCompanyList({
+      startAt: '2026-06-01T00:00:00',
+      endAt: '2026-06-30T23:59:59',
+      page: 1,
+      take: 10,
+    });
+
+    expect(result.list[0]).toMatchObject({
+      fee: 5,
+      feePrice: 50,
+      settlePrice: 950,
+    });
+    expect(result.list[0]).not.toMatchObject({ fee: 20, feePrice: 200, settlePrice: 800 });
+  });
+
+  it('협력사 수수료 스냅샷이 없을 때 고객사 정산 fee를 fallback으로 사용하지 않는다', async () => {
+    const orderDelivery = {
+      id: 3,
+      sendRequestAt: new Date('2026-06-19T09:00:00+09:00'),
+      couponStatus: 'UNUSED',
+      orderProductMapping: {
+        snapshotProductPrice: 1000,
+        fee: 5,
+        priceAdjustment: 'DISCOUNT',
+        partnerSettleFee: null,
+        partnerSettlePriceAdjustment: null,
+        order: {
+          id: 44,
+          eventName: '고객사 fee fallback 방지 테스트',
+          code: 'ORD-44',
+          user: { company: { businessName: '고객사' } },
+          clientUser: null,
+        },
+        product: {
+          name: '상품',
+          price: 1000,
+          category: 'MOBILE_COUPON',
+          classificationId: null,
+          brand: null,
+          partnerCompany: {
+            businessName: '협력사',
+            settleMethod: 'MONTHLY',
+            userDiscounts: [],
+          },
+        },
+      },
+    };
+    const qb = makeSelectQb({
+      getCount: jest.fn().mockResolvedValue(1),
+      getMany: jest.fn().mockResolvedValue([orderDelivery]),
+    });
+    const svc = makeService({
+      orderDeliveryRepository: { createQueryBuilder: jest.fn().mockReturnValue(qb) },
+    });
+
+    const result = await svc.getPartnerCompanyList({
+      startAt: '2026-06-01T00:00:00',
+      endAt: '2026-06-30T23:59:59',
+      page: 1,
+      take: 10,
+    });
+
+    expect(result.list[0]).toMatchObject({
+      fee: 0,
+      feePrice: 0,
+      settlePrice: 1000,
+    });
+    expect(result.list[0]).not.toMatchObject({ fee: 5, feePrice: 50, settlePrice: 950 });
+  });
+
+  it('협력사 할인 없음 스냅샷(0/null)은 현재 협력사 할인 조건으로 소급 계산하지 않는다', async () => {
+    const orderDelivery = {
+      id: 4,
+      sendRequestAt: new Date('2026-06-19T09:00:00+09:00'),
+      couponStatus: 'UNUSED',
+      orderProductMapping: {
+        snapshotProductPrice: 1000,
+        partnerSettleFee: 0,
+        partnerSettlePriceAdjustment: null,
+        order: {
+          id: 45,
+          eventName: '협력사 할인 없음 스냅샷 테스트',
+          code: 'ORD-45',
+          user: { company: { businessName: '고객사' } },
+          clientUser: null,
+        },
+        product: {
+          name: '상품',
+          price: 1000,
+          category: 'MOBILE_COUPON',
+          classificationId: null,
+          brand: null,
+          partnerCompany: {
+            businessName: '협력사',
+            settleMethod: 'MONTHLY',
+            userDiscounts: [
+              {
+                category: 'PRODUCT_GROUP',
+                method: 'BULK',
+                group: 'MOBILE_COUPON',
+                pricePercent: 20,
+                priceAdjustment: 'DISCOUNT',
+                classificationId: null,
+                brand: null,
+              },
+            ],
+          },
+        },
+      },
+    };
+    const qb = makeSelectQb({
+      getCount: jest.fn().mockResolvedValue(1),
+      getMany: jest.fn().mockResolvedValue([orderDelivery]),
+    });
+    const svc = makeService({
+      orderDeliveryRepository: { createQueryBuilder: jest.fn().mockReturnValue(qb) },
+    });
+
+    const result = await svc.getPartnerCompanyList({
+      startAt: '2026-06-01T00:00:00',
+      endAt: '2026-06-30T23:59:59',
+      page: 1,
+      take: 10,
+    });
+
+    expect(result.list[0]).toMatchObject({ fee: 0, feePrice: 0, settlePrice: 1000 });
+    expect(result.list[0]).not.toMatchObject({ fee: 20, feePrice: 200, settlePrice: 800 });
+  });
 });
 
 describe('SettleService — confirmSingleOrderTx (#20 fix)', () => {

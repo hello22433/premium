@@ -1201,36 +1201,42 @@ export class SettleService {
       // 주문 시점 스냅샷 우선 (고객사 정산과 동일 기준)
       const snapshotPrice = readLineProductView(orderProductMapping).price;
 
-      // 협력사 할인옵션에서 매칭되는 할인 찾기
-      const matchingDiscount = findMatchingDiscount(
-        {
-          price: snapshotPrice,
-          category: product.category,
-          classificationId: product.classificationId,
-          brand: product.brand,
-        },
-        partnerDiscounts,
-      );
-
-      // 협력사별 정산은 협력사 할인옵션만 적용 (없으면 수수료율 0%)
       let fee: number;
-      let priceAdjustment: string;
-      if (matchingDiscount) {
-        fee = matchingDiscount.pricePercent;
-        priceAdjustment = matchingDiscount.priceAdjustment;
+      let priceAdjustment: string | null;
+
+      if (orderProductMapping.partnerSettleFee != null) {
+        fee = orderProductMapping.partnerSettleFee;
+        priceAdjustment = orderProductMapping.partnerSettlePriceAdjustment;
       } else {
-        // 협력사 할인옵션이 없으면 수수료 없음 (정상가 = 공급가)
-        fee = 0;
-        priceAdjustment = 'DISCOUNT';
+        // Legacy rows do not have partner-settle snapshots. Use partner discounts only; never fall back to customer fee.
+        const matchingDiscount = findMatchingDiscount(
+          {
+            price: snapshotPrice,
+            category: product.category,
+            classificationId: product.classificationId,
+            brand: product.brand,
+          },
+          partnerDiscounts,
+        );
+
+        if (matchingDiscount) {
+          fee = matchingDiscount.pricePercent;
+          priceAdjustment = matchingDiscount.priceAdjustment;
+        } else {
+          fee = 0;
+          priceAdjustment = 'DISCOUNT';
+        }
       }
 
       const feePrice = (snapshotPrice * fee) / 100;
 
       // 협력사 정산: 소수점 발생 시 올림 처리
       const settlePrice =
-        priceAdjustment === 'DISCOUNT'
-          ? Math.ceil(snapshotPrice - feePrice)
-          : Math.ceil(snapshotPrice + feePrice);
+        priceAdjustment === null
+          ? snapshotPrice
+          : priceAdjustment === 'DISCOUNT'
+            ? Math.ceil(snapshotPrice - feePrice)
+            : Math.ceil(snapshotPrice + feePrice);
 
       return {
         id: order.id,
