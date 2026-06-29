@@ -64,6 +64,35 @@ export class FileService {
     return { url: fileReturn.url };
   }
 
+  /**
+   * 비공개(private) 업로드. ACL private + 무작위 key 로 저장한다.
+   * 직접 객체 접근이 안 되고 백엔드 프록시(자격증명 GetObject)로만 받는, 민감 첨부용.
+   */
+  async uploadPrivateFile(file: Express.Multer.File): Promise<FileUploadResDto> {
+    if (!file) {
+      throw new BadRequestException('파일이 존재하지 않습니다.');
+    }
+
+    // 한글 깨짐 방지
+    file.originalname = Buffer.from(file.originalname, 'latin1').toString('utf8');
+
+    const fileReturn = await this.fileStorage.uploadPrivateFile(file);
+
+    return { url: fileReturn.url };
+  }
+
+  /**
+   * S3 URL → 사용자에게 보여줄 원본 파일명 복원.
+   * 키 마지막 세그먼트가 `{무작위식별자}-{원본명}` 이므로 첫 '-' 뒤를 원본명으로 본다.
+   * 신키(private/{uuid}-원본명)·구키(file/{Date.now}-원본명) 모두 동일하게 복원된다
+   * (식별자에 '-' 가 없도록 표준화돼 있어 안전).
+   */
+  extractOriginalFileName(fileUrl: string): string {
+    const key = this.extractStorageKey(fileUrl);
+    const base = key.split('/').pop() || '';
+    return base.includes('-') ? base.split('-').slice(1).join('-') : base;
+  }
+
   private extractStorageKey(fileUrl: string): string {
     const parsedUrl = new URL(fileUrl);
     return decodeURIComponent(parsedUrl.pathname.replace(/^\/+/, ''));

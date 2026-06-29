@@ -89,4 +89,27 @@ export class FileController {
   uploadFile(@UploadedFile() file: Express.Multer.File, @Body() dto: FileUploadPdfReqDto) {
     return this.fileService.uploadFile(file);
   }
+
+  @ApiOperation({
+    summary: '비공개 파일 업로드 API',
+    description:
+      '민감 첨부(주문접수 등)를 위한 비공개 업로드 API 입니다.<br>' +
+      'ACL private + 무작위 key 로 저장되어 URL 직접 접근이 불가하며, ' +
+      '다운로드는 각 도메인의 백엔드 프록시(권한검증)로만 받습니다.<br>' +
+      'multipart/form-data 형식, key는 file로 전송하시면 됩니다.',
+  })
+  @ApiConsumes('multipart/form-data')
+  @ApiOkResponse({
+    type: FileUploadResDto,
+    description: '파일을 성공적으로 업로드한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '파일을 업로드 하지 않은 경우',
+  })
+  // ============================================
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 20 * 1024 * 1024 } }))
+  @Post('file/upload-private')
+  uploadPrivateFile(@UploadedFile() file: Express.Multer.File, @Body() dto: FileUploadPdfReqDto) {
+    return this.fileService.uploadPrivateFile(file);
+  }
 }
