@@ -237,8 +237,6 @@ export class UserDiscountService {
       });
     }
 
-    await this.validateCrossClassConflict({ userId, partnerCompanyId, category, priceAdjustment });
-
     if (method === IUserDiscountMethod.BULK) {
       await this.userDiscountRepository.insert({
         ...baseInsertData,
@@ -251,47 +249,6 @@ export class UserDiscountService {
         range,
         compareCondition,
       });
-    }
-  }
-
-  /**
-   * CATEGORY ↔ PRODUCT_GROUP 간 priceAdjustment 방향 충돌 시 등록 차단.
-   * 런타임에서 matcher가 BadRequestException을 던지기 전에 등록 시점에서 차단.
-   */
-  private async validateCrossClassConflict(params: {
-    userId?: number;
-    partnerCompanyId?: number;
-    category: IUserDiscountCategory;
-    priceAdjustment: string;
-  }) {
-    const { userId, partnerCompanyId, category, priceAdjustment } = params;
-
-    const counterCategory =
-      category === IUserDiscountCategory.CATEGORY
-        ? IUserDiscountCategory.PRODUCT_GROUP
-        : category === IUserDiscountCategory.PRODUCT_GROUP
-          ? IUserDiscountCategory.CATEGORY
-          : null;
-
-    if (!counterCategory) return;
-
-    let qb = this.userDiscountRepository
-      .createQueryBuilder('discount')
-      .andWhere('discount.category = :counterCategory', { counterCategory })
-      .andWhere('discount.priceAdjustment != :priceAdjustment', { priceAdjustment });
-
-    if (userId) {
-      qb = qb.andWhere('discount.userId = :userId', { userId });
-    }
-    if (partnerCompanyId) {
-      qb = qb.andWhere('discount.partnerCompanyId = :partnerCompanyId', { partnerCompanyId });
-    }
-
-    const conflict = await qb.getOne();
-    if (conflict) {
-      throw new BadRequestException(
-        `카테고리 할인과 상품군 할인/할증 방향이 충돌합니다. 기존 ${conflict.category} 할인을 먼저 삭제해주세요.`,
-      );
     }
   }
 

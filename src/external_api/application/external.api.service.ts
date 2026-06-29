@@ -389,11 +389,11 @@ export class ExternalApiService {
     settleAmount: number;
     cardSurchargeApplied: boolean;
   }> {
-    const where: Array<{ userId?: number; partnerCompanyId?: number }> = [{ userId: billingUser.id }];
-    if (product.partnerCompanyId != null) {
-      where.push({ partnerCompanyId: product.partnerCompanyId });
-    }
-    const userDiscounts = await this.userDiscountRepository.find({ where });
+    const userDiscounts = (
+      await this.userDiscountRepository.find({
+        where: { userId: billingUser.id },
+      })
+    ).filter((discount) => discount.userId === billingUser.id);
 
     const cardSurchargeApplied =
       appOptions?.cardSurchargeApplied ?? this.resolveCardSurchargeAppliedForUser(billingUser);

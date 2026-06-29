@@ -1,5 +1,9 @@
 import { ExternalApiService } from './external.api.service';
 import { ExternalApiAccountEntity } from '../../entity/external.api.account.entity';
+import { IUserDiscountCategory } from '../../user_discount/interface/user.discount.category';
+import { IUserDiscountMethod } from '../../user_discount/interface/user.discount.method';
+import { ICompareCondition } from '../../user_discount/interface/compare.condition';
+import { IPriceAdjustment } from '../../user_discount/interface/price.adjustment';
 
 // PR2a G003: add-only billing 위임층 behavior-identity 검증.
 // 기존 메서드(account 기반)와 신규 *ForBilling(billingUser 기반)의 단순모드(billingUser=account.user)
@@ -94,6 +98,55 @@ describe('PR2a G003 위임층 behavior-identity', () => {
 
       expect(legacy.cardSurchargeApplied).toBe(true);
       expect(legacy).toEqual(billing);
+    });
+
+    it('고객사 정산 계산에 협력사 할인 조건을 섞지 않는다', async () => {
+      const account = makeAccount();
+      const svc = svcWithDiscounts();
+      (svc as any).userDiscountRepository.find = jest.fn(async () => [
+        {
+          id: 1,
+          userId: account.user.id,
+          partnerCompanyId: null,
+          category: IUserDiscountCategory.CATEGORY,
+          classificationId: 10,
+          method: IUserDiscountMethod.BULK,
+          group: null,
+          primaryCategory: null,
+          range: null,
+          compareCondition: ICompareCondition.ALL,
+          priceAdjustment: IPriceAdjustment.DISCOUNT,
+          pricePercent: 5,
+        },
+        {
+          id: 2,
+          userId: null,
+          partnerCompanyId: 20,
+          category: IUserDiscountCategory.PRODUCT_GROUP,
+          classificationId: null,
+          method: IUserDiscountMethod.BULK,
+          group: 'CAT',
+          primaryCategory: null,
+          range: null,
+          compareCondition: ICompareCondition.ALL,
+          priceAdjustment: IPriceAdjustment.ADDITIONAL,
+          pricePercent: 10,
+        },
+      ]);
+
+      const result = await (svc as any).computeSettlementForBilling(
+        account.user,
+        { ...product, partnerCompanyId: 20 },
+        30000,
+      );
+
+      expect((svc as any).userDiscountRepository.find).toHaveBeenCalledWith({ where: { userId: account.user.id } });
+      expect(result).toEqual({
+        fee: 5,
+        priceAdjustment: IPriceAdjustment.DISCOUNT,
+        settleAmount: 28500,
+        cardSurchargeApplied: false,
+      });
     });
   });
 });
