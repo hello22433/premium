@@ -1,0 +1,107 @@
+import { ExternalApiService } from './external.api.service';
+import { IUserDiscountCategory } from '../../user_discount/interface/user.discount.category';
+import { IUserDiscountMethod } from '../../user_discount/interface/user.discount.method';
+import { IUserAuthority } from '../../user/interface/user.authority';
+import { IUserSettleMethod } from '../../user/interface/user.settle.method';
+
+/**
+ * D3-48 ② — getProductsForBilling 의 salePrice 가 주문 정산(createOrder)과 동일 모델
+ * (할인 findMatchingDiscount + 카드할증)로 산출되는지 검증.
+ *
+ * 이전: salePrice = p.price (정가, 할인 미적용) → 카탈로그 표시값이 실제 청구단가와 불일치.
+ * 본 수정: computeUnitSettlement 공유로 createOrder 와 동일 단가를 노출.
+ *
+ * - 할인은 1회 배치 로딩 후 product별로 (user OR 그 product 의 partner) 의미로 필터링 →
+ *   다른 협력사 할인의 오매칭이 없어야 한다.
+ */
+describe('ExternalApiService.getProductsForBilling — salePrice 할인/카드할증 적용 (D3-48 ②)', () => {
+  const makeQb = (products: unknown[]) => {
+    const qb: any = {};
+    for (const m of ['leftJoinAndSelect', 'innerJoin', 'where', 'andWhere']) qb[m] = jest.fn(() => qb);
+    qb.getMany = jest.fn(async () => products);
+    return qb;
+  };
+
+  // SUPER_ADMIN 으로 두어 getAssignedProductIds 경로를 건너뛰고 qb 픽스처를 그대로 사용.
+  const makeUser = (settleMethod: IUserSettleMethod | 'BANK' = 'BANK') =>
+    ({ id: 42, authority: IUserAuthority.SUPER_ADMIN, company: { settleMethod } }) as any;
+
+  const makeProduct = (overrides: Record<string, unknown> = {}) =>
+    ({
+      code: 'EP0001',
+      name: '상품A',
+      brand: { nameKorean: '브랜드A' },
+      price: 10000,
+      imagePath: 'http://img',
+      expireDay: 90,
+      type: 'GENERAL',
+      memo: '발송 안내문',
+      isCancelable: true,
+      partnerCompanyId: 1,
+      category: 'GENERAL',
+      classificationId: 100,
+      ...overrides,
+    }) as any;
+
+  // BULK·PRODUCT_GROUP·DISCOUNT 10% — 구간 계산 없이 결정적으로 매칭되는 최소 할인.
+  const groupDiscount = (overrides: Record<string, unknown> = {}) =>
+    ({
+      userId: 42,
+      partnerCompanyId: null,
+      category: IUserDiscountCategory.PRODUCT_GROUP,
+      group: 'GENERAL',
+      method: IUserDiscountMethod.BULK,
+      pricePercent: 10,
+      priceAdjustment: 'DISCOUNT',
+      ...overrides,
+    }) as any;
+
+  const makeSvc = (products: unknown[], discounts: unknown[]) => {
+    const svc = Object.create(ExternalApiService.prototype) as any;
+    svc.productRepository = { createQueryBuilder: jest.fn(() => makeQb(products)) };
+    svc.userDiscountRepository = { find: jest.fn(async () => discounts) };
+    return svc;
+  };
+
+  it('할인 없음 → salePrice = price (정가 그대로)', async () => {
+    const svc = makeSvc([makeProduct()], []);
+
+    const res = await svc.getProductsForBilling(makeUser());
+
+    expect(res.data[0].price).toBe(10000);
+    expect(res.data[0].salePrice).toBe(10000);
+  });
+
+  it('user 할인(10% DISCOUNT) → salePrice = 9000 (price=10000 유지)', async () => {
+    const svc = makeSvc([makeProduct()], [groupDiscount()]);
+
+    const res = await svc.getProductsForBilling(makeUser());
+
+    expect(res.data[0].price).toBe(10000);
+    expect(res.data[0].salePrice).toBe(9000); // 10000 - round(10%·10000)
+  });
+
+  it('카드할증(company.settleMethod=CARD) → salePrice = 9270 (9000 + 3% 가산, 10원 절사)', async () => {
+    const svc = makeSvc([makeProduct()], [groupDiscount()]);
+
+    const res = await svc.getProductsForBilling(makeUser(IUserSettleMethod.CARD));
+
+    expect(res.data[0].salePrice).toBe(9270);
+  });
+
+  it('협력사 스코핑: partner=2 전용 할인은 partner=1 상품에 오매칭되지 않는다', async () => {
+    const products = [
+      makeProduct({ code: 'EP-P1', partnerCompanyId: 1 }),
+      makeProduct({ code: 'EP-P2', partnerCompanyId: 2 }),
+    ];
+    // userId 없이 partnerCompanyId=2 에만 걸린 할인 → product(partner=1)엔 적용 금지, product(partner=2)엔 적용
+    const discounts = [groupDiscount({ userId: null, partnerCompanyId: 2 })];
+    const svc = makeSvc(products, discounts);
+
+    const res = await svc.getProductsForBilling(makeUser());
+    const byCode = Object.fromEntries(res.data.map((d: any) => [d.productCode, d.salePrice]));
+
+    expect(byCode['EP-P1']).toBe(10000); // 정가 — 다른 협력사 할인 미적용
+    expect(byCode['EP-P2']).toBe(9000); // 자기 협력사 할인 적용
+  });
+});

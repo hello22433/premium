@@ -395,8 +395,27 @@ export class ExternalApiService {
     }
     const userDiscounts = await this.userDiscountRepository.find({ where });
 
-    // SSG처럼 dto.amount로 sendAmount가 product.price와 다른 경우에도 정확히 매칭하도록
-    // sendAmount를 priceOverride로 일관되게 전달.
+    const cardSurchargeApplied =
+      appOptions?.cardSurchargeApplied ?? this.resolveCardSurchargeAppliedForUser(billingUser);
+    const { fee, priceAdjustment, settleAmount } = this.computeUnitSettlement(
+      product,
+      userDiscounts,
+      sendAmount,
+      cardSurchargeApplied,
+    );
+
+    return { fee, priceAdjustment, settleAmount, cardSurchargeApplied };
+  }
+
+  // 순수 단가 정산(DB 접근 없음). 할인목록을 주입받아 할인(findMatchingDiscount)+카드할증을 적용한 단가를 산출.
+  // computeSettlementForBilling(주문 정산)과 getProductsForBilling(카탈로그 salePrice)이 공유 — 단일 소스.
+  // SSG처럼 sendAmount가 product.price와 다른 경우에도 정확히 매칭하도록 sendAmount를 priceOverride로 전달.
+  private computeUnitSettlement(
+    product: ProductEntity,
+    userDiscounts: UserDiscountEntity[],
+    sendAmount: number,
+    cardSurchargeApplied: boolean,
+  ): { fee: number | null; priceAdjustment: IPriceAdjustment | null; settleAmount: number } {
     const matched = findMatchingDiscount(
       {
         price: product.price,
@@ -416,11 +435,9 @@ export class ExternalApiService {
         ? OrderFeeCalculator({ fee, priceAdjustment, price: sendAmount })
         : sendAmount;
 
-    const cardSurchargeApplied =
-      appOptions?.cardSurchargeApplied ?? this.resolveCardSurchargeAppliedForUser(billingUser);
     const settleAmount = applyCardSurcharge(unitPrice, cardSurchargeApplied);
 
-    return { fee, priceAdjustment, settleAmount, cardSurchargeApplied };
+    return { fee, priceAdjustment, settleAmount };
   }
 
   // ─── 할당 상품 헬퍼 ─────────────────────────────────────
@@ -581,18 +598,35 @@ export class ExternalApiService {
       throw new ExternalApiException('3001', '올바르지 못한 요청입니다');
     }
 
-    const data: ProductResponseData[] = products.map((p) => ({
-      productCode: p.code,
-      productName: p.name,
-      brandName: p.brand?.nameKorean ?? '',
-      price: p.price,
-      salePrice: p.price,
-      imageUrl: p.imagePath,
-      validDays: p.expireDay,
-      type: p.type,
-      memo: p.memo,
-      isCancelable: p.isCancelable,
-    }));
+    // salePrice = 주문 정산(createOrder)과 동일 모델(할인 findMatchingDiscount + 카드할증)을 적용한 고객사별 실제 청구 단가.
+    // price(정가)와 구분해 노출. SSG는 위에서 제외되어 sendAmount=정가(product.price)와 일치.
+    // 할인은 1회 배치 로딩 후 product별로 computeSettlementForBilling 과 동일한 where 의미(user OR 그 product 의 partner)로 필터.
+    const cardSurchargeApplied = this.resolveCardSurchargeAppliedForUser(user);
+    const partnerIds = [...new Set(products.map((p) => p.partnerCompanyId).filter((id): id is number => id != null))];
+    const discountWhere: Array<{ userId?: number; partnerCompanyId?: number }> = [
+      { userId: user.id },
+      ...partnerIds.map((id) => ({ partnerCompanyId: id })),
+    ];
+    const allDiscounts = await this.userDiscountRepository.find({ where: discountWhere });
+
+    const data: ProductResponseData[] = products.map((p) => {
+      const scopedDiscounts = allDiscounts.filter(
+        (d) => d.userId === user.id || (p.partnerCompanyId != null && d.partnerCompanyId === p.partnerCompanyId),
+      );
+      const { settleAmount } = this.computeUnitSettlement(p, scopedDiscounts, p.price, cardSurchargeApplied);
+      return {
+        productCode: p.code,
+        productName: p.name,
+        brandName: p.brand?.nameKorean ?? '',
+        price: p.price,
+        salePrice: settleAmount,
+        imageUrl: p.imagePath,
+        validDays: p.expireDay,
+        type: p.type,
+        memo: p.memo,
+        isCancelable: p.isCancelable,
+      };
+    });
 
     return ExternalApiResponse.success(data);
   }
