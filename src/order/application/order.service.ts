@@ -805,6 +805,28 @@ export class OrderService {
       // sendRequestAt: 예약 발송 요청 시간 (actualSendAt이 없을 때 폴백용)
       const sendRequestAt = firstMapping?.sendRequestAt ? format(firstMapping.sendRequestAt, DateFormatStr) : null;
 
+      // 상품별 예약 발송시간 배열: RESERVE 상품 중 분 단위 distinct ≥ 2일 때만 채움
+      const reserveMappings = (order.orderProductMappings ?? []).filter(
+        (m) => m.sendType === 'RESERVE' && m.sendRequestAt,
+      );
+      const minuteSlots = new Set(reserveMappings.map((m) => Math.floor(m.sendRequestAt!.getTime() / 60000)));
+      let productSendTimes: { productName: string; sendRequestAt: string; actualSendAt: string | null }[] | undefined;
+      if (minuteSlots.size >= 2) {
+        productSendTimes = reserveMappings.map((m) => {
+          const mappingActualSendAt =
+            [...(m.orderDeliveries ?? [])].reverse().find(
+              (d) =>
+                d.actualSendAt &&
+                (d.status === IOrderDeliveryStatus.COMPLETE || d.status === IOrderDeliveryStatus.COMPLETE_SMS),
+            )?.actualSendAt ?? null;
+          return {
+            productName: m.product?.name ?? '(삭제된 상품)',
+            sendRequestAt: format(m.sendRequestAt!, DateFormatStr),
+            actualSendAt: mappingActualSendAt ? format(mappingActualSendAt, DateFormatStr) : null,
+          };
+        });
+      }
+
       // 주문 시점 스냅샷 우선, NULL이면 clientUser ?? user FK로 fallback
       const billing = readBillingView(order);
 
@@ -828,6 +850,7 @@ export class OrderService {
         sendType: firstMapping?.sendType ?? null,
         hasFailedDelivery,
         hasResentDelivery,
+        productSendTimes,
       };
     });
 
