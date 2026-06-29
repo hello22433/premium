@@ -30,8 +30,10 @@ describe('FileStorageS3.uploadPrivateFile — 비공개 저장', () => {
     expect(input.ACL).toBe('private');
     expect(input.Key).toMatch(/^private\//);
     expect(input.Key).not.toMatch(/^file\//);
-    // UUID 포함 → "업로드 시각 + 파일명" 추측 불가
-    expect(input.Key).toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/);
+    // 무작위 UUID(하이픈 제거 32 hex) 포함 → "업로드 시각 + 파일명" 추측 불가.
+    // 하이픈을 제거하는 이유: 다운로드 프록시가 key 를 `{식별자}-{원본명}` 으로 보고 첫 '-' 기준
+    // 원본명을 복원하므로 식별자에 '-' 가 있으면 안 된다.
+    expect(input.Key).toMatch(/^private\/[0-9a-f]{32}-/);
   });
 
   it('반환 url 은 저장 key 기반(백엔드 GetObject 용), originalName 보존', async () => {
