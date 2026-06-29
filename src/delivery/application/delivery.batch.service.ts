@@ -581,11 +581,11 @@ export class DeliveryBatchService {
   // ───────────── Phase 5: 주문 완료/정산 단일 헬퍼 (issueAndSend / reportSweep 공유) ─────────────
 
   /**
-   * order 의 모든 orderDelivery 가 터미널(COMPLETE/COMPLETE_SMS/FAIL/FAIL_SMS/CANCEL)인지.
-   * WAIT/TEMP 또는 비동기 PENDING(status=WAIT) 가 하나라도 있으면 false(정산 보류).
+   * order 의 모든 orderDelivery 가 터미널(COMPLETE/COMPLETE_SMS/FAIL/FAIL_SMS)인지.
+   * WAIT/TEMP/PENDING 또는 CANCEL 이 하나라도 있으면 false — 취소 포함 주문은 자동 완료/정산 대상 아님(CS 처리).
    */
   private async isOrderAllDeliveriesTerminal(orderId: number): Promise<boolean> {
-    const pending = await this.orderDeliveryRepository
+    const nonTerminal = await this.orderDeliveryRepository
       .createQueryBuilder('od')
       .innerJoin('od.orderProductMapping', 'opm')
       .where('opm.orderId = :orderId', { orderId })
@@ -595,11 +595,10 @@ export class DeliveryBatchService {
           IOrderDeliveryStatus.COMPLETE_SMS,
           IOrderDeliveryStatus.FAIL,
           IOrderDeliveryStatus.FAIL_SMS,
-          IOrderDeliveryStatus.CANCEL,
         ],
       })
       .getCount();
-    return pending === 0;
+    return nonTerminal === 0;
   }
 
   /**
@@ -618,15 +617,19 @@ export class DeliveryBatchService {
   }
 
   /**
-   * 선정산 drift 복구(독립 멱등). 전이 affected 와 무관하게 호출 → 이미 DELIVERY_COMPLETE 이지만
-   * 미정산인 PRE_PAYMENT 주문도 복구된다. autoSettlePrePaymentOrders 자체가 멱등.
+   * 선정산 drift 복구. order.status=DELIVERY_COMPLETE 일 때만 정산(취소·미완 주문 정산 차단).
+   * autoSettlePrePaymentOrders 가 PRE_PAYMENT+isSettleBalance 필터 + 멱등.
    */
   private async settleIfDrift(orderId: number): Promise<void> {
+    const order = await this.orderRepository.findOne({ where: { id: orderId } });
+    if (!order || order.status !== IOrderStatus.DELIVERY_COMPLETE) {
+      return;
+    }
     await this.autoSettlePrePaymentOrders([orderId]);
   }
 
   /**
-   * 주문 터미널 확정 + 정산. 전건 터미널일 때만 전이하고, 정산은 독립 멱등으로 항상 시도(drift 복구).
+   * 주문 터미널 확정 + 정산. 전건 터미널(취소 미포함)일 때만 전이하고, 정산은 독립 멱등으로 시도(drift 복구).
    */
   private async markOrderTerminalAndSettle(orderId: number): Promise<void> {
     if (!(await this.isOrderAllDeliveriesTerminal(orderId))) {
@@ -636,8 +639,30 @@ export class DeliveryBatchService {
     try {
       await this.settleIfDrift(orderId);
     } catch (error) {
-      this.logger.error(`[SETTLE] settleIfDrift 실패 orderId=${orderId}: ${error}`);
+      // 실패해도 reconcileSettlementDrift 가 다음 sweep 에서 재시도(DELIVERY_COMPLETE+미정산 수렴).
+      this.logger.error(`[SETTLE] settleIfDrift 실패 orderId=${orderId} (reconcile 재시도 예정): ${error}`);
     }
+  }
+
+  /**
+   * DELIVERY_COMPLETE 이지만 미정산(SETTLE_COMPLETE 아님)인 PRE_PAYMENT 주문을 재정산한다.
+   * settleIfDrift 가 일시 실패해도 sweep 마다 수렴 → 영구 미정산 방지(HIGH: reconciliation).
+   */
+  private async reconcileSettlementDrift(): Promise<void> {
+    const rows = await this.orderRepository
+      .createQueryBuilder('o')
+      .select('o.id', 'id')
+      .where('o.status = :complete', { complete: IOrderStatus.DELIVERY_COMPLETE })
+      .andWhere('o.isSettleBalance = :t', { t: true })
+      .andWhere('(o.settleStatus IS NULL OR o.settleStatus != :done)', {
+        done: SettleUserOrderDetailEnum.SETTLE_COMPLETE,
+      })
+      .limit(REPORT_SWEEP_BATCH_LIMIT)
+      .getRawMany<{ id: number }>();
+    if (rows.length === 0) {
+      return;
+    }
+    await this.autoSettlePrePaymentOrders(rows.map((r) => r.id));
   }
 
   // ───────────── Phase 4: 알림톡 비동기 수신확인(reportSweep) + 자동 재발송 1회 ─────────────
@@ -648,70 +673,79 @@ export class DeliveryBatchService {
    * - 미확정(시도 소진/마감) → SMS 1회(at-most-once) → COMPLETE_SMS / FAIL+환불
    * - sweep 크래시로 stuck(fallback 선점됐으나 비터미널 + lease 초과) → 재전송 없이 FAIL 확정(CS 수동 회수)
    * 멱등 claim(report_claimed_at + report_owner_token)으로 다중 tick/PM2 다중 인스턴스 중복 차단.
+   * 모든 종결/재시도 update 는 report_owner_token CAS 로 펜싱(lease 회전 후 stale worker 의 덮어쓰기 방지).
    */
   async reportSweep(): Promise<void> {
     const now = new Date();
     const leaseThreshold = new Date(now.getTime() - REPORT_CLAIM_LEASE_MS);
 
-    // 1) 후보 선별(LIMIT): 정상 due 또는 stuck(fallback 선점), 미claim 또는 lease 만료
+    // 1) 후보 선별(LIMIT): status=WAIT + PENDING + (정상 due 또는 stuck), 미claim 또는 lease 만료
     const candidates = await this.orderDeliveryRepository
       .createQueryBuilder('od')
       .select('od.id', 'id')
-      .where('od.reportState = :pending', { pending: IOrderDeliveryReportState.PENDING })
+      .where('od.status = :wait', { wait: IOrderDeliveryStatus.WAIT })
+      .andWhere('od.reportState = :pending', { pending: IOrderDeliveryReportState.PENDING })
       .andWhere('(od.reportNextDueAt <= :now OR od.reportFallbackAttemptCount >= 1)', { now })
       .andWhere('(od.reportClaimedAt IS NULL OR od.reportClaimedAt < :lease)', { lease: leaseThreshold })
       .orderBy('od.reportNextDueAt', 'ASC')
       .limit(REPORT_SWEEP_BATCH_LIMIT)
       .getRawMany<{ id: number }>();
 
-    if (candidates.length === 0) {
-      return;
-    }
-    const candidateIds = candidates.map((c) => c.id);
-    const token = randomUUID();
+    if (candidates.length > 0) {
+      const candidateIds = candidates.map((c) => c.id);
+      const token = randomUUID();
 
-    // 2) 원자 claim(토큰 회전) — lease 재확인으로 동시 sweep 충돌 차단
-    await this.orderDeliveryRepository
-      .createQueryBuilder()
-      .update(OrderDeliveryEntity)
-      .set({ reportClaimedAt: now, reportOwnerToken: token })
-      .where('id IN (:...ids)', { ids: candidateIds })
-      .andWhere('report_state = :pending', { pending: IOrderDeliveryReportState.PENDING })
-      .andWhere('(report_claimed_at IS NULL OR report_claimed_at < :lease)', { lease: leaseThreshold })
-      .execute();
+      // 2) 원자 claim(토큰 회전) — status/lease 재확인으로 동시 sweep 충돌 차단
+      await this.orderDeliveryRepository
+        .createQueryBuilder()
+        .update(OrderDeliveryEntity)
+        .set({ reportClaimedAt: now, reportOwnerToken: token })
+        .where('id IN (:...ids)', { ids: candidateIds })
+        .andWhere('status = :wait', { wait: IOrderDeliveryStatus.WAIT })
+        .andWhere('report_state = :pending', { pending: IOrderDeliveryReportState.PENDING })
+        .andWhere('(report_claimed_at IS NULL OR report_claimed_at < :lease)', { lease: leaseThreshold })
+        .execute();
 
-    // 3) 자기 토큰 행만 처리
-    const rows = await this.orderDeliveryRepository
-      .createQueryBuilder('orderDelivery')
-      .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
-      .innerJoinAndSelect('orderProductMapping.order', 'order')
-      .leftJoinAndSelect('order.user', 'user')
-      .leftJoinAndSelect('order.clientUser', 'clientUser')
-      .leftJoinAndSelect('orderProductMapping.product', 'product')
-      .leftJoinAndSelect('product.brand', 'brand')
-      .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
-      .leftJoinAndSelect('orderDelivery.ssgEvent', 'ssgEvent')
-      .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
-      .leftJoinAndSelect('choiceSelectProduct.brand', 'choiceBrand')
-      .where('orderDelivery.reportOwnerToken = :token', { token })
-      .andWhere('orderDelivery.reportState = :pending', { pending: IOrderDeliveryReportState.PENDING })
-      .getMany();
+      // 3) 자기 토큰 행만 처리
+      const rows = await this.orderDeliveryRepository
+        .createQueryBuilder('orderDelivery')
+        .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
+        .innerJoinAndSelect('orderProductMapping.order', 'order')
+        .leftJoinAndSelect('order.user', 'user')
+        .leftJoinAndSelect('order.clientUser', 'clientUser')
+        .leftJoinAndSelect('orderProductMapping.product', 'product')
+        .leftJoinAndSelect('product.brand', 'brand')
+        .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
+        .leftJoinAndSelect('orderDelivery.ssgEvent', 'ssgEvent')
+        .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
+        .leftJoinAndSelect('choiceSelectProduct.brand', 'choiceBrand')
+        .where('orderDelivery.reportOwnerToken = :token', { token })
+        .andWhere('orderDelivery.reportState = :pending', { pending: IOrderDeliveryReportState.PENDING })
+        .getMany();
 
-    this.logger.log(`[REPORT_SWEEP] claimed ${rows.length} pending alimtalk reports (token=${token})`);
+      this.logger.log(`[REPORT_SWEEP] claimed ${rows.length} pending alimtalk reports (token=${token})`);
 
-    for (const od of rows) {
-      try {
-        await this.processOneReport(od);
-      } catch (error) {
-        this.logger.error(`[REPORT_SWEEP] orderDelivery.id=${od.id} 처리 실패: ${error}`);
+      for (const od of rows) {
+        try {
+          await this.processOneReport(od, token);
+        } catch (error) {
+          this.logger.error(`[REPORT_SWEEP] orderDelivery.id=${od.id} 처리 실패: ${error}`);
+        }
       }
+    }
+
+    // 정산 drift 복구: DELIVERY_COMPLETE 인데 미정산 PRE_PAYMENT 주문 재정산 (settleIfDrift 실패분 수렴)
+    try {
+      await this.reconcileSettlementDrift();
+    } catch (error) {
+      this.logger.error(`[REPORT_SWEEP] reconcileSettlementDrift 실패: ${error}`);
     }
   }
 
   /**
-   * 단건 리포트 처리: 도착확정 / 재시도 / 미확정 종결(R1) 분기.
+   * 단건 리포트 처리: 도착확정 / 재시도 / 미확정 종결(R1) 분기. token CAS 로 소유권 펜싱.
    */
-  private async processOneReport(od: OrderDeliveryEntity): Promise<void> {
+  private async processOneReport(od: OrderDeliveryEntity, token: string): Promise<void> {
     od.reportAttemptCount = (od.reportAttemptCount ?? 0) + 1;
 
     const inquiry = od.alimTalkMsgKey
@@ -723,9 +757,11 @@ export class DeliveryBatchService {
       od.reportClaimedAt = null;
       od.reportOwnerToken = null;
       this.markSendSuccess(od, IOrderDeliveryStatus.COMPLETE);
-      await this.persistReportState(od);
-      await this.correctSendHistory(od.id, true, inquiry.data ?? { reportCode: '10000' });
-      await this.markOrderTerminalAndSettle(od.orderProductMapping.order.id);
+      // 소유권 보유 시에만 종결/정산 (lease 회전 시 stale write·이중 정산 방지)
+      if (await this.persistReportState(od, token)) {
+        await this.correctSendHistory(od.id, true, inquiry.data ?? { reportCode: '10000' });
+        await this.markOrderTerminalAndSettle(od.orderProductMapping.order.id);
+      }
       return;
     }
 
@@ -734,33 +770,34 @@ export class DeliveryBatchService {
     const deadlineExceeded = od.reportDeadlineAt != null && now >= od.reportDeadlineAt;
 
     if (!attemptExhausted && !deadlineExceeded) {
-      // 다음 tick 재시도: claim 해제 + next_due 갱신
+      // 다음 tick 재시도: claim 해제 + next_due 갱신 (token CAS — 소유권 상실 시 no-op)
       od.reportClaimedAt = null;
       od.reportOwnerToken = null;
       od.reportNextDueAt = new Date(now.getTime() + REPORT_NEXT_DUE_MS);
-      await this.persistReportState(od);
+      await this.persistReportState(od, token);
       return;
     }
 
-    await this.runReportFallback(od);
+    await this.runReportFallback(od, token);
   }
 
   /**
-   * 자동 재발송 1회(R1): SMS 대체 발송. at-most-once 선점(fallback_count 0→1) 후 affected=1 일 때만 전송.
+   * 자동 재발송 1회(R1): SMS 대체 발송. at-most-once 선점(fallback_count 0→1 + 소유 token CAS) 후 affected=1 일 때만 전송.
    * sendSms 코어(csResendAsMms) 직접 사용 — oneSend/reverseRefundForResend 경로 미사용(환불→재차감 루프 차단).
    */
-  private async runReportFallback(od: OrderDeliveryEntity): Promise<void> {
+  private async runReportFallback(od: OrderDeliveryEntity, token: string): Promise<void> {
     const preempt = await this.orderDeliveryRepository
       .createQueryBuilder()
       .update(OrderDeliveryEntity)
       .set({ reportFallbackAttemptCount: 1 })
       .where('id = :id', { id: od.id })
       .andWhere('report_fallback_attempt_count = 0')
+      .andWhere('report_owner_token = :token', { token })
       .execute();
 
     if ((preempt.affected ?? 0) === 0) {
-      // 이미 선점됨(이전 sweep 가 SMS 시도 중 크래시 등) → recovery
-      await this.recoverStuckFallback(od);
+      // 이미 선점됨/소유권 상실 → recovery (재전송 안 함)
+      await this.recoverStuckFallback(od, token);
       return;
     }
     od.reportFallbackAttemptCount = 1;
@@ -779,11 +816,11 @@ export class DeliveryBatchService {
 
     if (smsOk) {
       this.markSendSuccess(od, IOrderDeliveryStatus.COMPLETE_SMS);
-      await this.persistReportState(od);
+      await this.persistReportState(od, token);
       await this.correctSendHistory(od.id, true, { fallback: 'COMPLETE_SMS' });
       await this.markOrderTerminalAndSettle(od.orderProductMapping.order.id);
     } else {
-      await this.finalizeReportFail(od);
+      await this.finalizeReportFail(od, token);
     }
   }
 
@@ -791,7 +828,7 @@ export class DeliveryBatchService {
    * fallback 선점됐으나 sweep 크래시로 비터미널 잔존 + lease 초과 → at-most-once 라 재전송 안 함.
    * 이미 성공 종결된 경우는 claim 만 정리, 아니면 결정적 FAIL 확정(CS 수동 reSend 로 회수).
    */
-  private async recoverStuckFallback(od: OrderDeliveryEntity): Promise<void> {
+  private async recoverStuckFallback(od: OrderDeliveryEntity, token: string): Promise<void> {
     if (
       od.status === IOrderDeliveryStatus.COMPLETE_SMS ||
       od.status === IOrderDeliveryStatus.COMPLETE
@@ -799,21 +836,24 @@ export class DeliveryBatchService {
       od.reportState = IOrderDeliveryReportState.CONFIRMED;
       od.reportClaimedAt = null;
       od.reportOwnerToken = null;
-      await this.persistReportState(od);
+      await this.persistReportState(od, token);
       return;
     }
     od.reportState = IOrderDeliveryReportState.UNCONFIRMED;
     od.reportClaimedAt = null;
     od.reportOwnerToken = null;
-    await this.finalizeReportFail(od);
+    await this.finalizeReportFail(od, token);
   }
 
   /**
-   * FAIL 확정 + 환불(B1/B3) + 정산. batch 최초발송이므로 isInitialSend=true 전제로 shouldHoldRefundForFail 재사용.
+   * FAIL 확정 + 환불(B1/B3) + 정산. token CAS 로 소유권 보유 시에만 환불/정산(이중 환불 방지).
    */
-  private async finalizeReportFail(od: OrderDeliveryEntity): Promise<void> {
+  private async finalizeReportFail(od: OrderDeliveryEntity, token: string): Promise<void> {
     this.markSendFail(od, IOrderDeliveryStatus.FAIL);
-    await this.persistReportState(od);
+    if (!(await this.persistReportState(od, token))) {
+      // 소유권 상실 — 다른 owner 가 처리 중. 환불/정산 중복 방지 위해 중단.
+      return;
+    }
     await this.correctSendHistory(od.id, false, { fallback: 'FAIL' });
 
     const order = od.orderProductMapping.order;
@@ -837,12 +877,14 @@ export class DeliveryBatchService {
   }
 
   /**
-   * reportSweep 종결/재시도 시 변경 컬럼만 타깃 update (imagePath 등 무관 컬럼 덮어쓰기 방지).
+   * reportSweep 종결/재시도 시 변경 컬럼만 타깃 update. report_owner_token CAS 로 소유권 펜싱.
+   * @returns 소유권 보유(affected>0) 여부 — false 면 lease 회전으로 소유권 상실(write drop).
    */
-  private async persistReportState(od: OrderDeliveryEntity): Promise<void> {
-    await this.orderDeliveryRepository.update(
-      { id: od.id },
-      {
+  private async persistReportState(od: OrderDeliveryEntity, token: string): Promise<boolean> {
+    const res = await this.orderDeliveryRepository
+      .createQueryBuilder()
+      .update(OrderDeliveryEntity)
+      .set({
         status: od.status,
         actualSendAt: od.actualSendAt,
         failedAt: od.failedAt,
@@ -852,8 +894,11 @@ export class DeliveryBatchService {
         reportNextDueAt: od.reportNextDueAt,
         reportClaimedAt: od.reportClaimedAt,
         reportOwnerToken: od.reportOwnerToken,
-      },
-    );
+      })
+      .where('id = :id', { id: od.id })
+      .andWhere('report_owner_token = :token', { token })
+      .execute();
+    return (res.affected ?? 0) > 0;
   }
 
   /**
@@ -1080,6 +1125,14 @@ export class DeliveryBatchService {
         status: orderDelivery.status,
         actualSendAt: orderDelivery.actualSendAt,
         failedAt: orderDelivery.failedAt,
+        // HIGH: POST 성공 후 PENDING/msgKey 를 status 와 함께 즉시 영속 → 중간 실패 시에도
+        // report_state=PENDING 이라 batch claim(report_state IS NULL) 이 재선택 안 함(중복 알림톡 차단).
+        reportState: orderDelivery.reportState,
+        alimTalkMsgKey: orderDelivery.alimTalkMsgKey,
+        reportDeadlineAt: orderDelivery.reportDeadlineAt,
+        reportNextDueAt: orderDelivery.reportNextDueAt,
+        reportAttemptCount: orderDelivery.reportAttemptCount,
+        reportFallbackAttemptCount: orderDelivery.reportFallbackAttemptCount,
       },
     );
     await this.orderDeliveryRepository.update(

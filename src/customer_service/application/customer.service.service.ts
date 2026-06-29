@@ -1605,6 +1605,11 @@ export class CustomerServiceService {
       throw new BadRequestException('존재하지 않는 발송 정보입니다.');
     }
 
+    // 비동기 수신확인 진행중(PENDING)이면 재진입 차단 (reportSweep 소관 — 중복 발송 방지). reSend 와 동일.
+    if (locked.reportState === IOrderDeliveryReportState.PENDING) {
+      throw new BadRequestException('수신 확인 진행중인 발송입니다. 잠시 후 다시 시도해주세요.');
+    }
+
     // 2. dedup — 락 보유 중 최근 시간창 내 동일 건 재전송 이력 확인
     const dedupSince = new Date(Date.now() - RESEND_DEDUP_WINDOW_MS);
     const recentResendCount = await this.orderHistoryRepository.count({

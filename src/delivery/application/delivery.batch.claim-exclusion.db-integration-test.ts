@@ -168,12 +168,14 @@ describe('DeliveryBatchService.claimWaitDeliveries DB 제외 (external / PENDING
       } as any) as unknown as ProductEntity,
     );
 
-    // 주문 1건 + delivery 1건 생성 헬퍼 (orderType / reportState 가변)
+    // 주문 1건 + delivery 1건 생성 헬퍼 (orderType / reportState 가변). seq 로 order code 유일성 보장.
+    let seq = 0;
     const seedDelivery = async (orderType: string, reportState: string | null) => {
+      seq += 1;
       const order = await orderRepo.save(
         orderRepo.create({
           userId: customer.id,
-          code: `order-${orderType}-${reportState ?? 'null'}-${suffix}`,
+          code: `order-${orderType}-${reportState ?? 'null'}-${suffix}-${seq}`,
           status: 'DELIVERY_CONFIRMED',
           type: orderType,
           eventName: '테스트 이벤트',
@@ -229,5 +231,23 @@ describe('DeliveryBatchService.claimWaitDeliveries DB 제외 (external / PENDING
     expect(general.claimedAt).not.toBeNull(); // 일반 건은 claim 됨
     expect(external.claimedAt).toBeNull(); // external 은 절대 claim 안 됨 (중복 issue/발송 차단)
     expect(pending.claimedAt).toBeNull(); // PENDING 은 reportSweep 소관, batch 미claim
+
+    // 동시 dispatch 안전성: 신규 일반 2건을 두 워커가 동시에 claim → 각 행은 정확히 1회만 claim,
+    // external 은 여전히 제외. (claimedAt IS NULL 조건의 DB 직렬화로 중복 claim 차단)
+    const concA = await seedDelivery('GENERAL', null);
+    const concB = await seedDelivery('GENERAL', null);
+    const externalId2 = await seedDelivery('EXTERNAL', null);
+    const t1 = new Date(Date.now() + 1000);
+    const t2 = new Date(Date.now() + 2000);
+    const [a1, a2] = await Promise.all([service.claimWaitDeliveries(t1), service.claimWaitDeliveries(t2)]);
+
+    const cA = await deliveryRepository.findOneByOrFail({ id: concA });
+    const cB = await deliveryRepository.findOneByOrFail({ id: concB });
+    const ext2 = await deliveryRepository.findOneByOrFail({ id: externalId2 });
+
+    expect(a1 + a2).toBe(2); // 신규 일반 2건이 두 워커에 걸쳐 정확히 한 번씩만 claim
+    expect(cA.claimedAt).not.toBeNull();
+    expect(cB.claimedAt).not.toBeNull();
+    expect(ext2.claimedAt).toBeNull(); // external 동시 상황에서도 제외 유지
   });
 });

@@ -28,7 +28,7 @@ describe('DeliveryBatchService — reportSweep / settlement (async alimtalk)', (
   beforeEach(() => {
     service = Object.create(DeliveryBatchService.prototype);
     service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
-    service.persistReportState = jest.fn().mockResolvedValue(undefined);
+    service.persistReportState = jest.fn().mockResolvedValue(true);
     service.correctSendHistory = jest.fn().mockResolvedValue(undefined);
     service.markOrderTerminalAndSettle = jest.fn().mockResolvedValue(undefined);
     service.markSendSuccess = jest.fn((od: any, s: IOrderDeliveryStatus) => {
@@ -48,7 +48,7 @@ describe('DeliveryBatchService — reportSweep / settlement (async alimtalk)', (
       const od = buildOd();
       service.deliveryAlimTalk.inquiryReport.mockResolvedValue({ success: true, reportCode: '10000', data: {} });
 
-      await service.processOneReport(od);
+      await service.processOneReport(od, 'tok');
 
       expect(od.status).toBe(IOrderDeliveryStatus.COMPLETE);
       expect(od.reportState).toBe(IOrderDeliveryReportState.CONFIRMED);
@@ -62,7 +62,7 @@ describe('DeliveryBatchService — reportSweep / settlement (async alimtalk)', (
       service.deliveryAlimTalk.inquiryReport.mockResolvedValue({ success: false, error: 'no report yet' });
       const fallbackSpy = jest.spyOn(service, 'runReportFallback').mockResolvedValue(undefined);
 
-      await service.processOneReport(od);
+      await service.processOneReport(od, 'tok');
 
       expect(od.reportState).toBe(IOrderDeliveryReportState.PENDING);
       expect(od.reportAttemptCount).toBe(1);
@@ -75,9 +75,9 @@ describe('DeliveryBatchService — reportSweep / settlement (async alimtalk)', (
       service.deliveryAlimTalk.inquiryReport.mockResolvedValue({ success: false });
       const fallbackSpy = jest.spyOn(service, 'runReportFallback').mockResolvedValue(undefined);
 
-      await service.processOneReport(od);
+      await service.processOneReport(od, 'tok');
 
-      expect(fallbackSpy).toHaveBeenCalledWith(od);
+      expect(fallbackSpy).toHaveBeenCalledWith(od, 'tok');
     });
 
     it('마감 초과 → 즉시 runReportFallback', async () => {
@@ -85,9 +85,9 @@ describe('DeliveryBatchService — reportSweep / settlement (async alimtalk)', (
       service.deliveryAlimTalk.inquiryReport.mockResolvedValue({ success: false });
       const fallbackSpy = jest.spyOn(service, 'runReportFallback').mockResolvedValue(undefined);
 
-      await service.processOneReport(od);
+      await service.processOneReport(od, 'tok');
 
-      expect(fallbackSpy).toHaveBeenCalledWith(od);
+      expect(fallbackSpy).toHaveBeenCalledWith(od, 'tok');
     });
   });
 
@@ -111,7 +111,7 @@ describe('DeliveryBatchService — reportSweep / settlement (async alimtalk)', (
       mockPreempt(1);
       service.csResendAsMms.mockResolvedValue(undefined);
 
-      await service.runReportFallback(od);
+      await service.runReportFallback(od, 'tok');
 
       expect(service.csResendAsMms).toHaveBeenCalledWith(od.id);
       expect(od.status).toBe(IOrderDeliveryStatus.COMPLETE_SMS);
@@ -125,7 +125,7 @@ describe('DeliveryBatchService — reportSweep / settlement (async alimtalk)', (
       mockPreempt(1);
       service.csResendAsMms.mockRejectedValue(new Error('SMS fail'));
 
-      await service.runReportFallback(od);
+      await service.runReportFallback(od, 'tok');
 
       expect(od.status).toBe(IOrderDeliveryStatus.FAIL);
       expect(service.shouldHoldRefundForFail).toHaveBeenCalled();
@@ -139,7 +139,7 @@ describe('DeliveryBatchService — reportSweep / settlement (async alimtalk)', (
       service.csResendAsMms.mockRejectedValue(new Error('SMS fail'));
       service.shouldHoldRefundForFail.mockResolvedValue(false);
 
-      await service.runReportFallback(od);
+      await service.runReportFallback(od, 'tok');
 
       expect(service.refundForFail).toHaveBeenCalledWith(od);
     });
@@ -149,9 +149,9 @@ describe('DeliveryBatchService — reportSweep / settlement (async alimtalk)', (
       mockPreempt(0);
       const recoverSpy = jest.spyOn(service, 'recoverStuckFallback').mockResolvedValue(undefined);
 
-      await service.runReportFallback(od);
+      await service.runReportFallback(od, 'tok');
 
-      expect(recoverSpy).toHaveBeenCalledWith(od);
+      expect(recoverSpy).toHaveBeenCalledWith(od, 'tok');
       expect(service.csResendAsMms).not.toHaveBeenCalled();
     });
   });
@@ -161,10 +161,10 @@ describe('DeliveryBatchService — reportSweep / settlement (async alimtalk)', (
       const od = buildOd({ status: IOrderDeliveryStatus.WAIT });
       const finalizeSpy = jest.spyOn(service, 'finalizeReportFail').mockResolvedValue(undefined);
 
-      await service.recoverStuckFallback(od);
+      await service.recoverStuckFallback(od, 'tok');
 
       expect(od.reportState).toBe(IOrderDeliveryReportState.UNCONFIRMED);
-      expect(finalizeSpy).toHaveBeenCalledWith(od);
+      expect(finalizeSpy).toHaveBeenCalledWith(od, 'tok');
       expect(service.csResendAsMms).not.toHaveBeenCalled();
     });
 
@@ -172,7 +172,7 @@ describe('DeliveryBatchService — reportSweep / settlement (async alimtalk)', (
       const od = buildOd({ status: IOrderDeliveryStatus.COMPLETE_SMS });
       const finalizeSpy = jest.spyOn(service, 'finalizeReportFail').mockResolvedValue(undefined);
 
-      await service.recoverStuckFallback(od);
+      await service.recoverStuckFallback(od, 'tok');
 
       expect(od.reportState).toBe(IOrderDeliveryReportState.CONFIRMED);
       expect(finalizeSpy).not.toHaveBeenCalled();

@@ -180,6 +180,11 @@ export class DeliveryAlimTalkInfoBankHttp implements DeliveryAlimTalk {
     const responseData = response.data as InfoBankSendResponse;
     this.logger.log(`알림톡 발신(async, inquiry 분리) : ${JSON.stringify(responseData)}`);
 
+    // POST 수락 검증: 성공코드(A000) + msgKey 없으면 실패로 간주(→ caller 가 SMS 폴백).
+    if (responseData.code !== 'A000' || !responseData.msgKey) {
+      throw new Error(`알림톡 POST 실패: code=${responseData.code}, msgKey=${responseData.msgKey ?? ''}`);
+    }
+
     return { msgKey: responseData.msgKey, responseData };
   }
 
