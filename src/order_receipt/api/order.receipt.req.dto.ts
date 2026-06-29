@@ -25,6 +25,16 @@ export class OrderReceiptGetDetailReqParamDto {
   id: number;
 }
 
+export class OrderReceiptFileDownloadReqQueryDto {
+  @ApiProperty({
+    description: '다운로드할 첨부파일 url (해당 주문접수에 첨부된 url 이어야 함)',
+  })
+  // =================================
+  @IsNotEmpty()
+  @IsString()
+  fileUrl: string;
+}
+
 export class OrderReceiptCreateReqDto {
   @ApiProperty({
     description: '주문접수 제목',

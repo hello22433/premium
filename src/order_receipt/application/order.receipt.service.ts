@@ -1,8 +1,13 @@
 import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import fs from 'node:fs';
 import { parseFilePathList } from '../../util/file.util';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { OrderReceiptEntity } from '../../entity/order.receipt.entity';
+import { FileService } from '../../file/application/file.service';
 import {
   OrderReceiptCreateReqDto,
   OrderReceiptGetDetailReqParamDto,
@@ -24,6 +29,7 @@ export class OrderReceiptService {
   constructor(
     @InjectRepository(OrderReceiptEntity)
     private orderReceiptRepository: Repository<OrderReceiptEntity>,
+    private fileService: FileService,
   ) {}
 
   async getList(user: ILoginUserInfo, getQuery: OrderReceiptGetListReqQueryDto): Promise<OrderReceiptGetListResDto> {
@@ -98,6 +104,42 @@ export class OrderReceiptService {
       processedAt: receipt.processedAt ? format(receipt.processedAt, DateFormatStr) : null,
       processedUserName: receipt.processedUser?.personName ?? null,
     };
+  }
+
+  /**
+   * 첨부 다운로드 프록시용. 권한·소유 검증 후 비공개(private) S3 객체를 임시파일로 받아
+   * 로컬 경로와 원본 파일명을 돌려준다. 컨트롤러가 Content-Disposition(원본명)으로 스트리밍한다.
+   *  - 권한: 운영/최고관리자는 전체, 기업관리자는 본인 문서만.
+   *  - IDOR 차단: 요청한 fileUrl 이 해당 주문접수의 filePath 목록에 포함될 때만 허용.
+   *  - 원본명: DB에 파일명 컬럼이 없어 S3 key 에서 복원(신/구 key 모두 호환).
+   */
+  async downloadFile(
+    user: ILoginUserInfo,
+    id: number,
+    fileUrl: string,
+  ): Promise<{ fileName: string; filePath: string }> {
+    const receipt = await this.findReceiptOrThrow(id);
+
+    const isOwner = receipt.userId === user.id;
+    if (!this.isAdminUser(user) && !isOwner) {
+      throw new ForbiddenException('다운로드 권한이 없습니다.');
+    }
+
+    // IDOR 차단: 이 주문접수에 실제로 첨부된 URL 만 허용
+    const fileUrlList = parseFilePathList(receipt.filePath);
+    if (!fileUrlList.includes(fileUrl)) {
+      throw new BadRequestException('해당 주문접수의 첨부파일이 아닙니다.');
+    }
+
+    const fileName = this.fileService.extractOriginalFileName(fileUrl);
+
+    const downloadDir = join(tmpdir(), 'epopkon-order-receipt');
+    fs.mkdirSync(downloadDir, { recursive: true });
+
+    // 로컬 임시 파일명은 충돌 방지를 위해 무작위(UUID). 사용자에게 보일 이름은 위 fileName.
+    const filePath = await this.fileService.downloadWithPath(downloadDir, randomUUID(), fileUrl);
+
+    return { fileName, filePath };
   }
 
   async create(user: ILoginUserInfo, getBody: OrderReceiptCreateReqDto) {
