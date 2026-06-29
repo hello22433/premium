@@ -39,6 +39,8 @@ export type InfoBankReportResponse = {
   };
 };
 
+export type InfoBankInquiryResult = { success: boolean; reportCode?: string; data?: any; error?: string };
+
 @Injectable()
 export class DeliveryAlimTalkInfoBankHttp implements DeliveryAlimTalk {
   constructor(
@@ -106,6 +108,81 @@ export class DeliveryAlimTalkInfoBankHttp implements DeliveryAlimTalk {
     }
   }
 
+  /**
+   * 알림톡 발송 메시지 바디 구성 (send / postAlimtalk 공용)
+   */
+  private buildSendBody(sendObj: IDeliveryAlimTalkSend): {
+    senderKey: string;
+    msgType: string;
+    to: string;
+    templateCode: string;
+    text: string;
+    button?: { type: string; name: string; urlMobile: string }[];
+  } {
+    const templateCode = sendObj.templateCode || this.infoBankTemplateCode;
+    const templateCodeLower = templateCode.toLowerCase();
+    const isTestTemplate = templateCodeLower.includes('dev');
+    const isEncourageTemplate = templateCodeLower.includes('encourage');
+
+    let buttonName: string;
+    if (isTestTemplate) {
+      buttonName = '[TEST]선물메시지 확인';
+    } else if (isEncourageTemplate) {
+      buttonName = '선물메시지 확인';
+    } else {
+      buttonName = '쿠폰 확인하기';
+    }
+
+    const body: {
+      senderKey: string;
+      msgType: string;
+      to: string;
+      templateCode: string;
+      text: string;
+      button?: { type: string; name: string; urlMobile: string }[];
+    } = {
+      senderKey: this.infoBankSenderKey,
+      msgType: sendObj.msgType || 'AI', // 기본값: 이미지 강조유형(AI)
+      to: sendObj.to,
+      templateCode: templateCode,
+      text: sendObj.text,
+    };
+
+    // encryptKey가 있을 때만 버튼 추가 (쿠폰 발송용)
+    if (sendObj.encryptKey) {
+      body.button = [
+        {
+          type: 'WL',
+          name: buttonName,
+          urlMobile: `${this.receiveUrl}/${sendObj.encryptKey}`,
+        },
+      ];
+    }
+
+    return body;
+  }
+
+  /**
+   * 알림톡 POST 만 수행하고 msgKey 를 반환한다 (수신리포트 inquiry 분리 = 비동기 reportSweep 위임).
+   * 발송 배치(sendAlimTalkAsync) 전용. 기존 send() 는 동기 inquiry 경로로 보존.
+   */
+  async postAlimtalk(sendObj: IDeliveryAlimTalkSend): Promise<{ msgKey: string; responseData: InfoBankSendResponse }> {
+    const url = `${this.infoBankUrl}/v1/send/alimtalk`;
+    const token = await this.getToken();
+    const headers = {
+      Authorization: token,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    };
+    const body = this.buildSendBody(sendObj);
+
+    const response = await firstValueFrom(this.httpService.post(url, body, { headers }));
+    const responseData = response.data as InfoBankSendResponse;
+    this.logger.log(`알림톡 발신(async, inquiry 분리) : ${JSON.stringify(responseData)}`);
+
+    return { msgKey: responseData.msgKey, responseData };
+  }
+
   async send(sendObj: IDeliveryAlimTalkSend): Promise<IDeliveryAlimTalkSendOut> {
     const url = `${this.infoBankUrl}/v1/send/alimtalk`;
 
@@ -117,45 +194,7 @@ export class DeliveryAlimTalkInfoBankHttp implements DeliveryAlimTalk {
         Accept: 'application/json',
       };
 
-      const templateCode = sendObj.templateCode || this.infoBankTemplateCode;
-      const templateCodeLower = templateCode.toLowerCase();
-      const isTestTemplate = templateCodeLower.includes('dev');
-      const isEncourageTemplate = templateCodeLower.includes('encourage');
-
-      let buttonName: string;
-      if (isTestTemplate) {
-        buttonName = '[TEST]선물메시지 확인';
-      } else if (isEncourageTemplate) {
-        buttonName = '선물메시지 확인';
-      } else {
-        buttonName = '쿠폰 확인하기';
-      }
-
-      const body: {
-        senderKey: string;
-        msgType: string;
-        to: string;
-        templateCode: string;
-        text: string;
-        button?: { type: string; name: string; urlMobile: string }[];
-      } = {
-        senderKey: this.infoBankSenderKey,
-        msgType: sendObj.msgType || 'AI', // 기본값: 이미지 강조유형(AI)
-        to: sendObj.to,
-        templateCode: templateCode,
-        text: sendObj.text,
-      };
-
-      // encryptKey가 있을 때만 버튼 추가 (쿠폰 발송용)
-      if (sendObj.encryptKey) {
-        body.button = [
-          {
-            type: 'WL',
-            name: buttonName,
-            urlMobile: `${this.receiveUrl}/${sendObj.encryptKey}`,
-          },
-        ];
-      }
+      const body = this.buildSendBody(sendObj);
 
       const response = await firstValueFrom(this.httpService.post(url, body, { headers }));
 
@@ -215,12 +254,7 @@ export class DeliveryAlimTalkInfoBankHttp implements DeliveryAlimTalk {
     }
   }
 
-  private async inquiryReport(msgKey: string): Promise<{
-    success: boolean;
-    reportCode?: string;
-    data?: any;
-    error?: string;
-  }> {
+  async inquiryReport(msgKey: string): Promise<InfoBankInquiryResult> {
     try {
       const url = `${this.reportUrl}/api/comm/v1/report/inquiry/${msgKey}`;
       const headers = {

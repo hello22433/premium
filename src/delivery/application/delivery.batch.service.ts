@@ -44,6 +44,13 @@ import { ISmsSend } from '../../sms/interface/sms.send';
 import { IOrderSendMethod } from '../../order/interface/order.send.method';
 import { IOrderStatus } from '../../order/interface/order.status';
 import { IOrderType } from '../../order/interface/order.type';
+import {
+  IOrderDeliveryReportState,
+  REPORT_CLAIM_LEASE_MS,
+  REPORT_MAX_INQUIRY_ATTEMPTS,
+  REPORT_NEXT_DUE_MS,
+  REPORT_SWEEP_BATCH_LIMIT,
+} from '../interface/order.delivery.report.state';
 import { IUserSettleCondition } from '../../user/interface/user.settle.condition';
 import { SettleUserOrderDetailEnum } from '../../settle/interface/settle.user.order.detail';
 import { calculateSettlementPrice } from '../../util/settle-fee.util';
@@ -412,11 +419,12 @@ export class DeliveryBatchService {
     return result.affected ?? 0;
   }
 
-  async issueAndSend() {
-    // 다른 배치가 동시에 돌더라도 UPDATE는 DB에서 직렬화되므로
-    // claimed_at IS NULL 조건에 걸린 행만 이 배치가 소유하게 된다.
-    // claimedAt 값은 이번 배치의 식별자로도 사용해서 뒤의 SELECT가 우리 몫만 가져오도록 한다.
-    const claimedAt = new Date();
+  /**
+   * WAIT 발송 대기 행을 claimedAt 으로 멱등 claim. 비동기 PENDING(report_state)·external(order.type=EXTERNAL) 제외.
+   * external 은 자체 동기 dispatch 이므로 batch claim 에서 원자적으로 배제(중복 issue/발송·차감 전 발송 차단).
+   * @returns claim 된 행 수
+   */
+  async claimWaitDeliveries(claimedAt: Date): Promise<number> {
     const claimResult = await this.orderDeliveryRepository
       .createQueryBuilder()
       .update(OrderDeliveryEntity)
@@ -424,9 +432,24 @@ export class DeliveryBatchService {
       .where('status = :status', { status: IOrderDeliveryStatus.WAIT })
       .andWhere('sendRequestAt < :now', { now: claimedAt })
       .andWhere('claimedAt IS NULL')
+      // 비동기 알림톡 PENDING(report_state) 행은 발송 배치 재발송 대상 아님 (reportSweep 소관)
+      .andWhere('report_state IS NULL')
+      // external_api 발송 건은 자체 동기 dispatch — batch 가 절대 claim 하지 않음 (중복 issue/발송 차단)
+      .andWhere(
+        'EXISTS (SELECT 1 FROM order_product_mapping opm JOIN `order` o ON o.id = opm.order_id ' +
+          'WHERE opm.id = order_delivery.order_product_mapping_id AND o.type != :externalType)',
+        { externalType: IOrderType.EXTERNAL },
+      )
       .execute();
+    return claimResult.affected ?? 0;
+  }
 
-    const claimedCount = claimResult.affected ?? 0;
+  async issueAndSend() {
+    // 다른 배치가 동시에 돌더라도 UPDATE는 DB에서 직렬화되므로
+    // claimed_at IS NULL 조건에 걸린 행만 이 배치가 소유하게 된다.
+    // claimedAt 값은 이번 배치의 식별자로도 사용해서 뒤의 SELECT가 우리 몫만 가져오도록 한다.
+    const claimedAt = new Date();
+    const claimedCount = await this.claimWaitDeliveries(claimedAt);
     this.logger.log(`[BATCH] Claimed ${claimedCount} deliveries at ${claimedAt.toISOString()}`);
 
     if (claimedCount === 0) {
@@ -443,7 +466,9 @@ export class DeliveryBatchService {
       .innerJoinAndSelect('product.brand', 'brand')
       .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .where('orderDelivery.status = :status', { status: IOrderDeliveryStatus.WAIT })
-      .andWhere('orderDelivery.claimedAt = :claimedAt', { claimedAt });
+      .andWhere('orderDelivery.claimedAt = :claimedAt', { claimedAt })
+      .andWhere('orderDelivery.reportState IS NULL')
+      .andWhere('order.type != :externalType', { externalType: IOrderType.EXTERNAL });
 
     const orderDeliveryList = await queryBuilder.getMany();
 
@@ -467,42 +492,46 @@ export class DeliveryBatchService {
     // 병렬 처리 결과 수집용
     const allResults: { deliveryHistory: DeliverySendHistoryEntity; orderId: number }[] = [];
     const concurrency = this.concurrencyLimit;
-
-    // 청크 구성 (SSG는 Mutex로 보호되므로 동시 처리 가능)
-    const chunks = this.createDeliveryChunks(uniqueDeliveryList, concurrency);
-
     this.logger.log(
-      `[BATCH] Processing ${uniqueDeliveryList.length} deliveries in ${chunks.length} chunks (concurrency: ${concurrency})`,
+      `[BATCH] Processing ${uniqueDeliveryList.length} deliveries (worker pool, concurrency: ${concurrency})`,
     );
 
-    // 청크 단위로 병렬 처리
+    // 워커풀: 슬롯이 빌 때마다 다음 건을 즉시 투입 (고정 청크 경계 head-of-line blocking 제거).
+    // 동시 처리 수는 concurrency 상한 유지. 건별 격리(processOneDeliveryForBatch 내부 try/catch)·SSG mutex 불변.
+    let cursor = 0;
     let processedCount = 0;
-    for (const chunk of chunks) {
-      const chunkResults = await Promise.all(
-        chunk.map((orderDelivery) => this.processOneDeliveryForBatch(orderDelivery)),
-      );
-      allResults.push(...chunkResults.filter((r) => r !== null));
-      processedCount += chunk.length;
-      this.logger.log(`[BATCH] Processed ${processedCount}/${uniqueDeliveryList.length}`);
-    }
+    const nextDelivery = (): OrderDeliveryEntity | undefined => uniqueDeliveryList[cursor++];
+    const runWorker = async (): Promise<void> => {
+      let od: OrderDeliveryEntity | undefined;
+      while ((od = nextDelivery()) !== undefined) {
+        const result = await this.processOneDeliveryForBatch(od);
+        if (result !== null) {
+          allResults.push(result);
+        }
+        processedCount++;
+        this.logger.log(`[BATCH] Processed ${processedCount}/${uniqueDeliveryList.length}`);
+      }
+    };
+    const workerCount = Math.min(concurrency, uniqueDeliveryList.length);
+    await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
 
     // 결과 집계
     const deliveryHistoryList = allResults.map((r) => r.deliveryHistory);
     const orderIdList = [...new Set(allResults.map((r) => r.orderId))];
 
-    // 히스토리 및 주문 상태 일괄 업데이트
+    // 히스토리 insert
     if (deliveryHistoryList.length > 0) {
       await this.deliverySendHistoryRepository.insert(deliveryHistoryList);
     }
-    if (orderIdList.length > 0) {
-      await this.orderRepository.update({ id: In(orderIdList) }, { status: IOrderStatus.DELIVERY_COMPLETE });
-    }
 
-    // 선정산(PRE_PAYMENT) 고객사 주문 자동 정산완료 처리
-    try {
-      await this.autoSettlePrePaymentOrders(orderIdList);
-    } catch (error) {
-      this.logger.error(`[BATCH] Auto-settle pre-payment orders failed for orderIds=[${orderIdList}]: ${error}`);
+    // 주문 완료/정산: 전건 터미널 주문만 DELIVERY_COMPLETE + 선정산(단일 헬퍼 markOrderTerminalAndSettle).
+    // 비동기 알림톡 PENDING(status=WAIT) 건은 전건 터미널이 아니므로 보류 → reportSweep 가 확정 시 정산.
+    for (const orderId of orderIdList) {
+      try {
+        await this.markOrderTerminalAndSettle(orderId);
+      } catch (error) {
+        this.logger.error(`[BATCH] markOrderTerminalAndSettle 실패 orderId=${orderId}: ${error}`);
+      }
     }
 
     this.logger.log(`[BATCH] Completed. Total: ${uniqueDeliveryList.length}, Success: ${deliveryHistoryList.length}`);
@@ -547,6 +576,284 @@ export class DeliveryBatchService {
         `[BATCH] Skipped auto-settle for ${unsettledCount} pre-payment orders (credit-excess, kept UNSETTLE_NORMAL)`,
       );
     }
+  }
+
+  // ───────────── Phase 5: 주문 완료/정산 단일 헬퍼 (issueAndSend / reportSweep 공유) ─────────────
+
+  /**
+   * order 의 모든 orderDelivery 가 터미널(COMPLETE/COMPLETE_SMS/FAIL/FAIL_SMS/CANCEL)인지.
+   * WAIT/TEMP 또는 비동기 PENDING(status=WAIT) 가 하나라도 있으면 false(정산 보류).
+   */
+  private async isOrderAllDeliveriesTerminal(orderId: number): Promise<boolean> {
+    const pending = await this.orderDeliveryRepository
+      .createQueryBuilder('od')
+      .innerJoin('od.orderProductMapping', 'opm')
+      .where('opm.orderId = :orderId', { orderId })
+      .andWhere('od.status NOT IN (:...terminal)', {
+        terminal: [
+          IOrderDeliveryStatus.COMPLETE,
+          IOrderDeliveryStatus.COMPLETE_SMS,
+          IOrderDeliveryStatus.FAIL,
+          IOrderDeliveryStatus.FAIL_SMS,
+          IOrderDeliveryStatus.CANCEL,
+        ],
+      })
+      .getCount();
+    return pending === 0;
+  }
+
+  /**
+   * 주문 상태 전이 CAS. 정상 선행상태(DELIVERY_CONFIRMED)에서만 DELIVERY_COMPLETE 로 전이.
+   * CANCEL/COMPLETE 은 자연 제외(취소 되돌림·이중 전이 방지). 전이 발생 시 true.
+   */
+  private async transitionOrderToComplete(orderId: number): Promise<boolean> {
+    const res = await this.orderRepository
+      .createQueryBuilder()
+      .update(OrderEntity)
+      .set({ status: IOrderStatus.DELIVERY_COMPLETE })
+      .where('id = :orderId', { orderId })
+      .andWhere('status = :confirmed', { confirmed: IOrderStatus.DELIVERY_CONFIRMED })
+      .execute();
+    return (res.affected ?? 0) > 0;
+  }
+
+  /**
+   * 선정산 drift 복구(독립 멱등). 전이 affected 와 무관하게 호출 → 이미 DELIVERY_COMPLETE 이지만
+   * 미정산인 PRE_PAYMENT 주문도 복구된다. autoSettlePrePaymentOrders 자체가 멱등.
+   */
+  private async settleIfDrift(orderId: number): Promise<void> {
+    await this.autoSettlePrePaymentOrders([orderId]);
+  }
+
+  /**
+   * 주문 터미널 확정 + 정산. 전건 터미널일 때만 전이하고, 정산은 독립 멱등으로 항상 시도(drift 복구).
+   */
+  private async markOrderTerminalAndSettle(orderId: number): Promise<void> {
+    if (!(await this.isOrderAllDeliveriesTerminal(orderId))) {
+      return;
+    }
+    await this.transitionOrderToComplete(orderId);
+    try {
+      await this.settleIfDrift(orderId);
+    } catch (error) {
+      this.logger.error(`[SETTLE] settleIfDrift 실패 orderId=${orderId}: ${error}`);
+    }
+  }
+
+  // ───────────── Phase 4: 알림톡 비동기 수신확인(reportSweep) + 자동 재발송 1회 ─────────────
+
+  /**
+   * 발송 트랜잭션 밖에서 알림톡 수신리포트를 확인한다(30초×2 근사).
+   * - 도착확정(10000) → COMPLETE + 정산
+   * - 미확정(시도 소진/마감) → SMS 1회(at-most-once) → COMPLETE_SMS / FAIL+환불
+   * - sweep 크래시로 stuck(fallback 선점됐으나 비터미널 + lease 초과) → 재전송 없이 FAIL 확정(CS 수동 회수)
+   * 멱등 claim(report_claimed_at + report_owner_token)으로 다중 tick/PM2 다중 인스턴스 중복 차단.
+   */
+  async reportSweep(): Promise<void> {
+    const now = new Date();
+    const leaseThreshold = new Date(now.getTime() - REPORT_CLAIM_LEASE_MS);
+
+    // 1) 후보 선별(LIMIT): 정상 due 또는 stuck(fallback 선점), 미claim 또는 lease 만료
+    const candidates = await this.orderDeliveryRepository
+      .createQueryBuilder('od')
+      .select('od.id', 'id')
+      .where('od.reportState = :pending', { pending: IOrderDeliveryReportState.PENDING })
+      .andWhere('(od.reportNextDueAt <= :now OR od.reportFallbackAttemptCount >= 1)', { now })
+      .andWhere('(od.reportClaimedAt IS NULL OR od.reportClaimedAt < :lease)', { lease: leaseThreshold })
+      .orderBy('od.reportNextDueAt', 'ASC')
+      .limit(REPORT_SWEEP_BATCH_LIMIT)
+      .getRawMany<{ id: number }>();
+
+    if (candidates.length === 0) {
+      return;
+    }
+    const candidateIds = candidates.map((c) => c.id);
+    const token = randomUUID();
+
+    // 2) 원자 claim(토큰 회전) — lease 재확인으로 동시 sweep 충돌 차단
+    await this.orderDeliveryRepository
+      .createQueryBuilder()
+      .update(OrderDeliveryEntity)
+      .set({ reportClaimedAt: now, reportOwnerToken: token })
+      .where('id IN (:...ids)', { ids: candidateIds })
+      .andWhere('report_state = :pending', { pending: IOrderDeliveryReportState.PENDING })
+      .andWhere('(report_claimed_at IS NULL OR report_claimed_at < :lease)', { lease: leaseThreshold })
+      .execute();
+
+    // 3) 자기 토큰 행만 처리
+    const rows = await this.orderDeliveryRepository
+      .createQueryBuilder('orderDelivery')
+      .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
+      .innerJoinAndSelect('orderProductMapping.order', 'order')
+      .leftJoinAndSelect('order.user', 'user')
+      .leftJoinAndSelect('order.clientUser', 'clientUser')
+      .leftJoinAndSelect('orderProductMapping.product', 'product')
+      .leftJoinAndSelect('product.brand', 'brand')
+      .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .leftJoinAndSelect('orderDelivery.ssgEvent', 'ssgEvent')
+      .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
+      .leftJoinAndSelect('choiceSelectProduct.brand', 'choiceBrand')
+      .where('orderDelivery.reportOwnerToken = :token', { token })
+      .andWhere('orderDelivery.reportState = :pending', { pending: IOrderDeliveryReportState.PENDING })
+      .getMany();
+
+    this.logger.log(`[REPORT_SWEEP] claimed ${rows.length} pending alimtalk reports (token=${token})`);
+
+    for (const od of rows) {
+      try {
+        await this.processOneReport(od);
+      } catch (error) {
+        this.logger.error(`[REPORT_SWEEP] orderDelivery.id=${od.id} 처리 실패: ${error}`);
+      }
+    }
+  }
+
+  /**
+   * 단건 리포트 처리: 도착확정 / 재시도 / 미확정 종결(R1) 분기.
+   */
+  private async processOneReport(od: OrderDeliveryEntity): Promise<void> {
+    od.reportAttemptCount = (od.reportAttemptCount ?? 0) + 1;
+
+    const inquiry = od.alimTalkMsgKey
+      ? await this.deliveryAlimTalk.inquiryReport(od.alimTalkMsgKey)
+      : { success: false, error: 'msgKey 없음(POST 실패)' };
+
+    if (inquiry.success && inquiry.reportCode === '10000') {
+      od.reportState = IOrderDeliveryReportState.CONFIRMED;
+      od.reportClaimedAt = null;
+      od.reportOwnerToken = null;
+      this.markSendSuccess(od, IOrderDeliveryStatus.COMPLETE);
+      await this.persistReportState(od);
+      await this.correctSendHistory(od.id, true, inquiry.data ?? { reportCode: '10000' });
+      await this.markOrderTerminalAndSettle(od.orderProductMapping.order.id);
+      return;
+    }
+
+    const now = new Date();
+    const attemptExhausted = od.reportAttemptCount >= REPORT_MAX_INQUIRY_ATTEMPTS;
+    const deadlineExceeded = od.reportDeadlineAt != null && now >= od.reportDeadlineAt;
+
+    if (!attemptExhausted && !deadlineExceeded) {
+      // 다음 tick 재시도: claim 해제 + next_due 갱신
+      od.reportClaimedAt = null;
+      od.reportOwnerToken = null;
+      od.reportNextDueAt = new Date(now.getTime() + REPORT_NEXT_DUE_MS);
+      await this.persistReportState(od);
+      return;
+    }
+
+    await this.runReportFallback(od);
+  }
+
+  /**
+   * 자동 재발송 1회(R1): SMS 대체 발송. at-most-once 선점(fallback_count 0→1) 후 affected=1 일 때만 전송.
+   * sendSms 코어(csResendAsMms) 직접 사용 — oneSend/reverseRefundForResend 경로 미사용(환불→재차감 루프 차단).
+   */
+  private async runReportFallback(od: OrderDeliveryEntity): Promise<void> {
+    const preempt = await this.orderDeliveryRepository
+      .createQueryBuilder()
+      .update(OrderDeliveryEntity)
+      .set({ reportFallbackAttemptCount: 1 })
+      .where('id = :id', { id: od.id })
+      .andWhere('report_fallback_attempt_count = 0')
+      .execute();
+
+    if ((preempt.affected ?? 0) === 0) {
+      // 이미 선점됨(이전 sweep 가 SMS 시도 중 크래시 등) → recovery
+      await this.recoverStuckFallback(od);
+      return;
+    }
+    od.reportFallbackAttemptCount = 1;
+
+    let smsOk = false;
+    try {
+      await this.csResendAsMms(od.id);
+      smsOk = true;
+    } catch (error) {
+      this.logger.error(`[REPORT_SWEEP][R1] SMS 폴백 실패 od=${od.id}: ${error}`);
+    }
+
+    od.reportState = IOrderDeliveryReportState.UNCONFIRMED;
+    od.reportClaimedAt = null;
+    od.reportOwnerToken = null;
+
+    if (smsOk) {
+      this.markSendSuccess(od, IOrderDeliveryStatus.COMPLETE_SMS);
+      await this.persistReportState(od);
+      await this.correctSendHistory(od.id, true, { fallback: 'COMPLETE_SMS' });
+      await this.markOrderTerminalAndSettle(od.orderProductMapping.order.id);
+    } else {
+      await this.finalizeReportFail(od);
+    }
+  }
+
+  /**
+   * fallback 선점됐으나 sweep 크래시로 비터미널 잔존 + lease 초과 → at-most-once 라 재전송 안 함.
+   * 이미 성공 종결된 경우는 claim 만 정리, 아니면 결정적 FAIL 확정(CS 수동 reSend 로 회수).
+   */
+  private async recoverStuckFallback(od: OrderDeliveryEntity): Promise<void> {
+    if (
+      od.status === IOrderDeliveryStatus.COMPLETE_SMS ||
+      od.status === IOrderDeliveryStatus.COMPLETE
+    ) {
+      od.reportState = IOrderDeliveryReportState.CONFIRMED;
+      od.reportClaimedAt = null;
+      od.reportOwnerToken = null;
+      await this.persistReportState(od);
+      return;
+    }
+    od.reportState = IOrderDeliveryReportState.UNCONFIRMED;
+    od.reportClaimedAt = null;
+    od.reportOwnerToken = null;
+    await this.finalizeReportFail(od);
+  }
+
+  /**
+   * FAIL 확정 + 환불(B1/B3) + 정산. batch 최초발송이므로 isInitialSend=true 전제로 shouldHoldRefundForFail 재사용.
+   */
+  private async finalizeReportFail(od: OrderDeliveryEntity): Promise<void> {
+    this.markSendFail(od, IOrderDeliveryStatus.FAIL);
+    await this.persistReportState(od);
+    await this.correctSendHistory(od.id, false, { fallback: 'FAIL' });
+
+    const order = od.orderProductMapping.order;
+    const shouldHold = await this.shouldHoldRefundForFail(od, order);
+    if (!shouldHold) {
+      await this.refundForFail(od);
+    }
+    await this.markOrderTerminalAndSettle(order.id);
+  }
+
+  /**
+   * 비동기 POST 성공 이력(delivery_send_history)을 최종 결과(성공/실패)로 정정한다.
+   */
+  private async correctSendHistory(orderDeliveryId: number, isSuccess: boolean, outcome: unknown): Promise<void> {
+    await this.deliverySendHistoryRepository
+      .createQueryBuilder()
+      .update(DeliverySendHistoryEntity)
+      .set({ isSuccess, etcContext: JSON.stringify(outcome) })
+      .where('order_delivery_id = :id', { id: orderDeliveryId })
+      .execute();
+  }
+
+  /**
+   * reportSweep 종결/재시도 시 변경 컬럼만 타깃 update (imagePath 등 무관 컬럼 덮어쓰기 방지).
+   */
+  private async persistReportState(od: OrderDeliveryEntity): Promise<void> {
+    await this.orderDeliveryRepository.update(
+      { id: od.id },
+      {
+        status: od.status,
+        actualSendAt: od.actualSendAt,
+        failedAt: od.failedAt,
+        reportState: od.reportState,
+        reportAttemptCount: od.reportAttemptCount,
+        reportFallbackAttemptCount: od.reportFallbackAttemptCount,
+        reportNextDueAt: od.reportNextDueAt,
+        reportClaimedAt: od.reportClaimedAt,
+        reportOwnerToken: od.reportOwnerToken,
+      },
+    );
   }
 
   /**
@@ -717,7 +1024,13 @@ export class DeliveryBatchService {
 
     // 6. 발송 채널별 처리
     if (deliveryMethod === IOrderSendMethod.ALIM_TALK) {
-      await this.deliverySendService.sendAlimTalk(
+      // ALIMTALK_ASYNC_REPORT: on 이면 POST 만 하고 수신확인을 reportSweep 로 분리(sendAlimTalkAsync),
+      // off 면 기존 동기 inquiry 경로(sendAlimTalk). 두 메서드 시그니처 동일.
+      const asyncReport = this.configService.get('ALIMTALK_ASYNC_REPORT') === 'true';
+      const sendAlimTalkFn = asyncReport
+        ? this.deliverySendService.sendAlimTalkAsync.bind(this.deliverySendService)
+        : this.deliverySendService.sendAlimTalk.bind(this.deliverySendService);
+      await sendAlimTalkFn(
         orderDelivery,
         decryptedDeliveryTarget,
         encryptKey,
@@ -2287,17 +2600,4 @@ export class DeliveryBatchService {
     }
   }
 
-  /**
-   * 배송 목록을 청크로 분할
-   * SSG는 Mutex로 보호되므로 별도 분리 없이 일반 청크 처리
-   */
-  private createDeliveryChunks(deliveryList: OrderDeliveryEntity[], chunkSize: number): OrderDeliveryEntity[][] {
-    const chunks: OrderDeliveryEntity[][] = [];
-
-    for (let i = 0; i < deliveryList.length; i += chunkSize) {
-      chunks.push(deliveryList.slice(i, i + chunkSize));
-    }
-
-    return chunks;
-  }
 }
