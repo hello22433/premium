@@ -99,7 +99,6 @@ import { IPartnerCompanyType } from '../../partner_company/interface/partner.com
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { OrderDeliveryRefundEntity } from '../../entity/order.delivery.refund.entity';
 import { UserDiscountEntity } from '../../entity/user.discount.entity';
-import { IPriceAdjustment } from '../../user_discount/interface/price.adjustment';
 import { findMatchingDiscount } from '../../user_discount/domain/discount.matcher';
 import { SettleUserPerListViewDto } from '../api/dto/settle.user.per.list.view.dto';
 import { SettleUserStatusEnum } from '../interface/settle.user.status';
