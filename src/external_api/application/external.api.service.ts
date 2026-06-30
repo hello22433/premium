@@ -598,22 +598,14 @@ export class ExternalApiService {
       throw new ExternalApiException('3001', '올바르지 못한 요청입니다');
     }
 
-    // salePrice = 주문 정산(createOrder)과 동일 모델(할인 findMatchingDiscount + 카드할증)을 적용한 고객사별 실제 청구 단가.
-    // price(정가)와 구분해 노출. SSG는 위에서 제외되어 sendAmount=정가(product.price)와 일치.
-    // 할인은 1회 배치 로딩 후 product별로 computeSettlementForBilling 과 동일한 where 의미(user OR 그 product 의 partner)로 필터.
+    // salePrice = 고객사 기준 실제 청구 단가(할인 + 카드할증).
+    // 협력사 정산 수수료(partnerCompanyId 기준 user_discount)는 자사↔협력사 간 정산이며
+    // 고객사 청구단가 산출 대상이 아니므로 userId 조건만 로딩한다.
     const cardSurchargeApplied = this.resolveCardSurchargeAppliedForUser(user);
-    const partnerIds = [...new Set(products.map((p) => p.partnerCompanyId).filter((id): id is number => id != null))];
-    const discountWhere: Array<{ userId?: number; partnerCompanyId?: number }> = [
-      { userId: user.id },
-      ...partnerIds.map((id) => ({ partnerCompanyId: id })),
-    ];
-    const allDiscounts = await this.userDiscountRepository.find({ where: discountWhere });
+    const allDiscounts = await this.userDiscountRepository.find({ where: { userId: user.id } });
 
     const data: ProductResponseData[] = products.map((p) => {
-      const scopedDiscounts = allDiscounts.filter(
-        (d) => d.userId === user.id || (p.partnerCompanyId != null && d.partnerCompanyId === p.partnerCompanyId),
-      );
-      const { settleAmount } = this.computeUnitSettlement(p, scopedDiscounts, p.price, cardSurchargeApplied);
+      const { settleAmount } = this.computeUnitSettlement(p, allDiscounts, p.price, cardSurchargeApplied);
       return {
         productCode: p.code,
         productName: p.name,
