@@ -2097,9 +2097,17 @@ export class OrderService {
           let adjustedPrice = originalPrice;
           if (orderProductMapping.fee !== null && orderProductMapping.fee > 0 && orderProductMapping.priceAdjustment) {
             if (orderProductMapping.priceAdjustment === IPriceAdjustment.DISCOUNT) {
-              adjustedPrice = OrderFeeCalculator({ fee: orderProductMapping.fee, priceAdjustment: IPriceAdjustment.DISCOUNT, price: originalPrice });
+              adjustedPrice = OrderFeeCalculator({
+                fee: orderProductMapping.fee,
+                priceAdjustment: IPriceAdjustment.DISCOUNT,
+                price: originalPrice,
+              });
             } else if (orderProductMapping.priceAdjustment === IPriceAdjustment.ADDITIONAL) {
-              adjustedPrice = OrderFeeCalculator({ fee: orderProductMapping.fee, priceAdjustment: IPriceAdjustment.ADDITIONAL, price: originalPrice });
+              adjustedPrice = OrderFeeCalculator({
+                fee: orderProductMapping.fee,
+                priceAdjustment: IPriceAdjustment.ADDITIONAL,
+                price: originalPrice,
+              });
             }
           }
 
@@ -4117,9 +4125,7 @@ export class OrderService {
           // 1차/2차 공통 신용초과 응답 빌더. 두 응답이 동일 필드를 내려야 함 —
           // walletAccountId/requestedAmount/requestedCreditExcessAmount 는 신용초과 사전 승인
           // (POST /credit-excess-approvals) 요청 body 로 그대로 전달되며, 누락 시 승인 API 400 회귀(요청4).
-          const buildCreditExcessResponse = (
-            message: 'credit_excess' | 'credit_excess_pending_approval',
-          ) =>
+          const buildCreditExcessResponse = (message: 'credit_excess' | 'credit_excess_pending_approval') =>
             ({
               message,
               creditExcess: true,
