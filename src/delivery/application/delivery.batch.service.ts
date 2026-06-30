@@ -1471,7 +1471,12 @@ export class DeliveryBatchService {
         if (resendDeducted && resendDeductionId) {
           await this.ssgEventService.markReissueIssueAttempted(resendDeductionId, orderDelivery.id);
         }
-        await this.partnerCompanyExternService.issue(orderDelivery, ssgEvent);
+        // resendDeductionId 전달 → issue() 가 기존/후보 PIN 재사용 시 pending 을 durable 'REUSED' 마킹(crash 안전).
+        const issueResult = await this.partnerCompanyExternService.issue(
+          orderDelivery,
+          ssgEvent,
+          resendDeductionId ?? undefined,
+        );
 
         if (!orderDelivery.barCode) {
           this.logger.error(`[RESEND] PIN 재발급 실패 - orderDelivery.id: ${orderDelivery.id}`);
@@ -1482,14 +1487,26 @@ export class DeliveryBatchService {
           return false;
         }
 
-        // 성공 시 ssgEventId 업데이트 (다른 행사로 변경된 경우) + 선차감 pending KEPT 해소
-        if (resendDeducted && ssgEvent) {
-          orderDelivery.ssgEventId = ssgEvent.id;
-          if (resendDeductionId) {
-            // ssgEventId 를 먼저 durable 반영 후 pending KEPT — 그 사이 크래시 시에도 DB delivery 가
-            // 신규 행사를 가리켜 정합(MEDIUM-4). 미반영 상태로 KEPT 하면 sweep 이 repair 못 해 참조 불일치 잔존.
+        // 선차감 정합(HIGH): issue() 가 신규 INSERT 로 선차감 행사를 실제 사용한 경우만 KEPT.
+        // 기존/후보(legacy 등록) PIN 재사용 시엔 선차감 행사가 미사용 → 직접 역복원해야 이중차감을 막는다.
+        if (resendDeducted && ssgEvent && resendDeductionId) {
+          if (issueResult.ssgNewIssue) {
+            // 신규 INSERT — 선차감 행사 실사용. ssgEventId durable 반영 후 pending KEPT.
+            orderDelivery.ssgEventId = ssgEvent.id;
             await this.orderDeliveryRepository.update(orderDelivery.id, { ssgEventId: ssgEvent.id });
             await this.ssgEventService.resolveReissuePending(resendDeductionId, 'KEPT');
+          } else {
+            // 재사용 — 선차감 행사(미사용)를 state 비의존 직접 역복원(이중차감 방지). state 기반 resolver 는
+            // 재사용 PIN 기준 CONFIRMED 를 새 선차감 확정으로 오판하므로 사용하지 않는다.
+            this.logger.warn(
+              `[RESEND] 선차감 행사 미사용(기존/후보 PIN 재사용) — 선차감 역복원. orderDelivery.id=${orderDelivery.id}, deductedEventId=${ssgEvent.id}, actualEventId=${issueResult.ssgEventId}`,
+            );
+            await this.reverseReissueDeductDirect(resendDeductionId, ssgEvent.id, order.id, product.price);
+            resendDeducted = false;
+            // ssgEventId 는 issue() 가 실제 귀속 행사로 이미 메모리/DB(markConfirmed) 반영. drift 시에만 보정.
+            if (issueResult.ssgEventId != null) {
+              orderDelivery.ssgEventId = issueResult.ssgEventId;
+            }
           }
         }
 

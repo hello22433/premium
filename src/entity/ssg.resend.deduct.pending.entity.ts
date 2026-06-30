@@ -61,6 +61,14 @@ export class SsgResendDeductPendingEntity {
   @Column({ type: 'varchar', length: 20, name: 'resolution', nullable: true })
   resolution: string | null;
 
+  /**
+   * issue() 가 선차감 행사를 실제 사용하지 않고 기존/후보 PIN 을 재사용한 경우 'REUSED'.
+   * issue() 재사용 시점에 REQUIRES_NEW 로 durable 마킹 → crash 시에도 sweep 이 SSG state(재사용 PIN 의
+   * CONFIRMED)와 무관하게 선차감을 REVERSED 한다. NULL = 신규발급/미상(기존 state 기준 확정).
+   */
+  @Column({ type: 'varchar', length: 20, name: 'issue_outcome', nullable: true })
+  issueOutcome: string | null;
+
   /** sweep CAS lease 토큰(ulid). */
   @Column({ type: 'varchar', length: 26, name: 'recover_token', nullable: true })
   recoverToken: string | null;

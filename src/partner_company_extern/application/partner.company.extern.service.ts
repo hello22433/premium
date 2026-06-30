@@ -28,6 +28,7 @@ import { SsgOrphanResolveOutcome } from '../interface/ssg.orphan.resolve';
 import { Propagation, Transactional } from 'typeorm-transactional';
 import { orderBarcodeGenerate } from '../../order/domain/order.code.generate';
 import { SsgEventEntity } from '../../entity/ssg.event.entity';
+import { SsgResendDeductPendingEntity } from '../../entity/ssg.resend.deduct.pending.entity';
 import { SsgTransactionId } from '../domain/ssg.transaction.id';
 import { systemFromPhoneNumber, ssgIssueUserName } from '../../const';
 import { smsSsgTemplate } from '../../delivery/domain/sms.ssg.template';
@@ -41,6 +42,17 @@ import { parseDateString, isExpiredYMD, formatDateYMD } from '../../util/date.ut
 import { applyReplaceCharacters } from '../../common/utils/replace-characters.util';
 import { resolveGalaxiaUsage } from '../../common/utils/galaxia.usage.util';
 import { sleep } from '../../util/time.util';
+
+/**
+ * issue() 결과 — 배치 재발송 선차감 정합용.
+ * ssgNewIssue=false(기존/후보 PIN 재사용)면 caller 는 선차감 행사를 역복원해야 한다(이중차감 방지).
+ */
+export interface PartnerIssueResult {
+  /** SSG 신규 INSERT 로 전달된 ssgEvent 를 실제 차감·사용했는지. 재사용/비-SSG 는 false. */
+  ssgNewIssue: boolean;
+  /** 실제 PIN 이 귀속된 SSG 행사 id. 재사용 시 후보/기존 행사 id, 신규 시 ssgEvent.id, 미상 null. */
+  ssgEventId: number | null;
+}
 
 @Injectable()
 export class PartnerCompanyExternService {
@@ -75,6 +87,8 @@ export class PartnerCompanyExternService {
     private galaxiaBarcodeLogRepository: Repository<GalaxiaBarcodeLogEntity>,
     private cryptoCipher: CryptoCipher,
     private ssgInsertStateService: SsgInsertStateService,
+    @InjectRepository(SsgResendDeductPendingEntity)
+    private resendDeductPendingRepository: Repository<SsgResendDeductPendingEntity>,
   ) {}
 
   private logger = new Logger('PARTNER_COMPANY_EXTERN');
@@ -162,6 +176,37 @@ export class PartnerCompanyExternService {
   }
 
   /**
+   * ssg_issue_log 후보(cust_info 등록 확인된 PIN)를 재사용한다: 선택 후보의 PIN 을 메모리 엔티티에 반영하고
+   * state CONFIRMED + order_delivery PIN 컬럼을 best-effort 로 durable 동기화(markConfirmed)한다.
+   * 발송은 메모리 엔티티 기준이므로 markConfirmed 가 state 가드로 skip 되어도 재사용 PIN 으로 정상 발송된다.
+   */
+  private async reuseSsgCandidate(orderDelivery: OrderDeliveryEntity, candidate: SsgIssueLogEntity): Promise<void> {
+    orderDelivery.barCode = candidate.barCode;
+    orderDelivery.personalCode = candidate.personalCode;
+    orderDelivery.ssgTransactionId = candidate.ssgTransactionId;
+    orderDelivery.couponNum = candidate.couponNum;
+    orderDelivery.expireAt = candidate.expireAt;
+    orderDelivery.encourageAt = candidate.encourageAt;
+    // PIN 과 행사 귀속(ssgEventId)을 메모리에 함께 반영. durable 반영은 markConfirmed 의 REQUIRES_NEW 에서
+    // PIN 과 같은 트랜잭션으로 처리한다(귀속 분리 방지). outer REQUIRED tx 에서 order_delivery 를 직접 update 하면
+    // markConfirmed(REQUIRES_NEW)와 동일 row 락 충돌로 self-deadlock 이 나므로 outer-tx update 는 하지 않는다.
+    if (candidate.ssgEventId != null) {
+      orderDelivery.ssgEventId = candidate.ssgEventId;
+    }
+    if (candidate.ssgTransactionId) {
+      await this.ssgInsertStateService.markConfirmed(orderDelivery.id, {
+        barCode: candidate.barCode,
+        personalCode: candidate.personalCode,
+        ssgTransactionId: candidate.ssgTransactionId,
+        couponNum: candidate.couponNum,
+        expireAt: candidate.expireAt,
+        encourageAt: candidate.encourageAt,
+        ssgEventId: candidate.ssgEventId,
+      });
+    }
+  }
+
+  /**
    * resultCd = 처리구분(2) + 처리결과(2).
    * 등록시도(01) + 처리결과 ≠ 00 → 등록 실패(미등록행사/잔액부족/행사키오류 등).
    * 0100(정상) / 02xx(전송) / 04xx(지급) 은 PIN 실존 → 유효.
@@ -204,8 +249,14 @@ export class PartnerCompanyExternService {
   }
 
   @Transactional({ propagation: Propagation.REQUIRED })
-  async issue(orderDelivery: OrderDeliveryEntity, ssgEvent: SsgEventEntity | null) {
+  async issue(
+    orderDelivery: OrderDeliveryEntity,
+    ssgEvent: SsgEventEntity | null,
+    resendDeductionId?: string,
+  ): Promise<PartnerIssueResult> {
     const type = orderDelivery.orderProductMapping!.product.partnerCompany!.type;
+    // issue 결과(배치 재발송 선차감 정합). 기본=재사용(false)·현재 귀속 행사. SSG 신규 INSERT 시 갱신.
+    const result: PartnerIssueResult = { ssgNewIssue: false, ssgEventId: orderDelivery.ssgEventId ?? null };
 
     // deliveryTarget 복호화
     const decryptedDeliveryTarget =
@@ -238,6 +289,10 @@ export class PartnerCompanyExternService {
         });
       } catch (e) {
         if (e instanceof QueryFailedError && (e as QueryFailedError & { code?: string }).code === 'ER_DUP_ENTRY') {
+          // ER_DUP_ENTRY = 이 호출이 외부 INSERT 를 수행하지 않은 dedup loser 로 확정(전달 ssgEvent=선차감 C 미사용).
+          // 어떤 추가 DB 조회(아래 dedup/fresh 조회)보다 먼저 REUSED 를 durable 기록 → 조회 중 크래시해도
+          // sweep 이 승자가 만든 CONFIRMED 를 loser 신규발급으로 오판하지 않고 선차감을 REVERSED 한다.
+          await this.markReissuePendingReusedIfBatch(resendDeductionId);
           const existing = await this.pinIssueDedupRepository.findOne({
             where: { transactionId: orderDelivery.transactionId },
           });
@@ -260,15 +315,54 @@ export class PartnerCompanyExternService {
               orderDelivery.ssgTransactionId = fresh.ssgTransactionId;
               orderDelivery.expireAt = fresh.expireAt;
               orderDelivery.encourageAt = fresh.encourageAt;
+              // MEDIUM: 행사 귀속(ssgEventId)도 함께 복원 — 누락 시 이후 stale save 가 잘못된 행사로 덮어쓴다.
+              orderDelivery.ssgEventId = fresh.ssgEventId;
+              result.ssgEventId = fresh.ssgEventId ?? null;
+              await this.pinIssueDedupRepository.update(
+                { transactionId: orderDelivery.transactionId },
+                { recoveredFrom: 'DEDUP' },
+              );
+              return result;
+            } else if (type === IPartnerCompanyType.SSG) {
+              // dedup 이 가리키는 '정확한' barCode 의 ssg_issue_log row 에서 전체 payload(행사귀속 포함)를 복원한다.
+              // (barCode 만 복원하면 personalCode/ssgTransactionId/유효기간/ssgEventId 누락. 최신 로그 auto-select 는
+              //  다른 시도의 PIN 을 잘못 복원할 수 있어 정확 매칭으로 한정.)
+              const exact = await this.ssgIssueLogRepository.findOne({
+                where: { orderDeliveryId: orderDelivery.id, barCode: existing.barCode },
+                order: { id: 'DESC' },
+              });
+              if (exact) {
+                orderDelivery.barCode = exact.barCode;
+                orderDelivery.personalCode = exact.personalCode;
+                orderDelivery.couponNum = exact.couponNum;
+                orderDelivery.ssgTransactionId = exact.ssgTransactionId;
+                orderDelivery.expireAt = exact.expireAt;
+                orderDelivery.encourageAt = exact.encourageAt;
+                if (exact.ssgEventId != null) {
+                  orderDelivery.ssgEventId = exact.ssgEventId;
+                }
+                result.ssgEventId = orderDelivery.ssgEventId ?? null;
+                await this.pinIssueDedupRepository.update(
+                  { transactionId: orderDelivery.transactionId },
+                  { recoveredFrom: 'DEDUP' },
+                );
+                return result;
+              }
+              // 정확 매칭 없음: barCode-only 성공 반환은 메타데이터 누락 + cust_info 우회라 위험.
+              // dedup row 를 복구표시하지 않고 아래 ConflictException 으로 fail-safe(재시도). 동시 tx 의
+              // order_delivery save 가 전파되면 다음 시도에서 fresh?.barCode 경로가 정상 복구한다.
+              this.logger.warn(
+                `[PIN_DEDUP] SSG dedup exact 매칭 없음 - fail-safe(ConflictException, 재시도 시 fresh 경로 복구). orderDeliveryId=${orderDelivery.id}, barCode=${existing.barCode}`,
+              );
             } else {
-              // Fix #3 적용 전 발급된 dedup row 등 fresh entity에 PIN이 없을 경우의 안전 폴백
+              // 비-SSG 최후 폴백 (ssg_issue_log 진실원천 없음)
               orderDelivery.barCode = existing.barCode;
+              await this.pinIssueDedupRepository.update(
+                { transactionId: orderDelivery.transactionId },
+                { recoveredFrom: 'DEDUP' },
+              );
+              return result;
             }
-            await this.pinIssueDedupRepository.update(
-              { transactionId: orderDelivery.transactionId },
-              { recoveredFrom: 'DEDUP' },
-            );
-            return;
           }
 
           // 이론상 도달 불가 경로(conflict 시점에는 상대가 성공 커밋되어 bar_code가 있어야 함).
@@ -287,7 +381,7 @@ export class PartnerCompanyExternService {
     try {
       if (!type || orderDelivery.orderProductMapping.product.type === 'SELF') {
         orderDelivery.barCode = orderBarcodeGenerate();
-        return;
+        return result;
       }
 
       // 1.1.1 갤럭시아 쿠폰 발급
@@ -298,7 +392,7 @@ export class PartnerCompanyExternService {
           this.logger.warn(
             `[GALAXIA] 이미 발급된 쿠폰 존재 - barCode: ${orderDelivery.barCode}, couponNum: ${orderDelivery.couponNum}, 발급 skip`,
           );
-          return;
+          return result;
         }
 
         const giftKind = orderDelivery.orderProductMapping.product.name.includes('(백화점)') ? 'dept' : 'cpn';
@@ -454,6 +548,8 @@ export class PartnerCompanyExternService {
           if (verdict === SsgPinVerdict.REGISTERED) {
             // result 유효 → INSERT는 됐고 발송만 실패 → 기존 PIN 재사용
             needsInsert = false;
+            // 재사용 확정 — 배치 선차감(C) 을 sweep 이 state 무관하게 REVERSED 하도록 durable 마킹(markConfirmed 전).
+            await this.markReissuePendingReusedIfBatch(resendDeductionId);
             this.logger.log(`[SSG] 기존 PIN이 SSG DB에 등록(유효) - barCode: ${orderDelivery.barCode}, INSERT 건너뜀`);
             // state ATTEMPTED → CONFIRMED 동기화 (markConfirmed 는 WHERE state=ATTEMPTED 가드라 그 외엔 silent skip).
             // ssgTransactionId 가 NULL 인 legacy row 는 markConfirmed 호출 자체를 skip (NOT NULL 타입 보호).
@@ -480,6 +576,87 @@ export class PartnerCompanyExternService {
             orderDelivery.barCode = null;
             orderDelivery.personalCode = null;
           }
+        }
+
+        // 1b) barCode 없음 → ssg_issue_log 후보(직전 시도 PIN)를 cust_info 진실원천으로 후보별 분류해
+        //     재사용/보류/새발급을 결정한다. 1차 발송 실패가 tx 롤백으로 barCode 를 남기지 못한 고아 PIN 을
+        //     모든 issue() 진입점(배치/CS reSend/재발송)에서 균일 처리(결정점 단일화).
+        //     state 가 아니라 '후보 존재 여부'로 판단한다(Lazy state 도입 전 legacy ssg_issue_log 도 커버).
+        //     resolveSsgOrphan 은 등록실패(resultCd 0103 등)도 CONFIRMED 로 보는 '환불용' 판정이라 재사용엔 쓰지 않고,
+        //     등록실패를 NOT 재사용으로 구분하는 classifySsgPin 으로 후보를 분류한다.
+        //     eventSeq 없는 legacy 후보는 check 파라미터가 부족하므로 getTry(제출여부)만으로 보류 판단한다.
+        if (!orderDelivery.barCode) {
+          const allCandidates = await this.ssgIssueLogRepository.find({
+            where: { orderDeliveryId: orderDelivery.id },
+            order: { id: 'DESC' },
+          });
+          const candidates = allCandidates.filter((c) => !!c.personalCode);
+
+          if (candidates.length > 0) {
+            const registeredList: SsgIssueLogEntity[] = [];
+            let uncertain = false; // PROCESSING / 조회오류 / eventSeq 없이 제출이력(getTry=Y)만 있는 후보
+
+            for (const candidate of candidates) {
+              try {
+                if (candidate.eventSeq !== null) {
+                  const verdict = await this.classifySsgPin({
+                    eventNo: candidate.eventNo,
+                    eventSeq: candidate.eventSeq,
+                    personalCode: candidate.personalCode,
+                  });
+                  if (verdict === SsgPinVerdict.REGISTERED) {
+                    registeredList.push(candidate);
+                  } else if (verdict === SsgPinVerdict.PROCESSING) {
+                    uncertain = true;
+                  }
+                  // NOT_SUBMITTED / REGISTRATION_FAILED → 재사용 불가
+                } else {
+                  // legacy(eventSeq=null): check 파라미터 부족 → getTry 만으로 제출 여부 확인.
+                  // 제출 이력(Y)이면 등록 여부를 확정할 수 없으나 새발급 시 이중발급 위험 → 보류.
+                  const tryOut = await this.ssgIssue.getTry({ vno: candidate.personalCode });
+                  if (tryOut?.response?.value?.[0]?.tryYn?.[0] === 'Y') {
+                    uncertain = true;
+                  }
+                  // tryYn !== 'Y' → 미제출 → 무시
+                }
+              } catch (e) {
+                // getTry/check 네트워크·파싱 오류 → 등록 여부 불명 → 보류 후보
+                uncertain = true;
+                this.logger.error(
+                  `[SSG] barCode 없음 후보 조회 오류 - orderDeliveryId=${orderDelivery.id}, vno=${candidate.personalCode}: ${e instanceof Error ? e.message : e}`,
+                );
+              }
+            }
+
+            if (registeredList.length > 0) {
+              // 재사용 확정 — 배치 선차감(C) 을 sweep 이 state 무관하게 REVERSED 하도록 durable 마킹(reuse 전).
+              await this.markReissuePendingReusedIfBatch(resendDeductionId);
+              if (registeredList.length > 1) {
+                // 동일 배송건에 등록 PIN 2건 이상 = 잠재 이중등록 → 운영 알림(후속 orphan 취소 검토).
+                this.logger.error(
+                  `[SSG] 다중 등록 PIN 감지(잠재 이중등록, 운영 점검 필요) - orderDeliveryId=${orderDelivery.id}, barCodes=${registeredList
+                    .map((c) => c.barCode)
+                    .join(',')}`,
+                );
+              }
+              // 최신(id DESC 첫 번째) 등록 후보 재사용(선택후보 복원). 새 INSERT 안 함.
+              await this.reuseSsgCandidate(orderDelivery, registeredList[0]);
+              needsInsert = false;
+              // 재사용 — PIN 은 후보(legacy 등록) 행사에 귀속. 전달된 ssgEvent(선차감)는 미사용.
+              result.ssgEventId = orderDelivery.ssgEventId ?? null;
+              this.logger.log(
+                `[SSG] barCode 없음 - 등록 확정 후보 재사용(barCode=${registeredList[0].barCode}). orderDeliveryId=${orderDelivery.id}`,
+              );
+            } else if (uncertain) {
+              // REGISTERED 없음 + (PROCESSING/조회불명/eventSeq없는 제출이력) → 등록 여부 미확정 → 보류(이중발급 차단).
+              this.logger.warn(
+                `[SSG] barCode 없음 - 후보 등록 여부 미확정(처리중/조회불가) - 발송 보류. orderDeliveryId=${orderDelivery.id}`,
+              );
+              throw new SsgProcessingError(orderDelivery.id);
+            }
+            // else: 모든 후보 미제출/미등록 확정 → 새 PIN 정상 경로(아래 Mutex)
+          }
+          // 후보 0건(최초 clean 발송) → 새 PIN. 외부 SSG API 추가호출 없음(hot-path 보존).
         }
 
         // 2~4단계를 Mutex로 직렬화: PIN 생성~중복확인~INSERT 간 경쟁 조건 방지
@@ -621,6 +798,12 @@ export class PartnerCompanyExternService {
           return '';
         });
 
+        // 신규 INSERT 로 전달된 ssgEvent 를 실제 차감·사용한 경우만 신규발급으로 표시(재사용은 기본 false 유지).
+        if (needsInsert) {
+          result.ssgNewIssue = true;
+          result.ssgEventId = ssgEvent.id;
+        }
+
         // SSG의 SsgCoupon.do는 Oracle INSERT만 수행하며 문자 발송은 하지 않음
         // actualSendAt은 실제 SMS/알림톡 발송 성공 시 delivery.batch.service에서 설정됨
       }
@@ -706,6 +889,32 @@ export class PartnerCompanyExternService {
         });
       }
     }
+    return result;
+  }
+
+  /** 배치 재발송(resendDeductionId 보유)에서만 pending 을 REUSED 로 durable 마킹. 비-배치 경로는 no-op(빈 tx 회피). */
+  private async markReissuePendingReusedIfBatch(resendDeductionId: string | undefined): Promise<void> {
+    if (resendDeductionId) {
+      await this.markReissuePendingReused(resendDeductionId);
+    }
+  }
+
+  /**
+   * 배치 재발송 선차감 pending 을 'REUSED' 로 durable 마킹 (REQUIRES_NEW 즉시 커밋).
+   * issue() 가 기존/후보 PIN 을 재사용해 전달된 ssgEvent(선차감 C)를 미사용한 경우, 재사용 확정 시점에 호출한다.
+   * 즉시 커밋되므로 이후 caller 의 직접 역복원 전에 크래시해도 sweep 이 SSG state(재사용 PIN 의 CONFIRMED)와
+   * 무관하게 issue_outcome='REUSED' 를 보고 선차감을 REVERSED 한다(이중차감 방지). 미해소 pending 에만 1회.
+   */
+  @Transactional({ propagation: Propagation.REQUIRES_NEW })
+  private async markReissuePendingReused(resendDeductionId: string): Promise<void> {
+    await this.resendDeductPendingRepository
+      .createQueryBuilder()
+      .update(SsgResendDeductPendingEntity)
+      .set({ issueOutcome: 'REUSED' })
+      .where('resend_deduction_id = :rid', { rid: resendDeductionId })
+      .andWhere('resolved_at IS NULL')
+      .andWhere('issue_outcome IS NULL')
+      .execute();
   }
 
   /**

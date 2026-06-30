@@ -159,6 +159,7 @@ describe('DeliveryBatchService - B1 settlement-hold redesign', () => {
     partnerCompanyExternService = {
       issue: jest.fn().mockImplementation(async (od: OrderDeliveryEntity) => {
         od.barCode = '80000000';
+        return { ssgNewIssue: true, ssgEventId: od.ssgEventId ?? null };
       }),
     } as unknown as jest.Mocked<PartnerCompanyExternService>;
 
@@ -412,6 +413,7 @@ describe('DeliveryBatchService - B1 settlement-hold redesign', () => {
       // issue() 가 barCode 를 채우지 못함 → PIN 재발급 실패
       partnerCompanyExternService.issue.mockImplementation(async () => {
         /* barCode 미설정 */
+        return { ssgNewIssue: false, ssgEventId: null };
       });
 
       const result = await sut.oneSend(od);
