@@ -809,6 +809,40 @@ export class SsgEventService {
     await this.amountHistoryRepository.update({ orderId, isTemporary: true }, { isTemporary: false });
   }
 
+  @Transactional()
+  async restoreTemporaryEventBalance(orderId: number): Promise<void> {
+    const histories = await this.amountHistoryRepository.find({
+      where: { orderId, isTemporary: true },
+      order: { ssgEventId: 'ASC' },
+    });
+
+    for (const history of histories) {
+      if (!history.ssgEventId || history.amount == null || history.amount >= 0) {
+        continue;
+      }
+
+      const ssgEvent = await this.findSsgEventForUpdate(history.ssgEventId);
+
+      if (!ssgEvent) {
+        continue;
+      }
+
+      const restoredBalance = ssgEvent.eventBalance - history.amount;
+
+      const restorationHistory = this.amountHistoryRepository.create({
+        ssgEventId: ssgEvent.id,
+        amount: -history.amount,
+        balance: restoredBalance,
+        orderId,
+        isTemporary: false,
+      });
+
+      ssgEvent.eventBalance = restoredBalance;
+      await this.amountHistoryRepository.save(restorationHistory);
+      await this.ssgEventRepository.save(ssgEvent);
+    }
+  }
+
   async getOpenTempDeductionByEvent(ssgEventId: number): Promise<number> {
     // R = '아직 살아있는' 검토중 선차감의 NET 합.
     //

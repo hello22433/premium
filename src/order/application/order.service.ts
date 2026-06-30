@@ -4735,6 +4735,7 @@ export class OrderService {
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .innerJoinAndSelect('orderProductMappings.product', 'product')
+      .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
       .where('order.id = :id', { id })
       // .andWhere('order.userId = :userId', { userId: user.id })
       .andWhere('order.status = :status', { status: IOrderStatus.DELIVERY_REQUEST })
@@ -4763,6 +4764,9 @@ export class OrderService {
       (product) => product.id,
     );
 
+    // 상품 교체 전: 기존 이벤트 가차감(isTemporary=true) 복원
+    await this.ssgEventService.restoreTemporaryEventBalance(beforeOrder.id);
+
     for (const orderProductMapping of beforeOrder.orderProductMappings!) {
       const beforeProductId = orderProductMapping.productId;
       const afterProductId = afterProductPriceMap.get(orderProductMapping.product.price);
@@ -4781,44 +4785,51 @@ export class OrderService {
       );
     }
 
-    const order = await this.orderRepository
-      .createQueryBuilder('order')
-      .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
-      .innerJoinAndSelect('orderProductMappings.product', 'product')
-      .where('order.id = :id', { id })
-      // .andWhere('order.userId = :userId', { userId: user.id })
-      .andWhere('order.status = :status', { status: IOrderStatus.DELIVERY_REQUEST })
-      .andWhere('order.type = :type', { type: IOrderType.SSG })
-      .getOne();
-    // 현재 order 에 되어있는 모든 product id 를 추출, 가격이 같은 다른 couponExpireation 으로 변경 진행
-    if (!order) {
-      throw new InternalServerErrorException('해당 주문이 존재하지 않습니다.');
+    // 새 유효기간 이벤트 재할당 + 가차감
+    const deliveries: { deliveryId: number; price: number }[] = [];
+    for (const mapping of beforeOrder.orderProductMappings!) {
+      const afterProductId = afterProductPriceMap.get(mapping.product.price);
+      const afterProduct = afterProductList.find((p) => p.id === afterProductId);
+      const price = afterProduct?.price ?? mapping.product.price;
+      for (const delivery of mapping.orderDeliveries) {
+        deliveries.push({ deliveryId: delivery.id, price });
+      }
     }
 
-    // // 상품 가격으로 전체 가격 계산
-    const totalPrice = order.sendAmount;
+    const reserveMapping = beforeOrder.orderProductMappings!.find((m) => m.sendType === 'RESERVE' && m.sendRequestAt);
+    const reserveDate = reserveMapping ? new Date(reserveMapping.sendRequestAt as unknown as string) : undefined;
 
-    const now = new Date();
-    const ssgEventList = await this.ssgEventRepository.find({
-      where: {
-        startAt: LessThanOrEqual(now),
-        endAt: MoreThanOrEqual(now),
-        couponExpiration: couponExpiration,
-      },
-      order: { order: 'desc' },
+    const allocations = await this.ssgEventService.allocateEventsForDeliveries(
+      deliveries,
+      couponExpiration,
+      reserveDate,
+    );
+
+    if (!allocations) {
+      throw new BadRequestException('사용 가능한 SSG 이벤트가 없습니다. (잔액 부족)');
+    }
+
+    await this.ssgEventService.deductEventBalanceMultiple(allocations, beforeOrder.id, true);
+
+    // orderDelivery.ssgEventId 및 order.ssgEventId 재저장
+    const allocationMap = new Map<number, number>();
+    for (const alloc of allocations) {
+      allocationMap.set(alloc.deliveryId, alloc.eventId);
+    }
+
+    for (const mapping of beforeOrder.orderProductMappings!) {
+      for (const delivery of mapping.orderDeliveries) {
+        if (allocationMap.has(delivery.id)) {
+          await this.orderDeliveryRepository.update(delivery.id, {
+            ssgEventId: allocationMap.get(delivery.id),
+          });
+        }
+      }
+    }
+
+    await this.orderRepository.update(beforeOrder.id, {
+      ssgEventId: allocations[0]?.eventId ?? null,
     });
-
-    if (ssgEventList.length === 0) {
-      throw new BadRequestException('행사가 존재하지 않습니다.');
-    }
-
-    const ssgEventTotalPrice = ssgEventList.reduce((acc, cur) => acc + cur.eventPrice, 0);
-
-    if (ssgEventTotalPrice < totalPrice) {
-      throw new BadRequestException('행사 잔액이 부족합니다.');
-    }
-
-    return;
   }
 
   @Transactional()
