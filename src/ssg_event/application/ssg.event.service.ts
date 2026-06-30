@@ -839,6 +839,7 @@ export class SsgEventService {
 
       ssgEvent.eventBalance = restoredBalance;
       await this.amountHistoryRepository.save(restorationHistory);
+      await this.amountHistoryRepository.update({ id: history.id }, { isTemporary: false });
       await this.ssgEventRepository.save(ssgEvent);
     }
   }

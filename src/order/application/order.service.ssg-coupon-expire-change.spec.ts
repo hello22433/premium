@@ -171,13 +171,12 @@ describe('OrderService.ssgCouponExpireChange — #16 의심포인트 해소 검�
   describe('5. 실행 순서 — 복원이 교체보다 먼저', () => {
     it('restoreTemporaryEventBalance가 orderProductMappingRepository.update보다 먼저 호출된다', async () => {
       const callOrder: string[] = [];
-      const { sut, ssgEventService, sut: _, ...rest } = buildSut();
+      const { sut, ssgEventService } = buildSut();
 
       ssgEventService.restoreTemporaryEventBalance = jest.fn().mockImplementation(async () => {
         callOrder.push('restore');
       });
 
-      const origUpdate = rest.orderDeliveryRepository.update;
       const mappingUpdate = jest.fn().mockImplementation(async () => {
         callOrder.push('mappingUpdate');
         return { affected: 1 };
