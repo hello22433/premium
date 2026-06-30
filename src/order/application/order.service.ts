@@ -140,7 +140,7 @@ import { IProductType } from '../../product/interface/product.type';
 import { defaultOrderMidImagePath, defaultOrderTopImagePath } from '../../const';
 import { OrderStatusExcelMapping } from '../domain/order.excel.mapping';
 import { OrderFeeCalculator, applyCardSurcharge } from '../domain/order.fee.calculator';
-import { calculateOrderSettlementAmount } from '../../util/settle-fee.util';
+import { calculateOrderSettlementAmount, calculateMappingSettlementBaseAmount } from '../../util/settle-fee.util';
 import { OrderCustomerViewDto } from '../api/dto/order.customer.view.dto';
 import { MaskingUtil } from '../../common/utils/masking.util';
 import { resolveExpireDays } from '../../common/utils/expire.util';
@@ -1622,29 +1622,14 @@ export class OrderService {
     if (order.orderProductMappings && order.orderProductMappings.length > 0) {
       for (const orderProductMapping of order.orderProductMappings) {
         const lineView = readLineProductView(orderProductMapping);
-        const originalPrice = lineView.price;
         const quantity = orderProductMapping.amount ?? 0;
 
-        // 할인/할증 적용된 단가 계산 (소수점 발생 시 올림 처리)
-        // D3-49: 표시 단가를 실제 차감과 동일한 OrderFeeCalculator(반올림)로 통일 (인라인 ceil 제거)
-        let adjustedPrice = originalPrice;
-        if (orderProductMapping.fee !== null && orderProductMapping.fee > 0 && orderProductMapping.priceAdjustment) {
-          if (orderProductMapping.priceAdjustment === IPriceAdjustment.DISCOUNT) {
-            adjustedPrice = OrderFeeCalculator({
-              fee: orderProductMapping.fee,
-              priceAdjustment: IPriceAdjustment.DISCOUNT,
-              price: originalPrice,
-            });
-          } else if (orderProductMapping.priceAdjustment === IPriceAdjustment.ADDITIONAL) {
-            adjustedPrice = OrderFeeCalculator({
-              fee: orderProductMapping.fee,
-              priceAdjustment: IPriceAdjustment.ADDITIONAL,
-              price: originalPrice,
-            });
-          }
-        }
+        // D3-49 축3: 발송건별 settleFee(SSG 차등정산) 반영해 실제 차감과 동일. 라인총액(=실제 청구 공급가)이 정확값.
+        const lineTotal = calculateMappingSettlementBaseAmount(orderProductMapping);
+        // 표시 단가는 라인총액/수량 평균(차등정산 시 단가가 균일하지 않음).
+        const adjustedPrice = quantity > 0 ? Math.round(lineTotal / quantity) : lineTotal;
 
-        const total = adjustedPrice * quantity;
+        const total = lineTotal;
         price += total;
 
         // 상품별로 한 줄만 추가 (첫 번째 orderDelivery의 발송 시각 사용)
@@ -2091,27 +2076,14 @@ export class OrderService {
       if (order.orderProductMappings && order.orderProductMappings.length > 0) {
         for (const orderProductMapping of order.orderProductMappings) {
           const lineView = readLineProductView(orderProductMapping);
-          const originalPrice = lineView.price;
           const quantity = orderProductMapping.amount ?? 0;
 
-          let adjustedPrice = originalPrice;
-          if (orderProductMapping.fee !== null && orderProductMapping.fee > 0 && orderProductMapping.priceAdjustment) {
-            if (orderProductMapping.priceAdjustment === IPriceAdjustment.DISCOUNT) {
-              adjustedPrice = OrderFeeCalculator({
-                fee: orderProductMapping.fee,
-                priceAdjustment: IPriceAdjustment.DISCOUNT,
-                price: originalPrice,
-              });
-            } else if (orderProductMapping.priceAdjustment === IPriceAdjustment.ADDITIONAL) {
-              adjustedPrice = OrderFeeCalculator({
-                fee: orderProductMapping.fee,
-                priceAdjustment: IPriceAdjustment.ADDITIONAL,
-                price: originalPrice,
-              });
-            }
-          }
+          // D3-49 축3: 발송건별 settleFee(SSG 차등정산) 반영해 실제 차감과 동일. 라인총액이 정확값.
+          const lineTotal = calculateMappingSettlementBaseAmount(orderProductMapping);
+          // 표시 단가는 라인총액/수량 평균(차등정산 시 단가가 균일하지 않음).
+          const adjustedPrice = quantity > 0 ? Math.round(lineTotal / quantity) : lineTotal;
 
-          const total = adjustedPrice * quantity;
+          const total = lineTotal;
           price += total;
 
           const firstDelivery = orderProductMapping.orderDeliveries?.[0];

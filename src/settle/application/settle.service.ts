@@ -93,7 +93,7 @@ import { IUserStatus } from '../../user/interface/user.status';
 import { SettleOtherProductDetailDto } from '../api/dto/settle.other.product.dto';
 import { OrderDeliveryCouponStatus, couponStatusToKorean } from '../../delivery/interface/order.delivery.coupon.status';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
-import { calculateSettlementPrice } from '../../util/settle-fee.util';
+import { calculateSettlementPrice, calculateMappingSettlementBaseAmount } from '../../util/settle-fee.util';
 import { applyCardSurcharge, OrderFeeCalculator } from '../../order/domain/order.fee.calculator';
 import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
@@ -1651,26 +1651,13 @@ export class SettleService {
 
     if (order.orderProductMappings && order.orderProductMappings.length > 0) {
       for (const orderProductMapping of order.orderProductMappings) {
-        // 할인/할증 적용된 단가 계산
+        // 할인/할증 적용 단가 — D3-49 축3: 발송건별 settleFee(SSG 차등정산)까지 반영해 실제 차감과 동일하게 산출.
+        // calculateMappingSettlementBaseAmount = 발송건 단가별 반올림 합(또는 단가별 반올림×수량). 라인총액이 정확값.
         const lineView = readLineProductView(orderProductMapping);
-        const originalPrice = lineView.price;
-        // D3-49: 표시 단가를 실제 차감과 동일한 OrderFeeCalculator(반올림)로 통일 (인라인 ceil 제거)
-        let adjustedPrice = originalPrice;
-        if (orderProductMapping.fee !== null && orderProductMapping.fee > 0 && orderProductMapping.priceAdjustment) {
-          if (orderProductMapping.priceAdjustment === IPriceAdjustment.DISCOUNT) {
-            adjustedPrice = OrderFeeCalculator({
-              fee: orderProductMapping.fee,
-              priceAdjustment: IPriceAdjustment.DISCOUNT,
-              price: originalPrice,
-            });
-          } else if (orderProductMapping.priceAdjustment === IPriceAdjustment.ADDITIONAL) {
-            adjustedPrice = OrderFeeCalculator({
-              fee: orderProductMapping.fee,
-              priceAdjustment: IPriceAdjustment.ADDITIONAL,
-              price: originalPrice,
-            });
-          }
-        }
+        const quantity = orderProductMapping.amount ?? 0;
+        const lineTotal = calculateMappingSettlementBaseAmount(orderProductMapping);
+        // 표시 단가는 라인총액/수량 평균(차등정산 시 단가가 균일하지 않으므로 평균값).
+        const adjustedPrice = quantity > 0 ? Math.round(lineTotal / quantity) : lineTotal;
 
         const product = {
           id: orderProductMapping.product?.id ?? orderProductMapping.productId,
