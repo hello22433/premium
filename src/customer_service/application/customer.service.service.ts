@@ -34,6 +34,7 @@ import { format } from 'date-fns';
 import { CustomerServiceViewDto } from '../api/dto/customer.service.view.dto';
 import { QueryBuilderDateCondition } from '../../common/infra/query.builder.date.condition';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
+import { IOrderDeliveryReportState } from '../../delivery/interface/order.delivery.report.state';
 import { CustomerServiceDetailViewDto } from '../api/dto/customer.service.detail.view.dto';
 import { CustomerServiceDlvryDetailViewDto } from '../api/dto/customer.service.dlvry.detail.view.dto';
 import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
@@ -960,7 +961,12 @@ export class CustomerServiceService {
       .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
       .leftJoinAndSelect('choiceSelectProduct.brand', 'choiceSelectBrand')
       .where('orderDelivery.id = :orderDeliveryId', { orderDeliveryId })
-      .andWhere('orderDelivery.status IN (:...statuses)', { statuses });
+      .andWhere('orderDelivery.status IN (:...statuses)', { statuses })
+      // 비동기 수신확인 진행중(PENDING)인 건은 재진입 차단 (msgKey 덮어쓰기/이중처리 방지).
+      // 단 recovery 후 FAIL(reportState=UNCONFIRMED)·CONFIRMED 는 수동 재발송 허용해야 하므로 PENDING 만 제외.
+      .andWhere('(orderDelivery.reportState IS NULL OR orderDelivery.reportState != :pendingReportState)', {
+        pendingReportState: IOrderDeliveryReportState.PENDING,
+      });
   }
 
   /**
@@ -1632,6 +1638,11 @@ export class CustomerServiceService {
       .getOne();
     if (!locked) {
       throw new BadRequestException('존재하지 않는 발송 정보입니다.');
+    }
+
+    // 비동기 수신확인 진행중(PENDING)이면 재진입 차단 (reportSweep 소관 — 중복 발송 방지). reSend 와 동일.
+    if (locked.reportState === IOrderDeliveryReportState.PENDING) {
+      throw new BadRequestException('수신 확인 진행중인 발송입니다. 잠시 후 다시 시도해주세요.');
     }
 
     // 2. dedup — 락 보유 중 최근 시간창 내 동일 건 재전송 이력 확인
