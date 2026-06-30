@@ -7,6 +7,9 @@ export class DeliverySendHistoryEntity extends BaseEntity {
   @PrimaryGeneratedColumn()
   id: number;
 
+  @Column({ type: 'int', nullable: true, comment: 'FK) order_delivery.id (POST 성공 이력 최종결과 정정용)' })
+  orderDeliveryId: number | null;
+
   @Column({ type: 'varchar', length: 255, comment: '전송 대상자 (암호화 저장, encryptDeliveryTarget)' })
   target: string;
 

@@ -33,6 +33,7 @@ export class DeliveryBatchSchedule {
   private encourageStartedAt: number | null = null;
   private ssgRecoverySweepStartedAt: number | null = null;
   private resendDeductSweepStartedAt: number | null = null;
+  private reportSweepStartedAt: number | null = null;
 
   /**
    * 실행 중 플래그를 체크한다. 진행 중이면 true 반환(skip).
@@ -65,6 +66,24 @@ export class DeliveryBatchSchedule {
       this.logger.error(e);
     } finally {
       this.issueAndSendStartedAt = null;
+    }
+  }
+
+  // 알림톡 비동기 수신확인 sweep. 30초마다(매분 7,37초 — 다른 cron 의 0/15/30/45초와 충돌 회피).
+  // PENDING 리포트 inquiry 30초×2 근사 + 미확정 시 SMS 자동 재발송 1회.
+  @Cron('7,37 * * * * *')
+  async handleReportSweep() {
+    if (this.isStillRunning(this.reportSweepStartedAt, 'handleReportSweep')) {
+      this.logger.log('[BATCH] 이전 handleReportSweep 진행 중 — skip');
+      return;
+    }
+    this.reportSweepStartedAt = Date.now();
+    try {
+      await this.deliveryBatchService.reportSweep();
+    } catch (e) {
+      this.logger.error(e);
+    } finally {
+      this.reportSweepStartedAt = null;
     }
   }
 
