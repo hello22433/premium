@@ -793,8 +793,7 @@ export class DeliveryBatchService {
 
     if (inquiry.success && inquiry.reportCode === '10000') {
       od.reportState = IOrderDeliveryReportState.CONFIRMED;
-      od.reportClaimedAt = null;
-      od.reportOwnerToken = null;
+      this.releaseReportClaim(od);
       this.markSendSuccess(od, IOrderDeliveryStatus.COMPLETE);
       // 소유권 보유 시에만 종결/정산 (lease 회전 시 stale write·이중 정산 방지)
       if (await this.persistReportState(od, token)) {
@@ -810,8 +809,7 @@ export class DeliveryBatchService {
 
     if (!attemptExhausted && !deadlineExceeded) {
       // 다음 tick 재시도: claim 해제 + next_due 갱신 (token CAS — 소유권 상실 시 no-op)
-      od.reportClaimedAt = null;
-      od.reportOwnerToken = null;
+      this.releaseReportClaim(od);
       od.reportNextDueAt = new Date(now.getTime() + REPORT_NEXT_DUE_MS);
       await this.persistReportState(od, token);
       return;
@@ -853,8 +851,7 @@ export class DeliveryBatchService {
     }
 
     od.reportState = IOrderDeliveryReportState.UNCONFIRMED;
-    od.reportClaimedAt = null;
-    od.reportOwnerToken = null;
+    this.releaseReportClaim(od);
 
     if (smsOk) {
       this.markSendSuccess(od, IOrderDeliveryStatus.COMPLETE_SMS);
@@ -878,15 +875,13 @@ export class DeliveryBatchService {
       od.status === IOrderDeliveryStatus.COMPLETE
     ) {
       od.reportState = IOrderDeliveryReportState.CONFIRMED;
-      od.reportClaimedAt = null;
-      od.reportOwnerToken = null;
+      this.releaseReportClaim(od);
       // 이미 터미널(WAIT 아님) 행이므로 status=WAIT CAS 의 persistReportState 대신 claim 정리 전용 CAS 사용
       await this.clearReportClaim(od, token);
       return;
     }
     od.reportState = IOrderDeliveryReportState.UNCONFIRMED;
-    od.reportClaimedAt = null;
-    od.reportOwnerToken = null;
+    this.releaseReportClaim(od);
     await this.finalizeReportFail(od, token);
   }
 
@@ -919,6 +914,12 @@ export class DeliveryBatchService {
       .set({ isSuccess, etcContext: JSON.stringify(outcome) })
       .where('order_delivery_id = :id', { id: orderDeliveryId })
       .execute();
+  }
+
+  /** reportSweep claim 해제: 점유 토큰/시각을 비운다(다음 tick 재claim 허용). */
+  private releaseReportClaim(od: OrderDeliveryEntity): void {
+    od.reportClaimedAt = null;
+    od.reportOwnerToken = null;
   }
 
   /**

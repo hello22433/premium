@@ -41,6 +41,15 @@ export type InfoBankReportResponse = {
 
 export type InfoBankInquiryResult = { success: boolean; reportCode?: string; data?: any; error?: string };
 
+type AlimTalkSendBody = {
+  senderKey: string;
+  msgType: string;
+  to: string;
+  templateCode: string;
+  text: string;
+  button?: { type: string; name: string; urlMobile: string }[];
+};
+
 @Injectable()
 export class DeliveryAlimTalkInfoBankHttp implements DeliveryAlimTalk {
   constructor(
@@ -108,17 +117,19 @@ export class DeliveryAlimTalkInfoBankHttp implements DeliveryAlimTalk {
     }
   }
 
+  /** send / postAlimtalk 공용 발송 요청 헤더 */
+  private sendHeaders(token: string) {
+    return {
+      Authorization: token,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    };
+  }
+
   /**
    * 알림톡 발송 메시지 바디 구성 (send / postAlimtalk 공용)
    */
-  private buildSendBody(sendObj: IDeliveryAlimTalkSend): {
-    senderKey: string;
-    msgType: string;
-    to: string;
-    templateCode: string;
-    text: string;
-    button?: { type: string; name: string; urlMobile: string }[];
-  } {
+  private buildSendBody(sendObj: IDeliveryAlimTalkSend): AlimTalkSendBody {
     const templateCode = sendObj.templateCode || this.infoBankTemplateCode;
     const templateCodeLower = templateCode.toLowerCase();
     const isTestTemplate = templateCodeLower.includes('dev');
@@ -133,14 +144,7 @@ export class DeliveryAlimTalkInfoBankHttp implements DeliveryAlimTalk {
       buttonName = '쿠폰 확인하기';
     }
 
-    const body: {
-      senderKey: string;
-      msgType: string;
-      to: string;
-      templateCode: string;
-      text: string;
-      button?: { type: string; name: string; urlMobile: string }[];
-    } = {
+    const body: AlimTalkSendBody = {
       senderKey: this.infoBankSenderKey,
       msgType: sendObj.msgType || 'AI', // 기본값: 이미지 강조유형(AI)
       to: sendObj.to,
@@ -169,11 +173,7 @@ export class DeliveryAlimTalkInfoBankHttp implements DeliveryAlimTalk {
   async postAlimtalk(sendObj: IDeliveryAlimTalkSend): Promise<{ msgKey: string; responseData: InfoBankSendResponse }> {
     const url = `${this.infoBankUrl}/v1/send/alimtalk`;
     const token = await this.getToken();
-    const headers = {
-      Authorization: token,
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-    };
+    const headers = this.sendHeaders(token);
     const body = this.buildSendBody(sendObj);
 
     const response = await firstValueFrom(this.httpService.post(url, body, { headers }));
@@ -193,11 +193,7 @@ export class DeliveryAlimTalkInfoBankHttp implements DeliveryAlimTalk {
 
     try {
       const token = await this.getToken();
-      const headers = {
-        Authorization: token,
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-      };
+      const headers = this.sendHeaders(token);
 
       const body = this.buildSendBody(sendObj);
 
@@ -211,7 +207,7 @@ export class DeliveryAlimTalkInfoBankHttp implements DeliveryAlimTalk {
       // inquiry API로 수신 확인 재시도
       const INQUIRY_MAX_ATTEMPTS = 2;
       const INQUIRY_INTERVAL_MS = 10000;
-      let reportResult: { success: boolean; reportCode?: string; data?: any; error?: string } | undefined = undefined;
+      let reportResult: InfoBankInquiryResult | undefined = undefined;
 
       for (let attempt = 1; attempt <= INQUIRY_MAX_ATTEMPTS; attempt++) {
         await sleep(INQUIRY_INTERVAL_MS);
