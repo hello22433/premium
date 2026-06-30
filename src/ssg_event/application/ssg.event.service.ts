@@ -173,9 +173,10 @@ export class SsgEventService {
       queryBuilder = queryBuilder.andWhere('ssg.name LIKE :name', { name: '%' + name + '%' });
     }
 
-    // 조회기간이 설정되지 않은 경우에만 현재 진행 중인 행사 필터 적용
+    // 조회기간 미설정 시 기본값: 이번 달 1일 이후까지 진행(종료)되는 행사 (상한 없음)
     if (!createdStartAt && !createdEndAt) {
-      queryBuilder = queryBuilder.andWhere('ssg.startAt <= :now', { now }).andWhere('ssg.endAt >= :now', { now });
+      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+      queryBuilder = queryBuilder.andWhere('ssg.endAt >= :monthStart', { monthStart });
     }
 
     queryBuilder = QueryBuilderDateCondition(queryBuilder, 'ssg', 'createdAt', createdStartAt, createdEndAt);
