@@ -1,5 +1,5 @@
 import { ApiBadRequestResponse, ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { Body, Controller, Get, Param, Post, Put, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Post, Put, Query, UseGuards } from '@nestjs/common';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
 import { User } from '../../auth/api/user.decorator';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
@@ -95,5 +95,22 @@ export class UserDriveController {
   @Put('/user-drive/reply')
   reply(@User() user: ILoginUserInfo, @Body() getBody: UserDriveReplyReqDto) {
     return this.userDriveService.reply(user, getBody);
+  }
+
+  @ApiOperation({
+    summary: '문서 삭제 API',
+  })
+  @ApiBearerAuth()
+  @ApiOkResponse({
+    description: '문서 삭제에 성공한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '문서가 존재하지 않는 경우',
+  })
+  // ===================================================
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
+  @Delete('/user-drive/:id')
+  delete(@User() user: ILoginUserInfo, @Param() getParam: UserDriveGetDetailReqParamDto) {
+    return this.userDriveService.delete(user, getParam.id);
   }
 }
