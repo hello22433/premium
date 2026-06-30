@@ -249,5 +249,19 @@ describe('DeliveryBatchService.claimWaitDeliveries DB 제외 (external / PENDING
     expect(cA.claimedAt).not.toBeNull();
     expect(cB.claimedAt).not.toBeNull();
     expect(ext2.claimedAt).toBeNull(); // external 동시 상황에서도 제외 유지
+
+    // completion drift 복구(실DB): order=DELIVERY_CONFIRMED 인데 delivery 전건 터미널(COMPLETE)
+    // → reconcileSettlementDrift 의 HAVING 집계 쿼리가 후보로 잡아 DELIVERY_COMPLETE 로 전이.
+    // (정산조건/reportState 무관 검증 — 본 주문 user 는 POST_PAYMENT, reportState=NULL)
+    service.orderRepository = orderRepo;
+    const driftDeliveryId = await seedDelivery('GENERAL', null);
+    const driftDelivery = await deliveryRepository.findOneByOrFail({ id: driftDeliveryId });
+    const driftMapping = await mappingRepo.findOneByOrFail({ id: driftDelivery.orderProductMappingId });
+    await deliveryRepository.update({ id: driftDeliveryId }, { status: 'COMPLETE' } as any);
+
+    await service.reconcileSettlementDrift();
+
+    const driftOrder = await orderRepo.findOneByOrFail({ id: driftMapping.orderId });
+    expect(driftOrder.status).toBe('DELIVERY_COMPLETE'); // 전건 터미널 → 완료 전이(POST_PAYMENT 도 대상)
   });
 });

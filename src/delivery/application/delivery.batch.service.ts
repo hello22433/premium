@@ -646,27 +646,29 @@ export class DeliveryBatchService {
 
   /**
    * 완료/정산 drift 복구 (sweep 마다 수렴 → 영구 미완료·미정산 방지, HIGH: reconciliation).
-   * PRE_PAYMENT 주문만 대상으로 한정 — POST_PAYMENT 미정산 건이 LIMIT 슬롯을 반복 점유해
-   * PRE_PAYMENT 건이 굶는(starvation) 현상 차단.
-   * 1) completion drift: delivery 는 전건 터미널인데 order 가 DELIVERY_CONFIRMED 로 남은 건
-   *    (markOrderTerminalAndSettle 의 transition 실패/크래시) → 완료 전이 + 정산.
-   * 2) settlement drift: DELIVERY_COMPLETE 인데 미정산(SETTLE_COMPLETE 아님) 건 → 재정산.
+   * 1) completion drift: order=DELIVERY_CONFIRMED 이고 delivery 가 전건 터미널(COMPLETE/
+   *    COMPLETE_SMS/FAIL/FAIL_SMS, CANCEL 없음)인데 order 가 미완료로 남은 건 → 완료 전이 + 정산.
+   *    정산조건/reportState 와 무관(동기 SMS·EMAIL=reportState NULL, POST_PAYMENT 포함).
+   * 2) settlement drift: DELIVERY_COMPLETE 인데 미정산(SETTLE_COMPLETE 아님) PRE_PAYMENT 건 → 재정산.
+   *    PRE_PAYMENT 직접 제한으로 POST_PAYMENT 미정산 건이 LIMIT 슬롯을 반복 점유하는 starvation 차단.
    */
   private async reconcileSettlementDrift(): Promise<void> {
-    // 1) completion drift: 알림톡 비동기 리포트가 터미널 도달한 PRE_PAYMENT 주문 중 order 가 미완료로 남은 건
+    // 1) completion drift: status=DELIVERY_CONFIRMED 이고 delivery 가 전건 터미널인 주문(정산조건/reportState 무관)
     const completionDrift = await this.orderDeliveryRepository
       .createQueryBuilder('od')
       .innerJoin('od.orderProductMapping', 'opm')
       .innerJoin('opm.order', 'o')
-      .leftJoin('o.user', 'u')
-      .leftJoin('o.clientUser', 'cu')
-      .select('DISTINCT o.id', 'id')
+      .select('o.id', 'id')
       .where('o.status = :confirmed', { confirmed: IOrderStatus.DELIVERY_CONFIRMED })
-      .andWhere('od.reportState IN (:...reported)', {
-        reported: [IOrderDeliveryReportState.CONFIRMED, IOrderDeliveryReportState.UNCONFIRMED],
-      })
-      .andWhere('COALESCE(cu.settle_condition, u.settle_condition) = :pre', {
-        pre: IUserSettleCondition.PRE_PAYMENT,
+      .groupBy('o.id')
+      // 비터미널(WAIT/TEMP/PENDING/CANCEL 등) delivery 가 하나도 없을 때만 = 전건 터미널 & CANCEL 없음
+      .having('SUM(CASE WHEN od.status NOT IN (:...terminal) THEN 1 ELSE 0 END) = 0', {
+        terminal: [
+          IOrderDeliveryStatus.COMPLETE,
+          IOrderDeliveryStatus.COMPLETE_SMS,
+          IOrderDeliveryStatus.FAIL,
+          IOrderDeliveryStatus.FAIL_SMS,
+        ],
       })
       .limit(REPORT_SWEEP_BATCH_LIMIT)
       .getRawMany<{ id: number }>();
@@ -875,7 +877,8 @@ export class DeliveryBatchService {
       od.reportState = IOrderDeliveryReportState.CONFIRMED;
       od.reportClaimedAt = null;
       od.reportOwnerToken = null;
-      await this.persistReportState(od, token);
+      // 이미 터미널(WAIT 아님) 행이므로 status=WAIT CAS 의 persistReportState 대신 claim 정리 전용 CAS 사용
+      await this.clearReportClaim(od, token);
       return;
     }
     od.reportState = IOrderDeliveryReportState.UNCONFIRMED;
@@ -916,9 +919,12 @@ export class DeliveryBatchService {
   }
 
   /**
-   * reportSweep 종결/재시도 시 변경 컬럼만 타깃 update. report_owner_token + report_state=PENDING CAS 로 펜싱.
-   * report_state=PENDING 조건은 터미널 전이(CONFIRMED/UNCONFIRMED) 이후 stale worker 의 재기록을 차단.
-   * (status=WAIT 은 recoverStuckFallback 의 terminal-status 정리 경로를 깨므로 의도적으로 제외)
+   * reportSweep 의 WAIT→터미널 전이/재시도 시 변경 컬럼만 타깃 update.
+   * report_owner_token + status=WAIT + report_state=PENDING 3중 CAS 로 펜싱:
+   *  - token: lease 회전 후 stale worker 의 덮어쓰기 차단
+   *  - status=WAIT: 이미 터미널로 전이된 행의 재전이 차단(전이는 항상 WAIT 출발)
+   *  - report_state=PENDING: 터미널 전이(CONFIRMED/UNCONFIRMED) 이후 stale 재기록 차단
+   * (이미 터미널 상태인 행의 claim 정리는 status=WAIT 불충족이므로 clearReportClaim 사용)
    * @returns 소유권 보유(affected>0) 여부 — false 면 lease 회전/상태 이탈로 소유권 상실(write drop).
    */
   private async persistReportState(od: OrderDeliveryEntity, token: string): Promise<boolean> {
@@ -933,6 +939,27 @@ export class DeliveryBatchService {
         reportAttemptCount: od.reportAttemptCount,
         reportFallbackAttemptCount: od.reportFallbackAttemptCount,
         reportNextDueAt: od.reportNextDueAt,
+        reportClaimedAt: od.reportClaimedAt,
+        reportOwnerToken: od.reportOwnerToken,
+      })
+      .where('id = :id', { id: od.id })
+      .andWhere('report_owner_token = :token', { token })
+      .andWhere('status = :wait', { wait: IOrderDeliveryStatus.WAIT })
+      .andWhere('report_state = :pending', { pending: IOrderDeliveryReportState.PENDING })
+      .execute();
+    return (res.affected ?? 0) > 0;
+  }
+
+  /**
+   * 이미 터미널 상태(WAIT 아님)인 행의 claim/리포트 상태만 정리한다(recoverStuckFallback 전용).
+   * persistReportState 의 status=WAIT CAS 를 우회 — token + report_state=PENDING 으로만 펜싱.
+   */
+  private async clearReportClaim(od: OrderDeliveryEntity, token: string): Promise<boolean> {
+    const res = await this.orderDeliveryRepository
+      .createQueryBuilder()
+      .update(OrderDeliveryEntity)
+      .set({
+        reportState: od.reportState,
         reportClaimedAt: od.reportClaimedAt,
         reportOwnerToken: od.reportOwnerToken,
       })

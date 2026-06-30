@@ -29,6 +29,7 @@ describe('DeliveryBatchService — reportSweep / settlement (async alimtalk)', (
     service = Object.create(DeliveryBatchService.prototype);
     service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
     service.persistReportState = jest.fn().mockResolvedValue(true);
+    service.clearReportClaim = jest.fn().mockResolvedValue(true);
     service.correctSendHistory = jest.fn().mockResolvedValue(undefined);
     service.markOrderTerminalAndSettle = jest.fn().mockResolvedValue(undefined);
     service.markSendSuccess = jest.fn((od: any, s: IOrderDeliveryStatus) => {
@@ -189,7 +190,8 @@ describe('DeliveryBatchService — reportSweep / settlement (async alimtalk)', (
 
       expect(od.reportState).toBe(IOrderDeliveryReportState.CONFIRMED);
       expect(finalizeSpy).not.toHaveBeenCalled();
-      expect(service.persistReportState).toHaveBeenCalled();
+      expect(service.clearReportClaim).toHaveBeenCalledWith(od, 'tok'); // 터미널 행은 clearReportClaim 사용
+      expect(service.persistReportState).not.toHaveBeenCalled();
     });
   });
 
@@ -225,6 +227,8 @@ describe('DeliveryBatchService — reportSweep / settlement (async alimtalk)', (
       createQueryBuilder: jest.fn().mockReturnValue({
         innerJoin: jest.fn().mockReturnThis(),
         leftJoin: jest.fn().mockReturnThis(),
+        groupBy: jest.fn().mockReturnThis(),
+        having: jest.fn().mockReturnThis(),
         select: jest.fn().mockReturnThis(),
         where: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
