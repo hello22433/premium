@@ -1293,6 +1293,23 @@ export class UserManagementService {
     user.company.maximumLimit = newMaximumLimit;
     await this.userCompanyRepository.save(user.company);
 
+    // wallet_account.credit_limit 동기화 (settlement_code 단위).
+    // 신규 흐름(WALLET cutover)에서 한도 SoT 는 wallet.creditLimit 이므로,
+    // 미동기화 시 maximumLimit 만 바뀌고 주문/잔여한도 조회에는 구한도가 적용된다.
+    const wallet = user.settlementCode
+      ? await this.walletAccountRepository.findOne({
+          where: { ownerType: 'SETTLEMENT_CODE', ownerId: user.settlementCode },
+        })
+      : null;
+    if (wallet) {
+      wallet.creditLimit = newMaximumLimit;
+      await this.walletAccountRepository.save(wallet);
+    } else {
+      this.logger.warn(
+        `modifyMaximumLimit: credit_limit 미동기화 — userId=${id} settlementCode=${user.settlementCode || '(none)'}`,
+      );
+    }
+
     // Activity Log 기록
     await this.activityLogService.createLog({
       userId: operator.id,
