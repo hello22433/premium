@@ -832,6 +832,9 @@ export class DeliveryBatchService {
       .where('id = :id', { id: od.id })
       .andWhere('report_fallback_attempt_count = 0')
       .andWhere('report_owner_token = :token', { token })
+      // SMS(외부호출) 직전 fencing 완결: 이미 터미널로 전이됐거나 리포트 상태가 이탈한 행은 선점 자체를 차단
+      .andWhere('status = :wait', { wait: IOrderDeliveryStatus.WAIT })
+      .andWhere('report_state = :pending', { pending: IOrderDeliveryReportState.PENDING })
       .execute();
 
     if ((preempt.affected ?? 0) === 0) {
