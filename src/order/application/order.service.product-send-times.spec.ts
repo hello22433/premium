@@ -32,11 +32,12 @@ const BASE_QUERY = {
   status: undefined,
 } as any;
 
-const makeDelivery = (
-  id: number,
-  status: IOrderDeliveryStatus,
-  actualSendAt: Date | null,
-) => ({ id, status, actualSendAt, resendAt: null });
+const makeDelivery = (id: number, status: IOrderDeliveryStatus, actualSendAt: Date | null) => ({
+  id,
+  status,
+  actualSendAt,
+  resendAt: null,
+});
 
 const makeMapping = (
   id: number,
@@ -111,19 +112,14 @@ const setupService = (orders: any[]) => {
 describe('OrderService getList — productSendTimes', () => {
   describe('트리거 조건: RESERVE 분 단위 distinct', () => {
     it('RESERVE 상품이 없으면 productSendTimes 미포함', async () => {
-      const mappings = [
-        makeMapping(1, '상품A', 'IMMEDIATE', null, []),
-        makeMapping(2, '상품B', 'IMMEDIATE', null, []),
-      ];
+      const mappings = [makeMapping(1, '상품A', 'IMMEDIATE', null, []), makeMapping(2, '상품B', 'IMMEDIATE', null, [])];
       const service = setupService([makeOrder(mappings)]);
       const result = await service.getList(BASE_USER, BASE_QUERY);
       expect(result.list[0].productSendTimes).toBeUndefined();
     });
 
     it('RESERVE 상품이 1개면 distinct=1이므로 productSendTimes 미포함', async () => {
-      const mappings = [
-        makeMapping(1, '상품A', 'RESERVE', new Date('2026-07-01T09:00:00'), []),
-      ];
+      const mappings = [makeMapping(1, '상품A', 'RESERVE', new Date('2026-07-01T09:00:00'), [])];
       const service = setupService([makeOrder(mappings)]);
       const result = await service.getList(BASE_USER, BASE_QUERY);
       expect(result.list[0].productSendTimes).toBeUndefined();
@@ -269,6 +265,24 @@ describe('OrderService getList — productSendTimes', () => {
       const result = await service.getList(BASE_USER, BASE_QUERY);
       const itemA = result.list[0].productSendTimes!.find((t: any) => t.productName === '상품A')!;
       // 마지막 COMPLETE = resendAt (10:30), 첫 번째 = 09:05
+      expect(itemA.actualSendAt).toContain('10:30');
+    });
+
+    it('DB가 id 역순으로 로딩해도 가장 높은 id의 COMPLETE 반환 (정렬 보장 검증)', async () => {
+      const firstSendAt = new Date('2026-07-01T09:05:00');
+      const resendAt = new Date('2026-07-01T10:30:00');
+      const mappings = [
+        makeMapping(1, '상품A', 'RESERVE', new Date('2026-07-01T09:00:00'), [
+          // 역순 입력: id=3이 배열 앞에 위치 — reverse()만으로는 id=1(FAIL)이 앞에 오는 상황
+          makeDelivery(3, IOrderDeliveryStatus.COMPLETE, resendAt),
+          makeDelivery(2, IOrderDeliveryStatus.COMPLETE, firstSendAt),
+          makeDelivery(1, IOrderDeliveryStatus.FAIL, null),
+        ]),
+        makeMapping(2, '상품B', 'RESERVE', new Date('2026-07-01T14:00:00'), []),
+      ];
+      const service = setupService([makeOrder(mappings)]);
+      const result = await service.getList(BASE_USER, BASE_QUERY);
+      const itemA = result.list[0].productSendTimes!.find((t: any) => t.productName === '상품A')!;
       expect(itemA.actualSendAt).toContain('10:30');
     });
 

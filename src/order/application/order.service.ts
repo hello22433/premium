@@ -814,11 +814,13 @@ export class OrderService {
       if (minuteSlots.size >= 2) {
         productSendTimes = reserveMappings.map((m) => {
           const mappingActualSendAt =
-            [...(m.orderDeliveries ?? [])].reverse().find(
-              (d) =>
-                d.actualSendAt &&
-                (d.status === IOrderDeliveryStatus.COMPLETE || d.status === IOrderDeliveryStatus.COMPLETE_SMS),
-            )?.actualSendAt ?? null;
+            [...(m.orderDeliveries ?? [])]
+              .sort((a, b) => b.id - a.id)
+              .find(
+                (d) =>
+                  d.actualSendAt &&
+                  (d.status === IOrderDeliveryStatus.COMPLETE || d.status === IOrderDeliveryStatus.COMPLETE_SMS),
+              )?.actualSendAt ?? null;
           return {
             productName: m.product?.name ?? '(삭제된 상품)',
             sendRequestAt: format(m.sendRequestAt!, DateFormatStr),
