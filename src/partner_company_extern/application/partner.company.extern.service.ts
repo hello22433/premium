@@ -292,9 +292,7 @@ export class PartnerCompanyExternService {
           // ER_DUP_ENTRY = 이 호출이 외부 INSERT 를 수행하지 않은 dedup loser 로 확정(전달 ssgEvent=선차감 C 미사용).
           // 어떤 추가 DB 조회(아래 dedup/fresh 조회)보다 먼저 REUSED 를 durable 기록 → 조회 중 크래시해도
           // sweep 이 승자가 만든 CONFIRMED 를 loser 신규발급으로 오판하지 않고 선차감을 REVERSED 한다.
-          if (resendDeductionId) {
-            await this.markReissuePendingReused(resendDeductionId);
-          }
+          await this.markReissuePendingReusedIfBatch(resendDeductionId);
           const existing = await this.pinIssueDedupRepository.findOne({
             where: { transactionId: orderDelivery.transactionId },
           });
@@ -551,9 +549,7 @@ export class PartnerCompanyExternService {
             // result 유효 → INSERT는 됐고 발송만 실패 → 기존 PIN 재사용
             needsInsert = false;
             // 재사용 확정 — 배치 선차감(C) 을 sweep 이 state 무관하게 REVERSED 하도록 durable 마킹(markConfirmed 전).
-            if (resendDeductionId) {
-              await this.markReissuePendingReused(resendDeductionId);
-            }
+            await this.markReissuePendingReusedIfBatch(resendDeductionId);
             this.logger.log(`[SSG] 기존 PIN이 SSG DB에 등록(유효) - barCode: ${orderDelivery.barCode}, INSERT 건너뜀`);
             // state ATTEMPTED → CONFIRMED 동기화 (markConfirmed 는 WHERE state=ATTEMPTED 가드라 그 외엔 silent skip).
             // ssgTransactionId 가 NULL 인 legacy row 는 markConfirmed 호출 자체를 skip (NOT NULL 타입 보호).
@@ -634,9 +630,7 @@ export class PartnerCompanyExternService {
 
             if (registeredList.length > 0) {
               // 재사용 확정 — 배치 선차감(C) 을 sweep 이 state 무관하게 REVERSED 하도록 durable 마킹(reuse 전).
-              if (resendDeductionId) {
-                await this.markReissuePendingReused(resendDeductionId);
-              }
+              await this.markReissuePendingReusedIfBatch(resendDeductionId);
               if (registeredList.length > 1) {
                 // 동일 배송건에 등록 PIN 2건 이상 = 잠재 이중등록 → 운영 알림(후속 orphan 취소 검토).
                 this.logger.error(
@@ -898,6 +892,12 @@ export class PartnerCompanyExternService {
     return result;
   }
 
+  /** 배치 재발송(resendDeductionId 보유)에서만 pending 을 REUSED 로 durable 마킹. 비-배치 경로는 no-op(빈 tx 회피). */
+  private async markReissuePendingReusedIfBatch(resendDeductionId: string | undefined): Promise<void> {
+    if (resendDeductionId) {
+      await this.markReissuePendingReused(resendDeductionId);
+    }
+  }
 
   /**
    * 배치 재발송 선차감 pending 을 'REUSED' 로 durable 마킹 (REQUIRES_NEW 즉시 커밋).
