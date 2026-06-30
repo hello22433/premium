@@ -268,21 +268,22 @@ describe('OrderService getList — productSendTimes', () => {
       expect(itemA.actualSendAt).toContain('10:30');
     });
 
-    it('DB가 id 역순으로 로딩해도 가장 높은 id의 COMPLETE 반환 (정렬 보장 검증)', async () => {
-      const firstSendAt = new Date('2026-07-01T09:05:00');
-      const resendAt = new Date('2026-07-01T10:30:00');
+    it('id 높은 delivery가 더 이른 시각일 때 actualSendAt 최댓값 반환 (병렬 발송 순서 역전 검증)', async () => {
+      // 병렬 발송: id=3이 먼저 완료(09:05), id=2가 나중 완료(10:30) — id 순서 ≠ 완료 시각 순서
+      const earlierSendAt = new Date('2026-07-01T09:05:00');
+      const laterSendAt = new Date('2026-07-01T10:30:00');
       const mappings = [
         makeMapping(1, '상품A', 'RESERVE', new Date('2026-07-01T09:00:00'), [
-          // 역순 입력: id=3이 배열 앞에 위치 — reverse()만으로는 id=1(FAIL)이 앞에 오는 상황
-          makeDelivery(3, IOrderDeliveryStatus.COMPLETE, resendAt),
-          makeDelivery(2, IOrderDeliveryStatus.COMPLETE, firstSendAt),
           makeDelivery(1, IOrderDeliveryStatus.FAIL, null),
+          makeDelivery(2, IOrderDeliveryStatus.COMPLETE, laterSendAt),
+          makeDelivery(3, IOrderDeliveryStatus.COMPLETE, earlierSendAt),
         ]),
         makeMapping(2, '상품B', 'RESERVE', new Date('2026-07-01T14:00:00'), []),
       ];
       const service = setupService([makeOrder(mappings)]);
       const result = await service.getList(BASE_USER, BASE_QUERY);
       const itemA = result.list[0].productSendTimes!.find((t: any) => t.productName === '상품A')!;
+      // id DESC 기준이면 id=3(09:05) 반환 → 틀림. actualSendAt MAX 기준이면 10:30 반환 → 맞음
       expect(itemA.actualSendAt).toContain('10:30');
     });
 
