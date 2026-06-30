@@ -289,6 +289,12 @@ export class PartnerCompanyExternService {
         });
       } catch (e) {
         if (e instanceof QueryFailedError && (e as QueryFailedError & { code?: string }).code === 'ER_DUP_ENTRY') {
+          // ER_DUP_ENTRY = 이 호출이 외부 INSERT 를 수행하지 않은 dedup loser 로 확정(전달 ssgEvent=선차감 C 미사용).
+          // 어떤 추가 DB 조회(아래 dedup/fresh 조회)보다 먼저 REUSED 를 durable 기록 → 조회 중 크래시해도
+          // sweep 이 승자가 만든 CONFIRMED 를 loser 신규발급으로 오판하지 않고 선차감을 REVERSED 한다.
+          if (resendDeductionId) {
+            await this.markReissuePendingReused(resendDeductionId);
+          }
           const existing = await this.pinIssueDedupRepository.findOne({
             where: { transactionId: orderDelivery.transactionId },
           });
@@ -314,10 +320,6 @@ export class PartnerCompanyExternService {
               // MEDIUM: 행사 귀속(ssgEventId)도 함께 복원 — 누락 시 이후 stale save 가 잘못된 행사로 덮어쓴다.
               orderDelivery.ssgEventId = fresh.ssgEventId;
               result.ssgEventId = fresh.ssgEventId ?? null;
-              // dedup 복구 = 전달 ssgEvent(배치 선차감 C) 미사용 → sweep 이 state 무관하게 REVERSED 하도록 durable 마킹.
-              if (resendDeductionId) {
-                await this.markReissuePendingReused(resendDeductionId);
-              }
               await this.pinIssueDedupRepository.update(
                 { transactionId: orderDelivery.transactionId },
                 { recoveredFrom: 'DEDUP' },
@@ -342,9 +344,6 @@ export class PartnerCompanyExternService {
                   orderDelivery.ssgEventId = exact.ssgEventId;
                 }
                 result.ssgEventId = orderDelivery.ssgEventId ?? null;
-                if (resendDeductionId) {
-                  await this.markReissuePendingReused(resendDeductionId);
-                }
                 await this.pinIssueDedupRepository.update(
                   { transactionId: orderDelivery.transactionId },
                   { recoveredFrom: 'DEDUP' },
