@@ -202,6 +202,10 @@ export class UserDriveService {
   }
 
   async delete(user: ILoginUserInfo, id: number) {
+    if (user.authority === 'CORPORATE_ADMIN') {
+      throw new BadRequestException('관리자만 접근 가능합니다.');
+    }
+
     const userDrive = await this.userDriveRepository.findOne({
       where: {
         id,
