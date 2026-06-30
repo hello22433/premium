@@ -1,3 +1,4 @@
+import { BadRequestException } from '@nestjs/common';
 import { UserDiscountEntity } from '../../entity/user.discount.entity';
 import { IUserDiscountCategory } from '../interface/user.discount.category';
 import { IUserDiscountMethod } from '../interface/user.discount.method';
@@ -15,7 +16,7 @@ type DiscountMatchProduct = {
  * 우선순위: 브랜드(BRAND) > 카테고리(CATEGORY) = 상품군(PRODUCT_GROUP)
  * - 브랜드 할인이 구간 일치하면 브랜드 할인 적용
  * - 브랜드 할인이 없거나 구간 불일치 시 카테고리/상품군 폴백
- * - 카테고리/상품군 둘 다 매칭 시 더 높은 할인율 적용
+ * - 카테고리/상품군 둘 다 매칭 시 같은 할인/할증 방향이면 더 높은 비율 적용
  */
 export function findMatchingDiscount(
   product: DiscountMatchProduct,
@@ -45,6 +46,9 @@ export function findMatchingDiscount(
   const groupMatch = findDiscountByMethod(product, groupDiscounts, priceOverride);
 
   if (categoryMatch && groupMatch) {
+    if (categoryMatch.priceAdjustment !== groupMatch.priceAdjustment) {
+      throw new BadRequestException('카테고리 할인과 상품군 할인/할증 정책이 충돌합니다.');
+    }
     return categoryMatch.pricePercent >= groupMatch.pricePercent ? categoryMatch : groupMatch;
   }
   return categoryMatch || groupMatch || null;

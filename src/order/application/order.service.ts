@@ -2179,17 +2179,17 @@ export class OrderService {
     });
     const totalCount = orderProductList.length;
 
-    // 2. 유저 및 협력사의 할인 옵션 전체 조회 (대행주문인 경우 clientUser의 할인옵션 사용)
+    // 2. 과금 대상 유저의 할인 옵션 조회 (대행주문인 경우 clientUser의 할인옵션 사용)
     const billingUserId = order.clientUserId ?? order.userId;
-    const partnerCompanyIds = [...new Set(orderProductList.map((op) => op.product.partnerCompanyId))];
-    const userDiscounts = await this.userDiscountRepository.find({
-      where: [{ userId: billingUserId }, { partnerCompanyId: In(partnerCompanyIds) }],
-    });
+    const userDiscounts = (
+      await this.userDiscountRepository.find({
+        where: { userId: billingUserId },
+      })
+    ).filter((discount) => discount.userId === billingUserId);
 
     this.logger.debug(
       `[getOrderSettle] orderId=${id}, billingUserId=${billingUserId} (clientUserId=${order.clientUserId}, userId=${order.userId})`,
     );
-    this.logger.debug(`[getOrderSettle] partnerCompanyIds=${JSON.stringify(partnerCompanyIds)}`);
     this.logger.debug(`[getOrderSettle] userDiscounts count=${userDiscounts.length}`);
     userDiscounts.forEach((d) => {
       this.logger.debug(
@@ -3927,13 +3927,11 @@ export class OrderService {
 
     // ======== 할인/할증 차액 정산 시작 ========
     // 발송요청 시 정가(sendAmount)로 차감되었으므로, 발송확정 시 최종 정산금액과의 차액을 조정
-    const partnerCompanyIds = order
-      .orderProductMappings!.map((m) => m.product.partnerCompanyId)
-      .filter((id, index, arr) => arr.indexOf(id) === index);
-
-    const userDiscounts = await this.userDiscountRepository.find({
-      where: [{ userId: billingUserId }, { partnerCompanyId: In(partnerCompanyIds) }],
-    });
+    const userDiscounts = (
+      await this.userDiscountRepository.find({
+        where: { userId: billingUserId },
+      })
+    ).filter((discount) => discount.userId === billingUserId);
 
     const mappingsToUpdate: OrderProductMappingEntity[] = [];
 
@@ -4108,9 +4106,7 @@ export class OrderService {
           // 1차/2차 공통 신용초과 응답 빌더. 두 응답이 동일 필드를 내려야 함 —
           // walletAccountId/requestedAmount/requestedCreditExcessAmount 는 신용초과 사전 승인
           // (POST /credit-excess-approvals) 요청 body 로 그대로 전달되며, 누락 시 승인 API 400 회귀(요청4).
-          const buildCreditExcessResponse = (
-            message: 'credit_excess' | 'credit_excess_pending_approval',
-          ) =>
+          const buildCreditExcessResponse = (message: 'credit_excess' | 'credit_excess_pending_approval') =>
             ({
               message,
               creditExcess: true,
