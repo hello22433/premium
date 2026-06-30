@@ -28,6 +28,7 @@ import { SsgOrphanResolveOutcome } from '../interface/ssg.orphan.resolve';
 import { Propagation, Transactional } from 'typeorm-transactional';
 import { orderBarcodeGenerate } from '../../order/domain/order.code.generate';
 import { SsgEventEntity } from '../../entity/ssg.event.entity';
+import { SsgResendDeductPendingEntity } from '../../entity/ssg.resend.deduct.pending.entity';
 import { SsgTransactionId } from '../domain/ssg.transaction.id';
 import { systemFromPhoneNumber, ssgIssueUserName } from '../../const';
 import { smsSsgTemplate } from '../../delivery/domain/sms.ssg.template';
@@ -86,6 +87,8 @@ export class PartnerCompanyExternService {
     private galaxiaBarcodeLogRepository: Repository<GalaxiaBarcodeLogEntity>,
     private cryptoCipher: CryptoCipher,
     private ssgInsertStateService: SsgInsertStateService,
+    @InjectRepository(SsgResendDeductPendingEntity)
+    private resendDeductPendingRepository: Repository<SsgResendDeductPendingEntity>,
   ) {}
 
   private logger = new Logger('PARTNER_COMPANY_EXTERN');
@@ -246,7 +249,11 @@ export class PartnerCompanyExternService {
   }
 
   @Transactional({ propagation: Propagation.REQUIRED })
-  async issue(orderDelivery: OrderDeliveryEntity, ssgEvent: SsgEventEntity | null): Promise<PartnerIssueResult> {
+  async issue(
+    orderDelivery: OrderDeliveryEntity,
+    ssgEvent: SsgEventEntity | null,
+    resendDeductionId?: string,
+  ): Promise<PartnerIssueResult> {
     const type = orderDelivery.orderProductMapping!.product.partnerCompany!.type;
     // issue 결과(배치 재발송 선차감 정합). 기본=재사용(false)·현재 귀속 행사. SSG 신규 INSERT 시 갱신.
     const result: PartnerIssueResult = { ssgNewIssue: false, ssgEventId: orderDelivery.ssgEventId ?? null };
@@ -307,6 +314,10 @@ export class PartnerCompanyExternService {
               // MEDIUM: 행사 귀속(ssgEventId)도 함께 복원 — 누락 시 이후 stale save 가 잘못된 행사로 덮어쓴다.
               orderDelivery.ssgEventId = fresh.ssgEventId;
               result.ssgEventId = fresh.ssgEventId ?? null;
+              // dedup 복구 = 전달 ssgEvent(배치 선차감 C) 미사용 → sweep 이 state 무관하게 REVERSED 하도록 durable 마킹.
+              if (resendDeductionId) {
+                await this.markReissuePendingReused(resendDeductionId);
+              }
               await this.pinIssueDedupRepository.update(
                 { transactionId: orderDelivery.transactionId },
                 { recoveredFrom: 'DEDUP' },
@@ -331,6 +342,9 @@ export class PartnerCompanyExternService {
                   orderDelivery.ssgEventId = exact.ssgEventId;
                 }
                 result.ssgEventId = orderDelivery.ssgEventId ?? null;
+                if (resendDeductionId) {
+                  await this.markReissuePendingReused(resendDeductionId);
+                }
                 await this.pinIssueDedupRepository.update(
                   { transactionId: orderDelivery.transactionId },
                   { recoveredFrom: 'DEDUP' },
@@ -537,6 +551,10 @@ export class PartnerCompanyExternService {
           if (verdict === SsgPinVerdict.REGISTERED) {
             // result 유효 → INSERT는 됐고 발송만 실패 → 기존 PIN 재사용
             needsInsert = false;
+            // 재사용 확정 — 배치 선차감(C) 을 sweep 이 state 무관하게 REVERSED 하도록 durable 마킹(markConfirmed 전).
+            if (resendDeductionId) {
+              await this.markReissuePendingReused(resendDeductionId);
+            }
             this.logger.log(`[SSG] 기존 PIN이 SSG DB에 등록(유효) - barCode: ${orderDelivery.barCode}, INSERT 건너뜀`);
             // state ATTEMPTED → CONFIRMED 동기화 (markConfirmed 는 WHERE state=ATTEMPTED 가드라 그 외엔 silent skip).
             // ssgTransactionId 가 NULL 인 legacy row 는 markConfirmed 호출 자체를 skip (NOT NULL 타입 보호).
@@ -616,6 +634,10 @@ export class PartnerCompanyExternService {
             }
 
             if (registeredList.length > 0) {
+              // 재사용 확정 — 배치 선차감(C) 을 sweep 이 state 무관하게 REVERSED 하도록 durable 마킹(reuse 전).
+              if (resendDeductionId) {
+                await this.markReissuePendingReused(resendDeductionId);
+              }
               if (registeredList.length > 1) {
                 // 동일 배송건에 등록 PIN 2건 이상 = 잠재 이중등록 → 운영 알림(후속 orphan 취소 검토).
                 this.logger.error(
@@ -875,6 +897,25 @@ export class PartnerCompanyExternService {
       }
     }
     return result;
+  }
+
+
+  /**
+   * 배치 재발송 선차감 pending 을 'REUSED' 로 durable 마킹 (REQUIRES_NEW 즉시 커밋).
+   * issue() 가 기존/후보 PIN 을 재사용해 전달된 ssgEvent(선차감 C)를 미사용한 경우, 재사용 확정 시점에 호출한다.
+   * 즉시 커밋되므로 이후 caller 의 직접 역복원 전에 크래시해도 sweep 이 SSG state(재사용 PIN 의 CONFIRMED)와
+   * 무관하게 issue_outcome='REUSED' 를 보고 선차감을 REVERSED 한다(이중차감 방지). 미해소 pending 에만 1회.
+   */
+  @Transactional({ propagation: Propagation.REQUIRES_NEW })
+  private async markReissuePendingReused(resendDeductionId: string): Promise<void> {
+    await this.resendDeductPendingRepository
+      .createQueryBuilder()
+      .update(SsgResendDeductPendingEntity)
+      .set({ issueOutcome: 'REUSED' })
+      .where('resend_deduction_id = :rid', { rid: resendDeductionId })
+      .andWhere('resolved_at IS NULL')
+      .andWhere('issue_outcome IS NULL')
+      .execute();
   }
 
   /**

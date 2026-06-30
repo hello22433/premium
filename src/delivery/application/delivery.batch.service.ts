@@ -1032,7 +1032,12 @@ export class DeliveryBatchService {
         if (resendDeducted && resendDeductionId) {
           await this.ssgEventService.markReissueIssueAttempted(resendDeductionId, orderDelivery.id);
         }
-        const issueResult = await this.partnerCompanyExternService.issue(orderDelivery, ssgEvent);
+        // resendDeductionId 전달 → issue() 가 기존/후보 PIN 재사용 시 pending 을 durable 'REUSED' 마킹(crash 안전).
+        const issueResult = await this.partnerCompanyExternService.issue(
+          orderDelivery,
+          ssgEvent,
+          resendDeductionId ?? undefined,
+        );
 
         if (!orderDelivery.barCode) {
           this.logger.error(`[RESEND] PIN 재발급 실패 - orderDelivery.id: ${orderDelivery.id}`);

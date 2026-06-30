@@ -21,6 +21,7 @@ import { PartnerCompanyExternHistoryEntity } from '../../entity/partner.company.
 import { PinIssueDedupEntity } from '../../entity/pin.issue.dedup.entity';
 import { SsgEventEntity } from '../../entity/ssg.event.entity';
 import { SsgIssueLogEntity } from '../../entity/ssg.issue.log.entity';
+import { SsgResendDeductPendingEntity } from '../../entity/ssg.resend.deduct.pending.entity';
 import { SsgPinVerdict } from '../interface/ssg.issue';
 import { SsgProcessingError } from '../infra/ssg.issue';
 import { PartnerCompanyExternService } from './partner.company.extern.service';
@@ -39,6 +40,8 @@ describe('PartnerCompanyExternService - issue() SSG barCode-empty 후보 재조�
   let ssgIssue: { check: jest.Mock; issue: jest.Mock; generateSsgIssue: jest.Mock; getTry: jest.Mock };
   let ssgIssueLogRepository: jest.Mocked<Repository<SsgIssueLogEntity>>;
   let orderDeliveryRepository: any;
+  let resendDeductPendingRepository: any;
+  let pendingQb: any;
   let ssgInsertStateService: {
     getState: jest.Mock;
     markAttempted: jest.Mock;
@@ -142,6 +145,15 @@ describe('PartnerCompanyExternService - issue() SSG barCode-empty 후보 재조�
       restoreConfirmedPinFromIssueLog: jest.fn().mockResolvedValue(false),
     };
 
+    pendingQb = {
+      update: jest.fn(() => pendingQb),
+      set: jest.fn(() => pendingQb),
+      where: jest.fn(() => pendingQb),
+      andWhere: jest.fn(() => pendingQb),
+      execute: jest.fn().mockResolvedValue({ affected: 1 }),
+    };
+    resendDeductPendingRepository = { createQueryBuilder: jest.fn(() => pendingQb) };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         PartnerCompanyExternService,
@@ -161,6 +173,7 @@ describe('PartnerCompanyExternService - issue() SSG barCode-empty 후보 재조�
         { provide: getRepositoryToken(GalaxiaBarcodeLogEntity), useValue: makeRepoMock() },
         { provide: CryptoCipher, useValue: { safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01000000000') } },
         { provide: SsgInsertStateService, useValue: ssgInsertStateService },
+        { provide: getRepositoryToken(SsgResendDeductPendingEntity), useValue: resendDeductPendingRepository },
       ],
     }).compile();
 
@@ -193,6 +206,30 @@ describe('PartnerCompanyExternService - issue() SSG barCode-empty 후보 재조�
     // outer REQUIRED tx 에서 order_delivery 를 직접 update 하지 않는다(markConfirmed 와 self-deadlock 방지).
     expect(od.ssgEventId).toBe(42);
     expect(ssgInsertStateService.markConfirmed).toHaveBeenCalledWith(9001, expect.objectContaining({ ssgEventId: 42 }));
+  });
+
+  it('HIGH crash 안전: resendDeductionId 전달 + REGISTERED 후보 재사용 → pending 을 durable REUSED 마킹', async () => {
+    ssgIssueLogRepository.find.mockResolvedValue([buildCandidate()]);
+    jest.spyOn(sut as any, 'classifySsgPin').mockResolvedValue(SsgPinVerdict.REGISTERED);
+    const od = buildOrderDelivery();
+
+    const result = await sut.issue(od, buildSsgEvent(), 'rd-batch-1');
+
+    expect(ssgIssue.issue).not.toHaveBeenCalled();
+    expect(result.ssgNewIssue).toBe(false);
+    // 재사용 시점에 pending(C) 을 'REUSED' 로 즉시(REQUIRES_NEW) durable 마킹 → sweep 이 state 무관하게 REVERSED.
+    expect(pendingQb.set).toHaveBeenCalledWith({ issueOutcome: 'REUSED' });
+    expect(pendingQb.where).toHaveBeenCalledWith('resend_deduction_id = :rid', { rid: 'rd-batch-1' });
+  });
+
+  it('resendDeductionId 미전달(비-배치 경로) → REGISTERED 재사용해도 pending 마킹 없음', async () => {
+    ssgIssueLogRepository.find.mockResolvedValue([buildCandidate()]);
+    jest.spyOn(sut as any, 'classifySsgPin').mockResolvedValue(SsgPinVerdict.REGISTERED);
+    const od = buildOrderDelivery();
+
+    await sut.issue(od, buildSsgEvent());
+
+    expect(pendingQb.set).not.toHaveBeenCalled();
   });
 
   it('후보 REGISTRATION_FAILED 전부 → 새 PIN (등록실패 PIN 재사용 금지)', async () => {
