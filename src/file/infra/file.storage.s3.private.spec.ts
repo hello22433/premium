@@ -36,6 +36,32 @@ describe('FileStorageS3.uploadPrivateFile — 비공개 저장', () => {
     expect(input.Key).toMatch(/^private\/[0-9a-f]{32}-/);
   });
 
+  it('ownerId 를 주면 private/{ownerId}/ 로 소유자 귀속 (다운로드 소유 검증용)', async () => {
+    const sut = makeSut();
+
+    await sut.uploadPrivateFile(file, 7);
+
+    expect(sentInput(sut).Key).toMatch(/^private\/7\/[0-9a-f]{32}-/);
+  });
+
+  it('진짜 원본명을 메타데이터(originalname)에 verbatim 보존 (한글/공백은 encodeURIComponent)', async () => {
+    const sut = makeSut();
+    const spaced = { originalname: '월간 보고서.xlsx', buffer: Buffer.from('x') } as any;
+
+    await sut.uploadPrivateFile(spaced, 7);
+
+    expect(sentInput(sut).Metadata.originalname).toBe(encodeURIComponent('월간 보고서.xlsx'));
+  });
+
+  it('headOriginalName: 메타데이터의 originalname 을 decode 해 반환', async () => {
+    const sut = makeSut();
+    sut.s3Client.send = jest
+      .fn()
+      .mockResolvedValue({ Metadata: { originalname: encodeURIComponent('월간 보고서.xlsx') } });
+
+    await expect(sut.headOriginalName('private/7/abc-월간_보고서.xlsx')).resolves.toBe('월간 보고서.xlsx');
+  });
+
   it('반환 url 은 저장 key 기반(백엔드 GetObject 용), originalName 보존', async () => {
     const sut = makeSut();
 
