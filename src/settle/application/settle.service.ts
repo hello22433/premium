@@ -94,7 +94,7 @@ import { SettleOtherProductDetailDto } from '../api/dto/settle.other.product.dto
 import { OrderDeliveryCouponStatus, couponStatusToKorean } from '../../delivery/interface/order.delivery.coupon.status';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 import { calculateSettlementPrice } from '../../util/settle-fee.util';
-import { applyCardSurcharge } from '../../order/domain/order.fee.calculator';
+import { applyCardSurcharge, OrderFeeCalculator } from '../../order/domain/order.fee.calculator';
 import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { OrderDeliveryRefundEntity } from '../../entity/order.delivery.refund.entity';
@@ -1654,12 +1654,21 @@ export class SettleService {
         // 할인/할증 적용된 단가 계산
         const lineView = readLineProductView(orderProductMapping);
         const originalPrice = lineView.price;
+        // D3-49: 표시 단가를 실제 차감과 동일한 OrderFeeCalculator(반올림)로 통일 (인라인 ceil 제거)
         let adjustedPrice = originalPrice;
         if (orderProductMapping.fee !== null && orderProductMapping.fee > 0 && orderProductMapping.priceAdjustment) {
           if (orderProductMapping.priceAdjustment === IPriceAdjustment.DISCOUNT) {
-            adjustedPrice = Math.ceil((originalPrice * (100 - orderProductMapping.fee)) / 100);
+            adjustedPrice = OrderFeeCalculator({
+              fee: orderProductMapping.fee,
+              priceAdjustment: IPriceAdjustment.DISCOUNT,
+              price: originalPrice,
+            });
           } else if (orderProductMapping.priceAdjustment === IPriceAdjustment.ADDITIONAL) {
-            adjustedPrice = Math.ceil((originalPrice * (100 + orderProductMapping.fee)) / 100);
+            adjustedPrice = OrderFeeCalculator({
+              fee: orderProductMapping.fee,
+              priceAdjustment: IPriceAdjustment.ADDITIONAL,
+              price: originalPrice,
+            });
           }
         }
 
@@ -1787,9 +1796,9 @@ export class SettleService {
           let adjustedPrice = originalPrice;
           if (mapping.fee !== null && mapping.fee > 0 && mapping.priceAdjustment) {
             if (mapping.priceAdjustment === IPriceAdjustment.DISCOUNT) {
-              adjustedPrice = Math.ceil((originalPrice * (100 - mapping.fee)) / 100);
+              adjustedPrice = OrderFeeCalculator({ fee: mapping.fee, priceAdjustment: IPriceAdjustment.DISCOUNT, price: originalPrice });
             } else if (mapping.priceAdjustment === IPriceAdjustment.ADDITIONAL) {
-              adjustedPrice = Math.ceil((originalPrice * (100 + mapping.fee)) / 100);
+              adjustedPrice = OrderFeeCalculator({ fee: mapping.fee, priceAdjustment: IPriceAdjustment.ADDITIONAL, price: originalPrice });
             }
           }
 
@@ -2903,9 +2912,9 @@ export class SettleService {
         let price = mapping.product.price;
         if (fee !== null && fee > 0 && priceAdjustment !== null) {
           if (priceAdjustment === IPriceAdjustment.DISCOUNT) {
-            price = Math.ceil((mapping.product.price * (100 - fee)) / 100);
+            price = OrderFeeCalculator({ fee, priceAdjustment: IPriceAdjustment.DISCOUNT, price: mapping.product.price });
           } else if (priceAdjustment === IPriceAdjustment.ADDITIONAL) {
-            price = Math.ceil((mapping.product.price * (100 + fee)) / 100);
+            price = OrderFeeCalculator({ fee, priceAdjustment: IPriceAdjustment.ADDITIONAL, price: mapping.product.price });
           }
         }
         total += price;
@@ -2920,9 +2929,9 @@ export class SettleService {
       let adjustedPrice = productTotalPrice;
       if (mapping.fee > 0) {
         if (mapping.priceAdjustment === IPriceAdjustment.DISCOUNT) {
-          adjustedPrice = Math.ceil((productTotalPrice * (100 - mapping.fee)) / 100);
+          adjustedPrice = OrderFeeCalculator({ fee: mapping.fee, priceAdjustment: IPriceAdjustment.DISCOUNT, price: productTotalPrice });
         } else if (mapping.priceAdjustment === IPriceAdjustment.ADDITIONAL) {
-          adjustedPrice = Math.ceil((productTotalPrice * (100 + mapping.fee)) / 100);
+          adjustedPrice = OrderFeeCalculator({ fee: mapping.fee, priceAdjustment: IPriceAdjustment.ADDITIONAL, price: productTotalPrice });
         }
       }
       return adjustedPrice;
