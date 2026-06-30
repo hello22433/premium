@@ -11,8 +11,8 @@ import { IUserSettleMethod } from '../../user/interface/user.settle.method';
  * 이전: salePrice = p.price (정가, 할인 미적용) → 카탈로그 표시값이 실제 청구단가와 불일치.
  * 본 수정: computeUnitSettlement 공유로 createOrder 와 동일 단가를 노출.
  *
- * - 할인은 1회 배치 로딩 후 product별로 (user OR 그 product 의 partner) 의미로 필터링 →
- *   다른 협력사 할인의 오매칭이 없어야 한다.
+ * - 할인은 userId 조건만 배치 로딩. 협력사 정산 수수료(partnerCompanyId 기준)는
+ *   자사↔협력사 간 정산이므로 고객사 salePrice 산출 대상이 아니다.
  */
 describe('ExternalApiService.getProductsForBilling — salePrice 할인/카드할증 적용 (D3-48 ②)', () => {
   const makeQb = (products: unknown[]) => {
@@ -59,7 +59,12 @@ describe('ExternalApiService.getProductsForBilling — salePrice 할인/카드�
   const makeSvc = (products: unknown[], discounts: unknown[]) => {
     const svc = Object.create(ExternalApiService.prototype) as any;
     svc.productRepository = { createQueryBuilder: jest.fn(() => makeQb(products)) };
-    svc.userDiscountRepository = { find: jest.fn(async () => discounts) };
+    // userId 조건 필터를 시뮬레이션: where.userId 와 일치하는 항목만 반환.
+    svc.userDiscountRepository = {
+      find: jest.fn(async ({ where }: { where: { userId: number } }) =>
+        discounts.filter((d: any) => d.userId === where.userId),
+      ),
+    };
     return svc;
   };
 
@@ -89,19 +94,19 @@ describe('ExternalApiService.getProductsForBilling — salePrice 할인/카드�
     expect(res.data[0].salePrice).toBe(9270);
   });
 
-  it('협력사 스코핑: partner=2 전용 할인은 partner=1 상품에 오매칭되지 않는다', async () => {
+  it('협력사 정산 수수료(partnerCompanyId 전용 할인)는 고객사 salePrice에 적용되지 않는다', async () => {
     const products = [
       makeProduct({ code: 'EP-P1', partnerCompanyId: 1 }),
       makeProduct({ code: 'EP-P2', partnerCompanyId: 2 }),
     ];
-    // userId 없이 partnerCompanyId=2 에만 걸린 할인 → product(partner=1)엔 적용 금지, product(partner=2)엔 적용
+    // userId 없이 partnerCompanyId 에만 걸린 할인 = 협력사 정산 수수료 → 고객사 salePrice 미적용
     const discounts = [groupDiscount({ userId: null, partnerCompanyId: 2 })];
     const svc = makeSvc(products, discounts);
 
     const res = await svc.getProductsForBilling(makeUser());
     const byCode = Object.fromEntries(res.data.map((d: any) => [d.productCode, d.salePrice]));
 
-    expect(byCode['EP-P1']).toBe(10000); // 정가 — 다른 협력사 할인 미적용
-    expect(byCode['EP-P2']).toBe(9000); // 자기 협력사 할인 적용
+    expect(byCode['EP-P1']).toBe(10000); // 협력사 수수료 미적용 → 정가
+    expect(byCode['EP-P2']).toBe(10000); // 협력사 수수료 미적용 → 정가
   });
 });

@@ -16,6 +16,7 @@ import { PartnerCompanyEntity } from '../../entity/partner.company.entity';
 import { PartnerCompanyExternHistoryEntity } from '../../entity/partner.company.extern.history.entity';
 import { PinIssueDedupEntity } from '../../entity/pin.issue.dedup.entity';
 import { SsgIssueLogEntity } from '../../entity/ssg.issue.log.entity';
+import { SsgResendDeductPendingEntity } from '../../entity/ssg.resend.deduct.pending.entity';
 import { GiftielExchangeHistoryEntity } from '../../entity/giftiel.exchange.history.entity';
 import { GalaxiaBarcodeLogEntity } from '../../entity/galaxia.barcode.log.entity';
 import { SsgInsertStateService } from '../../delivery/application/ssg-insert-state.service';
@@ -113,6 +114,10 @@ describe('PartnerCompanyExternService.refreshCouponStatus â€” GALAXIA INACTIVE ë
         {
           provide: getRepositoryToken(SsgIssueLogEntity),
           useValue: { ...mock<Repository<SsgIssueLogEntity>>(), ...makeRepoMock() },
+        },
+        {
+          provide: getRepositoryToken(SsgResendDeductPendingEntity),
+          useValue: {},
         },
         {
           provide: getRepositoryToken(GiftielExchangeHistoryEntity),

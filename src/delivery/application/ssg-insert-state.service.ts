@@ -37,6 +37,8 @@ export interface SsgConfirmInfo {
   couponNum: string | null;
   expireAt: Date | null;
   encourageAt: Date | null;
+  /** 재사용/dedup 복구 시 PIN 과 함께 order_delivery.ssgEventId(행사 귀속)도 같은 REQUIRES_NEW 로 durable 반영 */
+  ssgEventId?: number | null;
 }
 
 /**
@@ -174,6 +176,7 @@ export class SsgInsertStateService {
         couponNum: pinInfo.couponNum,
         expireAt: pinInfo.expireAt,
         encourageAt: pinInfo.encourageAt,
+        ...(pinInfo.ssgEventId != null ? { ssgEventId: pinInfo.ssgEventId } : {}),
       })
       .where('id = :id', { id: orderDeliveryId })
       .execute();
