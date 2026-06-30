@@ -19,6 +19,7 @@ import { PartnerCompanyEntity } from '../../entity/partner.company.entity';
 import { PartnerCompanyExternHistoryEntity } from '../../entity/partner.company.extern.history.entity';
 import { PinIssueDedupEntity } from '../../entity/pin.issue.dedup.entity';
 import { SsgIssueLogEntity } from '../../entity/ssg.issue.log.entity';
+import { SsgResendDeductPendingEntity } from '../../entity/ssg.resend.deduct.pending.entity';
 import { GiftielExchangeHistoryEntity } from '../../entity/giftiel.exchange.history.entity';
 import { SsgInsertStateService } from '../../delivery/application/ssg-insert-state.service';
 import { PartnerCompanyExternService } from './partner.company.extern.service';
@@ -47,6 +48,9 @@ describe('PartnerCompanyExternService - PIN dedup recovery', () => {
   let sut: PartnerCompanyExternService;
   let pinIssueDedupRepository: any;
   let galaxia: any;
+  let resendDeductPendingRepository: any;
+  let pendingQb: any;
+  let orderDeliveryRepository: any;
 
   const mockCrypto = {
     safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01000000000'),
@@ -85,6 +89,15 @@ describe('PartnerCompanyExternService - PIN dedup recovery', () => {
       cancel: jest.fn(),
     };
 
+    pendingQb = {
+      update: jest.fn(() => pendingQb),
+      set: jest.fn(() => pendingQb),
+      where: jest.fn(() => pendingQb),
+      andWhere: jest.fn(() => pendingQb),
+      execute: jest.fn().mockResolvedValue({ affected: 1 }),
+    };
+    resendDeductPendingRepository = { createQueryBuilder: jest.fn(() => pendingQb) };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         PartnerCompanyExternService,
@@ -116,6 +129,10 @@ describe('PartnerCompanyExternService - PIN dedup recovery', () => {
           useValue: { ...mock<Repository<SsgIssueLogEntity>>(), ...makeRepoMock() },
         },
         {
+          provide: getRepositoryToken(SsgResendDeductPendingEntity),
+          useValue: resendDeductPendingRepository,
+        },
+        {
           provide: getRepositoryToken(GiftielExchangeHistoryEntity),
           useValue: { ...mock<Repository<GiftielExchangeHistoryEntity>>(), ...makeRepoMock() },
         },
@@ -138,6 +155,7 @@ describe('PartnerCompanyExternService - PIN dedup recovery', () => {
 
     sut = module.get<PartnerCompanyExternService>(PartnerCompanyExternService);
     pinIssueDedupRepository = module.get(getRepositoryToken(PinIssueDedupEntity));
+    orderDeliveryRepository = module.get(getRepositoryToken(OrderDeliveryEntity));
   });
 
   describe('정상 발송 경로', () => {
@@ -248,6 +266,54 @@ describe('PartnerCompanyExternService - PIN dedup recovery', () => {
           recoveredFrom: 'FRESH_ISSUE',
         }),
       );
+    });
+  });
+
+  describe('SSG dedup loser — 선차감 REUSED durable 마킹 순서(HIGH crash 안전)', () => {
+    const buildSsgOrder = () =>
+      buildOrderDelivery({
+        orderProductMapping: {
+          product: {
+            type: 'COUPON',
+            name: 'SSG 1만원',
+            price: 10000,
+            partnerCompanyCode: 'SSG-1',
+            partnerCompany: { type: 'SSG' },
+          },
+        },
+      });
+
+    it('ER_DUP_ENTRY 즉시 + 다른 DB 조회(existing/fresh)보다 먼저 pending 을 REUSED 로 마킹한다', async () => {
+      const ssgOrder = buildSsgOrder();
+      pinIssueDedupRepository.insert.mockRejectedValueOnce(makeDuplicateKeyError());
+      pinIssueDedupRepository.findOne.mockResolvedValue({ transactionId: 'ENM1D1001', barCode: 'WINNER-BAR' });
+      orderDeliveryRepository.findOne.mockResolvedValue({
+        id: 1001,
+        barCode: 'WINNER-BAR',
+        personalCode: 'p',
+        ssgEventId: 50,
+      });
+
+      const result = await sut.issue(ssgOrder, null, 'rd-loser-1');
+
+      expect(pendingQb.set).toHaveBeenCalledWith({ issueOutcome: 'REUSED' });
+      expect(pendingQb.where).toHaveBeenCalledWith('resend_deduction_id = :rid', { rid: 'rd-loser-1' });
+      // 마킹이 dedup existing/fresh 조회보다 먼저 실행됐다(marker-이전 crash window 제거).
+      const markOrder = pendingQb.set.mock.invocationCallOrder[0];
+      expect(markOrder).toBeLessThan(pinIssueDedupRepository.findOne.mock.invocationCallOrder[0]);
+      expect(markOrder).toBeLessThan(orderDeliveryRepository.findOne.mock.invocationCallOrder[0]);
+      expect(result.ssgNewIssue).toBe(false);
+    });
+
+    it('resendDeductionId 미전달 시 dedup loser 라도 REUSED 마킹 없음', async () => {
+      const ssgOrder = buildSsgOrder();
+      pinIssueDedupRepository.insert.mockRejectedValueOnce(makeDuplicateKeyError());
+      pinIssueDedupRepository.findOne.mockResolvedValue({ transactionId: 'ENM1D1001', barCode: 'WINNER-BAR' });
+      orderDeliveryRepository.findOne.mockResolvedValue({ id: 1001, barCode: 'WINNER-BAR', ssgEventId: 50 });
+
+      await sut.issue(ssgOrder, null);
+
+      expect(pendingQb.set).not.toHaveBeenCalled();
     });
   });
 });

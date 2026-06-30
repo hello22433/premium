@@ -130,6 +130,23 @@ describe('SsgResendDeductRecoveryService', () => {
     expect(stats.reversed).toBe(1);
   });
 
+  it('issue 시도 + issue_outcome=REUSED → state 무관 직접 역복원(REVERSED), resolver 미호출 (HIGH crash 안전)', async () => {
+    process.env.SSG_SWEEP_MIGRATION_AT = '2020-01-01T00:00:00.000Z';
+    await setup({ ...baseRow, issueOutcome: 'REUSED' });
+    // 재사용 PIN 의 CONFIRMED 를 새 행사 등록으로 오판하면 안 되므로 state(resolver) 를 보지 않는다.
+    resolver.resolveAndRefundIfNeeded.mockResolvedValue(SsgRefundOutcome.SKIPPED_CONFIRMED);
+    const stats = await sut.sweepOnce();
+    expect(resolver.resolveAndRefundIfNeeded).not.toHaveBeenCalled();
+    expect(ssgEventService.refundResendEventDeduction).toHaveBeenCalledWith({
+      resendDeductionId: 'rd-1',
+      ssgEventId: 36,
+      orderId: 4145,
+      amount: 10000,
+    });
+    expect(ssgEventService.resolveReissuePending).toHaveBeenCalledWith('rd-1', 'REVERSED');
+    expect(stats.reversed).toBe(1);
+  });
+
   it('issue 시도 + SKIPPED_CONFIRMED → order_delivery ssg_event_id repair + KEPT', async () => {
     process.env.SSG_SWEEP_MIGRATION_AT = '2020-01-01T00:00:00.000Z';
     await setup(baseRow);

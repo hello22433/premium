@@ -142,14 +142,13 @@ export class SsgResendDeductRecoveryService {
     try {
       if (row.issueAttemptedAt == null) {
         // W1: issue 미시도 → 외부 미등록 확정 → 직접 역복원. (state 보지 않음)
-        await this.ssgEventService.refundResendEventDeduction({
-          resendDeductionId: row.resendDeductionId,
-          ssgEventId: row.ssgEventId,
-          orderId: row.orderId,
-          amount: row.amount,
-        });
-        await this.ssgEventService.resolveReissuePending(row.resendDeductionId, 'REVERSED');
-        return 'REVERSED';
+        return this.directReverse(row);
+      }
+
+      if (row.issueOutcome === 'REUSED') {
+        // issue() 가 기존/후보 PIN 을 재사용해 선차감 행사를 미사용함(durable 마킹). 재사용 PIN 의 CONFIRMED
+        // state 를 새 행사 등록으로 오판하지 않도록, state 와 무관하게 선차감을 직접 역복원한다(이중차감 방지).
+        return this.directReverse(row);
       }
 
       if (row.issueOrderDeliveryId == null) {
@@ -193,6 +192,18 @@ export class SsgResendDeductRecoveryService {
     } finally {
       clearInterval(heartbeat);
     }
+  }
+
+  /** 선차감 직접 역복원(state 비의존) — refundResendEventDeduction(멱등) 후 pending REVERSED 해소. */
+  private async directReverse(row: SsgResendDeductPendingEntity): Promise<'REVERSED'> {
+    await this.ssgEventService.refundResendEventDeduction({
+      resendDeductionId: row.resendDeductionId,
+      ssgEventId: row.ssgEventId,
+      orderId: row.orderId,
+      amount: row.amount,
+    });
+    await this.ssgEventService.resolveReissuePending(row.resendDeductionId, 'REVERSED');
+    return 'REVERSED';
   }
 
   private startHeartbeat(pendingId: number, token: string): NodeJS.Timeout {

@@ -20,6 +20,7 @@ import { PartnerCompanyEntity } from '../../entity/partner.company.entity';
 import { PartnerCompanyExternHistoryEntity } from '../../entity/partner.company.extern.history.entity';
 import { PinIssueDedupEntity } from '../../entity/pin.issue.dedup.entity';
 import { SsgIssueLogEntity } from '../../entity/ssg.issue.log.entity';
+import { SsgResendDeductPendingEntity } from '../../entity/ssg.resend.deduct.pending.entity';
 import { SsgCheckNotFoundError } from '../infra/ssg.issue';
 import { SsgOrphanResolveOutcome } from '../interface/ssg.orphan.resolve';
 import { PartnerCompanyExternService } from './partner.company.extern.service';
@@ -115,6 +116,7 @@ describe('PartnerCompanyExternService - SSG orphan resolver', () => {
         { provide: getRepositoryToken(GalaxiaBarcodeLogEntity), useValue: makeRepoMock() },
         { provide: CryptoCipher, useValue: { safeDecryptDeliveryTarget: jest.fn() } },
         { provide: SsgInsertStateService, useValue: ssgInsertStateService },
+        { provide: getRepositoryToken(SsgResendDeductPendingEntity), useValue: {} },
       ],
     }).compile();
 
