@@ -89,6 +89,12 @@ export class OrderReceiptService {
       throw new BadRequestException('주문접수 건이 존재하지 않습니다.');
     }
 
+    const fileUrlList = parseFilePathList(receipt.filePath);
+    // 원본 파일명(메타데이터)까지 함께 — FE 가 화면 표시·다운로드명 모두 진짜 이름으로 일관되게.
+    const files = await Promise.all(
+      fileUrlList.map(async (url) => ({ url, name: await this.fileService.getOriginalName(url) })),
+    );
+
     return {
       id: receipt.id,
       userId: receipt.userId,
@@ -96,7 +102,8 @@ export class OrderReceiptService {
       userCompanyName: receipt.user.company?.businessName ?? null,
       title: receipt.title,
       status: receipt.status,
-      filePathList: parseFilePathList(receipt.filePath),
+      filePathList: fileUrlList,
+      files,
       rejectReason: receipt.rejectReason,
       requestNote: receipt.requestNote,
       confirmNote: receipt.confirmNote,
@@ -109,9 +116,11 @@ export class OrderReceiptService {
   /**
    * 첨부 다운로드 프록시용. 권한·소유 검증 후 비공개(private) S3 객체를 임시파일로 받아
    * 로컬 경로와 원본 파일명을 돌려준다. 컨트롤러가 Content-Disposition(원본명)으로 스트리밍한다.
-   *  - 권한: 운영/최고관리자는 전체, 기업관리자는 본인 문서만.
-   *  - IDOR 차단: 요청한 fileUrl 이 해당 주문접수의 filePath 목록에 포함될 때만 허용.
-   *  - 원본명: DB에 파일명 컬럼이 없어 S3 key 에서 복원(신/구 key 모두 호환).
+   *  - 문서 권한: 운영/최고관리자는 전체, 기업관리자는 본인 문서만.
+   *  - 객체 소유 검증(assertDownloadable): key 의 ownerId 가 요청자(or 관리자)여야 함.
+   *    → filePath 는 클라이언트가 임의 지정 가능하므로 includes() 만으론 불충분.
+   *      private/{ownerId}/ 의 소유자까지 봐서 "남의 private 객체 우회 read" 를 차단한다.
+   *  - 원본명: 객체 메타데이터(verbatim) 우선, 없으면 key 복원.
    */
   async downloadFile(
     user: ILoginUserInfo,
@@ -125,13 +134,16 @@ export class OrderReceiptService {
       throw new ForbiddenException('다운로드 권한이 없습니다.');
     }
 
-    // IDOR 차단: 이 주문접수에 실제로 첨부된 URL 만 허용
+    // 1차: 이 주문접수에 첨부된 URL 인지
     const fileUrlList = parseFilePathList(receipt.filePath);
     if (!fileUrlList.includes(fileUrl)) {
       throw new BadRequestException('해당 주문접수의 첨부파일이 아닙니다.');
     }
 
-    const fileName = this.fileService.extractOriginalFileName(fileUrl);
+    // 2차(핵심): 이 객체를 이 요청자가 받을 자격이 있나 — filePath 가 신뢰 불가하므로 key 소유까지 검증
+    this.assertDownloadable(fileUrl, user);
+
+    const fileName = await this.fileService.getOriginalName(fileUrl);
 
     const downloadDir = join(tmpdir(), 'epopkon-order-receipt');
     fs.mkdirSync(downloadDir, { recursive: true });
@@ -140,6 +152,34 @@ export class OrderReceiptService {
     const filePath = await this.fileService.downloadWithPath(downloadDir, randomUUID(), fileUrl);
 
     return { fileName, filePath };
+  }
+
+  /**
+   * 클라이언트가 filePath 에 임의 S3 key 를 심어 백엔드 자격증명으로 타인 객체를 우회 read 하는 것을 차단.
+   *  - private/{ownerId}/... : ownerId 가 요청자(or 관리자)일 때만 허용. ownerId 세그먼트가 없는
+   *    구(舊) private key(예: 공유리스트)는 주문접수 첨부가 아니므로 차단.
+   *  - file/ · image/ (공개 객체) : 이미 공개라 추가 노출 아님(과거 첨부 호환). 허용.
+   *  - 그 외 위치 : 차단.
+   */
+  private assertDownloadable(fileUrl: string, user: ILoginUserInfo) {
+    const key = this.fileService.extractStorageKey(fileUrl);
+
+    if (key.startsWith('private/')) {
+      const ownerId = Number(key.split('/')[1]);
+      if (!Number.isInteger(ownerId)) {
+        throw new ForbiddenException('다운로드할 수 없는 파일입니다.');
+      }
+      if (!this.isAdminUser(user) && ownerId !== user.id) {
+        throw new ForbiddenException('다운로드 권한이 없습니다.');
+      }
+      return;
+    }
+
+    if (key.startsWith('file/') || key.startsWith('image/')) {
+      return;
+    }
+
+    throw new ForbiddenException('다운로드할 수 없는 파일입니다.');
   }
 
   async create(user: ILoginUserInfo, getBody: OrderReceiptCreateReqDto) {

@@ -1,11 +1,16 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { IFileStorage, IFileUploadFileReturn } from '../interface/file.storage';
-import { GetObjectCommand, PutObjectCommand, PutObjectCommandInput, S3Client } from '@aws-sdk/client-s3';
+import {
+  GetObjectCommand,
+  HeadObjectCommand,
+  PutObjectCommand,
+  PutObjectCommandInput,
+  S3Client,
+} from '@aws-sdk/client-s3';
 import { Readable } from 'stream';
 import { randomUUID } from 'node:crypto';
 import { join } from 'path';
-import process from 'node:process';
 import fs from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
@@ -89,18 +94,23 @@ export class FileStorageS3 implements IFileStorage {
     }
   }
 
-  async uploadPrivateFile(file: Express.Multer.File): Promise<IFileUploadFileReturn> {
+  async uploadPrivateFile(file: Express.Multer.File, ownerId?: number): Promise<IFileUploadFileReturn> {
     const bucketName = this.configService.getOrThrow('AWS_S3_BUCKET');
 
     // 비공개 저장 + 무작위(UUID) key. 다운로드는 백엔드가 자격증명으로 GetObject 하므로 public-read 불필요.
-    // UUID 로 "업로드 시각 + 원본 파일명" 추측 접근을 차단한다. (원본명은 응답/DB 의 originalName 으로 보존)
-    const uploadFileName = `private/${this.randomKey()}-${this.sanitizeFileName(file.originalname)}`;
+    // UUID 로 "업로드 시각 + 원본 파일명" 추측 접근을 차단한다.
+    // ownerId 가 있으면 `private/{ownerId}/...` 로 소유자를 key 에 귀속(다운로드 시 소유 검증용).
+    const prefix = ownerId != null ? `private/${ownerId}` : 'private';
+    const uploadFileName = `${prefix}/${this.randomKey()}-${this.sanitizeFileName(file.originalname)}`;
 
     const fileData: PutObjectCommandInput = {
       Bucket: bucketName,
       Key: uploadFileName,
       Body: file.buffer,
       ACL: 'private',
+      // 진짜 원본명을 메타데이터에 verbatim 보존(key 는 URL 안전 위해 sanitize 됨).
+      // S3 메타데이터는 ASCII 만 허용 → 한글 등은 encodeURIComponent 로 감싼다(읽을 때 decode).
+      Metadata: { originalname: encodeURIComponent(file.originalname) },
     };
 
     try {
@@ -114,6 +124,13 @@ export class FileStorageS3 implements IFileStorage {
     } catch (e) {
       throw new Error(e as any);
     }
+  }
+
+  async headOriginalName(key: string): Promise<string | null> {
+    const bucketName = this.configService.getOrThrow('AWS_S3_BUCKET');
+    const res = await this.s3Client.send(new HeadObjectCommand({ Bucket: bucketName, Key: key }));
+    const raw = res.Metadata?.originalname;
+    return raw ? decodeURIComponent(raw) : null;
   }
 
   async uploadImageFileWithBuffer(

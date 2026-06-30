@@ -1,6 +1,14 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { OrderReceiptStatus } from '../../interface/order.receipt.status';
 
+export class OrderReceiptFileDto {
+  @ApiProperty({ description: '다운로드용 파일 url (다운로드는 프록시 경유)' })
+  url: string;
+
+  @ApiProperty({ description: '원본 파일명 (표시·다운로드 파일명)' })
+  name: string;
+}
+
 export class OrderReceiptDetailDto {
   @ApiProperty({ description: '주문접수 id' })
   id: number;
@@ -20,8 +28,11 @@ export class OrderReceiptDetailDto {
   @ApiProperty({ description: '상태 ex) RECEIVED, REVIEWING, APPROVED, REJECTED' })
   status: OrderReceiptStatus;
 
-  @ApiProperty({ description: '파일 url list' })
+  @ApiProperty({ description: '파일 url list (하위호환용, 원본명 필요 시 files 사용)' })
   filePathList: string[];
+
+  @ApiProperty({ description: '파일 목록(원본명 포함)', type: [OrderReceiptFileDto] })
+  files: OrderReceiptFileDto[];
 
   @ApiProperty({ description: '반려 사유', nullable: true })
   rejectReason: string | null;
