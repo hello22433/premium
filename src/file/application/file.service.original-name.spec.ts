@@ -25,8 +25,7 @@ describe('FileService.extractOriginalFileName — key 에서 원본명 복원', 
 
   it('URL 인코딩된 한글 파일명 디코드', () => {
     const url =
-      'https://b.s3.amazonaws.com/private/0123456789abcdef0123456789abcdef-' +
-      encodeURIComponent('정산내역.xlsx');
+      'https://b.s3.amazonaws.com/private/0123456789abcdef0123456789abcdef-' + encodeURIComponent('정산내역.xlsx');
     expect(sut.extractOriginalFileName(url)).toBe('정산내역.xlsx');
   });
 });
