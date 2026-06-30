@@ -1796,9 +1796,17 @@ export class SettleService {
           let adjustedPrice = originalPrice;
           if (mapping.fee !== null && mapping.fee > 0 && mapping.priceAdjustment) {
             if (mapping.priceAdjustment === IPriceAdjustment.DISCOUNT) {
-              adjustedPrice = OrderFeeCalculator({ fee: mapping.fee, priceAdjustment: IPriceAdjustment.DISCOUNT, price: originalPrice });
+              adjustedPrice = OrderFeeCalculator({
+                fee: mapping.fee,
+                priceAdjustment: IPriceAdjustment.DISCOUNT,
+                price: originalPrice,
+              });
             } else if (mapping.priceAdjustment === IPriceAdjustment.ADDITIONAL) {
-              adjustedPrice = OrderFeeCalculator({ fee: mapping.fee, priceAdjustment: IPriceAdjustment.ADDITIONAL, price: originalPrice });
+              adjustedPrice = OrderFeeCalculator({
+                fee: mapping.fee,
+                priceAdjustment: IPriceAdjustment.ADDITIONAL,
+                price: originalPrice,
+              });
             }
           }
 
@@ -2912,9 +2920,17 @@ export class SettleService {
         let price = mapping.product.price;
         if (fee !== null && fee > 0 && priceAdjustment !== null) {
           if (priceAdjustment === IPriceAdjustment.DISCOUNT) {
-            price = OrderFeeCalculator({ fee, priceAdjustment: IPriceAdjustment.DISCOUNT, price: mapping.product.price });
+            price = OrderFeeCalculator({
+              fee,
+              priceAdjustment: IPriceAdjustment.DISCOUNT,
+              price: mapping.product.price,
+            });
           } else if (priceAdjustment === IPriceAdjustment.ADDITIONAL) {
-            price = OrderFeeCalculator({ fee, priceAdjustment: IPriceAdjustment.ADDITIONAL, price: mapping.product.price });
+            price = OrderFeeCalculator({
+              fee,
+              priceAdjustment: IPriceAdjustment.ADDITIONAL,
+              price: mapping.product.price,
+            });
           }
         }
         total += price;
@@ -2928,11 +2944,14 @@ export class SettleService {
     if (mapping.fee !== null && mapping.priceAdjustment !== null) {
       let adjustedPrice = productTotalPrice;
       if (mapping.fee > 0) {
-        if (mapping.priceAdjustment === IPriceAdjustment.DISCOUNT) {
-          adjustedPrice = OrderFeeCalculator({ fee: mapping.fee, priceAdjustment: IPriceAdjustment.DISCOUNT, price: productTotalPrice });
-        } else if (mapping.priceAdjustment === IPriceAdjustment.ADDITIONAL) {
-          adjustedPrice = OrderFeeCalculator({ fee: mapping.fee, priceAdjustment: IPriceAdjustment.ADDITIONAL, price: productTotalPrice });
-        }
+        // D3-49 축2: 실제 돈(calculateSettlementPrice)과 동일하게 단가별 반올림 후 수량 곱.
+        // 집계(단가×수량)에 한 번 반올림하면 비100 단가·수량≥2 에서 실제 차감액과 1원 어긋남.
+        const unitPrice = OrderFeeCalculator({
+          fee: mapping.fee,
+          priceAdjustment: mapping.priceAdjustment,
+          price: mapping.product.price,
+        });
+        adjustedPrice = unitPrice * mapping.amount;
       }
       return adjustedPrice;
     }

@@ -12,9 +12,9 @@ import { IPriceAdjustment } from '../../user_discount/interface/price.adjustment
  */
 describe('SettleService.calculateMappingSettlePrice — D3-49 반올림 통일(실경로)', () => {
   const calc = (mapping: unknown): number =>
-    (SettleService.prototype as unknown as { calculateMappingSettlePrice(m: unknown): number }).calculateMappingSettlePrice(
-      mapping,
-    );
+    (
+      SettleService.prototype as unknown as { calculateMappingSettlePrice(m: unknown): number }
+    ).calculateMappingSettlePrice(mapping);
 
   const makeMapping = (over: Record<string, unknown> = {}) => ({
     fee: null,
@@ -43,13 +43,23 @@ describe('SettleService.calculateMappingSettlePrice — D3-49 반올림 통일(�
 
   it('비100 10% ADDITIONAL → 3667 (반올림 가산, 대칭 검증; 이전 ceil 이면 3668)', () => {
     // 3334 + round(10%·3334)=round(333.4)=333 = 3667   (ceil(3334·110/100)=ceil(3667.4)=3668)
-    expect(calc(makeMapping({ fee: 10, priceAdjustment: IPriceAdjustment.ADDITIONAL, product: prod(3334) }))).toBe(3667);
+    expect(calc(makeMapping({ fee: 10, priceAdjustment: IPriceAdjustment.ADDITIONAL, product: prod(3334) }))).toBe(
+      3667,
+    );
   });
 
-  it('수량>1 (매핑레벨은 총액에 적용) → 20000·10% = 18000', () => {
+  it('수량>1 100단위 → 단가별 반올림×수량 = 18000 (집계와 동일)', () => {
     expect(
       calc(makeMapping({ fee: 10, priceAdjustment: IPriceAdjustment.DISCOUNT, amount: 2, product: prod(10000) })),
     ).toBe(18000);
+  });
+
+  it('D3-49 축2: 비100 단가·수량2 → 단가별 반올림×수량 = 6002 (집계반올림 6003 아님, 실제 차감과 일치)', () => {
+    // 단가별: (3335 - round(333.5)=334)=3001 × 2 = 6002  ← 실제 돈(calculateSettlementPrice×수량)과 동일
+    // 집계반올림(옛 버그): round(6670×0.9)=6003
+    expect(
+      calc(makeMapping({ fee: 10, priceAdjustment: IPriceAdjustment.DISCOUNT, amount: 2, product: prod(3335) })),
+    ).toBe(6002);
   });
 
   it('delivery settleFee 분기(SSG·소수율 2.5%)도 반올림 처리 → 9750', () => {
