@@ -1626,12 +1626,21 @@ export class OrderService {
         const quantity = orderProductMapping.amount ?? 0;
 
         // 할인/할증 적용된 단가 계산 (소수점 발생 시 올림 처리)
+        // D3-49: 표시 단가를 실제 차감과 동일한 OrderFeeCalculator(반올림)로 통일 (인라인 ceil 제거)
         let adjustedPrice = originalPrice;
         if (orderProductMapping.fee !== null && orderProductMapping.fee > 0 && orderProductMapping.priceAdjustment) {
           if (orderProductMapping.priceAdjustment === IPriceAdjustment.DISCOUNT) {
-            adjustedPrice = Math.ceil((originalPrice * (100 - orderProductMapping.fee)) / 100);
+            adjustedPrice = OrderFeeCalculator({
+              fee: orderProductMapping.fee,
+              priceAdjustment: IPriceAdjustment.DISCOUNT,
+              price: originalPrice,
+            });
           } else if (orderProductMapping.priceAdjustment === IPriceAdjustment.ADDITIONAL) {
-            adjustedPrice = Math.ceil((originalPrice * (100 + orderProductMapping.fee)) / 100);
+            adjustedPrice = OrderFeeCalculator({
+              fee: orderProductMapping.fee,
+              priceAdjustment: IPriceAdjustment.ADDITIONAL,
+              price: originalPrice,
+            });
           }
         }
 
@@ -2088,9 +2097,9 @@ export class OrderService {
           let adjustedPrice = originalPrice;
           if (orderProductMapping.fee !== null && orderProductMapping.fee > 0 && orderProductMapping.priceAdjustment) {
             if (orderProductMapping.priceAdjustment === IPriceAdjustment.DISCOUNT) {
-              adjustedPrice = Math.ceil((originalPrice * (100 - orderProductMapping.fee)) / 100);
+              adjustedPrice = OrderFeeCalculator({ fee: orderProductMapping.fee, priceAdjustment: IPriceAdjustment.DISCOUNT, price: originalPrice });
             } else if (orderProductMapping.priceAdjustment === IPriceAdjustment.ADDITIONAL) {
-              adjustedPrice = Math.ceil((originalPrice * (100 + orderProductMapping.fee)) / 100);
+              adjustedPrice = OrderFeeCalculator({ fee: orderProductMapping.fee, priceAdjustment: IPriceAdjustment.ADDITIONAL, price: originalPrice });
             }
           }
 
