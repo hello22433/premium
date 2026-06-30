@@ -1094,3 +1094,108 @@ describe('settleMethod SoT 동기화 테스트', () => {
     expect(userCompanyRepository.save).not.toHaveBeenCalled();
   });
 });
+
+describe('modifyMaximumLimit — wallet credit_limit 동기화', () => {
+  let sut: UserManagementService;
+  let userRepository: any;
+  let userCompanyRepository: any;
+  let walletAccountRepository: any;
+
+  beforeEach(async () => {
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        UserManagementService,
+        { provide: PasswordBcryptEncrypt, useValue: { encrypt: jest.fn().mockResolvedValue('hashed') } },
+        {
+          provide: getRepositoryToken(UserEntity),
+          useValue: { ...createMockRepositoryMethod(), manager: {}, createQueryBuilder: jest.fn(() => createMockQueryBuilder()) },
+        },
+        { provide: getRepositoryToken(UserCompanyEntity), useValue: createMockRepositoryMethod() },
+        { provide: getRepositoryToken(UserViewScopeEntity), useValue: createMockRepositoryMethod() },
+        { provide: getRepositoryToken(DepartmentEntity), useValue: createMockRepositoryMethod() },
+        { provide: getRepositoryToken(ExternalApiAccountEntity), useValue: createMockRepositoryMethod() },
+        { provide: getRepositoryToken(ExternalApiAllowedIpEntity), useValue: createMockRepositoryMethod() },
+        { provide: getRepositoryToken(ExternalApiSsgRequestEntity), useValue: createMockRepositoryMethod() },
+        { provide: getRepositoryToken(ApiAppEntity), useValue: { ...createMockRepositoryMethod(), softRemove: jest.fn() } },
+        { provide: getRepositoryToken(ApiCredentialEntity), useValue: createMockRepositoryMethod() },
+        { provide: getRepositoryToken(ApiCustomerMappingEntity), useValue: { ...createMockRepositoryMethod(), softRemove: jest.fn() } },
+        { provide: getRepositoryToken(WalletAccountEntity), useValue: createMockRepositoryMethod() },
+        { provide: getRepositoryToken(WalletTransactionEntity), useValue: createMockRepositoryMethod() },
+        { provide: 'IMailSend', useValue: { send: jest.fn() } },
+        { provide: 'DeliveryAlimTalk', useValue: { send: jest.fn() } },
+        { provide: 'ISmsSend', useValue: { send: jest.fn() } },
+        { provide: ActivityLogService, useValue: { createLog: jest.fn().mockResolvedValue(1), getMaximumLimitHistoryByUserId: jest.fn() } },
+        { provide: ConfigService, useValue: { getOrThrow: jest.fn().mockReturnValue('CODE') } },
+        { provide: WalletLedgerService, useValue: { recordTransaction: jest.fn().mockResolvedValue({}) } },
+        { provide: WalletAccountResolverService, useValue: { resolveByUserId: jest.fn() } },
+        { provide: WalletCutoverConfig, useValue: { pr2DeliveryLifecycleMode: WalletCutoverMode.WALLET, pr3SettleMode: WalletCutoverMode.WALLET } },
+        { provide: AccountStatusTransitionService, useValue: { logAccountCreate: jest.fn(), adminSetStatus: jest.fn(), touchLastActivity: jest.fn() } },
+        { provide: SettleService, useValue: { getRemainServiceAmountByUserId: jest.fn().mockResolvedValue(0) } },
+        { provide: OrderFromService, useValue: { resolveApprovedDefaultPhone: jest.fn().mockResolvedValue(null), seedApprovedDefaultPhone: jest.fn() } },
+      ],
+    }).compile();
+
+    sut = module.get(UserManagementService);
+    userRepository = module.get(getRepositoryToken(UserEntity));
+    userCompanyRepository = module.get(getRepositoryToken(UserCompanyEntity));
+    walletAccountRepository = module.get(getRepositoryToken(WalletAccountEntity));
+  });
+
+  const operator = { id: 99, email: 'op@test.com' } as any;
+
+  it('company.maximumLimit 와 wallet.creditLimit 를 함께 갱신한다', async () => {
+    const company = { id: 10, maximumLimit: 5_000_000, businessName: 'Biz' };
+    userRepository.findOne.mockResolvedValue({
+      ...UserEntityTest(),
+      id: 103,
+      email: 'u@test.com',
+      company,
+      companyId: 10,
+      settlementCode: 'company-10',
+    });
+    const wallet = { id: 'wallet-1', ownerType: 'SETTLEMENT_CODE', ownerId: 'company-10', creditLimit: 5_000_000 };
+    walletAccountRepository.findOne.mockResolvedValue(wallet);
+
+    await sut.modifyMaximumLimit({ id: 103, newMaximumLimit: 20_000_000, memo: '한도 상향' } as any, operator);
+
+    expect(userCompanyRepository.save).toHaveBeenCalledWith(expect.objectContaining({ maximumLimit: 20_000_000 }));
+    expect(walletAccountRepository.findOne).toHaveBeenCalledWith({
+      where: { ownerType: 'SETTLEMENT_CODE', ownerId: 'company-10' },
+    });
+    expect(walletAccountRepository.save).toHaveBeenCalledWith(expect.objectContaining({ creditLimit: 20_000_000 }));
+  });
+
+  it('wallet 미존재 시에도 company.maximumLimit 갱신은 진행한다', async () => {
+    const company = { id: 11, maximumLimit: 1_000_000, businessName: 'Biz2' };
+    userRepository.findOne.mockResolvedValue({
+      ...UserEntityTest(),
+      id: 104,
+      company,
+      companyId: 11,
+      settlementCode: 'company-11',
+    });
+    walletAccountRepository.findOne.mockResolvedValue(null);
+
+    await sut.modifyMaximumLimit({ id: 104, newMaximumLimit: 3_000_000, memo: null } as any, operator);
+
+    expect(userCompanyRepository.save).toHaveBeenCalledWith(expect.objectContaining({ maximumLimit: 3_000_000 }));
+    expect(walletAccountRepository.save).not.toHaveBeenCalled();
+  });
+
+  it('settlement_code 미부여 계정은 wallet 조회 없이 company.maximumLimit 만 갱신한다', async () => {
+    const company = { id: 12, maximumLimit: 0, businessName: 'Biz3' };
+    userRepository.findOne.mockResolvedValue({
+      ...UserEntityTest(),
+      id: 105,
+      company,
+      companyId: 12,
+      settlementCode: '',
+    });
+
+    await sut.modifyMaximumLimit({ id: 105, newMaximumLimit: 7_000_000, memo: null } as any, operator);
+
+    expect(userCompanyRepository.save).toHaveBeenCalledWith(expect.objectContaining({ maximumLimit: 7_000_000 }));
+    expect(walletAccountRepository.findOne).not.toHaveBeenCalled();
+    expect(walletAccountRepository.save).not.toHaveBeenCalled();
+  });
+});
