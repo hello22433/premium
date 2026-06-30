@@ -125,7 +125,7 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
       csResendAsEmail: jest.fn().mockResolvedValue(undefined),
     };
     partnerCompanyExternService = {
-      issue: jest.fn().mockResolvedValue(undefined),
+      issue: jest.fn().mockResolvedValue({ ssgNewIssue: true, ssgEventId: null }),
     };
     orderDeliveryRepository = {
       save: jest.fn().mockImplementation(async (e: any) => ({ id: 8001, ...e })),

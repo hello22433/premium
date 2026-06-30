@@ -132,13 +132,16 @@ describe('DeliveryBatchService.reissuePinAndCreateImageIfNeeded - refund ledger 
       deductForReissueWithPending: jest.fn().mockResolvedValue({ resendDeductionId: 'RD-1' }),
       markReissueIssueAttempted: jest.fn().mockResolvedValue(undefined),
       resolveReissuePending: jest.fn().mockResolvedValue(undefined),
+      refundResendEventDeduction: jest.fn().mockResolvedValue(undefined),
       chargeBackForResend: jest.fn(),
       refundForDeliveryFail: jest.fn(),
     } as unknown as jest.Mocked<SsgEventService>;
 
     partnerCompanyExternService = {
-      issue: jest.fn().mockImplementation(async (od: OrderDeliveryEntity) => {
+      issue: jest.fn().mockImplementation(async (od: OrderDeliveryEntity, ev: SsgEventEntity | null) => {
         od.barCode = '80000000';
+        // 기본: 신규 INSERT(전달 ssgEvent 실사용). 재사용 케이스는 테스트별 override.
+        return { ssgNewIssue: true, ssgEventId: ev?.id ?? null };
       }),
     } as unknown as jest.Mocked<PartnerCompanyExternService>;
 
@@ -234,6 +237,33 @@ describe('DeliveryBatchService.reissuePinAndCreateImageIfNeeded - refund ledger 
         purpose: 'BATCH_RESEND',
         issueOrderDeliveryId: od.id,
       });
+    });
+
+    it('HIGH: 신규 행사 선차감 후 issue()가 legacy 등록 후보(B)를 재사용하면 선차감(C)을 KEPT 하지 않고 직접 역복원한다', async () => {
+      const od = buildFailNoBarCode();
+      refundLedgerService.exists.mockResolvedValue(true);
+      ssgInsertStateService.getState.mockResolvedValue(SsgInsertState.NONE);
+      // 선차감 시점 state=NONE(=canDeduct) 으로 새 행사(C=36) 선차감이 일어나지만,
+      // issue() 는 legacy 등록 후보(B=99) PIN 을 재사용(ssgNewIssue=false)한다.
+      partnerCompanyExternService.issue.mockImplementation(async (target: OrderDeliveryEntity) => {
+        target.barCode = 'REUSED-B';
+        target.ssgEventId = 99;
+        return { ssgNewIssue: false, ssgEventId: 99 };
+      });
+
+      const result = await (sut as any).reissuePinAndCreateImageIfNeeded(od);
+
+      expect(result).toBe(true);
+      // 새 행사(C) 선차감은 발생.
+      expect(ssgEventService.deductForReissueWithPending).toHaveBeenCalled();
+      // 재사용이므로 KEPT 금지 + state 비의존 직접 역복원(refundResendEventDeduction + REVERSED).
+      expect(ssgEventService.refundResendEventDeduction).toHaveBeenCalledWith(
+        expect.objectContaining({ resendDeductionId: 'RD-1', ssgEventId: ssgEvent.id, orderId: 4145, amount: 10_000 }),
+      );
+      expect(ssgEventService.resolveReissuePending).toHaveBeenCalledWith('RD-1', 'REVERSED');
+      expect(ssgEventService.resolveReissuePending).not.toHaveBeenCalledWith('RD-1', 'KEPT');
+      // ssgEventId 는 실제 PIN 귀속 행사(B=99)로 정정.
+      expect(od.ssgEventId).toBe(99);
     });
 
     it('refund ledger 없음 + state=NONE → 새 선차감 X + 보류 재발송 info 로그 (B3 보류=정상)', async () => {
