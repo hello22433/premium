@@ -645,24 +645,61 @@ export class DeliveryBatchService {
   }
 
   /**
-   * DELIVERY_COMPLETE 이지만 미정산(SETTLE_COMPLETE 아님)인 PRE_PAYMENT 주문을 재정산한다.
-   * settleIfDrift 가 일시 실패해도 sweep 마다 수렴 → 영구 미정산 방지(HIGH: reconciliation).
+   * 완료/정산 drift 복구 (sweep 마다 수렴 → 영구 미완료·미정산 방지, HIGH: reconciliation).
+   * PRE_PAYMENT 주문만 대상으로 한정 — POST_PAYMENT 미정산 건이 LIMIT 슬롯을 반복 점유해
+   * PRE_PAYMENT 건이 굶는(starvation) 현상 차단.
+   * 1) completion drift: delivery 는 전건 터미널인데 order 가 DELIVERY_CONFIRMED 로 남은 건
+   *    (markOrderTerminalAndSettle 의 transition 실패/크래시) → 완료 전이 + 정산.
+   * 2) settlement drift: DELIVERY_COMPLETE 인데 미정산(SETTLE_COMPLETE 아님) 건 → 재정산.
    */
   private async reconcileSettlementDrift(): Promise<void> {
+    // 1) completion drift: 알림톡 비동기 리포트가 터미널 도달한 PRE_PAYMENT 주문 중 order 가 미완료로 남은 건
+    const completionDrift = await this.orderDeliveryRepository
+      .createQueryBuilder('od')
+      .innerJoin('od.orderProductMapping', 'opm')
+      .innerJoin('opm.order', 'o')
+      .leftJoin('o.user', 'u')
+      .leftJoin('o.clientUser', 'cu')
+      .select('DISTINCT o.id', 'id')
+      .where('o.status = :confirmed', { confirmed: IOrderStatus.DELIVERY_CONFIRMED })
+      .andWhere('od.reportState IN (:...reported)', {
+        reported: [IOrderDeliveryReportState.CONFIRMED, IOrderDeliveryReportState.UNCONFIRMED],
+      })
+      .andWhere('COALESCE(cu.settle_condition, u.settle_condition) = :pre', {
+        pre: IUserSettleCondition.PRE_PAYMENT,
+      })
+      .limit(REPORT_SWEEP_BATCH_LIMIT)
+      .getRawMany<{ id: number }>();
+    for (const { id } of completionDrift) {
+      try {
+        if (await this.isOrderAllDeliveriesTerminal(id)) {
+          await this.transitionOrderToComplete(id);
+          await this.settleIfDrift(id);
+        }
+      } catch (error) {
+        this.logger.error(`[REPORT_SWEEP] completion drift 복구 실패 orderId=${id}: ${error}`);
+      }
+    }
+
+    // 2) settlement drift: 완료됐으나 미정산인 PRE_PAYMENT 주문 재정산
     const rows = await this.orderRepository
       .createQueryBuilder('o')
+      .leftJoin('o.user', 'u')
+      .leftJoin('o.clientUser', 'cu')
       .select('o.id', 'id')
       .where('o.status = :complete', { complete: IOrderStatus.DELIVERY_COMPLETE })
       .andWhere('o.isSettleBalance = :t', { t: true })
       .andWhere('(o.settleStatus IS NULL OR o.settleStatus != :done)', {
         done: SettleUserOrderDetailEnum.SETTLE_COMPLETE,
       })
+      .andWhere('COALESCE(cu.settle_condition, u.settle_condition) = :pre', {
+        pre: IUserSettleCondition.PRE_PAYMENT,
+      })
       .limit(REPORT_SWEEP_BATCH_LIMIT)
       .getRawMany<{ id: number }>();
-    if (rows.length === 0) {
-      return;
+    if (rows.length > 0) {
+      await this.autoSettlePrePaymentOrders(rows.map((r) => r.id));
     }
-    await this.autoSettlePrePaymentOrders(rows.map((r) => r.id));
   }
 
   // ───────────── Phase 4: 알림톡 비동기 수신확인(reportSweep) + 자동 재발송 1회 ─────────────
@@ -816,9 +853,11 @@ export class DeliveryBatchService {
 
     if (smsOk) {
       this.markSendSuccess(od, IOrderDeliveryStatus.COMPLETE_SMS);
-      await this.persistReportState(od, token);
-      await this.correctSendHistory(od.id, true, { fallback: 'COMPLETE_SMS' });
-      await this.markOrderTerminalAndSettle(od.orderProductMapping.order.id);
+      // 소유권 보유 시에만 종결/정산 (lease 회전 시 stale worker 의 이력 정정·이중 정산 방지)
+      if (await this.persistReportState(od, token)) {
+        await this.correctSendHistory(od.id, true, { fallback: 'COMPLETE_SMS' });
+        await this.markOrderTerminalAndSettle(od.orderProductMapping.order.id);
+      }
     } else {
       await this.finalizeReportFail(od, token);
     }
@@ -877,8 +916,10 @@ export class DeliveryBatchService {
   }
 
   /**
-   * reportSweep 종결/재시도 시 변경 컬럼만 타깃 update. report_owner_token CAS 로 소유권 펜싱.
-   * @returns 소유권 보유(affected>0) 여부 — false 면 lease 회전으로 소유권 상실(write drop).
+   * reportSweep 종결/재시도 시 변경 컬럼만 타깃 update. report_owner_token + report_state=PENDING CAS 로 펜싱.
+   * report_state=PENDING 조건은 터미널 전이(CONFIRMED/UNCONFIRMED) 이후 stale worker 의 재기록을 차단.
+   * (status=WAIT 은 recoverStuckFallback 의 terminal-status 정리 경로를 깨므로 의도적으로 제외)
+   * @returns 소유권 보유(affected>0) 여부 — false 면 lease 회전/상태 이탈로 소유권 상실(write drop).
    */
   private async persistReportState(od: OrderDeliveryEntity, token: string): Promise<boolean> {
     const res = await this.orderDeliveryRepository
@@ -897,6 +938,7 @@ export class DeliveryBatchService {
       })
       .where('id = :id', { id: od.id })
       .andWhere('report_owner_token = :token', { token })
+      .andWhere('report_state = :pending', { pending: IOrderDeliveryReportState.PENDING })
       .execute();
     return (res.affected ?? 0) > 0;
   }

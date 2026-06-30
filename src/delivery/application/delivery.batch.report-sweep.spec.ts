@@ -154,6 +154,19 @@ describe('DeliveryBatchService — reportSweep / settlement (async alimtalk)', (
       expect(recoverSpy).toHaveBeenCalledWith(od, 'tok');
       expect(service.csResendAsMms).not.toHaveBeenCalled();
     });
+
+    it('HIGH-1) 선점 성공 + SMS 성공이지만 persist 소유권 상실(false) → 이력정정/정산 미수행', async () => {
+      const od = buildOd();
+      mockPreempt(1);
+      service.csResendAsMms.mockResolvedValue(undefined);
+      service.persistReportState = jest.fn().mockResolvedValue(false); // lease 회전으로 소유권 상실
+
+      await service.runReportFallback(od, 'tok');
+
+      expect(service.csResendAsMms).toHaveBeenCalledWith(od.id); // 선점은 성공
+      expect(service.correctSendHistory).not.toHaveBeenCalled();
+      expect(service.markOrderTerminalAndSettle).not.toHaveBeenCalled();
+    });
   });
 
   describe('recoverStuckFallback (n: 선점 후 크래시 회수)', () => {
@@ -203,6 +216,57 @@ describe('DeliveryBatchService — reportSweep / settlement (async alimtalk)', (
 
       expect(service.transitionOrderToComplete).toHaveBeenCalledWith(100);
       expect(service.settleIfDrift).toHaveBeenCalledWith(100); // affected 무관 멱등 호출
+    });
+  });
+
+  describe('reconcileSettlementDrift (완료/정산 drift 복구)', () => {
+    // completion / settlement 두 쿼리는 각각 별도 repository.createQueryBuilder 를 1회씩 사용
+    const qbReturning = (rows: any[]) => ({
+      createQueryBuilder: jest.fn().mockReturnValue({
+        innerJoin: jest.fn().mockReturnThis(),
+        leftJoin: jest.fn().mockReturnThis(),
+        select: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        limit: jest.fn().mockReturnThis(),
+        getRawMany: jest.fn().mockResolvedValue(rows),
+      }),
+    });
+
+    const bind = () => {
+      service.reconcileSettlementDrift = (DeliveryBatchService.prototype as any).reconcileSettlementDrift;
+    };
+
+    it('HIGH-2) completion drift: 전건 터미널 + DELIVERY_CONFIRMED → 완료전이 + 정산 + settlement 재정산', async () => {
+      bind();
+      service.orderDeliveryRepository = qbReturning([{ id: 100 }]); // completion drift 후보
+      service.orderRepository = qbReturning([{ id: 200 }]); // settlement drift 후보
+      service.isOrderAllDeliveriesTerminal = jest.fn().mockResolvedValue(true);
+      service.transitionOrderToComplete = jest.fn().mockResolvedValue(true);
+      service.settleIfDrift = jest.fn().mockResolvedValue(undefined);
+      service.autoSettlePrePaymentOrders = jest.fn().mockResolvedValue(undefined);
+
+      await service.reconcileSettlementDrift();
+
+      expect(service.transitionOrderToComplete).toHaveBeenCalledWith(100);
+      expect(service.settleIfDrift).toHaveBeenCalledWith(100);
+      expect(service.autoSettlePrePaymentOrders).toHaveBeenCalledWith([200]);
+    });
+
+    it('completion drift 후보지만 비-전건터미널 → 전이/정산 skip', async () => {
+      bind();
+      service.orderDeliveryRepository = qbReturning([{ id: 100 }]);
+      service.orderRepository = qbReturning([]);
+      service.isOrderAllDeliveriesTerminal = jest.fn().mockResolvedValue(false);
+      service.transitionOrderToComplete = jest.fn();
+      service.settleIfDrift = jest.fn();
+      service.autoSettlePrePaymentOrders = jest.fn();
+
+      await service.reconcileSettlementDrift();
+
+      expect(service.transitionOrderToComplete).not.toHaveBeenCalled();
+      expect(service.settleIfDrift).not.toHaveBeenCalled();
+      expect(service.autoSettlePrePaymentOrders).not.toHaveBeenCalled();
     });
   });
 });
