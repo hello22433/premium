@@ -94,7 +94,7 @@ import { SettleOtherProductDetailDto } from '../api/dto/settle.other.product.dto
 import { OrderDeliveryCouponStatus, couponStatusToKorean } from '../../delivery/interface/order.delivery.coupon.status';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 import { calculateSettlementPrice, calculateMappingSettlementBaseAmount } from '../../util/settle-fee.util';
-import { applyCardSurcharge, OrderFeeCalculator } from '../../order/domain/order.fee.calculator';
+import { applyCardSurcharge } from '../../order/domain/order.fee.calculator';
 import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { OrderDeliveryRefundEntity } from '../../entity/order.delivery.refund.entity';
@@ -1520,7 +1520,7 @@ export class SettleService {
       for (const mapping of order.orderProductMappings!) {
         productNameList.push(mapping.product.name);
         amount += mapping.amount;
-        finalSettlePrice += this.calculateMappingSettlePrice(mapping);
+        finalSettlePrice += calculateMappingSettlementBaseAmount(mapping);
       }
 
       const firstDelivery = order.orderProductMappings?.[0]?.orderDeliveries?.[0];
@@ -1577,7 +1577,7 @@ export class SettleService {
 
       for (const mapping of order.orderProductMappings!) {
         totalAmountSum += mapping.amount;
-        totalSettlePriceSum += this.calculateMappingSettlePrice(mapping);
+        totalSettlePriceSum += calculateMappingSettlementBaseAmount(mapping);
       }
     }
 
@@ -1610,7 +1610,7 @@ export class SettleService {
 
       let finalSettlePrice = 0;
       for (const mapping of order.orderProductMappings!) {
-        finalSettlePrice += this.calculateMappingSettlePrice(mapping);
+        finalSettlePrice += calculateMappingSettlementBaseAmount(mapping);
       }
 
       return {
@@ -1777,25 +1777,12 @@ export class SettleService {
     for (const order of orders) {
       if (order.orderProductMappings && order.orderProductMappings.length > 0) {
         for (const mapping of order.orderProductMappings) {
-          // 할인/할증 적용된 단가 계산
+          // 할인/할증 적용 단가 — D3-49 축3: 발송건별 settleFee(SSG 차등정산) 반영해 실제 차감과 동일.
           const mappingView = readLineProductView(mapping);
-          const originalPrice = mappingView.price;
-          let adjustedPrice = originalPrice;
-          if (mapping.fee !== null && mapping.fee > 0 && mapping.priceAdjustment) {
-            if (mapping.priceAdjustment === IPriceAdjustment.DISCOUNT) {
-              adjustedPrice = OrderFeeCalculator({
-                fee: mapping.fee,
-                priceAdjustment: IPriceAdjustment.DISCOUNT,
-                price: originalPrice,
-              });
-            } else if (mapping.priceAdjustment === IPriceAdjustment.ADDITIONAL) {
-              adjustedPrice = OrderFeeCalculator({
-                fee: mapping.fee,
-                priceAdjustment: IPriceAdjustment.ADDITIONAL,
-                price: originalPrice,
-              });
-            }
-          }
+          const quantity = mapping.amount ?? 0;
+          const lineTotal = calculateMappingSettlementBaseAmount(mapping);
+          // 표시/그룹핑 단가는 라인총액/수량 평균(차등정산 시 단가가 균일하지 않음).
+          const adjustedPrice = quantity > 0 ? Math.round(lineTotal / quantity) : lineTotal;
 
           // 키: 상품ID + 단가 (같은 상품이라도 단가가 다르면 분리)
           const key = `${mapping.product?.id}-${adjustedPrice}`;
@@ -2880,71 +2867,6 @@ export class SettleService {
       return isReissue ? '발행(재)' : '발행 완료';
     }
     return isReissue ? '다운로드(재)' : '다운로드 완료';
-  }
-
-  /**
-   * orderProductMapping에 저장된 fee/priceAdjustment를 적용하여 해당 매핑의 정산금액을 계산한다.
-   * 정산 리스트는 완료건(DELIVERY_CONFIRMED/DELIVERY_COMPLETE)만 조회하므로
-   * 현재 UserDiscount로 폴백하지 않고 매핑에 저장된 값만 사용한다.
-   * (새로 등록된 할인조건이 이미 완료된 주문에 소급 적용되는 것을 방지)
-   */
-  private calculateMappingSettlePrice(mapping: {
-    fee: number | null;
-    priceAdjustment: IPriceAdjustment | null;
-    amount: number;
-    product: { price: number; category: string; brand?: { nameKorean: string } | null };
-    orderDeliveries?: { settleFee: number | null; settlePriceAdjustment: string | null }[];
-  }): number {
-    // SSG 중복할인: delivery에 settleFee가 있으면 delivery별로 계산 후 합산
-    const deliveries = mapping.orderDeliveries ?? [];
-    const hasDeliveryFee = deliveries.some((d) => d.settleFee !== null);
-
-    if (hasDeliveryFee) {
-      let total = 0;
-      for (const delivery of deliveries) {
-        const fee = delivery.settleFee ?? mapping.fee;
-        const priceAdjustment = delivery.settlePriceAdjustment ?? mapping.priceAdjustment;
-        let price = mapping.product.price;
-        if (fee !== null && fee > 0 && priceAdjustment !== null) {
-          if (priceAdjustment === IPriceAdjustment.DISCOUNT) {
-            price = OrderFeeCalculator({
-              fee,
-              priceAdjustment: IPriceAdjustment.DISCOUNT,
-              price: mapping.product.price,
-            });
-          } else if (priceAdjustment === IPriceAdjustment.ADDITIONAL) {
-            price = OrderFeeCalculator({
-              fee,
-              priceAdjustment: IPriceAdjustment.ADDITIONAL,
-              price: mapping.product.price,
-            });
-          }
-        }
-        total += price;
-      }
-      return total;
-    }
-
-    // 기존 로직: 매핑 레벨 fee 사용
-    const productTotalPrice = mapping.product.price * mapping.amount;
-
-    if (mapping.fee !== null && mapping.priceAdjustment !== null) {
-      let adjustedPrice = productTotalPrice;
-      if (mapping.fee > 0) {
-        // D3-49 축2: 실제 돈(calculateSettlementPrice)과 동일하게 단가별 반올림 후 수량 곱.
-        // 집계(단가×수량)에 한 번 반올림하면 비100 단가·수량≥2 에서 실제 차감액과 1원 어긋남.
-        const unitPrice = OrderFeeCalculator({
-          fee: mapping.fee,
-          priceAdjustment: mapping.priceAdjustment,
-          price: mapping.product.price,
-        });
-        adjustedPrice = unitPrice * mapping.amount;
-      }
-      return adjustedPrice;
-    }
-
-    // 매핑에 할인 정보가 없으면 정가 반환
-    return productTotalPrice;
   }
 
   /**

@@ -1,20 +1,17 @@
-import { SettleService } from './settle.service';
 import { IPriceAdjustment } from '../../user_discount/interface/price.adjustment';
+import { calculateMappingSettlementBaseAmount } from '../../util/settle-fee.util';
+import { OrderProductMappingEntity } from '../../entity/order.product.mapping.entity';
 
 /**
- * D3-49 — 정산관리 고객사 단가 헬퍼 `calculateMappingSettlePrice` 가 인라인 Math.ceil(올림)
- * → OrderFeeCalculator(반올림, 실제 차감과 동일)로 통일됐는지 **실 프로덕션 함수**로 직접 검증.
+ * D3-49 — 정산관리 고객사 정산금액(getUserList/Summary/Ids/상세/거래명세서)이 실제 돈과 동일한
+ * 단일 함수 calculateMappingSettlementBaseAmount(settleFee 우선 + 단가별 반올림 + 발송건 합산)로
+ * 통일됐는지 검증. (옛 calculateMappingSettlePrice 중복 헬퍼는 제거됨 — 이 함수로 수렴)
  *
- * 이 헬퍼는 getUserList / getUserSummary / getUserIds (+ 엑셀)의 정산금액을 산출한다.
- * `this` 의존이 없어 prototype 으로 직접 호출한다(생성자 deps mock 불필요).
- *
- * 핵심: 가격이 100단위면 ceil==round 라 표시값 무변동, 비100/소수율에서만 표시=차감으로 정합.
+ * 핵심: 가격 100단위·정수 fee면 표시값 무변동, 비100/소수율/차등 settleFee 에서만 실제 차감과 정합.
  */
-describe('SettleService.calculateMappingSettlePrice — D3-49 반올림 통일(실경로)', () => {
-  const calc = (mapping: unknown): number =>
-    (
-      SettleService.prototype as unknown as { calculateMappingSettlePrice(m: unknown): number }
-    ).calculateMappingSettlePrice(mapping);
+describe('settle 정산금액 — calculateMappingSettlementBaseAmount 통일(실경로) (D3-49)', () => {
+  const calc = (mapping: Record<string, unknown>): number =>
+    calculateMappingSettlementBaseAmount(mapping as unknown as OrderProductMappingEntity);
 
   const makeMapping = (over: Record<string, unknown> = {}) => ({
     fee: null,
