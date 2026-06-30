@@ -3064,23 +3064,7 @@ export class SettleService {
   }
 
   // findMatchingDiscount는 user_discount/domain/discount.matcher.ts 공통 함수 사용
-
-  /**
-   * 상품 가격에 할인/할증 적용
-   */
-  private applyDiscount(price: number, discount: UserDiscountEntity | null): number {
-    if (!discount) {
-      return price;
-    }
-
-    if (discount.priceAdjustment === IPriceAdjustment.DISCOUNT) {
-      return (price * (100 - discount.pricePercent)) / 100;
-    } else if (discount.priceAdjustment === IPriceAdjustment.ADDITIONAL) {
-      return (price * (100 + discount.pricePercent)) / 100;
-    }
-
-    return price;
-  }
+  // (D3-49: 미사용 데드코드 applyDiscount 제거 — 반올림 없는 4번째 발산 구현이었음)
 
   private getAppDivName(appDiv: string): string {
     switch (appDiv) {
