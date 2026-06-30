@@ -101,4 +101,12 @@ export class OrderViewDto {
     description: '재발송 완료 건 포함 여부',
   })
   hasResentDelivery: boolean;
+
+  @ApiProperty({
+    required: false,
+    nullable: true,
+    description:
+      'RESERVE 상품의 분 단위 예약시각이 2종 이상 상이할 때만 채움. 각 항목: 상품명, 예약시각(KST), 실제 발송시각(발송 전 null)',
+  })
+  productSendTimes?: { productName: string; sendRequestAt: string; actualSendAt: string | null }[];
 }
