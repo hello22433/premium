@@ -21,6 +21,7 @@ import { IPartnerCompanySettleMethod } from '../../partner_company/interface/par
 import { IShippingStorageType } from '../../entity/shipping.storage.entity';
 import { SettleUserStatusEnum } from '../interface/settle.user.status';
 import { SettleUserOrderDetailEnum } from '../interface/settle.user.order.detail';
+import { IOrderDateType } from '../../order/interface/order.date.type';
 
 export class SettleGetOtherServiceSaleGetListReqDto extends PagingReqDto {
   @ApiPropertyOptional({
@@ -627,6 +628,16 @@ export class SettleGetUserListReqQueryDto extends PagingReqDto {
   })
   @IsOptional()
   searchKeyword?: string;
+
+  @ApiPropertyOptional({
+    description: '기간 필터 기준 (REGISTER: 등록일자, SEND: 발송일자)',
+    enum: IOrderDateType,
+    default: IOrderDateType.REGISTER,
+  })
+  // =============================================================
+  @IsOptional()
+  @IsEnum(IOrderDateType)
+  dateType?: IOrderDateType = IOrderDateType.REGISTER;
 }
 
 export class SettleGetUserSummaryReqQueryDto extends OmitType(SettleGetUserListReqQueryDto, [
@@ -720,6 +731,16 @@ export class SettleGetUserIdsReqQueryDto {
   })
   @IsOptional()
   searchKeyword?: string;
+
+  @ApiPropertyOptional({
+    description: '기간 필터 기준 (REGISTER: 등록일자, SEND: 발송일자)',
+    enum: IOrderDateType,
+    default: IOrderDateType.REGISTER,
+  })
+  // =============================================================
+  @IsOptional()
+  @IsEnum(IOrderDateType)
+  dateType?: IOrderDateType = IOrderDateType.REGISTER;
 }
 
 export class SettleGetUserExcelDownloadReqDto {
@@ -790,6 +811,16 @@ export class SettleGetUserExcelDownloadReqDto {
   })
   @IsOptional()
   searchKeyword?: string;
+
+  @ApiPropertyOptional({
+    description: '기간 필터 기준 (REGISTER: 등록일자, SEND: 발송일자)',
+    enum: IOrderDateType,
+    default: IOrderDateType.REGISTER,
+  })
+  // =============================================================
+  @IsOptional()
+  @IsEnum(IOrderDateType)
+  dateType?: IOrderDateType = IOrderDateType.REGISTER;
 }
 
 export class SettleGetUserPerListReqQueryDto extends PagingReqDto {
