@@ -820,10 +820,8 @@ export class OrderService {
                   d.actualSendAt &&
                   (d.status === IOrderDeliveryStatus.COMPLETE || d.status === IOrderDeliveryStatus.COMPLETE_SMS),
               )
-              .reduce<Date | null>(
-                (max, d) => (max === null || d.actualSendAt! > max ? d.actualSendAt! : max),
-                null,
-              ) ?? null;
+              .reduce<Date | null>((max, d) => (max === null || d.actualSendAt! > max ? d.actualSendAt! : max), null) ??
+            null;
           return {
             productName: m.product?.name ?? '(삭제된 상품)',
             sendRequestAt: format(m.sendRequestAt!, DateFormatStr),
@@ -3200,7 +3198,7 @@ export class OrderService {
 
     const ssgReservationRange = type === IOrderType.SSG ? await this.ssgEventService.getReservationRange() : null;
     validateSsgReservationWindow(type, orderProductList, ssgReservationRange);
-    // SSG 주문은 모든 상품 행의 발송 유형/예약시각이 동일해야 함 (혼합/불일치 400)
+    // SSG 주문은 즉시/예약 발송을 혼합할 수 없음 (혼합 시 400). 예약시각은 상품 행별로 달라도 됨
     validateSsgUniformSend(type, orderProductList);
 
     // 동일 productId를 여러 행으로 저장할 수 있으므로 상품 조회는 unique 기준으로 수행
@@ -3392,7 +3390,7 @@ export class OrderService {
 
     const ssgReservationRange = order.type === IOrderType.SSG ? await this.ssgEventService.getReservationRange() : null;
     validateSsgReservationWindow(order.type, orderProductList, ssgReservationRange);
-    // SSG 주문은 모든 상품 행의 발송 유형/예약시각이 동일해야 함 (혼합/불일치 400)
+    // SSG 주문은 즉시/예약 발송을 혼합할 수 없음 (혼합 시 400). 예약시각은 상품 행별로 달라도 됨
     validateSsgUniformSend(order.type, orderProductList);
 
     // 동일 productId를 여러 행으로 저장할 수 있으므로 상품 조회는 unique 기준으로 수행
@@ -3758,21 +3756,26 @@ export class OrderService {
     let ssgAllocations: { deliveryId: number; eventId: number; price: number }[] | null = null;
 
     if (order.type === IOrderType.SSG) {
-      // 발송 유형/예약시각 균일성 검증 (혼합/불일치 400) — 배포 전 생성된 혼합 주문 방어 포함
+      // 즉시/예약 발송 혼합 금지 검증 (혼합 시 400) — 배포 전 생성된 혼합 주문 방어 포함
       validateSsgUniformSend(order.type, order.orderProductMappings!);
 
       // expireDay(상품 유효기간)는 모든 SSG mapping이 동일해야 대표값을 전체에 적용 가능
       // 배송건 수집과 유효기간 검증을 단일 루프에서 처리
       const expireDays = new Set<number>();
-      const deliveries: { deliveryId: number; price: number }[] = [];
+      const deliveries: { deliveryId: number; price: number; reserveDate?: Date }[] = [];
       for (const orderMapping of order.orderProductMappings!) {
         if (!orderMapping.product) {
           throw new BadRequestException('상품 정보가 존재하지 않습니다.');
         }
         expireDays.add(orderMapping.product.expireDay);
         const price = orderMapping.product.price;
+        // 상품 행별 예약시각: RESERVE면 해당 mapping의 sendRequestAt, 아니면 즉시발송(폴백=현재 시각)
+        const mappingReserveDate =
+          orderMapping.sendType === 'RESERVE' && orderMapping.sendRequestAt
+            ? new Date(orderMapping.sendRequestAt as unknown as string)
+            : undefined;
         for (const orderDelivery of orderMapping.orderDeliveries) {
-          deliveries.push({ deliveryId: orderDelivery.id, price });
+          deliveries.push({ deliveryId: orderDelivery.id, price, reserveDate: mappingReserveDate });
         }
       }
       if (expireDays.size > 1) {
@@ -3780,19 +3783,8 @@ export class OrderService {
       }
       const couponExpiration = order.orderProductMappings![0].product!.expireDay;
 
-      // 예약발송이면 예약일 기준으로 행사 매칭, 즉시발송이면 현재 시점 기준
-      // 모든 예약 mapping의 sendRequestAt이 동일함은 위 균일성 검증으로 보장 → 공통 예약시각 사용
-      const reserveMapping = order.orderProductMappings!.find(
-        (mapping) => mapping.sendType === 'RESERVE' && mapping.sendRequestAt,
-      );
-      const reserveDate = reserveMapping ? new Date(reserveMapping.sendRequestAt as unknown as string) : undefined;
-
-      // 배송건별 행사 할당 (All or Nothing)
-      ssgAllocations = await this.ssgEventService.allocateEventsForDeliveries(
-        deliveries,
-        couponExpiration,
-        reserveDate,
-      );
+      // 배송건별 행사 할당: 각 배송건은 자신의 예약시각(reserveDate) 기준으로 유효한 행사에 매칭 (All or Nothing)
+      ssgAllocations = await this.ssgEventService.allocateEventsForDeliveries(deliveries, couponExpiration);
 
       if (!ssgAllocations) {
         throw new BadRequestException('사용 가능한 SSG 이벤트가 없습니다. (잔액 부족)');
@@ -4558,8 +4550,7 @@ export class OrderService {
 
     const now = new Date();
     // 취소 기준 시각: 예약 mapping들의 sendRequestAt 중 가장 이른 시각 사용
-    // 신규 주문은 모든 예약시각이 동일하므로 공통 시각과 같고,
-    // 배포 전 생성된 혼합 예약 주문은 가장 임박한 발송 건을 보호한다.
+    // 상품 행별 예약시각이 서로 다를 수 있으므로, 가장 임박한(이른) 발송 건을 기준으로 보호한다.
     const reserveSendTimes = (order.orderProductMappings ?? [])
       .filter((mapping) => mapping.sendType === 'RESERVE' && mapping.sendRequestAt)
       .map((mapping) => mapping.sendRequestAt!.getTime());
