@@ -895,6 +895,9 @@ export class OrderService {
 
     await this.recoverDeletedProducts(order.orderProductMappings);
 
+    // '폐기 후 신규 발송' 신규 건 숨김 — 고객사에는 최초 발송 1건만 노출 (전체 이력은 CS 발송상세)
+    this.hideDiscardReissueDeliveries(order.orderProductMappings);
+
     const productList: OrderDetailProductDto[] = [];
 
     let topImagePath;
@@ -1377,6 +1380,22 @@ export class OrderService {
     );
   }
 
+  /**
+   * 고객 노출용 발송 목록 필터.
+   *
+   * '폐기 후 신규 발송'은 자사↔수신자 간 내부 처리(고객사는 알 필요 없음)이므로, 원본을 대체해
+   * 신규 delivery(replacedFromId != null)를 숨기고 최초 발송 건만 남겨 논리적으로 1건으로 보이게 한다.
+   * 적용: 발송상세(getDetail)·발송완료리포트(단일/다중)·(프론트가 이 목록으로 그리는) 파기확약서.
+   * 전체 이력(원본+신규)은 CS 발송상세(customer_service)에서만 확인한다.
+   */
+  private hideDiscardReissueDeliveries(orderProductMappings: OrderProductMappingEntity[] | undefined): void {
+    for (const opm of orderProductMappings ?? []) {
+      if (opm.orderDeliveries) {
+        opm.orderDeliveries = opm.orderDeliveries.filter((d) => d.replacedFromId === null);
+      }
+    }
+  }
+
   async getDeliveryCompleteReport(
     getQuery: OrderGetDeliveryCompleteReportReqDto,
     user: ILoginUserInfo,
@@ -1418,6 +1437,9 @@ export class OrderService {
     }
 
     await this.recoverDeletedProducts(order.orderProductMappings);
+
+    // '폐기 후 신규 발송' 신규 건 숨김 — 발송완료리포트도 최초 발송 1건만 집계
+    this.hideDiscardReissueDeliveries(order.orderProductMappings);
 
     const productList: OrderPdfDetailProductDto[] = [];
     // 발송완료 리포트: 주문 시점 스냅샷 우선, NULL이면 clientUser ?? user FK로 fallback
@@ -1844,6 +1866,11 @@ export class OrderService {
       if (order.status !== IOrderStatus.DELIVERY_COMPLETE) {
         throw new BadRequestException('발송 완료된 건에 대해서만 조회 가능합니다.');
       }
+    }
+
+    // '폐기 후 신규 발송' 신규 건 숨김 — 통합 발송완료리포트도 최초 발송 1건만 집계
+    for (const order of orders) {
+      this.hideDiscardReissueDeliveries(order.orderProductMappings);
     }
 
     // 모든 주문이 같은 과금 대상 회사 소속인지 확인 (다중 주문 증빙 발행 시)
