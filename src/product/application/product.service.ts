@@ -655,6 +655,7 @@ export class ProductService {
     return this.productRepository
       .createQueryBuilder('product')
       .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .leftJoinAndSelect('partnerCompany.userDiscounts', 'partnerDiscounts')
       .innerJoinAndSelect('product.brand', 'brand')
       .leftJoinAndSelect('product.classification', 'classification')
       .where('product.price = :price', { price })
@@ -747,6 +748,7 @@ export class ProductService {
     const reloaded = await this.productRepository
       .createQueryBuilder('product')
       .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .leftJoinAndSelect('partnerCompany.userDiscounts', 'partnerDiscounts')
       .innerJoinAndSelect('product.brand', 'brand')
       .leftJoinAndSelect('product.classification', 'classification')
       .where('product.id = :id', { id: savedProduct.id })

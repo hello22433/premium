@@ -97,7 +97,6 @@ import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { OrderDeliveryRefundEntity } from '../../entity/order.delivery.refund.entity';
 import { UserDiscountEntity } from '../../entity/user.discount.entity';
 import { IPriceAdjustment } from '../../user_discount/interface/price.adjustment';
-import { findMatchingDiscount } from '../../user_discount/domain/discount.matcher';
 import { SettleUserPerListViewDto } from '../api/dto/settle.user.per.list.view.dto';
 import { SettleUserStatusEnum } from '../interface/settle.user.status';
 import { SettleUserPerDetailViewDto } from '../api/dto/settle.user.per.detail.view.dto';
@@ -1196,7 +1195,6 @@ export class SettleService {
       const order = orderProductMapping.order;
       const product = orderProductMapping.product;
       const partnerCompany = product.partnerCompany!;
-      const partnerDiscounts = partnerCompany.userDiscounts || [];
 
       // 주문 시점 스냅샷 우선 (고객사 정산과 동일 기준)
       const snapshotPrice = readLineProductView(orderProductMapping).price;
@@ -1208,24 +1206,9 @@ export class SettleService {
         fee = orderProductMapping.partnerSettleFee;
         priceAdjustment = orderProductMapping.partnerSettlePriceAdjustment;
       } else {
-        // Legacy rows do not have partner-settle snapshots. Use partner discounts only; never fall back to customer fee.
-        const matchingDiscount = findMatchingDiscount(
-          {
-            price: snapshotPrice,
-            category: product.category,
-            classificationId: product.classificationId,
-            brand: product.brand,
-          },
-          partnerDiscounts,
-        );
-
-        if (matchingDiscount) {
-          fee = matchingDiscount.pricePercent;
-          priceAdjustment = matchingDiscount.priceAdjustment;
-        } else {
-          fee = 0;
-          priceAdjustment = 'DISCOUNT';
-        }
+        // backfill 이전 legacy row 방어용. 배포시점 값 불명이므로 재매칭 금지 — 0으로 처리.
+        fee = 0;
+        priceAdjustment = null;
       }
 
       const feePrice = (snapshotPrice * fee) / 100;
