@@ -35,7 +35,8 @@ export class CreateExternalOrderDto {
   deliveryMethod: IOrderSendMethod;
 
   @ApiPropertyOptional({
-    description: '외부 고객 식별자 (3계층 매핑모드). 미지정 시 단순모드(default billing).',
+    description:
+      '외부 고객 식별자 (3계층 매핑모드). 매핑 필수 모드 계정은 필수(없으면 2001), 일반 계정은 미지정 시 단순모드(default billing).',
   })
   @IsString()
   @IsOptional()
@@ -77,7 +78,8 @@ export class CreateExternalSsgOrderDto {
   message?: string;
 
   @ApiPropertyOptional({
-    description: '외부 고객 식별자 (3계층 매핑모드). 미지정 시 단순모드(default billing).',
+    description:
+      '외부 고객 식별자 (3계층 매핑모드). 매핑 필수 모드 계정은 필수(없으면 2001), 일반 계정은 미지정 시 단순모드(default billing).',
   })
   @IsString()
   @IsOptional()
@@ -101,7 +103,8 @@ export class ExternalProductQueryDto {
   productCode?: string;
 
   @ApiPropertyOptional({
-    description: '외부 고객 식별자 (3계층 매핑모드). 지정 시 매핑 billing 계정 할당상품. 미지정이면 default billing.',
+    description:
+      '외부 고객 식별자 (3계층 매핑모드). 매핑 필수 모드 계정은 필수(없으면 2001), 지정 시 매핑 billing 계정 할당상품, 일반 계정 미지정 시 default billing.',
   })
   @IsString()
   @IsOptional()

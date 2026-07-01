@@ -12,7 +12,7 @@ describe('ExternalApiService.getProducts billing 스코프 (PR2 리뷰 #3)', () 
     return svc;
   };
   const account = { user: { id: 42 } };
-  const ctx = { apiApp: { id: '1' } };
+  const ctx = { apiApp: { id: '1', requireExternalCustomerId: false } };
 
   it('매핑모드: externalCustomerId 지정 → 매핑 billing user 기준 상품 조회', async () => {
     const mappedBillingUser = { id: 99 };
@@ -20,7 +20,7 @@ describe('ExternalApiService.getProducts billing 스코프 (PR2 리뷰 #3)', () 
 
     await svc.getProducts(account, ctx, 'P1', 'wisead-c1');
 
-    expect(svc.mappingResolver.resolveBillingTarget).toHaveBeenCalledWith('1', 'wisead-c1', 42);
+    expect(svc.mappingResolver.resolveBillingTarget).toHaveBeenCalledWith('1', 'wisead-c1', 42, false);
     expect(svc.getProductsForBilling).toHaveBeenCalledWith(mappedBillingUser, 'P1');
   });
 
@@ -29,8 +29,17 @@ describe('ExternalApiService.getProducts billing 스코프 (PR2 리뷰 #3)', () 
 
     await svc.getProducts(account, ctx, undefined, undefined);
 
-    expect(svc.mappingResolver.resolveBillingTarget).toHaveBeenCalledWith('1', undefined, 42);
+    expect(svc.mappingResolver.resolveBillingTarget).toHaveBeenCalledWith('1', undefined, 42, false);
     expect(svc.getProductsForBilling).toHaveBeenCalledWith(account.user, undefined);
+  });
+
+  it('매핑 필수 모드: getProducts 가 requireExternalCustomerId=true 를 resolver 로 전달', async () => {
+    const svc = makeSvc({ billingUser: { id: 99 }, clientUserId: 99, externalCustomerId: 'wisead-c1' });
+    const ctxRequire = { apiApp: { id: '1', requireExternalCustomerId: true } };
+
+    await svc.getProducts(account, ctxRequire, 'P1', 'wisead-c1');
+
+    expect(svc.mappingResolver.resolveBillingTarget).toHaveBeenCalledWith('1', 'wisead-c1', 42, true);
   });
 
   it('미등록 externalCustomerId → resolver 가 4003 throw(default 폴백 금지) 전파', async () => {

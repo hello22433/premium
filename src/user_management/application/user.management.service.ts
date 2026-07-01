@@ -1503,8 +1503,11 @@ export class UserManagementService {
       return { exists: false };
     }
 
+    // 매핑 필수 모드는 app 전용 플래그 → app 로드해 노출(app 없으면 false).
+    const app = await this.findAppBySourceAccountId(account.id);
     return {
       exists: true,
+      requireExternalCustomerId: app?.requireExternalCustomerId ?? false,
       accountId: account.id,
       isActive: account.isActive,
       ssgEnabled: account.ssgEnabled,
@@ -1582,17 +1585,22 @@ export class UserManagementService {
     );
   }
 
+  // 프론트 안정 계약: "API 앱 미프로비저닝" 을 errorCode 로 식별(문구 변경에 안 깨짐).
+  // resolveAppOrThrow(매핑/credential 가드)와 설정 토글(app 전용 플래그) 공통 사용.
+  private apiAppNotFound(): NotFoundException {
+    return new NotFoundException({
+      statusCode: 404,
+      errorCode: 'API_APP_NOT_FOUND',
+      message: 'API 앱을 찾을 수 없습니다.',
+    });
+  }
+
   // accountId → api_app 결정적 해석. 없으면 NotFound (credential/매핑 관리 공통 가드).
-  // 프론트가 "API 앱 미프로비저닝(재발급 유도)" vs "매핑/credential 리소스 없음"을 안정적으로
-  // 구분하도록 body 에 errorCode='API_APP_NOT_FOUND' 를 포함한다(문구 변경에 안 깨지는 계약).
+  // 없으면 apiAppNotFound()(errorCode='API_APP_NOT_FOUND') 로 실패 — "리소스 없음" 404 와 구분.
   private async resolveAppOrThrow(accountId: string): Promise<ApiAppEntity> {
     const app = await this.findAppBySourceAccountId(accountId);
     if (!app) {
-      throw new NotFoundException({
-        statusCode: 404,
-        errorCode: 'API_APP_NOT_FOUND',
-        message: 'API 앱을 찾을 수 없습니다.',
-      });
+      throw this.apiAppNotFound();
     }
     return app;
   }
@@ -1866,10 +1874,15 @@ export class UserManagementService {
 
     // PR2a 호환: api_app(guard SoT)에도 설정 미러링해 account 와 싱크 유지.
     const app = await this.findAppBySourceAccountId(account.id);
+    // requireExternalCustomerId 는 app 전용 플래그 → app 없이 전달되면 조용히 삼키지 않고 실패시킨다.
+    if (dto.requireExternalCustomerId !== undefined && !app) {
+      throw this.apiAppNotFound();
+    }
     if (app) {
       if (dto.isActive !== undefined) app.isActive = dto.isActive;
       if (dto.ssgEnabled !== undefined) app.ssgEnabled = dto.ssgEnabled;
       if (dto.resendMaxCount !== undefined) app.resendMaxCount = dto.resendMaxCount;
+      if (dto.requireExternalCustomerId !== undefined) app.requireExternalCustomerId = dto.requireExternalCustomerId;
       await this.apiAppRepository.save(app);
     }
   }

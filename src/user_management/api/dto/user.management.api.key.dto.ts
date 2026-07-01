@@ -69,6 +69,13 @@ export class UpdateApiKeySettingsReqDto {
   @IsInt()
   @Min(0)
   resendMaxCount?: number | null;
+
+  @ApiPropertyOptional({
+    description: '매핑 필수 모드. true 면 externalCustomerId 없는 상품조회/주문을 거절(2001). app 전용 플래그.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  requireExternalCustomerId?: boolean;
 }
 
 export class CreateSsgRequestReqDto {
@@ -115,6 +122,9 @@ export class ApiKeyInfoResDto {
 
   @ApiPropertyOptional({ type: [ApiKeyAllowedIpResDto] })
   allowedIps?: ApiKeyAllowedIpResDto[];
+
+  @ApiPropertyOptional({ description: '매핑 필수 모드 (app 전용, app 없으면 false)' })
+  requireExternalCustomerId?: boolean;
 }
 
 export class SsgRequestResDto {

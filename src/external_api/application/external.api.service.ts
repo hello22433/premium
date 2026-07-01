@@ -555,6 +555,7 @@ export class ExternalApiService {
       ctx.apiApp.id,
       externalCustomerId,
       account.user.id,
+      ctx.apiApp.requireExternalCustomerId,
     );
     return this.getProductsForBilling(billingUser, productCode);
   }
@@ -740,6 +741,7 @@ export class ExternalApiService {
       ctx.apiApp.id,
       dto.externalCustomerId,
       account.user.id,
+      ctx.apiApp.requireExternalCustomerId,
     );
 
     // 독립 쿼리(상품 조회 / 할당 상품 ID / 직전 주문 코드)는 병렬화하여 round-trip 절약
@@ -1347,6 +1349,7 @@ export class ExternalApiService {
       ctx.apiApp.id,
       dto.externalCustomerId,
       account.user.id,
+      ctx.apiApp.requireExternalCustomerId,
     );
     const sendAmount = dto.amount;
 
