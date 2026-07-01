@@ -1583,10 +1583,16 @@ export class UserManagementService {
   }
 
   // accountId → api_app 결정적 해석. 없으면 NotFound (credential/매핑 관리 공통 가드).
+  // 프론트가 "API 앱 미프로비저닝(재발급 유도)" vs "매핑/credential 리소스 없음"을 안정적으로
+  // 구분하도록 body 에 errorCode='API_APP_NOT_FOUND' 를 포함한다(문구 변경에 안 깨지는 계약).
   private async resolveAppOrThrow(accountId: string): Promise<ApiAppEntity> {
     const app = await this.findAppBySourceAccountId(accountId);
     if (!app) {
-      throw new NotFoundException('API 앱을 찾을 수 없습니다.');
+      throw new NotFoundException({
+        statusCode: 404,
+        errorCode: 'API_APP_NOT_FOUND',
+        message: 'API 앱을 찾을 수 없습니다.',
+      });
     }
     return app;
   }
