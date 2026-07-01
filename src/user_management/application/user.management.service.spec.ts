@@ -598,6 +598,7 @@ describe('user management service test', () => {
         isActive: false,
         ssgEnabled: true,
         resendMaxCount: 5,
+        requireExternalCustomerId: true,
         deletedAt: new Date(),
       });
 
@@ -612,7 +613,14 @@ describe('user management service test', () => {
       // app 속성 보존: ssgEnabled/resendMaxCount 덮어쓰지 않음, 재활성화만
       expect(apiAppRepository.create).not.toHaveBeenCalled();
       expect(apiAppRepository.save).toHaveBeenCalledWith(
-        expect.objectContaining({ id: 'app-1', isActive: true, ssgEnabled: true, resendMaxCount: 5, deletedAt: null }),
+        expect.objectContaining({
+          id: 'app-1',
+          isActive: true,
+          ssgEnabled: true,
+          resendMaxCount: 5,
+          requireExternalCustomerId: true,
+          deletedAt: null,
+        }),
       );
       // 기존 활성 credential 비활성화(키회전)
       expect(apiCredentialRepository.update).toHaveBeenCalledWith(
@@ -785,6 +793,66 @@ describe('user management service test', () => {
         status: 404,
         response: { errorCode: 'API_APP_NOT_FOUND', message: 'API 앱을 찾을 수 없습니다.' },
       });
+    });
+  });
+
+  describe('requireExternalCustomerId (매핑 필수 모드) 토글/메타 테스트', () => {
+    it('updateApiKeySettings: 토글 → app 에 반영, legacy account 에는 미기록(app 전용)', async () => {
+      const account: any = { id: 'acc-1', isActive: true, ssgEnabled: false, resendMaxCount: null };
+      (sut as any).externalApiAccountRepository.findOne.mockResolvedValue(account);
+      (sut as any).externalApiAccountRepository.save.mockImplementation((a: any) => Promise.resolve(a));
+      apiAppRepository.findOne.mockResolvedValue({
+        id: 'app-1',
+        sourceAccountId: 'acc-1',
+        requireExternalCustomerId: false,
+      });
+      apiAppRepository.save.mockImplementation((a: any) => Promise.resolve(a));
+
+      await sut.updateApiKeySettings('acc-1', { requireExternalCustomerId: true } as any);
+
+      expect(apiAppRepository.save).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'app-1', requireExternalCustomerId: true }),
+      );
+      // app 전용 플래그 → legacy account 엔티티에는 기록되지 않는다
+      expect(account).not.toHaveProperty('requireExternalCustomerId');
+    });
+
+    it('updateApiKeySettings: app 미존재 + 플래그 전달 → API_APP_NOT_FOUND (조용히 no-op 금지)', async () => {
+      (sut as any).externalApiAccountRepository.findOne.mockResolvedValue({ id: 'acc-1' });
+      (sut as any).externalApiAccountRepository.save.mockImplementation((a: any) => Promise.resolve(a));
+      apiAppRepository.findOne.mockResolvedValue(null);
+
+      await expect(sut.updateApiKeySettings('acc-1', { requireExternalCustomerId: true } as any)).rejects.toMatchObject(
+        { status: 404, response: { errorCode: 'API_APP_NOT_FOUND' } },
+      );
+    });
+
+    it('getApiKeyInfo: app.requireExternalCustomerId 를 응답에 노출', async () => {
+      (sut as any).externalApiAccountRepository.findOne.mockResolvedValue({
+        id: 'acc-1',
+        isActive: true,
+        ssgEnabled: false,
+        resendMaxCount: null,
+        allowedIps: [],
+      });
+      apiAppRepository.findOne.mockResolvedValue({ id: 'app-1', requireExternalCustomerId: true });
+
+      const res = await sut.getApiKeyInfo(1);
+      expect(res).toMatchObject({ exists: true, requireExternalCustomerId: true });
+    });
+
+    it('getApiKeyInfo: app 미존재 → requireExternalCustomerId=false', async () => {
+      (sut as any).externalApiAccountRepository.findOne.mockResolvedValue({
+        id: 'acc-1',
+        isActive: true,
+        ssgEnabled: false,
+        resendMaxCount: null,
+        allowedIps: [],
+      });
+      apiAppRepository.findOne.mockResolvedValue(null);
+
+      const res = await sut.getApiKeyInfo(1);
+      expect(res.requireExternalCustomerId).toBe(false);
     });
   });
 
@@ -1111,7 +1179,11 @@ describe('modifyMaximumLimit — wallet credit_limit 동기화', () => {
         { provide: PasswordBcryptEncrypt, useValue: { encrypt: jest.fn().mockResolvedValue('hashed') } },
         {
           provide: getRepositoryToken(UserEntity),
-          useValue: { ...createMockRepositoryMethod(), manager: {}, createQueryBuilder: jest.fn(() => createMockQueryBuilder()) },
+          useValue: {
+            ...createMockRepositoryMethod(),
+            manager: {},
+            createQueryBuilder: jest.fn(() => createMockQueryBuilder()),
+          },
         },
         { provide: getRepositoryToken(UserCompanyEntity), useValue: createMockRepositoryMethod() },
         { provide: getRepositoryToken(UserViewScopeEntity), useValue: createMockRepositoryMethod() },
@@ -1119,22 +1191,43 @@ describe('modifyMaximumLimit — wallet credit_limit 동기화', () => {
         { provide: getRepositoryToken(ExternalApiAccountEntity), useValue: createMockRepositoryMethod() },
         { provide: getRepositoryToken(ExternalApiAllowedIpEntity), useValue: createMockRepositoryMethod() },
         { provide: getRepositoryToken(ExternalApiSsgRequestEntity), useValue: createMockRepositoryMethod() },
-        { provide: getRepositoryToken(ApiAppEntity), useValue: { ...createMockRepositoryMethod(), softRemove: jest.fn() } },
+        {
+          provide: getRepositoryToken(ApiAppEntity),
+          useValue: { ...createMockRepositoryMethod(), softRemove: jest.fn() },
+        },
         { provide: getRepositoryToken(ApiCredentialEntity), useValue: createMockRepositoryMethod() },
-        { provide: getRepositoryToken(ApiCustomerMappingEntity), useValue: { ...createMockRepositoryMethod(), softRemove: jest.fn() } },
+        {
+          provide: getRepositoryToken(ApiCustomerMappingEntity),
+          useValue: { ...createMockRepositoryMethod(), softRemove: jest.fn() },
+        },
         { provide: getRepositoryToken(WalletAccountEntity), useValue: createMockRepositoryMethod() },
         { provide: getRepositoryToken(WalletTransactionEntity), useValue: createMockRepositoryMethod() },
         { provide: 'IMailSend', useValue: { send: jest.fn() } },
         { provide: 'DeliveryAlimTalk', useValue: { send: jest.fn() } },
         { provide: 'ISmsSend', useValue: { send: jest.fn() } },
-        { provide: ActivityLogService, useValue: { createLog: jest.fn().mockResolvedValue(1), getMaximumLimitHistoryByUserId: jest.fn() } },
+        {
+          provide: ActivityLogService,
+          useValue: { createLog: jest.fn().mockResolvedValue(1), getMaximumLimitHistoryByUserId: jest.fn() },
+        },
         { provide: ConfigService, useValue: { getOrThrow: jest.fn().mockReturnValue('CODE') } },
         { provide: WalletLedgerService, useValue: { recordTransaction: jest.fn().mockResolvedValue({}) } },
         { provide: WalletAccountResolverService, useValue: { resolveByUserId: jest.fn() } },
-        { provide: WalletCutoverConfig, useValue: { pr2DeliveryLifecycleMode: WalletCutoverMode.WALLET, pr3SettleMode: WalletCutoverMode.WALLET } },
-        { provide: AccountStatusTransitionService, useValue: { logAccountCreate: jest.fn(), adminSetStatus: jest.fn(), touchLastActivity: jest.fn() } },
+        {
+          provide: WalletCutoverConfig,
+          useValue: { pr2DeliveryLifecycleMode: WalletCutoverMode.WALLET, pr3SettleMode: WalletCutoverMode.WALLET },
+        },
+        {
+          provide: AccountStatusTransitionService,
+          useValue: { logAccountCreate: jest.fn(), adminSetStatus: jest.fn(), touchLastActivity: jest.fn() },
+        },
         { provide: SettleService, useValue: { getRemainServiceAmountByUserId: jest.fn().mockResolvedValue(0) } },
-        { provide: OrderFromService, useValue: { resolveApprovedDefaultPhone: jest.fn().mockResolvedValue(null), seedApprovedDefaultPhone: jest.fn() } },
+        {
+          provide: OrderFromService,
+          useValue: {
+            resolveApprovedDefaultPhone: jest.fn().mockResolvedValue(null),
+            seedApprovedDefaultPhone: jest.fn(),
+          },
+        },
       ],
     }).compile();
 

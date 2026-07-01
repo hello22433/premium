@@ -26,7 +26,7 @@ describe('ApiCustomerMappingResolver (PR2 Phase 2)', () => {
   describe('resolveBillingTarget', () => {
     it('단순모드: externalCustomerId 미지정 → default billing user, clientUserId=null', async () => {
       userRepo.findOne.mockResolvedValue(activeUser(42));
-      const res = await resolver.resolveBillingTarget('1', null, 42);
+      const res = await resolver.resolveBillingTarget('1', null, 42, false);
       expect(res.clientUserId).toBeNull();
       expect(res.externalCustomerId).toBeNull();
       expect(res.billingUser.id).toBe(42);
@@ -37,7 +37,7 @@ describe('ApiCustomerMappingResolver (PR2 Phase 2)', () => {
 
     it('단순모드: 빈 문자열/공백도 단순모드로 처리', async () => {
       userRepo.findOne.mockResolvedValue(activeUser(42));
-      const res = await resolver.resolveBillingTarget('1', '   ', 42);
+      const res = await resolver.resolveBillingTarget('1', '   ', 42, false);
       expect(res.clientUserId).toBeNull();
       expect(mappingRepo.findOne).not.toHaveBeenCalled();
     });
@@ -45,7 +45,7 @@ describe('ApiCustomerMappingResolver (PR2 Phase 2)', () => {
     it('매핑모드: 등록된 externalCustomerId → 매핑 billing user, clientUserId=billingUserId', async () => {
       mappingRepo.findOne.mockResolvedValue({ apiAppId: '1', externalCustomerId: 'c-1', billingUserId: 77 });
       userRepo.findOne.mockResolvedValue(activeUser(77));
-      const res = await resolver.resolveBillingTarget('1', 'c-1', 42);
+      const res = await resolver.resolveBillingTarget('1', 'c-1', 42, false);
       expect(res.clientUserId).toBe(77);
       expect(res.externalCustomerId).toBe('c-1');
       expect(res.billingUser.id).toBe(77);
@@ -57,7 +57,7 @@ describe('ApiCustomerMappingResolver (PR2 Phase 2)', () => {
     it('매핑모드: externalCustomerId 양끝 공백 정규화 후 조회', async () => {
       mappingRepo.findOne.mockResolvedValue({ apiAppId: '1', externalCustomerId: 'c-1', billingUserId: 77 });
       userRepo.findOne.mockResolvedValue(activeUser(77));
-      await resolver.resolveBillingTarget('1', '  c-1  ', 42);
+      await resolver.resolveBillingTarget('1', '  c-1  ', 42, false);
       expect(mappingRepo.findOne).toHaveBeenCalledWith({
         where: { apiAppId: '1', externalCustomerId: 'c-1' },
       });
@@ -65,7 +65,7 @@ describe('ApiCustomerMappingResolver (PR2 Phase 2)', () => {
 
     it('미등록 externalCustomerId → 4003 (default fallback 금지, fail-closed)', async () => {
       mappingRepo.findOne.mockResolvedValue(null);
-      await expect(resolver.resolveBillingTarget('1', 'unknown', 42)).rejects.toMatchObject({
+      await expect(resolver.resolveBillingTarget('1', 'unknown', 42, false)).rejects.toMatchObject({
         code: '4003',
       });
       // default billing 으로 폴백하지 않는다
@@ -75,19 +75,39 @@ describe('ApiCustomerMappingResolver (PR2 Phase 2)', () => {
     it('billing user 미존재 → 4003', async () => {
       mappingRepo.findOne.mockResolvedValue({ apiAppId: '1', externalCustomerId: 'c-1', billingUserId: 77 });
       userRepo.findOne.mockResolvedValue(null);
-      await expect(resolver.resolveBillingTarget('1', 'c-1', 42)).rejects.toMatchObject({ code: '4003' });
+      await expect(resolver.resolveBillingTarget('1', 'c-1', 42, false)).rejects.toMatchObject({ code: '4003' });
     });
 
     it('billing user 휴면(NOT_USED) → 1001 fail-closed', async () => {
       mappingRepo.findOne.mockResolvedValue({ apiAppId: '1', externalCustomerId: 'c-1', billingUserId: 77 });
       userRepo.findOne.mockResolvedValue({ id: 77, status: IUserStatus.NOT_USED } as unknown as UserEntity);
-      await expect(resolver.resolveBillingTarget('1', 'c-1', 42)).rejects.toBeInstanceOf(ExternalApiException);
-      await expect(resolver.resolveBillingTarget('1', 'c-1', 42)).rejects.toMatchObject({ code: '1001' });
+      await expect(resolver.resolveBillingTarget('1', 'c-1', 42, false)).rejects.toBeInstanceOf(ExternalApiException);
+      await expect(resolver.resolveBillingTarget('1', 'c-1', 42, false)).rejects.toMatchObject({ code: '1001' });
     });
 
     it('billing user 탈퇴(LEAVE) → 1001 fail-closed', async () => {
       userRepo.findOne.mockResolvedValue({ id: 42, status: IUserStatus.LEAVE } as unknown as UserEntity);
-      await expect(resolver.resolveBillingTarget('1', null, 42)).rejects.toMatchObject({ code: '1001' });
+      await expect(resolver.resolveBillingTarget('1', null, 42, false)).rejects.toMatchObject({ code: '1001' });
+    });
+
+    it('매핑 필수 모드: externalCustomerId 미지정 → 2001 (default fallback 차단)', async () => {
+      await expect(resolver.resolveBillingTarget('1', null, 42, true)).rejects.toMatchObject({ code: '2001' });
+      // default billing 으로 폴백하지 않는다
+      expect(userRepo.findOne).not.toHaveBeenCalled();
+      expect(mappingRepo.findOne).not.toHaveBeenCalled();
+    });
+
+    it('매핑 필수 모드: 공백만 있는 externalCustomerId → 2001', async () => {
+      await expect(resolver.resolveBillingTarget('1', '   ', 42, true)).rejects.toMatchObject({ code: '2001' });
+      expect(userRepo.findOne).not.toHaveBeenCalled();
+    });
+
+    it('매핑 필수 모드: 유효 externalCustomerId → 정상 매핑 청구(플래그 무영향)', async () => {
+      mappingRepo.findOne.mockResolvedValue({ apiAppId: '1', externalCustomerId: 'c-1', billingUserId: 77 });
+      userRepo.findOne.mockResolvedValue(activeUser(77));
+      const res = await resolver.resolveBillingTarget('1', 'c-1', 42, true);
+      expect(res.clientUserId).toBe(77);
+      expect(res.billingUser.id).toBe(77);
     });
   });
 

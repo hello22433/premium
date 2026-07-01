@@ -26,7 +26,8 @@ export interface ResolvedBillingTarget {
  * 외부 API 3계층 매핑모드 resolver (PR2 Phase 2).
  *
  * resolve 순서(ralplan 확정):
- *   externalCustomerId 없음/빈문자열 → api_app default billing user (단순모드, clientUserId=null)
+ *   externalCustomerId 없음/빈문자열 + 매핑 필수 모드(requireExternalCustomerId) → 2001 (default fallback 차단)
+ *   externalCustomerId 없음/빈문자열 + 단순모드 → api_app default billing user (clientUserId=null)
  *   externalCustomerId 있고 매핑 없음 → 4xx (4003, default fallback 금지 — fail-closed)
  *   externalCustomerId 있고 매핑 있음 → 매핑 billing user (clientUserId=billingUserId)
  *
@@ -47,11 +48,17 @@ export class ApiCustomerMappingResolver {
     apiAppId: string,
     externalCustomerId: string | null | undefined,
     defaultBillingUserId: number,
+    requireExternalCustomerId: boolean,
   ): Promise<ResolvedBillingTarget> {
     const normalized = externalCustomerId?.trim();
 
-    // 단순모드: externalCustomerId 미지정 → default billing user, clientUserId=null.
+    // externalCustomerId 미지정/공백:
+    //  - 매핑 필수 모드(플랫폼형) → default fallback 금지, 2001 거절(오청구 방지).
+    //  - 단순모드 → default billing user, clientUserId=null.
     if (!normalized) {
+      if (requireExternalCustomerId) {
+        throw new ExternalApiException('2001', '잘못된 요청', 'externalCustomerId 필수 (매핑 필수 모드)');
+      }
       const billingUser = await this.loadActiveBillingUser(defaultBillingUserId);
       return { billingUser, clientUserId: null, externalCustomerId: null };
     }
