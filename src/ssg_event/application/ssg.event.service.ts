@@ -4,7 +4,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { ISsgAmountResult, ISsgIssue } from '../../partner_company_extern/interface/ssg.issue';
 import { SsgEventEntity } from '../../entity/ssg.event.entity';
 import { SsgReservationRangeEntity } from '../../entity/ssg.reservation.range.entity';
-import { Brackets, Repository, SelectQueryBuilder } from 'typeorm';
+import { Brackets, LessThan, Repository, SelectQueryBuilder } from 'typeorm';
 import {
   SsgEventCreateReqDto,
   SsgEventExcelDownloadReqDto,
@@ -807,6 +807,13 @@ export class SsgEventService {
 
   async confirmEventBalance(orderId: number): Promise<void> {
     await this.amountHistoryRepository.update({ orderId, isTemporary: true }, { isTemporary: false });
+  }
+
+  async hasOpenTempDeduction(orderId: number): Promise<boolean> {
+    const count = await this.amountHistoryRepository.count({
+      where: { orderId, isTemporary: true, amount: LessThan(0) },
+    });
+    return count > 0;
   }
 
   @Transactional()

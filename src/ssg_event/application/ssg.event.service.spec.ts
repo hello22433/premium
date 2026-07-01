@@ -16,6 +16,7 @@ describe('SsgEventService', () => {
       save: jest.fn().mockResolvedValue(undefined),
       find: jest.fn().mockResolvedValue([]),
       update: jest.fn().mockResolvedValue({ affected: 1 }),
+      count: jest.fn().mockResolvedValue(0),
     };
     const orderProductMappingRepository = {};
     const reservationRangeRepository = {};
@@ -312,6 +313,29 @@ describe('SsgEventService', () => {
       await service.restoreTemporaryEventBalance(1);
 
       expect(amountHistoryRepository.save).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('hasOpenTempDeduction', () => {
+    it('isTemporary=true, amount<0 이력이 있으면 true 반환', async () => {
+      const { service, amountHistoryRepository } = createService();
+      amountHistoryRepository.count = jest.fn().mockResolvedValue(1);
+
+      const result = await service.hasOpenTempDeduction(1);
+
+      expect(result).toBe(true);
+      expect(amountHistoryRepository.count).toHaveBeenCalledWith({
+        where: { orderId: 1, isTemporary: true, amount: expect.anything() },
+      });
+    });
+
+    it('isTemporary=true, amount<0 이력이 없으면 false 반환', async () => {
+      const { service, amountHistoryRepository } = createService();
+      amountHistoryRepository.count = jest.fn().mockResolvedValue(0);
+
+      const result = await service.hasOpenTempDeduction(1);
+
+      expect(result).toBe(false);
     });
   });
 });

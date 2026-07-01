@@ -4741,6 +4741,7 @@ export class OrderService {
       // .andWhere('order.userId = :userId', { userId: user.id })
       .andWhere('order.status = :status', { status: IOrderStatus.DELIVERY_REQUEST })
       .andWhere('order.type = :type', { type: IOrderType.SSG })
+      .setLock('pessimistic_write')
       .getOne();
 
     if (!beforeOrder) {
@@ -4751,6 +4752,11 @@ export class OrderService {
 
     if (couponExpiration === couponExpirationProduct) {
       throw new BadRequestException(`유효기간이 ${couponExpiration}일 로 동일합니다.`);
+    }
+
+    const hasDeduction = await this.ssgEventService.hasOpenTempDeduction(beforeOrder.id);
+    if (!hasDeduction) {
+      throw new BadRequestException('처리 가능한 가차감 이력이 없습니다.');
     }
 
     const afterProductList = await this.productRepository.find({

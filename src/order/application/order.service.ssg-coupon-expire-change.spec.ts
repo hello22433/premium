@@ -65,6 +65,7 @@ const buildSut = (
     innerJoinAndSelect: jest.fn().mockReturnThis(),
     where: jest.fn().mockReturnThis(),
     andWhere: jest.fn().mockReturnThis(),
+    setLock: jest.fn().mockReturnThis(),
     getOne: jest.fn().mockResolvedValue(order),
   };
   const orderRepository: any = {
@@ -87,11 +88,13 @@ const buildSut = (
   const restoreTemporaryEventBalance = jest.fn().mockResolvedValue(undefined);
   const allocateEventsForDeliveries = jest.fn().mockResolvedValue(allocations);
   const deductEventBalanceMultiple = jest.fn().mockResolvedValue(undefined);
+  const hasOpenTempDeduction = jest.fn().mockResolvedValue(true);
 
   const ssgEventService: any = {
     restoreTemporaryEventBalance,
     allocateEventsForDeliveries,
     deductEventBalanceMultiple,
+    hasOpenTempDeduction,
   };
 
   const sut: any = Object.create(OrderService.prototype);
@@ -109,6 +112,7 @@ const buildSut = (
     restoreTemporaryEventBalance,
     allocateEventsForDeliveries,
     deductEventBalanceMultiple,
+    hasOpenTempDeduction,
   };
 };
 
@@ -187,6 +191,31 @@ describe('OrderService.ssgCouponExpireChange — #16 의심포인트 해소 검�
 
       expect(callOrder[0]).toBe('restore');
       expect(callOrder).toContain('mappingUpdate');
+    });
+  });
+
+  describe('6. 동시 요청 중복 방지 — pessimistic_write 락 + 가차감 이력 체크', () => {
+    it('hasOpenTempDeduction이 orderId로 호출된다', async () => {
+      const { sut, hasOpenTempDeduction } = buildSut();
+      await sut.ssgCouponExpireChange(BASE_USER, BASE_BODY);
+      expect(hasOpenTempDeduction).toHaveBeenCalledWith(1);
+    });
+
+    it('hasOpenTempDeduction이 false 반환하면 BadRequestException — 잔액 복원/차감 미실행', async () => {
+      // 첫 번째 요청이 완료된 후 두 번째 요청이 락 획득: isTemporary=true 이력 없음 → false
+      const { sut, restoreTemporaryEventBalance, deductEventBalanceMultiple } = buildSut();
+      sut.ssgEventService.hasOpenTempDeduction = jest.fn().mockResolvedValue(false);
+
+      await expect(sut.ssgCouponExpireChange(BASE_USER, BASE_BODY)).rejects.toThrow(BadRequestException);
+      expect(restoreTemporaryEventBalance).not.toHaveBeenCalled();
+      expect(deductEventBalanceMultiple).not.toHaveBeenCalled();
+    });
+
+    it('hasOpenTempDeduction이 true 반환하면 정상 처리 진행', async () => {
+      const { sut, restoreTemporaryEventBalance, deductEventBalanceMultiple } = buildSut();
+      await sut.ssgCouponExpireChange(BASE_USER, BASE_BODY);
+      expect(restoreTemporaryEventBalance).toHaveBeenCalledTimes(1);
+      expect(deductEventBalanceMultiple).toHaveBeenCalledTimes(1);
     });
   });
 });
