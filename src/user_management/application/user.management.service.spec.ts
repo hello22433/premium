@@ -779,9 +779,12 @@ describe('user management service test', () => {
       await expect(sut.deleteCustomerMapping('acc-1', 'mX')).rejects.toThrow();
     });
 
-    it('app 미존재 → 거부', async () => {
+    it('app 미존재 → 거부 (404 + errorCode=API_APP_NOT_FOUND)', async () => {
       apiAppRepository.findOne.mockResolvedValue(null);
-      await expect(sut.listCustomerMappings('acc-x')).rejects.toThrow();
+      await expect(sut.listCustomerMappings('acc-x')).rejects.toMatchObject({
+        status: 404,
+        response: { errorCode: 'API_APP_NOT_FOUND', message: 'API 앱을 찾을 수 없습니다.' },
+      });
     });
   });
 
