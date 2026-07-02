@@ -43,6 +43,7 @@ import { AuthErrorCode } from '../exception/auth-error-code';
 import { AuthException } from '../exception/auth.exception';
 import { AccountStatusTransitionService } from '../../account_lifecycle/application/account.status.transition.service';
 import { TransitionSource } from '../../account_lifecycle/interface/transition.source';
+import { SettlementCodeAdminService } from '../../wallet/application/settlement-code-admin.service';
 
 @Injectable()
 export class UserService {
@@ -70,6 +71,7 @@ export class UserService {
     private activityLogService: ActivityLogService,
     private accountStatusTransitionService: AccountStatusTransitionService,
     private cryptoCipher: CryptoCipher,
+    private settlementCodeAdminService: SettlementCodeAdminService,
   ) {}
 
   private logger = new Logger('UserService');
@@ -119,6 +121,9 @@ export class UserService {
 
     // 동일 사업자등록번호의 회사가 있으면 연결, 없으면 생성
     let companyId: number | null = null;
+    // 이번 호출에서 회사 row 를 신규 생성했는지 (settlement_code 배정 판정 기준, S4)
+    let isNewCompany = false;
+    let newCompanyMaximumLimit = 0;
     if (businessNumber) {
       const existingCompany = await this.userCompanyRepository.findOne({
         where: { businessNumber },
@@ -137,6 +142,8 @@ export class UserService {
           maximumLimit: 0,
         });
         companyId = newCompany.id;
+        isNewCompany = true;
+        newCompanyMaximumLimit = newCompany.maximumLimit;
       }
     }
 
@@ -174,6 +181,25 @@ export class UserService {
 
     // 계정 생성 로그 (라이프사이클)
     await this.accountStatusTransitionService.logAccountCreate(newUserId, signUpDto.email, TransitionSource.MANUAL);
+
+    // settlement_code 프로비저닝 (ambient @Transactional 안에서 실행 — 별도 TX/queryRunner 금지, B3).
+    // NEW: company-{id} 코드 + 공유 wallet 생성; SHARE_ONE: 기존 단일 코드 공유(지갑 생성 없음); PENDING: '' 유지.
+    if (companyId != null) {
+      const classification = await this.settlementCodeAdminService.classifyJoin(companyId, isNewCompany);
+      if (classification.mode === 'NEW') {
+        await this.settlementCodeAdminService.ensureSettlementCodeWallet(
+          companyId,
+          classification.code!,
+          newCompanyMaximumLimit,
+          this.userRepository.manager,
+          IUserSettleCondition.POST_PAYMENT,
+          IUserSettleMethod.CARD,
+        );
+        await this.userRepository.update(newUserId, { settlementCode: classification.code });
+      } else if (classification.mode === 'SHARE_ONE') {
+        await this.userRepository.update(newUserId, { settlementCode: classification.code });
+      }
+    }
 
     return;
   }

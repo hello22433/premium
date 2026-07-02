@@ -14,6 +14,8 @@ import {
 } from '../../entity/order.delivery.attempt.entity';
 import { WalletResourceType } from '../interface/wallet-resource-type';
 import { buildConfirmReleaseKey, ORDER_LEVEL_SENTINEL } from '../interface/wallet-idempotency';
+import { OrderEntity } from '../../entity/order.entity';
+import { assertAllocationCodeNotMoved } from './reversal-move-guard';
 
 const CONFIRM_RELEASE_TX_TYPE = 'CONFIRM_RELEASE';
 
@@ -123,6 +125,16 @@ export class OrderConfirmationReleaseService {
       );
       return { alreadyReleased: true, walletTransactionIds: [], rolledBackAttemptIds: [] };
     }
+
+    // H1: 정산코드 이동 후 역처리(보상 release) 차단.
+    const order = await manager.findOne(OrderEntity, {
+      where: { id: input.orderId },
+      select: ['id', 'userId', 'clientUserId'],
+    });
+    if (!order) {
+      throw new BadRequestException(`OrderConfirmationReleaseService: order not found id=${input.orderId}`);
+    }
+    await assertAllocationCodeNotMoved(manager, order, wallet.ownerId);
 
     const walletTransactionIds: string[] = [];
 

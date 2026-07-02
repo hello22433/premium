@@ -761,6 +761,9 @@ describe('OrderService deliveryConfirmed settlement amount', () => {
     service.userCompanyRepository = {
       update: jest.fn(),
     };
+    service.billingScopeLockService = {
+      lock: jest.fn().mockResolvedValue({ user: billingUser, companyUsers: [billingUser] }),
+    };
     service.userDiscountRepository = {
       find: jest.fn().mockResolvedValue([]),
     };
@@ -911,6 +914,9 @@ describe('OrderService deliveryConfirmed settlement amount', () => {
     service.userCompanyRepository = {
       update: jest.fn(),
     };
+    service.billingScopeLockService = {
+      lock: jest.fn().mockResolvedValue({ user: billingUser, companyUsers: [billingUser] }),
+    };
     service.userDiscountRepository = {
       find: jest.fn().mockResolvedValue([]),
     };
@@ -1024,6 +1030,9 @@ describe('OrderService deliveryConfirmed settlement amount', () => {
     };
     service.userCompanyRepository = {
       update: jest.fn(),
+    };
+    service.billingScopeLockService = {
+      lock: jest.fn().mockResolvedValue({ user: billingUser, companyUsers: [billingUser] }),
     };
     service.userDiscountRepository = {
       find: jest.fn().mockResolvedValue([

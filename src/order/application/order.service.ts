@@ -176,6 +176,7 @@ import { OrderProductCreateTempDto } from '../api/dto/order.product.create.temp.
 import { OrderConfirmationWalletService } from '../../wallet/application/order-confirmation-wallet.service';
 import { OrderConfirmationReleaseService } from '../../wallet/application/order-confirmation-release.service';
 import { ShadowMismatchClassifierService } from '../../wallet/application/shadow-mismatch-classifier.service';
+import { BillingScopeLockService } from '../../wallet/application/billing-scope-lock.service';
 import { OrderPaymentAllocationEntity } from '../../entity/order.payment.allocation.entity';
 import dayjs from 'dayjs';
 import timezone from 'dayjs/plugin/timezone';
@@ -309,6 +310,7 @@ export class OrderService {
     @InjectRepository(ForbiddenWordBlockLogEntity)
     private readonly forbiddenWordBlockLogRepository: Repository<ForbiddenWordBlockLogEntity>,
     private readonly orderFromService: OrderFromService,
+    private readonly billingScopeLockService: BillingScopeLockService,
   ) {}
 
   /**
@@ -3651,48 +3653,7 @@ export class OrderService {
    * 동일하게 사용해야 서로 다른 사용자의 동시 발송에서도 순환 대기가 생기지 않는다.
    */
   private async lockBillingScope(billingUserId: number): Promise<{ user: UserEntity; companyUsers: UserEntity[] }> {
-    const billingReference = await this.userRepository.findOne({
-      where: { id: billingUserId },
-      select: ['id', 'companyId'],
-    });
-    if (!billingReference) {
-      throw new InternalServerErrorException('과금 대상 유저가 존재하지 않습니다.');
-    }
-
-    if (!billingReference.companyId) {
-      const user = await this.userRepository
-        .createQueryBuilder('billingUser')
-        .setLock('pessimistic_write')
-        .leftJoinAndSelect('billingUser.company', 'billingCompany')
-        .where('billingUser.id = :id', { id: billingUserId })
-        .getOne();
-      if (!user) {
-        throw new InternalServerErrorException('과금 대상 유저가 존재하지 않습니다.');
-      }
-      return { user, companyUsers: [user] };
-    }
-
-    const company = await this.userCompanyRepository
-      .createQueryBuilder('company')
-      .setLock('pessimistic_write')
-      .where('company.id = :id', { id: billingReference.companyId })
-      .getOne();
-    if (!company) {
-      throw new InternalServerErrorException('회사 잔액 처리 중 회사 정보를 찾을 수 없습니다.');
-    }
-
-    const companyUsers = await this.userRepository
-      .createQueryBuilder('companyUser')
-      .setLock('pessimistic_write')
-      .where('companyUser.companyId = :companyId', { companyId: company.id })
-      .orderBy('companyUser.id', 'ASC')
-      .getMany();
-    const user = companyUsers.find((companyUser) => companyUser.id === billingUserId);
-    if (!user) {
-      throw new InternalServerErrorException('회사 사용자 잠금 처리 중 과금 대상 유저를 찾을 수 없습니다.');
-    }
-    user.company = company;
-    return { user, companyUsers };
+    return this.billingScopeLockService.lock(billingUserId);
   }
 
   @Transactional()

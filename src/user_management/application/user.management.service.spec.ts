@@ -49,6 +49,7 @@ import { WalletResourceType } from '../../wallet/interface/wallet-resource-type'
 import { AccountStatusTransitionService } from '../../account_lifecycle/application/account.status.transition.service';
 import { SettleService } from '../../settle/application/settle.service';
 import { OrderFromService } from '../../order_from/application/order.from.service';
+import { SettlementCodeAdminService } from '../../wallet/application/settlement-code-admin.service';
 import { UserManagementChargeBalanceReqDto, UserManagementModifyBalanceReqDto } from '../api/user.management.req.dto';
 
 describe('user management service test', () => {
@@ -83,6 +84,13 @@ describe('user management service test', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         UserManagementService,
+        {
+          provide: SettlementCodeAdminService,
+          useValue: {
+            classifyJoin: jest.fn().mockResolvedValue({ mode: 'PENDING' }),
+            ensureSettlementCodeWallet: jest.fn(),
+          },
+        },
         { provide: PasswordBcryptEncrypt, useValue: passwordEncrypt },
         {
           provide: getRepositoryToken(UserEntity),
@@ -966,6 +974,13 @@ describe('settleMethod SoT 동기화 테스트', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         UserManagementService,
+        {
+          provide: SettlementCodeAdminService,
+          useValue: {
+            classifyJoin: jest.fn().mockResolvedValue({ mode: 'PENDING' }),
+            ensureSettlementCodeWallet: jest.fn(),
+          },
+        },
         { provide: PasswordBcryptEncrypt, useValue: { encrypt: jest.fn().mockResolvedValue('hashed') } },
         {
           provide: getRepositoryToken(UserEntity),
@@ -1176,6 +1191,13 @@ describe('modifyMaximumLimit — wallet credit_limit 동기화', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         UserManagementService,
+        {
+          provide: SettlementCodeAdminService,
+          useValue: {
+            classifyJoin: jest.fn().mockResolvedValue({ mode: 'PENDING' }),
+            ensureSettlementCodeWallet: jest.fn(),
+          },
+        },
         { provide: PasswordBcryptEncrypt, useValue: { encrypt: jest.fn().mockResolvedValue('hashed') } },
         {
           provide: getRepositoryToken(UserEntity),
@@ -1293,5 +1315,55 @@ describe('modifyMaximumLimit — wallet credit_limit 동기화', () => {
     expect(userCompanyRepository.save).toHaveBeenCalledWith(expect.objectContaining({ maximumLimit: 7_000_000 }));
     expect(walletAccountRepository.findOne).not.toHaveBeenCalled();
     expect(walletAccountRepository.save).not.toHaveBeenCalled();
+  });
+  it('R-modLimit: 회사에 NON-EMPTY 정산코드가 2개 이상이면 400 (per-code 엔드포인트 안내)', async () => {
+    const company = { id: 20, maximumLimit: 1_000_000, businessName: 'MultiBiz' };
+    userRepository.findOne.mockResolvedValue({
+      ...UserEntityTest(),
+      id: 201,
+      company,
+      companyId: 20,
+      settlementCode: 'company-20',
+    });
+    // DISTINCT NON-EMPTY 코드 2개 반환.
+    userRepository.createQueryBuilder.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      getRawMany: jest.fn().mockResolvedValue([{ code: 'company-20' }, { code: 'company-20-1' }]),
+    } as any);
+
+    await expect(
+      sut.modifyMaximumLimit({ id: 201, newMaximumLimit: 9_000_000, memo: null } as any, operator),
+    ).rejects.toThrow(/정산코드가 2개 이상/);
+    expect(userCompanyRepository.save).not.toHaveBeenCalled();
+    expect(walletAccountRepository.save).not.toHaveBeenCalled();
+  });
+
+  it('R-modLimit: NON-EMPTY 코드 1개(+ PENDING "" 혼재) 회사는 허용', async () => {
+    const company = { id: 21, maximumLimit: 1_000_000, businessName: 'SingleBiz' };
+    userRepository.findOne.mockResolvedValue({
+      ...UserEntityTest(),
+      id: 202,
+      company,
+      companyId: 21,
+      settlementCode: 'company-21',
+    });
+    // 쿼리가 ''/NULL 을 제외하므로 실제 코드 1개만 반환.
+    userRepository.createQueryBuilder.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      getRawMany: jest.fn().mockResolvedValue([{ code: 'company-21' }]),
+    } as any);
+    walletAccountRepository.findOne.mockResolvedValue({
+      id: 'w-21',
+      ownerType: 'SETTLEMENT_CODE',
+      ownerId: 'company-21',
+      creditLimit: 1_000_000,
+    });
+
+    await sut.modifyMaximumLimit({ id: 202, newMaximumLimit: 4_000_000, memo: null } as any, operator);
+    expect(userCompanyRepository.save).toHaveBeenCalledWith(expect.objectContaining({ maximumLimit: 4_000_000 }));
   });
 });
