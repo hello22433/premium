@@ -81,6 +81,8 @@ import { ActivityLogActionType } from 'src/activity_log/interface/activity.log.a
 import { ActivityLogResult } from 'src/activity_log/interface/activity.log.result';
 import { UserEntity } from 'src/entity/user.entity';
 import { UserCompanyEntity } from 'src/entity/user.company.entity';
+import { CouponViewLogEntity } from '../../entity/coupon.view.log.entity';
+import { CouponViewLogResDto } from '../api/dto/customer.service.coupon.view.log.dto';
 import { calculateSettlementPrice } from '../../util/settle-fee.util';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 import { randomUUID } from 'crypto';
@@ -96,6 +98,8 @@ dayjs.extend(timezone);
 
 // CS 재전송 claim self-heal 임계(ms). 크래시로 finally 못 탄 stale claim 만 재claim 허용.
 // partner_company_extern_history.service 의 RESEND_CLAIM_STALE_MS 와 동일 의미(5분).
+// coupon-view 방문 로그 조회 시 응답 크기 상한(최신 N건). 전체 규모는 집계 필드로 제공한다.
+const COUPON_VIEW_LOG_MAX_ITEMS = 100;
 const RESEND_CLAIM_STALE_MS = 5 * 60 * 1000;
 
 @Injectable()
@@ -135,7 +139,79 @@ export class CustomerServiceService {
     private readonly refundPoolService: RefundPoolService,
     private readonly legacyWalletCreditSyncService: LegacyWalletCreditSyncService,
     private readonly authService: AuthService,
+    @InjectRepository(CouponViewLogEntity)
+    private readonly couponViewLogRepository: Repository<CouponViewLogEntity>,
   ) {}
+
+  /**
+   * 특정 발송건(order_delivery)의 coupon-view 페이지 방문 로그를 조회한다.
+   * CS 상세(일반/신세계)에서 '고객이 정말 페이지를 봤는가'를 판별하는 증거로 사용한다.
+   * 방문 규모는 단일 aggregate 로 집계하고, 목록은 최신순 최대 N건만 함께 반환한다(응답 크기 상한).
+   */
+  async getCouponViewLog(user: ILoginUserInfo, orderDeliveryId: number): Promise<CouponViewLogResDto> {
+    // 권한검사: 발송건의 쿠폰 종류(일반/SSG)에 맞는 CS 권한 (getDetail 과 동일 기준, 그 외/미존재는 거부).
+    // 로그인만으로 임의 orderDeliveryId 의 IP/UA 를 조회하지 못하도록 fail-closed.
+    const orderDelivery = await this.orderDeliveryRepository
+      .createQueryBuilder('orderDelivery')
+      .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
+      .leftJoinAndSelect('orderProductMapping.product', 'product')
+      .withDeleted()
+      .where('orderDelivery.id = :id', { id: orderDeliveryId })
+      .getOne();
+
+    if (!orderDelivery) {
+      throw new BadRequestException('존재하지 않는 발송 정보입니다.');
+    }
+
+    const requiredAuth = this.resolveCsCouponAuthority(orderDelivery.orderProductMapping?.product?.type);
+    if (!requiredAuth) {
+      throw new BadRequestException('CS 대상이 아닌 상품 유형입니다.');
+    }
+    await this.authService.authorityValidator(user, requiredAuth);
+
+    // 집계는 단일 aggregate 쿼리로 계산한다. 여러 쿼리를 분리하면 방문 insert 와 경쟁해
+    // botCount > total / 음수 humanCount 같은 불일치가 생길 수 있으므로 한 쿼리에서 일관되게 산출한다.
+    const agg = await this.couponViewLogRepository
+      .createQueryBuilder('log')
+      .select('COUNT(*)', 'total')
+      .addSelect('COALESCE(SUM(log.is_bot), 0)', 'botCount')
+      .addSelect('MIN(CASE WHEN log.is_bot = 0 THEN log.created_at END)', 'firstHumanVisitedAt')
+      .addSelect('MAX(log.created_at)', 'lastVisitedAt')
+      .where('log.order_delivery_id = :id', { id: orderDeliveryId })
+      .getRawOne<{
+        total: string | number;
+        botCount: string | number;
+        firstHumanVisitedAt: Date | string | null;
+        lastVisitedAt: Date | string | null;
+      }>();
+
+    const total = Number(agg?.total ?? 0);
+    const botCount = Number(agg?.botCount ?? 0);
+    const toDisplay = (v: Date | string | null | undefined): string | null =>
+      v ? format(new Date(v), DateFormatStr) : null;
+
+    // 응답 크기 상한: 최신 MAX_ITEMS 건만 목록으로 반환(무제한 응답 방지). 집계와는 독립.
+    const items = await this.couponViewLogRepository.find({
+      where: { orderDeliveryId },
+      order: { createdAt: 'DESC' },
+      take: COUPON_VIEW_LOG_MAX_ITEMS,
+    });
+
+    return {
+      total,
+      humanCount: total - botCount,
+      botCount,
+      firstHumanVisitedAt: toDisplay(agg?.firstHumanVisitedAt),
+      lastVisitedAt: toDisplay(agg?.lastVisitedAt),
+      items: items.map((log) => ({
+        visitedAt: format(log.createdAt, DateFormatStr),
+        ipAddress: log.ipAddress,
+        userAgent: log.userAgent,
+        source: log.source,
+        isBot: log.isBot,
+      })),
+    };
+  }
 
   /**
    * 폐기 시 정산금액(할인가) 기준으로 예치금/여신 복구.
@@ -949,24 +1025,26 @@ export class CustomerServiceService {
 
   /** CS 재전송 대상 조회(relation 포함, 재발송 가능 상태 필터). 락 없음. */
   private buildReSendQuery(orderDeliveryId: number, statuses: string[]) {
-    return this.orderDeliveryRepository
-      .createQueryBuilder('orderDelivery')
-      .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
-      .innerJoinAndSelect('orderProductMapping.order', 'order')
-      .innerJoinAndSelect('order.user', 'user')
-      .leftJoinAndSelect('user.company', 'company')
-      .innerJoinAndSelect('orderProductMapping.product', 'product')
-      .innerJoinAndSelect('product.brand', 'brand')
-      .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
-      .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
-      .leftJoinAndSelect('choiceSelectProduct.brand', 'choiceSelectBrand')
-      .where('orderDelivery.id = :orderDeliveryId', { orderDeliveryId })
-      .andWhere('orderDelivery.status IN (:...statuses)', { statuses })
-      // 비동기 수신확인 진행중(PENDING)인 건은 재진입 차단 (msgKey 덮어쓰기/이중처리 방지).
-      // 단 recovery 후 FAIL(reportState=UNCONFIRMED)·CONFIRMED 는 수동 재발송 허용해야 하므로 PENDING 만 제외.
-      .andWhere('(orderDelivery.reportState IS NULL OR orderDelivery.reportState != :pendingReportState)', {
-        pendingReportState: IOrderDeliveryReportState.PENDING,
-      });
+    return (
+      this.orderDeliveryRepository
+        .createQueryBuilder('orderDelivery')
+        .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
+        .innerJoinAndSelect('orderProductMapping.order', 'order')
+        .innerJoinAndSelect('order.user', 'user')
+        .leftJoinAndSelect('user.company', 'company')
+        .innerJoinAndSelect('orderProductMapping.product', 'product')
+        .innerJoinAndSelect('product.brand', 'brand')
+        .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
+        .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
+        .leftJoinAndSelect('choiceSelectProduct.brand', 'choiceSelectBrand')
+        .where('orderDelivery.id = :orderDeliveryId', { orderDeliveryId })
+        .andWhere('orderDelivery.status IN (:...statuses)', { statuses })
+        // 비동기 수신확인 진행중(PENDING)인 건은 재진입 차단 (msgKey 덮어쓰기/이중처리 방지).
+        // 단 recovery 후 FAIL(reportState=UNCONFIRMED)·CONFIRMED 는 수동 재발송 허용해야 하므로 PENDING 만 제외.
+        .andWhere('(orderDelivery.reportState IS NULL OR orderDelivery.reportState != :pendingReportState)', {
+          pendingReportState: IOrderDeliveryReportState.PENDING,
+        })
+    );
   }
 
   /**
