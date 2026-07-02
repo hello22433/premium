@@ -162,6 +162,7 @@ import { ActivityLogService } from '../../activity_log/application/activity.log.
 import { ActivityLogResult } from '../../activity_log/interface/activity.log.result';
 import { WalletCutoverConfig, WalletCutoverMode } from '../../wallet/config/wallet-cutover.config';
 import { WalletManagedPredicate } from '../../wallet/application/wallet-managed.predicate';
+import { SettlementCodeRequiredError } from '../../wallet/application/settlement-code-required.error';
 import { WalletAccountResolverService } from '../../wallet/application/wallet-account-resolver.service';
 import { WalletAccountEntity } from '../../entity/wallet.account.entity';
 import {
@@ -3758,6 +3759,16 @@ export class OrderService {
     );
 
     const { user: oneUser, companyUsers } = await this.lockBillingScope(billingUserId);
+
+    // PR-B settlement_code 가드 (WALLET 흐름 전용, 기본 OFF/DARK).
+    // 코드 미부여(빈 문자열/null) 상태로 발송요청 제출을 차단. legacy 흐름은 미적용.
+    if (
+      order.isNewBillingFlow &&
+      (oneUser.settlementCode == null || oneUser.settlementCode === '') &&
+      this.walletCutoverConfig.settlementCodeGuardEnforced
+    ) {
+      throw new SettlementCodeRequiredError();
+    }
 
     // 과금 모드 결정 (두 블록에서 공통 사용)
     const isCompanyBalanceMode = oneUser.company?.balanceManagementType === 'COMPANY';
