@@ -1,4 +1,4 @@
-import { BadRequestException, Inject, Injectable, InternalServerErrorException } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
 import { applyReplaceCharacters } from '../../common/utils/replace-characters.util';
 import {
   OrderReceiveAlimTalkReqDto,
@@ -44,6 +44,8 @@ import { normalizeLineBreaks } from '../../delivery/domain/email.delivery.templa
 import { resolveExpireDays, couponTokenExpiry } from '../../common/utils/expire.util';
 import { DateFormatStr } from '../../common/domain/date.format.str';
 import { PhoneUtil } from '../../common/utils/phone.util';
+import { CouponViewLogEntity } from '../../entity/coupon.view.log.entity';
+import { isCrawlerUserAgent } from '../../common/utils/crawler-ua.util';
 
 import dayjs from 'dayjs';
 import timezone from 'dayjs/plugin/timezone';
@@ -51,6 +53,33 @@ import utc from 'dayjs/plugin/utc';
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
+
+/** coupon-view 페이지 방문 로그에 남길 요청 컨텍스트 (알림톡/이메일 수신 API의 HTTP 메타). */
+export type CouponViewContext = {
+  ipAddress?: string | null;
+  userAgent?: string | null;
+  referer?: string | null;
+};
+
+/**
+ * coupon-view 방문 dedup 창(ms). 이 창(시간버킷) 안의 동일 (orderDeliveryId + ip) 방문은 같은 열람으로 보고
+ * 1건만 기록한다(더블 마운트/즉시 refetch 등 무의미한 누적 방지). 창을 넘는 재방문은 별개로 기록된다.
+ */
+const COUPON_VIEW_DEDUP_WINDOW_MS = 10_000;
+
+/**
+ * dedup 키 생성. "{orderDeliveryId}:{ip}:{시간버킷}" 형태이며 coupon_view_log.dedup_key UNIQUE 인덱스와
+ * INSERT IGNORE 로 동시요청도 원자적으로 1건만 남긴다(read-then-write 경합 없음).
+ * 시간버킷 = floor(now / DEDUP_WINDOW) — 같은 창의 동일 방문은 동일 키를 갖는다.
+ */
+export function couponViewDedupKey(
+  orderDeliveryId: number,
+  ipAddress: string | null,
+  nowMs: number = Date.now(),
+): string {
+  const bucket = Math.floor(nowMs / COUPON_VIEW_DEDUP_WINDOW_MS);
+  return `${orderDeliveryId}:${ipAddress ?? ''}:${bucket}`;
+}
 
 @Injectable()
 export class OrderReceiveService {
@@ -75,7 +104,41 @@ export class OrderReceiveService {
     @InjectRepository(SsgEventEntity)
     private ssgEventRepository: Repository<SsgEventEntity>,
     private orderFromService: OrderFromService,
+    @InjectRepository(CouponViewLogEntity)
+    private couponViewLogRepository: Repository<CouponViewLogEntity>,
   ) {}
+
+  private readonly logger = new Logger(OrderReceiveService.name);
+
+  /**
+   * coupon-view 페이지 방문 1건을 기록한다 (모든 방문 append).
+   * 방문 로그 실패가 쿠폰 조회 응답을 절대 깨뜨리지 않도록 예외를 삼킨다(fire-and-forget).
+   */
+  private async recordCouponView(orderDeliveryId: number, ctx?: CouponViewContext): Promise<void> {
+    try {
+      const userAgent = ctx?.userAgent ? ctx.userAgent.slice(0, 512) : null;
+      const ipAddress = ctx?.ipAddress ? ctx.ipAddress.slice(0, 45) : null;
+
+      // 원자적 dedup: dedup_key UNIQUE + INSERT IGNORE 로 동시요청 중복을 DB가 차단한다.
+      // read-then-write 경합 창이 없어 동시 2건이 들어와도 같은 시간버킷이면 1건만 남는다.
+      await this.couponViewLogRepository
+        .createQueryBuilder()
+        .insert()
+        .values({
+          orderDeliveryId,
+          ipAddress,
+          userAgent,
+          referer: ctx?.referer ? ctx.referer.slice(0, 512) : null,
+          source: 'alimtalk',
+          isBot: isCrawlerUserAgent(userAgent),
+          dedupKey: couponViewDedupKey(orderDeliveryId, ipAddress),
+        })
+        .orIgnore()
+        .execute();
+    } catch (e) {
+      this.logger.error(`coupon-view 방문 로그 기록 실패 (orderDeliveryId=${orderDeliveryId}): ${e}`);
+    }
+  }
 
   private assertCouponNotDiscarded(orderDelivery: OrderDeliveryEntity): void {
     if (
@@ -571,7 +634,7 @@ export class OrderReceiveService {
     await this.testOrderDeliveryRepository.save(testOrderDelivery);
   }
 
-  async alimTalk(getQuery: OrderReceiveAlimTalkReqDto): Promise<OrderReceiveAlimTalkResDto> {
+  async alimTalk(getQuery: OrderReceiveAlimTalkReqDto, ctx?: CouponViewContext): Promise<OrderReceiveAlimTalkResDto> {
     const orderDecrypt = this.cryptoCipher.decryptJson(getQuery.encryptKey) as OrderEncryptKey;
 
     // 테스트 발송인 경우 test_order_delivery 테이블에서 조회
@@ -600,6 +663,9 @@ export class OrderReceiveService {
     if (!orderDelivery) {
       throw new BadRequestException('존재하지 않는 주문 정보입니다.');
     }
+
+    // 방문 로그 기록 (모든 방문 append). 실패해도 조회를 막지 않도록 fire-and-forget.
+    void this.recordCouponView(orderDelivery.id, ctx);
 
     this.assertChoiceProductNotDeleted(orderDelivery);
     this.assertCouponNotDiscarded(orderDelivery);
