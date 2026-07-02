@@ -24,6 +24,7 @@ import { AuthErrorCode } from '../exception/auth-error-code';
 import { IUserStatus } from '../interface/user.status';
 import { AccountStatusTransitionService } from '../../account_lifecycle/application/account.status.transition.service';
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
+import { SettlementCodeAdminService } from '../../wallet/application/settlement-code-admin.service';
 
 jest.mock('typeorm-transactional', () => ({
   Transactional: () => () => ({}),
@@ -47,6 +48,7 @@ describe('user login service Test', () => {
   const accountStatusTransitionService: MockProxy<AccountStatusTransitionService> =
     mock<AccountStatusTransitionService>();
   const cryptoCipher: MockProxy<CryptoCipher> = mock<CryptoCipher>();
+  const settlementCodeAdminService: MockProxy<SettlementCodeAdminService> = mock<SettlementCodeAdminService>();
 
   const sut = new UserService(
     passwordEncrypt,
@@ -63,6 +65,7 @@ describe('user login service Test', () => {
     activityLogService,
     accountStatusTransitionService,
     cryptoCipher,
+    settlementCodeAdminService,
   );
 
   beforeEach(() => {
@@ -96,32 +99,70 @@ describe('user login service Test', () => {
   });
 
   describe('signUp 회원가입 테스트', () => {
-    it('정보를 입력받아 회원가입에 성공한 경우', async () => {
-      const givenSignUpDto: UserSignUpReqDto = {
-        email: 'test@gmail.com',
-        password: 'testset',
-        personName: 'test',
-        personPhoneNumber: '010-1234-5678',
-        personEmail: 'test@gmail.com',
-        businessType: null,
-        corporateNumber: null,
-        businessNumber: '1234567890',
-        businessName: '테스트사업자',
-        businessAddress: '서울시 강남구',
-        businessPhoneNumber: '02-1234-5678',
-        ip: '127.0.0.1',
-        industryType: null,
-        industryItem: null,
-      };
+    const baseDto = (): UserSignUpReqDto => ({
+      email: 'test@gmail.com',
+      password: 'testset',
+      personName: 'test',
+      personPhoneNumber: '010-1234-5678',
+      personEmail: 'test@gmail.com',
+      businessType: null,
+      corporateNumber: null,
+      businessNumber: '1234567890',
+      businessName: '테스트사업자',
+      businessAddress: '서울시 강남구',
+      businessPhoneNumber: '02-1234-5678',
+      ip: '127.0.0.1',
+      industryType: null,
+      industryItem: null,
+    });
 
+    beforeEach(() => {
+      mockReset(userCompanyRepository);
+      mockReset(userViewScopeRepository);
+      mockReset(accountStatusTransitionService);
+      mockReset(settlementCodeAdminService);
       passwordEncrypt.encrypt.mockResolvedValue('테스트 패스워드');
+      userRepository.insert.mockResolvedValue({ identifiers: [{ id: 7 }] } as any);
+    });
 
-      await sut.signUp(givenSignUpDto);
+    it('신규 회사(NEW) → 공유 wallet 프로비저닝(POST_PAYMENT/CARD) + settlement_code=company-{id} 배정', async () => {
+      userCompanyRepository.findOne.mockResolvedValue(null);
+      userCompanyRepository.save.mockResolvedValue({ id: 42, maximumLimit: 5000 } as any);
+      settlementCodeAdminService.classifyJoin.mockResolvedValue({ mode: 'NEW', code: 'company-42' });
 
-      expect(userRepository.insert).toHaveBeenCalledWith({
-        email: 'test@gmail.com',
-        password: '테스트 패스워드',
-      });
+      await sut.signUp(baseDto());
+
+      expect(settlementCodeAdminService.classifyJoin).toHaveBeenCalledWith(42, true);
+      expect(settlementCodeAdminService.ensureSettlementCodeWallet).toHaveBeenCalledWith(
+        42,
+        'company-42',
+        5000,
+        expect.anything(),
+        'POST_PAYMENT',
+        'CARD',
+      );
+      expect(userRepository.update).toHaveBeenCalledWith(7, { settlementCode: 'company-42' });
+    });
+
+    it('기존 회사 단일 코드(SHARE_ONE) → wallet 생성 없이 기존 코드 공유', async () => {
+      userCompanyRepository.findOne.mockResolvedValue({ id: 42, maximumLimit: 5000 } as any);
+      settlementCodeAdminService.classifyJoin.mockResolvedValue({ mode: 'SHARE_ONE', code: 'company-42' });
+
+      await sut.signUp(baseDto());
+
+      expect(settlementCodeAdminService.classifyJoin).toHaveBeenCalledWith(42, false);
+      expect(settlementCodeAdminService.ensureSettlementCodeWallet).not.toHaveBeenCalled();
+      expect(userRepository.update).toHaveBeenCalledWith(7, { settlementCode: 'company-42' });
+    });
+
+    it('배정 대기(PENDING) → wallet 생성/코드 배정 없음 (빈 code 유지)', async () => {
+      userCompanyRepository.findOne.mockResolvedValue({ id: 42, maximumLimit: 5000 } as any);
+      settlementCodeAdminService.classifyJoin.mockResolvedValue({ mode: 'PENDING' });
+
+      await sut.signUp(baseDto());
+
+      expect(settlementCodeAdminService.ensureSettlementCodeWallet).not.toHaveBeenCalled();
+      expect(userRepository.update).not.toHaveBeenCalled();
     });
   });
 

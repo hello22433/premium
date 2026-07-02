@@ -12,6 +12,8 @@ import { WalletAccountEntity } from '../../entity/wallet.account.entity';
 import { WalletTransactionEntity } from '../../entity/wallet.transaction.entity';
 import { OrderPointUsageEntity } from '../../entity/order.point.usage.entity';
 import { PointGrantEntity } from '../../entity/point.grant.entity';
+import { OrderEntity } from '../../entity/order.entity';
+import { UserEntity } from '../../entity/user.entity';
 import { WalletResourceType } from '../interface/wallet-resource-type';
 import { PaymentAllocationService } from './payment-allocation.service';
 import { RefundPoolService } from './refund-pool.service';
@@ -32,52 +34,59 @@ describe('RefundPoolService — §8 환불 알고리즘', () => {
   let pointUsages: OrderPointUsageEntity[];
   // reverseRefund 의 ledger lookup(getOne) 이 반환할 fixture. 기본 null = ledger 미존재.
   let reverseLedger: OrderPaymentRefundEventEntity | null;
+  // H1 가드용 — billing user 현재 settlement_code.
+  let billingUserCode: string;
 
   const ds: any = {
     // transaction 은 isolationLevel 1st arg + callback 또는 callback 단독 둘 다 지원
     transaction: jest.fn(async (...args: any[]) => {
       const cb = (typeof args[0] === 'function' ? args[0] : args[1]) as (m: any) => any;
       const manager = {
-        getRepository: (target: any) => ({
-          createQueryBuilder: (_alias: string) => {
-            // where 조건을 캡처해서 prefix LIKE 분기 처리
-            let wherePrefix: string | null = null;
-            const builder: any = {
-              setLock: () => builder,
-              where: (cond: string, params?: any) => {
-                if (typeof cond === 'string' && cond.includes('LIKE') && params?.prefix) {
-                  wherePrefix = String(params.prefix).replace(/%$/, '');
-                }
-                return builder;
-              },
-              andWhere: () => builder,
-              orderBy: () => builder,
-              addOrderBy: () => builder,
-              getOne: async () => {
-                if (target === WalletAccountEntity) {
-                  return Object.values(wallets)[0] ?? null;
-                }
-                if (target === OrderPaymentRefundEventEntity) {
-                  // reverseRefund 의 ledger lookup. reverseLedger fixture 반환 (기본 null = 미존재).
-                  return reverseLedger;
-                }
-                return Object.values(allocations)[0];
-              },
-              getMany: async () => {
-                if (target === OrderPaymentRefundEventEntity) {
-                  if (wherePrefix) {
-                    return ledger.filter((l) => (l.idempotencyKey ?? '').startsWith(wherePrefix as string));
+        getRepository: (target: any) => {
+          if (target === UserEntity) {
+            return { findOne: async () => ({ id: 1, settlementCode: billingUserCode }) };
+          }
+          return {
+            createQueryBuilder: (_alias: string) => {
+              // where 조건을 캡처해서 prefix LIKE 분기 처리
+              let wherePrefix: string | null = null;
+              const builder: any = {
+                setLock: () => builder,
+                where: (cond: string, params?: any) => {
+                  if (typeof cond === 'string' && cond.includes('LIKE') && params?.prefix) {
+                    wherePrefix = String(params.prefix).replace(/%$/, '');
                   }
-                  return ledger.filter((l) => l.reversedAt === null);
-                }
-                if (target === WalletTransactionEntity) return resendDeductTxs;
-                if (target === OrderPaymentAllocationLineEntity) return lines;
-                return [];
-              },
-            };
-            return builder;
-          },
-        }),
+                  return builder;
+                },
+                andWhere: () => builder,
+                orderBy: () => builder,
+                addOrderBy: () => builder,
+                getOne: async () => {
+                  if (target === WalletAccountEntity) {
+                    return Object.values(wallets)[0] ?? null;
+                  }
+                  if (target === OrderPaymentRefundEventEntity) {
+                    // reverseRefund 의 ledger lookup. reverseLedger fixture 반환 (기본 null = 미존재).
+                    return reverseLedger;
+                  }
+                  return Object.values(allocations)[0];
+                },
+                getMany: async () => {
+                  if (target === OrderPaymentRefundEventEntity) {
+                    if (wherePrefix) {
+                      return ledger.filter((l) => (l.idempotencyKey ?? '').startsWith(wherePrefix as string));
+                    }
+                    return ledger.filter((l) => l.reversedAt === null);
+                  }
+                  if (target === WalletTransactionEntity) return resendDeductTxs;
+                  if (target === OrderPaymentAllocationLineEntity) return lines;
+                  return [];
+                },
+              };
+              return builder;
+            },
+          };
+        },
         find: async (target: any, _where: any) => {
           if (target === OrderPaymentRefundEventEntity) return ledger.filter((l) => l.reversedAt === null);
           if (target === OrderPointUsageEntity) return pointUsages;
@@ -93,6 +102,7 @@ describe('RefundPoolService — §8 환불 알고리즘', () => {
           if (target === PointGrantEntity) {
             return pointGrants[opts?.where?.id] ?? null;
           }
+          if (target === OrderEntity) return { id: opts?.where?.id ?? 100, userId: 1, clientUserId: null };
           return null;
         },
         save: jest.fn(async (target: any, obj: any) => {
@@ -195,10 +205,12 @@ describe('RefundPoolService — §8 환불 알고리즘', () => {
     pointGrants = {};
     pointUsages = [];
     reverseLedger = null;
+    billingUserCode = 'company-1';
     wallets = {
       '5': {
         id: '5',
         ownerType: 'SETTLEMENT_CODE',
+        ownerId: 'company-1',
         settlementCode: 'company-1',
         depositBalance: 0,
         creditLimit: 100000,
@@ -235,6 +247,19 @@ describe('RefundPoolService — §8 환불 알고리즘', () => {
     expect(row.refundedCreditUsedAmount).toBe(5000); // 그 다음 여신
     expect(row.refundedDepositAmount).toBe(0); // 예치금은 마지막 (이 환불에서는 도달 안 함)
     expect(row.refundedPointAmount).toBe(0);
+  });
+
+  it('H1: allocation wallet owner_id != billing user 현재 code → 환불 BLOCK', async () => {
+    billingUserCode = 'company-2'; // 계정 이동됨.
+    await expect(
+      sut.refund({
+        orderId: 100,
+        eventType: OrderPaymentRefundEventType.FAIL_REFUND,
+        targetDeliveryIds: [100],
+        idempotencyKeyPrefix: 'fail_refund:100:100:1',
+      }),
+    ).rejects.toThrow(/정산코드가 변경된 계정/);
+    expect(ledger).toHaveLength(0);
   });
 
   it('already_refunded → BadRequest', async () => {
