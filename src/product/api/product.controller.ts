@@ -66,7 +66,7 @@ import { UserAuthSubEnum } from '../../user_management/domain/user.auth.enum';
 import { AuthUserSuperAdminGuard } from '../../auth/api/auth.user.super-admin.guard';
 import { AuthUserSuperAndOperationAdminGuard } from '../../auth/api/auth.user.super-operation-admin.guard';
 
-const PRODUCT_SHARED_LIST_FILE_MAX_SIZE = 10 * 1024 * 1024;
+const PRODUCT_SHARED_LIST_FILE_MAX_SIZE = 40 * 1024 * 1024;
 
 @ApiBearerAuth()
 @UseGuards(AuthUserAuthorizationGuard)
