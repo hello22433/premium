@@ -454,8 +454,9 @@ export class CustomerServiceService {
   }
 
   /**
-   * 폐기후신규발송(핀교체, 비-SSG) — wallet-managed 주문에서 원본 delivery 의 wallet 장부를
-   * 신규 delivery 로 승계한다.
+   * 폐기후신규발송(핀교체, SSG·비-SSG 공통) — wallet-managed 주문에서 원본 delivery 의 wallet 장부를
+   * 신규 delivery 로 승계한다. 고객 wallet 결제(allocation)는 SSG 여부와 무관하게 동일 승계 대상이며,
+   * SSG 의 forfeit+신규 행사 재차감은 '행사 잔액'(공급사 측)에만 적용된다(고객 wallet 과 독립).
    *
    * 핀교체는 동일 결제를 그대로 승계(원본 폐기 시 환불 skip + 신규 재차감 없음)하므로,
    * 발송확정 때 원본 delivery 에 매겨진 allocation_line 과 attempt 를 신규 delivery 가 이어받아야 한다.
@@ -2100,13 +2101,10 @@ export class CustomerServiceService {
           await this.deliveryBatchService.resolveReissuePendingKept(resendDeductionId);
         }
 
-        // Wallet Cutover — 비-SSG 핀교체는 "동일 결제를 신규 delivery 로 승계"(폐기 시 환불 skip, 신규 재차감 없음).
-        // wallet-managed 면 원본 delivery 의 allocation_line/attempt 를 신규 delivery 로 이관해야
-        // 이후 신규 delivery 폐기 시 attempt/line 부재로 환불이 drift abort 되는 것을 막는다.
-        // (SSG 는 forfeit+신규 행사 재차감 모델이라 승계 대상 아님 → 별도 처리 필요.)
-        if (!isSsg) {
-          await this.carryWalletOwnershipToReissuedDelivery(reissueOrderId, discardedDelivery.id, savedDelivery.id);
-        }
+        // Wallet Cutover — wallet-managed 면 원본 delivery 의 allocation_line/attempt 를 신규 delivery 로 승계한다.
+        // 미승계 시 이후 신규 delivery 폐기에서 attempt/line 부재로 환불이 drift abort 된다.
+        // SSG·비-SSG 공통(고객 wallet 결제는 SSG 여부와 무관 — 상세는 carryWalletOwnershipToReissuedDelivery JSDoc).
+        await this.carryWalletOwnershipToReissuedDelivery(reissueOrderId, discardedDelivery.id, savedDelivery.id);
 
         const newPin = fullDelivery.barCode;
         afterChange = `${normalizedTarget} / ${newPin}`;
