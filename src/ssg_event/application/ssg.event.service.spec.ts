@@ -316,6 +316,56 @@ describe('SsgEventService', () => {
     });
   });
 
+  describe('lockEventsForCouponExpireChange — 피드백2/3 락 순서 통일 검증', () => {
+    it('restore 대상 이벤트id + 후보 이벤트id를 id ASC 단일 쿼리로 선잠금한다', async () => {
+      const { service, ssgEventRepository, amountHistoryRepository } = createService();
+
+      // 기존(가차감중) 이벤트: id 7
+      amountHistoryRepository.find = jest
+        .fn()
+        .mockResolvedValue([{ id: 1, ssgEventId: 7, amount: -100, isTemporary: true, orderId: 1 }]);
+
+      // 후보(새 유효기간) 이벤트: id 3, id 9 (역순으로 반환되어도 정렬은 서비스가 강제)
+      const lockQb = {
+        select: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue([{ id: 9 }, { id: 3 }]),
+        setLock: jest.fn().mockReturnThis(),
+      };
+      ssgEventRepository.createQueryBuilder.mockReturnValue(lockQb);
+
+      await service.lockEventsForCouponExpireChange(1, 60);
+
+      // 마지막 호출(선잠금 쿼리)이 id ASC로 정렬되어 3개 id(7,3,9)를 IN 조건에 넣었는지 확인
+      expect(lockQb.orderBy).toHaveBeenCalledWith('ssg.id', 'ASC');
+      expect(lockQb.setLock).toHaveBeenCalledWith('pessimistic_write');
+      expect(lockQb.where).toHaveBeenCalledWith('ssg.id IN (:...uniqueIds)', {
+        uniqueIds: [3, 7, 9],
+      });
+    });
+
+    it('대상 이벤트id가 없으면 잠금 쿼리를 실행하지 않는다', async () => {
+      const { service, ssgEventRepository, amountHistoryRepository } = createService();
+      amountHistoryRepository.find = jest.fn().mockResolvedValue([]);
+
+      const lockQb = {
+        select: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue([]),
+        setLock: jest.fn().mockReturnThis(),
+      };
+      ssgEventRepository.createQueryBuilder.mockReturnValue(lockQb);
+
+      await service.lockEventsForCouponExpireChange(1, 60);
+
+      expect(lockQb.setLock).not.toHaveBeenCalled();
+    });
+  });
+
   describe('hasOpenTempDeduction', () => {
     it('isTemporary=true, amount<0 이력이 있으면 true 반환', async () => {
       const { service, amountHistoryRepository } = createService();

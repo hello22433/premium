@@ -4771,6 +4771,10 @@ export class OrderService {
       (product) => product.id,
     );
 
+    // restore 대상(기존 이벤트)과 allocate 후보(새 유효기간 이벤트)를 id ASC 순서로 선잠금하여
+    // 서로 다른 트랜잭션 간 락 순서 역전(데드락 소지)을 차단한다.
+    await this.ssgEventService.lockEventsForCouponExpireChange(beforeOrder.id, couponExpiration);
+
     // 상품 교체 전: 기존 이벤트 가차감(isTemporary=true) 복원
     await this.ssgEventService.restoreTemporaryEventBalance(beforeOrder.id);
 
@@ -4792,25 +4796,22 @@ export class OrderService {
       );
     }
 
-    // 새 유효기간 이벤트 재할당 + 가차감
-    const deliveries: { deliveryId: number; price: number }[] = [];
+    // 새 유효기간 이벤트 재할당 + 가차감 (배송건별 예약시각을 개별 반영 — 상품별 예약발송 정책 유지)
+    const deliveries: { deliveryId: number; price: number; reserveDate?: Date }[] = [];
     for (const mapping of beforeOrder.orderProductMappings!) {
       const afterProductId = afterProductPriceMap.get(mapping.product.price);
       const afterProduct = afterProductList.find((p) => p.id === afterProductId);
       const price = afterProduct?.price ?? mapping.product.price;
+      const reserveDate =
+        mapping.sendType === 'RESERVE' && mapping.sendRequestAt
+          ? new Date(mapping.sendRequestAt as unknown as string)
+          : undefined;
       for (const delivery of mapping.orderDeliveries) {
-        deliveries.push({ deliveryId: delivery.id, price });
+        deliveries.push({ deliveryId: delivery.id, price, reserveDate });
       }
     }
 
-    const reserveMapping = beforeOrder.orderProductMappings!.find((m) => m.sendType === 'RESERVE' && m.sendRequestAt);
-    const reserveDate = reserveMapping ? new Date(reserveMapping.sendRequestAt as unknown as string) : undefined;
-
-    const allocations = await this.ssgEventService.allocateEventsForDeliveries(
-      deliveries,
-      couponExpiration,
-      reserveDate,
-    );
+    const allocations = await this.ssgEventService.allocateEventsForDeliveries(deliveries, couponExpiration);
 
     if (!allocations) {
       throw new BadRequestException('사용 가능한 SSG 이벤트가 없습니다. (잔액 부족)');
