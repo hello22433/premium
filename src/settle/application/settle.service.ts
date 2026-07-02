@@ -1656,6 +1656,7 @@ export class SettleService {
         const quantity = orderProductMapping.amount ?? 0;
         const lineTotal = calculateMappingSettlementBaseAmount(orderProductMapping);
         // 표시 단가는 라인총액/수량 평균(차등정산 시 단가가 균일하지 않으므로 평균값).
+        // 정확한 합계가 필요하면 supplyAmount(=lineTotal)를 쓸 것 — price*amount로 재구성하면 반올림 오차 발생.
         const adjustedPrice = quantity > 0 ? Math.round(lineTotal / quantity) : lineTotal;
 
         const product = {
@@ -1663,8 +1664,9 @@ export class SettleService {
           code: orderProductMapping.product?.code ?? null,
           brandName: lineView.brandName,
           name: lineView.name,
-          price: adjustedPrice, // 할인/할증 적용된 단가
+          price: adjustedPrice, // 할인/할증 적용된 단가(평균, 표시용)
           amount: orderProductMapping.amount,
+          supplyAmount: lineTotal, // 공급가액(정확한 라인 합계)
         };
         productList.push({
           id: orderProductMapping.id,
