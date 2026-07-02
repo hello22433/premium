@@ -1789,9 +1789,10 @@ export class SettleService {
           const key = `${mapping.product?.id}-${adjustedPrice}`;
 
           if (productMap.has(key)) {
-            // 기존 상품에 수량 합산
+            // 기존 상품에 수량·공급가액 합산
             const existing = productMap.get(key)!;
             existing.amount += mapping.amount;
+            existing.supplyAmount += lineTotal;
             // 이벤트명도 업데이트 (여러 이벤트에 걸쳐있으면 "a 외" 형태)
             if (existing.eventName !== order.eventName && !existing.eventName.endsWith(' 외')) {
               existing.eventName = `${existing.eventName} 외`;
@@ -1805,6 +1806,7 @@ export class SettleService {
               name: mappingView.name,
               price: adjustedPrice,
               amount: mapping.amount,
+              supplyAmount: lineTotal, // 공급가액(정확한 라인 합계, 병합 시 누적)
               eventName: order.eventName,
             });
           }
