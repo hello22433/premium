@@ -6,6 +6,8 @@ import { OrderPointUsageEntity } from '../../entity/order.point.usage.entity';
 import { WalletAccountEntity } from '../../entity/wallet.account.entity';
 import { WalletTransactionEntity } from '../../entity/wallet.transaction.entity';
 import { PointGrantEntity } from '../../entity/point.grant.entity';
+import { OrderEntity } from '../../entity/order.entity';
+import { UserEntity } from '../../entity/user.entity';
 import {
   OrderDeliveryAttemptEntity,
   OrderDeliveryAttemptStatus,
@@ -66,6 +68,9 @@ describe('PR2-007 wallet-pr2-delivery-confirm integration', () => {
           }),
         };
       }
+      if (entity === UserEntity) {
+        return { findOne: async () => ({ id: 1, settlementCode: (walletRef as any).ownerId ?? '' }) };
+      }
       return {};
     };
 
@@ -96,6 +101,7 @@ describe('PR2-007 wallet-pr2-delivery-confirm integration', () => {
           }
           return null;
         }
+        if (entity === OrderEntity) return { id: 777, userId: 1, clientUserId: null };
         return null;
       },
       find: async (entity: any) => {

@@ -6,6 +6,8 @@ import { OrderPaymentAllocationLineEntity } from '../../entity/order.payment.all
 import { WalletAccountEntity } from '../../entity/wallet.account.entity';
 import { WalletTransactionEntity } from '../../entity/wallet.transaction.entity';
 import { WalletResourceType } from '../interface/wallet-resource-type';
+import { OrderEntity } from '../../entity/order.entity';
+import { assertAllocationCodeNotMoved } from './reversal-move-guard';
 
 const RESEND_DEDUCT_TYPE = 'RESEND_DEDUCT';
 const RESEND_UNDO_TYPE = 'RESEND_UNDO';
@@ -243,6 +245,16 @@ export class ResendDeductService {
         `ResendDeductService: allocation line not found (allocationId=${alloc.id}, deliveryId=${orderDeliveryId})`,
       );
     }
+
+    // H1: 정산코드 이동 후 재발송 차감/undo 차단 (원 allocation wallet 재차감이 현재 code 와 불일치).
+    const order = await manager.findOne(OrderEntity, {
+      where: { id: orderId },
+      select: ['id', 'userId', 'clientUserId'],
+    });
+    if (!order) {
+      throw new BadRequestException(`ResendDeductService: order not found id=${orderId}`);
+    }
+    await assertAllocationCodeNotMoved(manager, order, walletLock.ownerId);
 
     return { alloc, walletLock };
   }

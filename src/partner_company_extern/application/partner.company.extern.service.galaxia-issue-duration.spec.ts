@@ -18,6 +18,7 @@ import { PartnerCompanyEntity } from '../../entity/partner.company.entity';
 import { PartnerCompanyExternHistoryEntity } from '../../entity/partner.company.extern.history.entity';
 import { PinIssueDedupEntity } from '../../entity/pin.issue.dedup.entity';
 import { SsgIssueLogEntity } from '../../entity/ssg.issue.log.entity';
+import { SsgResendDeductPendingEntity } from '../../entity/ssg.resend.deduct.pending.entity';
 import { PartnerCompanyExternService } from './partner.company.extern.service';
 
 /**
@@ -107,6 +108,7 @@ describe('PartnerCompanyExternService - Galaxia issue duration 선택', () => {
         { provide: getRepositoryToken(GalaxiaBarcodeLogEntity), useValue: makeRepoMock() },
         { provide: CryptoCipher, useValue: { safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01099998888') } },
         { provide: SsgInsertStateService, useValue: mock<any>() },
+        { provide: getRepositoryToken(SsgResendDeductPendingEntity), useValue: {} },
       ],
     }).compile();
 

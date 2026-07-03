@@ -55,7 +55,7 @@ export class OrderReceiptController {
   @Get('/order-receipt/:id')
   async getDetail(@User() user: ILoginUserInfo, @Param() getParam: OrderReceiptGetDetailReqParamDto) {
     await this.authService.authorityValidator(user, UserAuthSubEnum.ORDER_RECEIPT);
-    return this.orderReceiptService.getDetail(getParam);
+    return this.orderReceiptService.getDetail(user, getParam);
   }
 
   @ApiOperation({

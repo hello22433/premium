@@ -112,6 +112,39 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
       refundStatus: 'SKIPPED',
     });
 
+  // wallet-managed carry 공통 시나리오 — 원본→신규 allocation_line repoint + 신규에 INITIAL/DEDUCTED attempt 생성 검증.
+  const expectWalletOwnershipCarried = async (orderType: IOrderType) => {
+    if (orderType === IOrderType.SSG) setupSsgAcquired();
+    setupExecDiscard(); // discardedDelivery.id = 7001
+    const ssgEvent = orderType === IOrderType.SSG ? { id: 7 } : null;
+    orderDeliveryRepository.findOne.mockResolvedValue(buildFullDelivery(orderType, ssgEvent)); // id 8001
+    service.walletManagedPredicate.isWalletManaged.mockResolvedValue(true);
+
+    const managerUpdate = jest.fn().mockResolvedValue({ affected: 1 });
+    const manager = {
+      findOne: jest.fn().mockResolvedValue({ id: '12', walletAccountId: '3' }),
+      update: managerUpdate,
+      save: jest.fn().mockResolvedValue({ id: 'A1' }),
+    };
+    service.dataSource.transaction.mockImplementation(async (cb: any) => cb(manager));
+
+    await service.execHistory(buildMap(orderType));
+
+    // wallet-managed 판정은 reissueOrderId(=555) 로
+    expect(service.walletManagedPredicate.isWalletManaged).toHaveBeenCalledWith(ORDER_ID);
+    // allocation_line repoint: 원본 7001 → 신규 8001
+    expect(managerUpdate).toHaveBeenCalledWith(
+      expect.anything(),
+      { allocationId: '12', orderDeliveryId: 7001 },
+      { orderDeliveryId: 8001 },
+    );
+    // 신규 delivery 에 INITIAL/DEDUCTED attempt 생성
+    const savedAttempt = manager.save.mock.calls.find((c: any[]) => c[1] && c[1].attemptType === 'INITIAL');
+    expect(savedAttempt).toBeDefined();
+    expect(savedAttempt[1].orderDeliveryId).toBe(8001);
+    expect(savedAttempt[1].status).toBe('DEDUCTED');
+  };
+
   beforeEach(() => {
     deliveryBatchService = {
       selectAndDeductSsgEventForReissue: jest.fn(),
@@ -125,7 +158,7 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
       csResendAsEmail: jest.fn().mockResolvedValue(undefined),
     };
     partnerCompanyExternService = {
-      issue: jest.fn().mockResolvedValue(undefined),
+      issue: jest.fn().mockResolvedValue({ ssgNewIssue: true, ssgEventId: null }),
     };
     orderDeliveryRepository = {
       save: jest.fn().mockImplementation(async (e: any) => ({ id: 8001, ...e })),
@@ -317,33 +350,7 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
     });
 
     it('10) GENERAL + wallet-managed: 신규 delivery 로 allocation_line repoint + INITIAL attempt 생성', async () => {
-      setupExecDiscard(); // discardedDelivery.id = 7001
-      orderDeliveryRepository.findOne.mockResolvedValue(buildFullDelivery(IOrderType.GENERAL, null)); // id 8001
-      service.walletManagedPredicate.isWalletManaged.mockResolvedValue(true);
-
-      const managerUpdate = jest.fn().mockResolvedValue({ affected: 1 });
-      const manager = {
-        findOne: jest.fn().mockResolvedValue({ id: '12', walletAccountId: '3' }),
-        update: managerUpdate,
-        save: jest.fn().mockResolvedValue({ id: 'A1' }),
-      };
-      service.dataSource.transaction.mockImplementation(async (cb: any) => cb(manager));
-
-      await service.execHistory(buildMap(IOrderType.GENERAL));
-
-      // wallet-managed 판정은 reissueOrderId(=555) 로
-      expect(service.walletManagedPredicate.isWalletManaged).toHaveBeenCalledWith(ORDER_ID);
-      // allocation_line repoint: 원본 7001 → 신규 8001
-      expect(managerUpdate).toHaveBeenCalledWith(
-        expect.anything(),
-        { allocationId: '12', orderDeliveryId: 7001 },
-        { orderDeliveryId: 8001 },
-      );
-      // 신규 delivery 에 INITIAL/DEDUCTED attempt 생성
-      const savedAttempt = manager.save.mock.calls.find((c: any[]) => c[1] && c[1].attemptType === 'INITIAL');
-      expect(savedAttempt).toBeDefined();
-      expect(savedAttempt[1].orderDeliveryId).toBe(8001);
-      expect(savedAttempt[1].status).toBe('DEDUCTED');
+      await expectWalletOwnershipCarried(IOrderType.GENERAL);
     });
 
     it('11) GENERAL + 비-wallet: carry 트랜잭션 미진입', async () => {
@@ -355,6 +362,11 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
 
       expect(service.walletManagedPredicate.isWalletManaged).toHaveBeenCalledWith(ORDER_ID);
       expect(service.dataSource.transaction).not.toHaveBeenCalled();
+    });
+
+    it('12) SSG + wallet-managed: allocation_line repoint + INITIAL attempt 생성 (환불 drift 방지)', async () => {
+      // SSG 도 고객 wallet 결제는 승계 대상 — 승계 누락 시 신규 SSG 쿠폰 폐기에서 attempt/line 부재로 환불이 drift abort 된다.
+      await expectWalletOwnershipCarried(IOrderType.SSG);
     });
   });
 });

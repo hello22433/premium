@@ -23,6 +23,7 @@ import { GalaxiaBarcodeLogEntity } from '../entity/galaxia.barcode.log.entity';
 import { PinIssueDedupEntity } from '../entity/pin.issue.dedup.entity';
 import { SsgIssueLogEntity } from '../entity/ssg.issue.log.entity';
 import { GiftielExchangeHistoryEntity } from '../entity/giftiel.exchange.history.entity';
+import { SsgResendDeductPendingEntity } from '../entity/ssg.resend.deduct.pending.entity';
 import { GiftielPushController } from './api/giftiel.push.controller';
 import { GiftielIpGuard } from './api/giftiel.ip.guard';
 import { SsgInsertStateModule } from '../delivery/ssg.insert.state.module';
@@ -39,6 +40,7 @@ import { SsgInsertStateModule } from '../delivery/ssg.insert.state.module';
       PinIssueDedupEntity,
       SsgIssueLogEntity,
       GiftielExchangeHistoryEntity,
+      SsgResendDeductPendingEntity,
     ]),
     SsgInsertStateModule,
   ],

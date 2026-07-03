@@ -77,7 +77,10 @@ export class OrderReceiptService {
     return { list: resultList, totalCount, totalPage, currentPage: page };
   }
 
-  async getDetail(getParam: OrderReceiptGetDetailReqParamDto): Promise<OrderReceiptGetDetailResDto> {
+  async getDetail(
+    user: ILoginUserInfo,
+    getParam: OrderReceiptGetDetailReqParamDto,
+  ): Promise<OrderReceiptGetDetailResDto> {
     const { id } = getParam;
 
     const receipt = await this.orderReceiptRepository.findOne({
@@ -88,6 +91,8 @@ export class OrderReceiptService {
     if (!receipt) {
       throw new BadRequestException('주문접수 건이 존재하지 않습니다.');
     }
+
+    this.assertCanReadReceipt(user, receipt);
 
     const fileUrlList = parseFilePathList(receipt.filePath);
     // 원본 파일명(메타데이터)까지 함께 — FE 가 화면 표시·다운로드명 모두 진짜 이름으로 일관되게.
@@ -200,19 +205,21 @@ export class OrderReceiptService {
   }
 
   async approve(user: ILoginUserInfo, id: number) {
+    this.validateAdminAuthority(user, '운영관리자 이상만 승인할 수 있습니다.');
+
     const receipt = await this.findReceiptOrThrow(id);
 
     if (receipt.status !== OrderReceiptStatus.RECEIVED) {
       throw new BadRequestException('접수 상태인 건만 승인할 수 있습니다.');
     }
 
-    receipt.status = OrderReceiptStatus.APPROVED;
-    receipt.processedAt = new Date();
-    receipt.processedUserId = user.id;
+    this.applyNonRejectedStatus(receipt, OrderReceiptStatus.APPROVED, user);
     await this.orderReceiptRepository.save(receipt);
   }
 
   async reject(user: ILoginUserInfo, id: number, getBody: OrderReceiptRejectReqDto) {
+    this.validateAdminAuthority(user, '운영관리자 이상만 반려할 수 있습니다.');
+
     const receipt = await this.findReceiptOrThrow(id);
 
     if (receipt.status !== OrderReceiptStatus.RECEIVED) {
@@ -220,7 +227,7 @@ export class OrderReceiptService {
     }
 
     receipt.status = OrderReceiptStatus.REJECTED;
-    receipt.rejectReason = getBody.rejectReason;
+    receipt.rejectReason = getBody.rejectReason.trim();
     receipt.processedAt = new Date();
     receipt.processedUserId = user.id;
     await this.orderReceiptRepository.save(receipt);
@@ -240,6 +247,10 @@ export class OrderReceiptService {
     // 승인된 건은 삭제 불가
     if (receipt.status === OrderReceiptStatus.APPROVED) {
       throw new BadRequestException('승인된 건은 삭제할 수 없습니다.');
+    }
+
+    if (isOwner && !isSuperAdmin && receipt.status === OrderReceiptStatus.REVIEWING) {
+      throw new BadRequestException('검토 중인 건은 삭제할 수 없습니다.');
     }
 
     await this.orderReceiptRepository.softDelete(id);
@@ -304,17 +315,7 @@ export class OrderReceiptService {
 
     const receipt = await this.findReceiptOrThrow(id);
 
-    receipt.status = getBody.status;
-
-    // 접수 상태로 되돌리는 경우 처리 이력 초기화
-    if (getBody.status === OrderReceiptStatus.RECEIVED) {
-      receipt.processedAt = null;
-      receipt.processedUserId = null;
-      receipt.rejectReason = null;
-    } else {
-      receipt.processedAt = new Date();
-      receipt.processedUserId = user.id;
-    }
+    this.applyNonRejectedStatus(receipt, getBody.status, user);
 
     await this.orderReceiptRepository.save(receipt);
   }
@@ -327,6 +328,39 @@ export class OrderReceiptService {
     if (!this.isAdminUser(user)) {
       throw new ForbiddenException(message);
     }
+  }
+
+  private assertCanReadReceipt(user: ILoginUserInfo, receipt: OrderReceiptEntity) {
+    if (this.isAdminUser(user)) {
+      return;
+    }
+
+    if (user.authority !== IUserAuthority.CORPORATE_ADMIN || receipt.userId !== user.id) {
+      throw new ForbiddenException('조회 권한이 없습니다.');
+    }
+
+    const dateLimit = subDays(new Date(), 180);
+    if (receipt.registerAt < dateLimit) {
+      throw new ForbiddenException('조회 권한이 없습니다.');
+    }
+  }
+
+  private applyNonRejectedStatus(receipt: OrderReceiptEntity, status: OrderReceiptStatus, user: ILoginUserInfo) {
+    if (status === OrderReceiptStatus.REJECTED) {
+      throw new BadRequestException('반려 처리는 반려 API를 사용해주세요.');
+    }
+
+    receipt.status = status;
+    receipt.rejectReason = null;
+
+    if (status === OrderReceiptStatus.RECEIVED) {
+      receipt.processedAt = null;
+      receipt.processedUserId = null;
+      return;
+    }
+
+    receipt.processedAt = new Date();
+    receipt.processedUserId = user.id;
   }
 
   private async findReceiptOrThrow(id: number): Promise<OrderReceiptEntity> {

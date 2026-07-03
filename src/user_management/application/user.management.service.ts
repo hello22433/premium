@@ -94,6 +94,7 @@ import { DeliveryAlimTalk } from '../../delivery/interface/delivery.alim.talk';
 import { ISmsSend } from '../../sms/interface/sms.send';
 import { defaultFromPhoneNumber } from '../../const';
 import { OrderFromService } from '../../order_from/application/order.from.service';
+import { SettlementCodeAdminService } from '../../wallet/application/settlement-code-admin.service';
 
 const MYSQL_INT_MAX = 2_147_483_647;
 
@@ -141,6 +142,7 @@ export class UserManagementService {
     private readonly accountStatusTransitionService: AccountStatusTransitionService,
     private readonly settleService: SettleService,
     private readonly orderFromService: OrderFromService,
+    private readonly settlementCodeAdminService: SettlementCodeAdminService,
   ) {}
 
   private readonly initPasswordTemplateCode = this.configService.getOrThrow<string>(
@@ -863,6 +865,7 @@ export class UserManagementService {
     });
   }
 
+  @Transactional()
   async create(getBody: UserManagementCreateReqDto) {
     const isExistEmail = await this.userRepository.count({
       where: {
@@ -881,6 +884,9 @@ export class UserManagementService {
 
     // 동일 사업자등록번호의 회사가 있으면 연결, 없으면 생성
     let companyId: number | null = null;
+    // 이번 호출에서 회사 row 를 신규 생성했는지 (settlement_code 배정 판정 기준, S4)
+    let isNewCompany = false;
+    let newCompanyMaximumLimit = 0;
     if (businessNumber) {
       let existingCompany = await this.userCompanyRepository.findOne({
         where: { businessNumber },
@@ -902,6 +908,8 @@ export class UserManagementService {
           settleMethod: getBody.settleMethod ?? null,
         });
         companyId = newCompany.id;
+        isNewCompany = true;
+        newCompanyMaximumLimit = newCompany.maximumLimit;
       }
     }
 
@@ -955,6 +963,25 @@ export class UserManagementService {
     await this.orderFromService.seedApprovedDefaultPhone(newUserId, getBody.fromPhoneNumber, undefined, {
       blankPolicy: 'clear-if-no-approved',
     });
+
+    // settlement_code 프로비저닝 (추가된 @Transactional 경계 안에서 실행, B3).
+    // NEW: company-{id} 코드 + 공유 wallet 생성; SHARE_ONE: 기존 단일 코드 공유(지갑 생성 없음); PENDING: '' 유지.
+    if (companyId != null) {
+      const classification = await this.settlementCodeAdminService.classifyJoin(companyId, isNewCompany);
+      if (classification.mode === 'NEW') {
+        await this.settlementCodeAdminService.ensureSettlementCodeWallet(
+          companyId,
+          classification.code!,
+          newCompanyMaximumLimit,
+          this.userRepository.manager,
+          getBody.settleCondition,
+          getBody.settleMethod ?? 'CASH',
+        );
+        await this.userRepository.update(newUserId, { settlementCode: classification.code });
+      } else if (classification.mode === 'SHARE_ONE') {
+        await this.userRepository.update(newUserId, { settlementCode: classification.code });
+      }
+    }
 
     return;
   }
@@ -1287,11 +1314,45 @@ export class UserManagementService {
       throw new BadRequestException('해당 계정에 연결된 회사 정보가 없습니다.');
     }
 
+    // R-modLimit: 회사에 DISTINCT NON-EMPTY settlement_code 가 2개 이상이면 여신 한도는 정산코드별
+    // 엔드포인트(PUT /settlement-codes/credit-limit)로만 변경해야 한다. '' (PENDING) 유저는 제외해
+    // 실제 코드가 1개뿐인 회사(가입 대기자 혼재)는 그대로 허용한다 (classifyJoin distinct 와 일관).
+    const distinctCodeRows = await this.userRepository
+      .createQueryBuilder('u')
+      .select('DISTINCT u.settlementCode', 'code')
+      .where('u.companyId = :companyId', { companyId: user.companyId })
+      .andWhere('u.settlementCode IS NOT NULL')
+      .andWhere("u.settlementCode != ''")
+      .getRawMany<{ code: string | null }>();
+    const nonEmptyCodeCount = distinctCodeRows.filter((r) => r.code != null && r.code !== '').length;
+    if (nonEmptyCodeCount >= 2) {
+      throw new BadRequestException(
+        '이 회사는 정산코드가 2개 이상이므로 최대서비스한도(여신한도)는 정산코드별 한도 설정(PUT /settlement-codes/credit-limit)으로 변경해야 합니다.',
+      );
+    }
+
     const beforeMaximumLimit = user.company.maximumLimit;
 
     // 회사의 최대서비스한도 업데이트
     user.company.maximumLimit = newMaximumLimit;
     await this.userCompanyRepository.save(user.company);
+
+    // wallet_account.credit_limit 동기화 (settlement_code 단위).
+    // 신규 흐름(WALLET cutover)에서 한도 SoT 는 wallet.creditLimit 이므로,
+    // 미동기화 시 maximumLimit 만 바뀌고 주문/잔여한도 조회에는 구한도가 적용된다.
+    const wallet = user.settlementCode
+      ? await this.walletAccountRepository.findOne({
+          where: { ownerType: 'SETTLEMENT_CODE', ownerId: user.settlementCode },
+        })
+      : null;
+    if (wallet) {
+      wallet.creditLimit = newMaximumLimit;
+      await this.walletAccountRepository.save(wallet);
+    } else {
+      this.logger.warn(
+        `modifyMaximumLimit: credit_limit 미동기화 — userId=${id} settlementCode=${user.settlementCode || '(none)'}`,
+      );
+    }
 
     // Activity Log 기록
     await this.activityLogService.createLog({
@@ -1486,8 +1547,11 @@ export class UserManagementService {
       return { exists: false };
     }
 
+    // 매핑 필수 모드는 app 전용 플래그 → app 로드해 노출(app 없으면 false).
+    const app = await this.findAppBySourceAccountId(account.id);
     return {
       exists: true,
+      requireExternalCustomerId: app?.requireExternalCustomerId ?? false,
       accountId: account.id,
       isActive: account.isActive,
       ssgEnabled: account.ssgEnabled,
@@ -1565,11 +1629,22 @@ export class UserManagementService {
     );
   }
 
+  // 프론트 안정 계약: "API 앱 미프로비저닝" 을 errorCode 로 식별(문구 변경에 안 깨짐).
+  // resolveAppOrThrow(매핑/credential 가드)와 설정 토글(app 전용 플래그) 공통 사용.
+  private apiAppNotFound(): NotFoundException {
+    return new NotFoundException({
+      statusCode: 404,
+      errorCode: 'API_APP_NOT_FOUND',
+      message: 'API 앱을 찾을 수 없습니다.',
+    });
+  }
+
   // accountId → api_app 결정적 해석. 없으면 NotFound (credential/매핑 관리 공통 가드).
+  // 없으면 apiAppNotFound()(errorCode='API_APP_NOT_FOUND') 로 실패 — "리소스 없음" 404 와 구분.
   private async resolveAppOrThrow(accountId: string): Promise<ApiAppEntity> {
     const app = await this.findAppBySourceAccountId(accountId);
     if (!app) {
-      throw new NotFoundException('API 앱을 찾을 수 없습니다.');
+      throw this.apiAppNotFound();
     }
     return app;
   }
@@ -1843,10 +1918,15 @@ export class UserManagementService {
 
     // PR2a 호환: api_app(guard SoT)에도 설정 미러링해 account 와 싱크 유지.
     const app = await this.findAppBySourceAccountId(account.id);
+    // requireExternalCustomerId 는 app 전용 플래그 → app 없이 전달되면 조용히 삼키지 않고 실패시킨다.
+    if (dto.requireExternalCustomerId !== undefined && !app) {
+      throw this.apiAppNotFound();
+    }
     if (app) {
       if (dto.isActive !== undefined) app.isActive = dto.isActive;
       if (dto.ssgEnabled !== undefined) app.ssgEnabled = dto.ssgEnabled;
       if (dto.resendMaxCount !== undefined) app.resendMaxCount = dto.resendMaxCount;
+      if (dto.requireExternalCustomerId !== undefined) app.requireExternalCustomerId = dto.requireExternalCustomerId;
       await this.apiAppRepository.save(app);
     }
   }

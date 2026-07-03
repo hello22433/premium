@@ -16,6 +16,7 @@ import { UserEntity } from 'src/entity/user.entity';
 import { UserCompanyEntity } from 'src/entity/user.company.entity';
 import { UserTaskHistoryEntity } from 'src/entity/user.task.history.entity';
 import { WalletModule } from '../wallet/wallet.module';
+import { CouponViewLogEntity } from '../entity/coupon.view.log.entity';
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { WalletModule } from '../wallet/wallet.module';
       UserEntity,
       UserCompanyEntity,
       UserTaskHistoryEntity,
+      CouponViewLogEntity,
     ]),
     PartnerCompanyExternModule,
     DeliveryModule,

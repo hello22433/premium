@@ -162,6 +162,7 @@ import { ActivityLogService } from '../../activity_log/application/activity.log.
 import { ActivityLogResult } from '../../activity_log/interface/activity.log.result';
 import { WalletCutoverConfig, WalletCutoverMode } from '../../wallet/config/wallet-cutover.config';
 import { WalletManagedPredicate } from '../../wallet/application/wallet-managed.predicate';
+import { SettlementCodeRequiredError } from '../../wallet/application/settlement-code-required.error';
 import { WalletAccountResolverService } from '../../wallet/application/wallet-account-resolver.service';
 import { WalletAccountEntity } from '../../entity/wallet.account.entity';
 import {
@@ -176,6 +177,7 @@ import { OrderProductCreateTempDto } from '../api/dto/order.product.create.temp.
 import { OrderConfirmationWalletService } from '../../wallet/application/order-confirmation-wallet.service';
 import { OrderConfirmationReleaseService } from '../../wallet/application/order-confirmation-release.service';
 import { ShadowMismatchClassifierService } from '../../wallet/application/shadow-mismatch-classifier.service';
+import { BillingScopeLockService } from '../../wallet/application/billing-scope-lock.service';
 import { OrderPaymentAllocationEntity } from '../../entity/order.payment.allocation.entity';
 import dayjs from 'dayjs';
 import timezone from 'dayjs/plugin/timezone';
@@ -309,6 +311,7 @@ export class OrderService {
     @InjectRepository(ForbiddenWordBlockLogEntity)
     private readonly forbiddenWordBlockLogRepository: Repository<ForbiddenWordBlockLogEntity>,
     private readonly orderFromService: OrderFromService,
+    private readonly billingScopeLockService: BillingScopeLockService,
   ) {}
 
   /**
@@ -805,6 +808,31 @@ export class OrderService {
       // sendRequestAt: 예약 발송 요청 시간 (actualSendAt이 없을 때 폴백용)
       const sendRequestAt = firstMapping?.sendRequestAt ? format(firstMapping.sendRequestAt, DateFormatStr) : null;
 
+      // 상품별 예약 발송시간 배열: RESERVE 상품 중 분 단위 distinct ≥ 2일 때만 채움
+      const reserveMappings = (order.orderProductMappings ?? []).filter(
+        (m) => m.sendType === 'RESERVE' && m.sendRequestAt,
+      );
+      const minuteSlots = new Set(reserveMappings.map((m) => Math.floor(m.sendRequestAt!.getTime() / 60000)));
+      let productSendTimes: { productName: string; sendRequestAt: string; actualSendAt: string | null }[] | undefined;
+      if (minuteSlots.size >= 2) {
+        productSendTimes = reserveMappings.map((m) => {
+          const mappingActualSendAt =
+            (m.orderDeliveries ?? [])
+              .filter(
+                (d) =>
+                  d.actualSendAt &&
+                  (d.status === IOrderDeliveryStatus.COMPLETE || d.status === IOrderDeliveryStatus.COMPLETE_SMS),
+              )
+              .reduce<Date | null>((max, d) => (max === null || d.actualSendAt! > max ? d.actualSendAt! : max), null) ??
+            null;
+          return {
+            productName: m.product?.name ?? '(삭제된 상품)',
+            sendRequestAt: format(m.sendRequestAt!, DateFormatStr),
+            actualSendAt: mappingActualSendAt ? format(mappingActualSendAt, DateFormatStr) : null,
+          };
+        });
+      }
+
       // 주문 시점 스냅샷 우선, NULL이면 clientUser ?? user FK로 fallback
       const billing = readBillingView(order);
 
@@ -828,6 +856,7 @@ export class OrderService {
         sendType: firstMapping?.sendType ?? null,
         hasFailedDelivery,
         hasResentDelivery,
+        productSendTimes,
       };
     });
 
@@ -868,6 +897,9 @@ export class OrderService {
     }
 
     await this.recoverDeletedProducts(order.orderProductMappings);
+
+    // '폐기 후 신규 발송' 신규 건 숨김 — 고객사에는 최초 발송 1건만 노출 (전체 이력은 CS 발송상세)
+    this.hideDiscardReissueDeliveries(order.orderProductMappings);
 
     const productList: OrderDetailProductDto[] = [];
 
@@ -1351,6 +1383,22 @@ export class OrderService {
     );
   }
 
+  /**
+   * 고객 노출용 발송 목록 필터.
+   *
+   * '폐기 후 신규 발송'은 자사↔수신자 간 내부 처리(고객사는 알 필요 없음)이므로, 원본을 대체해
+   * 신규 delivery(replacedFromId != null)를 숨기고 최초 발송 건만 남겨 논리적으로 1건으로 보이게 한다.
+   * 적용: 발송상세(getDetail)·발송완료리포트(단일/다중)·(프론트가 이 목록으로 그리는) 파기확약서.
+   * 전체 이력(원본+신규)은 CS 발송상세(customer_service)에서만 확인한다.
+   */
+  private hideDiscardReissueDeliveries(orderProductMappings: OrderProductMappingEntity[] | undefined): void {
+    for (const opm of orderProductMappings ?? []) {
+      if (opm.orderDeliveries) {
+        opm.orderDeliveries = opm.orderDeliveries.filter((d) => d.replacedFromId === null);
+      }
+    }
+  }
+
   async getDeliveryCompleteReport(
     getQuery: OrderGetDeliveryCompleteReportReqDto,
     user: ILoginUserInfo,
@@ -1392,6 +1440,9 @@ export class OrderService {
     }
 
     await this.recoverDeletedProducts(order.orderProductMappings);
+
+    // '폐기 후 신규 발송' 신규 건 숨김 — 발송완료리포트도 최초 발송 1건만 집계
+    this.hideDiscardReissueDeliveries(order.orderProductMappings);
 
     const productList: OrderPdfDetailProductDto[] = [];
     // 발송완료 리포트: 주문 시점 스냅샷 우선, NULL이면 clientUser ?? user FK로 fallback
@@ -1820,6 +1871,11 @@ export class OrderService {
       }
     }
 
+    // '폐기 후 신규 발송' 신규 건 숨김 — 통합 발송완료리포트도 최초 발송 1건만 집계
+    for (const order of orders) {
+      this.hideDiscardReissueDeliveries(order.orderProductMappings);
+    }
+
     // 모든 주문이 같은 과금 대상 회사 소속인지 확인 (다중 주문 증빙 발행 시)
     if (orders.length > 1) {
       const getBillingCompanyId = (order: OrderEntity) => {
@@ -2179,17 +2235,17 @@ export class OrderService {
     });
     const totalCount = orderProductList.length;
 
-    // 2. 유저 및 협력사의 할인 옵션 전체 조회 (대행주문인 경우 clientUser의 할인옵션 사용)
+    // 2. 과금 대상 유저의 할인 옵션 조회 (대행주문인 경우 clientUser의 할인옵션 사용)
     const billingUserId = order.clientUserId ?? order.userId;
-    const partnerCompanyIds = [...new Set(orderProductList.map((op) => op.product.partnerCompanyId))];
-    const userDiscounts = await this.userDiscountRepository.find({
-      where: [{ userId: billingUserId }, { partnerCompanyId: In(partnerCompanyIds) }],
-    });
+    const userDiscounts = (
+      await this.userDiscountRepository.find({
+        where: { userId: billingUserId },
+      })
+    ).filter((discount) => discount.userId === billingUserId);
 
     this.logger.debug(
       `[getOrderSettle] orderId=${id}, billingUserId=${billingUserId} (clientUserId=${order.clientUserId}, userId=${order.userId})`,
     );
-    this.logger.debug(`[getOrderSettle] partnerCompanyIds=${JSON.stringify(partnerCompanyIds)}`);
     this.logger.debug(`[getOrderSettle] userDiscounts count=${userDiscounts.length}`);
     userDiscounts.forEach((d) => {
       this.logger.debug(
@@ -3172,7 +3228,7 @@ export class OrderService {
 
     const ssgReservationRange = type === IOrderType.SSG ? await this.ssgEventService.getReservationRange() : null;
     validateSsgReservationWindow(type, orderProductList, ssgReservationRange);
-    // SSG 주문은 모든 상품 행의 발송 유형/예약시각이 동일해야 함 (혼합/불일치 400)
+    // SSG 주문은 즉시/예약 발송을 혼합할 수 없음 (혼합 시 400). 예약시각은 상품 행별로 달라도 됨
     validateSsgUniformSend(type, orderProductList);
 
     // 동일 productId를 여러 행으로 저장할 수 있으므로 상품 조회는 unique 기준으로 수행
@@ -3364,7 +3420,7 @@ export class OrderService {
 
     const ssgReservationRange = order.type === IOrderType.SSG ? await this.ssgEventService.getReservationRange() : null;
     validateSsgReservationWindow(order.type, orderProductList, ssgReservationRange);
-    // SSG 주문은 모든 상품 행의 발송 유형/예약시각이 동일해야 함 (혼합/불일치 400)
+    // SSG 주문은 즉시/예약 발송을 혼합할 수 없음 (혼합 시 400). 예약시각은 상품 행별로 달라도 됨
     validateSsgUniformSend(order.type, orderProductList);
 
     // 동일 productId를 여러 행으로 저장할 수 있으므로 상품 조회는 unique 기준으로 수행
@@ -3598,48 +3654,7 @@ export class OrderService {
    * 동일하게 사용해야 서로 다른 사용자의 동시 발송에서도 순환 대기가 생기지 않는다.
    */
   private async lockBillingScope(billingUserId: number): Promise<{ user: UserEntity; companyUsers: UserEntity[] }> {
-    const billingReference = await this.userRepository.findOne({
-      where: { id: billingUserId },
-      select: ['id', 'companyId'],
-    });
-    if (!billingReference) {
-      throw new InternalServerErrorException('과금 대상 유저가 존재하지 않습니다.');
-    }
-
-    if (!billingReference.companyId) {
-      const user = await this.userRepository
-        .createQueryBuilder('billingUser')
-        .setLock('pessimistic_write')
-        .leftJoinAndSelect('billingUser.company', 'billingCompany')
-        .where('billingUser.id = :id', { id: billingUserId })
-        .getOne();
-      if (!user) {
-        throw new InternalServerErrorException('과금 대상 유저가 존재하지 않습니다.');
-      }
-      return { user, companyUsers: [user] };
-    }
-
-    const company = await this.userCompanyRepository
-      .createQueryBuilder('company')
-      .setLock('pessimistic_write')
-      .where('company.id = :id', { id: billingReference.companyId })
-      .getOne();
-    if (!company) {
-      throw new InternalServerErrorException('회사 잔액 처리 중 회사 정보를 찾을 수 없습니다.');
-    }
-
-    const companyUsers = await this.userRepository
-      .createQueryBuilder('companyUser')
-      .setLock('pessimistic_write')
-      .where('companyUser.companyId = :companyId', { companyId: company.id })
-      .orderBy('companyUser.id', 'ASC')
-      .getMany();
-    const user = companyUsers.find((companyUser) => companyUser.id === billingUserId);
-    if (!user) {
-      throw new InternalServerErrorException('회사 사용자 잠금 처리 중 과금 대상 유저를 찾을 수 없습니다.');
-    }
-    user.company = company;
-    return { user, companyUsers };
+    return this.billingScopeLockService.lock(billingUserId);
   }
 
   @Transactional()
@@ -3706,6 +3721,16 @@ export class OrderService {
 
     const { user: oneUser, companyUsers } = await this.lockBillingScope(billingUserId);
 
+    // PR-B settlement_code 가드 (WALLET 흐름 전용, 기본 OFF/DARK).
+    // 코드 미부여(빈 문자열/null) 상태로 발송요청 제출을 차단. legacy 흐름은 미적용.
+    if (
+      order.isNewBillingFlow &&
+      (oneUser.settlementCode == null || oneUser.settlementCode === '') &&
+      this.walletCutoverConfig.settlementCodeGuardEnforced
+    ) {
+      throw new SettlementCodeRequiredError();
+    }
+
     // 과금 모드 결정 (두 블록에서 공통 사용)
     const isCompanyBalanceMode = oneUser.company?.balanceManagementType === 'COMPANY';
     const effectiveBalance = isCompanyBalanceMode && oneUser.company ? oneUser.company.balance : oneUser.balance;
@@ -3730,21 +3755,26 @@ export class OrderService {
     let ssgAllocations: { deliveryId: number; eventId: number; price: number }[] | null = null;
 
     if (order.type === IOrderType.SSG) {
-      // 발송 유형/예약시각 균일성 검증 (혼합/불일치 400) — 배포 전 생성된 혼합 주문 방어 포함
+      // 즉시/예약 발송 혼합 금지 검증 (혼합 시 400) — 배포 전 생성된 혼합 주문 방어 포함
       validateSsgUniformSend(order.type, order.orderProductMappings!);
 
       // expireDay(상품 유효기간)는 모든 SSG mapping이 동일해야 대표값을 전체에 적용 가능
       // 배송건 수집과 유효기간 검증을 단일 루프에서 처리
       const expireDays = new Set<number>();
-      const deliveries: { deliveryId: number; price: number }[] = [];
+      const deliveries: { deliveryId: number; price: number; reserveDate?: Date }[] = [];
       for (const orderMapping of order.orderProductMappings!) {
         if (!orderMapping.product) {
           throw new BadRequestException('상품 정보가 존재하지 않습니다.');
         }
         expireDays.add(orderMapping.product.expireDay);
         const price = orderMapping.product.price;
+        // 상품 행별 예약시각: RESERVE면 해당 mapping의 sendRequestAt, 아니면 즉시발송(폴백=현재 시각)
+        const mappingReserveDate =
+          orderMapping.sendType === 'RESERVE' && orderMapping.sendRequestAt
+            ? new Date(orderMapping.sendRequestAt as unknown as string)
+            : undefined;
         for (const orderDelivery of orderMapping.orderDeliveries) {
-          deliveries.push({ deliveryId: orderDelivery.id, price });
+          deliveries.push({ deliveryId: orderDelivery.id, price, reserveDate: mappingReserveDate });
         }
       }
       if (expireDays.size > 1) {
@@ -3752,19 +3782,8 @@ export class OrderService {
       }
       const couponExpiration = order.orderProductMappings![0].product!.expireDay;
 
-      // 예약발송이면 예약일 기준으로 행사 매칭, 즉시발송이면 현재 시점 기준
-      // 모든 예약 mapping의 sendRequestAt이 동일함은 위 균일성 검증으로 보장 → 공통 예약시각 사용
-      const reserveMapping = order.orderProductMappings!.find(
-        (mapping) => mapping.sendType === 'RESERVE' && mapping.sendRequestAt,
-      );
-      const reserveDate = reserveMapping ? new Date(reserveMapping.sendRequestAt as unknown as string) : undefined;
-
-      // 배송건별 행사 할당 (All or Nothing)
-      ssgAllocations = await this.ssgEventService.allocateEventsForDeliveries(
-        deliveries,
-        couponExpiration,
-        reserveDate,
-      );
+      // 배송건별 행사 할당: 각 배송건은 자신의 예약시각(reserveDate) 기준으로 유효한 행사에 매칭 (All or Nothing)
+      ssgAllocations = await this.ssgEventService.allocateEventsForDeliveries(deliveries, couponExpiration);
 
       if (!ssgAllocations) {
         throw new BadRequestException('사용 가능한 SSG 이벤트가 없습니다. (잔액 부족)');
@@ -3927,13 +3946,11 @@ export class OrderService {
 
     // ======== 할인/할증 차액 정산 시작 ========
     // 발송요청 시 정가(sendAmount)로 차감되었으므로, 발송확정 시 최종 정산금액과의 차액을 조정
-    const partnerCompanyIds = order
-      .orderProductMappings!.map((m) => m.product.partnerCompanyId)
-      .filter((id, index, arr) => arr.indexOf(id) === index);
-
-    const userDiscounts = await this.userDiscountRepository.find({
-      where: [{ userId: billingUserId }, { partnerCompanyId: In(partnerCompanyIds) }],
-    });
+    const userDiscounts = (
+      await this.userDiscountRepository.find({
+        where: { userId: billingUserId },
+      })
+    ).filter((discount) => discount.userId === billingUserId);
 
     const mappingsToUpdate: OrderProductMappingEntity[] = [];
 
@@ -4108,9 +4125,7 @@ export class OrderService {
           // 1차/2차 공통 신용초과 응답 빌더. 두 응답이 동일 필드를 내려야 함 —
           // walletAccountId/requestedAmount/requestedCreditExcessAmount 는 신용초과 사전 승인
           // (POST /credit-excess-approvals) 요청 body 로 그대로 전달되며, 누락 시 승인 API 400 회귀(요청4).
-          const buildCreditExcessResponse = (
-            message: 'credit_excess' | 'credit_excess_pending_approval',
-          ) =>
+          const buildCreditExcessResponse = (message: 'credit_excess' | 'credit_excess_pending_approval') =>
             ({
               message,
               creditExcess: true,
@@ -4534,8 +4549,7 @@ export class OrderService {
 
     const now = new Date();
     // 취소 기준 시각: 예약 mapping들의 sendRequestAt 중 가장 이른 시각 사용
-    // 신규 주문은 모든 예약시각이 동일하므로 공통 시각과 같고,
-    // 배포 전 생성된 혼합 예약 주문은 가장 임박한 발송 건을 보호한다.
+    // 상품 행별 예약시각이 서로 다를 수 있으므로, 가장 임박한(이른) 발송 건을 기준으로 보호한다.
     const reserveSendTimes = (order.orderProductMappings ?? [])
       .filter((mapping) => mapping.sendType === 'RESERVE' && mapping.sendRequestAt)
       .map((mapping) => mapping.sendRequestAt!.getTime());

@@ -44,6 +44,19 @@ export class WalletCutoverConfig {
   }
 
   /**
+   * settlement_code 가드(발송요청) 활성화 여부. 기본 OFF (DARK).
+   * cutover 플래그와 동일하게 ConfigService.get 으로 ENV 를 읽는다.
+   */
+  get settlementCodeGuardEnforced(): boolean {
+    const raw = this.config.get<string>(SETTLEMENT_CODE_GUARD_ENV_KEY);
+    if (raw == null) {
+      return false;
+    }
+    const normalized = raw.trim().toLowerCase();
+    return normalized === 'true' || normalized === '1' || normalized === 'on';
+  }
+
+  /**
    * ENV 값 → enum. 미설정 시 LEGACY. 잘못된 값은 fail-closed throw (boot 시점).
    */
   private resolve(envKey: string): WalletCutoverMode {
@@ -60,3 +73,9 @@ export class WalletCutoverConfig {
     );
   }
 }
+
+/**
+ * settlement_code 가드(발송요청) 활성화 플래그.
+ * 'true' | '1' | 'on' (대소문자 무시) 만 활성. 미설정/그 외 값은 비활성(기본 OFF).
+ */
+export const SETTLEMENT_CODE_GUARD_ENV_KEY = 'SETTLEMENT_CODE_GUARD_ENFORCE';

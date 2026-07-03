@@ -224,12 +224,6 @@ export class UserDiscountService {
         primaryCategory: primaryCategory ?? undefined,
         classificationId: classificationId ?? undefined,
       });
-
-      await this.userDiscountRepository.insert({
-        ...baseInsertData,
-        range: null,
-        compareCondition: ICompareCondition.ALL,
-      });
     } else {
       await this.validateSectionDiscount({
         userId,
@@ -241,7 +235,15 @@ export class UserDiscountService {
         compareCondition: compareCondition!,
         range: range ?? undefined,
       });
+    }
 
+    if (method === IUserDiscountMethod.BULK) {
+      await this.userDiscountRepository.insert({
+        ...baseInsertData,
+        range: null,
+        compareCondition: ICompareCondition.ALL,
+      });
+    } else {
       await this.userDiscountRepository.insert({
         ...baseInsertData,
         range,

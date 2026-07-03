@@ -54,27 +54,20 @@ export const validateSsgReservationWindow = (
 };
 
 /**
- * SSG 주문 내 모든 mapping(상품 행)의 발송 유형/예약시각이 동일한지 검증한다.
- * - 전체 즉시발송: 허용 (mapping별 저장 시각 밀리초 차이는 비교하지 않음)
- * - 전체 예약발송이며 sendRequestAt 동일: 허용
- * - 즉시/예약 혼합 또는 서로 다른 예약시각: 400
+ * SSG 주문 내 모든 mapping(상품 행)의 발송 유형(즉시/예약) 혼합 여부를 검증한다.
+ * - 전체 즉시발송: 허용
+ * - 전체 예약발송: 허용 (상품 행별 sendRequestAt이 서로 달라도 허용 — 상품별 예약시각 지원)
+ * - 즉시/예약 혼합: 400
  * sendType 미선택(임시저장 draft) 행은 검사 대상에서 제외한다.
  */
 export const validateSsgUniformSend = (type: IOrderType | null | undefined, products: SsgReservationCandidate[]) => {
   if (type !== IOrderType.SSG) return;
 
   const hasImmediate = products.some((p) => p.sendType === 'IMMEDIATE');
-  const reserveProducts = products.filter((p) => p.sendType === 'RESERVE');
+  const hasReserve = products.some((p) => p.sendType === 'RESERVE');
 
-  if (hasImmediate && reserveProducts.length > 0) {
+  if (hasImmediate && hasReserve) {
     throw new BadRequestException('SSG 주문은 즉시발송과 예약발송을 혼합할 수 없습니다.');
-  }
-
-  if (reserveProducts.length > 0) {
-    const reserveTimes = new Set(reserveProducts.map((p) => new Date(p.sendRequestAt as string | Date).getTime()));
-    if (reserveTimes.size > 1) {
-      throw new BadRequestException('SSG 주문의 예약 발송 시간은 모든 상품 행에서 동일해야 합니다.');
-    }
   }
 };
 

@@ -36,13 +36,13 @@ describe('validateSsgUniformSend', () => {
     ).toThrow(BadRequestException);
   });
 
-  it('SSG 예약시각이 서로 다르면 400을 던진다', () => {
+  it('SSG 예약시각이 서로 달라도 허용한다 (상품별 예약시각)', () => {
     expect(() =>
       validateSsgUniformSend(IOrderType.SSG, [
         { sendType: 'RESERVE', sendRequestAt: '2026-06-15T10:00:00' },
         { sendType: 'RESERVE', sendRequestAt: '2026-06-15T11:00:00' },
       ]),
-    ).toThrow(BadRequestException);
+    ).not.toThrow();
   });
 
   it('저장 단계의 sendType 미선택(draft) 행은 무시한다', () => {

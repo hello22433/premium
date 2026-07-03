@@ -27,6 +27,8 @@ describe('SettleConfirmationWalletService', () => {
     settleTxCount: number;
     /** existing wallet_transaction rows for SETTLE_RELEASE / SETTLE_UNDO lookup */
     walletTxs: Partial<WalletTransactionEntity>[];
+    /** H1 가드용 — billing user 의 현재 settlement_code (미지정 시 wallet.ownerId 와 매칭 처리). */
+    billingUserCode?: string;
   };
 
   let fx: Fixture;
@@ -100,6 +102,10 @@ describe('SettleConfirmationWalletService', () => {
       }
       if (entity === UserEntity) {
         return {
+          findOne: jest.fn(async () => ({
+            id: 1,
+            settlementCode: fx.billingUserCode !== undefined ? fx.billingUserCode : (fx.wallet?.ownerId ?? ''),
+          })),
           createQueryBuilder: () => ({
             update: () => ({
               set: (patch: any) => ({
@@ -120,6 +126,7 @@ describe('SettleConfirmationWalletService', () => {
           }),
         };
       }
+
       return { createQueryBuilder: () => ({}) };
     },
   });
@@ -268,5 +275,38 @@ describe('SettleConfirmationWalletService', () => {
     expect(r.walletTransactionIds).toHaveLength(0);
     expect(savedWalletTxs).toHaveLength(0);
     expect(userUpdates).toHaveLength(0);
+  });
+  // ── H1 reversal-after-move ─────────────────────────────────────────────────
+  it('H1: allocation wallet owner_id != billing user 현재 settlement_code → 정산해제 BLOCK', async () => {
+    fx.alloc = {
+      walletAccountId: '5',
+      creditUsedAmount: 7000,
+      creditExcessAmount: 0,
+      creditUsedRestoredAmount: 0,
+      creditExcessRestoredAmount: 0,
+    };
+    fx.wallet = { id: '5', ownerId: 'company-1', creditUsedAmount: 7000, creditExcessAmount: 0 };
+    fx.order = { id: 100, userId: 1, clientUserId: null };
+    fx.billingUserCode = 'company-2'; // 계정이 다른 코드로 이동됨.
+
+    await expect(sut.confirmSettlement(100)).rejects.toThrow(/정산코드가 변경된 계정/);
+    expect(savedWalletTxs).toHaveLength(0);
+    expect(userUpdates).toHaveLength(0);
+  });
+
+  it('H1: owner_id == billing user 현재 code → 정상 통과 (매칭)', async () => {
+    fx.alloc = {
+      walletAccountId: '5',
+      creditUsedAmount: 1000,
+      creditExcessAmount: 0,
+      creditUsedRestoredAmount: 0,
+      creditExcessRestoredAmount: 0,
+    };
+    fx.wallet = { id: '5', ownerId: 'company-1', creditUsedAmount: 1000, creditExcessAmount: 0 };
+    fx.order = { id: 100, userId: 1, clientUserId: null };
+    fx.billingUserCode = 'company-1'; // 이동 없음 — 매칭.
+
+    const r = await sut.confirmSettlement(100);
+    expect(r.creditReleased).toBe(1000);
   });
 });

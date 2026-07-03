@@ -10,6 +10,9 @@ import { IPriceAdjustment } from '../../user_discount/interface/price.adjustment
 import { IOrderType } from '../interface/order.type';
 import { WalletCutoverMode } from '../../wallet/config/wallet-cutover.config';
 import { BadRequestException } from '@nestjs/common';
+import { IUserDiscountCategory } from '../../user_discount/interface/user.discount.category';
+import { IUserDiscountMethod } from '../../user_discount/interface/user.discount.method';
+import { ICompareCondition } from '../../user_discount/interface/compare.condition';
 
 describe('OrderService card surcharge settlement priority', () => {
   beforeAll(() => {
@@ -758,6 +761,9 @@ describe('OrderService deliveryConfirmed settlement amount', () => {
     service.userCompanyRepository = {
       update: jest.fn(),
     };
+    service.billingScopeLockService = {
+      lock: jest.fn().mockResolvedValue({ user: billingUser, companyUsers: [billingUser] }),
+    };
     service.userDiscountRepository = {
       find: jest.fn().mockResolvedValue([]),
     };
@@ -908,6 +914,9 @@ describe('OrderService deliveryConfirmed settlement amount', () => {
     service.userCompanyRepository = {
       update: jest.fn(),
     };
+    service.billingScopeLockService = {
+      lock: jest.fn().mockResolvedValue({ user: billingUser, companyUsers: [billingUser] }),
+    };
     service.userDiscountRepository = {
       find: jest.fn().mockResolvedValue([]),
     };
@@ -946,6 +955,149 @@ describe('OrderService deliveryConfirmed settlement amount', () => {
     expect(service.userRepository.update).toHaveBeenCalledTimes(1);
     expect(service.orderRepository.save).toHaveBeenCalledTimes(1);
     expect(persistedStatus).toBe(IOrderStatus.DELIVERY_CONFIRMED);
+  });
+
+  it('deliveryConfirmed: 고객사 정산 fallback에 협력사 할인 조건을 섞지 않는다', async () => {
+    const service = Object.create(OrderService.prototype) as any;
+    const deliveries = [
+      {
+        id: 1,
+        deliveryTarget: '01011112222',
+        settleFee: null,
+        settlePriceAdjustment: null,
+      },
+    ];
+    const order = {
+      id: 77,
+      userId: 1,
+      clientUserId: 2,
+      operationUserId: 1,
+      eventName: 'event',
+      type: IOrderType.GENERAL,
+      status: IOrderStatus.REVIEW_COMPLETE,
+      sendAmount: 10000,
+      cardSurchargeApplied: false,
+      isNewBillingFlow: true,
+      orderProductMappings: [
+        {
+          id: 10,
+          productId: 100,
+          amount: 1,
+          fee: null,
+          priceAdjustment: null,
+          sendTitle: 'title',
+          sendContent: 'content',
+          product: {
+            price: 10000,
+            category: 'coffee',
+            classificationId: 11,
+            useStatus: 'USE',
+            partnerCompanyId: 20,
+            partnerCompany: {},
+            brand: null,
+          },
+          orderDeliveries: deliveries,
+        },
+      ],
+    } as any;
+    const billingUser = {
+      id: 2,
+      balance: 50000,
+      allSettleAmount: 0,
+      duplicatePhoneLimit: 0,
+      companyId: null,
+    };
+
+    const lockedOrderQueryBuilder = createQueryBuilder(order);
+    const orderRelationQueryBuilder = createQueryBuilder(order);
+
+    service.orderRepository = {
+      createQueryBuilder: jest
+        .fn()
+        .mockReturnValueOnce(lockedOrderQueryBuilder)
+        .mockReturnValueOnce(orderRelationQueryBuilder),
+      save: jest.fn().mockResolvedValue(order),
+    };
+    service.userRepository = {
+      findOne: jest.fn().mockResolvedValue({
+        id: 1,
+        authority: 'OPERATION_ADMIN',
+        status: 'USED',
+        authorityList: null,
+      }),
+      createQueryBuilder: jest.fn().mockReturnValue(createQueryBuilder(billingUser)),
+      update: jest.fn().mockResolvedValue({ affected: 1 }),
+    };
+    service.userCompanyRepository = {
+      update: jest.fn(),
+    };
+    service.billingScopeLockService = {
+      lock: jest.fn().mockResolvedValue({ user: billingUser, companyUsers: [billingUser] }),
+    };
+    service.userDiscountRepository = {
+      find: jest.fn().mockResolvedValue([
+        {
+          id: 1,
+          userId: 2,
+          partnerCompanyId: null,
+          category: IUserDiscountCategory.CATEGORY,
+          classificationId: 11,
+          method: IUserDiscountMethod.BULK,
+          group: null,
+          primaryCategory: null,
+          range: null,
+          compareCondition: ICompareCondition.ALL,
+          priceAdjustment: IPriceAdjustment.DISCOUNT,
+          pricePercent: 5,
+        },
+        {
+          id: 2,
+          userId: null,
+          partnerCompanyId: 20,
+          category: IUserDiscountCategory.PRODUCT_GROUP,
+          classificationId: null,
+          method: IUserDiscountMethod.BULK,
+          group: 'coffee',
+          primaryCategory: null,
+          range: null,
+          compareCondition: ICompareCondition.ALL,
+          priceAdjustment: IPriceAdjustment.ADDITIONAL,
+          pricePercent: 10,
+        },
+      ]),
+    };
+    service.orderProductMappingRepository = {
+      save: jest.fn(),
+    };
+    service.orderDeliveryRepository = {
+      save: jest.fn().mockResolvedValue(undefined),
+    };
+    service.logger = {
+      debug: jest.fn(),
+      warn: jest.fn(),
+    };
+    service.cryptoCipher = { safeDecryptDeliveryTarget: (v: string) => v };
+    service.ssgEventService = { confirmEventBalance: jest.fn() };
+    service.walletCutoverConfig = {
+      get pr2DeliveryLifecycleMode() {
+        return WalletCutoverMode.LEGACY;
+      },
+    };
+    service.walletManagedPredicate = { isWalletManaged: jest.fn().mockResolvedValue(false) };
+    service.walletAccountResolverService = { resolveForOrder: jest.fn() };
+    service.paymentAllocationService = { allocate: jest.fn() };
+    service.orderConfirmationWalletService = { persistAllocation: jest.fn() };
+    service.orderConfirmationReleaseService = { releaseConfirmation: jest.fn() };
+    service.shadowMismatchClassifierService = { classify: jest.fn() };
+
+    await service.deliveryConfirmed({ id: 1 } as any, { id: order.id } as any);
+
+    expect(service.userDiscountRepository.find).toHaveBeenCalledWith({ where: { userId: billingUser.id } });
+    expect(order.orderProductMappings[0]).toMatchObject({
+      fee: 5,
+      priceAdjustment: IPriceAdjustment.DISCOUNT,
+    });
+    expect(order.settleAmount).toBe(9500);
   });
 });
 
@@ -1065,5 +1217,69 @@ describe('OrderService getOrderSettle read priority', () => {
 
     expect(service.walletAccountResolverService.resolveForOrder).toHaveBeenCalled();
     expect(res.settleMethod).toBe('CARD'); // wallet 정책
+  });
+
+  it('고객사 정산 조회는 협력사 할인 조건을 고객사 할인 후보로 섞지 않는다', async () => {
+    const { service } = createReadService({
+      orderOverrides: { status: IOrderStatus.REVIEW_COMPLETE },
+    });
+    service.orderProductMappingRepository.find = jest.fn().mockResolvedValue([
+      {
+        id: 10,
+        amount: 1,
+        fee: null,
+        priceAdjustment: null,
+        settleDiscountType: null,
+        product: {
+          id: 100,
+          name: '테스트 상품',
+          price: 10000,
+          category: 'coffee',
+          classificationId: 11,
+          partnerCompanyId: 20,
+          brand: null,
+        },
+        orderDeliveries: [],
+      },
+    ]);
+    service.userDiscountRepository.find = jest.fn().mockResolvedValue([
+      {
+        id: 1,
+        userId: 2,
+        partnerCompanyId: null,
+        category: IUserDiscountCategory.CATEGORY,
+        classificationId: 11,
+        method: IUserDiscountMethod.BULK,
+        group: null,
+        primaryCategory: null,
+        range: null,
+        compareCondition: ICompareCondition.ALL,
+        priceAdjustment: IPriceAdjustment.DISCOUNT,
+        pricePercent: 5,
+      },
+      {
+        id: 2,
+        userId: null,
+        partnerCompanyId: 20,
+        category: IUserDiscountCategory.PRODUCT_GROUP,
+        classificationId: null,
+        method: IUserDiscountMethod.BULK,
+        group: 'coffee',
+        primaryCategory: null,
+        range: null,
+        compareCondition: ICompareCondition.ALL,
+        priceAdjustment: IPriceAdjustment.ADDITIONAL,
+        pricePercent: 10,
+      },
+    ]);
+
+    const res = await service.getOrderSettle(query);
+
+    expect(service.userDiscountRepository.find).toHaveBeenCalledWith({ where: { userId: 2 } });
+    expect(res.list[0]).toMatchObject({
+      fee: 5,
+      priceAdjustment: IPriceAdjustment.DISCOUNT,
+      discountPrice: 9500,
+    });
   });
 });

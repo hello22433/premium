@@ -12,6 +12,11 @@ import { EmailSendHistoryEntity } from '../../entity/email.send.history.entity';
 
 import { DeliveryAlimTalk } from '../interface/delivery.alim.talk';
 import { IOrderDeliveryStatus } from '../interface/order.delivery.status';
+import {
+  IOrderDeliveryReportState,
+  REPORT_DEADLINE_MS,
+  REPORT_NEXT_DUE_MS,
+} from '../interface/order.delivery.report.state';
 import { IMailSend } from '../../mail/interface/mail-send';
 import { ISmsSend } from '../../sms/interface/sms.send';
 import { IOrderType } from '../../order/interface/order.type';
@@ -153,6 +158,72 @@ export class DeliverySendService {
       }
 
       this.markSendSuccess(orderDelivery, IOrderDeliveryStatus.COMPLETE);
+    } catch (e) {
+      deliveryHistory.context = JSON.stringify(e);
+      deliveryHistory.isSuccess = false;
+      const resultSms = await this.handleAlimTalkFail(
+        orderDelivery,
+        title,
+        body,
+        memo,
+        tailText,
+        filePathList,
+        decryptedDeliveryTarget,
+        encryptKey,
+      );
+      if (resultSms === IOrderDeliveryStatus.COMPLETE_SMS) {
+        deliveryHistory.isSuccess = true;
+        this.markSendSuccess(orderDelivery, IOrderDeliveryStatus.COMPLETE_SMS);
+      } else {
+        deliveryHistory.context += JSON.stringify(resultSms);
+        this.markSendFail(orderDelivery, IOrderDeliveryStatus.FAIL);
+      }
+    }
+  }
+
+  /**
+   * 알림톡 POST 수락 후 '수신확인 대기'(PENDING) 마킹. status 는 WAIT 유지(reportSweep 가 터미널 확정).
+   */
+  private markAlimtalkPending(orderDelivery: OrderDeliveryEntity, msgKey: string): void {
+    const now = new Date();
+    orderDelivery.alimTalkMsgKey = msgKey;
+    orderDelivery.reportState = IOrderDeliveryReportState.PENDING;
+    orderDelivery.reportNextDueAt = new Date(now.getTime() + REPORT_NEXT_DUE_MS);
+    orderDelivery.reportDeadlineAt = new Date(now.getTime() + REPORT_DEADLINE_MS);
+    if (!orderDelivery.actualSendAt) {
+      orderDelivery.actualSendAt = now;
+    }
+  }
+
+  /**
+   * 알림톡 비동기 발송 (발송 배치 전용): POST 만 수행하고 reportState=PENDING 으로 마킹한다.
+   * 수신확인(inquiry)·COMPLETE/정산/환불 판정은 reportSweep 가 담당한다.
+   * POST 자체 실패(네트워크/거부)는 즉시 SMS 폴백(handleAlimTalkFail) — 기존 sendAlimTalk 실패경로와 동일 시맨틱.
+   */
+  async sendAlimTalkAsync(
+    orderDelivery: OrderDeliveryEntity,
+    decryptedDeliveryTarget: string,
+    encryptKey: string,
+    title: string,
+    body: string,
+    memo: string | null,
+    tailText: string | null,
+    filePathList: string[],
+    deliveryHistory: DeliverySendHistoryEntity,
+  ): Promise<void> {
+    deliveryHistory.orderDeliveryId = orderDelivery.id;
+    try {
+      const alimTalk = AlimTalkTemplate(orderDelivery);
+      const { msgKey, responseData } = await this.deliveryAlimTalk.postAlimtalk({
+        to: decryptedDeliveryTarget,
+        text: alimTalk,
+        encryptKey: encryptKey,
+      });
+
+      deliveryHistory.context = JSON.stringify(responseData);
+      deliveryHistory.isSuccess = true; // POST 수락 (최종 도달 여부는 reportSweep 가 정정)
+
+      this.markAlimtalkPending(orderDelivery, msgKey);
     } catch (e) {
       deliveryHistory.context = JSON.stringify(e);
       deliveryHistory.isSuccess = false;

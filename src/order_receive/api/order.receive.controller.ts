@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Post, Query, Req } from '@nestjs/common';
+import { Request } from 'express';
 import {
   OrderReceiveAlimTalkReqDto,
   OrderReceiveEmailReqDto,
@@ -40,8 +41,14 @@ export class OrderReceiveController {
   })
   // ====================================================
   @Get('/order/receive/alim-talk')
-  alimTalk(@Query() getQuery: OrderReceiveAlimTalkReqDto) {
-    return this.orderReceiveService.alimTalk(getQuery);
+  alimTalk(@Query() getQuery: OrderReceiveAlimTalkReqDto, @Req() req: Request) {
+    // req.ip 는 main.ts 의 'trust proxy' 설정을 반영한 실제 클라이언트 IP.
+    // raw x-forwarded-for 를 직접 파싱하지 않는다(클라이언트가 헤더를 선점해 위조 가능하므로).
+    return this.orderReceiveService.alimTalk(getQuery, {
+      ipAddress: req.ip ?? null,
+      userAgent: req.headers['user-agent'] ?? null,
+      referer: req.headers['referer'] ?? req.headers['referrer']?.toString() ?? null,
+    });
   }
 
   @ApiOperation({

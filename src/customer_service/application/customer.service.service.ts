@@ -34,6 +34,7 @@ import { format } from 'date-fns';
 import { CustomerServiceViewDto } from '../api/dto/customer.service.view.dto';
 import { QueryBuilderDateCondition } from '../../common/infra/query.builder.date.condition';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
+import { IOrderDeliveryReportState } from '../../delivery/interface/order.delivery.report.state';
 import { CustomerServiceDetailViewDto } from '../api/dto/customer.service.detail.view.dto';
 import { CustomerServiceDlvryDetailViewDto } from '../api/dto/customer.service.dlvry.detail.view.dto';
 import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
@@ -80,6 +81,8 @@ import { ActivityLogActionType } from 'src/activity_log/interface/activity.log.a
 import { ActivityLogResult } from 'src/activity_log/interface/activity.log.result';
 import { UserEntity } from 'src/entity/user.entity';
 import { UserCompanyEntity } from 'src/entity/user.company.entity';
+import { CouponViewLogEntity } from '../../entity/coupon.view.log.entity';
+import { CouponViewLogResDto } from '../api/dto/customer.service.coupon.view.log.dto';
 import { calculateSettlementPrice } from '../../util/settle-fee.util';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 import { randomUUID } from 'crypto';
@@ -92,6 +95,12 @@ const dayjs = require('dayjs');
 const timezone = require('dayjs/plugin/timezone');
 
 dayjs.extend(timezone);
+
+// CS 재전송 claim self-heal 임계(ms). 크래시로 finally 못 탄 stale claim 만 재claim 허용.
+// partner_company_extern_history.service 의 RESEND_CLAIM_STALE_MS 와 동일 의미(5분).
+// coupon-view 방문 로그 조회 시 응답 크기 상한(최신 N건). 전체 규모는 집계 필드로 제공한다.
+const COUPON_VIEW_LOG_MAX_ITEMS = 100;
+const RESEND_CLAIM_STALE_MS = 5 * 60 * 1000;
 
 @Injectable()
 export class CustomerServiceService {
@@ -130,7 +139,79 @@ export class CustomerServiceService {
     private readonly refundPoolService: RefundPoolService,
     private readonly legacyWalletCreditSyncService: LegacyWalletCreditSyncService,
     private readonly authService: AuthService,
+    @InjectRepository(CouponViewLogEntity)
+    private readonly couponViewLogRepository: Repository<CouponViewLogEntity>,
   ) {}
+
+  /**
+   * 특정 발송건(order_delivery)의 coupon-view 페이지 방문 로그를 조회한다.
+   * CS 상세(일반/신세계)에서 '고객이 정말 페이지를 봤는가'를 판별하는 증거로 사용한다.
+   * 방문 규모는 단일 aggregate 로 집계하고, 목록은 최신순 최대 N건만 함께 반환한다(응답 크기 상한).
+   */
+  async getCouponViewLog(user: ILoginUserInfo, orderDeliveryId: number): Promise<CouponViewLogResDto> {
+    // 권한검사: 발송건의 쿠폰 종류(일반/SSG)에 맞는 CS 권한 (getDetail 과 동일 기준, 그 외/미존재는 거부).
+    // 로그인만으로 임의 orderDeliveryId 의 IP/UA 를 조회하지 못하도록 fail-closed.
+    const orderDelivery = await this.orderDeliveryRepository
+      .createQueryBuilder('orderDelivery')
+      .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
+      .leftJoinAndSelect('orderProductMapping.product', 'product')
+      .withDeleted()
+      .where('orderDelivery.id = :id', { id: orderDeliveryId })
+      .getOne();
+
+    if (!orderDelivery) {
+      throw new BadRequestException('존재하지 않는 발송 정보입니다.');
+    }
+
+    const requiredAuth = this.resolveCsCouponAuthority(orderDelivery.orderProductMapping?.product?.type);
+    if (!requiredAuth) {
+      throw new BadRequestException('CS 대상이 아닌 상품 유형입니다.');
+    }
+    await this.authService.authorityValidator(user, requiredAuth);
+
+    // 집계는 단일 aggregate 쿼리로 계산한다. 여러 쿼리를 분리하면 방문 insert 와 경쟁해
+    // botCount > total / 음수 humanCount 같은 불일치가 생길 수 있으므로 한 쿼리에서 일관되게 산출한다.
+    const agg = await this.couponViewLogRepository
+      .createQueryBuilder('log')
+      .select('COUNT(*)', 'total')
+      .addSelect('COALESCE(SUM(log.is_bot), 0)', 'botCount')
+      .addSelect('MIN(CASE WHEN log.is_bot = 0 THEN log.created_at END)', 'firstHumanVisitedAt')
+      .addSelect('MAX(log.created_at)', 'lastVisitedAt')
+      .where('log.order_delivery_id = :id', { id: orderDeliveryId })
+      .getRawOne<{
+        total: string | number;
+        botCount: string | number;
+        firstHumanVisitedAt: Date | string | null;
+        lastVisitedAt: Date | string | null;
+      }>();
+
+    const total = Number(agg?.total ?? 0);
+    const botCount = Number(agg?.botCount ?? 0);
+    const toDisplay = (v: Date | string | null | undefined): string | null =>
+      v ? format(new Date(v), DateFormatStr) : null;
+
+    // 응답 크기 상한: 최신 MAX_ITEMS 건만 목록으로 반환(무제한 응답 방지). 집계와는 독립.
+    const items = await this.couponViewLogRepository.find({
+      where: { orderDeliveryId },
+      order: { createdAt: 'DESC' },
+      take: COUPON_VIEW_LOG_MAX_ITEMS,
+    });
+
+    return {
+      total,
+      humanCount: total - botCount,
+      botCount,
+      firstHumanVisitedAt: toDisplay(agg?.firstHumanVisitedAt),
+      lastVisitedAt: toDisplay(agg?.lastVisitedAt),
+      items: items.map((log) => ({
+        visitedAt: format(log.createdAt, DateFormatStr),
+        ipAddress: log.ipAddress,
+        userAgent: log.userAgent,
+        source: log.source,
+        isBot: log.isBot,
+      })),
+    };
+  }
 
   /**
    * 폐기 시 정산금액(할인가) 기준으로 예치금/여신 복구.
@@ -373,8 +454,9 @@ export class CustomerServiceService {
   }
 
   /**
-   * 폐기후신규발송(핀교체, 비-SSG) — wallet-managed 주문에서 원본 delivery 의 wallet 장부를
-   * 신규 delivery 로 승계한다.
+   * 폐기후신규발송(핀교체, SSG·비-SSG 공통) — wallet-managed 주문에서 원본 delivery 의 wallet 장부를
+   * 신규 delivery 로 승계한다. 고객 wallet 결제(allocation)는 SSG 여부와 무관하게 동일 승계 대상이며,
+   * SSG 의 forfeit+신규 행사 재차감은 '행사 잔액'(공급사 측)에만 적용된다(고객 wallet 과 독립).
    *
    * 핀교체는 동일 결제를 그대로 승계(원본 폐기 시 환불 skip + 신규 재차감 없음)하므로,
    * 발송확정 때 원본 delivery 에 매겨진 allocation_line 과 attempt 를 신규 delivery 가 이어받아야 한다.
@@ -883,49 +965,87 @@ export class CustomerServiceService {
   /**
    * CS 재전송.
    *
-   * 비관적 락(SELECT FOR UPDATE)으로 동시 재발송 race 차단:
-   * - 첫 번째 요청: 락 획득 → oneSend 수행 → status 변경 → 커밋 → 락 해제
-   * - 두 번째 요청: 락 대기 → 획득 후 status 확인 → 재발송 대상 아닌 상태로 변했거나
-   *   여전히 대상이지만 oneSend 내부 reverseRefundForResend/refundForFail은 이미
-   *   처리되어 ledger 멱등 락에 의해 차단된다.
-   * partner_company_extern_history.service.resendFailedDelivery 와 동일 패턴.
+   * 동시 재발송 race 는 원자적 self-heal claim(claimedAt 토큰)으로 직렬화한다.
+   * 기존 비관적 락(SELECT FOR UPDATE)+@Transactional 은 order_delivery 행을 잠근 채
+   * oneSend()→issue() 의 외부 SSG API / REQUIRES_NEW 를 호출해 self-deadlock(lock wait)
+   * 위험이 있었다. partner_company_extern_history.service.resendFailedDelivery 와 동일하게
+   * 짧은 claim 으로 동시성만 차단하고, 락 없는 상태에서 oneSend() 를 호출한다.
+   * - claim: app 생성 claimAt 토큰 저장. 5분 self-heal(크래시로 finally 못 탄 stale claim 만 재claim).
+   * - reSend 상태집합은 COMPLETE/COMPLETE_SMS 를 포함하므로 boot sweep(FAIL 한정)이 커버하지 못한다
+   *   → per-row self-heal(claimedAt<:stale)로 영구 stale 을 차단한다.
+   * - 모든 해제(성공/실패/예외)는 owner guard(claimed_at=:claimAt) 조건부.
    */
-  @Transactional()
   async reSend(user: ILoginUserInfo, getBody: CustomerServiceReSendReqDto) {
     const { orderDeliveryId } = getBody;
+    const statuses = ['COMPLETE', 'FAIL', 'COMPLETE_SMS', 'FAIL_SMS'];
 
-    const orderDelivery = await this.orderDeliveryRepository
-      .createQueryBuilder('orderDelivery')
-      .setLock('pessimistic_write')
-      .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
-      .innerJoinAndSelect('orderProductMapping.order', 'order')
-      .innerJoinAndSelect('order.user', 'user')
-      .leftJoinAndSelect('user.company', 'company')
-      .innerJoinAndSelect('orderProductMapping.product', 'product')
-      .innerJoinAndSelect('product.brand', 'brand')
-      .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
-      .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
-      .leftJoinAndSelect('choiceSelectProduct.brand', 'choiceSelectBrand')
-      .andWhere('orderDelivery.status IN (:...status)', { status: ['COMPLETE', 'FAIL', 'COMPLETE_SMS', 'FAIL_SMS'] })
-      .andWhere('orderDelivery.id = :orderDeliveryId', { orderDeliveryId: orderDeliveryId })
-      .getOne();
-
-    if (!orderDelivery) {
+    // 1. 대상 조회 (락 없음). 동시 재발송은 아래 원자적 claim 으로 직렬화.
+    const target = await this.buildReSendQuery(orderDeliveryId, statuses).getOne();
+    if (!target) {
       throw new BadRequestException('주문 발송가 존재하지 않습니다.');
     }
 
     // 권한검사: 쿠폰 종류(일반/SSG)에 맞는 CS 권한 (getList 분류 기준과 동일, 그 외 타입은 거부)
-    const requiredAuth = this.resolveCsCouponAuthority(orderDelivery.orderProductMapping?.product?.type);
+    const requiredAuth = this.resolveCsCouponAuthority(target.orderProductMapping?.product?.type);
     if (!requiredAuth) {
       throw new BadRequestException('CS 대상이 아닌 상품 유형입니다.');
     }
     await this.authService.authorityValidator(user, requiredAuth);
 
-    if (orderDelivery.deliveryTarget === '-') {
+    if (target.deliveryTarget === '-') {
       throw new BadRequestException('파기된 발송 정보입니다.');
     }
 
-    await this.deliveryBatchService.oneSend(orderDelivery);
+    // 2. 원자적 claim (owner 토큰 = app 생성 claimAt). 동시 재발송 직렬화 + 5분 self-heal.
+    const claimAt = new Date();
+    const staleThreshold = new Date(claimAt.getTime() - RESEND_CLAIM_STALE_MS);
+    const claimResult = await this.orderDeliveryRepository
+      .createQueryBuilder()
+      .update(OrderDeliveryEntity)
+      .set({ claimedAt: claimAt })
+      .where('id = :id', { id: orderDeliveryId })
+      .andWhere('status IN (:...statuses)', { statuses })
+      .andWhere('(claimedAt IS NULL OR claimedAt < :stale)', { stale: staleThreshold })
+      .execute();
+    if (!claimResult.affected) {
+      throw new ConflictException('재발송 처리 중이거나 상태가 변경되었습니다. 잠시 후 다시 시도해주세요.');
+    }
+
+    // 3. 발송 (락 없는 상태). oneSend 가 PIN 발급/확인 + 이미지 + 실제 발송 처리.
+    //    성공/실패/예외 모든 종료 경로에서 owner-guarded(claimed_at=:claimAt) claim 해제(finally).
+    try {
+      const orderDelivery = await this.buildReSendQuery(orderDeliveryId, statuses).getOne();
+      if (!orderDelivery) {
+        throw new Error('claim 후 재조회 실패');
+      }
+      await this.deliveryBatchService.oneSend(orderDelivery);
+    } finally {
+      await this.orderDeliveryRepository.update({ id: orderDeliveryId, claimedAt: claimAt }, { claimedAt: null });
+    }
+  }
+
+  /** CS 재전송 대상 조회(relation 포함, 재발송 가능 상태 필터). 락 없음. */
+  private buildReSendQuery(orderDeliveryId: number, statuses: string[]) {
+    return (
+      this.orderDeliveryRepository
+        .createQueryBuilder('orderDelivery')
+        .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
+        .innerJoinAndSelect('orderProductMapping.order', 'order')
+        .innerJoinAndSelect('order.user', 'user')
+        .leftJoinAndSelect('user.company', 'company')
+        .innerJoinAndSelect('orderProductMapping.product', 'product')
+        .innerJoinAndSelect('product.brand', 'brand')
+        .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
+        .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
+        .leftJoinAndSelect('choiceSelectProduct.brand', 'choiceSelectBrand')
+        .where('orderDelivery.id = :orderDeliveryId', { orderDeliveryId })
+        .andWhere('orderDelivery.status IN (:...statuses)', { statuses })
+        // 비동기 수신확인 진행중(PENDING)인 건은 재진입 차단 (msgKey 덮어쓰기/이중처리 방지).
+        // 단 recovery 후 FAIL(reportState=UNCONFIRMED)·CONFIRMED 는 수동 재발송 허용해야 하므로 PENDING 만 제외.
+        .andWhere('(orderDelivery.reportState IS NULL OR orderDelivery.reportState != :pendingReportState)', {
+          pendingReportState: IOrderDeliveryReportState.PENDING,
+        })
+    );
   }
 
   /**
@@ -1599,6 +1719,11 @@ export class CustomerServiceService {
       throw new BadRequestException('존재하지 않는 발송 정보입니다.');
     }
 
+    // 비동기 수신확인 진행중(PENDING)이면 재진입 차단 (reportSweep 소관 — 중복 발송 방지). reSend 와 동일.
+    if (locked.reportState === IOrderDeliveryReportState.PENDING) {
+      throw new BadRequestException('수신 확인 진행중인 발송입니다. 잠시 후 다시 시도해주세요.');
+    }
+
     // 2. dedup — 락 보유 중 최근 시간창 내 동일 건 재전송 이력 확인
     const dedupSince = new Date(Date.now() - RESEND_DEDUP_WINDOW_MS);
     const recentResendCount = await this.orderHistoryRepository.count({
@@ -1976,13 +2101,10 @@ export class CustomerServiceService {
           await this.deliveryBatchService.resolveReissuePendingKept(resendDeductionId);
         }
 
-        // Wallet Cutover — 비-SSG 핀교체는 "동일 결제를 신규 delivery 로 승계"(폐기 시 환불 skip, 신규 재차감 없음).
-        // wallet-managed 면 원본 delivery 의 allocation_line/attempt 를 신규 delivery 로 이관해야
-        // 이후 신규 delivery 폐기 시 attempt/line 부재로 환불이 drift abort 되는 것을 막는다.
-        // (SSG 는 forfeit+신규 행사 재차감 모델이라 승계 대상 아님 → 별도 처리 필요.)
-        if (!isSsg) {
-          await this.carryWalletOwnershipToReissuedDelivery(reissueOrderId, discardedDelivery.id, savedDelivery.id);
-        }
+        // Wallet Cutover — wallet-managed 면 원본 delivery 의 allocation_line/attempt 를 신규 delivery 로 승계한다.
+        // 미승계 시 이후 신규 delivery 폐기에서 attempt/line 부재로 환불이 drift abort 된다.
+        // SSG·비-SSG 공통(고객 wallet 결제는 SSG 여부와 무관 — 상세는 carryWalletOwnershipToReissuedDelivery JSDoc).
+        await this.carryWalletOwnershipToReissuedDelivery(reissueOrderId, discardedDelivery.id, savedDelivery.id);
 
         const newPin = fullDelivery.barCode;
         afterChange = `${normalizedTarget} / ${newPin}`;

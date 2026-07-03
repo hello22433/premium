@@ -1,4 +1,8 @@
-import { InfoBankReportResponse, InfoBankSendResponse } from '../infra/delivery.alim.talk.info.bank.http';
+import {
+  InfoBankInquiryResult,
+  InfoBankReportResponse,
+  InfoBankSendResponse,
+} from '../infra/delivery.alim.talk.info.bank.http';
 
 export type IDeliveryAlimTalkSend = {
   to: string;
@@ -15,4 +19,8 @@ export type IDeliveryAlimTalkSendOut = {
 
 export interface DeliveryAlimTalk {
   send(sendObj: IDeliveryAlimTalkSend): Promise<IDeliveryAlimTalkSendOut>;
+  // 발송 배치 비동기 경로: POST 만 수행하고 msgKey 반환 (수신확인은 reportSweep 위임)
+  postAlimtalk(sendObj: IDeliveryAlimTalkSend): Promise<{ msgKey: string; responseData: InfoBankSendResponse }>;
+  // reportSweep 가 호출하는 수신리포트 단건 조회
+  inquiryReport(msgKey: string): Promise<InfoBankInquiryResult>;
 }

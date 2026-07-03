@@ -4,6 +4,7 @@ import {
   initializeTransactionalContext,
 } from 'typeorm-transactional';
 import { OrderService } from './order.service';
+import { BillingScopeLockService } from '../../wallet/application/billing-scope-lock.service';
 import { IOrderStatus } from '../interface/order.status';
 import { IOrderType } from '../interface/order.type';
 import { IUserAuthority } from '../../user/interface/user.authority';
@@ -95,6 +96,12 @@ describe('OrderService billing lock — lockBillingScope', () => {
       createQueryBuilder: jest.fn().mockReturnValue(companyQueryBuilder),
       save: jest.fn().mockResolvedValue(undefined),
     };
+    // lockBillingScope 는 BillingScopeLockService 로 위임됨(PR-A). 동일 mock repo 로 실제 서비스를 주입해
+    // 잠금 QB 호출(회사→사용자 순서, id ASC)이 그대로 검증되도록 한다.
+    service.billingScopeLockService = new BillingScopeLockService(
+      service.userRepository,
+      service.userCompanyRepository,
+    );
     service.orderDeliveryRepository = { save: jest.fn().mockResolvedValue(undefined) };
     service.forbiddenWordMatcher = { scan: jest.fn().mockReturnValue([]) };
     service.logger = { log: jest.fn(), debug: jest.fn() };
@@ -186,6 +193,10 @@ describe('OrderService billing lock — lockBillingScope', () => {
     service.userCompanyRepository = {
       createQueryBuilder: jest.fn().mockReturnValue(companyQueryBuilder),
     };
+    service.billingScopeLockService = new BillingScopeLockService(
+      service.userRepository,
+      service.userCompanyRepository,
+    );
     service.logger = { log: jest.fn(), debug: jest.fn() };
 
     // lockBillingScope 내부 QB 호출은 위 mock으로 검증하되,

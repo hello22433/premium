@@ -21,6 +21,7 @@ import { PartnerCompanyExternHistoryEntity } from '../../entity/partner.company.
 import { PinIssueDedupEntity } from '../../entity/pin.issue.dedup.entity';
 import { SsgEventEntity } from '../../entity/ssg.event.entity';
 import { SsgIssueLogEntity } from '../../entity/ssg.issue.log.entity';
+import { SsgResendDeductPendingEntity } from '../../entity/ssg.resend.deduct.pending.entity';
 import {
   SsgCheckNotFoundError,
   SsgIssueAlreadyConfirmedError,
@@ -168,6 +169,7 @@ describe('PartnerCompanyExternService - SSG issue flow + state', () => {
         { provide: getRepositoryToken(GalaxiaBarcodeLogEntity), useValue: makeRepoMock() },
         { provide: CryptoCipher, useValue: { safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01000000000') } },
         { provide: SsgInsertStateService, useValue: ssgInsertStateService },
+        { provide: getRepositoryToken(SsgResendDeductPendingEntity), useValue: {} },
       ],
     }).compile();
 

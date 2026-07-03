@@ -12,6 +12,7 @@ import { OrderHistoryEntity } from './order.history.entity';
 import { OrderDeliveryRefundStatusEnum } from '../delivery/interface/order.delivery.refund.status.enum';
 import { IPriceAdjustment } from '../user_discount/interface/price.adjustment';
 import { IOrderSettleDiscountType } from '../order/interface/order.settle.discount.type';
+import { IOrderDeliveryReportState } from '../delivery/interface/order.delivery.report.state';
 
 @Entity('order_delivery')
 export class OrderDeliveryEntity extends BaseEntity {
@@ -230,6 +231,36 @@ export class OrderDeliveryEntity extends BaseEntity {
     comment: 'EMAIL PIN 발급 결과 불명 → 운영 reconcile 필요 표시',
   })
   emailCouponReconcileRequiredAt: Date | null;
+
+  // ── 알림톡 비동기 수신확인 / 자동 재발송 (ALIMTALK_ASYNC_REPORT) ──
+  @Column({ type: 'varchar', length: 64, nullable: true, comment: '알림톡 msgKey (수신리포트 inquiry 키)' })
+  alimTalkMsgKey: string | null;
+
+  @Column({
+    type: 'varchar',
+    length: 20,
+    nullable: true,
+    comment: '수신리포트 확인 상태 (NULL=비대상/PENDING/CONFIRMED/UNCONFIRMED)',
+  })
+  reportState: IOrderDeliveryReportState | null;
+
+  @Column({ type: 'datetime', nullable: true, comment: '리포트 확인 마감 시각 (미수신 영구대기 방지)' })
+  reportDeadlineAt: Date | null;
+
+  @Column({ type: 'int', default: 0, comment: '리포트 inquiry 누적 시도수' })
+  reportAttemptCount: number;
+
+  @Column({ type: 'int', default: 0, comment: 'SMS 폴백 자동 재발송 cap (resendCount 와 분리)' })
+  reportFallbackAttemptCount: number;
+
+  @Column({ type: 'datetime', nullable: true, comment: '다음 inquiry 수행 예정 시각 (30초 간격 근사)' })
+  reportNextDueAt: Date | null;
+
+  @Column({ type: 'datetime', precision: 6, nullable: true, comment: 'reportSweep 멱등 claim 시각 (lease 만료 판정용)' })
+  reportClaimedAt: Date | null;
+
+  @Column({ type: 'varchar', length: 64, nullable: true, comment: 'reportSweep 회차 소유 토큰 (자기 토큰 행만 처리)' })
+  reportOwnerToken: string | null;
 
   @ManyToOne(() => OrderProductMappingEntity, { createForeignKeyConstraints: false })
   @JoinColumn({ name: 'order_product_mapping_id' })

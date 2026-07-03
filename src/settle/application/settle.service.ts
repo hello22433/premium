@@ -26,6 +26,7 @@ import {
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { OrderEntity } from '../../entity/order.entity';
 import { readBillingView, readLineProductView, readOperationPersonName } from '../../order/util/order.snapshot.builder';
+import { IOrderDateType } from '../../order/interface/order.date.type';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Brackets, In, IsNull, Not, Repository, SelectQueryBuilder } from 'typeorm';
 import {
@@ -67,15 +68,11 @@ import {
   DateEndMinuteFormatStr,
   DateFormatStr,
   TimeCompactStr,
-  TimeFormatStr,
 } from '../../common/domain/date.format.str';
 import { format, subMonths } from 'date-fns';
 import { SettlePartnerCompanyListViewDto } from '../api/dto/settle.partner.company.list.view.dto';
 import { SettleMobileListViewDto } from '../api/dto/settle.mobile.list.view.dto';
 import * as ExcelJS from 'exceljs';
-import { join } from 'path';
-import * as process from 'node:process';
-import { normalizeDate } from '../../util/time.util';
 import { SettleProductViewDto } from '../api/dto/settle.product.view.dto';
 import { OtherServiceSaleEntity } from '../../entity/other.service.sale.entity';
 import { SettleOtherViewDto } from '../api/dto/settle.other.view.dto';
@@ -1494,9 +1491,9 @@ export class SettleService {
 
   async getUserList(getQuery: SettleGetUserListReqQueryDto): Promise<SettleGetUserListResDto> {
     const { startAt, endAt } = this.applyDefaultDateRange(getQuery.startAt, getQuery.endAt);
-    const { isPublished, businessName, personName, eventName, page, take, searchKeyword } = getQuery;
+    const { isPublished, businessName, personName, eventName, page, take, searchKeyword, dateType } = getQuery;
 
-    const filters = { startAt, endAt, isPublished, businessName, personName, eventName, searchKeyword };
+    const filters = { startAt, endAt, isPublished, businessName, personName, eventName, searchKeyword, dateType };
 
     const skip = (page - 1) * take;
 
@@ -1562,9 +1559,9 @@ export class SettleService {
 
   async getUserSummary(getQuery: SettleGetUserSummaryReqQueryDto): Promise<SettleGetUserSummaryResDto> {
     const { startAt, endAt } = this.applyDefaultDateRange(getQuery.startAt, getQuery.endAt);
-    const { isPublished, businessName, personName, eventName, searchKeyword } = getQuery;
+    const { isPublished, businessName, personName, eventName, searchKeyword, dateType } = getQuery;
 
-    const filters = { startAt, endAt, isPublished, businessName, personName, eventName, searchKeyword };
+    const filters = { startAt, endAt, isPublished, businessName, personName, eventName, searchKeyword, dateType };
 
     const sumOrders = await this.buildUserSettleQueryBuilder(filters, { forSum: true }).getMany();
 
@@ -1591,9 +1588,9 @@ export class SettleService {
 
   async getUserIds(getQuery: SettleGetUserIdsReqQueryDto): Promise<SettleGetUserIdsResDto> {
     const { startAt, endAt } = this.applyDefaultDateRange(getQuery.startAt, getQuery.endAt);
-    const { isPublished, businessName, personName, eventName, searchKeyword } = getQuery;
+    const { isPublished, businessName, personName, eventName, searchKeyword, dateType } = getQuery;
 
-    const filters = { startAt, endAt, isPublished, businessName, personName, eventName, searchKeyword };
+    const filters = { startAt, endAt, isPublished, businessName, personName, eventName, searchKeyword, dateType };
     const orders = await this.buildUserSettleQueryBuilder(filters).getMany();
 
     if (orders.length > 1000) {
@@ -1863,7 +1860,7 @@ export class SettleService {
     await this.activityLogService.verifyPassword(user.id, getBody.password);
 
     const defaultDate = this.applyDefaultDateRange(getBody.startAt, getBody.endAt);
-    const { isPublished, businessName, personName, eventName, downloadReason, searchKeyword } = getBody;
+    const { isPublished, businessName, personName, eventName, downloadReason, searchKeyword, dateType } = getBody;
     const { startAt, endAt } = defaultDate;
     this.assertExcelRangeWithinYears(startAt, endAt);
 
@@ -1920,7 +1917,7 @@ export class SettleService {
         qb.andWhere('order.eventName LIKE :eventName', { eventName: `%${eventName}%` });
       }
 
-      QueryBuilderDateCondition(qb, 'order', 'createdAt', startAt, endAt);
+      this.applySettleUserDateCondition(qb, dateType, startAt, endAt);
       return qb;
     };
 
@@ -2942,6 +2939,48 @@ export class SettleService {
    *  - orderDeliveries: innerJoin만 (SELECT 제외, 필터용)
    *  - orderBy: 제외
    */
+  /**
+   * 고객사별정산 기간 필터 기준 분기
+   * - REGISTER(기본): order.createdAt 기준
+   * - SEND: order_delivery.actual_send_at(실제 발송일) 기준 EXISTS 서브쿼리.
+   *   actualSendAt이 없는(미발송) 주문은 자연 제외된다.
+   */
+  private applySettleUserDateCondition(
+    queryBuilder: SelectQueryBuilder<any>,
+    dateType: IOrderDateType | undefined,
+    startAt?: string,
+    endAt?: string,
+  ): SelectQueryBuilder<any> {
+    if (dateType !== IOrderDateType.SEND) {
+      return QueryBuilderDateCondition(queryBuilder, 'order', 'createdAt', startAt, endAt);
+    }
+
+    const conditions: string[] = [];
+    const params: Record<string, string> = {};
+    if (startAt) {
+      conditions.push('od_send.actual_send_at >= :sendStartAt');
+      params.sendStartAt = startAt.replace('T', ' ');
+    }
+    if (endAt) {
+      conditions.push('od_send.actual_send_at <= :sendEndAt');
+      params.sendEndAt = endAt.replace('T', ' ');
+    }
+    if (conditions.length === 0) {
+      return queryBuilder;
+    }
+
+    return queryBuilder.andWhere(
+      `EXISTS (
+        SELECT 1
+        FROM order_delivery od_send
+        INNER JOIN order_product_mapping opm_send ON opm_send.id = od_send.order_product_mapping_id
+        WHERE opm_send.order_id = order.id
+          AND ${conditions.join(' AND ')}
+      )`,
+      params,
+    );
+  }
+
   private buildUserSettleQueryBuilder(
     filters: {
       startAt?: string;
@@ -2951,11 +2990,12 @@ export class SettleService {
       personName?: string;
       eventName?: string;
       searchKeyword?: string;
+      dateType?: IOrderDateType;
     },
     options?: { forSum?: boolean },
   ) {
     const forSum = options?.forSum ?? false;
-    const { startAt, endAt, isPublished, businessName, personName, eventName, searchKeyword } = filters;
+    const { startAt, endAt, isPublished, businessName, personName, eventName, searchKeyword, dateType } = filters;
 
     let queryBuilder = this.orderRepository.createQueryBuilder('order').innerJoinAndSelect('order.user', 'user');
 
@@ -3045,7 +3085,7 @@ export class SettleService {
       });
     }
 
-    queryBuilder = QueryBuilderDateCondition(queryBuilder, 'order', 'createdAt', startAt, endAt);
+    queryBuilder = this.applySettleUserDateCondition(queryBuilder, dateType, startAt, endAt);
 
     if (!forSum) {
       queryBuilder = queryBuilder.orderBy('order.id', 'DESC');

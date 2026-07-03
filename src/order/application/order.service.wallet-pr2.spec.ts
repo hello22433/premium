@@ -121,6 +121,10 @@ describe('OrderService deliveryConfirmed wallet PR2-005 gating', () => {
       update: jest.fn().mockResolvedValue({ affected: 1 }),
     };
     service.userCompanyRepository = { update: jest.fn() };
+    // PR-A: lockBillingScope 는 BillingScopeLockService.lock 로 위임된다 (companyId null → 본인만 잠금).
+    service.billingScopeLockService = {
+      lock: jest.fn().mockResolvedValue({ user: billingUser, companyUsers: [billingUser] }),
+    };
     service.userDiscountRepository = { find: jest.fn().mockResolvedValue([]) };
     service.orderProductMappingRepository = { save: jest.fn() };
     service.orderDeliveryRepository = { save: jest.fn().mockResolvedValue(undefined) };
