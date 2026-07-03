@@ -3,6 +3,7 @@ import { OrderEntity } from '../entity/order.entity';
 import { OrderProductMappingEntity } from '../entity/order.product.mapping.entity';
 import { OrderFeeCalculator, applyCardSurcharge } from '../order/domain/order.fee.calculator';
 import { IPriceAdjustment } from '../user_discount/interface/price.adjustment';
+import { OrderDeliveryCouponStatus } from '../delivery/interface/order.delivery.coupon.status';
 import { readLineProductView } from '../order/util/order.snapshot.builder';
 
 /**
@@ -43,7 +44,20 @@ export function calculateSettlementPrice(
 }
 
 export function calculateMappingSettlementBaseAmount(mapping: OrderProductMappingEntity): number {
-  const deliveries = mapping.orderDeliveries ?? [];
+  const allDeliveries = mapping.orderDeliveries ?? [];
+  // 폐기 후 신규발송(재발행)은 원본 행을 지우지 않고 같은 매핑에 새 행을 추가한다
+  // (customer.service.service.ts — newDelivery.replacedFromId = 원본 id, settleFee 승계).
+  // 재발행분이 원본의 자리를 이어받으므로, 대체된 CANCEL 원본까지 합산하면 이중합산이 된다.
+  // 폐기만 하고 재발행하지 않은 CANCEL 행은 기존 동작 유지(정산 반영 정책은 별도 판단).
+  // bigint 컬럼(replacedFromId)은 런타임에 string으로 hydrate될 수 있어 Number 정규화 후 비교.
+  const replacedIds = new Set(
+    allDeliveries
+      .filter((delivery) => delivery.replacedFromId !== null && delivery.replacedFromId !== undefined)
+      .map((delivery) => Number(delivery.replacedFromId)),
+  );
+  const deliveries = allDeliveries.filter(
+    (delivery) => !(delivery.couponStatus === OrderDeliveryCouponStatus.CANCEL && replacedIds.has(Number(delivery.id))),
+  );
   const hasDeliveryFee = deliveries.some((delivery) => delivery.settleFee !== null);
 
   if (hasDeliveryFee) {
