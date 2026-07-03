@@ -121,7 +121,7 @@ export class OrderReceiptService {
   /**
    * 첨부 다운로드 프록시용. 권한·소유 검증 후 비공개(private) S3 객체를 임시파일로 받아
    * 로컬 경로와 원본 파일명을 돌려준다. 컨트롤러가 Content-Disposition(원본명)으로 스트리밍한다.
-   *  - 문서 권한: 운영/최고관리자는 전체, 기업관리자는 본인 문서만.
+   *  - 문서 권한: 상세조회와 동일(assertCanReadReceipt) — 관리자 전체, 기업=본인+180일 이내.
    *  - 객체 소유 검증(assertDownloadable): key 의 ownerId 가 요청자(or 관리자)여야 함.
    *    → filePath 는 클라이언트가 임의 지정 가능하므로 includes() 만으론 불충분.
    *      private/{ownerId}/ 의 소유자까지 봐서 "남의 private 객체 우회 read" 를 차단한다.
@@ -134,10 +134,8 @@ export class OrderReceiptService {
   ): Promise<{ fileName: string; filePath: string }> {
     const receipt = await this.findReceiptOrThrow(id);
 
-    const isOwner = receipt.userId === user.id;
-    if (!this.isAdminUser(user) && !isOwner) {
-      throw new ForbiddenException('다운로드 권한이 없습니다.');
-    }
+    // 상세조회와 동일 규칙(기업관리자 180일 제한 포함) — 리스트에서 안 보이는 문서의 첨부도 못 받게.
+    this.assertCanReadReceipt(user, receipt);
 
     // 1차: 이 주문접수에 첨부된 URL 인지
     const fileUrlList = parseFilePathList(receipt.filePath);
