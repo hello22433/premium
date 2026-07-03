@@ -24,7 +24,8 @@ export class SettleProductMultipleDetailDto {
   name: string;
 
   @ApiProperty({
-    description: '상품 가격(단가, 공급가)',
+    description:
+      '상품 가격(할인/할증 적용 단가, 행 내 균일). 차등정산(SSG 중복할인) 매핑은 요율 적용 단가별로 행이 분리·병합되므로 price*amount 가 항상 정확한 공급가액.',
   })
   price: number;
 
@@ -32,12 +33,6 @@ export class SettleProductMultipleDetailDto {
     description: '수량',
   })
   amount: number;
-
-  @ApiProperty({
-    description:
-      '공급가액(라인 정확 합계, 동일 키로 병합된 여러 매핑의 합산값). 차등정산(SSG 중복할인) 시 price는 반올림된 평균값이라 price*amount로 재구성하면 반올림 오차가 날 수 있음 — 합계가 필요하면 이 필드를 사용할 것.',
-  })
-  supplyAmount: number;
 
   @ApiProperty({
     description: '이벤트명 (해당 상품이 속한 이벤트)',

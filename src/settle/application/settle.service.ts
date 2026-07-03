@@ -1818,37 +1818,33 @@ export class SettleService {
     for (const order of orders) {
       if (order.orderProductMappings && order.orderProductMappings.length > 0) {
         for (const mapping of order.orderProductMappings) {
-          // 할인/할증 적용 단가 — D3-49 축3: 발송건별 settleFee(SSG 차등정산) 반영해 실제 차감과 동일.
+          // D3-49 리뷰 B안: 차등정산 매핑은 요율 적용 단가별로 행 분리(buildSettlementDisplayLines).
+          // 그룹핑 단가가 근사(평균)가 아닌 실존값이라, 병합돼도 price*amount 가 항상 정확한 합계.
           const mappingView = readLineProductView(mapping);
-          const quantity = mapping.amount ?? 0;
-          const lineTotal = calculateMappingSettlementBaseAmount(mapping);
-          // 표시/그룹핑 단가는 라인총액/수량 평균(차등정산 시 단가가 균일하지 않음).
-          const adjustedPrice = quantity > 0 ? Math.round(lineTotal / quantity) : lineTotal;
+          for (const line of buildSettlementDisplayLines(mapping)) {
+            // 키: 상품ID + 단가 (같은 상품이라도 단가가 다르면 분리)
+            const key = `${mapping.product?.id}-${line.price}`;
 
-          // 키: 상품ID + 단가 (같은 상품이라도 단가가 다르면 분리)
-          const key = `${mapping.product?.id}-${adjustedPrice}`;
-
-          if (productMap.has(key)) {
-            // 기존 상품에 수량·공급가액 합산
-            const existing = productMap.get(key)!;
-            existing.amount += mapping.amount;
-            existing.supplyAmount += lineTotal;
-            // 이벤트명도 업데이트 (여러 이벤트에 걸쳐있으면 "a 외" 형태)
-            if (existing.eventName !== order.eventName && !existing.eventName.endsWith(' 외')) {
-              existing.eventName = `${existing.eventName} 외`;
+            if (productMap.has(key)) {
+              // 기존 상품에 수량 합산
+              const existing = productMap.get(key)!;
+              existing.amount += line.amount;
+              // 이벤트명도 업데이트 (여러 이벤트에 걸쳐있으면 "a 외" 형태)
+              if (existing.eventName !== order.eventName && !existing.eventName.endsWith(' 외')) {
+                existing.eventName = `${existing.eventName} 외`;
+              }
+            } else {
+              // 새로운 상품 추가
+              productMap.set(key, {
+                id: mapping.product?.id ?? 0,
+                code: mapping.product?.code ?? '',
+                brandName: mappingView.brandName,
+                name: mappingView.name,
+                price: line.price,
+                amount: line.amount,
+                eventName: order.eventName,
+              });
             }
-          } else {
-            // 새로운 상품 추가
-            productMap.set(key, {
-              id: mapping.product?.id ?? 0,
-              code: mapping.product?.code ?? '',
-              brandName: mappingView.brandName,
-              name: mappingView.name,
-              price: adjustedPrice,
-              amount: mapping.amount,
-              supplyAmount: lineTotal, // 공급가액(정확한 라인 합계, 병합 시 누적)
-              eventName: order.eventName,
-            });
           }
         }
       }
