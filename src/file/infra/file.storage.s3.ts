@@ -138,8 +138,10 @@ export class FileStorageS3 implements IFileStorage {
     try {
       const { hostname } = new URL(fileUrl);
       // 업로드 반환 형식(`{bucket}.s3.amazonaws.com`)과 리전 포함 변형(`{bucket}.s3.{region}.amazonaws.com`) 허용
-      return hostname === `${bucketName}.s3.amazonaws.com` ||
-        (hostname.startsWith(`${bucketName}.s3.`) && hostname.endsWith('.amazonaws.com'));
+      return (
+        hostname === `${bucketName}.s3.amazonaws.com` ||
+        (hostname.startsWith(`${bucketName}.s3.`) && hostname.endsWith('.amazonaws.com'))
+      );
     } catch {
       return false;
     }
