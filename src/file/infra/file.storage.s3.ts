@@ -133,6 +133,18 @@ export class FileStorageS3 implements IFileStorage {
     return raw ? decodeURIComponent(raw) : null;
   }
 
+  isOwnStorageUrl(fileUrl: string): boolean {
+    const bucketName = this.configService.getOrThrow('AWS_S3_BUCKET');
+    try {
+      const { hostname } = new URL(fileUrl);
+      // 업로드 반환 형식(`{bucket}.s3.amazonaws.com`)과 리전 포함 변형(`{bucket}.s3.{region}.amazonaws.com`) 허용
+      return hostname === `${bucketName}.s3.amazonaws.com` ||
+        (hostname.startsWith(`${bucketName}.s3.`) && hostname.endsWith('.amazonaws.com'));
+    } catch {
+      return false;
+    }
+  }
+
   async uploadImageFileWithBuffer(
     buffer: Buffer,
     fileName: string,

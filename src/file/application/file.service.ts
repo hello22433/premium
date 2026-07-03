@@ -118,4 +118,9 @@ export class FileService {
     const parsedUrl = new URL(fileUrl);
     return decodeURIComponent(parsedUrl.pathname.replace(/^\/+/, ''));
   }
+
+  /** 우리 S3 버킷의 객체 URL 인지(host 기준). 외부 host URL 차단용. */
+  isOwnStorageUrl(fileUrl: string): boolean {
+    return this.fileStorage.isOwnStorageUrl(fileUrl);
+  }
 }

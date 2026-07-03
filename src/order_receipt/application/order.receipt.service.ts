@@ -158,13 +158,18 @@ export class OrderReceiptService {
   }
 
   /**
-   * 클라이언트가 filePath 에 임의 S3 key 를 심어 백엔드 자격증명으로 타인 객체를 우회 read 하는 것을 차단.
+   * 클라이언트가 filePath 에 임의 URL/key 를 심어 백엔드 자격증명으로 타인 객체를 우회 read 하는 것을 차단.
+   *  - host: 우리 S3 버킷 URL 이 아니면 차단(외부 host 의 pathname 을 key 로 오인하는 것 방지).
    *  - private/{ownerId}/... : ownerId 가 요청자(or 관리자)일 때만 허용. ownerId 세그먼트가 없는
    *    구(舊) private key(예: 공유리스트)는 주문접수 첨부가 아니므로 차단.
-   *  - file/ · image/ (공개 객체) : 이미 공개라 추가 노출 아님(과거 첨부 호환). 허용.
-   *  - 그 외 위치 : 차단.
+   *  - file/ : 전환 전 주문접수 첨부(공개 객체) 호환용으로만 허용. image/ 등 그 외 위치는 차단
+   *    (프록시가 임의 공개객체 fetch 통로가 되지 않게 표면 최소화).
    */
   private assertDownloadable(fileUrl: string, user: ILoginUserInfo) {
+    if (!this.fileService.isOwnStorageUrl(fileUrl)) {
+      throw new ForbiddenException('다운로드할 수 없는 파일입니다.');
+    }
+
     const key = this.fileService.extractStorageKey(fileUrl);
 
     if (key.startsWith('private/')) {
@@ -178,7 +183,7 @@ export class OrderReceiptService {
       return;
     }
 
-    if (key.startsWith('file/') || key.startsWith('image/')) {
+    if (key.startsWith('file/')) {
       return;
     }
 

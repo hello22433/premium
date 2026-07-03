@@ -27,6 +27,12 @@ export interface IFileStorage {
   headOriginalName(key: string): Promise<string | null>;
 
   /**
+   * 주어진 URL 이 우리 S3 버킷의 객체 URL 인지(host 기준). 다운로드 프록시가
+   * 외부 host URL 의 pathname 을 우리 key 로 오인해 read 하는 것을 막는 데 쓴다.
+   */
+  isOwnStorageUrl(fileUrl: string): boolean;
+
+  /**
    * 외부 URL의 이미지를 S3로 복사
    * @param imageUrl 외부 이미지 URL
    * @returns S3에 저장된 이미지 URL

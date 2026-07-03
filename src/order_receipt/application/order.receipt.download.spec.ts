@@ -3,10 +3,10 @@ import { OrderReceiptService } from './order.receipt.service';
 import { IUserAuthority } from '../../user/interface/user.authority';
 
 /**
- * 주문접수 첨부 다운로드 프록시 회귀 — 문서권한 / 첨부귀속 / 객체소유(우회 차단) / 원본명.
- *  - 문서권한: 운영/최고관리자=전체, 기업관리자=본인 문서만.
- *  - 객체소유: filePath 는 클라이언트가 임의 지정 가능하므로, key 의 private/{ownerId}/ 소유자가
- *    요청자(or 관리자)인지까지 검증해야 타인 private 객체 우회 read 를 막는다. (PR #538 HIGH)
+ * 주문접수 첨부 다운로드 프록시 회귀 — 문서권한(180일 포함) / 첨부귀속 / 객체소유(우회 차단) / 원본명.
+ *  - 문서권한: 상세조회와 동일(assertCanReadReceipt) — 관리자 전체, 기업=본인+180일 이내.
+ *  - 객체소유: filePath 는 클라이언트가 임의 지정 가능하므로, 우리 버킷 host + key 의
+ *    private/{ownerId}/ 소유자가 요청자(or 관리자)인지까지 검증한다. (PR #538 리뷰)
  */
 describe('OrderReceiptService.downloadFile', () => {
   // 신 key 포맷: private/{ownerId}/{uuid}-{name}
@@ -14,10 +14,12 @@ describe('OrderReceiptService.downloadFile', () => {
   // 타인(ownerId=11) 의 private 객체 — 공격자가 자기 filePath 에 심어도 받으면 안 됨
   const foreignUrl = 'https://b.s3.amazonaws.com/private/11/ffffffffffffffffffffffffffffffff-남의것.xlsx';
 
-  const makeSut = (filePath: string) => {
-    const repo: any = { findOne: jest.fn().mockResolvedValue({ id: 1, userId: 10, filePath }) };
+  const makeSut = (filePath: string, receiptOverrides: Record<string, any> = {}) => {
+    const receipt = { id: 1, userId: 10, filePath, registerAt: new Date(), ...receiptOverrides };
+    const repo: any = { findOne: jest.fn().mockResolvedValue(receipt) };
     const fileService: any = {
       extractStorageKey: (url: string) => new URL(url).pathname.replace(/^\/+/, ''),
+      isOwnStorageUrl: jest.fn().mockReturnValue(true),
       getOriginalName: jest.fn().mockResolvedValue('보고서.xlsx'),
       downloadWithPath: jest.fn().mockResolvedValue('/tmp/x.xlsx'),
     };
@@ -46,6 +48,21 @@ describe('OrderReceiptService.downloadFile', () => {
     expect(fileService.downloadWithPath).not.toHaveBeenCalled();
   });
 
+  it('★180일: 기업관리자는 리스트 창(180일) 밖 본인 문서 첨부도 다운로드 불가', async () => {
+    const oldDate = new Date();
+    oldDate.setDate(oldDate.getDate() - 181);
+    const { sut, fileService } = makeSut(ownUrl, { registerAt: oldDate });
+    await expect(sut.downloadFile(owner, 1, ownUrl)).rejects.toBeInstanceOf(ForbiddenException);
+    expect(fileService.downloadWithPath).not.toHaveBeenCalled();
+  });
+
+  it('180일 밖이어도 관리자는 다운로드 가능', async () => {
+    const oldDate = new Date();
+    oldDate.setDate(oldDate.getDate() - 181);
+    const { sut } = makeSut(ownUrl, { registerAt: oldDate });
+    await expect(sut.downloadFile(admin, 1, ownUrl)).resolves.toBeDefined();
+  });
+
   it('첨부에 없는 url → BadRequest, 다운로드 시도 안 함', async () => {
     const { sut, fileService } = makeSut(ownUrl);
     const notAttached = 'https://b.s3.amazonaws.com/private/10/aaaa-다른것.xlsx';
@@ -60,6 +77,14 @@ describe('OrderReceiptService.downloadFile', () => {
     expect(fileService.downloadWithPath).not.toHaveBeenCalled();
   });
 
+  it('★우회 차단: 우리 버킷 host 가 아닌 URL → Forbidden', async () => {
+    const external = 'https://evil.example.com/private/10/abc-x.xlsx';
+    const { sut, fileService } = makeSut(external);
+    fileService.isOwnStorageUrl.mockReturnValue(false);
+    await expect(sut.downloadFile(owner, 1, external)).rejects.toBeInstanceOf(ForbiddenException);
+    expect(fileService.downloadWithPath).not.toHaveBeenCalled();
+  });
+
   it('★우회 차단: ownerId 세그먼트 없는 구 private key(공유리스트 등) → Forbidden', async () => {
     const legacyPrivate = 'https://b.s3.amazonaws.com/private/0123456789abcdef0123456789abcdef-list.xlsx';
     const { sut, fileService } = makeSut(legacyPrivate);
@@ -67,7 +92,14 @@ describe('OrderReceiptService.downloadFile', () => {
     expect(fileService.downloadWithPath).not.toHaveBeenCalled();
   });
 
-  it('레거시 공개 첨부(file/) 는 호환 허용 (이미 공개 객체)', async () => {
+  it('★우회 차단: image/ 등 첨부 외 위치 → Forbidden (file/ 레거시만 허용)', async () => {
+    const imageUrl = 'https://b.s3.amazonaws.com/image/abc-banner.png';
+    const { sut, fileService } = makeSut(imageUrl);
+    await expect(sut.downloadFile(owner, 1, imageUrl)).rejects.toBeInstanceOf(ForbiddenException);
+    expect(fileService.downloadWithPath).not.toHaveBeenCalled();
+  });
+
+  it('레거시 공개 첨부(file/) 는 호환 허용 (전환 전 주문접수 첨부)', async () => {
     const legacyPublic = 'https://b.s3.amazonaws.com/file/1780551879605-주문서.xlsx';
     const { sut, fileService } = makeSut(legacyPublic);
     await expect(sut.downloadFile(owner, 1, legacyPublic)).resolves.toBeDefined();
