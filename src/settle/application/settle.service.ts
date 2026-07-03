@@ -94,6 +94,7 @@ import { SettleOtherProductDetailDto } from '../api/dto/settle.other.product.dto
 import { OrderDeliveryCouponStatus, couponStatusToKorean } from '../../delivery/interface/order.delivery.coupon.status';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 import { calculateSettlementPrice, calculateMappingSettlementBaseAmount } from '../../util/settle-fee.util';
+import { OrderProductMappingEntity } from '../../entity/order.product.mapping.entity';
 import { applyCardSurcharge } from '../../order/domain/order.fee.calculator';
 import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
@@ -121,6 +122,50 @@ import { SettleGalaxiaListViewDto } from '../api/dto/settle.galaxia.list.view.dt
 import { IProductSettleMethod } from '../../product/interface/product.settle.method';
 
 const SETTLE_BLOCKED_BY_PENDING_DELIVERY_MSG = '미완료 발송 건이 있어 정산확정할 수 없습니다.';
+
+/**
+ * 고객사별정산 상세 표시용 라인 구성 (D3-49 리뷰 B안 — 요율별 행 분리).
+ *
+ * 차등정산(SSG 중복할인 등 delivery.settleFee 보유) 매핑은 발송건마다 요율이 달라
+ * 단일 단가가 존재하지 않는다. 기존에는 라인총액/수량 평균(반올림)을 단가로 내보내
+ * 어느 쿠폰에도 없는 근사값이었고, 프론트가 price*amount 로 합계를 재구성하면
+ * 실제 정산액과 반올림 오차가 발생했다. 요율 적용 단가별로 행을 분리하면 모든 행의
+ * 단가가 실존값이고 price*amount 가 항상 정확한 합계가 된다.
+ * (정산정보입력 화면(getOrderSettle 가상 분리 행)과 동일한 표현 방식)
+ *
+ * - 비차등(균일 요율) 매핑: 기존과 동일하게 단가 × mapping.amount 단일 행.
+ * - 폐기 후 재발행으로 대체된 CANCEL 원본 delivery 는 제외(이중합산 방지).
+ *   같은 기준의 필터가 calculateMappingSettlementBaseAmount(D3-52 수정)에도 적용 예정이며,
+ *   이 루프는 util 을 거치지 않고 delivery 를 직접 세므로 여기에도 동일 필터가 필요하다.
+ *   폐기만 하고 재발행하지 않은 CANCEL 은 기존 동작 유지(정산 반영 정책 별도 판단).
+ */
+function buildSettlementDisplayLines(mapping: OrderProductMappingEntity): Array<{ price: number; amount: number }> {
+  const allDeliveries = mapping.orderDeliveries ?? [];
+  // bigint 컬럼(replacedFromId)은 런타임에 string 으로 hydrate 될 수 있어 Number 정규화 후 비교.
+  const replacedIds = new Set(
+    allDeliveries
+      .filter((delivery) => delivery.replacedFromId !== null && delivery.replacedFromId !== undefined)
+      .map((delivery) => Number(delivery.replacedFromId)),
+  );
+  const deliveries = allDeliveries.filter(
+    (delivery) => !(delivery.couponStatus === OrderDeliveryCouponStatus.CANCEL && replacedIds.has(Number(delivery.id))),
+  );
+
+  const hasDeliveryFee = deliveries.some((delivery) => delivery.settleFee !== null);
+  if (!hasDeliveryFee) {
+    // 균일 요율: 단가 1회 계산 × 주문 수량 (기존 동작 그대로)
+    return [{ price: calculateSettlementPrice(mapping, false), amount: mapping.amount }];
+  }
+
+  // 차등정산: 요율 적용 단가별로 발송건 수를 세어 행 분리.
+  // 단가 자체를 그룹 키로 쓰므로 각 행에서 price*amount == 발송건별 정확 합계가 보장된다.
+  const unitPriceCounts = new Map<number, number>();
+  for (const delivery of deliveries) {
+    const unitPrice = calculateSettlementPrice(mapping, false, delivery);
+    unitPriceCounts.set(unitPrice, (unitPriceCounts.get(unitPrice) ?? 0) + 1);
+  }
+  return [...unitPriceCounts.entries()].map(([price, amount]) => ({ price, amount }));
+}
 
 @Injectable()
 export class SettleService {
@@ -1650,28 +1695,23 @@ export class SettleService {
 
     if (order.orderProductMappings && order.orderProductMappings.length > 0) {
       for (const orderProductMapping of order.orderProductMappings) {
-        // 할인/할증 적용 단가 — D3-49 축3: 발송건별 settleFee(SSG 차등정산)까지 반영해 실제 차감과 동일하게 산출.
-        // calculateMappingSettlementBaseAmount = 발송건 단가별 반올림 합(또는 단가별 반올림×수량). 라인총액이 정확값.
+        // D3-49 리뷰 B안: 차등정산 매핑은 요율 적용 단가별로 행 분리(buildSettlementDisplayLines).
+        // 모든 행의 단가가 실존값이라 price*amount 가 항상 정확한 합계 — 평균단가(근사) 제거.
+        // 균일 요율 매핑은 기존처럼 단일 행. 분리된 행들은 같은 매핑 id 를 공유한다.
         const lineView = readLineProductView(orderProductMapping);
-        const quantity = orderProductMapping.amount ?? 0;
-        const lineTotal = calculateMappingSettlementBaseAmount(orderProductMapping);
-        // 표시 단가는 라인총액/수량 평균(차등정산 시 단가가 균일하지 않으므로 평균값).
-        // 정확한 합계가 필요하면 supplyAmount(=lineTotal)를 쓸 것 — price*amount로 재구성하면 반올림 오차 발생.
-        const adjustedPrice = quantity > 0 ? Math.round(lineTotal / quantity) : lineTotal;
-
-        const product = {
-          id: orderProductMapping.product?.id ?? orderProductMapping.productId,
-          code: orderProductMapping.product?.code ?? null,
-          brandName: lineView.brandName,
-          name: lineView.name,
-          price: adjustedPrice, // 할인/할증 적용된 단가(평균, 표시용)
-          amount: orderProductMapping.amount,
-          supplyAmount: lineTotal, // 공급가액(정확한 라인 합계)
-        };
-        productList.push({
-          id: orderProductMapping.id,
-          product: product,
-        });
+        for (const line of buildSettlementDisplayLines(orderProductMapping)) {
+          productList.push({
+            id: orderProductMapping.id,
+            product: {
+              id: orderProductMapping.product?.id ?? orderProductMapping.productId,
+              code: orderProductMapping.product?.code ?? null,
+              brandName: lineView.brandName,
+              name: lineView.name,
+              price: line.price, // 할인/할증 적용된 실제 단가(행 내 균일)
+              amount: line.amount,
+            },
+          });
+        }
       }
     }
 
