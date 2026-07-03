@@ -69,18 +69,20 @@ export class OrderFromController {
   @ApiOkResponse({ description: '성공적으로 추가한 경우' })
   @ApiBadRequestResponse({ description: '이미 등록된 이메일이 존재할경우 <br>등록할 수 없는 이메일 id 일 경우' })
   // ====================================================
+  @UseGuards(AuthUserSuperAdminGuard)
   @Post('/order-from/email')
-  createEmail(@Body() getBody: OrderFromCreateEmailReqDto) {
-    return this.orderFromService.createEmail(getBody);
+  createEmail(@User() user: ILoginUserInfo, @Body() getBody: OrderFromCreateEmailReqDto) {
+    return this.orderFromService.createEmail(user, getBody);
   }
 
   @ApiOperation({ summary: '발신 이메일 삭제하기' })
   @ApiOkResponse({ description: '성공적으로 삭제한 경우' })
   @ApiBadRequestResponse({ description: '존재하지 않는 이메일일 경우' })
   // ====================================================
+  @UseGuards(AuthUserSuperAdminGuard)
   @Delete('/order-from/email')
-  deleteEmail(@Body() getBody: OrderFromDeleteEmailReqDto) {
-    return this.orderFromService.deleteEmail(getBody.id);
+  deleteEmail(@User() user: ILoginUserInfo, @Body() getBody: OrderFromDeleteEmailReqDto) {
+    return this.orderFromService.deleteEmail(user, getBody.id);
   }
 
   @ApiOperation({ summary: '기본 발신번호 설정' })
