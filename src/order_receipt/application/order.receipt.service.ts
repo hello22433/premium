@@ -26,6 +26,9 @@ import { IUserAuthority } from '../../user/interface/user.authority';
 
 @Injectable()
 export class OrderReceiptService {
+  /** 상세조회에서 원본명(HeadObject)을 조회하는 첨부 수 상한 — 초과분은 key 복원 폴백(S3 호출 폭주 방지) */
+  static readonly MAX_FILE_META_LOOKUP = 10;
+
   constructor(
     @InjectRepository(OrderReceiptEntity)
     private orderReceiptRepository: Repository<OrderReceiptEntity>,
@@ -96,8 +99,13 @@ export class OrderReceiptService {
 
     const fileUrlList = parseFilePathList(receipt.filePath);
     // 원본 파일명(메타데이터)까지 함께 — FE 가 화면 표시·다운로드명 모두 진짜 이름으로 일관되게.
+    // S3 HeadObject 는 상한(MAX_FILE_META_LOOKUP)까지만 — 초과분은 key 복원 폴백(호출 폭주 방지).
     const files = await Promise.all(
-      fileUrlList.map(async (url) => ({ url, name: await this.fileService.getOriginalName(url) })),
+      fileUrlList.map(async (url, index) =>
+        index < OrderReceiptService.MAX_FILE_META_LOOKUP
+          ? { url, name: await this.fileService.getOriginalName(url) }
+          : { url, name: this.fileService.extractOriginalFileName(url) },
+      ),
     );
 
     return {

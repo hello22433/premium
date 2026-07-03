@@ -62,6 +62,7 @@ describe('OrderReceiptService access and status policy', () => {
     return {
       service: new OrderReceiptService(repository as any, fileService as any),
       repository,
+      fileService,
       receipt,
     };
   };
@@ -118,6 +119,17 @@ describe('OrderReceiptService access and status policy', () => {
     expect(approvedTarget.receipt.rejectReason).toBeNull();
     expect(approvedTarget.receipt.status).toBe(OrderReceiptStatus.APPROVED);
     expect(approvedTarget.repository.save).toHaveBeenCalledWith(approvedTarget.receipt);
+  });
+
+  it('caps per-detail S3 metadata lookups at MAX_FILE_META_LOOKUP and falls back to key-derived names', async () => {
+    const manyUrls = Array.from({ length: 12 }, (_, i) => `https://b.s3.amazonaws.com/private/20/k${i}-f${i}.xlsx`);
+    const { service, fileService } = createService(makeReceipt({ filePath: manyUrls.join(',') }));
+
+    const detail = await (service.getDetail as any)(operationAdmin, { id: 100 });
+
+    expect(detail.files).toHaveLength(12);
+    expect(fileService.getOriginalName).toHaveBeenCalledTimes(OrderReceiptService.MAX_FILE_META_LOOKUP);
+    expect(fileService.extractOriginalFileName).toHaveBeenCalledTimes(12 - OrderReceiptService.MAX_FILE_META_LOOKUP);
   });
 
   it('allows admins to read details and super admin to delete reviewing receipts', async () => {
