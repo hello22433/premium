@@ -151,7 +151,10 @@ function buildSettlementDisplayLines(mapping: OrderProductMappingEntity): Array<
     (delivery) => !(delivery.couponStatus === OrderDeliveryCouponStatus.CANCEL && replacedIds.has(Number(delivery.id))),
   );
 
-  const hasDeliveryFee = deliveries.some((delivery) => delivery.settleFee !== null);
+  // 차등정산 여부 판정은 필터 "전" 목록 기준 — calculateMappingSettlementBaseAmount(정산금액 util)와
+  // 분기 판정을 일치시켜, 대체된 CANCEL 원본만 settleFee 를 갖는 엣지에서 화면과 정산금액이
+  // 서로 다른 분기(균일 vs 차등)를 타는 불일치를 방지한다.
+  const hasDeliveryFee = allDeliveries.some((delivery) => delivery.settleFee !== null);
   if (!hasDeliveryFee) {
     // 균일 요율: 단가 1회 계산 × 주문 수량 (기존 동작 그대로)
     return [{ price: calculateSettlementPrice(mapping, false), amount: mapping.amount }];
