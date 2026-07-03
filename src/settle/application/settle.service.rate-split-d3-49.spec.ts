@@ -182,4 +182,47 @@ describe('SettleService getUserDetail / getUserDetailMultiple — 요율별 행 
       ]),
     );
   });
+
+  it('settleFee 혼재(일부 null) 매핑: null 발송건은 mapping.fee 폴백 — util 합산과 동일한 단가 구성', async () => {
+    // 발송건1은 10% delivery 요율, 발송건2는 settleFee 없음(mapping.fee 도 null → 정가 3335 폴백)
+    const deliveries = [
+      { id: 1, settleFee: 10, settlePriceAdjustment: 'DISCOUNT', couponStatus: 'NOT_USED', replacedFromId: null },
+      { id: 2, settleFee: null, settlePriceAdjustment: null, couponStatus: 'NOT_USED', replacedFromId: null },
+    ];
+    const res = await getDetail(makeOrder(999, [makeMapping(deliveries)]));
+    const products = res.productList.map((row: any) => row.product);
+
+    expect(products).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ price: 3001, amount: 1 }), // delivery 요율 10%
+        expect.objectContaining({ price: 3335, amount: 1 }), // 폴백: mapping.fee null → 정가
+      ]),
+    );
+    expect(products.reduce((sum: number, p: any) => sum + p.price * p.amount, 0)).toBe(6336); // 3001+3335
+  });
+
+  it('orderDeliveries 가 비어 있으면 균일 분기 — 단가 × mapping.amount 단일 행 (기존 동작 보존)', async () => {
+    const mapping = makeMapping([], { fee: 10, priceAdjustment: 'DISCOUNT' });
+    const res = await getDetail(makeOrder(999, [mapping]));
+    const products = res.productList.map((row: any) => row.product);
+
+    expect(products).toHaveLength(1);
+    expect(products[0]).toEqual(expect.objectContaining({ price: 3001, amount: 2 }));
+  });
+
+  it('차등 분기 판정은 필터 전 기준: settleFee 보유 행이 대체된 CANCEL 뿐이어도 균일 분기로 안 넘어감', async () => {
+    // 유일한 settleFee 보유 행(id1)이 대체된 CANCEL. 재발행분(id3)은 settleFee 미승계(레거시 가정).
+    // 분기 판정이 필터 후 기준이면 균일 분기(단가×mapping.amount=2행 수량)로 넘어가
+    // 정산금액 util(필터 전 기준, 차등 분기)과 다른 분기를 타게 된다 — 필터 전 기준을 고정.
+    const deliveries = [
+      { id: 1, settleFee: 10, settlePriceAdjustment: 'DISCOUNT', couponStatus: 'CANCEL', replacedFromId: null },
+      { id: 3, settleFee: null, settlePriceAdjustment: null, couponStatus: 'NOT_USED', replacedFromId: '1' },
+    ];
+    const res = await getDetail(makeOrder(999, [makeMapping(deliveries)]));
+    const products = res.productList.map((row: any) => row.product);
+
+    // 차등 분기 유지: 생존 발송건(id3, 폴백 정가) 1건만 행으로 — mapping.amount(2) 기반 행이 아님
+    expect(products).toHaveLength(1);
+    expect(products[0]).toEqual(expect.objectContaining({ price: 3335, amount: 1 }));
+  });
 });
