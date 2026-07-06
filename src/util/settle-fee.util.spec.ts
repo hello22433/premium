@@ -197,6 +197,100 @@ describe('calculateMappingSettlementBaseAmount — 폐기 재발행 이중합산
   });
 });
 
+/**
+ * D3-52 후속(이기성 재리뷰) — 차등정산 여부(hasDeliveryFee) 판정 기준을 필터 "전"(allDeliveries)으로
+ * 통일. 표시 경로(settle.service buildSettlementDisplayLines, PR #533)가 이미 allDeliveries 기준이라
+ * 정산금액 util 도 동일 기준으로 맞춰 화면과 정산금액이 서로 다른 분기를 타는 것을 방지한다.
+ *
+ * 핵심 엣지: 유일하게 settleFee 를 가진 행이 "대체된 CANCEL 원본"이고, 생존 재발행분은 settleFee 를
+ * 승계하지 않은(레거시/비CS 경로) 데이터. 필터 후 기준이면 생존에 요율이 없어 균일 분기로 떨어져
+ * 단가 × mapping.amount(폐기 포함 수량)로 과다 계산된다. 필터 전 기준이면 차등 분기를 유지해
+ * 생존 발송건만 합산한다.
+ */
+describe('calculateMappingSettlementBaseAmount — 차등 분기 판정은 필터 전 기준 (D3-52 재리뷰)', () => {
+  const live = (id: number, settleFee: number | null, over: Record<string, unknown> = {}) => ({
+    id,
+    settleFee,
+    settlePriceAdjustment: settleFee !== null ? IPriceAdjustment.DISCOUNT : null,
+    couponStatus: OrderDeliveryCouponStatus.NOT_USED,
+    replacedFromId: null,
+    ...over,
+  });
+
+  it('유일 settleFee 보유 행이 대체된 CANCEL 원본이고 생존분은 요율 미승계 → 차등 분기 유지(생존만 합산)', () => {
+    // 3335원, mapping.fee 없음. 행1(요율10, 대체된 CANCEL) + 행3(요율 미승계, 생존, 재발행분)
+    const mapping = {
+      amount: 2,
+      fee: null,
+      priceAdjustment: null,
+      product: { price: 3335 },
+      orderDeliveries: [
+        live(1, 10, { couponStatus: OrderDeliveryCouponStatus.CANCEL }), // 유일한 settleFee 보유(폐기 원본)
+        live(3, null, { replacedFromId: 1 }), // 생존 재발행분, settleFee 미승계
+      ],
+    } as any;
+
+    // 필터 전 기준(allDeliveries.some=true) → 차등 분기 → 생존 [행3] 1건만 = 3335(요율 없음, 정가)
+    expect(calculateMappingSettlementBaseAmount(mapping)).toBe(3335);
+    // 필터 후 기준(옛 동작)이면 균일 분기로 떨어져 3335 × mapping.amount(2) = 6670 이 됐을 것
+    expect(calculateMappingSettlementBaseAmount(mapping)).not.toBe(6670);
+  });
+
+  it('생존분이 mapping.fee 로 폴백되는 엣지 → 차등 분기에서 생존만 할인 적용(단가×1)', () => {
+    // mapping.fee=10 존재. 행1(delivery요율11, 대체 CANCEL) + 행3(settleFee 미승계→mapping.fee 폴백, 생존)
+    const mapping = {
+      amount: 2,
+      fee: 10,
+      priceAdjustment: IPriceAdjustment.DISCOUNT,
+      product: { price: 3335 },
+      orderDeliveries: [
+        live(1, 11, { couponStatus: OrderDeliveryCouponStatus.CANCEL }),
+        live(3, null, { replacedFromId: 1 }),
+      ],
+    } as any;
+
+    // 차등 분기 → 생존 [행3]: getEffectiveFee = null ?? mapping.fee(10) → 3335-round(333.5)=3001, 1건
+    expect(calculateMappingSettlementBaseAmount(mapping)).toBe(3001);
+    // 균일 분기(옛 동작)면 3001 × 2 = 6002
+    expect(calculateMappingSettlementBaseAmount(mapping)).not.toBe(6002);
+  });
+
+  it('생존분이 요율을 정상 승계한 일반 케이스는 판정 기준과 무관하게 동일(회귀 안전)', () => {
+    // 행1(요율10, 대체 CANCEL) + 행2(요율11, 생존) + 행3(요율10 승계, 생존 재발행분)
+    const mapping = {
+      amount: 2,
+      fee: null,
+      priceAdjustment: null,
+      product: { price: 3335 },
+      orderDeliveries: [
+        live(1, 10, { couponStatus: OrderDeliveryCouponStatus.CANCEL }),
+        live(2, 11),
+        live(3, 10, { replacedFromId: 1 }),
+      ],
+    } as any;
+
+    // 필터 전/후 어느 기준이든 생존 [행2,행3] = 2968 + 3001 = 5969
+    expect(calculateMappingSettlementBaseAmount(mapping)).toBe(5969);
+  });
+
+  it('delivery-level 요율이 전혀 없는 순수 균일 매핑은 필터 전 기준이어도 균일 분기 유지', () => {
+    // 대체된 CANCEL 이 있어도 settleFee 가 전부 null → allDeliveries.some=false → 균일 분기
+    const mapping = {
+      amount: 2,
+      fee: 10,
+      priceAdjustment: IPriceAdjustment.DISCOUNT,
+      product: { price: 3335 },
+      orderDeliveries: [
+        live(1, null, { couponStatus: OrderDeliveryCouponStatus.CANCEL }),
+        live(3, null, { replacedFromId: 1 }),
+      ],
+    } as any;
+
+    // 균일 분기: (3335-round(333.5)=3001) × mapping.amount(2) = 6002 (기존 동작 그대로)
+    expect(calculateMappingSettlementBaseAmount(mapping)).toBe(6002);
+  });
+});
+
 describe('calculateSettlementPrice — snapshot price priority', () => {
   const makeMapping = (overrides: {
     snapshotProductPrice: number | null;
