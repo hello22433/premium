@@ -58,7 +58,12 @@ export function calculateMappingSettlementBaseAmount(mapping: OrderProductMappin
   const deliveries = allDeliveries.filter(
     (delivery) => !(delivery.couponStatus === OrderDeliveryCouponStatus.CANCEL && replacedIds.has(Number(delivery.id))),
   );
-  const hasDeliveryFee = deliveries.some((delivery) => delivery.settleFee !== null);
+  // 차등정산 여부 판정은 필터 "전" 목록(allDeliveries) 기준.
+  // 표시 경로(settle.service buildSettlementDisplayLines)와 동일 기준으로 맞춰,
+  // 유일한 settleFee 보유 행이 대체된 CANCEL 원본이고 재발행 생존분이 settleFee 를
+  // 승계하지 않은 엣지에서 화면(차등 분기)과 정산금액(균일 분기)이 어긋나는 것을 방지.
+  // (합산 대상은 여전히 필터 후 deliveries — 판정은 성격(과거), 합산은 현황(생존)으로 분리)
+  const hasDeliveryFee = allDeliveries.some((delivery) => delivery.settleFee !== null);
 
   if (hasDeliveryFee) {
     return deliveries.reduce((total, delivery) => {
