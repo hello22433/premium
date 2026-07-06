@@ -1,6 +1,33 @@
-ALTER TABLE `order_product_mapping`
-  ADD COLUMN `partner_settle_price_adjustment` ENUM('DISCOUNT', 'ADDITIONAL') NULL COMMENT '[snapshot] 협력사 정산 시 사용되는 할인 방법',
-  ADD COLUMN `partner_settle_fee` INT NULL COMMENT '[snapshot] 협력사 정산 시 사용되는 수수료 (percent)';
+-- 컬럼 추가는 재실행 안전해야 한다. backfill 검증 실패(SIGNAL) 후 이 스크립트를 처음부터
+-- 다시 실행하는 것이 운영 절차이므로, 컬럼이 이미 있으면 ALTER 를 건너뛴다.
+DROP PROCEDURE IF EXISTS add_partner_settle_snapshot_columns;
+DELIMITER //
+CREATE PROCEDURE add_partner_settle_snapshot_columns()
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = 'order_product_mapping'
+       AND COLUMN_NAME = 'partner_settle_price_adjustment'
+  ) THEN
+    ALTER TABLE `order_product_mapping`
+      ADD COLUMN `partner_settle_price_adjustment` ENUM('DISCOUNT', 'ADDITIONAL') NULL COMMENT '[snapshot] 협력사 정산 시 사용되는 할인 방법';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = 'order_product_mapping'
+       AND COLUMN_NAME = 'partner_settle_fee'
+  ) THEN
+    ALTER TABLE `order_product_mapping`
+      ADD COLUMN `partner_settle_fee` INT NULL COMMENT '[snapshot] 협력사 정산 시 사용되는 수수료 (percent)';
+  END IF;
+END //
+DELIMITER ;
+
+CALL add_partner_settle_snapshot_columns();
+DROP PROCEDURE IF EXISTS add_partner_settle_snapshot_columns;
 
 -- =============================================================================
 -- 배포시점 동결(containment): 기존 행을 findMatchingDiscount()(discount.matcher.ts)와
@@ -13,7 +40,11 @@ ALTER TABLE `order_product_mapping`
 -- 스킵(로그 기록) → 운영자 수동 확인.
 -- 가격 기준: order_product_mapping.snapshot_product_price 우선, 없으면 product.price
 --           (buildPartnerSettleSnapshot() 호출부와 동일 기준).
--- 배포 이후 신규 주문은 애플리케이션에서 정확히 박제되므로 기존 행만 영향.
+-- 운영 전제: 새 애플리케이션 배포 후 실행한다. 구버전 앱이 migration 도중 신규 주문을
+-- partner_settle_fee=NULL 로 insert하면 마지막 전체 테이블 검증에서 차단되므로, 실패 시
+-- 주문 쓰기를 멈추거나 새 앱 배포 상태를 확인한 뒤 재실행한다.
+-- 이 스크립트는 전체가 재실행 안전(idempotent)하다: 컬럼 추가는 존재 확인 후 수행하고,
+-- backfill 은 partner_settle_fee IS NULL 인 행만 대상으로 하므로 이미 확정된 행은 다시 건드리지 않는다.
 -- =============================================================================
 
 DROP TABLE IF EXISTS `_partner_settle_backfill_skip_log`;
@@ -49,6 +80,15 @@ INSERT INTO `_partner_settle_backfill_target`
     INNER JOIN `product` p ON p.id = opm.product_id
    WHERE opm.partner_settle_fee IS NULL
      AND p.partner_company_id IS NOT NULL;
+
+-- 할인조건도 backfill 시작 시점 기준으로 구체화한다. 이후 커서 처리 중 운영자가
+-- user_discount 를 수정해도 같은 migration 안의 row 들이 서로 다른 할인조건으로 박제되지 않게 한다.
+DROP TEMPORARY TABLE IF EXISTS `_partner_settle_backfill_discount`;
+CREATE TEMPORARY TABLE `_partner_settle_backfill_discount` LIKE `user_discount`;
+INSERT INTO `_partner_settle_backfill_discount`
+  SELECT *
+    FROM `user_discount`
+   WHERE deleted_at IS NULL;
 
 DROP PROCEDURE IF EXISTS backfill_partner_settle_snapshot;
 DELIMITER //
@@ -109,10 +149,9 @@ BEGIN
     -- 단건 SELECT ... INTO 는 row 없음도 NOT FOUND handler 를 태우므로 scalar subquery 로 조회한다.
     SET v_brand_fee = (
       SELECT ud.price_percent
-        FROM `user_discount` ud
+        FROM `_partner_settle_backfill_discount` ud
         INNER JOIN `brand` b ON b.id = v_brand_id
        WHERE ud.partner_company_id = v_partner_company_id
-         AND ud.deleted_at IS NULL
          AND ud.category = 'BRAND'
          AND ud.method = 'BULK'
          AND ud.primary_category = b.name_korean
@@ -120,10 +159,9 @@ BEGIN
     );
     SET v_brand_adj = (
       SELECT ud.price_adjustment
-        FROM `user_discount` ud
+        FROM `_partner_settle_backfill_discount` ud
         INNER JOIN `brand` b ON b.id = v_brand_id
        WHERE ud.partner_company_id = v_partner_company_id
-         AND ud.deleted_at IS NULL
          AND ud.category = 'BRAND'
          AND ud.method = 'BULK'
          AND ud.primary_category = b.name_korean
@@ -144,9 +182,8 @@ BEGIN
                  ud.price_adjustment,
                  LEAD(CAST(ud.`range` AS SIGNED)) OVER (ORDER BY CAST(ud.`range` AS SIGNED) ASC) AS next_range_val,
                  LEAD(ud.compare_condition) OVER (ORDER BY CAST(ud.`range` AS SIGNED) ASC) AS next_compare_cond
-            FROM `user_discount` ud
+            FROM `_partner_settle_backfill_discount` ud
            WHERE ud.partner_company_id = v_partner_company_id
-             AND ud.deleted_at IS NULL
              AND ud.category = 'BRAND'
              AND ud.method = 'SECTION'
              AND ud.primary_category = (SELECT b.name_korean FROM `brand` b WHERE b.id = v_brand_id)
@@ -226,9 +263,8 @@ BEGIN
       -- 2) CATEGORY: BULK 우선, 없으면 SECTION 구간 판정
       SET v_category_fee = (
         SELECT ud.price_percent
-          FROM `user_discount` ud
+          FROM `_partner_settle_backfill_discount` ud
          WHERE ud.partner_company_id = v_partner_company_id
-           AND ud.deleted_at IS NULL
            AND ud.category = 'CATEGORY'
            AND ud.method = 'BULK'
            AND ud.classification_id = v_classification_id
@@ -236,9 +272,8 @@ BEGIN
       );
       SET v_category_adj = (
         SELECT ud.price_adjustment
-          FROM `user_discount` ud
+          FROM `_partner_settle_backfill_discount` ud
          WHERE ud.partner_company_id = v_partner_company_id
-           AND ud.deleted_at IS NULL
            AND ud.category = 'CATEGORY'
            AND ud.method = 'BULK'
            AND ud.classification_id = v_classification_id
@@ -263,9 +298,8 @@ BEGIN
                    ud.price_adjustment,
                    LEAD(CAST(ud.`range` AS SIGNED)) OVER (ORDER BY CAST(ud.`range` AS SIGNED) ASC) AS next_range_val,
                    LEAD(ud.compare_condition) OVER (ORDER BY CAST(ud.`range` AS SIGNED) ASC) AS next_compare_cond
-              FROM `user_discount` ud
+              FROM `_partner_settle_backfill_discount` ud
              WHERE ud.partner_company_id = v_partner_company_id
-               AND ud.deleted_at IS NULL
                AND ud.category = 'CATEGORY'
                AND ud.method = 'SECTION'
                AND ud.classification_id = v_classification_id
@@ -340,9 +374,8 @@ BEGIN
       -- 3) PRODUCT_GROUP: BULK 우선, 없으면 SECTION 구간 판정 (CATEGORY와 동일 절차)
       SET v_group_fee = (
         SELECT ud.price_percent
-          FROM `user_discount` ud
+          FROM `_partner_settle_backfill_discount` ud
          WHERE ud.partner_company_id = v_partner_company_id
-           AND ud.deleted_at IS NULL
            AND ud.category = 'PRODUCT_GROUP'
            AND ud.method = 'BULK'
            AND ud.`group` = v_category
@@ -350,9 +383,8 @@ BEGIN
       );
       SET v_group_adj = (
         SELECT ud.price_adjustment
-          FROM `user_discount` ud
+          FROM `_partner_settle_backfill_discount` ud
          WHERE ud.partner_company_id = v_partner_company_id
-           AND ud.deleted_at IS NULL
            AND ud.category = 'PRODUCT_GROUP'
            AND ud.method = 'BULK'
            AND ud.`group` = v_category
@@ -373,9 +405,8 @@ BEGIN
                    ud.price_adjustment,
                    LEAD(CAST(ud.`range` AS SIGNED)) OVER (ORDER BY CAST(ud.`range` AS SIGNED) ASC) AS next_range_val,
                    LEAD(ud.compare_condition) OVER (ORDER BY CAST(ud.`range` AS SIGNED) ASC) AS next_compare_cond
-              FROM `user_discount` ud
+              FROM `_partner_settle_backfill_discount` ud
              WHERE ud.partner_company_id = v_partner_company_id
-               AND ud.deleted_at IS NULL
                AND ud.category = 'PRODUCT_GROUP'
                AND ud.method = 'SECTION'
                AND ud.`group` = v_category
@@ -494,6 +525,7 @@ DELIMITER ;
 CALL backfill_partner_settle_snapshot();
 DROP PROCEDURE IF EXISTS backfill_partner_settle_snapshot;
 DROP TEMPORARY TABLE IF EXISTS `_partner_settle_backfill_target`;
+DROP TEMPORARY TABLE IF EXISTS `_partner_settle_backfill_discount`;
 
 -- 검증: 방향 충돌로 스킵된 행 (운영자 수동 확인 필요, 0 row면 전량 자동 확정)
 SELECT * FROM `_partner_settle_backfill_skip_log`;
@@ -513,6 +545,7 @@ CREATE PROCEDURE assert_partner_settle_snapshot_backfill()
 BEGIN
   DECLARE v_skip_count INT DEFAULT 0;
   DECLARE v_remaining_count INT DEFAULT 0;
+  DECLARE v_remaining_null_total INT DEFAULT 0;
 
   SELECT COUNT(*)
     INTO v_skip_count
@@ -526,6 +559,15 @@ BEGIN
      AND p.partner_company_id IS NOT NULL
      AND opm.id NOT IN (SELECT mapping_id FROM `_partner_settle_backfill_skip_log`);
 
+  -- target 구체화 이후 구버전 앱이 새 주문을 insert했거나, backfill 대상 밖 NULL row가 있으면
+  -- skip log 여부와 무관하게 전체 테이블 기준으로 차단한다.
+  SELECT COUNT(*)
+    INTO v_remaining_null_total
+    FROM `order_product_mapping` opm
+    INNER JOIN `product` p ON p.id = opm.product_id
+   WHERE opm.partner_settle_fee IS NULL
+     AND p.partner_company_id IS NOT NULL;
+
   IF v_skip_count > 0 THEN
     SIGNAL SQLSTATE '45000'
       SET MESSAGE_TEXT = 'partner settle backfill blocked: CATEGORY/PRODUCT_GROUP priceAdjustment conflict';
@@ -535,10 +577,15 @@ BEGIN
     SIGNAL SQLSTATE '45000'
       SET MESSAGE_TEXT = 'partner settle backfill blocked: unresolved NULL rows remain';
   END IF;
+
+  IF v_remaining_null_total > v_skip_count THEN
+    SIGNAL SQLSTATE '45000'
+      SET MESSAGE_TEXT = 'partner settle backfill blocked: unresolved NULL rows remain after full-table verification';
+  END IF;
 END //
 DELIMITER ;
 
 CALL assert_partner_settle_snapshot_backfill();
 DROP PROCEDURE IF EXISTS assert_partner_settle_snapshot_backfill;
 
--- 확인 후 운영자가 직접 DROP: DROP TABLE `_partner_settle_backfill_skip_log`;
+-- 확인 후 DROP: DROP TABLE `_partner_settle_backfill_skip_log`;

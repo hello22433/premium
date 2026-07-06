@@ -45,4 +45,28 @@ describe('20260629_add_partner_settle_snapshot.sql', () => {
     expect(executableSql).not.toMatch(/SELECT\s+ud\.price_percent\s*,\s*ud\.price_adjustment\s+INTO\s+v_category_fee/i);
     expect(executableSql).not.toMatch(/SELECT\s+ud\.price_percent\s*,\s*ud\.price_adjustment\s+INTO\s+v_group_fee/i);
   });
+
+  it('backfill 시작 시점의 user_discount 스냅샷만 사용해 도중 할인조건 변경 영향을 차단한다', () => {
+    expect(executableSql).toMatch(/CREATE\s+TEMPORARY\s+TABLE\s+`_partner_settle_backfill_discount`/i);
+    expect(executableSql).toMatch(/INSERT\s+INTO\s+`_partner_settle_backfill_discount`/i);
+
+    const afterDiscountSnapshot = executableSql.slice(
+      executableSql.search(/DROP\s+PROCEDURE\s+IF\s+EXISTS\s+backfill_partner_settle_snapshot/i),
+    );
+    expect(afterDiscountSnapshot).not.toMatch(/FROM\s+`user_discount`\s+ud/i);
+    expect(afterDiscountSnapshot).toMatch(/FROM\s+`_partner_settle_backfill_discount`\s+ud/i);
+  });
+
+  it('컬럼 추가는 information_schema 존재 확인 뒤 수행해 스크립트 전체가 재실행 안전하다', () => {
+    expect(executableSql).toMatch(/information_schema\.COLUMNS/i);
+    expect(executableSql).toMatch(/COLUMN_NAME\s*=\s*'partner_settle_price_adjustment'/i);
+    expect(executableSql).toMatch(/COLUMN_NAME\s*=\s*'partner_settle_fee'/i);
+    // 가드 없는 최상위(bare) ALTER ADD COLUMN 이 존재하면 재실행 시 duplicate column 으로 실패한다
+    expect(executableSql).not.toMatch(/^ALTER\s+TABLE\s+`order_product_mapping`/im);
+  });
+
+  it('target 구체화 이후 새로 생긴 NULL 스냅샷 row도 전체 테이블 기준 검증으로 차단한다', () => {
+    expect(executableSql).toMatch(/remaining_null_total/i);
+    expect(executableSql).toMatch(/partner settle backfill blocked: unresolved NULL rows remain after full-table verification/i);
+  });
 });
