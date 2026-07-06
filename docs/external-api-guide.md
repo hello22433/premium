@@ -562,6 +562,8 @@ ePOPKON이 외부 고객사 시스템으로 쿠폰의 폐기/취소 사실을 �
 ```
 POST {등록한 URL}
 Content-Type: application/json
+X-Webhook-Signature: v1=<hex lowercase>
+X-Webhook-Timestamp: <unix epoch seconds>
 ```
 
 ```json
@@ -604,6 +606,36 @@ Content-Type: application/json
 - 통보 URL은 **HTTPS만 허용**됩니다. http URL은 등록되지 않습니다.
 - 사설망/loopback IP는 등록되지 않습니다 (SSRF 방지).
 - 페이로드에는 쿠폰의 핀번호(`barCode`, `personalCode`)가 포함되지 않습니다. 상세 정보는 [3. 주문 상태 조회](#3-주문-상태-조회) API를 사용해 `trId`로 조회하세요.
+
+### 서명 검증 (HMAC-SHA256)
+
+통보 요청의 위변조를 막기 위해 ePOPKON은 각 Webhook 요청에 HMAC-SHA256 서명 헤더를 부착합니다. 고객사는 아래 규격으로 서명을 재계산해 검증하는 것을 권장합니다.
+
+| 항목 | 값 |
+| --- | --- |
+| 서명 헤더 | `X-Webhook-Signature: v1=<hex lowercase>` |
+| 타임스탬프 헤더 | `X-Webhook-Timestamp: <unix epoch seconds>` |
+| 알고리즘 | HMAC-SHA256 |
+| 키 | ePOPKON과 사전 공유한 시크릿(`WEBHOOK_HMAC_SECRET`, UTF-8 바이트) |
+| 서명 대상 | `"{timestamp}.{rawBody}"` — `timestamp`는 `X-Webhook-Timestamp` 헤더 문자열, `rawBody`는 **수신한 원본 바디 바이트 그대로** |
+| 리플레이 방어 | `|now - timestamp| <= 300s`(±5분) 벗어나면 거부 권장 |
+| 비교 | 상수시간 비교(constant-time) 권장 |
+
+검증 절차:
+
+1. `X-Webhook-Signature`, `X-Webhook-Timestamp` 헤더를 읽는다.
+2. 수신한 **원본 바디 바이트**를 파싱/재직렬화하지 말고 그대로 사용한다(재직렬화하면 키 순서·공백 차이로 서명이 깨진다).
+3. `"{timestamp}.{rawBody}"`를 공유 시크릿으로 HMAC-SHA256 계산하고 `v1=<hex>` 형식과 상수시간 비교한다.
+4. 불일치하거나 타임스탬프가 ±5분을 벗어나면 요청을 거부한다.
+
+재현 예시(openssl):
+
+```
+printf '%s' "1700000000.{원본 바디}" | openssl dgst -sha256 -hmac "<공유 시크릿>" -r
+# → 앞의 hex 가 X-Webhook-Signature 의 v1= 뒤 값과 동일해야 함
+```
+
+> 도입 초기에는 서명 헤더 없이 전송될 수 있습니다(무중단 롤아웃). 서명 강제(미서명 요청 거부) 적용 시점은 별도 안내합니다.
 
 ---
 
