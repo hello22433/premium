@@ -53,6 +53,12 @@ export class OrderFromService {
     }
   }
 
+  private assertCanManageGlobalEmail(user: ILoginUserInfo): void {
+    if (user.authority !== IUserAuthority.SUPER_ADMIN) {
+      throw new ForbiddenException('권한이 없습니다.');
+    }
+  }
+
   async getPhoneList(
     user: ILoginUserInfo,
     getQuery: OrderFromGetPhoneReqQueryDto,
@@ -197,7 +203,9 @@ export class OrderFromService {
     };
   }
 
-  async createEmail(getBody: OrderFromCreateEmailReqDto) {
+  async createEmail(user: ILoginUserInfo, getBody: OrderFromCreateEmailReqDto) {
+    this.assertCanManageGlobalEmail(user);
+
     const { from } = getBody;
 
     const existFromEmail = await this.orderFromDefinitionRepository.existsBy({
@@ -231,7 +239,9 @@ export class OrderFromService {
     });
   }
 
-  async deleteEmail(id: number) {
+  async deleteEmail(user: ILoginUserInfo, id: number) {
+    this.assertCanManageGlobalEmail(user);
+
     const email = await this.orderFromDefinitionRepository.findOne({
       where: {
         id,
