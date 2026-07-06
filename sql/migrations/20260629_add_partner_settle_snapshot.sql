@@ -69,26 +69,10 @@ CREATE TEMPORARY TABLE `_partner_settle_backfill_target` (
   `effective_price` INT NOT NULL
 );
 
-INSERT INTO `_partner_settle_backfill_target`
-  SELECT opm.id,
-         p.partner_company_id,
-         p.brand_id,
-         p.classification_id,
-         p.category,
-         COALESCE(opm.snapshot_product_price, p.price)
-    FROM `order_product_mapping` opm
-    INNER JOIN `product` p ON p.id = opm.product_id
-   WHERE opm.partner_settle_fee IS NULL
-     AND p.partner_company_id IS NOT NULL;
-
 -- 할인조건도 backfill 시작 시점 기준으로 구체화한다. 이후 커서 처리 중 운영자가
 -- user_discount 를 수정해도 같은 migration 안의 row 들이 서로 다른 할인조건으로 박제되지 않게 한다.
 DROP TEMPORARY TABLE IF EXISTS `_partner_settle_backfill_discount`;
 CREATE TEMPORARY TABLE `_partner_settle_backfill_discount` LIKE `user_discount`;
-INSERT INTO `_partner_settle_backfill_discount`
-  SELECT *
-    FROM `user_discount`
-   WHERE deleted_at IS NULL;
 
 DROP PROCEDURE IF EXISTS backfill_partner_settle_snapshot;
 DELIMITER //
@@ -522,23 +506,6 @@ BEGIN
 END //
 DELIMITER ;
 
-CALL backfill_partner_settle_snapshot();
-DROP PROCEDURE IF EXISTS backfill_partner_settle_snapshot;
-DROP TEMPORARY TABLE IF EXISTS `_partner_settle_backfill_target`;
-DROP TEMPORARY TABLE IF EXISTS `_partner_settle_backfill_discount`;
-
--- 검증: 방향 충돌로 스킵된 행 (운영자 수동 확인 필요, 0 row면 전량 자동 확정)
-SELECT * FROM `_partner_settle_backfill_skip_log`;
-
--- 검증: 여전히 NULL인 행이 스킵 로그와 정확히 일치하는지 (그 외 NULL 잔존 시 로직 누락 의심)
-SELECT COUNT(*) AS remaining_null_not_in_skip_log
-  FROM `order_product_mapping` opm
-  INNER JOIN `product` p ON p.id = opm.product_id
- WHERE opm.partner_settle_fee IS NULL
-   AND p.partner_company_id IS NOT NULL
-   AND opm.id NOT IN (SELECT mapping_id FROM `_partner_settle_backfill_skip_log`);
--- 위 결과는 반드시 0 이어야 한다.
-
 DROP PROCEDURE IF EXISTS assert_partner_settle_snapshot_backfill;
 DELIMITER //
 CREATE PROCEDURE assert_partner_settle_snapshot_backfill()
@@ -585,7 +552,61 @@ BEGIN
 END //
 DELIMITER ;
 
-CALL assert_partner_settle_snapshot_backfill();
+DROP PROCEDURE IF EXISTS run_partner_settle_snapshot_backfill;
+DELIMITER //
+CREATE PROCEDURE run_partner_settle_snapshot_backfill()
+BEGIN
+  DECLARE EXIT HANDLER FOR SQLEXCEPTION
+  BEGIN
+    ROLLBACK;
+    RESIGNAL;
+  END;
+
+  START TRANSACTION;
+
+  INSERT INTO `_partner_settle_backfill_target`
+    SELECT opm.id,
+           p.partner_company_id,
+           p.brand_id,
+           p.classification_id,
+           p.category,
+           COALESCE(opm.snapshot_product_price, p.price)
+      FROM `order_product_mapping` opm
+      INNER JOIN `product` p ON p.id = opm.product_id
+     WHERE opm.partner_settle_fee IS NULL
+       AND p.partner_company_id IS NOT NULL;
+
+  INSERT INTO `_partner_settle_backfill_discount`
+    SELECT *
+      FROM `user_discount`
+     WHERE deleted_at IS NULL;
+
+  CALL backfill_partner_settle_snapshot();
+
+  -- 검증: 방향 충돌로 스킵된 행 (0 row면 전량 자동 확정)
+  SELECT * FROM `_partner_settle_backfill_skip_log`;
+
+  -- 검증: 여전히 NULL인 행이 스킵 로그와 정확히 일치하는지 (그 외 NULL 잔존 시 로직 누락 의심)
+  SELECT COUNT(*) AS remaining_null_not_in_skip_log
+    FROM `order_product_mapping` opm
+    INNER JOIN `product` p ON p.id = opm.product_id
+   WHERE opm.partner_settle_fee IS NULL
+     AND p.partner_company_id IS NOT NULL
+     AND opm.id NOT IN (SELECT mapping_id FROM `_partner_settle_backfill_skip_log`);
+  -- 위 결과는 반드시 0 이어야 한다.
+
+  CALL assert_partner_settle_snapshot_backfill();
+
+  COMMIT;
+END //
+DELIMITER ;
+
+CALL run_partner_settle_snapshot_backfill();
+
+DROP PROCEDURE IF EXISTS run_partner_settle_snapshot_backfill;
 DROP PROCEDURE IF EXISTS assert_partner_settle_snapshot_backfill;
+DROP PROCEDURE IF EXISTS backfill_partner_settle_snapshot;
+DROP TEMPORARY TABLE IF EXISTS `_partner_settle_backfill_target`;
+DROP TEMPORARY TABLE IF EXISTS `_partner_settle_backfill_discount`;
 
 -- 확인 후 DROP: DROP TABLE `_partner_settle_backfill_skip_log`;
