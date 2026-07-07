@@ -1099,6 +1099,56 @@ describe('OrderService deliveryConfirmed settlement amount', () => {
     });
     expect(order.settleAmount).toBe(9500);
   });
+  it('deliveryConfirmed: LEGACY 모드는 isNewBillingFlow=false 주문에도 wallet 전용 파라미터를 400 거부한다', async () => {
+    const service = Object.create(OrderService.prototype) as any;
+    const order = {
+      id: 88,
+      userId: 1,
+      clientUserId: 2,
+      operationUserId: 1,
+      eventName: 'event',
+      type: IOrderType.GENERAL,
+      status: IOrderStatus.REVIEW_COMPLETE,
+      sendAmount: 9999,
+      cardSurchargeApplied: false,
+      isNewBillingFlow: false,
+      orderProductMappings: [
+        {
+          id: 10,
+          productId: 100,
+          amount: 1,
+          fee: 0,
+          priceAdjustment: null,
+          sendTitle: 'title',
+          sendContent: 'content',
+          product: { price: 9999, useStatus: 'USE', partnerCompanyId: 20, partnerCompany: {}, brand: {} },
+          orderDeliveries: [{ id: 1, deliveryTarget: '01011112222' }],
+        },
+      ],
+    } as any;
+
+    service.orderRepository = {
+      createQueryBuilder: jest
+        .fn()
+        .mockReturnValueOnce(createQueryBuilder(order))
+        .mockReturnValueOnce(createQueryBuilder(order)),
+    };
+    service.userRepository = {
+      findOne: jest
+        .fn()
+        .mockResolvedValue({ id: 1, authority: 'OPERATION_ADMIN', status: 'USED', authorityList: null }),
+    };
+    service.walletCutoverConfig = {
+      get pr2DeliveryLifecycleMode() {
+        return WalletCutoverMode.LEGACY;
+      },
+    };
+
+    // 발송확정 공통 경로 가드 — isNewBillingFlow 분기 진입 전 400
+    await expect(
+      service.deliveryConfirmed({ id: 1 } as any, { id: order.id, depositUseAmount: 10000 } as any),
+    ).rejects.toThrow('포인트/예치금 사용 옵션은 지갑(wallet) 전환 후에만 사용할 수 있습니다.');
+  });
 });
 
 describe('OrderService getOrderSettle read priority', () => {

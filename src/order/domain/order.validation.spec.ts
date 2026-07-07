@@ -1,7 +1,14 @@
 import { BadRequestException } from '@nestjs/common';
 import { IOrderType } from '../interface/order.type';
 import { IPriceAdjustment } from '../../user_discount/interface/price.adjustment';
-import { validateSsgUniformSend, validateDeliverySendTypes, resolveProductDuplicateLimit } from './order.validation';
+import {
+  validateSsgUniformSend,
+  validateDeliverySendTypes,
+  resolveProductDuplicateLimit,
+  assertWalletOnlyParamsAbsent,
+  assertSettleListDeliveryCoverage,
+} from './order.validation';
+import { WalletCutoverMode } from '../../wallet/config/wallet-cutover.config';
 
 describe('validateSsgUniformSend', () => {
   const t = '2026-06-15T10:00:00';
@@ -133,5 +140,101 @@ describe('resolveProductDuplicateLimit', () => {
     );
     expect(limit.get(101)).toBe(1);
     expect(limit.get(202)).toBe(1);
+  });
+});
+
+describe('assertWalletOnlyParamsAbsent', () => {
+  it('LEGACY 모드에서 depositUseAmount 전송 시 400', () => {
+    expect(() => assertWalletOnlyParamsAbsent(WalletCutoverMode.LEGACY, { depositUseAmount: 10000 })).toThrow(
+      BadRequestException,
+    );
+  });
+
+  it('SHADOW 모드에서 pointUseAmount 전송 시 400', () => {
+    expect(() => assertWalletOnlyParamsAbsent(WalletCutoverMode.SHADOW, { pointUseAmount: 500 })).toThrow(
+      BadRequestException,
+    );
+  });
+
+  it('LEGACY 모드에서 depositUseEnabled=false 라도 명시 전송이면 400', () => {
+    expect(() => assertWalletOnlyParamsAbsent(WalletCutoverMode.LEGACY, { depositUseEnabled: false })).toThrow(
+      BadRequestException,
+    );
+  });
+
+  it('WALLET 모드에서는 전부 허용', () => {
+    expect(() =>
+      assertWalletOnlyParamsAbsent(WalletCutoverMode.WALLET, {
+        pointUseAmount: 500,
+        depositUseAmount: 10000,
+        depositUseEnabled: true,
+      }),
+    ).not.toThrow();
+  });
+
+  it('LEGACY 모드라도 파라미터 미전송이면 허용', () => {
+    expect(() => assertWalletOnlyParamsAbsent(WalletCutoverMode.LEGACY, {})).not.toThrow();
+  });
+});
+
+describe('assertSettleListDeliveryCoverage', () => {
+  const orderProducts = [
+    { id: 10, orderDeliveries: [{ id: 1 }, { id: 2 }, { id: 3 }] },
+    { id: 11, orderDeliveries: [{ id: 4 }, { id: 5 }] },
+  ];
+
+  it('행 간 중복 deliveryId 는 400', () => {
+    expect(() =>
+      assertSettleListDeliveryCoverage(
+        [
+          { id: 10, deliveryIds: [1, 2] },
+          { id: 10, deliveryIds: [2, 3] },
+        ],
+        orderProducts,
+        { requireFullCoverage: false },
+      ),
+    ).toThrow('정산 입력에 중복된 발송 내역이 있습니다.');
+  });
+
+  it('create: 전 행 delivery-scoped 인데 전량 미커버면 400', () => {
+    expect(() =>
+      assertSettleListDeliveryCoverage(
+        [
+          { id: 10, deliveryIds: [1, 2, 3] },
+          { id: 11, deliveryIds: [4] }, // 5 누락
+        ],
+        orderProducts,
+        { requireFullCoverage: true },
+      ),
+    ).toThrow(BadRequestException);
+  });
+
+  it('create: 전량 커버면 통과', () => {
+    expect(() =>
+      assertSettleListDeliveryCoverage(
+        [
+          { id: 10, deliveryIds: [1, 2, 3] },
+          { id: 11, deliveryIds: [4, 5] },
+        ],
+        orderProducts,
+        { requireFullCoverage: true },
+      ),
+    ).not.toThrow();
+  });
+
+  it('create: mapping-level 행 혼재 시 커버리지 검사 skip (중복 검사만)', () => {
+    expect(() =>
+      assertSettleListDeliveryCoverage([{ id: 10, deliveryIds: [1, 2] }, { id: 11 }], orderProducts, {
+        requireFullCoverage: true,
+      }),
+    ).not.toThrow();
+  });
+
+  it('update(requireFullCoverage=false): 부분 제출 허용', () => {
+    expect(() =>
+      assertSettleListDeliveryCoverage([{ id: 10, deliveryIds: [1] }], orderProducts, {
+        requireFullCoverage: false,
+      }),
+    ).not.toThrow();
   });
 });
