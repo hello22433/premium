@@ -1,7 +1,7 @@
 import { Type } from 'class-transformer';
 import { PagingReqDto } from '../../common/api/dto/pagination.req.dto';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsArray, IsEnum, IsIn, IsNotEmpty, IsNumber, IsOptional, IsString } from 'class-validator';
+import { ArrayMaxSize, IsArray, IsEnum, IsIn, IsNotEmpty, IsNumber, IsOptional, IsString } from 'class-validator';
 import { OrderReceiptStatus } from '../interface/order.receipt.status';
 
 export class OrderReceiptGetListReqQueryDto extends PagingReqDto {
@@ -25,6 +25,16 @@ export class OrderReceiptGetDetailReqParamDto {
   id: number;
 }
 
+export class OrderReceiptFileDownloadReqQueryDto {
+  @ApiProperty({
+    description: '다운로드할 첨부파일 url (해당 주문접수에 첨부된 url 이어야 함)',
+  })
+  // =================================
+  @IsNotEmpty()
+  @IsString()
+  fileUrl: string;
+}
+
 export class OrderReceiptCreateReqDto {
   @ApiProperty({
     description: '주문접수 제목',
@@ -39,6 +49,8 @@ export class OrderReceiptCreateReqDto {
   })
   // =================================
   @IsArray()
+  @ArrayMaxSize(10, { message: '첨부파일은 최대 10개까지 등록할 수 있습니다.' })
+  @IsString({ each: true })
   filePath: string[];
 
   @ApiPropertyOptional({
@@ -75,6 +87,8 @@ export class OrderReceiptUpdateReqDto {
   // =================================
   @IsOptional()
   @IsArray()
+  @ArrayMaxSize(10, { message: '첨부파일은 최대 10개까지 등록할 수 있습니다.' })
+  @IsString({ each: true })
   filePath?: string[];
 
   @ApiPropertyOptional({

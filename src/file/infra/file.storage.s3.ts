@@ -1,11 +1,16 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { IFileStorage, IFileUploadFileReturn } from '../interface/file.storage';
-import { GetObjectCommand, PutObjectCommand, PutObjectCommandInput, S3Client } from '@aws-sdk/client-s3';
+import {
+  GetObjectCommand,
+  HeadObjectCommand,
+  PutObjectCommand,
+  PutObjectCommandInput,
+  S3Client,
+} from '@aws-sdk/client-s3';
 import { Readable } from 'stream';
 import { randomUUID } from 'node:crypto';
 import { join } from 'path';
-import process from 'node:process';
 import fs from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
@@ -29,10 +34,20 @@ export class FileStorageS3 implements IFileStorage {
     return name.replace(/[#?%\s/\\]/g, '_');
   }
 
+  /**
+   * 키 접두사로 쓰는 무작위 식별자. 하이픈 없는 UUID(32 hex) 로 통일한다.
+   *  - Date.now() 대비: 시각 기반 추측/열거(brute-force) 차단(UUIDv4 = 122비트).
+   *  - 하이픈 제거 이유: 다운로드/표시단이 키를 `{식별자}-{원본명}` 으로 보고 첫 '-' 기준으로
+   *    원본명을 복원하므로(FE 5곳 + 다운로드 프록시), 식별자 안에 '-' 가 있으면 복원이 깨진다.
+   */
+  private randomKey(): string {
+    return randomUUID().replace(/-/g, '');
+  }
+
   async uploadImageFile(file: Express.Multer.File): Promise<IFileUploadFileReturn> {
     const bucketName = this.configService.getOrThrow('AWS_S3_BUCKET');
 
-    const uploadFileName = `image/${Date.now()}-${this.sanitizeFileName(file.originalname)}`;
+    const uploadFileName = `image/${this.randomKey()}-${this.sanitizeFileName(file.originalname)}`;
 
     const fileData: PutObjectCommandInput = {
       Bucket: bucketName,
@@ -57,7 +72,7 @@ export class FileStorageS3 implements IFileStorage {
   async uploadFile(file: Express.Multer.File): Promise<IFileUploadFileReturn> {
     const bucketName = this.configService.getOrThrow('AWS_S3_BUCKET');
 
-    const uploadFileName = `file/${Date.now()}-${this.sanitizeFileName(file.originalname)}`;
+    const uploadFileName = `file/${this.randomKey()}-${this.sanitizeFileName(file.originalname)}`;
 
     const fileData: PutObjectCommandInput = {
       Bucket: bucketName,
@@ -79,18 +94,23 @@ export class FileStorageS3 implements IFileStorage {
     }
   }
 
-  async uploadPrivateFile(file: Express.Multer.File): Promise<IFileUploadFileReturn> {
+  async uploadPrivateFile(file: Express.Multer.File, ownerId?: number): Promise<IFileUploadFileReturn> {
     const bucketName = this.configService.getOrThrow('AWS_S3_BUCKET');
 
     // 비공개 저장 + 무작위(UUID) key. 다운로드는 백엔드가 자격증명으로 GetObject 하므로 public-read 불필요.
-    // UUID 로 "업로드 시각 + 원본 파일명" 추측 접근을 차단한다. (원본명은 응답/DB 의 originalName 으로 보존)
-    const uploadFileName = `private/${randomUUID()}-${this.sanitizeFileName(file.originalname)}`;
+    // UUID 로 "업로드 시각 + 원본 파일명" 추측 접근을 차단한다.
+    // ownerId 가 있으면 `private/{ownerId}/...` 로 소유자를 key 에 귀속(다운로드 시 소유 검증용).
+    const prefix = ownerId != null ? `private/${ownerId}` : 'private';
+    const uploadFileName = `${prefix}/${this.randomKey()}-${this.sanitizeFileName(file.originalname)}`;
 
     const fileData: PutObjectCommandInput = {
       Bucket: bucketName,
       Key: uploadFileName,
       Body: file.buffer,
       ACL: 'private',
+      // 진짜 원본명을 메타데이터에 verbatim 보존(key 는 URL 안전 위해 sanitize 됨).
+      // S3 메타데이터는 ASCII 만 허용 → 한글 등은 encodeURIComponent 로 감싼다(읽을 때 decode).
+      Metadata: { originalname: encodeURIComponent(file.originalname) },
     };
 
     try {
@@ -103,6 +123,27 @@ export class FileStorageS3 implements IFileStorage {
       };
     } catch (e) {
       throw new Error(e as any);
+    }
+  }
+
+  async headOriginalName(key: string): Promise<string | null> {
+    const bucketName = this.configService.getOrThrow('AWS_S3_BUCKET');
+    const res = await this.s3Client.send(new HeadObjectCommand({ Bucket: bucketName, Key: key }));
+    const raw = res.Metadata?.originalname;
+    return raw ? decodeURIComponent(raw) : null;
+  }
+
+  isOwnStorageUrl(fileUrl: string): boolean {
+    const bucketName = this.configService.getOrThrow('AWS_S3_BUCKET');
+    try {
+      const { hostname } = new URL(fileUrl);
+      // 업로드 반환 형식(`{bucket}.s3.amazonaws.com`)과 리전 포함 변형(`{bucket}.s3.{region}.amazonaws.com`) 허용
+      return (
+        hostname === `${bucketName}.s3.amazonaws.com` ||
+        (hostname.startsWith(`${bucketName}.s3.`) && hostname.endsWith('.amazonaws.com'))
+      );
+    } catch {
+      return false;
     }
   }
 
@@ -191,7 +232,7 @@ export class FileStorageS3 implements IFileStorage {
     const originalName = decodeURIComponent(urlPath.split('/').pop() || 'image.jpg');
 
     // S3 업로드 경로 생성
-    const uploadFileName = `image/${Date.now()}-${this.sanitizeFileName(originalName)}`;
+    const uploadFileName = `image/${this.randomKey()}-${this.sanitizeFileName(originalName)}`;
 
     const fileData: PutObjectCommandInput = {
       Bucket: bucketName,

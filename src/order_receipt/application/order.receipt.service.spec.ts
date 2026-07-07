@@ -50,9 +50,19 @@ describe('OrderReceiptService access and status policy', () => {
       softDelete: jest.fn().mockResolvedValue({ affected: 1 }),
     };
 
+    // getDetail 이 첨부 원본명 조회에 사용 — 이 spec 은 접근/상태 정책만 검증하므로 단순 stub
+    const fileService = {
+      getOriginalName: jest.fn().mockResolvedValue('a.pdf'),
+      extractOriginalFileName: jest.fn().mockReturnValue('a.pdf'),
+      extractStorageKey: jest.fn().mockReturnValue(''),
+      isOwnStorageUrl: jest.fn().mockReturnValue(true),
+      downloadWithPath: jest.fn(),
+    };
+
     return {
-      service: new OrderReceiptService(repository as any),
+      service: new OrderReceiptService(repository as any, fileService as any),
       repository,
+      fileService,
       receipt,
     };
   };
@@ -109,6 +119,17 @@ describe('OrderReceiptService access and status policy', () => {
     expect(approvedTarget.receipt.rejectReason).toBeNull();
     expect(approvedTarget.receipt.status).toBe(OrderReceiptStatus.APPROVED);
     expect(approvedTarget.repository.save).toHaveBeenCalledWith(approvedTarget.receipt);
+  });
+
+  it('caps per-detail S3 metadata lookups at MAX_FILE_META_LOOKUP and falls back to key-derived names', async () => {
+    const manyUrls = Array.from({ length: 12 }, (_, i) => `https://b.s3.amazonaws.com/private/20/k${i}-f${i}.xlsx`);
+    const { service, fileService } = createService(makeReceipt({ filePath: manyUrls.join(',') }));
+
+    const detail = await (service.getDetail as any)(operationAdmin, { id: 100 });
+
+    expect(detail.files).toHaveLength(12);
+    expect(fileService.getOriginalName).toHaveBeenCalledTimes(OrderReceiptService.MAX_FILE_META_LOOKUP);
+    expect(fileService.extractOriginalFileName).toHaveBeenCalledTimes(12 - OrderReceiptService.MAX_FILE_META_LOOKUP);
   });
 
   it('allows admins to read details and super admin to delete reviewing receipts', async () => {
