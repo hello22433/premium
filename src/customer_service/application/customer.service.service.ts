@@ -345,6 +345,18 @@ export class CustomerServiceService {
         afterBalance = fresh!.balance;
         beforeBalance = afterBalance - restoreAmount;
       }
+      // 레거시(wallet 미관리) 선입금환불분만 wallet deposit 동기화 (wallet-managed 는 wallet 경로가 처리).
+      if (!isWalletManaged) {
+        await this.legacyWalletCreditSyncService.syncDeposit(queryRunner.manager, {
+          billingUserId,
+          orderId: order.id,
+          orderDeliveryId: orderDelivery.id,
+          delta: restoreAmount,
+          type: 'DISCARD_REFUND',
+          idempotencyKey: `legacy_discard_refund:${order.id}:${orderDelivery.id}:deposit`,
+          memo: `레거시 선입금환불 (주문번호: ${order.id})`,
+        });
+      }
     } else {
       await queryRunner.manager
         .createQueryBuilder()

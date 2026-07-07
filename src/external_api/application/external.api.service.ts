@@ -85,6 +85,7 @@ import {
 import { CreditExcessApprovalRequiredError } from '../../wallet/application/credit-excess-approval-required.error';
 import { WalletManagedPredicate } from '../../wallet/application/wallet-managed.predicate';
 import { RefundPoolService } from '../../wallet/application/refund-pool.service';
+import { LegacyWalletCreditSyncService } from '../../wallet/application/legacy-wallet-credit-sync.service';
 import { OrderPaymentAllocationEntity } from '../../entity/order.payment.allocation.entity';
 import { OrderPaymentRefundEventType } from '../../entity/order.payment.refund.event.entity';
 import { OrderDeliveryAttemptEntity, OrderDeliveryAttemptType } from '../../entity/order.delivery.attempt.entity';
@@ -127,6 +128,7 @@ export class ExternalApiService {
     private refundPoolService: RefundPoolService,
     private orderFromService: OrderFromService,
     private mappingResolver: ApiCustomerMappingResolver,
+    private legacyWalletCreditSyncService: LegacyWalletCreditSyncService,
   ) {}
 
   // 주문의 billing user(+company) 로드. getBillingUserId(order)=clientUserId ?? userId.
@@ -263,12 +265,12 @@ export class ExternalApiService {
     const user = billingUser;
     const isCompany = user.company?.balanceManagementType === 'COMPANY';
     if (isCompany) {
-      await this.dataSource.query('UPDATE user_company SET balance = balance + ? WHERE id = ?', [
+      await this.dataSource.manager.query('UPDATE user_company SET balance = balance + ? WHERE id = ?', [
         price,
         user.companyId,
       ]);
     } else {
-      await this.dataSource.query('UPDATE user SET balance = balance + ? WHERE id = ?', [price, user.id]);
+      await this.dataSource.manager.query('UPDATE user SET balance = balance + ? WHERE id = ?', [price, user.id]);
     }
   }
 
@@ -1006,6 +1008,16 @@ export class ExternalApiService {
       );
     } else {
       await this.refundBalance(billingUser, order.settleAmount);
+      // 레거시 예치금 wallet 동기화 (same-tx). settlement_code 단일 wallet 로 수렴(isCompanyMode 무관 1회).
+      await this.legacyWalletCreditSyncService.syncDeposit(this.dataSource.manager, {
+        billingUserId: billingUser.id,
+        orderId: order.id,
+        orderDeliveryId: orderDelivery.id,
+        delta: order.settleAmount,
+        type: 'FAIL_REFUND',
+        idempotencyKey: `legacy_fail_refund:${order.id}:${orderDelivery.id}:deposit`,
+        memo: `외부 API 발송 실패 환불 (주문번호: ${order.id})`,
+      });
     }
   }
 
@@ -1154,6 +1166,16 @@ export class ExternalApiService {
       );
     } else {
       await this.refundBalance(billingUser, order.settleAmount);
+      // 레거시 예치금 wallet 동기화 (same-tx). settlement_code 단일 wallet 로 수렴(isCompanyMode 무관 1회).
+      await this.legacyWalletCreditSyncService.syncDeposit(this.dataSource.manager, {
+        billingUserId: billingUser.id,
+        orderId: order.id,
+        orderDeliveryId: orderDelivery.id,
+        delta: order.settleAmount,
+        type: 'DISCARD_REFUND',
+        idempotencyKey: `legacy_discard_refund:${order.id}:${orderDelivery.id}:deposit`,
+        memo: `외부 API 취소 환불 (주문번호: ${order.id})`,
+      });
     }
   }
 
