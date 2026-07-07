@@ -72,6 +72,7 @@ X-API-Key: {발급받은 API Key}
 | GET    | `/products`                | 상품 목록 조회         |
 | POST   | `/orders`                  | 쿠폰 주문 및 즉시 발송 |
 | GET    | `/orders/:trId/status`     | 주문 상태 조회         |
+| GET    | `/orders/status`           | 주문 조회 (externalOrderId 기준, reconcile) |
 | POST   | `/orders/:trId/resend`     | 쿠폰 재발송            |
 | DELETE | `/orders/:trId`            | 주문 취소 (환불)       |
 | POST   | `/orders/ssg`              | SSG 쿠폰 주문 및 발송  |
@@ -213,6 +214,7 @@ curl -X POST "https://{서버주소}/api/v1/external/orders" \
 | `title`          | string | X    | 메시지 제목 (미입력 시 상품명 사용)    |
 | `message`        | string | X    | 메시지 내용                            |
 | `deliveryMethod` | string | O    | 발송 방법: `ALIM_TALK`, `MMS`, `EMAIL` |
+| `externalOrderId` | string | △ | 외부 주문번호(호출자 고유 키). 재시도/타임아웃 이중발급 방어 + reconcile 조회 기준. **필수 모드 앱은 필수** |
 
 **`deliveryMethod` 설명:**
 
@@ -540,7 +542,74 @@ curl -X GET "https://{서버주소}/api/v1/external/orders/ssg/01ARZ3NDEKTSV4RRF
 
 ---
 
-## 8. (수신) 쿠폰 폐기 통보 Webhook
+## 8. 주문 조회 (externalOrderId 기준) — reconcile 전용
+
+주문 API 요청이 **타임아웃**되어 응답(`trId`)을 받지 못했을 때, 호출자가 자신이 보낸 `externalOrderId`(고유 키)로 주문의 착지·발송 여부를 확인하는 **읽기 전용** 엔드포인트입니다. `trId` 기반 조회(3·7번)와 달리 응답을 못 받은 상황에서도 조회할 수 있어 reconcile(정합 보정)에 사용합니다.
+
+### Request
+
+```
+GET /api/v1/external/orders/status?externalOrderId={externalOrderId}
+```
+
+```bash
+curl -X GET "https://{서버주소}/api/v1/external/orders/status?externalOrderId=REQ-20260707-0001" \
+  -H "X-API-Key: {API_KEY}"
+```
+
+### Query Parameters
+
+| 파라미터          | 타입   | 필수 | 설명                              |
+| ----------------- | ------ | ---- | --------------------------------- |
+| `externalOrderId` | string | O    | 주문 시 보낸 외부 주문번호(고유 키) |
+
+### Response
+
+```json
+{
+  "result": {
+    "code": "0000",
+    "message": "success",
+    "data": {
+      "found": true,
+      "trId": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "orderStatus": "DELIVERY_COMPLETE",
+      "couponStatus": "ISSUED",
+      "deliveryStatus": "SUCCESS",
+      "barCode": "4161150509230215",
+      "validStartDate": "2026-07-08",
+      "validEndDate": "2026-09-05"
+    }
+  }
+}
+```
+
+### Response Fields
+
+| 필드             | 타입     | 설명                                                                    |
+| ---------------- | -------- | ----------------------------------------------------------------------- |
+| `found`          | boolean  | 해당 `externalOrderId` 주문 존재 여부. `false`면 요청이 착지하지 않음(쿠폰 미발급) |
+| `trId`           | string?  | 트랜잭션 ID (found=true)                                                |
+| `orderStatus`    | string?  | 내부 진행상태 raw (`DELIVERY_REQUEST`/`DELIVERY_COMPLETE`/`DELIVERY_CANCEL` 등) |
+| `couponStatus`   | string?  | 쿠폰 상태 (`ISSUED`/`DISCARDED`, 3번 참조)                              |
+| `deliveryStatus` | string?  | 발송 결과 (`SUCCESS`/`FAIL`, 3번 참조)                                  |
+| `barCode`        | string?  | 쿠폰 핀번호                                                             |
+| `personalCode`   | string?  | 개인번호 (SSG)                                                          |
+| `validStartDate` | string?  | 유효기간 시작일                                                         |
+| `validEndDate`   | string?  | 유효기간 종료일                                                         |
+
+### reconcile 권장 처리
+
+- `found=true` + `deliveryStatus=SUCCESS` → 발송 성공으로 확정 (`trId`·`barCode`·유효기간 백필).
+- `found=true` + `orderStatus=DELIVERY_CANCEL` 또는 `deliveryStatus=FAIL` → 발송 실패로 확정.
+- `found=true` + 그 외(처리중/불명) → 보류 후 재조회.
+- `found=false` → **즉시 실패로 판정하지 말 것.** 요청이 처리 중(커밋 전)일 수 있으므로, 요청 후 충분한 시간(권장 5~10분)이 지난 뒤에도 `found=false`일 때만 실패로 확정.
+
+> `deliveryStatus`는 `barCode` + 발송 성공 이력을 함께 반영하므로, 서버 재시작 등으로 `orderStatus`가 아직 `DELIVERY_REQUEST`(주문완료)에 머물러 있어도 실제 발송됐다면 `SUCCESS`로 정직하게 응답합니다.
+
+---
+
+## 9. (수신) 쿠폰 폐기 통보 Webhook
 
 ePOPKON이 외부 고객사 시스템으로 쿠폰의 폐기/취소 사실을 실시간 통보하는 단방향 Webhook입니다. 위 1~7번 API와 달리 **ePOPKON이 외부 고객사 서버로 HTTP POST를 호출하는 방향**입니다.
 
@@ -698,6 +767,12 @@ printf '%s' "1700000000.{원본 바디}" | openssl dgst -sha256 -hmac "<공유 �
 - 네트워크 오류로 응답을 받지 못한 경우, **같은 `Idempotency-Key`로 재요청**하면 기존 주문 결과가 반환됩니다.
 - 새로운 주문을 하려면 **새로운 `Idempotency-Key`**를 사용하세요.
 - 중복 판단 기준: `Idempotency-Key` + `X-API-Key` + API 엔드포인트
+
+**두 개의 멱등 축 (이중발급 방어):**
+
+- `Idempotency-Key`(전송축): 정상 타임아웃 재시도를 막습니다. 단 24시간 TTL이 있고, 서버 재시작 등으로 요청이 처리 중 중단되면 그 키는 한동안 "처리 중"으로 남습니다.
+- `externalOrderId`(주문축): 서버에 **영구 유니크 제약**으로 저장됩니다. 재시작/타임아웃/키 만료 이후 재요청에도 기존 주문을 반환해 **이중발급을 영구히 막는** 최종 방어선입니다.
+- 권장: 주문 시 `externalOrderId`에 호출자 고유 키(예: 전송 요청 ID)를 실어 보내고, 응답을 못 받으면 그 키로 [8. 주문 조회](#8-주문-조회-externalorderid-기준--reconcile-전용)로 reconcile 하세요. `requireExternalOrderId`가 설정된 앱은 `externalOrderId` 없는 주문이 거절됩니다(에러 코드 `2001`).
 
 ### 보안 및 접근 제한
 
