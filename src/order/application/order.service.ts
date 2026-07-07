@@ -176,6 +176,7 @@ import { ForbiddenWordBlockLogEntity } from '../../entity/forbidden.word.block.l
 import { OrderProductCreateTempDto } from '../api/dto/order.product.create.temp.dto';
 import { OrderConfirmationWalletService } from '../../wallet/application/order-confirmation-wallet.service';
 import { OrderConfirmationReleaseService } from '../../wallet/application/order-confirmation-release.service';
+import { LegacyWalletCreditSyncService } from '../../wallet/application/legacy-wallet-credit-sync.service';
 import { ShadowMismatchClassifierService } from '../../wallet/application/shadow-mismatch-classifier.service';
 import { BillingScopeLockService } from '../../wallet/application/billing-scope-lock.service';
 import { OrderPaymentAllocationEntity } from '../../entity/order.payment.allocation.entity';
@@ -304,6 +305,7 @@ export class OrderService {
     private readonly paymentAllocationService: PaymentAllocationService,
     private readonly orderConfirmationWalletService: OrderConfirmationWalletService,
     private readonly orderConfirmationReleaseService: OrderConfirmationReleaseService,
+    private readonly legacyWalletCreditSyncService: LegacyWalletCreditSyncService,
     private readonly shadowMismatchClassifierService: ShadowMismatchClassifierService,
     private readonly walletAllocationInputBuilder: WalletAllocationInputBuilder,
     private readonly forbiddenWordMatcher: ForbiddenWordMatcher,
@@ -4643,8 +4645,25 @@ export class OrderService {
           oneUser.balance += refundAmount;
         }
         order.isSettleBalance = false;
+        // legacy deposit sync (!isWalletManaged 분기 전용 — wallet path 는 위 releaseConfirmation 이 예치금 복구).
+        await this.legacyWalletCreditSyncService.syncDeposit(externalManager, {
+          billingUserId,
+          orderId: order.id,
+          delta: refundAmount,
+          type: 'DISCARD_REFUND',
+          idempotencyKey: `legacy_discard_refund:${order.id}:deposit`,
+          memo: `레거시 취소 선입금환불 (주문번호: ${order.id})`,
+        });
       } else {
         oneUser.allSettleAmount -= refundAmount;
+        // legacy credit sync (여신복구 — allSettleAmount 감소를 여신 잔액에 반영).
+        await this.legacyWalletCreditSyncService.syncCredit(externalManager, {
+          billingUserId,
+          orderId: order.id,
+          delta: -refundAmount,
+          type: 'DISCARD_REFUND',
+          memo: `레거시 취소 여신복구 (주문번호: ${order.id})`,
+        });
       }
     }
 

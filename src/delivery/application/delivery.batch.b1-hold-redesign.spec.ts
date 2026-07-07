@@ -219,7 +219,7 @@ describe('DeliveryBatchService - B1 settlement-hold redesign', () => {
         { provide: WalletManagedPredicate, useValue: walletManagedPredicate },
         { provide: RefundPoolService, useValue: { refund: jest.fn(), reverseRefund: jest.fn() } },
         { provide: ResendDeductService, useValue: { resendDeduct: jest.fn(), resendUndo: jest.fn() } },
-        { provide: LegacyWalletCreditSyncService, useValue: { syncCredit: jest.fn() } },
+        { provide: LegacyWalletCreditSyncService, useValue: { syncCredit: jest.fn(), syncDeposit: jest.fn() } },
         { provide: getRepositoryToken(OrderDeliveryAttemptEntity), useValue: attemptRepository },
         {
           provide: getRepositoryToken(OrderPaymentRefundEventEntity),

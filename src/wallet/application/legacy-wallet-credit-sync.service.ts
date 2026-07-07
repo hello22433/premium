@@ -4,6 +4,7 @@ import { WalletAccountEntity } from '../../entity/wallet.account.entity';
 import { WalletTransactionEntity } from '../../entity/wallet.transaction.entity';
 import { UserEntity } from '../../entity/user.entity';
 import { WalletResourceType } from '../interface/wallet-resource-type';
+import { WalletLedgerService } from './wallet-ledger.service';
 
 /** wallet_transaction.type — 레거시 동기화가 사용하는 정규 타입(기존 wallet_transaction 타입 체계). */
 export type LegacyWalletCreditSyncType =
@@ -42,6 +43,8 @@ export type LegacyWalletCreditSyncType =
 @Injectable()
 export class LegacyWalletCreditSyncService {
   private readonly logger = new Logger(LegacyWalletCreditSyncService.name);
+
+  constructor(private readonly walletLedger: WalletLedgerService) {}
 
   async syncCredit(
     manager: EntityManager,
@@ -118,5 +121,76 @@ export class LegacyWalletCreditSyncService {
       memo: params.memo.slice(0, 500),
       idempotencyKey: `${keyBase}:${seq}`,
     });
+  }
+
+  /**
+   * 레거시(allocation 없는 = 컷오버 이전) 주문의 예치금(선입금) 변동을 wallet_account.deposit_balance 에 동기화한다.
+   *
+   * 배경: syncCredit 이 여신(credit_used) 불변식을 유지하듯, 예치금 불변식
+   *   `wallet.deposit_balance == effective legacy balance` 도 레거시 주문 환불/역환불에서 유지돼야 한다.
+   *   그러나 예치금 컬럼의 미러 표준은 이미 WalletLedgerService.recordTransaction(user.management mirrorDepositToWallet 사용)이므로,
+   *   여신(syncCredit)의 count-seq 자체구현을 두지 않고 recordTransaction(DEPOSIT) 에 위임한다
+   *   — 결정론 idempotencyKey + underflow=throw(BadRequestException) + FOR UPDATE + same-tx 중복 no-op 을 그대로 재사용.
+   *   (여신은 recordTransaction 기반 미러 표준이 없어 count-seq 유지 → 비대칭 사유.)
+   *
+   * 사용:
+   *   - 호출자가 legacy balance(user_company.balance / user.balance)를 ±= X 갱신한 직후 동일 manager/TX 로 호출(원자성).
+   *   - delta > 0: 예치금 복구(폐기/실패 환불) → deposit_balance 가산.
+   *   - delta < 0: 예치금 재차감(재발송 역환불) → deposit_balance 차감(선행 legacy WHERE balance>=amount 가드로 underflow 미발생).
+   *   - wallet-managed(allocation 존재) 주문에는 호출하지 않는다(이미 wallet 경로가 deposit 처리).
+   *   - idempotencyKey 는 호출자가 이벤트별 결정론 키로 전달(recordTransaction 표준). same-tx 중복은 no-op.
+   */
+  async syncDeposit(
+    manager: EntityManager,
+    params: {
+      /** 과금 대상 user (대행주문이면 clientUserId). settlement_code → wallet 조회 키. */
+      billingUserId: number;
+      orderId: number;
+      /** 발송 단위 이벤트(환불/폐기)면 지정. */
+      orderDeliveryId?: number | null;
+      /** 부호 있는 변동액. 양수=예치금 복구, 음수=예치금 재차감. */
+      delta: number;
+      /** wallet_transaction.type — 정규 타입 사용. */
+      type: LegacyWalletCreditSyncType;
+      /** 이벤트별 결정론 idempotencyKey (호출자 생성). */
+      idempotencyKey: string;
+      memo: string;
+    },
+  ): Promise<void> {
+    if (params.delta === 0) return;
+
+    const user = await manager.getRepository(UserEntity).findOne({
+      where: { id: params.billingUserId },
+      select: ['id', 'settlementCode'],
+    });
+    if (!user?.settlementCode) {
+      throw new NotFoundException(
+        `legacy wallet deposit sync: settlement_code missing for user id=${params.billingUserId} (orderId=${params.orderId})`,
+      );
+    }
+
+    const wallet = await manager.getRepository(WalletAccountEntity).findOne({
+      where: { ownerType: 'SETTLEMENT_CODE', ownerId: user.settlementCode },
+    });
+    if (!wallet) {
+      throw new NotFoundException(
+        `legacy wallet deposit sync: wallet_account not found for settlement_code=${user.settlementCode} (orderId=${params.orderId})`,
+      );
+    }
+
+    // 예치금 미러 표준 = recordTransaction(DEPOSIT): FOR UPDATE 락 + underflow=throw + same-tx 멱등 no-op 내장.
+    await this.walletLedger.recordTransaction(
+      {
+        walletAccountId: String(wallet.id),
+        orderId: params.orderId,
+        orderDeliveryId: params.orderDeliveryId ?? null,
+        type: params.type,
+        resourceType: WalletResourceType.DEPOSIT,
+        amount: params.delta,
+        memo: params.memo.slice(0, 500),
+        idempotencyKey: params.idempotencyKey,
+      },
+      manager,
+    );
   }
 }

@@ -65,6 +65,7 @@ describe('OrderService.deliveryCancel — 취소메일 after-commit 배선', () 
     sut.walletManagedPredicate = walletManagedPredicate;
     sut.ssgEventService = ssgEventService;
     sut.orderCancelNotificationService = orderCancelNotificationService;
+    sut.legacyWalletCreditSyncService = { syncCredit: jest.fn(), syncDeposit: jest.fn() };
     return { sut, order, oneUser, company, orderCancelNotificationService };
   };
 

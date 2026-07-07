@@ -134,6 +134,7 @@ function refundService(opts: {
   }));
   const refundBalance = jest.fn(async () => undefined);
   const recoverWithLease = jest.fn(async () => opts.recoverResult ?? SsgRecoveryResult.RESTORED);
+  const syncDeposit = jest.fn(async () => undefined);
 
   (svc as any).refundLedgerService = { claim };
   (svc as any).refundPoolService = { refund };
@@ -143,11 +144,13 @@ function refundService(opts: {
   };
   // refundBalance 는 private. spy 로 가로채 legacy 경로 호출 검증.
   (svc as any).refundBalance = refundBalance;
+  // 레거시 예치금 wallet 동기화 목 (legacy 경로에서만 호출됨).
+  (svc as any).legacyWalletCreditSyncService = { syncCredit: jest.fn(), syncDeposit };
 
   return {
     svc,
     queries,
-    mocks: { managerQuery, managerFindOne, claim, refund, refundBalance, recoverWithLease },
+    mocks: { managerQuery, managerFindOne, claim, refund, refundBalance, recoverWithLease, syncDeposit },
   };
 }
 
@@ -178,6 +181,8 @@ describe('phaseC_handleFailure — R7-A claim 멱등 + R2 wallet 환불', () => 
 
     // wallet path → raw refundBalance 미호출 (이중복원 없음)
     expect(mocks.refundBalance).not.toHaveBeenCalled();
+    // wallet-managed → legacy 예치금 sync 미호출 (wallet 경로가 이미 처리)
+    expect(mocks.syncDeposit).not.toHaveBeenCalled();
     // user.balance 미기록
     expect(queries.some((q) => /UPDATE user SET balance/.test(q.sql))).toBe(false);
   });
@@ -289,6 +294,17 @@ describe('phaseC_handleFailure — R7-A claim 멱등 + R2 wallet 환불', () => 
 
     expect(mocks.refund).not.toHaveBeenCalled();
     expect(mocks.refundBalance).toHaveBeenCalledWith(expect.anything(), 30000);
+    // legacy → 예치금 wallet 동기화 호출 (FAIL_REFUND, +settleAmount)
+    expect(mocks.syncDeposit).toHaveBeenCalledTimes(1);
+    expect(mocks.syncDeposit).toHaveBeenCalledWith(expect.anything(), {
+      billingUserId: 42,
+      orderId: 1,
+      orderDeliveryId: 55,
+      delta: 30000,
+      type: 'FAIL_REFUND',
+      idempotencyKey: 'legacy_fail_refund:1:55:deposit',
+      memo: expect.any(String),
+    });
   });
 
   it('WALLET-managed인데 INITIAL attempt 없음 → drift throw', async () => {
@@ -317,6 +333,8 @@ describe('processCancelRefund — R2 wallet 환불 (DISCARD_REFUND)', () => {
     const companyUpdate = queries.find((q) => q.sql.includes('user_company SET balance = balance + ?'));
     expect(companyUpdate!.params).toEqual([30000, 9]);
     expect(mocks.refundBalance).not.toHaveBeenCalled();
+    // wallet-managed → legacy 예치금 sync 미호출
+    expect(mocks.syncDeposit).not.toHaveBeenCalled();
   });
 
   it('LEGACY 취소 → 기존 refundBalance 회귀 0', async () => {
@@ -326,6 +344,17 @@ describe('processCancelRefund — R2 wallet 환불 (DISCARD_REFUND)', () => {
 
     expect(mocks.refund).not.toHaveBeenCalled();
     expect(mocks.refundBalance).toHaveBeenCalledWith(expect.anything(), 30000);
+    // legacy → 예치금 wallet 동기화 호출 (DISCARD_REFUND, +settleAmount)
+    expect(mocks.syncDeposit).toHaveBeenCalledTimes(1);
+    expect(mocks.syncDeposit).toHaveBeenCalledWith(expect.anything(), {
+      billingUserId: 42,
+      orderId: 1,
+      orderDeliveryId: 55,
+      delta: 30000,
+      type: 'DISCARD_REFUND',
+      idempotencyKey: 'legacy_discard_refund:1:55:deposit',
+      memo: expect.any(String),
+    });
   });
 });
 

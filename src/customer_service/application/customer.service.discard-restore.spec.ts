@@ -47,7 +47,7 @@ describe('CustomerServiceService.restoreBalanceOnDiscard — refunded-proxy read
       claimWithManager: claimImpl ?? jest.fn().mockResolvedValue(undefined),
     };
     sut.walletManagedPredicate = { isWalletManaged: jest.fn().mockResolvedValue(false) };
-    sut.legacyWalletCreditSyncService = { syncCredit: jest.fn() };
+    sut.legacyWalletCreditSyncService = { syncCredit: jest.fn(), syncDeposit: jest.fn() };
     return sut;
   };
 
@@ -146,6 +146,72 @@ describe('CustomerServiceService.restoreBalanceOnDiscard — refunded-proxy read
     );
 
     expect(sut.legacyWalletCreditSyncService.syncCredit).not.toHaveBeenCalled();
+  });
+
+  it('레거시 선입금환불(isSettleBalance) 폐기 복구는 wallet deposit 을 DISCARD_REFUND(+restore) 로 동기화한다', async () => {
+    const sut: any = makeSut(false); // exists=false → 복구 진행, isWalletManaged=false
+    sut.activityLogService = { createLog: jest.fn().mockResolvedValue(undefined) };
+    sut.cryptoCipher = {
+      safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01000000000'),
+      encryptDeliveryTarget: jest.fn((v: string) => v),
+    };
+
+    const orderDelivery = buildOrderDelivery(IOrderDeliveryStatus.COMPLETE);
+    orderDelivery.orderProductMapping.order.isSettleBalance = true;
+
+    await sut.restoreBalanceOnDiscard(orderDelivery, operator, legacyDiscardQueryRunner(), 'operator');
+
+    expect(sut.legacyWalletCreditSyncService.syncDeposit).toHaveBeenCalledTimes(1);
+    expect(sut.legacyWalletCreditSyncService.syncDeposit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        billingUserId: 5,
+        orderId: 700,
+        orderDeliveryId: 5001,
+        delta: 10000,
+        type: 'DISCARD_REFUND',
+        idempotencyKey: 'legacy_discard_refund:700:5001:deposit',
+      }),
+    );
+    // 여신(syncCredit) 경로는 선입금환불에서 호출되지 않는다.
+    expect(sut.legacyWalletCreditSyncService.syncCredit).not.toHaveBeenCalled();
+  });
+
+  it('wallet-managed 선입금환불 폐기 복구는 legacy syncDeposit 을 호출하지 않는다 (이중반영 방지)', async () => {
+    const sut: any = makeSut(false);
+    const latestAttempt = { id: '44', attemptType: OrderDeliveryAttemptType.RESEND };
+    const user = { id: 5, email: 'buyer@test.local', balance: 0, company: null };
+    const builder: any = {
+      update: () => builder,
+      set: () => builder,
+      where: () => builder,
+      setParameters: () => builder,
+      execute: jest.fn().mockResolvedValue({ affected: 1 }),
+    };
+    const queryRunner = {
+      manager: {
+        findOne: jest.fn(async (_target: any, opts: any) => {
+          if (opts?.where?.orderDeliveryId === 5001) return latestAttempt;
+          return user;
+        }),
+        createQueryBuilder: jest.fn(() => builder),
+        save: jest.fn().mockResolvedValue(undefined),
+      },
+    } as any;
+    sut.activityLogService = { createLog: jest.fn().mockResolvedValue(undefined) };
+    sut.cryptoCipher = {
+      safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01012345678'),
+      encryptDeliveryTarget: jest.fn((v: string) => v),
+    };
+    sut.walletManagedPredicate = { isWalletManaged: jest.fn().mockResolvedValue(true) };
+    sut.refundPoolService = { refund: jest.fn().mockResolvedValue({ ledgerIds: [], totalRefundedAmount: 0 }) };
+
+    const orderDelivery = buildOrderDelivery(IOrderDeliveryStatus.COMPLETE);
+    orderDelivery.orderProductMapping.order.isSettleBalance = true;
+
+    await sut.restoreBalanceOnDiscard(orderDelivery, operator, queryRunner, 'operator');
+
+    expect(sut.legacyWalletCreditSyncService.syncDeposit).not.toHaveBeenCalled();
   });
 
   it('wallet 정산완료 폐기 환불은 INITIAL 고정이 아니라 최신 attempt.id 로 멱등키를 만든다', async () => {
