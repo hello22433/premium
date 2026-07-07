@@ -176,7 +176,7 @@ describe('phaseC_handleFailure — R7-A claim 멱등 + R2 wallet 환불', () => 
     // legacy mirror 역복원: company.balance += depositUsed, allSettleAmount -= 0
     const companyUpdate = queries.find((q) => q.sql.includes('user_company SET balance = balance + ?'));
     expect(companyUpdate!.params).toEqual([30000, 9]);
-    const allSettleUpdate = queries.find((q) => q.sql.includes('allSettleAmount = allSettleAmount - ?'));
+    const allSettleUpdate = queries.find((q) => q.sql.includes('all_settle_amount = all_settle_amount - ?'));
     expect(allSettleUpdate!.params).toEqual([0, 42]);
 
     // wallet path → raw refundBalance 미호출 (이중복원 없음)
@@ -200,7 +200,7 @@ describe('phaseC_handleFailure — R7-A claim 멱등 + R2 wallet 환불', () => 
     // 풀 refund 는 호출되지만 멱등 no-op → mirror UPDATE 한 건도 실행되면 안 됨
     expect(mocks.refund).toHaveBeenCalledTimes(1);
     expect(queries.some((q) => q.sql.includes('user_company SET balance'))).toBe(false);
-    expect(queries.some((q) => q.sql.includes('allSettleAmount = allSettleAmount - ?'))).toBe(false);
+    expect(queries.some((q) => q.sql.includes('all_settle_amount = all_settle_amount - ?'))).toBe(false);
     expect(mocks.refundBalance).not.toHaveBeenCalled();
   });
 
@@ -213,7 +213,7 @@ describe('phaseC_handleFailure — R7-A claim 멱등 + R2 wallet 환불', () => 
 
     await (svc as any).phaseC_handleFailure(makeOrder(), makeOrderDelivery(), account, new Error('x'));
 
-    const allSettleUpdate = queries.find((q) => q.sql.includes('allSettleAmount = allSettleAmount - ?'));
+    const allSettleUpdate = queries.find((q) => q.sql.includes('all_settle_amount = all_settle_amount - ?'));
     expect(allSettleUpdate!.params).toEqual([50000, 42]);
     expect(queries.some((q) => q.sql.includes('user_company'))).toBe(false);
   });

@@ -252,7 +252,7 @@ export class ExternalApiService {
       ]);
     }
     const allSettleDelta = finalAllocation.creditUsedAmount + finalAllocation.creditExcessAmount;
-    await this.dataSource.manager.query('UPDATE user SET allSettleAmount = allSettleAmount + ? WHERE id = ?', [
+    await this.dataSource.manager.query('UPDATE user SET all_settle_amount = all_settle_amount + ? WHERE id = ?', [
       allSettleDelta,
       user.id,
     ]);
@@ -341,7 +341,7 @@ export class ExternalApiService {
       ]);
     }
     const allSettleDelta = allocation.creditUsedAmount + allocation.creditExcessAmount;
-    await manager.query('UPDATE user SET allSettleAmount = allSettleAmount - ? WHERE id = ?', [
+    await manager.query('UPDATE user SET all_settle_amount = all_settle_amount - ? WHERE id = ?', [
       allSettleDelta,
       user.id,
     ]);

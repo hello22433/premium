@@ -180,7 +180,7 @@ describe('ExternalApiService wallet 차감 (deductViaWallet)', () => {
     expect(companyUpdate).toBeDefined();
     expect(companyUpdate!.params).toEqual([30000, 9]);
 
-    const userUpdate = queries.find((q) => q.sql.includes('UPDATE user SET allSettleAmount'));
+    const userUpdate = queries.find((q) => q.sql.includes('UPDATE user SET all_settle_amount'));
     expect(userUpdate).toBeDefined();
     expect(userUpdate!.params).toEqual([0, 42]);
 
@@ -208,7 +208,7 @@ describe('ExternalApiService wallet 차감 (deductViaWallet)', () => {
     expect(order.isSettleBalance).toBe(false);
     expect(order.isCreditExcess).toBe(false);
 
-    const userUpdate = queries.find((q) => q.sql.includes('UPDATE user SET allSettleAmount'));
+    const userUpdate = queries.find((q) => q.sql.includes('UPDATE user SET all_settle_amount'));
     expect(userUpdate!.params).toEqual([50000, 42]);
     // PERSONAL 모드 → user_company 미터치
     expect(queries.some((q) => q.sql.includes('user_company'))).toBe(false);
