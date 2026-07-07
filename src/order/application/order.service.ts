@@ -4574,11 +4574,10 @@ export class OrderService {
 
     const orderProductMappingIdList = order.orderProductMappings!.map((orderProductMapping) => orderProductMapping.id);
 
+    // 삭제된 상품이 포함된 주문도 취소는 허용해야 한다(취소는 오히려 더 허용되어야 하는 동작).
+    // 환불 단가는 주문 시점 스냅샷(snapshotProductPrice) → LIVE 상품가 → 0 순으로 폴백한다(readLineProductView 패턴 동일).
     const totalPrice = order.orderProductMappings!.reduce((acc, cur) => {
-      if (!cur.product) {
-        throw new BadRequestException('상품 정보가 존재하지 않습니다.');
-      }
-      return acc + cur.product.price * cur.amount;
+      return acc + readLineProductView(cur).price * cur.amount;
     }, 0);
 
     // SSG 주문인 경우 이벤트 잔액 복구 (새/기존 흐름 공통)
