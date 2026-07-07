@@ -386,6 +386,8 @@ export class CustomerServiceService {
       : order.isSettleBalance
         ? '미정산/선입금환불'
         : '미정산/여신복구';
+    // 여신(allSettleAmount) 복구인지 — 활동로그 재원 라벨 + 계정관리 이력관리 제외 판정에 공용.
+    const isCreditRestore = restoreType === 'ALL_SETTLE_AMOUNT';
 
     await this.activityLogService.createLog({
       userId: operatorUser.id,
@@ -408,29 +410,34 @@ export class CustomerServiceService {
         isSettleBalance: order.isSettleBalance,
         isSettleComplete: order.isSettleComplete,
         restoreType,
+        restoreTarget: isCreditRestore ? 'CREDIT' : 'DEPOSIT',
+        ...(isCreditRestore ? { beforeAllSettleAmount: beforeBalance, afterAllSettleAmount: afterBalance } : {}),
         beforeBalance,
         afterBalance,
         memo: `폐기복구(${refundRouteMemo})/ ${restoreAmount}원/ orderDelivery:${orderDelivery.id}`,
       },
     });
 
-    // 계정관리 > 이력관리 항목 기록
-    if (!operatorName) {
-      const operatorEntity = await queryRunner.manager.findOne(UserEntity, {
-        where: { id: operatorUser.id },
-      });
-      operatorName = operatorEntity?.personName ?? operatorUser.email;
-    }
-    const contactNumber = this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.deliveryTarget) ?? '-';
-    const now = format(new Date(), DateEndMinuteFormatStr);
+    // 계정관리 > 이력관리 항목 기록.
+    // 여신복구(ALL_SETTLE_AMOUNT)는 예치금/선입금 이동 이력이 아니므로 계정관리 이력관리에서 제외한다.
+    if (!isCreditRestore) {
+      if (!operatorName) {
+        const operatorEntity = await queryRunner.manager.findOne(UserEntity, {
+          where: { id: operatorUser.id },
+        });
+        operatorName = operatorEntity?.personName ?? operatorUser.email;
+      }
+      const contactNumber = this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.deliveryTarget) ?? '-';
+      const now = format(new Date(), DateEndMinuteFormatStr);
 
-    await queryRunner.manager.save(UserTaskHistoryEntity, {
-      userId: billingUserId,
-      adminUserId: operatorUser.id,
-      content: this.cryptoCipher.encryptDeliveryTarget(
-        `${operatorName}/ ${restoreAmount.toLocaleString()}원 폐기/ 회수/ ${contactNumber} 폐기/ ${now}`,
-      ),
-    });
+      await queryRunner.manager.save(UserTaskHistoryEntity, {
+        userId: billingUserId,
+        adminUserId: operatorUser.id,
+        content: this.cryptoCipher.encryptDeliveryTarget(
+          `${operatorName}/ ${restoreAmount.toLocaleString()}원 폐기/ 회수/ ${contactNumber} 폐기/ ${now}`,
+        ),
+      });
+    }
 
     // Wallet Cutover Bundle PR4 — wallet-managed 주문이면 wallet_account + wallet ledger 갱신.
     // legacy 잔액 mirror (위 balance/allSettleAmount UPDATE) 는 그대로 유지 → wallet/legacy 합계 일관.

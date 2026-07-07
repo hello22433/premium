@@ -4,6 +4,7 @@ import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delive
 import { OrderDeliveryAttemptType } from '../../entity/order.delivery.attempt.entity';
 import { applyCardSurcharge } from '../../order/domain/order.fee.calculator';
 import { IProductType } from '../../product/interface/product.type';
+import { UserTaskHistoryEntity } from '../../entity/user.task.history.entity';
 
 /**
  * PR-A — refunded-proxy reader 정규화.
@@ -564,5 +565,46 @@ describe('CustomerServiceService.restoreBalanceOnDiscard — refunded-proxy read
 
     expect(result).toBeNull();
     expect(sut.refundLedgerService.claimWithManager).not.toHaveBeenCalled();
+  });
+  it('여신복구(ALL_SETTLE_AMOUNT) 는 계정관리 이력관리(UserTaskHistory)에 기록하지 않는다', async () => {
+    const sut: any = makeSut(false);
+    sut.activityLogService = { createLog: jest.fn().mockResolvedValue(undefined) };
+    sut.cryptoCipher = {
+      safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01000000000'),
+      encryptDeliveryTarget: jest.fn((v: string) => v),
+    };
+    const qr = legacyDiscardQueryRunner();
+
+    await sut.restoreBalanceOnDiscard(buildOrderDelivery(IOrderDeliveryStatus.FAIL), operator, qr, 'operator');
+
+    const savedTaskHistory = qr.manager.save.mock.calls.some((c: any[]) => c[0] === UserTaskHistoryEntity);
+    expect(savedTaskHistory).toBe(false);
+    expect(sut.activityLogService.createLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestParams: expect.objectContaining({ restoreType: 'ALL_SETTLE_AMOUNT', restoreTarget: 'CREDIT' }),
+      }),
+    );
+  });
+
+  it('선입금복구(BALANCE) 는 계정관리 이력관리(UserTaskHistory)에 기록한다', async () => {
+    const sut: any = makeSut(false);
+    sut.activityLogService = { createLog: jest.fn().mockResolvedValue(undefined) };
+    sut.cryptoCipher = {
+      safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01000000000'),
+      encryptDeliveryTarget: jest.fn((v: string) => v),
+    };
+    const qr = legacyDiscardQueryRunner();
+    const delivery = buildOrderDelivery(IOrderDeliveryStatus.FAIL);
+    delivery.orderProductMapping.order.isSettleBalance = true;
+
+    await sut.restoreBalanceOnDiscard(delivery, operator, qr, 'operator');
+
+    const savedTaskHistory = qr.manager.save.mock.calls.filter((c: any[]) => c[0] === UserTaskHistoryEntity);
+    expect(savedTaskHistory).toHaveLength(1);
+    expect(sut.activityLogService.createLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestParams: expect.objectContaining({ restoreType: 'BALANCE', restoreTarget: 'DEPOSIT' }),
+      }),
+    );
   });
 });

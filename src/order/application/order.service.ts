@@ -89,6 +89,8 @@ import {
   validateSsgUniformSend,
   validateDeliverySendTypes,
   resolveProductDuplicateLimit,
+  assertWalletOnlyParamsAbsent,
+  assertSettleListDeliveryCoverage,
 } from '../domain/order.validation';
 import { OrderFromService } from '../../order_from/application/order.from.service';
 import { getBillingUserId } from '../domain/order.billing-user.helper';
@@ -2912,6 +2914,7 @@ export class OrderService {
     const sendAmount = existingOrderProducts[0].order.sendAmount;
     const isSettleBalance = existingOrderProducts[0].order.isSettleBalance;
 
+    assertSettleListDeliveryCoverage(list, allOrderProducts, { requireFullCoverage: true });
     const { orderProductList } = await this.processSettleList(list, allOrderProductMap);
 
     if (orderProductList.length > 0) {
@@ -3020,6 +3023,7 @@ export class OrderService {
     const beforeSettleAmount = existingOrderProducts[0].order.settleAmount;
     const isSettleBalance = existingOrderProducts[0].order.isSettleBalance;
 
+    assertSettleListDeliveryCoverage(list, allOrderProducts, { requireFullCoverage: false });
     const { orderProductList } = await this.processSettleList(list, allOrderProductMap);
 
     if (orderProductList.length > 0) {
@@ -3918,6 +3922,10 @@ export class OrderService {
 
     OrderValidation(order);
 
+    // wallet 전용 결제 파라미터(포인트/예치금 사용)는 WALLET 모드에서만 소비된다.
+    // isNewBillingFlow 분기와 무관하게 발송확정 공통 경로에서 LEGACY/SHADOW 수신 시 400 거부.
+    assertWalletOnlyParamsAbsent(this.walletCutoverConfig.pr2DeliveryLifecycleMode, getBody);
+
     if (process.env.FROM_PHONE_SOT_ENFORCE === 'true') {
       await this.orderFromService.assertApprovedPhones(getBillingUserId(order), order.orderProductMappings!);
     }
@@ -4006,7 +4014,8 @@ export class OrderService {
 
     // productId별 그룹 제한 결정 (같은 productId 여러 mapping 중 가장 엄격한 유한 제한 사용)
     //  - ADDITIONAL(할증): 무제한
-    //  - DISCOUNT(할인): [임시 비활성화] 무제한 취급 (복구 시 allowedCount=1 후보 추가)
+    //  - DISCOUNT(할인): CS팀 요청으로 개방 중 — 무제한 취급 (c7871f4, 2026-01-27).
+    //    원칙은 동일번호 1건 제한이며 CS팀이 재차 요청할 때만 복구 (복구 시 allowedCount=1 후보 추가)
     //  - 할인/할증 없음: duplicatePhoneLimit (0이면 무제한)
     // 유한 후보가 하나도 없으면(모두 무제한) 해당 productId 그룹은 검사 생략.
     const productLimit = resolveProductDuplicateLimit(
