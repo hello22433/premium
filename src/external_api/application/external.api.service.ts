@@ -57,6 +57,7 @@ import {
   OrderStatusResponseData,
   SsgOrderStatusResponseData,
   ProductResponseData,
+  OrderLookupResponseData,
 } from '../api/dto/external.api.response.dto';
 import { CreateExternalOrderDto, CreateExternalSsgOrderDto } from '../api/dto/external.api.request.dto';
 import { ApiRequestContext } from '../api/api-request-context';
@@ -488,6 +489,10 @@ export class ExternalApiService {
     );
 
     const deliveryHistory = new DeliverySendHistoryEntity();
+    // orderDeliveryId 를 채워 발송 성공 이력을 order_delivery 에 연결한다(async 발송 경로와 동일).
+    // Phase B(발송) 성공 후 Phase C(완료 전이) 전에 크래시하면 order 가 DELIVERY_REQUEST 로 stuck 되는데,
+    // 이 링크가 있어야 복구 스윕이 "발송 성공(isSuccess=true) 이력 존재"를 근거로 안전하게 완료 전이할 수 있다.
+    deliveryHistory.orderDeliveryId = orderDelivery.id;
     deliveryHistory.context = '{}';
     deliveryHistory.isSuccess = true;
     deliveryHistory.target = this.cryptoCipher.encryptDeliveryTarget(decryptedTarget);
@@ -633,6 +638,8 @@ export class ExternalApiService {
     dto: CreateExternalOrderDto,
     ctx: ApiRequestContext,
   ): Promise<ExternalApiResponse<OrderResponseData>> {
+    // externalOrderId 필수 모드: 크래시/타임아웃 재시도 이중발급 방어선(UNIQUE order_axis)을 강제.
+    this.assertExternalOrderIdIfRequired(ctx, dto.externalOrderId);
     // 비즈니스 멱등(매핑모드 보조): 동일 (apiApp, externalOrderId) 기존 주문이면 그 응답을 반환.
     // 전송 멱등(Idempotency-Key 헤더)과 직교 — 이건 주문축, 그건 요청축.
     if (dto.externalOrderId) {
@@ -1074,6 +1081,83 @@ export class ExternalApiService {
     });
   }
 
+  // ─── externalOrderId(호출자 reqTrId) 기준 주문 조회 (reconcile 전용, 읽기 전용) ─────
+
+  async getOrderStatusByExternalOrderId(
+    account: ExternalApiAccountEntity,
+    ctx: ApiRequestContext,
+    externalOrderId: string,
+  ): Promise<ExternalApiResponse<OrderLookupResponseData>> {
+    const normalized = externalOrderId?.trim();
+    if (!normalized) {
+      throw new ExternalApiException('2001', '잘못된 요청', 'externalOrderId 필수');
+    }
+
+    // 조회가 (apiApp, externalOrderId) 로 스코프되므로 소유권이 내재적으로 보장된다.
+    const order = await this.mappingResolver.findExistingOrderByExternalOrderId(ctx.apiApp.id, normalized);
+    if (!order) {
+      // 주문 자체가 없음 = Nest 미착지/미커밋 → 쿠폰 미발급(발급은 phaseA 커밋 이후 phaseB). 호출자는 grace 후 FAILED.
+      return ExternalApiResponse.success<OrderLookupResponseData>({ found: false });
+    }
+
+    const orderDelivery = await this.orderDeliveryRepository.findOne({
+      where: { orderProductMapping: { order: { id: order.id } } },
+      relations: [
+        'orderProductMapping',
+        'orderProductMapping.order',
+        'orderProductMapping.product',
+        'orderProductMapping.product.partnerCompany',
+      ],
+      order: { id: 'DESC' },
+    });
+    if (!orderDelivery) {
+      // phaseA 는 order+delivery 를 원자 커밋하므로 정상 도달 불가. 보수적으로 orderStatus 만 반환(처리중 취급).
+      return ExternalApiResponse.success<OrderLookupResponseData>({ found: true, orderStatus: order.status });
+    }
+
+    const { validStartDate, validEndDate } = this.resolveValidDates(orderDelivery);
+    return ExternalApiResponse.success<OrderLookupResponseData>({
+      found: true,
+      trId: orderDelivery.externalTrId ?? undefined,
+      orderStatus: order.status,
+      couponStatus: this.toExternalCouponStatus(orderDelivery.couponStatus),
+      deliveryStatus: await this.resolveDeliveryStatusWithSendHistory(orderDelivery),
+      barCode: orderDelivery.barCode || undefined,
+      personalCode: orderDelivery.personalCode || undefined,
+      validStartDate,
+      validEndDate,
+    });
+  }
+
+  /**
+   * 발송 결과 판정(reconcile 정직성 #3). 명시적 실패는 FAIL, actualSendAt 있으면 SUCCESS.
+   * 완료 전이 전(크래시 윈도우, actualSendAt 미백필)이라도 연결된 발송 성공 이력이 있으면 SUCCESS —
+   * dispatchSend 가 delivery_send_history(isSuccess=true, order_delivery_id)를 발송 직후 커밋하기 때문.
+   */
+  private async resolveDeliveryStatusWithSendHistory(
+    orderDelivery: OrderDeliveryEntity,
+  ): Promise<ExternalDeliveryStatus> {
+    if (orderDelivery.status === IOrderDeliveryStatus.FAIL || orderDelivery.status === IOrderDeliveryStatus.FAIL_SMS) {
+      return ExternalDeliveryStatus.FAIL;
+    }
+    if (orderDelivery.actualSendAt) {
+      return ExternalDeliveryStatus.SUCCESS;
+    }
+    const sent = await this.deliverySendHistoryRepository.findOne({
+      where: { orderDeliveryId: orderDelivery.id, isSuccess: true },
+    });
+    return sent ? ExternalDeliveryStatus.SUCCESS : ExternalDeliveryStatus.FAIL;
+  }
+
+  /**
+   * requireExternalOrderId 앱은 externalOrderId 누락 시 거절(이중발급 방어선 강제).
+   */
+  private assertExternalOrderIdIfRequired(ctx: ApiRequestContext, externalOrderId: string | undefined): void {
+    if (ctx.apiApp.requireExternalOrderId && !externalOrderId?.trim()) {
+      throw new ExternalApiException('2001', '잘못된 요청', 'externalOrderId 필수 (외부 주문번호 필수 모드)');
+    }
+  }
+
   // ─── 주문 취소 ──────────────────────────────────────────
 
   async cancelOrder(
@@ -1284,6 +1368,9 @@ export class ExternalApiService {
     if (!ctx.apiApp.ssgEnabled) {
       throw new ExternalApiException('1005', 'SSG 미승인 계정');
     }
+
+    // externalOrderId 필수 모드: 이중발급 방어선(UNIQUE order_axis) 강제.
+    this.assertExternalOrderIdIfRequired(ctx, dto.externalOrderId);
 
     // 비즈니스 멱등(SSG): 동일 (apiApp, externalOrderId) 기존 주문이면 그 응답 반환.
     if (dto.externalOrderId) {

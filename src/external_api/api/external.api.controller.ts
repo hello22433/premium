@@ -70,6 +70,18 @@ export class ExternalApiController {
     return this.externalApiService.resendOrder(this.getAccount(req), trId, this.getApiContext(req));
   }
 
+  // reconcile 전용: 호출자 reqTrId(=externalOrderId) 로 주문 조회. 타임아웃으로 trId 를 못 받은 경우의
+  // 착지/발송 확인용 읽기 전용 엔드포인트. 반드시 orders/:trId/status 보다 위에 둔다(라우트 우선순위).
+  @Get('orders/status')
+  @ApiOperation({ summary: '주문 조회 (externalOrderId 기준, reconcile)' })
+  async getOrderStatusByExternalOrderId(@Req() req: Request, @Query('externalOrderId') externalOrderId: string) {
+    return this.externalApiService.getOrderStatusByExternalOrderId(
+      this.getAccount(req),
+      this.getApiContext(req),
+      externalOrderId,
+    );
+  }
+
   @Get('orders/:trId/status')
   @ApiOperation({ summary: '주문 상태 확인' })
   async getOrderStatus(@Req() req: Request, @Param('trId') trId: string) {
