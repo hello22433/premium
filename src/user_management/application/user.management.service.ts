@@ -865,6 +865,19 @@ export class UserManagementService {
     });
   }
 
+  /**
+   * 발신번호 SoT 동기화. APPROVED isDefault PHONE 보장 + user.fromPhoneNumber mirror 갱신(없으면 NULL).
+   * 반드시 호출자의 @Transactional CLS 매니저(this.userRepository.manager)로 실행한다.
+   * manager 를 넘기지 않으면 seedApprovedDefaultPhone 이 별도 트랜잭션을 열고, 그 안의
+   * reconcileDefaultAndMirror 가 user 행에 SELECT FOR UPDATE 를 걸어 호출자가 이미 잡은
+   * user 행 락과 self-deadlock → Lock wait timeout 이 발생한다.
+   */
+  private async syncFromPhone(userId: number, rawFrom: string | null | undefined): Promise<void> {
+    await this.orderFromService.seedApprovedDefaultPhone(userId, rawFrom, this.userRepository.manager, {
+      blankPolicy: 'clear-if-no-approved',
+    });
+  }
+
   @Transactional()
   async create(getBody: UserManagementCreateReqDto) {
     const isExistEmail = await this.userRepository.count({
@@ -960,9 +973,7 @@ export class UserManagementService {
 
     // 발신번호 SoT 동기화: APPROVED isDefault PHONE 보장 + mirror 갱신(없으면 NULL).
     // user.insert 가 mirror 를 이미 썼지만 seed 가 마지막 권위 write 로 최종값 확정.
-    await this.orderFromService.seedApprovedDefaultPhone(newUserId, getBody.fromPhoneNumber, undefined, {
-      blankPolicy: 'clear-if-no-approved',
-    });
+    await this.syncFromPhone(newUserId, getBody.fromPhoneNumber);
 
     // settlement_code 프로비저닝 (추가된 @Transactional 경계 안에서 실행, B3).
     // NEW: company-{id} 코드 + 공유 wallet 생성; SHARE_ONE: 기존 단일 코드 공유(지갑 생성 없음); PENDING: '' 유지.
@@ -1098,9 +1109,7 @@ export class UserManagementService {
     // 발신번호 SoT 동기화: user save 이후 실행해야 mirror 가 stale 로 덮이지 않음.
     // seed 가 APPROVED isDefault 보장 + mirror 최종값 확정(없으면 NULL). 이후 user write 금지.
     if (getBody.fromPhoneNumber !== undefined) {
-      await this.orderFromService.seedApprovedDefaultPhone(user.id, getBody.fromPhoneNumber, undefined, {
-        blankPolicy: 'clear-if-no-approved',
-      });
+      await this.syncFromPhone(user.id, getBody.fromPhoneNumber);
     }
 
     // 상태 변경 시 공통 헬퍼로 전이 (side-column + ACCOUNT_WITHDRAW 로그 등 자동배치와 동일 side-effect 보장)
