@@ -30,7 +30,7 @@ function makeDelivery(over: {
   externalTrId?: string | null;
   couponStatus?: OrderDeliveryCouponStatus;
   replacedFromId?: number | string | null;
-  barCode?: string;
+  barCode?: string | null;
   status?: IOrderDeliveryStatus;
   discardedAt?: Date | null;
   actualSendAt?: Date | null;
@@ -44,7 +44,7 @@ function makeDelivery(over: {
     status: over.status ?? IOrderDeliveryStatus.COMPLETE,
     discardedAt: over.discardedAt ?? null,
     actualSendAt: over.actualSendAt === undefined ? new Date('2026-07-01T00:00:00.000Z') : over.actualSendAt,
-    barCode: over.barCode ?? `PIN-${over.id}`,
+    barCode: over.barCode === undefined ? `PIN-${over.id}` : over.barCode,
     personalCode: null,
     expireAt: null,
     sendRequestAt: new Date('2026-07-01T00:00:00.000Z'),
@@ -233,6 +233,48 @@ describe('D3-55 재발행 trId 체인 해소 (findOrderDeliveryByTrId / resolveA
     expect(res.data!.trId).toBe('TR-1'); // tip.externalTrId(null) 이 아니라 요청 trId echo
     expect(res.data!.couponStatus).toBe(ExternalCouponStatus.ISSUED); // 살아있는 tip 기준
     expect(res.data!.barCode).toBe('PIN-NEW');
+  });
+
+  it('getSsgOrderStatus: 재발행 후에도 응답 trId 는 요청값을 echo (getOrderStatus 와 대칭)', async () => {
+    const root = makeDelivery({
+      id: 100,
+      externalTrId: 'TR-1',
+      couponStatus: OrderDeliveryCouponStatus.CANCEL,
+      discardedAt: DISCARDED_AT,
+    });
+    const tip = makeDelivery({
+      id: 101,
+      externalTrId: null,
+      couponStatus: OrderDeliveryCouponStatus.NOT_USED,
+      replacedFromId: 100,
+      barCode: 'PIN-NEW',
+    });
+    const { svc } = makeService([root, tip]);
+
+    const res = await svc.getSsgOrderStatus(account, 'TR-1', ctx);
+
+    expect(res.data!.trId).toBe('TR-1'); // tip.externalTrId(null) 아니라 요청 trId echo
+    expect(res.data!.couponStatus).toBe(ExternalCouponStatus.ISSUED);
+  });
+
+  it('resendOrder: 재발행 trId 는 tip 으로 해소된다(폐기 root 로 갔다면 3005, tip(미발행)이면 3004)', async () => {
+    const root = makeDelivery({
+      id: 100,
+      externalTrId: 'TR-1',
+      couponStatus: OrderDeliveryCouponStatus.CANCEL, // root 로 갔다면 여기서 3005
+      discardedAt: DISCARDED_AT,
+    });
+    const tip = makeDelivery({
+      id: 101,
+      externalTrId: null,
+      couponStatus: OrderDeliveryCouponStatus.NOT_USED, // tip 은 살아있음
+      replacedFromId: 100,
+      barCode: null, // 미발행 → tip 으로 해소되면 3004
+    });
+    const { svc } = makeService([root, tip]);
+
+    // 3004(발행된 쿠폰 없음) = tip(NOT_USED) 해소 증거. root 해소였다면 couponStatus CANCEL → 3005.
+    await expect(svc.resendOrder(account, 'TR-1', ctx)).rejects.toMatchObject({ code: '3004' });
   });
 });
 
