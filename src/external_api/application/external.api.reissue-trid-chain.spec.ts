@@ -307,6 +307,55 @@ describe('D3-55 살아있는 재발행 tip 취소', () => {
     expect((svc as any).processCancelRefund).toHaveBeenCalled();
     expect(res).toBeDefined();
   });
+
+  it('cancelOrder: 발송 실패(FAIL_SMS)했지만 PIN 발급된 살아있는 재발행 tip 도 정상 취소된다', async () => {
+    // 리뷰(리뷰2 FAIL 가드 회귀 방지): 재발행 send 실패(FAIL_SMS)여도 PIN(barCode)은 발급됨·미환불 =
+    // 살아있는 쿠폰. status=FAIL 로 막던 가드는 이걸 오차단했었다. 가드 제거 후엔 정상 취소/환불로 진행해야 한다.
+    const root = makeDelivery({
+      id: 100,
+      externalTrId: 'TR-1',
+      couponStatus: OrderDeliveryCouponStatus.CANCEL,
+      discardedAt: DISCARDED_AT,
+    });
+    const tip = makeDelivery({
+      id: 101,
+      externalTrId: null,
+      couponStatus: OrderDeliveryCouponStatus.NOT_USED, // 아직 살아있음(터미널 아님)
+      replacedFromId: 100,
+      status: IOrderDeliveryStatus.FAIL_SMS, // 발송만 실패
+      actualSendAt: null,
+      barCode: 'PIN-NEW', // PIN 은 발급됨 → 취소로 회수 가능
+    });
+    const svc = makeService([root, tip]).svc;
+    (svc as any).partnerCompanyExternService = { cancelByExternalApi: jest.fn(async () => undefined) };
+    (svc as any).processCancelRefund = jest.fn(async () => undefined);
+
+    const res = await svc.cancelOrder(account, 'TR-1', ctx);
+
+    // 3005/3010 로 막히지 않고 취소·환불 경로에 도달해야 한다.
+    expect((svc as any).processCancelRefund).toHaveBeenCalled();
+    expect(res).toBeDefined();
+  });
+
+  it('cancelOrder: 이미 폐기/환불된 tip(couponStatus CANCEL)은 기존 터미널 가드로 3005', async () => {
+    // 개념 정합: 폐기는 couponStatus 로 가드(환불상태로 가드하지 않음). 이미 폐기된 건은 3005.
+    const root = makeDelivery({
+      id: 100,
+      externalTrId: 'TR-1',
+      couponStatus: OrderDeliveryCouponStatus.CANCEL,
+      discardedAt: DISCARDED_AT,
+    });
+    const tip = makeDelivery({
+      id: 101,
+      externalTrId: null,
+      couponStatus: OrderDeliveryCouponStatus.CANCEL, // tip 도 이미 폐기됨
+      replacedFromId: 100,
+      discardedAt: DISCARDED_AT,
+    });
+    const { svc } = makeService([root, tip]);
+
+    await expect(svc.cancelOrder(account, 'TR-1', ctx)).rejects.toMatchObject({ code: '3005' });
+  });
 });
 
 // ── 후속 1: getOrderStatusByExternalOrderId 는 상태=tip, trId=root 에서 복구 ──
