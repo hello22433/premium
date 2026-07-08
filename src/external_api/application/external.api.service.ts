@@ -1711,7 +1711,9 @@ export class ExternalApiService {
     });
 
     // 원본 id → 그 원본을 대체한 delivery id. bigint 는 런타임에 string 으로 hydrate 될 수 있어 Number 정규화.
-    // 같은 원본을 가리키는 행이 복수면(레이스/이상데이터) 최신(max id)을 선택해 결정적으로 만든다.
+    // 정상 데이터에선 한 원본을 대체하는 행이 1개뿐이라 유일. 이상 데이터(같은 원본을 가리키는 행이
+    // 복수로 갈라진 체인)에선 max id 로 결정적이되 "살아있는 가지"를 보장하진 못한다(그런 데이터는 발생
+    // 불가 전제 — 재발행은 원본을 CANCEL 로 폐기 후 1건만 생성). 완벽한 분기 추적은 범위 밖(알려진 제약).
     const replacedByMap = new Map<number, number>();
     for (const sibling of siblings) {
       if (sibling.replacedFromId == null) {
