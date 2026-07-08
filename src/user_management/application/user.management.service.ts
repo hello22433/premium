@@ -10,6 +10,7 @@ import {
 } from '@nestjs/common';
 import { UserEntity } from '../../entity/user.entity';
 import { IUserStatus } from '../../user/interface/user.status';
+import { IUserSettleMethod } from '../../user/interface/user.settle.method';
 import { UserCompanyEntity } from '../../entity/user.company.entity';
 import { UserViewScopeEntity, ViewScopeType } from '../../entity/user.view.scope.entity';
 import { DepartmentEntity } from '../../entity/department.entity';
@@ -424,6 +425,11 @@ export class UserManagementService {
     // 대상 계정 기준 잔여 발송 한도/신용초과금 (로그인 본인이 아니라 조회 대상 기준)
     const remain = await this.settleService.getRemainServiceAmountByUserId(id);
 
+    // settleMethod 표시값은 정산 SoT(WALLET=wallet_account, LEGACY=company)를 우선한다.
+    // deprecated user.settleMethod 만 반환하면 공유 정산코드(SHARE_ONE) 계정에서 실제
+    // 정산(getOrderSettle)이 쓰는 값과 어긋나, "선택값 불러오기"가 오표시된다.
+    const effectiveSettleMethod = await this.resolveEffectiveSettleMethod(user, company);
+
     return {
       id: user.id,
       email: user.email,
@@ -446,7 +452,7 @@ export class UserManagementService {
       businessPhoneNumber: company?.businessPhoneNumber ?? '',
       ip: user.ip,
       settleCondition: user.settleCondition,
-      settleMethod: user.settleMethod,
+      settleMethod: effectiveSettleMethod,
       maximumLimit: company?.maximumLimit ?? 0,
 
       bankName: user.bankName,
@@ -768,6 +774,50 @@ export class UserManagementService {
       return company.balance;
     }
     return user.balance;
+  }
+
+  /**
+   * 계정 표시용 정산방법(settleMethod) SoT 해석.
+   * order.service.resolveSettlePolicy 와 동일 기준으로, 계정관리 "선택값 불러오기"가
+   * 실제 정산(getOrderSettle)이 쓰는 값과 정확히 일치하도록 한다.
+   * - LEGACY: company.settleMethod (없으면 user.settleMethod 폴백)
+   * - settlement_code 미부여(PENDING): wallet SoT 자체가 없음 → SHADOW=company, WALLET=user 폴백
+   * - WALLET: wallet_account.settleMethod. 조회 실패는 폴백하지 않고 fail-closed(throw).
+   *   (오표시된 값이 폼 저장 시 공유 wallet 을 오염시키는 것을 방지 — resolveSettlePolicy 와 동일)
+   * - SHADOW: wallet 우선, 조회 실패 시 company.settleMethod 폴백
+   */
+  private async resolveEffectiveSettleMethod(
+    user: UserEntity,
+    company: UserCompanyEntity | null,
+  ): Promise<IUserSettleMethod> {
+    const userMethod = user.settleMethod;
+    const companyMethod = (company?.settleMethod as IUserSettleMethod | null) ?? null;
+    const mode = this.walletCutoverConfig.pr3SettleMode;
+
+    // LEGACY 는 회사 정책이 SoT.
+    if (mode === WalletCutoverMode.LEGACY) {
+      return companyMethod ?? userMethod;
+    }
+
+    // wallet SoT 부재(settlement_code 미부여) 또는 SHADOW 조회 실패 시 공통 폴백값.
+    // SHADOW=company 우선, WALLET=user (WALLET 은 조회 실패를 폴백하지 않고 fail-closed).
+    const nonWalletFallback = mode === WalletCutoverMode.SHADOW ? (companyMethod ?? userMethod) : userMethod;
+
+    // settlement_code 미부여(PENDING 등)는 wallet 이 존재하지 않는 정상 상태.
+    if (!user.settlementCode) {
+      return nonWalletFallback;
+    }
+
+    try {
+      const wallet = await this.walletResolver.resolveByUserId(user.id);
+      return (wallet.settleMethod as IUserSettleMethod) ?? userMethod;
+    } catch (e) {
+      // WALLET 은 fail-closed(throw) — 오표시→저장 round-trip 으로 인한 공유 wallet 오염 방지.
+      if (mode === WalletCutoverMode.SHADOW) {
+        return nonWalletFallback;
+      }
+      throw e;
+    }
   }
 
   /**
