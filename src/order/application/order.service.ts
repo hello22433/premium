@@ -162,6 +162,19 @@ import { IOrderDateType } from '../interface/order.date.type';
 import { OrderEncryptKey } from '../../order_receive/interface/order.encrypt.key';
 import { ActivityLogService } from '../../activity_log/application/activity.log.service';
 import { ActivityLogResult } from '../../activity_log/interface/activity.log.result';
+import {
+  buildSettleDiscountChanges,
+  buildSettleDeliveryChanges,
+  isSettleOrderChanged,
+  SETTLE_DISCOUNT_SOURCE_ACTION_TYPE,
+  SettleDeliveryChange,
+  SettleDeliverySnapshot,
+  SettleDiscountChange,
+  SettleDiscountChangeSource,
+  SettleFieldSnapshot,
+  SettleSnapshot,
+  SettleOrderSnapshot,
+} from '../domain/settle.discount.history';
 import { WalletCutoverConfig, WalletCutoverMode } from '../../wallet/config/wallet-cutover.config';
 import { WalletManagedPredicate } from '../../wallet/application/wallet-managed.predicate';
 import { SettlementCodeRequiredError } from '../../wallet/application/settlement-code-required.error';
@@ -2878,8 +2891,137 @@ export class OrderService {
       .getMany();
   }
 
+  /**
+   * 정산 변경이력용: 매핑들의 현재 정산 필드(fee/priceAdjustment/settleDiscountType)와 상품명을 스냅샷으로 캡처한다.
+   * 정산 처리 로직이 엔티티를 in-place mutate 하므로, 반드시 mutate 이전에 호출해야 before 값이 보존된다.
+   */
+  private captureSettleSnapshot(
+    mappings: Array<{
+      id: number;
+      fee: number | null;
+      priceAdjustment: IPriceAdjustment | null;
+      settleDiscountType: IOrderSettleDiscountType | null;
+      product?: { name?: string | null } | null;
+      orderDeliveries?: Array<{
+        id: number;
+        settleFee: number | null;
+        settlePriceAdjustment: IPriceAdjustment | null;
+        settleDiscountType: IOrderSettleDiscountType | null;
+      }> | null;
+    }>,
+  ): SettleSnapshot {
+    const beforeById = new Map<number, SettleFieldSnapshot>();
+    const productNameById = new Map<number, string>();
+    const deliveryBeforeById = new Map<number, { mappingId: number } & SettleDeliverySnapshot>();
+    for (const mapping of mappings) {
+      beforeById.set(mapping.id, {
+        fee: mapping.fee,
+        priceAdjustment: mapping.priceAdjustment,
+        settleDiscountType: mapping.settleDiscountType,
+      });
+      if (mapping.product?.name) {
+        productNameById.set(mapping.id, mapping.product.name);
+      }
+      for (const delivery of mapping.orderDeliveries ?? []) {
+        deliveryBeforeById.set(delivery.id, {
+          mappingId: mapping.id,
+          settleFee: delivery.settleFee,
+          settlePriceAdjustment: delivery.settlePriceAdjustment,
+          settleDiscountType: delivery.settleDiscountType,
+        });
+      }
+    }
+    return { beforeById, productNameById, deliveryBeforeById };
+  }
+
+  /**
+   * 정산 할인/할증 변경이력을 activity_log 에 기록한다 (성공만 영구보존 — purge 제외 actionType).
+   * - 운영자 신원(user)이 없으면(단위테스트 등 비-API 경로) 기록을 생략한다. 실제 API 경로는 항상 user 가 존재한다.
+   * - 실제 변경(매핑 change 또는 주문 결제수단/카드할증 변경)이 없으면 기록하지 않는다.
+   * - @Transactional 내부에서 호출되어 정산 저장과 동일 트랜잭션으로 커밋/롤백된다.
+   */
+  private async logSettleDiscountChange(params: {
+    user?: ILoginUserInfo;
+    orderId: number;
+    requestUrl: string;
+    method: string;
+    source: SettleDiscountChangeSource;
+    changes: SettleDiscountChange[];
+    deliveryChanges?: SettleDeliveryChange[];
+    orderBefore?: SettleOrderSnapshot;
+    orderAfter?: SettleOrderSnapshot & { settleAmount: number };
+  }): Promise<void> {
+    const { user } = params;
+    if (!user) {
+      return;
+    }
+    const orderChanged = Boolean(
+      params.orderBefore && params.orderAfter && isSettleOrderChanged(params.orderBefore, params.orderAfter),
+    );
+    const deliveryChanges = params.deliveryChanges ?? [];
+    if (params.changes.length === 0 && deliveryChanges.length === 0 && !orderChanged) {
+      return;
+    }
+    await this.activityLogService.createLog({
+      userId: user.id,
+      userEmail: user.email,
+      method: params.method,
+      requestUrl: params.requestUrl,
+      actionType: SETTLE_DISCOUNT_SOURCE_ACTION_TYPE[params.source],
+      ipAddress: '',
+      statusCode: 200,
+      result: ActivityLogResult.SUCCESS,
+      responseTime: 0,
+      requestParams: {
+        orderId: params.orderId,
+        source: params.source,
+        changes: params.changes,
+        ...(deliveryChanges.length > 0 ? { deliveryChanges } : {}),
+        ...(orderChanged ? { order: { before: params.orderBefore, after: params.orderAfter } } : {}),
+      },
+    });
+  }
+
+  /**
+   * 수동 정산입력(create/update) 성공 시 매핑/delivery 변경을 조립해 기록한다.
+   * mapping 대표값 변경은 changes, mapping 에 롤업되지 않는 delivery 부분변경은 deliveryChanges 로 남긴다.
+   */
+  private async logManualSettleChange(params: {
+    user?: ILoginUserInfo;
+    orderId: number;
+    method: string;
+    snapshot: SettleSnapshot;
+    savedMappings: Array<{ id: number } & SettleFieldSnapshot>;
+    allMappings: Array<{ id: number; orderDeliveries?: Array<{ id: number } & SettleDeliverySnapshot> | null }>;
+    orderBefore: SettleOrderSnapshot;
+    orderAfter: SettleOrderSnapshot & { settleAmount: number };
+  }): Promise<void> {
+    const changes = buildSettleDiscountChanges(
+      params.snapshot.beforeById,
+      params.savedMappings,
+      params.snapshot.productNameById,
+    );
+    const deliveryChanges = buildSettleDeliveryChanges(
+      params.snapshot.deliveryBeforeById,
+      params.allMappings,
+      new Set(changes.map((change) => change.mappingId)),
+      params.snapshot.productNameById,
+    );
+    await this.logSettleDiscountChange({
+      user: params.user,
+      orderId: params.orderId,
+      requestUrl: '/order/settle',
+      method: params.method,
+      source: SettleDiscountChangeSource.MANUAL,
+      changes,
+      deliveryChanges,
+      orderBefore: params.orderBefore,
+      orderAfter: params.orderAfter,
+    });
+  }
+
   @Transactional()
-  async createOrderSettle(getBody: OrderCreateSettleReqDto) {
+  async createOrderSettle(getBody: OrderCreateSettleReqDto, user?: ILoginUserInfo) {
     const { list } = getBody;
 
     if (list.length === 0) {
@@ -2913,6 +3055,13 @@ export class OrderService {
     const oneUserId = existingOrderProducts[0].order.clientUserId ?? existingOrderProducts[0].order.userId;
     const sendAmount = existingOrderProducts[0].order.sendAmount;
     const isSettleBalance = existingOrderProducts[0].order.isSettleBalance;
+    // 정산 변경이력(성공만 영구기록): 처리 전 상태 스냅샷.
+    // processSettleList 가 mapping 엔티티를 mutate 하므로 반드시 이 시점에 캡처해야 한다.
+    const settleSnapshot = this.captureSettleSnapshot(allOrderProducts);
+    const settleOrderBefore: SettleOrderSnapshot = {
+      settleMethod: existingOrderProducts[0].order.settleMethod,
+      cardSurchargeApplied: existingOrderProducts[0].order.cardSurchargeApplied,
+    };
 
     assertSettleListDeliveryCoverage(list, allOrderProducts, { requireFullCoverage: true });
     const { orderProductList } = await this.processSettleList(list, allOrderProductMap);
@@ -2935,6 +3084,17 @@ export class OrderService {
       { id: orderId },
       { settleAmount: newSettleAmount, cardSurchargeApplied, settleMethod },
     );
+
+    await this.logManualSettleChange({
+      user,
+      orderId,
+      method: 'POST',
+      snapshot: settleSnapshot,
+      savedMappings: orderProductList,
+      allMappings: allOrderProducts,
+      orderBefore: settleOrderBefore,
+      orderAfter: { settleMethod, cardSurchargeApplied, settleAmount: newSettleAmount },
+    });
 
     if (order.isNewBillingFlow) {
       // === 새 흐름 ===
@@ -2987,7 +3147,7 @@ export class OrderService {
   }
 
   @Transactional()
-  async updateOrderSettle(getBody: OrderUpdateSettleReqDto) {
+  async updateOrderSettle(getBody: OrderUpdateSettleReqDto, user?: ILoginUserInfo) {
     const { list } = getBody;
 
     if (list.length === 0) {
@@ -3022,6 +3182,12 @@ export class OrderService {
 
     const beforeSettleAmount = existingOrderProducts[0].order.settleAmount;
     const isSettleBalance = existingOrderProducts[0].order.isSettleBalance;
+    // 정산 변경이력(성공만 영구기록): 처리 전 상태 스냅샷.
+    const settleSnapshot = this.captureSettleSnapshot(allOrderProducts);
+    const settleOrderBefore: SettleOrderSnapshot = {
+      settleMethod: existingOrderProducts[0].order.settleMethod,
+      cardSurchargeApplied: existingOrderProducts[0].order.cardSurchargeApplied,
+    };
 
     assertSettleListDeliveryCoverage(list, allOrderProducts, { requireFullCoverage: false });
     const { orderProductList } = await this.processSettleList(list, allOrderProductMap);
@@ -3044,6 +3210,17 @@ export class OrderService {
       { id: orderId },
       { settleAmount: newSettleAmount, cardSurchargeApplied, settleMethod },
     );
+
+    await this.logManualSettleChange({
+      user,
+      orderId,
+      method: 'PUT',
+      snapshot: settleSnapshot,
+      savedMappings: orderProductList,
+      allMappings: allOrderProducts,
+      orderBefore: settleOrderBefore,
+      orderAfter: { settleMethod, cardSurchargeApplied, settleAmount: newSettleAmount },
+    });
 
     // 발송확정 이후(DELIVERY_CONFIRMED, DELIVERY_COMPLETE)에 정산정보를 수정한 경우
     // 이전 정산금액과 새 정산금액의 차이를 balance/allSettleAmount에 반영
@@ -3963,6 +4140,8 @@ export class OrderService {
     ).filter((discount) => discount.userId === billingUserId);
 
     const mappingsToUpdate: OrderProductMappingEntity[] = [];
+    // 정산 자동캡처 이력: 할인 자동 매칭 전 스냅샷 (아래 loop 가 mapping.fee 를 mutate 하므로 이 시점 캡처).
+    const autoSettleSnapshot = this.captureSettleSnapshot(order.orderProductMappings!);
 
     // 각 매핑별 할인/할증 상태 저장 (중복번호 체크에 사용)
     const mappingPriceAdjustments = new Map<number, IPriceAdjustment | null>();
@@ -4002,6 +4181,19 @@ export class OrderService {
     if (mappingsToUpdate.length > 0) {
       await this.orderProductMappingRepository.save(mappingsToUpdate);
     }
+
+    await this.logSettleDiscountChange({
+      user,
+      orderId: order.id,
+      requestUrl: '/order/delivery-confirmed',
+      method: 'POST',
+      source: SettleDiscountChangeSource.AUTO_CONFIRM,
+      changes: buildSettleDiscountChanges(
+        autoSettleSnapshot.beforeById,
+        mappingsToUpdate,
+        autoSettleSnapshot.productNameById,
+      ),
+    });
 
     // ======== 중복번호 제어 체크 시작 ========
     // 할인 적용 → 1건만 허용 (중복 불가)

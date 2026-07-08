@@ -370,8 +370,8 @@ export class OrderController {
   // ====================================================
   @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @Post('/order/settle')
-  createOrderSettle(@Body() getBody: OrderCreateSettleReqDto) {
-    return this.orderService.createOrderSettle(getBody);
+  createOrderSettle(@User() user: ILoginUserInfo, @Body() getBody: OrderCreateSettleReqDto) {
+    return this.orderService.createOrderSettle(getBody, user);
   }
 
   @ApiOperation({
@@ -399,8 +399,8 @@ export class OrderController {
   // ====================================================
   @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @Put('/order/settle')
-  updateOrderSettle(@Body() getBody: OrderUpdateSettleReqDto) {
-    return this.orderService.updateOrderSettle(getBody);
+  updateOrderSettle(@User() user: ILoginUserInfo, @Body() getBody: OrderUpdateSettleReqDto) {
+    return this.orderService.updateOrderSettle(getBody, user);
   }
 
   @ApiOperation({
