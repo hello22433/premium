@@ -1120,6 +1120,8 @@ export class ExternalApiService {
     // D3-55: reconcile 는 상태를 최신 delivery(id DESC=tip) 기준으로 보되, trId 는 externalTrId 를 가진
     // 원본(root)에서 가져온다. 재발행 tip 은 externalTrId=null 이라 그대로 쓰면 파트너가 trId 를 복구할 수 없다.
     // tip 이 이미 trId 를 가진 경우(재발행 없음)엔 추가 조회 없이 그대로 사용.
+    // 정렬 없음/단건 조회지만 모호성 없음: 외부주문은 createOrder 가 매핑 1개·발송건 1개(amount:1)로 만들고
+    // trId 는 root 하나에만 심긴다(재발행 tip=null). 즉 order 당 externalTrId 보유 행은 항상 root 단 하나.
     const responseTrId =
       orderDelivery.externalTrId ??
       (
