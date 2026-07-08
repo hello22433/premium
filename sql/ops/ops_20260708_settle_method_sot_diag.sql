@@ -39,7 +39,7 @@ SELECT
 FROM user u
 LEFT JOIN wallet_account wa ON wa.owner_type = 'SETTLEMENT_CODE' AND wa.owner_id = u.settlement_code
 WHERE u.deleted_at IS NULL
-  AND u.settlement_code = :code    -- 예: 'company-123'
+  AND u.settlement_code = 'company-1'    -- ← 1번 결과의 settlement_code 로 교체
 GROUP BY u.settlement_code;
 
 -- ── 3. [이슈1] 발송건 할인 자동적용 조건 점검 ──
@@ -62,7 +62,7 @@ SELECT
   opm.settle_discount_type AS mapping_settle_discount_type
 FROM `order` o
 JOIN order_product_mapping opm ON opm.order_id = o.id
-WHERE o.id = :orderId
+WHERE o.id = 5570    -- ← 대상 주문 id 로 교체
 ORDER BY opm.id;
 
 -- ── 3-1. billing_user 에 등록된 할인 룰이 존재/매칭 가능한지 ──
@@ -73,7 +73,7 @@ SELECT
   ud.`group`, ud.method, ud.`range`, ud.compare_condition,
   ud.price_adjustment, ud.price_percent, ud.partner_company_id
 FROM user_discount ud
-WHERE ud.user_id = :billingUserId
+WHERE ud.user_id = 22    -- ← 3번의 billing_user_id 로 교체
 ORDER BY ud.category, ud.id;
 
 -- ── 4. [교정 템플릿 / 실행 전 반드시 2번으로 공유 여부 확인] ──
@@ -82,4 +82,4 @@ ORDER BY ud.category, ud.id;
 -- UPDATE wallet_account
 --   SET settle_method = 'CASH'
 --   WHERE owner_type = 'SETTLEMENT_CODE'
---     AND owner_id = :code;   -- 1번에서 확인한 단독 settlement_code 만
+--     AND owner_id = 'company-1';   -- 1번에서 확인한 단독 settlement_code 만
