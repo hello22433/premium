@@ -23,4 +23,6 @@ export enum ActivityLogActionType {
   ACCOUNT_CREATE = 'ACCOUNT_CREATE', // 신규 계정 생성
   ACCOUNT_WITHDRAW = 'ACCOUNT_WITHDRAW', // 탈퇴 (LEAVE 전환 시점)
   ACCOUNT_ANONYMIZE = 'ACCOUNT_ANONYMIZE', // 익명화 (LEAVE +6개월 PII 파기)
+  SETTLE_DISCOUNT_MODIFY = 'SETTLE_DISCOUNT_MODIFY', // 정산 할인/할증 수동 변경 (정산정보 입력/수정)
+  SETTLE_DISCOUNT_AUTO_CAPTURE = 'SETTLE_DISCOUNT_AUTO_CAPTURE', // 발송확정 시 할인 자동 매칭 캡처
 }

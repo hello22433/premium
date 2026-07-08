@@ -685,6 +685,7 @@ describe('OrderService deliveryConfirmed settlement amount', () => {
 
   it('deliveryConfirmed: 발송확정 금액은 mapping 수수료가 아니라 배송별 정산값 합산 기준으로 차감한다', async () => {
     const service = Object.create(OrderService.prototype) as any;
+    service.activityLogService = { createLog: jest.fn() };
     const deliveries = [
       {
         id: 1,
@@ -813,6 +814,7 @@ describe('OrderService deliveryConfirmed settlement amount', () => {
 
   it('deliveryConfirmed: 동일 주문 확정이 겹치면 상태 조건으로 두 번째 차감을 차단한다', async () => {
     const service = Object.create(OrderService.prototype) as any;
+    service.activityLogService = { createLog: jest.fn() };
     const deliveries = [
       {
         id: 1,
@@ -959,6 +961,7 @@ describe('OrderService deliveryConfirmed settlement amount', () => {
 
   it('deliveryConfirmed: 고객사 정산 fallback에 협력사 할인 조건을 섞지 않는다', async () => {
     const service = Object.create(OrderService.prototype) as any;
+    service.activityLogService = { createLog: jest.fn() };
     const deliveries = [
       {
         id: 1,
