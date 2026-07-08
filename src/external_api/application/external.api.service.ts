@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Like, Repository } from 'typeorm';
+import { DataSource, IsNull, Like, Not, Repository } from 'typeorm';
 import { Transactional } from 'typeorm-transactional';
 import dayjs from 'dayjs';
 
@@ -1117,10 +1117,23 @@ export class ExternalApiService {
       return ExternalApiResponse.success<OrderLookupResponseData>({ found: true, orderStatus: order.status });
     }
 
+    // D3-55: reconcile 는 상태를 최신 delivery(id DESC=tip) 기준으로 보되, trId 는 externalTrId 를 가진
+    // 원본(root)에서 가져온다. 재발행 tip 은 externalTrId=null 이라 그대로 쓰면 파트너가 trId 를 복구할 수 없다.
+    // tip 이 이미 trId 를 가진 경우(재발행 없음)엔 추가 조회 없이 그대로 사용.
+    const responseTrId =
+      orderDelivery.externalTrId ??
+      (
+        await this.orderDeliveryRepository.findOne({
+          where: { orderProductMapping: { order: { id: order.id } }, externalTrId: Not(IsNull()) },
+          select: ['externalTrId'],
+        })
+      )?.externalTrId ??
+      undefined;
+
     const { validStartDate, validEndDate } = this.resolveValidDates(orderDelivery);
     return ExternalApiResponse.success<OrderLookupResponseData>({
       found: true,
-      trId: orderDelivery.externalTrId ?? undefined,
+      trId: responseTrId,
       orderStatus: order.status,
       couponStatus: this.toExternalCouponStatus(orderDelivery.couponStatus),
       deliveryStatus: await this.resolveDeliveryStatusWithSendHistory(orderDelivery),
