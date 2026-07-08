@@ -74,7 +74,8 @@ import { IOrderSendMethod } from '../../order/interface/order.send.method';
 import { IOrderType } from '../../order/interface/order.type';
 import { SsgEventEntity } from '../../entity/ssg.event.entity';
 import { SsgRefundOutcome } from '../../delivery/interface/ssg.refund.resolve';
-import { resolveExpireDays } from '../../common/utils/expire.util';
+import { assertExpireDayRangeValid, resolveExpireDays } from '../../common/utils/expire.util';
+import { QueryBuilderExpireDayCondition } from '../../common/infra/query.builder.expire.day.condition';
 import { addDays, subDays } from 'date-fns';
 import { ActivityLogService } from 'src/activity_log/application/activity.log.service';
 import { ActivityLogActionType } from 'src/activity_log/interface/activity.log.action.type';
@@ -542,9 +543,13 @@ export class CustomerServiceService {
       barCode,
       keyword,
       eventName,
+      expireDayMin,
+      expireDayMax,
       page,
       take,
     } = getQuery;
+
+    assertExpireDayRangeValid(expireDayMin, expireDayMax);
 
     // order_delivery 기반으로 조회하도록 변경
     let queryBuilder = this.orderDeliveryRepository
@@ -652,6 +657,14 @@ export class CustomerServiceService {
         barCode: `%${barCode}%`,
       });
     }
+
+    // 유효기간(일) 범위 — 초이스쿠폰은 선택된 상품 기준 (totalPrice 합계의 COALESCE 와 동일 기준)
+    queryBuilder = QueryBuilderExpireDayCondition(
+      queryBuilder,
+      'COALESCE(choiceSelectProduct.expireDay, product.expireDay)',
+      expireDayMin,
+      expireDayMax,
+    );
 
     // 날짜 조건을 실제 발송일(actualSendAt) 기준으로 변경
     queryBuilder = QueryBuilderDateCondition(queryBuilder, 'orderDelivery', 'actualSendAt', startAt, endAt);
@@ -2788,7 +2801,11 @@ export class CustomerServiceService {
       partnerCompanyId,
       barCode,
       eventName,
+      expireDayMin,
+      expireDayMax,
     } = searchParams;
+
+    assertExpireDayRangeValid(expireDayMin, expireDayMax);
 
     // 1. 비밀번호 검증
     await this.activityLogService.verifyPassword(user.id, password);
@@ -2901,6 +2918,14 @@ export class CustomerServiceService {
     if (eventName) {
       queryBuilder.andWhere('order.eventName LIKE :eventName', { eventName: `%${eventName}%` });
     }
+
+    // 유효기간(일) 범위 — 초이스쿠폰은 선택된 상품 기준 (getList 와 동일 조건)
+    queryBuilder = QueryBuilderExpireDayCondition(
+      queryBuilder,
+      'COALESCE(choiceSelectProduct.expireDay, product.expireDay)',
+      expireDayMin,
+      expireDayMax,
+    );
 
     // 날짜 조건을 실제 발송일(actualSendAt) 기준으로 변경
     queryBuilder = QueryBuilderDateCondition(queryBuilder, 'orderDelivery', 'actualSendAt', startAt, endAt);

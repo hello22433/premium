@@ -1,4 +1,6 @@
 import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { QueryBuilderExpireDayCondition } from '../../common/infra/query.builder.expire.day.condition';
+import { assertExpireDayRangeValid } from '../../common/utils/expire.util';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { createExportTempPath } from '../../util/file.util';
@@ -198,14 +200,7 @@ export class ProductService {
       expireDayMax,
     } = getQuery;
 
-    // 유효기간 필터 입력 검증: 둘 다 전송되었고 하한 > 상한이면 400
-    // 주의: expireDayMin/Max 는 사용자가 직접 입력하는 값이 아니라 프론트의 유효기간 프리셋
-    // (30일=29/31, 60일=59/61, 5년=1824/1826 등) 상수로 전송된다. 따라서 이 예외는 정상
-    // 사용자 조작으로는 발생하지 않고 프론트 버그/API 직접 호출 시에만 도달하므로, 메시지는
-    // 사용자 친화 문구가 아니라 프론트 개발자 디버깅용으로 둔다.
-    if (expireDayMin !== undefined && expireDayMax !== undefined && expireDayMin > expireDayMax) {
-      throw new BadRequestException('유효기간의 범위가 잘못 설정되었습니다.');
-    }
+    assertExpireDayRangeValid(expireDayMin, expireDayMax);
 
     let queryBuilder = this.productRepository
       .createQueryBuilder('product')
@@ -329,14 +324,7 @@ export class ProductService {
       });
     }
 
-    // 유효기간(일) 범위 필터 — 한쪽만 전송 시 단방향(열린 경계), 둘 다 전송 시 BETWEEN 과 동일
-    if (expireDayMin !== undefined) {
-      queryBuilder = queryBuilder.andWhere('product.expireDay >= :expireDayMin', { expireDayMin });
-    }
-
-    if (expireDayMax !== undefined) {
-      queryBuilder = queryBuilder.andWhere('product.expireDay <= :expireDayMax', { expireDayMax });
-    }
+    queryBuilder = QueryBuilderExpireDayCondition(queryBuilder, 'product.expireDay', expireDayMin, expireDayMax);
 
     if (isLike !== undefined) {
       queryBuilder = queryBuilder
@@ -425,14 +413,7 @@ export class ProductService {
       expireDayMax,
     } = getQuery;
 
-    // 유효기간 필터 입력 검증: 둘 다 전송되었고 하한 > 상한이면 400
-    // 주의: expireDayMin/Max 는 사용자가 직접 입력하는 값이 아니라 프론트의 유효기간 프리셋
-    // (30일=29/31, 60일=59/61, 5년=1824/1826 등) 상수로 전송된다. 따라서 이 예외는 정상
-    // 사용자 조작으로는 발생하지 않고 프론트 버그/API 직접 호출 시에만 도달하므로, 메시지는
-    // 사용자 친화 문구가 아니라 프론트 개발자 디버깅용으로 둔다.
-    if (expireDayMin !== undefined && expireDayMax !== undefined && expireDayMin > expireDayMax) {
-      throw new BadRequestException('유효기간의 범위가 잘못 설정되었습니다.');
-    }
+    assertExpireDayRangeValid(expireDayMin, expireDayMax);
 
     let queryBuilder = this.productRepository
       .createQueryBuilder('product')
@@ -582,14 +563,7 @@ export class ProductService {
       });
     }
 
-    // 유효기간(일) 범위 필터 — 한쪽만 전송 시 단방향(열린 경계), 둘 다 전송 시 BETWEEN 과 동일
-    if (expireDayMin !== undefined) {
-      queryBuilder = queryBuilder.andWhere('product.expireDay >= :expireDayMin', { expireDayMin });
-    }
-
-    if (expireDayMax !== undefined) {
-      queryBuilder = queryBuilder.andWhere('product.expireDay <= :expireDayMax', { expireDayMax });
-    }
+    queryBuilder = QueryBuilderExpireDayCondition(queryBuilder, 'product.expireDay', expireDayMin, expireDayMax);
 
     if (isLike !== undefined) {
       queryBuilder = queryBuilder
