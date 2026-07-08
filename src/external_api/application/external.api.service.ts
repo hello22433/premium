@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Like, Repository } from 'typeorm';
+import { DataSource, IsNull, Like, Not, Repository } from 'typeorm';
 import { Transactional } from 'typeorm-transactional';
 import dayjs from 'dayjs';
 
@@ -1044,7 +1044,8 @@ export class ExternalApiService {
     const { validStartDate, validEndDate } = this.resolveValidDates(orderDelivery);
 
     return ExternalApiResponse.success<OrderStatusResponseData>({
-      trId: orderDelivery.externalTrId!,
+      // D3-55: 재발행 tip 은 externalTrId=null 이므로, 파트너가 보낸 요청 trId 를 그대로 echo.
+      trId,
       couponStatus: this.toExternalCouponStatus(orderDelivery.couponStatus),
       deliveryStatus: this.toExternalDeliveryStatus(orderDelivery),
       barCode: orderDelivery.barCode || undefined,
@@ -1069,7 +1070,8 @@ export class ExternalApiService {
     const { validStartDate, validEndDate } = this.resolveValidDates(orderDelivery);
 
     return ExternalApiResponse.success<SsgOrderStatusResponseData>({
-      trId: orderDelivery.externalTrId!,
+      // D3-55: 재발행 tip 은 externalTrId=null 이므로, 파트너가 보낸 요청 trId 를 그대로 echo.
+      trId,
       couponStatus: this.toExternalCouponStatus(orderDelivery.couponStatus),
       deliveryStatus: this.toExternalDeliveryStatus(orderDelivery),
       barCode: orderDelivery.barCode || undefined,
@@ -1115,10 +1117,23 @@ export class ExternalApiService {
       return ExternalApiResponse.success<OrderLookupResponseData>({ found: true, orderStatus: order.status });
     }
 
+    // D3-55: reconcile 는 상태를 최신 delivery(id DESC=tip) 기준으로 보되, trId 는 externalTrId 를 가진
+    // 원본(root)에서 가져온다. 재발행 tip 은 externalTrId=null 이라 그대로 쓰면 파트너가 trId 를 복구할 수 없다.
+    // tip 이 이미 trId 를 가진 경우(재발행 없음)엔 추가 조회 없이 그대로 사용.
+    const responseTrId =
+      orderDelivery.externalTrId ??
+      (
+        await this.orderDeliveryRepository.findOne({
+          where: { orderProductMapping: { order: { id: order.id } }, externalTrId: Not(IsNull()) },
+          select: ['externalTrId'],
+        })
+      )?.externalTrId ??
+      undefined;
+
     const { validStartDate, validEndDate } = this.resolveValidDates(orderDelivery);
     return ExternalApiResponse.success<OrderLookupResponseData>({
       found: true,
-      trId: orderDelivery.externalTrId ?? undefined,
+      trId: responseTrId,
       orderStatus: order.status,
       couponStatus: this.toExternalCouponStatus(orderDelivery.couponStatus),
       deliveryStatus: await this.resolveDeliveryStatusWithSendHistory(orderDelivery),
@@ -1172,6 +1187,15 @@ export class ExternalApiService {
 
     if (order.type === IOrderType.SSG) {
       throw new ExternalApiException('3009', '신세계 상품권은 폐기할 수 없습니다');
+    }
+
+    // D3-55: findOrderDeliveryByTrId 가 재발행 tip 으로 해소하므로, tip 이 아직 미발송(actualSendAt=null)이면
+    // 재발행 발송과 취소/환불이 레이스가 된다(발송 완료 전 환불 → 발송됐는데 취소·환불된 쿠폰).
+    // 발송 완료 전에는 거절해 재시도를 유도한다.
+    // (발송 신호는 status 가 아니라 actualSendAt — 정상 발송 쿠폰도 delivery.status 는 WAIT 로 남고 actualSendAt 만 세팅됨.
+    //  재발행 tip 도 발송 성공 시 actualSendAt 세팅: customer.service.service.ts fullDelivery.actualSendAt)
+    if (!orderDelivery.actualSendAt) {
+      throw new ExternalApiException('3010', '발송 처리 중인 주문입니다. 잠시 후 다시 시도해 주세요.');
     }
 
     if (
@@ -1628,7 +1652,7 @@ export class ExternalApiService {
     trId: string,
     ctx: ApiRequestContext,
   ): Promise<OrderDeliveryEntity> {
-    const orderDelivery = await this.orderDeliveryRepository.findOne({
+    const root = await this.orderDeliveryRepository.findOne({
       where: { externalTrId: trId },
       relations: [
         'orderProductMapping',
@@ -1639,9 +1663,14 @@ export class ExternalApiService {
       ],
     });
 
-    if (!orderDelivery) {
+    if (!root) {
       throw new ExternalApiException('4001', '주문을 찾을 수 없음');
     }
+
+    // D3-55: 폐기 후 재발행 시 trId(externalTrId)는 폐기된 원본(root)에 남고,
+    // 새로 발급된 유효 delivery 는 externalTrId=null 이 된다. 파트너의 trId 가
+    // 죽은 원본을 가리키지 않도록, 재발행 체인(replacedFromId)의 살아있는 최신 delivery 로 이동한다.
+    const orderDelivery = await this.resolveActiveDelivery(root);
 
     const order = orderDelivery.orderProductMapping?.order;
     if (!order) {
@@ -1651,6 +1680,74 @@ export class ExternalApiService {
     this.assertOrderOwnership(order, account, ctx);
 
     return orderDelivery;
+  }
+
+  /**
+   * 폐기 후 재발행(replacedFromId) 체인을 따라 살아있는 최신 delivery(tip)로 이동한다.
+   * - trId 는 최초 createOrder delivery(체인의 root)에만 심기므로, 재발행 시 신 delivery(externalTrId=null)가
+   *   조회/취소/재발송의 대상이 되도록 root → tip 으로 forward-hop 한다.
+   * - 판정 기준(replacedFromId)은 정산(settle-fee.util calculateMappingSettlementBaseAmount)과 동일 SoT.
+   *   (내부 주문조회 order.service.hideDiscardReissueDeliveries 는 같은 체인을 **반대 방향**으로 해석해
+   *    root 만 남기고 tip 을 숨긴다 — 여기는 외부 파트너용이라 살아있는 tip 으로 전진. 재발행 의미 변경 시 양쪽 동기화 필요.)
+   * - 게이트는 couponStatus 가 아니라 discardedAt 으로 한다. 폐기 원본의 couponStatus 는 stale sync
+   *   (예: Galaxia push 로 CANCEL→USED)로 드리프트할 수 있으나, discardedAt 은 폐기 시에만 세팅되고
+   *   운영 경로에서 null 로 리셋되지 않는 안정 마커라, 재발행 여부 판정이 상태 드리프트에 영향받지 않는다.
+   */
+  private async resolveActiveDelivery(root: OrderDeliveryEntity): Promise<OrderDeliveryEntity> {
+    // 폐기된 적 없으면(discardedAt=null) 재발행된 적도 없음 → root 가 곧 tip.
+    if (root.discardedAt == null) {
+      return root;
+    }
+
+    // 같은 매핑의 형제 발송건 (체인 판정용 최소 컬럼만).
+    const siblings = await this.orderDeliveryRepository.find({
+      where: { orderProductMappingId: root.orderProductMappingId },
+      select: ['id', 'replacedFromId'],
+    });
+
+    // 원본 id → 그 원본을 대체한 delivery id. bigint 는 런타임에 string 으로 hydrate 될 수 있어 Number 정규화.
+    // 같은 원본을 가리키는 행이 복수면(레이스/이상데이터) 최신(max id)을 선택해 결정적으로 만든다.
+    const replacedByMap = new Map<number, number>();
+    for (const sibling of siblings) {
+      if (sibling.replacedFromId == null) {
+        continue;
+      }
+      const fromId = Number(sibling.replacedFromId);
+      const existing = replacedByMap.get(fromId);
+      if (existing == null || sibling.id > existing) {
+        replacedByMap.set(fromId, sibling.id);
+      }
+    }
+
+    // root 에서 시작해 "나를 대체한 행"을 계속 따라가 더 이상 대체되지 않은 tip 을 찾는다.
+    let currentId = root.id;
+    const visited = new Set<number>([currentId]);
+    while (replacedByMap.has(currentId)) {
+      const nextId = replacedByMap.get(currentId)!;
+      if (visited.has(nextId)) {
+        break; // 방어적 순환 차단(정상 데이터에선 발생 불가).
+      }
+      visited.add(nextId);
+      currentId = nextId;
+    }
+
+    if (currentId === root.id) {
+      return root; // 재발행 없이 폐기된 원본 → root 가 tip. (DISCARDED 로 정상 응답)
+    }
+
+    // tip 으로 이동 — caller 가 기대하는 relations 로 재로딩.
+    const tip = await this.orderDeliveryRepository.findOne({
+      where: { id: currentId },
+      relations: [
+        'orderProductMapping',
+        'orderProductMapping.order',
+        'orderProductMapping.product',
+        'orderProductMapping.product.partnerCompany',
+        'orderProductMapping.product.brand',
+      ],
+    });
+    // 방금 sibling 목록에 있던 id 이므로 정상 도달 불가. 방어적으로 root 유지.
+    return tip ?? root;
   }
 
   // 외부 API 주문 소유권 검사(apiAppId 기준, PR2). 모든 trId 기반 조회/상태/취소/재발송이 경유한다.
