@@ -1179,6 +1179,92 @@ describe('settleMethod SoT 동기화 테스트', () => {
 
     expect(userCompanyRepository.save).not.toHaveBeenCalled();
   });
+
+  describe('getDetail — settleMethod 표시 SoT (선택값 불러오기)', () => {
+    const company = { id: 10, businessNumber: '1234567890', settleMethod: 'CASH' };
+
+    it('WALLET 모드: wallet_account.settleMethod(SoT) 반환, user.settleMethod(deprecated) 무시', async () => {
+      walletCutoverConfig.pr3SettleMode = WalletCutoverMode.WALLET;
+      walletResolver.resolveByUserId.mockResolvedValue({ id: 'wallet-1', settleMethod: 'CARD' });
+      userRepository.findOne.mockResolvedValue({
+        ...UserEntityTest(),
+        id: 1,
+        settleMethod: IUserSettleMethod.CASH,
+        company,
+        companyId: 10,
+      });
+
+      const result = await sut.getDetail({ id: 1 } as any);
+
+      expect(result.settleMethod).toBe('CARD');
+      expect(walletResolver.resolveByUserId).toHaveBeenCalledWith(1);
+    });
+
+    it('WALLET 모드: settlement_code 有 + wallet 조회 실패 → fail-closed(throw), user 폴백 금지', async () => {
+      walletCutoverConfig.pr3SettleMode = WalletCutoverMode.WALLET;
+      walletResolver.resolveByUserId.mockRejectedValue(new Error('wallet not found'));
+      userRepository.findOne.mockResolvedValue({
+        ...UserEntityTest(),
+        id: 1,
+        settlementCode: 'company-1',
+        settleMethod: IUserSettleMethod.CASH,
+        company,
+        companyId: 10,
+      });
+
+      await expect(sut.getDetail({ id: 1 } as any)).rejects.toThrow('wallet not found');
+    });
+
+    it('WALLET 모드: settlement_code 미부여(PENDING) → user.settleMethod 폴백, wallet 미호출', async () => {
+      walletCutoverConfig.pr3SettleMode = WalletCutoverMode.WALLET;
+      userRepository.findOne.mockResolvedValue({
+        ...UserEntityTest(),
+        id: 1,
+        settlementCode: '',
+        settleMethod: IUserSettleMethod.CASH,
+        company,
+        companyId: 10,
+      });
+
+      const result = await sut.getDetail({ id: 1 } as any);
+
+      expect(result.settleMethod).toBe(IUserSettleMethod.CASH);
+      expect(walletResolver.resolveByUserId).not.toHaveBeenCalled();
+    });
+
+    it('SHADOW 모드: wallet 조회 실패 시 company.settleMethod 폴백', async () => {
+      walletCutoverConfig.pr3SettleMode = WalletCutoverMode.SHADOW;
+      walletResolver.resolveByUserId.mockRejectedValue(new Error('shadow miss'));
+      userRepository.findOne.mockResolvedValue({
+        ...UserEntityTest(),
+        id: 1,
+        settlementCode: 'company-1',
+        settleMethod: IUserSettleMethod.CARD,
+        company: { ...company, settleMethod: 'CASH' },
+        companyId: 10,
+      });
+
+      const result = await sut.getDetail({ id: 1 } as any);
+
+      expect(result.settleMethod).toBe('CASH');
+    });
+
+    it('LEGACY 모드: company.settleMethod 우선, wallet 미호출', async () => {
+      walletCutoverConfig.pr3SettleMode = WalletCutoverMode.LEGACY;
+      userRepository.findOne.mockResolvedValue({
+        ...UserEntityTest(),
+        id: 1,
+        settleMethod: IUserSettleMethod.CARD,
+        company: { ...company, settleMethod: 'CASH' },
+        companyId: 10,
+      });
+
+      const result = await sut.getDetail({ id: 1 } as any);
+
+      expect(result.settleMethod).toBe('CASH');
+      expect(walletResolver.resolveByUserId).not.toHaveBeenCalled();
+    });
+  });
 });
 
 describe('modifyMaximumLimit — wallet credit_limit 동기화', () => {
