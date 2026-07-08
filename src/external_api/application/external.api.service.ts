@@ -1191,20 +1191,12 @@ export class ExternalApiService {
       throw new ExternalApiException('3009', '신세계 상품권은 폐기할 수 없습니다');
     }
 
-    // 발송 실패 건은 이미 실패 환불(EXTERNAL_FAIL)이 끝난 종료 상태 → 취소 불가.
-    // couponStatus 는 NOT_USED 로 남아 아래 CANCEL 가드에 안 걸리므로 여기서 정확한 코드로 별도 거절한다.
-    // (재발행 tip 가드 앞에 둬서, 실패한 재발행 tip 도 3010 아닌 정확한 3005 로 처리)
-    if (orderDelivery.status === IOrderDeliveryStatus.FAIL || orderDelivery.status === IOrderDeliveryStatus.FAIL_SMS) {
-      throw new ExternalApiException('3005', '이미 실패/취소된 주문');
-    }
-
-    // D3-55: 재발행 tip 이 아직 발송 진행 중(replacedFromId 있고 actualSendAt=null)이면 발송과 취소/환불이
-    // 레이스가 된다(발송 완료 전 환불 → 발송됐는데 취소·환불된 쿠폰). 발송 완료 전에는 거절해 재시도를 유도한다.
-    // (재발행 tip 만 한정 — 발송실패 원본은 위 FAIL 가드가 정확한 코드로 처리. 발송 신호는 status 가 아니라
-    //  actualSendAt: 정상 발송 쿠폰도 delivery.status 는 WAIT 로 남음. 재발행 tip 도 발송 성공 시 actualSendAt 세팅.)
-    if (orderDelivery.replacedFromId != null && !orderDelivery.actualSendAt) {
-      throw new ExternalApiException('3010', '재발행 처리 중인 주문입니다. 잠시 후 다시 시도해 주세요.');
-    }
+    // 알려진 제약(D3-55): CS 폐기후재발행(execHistory)은 @Transactional 이 아니라, 재발행 tip 이
+    // 발송 완료 전(actualSendAt=null) 중간 상태로 외부에 노출된다. 그 창에서 파트너 취소가 들어오면
+    // 발송과 환불이 레이스가 될 수 있다. 이 창을 status/actualSendAt 로 완벽히 구분하려던 가드는
+    // 살아있는 send-실패(FAIL_SMS, PIN 발급·미환불) tip 을 잘못 차단하는 등 새 오류를 유발해 제거했다.
+    // 근본 해법은 재발행을 원자화하거나 "재발행 진행중" 플래그를 두는 것(별도 작업). external API 미출시라
+    // 실발생 0. 현재는 아래 터미널 가드만 두고 살아있는 tip 은 정상 취소되도록 한다.
 
     if (
       orderDelivery.status === IOrderDeliveryStatus.CANCEL ||
@@ -1304,6 +1296,11 @@ export class ExternalApiService {
   ): Promise<ExternalApiResponse> {
     const orderDelivery = await this.findOrderDeliveryByTrId(account, trId, ctx);
     const order = orderDelivery.orderProductMapping?.order;
+
+    // 알려진 제약(D3-55): 재발행 tip 이 발송 진행 중(actualSendAt=null, barCode 이미 발급)인 창에서
+    // 이 재발송이 들어오면 재발행 자체 발송과 이중 발송이 될 수 있다(재발행이 비원자적, execHistory).
+    // cancelOrder 와 동일하게, 완벽 구분 가드가 새 오류를 유발해 두지 않는다. 근본 해법은 재발행 원자화.
+    // external API 미출시라 실발생 0.
 
     // R3: 재발송은 발송 성공(DELIVERY_COMPLETE) 주문만 허용. 실패/취소(DELIVERY_CANCEL)는 거절.
     // 폐기/취소된 쿠폰(couponStatus CANCEL/REFUND_CANCEL)도 거절. cancelOrder 가드와 대칭.

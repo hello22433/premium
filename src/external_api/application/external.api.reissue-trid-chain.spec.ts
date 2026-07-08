@@ -278,30 +278,12 @@ describe('D3-55 재발행 trId 체인 해소 (findOrderDeliveryByTrId / resolveA
   });
 });
 
-// ── 리뷰 finding 2: 미발송(actualSendAt=null) 재발행 tip 에 대한 취소 환불 레이스 차단 ──
-// (발송 신호는 status 가 아니라 actualSendAt — 정상 발송 쿠폰도 delivery.status 는 WAIT 로 남음)
-describe('D3-55 재발행 미발송 tip 취소 가드', () => {
-  it('cancelOrder: 미발송(actualSendAt=null) tip 은 3010 으로 거절(환불 레이스 차단)', async () => {
-    const root = makeDelivery({
-      id: 100,
-      externalTrId: 'TR-1',
-      couponStatus: OrderDeliveryCouponStatus.CANCEL,
-      discardedAt: DISCARDED_AT,
-    });
-    const tip = makeDelivery({
-      id: 101,
-      externalTrId: null,
-      couponStatus: OrderDeliveryCouponStatus.NOT_USED,
-      replacedFromId: 100,
-      status: IOrderDeliveryStatus.WAIT,
-      actualSendAt: null, // 재발행 발송 진행 중(미발송)
-    });
-    const { svc } = makeService([root, tip]);
-
-    await expect(svc.cancelOrder(account, 'TR-1', ctx)).rejects.toMatchObject({ code: '3010' });
-  });
-
-  it('cancelOrder: 발송 완료된 재발행 tip(actualSendAt 있음)은 가드를 통과해 정상 취소 진행', async () => {
+// ── 살아있는 재발행 tip 은 파트너가 정상 취소 가능 (D3-55 핵심 가치) ──
+// 참고: 재발행 발송 진행 중(actualSendAt=null) 창의 취소/환불 레이스는 재발행이 비원자적이라
+// 발생 가능하나, status/actualSendAt 로 완벽 구분하려던 가드가 살아있는 FAIL_SMS tip 을 오차단하는 등
+// 새 오류를 유발해 제거함(리뷰3). 알려진 제약으로 문서화, 근본 해법은 재발행 원자화(별도 작업).
+describe('D3-55 살아있는 재발행 tip 취소', () => {
+  it('cancelOrder: 살아있는 재발행 tip(발송완료) 은 tip 대상으로 정상 취소가 진행된다', async () => {
     const root = makeDelivery({
       id: 100,
       externalTrId: 'TR-1',
@@ -316,7 +298,7 @@ describe('D3-55 재발행 미발송 tip 취소 가드', () => {
       // actualSendAt 기본값(세팅됨) → 발송 완료된 살아있는 재발행 쿠폰
     });
     const svc = makeService([root, tip]).svc;
-    // partnerCompany 취소/환불 경로를 스텁해 가드 통과만 검증(레이스 가드에 안 걸림).
+    // 취소/환불 부수효과는 스텁하고, tip(살아있는 행)이 취소 경로에 도달하는지만 검증.
     (svc as any).partnerCompanyExternService = { cancelByExternalApi: jest.fn(async () => undefined) };
     (svc as any).processCancelRefund = jest.fn(async () => undefined);
 
@@ -324,20 +306,6 @@ describe('D3-55 재발행 미발송 tip 취소 가드', () => {
 
     expect((svc as any).processCancelRefund).toHaveBeenCalled();
     expect(res).toBeDefined();
-  });
-
-  it('cancelOrder: 발송 실패(FAIL) 건은 3010(진행중) 아니라 3005(이미 실패)로 정확히 거절', async () => {
-    // FAIL 원본: status=FAIL, actualSendAt=null, 재발행 아님(replacedFromId=null). 이미 실패 환불 완료 상태.
-    const failed = makeDelivery({
-      id: 100,
-      externalTrId: 'TR-1',
-      status: IOrderDeliveryStatus.FAIL,
-      actualSendAt: null,
-    });
-    const { svc } = makeService([failed]);
-
-    // actualSendAt=null 이지만 재발행 tip 이 아니므로 3010 아닌 3005 여야 한다(무한 재시도 방지).
-    await expect(svc.cancelOrder(account, 'TR-1', ctx)).rejects.toMatchObject({ code: '3005' });
   });
 });
 
