@@ -1044,7 +1044,8 @@ export class ExternalApiService {
     const { validStartDate, validEndDate } = this.resolveValidDates(orderDelivery);
 
     return ExternalApiResponse.success<OrderStatusResponseData>({
-      trId: orderDelivery.externalTrId!,
+      // D3-55: 재발행 tip 은 externalTrId=null 이므로, 파트너가 보낸 요청 trId 를 그대로 echo.
+      trId,
       couponStatus: this.toExternalCouponStatus(orderDelivery.couponStatus),
       deliveryStatus: this.toExternalDeliveryStatus(orderDelivery),
       barCode: orderDelivery.barCode || undefined,
@@ -1069,7 +1070,8 @@ export class ExternalApiService {
     const { validStartDate, validEndDate } = this.resolveValidDates(orderDelivery);
 
     return ExternalApiResponse.success<SsgOrderStatusResponseData>({
-      trId: orderDelivery.externalTrId!,
+      // D3-55: 재발행 tip 은 externalTrId=null 이므로, 파트너가 보낸 요청 trId 를 그대로 echo.
+      trId,
       couponStatus: this.toExternalCouponStatus(orderDelivery.couponStatus),
       deliveryStatus: this.toExternalDeliveryStatus(orderDelivery),
       barCode: orderDelivery.barCode || undefined,
