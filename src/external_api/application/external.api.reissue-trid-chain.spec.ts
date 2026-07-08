@@ -283,6 +283,20 @@ describe('D3-55 재발행 미발송 tip 취소 가드', () => {
     expect((svc as any).processCancelRefund).toHaveBeenCalled();
     expect(res).toBeDefined();
   });
+
+  it('cancelOrder: 발송 실패(FAIL) 건은 3010(진행중) 아니라 3005(이미 실패)로 정확히 거절', async () => {
+    // FAIL 원본: status=FAIL, actualSendAt=null, 재발행 아님(replacedFromId=null). 이미 실패 환불 완료 상태.
+    const failed = makeDelivery({
+      id: 100,
+      externalTrId: 'TR-1',
+      status: IOrderDeliveryStatus.FAIL,
+      actualSendAt: null,
+    });
+    const { svc } = makeService([failed]);
+
+    // actualSendAt=null 이지만 재발행 tip 이 아니므로 3010 아닌 3005 여야 한다(무한 재시도 방지).
+    await expect(svc.cancelOrder(account, 'TR-1', ctx)).rejects.toMatchObject({ code: '3005' });
+  });
 });
 
 // ── 후속 1: getOrderStatusByExternalOrderId 는 상태=tip, trId=root 에서 복구 ──

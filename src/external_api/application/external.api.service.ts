@@ -1189,13 +1189,19 @@ export class ExternalApiService {
       throw new ExternalApiException('3009', '신세계 상품권은 폐기할 수 없습니다');
     }
 
-    // D3-55: findOrderDeliveryByTrId 가 재발행 tip 으로 해소하므로, tip 이 아직 미발송(actualSendAt=null)이면
-    // 재발행 발송과 취소/환불이 레이스가 된다(발송 완료 전 환불 → 발송됐는데 취소·환불된 쿠폰).
-    // 발송 완료 전에는 거절해 재시도를 유도한다.
-    // (발송 신호는 status 가 아니라 actualSendAt — 정상 발송 쿠폰도 delivery.status 는 WAIT 로 남고 actualSendAt 만 세팅됨.
-    //  재발행 tip 도 발송 성공 시 actualSendAt 세팅: customer.service.service.ts fullDelivery.actualSendAt)
-    if (!orderDelivery.actualSendAt) {
-      throw new ExternalApiException('3010', '발송 처리 중인 주문입니다. 잠시 후 다시 시도해 주세요.');
+    // 발송 실패 건은 이미 실패 환불(EXTERNAL_FAIL)이 끝난 종료 상태 → 취소 불가.
+    // couponStatus 는 NOT_USED 로 남아 아래 CANCEL 가드에 안 걸리므로 여기서 정확한 코드로 별도 거절한다.
+    // (재발행 tip 가드 앞에 둬서, 실패한 재발행 tip 도 3010 아닌 정확한 3005 로 처리)
+    if (orderDelivery.status === IOrderDeliveryStatus.FAIL || orderDelivery.status === IOrderDeliveryStatus.FAIL_SMS) {
+      throw new ExternalApiException('3005', '이미 실패/취소된 주문');
+    }
+
+    // D3-55: 재발행 tip 이 아직 발송 진행 중(replacedFromId 있고 actualSendAt=null)이면 발송과 취소/환불이
+    // 레이스가 된다(발송 완료 전 환불 → 발송됐는데 취소·환불된 쿠폰). 발송 완료 전에는 거절해 재시도를 유도한다.
+    // (재발행 tip 만 한정 — 발송실패 원본은 위 FAIL 가드가 정확한 코드로 처리. 발송 신호는 status 가 아니라
+    //  actualSendAt: 정상 발송 쿠폰도 delivery.status 는 WAIT 로 남음. 재발행 tip 도 발송 성공 시 actualSendAt 세팅.)
+    if (orderDelivery.replacedFromId != null && !orderDelivery.actualSendAt) {
+      throw new ExternalApiException('3010', '재발행 처리 중인 주문입니다. 잠시 후 다시 시도해 주세요.');
     }
 
     if (
