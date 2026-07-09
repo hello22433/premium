@@ -98,8 +98,24 @@ function makeHarness(assignedId = 777) {
   (svc as any).walletCutoverConfig = { pr2DeliveryLifecycleMode: WalletCutoverMode.LEGACY };
   (svc as any).deductBalance = jest.fn(async () => undefined);
 
+  // createSsgOrder 경로 전용 협력자(createOrder 테스트에는 무영향)
+  (svc as any).productService = {
+    findOrCreateSsgProductByPrice: jest.fn(async () => ({
+      id: 100,
+      price: 30000,
+      name: 'SSG',
+      brand: null,
+      expireDay: 30,
+      imagePath: null,
+    })),
+  };
+  (svc as any).ssgEventService = { selectEventForOrder: jest.fn(async () => ({ id: 9 })) };
+
   return { svc, orderFindOne, orderSave, savedCodes };
 }
+
+// insert/update(2-step) 직후 다운스트림 저장에서 멈추기 위한 sentinel
+const STOP = new Error('__STOP_AFTER_2STEP__');
 
 const dto = {
   productCode: 'P1',
@@ -136,6 +152,34 @@ describe('createOrder 주문코드 id 파생 채번 (D3-51)', () => {
     await (h.svc as any).phaseA_createAndDeduct(makeAccount(), dto, ctx);
 
     // 채번을 위해 orderRepository.findOne(code DESC)를 호출하던 로직이 제거되어야 함
+    expect(h.orderFindOne).not.toHaveBeenCalled();
+  });
+});
+
+describe('createSsgOrder 주문코드 id 파생 채번 (D3-51)', () => {
+  const ssgDto = {
+    amount: 30000,
+    deliveryMethod: 'ALIM_TALK',
+    recipientPhone: '01000000000',
+    message: '',
+    title: 't',
+    senderPhone: '0100',
+    externalCustomerId: null,
+  } as any;
+
+  it('createOrder 와 동일하게 임시코드 → id 파생 코드 2-step 으로 채번한다', async () => {
+    const h = makeHarness(888);
+    // 2-step 직후 매핑 저장에서 중단 → 채번 계약만 검증
+    (h.svc as any).orderProductMappingRepository.save = jest.fn(async () => {
+      throw STOP;
+    });
+
+    await expect((h.svc as any).phaseA_createSsgAndDeduct(makeAccount(), ssgDto, ctx)).rejects.toBe(STOP);
+
+    expect(h.savedCodes.length).toBeGreaterThanOrEqual(2);
+    expect(h.savedCodes[0].startsWith('TMP-')).toBe(true);
+    expect(h.savedCodes[h.savedCodes.length - 1]).toBe(deriveOrderCodeFromId(888));
+    expect(h.savedCodes[h.savedCodes.length - 1]).toBe('EPEVT00000000888');
     expect(h.orderFindOne).not.toHaveBeenCalled();
   });
 });
