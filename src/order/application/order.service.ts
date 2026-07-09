@@ -3388,21 +3388,49 @@ export class OrderService {
     }
   }
 
-  private assertPositiveIntegerAmounts(orderProductList: OrderProductCreateTempDto[]): void {
-    const hasInvalidAmount = orderProductList.some(
-      (product) => !Number.isInteger(product.amount) || product.amount < 1,
-    );
+  private async assertPositiveIntegerAmounts(orderProductList: OrderProductCreateTempDto[]): Promise<void> {
+    const invalidItems = orderProductList
+      .map((product, index) => ({ order: index + 1, productId: product.productId, amount: product.amount }))
+      .filter((item) => !Number.isInteger(item.amount) || item.amount < 1);
 
-    if (hasInvalidAmount) {
-      throw new BadRequestException('상품 수량은 1 이상의 정수여야 합니다.');
+    if (invalidItems.length === 0) {
+      return;
     }
+
+    // 오류 상품명은 안내용으로만 조회 — 조회 실패해도 순번 기준으로 폴백
+    const nameMap = new Map<number, string>();
+    try {
+      const productIds = [...new Set(invalidItems.map((item) => item.productId).filter((id) => Number.isInteger(id)))];
+      if (productIds.length > 0) {
+        const products = await this.productRepository.find({
+          where: { id: In(productIds) },
+          select: ['id', 'name'],
+        });
+        for (const product of products) {
+          nameMap.set(product.id, product.name);
+        }
+      }
+    } catch {
+      // 상품명 조회 실패는 무시하고 순번만 안내
+    }
+
+    const detail = invalidItems
+      .map((item) => {
+        const name = nameMap.get(item.productId);
+        return `- 상품${item.order}${name ? ` (${name})` : ''}`;
+      })
+      .join('\n');
+
+    throw new BadRequestException(
+      `수량이 올바르지 않은 상품이 있습니다. 각 상품에 수신번호를 1개 이상 입력해주세요.\n\n${detail}`,
+    );
   }
 
   @Transactional()
   async createTemp(user: ILoginUserInfo, getBody: OrderCreateTempReqDto): Promise<OrderCreateTempResDto> {
     const { type, eventName, topImagePath, midImagePath, orderProductList } = getBody;
 
-    this.assertPositiveIntegerAmounts(orderProductList);
+    await this.assertPositiveIntegerAmounts(orderProductList);
     await this.assertNoForbiddenWord(user, orderProductList, null);
 
     // 대행주문인 경우 clientUser의 허용 발신수단으로 검증
@@ -3564,7 +3592,7 @@ export class OrderService {
   async updateTemp(user: ILoginUserInfo, getBody: OrderUpdateTempReqDto): Promise<void> {
     const { id, eventName, topImagePath, midImagePath, orderProductList } = getBody;
 
-    this.assertPositiveIntegerAmounts(orderProductList);
+    await this.assertPositiveIntegerAmounts(orderProductList);
     await this.assertNoForbiddenWord(user, orderProductList, id);
 
     const order = await this.orderRepository.findOne({
