@@ -63,7 +63,6 @@ import {
   EntityManager,
   In,
   LessThanOrEqual,
-  Like,
   MoreThanOrEqual,
   ObjectLiteral,
   QueryRunner,
@@ -146,8 +145,7 @@ import { calculateOrderSettlementAmount } from '../../util/settle-fee.util';
 import { OrderCustomerViewDto } from '../api/dto/order.customer.view.dto';
 import { MaskingUtil } from '../../common/utils/masking.util';
 import { resolveExpireDays } from '../../common/utils/expire.util';
-import { CreateCode } from '../../common/domain/create.code';
-import { OrderDigitNumber, OrderPrefixCode } from '../domain/order.code';
+import { createTempOrderCode, deriveOrderCodeFromId } from '../domain/order.code';
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { PhoneUtil } from '../../common/utils/phone.util';
 import { DeliveryBatchService } from '../../delivery/application/delivery.batch.service';
@@ -3432,18 +3430,6 @@ export class OrderService {
     // 전송 정산 가격 적용
     let sendAmount = 0;
 
-    const prevProduct = await this.orderRepository.findOne({
-      where: {
-        code: Like(`${OrderPrefixCode}%`),
-      },
-      order: { code: 'DESC' },
-      withDeleted: true,
-    });
-
-    const prevCode = prevProduct?.code ?? null;
-
-    const newCode = CreateCode(prevCode, OrderPrefixCode, OrderDigitNumber);
-
     for (const orderProduct of orderProductList) {
       const getProduct = productPriceMap.get(orderProduct.productId)!;
       sendAmount += getProduct.price * orderProduct.amount;
@@ -3470,7 +3456,7 @@ export class OrderService {
     const orderInsertResult = await this.orderRepository.insert({
       userId: user.id,
       status: IOrderStatus.TEMP,
-      code: newCode,
+      code: createTempOrderCode(),
       type,
       eventName,
       sendAmount: sendAmount,
@@ -3483,6 +3469,9 @@ export class OrderService {
       ...buildOrderOperationUserSnapshot(operationUserEntity),
     });
     const orderId: number = orderInsertResult.identifiers[0].id;
+
+    // 2-step 채번: id 확정 후 EPEVT 코드로 확정(같은 트랜잭션 → 임시코드 커밋 전 소멸)
+    await this.orderRepository.update(orderId, { code: deriveOrderCodeFromId(orderId) });
 
     const orderDeliveryCreateList: OrderDeliveryEntity[] = [];
 
