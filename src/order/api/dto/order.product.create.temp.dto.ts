@@ -3,13 +3,11 @@ import {
   IsArray,
   IsEnum,
   IsIn,
-  IsInt,
   IsNotEmpty,
   IsNumber,
   IsOptional,
   IsString,
   Matches,
-  Min,
   ValidateNested,
 } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
@@ -21,7 +19,6 @@ export class OrderProductCreateTempDto {
   @ApiPropertyOptional({
     description: 'order product mapping 의 id ',
   })
-  // =================================
   @IsOptional()
   @IsNumber()
   id?: number;
@@ -29,7 +26,6 @@ export class OrderProductCreateTempDto {
   @ApiProperty({
     description: 'product.id',
   })
-  // =================================
   @IsNotEmpty()
   @IsNumber()
   productId: number;
@@ -37,17 +33,13 @@ export class OrderProductCreateTempDto {
   @ApiProperty({
     description: '상품 수량',
   })
-  // =================================
   @IsNotEmpty()
   @IsNumber()
-  @IsInt()
-  @Min(1)
   amount: number;
 
   @ApiPropertyOptional({
     description: '전송 방식 ex) 알림톡: ALIM_TALK, 문자: MMS, 이메일: EMAIL',
   })
-  // =================================================
   @IsEnum(IOrderSendMethod)
   @IsOptional()
   sendMethod: IOrderSendMethod | null;
@@ -55,14 +47,12 @@ export class OrderProductCreateTempDto {
   @ApiPropertyOptional({
     description: '꼬리 광고 텍스트',
   })
-  // =================================================
   @IsOptional()
   sendTailText: string | null;
 
   @ApiPropertyOptional({
     description: '개인정보 파기 요청 일',
   })
-  // =================================================
   @IsNumber()
   @IsOptional()
   requestToDestroyPersonalInfoDay: number | null;
@@ -70,7 +60,6 @@ export class OrderProductCreateTempDto {
   @ApiPropertyOptional({
     description: '발신 번호',
   })
-  // =================================================
   @IsOptional()
   @IsString()
   fromPhoneNumber: string | null;
@@ -78,7 +67,6 @@ export class OrderProductCreateTempDto {
   @ApiPropertyOptional({
     description: '발신 이메일',
   })
-  // =================================================
   @IsOptional()
   @IsString()
   fromEmail: string | null;
@@ -86,7 +74,6 @@ export class OrderProductCreateTempDto {
   @ApiPropertyOptional({
     description: '전송 제목',
   })
-  // =================================================
   @IsOptional()
   @IsString()
   sendTitle: string | null;
@@ -94,7 +81,6 @@ export class OrderProductCreateTempDto {
   @ApiPropertyOptional({
     description: 'QR: QR, URL: URL',
   })
-  // =================================================
   @IsOptional()
   @IsEnum(OrderEmailSendType)
   @Transform(({ value }) => (value === '' ? null : value)) // 빈 문자열을 null로 변환
@@ -103,7 +89,6 @@ export class OrderProductCreateTempDto {
   @ApiProperty({
     description: '이메일 사용 방법',
   })
-  // =================================================
   @IsOptional()
   @IsString()
   useEmailContent: string | null;
@@ -111,7 +96,6 @@ export class OrderProductCreateTempDto {
   @ApiPropertyOptional({
     description: '전송 내용',
   })
-  // =================================================
   @IsString()
   @IsOptional()
   sendContent: string | null;
@@ -120,7 +104,6 @@ export class OrderProductCreateTempDto {
     description: '발송 요청 시각 ex) yyyy-MM-ddTHH:mm:ss',
     nullable: true,
   })
-  // =================================================
   @IsOptional()
   @Matches(dateAtRegexp)
   sendRequestAt: string | null;
@@ -128,7 +111,6 @@ export class OrderProductCreateTempDto {
   @ApiProperty({
     description: '발송 방식 ex) IMMEDIATE : 즉시, RESERVE : 예약',
   })
-  // =================================================
   @IsOptional()
   @IsIn(['IMMEDIATE', 'RESERVE'])
   sendType: string | null;
@@ -136,7 +118,6 @@ export class OrderProductCreateTempDto {
   @ApiPropertyOptional({
     description: '독려 문자 day (만료일 N일 전 발송, null이면 미사용)',
   })
-  // =================================================
   @IsOptional()
   @IsNumber()
   encourageDay: number | null;
@@ -144,8 +125,7 @@ export class OrderProductCreateTempDto {
   @ApiProperty({
     description: '수신자 정보 list',
   })
-  // ===================================
-  @IsArray() // 배열임을 검증
+  @IsArray()
   @ValidateNested({ each: true })
   @Type(() => OrderDeliveryCreateDto)
   orderDeliveryList: OrderDeliveryCreateDto[];
@@ -155,7 +135,6 @@ export class OrderDeliveryCreateDto {
   @ApiProperty({
     description: '전송 주체 EMAIL 일 경우 email, SMS, ALIM_TALK 일 경우 핸드폰 번호',
   })
-  // =================================
   @IsNotEmpty()
   @IsString()
   deliveryTarget: string;
@@ -163,21 +142,18 @@ export class OrderDeliveryCreateDto {
   @ApiPropertyOptional({
     description: '대치문자 1 문구',
   })
-  // =================================
   @IsOptional()
   replaceCharacter1?: string;
 
   @ApiPropertyOptional({
     description: '대치문자 2 문구',
   })
-  // =================================
   @IsOptional()
   replaceCharacter2?: string;
 
   @ApiPropertyOptional({
     description: '대치문자 3 문구',
   })
-  // =================================
   @IsOptional()
   replaceCharacter3?: string;
 }
