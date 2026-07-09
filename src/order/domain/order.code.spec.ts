@@ -33,10 +33,18 @@ describe('order.code id 파생 채번 (D3-51)', () => {
       expect(() => deriveOrderCodeFromId(100000000000)).toThrow(/초과/);
     });
 
-    it('id 가 양의 정수가 아니면 throw 한다', () => {
-      expect(() => deriveOrderCodeFromId(0)).toThrow(/양의 정수/);
-      expect(() => deriveOrderCodeFromId(-1)).toThrow(/양의 정수/);
-      expect(() => deriveOrderCodeFromId(1.5)).toThrow(/양의 정수/);
+    it('지수표기 대상 거대값도 문자열길이 우회 없이 throw 한다(F2)', () => {
+      // String(1e21) === '1e+21'(길이 5) → 문자열 길이 판정이면 통과해버리는 케이스
+      expect(() => deriveOrderCodeFromId(1e21)).toThrow(/안전정수|초과/);
+      expect(() => deriveOrderCodeFromId(Number.MAX_SAFE_INTEGER)).toThrow(/초과/);
+    });
+
+    it('id 가 양의 안전정수가 아니면 throw 한다', () => {
+      expect(() => deriveOrderCodeFromId(0)).toThrow(/양의 안전정수/);
+      expect(() => deriveOrderCodeFromId(-1)).toThrow(/양의 안전정수/);
+      expect(() => deriveOrderCodeFromId(1.5)).toThrow(/양의 안전정수/);
+      expect(() => deriveOrderCodeFromId(NaN)).toThrow(/양의 안전정수/);
+      expect(() => deriveOrderCodeFromId(Infinity)).toThrow(/양의 안전정수/);
     });
   });
 

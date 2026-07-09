@@ -22,10 +22,12 @@ export const createTempOrderCode = (): string => `TMP-${randomUUID()}`;
  * (id 11자리 초과 = 999억 건, 근시일 도달 불가하나 방어적으로 명시)
  */
 export const deriveOrderCodeFromId = (orderId: number): string => {
-  if (!Number.isInteger(orderId) || orderId <= 0) {
-    throw new Error(`deriveOrderCodeFromId: orderId 는 양의 정수여야 합니다 (받은 값: ${orderId})`);
+  // isSafeInteger: 2^53 초과(지수표기 대상)·소수·NaN·Infinity 모두 배제.
+  if (!Number.isSafeInteger(orderId) || orderId <= 0) {
+    throw new Error(`deriveOrderCodeFromId: orderId 는 양의 안전정수여야 합니다 (받은 값: ${orderId})`);
   }
-  if (String(orderId).length > OrderDigitNumber) {
+  // 자릿수는 문자열 길이(지수표기에 취약)가 아니라 숫자 비교로 판정.
+  if (orderId >= 10 ** OrderDigitNumber) {
     throw new Error(`deriveOrderCodeFromId: orderId 가 ${OrderDigitNumber}자리를 초과했습니다 (${orderId})`);
   }
   return `${OrderPrefixCode}${NumberToDigitsString(orderId, OrderDigitNumber)}`;
