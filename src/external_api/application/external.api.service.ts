@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, IsNull, Like, Not, Repository } from 'typeorm';
+import { DataSource, IsNull, Not, Repository } from 'typeorm';
 import { Transactional } from 'typeorm-transactional';
 import dayjs from 'dayjs';
 
@@ -66,13 +66,7 @@ import { ApiCustomerMappingResolver } from './api.customer.mapping.resolver';
 
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { DeliveryCreateCouponImage } from '../../delivery/infra/delivery.create.coupon.image';
-import { CreateCode } from '../../common/domain/create.code';
-import {
-  OrderPrefixCode,
-  OrderDigitNumber,
-  createTempOrderCode,
-  deriveOrderCodeFromId,
-} from '../../order/domain/order.code';
+import { createTempOrderCode, deriveOrderCodeFromId } from '../../order/domain/order.code';
 import { CreateApiTransactionId } from '../../order/domain/create.transaction.id';
 import { applyReplaceCharacters } from '../../common/utils/replace-characters.util';
 import { resolveExpireDays, couponTokenExpiry } from '../../common/utils/expire.util';
@@ -1494,12 +1488,6 @@ export class ExternalApiService {
       throw new ExternalApiException('3001', 'SSG 상품 없음');
     });
 
-    const prevOrder = await this.orderRepository.findOne({
-      where: { code: Like(`${OrderPrefixCode}%`) },
-      order: { code: 'DESC' },
-      withDeleted: true,
-    });
-
     // SSG 이벤트는 sendAmount(정가) 기준으로 매칭/차감 (할인/할증/카드할증과 무관)
     const ssgEvent = await this.ssgEventService.selectEventForOrder(sendAmount, product.expireDay);
     if (!ssgEvent) {
@@ -1523,11 +1511,9 @@ export class ExternalApiService {
       ]);
     }
 
-    const newCode = CreateCode(prevOrder?.code ?? null, OrderPrefixCode, OrderDigitNumber);
-
     const order = this.orderRepository.create({
       userId: user.id,
-      code: newCode,
+      code: createTempOrderCode(),
       type: IOrderType.SSG,
       status: IOrderStatus.DELIVERY_REQUEST,
       eventName: `외부SSG주문`,
@@ -1549,6 +1535,10 @@ export class ExternalApiService {
       ...buildOrderClientUserSnapshot(clientUserId != null ? billingUser : null),
       ...buildOrderOperationUserSnapshot(null),
     });
+    await this.orderRepository.save(order);
+
+    // 2-step 채번: id 확정 후 EPEVT 코드로 확정(같은 트랜잭션 → 임시코드 커밋 전 소멸)
+    order.code = deriveOrderCodeFromId(order.id);
     await this.orderRepository.save(order);
 
     const mapping = this.orderProductMappingRepository.create({
