@@ -49,10 +49,12 @@ function makeHarness(assignedId = 777) {
   (svc as any).logger = { warn: jest.fn(), log: jest.fn(), error: jest.fn() };
 
   const savedCodes: string[] = [];
+  const savedRows: Array<{ id: number; code: string }> = [];
   const orderFindOne = jest.fn(async () => null);
   const orderSave = jest.fn(async (e: any) => {
-    if (e.id == null) e.id = assignedId; // DB auto_increment 모사: INSERT 시 id 부여
+    if (e.id == null) e.id = assignedId; // DB auto_increment 모사: INSERT 시 id 부여(이후 save는 같은 id 유지=UPDATE)
     savedCodes.push(e.code); // 호출 시점 code 스냅샷(문자열 불변)
+    savedRows.push({ id: e.id, code: e.code }); // 행 정체성(id) 추적 — 2번째 save가 같은 행인지 검증용
     return e;
   });
   (svc as any).orderRepository = {
@@ -111,7 +113,7 @@ function makeHarness(assignedId = 777) {
   };
   (svc as any).ssgEventService = { selectEventForOrder: jest.fn(async () => ({ id: 9 })) };
 
-  return { svc, orderFindOne, orderSave, savedCodes };
+  return { svc, orderFindOne, orderSave, savedCodes, savedRows };
 }
 
 // insert/update(2-step) 직후 다운스트림 저장에서 멈추기 위한 sentinel
@@ -153,6 +155,18 @@ describe('createOrder 주문코드 id 파생 채번 (D3-51)', () => {
 
     // 채번을 위해 orderRepository.findOne(code DESC)를 호출하던 로직이 제거되어야 함
     expect(h.orderFindOne).not.toHaveBeenCalled();
+  });
+
+  it('2번째 save 는 방금 insert된 같은 행(id)을 UPDATE 한다 — 새 행/딴 행 아님(F5)', async () => {
+    const h = makeHarness(777);
+    await (h.svc as any).phaseA_createAndDeduct(makeAccount(), dto, ctx);
+
+    expect(h.savedRows.length).toBeGreaterThanOrEqual(2);
+    const first = h.savedRows[0];
+    const last = h.savedRows[h.savedRows.length - 1];
+    expect(first.id).toBe(last.id); // 동일 행(정체성 보존) → 딴 행/새 행 쓰기면 실패
+    expect(first.code.startsWith('TMP-')).toBe(true); // 첫 저장 = 임시코드
+    expect(last.code).toBe('EPEVT00000000777'); // 마지막 저장 = 같은 행의 확정코드
   });
 });
 
