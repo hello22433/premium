@@ -67,7 +67,12 @@ import { ApiCustomerMappingResolver } from './api.customer.mapping.resolver';
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { DeliveryCreateCouponImage } from '../../delivery/infra/delivery.create.coupon.image';
 import { CreateCode } from '../../common/domain/create.code';
-import { OrderPrefixCode, OrderDigitNumber } from '../../order/domain/order.code';
+import {
+  OrderPrefixCode,
+  OrderDigitNumber,
+  createTempOrderCode,
+  deriveOrderCodeFromId,
+} from '../../order/domain/order.code';
 import { CreateApiTransactionId } from '../../order/domain/create.transaction.id';
 import { applyReplaceCharacters } from '../../common/utils/replace-characters.util';
 import { resolveExpireDays, couponTokenExpiry } from '../../common/utils/expire.util';
@@ -753,18 +758,13 @@ export class ExternalApiService {
       ctx.apiApp.requireExternalCustomerId,
     );
 
-    // 독립 쿼리(상품 조회 / 할당 상품 ID / 직전 주문 코드)는 병렬화하여 round-trip 절약
-    const [product, assignedIds, prevOrder] = await Promise.all([
+    // 독립 쿼리(상품 조회 / 할당 상품 ID)는 병렬화하여 round-trip 절약
+    const [product, assignedIds] = await Promise.all([
       this.productRepository.findOne({
         where: { code: dto.productCode, useStatus: IProductUseStatus.USE },
         relations: ['partnerCompany', 'brand'],
       }),
       this.getAssignedProductIdsForBilling(billingUser.id),
-      this.orderRepository.findOne({
-        where: { code: Like(`${OrderPrefixCode}%`) },
-        order: { code: 'DESC' },
-        withDeleted: true,
-      }),
     ]);
 
     if (!product) {
@@ -789,11 +789,9 @@ export class ExternalApiService {
       ]);
     }
 
-    const newCode = CreateCode(prevOrder?.code ?? null, OrderPrefixCode, OrderDigitNumber);
-
     const order = this.orderRepository.create({
       userId: user.id,
-      code: newCode,
+      code: createTempOrderCode(),
       type: IOrderType.EXTERNAL,
       status: IOrderStatus.DELIVERY_REQUEST,
       eventName: `외부주문`,
@@ -814,6 +812,10 @@ export class ExternalApiService {
       ...buildOrderClientUserSnapshot(clientUserId != null ? billingUser : null),
       ...buildOrderOperationUserSnapshot(null),
     });
+    await this.orderRepository.save(order);
+
+    // 2-step 채번: id 확정 후 EPEVT 코드로 확정(같은 트랜잭션 → 임시코드 커밋 전 소멸)
+    order.code = deriveOrderCodeFromId(order.id);
     await this.orderRepository.save(order);
 
     const mapping = this.orderProductMappingRepository.create({
