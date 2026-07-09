@@ -24,6 +24,20 @@ describe('order.code id 파생 채번 (D3-51)', () => {
     it('서로 다른 id 는 서로 다른 코드를 만든다(유일성)', () => {
       expect(deriveOrderCodeFromId(100)).not.toBe(deriveOrderCodeFromId(101));
     });
+
+    it('11자리 경계값은 정상 처리한다', () => {
+      expect(deriveOrderCodeFromId(99999999999)).toBe(`${OrderPrefixCode}99999999999`);
+    });
+
+    it('id 가 11자리를 초과하면 throw 한다(불변식 보호)', () => {
+      expect(() => deriveOrderCodeFromId(100000000000)).toThrow(/초과/);
+    });
+
+    it('id 가 양의 정수가 아니면 throw 한다', () => {
+      expect(() => deriveOrderCodeFromId(0)).toThrow(/양의 정수/);
+      expect(() => deriveOrderCodeFromId(-1)).toThrow(/양의 정수/);
+      expect(() => deriveOrderCodeFromId(1.5)).toThrow(/양의 정수/);
+    });
   });
 
   describe('createTempOrderCode', () => {
