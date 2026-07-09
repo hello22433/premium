@@ -95,4 +95,14 @@ describe('createTemp 주문코드 id 파생 채번 (D3-51)', () => {
     // findOne(code DESC) 채번 조회가 제거되어야 함 (동시 채번 경쟁 구간 소멸)
     expect(service.orderRepository.findOne).not.toHaveBeenCalled();
   });
+
+  it('insert 결과에 생성 id가 없으면 확정코드 UPDATE 전에 명확히 실패한다(부분주문 방지, F3)', async () => {
+    const service = makeService();
+    // 드라이버/엣지: identifiers 가 비었거나 id 부재 → deriveOrderCodeFromId 가 가드로 throw
+    service.orderRepository.insert = jest.fn(async () => ({ identifiers: [{}] }));
+
+    await expect(service.createTemp(user, body)).rejects.toThrow(/양의 안전정수|orderId/);
+    // 확정코드 UPDATE 는 호출되지 않아야(잘못된 code 로 갱신 방지) → 트랜잭션 롤백으로 임시행도 소멸
+    expect(service.orderRepository.update).not.toHaveBeenCalled();
+  });
 });
