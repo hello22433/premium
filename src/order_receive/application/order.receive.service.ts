@@ -124,6 +124,7 @@ export class OrderReceiveService {
       await this.couponViewLogRepository
         .createQueryBuilder()
         .insert()
+        .updateEntity(false)
         .values({
           orderDeliveryId,
           ipAddress,
