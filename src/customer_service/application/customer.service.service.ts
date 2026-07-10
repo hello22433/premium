@@ -2167,7 +2167,17 @@ export class CustomerServiceService {
         } else {
           fullDelivery.failedAt = new Date();
         }
-        await this.orderDeliveryRepository.save(fullDelivery);
+        // save(fullDelivery) 금지 — 위 유효기간 update 와 같은 이유.
+        // 발송 시도(csResendAsXxx)도 외부 통신이라 수 초가 걸리고, 그 사이 폐기·취소가 들어올 수 있다.
+        // 발송 결과 3컬럼만 targeted update 하여 couponStatus/discardedAt 을 덮지 않는다.
+        await this.orderDeliveryRepository.update(
+          { id: fullDelivery.id },
+          {
+            status: fullDelivery.status,
+            actualSendAt: fullDelivery.actualSendAt,
+            failedAt: fullDelivery.failedAt,
+          },
+        );
 
         // history 양쪽(OLD/NEW)에 기록 — 발송 실패 여부와 무관하게 보장
         const sharedHistoryFields = {
