@@ -2075,6 +2075,13 @@ export class CustomerServiceService {
         }
 
         // 폐기 후 신규발송: 새 쿠폰이므로 유효기간 새로 계산 (SSG는 issue() 내부에서 expireAt 채움 → 제외)
+        //
+        // save(fullDelivery) 금지: fullDelivery 는 issue() 전에 로드한 스냅샷이라
+        // couponStatus/discardedAt 이 로드 시점 값으로 굳어 있다. issue() 는 외부 통신이라 수 초가 걸리고,
+        // 그 사이 폐기(execDiscard)·외부 취소(cancelOrder)가 같은 행에 CANCEL 을 쓸 수 있다.
+        // save 는 행 전체를 쓰므로 그 CANCEL 을 stale 값으로 되돌려 "환불됐는데 살아있는 핀" 을 만든다.
+        // 발급 결과(barCode/personalCode/couponNum/ssgTransactionId)는 issue() 가 이미 targeted update 로
+        // 반영했으므로(partner.company.extern.service.ts) 여기서는 재계산한 유효기간만 쓴다.
         if (fullDelivery.orderProductMapping.order.type !== IOrderType.SSG) {
           const opm = fullDelivery.orderProductMapping;
           const expireDays = resolveExpireDays(
@@ -2086,9 +2093,12 @@ export class CustomerServiceService {
           if (opm.encourageDay) {
             fullDelivery.encourageAt = subDays(fullDelivery.expireAt, opm.encourageDay);
           }
-        }
 
-        await this.orderDeliveryRepository.save(fullDelivery);
+          await this.orderDeliveryRepository.update(
+            { id: fullDelivery.id },
+            { expireAt: fullDelivery.expireAt, encourageAt: fullDelivery.encourageAt },
+          );
+        }
 
         // HIGH-2: issue() 성공 후 barCode 없음 — SSG 는 outcome 으로 분기, 비SSG 는 단순 throw
         if (!fullDelivery.barCode) {
