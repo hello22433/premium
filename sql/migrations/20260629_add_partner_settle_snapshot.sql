@@ -33,11 +33,21 @@ DROP PROCEDURE IF EXISTS add_partner_settle_snapshot_columns;
 -- 배포시점 동결(containment): 기존 행을 findMatchingDiscount()(discount.matcher.ts)와
 -- 동일한 우선순위/경계 규칙으로 backfill한다.
 -- 우선순위: BRAND(BULK 또는 SECTION) > CATEGORY/PRODUCT_GROUP(BULK 또는 SECTION, 동시매칭 시 pricePercent 큰 쪽,
---          priceAdjustment 방향 충돌 시 매칭 실패 처리)
+--          priceAdjustment 방향 충돌 시 findMatchingDiscount()처럼 즉시 실패(SIGNAL))
 -- SECTION(가격구간)은 range 개수가 가변이라 정적 SQL로 재현 불가 → 커서로 range ASC 순회하며
 -- discount.matcher.ts 의 findDiscountByMethod() 경계 판정을 그대로 절차화한다.
--- 매칭 결과가 없는 행만 fee=0/adjustment=NULL(정말로 할인 없음 확정값). 방향 충돌은 미확정으로 남기고
--- 스킵(로그 기록) → 운영자 수동 확인.
+-- SECTION 후보는 findDiscountByMethod() 의 `d.method === SECTION && d.range` 와 동일하게
+-- range 가 NULL/빈문자인 행을 제외한다(제외하지 않으면 CAST 결과 NULL 행이 정렬 선두에 끼어
+-- LEAD lookahead 가 어긋난다). 정렬은 range ASC + id ASC 로 고정해 TS 의 stable sort 와 맞춘다.
+-- CATEGORY 매칭의 classification_id 비교는 NULL-safe `<=>` 를 쓴다
+-- (TS 의 `d.classificationId === product.classificationId` 는 둘 다 NULL 이면 매칭).
+-- 브랜드명/상품군 문자열 비교는 COLLATE utf8mb4_bin 으로 바이너리 비교를 강제한다.
+-- 컬럼 기본 collation(utf8mb4_unicode_ci)은 대소문자/후행공백을 무시하지만 TS 의 `===` 는
+-- 정확 일치라, ci 로 두면 표기가 어긋난 행까지 SQL 만 매칭한다.
+-- soft-delete 가시성도 호출부와 맞춘다. order.service.ts 는 relations 를 withDeleted 없이
+-- 로드하므로 brand / partner_company / user_discount 모두 deleted_at IS NULL 인 행만 보인다.
+-- 매칭 결과가 없는 행만 fee=0/adjustment=NULL(정말로 할인 없음 확정값). 방향 충돌은
+-- findMatchingDiscount()처럼 즉시 실패(SIGNAL)시켜 전체 backfill 트랜잭션을 롤백한다.
 -- 가격 기준: order_product_mapping.snapshot_product_price 우선, 없으면 product.price
 --           (buildPartnerSettleSnapshot() 호출부와 동일 기준).
 -- 운영 전제: 새 애플리케이션 배포 후 실행한다. 구버전 앱이 migration 도중 신규 주문을
@@ -47,23 +57,22 @@ DROP PROCEDURE IF EXISTS add_partner_settle_snapshot_columns;
 -- backfill 은 partner_settle_fee IS NULL 인 행만 대상으로 하므로 이미 확정된 행은 다시 건드리지 않는다.
 -- =============================================================================
 
-DROP TABLE IF EXISTS `_partner_settle_backfill_skip_log`;
-CREATE TABLE `_partner_settle_backfill_skip_log` (
-  `mapping_id` INT NOT NULL,
-  `reason` VARCHAR(100) NOT NULL,
-  PRIMARY KEY (`mapping_id`)
-) COMMENT = '20260629 backfill 시 자동 판정 불가로 스킵된 행 기록 (운영자 수동 확인용, 조회 후 DROP)';
-
 -- 대상 행을 먼저 구체화(materialize)한다. MySQL 프로시저 커서가 UPDATE 대상과 동일 테이블을
 -- 직접 SELECT하면 UPDATE 시점에 그 행이 커서의 WHERE 조건(partner_settle_fee IS NULL)을
 -- 더 이상 만족하지 못하게 되어 스캔 위치가 흐트러지고 다음 행을 건너뛰는 미정의 동작이 발생한다
 -- (실측: 2건 seed 검증 중 1건 처리 후 나머지 행이 통째로 스킵되는 현상 확인).
 -- 커서 소스를 이 스냅샷 테이블로 분리해 원본 테이블 UPDATE와 완전히 격리한다.
+-- partner_company_id / brand_id 가 NULL 인 것은 "해당 관계가 soft-delete 되었다"는 뜻이다.
+-- findMatchingDiscount() 호출부(order.service.ts)는 relations 를 withDeleted 없이 로드하므로
+-- TypeORM 이 각 조인에 deleted_at IS NULL 을 붙인다. 그 결과
+--   - 브랜드 삭제 → product.brand 가 undefined → 브랜드 할인 미매칭 → CATEGORY/PRODUCT_GROUP 폴백
+--   - 협력사 삭제 → product.partnerCompany 가 undefined → userDiscounts 가 [] → 할인 없음(fee 0)
+-- 이 되므로, 여기서도 NULL 로 구체화해 이후 모든 할인 조회가 0행이 되게 한다.
 DROP TEMPORARY TABLE IF EXISTS `_partner_settle_backfill_target`;
 CREATE TEMPORARY TABLE `_partner_settle_backfill_target` (
   `mapping_id` INT NOT NULL PRIMARY KEY,
-  `partner_company_id` INT NOT NULL,
-  `brand_id` INT NOT NULL,
+  `partner_company_id` INT NULL,
+  `brand_id` INT NULL,
   `classification_id` INT NULL,
   `category` VARCHAR(50) NOT NULL,
   `effective_price` INT NOT NULL
@@ -131,6 +140,10 @@ BEGIN
 
     -- 1) BRAND BULK (최우선, brand.name_korean = ud.primary_category)
     -- 단건 SELECT ... INTO 는 row 없음도 NOT FOUND handler 를 태우므로 scalar subquery 로 조회한다.
+    -- 문자열 비교는 COLLATE utf8mb4_bin 으로 바이너리 비교를 강제한다. 컬럼 기본 collation 인
+    -- utf8mb4_unicode_ci 는 대소문자/후행공백을 무시하지만 findMatchingDiscount() 의
+    -- `d.primaryCategory === product.brand?.nameKorean` 는 정확 일치라, ci 로 두면 표기가
+    -- 어긋난 행까지 SQL 만 매칭해버린다 (`group` 비교도 동일).
     SET v_brand_fee = (
       SELECT ud.price_percent
         FROM `_partner_settle_backfill_discount` ud
@@ -138,7 +151,8 @@ BEGIN
        WHERE ud.partner_company_id = v_partner_company_id
          AND ud.category = 'BRAND'
          AND ud.method = 'BULK'
-         AND ud.primary_category = b.name_korean
+         AND ud.primary_category COLLATE utf8mb4_bin = b.name_korean
+       ORDER BY ud.id ASC
        LIMIT 1
     );
     SET v_brand_adj = (
@@ -148,7 +162,8 @@ BEGIN
        WHERE ud.partner_company_id = v_partner_company_id
          AND ud.category = 'BRAND'
          AND ud.method = 'BULK'
-         AND ud.primary_category = b.name_korean
+         AND ud.primary_category COLLATE utf8mb4_bin = b.name_korean
+       ORDER BY ud.id ASC
        LIMIT 1
     );
 
@@ -164,14 +179,16 @@ BEGIN
                  ud.compare_condition,
                  ud.price_percent,
                  ud.price_adjustment,
-                 LEAD(CAST(ud.`range` AS SIGNED)) OVER (ORDER BY CAST(ud.`range` AS SIGNED) ASC) AS next_range_val,
-                 LEAD(ud.compare_condition) OVER (ORDER BY CAST(ud.`range` AS SIGNED) ASC) AS next_compare_cond
+                 LEAD(CAST(ud.`range` AS SIGNED)) OVER (ORDER BY CAST(ud.`range` AS SIGNED) ASC, ud.id ASC) AS next_range_val,
+                 LEAD(ud.compare_condition) OVER (ORDER BY CAST(ud.`range` AS SIGNED) ASC, ud.id ASC) AS next_compare_cond
             FROM `_partner_settle_backfill_discount` ud
            WHERE ud.partner_company_id = v_partner_company_id
              AND ud.category = 'BRAND'
              AND ud.method = 'SECTION'
-             AND ud.primary_category = (SELECT b.name_korean FROM `brand` b WHERE b.id = v_brand_id)
-           ORDER BY CAST(ud.`range` AS SIGNED) ASC;
+             AND ud.`range` IS NOT NULL
+             AND ud.`range` <> ''
+             AND ud.primary_category COLLATE utf8mb4_bin = (SELECT b.name_korean FROM `brand` b WHERE b.id = v_brand_id)
+           ORDER BY CAST(ud.`range` AS SIGNED) ASC, ud.id ASC;
         DECLARE CONTINUE HANDLER FOR NOT FOUND SET v_section_done = TRUE;
 
         OPEN brand_section_cur;
@@ -245,13 +262,17 @@ BEGIN
        WHERE id = v_mapping_id;
     ELSE
       -- 2) CATEGORY: BULK 우선, 없으면 SECTION 구간 판정
+      -- classification_id 는 양쪽 다 NULL 일 수 있다. findMatchingDiscount() 의
+      -- `d.classificationId === product.classificationId` 는 NULL===NULL 을 매칭으로 보므로
+      -- `=` 가 아니라 NULL-safe `<=>` 를 써야 한다 (`=` 는 NULL 을 반환해 매칭이 누락된다).
       SET v_category_fee = (
         SELECT ud.price_percent
           FROM `_partner_settle_backfill_discount` ud
          WHERE ud.partner_company_id = v_partner_company_id
            AND ud.category = 'CATEGORY'
            AND ud.method = 'BULK'
-           AND ud.classification_id = v_classification_id
+           AND ud.classification_id <=> v_classification_id
+         ORDER BY ud.id ASC
          LIMIT 1
       );
       SET v_category_adj = (
@@ -260,7 +281,8 @@ BEGIN
          WHERE ud.partner_company_id = v_partner_company_id
            AND ud.category = 'CATEGORY'
            AND ud.method = 'BULK'
-           AND ud.classification_id = v_classification_id
+           AND ud.classification_id <=> v_classification_id
+         ORDER BY ud.id ASC
          LIMIT 1
       );
 
@@ -275,19 +297,24 @@ BEGIN
           -- LEAD()로 다음 행(range ASC 기준 바로 다음 구간)을 같은 row에 끌어옴.
           -- MORE/MORE_THAN 은 다음 행이 LESS/LESS_THAN 이면 그 상한까지 같이 만족해야 매칭
           -- (findDiscountByMethod() 의 lowerCheck && upperCheck 규칙과 동일 — 하한만 보면 오매칭됨).
+          -- LEAD 의 window ORDER BY 와 커서 ORDER BY 는 반드시 같은 키(id tiebreak 포함)여야
+          -- LEAD 가 커서의 실제 다음 행을 가리킨다. TS 의 Array.sort() 는 stable 이므로
+          -- range 동률일 때 원 배열 순서(= id 순)가 유지되는 것과 맞춘다.
           DECLARE section_cur CURSOR FOR
             SELECT CAST(ud.`range` AS SIGNED) AS range_val,
                    ud.compare_condition,
                    ud.price_percent,
                    ud.price_adjustment,
-                   LEAD(CAST(ud.`range` AS SIGNED)) OVER (ORDER BY CAST(ud.`range` AS SIGNED) ASC) AS next_range_val,
-                   LEAD(ud.compare_condition) OVER (ORDER BY CAST(ud.`range` AS SIGNED) ASC) AS next_compare_cond
+                   LEAD(CAST(ud.`range` AS SIGNED)) OVER (ORDER BY CAST(ud.`range` AS SIGNED) ASC, ud.id ASC) AS next_range_val,
+                   LEAD(ud.compare_condition) OVER (ORDER BY CAST(ud.`range` AS SIGNED) ASC, ud.id ASC) AS next_compare_cond
               FROM `_partner_settle_backfill_discount` ud
              WHERE ud.partner_company_id = v_partner_company_id
                AND ud.category = 'CATEGORY'
                AND ud.method = 'SECTION'
-               AND ud.classification_id = v_classification_id
-             ORDER BY CAST(ud.`range` AS SIGNED) ASC;
+               AND ud.`range` IS NOT NULL
+               AND ud.`range` <> ''
+               AND ud.classification_id <=> v_classification_id
+             ORDER BY CAST(ud.`range` AS SIGNED) ASC, ud.id ASC;
           DECLARE CONTINUE HANDLER FOR NOT FOUND SET v_section_done = TRUE;
 
           OPEN section_cur;
@@ -362,7 +389,8 @@ BEGIN
          WHERE ud.partner_company_id = v_partner_company_id
            AND ud.category = 'PRODUCT_GROUP'
            AND ud.method = 'BULK'
-           AND ud.`group` = v_category
+           AND ud.`group` COLLATE utf8mb4_bin = v_category
+         ORDER BY ud.id ASC
          LIMIT 1
       );
       SET v_group_adj = (
@@ -371,7 +399,8 @@ BEGIN
          WHERE ud.partner_company_id = v_partner_company_id
            AND ud.category = 'PRODUCT_GROUP'
            AND ud.method = 'BULK'
-           AND ud.`group` = v_category
+           AND ud.`group` COLLATE utf8mb4_bin = v_category
+         ORDER BY ud.id ASC
          LIMIT 1
       );
 
@@ -387,14 +416,16 @@ BEGIN
                    ud.compare_condition,
                    ud.price_percent,
                    ud.price_adjustment,
-                   LEAD(CAST(ud.`range` AS SIGNED)) OVER (ORDER BY CAST(ud.`range` AS SIGNED) ASC) AS next_range_val,
-                   LEAD(ud.compare_condition) OVER (ORDER BY CAST(ud.`range` AS SIGNED) ASC) AS next_compare_cond
+                   LEAD(CAST(ud.`range` AS SIGNED)) OVER (ORDER BY CAST(ud.`range` AS SIGNED) ASC, ud.id ASC) AS next_range_val,
+                   LEAD(ud.compare_condition) OVER (ORDER BY CAST(ud.`range` AS SIGNED) ASC, ud.id ASC) AS next_compare_cond
               FROM `_partner_settle_backfill_discount` ud
              WHERE ud.partner_company_id = v_partner_company_id
                AND ud.category = 'PRODUCT_GROUP'
                AND ud.method = 'SECTION'
-               AND ud.`group` = v_category
-             ORDER BY CAST(ud.`range` AS SIGNED) ASC;
+               AND ud.`range` IS NOT NULL
+               AND ud.`range` <> ''
+               AND ud.`group` COLLATE utf8mb4_bin = v_category
+             ORDER BY CAST(ud.`range` AS SIGNED) ASC, ud.id ASC;
           DECLARE CONTINUE HANDLER FOR NOT FOUND SET v_section_done = TRUE;
 
           OPEN group_section_cur;
@@ -475,10 +506,9 @@ BEGIN
              WHERE id = v_mapping_id;
           END IF;
         ELSE
-          -- 방향 충돌: 자동 판정 불가 → 미확정(NULL) 유지, 스킵 로그만 기록
-          INSERT INTO `_partner_settle_backfill_skip_log` (mapping_id, reason)
-          VALUES (v_mapping_id, 'CATEGORY/PRODUCT_GROUP priceAdjustment 방향 충돌')
-          ON DUPLICATE KEY UPDATE reason = VALUES(reason);
+          -- 방향 충돌: findMatchingDiscount()의 BadRequestException과 같은 실패 처리.
+          SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'partner settle backfill blocked: CATEGORY/PRODUCT_GROUP priceAdjustment conflict';
         END IF;
       ELSEIF v_category_fee IS NOT NULL THEN
         UPDATE `order_product_mapping`
@@ -510,44 +540,18 @@ DROP PROCEDURE IF EXISTS assert_partner_settle_snapshot_backfill;
 DELIMITER //
 CREATE PROCEDURE assert_partner_settle_snapshot_backfill()
 BEGIN
-  DECLARE v_skip_count INT DEFAULT 0;
   DECLARE v_remaining_count INT DEFAULT 0;
-  DECLARE v_remaining_null_total INT DEFAULT 0;
-
-  SELECT COUNT(*)
-    INTO v_skip_count
-    FROM `_partner_settle_backfill_skip_log`;
 
   SELECT COUNT(*)
     INTO v_remaining_count
     FROM `order_product_mapping` opm
     INNER JOIN `product` p ON p.id = opm.product_id
    WHERE opm.partner_settle_fee IS NULL
-     AND p.partner_company_id IS NOT NULL
-     AND opm.id NOT IN (SELECT mapping_id FROM `_partner_settle_backfill_skip_log`);
-
-  -- target 구체화 이후 구버전 앱이 새 주문을 insert했거나, backfill 대상 밖 NULL row가 있으면
-  -- skip log 여부와 무관하게 전체 테이블 기준으로 차단한다.
-  SELECT COUNT(*)
-    INTO v_remaining_null_total
-    FROM `order_product_mapping` opm
-    INNER JOIN `product` p ON p.id = opm.product_id
-   WHERE opm.partner_settle_fee IS NULL
      AND p.partner_company_id IS NOT NULL;
-
-  IF v_skip_count > 0 THEN
-    SIGNAL SQLSTATE '45000'
-      SET MESSAGE_TEXT = 'partner settle backfill blocked: CATEGORY/PRODUCT_GROUP priceAdjustment conflict';
-  END IF;
 
   IF v_remaining_count > 0 THEN
     SIGNAL SQLSTATE '45000'
-      SET MESSAGE_TEXT = 'partner settle backfill blocked: unresolved NULL rows remain';
-  END IF;
-
-  IF v_remaining_null_total > v_skip_count THEN
-    SIGNAL SQLSTATE '45000'
-      SET MESSAGE_TEXT = 'partner settle backfill blocked: unresolved NULL rows remain after full-table verification';
+     SET MESSAGE_TEXT = 'partner settle backfill blocked: unresolved NULL rows remain';
   END IF;
 END //
 DELIMITER ;
@@ -564,15 +568,19 @@ BEGIN
 
   START TRANSACTION;
 
+  -- brand / partner_company 는 LEFT JOIN + deleted_at IS NULL 로 끌어와 soft-delete 된 경우
+  -- id 를 NULL 로 남긴다 (호출부 relations 로딩과 동일한 가시성).
   INSERT INTO `_partner_settle_backfill_target`
     SELECT opm.id,
-           p.partner_company_id,
-           p.brand_id,
+           pc.id,
+           b.id,
            p.classification_id,
            p.category,
            COALESCE(opm.snapshot_product_price, p.price)
       FROM `order_product_mapping` opm
       INNER JOIN `product` p ON p.id = opm.product_id
+      LEFT JOIN `partner_company` pc ON pc.id = p.partner_company_id AND pc.deleted_at IS NULL
+      LEFT JOIN `brand` b ON b.id = p.brand_id AND b.deleted_at IS NULL
      WHERE opm.partner_settle_fee IS NULL
        AND p.partner_company_id IS NOT NULL;
 
@@ -583,16 +591,12 @@ BEGIN
 
   CALL backfill_partner_settle_snapshot();
 
-  -- 검증: 방향 충돌로 스킵된 행 (0 row면 전량 자동 확정)
-  SELECT * FROM `_partner_settle_backfill_skip_log`;
-
-  -- 검증: 여전히 NULL인 행이 스킵 로그와 정확히 일치하는지 (그 외 NULL 잔존 시 로직 누락 의심)
-  SELECT COUNT(*) AS remaining_null_not_in_skip_log
+  -- 검증: 여전히 NULL인 협력사 정산 스냅샷 행이 있으면 로직 누락 또는 구버전 앱 write 의심
+  SELECT COUNT(*) AS remaining_null_total
     FROM `order_product_mapping` opm
     INNER JOIN `product` p ON p.id = opm.product_id
    WHERE opm.partner_settle_fee IS NULL
-     AND p.partner_company_id IS NOT NULL
-     AND opm.id NOT IN (SELECT mapping_id FROM `_partner_settle_backfill_skip_log`);
+     AND p.partner_company_id IS NOT NULL;
   -- 위 결과는 반드시 0 이어야 한다.
 
   CALL assert_partner_settle_snapshot_backfill();
@@ -608,5 +612,3 @@ DROP PROCEDURE IF EXISTS assert_partner_settle_snapshot_backfill;
 DROP PROCEDURE IF EXISTS backfill_partner_settle_snapshot;
 DROP TEMPORARY TABLE IF EXISTS `_partner_settle_backfill_target`;
 DROP TEMPORARY TABLE IF EXISTS `_partner_settle_backfill_discount`;
-
--- 확인 후 DROP: DROP TABLE `_partner_settle_backfill_skip_log`;

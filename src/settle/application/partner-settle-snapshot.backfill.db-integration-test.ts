@@ -447,6 +447,168 @@ describe('20260629 partner settle snapshot backfill (실DB 실행 검증)', () =
     expect(await fetchMapping(mappingIds.noMatch)).toEqual({ fee: 0, adj: null });
   });
 
+  it('classification_id 가 양쪽 NULL 인 CATEGORY 할인도 findMatchingDiscount 처럼 매칭된다', async () => {
+    // findMatchingDiscount 의 `d.classificationId === product.classificationId` 는
+    // 둘 다 null 이면 매칭이다. SQL 이 `=` 를 쓰면 NULL 비교가 UNKNOWN 이 되어 누락된다.
+    await createDiscount({
+      category: IUserDiscountCategory.CATEGORY,
+      method: IUserDiscountMethod.BULK,
+      classificationId: null,
+      pricePercent: 6,
+      priceAdjustment: IPriceAdjustment.DISCOUNT,
+    });
+    // 브랜드 할인 없음(백필브랜드Z) + classification 없음 + 상품군 할인 없음 → CATEGORY(NULL) 만 매칭
+    const nullClsMappingId = await createMapping(
+      await createProduct({ brandId: brandZId, classificationId: null, category: 'GRP_NONE' }),
+    );
+
+    await runMigrationScript(scriptConn);
+
+    expect(await fetchMapping(nullClsMappingId)).toEqual({ fee: 6, adj: 'DISCOUNT' });
+
+    // 이후 테스트가 기대하는 "할인 없음" 기준선을 되돌린다
+    await dataSource
+      .getRepository(UserDiscountEntity)
+      .createQueryBuilder()
+      .softDelete()
+      .where('category = :c AND method = :m AND classification_id IS NULL', {
+        c: IUserDiscountCategory.CATEGORY,
+        m: IUserDiscountMethod.BULK,
+      })
+      .execute();
+  });
+
+  it('브랜드명 대소문자가 다르면 findMatchingDiscount 처럼 매칭되지 않는다', async () => {
+    // 컬럼 기본 collation(utf8mb4_unicode_ci)은 대소문자를 무시하므로 `=` 로 두면 SQL 만 매칭한다.
+    // TS 의 `d.primaryCategory === product.brand?.nameKorean` 는 정확 일치라 매칭되지 않아야 한다.
+    const brandRepo = dataSource.getRepository(BrandEntity);
+    const suffix = `${Date.now()}`;
+    const caseBrand = await brandRepo.save(
+      brandRepo.create({
+        code: `bfCase${suffix}`.slice(0, 20),
+        nameKorean: 'Case Brand',
+        nameEnglish: 'CaseBrand',
+        isUsed: true,
+      } as any) as unknown as BrandEntity,
+    );
+    // 할인은 소문자로 등록 → 바이너리 비교면 불일치
+    await createDiscount({
+      category: IUserDiscountCategory.BRAND,
+      method: IUserDiscountMethod.BULK,
+      primaryCategory: 'case brand',
+      pricePercent: 30,
+      priceAdjustment: IPriceAdjustment.DISCOUNT,
+    });
+    const caseMappingId = await createMapping(await createProduct({ brandId: caseBrand.id }));
+
+    await runMigrationScript(scriptConn);
+
+    expect(await fetchMapping(caseMappingId)).toEqual({ fee: 0, adj: null });
+
+    await dataSource
+      .getRepository(UserDiscountEntity)
+      .createQueryBuilder()
+      .softDelete()
+      .where('primary_category = :p', { p: 'case brand' })
+      .execute();
+  });
+
+  it('brand 가 soft-delete 되면 브랜드 할인을 무시하고 상품군 할인으로 폴백한다', async () => {
+    // order.service.ts 는 relations 를 withDeleted 없이 로드하므로 삭제된 brand 는 보이지 않는다.
+    // → product.brand 가 undefined → 브랜드 할인 미매칭 → CATEGORY/PRODUCT_GROUP 폴백.
+    const brandRepo = dataSource.getRepository(BrandEntity);
+    const suffix = `${Date.now()}`;
+    const deadBrand = await brandRepo.save(
+      brandRepo.create({
+        code: `bfDead${suffix}`.slice(0, 20),
+        nameKorean: '삭제된브랜드',
+        nameEnglish: 'DeadBrand',
+        isUsed: true,
+      } as any) as unknown as BrandEntity,
+    );
+    // 브랜드 할인 20% (삭제된 브랜드라 적용되면 안 됨)
+    await createDiscount({
+      category: IUserDiscountCategory.BRAND,
+      method: IUserDiscountMethod.BULK,
+      primaryCategory: '삭제된브랜드',
+      pricePercent: 20,
+      priceAdjustment: IPriceAdjustment.DISCOUNT,
+    });
+    // 폴백 대상 상품군 할인 4%
+    await createDiscount({
+      category: IUserDiscountCategory.PRODUCT_GROUP,
+      method: IUserDiscountMethod.BULK,
+      group: 'GROUP_FALLBACK',
+      pricePercent: 4,
+      priceAdjustment: IPriceAdjustment.DISCOUNT,
+    });
+    const mappingId = await createMapping(
+      await createProduct({ brandId: deadBrand.id, category: 'GROUP_FALLBACK' }),
+    );
+    await brandRepo.softDelete(deadBrand.id);
+
+    await runMigrationScript(scriptConn);
+
+    expect(await fetchMapping(mappingId)).toEqual({ fee: 4, adj: 'DISCOUNT' });
+
+    await dataSource
+      .getRepository(UserDiscountEntity)
+      .createQueryBuilder()
+      .softDelete()
+      .where('primary_category = :p OR `group` = :g', { p: '삭제된브랜드', g: 'GROUP_FALLBACK' })
+      .execute();
+  });
+
+  it('partner_company 가 soft-delete 되면 할인 조건 자체가 보이지 않아 0/null 로 확정된다', async () => {
+    // product.partnerCompany 가 undefined → userDiscounts 가 [] → findMatchingDiscount 가 즉시 null.
+    const pcRepo = dataSource.getRepository(PartnerCompanyEntity);
+    const suffix = `${Date.now()}`;
+    const deadPc = await pcRepo.save(
+      pcRepo.create({
+        code: `bf-dead-pc-${suffix}`,
+        businessNumber: `bf-dead-biz-${suffix}`,
+        businessName: '삭제된 협력사',
+        businessAddress: '서울',
+        businessPhoneNumber: '0212345678',
+        personName: '담당자',
+        personPhoneNumber: '01000000000',
+        personEmail: 'dead@example.com',
+        settleCondition: 'POST_PAYMENT',
+        settleDay: 1,
+        settleMethod: 'CASH',
+        maximumLimit: 1_000_000,
+        bankName: '은행',
+        bankNumber: '0000',
+        status: 'ACTIVE',
+      } as any) as unknown as PartnerCompanyEntity,
+    );
+    // 삭제될 협력사에 브랜드 할인 25% 등록 (적용되면 안 됨)
+    const discountRepo = dataSource.getRepository(UserDiscountEntity);
+    await discountRepo.save(
+      discountRepo.create({
+        userId: null,
+        partnerCompanyId: deadPc.id,
+        category: IUserDiscountCategory.BRAND,
+        method: IUserDiscountMethod.BULK,
+        primaryCategory: '백필브랜드A',
+        classificationId: null,
+        group: null,
+        range: null,
+        compareCondition: ICompareCondition.ALL,
+        pricePercent: 25,
+        priceAdjustment: IPriceAdjustment.DISCOUNT,
+      } as any) as unknown as UserDiscountEntity,
+    );
+    const mappingId = await createMapping(
+      await createProduct({ partnerCompanyId: deadPc.id, brandId: brandAId }),
+    );
+    await pcRepo.softDelete(deadPc.id);
+
+    await runMigrationScript(scriptConn);
+
+    expect(await fetchMapping(mappingId)).toEqual({ fee: 0, adj: null });
+  });
+
   it('재실행(멱등성): 이미 박제된 행은 그대로, 새 NULL 행만 backfill 되고 새 앱이 쓴 값은 보존된다', async () => {
     // migration 도중/이후 상황 재현:
     // - 구버전 앱이 쓴 것 같은 미박제(NULL) 행
@@ -493,7 +655,7 @@ describe('20260629 partner settle snapshot backfill (실DB 실행 검증)', () =
       .execute();
   });
 
-  it('CATEGORY/PRODUCT_GROUP 방향 충돌 행은 NULL 유지 + skip log 기록 + 검증 SIGNAL 로 차단된다', async () => {
+  it('CATEGORY/PRODUCT_GROUP 방향 충돌 행은 findMatchingDiscount처럼 즉시 SIGNAL 로 차단되고 같은 트랜잭션 변경도 롤백된다', async () => {
     // 방향 충돌: CATEGORY(분류3, DISCOUNT) vs PRODUCT_GROUP(GROUP_C, ADDITIONAL)
     await createDiscount({
       category: IUserDiscountCategory.CATEGORY,
@@ -525,16 +687,11 @@ describe('20260629 partner settle snapshot backfill (실DB 실행 검증)', () =
     expect(error).not.toBeNull();
     expect(String(error.sqlMessage || error.message)).toContain('priceAdjustment conflict');
 
-    // 충돌 행: 자동 확정 금지 → NULL 유지 + skip log 기록
+    // 충돌 행: 자동 확정 금지 → NULL 유지
     expect(await fetchMapping(conflictMappingId)).toEqual({ fee: null, adj: null });
-    const [skipRows] = await scriptConn.query(
-      'SELECT reason FROM `_partner_settle_backfill_skip_log` WHERE mapping_id = ?',
-      [conflictMappingId],
-    );
-    expect((skipRows as any[]).length).toBe(1);
 
-    // 동반 정상 행은 박제 완료
-    expect(await fetchMapping(companionMappingId)).toEqual({ fee: 10, adj: 'DISCOUNT' });
+    // 같은 backfill 트랜잭션에서 처리되던 정상 행도 rollback 되어 아직 미박제 상태여야 한다
+    expect(await fetchMapping(companionMappingId)).toEqual({ fee: null, adj: null });
   });
 
   it('구버전 앱이 backfill 이후 끼워넣은 NULL 행도 전체 테이블 검증 SIGNAL 로 차단된다', async () => {
