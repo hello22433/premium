@@ -162,6 +162,7 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
     };
     orderDeliveryRepository = {
       save: jest.fn().mockImplementation(async (e: any) => ({ id: 8001, ...e })),
+      update: jest.fn().mockResolvedValue({ affected: 1 }),
       findOne: jest.fn(),
       softDelete: jest.fn().mockResolvedValue(undefined),
       createQueryBuilder: jest.fn(),
