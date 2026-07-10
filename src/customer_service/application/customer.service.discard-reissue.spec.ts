@@ -370,4 +370,115 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
       await expectWalletOwnershipCarried(IOrderType.SSG);
     });
   });
+
+  /**
+   * D3-55 후속 — 재발행 tip 쓰기의 컬럼 소유권.
+   *
+   * fullDelivery 는 issue() 호출 전에 로드한 스냅샷이라 couponStatus/discardedAt 이 로드 시점 값으로 굳는다.
+   * issue()/csResendAsXxx 는 외부 통신이라 수 초가 걸리고, 그 사이 폐기(execDiscard)나 외부 취소(cancelOrder)가
+   * 같은 행에 CANCEL 을 쓸 수 있다. save(fullDelivery) 는 행 전체를 쓰므로(merge) 그 CANCEL 을 stale 값으로
+   * 되돌려 "환불됐는데 살아있는 핀" 을 만든다. 따라서 tip 쓰기는 자기 소유 컬럼만 targeted update 해야 한다.
+   *
+   * 소유권: expireAt/encourageAt/status/actualSendAt/failedAt = 재발행
+   *         couponStatus/discardedAt = 폐기·취소   (SET 절에 절대 등장하면 안 됨)
+   *         barCode/personalCode/couponNum/ssgTransactionId = issue() 가 자체 targeted update 로 저장
+   */
+  describe('D3-55 후속 — tip 쓰기는 targeted update (stale save 로 couponStatus 를 덮지 않는다)', () => {
+    /** update 호출 중 SET 절(2번째 인자)만 모은다. */
+    const setClauses = () => orderDeliveryRepository.update.mock.calls.map((c: any[]) => c[1]);
+
+    it('13) 재발행 성공 시 fullDelivery 를 save 하지 않는다 (save 는 tip INSERT 1회뿐)', async () => {
+      setupExecDiscard();
+      orderDeliveryRepository.findOne.mockResolvedValue(buildFullDelivery(IOrderType.GENERAL, null));
+
+      await service.execHistory(buildMap(IOrderType.GENERAL));
+
+      // save 는 newDelivery INSERT 한 번만. 이후 두 번의 쓰기는 update 로 나가야 한다.
+      expect(orderDeliveryRepository.save).toHaveBeenCalledTimes(1);
+      expect(orderDeliveryRepository.save.mock.calls[0][0]).toEqual(
+        expect.objectContaining({ replacedFromId: 7001, couponStatus: OrderDeliveryCouponStatus.NOT_USED }),
+      );
+    });
+
+    it('14) 어떤 update 의 SET 절에도 couponStatus/discardedAt 이 없다 (일반)', async () => {
+      setupExecDiscard();
+      orderDeliveryRepository.findOne.mockResolvedValue(buildFullDelivery(IOrderType.GENERAL, null));
+
+      await service.execHistory(buildMap(IOrderType.GENERAL));
+
+      expect(orderDeliveryRepository.update).toHaveBeenCalled();
+      for (const set of setClauses()) {
+        expect(set).not.toHaveProperty('couponStatus');
+        expect(set).not.toHaveProperty('discardedAt');
+        expect(set).not.toHaveProperty('ssgEventId'); // markConfirmed(REQUIRES_NEW) 소유 — outer tx 에서 쓰면 self-deadlock
+      }
+    });
+
+    it('15) 어떤 update 의 SET 절에도 couponStatus/discardedAt 이 없다 (SSG)', async () => {
+      setupSsgAcquired();
+      setupExecDiscard();
+      orderDeliveryRepository.findOne.mockResolvedValue(buildFullDelivery(IOrderType.SSG, { id: 7 }));
+
+      await service.execHistory(buildMap(IOrderType.SSG));
+
+      expect(orderDeliveryRepository.save).toHaveBeenCalledTimes(1);
+      for (const set of setClauses()) {
+        expect(set).not.toHaveProperty('couponStatus');
+        expect(set).not.toHaveProperty('discardedAt');
+        expect(set).not.toHaveProperty('ssgEventId');
+      }
+    });
+
+    it('16) 발송 성공: status/actualSendAt/failedAt 만 tip(8001) 에 targeted update', async () => {
+      setupExecDiscard();
+      orderDeliveryRepository.findOne.mockResolvedValue(buildFullDelivery(IOrderType.GENERAL, null));
+
+      await service.execHistory(buildMap(IOrderType.GENERAL));
+
+      const sendUpdate = orderDeliveryRepository.update.mock.calls.find((c: any[]) => 'status' in c[1]);
+      expect(sendUpdate).toBeDefined();
+      expect(sendUpdate[0]).toEqual({ id: 8001 });
+      expect(Object.keys(sendUpdate[1]).sort()).toEqual(['actualSendAt', 'failedAt', 'status']);
+      expect(sendUpdate[1].status).toBe(IOrderDeliveryStatus.COMPLETE);
+      expect(sendUpdate[1].actualSendAt).toBeInstanceOf(Date);
+      expect(sendUpdate[1].failedAt).toBeUndefined();
+    });
+
+    it('17) 발송 실패: FAIL_SMS + failedAt 로 targeted update (couponStatus 는 여전히 미포함)', async () => {
+      setupExecDiscard();
+      orderDeliveryRepository.findOne.mockResolvedValue(buildFullDelivery(IOrderType.GENERAL, null));
+      deliveryBatchService.csResendAsSms.mockRejectedValue(new Error('MMS gateway down'));
+
+      // 발송 실패는 update/history 기록 후 caller 에게 throw 한다(발송실패내역 안내).
+      await expect(service.execHistory(buildMap(IOrderType.GENERAL))).rejects.toThrow(/발송에 실패했습니다/);
+
+      const sendUpdate = orderDeliveryRepository.update.mock.calls.find((c: any[]) => 'status' in c[1]);
+      expect(sendUpdate[0]).toEqual({ id: 8001 });
+      expect(sendUpdate[1].status).toBe(IOrderDeliveryStatus.FAIL_SMS);
+      expect(sendUpdate[1].failedAt).toBeInstanceOf(Date);
+      expect(sendUpdate[1].actualSendAt).toBeUndefined();
+      expect(sendUpdate[1]).not.toHaveProperty('couponStatus');
+    });
+
+    it('18) 비SSG 만 유효기간 update (SSG 는 issue() 가 expireAt 을 채우므로 쓰지 않는다)', async () => {
+      setupExecDiscard();
+      orderDeliveryRepository.findOne.mockResolvedValue(buildFullDelivery(IOrderType.GENERAL, null));
+      await service.execHistory(buildMap(IOrderType.GENERAL));
+
+      const generalExpiry = orderDeliveryRepository.update.mock.calls.filter((c: any[]) => 'expireAt' in c[1]);
+      expect(generalExpiry).toHaveLength(1);
+      expect(generalExpiry[0][0]).toEqual({ id: 8001 });
+      expect(Object.keys(generalExpiry[0][1]).sort()).toEqual(['encourageAt', 'expireAt']);
+
+      jest.clearAllMocks();
+      setupSsgAcquired();
+      setupExecDiscard();
+      orderDeliveryRepository.save.mockImplementation(async (e: any) => ({ id: 8001, ...e }));
+      orderDeliveryRepository.findOne.mockResolvedValue(buildFullDelivery(IOrderType.SSG, { id: 7 }));
+      await service.execHistory(buildMap(IOrderType.SSG));
+
+      const ssgExpiry = orderDeliveryRepository.update.mock.calls.filter((c: any[]) => 'expireAt' in c[1]);
+      expect(ssgExpiry).toHaveLength(0);
+    });
+  });
 });
