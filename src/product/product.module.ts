@@ -16,6 +16,7 @@ import { UserEntity } from 'src/entity/user.entity';
 import { ActivityLogModule } from '../activity_log/activity.log.module';
 import { FileModule } from '../file/file.module';
 import { ProductSharedListFileEntity } from '../entity/product.shared.list.file.entity';
+import { ProductChoiceMappingEntity } from '../entity/product.choice.mapping.entity';
 
 @Module({
   imports: [
@@ -32,6 +33,7 @@ import { ProductSharedListFileEntity } from '../entity/product.shared.list.file.
       SsgEventEntity,
       UserEntity,
       ProductSharedListFileEntity,
+      ProductChoiceMappingEntity,
     ]),
     ActivityLogModule,
     FileModule,

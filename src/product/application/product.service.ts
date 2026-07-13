@@ -76,6 +76,8 @@ import { ActivityLogResult } from '../../activity_log/interface/activity.log.res
 import { IUserSyncProductStatus } from '../../user_sync_product/interface/user.sync.product.status';
 import { IFileStorage } from '../../file/interface/file.storage';
 import { ProductSharedListFileEntity } from '../../entity/product.shared.list.file.entity';
+import { ProductChoiceMappingEntity } from '../../entity/product.choice.mapping.entity';
+import { resolveChoiceUseStatus } from '../../product_choice/domain/choice.use.status';
 
 @Injectable()
 export class ProductService {
@@ -102,6 +104,8 @@ export class ProductService {
     private userRepository: Repository<UserEntity>,
     @InjectRepository(ProductSharedListFileEntity)
     private productSharedListFileRepository: Repository<ProductSharedListFileEntity>,
+    @InjectRepository(ProductChoiceMappingEntity)
+    private productChoiceMappingRepository: Repository<ProductChoiceMappingEntity>,
     private activityLogService: ActivityLogService,
     @Inject('IFileStorage')
     private fileStorage: IFileStorage,
@@ -1031,8 +1035,73 @@ export class ProductService {
     }
 
     await this.productRepository.save(product);
+
+    // 구성상품 사용상태가 바뀌면 이 상품을 포함한 초이스쿠폰의 사용상태도 함께 맞춘다.
+    if (productUpdateHistoryCreateList.some((h) => h.key === 'useStatus')) {
+      productUpdateHistoryCreateList.push(...(await this.syncChoiceUseStatus(user, product, reason)));
+    }
+
     await this.productUpdateHistoryRepository.insert(productUpdateHistoryCreateList);
     return;
+  }
+
+  // 구성상품이 하나라도 미사용/영구미사용이면 초이스쿠폰도 미사용, 전부 사용이면 사용으로 되돌린다.
+  // 하나의 구성상품이 여러 초이스쿠폰에 묶일 수 있으므로 전부 반영한다.
+  private async syncChoiceUseStatus(
+    user: ILoginUserInfo,
+    component: ProductEntity,
+    reason?: string,
+  ): Promise<ProductUpdateHistoryEntity[]> {
+    const componentMappings = await this.productChoiceMappingRepository.find({
+      where: { productId: component.id },
+    });
+    if (componentMappings.length === 0) {
+      return [];
+    }
+
+    const histories: ProductUpdateHistoryEntity[] = [];
+    // 여러 구성상품이 동시에 수정되면 같은 초이스쿠폰을 두 트랜잭션이 함께 갱신할 수 있다.
+    // 초이스쿠폰 행에 쓰기 락을 걸어 직렬화하되, 데드락을 피하려 항상 choiceProductId 오름차순으로 락을 잡는다.
+    const choiceProductIds = [...new Set(componentMappings.map((mapping) => mapping.choiceProductId))].sort(
+      (a, b) => a - b,
+    );
+
+    for (const choiceProductId of choiceProductIds) {
+      const choiceProduct = await this.productRepository.findOne({
+        where: { id: choiceProductId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!choiceProduct) {
+        continue;
+      }
+
+      // 락을 잡은 뒤 sibling을 읽어야 다른 트랜잭션의 최신 반영을 본다.
+      const siblings = await this.productChoiceMappingRepository.find({
+        where: { choiceProductId },
+        relations: ['product'],
+      });
+
+      const nextUseStatus = resolveChoiceUseStatus(siblings.map((sibling) => sibling.product?.useStatus));
+
+      if (choiceProduct.useStatus === nextUseStatus) {
+        continue;
+      }
+
+      const history = new ProductUpdateHistoryEntity();
+      history.productId = choiceProductId;
+      history.userId = user.id;
+      history.key = 'useStatus';
+      history.keyName = ProductUpdateHistoryKeyName('useStatus');
+      history.beforeValue = choiceProduct.useStatus;
+      history.afterValue = nextUseStatus;
+      history.reason = reason ?? `구성상품(${component.code}) 사용상태 변경에 따른 자동 반영`;
+      histories.push(history);
+
+      choiceProduct.useStatus = nextUseStatus;
+      await this.productRepository.save(choiceProduct);
+    }
+
+    return histories;
   }
 
   async excelDownload(user: ILoginUserInfo, getBody: ProductExcelDownloadReqBodyDto) {

@@ -14,6 +14,7 @@ import {
 } from '../api/product.choice.req.dto';
 import { IProductType } from '../../product/interface/product.type';
 import { IProductUseStatus } from '../../product/interface/product.status';
+import { hasUnusedComponent, resolveChoiceUseStatus } from '../domain/choice.use.status';
 import { ProductChoiceMappingEntity } from '../../entity/product.choice.mapping.entity';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
@@ -90,10 +91,8 @@ export class ProductChoiceService {
     const [productList, totalCount] = await queryBuilder.getManyAndCount();
 
     const resultList = productList.map((product): ProductChoiceViewDto => {
-      const hasUnusedProduct = product.productChoiceMappings.some(
-        (mapping) =>
-          mapping.product?.useStatus === IProductUseStatus.UNUSED ||
-          mapping.product?.useStatus === IProductUseStatus.PERMANENTLY_UNUSED,
+      const hasUnusedProduct = hasUnusedComponent(
+        product.productChoiceMappings.map((mapping) => mapping.product?.useStatus),
       );
 
       return {
@@ -269,7 +268,7 @@ export class ProductChoiceService {
       settlePercent: choiceProductSettlePercent,
       settleMethod: choiceProductSettleMethod,
       couponMethod: choiceProductCouponMethod,
-      useStatus: useStatus,
+      useStatus: this.applyComponentUseStatus(useStatus, products),
     });
 
     const newChoiceProduct = await this.productRepository.save(insertedProduct);
@@ -316,7 +315,7 @@ export class ProductChoiceService {
       name,
       imagePath: imagePath!,
       price: initialPrice,
-      useStatus: useStatus,
+      useStatus: this.applyComponentUseStatus(useStatus, products),
     });
 
     await this.productChoiceMappingRepository.softDelete({ choiceProductId: id });
@@ -356,6 +355,15 @@ export class ProductChoiceService {
     }
 
     await this.productRepository.softDelete({ id: In(idList) });
+  }
+
+  // 구성상품에 미사용/영구미사용이 있으면 초이스쿠폰은 사용 상태가 될 수 없다.
+  // 요청이 미사용이면 그대로 존중한다(구성상품이 정상이라고 임의로 사용으로 올리지 않는다).
+  private applyComponentUseStatus(requested: IProductUseStatus, components: ProductEntity[]): IProductUseStatus {
+    if (requested !== IProductUseStatus.USE) {
+      return requested;
+    }
+    return resolveChoiceUseStatus(components.map((component) => component.useStatus));
   }
 
   private async assertAllChoiceProductsExist(idList: number[]): Promise<void> {
