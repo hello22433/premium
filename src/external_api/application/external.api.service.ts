@@ -1230,6 +1230,12 @@ export class ExternalApiService {
     if (!(await this.acquireMutationLease(orderDelivery.id, mutationClaimAt))) {
       throw new ExternalApiException('3010', '해당 주문에 다른 처리가 진행 중입니다. 잠시 후 다시 시도해 주세요.');
     }
+    // CRITICAL: 메모리 엔티티에도 lease 를 반영한다.
+    // orderDelivery 는 findOrderDeliveryByTrId 가 full entity 로 로드한 스냅샷이라 mutationClaimedAt=null 이고,
+    // acquireMutationLease 는 DB row 만 UPDATE 한다. 이 동기화가 없으면 processCancelRefund 의
+    // save(orderDelivery)(=merge) 가 "메모리 null vs DB claimAt" 을 변경으로 인식해
+    // mutation_claimed_at=NULL 을 써버린다 → 환불 도중 자기 lease 를 스스로 해제(자기 fencing 무력화).
+    orderDelivery.mutationClaimedAt = mutationClaimAt;
     try {
       // lease 획득 전 스냅샷은 stale 일 수 있다(직전까지 진행되던 재발행이 barCode/couponStatus 를 갱신).
       // 아래 가드와 "barCode 있으면 협력사 취소" 판단이 옛 값으로 내려가지 않도록 volatile 컬럼만 재조회한다.

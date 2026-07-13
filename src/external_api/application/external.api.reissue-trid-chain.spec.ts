@@ -444,6 +444,38 @@ describe('D3-55 살아있는 재발행 tip 취소', () => {
 
     expect(update).toHaveBeenCalledWith({ id: 101, mutationClaimedAt: expect.any(Date) }, { mutationClaimedAt: null });
   });
+
+  it('cancelOrder: 획득한 lease 를 메모리 엔티티에도 반영한다 — processCancelRefund 의 save(merge) 가 자기 lease 를 NULL 로 되돌리지 않도록', async () => {
+    // 리뷰 CONFIRMED: findOrderDeliveryByTrId 는 full entity 로 로드하므로 mutationClaimedAt=null 이 메모리에 남는다.
+    // acquireMutationLease 는 DB row 만 UPDATE → 동기화가 없으면 save(orderDelivery) 가 "메모리 null vs DB claimAt" 을
+    // 변경으로 인식해 mutation_claimed_at=NULL 을 써버린다 = 환불 도중 자기 lease 자진 해제.
+    const root = makeDelivery({
+      id: 100,
+      externalTrId: 'TR-1',
+      couponStatus: OrderDeliveryCouponStatus.CANCEL,
+      discardedAt: DISCARDED_AT,
+    });
+    const tip = makeDelivery({
+      id: 101,
+      externalTrId: null,
+      couponStatus: OrderDeliveryCouponStatus.NOT_USED,
+      replacedFromId: 100,
+    });
+    expect((tip as any).mutationClaimedAt ?? null).toBeNull(); // 로드 스냅샷은 null
+
+    const { svc } = makeService([root, tip]);
+    (svc as any).partnerCompanyExternService = { cancelByExternalApi: jest.fn(async () => undefined) };
+    const seen: Array<Date | null> = [];
+    (svc as any).processCancelRefund = jest.fn(async (_o: any, od: any) => {
+      seen.push(od.mutationClaimedAt ?? null); // save(merge) 가 보게 될 값
+    });
+
+    await svc.cancelOrder(account, 'TR-1', ctx);
+
+    // processCancelRefund 진입 시점의 엔티티가 내 lease 토큰을 들고 있어야 한다(= merge 시 diff 없음 → NULL 미기록)
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toBeInstanceOf(Date);
+  });
 });
 
 // ── 후속 1: getOrderStatusByExternalOrderId 는 상태=tip, trId=root 에서 복구 ──
