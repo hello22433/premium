@@ -437,7 +437,8 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
 
       const sendUpdate = orderDeliveryRepository.update.mock.calls.find((c: any[]) => 'status' in c[1]);
       expect(sendUpdate).toBeDefined();
-      expect(sendUpdate[0]).toEqual({ id: 8001 });
+      // criteria 에 mutationClaimedAt(owner guard) = fencing — 내 lease 일 때만 기록
+      expect(sendUpdate[0]).toEqual({ id: 8001, mutationClaimedAt: expect.any(Date) });
       expect(Object.keys(sendUpdate[1]).sort()).toEqual(['actualSendAt', 'failedAt', 'status']);
       expect(sendUpdate[1].status).toBe(IOrderDeliveryStatus.COMPLETE);
       expect(sendUpdate[1].actualSendAt).toBeInstanceOf(Date);
@@ -453,7 +454,7 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
       await expect(service.execHistory(buildMap(IOrderType.GENERAL))).rejects.toThrow(/발송에 실패했습니다/);
 
       const sendUpdate = orderDeliveryRepository.update.mock.calls.find((c: any[]) => 'status' in c[1]);
-      expect(sendUpdate[0]).toEqual({ id: 8001 });
+      expect(sendUpdate[0]).toEqual({ id: 8001, mutationClaimedAt: expect.any(Date) });
       expect(sendUpdate[1].status).toBe(IOrderDeliveryStatus.FAIL_SMS);
       expect(sendUpdate[1].failedAt).toBeInstanceOf(Date);
       expect(sendUpdate[1].actualSendAt).toBeUndefined();
@@ -467,7 +468,7 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
 
       const generalExpiry = orderDeliveryRepository.update.mock.calls.filter((c: any[]) => 'expireAt' in c[1]);
       expect(generalExpiry).toHaveLength(1);
-      expect(generalExpiry[0][0]).toEqual({ id: 8001 });
+      expect(generalExpiry[0][0]).toEqual({ id: 8001, mutationClaimedAt: expect.any(Date) });
       expect(Object.keys(generalExpiry[0][1]).sort()).toEqual(['encourageAt', 'expireAt']);
 
       jest.clearAllMocks();
@@ -479,6 +480,65 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
 
       const ssgExpiry = orderDeliveryRepository.update.mock.calls.filter((c: any[]) => 'expireAt' in c[1]);
       expect(ssgExpiry).toHaveLength(0);
+    });
+  });
+
+  /**
+   * D3-55 후속 2 — 변형 lease(mutationClaimedAt).
+   *
+   * tip 은 새 행이므로 INSERT 자체가 원자적 lease 획득이다(CAS 불필요).
+   * issue()/발송(외부 통신) 동안 폐기·외부취소·발송배치가 tip 에 진입하지 못하게 하고,
+   * 종료(정상/실패) 시 owner guard 조건부로 해제한다. 쓰기는 fencing(WHERE mutationClaimedAt=:my)
+   * 조건부라 stale 강탈 후 깨어난 좀비는 affected=0 으로 아무것도 덮지 않는다.
+   */
+  describe('D3-55 후속 2 — 변형 lease (tip INSERT 획득 / finally 해제 / fencing)', () => {
+    const releaseCalls = () =>
+      orderDeliveryRepository.update.mock.calls.filter(
+        (c: any[]) => c[1] && 'mutationClaimedAt' in c[1] && c[1].mutationClaimedAt === null,
+      );
+
+    it('19) tip INSERT 에 lease 세팅 + 성공 경로 finally 에서 owner-guarded 해제', async () => {
+      setupExecDiscard();
+      orderDeliveryRepository.findOne.mockResolvedValue(buildFullDelivery(IOrderType.GENERAL, null));
+
+      await service.execHistory(buildMap(IOrderType.GENERAL));
+
+      // INSERT 시 획득
+      const inserted = orderDeliveryRepository.save.mock.calls[0][0];
+      expect(inserted.mutationClaimedAt).toBeInstanceOf(Date);
+
+      // finally 해제: WHERE { id, mutationClaimedAt: 내토큰 } → SET { mutationClaimedAt: null }
+      const releases = releaseCalls();
+      expect(releases).toHaveLength(1);
+      expect(releases[0][0]).toEqual({ id: 8001, mutationClaimedAt: inserted.mutationClaimedAt });
+      expect(releases[0][1]).toEqual({ mutationClaimedAt: null });
+    });
+
+    it('20) 발송 실패(throw) 경로에서도 finally 해제가 실행된다', async () => {
+      setupExecDiscard();
+      orderDeliveryRepository.findOne.mockResolvedValue(buildFullDelivery(IOrderType.GENERAL, null));
+      deliveryBatchService.csResendAsSms.mockRejectedValue(new Error('MMS gateway down'));
+
+      await expect(service.execHistory(buildMap(IOrderType.GENERAL))).rejects.toThrow(/발송에 실패했습니다/);
+
+      expect(releaseCalls()).toHaveLength(1);
+    });
+
+    it('21) fencing: lease 상실(affected=0)이면 유효기간/발송결과를 덮지 않고 로그만 남긴 채 진행', async () => {
+      setupExecDiscard();
+      orderDeliveryRepository.findOne.mockResolvedValue(buildFullDelivery(IOrderType.GENERAL, null));
+      // stale 강탈 시나리오: 모든 update 가 affected=0 (남이 lease 를 가져감)
+      orderDeliveryRepository.update.mockResolvedValue({ affected: 0 });
+
+      // throw 없이 완료(발송 자체는 성공) — 좀비가 된 재발행은 덮어쓰기만 포기한다
+      await service.execHistory(buildMap(IOrderType.GENERAL));
+
+      const lostLogs = (service.logger.error as jest.Mock).mock.calls.filter((c: any[]) =>
+        String(c[0]).includes('변형 lease 상실'),
+      );
+      expect(lostLogs.length).toBeGreaterThanOrEqual(2); // 유효기간 + 발송결과 둘 다 스킵
+      // history 는 여전히 기록된다(사실 기록)
+      expect(orderHistoryRepository.save).toHaveBeenCalled();
     });
   });
 });

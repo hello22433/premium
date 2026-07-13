@@ -85,6 +85,7 @@ import { CouponViewLogEntity } from '../../entity/coupon.view.log.entity';
 import { CouponViewLogResDto } from '../api/dto/customer.service.coupon.view.log.dto';
 import { calculateSettlementPrice } from '../../util/settle-fee.util';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
+import { MUTATION_CLAIM_STALE_MS } from '../../delivery/interface/order.delivery.mutation.claim';
 import { randomUUID } from 'crypto';
 import { Response } from 'express';
 import * as ExcelJS from 'exceljs';
@@ -1043,6 +1044,40 @@ export class CustomerServiceService {
     }
   }
 
+  /**
+   * 쿠폰상태 변형(폐기/외부취소/재발행) lease 획득 — 원자적 CAS.
+   * 비었거나 stale(5분 초과)일 때만 획득. affected=0 이면 다른 변형 작업이 진행 중.
+   * claimedAt(발송배치 lease)과 별개 컬럼 — 배치는 stale 정책이 없고 부팅 sweep 이
+   * WAIT+claimedAt 을 무조건 해제하므로 겸용 시 살아있는 점유가 강탈·삭제된다.
+   */
+  private async acquireMutationLease(orderDeliveryId: number, claimAt: Date): Promise<boolean> {
+    const staleThreshold = new Date(claimAt.getTime() - MUTATION_CLAIM_STALE_MS);
+    const result = await this.orderDeliveryRepository
+      .createQueryBuilder()
+      .update(OrderDeliveryEntity)
+      .set({ mutationClaimedAt: claimAt })
+      .where('id = :id', { id: orderDeliveryId })
+      .andWhere('(mutationClaimedAt IS NULL OR mutationClaimedAt < :stale)', { stale: staleThreshold })
+      .execute();
+    return !!result.affected;
+  }
+
+  /**
+   * 변형 lease 해제 (owner guard). 내가 소유한 lease(mutationClaimedAt=:claimAt)만 해제 —
+   * stale 강탈로 소유권이 넘어갔으면 affected=0 으로 아무것도 지우지 않는다(reSend claim 해제와 동일 규약).
+   * 해제 실패는 로깅만 — stale(5분) self-heal 이 최후 안전망.
+   */
+  private async releaseMutationLease(orderDeliveryId: number, claimAt: Date): Promise<void> {
+    try {
+      await this.orderDeliveryRepository.update(
+        { id: orderDeliveryId, mutationClaimedAt: claimAt },
+        { mutationClaimedAt: null },
+      );
+    } catch (releaseErr) {
+      this.logger.error(`[변형lease] 해제 실패 — orderDeliveryId=${orderDeliveryId}`, releaseErr);
+    }
+  }
+
   /** CS 재전송 대상 조회(relation 포함, 재발송 가능 상태 필터). 락 없음. */
   private buildReSendQuery(orderDeliveryId: number, statuses: string[]) {
     return (
@@ -1970,6 +2005,12 @@ export class CustomerServiceService {
           }
         };
 
+        // 변형 lease: tip 은 새 행이므로 INSERT 자체가 원자적 획득(CAS 불필요).
+        // issue()/발송(외부 통신, 수 초) 동안 폐기(execDiscard)·외부취소(cancelOrder)·발송배치가
+        // 이 행에 진입하지 못하게 한다. 해제는 아래 try/finally(owner guard).
+        // 크래시로 해제를 못 타면 stale(5분) 후 다음 획득자가 CAS 로 강탈한다(self-heal).
+        const mutationClaimAt = new Date();
+
         const newDelivery = new OrderDeliveryEntity();
         newDelivery.orderProductMappingId = discardedDelivery.orderProductMappingId;
         newDelivery.status = IOrderDeliveryStatus.WAIT;
@@ -1986,6 +2027,7 @@ export class CustomerServiceService {
         newDelivery.replaceCharacter3 = discardedDelivery.replaceCharacter3;
         newDelivery.replacedFromId = discardedDelivery.id;
         newDelivery.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
+        newDelivery.mutationClaimedAt = mutationClaimAt;
         // 원본 정산 조건 보존 (SSG 중복할인 등 delivery 레벨 fee/adjustment)
         newDelivery.settleFee = discardedDelivery.settleFee;
         newDelivery.settlePriceAdjustment = discardedDelivery.settlePriceAdjustment;
@@ -2028,6 +2070,10 @@ export class CustomerServiceService {
             throw new InternalServerErrorException('새 발송 건 조회에 실패했습니다.');
           }
         } catch (preIssueErr) {
+          // save 는 성공했는데 findOne 이 실패한 경우 — lease 를 즉시 반납(soft-delete 전이어도 무해)
+          if (savedDelivery?.id != null) {
+            await this.releaseMutationLease(savedDelivery.id, mutationClaimAt);
+          }
           if (isSsg && reissueEvent && resendDeductionId) {
             await this.deliveryBatchService.reverseReissueDeductDirect(
               resendDeductionId,
@@ -2040,172 +2086,189 @@ export class CustomerServiceService {
           throw preIssueErr;
         }
 
-        const ssgEvent = fullDelivery.ssgEvent ?? null;
-
-        // PIN 발급 — 실패 시 SSG 선차감 역복원 + (미등록 확정이면) 폐기 역전·새 delivery 제거
         try {
-          // 선차감 pending 에 issue 시도 기록(실제 신규 delivery id) — sweep W1 구분 phase.
-          // issue try 보상 범위 안에 둬서 이 마킹이 throw 해도 catch(issueError)가 역복원+unwind 하도록 한다(MEDIUM).
-          // (이 시점 fullDelivery 는 미발급 → state=NONE → resolver RESTORED → 안전.)
-          if (isSsg && reissueEvent && resendDeductionId) {
-            await this.deliveryBatchService.markReissueIssueAttempted(resendDeductionId, fullDelivery.id);
-          }
-          await this.partnerCompanyExternService.issue(fullDelivery, ssgEvent);
-        } catch (issueError) {
-          if (isSsg && reissueEvent && resendDeductionId) {
-            const outcome = await this.deliveryBatchService.reverseSsgReissueDeduct(
-              fullDelivery,
-              reissueEvent.id,
-              reissuePrice,
-              reissueOrderId,
-              resendDeductionId,
-            );
-            if (outcome === SsgRefundOutcome.RESTORED) {
-              await unwindReissue(fullDelivery, savedDelivery.id, outcome);
-              throw new InternalServerErrorException('신규 발송에 실패하여 폐기를 취소했습니다. 다시 시도해 주세요.');
+          const ssgEvent = fullDelivery.ssgEvent ?? null;
+
+          // PIN 발급 — 실패 시 SSG 선차감 역복원 + (미등록 확정이면) 폐기 역전·새 delivery 제거
+          try {
+            // 선차감 pending 에 issue 시도 기록(실제 신규 delivery id) — sweep W1 구분 phase.
+            // issue try 보상 범위 안에 둬서 이 마킹이 throw 해도 catch(issueError)가 역복원+unwind 하도록 한다(MEDIUM).
+            // (이 시점 fullDelivery 는 미발급 → state=NONE → resolver RESTORED → 안전.)
+            if (isSsg && reissueEvent && resendDeductionId) {
+              await this.deliveryBatchService.markReissueIssueAttempted(resendDeductionId, fullDelivery.id);
             }
-            this.logger.error(
-              `[폐기후신규발송] issue 실패하나 SSG 등록 불명/확정(outcome=${outcome}) — 폐기 유지. orderDeliveryId=${savedDelivery.id}`,
-            );
-            throw new InternalServerErrorException(
-              '신규 발송 처리 중 오류가 발생했습니다. 발송실패내역에서 상태를 확인해 주세요.',
-            );
-          }
-          throw issueError;
-        }
-
-        // 폐기 후 신규발송: 새 쿠폰이므로 유효기간 새로 계산 (SSG는 issue() 내부에서 expireAt 채움 → 제외)
-        //
-        // save(fullDelivery) 금지: fullDelivery 는 issue() 전에 로드한 스냅샷이라
-        // couponStatus/discardedAt 이 로드 시점 값으로 굳어 있다. issue() 는 외부 통신이라 수 초가 걸리고,
-        // 그 사이 폐기(execDiscard)·외부 취소(cancelOrder)가 같은 행에 CANCEL 을 쓸 수 있다.
-        // save 는 행 전체를 쓰므로 그 CANCEL 을 stale 값으로 되돌려 "환불됐는데 살아있는 핀" 을 만든다.
-        // 발급 결과(barCode/personalCode/couponNum/ssgTransactionId)는 issue() 가 이미 targeted update 로
-        // 반영했으므로(partner.company.extern.service.ts) 여기서는 재계산한 유효기간만 쓴다.
-        if (fullDelivery.orderProductMapping.order.type !== IOrderType.SSG) {
-          const opm = fullDelivery.orderProductMapping;
-          const expireDays = resolveExpireDays(
-            opm.galaxiaDuration ?? opm.product.galaxiaDuration,
-            opm.product.expireDay,
-            opm.product.partnerCompany?.validityStartsNextDay,
-          );
-          fullDelivery.expireAt = addDays(new Date(), expireDays);
-          if (opm.encourageDay) {
-            fullDelivery.encourageAt = subDays(fullDelivery.expireAt, opm.encourageDay);
-          }
-
-          await this.orderDeliveryRepository.update(
-            { id: fullDelivery.id },
-            { expireAt: fullDelivery.expireAt, encourageAt: fullDelivery.encourageAt },
-          );
-        }
-
-        // HIGH-2: issue() 성공 후 barCode 없음 — SSG 는 outcome 으로 분기, 비SSG 는 단순 throw
-        if (!fullDelivery.barCode) {
-          if (isSsg && reissueEvent && resendDeductionId) {
-            const outcome = await this.deliveryBatchService.reverseSsgReissueDeduct(
-              fullDelivery,
-              reissueEvent.id,
-              reissuePrice,
-              reissueOrderId,
-              resendDeductionId,
-            );
-            if (outcome === SsgRefundOutcome.RESTORED) {
-              await unwindReissue(fullDelivery, savedDelivery.id, outcome);
-              throw new InternalServerErrorException('신규 발송에 실패하여 폐기를 취소했습니다. 다시 시도해 주세요.');
+            await this.partnerCompanyExternService.issue(fullDelivery, ssgEvent);
+          } catch (issueError) {
+            if (isSsg && reissueEvent && resendDeductionId) {
+              const outcome = await this.deliveryBatchService.reverseSsgReissueDeduct(
+                fullDelivery,
+                reissueEvent.id,
+                reissuePrice,
+                reissueOrderId,
+                resendDeductionId,
+              );
+              if (outcome === SsgRefundOutcome.RESTORED) {
+                await unwindReissue(fullDelivery, savedDelivery.id, outcome);
+                throw new InternalServerErrorException('신규 발송에 실패하여 폐기를 취소했습니다. 다시 시도해 주세요.');
+              }
+              this.logger.error(
+                `[폐기후신규발송] issue 실패하나 SSG 등록 불명/확정(outcome=${outcome}) — 폐기 유지. orderDeliveryId=${savedDelivery.id}`,
+              );
+              throw new InternalServerErrorException(
+                '신규 발송 처리 중 오류가 발생했습니다. 발송실패내역에서 상태를 확인해 주세요.',
+              );
             }
-            this.logger.error(
-              `[폐기후신규발송] barCode 누락 + SSG 등록 불명/확정(outcome=${outcome}) — 폐기 유지. orderDeliveryId=${savedDelivery.id}`,
-            );
-            throw new InternalServerErrorException(
-              '신규 발송 처리 중 오류가 발생했습니다. 발송실패내역에서 상태를 확인해 주세요.',
-            );
+            throw issueError;
           }
-          throw new InternalServerErrorException('핀 발급에 실패했습니다.');
-        }
 
-        // issue 성공 + barCode 확인 + durable save 완료 후에야 선차감 pending KEPT 해소(차감 유지 확정).
-        // barCode 검증 이전에 KEPT 하면 이후 !barCode 분기의 DEFERRED 역복원을 sweep 이 재시도 못 함(HIGH).
-        if (isSsg && reissueEvent && resendDeductionId) {
-          await this.deliveryBatchService.resolveReissuePendingKept(resendDeductionId);
-        }
+          // 폐기 후 신규발송: 새 쿠폰이므로 유효기간 새로 계산 (SSG는 issue() 내부에서 expireAt 채움 → 제외)
+          //
+          // save(fullDelivery) 금지: fullDelivery 는 issue() 전에 로드한 스냅샷이라
+          // couponStatus/discardedAt 이 로드 시점 값으로 굳어 있다. issue() 는 외부 통신이라 수 초가 걸리고,
+          // 그 사이 폐기(execDiscard)·외부 취소(cancelOrder)가 같은 행에 CANCEL 을 쓸 수 있다.
+          // save 는 행 전체를 쓰므로 그 CANCEL 을 stale 값으로 되돌려 "환불됐는데 살아있는 핀" 을 만든다.
+          // 발급 결과(barCode/personalCode/couponNum/ssgTransactionId)는 issue() 가 이미 targeted update 로
+          // 반영했으므로(partner.company.extern.service.ts) 여기서는 재계산한 유효기간만 쓴다.
+          if (fullDelivery.orderProductMapping.order.type !== IOrderType.SSG) {
+            const opm = fullDelivery.orderProductMapping;
+            const expireDays = resolveExpireDays(
+              opm.galaxiaDuration ?? opm.product.galaxiaDuration,
+              opm.product.expireDay,
+              opm.product.partnerCompany?.validityStartsNextDay,
+            );
+            fullDelivery.expireAt = addDays(new Date(), expireDays);
+            if (opm.encourageDay) {
+              fullDelivery.encourageAt = subDays(fullDelivery.expireAt, opm.encourageDay);
+            }
 
-        // Wallet Cutover — wallet-managed 면 원본 delivery 의 allocation_line/attempt 를 신규 delivery 로 승계한다.
-        // 미승계 시 이후 신규 delivery 폐기에서 attempt/line 부재로 환불이 drift abort 된다.
-        // SSG·비-SSG 공통(고객 wallet 결제는 SSG 여부와 무관 — 상세는 carryWalletOwnershipToReissuedDelivery JSDoc).
-        await this.carryWalletOwnershipToReissuedDelivery(reissueOrderId, discardedDelivery.id, savedDelivery.id);
-
-        const newPin = fullDelivery.barCode;
-        afterChange = `${normalizedTarget} / ${newPin}`;
-
-        // 발송 시도 — 실패해도 history는 OLD/NEW 양쪽에 기록
-        let sendStatus: IOrderDeliveryStatus = IOrderDeliveryStatus.COMPLETE;
-        let sendError: unknown = null;
-        try {
-          switch (fullDelivery.deliveryMethod) {
-            case IOrderSendMethod.ALIM_TALK:
-              sendStatus = await this.deliveryBatchService.csResendAsAlimTalk(savedDelivery.id);
-              break;
-            case IOrderSendMethod.MMS:
-              await this.deliveryBatchService.csResendAsMms(savedDelivery.id);
-              break;
-            case IOrderSendMethod.EMAIL:
-              await this.deliveryBatchService.csResendAsEmail(savedDelivery.id);
-              break;
-            default:
-              await this.deliveryBatchService.csResendAsSms(savedDelivery.id);
-              break;
+            // fencing: 내 lease 일 때만 기록. stale 강탈(좀비화) 시 affected=0 — 남의 결정을 덮지 않는다.
+            const expiryWrite = await this.orderDeliveryRepository.update(
+              { id: fullDelivery.id, mutationClaimedAt: mutationClaimAt },
+              { expireAt: fullDelivery.expireAt, encourageAt: fullDelivery.encourageAt },
+            );
+            if (!expiryWrite.affected) {
+              this.logger.error(
+                `[폐기후신규발송] 유효기간 기록 스킵 — 변형 lease 상실(다른 처리가 선점). orderDeliveryId=${fullDelivery.id}`,
+              );
+            }
           }
-        } catch (e) {
-          sendError = e;
-          sendStatus = IOrderDeliveryStatus.FAIL_SMS;
-        }
 
-        fullDelivery.status = sendStatus;
-        if (sendStatus === IOrderDeliveryStatus.COMPLETE || sendStatus === IOrderDeliveryStatus.COMPLETE_SMS) {
-          fullDelivery.actualSendAt = new Date();
-        } else {
-          fullDelivery.failedAt = new Date();
-        }
-        // save(fullDelivery) 금지 — 위 유효기간 update 와 같은 이유.
-        // 발송 시도(csResendAsXxx)도 외부 통신이라 수 초가 걸리고, 그 사이 폐기·취소가 들어올 수 있다.
-        // 발송 결과 3컬럼만 targeted update 하여 couponStatus/discardedAt 을 덮지 않는다.
-        await this.orderDeliveryRepository.update(
-          { id: fullDelivery.id },
-          {
-            status: fullDelivery.status,
-            actualSendAt: fullDelivery.actualSendAt,
-            failedAt: fullDelivery.failedAt,
-          },
-        );
+          // HIGH-2: issue() 성공 후 barCode 없음 — SSG 는 outcome 으로 분기, 비SSG 는 단순 throw
+          if (!fullDelivery.barCode) {
+            if (isSsg && reissueEvent && resendDeductionId) {
+              const outcome = await this.deliveryBatchService.reverseSsgReissueDeduct(
+                fullDelivery,
+                reissueEvent.id,
+                reissuePrice,
+                reissueOrderId,
+                resendDeductionId,
+              );
+              if (outcome === SsgRefundOutcome.RESTORED) {
+                await unwindReissue(fullDelivery, savedDelivery.id, outcome);
+                throw new InternalServerErrorException('신규 발송에 실패하여 폐기를 취소했습니다. 다시 시도해 주세요.');
+              }
+              this.logger.error(
+                `[폐기후신규발송] barCode 누락 + SSG 등록 불명/확정(outcome=${outcome}) — 폐기 유지. orderDeliveryId=${savedDelivery.id}`,
+              );
+              throw new InternalServerErrorException(
+                '신규 발송 처리 중 오류가 발생했습니다. 발송실패내역에서 상태를 확인해 주세요.',
+              );
+            }
+            throw new InternalServerErrorException('핀 발급에 실패했습니다.');
+          }
 
-        // history 양쪽(OLD/NEW)에 기록 — 발송 실패 여부와 무관하게 보장
-        const sharedHistoryFields = {
-          userId: map.userId,
-          type: map.type,
-          content: map.content,
-          sendMethod: map.sendMethod,
-          beforeChange: map.beforeChange,
-          afterChange: afterChange,
-        };
-        await this.orderHistoryRepository.save([
-          this.orderHistoryRepository.create({
-            ...sharedHistoryFields,
-            orderDeliveryId: map.orderDelivery.id,
-          }),
-          this.orderHistoryRepository.create({
-            ...sharedHistoryFields,
-            orderDeliveryId: savedDelivery.id,
-          }),
-        ]);
+          // issue 성공 + barCode 확인 + durable save 완료 후에야 선차감 pending KEPT 해소(차감 유지 확정).
+          // barCode 검증 이전에 KEPT 하면 이후 !barCode 분기의 DEFERRED 역복원을 sweep 이 재시도 못 함(HIGH).
+          if (isSsg && reissueEvent && resendDeductionId) {
+            await this.deliveryBatchService.resolveReissuePendingKept(resendDeductionId);
+          }
 
-        if (sendError) {
-          throw new InternalServerErrorException(
-            `신규 PIN ${newPin}이(가) 발급되었으나 발송에 실패했습니다. 발송실패내역에서 재발송해 주세요.`,
+          // Wallet Cutover — wallet-managed 면 원본 delivery 의 allocation_line/attempt 를 신규 delivery 로 승계한다.
+          // 미승계 시 이후 신규 delivery 폐기에서 attempt/line 부재로 환불이 drift abort 된다.
+          // SSG·비-SSG 공통(고객 wallet 결제는 SSG 여부와 무관 — 상세는 carryWalletOwnershipToReissuedDelivery JSDoc).
+          await this.carryWalletOwnershipToReissuedDelivery(reissueOrderId, discardedDelivery.id, savedDelivery.id);
+
+          const newPin = fullDelivery.barCode;
+          afterChange = `${normalizedTarget} / ${newPin}`;
+
+          // 발송 시도 — 실패해도 history는 OLD/NEW 양쪽에 기록
+          let sendStatus: IOrderDeliveryStatus = IOrderDeliveryStatus.COMPLETE;
+          let sendError: unknown = null;
+          try {
+            switch (fullDelivery.deliveryMethod) {
+              case IOrderSendMethod.ALIM_TALK:
+                sendStatus = await this.deliveryBatchService.csResendAsAlimTalk(savedDelivery.id);
+                break;
+              case IOrderSendMethod.MMS:
+                await this.deliveryBatchService.csResendAsMms(savedDelivery.id);
+                break;
+              case IOrderSendMethod.EMAIL:
+                await this.deliveryBatchService.csResendAsEmail(savedDelivery.id);
+                break;
+              default:
+                await this.deliveryBatchService.csResendAsSms(savedDelivery.id);
+                break;
+            }
+          } catch (e) {
+            sendError = e;
+            sendStatus = IOrderDeliveryStatus.FAIL_SMS;
+          }
+
+          fullDelivery.status = sendStatus;
+          if (sendStatus === IOrderDeliveryStatus.COMPLETE || sendStatus === IOrderDeliveryStatus.COMPLETE_SMS) {
+            fullDelivery.actualSendAt = new Date();
+          } else {
+            fullDelivery.failedAt = new Date();
+          }
+          // save(fullDelivery) 금지 — 위 유효기간 update 와 같은 이유.
+          // 발송 시도(csResendAsXxx)도 외부 통신이라 수 초가 걸리고, 그 사이 폐기·취소가 들어올 수 있다.
+          // 발송 결과 3컬럼만 targeted update + fencing(내 lease 일 때만) — couponStatus/discardedAt 을 덮지 않는다.
+          const sendWrite = await this.orderDeliveryRepository.update(
+            { id: fullDelivery.id, mutationClaimedAt: mutationClaimAt },
+            {
+              status: fullDelivery.status,
+              actualSendAt: fullDelivery.actualSendAt,
+              failedAt: fullDelivery.failedAt,
+            },
           );
-        }
+          if (!sendWrite.affected) {
+            this.logger.error(
+              `[폐기후신규발송] 발송결과 기록 스킵 — 변형 lease 상실(다른 처리가 선점). orderDeliveryId=${fullDelivery.id}`,
+            );
+          }
 
-        return;
+          // history 양쪽(OLD/NEW)에 기록 — 발송 실패 여부와 무관하게 보장
+          const sharedHistoryFields = {
+            userId: map.userId,
+            type: map.type,
+            content: map.content,
+            sendMethod: map.sendMethod,
+            beforeChange: map.beforeChange,
+            afterChange: afterChange,
+          };
+          await this.orderHistoryRepository.save([
+            this.orderHistoryRepository.create({
+              ...sharedHistoryFields,
+              orderDeliveryId: map.orderDelivery.id,
+            }),
+            this.orderHistoryRepository.create({
+              ...sharedHistoryFields,
+              orderDeliveryId: savedDelivery.id,
+            }),
+          ]);
+
+          if (sendError) {
+            throw new InternalServerErrorException(
+              `신규 PIN ${newPin}이(가) 발급되었으나 발송에 실패했습니다. 발송실패내역에서 재발송해 주세요.`,
+            );
+          }
+
+          return;
+        } finally {
+          // 정상/실패(throw) 모든 종료 경로에서 owner-guarded 해제.
+          // unwindReissue 가 soft-delete 한 뒤에도 무해(affected=0 또는 lease 만 정리).
+          await this.releaseMutationLease(savedDelivery.id, mutationClaimAt);
+        }
       }
       case CS_HISTORY_TYPE.DISCARD: {
         const result = await this.execDiscard(map.user, map.orderDeliveryId, OrderDeliveryCouponStatus.CANCEL);
