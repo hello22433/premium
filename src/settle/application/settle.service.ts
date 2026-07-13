@@ -1153,7 +1153,6 @@ export class SettleService {
       .leftJoinAndSelect('clientUser.company', 'clientCompany')
       .innerJoinAndSelect('orderProductMapping.product', 'product')
       .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
-      .leftJoinAndSelect('partnerCompany.userDiscounts', 'partnerDiscounts')
       .leftJoinAndSelect('product.brand', 'brand')
       .where('order.status IN (:...status)', { status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'] })
       .andWhere(
@@ -1298,7 +1297,6 @@ export class SettleService {
       .innerJoin('order.orderProductMappings', 'orderProductMappings')
       .innerJoin('orderProductMappings.product', 'product')
       .innerJoin('product.partnerCompany', 'partnerCompany')
-      .leftJoin('partnerCompany.userDiscounts', 'partnerDiscounts')
       .leftJoin('product.brand', 'brand')
       .innerJoin('orderProductMappings.orderDeliveries', 'orderDeliveries')
       .leftJoin('orderDeliveries.choiceSelectProduct', 'choiceSelectProduct')
@@ -1369,7 +1367,6 @@ export class SettleService {
         .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
         .innerJoinAndSelect('orderProductMappings.product', 'product')
         .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
-        .leftJoinAndSelect('partnerCompany.userDiscounts', 'partnerDiscounts')
         .leftJoinAndSelect('product.brand', 'brand')
         .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
         .leftJoinAndSelect('orderDeliveries.choiceSelectProduct', 'choiceSelectProduct')
