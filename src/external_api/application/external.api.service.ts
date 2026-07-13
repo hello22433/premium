@@ -1382,16 +1382,21 @@ export class ExternalApiService {
 
     const max = this.resolveResendMax(account);
 
-    // ─ Atomic slot claim ─
+    // ─ Atomic slot claim + 변형 lease 획득 ─
     // 동시 이중 발송(발송 비용 중복)과 resendCount 손실 race 를 차단하기 위해,
     // 외부 발송 전에 DB 에서 원자적으로 슬롯을 선점한다 (read-then-write save 금지).
     // WHERE 에 couponStatus 가드를 포함해 SELECT~UPDATE 사이의 취소/폐기 race 도 닫는다.
-    // 변형 lease 활성(재발행/폐기/취소 진행중) 행은 선점하지 않는다 — stale(5분 초과)은 무시(self-heal).
-    const mutationStale = new Date(Date.now() - MUTATION_CLAIM_STALE_MS);
+    //
+    // lease 는 "읽기"가 아니라 "획득"이어야 한다 — SET 에 mutationClaimedAt 을 포함해 슬롯 선점과 동시에
+    // 잡는다. 읽기만 하면 dispatchSend(외부 발송, 수 초) 동안 lease 가 비어 있어, 그 사이 폐기/취소가
+    // 진입해 협력사 취소 + 환불을 마치고, 이 재발송은 이미 죽은 핀을 고객에게 배달하게 된다.
+    // stale(5분 초과) lease 는 크래시 잔재로 보고 강탈한다(self-heal).
+    const mutationClaimAt = new Date();
+    const mutationStale = new Date(mutationClaimAt.getTime() - MUTATION_CLAIM_STALE_MS);
     const claim = await this.orderDeliveryRepository
       .createQueryBuilder()
       .update(OrderDeliveryEntity)
-      .set({ resendCount: () => 'resend_count + 1' })
+      .set({ resendCount: () => 'resend_count + 1', mutationClaimedAt: mutationClaimAt })
       .where('id = :id', { id: orderDelivery.id })
       .andWhere('resend_count < :max', { max })
       .andWhere('coupon_status NOT IN (:...blocked)', {
@@ -1417,31 +1422,42 @@ export class ExternalApiService {
       }
       throw new ExternalApiException('3008', `재발송 횟수 초과 (${fresh?.resendCount ?? max}/${max})`);
     }
+    // 메모리 엔티티에도 반영 — 이후 누군가 save(merge) 해도 자기 lease 를 NULL 로 되돌리지 않도록.
+    orderDelivery.mutationClaimedAt = mutationClaimAt;
 
-    // 슬롯 선점 후 외부 발송. 실패(throw 또는 isSuccess=false)하면 선점한 슬롯을 되돌린다
-    // (현행 정책: 성공만 카운트). 단일 catch 로 롤백 경로를 통일한다.
     try {
-      const history = await this.dispatchSend(orderDelivery);
-      if (!history.isSuccess) {
-        throw new ExternalApiException('3003', '재발송 실패');
+      // 슬롯 선점 후 외부 발송. 실패(throw 또는 isSuccess=false)하면 선점한 슬롯을 되돌린다
+      // (현행 정책: 성공만 카운트). 단일 catch 로 롤백 경로를 통일한다.
+      try {
+        const history = await this.dispatchSend(orderDelivery);
+        if (!history.isSuccess) {
+          throw new ExternalApiException('3003', '재발송 실패');
+        }
+      } catch (error) {
+        await this.releaseResendSlot(orderDelivery.id);
+        throw error;
       }
-    } catch (error) {
-      await this.releaseResendSlot(orderDelivery.id);
-      throw error;
+
+      // 성공: resendCount 는 이미 DB 에서 +1 됨(save 로 stale 값 덮지 말 것).
+      // dispatchSend 가 in-memory 로 갱신한 발송 상태만 targeted update + fencing(내 lease 일 때만).
+      const sendWrite = await this.orderDeliveryRepository.update(
+        { id: orderDelivery.id, mutationClaimedAt: mutationClaimAt },
+        {
+          resendAt: new Date(),
+          status: orderDelivery.status,
+          actualSendAt: orderDelivery.actualSendAt,
+        },
+      );
+      if (!sendWrite.affected) {
+        this.logger.error(
+          `[resendOrder] 발송결과 기록 스킵 — 변형 lease 상실(다른 처리가 선점). orderDeliveryId=${orderDelivery.id}, trId=${trId}`,
+        );
+      }
+
+      return ExternalApiResponse.success();
+    } finally {
+      await this.releaseMutationLease(orderDelivery.id, mutationClaimAt);
     }
-
-    // 성공: resendCount 는 이미 DB 에서 +1 됨(save 로 stale 값 덮지 말 것).
-    // dispatchSend 가 in-memory 로 갱신한 발송 상태만 targeted update.
-    await this.orderDeliveryRepository.update(
-      { id: orderDelivery.id },
-      {
-        resendAt: new Date(),
-        status: orderDelivery.status,
-        actualSendAt: orderDelivery.actualSendAt,
-      },
-    );
-
-    return ExternalApiResponse.success();
   }
 
   /** 재발송 슬롯 롤백 — 발송 실패 시 선점한 슬롯 1개 반납 (음수 방지). */

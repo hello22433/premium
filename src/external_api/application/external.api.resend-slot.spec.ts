@@ -166,4 +166,53 @@ describe('ExternalApiService.resendOrder atomic slot claim', () => {
     const setArg = (set.mock.calls[0] as any[])[0];
     expect(setArg.resendCount()).toBe('GREATEST(resend_count - 1, 0)');
   });
+
+  /**
+   * 리뷰 CONFIRMED: 슬롯 CAS 가 lease 를 WHERE 로 "읽기"만 하고 SET 으로 "획득"하지 않으면,
+   * dispatchSend(외부 발송, 수 초) 동안 lease 가 비어 있다. 그 사이 폐기/취소가 진입해
+   * 협력사 취소 + 환불을 마치면, 이 재발송은 이미 죽은 핀을 고객에게 배달하고
+   * 최종 update 로 status=COMPLETE 를 되살린다.
+   */
+  describe('변형 lease — 읽기가 아니라 획득/fencing/해제', () => {
+    it('슬롯 선점 CAS 의 SET 에 mutationClaimedAt 이 포함된다 (발송 구간 내내 lease 보유)', async () => {
+      const { svc, set } = makeService({ claimAffected: 1 });
+
+      await svc.resendOrder(account, 'TR-RESEND', ctx);
+
+      const setArg = (set.mock.calls[0] as any[])[0];
+      expect(setArg.resendCount()).toBe('resend_count + 1');
+      expect(setArg.mutationClaimedAt).toBeInstanceOf(Date); // ← 획득
+    });
+
+    it('발송 후 update 는 내 lease 로 fencing 된다 (좀비의 status=COMPLETE 되살림 차단)', async () => {
+      const { svc, update } = makeService({ claimAffected: 1 });
+
+      await svc.resendOrder(account, 'TR-RESEND', ctx);
+
+      const calls = update.mock.calls as unknown as any[][];
+      const sendWrite = calls.find((c) => c[1] && 'resendAt' in c[1]) as any[];
+      expect(sendWrite).toBeDefined();
+      expect(sendWrite[0]).toEqual({ id: expect.anything(), mutationClaimedAt: expect.any(Date) });
+    });
+
+    it('성공/실패 모두 finally 에서 owner-guarded 해제', async () => {
+      const releaseOf = (update: jest.Mock) =>
+        (update.mock.calls as unknown as any[][]).filter((c) => c[1] && c[1].mutationClaimedAt === null);
+
+      const ok = makeService({ claimAffected: 1 });
+      await ok.svc.resendOrder(account, 'TR-RESEND', ctx);
+      expect(releaseOf(ok.update)).toHaveLength(1);
+      expect(releaseOf(ok.update)[0][0]).toEqual({
+        id: expect.anything(),
+        mutationClaimedAt: expect.any(Date),
+      });
+
+      const failed = makeService({
+        claimAffected: 1,
+        dispatch: jest.fn(async () => ({ isSuccess: false })) as any,
+      });
+      await expect(failed.svc.resendOrder(account, 'TR-RESEND', ctx)).rejects.toMatchObject({ code: '3003' });
+      expect(releaseOf(failed.update)).toHaveLength(1);
+    });
+  });
 });

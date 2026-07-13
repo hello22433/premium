@@ -378,7 +378,8 @@ describe('resendOrder — R3 가드', () => {
     };
     (svc as any).orderDeliveryRepository = {
       save: jest.fn(async (o: any) => o),
-      update: jest.fn(async () => undefined),
+      // 발송결과 targeted update 는 fencing(affected 검사) + lease 해제에 쓰인다 → UpdateResult 형태로 반환
+      update: jest.fn(async () => ({ affected: 1 })),
       findOne: jest.fn(async () => null),
       createQueryBuilder: jest.fn(() => claimQb),
     };
