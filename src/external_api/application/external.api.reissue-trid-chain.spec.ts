@@ -445,6 +445,41 @@ describe('D3-55 살아있는 재발행 tip 취소', () => {
     expect(update).toHaveBeenCalledWith({ id: 101, mutationClaimedAt: expect.any(Date) }, { mutationClaimedAt: null });
   });
 
+  it('cancelOrder: lease 획득 후 재조회가 비면(soft-delete 등) fail-closed 로 3010 — 협력사 취소 스킵 + 환불 강행 방지', async () => {
+    // 리뷰 CONFIRMED: `if (fresh)` 로 열려 있으면, 재발행 실패로 unwindReissue 가 tip 을 softDelete 한 경우
+    // 낡은 스냅샷(barCode=null)이 그대로 쓰여 협력사 취소가 스킵된 채 환불만 나간다 = 자금 사고.
+    const root = makeDelivery({
+      id: 100,
+      externalTrId: 'TR-1',
+      couponStatus: OrderDeliveryCouponStatus.CANCEL,
+      discardedAt: DISCARDED_AT,
+    });
+    const tip = makeDelivery({
+      id: 101,
+      externalTrId: null,
+      couponStatus: OrderDeliveryCouponStatus.NOT_USED,
+      replacedFromId: 100,
+      barCode: null, // 로드 시점 스냅샷: 아직 미발급
+      actualSendAt: null,
+    });
+    const { svc, findOne } = makeService([root, tip]);
+    // resolve 단계 조회는 정상, lease 획득 후 volatile 재조회만 null (행이 soft-delete 됨)
+    const original = findOne.getMockImplementation()!;
+    let call = 0;
+    findOne.mockImplementation(async (opts: any) => {
+      call += 1;
+      if (call >= 3) return null; // root 조회 → tip 재로딩 → (3번째) volatile 재조회
+      return original(opts);
+    });
+    (svc as any).partnerCompanyExternService = { cancelByExternalApi: jest.fn() };
+    (svc as any).processCancelRefund = jest.fn();
+
+    await expect(svc.cancelOrder(account, 'TR-1', ctx)).rejects.toMatchObject({ code: '3010' });
+
+    expect((svc as any).partnerCompanyExternService.cancelByExternalApi).not.toHaveBeenCalled();
+    expect((svc as any).processCancelRefund).not.toHaveBeenCalled(); // 환불 미진입
+  });
+
   it('cancelOrder: 획득한 lease 를 메모리 엔티티에도 반영한다 — processCancelRefund 의 save(merge) 가 자기 lease 를 NULL 로 되돌리지 않도록', async () => {
     // 리뷰 CONFIRMED: findOrderDeliveryByTrId 는 full entity 로 로드하므로 mutationClaimedAt=null 이 메모리에 남는다.
     // acquireMutationLease 는 DB row 만 UPDATE → 동기화가 없으면 save(orderDelivery) 가 "메모리 null vs DB claimAt" 을

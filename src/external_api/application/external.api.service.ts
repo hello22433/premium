@@ -1238,18 +1238,26 @@ export class ExternalApiService {
     orderDelivery.mutationClaimedAt = mutationClaimAt;
     try {
       // lease 획득 전 스냅샷은 stale 일 수 있다(직전까지 진행되던 재발행이 barCode/couponStatus 를 갱신).
-      // 아래 가드와 "barCode 있으면 협력사 취소" 판단이 옛 값으로 내려가지 않도록 volatile 컬럼만 재조회한다.
+      // 아래 가드와 "barCode 있으면 협력사 취소" 판단이 옛 값으로 내려가지 않도록 volatile 컬럼을 재조회한다.
+      //
+      // fail-closed: 재조회가 비면 반드시 거절한다. stale 스냅샷으로 진행하면 barCode=null(미발급 시점 값) 때문에
+      // 협력사 취소를 건너뛴 채 환불만 나가 "협력사엔 살아있는 핀 + DB 는 CANCEL + 환불 완료" 자금 사고가 된다.
+      // 행이 사라지는 경로가 실재한다 — 재발행 실패 시 unwindReissue 가 tip 을 softDelete 한다(기본 조회에서 제외).
       const fresh = await this.orderDeliveryRepository.findOne({
         where: { id: orderDelivery.id },
         select: ['id', 'status', 'couponStatus', 'expireAt', 'barCode', 'discardedAt'],
       });
-      if (fresh) {
-        orderDelivery.status = fresh.status;
-        orderDelivery.couponStatus = fresh.couponStatus;
-        orderDelivery.expireAt = fresh.expireAt;
-        orderDelivery.barCode = fresh.barCode;
-        orderDelivery.discardedAt = fresh.discardedAt;
+      if (!fresh) {
+        this.logger.error(
+          `[cancelOrder] lease 획득 후 재조회 실패(행 없음/soft-delete) — 취소 거절. orderDeliveryId=${orderDelivery.id}, trId=${trId}`,
+        );
+        throw new ExternalApiException('3010', '해당 주문에 다른 처리가 진행 중입니다. 잠시 후 다시 시도해 주세요.');
       }
+      orderDelivery.status = fresh.status;
+      orderDelivery.couponStatus = fresh.couponStatus;
+      orderDelivery.expireAt = fresh.expireAt;
+      orderDelivery.barCode = fresh.barCode;
+      orderDelivery.discardedAt = fresh.discardedAt;
 
       if (
         orderDelivery.status === IOrderDeliveryStatus.CANCEL ||
