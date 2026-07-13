@@ -1174,143 +1174,154 @@ export class CustomerServiceService {
       throw new BadRequestException('현재 변경을 할 수 없는 핀상태입니다.');
     }
 
-    // 외부 API 폐기 처리 (트랜잭션 밖에서 실행)
-    switch (partnerType) {
-      case 'GS_M_BIZ':
-      case 'GIFT_SHOW':
-      case 'CULTURELAND':
-      case 'GALAXIA':
-      case 'GIFTIEL':
-      case 'DAOU': {
-        // 협력사 쿠폰은 EXPIRED(기간만료)도 폐기 불가 (terminal 공통 차단은 switch 앞에서 이미 수행)
-        if (beforeChange === 'EXPIRED') {
-          throw new BadRequestException('현재 변경을 할 수 없는 핀상태입니다.');
-        }
-
-        if (
-          couponStatus === OrderDeliveryCouponStatus.CANCEL ||
-          couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL
-        ) {
-          // 협력사 어댑터 cancel()은 실패를 '반환값'이 아니라 throw 로 알린다(galaxia/giftiel/giftishow/culture/daou 공통).
-          // 따라서 실패는 try/catch 로 받아야 한다. (D3-46: 기존 `result.message !== '폐기 완료'` 분기는
-          // 래퍼가 성공 시 항상 '폐기 완료'만 반환하므로 도달 불가한 데드코드였음)
-          // catch 에서는 추가 logger 를 두지 않는다 — 어댑터가 이미 infra 레벨에서 1회 로깅하므로 중복 방지.
-          try {
-            await this.partnerCompanyExternService.cancel(orderDelivery);
-          } catch (e) {
-            const syncedStatus = await this.syncCouponStatusAfterDiscardFailure(orderDelivery);
-            const statusSuffix = syncedStatus ? ` (현재 쿠폰상태: ${syncedStatus})` : '';
-            const reason = e instanceof Error ? e.message : '폐기 처리 실패';
-            throw new InternalServerErrorException(`${reason}${statusSuffix}`);
-          }
-        } else {
-          throw new BadRequestException('변경을 할 수 없는 핀상태입니다.');
-        }
-        break;
-      }
-      case 'SSG': {
-        // terminal 공통 차단은 switch 앞에서 수행. SSG는 EXPIRED 일 때 환불폐기(REFUND_CANCEL)만 허용
-        if (beforeChange === 'EXPIRED' && couponStatus !== OrderDeliveryCouponStatus.REFUND_CANCEL) {
-          throw new BadRequestException('기간만료 상태에서는 환불폐기만 가능합니다.');
-        }
-
-        if (
-          couponStatus !== OrderDeliveryCouponStatus.CANCEL &&
-          couponStatus !== OrderDeliveryCouponStatus.REFUND_CANCEL
-        ) {
-          throw new BadRequestException('변경을 할 수 없는 핀상태입니다.');
-        }
-        break;
-      }
-      default:
-        break;
+    // 변형 lease 획득 — "서로 다른 행위의 교차"(재발행 중 폐기, 취소 중 폐기 등)를 입구에서 차단.
+    // (terminal 가드=로드 스냅샷 검사, Tx1 CAS=동일행위(폐기×2) 멱등 게이트 — 각각 역할이 다르다.)
+    // 재발행 tip 은 INSERT 시점부터 lease 를 보유하므로, 발급/발송 중인 tip 폐기는 여기서 거절된다.
+    const mutationClaimAt = new Date();
+    if (!(await this.acquireMutationLease(orderDelivery.id, mutationClaimAt))) {
+      throw new BadRequestException('해당 발송 건에 다른 처리가 진행 중입니다. 잠시 후 다시 시도해 주세요.');
     }
-
-    // Tx1: 폐기 상태 + (옵션) historyData 저장
-    // 외부 cancel 이 이미 성공한 상태이므로 DB 반영 실패는 곧 상태 불일치를 의미한다.
-    // Tx1 실패는 caller 에서 인지할 수 있도록 그대로 throw 한다.
-    let savedHistoryId: number | null = null;
-    const tx1 = this.dataSource.createQueryRunner();
-    await tx1.connect();
-    await tx1.startTransaction();
     try {
-      // 메모리 값 갱신 (Tx2 restoreBalanceOnDiscard 등 후속 로직이 orderDelivery.couponStatus 를 읽음)
-      orderDelivery.couponStatus = couponStatus;
-      orderDelivery.discardedAt = new Date();
+      // 외부 API 폐기 처리 (트랜잭션 밖에서 실행)
+      switch (partnerType) {
+        case 'GS_M_BIZ':
+        case 'GIFT_SHOW':
+        case 'CULTURELAND':
+        case 'GALAXIA':
+        case 'GIFTIEL':
+        case 'DAOU': {
+          // 협력사 쿠폰은 EXPIRED(기간만료)도 폐기 불가 (terminal 공통 차단은 switch 앞에서 이미 수행)
+          if (beforeChange === 'EXPIRED') {
+            throw new BadRequestException('현재 변경을 할 수 없는 핀상태입니다.');
+          }
 
-      // 상태 전이는 조건부 UPDATE(CAS)로 저장 — coupon_status 가 아직 beforeChange 일 때만 반영.
-      // 동시 폐기 요청 시 둘 다 save 로 덮어쓰는 레이스를 affected=0 으로 감지·차단(멱등).
-      // (코드베이스 관례: settle.service 상태전이, ssg-insert-state.markAttempted 와 동일 패턴)
-      const transition = await tx1.manager
-        .createQueryBuilder()
-        .update(OrderDeliveryEntity)
-        .set({ couponStatus, discardedAt: orderDelivery.discardedAt })
-        .where('id = :id AND coupon_status = :before', { id: orderDelivery.id, before: beforeChange })
-        .execute();
-
-      if (transition.affected === 0) {
-        // 다른 요청이 먼저 폐기를 반영함 → 늦은 요청은 중복 처리 차단
-        throw new BadRequestException('이미 폐기 처리된 발송입니다.');
-      }
-
-      if (historyData) {
-        const history = this.orderHistoryRepository.create({
-          orderDeliveryId: orderDelivery.id,
-          userId: user.id,
-          type: historyData.type,
-          content: historyData.content,
-          beforeChange,
-          afterChange: orderDelivery.couponStatus,
-          destroyAmount,
-        });
-        const saved = await tx1.manager.save(OrderHistoryEntity, history);
-        savedHistoryId = saved.id;
-      }
-
-      await tx1.commitTransaction();
-    } catch (error) {
-      await tx1.rollbackTransaction();
-      throw error;
-    } finally {
-      await tx1.release();
-    }
-
-    // Tx2: 예치금/여신 복구 (실패 허용)
-    // 폐기 후 신규 발송 시에는 스킵 — 핀 교체이므로 잔액 변동 없음
-    let refundStatus: 'SUCCESS' | 'FAILED' | 'SKIPPED' = 'SKIPPED';
-    let refundError: Error | undefined;
-    let restoreAmount: number | null = null;
-
-    if (!options?.skipBalanceRestore) {
-      const tx2 = this.dataSource.createQueryRunner();
-      await tx2.connect();
-      await tx2.startTransaction();
-      try {
-        restoreAmount = await this.restoreBalanceOnDiscard(orderDelivery, user, tx2);
-        if (restoreAmount !== null && orderDelivery.orderProductMapping.order.isSettleComplete) {
-          destroyAmount = restoreAmount;
+          if (
+            couponStatus === OrderDeliveryCouponStatus.CANCEL ||
+            couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL
+          ) {
+            // 협력사 어댑터 cancel()은 실패를 '반환값'이 아니라 throw 로 알린다(galaxia/giftiel/giftishow/culture/daou 공통).
+            // 따라서 실패는 try/catch 로 받아야 한다. (D3-46: 기존 `result.message !== '폐기 완료'` 분기는
+            // 래퍼가 성공 시 항상 '폐기 완료'만 반환하므로 도달 불가한 데드코드였음)
+            // catch 에서는 추가 logger 를 두지 않는다 — 어댑터가 이미 infra 레벨에서 1회 로깅하므로 중복 방지.
+            try {
+              await this.partnerCompanyExternService.cancel(orderDelivery);
+            } catch (e) {
+              const syncedStatus = await this.syncCouponStatusAfterDiscardFailure(orderDelivery);
+              const statusSuffix = syncedStatus ? ` (현재 쿠폰상태: ${syncedStatus})` : '';
+              const reason = e instanceof Error ? e.message : '폐기 처리 실패';
+              throw new InternalServerErrorException(`${reason}${statusSuffix}`);
+            }
+          } else {
+            throw new BadRequestException('변경을 할 수 없는 핀상태입니다.');
+          }
+          break;
         }
-        await tx2.commitTransaction();
-        refundStatus = 'SUCCESS';
-      } catch (error) {
-        await tx2.rollbackTransaction();
-        refundStatus = 'FAILED';
-        refundError = error instanceof Error ? error : new Error(String(error));
-        this.logger.error(
-          `[execDiscard] 폐기는 완료(orderDeliveryId=${orderDelivery.id})되었으나 환불 처리 실패: ${refundError.message}`,
-          refundError.stack,
-        );
-      } finally {
-        await tx2.release();
+        case 'SSG': {
+          // terminal 공통 차단은 switch 앞에서 수행. SSG는 EXPIRED 일 때 환불폐기(REFUND_CANCEL)만 허용
+          if (beforeChange === 'EXPIRED' && couponStatus !== OrderDeliveryCouponStatus.REFUND_CANCEL) {
+            throw new BadRequestException('기간만료 상태에서는 환불폐기만 가능합니다.');
+          }
+
+          if (
+            couponStatus !== OrderDeliveryCouponStatus.CANCEL &&
+            couponStatus !== OrderDeliveryCouponStatus.REFUND_CANCEL
+          ) {
+            throw new BadRequestException('변경을 할 수 없는 핀상태입니다.');
+          }
+          break;
+        }
+        default:
+          break;
       }
-    }
 
-    // pinDiscard 등 Tx1 에서 이미 history 를 기록한 경로: 복원액은 Tx2 후 확정되므로 보강 update
-    if (savedHistoryId !== null && restoreAmount !== null) {
-      await this.orderHistoryRepository.update(savedHistoryId, { destroyAmount, restoreAmount });
-    }
+      // Tx1: 폐기 상태 + (옵션) historyData 저장
+      // 외부 cancel 이 이미 성공한 상태이므로 DB 반영 실패는 곧 상태 불일치를 의미한다.
+      // Tx1 실패는 caller 에서 인지할 수 있도록 그대로 throw 한다.
+      let savedHistoryId: number | null = null;
+      const tx1 = this.dataSource.createQueryRunner();
+      await tx1.connect();
+      await tx1.startTransaction();
+      try {
+        // 메모리 값 갱신 (Tx2 restoreBalanceOnDiscard 등 후속 로직이 orderDelivery.couponStatus 를 읽음)
+        orderDelivery.couponStatus = couponStatus;
+        orderDelivery.discardedAt = new Date();
 
-    return { orderDelivery, beforeChange, refundStatus, refundError, destroyAmount, restoreAmount };
+        // 상태 전이는 조건부 UPDATE(CAS)로 저장 — coupon_status 가 아직 beforeChange 일 때만 반영.
+        // 동시 폐기 요청 시 둘 다 save 로 덮어쓰는 레이스를 affected=0 으로 감지·차단(멱등).
+        // (코드베이스 관례: settle.service 상태전이, ssg-insert-state.markAttempted 와 동일 패턴)
+        const transition = await tx1.manager
+          .createQueryBuilder()
+          .update(OrderDeliveryEntity)
+          .set({ couponStatus, discardedAt: orderDelivery.discardedAt })
+          .where('id = :id AND coupon_status = :before', { id: orderDelivery.id, before: beforeChange })
+          .execute();
+
+        if (transition.affected === 0) {
+          // 다른 요청이 먼저 폐기를 반영함 → 늦은 요청은 중복 처리 차단
+          throw new BadRequestException('이미 폐기 처리된 발송입니다.');
+        }
+
+        if (historyData) {
+          const history = this.orderHistoryRepository.create({
+            orderDeliveryId: orderDelivery.id,
+            userId: user.id,
+            type: historyData.type,
+            content: historyData.content,
+            beforeChange,
+            afterChange: orderDelivery.couponStatus,
+            destroyAmount,
+          });
+          const saved = await tx1.manager.save(OrderHistoryEntity, history);
+          savedHistoryId = saved.id;
+        }
+
+        await tx1.commitTransaction();
+      } catch (error) {
+        await tx1.rollbackTransaction();
+        throw error;
+      } finally {
+        await tx1.release();
+      }
+
+      // Tx2: 예치금/여신 복구 (실패 허용)
+      // 폐기 후 신규 발송 시에는 스킵 — 핀 교체이므로 잔액 변동 없음
+      let refundStatus: 'SUCCESS' | 'FAILED' | 'SKIPPED' = 'SKIPPED';
+      let refundError: Error | undefined;
+      let restoreAmount: number | null = null;
+
+      if (!options?.skipBalanceRestore) {
+        const tx2 = this.dataSource.createQueryRunner();
+        await tx2.connect();
+        await tx2.startTransaction();
+        try {
+          restoreAmount = await this.restoreBalanceOnDiscard(orderDelivery, user, tx2);
+          if (restoreAmount !== null && orderDelivery.orderProductMapping.order.isSettleComplete) {
+            destroyAmount = restoreAmount;
+          }
+          await tx2.commitTransaction();
+          refundStatus = 'SUCCESS';
+        } catch (error) {
+          await tx2.rollbackTransaction();
+          refundStatus = 'FAILED';
+          refundError = error instanceof Error ? error : new Error(String(error));
+          this.logger.error(
+            `[execDiscard] 폐기는 완료(orderDeliveryId=${orderDelivery.id})되었으나 환불 처리 실패: ${refundError.message}`,
+            refundError.stack,
+          );
+        } finally {
+          await tx2.release();
+        }
+      }
+
+      // pinDiscard 등 Tx1 에서 이미 history 를 기록한 경로: 복원액은 Tx2 후 확정되므로 보강 update
+      if (savedHistoryId !== null && restoreAmount !== null) {
+        await this.orderHistoryRepository.update(savedHistoryId, { destroyAmount, restoreAmount });
+      }
+
+      return { orderDelivery, beforeChange, refundStatus, refundError, destroyAmount, restoreAmount };
+    } finally {
+      await this.releaseMutationLease(orderDelivery.id, mutationClaimAt);
+    }
   }
 
   /**

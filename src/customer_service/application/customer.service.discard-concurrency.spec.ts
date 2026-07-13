@@ -25,14 +25,25 @@ describe('CustomerServiceService.execDiscard — terminal 차단 / CAS 멱등', 
       orderProductMapping: { product: { type: 'GENERAL' }, order: { cardSurchargeApplied: false } },
     }) as any;
 
-  // orderDeliveryRepository.createQueryBuilder() 의 fluent 체인 mock — getOne 이 대상 반환
+  // orderDeliveryRepository.createQueryBuilder() 의 fluent 체인 mock — getOne 이 대상 반환.
+  // update/set/andWhere/execute 는 변형 lease 획득(acquireMutationLease) CAS 용 — 기본 획득 성공(affected=1).
+  // repo.update 는 lease 해제(releaseMutationLease, owner guard) 용.
   const mockRepoReturning = (orderDelivery: any) => {
     const qb: any = {};
-    for (const m of ['createQueryBuilder', 'innerJoinAndSelect', 'leftJoinAndSelect', 'where']) {
+    for (const m of [
+      'createQueryBuilder',
+      'innerJoinAndSelect',
+      'leftJoinAndSelect',
+      'where',
+      'update',
+      'set',
+      'andWhere',
+    ]) {
       qb[m] = jest.fn(() => qb);
     }
     qb.getOne = jest.fn().mockResolvedValue(orderDelivery);
-    return { createQueryBuilder: jest.fn(() => qb) };
+    qb.execute = jest.fn().mockResolvedValue({ affected: 1 });
+    return { createQueryBuilder: jest.fn(() => qb), update: jest.fn().mockResolvedValue({ affected: 1 }) };
   };
 
   const makeSut = (orderDelivery: any) => {
@@ -88,6 +99,38 @@ describe('CustomerServiceService.execDiscard — terminal 차단 / CAS 멱등', 
       expect(sut.restoreBalanceOnDiscard).not.toHaveBeenCalled();
       // 롤백이 호출됐는지 확인
       expect(txMock.rollbackTransaction).toHaveBeenCalled();
+    });
+  });
+
+  describe('(D) 변형 lease 게이트 — 교차 행위(재발행 중 폐기 등) 입구 차단', () => {
+    it('lease 획득 실패(affected=0)면 외부 cancel/Tx 이전에 거부한다', async () => {
+      const sut = makeSut(buildOrderDelivery(OrderDeliveryCouponStatus.NOT_USED));
+      // acquireMutationLease CAS 실패 — 재발행 tip 등 다른 변형 작업이 lease 보유 중
+      sut.orderDeliveryRepository.createQueryBuilder().execute.mockResolvedValue({ affected: 0 });
+      sut.dataSource = { createQueryRunner: jest.fn() };
+      sut.restoreBalanceOnDiscard = jest.fn();
+
+      await expect(sut.execDiscard(operator, 7001, OrderDeliveryCouponStatus.CANCEL)).rejects.toThrow(
+        /다른 처리가 진행 중/,
+      );
+
+      expect(sut.dataSource.createQueryRunner).not.toHaveBeenCalled(); // Tx1 미진입
+      expect(sut.restoreBalanceOnDiscard).not.toHaveBeenCalled(); // Tx2 미진입
+    });
+
+    it('정상 종료 시 owner-guarded 해제(WHERE id+mutationClaimedAt → null)가 호출된다', async () => {
+      const sut = makeSut(buildOrderDelivery(OrderDeliveryCouponStatus.NOT_USED));
+      const txMock = makeTxRunner(1);
+      sut.dataSource = { createQueryRunner: jest.fn(() => txMock) };
+      sut.orderHistoryRepository = { create: jest.fn(() => ({})) };
+      sut.restoreBalanceOnDiscard = jest.fn().mockResolvedValue(undefined);
+
+      await sut.execDiscard(operator, 7001, OrderDeliveryCouponStatus.CANCEL);
+
+      expect(sut.orderDeliveryRepository.update).toHaveBeenCalledWith(
+        { id: 7001, mutationClaimedAt: expect.any(Date) },
+        { mutationClaimedAt: null },
+      );
     });
   });
 
