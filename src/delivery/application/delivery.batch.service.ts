@@ -37,6 +37,7 @@ import { InjectDataSource } from '@nestjs/typeorm';
 
 import { DeliveryAlimTalk } from '../interface/delivery.alim.talk';
 import { IOrderDeliveryStatus } from '../interface/order.delivery.status';
+import { MUTATION_CLAIM_STALE_MS } from '../interface/order.delivery.mutation.claim';
 import { OrderDeliveryCouponStatus } from '../interface/order.delivery.coupon.status';
 import { OrderDeliveryRefundStatusEnum } from '../interface/order.delivery.refund.status.enum';
 import { PII_BEARING_HISTORY_TYPES } from '../../order/interface/order.history.pii.types';
@@ -474,9 +475,13 @@ export class DeliveryBatchService {
   /**
    * WAIT 발송 대기 행을 claimedAt 으로 멱등 claim. 비동기 PENDING(report_state)·external(order.type=EXTERNAL) 제외.
    * external 은 자체 동기 dispatch 이므로 batch claim 에서 원자적으로 배제(중복 issue/발송·차감 전 발송 차단).
+   * 변형 lease(mutation_claimed_at) 활성 행도 제외 — 재발행(폐기후신규발송) tip 은 WAIT 로 INSERT 되므로,
+   * lease 없이는 배치가 집어가 재발행 자체 발송과 이중 발송이 된다. stale(5분 초과)은 크래시 잔재로 보고
+   * 정상 수거한다(발급된 PIN 의 미발송 정체 방지 — 기존 WAIT self-heal 경로 유지).
    * @returns claim 된 행 수
    */
   async claimWaitDeliveries(claimedAt: Date): Promise<number> {
+    const mutationStale = new Date(claimedAt.getTime() - MUTATION_CLAIM_STALE_MS);
     const claimResult = await this.orderDeliveryRepository
       .createQueryBuilder()
       .update(OrderDeliveryEntity)
@@ -484,6 +489,8 @@ export class DeliveryBatchService {
       .where('status = :status', { status: IOrderDeliveryStatus.WAIT })
       .andWhere('sendRequestAt < :now', { now: claimedAt })
       .andWhere('claimedAt IS NULL')
+      // 변형(재발행/폐기/취소) 진행중 행은 발송 배치가 건드리지 않는다 (D3-55 후속)
+      .andWhere('(mutation_claimed_at IS NULL OR mutation_claimed_at < :mutationStale)', { mutationStale })
       // 비동기 알림톡 PENDING(report_state) 행은 발송 배치 재발송 대상 아님 (reportSweep 소관)
       .andWhere('report_state IS NULL')
       // external_api 발송 건은 자체 동기 dispatch — batch 가 절대 claim 하지 않음 (중복 issue/발송 차단)
