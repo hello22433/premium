@@ -30,6 +30,7 @@ import {
 import { IOrderType } from '../../order/interface/order.type';
 import { IOrderStatus } from '../../order/interface/order.status';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
+import { MUTATION_CLAIM_STALE_MS } from '../../delivery/interface/order.delivery.mutation.claim';
 import { IOrderSendMethod } from '../../order/interface/order.send.method';
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
 import { IProductUseStatus } from '../../product/interface/product.status';
@@ -1177,6 +1178,37 @@ export class ExternalApiService {
 
   // ─── 주문 취소 ──────────────────────────────────────────
 
+  /**
+   * 변형 lease 획득 — 원자적 CAS. 비었거나 stale(5분 초과)일 때만 획득.
+   * 재발행(execHistory DISCARD_REISSUE)·내부 폐기(execDiscard)와 같은 컬럼을 공유해
+   * "서로 다른 행위의 교차"(재발행 중 취소 등)를 입구에서 차단한다(D3-55 후속).
+   * claimedAt(발송배치 lease)과 별개 — 배치는 stale 정책이 없고 부팅 sweep 이
+   * WAIT+claimedAt 을 무조건 해제하므로 겸용 시 살아있는 점유가 강탈·삭제된다.
+   */
+  private async acquireMutationLease(orderDeliveryId: number, claimAt: Date): Promise<boolean> {
+    const staleThreshold = new Date(claimAt.getTime() - MUTATION_CLAIM_STALE_MS);
+    const result = await this.orderDeliveryRepository
+      .createQueryBuilder()
+      .update(OrderDeliveryEntity)
+      .set({ mutationClaimedAt: claimAt })
+      .where('id = :id', { id: orderDeliveryId })
+      .andWhere('(mutationClaimedAt IS NULL OR mutationClaimedAt < :stale)', { stale: staleThreshold })
+      .execute();
+    return !!result.affected;
+  }
+
+  /** 변형 lease 해제 (owner guard) — 내 lease 만 해제, 실패는 로깅만(stale self-heal 이 안전망). */
+  private async releaseMutationLease(orderDeliveryId: number, claimAt: Date): Promise<void> {
+    try {
+      await this.orderDeliveryRepository.update(
+        { id: orderDeliveryId, mutationClaimedAt: claimAt },
+        { mutationClaimedAt: null },
+      );
+    } catch (releaseErr) {
+      this.logger.error(`[변형lease] 해제 실패 — orderDeliveryId=${orderDeliveryId}`, releaseErr);
+    }
+  }
+
   async cancelOrder(
     account: ExternalApiAccountEntity,
     trId: string,
@@ -1191,45 +1223,63 @@ export class ExternalApiService {
       throw new ExternalApiException('3009', '신세계 상품권은 폐기할 수 없습니다');
     }
 
-    // 알려진 제약(D3-55): CS 폐기후재발행(execHistory)은 @Transactional 이 아니라, 재발행 tip 이
-    // 발송 완료 전(actualSendAt=null) 중간 상태로 외부에 노출된다. 그 창에서 파트너 취소가 들어오면
-    // 발송과 환불이 레이스가 될 수 있다. 이 창을 status/actualSendAt 로 완벽히 구분하려던 가드는
-    // 살아있는 send-실패(FAIL_SMS, PIN 발급·미환불) tip 을 잘못 차단하는 등 새 오류를 유발해 제거했다.
-    // 근본 해법은 재발행을 원자화하거나 "재발행 진행중" 플래그를 두는 것(별도 작업). external API 미출시라
-    // 실발생 0. 현재는 아래 터미널 가드만 두고 살아있는 tip 은 정상 취소되도록 한다.
-
-    if (
-      orderDelivery.status === IOrderDeliveryStatus.CANCEL ||
-      orderDelivery.couponStatus === OrderDeliveryCouponStatus.CANCEL ||
-      orderDelivery.couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL
-    ) {
-      throw new ExternalApiException('3005', '이미 폐기/취소된 주문');
+    // D3-55 후속: 변형 lease 로 재발행 진행중 창을 입구에서 닫는다.
+    // 재발행 tip 은 INSERT 시점부터 lease 를 보유하므로, 발급/발송 중인 tip 취소는 3010(일시적, 재시도 유도).
+    // 과거 status/actualSendAt 기반 가드는 살아있는 FAIL_SMS tip 을 오차단해 제거했던 이력이 있다(리뷰2/3).
+    const mutationClaimAt = new Date();
+    if (!(await this.acquireMutationLease(orderDelivery.id, mutationClaimAt))) {
+      throw new ExternalApiException('3010', '해당 주문에 다른 처리가 진행 중입니다. 잠시 후 다시 시도해 주세요.');
     }
-
-    if (orderDelivery.couponStatus === OrderDeliveryCouponStatus.USED) {
-      throw new ExternalApiException('3006', '이미 사용된 쿠폰은 취소 불가');
-    }
-
-    if (orderDelivery.expireAt && orderDelivery.expireAt.getTime() < Date.now()) {
-      throw new ExternalApiException('3007', '만료된 쿠폰');
-    }
-
-    if (product?.isCancelable === false) {
-      throw new ExternalApiException('3009', '취소 불가 상품');
-    }
-
-    if (orderDelivery.barCode && product?.partnerCompany) {
-      try {
-        await this.partnerCompanyExternService.cancelByExternalApi(orderDelivery);
-      } catch (error) {
-        this.logger.error(`[cancelOrder] 쿠폰 취소 실패 - trId: ${trId}`, error);
-        throw translatePartnerError(error, 'cancel');
+    try {
+      // lease 획득 전 스냅샷은 stale 일 수 있다(직전까지 진행되던 재발행이 barCode/couponStatus 를 갱신).
+      // 아래 가드와 "barCode 있으면 협력사 취소" 판단이 옛 값으로 내려가지 않도록 volatile 컬럼만 재조회한다.
+      const fresh = await this.orderDeliveryRepository.findOne({
+        where: { id: orderDelivery.id },
+        select: ['id', 'status', 'couponStatus', 'expireAt', 'barCode', 'discardedAt'],
+      });
+      if (fresh) {
+        orderDelivery.status = fresh.status;
+        orderDelivery.couponStatus = fresh.couponStatus;
+        orderDelivery.expireAt = fresh.expireAt;
+        orderDelivery.barCode = fresh.barCode;
+        orderDelivery.discardedAt = fresh.discardedAt;
       }
+
+      if (
+        orderDelivery.status === IOrderDeliveryStatus.CANCEL ||
+        orderDelivery.couponStatus === OrderDeliveryCouponStatus.CANCEL ||
+        orderDelivery.couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL
+      ) {
+        throw new ExternalApiException('3005', '이미 폐기/취소된 주문');
+      }
+
+      if (orderDelivery.couponStatus === OrderDeliveryCouponStatus.USED) {
+        throw new ExternalApiException('3006', '이미 사용된 쿠폰은 취소 불가');
+      }
+
+      if (orderDelivery.expireAt && orderDelivery.expireAt.getTime() < Date.now()) {
+        throw new ExternalApiException('3007', '만료된 쿠폰');
+      }
+
+      if (product?.isCancelable === false) {
+        throw new ExternalApiException('3009', '취소 불가 상품');
+      }
+
+      if (orderDelivery.barCode && product?.partnerCompany) {
+        try {
+          await this.partnerCompanyExternService.cancelByExternalApi(orderDelivery);
+        } catch (error) {
+          this.logger.error(`[cancelOrder] 쿠폰 취소 실패 - trId: ${trId}`, error);
+          throw translatePartnerError(error, 'cancel');
+        }
+      }
+
+      await this.processCancelRefund(order, orderDelivery, account);
+
+      return ExternalApiResponse.success();
+    } finally {
+      await this.releaseMutationLease(orderDelivery.id, mutationClaimAt);
     }
-
-    await this.processCancelRefund(order, orderDelivery, account);
-
-    return ExternalApiResponse.success();
   }
 
   @Transactional()

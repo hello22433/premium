@@ -77,9 +77,16 @@ function makeService(rows: OrderDeliveryEntity[]) {
     rows.filter((r) => r.orderProductMappingId === where.orderProductMappingId),
   );
 
+  // 변형 lease: createQueryBuilder 체인 = 획득(acquireMutationLease, 기본 성공), update = 해제(owner guard)
+  const qb: any = {};
+  for (const m of ['update', 'set', 'where', 'andWhere']) qb[m] = jest.fn(() => qb);
+  qb.execute = jest.fn(async () => ({ affected: 1 }));
+  const update = jest.fn(async () => ({ affected: 1 }));
+
   const svc = Object.create(ExternalApiService.prototype) as ExternalApiService;
-  (svc as any).orderDeliveryRepository = { findOne, find };
-  return { svc, findOne, find };
+  (svc as any).orderDeliveryRepository = { findOne, find, update, createQueryBuilder: jest.fn(() => qb) };
+  (svc as any).logger = { error: jest.fn(), log: jest.fn(), warn: jest.fn() };
+  return { svc, findOne, find, update, qb };
 }
 
 describe('D3-55 재발행 trId 체인 해소 (findOrderDeliveryByTrId / resolveActiveDelivery)', () => {
@@ -355,6 +362,87 @@ describe('D3-55 살아있는 재발행 tip 취소', () => {
     const { svc } = makeService([root, tip]);
 
     await expect(svc.cancelOrder(account, 'TR-1', ctx)).rejects.toMatchObject({ code: '3005' });
+  });
+
+  // ── D3-55 후속: 변형 lease — 재발행 진행중 창을 입구에서 차단 ──
+
+  it('cancelOrder: 변형 lease 획득 실패(재발행 진행중) → 3010, 협력사 취소/환불 미진입', async () => {
+    const root = makeDelivery({
+      id: 100,
+      externalTrId: 'TR-1',
+      couponStatus: OrderDeliveryCouponStatus.CANCEL,
+      discardedAt: DISCARDED_AT,
+    });
+    const tip = makeDelivery({
+      id: 101,
+      externalTrId: null,
+      couponStatus: OrderDeliveryCouponStatus.NOT_USED,
+      replacedFromId: 100,
+      status: IOrderDeliveryStatus.WAIT, // 재발행 발급/발송 진행 중
+      actualSendAt: null,
+    });
+    const { svc, qb } = makeService([root, tip]);
+    qb.execute.mockResolvedValue({ affected: 0 }); // 재발행 tip 이 lease 보유 중 → CAS 실패
+    (svc as any).partnerCompanyExternService = { cancelByExternalApi: jest.fn() };
+    (svc as any).processCancelRefund = jest.fn();
+
+    await expect(svc.cancelOrder(account, 'TR-1', ctx)).rejects.toMatchObject({ code: '3010' });
+
+    expect((svc as any).partnerCompanyExternService.cancelByExternalApi).not.toHaveBeenCalled();
+    expect((svc as any).processCancelRefund).not.toHaveBeenCalled();
+  });
+
+  it('cancelOrder: lease 획득 후 volatile 재조회 — 획득 직전 재발행이 채운 barCode 로 협력사 취소를 스킵하지 않는다', async () => {
+    const root = makeDelivery({
+      id: 100,
+      externalTrId: 'TR-1',
+      couponStatus: OrderDeliveryCouponStatus.CANCEL,
+      discardedAt: DISCARDED_AT,
+    });
+    const tip = makeDelivery({
+      id: 101,
+      externalTrId: null,
+      couponStatus: OrderDeliveryCouponStatus.NOT_USED,
+      replacedFromId: 100,
+      barCode: null, // resolve 시점 스냅샷: 아직 PIN 없음
+      actualSendAt: null,
+    });
+    const { svc, qb } = makeService([root, tip]);
+    // lease 획득 직전 재발행이 완료되어 barCode 가 채워진 상황 — 획득 시점에 행을 갱신
+    qb.execute.mockImplementation(async () => {
+      (tip as any).barCode = 'PIN-LATE';
+      (tip as any).status = IOrderDeliveryStatus.COMPLETE;
+      return { affected: 1 };
+    });
+    (svc as any).partnerCompanyExternService = { cancelByExternalApi: jest.fn(async () => undefined) };
+    (svc as any).processCancelRefund = jest.fn(async () => undefined);
+
+    await svc.cancelOrder(account, 'TR-1', ctx);
+
+    // 재조회로 barCode 를 봤으므로 협력사 취소가 스킵되지 않는다 (스킵되면 갈락시아 살아있는 핀 + 환불 = 자금 사고)
+    expect((svc as any).partnerCompanyExternService.cancelByExternalApi).toHaveBeenCalled();
+  });
+
+  it('cancelOrder: 성공/가드 거절 모두 owner-guarded 해제가 실행된다', async () => {
+    const root = makeDelivery({
+      id: 100,
+      externalTrId: 'TR-1',
+      couponStatus: OrderDeliveryCouponStatus.CANCEL,
+      discardedAt: DISCARDED_AT,
+    });
+    const tip = makeDelivery({
+      id: 101,
+      externalTrId: null,
+      couponStatus: OrderDeliveryCouponStatus.NOT_USED,
+      replacedFromId: 100,
+    });
+    const { svc, update } = makeService([root, tip]);
+    (svc as any).partnerCompanyExternService = { cancelByExternalApi: jest.fn(async () => undefined) };
+    (svc as any).processCancelRefund = jest.fn(async () => undefined);
+
+    await svc.cancelOrder(account, 'TR-1', ctx);
+
+    expect(update).toHaveBeenCalledWith({ id: 101, mutationClaimedAt: expect.any(Date) }, { mutationClaimedAt: null });
   });
 });
 
