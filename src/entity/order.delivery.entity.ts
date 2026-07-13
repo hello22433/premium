@@ -123,6 +123,17 @@ export class OrderDeliveryEntity extends BaseEntity {
   @Column({ type: 'datetime', precision: 6, nullable: true, comment: '발송 배치 중복 처리 방지용 클레임 시각' })
   claimedAt: Date | null;
 
+  // 쿠폰상태 변형(폐기/외부취소/재발행) 진행중 lease. claimedAt(발송배치)과 반드시 별개 —
+  // claimedAt 은 status 파티션별 stale 정책이 다르고(배치 WAIT=stale 없음), 부팅 sweep 이
+  // WAIT+claimedAt 을 무조건 해제하므로 변형 lease 를 겸용하면 살아있는 점유가 강탈·삭제된다.
+  @Column({
+    type: 'datetime',
+    precision: 6,
+    nullable: true,
+    comment: '쿠폰상태 변형(폐기/취소/재발행) 진행중 lease. 발송배치용 claimed_at 과 별개',
+  })
+  mutationClaimedAt: Date | null;
+
   @Column({ type: 'datetime', nullable: true, comment: '폐기/환불폐기 시각' })
   discardedAt: Date | null;
 

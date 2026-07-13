@@ -56,6 +56,7 @@ export class ExternalApiExceptionFilter implements ExceptionFilter {
         '3007': HttpStatus.CONFLICT,
         '3008': HttpStatus.CONFLICT,
         '3009': HttpStatus.CONFLICT,
+        '3010': HttpStatus.CONFLICT,
         '4001': HttpStatus.NOT_FOUND,
         '4002': HttpStatus.NOT_FOUND,
         '4003': HttpStatus.NOT_FOUND,
