@@ -1347,10 +1347,8 @@ export class ExternalApiService {
     const orderDelivery = await this.findOrderDeliveryByTrId(account, trId, ctx);
     const order = orderDelivery.orderProductMapping?.order;
 
-    // 알려진 제약(D3-55): 재발행 tip 이 발송 진행 중(actualSendAt=null, barCode 이미 발급)인 창에서
-    // 이 재발송이 들어오면 재발행 자체 발송과 이중 발송이 될 수 있다(재발행이 비원자적, execHistory).
-    // cancelOrder 와 동일하게, 완벽 구분 가드가 새 오류를 유발해 두지 않는다. 근본 해법은 재발행 원자화.
-    // external API 미출시라 실발생 0.
+    // D3-55 후속: 재발행 진행 중 tip 은 변형 lease 를 보유한다. 아래 슬롯 CAS 의 WHERE 에
+    // lease 조건을 포함해, 재발행 자체 발송과의 이중 발송을 원자적으로 차단한다(활성 lease → 3010).
 
     // R3: 재발송은 발송 성공(DELIVERY_COMPLETE) 주문만 허용. 실패/취소(DELIVERY_CANCEL)는 거절.
     // 폐기/취소된 쿠폰(couponStatus CANCEL/REFUND_CANCEL)도 거절. cancelOrder 가드와 대칭.
@@ -1374,6 +1372,8 @@ export class ExternalApiService {
     // 동시 이중 발송(발송 비용 중복)과 resendCount 손실 race 를 차단하기 위해,
     // 외부 발송 전에 DB 에서 원자적으로 슬롯을 선점한다 (read-then-write save 금지).
     // WHERE 에 couponStatus 가드를 포함해 SELECT~UPDATE 사이의 취소/폐기 race 도 닫는다.
+    // 변형 lease 활성(재발행/폐기/취소 진행중) 행은 선점하지 않는다 — stale(5분 초과)은 무시(self-heal).
+    const mutationStale = new Date(Date.now() - MUTATION_CLAIM_STALE_MS);
     const claim = await this.orderDeliveryRepository
       .createQueryBuilder()
       .update(OrderDeliveryEntity)
@@ -1383,19 +1383,23 @@ export class ExternalApiService {
       .andWhere('coupon_status NOT IN (:...blocked)', {
         blocked: [OrderDeliveryCouponStatus.CANCEL, OrderDeliveryCouponStatus.REFUND_CANCEL],
       })
+      .andWhere('(mutation_claimed_at IS NULL OR mutation_claimed_at < :mutationStale)', { mutationStale })
       .execute();
 
     if (!claim.affected) {
-      // 한도 도달 또는 직전 취소/폐기. 최신 상태로 정확히 분기.
+      // 한도 도달 / 직전 취소·폐기 / 변형 작업 진행중. 최신 상태로 정확히 분기.
       const fresh = await this.orderDeliveryRepository.findOne({
         where: { id: orderDelivery.id },
-        select: ['resendCount', 'couponStatus'],
+        select: ['resendCount', 'couponStatus', 'mutationClaimedAt'],
       });
       if (
         fresh?.couponStatus === OrderDeliveryCouponStatus.CANCEL ||
         fresh?.couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL
       ) {
         throw new ExternalApiException('3005', '폐기/취소된 쿠폰은 재발송 불가');
+      }
+      if (fresh?.mutationClaimedAt && fresh.mutationClaimedAt >= mutationStale) {
+        throw new ExternalApiException('3010', '해당 주문에 다른 처리가 진행 중입니다. 잠시 후 다시 시도해 주세요.');
       }
       throw new ExternalApiException('3008', `재발송 횟수 초과 (${fresh?.resendCount ?? max}/${max})`);
     }

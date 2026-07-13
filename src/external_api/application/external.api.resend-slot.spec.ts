@@ -35,7 +35,7 @@ function makeOrderDelivery(over?: {
 function makeService(opts?: {
   orderDelivery?: any;
   claimAffected?: number;
-  fresh?: { resendCount?: number; couponStatus?: OrderDeliveryCouponStatus };
+  fresh?: { resendCount?: number; couponStatus?: OrderDeliveryCouponStatus; mutationClaimedAt?: Date | null };
   dispatch?: jest.Mock;
 }) {
   const orderDelivery = opts?.orderDelivery ?? makeOrderDelivery();
@@ -57,6 +57,7 @@ function makeService(opts?: {
   const findOne = jest.fn(async () => ({
     resendCount: opts?.fresh?.resendCount ?? 3,
     couponStatus: opts?.fresh?.couponStatus ?? OrderDeliveryCouponStatus.NOT_USED,
+    mutationClaimedAt: opts?.fresh?.mutationClaimedAt ?? null,
   }));
   (svc as any).orderDeliveryRepository = { createQueryBuilder, update, findOne };
   (svc as any).dispatchSend = opts?.dispatch ?? jest.fn(async () => ({ isSuccess: true }));
@@ -98,6 +99,25 @@ describe('ExternalApiService.resendOrder atomic slot claim', () => {
 
     await expect(svc.resendOrder(account, 'TR-RESEND', ctx)).rejects.toMatchObject({ code: '3005' });
     expect((svc as any).dispatchSend).not.toHaveBeenCalled();
+  });
+
+  it('변형 lease 활성(재발행/폐기 진행중)으로 선점 실패 → 3010 (D3-55 후속, 이중 발송 차단)', async () => {
+    const { svc } = makeService({
+      claimAffected: 0,
+      fresh: { resendCount: 1, mutationClaimedAt: new Date() }, // 활성 lease (stale 아님)
+    });
+
+    await expect(svc.resendOrder(account, 'TR-RESEND', ctx)).rejects.toMatchObject({ code: '3010' });
+    expect((svc as any).dispatchSend).not.toHaveBeenCalled();
+  });
+
+  it('stale 변형 lease(5분 초과)는 선점을 막지 않는다 — affected=0 이면 3008 로 분류', async () => {
+    const { svc } = makeService({
+      claimAffected: 0,
+      fresh: { resendCount: 3, mutationClaimedAt: new Date(Date.now() - 6 * 60 * 1000) }, // stale
+    });
+
+    await expect(svc.resendOrder(account, 'TR-RESEND', ctx)).rejects.toMatchObject({ code: '3008' });
   });
 
   it('발송 실패(isSuccess=false): 선점 슬롯 롤백 후 3003', async () => {
