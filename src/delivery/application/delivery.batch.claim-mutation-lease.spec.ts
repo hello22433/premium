@@ -1,6 +1,10 @@
 import { DeliveryBatchService } from './delivery.batch.service';
 import { MUTATION_CLAIM_STALE_MS } from '../interface/order.delivery.mutation.claim';
 import { OrderDeliveryCouponStatus } from '../interface/order.delivery.coupon.status';
+import { IOrderDeliveryStatus } from '../interface/order.delivery.status';
+import { IOrderSendMethod } from '../../order/interface/order.send.method';
+import { IOrderType } from '../../order/interface/order.type';
+import { IProductType } from '../../product/interface/product.type';
 
 /**
  * D3-55 후속 — 발송배치 claim 이 변형 lease(mutation_claimed_at) 활성 행을 제외하는지.
@@ -152,5 +156,122 @@ describe('DeliveryBatchService.processOneDeliveryForBatch — 변형 lease 반�
     const reset = (update.mock.calls as unknown as any[][]).find((c) => c[1] && c[1].claimedAt === null);
     expect(reset).toBeDefined();
     expect(reset![0]).toEqual({ id: 777, status: 'WAIT', claimedAt: CLAIM_TOKEN });
+  });
+});
+
+/**
+ * D3-60 — 배치 발송에 full save() 가 없다.
+ *
+ * save(orderDelivery) 는 merge 라 **행 전체**를 claim 시점 스냅샷으로 쓴다. 이 엔티티는
+ * claimWaitDeliveries 가 읽은 뒤 issue()/발송(외부 통신, 수 초)을 거치는 동안 낡는다.
+ * 그 사이 다른 액터가 쓴 값을 되돌린다:
+ *   - coupon_status='CANCEL' → 'NOT_USED'   (환불은 끝났는데 되살아난 쿠폰 = 자금 손실)
+ *   - mutation_claimed_at    → 스냅샷 값     (남의 변형 lease 무력화)
+ *   - deleted_at             → NULL          (unwindReissue 가 지운 tip 부활 → 배치가 재발송)
+ *
+ * 따라서 이 메서드의 쓰기는 전부 targeted update 여야 한다. save 가 한 번이라도 호출되면
+ * 위 세 컬럼이 전부 clobber 가능해지므로, "save 미호출" 자체를 계약으로 잠근다.
+ */
+describe('DeliveryBatchService.processOneDeliveryInternal — full save() 부재 (D3-60 clobber)', () => {
+  let repo: { update: jest.Mock; save: jest.Mock };
+  let sut: DeliveryBatchService;
+
+  /** 발송 성공 경로용 delivery — barCode 있음(=PIN 발급 분기 skip) + MMS. */
+  const makeDelivery = (over: Record<string, any> = {}) =>
+    ({
+      id: 901,
+      status: IOrderDeliveryStatus.WAIT,
+      barCode: 'PIN-1',
+      imagePath: 'img/1.png',
+      expireAt: new Date('2026-12-31T00:00:00.000Z'),
+      encourageAt: null,
+      deliveryMethod: IOrderSendMethod.MMS,
+      deliveryTarget: 'ENC_TARGET',
+      transactionId: 'TR-1',
+      ssgEventId: null,
+      // clobber 대상 3컬럼 — 스냅샷에는 "발송 전" 값이 들어 있다.
+      couponStatus: OrderDeliveryCouponStatus.NOT_USED,
+      mutationClaimedAt: null,
+      deletedAt: null,
+      orderProductMapping: {
+        sendTitle: 't',
+        sendContent: 'body',
+        sendTailText: null,
+        galaxiaDuration: null,
+        encourageDay: null,
+        order: { id: 55, type: IOrderType.GENERAL },
+        product: { type: IProductType.GENERAL, expireDay: 30, galaxiaDuration: null, memo: null, partnerCompany: {} },
+      },
+      ...over,
+    }) as any;
+
+  beforeEach(() => {
+    repo = { update: jest.fn().mockResolvedValue({ affected: 1 }), save: jest.fn().mockResolvedValue(undefined) };
+    sut = Object.create(DeliveryBatchService.prototype);
+    (sut as any).orderDeliveryRepository = repo;
+    (sut as any).logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    (sut as any).cryptoCipher = {
+      safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01011112222'),
+      encryptDeliveryTarget: jest.fn().mockReturnValue('ENC_OUT'),
+      encryptJson: jest.fn().mockReturnValue('ENC_KEY'),
+    };
+    (sut as any).configService = { get: jest.fn().mockReturnValue('false') };
+    (sut as any).partnerCompanyExternService = { issue: jest.fn() };
+    (sut as any).ssgEventRepository = { findOne: jest.fn() };
+    (sut as any).ssgInsertStateService = { getState: jest.fn() };
+    // 발송 성공: sendSms 가 in-memory 로 상태를 COMPLETE 로 표시한다(실서비스 markSendSuccess 경로).
+    (sut as any).deliverySendService = {
+      sendSms: jest.fn(async (od: any) => {
+        od.status = IOrderDeliveryStatus.COMPLETE;
+        od.actualSendAt = new Date();
+      }),
+      markSendFail: jest.fn((od: any, status: any) => {
+        od.status = status;
+        od.failedAt = new Date();
+      }),
+    };
+    (sut as any).createCouponImage = jest.fn().mockResolvedValue('img/new.png');
+    (sut as any).refundForFail = jest.fn().mockResolvedValue(undefined);
+  });
+
+  it('발송 성공 경로: save() 를 호출하지 않는다 — 쓰기는 전부 targeted update', async () => {
+    await (sut as any).processOneDeliveryInternal(makeDelivery());
+
+    // save 가 한 번이라도 나가면 coupon_status/mutation_claimed_at/deleted_at 이 전부 clobber 가능해진다
+    expect(repo.save).not.toHaveBeenCalled();
+    expect(repo.update).toHaveBeenCalled();
+  });
+
+  it('발송 성공 경로: 어떤 update 의 SET 절에도 clobber 3컬럼이 없다', async () => {
+    await (sut as any).processOneDeliveryInternal(makeDelivery());
+
+    for (const [, set] of repo.update.mock.calls as unknown as any[][]) {
+      expect(set).not.toHaveProperty('couponStatus'); // 환불된 쿠폰 되살림
+      expect(set).not.toHaveProperty('mutationClaimedAt'); // 남의 변형 lease 무력화
+      expect(set).not.toHaveProperty('deletedAt'); // soft-delete 된 tip 부활
+    }
+  });
+
+  /**
+   * PIN 발급 실패 경로는 종전에 save(orderDelivery) 로 status/failedAt 을 썼다. 그 시점 스냅샷은
+   * issue() 시도 **전** 값이라, issue 가 수 초 걸리는 동안 들어온 폐기의 coupon_status=CANCEL 을
+   * 그대로 되돌린다. markSendFail 이 만지는 두 컬럼만 targeted update 여야 한다.
+   */
+  it('PIN 발급 실패 경로: save() 없이 status/failedAt 만 targeted update', async () => {
+    const od = makeDelivery({ barCode: null, imagePath: null });
+    (sut as any).partnerCompanyExternService.issue.mockRejectedValue(new Error('발급 실패'));
+
+    const result = await (sut as any).processOneDeliveryInternal(od);
+
+    expect(repo.save).not.toHaveBeenCalled();
+    // 최초 발송 실패는 환불 보류(B1) — refundForFail 미호출
+    expect((sut as any).refundForFail).not.toHaveBeenCalled();
+
+    const failWrite = (repo.update.mock.calls as unknown as any[][]).find((c) => c[1] && 'status' in c[1]);
+    expect(failWrite).toBeDefined();
+    expect(failWrite![0]).toEqual({ id: 901 });
+    expect(Object.keys(failWrite![1]).sort()).toEqual(['failedAt', 'status']);
+    expect(failWrite![1].status).toBe(IOrderDeliveryStatus.FAIL);
+    expect(result.deliveryHistory.isSuccess).toBe(false);
   });
 });

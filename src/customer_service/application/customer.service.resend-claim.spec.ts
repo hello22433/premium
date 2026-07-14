@@ -122,4 +122,92 @@ describe('CustomerServiceService — reSend self-heal claim', () => {
     expect(deltaMs).toBeGreaterThanOrEqual(5 * 60 * 1000 - 3000);
     expect(deltaMs).toBeLessThanOrEqual(5 * 60 * 1000 + 3000);
   });
+
+  /**
+   * D3-55 후속 — reSend 도 쿠폰상태 변형 lease 를 **획득**한다.
+   *
+   * reSend 는 claimedAt(재발송 직렬화)만 잡고 mutation lease 는 잡지 않았다. 그래서 oneSend
+   * (외부 통신, 수 초) 도중 폐기(execDiscard)·외부취소(cancelOrder)가 같은 행에 진입해
+   * 협력사 취소 + 환불을 마칠 수 있었다 → **이미 죽은 핀이 담긴 문자가 고객에게 배달**된다.
+   * (외부 resendOrder 의 슬롯 CAS 를 "읽기 → 획득" 으로 고친 것과 같은 결함·같은 해법)
+   *
+   * lease 는 별도 CAS 가 아니라 **기존 claimedAt CAS 의 SET 에 얹어** 원자적으로 획득한다.
+   * 별도 쿼리로 나누면 두 CAS 사이에 폐기가 끼어드는 창이 다시 생긴다.
+   */
+  describe('D3-55 후속 — 변형 lease 획득/해제', () => {
+    const leaseReleases = () =>
+      (orderDeliveryRepository.update.mock.calls as unknown as any[][]).filter(
+        (c) => c[1] && c[1].mutationClaimedAt === null,
+      );
+
+    it('claim CAS 의 SET 에 mutationClaimedAt 이 함께 들어간다 — claimedAt 과 같은 토큰으로 원자 획득', async () => {
+      qb.getOne.mockResolvedValueOnce(buildTarget()).mockResolvedValueOnce(buildTarget());
+      qb.execute.mockResolvedValue({ affected: 1 });
+
+      await service.reSend(user, { orderDeliveryId: ORDER_DELIVERY_ID });
+
+      // set 은 claim CAS 에서 1회 — 읽기(WHERE)만 하고 SET 을 빼면 발송 구간 내내 lease 가 비어 있다
+      expect(qb.set).toHaveBeenCalledTimes(1);
+      const setArg = qb.set.mock.calls[0][0];
+      expect(setArg.mutationClaimedAt).toBeInstanceOf(Date);
+      // 소유자 식별이 일관되도록 두 lease 의 토큰이 동일해야 한다(해제도 같은 토큰으로 owner-guard)
+      expect(setArg.mutationClaimedAt).toBe(setArg.claimedAt);
+      // 쿠폰상태는 건드리지 않는다 — 남이 쓴 CANCEL 을 되돌리지 않기 위해
+      expect(setArg).not.toHaveProperty('couponStatus');
+    });
+
+    it('claim CAS 의 WHERE 에 lease 술어 — 활성 lease(폐기/재발행 진행중)면 획득 실패, stale(5분 초과)은 강탈', async () => {
+      qb.getOne.mockResolvedValueOnce(buildTarget()).mockResolvedValueOnce(buildTarget());
+      qb.execute.mockResolvedValue({ affected: 1 });
+      const beforeMs = Date.now();
+
+      await service.reSend(user, { orderDeliveryId: ORDER_DELIVERY_ID });
+
+      const leaseCall = (qb.andWhere.mock.calls as unknown as any[][]).find((c) =>
+        /mutation_claimed_at/i.test(String(c[0])),
+      );
+      expect(leaseCall).toBeDefined(); // 없으면 폐기 진행중 행에도 재발송이 들어간다
+      expect(String(leaseCall![0])).toMatch(/mutation_claimed_at IS NULL/i);
+      expect(String(leaseCall![0])).toMatch(/mutation_claimed_at\s*<\s*:mutationStale/i);
+
+      const mutationStale: Date = leaseCall![1].mutationStale;
+      const deltaMs = beforeMs - mutationStale.getTime();
+      expect(deltaMs).toBeGreaterThanOrEqual(5 * 60 * 1000 - 3000);
+      expect(deltaMs).toBeLessThanOrEqual(5 * 60 * 1000 + 3000);
+    });
+
+    it('정상 종료: claimedAt 해제와 함께 변형 lease 도 owner-guarded 해제', async () => {
+      qb.getOne.mockResolvedValueOnce(buildTarget()).mockResolvedValueOnce(buildTarget());
+      qb.execute.mockResolvedValue({ affected: 1 });
+
+      await service.reSend(user, { orderDeliveryId: ORDER_DELIVERY_ID });
+
+      // 해제 안 하면 발송 직후부터 stale(5분)까지 그 행의 폐기·외부취소가 전부 거절된다
+      const releases = leaseReleases();
+      expect(releases).toHaveLength(1);
+      expect(releases[0][0]).toEqual({ id: ORDER_DELIVERY_ID, mutationClaimedAt: expect.any(Date) });
+      expect(releases[0][1]).toEqual({ mutationClaimedAt: null });
+    });
+
+    it('예외(oneSend throw) 경로에서도 변형 lease 를 해제한다', async () => {
+      qb.getOne.mockResolvedValueOnce(buildTarget()).mockResolvedValueOnce(buildTarget());
+      qb.execute.mockResolvedValue({ affected: 1 });
+      deliveryBatchService.oneSend.mockRejectedValue(new Error('send boom'));
+
+      await expect(service.reSend(user, { orderDeliveryId: ORDER_DELIVERY_ID })).rejects.toThrow('send boom');
+
+      expect(leaseReleases()).toHaveLength(1);
+    });
+
+    it('claim 실패(409) 시에는 lease 해제를 시도하지 않는다 — 남의 lease 를 건드리지 않음', async () => {
+      qb.getOne.mockResolvedValueOnce(buildTarget());
+      qb.execute.mockResolvedValue({ affected: 0 });
+
+      await expect(service.reSend(user, { orderDeliveryId: ORDER_DELIVERY_ID })).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+
+      expect(leaseReleases()).toHaveLength(0);
+    });
+  });
 });

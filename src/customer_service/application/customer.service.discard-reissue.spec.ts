@@ -208,6 +208,31 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
         cancel: OrderDeliveryCouponStatus.CANCEL,
       });
     });
+
+    /**
+     * 리뷰 HIGH: reverseDiscard 는 CAS(WHERE coupon_status=CANCEL) 라 affected=0 으로 조용히
+     * 실패할 수 있다. caller 는 이 boolean 으로 "폐기를 취소했습니다. 다시 시도해 주세요"(복구됨)와
+     * "운영팀에 문의"(복구 실패)를 가른다. 반환값이 affected 에서 실제로 파생되지 않고 상수 true 면
+     * 복구 실패가 성공으로 보고되어 caller 의 분기(3-1)가 통째로 死문이 된다.
+     */
+    it('CAS 결과를 boolean 으로 반환한다 — affected=0 이면 false (복구 실패를 caller 가 알아야 한다)', async () => {
+      const execute = jest.fn();
+      const where = jest.fn().mockReturnValue({ execute });
+      const set = jest.fn().mockReturnValue({ where });
+      const update = jest.fn().mockReturnValue({ set });
+      jest.spyOn(orderDeliveryRepository, 'createQueryBuilder').mockReturnValue({ update } as any);
+
+      execute.mockResolvedValueOnce({ affected: 1 });
+      await expect((service as any).reverseDiscard(99, OrderDeliveryCouponStatus.NOT_USED)).resolves.toBe(true);
+
+      // CAS 불일치(이미 다른 액터가 상태를 바꿈) → 고객 쿠폰이 폐기된 채로 남아 있다
+      execute.mockResolvedValueOnce({ affected: 0 });
+      await expect((service as any).reverseDiscard(99, OrderDeliveryCouponStatus.NOT_USED)).resolves.toBe(false);
+
+      // 드라이버가 affected 를 안 주는 경우도 성공으로 오인하지 않는다
+      execute.mockResolvedValueOnce({});
+      await expect((service as any).reverseDiscard(99, OrderDeliveryCouponStatus.NOT_USED)).resolves.toBe(false);
+    });
   });
 
   describe('execHistory — 폐기 후 신규 발송', () => {
@@ -617,6 +642,49 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
      * 발송 후 fencing 실패는 되돌릴 수 없다(문자는 이미 나갔다). 그대로 두면 tip 이 WAIT 로 남아
      * 배치가 같은 핀으로 재발송한다(고객 문자 2통). 최소한 status 를 WAIT 에서 떼어내야 한다.
      */
+    /**
+     * ★ pre-issue catch 의 lease 해제는 unwind **뒤**여야 한다 (리뷰 CONFIRMED).
+     *
+     * 먼저 반납하면 그 창에서 tip 은 status=WAIT / claimed_at=NULL / lease 없음 /
+     * coupon_status=NOT_USED / soft-delete 전 — claimWaitDeliveries 의 모든 조건을 통과한다.
+     * 배치가 집어 PIN 을 발급·발송하고, 뒤이어 unwind 가 원본 폐기를 되돌리면
+     * **살아있는 쿠폰 2장**(원본 + 배치가 발송한 tip)이 된다. SSG 선차감은 이미 역복원된 뒤라
+     * 미차감 발급까지 겹친다.
+     *
+     * 반대 순서(unwind → 해제)면 배치가 그 창을 볼 때 tip 은 이미 CANCEL + soft-delete 다.
+     */
+    it('24) pre-issue 실패: lease 해제가 unwind(tip 무력화·softDelete) 뒤에 일어난다', async () => {
+      setupSsgAcquired();
+      setupExecDiscard();
+      // pre-issue 경로 진입: save 는 성공하되 findOne 이 null → "새 발송 건 조회 실패"
+      orderDeliveryRepository.save.mockResolvedValue({ id: 8001 });
+      orderDeliveryRepository.findOne.mockResolvedValue(null);
+      jest.spyOn(service as any, 'reverseDiscard').mockResolvedValue(true);
+
+      await expect(service.execHistory(buildMap(IOrderType.SSG))).rejects.toThrow();
+
+      // tip 무력화(fenced kill)와 lease 해제는 둘 다 update 로 나간다 — 호출 순서로 구분.
+      // ★ 반드시 tip(id=8001) 로 한정할 것. execHistory 는 재발행 전에 execDiscard 를 실제로
+      //   호출하고, 그 안에서 **원본**의 변형 lease 를 잡았다 푼다(해제도 mutationClaimedAt:null).
+      //   id 로 좁히지 않으면 그 원본 해제를 tip 의 해제로 오인해 순서 검증이 무의미해진다.
+      const TIP_ID = 8001;
+      const calls = (orderDeliveryRepository.update.mock.calls as unknown as any[][]).map((c, i) => ({ c, i }));
+      const killIdx = calls.find(
+        ({ c }) => c[0]?.id === TIP_ID && c[1]?.couponStatus === OrderDeliveryCouponStatus.CANCEL,
+      )?.i;
+      const releaseIdx = calls.find(({ c }) => c[0]?.id === TIP_ID && c[1]?.mutationClaimedAt === null)?.i;
+
+      expect(killIdx).toBeDefined(); // unwind 의 tip 무력화가 실제로 일어났고
+      expect(releaseIdx).toBeDefined(); // tip 의 lease 해제도 일어났으며
+      const killOrder = orderDeliveryRepository.update.mock.invocationCallOrder[killIdx!];
+      const releaseOrder = orderDeliveryRepository.update.mock.invocationCallOrder[releaseIdx!];
+      const softDeleteOrder = orderDeliveryRepository.softDelete.mock.invocationCallOrder[0];
+
+      // 해제는 반드시 마지막 — 그 전에 tip 은 CANCEL 전이 + soft-delete 로 배치 픽업이 봉쇄돼야 한다
+      expect(killOrder).toBeLessThan(releaseOrder);
+      expect(softDeleteOrder).toBeLessThan(releaseOrder);
+    });
+
     it('23) 발송 후 fencing 실패 → status=WAIT 로 소유권을 좁힌 fallback 쓰기로 상태 확정', async () => {
       setupExecDiscard();
       orderDeliveryRepository.findOne.mockResolvedValue(buildFullDelivery(IOrderType.GENERAL, null));
