@@ -1071,6 +1071,21 @@ export class CustomerServiceService {
   }
 
   /**
+   * 아직 내가 변형 lease 를 쥐고 있는가. 되돌릴 수 없는 외부 부작용(문자 발송) 직전의 마지막 관문.
+   *
+   * fenced update 는 "쓰기"를 막을 뿐 "발송"을 막지 못한다. 비SSG 는 유효기간 fenced update 가
+   * 사실상 이 검사를 겸하지만 SSG 는 그 분기를 타지 않아(issue() 가 expireAt 을 채움) 검사 지점이
+   * 없었다. lease 를 잃었다 = 다른 폐기/취소가 이 핀을 협력사에서 죽이고 환불까지 했을 수 있다.
+   */
+  private async isMutationLeaseOwned(orderDeliveryId: number, claimAt: Date): Promise<boolean> {
+    const row = await this.orderDeliveryRepository.findOne({
+      where: { id: orderDeliveryId, mutationClaimedAt: claimAt },
+      select: ['id'],
+    });
+    return !!row;
+  }
+
+  /**
    * 변형 lease 해제 (owner guard). 내가 소유한 lease(mutationClaimedAt=:claimAt)만 해제 —
    * stale 강탈로 소유권이 넘어갔으면 affected=0 으로 아무것도 지우지 않는다(reSend claim 해제와 동일 규약).
    * 해제 실패는 로깅만 — stale(5분) self-heal 이 최후 안전망.
@@ -1336,8 +1351,8 @@ export class CustomerServiceService {
    * 폐기 역전 (폐기 후 신규 발송 롤백용). CAS: 아직 CANCEL 일 때만 originalStatus 로 되돌리고 discardedAt 해제.
    * SSG 폐기는 외부 cancel 을 호출하지 않으므로(SsgDB 미터치) 상태 플립만으로 안전하게 원복된다.
    */
-  private async reverseDiscard(orderDeliveryId: number, originalStatus: OrderDeliveryCouponStatus): Promise<void> {
-    await this.orderDeliveryRepository
+  private async reverseDiscard(orderDeliveryId: number, originalStatus: OrderDeliveryCouponStatus): Promise<boolean> {
+    const result = await this.orderDeliveryRepository
       .createQueryBuilder()
       .update(OrderDeliveryEntity)
       .set({ couponStatus: originalStatus, discardedAt: null })
@@ -1346,6 +1361,9 @@ export class CustomerServiceService {
         cancel: OrderDeliveryCouponStatus.CANCEL,
       })
       .execute();
+    // affected=0 = CAS 불일치(이미 다른 액터가 상태를 바꿈) → 복구 실패.
+    // caller 가 "폐기를 취소했습니다" 라고 말하기 전에 반드시 확인해야 한다 (리뷰 HIGH).
+    return (result.affected ?? 0) > 0;
   }
 
   /**
@@ -2002,38 +2020,78 @@ export class CustomerServiceService {
         }
 
         /**
-         * SSG 선차감+폐기 완전 역전 헬퍼.
-         * issue() 호출 전(미등록 확정) 구간에서 공유. 실패는 최선 처리로 로깅만.
+         * SSG 선차감+폐기 완전 역전 헬퍼. issue() 호출 전(미등록 확정) 구간에서 공유.
+         *
+         * ★ 순서: tip 무력화 먼저 → 폐기 역전 나중 (리뷰 CRITICAL 로 종전과 반대).
+         *   종전(폐기 역전 → softDelete)은 중간 중단·softDelete 실패 시 "원본 복구 + 살아있는 tip"
+         *   이 된다. 그 tip 은 status=WAIT / barCode=NULL / claimed_at=NULL 이고 finally 가 lease 를
+         *   해제하므로 claimWaitDeliveries 를 전부 통과한다 → 배치가 **새 PIN 을 발급해 발송**한다.
+         *   SSG 선차감은 이미 역복원된 뒤라 **미차감 발급**(직접 자금 손실) + 고객 쿠폰 2장이 된다.
+         *   반대 순서면 중단 시 남는 상태가 "둘 다 폐기"(무해·복구가능)다.
+         *
+         * ★ softDelete 만으로는 부족하다: 실패를 삼키면 배치가 그대로 집어간다. 그래서 먼저
+         *   status/couponStatus 를 CANCEL 로 전이(fenced)해 claimWaitDeliveries 를 확실히 막는다.
+         *
          * @param od - issue() 전 단계라면 fullDelivery 아직 없을 수 있으므로 orderDelivery 사용
          * @param savedId - 이미 save 한 newDelivery 의 id (없으면 null)
+         * @returns discardReversed - 원본 폐기 역전 성공 여부. false 면 caller 는 "폐기를 취소했습니다"
+         *          라고 말하면 안 된다(고객 쿠폰이 폐기된 채 남아 있다).
          */
         const unwindReissue = async (
           od: OrderDeliveryEntity,
           savedId: number | null,
           outcome: SsgRefundOutcome,
-        ): Promise<void> => {
-          // 1) 폐기 역전(고객 쿠폰 복구) — 먼저
-          if (discardBeforeValidated) {
+        ): Promise<{ discardReversed: boolean }> => {
+          // 1) tip 무력화 — 먼저. 배치 픽업 차단이 최우선이다.
+          if (savedId != null) {
             try {
-              await this.reverseDiscard(discardedDelivery.id, discardBeforeValidated);
-            } catch (rdErr) {
+              const kill = await this.orderDeliveryRepository.update(
+                { id: savedId, mutationClaimedAt: mutationClaimAt },
+                { status: IOrderDeliveryStatus.CANCEL, couponStatus: OrderDeliveryCouponStatus.CANCEL },
+              );
+              if (!kill.affected) {
+                this.logger.error(
+                  `[폐기후신규발송] tip 무력화 실패 — 변형 lease 상실(다른 처리가 선점). ` +
+                    `배치가 집어 PIN 을 발급·발송할 수 있다. 운영 확인 필요. orderDeliveryId=${savedId}`,
+                );
+              }
+            } catch (killErr) {
               this.logger.error(
-                `[폐기후신규발송] reverseDiscard 실패(outcome=${outcome}) — orderDeliveryId=${discardedDelivery.id}`,
-                rdErr,
+                `[폐기후신규발송] tip 무력화 실패(outcome=${outcome}) — orderDeliveryId=${savedId}`,
+                killErr,
               );
             }
-          }
-          // 2) 신규 row soft-delete — 나중에
-          if (savedId != null) {
             try {
               await this.orderDeliveryRepository.softDelete(savedId);
             } catch (sdErr) {
+              // 위 무력화가 이미 배치를 차단했으므로 여기 실패는 로깅으로 충분(행이 남을 뿐).
               this.logger.error(
                 `[폐기후신규발송] softDelete 실패(outcome=${outcome}) — orderDeliveryId=${savedId}`,
                 sdErr,
               );
             }
           }
+
+          // 2) 폐기 역전(고객 원본 쿠폰 복구) — 나중. 성공 여부를 caller 에게 알린다.
+          let discardReversed = true;
+          if (discardBeforeValidated) {
+            try {
+              discardReversed = await this.reverseDiscard(discardedDelivery.id, discardBeforeValidated);
+            } catch (rdErr) {
+              discardReversed = false;
+              this.logger.error(
+                `[폐기후신규발송] reverseDiscard 실패(outcome=${outcome}) — orderDeliveryId=${discardedDelivery.id}`,
+                rdErr,
+              );
+            }
+            if (!discardReversed) {
+              this.logger.error(
+                `[폐기후신규발송] 원본 폐기 역전 실패(CAS 불일치 또는 예외) — 고객 쿠폰이 폐기 상태로 남아 있다. ` +
+                  `운영 확인 필요. orderDeliveryId=${discardedDelivery.id}`,
+              );
+            }
+          }
+          return { discardReversed };
         };
 
         // 변형 lease: tip 은 새 행이므로 INSERT 자체가 원자적 획득(CAS 불필요).
@@ -2101,18 +2159,24 @@ export class CustomerServiceService {
             throw new InternalServerErrorException('새 발송 건 조회에 실패했습니다.');
           }
         } catch (preIssueErr) {
-          // save 는 성공했는데 findOne 이 실패한 경우 — lease 를 즉시 반납(soft-delete 전이어도 무해)
-          if (savedDelivery?.id != null) {
-            await this.releaseMutationLease(savedDelivery.id, mutationClaimAt);
-          }
-          if (isSsg && reissueEvent && resendDeductionId) {
-            await this.deliveryBatchService.reverseReissueDeductDirect(
-              resendDeductionId,
-              reissueEvent.id,
-              reissueOrderId,
-              reissuePrice,
-            );
-            await unwindReissue(orderDelivery, savedDelivery?.id ?? null, SsgRefundOutcome.RESTORED);
+          // ★ lease 해제는 unwind 가 끝난 뒤에. 먼저 반납하면 그 창에 tip 이
+          //   status=WAIT / claimed_at=NULL / lease 없음 / soft-delete 전 상태로 노출되어
+          //   claimWaitDeliveries 를 전부 통과한다 → 배치가 PIN 을 발급·발송하고,
+          //   뒤이어 unwind 가 원본 폐기를 되돌리면 살아있는 쿠폰이 2장이 된다 (리뷰 CONFIRMED).
+          try {
+            if (isSsg && reissueEvent && resendDeductionId) {
+              await this.deliveryBatchService.reverseReissueDeductDirect(
+                resendDeductionId,
+                reissueEvent.id,
+                reissueOrderId,
+                reissuePrice,
+              );
+              await unwindReissue(orderDelivery, savedDelivery?.id ?? null, SsgRefundOutcome.RESTORED);
+            }
+          } finally {
+            if (savedDelivery?.id != null) {
+              await this.releaseMutationLease(savedDelivery.id, mutationClaimAt);
+            }
           }
           throw preIssueErr;
         }
@@ -2139,7 +2203,16 @@ export class CustomerServiceService {
                 resendDeductionId,
               );
               if (outcome === SsgRefundOutcome.RESTORED) {
-                await unwindReissue(fullDelivery, savedDelivery.id, outcome);
+                const { discardReversed } = await unwindReissue(fullDelivery, savedDelivery.id, outcome);
+                // 복구가 실제로 됐을 때만 "다시 시도" 를 유도한다. 실패했는데 그렇게 말하면
+                // 운영자는 복구된 줄 알고 재시도하지만 원본이 폐기 상태라 터미널 가드에 걸린다.
+                // 고객은 쿠폰을 잃었는데 CS 는 이유를 모르는 상태가 된다 (리뷰 HIGH).
+                if (!discardReversed) {
+                  throw new InternalServerErrorException(
+                    `신규 발송에 실패했고 원본 쿠폰 복구도 실패했습니다. 재시도하지 마시고 운영팀에 문의해 주세요. ` +
+                      `(발송건 ${discardedDelivery.id})`,
+                  );
+                }
                 throw new InternalServerErrorException('신규 발송에 실패하여 폐기를 취소했습니다. 다시 시도해 주세요.');
               }
               this.logger.error(
@@ -2178,8 +2251,15 @@ export class CustomerServiceService {
               { expireAt: fullDelivery.expireAt, encourageAt: fullDelivery.encourageAt },
             );
             if (!expiryWrite.affected) {
+              // affected=0 = lease 를 빼앗겼다 = **다른 폐기/취소가 지금 이 tip 을 죽이고 있다**.
+              // 아직 발송 전이므로 여기서 멈추는 것이 가장 싸다. 로그만 찍고 진행하면
+              // 협력사에서 취소·환불된 핀을 고객에게 문자로 배달한다 — 이 작업이 막으려던 사고다.
+              // (부수: expireAt/encourageAt 이 영구 NULL 로 남아 만료 배치·취소 만료가드도 오작동)
               this.logger.error(
-                `[폐기후신규발송] 유효기간 기록 스킵 — 변형 lease 상실(다른 처리가 선점). orderDeliveryId=${fullDelivery.id}`,
+                `[폐기후신규발송] 변형 lease 상실(다른 처리가 선점) — 발송 중단. orderDeliveryId=${fullDelivery.id}`,
+              );
+              throw new InternalServerErrorException(
+                '처리 중 다른 작업이 이 발송 건을 선점했습니다. 발송실패내역에서 상태를 확인해 주세요.',
               );
             }
           }
@@ -2195,7 +2275,16 @@ export class CustomerServiceService {
                 resendDeductionId,
               );
               if (outcome === SsgRefundOutcome.RESTORED) {
-                await unwindReissue(fullDelivery, savedDelivery.id, outcome);
+                const { discardReversed } = await unwindReissue(fullDelivery, savedDelivery.id, outcome);
+                // 복구가 실제로 됐을 때만 "다시 시도" 를 유도한다. 실패했는데 그렇게 말하면
+                // 운영자는 복구된 줄 알고 재시도하지만 원본이 폐기 상태라 터미널 가드에 걸린다.
+                // 고객은 쿠폰을 잃었는데 CS 는 이유를 모르는 상태가 된다 (리뷰 HIGH).
+                if (!discardReversed) {
+                  throw new InternalServerErrorException(
+                    `신규 발송에 실패했고 원본 쿠폰 복구도 실패했습니다. 재시도하지 마시고 운영팀에 문의해 주세요. ` +
+                      `(발송건 ${discardedDelivery.id})`,
+                  );
+                }
                 throw new InternalServerErrorException('신규 발송에 실패하여 폐기를 취소했습니다. 다시 시도해 주세요.');
               }
               this.logger.error(
@@ -2221,6 +2310,18 @@ export class CustomerServiceService {
 
           const newPin = fullDelivery.barCode;
           afterChange = `${normalizedTarget} / ${newPin}`;
+
+          // 발송 직전 lease 소유 재확인 — 비SSG 는 위 유효기간 fenced update 가 이 역할을 하지만
+          // SSG 는 그 분기를 타지 않아(issue() 가 expireAt 을 채움) 검사 지점이 없었다.
+          // lease 를 잃었다 = 다른 폐기/취소가 이 핀을 죽이고 있다 → 발송하면 죽은 핀이 배달된다.
+          if (!(await this.isMutationLeaseOwned(fullDelivery.id, mutationClaimAt))) {
+            this.logger.error(
+              `[폐기후신규발송] 발송 직전 변형 lease 상실(다른 처리가 선점) — 발송 중단. orderDeliveryId=${fullDelivery.id}`,
+            );
+            throw new InternalServerErrorException(
+              '처리 중 다른 작업이 이 발송 건을 선점했습니다. 발송실패내역에서 상태를 확인해 주세요.',
+            );
+          }
 
           // 발송 시도 — 실패해도 history는 OLD/NEW 양쪽에 기록
           let sendStatus: IOrderDeliveryStatus = IOrderDeliveryStatus.COMPLETE;
@@ -2263,9 +2364,32 @@ export class CustomerServiceService {
             },
           );
           if (!sendWrite.affected) {
+            // 문자는 이미 나갔는데 lease 를 빼앗겨 status 를 못 썼다. 이대로 두면 tip 은 INSERT 당시
+            // status=WAIT 로 남고, claimWaitDeliveries 의 lease 배제도 더 이상 걸리지 않아
+            // **배치가 같은 핀으로 재발송**한다(고객 문자 2통). 되돌릴 수 없는 발송이 이미
+            // 일어난 이상, 최소한 상태는 WAIT 에서 떼어내야 한다.
+            //
+            // fallback 은 lease 가 아니라 status=WAIT 로 소유권을 좁힌다. tip 의 WAIT→발송결과 전이는
+            // 재발행 액터만 책임지는 구간이고, 배치가 이미 집어갔다면 status 가 바뀌어 affected=0 이
+            // 되어 남의 결정을 덮지 않는다.
             this.logger.error(
-              `[폐기후신규발송] 발송결과 기록 스킵 — 변형 lease 상실(다른 처리가 선점). orderDeliveryId=${fullDelivery.id}`,
+              `[폐기후신규발송] 발송결과 fenced 기록 실패 — 변형 lease 상실(다른 처리가 선점). ` +
+                `문자는 이미 발송됨. status fallback 시도. orderDeliveryId=${fullDelivery.id}`,
             );
+            const fallbackWrite = await this.orderDeliveryRepository.update(
+              { id: fullDelivery.id, status: IOrderDeliveryStatus.WAIT },
+              {
+                status: fullDelivery.status,
+                actualSendAt: fullDelivery.actualSendAt,
+                failedAt: fullDelivery.failedAt,
+              },
+            );
+            if (!fallbackWrite.affected) {
+              this.logger.error(
+                `[폐기후신규발송] status fallback 도 실패(이미 다른 액터가 전이) — 발송은 나갔으나 ` +
+                  `DB 상태를 확정하지 못했다. 운영 확인 필요. orderDeliveryId=${fullDelivery.id}`,
+              );
+            }
           }
 
           // history 양쪽(OLD/NEW)에 기록 — 발송 실패 여부와 무관하게 보장
