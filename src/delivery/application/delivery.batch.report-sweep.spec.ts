@@ -93,16 +93,28 @@ describe('DeliveryBatchService — reportSweep / settlement (async alimtalk)', (
   });
 
   describe('runReportFallback (자동 재발송 1회, at-most-once)', () => {
-    const mockPreempt = (affected: number) => {
-      const exec = jest.fn().mockResolvedValue({ affected });
+    /**
+     * runReportFallback 은 CAS 를 **두 번** 친다.
+     *  1) 변형 lease 게이트 — 폐기·환불됐거나 다른 처리 진행중인 건이면 여기서 걸러진다(D3-55 후속)
+     *  2) fallback 선점(at-most-once) — 동시 sweep 차단
+     * leaseAffected 로 1번, affected 로 2번을 각각 제어한다.
+     */
+    let qbSpy: any;
+    const mockPreempt = (affected: number, leaseAffected = 1) => {
+      const exec = jest
+        .fn()
+        .mockResolvedValueOnce({ affected: leaseAffected }) // 1) lease 게이트
+        .mockResolvedValue({ affected }); // 2) 선점
+      qbSpy = {
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        execute: exec,
+      };
       service.orderDeliveryRepository = {
-        createQueryBuilder: jest.fn().mockReturnValue({
-          update: jest.fn().mockReturnThis(),
-          set: jest.fn().mockReturnThis(),
-          where: jest.fn().mockReturnThis(),
-          andWhere: jest.fn().mockReturnThis(),
-          execute: exec,
-        }),
+        createQueryBuilder: jest.fn().mockReturnValue(qbSpy),
+        update: jest.fn().mockResolvedValue({ affected: 1 }), // lease 해제
       };
       return exec;
     };
@@ -154,6 +166,59 @@ describe('DeliveryBatchService — reportSweep / settlement (async alimtalk)', (
 
       expect(recoverSpy).toHaveBeenCalledWith(od, 'tok');
       expect(service.csResendAsMms).not.toHaveBeenCalled();
+    });
+
+    /**
+     * D3-55 후속 — SMS 대체발송도 "발송" 이다.
+     *
+     * report_owner_token 은 sweep 워커끼리의 소유권일 뿐, 폐기/외부취소/재발행과는 무관하다.
+     * 알림톡 POST 는 성공했지만 수신확인이 안 된 채 재시도를 소진하는 동안(분 단위) 그 쿠폰이
+     * 폐기·환불될 수 있고, 종전 코드는 그 죽은 핀을 SMS 로 다시 보낸 뒤 정산까지 했다.
+     */
+    describe('변형 lease / 쿠폰상태 가드 (D3-55 후속)', () => {
+      it('lease 게이트 WHERE 에 변형 lease + coupon_status 술어가 있다', async () => {
+        const od = buildOd();
+        mockPreempt(1);
+
+        await service.runReportFallback(od, 'tok');
+
+        const whereSqls = qbSpy.andWhere.mock.calls.map((c: any[]) => String(c[0]));
+        expect(whereSqls.some((s: string) => /mutation_claimed_at IS NULL/.test(s))).toBe(true);
+        expect(whereSqls.some((s: string) => /coupon_status NOT IN/.test(s))).toBe(true);
+        // 게이트는 lease 를 **획득**해야 한다 — WHERE 로 읽기만 하면 발송 구간이 무방비다
+        expect(qbSpy.set.mock.calls[0][0]).toHaveProperty('mutationClaimedAt');
+      });
+
+      it('폐기·환불된 건(lease 게이트 affected=0) → SMS 미발송 + 정산 미수행 + recovery 미진입', async () => {
+        const od = buildOd();
+        mockPreempt(1, 0); // lease 게이트 실패
+        const recoverSpy = jest.spyOn(service, 'recoverStuckFallback').mockResolvedValue(undefined);
+
+        await service.runReportFallback(od, 'tok');
+
+        expect(service.csResendAsMms).not.toHaveBeenCalled();
+        expect(service.markOrderTerminalAndSettle).not.toHaveBeenCalled();
+        // recovery 로 보내면 FAIL 확정·환불로 이어질 수 있다 — 폐기가 이미 환불했으면 이중 환불
+        expect(recoverSpy).not.toHaveBeenCalled();
+        expect(service.refundForFail).not.toHaveBeenCalled();
+        // sweep 재선택을 끊는다(PENDING 유지 시 매 tick 재진입)
+        expect(od.reportState).toBe(IOrderDeliveryReportState.UNCONFIRMED);
+        expect(service.persistReportState).toHaveBeenCalled();
+      });
+
+      it('정상 경로: 변형 lease 를 자기 토큰으로 해제한다', async () => {
+        const od = buildOd();
+        mockPreempt(1);
+        service.csResendAsMms.mockResolvedValue(undefined);
+
+        await service.runReportFallback(od, 'tok');
+
+        const release = service.orderDeliveryRepository.update.mock.calls.find(
+          (c: any[]) => c[1] && c[1].mutationClaimedAt === null,
+        );
+        expect(release).toBeDefined();
+        expect(release[0]).toEqual({ id: od.id, mutationClaimedAt: expect.any(Date) });
+      });
     });
 
     it('HIGH-1) 선점 성공 + SMS 성공이지만 persist 소유권 상실(false) → 이력정정/정산 미수행', async () => {

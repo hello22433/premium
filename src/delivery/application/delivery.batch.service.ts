@@ -894,45 +894,91 @@ export class DeliveryBatchService {
    * sendSms 코어(csResendAsMms) 직접 사용 — oneSend/reverseRefundForResend 경로 미사용(환불→재차감 루프 차단).
    */
   private async runReportFallback(od: OrderDeliveryEntity, token: string): Promise<void> {
-    const preempt = await this.orderDeliveryRepository
+    // ★ SMS 대체발송도 "발송" 이다 — 변형 lease + 쿠폰상태 가드가 필요하다 (D3-55 후속, 리뷰).
+    //
+    //   report_owner_token 은 리포트 sweep 워커끼리의 소유권일 뿐, 폐기/외부취소/재발행과는
+    //   아무 관계가 없다. 알림톡 POST 는 성공했지만 수신확인이 안 된 채 재시도를 소진하는
+    //   동안(분 단위) 그 쿠폰이 폐기·환불될 수 있고, 종전 코드는 그 죽은 핀을 SMS 로 다시
+    //   보낸 뒤 markOrderTerminalAndSettle 로 **정산까지** 했다.
+    //
+    //   가드 실패 시 recoverStuckFallback 으로 보내지 않는다. 그 경로는 FAIL 확정·환불로
+    //   이어질 수 있는데, 폐기가 이미 환불을 끝냈다면 이중 환불이 된다. 발송하지 않고
+    //   report_state 만 UNCONFIRMED 로 닫아 sweep 재선택을 끊는다(status 는 그대로 두므로
+    //   claimWaitDeliveries 의 coupon_status 가드가 배치 재발송도 막는다).
+    const mutationClaimAt = new Date();
+    const mutationStale = new Date(mutationClaimAt.getTime() - MUTATION_CLAIM_STALE_MS);
+    const leaseGate = await this.orderDeliveryRepository
       .createQueryBuilder()
       .update(OrderDeliveryEntity)
-      .set({ reportFallbackAttemptCount: 1 })
+      .set({ mutationClaimedAt: mutationClaimAt })
       .where('id = :id', { id: od.id })
-      .andWhere('report_fallback_attempt_count = 0')
       .andWhere('report_owner_token = :token', { token })
-      // SMS(외부호출) 직전 fencing 완결: 이미 터미널로 전이됐거나 리포트 상태가 이탈한 행은 선점 자체를 차단
       .andWhere('status = :wait', { wait: IOrderDeliveryStatus.WAIT })
-      .andWhere('report_state = :pending', { pending: IOrderDeliveryReportState.PENDING })
+      .andWhere('(mutation_claimed_at IS NULL OR mutation_claimed_at < :mutationStale)', { mutationStale })
+      .andWhere('(coupon_status IS NULL OR coupon_status NOT IN (:...blockedCouponStatuses))', {
+        blockedCouponStatuses: [OrderDeliveryCouponStatus.CANCEL, OrderDeliveryCouponStatus.REFUND_CANCEL],
+      })
       .execute();
 
-    if ((preempt.affected ?? 0) === 0) {
-      // 이미 선점됨/소유권 상실 → recovery (재전송 안 함)
-      await this.recoverStuckFallback(od, token);
+    if ((leaseGate.affected ?? 0) === 0) {
+      this.logger.error(`[REPORT_SWEEP][R1] SMS 폴백 중단 — 폐기·환불됐거나 다른 처리가 진행 중인 건. od=${od.id}`);
+      od.reportState = IOrderDeliveryReportState.UNCONFIRMED;
+      this.releaseReportClaim(od);
+      await this.persistReportState(od, token);
       return;
     }
-    od.reportFallbackAttemptCount = 1;
 
-    let smsOk = false;
     try {
-      await this.csResendAsMms(od.id);
-      smsOk = true;
-    } catch (error) {
-      this.logger.error(`[REPORT_SWEEP][R1] SMS 폴백 실패 od=${od.id}: ${error}`);
-    }
+      const preempt = await this.orderDeliveryRepository
+        .createQueryBuilder()
+        .update(OrderDeliveryEntity)
+        .set({ reportFallbackAttemptCount: 1 })
+        .where('id = :id', { id: od.id })
+        .andWhere('report_fallback_attempt_count = 0')
+        .andWhere('report_owner_token = :token', { token })
+        // SMS(외부호출) 직전 fencing 완결: 이미 터미널로 전이됐거나 리포트 상태가 이탈한 행은 선점 자체를 차단
+        .andWhere('status = :wait', { wait: IOrderDeliveryStatus.WAIT })
+        .andWhere('report_state = :pending', { pending: IOrderDeliveryReportState.PENDING })
+        .execute();
 
-    od.reportState = IOrderDeliveryReportState.UNCONFIRMED;
-    this.releaseReportClaim(od);
-
-    if (smsOk) {
-      this.markSendSuccess(od, IOrderDeliveryStatus.COMPLETE_SMS);
-      // 소유권 보유 시에만 종결/정산 (lease 회전 시 stale worker 의 이력 정정·이중 정산 방지)
-      if (await this.persistReportState(od, token)) {
-        await this.correctSendHistory(od.id, true, { fallback: 'COMPLETE_SMS' });
-        await this.markOrderTerminalAndSettle(od.orderProductMapping.order.id);
+      if ((preempt.affected ?? 0) === 0) {
+        // 이미 선점됨/소유권 상실 → recovery (재전송 안 함)
+        await this.recoverStuckFallback(od, token);
+        return;
       }
-    } else {
-      await this.finalizeReportFail(od, token);
+      od.reportFallbackAttemptCount = 1;
+
+      let smsOk = false;
+      try {
+        await this.csResendAsMms(od.id);
+        smsOk = true;
+      } catch (error) {
+        this.logger.error(`[REPORT_SWEEP][R1] SMS 폴백 실패 od=${od.id}: ${error}`);
+      }
+
+      od.reportState = IOrderDeliveryReportState.UNCONFIRMED;
+      this.releaseReportClaim(od);
+
+      if (smsOk) {
+        this.markSendSuccess(od, IOrderDeliveryStatus.COMPLETE_SMS);
+        // 소유권 보유 시에만 종결/정산 (lease 회전 시 stale worker 의 이력 정정·이중 정산 방지)
+        if (await this.persistReportState(od, token)) {
+          await this.correctSendHistory(od.id, true, { fallback: 'COMPLETE_SMS' });
+          await this.markOrderTerminalAndSettle(od.orderProductMapping.order.id);
+        }
+      } else {
+        await this.finalizeReportFail(od, token);
+      }
+    } finally {
+      // 변형 lease 해제 — 자기 토큰으로만. 실패는 삼킨다(5분 stale self-heal).
+      try {
+        await this.orderDeliveryRepository.update(
+          { id: od.id, mutationClaimedAt: mutationClaimAt },
+          { mutationClaimedAt: null },
+        );
+      } catch (releaseError) {
+        this.logger.error(`[REPORT_SWEEP][R1] 변형 lease 해제 실패 od=${od.id}, error: ${releaseError}`);
+      }
     }
   }
 
