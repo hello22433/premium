@@ -2246,45 +2246,6 @@ export class CustomerServiceService {
             throw issueError;
           }
 
-          // 폐기 후 신규발송: 새 쿠폰이므로 유효기간 새로 계산 (SSG는 issue() 내부에서 expireAt 채움 → 제외)
-          //
-          // save(fullDelivery) 금지: fullDelivery 는 issue() 전에 로드한 스냅샷이라
-          // couponStatus/discardedAt 이 로드 시점 값으로 굳어 있다. issue() 는 외부 통신이라 수 초가 걸리고,
-          // 그 사이 폐기(execDiscard)·외부 취소(cancelOrder)가 같은 행에 CANCEL 을 쓸 수 있다.
-          // save 는 행 전체를 쓰므로 그 CANCEL 을 stale 값으로 되돌려 "환불됐는데 살아있는 핀" 을 만든다.
-          // 발급 결과(barCode/personalCode/couponNum/ssgTransactionId)는 issue() 가 이미 targeted update 로
-          // 반영했으므로(partner.company.extern.service.ts) 여기서는 재계산한 유효기간만 쓴다.
-          if (fullDelivery.orderProductMapping.order.type !== IOrderType.SSG) {
-            const opm = fullDelivery.orderProductMapping;
-            const expireDays = resolveExpireDays(
-              opm.galaxiaDuration ?? opm.product.galaxiaDuration,
-              opm.product.expireDay,
-              opm.product.partnerCompany?.validityStartsNextDay,
-            );
-            fullDelivery.expireAt = addDays(new Date(), expireDays);
-            if (opm.encourageDay) {
-              fullDelivery.encourageAt = subDays(fullDelivery.expireAt, opm.encourageDay);
-            }
-
-            // fencing: 내 lease 일 때만 기록. stale 강탈(좀비화) 시 affected=0 — 남의 결정을 덮지 않는다.
-            const expiryWrite = await this.orderDeliveryRepository.update(
-              { id: fullDelivery.id, mutationClaimedAt: mutationClaimAt },
-              { expireAt: fullDelivery.expireAt, encourageAt: fullDelivery.encourageAt },
-            );
-            if (!expiryWrite.affected) {
-              // affected=0 = lease 를 빼앗겼다 = **다른 폐기/취소가 지금 이 tip 을 죽이고 있다**.
-              // 아직 발송 전이므로 여기서 멈추는 것이 가장 싸다. 로그만 찍고 진행하면
-              // 협력사에서 취소·환불된 핀을 고객에게 문자로 배달한다 — 이 작업이 막으려던 사고다.
-              // (부수: expireAt/encourageAt 이 영구 NULL 로 남아 만료 배치·취소 만료가드도 오작동)
-              this.logger.error(
-                `[폐기후신규발송] 변형 lease 상실(다른 처리가 선점) — 발송 중단. orderDeliveryId=${fullDelivery.id}`,
-              );
-              throw new InternalServerErrorException(
-                '처리 중 다른 작업이 이 발송 건을 선점했습니다. 발송실패내역에서 상태를 확인해 주세요.',
-              );
-            }
-          }
-
           // HIGH-2: issue() 성공 후 barCode 없음 — SSG 는 outcome 으로 분기, 비SSG 는 단순 throw
           if (!fullDelivery.barCode) {
             if (isSsg && reissueEvent && resendDeductionId) {
@@ -2327,7 +2288,56 @@ export class CustomerServiceService {
           // Wallet Cutover — wallet-managed 면 원본 delivery 의 allocation_line/attempt 를 신규 delivery 로 승계한다.
           // 미승계 시 이후 신규 delivery 폐기에서 attempt/line 부재로 환불이 drift abort 된다.
           // SSG·비-SSG 공통(고객 wallet 결제는 SSG 여부와 무관 — 상세는 carryWalletOwnershipToReissuedDelivery JSDoc).
+          //
+          // ★ 아래 유효기간 fencing 보다 **앞**이어야 한다 (리뷰 HIGH).
+          //   fencing 이 lease 상실로 throw 하면 tip 은 status=WAIT + barCode(발급·과금 완료) 로
+          //   남아 배치가 그대로 고객에게 발송한다. 그때 wallet 이 미승계면 이후 그 쿠폰을 폐기해도
+          //   attempt/line 부재로 환불이 drift abort 된다 — 돈이 고객에게도, 우리에게도 없는 상태.
+          //   반대로 barCode 검사(=unwind 경로)보다는 **뒤**여야 한다. unwind 는 tip 을 softDelete
+          //   하는데, 그 tip 으로 wallet 을 옮겨 두면 원본의 환불 근거가 사라진다.
           await this.carryWalletOwnershipToReissuedDelivery(reissueOrderId, discardedDelivery.id, savedDelivery.id);
+
+          // 폐기 후 신규발송: 새 쿠폰이므로 유효기간 새로 계산 (SSG는 issue() 내부에서 expireAt 채움 → 제외)
+          //
+          // save(fullDelivery) 금지: fullDelivery 는 issue() 전에 로드한 스냅샷이라
+          // couponStatus/discardedAt 이 로드 시점 값으로 굳어 있다. issue() 는 외부 통신이라 수 초가 걸리고,
+          // 그 사이 폐기(execDiscard)·외부 취소(cancelOrder)가 같은 행에 CANCEL 을 쓸 수 있다.
+          // save 는 행 전체를 쓰므로 그 CANCEL 을 stale 값으로 되돌려 "환불됐는데 살아있는 핀" 을 만든다.
+          // 발급 결과(barCode/personalCode/couponNum/ssgTransactionId)는 issue() 가 이미 targeted update 로
+          // 반영했으므로(partner.company.extern.service.ts) 여기서는 재계산한 유효기간만 쓴다.
+          if (fullDelivery.orderProductMapping.order.type !== IOrderType.SSG) {
+            const opm = fullDelivery.orderProductMapping;
+            const expireDays = resolveExpireDays(
+              opm.galaxiaDuration ?? opm.product.galaxiaDuration,
+              opm.product.expireDay,
+              opm.product.partnerCompany?.validityStartsNextDay,
+            );
+            fullDelivery.expireAt = addDays(new Date(), expireDays);
+            if (opm.encourageDay) {
+              fullDelivery.encourageAt = subDays(fullDelivery.expireAt, opm.encourageDay);
+            }
+
+            // fencing: 내 lease 일 때만 기록. stale 강탈(좀비화) 시 affected=0 — 남의 결정을 덮지 않는다.
+            const expiryWrite = await this.orderDeliveryRepository.update(
+              { id: fullDelivery.id, mutationClaimedAt: mutationClaimAt },
+              { expireAt: fullDelivery.expireAt, encourageAt: fullDelivery.encourageAt },
+            );
+            if (!expiryWrite.affected) {
+              // affected=0 = lease 를 빼앗겼다 = 다른 액터가 지금 이 tip 을 만지고 있다.
+              // 여기서 우리가 발송하지는 않는다(죽은 핀 배달 방지). 다만 **발송이 취소된 것은 아니다** —
+              // tip 은 status=WAIT + barCode 로 남아, 탈취자가 폐기/취소면 coupon_status=CANCEL 가드에
+              // 걸려 배치가 거르고, 탈취자가 배치면 배치가 이어서 발송한다. 그래서 메시지는
+              // "실패" 가 아니라 "자동 발송 가능 + 운영 확인" 이어야 한다.
+              // (부수: expireAt/encourageAt 이 NULL 로 남아 만료 배치·취소 만료가드가 오작동)
+              this.logger.error(
+                `[폐기후신규발송] 변형 lease 상실(다른 처리가 선점) — 발송 중단. orderDeliveryId=${fullDelivery.id}`,
+              );
+              throw new InternalServerErrorException(
+                `처리 중 다른 작업이 이 발송 건을 선점했습니다. 해당 건이 자동 발송될 수 있으니 ` +
+                  `재시도하지 마시고 운영팀에 확인해 주세요. (발송건 ${fullDelivery.id})`,
+              );
+            }
+          }
 
           const newPin = fullDelivery.barCode;
           afterChange = `${normalizedTarget} / ${newPin}`;
@@ -2339,8 +2349,10 @@ export class CustomerServiceService {
             this.logger.error(
               `[폐기후신규발송] 발송 직전 변형 lease 상실(다른 처리가 선점) — 발송 중단. orderDeliveryId=${fullDelivery.id}`,
             );
+            // 위 유효기간 fencing 과 동일 — tip 은 WAIT 로 남아 발송실패내역에 뜨지 않는다.
             throw new InternalServerErrorException(
-              '처리 중 다른 작업이 이 발송 건을 선점했습니다. 발송실패내역에서 상태를 확인해 주세요.',
+              `처리 중 다른 작업이 이 발송 건을 선점했습니다. 해당 건이 자동 발송될 수 있으니 ` +
+                `재시도하지 마시고 운영팀에 확인해 주세요. (발송건 ${fullDelivery.id})`,
             );
           }
 

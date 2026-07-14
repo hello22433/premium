@@ -623,6 +623,28 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
     });
 
     /**
+     * ★ wallet 승계는 유효기간 fencing **앞**이어야 한다 (리뷰 HIGH).
+     *
+     * fencing 이 lease 상실로 throw 하면 우리는 발송하지 않지만 tip 은 사라지지 않는다.
+     * status=WAIT + barCode(협력사에서 이미 발급·과금) 로 남아, 탈취자가 배치면 배치가 그대로
+     * 고객에게 발송한다. 그 시점에 wallet 이 미승계면 allocation_line/attempt 가 원본을 가리켜
+     * 이후 그 쿠폰을 폐기해도 환불이 drift abort 된다 — 고객은 쿠폰을 잃고 환불도 못 받는다.
+     *
+     * (단 barCode 검사보다는 뒤여야 한다. 그 경로는 unwind 가 tip 을 softDelete 하므로 wallet 을
+     *  옮겨 두면 원본의 환불 근거가 사라진다.)
+     */
+    it('26) fencing 으로 중단하더라도 wallet 승계는 이미 끝나 있다 (배치가 tip 을 발송할 수 있으므로)', async () => {
+      setupExecDiscard();
+      orderDeliveryRepository.findOne.mockResolvedValue(buildFullDelivery(IOrderType.GENERAL, null));
+      const carry = jest.spyOn(service as any, 'carryWalletOwnershipToReissuedDelivery').mockResolvedValue(undefined);
+      orderDeliveryRepository.update.mockResolvedValue({ affected: 0 });
+
+      await expect(service.execHistory(buildMap(IOrderType.GENERAL))).rejects.toThrow(/다른 작업이 이 발송 건을 선점/);
+
+      expect(carry).toHaveBeenCalled();
+    });
+
+    /**
      * SSG 는 유효기간 fenced update 분기를 타지 않으므로(issue() 가 expireAt 을 채움) 검사 지점이
      * 없었다. 발송 직전 lease 소유 재확인이 그 공백을 메운다.
      */
