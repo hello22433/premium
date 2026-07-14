@@ -2364,7 +2364,32 @@ export class CustomerServiceService {
           //   attempt/line 부재로 환불이 drift abort 된다 — 돈이 고객에게도, 우리에게도 없는 상태.
           //   반대로 barCode 검사(=unwind 경로)보다는 **뒤**여야 한다. unwind 는 tip 을 softDelete
           //   하는데, 그 tip 으로 wallet 을 옮겨 두면 원본의 환불 근거가 사라진다.
-          await this.carryWalletOwnershipToReissuedDelivery(reissueOrderId, discardedDelivery.id, savedDelivery.id);
+          //
+          // ★ 이 함수 자신이 throw 하는 경우도 막아야 한다 (리뷰 HIGH).
+          //   그냥 전파시키면 finally 가 lease 를 반납하고, tip 은 status=WAIT + barCode(발급·과금
+          //   완료) + claimed_at=NULL + coupon_status=NOT_USED + lease 없음 으로 남아
+          //   claimWaitDeliveries 를 **전부 통과**한다 → 배치가 5분 안에 고객에게 발송한다.
+          //   그런데 wallet 은 미승계라(그래서 여기 온 것) 이후 그 쿠폰을 폐기해도 환불이 drift
+          //   abort 된다 — 고객은 쿠폰을 잃고 환불도 못 받는다.
+          //   아직 lease 를 쥐고 있으니 tip 을 fenced 로 무력화해 배치 픽업을 끊는다.
+          try {
+            await this.carryWalletOwnershipToReissuedDelivery(reissueOrderId, discardedDelivery.id, savedDelivery.id);
+          } catch (carryErr) {
+            const kill = await this.orderDeliveryRepository.update(
+              { id: savedDelivery.id, mutationClaimedAt: mutationClaimAt },
+              { status: IOrderDeliveryStatus.CANCEL, couponStatus: OrderDeliveryCouponStatus.CANCEL },
+            );
+            this.logger.error(
+              `[폐기후신규발송] wallet 승계 실패 — tip 무력화 ${kill.affected ? '성공' : '실패(배치가 발송할 수 있다)'}. ` +
+                `발급된 PIN 은 협력사에서 살아있다(과금됨). 원본은 폐기 상태로 남는다. 운영 확인 필요. ` +
+                `orderDeliveryId=${savedDelivery.id}`,
+              carryErr,
+            );
+            throw new InternalServerErrorException(
+              `신규 PIN 은 발급됐으나 결제 정보 승계에 실패해 발송을 중단했습니다. ` +
+                `재시도하지 마시고 운영팀에 문의해 주세요. (발송건 ${savedDelivery.id})`,
+            );
+          }
 
           // 폐기 후 신규발송: 새 쿠폰이므로 유효기간 새로 계산 (SSG는 issue() 내부에서 expireAt 채움 → 제외)
           //
@@ -2401,7 +2426,10 @@ export class CustomerServiceService {
               this.logger.error(
                 `[폐기후신규발송] 변형 lease 상실(다른 처리가 선점) — 발송 중단. orderDeliveryId=${fullDelivery.id}`,
               );
-              throw new InternalServerErrorException(
+              // 409(Conflict) — 진짜 서버 버그(500)와 구분한다. 외부 API 의 3010 과 대칭.
+              // 500 으로 두면 어드민 프론트가 "잠시 후 다시 시도" 로 뭉갤 수 있는데, 이 메시지는
+              // 정확히 그 반대(재시도 금지)를 말한다. 알림/대시보드에서도 5xx 노이즈에 묻힌다.
+              throw new ConflictException(
                 `처리 중 다른 작업이 이 발송 건을 선점했습니다. 해당 건이 자동 발송될 수 있으니 ` +
                   `재시도하지 마시고 운영팀에 확인해 주세요. (발송건 ${fullDelivery.id})`,
               );
@@ -2415,8 +2443,8 @@ export class CustomerServiceService {
             this.logger.error(
               `[폐기후신규발송] 발송 직전 변형 lease 상실(다른 처리가 선점) — 발송 중단. orderDeliveryId=${fullDelivery.id}`,
             );
-            // 위 유효기간 fencing 과 동일 — tip 은 WAIT 로 남아 발송실패내역에 뜨지 않는다.
-            throw new InternalServerErrorException(
+            // 위 유효기간 fencing 과 동일 — tip 은 WAIT 로 남아 발송실패내역에 뜨지 않는다. 409.
+            throw new ConflictException(
               `처리 중 다른 작업이 이 발송 건을 선점했습니다. 해당 건이 자동 발송될 수 있으니 ` +
                 `재시도하지 마시고 운영팀에 확인해 주세요. (발송건 ${fullDelivery.id})`,
             );
@@ -2509,7 +2537,8 @@ export class CustomerServiceService {
           //   외부 API resendOrder 는 같은 상황에서 3010 을 던진다 — 내부만 성공을 주장할 이유가 없다.
           //   history 는 위에서 이미 남겼으므로(발급된 PIN 추적 가능) 여기서 던져도 이력은 보존된다.
           if (leaseLostAfterSend) {
-            throw new InternalServerErrorException(
+            // 409 — 외부 API resendOrder 의 3010 과 대칭.
+            throw new ConflictException(
               `신규 PIN ${newPin}이(가) 발송되었으나, 그 사이 다른 처리가 이 발송 건을 선점했습니다. ` +
                 `쿠폰이 취소·환불되었을 수 있으니 운영팀에 확인해 주세요. (발송건 ${savedDelivery.id})`,
             );

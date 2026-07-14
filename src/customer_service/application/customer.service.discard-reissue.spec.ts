@@ -683,6 +683,32 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
     });
 
     /**
+     * ★ carryWallet 자신이 throw 하면 tip 을 무력화해야 한다 (리뷰 HIGH).
+     *
+     * 그냥 전파시키면 finally 가 lease 를 반납하고, tip 은 status=WAIT + barCode(발급·과금 완료)
+     * + claimed_at=NULL + coupon_status=NOT_USED + lease 없음 으로 남아 claimWaitDeliveries 를
+     * **전부 통과**한다 → 배치가 고객에게 발송한다. 그런데 wallet 은 미승계라(그래서 여기 온 것)
+     * 이후 그 쿠폰을 폐기해도 환불이 drift abort 된다 — 고객은 쿠폰을 잃고 환불도 못 받는다.
+     */
+    it('28) wallet 승계 실패 → tip 을 fenced 무력화하고 중단 (배치 자동 발송 차단)', async () => {
+      setupExecDiscard();
+      orderDeliveryRepository.findOne.mockResolvedValue(buildFullDelivery(IOrderType.GENERAL, null));
+      jest
+        .spyOn(service as any, 'carryWalletOwnershipToReissuedDelivery')
+        .mockRejectedValue(new Error('wallet-managed 인데 allocation 없음'));
+
+      await expect(service.execHistory(buildMap(IOrderType.GENERAL))).rejects.toThrow(/결제 정보 승계에 실패/);
+
+      // tip(8001) 을 CANCEL 로 무력화했는가 — 안 하면 배치가 집어 발송한다
+      const kill = (orderDeliveryRepository.update.mock.calls as unknown as any[][]).find(
+        (c) => c[0]?.id === 8001 && c[1]?.couponStatus === OrderDeliveryCouponStatus.CANCEL,
+      );
+      expect(kill).toBeDefined();
+      expect(kill![0]).toHaveProperty('mutationClaimedAt'); // fenced — 내 lease 일 때만
+      expect(deliveryBatchService.csResendAsSms).not.toHaveBeenCalled();
+    });
+
+    /**
      * ★ 이력은 발송 **전**, PIN 확정 즉시 남긴다 (리뷰 MEDIUM).
      *
      * lease 상실 throw 들은 "발송이 안 됐다" 는 뜻이 아니다 — tip 은 status=WAIT + barCode 로
