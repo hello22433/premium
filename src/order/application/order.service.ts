@@ -140,7 +140,7 @@ import { IProductType } from '../../product/interface/product.type';
 import { defaultOrderMidImagePath, defaultOrderTopImagePath } from '../../const';
 import { OrderStatusExcelMapping } from '../domain/order.excel.mapping';
 import { OrderFeeCalculator, applyCardSurcharge } from '../domain/order.fee.calculator';
-import { calculateOrderSettlementAmount, calculateMappingSettlementBaseAmount } from '../../util/settle-fee.util';
+import { calculateOrderSettlementAmount, buildSettlementDisplayLines } from '../../util/settle-fee.util';
 import { OrderCustomerViewDto } from '../api/dto/order.customer.view.dto';
 import { MaskingUtil } from '../../common/utils/masking.util';
 import { resolveExpireDays } from '../../common/utils/expire.util';
@@ -236,6 +236,30 @@ function resolveSettleFee(
     };
   }
   return { fee: 0, priceAdjustment: null, settleDiscountType: mapping.settleDiscountType };
+}
+
+/**
+ * 거래명세서(단건/다중 공통) 품목 행 구성.
+ *
+ * D3-49 리뷰 B안: 차등정산(SSG 중복할인) 매핑은 요율 적용 단가별로 행을 분리한다(상세 화면과 동일 구성).
+ * 모든 행의 단가가 실존값이라 unitPrice * quantity === price 가 항상 성립한다(평균단가 근사 제거).
+ * 균일 요율 매핑은 기존처럼 단일 행이며, 분리된 행들은 같은 매핑 id 를 공유한다.
+ * 행별 일자(sendRequestAt)는 단건/다중(증빙일자)의 규칙이 달라 호출부에서 계산해 넘긴다.
+ */
+function buildOrderCompleteReportRows(
+  mapping: OrderProductMappingEntity,
+  sendRequestAt: string | null,
+): OrderCompleteReportDeliveryViewDto[] {
+  const lineView = readLineProductView(mapping);
+
+  return buildSettlementDisplayLines(mapping).map((line) => ({
+    id: mapping.id, // orderProductMapping id 사용
+    sendRequestAt,
+    productName: lineView.name,
+    quantity: line.amount, // 수량
+    unitPrice: line.price, // 할인/할증 적용된 실제 단가(행 내 균일)
+    price: line.price * line.amount, // 공급가액 (단가 * 수량)
+  }));
 }
 
 type OrderSearchType = 'ALL' | 'CUSTOMER' | 'MANAGER' | 'OPERATION_ADMIN' | 'EVENT' | 'PRODUCT';
@@ -1621,27 +1645,15 @@ export class OrderService {
 
     if (order.orderProductMappings && order.orderProductMappings.length > 0) {
       for (const orderProductMapping of order.orderProductMappings) {
-        const lineView = readLineProductView(orderProductMapping);
-        const quantity = orderProductMapping.amount ?? 0;
-
-        // D3-49 축3: 발송건별 settleFee(SSG 차등정산) 반영해 실제 차감과 동일. 라인총액(=실제 청구 공급가)이 정확값.
-        const lineTotal = calculateMappingSettlementBaseAmount(orderProductMapping);
-        // 표시 단가는 라인총액/수량 평균(차등정산 시 단가가 균일하지 않음).
-        const adjustedPrice = quantity > 0 ? Math.round(lineTotal / quantity) : lineTotal;
-
-        const total = lineTotal;
-        price += total;
-
-        // 상품별로 한 줄만 추가 (첫 번째 orderDelivery의 발송 시각 사용)
+        // 품목별 일자: 첫 번째 orderDelivery 의 발송 시각 사용
         const firstDelivery = orderProductMapping.orderDeliveries?.[0];
-        orderDeliveryList.push({
-          id: orderProductMapping.id, // orderProductMapping id 사용
-          sendRequestAt: firstDelivery?.sendRequestAt ? format(firstDelivery.sendRequestAt, DateFormatStr) : null,
-          productName: lineView.name,
-          quantity, // 수량
-          unitPrice: adjustedPrice, // 할인/할증 적용된 단가
-          price: total, // 공급가액 (단가 * 수량)
-        });
+        const itemSendRequestAt = firstDelivery?.sendRequestAt
+          ? format(firstDelivery.sendRequestAt, DateFormatStr)
+          : null;
+
+        const rows = buildOrderCompleteReportRows(orderProductMapping, itemSendRequestAt);
+        orderDeliveryList.push(...rows);
+        price += rows.reduce((sum, row) => sum + row.price, 0);
       }
 
       totalAmount = price + vat;
@@ -2075,17 +2087,6 @@ export class OrderService {
     for (const order of orders) {
       if (order.orderProductMappings && order.orderProductMappings.length > 0) {
         for (const orderProductMapping of order.orderProductMappings) {
-          const lineView = readLineProductView(orderProductMapping);
-          const quantity = orderProductMapping.amount ?? 0;
-
-          // D3-49 축3: 발송건별 settleFee(SSG 차등정산) 반영해 실제 차감과 동일. 라인총액이 정확값.
-          const lineTotal = calculateMappingSettlementBaseAmount(orderProductMapping);
-          // 표시 단가는 라인총액/수량 평균(차등정산 시 단가가 균일하지 않음).
-          const adjustedPrice = quantity > 0 ? Math.round(lineTotal / quantity) : lineTotal;
-
-          const total = lineTotal;
-          price += total;
-
           const firstDelivery = orderProductMapping.orderDeliveries?.[0];
           // 증빙일자가 없고 sendRequestAt도 없으면 첫 배송의 발송요청일 사용
           if (!sendRequestAt && firstDelivery?.sendRequestAt) {
@@ -2099,14 +2100,9 @@ export class OrderService {
               ? format(firstDelivery.sendRequestAt, DateFormatStr)
               : null;
 
-          orderDeliveryList.push({
-            id: orderProductMapping.id,
-            sendRequestAt: itemSendRequestAt,
-            productName: lineView.name,
-            quantity,
-            unitPrice: adjustedPrice,
-            price: total,
-          });
+          const rows = buildOrderCompleteReportRows(orderProductMapping, itemSendRequestAt);
+          orderDeliveryList.push(...rows);
+          price += rows.reduce((sum, row) => sum + row.price, 0);
         }
       }
     }
