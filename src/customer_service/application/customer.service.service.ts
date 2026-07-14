@@ -85,7 +85,10 @@ import { CouponViewLogEntity } from '../../entity/coupon.view.log.entity';
 import { CouponViewLogResDto } from '../api/dto/customer.service.coupon.view.log.dto';
 import { calculateSettlementPrice } from '../../util/settle-fee.util';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
-import { MUTATION_CLAIM_STALE_MS } from '../../delivery/interface/order.delivery.mutation.claim';
+import {
+  MUTATION_CLAIM_STALE_MS,
+  UNSENDABLE_COUPON_STATUSES,
+} from '../../delivery/interface/order.delivery.mutation.claim';
 import { randomUUID } from 'crypto';
 import { Response } from 'express';
 import * as ExcelJS from 'exceljs';
@@ -1016,6 +1019,14 @@ export class CustomerServiceService {
       throw new BadRequestException('파기된 발송 정보입니다.');
     }
 
+    // 폐기·환불된 쿠폰은 재발송하지 않는다 — 협력사에서 이미 죽은 핀이다.
+    // status(COMPLETE/FAIL)와 coupon_status(NOT_USED/CANCEL)는 별개 축이라, 발송 뒤 폐기된 행은
+    // status=COMPLETE + coupon_status=CANCEL 로 남아 위 status 필터를 그대로 통과한다.
+    // 이 사전검사는 안내 문구용이고, 경합 차단은 아래 claim CAS 의 coupon_status 술어가 한다.
+    if (target.couponStatus && UNSENDABLE_COUPON_STATUSES.includes(target.couponStatus)) {
+      throw new BadRequestException('폐기·환불된 쿠폰은 재발송할 수 없습니다.');
+    }
+
     // 2. 원자적 claim (owner 토큰 = app 생성 claimAt). 동시 재발송 직렬화 + 5분 self-heal.
     //    변형 lease(mutation_claimed_at)도 같은 CAS 로 함께 **획득**한다 (D3-55 후속).
     //    - WHERE 로 읽기만 하면 확인과 점유 사이에 폐기/외부취소가 진입해, 발송(수 초) 도중 협력사
@@ -1033,6 +1044,10 @@ export class CustomerServiceService {
       .andWhere('status IN (:...statuses)', { statuses })
       .andWhere('(claimedAt IS NULL OR claimedAt < :stale)', { stale: staleThreshold })
       .andWhere('(mutation_claimed_at IS NULL OR mutation_claimed_at < :mutationStale)', { mutationStale })
+      // 위 사전검사와 검사~claim 사이의 경합까지 닫는다(그 창에 폐기가 들어오면 여기서 affected=0).
+      .andWhere('(coupon_status IS NULL OR coupon_status NOT IN (:...unsendable))', {
+        unsendable: UNSENDABLE_COUPON_STATUSES,
+      })
       .execute();
     if (!claimResult.affected) {
       throw new ConflictException('재발송 처리 중이거나 상태가 변경되었습니다. 잠시 후 다시 시도해주세요.');
@@ -1047,7 +1062,15 @@ export class CustomerServiceService {
       }
       await this.deliveryBatchService.oneSend(orderDelivery);
     } finally {
-      await this.orderDeliveryRepository.update({ id: orderDeliveryId, claimedAt: claimAt }, { claimedAt: null });
+      // claimedAt 해제가 던져도 변형 lease 는 반드시 푼다. 안 풀면 최대 5분간 이 건의
+      // 폐기·외부취소·재발행이 전부 거절된다(둘은 별개 컬럼이라 한쪽 실패가 다른 쪽을 막으면 안 된다).
+      try {
+        await this.orderDeliveryRepository.update({ id: orderDeliveryId, claimedAt: claimAt }, { claimedAt: null });
+      } catch (releaseError) {
+        this.logger.error(
+          `[CS_RESEND] claimedAt 해제 실패 — orderDeliveryId=${orderDeliveryId}, error: ${releaseError}`,
+        );
+      }
       await this.releaseMutationLease(orderDeliveryId, claimAt);
     }
   }

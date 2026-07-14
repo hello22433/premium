@@ -1,5 +1,6 @@
 import { BadRequestException, ConflictException } from '@nestjs/common';
 import { CustomerServiceService } from './customer.service.service';
+import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
 
 /**
  * CS 재전송(reSend) self-heal claim 회귀 테스트. (ralplan G001 / AC4·AC5-i)
@@ -20,11 +21,13 @@ describe('CustomerServiceService — reSend self-heal claim', () => {
   let deliveryBatchService: any;
   let qb: any;
 
-  const buildTarget = () =>
+  const buildTarget = (overrides: Record<string, any> = {}) =>
     ({
       id: ORDER_DELIVERY_ID,
       deliveryTarget: 'ENC_TARGET',
+      couponStatus: OrderDeliveryCouponStatus.NOT_USED,
       orderProductMapping: { product: { type: 'GENERAL' } },
+      ...overrides,
     }) as any;
 
   /** createQueryBuilder 가 반환하는 체이너블 mock — select(buildReSendQuery)·update(claim) 양쪽 체인 지원. */
@@ -197,6 +200,40 @@ describe('CustomerServiceService — reSend self-heal claim', () => {
       await expect(service.reSend(user, { orderDeliveryId: ORDER_DELIVERY_ID })).rejects.toThrow('send boom');
 
       expect(leaseReleases()).toHaveLength(1);
+    });
+
+    /**
+     * status 와 coupon_status 는 별개 축이다. 폐기(execDiscard)는 coupon_status 만 CANCEL 로 쓰고
+     * status 는 건드리지 않으므로, 발송 뒤 폐기된 건은 status=COMPLETE + coupon_status=CANCEL 로
+     * 남아 reSend 의 status 필터(COMPLETE/FAIL/...)를 그대로 통과한다 → 죽은 핀을 재발송한다.
+     *
+     * 사전검사는 안내 문구용이고, 검사~claim 사이의 경합은 CAS 술어가 닫는다. 둘 다 필요하다.
+     */
+    it('폐기·환불된 쿠폰은 사전검사에서 거절한다 (status 필터만으로는 통과한다)', async () => {
+      qb.getOne.mockResolvedValueOnce(buildTarget({ couponStatus: OrderDeliveryCouponStatus.CANCEL }));
+
+      await expect(service.reSend(user, { orderDeliveryId: ORDER_DELIVERY_ID })).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(deliveryBatchService.oneSend).not.toHaveBeenCalled();
+      // claim CAS 자체를 치지 않는다 — 남의 lease 를 건드릴 이유가 없다
+      expect(qb.execute).not.toHaveBeenCalled();
+    });
+
+    it('claim CAS WHERE 에도 coupon_status 술어가 있다 — 검사~claim 사이 경합 차단', async () => {
+      qb.getOne.mockResolvedValueOnce(buildTarget()).mockResolvedValueOnce(buildTarget());
+      qb.execute.mockResolvedValue({ affected: 1 });
+
+      await service.reSend(user, { orderDeliveryId: ORDER_DELIVERY_ID });
+
+      const couponCall = (qb.andWhere.mock.calls as unknown as any[][]).find((c) =>
+        /coupon_status NOT IN/.test(String(c[0])),
+      );
+      expect(couponCall).toBeDefined();
+      expect(couponCall![1].unsendable).toEqual([
+        OrderDeliveryCouponStatus.CANCEL,
+        OrderDeliveryCouponStatus.REFUND_CANCEL,
+      ]);
     });
 
     it('claim 실패(409) 시에는 lease 해제를 시도하지 않는다 — 남의 lease 를 건드리지 않음', async () => {

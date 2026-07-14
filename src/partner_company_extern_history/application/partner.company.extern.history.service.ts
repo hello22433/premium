@@ -28,16 +28,13 @@ import { SsgInsertStateService } from '../../delivery/application/ssg-insert-sta
 import { SsgInsertState } from '../../delivery/interface/ssg.insert.state';
 import { SsgOrphanResolveOutcome } from '../../partner_company_extern/interface/ssg.orphan.resolve';
 import { SsgPinVerdict } from '../../partner_company_extern/interface/ssg.issue';
-import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
-import { MUTATION_CLAIM_STALE_MS } from '../../delivery/interface/order.delivery.mutation.claim';
+import {
+  MUTATION_CLAIM_STALE_MS,
+  UNSENDABLE_COUPON_STATUSES,
+} from '../../delivery/interface/order.delivery.mutation.claim';
 
 // 재발송 가능한 실패 상태 목록
 const RESENDABLE_FAIL_STATUSES = [IOrderDeliveryStatus.FAIL, IOrderDeliveryStatus.FAIL_SMS];
-
-// 재발송해서는 안 되는 쿠폰상태 — 이미 폐기·환불되어 협력사에서 죽은 핀이다.
-// status(WAIT/FAIL/COMPLETE)와 coupon_status(NOT_USED/CANCEL/...)는 별개 축이라
-// status=FAIL 이면서 coupon_status=CANCEL 인 행이 존재한다(발송 실패 후 폐기).
-const UNSENDABLE_COUPON_STATUSES = [OrderDeliveryCouponStatus.CANCEL, OrderDeliveryCouponStatus.REFUND_CANCEL];
 
 // claim self-heal 임계(ms). 크래시로 finally 못 탄 stale claim 만 재claim 허용.
 // claim 게이트(재claim 조건)와 거부 사유 판정(처리중 여부)이 동일 경계를 쓰도록 공유한다.

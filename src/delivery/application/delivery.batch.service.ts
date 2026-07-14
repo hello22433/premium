@@ -37,7 +37,7 @@ import { InjectDataSource } from '@nestjs/typeorm';
 
 import { DeliveryAlimTalk } from '../interface/delivery.alim.talk';
 import { IOrderDeliveryStatus } from '../interface/order.delivery.status';
-import { MUTATION_CLAIM_STALE_MS } from '../interface/order.delivery.mutation.claim';
+import { MUTATION_CLAIM_STALE_MS, UNSENDABLE_COUPON_STATUSES } from '../interface/order.delivery.mutation.claim';
 import { OrderDeliveryCouponStatus } from '../interface/order.delivery.coupon.status';
 import { OrderDeliveryRefundStatusEnum } from '../interface/order.delivery.refund.status.enum';
 import { PII_BEARING_HISTORY_TYPES } from '../../order/interface/order.history.pii.types';
@@ -501,7 +501,7 @@ export class DeliveryBatchService {
       // 폐기(coupon_status=CANCEL)가 status 를 건드리지 않으므로, 어떤 이유로든 WAIT 로 남은
       // 취소 행을 배치가 집어 "환불된 죽은 핀"을 고객에게 발송할 수 있었다 (리뷰 HIGH).
       .andWhere('(coupon_status IS NULL OR coupon_status NOT IN (:...blockedCouponStatuses))', {
-        blockedCouponStatuses: [OrderDeliveryCouponStatus.CANCEL, OrderDeliveryCouponStatus.REFUND_CANCEL],
+        blockedCouponStatuses: UNSENDABLE_COUPON_STATUSES,
       })
       // 비동기 알림톡 PENDING(report_state) 행은 발송 배치 재발송 대상 아님 (reportSweep 소관)
       .andWhere('report_state IS NULL')
@@ -916,7 +916,7 @@ export class DeliveryBatchService {
       .andWhere('status = :wait', { wait: IOrderDeliveryStatus.WAIT })
       .andWhere('(mutation_claimed_at IS NULL OR mutation_claimed_at < :mutationStale)', { mutationStale })
       .andWhere('(coupon_status IS NULL OR coupon_status NOT IN (:...blockedCouponStatuses))', {
-        blockedCouponStatuses: [OrderDeliveryCouponStatus.CANCEL, OrderDeliveryCouponStatus.REFUND_CANCEL],
+        blockedCouponStatuses: UNSENDABLE_COUPON_STATUSES,
       })
       .execute();
 
