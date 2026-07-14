@@ -280,9 +280,7 @@ describe('ExternalApiService.resendOrder atomic slot claim', () => {
 
       await expect(svc.resendOrder(account, 'TR-RESEND', ctx)).rejects.toMatchObject({ code: '3010' });
 
-      const releases = (update.mock.calls as unknown as any[][]).filter(
-        (c) => c[1] && c[1].mutationClaimedAt === null,
-      );
+      const releases = (update.mock.calls as unknown as any[][]).filter((c) => c[1] && c[1].mutationClaimedAt === null);
       expect(releases).toHaveLength(0);
     });
 

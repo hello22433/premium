@@ -2440,15 +2440,24 @@ export class CustomerServiceService {
               { id: savedDelivery.id, mutationClaimedAt: mutationClaimAt },
               { status: IOrderDeliveryStatus.CANCEL, couponStatus: OrderDeliveryCouponStatus.CANCEL },
             );
+            const tipKilled = (kill.affected ?? 0) > 0;
             this.logger.error(
-              `[폐기후신규발송] wallet 승계 실패 — tip 무력화 ${kill.affected ? '성공' : '실패(배치가 발송할 수 있다)'}. ` +
+              `[폐기후신규발송] wallet 승계 실패 — tip 무력화 ${tipKilled ? '성공' : '실패(배치가 발송할 수 있다)'}. ` +
                 `발급된 PIN 은 협력사에서 살아있다(과금됨). 원본은 폐기 상태로 남는다. 운영 확인 필요. ` +
                 `orderDeliveryId=${savedDelivery.id}`,
               carryErr,
             );
+            // ★ 메시지도 kill 결과로 갈라야 한다 (리뷰 HIGH).
+            //   무력화 실패(lease 상실)면 배치가 그 tip 을 발송한다 — "발송을 중단했습니다" 는
+            //   정확히 반대다. 운영자가 "안 나갔구나" 하고 고객에게 미발송 안내를 하는 사이
+            //   쿠폰이 배달되고, 그 쿠폰은 wallet 미승계라 나중에 폐기해도 환불이 안 된다.
             throw new InternalServerErrorException(
-              `신규 PIN 은 발급됐으나 결제 정보 승계에 실패해 발송을 중단했습니다. ` +
-                `재시도하지 마시고 운영팀에 문의해 주세요. (발송건 ${savedDelivery.id})`,
+              tipKilled
+                ? `신규 PIN 은 발급됐으나 결제 정보 승계에 실패해 발송을 중단했습니다. ` +
+                    `재시도하지 마시고 운영팀에 문의해 주세요. (발송건 ${savedDelivery.id})`
+                : `신규 PIN 이 발급됐고 결제 정보 승계에 실패했습니다. 발송 중단에도 실패해 ` +
+                    `**해당 건이 자동 발송될 수 있습니다.** 발송되면 이후 환불이 불가하니 ` +
+                    `재시도하지 마시고 즉시 운영팀에 문의해 주세요. (발송건 ${savedDelivery.id})`,
             );
           }
 

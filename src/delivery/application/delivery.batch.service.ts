@@ -460,8 +460,35 @@ export class DeliveryBatchService {
 
   /**
    * 비정상 종료로 남은 WAIT 행의 claimedAt 을 해제한다. main.ts 에서 listen() 전 1회 호출.
+   *
+   * ★ 배치가 잡은 변형 lease 도 함께 해제한다 (리뷰 MEDIUM).
+   *   claimWaitDeliveries 는 이제 claimedAt 과 mutationClaimedAt 을 **같은 토큰으로 함께** 세팅한다.
+   *   claimedAt 만 지우면 mutation_claimed_at 이 남아, 재시작 후 최대 5분간
+   *   **그 행의 폐기·외부취소·핀상태변경이 전부 "다른 처리가 진행 중" 으로 거절된다** —
+   *   실제로는 아무것도 안 돌고 있는데. 하필 재시작 = 사고 대응 중인 시점에 사고 대응 액션이 막힌다.
+   *
+   *   `mutation_claimed_at = claimed_at` 조건이 **필수**다. 이게 "배치가 잡은 lease" 의 서명이다.
+   *   조건 없이 지우면 멀티팟에서 **다른 팟이 진행 중인 재발행/폐기의 살아있는 lease** 를 부팅 팟이
+   *   지워버린다(컬럼을 분리한 이유를 정면으로 부순다).
+   *   WAIT + claimed_at IS NOT NULL ⟹ 배치 소유가 성립함을 전수 확인했다:
+   *     - 재발행 tip 은 claimedAt=NULL (lease 만 보유)
+   *     - runReportFallback 은 claimedAt 을 안 쓴다
+   *     - reSend/발송실패내역 재발송은 status 가 WAIT 가 아니다
    */
   async releaseStaleBatchClaims(): Promise<number> {
+    // ① 배치가 잡은 변형 lease 만 먼저 해제한다. claimed_at 을 아직 지우기 전이어야
+    //    `mutation_claimed_at = claimed_at` 서명을 대조할 수 있다(순서 필수).
+    await this.orderDeliveryRepository
+      .createQueryBuilder()
+      .update(OrderDeliveryEntity)
+      .set({ mutationClaimedAt: null })
+      .where('status = :status', { status: IOrderDeliveryStatus.WAIT })
+      .andWhere('claimedAt IS NOT NULL')
+      .andWhere('mutation_claimed_at = claimed_at')
+      .execute();
+
+    // ② claimedAt 해제는 **조건 없이**. ①의 서명 조건을 여기 합치면, 구버전 코드가 claim 해
+    //    mutation_claimed_at 이 NULL 인 행(배포 직전 크래시 잔재)이 영원히 안 풀린다.
     const result = await this.orderDeliveryRepository
       .createQueryBuilder()
       .update(OrderDeliveryEntity)
@@ -932,18 +959,26 @@ export class DeliveryBatchService {
     if ((leaseGate.affected ?? 0) === 0) {
       const fresh = await this.orderDeliveryRepository.findOne({
         where: { id: od.id },
-        select: ['id', 'status', 'couponStatus'],
+        select: ['id', 'status', 'couponStatus', 'mutationClaimedAt', 'reportOwnerToken'],
       });
 
       // (1) 폐기·환불 확정 — **유일하게 정당한 봉인**.
       //     recoverStuckFallback(→ FAIL 확정 + 환불)으로 보내면 폐기가 이미 끝낸 환불과 겹쳐
-      //     이중 환불이 된다. 발송하지 않고 report_state 만 닫는다. status 는 WAIT 로 두지만
-      //     claimWaitDeliveries 의 coupon_status 가드가 배치 재발송도 막으므로 방치돼도 안전하다.
+      //     이중 환불이 된다. 발송하지 않고 닫는다.
       if (fresh?.couponStatus && UNSENDABLE_COUPON_STATUSES.includes(fresh.couponStatus)) {
         this.logger.error(
           `[REPORT_SWEEP][R1] SMS 폴백 중단 — 폐기·환불된 쿠폰(coupon_status=${fresh.couponStatus}). od=${od.id}`,
         );
         od.reportState = IOrderDeliveryReportState.UNCONFIRMED;
+        // ★ status 도 터미널로 전이한다 (리뷰 HIGH).
+        //   WAIT 로 두면 report_state=UNCONFIRMED 와 겹쳐 **아무도 집지 못하는 좀비 행**이 된다:
+        //     reportSweep(PENDING 요구) / claimWaitDeliveries(report_state IS NULL 요구) /
+        //     CS reSend·재전송(COMPLETE·FAIL 요구) / 발송실패내역(FAIL·FAIL_SMS 요구) — 전부 제외.
+        //   markOrderTerminalAndSettle 도 못 타 주문이 영원히 미정산으로 남는다.
+        //   (아래 (3) 분기 주석이 규탄하는 바로 그 상태를 여기서 만들고 있었다.)
+        //   쿠폰은 이미 죽었으므로 CANCEL 이 맞다 — unwindReissue 의 tip kill 과 같은 규약.
+        //   환불은 하지 않는다(폐기가 이미 집행했다 → 이중 환불 방지).
+        od.status = IOrderDeliveryStatus.CANCEL;
         this.releaseReportClaim(od);
         if (!(await this.persistReportState(od, token))) {
           this.logger.error(`[REPORT_SWEEP][R1] UNCONFIRMED 기록도 실패(소유권 상실) — od=${od.id}`);
@@ -960,10 +995,26 @@ export class DeliveryBatchService {
       // (3) 일시적 — 변형 lease 활성(폐기/재발행/CS 재발송 진행중) 또는 report 토큰 회전.
       //     "지금은 못 한다" 를 "영원히 안 한다" 로 만들면 안 된다. PENDING 을 유지한 채
       //     다음 due 로 미뤄 다음 tick 이 재시도하게 둔다(at-most-once 선점은 아직 안 했으므로 안전).
-      this.logger.warn(
-        `[REPORT_SWEEP][R1] SMS 폴백 연기 — 다른 처리가 진행 중(변형 lease 활성/토큰 회전). ` +
-          `다음 tick 재시도. od=${od.id}`,
-      );
+      //
+      //     ★ 두 원인을 구분해 로깅한다 (리뷰 MEDIUM). 완전히 다른 사건이다:
+      //       - lease 활성      = 정상. 곧 해소되거나 5분 stale 로 강탈된다.
+      //       - 토큰 회전       = 동시 sweep 워커 2개 = **설정/배포 이상 신호**.
+      //       - lease 나이가 stale 임계를 넘었는데도 계속 여기로 오면 = **lease 누수**(해제 실패).
+      //     뭉뚱그리면 6개월 뒤 이 WARN 을 보는 사람이 어느 쪽인지 알 수 없다.
+      const leaseAgeMs = fresh?.mutationClaimedAt ? Date.now() - fresh.mutationClaimedAt.getTime() : null;
+      const tokenRotated = !!fresh && fresh.reportOwnerToken !== token;
+      if (leaseAgeMs !== null && leaseAgeMs > MUTATION_CLAIM_STALE_MS) {
+        // stale 인데도 게이트가 실패했다 = 다른 술어 때문이거나 lease 가 누수 중이다.
+        this.logger.error(
+          `[REPORT_SWEEP][R1] SMS 폴백 연기 — lease 가 stale(${Math.round(leaseAgeMs / 1000)}s) 인데도 ` +
+            `게이트 실패. lease 누수 의심. od=${od.id}, tokenRotated=${tokenRotated}`,
+        );
+      } else {
+        this.logger.warn(
+          `[REPORT_SWEEP][R1] SMS 폴백 연기 — ${tokenRotated ? 'report 토큰 회전(동시 워커 의심)' : `변형 lease 활성(${leaseAgeMs === null ? 'n/a' : Math.round(leaseAgeMs / 1000) + 's'})`}. ` +
+            `다음 tick 재시도. od=${od.id}`,
+        );
+      }
       this.releaseReportClaim(od);
       od.reportNextDueAt = new Date(Date.now() + REPORT_NEXT_DUE_MS);
       await this.persistReportState(od, token); // report_state 는 PENDING 유지

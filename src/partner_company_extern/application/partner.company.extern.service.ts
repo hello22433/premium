@@ -1007,8 +1007,21 @@ export class PartnerCompanyExternService {
     const productPartnerType = orderDelivery.orderProductMapping?.product?.partnerCompany?.type;
     const type = choicePartnerType ?? productPartnerType;
 
-    // 핀 미발급 건(barCode 없음): 외부 API에 등록된 PIN이 없으므로 호출 생략
+    // 핀 미발급 건(barCode 없음): 외부 API에 등록된 PIN이 없으므로 호출 생략.
+    //
+    // ★ 이 조기 return 은 이 코드베이스에서 가장 조용한 자금 사고 지점이다 (리뷰 CRITICAL).
+    //   전제는 "barCode 가 없다 = 협력사에 핀이 없다" 인데, 그 전제가 깨지는 경로가 있다:
+    //     - issue() 의 PIN durable update 가 실패/롤백되면 협력사엔 발급·과금됐는데 우리 DB 만 NULL
+    //     - 호출자가 stale 스냅샷(발급 전 값)으로 들어오면 메모리 barCode 가 null
+    //   그 상태로 여기 오면 **협력사 취소를 건너뛴 채 "폐기 완료"를 반환**하고, caller 는
+    //   그대로 환불을 집행한다 → 협력사엔 살아있는 과금된 핀 + 고객은 환불. 완전 무음이었다.
+    //   막지는 못하더라도(진짜 미발급 건도 여기로 온다) **흔적은 반드시 남겨야 한다.**
     if (!orderDelivery.barCode) {
+      this.logger.warn(
+        `[CANCEL_SKIP] barCode 부재로 협력사 취소 생략 — 발급 롤백/스냅샷 stale 이면 협력사에 ` +
+          `살아있는 핀이 남는다(환불은 집행된다). orderDeliveryId=${orderDelivery.id}, ` +
+          `transactionId=${orderDelivery.transactionId}, type=${type ?? 'none'}`,
+      );
       orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
       return {
         code: '',

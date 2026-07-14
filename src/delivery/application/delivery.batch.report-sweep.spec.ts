@@ -222,9 +222,13 @@ describe('DeliveryBatchService — reportSweep / settlement (async alimtalk)', (
         // recovery 로 보내면 FAIL 확정·환불로 이어질 수 있다 — 폐기가 이미 환불했으면 이중 환불
         expect(recoverSpy).not.toHaveBeenCalled();
         expect(service.refundForFail).not.toHaveBeenCalled();
-        // 폐기 확정이므로 봉인이 맞다. status=WAIT 로 남아도 claimWaitDeliveries 의
-        // coupon_status 가드가 배치 재발송을 막으므로 안전하다.
         expect(od.reportState).toBe(IOrderDeliveryReportState.UNCONFIRMED);
+        // ★ status 도 터미널로 전이해야 한다 (리뷰 HIGH).
+        //   WAIT + UNCONFIRMED 로 두면 reportSweep(PENDING 요구) / claimWaitDeliveries
+        //   (report_state IS NULL 요구) / CS reSend·재전송(COMPLETE·FAIL 요구) /
+        //   발송실패내역(FAIL·FAIL_SMS 요구) 이 전부 제외하는 **좀비 행**이 된다.
+        //   markOrderTerminalAndSettle 도 못 타 주문이 영원히 미정산으로 남는다.
+        expect(od.status).toBe(IOrderDeliveryStatus.CANCEL);
         expect(service.persistReportState).toHaveBeenCalled();
       });
 
