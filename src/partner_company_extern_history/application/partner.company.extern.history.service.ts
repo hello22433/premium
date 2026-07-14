@@ -28,9 +28,16 @@ import { SsgInsertStateService } from '../../delivery/application/ssg-insert-sta
 import { SsgInsertState } from '../../delivery/interface/ssg.insert.state';
 import { SsgOrphanResolveOutcome } from '../../partner_company_extern/interface/ssg.orphan.resolve';
 import { SsgPinVerdict } from '../../partner_company_extern/interface/ssg.issue';
+import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
+import { MUTATION_CLAIM_STALE_MS } from '../../delivery/interface/order.delivery.mutation.claim';
 
 // 재발송 가능한 실패 상태 목록
 const RESENDABLE_FAIL_STATUSES = [IOrderDeliveryStatus.FAIL, IOrderDeliveryStatus.FAIL_SMS];
+
+// 재발송해서는 안 되는 쿠폰상태 — 이미 폐기·환불되어 협력사에서 죽은 핀이다.
+// status(WAIT/FAIL/COMPLETE)와 coupon_status(NOT_USED/CANCEL/...)는 별개 축이라
+// status=FAIL 이면서 coupon_status=CANCEL 인 행이 존재한다(발송 실패 후 폐기).
+const UNSENDABLE_COUPON_STATUSES = [OrderDeliveryCouponStatus.CANCEL, OrderDeliveryCouponStatus.REFUND_CANCEL];
 
 // claim self-heal 임계(ms). 크래시로 finally 못 탄 stale claim 만 재claim 허용.
 // claim 게이트(재claim 조건)와 거부 사유 판정(처리중 여부)이 동일 경계를 쓰도록 공유한다.
@@ -383,9 +390,22 @@ export class PartnerCompanyExternHistoryService {
     }
 
     // 4. 원자적 claim (owner 토큰 = app 생성 claimAt). 5분 self-heal: 크래시로 남은 stale claim 만 재claim.
+    //
+    // ★ 변형 lease(mutation_claimed_at) 를 **함께** 획득한다 (D3-55 후속, 리뷰 CRITICAL).
+    //   이 경로는 oneSend() → 외부 통신(PIN 발급 + 문자 발송) 으로 수 초가 걸린다. 그 사이에
+    //   폐기(execDiscard)·외부취소(cancelOrder)·재발행이 같은 행에 진입하면 협력사에서 핀이
+    //   죽고 환불까지 나간 뒤 우리가 그 핀을 고객에게 배달한다. CS 재발행·발송배치·외부 API 는
+    //   이미 이 lease 를 존중하는데 이 경로만 이탈해 있었다 — 심지어 재발행 실패 시 우리가
+    //   운영자에게 안내하는 경로("발송실패내역에서 재발송")가 바로 여기다.
+    //   claimedAt 과 **같은 토큰**을 쓴다(해제도 같은 값으로 owner-guard).
     const claimAt = new Date();
     const staleThreshold = new Date(claimAt.getTime() - RESEND_CLAIM_STALE_MS);
-    const claimSet = { claimedAt: claimAt, ...(newTransactionId && { transactionId: newTransactionId }) };
+    const mutationStale = new Date(claimAt.getTime() - MUTATION_CLAIM_STALE_MS);
+    const claimSet = {
+      claimedAt: claimAt,
+      mutationClaimedAt: claimAt,
+      ...(newTransactionId && { transactionId: newTransactionId }),
+    };
     const claimResult = await this.orderDeliveryRepository
       .createQueryBuilder()
       .update(OrderDeliveryEntity)
@@ -393,6 +413,14 @@ export class PartnerCompanyExternHistoryService {
       .where('id = :id', { id: orderDeliveryId })
       .andWhere('status IN (:...statuses)', { statuses: RESENDABLE_FAIL_STATUSES })
       .andWhere('(claimedAt IS NULL OR claimedAt < :stale)', { stale: staleThreshold })
+      .andWhere('(mutation_claimed_at IS NULL OR mutation_claimed_at < :mutationStale)', { mutationStale })
+      // 이미 폐기·환불된 쿠폰은 재발송하지 않는다(죽은 핀 배달 방지).
+      .andWhere('(coupon_status IS NULL OR coupon_status NOT IN (:...unsendable))', {
+        unsendable: UNSENDABLE_COUPON_STATUSES,
+      })
+      // UpdateQueryBuilder 는 soft-delete 필터를 자동 적용하지 않는다. 재발행 unwind 가
+      // softDelete 한 tip 이 status=FAIL 로 남아 있으면 여기서 되살아나 발송된다.
+      .andWhere('deleted_at IS NULL')
       .execute();
     if (!claimResult.affected) {
       return this.classifyResendRejection(orderDeliveryId);
@@ -450,22 +478,44 @@ export class PartnerCompanyExternHistoryService {
       const error = e instanceof Error ? e : new Error(String(e));
       this.logger.error(`[resendFailedDelivery] 재발송 실패: ${error.message}`, error.stack);
       return { success: false, message: error.message || '재발송 중 오류가 발생했습니다.', orderDeliveryId };
+    } finally {
+      // 변형 lease 해제 — 성공/실패/게이트거부/예외 모든 종료 경로. **자기 토큰으로만** 푼다.
+      // claimedAt 해제와 한 번의 update 로 합치지 않는 이유: claimedAt 은 살아 있는데 변형 lease 만
+      // stale 로 빼앗긴 경우(폐기가 acquireMutationLease 로 가져감), 합치면 남의 활성 lease 를 지운다.
+      // 해제 실패는 삼킨다 — 실패했다면 DB 가 죽은 것이라 재시도해도 못 쓰고, 5분 stale 로 self-heal 된다.
+      try {
+        await this.orderDeliveryRepository.update(
+          { id: orderDeliveryId, mutationClaimedAt: claimAt },
+          { mutationClaimedAt: null },
+        );
+      } catch (releaseError) {
+        this.logger.error(
+          `[resendFailedDelivery] 변형 lease 해제 실패 — 최대 5분간 이 건의 폐기/취소가 거절된다. ` +
+            `orderDeliveryId=${orderDeliveryId}, error: ${releaseError}`,
+        );
+      }
     }
   }
 
   /** 재발송 대상 조회 쿼리(relation 포함, 재발송 가능 상태 필터). 락 없음. */
   private buildResendQuery(orderDeliveryId: number) {
-    return this.orderDeliveryRepository
-      .createQueryBuilder('orderDelivery')
-      .leftJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
-      .leftJoinAndSelect('orderProductMapping.order', 'order')
-      .leftJoinAndSelect('order.user', 'user')
-      .leftJoinAndSelect('orderProductMapping.product', 'product')
-      .leftJoinAndSelect('product.brand', 'brand')
-      .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
-      .withDeleted()
-      .where('orderDelivery.id = :id', { id: orderDeliveryId })
-      .andWhere('orderDelivery.status IN (:...statuses)', { statuses: RESENDABLE_FAIL_STATUSES });
+    return (
+      this.orderDeliveryRepository
+        .createQueryBuilder('orderDelivery')
+        .leftJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
+        .leftJoinAndSelect('orderProductMapping.order', 'order')
+        .leftJoinAndSelect('order.user', 'user')
+        .leftJoinAndSelect('orderProductMapping.product', 'product')
+        .leftJoinAndSelect('product.brand', 'brand')
+        .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
+        // withDeleted 는 삭제된 **상품**(초이스 삭제 판정, 아래 product.deletedAt) 을 보기 위한 것이다.
+        // 그 부작용으로 soft-delete 된 order_delivery 까지 딸려 오므로 명시적으로 배제한다.
+        // 재발행 unwind 가 softDelete 한 tip 이 status=FAIL 로 남아 있으면 여기서 되살아나 발송된다.
+        .withDeleted()
+        .where('orderDelivery.id = :id', { id: orderDeliveryId })
+        .andWhere('orderDelivery.deletedAt IS NULL')
+        .andWhere('orderDelivery.status IN (:...statuses)', { statuses: RESENDABLE_FAIL_STATUSES })
+    );
   }
 
   /** claim 해제 (owner guard). 내가 소유한 claim(claimedAt=:claimAt)만 해제. */
@@ -494,15 +544,28 @@ export class PartnerCompanyExternHistoryService {
    *
    * 판정 순서 (status 를 claimedAt 보다 먼저 본다):
    *  1. 행 없음        → 대상 없음
-   *  2. status 비대상   → 이미 완료/대상 아님 (성공 마무리 구간: status=COMPLETE 이지만
+   *  2. soft-delete    → 대상 아님 (재발행 unwind 가 지운 tip)
+   *  3. status 비대상   → 이미 완료/대상 아님 (성공 마무리 구간: status=COMPLETE 이지만
    *                       claimedAt 해제가 아직 안 된 찰나를 '처리 중'으로 오진하지 않음)
-   *  3. 최근 claimedAt  → 재발송 처리 중 (5분 이내)
-   *  4. 그 외          → 상태 변경(새로고침 유도)
+   *  4. 폐기/환불 쿠폰   → 재발송 불가 (죽은 핀)
+   *  5. 최근 claimedAt  → 재발송 처리 중 (5분 이내)
+   *  6. 최근 변형 lease → 다른 처리(폐기/취소/재발행) 진행 중
+   *  7. 그 외          → 상태 변경(새로고침 유도)
+   *
+   * claim CAS 에 술어를 추가할 때는 여기 판정도 같이 늘려야 한다. 안 그러면 새 술어로 거절된
+   * 건이 전부 "상태가 변경되었습니다"(새로고침 유도) 로 뭉뚱그려져 운영자가 원인을 못 찾는다.
    */
   private async classifyResendRejection(orderDeliveryId: number): Promise<ResendResultDto> {
     const row = await this.orderDeliveryRepository
       .createQueryBuilder('orderDelivery')
-      .select(['orderDelivery.id', 'orderDelivery.status', 'orderDelivery.claimedAt'])
+      .select([
+        'orderDelivery.id',
+        'orderDelivery.status',
+        'orderDelivery.claimedAt',
+        'orderDelivery.mutationClaimedAt',
+        'orderDelivery.couponStatus',
+        'orderDelivery.deletedAt',
+      ])
       .withDeleted()
       .where('orderDelivery.id = :id', { id: orderDeliveryId })
       .getOne();
@@ -510,12 +573,26 @@ export class PartnerCompanyExternHistoryService {
     if (!row) {
       return { success: false, message: '재발송 대상을 찾을 수 없습니다.', orderDeliveryId };
     }
+    if (row.deletedAt) {
+      return { success: false, message: '삭제된 발송 건은 재발송할 수 없습니다.', orderDeliveryId };
+    }
     if (!RESENDABLE_FAIL_STATUSES.includes(row.status)) {
       return { success: false, message: '이미 완료되었거나 재발송 대상이 아닙니다.', orderDeliveryId };
+    }
+    if (row.couponStatus && UNSENDABLE_COUPON_STATUSES.includes(row.couponStatus)) {
+      return { success: false, message: '폐기·환불된 쿠폰은 재발송할 수 없습니다.', orderDeliveryId };
     }
     const staleThreshold = new Date(Date.now() - RESEND_CLAIM_STALE_MS);
     if (row.claimedAt && row.claimedAt >= staleThreshold) {
       return { success: false, message: '재발송 처리 중입니다. 잠시 후 다시 시도해주세요.', orderDeliveryId };
+    }
+    const mutationStale = new Date(Date.now() - MUTATION_CLAIM_STALE_MS);
+    if (row.mutationClaimedAt && row.mutationClaimedAt >= mutationStale) {
+      return {
+        success: false,
+        message: '해당 발송 건에 다른 처리(폐기/취소/재발행)가 진행 중입니다. 잠시 후 다시 시도해주세요.',
+        orderDeliveryId,
+      };
     }
     return {
       success: false,
