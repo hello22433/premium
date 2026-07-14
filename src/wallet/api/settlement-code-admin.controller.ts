@@ -1,11 +1,11 @@
 import { BadRequestException, Body, Controller, Get, ParseIntPipe, Post, Put, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { IsInt, IsNotEmpty, IsString, Min } from 'class-validator';
+import { IsIn, IsInt, IsNotEmpty, IsOptional, IsString, MaxLength, Min } from 'class-validator';
 
 import { User } from '../../auth/api/user.decorator';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { AuthUserSuperAndOperationAdminGuard } from '../../auth/api/auth.user.super-operation-admin.guard';
-import { WalletReadService, SettlementCodeSnapshot } from '../application/wallet-read.service';
+import { WalletReadService, SettlementCodeSnapshot, SettlementCodeDetail } from '../application/wallet-read.service';
 import { SettlementCodeAdminService } from '../application/settlement-code-admin.service';
 
 class IssueCodeReqDto {
@@ -48,6 +48,40 @@ class SetCreditLimitReqDto {
   creditLimit: number;
 }
 
+class SetSettlePolicyReqDto {
+  @IsString()
+  @IsNotEmpty()
+  settlementCode: string;
+
+  @IsOptional()
+  @IsIn(['PRE_PAYMENT', 'POST_PAYMENT'])
+  settleCondition?: 'PRE_PAYMENT' | 'POST_PAYMENT';
+
+  @IsOptional()
+  @IsIn(['CARD', 'CASH'])
+  settleMethod?: 'CARD' | 'CASH';
+}
+
+class ChargeDepositReqDto {
+  @IsString()
+  @IsNotEmpty()
+  settlementCode: string;
+
+  @IsInt()
+  @Min(1)
+  chargeAmount: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  memo?: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(120)
+  requestKey: string;
+}
+
 /**
  * settlement_code(정산코드) 운영자 관리 API (plan PR-C, Top-1).
  *
@@ -69,6 +103,44 @@ export class SettlementCodeAdminController {
   @ApiOperation({ summary: '정산코드 목록/스냅샷 조회 (회사 단위)' })
   list(@Query('companyId', new ParseIntPipe()) companyId: number) {
     return this.walletReadService.getSettlementCodeSnapshot(companyId);
+  }
+
+  /** 정산코드 키 단위 상세 (정책 + 잔액 + 배정 계정, 회사 걸침 포함 — N:M). */
+  @Get('detail')
+  @ApiOperation({ summary: '정산코드 상세 조회 (정책/잔액/배정 계정)' })
+  detail(@Query('settlementCode') settlementCode: string): Promise<SettlementCodeDetail> {
+    return this.walletReadService.getSettlementCodeDetail(settlementCode);
+  }
+
+  /** 정산코드 변경 이력 (여신한도/정산조건/정산방법/예치금 충전). */
+  @Get('history')
+  @ApiOperation({ summary: '정산코드 변경 이력 조회' })
+  history(@Query('settlementCode') settlementCode: string) {
+    return this.adminService.getCodeHistory(settlementCode);
+  }
+
+  /** 정산코드 단위 정산조건/정산방법 변경 (정산조건 변경 시 진행중 주문 게이트). */
+  @Put('settle-policy')
+  @ApiOperation({ summary: '정산코드 정산조건/정산방법 변경' })
+  setSettlePolicy(@User() user: ILoginUserInfo, @Body() body: SetSettlePolicyReqDto) {
+    return this.adminService.setSettlePolicy(
+      body.settlementCode,
+      { settleCondition: body.settleCondition, settleMethod: body.settleMethod },
+      user,
+    );
+  }
+
+  /** 정산코드 단위 예치금 충전. */
+  @Put('deposit')
+  @ApiOperation({ summary: '정산코드 예치금 충전' })
+  deposit(@User() user: ILoginUserInfo, @Body() body: ChargeDepositReqDto) {
+    return this.adminService.chargeDeposit(
+      body.settlementCode,
+      body.chargeAmount,
+      user,
+      body.memo,
+      body.requestKey,
+    );
   }
 
   /** 특정 정산코드에 배정된 계정 목록 (스냅샷에서 필터). */
