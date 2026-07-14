@@ -22,6 +22,7 @@ import { findMatchingDiscount } from '../../user_discount/domain/discount.matche
 import { OrderFeeCalculator, applyCardSurcharge } from '../../order/domain/order.fee.calculator';
 import {
   buildLineProductSnapshot,
+  buildPartnerSettleSnapshot,
   buildOrderClientUserSnapshot,
   buildOrderOperationUserSnapshot,
   buildOrderUserSnapshot,
@@ -757,7 +758,7 @@ export class ExternalApiService {
     const [product, assignedIds, prevOrder] = await Promise.all([
       this.productRepository.findOne({
         where: { code: dto.productCode, useStatus: IProductUseStatus.USE },
-        relations: ['partnerCompany', 'brand'],
+        relations: ['partnerCompany', 'partnerCompany.userDiscounts', 'brand'],
       }),
       this.getAssignedProductIdsForBilling(billingUser.id),
       this.orderRepository.findOne({
@@ -816,6 +817,7 @@ export class ExternalApiService {
     });
     await this.orderRepository.save(order);
 
+    const lineSnapshot = buildLineProductSnapshot(product);
     const mapping = this.orderProductMappingRepository.create({
       orderId: order.id,
       productId: product.id,
@@ -828,7 +830,8 @@ export class ExternalApiService {
       priceAdjustment,
       topImagePath: '',
       midImagePath: '',
-      ...buildLineProductSnapshot(product),
+      ...lineSnapshot,
+      ...buildPartnerSettleSnapshot(product, lineSnapshot.snapshotProductPrice ?? product.price),
     });
     await this.orderProductMappingRepository.save(mapping);
 
@@ -1549,6 +1552,7 @@ export class ExternalApiService {
     });
     await this.orderRepository.save(order);
 
+    const ssgLineSnapshot = buildLineProductSnapshot(product);
     const mapping = this.orderProductMappingRepository.create({
       orderId: order.id,
       productId: product.id,
@@ -1561,7 +1565,8 @@ export class ExternalApiService {
       priceAdjustment,
       topImagePath: '',
       midImagePath: '',
-      ...buildLineProductSnapshot(product),
+      ...ssgLineSnapshot,
+      ...buildPartnerSettleSnapshot(product, ssgLineSnapshot.snapshotProductPrice ?? product.price),
     });
     await this.orderProductMappingRepository.save(mapping);
 

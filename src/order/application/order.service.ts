@@ -103,6 +103,7 @@ import { createExportTempPath } from '../../util/file.util';
 import { UserEntity } from '../../entity/user.entity';
 import { UserCompanyEntity } from '../../entity/user.company.entity';
 import {
+  buildPartnerSettleSnapshot,
   buildLineProductSnapshot,
   buildOrderClientUserSnapshot,
   buildOrderOperationUserSnapshot,
@@ -114,7 +115,12 @@ import {
   readOperationPersonName,
   readUserView,
 } from '../util/order.snapshot.builder';
-import { assertLineIdsValid, OwnedLine, resolveLineSnapshot } from './order.snapshot.update.helper';
+import {
+  assertLineIdsValid,
+  OwnedLine,
+  resolveLineSnapshot,
+  resolvePartnerSettleSnapshot as resolvePartnerSettleSnapshotForUpdate,
+} from './order.snapshot.update.helper';
 import { UserViewScopeEntity, ViewScopeType } from '../../entity/user.view.scope.entity';
 import { IUserAuthority } from '../../user/interface/user.authority';
 import { IUserSettleCondition } from '../../user/interface/user.settle.condition';
@@ -3449,7 +3455,7 @@ export class OrderService {
       where: {
         id: In(uniqueProductIds),
       },
-      relations: ['brand'],
+      relations: ['brand', 'partnerCompany', 'partnerCompany.userDiscounts'],
     });
 
     if (uniqueProductIds.length !== getProductList.length) {
@@ -3552,7 +3558,12 @@ export class OrderService {
 
       // 주문 생성 시점 상품 정보 snapshot 박제
       const liveProduct = productPriceMap.get(product.productId)!;
-      Object.assign(orderProduct, buildLineProductSnapshot(liveProduct));
+      const lineSnapshot = buildLineProductSnapshot(liveProduct);
+      Object.assign(orderProduct, lineSnapshot);
+      Object.assign(
+        orderProduct,
+        buildPartnerSettleSnapshot(liveProduct, lineSnapshot.snapshotProductPrice ?? liveProduct.price),
+      );
 
       await this.orderProductMappingRepository.save(orderProduct);
 
@@ -3641,7 +3652,7 @@ export class OrderService {
       where: {
         id: In(uniqueProductIds),
       },
-      relations: ['brand'],
+      relations: ['brand', 'partnerCompany', 'partnerCompany.userDiscounts'],
     });
 
     if (uniqueProductIds.length !== getProductList.length) {
@@ -3668,6 +3679,10 @@ export class OrderService {
             snapshotProductBrandName: m.snapshotProductBrandName,
             snapshotProductExpireDay: m.snapshotProductExpireDay,
             snapshotProductImagePath: m.snapshotProductImagePath,
+          },
+          partnerSettleSnapshot: {
+            partnerSettleFee: m.partnerSettleFee,
+            partnerSettlePriceAdjustment: m.partnerSettlePriceAdjustment,
           },
         },
       ]),
@@ -3744,7 +3759,17 @@ export class OrderService {
       orderProduct.encourageDay = product.encourageDay ?? null;
 
       const liveProduct = productPriceMap.get(product.productId)!;
-      Object.assign(orderProduct, resolveLineSnapshot(product, ownedMap, liveProduct));
+      const lineSnapshot = resolveLineSnapshot(product, ownedMap, liveProduct);
+      Object.assign(orderProduct, lineSnapshot);
+      Object.assign(
+        orderProduct,
+        resolvePartnerSettleSnapshotForUpdate(
+          product,
+          ownedMap,
+          liveProduct,
+          lineSnapshot.snapshotProductPrice ?? liveProduct.price,
+        ),
+      );
 
       await this.orderProductMappingRepository.save(orderProduct);
 
