@@ -907,10 +907,13 @@ export class DeliveryBatchService {
     //   동안(분 단위) 그 쿠폰이 폐기·환불될 수 있고, 종전 코드는 그 죽은 핀을 SMS 로 다시
     //   보낸 뒤 markOrderTerminalAndSettle 로 **정산까지** 했다.
     //
-    //   가드 실패 시 recoverStuckFallback 으로 보내지 않는다. 그 경로는 FAIL 확정·환불로
-    //   이어질 수 있는데, 폐기가 이미 환불을 끝냈다면 이중 환불이 된다. 발송하지 않고
-    //   report_state 만 UNCONFIRMED 로 닫아 sweep 재선택을 끊는다(status 는 그대로 두므로
-    //   claimWaitDeliveries 의 coupon_status 가드가 배치 재발송도 막는다).
+    //   ★ 게이트 실패(affected=0)의 원인은 **4가지**이고, 처리가 서로 다르다 (리뷰 HIGH).
+    //     WHERE 는 id/token/status=WAIT/lease/coupon_status 의 AND 라 affected=0 만으로는
+    //     무엇이 틀렸는지 알 수 없다. 하나로 뭉개면 **일시적 원인까지 영구 봉인**된다 —
+    //     status=WAIT + report_state=UNCONFIRMED 는 reportSweep(PENDING 요구)도,
+    //     claimWaitDeliveries(report_state IS NULL 요구)도, CS reSend(COMPLETE/FAIL 요구)도,
+    //     발송실패내역 재발송(FAIL/FAIL_SMS 요구)도 **아무도 집지 못하는 상태**다.
+    //     그래서 fresh 로 1회 재조회해 원인별로 가른다.
     const mutationClaimAt = new Date();
     const mutationStale = new Date(mutationClaimAt.getTime() - MUTATION_CLAIM_STALE_MS);
     const leaseGate = await this.orderDeliveryRepository
@@ -927,10 +930,43 @@ export class DeliveryBatchService {
       .execute();
 
     if ((leaseGate.affected ?? 0) === 0) {
-      this.logger.error(`[REPORT_SWEEP][R1] SMS 폴백 중단 — 폐기·환불됐거나 다른 처리가 진행 중인 건. od=${od.id}`);
-      od.reportState = IOrderDeliveryReportState.UNCONFIRMED;
+      const fresh = await this.orderDeliveryRepository.findOne({
+        where: { id: od.id },
+        select: ['id', 'status', 'couponStatus'],
+      });
+
+      // (1) 폐기·환불 확정 — **유일하게 정당한 봉인**.
+      //     recoverStuckFallback(→ FAIL 확정 + 환불)으로 보내면 폐기가 이미 끝낸 환불과 겹쳐
+      //     이중 환불이 된다. 발송하지 않고 report_state 만 닫는다. status 는 WAIT 로 두지만
+      //     claimWaitDeliveries 의 coupon_status 가드가 배치 재발송도 막으므로 방치돼도 안전하다.
+      if (fresh?.couponStatus && UNSENDABLE_COUPON_STATUSES.includes(fresh.couponStatus)) {
+        this.logger.error(
+          `[REPORT_SWEEP][R1] SMS 폴백 중단 — 폐기·환불된 쿠폰(coupon_status=${fresh.couponStatus}). od=${od.id}`,
+        );
+        od.reportState = IOrderDeliveryReportState.UNCONFIRMED;
+        this.releaseReportClaim(od);
+        if (!(await this.persistReportState(od, token))) {
+          this.logger.error(`[REPORT_SWEEP][R1] UNCONFIRMED 기록도 실패(소유권 상실) — od=${od.id}`);
+        }
+        return;
+      }
+
+      // (2) 이미 터미널(status != WAIT) — 종전 동작 유지. 성공 종결이면 claim 만 정리한다.
+      if (fresh && fresh.status !== IOrderDeliveryStatus.WAIT) {
+        await this.recoverStuckFallback(od, token);
+        return;
+      }
+
+      // (3) 일시적 — 변형 lease 활성(폐기/재발행/CS 재발송 진행중) 또는 report 토큰 회전.
+      //     "지금은 못 한다" 를 "영원히 안 한다" 로 만들면 안 된다. PENDING 을 유지한 채
+      //     다음 due 로 미뤄 다음 tick 이 재시도하게 둔다(at-most-once 선점은 아직 안 했으므로 안전).
+      this.logger.warn(
+        `[REPORT_SWEEP][R1] SMS 폴백 연기 — 다른 처리가 진행 중(변형 lease 활성/토큰 회전). ` +
+          `다음 tick 재시도. od=${od.id}`,
+      );
       this.releaseReportClaim(od);
-      await this.persistReportState(od, token);
+      od.reportNextDueAt = new Date(Date.now() + REPORT_NEXT_DUE_MS);
+      await this.persistReportState(od, token); // report_state 는 PENDING 유지
       return;
     }
 

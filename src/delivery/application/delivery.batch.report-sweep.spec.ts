@@ -2,6 +2,7 @@ import { DeliveryBatchService } from './delivery.batch.service';
 import { IOrderDeliveryStatus } from '../interface/order.delivery.status';
 import { IOrderDeliveryReportState } from '../interface/order.delivery.report.state';
 import { IOrderType } from '../../order/interface/order.type';
+import { OrderDeliveryCouponStatus } from '../interface/order.delivery.coupon.status';
 
 /**
  * Phase 4/5 회귀: 알림톡 비동기 수신확인(reportSweep) + 자동 재발송 1회 + 정산 단일헬퍼.
@@ -100,7 +101,13 @@ describe('DeliveryBatchService — reportSweep / settlement (async alimtalk)', (
      * leaseAffected 로 1번, affected 로 2번을 각각 제어한다.
      */
     let qbSpy: any;
-    const mockPreempt = (affected: number, leaseAffected = 1) => {
+    let findOne: jest.Mock;
+    /**
+     * @param affected       선점(at-most-once) CAS 결과
+     * @param leaseAffected  변형 lease 게이트 결과
+     * @param freshRow       게이트 실패 시 원인 판정용 재조회 결과 (coupon_status / status)
+     */
+    const mockPreempt = (affected: number, leaseAffected = 1, freshRow: any = { id: 1, status: 'WAIT' }) => {
       const exec = jest
         .fn()
         .mockResolvedValueOnce({ affected: leaseAffected }) // 1) lease 게이트
@@ -112,9 +119,11 @@ describe('DeliveryBatchService — reportSweep / settlement (async alimtalk)', (
         andWhere: jest.fn().mockReturnThis(),
         execute: exec,
       };
+      findOne = jest.fn().mockResolvedValue(freshRow);
       service.orderDeliveryRepository = {
         createQueryBuilder: jest.fn().mockReturnValue(qbSpy),
         update: jest.fn().mockResolvedValue({ affected: 1 }), // lease 해제
+        findOne, // 게이트 실패 원인 판정
       };
       return exec;
     };
@@ -189,9 +198,21 @@ describe('DeliveryBatchService — reportSweep / settlement (async alimtalk)', (
         expect(qbSpy.set.mock.calls[0][0]).toHaveProperty('mutationClaimedAt');
       });
 
-      it('폐기·환불된 건(lease 게이트 affected=0) → SMS 미발송 + 정산 미수행 + recovery 미진입', async () => {
+      /**
+       * ★ 게이트 실패(affected=0)의 원인은 4가지이고 처리가 다르다 (리뷰 HIGH).
+       *   WHERE 는 id/token/status=WAIT/lease/coupon_status 의 AND 라 affected=0 만으로는
+       *   무엇이 틀렸는지 알 수 없다. 하나로 뭉개면 **일시적 원인까지 영구 봉인**된다.
+       *
+       *   status=WAIT + report_state=UNCONFIRMED 는 이 코드베이스에서 **아무도 집지 못하는 상태**다:
+       *     reportSweep         → report_state=PENDING 요구
+       *     claimWaitDeliveries → report_state IS NULL 요구
+       *     CS reSend           → status IN (COMPLETE/FAIL/...) 요구
+       *     발송실패내역 재발송  → status IN (FAIL/FAIL_SMS) 요구
+       *   자동·수동 어떤 회수 경로도 없는 영구 정체다.
+       */
+      it('원인=폐기·환불 → SMS 미발송 + 정산 미수행 + recovery 미진입 (유일하게 정당한 봉인)', async () => {
         const od = buildOd();
-        mockPreempt(1, 0); // lease 게이트 실패
+        mockPreempt(1, 0, { id: 1, status: 'WAIT', couponStatus: OrderDeliveryCouponStatus.REFUND_CANCEL });
         const recoverSpy = jest.spyOn(service, 'recoverStuckFallback').mockResolvedValue(undefined);
 
         await service.runReportFallback(od, 'tok');
@@ -201,9 +222,37 @@ describe('DeliveryBatchService — reportSweep / settlement (async alimtalk)', (
         // recovery 로 보내면 FAIL 확정·환불로 이어질 수 있다 — 폐기가 이미 환불했으면 이중 환불
         expect(recoverSpy).not.toHaveBeenCalled();
         expect(service.refundForFail).not.toHaveBeenCalled();
-        // sweep 재선택을 끊는다(PENDING 유지 시 매 tick 재진입)
+        // 폐기 확정이므로 봉인이 맞다. status=WAIT 로 남아도 claimWaitDeliveries 의
+        // coupon_status 가드가 배치 재발송을 막으므로 안전하다.
         expect(od.reportState).toBe(IOrderDeliveryReportState.UNCONFIRMED);
         expect(service.persistReportState).toHaveBeenCalled();
+      });
+
+      it('원인=일시적(변형 lease 활성) → PENDING 유지 + 다음 tick 재시도 (영구 봉인 금지)', async () => {
+        const od = buildOd();
+        // 폐기 아님 + 아직 WAIT — 즉 폐기/재발행/CS재발송이 lease 를 쥐고 있는 일시적 상황
+        mockPreempt(1, 0, { id: 1, status: 'WAIT', couponStatus: OrderDeliveryCouponStatus.NOT_USED });
+        const recoverSpy = jest.spyOn(service, 'recoverStuckFallback').mockResolvedValue(undefined);
+
+        await service.runReportFallback(od, 'tok');
+
+        expect(service.csResendAsMms).not.toHaveBeenCalled();
+        expect(recoverSpy).not.toHaveBeenCalled();
+        // ★ UNCONFIRMED 로 닫으면 아무도 못 집는 영구 고아가 된다
+        expect(od.reportState).toBe(IOrderDeliveryReportState.PENDING);
+        expect(od.reportNextDueAt.getTime()).toBeGreaterThan(Date.now()); // 다음 tick 으로 미룸
+        expect(service.persistReportState).toHaveBeenCalled();
+      });
+
+      it('원인=이미 터미널(status != WAIT) → recoverStuckFallback (종전 동작 유지)', async () => {
+        const od = buildOd();
+        mockPreempt(1, 0, { id: 1, status: IOrderDeliveryStatus.COMPLETE_SMS, couponStatus: null });
+        const recoverSpy = jest.spyOn(service, 'recoverStuckFallback').mockResolvedValue(undefined);
+
+        await service.runReportFallback(od, 'tok');
+
+        expect(recoverSpy).toHaveBeenCalledWith(od, 'tok');
+        expect(service.csResendAsMms).not.toHaveBeenCalled();
       });
 
       it('정상 경로: 변형 lease 를 자기 토큰으로 해제한다', async () => {
