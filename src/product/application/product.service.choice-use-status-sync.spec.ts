@@ -59,7 +59,7 @@ describe('ProductService.updatePartial - 초이스쿠폰 사용상태 자동 반
       {} as any, // fileStorage
     );
 
-    return { service, saved, insertedHistories, products };
+    return { service, saved, insertedHistories, products, userSyncProductEventMappingRepository };
   };
 
   const product = (id: number, useStatus: IProductUseStatus, code = `P${id}`) => ({
@@ -184,6 +184,41 @@ describe('ProductService.updatePartial - 초이스쿠폰 사용상태 자동 반
     expect(choiceHistory!.afterValue).toBe(IProductUseStatus.UNUSED);
     expect(choiceHistory!.userId).toBe(user.id);
     expect(choiceHistory!.reason).toContain('P1');
+  });
+
+  it('초이스쿠폰이 자동 미사용이 되면 고객상품관리 매핑도 해제된다', async () => {
+    const products = {
+      1: product(1, IProductUseStatus.USE),
+      2: product(2, IProductUseStatus.USE),
+      100: { ...product(100, IProductUseStatus.USE, 'CHOICE100'), type: 'CHOICE' },
+    };
+    const { service, userSyncProductEventMappingRepository } = createService(products, [
+      { choiceProductId: 100, productId: 1 },
+      { choiceProductId: 100, productId: 2 },
+    ]);
+
+    await service.updatePartial(user, { id: 1, useStatus: IProductUseStatus.UNUSED } as any);
+
+    // 직접 미사용 상품(id: 1)과 자동 미사용 초이스쿠폰(id: 100) 모두 매핑 해제
+    expect(userSyncProductEventMappingRepository.softDelete).toHaveBeenCalledWith({ productId: 1 });
+    expect(userSyncProductEventMappingRepository.softDelete).toHaveBeenCalledWith({ productId: 100 });
+  });
+
+  it('초이스쿠폰이 미사용에서 사용으로 복구될 때는 매핑을 해제하지 않는다', async () => {
+    const products = {
+      1: product(1, IProductUseStatus.UNUSED),
+      2: product(2, IProductUseStatus.USE),
+      100: { ...product(100, IProductUseStatus.UNUSED, 'CHOICE100'), type: 'CHOICE' },
+    };
+    const { service, userSyncProductEventMappingRepository } = createService(products, [
+      { choiceProductId: 100, productId: 1 },
+      { choiceProductId: 100, productId: 2 },
+    ]);
+
+    await service.updatePartial(user, { id: 1, useStatus: IProductUseStatus.USE } as any);
+
+    // 초이스쿠폰(id: 100)은 USE로 복구되므로 매핑 해제 대상 아님
+    expect(userSyncProductEventMappingRepository.softDelete).not.toHaveBeenCalledWith({ productId: 100 });
   });
 
   it('초이스쿠폰 상태가 이미 목표값이면 저장하지 않는다', async () => {

@@ -1099,6 +1099,14 @@ export class ProductService {
 
       choiceProduct.useStatus = nextUseStatus;
       await this.productRepository.save(choiceProduct);
+
+      // 자동 USE → UNUSED 전환도 직접 미사용 처리와 동일하게 고객상품관리 매핑을 해제한다.
+      // (전시 취소 + 숨기기. 매핑 살아있으면 고객별 상품 현황 집계에 유령 카운트가 남는다.)
+      if (history.beforeValue === IProductUseStatus.USE && nextUseStatus === IProductUseStatus.UNUSED) {
+        await this.userSyncProductEventMappingRepository.softDelete({
+          productId: choiceProductId,
+        });
+      }
     }
 
     return histories;
