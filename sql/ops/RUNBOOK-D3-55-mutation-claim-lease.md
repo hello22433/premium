@@ -82,7 +82,12 @@ SELECT COUNT(*) FROM order_delivery
 | `stale`(5분 초과) 행이 쌓임 | 크래시로 해제를 못 탄 잔재 | CAS self-heal 이 다음 획득자에서 자동 회수하므로 방치해도 수렴. 지속되면 파드 OOM/재시작 확인 |
 | `변형 lease 상실` ERROR 급증 | 발송 중 폐기/취소 경합이 실제로 일어나고 있다 | 정상 동작(막고 있는 것). 다만 빈도가 높으면 운영 플로우 점검 |
 | `원본 폐기 역전 실패` ERROR | **고객 쿠폰이 폐기된 채 남아 있다** | 🚨 즉시 대응. 로그의 `orderDeliveryId` 로 수동 복구 |
-| `tip 무력화 실패` ERROR | 배치가 유령 tip 을 집어 PIN 을 발급할 수 있다 | 🚨 즉시 대응. 해당 `orderDeliveryId` 의 `status`/`coupon_status` 확인 |
+| `tip 무력화 실패` ERROR | tip 을 남에게 빼앗겼다. 배치가 그 tip 을 발송할 수 있다. **원본 폐기 역전은 자동으로 봉인된다**(쿠폰 2장 방지) | 🚨 즉시 대응. 원본은 폐기 상태로 남고 tip 이 발송될 수 있다 — 고객 쿠폰이 1장인지 확인 |
+| `tip 을 무력화하지 못해 원본 폐기 역전을 건너뛴다` ERROR | 위와 같은 사건의 결론 로그. SSG 면 미차감 발급 가능 | 🚨 SSG 행사 잔액 대조 |
+| `발송결과 fenced 기록 실패` ERROR (CS) | **문자는 나갔는데** 그 사이 폐기/취소가 선점. 죽은 핀이 배달됐을 수 있다 | 🚨 CS 는 500 을 받는다(성공 아님). 해당 건 협력사 상태 확인 |
+| `[resendOrder] 발송결과 기록 실패` ERROR (외부) | 위와 동일. 파트너는 3010 을 받는다 | 🚨 조회 API 로는 안 보인다(D3-54 축약) — DB/협력사 직접 확인 |
+| `[REPORT_SWEEP][R1] SMS 폴백 중단` ERROR | 폐기·환불된 건이라 SMS 대체발송을 막았다 | ✅ 정상 동작(막고 있는 것). 빈도가 높으면 운영 플로우 점검 |
+| `[BATCH] 변형 lease 해제 실패` / `[CS_RESEND] claimedAt 해제 실패` / `[resendFailedDelivery] 변형 lease 해제 실패` | DB 쓰기 실패. 해당 건의 폐기/취소가 최대 5분간 거절된다 | 5분 stale self-heal 로 수렴. 반복되면 DB 상태 점검 |
 
 ### 신규 에러코드
 
@@ -102,5 +107,27 @@ SELECT COUNT(*) FROM order_delivery
 - **발송배치가 집어가면** → PIN 이중 발급 + 문자 2통 + SSG 행사 잔액 이중 차감
 
 `mutation_claimed_at` 은 이 구간을 "진행중" 으로 표시해 다른 액터의 진입을 거절합니다.
-lease 를 존중하는 곳: `execDiscard` / `bulkDiscard` / `execPinStatusModify` / CS `reSend` /
-외부 `cancelOrder` / 외부 `resendOrder` / 발송배치 `claimWaitDeliveries`.
+
+### lease 를 존중하는 곳
+
+**변형 액터**(lease 를 잡고 쿠폰상태를 바꾼다)
+`execDiscard` / `bulkDiscard` / `execPinStatusModify` / 외부 `cancelOrder` / CS 재발행(`execHistory`)
+
+**발송 경로** — 아래 5개가 전부 (a) lease 를 잡고 (b) 폐기·환불 쿠폰을 거른다.
+하나라도 빠지면 "환불된 죽은 핀"이 그 경로로 배달된다.
+
+| 발송 경로 | 진입점 |
+|---|---|
+| 발송배치 | `claimWaitDeliveries` |
+| CS 재발송 | `reSend` |
+| 발송실패내역 재발송 | `resendFailedDelivery` |
+| 알림톡 SMS 대체발송 | `runReportFallback` |
+| 외부 API 재발송 | `resendOrder` |
+
+> ⚠️ 새 발송 경로를 추가할 때는 반드시 이 두 가지를 함께 넣으십시오.
+> 배제 목록은 `UNSENDABLE_COUPON_STATUSES`(`order.delivery.mutation.claim.ts`) 하나를 공유합니다.
+
+### 발송 후 lease 를 잃으면
+
+문자는 되돌릴 수 없습니다. **성공으로 응답하지 않습니다** — CS 는 500, 외부 API 는 3010.
+이력(`order_history`)은 PIN 확정 즉시(발송 전) 남기므로, 중단되더라도 발급된 PIN 은 추적됩니다.
