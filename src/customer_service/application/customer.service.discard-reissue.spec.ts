@@ -685,6 +685,38 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
       expect(softDeleteOrder).toBeLessThan(releaseOrder);
     });
 
+    /**
+     * ★ tip 무력화 실패(변형 lease 상실)면 원본 폐기를 되돌리면 안 된다 (리뷰 HIGH).
+     *
+     * kill 의 affected=0 은 "WHERE 의 lease 토큰이 안 맞는다" = 남이 이 tip 을 가져갔다는 뜻이다.
+     * 그 tip 은 status=WAIT / coupon_status=NOT_USED 로 살아 있어 배치가 집어 PIN 을 발급·발송한다.
+     * 여기서 원본 폐기까지 되돌리면 **살아있는 쿠폰이 2장**이 된다.
+     *
+     * 되돌리지 않으면 남는 상태는 "원본 폐기 + tip 발송" — 재발행이 배치를 경유해 완료된 것과
+     * 같아 고객 피해가 없다. 따라서 폐기 역전은 tipNeutralized 를 전제로만 수행한다.
+     */
+    it('25) pre-issue 실패 + tip 무력화 실패(lease 상실): 원본 폐기를 되돌리지 않는다 (쿠폰 2장 방지)', async () => {
+      setupSsgAcquired();
+      setupExecDiscard();
+      orderDeliveryRepository.save.mockResolvedValue({ id: 8001 });
+      orderDeliveryRepository.findOne.mockResolvedValue(null);
+
+      const reverseDiscard = jest.spyOn(service as any, 'reverseDiscard').mockResolvedValue(true);
+      // tip(8001) 의 kill 만 affected=0 (lease 를 뺏김). 나머지 update 는 정상.
+      const baseUpdate = orderDeliveryRepository.update.getMockImplementation();
+      orderDeliveryRepository.update.mockImplementation(async (criteria: any, set: any) => {
+        if (criteria?.id === 8001 && set?.couponStatus === OrderDeliveryCouponStatus.CANCEL) {
+          return { affected: 0 };
+        }
+        return baseUpdate ? await baseUpdate(criteria, set) : { affected: 1 };
+      });
+
+      await expect(service.execHistory(buildMap(IOrderType.SSG))).rejects.toThrow();
+
+      // 되돌렸다면 원본 쿠폰이 살아나 tip 과 함께 2장이 된다
+      expect(reverseDiscard).not.toHaveBeenCalled();
+    });
+
     it('23) 발송 후 fencing 실패 → status=WAIT 로 소유권을 좁힌 fallback 쓰기로 상태 확정', async () => {
       setupExecDiscard();
       orderDeliveryRepository.findOne.mockResolvedValue(buildFullDelivery(IOrderType.GENERAL, null));

@@ -2043,13 +2043,24 @@ export class CustomerServiceService {
           outcome: SsgRefundOutcome,
         ): Promise<{ discardReversed: boolean }> => {
           // 1) tip 무력화 — 먼저. 배치 픽업 차단이 최우선이다.
+          //
+          // ★ tipNeutralized 는 폐기 역전의 **전제조건**이다 (리뷰 HIGH).
+          //   무력화에 실패했다는 것은 = 변형 lease 를 잃었다 = 그 tip 은 살아서 배치가 집어
+          //   PIN 을 발급·발송할 수 있다는 뜻이다. 그 상태에서 원본 폐기까지 되돌리면
+          //   **살아있는 쿠폰이 2장**(원본 + 배치가 보낸 tip)이 된다.
+          //   반대로 되돌리지 않으면 남는 상태는 "원본 폐기 + tip 발송" = 재발행이 배치 경유로
+          //   완료된 것과 같아 고객 피해가 없다. 후자를 택한다.
+          let tipNeutralized = true;
           if (savedId != null) {
+            tipNeutralized = false;
             try {
               const kill = await this.orderDeliveryRepository.update(
                 { id: savedId, mutationClaimedAt: mutationClaimAt },
                 { status: IOrderDeliveryStatus.CANCEL, couponStatus: OrderDeliveryCouponStatus.CANCEL },
               );
-              if (!kill.affected) {
+              // affected=0 ⟺ WHERE 의 lease 토큰 불일치 ⟺ 남이 이 행을 가져갔다.
+              tipNeutralized = (kill.affected ?? 0) > 0;
+              if (!tipNeutralized) {
                 this.logger.error(
                   `[폐기후신규발송] tip 무력화 실패 — 변형 lease 상실(다른 처리가 선점). ` +
                     `배치가 집어 PIN 을 발급·발송할 수 있다. 운영 확인 필요. orderDeliveryId=${savedId}`,
@@ -2064,7 +2075,8 @@ export class CustomerServiceService {
             try {
               await this.orderDeliveryRepository.softDelete(savedId);
             } catch (sdErr) {
-              // 위 무력화가 이미 배치를 차단했으므로 여기 실패는 로깅으로 충분(행이 남을 뿐).
+              // 위 무력화가 성공했다면 배치는 이미 차단됐으므로 여기 실패는 로깅으로 충분(행이 남을 뿐).
+              // 실패했다면 tipNeutralized=false 로 이미 아래 폐기 역전이 봉인된다.
               this.logger.error(
                 `[폐기후신규발송] softDelete 실패(outcome=${outcome}) — orderDeliveryId=${savedId}`,
                 sdErr,
@@ -2074,6 +2086,15 @@ export class CustomerServiceService {
 
           // 2) 폐기 역전(고객 원본 쿠폰 복구) — 나중. 성공 여부를 caller 에게 알린다.
           let discardReversed = true;
+          if (!tipNeutralized) {
+            // 되돌리지 않는다(쿠폰 2장 방지). caller 는 "폐기를 취소했습니다" 라고 말하면 안 된다.
+            this.logger.error(
+              `[폐기후신규발송] tip 을 무력화하지 못해 원본 폐기 역전을 건너뛴다 — ` +
+                `배치가 tip(${savedId}) 을 발송할 수 있고, 원본(${discardedDelivery.id})은 폐기 상태로 남는다. ` +
+                `SSG 선차감은 이미 역복원되어 미차감 발급이 될 수 있다. 운영 확인 필요.`,
+            );
+            return { discardReversed: false };
+          }
           if (discardBeforeValidated) {
             try {
               discardReversed = await this.reverseDiscard(discardedDelivery.id, discardBeforeValidated);
