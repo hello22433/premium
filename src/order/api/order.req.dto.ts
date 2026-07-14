@@ -20,7 +20,7 @@ import { PagingReqDto } from '../../common/api/dto/pagination.req.dto';
 import { OrderCreateDto } from './dto/order.create.dto';
 import { IOrderType } from '../interface/order.type';
 import { IOrderSection } from '../interface/order.section';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import { OrderSettleCreateDto } from './dto/order.settle.create.dto';
 import { IOrderSendMethod } from '../interface/order.send.method';
 import { IOrderSendingType } from '../interface/order.sending.type';
@@ -110,6 +110,16 @@ export class OrderGetListReqDto extends PagingReqDto {
   @IsOptional()
   @IsEnum(IOrderSendingType)
   sendingType?: IOrderSendingType = IOrderSendingType.ALL;
+
+  @ApiPropertyOptional({
+    description: '발송관리 고객사 정산정보(customerSettlement) 포함 여부. 발송관리 화면에서만 true 로 보낸다.',
+    default: false,
+  })
+  // ===================================
+  @IsOptional()
+  @IsBoolean()
+  @Transform(({ value }) => value === 'true')
+  includeSettlement?: boolean;
 }
 
 export class OrderCreateTempReqDto extends OrderCreateDto {

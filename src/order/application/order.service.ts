@@ -335,6 +335,8 @@ export class OrderService {
     private readonly forbiddenWordBlockLogRepository: Repository<ForbiddenWordBlockLogEntity>,
     private readonly orderFromService: OrderFromService,
     private readonly billingScopeLockService: BillingScopeLockService,
+    @InjectRepository(WalletAccountEntity)
+    private readonly walletAccountRepository: Repository<WalletAccountEntity>,
   ) {}
 
   /**
@@ -883,7 +885,60 @@ export class OrderService {
       };
     });
 
+    if (getQuery.includeSettlement && OrderService.canViewCustomerSettlement(user)) {
+      await this.attachCustomerSettlement(orderList, resultList);
+    }
+
     return { list: resultList, totalPage, totalCount, currentPage: page };
+  }
+
+  private static readonly CUSTOMER_SETTLEMENT_ROLES: ReadonlyArray<IUserAuthority> = [
+    IUserAuthority.SUPER_ADMIN,
+    IUserAuthority.OPERATION_ADMIN,
+  ];
+
+  /** customerSettlement 노출 화이트리스트 (운영관리자 이상). 쿠키 authority 는 UI 힌트일 뿐 이 서버 필터가 유일 방어선. */
+  private static canViewCustomerSettlement(user: ILoginUserInfo): boolean {
+    return OrderService.CUSTOMER_SETTLEMENT_ROLES.includes(user.authority as IUserAuthority);
+  }
+
+  /**
+   * 응답 페이지 내 distinct 고객사(settlement_code)에 대해 wallet_account 를 1회 배치 조회 후
+   * remainServiceAmount 를 map 조인한다 (행별 재계산·N+1 없음).
+   * - settleCondition SoT = wallet_account.settle_condition (user 컬럼은 deprecated).
+   * - remainServiceAmount = creditLimit + depositBalance − creditUsedAmount − creditExcessAmount, 0-clamp.
+   * - wallet_account 미존재 고객사는 customerSettlement 필드를 붙이지 않는다(생략).
+   */
+  private async attachCustomerSettlement(orders: OrderEntity[], views: OrderViewDto[]): Promise<void> {
+    const settlementCodeOf = (order: OrderEntity): string | null =>
+      (order.clientUser ?? order.user)?.settlementCode || null;
+
+    const orderCodes = orders.map(settlementCodeOf);
+    const settlementCodes = [...new Set(orderCodes.filter((code): code is string => code !== null))];
+    if (settlementCodes.length === 0) {
+      return;
+    }
+
+    const wallets = await this.walletAccountRepository.find({
+      where: { ownerType: 'SETTLEMENT_CODE', ownerId: In(settlementCodes) },
+    });
+    const walletByCode = new Map(wallets.map((wallet) => [wallet.ownerId, wallet]));
+
+    orderCodes.forEach((code, index) => {
+      if (code === null) {
+        return;
+      }
+      const wallet = walletByCode.get(code);
+      if (!wallet) {
+        return;
+      }
+      const remain =
+        wallet.creditLimit + wallet.depositBalance - wallet.creditUsedAmount - wallet.creditExcessAmount;
+      views[index].customerSettlement = {
+        settleCondition: wallet.settleCondition,
+        remainServiceAmount: Math.max(0, remain),
+      };
+    });
   }
 
   async getDetail(user: ILoginUserInfo, getParam: OrderGetDetailReqParamDto): Promise<OrderGetDetailResDto> {
