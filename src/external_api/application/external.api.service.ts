@@ -1452,8 +1452,16 @@ export class ExternalApiService {
         // affected=0 = 발송(외부 통신, 수 초) 도중 폐기/취소가 lease 를 탈취했다
         // = **방금 보낸 핀은 협력사에서 취소되고 환불까지 됐을 수 있다**.
         // 여기서 success() 를 주면 파트너는 발송 성공으로 알고, 고객은 죽은 핀을 받고,
-        // resendAt/actualSendAt 은 갱신 안 된 채 로그 한 줄만 남는다.
-        // 3010(CONFLICT)로 응답해 파트너가 getOrderStatus 로 재확인하게 한다 (리뷰 MEDIUM).
+        // resendAt/actualSendAt 은 갱신 안 된 채 로그 한 줄만 남는다. → 3010(CONFLICT).
+        //
+        // ★ "주문 상태를 다시 조회해 주세요" 라고 하면 안 된다 (리뷰 MEDIUM).
+        //   getOrderStatus 의 toExternalCouponStatus 는 USED/EXPIRED/REFUND_CANCEL 을 전부
+        //   ISSUED 로 축약한다(의도된 설계, D3-54). 즉 이 상황에서 재조회하면 **정상으로 보인다**.
+        //   우리가 유도한 확인 행동이 문제를 못 드러내고 오히려 안심시킨다.
+        //
+        // ★ 재발송 슬롯(resend_count)은 반납하지 않는다.
+        //   위 catch 의 롤백은 "발송이 실패했으니 시도를 무르는" 것인데, 여기는 발송이
+        //   **성공**했다(문자가 고객에게 나갔다). 슬롯은 소비된 게 맞다.
         this.logger.error(
           `[resendOrder] 발송결과 기록 실패 — 변형 lease 상실(다른 처리가 선점). ` +
             `문자는 이미 발송됐으나 해당 쿠폰이 취소·환불됐을 수 있다. 운영 확인 필요. ` +
@@ -1461,7 +1469,8 @@ export class ExternalApiService {
         );
         throw new ExternalApiException(
           '3010',
-          '재발송 처리 중 해당 주문의 상태가 변경되었습니다. 주문 상태를 다시 조회해 주세요.',
+          '재발송 문자는 발송되었으나, 그 사이 해당 주문이 취소·폐기되었을 수 있습니다. ' +
+            '조회 API 로는 확인되지 않으니 담당자에게 문의해 주세요.',
         );
       }
 

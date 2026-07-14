@@ -2302,6 +2302,37 @@ export class CustomerServiceService {
             throw new InternalServerErrorException('핀 발급에 실패했습니다.');
           }
 
+          const newPin = fullDelivery.barCode;
+          afterChange = `${normalizedTarget} / ${newPin}`;
+
+          // ★ 이력은 **발송 전**, PIN 이 확정된 즉시 남긴다 (리뷰 MEDIUM).
+          //
+          //   종전에는 발송 뒤에 기록했는데, 그 사이의 lease 상실 throw 들이 전부 이 지점보다
+          //   앞이라 이력이 통째로 사라졌다. 그런데 그 throw 들은 "발송이 안 됐다" 는 뜻이 아니다
+          //   — tip 은 status=WAIT + barCode 로 남아 배치가 이어서 발송할 수 있다. 즉 **고객은
+          //   PIN 을 받았는데 CS 에는 그 PIN 의 이력이 없는** 상태가 된다.
+          //   협력사에서 이미 발급·과금된 PIN 이므로, 발송 성공 여부와 무관하게 "이 PIN 이
+          //   이 주문에 발급됐다" 는 사실 자체를 남겨야 한다. 발송 결과는 order_delivery.status 가
+          //   따로 들고 있다.
+          const sharedHistoryFields = {
+            userId: map.userId,
+            type: map.type,
+            content: map.content,
+            sendMethod: map.sendMethod,
+            beforeChange: map.beforeChange,
+            afterChange: afterChange,
+          };
+          await this.orderHistoryRepository.save([
+            this.orderHistoryRepository.create({
+              ...sharedHistoryFields,
+              orderDeliveryId: map.orderDelivery.id,
+            }),
+            this.orderHistoryRepository.create({
+              ...sharedHistoryFields,
+              orderDeliveryId: savedDelivery.id,
+            }),
+          ]);
+
           // issue 성공 + barCode 확인 + durable save 완료 후에야 선차감 pending KEPT 해소(차감 유지 확정).
           // barCode 검증 이전에 KEPT 하면 이후 !barCode 분기의 DEFERRED 역복원을 sweep 이 재시도 못 함(HIGH).
           if (isSsg && reissueEvent && resendDeductionId) {
@@ -2361,9 +2392,6 @@ export class CustomerServiceService {
               );
             }
           }
-
-          const newPin = fullDelivery.barCode;
-          afterChange = `${normalizedTarget} / ${newPin}`;
 
           // 발송 직전 lease 소유 재확인 — 비SSG 는 위 유효기간 fenced update 가 이 역할을 하지만
           // SSG 는 그 분기를 타지 않아(issue() 가 expireAt 을 채움) 검사 지점이 없었다.
@@ -2451,25 +2479,7 @@ export class CustomerServiceService {
             }
           }
 
-          // history 양쪽(OLD/NEW)에 기록 — 발송 실패 여부와 무관하게 보장
-          const sharedHistoryFields = {
-            userId: map.userId,
-            type: map.type,
-            content: map.content,
-            sendMethod: map.sendMethod,
-            beforeChange: map.beforeChange,
-            afterChange: afterChange,
-          };
-          await this.orderHistoryRepository.save([
-            this.orderHistoryRepository.create({
-              ...sharedHistoryFields,
-              orderDeliveryId: map.orderDelivery.id,
-            }),
-            this.orderHistoryRepository.create({
-              ...sharedHistoryFields,
-              orderDeliveryId: savedDelivery.id,
-            }),
-          ]);
+          // history 는 PIN 확정 직후(발송 전)에 이미 남겼다 — 위 주석 참조.
 
           if (sendError) {
             throw new InternalServerErrorException(

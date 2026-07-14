@@ -645,6 +645,26 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
     });
 
     /**
+     * ★ 이력은 발송 **전**, PIN 확정 즉시 남긴다 (리뷰 MEDIUM).
+     *
+     * lease 상실 throw 들은 "발송이 안 됐다" 는 뜻이 아니다 — tip 은 status=WAIT + barCode 로
+     * 남아 배치가 이어서 발송할 수 있다. 이력을 발송 뒤에 남기면 그 경로에서 **고객은 PIN 을
+     * 받았는데 CS 에는 그 PIN 의 이력이 없는** 상태가 된다. 협력사에서 이미 발급·과금된 PIN 이니
+     * 발송 성공 여부와 무관하게 "이 PIN 이 발급됐다" 는 사실을 남겨야 한다.
+     */
+    it('27) fencing 으로 중단해도 신규 PIN 이력은 남는다 (OLD/NEW 양쪽)', async () => {
+      setupExecDiscard();
+      orderDeliveryRepository.findOne.mockResolvedValue(buildFullDelivery(IOrderType.GENERAL, null));
+      orderDeliveryRepository.update.mockResolvedValue({ affected: 0 });
+
+      await expect(service.execHistory(buildMap(IOrderType.GENERAL))).rejects.toThrow(/다른 작업이 이 발송 건을 선점/);
+
+      expect(orderHistoryRepository.save).toHaveBeenCalled();
+      const rows = (orderHistoryRepository.save as jest.Mock).mock.calls[0][0];
+      expect(rows).toHaveLength(2); // 원본 + 신규 delivery 양쪽
+    });
+
+    /**
      * SSG 는 유효기간 fenced update 분기를 타지 않으므로(issue() 가 expireAt 을 채움) 검사 지점이
      * 없었다. 발송 직전 lease 소유 재확인이 그 공백을 메운다.
      */
