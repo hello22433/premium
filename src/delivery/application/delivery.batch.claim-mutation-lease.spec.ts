@@ -1,5 +1,6 @@
 import { DeliveryBatchService } from './delivery.batch.service';
 import { MUTATION_CLAIM_STALE_MS } from '../interface/order.delivery.mutation.claim';
+import { OrderDeliveryCouponStatus } from '../interface/order.delivery.coupon.status';
 
 /**
  * D3-55 후속 — 발송배치 claim 이 변형 lease(mutation_claimed_at) 활성 행을 제외하는지.
@@ -75,6 +76,22 @@ describe('DeliveryBatchService.claimWaitDeliveries — 변형 lease 제외 (D3-5
     const setArg = qb.set.mock.calls[0][0];
     expect(setArg).not.toHaveProperty('couponStatus');
     expect(setArg).not.toHaveProperty('discardedAt');
+  });
+
+  /**
+   * 리뷰 CONFIRMED(HIGH): status 와 coupon_status 는 서로 다른 축이다. 폐기(execDiscard)는
+   * coupon_status 만 CANCEL 로 쓰고 status 는 건드리지 않으므로, 어떤 이유로든 WAIT 로 남은
+   * 취소 행을 배치가 집어 "환불 완료된 죽은 핀"을 고객에게 발송할 수 있었다.
+   */
+  it('폐기/환불된 쿠폰(coupon_status CANCEL·REFUND_CANCEL)은 배치가 집지 않는다', async () => {
+    await sut.claimWaitDeliveries(new Date());
+
+    const call = qb.andWhere.mock.calls.find((c: any[]) => /coupon_status/i.test(String(c[0])));
+    expect(call).toBeDefined();
+    expect(call[1].blockedCouponStatuses).toEqual([
+      OrderDeliveryCouponStatus.CANCEL,
+      OrderDeliveryCouponStatus.REFUND_CANCEL,
+    ]);
   });
 
   it('affected 를 그대로 반환한다 (undefined 면 0)', async () => {

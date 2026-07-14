@@ -497,6 +497,12 @@ export class DeliveryBatchService {
       .andWhere('claimedAt IS NULL')
       // 변형(재발행/폐기/취소) 진행중 행은 발송 배치가 건드리지 않는다 (D3-55 후속)
       .andWhere('(mutation_claimed_at IS NULL OR mutation_claimed_at < :mutationStale)', { mutationStale })
+      // 이미 폐기/환불된 쿠폰은 발송하지 않는다. status 와 coupon_status 는 다른 축이라
+      // 폐기(coupon_status=CANCEL)가 status 를 건드리지 않으므로, 어떤 이유로든 WAIT 로 남은
+      // 취소 행을 배치가 집어 "환불된 죽은 핀"을 고객에게 발송할 수 있었다 (리뷰 HIGH).
+      .andWhere('(coupon_status IS NULL OR coupon_status NOT IN (:...blockedCouponStatuses))', {
+        blockedCouponStatuses: [OrderDeliveryCouponStatus.CANCEL, OrderDeliveryCouponStatus.REFUND_CANCEL],
+      })
       // 비동기 알림톡 PENDING(report_state) 행은 발송 배치 재발송 대상 아님 (reportSweep 소관)
       .andWhere('report_state IS NULL')
       // external_api 발송 건은 자체 동기 dispatch — batch 가 절대 claim 하지 않음 (중복 issue/발송 차단)
