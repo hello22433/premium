@@ -219,11 +219,7 @@ describe('ExternalApiService.resendOrder atomic slot claim', () => {
         expect(setArg).not.toHaveProperty('discardedAt');
       }
       // 발송결과 update 는 자기 소유 컬럼만
-      expect(Object.keys((update.mock.calls[0] as any[])[1]).sort()).toEqual([
-        'actualSendAt',
-        'resendAt',
-        'status',
-      ]);
+      expect(Object.keys((update.mock.calls[0] as any[])[1]).sort()).toEqual(['actualSendAt', 'resendAt', 'status']);
     });
 
     it('fencing: 발송결과 update 가 affected=0(lease 강탈당한 좀비)이면 throw 없이 로그만 — 상태를 되살리지 않는다', async () => {

@@ -1017,15 +1017,22 @@ export class CustomerServiceService {
     }
 
     // 2. 원자적 claim (owner 토큰 = app 생성 claimAt). 동시 재발송 직렬화 + 5분 self-heal.
+    //    변형 lease(mutation_claimed_at)도 같은 CAS 로 함께 **획득**한다 (D3-55 후속).
+    //    - WHERE 로 읽기만 하면 확인과 점유 사이에 폐기/외부취소가 진입해, 발송(수 초) 도중 협력사
+    //      취소 + 환불을 마친다 → 이미 죽은 핀이 담긴 문자가 고객에게 배달된다.
+    //      (외부 resendOrder 의 슬롯 CAS 를 "읽기→획득" 으로 고친 8a8f256 과 같은 이유)
+    //    - 반대로 폐기가 먼저면 그쪽이 lease 를 쥐고 있어 이 CAS 가 affected=0 → 409 로 거절된다.
     const claimAt = new Date();
     const staleThreshold = new Date(claimAt.getTime() - RESEND_CLAIM_STALE_MS);
+    const mutationStale = new Date(claimAt.getTime() - MUTATION_CLAIM_STALE_MS);
     const claimResult = await this.orderDeliveryRepository
       .createQueryBuilder()
       .update(OrderDeliveryEntity)
-      .set({ claimedAt: claimAt })
+      .set({ claimedAt: claimAt, mutationClaimedAt: claimAt })
       .where('id = :id', { id: orderDeliveryId })
       .andWhere('status IN (:...statuses)', { statuses })
       .andWhere('(claimedAt IS NULL OR claimedAt < :stale)', { stale: staleThreshold })
+      .andWhere('(mutation_claimed_at IS NULL OR mutation_claimed_at < :mutationStale)', { mutationStale })
       .execute();
     if (!claimResult.affected) {
       throw new ConflictException('재발송 처리 중이거나 상태가 변경되었습니다. 잠시 후 다시 시도해주세요.');
@@ -1041,6 +1048,7 @@ export class CustomerServiceService {
       await this.deliveryBatchService.oneSend(orderDelivery);
     } finally {
       await this.orderDeliveryRepository.update({ id: orderDeliveryId, claimedAt: claimAt }, { claimedAt: null });
+      await this.releaseMutationLease(orderDeliveryId, claimAt);
     }
   }
 
@@ -1521,62 +1529,74 @@ export class CustomerServiceService {
       throw new BadRequestException('현재 변경을 할 수 없는 핀상태입니다.');
     }
 
-    switch (businessName) {
-      case 'GS엠비즈':
-      case '대홍기획':
-      case '컬쳐랜드':
-      case '갤럭시아':
-      case '케이티알파':
-      case '주식회사 다우기술':
-        // 협력사 쿠폰은 기간만료(EXPIRED)도 변경 불가 (terminal 공통 차단은 switch 앞에서 수행)
-        if (beforeChange === OrderDeliveryCouponStatus.EXPIRED) {
-          throw new BadRequestException('현재 변경을 할 수 없는 핀상태입니다.');
-        }
+    // 변형 lease 게이트 (D3-55 후속). execDiscard 와 동일 — terminal 가드 직후, 협력사 cancel 앞.
+    // 핀상태변경도 coupon_status 를 CANCEL 로 쓰고 협력사 취소를 태우므로, 재발행/외부취소/배치발송이
+    // 진행 중인 행에 진입하면 "발송 중인 핀을 죽이고 문자는 그대로 나가는" 상태가 된다.
+    const mutationClaimAt = new Date();
+    if (!(await this.acquireMutationLease(orderDelivery.id, mutationClaimAt))) {
+      throw new BadRequestException('해당 발송 건에 다른 처리가 진행 중입니다. 잠시 후 다시 시도해 주세요.');
+    }
 
-        if (afterChange === 'CANCEL' || afterChange === 'REFUND_CANCEL') {
-          // 외부 cancel 은 트랜잭션 밖에서 선행(HTTP 롤백 불가). 성공 응답 후에만 DB 반영.
-          // 협력사 cancel()은 실패 시 throw 로 알리므로(반환값 아님), 여기까지 도달하면 성공이다.
-          // (D3-46: 기존 `if (result.message === '폐기 완료') ... else throw` 의 else 는 도달 불가 데드코드였음)
-          await this.partnerCompanyExternService.cancel(orderDelivery);
+    try {
+      switch (businessName) {
+        case 'GS엠비즈':
+        case '대홍기획':
+        case '컬쳐랜드':
+        case '갤럭시아':
+        case '케이티알파':
+        case '주식회사 다우기술':
+          // 협력사 쿠폰은 기간만료(EXPIRED)도 변경 불가 (terminal 공통 차단은 switch 앞에서 수행)
+          if (beforeChange === OrderDeliveryCouponStatus.EXPIRED) {
+            throw new BadRequestException('현재 변경을 할 수 없는 핀상태입니다.');
+          }
 
-          await this.commitPinStatusTransition(
-            orderDelivery.id,
-            beforeChange,
-            { couponStatus: OrderDeliveryCouponStatus.CANCEL, discardedAt: new Date() },
-            { userId: map.userId, type, content, afterChange: OrderDeliveryCouponStatus.CANCEL },
-          );
-        } else {
-          throw new BadRequestException('변경을 할 수 없는 핀상태입니다.');
-        }
+          if (afterChange === 'CANCEL' || afterChange === 'REFUND_CANCEL') {
+            // 외부 cancel 은 트랜잭션 밖에서 선행(HTTP 롤백 불가). 성공 응답 후에만 DB 반영.
+            // 협력사 cancel()은 실패 시 throw 로 알리므로(반환값 아님), 여기까지 도달하면 성공이다.
+            // (D3-46: 기존 `if (result.message === '폐기 완료') ... else throw` 의 else 는 도달 불가 데드코드였음)
+            await this.partnerCompanyExternService.cancel(orderDelivery);
 
-        break;
-      case 'SSG':
-        // SSG 기간만료 정책은 현행 보존(전면 차단). 폐기(만료→환불폐기 허용)와의 비대칭은
-        // 의도/누락 확인이 필요한 별도 사안 — 본 작업(가드/CAS/트랜잭션)에서 동작 변경하지 않음.
-        if (beforeChange === OrderDeliveryCouponStatus.EXPIRED) {
-          throw new BadRequestException('현재 변경을 할 수 없는 핀상태입니다.');
-        }
+            await this.commitPinStatusTransition(
+              orderDelivery.id,
+              beforeChange,
+              { couponStatus: OrderDeliveryCouponStatus.CANCEL, discardedAt: new Date() },
+              { userId: map.userId, type, content, afterChange: OrderDeliveryCouponStatus.CANCEL },
+            );
+          } else {
+            throw new BadRequestException('변경을 할 수 없는 핀상태입니다.');
+          }
 
-        if (afterChange === 'CANCEL' || afterChange === 'REFUND_CANCEL') {
-          await this.commitPinStatusTransition(
-            orderDelivery.id,
-            beforeChange,
-            { couponStatus: afterChange, discardedAt: new Date() },
-            { userId: orderDelivery.userId, type, content, afterChange },
-          );
-        } else {
-          throw new BadRequestException('변경을 할 수 없는 핀상태입니다.');
-        }
+          break;
+        case 'SSG':
+          // SSG 기간만료 정책은 현행 보존(전면 차단). 폐기(만료→환불폐기 허용)와의 비대칭은
+          // 의도/누락 확인이 필요한 별도 사안 — 본 작업(가드/CAS/트랜잭션)에서 동작 변경하지 않음.
+          if (beforeChange === OrderDeliveryCouponStatus.EXPIRED) {
+            throw new BadRequestException('현재 변경을 할 수 없는 핀상태입니다.');
+          }
 
-        break;
-      default:
-        // 협력사 미지정 등 — 상태만 보정(이력 없음). 허용 상태(CANCEL/REFUND_CANCEL)만 명시 제한:
-        // DTO @IsEnum 1차 차단 + 여기서 폐기/환불폐기로 2차 제한 → 임의 문자열의 상태 컬럼 오염 방지.
-        if (afterChange !== 'CANCEL' && afterChange !== 'REFUND_CANCEL') {
-          throw new BadRequestException('변경을 할 수 없는 핀상태입니다.');
-        }
-        // 경합 방지를 위해 CAS 적용.
-        await this.commitPinStatusTransition(orderDelivery.id, beforeChange, { couponStatus: afterChange });
+          if (afterChange === 'CANCEL' || afterChange === 'REFUND_CANCEL') {
+            await this.commitPinStatusTransition(
+              orderDelivery.id,
+              beforeChange,
+              { couponStatus: afterChange, discardedAt: new Date() },
+              { userId: orderDelivery.userId, type, content, afterChange },
+            );
+          } else {
+            throw new BadRequestException('변경을 할 수 없는 핀상태입니다.');
+          }
+
+          break;
+        default:
+          // 협력사 미지정 등 — 상태만 보정(이력 없음). 허용 상태(CANCEL/REFUND_CANCEL)만 명시 제한:
+          // DTO @IsEnum 1차 차단 + 여기서 폐기/환불폐기로 2차 제한 → 임의 문자열의 상태 컬럼 오염 방지.
+          if (afterChange !== 'CANCEL' && afterChange !== 'REFUND_CANCEL') {
+            throw new BadRequestException('변경을 할 수 없는 핀상태입니다.');
+          }
+          // 경합 방지를 위해 CAS 적용.
+          await this.commitPinStatusTransition(orderDelivery.id, beforeChange, { couponStatus: afterChange });
+      }
+    } finally {
+      await this.releaseMutationLease(orderDelivery.id, mutationClaimAt);
     }
 
     return;
@@ -2744,94 +2764,111 @@ export class CustomerServiceService {
             continue;
           }
 
-          const beforeChange = orderDelivery.couponStatus;
-          // 초이스쿠폰의 경우 선택한 상품의 협력사를 우선 사용
-          const partnerCompanyName =
-            orderDelivery.choiceSelectProduct?.partnerCompany?.businessName ??
-            orderDelivery.orderProductMapping?.product?.partnerCompany?.businessName;
-
-          // 4. 협력사별 폐기 처리 (외부 API - 트랜잭션 밖에서 실행)
-          switch (partnerCompanyName) {
-            case 'GS엠비즈':
-            case '대홍기획':
-            case '컬쳐랜드':
-            case '갤럭시아':
-            case '케이티알파':
-            case '주식회사 다우기술': {
-              // 협력사 cancel()은 실패를 throw 로 알린다(반환값 아님) → try/catch 로 받아야 함.
-              // (D3-46: 기존 `result.message !== '폐기 완료'` 분기는 도달 불가한 데드코드였음)
-              // catch 에서 추가 logger 없음 — 어댑터가 이미 infra 레벨 1회 로깅(중복 방지).
-              try {
-                await this.partnerCompanyExternService.cancel(orderDelivery);
-              } catch (e) {
-                const syncedStatus = await this.syncCouponStatusAfterDiscardFailure(orderDelivery);
-                failed.push({
-                  id: orderDeliveryId,
-                  reason: (e instanceof Error ? e.message : '') || '외부 API 폐기 실패',
-                  syncedStatus: syncedStatus ?? undefined,
-                });
-                continue;
-              }
-              orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
-              orderDelivery.discardedAt = new Date();
-              break;
-            }
-            case 'SSG':
-            default: {
-              orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
-              orderDelivery.discardedAt = new Date();
-              break;
-            }
-          }
-
-          // 5. 트랜잭션: couponStatus 저장 + 복구 + CS 히스토리 (건별 트랜잭션)
-          await queryRunner.startTransaction();
-          try {
-            // 상태 전이는 조건부 UPDATE(CAS) — coupon_status 가 아직 beforeChange 일 때만 반영.
-            // bulk 와 pin/history 폐기 경합 시 stale save 가 동시 REFUND_CANCEL 을 CANCEL 로 덮는 것을 차단(멱등).
-            const transition = await queryRunner.manager
-              .createQueryBuilder()
-              .update(OrderDeliveryEntity)
-              .set({ couponStatus: OrderDeliveryCouponStatus.CANCEL, discardedAt: orderDelivery.discardedAt })
-              .where('id = :id AND coupon_status = :before', { id: orderDelivery.id, before: beforeChange })
-              .execute();
-
-            if (transition.affected === 0) {
-              // 다른 요청이 먼저 상태를 바꿈 → 덮어쓰지 않고 이 건만 실패 처리(아래 catch 로 전파)
-              throw new BadRequestException('동시에 상태가 변경되어 폐기하지 못했습니다.');
-            }
-
-            // 예치금/여신 복구
-            const restoreAmount = await this.restoreBalanceOnDiscard(orderDelivery, user, queryRunner, operatorName);
-            let destroyAmount = calculateSettlementPrice(
-              orderDelivery.orderProductMapping,
-              orderDelivery.orderProductMapping.order.cardSurchargeApplied,
-              orderDelivery,
-            );
-            if (restoreAmount !== null && orderDelivery.orderProductMapping.order.isSettleComplete) {
-              destroyAmount = restoreAmount;
-            }
-
-            // CS 히스토리 저장
-            const history = this.orderHistoryRepository.create({
-              orderDeliveryId: orderDelivery.id,
-              userId: user.id,
-              type: CS_HISTORY_TYPE.DISCARD,
-              content: content,
-              beforeChange: beforeChange,
-              afterChange: OrderDeliveryCouponStatus.CANCEL,
-              destroyAmount,
-              restoreAmount,
+          // 3-2. 변형 lease 획득 (D3-55 후속). 재발행/외부취소/배치발송이 이 행을 진행 중이면 skip.
+          // 없으면 재발행이 issue()/발송(외부 통신 수 초) 중인 tip 을 다중폐기가 협력사 취소 + 환불까지
+          // 마치고, 재발행은 그대로 진행해 **이미 죽은 핀이 담긴 문자를 고객에게 배달**한다.
+          // fencing 은 내 쓰기만 보호할 뿐, 남이 CANCEL 을 쓰는 것을 막지 못하므로 게이트가 필요하다.
+          const mutationClaimAt = new Date();
+          if (!(await this.acquireMutationLease(orderDelivery.id, mutationClaimAt))) {
+            failed.push({
+              id: orderDeliveryId,
+              reason: '해당 발송 건에 다른 처리가 진행 중입니다. 잠시 후 다시 시도해 주세요.',
             });
-            await queryRunner.manager.save(OrderHistoryEntity, history);
-
-            await queryRunner.commitTransaction();
-          } catch (txError) {
-            await queryRunner.rollbackTransaction();
-            throw txError;
+            continue;
           }
 
-          success.push(orderDeliveryId);
+          try {
+            const beforeChange = orderDelivery.couponStatus;
+            // 초이스쿠폰의 경우 선택한 상품의 협력사를 우선 사용
+            const partnerCompanyName =
+              orderDelivery.choiceSelectProduct?.partnerCompany?.businessName ??
+              orderDelivery.orderProductMapping?.product?.partnerCompany?.businessName;
+
+            // 4. 협력사별 폐기 처리 (외부 API - 트랜잭션 밖에서 실행)
+            switch (partnerCompanyName) {
+              case 'GS엠비즈':
+              case '대홍기획':
+              case '컬쳐랜드':
+              case '갤럭시아':
+              case '케이티알파':
+              case '주식회사 다우기술': {
+                // 협력사 cancel()은 실패를 throw 로 알린다(반환값 아님) → try/catch 로 받아야 함.
+                // (D3-46: 기존 `result.message !== '폐기 완료'` 분기는 도달 불가한 데드코드였음)
+                // catch 에서 추가 logger 없음 — 어댑터가 이미 infra 레벨 1회 로깅(중복 방지).
+                try {
+                  await this.partnerCompanyExternService.cancel(orderDelivery);
+                } catch (e) {
+                  const syncedStatus = await this.syncCouponStatusAfterDiscardFailure(orderDelivery);
+                  failed.push({
+                    id: orderDeliveryId,
+                    reason: (e instanceof Error ? e.message : '') || '외부 API 폐기 실패',
+                    syncedStatus: syncedStatus ?? undefined,
+                  });
+                  continue;
+                }
+                orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
+                orderDelivery.discardedAt = new Date();
+                break;
+              }
+              case 'SSG':
+              default: {
+                orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
+                orderDelivery.discardedAt = new Date();
+                break;
+              }
+            }
+
+            // 5. 트랜잭션: couponStatus 저장 + 복구 + CS 히스토리 (건별 트랜잭션)
+            await queryRunner.startTransaction();
+            try {
+              // 상태 전이는 조건부 UPDATE(CAS) — coupon_status 가 아직 beforeChange 일 때만 반영.
+              // bulk 와 pin/history 폐기 경합 시 stale save 가 동시 REFUND_CANCEL 을 CANCEL 로 덮는 것을 차단(멱등).
+              const transition = await queryRunner.manager
+                .createQueryBuilder()
+                .update(OrderDeliveryEntity)
+                .set({ couponStatus: OrderDeliveryCouponStatus.CANCEL, discardedAt: orderDelivery.discardedAt })
+                .where('id = :id AND coupon_status = :before', { id: orderDelivery.id, before: beforeChange })
+                .execute();
+
+              if (transition.affected === 0) {
+                // 다른 요청이 먼저 상태를 바꿈 → 덮어쓰지 않고 이 건만 실패 처리(아래 catch 로 전파)
+                throw new BadRequestException('동시에 상태가 변경되어 폐기하지 못했습니다.');
+              }
+
+              // 예치금/여신 복구
+              const restoreAmount = await this.restoreBalanceOnDiscard(orderDelivery, user, queryRunner, operatorName);
+              let destroyAmount = calculateSettlementPrice(
+                orderDelivery.orderProductMapping,
+                orderDelivery.orderProductMapping.order.cardSurchargeApplied,
+                orderDelivery,
+              );
+              if (restoreAmount !== null && orderDelivery.orderProductMapping.order.isSettleComplete) {
+                destroyAmount = restoreAmount;
+              }
+
+              // CS 히스토리 저장
+              const history = this.orderHistoryRepository.create({
+                orderDeliveryId: orderDelivery.id,
+                userId: user.id,
+                type: CS_HISTORY_TYPE.DISCARD,
+                content: content,
+                beforeChange: beforeChange,
+                afterChange: OrderDeliveryCouponStatus.CANCEL,
+                destroyAmount,
+                restoreAmount,
+              });
+              await queryRunner.manager.save(OrderHistoryEntity, history);
+
+              await queryRunner.commitTransaction();
+            } catch (txError) {
+              await queryRunner.rollbackTransaction();
+              throw txError;
+            }
+
+            success.push(orderDeliveryId);
+          } finally {
+            await this.releaseMutationLease(orderDelivery.id, mutationClaimAt);
+          }
         } catch (error: any) {
           failed.push({
             id: orderDeliveryId,

@@ -217,13 +217,27 @@ describe('CustomerServiceService.execDiscard — terminal 차단 / CAS 멱등', 
         choiceSelectProduct: undefined,
       }) as any;
 
-    const makeBulkSut = (txAffected: number) => {
+    const makeBulkSut = (txAffected: number, leaseAffected = 1) => {
       const sut: any = Object.create(CustomerServiceService.prototype);
       sut.userRepository = { findOne: jest.fn().mockResolvedValue(operatorEntity) };
-      sut.orderDeliveryRepository = { findOne: jest.fn().mockResolvedValue(buildBulkOrderDelivery()) };
       sut.dataSource = { createQueryRunner: jest.fn(() => makeTxRunner(txAffected)) };
       sut.orderHistoryRepository = { create: jest.fn(() => ({})) };
       sut.restoreBalanceOnDiscard = jest.fn().mockResolvedValue(undefined);
+      sut.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
+
+      // 변형 lease (D3-55 후속): acquire=createQueryBuilder CAS, release=update
+      const leaseQb: any = {
+        update: jest.fn(() => leaseQb),
+        set: jest.fn(() => leaseQb),
+        where: jest.fn(() => leaseQb),
+        andWhere: jest.fn(() => leaseQb),
+        execute: jest.fn(async () => ({ affected: leaseAffected })),
+      };
+      sut.orderDeliveryRepository = {
+        findOne: jest.fn().mockResolvedValue(buildBulkOrderDelivery()),
+        createQueryBuilder: jest.fn(() => leaseQb),
+        update: jest.fn(async () => ({ affected: 1 })),
+      };
       return sut;
     };
 
@@ -245,6 +259,43 @@ describe('CustomerServiceService.execDiscard — terminal 차단 / CAS 멱등', 
       expect(result.success).toHaveLength(0);
       expect(result.failed).toEqual([{ id: 8001, reason: '동시에 상태가 변경되어 폐기하지 못했습니다.' }]);
       expect(sut.restoreBalanceOnDiscard).not.toHaveBeenCalled();
+    });
+
+    /**
+     * D3-55 후속 — 변형 lease 게이트.
+     * bulkDiscard 는 운영자가 가장 많이 쓰는 폐기 경로인데 lease 를 잡지 않았다.
+     * 재발행이 issue()/발송(외부 통신 수 초) 중인 tip 을 다중폐기가 협력사 취소 + 환불까지 마치면,
+     * 재발행은 그대로 진행해 **이미 죽은 핀이 담긴 문자를 고객에게 배달**한다.
+     * fencing 은 내 쓰기만 보호할 뿐 남이 CANCEL 을 쓰는 것을 막지 못하므로 게이트가 필요하다.
+     */
+    it('활성 lease(다른 처리 진행중) → 건별 failed 로 skip, 협력사 취소/Tx 미진입', async () => {
+      const sut = makeBulkSut(1, 0); // lease CAS affected=0
+
+      const result = await sut.bulkDiscard(operator, [8001], '일괄폐기');
+
+      expect(result.success).toHaveLength(0);
+      expect(result.failed).toEqual([
+        { id: 8001, reason: '해당 발송 건에 다른 처리가 진행 중입니다. 잠시 후 다시 시도해 주세요.' },
+      ]);
+      expect(sut.dataSource.createQueryRunner().startTransaction).not.toHaveBeenCalled();
+      expect(sut.restoreBalanceOnDiscard).not.toHaveBeenCalled();
+    });
+
+    it('성공/실패 모두 건별 finally 에서 owner-guarded 해제', async () => {
+      const releases = (sut: any) =>
+        (sut.orderDeliveryRepository.update.mock.calls as unknown as any[][]).filter(
+          (c) => c[1] && c[1].mutationClaimedAt === null,
+        );
+
+      const ok = makeBulkSut(1);
+      await ok.bulkDiscard(operator, [8001], '일괄폐기');
+      expect(releases(ok)).toHaveLength(1);
+      expect(releases(ok)[0][0]).toEqual({ id: 8001, mutationClaimedAt: expect.any(Date) });
+
+      // CAS 경합으로 건이 실패해도 lease 는 반납된다 (미반납 시 5분간 그 행이 잠긴다)
+      const conflicted = makeBulkSut(0);
+      await conflicted.bulkDiscard(operator, [8001], '일괄폐기');
+      expect(releases(conflicted)).toHaveLength(1);
     });
   });
 
