@@ -267,7 +267,12 @@ export class OrderDeliveryEntity extends BaseEntity {
   @Column({ type: 'datetime', nullable: true, comment: '다음 inquiry 수행 예정 시각 (30초 간격 근사)' })
   reportNextDueAt: Date | null;
 
-  @Column({ type: 'datetime', precision: 6, nullable: true, comment: 'reportSweep 멱등 claim 시각 (lease 만료 판정용)' })
+  @Column({
+    type: 'datetime',
+    precision: 6,
+    nullable: true,
+    comment: 'reportSweep 멱등 claim 시각 (lease 만료 판정용)',
+  })
   reportClaimedAt: Date | null;
 
   @Column({ type: 'varchar', length: 64, nullable: true, comment: 'reportSweep 회차 소유 토큰 (자기 토큰 행만 처리)' })
