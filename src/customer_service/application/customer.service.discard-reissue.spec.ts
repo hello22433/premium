@@ -478,14 +478,37 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
       expect(carry).not.toHaveBeenCalled();
     });
 
-    it('9-2) 비SSG barCode 없음(핀 발급 실패)도 wallet 승계 전에 중단한다', async () => {
+    /**
+     * ★ 비-SSG 실패 메시지는 **실제 잔여 상태**를 말해야 한다 (4차 리뷰 HIGH).
+     *
+     * 종전 메시지는 "핀 발급에 실패했습니다." 였다. 그런데 그 시점의 진짜 상태는:
+     *   - 원본: 협력사에서 **이미 취소됨**. 그리고 재발행의 폐기는 skipBalanceRestore:true 라
+     *     **환불이 집행되지 않았다** → 고객은 쿠폰도 없고 환불도 없다(결제만 그대로).
+     *   - 재시도 불가: 원본이 CANCEL 이라 execDiscard 터미널 가드에 걸린다(운영자는 이유를 모른다).
+     *   - order_history 도 이 시점엔 0건 → CS 는 추적조차 못 한다.
+     * "핀 발급에 실패" 는 그 어느 것도 전달하지 않는다 — 운영자는 그냥 다시 누르고, 막히고, 끝난다.
+     */
+    it('9-2) 비SSG barCode 없음: wallet 승계 전 중단 + tip 무력화 + 실제 잔여상태를 알리는 메시지', async () => {
       setupExecDiscard();
       orderDeliveryRepository.findOne.mockResolvedValue(buildFullDelivery(IOrderType.GENERAL, null, ''));
       const carry = jest.spyOn(service as any, 'carryWalletOwnershipToReissuedDelivery').mockResolvedValue(undefined);
+      const reverseDiscard = jest.spyOn(service as any, 'reverseDiscard').mockResolvedValue(true);
 
-      await expect(service.execHistory(buildMap(IOrderType.GENERAL))).rejects.toThrow(/핀 발급에 실패/);
+      await expect(service.execHistory(buildMap(IOrderType.GENERAL))).rejects.toThrow(
+        /협력사에서 이미 취소.*환불도 집행되지 않았습니다/s,
+      );
 
       expect(carry).not.toHaveBeenCalled();
+
+      // tip 을 살려 두면 배치가 새 PIN 을 발급해 고객에게 보낸다(운영자에겐 실패라고 답한 뒤)
+      const kill = (orderDeliveryRepository.update.mock.calls as unknown as any[][]).find(
+        (c) => c[0]?.id === 8001 && c[1]?.couponStatus === OrderDeliveryCouponStatus.CANCEL,
+      );
+      expect(kill).toBeDefined();
+      expect(kill![0]).toHaveProperty('mutationClaimedAt'); // fenced
+
+      // 비-SSG 원본은 협력사 cancel 을 이미 태워 상태 플립으로 되살릴 수 없다
+      expect(reverseDiscard).not.toHaveBeenCalled();
     });
 
     it('10) GENERAL + wallet-managed: 신규 delivery 로 allocation_line repoint + INITIAL attempt 생성', async () => {

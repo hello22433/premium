@@ -34,6 +34,7 @@ import { systemFromPhoneNumber, ssgIssueUserName } from '../../const';
 import { smsSsgTemplate } from '../../delivery/domain/sms.ssg.template';
 import { addDays, format, subDays } from 'date-fns';
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
+import { UNSENDABLE_COUPON_STATUSES } from '../../delivery/interface/order.delivery.mutation.claim';
 import { CancelCouponResDto } from '../api/CancelCouponResDto';
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
@@ -1120,6 +1121,11 @@ export class PartnerCompanyExternService {
   }
 
   async refreshCouponStatus(orderDelivery: OrderDeliveryEntity): Promise<OrderDeliveryEntity> {
+    // ★ 진입 시점의 coupon_status 를 붙잡아 둔다 — 아래 optimistic CAS 의 대조값.
+    //   협력사 조회(외부 통신, 수 초) 동안 아래 분기들이 orderDelivery.couponStatus 를 덮어쓰므로
+    //   **반드시 여기서** 캡처해야 한다.
+    const loadedCouponStatus = orderDelivery.couponStatus ?? null;
+
     // 초이스쿠폰의 경우 선택한 상품의 협력사를 우선 확인
     const choicePartnerType = orderDelivery.choiceSelectProduct?.partnerCompany?.type;
     const productPartnerType = orderDelivery.orderProductMapping.product.partnerCompany?.type;
@@ -1446,19 +1452,47 @@ export class PartnerCompanyExternService {
     //     - 진행 중인 재발행의 fenced write 가 affected=0 → 운영자에게 409("다른 작업이 선점")
     //       — 실제로는 아무도 선점하지 않았는데.
     //     - lease 가 사라져 폐기×재발행 교차 창이 **다시 열린다**(이 작업이 닫으려던 그 창).
-    //   같은 이유로 coupon_status 도 stale 로 되돌아갈 수 있다(D3-60 원본 결함).
     //
     // 이 메서드가 엔티티에 쓰는 컬럼은 아래 5개가 전부다(전수 확인: 협력사별 분기 전 구간).
-    await this.orderDeliveryRepository.update(
-      { id: orderDelivery.id },
-      {
+    //
+    // ★ 그리고 **optimistic CAS** 가 필요하다 (리뷰 HIGH, 양쪽 일치).
+    //   lease 컬럼 clobber 는 위로 막혔지만 coupon_status 축(D3-60 의 본체)은 여전히 열려 있었다:
+    //     T0: 운영자 A 가 "핀상태갱신" → 협력사 check 호출(수 초). 응답 NOT_USED.
+    //     T1: 운영자 B 가 폐기 → lease 획득 → 협력사 cancel → coupon_status=CANCEL → 환불 집행.
+    //     T2: A 의 update 착지 → coupon_status=NOT_USED, discarded_at=NULL (스냅샷 stale 값)
+    //         → **환불된 죽은 쿠폰이 DB 상 되살아나고 폐기 시각까지 지워진다.**
+    //         → UNSENDABLE_COUPON_STATUSES 게이트를 통과 → 배치/CS 재전송이 그 핀을 배달.
+    //   폐기 쪽은 lease 를 정상적으로 잡았고 아무 잘못이 없다. 이 update 가 무조건부였을 뿐이다.
+    //
+    //   막는 법 — **진입 시점 값에서 변하지 않았을 때만 쓴다**(optimistic CAS).
+    //   lease 술어(mutation_claimed_at IS NULL)를 쓰면 안 된다: syncCouponStatusAfterDiscardFailure
+    //   는 **자기 lease 를 쥔 채** 이 메서드를 부르므로 자기 쓰기를 스스로 막게 된다
+    //   (b90abcb 에서 이미 밟은 지뢰다).
+    //   "터미널 다운그레이드 금지" 도 안 된다: 폐기 실패 후 동기화(CANCEL → 실제 NOT_USED 정정)라는
+    //   **정당한 다운그레이드**가 실재하고, 그걸 막으면 살아있는 쿠폰이 DB 상 죽은 채로 굳는다.
+    //   진입 시점 값 대조는 그 둘을 정확히 가른다.
+    const write = await this.orderDeliveryRepository
+      .createQueryBuilder()
+      .update(OrderDeliveryEntity)
+      .set({
         couponStatus: orderDelivery.couponStatus,
         discardedAt: orderDelivery.discardedAt,
         tradeAt: orderDelivery.tradeAt,
         tradePlace: orderDelivery.tradePlace,
         galaxiaBalance: orderDelivery.galaxiaBalance,
-      },
-    );
+      })
+      .where('id = :id', { id: orderDelivery.id })
+      // NULL-safe equality(<=>) — coupon_status 가 NULL 인 행도 정상 대조된다.
+      .andWhere('coupon_status <=> :loaded', { loaded: loadedCouponStatus })
+      .execute();
+    if (!write.affected) {
+      // 조회(외부 통신, 수 초) 도중 남이 coupon_status 를 바꿨다. 우리 결과는 stale 이므로 버린다.
+      // 덮어썼다면 폐기·환불이 확정된 쿠폰을 되살렸을 것이다.
+      this.logger.error(
+        `[핀상태갱신] 조회 중 쿠폰상태가 변경됨 — 갱신을 폐기한다(stale 덮어쓰기 방지). ` +
+          `orderDeliveryId=${orderDelivery.id}, 진입시=${loadedCouponStatus}, 협력사응답=${orderDelivery.couponStatus}`,
+      );
+    }
     return orderDelivery;
   }
 

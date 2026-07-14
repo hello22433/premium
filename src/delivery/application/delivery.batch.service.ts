@@ -478,12 +478,26 @@ export class DeliveryBatchService {
   async releaseStaleBatchClaims(): Promise<number> {
     // ① 배치가 잡은 변형 lease 만 먼저 해제한다. claimed_at 을 아직 지우기 전이어야
     //    `mutation_claimed_at = claimed_at` 서명을 대조할 수 있다(순서 필수).
+    //
+    // ★ stale 술어가 **필수**다 (4차 조준 리뷰 HIGH x2 — 내가 만든 회귀).
+    //   이 메서드는 부팅 시 1회 돌지만, 롤링 배포·다중 인스턴스에서는 **다른 팟이 지금 발송 중**일 수
+    //   있다. 나이 조건 없이 지우면:
+    //     팟 B: od#123 claim(claimed_at=mutation_claimed_at=T) → 협력사 issue() 진행 중(수 초)
+    //     팟 A: 부팅 → ①이 B 의 **살아있는 lease** 를 벗김 → 그 즉시 폐기·외부취소·다른 팟 claim 에
+    //           전부 열림 → B 가 발송하는 사이 폐기가 협력사 취소 + 환불 → 환불된 핀이 배달된다.
+    //   종전에는 ②가 claimed_at 만 벗겨도 **변형 lease 가 남아 폐기를 막아주고 있었다.**
+    //   내가 ①을 추가하면서 그 마지막 방벽을 걷어냈다.
+    //   stale(5분 초과)만 지우면: 크래시 잔재는 회수되고(살아있는 발송은 초 단위라 절대 안 걸린다),
+    //   살아있는 팟은 건드리지 않는다. 5분 미만의 잔재는 claimWaitDeliveries 의 per-row self-heal 이
+    //   어차피 회수한다.
+    const staleThreshold = new Date(Date.now() - MUTATION_CLAIM_STALE_MS);
     await this.orderDeliveryRepository
       .createQueryBuilder()
       .update(OrderDeliveryEntity)
       .set({ mutationClaimedAt: null })
       .where('status = :status', { status: IOrderDeliveryStatus.WAIT })
       .andWhere('claimedAt IS NOT NULL')
+      .andWhere('claimed_at < :staleThreshold', { staleThreshold })
       .andWhere('mutation_claimed_at = claimed_at')
       .execute();
 
@@ -970,15 +984,27 @@ export class DeliveryBatchService {
           `[REPORT_SWEEP][R1] SMS 폴백 중단 — 폐기·환불된 쿠폰(coupon_status=${fresh.couponStatus}). od=${od.id}`,
         );
         od.reportState = IOrderDeliveryReportState.UNCONFIRMED;
-        // ★ status 도 터미널로 전이한다 (리뷰 HIGH).
-        //   WAIT 로 두면 report_state=UNCONFIRMED 와 겹쳐 **아무도 집지 못하는 좀비 행**이 된다:
-        //     reportSweep(PENDING 요구) / claimWaitDeliveries(report_state IS NULL 요구) /
-        //     CS reSend·재전송(COMPLETE·FAIL 요구) / 발송실패내역(FAIL·FAIL_SMS 요구) — 전부 제외.
-        //   markOrderTerminalAndSettle 도 못 타 주문이 영원히 미정산으로 남는다.
-        //   (아래 (3) 분기 주석이 규탄하는 바로 그 상태를 여기서 만들고 있었다.)
-        //   쿠폰은 이미 죽었으므로 CANCEL 이 맞다 — unwindReissue 의 tip kill 과 같은 규약.
-        //   환불은 하지 않는다(폐기가 이미 집행했다 → 이중 환불 방지).
-        od.status = IOrderDeliveryStatus.CANCEL;
+        // ★ status 는 **건드리지 않는다** (4차 조준 리뷰 CRITICAL x2 — 앞선 라운드의 내 수정을 철회).
+        //
+        //   한때 여기서 status=CANCEL 로 "터미널 전이" 를 했다. 두 가지 이유로 틀렸다:
+        //
+        //   ① 정산을 열어주지 못한다. isOrderAllDeliveriesTerminal(L696)의 터미널 집합은
+        //      [COMPLETE, COMPLETE_SMS, FAIL, FAIL_SMS] 로 **CANCEL 을 포함하지 않는다**.
+        //      CANCEL 은 WAIT 과 똑같이 비터미널이라 주문은 그대로 미정산이다. 즉 얻는 게 없다.
+        //      (주문 미정산 자체는 이 분기가 만든 문제가 아니다 — 폐기된 알림톡 PENDING 건은
+        //       종전에도 status=WAIT 로 남아 똑같이 비터미널이었다. 별도 티켓.)
+        //
+        //   ② **lease 를 못 잡은 상태에서 남의 행에 터미널을 쓰는 짓이다.** 이 분기의 진입 조건
+        //      자체가 leaseGate.affected=0 = "다른 액터가 이 행의 운명을 결정 중" 이다.
+        //      그 액터가 재발행이면: execDiscard 가 원본을 CANCEL 로 만든 창에 우리가 status=CANCEL
+        //      을 쓰고, 이후 재발행이 실패해 reverseDiscard 가 coupon_status 만 NOT_USED 로 되돌린다
+        //      (reverseDiscard 는 status 를 안 만진다) → **status=CANCEL + coupon_status=NOT_USED**.
+        //      고객은 알림톡으로 살아있는 쿠폰을 이미 받았는데 DB·CS 화면은 "취소됨" 이다.
+        //      이 프로젝트가 내내 지켜온 규칙("변형은 lease 를 잡고 한다")을 정면으로 어긴다.
+        //
+        //   남는 행(status=WAIT + coupon_status=CANCEL + report_state=UNCONFIRMED)은 **무해하다**:
+        //   쿠폰은 이미 죽고 환불도 끝났으므로 아무도 이 행에 할 일이 없고, 모든 발송 경로가
+        //   coupon_status 가드로 이 행을 배제한다. 방치가 정답이다.
         this.releaseReportClaim(od);
         if (!(await this.persistReportState(od, token))) {
           this.logger.error(`[REPORT_SWEEP][R1] UNCONFIRMED 기록도 실패(소유권 상실) — od=${od.id}`);

@@ -2099,7 +2099,7 @@ export class CustomerServiceService {
           savedId: number | null,
           outcome: SsgRefundOutcome,
           reverseOriginal = true,
-        ): Promise<{ discardReversed: boolean }> => {
+        ): Promise<{ discardReversed: boolean; tipNeutralized: boolean }> => {
           // 1) tip 무력화 — 먼저. 배치 픽업 차단이 최우선이다.
           //
           // ★ tipNeutralized 는 폐기 역전의 **전제조건**이다 (리뷰 HIGH).
@@ -2161,14 +2161,25 @@ export class CustomerServiceService {
           let discardReversed = true;
 
           // 비-SSG 는 폐기 시 협력사 cancel 을 이미 태웠으므로 상태 플립으로 되살릴 수 없다.
-          // tip 무력화(위)만 하고 원본은 폐기 상태로 둔다. 남는 상태는 "원본 폐기(환불 완료) +
-          // tip 없음" 으로, 고객은 환불을 받았고 쿠폰은 없다 — 복구 가능한 정상 종료다.
+          // tip 무력화(위)만 하고 원본은 폐기 상태로 둔다.
+          //
+          // ⚠️ 남는 상태를 정확히 적는다 (4차 리뷰 HIGH — 종전 주석이 "환불 완료" 라고 **거짓**을 썼다):
+          //   재발행의 폐기는 execDiscard(..., { skipBalanceRestore: true }) 로 호출된다("핀 교체"
+          //   전제라 잔액 복구를 건너뛴다). 즉 **환불은 집행되지 않았다.**
+          //   따라서 남는 상태는:
+          //     원본 = 협력사 취소됨 + coupon_status=CANCEL + **환불 없음**
+          //     tip  = 무력화(또는 무력화 실패 시 살아있음)
+          //     고객 = **쿠폰 없음 + 환불 없음.** 결제만 그대로다 → 수동 환불/재발급이 필요하다.
+          //   재시도도 불가하다(원본이 CANCEL 이라 execDiscard 터미널 가드에 걸린다).
+          //   그래서 caller 는 반드시 "운영팀 문의" 를 띄워야 한다 — 아래 ERROR 로그가 그 근거다.
           if (!reverseOriginal) {
-            this.logger.warn(
-              `[폐기후신규발송] 비-SSG — 원본 폐기 역전 미수행(협력사 cancel 을 이미 태워 플립 복구 불가). ` +
-                `tip 무력화 ${tipNeutralized ? '성공' : '실패'}. orderDeliveryId=${discardedDelivery.id}`,
+            this.logger[tipNeutralized ? 'error' : 'error'](
+              `[폐기후신규발송] 비-SSG 재발행 실패 — 원본은 협력사에서 취소됐고 **환불은 집행되지 않았다**` +
+                `(skipBalanceRestore). 수동 환불/재발급 필요. ` +
+                `tip 무력화=${tipNeutralized ? '성공' : '실패(배치가 자동 발송할 수 있다)'}. ` +
+                `원본=${discardedDelivery.id}, tip=${savedId}`,
             );
-            return { discardReversed: false };
+            return { discardReversed: false, tipNeutralized };
           }
 
           if (!tipNeutralized) {
@@ -2178,7 +2189,7 @@ export class CustomerServiceService {
                 `배치가 tip(${savedId}) 을 발송할 수 있고, 원본(${discardedDelivery.id})은 폐기 상태로 남는다. ` +
                 `SSG 선차감은 이미 역복원되어 미차감 발급이 될 수 있다. 운영 확인 필요.`,
             );
-            return { discardReversed: false };
+            return { discardReversed: false, tipNeutralized };
           }
           if (discardBeforeValidated) {
             try {
@@ -2197,8 +2208,25 @@ export class CustomerServiceService {
               );
             }
           }
-          return { discardReversed };
+          return { discardReversed, tipNeutralized };
         };
+
+        /**
+         * 비-SSG 재발행 실패 시 운영자에게 보낼 메시지.
+         *
+         * 실제 잔여 상태를 그대로 말한다 (4차 리뷰 HIGH — 종전에는 "핀 발급에 실패했습니다" 처럼
+         * **원본이 죽었다는 사실도, 환불이 안 나갔다는 사실도** 한 글자도 없었다):
+         *   - 원본: 협력사에서 취소됨. **환불 없음**(재발행 폐기는 skipBalanceRestore:true — 핀 교체 전제)
+         *   - 재시도 불가: 원본이 CANCEL 이라 execDiscard 터미널 가드에 걸린다(운영자는 이유를 모른다)
+         *   - tip 무력화 실패 시: 배치가 그 tip 을 **자동 발송**할 수 있고, wallet 미승계라 이후 환불 불가
+         */
+        const buildNonSsgReissueFailureMessage = (tipNeutralized: boolean): string =>
+          `재발행에 실패했습니다. 원본 쿠폰(발송건 ${discardedDelivery.id})은 협력사에서 이미 취소되어 ` +
+          `되돌릴 수 없고, 환불도 집행되지 않았습니다. 재시도하지 마시고 운영팀에 문의해 ` +
+          `수동 환불 또는 재발급을 진행해 주세요.` +
+          (tipNeutralized
+            ? ''
+            : ` ⚠️ 신규 발송 건(${savedDelivery?.id ?? '-'})을 무력화하지 못해 자동 발송될 수 있습니다.`);
 
         // 변형 lease: tip 은 새 행이므로 INSERT 자체가 원자적 획득(CAS 불필요).
         // issue()/발송(외부 통신, 수 초) 동안 폐기(execDiscard)·외부취소(cancelOrder)·발송배치가
@@ -2292,7 +2320,21 @@ export class CustomerServiceService {
               );
             }
             // reverseOriginal 은 SSG 에서만. 비-SSG 원본은 협력사 cancel 이 이미 나갔다.
-            await unwindReissue(orderDelivery, savedDelivery?.id ?? null, SsgRefundOutcome.RESTORED, isSsg);
+            const unwound = await unwindReissue(
+              orderDelivery,
+              savedDelivery?.id ?? null,
+              SsgRefundOutcome.RESTORED,
+              isSsg,
+            );
+            // 비-SSG 는 원본이 죽고 환불도 안 나갔다 — 원문 에러("새 발송 건 조회에 실패했습니다")로는
+            // 운영자가 그 사실을 알 수 없다. 실제 잔여 상태를 말해 주는 메시지로 갈아끼운다.
+            if (!isSsg) {
+              this.logger.error(
+                `[폐기후신규발송] 비-SSG pre-issue 실패 — orderDeliveryId=${savedDelivery?.id}`,
+                preIssueErr,
+              );
+              throw new InternalServerErrorException(buildNonSsgReissueFailureMessage(unwound.tipNeutralized));
+            }
           } finally {
             if (savedDelivery?.id != null) {
               await this.releaseMutationLease(savedDelivery.id, mutationClaimAt);
@@ -2342,7 +2384,16 @@ export class CustomerServiceService {
                 '신규 발송 처리 중 오류가 발생했습니다. 발송실패내역에서 상태를 확인해 주세요.',
               );
             }
-            throw issueError;
+            // ★ 비-SSG 도 tip 을 무력화해야 한다 (리뷰 HIGH).
+            //   issue() 의 catch 가 세팅하는 status=FAIL 은 **메모리 전용**이다(issue 는 더 이상
+            //   order_delivery 를 save 하지 않는다) → DB 행은 WAIT 그대로다. 여기서 그냥 throw 하면
+            //   finally 가 lease 를 반납하고, tip 은 claimWaitDeliveries 를 전부 통과해
+            //   배치가 새 PIN 을 발급·발송한다. 운영자에겐 실패라고 답했는데 고객은 쿠폰을 받고,
+            //   carryWallet 은 아직 실행 전이라 **wallet 미승계 tip 이 배달**된다(폐기해도 환불 불가).
+            //   비-SSG 원본은 협력사 cancel 을 이미 태워 되살릴 수 없으므로 reverseOriginal=false.
+            const unwound = await unwindReissue(fullDelivery, savedDelivery.id, SsgRefundOutcome.RESTORED, false);
+            this.logger.error(`[폐기후신규발송] 비-SSG issue 실패 — orderDeliveryId=${savedDelivery.id}`, issueError);
+            throw new InternalServerErrorException(buildNonSsgReissueFailureMessage(unwound.tipNeutralized));
           }
 
           // HIGH-2: issue() 성공 후 barCode 없음 — SSG 는 outcome 으로 분기, 비SSG 는 단순 throw
@@ -2375,7 +2426,11 @@ export class CustomerServiceService {
                 '신규 발송 처리 중 오류가 발생했습니다. 발송실패내역에서 상태를 확인해 주세요.',
               );
             }
-            throw new InternalServerErrorException('핀 발급에 실패했습니다.');
+            // ★ 비-SSG 도 tip 을 무력화한다 (위 issue 실패 경로와 동일 근거).
+            //   barCode 가 없다 = 발급 실패 = 이 tip 은 죽어야 한다. 살려 두면 배치가 집어
+            //   **새 PIN 을 발급해** 고객에게 보낸다(운영자에겐 "핀 발급에 실패했습니다" 라고 답한 뒤).
+            const unwound = await unwindReissue(fullDelivery, savedDelivery.id, SsgRefundOutcome.RESTORED, false);
+            throw new InternalServerErrorException(buildNonSsgReissueFailureMessage(unwound.tipNeutralized));
           }
 
           const newPin = fullDelivery.barCode;

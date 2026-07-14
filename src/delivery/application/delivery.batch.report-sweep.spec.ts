@@ -223,12 +223,22 @@ describe('DeliveryBatchService — reportSweep / settlement (async alimtalk)', (
         expect(recoverSpy).not.toHaveBeenCalled();
         expect(service.refundForFail).not.toHaveBeenCalled();
         expect(od.reportState).toBe(IOrderDeliveryReportState.UNCONFIRMED);
-        // ★ status 도 터미널로 전이해야 한다 (리뷰 HIGH).
-        //   WAIT + UNCONFIRMED 로 두면 reportSweep(PENDING 요구) / claimWaitDeliveries
-        //   (report_state IS NULL 요구) / CS reSend·재전송(COMPLETE·FAIL 요구) /
-        //   발송실패내역(FAIL·FAIL_SMS 요구) 이 전부 제외하는 **좀비 행**이 된다.
-        //   markOrderTerminalAndSettle 도 못 타 주문이 영원히 미정산으로 남는다.
-        expect(od.status).toBe(IOrderDeliveryStatus.CANCEL);
+
+        // ★ status 는 **건드리지 않는다** (4차 조준 리뷰 CRITICAL x2 — 한때 여기서 CANCEL 로
+        //   전이했다가 철회했다). 두 가지 이유로 틀렸다:
+        //
+        //   ① 정산을 열어주지 못한다. isOrderAllDeliveriesTerminal 의 터미널 집합은
+        //      [COMPLETE, COMPLETE_SMS, FAIL, FAIL_SMS] 로 **CANCEL 을 포함하지 않는다** —
+        //      CANCEL 은 WAIT 과 똑같이 비터미널이라 얻는 게 없다.
+        //   ② **lease 를 못 잡은 상태에서 남의 행에 터미널을 쓰는 짓**이다. 이 분기의 진입 조건이
+        //      곧 leaseGate.affected=0(= 남이 이 행의 운명을 결정 중)이다. 그 액터가 재발행이면
+        //      이후 reverseDiscard 가 coupon_status 만 NOT_USED 로 되돌려(status 는 안 만진다)
+        //      **status=CANCEL + coupon_status=NOT_USED** 가 남는다 — 고객은 알림톡으로 살아있는
+        //      쿠폰을 받았는데 DB·CS 는 "취소됨" 이다.
+        //
+        //   남는 행(WAIT + coupon CANCEL + UNCONFIRMED)은 무해하다: 쿠폰은 이미 죽고 환불도
+        //   끝났으므로 아무도 할 일이 없고, 모든 발송 경로가 coupon_status 가드로 배제한다.
+        expect(od.status).toBe(IOrderDeliveryStatus.WAIT);
         expect(service.persistReportState).toHaveBeenCalled();
       });
 
