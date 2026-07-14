@@ -19,8 +19,16 @@ export const MUTATION_CLAIM_STALE_MS = 5 * 60 * 1000;
  * status=WAIT + coupon_status=CANCEL / status=COMPLETE + coupon_status=CANCEL 같은 행이 존재한다.
  * status 만 보는 발송 경로는 그 죽은 핀을 그대로 고객에게 보낸다.
  *
- * 모든 발송 경로(발송배치 claim / CS reSend / 발송실패내역 재발송 / report SMS 폴백 /
- * 외부 resendOrder)가 이 목록을 배제해야 한다.
+ * 발송 경로는 **6개**다. 전부 이 목록을 배제해야 한다:
+ *   1. 발송배치            claimWaitDeliveries
+ *   2. CS 재발송           reSend
+ *   3. CS 재전송           execResend        ← 별개 진입점이다. 4차 리뷰까지 이 목록에서 빠져 있었다
+ *   4. 발송실패내역 재발송  resendFailedDelivery
+ *   5. 알림톡 SMS 폴백      runReportFallback
+ *   6. 외부 API 재발송      resendOrder
+ *
+ * ⚠️ 새 발송 경로를 추가하면 **이 목록을 먼저 갱신**하라. 목록이 틀리면 그 목록을 믿고 짠
+ *    다음 사람이 같은 구멍을 만든다(실제로 그렇게 execResend 가 3라운드 동안 안 보였다).
  */
 export const UNSENDABLE_COUPON_STATUSES: OrderDeliveryCouponStatus[] = [
   OrderDeliveryCouponStatus.CANCEL,

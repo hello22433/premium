@@ -1850,6 +1850,33 @@ export class CustomerServiceService {
       throw new BadRequestException('수신 확인 진행중인 발송입니다. 잠시 후 다시 시도해주세요.');
     }
 
+    // ★ 이것도 **발송 경로**다 (리뷰 CRITICAL, D3-55 후속).
+    //   csResendAs* 는 쿠폰 이미지와 핀번호가 담긴 문자를 고객에게 그대로 보낸다. 그런데 종전에는
+    //   폐기·환불 여부도, 변형 lease 도 보지 않았다.
+    //
+    //   ① 폐기 쿠폰 — 레이스도 아니고 **결정적**이다.
+    //      status(COMPLETE)와 coupon_status(CANCEL)는 별개 축이라, 발송 완료 후 폐기·환불된 건은
+    //      status=COMPLETE + coupon_status=CANCEL 로 남는다. 운영자가 CS 화면에서 "재전송" 을
+    //      누르면 협력사에서 이미 죽고 환불까지 끝난 핀이 고객에게 다시 배달된다.
+    //
+    //   ② 진행중인 변형 — 비관락으로는 못 막는다.
+    //      execDiscard 는 lease 를 잡은 뒤 **행 락을 놓고** 협력사 cancel(외부 통신, 수 초)에 들어간다.
+    //      그 창에서 이 비관락은 아무것도 막지 못한다(폐기가 그 행의 락을 쥐고 있지 않으므로 즉시 획득된다).
+    //      lease 를 읽어야만 "취소 진행 중" 을 알 수 있다.
+    //
+    //   여기서는 lease 를 **획득하지 않고 읽기만 한다.** 이 트랜잭션이 pessimistic_write 로 행을
+    //   잡고 있는 동안에는 남이 lease 를 획득하는 UPDATE 자체가 블록되므로, 검사~발송 사이에
+    //   새 변형이 끼어들 수 없다(검사와 발송이 락 구간 안에서 원자적이다).
+    if (locked.couponStatus && UNSENDABLE_COUPON_STATUSES.includes(locked.couponStatus)) {
+      throw new BadRequestException('폐기·환불된 쿠폰은 재전송할 수 없습니다.');
+    }
+    const mutationStale = new Date(Date.now() - MUTATION_CLAIM_STALE_MS);
+    if (locked.mutationClaimedAt && locked.mutationClaimedAt >= mutationStale) {
+      throw new ConflictException(
+        '해당 발송 건에 다른 처리(폐기/취소/재발행)가 진행 중입니다. 잠시 후 다시 시도해주세요.',
+      );
+    }
+
     // 2. dedup — 락 보유 중 최근 시간창 내 동일 건 재전송 이력 확인
     const dedupSince = new Date(Date.now() - RESEND_DEDUP_WINDOW_MS);
     const recentResendCount = await this.orderHistoryRepository.count({

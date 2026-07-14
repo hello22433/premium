@@ -1,4 +1,4 @@
-import { BadRequestException, InternalServerErrorException } from '@nestjs/common';
+import { BadRequestException, ConflictException, HttpStatus, InternalServerErrorException } from '@nestjs/common';
 import { CustomerServiceService } from './customer.service.service';
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
 import { SsgRefundOutcome } from '../../delivery/interface/ssg.refund.resolve';
@@ -22,6 +22,34 @@ import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.st
  * 생성자 의존성이 많아 Object.create 로 생성자 우회 후 협력자만 mock 주입한다.
  * (discard-concurrency.spec 관례)
  */
+/**
+ * 예외를 **타입(HTTP 상태)까지** 잠근다.
+ *
+ * `rejects.toThrow(/정규식/)` 은 **메시지만** 본다 — 같은 메시지를 든 500 으로 되돌려도 초록이다.
+ * 그런데 여기서 타입은 장식이 아니라 계약이다:
+ *   - 선점(다른 액터가 lease 를 가져감)은 정의상 conflict(409). 500 으로 두면 진짜 서버 버그
+ *     (NPE/DB 다운)와 같은 코드라 알림·대시보드에서 5xx 노이즈에 묻힌다.
+ *   - 어드민 프론트가 5xx 를 "잠시 후 다시 시도해주세요" 로 일괄 처리하면(흔한 패턴) 본문의
+ *     **"재시도하지 마시고"** 가 화면에 안 뜨고, 운영자는 정확히 금지된 행동을 한다.
+ *   - 외부 API 가 같은 상황에서 3010(409)을 주는 것과 대칭이어야 한다.
+ * 반대로 wallet 승계 실패는 **진짜 오류**라 500 이어야 한다 — 그 비대칭도 함께 잠근다.
+ */
+const expectRejection = async (
+  promise: Promise<unknown>,
+  type: new (...args: any[]) => any,
+  status: HttpStatus,
+  messageRe: RegExp,
+) => {
+  const err: any = await promise.then(
+    () => null,
+    (e) => e,
+  );
+  expect(err).toBeInstanceOf(type);
+  expect(err.getStatus()).toBe(status);
+  expect(err.message).toMatch(messageRe);
+  return err;
+};
+
 describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)', () => {
   const VALID_PHONE = '01098765432';
   const ORDER_ID = 555;
@@ -647,7 +675,14 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
       // stale 강탈 시나리오: fenced update 가 affected=0 (남이 lease 를 가져감)
       orderDeliveryRepository.update.mockResolvedValue({ affected: 0 });
 
-      await expect(service.execHistory(buildMap(IOrderType.GENERAL))).rejects.toThrow(/다른 작업이 이 발송 건을 선점/);
+      // 409(Conflict) — 타입까지 잠근다. 500 으로 되돌아가면 어드민이 "잠시 후 재시도" 로 뭉개
+      // 본문의 "재시도하지 마시고" 를 못 띄운다(정규식 단독 assertion 은 그 회귀를 통과시킨다).
+      await expectRejection(
+        service.execHistory(buildMap(IOrderType.GENERAL)),
+        ConflictException,
+        HttpStatus.CONFLICT,
+        /다른 작업이 이 발송 건을 선점/,
+      );
 
       // 발송 자체가 일어나면 안 된다 — 죽은 핀 배달 차단
       expect(deliveryBatchService.csResendAsMms).not.toHaveBeenCalled();
@@ -697,7 +732,15 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
         .spyOn(service as any, 'carryWalletOwnershipToReissuedDelivery')
         .mockRejectedValue(new Error('wallet-managed 인데 allocation 없음'));
 
-      await expect(service.execHistory(buildMap(IOrderType.GENERAL))).rejects.toThrow(/결제 정보 승계에 실패/);
+      // ★ 선점(409)과 달리 이건 **진짜 오류**라 500 이어야 한다 — 그 비대칭을 잠근다.
+      //   409 로 내려가면 어드민이 "다른 사람이 처리 중" 으로 오인해 재시도할 수 있는데,
+      //   이 상태는 재시도로 낫지 않는다(PIN 은 이미 발급·과금됐고 wallet 만 미승계).
+      await expectRejection(
+        service.execHistory(buildMap(IOrderType.GENERAL)),
+        InternalServerErrorException,
+        HttpStatus.INTERNAL_SERVER_ERROR,
+        /결제 정보 승계에 실패/,
+      );
 
       // tip(8001) 을 CANCEL 로 무력화했는가 — 안 하면 배치가 집어 발송한다
       const kill = (orderDeliveryRepository.update.mock.calls as unknown as any[][]).find(
@@ -739,7 +782,13 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
         .mockResolvedValueOnce(buildFullDelivery(IOrderType.SSG, { id: 7 })) // fullDelivery 로드
         .mockResolvedValue(null); // isMutationLeaseOwned → 내 lease 아님
 
-      await expect(service.execHistory(buildMap(IOrderType.SSG))).rejects.toThrow(/다른 작업이 이 발송 건을 선점/);
+      // 발송 직전 lease 확인도 409 다 (유효기간 fencing 과 동일 계약)
+      await expectRejection(
+        service.execHistory(buildMap(IOrderType.SSG)),
+        ConflictException,
+        HttpStatus.CONFLICT,
+        /다른 작업이 이 발송 건을 선점/,
+      );
 
       expect(deliveryBatchService.csResendAsMms).not.toHaveBeenCalled();
     });
@@ -850,7 +899,13 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
         .mockResolvedValueOnce({ affected: 0 }) // 발송결과 (fenced) — lease 상실
         .mockResolvedValue({ affected: 1 }); // fallback + 해제
 
-      await expect(service.execHistory(buildMap(IOrderType.GENERAL))).rejects.toThrow(/다른 처리가 이 발송 건을 선점/);
+      // 발송 **후** lease 상실도 409 — 외부 API resendOrder 의 3010 과 대칭. 내부만 500 일 이유가 없다.
+      await expectRejection(
+        service.execHistory(buildMap(IOrderType.GENERAL)),
+        ConflictException,
+        HttpStatus.CONFLICT,
+        /다른 처리가 이 발송 건을 선점/,
+      );
 
       const fallback = (orderDeliveryRepository.update.mock.calls as unknown as any[][]).find(
         (c) => c[0] && c[0].status === IOrderDeliveryStatus.WAIT,

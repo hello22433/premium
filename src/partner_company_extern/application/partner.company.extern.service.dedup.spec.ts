@@ -51,6 +51,7 @@ describe('PartnerCompanyExternService - PIN dedup recovery', () => {
   let resendDeductPendingRepository: any;
   let pendingQb: any;
   let orderDeliveryRepository: any;
+  let ssgIssueLogRepository: any;
 
   const mockCrypto = {
     safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01000000000'),
@@ -156,6 +157,7 @@ describe('PartnerCompanyExternService - PIN dedup recovery', () => {
     sut = module.get<PartnerCompanyExternService>(PartnerCompanyExternService);
     pinIssueDedupRepository = module.get(getRepositoryToken(PinIssueDedupEntity));
     orderDeliveryRepository = module.get(getRepositoryToken(OrderDeliveryEntity));
+    ssgIssueLogRepository = module.get(getRepositoryToken(SsgIssueLogEntity));
   });
 
   describe('정상 발송 경로', () => {
@@ -250,6 +252,106 @@ describe('PartnerCompanyExternService - PIN dedup recovery', () => {
       await sut.issue(orderDelivery, null);
 
       expect(pinWrite()![1].barCode).toBe('GX-BAR-0001');
+    });
+
+    /**
+     * ★ SSG dedup exact 복구 경로 — 네 번째(그리고 마지막) 조기 return.
+     *
+     * 이 분기의 **진입 조건 자체가** `fresh?.barCode` 부재, 즉 "DB order_delivery 에 PIN 이 없다"
+     * 이다. 그래서 ssg_issue_log 에서 payload 를 복원하는데, 그 복원은 **메모리 엔티티에만**
+     * 일어난다. persistIssuedPin 이 없으면 여기서 그대로 return 되고 bar_code 는 NULL 로 남는다.
+     *
+     * 그리고 이 경로는 SSG 다 — 외부 SSG 서버에는 핀이 INSERT 되어 있고 행사 잔액도 차감된 상태다.
+     * 우리 DB 만 NULL 이면:
+     *   - cancelOrder/execDiscard 의 `if (barCode && partnerCompany)` 가드가 falsy → 협력사 취소를
+     *     건너뛴 채 환불만 집행 → SSG 엔 살아있는 핀 + 환불 완료 = 자금 손실
+     *   - 재발송 시 !barCode → 새 PIN 재발급 + 새 행사 재차감
+     *
+     * 메모리 복원과 durable 반영은 별개다. 복원만 하고 끝내면 caller 의 targeted update 는
+     * PIN 컬럼을 안 건드리므로(D3-60) 아무도 그 값을 쓰지 않는다.
+     */
+    const buildSsgDelivery = () =>
+      buildOrderDelivery({
+        orderProductMapping: {
+          product: {
+            type: 'COUPON',
+            name: 'SSG 1만원',
+            price: 10000,
+            partnerCompanyCode: 'SSG-1',
+            partnerCompany: { type: 'SSG' },
+          },
+        },
+      });
+
+    it('SSG dedup exact 복구: ssg_issue_log 에서 복원한 payload 전체를 DB 에 남긴다', async () => {
+      const orderDelivery = buildSsgDelivery();
+      pinIssueDedupRepository.insert.mockRejectedValueOnce(makeDuplicateKeyError());
+      pinIssueDedupRepository.findOne.mockResolvedValue({
+        transactionId: 'ENM1D1001',
+        barCode: 'SSG-BAR-7777',
+      });
+      // fresh 에 barCode 가 없어야 이 분기로 온다 = DB order_delivery 는 아직 NULL
+      orderDeliveryRepository.findOne.mockResolvedValue({ id: 1001, barCode: null });
+      ssgIssueLogRepository.findOne.mockResolvedValue({
+        id: 77,
+        orderDeliveryId: 1001,
+        barCode: 'SSG-BAR-7777',
+        personalCode: 'SSG-PIN-7777',
+        couponNum: 'CPN-7777',
+        ssgTransactionId: 'ssg-tr-7777',
+        expireAt: new Date('2026-08-14T00:00:00.000Z'),
+        encourageAt: new Date('2026-08-07T00:00:00.000Z'),
+        ssgEventId: 42,
+      });
+
+      const result = await sut.issue(orderDelivery, null);
+
+      // dedup 이 가리키는 '정확한' 바코드의 로그로만 복원한다(최신 로그 auto-select 금지)
+      expect(ssgIssueLogRepository.findOne).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { orderDeliveryId: 1001, barCode: 'SSG-BAR-7777' } }),
+      );
+      expect(orderDelivery.barCode).toBe('SSG-BAR-7777'); // 메모리 복원은 됐고
+
+      // ★ 여기가 핵심 — 메모리에만 있으면 아무 소용이 없다. DB 에 반드시 남아야 한다.
+      const write = pinWrite();
+      expect(write).toBeDefined();
+      expect(write[0]).toEqual({ id: 1001 });
+      // barCode 만 남기고 나머지를 흘리면 SSG 취소 API 가 personalCode/ssgTransactionId 없이 실패한다
+      expect(write[1]).toMatchObject({
+        barCode: 'SSG-BAR-7777',
+        personalCode: 'SSG-PIN-7777',
+        couponNum: 'CPN-7777',
+        ssgTransactionId: 'ssg-tr-7777',
+        expireAt: new Date('2026-08-14T00:00:00.000Z'),
+        encourageAt: new Date('2026-08-07T00:00:00.000Z'),
+        ssgEventId: 42, // 행사 귀속 — 누락 시 정산이 엉뚱한 행사로 잡힌다
+      });
+      expect(result.ssgEventId).toBe(42);
+      expect(pinIssueDedupRepository.update).toHaveBeenCalledWith(
+        { transactionId: 'ENM1D1001' },
+        { recoveredFrom: 'DEDUP' },
+      );
+    });
+
+    /**
+     * exact 매칭이 없으면 fail-safe(ConflictException) 다 — 그리고 **아무것도 영속하지 않는다**.
+     * 반쪽짜리 PIN(barCode 만, personalCode 없음)을 DB 에 박아 두면 다음 재시도의 fresh 경로가
+     * "이미 복구됐다" 고 오판해 메타데이터 없는 핀이 그대로 굳는다.
+     */
+    it('SSG dedup exact 매칭 없음: ConflictException + PIN 을 절반만 남기지 않는다', async () => {
+      const orderDelivery = buildSsgDelivery();
+      pinIssueDedupRepository.insert.mockRejectedValueOnce(makeDuplicateKeyError());
+      pinIssueDedupRepository.findOne.mockResolvedValue({
+        transactionId: 'ENM1D1001',
+        barCode: 'SSG-BAR-7777',
+      });
+      orderDeliveryRepository.findOne.mockResolvedValue({ id: 1001, barCode: null });
+      ssgIssueLogRepository.findOne.mockResolvedValue(null); // 정확 매칭 없음
+
+      await expect(sut.issue(orderDelivery, null)).rejects.toBeInstanceOf(ConflictException);
+
+      expect(pinWrite()).toBeUndefined(); // 반쪽 PIN 영속 금지
+      expect(pinIssueDedupRepository.update).not.toHaveBeenCalled(); // 복구표시도 하지 않는다(재시도 가능)
     });
   });
 
