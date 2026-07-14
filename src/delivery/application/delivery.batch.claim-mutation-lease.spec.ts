@@ -98,6 +98,19 @@ describe('DeliveryBatchService.claimWaitDeliveries — 변형 lease 제외 (D3-5
     ]);
   });
 
+  /**
+   * 리뷰 CONFIRMED: UpdateQueryBuilder 는 soft-delete 필터를 **자동 적용하지 않는다**
+   * (SelectQueryBuilder 와 달리). unwindReissue 가 softDelete 한 tip 이 status=WAIT /
+   * coupon_status=NOT_USED 로 남아 있으면, 이 조건 없이는 배치가 집어 PIN 을 발급·발송한다.
+   * 폐기 역전으로 원본이 이미 살아났다면 고객 쿠폰이 2장이 되고, SSG 는 선차감까지 역복원된
+   * 뒤라 미차감 발급이 된다.
+   */
+  it('soft-delete 된 행은 집지 않는다 (UpdateQueryBuilder 는 deleted_at 을 자동 필터링하지 않는다)', async () => {
+    await sut.claimWaitDeliveries(new Date());
+
+    expect(qb.andWhere.mock.calls.some((c: any[]) => /deleted_at IS NULL/i.test(String(c[0])))).toBe(true);
+  });
+
   it('affected 를 그대로 반환한다 (undefined 면 0)', async () => {
     qb.execute.mockResolvedValueOnce({ affected: 3 });
     expect(await sut.claimWaitDeliveries(new Date())).toBe(3);

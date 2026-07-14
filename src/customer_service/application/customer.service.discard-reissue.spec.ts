@@ -795,6 +795,14 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
 
       // 되돌렸다면 원본 쿠폰이 살아나 tip 과 함께 2장이 된다
       expect(reverseDiscard).not.toHaveBeenCalled();
+
+      // ★ softDelete 도 하면 안 된다 (리뷰 HIGH).
+      //   무력화 실패 = 남이(대표적으로 stale lease 를 탈취한 발송배치가) 이 tip 을 가져갔다는 뜻.
+      //   그 행을 지워도 배치의 targeted update 는 soft-delete 필터를 안 타므로 발송은 그대로
+      //   진행되고, 남는 건 "deleted_at 찍힌 행 + 고객 손의 살아있는 쿠폰 + 협력사 과금 완료" 다.
+      //   CS 목록에서 사라지고 정산에서도 빠진다(과금당했는데 청구 못 함). 게다가 softDelete 는
+      //   **성공**하므로 아무 신호도 안 남는다. 내 것이 아닌 행을 지울 권리는 없다.
+      expect(orderDeliveryRepository.softDelete).not.toHaveBeenCalled();
     });
 
     /**

@@ -2095,14 +2095,29 @@ export class CustomerServiceService {
                 killErr,
               );
             }
-            try {
-              await this.orderDeliveryRepository.softDelete(savedId);
-            } catch (sdErr) {
-              // 위 무력화가 성공했다면 배치는 이미 차단됐으므로 여기 실패는 로깅으로 충분(행이 남을 뿐).
-              // 실패했다면 tipNeutralized=false 로 이미 아래 폐기 역전이 봉인된다.
+            // ★ softDelete 는 무력화에 **성공했을 때만** 한다 (리뷰 HIGH).
+            //
+            //   tipNeutralized=false 는 "남이 이 tip 을 가져갔다" 는 뜻이고, 그 '남' 의 대표는
+            //   **stale lease 를 탈취해 지금 이 tip 을 발송 중인 발송배치**다. 그 행을 우리가 지우면:
+            //     - 배치의 targeted update 는 soft-delete 필터를 안 타므로 발송은 **그대로 진행**된다
+            //     - 남는 상태: deleted_at 찍힌 행 + 고객 손의 살아있는 쿠폰 + 협력사 과금 완료
+            //     - CS 목록에서 안 보이고, 정산 대상에서 빠지고(과금당했는데 청구 못 함),
+            //       폐기·환불도 불가능하다. 게다가 softDelete 는 **성공**하므로 아무 신호도 없다.
+            //   내 것이 아닌 행을 지울 권리는 없다.
+            if (tipNeutralized) {
+              try {
+                await this.orderDeliveryRepository.softDelete(savedId);
+              } catch (sdErr) {
+                // 무력화가 이미 배치를 차단했으므로 여기 실패는 로깅으로 충분(행이 남을 뿐).
+                this.logger.error(
+                  `[폐기후신규발송] softDelete 실패(outcome=${outcome}) — orderDeliveryId=${savedId}`,
+                  sdErr,
+                );
+              }
+            } else {
               this.logger.error(
-                `[폐기후신규발송] softDelete 실패(outcome=${outcome}) — orderDeliveryId=${savedId}`,
-                sdErr,
+                `[폐기후신규발송] lease 상실로 softDelete 도 보류 — 남의 행(발송 진행중일 수 있다)은 지우지 않는다. ` +
+                  `orderDeliveryId=${savedId}`,
               );
             }
           }

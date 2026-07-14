@@ -503,6 +503,12 @@ export class DeliveryBatchService {
       .andWhere('(coupon_status IS NULL OR coupon_status NOT IN (:...blockedCouponStatuses))', {
         blockedCouponStatuses: UNSENDABLE_COUPON_STATUSES,
       })
+      // soft-delete 된 행은 집지 않는다. UpdateQueryBuilder 는 deleted_at 필터를 **자동 적용하지 않는다**
+      // (SelectQueryBuilder 와 달리). 재발행 실패 시 unwindReissue 가 tip 을 softDelete 하는데,
+      // 이 조건이 없으면 그 행이 status=WAIT / coupon_status=NOT_USED 로 남아 배치가 집어
+      // PIN 을 발급·발송한다 — 이미 폐기 역전으로 원본이 살아난 뒤라면 고객 쿠폰이 2장이 된다.
+      // SSG 는 선차감까지 역복원된 뒤라 미차감 발급이다 (리뷰 CONFIRMED).
+      .andWhere('deleted_at IS NULL')
       // 비동기 알림톡 PENDING(report_state) 행은 발송 배치 재발송 대상 아님 (reportSweep 소관)
       .andWhere('report_state IS NULL')
       // external_api 발송 건은 자체 동기 dispatch — batch 가 절대 claim 하지 않음 (중복 issue/발송 차단)
