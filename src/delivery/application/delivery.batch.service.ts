@@ -1150,7 +1150,13 @@ export class DeliveryBatchService {
         }
 
         this.markSendFail(orderDelivery, IOrderDeliveryStatus.FAIL);
-        await this.orderDeliveryRepository.save(orderDelivery);
+        // save(orderDelivery) 금지 — merge 는 claim 시점 스냅샷으로 행 전체를 쓴다. issue()(외부 통신,
+        // 수 초) 동안 폐기·외부취소가 쓴 coupon_status=CANCEL 을 되돌리고 mutation_claimed_at 까지
+        // 지운다(D3-60 clobber). markSendFail 이 쓰는 두 컬럼만 targeted update 한다.
+        await this.orderDeliveryRepository.update(
+          { id: orderDelivery.id },
+          { status: orderDelivery.status, failedAt: orderDelivery.failedAt },
+        );
 
         // 실패해도 히스토리는 남김
         const deliveryHistory = new DeliverySendHistoryEntity();
@@ -1311,8 +1317,19 @@ export class DeliveryBatchService {
       }
     }
 
-    // 7. DB 저장
-    await this.orderDeliveryRepository.save(orderDelivery);
+    // 7. save(orderDelivery) 제거 (D3-60 clobber).
+    //
+    // merge 는 행 전체를 쓴다. 이 엔티티는 claim 시점 스냅샷이라 issue()/발송(외부 통신, 수 초)
+    // 동안 다른 액터가 쓴 값을 되돌린다:
+    //   - coupon_status='CANCEL' → 'NOT_USED'  (환불됐는데 살아있는 쿠폰)
+    //   - mutation_claimed_at    → 스냅샷 값    (변형 lease 무력화)
+    //   - deleted_at             → NULL         (soft-delete 된 행 부활)
+    //
+    // 이 메서드가 엔티티에 쓰는 컬럼은 imagePath/expireAt/encourageAt(위) 와
+    // status/actualSendAt/failedAt/report*(markSendSuccess·markSendFail → 위 1차 update) 뿐이고,
+    // 전부 앞의 targeted update 2개가 이미 영속했다. 발급 결과(barCode/personalCode/couponNum/
+    // ssgTransactionId)는 issue() 가 자체 targeted update 로 반영한다.
+    // → 여기서 추가로 쓸 컬럼이 없다.
 
     return { deliveryHistory, orderId: order.id };
   }
