@@ -2396,7 +2396,10 @@ export class CustomerServiceService {
               failedAt: fullDelivery.failedAt,
             },
           );
+          // 발송 후 lease 상실 — 아래 history 를 남긴 뒤 throw 한다. 성공으로 반환하면 안 된다.
+          let leaseLostAfterSend = false;
           if (!sendWrite.affected) {
+            leaseLostAfterSend = true;
             // 문자는 이미 나갔는데 lease 를 빼앗겨 status 를 못 썼다. 이대로 두면 tip 은 INSERT 당시
             // status=WAIT 로 남고, claimWaitDeliveries 의 lease 배제도 더 이상 걸리지 않아
             // **배치가 같은 핀으로 재발송**한다(고객 문자 2통). 되돌릴 수 없는 발송이 이미
@@ -2448,6 +2451,19 @@ export class CustomerServiceService {
           if (sendError) {
             throw new InternalServerErrorException(
               `신규 PIN ${newPin}이(가) 발급되었으나 발송에 실패했습니다. 발송실패내역에서 재발송해 주세요.`,
+            );
+          }
+
+          // ★ 발송 후 lease 상실은 성공이 아니다 (리뷰 CRITICAL).
+          //   lease 를 빼앗겼다 = 다른 폐기/취소가 이 핀을 죽이고 있(었)다는 뜻이다. 문자는 이미
+          //   나갔으니 되돌릴 수 없지만, 그 핀은 협력사에서 취소·환불됐을 수 있다. 여기서 성공을
+          //   반환하면 CS 화면에는 "재발행 완료" 로 뜨고, 고객은 죽은 핀을 들고 전화한다.
+          //   외부 API resendOrder 는 같은 상황에서 3010 을 던진다 — 내부만 성공을 주장할 이유가 없다.
+          //   history 는 위에서 이미 남겼으므로(발급된 PIN 추적 가능) 여기서 던져도 이력은 보존된다.
+          if (leaseLostAfterSend) {
+            throw new InternalServerErrorException(
+              `신규 PIN ${newPin}이(가) 발송되었으나, 그 사이 다른 처리가 이 발송 건을 선점했습니다. ` +
+                `쿠폰이 취소·환불되었을 수 있으니 운영팀에 확인해 주세요. (발송건 ${savedDelivery.id})`,
             );
           }
 

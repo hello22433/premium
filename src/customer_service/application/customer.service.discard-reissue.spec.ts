@@ -739,7 +739,17 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
       expect(reverseDiscard).not.toHaveBeenCalled();
     });
 
-    it('23) 발송 후 fencing 실패 → status=WAIT 로 소유권을 좁힌 fallback 쓰기로 상태 확정', async () => {
+    /**
+     * ★ 발송 후 lease 상실은 **성공이 아니다** (리뷰 CRITICAL).
+     *
+     * 종전에는 fallback 쓰기만 하고 정상 return 했다 → CS 화면에 "재발행 완료" 로 뜬다.
+     * 그러나 lease 를 빼앗겼다는 건 다른 폐기/취소가 그 핀을 죽이고 있(었)다는 뜻이고,
+     * 문자는 이미 나갔다. 고객은 취소·환불된 죽은 핀을 들고 전화하는데 CS 이력은 정상 발행이다.
+     * 외부 API resendOrder 는 같은 상황에서 3010 을 던진다 — 내부만 성공을 주장할 이유가 없다.
+     *
+     * 단 history 는 남긴 뒤 던져야 한다. 발급·발송된 PIN 을 추적할 유일한 수단이다.
+     */
+    it('23) 발송 후 fencing 실패 → fallback 쓰기 + history 기록 후 throw (성공 반환 금지)', async () => {
       setupExecDiscard();
       orderDeliveryRepository.findOne.mockResolvedValue(buildFullDelivery(IOrderType.GENERAL, null));
       // 유효기간 update 는 성공(=lease 보유), 발송결과 fenced update 만 affected=0
@@ -748,7 +758,7 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
         .mockResolvedValueOnce({ affected: 0 }) // 발송결과 (fenced) — lease 상실
         .mockResolvedValue({ affected: 1 }); // fallback + 해제
 
-      await service.execHistory(buildMap(IOrderType.GENERAL));
+      await expect(service.execHistory(buildMap(IOrderType.GENERAL))).rejects.toThrow(/다른 처리가 이 발송 건을 선점/);
 
       const fallback = (orderDeliveryRepository.update.mock.calls as unknown as any[][]).find(
         (c) => c[0] && c[0].status === IOrderDeliveryStatus.WAIT,
@@ -758,6 +768,9 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
       expect(fallback![0]).toEqual({ id: expect.anything(), status: IOrderDeliveryStatus.WAIT });
       expect(fallback![1]).toHaveProperty('status');
       expect(fallback![1]).toHaveProperty('actualSendAt');
+
+      // throw 하더라도 이력은 남아야 한다 — 고객이 받은 PIN 을 CS 가 조회할 유일한 수단
+      expect(orderHistoryRepository.save).toHaveBeenCalled();
     });
   });
 });
