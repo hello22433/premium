@@ -258,7 +258,7 @@ describe('OrderService card surcharge settlement priority', () => {
     );
   });
 
-  it('createOrderSettle: WALLET 모드는 settleMethod 미전송 시 wallet_account 정책을 저장한다', async () => {
+  it('createOrderSettle: WALLET 모드는 settleMethod·카드할증 기본값 모두 wallet_account 정책을 따른다 (PR-B)', async () => {
     const { service, order, settleFee } = createService({
       settleMethod: 'CASH', // 회사 정책 (무시되어야 함)
       pr3SettleMode: WalletCutoverMode.WALLET,
@@ -271,9 +271,9 @@ describe('OrderService card surcharge settlement priority', () => {
     expect(service.orderRepository.update).toHaveBeenCalledWith(
       { id: order.id },
       {
-        // 정책=wallet 'CARD' 이지만 cardSurchargeApplied 는 회사 기준 default(false) 유지 — 독립
-        settleAmount: applyCardSurcharge(order.sendAmount + settleFee, false),
-        cardSurchargeApplied: false,
+        // PR-B: 카드할증 기본값도 정산코드 wallet.settleMethod 기준 (company=CASH 무시, wallet=CARD → 할증 ON)
+        settleAmount: applyCardSurcharge(order.sendAmount + settleFee, true),
+        cardSurchargeApplied: true,
         settleMethod: 'CARD',
       },
     );

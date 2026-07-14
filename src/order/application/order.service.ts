@@ -505,8 +505,10 @@ export class OrderService {
       relations: ['company'],
     });
     const company = billingUser?.company;
-    const defaultCardSurchargeApplied = company?.settleMethod === 'CARD';
     const { policy: settlePolicy } = await this.resolveSettlePolicy(order, company);
+    // 카드할증 기본값도 정산방법(코드 지갑 SoT) 소스를 따른다 — company.settleMethod 는 회사 단위라 코드별로 갈릴 때 틀림.
+    // resolveSettlePolicy 가 cutover mode(WALLET=코드 지갑 / SHADOW=지갑·회사 폴백 / LEGACY=회사)를 이미 반영한다.
+    const defaultCardSurchargeApplied = settlePolicy === 'CARD';
 
     const cardSurchargeApplied = opts.useExistingAsMiddleFallback
       ? (body.cardSurchargeApplied ?? order.cardSurchargeApplied ?? defaultCardSurchargeApplied)
