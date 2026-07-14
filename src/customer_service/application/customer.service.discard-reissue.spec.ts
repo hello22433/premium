@@ -841,6 +841,38 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
     });
 
     /**
+     * ★ 비-SSG pre-issue 실패도 tip 을 무력화해야 한다 (리뷰 HIGH, 양쪽 일치).
+     *
+     * 종전에는 unwind 전체가 `if (isSsg && ...)` 안에 갇혀 있어서, 비-SSG 재발행이 pre-issue 로
+     * 실패하면(save 성공 + findOne 실패) **아무것도 하지 않고** lease 만 반납했다. 남는 tip 은
+     *   status=WAIT / claimed_at=NULL / coupon_status=NOT_USED / lease 없음 / deleted_at=NULL
+     * 로 claimWaitDeliveries 를 전부 통과 → 배치가 PIN 을 발급해 고객에게 발송한다.
+     * 그런데 carryWallet 은 아직 실행 전이라 **wallet 미승계 tip 이 배달**된다 → 이후 폐기해도
+     * 환불이 drift abort. order_history 도 아직 0건이라 CS 는 추적조차 못 한다.
+     *
+     * 단 **원본 폐기 역전은 하면 안 된다.** 비-SSG 폐기는 협력사 cancel 을 이미 태웠으므로,
+     * coupon_status 를 플립해 되살리면 "DB 는 살아있는데 협력사에선 죽은 쿠폰"이 된다.
+     */
+    it('29) 비-SSG pre-issue 실패: tip 은 무력화하되 원본 폐기는 되돌리지 않는다', async () => {
+      setupExecDiscard();
+      orderDeliveryRepository.save.mockResolvedValue({ id: 8001 });
+      orderDeliveryRepository.findOne.mockResolvedValue(null); // pre-issue 실패
+      const reverseDiscard = jest.spyOn(service as any, 'reverseDiscard').mockResolvedValue(true);
+
+      await expect(service.execHistory(buildMap(IOrderType.GENERAL))).rejects.toThrow();
+
+      // tip(8001) 무력화 — 안 하면 배치가 wallet 미승계 tip 을 고객에게 발송한다
+      const kill = (orderDeliveryRepository.update.mock.calls as unknown as any[][]).find(
+        (c) => c[0]?.id === 8001 && c[1]?.couponStatus === OrderDeliveryCouponStatus.CANCEL,
+      );
+      expect(kill).toBeDefined();
+      expect(kill![0]).toHaveProperty('mutationClaimedAt'); // fenced
+
+      // 원본 폐기 역전은 금지 — 협력사에서 이미 죽은 쿠폰을 DB 에서만 살려낼 수 없다
+      expect(reverseDiscard).not.toHaveBeenCalled();
+    });
+
+    /**
      * ★ tip 무력화 실패(변형 lease 상실)면 원본 폐기를 되돌리면 안 된다 (리뷰 HIGH).
      *
      * kill 의 affected=0 은 "WHERE 의 lease 토큰이 안 맞는다" = 남이 이 tip 을 가져갔다는 뜻이다.

@@ -2084,13 +2084,21 @@ export class CustomerServiceService {
          *
          * @param od - issue() 전 단계라면 fullDelivery 아직 없을 수 있으므로 orderDelivery 사용
          * @param savedId - 이미 save 한 newDelivery 의 id (없으면 null)
+         * @param reverseOriginal - 원본 폐기를 되돌릴지. **SSG 에서만 true** 여야 한다.
+         *        reverseDiscard 는 coupon_status 를 되돌리는 상태 플립일 뿐이다. SSG 폐기는 외부
+         *        cancel 을 호출하지 않으므로(SsgDB 미터치) 플립만으로 안전하게 원복된다. 그러나
+         *        **비-SSG 폐기는 협력사 cancel 을 이미 태웠다** — 협력사에서 죽은 핀을 우리 DB 에서만
+         *        살려내면 "DB 는 살아있는데 협력사에선 죽은 쿠폰"이 된다(고객이 못 쓰는 쿠폰 +
+         *        환불도 이미 나감). 비-SSG 는 tip 무력화만 하고 원본은 폐기 상태로 둔다.
          * @returns discardReversed - 원본 폐기 역전 성공 여부. false 면 caller 는 "폐기를 취소했습니다"
          *          라고 말하면 안 된다(고객 쿠폰이 폐기된 채 남아 있다).
+         *          reverseOriginal=false 로 호출했으면 애초에 되돌릴 의도가 없으므로 false 다.
          */
         const unwindReissue = async (
           od: OrderDeliveryEntity,
           savedId: number | null,
           outcome: SsgRefundOutcome,
+          reverseOriginal = true,
         ): Promise<{ discardReversed: boolean }> => {
           // 1) tip 무력화 — 먼저. 배치 픽업 차단이 최우선이다.
           //
@@ -2151,6 +2159,18 @@ export class CustomerServiceService {
 
           // 2) 폐기 역전(고객 원본 쿠폰 복구) — 나중. 성공 여부를 caller 에게 알린다.
           let discardReversed = true;
+
+          // 비-SSG 는 폐기 시 협력사 cancel 을 이미 태웠으므로 상태 플립으로 되살릴 수 없다.
+          // tip 무력화(위)만 하고 원본은 폐기 상태로 둔다. 남는 상태는 "원본 폐기(환불 완료) +
+          // tip 없음" 으로, 고객은 환불을 받았고 쿠폰은 없다 — 복구 가능한 정상 종료다.
+          if (!reverseOriginal) {
+            this.logger.warn(
+              `[폐기후신규발송] 비-SSG — 원본 폐기 역전 미수행(협력사 cancel 을 이미 태워 플립 복구 불가). ` +
+                `tip 무력화 ${tipNeutralized ? '성공' : '실패'}. orderDeliveryId=${discardedDelivery.id}`,
+            );
+            return { discardReversed: false };
+          }
+
           if (!tipNeutralized) {
             // 되돌리지 않는다(쿠폰 2장 방지). caller 는 "폐기를 취소했습니다" 라고 말하면 안 된다.
             this.logger.error(
@@ -2249,6 +2269,19 @@ export class CustomerServiceService {
           //   status=WAIT / claimed_at=NULL / lease 없음 / soft-delete 전 상태로 노출되어
           //   claimWaitDeliveries 를 전부 통과한다 → 배치가 PIN 을 발급·발송하고,
           //   뒤이어 unwind 가 원본 폐기를 되돌리면 살아있는 쿠폰이 2장이 된다 (리뷰 CONFIRMED).
+          //
+          // ★★ unwind 는 isSsg 게이트 **밖**이어야 한다 (리뷰 HIGH, 양쪽 일치).
+          //    종전에는 unwind 전체가 `if (isSsg && ...)` 안에 있어서, **비-SSG** 재발행이
+          //    여기로 오면(save 성공 + findOne 실패) tip 무력화도 softDelete 도 폐기 역전도
+          //    **아무것도 하지 않고** finally 가 lease 만 반납했다. 남는 tip:
+          //      status=WAIT / claimed_at=NULL / coupon_status=NOT_USED / lease 없음 / deleted_at=NULL
+          //    → claimWaitDeliveries 를 전부 통과 → 배치가 PIN 을 발급해 고객에게 발송한다.
+          //    그런데 carryWalletOwnershipToReissuedDelivery 는 실행되지 않았다(아래 단계다).
+          //    즉 이 파일이 다른 곳에서 "절대 만들면 안 된다" 고 못 박은 상태 —
+          //    **발송된 tip + wallet 미승계** — 가 그대로 만들어진다. 이후 그 쿠폰을 폐기하면
+          //    attempt/line 부재로 환불이 drift abort 된다(고객도 우리도 돈이 없다).
+          //    게다가 order_history 는 이 시점에 아직 한 줄도 없어 CS 는 추적조차 못 한다.
+          //    tip 무력화는 SSG 여부와 무관하다. SSG 선차감 역복원만 SSG 게이트 안에 둔다.
           try {
             if (isSsg && reissueEvent && resendDeductionId) {
               await this.deliveryBatchService.reverseReissueDeductDirect(
@@ -2257,8 +2290,9 @@ export class CustomerServiceService {
                 reissueOrderId,
                 reissuePrice,
               );
-              await unwindReissue(orderDelivery, savedDelivery?.id ?? null, SsgRefundOutcome.RESTORED);
             }
+            // reverseOriginal 은 SSG 에서만. 비-SSG 원본은 협력사 cancel 이 이미 나갔다.
+            await unwindReissue(orderDelivery, savedDelivery?.id ?? null, SsgRefundOutcome.RESTORED, isSsg);
           } finally {
             if (savedDelivery?.id != null) {
               await this.releaseMutationLease(savedDelivery.id, mutationClaimAt);
