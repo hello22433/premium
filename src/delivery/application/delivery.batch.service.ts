@@ -478,6 +478,11 @@ export class DeliveryBatchService {
    * 변형 lease(mutation_claimed_at) 활성 행도 제외 — 재발행(폐기후신규발송) tip 은 WAIT 로 INSERT 되므로,
    * lease 없이는 배치가 집어가 재발행 자체 발송과 이중 발송이 된다. stale(5분 초과)은 크래시 잔재로 보고
    * 정상 수거한다(발급된 PIN 의 미발송 정체 방지 — 기존 WAIT self-heal 경로 유지).
+   *
+   * ★ stale 수거는 lease 를 WHERE 로 통과시키는 데 그치지 않고 SET 으로 **탈취**해야 한다.
+   *   값을 그대로 두면 원 소유자(좀비)의 fencing 조건(mutation_claimed_at = :myClaimAt)이 여전히
+   *   일치해 affected=1 로 성공한다 — fencing 이 설계된 바로 그 상황에서 발동하지 않는다.
+   *   탈취하면 좀비의 쓰기가 affected=0 이 되어 "조용한 이중 발급" 이 "시끄러운 중단" 으로 바뀐다.
    * @returns claim 된 행 수
    */
   async claimWaitDeliveries(claimedAt: Date): Promise<number> {
@@ -485,7 +490,8 @@ export class DeliveryBatchService {
     const claimResult = await this.orderDeliveryRepository
       .createQueryBuilder()
       .update(OrderDeliveryEntity)
-      .set({ claimedAt })
+      // 변형 lease 를 배치 소유로 탈취(위 주석). claimedAt 과 동일 값이라 소유자 식별도 일관된다.
+      .set({ claimedAt, mutationClaimedAt: claimedAt })
       .where('status = :status', { status: IOrderDeliveryStatus.WAIT })
       .andWhere('sendRequestAt < :now', { now: claimedAt })
       .andWhere('claimedAt IS NULL')
@@ -1036,10 +1042,15 @@ export class DeliveryBatchService {
    * 예외 발생 시 status=WAIT 행의 claimedAt을 해제해 다음 cron에서 재시도되게 한다.
    * 해제 안 하면 row가 영구 stale claim 상태로 빠져 부팅 시 releaseStaleClaims만이
    * 풀 수 있는 사고가 된다. status가 이미 FAIL/COMPLETE면 건드리지 않음.
+   * claimedAt reset 은 owner guard(claimedAt = 내 토큰) 로 남의 claim 을 풀지 않는다.
+   *
+   * 변형 lease(claimWaitDeliveries 가 탈취한 mutation_claimed_at)는 성공/실패 모두 finally 에서
+   * owner-guarded 해제한다. 해제하지 않으면 발송 직후 stale(5분) 까지 폐기·취소가 전부 거절된다.
    */
   private async processOneDeliveryForBatch(
     orderDelivery: OrderDeliveryEntity,
   ): Promise<{ deliveryHistory: DeliverySendHistoryEntity; orderId: number } | null> {
+    const claimToken = orderDelivery.claimedAt;
     try {
       const result = await this.processOneDeliveryInternal(orderDelivery);
       return result;
@@ -1047,13 +1058,26 @@ export class DeliveryBatchService {
       this.logger.error(`[BATCH] Failed to process orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
       try {
         await this.orderDeliveryRepository.update(
-          { id: orderDelivery.id, status: IOrderDeliveryStatus.WAIT },
+          { id: orderDelivery.id, status: IOrderDeliveryStatus.WAIT, claimedAt: claimToken ?? undefined },
           { claimedAt: null },
         );
       } catch (resetError) {
         this.logger.error(`[BATCH] claimedAt reset 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${resetError}`);
       }
       return null;
+    } finally {
+      if (claimToken) {
+        try {
+          await this.orderDeliveryRepository.update(
+            { id: orderDelivery.id, mutationClaimedAt: claimToken },
+            { mutationClaimedAt: null },
+          );
+        } catch (releaseError) {
+          this.logger.error(
+            `[BATCH] 변형 lease 해제 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${releaseError}`,
+          );
+        }
+      }
     }
   }
 
