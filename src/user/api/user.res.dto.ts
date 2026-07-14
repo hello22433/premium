@@ -117,4 +117,32 @@ export class UserLoginEmailResDto {
   id: number;
 }
 
+export class ReactivateEmailCandidateDto {
+  @ApiProperty({ type: Number, description: '선택 인덱스 (0-base). 발송 요청 시 targetEmailIndex 로 전달' })
+  index: number;
+
+  @ApiProperty({ type: String, description: '마스킹된 담당자 이메일 (예: ab****ef@enmad.com)' })
+  maskedEmail: string;
+}
+
+export class UserReactivateEmailSendResDto {
+  @ApiProperty({
+    description: '담당자 이메일이 2개 이상이라 이메일 선택이 필요한지 여부. true면 코드 미발송, candidates 참고',
+  })
+  needEmailSelection: boolean;
+
+  @ApiProperty({
+    type: Number,
+    nullable: true,
+    description: 'email send history id (발송된 경우). 선택 필요 시 null',
+  })
+  id: number | null;
+
+  @ApiProperty({
+    type: [ReactivateEmailCandidateDto],
+    description: '선택 후보 목록 (needEmailSelection=true 일 때만 채워짐)',
+  })
+  candidates: ReactivateEmailCandidateDto[];
+}
+
 export class UserRefreshByRefreshResDto extends LoginTokenResDto {}
