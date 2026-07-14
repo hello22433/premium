@@ -87,6 +87,9 @@ SELECT COUNT(*) FROM order_delivery
 | `발송결과 fenced 기록 실패` ERROR (CS) | **문자는 나갔는데** 그 사이 폐기/취소가 선점. 죽은 핀이 배달됐을 수 있다 | 🚨 CS 는 500 을 받는다(성공 아님). 해당 건 협력사 상태 확인 |
 | `[resendOrder] 발송결과 기록 실패` ERROR (외부) | 위와 동일. 파트너는 3010 을 받는다 | 🚨 조회 API 로는 안 보인다(D3-54 축약) — DB/협력사 직접 확인 |
 | `[REPORT_SWEEP][R1] SMS 폴백 중단` ERROR | 폐기·환불된 건이라 SMS 대체발송을 막았다 | ✅ 정상 동작(막고 있는 것). 빈도가 높으면 운영 플로우 점검 |
+| `[REPORT_SWEEP][R1] SMS 폴백 연기` WARN | 다른 처리가 진행 중이라 다음 tick 으로 미뤘다 | ✅ 정상 동작. 같은 건이 계속 반복되면 lease 해제 실패 의심 |
+| `wallet 승계 실패 — tip 무력화 성공` ERROR | 발송은 막았으나 **발급된 PIN 이 협력사에서 살아있다(과금됨)**. 원본은 폐기 유지 | 🚨 협력사 핀 정리 + 원본 복구 판단 필요 |
+| `lease 상실로 softDelete 도 보류` ERROR | tip 을 남이 가져갔다(배치가 발송 중일 수 있다). 지우지 않고 남겨 둔 것 | 🚨 해당 tip 의 `status`/`coupon_status` 확인 |
 | `[BATCH] 변형 lease 해제 실패` / `[CS_RESEND] claimedAt 해제 실패` / `[resendFailedDelivery] 변형 lease 해제 실패` | DB 쓰기 실패. 해당 건의 폐기/취소가 최대 5분간 거절된다 | 5분 stale self-heal 로 수렴. 반복되면 DB 상태 점검 |
 
 ### 신규 에러코드
@@ -129,5 +132,10 @@ SELECT COUNT(*) FROM order_delivery
 
 ### 발송 후 lease 를 잃으면
 
-문자는 되돌릴 수 없습니다. **성공으로 응답하지 않습니다** — CS 는 500, 외부 API 는 3010.
+문자는 되돌릴 수 없습니다. **성공으로 응답하지 않습니다** — CS 는 **409**, 외부 API 는 **3010**.
 이력(`order_history`)은 PIN 확정 즉시(발송 전) 남기므로, 중단되더라도 발급된 PIN 은 추적됩니다.
+
+> ⚠️ **`DISCARD_REISSUE` 이력 = "발급 사실" 이지 "발송 확정" 이 아닙니다.**
+> lease 상실로 중단된 경우에도 이력은 남습니다(그래야 고객이 받은 PIN 을 추적할 수 있습니다).
+> 실제 발송 여부는 반드시 **`order_delivery.status`** 로 확인하십시오
+> (`WAIT`=미발송·배치가 보낼 수 있음 / `COMPLETE`=발송됨 / `FAIL_SMS`=발송 실패).
