@@ -5,6 +5,7 @@ import { IOrderStatus } from '../../order/interface/order.status';
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { ExternalApiAccountEntity } from '../../entity/external.api.account.entity';
+import { MUTATION_CLAIM_STALE_MS } from '../../delivery/interface/order.delivery.mutation.claim';
 
 // D3-55: 폐기 후 재발행 시 파트너 trId(externalTrId)는 폐기된 원본(root)에 남고, 새로 발급된
 // 유효 delivery 는 externalTrId=null 이 된다. findOrderDeliveryByTrId 가 replacedFromId 체인의
@@ -443,6 +444,57 @@ describe('D3-55 살아있는 재발행 tip 취소', () => {
     await svc.cancelOrder(account, 'TR-1', ctx);
 
     expect(update).toHaveBeenCalledWith({ id: 101, mutationClaimedAt: expect.any(Date) }, { mutationClaimedAt: null });
+  });
+
+  it('cancelOrder: lease 획득은 CAS — SET=mutationClaimedAt 만, WHERE=id + (IS NULL OR < claimAt-5분)', async () => {
+    // mock 은 affected 만 돌려주므로, 획득이 진짜 CAS 인지는 발행된 쿼리 모양으로 잠근다.
+    // andWhere 술어가 빠지면 활성 lease(재발행 진행중)를 무조건 강탈 → 게이트가 통째로 무력화된다.
+    const tip = makeDelivery({ id: 101, externalTrId: 'TR-1', couponStatus: OrderDeliveryCouponStatus.NOT_USED });
+    const { svc, qb } = makeService([tip]);
+    (svc as any).partnerCompanyExternService = { cancelByExternalApi: jest.fn(async () => undefined) };
+    (svc as any).processCancelRefund = jest.fn(async () => undefined);
+
+    await svc.cancelOrder(account, 'TR-1', ctx);
+
+    const setArg = (qb.set as jest.Mock).mock.calls[0][0];
+    expect(Object.keys(setArg)).toEqual(['mutationClaimedAt']); // 획득 UPDATE 는 쿠폰상태를 건드리지 않는다
+    const claimAt: Date = setArg.mutationClaimedAt;
+    expect(claimAt).toBeInstanceOf(Date);
+
+    const idWhere = (qb.where as jest.Mock).mock.calls.find((c: any[]) => /^id = :id$/.test(String(c[0])));
+    expect(idWhere).toBeDefined();
+    expect(idWhere![1]).toEqual({ id: 101 });
+
+    const cas = (qb.andWhere as jest.Mock).mock.calls.find((c: any[]) => /mutationClaimedAt/.test(String(c[0])));
+    expect(cas).toBeDefined();
+    expect(String(cas![0])).toMatch(/mutationClaimedAt IS NULL/);
+    expect(String(cas![0])).toMatch(/mutationClaimedAt\s*<\s*:stale/);
+    expect(cas![1].stale.getTime()).toBe(claimAt.getTime() - MUTATION_CLAIM_STALE_MS);
+  });
+
+  it('cancelOrder: 가드 거절(USED → 3006) 경로에서도 finally 에서 owner-guarded 해제', async () => {
+    // 해제가 finally 가 아니면 가드로 거절된 취소가 5분짜리 lease 를 남겨
+    // 그 행의 재발행/재발송/폐기가 전부 막힌다(3010).
+    const tip = makeDelivery({ id: 101, externalTrId: 'TR-1', couponStatus: OrderDeliveryCouponStatus.USED });
+    const { svc, update } = makeService([tip]);
+    (svc as any).partnerCompanyExternService = { cancelByExternalApi: jest.fn() };
+    (svc as any).processCancelRefund = jest.fn();
+
+    await expect(svc.cancelOrder(account, 'TR-1', ctx)).rejects.toMatchObject({ code: '3006' });
+
+    expect(update).toHaveBeenCalledWith({ id: 101, mutationClaimedAt: expect.any(Date) }, { mutationClaimedAt: null });
+  });
+
+  it('cancelOrder: lease 획득 실패(3010) 시에는 해제를 시도하지 않는다 (남의 lease 를 건드리지 않음)', async () => {
+    const tip = makeDelivery({ id: 101, externalTrId: 'TR-1', couponStatus: OrderDeliveryCouponStatus.NOT_USED });
+    const { svc, qb, update } = makeService([tip]);
+    qb.execute.mockResolvedValue({ affected: 0 }); // 남이 lease 보유 중
+
+    await expect(svc.cancelOrder(account, 'TR-1', ctx)).rejects.toMatchObject({ code: '3010' });
+
+    // 획득 실패는 try 진입 전 throw — finally 가 없어야 한다(있으면 owner guard 로 affected=0 이라 무해하나,
+    // 획득/해제 대칭이 깨지면 이후 리팩터에서 남의 lease 를 지우는 방향으로 흐르기 쉽다).
+    expect(update).not.toHaveBeenCalled();
   });
 
   it('cancelOrder: lease 획득 후 재조회가 비면(soft-delete 등) fail-closed 로 3010 — 협력사 취소 스킵 + 환불 강행 방지', async () => {
