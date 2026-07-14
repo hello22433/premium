@@ -14,6 +14,7 @@ import { OrderPaymentRefundEventEntity } from '../entity/order.payment.refund.ev
 import { OrderDeliveryAttemptEntity } from '../entity/order.delivery.attempt.entity';
 import { UserEntity } from '../entity/user.entity';
 import { UserCompanyEntity } from '../entity/user.company.entity';
+import { ActivityLogEntity } from '../entity/activity.log.entity';
 import { WalletAccountResolverService } from './application/wallet-account-resolver.service';
 import { WalletReadService } from './application/wallet-read.service';
 import { PointPolicyService } from './application/point-policy.service';
@@ -65,6 +66,7 @@ import { ActivityLogModule } from '../activity_log/activity.log.module';
       OrderDeliveryAttemptEntity,
       UserEntity,
       UserCompanyEntity,
+      ActivityLogEntity,
     ]),
   ],
   controllers: [CreditExcessApprovalController, SettlementCodeAdminController],

@@ -36,6 +36,20 @@ export class SettleSettlementCodeSnapshotDto {
   @ApiProperty({ description: '사용 가능 포인트 잔액 합 (만료/비활성 제외)' })
   pointTotalRemaining: number;
 
+  @ApiProperty({
+    description: '정산조건 (PRE_PAYMENT 선정산 / POST_PAYMENT 후정산). wallet 미존재 시 null',
+    enum: ['PRE_PAYMENT', 'POST_PAYMENT'],
+    nullable: true,
+  })
+  settleCondition: 'PRE_PAYMENT' | 'POST_PAYMENT' | null;
+
+  @ApiProperty({
+    description: '정산방법 (CARD 카드 / CASH 현금). wallet 미존재 시 null',
+    enum: ['CARD', 'CASH'],
+    nullable: true,
+  })
+  settleMethod: 'CARD' | 'CASH' | null;
+
   @ApiProperty({ description: '해당 정산코드 소속 user 목록', type: [SettleAssignedUserDto] })
   assignedUsers: SettleAssignedUserDto[];
 }
