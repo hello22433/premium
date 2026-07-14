@@ -274,4 +274,49 @@ describe('DeliveryBatchService.processOneDeliveryInternal — full save() 부재
     expect(failWrite![1].status).toBe(IOrderDeliveryStatus.FAIL);
     expect(result.deliveryHistory.isSuccess).toBe(false);
   });
+
+  /**
+   * D3-60 — oneSend(CS 재발송 / 발송실패내역 재발송 진입점) 에도 full save() 가 없다.
+   *
+   * 배치(processOneDeliveryInternal)만 고치고 oneSend 를 두면 clobber 는 그대로 남는다.
+   * 변형 lease 는 5분 stale 이라 발송(외부 통신) 도중 폐기가 lease 를 **강탈**할 수 있고,
+   * 그때 save 는 남이 쓴 coupon_status=CANCEL / deleted_at 을 스냅샷으로 되돌린다.
+   * lease 는 "남의 진입"을 막을 뿐 "이미 들어온 값을 되돌리는 것"은 못 막는다 — 그건 save 의 문제다.
+   */
+  describe('oneSend — full save() 부재 (persistOneSendResult)', () => {
+    it('persistOneSendResult 의 SET 은 6컬럼뿐 — clobber 3컬럼 없음', async () => {
+      const od = makeDelivery({ actualSendAt: new Date(), failedAt: null });
+
+      await (sut as any).persistOneSendResult(od);
+
+      expect(repo.update).toHaveBeenCalledTimes(1);
+      const [criteria, set] = repo.update.mock.calls[0];
+      expect(criteria).toEqual({ id: 901 });
+      // oneSend 가 엔티티에 쓰는 컬럼의 전부(전수 확인). 여기 없는 컬럼은 각자 자체 update 로 영속한다.
+      expect(Object.keys(set).sort()).toEqual([
+        'actualSendAt',
+        'encourageAt',
+        'expireAt',
+        'failedAt',
+        'imagePath',
+        'status',
+      ]);
+      expect(set).not.toHaveProperty('couponStatus');
+      expect(set).not.toHaveProperty('mutationClaimedAt');
+      expect(set).not.toHaveProperty('deletedAt');
+    });
+
+    it('PIN 재발급 실패 경로: save() 대신 targeted update', async () => {
+      const od = makeDelivery({ status: IOrderDeliveryStatus.WAIT }); // wasFailBefore=false → 환불 분기 미진입
+      (sut as any).reissuePinAndCreateImageIfNeeded = jest.fn().mockResolvedValue(false);
+      (sut as any).deliverySendHistoryRepository = { save: jest.fn().mockResolvedValue(undefined) };
+
+      const sent = await (sut as any).oneSend(od);
+
+      expect(sent).toBe(false);
+      expect(repo.save).not.toHaveBeenCalled();
+      expect(repo.update).toHaveBeenCalledTimes(1);
+      expect(repo.update.mock.calls[0][1]).not.toHaveProperty('couponStatus');
+    });
+  });
 });

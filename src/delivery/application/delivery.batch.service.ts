@@ -2379,6 +2379,40 @@ export class DeliveryBatchService {
     });
   }
 
+  /**
+   * oneSend 의 결과 영속 — save(orderDelivery) 금지, targeted update (D3-60 clobber).
+   *
+   * save 는 merge 라 **행 전체**를 claim 시점 스냅샷으로 쓴다. oneSend 는 PIN 발급·문자 발송
+   * (외부 통신)으로 수 초가 걸리고, 변형 lease 는 5분 stale 이라 그 사이 폐기·외부취소가
+   * lease 를 강탈해 들어올 수 있다. 그때 save 는 남이 쓴 값을 스냅샷으로 되돌린다:
+   *   - coupon_status='CANCEL' → 'NOT_USED'   (환불은 끝났는데 되살아난 쿠폰 = 자금 손실)
+   *   - deleted_at             → NULL          (unwindReissue 가 지운 tip 부활)
+   *   - mutation_claimed_at    → 스냅샷 값      (남의 변형 lease 무력화)
+   *
+   * 아래 6개가 oneSend 가 엔티티에 쓰는 컬럼의 **전부**다(전수 확인):
+   *   - status/actualSendAt/failedAt : markSendSuccess · markSendFail
+   *   - expireAt/encourageAt         : 유효기간 신규 계산(재발송은 기존 값 유지)
+   *   - imagePath                    : reissuePinAndCreateImageIfNeeded (자체 update 가 없는 유일한 컬럼)
+   *
+   * 나머지는 각자 자체 targeted update 로 이미 영속한다 —
+   * barCode/personalCode/couponNum/ssgTransactionId 는 issue(), ssgEventId 는 재발급 분기,
+   * transactionId 는 호출자의 claim CAS. 알림톡도 oneSend 는 **동기** 전송이라
+   * reportState/msgKey 를 건드리지 않는다(비동기 sweep 은 배치 전용 경로).
+   */
+  private async persistOneSendResult(orderDelivery: OrderDeliveryEntity): Promise<void> {
+    await this.orderDeliveryRepository.update(
+      { id: orderDelivery.id },
+      {
+        status: orderDelivery.status,
+        actualSendAt: orderDelivery.actualSendAt,
+        failedAt: orderDelivery.failedAt,
+        expireAt: orderDelivery.expireAt,
+        encourageAt: orderDelivery.encourageAt,
+        imagePath: orderDelivery.imagePath,
+      },
+    );
+  }
+
   async oneSend(
     orderDelivery: OrderDeliveryEntity,
     isSave: boolean = true,
@@ -2409,7 +2443,7 @@ export class DeliveryBatchService {
         deliveryHistory.deliveryMethod = orderDelivery.deliveryMethod;
 
         if (isSave) {
-          await this.orderDeliveryRepository.save(orderDelivery);
+          await this.persistOneSendResult(orderDelivery);
         }
         await this.deliverySendHistoryRepository.save(deliveryHistory);
         return false;
@@ -2704,7 +2738,7 @@ export class DeliveryBatchService {
     }
 
     if (isSave) {
-      await this.orderDeliveryRepository.save(orderDelivery);
+      await this.persistOneSendResult(orderDelivery);
     }
 
     // 테스트 발송은 발송실패내역(delivery_send_history)에 기록하지 않는다.
