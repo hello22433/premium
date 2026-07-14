@@ -264,9 +264,34 @@ export class PartnerCompanyExternService {
    *  - cancelOrder/execDiscard 의 `if (barCode && partnerCompany)` 가드가 falsy →
    *    **협력사 취소를 건너뛴 채 환불만 집행** → 협력사엔 살아있는 핀 + 환불 완료 = 자금 손실
    *
-   * @Transactional(REQUIRED) 안이므로 issue() 가 throw 하면 함께 롤백된다.
+   * ★ REQUIRES_NEW 인 이유 (리뷰 CRITICAL) — issue() 의 트랜잭션과 **운명을 분리**해야 한다.
+   *
+   *   협력사 발급(HTTP)은 롤백 대상이 아니다. 그런데 REQUIRED 로 두면 issue() 가 이후 어디서든
+   *   throw 할 때 이 update 가 **함께 롤백**되어, "협력사엔 발급·과금된 핀 + 우리 DB 는 NULL" 이
+   *   된다. 그 상태의 결말이 위에 적은 3가지다(특히 cancel 이 협력사 취소를 건너뛴 채 환불 집행).
+   *
+   *   종전(save 시절)에는 caller 의 save(orderDelivery) 가 issue() **밖**에서 실행돼 롤백돼도
+   *   메모리의 barCode 를 다시 써 줬다. targeted update 로 바꾸면서 그 안전망이 사라졌으므로,
+   *   여기서 명시적으로 트랜잭션을 분리해 복원한다.
+   *
+   *   같은 이유로 SsgInsertStateService 의 markAttempted/markConfirmed 도 REQUIRES_NEW 다
+   *   ("호출자 트랜잭션이 롤백돼도 state 는 함께 commit 된다").
+   *
+   * ⚠️ self-deadlock 검토 (과거 재발행 비관락이 markConfirmed(REQUIRES_NEW) 와 얼어붙은 전례):
+   *   REQUIRES_NEW 는 **별도 커넥션·별도 트랜잭션**이므로, 호출자가 이 order_delivery 행에
+   *   X-lock 을 쥔 채 issue() 를 호출하면 여기서 영원히 블록된다(lock wait timeout).
+   *   issue() 호출자 5곳을 전수 확인했다:
+   *     - delivery.batch(발송배치/oneSend) : 트랜잭션 없음
+   *     - customer.service(재발행)          : execHistory 는 @Transactional 아님
+   *     - external_api(phaseB)              : "Phase B: 쿠폰 발행 + 발송 (트랜잭션 없음)" 명시
+   *     - order_receive(x2)                 : sendToMMS 만 @Transactional 인데, 그 안에서
+   *       order_delivery 는 **락 없는 SELECT** 만 하고(claim 은 별도 REQUIRES_NEW 에서 CAS),
+   *       쓰기는 issue() **뒤**에 온다 → X-lock 미보유.
+   *   결정적 근거: markConfirmed(REQUIRES_NEW)가 이미 같은 경로에서 order_delivery 를
+   *   UPDATE 하고 있고 운영에서 정상 동작한다. 같은 구조다.
    */
-  private async persistIssuedPin(orderDelivery: OrderDeliveryEntity): Promise<void> {
+  @Transactional({ propagation: Propagation.REQUIRES_NEW })
+  async persistIssuedPin(orderDelivery: OrderDeliveryEntity): Promise<void> {
     await this.orderDeliveryRepository.update(
       { id: orderDelivery.id },
       {
@@ -1412,8 +1437,29 @@ export class PartnerCompanyExternService {
         throw new Error(`Unsupported partnerCompany type: ${partnerType}`);
     }
 
-    // 저장
-    return this.orderDeliveryRepository.save(orderDelivery);
+    // 저장 — save(orderDelivery) 금지 (D3-55/D3-60).
+    //
+    // ★ mutation_claimed_at 은 **컬럼**이고, save()=merge 는 **행 전체**를 쓴다.
+    //   이 메서드의 스냅샷은 협력사 조회(외부 통신, 수 초) **전에** 로드된 것이라
+    //   mutation_claimed_at=null 이 굳어 있다. 그 사이 폐기·재발행이 lease 를 잡으면
+    //   여기 save 가 **남의 살아있는 lease 를 NULL 로 지운다**:
+    //     - 진행 중인 재발행의 fenced write 가 affected=0 → 운영자에게 409("다른 작업이 선점")
+    //       — 실제로는 아무도 선점하지 않았는데.
+    //     - lease 가 사라져 폐기×재발행 교차 창이 **다시 열린다**(이 작업이 닫으려던 그 창).
+    //   같은 이유로 coupon_status 도 stale 로 되돌아갈 수 있다(D3-60 원본 결함).
+    //
+    // 이 메서드가 엔티티에 쓰는 컬럼은 아래 5개가 전부다(전수 확인: 협력사별 분기 전 구간).
+    await this.orderDeliveryRepository.update(
+      { id: orderDelivery.id },
+      {
+        couponStatus: orderDelivery.couponStatus,
+        discardedAt: orderDelivery.discardedAt,
+        tradeAt: orderDelivery.tradeAt,
+        tradePlace: orderDelivery.tradePlace,
+        galaxiaBalance: orderDelivery.galaxiaBalance,
+      },
+    );
+    return orderDelivery;
   }
 
   /**
