@@ -1449,8 +1449,19 @@ export class ExternalApiService {
         },
       );
       if (!sendWrite.affected) {
+        // affected=0 = 발송(외부 통신, 수 초) 도중 폐기/취소가 lease 를 탈취했다
+        // = **방금 보낸 핀은 협력사에서 취소되고 환불까지 됐을 수 있다**.
+        // 여기서 success() 를 주면 파트너는 발송 성공으로 알고, 고객은 죽은 핀을 받고,
+        // resendAt/actualSendAt 은 갱신 안 된 채 로그 한 줄만 남는다.
+        // 3010(CONFLICT)로 응답해 파트너가 getOrderStatus 로 재확인하게 한다 (리뷰 MEDIUM).
         this.logger.error(
-          `[resendOrder] 발송결과 기록 스킵 — 변형 lease 상실(다른 처리가 선점). orderDeliveryId=${orderDelivery.id}, trId=${trId}`,
+          `[resendOrder] 발송결과 기록 실패 — 변형 lease 상실(다른 처리가 선점). ` +
+            `문자는 이미 발송됐으나 해당 쿠폰이 취소·환불됐을 수 있다. 운영 확인 필요. ` +
+            `orderDeliveryId=${orderDelivery.id}, trId=${trId}`,
+        );
+        throw new ExternalApiException(
+          '3010',
+          '재발송 처리 중 해당 주문의 상태가 변경되었습니다. 주문 상태를 다시 조회해 주세요.',
         );
       }
 

@@ -222,13 +222,21 @@ describe('ExternalApiService.resendOrder atomic slot claim', () => {
       expect(Object.keys((update.mock.calls[0] as any[])[1]).sort()).toEqual(['actualSendAt', 'resendAt', 'status']);
     });
 
-    it('fencing: 발송결과 update 가 affected=0(lease 강탈당한 좀비)이면 throw 없이 로그만 — 상태를 되살리지 않는다', async () => {
+    /**
+     * ★ 종전 계약("throw 없이 로그만, 응답은 0000")을 뒤집었다 (리뷰 MEDIUM).
+     *
+     * affected=0 = 발송(수 초) 도중 폐기/취소가 lease 를 탈취했다
+     * = 방금 보낸 핀은 협력사에서 취소되고 환불까지 됐을 수 있다.
+     * success() 를 주면 파트너는 발송 성공으로 알고, 고객은 죽은 핀을 받고,
+     * resendAt/actualSendAt 은 갱신 안 된 채 로그 한 줄만 남는다.
+     * 3010(CONFLICT)로 응답해 파트너가 getOrderStatus 로 재확인하게 한다.
+     */
+    it('fencing: 발송결과 update 가 affected=0(lease 강탈당한 좀비)이면 success 금지 → 3010', async () => {
       const { svc, update } = makeService({ claimAffected: 1 });
-      update.mockResolvedValue({ affected: 0 } as any); // 내 lease 가 이미 남에게 넘어감
+      // 발송결과 update 만 affected=0, finally 의 해제 update 는 정상
+      update.mockResolvedValueOnce({ affected: 0 } as any).mockResolvedValue({ affected: 1 } as any);
 
-      // 발송 자체는 성공했으므로 응답은 성공. 다만 DB 상태는 덮지 않는다(남의 CANCEL 유지).
-      const res = await svc.resendOrder(account, 'TR-RESEND', ctx);
-      expect(res.code).toBe('0000');
+      await expect(svc.resendOrder(account, 'TR-RESEND', ctx)).rejects.toMatchObject({ code: '3010' });
 
       const lost = ((svc as any).logger.error as jest.Mock).mock.calls.filter((c: any[]) =>
         String(c[0]).includes('변형 lease 상실'),
