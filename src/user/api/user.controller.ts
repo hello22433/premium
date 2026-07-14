@@ -21,6 +21,7 @@ import {
   UserLoginEmailVerifyReqDto,
   UserLoginPhoneSendReqDto,
   UserLoginPhoneVerifyReqDto,
+  UserReactivateEmailSendReqDto,
   UserSignUpReqDto,
 } from './user.req.dto';
 import { ConfigService } from '@nestjs/config';
@@ -28,6 +29,7 @@ import {
   UserLoginByEmailPasswordResDto,
   UserLoginEmailResDto,
   UserLoginPhoneResDto,
+  UserReactivateEmailSendResDto,
   UserRefreshByRefreshResDto,
 } from './user.res.dto';
 import { Request } from 'express';
@@ -125,12 +127,13 @@ export class UserController {
     description: '휴면(NOT_USED) 상태 계정에 본인인증 코드를 발송합니다. 탈퇴(LEAVE) 계정은 재활성화 불가.',
   })
   @ApiOkResponse({
-    type: UserLoginEmailResDto,
-    description: '재활성화 인증 이메일 전송',
+    type: UserReactivateEmailSendResDto,
+    description:
+      '재활성화 인증 이메일 전송. 담당자 이메일이 2개 이상이고 targetEmailIndex 미지정 시 needEmailSelection=true + candidates(마스킹 후보) 반환(코드 미발송).',
   })
   // ============================================
   @Post('/user/reactivate/email/send')
-  async reactivateEmailSend(@Body() getBody: UserLoginEmailSendReqDto): Promise<UserLoginEmailResDto> {
+  async reactivateEmailSend(@Body() getBody: UserReactivateEmailSendReqDto): Promise<UserReactivateEmailSendResDto> {
     return this.userService.reactivateEmailSend(getBody);
   }
 
