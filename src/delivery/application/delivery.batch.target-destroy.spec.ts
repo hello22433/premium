@@ -18,10 +18,14 @@ import { DeliveryBatchService } from './delivery.batch.service';
  * 생성자 의존성이 많아 Object.create 로 우회 후 필요한 repository 만 mock 주입.
  */
 describe('DeliveryBatchService.deliveryDeliveryTargetDestroy', () => {
-  // SELECT 용 QueryBuilder mock (andWhere 인자 기록)
+  // SELECT 용 QueryBuilder mock (where/andWhere 인자 기록)
   const makeSelectQb = (rows: any[]) => {
-    const qb: any = { calls: { andWhere: [] as any[] } };
-    for (const m of ['innerJoinAndSelect', 'where']) qb[m] = jest.fn(() => qb);
+    const qb: any = { calls: { where: [] as any[], andWhere: [] as any[] } };
+    for (const m of ['innerJoinAndSelect']) qb[m] = jest.fn(() => qb);
+    qb.where = jest.fn((sql: any, params: any) => {
+      qb.calls.where.push([sql, params]);
+      return qb;
+    });
     qb.andWhere = jest.fn((sql: any, params: any) => {
       qb.calls.andWhere.push([sql, params]);
       return qb;
@@ -95,6 +99,17 @@ describe('DeliveryBatchService.deliveryDeliveryTargetDestroy', () => {
     ]) {
       expect(piiIdempotency[0]).toContain(col);
     }
+  });
+
+  it('파기 기준시각 비교는 날짜(DATE) 단위 절삭이다 — 파기예정일 당일 자정 크론에서 파기', async () => {
+    const selectQb = makeSelectQb([{ id: 1 }]);
+    const sut = makeSut(selectQb);
+
+    await sut.deliveryDeliveryTargetDestroy();
+
+    const [sql] = selectQb.calls.where[0];
+    expect(sql).toContain('DATE_ADD(DATE(orderProductMapping.sendRequestAt)');
+    expect(sql).toContain('<= DATE(:now)');
   });
 
   it('환불 진행중(PROGRESS/APPROVE) 제외 조건이 WHERE 에 포함된다 (조기파기 환불 가드 미러링)', async () => {

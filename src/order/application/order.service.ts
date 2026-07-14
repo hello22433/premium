@@ -79,6 +79,7 @@ import { OrderProductMappingEntity } from '../../entity/order.product.mapping.en
 import { Transactional, runOnTransactionCommit } from 'typeorm-transactional';
 import { OrderCancelNotificationService } from './order.cancel.notification.service';
 import { isDirectCustomerCancelTarget } from '../domain/order.cancel.notification.policy';
+import { resolveDestructionCertificateGate } from '../domain/destruction.certificate.gate';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { TestOrderDeliveryEntity } from '../../entity/test.order.delivery.entity';
 import { ProductEntity } from '../../entity/product.entity';
@@ -870,6 +871,9 @@ export class OrderService {
           mapping.orderDeliveries?.some((delivery) => delivery.resendAt != null),
         ) ?? false;
 
+      // 파기확인서 발행 가능 여부 (deliveryTarget 단일 컬럼 판정 — destruction.certificate.gate 참조)
+      const destructionCertificateGate = resolveDestructionCertificateGate(order);
+
       // 첫 번째 상품의 발송 정보 사용
       const firstMapping = order.orderProductMappings?.[0];
       // sendRequestAt: 예약 발송 요청 시간 (actualSendAt이 없을 때 폴백용)
@@ -923,6 +927,8 @@ export class OrderService {
         sendType: firstMapping?.sendType ?? null,
         hasFailedDelivery,
         hasResentDelivery,
+        canIssueDestructionCertificate: destructionCertificateGate.canIssue,
+        destructionCertificateBlockReason: destructionCertificateGate.reason,
         productSendTimes,
       };
     });

@@ -2665,7 +2665,10 @@ export class DeliveryBatchService {
       .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
       .innerJoinAndSelect('orderProductMapping.order', 'order')
       .where(
-        `DATE_ADD(orderProductMapping.sendRequestAt, INTERVAL orderProductMapping.requestToDestroyPersonalInfoDay DAY) <= :now`,
+        // 파기 기준은 날짜(DATE) 단위 절삭 — "발송요청일 + N일". 시각(datetime) 비교면 자정 크론이
+        // 그날 발송요청 시각 이후 몫을 다음 날로 미뤄, 파기예정일 당일 내내 미파기 상태가 됐다
+        // (0710/backend-response 문서 2번). TZ/DB 커넥션 모두 KST(+09:00)라 DATE() 는 KST 날짜다.
+        `DATE_ADD(DATE(orderProductMapping.sendRequestAt), INTERVAL orderProductMapping.requestToDestroyPersonalInfoDay DAY) <= DATE(:now)`,
         { now },
       )
       .andWhere('order.status = :status', { status: IOrderStatus.DELIVERY_COMPLETE })
