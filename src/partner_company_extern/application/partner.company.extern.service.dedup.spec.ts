@@ -185,6 +185,74 @@ describe('PartnerCompanyExternService - PIN dedup recovery', () => {
     });
   });
 
+  /**
+   * ★ issue() 의 **모든 성공 반환 경로**가 PIN 을 order_delivery 에 durable 반영해야 한다
+   *   (리뷰 CRITICAL, D3-60 후속).
+   *
+   * 종전에는 메인 경로(협력사 발급 완료 지점)에서만 update 했고, 조기 return 하는 경로들은
+   * barCode 를 **메모리에만** 채운 뒤 caller 의 `save(orderDelivery)` 가 영속시켜 줬다.
+   * D3-60 대응으로 그 save 들을 targeted update 로 바꾸면서 PIN 컬럼이 대상에서 빠졌고,
+   * 조기 return 경로에서 `bar_code` 가 NULL 로 남는 결함이 생겼다.
+   *
+   * 결말:
+   *  - 고객은 바코드를 받았는데(이미지·문자로 나감) 우리 DB 엔 없다 → CS 조회 불가
+   *  - 재발송 시 !barCode → 새 PIN 재발급·재과금 (고객이 가진 것과 불일치)
+   *  - cancelOrder/execDiscard 의 `if (barCode && partnerCompany)` 가드가 falsy →
+   *    협력사 취소를 건너뛴 채 환불만 집행 → 협력사엔 살아있는 핀 + 환불 완료 = 자금 손실
+   *
+   * caller 의 save 에 기대면 안 된다. issue() 가 스스로 책임진다.
+   */
+  describe('PIN durable 반영 — 모든 반환 경로 (리뷰 CRITICAL)', () => {
+    /** order_delivery 에 barCode 를 쓴 update 호출. */
+    const pinWrite = () => orderDeliveryRepository.update.mock.calls.find((c: any[]) => c[1] && 'barCode' in c[1]);
+
+    it('자체(SELF) 상품: 협력사 호출 없이 만든 바코드도 DB 에 남긴다', async () => {
+      const orderDelivery = buildOrderDelivery({
+        orderProductMapping: {
+          product: { type: 'SELF', name: '자체상품', price: 1000, partnerCompany: { type: 'GALAXIA' } },
+        },
+      });
+
+      await sut.issue(orderDelivery, null);
+
+      expect(orderDelivery.barCode).toBeTruthy(); // 메모리엔 생성됐고
+      const write = pinWrite();
+      expect(write).toBeDefined(); // DB 에도 반드시 남아야 한다
+      expect(write[0]).toEqual({ id: 1001 });
+      expect(write[1].barCode).toBe(orderDelivery.barCode);
+    });
+
+    it('비SSG dedup 복구: 이어받은 바코드를 DB 에 남긴다 (진입 조건이 곧 DB NULL 이다)', async () => {
+      const orderDelivery = buildOrderDelivery();
+      pinIssueDedupRepository.insert.mockRejectedValueOnce(makeDuplicateKeyError());
+      pinIssueDedupRepository.findOne.mockResolvedValue({
+        transactionId: 'ENM1D1001',
+        barCode: 'GX-BAR-9999',
+      });
+      // fresh?.barCode 가 없어야 이 폴백으로 온다 = DB order_delivery 에 PIN 이 없다는 뜻
+      orderDeliveryRepository.findOne.mockResolvedValue({ id: 1001, barCode: null });
+
+      await sut.issue(orderDelivery, null);
+
+      expect(orderDelivery.barCode).toBe('GX-BAR-9999');
+      const write = pinWrite();
+      expect(write).toBeDefined();
+      expect(write[1].barCode).toBe('GX-BAR-9999');
+    });
+
+    it('메인 경로(협력사 발급): 종전대로 DB 에 남긴다', async () => {
+      const orderDelivery = buildOrderDelivery();
+      galaxia.issue.mockResolvedValue({
+        transactionId: 'galaxia-tr-1',
+        giftCertificate: { barcode: 'GX-BAR-0001' },
+      });
+
+      await sut.issue(orderDelivery, null);
+
+      expect(pinWrite()![1].barCode).toBe('GX-BAR-0001');
+    });
+  });
+
   describe('동시 경쟁 recovery 경로', () => {
     it('ER_DUP_ENTRY 발생 시 기존 dedup row의 bar_code를 이어받고 협력사 호출을 생략한다', async () => {
       const orderDelivery = buildOrderDelivery();

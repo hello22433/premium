@@ -248,6 +248,39 @@ export class PartnerCompanyExternService {
     });
   }
 
+  /**
+   * PIN 발급 결과를 order_delivery 에 즉시 durable 반영한다.
+   *
+   * ★ issue() 의 **모든 성공 반환 경로**가 이걸 타야 한다 (리뷰 CRITICAL).
+   *
+   * 종전에는 메인 경로(협력사 발급 완료 지점)에서만 호출했고, 조기 return 하는 경로들은
+   * barCode 를 **메모리에만** 채운 뒤 caller 의 `save(orderDelivery)` 가 영속시켜 줬다.
+   * D3-60(clobber) 대응으로 그 save 들을 targeted update 로 바꾸면서 PIN 컬럼이 대상에서
+   * 빠졌고, 그 결과 조기 return 경로에서 `bar_code` 가 **NULL 로 남는** 결함이 생겼다.
+   *
+   * 그 결말:
+   *  - 고객은 바코드를 받았는데(이미지·문자에 담겨 나감) 우리 DB 엔 없다 → CS 조회 불가
+   *  - 재발송 시 `!barCode` 판정 → **새 PIN 재발급·재과금** (고객이 가진 것과 불일치)
+   *  - cancelOrder/execDiscard 의 `if (barCode && partnerCompany)` 가드가 falsy →
+   *    **협력사 취소를 건너뛴 채 환불만 집행** → 협력사엔 살아있는 핀 + 환불 완료 = 자금 손실
+   *
+   * @Transactional(REQUIRED) 안이므로 issue() 가 throw 하면 함께 롤백된다.
+   */
+  private async persistIssuedPin(orderDelivery: OrderDeliveryEntity): Promise<void> {
+    await this.orderDeliveryRepository.update(
+      { id: orderDelivery.id },
+      {
+        barCode: orderDelivery.barCode,
+        personalCode: orderDelivery.personalCode,
+        couponNum: orderDelivery.couponNum,
+        ssgTransactionId: orderDelivery.ssgTransactionId,
+        expireAt: orderDelivery.expireAt,
+        encourageAt: orderDelivery.encourageAt,
+        ...(orderDelivery.ssgEventId != null ? { ssgEventId: orderDelivery.ssgEventId } : {}),
+      },
+    );
+  }
+
   @Transactional({ propagation: Propagation.REQUIRED })
   async issue(
     orderDelivery: OrderDeliveryEntity,
@@ -346,6 +379,9 @@ export class PartnerCompanyExternService {
                   { transactionId: orderDelivery.transactionId },
                   { recoveredFrom: 'DEDUP' },
                 );
+                // ssg_issue_log 에서 메모리로만 복원한 PIN — DB order_delivery 는 아직 NULL 이다
+                // (이 분기 진입 조건 자체가 fresh?.barCode 부재). 반드시 durable 반영한다.
+                await this.persistIssuedPin(orderDelivery);
                 return result;
               }
               // 정확 매칭 없음: barCode-only 성공 반환은 메타데이터 누락 + cust_info 우회라 위험.
@@ -361,6 +397,8 @@ export class PartnerCompanyExternService {
                 { transactionId: orderDelivery.transactionId },
                 { recoveredFrom: 'DEDUP' },
               );
+              // 메모리로만 복원한 PIN — DB order_delivery 는 아직 NULL 이다. 반드시 durable 반영.
+              await this.persistIssuedPin(orderDelivery);
               return result;
             }
           }
@@ -380,7 +418,11 @@ export class PartnerCompanyExternService {
 
     try {
       if (!type || orderDelivery.orderProductMapping.product.type === 'SELF') {
+        // 자체 상품 — 협력사 호출 없이 우리가 바코드를 만든다. 그래도 **DB 에 반드시 남겨야** 한다.
+        // 이 바코드는 곧 쿠폰 이미지에 찍혀 고객에게 나간다. DB 에 없으면 CS 조회도, 재발송 시
+        // 동일 핀 재사용도 불가능하다(!barCode → 다른 바코드 재생성 → 고객이 받은 것과 불일치).
         orderDelivery.barCode = orderBarcodeGenerate();
+        await this.persistIssuedPin(orderDelivery);
         return result;
       }
 
@@ -841,22 +883,8 @@ export class PartnerCompanyExternService {
         );
       }
 
-      // PIN 발급 결과를 order_delivery에도 즉시 반영한다.
-      // caller(배치/수동 발송)가 issue() 반환 이후 createCouponImage/save 등에서 throw하면
-      // entity 메모리에만 들고 있던 barCode/personalCode 등이 DB에 남지 않아
-      // 외부 SSG에는 INSERT 됐는데 사내 DB는 NULL인 불일치 상태가 발생한다(orphan PIN).
-      // @Transactional 안에서 update하므로 issue() 자체가 throw하면 함께 롤백된다.
-      await this.orderDeliveryRepository.update(
-        { id: orderDelivery.id },
-        {
-          barCode: orderDelivery.barCode,
-          personalCode: orderDelivery.personalCode,
-          couponNum: orderDelivery.couponNum,
-          ssgTransactionId: orderDelivery.ssgTransactionId,
-          expireAt: orderDelivery.expireAt,
-          encourageAt: orderDelivery.encourageAt,
-        },
-      );
+      // PIN 발급 결과를 order_delivery에도 즉시 반영한다. (조기 return 경로들도 반드시 이걸 탄다)
+      await this.persistIssuedPin(orderDelivery);
     } catch (e) {
       this.logger.error(e);
 

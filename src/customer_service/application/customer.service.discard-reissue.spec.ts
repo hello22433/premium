@@ -422,6 +422,44 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
       expect(orderDeliveryRepository.softDelete).toHaveBeenCalled();
     });
 
+    /**
+     * ★ wallet 승계는 barCode 검사 **뒤**여야 한다 (리뷰 HIGH — 26 의 반대쪽 절반).
+     *
+     * 26 은 "fencing 앞"만 잠근다. 그것만 보면 carry 를 issue() 직후·barCode 검사 **앞**으로
+     * 끌어올려도 26/10/12 는 전부 초록이다. 그러나 barCode 누락은 unwind 경로다 — unwind 는 tip 을
+     * softDelete 하고 원본 폐기를 되돌린다. 그 전에 wallet(allocation_line/attempt)을 tip 으로
+     * 옮겨 두면, 살아 돌아온 **원본**에는 환불 근거가 없고 근거는 삭제된 tip 에 매달려 있다.
+     * 이후 고객이 그 원본을 폐기하면 attempt/line 부재로 환불이 drift abort 된다 — 쿠폰도 돈도 없다.
+     *
+     * 요약: carry 는 (barCode 검사) < carry < (유효기간 fencing) 사이에만 존재해야 하고,
+     * 이 테스트가 왼쪽 경계를, 26 이 오른쪽 경계를 잠근다.
+     */
+    it('9-1) barCode 없음(unwind → softDelete) 경로에서는 wallet 승계를 하지 않는다 (원본의 환불 근거 보존)', async () => {
+      setupSsgAcquired();
+      setupExecDiscard();
+      orderDeliveryRepository.findOne.mockResolvedValue(buildFullDelivery(IOrderType.SSG, { id: 7 }, ''));
+      partnerCompanyExternService.issue.mockResolvedValue(undefined);
+      deliveryBatchService.reverseSsgReissueDeduct.mockResolvedValue(SsgRefundOutcome.RESTORED);
+      jest.spyOn(service as any, 'reverseDiscard').mockResolvedValue(true);
+      const carry = jest.spyOn(service as any, 'carryWalletOwnershipToReissuedDelivery').mockResolvedValue(undefined);
+
+      await expect(service.execHistory(buildMap(IOrderType.SSG))).rejects.toThrow();
+
+      // tip 은 softDelete 된다 — 그 tip 으로 wallet 을 옮겼다면 원본의 환불 근거가 사라진다
+      expect(orderDeliveryRepository.softDelete).toHaveBeenCalled();
+      expect(carry).not.toHaveBeenCalled();
+    });
+
+    it('9-2) 비SSG barCode 없음(핀 발급 실패)도 wallet 승계 전에 중단한다', async () => {
+      setupExecDiscard();
+      orderDeliveryRepository.findOne.mockResolvedValue(buildFullDelivery(IOrderType.GENERAL, null, ''));
+      const carry = jest.spyOn(service as any, 'carryWalletOwnershipToReissuedDelivery').mockResolvedValue(undefined);
+
+      await expect(service.execHistory(buildMap(IOrderType.GENERAL))).rejects.toThrow(/핀 발급에 실패/);
+
+      expect(carry).not.toHaveBeenCalled();
+    });
+
     it('10) GENERAL + wallet-managed: 신규 delivery 로 allocation_line repoint + INITIAL attempt 생성', async () => {
       await expectWalletOwnershipCarried(IOrderType.GENERAL);
     });

@@ -318,5 +318,96 @@ describe('DeliveryBatchService.processOneDeliveryInternal — full save() 부재
       expect(repo.update).toHaveBeenCalledTimes(1);
       expect(repo.update.mock.calls[0][1]).not.toHaveProperty('couponStatus');
     });
+
+    /**
+     * ★ 성공(발송 완료) 경로를 **실제로 통과시켜** 영속 계약을 잠근다.
+     *
+     * 위 두 테스트의 공백: 287 은 persistOneSendResult 를 직접 호출하고, 309 는 PIN 재발급 실패
+     * 조기 return 만 탄다. 즉 oneSend 의 **성공 경로 말미**(`if (isSave) await this.persistOneSendResult(...)`)
+     * 는 어떤 테스트도 통과하지 않았다. 그 줄을 `save(orderDelivery)` 로 되돌려도(=D3-60 clobber 재발),
+     * 혹은 통째로 지워도(발송 결과 소실) 전 스위트가 초록이었다.
+     *
+     * 이 경로는 CS 재발송(reSend)·발송실패내역 재발송의 실제 진입점이고, 둘 다 변형 lease 를
+     * 5분 stale 로 들고 외부 통신(PIN 발급+문자)을 하는 구간이라 clobber 창이 가장 넓다.
+     */
+    const setupOneSendSuccess = (od: any) => {
+      (sut as any).reissuePinAndCreateImageIfNeeded = jest.fn().mockResolvedValue(true);
+      (sut as any).deliverySendHistoryRepository = { save: jest.fn().mockResolvedValue(undefined) };
+      (sut as any).smsSend = { send: jest.fn().mockResolvedValue(undefined) };
+      (sut as any).buildSmsText = jest.fn().mockReturnValue('본문');
+      // markSendSuccess 는 deliverySendService 로 위임된다(프로덕션 174行).
+      (sut as any).deliverySendService.markSendSuccess = jest.fn((d: any, status: any) => {
+        d.status = status;
+        d.actualSendAt = new Date('2026-07-14T03:00:00.000Z');
+      });
+      od.orderProductMapping.fromPhoneNumber = '16443614';
+      return od;
+    };
+
+    it('발송 성공 경로: save() 를 호출하지 않는다 — persistOneSendResult 로만 영속 (D3-60 회귀 방지)', async () => {
+      const od = setupOneSendSuccess(makeDelivery({ status: IOrderDeliveryStatus.WAIT }));
+
+      const sent = await (sut as any).oneSend(od);
+
+      expect(sent).toBe(true);
+      expect((sut as any).smsSend.send).toHaveBeenCalled(); // 발송 경로를 실제로 통과했다
+      // save 가 한 번이라도 나가면 coupon_status=CANCEL / deleted_at / 남의 mutation_claimed_at 이
+      // 발송 시작 시점 스냅샷으로 되돌아간다 = 환불됐는데 살아있는 쿠폰.
+      expect(repo.save).not.toHaveBeenCalled();
+      // 영속을 통째로 지우는 회귀도 잡는다 — update 가 0회면 발송 결과(status/actualSendAt)가 유실된다.
+      expect(repo.update).toHaveBeenCalledTimes(1);
+      const [criteria, set] = repo.update.mock.calls[0];
+      expect(criteria).toEqual({ id: 901 });
+      expect(Object.keys(set).sort()).toEqual([
+        'actualSendAt',
+        'encourageAt',
+        'expireAt',
+        'failedAt',
+        'imagePath',
+        'status',
+      ]);
+    });
+
+    /**
+     * ★ 컬럼 이름만 맞고 **값**이 엉뚱하면 그 값은 조용히 사라진다.
+     *
+     * 287 은 Object.keys 만 본다. `imagePath: undefined` (TypeORM 이 컬럼을 통째로 스킵) 나
+     * `expireAt: orderDelivery.encourageAt` 같은 오결선은 키 집합이 그대로라 통과한다.
+     * 6컬럼 각각이 **엔티티의 자기 필드**에서 온다는 것까지 잠근다.
+     */
+    it('persistOneSendResult: 6컬럼이 각각 엔티티의 해당 필드 값으로 쓰인다 (오결선/undefined 차단)', async () => {
+      const od = makeDelivery({
+        status: IOrderDeliveryStatus.COMPLETE,
+        actualSendAt: new Date('2026-07-14T01:00:00.000Z'),
+        failedAt: new Date('2026-07-14T02:00:00.000Z'),
+        expireAt: new Date('2026-08-14T00:00:00.000Z'),
+        encourageAt: new Date('2026-08-07T00:00:00.000Z'),
+        imagePath: 'img/coupon-901.png',
+      });
+
+      await (sut as any).persistOneSendResult(od);
+
+      const [, set] = repo.update.mock.calls[0];
+      expect(set).toEqual({
+        status: IOrderDeliveryStatus.COMPLETE,
+        actualSendAt: new Date('2026-07-14T01:00:00.000Z'),
+        failedAt: new Date('2026-07-14T02:00:00.000Z'),
+        expireAt: new Date('2026-08-14T00:00:00.000Z'),
+        encourageAt: new Date('2026-08-07T00:00:00.000Z'),
+        imagePath: 'img/coupon-901.png',
+      });
+      // imagePath 는 자체 update 가 없는 유일한 컬럼 — 여기서 빠지면 쿠폰 이미지가 영영 유실된다.
+      expect(set.imagePath).toBe('img/coupon-901.png');
+    });
+
+    it('isSave=false: 발송은 하되 영속은 하지 않는다 (테스트 발송이 실 데이터를 덮지 않는다)', async () => {
+      const od = setupOneSendSuccess(makeDelivery({ status: IOrderDeliveryStatus.WAIT }));
+
+      await (sut as any).oneSend(od, false);
+
+      expect((sut as any).smsSend.send).toHaveBeenCalled();
+      expect(repo.save).not.toHaveBeenCalled();
+      expect(repo.update).not.toHaveBeenCalled();
+    });
   });
 });

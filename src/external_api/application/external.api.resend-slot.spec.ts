@@ -209,6 +209,28 @@ describe('ExternalApiService.resendOrder atomic slot claim', () => {
       expect(cas![1].mutationStale.getTime()).toBe(claimAt.getTime() - MUTATION_CLAIM_STALE_MS);
     });
 
+    /**
+     * ★ 슬롯 CAS 의 WHERE 에 coupon_status 배제 술어가 살아 있어야 한다 (발송 경로 5개 공통 계약).
+     *
+     * 95 는 "affected=0 이고 fresh.couponStatus=CANCEL 이면 3005" 라는 **분류**만 본다. 술어 자체를
+     * 지워도 그 테스트는 초록이다 — mock 이 affected 를 직접 주기 때문이다. 그러나 술어가 없으면
+     * 진입부 R3 가드(SELECT)와 이 CAS(UPDATE) 사이의 창에서 폐기·외부취소가 끼어들 때 affected=1 이
+     * 나오고, 이미 협력사에서 취소·환불된 죽은 핀을 파트너 요청으로 다시 배달한다.
+     * SELECT 가드는 race 를 못 막는다 — CAS 의 WHERE 만이 막는다.
+     */
+    it('슬롯 CAS 의 WHERE 에 폐기/환불 쿠폰 배제 술어가 있다 (R3 가드~CAS 사이 폐기 race 차단)', async () => {
+      const { svc, qb } = makeService({ claimAffected: 1 });
+
+      await svc.resendOrder(account, 'TR-RESEND', ctx);
+
+      const blocked = (qb.andWhere as jest.Mock).mock.calls.find((c: any[]) => /coupon_status/i.test(String(c[0])));
+      expect(blocked).toBeDefined();
+      expect(String(blocked![0])).toMatch(/coupon_status NOT IN/i);
+      expect(blocked![1].blocked).toEqual(
+        expect.arrayContaining([OrderDeliveryCouponStatus.CANCEL, OrderDeliveryCouponStatus.REFUND_CANCEL]),
+      );
+    });
+
     it('슬롯 CAS 의 SET 절에 couponStatus/discardedAt 이 없다 (남이 쓴 CANCEL 을 되돌리지 않는다)', async () => {
       const { svc, set, update } = makeService({ claimAffected: 1 });
 
@@ -242,6 +264,26 @@ describe('ExternalApiService.resendOrder atomic slot claim', () => {
         String(c[0]).includes('변형 lease 상실'),
       );
       expect(lost).toHaveLength(1);
+    });
+
+    /**
+     * 슬롯 CAS 가 실패하면 lease 를 **획득하지 못한 것**이다(SET 이 안 나갔다).
+     * 그런데도 해제를 시도하면, 그 행의 활성 lease 는 지금 폐기/재발행을 하고 있는 **남의 것**이다.
+     * owner guard(WHERE mutationClaimedAt=:my)가 최종 방어선이지만, 애초에 시도하지 않는 것이 계약이다.
+     * cancelOrder(488)·reSend·resendFailedDelivery 에는 이 계약이 있는데 resendOrder 만 없었다.
+     */
+    it('슬롯 선점 실패 시에는 lease 해제를 시도하지 않는다 — 남의 lease 를 건드리지 않음', async () => {
+      const { svc, update } = makeService({
+        claimAffected: 0,
+        fresh: { resendCount: 0, mutationClaimedAt: new Date() }, // 남이 변형 작업 중
+      });
+
+      await expect(svc.resendOrder(account, 'TR-RESEND', ctx)).rejects.toMatchObject({ code: '3010' });
+
+      const releases = (update.mock.calls as unknown as any[][]).filter(
+        (c) => c[1] && c[1].mutationClaimedAt === null,
+      );
+      expect(releases).toHaveLength(0);
     });
 
     it('성공/실패 모두 finally 에서 owner-guarded 해제', async () => {
