@@ -52,6 +52,21 @@ export class OrderProductMappingEntity extends BaseEntity {
   fee: number | null;
 
   @Column({
+    type: 'enum',
+    enum: IPriceAdjustment,
+    nullable: true,
+    comment: '[snapshot] 협력사 정산 시 사용되는 할인 방법 ex) 할인: DISCOUNT, 할증: ADDITIONAL ',
+  })
+  partnerSettlePriceAdjustment: IPriceAdjustment | null;
+
+  @Column({
+    type: 'int',
+    nullable: true,
+    comment: '[snapshot] 협력사 정산 시 사용되는 수수료 (percent) ',
+  })
+  partnerSettleFee: number | null;
+
+  @Column({
     type: 'varchar',
     nullable: true,
     length: 100,

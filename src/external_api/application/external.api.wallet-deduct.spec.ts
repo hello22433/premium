@@ -141,7 +141,12 @@ function makeOrder(): OrderEntity {
 }
 
 // PR2a: phaseA_* 가 ctx 인자(ctx.apiApp.id 등)를 요구. billingUserId 는 account.user.id(=42)와 일치시켜 단순모드 동작 보존.
-const ctx = { apiApp: { id: '1' }, apiCredential: { id: '1' }, billingUserId: 42, externalCustomerId: null } as any;
+const ctx = {
+  apiApp: { id: '1', requireExternalCustomerId: false },
+  apiCredential: { id: '1' },
+  billingUserId: 42,
+  externalCustomerId: null,
+} as any;
 
 describe('ExternalApiService wallet 차감 (deductViaWallet)', () => {
   it('선정산 예치금 충분 → allocation 생성 + legacy mirror(company.balance/allSettleAmount), user.balance 불변', async () => {
@@ -175,7 +180,7 @@ describe('ExternalApiService wallet 차감 (deductViaWallet)', () => {
     expect(companyUpdate).toBeDefined();
     expect(companyUpdate!.params).toEqual([30000, 9]);
 
-    const userUpdate = queries.find((q) => q.sql.includes('UPDATE user SET allSettleAmount'));
+    const userUpdate = queries.find((q) => q.sql.includes('UPDATE user SET all_settle_amount'));
     expect(userUpdate).toBeDefined();
     expect(userUpdate!.params).toEqual([0, 42]);
 
@@ -203,7 +208,7 @@ describe('ExternalApiService wallet 차감 (deductViaWallet)', () => {
     expect(order.isSettleBalance).toBe(false);
     expect(order.isCreditExcess).toBe(false);
 
-    const userUpdate = queries.find((q) => q.sql.includes('UPDATE user SET allSettleAmount'));
+    const userUpdate = queries.find((q) => q.sql.includes('UPDATE user SET all_settle_amount'));
     expect(userUpdate!.params).toEqual([50000, 42]);
     // PERSONAL 모드 → user_company 미터치
     expect(queries.some((q) => q.sql.includes('user_company'))).toBe(false);
@@ -447,6 +452,8 @@ describe('phaseA_createAndDeduct (R6 관계그래프)', () => {
     };
 
     const result = await (svc as any).phaseA_createAndDeduct(account, dto, ctx);
+    // 매핑 필수 모드 플래그를 resolver 로 전달(4번째 인자 = ctx.apiApp.requireExternalCustomerId)
+    expect((svc as any).mappingResolver.resolveBillingTarget.mock.calls[0][3]).toBe(false);
 
     expect(build).toHaveBeenCalledTimes(1);
     const orderArg = (build.mock.calls[0] as any[])[0];
@@ -510,6 +517,80 @@ describe('phaseA_createAndDeduct (R6 관계그래프)', () => {
 
     expect(result.order.externalOrderId).toBeNull();
   });
+
+  it('주문 생성 시 협력사 정산 수수료 스냅샷(partnerSettleFee/partnerSettlePriceAdjustment)이 mapping에 저장된다', async () => {
+    const { svc } = phaseAService(WalletCutoverMode.WALLET);
+    (svc as any).productRepository.findOne = jest.fn(async () => ({
+      id: 100,
+      price: 10000,
+      category: 'MOBILE_COUPON',
+      classificationId: null,
+      partnerCompany: {
+        code: 'PC',
+        userDiscounts: [
+          {
+            category: 'PRODUCT_GROUP',
+            method: 'BULK',
+            group: 'MOBILE_COUPON',
+            pricePercent: 8,
+            priceAdjustment: 'DISCOUNT',
+            classificationId: null,
+            brand: null,
+            minPrice: null,
+            maxPrice: null,
+            compareCondition: null,
+          },
+        ],
+      },
+      brand: { nameKorean: 'B' },
+      expireDay: 30,
+    }));
+    const account = makeAccount();
+    const dto: any = {
+      productCode: 'P1',
+      deliveryMethod: 'MMS',
+      recipientPhone: '01000000000',
+      message: '',
+      title: 't',
+      senderPhone: '0100',
+    };
+
+    const mappingSave = (svc as any).orderProductMappingRepository.save as jest.Mock;
+    await (svc as any).phaseA_createAndDeduct(account, dto, ctx);
+
+    const savedMapping = mappingSave.mock.calls[0][0];
+    expect(savedMapping.partnerSettleFee).toBe(8);
+    expect(savedMapping.partnerSettlePriceAdjustment).toBe('DISCOUNT');
+  });
+
+  it('협력사 할인 조건 없을 때 partnerSettleFee=0, partnerSettlePriceAdjustment=null로 저장된다', async () => {
+    const { svc } = phaseAService(WalletCutoverMode.WALLET);
+    (svc as any).productRepository.findOne = jest.fn(async () => ({
+      id: 100,
+      price: 10000,
+      category: 'MOBILE_COUPON',
+      classificationId: null,
+      partnerCompany: { code: 'PC', userDiscounts: [] },
+      brand: { nameKorean: 'B' },
+      expireDay: 30,
+    }));
+    const account = makeAccount();
+    const dto: any = {
+      productCode: 'P1',
+      deliveryMethod: 'MMS',
+      recipientPhone: '01000000000',
+      message: '',
+      title: 't',
+      senderPhone: '0100',
+    };
+
+    const mappingSave = (svc as any).orderProductMappingRepository.save as jest.Mock;
+    await (svc as any).phaseA_createAndDeduct(account, dto, ctx);
+
+    const savedMapping = mappingSave.mock.calls[0][0];
+    expect(savedMapping.partnerSettleFee).toBe(0);
+    expect(savedMapping.partnerSettlePriceAdjustment).toBeNull();
+  });
 });
 
 describe('phaseA_createSsgAndDeduct (SSG: allocation + ssgEvent 둘 다)', () => {
@@ -546,6 +627,8 @@ describe('phaseA_createSsgAndDeduct (SSG: allocation + ssgEvent 둘 다)', () =>
     const dto: any = { amount: 50000, recipientPhone: '01000000000', message: '', senderPhone: '0100' };
 
     const result = await (svc as any).phaseA_createSsgAndDeduct(account, dto, ctx);
+    // SSG phaseA 도 매핑 필수 모드 플래그를 resolver 로 전달(4번째 인자)
+    expect((svc as any).mappingResolver.resolveBillingTarget.mock.calls[0][3]).toBe(false);
 
     // ssgEvent 차감 (협력사측, wallet 과 독립)
     expect(deductEventBalance).toHaveBeenCalledTimes(1);
@@ -601,5 +684,61 @@ describe('phaseA_createSsgAndDeduct (SSG: allocation + ssgEvent 둘 다)', () =>
     expect(allocate).toHaveBeenCalledTimes(1);
     expect(persistAllocation).toHaveBeenCalledTimes(1);
     expect(deductEventBalance).toHaveBeenCalledTimes(1);
+  });
+
+  it('SSG 주문 생성 시 협력사 정산 수수료 스냅샷(partnerSettleFee/partnerSettlePriceAdjustment)이 mapping에 저장된다', async () => {
+    const { svc } = ssgService(WalletCutoverMode.WALLET);
+    const account = makeAccount();
+    const dto: any = { amount: 50000, recipientPhone: '01000000000', message: '', senderPhone: '0100' };
+
+    const mappingSave = (svc as any).orderProductMappingRepository.save as jest.Mock;
+    await (svc as any).phaseA_createSsgAndDeduct(account, dto, ctx);
+
+    const savedMapping = mappingSave.mock.calls[0][0];
+    // SSG 협력사는 userDiscounts 없음 → fee=0, priceAdjustment=null
+    expect(savedMapping.partnerSettleFee).toBe(0);
+    expect(savedMapping.partnerSettlePriceAdjustment).toBeNull();
+  });
+});
+
+// ─── externalOrderId 비즈니스 멱등 재생 (신규 차감 없음) ───
+// 멱등 계약: 동일 (apiApp, externalOrderId) 기존 주문이면 phaseA(차감) 없이 기존 응답을 재생한다.
+describe('externalOrderId 멱등 재생 (신규 차감 없음)', () => {
+  it('일반 주문: 기존 주문 존재 → phaseA 미호출, 기존 응답 재생', async () => {
+    const svc = Object.create(ExternalApiService.prototype) as any;
+    const existing = { id: 555 };
+    svc.mappingResolver = { findExistingOrderByExternalOrderId: jest.fn(async () => existing) };
+    svc.buildCreateResponseForExistingOrder = jest.fn(() => ({ result: { code: '0000' } }));
+    svc.phaseA_createAndDeduct = jest.fn();
+
+    const res = await svc.createOrder(
+      {},
+      { productCode: 'P1', recipientPhone: '0100', senderPhone: '0100', externalOrderId: 'WA-1' },
+      { apiApp: { id: '1', requireExternalCustomerId: false } },
+    );
+
+    expect(svc.mappingResolver.findExistingOrderByExternalOrderId).toHaveBeenCalledWith('1', 'WA-1');
+    expect(svc.buildCreateResponseForExistingOrder).toHaveBeenCalledWith(existing);
+    expect(svc.phaseA_createAndDeduct).not.toHaveBeenCalled();
+    expect(res).toEqual({ result: { code: '0000' } });
+  });
+
+  it('SSG 주문: 기존 주문 존재 → phaseA 미호출, 기존 응답 재생', async () => {
+    const svc = Object.create(ExternalApiService.prototype) as any;
+    const existing = { id: 777 };
+    svc.mappingResolver = { findExistingOrderByExternalOrderId: jest.fn(async () => existing) };
+    svc.buildSsgCreateResponseForExistingOrder = jest.fn(() => ({ result: { code: '0000' } }));
+    svc.phaseA_createSsgAndDeduct = jest.fn();
+
+    const res = await svc.createSsgOrder(
+      {},
+      { amount: 50000, recipientPhone: '0100', externalOrderId: 'WA-2' },
+      { apiApp: { id: '1', ssgEnabled: true, requireExternalCustomerId: false } },
+    );
+
+    expect(svc.mappingResolver.findExistingOrderByExternalOrderId).toHaveBeenCalledWith('1', 'WA-2');
+    expect(svc.buildSsgCreateResponseForExistingOrder).toHaveBeenCalledWith(existing);
+    expect(svc.phaseA_createSsgAndDeduct).not.toHaveBeenCalled();
+    expect(res).toEqual({ result: { code: '0000' } });
   });
 });

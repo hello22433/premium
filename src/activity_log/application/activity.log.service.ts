@@ -298,6 +298,11 @@ export class ActivityLogService {
       .andWhere('activityLog.actionType IN (:...actionTypes)', {
         actionTypes: ['BALANCE_CHARGE', 'BALANCE_MODIFY', 'BALANCE_REFUND', 'DISCARD_RESTORE'],
       })
+      .andWhere(
+        // 여신복구(ALL_SETTLE_AMOUNT)는 예치금/선입금 이동이 아니라 예치금 이력에서 제외(저장부 user_task_history 제외 규칙과 정합).
+        // restoreType 없는 과거 로그는 하위호환으로 노출.
+        "(activityLog.actionType <> 'DISCARD_RESTORE' OR COALESCE(JSON_UNQUOTE(JSON_EXTRACT(activityLog.requestParams, '$.restoreType')), '') <> 'ALL_SETTLE_AMOUNT')",
+      )
       .andWhere("JSON_EXTRACT(activityLog.requestParams, '$.targetUserId') = :targetUserId", {
         targetUserId,
       })

@@ -124,6 +124,7 @@ describe('DeliveryBatchService.reissuePinAndCreateImageIfNeeded - refund ledger 
       // PR3 보강 — SSG 보정 완료 신호. 기본 true (보정 완료된 정상 흐름 가정).
       isSsgSettled: jest.fn().mockResolvedValue(true),
       markSsgSettled: jest.fn().mockResolvedValue(undefined),
+      getLedgerId: jest.fn().mockResolvedValue(123),
     } as unknown as jest.Mocked<RefundLedgerService>;
 
     ssgEventService = {
@@ -202,7 +203,7 @@ describe('DeliveryBatchService.reissuePinAndCreateImageIfNeeded - refund ledger 
         { provide: WalletManagedPredicate, useValue: { isWalletManaged: jest.fn().mockResolvedValue(false) } },
         { provide: RefundPoolService, useValue: { refund: jest.fn(), reverseRefund: jest.fn() } },
         { provide: ResendDeductService, useValue: { resendDeduct: jest.fn(), resendUndo: jest.fn() } },
-        { provide: LegacyWalletCreditSyncService, useValue: { syncCredit: jest.fn() } },
+        { provide: LegacyWalletCreditSyncService, useValue: { syncCredit: jest.fn(), syncDeposit: jest.fn() } },
         { provide: getRepositoryToken(OrderDeliveryAttemptEntity), useValue: { findOne: jest.fn(), save: jest.fn() } },
         {
           provide: getRepositoryToken(OrderPaymentRefundEventEntity),

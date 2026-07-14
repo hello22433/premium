@@ -89,6 +89,8 @@ import {
   validateSsgUniformSend,
   validateDeliverySendTypes,
   resolveProductDuplicateLimit,
+  assertWalletOnlyParamsAbsent,
+  assertSettleListDeliveryCoverage,
 } from '../domain/order.validation';
 import { OrderFromService } from '../../order_from/application/order.from.service';
 import { getBillingUserId } from '../domain/order.billing-user.helper';
@@ -101,6 +103,7 @@ import { createExportTempPath } from '../../util/file.util';
 import { UserEntity } from '../../entity/user.entity';
 import { UserCompanyEntity } from '../../entity/user.company.entity';
 import {
+  buildPartnerSettleSnapshot,
   buildLineProductSnapshot,
   buildOrderClientUserSnapshot,
   buildOrderOperationUserSnapshot,
@@ -112,7 +115,12 @@ import {
   readOperationPersonName,
   readUserView,
 } from '../util/order.snapshot.builder';
-import { assertLineIdsValid, OwnedLine, resolveLineSnapshot } from './order.snapshot.update.helper';
+import {
+  assertLineIdsValid,
+  OwnedLine,
+  resolveLineSnapshot,
+  resolvePartnerSettleSnapshot as resolvePartnerSettleSnapshotForUpdate,
+} from './order.snapshot.update.helper';
 import { UserViewScopeEntity, ViewScopeType } from '../../entity/user.view.scope.entity';
 import { IUserAuthority } from '../../user/interface/user.authority';
 import { IUserSettleCondition } from '../../user/interface/user.settle.condition';
@@ -160,8 +168,22 @@ import { IOrderDateType } from '../interface/order.date.type';
 import { OrderEncryptKey } from '../../order_receive/interface/order.encrypt.key';
 import { ActivityLogService } from '../../activity_log/application/activity.log.service';
 import { ActivityLogResult } from '../../activity_log/interface/activity.log.result';
+import {
+  buildSettleDiscountChanges,
+  buildSettleDeliveryChanges,
+  isSettleOrderChanged,
+  SETTLE_DISCOUNT_SOURCE_ACTION_TYPE,
+  SettleDeliveryChange,
+  SettleDeliverySnapshot,
+  SettleDiscountChange,
+  SettleDiscountChangeSource,
+  SettleFieldSnapshot,
+  SettleSnapshot,
+  SettleOrderSnapshot,
+} from '../domain/settle.discount.history';
 import { WalletCutoverConfig, WalletCutoverMode } from '../../wallet/config/wallet-cutover.config';
 import { WalletManagedPredicate } from '../../wallet/application/wallet-managed.predicate';
+import { SettlementCodeRequiredError } from '../../wallet/application/settlement-code-required.error';
 import { WalletAccountResolverService } from '../../wallet/application/wallet-account-resolver.service';
 import { WalletAccountEntity } from '../../entity/wallet.account.entity';
 import {
@@ -175,7 +197,9 @@ import { ForbiddenWordBlockLogEntity } from '../../entity/forbidden.word.block.l
 import { OrderProductCreateTempDto } from '../api/dto/order.product.create.temp.dto';
 import { OrderConfirmationWalletService } from '../../wallet/application/order-confirmation-wallet.service';
 import { OrderConfirmationReleaseService } from '../../wallet/application/order-confirmation-release.service';
+import { LegacyWalletCreditSyncService } from '../../wallet/application/legacy-wallet-credit-sync.service';
 import { ShadowMismatchClassifierService } from '../../wallet/application/shadow-mismatch-classifier.service';
+import { BillingScopeLockService } from '../../wallet/application/billing-scope-lock.service';
 import { OrderPaymentAllocationEntity } from '../../entity/order.payment.allocation.entity';
 import dayjs from 'dayjs';
 import timezone from 'dayjs/plugin/timezone';
@@ -326,6 +350,7 @@ export class OrderService {
     private readonly paymentAllocationService: PaymentAllocationService,
     private readonly orderConfirmationWalletService: OrderConfirmationWalletService,
     private readonly orderConfirmationReleaseService: OrderConfirmationReleaseService,
+    private readonly legacyWalletCreditSyncService: LegacyWalletCreditSyncService,
     private readonly shadowMismatchClassifierService: ShadowMismatchClassifierService,
     private readonly walletAllocationInputBuilder: WalletAllocationInputBuilder,
     private readonly forbiddenWordMatcher: ForbiddenWordMatcher,
@@ -333,6 +358,9 @@ export class OrderService {
     @InjectRepository(ForbiddenWordBlockLogEntity)
     private readonly forbiddenWordBlockLogRepository: Repository<ForbiddenWordBlockLogEntity>,
     private readonly orderFromService: OrderFromService,
+    private readonly billingScopeLockService: BillingScopeLockService,
+    @InjectRepository(WalletAccountEntity)
+    private readonly walletAccountRepository: Repository<WalletAccountEntity>,
   ) {}
 
   /**
@@ -501,8 +529,10 @@ export class OrderService {
       relations: ['company'],
     });
     const company = billingUser?.company;
-    const defaultCardSurchargeApplied = company?.settleMethod === 'CARD';
     const { policy: settlePolicy } = await this.resolveSettlePolicy(order, company);
+    // 카드할증 기본값도 정산방법(코드 지갑 SoT) 소스를 따른다 — company.settleMethod 는 회사 단위라 코드별로 갈릴 때 틀림.
+    // resolveSettlePolicy 가 cutover mode(WALLET=코드 지갑 / SHADOW=지갑·회사 폴백 / LEGACY=회사)를 이미 반영한다.
+    const defaultCardSurchargeApplied = settlePolicy === 'CARD';
 
     const cardSurchargeApplied = opts.useExistingAsMiddleFallback
       ? (body.cardSurchargeApplied ?? order.cardSurchargeApplied ?? defaultCardSurchargeApplied)
@@ -829,6 +859,31 @@ export class OrderService {
       // sendRequestAt: 예약 발송 요청 시간 (actualSendAt이 없을 때 폴백용)
       const sendRequestAt = firstMapping?.sendRequestAt ? format(firstMapping.sendRequestAt, DateFormatStr) : null;
 
+      // 상품별 예약 발송시간 배열: RESERVE 상품 중 분 단위 distinct ≥ 2일 때만 채움
+      const reserveMappings = (order.orderProductMappings ?? []).filter(
+        (m) => m.sendType === 'RESERVE' && m.sendRequestAt,
+      );
+      const minuteSlots = new Set(reserveMappings.map((m) => Math.floor(m.sendRequestAt!.getTime() / 60000)));
+      let productSendTimes: { productName: string; sendRequestAt: string; actualSendAt: string | null }[] | undefined;
+      if (minuteSlots.size >= 2) {
+        productSendTimes = reserveMappings.map((m) => {
+          const mappingActualSendAt =
+            (m.orderDeliveries ?? [])
+              .filter(
+                (d) =>
+                  d.actualSendAt &&
+                  (d.status === IOrderDeliveryStatus.COMPLETE || d.status === IOrderDeliveryStatus.COMPLETE_SMS),
+              )
+              .reduce<Date | null>((max, d) => (max === null || d.actualSendAt! > max ? d.actualSendAt! : max), null) ??
+            null;
+          return {
+            productName: m.product?.name ?? '(삭제된 상품)',
+            sendRequestAt: format(m.sendRequestAt!, DateFormatStr),
+            actualSendAt: mappingActualSendAt ? format(mappingActualSendAt, DateFormatStr) : null,
+          };
+        });
+      }
+
       // 주문 시점 스냅샷 우선, NULL이면 clientUser ?? user FK로 fallback
       const billing = readBillingView(order);
 
@@ -852,10 +907,64 @@ export class OrderService {
         sendType: firstMapping?.sendType ?? null,
         hasFailedDelivery,
         hasResentDelivery,
+        productSendTimes,
       };
     });
 
+    if (getQuery.includeSettlement && OrderService.canViewCustomerSettlement(user)) {
+      await this.attachCustomerSettlement(orderList, resultList);
+    }
+
     return { list: resultList, totalPage, totalCount, currentPage: page };
+  }
+
+  private static readonly CUSTOMER_SETTLEMENT_ROLES: ReadonlyArray<IUserAuthority> = [
+    IUserAuthority.SUPER_ADMIN,
+    IUserAuthority.OPERATION_ADMIN,
+  ];
+
+  /** customerSettlement 노출 화이트리스트 (운영관리자 이상). 쿠키 authority 는 UI 힌트일 뿐 이 서버 필터가 유일 방어선. */
+  private static canViewCustomerSettlement(user: ILoginUserInfo): boolean {
+    return OrderService.CUSTOMER_SETTLEMENT_ROLES.includes(user.authority as IUserAuthority);
+  }
+
+  /**
+   * 응답 페이지 내 distinct 고객사(settlement_code)에 대해 wallet_account 를 1회 배치 조회 후
+   * remainServiceAmount 를 map 조인한다 (행별 재계산·N+1 없음).
+   * - settleCondition SoT = wallet_account.settle_condition (user 컬럼은 deprecated).
+   * - remainServiceAmount = creditLimit + depositBalance − creditUsedAmount − creditExcessAmount, 0-clamp.
+   * - wallet_account 미존재 고객사는 customerSettlement 필드를 붙이지 않는다(생략).
+   */
+  private async attachCustomerSettlement(orders: OrderEntity[], views: OrderViewDto[]): Promise<void> {
+    const settlementCodeOf = (order: OrderEntity): string | null =>
+      (order.clientUser ?? order.user)?.settlementCode || null;
+
+    const orderCodes = orders.map(settlementCodeOf);
+    const settlementCodes = [...new Set(orderCodes.filter((code): code is string => code !== null))];
+    if (settlementCodes.length === 0) {
+      return;
+    }
+
+    const wallets = await this.walletAccountRepository.find({
+      where: { ownerType: 'SETTLEMENT_CODE', ownerId: In(settlementCodes) },
+    });
+    const walletByCode = new Map(wallets.map((wallet) => [wallet.ownerId, wallet]));
+
+    orderCodes.forEach((code, index) => {
+      if (code === null) {
+        return;
+      }
+      const wallet = walletByCode.get(code);
+      if (!wallet) {
+        return;
+      }
+      const remain =
+        wallet.creditLimit + wallet.depositBalance - wallet.creditUsedAmount - wallet.creditExcessAmount;
+      views[index].customerSettlement = {
+        settleCondition: wallet.settleCondition,
+        remainServiceAmount: Math.max(0, remain),
+      };
+    });
   }
 
   async getDetail(user: ILoginUserInfo, getParam: OrderGetDetailReqParamDto): Promise<OrderGetDetailResDto> {
@@ -892,6 +1001,9 @@ export class OrderService {
     }
 
     await this.recoverDeletedProducts(order.orderProductMappings);
+
+    // '폐기 후 신규 발송' 신규 건 숨김 — 고객사에는 최초 발송 1건만 노출 (전체 이력은 CS 발송상세)
+    this.hideDiscardReissueDeliveries(order.orderProductMappings);
 
     const productList: OrderDetailProductDto[] = [];
 
@@ -1375,6 +1487,22 @@ export class OrderService {
     );
   }
 
+  /**
+   * 고객 노출용 발송 목록 필터.
+   *
+   * '폐기 후 신규 발송'은 자사↔수신자 간 내부 처리(고객사는 알 필요 없음)이므로, 원본을 대체해
+   * 신규 delivery(replacedFromId != null)를 숨기고 최초 발송 건만 남겨 논리적으로 1건으로 보이게 한다.
+   * 적용: 발송상세(getDetail)·발송완료리포트(단일/다중)·(프론트가 이 목록으로 그리는) 파기확약서.
+   * 전체 이력(원본+신규)은 CS 발송상세(customer_service)에서만 확인한다.
+   */
+  private hideDiscardReissueDeliveries(orderProductMappings: OrderProductMappingEntity[] | undefined): void {
+    for (const opm of orderProductMappings ?? []) {
+      if (opm.orderDeliveries) {
+        opm.orderDeliveries = opm.orderDeliveries.filter((d) => d.replacedFromId === null);
+      }
+    }
+  }
+
   async getDeliveryCompleteReport(
     getQuery: OrderGetDeliveryCompleteReportReqDto,
     user: ILoginUserInfo,
@@ -1416,6 +1544,9 @@ export class OrderService {
     }
 
     await this.recoverDeletedProducts(order.orderProductMappings);
+
+    // '폐기 후 신규 발송' 신규 건 숨김 — 발송완료리포트도 최초 발송 1건만 집계
+    this.hideDiscardReissueDeliveries(order.orderProductMappings);
 
     const productList: OrderPdfDetailProductDto[] = [];
     // 발송완료 리포트: 주문 시점 스냅샷 우선, NULL이면 clientUser ?? user FK로 fallback
@@ -1824,6 +1955,11 @@ export class OrderService {
       if (order.status !== IOrderStatus.DELIVERY_COMPLETE) {
         throw new BadRequestException('발송 완료된 건에 대해서만 조회 가능합니다.');
       }
+    }
+
+    // '폐기 후 신규 발송' 신규 건 숨김 — 통합 발송완료리포트도 최초 발송 1건만 집계
+    for (const order of orders) {
+      this.hideDiscardReissueDeliveries(order.orderProductMappings);
     }
 
     // 모든 주문이 같은 과금 대상 회사 소속인지 확인 (다중 주문 증빙 발행 시)
@@ -2803,8 +2939,137 @@ export class OrderService {
       .getMany();
   }
 
+  /**
+   * 정산 변경이력용: 매핑들의 현재 정산 필드(fee/priceAdjustment/settleDiscountType)와 상품명을 스냅샷으로 캡처한다.
+   * 정산 처리 로직이 엔티티를 in-place mutate 하므로, 반드시 mutate 이전에 호출해야 before 값이 보존된다.
+   */
+  private captureSettleSnapshot(
+    mappings: Array<{
+      id: number;
+      fee: number | null;
+      priceAdjustment: IPriceAdjustment | null;
+      settleDiscountType: IOrderSettleDiscountType | null;
+      product?: { name?: string | null } | null;
+      orderDeliveries?: Array<{
+        id: number;
+        settleFee: number | null;
+        settlePriceAdjustment: IPriceAdjustment | null;
+        settleDiscountType: IOrderSettleDiscountType | null;
+      }> | null;
+    }>,
+  ): SettleSnapshot {
+    const beforeById = new Map<number, SettleFieldSnapshot>();
+    const productNameById = new Map<number, string>();
+    const deliveryBeforeById = new Map<number, { mappingId: number } & SettleDeliverySnapshot>();
+    for (const mapping of mappings) {
+      beforeById.set(mapping.id, {
+        fee: mapping.fee,
+        priceAdjustment: mapping.priceAdjustment,
+        settleDiscountType: mapping.settleDiscountType,
+      });
+      if (mapping.product?.name) {
+        productNameById.set(mapping.id, mapping.product.name);
+      }
+      for (const delivery of mapping.orderDeliveries ?? []) {
+        deliveryBeforeById.set(delivery.id, {
+          mappingId: mapping.id,
+          settleFee: delivery.settleFee,
+          settlePriceAdjustment: delivery.settlePriceAdjustment,
+          settleDiscountType: delivery.settleDiscountType,
+        });
+      }
+    }
+    return { beforeById, productNameById, deliveryBeforeById };
+  }
+
+  /**
+   * 정산 할인/할증 변경이력을 activity_log 에 기록한다 (성공만 영구보존 — purge 제외 actionType).
+   * - 운영자 신원(user)이 없으면(단위테스트 등 비-API 경로) 기록을 생략한다. 실제 API 경로는 항상 user 가 존재한다.
+   * - 실제 변경(매핑 change 또는 주문 결제수단/카드할증 변경)이 없으면 기록하지 않는다.
+   * - @Transactional 내부에서 호출되어 정산 저장과 동일 트랜잭션으로 커밋/롤백된다.
+   */
+  private async logSettleDiscountChange(params: {
+    user?: ILoginUserInfo;
+    orderId: number;
+    requestUrl: string;
+    method: string;
+    source: SettleDiscountChangeSource;
+    changes: SettleDiscountChange[];
+    deliveryChanges?: SettleDeliveryChange[];
+    orderBefore?: SettleOrderSnapshot;
+    orderAfter?: SettleOrderSnapshot & { settleAmount: number };
+  }): Promise<void> {
+    const { user } = params;
+    if (!user) {
+      return;
+    }
+    const orderChanged = Boolean(
+      params.orderBefore && params.orderAfter && isSettleOrderChanged(params.orderBefore, params.orderAfter),
+    );
+    const deliveryChanges = params.deliveryChanges ?? [];
+    if (params.changes.length === 0 && deliveryChanges.length === 0 && !orderChanged) {
+      return;
+    }
+    await this.activityLogService.createLog({
+      userId: user.id,
+      userEmail: user.email,
+      method: params.method,
+      requestUrl: params.requestUrl,
+      actionType: SETTLE_DISCOUNT_SOURCE_ACTION_TYPE[params.source],
+      ipAddress: '',
+      statusCode: 200,
+      result: ActivityLogResult.SUCCESS,
+      responseTime: 0,
+      requestParams: {
+        orderId: params.orderId,
+        source: params.source,
+        changes: params.changes,
+        ...(deliveryChanges.length > 0 ? { deliveryChanges } : {}),
+        ...(orderChanged ? { order: { before: params.orderBefore, after: params.orderAfter } } : {}),
+      },
+    });
+  }
+
+  /**
+   * 수동 정산입력(create/update) 성공 시 매핑/delivery 변경을 조립해 기록한다.
+   * mapping 대표값 변경은 changes, mapping 에 롤업되지 않는 delivery 부분변경은 deliveryChanges 로 남긴다.
+   */
+  private async logManualSettleChange(params: {
+    user?: ILoginUserInfo;
+    orderId: number;
+    method: string;
+    snapshot: SettleSnapshot;
+    savedMappings: Array<{ id: number } & SettleFieldSnapshot>;
+    allMappings: Array<{ id: number; orderDeliveries?: Array<{ id: number } & SettleDeliverySnapshot> | null }>;
+    orderBefore: SettleOrderSnapshot;
+    orderAfter: SettleOrderSnapshot & { settleAmount: number };
+  }): Promise<void> {
+    const changes = buildSettleDiscountChanges(
+      params.snapshot.beforeById,
+      params.savedMappings,
+      params.snapshot.productNameById,
+    );
+    const deliveryChanges = buildSettleDeliveryChanges(
+      params.snapshot.deliveryBeforeById,
+      params.allMappings,
+      new Set(changes.map((change) => change.mappingId)),
+      params.snapshot.productNameById,
+    );
+    await this.logSettleDiscountChange({
+      user: params.user,
+      orderId: params.orderId,
+      requestUrl: '/order/settle',
+      method: params.method,
+      source: SettleDiscountChangeSource.MANUAL,
+      changes,
+      deliveryChanges,
+      orderBefore: params.orderBefore,
+      orderAfter: params.orderAfter,
+    });
+  }
+
   @Transactional()
-  async createOrderSettle(getBody: OrderCreateSettleReqDto) {
+  async createOrderSettle(getBody: OrderCreateSettleReqDto, user?: ILoginUserInfo) {
     const { list } = getBody;
 
     if (list.length === 0) {
@@ -2838,7 +3103,15 @@ export class OrderService {
     const oneUserId = existingOrderProducts[0].order.clientUserId ?? existingOrderProducts[0].order.userId;
     const sendAmount = existingOrderProducts[0].order.sendAmount;
     const isSettleBalance = existingOrderProducts[0].order.isSettleBalance;
+    // 정산 변경이력(성공만 영구기록): 처리 전 상태 스냅샷.
+    // processSettleList 가 mapping 엔티티를 mutate 하므로 반드시 이 시점에 캡처해야 한다.
+    const settleSnapshot = this.captureSettleSnapshot(allOrderProducts);
+    const settleOrderBefore: SettleOrderSnapshot = {
+      settleMethod: existingOrderProducts[0].order.settleMethod,
+      cardSurchargeApplied: existingOrderProducts[0].order.cardSurchargeApplied,
+    };
 
+    assertSettleListDeliveryCoverage(list, allOrderProducts, { requireFullCoverage: true });
     const { orderProductList } = await this.processSettleList(list, allOrderProductMap);
 
     if (orderProductList.length > 0) {
@@ -2859,6 +3132,17 @@ export class OrderService {
       { id: orderId },
       { settleAmount: newSettleAmount, cardSurchargeApplied, settleMethod },
     );
+
+    await this.logManualSettleChange({
+      user,
+      orderId,
+      method: 'POST',
+      snapshot: settleSnapshot,
+      savedMappings: orderProductList,
+      allMappings: allOrderProducts,
+      orderBefore: settleOrderBefore,
+      orderAfter: { settleMethod, cardSurchargeApplied, settleAmount: newSettleAmount },
+    });
 
     if (order.isNewBillingFlow) {
       // === 새 흐름 ===
@@ -2911,7 +3195,7 @@ export class OrderService {
   }
 
   @Transactional()
-  async updateOrderSettle(getBody: OrderUpdateSettleReqDto) {
+  async updateOrderSettle(getBody: OrderUpdateSettleReqDto, user?: ILoginUserInfo) {
     const { list } = getBody;
 
     if (list.length === 0) {
@@ -2946,7 +3230,14 @@ export class OrderService {
 
     const beforeSettleAmount = existingOrderProducts[0].order.settleAmount;
     const isSettleBalance = existingOrderProducts[0].order.isSettleBalance;
+    // 정산 변경이력(성공만 영구기록): 처리 전 상태 스냅샷.
+    const settleSnapshot = this.captureSettleSnapshot(allOrderProducts);
+    const settleOrderBefore: SettleOrderSnapshot = {
+      settleMethod: existingOrderProducts[0].order.settleMethod,
+      cardSurchargeApplied: existingOrderProducts[0].order.cardSurchargeApplied,
+    };
 
+    assertSettleListDeliveryCoverage(list, allOrderProducts, { requireFullCoverage: false });
     const { orderProductList } = await this.processSettleList(list, allOrderProductMap);
 
     if (orderProductList.length > 0) {
@@ -2967,6 +3258,17 @@ export class OrderService {
       { id: orderId },
       { settleAmount: newSettleAmount, cardSurchargeApplied, settleMethod },
     );
+
+    await this.logManualSettleChange({
+      user,
+      orderId,
+      method: 'PUT',
+      snapshot: settleSnapshot,
+      savedMappings: orderProductList,
+      allMappings: allOrderProducts,
+      orderBefore: settleOrderBefore,
+      orderAfter: { settleMethod, cardSurchargeApplied, settleAmount: newSettleAmount },
+    });
 
     // 발송확정 이후(DELIVERY_CONFIRMED, DELIVERY_COMPLETE)에 정산정보를 수정한 경우
     // 이전 정산금액과 새 정산금액의 차이를 balance/allSettleAmount에 반영
@@ -3134,21 +3436,49 @@ export class OrderService {
     }
   }
 
-  private assertPositiveIntegerAmounts(orderProductList: OrderProductCreateTempDto[]): void {
-    const hasInvalidAmount = orderProductList.some(
-      (product) => !Number.isInteger(product.amount) || product.amount < 1,
-    );
+  private async assertPositiveIntegerAmounts(orderProductList: OrderProductCreateTempDto[]): Promise<void> {
+    const invalidItems = orderProductList
+      .map((product, index) => ({ order: index + 1, productId: product.productId, amount: product.amount }))
+      .filter((item) => !Number.isInteger(item.amount) || item.amount < 1);
 
-    if (hasInvalidAmount) {
-      throw new BadRequestException('상품 수량은 1 이상의 정수여야 합니다.');
+    if (invalidItems.length === 0) {
+      return;
     }
+
+    // 오류 상품명은 안내용으로만 조회 — 조회 실패해도 순번 기준으로 폴백
+    const nameMap = new Map<number, string>();
+    try {
+      const productIds = [...new Set(invalidItems.map((item) => item.productId).filter((id) => Number.isInteger(id)))];
+      if (productIds.length > 0) {
+        const products = await this.productRepository.find({
+          where: { id: In(productIds) },
+          select: ['id', 'name'],
+        });
+        for (const product of products) {
+          nameMap.set(product.id, product.name);
+        }
+      }
+    } catch {
+      // 상품명 조회 실패는 무시하고 순번만 안내
+    }
+
+    const detail = invalidItems
+      .map((item) => {
+        const name = nameMap.get(item.productId);
+        return `- 상품${item.order}${name ? ` (${name})` : ''}`;
+      })
+      .join('\n');
+
+    throw new BadRequestException(
+      `수량이 올바르지 않은 상품이 있습니다. 각 상품에 수신번호를 1개 이상 입력해주세요.\n\n${detail}`,
+    );
   }
 
   @Transactional()
   async createTemp(user: ILoginUserInfo, getBody: OrderCreateTempReqDto): Promise<OrderCreateTempResDto> {
     const { type, eventName, topImagePath, midImagePath, orderProductList } = getBody;
 
-    this.assertPositiveIntegerAmounts(orderProductList);
+    await this.assertPositiveIntegerAmounts(orderProductList);
     await this.assertNoForbiddenWord(user, orderProductList, null);
 
     // 대행주문인 경우 clientUser의 허용 발신수단으로 검증
@@ -3157,7 +3487,7 @@ export class OrderService {
 
     const ssgReservationRange = type === IOrderType.SSG ? await this.ssgEventService.getReservationRange() : null;
     validateSsgReservationWindow(type, orderProductList, ssgReservationRange);
-    // SSG 주문은 모든 상품 행의 발송 유형/예약시각이 동일해야 함 (혼합/불일치 400)
+    // SSG 주문은 즉시/예약 발송을 혼합할 수 없음 (혼합 시 400). 예약시각은 상품 행별로 달라도 됨
     validateSsgUniformSend(type, orderProductList);
 
     // 동일 productId를 여러 행으로 저장할 수 있으므로 상품 조회는 unique 기준으로 수행
@@ -3167,7 +3497,7 @@ export class OrderService {
       where: {
         id: In(uniqueProductIds),
       },
-      relations: ['brand'],
+      relations: ['brand', 'partnerCompany', 'partnerCompany.userDiscounts'],
     });
 
     if (uniqueProductIds.length !== getProductList.length) {
@@ -3270,7 +3600,12 @@ export class OrderService {
 
       // 주문 생성 시점 상품 정보 snapshot 박제
       const liveProduct = productPriceMap.get(product.productId)!;
-      Object.assign(orderProduct, buildLineProductSnapshot(liveProduct));
+      const lineSnapshot = buildLineProductSnapshot(liveProduct);
+      Object.assign(orderProduct, lineSnapshot);
+      Object.assign(
+        orderProduct,
+        buildPartnerSettleSnapshot(liveProduct, lineSnapshot.snapshotProductPrice ?? liveProduct.price),
+      );
 
       await this.orderProductMappingRepository.save(orderProduct);
 
@@ -3310,7 +3645,7 @@ export class OrderService {
   async updateTemp(user: ILoginUserInfo, getBody: OrderUpdateTempReqDto): Promise<void> {
     const { id, eventName, topImagePath, midImagePath, orderProductList } = getBody;
 
-    this.assertPositiveIntegerAmounts(orderProductList);
+    await this.assertPositiveIntegerAmounts(orderProductList);
     await this.assertNoForbiddenWord(user, orderProductList, id);
 
     const order = await this.orderRepository.findOne({
@@ -3349,7 +3684,7 @@ export class OrderService {
 
     const ssgReservationRange = order.type === IOrderType.SSG ? await this.ssgEventService.getReservationRange() : null;
     validateSsgReservationWindow(order.type, orderProductList, ssgReservationRange);
-    // SSG 주문은 모든 상품 행의 발송 유형/예약시각이 동일해야 함 (혼합/불일치 400)
+    // SSG 주문은 즉시/예약 발송을 혼합할 수 없음 (혼합 시 400). 예약시각은 상품 행별로 달라도 됨
     validateSsgUniformSend(order.type, orderProductList);
 
     // 동일 productId를 여러 행으로 저장할 수 있으므로 상품 조회는 unique 기준으로 수행
@@ -3359,7 +3694,7 @@ export class OrderService {
       where: {
         id: In(uniqueProductIds),
       },
-      relations: ['brand'],
+      relations: ['brand', 'partnerCompany', 'partnerCompany.userDiscounts'],
     });
 
     if (uniqueProductIds.length !== getProductList.length) {
@@ -3386,6 +3721,10 @@ export class OrderService {
             snapshotProductBrandName: m.snapshotProductBrandName,
             snapshotProductExpireDay: m.snapshotProductExpireDay,
             snapshotProductImagePath: m.snapshotProductImagePath,
+          },
+          partnerSettleSnapshot: {
+            partnerSettleFee: m.partnerSettleFee,
+            partnerSettlePriceAdjustment: m.partnerSettlePriceAdjustment,
           },
         },
       ]),
@@ -3462,7 +3801,17 @@ export class OrderService {
       orderProduct.encourageDay = product.encourageDay ?? null;
 
       const liveProduct = productPriceMap.get(product.productId)!;
-      Object.assign(orderProduct, resolveLineSnapshot(product, ownedMap, liveProduct));
+      const lineSnapshot = resolveLineSnapshot(product, ownedMap, liveProduct);
+      Object.assign(orderProduct, lineSnapshot);
+      Object.assign(
+        orderProduct,
+        resolvePartnerSettleSnapshotForUpdate(
+          product,
+          ownedMap,
+          liveProduct,
+          lineSnapshot.snapshotProductPrice ?? liveProduct.price,
+        ),
+      );
 
       await this.orderProductMappingRepository.save(orderProduct);
 
@@ -3583,48 +3932,7 @@ export class OrderService {
    * 동일하게 사용해야 서로 다른 사용자의 동시 발송에서도 순환 대기가 생기지 않는다.
    */
   private async lockBillingScope(billingUserId: number): Promise<{ user: UserEntity; companyUsers: UserEntity[] }> {
-    const billingReference = await this.userRepository.findOne({
-      where: { id: billingUserId },
-      select: ['id', 'companyId'],
-    });
-    if (!billingReference) {
-      throw new InternalServerErrorException('과금 대상 유저가 존재하지 않습니다.');
-    }
-
-    if (!billingReference.companyId) {
-      const user = await this.userRepository
-        .createQueryBuilder('billingUser')
-        .setLock('pessimistic_write')
-        .leftJoinAndSelect('billingUser.company', 'billingCompany')
-        .where('billingUser.id = :id', { id: billingUserId })
-        .getOne();
-      if (!user) {
-        throw new InternalServerErrorException('과금 대상 유저가 존재하지 않습니다.');
-      }
-      return { user, companyUsers: [user] };
-    }
-
-    const company = await this.userCompanyRepository
-      .createQueryBuilder('company')
-      .setLock('pessimistic_write')
-      .where('company.id = :id', { id: billingReference.companyId })
-      .getOne();
-    if (!company) {
-      throw new InternalServerErrorException('회사 잔액 처리 중 회사 정보를 찾을 수 없습니다.');
-    }
-
-    const companyUsers = await this.userRepository
-      .createQueryBuilder('companyUser')
-      .setLock('pessimistic_write')
-      .where('companyUser.companyId = :companyId', { companyId: company.id })
-      .orderBy('companyUser.id', 'ASC')
-      .getMany();
-    const user = companyUsers.find((companyUser) => companyUser.id === billingUserId);
-    if (!user) {
-      throw new InternalServerErrorException('회사 사용자 잠금 처리 중 과금 대상 유저를 찾을 수 없습니다.');
-    }
-    user.company = company;
-    return { user, companyUsers };
+    return this.billingScopeLockService.lock(billingUserId);
   }
 
   @Transactional()
@@ -3691,6 +3999,16 @@ export class OrderService {
 
     const { user: oneUser, companyUsers } = await this.lockBillingScope(billingUserId);
 
+    // PR-B settlement_code 가드 (WALLET 흐름 전용, 기본 OFF/DARK).
+    // 코드 미부여(빈 문자열/null) 상태로 발송요청 제출을 차단. legacy 흐름은 미적용.
+    if (
+      order.isNewBillingFlow &&
+      (oneUser.settlementCode == null || oneUser.settlementCode === '') &&
+      this.walletCutoverConfig.settlementCodeGuardEnforced
+    ) {
+      throw new SettlementCodeRequiredError();
+    }
+
     // 과금 모드 결정 (두 블록에서 공통 사용)
     const isCompanyBalanceMode = oneUser.company?.balanceManagementType === 'COMPANY';
     const effectiveBalance = isCompanyBalanceMode && oneUser.company ? oneUser.company.balance : oneUser.balance;
@@ -3715,21 +4033,26 @@ export class OrderService {
     let ssgAllocations: { deliveryId: number; eventId: number; price: number }[] | null = null;
 
     if (order.type === IOrderType.SSG) {
-      // 발송 유형/예약시각 균일성 검증 (혼합/불일치 400) — 배포 전 생성된 혼합 주문 방어 포함
+      // 즉시/예약 발송 혼합 금지 검증 (혼합 시 400) — 배포 전 생성된 혼합 주문 방어 포함
       validateSsgUniformSend(order.type, order.orderProductMappings!);
 
       // expireDay(상품 유효기간)는 모든 SSG mapping이 동일해야 대표값을 전체에 적용 가능
       // 배송건 수집과 유효기간 검증을 단일 루프에서 처리
       const expireDays = new Set<number>();
-      const deliveries: { deliveryId: number; price: number }[] = [];
+      const deliveries: { deliveryId: number; price: number; reserveDate?: Date }[] = [];
       for (const orderMapping of order.orderProductMappings!) {
         if (!orderMapping.product) {
           throw new BadRequestException('상품 정보가 존재하지 않습니다.');
         }
         expireDays.add(orderMapping.product.expireDay);
         const price = orderMapping.product.price;
+        // 상품 행별 예약시각: RESERVE면 해당 mapping의 sendRequestAt, 아니면 즉시발송(폴백=현재 시각)
+        const mappingReserveDate =
+          orderMapping.sendType === 'RESERVE' && orderMapping.sendRequestAt
+            ? new Date(orderMapping.sendRequestAt as unknown as string)
+            : undefined;
         for (const orderDelivery of orderMapping.orderDeliveries) {
-          deliveries.push({ deliveryId: orderDelivery.id, price });
+          deliveries.push({ deliveryId: orderDelivery.id, price, reserveDate: mappingReserveDate });
         }
       }
       if (expireDays.size > 1) {
@@ -3737,19 +4060,8 @@ export class OrderService {
       }
       const couponExpiration = order.orderProductMappings![0].product!.expireDay;
 
-      // 예약발송이면 예약일 기준으로 행사 매칭, 즉시발송이면 현재 시점 기준
-      // 모든 예약 mapping의 sendRequestAt이 동일함은 위 균일성 검증으로 보장 → 공통 예약시각 사용
-      const reserveMapping = order.orderProductMappings!.find(
-        (mapping) => mapping.sendType === 'RESERVE' && mapping.sendRequestAt,
-      );
-      const reserveDate = reserveMapping ? new Date(reserveMapping.sendRequestAt as unknown as string) : undefined;
-
-      // 배송건별 행사 할당 (All or Nothing)
-      ssgAllocations = await this.ssgEventService.allocateEventsForDeliveries(
-        deliveries,
-        couponExpiration,
-        reserveDate,
-      );
+      // 배송건별 행사 할당: 각 배송건은 자신의 예약시각(reserveDate) 기준으로 유효한 행사에 매칭 (All or Nothing)
+      ssgAllocations = await this.ssgEventService.allocateEventsForDeliveries(deliveries, couponExpiration);
 
       if (!ssgAllocations) {
         throw new BadRequestException('사용 가능한 SSG 이벤트가 없습니다. (잔액 부족)');
@@ -3882,6 +4194,10 @@ export class OrderService {
 
     OrderValidation(order);
 
+    // wallet 전용 결제 파라미터(포인트/예치금 사용)는 WALLET 모드에서만 소비된다.
+    // isNewBillingFlow 분기와 무관하게 발송확정 공통 경로에서 LEGACY/SHADOW 수신 시 400 거부.
+    assertWalletOnlyParamsAbsent(this.walletCutoverConfig.pr2DeliveryLifecycleMode, getBody);
+
     if (process.env.FROM_PHONE_SOT_ENFORCE === 'true') {
       await this.orderFromService.assertApprovedPhones(getBillingUserId(order), order.orderProductMappings!);
     }
@@ -3919,6 +4235,8 @@ export class OrderService {
     ).filter((discount) => discount.userId === billingUserId);
 
     const mappingsToUpdate: OrderProductMappingEntity[] = [];
+    // 정산 자동캡처 이력: 할인 자동 매칭 전 스냅샷 (아래 loop 가 mapping.fee 를 mutate 하므로 이 시점 캡처).
+    const autoSettleSnapshot = this.captureSettleSnapshot(order.orderProductMappings!);
 
     // 각 매핑별 할인/할증 상태 저장 (중복번호 체크에 사용)
     const mappingPriceAdjustments = new Map<number, IPriceAdjustment | null>();
@@ -3959,6 +4277,19 @@ export class OrderService {
       await this.orderProductMappingRepository.save(mappingsToUpdate);
     }
 
+    await this.logSettleDiscountChange({
+      user,
+      orderId: order.id,
+      requestUrl: '/order/delivery-confirmed',
+      method: 'POST',
+      source: SettleDiscountChangeSource.AUTO_CONFIRM,
+      changes: buildSettleDiscountChanges(
+        autoSettleSnapshot.beforeById,
+        mappingsToUpdate,
+        autoSettleSnapshot.productNameById,
+      ),
+    });
+
     // ======== 중복번호 제어 체크 시작 ========
     // 할인 적용 → 1건만 허용 (중복 불가)
     // 할인/할증 없음 → duplicatePhoneLimit 만큼 허용 (0이면 무제한)
@@ -3970,7 +4301,8 @@ export class OrderService {
 
     // productId별 그룹 제한 결정 (같은 productId 여러 mapping 중 가장 엄격한 유한 제한 사용)
     //  - ADDITIONAL(할증): 무제한
-    //  - DISCOUNT(할인): [임시 비활성화] 무제한 취급 (복구 시 allowedCount=1 후보 추가)
+    //  - DISCOUNT(할인): CS팀 요청으로 개방 중 — 무제한 취급 (c7871f4, 2026-01-27).
+    //    원칙은 동일번호 1건 제한이며 CS팀이 재차 요청할 때만 복구 (복구 시 allowedCount=1 후보 추가)
     //  - 할인/할증 없음: duplicatePhoneLimit (0이면 무제한)
     // 유한 후보가 하나도 없으면(모두 무제한) 해당 productId 그룹은 검사 생략.
     const productLimit = resolveProductDuplicateLimit(
@@ -4515,8 +4847,7 @@ export class OrderService {
 
     const now = new Date();
     // 취소 기준 시각: 예약 mapping들의 sendRequestAt 중 가장 이른 시각 사용
-    // 신규 주문은 모든 예약시각이 동일하므로 공통 시각과 같고,
-    // 배포 전 생성된 혼합 예약 주문은 가장 임박한 발송 건을 보호한다.
+    // 상품 행별 예약시각이 서로 다를 수 있으므로, 가장 임박한(이른) 발송 건을 기준으로 보호한다.
     const reserveSendTimes = (order.orderProductMappings ?? [])
       .filter((mapping) => mapping.sendType === 'RESERVE' && mapping.sendRequestAt)
       .map((mapping) => mapping.sendRequestAt!.getTime());
@@ -4541,11 +4872,10 @@ export class OrderService {
 
     const orderProductMappingIdList = order.orderProductMappings!.map((orderProductMapping) => orderProductMapping.id);
 
+    // 삭제된 상품이 포함된 주문도 취소는 허용해야 한다(취소는 오히려 더 허용되어야 하는 동작).
+    // 환불 단가는 주문 시점 스냅샷(snapshotProductPrice) → LIVE 상품가 → 0 순으로 폴백한다(readLineProductView 패턴 동일).
     const totalPrice = order.orderProductMappings!.reduce((acc, cur) => {
-      if (!cur.product) {
-        throw new BadRequestException('상품 정보가 존재하지 않습니다.');
-      }
-      return acc + cur.product.price * cur.amount;
+      return acc + readLineProductView(cur).price * cur.amount;
     }, 0);
 
     // SSG 주문인 경우 이벤트 잔액 복구 (새/기존 흐름 공통)
@@ -4610,8 +4940,25 @@ export class OrderService {
           oneUser.balance += refundAmount;
         }
         order.isSettleBalance = false;
+        // legacy deposit sync (!isWalletManaged 분기 전용 — wallet path 는 위 releaseConfirmation 이 예치금 복구).
+        await this.legacyWalletCreditSyncService.syncDeposit(externalManager, {
+          billingUserId,
+          orderId: order.id,
+          delta: refundAmount,
+          type: 'DISCARD_REFUND',
+          idempotencyKey: `legacy_discard_refund:${order.id}:deposit`,
+          memo: `레거시 취소 선입금환불 (주문번호: ${order.id})`,
+        });
       } else {
         oneUser.allSettleAmount -= refundAmount;
+        // legacy credit sync (여신복구 — allSettleAmount 감소를 여신 잔액에 반영).
+        await this.legacyWalletCreditSyncService.syncCredit(externalManager, {
+          billingUserId,
+          orderId: order.id,
+          delta: -refundAmount,
+          type: 'DISCARD_REFUND',
+          memo: `레거시 취소 여신복구 (주문번호: ${order.id})`,
+        });
       }
     }
 

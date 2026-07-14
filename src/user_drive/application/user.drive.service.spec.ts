@@ -92,4 +92,47 @@ describe('UserDriveService', () => {
       expect(userDriveRepository.save).toHaveBeenCalled();
     });
   });
+
+  describe('delete 소유권 검증', () => {
+    it('CORPORATE_ADMIN → BadRequestException', async () => {
+      await expect(sut.delete(CORPORATE_ADMIN_USER, 1)).rejects.toThrow(
+        new BadRequestException('관리자만 접근 가능합니다.'),
+      );
+      expect(userDriveRepository.softDelete).not.toHaveBeenCalled();
+    });
+
+    it('문서 없음 → BadRequestException', async () => {
+      userDriveRepository.findOne.mockResolvedValue(null);
+
+      await expect(sut.delete(OPERATION_ADMIN_USER, 1)).rejects.toThrow(
+        new BadRequestException('문서가 존재하지 않습니다.'),
+      );
+      expect(userDriveRepository.softDelete).not.toHaveBeenCalled();
+    });
+
+    it('OPERATION_ADMIN + 본인 문서 → 삭제 성공', async () => {
+      userDriveRepository.findOne.mockResolvedValue({ id: 1, senderId: 10 });
+      userDriveRepository.softDelete.mockResolvedValue({});
+
+      await sut.delete(OPERATION_ADMIN_USER, 1);
+
+      expect(userDriveRepository.softDelete).toHaveBeenCalledWith(1);
+    });
+
+    it('OPERATION_ADMIN + 타인 문서 → ForbiddenException', async () => {
+      userDriveRepository.findOne.mockResolvedValue({ id: 1, senderId: 99 }); // 다른 사람이 만든 문서
+
+      await expect(sut.delete(OPERATION_ADMIN_USER, 1)).rejects.toThrow(ForbiddenException);
+      expect(userDriveRepository.softDelete).not.toHaveBeenCalled();
+    });
+
+    it('SUPER_ADMIN + 타인 문서 → 삭제 성공 (소유권 제한 없음)', async () => {
+      userDriveRepository.findOne.mockResolvedValue({ id: 1, senderId: 10 }); // 다른 사람이 만든 문서
+      userDriveRepository.softDelete.mockResolvedValue({});
+
+      await sut.delete(SUPER_ADMIN_USER, 1);
+
+      expect(userDriveRepository.softDelete).toHaveBeenCalledWith(1);
+    });
+  });
 });

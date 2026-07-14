@@ -58,7 +58,7 @@ describe('DeliveryBatchService.refundForFail - wallet path', () => {
   let userManagementService: jest.Mocked<UserManagementService>;
   let walletManagedPredicate: { isWalletManaged: jest.Mock };
   let refundPoolService: { refund: jest.Mock };
-  let legacyWalletCreditSyncService: { syncCredit: jest.Mock };
+  let legacyWalletCreditSyncService: { syncCredit: jest.Mock; syncDeposit: jest.Mock };
   let orderDeliveryAttemptRepository: { findOne: jest.Mock };
   let userRepoExecute: jest.Mock;
 
@@ -102,6 +102,7 @@ describe('DeliveryBatchService.refundForFail - wallet path', () => {
       release: jest.fn(),
       isSsgSettled: jest.fn().mockResolvedValue(true),
       markSsgSettled: jest.fn().mockResolvedValue(undefined),
+      getLedgerId: jest.fn().mockResolvedValue(9911),
     } as unknown as jest.Mocked<RefundLedgerService>;
 
     userManagementService = {
@@ -129,7 +130,7 @@ describe('DeliveryBatchService.refundForFail - wallet path', () => {
     orderDeliveryAttemptRepository = {
       findOne: jest.fn(),
     };
-    legacyWalletCreditSyncService = { syncCredit: jest.fn() };
+    legacyWalletCreditSyncService = { syncCredit: jest.fn(), syncDeposit: jest.fn() };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -207,6 +208,46 @@ describe('DeliveryBatchService.refundForFail - wallet path', () => {
     );
   });
 
+  it('legacy 예치금 경로(isSettleBalance=true): wallet deposit 을 FAIL_REFUND(+price) 로 동기화', async () => {
+    const od = buildOrderDelivery(); // 기본 isSettleBalance=true → 예치금 복구 경로
+    walletManagedPredicate.isWalletManaged.mockResolvedValue(false);
+
+    await (sut as any).refundForFail(od);
+
+    expect(userManagementService.addBalance).toHaveBeenCalledTimes(1);
+    expect(legacyWalletCreditSyncService.syncDeposit.mock.calls[0][1]).toEqual(
+      expect.objectContaining({
+        billingUserId: 5500,
+        orderId: 8800,
+        orderDeliveryId: 770001,
+        delta: 10_000,
+        type: 'FAIL_REFUND',
+        idempotencyKey: 'legacy_fail_refund:8800:770001:9911:deposit',
+      }),
+    );
+    expect(legacyWalletCreditSyncService.syncCredit).not.toHaveBeenCalled();
+  });
+
+  it('legacy 예치금 재발송 역환불(isSettleBalance=true): wallet deposit 을 RESEND_DEDUCT(-price) 로 동기화', async () => {
+    const od = buildOrderDelivery(); // 기본 isSettleBalance=true → 예치금 재차감 경로
+    walletManagedPredicate.isWalletManaged.mockResolvedValue(false);
+
+    await (sut as any).reverseRefundForResend(od);
+
+    expect(userManagementService.deductBalance).toHaveBeenCalledTimes(1);
+    expect(legacyWalletCreditSyncService.syncDeposit.mock.calls[0][1]).toEqual(
+      expect.objectContaining({
+        billingUserId: 5500,
+        orderId: 8800,
+        orderDeliveryId: 770001,
+        delta: -10_000,
+        type: 'RESEND_DEDUCT',
+        idempotencyKey: 'legacy_resend_deduct:8800:770001:9911:deposit',
+      }),
+    );
+    expect(legacyWalletCreditSyncService.syncCredit).not.toHaveBeenCalled();
+  });
+
   it('legacy 여신 재발송 역환불(isSettleBalance=false): wallet credit_used 를 RESEND_DEDUCT(+price) 로 동기화', async () => {
     const od = buildOrderDelivery();
     od.orderProductMapping.order.isSettleBalance = false; // 외상(여신) 건 → all_settle/credit 가산 경로
@@ -254,6 +295,7 @@ describe('DeliveryBatchService.refundForFail - wallet path', () => {
     expect(userManagementService.addBalance).not.toHaveBeenCalled();
     expect(userRepoExecute).not.toHaveBeenCalled();
     expect(legacyWalletCreditSyncService.syncCredit).not.toHaveBeenCalled();
+    expect(legacyWalletCreditSyncService.syncDeposit).not.toHaveBeenCalled();
   });
 
   it('wallet 경로 + RESEND attempt: 재실패 환불을 attempt RESEND_DEDUCT 재원 기준으로 요청한다', async () => {

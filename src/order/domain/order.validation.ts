@@ -4,6 +4,7 @@ import { IOrderSendMethod } from '../interface/order.send.method';
 import { IOrderStatus } from '../interface/order.status';
 import { IOrderType } from '../interface/order.type';
 import { IPriceAdjustment } from '../../user_discount/interface/price.adjustment';
+import { WalletCutoverMode } from '../../wallet/config/wallet-cutover.config';
 import dayjs from 'dayjs';
 import utc from 'dayjs/plugin/utc';
 import timezone from 'dayjs/plugin/timezone';
@@ -54,27 +55,20 @@ export const validateSsgReservationWindow = (
 };
 
 /**
- * SSG 주문 내 모든 mapping(상품 행)의 발송 유형/예약시각이 동일한지 검증한다.
- * - 전체 즉시발송: 허용 (mapping별 저장 시각 밀리초 차이는 비교하지 않음)
- * - 전체 예약발송이며 sendRequestAt 동일: 허용
- * - 즉시/예약 혼합 또는 서로 다른 예약시각: 400
+ * SSG 주문 내 모든 mapping(상품 행)의 발송 유형(즉시/예약) 혼합 여부를 검증한다.
+ * - 전체 즉시발송: 허용
+ * - 전체 예약발송: 허용 (상품 행별 sendRequestAt이 서로 달라도 허용 — 상품별 예약시각 지원)
+ * - 즉시/예약 혼합: 400
  * sendType 미선택(임시저장 draft) 행은 검사 대상에서 제외한다.
  */
 export const validateSsgUniformSend = (type: IOrderType | null | undefined, products: SsgReservationCandidate[]) => {
   if (type !== IOrderType.SSG) return;
 
   const hasImmediate = products.some((p) => p.sendType === 'IMMEDIATE');
-  const reserveProducts = products.filter((p) => p.sendType === 'RESERVE');
+  const hasReserve = products.some((p) => p.sendType === 'RESERVE');
 
-  if (hasImmediate && reserveProducts.length > 0) {
+  if (hasImmediate && hasReserve) {
     throw new BadRequestException('SSG 주문은 즉시발송과 예약발송을 혼합할 수 없습니다.');
-  }
-
-  if (reserveProducts.length > 0) {
-    const reserveTimes = new Set(reserveProducts.map((p) => new Date(p.sendRequestAt as string | Date).getTime()));
-    if (reserveTimes.size > 1) {
-      throw new BadRequestException('SSG 주문의 예약 발송 시간은 모든 상품 행에서 동일해야 합니다.');
-    }
   }
 };
 
@@ -176,4 +170,47 @@ export const OrderValidation = (order: OrderEntity) => {
   }
 
   return;
+};
+
+/**
+ * wallet 전용 결제 파라미터(포인트/예치금 사용 옵션)는 WALLET 모드에서만 소비된다.
+ * LEGACY/SHADOW 에서는 조용히 무시되어 사용자가 분할 사용된 것으로 오인할 수 있어 명시 거부.
+ */
+export const assertWalletOnlyParamsAbsent = (
+  cutoverMode: WalletCutoverMode,
+  body: { pointUseAmount?: number; depositUseAmount?: number; depositUseEnabled?: boolean },
+): void => {
+  if (cutoverMode === WalletCutoverMode.WALLET) return;
+  if (body.pointUseAmount != null || body.depositUseAmount != null || body.depositUseEnabled != null) {
+    throw new BadRequestException('포인트/예치금 사용 옵션은 지갑(wallet) 전환 후에만 사용할 수 있습니다.');
+  }
+};
+
+/**
+ * 정산입력 저장 검증 (개선요구: 총 발송 수량과 연락처 입력 수량 일치).
+ * - 중복 deliveryId: 항상 거부 (이중 반영 방지)
+ * - 전량 커버리지: requireFullCoverage=true(최초 입력)이고 모든 행이 delivery-scoped 일 때만.
+ *   mapping-level 행 혼재/부분 수정(update)은 정당한 흐름이므로 강제하지 않는다.
+ */
+export const assertSettleListDeliveryCoverage = (
+  list: { id: number; deliveryIds?: number[] | null }[],
+  orderProducts: { id: number; orderDeliveries?: { id: number }[] }[],
+  opts: { requireFullCoverage: boolean },
+): void => {
+  const submitted = list.flatMap((row) => row.deliveryIds ?? []);
+  const unique = new Set(submitted);
+  if (unique.size !== submitted.length) {
+    throw new BadRequestException('정산 입력에 중복된 발송 내역이 있습니다.');
+  }
+
+  if (!opts.requireFullCoverage) return;
+  const allScoped = list.length > 0 && list.every((row) => row.deliveryIds != null && row.deliveryIds.length > 0);
+  if (!allScoped) return;
+
+  const totalDeliveries = orderProducts.reduce((sum, op) => sum + (op.orderDeliveries?.length ?? 0), 0);
+  if (unique.size !== totalDeliveries) {
+    throw new BadRequestException(
+      `정산 입력 수량(${unique.size})이 주문의 연락처 수(${totalDeliveries})와 일치하지 않습니다.`,
+    );
+  }
 };

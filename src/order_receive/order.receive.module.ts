@@ -13,6 +13,7 @@ import { SsgEventEntity } from '../entity/ssg.event.entity';
 import { PartnerCompanyExternModule } from '../partner_company_extern/partner.company.extern.module';
 import { DeliveryModule } from '../delivery/delivery.module';
 import { OrderFromModule } from '../order_from/order.from.module';
+import { CouponViewLogEntity } from '../entity/coupon.view.log.entity';
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { OrderFromModule } from '../order_from/order.from.module';
       OrderEntity,
       ProductChoiceMappingEntity,
       SsgEventEntity,
+      CouponViewLogEntity,
     ]),
     SmsModule,
     PartnerCompanyExternModule,

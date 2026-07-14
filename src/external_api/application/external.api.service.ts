@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Like, Repository } from 'typeorm';
+import { DataSource, IsNull, Like, Not, Repository } from 'typeorm';
 import { Transactional } from 'typeorm-transactional';
 import dayjs from 'dayjs';
 
@@ -22,6 +22,7 @@ import { findMatchingDiscount } from '../../user_discount/domain/discount.matche
 import { OrderFeeCalculator, applyCardSurcharge } from '../../order/domain/order.fee.calculator';
 import {
   buildLineProductSnapshot,
+  buildPartnerSettleSnapshot,
   buildOrderClientUserSnapshot,
   buildOrderOperationUserSnapshot,
   buildOrderUserSnapshot,
@@ -57,6 +58,7 @@ import {
   OrderStatusResponseData,
   SsgOrderStatusResponseData,
   ProductResponseData,
+  OrderLookupResponseData,
 } from '../api/dto/external.api.response.dto';
 import { CreateExternalOrderDto, CreateExternalSsgOrderDto } from '../api/dto/external.api.request.dto';
 import { ApiRequestContext } from '../api/api-request-context';
@@ -85,6 +87,7 @@ import {
 import { CreditExcessApprovalRequiredError } from '../../wallet/application/credit-excess-approval-required.error';
 import { WalletManagedPredicate } from '../../wallet/application/wallet-managed.predicate';
 import { RefundPoolService } from '../../wallet/application/refund-pool.service';
+import { LegacyWalletCreditSyncService } from '../../wallet/application/legacy-wallet-credit-sync.service';
 import { OrderPaymentAllocationEntity } from '../../entity/order.payment.allocation.entity';
 import { OrderPaymentRefundEventType } from '../../entity/order.payment.refund.event.entity';
 import { OrderDeliveryAttemptEntity, OrderDeliveryAttemptType } from '../../entity/order.delivery.attempt.entity';
@@ -127,6 +130,7 @@ export class ExternalApiService {
     private refundPoolService: RefundPoolService,
     private orderFromService: OrderFromService,
     private mappingResolver: ApiCustomerMappingResolver,
+    private legacyWalletCreditSyncService: LegacyWalletCreditSyncService,
   ) {}
 
   // 주문의 billing user(+company) 로드. getBillingUserId(order)=clientUserId ?? userId.
@@ -250,7 +254,7 @@ export class ExternalApiService {
       ]);
     }
     const allSettleDelta = finalAllocation.creditUsedAmount + finalAllocation.creditExcessAmount;
-    await this.dataSource.manager.query('UPDATE user SET allSettleAmount = allSettleAmount + ? WHERE id = ?', [
+    await this.dataSource.manager.query('UPDATE user SET all_settle_amount = all_settle_amount + ? WHERE id = ?', [
       allSettleDelta,
       user.id,
     ]);
@@ -263,12 +267,12 @@ export class ExternalApiService {
     const user = billingUser;
     const isCompany = user.company?.balanceManagementType === 'COMPANY';
     if (isCompany) {
-      await this.dataSource.query('UPDATE user_company SET balance = balance + ? WHERE id = ?', [
+      await this.dataSource.manager.query('UPDATE user_company SET balance = balance + ? WHERE id = ?', [
         price,
         user.companyId,
       ]);
     } else {
-      await this.dataSource.query('UPDATE user SET balance = balance + ? WHERE id = ?', [price, user.id]);
+      await this.dataSource.manager.query('UPDATE user SET balance = balance + ? WHERE id = ?', [price, user.id]);
     }
   }
 
@@ -339,7 +343,7 @@ export class ExternalApiService {
       ]);
     }
     const allSettleDelta = allocation.creditUsedAmount + allocation.creditExcessAmount;
-    await manager.query('UPDATE user SET allSettleAmount = allSettleAmount - ? WHERE id = ?', [
+    await manager.query('UPDATE user SET all_settle_amount = all_settle_amount - ? WHERE id = ?', [
       allSettleDelta,
       user.id,
     ]);
@@ -347,18 +351,34 @@ export class ExternalApiService {
 
   // ─── 정산 헬퍼 ──────────────────────────────────────────
   // 일반 주문(order.service.ts)과 동일한 정산 모델을 외부 API에도 적용.
-  //  - 카드할증 여부: company.settleMethod === 'CARD' (SoT. user.settleMethod 는 deprecated)
+  //  - 카드할증 여부: billingUser 정산코드 wallet.settleMethod === 'CARD' (SoT, cutover mode 반영). LEGACY 는 company 폴백
   //  - 할인/할증: user_discount 자동 매칭(findMatchingDiscount). 매칭 없으면 정가 그대로
   //  - settleAmount = applyCardSurcharge(OrderFeeCalculator(...), cardSurchargeApplied)
 
-  private resolveCardSurchargeApplied(account: ExternalApiAccountEntity): boolean {
+  private resolveCardSurchargeApplied(account: ExternalApiAccountEntity): Promise<boolean> {
     return this.resolveCardSurchargeAppliedForUser(account.user);
   }
 
-  // billingUser 기준 카드할증 판정. company.settleMethod 가 SoT (user.settleMethod 는 deprecated).
-  // balanceManagementType 분기 제거 — PR1+ 모든 user 가 company 단위 공유 settlement_code 로 통합.
-  private resolveCardSurchargeAppliedForUser(user: UserEntity): boolean {
-    return user.company?.settleMethod === IUserSettleMethod.CARD;
+  // billingUser 기준 카드할증 판정. 정산방법 SoT = 정산코드 wallet.settleMethod (order.service resolveSettlePolicy 와 동일 모델).
+  //  - WALLET: wallet.settleMethod (미존재 시 fail-closed throw — 잘못된 결제수단 영구저장 방지)
+  //  - SHADOW: wallet 조회 실패 시 company 폴백
+  //  - LEGACY: company.settleMethod (user.settleMethod 는 deprecated)
+  private async resolveCardSurchargeAppliedForUser(user: UserEntity): Promise<boolean> {
+    const mode = this.walletCutoverConfig.pr3SettleMode;
+    const companyApplied = user.company?.settleMethod === IUserSettleMethod.CARD;
+    if (mode === WalletCutoverMode.LEGACY) {
+      return companyApplied;
+    }
+    try {
+      const wallet = await this.walletAccountResolverService.resolveByUserId(user.id);
+      return wallet.settleMethod === 'CARD';
+    } catch (e) {
+      if (mode === WalletCutoverMode.WALLET) {
+        throw e; // fail-closed
+      }
+      this.logger.warn(`[card surcharge] SHADOW wallet 조회 실패 → legacy(회사) 폴백: ${(e as Error).message}`);
+      return companyApplied;
+    }
   }
 
   private async computeSettlement(
@@ -372,7 +392,7 @@ export class ExternalApiService {
     cardSurchargeApplied: boolean;
   }> {
     return this.computeSettlementForBilling(account.user, product, sendAmount, {
-      cardSurchargeApplied: this.resolveCardSurchargeApplied(account),
+      cardSurchargeApplied: await this.resolveCardSurchargeApplied(account),
     });
   }
 
@@ -396,7 +416,7 @@ export class ExternalApiService {
     ).filter((discount) => discount.userId === billingUser.id);
 
     const cardSurchargeApplied =
-      appOptions?.cardSurchargeApplied ?? this.resolveCardSurchargeAppliedForUser(billingUser);
+      appOptions?.cardSurchargeApplied ?? (await this.resolveCardSurchargeAppliedForUser(billingUser));
     const { fee, priceAdjustment, settleAmount } = this.computeUnitSettlement(
       product,
       userDiscounts,
@@ -486,6 +506,10 @@ export class ExternalApiService {
     );
 
     const deliveryHistory = new DeliverySendHistoryEntity();
+    // orderDeliveryId 를 채워 발송 성공 이력을 order_delivery 에 연결한다(async 발송 경로와 동일).
+    // Phase B(발송) 성공 후 Phase C(완료 전이) 전에 크래시하면 order 가 DELIVERY_REQUEST 로 stuck 되는데,
+    // 이 링크가 있어야 복구 스윕이 "발송 성공(isSuccess=true) 이력 존재"를 근거로 안전하게 완료 전이할 수 있다.
+    deliveryHistory.orderDeliveryId = orderDelivery.id;
     deliveryHistory.context = '{}';
     deliveryHistory.isSuccess = true;
     deliveryHistory.target = this.cryptoCipher.encryptDeliveryTarget(decryptedTarget);
@@ -555,6 +579,7 @@ export class ExternalApiService {
       ctx.apiApp.id,
       externalCustomerId,
       account.user.id,
+      ctx.apiApp.requireExternalCustomerId,
     );
     return this.getProductsForBilling(billingUser, productCode);
   }
@@ -601,7 +626,7 @@ export class ExternalApiService {
     // salePrice = 고객사 기준 실제 청구 단가(할인 + 카드할증).
     // 협력사 정산 수수료(partnerCompanyId 기준 user_discount)는 자사↔협력사 간 정산이며
     // 고객사 청구단가 산출 대상이 아니므로 userId 조건만 로딩한다.
-    const cardSurchargeApplied = this.resolveCardSurchargeAppliedForUser(user);
+    const cardSurchargeApplied = await this.resolveCardSurchargeAppliedForUser(user);
     const allDiscounts = await this.userDiscountRepository.find({ where: { userId: user.id } });
 
     const data: ProductResponseData[] = products.map((p) => {
@@ -630,6 +655,8 @@ export class ExternalApiService {
     dto: CreateExternalOrderDto,
     ctx: ApiRequestContext,
   ): Promise<ExternalApiResponse<OrderResponseData>> {
+    // externalOrderId 필수 모드: 크래시/타임아웃 재시도 이중발급 방어선(UNIQUE order_axis)을 강제.
+    this.assertExternalOrderIdIfRequired(ctx, dto.externalOrderId);
     // 비즈니스 멱등(매핑모드 보조): 동일 (apiApp, externalOrderId) 기존 주문이면 그 응답을 반환.
     // 전송 멱등(Idempotency-Key 헤더)과 직교 — 이건 주문축, 그건 요청축.
     if (dto.externalOrderId) {
@@ -740,13 +767,14 @@ export class ExternalApiService {
       ctx.apiApp.id,
       dto.externalCustomerId,
       account.user.id,
+      ctx.apiApp.requireExternalCustomerId,
     );
 
     // 독립 쿼리(상품 조회 / 할당 상품 ID / 직전 주문 코드)는 병렬화하여 round-trip 절약
     const [product, assignedIds, prevOrder] = await Promise.all([
       this.productRepository.findOne({
         where: { code: dto.productCode, useStatus: IProductUseStatus.USE },
-        relations: ['partnerCompany', 'brand'],
+        relations: ['partnerCompany', 'partnerCompany.userDiscounts', 'brand'],
       }),
       this.getAssignedProductIdsForBilling(billingUser.id),
       this.orderRepository.findOne({
@@ -768,7 +796,7 @@ export class ExternalApiService {
       billingUser,
       product,
       sendAmount,
-      { cardSurchargeApplied: this.resolveCardSurchargeAppliedForUser(billingUser) },
+      { cardSurchargeApplied: await this.resolveCardSurchargeAppliedForUser(billingUser) },
     );
 
     // 발신번호 SoT 검증(차감 전, flag gating). 차감은 아래 order 그래프 저장 후 wallet/legacy 분기에서 수행.
@@ -805,6 +833,7 @@ export class ExternalApiService {
     });
     await this.orderRepository.save(order);
 
+    const lineSnapshot = buildLineProductSnapshot(product);
     const mapping = this.orderProductMappingRepository.create({
       orderId: order.id,
       productId: product.id,
@@ -817,7 +846,8 @@ export class ExternalApiService {
       priceAdjustment,
       topImagePath: '',
       midImagePath: '',
-      ...buildLineProductSnapshot(product),
+      ...lineSnapshot,
+      ...buildPartnerSettleSnapshot(product, lineSnapshot.snapshotProductPrice ?? product.price),
     });
     await this.orderProductMappingRepository.save(mapping);
 
@@ -1004,6 +1034,16 @@ export class ExternalApiService {
       );
     } else {
       await this.refundBalance(billingUser, order.settleAmount);
+      // 레거시 예치금 wallet 동기화 (same-tx). settlement_code 단일 wallet 로 수렴(isCompanyMode 무관 1회).
+      await this.legacyWalletCreditSyncService.syncDeposit(this.dataSource.manager, {
+        billingUserId: billingUser.id,
+        orderId: order.id,
+        orderDeliveryId: orderDelivery.id,
+        delta: order.settleAmount,
+        type: 'FAIL_REFUND',
+        idempotencyKey: `legacy_fail_refund:${order.id}:${orderDelivery.id}:deposit`,
+        memo: `외부 API 발송 실패 환불 (주문번호: ${order.id})`,
+      });
     }
   }
 
@@ -1023,7 +1063,8 @@ export class ExternalApiService {
     const { validStartDate, validEndDate } = this.resolveValidDates(orderDelivery);
 
     return ExternalApiResponse.success<OrderStatusResponseData>({
-      trId: orderDelivery.externalTrId!,
+      // D3-55: 재발행 tip 은 externalTrId=null 이므로, 파트너가 보낸 요청 trId 를 그대로 echo.
+      trId,
       couponStatus: this.toExternalCouponStatus(orderDelivery.couponStatus),
       deliveryStatus: this.toExternalDeliveryStatus(orderDelivery),
       barCode: orderDelivery.barCode || undefined,
@@ -1048,7 +1089,8 @@ export class ExternalApiService {
     const { validStartDate, validEndDate } = this.resolveValidDates(orderDelivery);
 
     return ExternalApiResponse.success<SsgOrderStatusResponseData>({
-      trId: orderDelivery.externalTrId!,
+      // D3-55: 재발행 tip 은 externalTrId=null 이므로, 파트너가 보낸 요청 trId 를 그대로 echo.
+      trId,
       couponStatus: this.toExternalCouponStatus(orderDelivery.couponStatus),
       deliveryStatus: this.toExternalDeliveryStatus(orderDelivery),
       barCode: orderDelivery.barCode || undefined,
@@ -1058,6 +1100,96 @@ export class ExternalApiService {
       price,
       settleAmount,
     });
+  }
+
+  // ─── externalOrderId(호출자 reqTrId) 기준 주문 조회 (reconcile 전용, 읽기 전용) ─────
+
+  async getOrderStatusByExternalOrderId(
+    account: ExternalApiAccountEntity,
+    ctx: ApiRequestContext,
+    externalOrderId: string,
+  ): Promise<ExternalApiResponse<OrderLookupResponseData>> {
+    const normalized = externalOrderId?.trim();
+    if (!normalized) {
+      throw new ExternalApiException('2001', '잘못된 요청', 'externalOrderId 필수');
+    }
+
+    // 조회가 (apiApp, externalOrderId) 로 스코프되므로 소유권이 내재적으로 보장된다.
+    const order = await this.mappingResolver.findExistingOrderByExternalOrderId(ctx.apiApp.id, normalized);
+    if (!order) {
+      // 주문 자체가 없음 = Nest 미착지/미커밋 → 쿠폰 미발급(발급은 phaseA 커밋 이후 phaseB). 호출자는 grace 후 FAILED.
+      return ExternalApiResponse.success<OrderLookupResponseData>({ found: false });
+    }
+
+    const orderDelivery = await this.orderDeliveryRepository.findOne({
+      where: { orderProductMapping: { order: { id: order.id } } },
+      relations: [
+        'orderProductMapping',
+        'orderProductMapping.order',
+        'orderProductMapping.product',
+        'orderProductMapping.product.partnerCompany',
+      ],
+      order: { id: 'DESC' },
+    });
+    if (!orderDelivery) {
+      // phaseA 는 order+delivery 를 원자 커밋하므로 정상 도달 불가. 보수적으로 orderStatus 만 반환(처리중 취급).
+      return ExternalApiResponse.success<OrderLookupResponseData>({ found: true, orderStatus: order.status });
+    }
+
+    // D3-55: reconcile 는 상태를 최신 delivery(id DESC=tip) 기준으로 보되, trId 는 externalTrId 를 가진
+    // 원본(root)에서 가져온다. 재발행 tip 은 externalTrId=null 이라 그대로 쓰면 파트너가 trId 를 복구할 수 없다.
+    // tip 이 이미 trId 를 가진 경우(재발행 없음)엔 추가 조회 없이 그대로 사용.
+    const responseTrId =
+      orderDelivery.externalTrId ??
+      (
+        await this.orderDeliveryRepository.findOne({
+          where: { orderProductMapping: { order: { id: order.id } }, externalTrId: Not(IsNull()) },
+          select: ['externalTrId'],
+        })
+      )?.externalTrId ??
+      undefined;
+
+    const { validStartDate, validEndDate } = this.resolveValidDates(orderDelivery);
+    return ExternalApiResponse.success<OrderLookupResponseData>({
+      found: true,
+      trId: responseTrId,
+      orderStatus: order.status,
+      couponStatus: this.toExternalCouponStatus(orderDelivery.couponStatus),
+      deliveryStatus: await this.resolveDeliveryStatusWithSendHistory(orderDelivery),
+      barCode: orderDelivery.barCode || undefined,
+      personalCode: orderDelivery.personalCode || undefined,
+      validStartDate,
+      validEndDate,
+    });
+  }
+
+  /**
+   * 발송 결과 판정(reconcile 정직성 #3). 명시적 실패는 FAIL, actualSendAt 있으면 SUCCESS.
+   * 완료 전이 전(크래시 윈도우, actualSendAt 미백필)이라도 연결된 발송 성공 이력이 있으면 SUCCESS —
+   * dispatchSend 가 delivery_send_history(isSuccess=true, order_delivery_id)를 발송 직후 커밋하기 때문.
+   */
+  private async resolveDeliveryStatusWithSendHistory(
+    orderDelivery: OrderDeliveryEntity,
+  ): Promise<ExternalDeliveryStatus> {
+    if (orderDelivery.status === IOrderDeliveryStatus.FAIL || orderDelivery.status === IOrderDeliveryStatus.FAIL_SMS) {
+      return ExternalDeliveryStatus.FAIL;
+    }
+    if (orderDelivery.actualSendAt) {
+      return ExternalDeliveryStatus.SUCCESS;
+    }
+    const sent = await this.deliverySendHistoryRepository.findOne({
+      where: { orderDeliveryId: orderDelivery.id, isSuccess: true },
+    });
+    return sent ? ExternalDeliveryStatus.SUCCESS : ExternalDeliveryStatus.FAIL;
+  }
+
+  /**
+   * requireExternalOrderId 앱은 externalOrderId 누락 시 거절(이중발급 방어선 강제).
+   */
+  private assertExternalOrderIdIfRequired(ctx: ApiRequestContext, externalOrderId: string | undefined): void {
+    if (ctx.apiApp.requireExternalOrderId && !externalOrderId?.trim()) {
+      throw new ExternalApiException('2001', '잘못된 요청', 'externalOrderId 필수 (외부 주문번호 필수 모드)');
+    }
   }
 
   // ─── 주문 취소 ──────────────────────────────────────────
@@ -1074,6 +1206,15 @@ export class ExternalApiService {
 
     if (order.type === IOrderType.SSG) {
       throw new ExternalApiException('3009', '신세계 상품권은 폐기할 수 없습니다');
+    }
+
+    // D3-55: findOrderDeliveryByTrId 가 재발행 tip 으로 해소하므로, tip 이 아직 미발송(actualSendAt=null)이면
+    // 재발행 발송과 취소/환불이 레이스가 된다(발송 완료 전 환불 → 발송됐는데 취소·환불된 쿠폰).
+    // 발송 완료 전에는 거절해 재시도를 유도한다.
+    // (발송 신호는 status 가 아니라 actualSendAt — 정상 발송 쿠폰도 delivery.status 는 WAIT 로 남고 actualSendAt 만 세팅됨.
+    //  재발행 tip 도 발송 성공 시 actualSendAt 세팅: customer.service.service.ts fullDelivery.actualSendAt)
+    if (!orderDelivery.actualSendAt) {
+      throw new ExternalApiException('3010', '발송 처리 중인 주문입니다. 잠시 후 다시 시도해 주세요.');
     }
 
     if (
@@ -1152,6 +1293,16 @@ export class ExternalApiService {
       );
     } else {
       await this.refundBalance(billingUser, order.settleAmount);
+      // 레거시 예치금 wallet 동기화 (same-tx). settlement_code 단일 wallet 로 수렴(isCompanyMode 무관 1회).
+      await this.legacyWalletCreditSyncService.syncDeposit(this.dataSource.manager, {
+        billingUserId: billingUser.id,
+        orderId: order.id,
+        orderDeliveryId: orderDelivery.id,
+        delta: order.settleAmount,
+        type: 'DISCARD_REFUND',
+        idempotencyKey: `legacy_discard_refund:${order.id}:${orderDelivery.id}:deposit`,
+        memo: `외부 API 취소 환불 (주문번호: ${order.id})`,
+      });
     }
   }
 
@@ -1261,6 +1412,9 @@ export class ExternalApiService {
       throw new ExternalApiException('1005', 'SSG 미승인 계정');
     }
 
+    // externalOrderId 필수 모드: 이중발급 방어선(UNIQUE order_axis) 강제.
+    this.assertExternalOrderIdIfRequired(ctx, dto.externalOrderId);
+
     // 비즈니스 멱등(SSG): 동일 (apiApp, externalOrderId) 기존 주문이면 그 응답 반환.
     if (dto.externalOrderId) {
       const existing = await this.mappingResolver.findExistingOrderByExternalOrderId(
@@ -1347,6 +1501,7 @@ export class ExternalApiService {
       ctx.apiApp.id,
       dto.externalCustomerId,
       account.user.id,
+      ctx.apiApp.requireExternalCustomerId,
     );
     const sendAmount = dto.amount;
 
@@ -1372,7 +1527,7 @@ export class ExternalApiService {
       billingUser,
       product,
       sendAmount,
-      { cardSurchargeApplied: this.resolveCardSurchargeAppliedForUser(billingUser) },
+      { cardSurchargeApplied: await this.resolveCardSurchargeAppliedForUser(billingUser) },
     );
 
     // senderPhone 미지정 SSG 알림톡 → 자사 대표번호로 확정 (검증/저장 동일값)
@@ -1413,6 +1568,7 @@ export class ExternalApiService {
     });
     await this.orderRepository.save(order);
 
+    const ssgLineSnapshot = buildLineProductSnapshot(product);
     const mapping = this.orderProductMappingRepository.create({
       orderId: order.id,
       productId: product.id,
@@ -1425,7 +1581,8 @@ export class ExternalApiService {
       priceAdjustment,
       topImagePath: '',
       midImagePath: '',
-      ...buildLineProductSnapshot(product),
+      ...ssgLineSnapshot,
+      ...buildPartnerSettleSnapshot(product, ssgLineSnapshot.snapshotProductPrice ?? product.price),
     });
     await this.orderProductMappingRepository.save(mapping);
 
@@ -1516,7 +1673,7 @@ export class ExternalApiService {
     trId: string,
     ctx: ApiRequestContext,
   ): Promise<OrderDeliveryEntity> {
-    const orderDelivery = await this.orderDeliveryRepository.findOne({
+    const root = await this.orderDeliveryRepository.findOne({
       where: { externalTrId: trId },
       relations: [
         'orderProductMapping',
@@ -1527,9 +1684,14 @@ export class ExternalApiService {
       ],
     });
 
-    if (!orderDelivery) {
+    if (!root) {
       throw new ExternalApiException('4001', '주문을 찾을 수 없음');
     }
+
+    // D3-55: 폐기 후 재발행 시 trId(externalTrId)는 폐기된 원본(root)에 남고,
+    // 새로 발급된 유효 delivery 는 externalTrId=null 이 된다. 파트너의 trId 가
+    // 죽은 원본을 가리키지 않도록, 재발행 체인(replacedFromId)의 살아있는 최신 delivery 로 이동한다.
+    const orderDelivery = await this.resolveActiveDelivery(root);
 
     const order = orderDelivery.orderProductMapping?.order;
     if (!order) {
@@ -1539,6 +1701,74 @@ export class ExternalApiService {
     this.assertOrderOwnership(order, account, ctx);
 
     return orderDelivery;
+  }
+
+  /**
+   * 폐기 후 재발행(replacedFromId) 체인을 따라 살아있는 최신 delivery(tip)로 이동한다.
+   * - trId 는 최초 createOrder delivery(체인의 root)에만 심기므로, 재발행 시 신 delivery(externalTrId=null)가
+   *   조회/취소/재발송의 대상이 되도록 root → tip 으로 forward-hop 한다.
+   * - 판정 기준(replacedFromId)은 정산(settle-fee.util calculateMappingSettlementBaseAmount)과 동일 SoT.
+   *   (내부 주문조회 order.service.hideDiscardReissueDeliveries 는 같은 체인을 **반대 방향**으로 해석해
+   *    root 만 남기고 tip 을 숨긴다 — 여기는 외부 파트너용이라 살아있는 tip 으로 전진. 재발행 의미 변경 시 양쪽 동기화 필요.)
+   * - 게이트는 couponStatus 가 아니라 discardedAt 으로 한다. 폐기 원본의 couponStatus 는 stale sync
+   *   (예: Galaxia push 로 CANCEL→USED)로 드리프트할 수 있으나, discardedAt 은 폐기 시에만 세팅되고
+   *   운영 경로에서 null 로 리셋되지 않는 안정 마커라, 재발행 여부 판정이 상태 드리프트에 영향받지 않는다.
+   */
+  private async resolveActiveDelivery(root: OrderDeliveryEntity): Promise<OrderDeliveryEntity> {
+    // 폐기된 적 없으면(discardedAt=null) 재발행된 적도 없음 → root 가 곧 tip.
+    if (root.discardedAt == null) {
+      return root;
+    }
+
+    // 같은 매핑의 형제 발송건 (체인 판정용 최소 컬럼만).
+    const siblings = await this.orderDeliveryRepository.find({
+      where: { orderProductMappingId: root.orderProductMappingId },
+      select: ['id', 'replacedFromId'],
+    });
+
+    // 원본 id → 그 원본을 대체한 delivery id. bigint 는 런타임에 string 으로 hydrate 될 수 있어 Number 정규화.
+    // 같은 원본을 가리키는 행이 복수면(레이스/이상데이터) 최신(max id)을 선택해 결정적으로 만든다.
+    const replacedByMap = new Map<number, number>();
+    for (const sibling of siblings) {
+      if (sibling.replacedFromId == null) {
+        continue;
+      }
+      const fromId = Number(sibling.replacedFromId);
+      const existing = replacedByMap.get(fromId);
+      if (existing == null || sibling.id > existing) {
+        replacedByMap.set(fromId, sibling.id);
+      }
+    }
+
+    // root 에서 시작해 "나를 대체한 행"을 계속 따라가 더 이상 대체되지 않은 tip 을 찾는다.
+    let currentId = root.id;
+    const visited = new Set<number>([currentId]);
+    while (replacedByMap.has(currentId)) {
+      const nextId = replacedByMap.get(currentId)!;
+      if (visited.has(nextId)) {
+        break; // 방어적 순환 차단(정상 데이터에선 발생 불가).
+      }
+      visited.add(nextId);
+      currentId = nextId;
+    }
+
+    if (currentId === root.id) {
+      return root; // 재발행 없이 폐기된 원본 → root 가 tip. (DISCARDED 로 정상 응답)
+    }
+
+    // tip 으로 이동 — caller 가 기대하는 relations 로 재로딩.
+    const tip = await this.orderDeliveryRepository.findOne({
+      where: { id: currentId },
+      relations: [
+        'orderProductMapping',
+        'orderProductMapping.order',
+        'orderProductMapping.product',
+        'orderProductMapping.product.partnerCompany',
+        'orderProductMapping.product.brand',
+      ],
+    });
+    // 방금 sibling 목록에 있던 id 이므로 정상 도달 불가. 방어적으로 root 유지.
+    return tip ?? root;
   }
 
   // 외부 API 주문 소유권 검사(apiAppId 기준, PR2). 모든 trId 기반 조회/상태/취소/재발송이 경유한다.

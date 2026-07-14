@@ -43,6 +43,20 @@ export class ApiAppEntity extends BaseEntity {
   @Column({ type: 'boolean', default: false })
   cancelWebhookEnabled: boolean;
 
+  @Column({
+    type: 'boolean',
+    default: false,
+    comment: '매핑 필수 모드(true면 externalCustomerId 없는 상품조회/주문 거절, default fallback 차단)',
+  })
+  requireExternalCustomerId: boolean;
+
+  @Column({
+    type: 'boolean',
+    default: false,
+    comment: '외부 주문번호 필수 모드(true면 externalOrderId 없는 주문 거절 — 크래시/타임아웃 이중발급 방어선 강제)',
+  })
+  requireExternalOrderId: boolean;
+
   @OneToMany(() => ApiCredentialEntity, (c) => c.apiApp)
   credentials: ApiCredentialEntity[];
 

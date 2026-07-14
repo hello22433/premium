@@ -23,6 +23,8 @@ export interface SettlementCodeSnapshot {
   creditUsedAmount: number;
   creditExcessAmount: number;
   pointTotalRemaining: number;
+  settleCondition: 'PRE_PAYMENT' | 'POST_PAYMENT' | null;
+  settleMethod: 'CARD' | 'CASH' | null;
   assignedUsers: SettlementCodeAssignedUser[];
 }
 
@@ -30,6 +32,28 @@ export interface SettlementCodeSnapshotResult {
   companyId: number;
   companyName: string;
   settlementCodes: SettlementCodeSnapshot[];
+}
+
+export interface SettlementCodeAssignedAccount {
+  userId: number;
+  personName: string;
+  companyId: number | null;
+  companyName: string | null;
+}
+
+export interface SettlementCodeDetail {
+  settlementCode: string;
+  walletAccountId: string | null;
+  walletStatus: WalletStatus;
+  depositBalance: number;
+  creditLimit: number;
+  creditUsedAmount: number;
+  creditExcessAmount: number;
+  pointTotalRemaining: number;
+  settleCondition: 'PRE_PAYMENT' | 'POST_PAYMENT' | null;
+  settleMethod: 'CARD' | 'CASH' | null;
+  /** 이 정산코드에 배정된 전체 계정 (회사 걸침 가능 — N:M). */
+  assignedAccounts: SettlementCodeAssignedAccount[];
 }
 
 export interface SettlementCodeUsage {
@@ -97,6 +121,8 @@ export class WalletReadService {
           creditUsedAmount: 0,
           creditExcessAmount: 0,
           pointTotalRemaining: 0,
+          settleCondition: null,
+          settleMethod: null,
           assignedUsers,
         });
         continue;
@@ -111,11 +137,76 @@ export class WalletReadService {
         creditUsedAmount: wallet.creditUsedAmount,
         creditExcessAmount: wallet.creditExcessAmount,
         pointTotalRemaining: await this.pointTotalRemaining(wallet.id),
+        settleCondition: wallet.settleCondition,
+        settleMethod: wallet.settleMethod,
         assignedUsers,
       });
     }
 
     return { companyId, companyName, settlementCodes };
+  }
+
+  /**
+   * settlement_code 키 단위 상세 조회 (회사 스코프 아님 — N:M 대응).
+   * 코드에 배정된 전체 계정을 회사 걸침 포함해 반환한다. 코드 자체가 존재하지 않으면 NotFound.
+   */
+  async getSettlementCodeDetail(settlementCode: string): Promise<SettlementCodeDetail> {
+    if (!settlementCode || settlementCode.trim() === '') {
+      throw new BadRequestException('settlementCode 는 필수입니다.');
+    }
+    const wallet = await this.findWalletBySettlementCode(settlementCode);
+    const rows = await this.userRepository
+      .createQueryBuilder('u')
+      .leftJoin(UserCompanyEntity, 'c', 'c.id = u.companyId')
+      .select('u.id', 'userId')
+      .addSelect('u.personName', 'personName')
+      .addSelect('u.companyId', 'companyId')
+      .addSelect('c.businessName', 'companyName')
+      .where('u.settlementCode = :code', { code: settlementCode })
+      .orderBy('u.companyId', 'ASC')
+      .addOrderBy('u.id', 'ASC')
+      .getRawMany<{ userId: number; personName: string; companyId: number | null; companyName: string | null }>();
+
+    if (!wallet && rows.length === 0) {
+      throw new NotFoundException(`settlement_code not found: ${settlementCode}`);
+    }
+
+    const assignedAccounts: SettlementCodeAssignedAccount[] = rows.map((r) => ({
+      userId: Number(r.userId),
+      personName: r.personName,
+      companyId: r.companyId != null ? Number(r.companyId) : null,
+      companyName: r.companyName ?? null,
+    }));
+
+    if (!wallet) {
+      return {
+        settlementCode,
+        walletAccountId: null,
+        walletStatus: 'MISSING',
+        depositBalance: 0,
+        creditLimit: 0,
+        creditUsedAmount: 0,
+        creditExcessAmount: 0,
+        pointTotalRemaining: 0,
+        settleCondition: null,
+        settleMethod: null,
+        assignedAccounts,
+      };
+    }
+
+    return {
+      settlementCode,
+      walletAccountId: wallet.id,
+      walletStatus: 'ACTIVE',
+      depositBalance: wallet.depositBalance,
+      creditLimit: wallet.creditLimit,
+      creditUsedAmount: wallet.creditUsedAmount,
+      creditExcessAmount: wallet.creditExcessAmount,
+      pointTotalRemaining: await this.pointTotalRemaining(wallet.id),
+      settleCondition: wallet.settleCondition,
+      settleMethod: wallet.settleMethod,
+      assignedAccounts,
+    };
   }
 
   async getSettlementCodeUsage(

@@ -258,7 +258,7 @@ describe('OrderService card surcharge settlement priority', () => {
     );
   });
 
-  it('createOrderSettle: WALLET 모드는 settleMethod 미전송 시 wallet_account 정책을 저장한다', async () => {
+  it('createOrderSettle: WALLET 모드는 settleMethod·카드할증 기본값 모두 wallet_account 정책을 따른다 (PR-B)', async () => {
     const { service, order, settleFee } = createService({
       settleMethod: 'CASH', // 회사 정책 (무시되어야 함)
       pr3SettleMode: WalletCutoverMode.WALLET,
@@ -271,9 +271,9 @@ describe('OrderService card surcharge settlement priority', () => {
     expect(service.orderRepository.update).toHaveBeenCalledWith(
       { id: order.id },
       {
-        // 정책=wallet 'CARD' 이지만 cardSurchargeApplied 는 회사 기준 default(false) 유지 — 독립
-        settleAmount: applyCardSurcharge(order.sendAmount + settleFee, false),
-        cardSurchargeApplied: false,
+        // PR-B: 카드할증 기본값도 정산코드 wallet.settleMethod 기준 (company=CASH 무시, wallet=CARD → 할증 ON)
+        settleAmount: applyCardSurcharge(order.sendAmount + settleFee, true),
+        cardSurchargeApplied: true,
         settleMethod: 'CARD',
       },
     );
@@ -685,6 +685,7 @@ describe('OrderService deliveryConfirmed settlement amount', () => {
 
   it('deliveryConfirmed: 발송확정 금액은 mapping 수수료가 아니라 배송별 정산값 합산 기준으로 차감한다', async () => {
     const service = Object.create(OrderService.prototype) as any;
+    service.activityLogService = { createLog: jest.fn() };
     const deliveries = [
       {
         id: 1,
@@ -761,6 +762,9 @@ describe('OrderService deliveryConfirmed settlement amount', () => {
     service.userCompanyRepository = {
       update: jest.fn(),
     };
+    service.billingScopeLockService = {
+      lock: jest.fn().mockResolvedValue({ user: billingUser, companyUsers: [billingUser] }),
+    };
     service.userDiscountRepository = {
       find: jest.fn().mockResolvedValue([]),
     };
@@ -810,6 +814,7 @@ describe('OrderService deliveryConfirmed settlement amount', () => {
 
   it('deliveryConfirmed: 동일 주문 확정이 겹치면 상태 조건으로 두 번째 차감을 차단한다', async () => {
     const service = Object.create(OrderService.prototype) as any;
+    service.activityLogService = { createLog: jest.fn() };
     const deliveries = [
       {
         id: 1,
@@ -911,6 +916,9 @@ describe('OrderService deliveryConfirmed settlement amount', () => {
     service.userCompanyRepository = {
       update: jest.fn(),
     };
+    service.billingScopeLockService = {
+      lock: jest.fn().mockResolvedValue({ user: billingUser, companyUsers: [billingUser] }),
+    };
     service.userDiscountRepository = {
       find: jest.fn().mockResolvedValue([]),
     };
@@ -953,6 +961,7 @@ describe('OrderService deliveryConfirmed settlement amount', () => {
 
   it('deliveryConfirmed: 고객사 정산 fallback에 협력사 할인 조건을 섞지 않는다', async () => {
     const service = Object.create(OrderService.prototype) as any;
+    service.activityLogService = { createLog: jest.fn() };
     const deliveries = [
       {
         id: 1,
@@ -1025,6 +1034,9 @@ describe('OrderService deliveryConfirmed settlement amount', () => {
     service.userCompanyRepository = {
       update: jest.fn(),
     };
+    service.billingScopeLockService = {
+      lock: jest.fn().mockResolvedValue({ user: billingUser, companyUsers: [billingUser] }),
+    };
     service.userDiscountRepository = {
       find: jest.fn().mockResolvedValue([
         {
@@ -1089,6 +1101,56 @@ describe('OrderService deliveryConfirmed settlement amount', () => {
       priceAdjustment: IPriceAdjustment.DISCOUNT,
     });
     expect(order.settleAmount).toBe(9500);
+  });
+  it('deliveryConfirmed: LEGACY 모드는 isNewBillingFlow=false 주문에도 wallet 전용 파라미터를 400 거부한다', async () => {
+    const service = Object.create(OrderService.prototype) as any;
+    const order = {
+      id: 88,
+      userId: 1,
+      clientUserId: 2,
+      operationUserId: 1,
+      eventName: 'event',
+      type: IOrderType.GENERAL,
+      status: IOrderStatus.REVIEW_COMPLETE,
+      sendAmount: 9999,
+      cardSurchargeApplied: false,
+      isNewBillingFlow: false,
+      orderProductMappings: [
+        {
+          id: 10,
+          productId: 100,
+          amount: 1,
+          fee: 0,
+          priceAdjustment: null,
+          sendTitle: 'title',
+          sendContent: 'content',
+          product: { price: 9999, useStatus: 'USE', partnerCompanyId: 20, partnerCompany: {}, brand: {} },
+          orderDeliveries: [{ id: 1, deliveryTarget: '01011112222' }],
+        },
+      ],
+    } as any;
+
+    service.orderRepository = {
+      createQueryBuilder: jest
+        .fn()
+        .mockReturnValueOnce(createQueryBuilder(order))
+        .mockReturnValueOnce(createQueryBuilder(order)),
+    };
+    service.userRepository = {
+      findOne: jest
+        .fn()
+        .mockResolvedValue({ id: 1, authority: 'OPERATION_ADMIN', status: 'USED', authorityList: null }),
+    };
+    service.walletCutoverConfig = {
+      get pr2DeliveryLifecycleMode() {
+        return WalletCutoverMode.LEGACY;
+      },
+    };
+
+    // 발송확정 공통 경로 가드 — isNewBillingFlow 분기 진입 전 400
+    await expect(
+      service.deliveryConfirmed({ id: 1 } as any, { id: order.id, depositUseAmount: 10000 } as any),
+    ).rejects.toThrow('포인트/예치금 사용 옵션은 지갑(wallet) 전환 후에만 사용할 수 있습니다.');
   });
 });
 

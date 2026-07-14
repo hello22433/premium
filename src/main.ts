@@ -11,6 +11,27 @@ import { DeliveryBatchService } from './delivery/application/delivery.batch.serv
 import { PartnerCompanyExternHistoryService } from './partner_company_extern_history/application/partner.company.extern.history.service';
 import { hydrateEnvFromSsm } from './config/hydrate-env-from-ssm';
 
+/**
+ * X-Forwarded-For 신뢰 범위 파싱. req.ip 가 위조 불가한 실제 클라이언트 IP를 반환하도록 프록시 신뢰 범위를 정한다.
+ * - 미설정: 1 (프록시 1홉 신뢰 = 단일 리버스프록시 뒤 표준 배포에서 클라이언트 위조 불가).
+ *   ⚠ 프록시가 2홉 이상(예: ALB+nginx)이면 TRUST_PROXY 에 실제 홉 수를 지정해야 정확한 클라이언트 IP가 잡힌다.
+ * - 정수: 신뢰할 프록시 hop 수
+ * - 'true'/'false': 불리언 (true=모든 프록시 신뢰 — leftmost XFF, 위조 가능하므로 지양)
+ * - 그 외: subnet/IP 목록 (예: 'loopback, 10.0.0.0/8')
+ */
+function resolveTrustProxy(value?: string): boolean | number | string {
+  if (value === undefined || value.trim() === '') {
+    // 안전 기본값: 모든 프록시(true)를 신뢰하지 않고 1홉만 신뢰한다(XFF 선점 위조 방지).
+    return 1;
+  }
+  const trimmed = value.trim();
+  if (trimmed === 'true') return true;
+  if (trimmed === 'false') return false;
+  const num = Number(trimmed);
+  if (Number.isInteger(num) && num >= 0) return num;
+  return trimmed;
+}
+
 async function bootstrap() {
   // SSM Parameter Store의 비밀값을 process.env에 주입한다.
   // 접두는 ENVIRONMENT에서 자동 유도(prod→/prod, dev→/dev, local→/local). ENVIRONMENT 미설정이면 .env 그대로.
@@ -24,7 +45,7 @@ async function bootstrap() {
   app.useBodyParser('json', { limit: '50mb' });
   app.useBodyParser('urlencoded', { limit: '50mb', extended: true });
   app.useBodyParser('text', { type: ['application/xml', 'text/xml'], limit: '10mb' });
-  app.set('trust proxy', true);
+  app.set('trust proxy', resolveTrustProxy(process.env.TRUST_PROXY));
   app.useGlobalInterceptors(new TransformResInterceptor());
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
 

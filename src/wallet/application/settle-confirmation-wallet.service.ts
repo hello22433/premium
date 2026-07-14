@@ -8,6 +8,7 @@ import { WalletAccountEntity } from '../../entity/wallet.account.entity';
 import { WalletTransactionEntity } from '../../entity/wallet.transaction.entity';
 import { WalletResourceType } from '../interface/wallet-resource-type';
 import { getBillingUserId } from '../../order/domain/order.billing-user.helper';
+import { assertAllocationCodeNotMoved } from './reversal-move-guard';
 
 const SETTLE_RELEASE_TYPE = 'SETTLE_RELEASE';
 const SETTLE_UNDO_TYPE = 'SETTLE_UNDO';
@@ -288,6 +289,9 @@ export class SettleConfirmationWalletService {
     if (!order) {
       throw new BadRequestException(`SettleConfirmationWalletService: order not found id=${orderId}`);
     }
+
+    // H1: 정산코드 이동 후 역처리 차단 — allocation wallet owner != billing user 현재 code 면 throw.
+    await assertAllocationCodeNotMoved(manager, order, walletLock.ownerId);
 
     return { alloc, walletLock, order };
   }

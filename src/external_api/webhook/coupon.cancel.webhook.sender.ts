@@ -1,6 +1,7 @@
-import { randomUUID } from 'crypto';
+import { randomUUID, createHmac } from 'crypto';
 import { Injectable, Logger } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { firstValueFrom } from 'rxjs';
@@ -36,6 +37,7 @@ export class CouponCancelWebhookSender {
     @InjectRepository(ExternalApiWebhookLogEntity)
     private readonly logRepository: Repository<ExternalApiWebhookLogEntity>,
     private readonly httpService: HttpService,
+    private readonly configService: ConfigService,
   ) {}
 
   async send(
@@ -55,6 +57,20 @@ export class CouponCancelWebhookSender {
     const requestBody = JSON.stringify(payload);
     const startedAt = Date.now();
 
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    const secret = this.configService.get<string>('WEBHOOK_HMAC_SECRET');
+    if (secret) {
+      const ts = Math.floor(Date.now() / 1000).toString();
+      const sig =
+        'v1=' + createHmac('sha256', secret).update(`${ts}.${requestBody}`).digest('hex');
+      headers['X-Webhook-Signature'] = sig;
+      headers['X-Webhook-Timestamp'] = ts;
+    } else {
+      this.logger.warn(
+        `WEBHOOK_HMAC_SECRET not set; sending UNSIGNED webhook (eventId=${eventId}, trId=${outbound.trId})`,
+      );
+    }
+
     let responseStatus: number | null = null;
     let responseBody: string | null = null;
     let errorMessage: string | null = null;
@@ -62,7 +78,8 @@ export class CouponCancelWebhookSender {
 
     try {
       const response = await firstValueFrom(
-        this.httpService.post(url, payload, {
+        this.httpService.post(url, requestBody, {
+          headers,
           timeout: HTTP_TIMEOUT_MS,
           validateStatus: () => true,
         }),

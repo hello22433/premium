@@ -37,6 +37,7 @@ import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { Transactional } from 'typeorm-transactional';
 import { evaluateSsgEventSignals, SsgBalanceCheckResult, SsgEventSignalResult } from './ssg.balance.guard';
 import { ulid } from 'ulid';
+import { allocateSsgEventsForDeliveries, SsgAllocationIndeterminateError } from '../domain/ssg.event.allocation';
 
 // 상세조회 임계경로에서 SSG 외부 API(getAmount) 지연이 페이지 로딩을 묶지 않도록 하는 가드 타임아웃
 const SSG_BALANCE_CHECK_TIMEOUT_MS = 3000;
@@ -173,9 +174,10 @@ export class SsgEventService {
       queryBuilder = queryBuilder.andWhere('ssg.name LIKE :name', { name: '%' + name + '%' });
     }
 
-    // 조회기간이 설정되지 않은 경우에만 현재 진행 중인 행사 필터 적용
+    // 조회기간 미설정 시 기본값: 이번 달 1일 이후까지 진행(종료)되는 행사 (상한 없음)
     if (!createdStartAt && !createdEndAt) {
-      queryBuilder = queryBuilder.andWhere('ssg.startAt <= :now', { now }).andWhere('ssg.endAt >= :now', { now });
+      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+      queryBuilder = queryBuilder.andWhere('ssg.endAt >= :monthStart', { monthStart });
     }
 
     queryBuilder = QueryBuilderDateCondition(queryBuilder, 'ssg', 'createdAt', createdStartAt, createdEndAt);
@@ -615,23 +617,27 @@ export class SsgEventService {
    * 배송건별로 행사를 할당합니다.
    * 각 배송건(상품권)은 하나의 행사에서 전액 처리되어야 합니다.
    * 모든 배송건 할당 가능 시에만 결과 반환, 하나라도 불가하면 null 반환 (All or Nothing)
-   * @param deliveries 배송건 정보 배열 [{ deliveryId, price }]
+   *
+   * 배송건마다 reserveDate가 다를 수 있으므로(상품별 예약시각), 각 배송건은 자신의
+   * 예약시각(reserveDate) 기준으로 유효한 행사에만 매칭한다. reserveDate가 없으면
+   * defaultReserveDate → 현재 시각 순으로 폴백한다. 후보 집합이 배송건마다 달라
+   * first-fit이 실행 가능한 조합을 놓칠 수 있으므로, 정확한 할당 탐색은
+   * allocateSsgEventsForDeliveries(순수 함수)에 위임한다.
+   * @param deliveries 배송건 정보 배열 [{ deliveryId, price, reserveDate? }]
    * @param couponExpiration 쿠폰 유효기간
+   * @param defaultReserveDate reserveDate가 없는 배송건에 적용할 기준 시각(폴백)
    * @returns 할당 결과 배열 [{ deliveryId, eventId, price }] 또는 null (잔액 부족)
    */
   async allocateEventsForDeliveries(
-    deliveries: { deliveryId: number; price: number }[],
+    deliveries: { deliveryId: number; price: number; reserveDate?: Date }[],
     couponExpiration?: number,
-    reserveDate?: Date,
+    defaultReserveDate?: Date,
   ): Promise<{ deliveryId: number; eventId: number; price: number }[] | null> {
-    const referenceDate = reserveDate ?? new Date();
-
-    // 유효한 행사 목록 조회 (id 기준 정렬 - 먼저 등록한 행사 우선, 잔액 > 0)
+    // 후보 행사 조회(잔액 > 0). 유효기간(startAt~endAt) 매칭은 배송건별 기준시각으로 판정하므로
+    // 날짜 조건은 쿼리에 걸지 않고 할당 로직에서 처리한다.
     let queryBuilder = this.ssgEventRepository
       .createQueryBuilder('ssg')
-      .where('ssg.startAt <= :referenceDate', { referenceDate })
-      .andWhere('ssg.endAt >= :referenceDate', { referenceDate })
-      .andWhere('ssg.eventBalance > 0')
+      .where('ssg.eventBalance > 0')
       .orderBy('ssg.id', 'ASC');
 
     if (couponExpiration) {
@@ -640,47 +646,17 @@ export class SsgEventService {
 
     const events = await queryBuilder.getMany();
 
-    if (events.length === 0) {
-      return null;
-    }
-
-    // 각 행사의 잔여 잔액을 추적 (실제 차감 전 시뮬레이션)
-    const eventBalances = new Map<number, number>();
-    for (const event of events) {
-      eventBalances.set(event.id, event.eventBalance);
-    }
-
-    const allocations: { deliveryId: number; eventId: number; price: number }[] = [];
-
-    // 각 배송건에 대해 행사 할당
-    for (const delivery of deliveries) {
-      let allocated = false;
-
-      for (const event of events) {
-        const remainingBalance = eventBalances.get(event.id) || 0;
-
-        // 현재 행사 잔액이 상품 가격 이상이면 할당
-        if (remainingBalance >= delivery.price) {
-          allocations.push({
-            deliveryId: delivery.deliveryId,
-            eventId: event.id,
-            price: delivery.price,
-          });
-
-          // 잔액 차감 (시뮬레이션)
-          eventBalances.set(event.id, remainingBalance - delivery.price);
-          allocated = true;
-          break;
-        }
+    try {
+      return allocateSsgEventsForDeliveries(events, deliveries, defaultReserveDate);
+    } catch (error) {
+      // 탐색 한도 초과(결정 불가)는 "잔액 부족(null)"과 구분되는 서버측 오류로 처리한다.
+      if (error instanceof SsgAllocationIndeterminateError) {
+        throw new InternalServerErrorException(
+          'SSG 행사 자동 할당 계산이 지연되어 완료하지 못했습니다. 주문 수량을 줄이거나 나누어 다시 시도해주세요.',
+        );
       }
-
-      // 어떤 행사에서도 처리 못하면 잔액 부족
-      if (!allocated) {
-        return null;
-      }
+      throw error;
     }
-
-    return allocations;
   }
 
   /**

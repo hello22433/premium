@@ -58,6 +58,24 @@ export class SsgOrderStatusResponseData extends OrderStatusResponseData {
   personalCode?: string;
 }
 
+/**
+ * externalOrderId(호출자 reqTrId) 기준 주문 조회 응답 (reconcile 전용, 읽기 전용).
+ * found=false → Nest 에 해당 주문 자체가 없음(미착지/미커밋). deliveryStatus 는 barCode + 발송 성공
+ * 이력을 함께 반영해 완료 전이 전(크래시 윈도우)에도 실발송 여부를 정직하게 보고한다(#3).
+ */
+export class OrderLookupResponseData {
+  found: boolean;
+  trId?: string;
+  /** 내부 진행상태 raw (DELIVERY_REQUEST/DELIVERY_COMPLETE/DELIVERY_CANCEL 등) — 호출자 reconcile 분기용. */
+  orderStatus?: string;
+  couponStatus?: ExternalCouponStatus;
+  deliveryStatus?: ExternalDeliveryStatus;
+  barCode?: string;
+  personalCode?: string;
+  validStartDate?: string;
+  validEndDate?: string;
+}
+
 export class ProductResponseData {
   productCode: string;
   productName: string;

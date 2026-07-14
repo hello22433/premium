@@ -31,6 +31,7 @@ import { UserAuthSubEnum } from '../../user_management/domain/user.auth.enum';
 import { AuthService } from '../../auth/application/auth.service';
 import { IProductType } from '../../product/interface/product.type';
 import { Response } from 'express';
+import { CouponViewLogResDto } from './dto/customer.service.coupon.view.log.dto';
 
 @Controller('')
 @ApiTags('customer-service')
@@ -103,6 +104,19 @@ export class CustomerServiceController {
   @Get('/customer-service/detail')
   getDetail(@User() user: ILoginUserInfo, @Query() getQuery: CustomerServiceGetDetailReqDto) {
     return this.customerServiceService.getDetail(user, getQuery);
+  }
+
+  @ApiOperation({
+    description: 'coupon-view 페이지 방문 로그 조회 API (일반/신세계 CS 상세)',
+  })
+  @ApiOkResponse({
+    type: CouponViewLogResDto,
+    description: '해당 발송건의 방문 로그 집계 + 최신 목록',
+  })
+  // ===============================================
+  @Get('/customer-service/coupon-view-log')
+  getCouponViewLog(@User() user: ILoginUserInfo, @Query() getQuery: CustomerServiceGetDetailReqDto) {
+    return this.customerServiceService.getCouponViewLog(user, getQuery.orderDeliveryId);
   }
 
   @ApiOperation({

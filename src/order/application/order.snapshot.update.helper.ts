@@ -1,8 +1,17 @@
 import { BadRequestException } from '@nestjs/common';
 import { ProductEntity } from '../../entity/product.entity';
-import { buildLineProductSnapshot, LineProductSnapshotPart } from '../util/order.snapshot.builder';
+import {
+  buildLineProductSnapshot,
+  buildPartnerSettleSnapshot,
+  LineProductSnapshotPart,
+  PartnerSettleSnapshotPart,
+} from '../util/order.snapshot.builder';
 
-export type OwnedLine = { productId: number; snapshot?: LineProductSnapshotPart };
+export type OwnedLine = {
+  productId: number;
+  snapshot?: LineProductSnapshotPart;
+  partnerSettleSnapshot?: PartnerSettleSnapshotPart;
+};
 
 export function assertLineIdsValid(lines: { id?: number; productId: number }[], owned: Map<number, OwnedLine>): void {
   const seen = new Set<number>();
@@ -30,4 +39,19 @@ export function resolveLineSnapshot(
     }
   }
   return buildLineProductSnapshot(liveProduct);
+}
+
+export function resolvePartnerSettleSnapshot(
+  line: { id?: number; productId: number },
+  owned: Map<number, OwnedLine>,
+  liveProduct: ProductEntity,
+  price: number,
+): PartnerSettleSnapshotPart {
+  if (line.id != null) {
+    const prev = owned.get(line.id);
+    if (prev?.productId === line.productId && prev.partnerSettleSnapshot) {
+      return prev.partnerSettleSnapshot;
+    }
+  }
+  return buildPartnerSettleSnapshot(liveProduct, price);
 }

@@ -4,9 +4,10 @@ import { OrderReceiptEntity } from '../entity/order.receipt.entity';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { OrderReceiptService } from './application/order.receipt.service';
 import { OrderReceiptController } from './api/order.receipt.controller';
+import { FileModule } from '../file/file.module';
 
 @Module({
-  imports: [AuthModule, TypeOrmModule.forFeature([OrderReceiptEntity])],
+  imports: [AuthModule, TypeOrmModule.forFeature([OrderReceiptEntity]), FileModule],
   controllers: [OrderReceiptController],
   providers: [OrderReceiptService],
 })

@@ -13,6 +13,8 @@ import { WalletAccountEntity } from '../../entity/wallet.account.entity';
 import { WalletTransactionEntity } from '../../entity/wallet.transaction.entity';
 import { PaymentAllocationService } from './payment-allocation.service';
 import { WalletResourceType } from '../interface/wallet-resource-type';
+import { OrderEntity } from '../../entity/order.entity';
+import { assertAllocationCodeNotMoved } from './reversal-move-guard';
 
 export interface RefundEventInput {
   orderId: number;
@@ -150,6 +152,9 @@ export class RefundPoolService {
         throw new BadRequestException('already_refunded');
       }
     }
+
+    // H1: 정산코드 이동 후 환불(폐기환불) 차단.
+    await this.assertReversalCodeNotMoved(manager, input.orderId, walletLock.ownerId);
 
     const pointRefund = await this.refundPointsForSettledDiscard(input, alloc, manager);
     const depositRefundAmount = input.refundAmount - pointRefund.restored - pointRefund.skipped;
@@ -360,6 +365,9 @@ export class RefundPoolService {
         throw new BadRequestException('already_refunded');
       }
     }
+
+    // H1: 정산코드 이동 후 환불(실패환불/폐기환불/재발송 역환불) 차단.
+    await this.assertReversalCodeNotMoved(manager, input.orderId, walletLock.ownerId);
 
     if (input.refundFromAttemptTransactions) {
       return this.runRefundFromResendDeductTransactions(input, alloc, walletLock, manager);
@@ -1078,5 +1086,20 @@ export class RefundPoolService {
       memo: `expired_point_reskip=${skipped}`,
       idempotencyKey: `resend_deduct:${ledger.orderId}:${deliveryId}:point_skipped_expired:${reversedByWalletTransactionId}`,
     });
+  }
+  /** H1: 정산코드 이동 후 역처리 차단 — allocation wallet owner 가 billing user 현재 code 와 다르면 throw. */
+  private async assertReversalCodeNotMoved(
+    manager: EntityManager,
+    orderId: number,
+    walletOwnerId: string,
+  ): Promise<void> {
+    const order = await manager.findOne(OrderEntity, {
+      where: { id: orderId },
+      select: ['id', 'userId', 'clientUserId'],
+    });
+    if (!order) {
+      throw new BadRequestException(`RefundPoolService: order not found id=${orderId}`);
+    }
+    await assertAllocationCodeNotMoved(manager, order, walletOwnerId);
   }
 }

@@ -7,6 +7,7 @@ import {
   UserLoginEmailVerifyReqDto,
   UserLoginPhoneSendReqDto,
   UserLoginPhoneVerifyReqDto,
+  UserReactivateEmailSendReqDto,
   UserSignUpReqDto,
 } from '../api/user.req.dto';
 import { PasswordBcryptEncrypt } from '../../auth/infrastructure/password.bcrypt.encrypt';
@@ -19,7 +20,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Between, In, IsNull, Repository, Raw } from 'typeorm';
 import { Transactional } from 'typeorm-transactional';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
-import { UserLoginByEmailPasswordResDto } from '../api/user.res.dto';
+import { UserLoginByEmailPasswordResDto, UserReactivateEmailSendResDto } from '../api/user.res.dto';
 import { EmailSendHistoryEntity } from '../../entity/email.send.history.entity';
 import { IMailSend } from '../../mail/interface/mail-send';
 import { EmailType } from '../../mail/domain/email.type';
@@ -27,6 +28,7 @@ import { addMinutes, differenceInDays } from 'date-fns';
 import { generateLoginVerifyCode, generateNumericCode } from '../../user_find/domain/code.generate';
 import { EmailCertifyExpireMinute } from '../../const';
 import { userLoginTemplateHtml } from '../domain/user.login.template.html';
+import { userReactivateTemplateHtml } from '../domain/user.reactivate.template.html';
 import { IUserAuthority } from '../interface/user.authority';
 import { IUserStatus } from '../interface/user.status';
 import { IUserSettleCondition } from '../interface/user.settle.condition';
@@ -43,6 +45,7 @@ import { AuthErrorCode } from '../exception/auth-error-code';
 import { AuthException } from '../exception/auth.exception';
 import { AccountStatusTransitionService } from '../../account_lifecycle/application/account.status.transition.service';
 import { TransitionSource } from '../../account_lifecycle/interface/transition.source';
+import { SettlementCodeAdminService } from '../../wallet/application/settlement-code-admin.service';
 
 @Injectable()
 export class UserService {
@@ -70,6 +73,7 @@ export class UserService {
     private activityLogService: ActivityLogService,
     private accountStatusTransitionService: AccountStatusTransitionService,
     private cryptoCipher: CryptoCipher,
+    private settlementCodeAdminService: SettlementCodeAdminService,
   ) {}
 
   private logger = new Logger('UserService');
@@ -119,6 +123,9 @@ export class UserService {
 
     // 동일 사업자등록번호의 회사가 있으면 연결, 없으면 생성
     let companyId: number | null = null;
+    // 이번 호출에서 회사 row 를 신규 생성했는지 (settlement_code 배정 판정 기준, S4)
+    let isNewCompany = false;
+    let newCompanyMaximumLimit = 0;
     if (businessNumber) {
       const existingCompany = await this.userCompanyRepository.findOne({
         where: { businessNumber },
@@ -137,6 +144,8 @@ export class UserService {
           maximumLimit: 0,
         });
         companyId = newCompany.id;
+        isNewCompany = true;
+        newCompanyMaximumLimit = newCompany.maximumLimit;
       }
     }
 
@@ -174,6 +183,25 @@ export class UserService {
 
     // 계정 생성 로그 (라이프사이클)
     await this.accountStatusTransitionService.logAccountCreate(newUserId, signUpDto.email, TransitionSource.MANUAL);
+
+    // settlement_code 프로비저닝 (ambient @Transactional 안에서 실행 — 별도 TX/queryRunner 금지, B3).
+    // NEW: company-{id} 코드 + 공유 wallet 생성; SHARE_ONE: 기존 단일 코드 공유(지갑 생성 없음); PENDING: '' 유지.
+    if (companyId != null) {
+      const classification = await this.settlementCodeAdminService.classifyJoin(companyId, isNewCompany);
+      if (classification.mode === 'NEW') {
+        await this.settlementCodeAdminService.ensureSettlementCodeWallet(
+          companyId,
+          classification.code!,
+          newCompanyMaximumLimit,
+          this.userRepository.manager,
+          IUserSettleCondition.POST_PAYMENT,
+          IUserSettleMethod.CARD,
+        );
+        await this.userRepository.update(newUserId, { settlementCode: classification.code });
+      } else if (classification.mode === 'SHARE_ONE') {
+        await this.userRepository.update(newUserId, { settlementCode: classification.code });
+      }
+    }
 
     return;
   }
@@ -543,9 +571,11 @@ export class UserService {
   /**
    * 휴면(NOT_USED) 계정 재활성화 — 본인인증 이메일 코드 발송.
    * 로그인 인증과 격리하기 위해 EmailType.REACTIVATE 사용.
+   * 담당자 이메일이 2개 이상이면 targetEmailIndex 로 수신처를 선택한다. 미지정 시
+   * 마스킹된 후보 목록만 반환(코드 미발송) — 비인증 경로라 원본 이메일은 노출하지 않는다.
    */
-  async reactivateEmailSend(getBody: UserLoginEmailSendReqDto) {
-    const { email, targetEmail } = getBody;
+  async reactivateEmailSend(getBody: UserReactivateEmailSendReqDto): Promise<UserReactivateEmailSendResDto> {
+    const { email, targetEmailIndex } = getBody;
 
     const user = await this.userRepository.findOne({ where: { email } });
     if (!user) {
@@ -559,7 +589,24 @@ export class UserService {
     }
 
     const personEmails = this.parsePersonEmails(user.personEmail);
-    const sendToEmail = this.resolveTargetEmail(email, personEmails, targetEmail);
+
+    // 담당자 이메일 다건: 선택 필요. 미선택(undefined/null)이면 마스킹 후보만 반환(발송 보류).
+    if (personEmails.length > 1) {
+      if (targetEmailIndex === undefined || targetEmailIndex === null) {
+        return {
+          needEmailSelection: true,
+          id: null,
+          candidates: personEmails.map((e, index) => ({ index, maskedEmail: MaskingUtil.maskEmail(e) })),
+        };
+      }
+      // 정수 + 범위(0 <= index < length) 방어. 소수/음수/범위초과는 모두 거부.
+      if (!Number.isInteger(targetEmailIndex) || targetEmailIndex < 0 || targetEmailIndex >= personEmails.length) {
+        throw new AuthException(AuthErrorCode.INVALID_TARGET_EMAIL);
+      }
+    }
+
+    // 발송 대상: 다건이면 선택 인덱스, 1건 이하면 계정 이메일(로그인 인증과 동일 규칙).
+    const sendToEmail = personEmails.length > 1 ? personEmails[targetEmailIndex as number] : email;
 
     const code = generateLoginVerifyCode();
     const expireAt = addMinutes(new Date(), EmailCertifyExpireMinute);
@@ -571,7 +618,7 @@ export class UserService {
     emailSendHistory.expireAt = expireAt;
     emailSendHistory.code = code;
 
-    const { title, content } = userLoginTemplateHtml(code, EmailCertifyExpireMinute);
+    const { title, content } = userReactivateTemplateHtml(code, EmailCertifyExpireMinute);
     await this.mailSendService.send({
       saveSentMail: 'N',
       bcc: undefined,
@@ -582,7 +629,7 @@ export class UserService {
     });
 
     await this.emailSendHistoryRepository.save(emailSendHistory);
-    return { id: emailSendHistory.id };
+    return { needEmailSelection: false, id: emailSendHistory.id, candidates: [] };
   }
 
   /**

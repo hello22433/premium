@@ -1,4 +1,4 @@
-import { resolveLineSnapshot, assertLineIdsValid } from './order.snapshot.update.helper';
+import { resolveLineSnapshot, resolvePartnerSettleSnapshot, assertLineIdsValid } from './order.snapshot.update.helper';
 
 describe('assertLineIdsValid', () => {
   const owned = new Map([
@@ -42,5 +42,43 @@ describe('resolveLineSnapshot', () => {
   });
   it('id 없음(신규행) → LIVE 신규 박제', () => {
     expect(resolveLineSnapshot({ productId: 1 } as any, owned as any, live).snapshotProductPrice).toBe(1500);
+  });
+});
+
+describe('resolvePartnerSettleSnapshot', () => {
+  const partnerSnap = {
+    partnerSettleFee: 5,
+    partnerSettlePriceAdjustment: 'DISCOUNT',
+  };
+  const owned = new Map([[10, { productId: 1, partnerSettleSnapshot: partnerSnap }]]);
+  const live = {
+    price: 1500,
+    category: 'MOBILE_COUPON',
+    classificationId: null,
+    brand: null,
+    partnerCompany: {
+      userDiscounts: [
+        {
+          category: 'PRODUCT_GROUP',
+          method: 'BULK',
+          group: 'MOBILE_COUPON',
+          pricePercent: 20,
+          priceAdjustment: 'DISCOUNT',
+        },
+      ],
+    },
+  } as any;
+
+  it('동일 id+productId → 기존 협력사 정산 snapshot 승계', () => {
+    expect(resolvePartnerSettleSnapshot({ id: 10, productId: 1 } as any, owned as any, live, 1000)).toEqual(
+      partnerSnap,
+    );
+  });
+
+  it('id 있으나 productId 교체 → LIVE 협력사 조건 신규 박제', () => {
+    expect(resolvePartnerSettleSnapshot({ id: 10, productId: 9 } as any, owned as any, live, 1500)).toEqual({
+      partnerSettleFee: 20,
+      partnerSettlePriceAdjustment: 'DISCOUNT',
+    });
   });
 });

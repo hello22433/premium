@@ -13,6 +13,7 @@ export enum ActivityLogActionType {
   BALANCE_REFUND = 'BALANCE_REFUND', // 선충전 잔액 환불 (시스템)
   BALANCE_REFUND_REVERSE = 'BALANCE_REFUND_REVERSE', // 선충전 잔액 환불 복구 (재발송 시 역환불)
   MAXIMUM_LIMIT_MODIFY = 'MAXIMUM_LIMIT_MODIFY', // 최대서비스한도(여신한도) 수정
+  SETTLE_CODE_POLICY_MODIFY = 'SETTLE_CODE_POLICY_MODIFY', // 정산코드 정산조건/정산방법 변경
   DELIVERY_COMPLETE_REPORT = 'DELIVERY_COMPLETE_REPORT', // 발송완료리포트 다운로드
   TRANSACTION_STATEMENT = 'TRANSACTION_STATEMENT', // 거래명세서 다운로드
   DISCARD_RESTORE = 'DISCARD_RESTORE', // 폐기 복구 (선충전 잔액 / 여신)
@@ -23,4 +24,6 @@ export enum ActivityLogActionType {
   ACCOUNT_CREATE = 'ACCOUNT_CREATE', // 신규 계정 생성
   ACCOUNT_WITHDRAW = 'ACCOUNT_WITHDRAW', // 탈퇴 (LEAVE 전환 시점)
   ACCOUNT_ANONYMIZE = 'ACCOUNT_ANONYMIZE', // 익명화 (LEAVE +6개월 PII 파기)
+  SETTLE_DISCOUNT_MODIFY = 'SETTLE_DISCOUNT_MODIFY', // 정산 할인/할증 수동 변경 (정산정보 입력/수정)
+  SETTLE_DISCOUNT_AUTO_CAPTURE = 'SETTLE_DISCOUNT_AUTO_CAPTURE', // 발송확정 시 할인 자동 매칭 캡처
 }

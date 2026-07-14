@@ -28,6 +28,7 @@ describe('OrderFromService — IDOR / blacklist / admin 필터 (P0)', () => {
       update: jest.fn().mockResolvedValue(undefined),
       findOne: jest.fn().mockResolvedValue(null),
       findAndCount: jest.fn().mockResolvedValue([[], 0]),
+      softDelete: jest.fn().mockResolvedValue(undefined),
     };
     sut.userRepository = {
       find: jest.fn().mockResolvedValue([]),
@@ -131,6 +132,25 @@ describe('OrderFromService — IDOR / blacklist / admin 필터 (P0)', () => {
       expect(sut.orderFromDefinitionRepository.insert).toHaveBeenCalledWith(
         expect.objectContaining({ from: '01099998888', userId: 10, requestStatus: OrderFromRequestStatus.PENDING }),
       );
+    });
+  });
+
+  describe('email — 전역 발신 이메일 변경 권한', () => {
+    it('CORPORATE_ADMIN 은 전역 발신 이메일을 등록할 수 없다', async () => {
+      const sut = makeSut();
+      const user = makeUser(10, IUserAuthority.CORPORATE_ADMIN);
+
+      await expect(sut.createEmail(user, { from: 'sender@example.com' })).rejects.toThrow(ForbiddenException);
+      expect(sut.orderFromDefinitionRepository.insert).not.toHaveBeenCalled();
+    });
+
+    it('CORPORATE_ADMIN 은 전역 발신 이메일을 삭제할 수 없다', async () => {
+      const sut = makeSut();
+      const user = makeUser(10, IUserAuthority.CORPORATE_ADMIN);
+
+      await expect(sut.deleteEmail(user, 1)).rejects.toThrow(ForbiddenException);
+      expect(sut.orderFromDefinitionRepository.findOne).not.toHaveBeenCalled();
+      expect(sut.orderFromDefinitionRepository.softDelete).not.toHaveBeenCalled();
     });
   });
 

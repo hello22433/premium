@@ -1,6 +1,6 @@
 import { BadRequestException, Inject, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, MoreThan, Repository } from 'typeorm';
+import { In, MoreThan, Repository, Like } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { Transactional } from 'typeorm-transactional';
 import { randomUUID } from 'crypto';
@@ -30,6 +30,7 @@ import {
   OrderPaymentRefundEventType,
 } from '../../entity/order.payment.refund.event.entity';
 import { OrderPaymentAllocationEntity } from '../../entity/order.payment.allocation.entity';
+import { WalletTransactionEntity } from '../../entity/wallet.transaction.entity';
 import { ResendDeductService } from '../../wallet/application/resend-deduct.service';
 import { DataSource, IsNull } from 'typeorm';
 import { InjectDataSource } from '@nestjs/typeorm';
@@ -292,17 +293,14 @@ export class DeliveryBatchService {
       });
     } catch (error) {
       if (error instanceof BadRequestException) {
-        if (isWalletManaged) {
-          this.logger.warn(
-            `[REFUND] claim 중복 — wallet path 멱등 재시도 진행. orderDelivery.id: ${orderDelivery.id}, message: ${error.message}`,
-          );
-          claimWasDuplicate = true;
-        } else {
-          this.logger.warn(
-            `[REFUND] 환불 중복 차단 (정상, legacy) - orderDelivery.id: ${orderDelivery.id}, message: ${error.message}`,
-          );
-          return;
-        }
+        // claim 중복. wallet/legacy 모두 재시도 진행(early return 금지) — claim() 은 TX 밖 즉시 commit 이라
+        // 앞선 시도가 claim commit 후 balance/wallet 복구 단계에서 실패했을 수 있다(claim 중복 != 복구 완료).
+        // wallet 은 RefundPoolService 멱등, legacy 는 아래 step3 에서 wallet_transaction 멱등키 존재로 완료
+        // 판정 후 미완료면 재환불. SSG 는 ssg_balance_settled 가드로 이중 복구 차단(ledger 는 삭제하지 않는다).
+        claimWasDuplicate = true;
+        this.logger.warn(
+          `[REFUND] claim 중복 — ${isWalletManaged ? 'wallet' : 'legacy'} 멱등 재시도 진행. orderDelivery.id: ${orderDelivery.id}, message: ${error.message}`,
+        );
       } else {
         throw error;
       }
@@ -365,8 +363,36 @@ export class DeliveryBatchService {
         `[REFUND] wallet path complete - orderDelivery.id: ${orderDelivery.id}, attemptId: ${activeAttempt.id}`,
       );
     } else {
+      // legacy path. claim() 은 위(L278)에서 이미 commit 됐고, balance 복구는 별도 @Transactional 이라
+      // 앞선 시도가 balance 복구 전에 실패했으면 claim 만 남는다. claim 중복(재시도) 시 ledger 를 삭제하지
+      // 않고(삭제하면 SSG 잔액이 새 ledger PK 로 이중 복구됨) balance 복구 완료 여부를 wallet_transaction
+      // 멱등키 존재로 판정: 완료면 skip(중복 balance 복구/addBalance 이중 방지), 미완료면 재환불(재실행 안전).
+      const failLedgerId = await this.refundLedgerService.getLedgerId(orderDelivery.id);
+      if (claimWasDuplicate) {
+        const txRepo = this.orderRepository.manager.getRepository(WalletTransactionEntity);
+        const alreadyRestored = shouldRestoreBalance
+          ? (await txRepo.count({
+              where: { idempotencyKey: `legacy_fail_refund:${order.id}:${orderDelivery.id}:${failLedgerId}:deposit` },
+            })) > 0
+          : (await txRepo.count({
+              where: { idempotencyKey: Like(`legacy_fail_refund:${order.id}:${orderDelivery.id}:credit:%`) },
+            })) > 0;
+        if (alreadyRestored) {
+          this.logger.warn(
+            `[REFUND] legacy 환불 재시도 — 이미 balance 복구 완료(wallet_transaction 존재), 멱등 skip. orderDelivery.id: ${orderDelivery.id}`,
+          );
+          return;
+        }
+      }
       if (shouldRestoreBalance) {
-        await this.userManagementService.addBalance(userId, settlementPrice, `발송 실패 환불 (주문번호: ${order.id})`);
+        await this.applyLegacyFailRefundDeposit(
+          userId,
+          order.id,
+          orderDelivery.id,
+          settlementPrice,
+          failLedgerId,
+          `발송 실패 환불 (주문번호: ${order.id})`,
+        );
       } else {
         await this.applyLegacyFailRefundCredit(userId, order.id, orderDelivery.id, settlementPrice);
       }
@@ -402,6 +428,32 @@ export class DeliveryBatchService {
       delta: -amount,
       type: 'FAIL_REFUND',
       memo: `발송 실패 환불 (주문번호: ${orderId})`,
+    });
+  }
+
+  /**
+   * 레거시(allocation 없음) 발송실패 환불의 예치금 복구 + wallet deposit 동기화를 한 DB TX 로 묶는다.
+   * applyLegacyFailRefundCredit(여신) 과 동일 패턴 — addBalance(예치금 환불) + syncDeposit 를 원자화한다.
+   * @Transactional REQUIRED — 외부 TX 존재 시 흡수, 없으면 신규 TX. wallet 미존재 throw 시 전체 롤백.
+   */
+  @Transactional()
+  private async applyLegacyFailRefundDeposit(
+    userId: number,
+    orderId: number,
+    orderDeliveryId: number,
+    amount: number,
+    ledgerId: number | null,
+    memo: string,
+  ): Promise<void> {
+    await this.userManagementService.addBalance(userId, amount, memo);
+    await this.legacyWalletCreditSyncService.syncDeposit(this.orderRepository.manager, {
+      billingUserId: userId,
+      orderId,
+      orderDeliveryId,
+      delta: amount,
+      type: 'FAIL_REFUND',
+      idempotencyKey: `legacy_fail_refund:${orderId}:${orderDeliveryId}:${ledgerId}:deposit`,
+      memo,
     });
   }
 
@@ -870,10 +922,7 @@ export class DeliveryBatchService {
    * 이미 성공 종결된 경우는 claim 만 정리, 아니면 결정적 FAIL 확정(CS 수동 reSend 로 회수).
    */
   private async recoverStuckFallback(od: OrderDeliveryEntity, token: string): Promise<void> {
-    if (
-      od.status === IOrderDeliveryStatus.COMPLETE_SMS ||
-      od.status === IOrderDeliveryStatus.COMPLETE
-    ) {
+    if (od.status === IOrderDeliveryStatus.COMPLETE_SMS || od.status === IOrderDeliveryStatus.COMPLETE) {
       od.reportState = IOrderDeliveryReportState.CONFIRMED;
       this.releaseReportClaim(od);
       // 이미 터미널(WAIT 아님) 행이므로 status=WAIT CAS 의 persistReportState 대신 claim 정리 전용 CAS 사용
@@ -1705,7 +1754,9 @@ export class DeliveryBatchService {
     // 재발송 처리) 시 여기서 early return 해 이후 side effect(SSG chargeBack / 재차감 / wallet 역차감)가
     // 실행되지 않도록 막는다 → 선행 재차감 commit 으로 인한 이중 재차감 방지.
     // release 가 성공하고 이후 단계가 throw 하면 @Transactional 이 release 까지 함께 rollback (atomic).
+    let reverseLedgerId: number | null = null;
     try {
+      reverseLedgerId = await this.refundLedgerService.getLedgerId(orderDelivery.id);
       await this.refundLedgerService.release(orderDelivery.id);
     } catch (error) {
       if (error instanceof BadRequestException) {
@@ -1761,6 +1812,19 @@ export class DeliveryBatchService {
         delta: settlementPrice,
         type: 'RESEND_DEDUCT',
         memo: `재발송 역환불 재차감 (주문번호: ${order.id})`,
+      });
+    } else if (shouldRestoreBalance) {
+      // 레거시(allocation 없음) 예치금 재차감분을 wallet deposit 에도 동기화 (drift 방지).
+      // R-A fix: release() 이전에 캡처한 refund ledger PK(reverseLedgerId)로 cycle 을 결정론 키에 포함해
+      // 다회 재발송(fail→release→re-fail) 시 cycle 별 재차감이 same-key no-op 으로 유실되지 않게 한다.
+      await this.legacyWalletCreditSyncService.syncDeposit(this.orderRepository.manager, {
+        billingUserId: userId,
+        orderId: order.id,
+        orderDeliveryId: orderDelivery.id,
+        delta: -settlementPrice,
+        type: 'RESEND_DEDUCT',
+        idempotencyKey: `legacy_resend_deduct:${order.id}:${orderDelivery.id}:${reverseLedgerId}:deposit`,
+        memo: `재발송 역환불 (주문번호: ${order.id})`,
       });
     }
 
@@ -2742,5 +2806,4 @@ export class DeliveryBatchService {
       }
     }
   }
-
 }

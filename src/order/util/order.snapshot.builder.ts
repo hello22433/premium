@@ -4,6 +4,8 @@ import { CompanyType } from '../../common/domain/company.type';
 import { IUserSettleCondition } from '../../user/interface/user.settle.condition';
 import { ProductEntity } from '../../entity/product.entity';
 import { OrderProductMappingEntity } from '../../entity/order.product.mapping.entity';
+import { IPriceAdjustment } from '../../user_discount/interface/price.adjustment';
+import { findMatchingDiscount } from '../../user_discount/domain/discount.matcher';
 
 // 주문 시점의 사용자/회사 정보를 OrderEntity 컬럼으로 매핑하는 헬퍼.
 // 호출자는 user.company가 로드된 UserEntity를 넘겨야 한다 (relations: ['company']).
@@ -167,6 +169,29 @@ export function buildLineProductSnapshot(product: ProductEntity): LineProductSna
     snapshotProductBrandName: product.brand?.nameKorean ?? '',
     snapshotProductExpireDay: product.expireDay ?? null,
     snapshotProductImagePath: product.imagePath ?? null,
+  };
+}
+
+export type PartnerSettleSnapshotPart = Pick<
+  OrderProductMappingEntity,
+  'partnerSettleFee' | 'partnerSettlePriceAdjustment'
+>;
+
+// 주문 라인 생성/수정 시점의 협력사 정산 조건을 박제한다. product.partnerCompany.userDiscounts가 로드되어야 한다.
+export function buildPartnerSettleSnapshot(product: ProductEntity, price: number): PartnerSettleSnapshotPart {
+  const matchingDiscount = findMatchingDiscount(
+    {
+      price,
+      category: product.category,
+      classificationId: product.classificationId,
+      brand: product.brand,
+    },
+    product.partnerCompany?.userDiscounts ?? [],
+  );
+
+  return {
+    partnerSettleFee: matchingDiscount?.pricePercent ?? 0,
+    partnerSettlePriceAdjustment: (matchingDiscount?.priceAdjustment as IPriceAdjustment | undefined) ?? null,
   };
 }
 

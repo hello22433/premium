@@ -91,6 +91,7 @@ import { OrderDeliveryAttemptEntity } from '../entity/order.delivery.attempt.ent
 import { ForbiddenWordEntity } from '../entity/forbidden.word.entity';
 import { ForbiddenWordHistoryEntity } from '../entity/forbidden.word.history.entity';
 import { ForbiddenWordBlockLogEntity } from '../entity/forbidden.word.block.log.entity';
+import { CouponViewLogEntity } from '../entity/coupon.view.log.entity';
 
 @Module({
   imports: [
@@ -189,6 +190,7 @@ import { ForbiddenWordBlockLogEntity } from '../entity/forbidden.word.block.log.
           ForbiddenWordEntity,
           ForbiddenWordHistoryEntity,
           ForbiddenWordBlockLogEntity,
+          CouponViewLogEntity,
         ],
         extra: {
           connectionLimit: +configService.get('DATABASE_CONNECTION_LIMIT', 50),

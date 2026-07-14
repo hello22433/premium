@@ -74,13 +74,16 @@ import { IOrderSendMethod } from '../../order/interface/order.send.method';
 import { IOrderType } from '../../order/interface/order.type';
 import { SsgEventEntity } from '../../entity/ssg.event.entity';
 import { SsgRefundOutcome } from '../../delivery/interface/ssg.refund.resolve';
-import { resolveExpireDays } from '../../common/utils/expire.util';
+import { assertExpireDayRangeValid, resolveExpireDays } from '../../common/utils/expire.util';
+import { QueryBuilderExpireDayCondition } from '../../common/infra/query.builder.expire.day.condition';
 import { addDays, subDays } from 'date-fns';
 import { ActivityLogService } from 'src/activity_log/application/activity.log.service';
 import { ActivityLogActionType } from 'src/activity_log/interface/activity.log.action.type';
 import { ActivityLogResult } from 'src/activity_log/interface/activity.log.result';
 import { UserEntity } from 'src/entity/user.entity';
 import { UserCompanyEntity } from 'src/entity/user.company.entity';
+import { CouponViewLogEntity } from '../../entity/coupon.view.log.entity';
+import { CouponViewLogResDto } from '../api/dto/customer.service.coupon.view.log.dto';
 import { calculateSettlementPrice } from '../../util/settle-fee.util';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 import { randomUUID } from 'crypto';
@@ -96,6 +99,8 @@ dayjs.extend(timezone);
 
 // CS 재전송 claim self-heal 임계(ms). 크래시로 finally 못 탄 stale claim 만 재claim 허용.
 // partner_company_extern_history.service 의 RESEND_CLAIM_STALE_MS 와 동일 의미(5분).
+// coupon-view 방문 로그 조회 시 응답 크기 상한(최신 N건). 전체 규모는 집계 필드로 제공한다.
+const COUPON_VIEW_LOG_MAX_ITEMS = 100;
 const RESEND_CLAIM_STALE_MS = 5 * 60 * 1000;
 
 @Injectable()
@@ -135,7 +140,79 @@ export class CustomerServiceService {
     private readonly refundPoolService: RefundPoolService,
     private readonly legacyWalletCreditSyncService: LegacyWalletCreditSyncService,
     private readonly authService: AuthService,
+    @InjectRepository(CouponViewLogEntity)
+    private readonly couponViewLogRepository: Repository<CouponViewLogEntity>,
   ) {}
+
+  /**
+   * 특정 발송건(order_delivery)의 coupon-view 페이지 방문 로그를 조회한다.
+   * CS 상세(일반/신세계)에서 '고객이 정말 페이지를 봤는가'를 판별하는 증거로 사용한다.
+   * 방문 규모는 단일 aggregate 로 집계하고, 목록은 최신순 최대 N건만 함께 반환한다(응답 크기 상한).
+   */
+  async getCouponViewLog(user: ILoginUserInfo, orderDeliveryId: number): Promise<CouponViewLogResDto> {
+    // 권한검사: 발송건의 쿠폰 종류(일반/SSG)에 맞는 CS 권한 (getDetail 과 동일 기준, 그 외/미존재는 거부).
+    // 로그인만으로 임의 orderDeliveryId 의 IP/UA 를 조회하지 못하도록 fail-closed.
+    const orderDelivery = await this.orderDeliveryRepository
+      .createQueryBuilder('orderDelivery')
+      .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
+      .leftJoinAndSelect('orderProductMapping.product', 'product')
+      .withDeleted()
+      .where('orderDelivery.id = :id', { id: orderDeliveryId })
+      .getOne();
+
+    if (!orderDelivery) {
+      throw new BadRequestException('존재하지 않는 발송 정보입니다.');
+    }
+
+    const requiredAuth = this.resolveCsCouponAuthority(orderDelivery.orderProductMapping?.product?.type);
+    if (!requiredAuth) {
+      throw new BadRequestException('CS 대상이 아닌 상품 유형입니다.');
+    }
+    await this.authService.authorityValidator(user, requiredAuth);
+
+    // 집계는 단일 aggregate 쿼리로 계산한다. 여러 쿼리를 분리하면 방문 insert 와 경쟁해
+    // botCount > total / 음수 humanCount 같은 불일치가 생길 수 있으므로 한 쿼리에서 일관되게 산출한다.
+    const agg = await this.couponViewLogRepository
+      .createQueryBuilder('log')
+      .select('COUNT(*)', 'total')
+      .addSelect('COALESCE(SUM(log.is_bot), 0)', 'botCount')
+      .addSelect('MIN(CASE WHEN log.is_bot = 0 THEN log.created_at END)', 'firstHumanVisitedAt')
+      .addSelect('MAX(log.created_at)', 'lastVisitedAt')
+      .where('log.order_delivery_id = :id', { id: orderDeliveryId })
+      .getRawOne<{
+        total: string | number;
+        botCount: string | number;
+        firstHumanVisitedAt: Date | string | null;
+        lastVisitedAt: Date | string | null;
+      }>();
+
+    const total = Number(agg?.total ?? 0);
+    const botCount = Number(agg?.botCount ?? 0);
+    const toDisplay = (v: Date | string | null | undefined): string | null =>
+      v ? format(new Date(v), DateFormatStr) : null;
+
+    // 응답 크기 상한: 최신 MAX_ITEMS 건만 목록으로 반환(무제한 응답 방지). 집계와는 독립.
+    const items = await this.couponViewLogRepository.find({
+      where: { orderDeliveryId },
+      order: { createdAt: 'DESC' },
+      take: COUPON_VIEW_LOG_MAX_ITEMS,
+    });
+
+    return {
+      total,
+      humanCount: total - botCount,
+      botCount,
+      firstHumanVisitedAt: toDisplay(agg?.firstHumanVisitedAt),
+      lastVisitedAt: toDisplay(agg?.lastVisitedAt),
+      items: items.map((log) => ({
+        visitedAt: format(log.createdAt, DateFormatStr),
+        ipAddress: log.ipAddress,
+        userAgent: log.userAgent,
+        source: log.source,
+        isBot: log.isBot,
+      })),
+    };
+  }
 
   /**
    * 폐기 시 정산금액(할인가) 기준으로 예치금/여신 복구.
@@ -269,6 +346,18 @@ export class CustomerServiceService {
         afterBalance = fresh!.balance;
         beforeBalance = afterBalance - restoreAmount;
       }
+      // 레거시(wallet 미관리) 선입금환불분만 wallet deposit 동기화 (wallet-managed 는 wallet 경로가 처리).
+      if (!isWalletManaged) {
+        await this.legacyWalletCreditSyncService.syncDeposit(queryRunner.manager, {
+          billingUserId,
+          orderId: order.id,
+          orderDeliveryId: orderDelivery.id,
+          delta: restoreAmount,
+          type: 'DISCARD_REFUND',
+          idempotencyKey: `legacy_discard_refund:${order.id}:${orderDelivery.id}:deposit`,
+          memo: `레거시 선입금환불 (주문번호: ${order.id})`,
+        });
+      }
     } else {
       await queryRunner.manager
         .createQueryBuilder()
@@ -298,6 +387,8 @@ export class CustomerServiceService {
       : order.isSettleBalance
         ? '미정산/선입금환불'
         : '미정산/여신복구';
+    // 여신(allSettleAmount) 복구인지 — 활동로그 재원 라벨 + 계정관리 이력관리 제외 판정에 공용.
+    const isCreditRestore = restoreType === 'ALL_SETTLE_AMOUNT';
 
     await this.activityLogService.createLog({
       userId: operatorUser.id,
@@ -320,29 +411,34 @@ export class CustomerServiceService {
         isSettleBalance: order.isSettleBalance,
         isSettleComplete: order.isSettleComplete,
         restoreType,
+        restoreTarget: isCreditRestore ? 'CREDIT' : 'DEPOSIT',
+        ...(isCreditRestore ? { beforeAllSettleAmount: beforeBalance, afterAllSettleAmount: afterBalance } : {}),
         beforeBalance,
         afterBalance,
         memo: `폐기복구(${refundRouteMemo})/ ${restoreAmount}원/ orderDelivery:${orderDelivery.id}`,
       },
     });
 
-    // 계정관리 > 이력관리 항목 기록
-    if (!operatorName) {
-      const operatorEntity = await queryRunner.manager.findOne(UserEntity, {
-        where: { id: operatorUser.id },
-      });
-      operatorName = operatorEntity?.personName ?? operatorUser.email;
-    }
-    const contactNumber = this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.deliveryTarget) ?? '-';
-    const now = format(new Date(), DateEndMinuteFormatStr);
+    // 계정관리 > 이력관리 항목 기록.
+    // 여신복구(ALL_SETTLE_AMOUNT)는 예치금/선입금 이동 이력이 아니므로 계정관리 이력관리에서 제외한다.
+    if (!isCreditRestore) {
+      if (!operatorName) {
+        const operatorEntity = await queryRunner.manager.findOne(UserEntity, {
+          where: { id: operatorUser.id },
+        });
+        operatorName = operatorEntity?.personName ?? operatorUser.email;
+      }
+      const contactNumber = this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.deliveryTarget) ?? '-';
+      const now = format(new Date(), DateEndMinuteFormatStr);
 
-    await queryRunner.manager.save(UserTaskHistoryEntity, {
-      userId: billingUserId,
-      adminUserId: operatorUser.id,
-      content: this.cryptoCipher.encryptDeliveryTarget(
-        `${operatorName}/ ${restoreAmount.toLocaleString()}원 폐기/ 회수/ ${contactNumber} 폐기/ ${now}`,
-      ),
-    });
+      await queryRunner.manager.save(UserTaskHistoryEntity, {
+        userId: billingUserId,
+        adminUserId: operatorUser.id,
+        content: this.cryptoCipher.encryptDeliveryTarget(
+          `${operatorName}/ ${restoreAmount.toLocaleString()}원 폐기/ 회수/ ${contactNumber} 폐기/ ${now}`,
+        ),
+      });
+    }
 
     // Wallet Cutover Bundle PR4 — wallet-managed 주문이면 wallet_account + wallet ledger 갱신.
     // legacy 잔액 mirror (위 balance/allSettleAmount UPDATE) 는 그대로 유지 → wallet/legacy 합계 일관.
@@ -378,8 +474,9 @@ export class CustomerServiceService {
   }
 
   /**
-   * 폐기후신규발송(핀교체, 비-SSG) — wallet-managed 주문에서 원본 delivery 의 wallet 장부를
-   * 신규 delivery 로 승계한다.
+   * 폐기후신규발송(핀교체, SSG·비-SSG 공통) — wallet-managed 주문에서 원본 delivery 의 wallet 장부를
+   * 신규 delivery 로 승계한다. 고객 wallet 결제(allocation)는 SSG 여부와 무관하게 동일 승계 대상이며,
+   * SSG 의 forfeit+신규 행사 재차감은 '행사 잔액'(공급사 측)에만 적용된다(고객 wallet 과 독립).
    *
    * 핀교체는 동일 결제를 그대로 승계(원본 폐기 시 환불 skip + 신규 재차감 없음)하므로,
    * 발송확정 때 원본 delivery 에 매겨진 allocation_line 과 attempt 를 신규 delivery 가 이어받아야 한다.
@@ -446,9 +543,13 @@ export class CustomerServiceService {
       barCode,
       keyword,
       eventName,
+      expireDayMin,
+      expireDayMax,
       page,
       take,
     } = getQuery;
+
+    assertExpireDayRangeValid(expireDayMin, expireDayMax);
 
     // order_delivery 기반으로 조회하도록 변경
     let queryBuilder = this.orderDeliveryRepository
@@ -556,6 +657,14 @@ export class CustomerServiceService {
         barCode: `%${barCode}%`,
       });
     }
+
+    // 유효기간(일) 범위 — 초이스쿠폰은 선택된 상품 기준 (totalPrice 합계의 COALESCE 와 동일 기준)
+    queryBuilder = QueryBuilderExpireDayCondition(
+      queryBuilder,
+      'COALESCE(choiceSelectProduct.expireDay, product.expireDay)',
+      expireDayMin,
+      expireDayMax,
+    );
 
     // 날짜 조건을 실제 발송일(actualSendAt) 기준으로 변경
     queryBuilder = QueryBuilderDateCondition(queryBuilder, 'orderDelivery', 'actualSendAt', startAt, endAt);
@@ -949,24 +1058,26 @@ export class CustomerServiceService {
 
   /** CS 재전송 대상 조회(relation 포함, 재발송 가능 상태 필터). 락 없음. */
   private buildReSendQuery(orderDeliveryId: number, statuses: string[]) {
-    return this.orderDeliveryRepository
-      .createQueryBuilder('orderDelivery')
-      .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
-      .innerJoinAndSelect('orderProductMapping.order', 'order')
-      .innerJoinAndSelect('order.user', 'user')
-      .leftJoinAndSelect('user.company', 'company')
-      .innerJoinAndSelect('orderProductMapping.product', 'product')
-      .innerJoinAndSelect('product.brand', 'brand')
-      .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
-      .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
-      .leftJoinAndSelect('choiceSelectProduct.brand', 'choiceSelectBrand')
-      .where('orderDelivery.id = :orderDeliveryId', { orderDeliveryId })
-      .andWhere('orderDelivery.status IN (:...statuses)', { statuses })
-      // 비동기 수신확인 진행중(PENDING)인 건은 재진입 차단 (msgKey 덮어쓰기/이중처리 방지).
-      // 단 recovery 후 FAIL(reportState=UNCONFIRMED)·CONFIRMED 는 수동 재발송 허용해야 하므로 PENDING 만 제외.
-      .andWhere('(orderDelivery.reportState IS NULL OR orderDelivery.reportState != :pendingReportState)', {
-        pendingReportState: IOrderDeliveryReportState.PENDING,
-      });
+    return (
+      this.orderDeliveryRepository
+        .createQueryBuilder('orderDelivery')
+        .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
+        .innerJoinAndSelect('orderProductMapping.order', 'order')
+        .innerJoinAndSelect('order.user', 'user')
+        .leftJoinAndSelect('user.company', 'company')
+        .innerJoinAndSelect('orderProductMapping.product', 'product')
+        .innerJoinAndSelect('product.brand', 'brand')
+        .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
+        .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
+        .leftJoinAndSelect('choiceSelectProduct.brand', 'choiceSelectBrand')
+        .where('orderDelivery.id = :orderDeliveryId', { orderDeliveryId })
+        .andWhere('orderDelivery.status IN (:...statuses)', { statuses })
+        // 비동기 수신확인 진행중(PENDING)인 건은 재진입 차단 (msgKey 덮어쓰기/이중처리 방지).
+        // 단 recovery 후 FAIL(reportState=UNCONFIRMED)·CONFIRMED 는 수동 재발송 허용해야 하므로 PENDING 만 제외.
+        .andWhere('(orderDelivery.reportState IS NULL OR orderDelivery.reportState != :pendingReportState)', {
+          pendingReportState: IOrderDeliveryReportState.PENDING,
+        })
+    );
   }
 
   /**
@@ -2022,13 +2133,10 @@ export class CustomerServiceService {
           await this.deliveryBatchService.resolveReissuePendingKept(resendDeductionId);
         }
 
-        // Wallet Cutover — 비-SSG 핀교체는 "동일 결제를 신규 delivery 로 승계"(폐기 시 환불 skip, 신규 재차감 없음).
-        // wallet-managed 면 원본 delivery 의 allocation_line/attempt 를 신규 delivery 로 이관해야
-        // 이후 신규 delivery 폐기 시 attempt/line 부재로 환불이 drift abort 되는 것을 막는다.
-        // (SSG 는 forfeit+신규 행사 재차감 모델이라 승계 대상 아님 → 별도 처리 필요.)
-        if (!isSsg) {
-          await this.carryWalletOwnershipToReissuedDelivery(reissueOrderId, discardedDelivery.id, savedDelivery.id);
-        }
+        // Wallet Cutover — wallet-managed 면 원본 delivery 의 allocation_line/attempt 를 신규 delivery 로 승계한다.
+        // 미승계 시 이후 신규 delivery 폐기에서 attempt/line 부재로 환불이 drift abort 된다.
+        // SSG·비-SSG 공통(고객 wallet 결제는 SSG 여부와 무관 — 상세는 carryWalletOwnershipToReissuedDelivery JSDoc).
+        await this.carryWalletOwnershipToReissuedDelivery(reissueOrderId, discardedDelivery.id, savedDelivery.id);
 
         const newPin = fullDelivery.barCode;
         afterChange = `${normalizedTarget} / ${newPin}`;
@@ -2693,7 +2801,11 @@ export class CustomerServiceService {
       partnerCompanyId,
       barCode,
       eventName,
+      expireDayMin,
+      expireDayMax,
     } = searchParams;
+
+    assertExpireDayRangeValid(expireDayMin, expireDayMax);
 
     // 1. 비밀번호 검증
     await this.activityLogService.verifyPassword(user.id, password);
@@ -2806,6 +2918,14 @@ export class CustomerServiceService {
     if (eventName) {
       queryBuilder.andWhere('order.eventName LIKE :eventName', { eventName: `%${eventName}%` });
     }
+
+    // 유효기간(일) 범위 — 초이스쿠폰은 선택된 상품 기준 (getList 와 동일 조건)
+    queryBuilder = QueryBuilderExpireDayCondition(
+      queryBuilder,
+      'COALESCE(choiceSelectProduct.expireDay, product.expireDay)',
+      expireDayMin,
+      expireDayMax,
+    );
 
     // 날짜 조건을 실제 발송일(actualSendAt) 기준으로 변경
     queryBuilder = QueryBuilderDateCondition(queryBuilder, 'orderDelivery', 'actualSendAt', startAt, endAt);

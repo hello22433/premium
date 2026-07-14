@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { OrderEntity } from '../../entity/order.entity';
 import { OrderLikeEntity } from '../../entity/order.like.entity';
@@ -9,6 +9,10 @@ import { format } from 'date-fns';
 import { DateDateFormatStr } from '../../common/domain/date.format.str';
 import { OrderEventViewDto } from '../api/dto/order.event.view.dto';
 import { IUserAuthority } from '../../user/interface/user.authority';
+import { IOrderStatus } from '../../order/interface/order.status';
+import { IOrderType } from '../../order/interface/order.type';
+
+const ORDER_EVENT_TYPES = new Set<string>(Object.values(IOrderType));
 
 @Injectable()
 export class OrderEventService {
@@ -20,7 +24,7 @@ export class OrderEventService {
   ) {}
 
   async getList(user: ILoginUserInfo, getQuery: OrderEventGetListReqQueryDto) {
-    const { type, productName, brandName, eventName, startDate, endDate, isLike, page, take } = getQuery;
+    const { type, eventName, startDate, endDate, isLike, page, take } = getQuery;
 
     let queryBuilder = this.orderRepository
       .createQueryBuilder('order')
@@ -119,6 +123,22 @@ export class OrderEventService {
 
   async setLike(user: ILoginUserInfo, getBody: OrderEventSetLikeReqDto) {
     const { orderId, isLike } = getBody;
+    const order = await this.orderRepository.findOne({
+      where: { id: orderId },
+    });
+
+    if (!order) {
+      throw new NotFoundException('주문을 찾을 수 없습니다.');
+    }
+
+    if (order.status === IOrderStatus.TEMP || !ORDER_EVENT_TYPES.has(order.type)) {
+      throw new ForbiddenException('찜할 수 없는 주문입니다.');
+    }
+
+    if (user.authority !== IUserAuthority.SUPER_ADMIN && order.userId !== user.id) {
+      throw new ForbiddenException('주문에 접근할 수 없습니다.');
+    }
+
     let orderLike = await this.orderLikeRepository.findOne({
       where: { orderId, userId: user.id },
     });

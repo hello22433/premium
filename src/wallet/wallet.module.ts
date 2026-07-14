@@ -14,6 +14,7 @@ import { OrderPaymentRefundEventEntity } from '../entity/order.payment.refund.ev
 import { OrderDeliveryAttemptEntity } from '../entity/order.delivery.attempt.entity';
 import { UserEntity } from '../entity/user.entity';
 import { UserCompanyEntity } from '../entity/user.company.entity';
+import { ActivityLogEntity } from '../entity/activity.log.entity';
 import { WalletAccountResolverService } from './application/wallet-account-resolver.service';
 import { WalletReadService } from './application/wallet-read.service';
 import { PointPolicyService } from './application/point-policy.service';
@@ -32,7 +33,11 @@ import { ShadowMismatchClassifierService } from './application/shadow-mismatch-c
 import { WalletCutoverConfig } from './config/wallet-cutover.config';
 import { SettlementCodeScopeGuard } from './api/settlement-code-scope.guard';
 import { LegacyWalletCreditSyncService } from './application/legacy-wallet-credit-sync.service';
+import { BillingScopeLockService } from './application/billing-scope-lock.service';
+import { SettlementCodeAdminService } from './application/settlement-code-admin.service';
 import { CreditExcessApprovalController } from './api/credit-excess-approval.controller';
+import { SettlementCodeAdminController } from './api/settlement-code-admin.controller';
+import { ActivityLogModule } from '../activity_log/activity.log.module';
 
 /**
  * PR1 — schema + entity + service skeleton.
@@ -45,6 +50,7 @@ import { CreditExcessApprovalController } from './api/credit-excess-approval.con
  */
 @Module({
   imports: [
+    ActivityLogModule,
     AuthModule,
     ConfigModule,
     TypeOrmModule.forFeature([
@@ -60,9 +66,10 @@ import { CreditExcessApprovalController } from './api/credit-excess-approval.con
       OrderDeliveryAttemptEntity,
       UserEntity,
       UserCompanyEntity,
+      ActivityLogEntity,
     ]),
   ],
-  controllers: [CreditExcessApprovalController],
+  controllers: [CreditExcessApprovalController, SettlementCodeAdminController],
   providers: [
     WalletAccountResolverService,
     WalletReadService,
@@ -82,6 +89,8 @@ import { CreditExcessApprovalController } from './api/credit-excess-approval.con
     ShadowMismatchClassifierService,
     SettlementCodeScopeGuard,
     LegacyWalletCreditSyncService,
+    BillingScopeLockService,
+    SettlementCodeAdminService,
     // WalletCutoverBundleBootstrap 의 activation gate 가 moduleRef.get(<string-token>)
     // 으로 downstream hook service 등록 여부를 검증한다 (PR3/PR4 hook 누락 → process exit 1).
     // class provider 만 등록 시 string token lookup 이 항상 null → false-negative.
@@ -109,6 +118,8 @@ import { CreditExcessApprovalController } from './api/credit-excess-approval.con
     ShadowMismatchClassifierService,
     SettlementCodeScopeGuard,
     LegacyWalletCreditSyncService,
+    BillingScopeLockService,
+    SettlementCodeAdminService,
   ],
 })
 export class WalletModule {}

@@ -65,6 +65,7 @@ describe('OrderService deliveryCancel wallet PR2-005 branch', () => {
           id: 10,
           amount: 1,
           product: { price: 10000 },
+          sendType: 'RESERVE',
           sendRequestAt: new Date(Date.now() + 3600_000), // 1h later (>10min)
         },
       ],
@@ -132,6 +133,7 @@ describe('OrderService deliveryCancel wallet PR2-005 branch', () => {
         rolledBackAttemptIds: ['a-1'],
       }),
     };
+    service.legacyWalletCreditSyncService = { syncCredit: jest.fn(), syncDeposit: jest.fn() };
 
     return { service, order, billingUser, managedManager };
   };
@@ -198,6 +200,18 @@ describe('OrderService deliveryCancel wallet PR2-005 branch', () => {
     expect(billingUser.balance).toBe(50000 + 10000); // refundAmount = settleAmount = 10000
     expect(order.isSettleBalance).toBe(false);
     expect(service.userRepository.save).toHaveBeenCalled();
+    // legacy 예치금 복구는 wallet 동기화(syncDeposit) 를 동반 (billingUserId=clientUserId=2).
+    expect(service.legacyWalletCreditSyncService.syncDeposit).toHaveBeenCalledWith(
+      service.orderRepository.manager,
+      expect.objectContaining({
+        billingUserId: 2,
+        orderId: order.id,
+        delta: 10000,
+        type: 'DISCARD_REFUND',
+        idempotencyKey: `legacy_discard_refund:${order.id}:deposit`,
+      }),
+    );
+    expect(service.legacyWalletCreditSyncService.syncCredit).not.toHaveBeenCalled();
   });
 
   it('wallet-managed but refundAmount=0 (취소 시점에 환불 없음, e.g. REVIEW_COMPLETE) → wallet path 진입 안 함', async () => {

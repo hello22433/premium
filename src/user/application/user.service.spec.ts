@@ -24,6 +24,7 @@ import { AuthErrorCode } from '../exception/auth-error-code';
 import { IUserStatus } from '../interface/user.status';
 import { AccountStatusTransitionService } from '../../account_lifecycle/application/account.status.transition.service';
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
+import { SettlementCodeAdminService } from '../../wallet/application/settlement-code-admin.service';
 
 jest.mock('typeorm-transactional', () => ({
   Transactional: () => () => ({}),
@@ -47,6 +48,7 @@ describe('user login service Test', () => {
   const accountStatusTransitionService: MockProxy<AccountStatusTransitionService> =
     mock<AccountStatusTransitionService>();
   const cryptoCipher: MockProxy<CryptoCipher> = mock<CryptoCipher>();
+  const settlementCodeAdminService: MockProxy<SettlementCodeAdminService> = mock<SettlementCodeAdminService>();
 
   const sut = new UserService(
     passwordEncrypt,
@@ -63,6 +65,7 @@ describe('user login service Test', () => {
     activityLogService,
     accountStatusTransitionService,
     cryptoCipher,
+    settlementCodeAdminService,
   );
 
   beforeEach(() => {
@@ -96,32 +99,70 @@ describe('user login service Test', () => {
   });
 
   describe('signUp 회원가입 테스트', () => {
-    it('정보를 입력받아 회원가입에 성공한 경우', async () => {
-      const givenSignUpDto: UserSignUpReqDto = {
-        email: 'test@gmail.com',
-        password: 'testset',
-        personName: 'test',
-        personPhoneNumber: '010-1234-5678',
-        personEmail: 'test@gmail.com',
-        businessType: null,
-        corporateNumber: null,
-        businessNumber: '1234567890',
-        businessName: '테스트사업자',
-        businessAddress: '서울시 강남구',
-        businessPhoneNumber: '02-1234-5678',
-        ip: '127.0.0.1',
-        industryType: null,
-        industryItem: null,
-      };
+    const baseDto = (): UserSignUpReqDto => ({
+      email: 'test@gmail.com',
+      password: 'testset',
+      personName: 'test',
+      personPhoneNumber: '010-1234-5678',
+      personEmail: 'test@gmail.com',
+      businessType: null,
+      corporateNumber: null,
+      businessNumber: '1234567890',
+      businessName: '테스트사업자',
+      businessAddress: '서울시 강남구',
+      businessPhoneNumber: '02-1234-5678',
+      ip: '127.0.0.1',
+      industryType: null,
+      industryItem: null,
+    });
 
+    beforeEach(() => {
+      mockReset(userCompanyRepository);
+      mockReset(userViewScopeRepository);
+      mockReset(accountStatusTransitionService);
+      mockReset(settlementCodeAdminService);
       passwordEncrypt.encrypt.mockResolvedValue('테스트 패스워드');
+      userRepository.insert.mockResolvedValue({ identifiers: [{ id: 7 }] } as any);
+    });
 
-      await sut.signUp(givenSignUpDto);
+    it('신규 회사(NEW) → 공유 wallet 프로비저닝(POST_PAYMENT/CARD) + settlement_code=company-{id} 배정', async () => {
+      userCompanyRepository.findOne.mockResolvedValue(null);
+      userCompanyRepository.save.mockResolvedValue({ id: 42, maximumLimit: 5000 } as any);
+      settlementCodeAdminService.classifyJoin.mockResolvedValue({ mode: 'NEW', code: 'company-42' });
 
-      expect(userRepository.insert).toHaveBeenCalledWith({
-        email: 'test@gmail.com',
-        password: '테스트 패스워드',
-      });
+      await sut.signUp(baseDto());
+
+      expect(settlementCodeAdminService.classifyJoin).toHaveBeenCalledWith(42, true);
+      expect(settlementCodeAdminService.ensureSettlementCodeWallet).toHaveBeenCalledWith(
+        42,
+        'company-42',
+        5000,
+        expect.anything(),
+        'POST_PAYMENT',
+        'CARD',
+      );
+      expect(userRepository.update).toHaveBeenCalledWith(7, { settlementCode: 'company-42' });
+    });
+
+    it('기존 회사 단일 코드(SHARE_ONE) → wallet 생성 없이 기존 코드 공유', async () => {
+      userCompanyRepository.findOne.mockResolvedValue({ id: 42, maximumLimit: 5000 } as any);
+      settlementCodeAdminService.classifyJoin.mockResolvedValue({ mode: 'SHARE_ONE', code: 'company-42' });
+
+      await sut.signUp(baseDto());
+
+      expect(settlementCodeAdminService.classifyJoin).toHaveBeenCalledWith(42, false);
+      expect(settlementCodeAdminService.ensureSettlementCodeWallet).not.toHaveBeenCalled();
+      expect(userRepository.update).toHaveBeenCalledWith(7, { settlementCode: 'company-42' });
+    });
+
+    it('배정 대기(PENDING) → wallet 생성/코드 배정 없음 (빈 code 유지)', async () => {
+      userCompanyRepository.findOne.mockResolvedValue({ id: 42, maximumLimit: 5000 } as any);
+      settlementCodeAdminService.classifyJoin.mockResolvedValue({ mode: 'PENDING' });
+
+      await sut.signUp(baseDto());
+
+      expect(settlementCodeAdminService.ensureSettlementCodeWallet).not.toHaveBeenCalled();
+      expect(userRepository.update).not.toHaveBeenCalled();
     });
   });
 
@@ -136,6 +177,7 @@ describe('user login service Test', () => {
         ...UserEntityTest(),
         id: 0,
         email: 'test@gmail.com',
+        ip: '127.0.0.1',
         password: 'PASSWORD',
         createdAt: new Date(),
         updatedAt: new Date(),
@@ -302,6 +344,102 @@ describe('user login service Test', () => {
 
         expect(loginTokenValidator.issuance).not.toHaveBeenCalled();
       });
+    });
+  });
+
+  describe('reactivateEmailSend 휴면 재활성화 이메일 발송', () => {
+    beforeEach(() => {
+      mockReset(userRepository);
+      mockReset(emailSendHistoryRepository);
+      mockReset(mailSendService);
+      mockReset(cryptoCipher);
+      mockReset(accountStatusTransitionService);
+      cryptoCipher.encryptDeliveryTarget.mockReturnValue('ENC');
+      emailSendHistoryRepository.save.mockImplementation((e: any) => {
+        e.id = 55;
+        return Promise.resolve(e);
+      });
+    });
+
+    const dormantUser = (personEmail: string) => ({
+      ...UserEntityTest(),
+      id: 9,
+      email: 'account@enmad.com',
+      status: IUserStatus.NOT_USED,
+      personEmail,
+    });
+
+    it('휴면 상태가 아니면(USED) REACTIVATION_NOT_ALLOWED', async () => {
+      userRepository.findOne.mockResolvedValue({ ...dormantUser(''), status: IUserStatus.USED });
+      await expect(sut.reactivateEmailSend({ email: 'account@enmad.com' } as any)).rejects.toThrow(
+        new AuthException(AuthErrorCode.REACTIVATION_NOT_ALLOWED),
+      );
+      expect(mailSendService.send).not.toHaveBeenCalled();
+    });
+
+    it('탈퇴(LEAVE) 계정은 ACCOUNT_WITHDRAWN', async () => {
+      userRepository.findOne.mockResolvedValue({ ...dormantUser(''), status: IUserStatus.LEAVE });
+      await expect(sut.reactivateEmailSend({ email: 'account@enmad.com' } as any)).rejects.toThrow(
+        new AuthException(AuthErrorCode.ACCOUNT_WITHDRAWN),
+      );
+      expect(mailSendService.send).not.toHaveBeenCalled();
+    });
+
+    it('담당자 이메일 1개 이하면 계정 이메일로 즉시 발송(needEmailSelection=false)', async () => {
+      userRepository.findOne.mockResolvedValue(dormantUser('manager@enmad.com'));
+      const res = await sut.reactivateEmailSend({ email: 'account@enmad.com' } as any);
+
+      expect(res).toEqual({ needEmailSelection: false, id: 55, candidates: [] });
+      expect(mailSendService.send).toHaveBeenCalledWith(expect.objectContaining({ to: 'account@enmad.com' }));
+    });
+
+    it('담당자 이메일 2개 + index 미지정 → 마스킹 후보 반환, 발송 보류', async () => {
+      userRepository.findOne.mockResolvedValue(dormantUser('manager1@enmad.com,second@enmad.com'));
+      const res = await sut.reactivateEmailSend({ email: 'account@enmad.com' } as any);
+
+      expect(res.needEmailSelection).toBe(true);
+      expect(res.id).toBeNull();
+      expect(res.candidates).toEqual([
+        { index: 0, maskedEmail: 'ma****r1@enmad.com' },
+        { index: 1, maskedEmail: 'se****nd@enmad.com' },
+      ]);
+      expect(mailSendService.send).not.toHaveBeenCalled();
+    });
+
+    it('담당자 이메일 2개 + index 지정 → 선택한 이메일로 발송', async () => {
+      userRepository.findOne.mockResolvedValue(dormantUser('manager1@enmad.com,second@enmad.com'));
+      const res = await sut.reactivateEmailSend({ email: 'account@enmad.com', targetEmailIndex: 1 } as any);
+
+      expect(res).toEqual({ needEmailSelection: false, id: 55, candidates: [] });
+      expect(mailSendService.send).toHaveBeenCalledWith(expect.objectContaining({ to: 'second@enmad.com' }));
+    });
+
+    it('index 범위 초과 → INVALID_TARGET_EMAIL', async () => {
+      userRepository.findOne.mockResolvedValue(dormantUser('manager1@enmad.com,second@enmad.com'));
+      await expect(
+        sut.reactivateEmailSend({ email: 'account@enmad.com', targetEmailIndex: 2 } as any),
+      ).rejects.toThrow(new AuthException(AuthErrorCode.INVALID_TARGET_EMAIL));
+      expect(mailSendService.send).not.toHaveBeenCalled();
+    });
+
+    it('index 가 null 이면(검증 우회) 후보 반환 + 발송 보류', async () => {
+      userRepository.findOne.mockResolvedValue(dormantUser('manager1@enmad.com,second@enmad.com'));
+      const res = await sut.reactivateEmailSend({ email: 'account@enmad.com', targetEmailIndex: null } as any);
+
+      expect(res.needEmailSelection).toBe(true);
+      expect(res.id).toBeNull();
+      expect(mailSendService.send).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['소수', 0.5],
+      ['음수', -1],
+    ])('index 가 %s(%p)면 INVALID_TARGET_EMAIL', async (_label, idx) => {
+      userRepository.findOne.mockResolvedValue(dormantUser('manager1@enmad.com,second@enmad.com'));
+      await expect(
+        sut.reactivateEmailSend({ email: 'account@enmad.com', targetEmailIndex: idx } as any),
+      ).rejects.toThrow(new AuthException(AuthErrorCode.INVALID_TARGET_EMAIL));
+      expect(mailSendService.send).not.toHaveBeenCalled();
     });
   });
 });

@@ -200,4 +200,27 @@ export class UserDriveService {
     await this.userDriveRepository.save(userDrive);
     return;
   }
+
+  async delete(user: ILoginUserInfo, id: number) {
+    if (user.authority === 'CORPORATE_ADMIN') {
+      throw new BadRequestException('관리자만 접근 가능합니다.');
+    }
+
+    const userDrive = await this.userDriveRepository.findOne({
+      where: {
+        id,
+      },
+    });
+
+    if (!userDrive) {
+      throw new BadRequestException('문서가 존재하지 않습니다.');
+    }
+
+    if (user.authority === IUserAuthority.OPERATION_ADMIN && userDrive.senderId !== user.id) {
+      throw new ForbiddenException();
+    }
+
+    await this.userDriveRepository.softDelete(id);
+    return;
+  }
 }

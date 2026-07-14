@@ -23,6 +23,8 @@ import { ExternalApiService } from './application/external.api.service';
 import { ApiKeyGuard } from './api/external.api.key.guard';
 import { ExternalApiThrottleGuard } from './api/external.api.throttle.guard';
 import { IdempotencyInterceptor } from './api/idempotency.interceptor';
+import { ExternalOrderRecoveryService } from './application/external.order.recovery.service';
+import { ExternalOrderRecoverySchedule } from './external.order.recovery.schedule';
 
 import { PartnerCompanyExternModule } from '../partner_company_extern/partner.company.extern.module';
 import { SsgEventModule } from '../ssg_event/ssg.event.module';
@@ -73,6 +75,8 @@ import { OrderFromModule } from '../order_from/order.from.module';
     IdempotencyInterceptor,
     CryptoCipher,
     ApiCustomerMappingResolver,
+    ExternalOrderRecoveryService,
+    ExternalOrderRecoverySchedule,
   ],
 })
 export class ExternalApiModule {}

@@ -13,6 +13,7 @@ import { ActivityLogModule } from '../activity_log/activity.log.module';
 import { DeliveryModule } from '../delivery/delivery.module';
 import { SmsModule } from '../sms/sms.module';
 import { AccountLifecycleModule } from '../account_lifecycle/account.lifecycle.module';
+import { WalletModule } from '../wallet/wallet.module';
 
 @Module({
   imports: [
@@ -29,6 +30,7 @@ import { AccountLifecycleModule } from '../account_lifecycle/account.lifecycle.m
     ]),
     ActivityLogModule,
     AccountLifecycleModule,
+    WalletModule,
   ],
   controllers: [UserController],
   providers: [UserService],
