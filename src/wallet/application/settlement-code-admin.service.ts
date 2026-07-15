@@ -24,6 +24,26 @@ export interface SettlementJoinClassification {
   code?: string;
 }
 
+export type SettlementCodeHistoryEventType = 'CREDIT_LIMIT_CHANGED' | 'SETTLE_POLICY_CHANGED' | 'DEPOSIT_CHARGED';
+
+/** 정산코드 변경 이력 공통 항목(정책/한도=activity_log, 예치금=wallet_transaction). */
+export interface SettlementCodeHistoryItem {
+  source: 'ACTIVITY_LOG' | 'WALLET_TRANSACTION';
+  sourceId: string;
+  eventType: SettlementCodeHistoryEventType;
+  occurredAt: Date;
+  operatorId: number | null;
+  operatorEmail: string | null;
+  before?: unknown;
+  after?: unknown;
+  memo?: string | null;
+}
+
+export interface HistoryPage {
+  items: SettlementCodeHistoryItem[];
+  nextCursor: string | null;
+}
+
 const SETTLE_COMPLETE = 'SETTLE_COMPLETE';
 
 /** 진행 중(변경 차단) 판정 대상 상태. TEMP/DELIVERY_CANCEL 은 제외. */
@@ -296,7 +316,7 @@ export class SettlementCodeAdminService {
     settlementCode: string,
     creditLimit: number,
     operator: ILoginUserInfo,
-  ): Promise<{ settlementCode: string; before: number; after: number }> {
+  ): Promise<{ settlementCode: string; before: number; after: number; belowCurrentUsage: boolean }> {
     if (!Number.isInteger(creditLimit) || creditLimit < 0) {
       throw new BadRequestException('여신 한도(creditLimit)는 0 이상의 정수여야 합니다.');
     }
@@ -307,6 +327,8 @@ export class SettlementCodeAdminService {
       }
 
       const before = wallet.creditLimit;
+      // creditLimit < 현재 사용액 설정 허용(기존 사용액/초과액은 불변). 신규 차감 가용 여신은 max(0, limit-used)=0.
+      const belowCurrentUsage = creditLimit < wallet.creditUsedAmount;
       wallet.creditLimit = creditLimit;
       await manager.getRepository(WalletAccountEntity).save(wallet);
 
@@ -325,12 +347,12 @@ export class SettlementCodeAdminService {
           beforeMaximumLimit: before,
           afterMaximumLimit: creditLimit,
         },
-      });
+      }, manager); // 동일 트랜잭션 감사(정책/한도 변경 정본).
 
       this.logger.log(
         `setCodeCreditLimit code=${settlementCode} ${before} -> ${creditLimit} by operator=${operator.id}`,
       );
-      return { settlementCode, before, after: creditLimit };
+      return { settlementCode, before, after: creditLimit, belowCurrentUsage };
     });
   }
 
@@ -349,6 +371,7 @@ export class SettlementCodeAdminService {
     settlementCode: string;
     before: { settleCondition: 'PRE_PAYMENT' | 'POST_PAYMENT'; settleMethod: 'CARD' | 'CASH' };
     after: { settleCondition: 'PRE_PAYMENT' | 'POST_PAYMENT'; settleMethod: 'CARD' | 'CASH' };
+    noop?: boolean;
   }> {
     if (update.settleCondition === undefined && update.settleMethod === undefined) {
       throw new BadRequestException('변경할 항목(settleCondition/settleMethod)이 없습니다.');
@@ -369,18 +392,36 @@ export class SettlementCodeAdminService {
 
         const before = { settleCondition: wallet.settleCondition, settleMethod: wallet.settleMethod };
 
-        if (update.settleCondition !== undefined && update.settleCondition !== wallet.settleCondition) {
+        const condChanged = update.settleCondition !== undefined && update.settleCondition !== wallet.settleCondition;
+        const methodChanged = update.settleMethod !== undefined && update.settleMethod !== wallet.settleMethod;
+
+        // **동일값(no-op)**: 요청값이 현재값과 같으면 저장/감사 로그 없이 현재값 반환(감사 노이즈 방지).
+        if (!condChanged && !methodChanged) {
+          return { settlementCode, before, after: before, noop: true };
+        }
+
+        if (condChanged) {
           // 멤버십 동결(wallet 락) 상태에서 모든 회사 + 회사미연결 사용자 락 확보 → 진행 주문 재검증.
           const companyIds = await this.distinctCompanyIdsForCode(manager, settlementCode);
           for (const companyId of companyIds) {
             await this.billingScopeLock.lockByCompany(companyId, manager);
           }
           await this.lockCompanylessCodeUsers(manager, settlementCode);
-          await this.assertNoOutstandingForCode(manager, settlementCode);
-          wallet.settleCondition = update.settleCondition;
+          // **구조화된 게이트 오류**(문자열 파싱 금지): 어떤 계정/주문이 차단하는지 배열로 반환.
+          const outstanding = await this.collectOutstandingForCode(manager, settlementCode);
+          if (outstanding.blockingUserIds.length > 0 || outstanding.blockingOrderCount > 0) {
+            throw new BadRequestException({
+              code: 'OUTSTANDING_ORDER_EXISTS',
+              message: '진행 중이거나 미정산 완료된 주문이 있어 정산조건을 변경할 수 없습니다.',
+              blockingUserIds: outstanding.blockingUserIds,
+              blockingOrderCount: outstanding.blockingOrderCount, // 전체 차단 주문 수
+              blockingOrderIds: outstanding.blockingOrderIds, // 대표 최대 20건
+            });
+          }
+          wallet.settleCondition = update.settleCondition!;
         }
-        if (update.settleMethod !== undefined) {
-          wallet.settleMethod = update.settleMethod;
+        if (methodChanged) {
+          wallet.settleMethod = update.settleMethod!;
         }
         await manager.getRepository(WalletAccountEntity).save(wallet);
 
@@ -396,7 +437,7 @@ export class SettlementCodeAdminService {
           result: ActivityLogResult.SUCCESS,
           responseTime: 0,
           requestParams: { settlementCode, before, after },
-        });
+        }, manager); // 동일 트랜잭션 감사(정책 변경 정본).
 
         this.logger.log(
           `setSettlePolicy code=${settlementCode} ${JSON.stringify(before)} -> ${JSON.stringify(after)} by operator=${operator.id}`,
@@ -462,6 +503,8 @@ export class SettlementCodeAdminService {
       amount: chargeAmount,
       memo: memo ?? null,
       idempotencyKey,
+      operatorId: operator.id,
+      operatorEmail: operator.email,
     });
 
     // 동시성 race: 다른 요청이 먼저 기록한 경우 최초 사실 반환(이력 미기록). 금액 불일치면 409.
@@ -480,18 +523,26 @@ export class SettlementCodeAdminService {
       };
     }
 
-    await this.activityLogService.createLog({
-      userId: operator.id,
-      userEmail: operator.email,
-      method: 'PUT',
-      requestUrl: '/settlement-codes/deposit',
-      actionType: ActivityLogActionType.BALANCE_CHARGE,
-      ipAddress: '',
-      statusCode: 200,
-      result: ActivityLogResult.SUCCESS,
-      responseTime: 0,
-      requestParams: { settlementCode, chargeAmount, memo: memo ?? null },
-    });
+    // **감사 정본 = wallet_transaction**(운영자/전후잔액/멱등키 보존). activity_log 는 보조이며 **best-effort** —
+    // 실패해도 이미 커밋된 충전을 API 실패로 노출하지 않는다(원장이 정본이므로 감사 누락 없음).
+    try {
+      await this.activityLogService.createLog({
+        userId: operator.id,
+        userEmail: operator.email,
+        method: 'POST',
+        requestUrl: '/settlement-codes/deposits',
+        actionType: ActivityLogActionType.BALANCE_CHARGE,
+        ipAddress: '',
+        statusCode: 200,
+        result: ActivityLogResult.SUCCESS,
+        responseTime: 0,
+        requestParams: { settlementCode, chargeAmount, memo: memo ?? null, requestKey: requestKey.trim() },
+      });
+    } catch (e) {
+      this.logger.warn(
+        `chargeDeposit activity_log best-effort 실패(원장은 커밋됨, 감사 정본은 wallet_transaction): code=${settlementCode} ${(e as Error)?.message ?? e}`,
+      );
+    }
 
     this.logger.log(
       `chargeDeposit code=${settlementCode} +${chargeAmount} balanceAfter=${result.balanceAfter} by operator=${operator.id}`,
@@ -505,53 +556,223 @@ export class SettlementCodeAdminService {
   }
 
   /**
-   * 운영자: 정산코드 단위 변경 이력 조회 (여신한도·정산조건·정산방법·예치금 충전).
-   * activity_log 에서 settlementCode(requestParams JSON)로 필터. 최신순 최대 200건.
+   * 운영자: 정산코드 **정책/여신한도** 변경 이력 (activity_log 기반, cursor pagination).
+   * 예치금 충전 이력은 감사 정본이 wallet_transaction 이므로 getDepositHistory(GET /deposits)에서 조회한다.
+   * eventType 미지정 시 정책+한도 전체. 정렬 createdAt DESC, id DESC. limit 기본 50, 최대 100.
    */
-  async getCodeHistory(settlementCode: string): Promise<
-    Array<{
-      id: number;
-      actionType: string;
-      operatorEmail: string;
-      requestParams: unknown;
-      createdAt: Date;
-    }>
-  > {
+  async getCodeHistory(
+    settlementCode: string,
+    opts: { limit?: number; cursor?: string; eventType?: SettlementCodeHistoryEventType } = {},
+  ): Promise<HistoryPage> {
     if (!settlementCode || settlementCode.trim() === '') {
       throw new BadRequestException('settlementCode 는 필수입니다.');
     }
-    const rows = await this.activityLogRepository
+    const limit = this.normalizeLimit(opts.limit);
+    const cursor = this.decodeCursor(opts.cursor); // 잘못된 cursor 는 DB 접근 전에 400.
+
+    const actionByEvent: Partial<Record<SettlementCodeHistoryEventType, ActivityLogActionType>> = {
+      CREDIT_LIMIT_CHANGED: ActivityLogActionType.MAXIMUM_LIMIT_MODIFY,
+      SETTLE_POLICY_CHANGED: ActivityLogActionType.SETTLE_CODE_POLICY_MODIFY,
+    };
+    let types = [ActivityLogActionType.MAXIMUM_LIMIT_MODIFY, ActivityLogActionType.SETTLE_CODE_POLICY_MODIFY];
+    if (opts.eventType !== undefined) {
+      const mapped = actionByEvent[opts.eventType];
+      if (!mapped) {
+        throw new BadRequestException(
+          'eventType 은 CREDIT_LIMIT_CHANGED | SETTLE_POLICY_CHANGED 만 허용됩니다(예치금 이력은 GET /settlement-codes/deposits).',
+        );
+      }
+      types = [mapped];
+    }
+
+    const qb = this.activityLogRepository
       .createQueryBuilder('a')
       .where('a.deletedAt IS NULL')
-      .andWhere('a.actionType IN (:...types)', {
-        types: [
-          ActivityLogActionType.MAXIMUM_LIMIT_MODIFY,
-          ActivityLogActionType.BALANCE_CHARGE,
-          ActivityLogActionType.SETTLE_CODE_POLICY_MODIFY,
-        ],
-      })
-      .andWhere("JSON_EXTRACT(a.requestParams, '$.settlementCode') = :code", { code: settlementCode })
-      .orderBy('a.createdAt', 'DESC')
-      .limit(200)
-      .getMany();
+      .andWhere('a.actionType IN (:...types)', { types })
+      .andWhere("JSON_UNQUOTE(JSON_EXTRACT(a.requestParams, '$.settlementCode')) = :code", { code: settlementCode });
 
-    return rows.map((r) => ({
-      id: r.id,
-      actionType: r.actionType,
-      operatorEmail: r.userEmail,
-      requestParams: r.requestParams,
-      createdAt: r.createdAt,
-    }));
+    if (cursor) {
+      qb.andWhere('a.id < :cId', { cId: Number(cursor.id) });
+    }
+
+    // 단일 테이블 + auto-increment PK 라 id DESC 만으로 생성순·유일 정렬(DATETIME(6) 정밀도 무관).
+    const rows = await qb.orderBy('a.id', 'DESC').limit(limit + 1).getMany();
+    const { page, nextCursor } = this.pageWithCursor(rows, limit);
+    const items = page.map((r) => this.mapActivityLogItem(r));
+    return { items, nextCursor };
   }
 
-  /** 정산코드를 공유하는 전체 계정에 진행 중/미정산 주문이 없는지 검증(선/후정산 전환 게이트). */
-  private async assertNoOutstandingForCode(manager: EntityManager, settlementCode: string): Promise<void> {
+  /**
+   * 운영자: 정산코드 **예치금 충전** 이력 (wallet_transaction 감사 정본, cursor pagination).
+   * 정렬 id DESC(auto-increment PK = 생성순, 유일). limit 기본 50, 최대 100.
+   */
+  async getDepositHistory(settlementCode: string, opts: { limit?: number; cursor?: string } = {}): Promise<HistoryPage> {
+    if (!settlementCode || settlementCode.trim() === '') {
+      throw new BadRequestException('settlementCode 는 필수입니다.');
+    }
+    const wallet = await this.dataSource
+      .getRepository(WalletAccountEntity)
+      .findOne({ where: { ownerType: 'SETTLEMENT_CODE', ownerId: settlementCode } });
+    if (!wallet) {
+      throw new BadRequestException(`정산코드('${settlementCode}') 의 wallet_account 를 찾을 수 없습니다.`);
+    }
+    const limit = this.normalizeLimit(opts.limit);
+    const cursor = this.decodeCursor(opts.cursor);
+
+    const qb = this.dataSource
+      .getRepository(WalletTransactionEntity)
+      .createQueryBuilder('t')
+      .where('t.walletAccountId = :wid', { wid: wallet.id })
+      .andWhere('t.resourceType = :rt', { rt: WalletResourceType.DEPOSIT })
+      .andWhere('t.type = :ty', { ty: 'CHARGE' });
+
+    if (cursor) {
+      qb.andWhere('t.id < :cId', { cId: cursor.id });
+    }
+
+    // 단일 테이블 + auto-increment PK 라 id DESC 만으로 생성순·유일 정렬(DATETIME(6) 정밀도 무관).
+    const rows = await qb.orderBy('t.id', 'DESC').limit(limit + 1).getMany();
+    const { page, nextCursor } = this.pageWithCursor(rows, limit);
+    const items: SettlementCodeHistoryItem[] = page.map((t) => ({
+      source: 'WALLET_TRANSACTION',
+      sourceId: String(t.id),
+      eventType: 'DEPOSIT_CHARGED',
+      occurredAt: t.createdAt,
+      operatorId: t.operatorId ?? null,
+      operatorEmail: t.operatorEmail ?? null,
+      before: t.balanceBefore,
+      after: t.balanceAfter,
+      memo: t.memo,
+    }));
+    return { items, nextCursor };
+  }
+
+  private mapActivityLogItem(r: ActivityLogEntity): SettlementCodeHistoryItem {
+    const params = (r.requestParams ?? {}) as Record<string, unknown>;
+    if (r.actionType === ActivityLogActionType.MAXIMUM_LIMIT_MODIFY) {
+      return {
+        source: 'ACTIVITY_LOG',
+        sourceId: String(r.id),
+        eventType: 'CREDIT_LIMIT_CHANGED',
+        occurredAt: r.createdAt,
+        operatorId: r.userId,
+        operatorEmail: r.userEmail,
+        before: params.beforeMaximumLimit,
+        after: params.afterMaximumLimit,
+      };
+    }
+    return {
+      source: 'ACTIVITY_LOG',
+      sourceId: String(r.id),
+      eventType: 'SETTLE_POLICY_CHANGED',
+      occurredAt: r.createdAt,
+      operatorId: r.userId,
+      operatorEmail: r.userEmail,
+      before: params.before,
+      after: params.after,
+    };
+  }
+
+  private normalizeLimit(limit?: number): number {
+    if (limit === undefined || !Number.isFinite(limit)) return 50;
+    return Math.min(100, Math.max(1, Math.floor(limit)));
+  }
+
+  private encodeCursor(id: string | number): string {
+    return Buffer.from(JSON.stringify({ id: String(id) })).toString('base64url');
+  }
+
+  /** cursor 기반 페이지 계산: limit+1 조회 결과에서 실제 페이지 + nextCursor 를 산출(getCodeHistory/getDepositHistory 공용). */
+  private pageWithCursor<T extends { id: string | number }>(
+    rows: T[],
+    limit: number,
+  ): { page: T[]; nextCursor: string | null } {
+    const page = rows.slice(0, limit);
+    const last = page[page.length - 1];
+    const nextCursor = rows.length > limit && last ? this.encodeCursor(last.id) : null;
+    return { page, nextCursor };
+  }
+
+  private decodeCursor(cursor?: string): { id: string } | null {
+    if (cursor === undefined || cursor === '') return null;
+    try {
+      const parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as { id?: unknown };
+      // id: 양의 정수 문자열만 허용(그 외 전부 400). 단일 테이블 정렬이라 timestamp 는 cursor 에 불필요.
+      const idStr = String(parsed?.id);
+      if (!/^\d+$/.test(idStr) || idStr === '0') {
+        throw new Error('cursor id');
+      }
+      return { id: idStr };
+    } catch {
+      throw new BadRequestException('cursor 형식이 올바르지 않습니다.');
+    }
+  }
+
+  /**
+   * 정산코드를 공유하는 전체 계정에서 진행 중/미정산 주문(또는 미정산 외상 잔액)을 **수집**한다(선/후정산 전환 게이트).
+   * 대량 응답/락 보유시간 방지: 전체 count 는 집계로, 대표 주문 ID 는 최대 REP_LIMIT 건만 조회한다.
+   * blockingUserIds 는 코드 멤버 수로 유계이므로 DISTINCT 전량 수집.
+   */
+  private async collectOutstandingForCode(
+    manager: EntityManager,
+    settlementCode: string,
+  ): Promise<{ blockingUserIds: number[]; blockingOrderIds: number[]; blockingOrderCount: number }> {
+    const REP_LIMIT = 20;
     const users = await manager
       .getRepository(UserEntity)
-      .find({ where: { settlementCode }, select: ['id'] });
+      .find({ where: { settlementCode }, select: ['id', 'allSettleAmount'] });
+    const blockingUserIds = new Set<number>();
     for (const u of users) {
-      await this.assertNoOutstanding(manager, u.id);
+      if (typeof u.allSettleAmount === 'number' && u.allSettleAmount !== 0) {
+        blockingUserIds.add(u.id);
+      }
     }
+
+    const blockingOrderIds: number[] = [];
+    let blockingOrderCount = 0;
+    const userIds = users.map((u) => u.id);
+    if (userIds.length > 0) {
+      // (1) 전체 차단 주문 수(집계만 — row 미적재).
+      blockingOrderCount = await this.outstandingOrdersQuery(manager, userIds).getCount();
+
+      if (blockingOrderCount > 0) {
+        // (2) 대표 주문 ID 최대 REP_LIMIT 건.
+        const repRows = await this.outstandingOrdersQuery(manager, userIds)
+          .select('o.id', 'id')
+          .orderBy('o.id', 'DESC')
+          .limit(REP_LIMIT)
+          .getRawMany<{ id: number }>();
+        for (const r of repRows) {
+          blockingOrderIds.push(Number(r.id));
+        }
+
+        // (3) 차단 주문의 DISTINCT billing user(대표 주문에 없어도 누락되지 않도록 별도 집계).
+        const uidRows = await this.outstandingOrdersQuery(manager, userIds)
+          .select('DISTINCT COALESCE(o.clientUserId, o.userId)', 'uid')
+          .getRawMany<{ uid: number }>();
+        for (const r of uidRows) {
+          blockingUserIds.add(Number(r.uid));
+        }
+      }
+    }
+
+    return { blockingUserIds: [...blockingUserIds], blockingOrderIds, blockingOrderCount };
+  }
+
+  /** collectOutstandingForCode 의 3개 조회가 공유하는 base queryBuilder (대상 사용자 + 진행 중/미정산 필터). */
+  private outstandingOrdersQuery(manager: EntityManager, userIds: number[]) {
+    return manager
+      .getRepository(OrderEntity)
+      .createQueryBuilder('o')
+      .where('COALESCE(o.clientUserId, o.userId) IN (:...uids)', { uids: userIds })
+      .andWhere(
+        new Brackets((qb) => {
+          qb.where('o.status IN (:...inflight)', { inflight: CHANGE_GATE_INFLIGHT_STATUSES }).orWhere(
+            '(o.status = :dc AND (o.settleStatus IS NULL OR o.settleStatus != :sc))',
+            { dc: IOrderStatus.DELIVERY_COMPLETE, sc: SETTLE_COMPLETE },
+          );
+        }),
+      );
   }
 
   /** settlement_code(owner_id) 로 wallet_account 를 FOR UPDATE(락 모드 지정) 조회. 없으면 null. */
