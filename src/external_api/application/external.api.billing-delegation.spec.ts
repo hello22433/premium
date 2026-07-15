@@ -4,6 +4,7 @@ import { IUserDiscountCategory } from '../../user_discount/interface/user.discou
 import { IUserDiscountMethod } from '../../user_discount/interface/user.discount.method';
 import { ICompareCondition } from '../../user_discount/interface/compare.condition';
 import { IPriceAdjustment } from '../../user_discount/interface/price.adjustment';
+import { WalletCutoverMode } from '../../wallet/config/wallet-cutover.config';
 
 // PR2a G003: add-only billing 위임층 behavior-identity 검증.
 // 기존 메서드(account 기반)와 신규 *ForBilling(billingUser 기반)의 단순모드(billingUser=account.user)
@@ -56,6 +57,11 @@ describe('PR2a G003 위임층 behavior-identity', () => {
       (svc as any).userDiscountRepository = {
         find: jest.fn(async () => []),
       };
+      // 카드할증 정산방법 소스: LEGACY(회사값) — behavior-identity 는 기존(회사 기준) 동작 유지.
+      (svc as any).walletCutoverConfig = { pr3SettleMode: WalletCutoverMode.LEGACY };
+      (svc as any).walletAccountResolverService = {
+        resolveByUserId: jest.fn(async () => ({ settleMethod: 'CASH' })),
+      };
       return svc;
     }
 
@@ -74,7 +80,7 @@ describe('PR2a G003 위임층 behavior-identity', () => {
 
       const legacy = await (svc as any).computeSettlement(account, product, 30000);
       const billing = await (svc as any).computeSettlementForBilling(account.user, product, 30000, {
-        cardSurchargeApplied: (svc as any).resolveCardSurchargeApplied(account),
+        cardSurchargeApplied: await (svc as any).resolveCardSurchargeApplied(account),
       });
 
       expect(legacy).toEqual(billing);

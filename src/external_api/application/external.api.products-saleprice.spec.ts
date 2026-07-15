@@ -3,6 +3,7 @@ import { IUserDiscountCategory } from '../../user_discount/interface/user.discou
 import { IUserDiscountMethod } from '../../user_discount/interface/user.discount.method';
 import { IUserAuthority } from '../../user/interface/user.authority';
 import { IUserSettleMethod } from '../../user/interface/user.settle.method';
+import { WalletCutoverMode } from '../../wallet/config/wallet-cutover.config';
 
 /**
  * D3-48 ② — getProductsForBilling 의 salePrice 가 주문 정산(createOrder)과 동일 모델
@@ -56,7 +57,11 @@ describe('ExternalApiService.getProductsForBilling — salePrice 할인/카드�
       ...overrides,
     }) as any;
 
-  const makeSvc = (products: unknown[], discounts: unknown[]) => {
+  const makeSvc = (
+    products: unknown[],
+    discounts: unknown[],
+    opts?: { mode?: WalletCutoverMode; walletSettleMethod?: 'CARD' | 'CASH' },
+  ) => {
     const svc = Object.create(ExternalApiService.prototype) as any;
     svc.productRepository = { createQueryBuilder: jest.fn(() => makeQb(products)) };
     // userId 조건 필터를 시뮬레이션: where.userId 와 일치하는 항목만 반환.
@@ -64,6 +69,11 @@ describe('ExternalApiService.getProductsForBilling — salePrice 할인/카드�
       find: jest.fn(async ({ where }: { where: { userId: number } }) =>
         discounts.filter((d: any) => d.userId === where.userId),
       ),
+    };
+    // 카드할증 정산방법 소스: 기본 LEGACY(회사값). WALLET 모드면 정산코드 wallet.settleMethod.
+    svc.walletCutoverConfig = { pr3SettleMode: opts?.mode ?? WalletCutoverMode.LEGACY };
+    svc.walletAccountResolverService = {
+      resolveByUserId: jest.fn(async () => ({ settleMethod: opts?.walletSettleMethod ?? 'CASH' })),
     };
     return svc;
   };
@@ -92,6 +102,24 @@ describe('ExternalApiService.getProductsForBilling — salePrice 할인/카드�
     const res = await svc.getProductsForBilling(makeUser(IUserSettleMethod.CARD));
 
     expect(res.data[0].salePrice).toBe(9270);
+  });
+
+  it('WALLET 모드 → 카드할증은 회사값이 아닌 정산코드 wallet.settleMethod 기준 (company=BANK·wallet=CARD → 할증)', async () => {
+    const svc = makeSvc([makeProduct()], [groupDiscount()], {
+      mode: WalletCutoverMode.WALLET,
+      walletSettleMethod: 'CARD',
+    });
+    const res = await svc.getProductsForBilling(makeUser('BANK')); // 회사는 비카드
+    expect(res.data[0].salePrice).toBe(9270); // 코드 지갑=CARD → 할증 적용
+  });
+
+  it('WALLET 모드 → wallet=CASH면 회사가 CARD여도 할증 없음', async () => {
+    const svc = makeSvc([makeProduct()], [groupDiscount()], {
+      mode: WalletCutoverMode.WALLET,
+      walletSettleMethod: 'CASH',
+    });
+    const res = await svc.getProductsForBilling(makeUser(IUserSettleMethod.CARD)); // 회사는 CARD
+    expect(res.data[0].salePrice).toBe(9000); // 코드 지갑=CASH → 할증 없음
   });
 
   it('협력사 정산 수수료(partnerCompanyId 전용 할인)는 고객사 salePrice에 적용되지 않는다', async () => {

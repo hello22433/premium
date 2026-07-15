@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsEmail, IsEnum, IsNotEmpty, IsNumber, IsOptional, Matches } from 'class-validator';
+import { IsEmail, IsEnum, IsInt, IsNotEmpty, IsNumber, IsOptional, Matches, Min } from 'class-validator';
 import { passwordRegex } from '../../user_find/domain/user.password.regex';
 import { IUserBusinessType } from '../interface/user.business.type';
 
@@ -172,6 +172,28 @@ export class UserLoginEmailSendReqDto {
   @IsOptional()
   @IsEmail()
   readonly targetEmail?: string;
+}
+
+export class UserReactivateEmailSendReqDto {
+  @ApiProperty({
+    type: String,
+    description: '계정 이메일 (로그인 ID)',
+  })
+  // =================================
+  @IsNotEmpty()
+  @IsEmail()
+  readonly email: string;
+
+  @ApiProperty({
+    type: Number,
+    required: false,
+    description: '담당자 이메일이 2개 이상일 때, 코드를 받을 이메일의 인덱스(0-base). 미지정 시 후보 목록만 반환하고 발송하지 않는다.',
+  })
+  // =================================
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  readonly targetEmailIndex?: number;
 }
 
 export class UserLoginEmailVerifyReqDto {

@@ -22,6 +22,7 @@ import { findMatchingDiscount } from '../../user_discount/domain/discount.matche
 import { OrderFeeCalculator, applyCardSurcharge } from '../../order/domain/order.fee.calculator';
 import {
   buildLineProductSnapshot,
+  buildPartnerSettleSnapshot,
   buildOrderClientUserSnapshot,
   buildOrderOperationUserSnapshot,
   buildOrderUserSnapshot,
@@ -349,18 +350,34 @@ export class ExternalApiService {
 
   // ─── 정산 헬퍼 ──────────────────────────────────────────
   // 일반 주문(order.service.ts)과 동일한 정산 모델을 외부 API에도 적용.
-  //  - 카드할증 여부: company.settleMethod === 'CARD' (SoT. user.settleMethod 는 deprecated)
+  //  - 카드할증 여부: billingUser 정산코드 wallet.settleMethod === 'CARD' (SoT, cutover mode 반영). LEGACY 는 company 폴백
   //  - 할인/할증: user_discount 자동 매칭(findMatchingDiscount). 매칭 없으면 정가 그대로
   //  - settleAmount = applyCardSurcharge(OrderFeeCalculator(...), cardSurchargeApplied)
 
-  private resolveCardSurchargeApplied(account: ExternalApiAccountEntity): boolean {
+  private resolveCardSurchargeApplied(account: ExternalApiAccountEntity): Promise<boolean> {
     return this.resolveCardSurchargeAppliedForUser(account.user);
   }
 
-  // billingUser 기준 카드할증 판정. company.settleMethod 가 SoT (user.settleMethod 는 deprecated).
-  // balanceManagementType 분기 제거 — PR1+ 모든 user 가 company 단위 공유 settlement_code 로 통합.
-  private resolveCardSurchargeAppliedForUser(user: UserEntity): boolean {
-    return user.company?.settleMethod === IUserSettleMethod.CARD;
+  // billingUser 기준 카드할증 판정. 정산방법 SoT = 정산코드 wallet.settleMethod (order.service resolveSettlePolicy 와 동일 모델).
+  //  - WALLET: wallet.settleMethod (미존재 시 fail-closed throw — 잘못된 결제수단 영구저장 방지)
+  //  - SHADOW: wallet 조회 실패 시 company 폴백
+  //  - LEGACY: company.settleMethod (user.settleMethod 는 deprecated)
+  private async resolveCardSurchargeAppliedForUser(user: UserEntity): Promise<boolean> {
+    const mode = this.walletCutoverConfig.pr3SettleMode;
+    const companyApplied = user.company?.settleMethod === IUserSettleMethod.CARD;
+    if (mode === WalletCutoverMode.LEGACY) {
+      return companyApplied;
+    }
+    try {
+      const wallet = await this.walletAccountResolverService.resolveByUserId(user.id);
+      return wallet.settleMethod === 'CARD';
+    } catch (e) {
+      if (mode === WalletCutoverMode.WALLET) {
+        throw e; // fail-closed
+      }
+      this.logger.warn(`[card surcharge] SHADOW wallet 조회 실패 → legacy(회사) 폴백: ${(e as Error).message}`);
+      return companyApplied;
+    }
   }
 
   private async computeSettlement(
@@ -374,7 +391,7 @@ export class ExternalApiService {
     cardSurchargeApplied: boolean;
   }> {
     return this.computeSettlementForBilling(account.user, product, sendAmount, {
-      cardSurchargeApplied: this.resolveCardSurchargeApplied(account),
+      cardSurchargeApplied: await this.resolveCardSurchargeApplied(account),
     });
   }
 
@@ -398,7 +415,7 @@ export class ExternalApiService {
     ).filter((discount) => discount.userId === billingUser.id);
 
     const cardSurchargeApplied =
-      appOptions?.cardSurchargeApplied ?? this.resolveCardSurchargeAppliedForUser(billingUser);
+      appOptions?.cardSurchargeApplied ?? (await this.resolveCardSurchargeAppliedForUser(billingUser));
     const { fee, priceAdjustment, settleAmount } = this.computeUnitSettlement(
       product,
       userDiscounts,
@@ -608,7 +625,7 @@ export class ExternalApiService {
     // salePrice = 고객사 기준 실제 청구 단가(할인 + 카드할증).
     // 협력사 정산 수수료(partnerCompanyId 기준 user_discount)는 자사↔협력사 간 정산이며
     // 고객사 청구단가 산출 대상이 아니므로 userId 조건만 로딩한다.
-    const cardSurchargeApplied = this.resolveCardSurchargeAppliedForUser(user);
+    const cardSurchargeApplied = await this.resolveCardSurchargeAppliedForUser(user);
     const allDiscounts = await this.userDiscountRepository.find({ where: { userId: user.id } });
 
     const data: ProductResponseData[] = products.map((p) => {
@@ -756,7 +773,7 @@ export class ExternalApiService {
     const [product, assignedIds] = await Promise.all([
       this.productRepository.findOne({
         where: { code: dto.productCode, useStatus: IProductUseStatus.USE },
-        relations: ['partnerCompany', 'brand'],
+        relations: ['partnerCompany', 'partnerCompany.userDiscounts', 'brand'],
       }),
       this.getAssignedProductIdsForBilling(billingUser.id),
     ]);
@@ -773,7 +790,7 @@ export class ExternalApiService {
       billingUser,
       product,
       sendAmount,
-      { cardSurchargeApplied: this.resolveCardSurchargeAppliedForUser(billingUser) },
+      { cardSurchargeApplied: await this.resolveCardSurchargeAppliedForUser(billingUser) },
     );
 
     // 발신번호 SoT 검증(차감 전, flag gating). 차감은 아래 order 그래프 저장 후 wallet/legacy 분기에서 수행.
@@ -812,6 +829,7 @@ export class ExternalApiService {
     order.code = deriveOrderCodeFromId(order.id);
     await this.orderRepository.save(order);
 
+    const lineSnapshot = buildLineProductSnapshot(product);
     const mapping = this.orderProductMappingRepository.create({
       orderId: order.id,
       productId: product.id,
@@ -824,7 +842,8 @@ export class ExternalApiService {
       priceAdjustment,
       topImagePath: '',
       midImagePath: '',
-      ...buildLineProductSnapshot(product),
+      ...lineSnapshot,
+      ...buildPartnerSettleSnapshot(product, lineSnapshot.snapshotProductPrice ?? product.price),
     });
     await this.orderProductMappingRepository.save(mapping);
 
@@ -1498,7 +1517,7 @@ export class ExternalApiService {
       billingUser,
       product,
       sendAmount,
-      { cardSurchargeApplied: this.resolveCardSurchargeAppliedForUser(billingUser) },
+      { cardSurchargeApplied: await this.resolveCardSurchargeAppliedForUser(billingUser) },
     );
 
     // senderPhone 미지정 SSG 알림톡 → 자사 대표번호로 확정 (검증/저장 동일값)
@@ -1541,6 +1560,7 @@ export class ExternalApiService {
     order.code = deriveOrderCodeFromId(order.id);
     await this.orderRepository.save(order);
 
+    const ssgLineSnapshot = buildLineProductSnapshot(product);
     const mapping = this.orderProductMappingRepository.create({
       orderId: order.id,
       productId: product.id,
@@ -1553,7 +1573,8 @@ export class ExternalApiService {
       priceAdjustment,
       topImagePath: '',
       midImagePath: '',
-      ...buildLineProductSnapshot(product),
+      ...ssgLineSnapshot,
+      ...buildPartnerSettleSnapshot(product, ssgLineSnapshot.snapshotProductPrice ?? product.price),
     });
     await this.orderProductMappingRepository.save(mapping);
 

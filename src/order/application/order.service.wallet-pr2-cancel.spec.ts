@@ -65,6 +65,7 @@ describe('OrderService deliveryCancel wallet PR2-005 branch', () => {
           id: 10,
           amount: 1,
           product: { price: 10000 },
+          sendType: 'RESERVE',
           sendRequestAt: new Date(Date.now() + 3600_000), // 1h later (>10min)
         },
       ],

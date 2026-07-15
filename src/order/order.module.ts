@@ -2,6 +2,7 @@ import { forwardRef, Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { OrderEntity } from '../entity/order.entity';
+import { WalletAccountEntity } from '../entity/wallet.account.entity';
 import { OrderDeliveryEntity } from '../entity/order.delivery.entity';
 import { TestOrderDeliveryEntity } from '../entity/test.order.delivery.entity';
 import { OrderProductMappingEntity } from '../entity/order.product.mapping.entity';
@@ -54,6 +55,7 @@ import { OrderFromModule } from '../order_from/order.from.module';
       EarlyDestroyRequestEntity,
       EarlyDestroyRequestItemEntity,
       OrderHistoryEntity,
+      WalletAccountEntity,
       PointGrantEntity,
       ForbiddenWordBlockLogEntity,
     ]),

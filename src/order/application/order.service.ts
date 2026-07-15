@@ -102,6 +102,7 @@ import { createExportTempPath } from '../../util/file.util';
 import { UserEntity } from '../../entity/user.entity';
 import { UserCompanyEntity } from '../../entity/user.company.entity';
 import {
+  buildPartnerSettleSnapshot,
   buildLineProductSnapshot,
   buildOrderClientUserSnapshot,
   buildOrderOperationUserSnapshot,
@@ -113,7 +114,12 @@ import {
   readOperationPersonName,
   readUserView,
 } from '../util/order.snapshot.builder';
-import { assertLineIdsValid, OwnedLine, resolveLineSnapshot } from './order.snapshot.update.helper';
+import {
+  assertLineIdsValid,
+  OwnedLine,
+  resolveLineSnapshot,
+  resolvePartnerSettleSnapshot as resolvePartnerSettleSnapshotForUpdate,
+} from './order.snapshot.update.helper';
 import { UserViewScopeEntity, ViewScopeType } from '../../entity/user.view.scope.entity';
 import { IUserAuthority } from '../../user/interface/user.authority';
 import { IUserSettleCondition } from '../../user/interface/user.settle.condition';
@@ -327,6 +333,8 @@ export class OrderService {
     private readonly forbiddenWordBlockLogRepository: Repository<ForbiddenWordBlockLogEntity>,
     private readonly orderFromService: OrderFromService,
     private readonly billingScopeLockService: BillingScopeLockService,
+    @InjectRepository(WalletAccountEntity)
+    private readonly walletAccountRepository: Repository<WalletAccountEntity>,
   ) {}
 
   /**
@@ -495,8 +503,10 @@ export class OrderService {
       relations: ['company'],
     });
     const company = billingUser?.company;
-    const defaultCardSurchargeApplied = company?.settleMethod === 'CARD';
     const { policy: settlePolicy } = await this.resolveSettlePolicy(order, company);
+    // 카드할증 기본값도 정산방법(코드 지갑 SoT) 소스를 따른다 — company.settleMethod 는 회사 단위라 코드별로 갈릴 때 틀림.
+    // resolveSettlePolicy 가 cutover mode(WALLET=코드 지갑 / SHADOW=지갑·회사 폴백 / LEGACY=회사)를 이미 반영한다.
+    const defaultCardSurchargeApplied = settlePolicy === 'CARD';
 
     const cardSurchargeApplied = opts.useExistingAsMiddleFallback
       ? (body.cardSurchargeApplied ?? order.cardSurchargeApplied ?? defaultCardSurchargeApplied)
@@ -875,7 +885,60 @@ export class OrderService {
       };
     });
 
+    if (getQuery.includeSettlement && OrderService.canViewCustomerSettlement(user)) {
+      await this.attachCustomerSettlement(orderList, resultList);
+    }
+
     return { list: resultList, totalPage, totalCount, currentPage: page };
+  }
+
+  private static readonly CUSTOMER_SETTLEMENT_ROLES: ReadonlyArray<IUserAuthority> = [
+    IUserAuthority.SUPER_ADMIN,
+    IUserAuthority.OPERATION_ADMIN,
+  ];
+
+  /** customerSettlement 노출 화이트리스트 (운영관리자 이상). 쿠키 authority 는 UI 힌트일 뿐 이 서버 필터가 유일 방어선. */
+  private static canViewCustomerSettlement(user: ILoginUserInfo): boolean {
+    return OrderService.CUSTOMER_SETTLEMENT_ROLES.includes(user.authority as IUserAuthority);
+  }
+
+  /**
+   * 응답 페이지 내 distinct 고객사(settlement_code)에 대해 wallet_account 를 1회 배치 조회 후
+   * remainServiceAmount 를 map 조인한다 (행별 재계산·N+1 없음).
+   * - settleCondition SoT = wallet_account.settle_condition (user 컬럼은 deprecated).
+   * - remainServiceAmount = creditLimit + depositBalance − creditUsedAmount − creditExcessAmount, 0-clamp.
+   * - wallet_account 미존재 고객사는 customerSettlement 필드를 붙이지 않는다(생략).
+   */
+  private async attachCustomerSettlement(orders: OrderEntity[], views: OrderViewDto[]): Promise<void> {
+    const settlementCodeOf = (order: OrderEntity): string | null =>
+      (order.clientUser ?? order.user)?.settlementCode || null;
+
+    const orderCodes = orders.map(settlementCodeOf);
+    const settlementCodes = [...new Set(orderCodes.filter((code): code is string => code !== null))];
+    if (settlementCodes.length === 0) {
+      return;
+    }
+
+    const wallets = await this.walletAccountRepository.find({
+      where: { ownerType: 'SETTLEMENT_CODE', ownerId: In(settlementCodes) },
+    });
+    const walletByCode = new Map(wallets.map((wallet) => [wallet.ownerId, wallet]));
+
+    orderCodes.forEach((code, index) => {
+      if (code === null) {
+        return;
+      }
+      const wallet = walletByCode.get(code);
+      if (!wallet) {
+        return;
+      }
+      const remain =
+        wallet.creditLimit + wallet.depositBalance - wallet.creditUsedAmount - wallet.creditExcessAmount;
+      views[index].customerSettlement = {
+        settleCondition: wallet.settleCondition,
+        remainServiceAmount: Math.max(0, remain),
+      };
+    });
   }
 
   async getDetail(user: ILoginUserInfo, getParam: OrderGetDetailReqParamDto): Promise<OrderGetDetailResDto> {
@@ -3386,21 +3449,49 @@ export class OrderService {
     }
   }
 
-  private assertPositiveIntegerAmounts(orderProductList: OrderProductCreateTempDto[]): void {
-    const hasInvalidAmount = orderProductList.some(
-      (product) => !Number.isInteger(product.amount) || product.amount < 1,
-    );
+  private async assertPositiveIntegerAmounts(orderProductList: OrderProductCreateTempDto[]): Promise<void> {
+    const invalidItems = orderProductList
+      .map((product, index) => ({ order: index + 1, productId: product.productId, amount: product.amount }))
+      .filter((item) => !Number.isInteger(item.amount) || item.amount < 1);
 
-    if (hasInvalidAmount) {
-      throw new BadRequestException('상품 수량은 1 이상의 정수여야 합니다.');
+    if (invalidItems.length === 0) {
+      return;
     }
+
+    // 오류 상품명은 안내용으로만 조회 — 조회 실패해도 순번 기준으로 폴백
+    const nameMap = new Map<number, string>();
+    try {
+      const productIds = [...new Set(invalidItems.map((item) => item.productId).filter((id) => Number.isInteger(id)))];
+      if (productIds.length > 0) {
+        const products = await this.productRepository.find({
+          where: { id: In(productIds) },
+          select: ['id', 'name'],
+        });
+        for (const product of products) {
+          nameMap.set(product.id, product.name);
+        }
+      }
+    } catch {
+      // 상품명 조회 실패는 무시하고 순번만 안내
+    }
+
+    const detail = invalidItems
+      .map((item) => {
+        const name = nameMap.get(item.productId);
+        return `- 상품${item.order}${name ? ` (${name})` : ''}`;
+      })
+      .join('\n');
+
+    throw new BadRequestException(
+      `수량이 올바르지 않은 상품이 있습니다. 각 상품에 수신번호를 1개 이상 입력해주세요.\n\n${detail}`,
+    );
   }
 
   @Transactional()
   async createTemp(user: ILoginUserInfo, getBody: OrderCreateTempReqDto): Promise<OrderCreateTempResDto> {
     const { type, eventName, topImagePath, midImagePath, orderProductList } = getBody;
 
-    this.assertPositiveIntegerAmounts(orderProductList);
+    await this.assertPositiveIntegerAmounts(orderProductList);
     await this.assertNoForbiddenWord(user, orderProductList, null);
 
     // 대행주문인 경우 clientUser의 허용 발신수단으로 검증
@@ -3419,7 +3510,7 @@ export class OrderService {
       where: {
         id: In(uniqueProductIds),
       },
-      relations: ['brand'],
+      relations: ['brand', 'partnerCompany', 'partnerCompany.userDiscounts'],
     });
 
     if (uniqueProductIds.length !== getProductList.length) {
@@ -3519,7 +3610,12 @@ export class OrderService {
 
       // 주문 생성 시점 상품 정보 snapshot 박제
       const liveProduct = productPriceMap.get(product.productId)!;
-      Object.assign(orderProduct, buildLineProductSnapshot(liveProduct));
+      const lineSnapshot = buildLineProductSnapshot(liveProduct);
+      Object.assign(orderProduct, lineSnapshot);
+      Object.assign(
+        orderProduct,
+        buildPartnerSettleSnapshot(liveProduct, lineSnapshot.snapshotProductPrice ?? liveProduct.price),
+      );
 
       await this.orderProductMappingRepository.save(orderProduct);
 
@@ -3559,7 +3655,7 @@ export class OrderService {
   async updateTemp(user: ILoginUserInfo, getBody: OrderUpdateTempReqDto): Promise<void> {
     const { id, eventName, topImagePath, midImagePath, orderProductList } = getBody;
 
-    this.assertPositiveIntegerAmounts(orderProductList);
+    await this.assertPositiveIntegerAmounts(orderProductList);
     await this.assertNoForbiddenWord(user, orderProductList, id);
 
     const order = await this.orderRepository.findOne({
@@ -3608,7 +3704,7 @@ export class OrderService {
       where: {
         id: In(uniqueProductIds),
       },
-      relations: ['brand'],
+      relations: ['brand', 'partnerCompany', 'partnerCompany.userDiscounts'],
     });
 
     if (uniqueProductIds.length !== getProductList.length) {
@@ -3635,6 +3731,10 @@ export class OrderService {
             snapshotProductBrandName: m.snapshotProductBrandName,
             snapshotProductExpireDay: m.snapshotProductExpireDay,
             snapshotProductImagePath: m.snapshotProductImagePath,
+          },
+          partnerSettleSnapshot: {
+            partnerSettleFee: m.partnerSettleFee,
+            partnerSettlePriceAdjustment: m.partnerSettlePriceAdjustment,
           },
         },
       ]),
@@ -3711,7 +3811,17 @@ export class OrderService {
       orderProduct.encourageDay = product.encourageDay ?? null;
 
       const liveProduct = productPriceMap.get(product.productId)!;
-      Object.assign(orderProduct, resolveLineSnapshot(product, ownedMap, liveProduct));
+      const lineSnapshot = resolveLineSnapshot(product, ownedMap, liveProduct);
+      Object.assign(orderProduct, lineSnapshot);
+      Object.assign(
+        orderProduct,
+        resolvePartnerSettleSnapshotForUpdate(
+          product,
+          ownedMap,
+          liveProduct,
+          lineSnapshot.snapshotProductPrice ?? liveProduct.price,
+        ),
+      );
 
       await this.orderProductMappingRepository.save(orderProduct);
 

@@ -517,6 +517,80 @@ describe('phaseA_createAndDeduct (R6 관계그래프)', () => {
 
     expect(result.order.externalOrderId).toBeNull();
   });
+
+  it('주문 생성 시 협력사 정산 수수료 스냅샷(partnerSettleFee/partnerSettlePriceAdjustment)이 mapping에 저장된다', async () => {
+    const { svc } = phaseAService(WalletCutoverMode.WALLET);
+    (svc as any).productRepository.findOne = jest.fn(async () => ({
+      id: 100,
+      price: 10000,
+      category: 'MOBILE_COUPON',
+      classificationId: null,
+      partnerCompany: {
+        code: 'PC',
+        userDiscounts: [
+          {
+            category: 'PRODUCT_GROUP',
+            method: 'BULK',
+            group: 'MOBILE_COUPON',
+            pricePercent: 8,
+            priceAdjustment: 'DISCOUNT',
+            classificationId: null,
+            brand: null,
+            minPrice: null,
+            maxPrice: null,
+            compareCondition: null,
+          },
+        ],
+      },
+      brand: { nameKorean: 'B' },
+      expireDay: 30,
+    }));
+    const account = makeAccount();
+    const dto: any = {
+      productCode: 'P1',
+      deliveryMethod: 'MMS',
+      recipientPhone: '01000000000',
+      message: '',
+      title: 't',
+      senderPhone: '0100',
+    };
+
+    const mappingSave = (svc as any).orderProductMappingRepository.save as jest.Mock;
+    await (svc as any).phaseA_createAndDeduct(account, dto, ctx);
+
+    const savedMapping = mappingSave.mock.calls[0][0];
+    expect(savedMapping.partnerSettleFee).toBe(8);
+    expect(savedMapping.partnerSettlePriceAdjustment).toBe('DISCOUNT');
+  });
+
+  it('협력사 할인 조건 없을 때 partnerSettleFee=0, partnerSettlePriceAdjustment=null로 저장된다', async () => {
+    const { svc } = phaseAService(WalletCutoverMode.WALLET);
+    (svc as any).productRepository.findOne = jest.fn(async () => ({
+      id: 100,
+      price: 10000,
+      category: 'MOBILE_COUPON',
+      classificationId: null,
+      partnerCompany: { code: 'PC', userDiscounts: [] },
+      brand: { nameKorean: 'B' },
+      expireDay: 30,
+    }));
+    const account = makeAccount();
+    const dto: any = {
+      productCode: 'P1',
+      deliveryMethod: 'MMS',
+      recipientPhone: '01000000000',
+      message: '',
+      title: 't',
+      senderPhone: '0100',
+    };
+
+    const mappingSave = (svc as any).orderProductMappingRepository.save as jest.Mock;
+    await (svc as any).phaseA_createAndDeduct(account, dto, ctx);
+
+    const savedMapping = mappingSave.mock.calls[0][0];
+    expect(savedMapping.partnerSettleFee).toBe(0);
+    expect(savedMapping.partnerSettlePriceAdjustment).toBeNull();
+  });
 });
 
 describe('phaseA_createSsgAndDeduct (SSG: allocation + ssgEvent 둘 다)', () => {
@@ -610,6 +684,20 @@ describe('phaseA_createSsgAndDeduct (SSG: allocation + ssgEvent 둘 다)', () =>
     expect(allocate).toHaveBeenCalledTimes(1);
     expect(persistAllocation).toHaveBeenCalledTimes(1);
     expect(deductEventBalance).toHaveBeenCalledTimes(1);
+  });
+
+  it('SSG 주문 생성 시 협력사 정산 수수료 스냅샷(partnerSettleFee/partnerSettlePriceAdjustment)이 mapping에 저장된다', async () => {
+    const { svc } = ssgService(WalletCutoverMode.WALLET);
+    const account = makeAccount();
+    const dto: any = { amount: 50000, recipientPhone: '01000000000', message: '', senderPhone: '0100' };
+
+    const mappingSave = (svc as any).orderProductMappingRepository.save as jest.Mock;
+    await (svc as any).phaseA_createSsgAndDeduct(account, dto, ctx);
+
+    const savedMapping = mappingSave.mock.calls[0][0];
+    // SSG 협력사는 userDiscounts 없음 → fee=0, priceAdjustment=null
+    expect(savedMapping.partnerSettleFee).toBe(0);
+    expect(savedMapping.partnerSettlePriceAdjustment).toBeNull();
   });
 });
 

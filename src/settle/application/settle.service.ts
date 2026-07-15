@@ -97,7 +97,6 @@ import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { OrderDeliveryRefundEntity } from '../../entity/order.delivery.refund.entity';
 import { UserDiscountEntity } from '../../entity/user.discount.entity';
 import { IPriceAdjustment } from '../../user_discount/interface/price.adjustment';
-import { findMatchingDiscount } from '../../user_discount/domain/discount.matcher';
 import { SettleUserPerListViewDto } from '../api/dto/settle.user.per.list.view.dto';
 import { SettleUserStatusEnum } from '../interface/settle.user.status';
 import { SettleUserPerDetailViewDto } from '../api/dto/settle.user.per.detail.view.dto';
@@ -1154,7 +1153,6 @@ export class SettleService {
       .leftJoinAndSelect('clientUser.company', 'clientCompany')
       .innerJoinAndSelect('orderProductMapping.product', 'product')
       .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
-      .leftJoinAndSelect('partnerCompany.userDiscounts', 'partnerDiscounts')
       .leftJoinAndSelect('product.brand', 'brand')
       .where('order.status IN (:...status)', { status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'] })
       .andWhere(
@@ -1196,36 +1194,31 @@ export class SettleService {
       const order = orderProductMapping.order;
       const product = orderProductMapping.product;
       const partnerCompany = product.partnerCompany!;
-      const partnerDiscounts = partnerCompany.userDiscounts || [];
 
-      // 협력사 할인옵션에서 매칭되는 할인 찾기
-      const matchingDiscount = findMatchingDiscount(
-        {
-          price: product.price,
-          category: product.category,
-          classificationId: product.classificationId,
-          brand: product.brand,
-        },
-        partnerDiscounts,
-      );
+      // 주문 시점 스냅샷 우선 (고객사 정산과 동일 기준)
+      const snapshotPrice = readLineProductView(orderProductMapping).price;
 
-      // 협력사별 정산은 협력사 할인옵션만 적용 (없으면 수수료율 0%)
       let fee: number;
-      let priceAdjustment: string;
-      if (matchingDiscount) {
-        fee = matchingDiscount.pricePercent;
-        priceAdjustment = matchingDiscount.priceAdjustment;
+      let priceAdjustment: string | null;
+
+      if (orderProductMapping.partnerSettleFee != null) {
+        fee = orderProductMapping.partnerSettleFee;
+        priceAdjustment = orderProductMapping.partnerSettlePriceAdjustment;
       } else {
-        // 협력사 할인옵션이 없으면 수수료 없음 (정상가 = 공급가)
+        // backfill 이전 legacy row 방어용. 배포시점 값 불명이므로 재매칭 금지 — 0으로 처리.
         fee = 0;
-        priceAdjustment = 'DISCOUNT';
+        priceAdjustment = null;
       }
 
-      const feePrice = (product.price * fee) / 100;
+      const feePrice = (snapshotPrice * fee) / 100;
 
       // 협력사 정산: 소수점 발생 시 올림 처리
       const settlePrice =
-        priceAdjustment === 'DISCOUNT' ? Math.ceil(product.price - feePrice) : Math.ceil(product.price + feePrice);
+        priceAdjustment === null
+          ? snapshotPrice
+          : priceAdjustment === 'DISCOUNT'
+            ? Math.ceil(snapshotPrice - feePrice)
+            : Math.ceil(snapshotPrice + feePrice);
 
       return {
         id: order.id,
@@ -1235,7 +1228,7 @@ export class SettleService {
         eventName: order.eventName,
         code: order.code,
         productNameList: [product.name],
-        deliveryPrice: product.price,
+        deliveryPrice: snapshotPrice,
         settlePrice: settlePrice,
         fee: fee,
         feePrice: feePrice,
@@ -1304,7 +1297,6 @@ export class SettleService {
       .innerJoin('order.orderProductMappings', 'orderProductMappings')
       .innerJoin('orderProductMappings.product', 'product')
       .innerJoin('product.partnerCompany', 'partnerCompany')
-      .leftJoin('partnerCompany.userDiscounts', 'partnerDiscounts')
       .leftJoin('product.brand', 'brand')
       .innerJoin('orderProductMappings.orderDeliveries', 'orderDeliveries')
       .leftJoin('orderDeliveries.choiceSelectProduct', 'choiceSelectProduct')
@@ -1375,7 +1367,6 @@ export class SettleService {
         .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
         .innerJoinAndSelect('orderProductMappings.product', 'product')
         .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
-        .leftJoinAndSelect('partnerCompany.userDiscounts', 'partnerDiscounts')
         .leftJoinAndSelect('product.brand', 'brand')
         .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
         .leftJoinAndSelect('orderDeliveries.choiceSelectProduct', 'choiceSelectProduct')
@@ -1440,7 +1431,9 @@ export class SettleService {
                 eventName: order.eventName,
                 productName: displayProduct.name,
                 brandName: displayBrand?.nameKorean ?? '',
-                price: displayProduct.price,
+                price: orderDelivery.choiceSelectProduct
+                  ? orderDelivery.choiceSelectProduct.price
+                  : readLineProductView(orderProductMapping).price,
                 balance: orderDelivery.galaxiaBalance ?? 0,
                 expireDay: displayProduct.expireDay,
                 validityStartAt,
