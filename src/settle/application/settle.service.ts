@@ -2925,9 +2925,14 @@ export class SettleService {
     const forSum = options?.forSum ?? false;
     const { startAt, endAt, isPublished, businessName, personName, eventName, searchKeyword, dateType } = filters;
 
+    // forSum(요약 합계 전용) 은 표시 DTO 를 만들지 않으므로 display 전용 관계의 SELECT 를 생략해
+    // 행 증폭/전송량을 줄이는 성능 최적화다. 아래 company(필터용 JOIN만)/classification(제외) 분기가 그것이다.
+    // 이 최적화 분기 자체는 정합성에 영향이 없어 안정성을 위해 리팩토링하지 않고 현행 유지한다.
+    // 유일한 예외가 orderDeliveries — 이건 표시가 아니라 정산금액 계산에 쓰는 load-bearing 관계라
+    // forSum 에서도 반드시 로드해야 한다(아래 별도 처리 + 사유 주석 참고).
     let queryBuilder = this.orderRepository.createQueryBuilder('order').innerJoinAndSelect('order.user', 'user');
 
-    // forSum: company는 필터용 JOIN만, classification/orderDeliveries는 SELECT 제외
+    // forSum: company는 필터용 JOIN만, classification은 SELECT 제외 (표시 전용 — 현행 유지)
     if (forSum) {
       queryBuilder = queryBuilder
         .leftJoin('user.company', 'userCompany')
@@ -2950,9 +2955,23 @@ export class SettleService {
 
     queryBuilder = queryBuilder.leftJoinAndSelect('product.brand', 'brand');
 
-    // forSum: orderDeliveries JOIN 제거 — status 필터로 이미 확정된 주문만 조회되므로 불필요
-    // 이 JOIN이 매핑당 배송건수만큼 행을 증폭시켜 성능 저하의 주원인이었음
-    if (!forSum) {
+    // orderDeliveries 는 정산금액 계산(calculateMappingSettlementBaseAmount)에 필수다.
+    //   - 차등정산(SSG 중복할인) 매핑은 발송건별 settleFee 로 단가가 갈리고, 폐기 후 재발행된
+    //     CANCEL 원본 제외(replacedFromId)도 발송건 단위로 판정한다.
+    //   - 미로드 시 hasDeliveryFee=false 로 균일 분기에 빠져 settleFee 를 통째로 무시 → 합계 오류.
+    //     (undefined 관계와 "발송건 0건"이 런타임에 구분되지 않아 조용히 틀린 금액이 나온다.)
+    // forSum(요약)은 표시 필드가 필요 없으므로 계산에 쓰는 5개 컬럼만 선택해 행 증폭 부담을 줄인다.
+    if (forSum) {
+      queryBuilder = queryBuilder
+        .innerJoin('orderProductMappings.orderDeliveries', 'orderDeliveries')
+        .addSelect([
+          'orderDeliveries.id',
+          'orderDeliveries.settleFee',
+          'orderDeliveries.settlePriceAdjustment',
+          'orderDeliveries.couponStatus',
+          'orderDeliveries.replacedFromId',
+        ]);
+    } else {
       queryBuilder = queryBuilder.innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries');
     }
 
