@@ -597,10 +597,8 @@ export class SettlementCodeAdminService {
 
     // 단일 테이블 + auto-increment PK 라 id DESC 만으로 생성순·유일 정렬(DATETIME(6) 정밀도 무관).
     const rows = await qb.orderBy('a.id', 'DESC').limit(limit + 1).getMany();
-    const page = rows.slice(0, limit);
+    const { page, nextCursor } = this.pageWithCursor(rows, limit);
     const items = page.map((r) => this.mapActivityLogItem(r));
-    const last = page[page.length - 1];
-    const nextCursor = rows.length > limit && last ? this.encodeCursor(last.id) : null;
     return { items, nextCursor };
   }
 
@@ -634,7 +632,7 @@ export class SettlementCodeAdminService {
 
     // 단일 테이블 + auto-increment PK 라 id DESC 만으로 생성순·유일 정렬(DATETIME(6) 정밀도 무관).
     const rows = await qb.orderBy('t.id', 'DESC').limit(limit + 1).getMany();
-    const page = rows.slice(0, limit);
+    const { page, nextCursor } = this.pageWithCursor(rows, limit);
     const items: SettlementCodeHistoryItem[] = page.map((t) => ({
       source: 'WALLET_TRANSACTION',
       sourceId: String(t.id),
@@ -646,8 +644,6 @@ export class SettlementCodeAdminService {
       after: t.balanceAfter,
       memo: t.memo,
     }));
-    const last = page[page.length - 1];
-    const nextCursor = rows.length > limit && last ? this.encodeCursor(last.id) : null;
     return { items, nextCursor };
   }
 
@@ -684,6 +680,17 @@ export class SettlementCodeAdminService {
 
   private encodeCursor(id: string | number): string {
     return Buffer.from(JSON.stringify({ id: String(id) })).toString('base64url');
+  }
+
+  /** cursor 기반 페이지 계산: limit+1 조회 결과에서 실제 페이지 + nextCursor 를 산출(getCodeHistory/getDepositHistory 공용). */
+  private pageWithCursor<T extends { id: string | number }>(
+    rows: T[],
+    limit: number,
+  ): { page: T[]; nextCursor: string | null } {
+    const page = rows.slice(0, limit);
+    const last = page[page.length - 1];
+    const nextCursor = rows.length > limit && last ? this.encodeCursor(last.id) : null;
+    return { page, nextCursor };
   }
 
   private decodeCursor(cursor?: string): { id: string } | null {
@@ -725,30 +732,13 @@ export class SettlementCodeAdminService {
     let blockingOrderCount = 0;
     const userIds = users.map((u) => u.id);
     if (userIds.length > 0) {
-      const inflightBrackets = () =>
-        new Brackets((qb) => {
-          qb.where('o.status IN (:...inflight)', { inflight: CHANGE_GATE_INFLIGHT_STATUSES }).orWhere(
-            '(o.status = :dc AND (o.settleStatus IS NULL OR o.settleStatus != :sc))',
-            { dc: IOrderStatus.DELIVERY_COMPLETE, sc: SETTLE_COMPLETE },
-          );
-        });
-
       // (1) 전체 차단 주문 수(집계만 — row 미적재).
-      blockingOrderCount = await manager
-        .getRepository(OrderEntity)
-        .createQueryBuilder('o')
-        .where('COALESCE(o.clientUserId, o.userId) IN (:...uids)', { uids: userIds })
-        .andWhere(inflightBrackets())
-        .getCount();
+      blockingOrderCount = await this.outstandingOrdersQuery(manager, userIds).getCount();
 
       if (blockingOrderCount > 0) {
         // (2) 대표 주문 ID 최대 REP_LIMIT 건.
-        const repRows = await manager
-          .getRepository(OrderEntity)
-          .createQueryBuilder('o')
+        const repRows = await this.outstandingOrdersQuery(manager, userIds)
           .select('o.id', 'id')
-          .where('COALESCE(o.clientUserId, o.userId) IN (:...uids)', { uids: userIds })
-          .andWhere(inflightBrackets())
           .orderBy('o.id', 'DESC')
           .limit(REP_LIMIT)
           .getRawMany<{ id: number }>();
@@ -757,12 +747,8 @@ export class SettlementCodeAdminService {
         }
 
         // (3) 차단 주문의 DISTINCT billing user(대표 주문에 없어도 누락되지 않도록 별도 집계).
-        const uidRows = await manager
-          .getRepository(OrderEntity)
-          .createQueryBuilder('o')
+        const uidRows = await this.outstandingOrdersQuery(manager, userIds)
           .select('DISTINCT COALESCE(o.clientUserId, o.userId)', 'uid')
-          .where('COALESCE(o.clientUserId, o.userId) IN (:...uids)', { uids: userIds })
-          .andWhere(inflightBrackets())
           .getRawMany<{ uid: number }>();
         for (const r of uidRows) {
           blockingUserIds.add(Number(r.uid));
@@ -771,6 +757,22 @@ export class SettlementCodeAdminService {
     }
 
     return { blockingUserIds: [...blockingUserIds], blockingOrderIds, blockingOrderCount };
+  }
+
+  /** collectOutstandingForCode 의 3개 조회가 공유하는 base queryBuilder (대상 사용자 + 진행 중/미정산 필터). */
+  private outstandingOrdersQuery(manager: EntityManager, userIds: number[]) {
+    return manager
+      .getRepository(OrderEntity)
+      .createQueryBuilder('o')
+      .where('COALESCE(o.clientUserId, o.userId) IN (:...uids)', { uids: userIds })
+      .andWhere(
+        new Brackets((qb) => {
+          qb.where('o.status IN (:...inflight)', { inflight: CHANGE_GATE_INFLIGHT_STATUSES }).orWhere(
+            '(o.status = :dc AND (o.settleStatus IS NULL OR o.settleStatus != :sc))',
+            { dc: IOrderStatus.DELIVERY_COMPLETE, sc: SETTLE_COMPLETE },
+          );
+        }),
+      );
   }
 
   /** settlement_code(owner_id) 로 wallet_account 를 FOR UPDATE(락 모드 지정) 조회. 없으면 null. */
