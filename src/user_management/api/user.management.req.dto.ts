@@ -1,5 +1,6 @@
 import { PagingReqDto } from '../../common/api/dto/pagination.req.dto';
 import { IUserSettleCondition } from '../../user/interface/user.settle.condition';
+import { IUserSettleMethod } from '../../user/interface/user.settle.method';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsEmail,
@@ -181,6 +182,21 @@ export class UserManagementCreateReqDto extends UserManagementUpsertDto {
   @IsNotEmpty()
   @IsEnum(IUserStatus)
   status: IUserStatus;
+  @ApiProperty({ description: '정산 조건' })
+  @IsNotEmpty()
+  @IsEnum(IUserSettleCondition)
+  settleCondition: IUserSettleCondition;
+
+  @ApiProperty({ description: '정산 방법' })
+  @IsNotEmpty()
+  @IsEnum(IUserSettleMethod)
+  settleMethod: IUserSettleMethod;
+
+  @ApiProperty({ description: '최대 서비스 한도' })
+  @IsNotEmpty()
+  @IsNumber()
+  maximumLimit: number;
+
 }
 
 export class UserManagementUpdateReqDto extends UserManagementUpsertDto {
@@ -199,6 +215,23 @@ export class UserManagementUpdateReqDto extends UserManagementUpsertDto {
   @IsNotEmpty()
   @IsEnum(IUserStatus)
   status: IUserStatus;
+  // 정산조건/정산방법/최대서비스한도는 정산코드 관리 페이지(wallet SoT)에서 편집.
+  // 계정 수정 시 미전송 = 기존값 유지(서비스 update()가 undefined 를 덮어쓰지 않음).
+  @ApiPropertyOptional({ description: '정산 조건 (미전송 시 기존값 유지)' })
+  @IsOptional()
+  @IsEnum(IUserSettleCondition)
+  settleCondition?: IUserSettleCondition;
+
+  @ApiPropertyOptional({ description: '정산 방법 (미전송 시 기존값 유지)' })
+  @IsOptional()
+  @IsEnum(IUserSettleMethod)
+  settleMethod?: IUserSettleMethod;
+
+  @ApiPropertyOptional({ description: '최대 서비스 한도 (미전송 시 기존값 유지, 편집은 별도 API)' })
+  @IsOptional()
+  @IsNumber()
+  maximumLimit?: number;
+
 }
 
 export class UserManagementPasswordResetReqDto {

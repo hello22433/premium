@@ -1104,8 +1104,10 @@ export class UserManagementService {
         user.company.businessPhoneNumber = getBody.businessPhoneNumber;
         user.company.industryType = getBody.industryType;
         user.company.industryItem = getBody.industryItem;
-        // settleMethod SoT 동기화 (company.settleMethod 가 정산 계산 소스)
-        user.company.settleMethod = getBody.settleMethod ?? null;
+        // settleMethod SoT 동기화 (company.settleMethod 가 정산 계산 소스). 미전송 시 기존값 보존(정산코드 관리로 이관).
+        if (getBody.settleMethod !== undefined) {
+          user.company.settleMethod = getBody.settleMethod;
+        }
         // maximumLimit은 별도 API로만 수정 가능하므로 여기서는 업데이트하지 않음
         await this.userCompanyRepository.save(user.company);
       }
@@ -1119,8 +1121,13 @@ export class UserManagementService {
     user.corporateNumber = getBody.corporateNumber;
     user.businessType = getBody.businessType;
     user.ip = getBody.ip;
-    user.settleCondition = getBody.settleCondition;
-    user.settleMethod = getBody.settleMethod;
+    // 정산조건/정산방법: 미전송 시 기존값 보존(정산코드 관리 페이지 wallet SoT 로 편집 이관).
+    if (getBody.settleCondition !== undefined) {
+      user.settleCondition = getBody.settleCondition;
+    }
+    if (getBody.settleMethod !== undefined) {
+      user.settleMethod = getBody.settleMethod;
+    }
     user.bankName = getBody.bankName;
     user.bankNumber = getBody.bankNumber;
     user.cardName = getBody.cardName;
@@ -1128,8 +1135,13 @@ export class UserManagementService {
     // user.status 는 여기서 직접 세팅하지 않음 — save 후 accountStatusTransitionService 로 일원화 처리.
     // fromPhoneNumber mirror 직접 세팅 제거 — save 이후 seedApprovedDefaultPhone 이 최종 권위 write.
 
-    user.settlePeriodCondition = getBody.settlePeriodCondition;
-    user.settlePeriodCount = getBody.settlePeriodCount;
+    // 정산기준(정산주기): 미전송 시 기존값 보존.
+    if (getBody.settlePeriodCondition !== undefined) {
+      user.settlePeriodCondition = getBody.settlePeriodCondition;
+    }
+    if (getBody.settlePeriodCount !== undefined) {
+      user.settlePeriodCount = getBody.settlePeriodCount;
+    }
     user.duplicatePhoneLimit = getBody.duplicatePhoneLimit ?? 0;
     // payload 에 없으면(구버전/부분 payload) 셀프서비스 토글 값을 보존한다. 명시 전달 시에만 갱신.
     if (getBody.hideSystemFromPhone !== undefined) {
