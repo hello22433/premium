@@ -2227,24 +2227,25 @@ export class OrderService {
     let price = 0;
     let vat = 0;
     let totalAmount = 0;
-    // 거래일자: 증빙일자가 있으면 증빙일자 사용
-    let sendRequestAt: string | null = evidenceDateParsed ? format(evidenceDateParsed, DateFormatStr) : null;
+    // 거래일자: 증빙일자가 있으면 증빙일자 사용 (루프 불변값이므로 1회만 계산)
+    const evidenceDateStr = evidenceDateParsed ? format(evidenceDateParsed, DateFormatStr) : null;
+    let sendRequestAt: string | null = evidenceDateStr;
 
     for (const order of orders) {
       if (order.orderProductMappings && order.orderProductMappings.length > 0) {
         for (const orderProductMapping of order.orderProductMappings) {
           const firstDelivery = orderProductMapping.orderDeliveries?.[0];
+          const deliveryDateStr = firstDelivery?.sendRequestAt
+            ? format(firstDelivery.sendRequestAt, DateFormatStr)
+            : null;
+
           // 증빙일자가 없고 sendRequestAt도 없으면 첫 배송의 발송요청일 사용
-          if (!sendRequestAt && firstDelivery?.sendRequestAt) {
-            sendRequestAt = format(firstDelivery.sendRequestAt, DateFormatStr);
+          if (!sendRequestAt && deliveryDateStr) {
+            sendRequestAt = deliveryDateStr;
           }
 
-          // 품목별 일자: 증빙일자가 있으면 증빙일자 사용
-          const itemSendRequestAt = evidenceDateParsed
-            ? format(evidenceDateParsed, DateFormatStr)
-            : firstDelivery?.sendRequestAt
-              ? format(firstDelivery.sendRequestAt, DateFormatStr)
-              : null;
+          // 품목별 일자: 증빙일자가 있으면 증빙일자, 없으면 첫 배송의 발송요청일
+          const itemSendRequestAt = evidenceDateStr ?? deliveryDateStr;
 
           const rows = buildOrderCompleteReportRows(orderProductMapping, itemSendRequestAt);
           orderDeliveryList.push(...rows);
