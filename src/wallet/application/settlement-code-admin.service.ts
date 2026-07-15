@@ -347,7 +347,7 @@ export class SettlementCodeAdminService {
           beforeMaximumLimit: before,
           afterMaximumLimit: creditLimit,
         },
-      });
+      }, manager); // 동일 트랜잭션 감사(정책/한도 변경 정본).
 
       this.logger.log(
         `setCodeCreditLimit code=${settlementCode} ${before} -> ${creditLimit} by operator=${operator.id}`,
@@ -409,12 +409,13 @@ export class SettlementCodeAdminService {
           await this.lockCompanylessCodeUsers(manager, settlementCode);
           // **구조화된 게이트 오류**(문자열 파싱 금지): 어떤 계정/주문이 차단하는지 배열로 반환.
           const outstanding = await this.collectOutstandingForCode(manager, settlementCode);
-          if (outstanding.blockingUserIds.length > 0 || outstanding.blockingOrderIds.length > 0) {
+          if (outstanding.blockingUserIds.length > 0 || outstanding.blockingOrderCount > 0) {
             throw new BadRequestException({
               code: 'OUTSTANDING_ORDER_EXISTS',
               message: '진행 중이거나 미정산 완료된 주문이 있어 정산조건을 변경할 수 없습니다.',
               blockingUserIds: outstanding.blockingUserIds,
-              blockingOrderIds: outstanding.blockingOrderIds,
+              blockingOrderCount: outstanding.blockingOrderCount, // 전체 차단 주문 수
+              blockingOrderIds: outstanding.blockingOrderIds, // 대표 최대 20건
             });
           }
           wallet.settleCondition = update.settleCondition!;
@@ -436,7 +437,7 @@ export class SettlementCodeAdminService {
           result: ActivityLogResult.SUCCESS,
           responseTime: 0,
           requestParams: { settlementCode, before, after },
-        });
+        }, manager); // 동일 트랜잭션 감사(정책 변경 정본).
 
         this.logger.log(
           `setSettlePolicy code=${settlementCode} ${JSON.stringify(before)} -> ${JSON.stringify(after)} by operator=${operator.id}`,
@@ -693,10 +694,15 @@ export class SettlementCodeAdminService {
     if (cursor === undefined || cursor === '') return null;
     try {
       const parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as { createdAt?: unknown; id?: unknown };
-      if (!parsed || typeof parsed.createdAt !== 'string' || parsed.id === undefined || parsed.id === null) {
-        throw new Error('cursor shape');
+      // createdAt: 유효 ISO datetime, id: 양의 정수 문자열만 허용(그 외 전부 400).
+      if (!parsed || typeof parsed.createdAt !== 'string' || Number.isNaN(Date.parse(parsed.createdAt))) {
+        throw new Error('cursor createdAt');
       }
-      return { createdAt: parsed.createdAt, id: String(parsed.id) };
+      const idStr = String(parsed.id);
+      if (!/^\d+$/.test(idStr) || idStr === '0') {
+        throw new Error('cursor id');
+      }
+      return { createdAt: new Date(parsed.createdAt).toISOString(), id: idStr };
     } catch {
       throw new BadRequestException('cursor 형식이 올바르지 않습니다.');
     }
@@ -704,12 +710,14 @@ export class SettlementCodeAdminService {
 
   /**
    * 정산코드를 공유하는 전체 계정에서 진행 중/미정산 주문(또는 미정산 외상 잔액)을 **수집**한다(선/후정산 전환 게이트).
-   * 조기 throw 대신 차단 원인을 배열로 모아 호출자가 구조화된 오류 응답을 구성하게 한다.
+   * 대량 응답/락 보유시간 방지: 전체 count 는 집계로, 대표 주문 ID 는 최대 REP_LIMIT 건만 조회한다.
+   * blockingUserIds 는 코드 멤버 수로 유계이므로 DISTINCT 전량 수집.
    */
   private async collectOutstandingForCode(
     manager: EntityManager,
     settlementCode: string,
-  ): Promise<{ blockingUserIds: number[]; blockingOrderIds: number[] }> {
+  ): Promise<{ blockingUserIds: number[]; blockingOrderIds: number[]; blockingOrderCount: number }> {
+    const REP_LIMIT = 20;
     const users = await manager
       .getRepository(UserEntity)
       .find({ where: { settlementCode }, select: ['id', 'allSettleAmount'] });
@@ -721,30 +729,55 @@ export class SettlementCodeAdminService {
     }
 
     const blockingOrderIds: number[] = [];
+    let blockingOrderCount = 0;
     const userIds = users.map((u) => u.id);
     if (userIds.length > 0) {
-      const rows = await manager
+      const inflightBrackets = () =>
+        new Brackets((qb) => {
+          qb.where('o.status IN (:...inflight)', { inflight: CHANGE_GATE_INFLIGHT_STATUSES }).orWhere(
+            '(o.status = :dc AND (o.settleStatus IS NULL OR o.settleStatus != :sc))',
+            { dc: IOrderStatus.DELIVERY_COMPLETE, sc: SETTLE_COMPLETE },
+          );
+        });
+
+      // (1) 전체 차단 주문 수(집계만 — row 미적재).
+      blockingOrderCount = await manager
         .getRepository(OrderEntity)
         .createQueryBuilder('o')
-        .select('o.id', 'id')
-        .addSelect('COALESCE(o.clientUserId, o.userId)', 'uid')
         .where('COALESCE(o.clientUserId, o.userId) IN (:...uids)', { uids: userIds })
-        .andWhere(
-          new Brackets((qb) => {
-            qb.where('o.status IN (:...inflight)', { inflight: CHANGE_GATE_INFLIGHT_STATUSES }).orWhere(
-              '(o.status = :dc AND (o.settleStatus IS NULL OR o.settleStatus != :sc))',
-              { dc: IOrderStatus.DELIVERY_COMPLETE, sc: SETTLE_COMPLETE },
-            );
-          }),
-        )
-        .getRawMany<{ id: number; uid: number }>();
-      for (const r of rows) {
-        blockingOrderIds.push(Number(r.id));
-        blockingUserIds.add(Number(r.uid));
+        .andWhere(inflightBrackets())
+        .getCount();
+
+      if (blockingOrderCount > 0) {
+        // (2) 대표 주문 ID 최대 REP_LIMIT 건.
+        const repRows = await manager
+          .getRepository(OrderEntity)
+          .createQueryBuilder('o')
+          .select('o.id', 'id')
+          .where('COALESCE(o.clientUserId, o.userId) IN (:...uids)', { uids: userIds })
+          .andWhere(inflightBrackets())
+          .orderBy('o.id', 'DESC')
+          .limit(REP_LIMIT)
+          .getRawMany<{ id: number }>();
+        for (const r of repRows) {
+          blockingOrderIds.push(Number(r.id));
+        }
+
+        // (3) 차단 주문의 DISTINCT billing user(대표 주문에 없어도 누락되지 않도록 별도 집계).
+        const uidRows = await manager
+          .getRepository(OrderEntity)
+          .createQueryBuilder('o')
+          .select('DISTINCT COALESCE(o.clientUserId, o.userId)', 'uid')
+          .where('COALESCE(o.clientUserId, o.userId) IN (:...uids)', { uids: userIds })
+          .andWhere(inflightBrackets())
+          .getRawMany<{ uid: number }>();
+        for (const r of uidRows) {
+          blockingUserIds.add(Number(r.uid));
+        }
       }
     }
 
-    return { blockingUserIds: [...blockingUserIds], blockingOrderIds };
+    return { blockingUserIds: [...blockingUserIds], blockingOrderIds, blockingOrderCount };
   }
 
   /** settlement_code(owner_id) 로 wallet_account 를 FOR UPDATE(락 모드 지정) 조회. 없으면 null. */

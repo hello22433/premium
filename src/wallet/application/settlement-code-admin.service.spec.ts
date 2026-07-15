@@ -156,6 +156,8 @@ function makeManager(fx: ManagerFixture, cap: Captured) {
         addSelect: () => qb,
         where: () => qb,
         andWhere: () => qb,
+        orderBy: () => qb,
+        limit: () => qb,
         getCount: async () => fx.outstandingCount,
         getRawMany: async () => fx.outstandingOrderRows ?? [],
       };
@@ -496,6 +498,7 @@ describe('SettlementCodeAdminService', () => {
       expect(r).toEqual({ settlementCode: 'company-7', before: 5000, after: 20000, belowCurrentUsage: false });
       expect(cap.setLockModes).toContain('pessimistic_write');
       expect(cap.walletSave[0]).toEqual(expect.objectContaining({ creditLimit: 20000 }));
+      // createLog 는 (dto, manager) 2인자로 호출 — 동일 트랜잭션 감사.
       expect(activityLogService.createLog).toHaveBeenCalledWith(
         expect.objectContaining({
           userId: 99,
@@ -506,6 +509,7 @@ describe('SettlementCodeAdminService', () => {
             afterMaximumLimit: 20000,
           }),
         }),
+        expect.anything(),
       );
     });
 
@@ -581,7 +585,8 @@ describe('SettlementCodeAdminService', () => {
     it('정산조건 변경 + 진행중 주문 있음 → 구조화된 게이트 차단(BadRequest, blocking ids 포함)', async () => {
       fx.walletGetOne = { id: 'w1', settleCondition: 'POST_PAYMENT', settleMethod: 'CASH' } as any;
       fx.codeUsers = [{ id: 1 }];
-      fx.outstandingOrderRows = [{ id: 101, uid: 1 }];
+      fx.outstandingCount = 3; // 전체 차단 주문 수(집계)
+      fx.outstandingOrderRows = [{ id: 101, uid: 1 }]; // 대표 주문/uid
       let caught: any;
       await sut
         .setSettlePolicy('company-7', { settleCondition: 'PRE_PAYMENT' }, { id: 9, email: 'op@x' } as any)
@@ -591,6 +596,7 @@ describe('SettlementCodeAdminService', () => {
         expect.objectContaining({
           code: 'OUTSTANDING_ORDER_EXISTS',
           blockingUserIds: [1],
+          blockingOrderCount: 3,
           blockingOrderIds: [101],
         }),
       );
@@ -675,16 +681,31 @@ describe('SettlementCodeAdminService', () => {
       ).rejects.toBeInstanceOf(BadRequestException);
     });
 
-    it('충전 성공 → DEPOSIT +amount 원장 기록 + balanceAfter 반환', async () => {
+    it('충전 성공 → DEPOSIT +amount 원장 기록(운영자/메모/멱등키) + balanceAfter 반환', async () => {
       fx.walletGetOne = { id: 'w1' } as any;
       const res = await sut.chargeDeposit('company-7', 5000, { id: 9, email: 'op@x' } as any, '메모', 'req-1');
       const arg = walletLedger.recordTransaction.mock.calls[0][0];
       expect(arg.resourceType).toBe('DEPOSIT');
       expect(arg.amount).toBe(5000);
       expect(arg.type).toBe('CHARGE');
+      // 감사 정본 payload: 운영자/메모/멱등키가 원장에 보존되어야 한다.
+      expect(arg.operatorId).toBe(9);
+      expect(arg.operatorEmail).toBe('op@x');
+      expect(arg.memo).toBe('메모');
+      expect(typeof arg.idempotencyKey).toBe('string');
+      expect(arg.idempotencyKey).toMatch(/^ADMIN_DEPOSIT:/);
       expect(res.depositBalanceAfter).toBe(15000);
       expect(res.isDuplicate).toBe(false);
       expect(activityLogService.createLog).toHaveBeenCalledTimes(1);
+    });
+
+    it('activity_log 실패해도 충전은 성공 반환 (원장 정본, 로그 best-effort)', async () => {
+      fx.walletGetOne = { id: 'w1' } as any;
+      activityLogService.createLog.mockRejectedValueOnce(new Error('activity_log down'));
+      const res = await sut.chargeDeposit('company-7', 5000, { id: 9, email: 'op@x' } as any, undefined, 'req-1');
+      expect(res.isDuplicate).toBe(false);
+      expect(res.depositBalanceAfter).toBe(15000);
+      expect(walletLedger.recordTransaction).toHaveBeenCalledTimes(1);
     });
 
     it('동일 requestKey·다른 금액 → 409(Conflict)', async () => {
@@ -731,13 +752,19 @@ describe('SettlementCodeAdminService', () => {
 
   // ── getCodeHistory (정책/한도, activity_log) ───────────────────────────────
   describe('getCodeHistory', () => {
-    function makeHistoryQb(rows: any[]) {
+    function makeHistoryQb(rows: any[], cap?: { andWhere: any[][]; limit: number[] }) {
       const qb: any = {
         where: () => qb,
-        andWhere: () => qb,
+        andWhere: (...args: any[]) => {
+          cap?.andWhere.push(args);
+          return qb;
+        },
         orderBy: () => qb,
         addOrderBy: () => qb,
-        limit: () => qb,
+        limit: (n: number) => {
+          cap?.limit.push(n);
+          return qb;
+        },
         getMany: async () => rows,
       };
       return qb;
@@ -753,6 +780,23 @@ describe('SettlementCodeAdminService', () => {
       await expect(sut.getCodeHistory('company-7', { cursor: 'not-a-valid-cursor!!' })).rejects.toBeInstanceOf(
         BadRequestException,
       );
+    });
+
+    it('유효 JSON 이지만 createdAt 이 날짜가 아니면 → BadRequest', async () => {
+      const bad = Buffer.from(JSON.stringify({ createdAt: 'not-a-date', id: '5' })).toString('base64url');
+      await expect(sut.getCodeHistory('company-7', { cursor: bad })).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('유효 JSON 이지만 id 가 정수 문자열이 아니면 → BadRequest', async () => {
+      const bad = Buffer.from(
+        JSON.stringify({ createdAt: '2026-07-10T00:00:00.000Z', id: 'abc' }),
+      ).toString('base64url');
+      await expect(sut.getCodeHistory('company-7', { cursor: bad })).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('id=0 cursor → BadRequest (양의 정수만 허용)', async () => {
+      const bad = Buffer.from(JSON.stringify({ createdAt: '2026-07-10T00:00:00.000Z', id: '0' })).toString('base64url');
+      await expect(sut.getCodeHistory('company-7', { cursor: bad })).rejects.toBeInstanceOf(BadRequestException);
     });
 
     it('정책/한도 이력 매핑 + nextCursor(limit 초과 시)', async () => {
@@ -786,6 +830,23 @@ describe('SettlementCodeAdminService', () => {
       expect(page.nextCursor).not.toBeNull();
       const decoded = JSON.parse(Buffer.from(page.nextCursor as string, 'base64url').toString('utf8'));
       expect(decoded.id).toBe('20');
+    });
+
+    it('유효 cursor → (createdAt,id) 비교 조건 + limit(limit+1) 적용', async () => {
+      const cap = { andWhere: [] as any[][], limit: [] as number[] };
+      activityLogRepo.createQueryBuilder.mockReturnValue(makeHistoryQb([], cap));
+      const cursor = Buffer.from(JSON.stringify({ createdAt: '2026-07-10T00:00:00.000Z', id: '20' })).toString(
+        'base64url',
+      );
+      await sut.getCodeHistory('company-7', { limit: 10, cursor });
+      // limit + 1 (다음 페이지 존재 판정용)
+      expect(cap.limit).toContain(11);
+      // cursor 비교 andWhere 가 (createdAt,id) 파라미터와 함께 적용됨
+      const cursorClause = cap.andWhere.find(
+        (a) => typeof a[0] === 'string' && a[0].includes('a.createdAt < :cAt'),
+      );
+      expect(cursorClause).toBeDefined();
+      expect(cursorClause![1]).toEqual({ cAt: '2026-07-10T00:00:00.000Z', cId: 20 });
     });
   });
 
