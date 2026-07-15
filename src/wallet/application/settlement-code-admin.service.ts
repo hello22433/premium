@@ -592,23 +592,21 @@ export class SettlementCodeAdminService {
       .andWhere("JSON_UNQUOTE(JSON_EXTRACT(a.requestParams, '$.settlementCode')) = :code", { code: settlementCode });
 
     if (cursor) {
-      qb.andWhere('(a.createdAt < :cAt OR (a.createdAt = :cAt AND a.id < :cId))', {
-        cAt: cursor.createdAt,
-        cId: Number(cursor.id),
-      });
+      qb.andWhere('a.id < :cId', { cId: Number(cursor.id) });
     }
 
-    const rows = await qb.orderBy('a.createdAt', 'DESC').addOrderBy('a.id', 'DESC').limit(limit + 1).getMany();
+    // 단일 테이블 + auto-increment PK 라 id DESC 만으로 생성순·유일 정렬(DATETIME(6) 정밀도 무관).
+    const rows = await qb.orderBy('a.id', 'DESC').limit(limit + 1).getMany();
     const page = rows.slice(0, limit);
     const items = page.map((r) => this.mapActivityLogItem(r));
     const last = page[page.length - 1];
-    const nextCursor = rows.length > limit && last ? this.encodeCursor(last.createdAt, last.id) : null;
+    const nextCursor = rows.length > limit && last ? this.encodeCursor(last.id) : null;
     return { items, nextCursor };
   }
 
   /**
    * 운영자: 정산코드 **예치금 충전** 이력 (wallet_transaction 감사 정본, cursor pagination).
-   * 정렬 createdAt DESC, id DESC. limit 기본 50, 최대 100.
+   * 정렬 id DESC(auto-increment PK = 생성순, 유일). limit 기본 50, 최대 100.
    */
   async getDepositHistory(settlementCode: string, opts: { limit?: number; cursor?: string } = {}): Promise<HistoryPage> {
     if (!settlementCode || settlementCode.trim() === '') {
@@ -631,13 +629,11 @@ export class SettlementCodeAdminService {
       .andWhere('t.type = :ty', { ty: 'CHARGE' });
 
     if (cursor) {
-      qb.andWhere('(t.createdAt < :cAt OR (t.createdAt = :cAt AND t.id < :cId))', {
-        cAt: cursor.createdAt,
-        cId: cursor.id,
-      });
+      qb.andWhere('t.id < :cId', { cId: cursor.id });
     }
 
-    const rows = await qb.orderBy('t.createdAt', 'DESC').addOrderBy('t.id', 'DESC').limit(limit + 1).getMany();
+    // 단일 테이블 + auto-increment PK 라 id DESC 만으로 생성순·유일 정렬(DATETIME(6) 정밀도 무관).
+    const rows = await qb.orderBy('t.id', 'DESC').limit(limit + 1).getMany();
     const page = rows.slice(0, limit);
     const items: SettlementCodeHistoryItem[] = page.map((t) => ({
       source: 'WALLET_TRANSACTION',
@@ -651,7 +647,7 @@ export class SettlementCodeAdminService {
       memo: t.memo,
     }));
     const last = page[page.length - 1];
-    const nextCursor = rows.length > limit && last ? this.encodeCursor(last.createdAt, last.id) : null;
+    const nextCursor = rows.length > limit && last ? this.encodeCursor(last.id) : null;
     return { items, nextCursor };
   }
 
@@ -686,23 +682,20 @@ export class SettlementCodeAdminService {
     return Math.min(100, Math.max(1, Math.floor(limit)));
   }
 
-  private encodeCursor(createdAt: Date, id: string | number): string {
-    return Buffer.from(JSON.stringify({ createdAt: createdAt.toISOString(), id: String(id) })).toString('base64url');
+  private encodeCursor(id: string | number): string {
+    return Buffer.from(JSON.stringify({ id: String(id) })).toString('base64url');
   }
 
-  private decodeCursor(cursor?: string): { createdAt: string; id: string } | null {
+  private decodeCursor(cursor?: string): { id: string } | null {
     if (cursor === undefined || cursor === '') return null;
     try {
-      const parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as { createdAt?: unknown; id?: unknown };
-      // createdAt: 유효 ISO datetime, id: 양의 정수 문자열만 허용(그 외 전부 400).
-      if (!parsed || typeof parsed.createdAt !== 'string' || Number.isNaN(Date.parse(parsed.createdAt))) {
-        throw new Error('cursor createdAt');
-      }
-      const idStr = String(parsed.id);
+      const parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as { id?: unknown };
+      // id: 양의 정수 문자열만 허용(그 외 전부 400). 단일 테이블 정렬이라 timestamp 는 cursor 에 불필요.
+      const idStr = String(parsed?.id);
       if (!/^\d+$/.test(idStr) || idStr === '0') {
         throw new Error('cursor id');
       }
-      return { createdAt: new Date(parsed.createdAt).toISOString(), id: idStr };
+      return { id: idStr };
     } catch {
       throw new BadRequestException('cursor 형식이 올바르지 않습니다.');
     }

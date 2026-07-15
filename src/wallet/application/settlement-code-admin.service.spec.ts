@@ -782,20 +782,13 @@ describe('SettlementCodeAdminService', () => {
       );
     });
 
-    it('유효 JSON 이지만 createdAt 이 날짜가 아니면 → BadRequest', async () => {
-      const bad = Buffer.from(JSON.stringify({ createdAt: 'not-a-date', id: '5' })).toString('base64url');
-      await expect(sut.getCodeHistory('company-7', { cursor: bad })).rejects.toBeInstanceOf(BadRequestException);
-    });
-
     it('유효 JSON 이지만 id 가 정수 문자열이 아니면 → BadRequest', async () => {
-      const bad = Buffer.from(
-        JSON.stringify({ createdAt: '2026-07-10T00:00:00.000Z', id: 'abc' }),
-      ).toString('base64url');
+      const bad = Buffer.from(JSON.stringify({ id: 'abc' })).toString('base64url');
       await expect(sut.getCodeHistory('company-7', { cursor: bad })).rejects.toBeInstanceOf(BadRequestException);
     });
 
     it('id=0 cursor → BadRequest (양의 정수만 허용)', async () => {
-      const bad = Buffer.from(JSON.stringify({ createdAt: '2026-07-10T00:00:00.000Z', id: '0' })).toString('base64url');
+      const bad = Buffer.from(JSON.stringify({ id: '0' })).toString('base64url');
       await expect(sut.getCodeHistory('company-7', { cursor: bad })).rejects.toBeInstanceOf(BadRequestException);
     });
 
@@ -832,21 +825,17 @@ describe('SettlementCodeAdminService', () => {
       expect(decoded.id).toBe('20');
     });
 
-    it('유효 cursor → (createdAt,id) 비교 조건 + limit(limit+1) 적용', async () => {
+    it('유효 cursor → id 비교 조건 + limit(limit+1) 적용', async () => {
       const cap = { andWhere: [] as any[][], limit: [] as number[] };
       activityLogRepo.createQueryBuilder.mockReturnValue(makeHistoryQb([], cap));
-      const cursor = Buffer.from(JSON.stringify({ createdAt: '2026-07-10T00:00:00.000Z', id: '20' })).toString(
-        'base64url',
-      );
+      const cursor = Buffer.from(JSON.stringify({ id: '20' })).toString('base64url');
       await sut.getCodeHistory('company-7', { limit: 10, cursor });
       // limit + 1 (다음 페이지 존재 판정용)
       expect(cap.limit).toContain(11);
-      // cursor 비교 andWhere 가 (createdAt,id) 파라미터와 함께 적용됨
-      const cursorClause = cap.andWhere.find(
-        (a) => typeof a[0] === 'string' && a[0].includes('a.createdAt < :cAt'),
-      );
+      // cursor 비교 andWhere 가 id 파라미터와 함께 적용됨(단일 테이블 id DESC)
+      const cursorClause = cap.andWhere.find((a) => typeof a[0] === 'string' && a[0].includes('a.id < :cId'));
       expect(cursorClause).toBeDefined();
-      expect(cursorClause![1]).toEqual({ cAt: '2026-07-10T00:00:00.000Z', cId: 20 });
+      expect(cursorClause![1]).toEqual({ cId: 20 });
     });
   });
 
