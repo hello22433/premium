@@ -2858,16 +2858,6 @@ export class SettleService {
   }
 
   /**
-   * getUserList / getUserIds 공통 쿼리빌더 생성
-   * 동일한 join + 필터 조건을 공유한다.
-   *
-   * forSum=true: 합산 계산 전용 경량 쿼리 (display 전용 JOIN 제외)
-   *  - company: leftJoin만 (SELECT 제외, 필터용)
-   *  - classification: 제외
-   *  - orderDeliveries: innerJoin만 (SELECT 제외, 필터용)
-   *  - orderBy: 제외
-   */
-  /**
    * 고객사별정산 기간 필터 기준 분기
    * - REGISTER(기본): order.createdAt 기준
    * - SEND: order_delivery.actual_send_at(실제 발송일) 기준 EXISTS 서브쿼리.
@@ -2909,6 +2899,19 @@ export class SettleService {
     );
   }
 
+  /**
+   * getUserList / getUserIds / getUserSummary 공통 쿼리빌더 생성
+   * 동일한 join + 필터 조건을 공유한다.
+   *
+   * forSum=true: 요약(합산) 전용 경량 쿼리 — display 전용 JOIN 을 생략한다.
+   *  - company: leftJoin만 (SELECT 제외, 필터용)
+   *  - classification: 제외
+   *  - orderDeliveries: innerJoin + 정산금액 계산에 필요한 5개 컬럼만 addSelect (표시 컬럼 제외).
+   *    ※ 관계 자체는 반드시 로드해야 한다 — calculateMappingSettlementBaseAmount 가 발송건별
+   *      settleFee 로 차등정산 단가를 계산하므로, 미로드 시 균일 분기로 빠져 합계가 틀린다.
+   *  - orderBy: 제외
+   * forSum=false: 목록/상세용 — 위 JOIN 을 모두 SELECT 까지 포함(innerJoinAndSelect).
+   */
   private buildUserSettleQueryBuilder(
     filters: {
       startAt?: string;
