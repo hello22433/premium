@@ -2662,6 +2662,7 @@ export class DeliveryBatchService {
 
     const orderDeliveryList = await this.orderDeliveryRepository
       .createQueryBuilder('orderDelivery')
+      .withDeleted() // 폐기후재발행 롤백으로 soft-delete 된 행도 파기 (조기파기와 동일 집합)
       .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
       .innerJoinAndSelect('orderProductMapping.order', 'order')
       .where(

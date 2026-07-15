@@ -21,7 +21,7 @@ describe('DeliveryBatchService.deliveryDeliveryTargetDestroy', () => {
   // SELECT 용 QueryBuilder mock (where/andWhere 인자 기록)
   const makeSelectQb = (rows: any[]) => {
     const qb: any = { calls: { where: [] as any[], andWhere: [] as any[] } };
-    for (const m of ['innerJoinAndSelect']) qb[m] = jest.fn(() => qb);
+    for (const m of ['withDeleted', 'innerJoinAndSelect']) qb[m] = jest.fn(() => qb);
     qb.where = jest.fn((sql: any, params: any) => {
       qb.calls.where.push([sql, params]);
       return qb;
@@ -99,6 +99,16 @@ describe('DeliveryBatchService.deliveryDeliveryTargetDestroy', () => {
     ]) {
       expect(piiIdempotency[0]).toContain(col);
     }
+  });
+
+  it('soft-delete 된 행도 파기 대상에 포함한다 (폐기후재발행 롤백, 조기파기와 동일 집합)', async () => {
+    const selectQb = makeSelectQb([{ id: 1 }]);
+    const sut = makeSut(selectQb);
+
+    await sut.deliveryDeliveryTargetDestroy();
+
+    // withDeleted() 없으면 TypeORM 이 deletedAt IS NULL 을 자동 부착해 롤백 soft-delete 행이 영구 미파기.
+    expect(selectQb.withDeleted).toHaveBeenCalled();
   });
 
   it('파기 기준시각 비교는 날짜(DATE) 단위 절삭이다 — 파기예정일 당일 자정 크론에서 파기', async () => {
