@@ -42,6 +42,7 @@ export enum UserAuthSubEnum {
   SETTLE_USER = 'SETTLE_USER', // 고객사별 정산
   SETTLE_USER_MANAGE = 'SETTLE_USER_MANAGE', // 고객사별 정산 관리
   REFILL_SSG = 'REFILL_SSG', // 신세계 충전
+  SETTLEMENT_CODE = 'SETTLEMENT_CODE', // 정산코드 관리
 
   // 고객 센터
   NOTICE = 'NOTICE', // 공지사항
