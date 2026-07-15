@@ -1770,6 +1770,11 @@ export class OrderService {
     const fileName: string = `${serialNumber}_거래명세서`;
     const orderDeliveryList: OrderCompleteReportDeliveryViewDto[] = [];
 
+    // 카드할증(3%)은 거래명세서 총액에 포함하지 않는다(의도된 동작).
+    //   - price/totalAmount 는 물품(상품권) 공급가액 기준(applyCardSurcharge 미적용).
+    //   - 카드 정산 주문의 실제 청구액(order.settleAmount)은 여기에 카드할증이 더해진 값이지만,
+    //     카드할증은 물품 공급가가 아닌 결제수단 수수료이므로 별도 결제 영수증으로 첨부해 안내한다.
+    //   - vat 은 상품권 특성상 0(면세)로 고정.
     let price = 0;
     let vat = 0;
     let totalAmount = 0;
@@ -2214,6 +2219,11 @@ export class OrderService {
     const eventName = eventNames.length > 1 ? `${eventNames[0]} 외 ${eventNames.length - 1}건` : eventNames[0];
 
     const orderDeliveryList: OrderCompleteReportDeliveryViewDto[] = [];
+    // 카드할증(3%)은 거래명세서 총액에 포함하지 않는다(의도된 동작).
+    //   - price/totalAmount 는 물품(상품권) 공급가액 기준(applyCardSurcharge 미적용).
+    //   - 카드 정산 주문의 실제 청구액(order.settleAmount)은 여기에 카드할증이 더해진 값이지만,
+    //     카드할증은 물품 공급가가 아닌 결제수단 수수료이므로 별도 결제 영수증으로 첨부해 안내한다.
+    //   - vat 은 상품권 특성상 0(면세)로 고정.
     let price = 0;
     let vat = 0;
     let totalAmount = 0;
