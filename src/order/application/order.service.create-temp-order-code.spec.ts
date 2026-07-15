@@ -96,12 +96,18 @@ describe('createTemp 주문코드 id 파생 채번 (D3-51)', () => {
     expect(service.orderRepository.findOne).not.toHaveBeenCalled();
   });
 
-  it('insert 결과에 생성 id가 없으면 확정코드 UPDATE 전에 명확히 실패한다(부분주문 방지, F3)', async () => {
+  // 드라이버/엣지 두 형태 모두 커버:
+  //  - [] (빈 배열): identifiers[0] 이 undefined → 과거엔 .id 접근에서 raw TypeError 였음
+  //  - [{}] (id 부재): identifiers[0].id 가 undefined
+  // 이제 둘 다 [0]?.id + 명시 가드로 같은 도메인 에러가 되어 확정코드 UPDATE 전에 실패해야 함.
+  it.each([
+    ['빈 배열', [] as unknown[]],
+    ['id 부재', [{}] as unknown[]],
+  ])('insert 결과에 생성 id가 없으면(%s) 확정코드 UPDATE 전에 명확히 실패한다(부분주문 방지, F3)', async (_label, identifiers) => {
     const service = makeService();
-    // 드라이버/엣지: identifiers 가 비었거나 id 부재 → deriveOrderCodeFromId 가 가드로 throw
-    service.orderRepository.insert = jest.fn(async () => ({ identifiers: [{}] }));
+    service.orderRepository.insert = jest.fn(async () => ({ identifiers }));
 
-    await expect(service.createTemp(user, body)).rejects.toThrow(/양의 안전정수|orderId/);
+    await expect(service.createTemp(user, body)).rejects.toThrow(/생성 id가 없|양의 안전정수/);
     // 확정코드 UPDATE 는 호출되지 않아야(잘못된 code 로 갱신 방지) → 트랜잭션 롤백으로 임시행도 소멸
     expect(service.orderRepository.update).not.toHaveBeenCalled();
   });

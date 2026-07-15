@@ -3468,7 +3468,12 @@ export class OrderService {
       ...buildOrderClientUserSnapshot(clientUserEntity),
       ...buildOrderOperationUserSnapshot(operationUserEntity),
     });
-    const orderId: number = orderInsertResult.identifiers[0].id;
+    // identifiers 가 빈 배열([])이면 [0] 이 undefined 라 .id 접근 시 raw TypeError 가 난다.
+    // ?. 로 undefined 로 좁힌 뒤 명시 가드 → 빈배열/ id부재 모두 같은 도메인 에러로 실패(부분주문 방지).
+    const orderId = orderInsertResult.identifiers[0]?.id;
+    if (orderId == null) {
+      throw new Error('createTemp: insert 결과에 생성 id가 없어 확정코드를 채번할 수 없습니다');
+    }
 
     // 2-step 채번: id 확정 후 EPEVT 코드로 확정(같은 트랜잭션 → 임시코드 커밋 전 소멸)
     await this.orderRepository.update(orderId, { code: deriveOrderCodeFromId(orderId) });
