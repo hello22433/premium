@@ -1,4 +1,5 @@
 import {
+  buildSettlementDisplayLines,
   calculateMappingSettlementBaseAmount,
   calculateOrderSettlementAmount,
   calculateSettlementPrice,
@@ -351,5 +352,172 @@ describe('calculateSettlementPrice — snapshot price priority', () => {
     });
     const expected = OrderFeeCalculator({ fee: 10, priceAdjustment: IPriceAdjustment.DISCOUNT, price: 1500 });
     expect(calculateSettlementPrice(mapping, false)).toBe(expected);
+  });
+});
+
+/**
+ * buildSettlementDisplayLines — 정산 표시용 라인 구성 (D3-49 B안, 요율별 행 분리).
+ *
+ * 고객사별정산 상세/다중상세와 거래명세서가 공유하는 단일 소스이므로 util 레벨에서 직접 검증한다.
+ * 핵심 계약 2가지:
+ *   (1) 모든 행의 단가가 "실존값" — price * amount 가 항상 정확한 합계 (평균단가 근사 없음)
+ *   (2) 표시 합계 === 돈(calculateMappingSettlementBaseAmount) — 두 함수가 동일 기준(D3-52 필터 포함)
+ */
+describe('buildSettlementDisplayLines — 요율별 행 분리 (D3-49)', () => {
+  const makeDelivery = (over: Record<string, unknown> = {}) =>
+    ({
+      id: 1,
+      settleFee: null,
+      settlePriceAdjustment: null,
+      couponStatus: OrderDeliveryCouponStatus.NOT_USED,
+      replacedFromId: null,
+      ...over,
+    }) as any;
+
+  const makeMapping = (orderDeliveries: any[], over: Record<string, unknown> = {}) =>
+    ({
+      amount: 2,
+      fee: null,
+      priceAdjustment: null,
+      product: { price: 3335 },
+      orderDeliveries,
+      ...over,
+    }) as any;
+
+  /** 표시 합계와 돈이 항상 같아야 한다 — 두 경로가 갈라지면 여기서 깨진다. */
+  const expectMatchesSettlement = (mapping: any) => {
+    const displaySum = buildSettlementDisplayLines(mapping).reduce((s, l) => s + l.price * l.amount, 0);
+    expect(displaySum).toBe(calculateMappingSettlementBaseAmount(mapping));
+  };
+
+  it('빈 orderDeliveries → 균일 분기 단일 행, amount 는 mapping.amount', () => {
+    const mapping = makeMapping([], { fee: 10, priceAdjustment: IPriceAdjustment.DISCOUNT });
+
+    expect(buildSettlementDisplayLines(mapping)).toEqual([{ price: 3001, amount: 2 }]);
+    expectMatchesSettlement(mapping);
+  });
+
+  it('할인 정보 없음(fee=null) → 정가 단일 행', () => {
+    const mapping = makeMapping([makeDelivery({ id: 1 }), makeDelivery({ id: 2 })]);
+
+    expect(buildSettlementDisplayLines(mapping)).toEqual([{ price: 3335, amount: 2 }]);
+    expectMatchesSettlement(mapping);
+  });
+
+  it('ADDITIONAL(할증) 차등 요율도 단가별로 행이 분리된다', () => {
+    // 3335 + round(10%) = 3669 / 3335 + round(11%) = 3702
+    const mapping = makeMapping([
+      makeDelivery({ id: 1, settleFee: 10, settlePriceAdjustment: IPriceAdjustment.ADDITIONAL }),
+      makeDelivery({ id: 2, settleFee: 11, settlePriceAdjustment: IPriceAdjustment.ADDITIONAL }),
+    ]);
+
+    expect(buildSettlementDisplayLines(mapping)).toEqual(
+      expect.arrayContaining([
+        { price: 3669, amount: 1 },
+        { price: 3702, amount: 1 },
+      ]),
+    );
+    expectMatchesSettlement(mapping);
+  });
+
+  it('같은 요율 발송건은 한 행으로 묶이고 건수가 누적된다', () => {
+    const mapping = makeMapping(
+      [
+        makeDelivery({ id: 1, settleFee: 10, settlePriceAdjustment: IPriceAdjustment.DISCOUNT }),
+        makeDelivery({ id: 2, settleFee: 10, settlePriceAdjustment: IPriceAdjustment.DISCOUNT }),
+        makeDelivery({ id: 3, settleFee: 11, settlePriceAdjustment: IPriceAdjustment.DISCOUNT }),
+      ],
+      { amount: 3 },
+    );
+
+    expect(buildSettlementDisplayLines(mapping)).toEqual(
+      expect.arrayContaining([
+        { price: 3001, amount: 2 },
+        { price: 2968, amount: 1 },
+      ]),
+    );
+    expectMatchesSettlement(mapping);
+  });
+
+  it('폐기만 하고 재발행하지 않은 CANCEL 은 계속 집계에 포함된다 (기존 동작 유지)', () => {
+    const mapping = makeMapping([
+      makeDelivery({ id: 1, settleFee: 10, settlePriceAdjustment: IPriceAdjustment.DISCOUNT }),
+      // CANCEL 이지만 이를 대체한 신행이 없다 → 제외 대상 아님
+      makeDelivery({
+        id: 2,
+        settleFee: 10,
+        settlePriceAdjustment: IPriceAdjustment.DISCOUNT,
+        couponStatus: OrderDeliveryCouponStatus.CANCEL,
+      }),
+    ]);
+
+    expect(buildSettlementDisplayLines(mapping)).toEqual([{ price: 3001, amount: 2 }]);
+    expectMatchesSettlement(mapping);
+  });
+
+  it('폐기 후 재발행으로 대체된 CANCEL 원본은 제외된다 (이중합산 방지)', () => {
+    const mapping = makeMapping([
+      makeDelivery({
+        id: 1,
+        settleFee: 10,
+        settlePriceAdjustment: IPriceAdjustment.DISCOUNT,
+        couponStatus: OrderDeliveryCouponStatus.CANCEL,
+      }),
+      makeDelivery({ id: 2, settleFee: 10, settlePriceAdjustment: IPriceAdjustment.DISCOUNT, replacedFromId: 1 }),
+    ]);
+
+    expect(buildSettlementDisplayLines(mapping)).toEqual([{ price: 3001, amount: 1 }]);
+    expectMatchesSettlement(mapping);
+  });
+
+  it('replacedFromId 가 string 으로 hydrate 돼도 원본이 제외된다 (bigint → Number 정규화)', () => {
+    // TypeORM bigint 컬럼은 런타임에 string 으로 올라올 수 있다. Number() 정규화가 빠지면
+    // '1' !== 1 로 매칭에 실패해 CANCEL 원본이 살아남고 조용히 이중청구된다.
+    const mapping = makeMapping([
+      makeDelivery({
+        id: 1,
+        settleFee: 10,
+        settlePriceAdjustment: IPriceAdjustment.DISCOUNT,
+        couponStatus: OrderDeliveryCouponStatus.CANCEL,
+      }),
+      makeDelivery({ id: 2, settleFee: 10, settlePriceAdjustment: IPriceAdjustment.DISCOUNT, replacedFromId: '1' }),
+    ]);
+
+    expect(buildSettlementDisplayLines(mapping)).toEqual([{ price: 3001, amount: 1 }]);
+    expectMatchesSettlement(mapping);
+  });
+
+  it('차등 분기의 수량은 mapping.amount 가 아니라 실제 과금 발송건 수다', () => {
+    // 주문 수량 5 이지만 살아있는 과금 발송건은 2 → 행 수량 합은 2
+    const mapping = makeMapping(
+      [
+        makeDelivery({ id: 1, settleFee: 10, settlePriceAdjustment: IPriceAdjustment.DISCOUNT }),
+        makeDelivery({ id: 2, settleFee: 11, settlePriceAdjustment: IPriceAdjustment.DISCOUNT }),
+      ],
+      { amount: 5 },
+    );
+
+    const lines = buildSettlementDisplayLines(mapping);
+    expect(lines.reduce((s, l) => s + l.amount, 0)).toBe(2);
+    expectMatchesSettlement(mapping);
+  });
+
+  it('차등 판정은 필터 "전" 목록 기준 — 유일한 settleFee 보유 행이 대체된 CANCEL 원본이어도 돈과 분기가 일치', () => {
+    // settleFee 를 가진 유일한 행이 제외 대상(CANCEL 원본)이고, 생존 신행은 settleFee 미승계.
+    // 판정을 필터 후로 하면 표시는 균일 분기, 돈은 차등 분기로 갈라진다 → 반드시 일치해야 한다.
+    const mapping = makeMapping(
+      [
+        makeDelivery({
+          id: 1,
+          settleFee: 10,
+          settlePriceAdjustment: IPriceAdjustment.DISCOUNT,
+          couponStatus: OrderDeliveryCouponStatus.CANCEL,
+        }),
+        makeDelivery({ id: 2, replacedFromId: 1 }),
+      ],
+      { fee: 20, priceAdjustment: IPriceAdjustment.DISCOUNT },
+    );
+
+    expectMatchesSettlement(mapping);
   });
 });

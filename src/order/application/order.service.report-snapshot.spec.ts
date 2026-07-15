@@ -8,7 +8,8 @@
  *   const lineView = readLineProductView(orderProductMapping);
  *   const originalPrice = lineView.price;
  *   let adjustedPrice = originalPrice;
- *   if (fee > 0 && priceAdjustment) { adjustedPrice = Math.ceil(originalPrice * (100 ± fee) / 100); }
+ *   if (fee > 0 && priceAdjustment) { adjustedPrice = OrderFeeCalculator({ fee, priceAdjustment, price: originalPrice }); }
+ *   // D3-49: 인라인 ceil → 실제 차감과 동일한 OrderFeeCalculator(반올림)로 통일됨. 본 헬퍼도 동기화.
  *
  * We verify that when snapshotProductPrice=1000 and product.price=1500,
  * readLineProductView returns price=1000, so the calc yields unitPrice=1000
@@ -19,6 +20,7 @@
 import { readLineProductView } from '../util/order.snapshot.builder';
 import { OrderProductMappingEntity } from '../../entity/order.product.mapping.entity';
 import { IPriceAdjustment } from '../../user_discount/interface/price.adjustment';
+import { OrderFeeCalculator } from '../domain/order.fee.calculator';
 
 // Minimal OPM factory — only fields readLineProductView and the fee calc use
 function makeOpm(overrides: Partial<OrderProductMappingEntity>): OrderProductMappingEntity {
@@ -40,15 +42,10 @@ function makeOpm(overrides: Partial<OrderProductMappingEntity>): OrderProductMap
 function calcAdjustedPrice(opm: OrderProductMappingEntity): number {
   const lineView = readLineProductView(opm);
   const originalPrice = lineView.price;
-  let adjustedPrice = originalPrice;
-  if (opm.fee !== null && opm.fee > 0 && opm.priceAdjustment) {
-    if (opm.priceAdjustment === IPriceAdjustment.DISCOUNT) {
-      adjustedPrice = Math.ceil((originalPrice * (100 - opm.fee)) / 100);
-    } else if (opm.priceAdjustment === IPriceAdjustment.ADDITIONAL) {
-      adjustedPrice = Math.ceil((originalPrice * (100 + opm.fee)) / 100);
-    }
-  }
-  return adjustedPrice;
+  // D3-49: 문서/정산 빌더가 인라인 ceil → OrderFeeCalculator(반올림, 실제 차감과 동일)로 통일. 본 헬퍼도 동기화.
+  return opm.fee !== null && opm.fee > 0 && opm.priceAdjustment
+    ? OrderFeeCalculator({ fee: opm.fee, priceAdjustment: opm.priceAdjustment, price: originalPrice })
+    : originalPrice;
 }
 
 describe('readLineProductView — snapshot price takes precedence over LIVE product.price', () => {
@@ -80,7 +77,7 @@ describe('readLineProductView — snapshot price takes precedence over LIVE prod
   });
 
   it('document calc with 10% discount fee uses snapshot base, not live base', () => {
-    // snapshot=1000, live=1500, fee=10% discount → ceil(1000*90/100)=900
+    // snapshot=1000, live=1500, fee=10% discount → 1000 - round(10%·1000)=100 = 900 (100단위라 ceil==round)
     const opm = makeOpm({
       snapshotProductPrice: 1000,
       product: { price: 1500, name: 'LIVE', brand: null, expireDay: 0, imagePath: null } as any,
@@ -90,8 +87,22 @@ describe('readLineProductView — snapshot price takes precedence over LIVE prod
     });
 
     const unitPrice = calcAdjustedPrice(opm);
-    expect(unitPrice).toBe(900); // ceil(1000*90/100)=900, NOT ceil(1500*90/100)=1350
+    expect(unitPrice).toBe(900); // 1000-100=900, live base였다면 1350
     expect(unitPrice * opm.amount).toBe(1800); // NOT 2700
+  });
+
+  it('D3-49: 비100 단가는 반올림(실제 차감)과 일치 — 이전 올림(ceil)과 1원 다름', () => {
+    // snapshot=3335, fee=10% discount
+    //   이전(ceil):  Math.ceil(3335*90/100)=ceil(3001.5)=3002
+    //   현행(round, OrderFeeCalculator): 3335 - round(333.5)=334 = 3001  ← 실제 차감액과 동일
+    const opm = makeOpm({
+      snapshotProductPrice: 3335,
+      fee: 10,
+      priceAdjustment: IPriceAdjustment.DISCOUNT,
+      amount: 1,
+    });
+
+    expect(calcAdjustedPrice(opm)).toBe(3001);
   });
 
   it('falls back to live product.price when snapshot is null', () => {
