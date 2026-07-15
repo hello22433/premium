@@ -43,35 +43,20 @@ export function calculateSettlementPrice(
   return applyCardSurcharge(price, cardSurchargeApplied);
 }
 
+/**
+ * 매핑 1건의 정산 기준금액(카드할증 미포함).
+ *
+ * 표시 라인(buildSettlementDisplayLines)과 "완전히 동일한 분해"를 합산하므로, 화면 합계와
+ * 실제 정산금액이 구조적으로 항상 일치한다(차등 판정·재발행 CANCEL 원본 제외 로직을 한 벌로 공유).
+ * 단가는 모두 정수(OrderFeeCalculator 반올림)라 그룹 합산(Σ price×amount)과 발송건별 합산(Σ 단가)이
+ * 정확히 일치한다.
+ *
+ * 이 함수는 정산확정 여신차감·발송확정·환불 등 "실제 돈" 경로가 쓰는 SoT 이다(getUserList/Summary/Ids
+ * 표시 합계도 동일). 호출부는 mapping.orderDeliveries 를 반드시 로드해야 한다 — 미로드 시 균일 분기로
+ * 빠져 발송건별 settleFee 를 무시한 틀린 금액이 조용히 나온다.
+ */
 export function calculateMappingSettlementBaseAmount(mapping: OrderProductMappingEntity): number {
-  const allDeliveries = mapping.orderDeliveries ?? [];
-  // 폐기 후 신규발송(재발행)은 원본 행을 지우지 않고 같은 매핑에 새 행을 추가한다
-  // (customer.service.service.ts — newDelivery.replacedFromId = 원본 id, settleFee 승계).
-  // 재발행분이 원본의 자리를 이어받으므로, 대체된 CANCEL 원본까지 합산하면 이중합산이 된다.
-  // 폐기만 하고 재발행하지 않은 CANCEL 행은 기존 동작 유지(정산 반영 정책은 별도 판단).
-  // bigint 컬럼(replacedFromId)은 런타임에 string으로 hydrate될 수 있어 Number 정규화 후 비교.
-  const replacedIds = new Set(
-    allDeliveries
-      .filter((delivery) => delivery.replacedFromId !== null && delivery.replacedFromId !== undefined)
-      .map((delivery) => Number(delivery.replacedFromId)),
-  );
-  const deliveries = allDeliveries.filter(
-    (delivery) => !(delivery.couponStatus === OrderDeliveryCouponStatus.CANCEL && replacedIds.has(Number(delivery.id))),
-  );
-  // 차등정산 여부 판정은 필터 "전" 목록(allDeliveries) 기준.
-  // 표시 경로(settle.service buildSettlementDisplayLines)와 동일 기준으로 맞춰,
-  // 유일한 settleFee 보유 행이 대체된 CANCEL 원본이고 재발행 생존분이 settleFee 를
-  // 승계하지 않은 엣지에서 화면(차등 분기)과 정산금액(균일 분기)이 어긋나는 것을 방지.
-  // (합산 대상은 여전히 필터 후 deliveries — 판정은 성격(과거), 합산은 현황(생존)으로 분리)
-  const hasDeliveryFee = allDeliveries.some((delivery) => delivery.settleFee !== null);
-
-  if (hasDeliveryFee) {
-    return deliveries.reduce((total, delivery) => {
-      return total + calculateSettlementPrice(mapping, false, delivery);
-    }, 0);
-  }
-
-  return calculateSettlementPrice(mapping, false) * mapping.amount;
+  return buildSettlementDisplayLines(mapping).reduce((total, line) => total + line.price * line.amount, 0);
 }
 
 /** 정산 표시용 라인 1행: 실존 단가(price)와 그 단가가 적용된 발송건 수(amount). */
@@ -91,9 +76,9 @@ export type SettlementDisplayLine = {
  * (정산정보입력 화면(getOrderSettle 가상 분리 행)과 동일한 표현 방식)
  *
  * - 비차등(균일 요율) 매핑: 단가 × mapping.amount 단일 행.
- * - 폐기 후 재발행으로 대체된 CANCEL 원본 delivery 는 제외(이중합산 방지).
- *   같은 기준의 필터가 calculateMappingSettlementBaseAmount(D3-52 수정)에도 적용 예정이며,
- *   이 루프는 delivery 를 직접 세므로 여기에도 동일 필터가 필요하다.
+ * - 폐기 후 재발행으로 대체된 CANCEL 원본 delivery 는 제외(이중합산 방지 — D3-52).
+ *   정산금액 SoT(calculateMappingSettlementBaseAmount)가 이 함수의 결과를 그대로 합산하므로,
+ *   화면과 실제 돈이 동일한 필터·분기 기준을 공유한다(로직 중복 없음).
  *   폐기만 하고 재발행하지 않은 CANCEL 은 기존 동작 유지(정산 반영 정책 별도 판단).
  */
 export function buildSettlementDisplayLines(mapping: OrderProductMappingEntity): SettlementDisplayLine[] {
