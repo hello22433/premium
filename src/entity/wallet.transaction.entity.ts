@@ -35,6 +35,15 @@ export class WalletTransactionEntity {
   @Column({ type: 'int', nullable: true, comment: '해당 resource_type 잔액 갱신 후 값' })
   balanceAfter: number | null;
 
+  @Column({ type: 'int', nullable: true, comment: '해당 resource_type 잔액 갱신 전 값(감사 정본)' })
+  balanceBefore: number | null;
+
+  @Column({ type: 'int', nullable: true, comment: '운영자 수동 거래(예치금 충전 등) 실행 운영자 user.id — 감사 정본' })
+  operatorId: number | null;
+
+  @Column({ type: 'varchar', length: 190, nullable: true, comment: '운영자 수동 거래 실행 당시 운영자 email — 감사 정본' })
+  operatorEmail: string | null;
+
   @Column({ type: 'varchar', length: 500, nullable: true })
   memo: string | null;
 

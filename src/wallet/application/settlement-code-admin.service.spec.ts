@@ -7,6 +7,7 @@ import { PointGrantEntity } from '../../entity/point.grant.entity';
 import { WalletTransactionEntity } from '../../entity/wallet.transaction.entity';
 import { SettlementCodeAdminService } from './settlement-code-admin.service';
 import { BillingScopeLockService } from './billing-scope-lock.service';
+import { ActivityLogActionType } from '../../activity_log/interface/activity.log.action.type';
 
 /** DISTINCT settlementCode 조회용 query builder mock (classifyJoin 용). getRawMany 결과를 주입. */
 function makeDistinctQb(rows: { code: string | null }[]) {
@@ -80,6 +81,7 @@ interface ManagerFixture {
   existingTx?: { amount: number; balanceAfter: number | null } | null;
   walletByCode?: Record<string, Partial<WalletAccountEntity> | null>;
   companylessUsers?: { id: number }[];
+  outstandingOrderRows?: { id: number; uid: number }[];
 }
 
 interface Captured {
@@ -149,7 +151,14 @@ function makeManager(fx: ManagerFixture, cap: Captured) {
   };
   const orderRepo = {
     createQueryBuilder: () => {
-      const qb: any = { where: () => qb, andWhere: () => qb, getCount: async () => fx.outstandingCount };
+      const qb: any = {
+        select: () => qb,
+        addSelect: () => qb,
+        where: () => qb,
+        andWhere: () => qb,
+        getCount: async () => fx.outstandingCount,
+        getRawMany: async () => fx.outstandingOrderRows ?? [],
+      };
       return qb;
     },
   };
@@ -484,7 +493,7 @@ describe('SettlementCodeAdminService', () => {
     it('wallet FOR UPDATE + creditLimit 갱신 + activity_log(before/after) 기록', async () => {
       fx.walletGetOne = { id: 'w-7', ownerId: 'company-7', creditLimit: 5000 };
       const r = await sut.setCodeCreditLimit('company-7', 20000, operator);
-      expect(r).toEqual({ settlementCode: 'company-7', before: 5000, after: 20000 });
+      expect(r).toEqual({ settlementCode: 'company-7', before: 5000, after: 20000, belowCurrentUsage: false });
       expect(cap.setLockModes).toContain('pessimistic_write');
       expect(cap.walletSave[0]).toEqual(expect.objectContaining({ creditLimit: 20000 }));
       expect(activityLogService.createLog).toHaveBeenCalledWith(
@@ -498,6 +507,13 @@ describe('SettlementCodeAdminService', () => {
           }),
         }),
       );
+    });
+
+    it('creditLimit < 현재 사용액 → belowCurrentUsage: true (사용액 불변, 설정은 허용)', async () => {
+      fx.walletGetOne = { id: 'w-7', ownerId: 'company-7', creditLimit: 50000, creditUsedAmount: 30000 };
+      const r = await sut.setCodeCreditLimit('company-7', 20000, operator);
+      expect(r).toEqual({ settlementCode: 'company-7', before: 50000, after: 20000, belowCurrentUsage: true });
+      expect(cap.walletSave[0]).toEqual(expect.objectContaining({ creditLimit: 20000, creditUsedAmount: 30000 }));
     });
   });
   // ── listPendingAccounts ───────────────────────────────────────────────────
@@ -562,14 +578,35 @@ describe('SettlementCodeAdminService', () => {
       expect(activityLogService.createLog).toHaveBeenCalledTimes(1);
     });
 
-    it('정산조건 변경 + 진행중 주문 있음 → 게이트 차단(BadRequest)', async () => {
+    it('정산조건 변경 + 진행중 주문 있음 → 구조화된 게이트 차단(BadRequest, blocking ids 포함)', async () => {
       fx.walletGetOne = { id: 'w1', settleCondition: 'POST_PAYMENT', settleMethod: 'CASH' } as any;
       fx.codeUsers = [{ id: 1 }];
-      fx.outstandingCount = 1;
-      await expect(
-        sut.setSettlePolicy('company-7', { settleCondition: 'PRE_PAYMENT' }, { id: 9, email: 'op@x' } as any),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      fx.outstandingOrderRows = [{ id: 101, uid: 1 }];
+      let caught: any;
+      await sut
+        .setSettlePolicy('company-7', { settleCondition: 'PRE_PAYMENT' }, { id: 9, email: 'op@x' } as any)
+        .catch((e) => (caught = e));
+      expect(caught).toBeInstanceOf(BadRequestException);
+      expect(caught.getResponse()).toEqual(
+        expect.objectContaining({
+          code: 'OUTSTANDING_ORDER_EXISTS',
+          blockingUserIds: [1],
+          blockingOrderIds: [101],
+        }),
+      );
       expect(cap.walletSave).toHaveLength(0);
+    });
+
+    it('요청값이 현재값과 동일 → no-op(저장/activity_log 없음, noop:true)', async () => {
+      fx.walletGetOne = { id: 'w1', settleCondition: 'POST_PAYMENT', settleMethod: 'CASH' } as any;
+      const res = await sut.setSettlePolicy(
+        'company-7',
+        { settleCondition: 'POST_PAYMENT', settleMethod: 'CASH' },
+        { id: 9, email: 'op@x' } as any,
+      );
+      expect(res.noop).toBe(true);
+      expect(cap.walletSave).toHaveLength(0);
+      expect(activityLogService.createLog).not.toHaveBeenCalled();
     });
 
     it('정산조건 변경 + 진행중 주문 없음 → 저장', async () => {
@@ -689,6 +726,110 @@ describe('SettlementCodeAdminService', () => {
       };
       fx.walletGetOne = null;
       await expect(sut.assignUserToCode(1, 'company-99')).rejects.toBeInstanceOf(BadRequestException);
+    });
+  });
+
+  // ── getCodeHistory (정책/한도, activity_log) ───────────────────────────────
+  describe('getCodeHistory', () => {
+    function makeHistoryQb(rows: any[]) {
+      const qb: any = {
+        where: () => qb,
+        andWhere: () => qb,
+        orderBy: () => qb,
+        addOrderBy: () => qb,
+        limit: () => qb,
+        getMany: async () => rows,
+      };
+      return qb;
+    }
+
+    it('잘못된 eventType(DEPOSIT_CHARGED) → BadRequest', async () => {
+      await expect(sut.getCodeHistory('company-7', { eventType: 'DEPOSIT_CHARGED' as any })).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+    });
+
+    it('잘못된 cursor → BadRequest (DB 접근 전)', async () => {
+      await expect(sut.getCodeHistory('company-7', { cursor: 'not-a-valid-cursor!!' })).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+    });
+
+    it('정책/한도 이력 매핑 + nextCursor(limit 초과 시)', async () => {
+      const rows = [
+        {
+          id: 20,
+          actionType: ActivityLogActionType.SETTLE_CODE_POLICY_MODIFY,
+          userId: 9,
+          userEmail: 'op@x',
+          requestParams: { settlementCode: 'company-7', before: { settleMethod: 'CASH' }, after: { settleMethod: 'CARD' } },
+          createdAt: new Date('2026-07-10T00:00:00.000Z'),
+        },
+        {
+          id: 10,
+          actionType: ActivityLogActionType.MAXIMUM_LIMIT_MODIFY,
+          userId: 9,
+          userEmail: 'op@x',
+          requestParams: { settlementCode: 'company-7', beforeMaximumLimit: 1000, afterMaximumLimit: 2000 },
+          createdAt: new Date('2026-07-09T00:00:00.000Z'),
+        },
+      ];
+      activityLogRepo.createQueryBuilder.mockReturnValue(makeHistoryQb(rows));
+      const page = await sut.getCodeHistory('company-7', { limit: 1 });
+      expect(page.items).toHaveLength(1);
+      expect(page.items[0]).toMatchObject({
+        source: 'ACTIVITY_LOG',
+        eventType: 'SETTLE_POLICY_CHANGED',
+        sourceId: '20',
+        operatorId: 9,
+      });
+      expect(page.nextCursor).not.toBeNull();
+      const decoded = JSON.parse(Buffer.from(page.nextCursor as string, 'base64url').toString('utf8'));
+      expect(decoded.id).toBe('20');
+    });
+  });
+
+  // ── getDepositHistory (예치금, wallet_transaction 정본) ─────────────────────
+  describe('getDepositHistory', () => {
+    it('wallet 없음 → BadRequest', async () => {
+      (dataSource as any).getRepository = (e: any) =>
+        e === WalletAccountEntity ? { findOne: async () => null } : {};
+      await expect(sut.getDepositHistory('company-7')).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('예치금 이력을 wallet_transaction 정본에서 DEPOSIT_CHARGED 로 매핑', async () => {
+      const tx = {
+        id: '77',
+        createdAt: new Date('2026-07-11T00:00:00.000Z'),
+        operatorId: 9,
+        operatorEmail: 'op@x',
+        balanceBefore: 1000,
+        balanceAfter: 6000,
+        memo: '충전',
+      };
+      const qb: any = {
+        where: () => qb,
+        andWhere: () => qb,
+        orderBy: () => qb,
+        addOrderBy: () => qb,
+        limit: () => qb,
+        getMany: async () => [tx],
+      };
+      (dataSource as any).getRepository = (e: any) => {
+        if (e === WalletAccountEntity) return { findOne: async () => ({ id: 'w1' }) };
+        if (e === WalletTransactionEntity) return { createQueryBuilder: () => qb };
+        return {};
+      };
+      const page = await sut.getDepositHistory('company-7', { limit: 50 });
+      expect(page.items[0]).toMatchObject({
+        source: 'WALLET_TRANSACTION',
+        eventType: 'DEPOSIT_CHARGED',
+        sourceId: '77',
+        operatorId: 9,
+        before: 1000,
+        after: 6000,
+      });
+      expect(page.nextCursor).toBeNull();
     });
   });
 });
