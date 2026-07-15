@@ -10,6 +10,10 @@ describe('SettlementCodeAdminController', () => {
     renameCode: jest.Mock;
     setCodeCreditLimit: jest.Mock;
     listPendingAccounts: jest.Mock;
+    chargeDeposit: jest.Mock;
+    getCodeHistory: jest.Mock;
+    getDepositHistory: jest.Mock;
+    setSettlePolicy: jest.Mock;
   };
 
   beforeEach(() => {
@@ -20,6 +24,10 @@ describe('SettlementCodeAdminController', () => {
       renameCode: jest.fn(),
       setCodeCreditLimit: jest.fn(),
       listPendingAccounts: jest.fn(),
+      chargeDeposit: jest.fn(),
+      getCodeHistory: jest.fn(),
+      getDepositHistory: jest.fn(),
+      setSettlePolicy: jest.fn(),
     };
     controller = new SettlementCodeAdminController(walletReadService as any, adminService as any);
   });
@@ -82,5 +90,39 @@ describe('SettlementCodeAdminController', () => {
     adminService.setCodeCreditLimit.mockResolvedValue({ settlementCode: 'company-7', before: 0, after: 100 });
     await controller.setCreditLimit(operator, { settlementCode: 'company-7', creditLimit: 100 });
     expect(adminService.setCodeCreditLimit).toHaveBeenCalledWith('company-7', 100, operator);
+  });
+
+  it('POST /deposits → adminService.chargeDeposit(code, amount, operator, memo, requestKey)', async () => {
+    const operator = { id: 99, email: 'op@test.com' } as any;
+    await controller.deposit(operator, {
+      settlementCode: 'company-7',
+      chargeAmount: 5000,
+      memo: '충전',
+      requestKey: 'req-1',
+    } as any);
+    expect(adminService.chargeDeposit).toHaveBeenCalledWith('company-7', 5000, operator, '충전', 'req-1');
+  });
+
+  it('GET /history → getCodeHistory(code, { limit, cursor, eventType }) — limit 숫자 변환', () => {
+    controller.history('company-7', '30', 'CUR', 'SETTLE_POLICY_CHANGED' as any);
+    expect(adminService.getCodeHistory).toHaveBeenCalledWith('company-7', {
+      limit: 30,
+      cursor: 'CUR',
+      eventType: 'SETTLE_POLICY_CHANGED',
+    });
+  });
+
+  it('GET /history → limit 미지정 시 undefined 전달', () => {
+    controller.history('company-7');
+    expect(adminService.getCodeHistory).toHaveBeenCalledWith('company-7', {
+      limit: undefined,
+      cursor: undefined,
+      eventType: undefined,
+    });
+  });
+
+  it('GET /deposits → getDepositHistory(code, { limit, cursor })', () => {
+    controller.depositHistory('company-7', '50', 'CUR');
+    expect(adminService.getDepositHistory).toHaveBeenCalledWith('company-7', { limit: 50, cursor: 'CUR' });
   });
 });

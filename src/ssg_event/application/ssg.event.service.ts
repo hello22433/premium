@@ -4,7 +4,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { ISsgAmountResult, ISsgIssue } from '../../partner_company_extern/interface/ssg.issue';
 import { SsgEventEntity } from '../../entity/ssg.event.entity';
 import { SsgReservationRangeEntity } from '../../entity/ssg.reservation.range.entity';
-import { Brackets, Repository } from 'typeorm';
+import { Brackets, Repository, SelectQueryBuilder } from 'typeorm';
 import {
   SsgEventCreateReqDto,
   SsgEventExcelDownloadReqDto,
@@ -30,7 +30,7 @@ import { IOrderType } from '../../order/interface/order.type';
 import * as ExcelJS from 'exceljs';
 import { join } from 'path';
 import * as process from 'node:process';
-import { QueryBuilderDateCondition } from '../../common/infra/query.builder.date.condition';
+
 import { ActivityLogService } from '../../activity_log/application/activity.log.service';
 import { ActivityLogResult } from '../../activity_log/interface/activity.log.result';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
@@ -180,7 +180,8 @@ export class SsgEventService {
       queryBuilder = queryBuilder.andWhere('ssg.endAt >= :monthStart', { monthStart });
     }
 
-    queryBuilder = QueryBuilderDateCondition(queryBuilder, 'ssg', 'createdAt', createdStartAt, createdEndAt);
+    // 조회기간: 행사기간(startAt~endAt)이 선택 기간과 겹치는 행사 필터 (등록일 기준 아님)
+    queryBuilder = this.applyEventPeriodCondition(queryBuilder, createdStartAt, createdEndAt);
 
     const [eventList, totalCount] = await queryBuilder.skip(skip).take(take).getManyAndCount();
 
@@ -293,6 +294,32 @@ export class SsgEventService {
     return response;
   }
 
+  /**
+   * 조회기간(선택 기간)과 행사기간(startAt~endAt)이 겹치는 행사만 남기는 조건.
+   * 등록일(createdAt)이 아니라 행사기간 기준으로 필터한다.
+   * - 시작일 지정: 행사 종료일이 시작일 이상 (ssg.endAt >= start)
+   * - 종료일 지정: 행사 시작일이 종료일 이하 (ssg.startAt <= end)
+   */
+  private applyEventPeriodCondition(
+    queryBuilder: SelectQueryBuilder<SsgEventEntity>,
+    createdStartAt?: string,
+    createdEndAt?: string,
+  ): SelectQueryBuilder<SsgEventEntity> {
+    if (createdStartAt) {
+      queryBuilder = queryBuilder.andWhere('ssg.endAt >= :eventPeriodStart', {
+        eventPeriodStart: createdStartAt.replace('T', ' '),
+      });
+    }
+
+    if (createdEndAt) {
+      queryBuilder = queryBuilder.andWhere('ssg.startAt <= :eventPeriodEnd', {
+        eventPeriodEnd: createdEndAt.replace('T', ' '),
+      });
+    }
+
+    return queryBuilder;
+  }
+
   async excelDownload(user: ILoginUserInfo, getBody: SsgEventExcelDownloadReqDto) {
     const startTime = Date.now();
     const { code, createdEndAt, createdStartAt, name, password, downloadReason, searchKeyword } = getBody;
@@ -323,7 +350,8 @@ export class SsgEventService {
       queryBuilder = queryBuilder.andWhere('ssg.name LIKE :name', { name: '%' + name + '%' });
     }
 
-    queryBuilder = QueryBuilderDateCondition(queryBuilder, 'ssg', 'createdAt', createdStartAt, createdEndAt);
+    // 조회기간: 행사기간(startAt~endAt)이 선택 기간과 겹치는 행사 필터 (등록일 기준 아님)
+    queryBuilder = this.applyEventPeriodCondition(queryBuilder, createdStartAt, createdEndAt);
 
     const eventList = await queryBuilder.getMany();
 

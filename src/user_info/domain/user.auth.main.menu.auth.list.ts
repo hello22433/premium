@@ -95,6 +95,10 @@ export const UserAuthMainMenuAuthList = (userSubmenuAuthList: UserAuthSubEnum[])
       mainMenuSet.add(UserAuthMainEnum.SETTLEMENT);
     }
 
+    if (subMenu === UserAuthSubEnum.SETTLEMENT_CODE) {
+      mainMenuSet.add(UserAuthMainEnum.SETTLEMENT);
+    }
+
     if (subMenu === UserAuthSubEnum.NOTICE) {
       mainMenuSet.add(UserAuthMainEnum.CUSTOMER_SERVICE);
     }

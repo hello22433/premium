@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Brackets, In, LessThan, Not, Repository } from 'typeorm';
+import { Brackets, EntityManager, In, LessThan, Not, Repository } from 'typeorm';
 import { ActivityLogEntity } from '../../entity/activity.log.entity';
 import { ActivityLogResult } from '../interface/activity.log.result';
 import { UserEntity } from '../../entity/user.entity';
@@ -49,8 +49,10 @@ export class ActivityLogService {
    * 생성된 로그 id 를 반환한다 (wallet mirror idempotency_key 생성 등에서 사용).
    * 호출 트랜잭션이 @Transactional cls 컨텍스트면 같은 트랜잭션 안에서 INSERT 된다.
    */
-  async createLog(dto: CreateActivityLogDto): Promise<number> {
-    const result = await this.activityLogRepository.insert({
+  async createLog(dto: CreateActivityLogDto, manager?: EntityManager): Promise<number> {
+    // manager 전달 시 해당 트랜잭션 안에서 INSERT(동일 트랜잭션 감사 보장). 미전달 시 전역 repository.
+    const repo = manager ? manager.getRepository(ActivityLogEntity) : this.activityLogRepository;
+    const result = await repo.insert({
       userId: dto.userId,
       userEmail: dto.userEmail,
       method: dto.method,

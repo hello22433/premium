@@ -31,6 +31,11 @@ describe('UserAuthListDefault', () => {
     it('빈 문자열 CSV 여도 전체 권한', () => {
       expect(UserAuthListDefault(IUserAuthority.SUPER_ADMIN, '')).toEqual(allKeys);
     });
+
+    it('SETTLEMENT_CODE(정산코드 관리)가 전체 권한에 포함된다', () => {
+      const result = UserAuthListDefault(IUserAuthority.SUPER_ADMIN, null);
+      expect(result).toContain(UserAuthSubEnum.SETTLEMENT_CODE);
+    });
   });
 
   describe('OPERATION_ADMIN 의 메뉴별 제한은 보존된다 (CSV verbatim)', () => {
@@ -45,6 +50,11 @@ describe('UserAuthListDefault', () => {
     it('authority_list 가 null 이면 기본 권한 목록(FORBIDDEN_WORD 포함)', () => {
       const result = UserAuthListDefault(IUserAuthority.OPERATION_ADMIN, null);
       expect(result).toContain(UserAuthSubEnum.FORBIDDEN_WORD);
+    });
+
+    it('SETTLEMENT_CODE 는 기본 권한 목록에 포함되지 않는다 (권한관리 화면에서 개별 부여)', () => {
+      const result = UserAuthListDefault(IUserAuthority.OPERATION_ADMIN, null);
+      expect(result).not.toContain(UserAuthSubEnum.SETTLEMENT_CODE);
     });
   });
 

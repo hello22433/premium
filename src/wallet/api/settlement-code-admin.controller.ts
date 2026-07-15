@@ -6,7 +6,7 @@ import { User } from '../../auth/api/user.decorator';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { AuthUserSuperAndOperationAdminGuard } from '../../auth/api/auth.user.super-operation-admin.guard';
 import { WalletReadService, SettlementCodeSnapshot, SettlementCodeDetail } from '../application/wallet-read.service';
-import { SettlementCodeAdminService } from '../application/settlement-code-admin.service';
+import { SettlementCodeAdminService, SettlementCodeHistoryEventType } from '../application/settlement-code-admin.service';
 
 class IssueCodeReqDto {
   @IsInt()
@@ -112,11 +112,34 @@ export class SettlementCodeAdminController {
     return this.walletReadService.getSettlementCodeDetail(settlementCode);
   }
 
-  /** 정산코드 변경 이력 (여신한도/정산조건/정산방법/예치금 충전). */
+  /** 정산코드 정책/여신한도 변경 이력 (activity_log, cursor pagination). 예치금은 GET /deposits. */
   @Get('history')
-  @ApiOperation({ summary: '정산코드 변경 이력 조회' })
-  history(@Query('settlementCode') settlementCode: string) {
-    return this.adminService.getCodeHistory(settlementCode);
+  @ApiOperation({ summary: '정산코드 정책/여신한도 변경 이력 조회' })
+  history(
+    @Query('settlementCode') settlementCode: string,
+    @Query('limit') limit?: string,
+    @Query('cursor') cursor?: string,
+    @Query('eventType') eventType?: SettlementCodeHistoryEventType,
+  ) {
+    return this.adminService.getCodeHistory(settlementCode, {
+      limit: limit !== undefined ? Number(limit) : undefined,
+      cursor,
+      eventType,
+    });
+  }
+
+  /** 정산코드 예치금 충전 이력 (wallet_transaction 정본, cursor pagination). */
+  @Get('deposits')
+  @ApiOperation({ summary: '정산코드 예치금 충전 이력 조회' })
+  depositHistory(
+    @Query('settlementCode') settlementCode: string,
+    @Query('limit') limit?: string,
+    @Query('cursor') cursor?: string,
+  ) {
+    return this.adminService.getDepositHistory(settlementCode, {
+      limit: limit !== undefined ? Number(limit) : undefined,
+      cursor,
+    });
   }
 
   /** 정산코드 단위 정산조건/정산방법 변경 (정산조건 변경 시 진행중 주문 게이트). */
@@ -130,8 +153,8 @@ export class SettlementCodeAdminController {
     );
   }
 
-  /** 정산코드 단위 예치금 충전. */
-  @Put('deposit')
+  /** 정산코드 단위 예치금 충전 (누적 충전 이벤트 생성). */
+  @Post('deposits')
   @ApiOperation({ summary: '정산코드 예치금 충전' })
   deposit(@User() user: ILoginUserInfo, @Body() body: ChargeDepositReqDto) {
     return this.adminService.chargeDeposit(

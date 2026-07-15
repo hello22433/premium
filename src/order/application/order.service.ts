@@ -147,7 +147,7 @@ import { IProductType } from '../../product/interface/product.type';
 import { defaultOrderMidImagePath, defaultOrderTopImagePath } from '../../const';
 import { OrderStatusExcelMapping } from '../domain/order.excel.mapping';
 import { OrderFeeCalculator, applyCardSurcharge } from '../domain/order.fee.calculator';
-import { calculateOrderSettlementAmount } from '../../util/settle-fee.util';
+import { calculateOrderSettlementAmount, buildSettlementDisplayLines } from '../../util/settle-fee.util';
 import { OrderCustomerViewDto } from '../api/dto/order.customer.view.dto';
 import { MaskingUtil } from '../../common/utils/masking.util';
 import { resolveExpireDays } from '../../common/utils/expire.util';
@@ -258,6 +258,30 @@ function resolveSettleFee(
     };
   }
   return { fee: 0, priceAdjustment: null, settleDiscountType: mapping.settleDiscountType };
+}
+
+/**
+ * 거래명세서(단건/다중 공통) 품목 행 구성.
+ *
+ * D3-49 리뷰 B안: 차등정산(SSG 중복할인) 매핑은 요율 적용 단가별로 행을 분리한다(상세 화면과 동일 구성).
+ * 모든 행의 단가가 실존값이라 unitPrice * quantity === price 가 항상 성립한다(평균단가 근사 제거).
+ * 균일 요율 매핑은 기존처럼 단일 행이며, 분리된 행들은 같은 매핑 id 를 공유한다.
+ * 행별 일자(sendRequestAt)는 단건/다중(증빙일자)의 규칙이 달라 호출부에서 계산해 넘긴다.
+ */
+function buildOrderCompleteReportRows(
+  mapping: OrderProductMappingEntity,
+  sendRequestAt: string | null,
+): OrderCompleteReportDeliveryViewDto[] {
+  const lineView = readLineProductView(mapping);
+
+  return buildSettlementDisplayLines(mapping).map((line) => ({
+    id: mapping.id, // orderProductMapping id 사용
+    sendRequestAt,
+    productName: lineView.name,
+    quantity: line.amount, // 수량
+    unitPrice: line.price, // 할인/할증 적용된 실제 단가(행 내 균일)
+    price: line.price * line.amount, // 공급가액 (단가 * 수량)
+  }));
 }
 
 type OrderSearchType = 'ALL' | 'CUSTOMER' | 'MANAGER' | 'OPERATION_ADMIN' | 'EVENT' | 'PRODUCT';
@@ -1744,39 +1768,26 @@ export class OrderService {
     const fileName: string = `${serialNumber}_거래명세서`;
     const orderDeliveryList: OrderCompleteReportDeliveryViewDto[] = [];
 
+    // 카드할증(3%)은 거래명세서 총액에 포함하지 않는다(의도된 동작).
+    //   - price/totalAmount 는 물품(상품권) 공급가액 기준(applyCardSurcharge 미적용).
+    //   - 카드 정산 주문의 실제 청구액(order.settleAmount)은 여기에 카드할증이 더해진 값이지만,
+    //     카드할증은 물품 공급가가 아닌 결제수단 수수료이므로 별도 결제 영수증으로 첨부해 안내한다.
+    //   - vat 은 상품권 특성상 0(면세)로 고정.
     let price = 0;
     let vat = 0;
     let totalAmount = 0;
 
     if (order.orderProductMappings && order.orderProductMappings.length > 0) {
       for (const orderProductMapping of order.orderProductMappings) {
-        const lineView = readLineProductView(orderProductMapping);
-        const originalPrice = lineView.price;
-        const quantity = orderProductMapping.amount ?? 0;
-
-        // 할인/할증 적용된 단가 계산 (소수점 발생 시 올림 처리)
-        let adjustedPrice = originalPrice;
-        if (orderProductMapping.fee !== null && orderProductMapping.fee > 0 && orderProductMapping.priceAdjustment) {
-          if (orderProductMapping.priceAdjustment === IPriceAdjustment.DISCOUNT) {
-            adjustedPrice = Math.ceil((originalPrice * (100 - orderProductMapping.fee)) / 100);
-          } else if (orderProductMapping.priceAdjustment === IPriceAdjustment.ADDITIONAL) {
-            adjustedPrice = Math.ceil((originalPrice * (100 + orderProductMapping.fee)) / 100);
-          }
-        }
-
-        const total = adjustedPrice * quantity;
-        price += total;
-
-        // 상품별로 한 줄만 추가 (첫 번째 orderDelivery의 발송 시각 사용)
+        // 품목별 일자: 첫 번째 orderDelivery 의 발송 시각 사용
         const firstDelivery = orderProductMapping.orderDeliveries?.[0];
-        orderDeliveryList.push({
-          id: orderProductMapping.id, // orderProductMapping id 사용
-          sendRequestAt: firstDelivery?.sendRequestAt ? format(firstDelivery.sendRequestAt, DateFormatStr) : null,
-          productName: lineView.name,
-          quantity, // 수량
-          unitPrice: adjustedPrice, // 할인/할증 적용된 단가
-          price: total, // 공급가액 (단가 * 수량)
-        });
+        const itemSendRequestAt = firstDelivery?.sendRequestAt
+          ? format(firstDelivery.sendRequestAt, DateFormatStr)
+          : null;
+
+        const rows = buildOrderCompleteReportRows(orderProductMapping, itemSendRequestAt);
+        orderDeliveryList.push(...rows);
+        price += rows.reduce((sum, row) => sum + row.price, 0);
       }
 
       totalAmount = price + vat;
@@ -2206,52 +2217,37 @@ export class OrderService {
     const eventName = eventNames.length > 1 ? `${eventNames[0]} 외 ${eventNames.length - 1}건` : eventNames[0];
 
     const orderDeliveryList: OrderCompleteReportDeliveryViewDto[] = [];
+    // 카드할증(3%)은 거래명세서 총액에 포함하지 않는다(의도된 동작).
+    //   - price/totalAmount 는 물품(상품권) 공급가액 기준(applyCardSurcharge 미적용).
+    //   - 카드 정산 주문의 실제 청구액(order.settleAmount)은 여기에 카드할증이 더해진 값이지만,
+    //     카드할증은 물품 공급가가 아닌 결제수단 수수료이므로 별도 결제 영수증으로 첨부해 안내한다.
+    //   - vat 은 상품권 특성상 0(면세)로 고정.
     let price = 0;
     let vat = 0;
     let totalAmount = 0;
-    // 거래일자: 증빙일자가 있으면 증빙일자 사용
-    let sendRequestAt: string | null = evidenceDateParsed ? format(evidenceDateParsed, DateFormatStr) : null;
+    // 거래일자: 증빙일자가 있으면 증빙일자 사용 (루프 불변값이므로 1회만 계산)
+    const evidenceDateStr = evidenceDateParsed ? format(evidenceDateParsed, DateFormatStr) : null;
+    let sendRequestAt: string | null = evidenceDateStr;
 
     for (const order of orders) {
       if (order.orderProductMappings && order.orderProductMappings.length > 0) {
         for (const orderProductMapping of order.orderProductMappings) {
-          const lineView = readLineProductView(orderProductMapping);
-          const originalPrice = lineView.price;
-          const quantity = orderProductMapping.amount ?? 0;
-
-          let adjustedPrice = originalPrice;
-          if (orderProductMapping.fee !== null && orderProductMapping.fee > 0 && orderProductMapping.priceAdjustment) {
-            if (orderProductMapping.priceAdjustment === IPriceAdjustment.DISCOUNT) {
-              adjustedPrice = Math.ceil((originalPrice * (100 - orderProductMapping.fee)) / 100);
-            } else if (orderProductMapping.priceAdjustment === IPriceAdjustment.ADDITIONAL) {
-              adjustedPrice = Math.ceil((originalPrice * (100 + orderProductMapping.fee)) / 100);
-            }
-          }
-
-          const total = adjustedPrice * quantity;
-          price += total;
-
           const firstDelivery = orderProductMapping.orderDeliveries?.[0];
+          const deliveryDateStr = firstDelivery?.sendRequestAt
+            ? format(firstDelivery.sendRequestAt, DateFormatStr)
+            : null;
+
           // 증빙일자가 없고 sendRequestAt도 없으면 첫 배송의 발송요청일 사용
-          if (!sendRequestAt && firstDelivery?.sendRequestAt) {
-            sendRequestAt = format(firstDelivery.sendRequestAt, DateFormatStr);
+          if (!sendRequestAt && deliveryDateStr) {
+            sendRequestAt = deliveryDateStr;
           }
 
-          // 품목별 일자: 증빙일자가 있으면 증빙일자 사용
-          const itemSendRequestAt = evidenceDateParsed
-            ? format(evidenceDateParsed, DateFormatStr)
-            : firstDelivery?.sendRequestAt
-              ? format(firstDelivery.sendRequestAt, DateFormatStr)
-              : null;
+          // 품목별 일자: 증빙일자가 있으면 증빙일자, 없으면 첫 배송의 발송요청일
+          const itemSendRequestAt = evidenceDateStr ?? deliveryDateStr;
 
-          orderDeliveryList.push({
-            id: orderProductMapping.id,
-            sendRequestAt: itemSendRequestAt,
-            productName: lineView.name,
-            quantity,
-            unitPrice: adjustedPrice,
-            price: total,
-          });
+          const rows = buildOrderCompleteReportRows(orderProductMapping, itemSendRequestAt);
+          orderDeliveryList.push(...rows);
+          price += rows.reduce((sum, row) => sum + row.price, 0);
         }
       }
     }

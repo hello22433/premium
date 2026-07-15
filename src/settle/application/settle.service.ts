@@ -90,13 +90,16 @@ import { IUserStatus } from '../../user/interface/user.status';
 import { SettleOtherProductDetailDto } from '../api/dto/settle.other.product.dto';
 import { OrderDeliveryCouponStatus, couponStatusToKorean } from '../../delivery/interface/order.delivery.coupon.status';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
-import { calculateSettlementPrice } from '../../util/settle-fee.util';
+import {
+  calculateSettlementPrice,
+  calculateMappingSettlementBaseAmount,
+  buildSettlementDisplayLines,
+} from '../../util/settle-fee.util';
 import { applyCardSurcharge } from '../../order/domain/order.fee.calculator';
 import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { OrderDeliveryRefundEntity } from '../../entity/order.delivery.refund.entity';
 import { UserDiscountEntity } from '../../entity/user.discount.entity';
-import { IPriceAdjustment } from '../../user_discount/interface/price.adjustment';
 import { SettleUserPerListViewDto } from '../api/dto/settle.user.per.list.view.dto';
 import { SettleUserStatusEnum } from '../interface/settle.user.status';
 import { SettleUserPerDetailViewDto } from '../api/dto/settle.user.per.detail.view.dto';
@@ -1510,7 +1513,7 @@ export class SettleService {
       for (const mapping of order.orderProductMappings!) {
         productNameList.push(mapping.product.name);
         amount += mapping.amount;
-        finalSettlePrice += this.calculateMappingSettlePrice(mapping);
+        finalSettlePrice += calculateMappingSettlementBaseAmount(mapping);
       }
 
       const firstDelivery = order.orderProductMappings?.[0]?.orderDeliveries?.[0];
@@ -1567,7 +1570,7 @@ export class SettleService {
 
       for (const mapping of order.orderProductMappings!) {
         totalAmountSum += mapping.amount;
-        totalSettlePriceSum += this.calculateMappingSettlePrice(mapping);
+        totalSettlePriceSum += calculateMappingSettlementBaseAmount(mapping);
       }
     }
 
@@ -1600,7 +1603,7 @@ export class SettleService {
 
       let finalSettlePrice = 0;
       for (const mapping of order.orderProductMappings!) {
-        finalSettlePrice += this.calculateMappingSettlePrice(mapping);
+        finalSettlePrice += calculateMappingSettlementBaseAmount(mapping);
       }
 
       return {
@@ -1641,30 +1644,23 @@ export class SettleService {
 
     if (order.orderProductMappings && order.orderProductMappings.length > 0) {
       for (const orderProductMapping of order.orderProductMappings) {
-        // 할인/할증 적용된 단가 계산
+        // D3-49 리뷰 B안: 차등정산 매핑은 요율 적용 단가별로 행 분리(buildSettlementDisplayLines).
+        // 모든 행의 단가가 실존값이라 price*amount 가 항상 정확한 합계 — 평균단가(근사) 제거.
+        // 균일 요율 매핑은 기존처럼 단일 행. 분리된 행들은 같은 매핑 id 를 공유한다.
         const lineView = readLineProductView(orderProductMapping);
-        const originalPrice = lineView.price;
-        let adjustedPrice = originalPrice;
-        if (orderProductMapping.fee !== null && orderProductMapping.fee > 0 && orderProductMapping.priceAdjustment) {
-          if (orderProductMapping.priceAdjustment === IPriceAdjustment.DISCOUNT) {
-            adjustedPrice = Math.ceil((originalPrice * (100 - orderProductMapping.fee)) / 100);
-          } else if (orderProductMapping.priceAdjustment === IPriceAdjustment.ADDITIONAL) {
-            adjustedPrice = Math.ceil((originalPrice * (100 + orderProductMapping.fee)) / 100);
-          }
+        for (const line of buildSettlementDisplayLines(orderProductMapping)) {
+          productList.push({
+            id: orderProductMapping.id,
+            product: {
+              id: orderProductMapping.product?.id ?? orderProductMapping.productId,
+              code: orderProductMapping.product?.code ?? null,
+              brandName: lineView.brandName,
+              name: lineView.name,
+              price: line.price, // 할인/할증 적용된 실제 단가(행 내 균일)
+              amount: line.amount,
+            },
+          });
         }
-
-        const product = {
-          id: orderProductMapping.product?.id ?? orderProductMapping.productId,
-          code: orderProductMapping.product?.code ?? null,
-          brandName: lineView.brandName,
-          name: lineView.name,
-          price: adjustedPrice, // 할인/할증 적용된 단가
-          amount: orderProductMapping.amount,
-        };
-        productList.push({
-          id: orderProductMapping.id,
-          product: product,
-        });
       }
     }
 
@@ -1771,40 +1767,33 @@ export class SettleService {
     for (const order of orders) {
       if (order.orderProductMappings && order.orderProductMappings.length > 0) {
         for (const mapping of order.orderProductMappings) {
-          // 할인/할증 적용된 단가 계산
+          // D3-49 리뷰 B안: 차등정산 매핑은 요율 적용 단가별로 행 분리(buildSettlementDisplayLines).
+          // 그룹핑 단가가 근사(평균)가 아닌 실존값이라, 병합돼도 price*amount 가 항상 정확한 합계.
           const mappingView = readLineProductView(mapping);
-          const originalPrice = mappingView.price;
-          let adjustedPrice = originalPrice;
-          if (mapping.fee !== null && mapping.fee > 0 && mapping.priceAdjustment) {
-            if (mapping.priceAdjustment === IPriceAdjustment.DISCOUNT) {
-              adjustedPrice = Math.ceil((originalPrice * (100 - mapping.fee)) / 100);
-            } else if (mapping.priceAdjustment === IPriceAdjustment.ADDITIONAL) {
-              adjustedPrice = Math.ceil((originalPrice * (100 + mapping.fee)) / 100);
-            }
-          }
+          for (const line of buildSettlementDisplayLines(mapping)) {
+            // 키: 상품ID + 단가 (같은 상품이라도 단가가 다르면 분리)
+            const key = `${mapping.product?.id}-${line.price}`;
 
-          // 키: 상품ID + 단가 (같은 상품이라도 단가가 다르면 분리)
-          const key = `${mapping.product?.id}-${adjustedPrice}`;
-
-          if (productMap.has(key)) {
-            // 기존 상품에 수량 합산
-            const existing = productMap.get(key)!;
-            existing.amount += mapping.amount;
-            // 이벤트명도 업데이트 (여러 이벤트에 걸쳐있으면 "a 외" 형태)
-            if (existing.eventName !== order.eventName && !existing.eventName.endsWith(' 외')) {
-              existing.eventName = `${existing.eventName} 외`;
+            if (productMap.has(key)) {
+              // 기존 상품에 수량 합산
+              const existing = productMap.get(key)!;
+              existing.amount += line.amount;
+              // 이벤트명도 업데이트 (여러 이벤트에 걸쳐있으면 "a 외" 형태)
+              if (existing.eventName !== order.eventName && !existing.eventName.endsWith(' 외')) {
+                existing.eventName = `${existing.eventName} 외`;
+              }
+            } else {
+              // 새로운 상품 추가
+              productMap.set(key, {
+                id: mapping.product?.id ?? 0,
+                code: mapping.product?.code ?? '',
+                brandName: mappingView.brandName,
+                name: mappingView.name,
+                price: line.price,
+                amount: line.amount,
+                eventName: order.eventName,
+              });
             }
-          } else {
-            // 새로운 상품 추가
-            productMap.set(key, {
-              id: mapping.product?.id ?? 0,
-              code: mapping.product?.code ?? '',
-              brandName: mappingView.brandName,
-              name: mappingView.name,
-              price: adjustedPrice,
-              amount: mapping.amount,
-              eventName: order.eventName,
-            });
           }
         }
       }
@@ -2869,70 +2858,6 @@ export class SettleService {
   }
 
   /**
-   * orderProductMapping에 저장된 fee/priceAdjustment를 적용하여 해당 매핑의 정산금액을 계산한다.
-   * 정산 리스트는 완료건(DELIVERY_CONFIRMED/DELIVERY_COMPLETE)만 조회하므로
-   * 현재 UserDiscount로 폴백하지 않고 매핑에 저장된 값만 사용한다.
-   * (새로 등록된 할인조건이 이미 완료된 주문에 소급 적용되는 것을 방지)
-   */
-  private calculateMappingSettlePrice(mapping: {
-    fee: number | null;
-    priceAdjustment: IPriceAdjustment | null;
-    amount: number;
-    product: { price: number; category: string; brand?: { nameKorean: string } | null };
-    orderDeliveries?: { settleFee: number | null; settlePriceAdjustment: string | null }[];
-  }): number {
-    // SSG 중복할인: delivery에 settleFee가 있으면 delivery별로 계산 후 합산
-    const deliveries = mapping.orderDeliveries ?? [];
-    const hasDeliveryFee = deliveries.some((d) => d.settleFee !== null);
-
-    if (hasDeliveryFee) {
-      let total = 0;
-      for (const delivery of deliveries) {
-        const fee = delivery.settleFee ?? mapping.fee;
-        const priceAdjustment = delivery.settlePriceAdjustment ?? mapping.priceAdjustment;
-        let price = mapping.product.price;
-        if (fee !== null && fee > 0 && priceAdjustment !== null) {
-          if (priceAdjustment === IPriceAdjustment.DISCOUNT) {
-            price = Math.ceil((mapping.product.price * (100 - fee)) / 100);
-          } else if (priceAdjustment === IPriceAdjustment.ADDITIONAL) {
-            price = Math.ceil((mapping.product.price * (100 + fee)) / 100);
-          }
-        }
-        total += price;
-      }
-      return total;
-    }
-
-    // 기존 로직: 매핑 레벨 fee 사용
-    const productTotalPrice = mapping.product.price * mapping.amount;
-
-    if (mapping.fee !== null && mapping.priceAdjustment !== null) {
-      let adjustedPrice = productTotalPrice;
-      if (mapping.fee > 0) {
-        if (mapping.priceAdjustment === IPriceAdjustment.DISCOUNT) {
-          adjustedPrice = Math.ceil((productTotalPrice * (100 - mapping.fee)) / 100);
-        } else if (mapping.priceAdjustment === IPriceAdjustment.ADDITIONAL) {
-          adjustedPrice = Math.ceil((productTotalPrice * (100 + mapping.fee)) / 100);
-        }
-      }
-      return adjustedPrice;
-    }
-
-    // 매핑에 할인 정보가 없으면 정가 반환
-    return productTotalPrice;
-  }
-
-  /**
-   * getUserList / getUserIds 공통 쿼리빌더 생성
-   * 동일한 join + 필터 조건을 공유한다.
-   *
-   * forSum=true: 합산 계산 전용 경량 쿼리 (display 전용 JOIN 제외)
-   *  - company: leftJoin만 (SELECT 제외, 필터용)
-   *  - classification: 제외
-   *  - orderDeliveries: innerJoin만 (SELECT 제외, 필터용)
-   *  - orderBy: 제외
-   */
-  /**
    * 고객사별정산 기간 필터 기준 분기
    * - REGISTER(기본): order.createdAt 기준
    * - SEND: order_delivery.actual_send_at(실제 발송일) 기준 EXISTS 서브쿼리.
@@ -2974,6 +2899,19 @@ export class SettleService {
     );
   }
 
+  /**
+   * getUserList / getUserIds / getUserSummary 공통 쿼리빌더 생성
+   * 동일한 join + 필터 조건을 공유한다.
+   *
+   * forSum=true: 요약(합산) 전용 경량 쿼리 — display 전용 JOIN 을 생략한다.
+   *  - company: leftJoin만 (SELECT 제외, 필터용)
+   *  - classification: 제외
+   *  - orderDeliveries: innerJoin + 정산금액 계산에 필요한 5개 컬럼만 addSelect (표시 컬럼 제외).
+   *    ※ 관계 자체는 반드시 로드해야 한다 — calculateMappingSettlementBaseAmount 가 발송건별
+   *      settleFee 로 차등정산 단가를 계산하므로, 미로드 시 균일 분기로 빠져 합계가 틀린다.
+   *  - orderBy: 제외
+   * forSum=false: 목록/상세용 — 위 JOIN 을 모두 SELECT 까지 포함(innerJoinAndSelect).
+   */
   private buildUserSettleQueryBuilder(
     filters: {
       startAt?: string;
@@ -2990,9 +2928,14 @@ export class SettleService {
     const forSum = options?.forSum ?? false;
     const { startAt, endAt, isPublished, businessName, personName, eventName, searchKeyword, dateType } = filters;
 
+    // forSum(요약 합계 전용) 은 표시 DTO 를 만들지 않으므로 display 전용 관계의 SELECT 를 생략해
+    // 행 증폭/전송량을 줄이는 성능 최적화다. 아래 company(필터용 JOIN만)/classification(제외) 분기가 그것이다.
+    // 이 최적화 분기 자체는 정합성에 영향이 없어 안정성을 위해 리팩토링하지 않고 현행 유지한다.
+    // 유일한 예외가 orderDeliveries — 이건 표시가 아니라 정산금액 계산에 쓰는 load-bearing 관계라
+    // forSum 에서도 반드시 로드해야 한다(아래 별도 처리 + 사유 주석 참고).
     let queryBuilder = this.orderRepository.createQueryBuilder('order').innerJoinAndSelect('order.user', 'user');
 
-    // forSum: company는 필터용 JOIN만, classification/orderDeliveries는 SELECT 제외
+    // forSum: company는 필터용 JOIN만, classification은 SELECT 제외 (표시 전용 — 현행 유지)
     if (forSum) {
       queryBuilder = queryBuilder
         .leftJoin('user.company', 'userCompany')
@@ -3015,9 +2958,23 @@ export class SettleService {
 
     queryBuilder = queryBuilder.leftJoinAndSelect('product.brand', 'brand');
 
-    // forSum: orderDeliveries JOIN 제거 — status 필터로 이미 확정된 주문만 조회되므로 불필요
-    // 이 JOIN이 매핑당 배송건수만큼 행을 증폭시켜 성능 저하의 주원인이었음
-    if (!forSum) {
+    // orderDeliveries 는 정산금액 계산(calculateMappingSettlementBaseAmount)에 필수다.
+    //   - 차등정산(SSG 중복할인) 매핑은 발송건별 settleFee 로 단가가 갈리고, 폐기 후 재발행된
+    //     CANCEL 원본 제외(replacedFromId)도 발송건 단위로 판정한다.
+    //   - 미로드 시 hasDeliveryFee=false 로 균일 분기에 빠져 settleFee 를 통째로 무시 → 합계 오류.
+    //     (undefined 관계와 "발송건 0건"이 런타임에 구분되지 않아 조용히 틀린 금액이 나온다.)
+    // forSum(요약)은 표시 필드가 필요 없으므로 계산에 쓰는 5개 컬럼만 선택해 행 증폭 부담을 줄인다.
+    if (forSum) {
+      queryBuilder = queryBuilder
+        .innerJoin('orderProductMappings.orderDeliveries', 'orderDeliveries')
+        .addSelect([
+          'orderDeliveries.id',
+          'orderDeliveries.settleFee',
+          'orderDeliveries.settlePriceAdjustment',
+          'orderDeliveries.couponStatus',
+          'orderDeliveries.replacedFromId',
+        ]);
+    } else {
       queryBuilder = queryBuilder.innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries');
     }
 
@@ -3088,23 +3045,7 @@ export class SettleService {
   }
 
   // findMatchingDiscount는 user_discount/domain/discount.matcher.ts 공통 함수 사용
-
-  /**
-   * 상품 가격에 할인/할증 적용
-   */
-  private applyDiscount(price: number, discount: UserDiscountEntity | null): number {
-    if (!discount) {
-      return price;
-    }
-
-    if (discount.priceAdjustment === IPriceAdjustment.DISCOUNT) {
-      return (price * (100 - discount.pricePercent)) / 100;
-    } else if (discount.priceAdjustment === IPriceAdjustment.ADDITIONAL) {
-      return (price * (100 + discount.pricePercent)) / 100;
-    }
-
-    return price;
-  }
+  // (D3-49: 미사용 데드코드 applyDiscount 제거 — 반올림 없는 4번째 발산 구현이었음)
 
   private getAppDivName(appDiv: string): string {
     switch (appDiv) {
