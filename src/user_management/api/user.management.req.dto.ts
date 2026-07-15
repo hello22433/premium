@@ -14,6 +14,7 @@ import {
   Matches,
   Max,
   Min,
+  ValidateIf,
 } from 'class-validator';
 import { IUserStatus } from '../../user/interface/user.status';
 import { dateAtRegexp } from '../../common/domain/date.regexp';
@@ -216,19 +217,19 @@ export class UserManagementUpdateReqDto extends UserManagementUpsertDto {
   @IsEnum(IUserStatus)
   status: IUserStatus;
   // 정산조건/정산방법/최대서비스한도는 정산코드 관리 페이지(wallet SoT)에서 편집.
-  // 계정 수정 시 미전송 = 기존값 유지(서비스 update()가 undefined 를 덮어쓰지 않음).
+  // 미전송(undefined)만 "생략=기존값 유지"로 인정하고, null 은 enum/number 검증에서 거부(NOT NULL 컬럼·정본 오염 방지).
   @ApiPropertyOptional({ description: '정산 조건 (미전송 시 기존값 유지)' })
-  @IsOptional()
+  @ValidateIf((_, value) => value !== undefined)
   @IsEnum(IUserSettleCondition)
   settleCondition?: IUserSettleCondition;
 
   @ApiPropertyOptional({ description: '정산 방법 (미전송 시 기존값 유지)' })
-  @IsOptional()
+  @ValidateIf((_, value) => value !== undefined)
   @IsEnum(IUserSettleMethod)
   settleMethod?: IUserSettleMethod;
 
   @ApiPropertyOptional({ description: '최대 서비스 한도 (미전송 시 기존값 유지, 편집은 별도 API)' })
-  @IsOptional()
+  @ValidateIf((_, value) => value !== undefined)
   @IsNumber()
   maximumLimit?: number;
 

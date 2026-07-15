@@ -35,6 +35,7 @@ import { UserEntityTest } from '../../../test/infra/user.entity.test';
 import { PasswordBcryptEncrypt } from '../../auth/infrastructure/password.bcrypt.encrypt';
 import { IUserSettleCondition } from '../../user/interface/user.settle.condition';
 import { IUserSettleMethod } from '../../user/interface/user.settle.method';
+import { UserSettlePeriodConditionEnum } from '../../user/interface/user.settle.period.condition.enum';
 import { BadRequestException } from '@nestjs/common';
 import { IUserAuthority } from '../../user/interface/user.authority';
 import { IUserStatus } from '../../user/interface/user.status';
@@ -1137,9 +1138,9 @@ describe('settleMethod SoT 동기화 테스트', () => {
     );
   });
 
-  it('update: 정산조건/정산방법/최대한도 미전송 → 기존값 보존 + wallet/company settleMethod 미동기화', async () => {
+  it('update: 정산조건/정산방법/최대한도/정산기준 미전송 → 기존값 보존 + wallet/company 미오염', async () => {
     walletCutoverConfig.pr3SettleMode = WalletCutoverMode.WALLET;
-    const company = { id: 10, businessNumber: '1234567890', settleMethod: 'CASH' };
+    const company = { id: 10, businessNumber: '1234567890', settleMethod: 'CASH', maximumLimit: 500 };
     userRepository.findOne.mockResolvedValue({
       ...UserEntityTest(),
       id: 1,
@@ -1148,23 +1149,30 @@ describe('settleMethod SoT 동기화 테스트', () => {
       status: IUserStatus.USED,
       settleCondition: IUserSettleCondition.PRE_PAYMENT,
       settleMethod: IUserSettleMethod.CARD,
+      settlePeriodCondition: UserSettlePeriodConditionEnum.NEXT_MONTH,
+      settlePeriodCount: 15,
     });
     userCompanyRepository.findOne.mockResolvedValue(company);
 
-    // 계정 페이지 read-only 전환 후 프론트가 보내는 형태: settleCondition/maximumLimit/settleMethod 미포함.
+    // 계정 페이지 read-only 전환 후 프론트가 보내는 형태: 정산 편집 필드 전부 미포함.
     const { settleCondition: _sc, maximumLimit: _ml, ...bodyWithoutSettle } = baseUpdateBody as any;
     await sut.update(bodyWithoutSettle as any);
 
     const savedUser = userRepository.save.mock.calls.at(-1)?.[0];
+    // user NOT NULL 정산 필드 보존
     expect(savedUser.settleCondition).toBe(IUserSettleCondition.PRE_PAYMENT);
     expect(savedUser.settleMethod).toBe(IUserSettleMethod.CARD);
+    // 정산기준(정산주기) 보존
+    expect(savedUser.settlePeriodCondition).toBe(UserSettlePeriodConditionEnum.NEXT_MONTH);
+    expect(savedUser.settlePeriodCount).toBe(15);
     // settleMethod 미전송 → wallet_account 정본 동기화 미호출(오염 방지)
     expect(walletResolver.resolveByUserId).not.toHaveBeenCalled();
     expect(walletAccountRepository.save).not.toHaveBeenCalled();
-    // company.settleMethod 도 미변경 보존
-    if (userCompanyRepository.save.mock.calls.length) {
-      expect(userCompanyRepository.save.mock.calls.at(-1)[0].settleMethod).toBe('CASH');
-    }
+    // 동일 사업자번호 경로: company 는 저장되지만 settleMethod/maximumLimit 은 미변경 보존
+    expect(userCompanyRepository.save).toHaveBeenCalled();
+    const savedCompany = userCompanyRepository.save.mock.calls.at(-1)?.[0];
+    expect(savedCompany.settleMethod).toBe('CASH');
+    expect(savedCompany.maximumLimit).toBe(500);
   });
 
   it('create: LEGACY 모드 — 신규 company에 settleMethod 포함 저장', async () => {

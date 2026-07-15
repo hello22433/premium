@@ -1105,7 +1105,7 @@ export class UserManagementService {
         user.company.industryType = getBody.industryType;
         user.company.industryItem = getBody.industryItem;
         // settleMethod SoT 동기화 (company.settleMethod 가 정산 계산 소스). 미전송 시 기존값 보존(정산코드 관리로 이관).
-        if (getBody.settleMethod !== undefined) {
+        if (getBody.settleMethod != null) {
           user.company.settleMethod = getBody.settleMethod;
         }
         // maximumLimit은 별도 API로만 수정 가능하므로 여기서는 업데이트하지 않음
@@ -1121,11 +1121,11 @@ export class UserManagementService {
     user.corporateNumber = getBody.corporateNumber;
     user.businessType = getBody.businessType;
     user.ip = getBody.ip;
-    // 정산조건/정산방법: 미전송 시 기존값 보존(정산코드 관리 페이지 wallet SoT 로 편집 이관).
-    if (getBody.settleCondition !== undefined) {
+    // 정산조건/정산방법(NOT NULL): 미전송·null 시 기존값 보존(정산코드 관리 페이지 wallet SoT 로 편집 이관).
+    if (getBody.settleCondition != null) {
       user.settleCondition = getBody.settleCondition;
     }
-    if (getBody.settleMethod !== undefined) {
+    if (getBody.settleMethod != null) {
       user.settleMethod = getBody.settleMethod;
     }
     user.bankName = getBody.bankName;
@@ -1159,7 +1159,7 @@ export class UserManagementService {
     await this.userRepository.save(user);
 
     // settleMethod SoT 동기화: wallet_account(WALLET 모드) 또는 company(LEGACY 모드) 에 반영.
-    if (getBody.settleMethod !== undefined) {
+    if (getBody.settleMethod != null) {
       const settleMethod = getBody.settleMethod as 'CARD' | 'CASH';
       if (this.walletCutoverConfig.pr3SettleMode === WalletCutoverMode.WALLET) {
         const wallet = await this.walletResolver.resolveByUserId(user.id);
