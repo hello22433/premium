@@ -41,7 +41,7 @@ import { ProductChoicePrefixCode, ProductDigitNumber, ProductPrefixCode } from '
 import { BrandDigitNumber, BrandPrefixCode } from '../../brand/domain/brand.code';
 import { ProductUpdateHistoryEntity } from '../../entity/product.update.history.entity';
 import { ProductUpdateHistoryKeyName } from '../domain/product.update.history.key.name';
-import { Transactional } from 'typeorm-transactional';
+import { IsolationLevel, Transactional } from 'typeorm-transactional';
 import { ProductHistoryViewDto } from '../api/dto/product.history.view.dto';
 import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
@@ -239,6 +239,11 @@ export class ProductService {
       } else {
         queryBuilder = queryBuilder.andWhere('product.id IN (:...mappedProductIds)', {
           mappedProductIds: uniqueProductIds,
+        });
+        // 매핑은 살아 있어도 미사용 상품(자동 미사용 초이스쿠폰 포함)은 노출하지 않는다.
+        // 사용으로 복구되면 매핑이 그대로이므로 다시 노출된다.
+        queryBuilder = queryBuilder.andWhere('product.useStatus = :corporateUseStatus', {
+          corporateUseStatus: IProductUseStatus.USE,
         });
       }
     }
@@ -451,6 +456,9 @@ export class ProductService {
         queryBuilder = queryBuilder.andWhere('product.id IN (:...mappedProductIds)', {
           mappedProductIds: uniqueProductIds,
         });
+        queryBuilder = queryBuilder.andWhere('product.useStatus = :headPersonMappedUseStatus', {
+          headPersonMappedUseStatus: IProductUseStatus.USE,
+        });
       }
     }
 
@@ -478,6 +486,9 @@ export class ProductService {
       } else {
         queryBuilder = queryBuilder.andWhere('product.id IN (:...mappedProductIds)', {
           mappedProductIds: uniqueProductIds,
+        });
+        queryBuilder = queryBuilder.andWhere('product.useStatus = :corporateMappedUseStatus', {
+          corporateMappedUseStatus: IProductUseStatus.USE,
         });
       }
     }
@@ -925,7 +936,7 @@ export class ProductService {
     return;
   }
 
-  @Transactional()
+  @Transactional({ isolationLevel: IsolationLevel.READ_COMMITTED })
   async updatePartial(user: ILoginUserInfo, getBody: ProductUpdatePartialReqDto) {
     const { id, reason } = getBody;
 
@@ -1075,13 +1086,36 @@ export class ProductService {
         continue;
       }
 
-      // 락을 잡은 뒤 sibling을 읽어야 다른 트랜잭션의 최신 반영을 본다.
-      const siblings = await this.productChoiceMappingRepository.find({
+      // 초이스쿠폰에 묶인 구성상품을 읽는다.
+      const siblingMappings = await this.productChoiceMappingRepository.find({
         where: { choiceProductId },
-        relations: ['product'],
+      });
+      const siblingProductIds = siblingMappings.map((mapping) => mapping.productId);
+
+      const uniqueSiblingProductIds = [...new Set(siblingProductIds)].sort((a, b) => a - b);
+
+      // updatePartial 트랜잭션은 READ COMMITTED다.
+      // choiceProduct 락을 잡은 뒤 구성상품을 다시 읽어야 다른 트랜잭션의 최신 커밋 상태를 본다.
+      // withDeleted로 soft-delete된 구성상품도 확인하고, 매핑은 있는데 상품이 없거나 삭제됐으면 UNUSED로 닫는다.
+      const siblingProducts =
+        uniqueSiblingProductIds.length > 0
+          ? await this.productRepository
+              .createQueryBuilder('product')
+              .withDeleted()
+              .where('product.id IN (:...ids)', { ids: uniqueSiblingProductIds })
+              .orderBy('product.id', 'ASC')
+              .getMany()
+          : [];
+      const siblingProductMap = listToMap(siblingProducts, (sibling) => sibling.id);
+      const siblingUseStatuses = uniqueSiblingProductIds.map((siblingProductId) => {
+        const sibling = siblingProductMap.get(siblingProductId);
+        if (!sibling || sibling.deletedAt) {
+          return undefined;
+        }
+        return sibling.useStatus;
       });
 
-      const nextUseStatus = resolveChoiceUseStatus(siblings.map((sibling) => sibling.product?.useStatus));
+      const nextUseStatus = resolveChoiceUseStatus(siblingUseStatuses);
 
       if (choiceProduct.useStatus === nextUseStatus) {
         continue;
@@ -1099,14 +1133,9 @@ export class ProductService {
 
       choiceProduct.useStatus = nextUseStatus;
       await this.productRepository.save(choiceProduct);
-
-      // 자동 USE → UNUSED 전환도 직접 미사용 처리와 동일하게 고객상품관리 매핑을 해제한다.
-      // (전시 취소 + 숨기기. 매핑 살아있으면 고객별 상품 현황 집계에 유령 카운트가 남는다.)
-      if (history.beforeValue === IProductUseStatus.USE && nextUseStatus === IProductUseStatus.UNUSED) {
-        await this.userSyncProductEventMappingRepository.softDelete({
-          productId: choiceProductId,
-        });
-      }
+      // 자동 미사용 시에는 고객상품관리 매핑을 지우지 않는다.
+      // 매핑을 지우면 이후 사용으로 복구돼도 고객사 목록에 다시 노출되지 않기 때문이다.
+      // 미사용 상품의 노출/집계 제외는 조회 시 product.useStatus = USE 필터로 처리한다.
     }
 
     return histories;
@@ -1160,8 +1189,13 @@ export class ProductService {
 
       const mappedProductIds = event.userSyncProductEventMappings?.map((m) => m.productId);
 
-      if (mappedProductIds && mappedProductIds.length > 0) {
+      if (!mappedProductIds || mappedProductIds.length === 0) {
+        queryBuilder = queryBuilder.andWhere('1 = 0');
+      } else {
         queryBuilder = queryBuilder.andWhere('product.id IN (:...mappedProductIds)', { mappedProductIds });
+        queryBuilder = queryBuilder.andWhere('product.useStatus = :excelMappedUseStatus', {
+          excelMappedUseStatus: IProductUseStatus.USE,
+        });
       }
     }
 

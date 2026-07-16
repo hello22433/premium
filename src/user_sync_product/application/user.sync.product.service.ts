@@ -54,6 +54,12 @@ export class UserSyncProductService {
     let queryBuilder = this.eventRepository
       .createQueryBuilder('event')
       .leftJoinAndSelect('event.userSyncProductEventMappings', 'userSyncProductEventMappings')
+      .leftJoinAndSelect(
+        'userSyncProductEventMappings.product',
+        'syncProduct',
+        'syncProduct.deletedAt IS NULL AND syncProduct.useStatus = :syncProductUseStatus',
+        { syncProductUseStatus: IProductUseStatus.USE },
+      )
       .innerJoinAndSelect('event.businessUser', 'user')
       .leftJoinAndSelect('user.company', 'userCompany');
 
@@ -65,6 +71,7 @@ export class UserSyncProductService {
         .innerJoin(ProductEntity, 'p', 'p.id = mapping.productId')
         .where('p.name LIKE :keyword')
         .andWhere('p.deletedAt IS NULL')
+        .andWhere('p.useStatus = :syncProductUseStatus')
         .andWhere('mapping.deletedAt IS NULL')
         .getQuery();
 
@@ -100,6 +107,7 @@ export class UserSyncProductService {
           .innerJoin(ProductEntity, 'p', 'p.id = mapping.productId')
           .where('p.name LIKE :productName')
           .andWhere('p.deletedAt IS NULL')
+          .andWhere('p.useStatus = :syncProductUseStatus')
           .andWhere('mapping.deletedAt IS NULL')
           .getQuery();
         return 'event.id IN ' + subQuery;
@@ -120,13 +128,16 @@ export class UserSyncProductService {
     const totalPage = Math.ceil(totalCount / take);
 
     const resultList: UserSyncProductEventViewDto[] = eventList.map((event) => {
+      const syncProductCount =
+        event.userSyncProductEventMappings?.filter((mapping) => mapping.product != null).length ?? 0;
+
       return {
         id: event.id,
         createdAt: format(event.createdAt, DateFormatStr),
         name: event.name,
         code: event.code,
         userBusinessName: event.businessUser.company?.businessName ?? '',
-        syncProductCount: event.userSyncProductEventMappings?.length ?? 0,
+        syncProductCount,
         status: event.status,
       };
     });
@@ -403,7 +414,11 @@ export class UserSyncProductService {
         .createQueryBuilder('event')
         .innerJoinAndSelect('event.businessUser', 'businessUser')
         .leftJoinAndSelect('event.userSyncProductEventMappings', 'mappings')
-        .leftJoin('mappings.product', 'product')
+        // 매핑은 살아 있어도 미사용 상품은 현황 집계에서 제외한다.
+        // (자동 미사용 초이스쿠폰이 복구되면 useStatus가 USE로 돌아와 다시 집계된다.)
+        .leftJoin('mappings.product', 'product', 'product.deletedAt IS NULL AND product.useStatus = :useStatus', {
+          useStatus: IProductUseStatus.USE,
+        })
         .leftJoin('product.brand', 'brand')
         .where('event.businessUserId = :userId', { userId: user.id })
         .andWhere('event.status = :status', { status: IUserSyncProductStatus.ACTIVE });
@@ -423,8 +438,12 @@ export class UserSyncProductService {
       for (const event of events) {
         if (event.userSyncProductEventMappings) {
           for (const mapping of event.userSyncProductEventMappings) {
+            // useStatus 조건으로 product 조인이 걸러지면 product가 없다. 미사용 상품은 집계하지 않는다.
+            if (!mapping.product) {
+              continue;
+            }
             productCount++;
-            if (mapping.product?.brandId) {
+            if (mapping.product.brandId) {
               brandIds.add(mapping.product.brandId);
             }
           }

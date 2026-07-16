@@ -1,4 +1,5 @@
 jest.mock('typeorm-transactional', () => ({
+  IsolationLevel: { READ_COMMITTED: 'READ COMMITTED' },
   Transactional: () => () => undefined,
 }));
 
@@ -14,10 +15,30 @@ describe('ProductService.updatePartial - 초이스쿠폰 사용상태 자동 반
   // mappings: { choiceProductId, productId }[]
   const createService = (products: Record<number, any>, mappings: { choiceProductId: number; productId: number }[]) => {
     const saved: any[] = [];
+    const lockedChoiceIds: number[] = [];
     const insertedHistories: ProductUpdateHistoryEntity[] = [];
 
     const productRepository = {
-      findOne: jest.fn(async ({ where: { id } }: any) => products[id] ?? null),
+      findOne: jest.fn(async ({ where: { id }, lock }: any) => {
+        if (lock?.mode === 'pessimistic_write') {
+          lockedChoiceIds.push(id);
+        }
+        return products[id] ?? null;
+      }),
+      createQueryBuilder: jest.fn(() => {
+        let ids: number[] = [];
+        const qb: any = {
+          withDeleted: jest.fn((): any => qb),
+          where: jest.fn((_condition: string, params: { ids: number[] }) => {
+            ids = params.ids;
+            return qb;
+          }),
+          orderBy: jest.fn((): any => qb),
+          setLock: jest.fn((): any => qb),
+          getMany: jest.fn(async () => ids.map((productId) => products[productId]).filter((p) => p != null)),
+        };
+        return qb;
+      }),
       save: jest.fn(async (entity: any) => {
         saved.push({ id: entity.id, useStatus: entity.useStatus });
         products[entity.id] = entity;
@@ -30,9 +51,7 @@ describe('ProductService.updatePartial - 초이스쿠폰 사용상태 자동 반
         if (where.productId !== undefined) {
           return mappings.filter((m) => m.productId === where.productId);
         }
-        return mappings
-          .filter((m) => m.choiceProductId === where.choiceProductId)
-          .map((m) => ({ ...m, product: products[m.productId] }));
+        return mappings.filter((m) => m.choiceProductId === where.choiceProductId);
       }),
     };
 
@@ -59,7 +78,7 @@ describe('ProductService.updatePartial - 초이스쿠폰 사용상태 자동 반
       {} as any, // fileStorage
     );
 
-    return { service, saved, insertedHistories, products, userSyncProductEventMappingRepository };
+    return { service, saved, lockedChoiceIds, insertedHistories, products, userSyncProductEventMappingRepository };
   };
 
   const product = (id: number, useStatus: IProductUseStatus, code = `P${id}`) => ({
@@ -67,6 +86,7 @@ describe('ProductService.updatePartial - 초이스쿠폰 사용상태 자동 반
     code,
     useStatus,
     type: 'GENERAL',
+    deletedAt: null,
   });
 
   it('구성상품이 미사용이 되면 초이스쿠폰도 미사용이 된다', async () => {
@@ -146,6 +166,22 @@ describe('ProductService.updatePartial - 초이스쿠폰 사용상태 자동 반
     expect(after[200].useStatus).toBe(IProductUseStatus.UNUSED);
   });
 
+  it('여러 초이스쿠폰에 묶인 구성상품 변경 시 choiceProductId 오름차순으로 락을 잡는다', async () => {
+    const products = {
+      1: product(1, IProductUseStatus.USE),
+      100: { ...product(100, IProductUseStatus.USE, 'CHOICE100'), type: 'CHOICE' },
+      200: { ...product(200, IProductUseStatus.USE, 'CHOICE200'), type: 'CHOICE' },
+    };
+    const { service, lockedChoiceIds } = createService(products, [
+      { choiceProductId: 200, productId: 1 },
+      { choiceProductId: 100, productId: 1 },
+    ]);
+
+    await service.updatePartial(user, { id: 1, useStatus: IProductUseStatus.UNUSED } as any);
+
+    expect(lockedChoiceIds).toEqual([100, 200]);
+  });
+
   it('초이스쿠폰에 묶이지 않은 상품이면 아무것도 하지 않는다', async () => {
     const products = { 1: product(1, IProductUseStatus.USE) };
     const { service, saved } = createService(products, []);
@@ -186,7 +222,9 @@ describe('ProductService.updatePartial - 초이스쿠폰 사용상태 자동 반
     expect(choiceHistory!.reason).toContain('P1');
   });
 
-  it('초이스쿠폰이 자동 미사용이 되면 고객상품관리 매핑도 해제된다', async () => {
+  it('초이스쿠폰이 자동 미사용이 되어도 고객상품관리 매핑은 지우지 않는다', async () => {
+    // 매핑을 지우면 이후 사용으로 복구돼도 고객사 목록에 다시 노출되지 않는다.
+    // 미사용 상품의 노출/집계 제외는 조회 시 useStatus 필터로 처리하므로 매핑은 보존한다.
     const products = {
       1: product(1, IProductUseStatus.USE),
       2: product(2, IProductUseStatus.USE),
@@ -199,26 +237,40 @@ describe('ProductService.updatePartial - 초이스쿠폰 사용상태 자동 반
 
     await service.updatePartial(user, { id: 1, useStatus: IProductUseStatus.UNUSED } as any);
 
-    // 직접 미사용 상품(id: 1)과 자동 미사용 초이스쿠폰(id: 100) 모두 매핑 해제
-    expect(userSyncProductEventMappingRepository.softDelete).toHaveBeenCalledWith({ productId: 1 });
-    expect(userSyncProductEventMappingRepository.softDelete).toHaveBeenCalledWith({ productId: 100 });
+    // 자동 미사용된 초이스쿠폰(id: 100)의 매핑은 지우지 않는다.
+    // (직접 미사용된 구성상품 id: 1은 기존 경로에서 매핑을 해제하지만, 자동 반영 경로는 매핑을 보존한다.)
+    expect(userSyncProductEventMappingRepository.softDelete).not.toHaveBeenCalledWith({ productId: 100 });
   });
 
-  it('초이스쿠폰이 미사용에서 사용으로 복구될 때는 매핑을 해제하지 않는다', async () => {
+  it('매핑은 있는데 구성상품 조회가 누락되면 나머지가 모두 사용이어도 초이스쿠폰은 미사용으로 남는다', async () => {
     const products = {
-      1: product(1, IProductUseStatus.UNUSED),
-      2: product(2, IProductUseStatus.USE),
+      1: product(1, IProductUseStatus.USE),
       100: { ...product(100, IProductUseStatus.UNUSED, 'CHOICE100'), type: 'CHOICE' },
     };
-    const { service, userSyncProductEventMappingRepository } = createService(products, [
+    const { service, products: after } = createService(products, [
       { choiceProductId: 100, productId: 1 },
       { choiceProductId: 100, productId: 2 },
     ]);
 
     await service.updatePartial(user, { id: 1, useStatus: IProductUseStatus.USE } as any);
 
-    // 초이스쿠폰(id: 100)은 USE로 복구되므로 매핑 해제 대상 아님
-    expect(userSyncProductEventMappingRepository.softDelete).not.toHaveBeenCalledWith({ productId: 100 });
+    expect(after[100].useStatus).toBe(IProductUseStatus.UNUSED);
+  });
+
+  it('soft-delete된 구성상품이 있으면 나머지가 모두 사용이어도 초이스쿠폰은 미사용으로 남는다', async () => {
+    const products = {
+      1: product(1, IProductUseStatus.USE),
+      2: { ...product(2, IProductUseStatus.USE), deletedAt: new Date() },
+      100: { ...product(100, IProductUseStatus.UNUSED, 'CHOICE100'), type: 'CHOICE' },
+    };
+    const { service, products: after } = createService(products, [
+      { choiceProductId: 100, productId: 1 },
+      { choiceProductId: 100, productId: 2 },
+    ]);
+
+    await service.updatePartial(user, { id: 1, useStatus: IProductUseStatus.USE } as any);
+
+    expect(after[100].useStatus).toBe(IProductUseStatus.UNUSED);
   });
 
   it('초이스쿠폰 상태가 이미 목표값이면 저장하지 않는다', async () => {
