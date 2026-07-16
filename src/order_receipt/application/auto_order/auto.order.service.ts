@@ -75,6 +75,7 @@ export class AutoOrderService {
 
     // 사전검증 입력(주문 주체=접수한 기업 사용자의 발신수단 제한, SSG 예약창)을 1회 조회해 재사용
     const receiptUser = await this.userRepository.findOne({ where: { id: receipt.userId } });
+    const ownerMissing = receiptUser === null; // 소유자 없음 → 전체허용 폴백 금지(사전검증에서 FILE 차단)
     const allowedSendMethods = receiptUser?.allowedSendMethods ?? null;
     const range = this.toRangeBoundary(await this.getReservationRange());
 
@@ -85,7 +86,9 @@ export class AutoOrderService {
 
     const files: AutoOrderFileResult[] = [];
     for (let fileIndex = 0; fileIndex < urls.length; fileIndex++) {
-      files.push(await this.processFile(receipt, user, urls[fileIndex], fileIndex, allowedSendMethods, range, mode));
+      files.push(
+        await this.processFile(receipt, user, urls[fileIndex], fileIndex, allowedSendMethods, ownerMissing, range, mode),
+      );
     }
 
     const result: AutoOrderResult = { files, alreadyCommitted: false };
@@ -108,6 +111,7 @@ export class AutoOrderService {
     url: string,
     fileIndex: number,
     allowedSendMethods: string | null,
+    ownerMissing: boolean,
     range: SsgReservationRangeBoundary | null,
     mode: AutoOrderRunMode,
   ): Promise<AutoOrderFileResult> {
@@ -139,6 +143,7 @@ export class AutoOrderService {
       generalRows: mapped.generalRows,
       ssgRows: mapped.ssgRows,
       userAllowedSendMethods: allowedSendMethods,
+      ownerMissing,
       ssgReservationRange: range,
     });
 
@@ -153,6 +158,15 @@ export class AutoOrderService {
       excludedCount: mapped.excludedRows.length,
       builtDeliveryCount,
     });
+
+    // 검산 불일치(built 과다=중복계상 코드버그 신호) → 에러 로깅으로 표면화
+    if (!reconciliation.matched) {
+      this.logger.error(
+        `자동주문 검산 불일치 [${mode}] receipt=${receipt.id} file=${fileIndex} ` +
+          `expected=${reconciliation.expectedDeliveryCount} built=${reconciliation.builtDeliveryCount} ` +
+          `blocked=${reconciliation.blockedDeliveryCount}`,
+      );
+    }
 
     return {
       fileIndex,

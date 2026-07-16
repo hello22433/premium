@@ -78,7 +78,12 @@ export interface MappedResult {
 export type BlockLevel = 'FILE' | 'ORDER' | 'ROW';
 
 /** 차단 사유 코드 (프론트 계약) */
-export type BlockCode = 'FORBIDDEN_WORD' | 'SSG_RESERVATION_WINDOW' | 'SEND_METHOD_NOT_ALLOWED';
+export type BlockCode =
+  | 'FORBIDDEN_WORD'
+  | 'SSG_RESERVATION_WINDOW'
+  | 'SEND_METHOD_NOT_ALLOWED'
+  | 'MISSING_DELIVERY_TARGET' // 발신수단에 맞는 수신처(휴대폰/이메일)가 행에 없음
+  | 'RECEIPT_OWNER_MISSING'; // 접수 소유자(기업 사용자)를 찾을 수 없음
 
 /** 금칙어 적발 필드 (code === 'FORBIDDEN_WORD'일 때만) */
 export type BlockField = 'TITLE' | 'CONTENT' | 'REPLACE_CHAR';
@@ -99,6 +104,7 @@ export interface PreValidateInput {
   ssgRows: MappedRow[];
   userAllowedSendMethods: string | null; // user.allowedSendMethods 원본(콤마구분), null이면 전체 허용
   ssgReservationRange: SsgReservationRangeBoundary | null; // SSG 예약 가능 범위(미설정 시 당월 폴백)
+  ownerMissing: boolean; // 접수 소유자 조회 실패 → FILE 차단(소유자 없이 전체허용 폴백 금지)
 }
 
 export interface PreValidateResult {

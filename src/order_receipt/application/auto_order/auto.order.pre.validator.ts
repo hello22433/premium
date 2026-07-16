@@ -1,8 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { ForbiddenWordMatcher } from '../../../forbidden_word/application/forbidden.word.matcher';
 import { IOrderType } from '../../../order/interface/order.type';
+import { IOrderSendMethod } from '../../../order/interface/order.send.method';
 import { validateSsgReservationWindow } from '../../../order/domain/order.validation';
-import { BlockReason, MappedRow, PreValidateInput, PreValidateResult } from './auto.order.types';
+import { BlockReason, MappedRow, ParsedHeader, PreValidateInput, PreValidateResult } from './auto.order.types';
 
 /**
  * 4단계 - 사전검증 (이 설계의 심장).
@@ -28,6 +29,15 @@ export class AutoOrderPreValidator {
   validate(input: PreValidateInput): PreValidateResult {
     const { header, generalRows, ssgRows } = input;
     const blocked: BlockReason[] = [];
+
+    // ── FILE ⓪ 접수 소유자 없음 → 전체 차단(소유자 없이 전체허용 폴백 금지; commit 시 createTemp가 어차피 throw)
+    if (input.ownerMissing) {
+      blocked.push({
+        code: 'RECEIPT_OWNER_MISSING',
+        level: 'FILE',
+        reason: '접수 소유자(기업 사용자) 정보를 찾을 수 없어 자동주문을 생성할 수 없습니다.',
+      });
+    }
 
     // ── FILE ① 제목/내용 금칙어 (모든 수신자 공유값 → 오염 시 파일 전체 차단)
     const titleHits = this.forbiddenWordMatcher.scan(header.sendTitle);
@@ -63,10 +73,11 @@ export class AutoOrderPreValidator {
       });
     }
 
-    // ── ROW ③ 대치문자 금칙어 (수신자별 값 → 그 행만 제외)
+    // ── ROW ③ 대치문자 금칙어 + 수신처 없음 (수신자별 값 → 그 행만 제외)
     const blockedRowNos = new Set<number>();
     for (const row of [...generalRows, ...ssgRows]) {
       this.scanReplaceCharacters(row, blocked, blockedRowNos);
+      this.checkDeliveryTarget(header, row, blocked, blockedRowNos);
     }
 
     // ── ORDER ④ SSG 예약창 (createTemp의 validateSsgReservationWindow 재사용 → 완전 동기화)
@@ -90,6 +101,30 @@ export class AutoOrderPreValidator {
 
     const fileBlocked = blocked.some((b) => b.level === 'FILE');
     return { blocked, blockedRowNos, ssgOrderBlocked, fileBlocked };
+  }
+
+  /**
+   * 발신수단에 맞는 수신처(EMAIL=이메일, 그 외=휴대폰)가 없으면 그 행을 ROW 차단.
+   * → payload 조립 단계에서 조용히 빠지던 행이 "사유 있는 제외"로 검산에 집계된다.
+   */
+  private checkDeliveryTarget(
+    header: ParsedHeader,
+    row: MappedRow,
+    blocked: BlockReason[],
+    blockedRowNos: Set<number>,
+  ): void {
+    const target = header.sendMethod === IOrderSendMethod.EMAIL ? row.email : row.phone;
+    if (target) return;
+    blockedRowNos.add(row.rowNo);
+    blocked.push({
+      code: 'MISSING_DELIVERY_TARGET',
+      level: 'ROW',
+      rowNo: row.rowNo,
+      reason:
+        header.sendMethod === IOrderSendMethod.EMAIL
+          ? `${row.rowNo}행: 이메일 발송인데 이메일 주소(D)가 없습니다.`
+          : `${row.rowNo}행: 수신 휴대폰 번호(B)가 없습니다.`,
+    });
   }
 
   /** 한 행의 대치문자 1/2/3을 검사. 하나라도 걸리면 그 행을 ROW 차단(사유는 걸린 만큼 보고, 카운트는 Set으로 1회). */

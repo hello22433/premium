@@ -50,6 +50,7 @@ function input(overrides: Partial<PreValidateInput> = {}): PreValidateInput {
     generalRows: [mappedRow(5)],
     ssgRows: [],
     userAllowedSendMethods: null,
+    ownerMissing: false,
     ssgReservationRange: null,
     ...overrides,
   };
@@ -64,6 +65,25 @@ describe('AutoOrderPreValidator', () => {
     expect(r.fileBlocked).toBe(false);
     expect(r.blockedRowNos.size).toBe(0);
     expect(r.ssgOrderBlocked).toBe(false);
+  });
+
+  it('소유자 없음 → FILE 차단', () => {
+    const r = validator.validate(input({ ownerMissing: true }));
+    expect(r.fileBlocked).toBe(true);
+    expect(r.blocked.some((b) => b.code === 'RECEIPT_OWNER_MISSING' && b.level === 'FILE')).toBe(true);
+  });
+
+  it('휴대폰 없는 행(문자 발송) → ROW 차단(MISSING_DELIVERY_TARGET)', () => {
+    const rows = [mappedRow(5, { phone: null }), mappedRow(6, { phone: '010-1' })];
+    const r = validator.validate(input({ generalRows: rows }));
+    expect([...r.blockedRowNos]).toEqual([5]);
+    expect(r.blocked.some((b) => b.code === 'MISSING_DELIVERY_TARGET' && b.rowNo === 5)).toBe(true);
+  });
+
+  it('EMAIL 발송인데 이메일 없는 행 → ROW 차단', () => {
+    const rows = [mappedRow(5, { email: null, phone: '010-1' })];
+    const r = validator.validate(input({ header: header({ sendMethod: IOrderSendMethod.EMAIL }), generalRows: rows }));
+    expect([...r.blockedRowNos]).toEqual([5]); // 휴대폰 있어도 이메일 없으면 이메일발송은 차단
   });
 
   it('제목 금칙어 → FILE 차단(TITLE, 마스킹)', () => {
