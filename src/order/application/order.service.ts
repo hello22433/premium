@@ -63,7 +63,6 @@ import {
   EntityManager,
   In,
   LessThanOrEqual,
-  Like,
   MoreThanOrEqual,
   ObjectLiteral,
   QueryRunner,
@@ -152,8 +151,7 @@ import { calculateOrderSettlementAmount, buildSettlementDisplayLines } from '../
 import { OrderCustomerViewDto } from '../api/dto/order.customer.view.dto';
 import { MaskingUtil } from '../../common/utils/masking.util';
 import { resolveExpireDays } from '../../common/utils/expire.util';
-import { CreateCode } from '../../common/domain/create.code';
-import { OrderDigitNumber, OrderPrefixCode } from '../domain/order.code';
+import { createTempOrderCode, deriveOrderCodeFromId } from '../domain/order.code';
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { PhoneUtil } from '../../common/utils/phone.util';
 import { DeliveryBatchService } from '../../delivery/application/delivery.batch.service';
@@ -3519,18 +3517,6 @@ export class OrderService {
     // 전송 정산 가격 적용
     let sendAmount = 0;
 
-    const prevProduct = await this.orderRepository.findOne({
-      where: {
-        code: Like(`${OrderPrefixCode}%`),
-      },
-      order: { code: 'DESC' },
-      withDeleted: true,
-    });
-
-    const prevCode = prevProduct?.code ?? null;
-
-    const newCode = CreateCode(prevCode, OrderPrefixCode, OrderDigitNumber);
-
     for (const orderProduct of orderProductList) {
       const getProduct = productPriceMap.get(orderProduct.productId)!;
       sendAmount += getProduct.price * orderProduct.amount;
@@ -3557,7 +3543,7 @@ export class OrderService {
     const orderInsertResult = await this.orderRepository.insert({
       userId: user.id,
       status: IOrderStatus.TEMP,
-      code: newCode,
+      code: createTempOrderCode(),
       type,
       eventName,
       sendAmount: sendAmount,
@@ -3569,7 +3555,16 @@ export class OrderService {
       ...buildOrderClientUserSnapshot(clientUserEntity),
       ...buildOrderOperationUserSnapshot(operationUserEntity),
     });
-    const orderId: number = orderInsertResult.identifiers[0].id;
+    // identifiers 가 누락(undefined)/빈 배열([])/id 부재([{}]) 면 [0] 또는 .id 접근이
+    // raw TypeError 를 낸다. ?.[0]?.id 로 모두 undefined 로 좁힌 뒤 명시 가드 →
+    // 세 엣지 모두 같은 도메인 에러로 실패(부분주문 방지).
+    const orderId: number | undefined = orderInsertResult.identifiers?.[0]?.id;
+    if (orderId == null) {
+      throw new Error('createTemp: insert 결과에 생성 id가 없어 확정코드를 채번할 수 없습니다');
+    }
+
+    // 2-step 채번: id 확정 후 EPEVT 코드로 확정(같은 트랜잭션 → 임시코드 커밋 전 소멸)
+    await this.orderRepository.update(orderId, { code: deriveOrderCodeFromId(orderId) });
 
     const orderDeliveryCreateList: OrderDeliveryEntity[] = [];
 
