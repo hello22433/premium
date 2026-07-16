@@ -55,6 +55,18 @@ async function buildFilledBuffer(rows: RowInput[], formVersion = 'v4.1-immediate
   return (await wb.xlsx.writeBuffer()) as Buffer;
 }
 
+/** 예약발송(C16=FALSE) 버퍼: 즉시발송 버퍼를 로드해 C16/C17/C18만 예약값으로 덮어쓴다 */
+async function buildReserveBuffer(rows: RowInput[], sendDate: string, sendTime: string): Promise<Buffer> {
+  const base = await buildFilledBuffer(rows);
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(base);
+  const info = wb.getWorksheet('1.신청정보')!;
+  info.getCell('C16').value = 'FALSE';
+  info.getCell('C17').value = sendDate;
+  info.getCell('C18').value = sendTime;
+  return (await wb.xlsx.writeBuffer()) as Buffer;
+}
+
 interface Mocks {
   createTemp: jest.Mock;
   generatedInsert: jest.Mock;
@@ -65,6 +77,7 @@ interface Mocks {
 function makeService(
   bufferByUrl: Record<string, Buffer>,
   mocks?: Partial<Mocks>,
+  opts?: { reservationRange?: { startDate: Date; endDate: Date } | null; ownerMissing?: boolean },
 ): { svc: AutoOrderService; mocks: Mocks } {
   const productRepo = {
     find: async () =>
@@ -72,10 +85,13 @@ function makeService(
   } as unknown as Repository<ProductEntity>;
 
   const userRepo = {
-    findOne: async () => ({ id: 10, allowedSendMethods: null }) as unknown as UserEntity,
+    findOne: async () =>
+      opts?.ownerMissing ? null : (({ id: 10, allowedSendMethods: null }) as unknown as UserEntity),
   } as unknown as Repository<UserEntity>;
 
-  const ssgEventService = { getReservationRange: async () => null } as unknown as SsgEventService;
+  const ssgEventService = {
+    getReservationRange: async () => opts?.reservationRange ?? null,
+  } as unknown as SsgEventService;
 
   const fileService = {
     getBuffer: async (url: string) => bufferByUrl[url],
@@ -296,5 +312,97 @@ describe('AutoOrderService (COMMIT 승인)', () => {
     (previewSvc as any).fileService = throwingFile;
     const r = await previewSvc.run(receipt('u://x.xlsx'), admin, AutoOrderRunMode.DRY_RUN);
     expect(r.files[0].status).toBe('INVALID_FORMAT');
+  });
+});
+
+describe('AutoOrderService (리뷰 추가 커버리지)', () => {
+  // 리뷰 test-analyzer #1: DRY_RUN은 절대 쓰지 않는다(미리보기가 실제 주문을 만들면 안 됨)
+  it('DRY_RUN: 어떤 쓰기도 하지 않는다(createTemp/멱등insert/스냅샷 모두 미호출)', async () => {
+    const buf = await buildFilledBuffer([
+      { b: '010-1111-1111', code: 'GEN-1' },
+      { b: '010-2222-2222', code: 'SSG-1' },
+    ]);
+    const { svc, mocks } = makeService({ 'u://a.xlsx': buf });
+
+    await svc.run(receipt('u://a.xlsx'), admin, AutoOrderRunMode.DRY_RUN);
+
+    expect(mocks.createTemp).not.toHaveBeenCalled();
+    expect(mocks.generatedInsert).not.toHaveBeenCalled();
+    expect(mocks.autoResultInsert).not.toHaveBeenCalled();
+  });
+
+  // 리뷰 test-analyzer #3: 소유자 조회 실패 → FILE 차단이 서비스 경계까지 배선되는지
+  it('소유자 없음(userRepo.findOne=null) → FILE 차단, createTemp 미호출, 스냅샷은 저장', async () => {
+    const buf = await buildFilledBuffer([{ b: '010-1111-1111', code: 'GEN-1' }]);
+    const { svc, mocks } = makeService({ 'u://a.xlsx': buf }, undefined, { ownerMissing: true });
+
+    const file = (await svc.run(receipt('u://a.xlsx'), admin, AutoOrderRunMode.COMMIT)).files[0];
+
+    expect(file.fileBlocked).toBe(true);
+    expect(file.orders).toHaveLength(0);
+    expect(mocks.createTemp).not.toHaveBeenCalled();
+    expect(file.blocked.some((b) => b.code === 'RECEIPT_OWNER_MISSING')).toBe(true);
+    expect(mocks.autoResultInsert).toHaveBeenCalledTimes(1); // 0건이라도 멱등 스냅샷은 저장
+  });
+
+  // 리뷰 test-analyzer #2 + H-1: SSG 예약창 밖 → SSG만 스킵, GENERAL은 생성(부분 스킵)
+  it('SSG 예약창 밖 → SSG 주문만 스킵하고 GENERAL은 생성; 검산 일치', async () => {
+    const buf = await buildReserveBuffer(
+      [
+        { b: '010-1111-1111', code: 'GEN-1' },
+        { b: '010-2222-2222', code: 'SSG-1' },
+      ],
+      '2026-08-10',
+      '10:00',
+    );
+    const range = { startDate: new Date('2026-07-01'), endDate: new Date('2026-07-31') }; // 발송일이 창 밖
+    const { svc } = makeService({ 'u://a.xlsx': buf }, undefined, { reservationRange: range });
+
+    const file = (await svc.run(receipt('u://a.xlsx'), admin, AutoOrderRunMode.DRY_RUN)).files[0];
+
+    expect(file.orders).toHaveLength(1);
+    expect(file.orders[0].type).toBe('GENERAL'); // SSG는 빠짐
+    expect(file.blocked.some((b) => b.code === 'SSG_RESERVATION_WINDOW' && b.level === 'ORDER')).toBe(true);
+    expect(file.reconciliation.builtDeliveryCount).toBe(1); // GENERAL 1
+    expect(file.reconciliation.blockedDeliveryCount).toBe(1); // SSG 1행이 스킵으로 집계
+    expect(file.reconciliation.matched).toBe(true);
+  });
+
+  // 리뷰 test-analyzer #4 + H-1: 파싱 불가 파일은 COMMIT에서도 throw하지 않고 INVALID_FORMAT(비-v4.1 허용 요구)
+  it('파싱 불가(비-xlsx) → COMMIT/DRY_RUN 모두 throw 없이 INVALID_FORMAT, createTemp 미호출', async () => {
+    const junk = Buffer.from('this is not an excel file');
+
+    const commit = makeService({ 'u://x.xlsx': junk });
+    const cf = (await commit.svc.run(receipt('u://x.xlsx'), admin, AutoOrderRunMode.COMMIT)).files[0];
+    expect(cf.status).toBe('INVALID_FORMAT');
+    expect(commit.mocks.createTemp).not.toHaveBeenCalled();
+
+    const dry = makeService({ 'u://x.xlsx': junk });
+    const df = (await dry.svc.run(receipt('u://x.xlsx'), admin, AutoOrderRunMode.DRY_RUN)).files[0];
+    expect(df.status).toBe('INVALID_FORMAT');
+  });
+
+  // 리뷰 test-analyzer #5: 0바이트 파일 → COMMIT throw(업로드 실패로 간주), DRY_RUN은 INVALID_FORMAT
+  it('0바이트 파일 → COMMIT 전파(승인 롤백); DRY_RUN은 INVALID_FORMAT', async () => {
+    const empty = Buffer.alloc(0);
+
+    const { svc: commitSvc } = makeService({ 'u://x.xlsx': empty });
+    await expect(commitSvc.run(receipt('u://x.xlsx'), admin, AutoOrderRunMode.COMMIT)).rejects.toThrow(/비어/);
+
+    const { svc: drySvc } = makeService({ 'u://x.xlsx': empty });
+    const f = (await drySvc.run(receipt('u://x.xlsx'), admin, AutoOrderRunMode.DRY_RUN)).files[0];
+    expect(f.status).toBe('INVALID_FORMAT');
+  });
+
+  // 리뷰 M-2: 저장 스냅샷이 손상되면 raw SyntaxError가 아니라 맥락 있는 오류로 실패
+  it('손상된 스냅샷(JSON 파싱 불가) → 친절한 오류로 전파(raw SyntaxError 아님)', async () => {
+    const { svc } = makeService(
+      {},
+      { autoResultFindOne: jest.fn(async () => ({ resultJson: '{broken json' })) },
+    );
+
+    await expect(svc.run(receipt('u://a.xlsx'), admin, AutoOrderRunMode.COMMIT)).rejects.toThrow(
+      /읽을 수 없습니다/,
+    );
   });
 });

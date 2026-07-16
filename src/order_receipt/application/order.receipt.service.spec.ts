@@ -139,6 +139,35 @@ describe('OrderReceiptService access and status policy', () => {
     await expect(service.approve(operationAdmin, 100)).rejects.toThrow('자동주문 실패');
   });
 
+  it('접수 상태가 아니면(이미 APPROVED) 승인 거부 + 자동주문 훅 미호출', async () => {
+    const { service, autoOrderService } = createService(
+      makeReceipt({ userId: 20, status: OrderReceiptStatus.APPROVED }),
+    );
+
+    await expect(service.approve(operationAdmin, 100)).rejects.toThrow(BadRequestException);
+    expect(autoOrderService.run).not.toHaveBeenCalled(); // 상태가드가 훅 앞에서 차단(재실행 방지)
+  });
+
+  it('미리보기는 운영관리자 이상만 허용', async () => {
+    const { service } = createService(makeReceipt({ userId: 20, status: OrderReceiptStatus.RECEIVED }));
+
+    await expect((service as any).previewAutoOrder(corporateUser(20), 100)).rejects.toThrow(ForbiddenException);
+  });
+
+  it('미리보기는 자동주문 훅을 DRY_RUN 모드로 호출한다', async () => {
+    const { service, autoOrderService, receipt } = createService(
+      makeReceipt({ userId: 20, status: OrderReceiptStatus.RECEIVED }),
+    );
+
+    await (service as any).previewAutoOrder(operationAdmin, 100);
+
+    expect(autoOrderService.run).toHaveBeenCalledTimes(1);
+    const [passedReceipt, passedUser, mode] = autoOrderService.run.mock.calls[0];
+    expect(passedReceipt).toBe(receipt);
+    expect(passedUser).toBe(operationAdmin);
+    expect(mode).toBe('DRY_RUN');
+  });
+
   it('blocks corporate delete while receipt is reviewing but keeps rejected delete available for owner', async () => {
     const reviewing = createService(makeReceipt({ userId: 20, status: OrderReceiptStatus.REVIEWING }));
 
