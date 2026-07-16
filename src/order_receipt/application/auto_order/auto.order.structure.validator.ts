@@ -26,6 +26,9 @@ export class AutoOrderStructureValidator {
     if (!h.sendTitle) return this.invalid('발송 제목(C20)이 비어 있습니다.');
     if (!h.sendContent) return this.invalid('발송 내용(C21)이 비어 있습니다.');
     if (!h.sendMethod) return this.invalid('발신수단(C23)이 비어 있거나 알 수 없는 값입니다.');
+    if (h.destroyDay < 1) {
+      return this.invalid('개인정보 파기일(C25)이 비어 있거나 올바르지 않습니다.');
+    }
     if (!h.isImmediate && !h.sendRequestAt) {
       return this.invalid('예약발송인데 발송희망일/시간(C17/C18)이 올바르지 않습니다.');
     }

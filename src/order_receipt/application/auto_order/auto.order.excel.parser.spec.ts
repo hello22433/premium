@@ -13,19 +13,21 @@ async function buildBuffer(opts: {
   sendMethod?: string;
   eventName?: string;
   withRows?: boolean;
+  sendTime?: unknown; // C18 (문자열/Date/빈값 등 다양한 케이스)
+  destroyDay?: unknown; // C25
 }): Promise<Buffer> {
   const wb = new ExcelJS.Workbook();
   const info = wb.addWorksheet('1.신청정보');
   info.getCell('C1').value = opts.formVersion ?? 'v4.1-immediate-send';
   info.getCell('C16').value = opts.immediate ?? 'FALSE';
   info.getCell('C17').value = '2026-08-05';
-  info.getCell('C18').value = '14:30';
+  info.getCell('C18').value = (opts.sendTime ?? '14:30') as ExcelJS.CellValue;
   info.getCell('C19').value = opts.eventName ?? '8월 프로모션';
   info.getCell('C20').value = '여름 이벤트 쿠폰';
   info.getCell('C21').value = '즐거운 여름 되세요';
   info.getCell('C23').value = opts.sendMethod ?? '문자';
   info.getCell('C24').value = '1644-3614';
-  info.getCell('C25').value = 90;
+  info.getCell('C25').value = (opts.destroyDay ?? 90) as ExcelJS.CellValue;
 
   const list = wb.addWorksheet('2.발송명단');
   if (opts.withRows !== false) {
@@ -91,6 +93,34 @@ describe('AutoOrderExcelParser', () => {
     const parsed = await parser.parse(await buildBuffer({ sendMethod: '카카오' }));
     expect(parsed.header!.sendMethod).toBeNull();
   });
+
+  // ── 리뷰 반영: toKstDate 하드닝 (조용한 자정 폴백 금지 + 네이티브 시간셀 + 범위검증)
+  it('자정 경계: 00:00 KST → 전날 UTC 15:00', async () => {
+    const parsed = await parser.parse(await buildBuffer({ sendTime: '00:00' }));
+    expect(parsed.header!.sendRequestAt?.toISOString()).toBe('2026-08-04T15:00:00.000Z');
+  });
+
+  it('한 자리 시(9:30)도 파싱', async () => {
+    const parsed = await parser.parse(await buildBuffer({ sendTime: '9:30' }));
+    expect(parsed.header!.sendRequestAt?.toISOString()).toBe('2026-08-05T00:30:00.000Z');
+  });
+
+  it('네이티브 시간셀(Date)도 흡수 (조용한 자정 폴백 아님)', async () => {
+    // 엑셀이 시간을 native Date로 저장 → cell()이 ISO로 변환 → 시간부 추출
+    const parsed = await parser.parse(await buildBuffer({ sendTime: new Date('2026-08-05T14:30:00.000Z') }));
+    // ISO의 시각(14:30)을 KST로 재조합 → UTC 05:30
+    expect(parsed.header!.sendRequestAt?.toISOString()).toBe('2026-08-05T05:30:00.000Z');
+  });
+
+  it('범위 초과 시간(25:99)은 null (자정으로 조용히 안 떨어짐)', async () => {
+    const parsed = await parser.parse(await buildBuffer({ sendTime: '25:99' }));
+    expect(parsed.header!.sendRequestAt).toBeNull();
+  });
+
+  it('빈 시간 + 예약발송은 null', async () => {
+    const parsed = await parser.parse(await buildBuffer({ sendTime: '', immediate: 'FALSE' }));
+    expect(parsed.header!.sendRequestAt).toBeNull();
+  });
 });
 
 describe('AutoOrderStructureValidator', () => {
@@ -119,5 +149,20 @@ describe('AutoOrderStructureValidator', () => {
     const r = validator.validate(parsed);
     expect(r.status).toBe('INVALID_FORMAT');
     expect(r.message).toContain('발송명단');
+  });
+
+  // ── 리뷰 반영: destroyDay 불량(0) 및 예약발송 시간 불량 리젝
+  it('파기일(C25)이 0/불량이면 INVALID_FORMAT', async () => {
+    const parsed = await parser.parse(await buildBuffer({ destroyDay: '' }));
+    const r = validator.validate(parsed);
+    expect(r.status).toBe('INVALID_FORMAT');
+    expect(r.message).toContain('파기일');
+  });
+
+  it('예약발송인데 시간이 불량(25:99)이면 INVALID_FORMAT (자정 폴백 아님)', async () => {
+    const parsed = await parser.parse(await buildBuffer({ sendTime: '25:99', immediate: 'FALSE' }));
+    const r = validator.validate(parsed);
+    expect(r.status).toBe('INVALID_FORMAT');
+    expect(r.message).toContain('발송희망일/시간');
   });
 });
