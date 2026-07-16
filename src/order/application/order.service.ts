@@ -721,8 +721,8 @@ export class OrderService {
       .leftJoinAndSelect('order.operationUser', 'operationUser')
       .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .leftJoinAndSelect('orderProductMappings.product', 'product')
-      .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
       .withDeleted()
+      .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
       .where('order.type = :type', { type })
       .andWhere('order.deletedAt IS NULL');
 
@@ -980,8 +980,7 @@ export class OrderService {
       if (!wallet) {
         return;
       }
-      const remain =
-        wallet.creditLimit + wallet.depositBalance - wallet.creditUsedAmount - wallet.creditExcessAmount;
+      const remain = wallet.creditLimit + wallet.depositBalance - wallet.creditUsedAmount - wallet.creditExcessAmount;
       views[index].customerSettlement = {
         settleCondition: wallet.settleCondition,
         remainServiceAmount: Math.max(0, remain),
