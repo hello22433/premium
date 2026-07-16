@@ -3,7 +3,6 @@ import { AuthModule } from '../auth/auth.module';
 import { OrderReceiptEntity } from '../entity/order.receipt.entity';
 import { UserEntity } from '../entity/user.entity';
 import { ProductEntity } from '../entity/product.entity';
-import { SsgReservationRangeEntity } from '../entity/ssg.reservation.range.entity';
 import { OrderReceiptGeneratedOrderEntity } from '../entity/order.receipt.generated.order.entity';
 import { OrderReceiptAutoResultEntity } from '../entity/order.receipt.auto.result.entity';
 import { TypeOrmModule } from '@nestjs/typeorm';
@@ -12,6 +11,7 @@ import { OrderReceiptController } from './api/order.receipt.controller';
 import { FileModule } from '../file/file.module';
 import { ForbiddenWordModule } from '../forbidden_word/forbidden.word.module';
 import { OrderModule } from '../order/order.module';
+import { SsgEventModule } from '../ssg_event/ssg.event.module';
 import { AutoOrderService } from './application/auto_order/auto.order.service';
 import { AutoOrderExcelParser } from './application/auto_order/auto.order.excel.parser';
 import { AutoOrderStructureValidator } from './application/auto_order/auto.order.structure.validator';
@@ -26,13 +26,13 @@ import { AutoOrderPayloadBuilder } from './application/auto_order/auto.order.pay
       OrderReceiptEntity,
       UserEntity,
       ProductEntity,
-      SsgReservationRangeEntity,
       OrderReceiptGeneratedOrderEntity,
       OrderReceiptAutoResultEntity,
     ]),
     FileModule,
     ForbiddenWordModule,
     OrderModule,
+    SsgEventModule,
   ],
   controllers: [OrderReceiptController],
   providers: [

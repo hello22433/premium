@@ -8,12 +8,12 @@ import { AutoOrderPreValidator } from './auto.order.pre.validator';
 import { AutoOrderPayloadBuilder } from './auto.order.payload.builder';
 import { FileService } from '../../../file/application/file.service';
 import { OrderService } from '../../../order/application/order.service';
+import { SsgEventService } from '../../../ssg_event/application/ssg.event.service';
 import { OrderReceiptGeneratedOrderEntity } from '../../../entity/order.receipt.generated.order.entity';
 import { OrderReceiptAutoResultEntity } from '../../../entity/order.receipt.auto.result.entity';
 import { ForbiddenWordMatcher } from '../../../forbidden_word/application/forbidden.word.matcher';
 import { ProductEntity } from '../../../entity/product.entity';
 import { UserEntity } from '../../../entity/user.entity';
-import { SsgReservationRangeEntity } from '../../../entity/ssg.reservation.range.entity';
 import { OrderReceiptEntity } from '../../../entity/order.receipt.entity';
 import { IProductType } from '../../../product/interface/product.type';
 import { ILoginUserInfo } from '../../../auth/interface/login.user';
@@ -75,7 +75,7 @@ function makeService(
     findOne: async () => ({ id: 10, allowedSendMethods: null }) as unknown as UserEntity,
   } as unknown as Repository<UserEntity>;
 
-  const rangeRepo = { findOne: async () => null } as unknown as Repository<SsgReservationRangeEntity>;
+  const ssgEventService = { getReservationRange: async () => null } as unknown as SsgEventService;
 
   const fileService = {
     getBuffer: async (url: string) => bufferByUrl[url],
@@ -109,8 +109,8 @@ function makeService(
     new AutoOrderPayloadBuilder(),
     fileService,
     orderService,
+    ssgEventService,
     userRepo,
-    rangeRepo,
     generatedRepo,
     autoResultRepo,
   );

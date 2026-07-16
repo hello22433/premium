@@ -4,11 +4,11 @@ import { Repository } from 'typeorm';
 import { ILoginUserInfo } from '../../../auth/interface/login.user';
 import { UserEntity } from '../../../entity/user.entity';
 import { OrderReceiptEntity } from '../../../entity/order.receipt.entity';
-import { SsgReservationRangeEntity } from '../../../entity/ssg.reservation.range.entity';
 import { OrderReceiptGeneratedOrderEntity } from '../../../entity/order.receipt.generated.order.entity';
 import { OrderReceiptAutoResultEntity } from '../../../entity/order.receipt.auto.result.entity';
 import { IOrderType } from '../../../order/interface/order.type';
 import { OrderService } from '../../../order/application/order.service';
+import { SsgEventService } from '../../../ssg_event/application/ssg.event.service';
 import { FileService } from '../../../file/application/file.service';
 import { SsgReservationRangeBoundary } from '../../../order/domain/order.validation';
 import { AutoOrderExcelParser } from './auto.order.excel.parser';
@@ -48,20 +48,14 @@ export class AutoOrderService {
     private readonly payloadBuilder: AutoOrderPayloadBuilder,
     private readonly fileService: FileService,
     private readonly orderService: OrderService,
+    private readonly ssgEventService: SsgEventService,
     @InjectRepository(UserEntity)
     private readonly userRepository: Repository<UserEntity>,
-    @InjectRepository(SsgReservationRangeEntity)
-    private readonly reservationRangeRepository: Repository<SsgReservationRangeEntity>,
     @InjectRepository(OrderReceiptGeneratedOrderEntity)
     private readonly generatedOrderRepository: Repository<OrderReceiptGeneratedOrderEntity>,
     @InjectRepository(OrderReceiptAutoResultEntity)
     private readonly autoResultRepository: Repository<OrderReceiptAutoResultEntity>,
   ) {}
-
-  /** SSG 예약 가능 범위(단일 row 운용, 최신 1건). SsgEventService.getReservationRange와 동일 로직. */
-  private async getReservationRange(): Promise<SsgReservationRangeEntity | null> {
-    return this.reservationRangeRepository.findOne({ where: {}, order: { id: 'DESC' } });
-  }
 
   async run(receipt: OrderReceiptEntity, user: ILoginUserInfo, mode: AutoOrderRunMode): Promise<AutoOrderResult> {
     // ── COMMIT 멱등 게이트: 이미 처리했으면 저장 스냅샷 그대로 반환(재계산 안 함)
@@ -77,7 +71,7 @@ export class AutoOrderService {
     const receiptUser = await this.userRepository.findOne({ where: { id: receipt.userId } });
     const ownerMissing = receiptUser === null; // 소유자 없음 → 전체허용 폴백 금지(사전검증에서 FILE 차단)
     const allowedSendMethods = receiptUser?.allowedSendMethods ?? null;
-    const range = this.toRangeBoundary(await this.getReservationRange());
+    const range = this.toRangeBoundary(await this.ssgEventService.getReservationRange());
 
     const urls = (receipt.filePath ?? '')
       .split(',')
@@ -117,14 +111,32 @@ export class AutoOrderService {
   ): Promise<AutoOrderFileResult> {
     const fileName = this.safeFileName(url);
 
-    // ── 1단계 파싱 (읽기/파싱 실패는 해당 파일만 오류 처리)
+    // ── 1단계 파싱
+    //   인프라/IO 오류(S3 읽기 실패, 0바이트)와 형식 오류(파싱 실패)를 구분한다.
+    //   · 인프라 오류: COMMIT이면 전파 → approve 트랜잭션 롤백(유효 주문 소실 방지). DRY_RUN이면 파일 오류 표시.
+    //   · 형식 오류:   INVALID_FORMAT으로 진행(고객사 자체 양식 허용 — 승인은 정상).
+    let buffer: Buffer;
+    try {
+      buffer = await this.fileService.getBuffer(url);
+    } catch (e) {
+      this.logger.error(`자동주문 파일 읽기 실패 [${fileIndex}] ${fileName}: ${(e as Error).message}`);
+      if (mode === AutoOrderRunMode.COMMIT) {
+        throw new Error(`자동주문 파일을 읽을 수 없습니다(${fileName}): ${(e as Error).message}`);
+      }
+      return this.invalidFile(fileIndex, fileName, '파일을 읽을 수 없습니다(일시 오류). 다시 시도해 주세요.');
+    }
+    if (buffer.length === 0) {
+      this.logger.error(`자동주문 파일 0바이트 [${fileIndex}] ${fileName} (업로드 실패 추정)`);
+      if (mode === AutoOrderRunMode.COMMIT) throw new Error(`자동주문 파일이 비어 있습니다(${fileName}).`);
+      return this.invalidFile(fileIndex, fileName, '파일이 비어 있습니다.');
+    }
+
     let parsed;
     try {
-      const buffer = await this.fileService.getBuffer(url);
       parsed = await this.parser.parse(buffer);
     } catch (e) {
       this.logger.warn(`자동주문 파일 파싱 실패 [${fileIndex}] ${fileName}: ${(e as Error).message}`);
-      return this.invalidFile(fileIndex, fileName, '파일을 읽거나 열 수 없습니다.');
+      return this.invalidFile(fileIndex, fileName, '엑셀 형식을 해석할 수 없습니다.');
     }
 
     // ── 2단계 구조검증
