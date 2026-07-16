@@ -1,0 +1,27 @@
+name: be-deploy-prod
+
+# 수동 실행 전용. push 만으로는 배포되지 않는다.
+# main 에 머지/push 한 뒤, Gitea → 이 레포 → Actions 탭에서
+# 이 워크플로우를 'Run workflow' 로 눌러야 pull → build → restart 가 진행된다.
+#
+# ⚠ 상용은 개발서버와 '다른 서버'다. 그 상용 서버에 라벨 'epopkon-prod' 로 host 러너를 별도 등록해야 한다:
+#   act_runner register --instance https://gitea.syscuss.com --token <토큰> --labels epopkon-prod:host
+#   그래야 develop=dev서버(epopkon-dev) / main=상용서버(epopkon-prod) 로 배포가 갈린다.
+#   ⚠ 라벨을 'prod' 로 쓰면 안 된다. WiseAd 러너가 이미 'prod' 라벨을 갖고 있어 배포가 엉뚱한 서버로 간다.
+# host 러너는 pm2 가 설치된 계정으로 상시 구동한다.
+on:
+  workflow_dispatch:
+
+jobs:
+  build-deploy:
+    runs-on: epopkon-prod
+    steps:
+      - name: Deploy in place
+        run: |
+          cd /home/ubuntu/epopkon-premium
+          git fetch origin
+          git checkout -f -B main origin/main   # 현재 브랜치가 뭐든 main 으로 강제 정렬 (로컬 변경 폐기)
+          git reset --hard origin/main
+          npm install
+          npm run build
+          pm2 restart backend --update-env
