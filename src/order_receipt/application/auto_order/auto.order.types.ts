@@ -21,8 +21,8 @@ export interface ParsedHeader {
   sendMethod: IOrderSendMethod | null; // C23 (알림톡/문자/이메일 → enum)
   fromPhoneNumber: string; // C24
   isImmediate: boolean; // C16
-  sendDate: string; // C17 원본 (YYYY-MM-DD)
-  sendTime: string; // C18 원본 (HH:MM)
+  sendDate: string; // C17 원본 문자열(텍스트셀='YYYY-MM-DD', 네이티브 날짜셀=ISO). sendRequestAt 도출에만 사용
+  sendTime: string; // C18 원본 문자열(텍스트셀='HH:MM', 네이티브 시간셀=ISO). sendRequestAt 도출에만 사용
   sendRequestAt: Date | null; // C17+C18 (KST) - 즉시발송이면 null
   destroyDay: number; // C25
 }

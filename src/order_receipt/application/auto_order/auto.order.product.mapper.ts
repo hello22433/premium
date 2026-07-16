@@ -19,7 +19,8 @@ export class AutoOrderProductMapper {
   ) {}
 
   async map(rows: ParsedRow[]): Promise<MappedResult> {
-    // ── 1순위: _유효(M)=False 행 제외. N(_상태)=format_error(폰형식)/duplicate(중복)/unselected(상품미선택)
+    // ── 1순위: _유효(M)=False 행 제외. (N(_상태)=format_error/duplicate/unselected/ok는 리포트용으로만
+    //   보존하고 분기엔 쓰지 않는다 — 제외 판단은 오직 M(_유효) 기준)
     const excludedRows = rows.filter((r) => !r.isValid);
     const aliveRows = rows.filter((r) => r.isValid);
 

@@ -59,7 +59,7 @@ export class AutoOrderExcelParser {
   private parseRows(list: ExcelJS.Worksheet): ParsedRow[] {
     const rows: ParsedRow[] = [];
 
-    // getRow의 rowNumber는 엑셀과 동일한 1-based → 그대로 rowNo로 사용
+    // eachRow 콜백의 rowNumber는 엑셀과 동일한 1-based → 그대로 rowNo로 사용
     list.eachRow({ includeEmpty: false }, (row, rowNo) => {
       if (rowNo < AutoOrderExcelParser.DATA_START_ROW) return;
 

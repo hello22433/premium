@@ -7,7 +7,9 @@ import { BlockReason, MappedRow, ParsedHeader, PreValidateInput, PreValidateResu
 
 /**
  * 4단계 - 사전검증 (이 설계의 심장).
- * createTemp가 throw할 조건을 미리 검사해 예외 대신 blocked 리포트로 변환한다.
+ * createTemp가 throw할 조건 중 아래 열거된 것들을 미리 검사해 예외 대신 blocked 리포트로 변환한다.
+ * (전부가 아니라 수기로 동기화한 부분집합 — createTemp에 새 검증이 추가되면 여기에도 반영해야
+ *  preview=commit이 유지된다.)
  * → 미리보기(DRY_RUN)와 승인(COMMIT)이 "똑같이" 막힘을 보고하므로 preview=commit이 성립한다.
  *
  * 차단 레벨:
