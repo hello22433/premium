@@ -23,6 +23,8 @@ import { DateFormatStr } from '../../common/domain/date.format.str';
 import { format, subDays } from 'date-fns';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { IUserAuthority } from '../../user/interface/user.authority';
+import { AutoOrderService } from './auto_order/auto.order.service';
+import { AutoOrderRunMode, AutoOrderResult } from './auto_order/auto.order.types';
 
 @Injectable()
 export class OrderReceiptService {
@@ -33,7 +35,18 @@ export class OrderReceiptService {
     @InjectRepository(OrderReceiptEntity)
     private orderReceiptRepository: Repository<OrderReceiptEntity>,
     private fileService: FileService,
+    private autoOrderService: AutoOrderService,
   ) {}
+
+  /**
+   * 자동주문 미리보기(DRY_RUN). 첨부 집행신청서를 파싱해 "승인 시 무엇이 생성/차단될지"를 리포트로 반환.
+   * DB를 변경하지 않는다(실제 생성은 approve). 승인과 짝을 이루는 관리자 액션이라 운영관리자 이상만 허용.
+   */
+  async previewAutoOrder(user: ILoginUserInfo, id: number): Promise<AutoOrderResult> {
+    this.validateAdminAuthority(user, '운영관리자 이상만 미리보기를 조회할 수 있습니다.');
+    const receipt = await this.findReceiptOrThrow(id);
+    return this.autoOrderService.run(receipt, user, AutoOrderRunMode.DRY_RUN);
+  }
 
   async getList(user: ILoginUserInfo, getQuery: OrderReceiptGetListReqQueryDto): Promise<OrderReceiptGetListResDto> {
     const { take, page, status } = getQuery;

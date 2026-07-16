@@ -59,8 +59,9 @@ describe('OrderReceiptService access and status policy', () => {
       downloadWithPath: jest.fn(),
     };
 
+    const autoOrderService: any = { run: jest.fn() };
     return {
-      service: new OrderReceiptService(repository as any, fileService as any),
+      service: new OrderReceiptService(repository as any, fileService as any, autoOrderService),
       repository,
       fileService,
       receipt,

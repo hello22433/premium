@@ -117,6 +117,22 @@ export class OrderReceiptController {
   }
 
   @ApiOperation({
+    summary: '주문접수 자동주문 미리보기 API',
+    description:
+      '첨부 집행신청서를 파싱해 승인 시 생성/차단될 주문을 미리 계산합니다(DB 무변경). ' +
+      '운영관리자 이상만 조회 가능.',
+  })
+  @ApiBearerAuth()
+  @ApiOkResponse({ description: '미리보기 계산에 성공한 경우' })
+  @ApiBadRequestResponse({ description: '주문접수 건이 존재하지 않는 경우' })
+  // ===================================================
+  @Post('/order-receipt/:id/preview')
+  async previewAutoOrder(@User() user: ILoginUserInfo, @Param() getParam: OrderReceiptGetDetailReqParamDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.ORDER_RECEIPT);
+    return this.orderReceiptService.previewAutoOrder(user, getParam.id);
+  }
+
+  @ApiOperation({
     summary: '주문접수 승인 API',
   })
   @ApiBearerAuth()
