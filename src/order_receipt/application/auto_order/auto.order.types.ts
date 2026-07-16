@@ -12,6 +12,18 @@ import { IOrderType } from '../../../order/interface/order.type';
 /** 파일 양식 판정 결과 상태 */
 export type AutoOrderFileStatus = 'VALID' | 'INVALID_FORMAT' | 'ALREADY_COMMITTED';
 
+/**
+ * 발신수단별 수신처: EMAIL이면 이메일(D), 그 외엔 휴대폰(B). 없으면 null.
+ * 사전검증(MISSING_DELIVERY_TARGET 판정)과 payload조립(usableRows 필터)이 반드시 같은 규칙을
+ * 써야 "사전검증 통과했는데 조립 단계가 행을 조용히 drop"하는 불일치가 생기지 않으므로 단일 소스로 공유한다.
+ */
+export function resolveDeliveryTarget(
+  sendMethod: IOrderSendMethod | null,
+  row: { email: string | null; phone: string | null },
+): string | null {
+  return sendMethod === IOrderSendMethod.EMAIL ? row.email : row.phone;
+}
+
 /** 1단계 파서 산출물 - 1.신청정보 시트(주문 공통값) */
 export interface ParsedHeader {
   formVersion: string; // C1

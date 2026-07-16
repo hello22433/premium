@@ -3,7 +3,14 @@ import { ForbiddenWordMatcher } from '../../../forbidden_word/application/forbid
 import { IOrderType } from '../../../order/interface/order.type';
 import { IOrderSendMethod } from '../../../order/interface/order.send.method';
 import { validateSsgReservationWindow } from '../../../order/domain/order.validation';
-import { BlockReason, MappedRow, ParsedHeader, PreValidateInput, PreValidateResult } from './auto.order.types';
+import {
+  BlockReason,
+  MappedRow,
+  ParsedHeader,
+  PreValidateInput,
+  PreValidateResult,
+  resolveDeliveryTarget,
+} from './auto.order.types';
 
 /**
  * 4단계 - 사전검증 (이 설계의 심장).
@@ -115,7 +122,7 @@ export class AutoOrderPreValidator {
     blocked: BlockReason[],
     blockedRowNos: Set<number>,
   ): void {
-    const target = header.sendMethod === IOrderSendMethod.EMAIL ? row.email : row.phone;
+    const target = resolveDeliveryTarget(header.sendMethod, row);
     if (target) return;
     blockedRowNos.add(row.rowNo);
     blocked.push({

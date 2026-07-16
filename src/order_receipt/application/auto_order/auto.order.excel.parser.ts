@@ -73,7 +73,7 @@ export class AutoOrderExcelParser {
         email: this.emptyToNull(email),
         productCode: this.emptyToNull(this.cell(row, 'H')),
         amount: this.toInt(this.cell(row, 'J')),
-        isValid: this.cell(row, 'M').toUpperCase() === 'TRUE',
+        isValid: this.toBool(this.cell(row, 'M')),
         statusReason: this.emptyToNull(this.cell(row, 'N')),
         replaceCharacter1: this.emptyToNull(this.cell(row, 'P')),
         replaceCharacter2: this.emptyToNull(this.cell(row, 'Q')),

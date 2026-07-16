@@ -4,7 +4,7 @@ import utc from 'dayjs/plugin/utc';
 import timezone from 'dayjs/plugin/timezone';
 import { IOrderSendMethod } from '../../../order/interface/order.send.method';
 import { OrderProductCreateTempDto, OrderDeliveryCreateDto } from '../../../order/api/dto/order.product.create.temp.dto';
-import { BuildPayloadInput, BuildPayloadResult, MappedRow, ParsedHeader } from './auto.order.types';
+import { BuildPayloadInput, BuildPayloadResult, MappedRow, ParsedHeader, resolveDeliveryTarget } from './auto.order.types';
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
@@ -25,7 +25,7 @@ export class AutoOrderPayloadBuilder {
 
     // 차단 행 제거 + 이 발신수단으로 실제 보낼 수신처가 있는 행만
     const usableRows = rows.filter(
-      (r) => !blockedRowNos.has(r.rowNo) && this.deliveryTarget(header.sendMethod, r) !== null,
+      (r) => !blockedRowNos.has(r.rowNo) && resolveDeliveryTarget(header.sendMethod, r) !== null,
     );
     if (usableRows.length === 0) return null;
 
@@ -70,16 +70,11 @@ export class AutoOrderPayloadBuilder {
 
   private toDelivery(sendMethod: IOrderSendMethod | null, row: MappedRow): OrderDeliveryCreateDto {
     return {
-      deliveryTarget: this.deliveryTarget(sendMethod, row)!, // usableRows 필터로 non-null 보장
+      deliveryTarget: resolveDeliveryTarget(sendMethod, row)!, // usableRows 필터로 non-null 보장
       replaceCharacter1: row.replaceCharacter1 ?? undefined,
       replaceCharacter2: row.replaceCharacter2 ?? undefined,
       replaceCharacter3: row.replaceCharacter3 ?? undefined,
     };
-  }
-
-  /** 발신수단별 수신처: EMAIL이면 이메일(D), 그 외엔 휴대폰(B). 없으면 null */
-  private deliveryTarget(sendMethod: IOrderSendMethod | null, row: MappedRow): string | null {
-    return sendMethod === IOrderSendMethod.EMAIL ? row.email : row.phone;
   }
 
   /** KST Date → 'YYYY-MM-DDTHH:mm:ss'(dateAtRegexp 준수, KST 벽시계) */
