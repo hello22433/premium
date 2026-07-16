@@ -5,7 +5,10 @@ import { ILoginUserInfo } from '../../../auth/interface/login.user';
 import { UserEntity } from '../../../entity/user.entity';
 import { OrderReceiptEntity } from '../../../entity/order.receipt.entity';
 import { SsgReservationRangeEntity } from '../../../entity/ssg.reservation.range.entity';
+import { OrderReceiptGeneratedOrderEntity } from '../../../entity/order.receipt.generated.order.entity';
+import { OrderReceiptAutoResultEntity } from '../../../entity/order.receipt.auto.result.entity';
 import { IOrderType } from '../../../order/interface/order.type';
+import { OrderService } from '../../../order/application/order.service';
 import { FileService } from '../../../file/application/file.service';
 import { SsgReservationRangeBoundary } from '../../../order/domain/order.validation';
 import { AutoOrderExcelParser } from './auto.order.excel.parser';
@@ -26,11 +29,12 @@ import {
 } from './auto.order.types';
 
 /**
- * 6단계 - 오케스트레이터.
+ * 6~7단계 - 오케스트레이터.
  * 파싱 → 구조검증 → 상품매핑/분기 → 사전검증 → payload조립 → (mode별 실행) → 검산 을 지휘한다.
  * 미리보기(DRY_RUN)와 승인(COMMIT)이 "같은 파이프라인"을 타고 mode만 갈리므로 preview=commit이 보장된다.
  *
- * ※ 현재 Phase: DRY_RUN(미리보기)만 구현. COMMIT(실제 생성/멱등/저장)은 Phase 7에서 추가.
+ * COMMIT은 반드시 호출자(approve)의 @Transactional 안에서 실행되어야 원자성이 보장된다
+ * (로봇 실패 시 승인 상태변경까지 함께 롤백).
  */
 @Injectable()
 export class AutoOrderService {
@@ -43,10 +47,15 @@ export class AutoOrderService {
     private readonly preValidator: AutoOrderPreValidator,
     private readonly payloadBuilder: AutoOrderPayloadBuilder,
     private readonly fileService: FileService,
+    private readonly orderService: OrderService,
     @InjectRepository(UserEntity)
     private readonly userRepository: Repository<UserEntity>,
     @InjectRepository(SsgReservationRangeEntity)
     private readonly reservationRangeRepository: Repository<SsgReservationRangeEntity>,
+    @InjectRepository(OrderReceiptGeneratedOrderEntity)
+    private readonly generatedOrderRepository: Repository<OrderReceiptGeneratedOrderEntity>,
+    @InjectRepository(OrderReceiptAutoResultEntity)
+    private readonly autoResultRepository: Repository<OrderReceiptAutoResultEntity>,
   ) {}
 
   /** SSG 예약 가능 범위(단일 row 운용, 최신 1건). SsgEventService.getReservationRange와 동일 로직. */
@@ -54,7 +63,16 @@ export class AutoOrderService {
     return this.reservationRangeRepository.findOne({ where: {}, order: { id: 'DESC' } });
   }
 
-  async run(receipt: OrderReceiptEntity, _user: ILoginUserInfo, mode: AutoOrderRunMode): Promise<AutoOrderResult> {
+  async run(receipt: OrderReceiptEntity, user: ILoginUserInfo, mode: AutoOrderRunMode): Promise<AutoOrderResult> {
+    // ── COMMIT 멱등 게이트: 이미 처리했으면 저장 스냅샷 그대로 반환(재계산 안 함)
+    if (mode === AutoOrderRunMode.COMMIT) {
+      const saved = await this.autoResultRepository.findOne({ where: { orderReceiptId: receipt.id } });
+      if (saved) {
+        const prev = JSON.parse(saved.resultJson) as AutoOrderResult;
+        return { ...prev, alreadyCommitted: true };
+      }
+    }
+
     // 사전검증 입력(주문 주체=접수한 기업 사용자의 발신수단 제한, SSG 예약창)을 1회 조회해 재사용
     const receiptUser = await this.userRepository.findOne({ where: { id: receipt.userId } });
     const allowedSendMethods = receiptUser?.allowedSendMethods ?? null;
@@ -67,13 +85,26 @@ export class AutoOrderService {
 
     const files: AutoOrderFileResult[] = [];
     for (let fileIndex = 0; fileIndex < urls.length; fileIndex++) {
-      files.push(await this.processFile(urls[fileIndex], fileIndex, allowedSendMethods, range, mode));
+      files.push(await this.processFile(receipt, user, urls[fileIndex], fileIndex, allowedSendMethods, range, mode));
     }
 
-    return { files, alreadyCommitted: false };
+    const result: AutoOrderResult = { files, alreadyCommitted: false };
+
+    // ── COMMIT: 리포트 스냅샷 저장(재조회/재승인 시 그대로 반환)
+    if (mode === AutoOrderRunMode.COMMIT) {
+      await this.autoResultRepository.insert({
+        orderReceiptId: receipt.id,
+        resultJson: JSON.stringify(result),
+        generatedAt: new Date(),
+      });
+    }
+
+    return result;
   }
 
   private async processFile(
+    receipt: OrderReceiptEntity,
+    user: ILoginUserInfo,
     url: string,
     fileIndex: number,
     allowedSendMethods: string | null,
@@ -112,7 +143,7 @@ export class AutoOrderService {
     });
 
     // ── 5~6단계 payload 조립 + (mode별) 실행
-    const orders = this.buildOrders(header, mapped, pre, mode);
+    const orders = await this.buildOrders(receipt, user, fileIndex, header, mapped, pre, mode);
 
     // ── 검산
     const builtDeliveryCount = orders.reduce((sum, o) => sum + o.deliveryCount, 0);
@@ -136,13 +167,16 @@ export class AutoOrderService {
     };
   }
 
-  /** 일반/SSG 주문을 조립. FILE 차단이면 0건, SSG는 예약창 밖이면 스킵. */
-  private buildOrders(
+  /** 일반/SSG 주문을 조립. FILE 차단이면 0건, SSG는 예약창 밖이면 스킵. COMMIT이면 실제 생성 + 멱등 기록. */
+  private async buildOrders(
+    receipt: OrderReceiptEntity,
+    user: ILoginUserInfo,
+    fileIndex: number,
     header: ParsedHeader,
     mapped: MappedResult,
     pre: PreValidateResult,
     mode: AutoOrderRunMode,
-  ): AutoOrderReportOrder[] {
+  ): Promise<AutoOrderReportOrder[]> {
     if (pre.fileBlocked) return [];
 
     const plans = [
@@ -162,21 +196,46 @@ export class AutoOrderService {
       });
       if (!result) continue; // 살아남은 수신자 0명
 
-      orders.push(this.toReportOrder(plan.type, header.eventName, result, mode));
+      const orderId = mode === AutoOrderRunMode.COMMIT ? await this.commitOrder(receipt, fileIndex, user, result, plan.type) : null;
+      orders.push(this.toReportOrder(orderId, plan.type, header.eventName, result));
     }
     return orders;
   }
 
+  /**
+   * 실제 TEMP 주문 생성 + 멱등 기록.
+   * 소유권: 접수한 기업 사용자(receipt.userId)를 clientUserId로 → "관리자가 그 기업을 위해 대행 생성".
+   *         발신수단 검증 대상이 사전검증(receipt.userId 기준)과 일치한다.
+   */
+  private async commitOrder(
+    receipt: OrderReceiptEntity,
+    fileIndex: number,
+    user: ILoginUserInfo,
+    result: BuildPayloadResult,
+    type: IOrderType,
+  ): Promise<number> {
+    result.payload.clientUserId = receipt.userId;
+    const created = await this.orderService.createTemp(user, result.payload);
+
+    // UNIQUE(orderReceiptId, fileIndex, type)가 동시/중복 생성을 DB에서 차단
+    await this.generatedOrderRepository.insert({
+      orderReceiptId: receipt.id,
+      fileIndex,
+      orderId: created.id,
+      type,
+    });
+
+    return created.id;
+  }
+
   private toReportOrder(
+    orderId: number | null,
     type: IOrderType,
     eventName: string,
     result: BuildPayloadResult,
-    mode: AutoOrderRunMode,
   ): AutoOrderReportOrder {
-    // DRY_RUN: 실제 생성하지 않으므로 orderId=null. COMMIT의 실제 생성/멱등은 Phase 7.
-    void mode;
     return {
-      orderId: null,
+      orderId,
       type,
       eventName,
       productCount: result.payload.orderProductList.length,
@@ -185,9 +244,7 @@ export class AutoOrderService {
     };
   }
 
-  private toRangeBoundary(
-    range: { startDate: Date; endDate: Date } | null,
-  ): SsgReservationRangeBoundary | null {
+  private toRangeBoundary(range: { startDate: Date; endDate: Date } | null): SsgReservationRangeBoundary | null {
     return range ? { startDate: range.startDate, endDate: range.endDate } : null;
   }
 
