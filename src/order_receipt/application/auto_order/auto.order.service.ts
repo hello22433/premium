@@ -10,6 +10,7 @@ import { IOrderType } from '../../../order/interface/order.type';
 import { OrderService } from '../../../order/application/order.service';
 import { SsgEventService } from '../../../ssg_event/application/ssg.event.service';
 import { FileService } from '../../../file/application/file.service';
+import { parseFilePathList } from '../../../util/file.util';
 import { SsgReservationRangeBoundary } from '../../../order/domain/order.validation';
 import { AutoOrderExcelParser } from './auto.order.excel.parser';
 import { AutoOrderStructureValidator } from './auto.order.structure.validator';
@@ -73,10 +74,9 @@ export class AutoOrderService {
     const allowedSendMethods = receiptUser?.allowedSendMethods ?? null;
     const range = this.toRangeBoundary(await this.ssgEventService.getReservationRange());
 
-    const urls = (receipt.filePath ?? '')
-      .split(',')
-      .map((u) => u.trim())
-      .filter((u) => u.length > 0);
+    // 저장 filePath 파싱은 접수 시스템 전체가 쓰는 공용 파서로 통일한다.
+    // (파일명에 콤마가 포함될 수 있어 naive split(',')은 URL을 조각내 승인 실패 + fileIndex 멱등키 오염을 유발)
+    const urls = parseFilePathList(receipt.filePath);
 
     const files: AutoOrderFileResult[] = [];
     for (let fileIndex = 0; fileIndex < urls.length; fileIndex++) {
