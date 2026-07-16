@@ -1,10 +1,34 @@
 import { BadRequestException, ForbiddenException } from '@nestjs/common';
+import {
+  addTransactionalDataSource,
+  deleteDataSourceByName,
+  initializeTransactionalContext,
+} from 'typeorm-transactional';
 import { OrderReceiptService } from './order.receipt.service';
 import { OrderReceiptStatus } from '../interface/order.receipt.status';
 import { IUserAuthority } from '../../user/interface/user.authority';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 
 describe('OrderReceiptService access and status policy', () => {
+  // approve()가 @Transactional 이므로 스텁 DataSource 등록(콜백만 실행)
+  beforeAll(() => {
+    initializeTransactionalContext();
+    deleteDataSourceByName('default');
+    addTransactionalDataSource({
+      name: 'default',
+      patch: false,
+      dataSource: {
+        transaction: async (...args: any[]) => {
+          const callback = typeof args[0] === 'function' ? args[0] : args[1];
+          return callback({});
+        },
+      } as any,
+    });
+  });
+
+  afterAll(() => {
+    deleteDataSourceByName('default');
+  });
   const corporateUser = (id: number): ILoginUserInfo => ({
     id,
     email: `user${id}@example.com`,

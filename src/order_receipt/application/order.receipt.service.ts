@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import { parseFilePathList } from '../../util/file.util';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { Transactional } from 'typeorm-transactional';
 import { OrderReceiptEntity } from '../../entity/order.receipt.entity';
 import { FileService } from '../../file/application/file.service';
 import {
@@ -228,6 +229,11 @@ export class OrderReceiptService {
     });
   }
 
+  /**
+   * 주문접수 승인. 상태 전환(APPROVED) 후 첨부 집행신청서로 자동주문(TEMP)을 생성한다.
+   * @Transactional: 자동주문이 실패하면 상태 전환까지 함께 롤백(all-or-nothing) → 어중간한 상태 방지.
+   */
+  @Transactional()
   async approve(user: ILoginUserInfo, id: number) {
     this.validateAdminAuthority(user, '운영관리자 이상만 승인할 수 있습니다.');
 
@@ -239,6 +245,9 @@ export class OrderReceiptService {
 
     this.applyNonRejectedStatus(receipt, OrderReceiptStatus.APPROVED, user);
     await this.orderReceiptRepository.save(receipt);
+
+    // 승인의 길목에 자동주문 훅(COMMIT). 첨부가 없거나 처리할 게 없으면 무해하게 통과.
+    await this.autoOrderService.run(receipt, user, AutoOrderRunMode.COMMIT);
   }
 
   async reject(user: ILoginUserInfo, id: number, getBody: OrderReceiptRejectReqDto) {
