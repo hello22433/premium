@@ -21,6 +21,9 @@ export interface IFileStorage {
 
   downloadFileToLocalWithPath(path: string, fileTitle: string, downloadPath: string): Promise<string>;
 
+  /** 주어진 S3 key 의 객체를 메모리 버퍼로 읽는다(로컬 파일 없이). 파싱 등 서버 내 처리용. */
+  getFileBuffer(key: string): Promise<Buffer>;
+
   /**
    * 객체 메타데이터에서 진짜 원본 파일명을 읽는다(없으면 null). HeadObject 1회.
    */

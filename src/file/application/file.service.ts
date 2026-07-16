@@ -34,6 +34,12 @@ export class FileService {
     }
   }
 
+  /** S3 URL 의 객체를 메모리 버퍼로 읽는다(엑셀 파싱 등 서버 내 처리용). */
+  async getBuffer(fileUrl: string): Promise<Buffer> {
+    const key = this.extractStorageKey(fileUrl);
+    return this.fileStorage.getFileBuffer(key);
+  }
+
   async createPdf(file: Express.Multer.File) {
     if (!file) {
       throw new BadRequestException('not exist pdf file');
