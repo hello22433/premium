@@ -1,5 +1,6 @@
 import { IOrderSendMethod } from '../../../order/interface/order.send.method';
 import { ProductEntity } from '../../../entity/product.entity';
+import { SsgReservationRangeBoundary } from '../../../order/domain/order.validation';
 
 /**
  * 자동주문 파이프라인 공용 타입.
@@ -66,4 +67,41 @@ export interface MappedResult {
   unmappedRows: ParsedRow[]; // 상품코드가 DB에 없음
   generalRows: MappedRow[]; // 비-SSG 상품 → 일반 주문
   ssgRows: MappedRow[]; // SSG 상품 → SSG 주문
+}
+
+// ── 4단계 사전검증(blocked) ────────────────────────────────
+// createTemp가 throw할 조건(금칙어/발신수단/SSG예약창)을 미리 scan해 blocked로 변환한다.
+
+/** 차단 레벨: 파일 전체 / SSG 주문만 / 특정 수신자 행만 */
+export type BlockLevel = 'FILE' | 'ORDER' | 'ROW';
+
+/** 차단 사유 코드 (프론트 계약) */
+export type BlockCode = 'FORBIDDEN_WORD' | 'SSG_RESERVATION_WINDOW' | 'SEND_METHOD_NOT_ALLOWED';
+
+/** 금칙어 적발 필드 (code === 'FORBIDDEN_WORD'일 때만) */
+export type BlockField = 'TITLE' | 'CONTENT' | 'REPLACE_CHAR';
+
+export interface BlockReason {
+  code: BlockCode;
+  reason: string;
+  level: BlockLevel;
+  rowNo?: number; // ROW 레벨일 때 해당 엑셀 행번호
+  field?: BlockField; // FORBIDDEN_WORD일 때만
+  matched?: string; // 매칭된 금칙어(마스킹)
+}
+
+/** 4단계 입력. SSG range/allowedSendMethods는 상위(오케스트레이터)가 조회해 주입 → 사전검증은 순수 로직 */
+export interface PreValidateInput {
+  header: ParsedHeader;
+  generalRows: MappedRow[];
+  ssgRows: MappedRow[];
+  userAllowedSendMethods: string | null; // user.allowedSendMethods 원본(콤마구분), null이면 전체 허용
+  ssgReservationRange: SsgReservationRangeBoundary | null; // SSG 예약 가능 범위(미설정 시 당월 폴백)
+}
+
+export interface PreValidateResult {
+  blocked: BlockReason[]; // FILE/ORDER/ROW 사유 전부(표시용, 중복 보고 가능)
+  blockedRowNos: Set<number>; // ROW 차단된 엑셀 행번호(카운트/제외용, 1회만)
+  ssgOrderBlocked: boolean; // SSG 주문 스킵 여부(예약창 밖)
+  fileBlocked: boolean; // FILE 레벨 차단 존재 → 파일 주문 0건
 }
