@@ -63,7 +63,17 @@ export class AutoOrderService {
     if (mode === AutoOrderRunMode.COMMIT) {
       const saved = await this.autoResultRepository.findOne({ where: { orderReceiptId: receipt.id } });
       if (saved) {
-        const prev = JSON.parse(saved.resultJson) as AutoOrderResult;
+        let prev: AutoOrderResult;
+        try {
+          prev = JSON.parse(saved.resultJson) as AutoOrderResult;
+        } catch (e) {
+          // 저장 스냅샷이 손상/스키마드리프트로 파싱 불가 → raw SyntaxError 500 대신 맥락 있는 오류로.
+          // 원 주문은 최초 커밋에서 이미 생성됐으므로 이 경로는 복구 불가, 명확히 실패시킨다.
+          this.logger.error(
+            `자동주문 저장 스냅샷 파싱 실패 receipt=${receipt.id}: ${(e as Error).message}`,
+          );
+          throw new Error(`이미 처리된 자동주문 결과를 읽을 수 없습니다(receipt=${receipt.id}).`);
+        }
         return { ...prev, alreadyCommitted: true };
       }
     }
@@ -135,7 +145,13 @@ export class AutoOrderService {
     try {
       parsed = await this.parser.parse(buffer);
     } catch (e) {
-      this.logger.warn(`자동주문 파일 파싱 실패 [${fileIndex}] ${fileName}: ${(e as Error).message}`);
+      // 파싱 throw는 비-v4.1(고객사 자체양식) 정상 케이스와, 정상 v4.1인데 OOM/손상zip/라이브러리
+      // 버그로 실패한 케이스가 구분되지 않는다. 요구사항상 승인은 차단하지 않되(비-v4.1 허용),
+      // 후자(정상 파일 유실)를 놓치지 않도록 error 레벨로 승격해 표면화한다. mode도 함께 남긴다.
+      this.logger.error(
+        `자동주문 파일 파싱 실패 [${mode}] receipt=${receipt.id} file=${fileIndex} ${fileName}: ` +
+          `${(e as Error).message} (정상 v4.1 파일이 일시 오류로 유실됐을 수 있으니 확인 요망)`,
+      );
       return this.invalidFile(fileIndex, fileName, '엑셀 형식을 해석할 수 없습니다.');
     }
 
@@ -171,13 +187,20 @@ export class AutoOrderService {
       builtDeliveryCount,
     });
 
-    // 검산 불일치(built 과다=중복계상 코드버그 신호) → 에러 로깅으로 표면화
+    // 검산 불일치(built 과다=중복계상 코드버그 신호) → 에러 로깅으로 표면화.
+    // COMMIT이면 이미 createTemp로 실제 주문이 생성된 뒤이므로, 로그에 그치지 않고 throw해
+    // approve 트랜잭션을 롤백한다(중복주문이 그대로 커밋되는 것을 방지). DRY_RUN은 로깅만.
     if (!reconciliation.matched) {
       this.logger.error(
         `자동주문 검산 불일치 [${mode}] receipt=${receipt.id} file=${fileIndex} ` +
           `expected=${reconciliation.expectedDeliveryCount} built=${reconciliation.builtDeliveryCount} ` +
           `blocked=${reconciliation.blockedDeliveryCount}`,
       );
+      if (mode === AutoOrderRunMode.COMMIT) {
+        throw new Error(
+          `자동주문 검산 불일치로 승인을 중단합니다(receipt=${receipt.id}, file=${fileIndex}). 중복주문 방지를 위해 롤백합니다.`,
+        );
+      }
     }
 
     return {
