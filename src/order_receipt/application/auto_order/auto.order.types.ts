@@ -123,3 +123,55 @@ export interface BuildPayloadResult {
   payload: OrderCreateTempReqDto;
   sourceRowNos: number[]; // 이 주문에 실제로 들어간 엑셀 행번호
 }
+
+// ── 6단계 리포트/검산 (프론트 계약) ─────────────────────────
+
+/**
+ * 회계 검산. 4버킷은 입력행의 서로소 분할이며 항상:
+ *   expectedDeliveryCount === builtDeliveryCount + unmappedCount + excludedCount + blockedDeliveryCount
+ * blocked는 세지 않고 뺄셈으로 구해 중복계상을 원천 차단. matched=false면 built가 과다(코드 버그).
+ */
+export interface AutoOrderReconciliation {
+  inputRowCount: number;
+  expectedDeliveryCount: number;
+  builtDeliveryCount: number;
+  unmappedCount: number;
+  excludedCount: number;
+  blockedDeliveryCount: number;
+  matched: boolean;
+}
+
+/** 미리보기/승인 리포트의 주문 1건 */
+export interface AutoOrderReportOrder {
+  orderId: number | null; // DRY_RUN=null, COMMIT=생성된 order.id
+  type: IOrderType;
+  eventName: string;
+  productCount: number; // 상품 종수
+  deliveryCount: number; // 발송건 수(=수신자 수)
+  sourceRowNos: number[]; // 이 주문에 들어간 엑셀 행번호
+}
+
+/** 파일 1개 처리 결과 */
+export interface AutoOrderFileResult {
+  fileIndex: number;
+  fileName: string;
+  status: AutoOrderFileStatus;
+  message: string | null; // INVALID_FORMAT 사유
+  orders: AutoOrderReportOrder[];
+  reconciliation: AutoOrderReconciliation;
+  fileBlocked: boolean; // FILE 차단 존재(≠ built===0)
+  blocked: BlockReason[]; // FILE/ORDER 사유
+  blockedRows: BlockReason[]; // ROW 사유
+}
+
+/** 접수 1건(파일 N개) 전체 결과 */
+export interface AutoOrderResult {
+  files: AutoOrderFileResult[];
+  alreadyCommitted: boolean; // 멱등 재처리로 저장 스냅샷을 반환한 경우
+}
+
+/** 실행 모드: 미리보기(DB 무변경) / 승인(실제 생성) */
+export enum AutoOrderRunMode {
+  DRY_RUN = 'DRY_RUN',
+  COMMIT = 'COMMIT',
+}
