@@ -63,7 +63,6 @@ import {
   EntityManager,
   In,
   LessThanOrEqual,
-  Like,
   MoreThanOrEqual,
   ObjectLiteral,
   QueryRunner,
