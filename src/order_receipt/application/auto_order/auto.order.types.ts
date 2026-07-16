@@ -1,6 +1,8 @@
 import { IOrderSendMethod } from '../../../order/interface/order.send.method';
 import { ProductEntity } from '../../../entity/product.entity';
 import { SsgReservationRangeBoundary } from '../../../order/domain/order.validation';
+import { OrderCreateTempReqDto } from '../../../order/api/order.req.dto';
+import { IOrderType } from '../../../order/interface/order.type';
 
 /**
  * 자동주문 파이프라인 공용 타입.
@@ -104,4 +106,20 @@ export interface PreValidateResult {
   blockedRowNos: Set<number>; // ROW 차단된 엑셀 행번호(카운트/제외용, 1회만)
   ssgOrderBlocked: boolean; // SSG 주문 스킵 여부(예약창 밖)
   fileBlocked: boolean; // FILE 레벨 차단 존재 → 파일 주문 0건
+}
+
+// ── 5단계 payload 조립 ─────────────────────────────────────
+
+/** 5단계 입력 (주문 1건분: general 또는 ssg 행 묶음) */
+export interface BuildPayloadInput {
+  header: ParsedHeader;
+  rows: MappedRow[]; // 이 주문 종류의 매핑 행들
+  orderType: IOrderType;
+  blockedRowNos: Set<number>; // 4단계 ROW 차단 → 제외
+}
+
+/** 5단계 결과. createTemp payload + 리포트/검산용 소스 행번호(payload엔 못 담음) */
+export interface BuildPayloadResult {
+  payload: OrderCreateTempReqDto;
+  sourceRowNos: number[]; // 이 주문에 실제로 들어간 엑셀 행번호
 }
