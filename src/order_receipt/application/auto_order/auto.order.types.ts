@@ -30,7 +30,7 @@ export interface ParsedRow {
   phone: string | null; // B
   email: string | null; // D
   productCode: string | null; // H (상품명 G에서 자동 도출된 코드)
-  amount: number; // J (수식 =IF(B="","",1) → 항상 1)
+  amount: number; // J (수식 =IF(B="","",1)). 휴대폰(B) 있으면 1, 이메일 전용 행은 B가 비어 0이 될 수 있음 → 수량은 payload 단계에서 행 수로 계산(J 신뢰 안 함)
   isValid: boolean; // M (_유효, TRUE/FALSE)
   statusReason: string | null; // N (_상태: format_error/duplicate/unselected/ok)
   replaceCharacter1: string | null; // P

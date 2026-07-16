@@ -8,7 +8,8 @@ import { MappedResult, MappedRow, ParsedRow } from './auto.order.types';
 /**
  * 3단계 - 상품매핑 + 주문 분기.
  * 입력 행을 서로소 4버킷으로 나눈다: excluded → unmapped → (general | ssg)
- * 배정 순서가 곧 우선순위이며, filter로 물리적으로 갈라 중복 계상을 원천 차단한다.
+ * 배정 순서가 곧 우선순위. 각 행은 정확히 한 버킷에만 들어가 중복 계상이 원천 차단된다
+ * (excluded/ssg/general은 filter 분리, unmapped/mapped는 for-loop 단일 배정).
  */
 @Injectable()
 export class AutoOrderProductMapper {
@@ -18,7 +19,7 @@ export class AutoOrderProductMapper {
   ) {}
 
   async map(rows: ParsedRow[]): Promise<MappedResult> {
-    // ── 1순위: _유효=False 행 제외 (엑셀이 스스로 폰오류/중복/상품없음을 표시)
+    // ── 1순위: _유효(M)=False 행 제외. N(_상태)=format_error(폰형식)/duplicate(중복)/unselected(상품미선택)
     const excludedRows = rows.filter((r) => !r.isValid);
     const aliveRows = rows.filter((r) => r.isValid);
 
