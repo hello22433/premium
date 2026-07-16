@@ -88,6 +88,7 @@ describe('OrderReceiptService access and status policy', () => {
       service: new OrderReceiptService(repository as any, fileService as any, autoOrderService),
       repository,
       fileService,
+      autoOrderService,
       receipt,
     };
   };
@@ -113,6 +114,29 @@ describe('OrderReceiptService access and status policy', () => {
     await expect(service.reject(corporateUser(20), 100, { rejectReason: 'reason' })).rejects.toThrow(
       ForbiddenException,
     );
+  });
+
+  it('승인 성공 시 자동주문 훅을 COMMIT 모드로 호출한다', async () => {
+    const { service, autoOrderService, receipt } = createService(
+      makeReceipt({ userId: 20, status: OrderReceiptStatus.RECEIVED }),
+    );
+
+    await service.approve(operationAdmin, 100);
+
+    expect(autoOrderService.run).toHaveBeenCalledTimes(1);
+    const [passedReceipt, passedUser, mode] = autoOrderService.run.mock.calls[0];
+    expect(passedReceipt).toBe(receipt);
+    expect(passedUser).toBe(operationAdmin);
+    expect(mode).toBe('COMMIT');
+  });
+
+  it('자동주문 훅이 throw하면 승인 전체가 실패한다(원자성)', async () => {
+    const { service, autoOrderService } = createService(
+      makeReceipt({ userId: 20, status: OrderReceiptStatus.RECEIVED }),
+    );
+    autoOrderService.run.mockRejectedValueOnce(new Error('자동주문 실패'));
+
+    await expect(service.approve(operationAdmin, 100)).rejects.toThrow('자동주문 실패');
   });
 
   it('blocks corporate delete while receipt is reviewing but keeps rejected delete available for owner', async () => {

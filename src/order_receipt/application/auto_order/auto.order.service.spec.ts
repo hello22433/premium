@@ -255,4 +255,46 @@ describe('AutoOrderService (COMMIT 승인)', () => {
     expect(mocks.createTemp).not.toHaveBeenCalled();
     expect(mocks.autoResultInsert).toHaveBeenCalledTimes(1); // 스냅샷은 저장(0건이라도)
   });
+
+  it('createTemp가 루프 중 throw → run 전파 + 스냅샷 미저장(트랜잭션 롤백 위임)', async () => {
+    const buf = await buildFilledBuffer([
+      { b: '010-1111-1111', code: 'GEN-1' },
+      { b: '010-2222-2222', code: 'SSG-1' },
+    ]);
+    const { svc, mocks } = makeService(
+      { 'u://a.xlsx': buf },
+      { createTemp: jest.fn(async () => { throw new Error('createTemp 실패'); }) },
+    );
+
+    await expect(svc.run(receipt('u://a.xlsx'), admin, AutoOrderRunMode.COMMIT)).rejects.toThrow('createTemp 실패');
+    expect(mocks.autoResultInsert).not.toHaveBeenCalled(); // 스냅샷 저장 안 됨
+  });
+
+  it('generated_order UNIQUE 위반 → run 전파(동시 더블승인 방어)', async () => {
+    const buf = await buildFilledBuffer([{ b: '010-1111-1111', code: 'GEN-1' }]);
+    const { svc } = makeService(
+      { 'u://a.xlsx': buf },
+      { generatedInsert: jest.fn(async () => { throw new Error('Duplicate entry (uq_receipt_file_type)'); }) },
+    );
+
+    await expect(svc.run(receipt('u://a.xlsx'), admin, AutoOrderRunMode.COMMIT)).rejects.toThrow('Duplicate entry');
+  });
+
+  it('COMMIT 중 인프라(읽기) 오류 → run 전파(승인 롤백); DRY_RUN은 INVALID_FORMAT', async () => {
+    const throwingFile = {
+      getBuffer: async () => { throw new Error('S3 timeout'); },
+      extractOriginalFileName: (u: string) => u,
+    } as unknown as FileService;
+
+    // COMMIT: 전파
+    const { svc: commitSvc } = makeService({});
+    (commitSvc as any).fileService = throwingFile;
+    await expect(commitSvc.run(receipt('u://x.xlsx'), admin, AutoOrderRunMode.COMMIT)).rejects.toThrow('S3 timeout');
+
+    // DRY_RUN: 파일 오류로 표시(전파 안 함)
+    const { svc: previewSvc } = makeService({});
+    (previewSvc as any).fileService = throwingFile;
+    const r = await previewSvc.run(receipt('u://x.xlsx'), admin, AutoOrderRunMode.DRY_RUN);
+    expect(r.files[0].status).toBe('INVALID_FORMAT');
+  });
 });
