@@ -22,6 +22,14 @@ export class OrderReceiptAutoResultEntity extends BaseEntity {
   })
   resultJson: string;
 
+  @Column({
+    type: 'varchar',
+    length: 64,
+    nullable: true,
+    comment: '승인 당시 첨부(filePath) 해시(sha256). 재승인 시 현재 첨부와 다르면 스냅샷 반환 대신 400',
+  })
+  filePathHash: string | null;
+
   @Column({ type: 'datetime', comment: '리포트 생성(=승인 커밋) 시각' })
   generatedAt: Date;
 }

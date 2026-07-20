@@ -1,4 +1,5 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { createHash } from 'node:crypto';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -76,6 +77,14 @@ export class AutoOrderService {
     if (mode === AutoOrderRunMode.COMMIT) {
       const saved = await this.autoResultRepository.findOne({ where: { orderReceiptId: receipt.id } });
       if (saved) {
+        // 승인 후 첨부가 바뀐 채 재승인되면(APPROVED→RECEIVED→filePath 교체→재승인) 구 스냅샷을 조용히
+        // 돌려주면 "미리보기는 신규 N건, 실제는 0건/구 파일"이 된다. 첨부 해시 불일치면 명시적 400으로 막는다.
+        const currentHash = this.computeFilePathHash(receipt.filePath);
+        if (saved.filePathHash && saved.filePathHash !== currentHash) {
+          throw new BadRequestException(
+            '승인 후 첨부파일이 변경되어 기존 자동주문 결과와 일치하지 않습니다. 재승인을 진행할 수 없습니다(기존 자동주문 결과 정리 후 다시 시도).',
+          );
+        }
         let prev: AutoOrderResult;
         try {
           prev = JSON.parse(saved.resultJson) as AutoOrderResult;
@@ -130,6 +139,7 @@ export class AutoOrderService {
       await this.autoResultRepository.insert({
         orderReceiptId: receipt.id,
         resultJson: JSON.stringify(result),
+        filePathHash: this.computeFilePathHash(receipt.filePath),
         generatedAt: new Date(),
       });
     }
@@ -157,6 +167,12 @@ export class AutoOrderService {
    * 발신번호(1644-3614 고정)와 동일 패턴 — 양식엔 수신 이메일만, 발신은 시스템이 주입.
    * 둘 다 없으면 null → 사전검증이 EMAIL 파일을 FILE 차단(발송확정 throw를 미리 표면화).
    */
+  /** 첨부(filePath) 정규화 해시(sha256). 공용 파서로 파싱한 URL 목록을 정렬 없이 그대로 join(순서 의미 있음=fileIndex). */
+  private computeFilePathHash(filePath: string | null): string {
+    const canonical = parseFilePathList(filePath ?? '').join('\n');
+    return createHash('sha256').update(canonical).digest('hex');
+  }
+
   private async resolveEmailSender(): Promise<string | null> {
     const registered = await this.orderFromRepository.findOne({
       where: { type: OrderFromDefinitionType.EMAIL, requestStatus: OrderFromRequestStatus.APPROVED },

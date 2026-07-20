@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS `order_receipt_auto_result` (
   `id` INT NOT NULL AUTO_INCREMENT,
   `order_receipt_id` INT NOT NULL COMMENT 'FK) order_receipt.id, 접수당 리포트 1건',
   `result_json` LONGTEXT NOT NULL COMMENT '리포트 전체(파일/주문/blocked/reconciliation) JSON 직렬화 스냅샷',
+  `file_path_hash` VARCHAR(64) NULL COMMENT '승인 당시 첨부(filePath) 해시(sha256). 재승인 시 현재 첨부와 다르면 스냅샷 반환 대신 400',
   `generated_at` DATETIME NOT NULL COMMENT '리포트 생성(=승인 커밋) 시각',
   `created_at` DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
   `updated_at` DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),

@@ -307,6 +307,28 @@ describe('AutoOrderService (COMMIT 승인)', () => {
     expect(result.files[0].orders[0].orderId).toBe(999); // 저장본 그대로
   });
 
+  it('재승인 시 첨부가 바뀌면(해시 불일치) 스냅샷 반환 대신 400', async () => {
+    const saved = { files: [], alreadyCommitted: false };
+    const { svc, mocks } = makeService(
+      {},
+      { autoResultFindOne: jest.fn(async () => ({ resultJson: JSON.stringify(saved), filePathHash: 'OLD_HASH_NOT_MATCHING' })) },
+    );
+
+    await expect(svc.run(receipt('u://changed.xlsx'), admin, AutoOrderRunMode.COMMIT)).rejects.toThrow(/변경/);
+    expect(mocks.createTemp).not.toHaveBeenCalled();
+    expect(mocks.autoResultInsert).not.toHaveBeenCalled();
+  });
+
+  it('레거시 스냅샷(해시 없음)은 게이트 통과(하위호환) → 스냅샷 반환', async () => {
+    const saved = { files: [{ orders: [{ orderId: 5 }] }], alreadyCommitted: false };
+    const { svc } = makeService(
+      {},
+      { autoResultFindOne: jest.fn(async () => ({ resultJson: JSON.stringify(saved) })) }, // filePathHash undefined
+    );
+    const result = await svc.run(receipt('u://a.xlsx'), admin, AutoOrderRunMode.COMMIT);
+    expect(result.alreadyCommitted).toBe(true);
+  });
+
   it('FILE 차단 파일은 createTemp 호출 없음(주문 0건)', async () => {
     const base = await buildFilledBuffer([{ b: '010-1111-1111', code: 'GEN-1' }]);
     const wb = new ExcelJS.Workbook();
