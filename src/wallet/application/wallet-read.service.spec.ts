@@ -13,7 +13,7 @@ import { WalletReadService } from './wallet-read.service';
 function makeQb(raw: any) {
   const calls: { method: string; args: any[] }[] = [];
   const qb: any = {};
-  for (const m of ['select', 'addSelect', 'leftJoin', 'where', 'andWhere', 'orderBy', 'addOrderBy']) {
+  for (const m of ['select', 'addSelect', 'leftJoin', 'where', 'andWhere', 'orderBy', 'addOrderBy', 'limit']) {
     qb[m] = jest.fn((...args: any[]) => {
       calls.push({ method: m, args });
       return qb;
@@ -379,6 +379,122 @@ describe('WalletReadService', () => {
 
     it('from/to 누락 → BadRequestException', async () => {
       await expect(sut.getSettlementCodeUsage(7, '', '2026-06-30', false)).rejects.toBeInstanceOf(BadRequestException);
+    });
+  });
+
+  describe('searchSettlementCodes', () => {
+    const makeRow = (over: any = {}) => ({
+      walletAccountId: '10',
+      settlementCode: 'company-7-2',
+      ownerCompanyId: 7,
+      ownerCompanyName: '테스트상사',
+      settleCondition: 'POST_PAYMENT',
+      settleMethod: 'CASH',
+      depositBalance: '0',
+      creditLimit: '5000000',
+      creditUsedAmount: '0',
+      creditExcessAmount: '0',
+      assignedUserCount: '0',
+      ...over,
+    });
+    const andWheres = (qb: any) => qb._calls.filter((c: any) => c.method === 'andWhere');
+
+    it('배정 계정 0개 코드도 매핑되어 노출(P1), 숫자 변환·nextCursor null', async () => {
+      const qb = makeQb([makeRow()]);
+      walletRepo.createQueryBuilder.mockReturnValueOnce(qb as any);
+
+      const res = await sut.searchSettlementCodes({ companyId: 7 });
+
+      expect(res.items).toHaveLength(1);
+      expect(res.items[0]).toMatchObject({
+        settlementCode: 'company-7-2',
+        walletAccountId: '10',
+        ownerCompanyId: 7,
+        ownerCompanyName: '테스트상사',
+        walletStatus: 'ACTIVE',
+        depositBalance: 0,
+        creditLimit: 5000000,
+        assignedUserCount: 0,
+      });
+      expect(res.nextCursor).toBeNull();
+    });
+
+    it('필터 전부 → andWhere 절 구성', async () => {
+      const qb = makeQb([]);
+      walletRepo.createQueryBuilder.mockReturnValueOnce(qb as any);
+
+      await sut.searchSettlementCodes({
+        companyId: 7,
+        settleCondition: 'PRE_PAYMENT',
+        settleMethod: 'CARD',
+        depositMin: 0,
+        depositMax: 100,
+        creditLimitMin: 1000,
+        creditLimitMax: 9000,
+        codeQuery: 'company-7',
+        cursor: '5',
+      });
+
+      const clauses = andWheres(qb).map((c: any) => c.args[0]);
+      expect(clauses).toEqual(
+        expect.arrayContaining([
+          'w.ownerCompanyId = :cid',
+          'w.settleCondition = :sc',
+          'w.settleMethod = :sm',
+          'w.depositBalance >= :dmin',
+          'w.depositBalance <= :dmax',
+          'w.creditLimit >= :lmin',
+          'w.creditLimit <= :lmax',
+          "w.ownerId LIKE :cq ESCAPE '!'",
+          'w.id > :cursor',
+        ]),
+      );
+    });
+
+    it('codeQuery LIKE 와일드카드 이스케이프', async () => {
+      const qb = makeQb([]);
+      walletRepo.createQueryBuilder.mockReturnValueOnce(qb as any);
+
+      await sut.searchSettlementCodes({ codeQuery: '100%_x' });
+
+      const like = andWheres(qb).find((c: any) => c.args[0] === "w.ownerId LIKE :cq ESCAPE '!'");
+      expect(like.args[1].cq).toBe('%100!%!_x%');
+    });
+
+    it('limit+1 초과 → 마지막 잘라내고 nextCursor 반환', async () => {
+      const qb = makeQb([
+        makeRow({ walletAccountId: '10' }),
+        makeRow({ walletAccountId: '20' }),
+        makeRow({ walletAccountId: '30' }),
+      ]);
+      walletRepo.createQueryBuilder.mockReturnValueOnce(qb as any);
+
+      const res = await sut.searchSettlementCodes({ limit: 2 });
+
+      expect(res.items.map((i) => i.walletAccountId)).toEqual(['10', '20']);
+      expect(res.nextCursor).toBe('20');
+    });
+
+    it('잘못된 settleCondition → BadRequest', async () => {
+      await expect(sut.searchSettlementCodes({ settleCondition: 'X' as any })).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('예치금 min > max → BadRequest', async () => {
+      await expect(sut.searchSettlementCodes({ depositMin: 100, depositMax: 10 })).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+    });
+
+    it('limit 0 → BadRequest', async () => {
+      await expect(sut.searchSettlementCodes({ limit: 0 })).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('cursor 비정수 → BadRequest', async () => {
+      await expect(sut.searchSettlementCodes({ cursor: 'abc' })).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('codeQuery 50자 초과 → BadRequest', async () => {
+      await expect(sut.searchSettlementCodes({ codeQuery: 'a'.repeat(51) })).rejects.toBeInstanceOf(BadRequestException);
     });
   });
 });

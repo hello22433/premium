@@ -1,4 +1,4 @@
-import { Column, Entity, JoinColumn, ManyToOne, OneToMany, OneToOne, PrimaryGeneratedColumn } from 'typeorm';
+import { Column, Entity, Index, JoinColumn, ManyToOne, OneToMany, OneToOne, PrimaryGeneratedColumn } from 'typeorm';
 import { BaseEntity } from '../common/entity/base.entity';
 import { IUserStatus } from '../user/interface/user.status';
 import { IUserAuthority } from '../user/interface/user.authority';
@@ -15,6 +15,7 @@ import { CompanyType } from '../common/domain/company.type';
 import { LoginVerifyMethod } from '../user/interface/login.verify.method';
 
 @Entity('user')
+@Index('idx_user_settlement_code', ['settlementCode'])
 export class UserEntity extends BaseEntity {
   @PrimaryGeneratedColumn()
   id: number;
