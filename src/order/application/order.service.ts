@@ -4,7 +4,6 @@ import {
   Injectable,
   InternalServerErrorException,
   Logger,
-  Query,
 } from '@nestjs/common';
 import { UserManagementService } from '../../user_management/application/user.management.service';
 import { SsgEventService } from '../../ssg_event/application/ssg.event.service';
@@ -61,16 +60,7 @@ import {
 } from '../api/order.res.dto';
 import { OrderEntity } from '../../entity/order.entity';
 import { InjectRepository } from '@nestjs/typeorm';
-import {
-  EntityManager,
-  In,
-  LessThanOrEqual,
-  MoreThanOrEqual,
-  ObjectLiteral,
-  QueryRunner,
-  Repository,
-  SelectQueryBuilder,
-} from 'typeorm';
+import { EntityManager, In, ObjectLiteral, QueryRunner, Repository, SelectQueryBuilder } from 'typeorm';
 import { QueryBuilderDateCondition } from '../../common/infra/query.builder.date.condition';
 import { CustomerSettlementViewDto, OrderViewDto } from '../api/dto/order.view.dto';
 import { DateDateFormatStr, DateFormatStr } from '../../common/domain/date.format.str';
@@ -119,7 +109,6 @@ import {
   readClientUserView,
   readLineProductView,
   readOperationPersonName,
-  readUserView,
 } from '../util/order.snapshot.builder';
 import {
   assertLineIdsValid,
@@ -135,11 +124,11 @@ import {
   OrderCompleteReportDeliveryViewDto,
   OrderDeliveryCompleteReportViewDto,
   OrderDetailProductDto,
+  OrderTestDeliveryHistoryDto,
   OrderPdfDetailProductDto,
   OrderViewDeliveryDto,
 } from '../api/dto/order.detail.product.dto';
 import { normalizeDate } from '../../util/time.util';
-import { join } from 'path';
 import * as process from 'node:process';
 import * as ExcelJS from 'exceljs';
 import { OrderSettleViewDto } from '../api/dto/order.settle.view.dto';
@@ -162,7 +151,6 @@ import { createTempOrderCode, deriveOrderCodeFromId } from '../domain/order.code
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { PhoneUtil } from '../../common/utils/phone.util';
 import { DeliveryBatchService } from '../../delivery/application/delivery.batch.service';
-import { IOrderSendMethod } from '../interface/order.send.method';
 import { IOrderSendingType } from '../interface/order.sending.type';
 import {
   canForceConfirmDelivery,
@@ -170,7 +158,6 @@ import {
   shouldExposeSsgBalanceCheck,
 } from '../domain/order.delivery-transition-authority.helper';
 import { IOrderDateType } from '../interface/order.date.type';
-import { OrderEncryptKey } from '../../order_receive/interface/order.encrypt.key';
 import { ActivityLogService } from '../../activity_log/application/activity.log.service';
 import { ActivityLogResult } from '../../activity_log/interface/activity.log.result';
 import {
@@ -213,7 +200,6 @@ import { MailSendSmtp } from '../../mail/infrastructure/mail-send.smtp';
 import { CompanyType, INTERNAL_BUSINESS_NUMBERS } from '../../common/domain/company.type';
 import { OrderDeliveryCompleteReportEmailReqDto } from '../api/order.req.dto';
 import { EmailSendHistoryEntity } from '../../entity/email.send.history.entity';
-import { EmailType } from '../../mail/domain/email.type';
 import { OrderManualEntryEntity } from '../../entity/order.manual.entry.entity';
 import { ManualEntryItemDto, ManualEntryViewDto } from '../api/dto/order.manual.entry.dto';
 
@@ -1168,6 +1154,26 @@ export class OrderService {
     this.hideDiscardReissueDeliveries(order.orderProductMappings);
 
     const productList: OrderDetailProductDto[] = [];
+    const orderProductMappingIds = (order.orderProductMappings ?? []).map((mapping) => mapping.id);
+    const testDeliveryHistoryMap = new Map<number, OrderTestDeliveryHistoryDto[]>();
+
+    if (orderProductMappingIds.length > 0) {
+      const testDeliveryHistories = await this.testOrderDeliveryRepository.find({
+        where: { orderProductMappingId: In(orderProductMappingIds) },
+        order: { id: 'ASC' },
+      });
+
+      // testDeliveryHistories 는 id ASC 로 조회되므로, 상품별 push 순서(배열 인덱스+1)가 곧 id ASC 순번이다.
+      for (const history of testDeliveryHistories) {
+        const histories = testDeliveryHistoryMap.get(history.orderProductMappingId) ?? [];
+        histories.push({
+          sequence: histories.length + 1,
+          deliveryTarget: this.cryptoCipher.safeDecryptDeliveryTarget(history.deliveryTarget) ?? '',
+          sendRequestAt: format(history.sendRequestAt, DateFormatStr),
+        });
+        testDeliveryHistoryMap.set(history.orderProductMappingId, histories);
+      }
+    }
 
     let topImagePath;
     let midImagePath;
@@ -1254,6 +1260,7 @@ export class OrderService {
           encourageDay: orderProductMapping.encourageDay,
           galaxiaDuration: orderProductMapping.galaxiaDuration,
           failCount: failCount,
+          testDeliveryHistories: testDeliveryHistoryMap.get(orderProductMapping.id) ?? [],
           // 자사 운영자(SUPER_ADMIN/OPERATION_ADMIN)에게만 가격 divergence 노출.
           // 고객사(CORPORATE_ADMIN) 또는 미인증 경로에서는 필드 자체를 omit.
           ...(user.authority === IUserAuthority.SUPER_ADMIN || user.authority === IUserAuthority.OPERATION_ADMIN
@@ -1607,6 +1614,7 @@ export class OrderService {
           encourageDay: orderProductMapping.encourageDay,
           galaxiaDuration: orderProductMapping.galaxiaDuration,
           failCount: 0, // 이벤트 불러오기 시 발송 정보가 없으므로 0
+          testDeliveryHistories: [],
         });
       }
     }
@@ -1992,7 +2000,7 @@ export class OrderService {
     //     카드할증은 물품 공급가가 아닌 결제수단 수수료이므로 별도 결제 영수증으로 첨부해 안내한다.
     //   - vat 은 상품권 특성상 0(면세)로 고정.
     let price = 0;
-    let vat = 0;
+    const vat = 0;
     let totalAmount = 0;
 
     if (order.orderProductMappings && order.orderProductMappings.length > 0) {
@@ -2462,7 +2470,7 @@ export class OrderService {
     //     카드할증은 물품 공급가가 아닌 결제수단 수수료이므로 별도 결제 영수증으로 첨부해 안내한다.
     //   - vat 은 상품권 특성상 0(면세)로 고정.
     let price = 0;
-    let vat = 0;
+    const vat = 0;
     let totalAmount = 0;
     // 거래일자: 증빙일자가 있으면 증빙일자 사용 (루프 불변값이므로 1회만 계산)
     const evidenceDateStr = evidenceDateParsed ? format(evidenceDateParsed, DateFormatStr) : null;
@@ -5513,7 +5521,7 @@ export class OrderService {
 
     // 성공 로그 저장
     const responseTime = Date.now() - startTime;
-    const { password: _, ...requestParams } = getBody;
+    const requestParams = Object.fromEntries(Object.entries(getBody).filter(([key]) => key !== 'password'));
 
     await this.activityLogService.createLog({
       userId: user.id,
@@ -5620,9 +5628,13 @@ export class OrderService {
   async testDelivery(user: ILoginUserInfo, getBody: OrderTestDeliveryReqDto) {
     const { orderId, orderProductMappingId, deliveryTarget } = getBody;
 
-    // 최대 횟수 (상품별 2회)
+    await this.assertOrderInViewScope(user, orderId);
+
+    // 최대 횟수 (상품별 2회). 운영관리자/최고관리자는 제한 없음.
     const maxLimitCount = 2;
     const barCode = '999999';
+    const canBypassTestDeliveryLimit =
+      user.authority === IUserAuthority.SUPER_ADMIN || user.authority === IUserAuthority.OPERATION_ADMIN;
 
     // 알림톡일 경우 order.user도 필요하므로 항상 조인
     const orderProductMapping = await this.orderProductMappingRepository
@@ -5639,7 +5651,11 @@ export class OrderService {
       throw new BadRequestException('해당 주문-상품이 존재하지 않습니다.');
     }
 
-    if (orderProductMapping.testDeliveryCount >= maxLimitCount) {
+    if (orderProductMapping.orderId !== orderId) {
+      throw new BadRequestException('주문 정보와 상품 정보가 일치하지 않습니다.');
+    }
+
+    if (!canBypassTestDeliveryLimit && orderProductMapping.testDeliveryCount >= maxLimitCount) {
       throw new BadRequestException('테스트발송은 상품당 최대 2회입니다.');
     }
 
