@@ -60,10 +60,14 @@ export interface ParsedFile {
   parseError: 'SHEET_MISSING' | 'FORMULA_NOT_CACHED' | null;
 }
 
+/** 구조검증/파일 실패 사유 코드 (프론트 계약 5종) */
+export type FormatErrorCode = 'NOT_XLSX' | 'MISSING_SHEET' | 'HEADER_MISMATCH' | 'VERSION_MISMATCH' | 'EMPTY_LIST';
+
 /** 2단계 구조검증 결과 */
 export interface StructureResult {
   status: 'VALID' | 'INVALID_FORMAT';
   message: string | null; // INVALID_FORMAT일 때 사유
+  code: FormatErrorCode | null; // INVALID_FORMAT일 때 프론트 계약 코드
 }
 
 /** 3단계 - 상품이 매핑된 행(ParsedRow + product) */
@@ -136,10 +140,20 @@ export interface BuildPayloadInput {
   blockedRowNos: Set<number>; // 4단계 ROW 차단 → 제외
 }
 
+/** 리포트용 상품/권종 요약 (프론트 orders[].products[]) */
+export interface ReportProduct {
+  productId: number | null; // 미매핑이면 null(주문 내부에선 항상 매핑됨)
+  productName: string;
+  code: string;
+  faceValue: number; // 정상가(product.price)
+  deliveryCount: number; // 이 상품의 발송건 수
+}
+
 /** 5단계 결과. createTemp payload + 리포트/검산용 소스 행번호(payload엔 못 담음) */
 export interface BuildPayloadResult {
   payload: OrderCreateTempReqDto;
   sourceRowNos: number[]; // 이 주문에 실제로 들어간 엑셀 행번호
+  products: ReportProduct[]; // 상품별 분해(리포트용)
 }
 
 // ── 6단계 리포트/검산 (프론트 계약) ─────────────────────────
@@ -169,19 +183,41 @@ export interface AutoOrderReportOrder {
   productCount: number; // 상품 종수
   deliveryCount: number; // 발송건 수(=수신자 수)
   sourceRowNos: number[]; // 이 주문에 들어간 엑셀 행번호
+  products: ReportProduct[]; // 상품별 분해(프론트 orders[].products[])
+}
+
+/** 리포트 행 분류(프론트 계약) */
+export interface ReportUnmappedRow {
+  rowNo: number;
+  code: string; // 미등록 상품코드
+  reason: string;
+}
+export interface ReportWarningRow {
+  rowNo: number;
+  code: string;
+  reason: string;
+}
+export interface ReportExcludedRow {
+  rowNo: number;
+  reason: string;
 }
 
 /** 파일 1개 처리 결과 */
 export interface AutoOrderFileResult {
   fileIndex: number;
   fileName: string;
+  targetFilePath: string; // 파싱 대상 파일 경로(프론트 targetFilePath — 표시명 도출용)
   status: AutoOrderFileStatus;
   message: string | null; // INVALID_FORMAT 사유
+  formatErrorCode: FormatErrorCode | null; // INVALID_FORMAT 프론트 계약 코드
   orders: AutoOrderReportOrder[];
   reconciliation: AutoOrderReconciliation;
   fileBlocked: boolean; // FILE 차단 존재(≠ built===0)
   blocked: BlockReason[]; // FILE/ORDER 사유
   blockedRows: BlockReason[]; // ROW 사유
+  unmappedRows: ReportUnmappedRow[]; // 미등록 상품코드 행(프론트 계약)
+  warningRows: ReportWarningRow[]; // ROW 차단 사유(금칙어/수신처없음 등)를 경고로 표시
+  excludedRows: ReportExcludedRow[]; // _유효=False 행
 }
 
 /** 접수 1건(파일 N개) 전체 결과 */

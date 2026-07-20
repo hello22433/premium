@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { ParsedFile, StructureResult } from './auto.order.types';
+import { FormatErrorCode, ParsedFile, StructureResult } from './auto.order.types';
 
 /**
  * 2단계 - 구조검증.
@@ -12,11 +12,12 @@ export class AutoOrderStructureValidator {
 
   validate(parsed: ParsedFile): StructureResult {
     if (parsed.parseError === 'SHEET_MISSING' || !parsed.header) {
-      return this.invalid('필수 시트(1.신청정보 / 2.발송명단)가 없습니다.');
+      return this.invalid('필수 시트(1.신청정보 / 2.발송명단)가 없습니다.', 'MISSING_SHEET');
     }
     if (parsed.parseError === 'FORMULA_NOT_CACHED') {
       return this.invalid(
         '엑셀 수식 결과가 저장되지 않았습니다. 엑셀에서 파일을 열어 다시 저장(계산 후 저장)한 뒤 업로드해 주세요.',
+        'HEADER_MISMATCH',
       );
     }
 
@@ -25,27 +26,28 @@ export class AutoOrderStructureValidator {
     if (h.formVersion !== AutoOrderStructureValidator.SUPPORTED_VERSION) {
       return this.invalid(
         `지원하지 않는 양식버전입니다. (파일: ${h.formVersion || '없음'} / 지원: ${AutoOrderStructureValidator.SUPPORTED_VERSION})`,
+        'VERSION_MISMATCH',
       );
     }
-    if (!h.eventName) return this.invalid('프로모션명(C19)이 비어 있습니다.');
-    if (!h.sendTitle) return this.invalid('발송 제목(C20)이 비어 있습니다.');
-    if (!h.sendContent) return this.invalid('발송 내용(C21)이 비어 있습니다.');
-    if (!h.sendMethod) return this.invalid('발신수단(C23)이 비어 있거나 알 수 없는 값입니다.');
+    if (!h.eventName) return this.invalid('프로모션명(C19)이 비어 있습니다.', 'HEADER_MISMATCH');
+    if (!h.sendTitle) return this.invalid('발송 제목(C20)이 비어 있습니다.', 'HEADER_MISMATCH');
+    if (!h.sendContent) return this.invalid('발송 내용(C21)이 비어 있습니다.', 'HEADER_MISMATCH');
+    if (!h.sendMethod) return this.invalid('발신수단(C23)이 비어 있거나 알 수 없는 값입니다.', 'HEADER_MISMATCH');
     if (h.isImmediate === null) {
-      return this.invalid('즉시발송 여부(C16) 값을 해석할 수 없습니다. (예: TRUE/FALSE)');
+      return this.invalid('즉시발송 여부(C16) 값을 해석할 수 없습니다. (예: TRUE/FALSE)', 'HEADER_MISMATCH');
     }
     if (h.destroyDay < 1) {
-      return this.invalid('개인정보 파기일(C25)이 비어 있거나 올바르지 않습니다.');
+      return this.invalid('개인정보 파기일(C25)이 비어 있거나 올바르지 않습니다.', 'HEADER_MISMATCH');
     }
     if (!h.isImmediate && !h.sendRequestAt) {
-      return this.invalid('예약발송인데 발송희망일/시간(C17/C18)이 올바르지 않습니다.');
+      return this.invalid('예약발송인데 발송희망일/시간(C17/C18)이 올바르지 않습니다.', 'HEADER_MISMATCH');
     }
-    if (parsed.rows.length === 0) return this.invalid('발송명단에 데이터가 없습니다.');
+    if (parsed.rows.length === 0) return this.invalid('발송명단에 데이터가 없습니다.', 'EMPTY_LIST');
 
-    return { status: 'VALID', message: null };
+    return { status: 'VALID', message: null, code: null };
   }
 
-  private invalid(message: string): StructureResult {
-    return { status: 'INVALID_FORMAT', message };
+  private invalid(message: string, code: FormatErrorCode): StructureResult {
+    return { status: 'INVALID_FORMAT', message, code };
   }
 }

@@ -65,7 +65,16 @@ export class AutoOrderPayloadBuilder {
       orderProductList,
     };
 
-    return { payload, sourceRowNos: usableRows.map((r) => r.rowNo) };
+    // 리포트용 상품 분해(그룹은 최소 1행이라 group[0].product 안전)
+    const products = [...byProductId.entries()].map(([productId, group]) => ({
+      productId,
+      productName: group[0].product.name,
+      code: group[0].product.code,
+      faceValue: group[0].product.price,
+      deliveryCount: group.length,
+    }));
+
+    return { payload, sourceRowNos: usableRows.map((r) => r.rowNo), products };
   }
 
   private toDelivery(sendMethod: IOrderSendMethod | null, row: MappedRow): OrderDeliveryCreateDto {

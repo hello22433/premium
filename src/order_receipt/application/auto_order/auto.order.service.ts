@@ -24,6 +24,7 @@ import {
   AutoOrderResult,
   AutoOrderRunMode,
   BuildPayloadResult,
+  FormatErrorCode,
   MappedResult,
   ParsedHeader,
   PreValidateResult,
@@ -58,7 +59,12 @@ export class AutoOrderService {
     private readonly autoResultRepository: Repository<OrderReceiptAutoResultEntity>,
   ) {}
 
-  async run(receipt: OrderReceiptEntity, user: ILoginUserInfo, mode: AutoOrderRunMode): Promise<AutoOrderResult> {
+  async run(
+    receipt: OrderReceiptEntity,
+    user: ILoginUserInfo,
+    mode: AutoOrderRunMode,
+    fileIndexes?: number[],
+  ): Promise<AutoOrderResult> {
     // ── COMMIT 멱등 게이트: 이미 처리했으면 저장 스냅샷 그대로 반환(재계산 안 함)
     if (mode === AutoOrderRunMode.COMMIT) {
       const saved = await this.autoResultRepository.findOne({ where: { orderReceiptId: receipt.id } });
@@ -88,8 +94,15 @@ export class AutoOrderService {
     // (파일명에 콤마가 포함될 수 있어 naive split(',')은 URL을 조각내 승인 실패 + fileIndex 멱등키 오염을 유발)
     const urls = parseFilePathList(receipt.filePath);
 
+    // 관리자가 고른 파일만 처리(fileIndexes). 미지정이면 전체. fileIndex는 전체 목록 기준 인덱스를 유지해
+    // 멱등키(orderReceiptId, fileIndex, type)와 리포트 식별자가 선택 여부와 무관하게 안정적이다.
+    const selected =
+      fileIndexes && fileIndexes.length > 0
+        ? [...new Set(fileIndexes)].filter((i) => Number.isInteger(i) && i >= 0 && i < urls.length).sort((a, b) => a - b)
+        : urls.map((_, i) => i);
+
     const files: AutoOrderFileResult[] = [];
-    for (let fileIndex = 0; fileIndex < urls.length; fileIndex++) {
+    for (const fileIndex of selected) {
       files.push(
         await this.processFile(receipt, user, urls[fileIndex], fileIndex, allowedSendMethods, ownerMissing, range, mode),
       );
@@ -107,6 +120,21 @@ export class AutoOrderService {
     }
 
     return result;
+  }
+
+  /**
+   * 저장된 COMMIT 스냅샷을 읽어 반환(없으면 null) — GET /result용, 부작용 없음.
+   * 재계산하지 않고 승인 시점 결과를 그대로 돌려준다(SSG 예약창 등 시간의존 결과의 일관성 보장).
+   */
+  async getStoredResult(receiptId: number): Promise<{ result: AutoOrderResult; generatedAt: Date } | null> {
+    const saved = await this.autoResultRepository.findOne({ where: { orderReceiptId: receiptId } });
+    if (!saved) return null;
+    try {
+      return { result: JSON.parse(saved.resultJson) as AutoOrderResult, generatedAt: saved.generatedAt };
+    } catch (e) {
+      this.logger.error(`자동주문 저장 스냅샷 파싱 실패 receipt=${receiptId}: ${(e as Error).message}`);
+      throw new Error(`이미 처리된 자동주문 결과를 읽을 수 없습니다(receipt=${receiptId}).`);
+    }
   }
 
   private async processFile(
@@ -133,12 +161,12 @@ export class AutoOrderService {
       if (mode === AutoOrderRunMode.COMMIT) {
         throw new Error(`자동주문 파일을 읽을 수 없습니다(${fileName}): ${(e as Error).message}`);
       }
-      return this.invalidFile(fileIndex, fileName, '파일을 읽을 수 없습니다(일시 오류). 다시 시도해 주세요.');
+      return this.invalidFile(fileIndex, fileName, url, '파일을 읽을 수 없습니다(일시 오류). 다시 시도해 주세요.', 'NOT_XLSX');
     }
     if (buffer.length === 0) {
       this.logger.error(`자동주문 파일 0바이트 [${fileIndex}] ${fileName} (업로드 실패 추정)`);
       if (mode === AutoOrderRunMode.COMMIT) throw new Error(`자동주문 파일이 비어 있습니다(${fileName}).`);
-      return this.invalidFile(fileIndex, fileName, '파일이 비어 있습니다.');
+      return this.invalidFile(fileIndex, fileName, url, '파일이 비어 있습니다.', 'NOT_XLSX');
     }
 
     let parsed;
@@ -154,13 +182,19 @@ export class AutoOrderService {
       );
       // 정상 xlsx는 비-v4.1이어도 파싱은 되고 구조검증에서 리젝된다. 파싱 자체가 throw면 손상/비표준 파일이므로
       // 일반 "고객사 자체양식" 스킵과 시각적으로 구분되는 메시지로 표면화(승인은 막지 않되 담당자 확인 유도).
-      return this.invalidFile(fileIndex, fileName, '엑셀 파일을 해석하지 못했습니다(손상/비표준 파일 가능). 담당자 확인이 필요합니다.');
+      return this.invalidFile(
+        fileIndex,
+        fileName,
+        url,
+        '엑셀 파일을 해석하지 못했습니다(손상/비표준 파일 가능). 담당자 확인이 필요합니다.',
+        'NOT_XLSX',
+      );
     }
 
     // ── 2단계 구조검증
     const structure = this.structureValidator.validate(parsed);
     if (structure.status === 'INVALID_FORMAT') {
-      return this.invalidFile(fileIndex, fileName, structure.message);
+      return this.invalidFile(fileIndex, fileName, url, structure.message, structure.code ?? 'HEADER_MISMATCH');
     }
     const header = parsed.header as ParsedHeader;
 
@@ -208,16 +242,30 @@ export class AutoOrderService {
       }
     }
 
+    const rowBlocks = pre.blocked.filter((b) => b.level === 'ROW');
     return {
       fileIndex,
       fileName,
+      targetFilePath: url,
       status: 'VALID',
       message: null,
+      formatErrorCode: null,
       orders,
       reconciliation,
       fileBlocked: pre.fileBlocked,
       blocked: pre.blocked.filter((b) => b.level !== 'ROW'), // FILE/ORDER
-      blockedRows: pre.blocked.filter((b) => b.level === 'ROW'), // ROW
+      blockedRows: rowBlocks, // ROW
+      unmappedRows: mapped.unmappedRows.map((r) => ({
+        rowNo: r.rowNo,
+        code: r.productCode ?? '',
+        reason: '미등록 상품코드',
+      })),
+      // 백엔드 ROW 차단(금칙어/수신처없음)을 프론트 warningRows로 표시(행별 사유 노출)
+      warningRows: rowBlocks.map((b) => ({ rowNo: b.rowNo ?? 0, code: b.code, reason: b.reason })),
+      excludedRows: mapped.excludedRows.map((r) => ({
+        rowNo: r.rowNo,
+        reason: r.statusReason ?? '_유효=False',
+      })),
     };
   }
 
@@ -311,6 +359,7 @@ export class AutoOrderService {
       productCount: result.payload.orderProductList.length,
       deliveryCount: result.sourceRowNos.length,
       sourceRowNos: result.sourceRowNos,
+      products: result.products,
     };
   }
 
@@ -326,12 +375,20 @@ export class AutoOrderService {
     }
   }
 
-  private invalidFile(fileIndex: number, fileName: string, message: string | null): AutoOrderFileResult {
+  private invalidFile(
+    fileIndex: number,
+    fileName: string,
+    targetFilePath: string,
+    message: string | null,
+    code: FormatErrorCode,
+  ): AutoOrderFileResult {
     return {
       fileIndex,
       fileName,
+      targetFilePath,
       status: 'INVALID_FORMAT',
       message,
+      formatErrorCode: code,
       orders: [],
       reconciliation: buildReconciliation({
         inputRowCount: 0,
@@ -344,6 +401,9 @@ export class AutoOrderService {
       fileBlocked: false,
       blocked: [],
       blockedRows: [],
+      unmappedRows: [],
+      warningRows: [],
+      excludedRows: [],
     };
   }
 }

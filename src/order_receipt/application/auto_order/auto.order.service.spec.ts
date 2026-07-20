@@ -225,6 +225,40 @@ describe('AutoOrderService (DRY_RUN 미리보기)', () => {
     expect(result.files[0].fileIndex).toBe(0);
     expect(result.files[1].fileIndex).toBe(1);
   });
+
+  it('fileIndexes=[1] → 선택 파일만 처리, fileIndex는 전체목록 기준 유지', async () => {
+    const a = await buildFilledBuffer([{ b: '010-1111-1111', code: 'GEN-1' }]);
+    const b = await buildFilledBuffer([{ b: '010-2222-2222', code: 'SSG-1' }]);
+    const { svc } = makeService({ 'u://a.xlsx': a, 'u://b.xlsx': b });
+
+    const result = await svc.run(receipt('u://a.xlsx,u://b.xlsx'), admin, AutoOrderRunMode.DRY_RUN, [1]);
+    expect(result.files).toHaveLength(1);
+    expect(result.files[0].fileIndex).toBe(1); // 멱등키/식별자 안정성
+  });
+
+  it('리포트 필드: VALID 파일에 상품분해·미매핑/제외 행이 채워진다', async () => {
+    const buf = await buildFilledBuffer([
+      { b: '010-1111-1111', code: 'GEN-1' }, // built
+      { b: '010-2222-2222', code: '없음' }, // unmapped
+      { b: '010-3333-3333', code: 'GEN-1', valid: false }, // excluded
+    ]);
+    const { svc } = makeService({ 'u://a.xlsx': buf });
+    const file = (await svc.run(receipt('u://a.xlsx'), admin, AutoOrderRunMode.DRY_RUN)).files[0];
+
+    expect(file.targetFilePath).toBe('u://a.xlsx');
+    expect(file.formatErrorCode).toBeNull();
+    expect(file.orders[0].products[0]).toMatchObject({ code: 'GEN-1', deliveryCount: 1 });
+    expect(file.unmappedRows).toEqual([{ rowNo: 6, code: '없음', reason: '미등록 상품코드' }]);
+    expect(file.excludedRows.map((r) => r.rowNo)).toEqual([7]);
+  });
+
+  it('INVALID_FORMAT 파일에 formatErrorCode 부여(양식버전 불일치 → VERSION_MISMATCH)', async () => {
+    const buf = await buildFilledBuffer([{ b: '010-1111-1111', code: 'GEN-1' }], 'v3.9');
+    const { svc } = makeService({ 'u://d.xlsx': buf });
+    const file = (await svc.run(receipt('u://d.xlsx'), admin, AutoOrderRunMode.DRY_RUN)).files[0];
+    expect(file.status).toBe('INVALID_FORMAT');
+    expect(file.formatErrorCode).toBe('VERSION_MISMATCH');
+  });
 });
 
 describe('AutoOrderService (COMMIT 승인)', () => {
