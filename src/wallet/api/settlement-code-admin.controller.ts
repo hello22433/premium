@@ -5,8 +5,23 @@ import { IsIn, IsInt, IsNotEmpty, IsOptional, IsString, MaxLength, Min } from 'c
 import { User } from '../../auth/api/user.decorator';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { AuthUserSuperAndOperationAdminGuard } from '../../auth/api/auth.user.super-operation-admin.guard';
-import { WalletReadService, SettlementCodeSnapshot, SettlementCodeDetail } from '../application/wallet-read.service';
+import {
+  WalletReadService,
+  SettlementCodeSnapshot,
+  SettlementCodeDetail,
+  SettlementCodeSearchResult,
+} from '../application/wallet-read.service';
 import { SettlementCodeAdminService, SettlementCodeHistoryEventType } from '../application/settlement-code-admin.service';
+
+/** query 문자열 → 선택적 정수(빈값 undefined, 비정수 400). */
+function parseOptionalInt(v: string | undefined, field: string): number | undefined {
+  if (v === undefined || v.trim() === '') return undefined;
+  const n = Number(v);
+  if (!Number.isInteger(n)) {
+    throw new BadRequestException(`${field} 은(는) 정수여야 합니다.`);
+  }
+  return n;
+}
 
 class IssueCodeReqDto {
   @IsInt()
@@ -103,6 +118,35 @@ export class SettlementCodeAdminController {
   @ApiOperation({ summary: '정산코드 목록/스냅샷 조회 (회사 단위)' })
   list(@Query('companyId', new ParseIntPipe()) companyId: number) {
     return this.walletReadService.getSettlementCodeSnapshot(companyId);
+  }
+
+  /** 정산코드 검색 (필터·커서 페이지네이션, 회사 선택적 — 회사 선택 강제 완화). */
+  @Get('search')
+  @ApiOperation({ summary: '정산코드 검색 (선/후정산·정산방법·예치금/여신 범위·코드검색, 회사 선택적)' })
+  search(
+    @Query('companyId') companyId?: string,
+    @Query('settleCondition') settleCondition?: string,
+    @Query('settleMethod') settleMethod?: string,
+    @Query('depositMin') depositMin?: string,
+    @Query('depositMax') depositMax?: string,
+    @Query('creditLimitMin') creditLimitMin?: string,
+    @Query('creditLimitMax') creditLimitMax?: string,
+    @Query('codeQuery') codeQuery?: string,
+    @Query('limit') limit?: string,
+    @Query('cursor') cursor?: string,
+  ): Promise<SettlementCodeSearchResult> {
+    return this.walletReadService.searchSettlementCodes({
+      companyId: parseOptionalInt(companyId, 'companyId'),
+      settleCondition: settleCondition as 'PRE_PAYMENT' | 'POST_PAYMENT' | undefined,
+      settleMethod: settleMethod as 'CARD' | 'CASH' | undefined,
+      depositMin: parseOptionalInt(depositMin, 'depositMin'),
+      depositMax: parseOptionalInt(depositMax, 'depositMax'),
+      creditLimitMin: parseOptionalInt(creditLimitMin, 'creditLimitMin'),
+      creditLimitMax: parseOptionalInt(creditLimitMax, 'creditLimitMax'),
+      codeQuery,
+      limit: parseOptionalInt(limit, 'limit'),
+      cursor,
+    });
   }
 
   /** 정산코드 키 단위 상세 (정책 + 잔액 + 배정 계정, 회사 걸침 포함 — N:M). */
