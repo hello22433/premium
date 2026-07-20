@@ -11,6 +11,7 @@ import {
   OrderReceiptRejectReqDto,
   OrderReceiptUpdateReqDto,
   OrderReceiptChangeStatusReqDto,
+  OrderReceiptPreviewReqDto,
 } from './order.receipt.req.dto';
 import { OrderReceiptGetDetailResDto, OrderReceiptGetListResDto } from './order.receipt.res.dto';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
@@ -127,9 +128,26 @@ export class OrderReceiptController {
   @ApiBadRequestResponse({ description: '주문접수 건이 존재하지 않는 경우' })
   // ===================================================
   @Post('/order-receipt/:id/preview')
-  async previewAutoOrder(@User() user: ILoginUserInfo, @Param() getParam: OrderReceiptGetDetailReqParamDto) {
+  async previewAutoOrder(
+    @User() user: ILoginUserInfo,
+    @Param() getParam: OrderReceiptGetDetailReqParamDto,
+    @Body() getBody: OrderReceiptPreviewReqDto,
+  ) {
     await this.authService.authorityValidator(user, UserAuthSubEnum.ORDER_RECEIPT);
-    return this.orderReceiptService.previewAutoOrder(user, getParam.id);
+    return this.orderReceiptService.previewAutoOrder(user, getParam.id, getBody.fileIndexes);
+  }
+
+  @ApiOperation({
+    summary: '주문접수 자동주문 결과 조회 API',
+    description: '승인 시 생성된 자동주문 리포트(저장 스냅샷)를 반환합니다. 운영관리자 이상만 조회 가능.',
+  })
+  @ApiBearerAuth()
+  @ApiOkResponse({ description: '자동주문 결과 조회에 성공한 경우' })
+  // ===================================================
+  @Get('/order-receipt/:id/result')
+  async getAutoOrderResult(@User() user: ILoginUserInfo, @Param() getParam: OrderReceiptGetDetailReqParamDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.ORDER_RECEIPT);
+    return this.orderReceiptService.getAutoOrderResult(user, getParam.id);
   }
 
   @ApiOperation({

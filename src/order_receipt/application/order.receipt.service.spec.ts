@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import {
   addTransactionalDataSource,
   deleteDataSourceByName,
@@ -83,7 +83,10 @@ describe('OrderReceiptService access and status policy', () => {
       downloadWithPath: jest.fn(),
     };
 
-    const autoOrderService: any = { run: jest.fn() };
+    const autoOrderService: any = {
+      run: jest.fn().mockResolvedValue({ files: [], alreadyCommitted: false }),
+      getStoredResult: jest.fn().mockResolvedValue(null),
+    };
     return {
       service: new OrderReceiptService(repository as any, fileService as any, autoOrderService),
       repository,
@@ -166,6 +169,50 @@ describe('OrderReceiptService access and status policy', () => {
     expect(passedReceipt).toBe(receipt);
     expect(passedUser).toBe(operationAdmin);
     expect(mode).toBe('DRY_RUN');
+  });
+
+  it('미리보기는 fileIndexes를 훅에 전달하고 PREVIEW DTO를 반환한다', async () => {
+    const { service, autoOrderService } = createService(makeReceipt({ userId: 20, status: OrderReceiptStatus.RECEIVED }));
+
+    const dto = await (service as any).previewAutoOrder(operationAdmin, 100, [1, 2]);
+
+    expect(autoOrderService.run.mock.calls[0][3]).toEqual([1, 2]); // 4번째 인자=fileIndexes
+    expect(dto.mode).toBe('PREVIEW');
+    expect(dto.receiptId).toBe(100);
+    expect(dto.summary).toBeDefined();
+  });
+
+  it('승인은 COMMITTED DTO를 반환한다', async () => {
+    const { service } = createService(makeReceipt({ userId: 20, status: OrderReceiptStatus.RECEIVED }));
+
+    const dto = await service.approve(operationAdmin, 100);
+
+    expect((dto as any).mode).toBe('COMMITTED');
+    expect((dto as any).receiptId).toBe(100);
+  });
+
+  it('결과조회는 운영관리자 이상만 허용', async () => {
+    const { service } = createService(makeReceipt({ userId: 20, status: OrderReceiptStatus.APPROVED }));
+    await expect((service as any).getAutoOrderResult(corporateUser(20), 100)).rejects.toThrow(ForbiddenException);
+  });
+
+  it('결과조회: 스냅샷 없으면 404', async () => {
+    const { service } = createService(makeReceipt({ userId: 20, status: OrderReceiptStatus.APPROVED }));
+    await expect((service as any).getAutoOrderResult(operationAdmin, 100)).rejects.toThrow(NotFoundException);
+  });
+
+  it('결과조회: 저장 스냅샷을 COMMITTED DTO로 매핑', async () => {
+    const { service, autoOrderService } = createService(makeReceipt({ userId: 20, status: OrderReceiptStatus.APPROVED }));
+    autoOrderService.getStoredResult.mockResolvedValueOnce({
+      result: { files: [], alreadyCommitted: false },
+      generatedAt: new Date('2026-08-05T05:30:00.000Z'),
+    });
+
+    const dto = await (service as any).getAutoOrderResult(operationAdmin, 100);
+
+    expect(dto.mode).toBe('COMMITTED');
+    expect(dto.generatedAt).toBe('2026-08-05T05:30:00.000Z');
+    expect(dto.summary.fileCount).toBe(0);
   });
 
   it('blocks corporate delete while receipt is reviewing but keeps rejected delete available for owner', async () => {

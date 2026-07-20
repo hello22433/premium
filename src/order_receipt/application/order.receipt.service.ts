@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -25,7 +25,8 @@ import { format, subDays } from 'date-fns';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { IUserAuthority } from '../../user/interface/user.authority';
 import { AutoOrderService } from './auto_order/auto.order.service';
-import { AutoOrderRunMode, AutoOrderResult } from './auto_order/auto.order.types';
+import { AutoOrderRunMode } from './auto_order/auto.order.types';
+import { AutoOrderResultDto, toAutoOrderResultDto } from './auto_order/auto.order.result.mapper';
 
 @Injectable()
 export class OrderReceiptService {
@@ -43,10 +44,25 @@ export class OrderReceiptService {
    * 자동주문 미리보기(DRY_RUN). 첨부 집행신청서를 파싱해 "승인 시 무엇이 생성/차단될지"를 리포트로 반환.
    * DB를 변경하지 않는다(실제 생성은 approve). 승인과 짝을 이루는 관리자 액션이라 운영관리자 이상만 허용.
    */
-  async previewAutoOrder(user: ILoginUserInfo, id: number): Promise<AutoOrderResult> {
+  async previewAutoOrder(user: ILoginUserInfo, id: number, fileIndexes?: number[]): Promise<AutoOrderResultDto> {
     this.validateAdminAuthority(user, '운영관리자 이상만 미리보기를 조회할 수 있습니다.');
     const receipt = await this.findReceiptOrThrow(id);
-    return this.autoOrderService.run(receipt, user, AutoOrderRunMode.DRY_RUN);
+    const result = await this.autoOrderService.run(receipt, user, AutoOrderRunMode.DRY_RUN, fileIndexes);
+    return toAutoOrderResultDto(result, { mode: 'PREVIEW', receiptId: id, generatedAt: new Date() });
+  }
+
+  /**
+   * 승인 후 자동주문 리포트 조회(GET /result). 저장된 COMMIT 스냅샷을 그대로 반환(재계산 없음).
+   * 스냅샷이 없으면(미승인/자동주문 대상 아님) 404.
+   */
+  async getAutoOrderResult(user: ILoginUserInfo, id: number): Promise<AutoOrderResultDto> {
+    this.validateAdminAuthority(user, '운영관리자 이상만 자동주문 결과를 조회할 수 있습니다.');
+    await this.findReceiptOrThrow(id);
+    const stored = await this.autoOrderService.getStoredResult(id);
+    if (!stored) {
+      throw new NotFoundException('자동주문 결과가 없습니다(승인 전이거나 자동주문 대상이 아닙니다).');
+    }
+    return toAutoOrderResultDto(stored.result, { mode: 'COMMITTED', receiptId: id, generatedAt: stored.generatedAt });
   }
 
   async getList(user: ILoginUserInfo, getQuery: OrderReceiptGetListReqQueryDto): Promise<OrderReceiptGetListResDto> {
@@ -247,7 +263,8 @@ export class OrderReceiptService {
     await this.orderReceiptRepository.save(receipt);
 
     // 승인의 길목에 자동주문 훅(COMMIT). 첨부가 없거나 처리할 게 없으면 무해하게 통과.
-    await this.autoOrderService.run(receipt, user, AutoOrderRunMode.COMMIT);
+    const result = await this.autoOrderService.run(receipt, user, AutoOrderRunMode.COMMIT);
+    return toAutoOrderResultDto(result, { mode: 'COMMITTED', receiptId: id, generatedAt: new Date() });
   }
 
   async reject(user: ILoginUserInfo, id: number, getBody: OrderReceiptRejectReqDto) {
