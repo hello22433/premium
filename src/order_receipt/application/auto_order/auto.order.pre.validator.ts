@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { ForbiddenWordMatcher } from '../../../forbidden_word/application/forbidden.word.matcher';
 import { IOrderType } from '../../../order/interface/order.type';
 import { IOrderSendMethod } from '../../../order/interface/order.send.method';
@@ -32,6 +32,7 @@ import {
 @Injectable()
 export class AutoOrderPreValidator {
   private static readonly DEFAULT_SEND_METHODS = ['ALIM_TALK', 'MMS', 'EMAIL'];
+  private readonly logger = new Logger(AutoOrderPreValidator.name);
 
   constructor(private readonly forbiddenWordMatcher: ForbiddenWordMatcher) {}
 
@@ -99,11 +100,18 @@ export class AutoOrderPreValidator {
           input.ssgReservationRange,
         );
       } catch (e) {
+        // validateSsgReservationWindow는 예약창/혼합/시각누락 위반을 BadRequestException으로 던진다.
+        // 그 외 예외(잘못된 range 객체·널참조·향후 추가된 검증 등)를 "기간 밖" 비즈니스 사유로 둔갑시키면
+        // SSG 주문이 조용히 스킵되고 Sentry에도 안 남는다 → BadRequest만 사유화하고 나머지는 표면화한다.
+        if (!(e instanceof BadRequestException)) {
+          this.logger.error(`SSG 예약창 검증 중 예기치 못한 오류(기간 밖 아님): ${(e as Error)?.message}`);
+          throw e;
+        }
         ssgOrderBlocked = true;
         blocked.push({
           code: 'SSG_RESERVATION_WINDOW',
           level: 'ORDER',
-          reason: e instanceof Error ? e.message : 'SSG 예약 가능 기간 밖입니다.',
+          reason: e.message,
         });
       }
     }

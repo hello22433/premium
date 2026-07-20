@@ -1,4 +1,5 @@
 import { AutoOrderPreValidator } from './auto.order.pre.validator';
+import * as OrderValidation from '../../../order/domain/order.validation';
 import { ForbiddenWordMatcher } from '../../../forbidden_word/application/forbidden.word.matcher';
 import { ProductEntity } from '../../../entity/product.entity';
 import { IProductType } from '../../../product/interface/product.type';
@@ -153,5 +154,26 @@ describe('AutoOrderPreValidator', () => {
       }),
     );
     expect(r.ssgOrderBlocked).toBe(false);
+  });
+
+  // ── 리뷰 반영(Finding D): SSG 검증이 BadRequest가 아닌 예외를 던지면 "기간 밖"으로 둔갑시키지 않고 표면화(rethrow)
+  it('SSG 검증이 예기치 못한(비-BadRequest) 오류를 던지면 삼키지 않고 rethrow', () => {
+    const spy = jest
+      .spyOn(OrderValidation, 'validateSsgReservationWindow')
+      .mockImplementation(() => {
+        throw new TypeError('예상치 못한 내부 오류');
+      });
+    try {
+      expect(() =>
+        validator.validate(
+          input({
+            header: header({ isImmediate: false, sendRequestAt: new Date('2026-07-15T00:00:00+09:00') }),
+            ssgRows: [mappedRow(5, { product: { code: 'S-1', type: IProductType.SSG, price: 10000 } as ProductEntity })],
+          }),
+        ),
+      ).toThrow('예상치 못한 내부 오류');
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
