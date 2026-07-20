@@ -87,6 +87,34 @@ describe('AutoOrderPayloadBuilder', () => {
     expect(r.payload.orderProductList[0].orderDeliveryList[0].deliveryTarget).toBe('a@x.com');
   });
 
+  it('EMAIL 발송: fromEmail 주입 + emailSendType=URL', () => {
+    const rows = [mappedRow(5, p1, { email: 'a@x.com' })];
+    const r = builder.build({
+      header: header({ sendMethod: IOrderSendMethod.EMAIL }),
+      rows,
+      orderType: IOrderType.GENERAL,
+      blockedRowNos: new Set(),
+      fromEmail: 'sender@enmad.com',
+    })!;
+    const op = r.payload.orderProductList[0];
+    expect(op.fromEmail).toBe('sender@enmad.com');
+    expect(op.emailSendType).toBe('URL');
+  });
+
+  it('비-EMAIL(MMS)은 fromEmail/emailSendType null (fromEmail 주입해도 무시)', () => {
+    const rows = [mappedRow(5, p1)];
+    const r = builder.build({
+      header: header({ sendMethod: IOrderSendMethod.MMS }),
+      rows,
+      orderType: IOrderType.GENERAL,
+      blockedRowNos: new Set(),
+      fromEmail: 'sender@enmad.com',
+    })!;
+    const op = r.payload.orderProductList[0];
+    expect(op.fromEmail).toBeNull();
+    expect(op.emailSendType).toBeNull();
+  });
+
   it('EMAIL 발송인데 이메일 없는 행은 제외(수신처 없음)', () => {
     const rows = [mappedRow(5, p1, { email: 'a@x.com' }), mappedRow(6, p1, { email: null })];
     const r = builder.build({

@@ -1,8 +1,12 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ILoginUserInfo } from '../../../auth/interface/login.user';
 import { UserEntity } from '../../../entity/user.entity';
+import { OrderFromDefinitionEntity } from '../../../entity/order.from.definition.entity';
+import { OrderFromDefinitionType, OrderFromRequestStatus } from '../../../order_from/interface/order.from.definition.type';
+import { IOrderSendMethod } from '../../../order/interface/order.send.method';
 import { OrderReceiptEntity } from '../../../entity/order.receipt.entity';
 import { OrderReceiptGeneratedOrderEntity } from '../../../entity/order.receipt.generated.order.entity';
 import { OrderReceiptAutoResultEntity } from '../../../entity/order.receipt.auto.result.entity';
@@ -57,6 +61,9 @@ export class AutoOrderService {
     private readonly generatedOrderRepository: Repository<OrderReceiptGeneratedOrderEntity>,
     @InjectRepository(OrderReceiptAutoResultEntity)
     private readonly autoResultRepository: Repository<OrderReceiptAutoResultEntity>,
+    @InjectRepository(OrderFromDefinitionEntity)
+    private readonly orderFromRepository: Repository<OrderFromDefinitionEntity>,
+    private readonly configService: ConfigService,
   ) {}
 
   async run(
@@ -89,6 +96,7 @@ export class AutoOrderService {
     const ownerMissing = receiptUser === null; // 소유자 없음 → 전체허용 폴백 금지(사전검증에서 FILE 차단)
     const allowedSendMethods = receiptUser?.allowedSendMethods ?? null;
     const range = this.toRangeBoundary(await this.ssgEventService.getReservationRange());
+    const resolvedFromEmail = await this.resolveEmailSender(); // EMAIL 발신주소(등록 우선, 없으면 하이웍스 기본)
 
     // 저장 filePath 파싱은 접수 시스템 전체가 쓰는 공용 파서로 통일한다.
     // (파일명에 콤마가 포함될 수 있어 naive split(',')은 URL을 조각내 승인 실패 + fileIndex 멱등키 오염을 유발)
@@ -104,7 +112,14 @@ export class AutoOrderService {
     const files: AutoOrderFileResult[] = [];
     for (const fileIndex of selected) {
       files.push(
-        await this.processFile(receipt, user, urls[fileIndex], fileIndex, allowedSendMethods, ownerMissing, range, mode),
+        await this.processFile(
+          receipt,
+          user,
+          urls[fileIndex],
+          fileIndex,
+          { allowedSendMethods, ownerMissing, range, resolvedFromEmail },
+          mode,
+        ),
       );
     }
 
@@ -137,14 +152,33 @@ export class AutoOrderService {
     }
   }
 
+  /**
+   * EMAIL 발신주소 해석: 등록된 APPROVED 전역 발신이메일(isDefault 우선) → 없으면 하이웍스 기본계정.
+   * 발신번호(1644-3614 고정)와 동일 패턴 — 양식엔 수신 이메일만, 발신은 시스템이 주입.
+   * 둘 다 없으면 null → 사전검증이 EMAIL 파일을 FILE 차단(발송확정 throw를 미리 표면화).
+   */
+  private async resolveEmailSender(): Promise<string | null> {
+    const registered = await this.orderFromRepository.findOne({
+      where: { type: OrderFromDefinitionType.EMAIL, requestStatus: OrderFromRequestStatus.APPROVED },
+      order: { isDefault: 'DESC', id: 'ASC' },
+    });
+    if (registered?.from) return registered.from;
+
+    const hiworksId = this.configService.get<string>('MAIL_HIGH_WORKS_ID');
+    return hiworksId ? `${hiworksId}@enmad.com` : null;
+  }
+
   private async processFile(
     receipt: OrderReceiptEntity,
     user: ILoginUserInfo,
     url: string,
     fileIndex: number,
-    allowedSendMethods: string | null,
-    ownerMissing: boolean,
-    range: SsgReservationRangeBoundary | null,
+    ctx: {
+      allowedSendMethods: string | null;
+      ownerMissing: boolean;
+      range: SsgReservationRangeBoundary | null;
+      resolvedFromEmail: string | null;
+    },
     mode: AutoOrderRunMode,
   ): Promise<AutoOrderFileResult> {
     const fileName = this.safeFileName(url);
@@ -206,13 +240,14 @@ export class AutoOrderService {
       header,
       generalRows: mapped.generalRows,
       ssgRows: mapped.ssgRows,
-      userAllowedSendMethods: allowedSendMethods,
-      ownerMissing,
-      ssgReservationRange: range,
+      userAllowedSendMethods: ctx.allowedSendMethods,
+      ownerMissing: ctx.ownerMissing,
+      ssgReservationRange: ctx.range,
+      resolvedFromEmail: ctx.resolvedFromEmail,
     });
 
     // ── 5~6단계 payload 조립 + (mode별) 실행
-    const orders = await this.buildOrders(receipt, user, fileIndex, header, mapped, pre, mode);
+    const orders = await this.buildOrders(receipt, user, fileIndex, header, mapped, pre, ctx.resolvedFromEmail, mode);
 
     // ── 검산
     const builtDeliveryCount = orders.reduce((sum, o) => sum + o.deliveryCount, 0);
@@ -277,6 +312,7 @@ export class AutoOrderService {
     header: ParsedHeader,
     mapped: MappedResult,
     pre: PreValidateResult,
+    resolvedFromEmail: string | null,
     mode: AutoOrderRunMode,
   ): Promise<AutoOrderReportOrder[]> {
     if (pre.fileBlocked) return [];
@@ -295,6 +331,7 @@ export class AutoOrderService {
         rows: plan.rows,
         orderType: plan.type,
         blockedRowNos: pre.blockedRowNos,
+        fromEmail: resolvedFromEmail,
       });
       if (!result) continue; // 살아남은 수신자 0명
 

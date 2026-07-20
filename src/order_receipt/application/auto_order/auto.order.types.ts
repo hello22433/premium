@@ -99,7 +99,8 @@ export type BlockCode =
   | 'SSG_RESERVATION_WINDOW'
   | 'SEND_METHOD_NOT_ALLOWED'
   | 'MISSING_DELIVERY_TARGET' // 발신수단에 맞는 수신처(휴대폰/이메일)가 행에 없음
-  | 'RECEIPT_OWNER_MISSING'; // 접수 소유자(기업 사용자)를 찾을 수 없음
+  | 'RECEIPT_OWNER_MISSING' // 접수 소유자(기업 사용자)를 찾을 수 없음
+  | 'EMAIL_SENDER_MISSING'; // 이메일 발신주소(등록/기본계정)를 확보할 수 없음
 
 /** 금칙어 적발 필드 (code === 'FORBIDDEN_WORD'일 때만) */
 export type BlockField = 'TITLE' | 'CONTENT' | 'REPLACE_CHAR';
@@ -121,6 +122,7 @@ export interface PreValidateInput {
   userAllowedSendMethods: string | null; // user.allowedSendMethods 원본(콤마구분), null이면 전체 허용
   ssgReservationRange: SsgReservationRangeBoundary | null; // SSG 예약 가능 범위(미설정 시 당월 폴백)
   ownerMissing: boolean; // 접수 소유자 조회 실패 → FILE 차단(소유자 없이 전체허용 폴백 금지)
+  resolvedFromEmail: string | null; // EMAIL 발신주소(등록 우선, 없으면 하이웍스 기본). EMAIL인데 null이면 FILE 차단
 }
 
 export interface PreValidateResult {
@@ -138,6 +140,7 @@ export interface BuildPayloadInput {
   rows: MappedRow[]; // 이 주문 종류의 매핑 행들
   orderType: IOrderType;
   blockedRowNos: Set<number>; // 4단계 ROW 차단 → 제외
+  fromEmail?: string | null; // EMAIL 발신주소(오케스트레이터가 주입). EMAIL 아닐 땐 미사용
 }
 
 /** 리포트용 상품/권종 요약 (프론트 orders[].products[]) */

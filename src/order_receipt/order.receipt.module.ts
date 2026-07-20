@@ -5,6 +5,7 @@ import { UserEntity } from '../entity/user.entity';
 import { ProductEntity } from '../entity/product.entity';
 import { OrderReceiptGeneratedOrderEntity } from '../entity/order.receipt.generated.order.entity';
 import { OrderReceiptAutoResultEntity } from '../entity/order.receipt.auto.result.entity';
+import { OrderFromDefinitionEntity } from '../entity/order.from.definition.entity';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { OrderReceiptService } from './application/order.receipt.service';
 import { OrderReceiptController } from './api/order.receipt.controller';
@@ -28,6 +29,7 @@ import { AutoOrderPayloadBuilder } from './application/auto_order/auto.order.pay
       ProductEntity,
       OrderReceiptGeneratedOrderEntity,
       OrderReceiptAutoResultEntity,
+      OrderFromDefinitionEntity,
     ]),
     FileModule,
     ForbiddenWordModule,

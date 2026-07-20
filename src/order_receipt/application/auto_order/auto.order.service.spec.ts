@@ -81,6 +81,8 @@ function makeService(
     reservationRange?: { startDate: Date; endDate: Date } | null;
     ownerMissing?: boolean;
     allowedSendMethods?: string | null;
+    registeredFromEmail?: string | null;
+    hiworksId?: string | null;
   },
 ): { svc: AutoOrderService; mocks: Mocks } {
   const productRepo = {
@@ -123,6 +125,11 @@ function makeService(
     insert: m.autoResultInsert,
   } as unknown as Repository<OrderReceiptAutoResultEntity>;
 
+  const orderFromRepo = {
+    findOne: async () => (opts?.registeredFromEmail ? ({ from: opts.registeredFromEmail } as any) : null),
+  } as unknown as Repository<any>;
+  const configService = { get: () => (opts && 'hiworksId' in opts ? opts.hiworksId : 'service') } as any;
+
   const svc = new AutoOrderService(
     new AutoOrderExcelParser(),
     new AutoOrderStructureValidator(),
@@ -135,6 +142,8 @@ function makeService(
     userRepo,
     generatedRepo,
     autoResultRepo,
+    orderFromRepo,
+    configService,
   );
   return { svc, mocks: m };
 }
@@ -508,5 +517,39 @@ describe('AutoOrderService (리뷰 추가 커버리지)', () => {
     expect(result.files[1].fileIndex).toBe(1);
     expect(mocks.createTemp).toHaveBeenCalledTimes(1); // 유효 파일 1건만
     expect(mocks.autoResultInsert).toHaveBeenCalledTimes(1); // 접수 단위 스냅샷 1건
+  });
+
+  // #6 EMAIL: 발신주소 자동 주입(등록 우선) — payload에 fromEmail/emailSendType 채워 발송확정 throw 방지
+  it('EMAIL 파일: 등록 발신주소로 fromEmail 주입 + emailSendType=URL, 정상 생성', async () => {
+    const base = await buildFilledBuffer([{ d: 'a@x.com', code: 'GEN-1' }]);
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(base);
+    wb.getWorksheet('1.신청정보')!.getCell('C23').value = '이메일';
+    const buf = (await wb.xlsx.writeBuffer()) as Buffer;
+
+    const { svc, mocks } = makeService({ 'u://a.xlsx': buf }, undefined, { registeredFromEmail: 'promo@enmad.com' });
+    const file = (await svc.run(receipt('u://a.xlsx'), admin, AutoOrderRunMode.COMMIT)).files[0];
+
+    expect(file.status).toBe('VALID');
+    expect(file.fileBlocked).toBe(false);
+    expect(mocks.createTemp).toHaveBeenCalledTimes(1);
+    const payload = mocks.createTemp.mock.calls[0][1];
+    expect(payload.orderProductList[0].fromEmail).toBe('promo@enmad.com');
+    expect(payload.orderProductList[0].emailSendType).toBe('URL');
+  });
+
+  it('EMAIL 파일인데 발신주소 확보 실패(등록X + 하이웍스ID 없음) → FILE 차단, createTemp 미호출', async () => {
+    const base = await buildFilledBuffer([{ d: 'a@x.com', code: 'GEN-1' }]);
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(base);
+    wb.getWorksheet('1.신청정보')!.getCell('C23').value = '이메일';
+    const buf = (await wb.xlsx.writeBuffer()) as Buffer;
+
+    const { svc, mocks } = makeService({ 'u://a.xlsx': buf }, undefined, { registeredFromEmail: null, hiworksId: null });
+    const file = (await svc.run(receipt('u://a.xlsx'), admin, AutoOrderRunMode.COMMIT)).files[0];
+
+    expect(file.fileBlocked).toBe(true);
+    expect(file.blocked.some((b) => b.code === 'EMAIL_SENDER_MISSING')).toBe(true);
+    expect(mocks.createTemp).not.toHaveBeenCalled();
   });
 });

@@ -3,6 +3,7 @@ import dayjs from 'dayjs';
 import utc from 'dayjs/plugin/utc';
 import timezone from 'dayjs/plugin/timezone';
 import { IOrderSendMethod } from '../../../order/interface/order.send.method';
+import { OrderEmailSendType } from '../../../order/domain/order.email.send.type';
 import { OrderProductCreateTempDto, OrderDeliveryCreateDto } from '../../../order/api/dto/order.product.create.temp.dto';
 import { BuildPayloadInput, BuildPayloadResult, MappedRow, ParsedHeader, resolveDeliveryTarget } from './auto.order.types';
 
@@ -22,6 +23,7 @@ export class AutoOrderPayloadBuilder {
   /** @returns 남은 수신자 0명이면 null(= 주문 안 만듦) */
   build(input: BuildPayloadInput): BuildPayloadResult | null {
     const { header, rows, orderType, blockedRowNos } = input;
+    const isEmail = header.sendMethod === IOrderSendMethod.EMAIL;
 
     // 차단 행 제거 + 이 발신수단으로 실제 보낼 수신처가 있는 행만
     const usableRows = rows.filter(
@@ -50,10 +52,10 @@ export class AutoOrderPayloadBuilder {
       requestToDestroyPersonalInfoDay: header.destroyDay,
       sendType,
       sendRequestAt,
-      // 자동주문 미사용 필드(명시적 null)
       sendTailText: null,
-      fromEmail: null,
-      emailSendType: null,
+      // EMAIL이면 발신주소(등록/기본계정 주입)+발송타입 URL 기본. 그 외 채널은 미사용(null).
+      fromEmail: isEmail ? (input.fromEmail ?? null) : null,
+      emailSendType: isEmail ? OrderEmailSendType.URL : null,
       useEmailContent: null,
       encourageDay: null,
       orderDeliveryList: group.map((r) => this.toDelivery(header.sendMethod, r)),

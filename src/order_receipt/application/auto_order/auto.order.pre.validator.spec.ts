@@ -53,6 +53,7 @@ function input(overrides: Partial<PreValidateInput> = {}): PreValidateInput {
     userAllowedSendMethods: null,
     ownerMissing: false,
     ssgReservationRange: null,
+    resolvedFromEmail: 'sender@enmad.com',
     ...overrides,
   };
 }
@@ -106,6 +107,21 @@ describe('AutoOrderPreValidator', () => {
     );
     expect(r.blocked.some((b) => b.code === 'SEND_METHOD_NOT_ALLOWED')).toBe(true);
     expect(r.fileBlocked).toBe(true);
+  });
+
+  it('EMAIL인데 발신주소 확보 실패(resolvedFromEmail=null) → FILE 차단', () => {
+    const r = validator.validate(
+      input({ header: header({ sendMethod: IOrderSendMethod.EMAIL }), resolvedFromEmail: null }),
+    );
+    expect(r.fileBlocked).toBe(true);
+    expect(r.blocked.some((b) => b.code === 'EMAIL_SENDER_MISSING' && b.level === 'FILE')).toBe(true);
+  });
+
+  it('EMAIL인데 발신주소 확보됨 → EMAIL_SENDER_MISSING 없음', () => {
+    const r = validator.validate(
+      input({ header: header({ sendMethod: IOrderSendMethod.EMAIL }), resolvedFromEmail: 'sender@enmad.com' }),
+    );
+    expect(r.blocked.some((b) => b.code === 'EMAIL_SENDER_MISSING')).toBe(false);
   });
 
   it('SMS→MMS 정규화: allowedSendMethods=SMS면 MMS 발송 허용', () => {

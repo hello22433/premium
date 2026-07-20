@@ -83,6 +83,15 @@ export class AutoOrderPreValidator {
       });
     }
 
+    // ── FILE ②-b EMAIL인데 주입할 발신주소(등록/기본계정)가 없음 → 발송확정 단계 throw를 사전 차단(preview=commit)
+    if (header.sendMethod === IOrderSendMethod.EMAIL && !input.resolvedFromEmail) {
+      blocked.push({
+        code: 'EMAIL_SENDER_MISSING',
+        level: 'FILE',
+        reason: '이메일 발신주소가 등록돼 있지 않아 이메일 자동주문을 생성할 수 없습니다.',
+      });
+    }
+
     // ── ROW ③ 대치문자 금칙어 + 수신처 없음 (수신자별 값 → 그 행만 제외)
     const blockedRowNos = new Set<number>();
     for (const row of [...generalRows, ...ssgRows]) {
