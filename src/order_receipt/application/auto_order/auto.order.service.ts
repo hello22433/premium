@@ -152,7 +152,9 @@ export class AutoOrderService {
         `자동주문 파일 파싱 실패 [${mode}] receipt=${receipt.id} file=${fileIndex} ${fileName}: ` +
           `${(e as Error).message} (정상 v4.1 파일이 일시 오류로 유실됐을 수 있으니 확인 요망)`,
       );
-      return this.invalidFile(fileIndex, fileName, '엑셀 형식을 해석할 수 없습니다.');
+      // 정상 xlsx는 비-v4.1이어도 파싱은 되고 구조검증에서 리젝된다. 파싱 자체가 throw면 손상/비표준 파일이므로
+      // 일반 "고객사 자체양식" 스킵과 시각적으로 구분되는 메시지로 표면화(승인은 막지 않되 담당자 확인 유도).
+      return this.invalidFile(fileIndex, fileName, '엑셀 파일을 해석하지 못했습니다(손상/비표준 파일 가능). 담당자 확인이 필요합니다.');
     }
 
     // ── 2단계 구조검증
@@ -184,6 +186,7 @@ export class AutoOrderService {
       inputRowCount: parsed.rows.length,
       unmappedCount: mapped.unmappedRows.length,
       excludedCount: mapped.excludedRows.length,
+      mappedCount: mapped.generalRows.length + mapped.ssgRows.length,
       builtDeliveryCount,
     });
 
@@ -316,6 +319,7 @@ export class AutoOrderService {
         inputRowCount: 0,
         unmappedCount: 0,
         excludedCount: 0,
+        mappedCount: 0,
         builtDeliveryCount: 0,
       }),
       fileBlocked: false,

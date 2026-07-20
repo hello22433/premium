@@ -77,4 +77,16 @@ describe('AutoOrderProductMapper', () => {
     const result = await mapper.map(rows);
     expect(result.generalRows[0].product.type).toBe(IProductType.GENERAL);
   });
+
+  // ── 리뷰 반영: 상품코드 없는(blank/null) 유효행은 unmapped, 조회할 코드가 0개면 find 미호출(빈 IN 쿼리 회피)
+  it('상품코드 null 유효행 → unmapped, alive 코드 0개면 productRepository.find 미호출', async () => {
+    const find = jest.fn(async () => []);
+    const m = new AutoOrderProductMapper({ find } as unknown as Repository<ProductEntity>);
+
+    const result = await m.map([row({ rowNo: 5, productCode: null }), row({ rowNo: 6, productCode: null })]);
+
+    expect(result.unmappedRows.map((r) => r.rowNo)).toEqual([5, 6]);
+    expect(result.generalRows).toHaveLength(0);
+    expect(find).not.toHaveBeenCalled();
+  });
 });

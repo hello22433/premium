@@ -77,7 +77,11 @@ interface Mocks {
 function makeService(
   bufferByUrl: Record<string, Buffer>,
   mocks?: Partial<Mocks>,
-  opts?: { reservationRange?: { startDate: Date; endDate: Date } | null; ownerMissing?: boolean },
+  opts?: {
+    reservationRange?: { startDate: Date; endDate: Date } | null;
+    ownerMissing?: boolean;
+    allowedSendMethods?: string | null;
+  },
 ): { svc: AutoOrderService; mocks: Mocks } {
   const productRepo = {
     find: async () =>
@@ -86,7 +90,9 @@ function makeService(
 
   const userRepo = {
     findOne: async () =>
-      opts?.ownerMissing ? null : (({ id: 10, allowedSendMethods: null }) as unknown as UserEntity),
+      opts?.ownerMissing
+        ? null
+        : (({ id: 10, allowedSendMethods: opts?.allowedSendMethods ?? null }) as unknown as UserEntity),
   } as unknown as Repository<UserEntity>;
 
   const ssgEventService = {
@@ -404,5 +410,55 @@ describe('AutoOrderService (리뷰 추가 커버리지)', () => {
     await expect(svc.run(receipt('u://a.xlsx'), admin, AutoOrderRunMode.COMMIT)).rejects.toThrow(
       /읽을 수 없습니다/,
     );
+  });
+
+  // 리뷰 test-analyzer #5: 제한 소유자(allowedSendMethods) 배선 — 발신수단 미허용이 서비스 경계까지 FILE 차단
+  it('제한 소유자(allowedSendMethods=ALIM_TALK) + 문자(MMS) 파일 → SEND_METHOD_NOT_ALLOWED FILE 차단, createTemp 미호출', async () => {
+    // buildFilledBuffer는 C23='문자'(→MMS). 소유자는 ALIM_TALK만 허용.
+    const buf = await buildFilledBuffer([{ b: '010-1111-1111', code: 'GEN-1' }]);
+    const { svc, mocks } = makeService({ 'u://a.xlsx': buf }, undefined, { allowedSendMethods: 'ALIM_TALK' });
+
+    const file = (await svc.run(receipt('u://a.xlsx'), admin, AutoOrderRunMode.COMMIT)).files[0];
+
+    expect(file.fileBlocked).toBe(true);
+    expect(file.orders).toHaveLength(0);
+    expect(mocks.createTemp).not.toHaveBeenCalled();
+    expect(file.blocked.some((b) => b.code === 'SEND_METHOD_NOT_ALLOWED')).toBe(true);
+  });
+
+  // 리뷰 test-analyzer #4(Finding C): 검산 불일치(built>mapped) 배선 — COMMIT은 throw로 롤백, DRY_RUN은 로깅만
+  it('검산 불일치(built 과다) → COMMIT은 throw+스냅샷 미저장, DRY_RUN은 matched=false로 표시만', async () => {
+    const buf = await buildFilledBuffer([{ b: '010-1111-1111', code: 'GEN-1' }]); // mapped=1
+    // payloadBuilder를 과다생성 스텁으로 교체(sourceRowNos 2건 → built=2 > mapped=1)
+    const overBuild = {
+      build: () => ({ payload: { orderProductList: [{}], clientUserId: 0 }, sourceRowNos: [5, 6] }),
+    };
+
+    const commit = makeService({ 'u://a.xlsx': buf });
+    (commit.svc as any).payloadBuilder = overBuild;
+    await expect(commit.svc.run(receipt('u://a.xlsx'), admin, AutoOrderRunMode.COMMIT)).rejects.toThrow(/검산 불일치/);
+    expect(commit.mocks.autoResultInsert).not.toHaveBeenCalled(); // 롤백 → 스냅샷 미저장
+
+    const dry = makeService({ 'u://a.xlsx': buf });
+    (dry.svc as any).payloadBuilder = overBuild;
+    const file = (await dry.svc.run(receipt('u://a.xlsx'), admin, AutoOrderRunMode.DRY_RUN)).files[0];
+    expect(file.reconciliation.matched).toBe(false); // DRY_RUN은 throw 없이 불일치 표시
+  });
+
+  // 리뷰 test-analyzer #6: 정상 v4.1 + 비-xlsx 혼합 접수 — 유효 파일만 커밋, 나머지는 INVALID_FORMAT
+  it('혼합 첨부(정상 v4.1 + 비-xlsx) → 유효 파일만 커밋, 다른 파일 INVALID_FORMAT, 스냅샷 1건', async () => {
+    const valid = await buildFilledBuffer([{ b: '010-1111-1111', code: 'GEN-1' }]);
+    const junk = Buffer.from('not-an-excel');
+    const { svc, mocks } = makeService({ 'u://a.xlsx': valid, 'u://bad.xlsx': junk });
+
+    const result = await svc.run(receipt('u://a.xlsx,u://bad.xlsx'), admin, AutoOrderRunMode.COMMIT);
+
+    expect(result.files).toHaveLength(2);
+    expect(result.files[0].status).toBe('VALID');
+    expect(result.files[0].fileIndex).toBe(0);
+    expect(result.files[1].status).toBe('INVALID_FORMAT');
+    expect(result.files[1].fileIndex).toBe(1);
+    expect(mocks.createTemp).toHaveBeenCalledTimes(1); // 유효 파일 1건만
+    expect(mocks.autoResultInsert).toHaveBeenCalledTimes(1); // 접수 단위 스냅샷 1건
   });
 });
