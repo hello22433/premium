@@ -45,6 +45,7 @@ import {
  */
 @Injectable()
 export class AutoOrderService {
+  static readonly MAX_FILE_BYTES = 20 * 1024 * 1024; // 첨부 크기 상한 20MB(신뢰경계 밖 입력 DoS/압축폭탄 방어)
   private readonly logger = new Logger(AutoOrderService.name);
 
   constructor(
@@ -217,6 +218,17 @@ export class AutoOrderService {
       this.logger.error(`자동주문 파일 0바이트 [${fileIndex}] ${fileName} (업로드 실패 추정)`);
       if (mode === AutoOrderRunMode.COMMIT) throw new Error(`자동주문 파일이 비어 있습니다(${fileName}).`);
       return this.invalidFile(fileIndex, fileName, url, '파일이 비어 있습니다.', 'NOT_XLSX');
+    }
+    // 크기 상한: xlsx.load 전에 차단(압축폭탄/거대파일이 파싱 단계에서 메모리·CPU 폭주하는 것 방지).
+    if (buffer.length > AutoOrderService.MAX_FILE_BYTES) {
+      this.logger.error(
+        `자동주문 파일 크기 초과 [${fileIndex}] ${fileName}: ${buffer.length}바이트 (상한 ${AutoOrderService.MAX_FILE_BYTES})`,
+      );
+      const limitMb = Math.floor(AutoOrderService.MAX_FILE_BYTES / (1024 * 1024));
+      if (mode === AutoOrderRunMode.COMMIT) {
+        throw new Error(`자동주문 파일이 처리 한도(${limitMb}MB)를 초과했습니다(${fileName}).`);
+      }
+      return this.invalidFile(fileIndex, fileName, url, `파일이 처리 한도(${limitMb}MB)를 초과했습니다.`, 'NOT_XLSX');
     }
 
     let parsed;

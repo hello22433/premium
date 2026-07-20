@@ -465,6 +465,20 @@ describe('AutoOrderService (리뷰 추가 커버리지)', () => {
     expect(f.status).toBe('INVALID_FORMAT');
   });
 
+  // 리뷰 #8: 입력 상한 — 크기 초과 파일은 파싱 전에 차단(압축폭탄/거대파일 방어)
+  it('첨부 크기 초과(>20MB) → COMMIT 전파(한도), DRY_RUN은 INVALID_FORMAT', async () => {
+    const big = Buffer.alloc(AutoOrderService.MAX_FILE_BYTES + 1);
+
+    const { svc: commitSvc, mocks } = makeService({ 'u://big.xlsx': big });
+    await expect(commitSvc.run(receipt('u://big.xlsx'), admin, AutoOrderRunMode.COMMIT)).rejects.toThrow(/한도/);
+    expect(mocks.createTemp).not.toHaveBeenCalled();
+
+    const { svc: drySvc } = makeService({ 'u://big.xlsx': big });
+    const f = (await drySvc.run(receipt('u://big.xlsx'), admin, AutoOrderRunMode.DRY_RUN)).files[0];
+    expect(f.status).toBe('INVALID_FORMAT');
+    expect(f.formatErrorCode).toBe('NOT_XLSX');
+  });
+
   // 리뷰 M-2: 저장 스냅샷이 손상되면 raw SyntaxError가 아니라 맥락 있는 오류로 실패
   it('손상된 스냅샷(JSON 파싱 불가) → 친절한 오류로 전파(raw SyntaxError 아님)', async () => {
     const { svc } = makeService(

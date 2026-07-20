@@ -57,7 +57,7 @@ export interface ParsedRow {
 export interface ParsedFile {
   header: ParsedHeader | null; // 시트 없으면 null
   rows: ParsedRow[];
-  parseError: 'SHEET_MISSING' | 'FORMULA_NOT_CACHED' | null;
+  parseError: 'SHEET_MISSING' | 'FORMULA_NOT_CACHED' | 'TOO_MANY_ROWS' | null;
 }
 
 /** 구조검증/파일 실패 사유 코드 (프론트 계약 5종) */

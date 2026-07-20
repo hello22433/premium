@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { AutoOrderExcelParser } from './auto.order.excel.parser';
 import { FormatErrorCode, ParsedFile, StructureResult } from './auto.order.types';
 
 /**
@@ -17,6 +18,12 @@ export class AutoOrderStructureValidator {
     if (parsed.parseError === 'FORMULA_NOT_CACHED') {
       return this.invalid(
         '엑셀 수식 결과가 저장되지 않았습니다. 엑셀에서 파일을 열어 다시 저장(계산 후 저장)한 뒤 업로드해 주세요.',
+        'HEADER_MISMATCH',
+      );
+    }
+    if (parsed.parseError === 'TOO_MANY_ROWS') {
+      return this.invalid(
+        `발송명단이 처리 한도(${AutoOrderExcelParser.MAX_LIST_ROWS.toLocaleString()}행)를 초과했습니다. 파일을 나눠 접수해 주세요.`,
         'HEADER_MISMATCH',
       );
     }

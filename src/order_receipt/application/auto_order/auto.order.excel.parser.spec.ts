@@ -357,4 +357,11 @@ describe('AutoOrderStructureValidator', () => {
     expect(r.status).toBe('INVALID_FORMAT');
     expect(r.message).toContain('필수 시트');
   });
+
+  it('행수 상한 초과(TOO_MANY_ROWS)면 INVALID_FORMAT (처리 한도 안내)', () => {
+    const parsed: any = { header: { formVersion: 'v4.1-immediate-send' }, rows: [], parseError: 'TOO_MANY_ROWS' };
+    const r = validator.validate(parsed);
+    expect(r.status).toBe('INVALID_FORMAT');
+    expect(r.message).toContain('한도');
+  });
 });

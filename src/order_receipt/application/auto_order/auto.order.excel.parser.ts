@@ -18,6 +18,7 @@ export class AutoOrderExcelParser {
   private static readonly INFO_SHEET = '1.신청정보';
   private static readonly LIST_SHEET = '2.발송명단';
   private static readonly DATA_START_ROW = 5; // 1~4행은 META/헤더/안내
+  static readonly MAX_LIST_ROWS = 10_000; // 발송명단 행수 상한(신뢰경계 밖 입력 DoS/메모리 방어). 초과 시 리젝
 
   async parse(buffer: Buffer): Promise<ParsedFile> {
     const workbook = new ExcelJS.Workbook();
@@ -32,8 +33,12 @@ export class AutoOrderExcelParser {
     }
 
     const header = this.parseHeader(info);
-    const rows = this.parseRows(list);
+    const { rows, overflow } = this.parseRows(list);
 
+    // 행수 상한 초과 = 신뢰경계 밖 대용량 입력 → 파일 단위 리젝(파싱 메모리도 상한에서 바운드됨).
+    if (overflow) {
+      return { header, rows, parseError: 'TOO_MANY_ROWS' };
+    }
     // ★ M(_유효) 수식의 계산 결과가 캐시되지 않은 파일(엑셀이 결과 없이 저장 — 프로그램 생성/일부 오피스,
     //   또는 _유효 수식만 고쳐 재계산 없이 저장)은 result가 undefined라 cell()이 ''로 읽혀
     //   전건 false→전원 조용히 제외되는데도 검산은 초록이 된다. 신뢰 불가 파일이므로 파일 단위로 리젝한다.
@@ -62,8 +67,9 @@ export class AutoOrderExcelParser {
     };
   }
 
-  private parseRows(list: ExcelJS.Worksheet): ParsedRow[] {
+  private parseRows(list: ExcelJS.Worksheet): { rows: ParsedRow[]; overflow: boolean } {
     const rows: ParsedRow[] = [];
+    let overflow = false;
 
     // eachRow 콜백의 rowNumber는 엑셀과 동일한 1-based → 그대로 rowNo로 사용
     list.eachRow({ includeEmpty: false }, (row, rowNo) => {
@@ -72,6 +78,12 @@ export class AutoOrderExcelParser {
       const phone = this.cell(row, 'B');
       const email = this.cell(row, 'D');
       if (!phone && !email) return; // 완전 빈 행은 스킵(입력 자체가 없음)
+
+      // 상한 초과 → 더 이상 push하지 않아 메모리를 상한에서 바운드(eachRow는 중단 불가, 누적만 차단)
+      if (rows.length >= AutoOrderExcelParser.MAX_LIST_ROWS) {
+        overflow = true;
+        return;
+      }
 
       rows.push({
         rowNo,
@@ -87,7 +99,7 @@ export class AutoOrderExcelParser {
       });
     });
 
-    return rows;
+    return { rows, overflow };
   }
 
   /**
