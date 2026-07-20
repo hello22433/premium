@@ -313,8 +313,27 @@ export class ProductChoiceService {
     const { id, name, productIdList, useStatus } = getBody;
     let { imagePath } = getBody;
 
-    // 초이스쿠폰 -> 구성상품 순서로 잠근다.
-    // ProductService.syncChoiceUseStatus 도 같은 순서로 잠그므로 두 경로가 엇갈려도 데드락이 나지 않는다.
+    // 존재 확인만 먼저 한다. 락은 아래에서 구성상품 다음에 잡는다.
+    const existsChoiceProduct = await this.productRepository.countBy({ id: id, type: IProductType.CHOICE });
+
+    if (!existsChoiceProduct) {
+      throw new BadRequestException('존재하지 않는 상품입니다.');
+    }
+
+    // 구성상품 -> 초이스쿠폰 순서로 잠근다.
+    // ProductService.updatePartial 은 구성상품을 save 로 갱신(행 락)한 뒤 syncChoiceUseStatus 에서
+    // 초이스쿠폰을 잠근다. 즉 그 경로도 구성상품이 먼저다.
+    // 여기서 초이스쿠폰을 먼저 잠그면 두 경로가 엇갈릴 때 서로를 기다려 데드락이 난다.
+    const products = await this.findComponentsWithLock(productIdList);
+
+    // 락 조회는 중복 id 를 한 건으로 합치므로 길이 비교가 중복까지 걸러낸다.
+    // 중복 요청을 통과시키면 같은 구성상품 매핑이 여러 건 저장된다.
+    if (products.length !== productIdList.length) {
+      throw new BadRequestException(`존재하지 않거나 삭제된 상품이 있습니다.`);
+    }
+
+    // 구성상품을 잠근 뒤 초이스쿠폰을 잠근다.
+    // 락 전에 읽으면 그 사이 다른 트랜잭션이 사용상태를 바꿀 수 있으므로 여기서 읽어야 최신 값이다.
     const product = await this.productRepository.findOne({
       where: { id: id, type: IProductType.CHOICE },
       lock: { mode: 'pessimistic_write' },
@@ -322,14 +341,6 @@ export class ProductChoiceService {
 
     if (!product) {
       throw new BadRequestException('존재하지 않는 상품입니다.');
-    }
-
-    const products = await this.findComponentsWithLock(productIdList);
-
-    // 락 조회는 중복 id 를 한 건으로 합치므로 길이 비교가 중복까지 걸러낸다.
-    // 중복 요청을 통과시키면 같은 구성상품 매핑이 여러 건 저장된다.
-    if (products.length !== productIdList.length) {
-      throw new BadRequestException(`존재하지 않거나 삭제된 상품이 있습니다.`);
     }
 
     const initialPrice = products[0].price;

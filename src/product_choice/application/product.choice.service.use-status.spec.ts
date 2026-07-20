@@ -55,6 +55,8 @@ describe('ProductChoiceService - 구성상품 상태에 따른 초이스쿠폰 u
         };
         return qb;
       }),
+      // update 는 락 전에 존재 확인만 한다.
+      countBy: jest.fn(async () => 1),
       findOne: jest.fn(async (options: any) => {
         if (options?.lock?.mode === 'pessimistic_write') {
           lockOrder.push('choiceProduct');
@@ -289,9 +291,9 @@ describe('ProductChoiceService - 구성상품 상태에 따른 초이스쿠폰 u
       expect(lockModes).toContain('pessimistic_write');
     });
 
-    // ProductService.syncChoiceUseStatus 도 초이스쿠폰 -> 구성상품 순서로 잠근다.
-    // 순서가 뒤집히면 두 경로가 엇갈릴 때 데드락이 난다.
-    it('수정 시 초이스쿠폰을 먼저 잠그고 구성상품을 나중에 잠근다', async () => {
+    // ProductService.updatePartial 은 구성상품을 save 로 갱신(행 락)한 뒤 초이스쿠폰을 잠근다.
+    // 여기서 초이스쿠폰을 먼저 잠그면 두 경로가 엇갈릴 때 서로를 기다려 데드락이 난다.
+    it('수정 시 구성상품을 먼저 잠그고 초이스쿠폰을 나중에 잠근다', async () => {
       const { service, lockOrder } = createService([
         component(1, IProductUseStatus.USE),
         component(2, IProductUseStatus.USE),
@@ -299,7 +301,7 @@ describe('ProductChoiceService - 구성상품 상태에 따른 초이스쿠폰 u
 
       await service.update(user, { id: 100, ...body(IProductUseStatus.USE) } as any);
 
-      expect(lockOrder).toEqual(['choiceProduct', 'components']);
+      expect(lockOrder).toEqual(['components', 'choiceProduct']);
     });
 
     // 락 조회가 중복 id 를 합치므로 길이 비교로 중복 요청을 거부해야 한다.

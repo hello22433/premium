@@ -21,6 +21,8 @@ import { IPartnerCompanyStatus } from '../../partner_company/interface/partner.c
 import { IProductType } from '../interface/product.type';
 import { IProductUseStatus } from '../interface/product.status';
 import { ProductService } from './product.service';
+import { ProductChoiceService } from '../../product_choice/application/product.choice.service';
+import { ProductUpdateHistoryKeyName, ProductUseStatusAutoHistoryKey } from '../domain/product.update.history.key.name';
 
 // Finding 2 회귀 방지용 실제 MySQL 동시성 테스트.
 // 초이스쿠폰의 마지막 두 구성상품을 동시에 UNUSED -> USE 로 복구하면,
@@ -135,7 +137,60 @@ describe('ProductService.updatePartial 초이스쿠폰 동기화 DB concurrency'
     const refreshedChoice = await productRepository.findOneByOrFail({ id: fixture.choice.id });
     expect(refreshedChoice.useStatus).toBe(IProductUseStatus.UNUSED);
   });
+
+  // 구성상품 변경(ProductService.updatePartial)과 초이스쿠폰 수정(ProductChoiceService.update)이
+  // 같은 구성상품/초이스쿠폰을 동시에 건드리는 교차 시나리오.
+  // 두 경로의 락 순서가 어긋나면(한쪽은 구성상품 -> 초이스쿠폰, 다른 쪽은 그 반대) 서로를 기다려
+  // 데드락이 난다. 두 경로 모두 구성상품을 먼저 잠가야 이 테스트가 통과한다.
+  it('구성상품 변경과 초이스쿠폰 수정을 동시에 실행해도 데드락이 나지 않는다', async () => {
+    const fixture = await seedChoiceWithTwoUnusedComponents(dataSource);
+    const choiceService = createChoiceService(dataSource);
+
+    // 양쪽을 여러 번 교차 실행해 락 순서가 어긋나면 걸리도록 한다.
+    for (let round = 0; round < 5; round++) {
+      const nextComponentStatus = round % 2 === 0 ? IProductUseStatus.USE : IProductUseStatus.UNUSED;
+
+      await Promise.all([
+        service.updatePartial(
+          { id: fixture.operator.id } as any,
+          {
+            id: fixture.componentA.id,
+            useStatus: nextComponentStatus,
+          } as any,
+        ),
+        choiceService.update(
+          { id: fixture.operator.id } as any,
+          {
+            id: fixture.choice.id,
+            name: `초이스쿠폰-${round}`,
+            productIdList: [fixture.componentA.id, fixture.componentB.id],
+            useStatus: IProductUseStatus.USE,
+          } as any,
+        ),
+      ]);
+    }
+
+    // 데드락 없이 완주하면 성공. 최종 상태도 구성상품 기준과 어긋나지 않아야 한다.
+    const refreshedChoice = await productRepository.findOneByOrFail({ id: fixture.choice.id });
+    const refreshedA = await productRepository.findOneByOrFail({ id: fixture.componentA.id });
+    const refreshedB = await productRepository.findOneByOrFail({ id: fixture.componentB.id });
+
+    const expected =
+      refreshedA.useStatus === IProductUseStatus.USE && refreshedB.useStatus === IProductUseStatus.USE
+        ? IProductUseStatus.USE
+        : IProductUseStatus.UNUSED;
+
+    expect(refreshedChoice.useStatus).toBe(expected);
+  });
 });
+
+function createChoiceService(dataSource: DataSource): ProductChoiceService {
+  const service = Object.create(ProductChoiceService.prototype) as any;
+  service.productRepository = dataSource.getRepository(ProductEntity);
+  service.productChoiceMappingRepository = dataSource.getRepository(ProductChoiceMappingEntity);
+  service.productUpdateHistoryRepository = dataSource.getRepository(ProductUpdateHistoryEntity);
+  return service as ProductChoiceService;
+}
 
 function createService(dataSource: DataSource): ProductService {
   const service = Object.create(ProductService.prototype) as any;
@@ -208,7 +263,7 @@ async function seedChoiceWithTwoUnusedComponents(dataSource: DataSource) {
       status: null,
     } as any) as unknown as ProductEntity;
 
-  // 구성상품 두 개 모두 미사용, 초이스쿠폰도 미사용 상태에서 시작.
+  // 구성상품 두 개 모두 미사용, 초이스쿠폰도 자동으로 미사용된 상태에서 시작.
   const componentA = await productRepository.save(buildProduct('a', IProductType.GENERAL, IProductUseStatus.UNUSED));
   const componentB = await productRepository.save(buildProduct('b', IProductType.GENERAL, IProductUseStatus.UNUSED));
   const choice = await productRepository.save(buildProduct('choice', IProductType.CHOICE, IProductUseStatus.UNUSED));
@@ -221,6 +276,21 @@ async function seedChoiceWithTwoUnusedComponents(dataSource: DataSource) {
     mappingRepository.create({ choiceProductId: choice.id, productId: componentA.id }),
     mappingRepository.create({ choiceProductId: choice.id, productId: componentB.id }),
   ]);
+
+  // 구성상품이 미사용이라 초이스쿠폰이 자동으로 내려간 상태를 만든다.
+  // 이 이력이 없으면 관리자가 직접 미사용으로 둔 것으로 보고 자동 복구 대상에서 빠진다.
+  const historyRepository = dataSource.getRepository(ProductUpdateHistoryEntity);
+  await historyRepository.save(
+    historyRepository.create({
+      productId: choice.id,
+      userId: operator.id,
+      key: ProductUseStatusAutoHistoryKey,
+      keyName: ProductUpdateHistoryKeyName(ProductUseStatusAutoHistoryKey),
+      beforeValue: IProductUseStatus.USE,
+      afterValue: IProductUseStatus.UNUSED,
+      reason: '구성상품 사용상태 변경에 따른 자동 반영',
+    } as any) as unknown as ProductUpdateHistoryEntity,
+  );
 
   return { partnerCompany, brand, componentA, componentB, choice, operator };
 }
