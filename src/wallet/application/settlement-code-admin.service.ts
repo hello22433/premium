@@ -90,7 +90,7 @@ export class SettlementCodeAdminService {
    * INSERT ... ON DUPLICATE KEY UPDATE id=id (uq_wallet_owner) 로, 동일 code 가 이미 있으면
    * no-op 성공 처리한다 (동시 가입 race 에서도 단일 row 보장 — Pre-mortem #2). 중복은 log.warn.
    *
-   * @param companyId 로그/추적용 (실제 wallet 은 code 로 식별; wallet 에 company_id 컬럼 없음).
+   * @param companyId 홈(발급) 회사 id — wallet_account.owner_company_id 에 저장(정산코드↔회사 결정론 링크). 로그/추적에도 사용.
    * @param code      owner_id (예: company-123).
    * @param creditLimit 신규 생성 시 여신 한도.
    * @param manager   호출자가 소유한 트랜잭션 매니저 (필수 — 프로비저닝은 호스트 TX 안에서 실행).
@@ -105,10 +105,10 @@ export class SettlementCodeAdminService {
   ): Promise<void> {
     const result = await manager.query(
       `INSERT INTO wallet_account
-         (owner_type, owner_id, deposit_balance, credit_limit, credit_used_amount, credit_excess_amount, settle_condition, settle_method)
-       VALUES ('SETTLEMENT_CODE', ?, 0, ?, 0, 0, ?, ?)
+         (owner_type, owner_id, owner_company_id, deposit_balance, credit_limit, credit_used_amount, credit_excess_amount, settle_condition, settle_method)
+       VALUES ('SETTLEMENT_CODE', ?, ?, 0, ?, 0, 0, ?, ?)
        ON DUPLICATE KEY UPDATE id = id`,
-      [code, creditLimit, settleCondition, settleMethod],
+      [code, companyId, creditLimit, settleCondition, settleMethod],
     );
 
     // MySQL: 신규 insert 는 affectedRows=1, id=id no-op update(중복) 는 affectedRows=0.
@@ -263,14 +263,9 @@ export class SettlementCodeAdminService {
       throw new BadRequestException('oldCode 와 newCode 가 동일합니다.');
     }
     await this.dataSource.transaction(async (manager) => {
-      // 회사 → users 순으로 잠근 뒤 oldCode 가 이 회사 소속 코드인지 검증 (타 회사 코드 전역 rename 방지, H5).
-      const { companyUsers } = await this.billingScopeLock.lockByCompany(companyId, manager);
-      const belongsToCompany = companyUsers.some((u) => u.settlementCode === oldCode);
-      if (!belongsToCompany) {
-        throw new BadRequestException(
-          `정산코드('${oldCode}')는 이 회사(companyId=${companyId})에 속한 코드가 아닙니다.`,
-        );
-      }
+      // 잠금 순서: 회사 row FOR UPDATE → oldCode wallet FOR UPDATE. 소속 판정은 유저가 아니라 wallet.owner_company_id 로 한다
+      // (유저 0인 코드도 이 회사 홈 코드면 rename 허용 — 스펙 §2.4 P1 결함 수정).
+      await this.billingScopeLock.lockByCompany(companyId, manager);
 
       // **oldCode wallet FOR UPDATE (P1 rename↔assign 직렬화)**: assignUserToCode 는 target 코드 wallet 을 FOR UPDATE 로
       // 잠근다. rename 도 oldCode wallet 을 먼저 잠가 두 경로를 직렬화한다 — 그렇지 않으면 foreignRef 검증 직후 타 회사
@@ -278,6 +273,12 @@ export class SettlementCodeAdminService {
       const oldWallet = await this.lockWalletByCode(manager, oldCode, 'pessimistic_write');
       if (!oldWallet) {
         throw new BadRequestException(`정산코드('${oldCode}') 의 wallet_account 를 찾을 수 없습니다.`);
+      }
+      // 홈(발급) 회사 = owner_company_id 기준 소속 판정. rename 은 코드 이름만 바꾸고 홈 회사(owner_company_id)는 불변.
+      if (oldWallet.ownerCompanyId !== companyId) {
+        throw new BadRequestException(
+          `정산코드('${oldCode}')는 이 회사(companyId=${companyId})에 속한 코드가 아닙니다.`,
+        );
       }
 
       // **공유 코드 리네임 불가 계약 (결정 #6 파생)**: 교차 회사 공유가 정상 경로가 되었으므로 "foreign drift"가 아니라
