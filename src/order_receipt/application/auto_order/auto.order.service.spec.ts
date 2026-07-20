@@ -426,10 +426,10 @@ describe('AutoOrderService (리뷰 추가 커버리지)', () => {
     expect(file.blocked.some((b) => b.code === 'SEND_METHOD_NOT_ALLOWED')).toBe(true);
   });
 
-  // 리뷰 test-analyzer #4(Finding C): 검산 불일치(built>mapped) 배선 — COMMIT은 throw로 롤백, DRY_RUN은 로깅만
+  // 리뷰 test-analyzer #4(Finding C): 검산 불일치 배선 — COMMIT은 throw로 롤백, DRY_RUN은 표시만
   it('검산 불일치(built 과다) → COMMIT은 throw+스냅샷 미저장, DRY_RUN은 matched=false로 표시만', async () => {
-    const buf = await buildFilledBuffer([{ b: '010-1111-1111', code: 'GEN-1' }]); // mapped=1
-    // payloadBuilder를 과다생성 스텁으로 교체(sourceRowNos 2건 → built=2 > mapped=1)
+    const buf = await buildFilledBuffer([{ b: '010-1111-1111', code: 'GEN-1' }]); // mapped=1, 기대생성=1
+    // payloadBuilder를 과다생성 스텁으로 교체(sourceRowNos 2건 → built=2 ≠ 기대 1)
     const overBuild = {
       build: () => ({ payload: { orderProductList: [{}], clientUserId: 0 }, sourceRowNos: [5, 6] }),
     };
@@ -443,6 +443,20 @@ describe('AutoOrderService (리뷰 추가 커버리지)', () => {
     (dry.svc as any).payloadBuilder = overBuild;
     const file = (await dry.svc.run(receipt('u://a.xlsx'), admin, AutoOrderRunMode.DRY_RUN)).files[0];
     expect(file.reconciliation.matched).toBe(false); // DRY_RUN은 throw 없이 불일치 표시
+  });
+
+  // Finding C 핵심: 조립이 사유 없이 행을 흘림(built < 기대생성) → 뺄셈검산은 놓쳤지만 이제 잡는다
+  it('무사유 드롭(build가 행을 흘림) → COMMIT throw(검산 불일치)', async () => {
+    const buf = await buildFilledBuffer([{ b: '010-1111-1111', code: 'GEN-1' }]); // mapped=1, 기대생성=1, 차단 0
+    // 아무 사유 없이 0건만 생성하는 스텁(sourceRowNos 비움 → built=0 ≠ 기대 1)
+    const dropBuild = {
+      build: () => ({ payload: { orderProductList: [{}], clientUserId: 0 }, sourceRowNos: [] }),
+    };
+
+    const commit = makeService({ 'u://a.xlsx': buf });
+    (commit.svc as any).payloadBuilder = dropBuild;
+    await expect(commit.svc.run(receipt('u://a.xlsx'), admin, AutoOrderRunMode.COMMIT)).rejects.toThrow(/검산 불일치/);
+    expect(commit.mocks.autoResultInsert).not.toHaveBeenCalled();
   });
 
   // 리뷰 test-analyzer #6: 정상 v4.1 + 비-xlsx 혼합 접수 — 유효 파일만 커밋, 나머지는 INVALID_FORMAT

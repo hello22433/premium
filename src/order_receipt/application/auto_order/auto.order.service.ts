@@ -188,6 +188,8 @@ export class AutoOrderService {
       excludedCount: mapped.excludedRows.length,
       mappedCount: mapped.generalRows.length + mapped.ssgRows.length,
       builtDeliveryCount,
+      // 차단 이유로 "생성돼야 할" 건수를 독립 산출 → built와 대조(사유 없는 드롭/중복계상 실검출)
+      expectedBuiltCount: this.computeExpectedBuilt(mapped, pre),
     });
 
     // 검산 불일치(built 과다=중복계상 코드버그 신호) → 에러 로깅으로 표면화.
@@ -252,6 +254,18 @@ export class AutoOrderService {
       orders.push(this.toReportOrder(orderId, plan.type, header.eventName, result));
     }
     return orders;
+  }
+
+  /**
+   * 차단 이유들로 "생성돼야 할" 발송건수를 독립 산출(buildOrders 로직의 거울).
+   * 검산은 이 값을 실제 built와 대조 → payload 조립이 사유 없이 행을 흘리면(build != expected) 불일치로 잡힌다.
+   * (blockedRowNos는 사전검증이 general/ssg(=매핑행)만 스캔하므로 전부 매핑행에 속한다.)
+   */
+  private computeExpectedBuilt(mapped: MappedResult, pre: PreValidateResult): number {
+    if (pre.fileBlocked) return 0;
+    const generalBuilt = mapped.generalRows.filter((r) => !pre.blockedRowNos.has(r.rowNo)).length;
+    const ssgBuilt = pre.ssgOrderBlocked ? 0 : mapped.ssgRows.filter((r) => !pre.blockedRowNos.has(r.rowNo)).length;
+    return generalBuilt + ssgBuilt;
   }
 
   /**
@@ -321,6 +335,7 @@ export class AutoOrderService {
         excludedCount: 0,
         mappedCount: 0,
         builtDeliveryCount: 0,
+        expectedBuiltCount: 0,
       }),
       fileBlocked: false,
       blocked: [],

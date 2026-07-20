@@ -6,23 +6,24 @@ export interface ReconciliationInput {
   excludedCount: number; // _유효=False
   mappedCount: number; // 상품 매핑된 행(general+ssg) — built의 상한
   builtDeliveryCount: number; // 실제 주문에 들어간 발송건 수
+  expectedBuiltCount: number; // 차단 이유들로 독립 산출한 "생성돼야 할" 건수(오케스트레이터가 계산해 주입)
 }
 
 /**
  * 검산표 계산 (순수 함수) — 양방향 검산.
- * 4버킷(excluded/unmapped/mapped)은 입력행의 서로소 분할이어야 한다.
- * blocked는 mapped−built로 독립 산출하고(뺄셈 은폐 방지), 아래 셋을 모두 만족해야 matched=true:
- *   (1) partitionOk : input === unmapped + excluded + mapped   (행이 어느 버킷에도 안 세이고 증발하면 깨짐)
- *   (2) builtWithinMapped : built ≤ mapped                      (built 과다 = 중복계상 버그)
- *   (3) blocked ≥ 0
- * 과거엔 blocked를 expected 뺄셈으로만 구해 "실종된 수신자"를 양수 blocked로 흡수해 초록으로 통과했다.
+ * ★ 핵심: blocked를 뺄셈으로 만들면 "사유 없이 사라진 행"이 양수 blocked로 흡수돼 늘 초록이 된다.
+ *   그래서 오케스트레이터가 실제 차단 이유(ROW차단/SSG창밖/파일차단)로 독립 산출한 expectedBuilt와
+ *   실제 built를 직접 대조한다. built ≠ expectedBuilt면 = 조립 단계가 사유 없이 행을 흘렸거나 이중계상한 것.
+ * matched는 다음을 모두 만족해야 true:
+ *   (1) partitionOk : input === unmapped + excluded + mapped   (매핑 서로소 분할 회귀 가드)
+ *   (2) builtMatchesExpected : built === expectedBuilt          (무사유 드롭/중복계상 실검출)
  */
 export function buildReconciliation(input: ReconciliationInput): AutoOrderReconciliation {
   const expected = input.inputRowCount;
   const blockedDeliveryCount = input.mappedCount - input.builtDeliveryCount;
 
   const partitionOk = expected === input.unmappedCount + input.excludedCount + input.mappedCount;
-  const builtWithinMapped = input.builtDeliveryCount <= input.mappedCount;
+  const builtMatchesExpected = input.builtDeliveryCount === input.expectedBuiltCount;
 
   return {
     inputRowCount: input.inputRowCount,
@@ -31,6 +32,6 @@ export function buildReconciliation(input: ReconciliationInput): AutoOrderReconc
     unmappedCount: input.unmappedCount,
     excludedCount: input.excludedCount,
     blockedDeliveryCount,
-    matched: partitionOk && builtWithinMapped && blockedDeliveryCount >= 0,
+    matched: partitionOk && builtMatchesExpected,
   };
 }
