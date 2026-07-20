@@ -32,7 +32,7 @@ export interface ParsedHeader {
   sendContent: string; // C21
   sendMethod: IOrderSendMethod | null; // C23 (알림톡/문자/이메일 → enum)
   fromPhoneNumber: string; // C24
-  isImmediate: boolean; // C16
+  isImmediate: boolean | null; // C16 (true=즉시/false=예약/null=해석불가 → 구조검증에서 리젝)
   sendDate: string; // C17 원본 문자열(텍스트셀='YYYY-MM-DD', 네이티브 날짜셀=ISO). sendRequestAt 도출에만 사용
   sendTime: string; // C18 원본 문자열(텍스트셀='HH:MM', 네이티브 시간셀=ISO). sendRequestAt 도출에만 사용
   sendRequestAt: Date | null; // C17+C18 (KST) - 즉시발송이면 null
@@ -57,7 +57,7 @@ export interface ParsedRow {
 export interface ParsedFile {
   header: ParsedHeader | null; // 시트 없으면 null
   rows: ParsedRow[];
-  parseError: 'SHEET_MISSING' | null;
+  parseError: 'SHEET_MISSING' | 'FORMULA_NOT_CACHED' | null;
 }
 
 /** 2단계 구조검증 결과 */

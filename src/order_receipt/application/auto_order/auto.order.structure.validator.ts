@@ -14,6 +14,11 @@ export class AutoOrderStructureValidator {
     if (parsed.parseError === 'SHEET_MISSING' || !parsed.header) {
       return this.invalid('필수 시트(1.신청정보 / 2.발송명단)가 없습니다.');
     }
+    if (parsed.parseError === 'FORMULA_NOT_CACHED') {
+      return this.invalid(
+        '엑셀 수식 결과가 저장되지 않았습니다. 엑셀에서 파일을 열어 다시 저장(계산 후 저장)한 뒤 업로드해 주세요.',
+      );
+    }
 
     const h = parsed.header;
 
@@ -26,6 +31,9 @@ export class AutoOrderStructureValidator {
     if (!h.sendTitle) return this.invalid('발송 제목(C20)이 비어 있습니다.');
     if (!h.sendContent) return this.invalid('발송 내용(C21)이 비어 있습니다.');
     if (!h.sendMethod) return this.invalid('발신수단(C23)이 비어 있거나 알 수 없는 값입니다.');
+    if (h.isImmediate === null) {
+      return this.invalid('즉시발송 여부(C16) 값을 해석할 수 없습니다. (예: TRUE/FALSE)');
+    }
     if (h.destroyDay < 1) {
       return this.invalid('개인정보 파기일(C25)이 비어 있거나 올바르지 않습니다.');
     }

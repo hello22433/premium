@@ -33,13 +33,18 @@ export class AutoOrderExcelParser {
 
     const header = this.parseHeader(info);
     const rows = this.parseRows(list);
-    return { header, rows, parseError: null };
+
+    // ★ 수식 셀(H/J/M)의 계산 결과가 캐시되지 않은 파일(엑셀이 결과 없이 저장 — 프로그램 생성/일부 오피스)은
+    //   result가 undefined라 cell()이 ''로 읽혀 M(_유효)이 전건 false→전원 조용히 제외되는데도 검산은 초록이 된다.
+    //   신뢰 불가 파일이므로 파일 단위로 리젝 신호를 올린다(구조검증이 INVALID_FORMAT 처리).
+    const formulaUncached = this.hasUncachedTrustedFormula(list, rows);
+    return { header, rows, parseError: formulaUncached ? 'FORMULA_NOT_CACHED' : null };
   }
 
   private parseHeader(info: ExcelJS.Worksheet): ParsedHeader {
     const sendDate = this.cell(info, 'C17');
     const sendTime = this.cell(info, 'C18');
-    const isImmediate = this.toBool(this.cell(info, 'C16'));
+    const isImmediate = this.parseImmediate(this.cell(info, 'C16'));
 
     return {
       formVersion: this.cell(info, 'C1'),
@@ -51,7 +56,8 @@ export class AutoOrderExcelParser {
       isImmediate,
       sendDate,
       sendTime,
-      sendRequestAt: isImmediate ? null : this.toKstDate(sendDate, sendTime),
+      // 즉시발송(true)이면 예약시각 없음. null(해석불가)은 구조검증에서 리젝되므로 여기선 도출만 시도.
+      sendRequestAt: isImmediate === true ? null : this.toKstDate(sendDate, sendTime),
       destroyDay: this.toInt(this.cell(info, 'C25')),
     };
   }
@@ -114,6 +120,46 @@ export class AutoOrderExcelParser {
 
   private toBool(s: string): boolean {
     return s.toUpperCase() === 'TRUE';
+  }
+
+  /**
+   * C16(즉시발송 여부)를 3-상태로 해석: true/false/null.
+   * ★ 과거엔 정확히 'TRUE'만 즉시로 보고 그 외 전부를 예약으로 떨궈, 빈값/오타/체크박스/로컬표기 같은
+   *   모호한 값이 조용히 "예약발송"으로 둔갑했다(엉뚱한 시각 발송 위험). 명시적 참/거짓 토큰만 인정하고
+   *   알 수 없으면 null → 구조검증에서 리젝한다.
+   */
+  private parseImmediate(s: string): boolean | null {
+    const v = s.trim().toUpperCase();
+    if (['TRUE', '1', 'Y', 'O', '예', '즉시', '즉시발송'].includes(v)) return true;
+    if (['FALSE', '0', 'N', 'X', '아니오', '예약', '예약발송'].includes(v)) return false;
+    return null;
+  }
+
+  private static readonly TRUSTED_FORMULA_COLS = ['H', 'J', 'M']; // 상품코드/수량/_유효 (N은 리포트용이라 제외)
+
+  private isFormulaCell(target: ExcelJS.Worksheet | ExcelJS.Row, address: string): boolean {
+    const value = target.getCell(address).value as { formula?: unknown; sharedFormula?: unknown } | null;
+    return !!value && typeof value === 'object' && ('formula' in value || 'sharedFormula' in value);
+  }
+
+  /** 대상 셀이 수식이고 계산 결과가 캐시돼 있는지(result 존재). */
+  private hasCachedFormulaResult(target: ExcelJS.Worksheet | ExcelJS.Row, address: string): boolean {
+    const value = target.getCell(address).value as { result?: unknown } | null;
+    return this.isFormulaCell(target, address) && value!.result !== undefined && value!.result !== null;
+  }
+
+  /**
+   * "계산 없이 저장된(수식 결과 미캐시) 파일"인지 판정.
+   * ★ 엑셀 저장기가 거짓/0/빈문자 같은 falsy 수식 결과의 캐시(<v>)를 생략하므로 셀 단위로 "미캐시"를 단정할 수 없다
+   *   (M=false 정상 제외행도 미캐시처럼 보임). 그래서 파일 전체에 캐시된 신뢰 수식이 "단 하나도" 없을 때만
+   *   미캐시 파일로 본다(정상 파일엔 상품코드 문자열 등 falsy 아닌 캐시가 최소 하나는 있다).
+   */
+  private hasUncachedTrustedFormula(list: ExcelJS.Worksheet, rows: ParsedRow[]): boolean {
+    if (rows.length === 0) return false;
+    const cols = AutoOrderExcelParser.TRUSTED_FORMULA_COLS;
+    const anyFormula = rows.some((r) => cols.some((c) => this.isFormulaCell(list, `${c}${r.rowNo}`)));
+    const anyCached = rows.some((r) => cols.some((c) => this.hasCachedFormulaResult(list, `${c}${r.rowNo}`)));
+    return anyFormula && !anyCached;
   }
 
   /** 엑셀 한글 발신수단 → enum. 알 수 없으면 null(2단계에서 오류 처리) */

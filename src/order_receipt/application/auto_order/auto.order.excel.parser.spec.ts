@@ -161,6 +161,89 @@ describe('AutoOrderExcelParser', () => {
     expect(parsed.header!.isImmediate).toBe(true);
     expect(parsed.header!.sendRequestAt).toBeNull();
   });
+
+  // ── 리뷰 반영(Finding E): 즉시발송 여부(C16)를 'TRUE' 한 토큰이 아니라 명시 참/거짓 집합으로 해석, 모호값은 null
+  it.each(['예', '즉시', '즉시발송', '1', 'Y', 'true'])('즉시발송 참 토큰(%s) → isImmediate=true', async (v) => {
+    const parsed = await parser.parse(await buildBuffer({ immediate: v }));
+    expect(parsed.header!.isImmediate).toBe(true);
+  });
+
+  it.each(['예약', '예약발송', '0', 'N', 'false'])('즉시발송 거짓 토큰(%s) → isImmediate=false', async (v) => {
+    const parsed = await parser.parse(await buildBuffer({ immediate: v }));
+    expect(parsed.header!.isImmediate).toBe(false);
+  });
+
+  it.each(['', '체크', 'maybe', '즉시발송요망'])('알 수 없는 C16 값(%s) → isImmediate=null (조용한 예약 둔갑 금지)', async (v) => {
+    const parsed = await parser.parse(await buildBuffer({ immediate: v }));
+    expect(parsed.header!.isImmediate).toBeNull();
+  });
+
+  // ── 리뷰 반영(Finding B): 계산 없이 저장된 파일(신뢰 수식 캐시가 전무)은 신뢰 불가 → FORMULA_NOT_CACHED
+  it('신뢰 수식(H/J/M)이 전부 결과 미캐시면 parseError=FORMULA_NOT_CACHED', async () => {
+    const wb = new ExcelJS.Workbook();
+    const info = wb.addWorksheet('1.신청정보');
+    info.getCell('C1').value = 'v4.1-immediate-send';
+    info.getCell('C16').value = 'FALSE';
+    info.getCell('C19').value = '이벤트';
+    const list = wb.addWorksheet('2.발송명단');
+    list.getCell('B5').value = '010-1111-2222';
+    // 수식만 있고 결과 캐시 없음(계산 없이 저장) — H/J/M 전부
+    list.getCell('H5').value = { formula: 'INDEX(...)' } as unknown as ExcelJS.CellValue;
+    list.getCell('J5').value = { formula: 'IF(...)' } as unknown as ExcelJS.CellValue;
+    list.getCell('M5').value = { formula: 'AND(...)' } as unknown as ExcelJS.CellValue;
+    const parsed = await parser.parse((await wb.xlsx.writeBuffer()) as Buffer);
+    expect(parsed.parseError).toBe('FORMULA_NOT_CACHED');
+  });
+
+  it('일부라도 캐시된 신뢰 수식이 있으면(정상) parseError=null — M=false 정상 제외행 오탐 없음', async () => {
+    // 기본 fixture는 M6=false(엑셀이 falsy 캐시를 생략)지만 H5/J5/M5 등이 캐시돼 있어 미캐시 파일이 아니다.
+    const parsed = await parser.parse(await buildBuffer({}));
+    expect(parsed.parseError).toBeNull();
+    expect(parsed.rows[1].isValid).toBe(false); // M=false 정상 인식
+  });
+
+  // ── 리뷰 반영: richText/하이퍼링크 셀에서도 평문을 복원
+  it('richText 헤더 + 하이퍼링크 이메일 셀에서 평문을 꺼낸다', async () => {
+    const wb = new ExcelJS.Workbook();
+    const info = wb.addWorksheet('1.신청정보');
+    info.getCell('C1').value = 'v4.1-immediate-send';
+    info.getCell('C16').value = 'TRUE';
+    info.getCell('C19').value = { richText: [{ text: '8월 ' }, { text: '프로모션' }] } as ExcelJS.CellValue;
+    const list = wb.addWorksheet('2.발송명단');
+    list.getCell('D5').value = { text: 'a@x.com', hyperlink: 'mailto:a@x.com' } as ExcelJS.CellValue;
+    list.getCell('J5').value = { formula: 'IF(...)', result: 0 } as ExcelJS.CellFormulaValue;
+    list.getCell('M5').value = { formula: 'AND(...)', result: true } as ExcelJS.CellFormulaValue;
+    const parsed = await parser.parse((await wb.xlsx.writeBuffer()) as Buffer);
+    expect(parsed.header!.eventName).toBe('8월 프로모션');
+    expect(parsed.rows[0].email).toBe('a@x.com');
+  });
+
+  // ── 리뷰 반영: 이메일 전용 행(B 없음, D 있음)은 빈 행 스킵에 걸리지 않는다
+  it('이메일 전용 행(휴대폰 없음)은 스킵되지 않고 보존', async () => {
+    const wb = new ExcelJS.Workbook();
+    const info = wb.addWorksheet('1.신청정보');
+    info.getCell('C1').value = 'v4.1-immediate-send';
+    info.getCell('C16').value = 'TRUE';
+    const list = wb.addWorksheet('2.발송명단');
+    list.getCell('D5').value = 'only@mail.com';
+    list.getCell('H5').value = { formula: 'INDEX(...)', result: 'SB-5000-90' } as ExcelJS.CellFormulaValue;
+    list.getCell('J5').value = { formula: 'IF(...)', result: 0 } as ExcelJS.CellFormulaValue;
+    list.getCell('M5').value = { formula: 'AND(...)', result: true } as ExcelJS.CellFormulaValue;
+    const parsed = await parser.parse((await wb.xlsx.writeBuffer()) as Buffer);
+    expect(parsed.rows).toHaveLength(1);
+    expect(parsed.rows[0].phone).toBeNull();
+    expect(parsed.rows[0].email).toBe('only@mail.com');
+  });
+
+  // ── 리뷰 반영: 필수 시트 누락 → SHEET_MISSING
+  it('발송명단 시트가 없으면 parseError=SHEET_MISSING, header=null', async () => {
+    const wb = new ExcelJS.Workbook();
+    const info = wb.addWorksheet('1.신청정보');
+    info.getCell('C1').value = 'v4.1-immediate-send';
+    const parsed = await parser.parse((await wb.xlsx.writeBuffer()) as Buffer);
+    expect(parsed.parseError).toBe('SHEET_MISSING');
+    expect(parsed.header).toBeNull();
+  });
 });
 
 describe('AutoOrderStructureValidator', () => {
@@ -230,5 +313,33 @@ describe('AutoOrderStructureValidator', () => {
   it('즉시발송이면 날짜가 불량(2026-02-30)이어도 VALID (날짜 검증 대상 아님)', async () => {
     const parsed = await parser.parse(await buildBuffer({ sendDate: '2026-02-30', immediate: 'TRUE' }));
     expect(validator.validate(parsed).status).toBe('VALID');
+  });
+
+  it('알 수 없는 발신수단(카카오)은 INVALID_FORMAT', async () => {
+    const parsed = await parser.parse(await buildBuffer({ sendMethod: '카카오' }));
+    const r = validator.validate(parsed);
+    expect(r.status).toBe('INVALID_FORMAT');
+    expect(r.message).toContain('발신수단');
+  });
+
+  it('즉시발송 여부(C16)가 해석불가면 INVALID_FORMAT', async () => {
+    const parsed = await parser.parse(await buildBuffer({ immediate: '체크박스' }));
+    const r = validator.validate(parsed);
+    expect(r.status).toBe('INVALID_FORMAT');
+    expect(r.message).toContain('즉시발송 여부');
+  });
+
+  it('수식 결과 미캐시(FORMULA_NOT_CACHED)면 INVALID_FORMAT', async () => {
+    const parsed: any = { header: { formVersion: 'v4.1-immediate-send' }, rows: [], parseError: 'FORMULA_NOT_CACHED' };
+    const r = validator.validate(parsed);
+    expect(r.status).toBe('INVALID_FORMAT');
+    expect(r.message).toContain('수식');
+  });
+
+  it('필수 시트 누락(SHEET_MISSING)이면 INVALID_FORMAT', async () => {
+    const parsed: any = { header: null, rows: [], parseError: 'SHEET_MISSING' };
+    const r = validator.validate(parsed);
+    expect(r.status).toBe('INVALID_FORMAT');
+    expect(r.message).toContain('필수 시트');
   });
 });
