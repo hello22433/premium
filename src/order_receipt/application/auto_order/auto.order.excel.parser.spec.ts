@@ -12,6 +12,8 @@ async function buildBuffer(opts: {
   immediate?: string;
   sendMethod?: string;
   eventName?: string;
+  sendTitle?: string;
+  sendContent?: string;
   withRows?: boolean;
   sendDate?: unknown; // C17 (문자열/Date/빈값 등 다양한 케이스)
   sendTime?: unknown; // C18 (문자열/Date/빈값 등 다양한 케이스)
@@ -24,8 +26,8 @@ async function buildBuffer(opts: {
   info.getCell('C17').value = (opts.sendDate ?? '2026-08-05') as ExcelJS.CellValue;
   info.getCell('C18').value = (opts.sendTime ?? '14:30') as ExcelJS.CellValue;
   info.getCell('C19').value = opts.eventName ?? '8월 프로모션';
-  info.getCell('C20').value = '여름 이벤트 쿠폰';
-  info.getCell('C21').value = '즐거운 여름 되세요';
+  info.getCell('C20').value = opts.sendTitle ?? '여름 이벤트 쿠폰';
+  info.getCell('C21').value = opts.sendContent ?? '즐거운 여름 되세요';
   info.getCell('C23').value = opts.sendMethod ?? '문자';
   info.getCell('C24').value = '1644-3614';
   info.getCell('C25').value = (opts.destroyDay ?? 90) as ExcelJS.CellValue;
@@ -142,6 +144,23 @@ describe('AutoOrderExcelParser', () => {
     // 기본 sendTime '14:30' KST = UTC 05:30
     expect(parsed.header!.sendRequestAt?.toISOString()).toBe('2028-02-29T05:30:00.000Z');
   });
+
+  // 롤오버 가드가 실재하는 말일(30/31일)을 오검출하지 않는지 — 정상 예약발송을 막으면 안 됨
+  it.each([
+    ['2026-01-31', '2026-01-31T05:30:00.000Z'], // 31일 달 말일
+    ['2026-04-30', '2026-04-30T05:30:00.000Z'], // 30일 달 말일(31일이면 롤오버)
+    ['2026-02-28', '2026-02-28T05:30:00.000Z'], // 평년 2월 말일
+    ['2026-12-31', '2026-12-31T05:30:00.000Z'], // 연말 경계
+  ])('실재하는 말일(%s)은 정상 파싱(가드 오검출 없음)', async (date, iso) => {
+    const parsed = await parser.parse(await buildBuffer({ sendDate: date }));
+    expect(parsed.header!.sendRequestAt?.toISOString()).toBe(iso);
+  });
+
+  it('즉시발송이면 날짜가 불량(2026-02-30)이어도 sendRequestAt은 null(날짜 미사용 → 가드 비켜감)', async () => {
+    const parsed = await parser.parse(await buildBuffer({ immediate: 'TRUE', sendDate: '2026-02-30' }));
+    expect(parsed.header!.isImmediate).toBe(true);
+    expect(parsed.header!.sendRequestAt).toBeNull();
+  });
 });
 
 describe('AutoOrderStructureValidator', () => {
@@ -163,6 +182,20 @@ describe('AutoOrderStructureValidator', () => {
   it('프로모션명 비면 INVALID_FORMAT', async () => {
     const parsed = await parser.parse(await buildBuffer({ eventName: '' }));
     expect(validator.validate(parsed).status).toBe('INVALID_FORMAT');
+  });
+
+  it('발송 제목(C20) 비면 INVALID_FORMAT', async () => {
+    const parsed = await parser.parse(await buildBuffer({ sendTitle: '' }));
+    const r = validator.validate(parsed);
+    expect(r.status).toBe('INVALID_FORMAT');
+    expect(r.message).toContain('발송 제목');
+  });
+
+  it('발송 내용(C21) 비면 INVALID_FORMAT', async () => {
+    const parsed = await parser.parse(await buildBuffer({ sendContent: '' }));
+    const r = validator.validate(parsed);
+    expect(r.status).toBe('INVALID_FORMAT');
+    expect(r.message).toContain('발송 내용');
   });
 
   it('발송명단 데이터 0건이면 INVALID_FORMAT', async () => {
@@ -192,5 +225,10 @@ describe('AutoOrderStructureValidator', () => {
     const r = validator.validate(parsed);
     expect(r.status).toBe('INVALID_FORMAT');
     expect(r.message).toContain('발송희망일/시간');
+  });
+
+  it('즉시발송이면 날짜가 불량(2026-02-30)이어도 VALID (날짜 검증 대상 아님)', async () => {
+    const parsed = await parser.parse(await buildBuffer({ sendDate: '2026-02-30', immediate: 'TRUE' }));
+    expect(validator.validate(parsed).status).toBe('VALID');
   });
 });
