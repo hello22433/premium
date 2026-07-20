@@ -13,6 +13,7 @@ async function buildBuffer(opts: {
   sendMethod?: string;
   eventName?: string;
   withRows?: boolean;
+  sendDate?: unknown; // C17 (문자열/Date/빈값 등 다양한 케이스)
   sendTime?: unknown; // C18 (문자열/Date/빈값 등 다양한 케이스)
   destroyDay?: unknown; // C25
 }): Promise<Buffer> {
@@ -20,7 +21,7 @@ async function buildBuffer(opts: {
   const info = wb.addWorksheet('1.신청정보');
   info.getCell('C1').value = opts.formVersion ?? 'v4.1-immediate-send';
   info.getCell('C16').value = opts.immediate ?? 'FALSE';
-  info.getCell('C17').value = '2026-08-05';
+  info.getCell('C17').value = (opts.sendDate ?? '2026-08-05') as ExcelJS.CellValue;
   info.getCell('C18').value = (opts.sendTime ?? '14:30') as ExcelJS.CellValue;
   info.getCell('C19').value = opts.eventName ?? '8월 프로모션';
   info.getCell('C20').value = '여름 이벤트 쿠폰';
@@ -121,6 +122,26 @@ describe('AutoOrderExcelParser', () => {
     const parsed = await parser.parse(await buildBuffer({ sendTime: '', immediate: 'FALSE' }));
     expect(parsed.header!.sendRequestAt).toBeNull();
   });
+
+  // ── 리뷰 반영(PR#7): 존재하지 않는 달력 날짜가 롤오버로 정상 예약발송으로 둔갑하는 것 차단
+  it.each(['2026-02-30', '2026-02-31', '2026-04-31', '2026-06-31', '2026-13-01', '2026-00-10', '2026-01-32'])(
+    '실재하지 않는 달력 날짜(%s)는 null (롤오버 둔갑 금지)',
+    async (badDate) => {
+      const parsed = await parser.parse(await buildBuffer({ sendDate: badDate }));
+      expect(parsed.header!.sendRequestAt).toBeNull();
+    },
+  );
+
+  it('평년 2월 29일(2026-02-29)은 null', async () => {
+    const parsed = await parser.parse(await buildBuffer({ sendDate: '2026-02-29' }));
+    expect(parsed.header!.sendRequestAt).toBeNull();
+  });
+
+  it('윤년 2월 29일(2028-02-29)은 정상 파싱', async () => {
+    const parsed = await parser.parse(await buildBuffer({ sendDate: '2028-02-29' }));
+    // 기본 sendTime '14:30' KST = UTC 05:30
+    expect(parsed.header!.sendRequestAt?.toISOString()).toBe('2028-02-29T05:30:00.000Z');
+  });
 });
 
 describe('AutoOrderStructureValidator', () => {
@@ -161,6 +182,13 @@ describe('AutoOrderStructureValidator', () => {
 
   it('예약발송인데 시간이 불량(25:99)이면 INVALID_FORMAT (자정 폴백 아님)', async () => {
     const parsed = await parser.parse(await buildBuffer({ sendTime: '25:99', immediate: 'FALSE' }));
+    const r = validator.validate(parsed);
+    expect(r.status).toBe('INVALID_FORMAT');
+    expect(r.message).toContain('발송희망일/시간');
+  });
+
+  it('예약발송인데 날짜가 실재하지 않으면(2026-02-30) INVALID_FORMAT (롤오버 둔갑 아님)', async () => {
+    const parsed = await parser.parse(await buildBuffer({ sendDate: '2026-02-30', immediate: 'FALSE' }));
     const r = validator.validate(parsed);
     expect(r.status).toBe('INVALID_FORMAT');
     expect(r.message).toContain('발송희망일/시간');

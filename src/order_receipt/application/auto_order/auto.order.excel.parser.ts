@@ -141,6 +141,16 @@ export class AutoOrderExcelParser {
     const ymd = dateStr.slice(0, 10);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return null;
 
+    // ★ 존재하지 않는 달력 날짜(예: 2026-02-30, 2026-04-31)는 정규식은 통과하지만 실재하지 않는다.
+    //   new Date(...)는 이런 날짜를 Invalid로 만들지 않고 조용히 롤오버(2/30→3/2, 4/31→5/1)시켜
+    //   "다른 날짜의 정상 예약발송"으로 둔갑시킨다. 연·월·일을 분해해 롤오버 없이 그대로 일치하는지
+    //   UTC 기준(타임존 무관)으로 확인해 실재하지 않는 날짜를 리젝한다.
+    const [y, mo, day] = ymd.split('-').map(Number);
+    const probe = new Date(Date.UTC(y, mo - 1, day));
+    if (probe.getUTCFullYear() !== y || probe.getUTCMonth() !== mo - 1 || probe.getUTCDate() !== day) {
+      return null;
+    }
+
     const hm = this.extractHhmm(timeStr);
     if (hm === null) return null; // 시간 불량 → 리젝(자정 폴백 금지)
 
