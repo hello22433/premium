@@ -34,10 +34,10 @@ export class AutoOrderExcelParser {
     const header = this.parseHeader(info);
     const rows = this.parseRows(list);
 
-    // ★ 수식 셀(H/J/M)의 계산 결과가 캐시되지 않은 파일(엑셀이 결과 없이 저장 — 프로그램 생성/일부 오피스)은
-    //   result가 undefined라 cell()이 ''로 읽혀 M(_유효)이 전건 false→전원 조용히 제외되는데도 검산은 초록이 된다.
-    //   신뢰 불가 파일이므로 파일 단위로 리젝 신호를 올린다(구조검증이 INVALID_FORMAT 처리).
-    const formulaUncached = this.hasUncachedTrustedFormula(list, rows);
+    // ★ M(_유효) 수식의 계산 결과가 캐시되지 않은 파일(엑셀이 결과 없이 저장 — 프로그램 생성/일부 오피스,
+    //   또는 _유효 수식만 고쳐 재계산 없이 저장)은 result가 undefined라 cell()이 ''로 읽혀
+    //   전건 false→전원 조용히 제외되는데도 검산은 초록이 된다. 신뢰 불가 파일이므로 파일 단위로 리젝한다.
+    const formulaUncached = this.hasUncachedValidityFormula(list, rows);
     return { header, rows, parseError: formulaUncached ? 'FORMULA_NOT_CACHED' : null };
   }
 
@@ -135,8 +135,6 @@ export class AutoOrderExcelParser {
     return null;
   }
 
-  private static readonly TRUSTED_FORMULA_COLS = ['H', 'J', 'M']; // 상품코드/수량/_유효 (N은 리포트용이라 제외)
-
   private isFormulaCell(target: ExcelJS.Worksheet | ExcelJS.Row, address: string): boolean {
     const value = target.getCell(address).value as { formula?: unknown; sharedFormula?: unknown } | null;
     return !!value && typeof value === 'object' && ('formula' in value || 'sharedFormula' in value);
@@ -149,17 +147,18 @@ export class AutoOrderExcelParser {
   }
 
   /**
-   * "계산 없이 저장된(수식 결과 미캐시) 파일"인지 판정.
-   * ★ 엑셀 저장기가 거짓/0/빈문자 같은 falsy 수식 결과의 캐시(<v>)를 생략하므로 셀 단위로 "미캐시"를 단정할 수 없다
-   *   (M=false 정상 제외행도 미캐시처럼 보임). 그래서 파일 전체에 캐시된 신뢰 수식이 "단 하나도" 없을 때만
-   *   미캐시 파일로 본다(정상 파일엔 상품코드 문자열 등 falsy 아닌 캐시가 최소 하나는 있다).
+   * "M(_유효) 수식 결과가 계산 없이 저장돼 미캐시"인 파일인지 판정.
+   * ★ M은 제외의 유일한 키라, 미캐시면 전건 false로 읽혀 전원 조용히 사라진다. H/J가 캐시돼 있어도
+   *   M만 미캐시면 위험하므로(예: _유효 수식만 고쳐 재계산 없이 저장) 다른 열이 아니라 M을 직접 본다.
+   * ★ 엑셀은 falsy(false) 결과의 캐시(<v>)를 생략하므로, "M 수식이 있는데 캐시된 M이 하나도 없을 때"만 미캐시로 본다.
+   *   (정상 파일엔 M=true(=발송 대상) 행의 캐시가 최소 하나 있다. 전 행이 무효인 파일은 이 판정에 걸릴 수 있으나
+   *    그 파일은 어차피 주문 0건이라 피해는 "재저장 안내" 뿐 — 진짜 유실을 놓치는 것보다 안전한 오탐이다.)
    */
-  private hasUncachedTrustedFormula(list: ExcelJS.Worksheet, rows: ParsedRow[]): boolean {
+  private hasUncachedValidityFormula(list: ExcelJS.Worksheet, rows: ParsedRow[]): boolean {
     if (rows.length === 0) return false;
-    const cols = AutoOrderExcelParser.TRUSTED_FORMULA_COLS;
-    const anyFormula = rows.some((r) => cols.some((c) => this.isFormulaCell(list, `${c}${r.rowNo}`)));
-    const anyCached = rows.some((r) => cols.some((c) => this.hasCachedFormulaResult(list, `${c}${r.rowNo}`)));
-    return anyFormula && !anyCached;
+    const anyMFormula = rows.some((r) => this.isFormulaCell(list, `M${r.rowNo}`));
+    const anyMCached = rows.some((r) => this.hasCachedFormulaResult(list, `M${r.rowNo}`));
+    return anyMFormula && !anyMCached;
   }
 
   /** 엑셀 한글 발신수단 → enum. 알 수 없으면 null(2단계에서 오류 처리) */

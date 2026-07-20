@@ -196,10 +196,25 @@ describe('AutoOrderExcelParser', () => {
   });
 
   it('일부라도 캐시된 신뢰 수식이 있으면(정상) parseError=null — M=false 정상 제외행 오탐 없음', async () => {
-    // 기본 fixture는 M6=false(엑셀이 falsy 캐시를 생략)지만 H5/J5/M5 등이 캐시돼 있어 미캐시 파일이 아니다.
+    // 기본 fixture는 M6=false(엑셀이 falsy 캐시를 생략)지만 M5=true가 캐시돼 있어 미캐시 파일이 아니다.
     const parsed = await parser.parse(await buildBuffer({}));
     expect(parsed.parseError).toBeNull();
     expect(parsed.rows[1].isValid).toBe(false); // M=false 정상 인식
+  });
+
+  it('H/J는 캐시됐어도 M(_유효)만 미캐시면 FORMULA_NOT_CACHED (M-한정 판정)', async () => {
+    const wb = new ExcelJS.Workbook();
+    const info = wb.addWorksheet('1.신청정보');
+    info.getCell('C1').value = 'v4.1-immediate-send';
+    info.getCell('C16').value = 'FALSE';
+    info.getCell('C19').value = '이벤트';
+    const list = wb.addWorksheet('2.발송명단');
+    list.getCell('B5').value = '010-1111-2222';
+    list.getCell('H5').value = { formula: 'INDEX(...)', result: 'SB-5000-90' } as ExcelJS.CellFormulaValue; // 캐시됨
+    list.getCell('J5').value = { formula: 'IF(...)', result: 1 } as ExcelJS.CellFormulaValue; // 캐시됨
+    list.getCell('M5').value = { formula: 'AND(...)' } as unknown as ExcelJS.CellValue; // M만 미캐시
+    const parsed = await parser.parse((await wb.xlsx.writeBuffer()) as Buffer);
+    expect(parsed.parseError).toBe('FORMULA_NOT_CACHED');
   });
 
   // ── 리뷰 반영: richText/하이퍼링크 셀에서도 평문을 복원
