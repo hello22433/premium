@@ -104,7 +104,7 @@ export class WalletReadService {
 
   async getSettlementCodeSnapshot(companyId: number): Promise<SettlementCodeSnapshotResult> {
     const companyName = await this.resolveCompanyName(companyId);
-    const codes = await this.distinctSettlementCodes(companyId);
+    const codes = await this.companySettlementCodes(companyId);
 
     const settlementCodes: SettlementCodeSnapshot[] = [];
     for (const settlementCode of codes) {
@@ -285,6 +285,43 @@ export class WalletReadService {
       .orderBy('u.settlementCode', 'ASC')
       .getRawMany<{ settlementCode: string }>();
     return rows.map((r) => r.settlementCode);
+  }
+
+  /**
+   * 스냅샷/재배정 대상용 회사 정산코드 집합.
+   *
+   * = 소속 사용자가 참조하는 코드(distinctSettlementCodes — 교차회사 공유 코드 포함)
+   *   ∪ 이 회사 네이밍(company-{id}, company-{id}-{n})의 정산코드 wallet(유저 0명인 빈/고아 코드 포함).
+   *
+   * distinctSettlementCodes 단독은 user.settlement_code 참조가 있는 코드만 노출하므로,
+   * 발급됐다 비워진 코드·잔액만 남은 고아 코드가 운영자 화면과 재배정 대상 드롭박스에서 사라진다.
+   * assignUserToCode 는 wallet 만 존재하면 어떤 코드로도 이동을 허용하므로(빈 코드 포함), 대상 후보도 같은 범위여야 한다.
+   */
+  private async companySettlementCodes(companyId: number): Promise<string[]> {
+    const [referenced, owned] = await Promise.all([
+      this.distinctSettlementCodes(companyId),
+      this.companyWalletCodes(companyId),
+    ]);
+    // 숫자 인식 정렬: company-7-2 가 company-7-10 보다 앞(사전식이면 -10 이 앞으로 와 드롭박스 순서가 어색).
+    return [...new Set([...referenced, ...owned])].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  }
+
+  /**
+   * 이 회사 네이밍(company-{id}, company-{id}-{n})의 정산코드 wallet owner_id. 유저 0명인 빈 코드도 포함.
+   *
+   * 엣지케이스: 커스텀 이름으로 리네임된 뒤 유저 0명이 된 코드는 이 네이밍 매칭에서 빠진다.
+   * 단 rename 은 단일 회사 전용 코드에서만 허용되고 발급 코드는 전부 company-* 네이밍이라 실무 커버리지는 충분하며,
+   * 유저가 남아 있는 커스텀 코드는 distinctSettlementCodes 쪽 합집합으로 이미 포함된다.
+   */
+  private async companyWalletCodes(companyId: number): Promise<string[]> {
+    const base = `company-${companyId}`;
+    const rows = await this.walletRepository
+      .createQueryBuilder('w')
+      .select('w.ownerId', 'ownerId')
+      .where('w.ownerType = :t', { t: 'SETTLEMENT_CODE' })
+      .andWhere('(w.ownerId = :base OR w.ownerId LIKE :prefix)', { base, prefix: `${base}-%` })
+      .getRawMany<{ ownerId: string }>();
+    return rows.map((r) => r.ownerId);
   }
 
   private async assignedUsers(companyId: number, settlementCode: string): Promise<SettlementCodeAssignedUser[]> {

@@ -24,7 +24,11 @@ export interface SettlementJoinClassification {
   code?: string;
 }
 
-export type SettlementCodeHistoryEventType = 'CREDIT_LIMIT_CHANGED' | 'SETTLE_POLICY_CHANGED' | 'DEPOSIT_CHARGED';
+export type SettlementCodeHistoryEventType =
+  | 'CREDIT_LIMIT_CHANGED'
+  | 'SETTLE_POLICY_CHANGED'
+  | 'CODE_RENAMED'
+  | 'DEPOSIT_CHARGED';
 
 /** 정산코드 변경 이력 공통 항목(정책/한도=activity_log, 예치금=wallet_transaction). */
 export interface SettlementCodeHistoryItem {
@@ -251,7 +255,7 @@ export class SettlementCodeAdminService {
    * 진행 중 주문과 무관하게 언제든 가능 (자금 이동 없음). oldCode 는 회사 소속 검증(회사→users 잠금 하),
    * newCode 는 잠금 하 사전 부재 검증.
    */
-  async renameCode(companyId: number, oldCode: string, newCode: string): Promise<void> {
+  async renameCode(companyId: number, oldCode: string, newCode: string, operator: ILoginUserInfo): Promise<void> {
     if (!oldCode || !newCode) {
       throw new BadRequestException('oldCode / newCode 는 필수입니다.');
     }
@@ -302,7 +306,42 @@ export class SettlementCodeAdminService {
       await manager
         .getRepository(UserEntity)
         .update({ companyId, settlementCode: oldCode }, { settlementCode: newCode });
-      this.logger.log(`renameCode companyId=${companyId} ${oldCode} -> ${newCode}`);
+
+      // **이력이 코드를 따라가도록 이관 (정책/한도 이력 승계)**: getCodeHistory 는 requestParams.settlementCode 로
+      // 필터하므로, 리네임 이전 oldCode 로 박제된 정책/한도/과거 리네임 감사 로그의 settlementCode 를 newCode 로 갱신한다.
+      // 이관하지 않으면 리네임 후 새 이름 이력에서 과거 한도/정책 변경이 사라진다(oldCode wallet 은 이미 없어 접근 경로도 없음).
+      // 감사행 불변성 유지: 전 컬럼 재기록(save)·N+1 없이 request_params 만 건드리는 단일 targeted UPDATE
+      // (이 서비스의 ensureSettlementCodeWallet 과 동일한 raw-SQL 컨벤션, snake_case 컬럼).
+      await manager.query(
+        `UPDATE activity_log
+            SET request_params = JSON_SET(request_params, '$.settlementCode', ?)
+          WHERE deleted_at IS NULL
+            AND action_type IN (?, ?, ?)
+            AND JSON_UNQUOTE(JSON_EXTRACT(request_params, '$.settlementCode')) = ?`,
+        [
+          newCode,
+          ActivityLogActionType.MAXIMUM_LIMIT_MODIFY,
+          ActivityLogActionType.SETTLE_CODE_POLICY_MODIFY,
+          ActivityLogActionType.SETTLE_CODE_RENAME,
+          oldCode,
+        ],
+      );
+      // 정책/한도 이력에 리네임을 노출한다 (getCodeHistory 는 newCode 기준 조회 — settlementCode=newCode 저장).
+      // 동일 트랜잭션 감사(리네임 정본): rename 커밋과 감사 로그가 원자적으로 함께 남는다.
+      await this.activityLogService.createLog({
+        userId: operator.id,
+        userEmail: operator.email,
+        method: 'PUT',
+        requestUrl: '/settlement-codes/rename',
+        actionType: ActivityLogActionType.SETTLE_CODE_RENAME,
+        ipAddress: '',
+        statusCode: 200,
+        result: ActivityLogResult.SUCCESS,
+        responseTime: 0,
+        requestParams: { settlementCode: newCode, before: oldCode, after: newCode },
+      }, manager);
+
+      this.logger.log(`renameCode companyId=${companyId} ${oldCode} -> ${newCode} by operator=${operator.id}`);
     });
   }
 
@@ -573,13 +612,15 @@ export class SettlementCodeAdminService {
     const actionByEvent: Partial<Record<SettlementCodeHistoryEventType, ActivityLogActionType>> = {
       CREDIT_LIMIT_CHANGED: ActivityLogActionType.MAXIMUM_LIMIT_MODIFY,
       SETTLE_POLICY_CHANGED: ActivityLogActionType.SETTLE_CODE_POLICY_MODIFY,
+      CODE_RENAMED: ActivityLogActionType.SETTLE_CODE_RENAME,
     };
-    let types = [ActivityLogActionType.MAXIMUM_LIMIT_MODIFY, ActivityLogActionType.SETTLE_CODE_POLICY_MODIFY];
+    // 기본 조회 범위 = actionByEvent 의 전체 매핑 값 (eventType 필터가 늘어도 자동으로 동기화).
+    let types = Object.values(actionByEvent);
     if (opts.eventType !== undefined) {
       const mapped = actionByEvent[opts.eventType];
       if (!mapped) {
         throw new BadRequestException(
-          'eventType 은 CREDIT_LIMIT_CHANGED | SETTLE_POLICY_CHANGED 만 허용됩니다(예치금 이력은 GET /settlement-codes/deposits).',
+          'eventType 은 CREDIT_LIMIT_CHANGED | SETTLE_POLICY_CHANGED | CODE_RENAMED 만 허용됩니다(예치금 이력은 GET /settlement-codes/deposits).',
         );
       }
       types = [mapped];
@@ -649,27 +690,34 @@ export class SettlementCodeAdminService {
 
   private mapActivityLogItem(r: ActivityLogEntity): SettlementCodeHistoryItem {
     const params = (r.requestParams ?? {}) as Record<string, unknown>;
-    if (r.actionType === ActivityLogActionType.MAXIMUM_LIMIT_MODIFY) {
-      return {
-        source: 'ACTIVITY_LOG',
-        sourceId: String(r.id),
-        eventType: 'CREDIT_LIMIT_CHANGED',
-        occurredAt: r.createdAt,
-        operatorId: r.userId,
-        operatorEmail: r.userEmail,
-        before: params.beforeMaximumLimit,
-        after: params.afterMaximumLimit,
-      };
+    let eventType: SettlementCodeHistoryEventType;
+    let before: unknown;
+    let after: unknown;
+    switch (r.actionType) {
+      case ActivityLogActionType.MAXIMUM_LIMIT_MODIFY:
+        eventType = 'CREDIT_LIMIT_CHANGED';
+        before = params.beforeMaximumLimit;
+        after = params.afterMaximumLimit;
+        break;
+      case ActivityLogActionType.SETTLE_CODE_RENAME:
+        eventType = 'CODE_RENAMED';
+        before = params.before;
+        after = params.after;
+        break;
+      default:
+        eventType = 'SETTLE_POLICY_CHANGED';
+        before = params.before;
+        after = params.after;
     }
     return {
       source: 'ACTIVITY_LOG',
       sourceId: String(r.id),
-      eventType: 'SETTLE_POLICY_CHANGED',
+      eventType,
       occurredAt: r.createdAt,
       operatorId: r.userId,
       operatorEmail: r.userEmail,
-      before: params.before,
-      after: params.after,
+      before,
+      after,
     };
   }
 

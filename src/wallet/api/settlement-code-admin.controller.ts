@@ -210,8 +210,8 @@ export class SettlementCodeAdminController {
   /** 정산코드 리네임 (wallet owner_id + 모든 참조 user.settlement_code). */
   @Put('rename')
   @ApiOperation({ summary: '정산코드 리네임' })
-  async rename(@Body() body: RenameCodeReqDto): Promise<{ success: true }> {
-    await this.adminService.renameCode(body.companyId, body.oldCode, body.newCode);
+  async rename(@User() user: ILoginUserInfo, @Body() body: RenameCodeReqDto): Promise<{ success: true }> {
+    await this.adminService.renameCode(body.companyId, body.oldCode, body.newCode, user);
     return { success: true };
   }
 

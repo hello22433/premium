@@ -79,9 +79,10 @@ describe('SettlementCodeAdminController', () => {
     expect(r).toEqual({ success: true });
   });
 
-  it('PUT /rename → adminService.renameCode(companyId, oldCode, newCode)', async () => {
-    const r = await controller.rename({ companyId: 7, oldCode: 'company-7', newCode: 'company-7-x' });
-    expect(adminService.renameCode).toHaveBeenCalledWith(7, 'company-7', 'company-7-x');
+  it('PUT /rename → adminService.renameCode(companyId, oldCode, newCode, operator)', async () => {
+    const operator = { id: 99, email: 'op@test.com', authority: 'OPERATION_ADMIN' } as any;
+    const r = await controller.rename(operator, { companyId: 7, oldCode: 'company-7', newCode: 'company-7-x' });
+    expect(adminService.renameCode).toHaveBeenCalledWith(7, 'company-7', 'company-7-x', operator);
     expect(r).toEqual({ success: true });
   });
 

@@ -37,7 +37,7 @@ describe('WalletReadService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         WalletReadService,
-        { provide: getRepositoryToken(WalletAccountEntity), useValue: { findOne: jest.fn() } },
+        { provide: getRepositoryToken(WalletAccountEntity), useValue: { findOne: jest.fn(), createQueryBuilder: jest.fn() } },
         { provide: getRepositoryToken(PointGrantEntity), useValue: { createQueryBuilder: jest.fn() } },
         { provide: getRepositoryToken(OrderPaymentAllocationEntity), useValue: { createQueryBuilder: jest.fn() } },
         { provide: getRepositoryToken(UserEntity), useValue: { createQueryBuilder: jest.fn(), find: jest.fn() } },
@@ -52,6 +52,8 @@ describe('WalletReadService', () => {
     companyRepo = module.get(getRepositoryToken(UserCompanyEntity));
 
     companyRepo.findOne.mockResolvedValue({ id: 7, businessName: '테스트상사' } as UserCompanyEntity);
+    // 기본: 회사 네이밍 wallet 코드 없음(빈 목록). 필요한 테스트에서만 override.
+    walletRepo.createQueryBuilder.mockReturnValue(makeQb([]) as any);
   });
 
   describe('getSettlementCodeSnapshot', () => {
@@ -132,6 +134,47 @@ describe('WalletReadService', () => {
     it('company 미존재 → NotFoundException', async () => {
       companyRepo.findOne.mockResolvedValue(null);
       await expect(sut.getSettlementCodeSnapshot(999)).rejects.toBeInstanceOf(NotFoundException);
+    });
+
+    it('유저 0명이라도 회사 네이밍 정산코드 wallet(빈 코드)은 스냅샷에 노출 (재배정 대상 후보)', async () => {
+      // distinctSettlementCodes: company-7 (유저 있음)만 참조
+      userRepo.createQueryBuilder.mockReturnValue(makeQb([{ settlementCode: 'company-7' }]));
+      // companyWalletCodes: company-7 + company-7-2 (company-7-2 는 유저 0명 빈 코드)
+      walletRepo.createQueryBuilder.mockReturnValue(
+        makeQb([{ ownerId: 'company-7' }, { ownerId: 'company-7-2' }]) as any,
+      );
+      walletRepo.findOne.mockImplementation(
+        async ({ where }: any) =>
+          (({
+            'company-7': { id: '11', depositBalance: 5000, creditLimit: 0, creditUsedAmount: 0, creditExcessAmount: 0 },
+            'company-7-2': { id: '22', depositBalance: 300, creditLimit: 0, creditUsedAmount: 0, creditExcessAmount: 0 },
+          }) as any)[where.ownerId],
+      );
+      pointRepo.createQueryBuilder.mockReturnValue(makeQb({ total: '0' }) as any);
+      userRepo.find.mockImplementation(
+        async ({ where }: any) =>
+          (where.settlementCode === 'company-7' ? [{ id: 1, personName: '홍길동' }] : []) as any,
+      );
+
+      const res = await sut.getSettlementCodeSnapshot(7);
+
+      expect(res.settlementCodes.map((c) => c.settlementCode)).toEqual(['company-7', 'company-7-2']);
+      const empty = res.settlementCodes.find((c) => c.settlementCode === 'company-7-2')!;
+      expect(empty.assignedUsers).toEqual([]);
+      expect(empty.walletStatus).toBe('ACTIVE');
+      expect(empty.depositBalance).toBe(300);
+    });
+
+    it('companyWalletCodes 는 company-{id} 와 company-{id}-% 네이밍 wallet 만 조회', async () => {
+      userRepo.createQueryBuilder.mockReturnValue(makeQb([]));
+      const walletQb = makeQb([]);
+      walletRepo.createQueryBuilder.mockReturnValue(walletQb as any);
+
+      await sut.getSettlementCodeSnapshot(7);
+
+      const andWhere = walletQb._calls.find((c: any) => c.method === 'andWhere');
+      expect(andWhere.args[0]).toBe('(w.ownerId = :base OR w.ownerId LIKE :prefix)');
+      expect(andWhere.args[1]).toMatchObject({ base: 'company-7', prefix: 'company-7-%' });
     });
   });
 
