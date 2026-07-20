@@ -422,5 +422,79 @@ describe('ProductService.updatePartial - 초이스쿠폰 사용상태 자동 반
 
       expect(insertedHistories).toHaveLength(0);
     });
+
+    // 상품관리 화면은 체크박스 다중 선택으로 여러 건을 한 번에 삭제한다.
+    // 같은 초이스쿠폰에 묶인 구성상품이 함께 선택될 수 있다.
+    it('같은 초이스쿠폰의 구성상품을 한 번에 삭제해도 이력은 한 건만 남는다', async () => {
+      const products = {
+        1: product(1, IProductUseStatus.USE),
+        2: product(2, IProductUseStatus.USE),
+        100: { ...product(100, IProductUseStatus.USE, 'CHOICE100'), type: 'CHOICE' },
+      };
+      const {
+        service,
+        products: after,
+        insertedHistories,
+      } = createService(products, [
+        { choiceProductId: 100, productId: 1 },
+        { choiceProductId: 100, productId: 2 },
+      ]);
+
+      await service.delete(user, { idList: [1, 2] } as any);
+
+      expect(after[100].useStatus).toBe(IProductUseStatus.UNUSED);
+      // 첫 구성상품 처리에서 이미 UNUSED 가 되므로 두 번째는 상태가 같아 이력을 남기지 않는다.
+      const choiceHistories = insertedHistories.filter((h) => h.productId === 100);
+      expect(choiceHistories).toHaveLength(1);
+      expect(choiceHistories[0].afterValue).toBe(IProductUseStatus.UNUSED);
+    });
+
+    it('서로 다른 초이스쿠폰의 구성상품을 한 번에 삭제하면 각각 이력이 남는다', async () => {
+      const products = {
+        1: product(1, IProductUseStatus.USE),
+        2: product(2, IProductUseStatus.USE),
+        100: { ...product(100, IProductUseStatus.USE, 'CHOICE100'), type: 'CHOICE' },
+        200: { ...product(200, IProductUseStatus.USE, 'CHOICE200'), type: 'CHOICE' },
+      };
+      const {
+        service,
+        products: after,
+        insertedHistories,
+      } = createService(products, [
+        { choiceProductId: 100, productId: 1 },
+        { choiceProductId: 200, productId: 2 },
+      ]);
+
+      await service.delete(user, { idList: [1, 2] } as any);
+
+      expect(after[100].useStatus).toBe(IProductUseStatus.UNUSED);
+      expect(after[200].useStatus).toBe(IProductUseStatus.UNUSED);
+      expect(insertedHistories.filter((h) => h.productId === 100)).toHaveLength(1);
+      expect(insertedHistories.filter((h) => h.productId === 200)).toHaveLength(1);
+    });
+
+    // 하나의 구성상품이 여러 초이스쿠폰에 묶일 수 있다.
+    it('한 구성상품이 여러 초이스쿠폰에 묶여 있으면 전부 미사용이 된다', async () => {
+      const products = {
+        1: product(1, IProductUseStatus.USE),
+        100: { ...product(100, IProductUseStatus.USE, 'CHOICE100'), type: 'CHOICE' },
+        200: { ...product(200, IProductUseStatus.USE, 'CHOICE200'), type: 'CHOICE' },
+      };
+      const {
+        service,
+        products: after,
+        insertedHistories,
+      } = createService(products, [
+        { choiceProductId: 100, productId: 1 },
+        { choiceProductId: 200, productId: 1 },
+      ]);
+
+      await service.delete(user, { idList: [1] } as any);
+
+      expect(after[100].useStatus).toBe(IProductUseStatus.UNUSED);
+      expect(after[200].useStatus).toBe(IProductUseStatus.UNUSED);
+      expect(insertedHistories.filter((h) => h.productId === 100)).toHaveLength(1);
+      expect(insertedHistories.filter((h) => h.productId === 200)).toHaveLength(1);
+    });
   });
 });
