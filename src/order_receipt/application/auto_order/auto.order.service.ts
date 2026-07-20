@@ -192,13 +192,13 @@ export class AutoOrderService {
       expectedBuiltCount: this.computeExpectedBuilt(mapped, pre),
     });
 
-    // 검산 불일치(built 과다=중복계상 코드버그 신호) → 에러 로깅으로 표면화.
+    // 검산 불일치(built≠기대: 사유 없는 드롭=under 또는 중복계상=over → 코드버그 신호) → 에러 로깅으로 표면화.
     // COMMIT이면 이미 createTemp로 실제 주문이 생성된 뒤이므로, 로그에 그치지 않고 throw해
-    // approve 트랜잭션을 롤백한다(중복주문이 그대로 커밋되는 것을 방지). DRY_RUN은 로깅만.
+    // approve 트랜잭션을 롤백한다(잘못 계상된 주문이 그대로 커밋되는 것을 방지). DRY_RUN은 로깅만.
     if (!reconciliation.matched) {
       this.logger.error(
         `자동주문 검산 불일치 [${mode}] receipt=${receipt.id} file=${fileIndex} ` +
-          `expected=${reconciliation.expectedDeliveryCount} built=${reconciliation.builtDeliveryCount} ` +
+          `expectedBuilt=${this.computeExpectedBuilt(mapped, pre)} built=${reconciliation.builtDeliveryCount} ` +
           `blocked=${reconciliation.blockedDeliveryCount}`,
       );
       if (mode === AutoOrderRunMode.COMMIT) {
@@ -257,9 +257,13 @@ export class AutoOrderService {
   }
 
   /**
-   * 차단 이유들로 "생성돼야 할" 발송건수를 독립 산출(buildOrders 로직의 거울).
+   * 차단 이유들로 "생성돼야 할" 발송건수를 독립 산출(buildOrders/payloadBuilder 로직의 거울).
    * 검산은 이 값을 실제 built와 대조 → payload 조립이 사유 없이 행을 흘리면(build != expected) 불일치로 잡힌다.
    * (blockedRowNos는 사전검증이 general/ssg(=매핑행)만 스캔하므로 전부 매핑행에 속한다.)
+   *
+   * ⚠️ lockstep: payloadBuilder의 usableRows 필터(현재 !blockedRowNos + 수신처 존재)에 새 제외 조건이 추가되면
+   *   여기에도 동일 조건을 반영해야 한다. 안 그러면 expectedBuilt가 과다 산출돼 정상 승인이 검산 불일치로
+   *   롤백된다. (현재는 수신처-null 행이 전부 blockedRowNos에 들어가 두 필터가 등가라 안전.)
    */
   private computeExpectedBuilt(mapped: MappedResult, pre: PreValidateResult): number {
     if (pre.fileBlocked) return 0;

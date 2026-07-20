@@ -145,9 +145,11 @@ export interface BuildPayloadResult {
 // ── 6단계 리포트/검산 (프론트 계약) ─────────────────────────
 
 /**
- * 회계 검산. 4버킷은 입력행의 서로소 분할이며 항상:
+ * 회계 검산. 4버킷(excluded/unmapped/mapped)은 입력행의 서로소 분할이며
  *   expectedDeliveryCount === builtDeliveryCount + unmappedCount + excludedCount + blockedDeliveryCount
- * blocked는 세지 않고 뺄셈으로 구해 중복계상을 원천 차단. matched=false면 built가 과다(코드 버그).
+ * 이 항상 성립한다(blockedDeliveryCount = mapped − built).
+ * ★ matched는 이 항등식이 아니라, 차단 이유로 독립 산출한 기대생성수와 실제 built의 일치로 판정한다
+ *   (built === expectedBuilt). 조립이 사유 없이 행을 흘리거나(under) 이중계상하면(over) matched=false.
  */
 export interface AutoOrderReconciliation {
   inputRowCount: number;
