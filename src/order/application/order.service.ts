@@ -3383,15 +3383,20 @@ export class OrderService {
 
   /**
    * 임시저장/수정 콘텐츠 금칙어 검사. 적발 시 block_log 기록 후 BadRequestException(FORBIDDEN_WORD).
+   * eventName(이벤트명)은 주문 레벨 필드라 상품 행과 별도로 검사한다.
    */
   private async assertNoForbiddenWord(
     user: ILoginUserInfo,
     orderProductList: OrderProductCreateTempDto[],
     orderId: number | null,
+    eventName?: string | null,
   ): Promise<void> {
     const targets = OrderService.collectForbiddenWordTargets(
       orderProductList.map((product) => ({ ...product, deliveries: product.orderDeliveryList ?? [] })),
     );
+    if (eventName) {
+      targets.push({ field: 'eventName', text: eventName });
+    }
     await this.assertTargetsHaveNoForbiddenWord(user, targets, orderId);
   }
 
@@ -3406,11 +3411,16 @@ export class OrderService {
         deliveries: mapping.orderDeliveries ?? [],
       })),
     );
+    if (order.eventName) {
+      targets.push({ field: 'eventName', text: order.eventName });
+    }
     await this.assertTargetsHaveNoForbiddenWord(user, targets, order.id);
   }
 
   /**
-   * 금칙어 검사 공통 로직: 적발 시 block_log 기록 후 BadRequestException(FORBIDDEN_WORD) throw.
+   * 금칙어 검사 공통 로직: 전 필드를 스캔해 적발 필드별 block_log 기록 후,
+   * 적발 단어 합집합(중복 제거)으로 BadRequestException(FORBIDDEN_WORD) throw.
+   * (첫 필드에서 즉시 throw하면 교차 필드 적발 시 FE 안내 팝업에 단어가 누락된다)
    * block_log insert 실패는 warn 후에도 reject 유지.
    */
   private async assertTargetsHaveNoForbiddenWord(
@@ -3418,6 +3428,8 @@ export class OrderService {
     targets: { field: string; text: string }[],
     orderId: number | null,
   ): Promise<void> {
+    const allWords: string[] = [];
+
     for (const target of targets) {
       const matchedWords = this.forbiddenWordMatcher.scan(target.text);
       if (matchedWords.length === 0) {
@@ -3437,9 +3449,17 @@ export class OrderService {
         this.logger.warn(`금칙어 차단 로그 기록 실패: ${(e as Error).message}`);
       }
 
+      for (const word of matchedWords) {
+        if (!allWords.includes(word)) {
+          allWords.push(word);
+        }
+      }
+    }
+
+    if (allWords.length > 0) {
       throw new BadRequestException({
         code: 'FORBIDDEN_WORD',
-        words: matchedWords,
+        words: allWords,
         message: '금칙어가 포함되어 있습니다.',
       });
     }
@@ -3488,7 +3508,7 @@ export class OrderService {
     const { type, eventName, topImagePath, midImagePath, orderProductList } = getBody;
 
     await this.assertPositiveIntegerAmounts(orderProductList);
-    await this.assertNoForbiddenWord(user, orderProductList, null);
+    await this.assertNoForbiddenWord(user, orderProductList, null, eventName);
 
     // 대행주문인 경우 clientUser의 허용 발신수단으로 검증
     const clientUserId = getBody.clientUserId ?? null;
@@ -3652,7 +3672,7 @@ export class OrderService {
     const { id, eventName, topImagePath, midImagePath, orderProductList } = getBody;
 
     await this.assertPositiveIntegerAmounts(orderProductList);
-    await this.assertNoForbiddenWord(user, orderProductList, id);
+    await this.assertNoForbiddenWord(user, orderProductList, id, eventName);
 
     const order = await this.orderRepository.findOne({
       where: {
