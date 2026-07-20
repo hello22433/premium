@@ -14,11 +14,17 @@ import {
 } from '../api/product.choice.req.dto';
 import { IProductType } from '../../product/interface/product.type';
 import { IProductUseStatus } from '../../product/interface/product.status';
-import { hasUnusedComponent, resolveChoiceUseStatus } from '../domain/choice.use.status';
+import { hasUnusedComponent, isAutoUnusedByHistory, resolveChoiceUseStatus } from '../domain/choice.use.status';
 import { ProductChoiceMappingEntity } from '../../entity/product.choice.mapping.entity';
+import { ProductUpdateHistoryEntity } from '../../entity/product.update.history.entity';
+import {
+  ProductUpdateHistoryKeyName,
+  ProductUseStatusAutoHistoryKey,
+} from '../../product/domain/product.update.history.key.name';
+import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
-import { Transactional } from 'typeorm-transactional';
+import { IsolationLevel, Transactional } from 'typeorm-transactional';
 import { format } from 'date-fns';
 import { DateDateFormatStr } from '../../common/domain/date.format.str';
 import { ProductChoiceProductViewDto } from '../api/dto/product.choice.product.view.dto';
@@ -49,16 +55,22 @@ export class ProductChoiceService {
     private productRepository: Repository<ProductEntity>,
     @InjectRepository(ProductChoiceMappingEntity)
     private productChoiceMappingRepository: Repository<ProductChoiceMappingEntity>,
+    @InjectRepository(ProductUpdateHistoryEntity)
+    private productUpdateHistoryRepository: Repository<ProductUpdateHistoryEntity>,
     @InjectRepository(OrderDeliveryEntity)
     private orderDeliveryRepository: Repository<OrderDeliveryEntity>,
   ) {}
 
   async getList(getQuery: ProductChoiceGetListReqQueryDto): Promise<ProductChoiceGetListResDto> {
     const { createdStartAt, createdEndAt, name, code, expireDay, price, page, take } = getQuery;
+    // 구성상품은 left join 으로 가져온다.
+    // inner join 이면 삭제된 구성상품이 조인에서 빠져 남은 상품만으로 정상으로 보이거나,
+    // 구성상품이 전부 삭제된 초이스쿠폰 행 자체가 목록에서 사라진다.
+    // 매핑은 남기고 상품만 undefined 로 넘겨야 hasUnusedComponent 가 비정상으로 판정한다.
     let queryBuilder = this.productRepository
       .createQueryBuilder('product')
       .leftJoinAndSelect('product.productChoiceMappings', 'productChoiceMappings')
-      .innerJoinAndSelect('productChoiceMappings.product', 'subProduct')
+      .leftJoinAndSelect('productChoiceMappings.product', 'subProduct')
       .andWhere('product.type = :type', { type: IProductType.CHOICE });
 
     queryBuilder = QueryBuilderDateCondition(queryBuilder, 'product', 'createdAt', createdStartAt, createdEndAt);
@@ -100,7 +112,7 @@ export class ProductChoiceService {
         createdDate: format(product.createdAt, DateDateFormatStr),
         code: product.code,
         name: product.name,
-        productComposition: product.productChoiceMappings[0].product?.name ?? '',
+        productComposition: product.productChoiceMappings[0]?.product?.name ?? '',
         productCount: product.productChoiceMappings.length,
         usagePeriod: '2024-01-01~2024-12-31', // TODO:
         useStatus: product.useStatus,
@@ -224,13 +236,17 @@ export class ProductChoiceService {
     return { list: resultList, totalPage, totalCount, currentPage: page };
   }
 
-  @Transactional()
-  async create(getBody: ProductChoiceCreateReqDto) {
+  // READ COMMITTED 로 둬야 락을 잡은 뒤 읽은 구성상품 상태가 다른 트랜잭션의 최신 커밋을 반영한다.
+  // MySQL 기본 REPEATABLE READ 면 트랜잭션 시작 시점 스냅샷을 봐서 옛 상태로 판단할 수 있다.
+  @Transactional({ isolationLevel: IsolationLevel.READ_COMMITTED })
+  async create(user: ILoginUserInfo, getBody: ProductChoiceCreateReqDto) {
     const { name, productIdList, useStatus } = getBody;
     let { imagePath } = getBody;
 
-    const products = await this.productRepository.find({ where: { id: In(productIdList) } });
+    const products = await this.findComponentsWithLock(productIdList);
 
+    // 락 조회는 중복 id 를 한 건으로 합치므로 길이 비교가 중복까지 걸러낸다.
+    // 중복 요청을 통과시키면 같은 구성상품 매핑이 여러 건 저장된다.
     if (products.length !== productIdList.length) {
       throw new BadRequestException(`존재하지 않거나 삭제된 상품이 있습니다.`);
     }
@@ -275,6 +291,11 @@ export class ProductChoiceService {
 
     const newChoiceProductId = newChoiceProduct.id;
 
+    // 사용상태를 이력에 남긴다.
+    // 관리자가 USE 를 요청했는데 구성상품 때문에 UNUSED 로 보정된 경우는 자동 강등이다.
+    // 이때 수동 이력으로 남기면 이후 구성상품이 회복돼도 자동 복구 대상에서 빠진다.
+    await this.saveUseStatusHistory(user, newChoiceProductId, null, newChoiceProduct.useStatus, useStatus);
+
     const productChoiceMappings = productIdList.map((productId) => {
       return this.productChoiceMappingRepository.create({
         choiceProductId: newChoiceProductId,
@@ -287,19 +308,26 @@ export class ProductChoiceService {
     return;
   }
 
-  @Transactional()
-  async update(getBody: ProductChoiceUpdateReqDto) {
+  @Transactional({ isolationLevel: IsolationLevel.READ_COMMITTED })
+  async update(user: ILoginUserInfo, getBody: ProductChoiceUpdateReqDto) {
     const { id, name, productIdList, useStatus } = getBody;
     let { imagePath } = getBody;
 
-    const product = await this.productRepository.findOne({ where: { id: id, type: IProductType.CHOICE } });
+    // 초이스쿠폰 -> 구성상품 순서로 잠근다.
+    // ProductService.syncChoiceUseStatus 도 같은 순서로 잠그므로 두 경로가 엇갈려도 데드락이 나지 않는다.
+    const product = await this.productRepository.findOne({
+      where: { id: id, type: IProductType.CHOICE },
+      lock: { mode: 'pessimistic_write' },
+    });
 
     if (!product) {
       throw new BadRequestException('존재하지 않는 상품입니다.');
     }
 
-    const products = await this.productRepository.find({ where: { id: In(productIdList) } });
+    const products = await this.findComponentsWithLock(productIdList);
 
+    // 락 조회는 중복 id 를 한 건으로 합치므로 길이 비교가 중복까지 걸러낸다.
+    // 중복 요청을 통과시키면 같은 구성상품 매핑이 여러 건 저장된다.
     if (products.length !== productIdList.length) {
       throw new BadRequestException(`존재하지 않거나 삭제된 상품이 있습니다.`);
     }
@@ -310,13 +338,33 @@ export class ProductChoiceService {
       throw new BadRequestException(`가격이 다른 상품이 포함 되어 있습니다.`);
     }
 
+    const nextUseStatus = this.applyComponentUseStatus(useStatus, products);
+
     await this.productRepository.update(id, {
       type: IProductType.CHOICE,
       name,
       imagePath: imagePath!,
       price: initialPrice,
-      useStatus: this.applyComponentUseStatus(useStatus, products),
+      useStatus: nextUseStatus,
     });
+
+    // 사용상태가 바뀌면 이력을 남긴다.
+    // 관리자가 USE 를 요청했는데 구성상품 때문에 UNUSED 로 보정됐다면 자동 강등으로 남겨야
+    // 이후 구성상품이 회복될 때 자동 복구 대상이 된다.
+    //
+    // 값이 그대로여도 자동 강등 상태를 관리자가 같은 값으로 확정한 경우에는 이력을 남긴다.
+    // 마지막 이력이 자동 key 로 남아 있으면 구성상품이 회복될 때 자동으로 USE 가 되어
+    // 관리자의 미사용 의도가 무시되기 때문이다. 수동 이력으로 그 연결을 끊는다.
+    //
+    // 이 판별은 위에서 초이스쿠폰 행에 잡은 쓰기 락 안에서 수행한다.
+    // syncChoiceUseStatus 도 같은 행 락을 거치므로 두 경로가 직렬화되어
+    // 판별과 이력 기록 사이에 자동 강등이 끼어들지 못한다.
+    const isManualRequest = nextUseStatus === useStatus;
+    const needsManualOverride = product.useStatus === nextUseStatus && isManualRequest && (await this.isAutoUnused(id));
+
+    if (product.useStatus !== nextUseStatus || needsManualOverride) {
+      await this.saveUseStatusHistory(user, id, product.useStatus, nextUseStatus, useStatus);
+    }
 
     await this.productChoiceMappingRepository.softDelete({ choiceProductId: id });
 
@@ -355,6 +403,68 @@ export class ProductChoiceService {
     }
 
     await this.productRepository.softDelete({ id: In(idList) });
+  }
+
+  // 구성상품을 쓰기 락과 함께 id 오름차순으로 읽는다.
+  // 락이 없으면 구성상품 상태를 읽은 뒤 매핑을 만들기 전에 그 상품이 미사용으로 바뀔 수 있다.
+  // 이때 ProductService 의 동기화는 아직 없는 매핑을 못 찾고, 여기서는 옛 상태로 USE 를 저장해
+  // 미사용 구성상품을 가진 초이스쿠폰이 USE 로 남는다.
+  // ProductService.syncChoiceUseStatus 와 같은 순서(id 오름차순)로 잠가 데드락을 피한다.
+  private async findComponentsWithLock(productIdList: number[]): Promise<ProductEntity[]> {
+    const uniqueIds = [...new Set(productIdList)].sort((a, b) => a - b);
+
+    if (uniqueIds.length === 0) {
+      return [];
+    }
+
+    return this.productRepository
+      .createQueryBuilder('product')
+      .setLock('pessimistic_write')
+      .where('product.id IN (:...ids)', { ids: uniqueIds })
+      .orderBy('product.id', 'ASC')
+      .getMany();
+  }
+
+  // 초이스쿠폰이 자동으로 미사용된 상태인지 마지막 사용상태 이력으로 판별한다.
+  // ProductService.wasAutoUnused 와 같은 도메인 규칙(isAutoUnusedByHistory)을 쓴다.
+  // 호출부가 초이스쿠폰 행 쓰기 락을 잡은 뒤 부르므로 최신 이력을 본다.
+  private async isAutoUnused(choiceProductId: number): Promise<boolean> {
+    const lastUseStatusHistory = await this.productUpdateHistoryRepository.findOne({
+      where: {
+        productId: choiceProductId,
+        key: In(['useStatus', ProductUseStatusAutoHistoryKey]),
+      },
+      order: { id: 'DESC' },
+    });
+
+    return isAutoUnusedByHistory(lastUseStatusHistory);
+  }
+
+  // 사용상태 이력을 남긴다. 마지막 이력의 key 로 수동/자동을 구분하므로 key 선택이 중요하다.
+  //
+  // requested 와 afterValue 가 다르면 구성상품 때문에 보정된 것이므로 자동 강등으로 본다.
+  // 이 경우 ProductUseStatusAutoHistoryKey 로 남겨야 구성상품이 회복될 때 자동으로 복구된다.
+  // 관리자가 요청한 값 그대로 저장됐다면 수동 변경이므로 'useStatus' 로 남긴다.
+  private async saveUseStatusHistory(
+    user: ILoginUserInfo,
+    productId: number,
+    beforeValue: IProductUseStatus | null,
+    afterValue: IProductUseStatus,
+    requested: IProductUseStatus,
+  ): Promise<void> {
+    const isAutoAdjusted = requested !== afterValue;
+    const key = isAutoAdjusted ? ProductUseStatusAutoHistoryKey : 'useStatus';
+
+    const history = new ProductUpdateHistoryEntity();
+    history.productId = productId;
+    history.userId = user.id;
+    history.key = key;
+    history.keyName = ProductUpdateHistoryKeyName(key);
+    history.beforeValue = beforeValue;
+    history.afterValue = afterValue;
+    history.reason = isAutoAdjusted ? '구성상품 사용상태에 따른 자동 반영' : null;
+
+    await this.productUpdateHistoryRepository.insert(history);
   }
 
   // 구성상품에 미사용/영구미사용이 있으면 초이스쿠폰은 사용 상태가 될 수 없다.

@@ -451,8 +451,8 @@ export class ProductController {
   // =========================================
   @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @Delete('/product/list')
-  delete(@Body() getDto: ProductDeleteReqDto) {
-    return this.productService.delete(getDto);
+  delete(@User() user: ILoginUserInfo, @Body() getDto: ProductDeleteReqDto) {
+    return this.productService.delete(user, getDto);
   }
 
   @ApiOperation({

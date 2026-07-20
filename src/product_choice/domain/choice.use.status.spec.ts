@@ -1,5 +1,5 @@
 import { IProductUseStatus } from '../../product/interface/product.status';
-import { hasUnusedComponent, resolveChoiceUseStatus } from './choice.use.status';
+import { hasUnusedComponent, isAutoUnusedByHistory, resolveChoiceUseStatus } from './choice.use.status';
 
 describe('hasUnusedComponent', () => {
   it('구성상품이 모두 사용이면 false', () => {
@@ -49,5 +49,25 @@ describe('resolveChoiceUseStatus', () => {
   it('상태가 없는 구성상품이 섞여 있으면 나머지가 모두 사용이어도 미사용', () => {
     expect(resolveChoiceUseStatus([IProductUseStatus.USE, undefined])).toBe(IProductUseStatus.UNUSED);
     expect(resolveChoiceUseStatus([IProductUseStatus.USE, null])).toBe(IProductUseStatus.UNUSED);
+  });
+});
+
+describe('isAutoUnusedByHistory - 자동/수동 미사용 판별', () => {
+  it('자동 key 로 미사용된 경우 자동 강등으로 본다', () => {
+    expect(isAutoUnusedByHistory({ key: 'useStatusAuto', afterValue: IProductUseStatus.UNUSED })).toBe(true);
+  });
+
+  it('수동 key 로 미사용된 경우 자동 강등이 아니다', () => {
+    expect(isAutoUnusedByHistory({ key: 'useStatus', afterValue: IProductUseStatus.UNUSED })).toBe(false);
+  });
+
+  it('자동 key 라도 결과가 사용이면 자동 강등이 아니다', () => {
+    expect(isAutoUnusedByHistory({ key: 'useStatusAuto', afterValue: IProductUseStatus.USE })).toBe(false);
+  });
+
+  // 자동 반영 도입 전 데이터는 이력이 없다. 수동으로 보고 복구하지 않는다.
+  it('이력이 없으면 자동 강등이 아니다', () => {
+    expect(isAutoUnusedByHistory(null)).toBe(false);
+    expect(isAutoUnusedByHistory(undefined)).toBe(false);
   });
 });

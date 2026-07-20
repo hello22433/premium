@@ -40,7 +40,7 @@ import { CreateCode } from '../../common/domain/create.code';
 import { ProductChoicePrefixCode, ProductDigitNumber, ProductPrefixCode } from '../domain/product.code';
 import { BrandDigitNumber, BrandPrefixCode } from '../../brand/domain/brand.code';
 import { ProductUpdateHistoryEntity } from '../../entity/product.update.history.entity';
-import { ProductUpdateHistoryKeyName } from '../domain/product.update.history.key.name';
+import { ProductUpdateHistoryKeyName, ProductUseStatusAutoHistoryKey } from '../domain/product.update.history.key.name';
 import { IsolationLevel, Transactional } from 'typeorm-transactional';
 import { ProductHistoryViewDto } from '../api/dto/product.history.view.dto';
 import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
@@ -77,7 +77,7 @@ import { IUserSyncProductStatus } from '../../user_sync_product/interface/user.s
 import { IFileStorage } from '../../file/interface/file.storage';
 import { ProductSharedListFileEntity } from '../../entity/product.shared.list.file.entity';
 import { ProductChoiceMappingEntity } from '../../entity/product.choice.mapping.entity';
-import { resolveChoiceUseStatus } from '../../product_choice/domain/choice.use.status';
+import { isAutoUnusedByHistory, resolveChoiceUseStatus } from '../../product_choice/domain/choice.use.status';
 
 @Injectable()
 export class ProductService {
@@ -1121,11 +1121,19 @@ export class ProductService {
         continue;
       }
 
+      // USE 로 되돌리는 경우는 자동으로 내려간 초이스쿠폰만 대상이다.
+      // 관리자가 직접 미사용으로 둔 초이스쿠폰까지 구성상품 회복만으로 노출시키면 안 된다.
+      // 마지막 사용상태 이력의 key 로 판별한다. 자동 강등이면 ProductUseStatusAutoHistoryKey 다.
+      if (nextUseStatus === IProductUseStatus.USE && !(await this.wasAutoUnused(choiceProductId))) {
+        continue;
+      }
+
+      // 자동 강등/복구 이력은 관리자 수동 변경과 구분되도록 별도 key 로 남긴다.
       const history = new ProductUpdateHistoryEntity();
       history.productId = choiceProductId;
       history.userId = user.id;
-      history.key = 'useStatus';
-      history.keyName = ProductUpdateHistoryKeyName('useStatus');
+      history.key = ProductUseStatusAutoHistoryKey;
+      history.keyName = ProductUpdateHistoryKeyName(ProductUseStatusAutoHistoryKey);
       history.beforeValue = choiceProduct.useStatus;
       history.afterValue = nextUseStatus;
       history.reason = reason ?? `구성상품(${component.code}) 사용상태 변경에 따른 자동 반영`;
@@ -1139,6 +1147,21 @@ export class ProductService {
     }
 
     return histories;
+  }
+
+  // 초이스쿠폰이 자동으로 미사용 처리된 상태인지 판별한다.
+  // 판별 규칙은 도메인(isAutoUnusedByHistory)에 두어 ProductChoiceService 와 같은 기준을 쓴다.
+  // 호출부에서 이미 초이스쿠폰 행에 쓰기 락을 잡았으므로, 이 조회는 락 안에서 최신 이력을 본다.
+  private async wasAutoUnused(choiceProductId: number): Promise<boolean> {
+    const lastUseStatusHistory = await this.productUpdateHistoryRepository.findOne({
+      where: {
+        productId: choiceProductId,
+        key: In(['useStatus', ProductUseStatusAutoHistoryKey]),
+      },
+      order: { id: 'DESC' },
+    });
+
+    return isAutoUnusedByHistory(lastUseStatusHistory);
   }
 
   async excelDownload(user: ILoginUserInfo, getBody: ProductExcelDownloadReqBodyDto) {
@@ -2002,7 +2025,10 @@ export class ProductService {
     await this.productLikeRepository.save(productLike);
   }
 
-  async delete(getDto: ProductDeleteReqDto) {
+  // 삭제도 구성상품이 빠지는 것이므로 초이스쿠폰 사용상태를 다시 계산해야 한다.
+  // 삭제와 재계산이 한 트랜잭션에서 끝나야 삭제만 반영되고 초이스쿠폰이 사용으로 남는 상태를 막는다.
+  @Transactional({ isolationLevel: IsolationLevel.READ_COMMITTED })
+  async delete(user: ILoginUserInfo, getDto: ProductDeleteReqDto) {
     const { idList } = getDto;
 
     const productList = await this.productRepository.find({
@@ -2018,6 +2044,17 @@ export class ProductService {
     await this.productRepository.softDelete({
       id: In(idList),
     });
+
+    // 삭제된 구성상품은 siblingProducts 조회에서 deletedAt 이 채워진 채로 잡히고,
+    // resolveChoiceUseStatus 가 이를 비정상으로 보아 초이스쿠폰을 미사용으로 내린다.
+    const histories: ProductUpdateHistoryEntity[] = [];
+    for (const product of productList) {
+      histories.push(...(await this.syncChoiceUseStatus(user, product, `구성상품(${product.code}) 삭제`)));
+    }
+
+    if (histories.length > 0) {
+      await this.productUpdateHistoryRepository.insert(histories);
+    }
 
     return;
   }
