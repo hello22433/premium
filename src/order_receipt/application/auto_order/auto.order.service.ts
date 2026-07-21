@@ -243,7 +243,8 @@ export class AutoOrderService {
     } catch (e) {
       this.logger.error(`자동주문 파일 읽기 실패 [${fileIndex}] ${fileName}: ${(e as Error).message}`);
       if (mode === AutoOrderRunMode.COMMIT) {
-        throw new Error(`자동주문 파일을 읽을 수 없습니다(${fileName}): ${(e as Error).message}`);
+        // 원문(버킷/키/리전 등 S3 SDK 메시지)은 위 logger.error에만 남기고, 응답 본문(→500)엔 일반 문구만.
+        throw new Error(`자동주문 파일을 읽을 수 없습니다(${fileName}).`);
       }
       return this.invalidFile(fileIndex, fileName, url, '파일을 읽을 수 없습니다(일시 오류). 다시 시도해 주세요.', 'NOT_XLSX');
     }

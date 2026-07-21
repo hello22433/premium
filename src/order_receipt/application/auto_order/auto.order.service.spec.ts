@@ -408,14 +408,17 @@ describe('AutoOrderService (COMMIT 승인)', () => {
 
   it('COMMIT 중 인프라(읽기) 오류 → run 전파(승인 롤백); DRY_RUN은 INVALID_FORMAT', async () => {
     const throwingFile = {
+      getContentLength: async () => null, // HeadObject 미제공 → 본문 조회 시도로 진행
       getBuffer: async () => { throw new Error('S3 timeout'); },
       extractOriginalFileName: (u: string) => u,
     } as unknown as FileService;
 
-    // COMMIT: 전파
+    // COMMIT: 전파(롤백). 단 원문(S3 timeout)은 로그에만, 응답 문구는 일반화(재검증 LOW).
     const { svc: commitSvc } = makeService({});
     (commitSvc as any).fileService = throwingFile;
-    await expect(commitSvc.run(receipt('u://x.xlsx'), admin, AutoOrderRunMode.COMMIT)).rejects.toThrow('S3 timeout');
+    await expect(commitSvc.run(receipt('u://x.xlsx'), admin, AutoOrderRunMode.COMMIT)).rejects.toThrow(
+      '자동주문 파일을 읽을 수 없습니다',
+    );
 
     // DRY_RUN: 파일 오류로 표시(전파 안 함)
     const { svc: previewSvc } = makeService({});
