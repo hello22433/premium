@@ -42,7 +42,7 @@ export interface AutoOrderOrderDto {
 export interface AutoOrderFileResultDto {
   targetFilePath: string;
   fileIndex: number;
-  status: 'VALID' | 'INVALID_FORMAT' | 'ALREADY_COMMITTED';
+  status: 'VALID' | 'INVALID_FORMAT';
   formatError: AutoOrderFormatErrorDto | null;
   reconciliation: AutoOrderReconciliationDto;
   orders: AutoOrderOrderDto[];

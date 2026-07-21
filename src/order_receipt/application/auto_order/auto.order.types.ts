@@ -9,8 +9,12 @@ import { IOrderType } from '../../../order/interface/order.type';
  * (blocked/reconciliation 등 뒤 단계 타입은 해당 Phase에서 추가한다)
  */
 
-/** 파일 양식 판정 결과 상태 */
-export type AutoOrderFileStatus = 'VALID' | 'INVALID_FORMAT' | 'ALREADY_COMMITTED';
+/**
+ * 파일 양식 판정 결과 상태.
+ * (멱등 재처리는 파일 status가 아니라 상위 AutoOrderResult.alreadyCommitted 플래그로 표현한다 —
+ *  과거 'ALREADY_COMMITTED' 파일 status는 생성 지점이 없는 죽은 값이라 제거함.)
+ */
+export type AutoOrderFileStatus = 'VALID' | 'INVALID_FORMAT';
 
 /**
  * 발신수단별 수신처: EMAIL이면 이메일(D), 그 외엔 휴대폰(B). 없으면 null.
