@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { AutoOrderExcelParser } from './auto.order.excel.parser';
 import { FormatErrorCode, ParsedFile, StructureResult } from './auto.order.types';
 
@@ -10,6 +10,7 @@ import { FormatErrorCode, ParsedFile, StructureResult } from './auto.order.types
 @Injectable()
 export class AutoOrderStructureValidator {
   private static readonly SUPPORTED_VERSION = 'v4.1-immediate-send';
+  private readonly logger = new Logger(AutoOrderStructureValidator.name);
 
   validate(parsed: ParsedFile): StructureResult {
     if (parsed.parseError === 'SHEET_MISSING' || !parsed.header) {
@@ -31,6 +32,11 @@ export class AutoOrderStructureValidator {
     const h = parsed.header;
 
     if (h.formVersion !== AutoOrderStructureValidator.SUPPORTED_VERSION) {
+      // 양식 개정(예: v4.2) 배포 시 전 건이 VERSION_MISMATCH로 조용히 0건 처리된다 → warn으로 남겨
+      // 이 로그의 급증 자체가 "양식이 바뀌었다"는 감지 신호가 되게 한다(알림/에러 없이 며칠 뒤 발견 방지).
+      this.logger.warn(
+        `자동주문 양식버전 불일치: 파일=${h.formVersion || '없음'} 지원=${AutoOrderStructureValidator.SUPPORTED_VERSION} (양식 개정 시 급증=감지 신호)`,
+      );
       return this.invalid(
         `지원하지 않는 양식버전입니다. (파일: ${h.formVersion || '없음'} / 지원: ${AutoOrderStructureValidator.SUPPORTED_VERSION})`,
         'VERSION_MISMATCH',
