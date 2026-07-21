@@ -30,6 +30,12 @@ export interface IFileStorage {
   headOriginalName(key: string): Promise<string | null>;
 
   /**
+   * 객체 크기(바이트)를 본문 다운로드 없이 읽는다(못 구하면 null). HeadObject 1회.
+   * 대용량/압축폭탄을 getFileBuffer(본문 적재) 전에 거르는 용도.
+   */
+  headContentLength(key: string): Promise<number | null>;
+
+  /**
    * 주어진 URL 이 우리 S3 버킷의 객체 URL 인지(host 기준). 다운로드 프록시가
    * 외부 host URL 의 pathname 을 우리 key 로 오인해 read 하는 것을 막는 데 쓴다.
    */

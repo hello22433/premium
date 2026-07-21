@@ -104,6 +104,7 @@ function makeService(
 
   const fileService = {
     getBuffer: async (url: string) => bufferByUrl[url],
+    getContentLength: async (url: string) => bufferByUrl[url]?.length ?? null,
     extractOriginalFileName: (url: string) => url.split('/').pop() ?? url,
   } as unknown as FileService;
 
@@ -515,6 +516,42 @@ describe('AutoOrderService (리뷰 추가 커버리지)', () => {
     const f = (await drySvc.run(receipt('u://big.xlsx'), admin, AutoOrderRunMode.DRY_RUN)).files[0];
     expect(f.status).toBe('INVALID_FORMAT');
     expect(f.formatErrorCode).toBe('NOT_XLSX');
+  });
+
+  // 리뷰 M5: HeadObject(Content-Length)로 본문 적재 전에 차단 — getBuffer 미호출로 메모리 폭주 방지
+  it('HeadObject가 상한 초과를 알리면 본문(getBuffer) 조회 없이 차단', async () => {
+    const { svc } = makeService({ 'u://big.xlsx': Buffer.from('small') });
+    let bufferFetched = false;
+    (svc as any).fileService = {
+      getContentLength: async () => AutoOrderService.MAX_FILE_BYTES + 1, // 본문은 작지만 Head는 초과 보고
+      getBuffer: async () => {
+        bufferFetched = true;
+        return Buffer.from('small');
+      },
+      extractOriginalFileName: (u: string) => u,
+    };
+
+    const f = (await svc.run(receipt('u://big.xlsx'), admin, AutoOrderRunMode.DRY_RUN)).files[0];
+    expect(f.status).toBe('INVALID_FORMAT');
+    expect(f.message).toContain('한도');
+    expect(bufferFetched).toBe(false); // 본문을 아예 안 읽음
+
+    await expect(svc.run(receipt('u://big.xlsx'), admin, AutoOrderRunMode.COMMIT)).rejects.toThrow(/한도/);
+    expect(bufferFetched).toBe(false);
+  });
+
+  // HeadObject가 크기를 못 주면(null) 본문 length로 2차 차단(폴백)
+  it('HeadObject가 null이면 본문 length 2차 폴백으로 차단', async () => {
+    const big = Buffer.alloc(AutoOrderService.MAX_FILE_BYTES + 1);
+    const { svc } = makeService({ 'u://big.xlsx': big });
+    (svc as any).fileService = {
+      getContentLength: async () => null, // Head 실패/미제공
+      getBuffer: async () => big,
+      extractOriginalFileName: (u: string) => u,
+    };
+    const f = (await svc.run(receipt('u://big.xlsx'), admin, AutoOrderRunMode.DRY_RUN)).files[0];
+    expect(f.status).toBe('INVALID_FORMAT');
+    expect(f.message).toContain('한도');
   });
 
   // 리뷰 M-2: 저장 스냅샷이 손상되면 raw SyntaxError가 아니라 맥락 있는 오류로 실패

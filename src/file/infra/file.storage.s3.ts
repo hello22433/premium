@@ -133,6 +133,12 @@ export class FileStorageS3 implements IFileStorage {
     return raw ? decodeURIComponent(raw) : null;
   }
 
+  async headContentLength(key: string): Promise<number | null> {
+    const bucketName = this.configService.getOrThrow('AWS_S3_BUCKET');
+    const res = await this.s3Client.send(new HeadObjectCommand({ Bucket: bucketName, Key: key }));
+    return typeof res.ContentLength === 'number' ? res.ContentLength : null;
+  }
+
   isOwnStorageUrl(fileUrl: string): boolean {
     const bucketName = this.configService.getOrThrow('AWS_S3_BUCKET');
     try {

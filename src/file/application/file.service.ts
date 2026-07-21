@@ -40,6 +40,12 @@ export class FileService {
     return this.fileStorage.getFileBuffer(key);
   }
 
+  /** S3 객체 크기(바이트)를 본문 다운로드 없이 조회(못 구하면 null). 대용량 파일을 getBuffer 전에 거르는 용도. */
+  async getContentLength(fileUrl: string): Promise<number | null> {
+    const key = this.extractStorageKey(fileUrl);
+    return this.fileStorage.headContentLength(key);
+  }
+
   async createPdf(file: Express.Multer.File) {
     if (!file) {
       throw new BadRequestException('not exist pdf file');

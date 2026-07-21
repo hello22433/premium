@@ -221,6 +221,22 @@ export class AutoOrderService {
     //   인프라/IO 오류(S3 읽기 실패, 0바이트)와 형식 오류(파싱 실패)를 구분한다.
     //   · 인프라 오류: COMMIT이면 전파 → approve 트랜잭션 롤백(유효 주문 소실 방지). DRY_RUN이면 파일 오류 표시.
     //   · 형식 오류:   INVALID_FORMAT으로 진행(고객사 자체 양식 허용 — 승인은 정상).
+
+    // 크기 상한 1차: 본문을 메모리에 올리기 전에 HeadObject(Content-Length)로 먼저 차단.
+    // getBuffer가 객체 전체를 버퍼로 적재하므로, 여기서 막아야 거대파일/압축폭탄의 메모리 폭주를 실제로 방어한다.
+    let headLen: number | null = null;
+    try {
+      headLen = await this.fileService.getContentLength(url);
+    } catch (e) {
+      // HeadObject 실패(권한/레거시 등)는 치명적이지 않다 → 본문 적재 후 buffer.length 2차 방어로 넘긴다.
+      this.logger.warn(
+        `자동주문 파일 크기 사전조회 실패 [${fileIndex}] ${fileName}: ${(e as Error).message} (본문 조회 후 재확인)`,
+      );
+    }
+    if (headLen !== null && headLen > AutoOrderService.MAX_FILE_BYTES) {
+      return this.rejectOversize(mode, fileIndex, fileName, url, headLen, 'HeadObject');
+    }
+
     let buffer: Buffer;
     try {
       buffer = await this.fileService.getBuffer(url);
@@ -236,16 +252,9 @@ export class AutoOrderService {
       if (mode === AutoOrderRunMode.COMMIT) throw new Error(`자동주문 파일이 비어 있습니다(${fileName}).`);
       return this.invalidFile(fileIndex, fileName, url, '파일이 비어 있습니다.', 'NOT_XLSX');
     }
-    // 크기 상한: xlsx.load 전에 차단(압축폭탄/거대파일이 파싱 단계에서 메모리·CPU 폭주하는 것 방지).
+    // 크기 상한 2차(폴백): HeadObject가 크기를 못 준(null) 경우 대비. 이미 버퍼엔 올라왔지만 파싱(xlsx.load) 전에 차단.
     if (buffer.length > AutoOrderService.MAX_FILE_BYTES) {
-      this.logger.error(
-        `자동주문 파일 크기 초과 [${fileIndex}] ${fileName}: ${buffer.length}바이트 (상한 ${AutoOrderService.MAX_FILE_BYTES})`,
-      );
-      const limitMb = Math.floor(AutoOrderService.MAX_FILE_BYTES / (1024 * 1024));
-      if (mode === AutoOrderRunMode.COMMIT) {
-        throw new Error(`자동주문 파일이 처리 한도(${limitMb}MB)를 초과했습니다(${fileName}).`);
-      }
-      return this.invalidFile(fileIndex, fileName, url, `파일이 처리 한도(${limitMb}MB)를 초과했습니다.`, 'NOT_XLSX');
+      return this.rejectOversize(mode, fileIndex, fileName, url, buffer.length, '본문');
     }
 
     let parsed;
@@ -495,6 +504,25 @@ export class AutoOrderService {
     } catch {
       return url;
     }
+  }
+
+  /** 크기 상한 초과 처리: COMMIT은 throw(승인 롤백), DRY_RUN은 INVALID_FORMAT 파일 결과 반환. source=조회 출처(로그용). */
+  private rejectOversize(
+    mode: AutoOrderRunMode,
+    fileIndex: number,
+    fileName: string,
+    url: string,
+    sizeBytes: number,
+    source: 'HeadObject' | '본문',
+  ): AutoOrderFileResult {
+    this.logger.error(
+      `자동주문 파일 크기 초과(${source}) [${fileIndex}] ${fileName}: ${sizeBytes}바이트 (상한 ${AutoOrderService.MAX_FILE_BYTES})`,
+    );
+    const limitMb = Math.floor(AutoOrderService.MAX_FILE_BYTES / (1024 * 1024));
+    if (mode === AutoOrderRunMode.COMMIT) {
+      throw new Error(`자동주문 파일이 처리 한도(${limitMb}MB)를 초과했습니다(${fileName}).`);
+    }
+    return this.invalidFile(fileIndex, fileName, url, `파일이 처리 한도(${limitMb}MB)를 초과했습니다.`, 'NOT_XLSX');
   }
 
   private invalidFile(
