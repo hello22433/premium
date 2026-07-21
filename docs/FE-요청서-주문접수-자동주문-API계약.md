@@ -14,7 +14,7 @@
 | 액션 | Method · Path | Body | 응답 | 권한 |
 |---|---|---|---|---|
 | 미리보기 | `POST /order-receipt/:id/preview` | `{ fileIndexes?: number[] }` | `AutoOrderResultDto` (`mode=PREVIEW`, 이미 승인됐으면 `COMMITTED`) | 운영관리자 이상 |
-| 승인 | `PUT /order-receipt/:id/approve` | 없음 | `AutoOrderResultDto` (`mode=COMMITTED`) | 운영관리자 이상 |
+| 승인 | `PUT /order-receipt/:id/approve` | `{ fileIndexes?: number[] }` | `AutoOrderResultDto` (`mode=COMMITTED`) | 운영관리자 이상 |
 | 결과조회 | `GET /order-receipt/:id/result` | 없음 | `AutoOrderResultDto` (`mode=COMMITTED`) / 없으면 404 | 운영관리자 이상 |
 
 - **미리보기**는 DB를 바꾸지 않습니다(DRY_RUN). "승인하면 무엇이 생성/차단되는지"를 계산해 보여줍니다.
@@ -34,7 +34,9 @@ interface OrderReceiptPreviewReq {
 }
 ```
 - `fileIndexes`는 `order_receipt.filePath`(첨부 URL 목록)의 **인덱스**입니다. 선택 여부와 무관하게 인덱스는 전체 목록 기준으로 고정됩니다(멱등키·리포트 식별 안정성).
-- 승인(`approve`)에는 Body가 없습니다 — 승인은 항상 전체 파일을 처리합니다.
+- 미리보기/승인 **공용 Body**입니다. 미지정/빈 배열이면 전체 파일. 범위 밖/비정수 인덱스는 **400**으로 거부됩니다(조용한 빈 미리보기 방지).
+- **승인도 `fileIndexes`를 받습니다 — "검토한 집합만 커밋"**: 미리보기에서 본 선택을 그대로 승인에 넘기면 그 파일만 생성됩니다(검토집합=커밋집합). 미지정이면 전체.
+  - ⚠️ **부분 승인은 접수를 APPROVED로 마감**합니다. 선택하지 않은 파일은 이 접수에서 더 이상 승인할 수 없으니, 남은 파일까지 생성하려면 처음부터 전체를 선택(또는 미지정)하세요. 프론트는 "선택한 N개만 승인되고 접수가 마감됩니다"를 확인 UX로 노출 권장.
 
 ---
 
@@ -173,10 +175,13 @@ interface AutoOrderOrderDto {
 - `type.ts`의 `TOrderReceiptAutoResult`(및 하위 타입)를 2절 형태로 정렬 — 특히 `mode`, `formatError`, `reconciliation`, `warningRows[].code`(BlockCode), `orders[].type`(GENERAL/SSG).
 - 미리보기/결과조회를 **동일 렌더러**로 처리(둘 다 `AutoOrderResultDto`).
 - 3-1/3-2 코드 표를 한글 라벨 상수로 매핑(사용자 노출 문구).
+- **미리보기에서 부분 선택했다면 승인에도 같은 `fileIndexes`를 전달**(검토집합=커밋집합). 전체 승인이면 Body 생략.
 
 **안 할 것 / 확인 필요(백엔드에 회신 주세요)**
 - **(확인①) 계약 정본**: 위 필드명이 프론트 `type.ts`와 어긋나는 항목이 있으면 알려주세요. 백엔드는 프론트 기존 타입에 맞추는 것을 우선했으나, `sendParams/settlement/orderDeliveryList/fileWarnings` 등 프론트가 optional로 두던 필드는 **현재 미제공(후속 단계)** 입니다.
 - **(확인②) `GET /result` 범위**: 이 엔드포인트가 이번 PR 범위에 포함되는지(프론트가 승인 응답만 쓰고 결과조회는 안 쓸 계획이면 알려주세요 — 백엔드는 새로고침/재방문 대비로 추가함).
+
+> 리뷰 반영(해소됨): 이전엔 "미리보기는 일부 파일, 승인은 항상 전체"라 검토집합 ⊂ 커밋집합 비대칭이 있었으나, 승인이 동일 `fileIndexes`를 받도록 통일해 닫혔습니다.
 
 ---
 
