@@ -841,8 +841,9 @@ export class OrderService {
         }
 
         // 실제 발송 시간: 성공한 배송 건 중 하나의 actualSendAt 사용
+        // 목록 표시는 활성 배송건만 사용한다. soft-delete 배송건은 파기확인서 게이트 판정에만 쓴다.
         for (const mapping of order.orderProductMappings) {
-          for (const delivery of mapping.orderDeliveries ?? []) {
+          for (const delivery of (mapping.orderDeliveries ?? []).filter((d) => d.deletedAt == null)) {
             if (
               delivery.actualSendAt &&
               (delivery.status === IOrderDeliveryStatus.COMPLETE ||
@@ -856,19 +857,23 @@ export class OrderService {
         }
       }
 
-      // 발송 실패 건 포함 여부 확인
+      // 발송 실패 건 포함 여부 확인 (활성 배송건만)
       const hasFailedDelivery =
         order.orderProductMappings?.some((mapping) =>
-          mapping.orderDeliveries?.some(
-            (delivery) =>
-              delivery.status === IOrderDeliveryStatus.FAIL || delivery.status === IOrderDeliveryStatus.FAIL_SMS,
-          ),
+          mapping.orderDeliveries
+            ?.filter((delivery) => delivery.deletedAt == null)
+            .some(
+              (delivery) =>
+                delivery.status === IOrderDeliveryStatus.FAIL || delivery.status === IOrderDeliveryStatus.FAIL_SMS,
+            ),
         ) ?? false;
 
-      // 재발송 완료 건 포함 여부 확인
+      // 재발송 완료 건 포함 여부 확인 (활성 배송건만)
       const hasResentDelivery =
         order.orderProductMappings?.some((mapping) =>
-          mapping.orderDeliveries?.some((delivery) => delivery.resendAt != null),
+          mapping.orderDeliveries
+            ?.filter((delivery) => delivery.deletedAt == null)
+            .some((delivery) => delivery.resendAt != null),
         ) ?? false;
 
       // 파기확인서 발행 가능 여부 (deliveryTarget 단일 컬럼 판정 — destruction.certificate.gate 참조)
@@ -891,6 +896,7 @@ export class OrderService {
             (m.orderDeliveries ?? [])
               .filter(
                 (d) =>
+                  d.deletedAt == null &&
                   d.actualSendAt &&
                   (d.status === IOrderDeliveryStatus.COMPLETE || d.status === IOrderDeliveryStatus.COMPLETE_SMS),
               )
