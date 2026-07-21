@@ -76,7 +76,7 @@ describe('AutoOrderPreValidator', () => {
   });
 
   it('휴대폰 없는 행(문자 발송) → ROW 차단(MISSING_DELIVERY_TARGET)', () => {
-    const rows = [mappedRow(5, { phone: null }), mappedRow(6, { phone: '010-1' })];
+    const rows = [mappedRow(5, { phone: null }), mappedRow(6, { phone: '010-2345-6789' })];
     const r = validator.validate(input({ generalRows: rows }));
     expect([...r.blockedRowNos]).toEqual([5]);
     expect(r.blocked.some((b) => b.code === 'MISSING_DELIVERY_TARGET' && b.rowNo === 5)).toBe(true);
@@ -86,6 +86,26 @@ describe('AutoOrderPreValidator', () => {
     const rows = [mappedRow(5, { email: null, phone: '010-1' })];
     const r = validator.validate(input({ header: header({ sendMethod: IOrderSendMethod.EMAIL }), generalRows: rows }));
     expect([...r.blockedRowNos]).toEqual([5]); // 휴대폰 있어도 이메일 없으면 이메일발송은 차단
+  });
+
+  it('EMAIL인데 이메일 형식 아님(이름) → ROW 차단(INVALID_DELIVERY_TARGET)', () => {
+    const rows = [mappedRow(5, { email: '홍길동', phone: null })];
+    const r = validator.validate(input({ header: header({ sendMethod: IOrderSendMethod.EMAIL }), generalRows: rows }));
+    expect([...r.blockedRowNos]).toEqual([5]);
+    expect(r.blocked.some((b) => b.code === 'INVALID_DELIVERY_TARGET' && b.rowNo === 5)).toBe(true);
+  });
+
+  it('휴대폰 형식 아님(문자열) → ROW 차단(INVALID_DELIVERY_TARGET)', () => {
+    const rows = [mappedRow(5, { phone: '없는번호' }), mappedRow(6, { phone: '010-2345-6789' })];
+    const r = validator.validate(input({ generalRows: rows }));
+    expect([...r.blockedRowNos]).toEqual([5]); // 6행은 정상 형식이라 통과
+    expect(r.blocked.some((b) => b.code === 'INVALID_DELIVERY_TARGET' && b.rowNo === 5)).toBe(true);
+  });
+
+  it('정상 이메일 형식은 차단 없음', () => {
+    const rows = [mappedRow(5, { email: 'a@x.com', phone: null })];
+    const r = validator.validate(input({ header: header({ sendMethod: IOrderSendMethod.EMAIL }), generalRows: rows }));
+    expect(r.blocked.some((b) => b.code === 'INVALID_DELIVERY_TARGET')).toBe(false);
   });
 
   it('제목 금칙어 → FILE 차단(TITLE, 마스킹)', () => {

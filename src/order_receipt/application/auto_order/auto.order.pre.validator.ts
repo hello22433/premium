@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { PhoneUtil } from '../../../common/utils/phone.util';
 import { ForbiddenWordMatcher } from '../../../forbidden_word/application/forbidden.word.matcher';
 import { IOrderType } from '../../../order/interface/order.type';
 import { IOrderSendMethod } from '../../../order/interface/order.send.method';
@@ -139,18 +140,39 @@ export class AutoOrderPreValidator {
     blocked: BlockReason[],
     blockedRowNos: Set<number>,
   ): void {
+    const isEmail = header.sendMethod === IOrderSendMethod.EMAIL;
     const target = resolveDeliveryTarget(header.sendMethod, row);
-    if (target) return;
-    blockedRowNos.add(row.rowNo);
-    blocked.push({
-      code: 'MISSING_DELIVERY_TARGET',
-      level: 'ROW',
-      rowNo: row.rowNo,
-      reason:
-        header.sendMethod === IOrderSendMethod.EMAIL
+
+    // ① 수신처 자체가 없음
+    if (!target) {
+      blockedRowNos.add(row.rowNo);
+      blocked.push({
+        code: 'MISSING_DELIVERY_TARGET',
+        level: 'ROW',
+        rowNo: row.rowNo,
+        reason: isEmail
           ? `${row.rowNo}행: 이메일 발송인데 이메일 주소(D)가 없습니다.`
           : `${row.rowNo}행: 수신 휴대폰 번호(B)가 없습니다.`,
-    });
+      });
+      return;
+    }
+
+    // ② 수신처는 있으나 형식이 발신수단과 안 맞음(예: EMAIL인데 D열이 이름) → 발송단에서야 실패하던 것을 사전 차단.
+    //   이메일은 엄격 검증, 전화는 "휴대폰 형식(01X+8~9자리)"로 느슨하게(정상 번호 오차단 없이 이름/쓰레기값만 리젝).
+    const validFormat = isEmail
+      ? PhoneUtil.isValidEmail(target)
+      : /^01[0-9]\d{7,8}$/.test(PhoneUtil.normalize(target));
+    if (!validFormat) {
+      blockedRowNos.add(row.rowNo);
+      blocked.push({
+        code: 'INVALID_DELIVERY_TARGET',
+        level: 'ROW',
+        rowNo: row.rowNo,
+        reason: isEmail
+          ? `${row.rowNo}행: 이메일 주소(D) 형식이 올바르지 않습니다.`
+          : `${row.rowNo}행: 휴대폰 번호(B) 형식이 올바르지 않습니다(010 휴대폰).`,
+      });
+    }
   }
 
   /** 한 행의 대치문자 1/2/3을 검사. 하나라도 걸리면 그 행을 ROW 차단(사유는 걸린 만큼 보고, 카운트는 Set으로 1회). */

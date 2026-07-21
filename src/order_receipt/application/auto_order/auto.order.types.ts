@@ -99,6 +99,7 @@ export type BlockCode =
   | 'SSG_RESERVATION_WINDOW'
   | 'SEND_METHOD_NOT_ALLOWED'
   | 'MISSING_DELIVERY_TARGET' // 발신수단에 맞는 수신처(휴대폰/이메일)가 행에 없음
+  | 'INVALID_DELIVERY_TARGET' // 수신처가 있으나 형식이 올바르지 않음(이메일 아님/휴대폰 아님)
   | 'RECEIPT_OWNER_MISSING' // 접수 소유자(기업 사용자)를 찾을 수 없음
   | 'EMAIL_SENDER_MISSING'; // 이메일 발신주소(등록/기본계정)를 확보할 수 없음
 
