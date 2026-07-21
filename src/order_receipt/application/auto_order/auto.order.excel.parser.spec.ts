@@ -250,6 +250,34 @@ describe('AutoOrderExcelParser', () => {
     expect(parsed.rows[0].email).toBe('only@mail.com');
   });
 
+  // ── 리뷰 반영(M2): 상품코드는 있고 연락처(B/D)만 빈 행은 스킵되지 않고 보존(하류 MISSING_DELIVERY_TARGET 집계용)
+  it('상품코드 있고 연락처 없는 행은 스킵되지 않고 보존(silent drop 방지)', async () => {
+    const wb = new ExcelJS.Workbook();
+    const info = wb.addWorksheet('1.신청정보');
+    info.getCell('C1').value = 'v4.1-immediate-send';
+    info.getCell('C16').value = 'TRUE';
+    const list = wb.addWorksheet('2.발송명단');
+    list.getCell('H5').value = { formula: 'INDEX(...)', result: 'SB-5000-90' } as ExcelJS.CellFormulaValue;
+    list.getCell('M5').value = { formula: 'AND(...)', result: true } as ExcelJS.CellFormulaValue;
+    const parsed = await parser.parse((await wb.xlsx.writeBuffer()) as Buffer);
+    expect(parsed.rows).toHaveLength(1);
+    expect(parsed.rows[0].phone).toBeNull();
+    expect(parsed.rows[0].email).toBeNull();
+    expect(parsed.rows[0].productCode).toBe('SB-5000-90'); // 검산/차단이 볼 수 있게 보존
+  });
+
+  // ── 연락처·상품코드 모두 없는 진짜 빈 행은 계속 스킵(대치문자만 있어도 주문 불가)
+  it('연락처·상품코드 모두 없는 행은 스킵(빈 행)', async () => {
+    const wb = new ExcelJS.Workbook();
+    const info = wb.addWorksheet('1.신청정보');
+    info.getCell('C1').value = 'v4.1-immediate-send';
+    info.getCell('C16').value = 'TRUE';
+    const list = wb.addWorksheet('2.발송명단');
+    list.getCell('P5').value = '홍길동'; // 대치문자만 있고 상품/연락처 없음
+    const parsed = await parser.parse((await wb.xlsx.writeBuffer()) as Buffer);
+    expect(parsed.rows).toHaveLength(0);
+  });
+
   // ── 리뷰 반영: 필수 시트 누락 → SHEET_MISSING
   it('발송명단 시트가 없으면 parseError=SHEET_MISSING, header=null', async () => {
     const wb = new ExcelJS.Workbook();

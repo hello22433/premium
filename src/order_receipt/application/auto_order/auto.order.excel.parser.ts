@@ -77,7 +77,11 @@ export class AutoOrderExcelParser {
 
       const phone = this.cell(row, 'B');
       const email = this.cell(row, 'D');
-      if (!phone && !email) return; // 완전 빈 행은 스킵(입력 자체가 없음)
+      const productCode = this.cell(row, 'H');
+      // 스킵은 '주문 의도가 전혀 없는 행'만 — 상품코드(H)가 있으면 연락처(B/D)가 비어도 유지한다.
+      // 연락처만 빠진 행을 여기서 버리면 inputRowCount에도 안 잡혀 하류 checkDeliveryTarget이
+      // MISSING_DELIVERY_TARGET으로 표면화하지 못하고 검산도 통과해버린다(사유 없는 silent drop). → 유지해 집계되게.
+      if (!phone && !email && !productCode) return;
 
       // 상한 초과 → 더 이상 push하지 않아 메모리를 상한에서 바운드(eachRow는 중단 불가, 누적만 차단)
       if (rows.length >= AutoOrderExcelParser.MAX_LIST_ROWS) {
@@ -89,7 +93,7 @@ export class AutoOrderExcelParser {
         rowNo,
         phone: this.emptyToNull(phone),
         email: this.emptyToNull(email),
-        productCode: this.emptyToNull(this.cell(row, 'H')),
+        productCode: this.emptyToNull(productCode),
         amount: this.toInt(this.cell(row, 'J')),
         isValid: this.toBool(this.cell(row, 'M')),
         statusReason: this.emptyToNull(this.cell(row, 'N')),
