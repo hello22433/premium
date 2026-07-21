@@ -292,7 +292,19 @@ export class AutoOrderService {
     });
 
     // ── 5~6단계 payload 조립 + (mode별) 실행
-    const orders = await this.buildOrders(receipt, user, fileIndex, header, mapped, pre, ctx.resolvedFromEmail, mode);
+    let orders: AutoOrderReportOrder[];
+    try {
+      orders = await this.buildOrders(receipt, user, fileIndex, header, mapped, pre, ctx.resolvedFromEmail, mode);
+    } catch (e) {
+      // 조립 payload의 DTO 검증 실패(assertPayloadValid의 BadRequest)가 DRY_RUN에서 '전체' 미리보기를 중단시키지
+      // 않도록 그 파일만 실패로 표시한다(파일별 리포트 계약 유지 — 나머지 파일은 정상 미리보기). COMMIT은
+      // rethrow → approve 트랜잭션 롤백(부분 커밋 방지).
+      if (mode === AutoOrderRunMode.DRY_RUN && e instanceof BadRequestException) {
+        this.logger.error(`자동주문 미리보기 payload 검증 실패 [${fileIndex}] ${fileName}: ${e.message}`);
+        return this.invalidFile(fileIndex, fileName, url, `자동주문 데이터 검증 실패: ${e.message}`, 'HEADER_MISMATCH');
+      }
+      throw e;
+    }
 
     // ── 검산
     const builtDeliveryCount = orders.reduce((sum, o) => sum + o.deliveryCount, 0);

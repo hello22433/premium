@@ -1,4 +1,5 @@
 import * as ExcelJS from 'exceljs';
+import { BadRequestException } from '@nestjs/common';
 import { Repository } from 'typeorm';
 import { AutoOrderService } from './auto.order.service';
 import { AutoOrderExcelParser } from './auto.order.excel.parser';
@@ -243,6 +244,35 @@ describe('AutoOrderService (DRY_RUN 미리보기)', () => {
     const result = await svc.run(receipt('u://a.xlsx,u://b.xlsx'), admin, AutoOrderRunMode.DRY_RUN, [1]);
     expect(result.files).toHaveLength(1);
     expect(result.files[0].fileIndex).toBe(1); // 멱등키/식별자 안정성
+  });
+
+  it('DRY_RUN: 한 파일 payload 검증 실패는 그 파일만 INVALID_FORMAT, 나머지는 정상', async () => {
+    const a = await buildFilledBuffer([{ b: '010-1111-1111', code: 'GEN-1' }]);
+    const b = await buildFilledBuffer([{ b: '010-2222-2222', code: 'GEN-1' }]);
+    const { svc } = makeService({ 'u://a.xlsx': a, 'u://b.xlsx': b });
+
+    // 첫 파일(순차 처리) 조립만 검증 실패시킴 → 그 파일만 실패, 둘째는 정상이어야 한다.
+    let calls = 0;
+    (svc as any).assertPayloadValid = async () => {
+      calls += 1;
+      if (calls === 1) throw new BadRequestException('데이터 검증 실패(테스트)');
+    };
+
+    const result = await svc.run(receipt('u://a.xlsx,u://b.xlsx'), admin, AutoOrderRunMode.DRY_RUN);
+    expect(result.files).toHaveLength(2);
+    expect(result.files[0].status).toBe('INVALID_FORMAT');
+    expect(result.files[0].message).toContain('데이터 검증 실패');
+    expect(result.files[1].status).toBe('VALID');
+    expect(result.files[1].orders).toHaveLength(1);
+  });
+
+  it('COMMIT: payload 검증 실패는 파일별로 삼키지 않고 rethrow(롤백)', async () => {
+    const a = await buildFilledBuffer([{ b: '010-1111-1111', code: 'GEN-1' }]);
+    const { svc } = makeService({ 'u://a.xlsx': a });
+    (svc as any).assertPayloadValid = async () => {
+      throw new BadRequestException('데이터 검증 실패(테스트)');
+    };
+    await expect(svc.run(receipt('u://a.xlsx'), admin, AutoOrderRunMode.COMMIT)).rejects.toThrow(BadRequestException);
   });
 
   it('범위 밖 fileIndexes → BadRequestException (조용한 빈 미리보기 방지)', async () => {
@@ -550,7 +580,7 @@ describe('AutoOrderService (리뷰 추가 커버리지)', () => {
   });
 
   // 리뷰 #13: createTemp 직접 호출이라 ValidationPipe 미작동 → 조립 payload를 DTO로 검증(양쪽 모드)
-  it('조립 payload가 DTO 제약 위반이면 COMMIT/DRY_RUN 모두 검증 실패(400), createTemp 미호출', async () => {
+  it('조립 payload가 DTO 제약 위반이면 COMMIT은 throw(롤백), DRY_RUN은 그 파일만 INVALID_FORMAT (리뷰 L6)', async () => {
     const buf = await buildFilledBuffer([{ b: '010-1111-1111', code: 'GEN-1' }]);
     // type 누락 → OrderCreateTempReqDto의 @IsEnum(type) 위반
     const invalidBuild = { build: () => ({ payload: { eventName: 'e', orderProductList: [] }, sourceRowNos: [5] }) };
@@ -560,9 +590,13 @@ describe('AutoOrderService (리뷰 추가 커버리지)', () => {
     await expect(commit.svc.run(receipt('u://a.xlsx'), admin, AutoOrderRunMode.COMMIT)).rejects.toThrow(/검증 실패/);
     expect(commit.mocks.createTemp).not.toHaveBeenCalled();
 
+    // DRY_RUN은 전체 미리보기를 중단시키지 않고 그 파일만 실패로 표시(Q3/L6)
     const dry = makeService({ 'u://a.xlsx': buf });
     (dry.svc as any).payloadBuilder = invalidBuild;
-    await expect(dry.svc.run(receipt('u://a.xlsx'), admin, AutoOrderRunMode.DRY_RUN)).rejects.toThrow(/검증 실패/);
+    const file = (await dry.svc.run(receipt('u://a.xlsx'), admin, AutoOrderRunMode.DRY_RUN)).files[0];
+    expect(file.status).toBe('INVALID_FORMAT');
+    expect(file.message).toContain('검증 실패');
+    expect(dry.mocks.createTemp).not.toHaveBeenCalled();
   });
 
   // 리뷰 test-analyzer #6: 정상 v4.1 + 비-xlsx 혼합 접수 — 유효 파일만 커밋, 나머지는 INVALID_FORMAT
