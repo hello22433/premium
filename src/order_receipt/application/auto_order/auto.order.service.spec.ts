@@ -632,6 +632,7 @@ describe('AutoOrderService (리뷰 추가 커버리지)', () => {
     (dry.svc as any).payloadBuilder = invalidBuild;
     const file = (await dry.svc.run(receipt('u://a.xlsx'), admin, AutoOrderRunMode.DRY_RUN)).files[0];
     expect(file.status).toBe('INVALID_FORMAT');
+    expect(file.formatErrorCode).toBe('DATA_INVALID'); // 양식오류(HEADER_MISMATCH)와 구분
     expect(file.message).toContain('검증 실패');
     expect(dry.mocks.createTemp).not.toHaveBeenCalled();
   });

@@ -60,8 +60,19 @@ export interface ParsedFile {
   parseError: 'SHEET_MISSING' | 'FORMULA_NOT_CACHED' | 'TOO_MANY_ROWS' | null;
 }
 
-/** 구조검증/파일 실패 사유 코드 (프론트 계약 5종) */
-export type FormatErrorCode = 'NOT_XLSX' | 'MISSING_SHEET' | 'HEADER_MISMATCH' | 'VERSION_MISMATCH' | 'EMPTY_LIST';
+/**
+ * 구조검증/파일 실패 사유 코드 (프론트 계약).
+ * NOT_XLSX/MISSING_SHEET/HEADER_MISMATCH/VERSION_MISMATCH/EMPTY_LIST = "양식 스킵"(승인은 무해 통과, 건너뛰어도 됨).
+ * DATA_INVALID = 자동주문 데이터 검증 실패(조립 payload가 DTO 제약 위반) — "양식 스킵"과 달리 승인(COMMIT) 시
+ *   해당 파일이 전체 승인을 롤백시킨다. 미리보기에서 이 둘을 구분하기 위해 코드를 분리한다.
+ */
+export type FormatErrorCode =
+  | 'NOT_XLSX'
+  | 'MISSING_SHEET'
+  | 'HEADER_MISMATCH'
+  | 'VERSION_MISMATCH'
+  | 'EMPTY_LIST'
+  | 'DATA_INVALID';
 
 /** 2단계 구조검증 결과 */
 export interface StructureResult {

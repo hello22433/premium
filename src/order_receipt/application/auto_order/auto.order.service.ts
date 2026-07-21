@@ -310,7 +310,8 @@ export class AutoOrderService {
       // rethrow → approve 트랜잭션 롤백(부분 커밋 방지).
       if (mode === AutoOrderRunMode.DRY_RUN && e instanceof BadRequestException) {
         this.logger.error(`자동주문 미리보기 payload 검증 실패 [${fileIndex}] ${fileName}: ${e.message}`);
-        return this.invalidFile(fileIndex, fileName, url, `자동주문 데이터 검증 실패: ${e.message}`, 'HEADER_MISMATCH');
+        // 양식오류(HEADER_MISMATCH 등, 건너뛰어도 됨)와 달리 DATA_INVALID는 승인 시 전체 롤백을 유발 → 코드로 구분.
+        return this.invalidFile(fileIndex, fileName, url, `자동주문 데이터 검증 실패: ${e.message}`, 'DATA_INVALID');
       }
       throw e;
     }
