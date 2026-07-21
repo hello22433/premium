@@ -258,7 +258,7 @@ export class OrderReceiptService {
    * @Transactional: 자동주문이 실패하면 상태 전환까지 함께 롤백(all-or-nothing) → 어중간한 상태 방지.
    */
   @Transactional()
-  async approve(user: ILoginUserInfo, id: number) {
+  async approve(user: ILoginUserInfo, id: number, fileIndexes?: number[]) {
     this.validateAdminAuthority(user, '운영관리자 이상만 승인할 수 있습니다.');
 
     const receipt = await this.findReceiptOrThrow(id, { lock: true }); // 동시 승인 직렬화
@@ -271,8 +271,11 @@ export class OrderReceiptService {
     await this.orderReceiptRepository.save(receipt);
 
     // 승인의 길목에 자동주문 훅(COMMIT). 첨부가 없거나 처리할 게 없으면 무해하게 통과.
+    // fileIndexes로 검토한 파일만 커밋한다("본 것만 커밋" — 미리보기와 동일 선택을 받아 검토집합=커밋집합).
+    // ⚠️ 부분 승인은 접수를 APPROVED로 마감하므로(이후 approve는 RECEIVED만 허용) 선택 안 한 파일은 이 접수에서 더는
+    //    승인할 수 없다. 남은 파일까지 커밋하려면 fileIndexes를 생략(전체)하거나 처음부터 전체를 선택해야 한다.
     try {
-      const result = await this.autoOrderService.run(receipt, user, AutoOrderRunMode.COMMIT);
+      const result = await this.autoOrderService.run(receipt, user, AutoOrderRunMode.COMMIT, fileIndexes);
       return toAutoOrderResultDto(result, { mode: 'COMMITTED', receiptId: id, generatedAt: new Date() });
     } catch (e) {
       // 락을 못 잡는 경합 잔여 등으로 멱등 UNIQUE 위반이 나면 raw 500 대신 409로(트랜잭션은 어차피 롤백).

@@ -133,6 +133,18 @@ describe('OrderReceiptService access and status policy', () => {
     expect(mode).toBe('COMMIT');
   });
 
+  it('승인에 fileIndexes를 주면 COMMIT run에 그대로 전달한다(검토집합=커밋집합)', async () => {
+    const { service, autoOrderService } = createService(
+      makeReceipt({ userId: 20, status: OrderReceiptStatus.RECEIVED }),
+    );
+
+    await service.approve(operationAdmin, 100, [1]);
+
+    const [, , mode, passedIndexes] = autoOrderService.run.mock.calls[0];
+    expect(mode).toBe('COMMIT');
+    expect(passedIndexes).toEqual([1]);
+  });
+
   it('자동주문 훅이 throw하면 승인 전체가 실패한다(원자성)', async () => {
     const { service, autoOrderService } = createService(
       makeReceipt({ userId: 20, status: OrderReceiptStatus.RECEIVED }),

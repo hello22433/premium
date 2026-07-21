@@ -11,7 +11,7 @@ import {
   OrderReceiptRejectReqDto,
   OrderReceiptUpdateReqDto,
   OrderReceiptChangeStatusReqDto,
-  OrderReceiptPreviewReqDto,
+  OrderReceiptFileIndexesReqDto,
 } from './order.receipt.req.dto';
 import { OrderReceiptGetDetailResDto, OrderReceiptGetListResDto } from './order.receipt.res.dto';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
@@ -131,7 +131,7 @@ export class OrderReceiptController {
   async previewAutoOrder(
     @User() user: ILoginUserInfo,
     @Param() getParam: OrderReceiptGetDetailReqParamDto,
-    @Body() getBody: OrderReceiptPreviewReqDto,
+    @Body() getBody: OrderReceiptFileIndexesReqDto,
   ) {
     await this.authService.authorityValidator(user, UserAuthSubEnum.ORDER_RECEIPT);
     return this.orderReceiptService.previewAutoOrder(user, getParam.id, getBody.fileIndexes);
@@ -162,9 +162,13 @@ export class OrderReceiptController {
   })
   // ===================================================
   @Put('/order-receipt/:id/approve')
-  async approve(@User() user: ILoginUserInfo, @Param() getParam: OrderReceiptGetDetailReqParamDto) {
+  async approve(
+    @User() user: ILoginUserInfo,
+    @Param() getParam: OrderReceiptGetDetailReqParamDto,
+    @Body() getBody: OrderReceiptFileIndexesReqDto,
+  ) {
     await this.authService.authorityValidator(user, UserAuthSubEnum.ORDER_RECEIPT);
-    return this.orderReceiptService.approve(user, getParam.id);
+    return this.orderReceiptService.approve(user, getParam.id, getBody.fileIndexes);
   }
 
   @ApiOperation({

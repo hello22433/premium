@@ -116,9 +116,10 @@ export class OrderReceiptUpdateReqDto {
   rejectReason?: string;
 }
 
-export class OrderReceiptPreviewReqDto {
+// 미리보기/승인 공용 — 처리 대상 파일 인덱스 선택(미지정이면 전체). 승인은 '검토한 집합만 커밋'을 위해 미리보기와 동일 선택을 받는다.
+export class OrderReceiptFileIndexesReqDto {
   @ApiPropertyOptional({
-    description: '미리보기 대상 파일 인덱스 배열(filePathList 기준). 미지정/빈 배열이면 전체 파일.',
+    description: '처리 대상 파일 인덱스 배열(filePathList 기준). 미지정/빈 배열이면 전체 파일.',
     type: [Number],
   })
   // =================================
