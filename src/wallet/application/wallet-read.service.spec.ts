@@ -64,8 +64,22 @@ describe('WalletReadService', () => {
       walletRepo.findOne.mockImplementation(
         async ({ where }: any) =>
           (where.ownerId === 'company-7'
-            ? { id: '11', depositBalance: 5000, creditLimit: 100000, creditUsedAmount: 2000, creditExcessAmount: 0 }
-            : { id: '22', depositBalance: 0, creditLimit: 50000, creditUsedAmount: 0, creditExcessAmount: 300 }) as any,
+            ? {
+                id: '11',
+                depositBalance: 5000,
+                creditLimit: 100000,
+                creditUsedAmount: 2000,
+                creditExcessAmount: 0,
+                cardSurchargeApplied: false,
+              }
+            : {
+                id: '22',
+                depositBalance: 0,
+                creditLimit: 50000,
+                creditUsedAmount: 0,
+                creditExcessAmount: 300,
+                cardSurchargeApplied: true,
+              }) as any,
       );
       pointRepo.createQueryBuilder.mockReturnValueOnce(makeQb({ total: '1500' }) as any);
       pointRepo.createQueryBuilder.mockReturnValueOnce(makeQb({ total: '0' }) as any);
@@ -81,6 +95,7 @@ describe('WalletReadService', () => {
         walletStatus: 'ACTIVE',
         depositBalance: 5000,
         pointTotalRemaining: 1500,
+        cardSurchargeApplied: false,
       });
       expect(res.settlementCodes[1].creditExcessAmount).toBe(300);
       expect(res.settlementCodes[1].pointTotalRemaining).toBe(0);
@@ -98,6 +113,7 @@ describe('WalletReadService', () => {
         walletAccountId: null,
         depositBalance: 0,
         pointTotalRemaining: 0,
+        cardSurchargeApplied: true,
       });
       expect(res.settlementCodes[0].assignedUsers).toHaveLength(1);
       expect(pointRepo.createQueryBuilder).not.toHaveBeenCalled();
@@ -275,6 +291,7 @@ describe('WalletReadService', () => {
         creditExcessAmount: 0,
         settleCondition: 'POST_PAYMENT',
         settleMethod: 'CASH',
+        cardSurchargeApplied: false,
       } as any);
       // 회사 걸침: 3번·7번 회사 계정이 같은 코드를 공유 (companyId ASC 정렬)
       const detailQb = makeQb([
@@ -292,6 +309,7 @@ describe('WalletReadService', () => {
         walletStatus: 'ACTIVE',
         depositBalance: 5000,
         pointTotalRemaining: 1500,
+        cardSurchargeApplied: false,
       });
       expect(res.assignedAccounts).toEqual([
         { userId: 3, personName: '삼번', companyId: 3, companyName: 'B상사' },

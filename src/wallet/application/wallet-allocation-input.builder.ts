@@ -43,6 +43,7 @@ export class WalletAllocationInputBuilder {
       depositUseEnabled?: boolean;
       depositUseAmount?: number;
       companyId: number | null;
+      cardSurchargeApplied?: boolean;
     },
   ): Promise<AllocationInput> {
     void finalAmount; // allocate() 가 라인 합으로 다시 계산 — 호출자가 일관성 검증용으로만 사용
@@ -100,7 +101,7 @@ export class WalletAllocationInputBuilder {
       orderId: order.id,
       walletAccountId: wallet.id,
       lines,
-      cardSurchargeApplied: order.cardSurchargeApplied,
+      cardSurchargeApplied: opts.cardSurchargeApplied ?? order.cardSurchargeApplied,
       requestedPointAmount,
       requestedDepositAmount,
       availableDeposit: wallet.depositBalance,

@@ -1,6 +1,6 @@
 import { BadRequestException, Body, Controller, Get, ParseIntPipe, Post, Put, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { IsIn, IsInt, IsNotEmpty, IsOptional, IsString, MaxLength, Min } from 'class-validator';
+import { IsBoolean, IsIn, IsInt, IsNotEmpty, IsOptional, IsString, MaxLength, Min } from 'class-validator';
 
 import { User } from '../../auth/api/user.decorator';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
@@ -75,6 +75,10 @@ class SetSettlePolicyReqDto {
   @IsOptional()
   @IsIn(['CARD', 'CASH'])
   settleMethod?: 'CARD' | 'CASH';
+
+  @IsOptional()
+  @IsBoolean()
+  cardSurchargeApplied?: boolean;
 }
 
 class ChargeDepositReqDto {
@@ -192,7 +196,7 @@ export class SettlementCodeAdminController {
   setSettlePolicy(@User() user: ILoginUserInfo, @Body() body: SetSettlePolicyReqDto) {
     return this.adminService.setSettlePolicy(
       body.settlementCode,
-      { settleCondition: body.settleCondition, settleMethod: body.settleMethod },
+      { settleCondition: body.settleCondition, settleMethod: body.settleMethod, cardSurchargeApplied: body.cardSurchargeApplied },
       user,
     );
   }

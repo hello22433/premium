@@ -25,6 +25,7 @@ export interface SettlementCodeSnapshot {
   pointTotalRemaining: number;
   settleCondition: 'PRE_PAYMENT' | 'POST_PAYMENT' | null;
   settleMethod: 'CARD' | 'CASH' | null;
+  cardSurchargeApplied: boolean;
   assignedUsers: SettlementCodeAssignedUser[];
 }
 
@@ -52,6 +53,7 @@ export interface SettlementCodeDetail {
   pointTotalRemaining: number;
   settleCondition: 'PRE_PAYMENT' | 'POST_PAYMENT' | null;
   settleMethod: 'CARD' | 'CASH' | null;
+  cardSurchargeApplied: boolean;
   /** 이 정산코드에 배정된 전체 계정 (회사 걸침 가능 — N:M). */
   assignedAccounts: SettlementCodeAssignedAccount[];
 }
@@ -164,6 +166,7 @@ export class WalletReadService {
           pointTotalRemaining: 0,
           settleCondition: null,
           settleMethod: null,
+          cardSurchargeApplied: true,
           assignedUsers,
         });
         continue;
@@ -180,6 +183,7 @@ export class WalletReadService {
         pointTotalRemaining: await this.pointTotalRemaining(wallet.id),
         settleCondition: wallet.settleCondition,
         settleMethod: wallet.settleMethod,
+        cardSurchargeApplied: wallet.cardSurchargeApplied,
         assignedUsers,
       });
     }
@@ -349,6 +353,7 @@ export class WalletReadService {
         pointTotalRemaining: 0,
         settleCondition: null,
         settleMethod: null,
+        cardSurchargeApplied: true,
         assignedAccounts,
       };
     }
@@ -364,6 +369,7 @@ export class WalletReadService {
       pointTotalRemaining: await this.pointTotalRemaining(wallet.id),
       settleCondition: wallet.settleCondition,
       settleMethod: wallet.settleMethod,
+      cardSurchargeApplied: wallet.cardSurchargeApplied,
       assignedAccounts,
     };
   }
