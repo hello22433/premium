@@ -379,6 +379,13 @@ export class OrderReceiptService {
   async changeStatus(user: ILoginUserInfo, id: number, getBody: OrderReceiptChangeStatusReqDto) {
     this.validateAdminAuthority(user, '운영관리자 이상만 상태를 변경할 수 있습니다.');
 
+    // APPROVED는 상태 변경으로 못 만든다 → 반드시 approve API를 통하게. (반려를 reject API로 유도하는 것과 대칭)
+    // changeStatus는 자동주문 실행/스냅샷/락을 타지 않으므로, 여기서 APPROVED를 허용하면 "주문 0건인 채 APPROVED"로
+    // 갇힌다(이후 approve는 RECEIVED만 받아 재실행 불가, GET /result는 404). "APPROVED ⇒ 자동주문 생성됨" 불변식 보호.
+    if (getBody.status === OrderReceiptStatus.APPROVED) {
+      throw new BadRequestException('승인 처리는 승인 API(/approve)를 사용해주세요. 상태 변경으로는 자동주문이 생성되지 않습니다.');
+    }
+
     const receipt = await this.findReceiptOrThrow(id);
 
     this.applyNonRejectedStatus(receipt, getBody.status, user);

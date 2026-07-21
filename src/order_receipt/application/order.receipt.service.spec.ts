@@ -253,7 +253,7 @@ describe('OrderReceiptService access and status policy', () => {
     expect(rejected.repository.softDelete).toHaveBeenCalledWith(100);
   });
 
-  it('blocks rejected transition through generic changeStatus and clears stale rejectReason on non-rejected statuses', async () => {
+  it('blocks rejected/approved transitions through generic changeStatus and clears stale rejectReason on non-rejected statuses', async () => {
     const rejectedTarget = createService(makeReceipt({ status: OrderReceiptStatus.RECEIVED }));
 
     await expect(
@@ -261,15 +261,23 @@ describe('OrderReceiptService access and status policy', () => {
     ).rejects.toThrow(BadRequestException);
     expect(rejectedTarget.repository.save).not.toHaveBeenCalled();
 
-    const approvedTarget = createService(
+    // APPROVED도 상태변경으로는 불가(자동주문 실행/스냅샷 우회 방지) — 반드시 approve API를 타야 함
+    const approvedBlocked = createService(makeReceipt({ status: OrderReceiptStatus.RECEIVED }));
+    await expect(
+      approvedBlocked.service.changeStatus(operationAdmin, 100, { status: OrderReceiptStatus.APPROVED }),
+    ).rejects.toThrow(BadRequestException);
+    expect(approvedBlocked.repository.save).not.toHaveBeenCalled();
+
+    // 비-반려/비-승인 상태(REVIEWING) 전환은 stale rejectReason을 정리한다
+    const reviewingTarget = createService(
       makeReceipt({ status: OrderReceiptStatus.REJECTED, rejectReason: 'old reason' }),
     );
 
-    await approvedTarget.service.changeStatus(operationAdmin, 100, { status: OrderReceiptStatus.APPROVED });
+    await reviewingTarget.service.changeStatus(operationAdmin, 100, { status: OrderReceiptStatus.REVIEWING });
 
-    expect(approvedTarget.receipt.rejectReason).toBeNull();
-    expect(approvedTarget.receipt.status).toBe(OrderReceiptStatus.APPROVED);
-    expect(approvedTarget.repository.save).toHaveBeenCalledWith(approvedTarget.receipt);
+    expect(reviewingTarget.receipt.rejectReason).toBeNull();
+    expect(reviewingTarget.receipt.status).toBe(OrderReceiptStatus.REVIEWING);
+    expect(reviewingTarget.repository.save).toHaveBeenCalledWith(reviewingTarget.receipt);
   });
 
   it('caps per-detail S3 metadata lookups at MAX_FILE_META_LOOKUP and falls back to key-derived names', async () => {
