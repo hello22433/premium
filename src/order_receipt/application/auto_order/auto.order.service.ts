@@ -108,6 +108,11 @@ export class AutoOrderService {
     const receiptUser = await this.userRepository.findOne({ where: { id: receipt.userId } });
     const ownerMissing = receiptUser === null; // 소유자 없음 → 전체허용 폴백 금지(사전검증에서 FILE 차단)
     const allowedSendMethods = receiptUser?.allowedSendMethods ?? null;
+    // SSG 예약창을 여기서 1회 읽어(time-of-check) 사전검증에 넘긴다. 실제 생성(createTemp, time-of-use)까지의
+    // 사이에 관리자가 예약창을 바꾸면 이 스냅샷이 낡을 수 있으나(리뷰 #14 TOCTOU), 봉쇄하지 않는다:
+    //   · createTemp가 내부에서 validateSsgReservationWindow를 재검증하므로 "창 밖 SSG가 실제 생성"되는 경로는 없다(권위 가드).
+    //   · 어긋나도 결과는 둘 다 안전 — commit 시 창 이동이면 createTemp throw→approve 전체 롤백(잘못된 주문 0건),
+    //     반대로 스킵됐다 창 안이면 SSG만 미생성→재승인으로 복구. 완전 봉쇄(이벤트 행 락/직전 재조회)는 ROI가 낮아 수용.
     const range = this.toRangeBoundary(await this.ssgEventService.getReservationRange());
     const resolvedFromEmail = await this.resolveEmailSender(); // EMAIL 발신주소(등록 우선, 없으면 하이웍스 기본)
 
@@ -427,6 +432,8 @@ export class AutoOrderService {
     type: IOrderType,
   ): Promise<number> {
     result.payload.clientUserId = receipt.userId;
+    // createTemp는 SSG 예약창을 여기서(time-of-use) 다시 검증한다 → 사전검증이 쓴 range 스냅샷(L111)이 낡았어도
+    // 창 밖 SSG는 여기서 throw로 걸러진다(리뷰 #14의 권위 가드). throw는 approve 트랜잭션을 롤백시켜 부분 커밋을 막는다.
     const created = await this.orderService.createTemp(user, result.payload);
 
     // UNIQUE(orderReceiptId, fileIndex, type)가 동시/중복 생성을 DB에서 차단
