@@ -171,6 +171,20 @@ describe('OrderReceiptService access and status policy', () => {
     expect(mode).toBe('DRY_RUN');
   });
 
+  it('승인된 접수(스냅샷 존재)에 미리보기 → 재계산 없이 저장 스냅샷(COMMITTED) 반환', async () => {
+    const { service, autoOrderService } = createService(makeReceipt({ userId: 20, status: OrderReceiptStatus.APPROVED }));
+    autoOrderService.getStoredResult.mockResolvedValueOnce({
+      result: { files: [], alreadyCommitted: false },
+      generatedAt: new Date('2026-08-05T05:30:00.000Z'),
+    });
+
+    const dto = await (service as any).previewAutoOrder(operationAdmin, 100);
+
+    expect(dto.mode).toBe('COMMITTED');
+    expect(dto.generatedAt).toBe('2026-08-05T05:30:00.000Z');
+    expect(autoOrderService.run).not.toHaveBeenCalled(); // 재계산 안 함
+  });
+
   it('미리보기는 fileIndexes를 훅에 전달하고 PREVIEW DTO를 반환한다', async () => {
     const { service, autoOrderService } = createService(makeReceipt({ userId: 20, status: OrderReceiptStatus.RECEIVED }));
 

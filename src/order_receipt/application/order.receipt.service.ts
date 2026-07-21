@@ -47,6 +47,14 @@ export class OrderReceiptService {
   async previewAutoOrder(user: ILoginUserInfo, id: number, fileIndexes?: number[]): Promise<AutoOrderResultDto> {
     this.validateAdminAuthority(user, '운영관리자 이상만 미리보기를 조회할 수 있습니다.');
     const receipt = await this.findReceiptOrThrow(id);
+
+    // 이미 승인돼 스냅샷이 있으면 재계산하지 않고 그대로 반환(재계산 시 orderId=null·시간의존 SSG창 결과가
+    // 사실과 달라짐 — 엔티티 주석의 "재조회 시 재계산 안 함" 약속). 미승인 건만 새로 미리보기 계산.
+    const stored = await this.autoOrderService.getStoredResult(id);
+    if (stored) {
+      return toAutoOrderResultDto(stored.result, { mode: 'COMMITTED', receiptId: id, generatedAt: stored.generatedAt });
+    }
+
     const result = await this.autoOrderService.run(receipt, user, AutoOrderRunMode.DRY_RUN, fileIndexes);
     return toAutoOrderResultDto(result, { mode: 'PREVIEW', receiptId: id, generatedAt: new Date() });
   }
