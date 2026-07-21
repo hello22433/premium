@@ -52,6 +52,12 @@ export class WalletAccountEntity {
   })
   settleMethod: 'CARD' | 'CASH';
 
+  @Column({
+    default: true,
+    comment: '카드할증 3% 적용 기본값 (settleMethod=CARD 코드 기준). default 파생에만 CARD 게이트 적용',
+  })
+  cardSurchargeApplied: boolean;
+
   @CreateDateColumn({ type: 'datetime', precision: 6 })
   createdAt: Date;
 

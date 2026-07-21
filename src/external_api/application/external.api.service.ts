@@ -358,10 +358,10 @@ export class ExternalApiService {
     return this.resolveCardSurchargeAppliedForUser(account.user);
   }
 
-  // billingUser 기준 카드할증 판정. 정산방법 SoT = 정산코드 wallet.settleMethod (order.service resolveSettlePolicy 와 동일 모델).
-  //  - WALLET: wallet.settleMethod (미존재 시 fail-closed throw — 잘못된 결제수단 영구저장 방지)
-  //  - SHADOW: wallet 조회 실패 시 company 폴백
-  //  - LEGACY: company.settleMethod (user.settleMethod 는 deprecated)
+  // billingUser 기준 카드할증 판정. SoT = 정산코드 wallet.settleMethod === 'CARD' && wallet.cardSurchargeApplied (order.service §4.0 와 동일 모델).
+  //  - WALLET: wallet.settleMethod + 토글 (미존재 시 fail-closed throw — 잘못된 결제수단 영구저장 방지)
+  //  - SHADOW: wallet 성공 시 토글 반영 / 실패 시 company 폴백(토글 미개입)
+  //  - LEGACY: company.settleMethod (user.settleMethod 는 deprecated, 토글 미개입)
   private async resolveCardSurchargeAppliedForUser(user: UserEntity): Promise<boolean> {
     const mode = this.walletCutoverConfig.pr3SettleMode;
     const companyApplied = user.company?.settleMethod === IUserSettleMethod.CARD;
@@ -370,7 +370,7 @@ export class ExternalApiService {
     }
     try {
       const wallet = await this.walletAccountResolverService.resolveByUserId(user.id);
-      return wallet.settleMethod === 'CARD';
+      return wallet.settleMethod === 'CARD' && !!wallet.cardSurchargeApplied;
     } catch (e) {
       if (mode === WalletCutoverMode.WALLET) {
         throw e; // fail-closed

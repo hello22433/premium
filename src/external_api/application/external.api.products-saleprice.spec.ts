@@ -60,7 +60,7 @@ describe('ExternalApiService.getProductsForBilling — salePrice 할인/카드�
   const makeSvc = (
     products: unknown[],
     discounts: unknown[],
-    opts?: { mode?: WalletCutoverMode; walletSettleMethod?: 'CARD' | 'CASH' },
+    opts?: { mode?: WalletCutoverMode; walletSettleMethod?: 'CARD' | 'CASH'; walletCardSurchargeApplied?: boolean },
   ) => {
     const svc = Object.create(ExternalApiService.prototype) as any;
     svc.productRepository = { createQueryBuilder: jest.fn(() => makeQb(products)) };
@@ -73,7 +73,10 @@ describe('ExternalApiService.getProductsForBilling — salePrice 할인/카드�
     // 카드할증 정산방법 소스: 기본 LEGACY(회사값). WALLET 모드면 정산코드 wallet.settleMethod.
     svc.walletCutoverConfig = { pr3SettleMode: opts?.mode ?? WalletCutoverMode.LEGACY };
     svc.walletAccountResolverService = {
-      resolveByUserId: jest.fn(async () => ({ settleMethod: opts?.walletSettleMethod ?? 'CASH' })),
+      resolveByUserId: jest.fn(async () => ({
+        settleMethod: opts?.walletSettleMethod ?? 'CASH',
+        cardSurchargeApplied: opts?.walletCardSurchargeApplied ?? true,
+      })),
     };
     return svc;
   };
@@ -111,6 +114,16 @@ describe('ExternalApiService.getProductsForBilling — salePrice 할인/카드�
     });
     const res = await svc.getProductsForBilling(makeUser('BANK')); // 회사는 비카드
     expect(res.data[0].salePrice).toBe(9270); // 코드 지갑=CARD → 할증 적용
+  });
+
+  it('WALLET 모드 → wallet=CARD 라도 정산코드 카드할증 토글 OFF면 할증 없음', async () => {
+    const svc = makeSvc([makeProduct()], [groupDiscount()], {
+      mode: WalletCutoverMode.WALLET,
+      walletSettleMethod: 'CARD',
+      walletCardSurchargeApplied: false,
+    });
+    const res = await svc.getProductsForBilling(makeUser('BANK'));
+    expect(res.data[0].salePrice).toBe(9000); // wallet CARD 지만 토글 OFF → 할증 없음
   });
 
   it('WALLET 모드 → wallet=CASH면 회사가 CARD여도 할증 없음', async () => {

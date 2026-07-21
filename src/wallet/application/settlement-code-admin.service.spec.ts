@@ -635,6 +635,53 @@ describe('SettlementCodeAdminService', () => {
       expect(activityLogService.createLog).toHaveBeenCalledTimes(1);
     });
 
+    it('카드할증 기본값 변경 → 저장 + before/after activity_log', async () => {
+      fx.walletGetOne = {
+        id: 'w1',
+        settleCondition: 'POST_PAYMENT',
+        settleMethod: 'CARD',
+        cardSurchargeApplied: true,
+      } as any;
+
+      const res = await sut.setSettlePolicy(
+        'company-7',
+        { cardSurchargeApplied: false },
+        { id: 9, email: 'op@x' } as any,
+      );
+
+      expect(res.before.cardSurchargeApplied).toBe(true);
+      expect(res.after.cardSurchargeApplied).toBe(false);
+      expect(cap.walletSave[0].cardSurchargeApplied).toBe(false);
+      expect(activityLogService.createLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          requestParams: expect.objectContaining({
+            before: expect.objectContaining({ cardSurchargeApplied: true }),
+            after: expect.objectContaining({ cardSurchargeApplied: false }),
+          }),
+        }),
+        expect.anything(),
+      );
+    });
+
+    it('카드할증 기본값이 현재값과 동일 → no-op', async () => {
+      fx.walletGetOne = {
+        id: 'w1',
+        settleCondition: 'POST_PAYMENT',
+        settleMethod: 'CARD',
+        cardSurchargeApplied: false,
+      } as any;
+
+      const res = await sut.setSettlePolicy(
+        'company-7',
+        { cardSurchargeApplied: false },
+        { id: 9, email: 'op@x' } as any,
+      );
+
+      expect(res.noop).toBe(true);
+      expect(cap.walletSave).toHaveLength(0);
+      expect(activityLogService.createLog).not.toHaveBeenCalled();
+    });
+
     it('정산조건 변경 + 진행중 주문 있음 → 구조화된 게이트 차단(BadRequest, blocking ids 포함)', async () => {
       fx.walletGetOne = { id: 'w1', settleCondition: 'POST_PAYMENT', settleMethod: 'CASH' } as any;
       fx.codeUsers = [{ id: 1 }];

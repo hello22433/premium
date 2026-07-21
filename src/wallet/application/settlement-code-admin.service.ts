@@ -405,16 +405,16 @@ export class SettlementCodeAdminService {
    */
   async setSettlePolicy(
     settlementCode: string,
-    update: { settleCondition?: 'PRE_PAYMENT' | 'POST_PAYMENT'; settleMethod?: 'CARD' | 'CASH' },
+    update: { settleCondition?: 'PRE_PAYMENT' | 'POST_PAYMENT'; settleMethod?: 'CARD' | 'CASH'; cardSurchargeApplied?: boolean },
     operator: ILoginUserInfo,
   ): Promise<{
     settlementCode: string;
-    before: { settleCondition: 'PRE_PAYMENT' | 'POST_PAYMENT'; settleMethod: 'CARD' | 'CASH' };
-    after: { settleCondition: 'PRE_PAYMENT' | 'POST_PAYMENT'; settleMethod: 'CARD' | 'CASH' };
+    before: { settleCondition: 'PRE_PAYMENT' | 'POST_PAYMENT'; settleMethod: 'CARD' | 'CASH'; cardSurchargeApplied: boolean };
+    after: { settleCondition: 'PRE_PAYMENT' | 'POST_PAYMENT'; settleMethod: 'CARD' | 'CASH'; cardSurchargeApplied: boolean };
     noop?: boolean;
   }> {
-    if (update.settleCondition === undefined && update.settleMethod === undefined) {
-      throw new BadRequestException('변경할 항목(settleCondition/settleMethod)이 없습니다.');
+    if (update.settleCondition === undefined && update.settleMethod === undefined && update.cardSurchargeApplied === undefined) {
+      throw new BadRequestException('변경할 항목(settleCondition/settleMethod/cardSurchargeApplied)이 없습니다.');
     }
     return this.runWithRetry(() =>
       this.dataSource.transaction(async (manager) => {
@@ -430,13 +430,15 @@ export class SettlementCodeAdminService {
           throw new BadRequestException(`정산코드('${settlementCode}') 의 wallet_account 를 찾을 수 없습니다.`);
         }
 
-        const before = { settleCondition: wallet.settleCondition, settleMethod: wallet.settleMethod };
+        const before = { settleCondition: wallet.settleCondition, settleMethod: wallet.settleMethod, cardSurchargeApplied: wallet.cardSurchargeApplied };
 
         const condChanged = update.settleCondition !== undefined && update.settleCondition !== wallet.settleCondition;
         const methodChanged = update.settleMethod !== undefined && update.settleMethod !== wallet.settleMethod;
+        const surchargeChanged =
+          update.cardSurchargeApplied !== undefined && update.cardSurchargeApplied !== wallet.cardSurchargeApplied;
 
         // **동일값(no-op)**: 요청값이 현재값과 같으면 저장/감사 로그 없이 현재값 반환(감사 노이즈 방지).
-        if (!condChanged && !methodChanged) {
+        if (!condChanged && !methodChanged && !surchargeChanged) {
           return { settlementCode, before, after: before, noop: true };
         }
 
@@ -463,9 +465,12 @@ export class SettlementCodeAdminService {
         if (methodChanged) {
           wallet.settleMethod = update.settleMethod!;
         }
+        if (surchargeChanged) {
+          wallet.cardSurchargeApplied = update.cardSurchargeApplied!;
+        }
         await manager.getRepository(WalletAccountEntity).save(wallet);
 
-        const after = { settleCondition: wallet.settleCondition, settleMethod: wallet.settleMethod };
+        const after = { settleCondition: wallet.settleCondition, settleMethod: wallet.settleMethod, cardSurchargeApplied: wallet.cardSurchargeApplied };
         await this.activityLogService.createLog({
           userId: operator.id,
           userEmail: operator.email,
