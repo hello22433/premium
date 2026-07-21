@@ -2,6 +2,7 @@ import { Body, Controller, Delete, Get, Logger, Param, Patch, Post, Put, Query, 
 import { ApiBadRequestResponse, ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Response } from 'express';
 import fs from 'node:fs';
+import { pipeline } from 'node:stream';
 import { OrderReceiptService } from '../application/order.receipt.service';
 import {
   OrderReceiptCreateReqDto,
@@ -89,16 +90,21 @@ export class OrderReceiptController {
     );
 
     const fileStream = fs.createReadStream(filePath);
-    fileStream.pipe(res);
-
-    fileStream.on('end', () => fs.unlink(filePath, () => {}));
-    fileStream.on('error', (err) => {
-      this.logger.error(`주문접수 첨부 스트림 오류: ${err}`);
+    // pipeline은 성공/스트림오류/클라이언트 조기 종료(res close) 등 '모든' 종료 경로에서 콜백을 1회 호출하고
+    // 두 스트림을 정리한다 → 어느 경로로 끝나든 임시파일을 확실히 삭제한다.
+    // (과거엔 read 스트림의 end/error에만 unlink를 걸어, 클라이언트가 중간에 끊으면 read 쪽엔 end·error가
+    //  안 떠서 temp 파일이 tmpdir에 무기한 쌓였다.)
+    pipeline(fileStream, res, (err) => {
       fs.unlink(filePath, () => {});
+      if (!err) return;
+      // 클라이언트 조기 종료는 정상적인 취소이므로 warn, 그 외 실제 오류만 error + (헤더 전이면) 500.
+      if ((err as NodeJS.ErrnoException).code === 'ERR_STREAM_PREMATURE_CLOSE') {
+        this.logger.warn(`주문접수 첨부 다운로드 중단(클라이언트 종료): ${filePath}`);
+        return;
+      }
+      this.logger.error(`주문접수 첨부 스트림 오류: ${err}`);
       if (!res.headersSent) {
         res.status(500).json({ message: '파일 다운로드 중 오류가 발생했습니다.' });
-      } else {
-        res.destroy();
       }
     });
   }
