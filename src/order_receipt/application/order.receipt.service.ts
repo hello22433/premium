@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -261,7 +261,7 @@ export class OrderReceiptService {
   async approve(user: ILoginUserInfo, id: number) {
     this.validateAdminAuthority(user, '운영관리자 이상만 승인할 수 있습니다.');
 
-    const receipt = await this.findReceiptOrThrow(id);
+    const receipt = await this.findReceiptOrThrow(id, { lock: true }); // 동시 승인 직렬화
 
     if (receipt.status !== OrderReceiptStatus.RECEIVED) {
       throw new BadRequestException('접수 상태인 건만 승인할 수 있습니다.');
@@ -271,8 +271,16 @@ export class OrderReceiptService {
     await this.orderReceiptRepository.save(receipt);
 
     // 승인의 길목에 자동주문 훅(COMMIT). 첨부가 없거나 처리할 게 없으면 무해하게 통과.
-    const result = await this.autoOrderService.run(receipt, user, AutoOrderRunMode.COMMIT);
-    return toAutoOrderResultDto(result, { mode: 'COMMITTED', receiptId: id, generatedAt: new Date() });
+    try {
+      const result = await this.autoOrderService.run(receipt, user, AutoOrderRunMode.COMMIT);
+      return toAutoOrderResultDto(result, { mode: 'COMMITTED', receiptId: id, generatedAt: new Date() });
+    } catch (e) {
+      // 락을 못 잡는 경합 잔여 등으로 멱등 UNIQUE 위반이 나면 raw 500 대신 409로(트랜잭션은 어차피 롤백).
+      if (this.isDuplicateKeyError(e)) {
+        throw new ConflictException('이미 처리 중이거나 처리된 승인입니다. 잠시 후 자동주문 결과를 확인해 주세요.');
+      }
+      throw e;
+    }
   }
 
   async reject(user: ILoginUserInfo, id: number, getBody: OrderReceiptRejectReqDto) {
@@ -421,13 +429,26 @@ export class OrderReceiptService {
     receipt.processedUserId = user.id;
   }
 
-  private async findReceiptOrThrow(id: number): Promise<OrderReceiptEntity> {
-    const receipt = await this.orderReceiptRepository.findOne({ where: { id } });
+  private async findReceiptOrThrow(id: number, opts?: { lock?: boolean }): Promise<OrderReceiptEntity> {
+    // approve는 lock:true로 행을 비관적 락 → 동시 승인이 직렬화돼(둘째는 대기 후 status=APPROVED를 보고 거부)
+    // 멱등 게이트를 뚫고 중복 insert하는 경합을 차단한다. (락은 @Transactional 안에서만 유효)
+    const receipt = await this.orderReceiptRepository.findOne({
+      where: { id },
+      ...(opts?.lock ? { lock: { mode: 'pessimistic_write' as const } } : {}),
+    });
 
     if (!receipt) {
       throw new BadRequestException('주문접수 건이 존재하지 않습니다.');
     }
 
     return receipt;
+  }
+
+  /** MySQL 중복키(ER_DUP_ENTRY/1062) 오류인지 — 동시 승인 경합을 raw 500 대신 409로 변환하기 위함 */
+  private isDuplicateKeyError(e: unknown): boolean {
+    const err = e as { code?: string; errno?: number; driverError?: { code?: string; errno?: number } };
+    const code = err?.driverError?.code ?? err?.code;
+    const errno = err?.driverError?.errno ?? err?.errno;
+    return code === 'ER_DUP_ENTRY' || errno === 1062;
   }
 }

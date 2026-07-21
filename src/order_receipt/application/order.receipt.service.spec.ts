@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import {
   addTransactionalDataSource,
   deleteDataSourceByName,
@@ -140,6 +140,18 @@ describe('OrderReceiptService access and status policy', () => {
     autoOrderService.run.mockRejectedValueOnce(new Error('자동주문 실패'));
 
     await expect(service.approve(operationAdmin, 100)).rejects.toThrow('자동주문 실패');
+  });
+
+  it('동시 승인 경합으로 UNIQUE 위반(ER_DUP_ENTRY)이면 raw 500 대신 409(Conflict)', async () => {
+    const { service, autoOrderService } = createService(
+      makeReceipt({ userId: 20, status: OrderReceiptStatus.RECEIVED }),
+    );
+    autoOrderService.run.mockRejectedValueOnce({
+      code: 'ER_DUP_ENTRY',
+      message: "Duplicate entry '100-0-GENERAL' for key 'uq_receipt_file_type'",
+    });
+
+    await expect(service.approve(operationAdmin, 100)).rejects.toThrow(ConflictException);
   });
 
   it('접수 상태가 아니면(이미 APPROVED) 승인 거부 + 자동주문 훅 미호출', async () => {
