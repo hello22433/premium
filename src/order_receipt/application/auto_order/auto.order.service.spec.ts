@@ -245,6 +245,14 @@ describe('AutoOrderService (DRY_RUN 미리보기)', () => {
     expect(result.files[0].fileIndex).toBe(1); // 멱등키/식별자 안정성
   });
 
+  it('범위 밖 fileIndexes → BadRequestException (조용한 빈 미리보기 방지)', async () => {
+    const a = await buildFilledBuffer([{ b: '010-1111-1111', code: 'GEN-1' }]);
+    const { svc } = makeService({ 'u://a.xlsx': a });
+    await expect(svc.run(receipt('u://a.xlsx'), admin, AutoOrderRunMode.DRY_RUN, [5])).rejects.toThrow(
+      /유효하지 않은 파일 인덱스/,
+    );
+  });
+
   it('리포트 필드: VALID 파일에 상품분해·미매핑/제외 행이 채워진다', async () => {
     const buf = await buildFilledBuffer([
       { b: '010-1111-1111', code: 'GEN-1' }, // built

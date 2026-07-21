@@ -122,10 +122,19 @@ export class AutoOrderService {
 
     // 관리자가 고른 파일만 처리(fileIndexes). 미지정이면 전체. fileIndex는 전체 목록 기준 인덱스를 유지해
     // 멱등키(orderReceiptId, fileIndex, type)와 리포트 식별자가 선택 여부와 무관하게 안정적이다.
-    const selected =
-      fileIndexes && fileIndexes.length > 0
-        ? [...new Set(fileIndexes)].filter((i) => Number.isInteger(i) && i >= 0 && i < urls.length).sort((a, b) => a - b)
-        : urls.map((_, i) => i);
+    let selected: number[];
+    if (fileIndexes && fileIndexes.length > 0) {
+      // 범위 밖/비정수 인덱스를 조용히 필터하면 빈(또는 부분) 미리보기가 사유 없이 나온다 → 명시적으로 거부.
+      const invalid = fileIndexes.filter((i) => !Number.isInteger(i) || i < 0 || i >= urls.length);
+      if (invalid.length > 0) {
+        throw new BadRequestException(
+          `유효하지 않은 파일 인덱스: ${invalid.join(', ')} (첨부 ${urls.length}개, 허용 0~${urls.length - 1}).`,
+        );
+      }
+      selected = [...new Set(fileIndexes)].sort((a, b) => a - b);
+    } else {
+      selected = urls.map((_, i) => i);
+    }
 
     const files: AutoOrderFileResult[] = [];
     for (const fileIndex of selected) {
