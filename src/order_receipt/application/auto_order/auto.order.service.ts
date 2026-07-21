@@ -127,9 +127,8 @@ export class AutoOrderService {
       // 범위 밖/비정수 인덱스를 조용히 필터하면 빈(또는 부분) 미리보기가 사유 없이 나온다 → 명시적으로 거부.
       const invalid = fileIndexes.filter((i) => !Number.isInteger(i) || i < 0 || i >= urls.length);
       if (invalid.length > 0) {
-        throw new BadRequestException(
-          `유효하지 않은 파일 인덱스: ${invalid.join(', ')} (첨부 ${urls.length}개, 허용 0~${urls.length - 1}).`,
-        );
+        const range = urls.length === 0 ? '첨부 파일이 없습니다' : `첨부 ${urls.length}개, 허용 0~${urls.length - 1}`;
+        throw new BadRequestException(`유효하지 않은 파일 인덱스: ${invalid.join(', ')} (${range}).`);
       }
       selected = [...new Set(fileIndexes)].sort((a, b) => a - b);
     } else {
@@ -228,9 +227,10 @@ export class AutoOrderService {
     try {
       headLen = await this.fileService.getContentLength(url);
     } catch (e) {
-      // HeadObject 실패(권한/레거시 등)는 치명적이지 않다 → 본문 적재 후 buffer.length 2차 방어로 넘긴다.
-      this.logger.warn(
-        `자동주문 파일 크기 사전조회 실패 [${fileIndex}] ${fileName}: ${(e as Error).message} (본문 조회 후 재확인)`,
+      // HeadObject 실패 시 본문 length 2차 방어로 넘어가지만, 그 사이 getBuffer가 객체 전체를 메모리에 올린다
+      // → 선(先)차단 보호가 무력화되는 상태이므로 error로 승격(단순 warn이면 우회된 크기보호가 눈에 안 띈다).
+      this.logger.error(
+        `자동주문 파일 크기 사전조회(HeadObject) 실패 [${fileIndex}] ${fileName}: ${(e as Error).message} — 본문 length 2차 방어로 진행(선차단 보호 저하)`,
       );
     }
     if (headLen !== null && headLen > AutoOrderService.MAX_FILE_BYTES) {

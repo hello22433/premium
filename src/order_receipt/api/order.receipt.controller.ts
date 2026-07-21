@@ -95,7 +95,12 @@ export class OrderReceiptController {
     // (과거엔 read 스트림의 end/error에만 unlink를 걸어, 클라이언트가 중간에 끊으면 read 쪽엔 end·error가
     //  안 떠서 temp 파일이 tmpdir에 무기한 쌓였다.)
     pipeline(fileStream, res, (err) => {
-      fs.unlink(filePath, () => {});
+      // unlink 실패(EBUSY/EPERM 등)를 삼키면 이 fix가 막으려던 temp 누수가 조용히 다시 생긴다 → ENOENT 외엔 남긴다.
+      fs.unlink(filePath, (unlinkErr) => {
+        if (unlinkErr && (unlinkErr as NodeJS.ErrnoException).code !== 'ENOENT') {
+          this.logger.warn(`주문접수 첨부 임시파일 삭제 실패(누수 가능): ${filePath} — ${unlinkErr.message}`);
+        }
+      });
       if (!err) return;
       // 클라이언트 조기 종료는 정상적인 취소이므로 warn, 그 외 실제 오류만 error + (헤더 전이면) 500.
       if ((err as NodeJS.ErrnoException).code === 'ERR_STREAM_PREMATURE_CLOSE') {
@@ -103,7 +108,8 @@ export class OrderReceiptController {
         return;
       }
       this.logger.error(`주문접수 첨부 스트림 오류: ${err}`);
-      if (!res.headersSent) {
+      // pipeline이 오류 시 res를 이미 destroy하므로, 헤더 전·미파괴일 때만 안전하게 500 본문을 쓴다.
+      if (!res.headersSent && !res.destroyed) {
         res.status(500).json({ message: '파일 다운로드 중 오류가 발생했습니다.' });
       }
     });
