@@ -425,10 +425,20 @@ export class UserManagementService {
     // 대상 계정 기준 잔여 발송 한도/신용초과금 (로그인 본인이 아니라 조회 대상 기준)
     const remain = await this.settleService.getRemainServiceAmountByUserId(id);
 
+    // 현재 여신 사용액 — wallet_account.credit_used_amount (여신 이력 사용액 누계의 최신값 SoT).
+    // getWalletHistory 와 동일하게 settlement_code 로 wallet 을 조회해 이력 요약과 정합을 보장한다.
+    // settlement_code 미부여(PENDING 등) 계정은 wallet 이 없으므로 0.
+    const walletAccount = user.settlementCode
+      ? await this.walletAccountRepository.findOne({
+          where: { ownerType: 'SETTLEMENT_CODE', ownerId: user.settlementCode },
+        })
+      : null;
+    const creditUsedAmount = walletAccount?.creditUsedAmount ?? 0;
+
     // settleMethod 표시값은 정산 SoT(WALLET=wallet_account, LEGACY=company)를 우선한다.
     // deprecated user.settleMethod 만 반환하면 공유 정산코드(SHARE_ONE) 계정에서 실제
     // 정산(getOrderSettle)이 쓰는 값과 어긋나, "선택값 불러오기"가 오표시된다.
-    const effectiveSettleMethod = await this.resolveEffectiveSettleMethod(user, company);
+    const effectiveSettleMethod = this.resolveEffectiveSettleMethod(user, company, walletAccount);
 
     return {
       id: user.id,
@@ -506,6 +516,7 @@ export class UserManagementService {
       loginVerifyMethod: user.loginVerifyMethod,
       remainServiceAmount: remain.remainServiceAmount,
       creditExcessAmount: remain.creditExcessAmount,
+      creditUsedAmount,
     };
   }
 
@@ -785,11 +796,14 @@ export class UserManagementService {
    * - WALLET: wallet_account.settleMethod. 조회 실패는 폴백하지 않고 fail-closed(throw).
    *   (오표시된 값이 폼 저장 시 공유 wallet 을 오염시키는 것을 방지 — resolveSettlePolicy 와 동일)
    * - SHADOW: wallet 우선, 조회 실패 시 company.settleMethod 폴백
+   * @param walletAccount getDetail 이 settlement_code 로 1회 조회한 wallet (미부여/미존재 시 null).
+   *   중복 조회 제거 + creditUsedAmount 와 동일 wallet SoT 보장.
    */
-  private async resolveEffectiveSettleMethod(
+  private resolveEffectiveSettleMethod(
     user: UserEntity,
     company: UserCompanyEntity | null,
-  ): Promise<IUserSettleMethod> {
+    walletAccount: WalletAccountEntity | null,
+  ): IUserSettleMethod {
     const userMethod = user.settleMethod;
     const companyMethod = (company?.settleMethod as IUserSettleMethod | null) ?? null;
     const mode = this.walletCutoverConfig.pr3SettleMode;
@@ -808,16 +822,17 @@ export class UserManagementService {
       return nonWalletFallback;
     }
 
-    try {
-      const wallet = await this.walletResolver.resolveByUserId(user.id);
-      return (wallet.settleMethod as IUserSettleMethod) ?? userMethod;
-    } catch (e) {
-      // WALLET 은 fail-closed(throw) — 오표시→저장 round-trip 으로 인한 공유 wallet 오염 방지.
-      if (mode === WalletCutoverMode.SHADOW) {
-        return nonWalletFallback;
-      }
-      throw e;
+    // settlement_code 有: getDetail 이 조회한 wallet 을 재사용한다.
+    if (walletAccount) {
+      return (walletAccount.settleMethod as IUserSettleMethod) ?? userMethod;
     }
+
+    // wallet 미존재: SHADOW 는 company 폴백, WALLET 은 fail-closed(throw).
+    // 오표시된 정산방법이 폼 저장 시 공유 wallet 을 오염시키는 것을 방지 (resolveSettlePolicy 와 동일).
+    if (mode === WalletCutoverMode.SHADOW) {
+      return nonWalletFallback;
+    }
+    throw new NotFoundException(`wallet_account not found for settlement_code=${user.settlementCode}`);
   }
 
   /**

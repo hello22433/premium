@@ -1223,24 +1223,7 @@ describe('settleMethod SoT 동기화 테스트', () => {
 
     it('WALLET 모드: wallet_account.settleMethod(SoT) 반환, user.settleMethod(deprecated) 무시', async () => {
       walletCutoverConfig.pr3SettleMode = WalletCutoverMode.WALLET;
-      walletResolver.resolveByUserId.mockResolvedValue({ id: 'wallet-1', settleMethod: 'CARD' });
-      userRepository.findOne.mockResolvedValue({
-        ...UserEntityTest(),
-        id: 1,
-        settleMethod: IUserSettleMethod.CASH,
-        company,
-        companyId: 10,
-      });
-
-      const result = await sut.getDetail({ id: 1 } as any);
-
-      expect(result.settleMethod).toBe('CARD');
-      expect(walletResolver.resolveByUserId).toHaveBeenCalledWith(1);
-    });
-
-    it('WALLET 모드: settlement_code 有 + wallet 조회 실패 → fail-closed(throw), user 폴백 금지', async () => {
-      walletCutoverConfig.pr3SettleMode = WalletCutoverMode.WALLET;
-      walletResolver.resolveByUserId.mockRejectedValue(new Error('wallet not found'));
+      walletAccountRepository.findOne.mockResolvedValue({ settleMethod: 'CARD' });
       userRepository.findOne.mockResolvedValue({
         ...UserEntityTest(),
         id: 1,
@@ -1250,7 +1233,27 @@ describe('settleMethod SoT 동기화 테스트', () => {
         companyId: 10,
       });
 
-      await expect(sut.getDetail({ id: 1 } as any)).rejects.toThrow('wallet not found');
+      const result = await sut.getDetail({ id: 1 } as any);
+
+      expect(result.settleMethod).toBe('CARD');
+      expect(walletAccountRepository.findOne).toHaveBeenCalledWith({
+        where: { ownerType: 'SETTLEMENT_CODE', ownerId: 'company-1' },
+      });
+    });
+
+    it('WALLET 모드: settlement_code 有 + wallet 조회 실패 → fail-closed(throw), user 폴백 금지', async () => {
+      walletCutoverConfig.pr3SettleMode = WalletCutoverMode.WALLET;
+      walletAccountRepository.findOne.mockResolvedValue(null);
+      userRepository.findOne.mockResolvedValue({
+        ...UserEntityTest(),
+        id: 1,
+        settlementCode: 'company-1',
+        settleMethod: IUserSettleMethod.CASH,
+        company,
+        companyId: 10,
+      });
+
+      await expect(sut.getDetail({ id: 1 } as any)).rejects.toThrow('wallet_account not found');
     });
 
     it('WALLET 모드: settlement_code 미부여(PENDING) → user.settleMethod 폴백, wallet 미호출', async () => {
@@ -1267,12 +1270,12 @@ describe('settleMethod SoT 동기화 테스트', () => {
       const result = await sut.getDetail({ id: 1 } as any);
 
       expect(result.settleMethod).toBe(IUserSettleMethod.CASH);
-      expect(walletResolver.resolveByUserId).not.toHaveBeenCalled();
+      expect(walletAccountRepository.findOne).not.toHaveBeenCalled();
     });
 
     it('SHADOW 모드: wallet 조회 실패 시 company.settleMethod 폴백', async () => {
       walletCutoverConfig.pr3SettleMode = WalletCutoverMode.SHADOW;
-      walletResolver.resolveByUserId.mockRejectedValue(new Error('shadow miss'));
+      walletAccountRepository.findOne.mockResolvedValue(null);
       userRepository.findOne.mockResolvedValue({
         ...UserEntityTest(),
         id: 1,
@@ -1301,6 +1304,64 @@ describe('settleMethod SoT 동기화 테스트', () => {
 
       expect(result.settleMethod).toBe('CASH');
       expect(walletResolver.resolveByUserId).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getDetail — 여신 현재 사용액(creditUsedAmount)', () => {
+    const company = { id: 10, businessNumber: '1234567890', settleMethod: 'CASH' };
+
+    it('wallet 존재: settlement_code 로 조회한 wallet_account.credit_used_amount 를 반환', async () => {
+      walletCutoverConfig.pr3SettleMode = WalletCutoverMode.WALLET;
+      walletAccountRepository.findOne.mockResolvedValue({ creditUsedAmount: 123_456 });
+      userRepository.findOne.mockResolvedValue({
+        ...UserEntityTest(),
+        id: 1,
+        settlementCode: 'company-1',
+        company,
+        companyId: 10,
+      });
+
+      const result = await sut.getDetail({ id: 1 } as any);
+
+      expect(result.creditUsedAmount).toBe(123_456);
+      expect(walletAccountRepository.findOne).toHaveBeenCalledWith({
+        where: { ownerType: 'SETTLEMENT_CODE', ownerId: 'company-1' },
+      });
+    });
+
+    it('wallet row 미존재(비-WALLET 모드): 조회는 하되 creditUsedAmount = 0', async () => {
+      walletCutoverConfig.pr3SettleMode = WalletCutoverMode.LEGACY;
+      walletAccountRepository.findOne.mockResolvedValue(null);
+      userRepository.findOne.mockResolvedValue({
+        ...UserEntityTest(),
+        id: 1,
+        settlementCode: 'company-1',
+        company,
+        companyId: 10,
+      });
+
+      const result = await sut.getDetail({ id: 1 } as any);
+
+      expect(result.creditUsedAmount).toBe(0);
+      expect(walletAccountRepository.findOne).toHaveBeenCalledWith({
+        where: { ownerType: 'SETTLEMENT_CODE', ownerId: 'company-1' },
+      });
+    });
+
+    it('settlement_code 미부여(PENDING): wallet 조회 없이 creditUsedAmount = 0', async () => {
+      walletCutoverConfig.pr3SettleMode = WalletCutoverMode.WALLET;
+      userRepository.findOne.mockResolvedValue({
+        ...UserEntityTest(),
+        id: 1,
+        settlementCode: '',
+        company,
+        companyId: 10,
+      });
+
+      const result = await sut.getDetail({ id: 1 } as any);
+
+      expect(result.creditUsedAmount).toBe(0);
+      expect(walletAccountRepository.findOne).not.toHaveBeenCalled();
     });
   });
 });
