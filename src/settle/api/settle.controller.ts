@@ -17,7 +17,6 @@ import {
 } from '@nestjs/common';
 import { WalletReadService } from '../../wallet/application/wallet-read.service';
 import { SettleBySettlementCodeResDto, SettleSettlementCodeUsageResDto } from './dto/settle.read.res.dto';
-import { AuthUserSuperAndOperationAdminGuard } from '../../auth/api/auth.user.super-operation-admin.guard';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
 import { User } from '../../auth/api/user.decorator';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
@@ -31,7 +30,6 @@ import {
   SettleGetPartnerCompanyListResDto,
   SettleGetPerUserDetailResDto,
   SettleGetPerUserListResDto,
-  SettleGetRemainServiceAmountResDto,
   SettleGetSaleTypeListResDto,
   SettleGetShippingStorageListResDto,
   SettleGetUserDetailResDto,
@@ -70,7 +68,6 @@ import {
   SettleGalaxiaExcelDownloadReqDto,
   SettleBatchConfirmOrdersReqDto,
 } from './settle.req.dto';
-import { SettleUserDetailMultipleDto } from './dto/settle.user.detail.multiple.dto';
 import * as fs from 'fs';
 import { Request, Response } from 'express';
 import { UserAuthSubEnum } from '../../user_management/domain/user.auth.enum';
@@ -467,12 +464,7 @@ export class SettleController {
     try {
       const ipAddress = req.ip || req.headers['x-forwarded-for']?.toString() || '';
       const userAgent = req.headers['user-agent'] || '';
-      const { fileName, filePath, recordCount } = await this.settleService.getUserExcelDownload(
-        user,
-        getBody,
-        ipAddress,
-        userAgent,
-      );
+      const { fileName, filePath } = await this.settleService.getUserExcelDownload(user, getBody, ipAddress, userAgent);
 
       const encodedFileName = encodeURIComponent(fileName);
       res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
@@ -526,7 +518,8 @@ export class SettleController {
   })
   // =====================================
   @Get('settle/user-per/detail')
-  getUserPerDetail(@Query() getDto: SettleGetUserPerDetailReqQueryDto) {
+  async getUserPerDetail(@User() user: ILoginUserInfo, @Query() getDto: SettleGetUserPerDetailReqQueryDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.SETTLE_USER_MANAGE);
     return this.settleService.getUserPerDetail(getDto);
   }
 

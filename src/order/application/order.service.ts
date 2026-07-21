@@ -440,17 +440,19 @@ export class OrderService {
     const billingUserId = order.clientUserId ?? order.userId;
     const billingUser = await this.userRepository.findOne({
       where: { id: billingUserId },
-      select: ['id', 'companyId'],
+      relations: ['company'],
     });
 
     const wallet = await this.walletAccountResolverService.resolveForOrder(order);
-    const finalAmount = calculateOrderSettlementAmount(order, order.cardSurchargeApplied);
+    const effectiveSurcharge = await this.resolveEffectiveSurcharge(order, billingUser?.company);
+    const finalAmount = calculateOrderSettlementAmount(order, effectiveSurcharge);
 
     const allocationInput = await this.walletAllocationInputBuilder.build(order, wallet, finalAmount, {
       requestedPointAmount: getBody.pointUseAmount,
       depositUseEnabled: getBody.depositUseEnabled,
       depositUseAmount: getBody.depositUseAmount,
       companyId: billingUser?.companyId ?? null,
+      cardSurchargeApplied: effectiveSurcharge,
     });
     // clamp 금지 — 초과 입력은 400 (확정과 동일 규칙)
     this.assertUsageWithinLimits(allocationInput, getBody);
@@ -527,14 +529,15 @@ export class OrderService {
       relations: ['company'],
     });
     const company = billingUser?.company;
-    const { policy: settlePolicy } = await this.resolveSettlePolicy(order, company);
-    // 카드할증 기본값도 정산방법(코드 지갑 SoT) 소스를 따른다 — company.settleMethod 는 회사 단위라 코드별로 갈릴 때 틀림.
-    // resolveSettlePolicy 가 cutover mode(WALLET=코드 지갑 / SHADOW=지갑·회사 폴백 / LEGACY=회사)를 이미 반영한다.
-    const defaultCardSurchargeApplied = settlePolicy === 'CARD';
+    const { policy: settlePolicy, resolvedWallet } = await this.resolveSettlePolicy(order, company);
+    // 카드할증 기본값도 정산방법(코드 지갑 SoT) 소스를 따른다 — wallet 토글(§4.0) 반영. wallet 미조회(LEGACY/SHADOW-실패)는 ?? true 로 현행 회사 CARD⇒기본 ON 보존.
+    const defaultCardSurchargeApplied = settlePolicy === 'CARD' && (resolvedWallet?.cardSurchargeApplied ?? true);
 
-    const cardSurchargeApplied = opts.useExistingAsMiddleFallback
-      ? (body.cardSurchargeApplied ?? order.cardSurchargeApplied ?? defaultCardSurchargeApplied)
-      : (body.cardSurchargeApplied ?? defaultCardSurchargeApplied);
+    // 기존값 폴백은 정산완료(settleMethod!=null) update 에서만 — cardSurchargeApplied 는 non-nullable(false)이라 미정산 update 가 wallet 기본값을 가로채지 않게 게이트.
+    const hasSettleInput = order.settleMethod != null;
+    const existingSurcharge =
+      opts.useExistingAsMiddleFallback && hasSettleInput ? order.cardSurchargeApplied : undefined;
+    const cardSurchargeApplied = body.cardSurchargeApplied ?? existingSurcharge ?? defaultCardSurchargeApplied;
 
     // 정책 부재(LEGACY/SHADOW 회사 정책 null)에도 신규 저장은 항상 non-null — 기본값 'CASH'(할증OFF 와 정합).
     const settleMethod = opts.useExistingAsMiddleFallback
@@ -542,6 +545,21 @@ export class OrderService {
       : (body.settleMethod ?? settlePolicy ?? 'CASH');
 
     return { cardSurchargeApplied, settleMethod };
+  }
+
+  /**
+   * 카드할증 effective 값 (settle 읽기/preview/confirm 공통, §4.0/§4.3 Y).
+   * - 정산완료(settleMethod!=null): 저장된 order.cardSurchargeApplied.
+   * - 미정산: resolveSettlePolicy 기반 wallet 토글 기본값(policy CARD & wallet 토글; wallet 미조회는 ?? true = 현행 회사 CARD⇒ON 보존).
+   * 완료판정은 settleMethod (cardSurchargeApplied 는 non-nullable false 라 판정 불가). hasSettleInput 이면 resolveSettlePolicy 미호출(laziness).
+   */
+  private async resolveEffectiveSurcharge(
+    order: Pick<OrderEntity, 'userId' | 'clientUserId' | 'settleMethod' | 'cardSurchargeApplied'>,
+    company: { settleMethod?: string | null } | null | undefined,
+  ): Promise<boolean> {
+    if (order.settleMethod != null) return order.cardSurchargeApplied;
+    const { policy, resolvedWallet } = await this.resolveSettlePolicy(order, company);
+    return policy === 'CARD' && (resolvedWallet?.cardSurchargeApplied ?? true);
   }
 
   /**
@@ -2750,10 +2768,16 @@ export class OrderService {
     // 입력완료 표식 = order.settleMethod 존재 (settleAmount>0 의존 제거 — 0원 정산도 입력값 유지)
     const hasSettleInput = order.settleMethod != null;
     // 정책 폴백은 미입력일 때만 필요. 읽기 경로는 fail-closed 불필요 → lazy 해석으로 WALLET 불필요 throw/조회 회피.
-    const settlePolicy = hasSettleInput
-      ? null
-      : (await this.resolveSettlePolicy(order, billingUserForSettle?.company)).policy;
-    const effectiveCardSurcharge = hasSettleInput ? order.cardSurchargeApplied : settlePolicy === 'CARD';
+    let settlePolicy: 'CARD' | 'CASH' | null;
+    let effectiveCardSurcharge: boolean;
+    if (hasSettleInput) {
+      settlePolicy = null;
+      effectiveCardSurcharge = order.cardSurchargeApplied;
+    } else {
+      const resolved = await this.resolveSettlePolicy(order, billingUserForSettle?.company);
+      settlePolicy = resolved.policy;
+      effectiveCardSurcharge = resolved.policy === 'CARD' && (resolved.resolvedWallet?.cardSurchargeApplied ?? true);
+    }
 
     // 카드할증 산정 (백엔드 산식 단일화: 프론트 자체계산 제거)
     const cardSurchargeBase = totalDiscountAmount;
@@ -3383,15 +3407,20 @@ export class OrderService {
 
   /**
    * 임시저장/수정 콘텐츠 금칙어 검사. 적발 시 block_log 기록 후 BadRequestException(FORBIDDEN_WORD).
+   * eventName(이벤트명)은 주문 레벨 필드라 상품 행과 별도로 검사한다.
    */
   private async assertNoForbiddenWord(
     user: ILoginUserInfo,
     orderProductList: OrderProductCreateTempDto[],
     orderId: number | null,
+    eventName?: string | null,
   ): Promise<void> {
     const targets = OrderService.collectForbiddenWordTargets(
       orderProductList.map((product) => ({ ...product, deliveries: product.orderDeliveryList ?? [] })),
     );
+    if (eventName) {
+      targets.push({ field: 'eventName', text: eventName });
+    }
     await this.assertTargetsHaveNoForbiddenWord(user, targets, orderId);
   }
 
@@ -3406,11 +3435,16 @@ export class OrderService {
         deliveries: mapping.orderDeliveries ?? [],
       })),
     );
+    if (order.eventName) {
+      targets.push({ field: 'eventName', text: order.eventName });
+    }
     await this.assertTargetsHaveNoForbiddenWord(user, targets, order.id);
   }
 
   /**
-   * 금칙어 검사 공통 로직: 적발 시 block_log 기록 후 BadRequestException(FORBIDDEN_WORD) throw.
+   * 금칙어 검사 공통 로직: 전 필드를 스캔해 적발 필드별 block_log 기록 후,
+   * 적발 단어 합집합(중복 제거)으로 BadRequestException(FORBIDDEN_WORD) throw.
+   * (첫 필드에서 즉시 throw하면 교차 필드 적발 시 FE 안내 팝업에 단어가 누락된다)
    * block_log insert 실패는 warn 후에도 reject 유지.
    */
   private async assertTargetsHaveNoForbiddenWord(
@@ -3418,6 +3452,8 @@ export class OrderService {
     targets: { field: string; text: string }[],
     orderId: number | null,
   ): Promise<void> {
+    const allWords: string[] = [];
+
     for (const target of targets) {
       const matchedWords = this.forbiddenWordMatcher.scan(target.text);
       if (matchedWords.length === 0) {
@@ -3437,9 +3473,17 @@ export class OrderService {
         this.logger.warn(`금칙어 차단 로그 기록 실패: ${(e as Error).message}`);
       }
 
+      for (const word of matchedWords) {
+        if (!allWords.includes(word)) {
+          allWords.push(word);
+        }
+      }
+    }
+
+    if (allWords.length > 0) {
       throw new BadRequestException({
         code: 'FORBIDDEN_WORD',
-        words: matchedWords,
+        words: allWords,
         message: '금칙어가 포함되어 있습니다.',
       });
     }
@@ -3488,7 +3532,7 @@ export class OrderService {
     const { type, eventName, topImagePath, midImagePath, orderProductList } = getBody;
 
     await this.assertPositiveIntegerAmounts(orderProductList);
-    await this.assertNoForbiddenWord(user, orderProductList, null);
+    await this.assertNoForbiddenWord(user, orderProductList, null, eventName);
 
     // 대행주문인 경우 clientUser의 허용 발신수단으로 검증
     const clientUserId = getBody.clientUserId ?? null;
@@ -3652,7 +3696,7 @@ export class OrderService {
     const { id, eventName, topImagePath, midImagePath, orderProductList } = getBody;
 
     await this.assertPositiveIntegerAmounts(orderProductList);
-    await this.assertNoForbiddenWord(user, orderProductList, id);
+    await this.assertNoForbiddenWord(user, orderProductList, id, eventName);
 
     const order = await this.orderRepository.findOne({
       where: {
@@ -4377,8 +4421,20 @@ export class OrderService {
     }
     // ======== 중복번호 제어 체크 끝 ========
 
-    // 최종 정산금액 계산 (배송별 정산값 우선, 주문 전체 카드할증 1회 적용)
-    const finalAmount = calculateOrderSettlementAmount(order, order.cardSurchargeApplied);
+    // 미정산 주문은 확정 시점 정책을 주문 스냅샷으로 고정해 allocation/조회/재정산의 기준을 일치시킨다.
+    const settleOrderBefore: SettleOrderSnapshot = {
+      settleMethod: order.settleMethod,
+      cardSurchargeApplied: order.cardSurchargeApplied,
+    };
+    const hasSettleInput = order.settleMethod != null;
+    const resolvedSettlePolicy = hasSettleInput
+      ? null
+      : await this.resolveSettlePolicy(order, oneUser.company);
+    const effectiveSettleMethod = order.settleMethod ?? resolvedSettlePolicy?.policy ?? 'CASH';
+    const effectiveSurcharge = hasSettleInput
+      ? order.cardSurchargeApplied
+      : effectiveSettleMethod === 'CARD' && (resolvedSettlePolicy?.resolvedWallet?.cardSurchargeApplied ?? true);
+    const finalAmount = calculateOrderSettlementAmount(order, effectiveSurcharge);
 
     if (order.isNewBillingFlow) {
       // === 새 흐름: 발송확정 시 전액 차감 ===
@@ -4419,6 +4475,7 @@ export class OrderService {
           depositUseEnabled: getBody.depositUseEnabled,
           depositUseAmount: getBody.depositUseAmount,
           companyId: oneUser.companyId,
+          cardSurchargeApplied: effectiveSurcharge,
         });
         // 사용액 입력 검증 (clamp 금지 — 사용 가능 한도 초과 시 400)
         this.assertUsageWithinLimits(allocationInput, getBody);
@@ -4478,10 +4535,9 @@ export class OrderService {
           {
             orderId: order.id,
             allocation,
-            cardSurchargeAppliedSnapshot: order.cardSurchargeApplied,
+            cardSurchargeAppliedSnapshot: effectiveSurcharge,
             hasDiscountSnapshot: allocation.hasDiscount,
-            // effective: 정산입력된 order.settleMethod 우선, 없으면 이미 조회한 wallet SoT 재사용 (추가 조회 0)
-            settleMethodSnapshot: order.settleMethod ?? wallet.settleMethod,
+            settleMethodSnapshot: effectiveSettleMethod,
             deliveryIdsForAttempt,
             creditExcessApprovalId: getBody.creditExcessApprovalId ?? null,
           },
@@ -4560,6 +4616,7 @@ export class OrderService {
             const wallet = await this.walletAccountResolverService.resolveForOrder(order, this.orderRepository.manager);
             const previewInput = await this.walletAllocationInputBuilder.build(order, wallet, finalAmount, {
               companyId: oneUser.companyId,
+              cardSurchargeApplied: effectiveSurcharge,
             });
             const preview = this.paymentAllocationService.allocate(previewInput);
 
@@ -4710,6 +4767,10 @@ export class OrderService {
       order.settleAmount = finalAmount;
     }
     // ======== 과금 처리 끝 ========
+    if (!hasSettleInput) {
+      order.settleMethod = effectiveSettleMethod;
+      order.cardSurchargeApplied = effectiveSurcharge;
+    }
 
     for (const orderMapping of order.orderProductMappings!) {
       for (const orderDelivery of orderMapping.orderDeliveries) {
@@ -4723,6 +4784,22 @@ export class OrderService {
 
     order.status = IOrderStatus.DELIVERY_CONFIRMED;
     await this.orderRepository.save(order);
+    if (!hasSettleInput) {
+      await this.logSettleDiscountChange({
+        user,
+        orderId: order.id,
+        requestUrl: '/order/delivery-confirmed',
+        method: 'POST',
+        source: SettleDiscountChangeSource.AUTO_CONFIRM,
+        changes: [],
+        orderBefore: settleOrderBefore,
+        orderAfter: {
+          settleMethod: order.settleMethod,
+          cardSurchargeApplied: order.cardSurchargeApplied,
+          settleAmount: order.settleAmount,
+        },
+      });
+    }
 
     return { message: message, ...this.allocationDetail(walletAllocation) };
   }
@@ -4735,10 +4812,12 @@ export class OrderService {
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .innerJoinAndSelect('orderProductMappings.product', 'product')
+      .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
       .where('order.id = :id', { id })
       // .andWhere('order.userId = :userId', { userId: user.id })
       .andWhere('order.status = :status', { status: IOrderStatus.DELIVERY_REQUEST })
       .andWhere('order.type = :type', { type: IOrderType.SSG })
+      .setLock('pessimistic_write')
       .getOne();
 
     if (!beforeOrder) {
@@ -4749,6 +4828,11 @@ export class OrderService {
 
     if (couponExpiration === couponExpirationProduct) {
       throw new BadRequestException(`유효기간이 ${couponExpiration}일 로 동일합니다.`);
+    }
+
+    const hasDeduction = await this.ssgEventService.hasOpenTempDeduction(beforeOrder.id);
+    if (!hasDeduction) {
+      throw new BadRequestException('처리 가능한 가차감 이력이 없습니다.');
     }
 
     const afterProductList = await this.productRepository.find({
@@ -4762,6 +4846,13 @@ export class OrderService {
       (product) => product.price,
       (product) => product.id,
     );
+
+    // restore 대상(기존 이벤트)과 allocate 후보(새 유효기간 이벤트)를 id ASC 순서로 선잠금하여
+    // 서로 다른 트랜잭션 간 락 순서 역전(데드락 소지)을 차단한다.
+    await this.ssgEventService.lockEventsForCouponExpireChange(beforeOrder.id, couponExpiration);
+
+    // 상품 교체 전: 기존 이벤트 가차감(isTemporary=true) 복원
+    await this.ssgEventService.restoreTemporaryEventBalance(beforeOrder.id);
 
     for (const orderProductMapping of beforeOrder.orderProductMappings!) {
       const beforeProductId = orderProductMapping.productId;
@@ -4781,44 +4872,48 @@ export class OrderService {
       );
     }
 
-    const order = await this.orderRepository
-      .createQueryBuilder('order')
-      .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
-      .innerJoinAndSelect('orderProductMappings.product', 'product')
-      .where('order.id = :id', { id })
-      // .andWhere('order.userId = :userId', { userId: user.id })
-      .andWhere('order.status = :status', { status: IOrderStatus.DELIVERY_REQUEST })
-      .andWhere('order.type = :type', { type: IOrderType.SSG })
-      .getOne();
-    // 현재 order 에 되어있는 모든 product id 를 추출, 가격이 같은 다른 couponExpireation 으로 변경 진행
-    if (!order) {
-      throw new InternalServerErrorException('해당 주문이 존재하지 않습니다.');
+    // 새 유효기간 이벤트 재할당 + 가차감 (배송건별 예약시각을 개별 반영 — 상품별 예약발송 정책 유지)
+    const deliveries: { deliveryId: number; price: number; reserveDate?: Date }[] = [];
+    for (const mapping of beforeOrder.orderProductMappings!) {
+      const afterProductId = afterProductPriceMap.get(mapping.product.price);
+      const afterProduct = afterProductList.find((p) => p.id === afterProductId);
+      const price = afterProduct?.price ?? mapping.product.price;
+      const reserveDate =
+        mapping.sendType === 'RESERVE' && mapping.sendRequestAt
+          ? new Date(mapping.sendRequestAt as unknown as string)
+          : undefined;
+      for (const delivery of mapping.orderDeliveries) {
+        deliveries.push({ deliveryId: delivery.id, price, reserveDate });
+      }
     }
 
-    // // 상품 가격으로 전체 가격 계산
-    const totalPrice = order.sendAmount;
+    const allocations = await this.ssgEventService.allocateEventsForDeliveries(deliveries, couponExpiration);
 
-    const now = new Date();
-    const ssgEventList = await this.ssgEventRepository.find({
-      where: {
-        startAt: LessThanOrEqual(now),
-        endAt: MoreThanOrEqual(now),
-        couponExpiration: couponExpiration,
-      },
-      order: { order: 'desc' },
+    if (!allocations) {
+      throw new BadRequestException('사용 가능한 SSG 이벤트가 없습니다. (잔액 부족)');
+    }
+
+    await this.ssgEventService.deductEventBalanceMultiple(allocations, beforeOrder.id, true);
+
+    // orderDelivery.ssgEventId 및 order.ssgEventId 재저장
+    const allocationMap = new Map<number, number>();
+    for (const alloc of allocations) {
+      allocationMap.set(alloc.deliveryId, alloc.eventId);
+    }
+
+    for (const mapping of beforeOrder.orderProductMappings!) {
+      for (const delivery of mapping.orderDeliveries) {
+        if (allocationMap.has(delivery.id)) {
+          await this.orderDeliveryRepository.update(delivery.id, {
+            ssgEventId: allocationMap.get(delivery.id),
+          });
+        }
+      }
+    }
+
+    await this.orderRepository.update(beforeOrder.id, {
+      ssgEventId: allocations[0]?.eventId ?? null,
     });
-
-    if (ssgEventList.length === 0) {
-      throw new BadRequestException('행사가 존재하지 않습니다.');
-    }
-
-    const ssgEventTotalPrice = ssgEventList.reduce((acc, cur) => acc + cur.eventPrice, 0);
-
-    if (ssgEventTotalPrice < totalPrice) {
-      throw new BadRequestException('행사 잔액이 부족합니다.');
-    }
-
-    return;
   }
 
   @Transactional()

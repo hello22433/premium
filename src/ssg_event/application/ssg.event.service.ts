@@ -4,7 +4,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { ISsgAmountResult, ISsgIssue } from '../../partner_company_extern/interface/ssg.issue';
 import { SsgEventEntity } from '../../entity/ssg.event.entity';
 import { SsgReservationRangeEntity } from '../../entity/ssg.reservation.range.entity';
-import { Brackets, Repository, SelectQueryBuilder } from 'typeorm';
+import { Brackets, LessThan, Repository, SelectQueryBuilder } from 'typeorm';
 import {
   SsgEventCreateReqDto,
   SsgEventExcelDownloadReqDto,
@@ -554,6 +554,24 @@ export class SsgEventService {
       .getOne();
   }
 
+  /**
+   * 여러 행사를 id 오름차순 단일 쿼리로 한 번에 잠근다.
+   * 서로 다른 트랜잭션이 같은 행사 집합을 다루더라도 항상 동일한(id ASC) 순서로
+   * 락을 획득하도록 강제해 데드락을 방지한다. 반드시 @Transactional() 컨텍스트에서 호출.
+   */
+  private async lockEventsForUpdate(ids: number[]): Promise<void> {
+    const uniqueIds = [...new Set(ids)].sort((a, b) => a - b);
+    if (uniqueIds.length === 0) {
+      return;
+    }
+    await this.ssgEventRepository
+      .createQueryBuilder('ssg')
+      .setLock('pessimistic_write')
+      .where('ssg.id IN (:...uniqueIds)', { uniqueIds })
+      .orderBy('ssg.id', 'ASC')
+      .getMany();
+  }
+
   @Transactional()
   async updateAmount(getBody: SsgEventUpdateAmountReqDto) {
     const { id, amount } = getBody;
@@ -807,6 +825,81 @@ export class SsgEventService {
 
   async confirmEventBalance(orderId: number): Promise<void> {
     await this.amountHistoryRepository.update({ orderId, isTemporary: true }, { isTemporary: false });
+  }
+
+  async hasOpenTempDeduction(orderId: number): Promise<boolean> {
+    const count = await this.amountHistoryRepository.count({
+      where: { orderId, isTemporary: true, amount: LessThan(0) },
+    });
+    return count > 0;
+  }
+
+  /** 특정 주문의 미확정(isTemporary=true) 가차감이 걸려있는 행사 id 목록. */
+  private async getOpenTempDeductionEventIds(orderId: number): Promise<number[]> {
+    const histories = await this.amountHistoryRepository.find({
+      where: { orderId, isTemporary: true, amount: LessThan(0) },
+    });
+    return histories.map((h) => h.ssgEventId).filter((id): id is number => !!id);
+  }
+
+  /** 특정 유효기간(couponExpiration)의 잔액 있는 후보 행사 id 목록. */
+  private async getCandidateEventIdsByExpiration(couponExpiration: number): Promise<number[]> {
+    const events = await this.ssgEventRepository
+      .createQueryBuilder('ssg')
+      .select('ssg.id')
+      .where('ssg.eventBalance > 0')
+      .andWhere('ssg.couponExpiration = :couponExpiration', { couponExpiration })
+      .getMany();
+    return events.map((e) => e.id);
+  }
+
+  /**
+   * 유효기간 변경(ssgCouponExpireChange) 시작 시 restore 대상(기존 이벤트)과
+   * allocate 후보(새 유효기간 이벤트)를 하나의 id ASC 순서로 선잠금한다.
+   * restore/allocate가 각자 다른 순서로 개별 락을 잡는 경합(데드락 소지)을 원천 차단.
+   */
+  @Transactional()
+  async lockEventsForCouponExpireChange(orderId: number, couponExpiration: number): Promise<void> {
+    const [openIds, candidateIds] = await Promise.all([
+      this.getOpenTempDeductionEventIds(orderId),
+      this.getCandidateEventIdsByExpiration(couponExpiration),
+    ]);
+    await this.lockEventsForUpdate([...openIds, ...candidateIds]);
+  }
+
+  @Transactional()
+  async restoreTemporaryEventBalance(orderId: number): Promise<void> {
+    const histories = await this.amountHistoryRepository.find({
+      where: { orderId, isTemporary: true },
+      order: { ssgEventId: 'ASC' },
+    });
+
+    for (const history of histories) {
+      if (!history.ssgEventId || history.amount == null || history.amount >= 0) {
+        continue;
+      }
+
+      const ssgEvent = await this.findSsgEventForUpdate(history.ssgEventId);
+
+      if (!ssgEvent) {
+        continue;
+      }
+
+      const restoredBalance = ssgEvent.eventBalance - history.amount;
+
+      const restorationHistory = this.amountHistoryRepository.create({
+        ssgEventId: ssgEvent.id,
+        amount: -history.amount,
+        balance: restoredBalance,
+        orderId,
+        isTemporary: false,
+      });
+
+      ssgEvent.eventBalance = restoredBalance;
+      await this.amountHistoryRepository.save(restorationHistory);
+      await this.amountHistoryRepository.update({ id: history.id }, { isTemporary: false });
+      await this.ssgEventRepository.save(ssgEvent);
+    }
   }
 
   async getOpenTempDeductionByEvent(ssgEventId: number): Promise<number> {

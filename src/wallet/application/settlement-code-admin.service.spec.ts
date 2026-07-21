@@ -281,13 +281,14 @@ describe('SettlementCodeAdminService', () => {
       await sut.ensureSettlementCodeWallet(7, 'company-7', 5000, manager);
       const [sql, params] = manager.query.mock.calls[0];
       expect(sql).toMatch(/ON DUPLICATE KEY UPDATE\s+id\s*=\s*id/i);
-      expect(params).toEqual(['company-7', 5000, 'POST_PAYMENT', 'CASH']);
+      expect(sql).toMatch(/\bowner_company_id\b/);
+      expect(params).toEqual(['company-7', 7, 5000, 'POST_PAYMENT', 'CASH']);
     });
     it('settleCondition/settleMethod 인자를 wallet 정책 컬럼에 반영한다', async () => {
       const manager: any = { query: jest.fn().mockResolvedValue({ affectedRows: 1 }) };
       await sut.ensureSettlementCodeWallet(7, 'company-7', 5000, manager, 'PRE_PAYMENT', 'CARD');
       const [, params] = manager.query.mock.calls[0];
-      expect(params).toEqual(['company-7', 5000, 'PRE_PAYMENT', 'CARD']);
+      expect(params).toEqual(['company-7', 7, 5000, 'PRE_PAYMENT', 'CARD']);
     });
     it('중복(affectedRows=0) → log.warn + 성공', async () => {
       const manager: any = { query: jest.fn().mockResolvedValue({ affectedRows: 0 }) };
@@ -389,8 +390,8 @@ describe('SettlementCodeAdminService', () => {
       fx.issuedOwnerRows = [];
       const code = await sut.issueNewCode(1);
       expect(code).toBe('company-7-1');
-      // ensureSettlementCodeWallet 은 creditLimit=0 으로 INSERT.
-      expect(cap.queries[0].params).toEqual(['company-7-1', 0, 'PRE_PAYMENT', 'CARD']);
+      // ensureSettlementCodeWallet 은 companyId + creditLimit=0 으로 INSERT.
+      expect(cap.queries[0].params).toEqual(['company-7-1', 7, 0, 'PRE_PAYMENT', 'CARD']);
       expect(cap.userUpdate).toEqual([{ crit: { id: 1 }, patch: { settlementCode: 'company-7-1' } }]);
     });
 
@@ -429,30 +430,82 @@ describe('SettlementCodeAdminService', () => {
 
   // ── renameCode ────────────────────────────────────────────────────────────
   describe('renameCode', () => {
+    const operator = { id: 9, email: 'op@x' } as any;
     it('newCode wallet 이 이미 있으면 collision BadRequest (원자성 — update 없음)', async () => {
-      fx.walletByCode = { 'company-7': { id: 'w7' }, 'company-7-new': { id: 'w-x', ownerId: 'company-7-new' } };
-      await expect(sut.renameCode(7, 'company-7', 'company-7-new')).rejects.toThrow(/이미 존재/);
+      fx.walletByCode = { 'company-7': { id: 'w7', ownerCompanyId: 7 }, 'company-7-new': { id: 'w-x', ownerId: 'company-7-new', ownerCompanyId: 7 } };
+      await expect(sut.renameCode(7, 'company-7', 'company-7-new', operator)).rejects.toThrow(/이미 존재/);
       expect(cap.walletUpdate).toHaveLength(0);
       expect(cap.userUpdate).toHaveLength(0);
     });
 
     it('collision 없음 → wallet.owner_id + 모든 참조 user.settlement_code 를 한 TX 에서 갱신', async () => {
-      fx.walletByCode = { 'company-7': { id: 'w7' } }; // oldCode 실재, newCode 부재
-      await sut.renameCode(7, 'company-7', 'company-7-new');
+      fx.walletByCode = { 'company-7': { id: 'w7', ownerCompanyId: 7 } }; // oldCode 실재(홈 회사 7), newCode 부재
+      await sut.renameCode(7, 'company-7', 'company-7-new', operator);
       expect(cap.walletUpdate).toEqual([
         { crit: { ownerType: 'SETTLEMENT_CODE', ownerId: 'company-7' }, patch: { ownerId: 'company-7-new' } },
       ]);
       expect(cap.userUpdate).toEqual([
         { crit: { companyId: 7, settlementCode: 'company-7' }, patch: { settlementCode: 'company-7-new' } },
       ]);
+      // 정책/한도 이력에 리네임 감사 로그가 동일 TX 로 남는다 (settlementCode=newCode, before/after).
+      expect(activityLogService.createLog).toHaveBeenCalledTimes(1);
+      const [logDto, mgr] = activityLogService.createLog.mock.calls[0];
+      expect(logDto).toMatchObject({
+        actionType: ActivityLogActionType.SETTLE_CODE_RENAME,
+        userId: 9,
+        requestParams: { settlementCode: 'company-7-new', before: 'company-7', after: 'company-7-new' },
+      });
+      expect(mgr).toBeDefined();
     });
 
-    it('oldCode 가 이 회사 소속 코드가 아니면 BadRequest (타 회사 code 전역 rename 방지, H5)', async () => {
-      lockByCompanyResult = {
-        company: { id: 7 },
-        companyUsers: [{ id: 1, settlementCode: 'company-7', companyId: 7 }],
-      };
-      await expect(sut.renameCode(7, 'company-999', 'company-999-new')).rejects.toThrow(/속한 코드가 아닙니다/);
+    it('유저 0명 코드도 rename 성공 — 소속 판정이 유저가 아니라 owner_company_id 임을 고정 (회귀 가드)', async () => {
+      // 이 회사에 배정된 유저가 아예 없다(유저 기반 판정이면 "이 회사 코드 아님"으로 차단됐을 상황).
+      lockByCompanyResult = { company: { id: 7 }, companyUsers: [] };
+      // company-7-2 는 유저 0이지만 홈 회사(owner_company_id)가 7 → rename 허용돼야 한다.
+      fx.walletByCode = { 'company-7-2': { id: 'w72', ownerCompanyId: 7 } };
+
+      await sut.renameCode(7, 'company-7-2', 'company-7-renamed', operator);
+
+      expect(cap.walletUpdate).toEqual([
+        { crit: { ownerType: 'SETTLEMENT_CODE', ownerId: 'company-7-2' }, patch: { ownerId: 'company-7-renamed' } },
+      ]);
+      expect(cap.userUpdate).toEqual([
+        { crit: { companyId: 7, settlementCode: 'company-7-2' }, patch: { settlementCode: 'company-7-renamed' } },
+      ]);
+      expect(activityLogService.createLog).toHaveBeenCalledTimes(1);
+      expect(activityLogService.createLog.mock.calls[0][0]).toMatchObject({
+        actionType: ActivityLogActionType.SETTLE_CODE_RENAME,
+        requestParams: { settlementCode: 'company-7-renamed', before: 'company-7-2', after: 'company-7-renamed' },
+      });
+    });
+
+    it('리네임 시 정책/한도 이력의 settlementCode 를 newCode 로 이관 (감사행 불변 — request_params 만 targeted UPDATE)', async () => {
+      fx.walletByCode = { 'company-7': { id: 'w7', ownerCompanyId: 7 } };
+
+      await sut.renameCode(7, 'company-7', 'company-7-new', operator);
+
+      const migration = cap.queries.find((q) => /UPDATE\s+activity_log/i.test(q.sql));
+      expect(migration).toBeDefined();
+      // request_params 만 SET (전 컬럼 재기록 금지 — updated_at 등 다른 컬럼은 SET 절에 없음)
+      expect(migration!.sql).toMatch(/SET\s+request_params\s*=\s*JSON_SET\(request_params, '\$\.settlementCode', \?\)/);
+      expect(migration!.sql).not.toMatch(/updated_at/);
+      // 소프트삭제 제외 + action_type 3종 스코프 + oldCode → newCode 치환
+      expect(migration!.sql).toMatch(/deleted_at IS NULL/);
+      expect(migration!.sql).toMatch(/action_type IN \(\?, \?, \?\)/);
+      expect(migration!.sql).toMatch(/JSON_UNQUOTE\(JSON_EXTRACT\(request_params, '\$\.settlementCode'\)\) = \?/);
+      expect(migration!.params).toEqual([
+        'company-7-new',
+        ActivityLogActionType.MAXIMUM_LIMIT_MODIFY,
+        ActivityLogActionType.SETTLE_CODE_POLICY_MODIFY,
+        ActivityLogActionType.SETTLE_CODE_RENAME,
+        'company-7',
+      ]);
+    });
+
+    it('oldCode 의 홈 회사(owner_company_id)가 이 회사가 아니면 BadRequest (타 회사 code 전역 rename 방지)', async () => {
+      // company-999 wallet 은 존재하나 홈 회사가 999 → companyId=7 로는 rename 불가(유저 유무와 무관).
+      fx.walletByCode = { 'company-999': { id: 'w999', ownerCompanyId: 999 } };
+      await expect(sut.renameCode(7, 'company-999', 'company-999-new', operator)).rejects.toThrow(/속한 코드가 아닙니다/);
       expect(cap.walletUpdate).toHaveLength(0);
       expect(cap.userUpdate).toHaveLength(0);
     });
@@ -460,8 +513,8 @@ describe('SettlementCodeAdminService', () => {
     it('oldCode 가 다른 회사와 공유 중이면 BadRequest (공유 코드 리네임 불가 계약, 결정 #6)', async () => {
       // 이 회사 소속 검증은 통과하나, 타 회사 공유 참조가 있어 리네임 불가(단일 회사 전용 코드만 허용).
       fx.foreignRefCount = 1;
-      fx.walletByCode = { 'company-7': { id: 'w7' } }; // oldCode 실재
-      await expect(sut.renameCode(7, 'company-7', 'company-7-new')).rejects.toThrow(/공유 중이라 리네임할 수 없습니다/);
+      fx.walletByCode = { 'company-7': { id: 'w7', ownerCompanyId: 7 } }; // oldCode 실재(홈 회사 7)
+      await expect(sut.renameCode(7, 'company-7', 'company-7-new', operator)).rejects.toThrow(/공유 중이라 리네임할 수 없습니다/);
       expect(cap.walletUpdate).toHaveLength(0);
       expect(cap.userUpdate).toHaveLength(0);
     });
@@ -469,13 +522,13 @@ describe('SettlementCodeAdminService', () => {
     it('oldCode wallet 부재(dangling) → BadRequest (assign 인터리빙 대비 FOR UPDATE 확보)', async () => {
       fx.walletByCode = {}; // oldCode wallet 없음
       fx.walletGetOne = null;
-      await expect(sut.renameCode(7, 'company-7', 'company-7-new')).rejects.toThrow(/wallet_account 를 찾을 수 없습니다/);
+      await expect(sut.renameCode(7, 'company-7', 'company-7-new', operator)).rejects.toThrow(/wallet_account 를 찾을 수 없습니다/);
       expect(cap.walletUpdate).toHaveLength(0);
       expect(cap.userUpdate).toHaveLength(0);
     });
 
     it('oldCode == newCode → BadRequest', async () => {
-      await expect(sut.renameCode(7, 'company-7', 'company-7')).rejects.toBeInstanceOf(BadRequestException);
+      await expect(sut.renameCode(7, 'company-7', 'company-7', operator)).rejects.toBeInstanceOf(BadRequestException);
     });
   });
 
@@ -580,6 +633,53 @@ describe('SettlementCodeAdminService', () => {
       expect(res.after.settleMethod).toBe('CARD');
       expect(cap.walletSave[0].settleMethod).toBe('CARD');
       expect(activityLogService.createLog).toHaveBeenCalledTimes(1);
+    });
+
+    it('카드할증 기본값 변경 → 저장 + before/after activity_log', async () => {
+      fx.walletGetOne = {
+        id: 'w1',
+        settleCondition: 'POST_PAYMENT',
+        settleMethod: 'CARD',
+        cardSurchargeApplied: true,
+      } as any;
+
+      const res = await sut.setSettlePolicy(
+        'company-7',
+        { cardSurchargeApplied: false },
+        { id: 9, email: 'op@x' } as any,
+      );
+
+      expect(res.before.cardSurchargeApplied).toBe(true);
+      expect(res.after.cardSurchargeApplied).toBe(false);
+      expect(cap.walletSave[0].cardSurchargeApplied).toBe(false);
+      expect(activityLogService.createLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          requestParams: expect.objectContaining({
+            before: expect.objectContaining({ cardSurchargeApplied: true }),
+            after: expect.objectContaining({ cardSurchargeApplied: false }),
+          }),
+        }),
+        expect.anything(),
+      );
+    });
+
+    it('카드할증 기본값이 현재값과 동일 → no-op', async () => {
+      fx.walletGetOne = {
+        id: 'w1',
+        settleCondition: 'POST_PAYMENT',
+        settleMethod: 'CARD',
+        cardSurchargeApplied: false,
+      } as any;
+
+      const res = await sut.setSettlePolicy(
+        'company-7',
+        { cardSurchargeApplied: false },
+        { id: 9, email: 'op@x' } as any,
+      );
+
+      expect(res.noop).toBe(true);
+      expect(cap.walletSave).toHaveLength(0);
+      expect(activityLogService.createLog).not.toHaveBeenCalled();
     });
 
     it('정산조건 변경 + 진행중 주문 있음 → 구조화된 게이트 차단(BadRequest, blocking ids 포함)', async () => {
@@ -823,6 +923,43 @@ describe('SettlementCodeAdminService', () => {
       expect(page.nextCursor).not.toBeNull();
       const decoded = JSON.parse(Buffer.from(page.nextCursor as string, 'base64url').toString('utf8'));
       expect(decoded.id).toBe('20');
+    });
+
+    it('리네임 이력을 CODE_RENAMED 로 매핑 (before=oldCode, after=newCode)', async () => {
+      const rows = [
+        {
+          id: 30,
+          actionType: ActivityLogActionType.SETTLE_CODE_RENAME,
+          userId: 9,
+          userEmail: 'op@x',
+          requestParams: { settlementCode: 'company-7-new', before: 'company-7', after: 'company-7-new' },
+          createdAt: new Date('2026-07-11T00:00:00.000Z'),
+        },
+      ];
+      activityLogRepo.createQueryBuilder.mockReturnValue(makeHistoryQb(rows));
+      const page = await sut.getCodeHistory('company-7-new');
+      expect(page.items[0]).toMatchObject({
+        source: 'ACTIVITY_LOG',
+        eventType: 'CODE_RENAMED',
+        sourceId: '30',
+        operatorId: 9,
+        before: 'company-7',
+        after: 'company-7-new',
+      });
+    });
+
+    it('eventType=CODE_RENAMED → SETTLE_CODE_RENAME 단일 타입으로 필터', async () => {
+      const cap = { andWhere: [] as any[][], limit: [] as number[] };
+      const qb = makeHistoryQb([], cap);
+      let capturedTypes: any;
+      qb.andWhere = (sql: string, params?: any) => {
+        if (params && 'types' in params) capturedTypes = params.types;
+        cap.andWhere.push([sql, params]);
+        return qb;
+      };
+      activityLogRepo.createQueryBuilder.mockReturnValue(qb);
+      await sut.getCodeHistory('company-7-new', { eventType: 'CODE_RENAMED' });
+      expect(capturedTypes).toEqual([ActivityLogActionType.SETTLE_CODE_RENAME]);
     });
 
     it('유효 cursor → id 비교 조건 + limit(limit+1) 적용', async () => {

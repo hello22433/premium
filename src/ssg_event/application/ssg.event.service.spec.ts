@@ -14,6 +14,9 @@ describe('SsgEventService', () => {
     const amountHistoryRepository = {
       create: jest.fn((v) => v),
       save: jest.fn().mockResolvedValue(undefined),
+      find: jest.fn().mockResolvedValue([]),
+      update: jest.fn().mockResolvedValue({ affected: 1 }),
+      count: jest.fn().mockResolvedValue(0),
     };
     const orderProductMappingRepository = {};
     const reservationRangeRepository = {};
@@ -249,6 +252,140 @@ describe('SsgEventService', () => {
 
       await expect(service.refundResendEventDeduction(input)).rejects.toThrow();
       expect(seen.size).toBe(0);
+    });
+  });
+
+  describe('restoreTemporaryEventBalance — 중복 복원 방지 검증', () => {
+    const buildRestoreSut = (histories: any[], eventBalance = 1000) => {
+      const { service, ssgEventRepository, amountHistoryRepository } = createService();
+
+      amountHistoryRepository.find = jest.fn().mockResolvedValue(histories);
+      amountHistoryRepository.update = jest.fn().mockResolvedValue({ affected: 1 });
+
+      const event = { id: 10, eventBalance };
+      mockFindSsgEvent(ssgEventRepository, event);
+
+      return { service, amountHistoryRepository, ssgEventRepository, event };
+    };
+
+    it('복원 후 원본 이력을 isTemporary=false로 닫는다', async () => {
+      const history = { id: 1, ssgEventId: 10, amount: -100, isTemporary: true, orderId: 1 };
+      const { service, amountHistoryRepository } = buildRestoreSut([history]);
+
+      await service.restoreTemporaryEventBalance(1);
+
+      expect(amountHistoryRepository.update).toHaveBeenCalledWith({ id: 1 }, { isTemporary: false });
+    });
+
+    it('2회 연속 호출 시 1차 복원으로 닫힌 이력은 2차 호출 find 대상에서 제외된다', async () => {
+      const history = { id: 1, ssgEventId: 10, amount: -100, isTemporary: true, orderId: 1 };
+      const { service, amountHistoryRepository } = buildRestoreSut([history]);
+
+      await service.restoreTemporaryEventBalance(1);
+
+      // 2차 호출: isTemporary=true 이력 없음 (이미 닫혔으므로 DB에서 조회 안 됨)
+      amountHistoryRepository.find = jest.fn().mockResolvedValue([]);
+      const saveCalls = (amountHistoryRepository.save as jest.Mock).mock.calls.length;
+
+      await service.restoreTemporaryEventBalance(1);
+
+      // 2차 호출에서 save가 추가로 호출되지 않아야 함
+      expect((amountHistoryRepository.save as jest.Mock).mock.calls.length).toBe(saveCalls);
+    });
+
+    it('amount >= 0인 이력은 복원 대상에서 제외된다', async () => {
+      const histories = [
+        { id: 1, ssgEventId: 10, amount: 100, isTemporary: true, orderId: 1 },
+        { id: 2, ssgEventId: 10, amount: 0, isTemporary: true, orderId: 1 },
+      ];
+      const { service, amountHistoryRepository } = buildRestoreSut(histories);
+
+      await service.restoreTemporaryEventBalance(1);
+
+      expect(amountHistoryRepository.save).not.toHaveBeenCalled();
+      expect(amountHistoryRepository.update).not.toHaveBeenCalled();
+    });
+
+    it('ssgEvent 없는 이력은 건너뛴다', async () => {
+      const histories = [{ id: 1, ssgEventId: null, amount: -100, isTemporary: true, orderId: 1 }];
+      const { service, amountHistoryRepository } = buildRestoreSut(histories);
+
+      await service.restoreTemporaryEventBalance(1);
+
+      expect(amountHistoryRepository.save).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('lockEventsForCouponExpireChange — 피드백2/3 락 순서 통일 검증', () => {
+    it('restore 대상 이벤트id + 후보 이벤트id를 id ASC 단일 쿼리로 선잠금한다', async () => {
+      const { service, ssgEventRepository, amountHistoryRepository } = createService();
+
+      // 기존(가차감중) 이벤트: id 7
+      amountHistoryRepository.find = jest
+        .fn()
+        .mockResolvedValue([{ id: 1, ssgEventId: 7, amount: -100, isTemporary: true, orderId: 1 }]);
+
+      // 후보(새 유효기간) 이벤트: id 3, id 9 (역순으로 반환되어도 정렬은 서비스가 강제)
+      const lockQb = {
+        select: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue([{ id: 9 }, { id: 3 }]),
+        setLock: jest.fn().mockReturnThis(),
+      };
+      ssgEventRepository.createQueryBuilder.mockReturnValue(lockQb);
+
+      await service.lockEventsForCouponExpireChange(1, 60);
+
+      // 마지막 호출(선잠금 쿼리)이 id ASC로 정렬되어 3개 id(7,3,9)를 IN 조건에 넣었는지 확인
+      expect(lockQb.orderBy).toHaveBeenCalledWith('ssg.id', 'ASC');
+      expect(lockQb.setLock).toHaveBeenCalledWith('pessimistic_write');
+      expect(lockQb.where).toHaveBeenCalledWith('ssg.id IN (:...uniqueIds)', {
+        uniqueIds: [3, 7, 9],
+      });
+    });
+
+    it('대상 이벤트id가 없으면 잠금 쿼리를 실행하지 않는다', async () => {
+      const { service, ssgEventRepository, amountHistoryRepository } = createService();
+      amountHistoryRepository.find = jest.fn().mockResolvedValue([]);
+
+      const lockQb = {
+        select: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue([]),
+        setLock: jest.fn().mockReturnThis(),
+      };
+      ssgEventRepository.createQueryBuilder.mockReturnValue(lockQb);
+
+      await service.lockEventsForCouponExpireChange(1, 60);
+
+      expect(lockQb.setLock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('hasOpenTempDeduction', () => {
+    it('isTemporary=true, amount<0 이력이 있으면 true 반환', async () => {
+      const { service, amountHistoryRepository } = createService();
+      amountHistoryRepository.count = jest.fn().mockResolvedValue(1);
+
+      const result = await service.hasOpenTempDeduction(1);
+
+      expect(result).toBe(true);
+      expect(amountHistoryRepository.count).toHaveBeenCalledWith({
+        where: { orderId: 1, isTemporary: true, amount: expect.anything() },
+      });
+    });
+
+    it('isTemporary=true, amount<0 이력이 없으면 false 반환', async () => {
+      const { service, amountHistoryRepository } = createService();
+      amountHistoryRepository.count = jest.fn().mockResolvedValue(0);
+
+      const result = await service.hasOpenTempDeduction(1);
+
+      expect(result).toBe(false);
     });
   });
 });
