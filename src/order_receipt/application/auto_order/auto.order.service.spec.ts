@@ -515,11 +515,13 @@ describe('AutoOrderService (리뷰 추가 커버리지)', () => {
 
     const commit = makeService({ 'u://a.xlsx': buf });
     (commit.svc as any).payloadBuilder = overBuild;
+    (commit.svc as any).assertPayloadValid = async () => {}; // 이 테스트는 검산만 검증(payload DTO 검증 우회)
     await expect(commit.svc.run(receipt('u://a.xlsx'), admin, AutoOrderRunMode.COMMIT)).rejects.toThrow(/검산 불일치/);
     expect(commit.mocks.autoResultInsert).not.toHaveBeenCalled(); // 롤백 → 스냅샷 미저장
 
     const dry = makeService({ 'u://a.xlsx': buf });
     (dry.svc as any).payloadBuilder = overBuild;
+    (dry.svc as any).assertPayloadValid = async () => {};
     const file = (await dry.svc.run(receipt('u://a.xlsx'), admin, AutoOrderRunMode.DRY_RUN)).files[0];
     expect(file.reconciliation.matched).toBe(false); // DRY_RUN은 throw 없이 불일치 표시
   });
@@ -534,8 +536,25 @@ describe('AutoOrderService (리뷰 추가 커버리지)', () => {
 
     const commit = makeService({ 'u://a.xlsx': buf });
     (commit.svc as any).payloadBuilder = dropBuild;
+    (commit.svc as any).assertPayloadValid = async () => {}; // 검산만 검증
     await expect(commit.svc.run(receipt('u://a.xlsx'), admin, AutoOrderRunMode.COMMIT)).rejects.toThrow(/검산 불일치/);
     expect(commit.mocks.autoResultInsert).not.toHaveBeenCalled();
+  });
+
+  // 리뷰 #13: createTemp 직접 호출이라 ValidationPipe 미작동 → 조립 payload를 DTO로 검증(양쪽 모드)
+  it('조립 payload가 DTO 제약 위반이면 COMMIT/DRY_RUN 모두 검증 실패(400), createTemp 미호출', async () => {
+    const buf = await buildFilledBuffer([{ b: '010-1111-1111', code: 'GEN-1' }]);
+    // type 누락 → OrderCreateTempReqDto의 @IsEnum(type) 위반
+    const invalidBuild = { build: () => ({ payload: { eventName: 'e', orderProductList: [] }, sourceRowNos: [5] }) };
+
+    const commit = makeService({ 'u://a.xlsx': buf });
+    (commit.svc as any).payloadBuilder = invalidBuild;
+    await expect(commit.svc.run(receipt('u://a.xlsx'), admin, AutoOrderRunMode.COMMIT)).rejects.toThrow(/검증 실패/);
+    expect(commit.mocks.createTemp).not.toHaveBeenCalled();
+
+    const dry = makeService({ 'u://a.xlsx': buf });
+    (dry.svc as any).payloadBuilder = invalidBuild;
+    await expect(dry.svc.run(receipt('u://a.xlsx'), admin, AutoOrderRunMode.DRY_RUN)).rejects.toThrow(/검증 실패/);
   });
 
   // 리뷰 test-analyzer #6: 정상 v4.1 + 비-xlsx 혼합 접수 — 유효 파일만 커밋, 나머지는 INVALID_FORMAT

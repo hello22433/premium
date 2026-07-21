@@ -1,6 +1,9 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { createHash } from 'node:crypto';
+import { plainToInstance } from 'class-transformer';
+import { validate, ValidationError } from 'class-validator';
 import { ConfigService } from '@nestjs/config';
+import { OrderCreateTempReqDto } from '../../../order/api/order.req.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ILoginUserInfo } from '../../../auth/interface/login.user';
@@ -363,10 +366,36 @@ export class AutoOrderService {
       });
       if (!result) continue; // 살아남은 수신자 0명
 
+      // ★ createTemp를 서비스 직접 호출이라 ValidationPipe가 안 돈다 → 조립 payload를 실제 DTO로 검증(양쪽 모드).
+      //   구조검증이 못 잡는 필드제약(길이 등)을 여기서 잡아 raw DB 오류/트랜잭션 파손 대신 맥락 오류로.
+      //   DRY_RUN에서도 돌려 preview=commit 유지(승인 때만 뒤늦게 터지는 것 방지).
+      await this.assertPayloadValid(result.payload, plan.type);
+
       const orderId = mode === AutoOrderRunMode.COMMIT ? await this.commitOrder(receipt, fileIndex, user, result, plan.type) : null;
       orders.push(this.toReportOrder(orderId, plan.type, header.eventName, result));
     }
     return orders;
+  }
+
+  /** 조립 payload를 createTemp DTO로 검증(class-validator). 실패 시 첫 제약 위반 메시지로 BadRequest. */
+  private async assertPayloadValid(payload: BuildPayloadResult['payload'], type: IOrderType): Promise<void> {
+    const errors = await validate(plainToInstance(OrderCreateTempReqDto, payload));
+    if (errors.length === 0) return;
+    const message = this.firstConstraintMessage(errors) ?? '알 수 없는 검증 오류';
+    this.logger.error(`자동주문 payload 검증 실패(${type}): ${message}`);
+    throw new BadRequestException(`자동주문 데이터 검증 실패(${type}): ${message}`);
+  }
+
+  /** 중첩 ValidationError 트리에서 첫 제약 위반 메시지를 추출 */
+  private firstConstraintMessage(errors: ValidationError[]): string | null {
+    for (const err of errors) {
+      if (err.constraints) return Object.values(err.constraints)[0];
+      if (err.children?.length) {
+        const nested = this.firstConstraintMessage(err.children);
+        if (nested) return nested;
+      }
+    }
+    return null;
   }
 
   /**
