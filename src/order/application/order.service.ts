@@ -139,6 +139,7 @@ import {
 } from '../api/dto/order.detail.product.dto';
 import { normalizeDate } from '../../util/time.util';
 import * as process from 'node:process';
+import { createHash } from 'crypto';
 import * as ExcelJS from 'exceljs';
 import { OrderSettleViewDto } from '../api/dto/order.settle.view.dto';
 import { UserDiscountEntity } from '../../entity/user.discount.entity';
@@ -5889,7 +5890,8 @@ export class OrderService {
     // 부분 수용(가능한 것만 취소)하지 않는 이유: 요청자는 N건을 취소했다고 믿는데 실제로는 M건만
     // 취소되고 환불도 M건분이라, 차이를 응답으로 알려줘도 이미 일부가 커밋된 뒤다. 전량 거부가 안전하다.
     const cancelable = new Set(await this.findCancelableDeliveryIds(orderId, now));
-    const requested = [...new Set(deliveryIds)];
+    // 정렬해 둔다 — 멱등키·로그·에러 메시지가 요청 순서에 흔들리지 않게 한다.
+    const requested = [...new Set(deliveryIds)].sort((a, b) => a - b);
     const notCancelable = requested.filter((deliveryId) => !cancelable.has(deliveryId));
 
     if (notCancelable.length > 0) {
@@ -5908,15 +5910,38 @@ export class OrderService {
     // ※ externalManager 를 넘겨 같은 트랜잭션에서 실행한다(외부 API 취소 / CS 폐기와 동일한 방식).
     //   refund-pool 의 lock 후 재조회가 평문 SELECT 라 호출자 격리수준을 따르는 기존 조건이 여기에도
     //   적용된다 — 이 브랜치 범위 밖의 별도 이슈로 추적한다.
-    await this.refundPoolService.refund(
+    //
+    // ★ 멱등키 prefix 에 id 목록을 그대로 이어붙이면 안 된다.
+    //   저장 컬럼은 order_payment_refund_event.idempotency_key / wallet_transaction.idempotency_key 둘 다
+    //   varchar(120) 이고, RefundPoolService 가 이 prefix 뒤에 `:line:{id}:point_skipped_expired`(최대 27자)
+    //   까지 붙인다. id 를 나열하면 발송건 9건에서 120자를 넘겨 strict 모드는 Data too long(1406) 으로,
+    //   비-strict 모드는 잘린 키끼리 uq_refund_event_idempotency 충돌로 트랜잭션이 통째로 롤백된다.
+    //   "수신자 수십~수백 명 중 일부만 취소" 가 이 기능의 본래 용도라 그 규모에서 반드시 깨진다.
+    //   정렬된 집합의 해시를 쓰면 길이가 입력 크기와 무관하게 고정되고, 같은 집합을 다른 순서로 보내도
+    //   같은 키가 되어 재시도 멱등이 유지된다.
+    const requestDigest = createHash('sha1').update(requested.join(',')).digest('hex').slice(0, 16);
+    const refundResult = await this.refundPoolService.refund(
       {
         orderId,
-        eventType: OrderPaymentRefundEventType.DISCARD_REFUND,
+        // CS 폐기환불(DISCARD_REFUND) 과 구분한다 — 원장에서 "왜 돈이 돌아왔나" 를 사유별로 추적해야 한다.
+        eventType: OrderPaymentRefundEventType.CANCEL,
         targetDeliveryIds: requested,
-        idempotencyKeyPrefix: `partial_cancel:${orderId}:${requested.join('-')}`,
+        idempotencyKeyPrefix: `partial_cancel:${orderId}:${requestDigest}`,
       },
       externalManager,
     );
+
+    // 멱등 hit 이면 원장만 재사용되고 돈은 움직이지 않는다. 그대로 성공 응답을 주면
+    // "취소됐고 환불됐다" 고 알리면서 실제로는 0원이 나간다 — 외부 API 취소도 같은 상황을 bail 로 처리한다.
+    if (refundResult.alreadyRefunded) {
+      this.logger.error(
+        `[DELIVERY_CANCEL_REFUND_NOOP] orderId=${orderId} ids=[${requested.join(',')}] ` +
+          `digest=${requestDigest} — 멱등 hit 으로 환불 미실행, 취소 롤백`,
+      );
+      throw new ConflictException(
+        '이미 처리된 취소 요청입니다. 발송 상태를 다시 조회한 뒤 남은 대기 건만 취소해 주세요.',
+      );
+    }
 
     // 남은 발송건이 없으면 주문도 취소로 내린다. 남아 있으면 DELIVERY_CONFIRMED 를 유지해야
     // 잔여분이 정상 발송되고, 전건 터미널이 됐을 때 배치가 완료·정산으로 넘긴다.
@@ -5934,9 +5959,10 @@ export class OrderService {
       await this.orderRepository.save(lockedOrder);
     }
 
+    // 금액을 남긴다 — 돈이 오간 엔드포인트에서 "얼마를 돌려줬나" 를 원장 조회 없이 답할 수 있어야 한다.
     this.logger.log(
       `[DELIVERY_CANCEL] 부분취소 완료 orderId=${orderId} canceled=${requested.length}건 ` +
-        `ids=[${requested.join(',')}] 잔여=${remaining}건`,
+        `refunded=${refundResult.totalRefundedAmount}원 ids=[${requested.join(',')}] 잔여=${remaining}건`,
     );
   }
 

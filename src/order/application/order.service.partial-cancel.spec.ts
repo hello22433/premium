@@ -6,7 +6,7 @@ jest.mock('typeorm-transactional', () => ({
   runOnTransactionCommit: (cb: () => void) => cb(),
 }));
 
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ConflictException } from '@nestjs/common';
 import { OrderService } from './order.service';
 import { IOrderStatus } from '../interface/order.status';
 import { IOrderType } from '../interface/order.type';
@@ -32,6 +32,7 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
       isWalletManaged?: boolean;
       cancelableIds?: number[];
       remainingAfterCancel?: number;
+      alreadyRefunded?: boolean;
     } = {},
   ) => {
     const order = {
@@ -47,22 +48,38 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
 
     const sut: any = Object.create(OrderService.prototype);
 
+    // 전체취소 경로만 주문 그래프(leftJoinAndSelect)를 다시 조회한다 — 경로 분기의 양성 신호로 쓴다.
+    const graphQuery = { used: false };
     sut.orderRepository = {
       createQueryBuilder: jest.fn(() => {
-        const b: any = { setLock: () => b, where: () => b, getOne: async () => order };
+        const b: any = {
+          setLock: () => b,
+          leftJoinAndSelect: () => {
+            graphQuery.used = true;
+            return b;
+          },
+          where: () => b,
+          getOne: async () => order,
+        };
         return b;
       }),
       save: jest.fn(async () => order),
       manager: {},
     };
 
-    // 잔여 발송건 카운트용 빌더
+    // 잔여 발송건 카운트용 빌더.
+    // ★ andWhere 인자를 캡처한다. getCount 만 스텁하면 조건을 반전시켜도(= vs !=) 전부 통과해
+    //   "잔여 판정" 테스트가 아무것도 지키지 못한다 — 실제로 뮤테이션으로 확인된 공백이었다.
+    const remainingConditions: Array<[string, any]> = [];
     sut.orderDeliveryRepository = {
       createQueryBuilder: jest.fn(() => {
         const b: any = {
           innerJoin: () => b,
           where: () => b,
-          andWhere: () => b,
+          andWhere: (condition: string, params: any) => {
+            remainingConditions.push([condition, params]);
+            return b;
+          },
           getCount: async () => remaining,
         };
         return b;
@@ -70,13 +87,19 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
     };
 
     sut.walletManagedPredicate = { isWalletManaged: jest.fn(async () => over.isWalletManaged ?? true) };
-    sut.refundPoolService = { refund: jest.fn(async () => ({ alreadyRefunded: false, ledgerIds: ['l-1'] })) };
+    sut.refundPoolService = {
+      refund: jest.fn(async () => ({
+        alreadyRefunded: over.alreadyRefunded ?? false,
+        ledgerIds: ['l-1'],
+        totalRefundedAmount: 30000,
+      })),
+    };
     sut.logger = { log: jest.fn(), error: jest.fn(), warn: jest.fn() };
 
     sut.findCancelableDeliveryIds = jest.fn(async () => cancelableIds);
     sut.cancelDeliveriesIfStillWaiting = jest.fn(async () => undefined);
 
-    return { sut, order };
+    return { sut, order, remainingConditions, graphQuery };
   };
 
   const call = (sut: any, deliveryIds: number[]) =>
@@ -97,12 +120,17 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
     });
 
     // 기존 프론트는 이 필드를 보내지 않는다 — 종전 전체취소가 그대로 동작해야 배포 창이 생기지 않는다.
+    //
+    // ★ 이 fixture 는 전체취소 경로의 의존성을 다 갖추지 않아 중간에 던진다. 그래서 예외를 삼키되,
+    //   "안 갔다" 는 음성 신호만 보면 첫 줄에서 터져도 통과해버린다 — 전체취소 경로만 하는 일
+    //   (주문 그래프 재조회)이 실제로 일어났는지 **양성 신호**로 확인한다.
     it('deliveryIds 가 없으면 전체취소 경로로 간다', async () => {
-      const { sut } = buildSut();
+      const { sut, graphQuery } = buildSut();
 
-      // 전체취소 경로는 findCancelableDeliveryIds 를 쓰지 않는다(그 경로의 계약은 별도 스펙이 지킨다).
       await sut.deliveryCancel({ id: 1 }, { id: ORDER_ID, cancelReason: 'r' }).catch(() => undefined);
 
+      expect(graphQuery.used).toBe(true);
+      expect(sut.findCancelableDeliveryIds).not.toHaveBeenCalled();
       expect(sut.cancelDeliveriesIfStillWaiting).not.toHaveBeenCalled();
     });
   });
@@ -162,11 +190,47 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
       expect(sut.refundPoolService.refund).toHaveBeenCalledWith(
         expect.objectContaining({
           orderId: ORDER_ID,
-          eventType: OrderPaymentRefundEventType.DISCARD_REFUND,
+          // CS 폐기환불(DISCARD_REFUND)과 구분해야 원장에서 취소 사유를 추적할 수 있다.
+          eventType: OrderPaymentRefundEventType.CANCEL,
           targetDeliveryIds: CANCELABLE,
         }),
         expect.anything(),
       );
+    });
+
+    // ★ 저장 컬럼이 varchar(120) 이고 RefundPoolService 가 prefix 뒤에 `:line:{id}:point_skipped_expired`
+    //   (최대 27자)를 덧붙인다. id 를 나열하던 예전 방식은 발송건 9건부터 이 상한을 넘겨
+    //   strict 모드에서 Data too long 으로 트랜잭션이 통째로 롤백됐다.
+    it('멱등키 prefix 는 취소 건수와 무관하게 길이가 고정된다 — varchar(120) 초과 방지', async () => {
+      const many = Array.from({ length: 500 }, (_, i) => 9000000 + i);
+      const { sut } = buildSut({ cancelableIds: many });
+
+      await call(sut, many);
+
+      const { idempotencyKeyPrefix } = sut.refundPoolService.refund.mock.calls[0][0];
+      // prefix + RefundPoolService 최장 접미사가 120 을 넘지 않아야 한다.
+      expect(idempotencyKeyPrefix.length + ':line:99999999:point_skipped_expired'.length).toBeLessThanOrEqual(120);
+    });
+
+    it('같은 발송건 집합은 순서가 달라도 같은 멱등키를 만든다 — 재시도가 중복 환불이 되지 않는다', async () => {
+      const { sut: a } = buildSut();
+      const { sut: b } = buildSut();
+
+      await call(a, [9005, 9003, 9004]);
+      await call(b, [9003, 9004, 9005]);
+
+      expect(a.refundPoolService.refund.mock.calls[0][0].idempotencyKeyPrefix).toBe(
+        b.refundPoolService.refund.mock.calls[0][0].idempotencyKeyPrefix,
+      );
+    });
+
+    // 멱등 hit 이면 원장만 재사용되고 실제 잔액은 움직이지 않는다. 성공으로 응답하면
+    // "취소됐고 환불됐다" 고 알리면서 0원이 나간다.
+    it('환불이 멱등 hit 이면 성공으로 넘기지 않고 던진다 (취소도 롤백)', async () => {
+      const { sut } = buildSut({ alreadyRefunded: true });
+
+      await expect(call(sut, CANCELABLE)).rejects.toBeInstanceOf(ConflictException);
+      expect(sut.logger.error).toHaveBeenCalledWith(expect.stringContaining('DELIVERY_CANCEL_REFUND_NOOP'));
     });
 
     it('취소를 먼저 하고 환불한다 — 취소가 실패하면 환불하지 않는다', async () => {
@@ -214,12 +278,17 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
       expect(sut.orderRepository.save).toHaveBeenCalled();
     });
 
-    it('잔여 판정은 CANCEL 이 아닌 발송건을 센다', async () => {
-      const { sut } = buildSut();
+    // ★ 조건을 직접 본다. 이 판정이 뒤집히면(!= → =) 잔여분이 남아 있는데도 remaining=0 이 되어
+    //   주문이 DELIVERY_CANCEL 로 내려가고, 아직 발송해야 할 예약건이 통째로 죽는다.
+    it('잔여 판정은 CANCEL "이 아닌" 발송건을 센다 (조건 반전 방지)', async () => {
+      const { sut, remainingConditions } = buildSut();
 
       await call(sut, CANCELABLE);
 
-      expect(sut.orderDeliveryRepository.createQueryBuilder).toHaveBeenCalled();
+      expect(remainingConditions).toContainEqual([
+        'od.status != :canceled',
+        { canceled: IOrderDeliveryStatus.CANCEL },
+      ]);
     });
   });
 
@@ -233,7 +302,4 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
     await expect(call(sut, CANCELABLE)).rejects.toBeInstanceOf(BadRequestException);
   });
 
-  it('취소 상태 전이는 CANCEL 상수를 쓴다 (문자열 오타 방지)', () => {
-    expect(IOrderDeliveryStatus.CANCEL).toBe('CANCEL');
-  });
 });
