@@ -326,12 +326,13 @@ describe('ProductChoiceService.getProductList', () => {
     });
   });
 
-  it('제외 후 남은 건수로 totalPage 를 계산한다', async () => {
-    // 제외를 DB 에서 처리하므로 totalCount 자체가 후보 수가 된다.
+  it('getManyAndCount 가 돌려준 totalCount 로 totalPage 를 올림 계산한다', async () => {
+    // 제외가 totalCount 에 반영되는지는 목이 아니라 실제 DB 로만 증명된다(로컬 HTTP 검증에서 확인).
+    // 여기서는 count → totalPage 산술만 고정한다.
     const queryBuilder = createQueryBuilder([searchProduct(780)], 25);
     const service = createService(queryBuilder);
 
-    const result = await service.getProductList({ page: 1, take: 10, excludeProductIdList: [763] } as any);
+    const result = await service.getProductList({ page: 1, take: 10 } as any);
 
     expect(result.totalCount).toBe(25);
     expect(result.totalPage).toBe(3);
