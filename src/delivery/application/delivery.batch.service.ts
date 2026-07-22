@@ -203,6 +203,20 @@ const summarizeRestampRows = (rows: { destroyedAt: Date | null; destroyedAtSourc
   return `갱신 전 파기일 ${range}${unreadable > 0 ? ` (읽을 수 없는 값 ${unreadable}건)` : ''} / 출처 ${sources}`;
 };
 
+/**
+ * 주문 완료 판정에서 "더 이상 변하지 않는" 발송건 상태.
+ *
+ * 이 목록이 isOrderAllDeliveriesTerminal 과 reconcileSettlementDrift 두 곳에 각각
+ * 하드코딩돼 있었다. 둘은 같은 판정을 해야 하는데 한쪽만 고치면 sweep 이 후보를 안 뽑거나
+ * 반대로 뽑아놓고 전이하지 않는 어긋남이 생긴다. 한 곳에서 관리한다.
+ */
+const ORDER_COMPLETION_TERMINAL_STATUSES = [
+  IOrderDeliveryStatus.COMPLETE,
+  IOrderDeliveryStatus.COMPLETE_SMS,
+  IOrderDeliveryStatus.FAIL,
+  IOrderDeliveryStatus.FAIL_SMS,
+];
+
 @Injectable()
 export class DeliveryBatchService {
   constructor(
@@ -949,12 +963,7 @@ export class DeliveryBatchService {
       .innerJoin('od.orderProductMapping', 'opm')
       .where('opm.orderId = :orderId', { orderId })
       .andWhere('od.status NOT IN (:...terminal)', {
-        terminal: [
-          IOrderDeliveryStatus.COMPLETE,
-          IOrderDeliveryStatus.COMPLETE_SMS,
-          IOrderDeliveryStatus.FAIL,
-          IOrderDeliveryStatus.FAIL_SMS,
-        ],
+        terminal: ORDER_COMPLETION_TERMINAL_STATUSES,
       })
       .getCount();
     return nonTerminal === 0;
@@ -1022,12 +1031,7 @@ export class DeliveryBatchService {
       .groupBy('o.id')
       // 비터미널(WAIT/TEMP/PENDING/CANCEL 등) delivery 가 하나도 없을 때만 = 전건 터미널 & CANCEL 없음
       .having('SUM(CASE WHEN od.status NOT IN (:...terminal) THEN 1 ELSE 0 END) = 0', {
-        terminal: [
-          IOrderDeliveryStatus.COMPLETE,
-          IOrderDeliveryStatus.COMPLETE_SMS,
-          IOrderDeliveryStatus.FAIL,
-          IOrderDeliveryStatus.FAIL_SMS,
-        ],
+        terminal: ORDER_COMPLETION_TERMINAL_STATUSES,
       })
       .limit(REPORT_SWEEP_BATCH_LIMIT)
       .getRawMany<{ id: number }>();
