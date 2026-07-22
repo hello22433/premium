@@ -5723,7 +5723,25 @@ export class OrderService {
 
   @Transactional()
   async deliveryCancel(user: ILoginUserInfo, getBody: OrderDeliveryCancelReqDto) {
-    const { id, cancelReason } = getBody;
+    const { id, cancelReason, deliveryIds } = getBody;
+
+    // 부분취소 미구현 구간의 안전 가드.
+    //
+    // deliveryIds 는 DTO 와 Swagger 에 이미 노출돼 있지만 아래 로직은 아직 주문 전체를 취소한다.
+    // 이 값을 조용히 무시하면 "3건만 취소" 요청이 "주문 전체 취소 + 전액 환불" 로 실행되고
+    // 응답은 200 이다 — 요청보다 더 많이 하는 셈이라 실패보다 나쁘다(되돌릴 수 없고 티도 안 난다).
+    //
+    // 조율로 막지 않는 이유: Swagger 를 본 프론트가 아무 합의 없이 이 필드를 쓰기 시작할 수 있다.
+    // 거절해 두면 전달이 실패해도 사고가 나지 않는다.
+    //
+    // 부분취소 전환 커밋에서 이 가드를 지우고 deliveryIds 를 실제 취소 대상으로 사용한다.
+    if (deliveryIds) {
+      throw new BadRequestException(
+        '발송건 부분취소(deliveryIds)는 아직 지원하지 않습니다. ' +
+          '이 요청을 그대로 처리하면 주문 전체가 취소되므로 거부합니다. ' +
+          'deliveryIds 없이 요청하면 종전과 같이 주문 전체가 취소됩니다.',
+      );
+    }
 
     // 주문 행 단독 잠금 (deliveryConfirmed 와 동일 패턴).
     //  - 조인을 건 채로 FOR UPDATE 를 걸면 product 행까지 잠겨, 같은 상품을 쓰는 무관한 주문들이
