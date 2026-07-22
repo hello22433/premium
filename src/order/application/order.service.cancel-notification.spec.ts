@@ -60,6 +60,8 @@ describe('OrderService.deliveryCancel — 취소메일 after-commit 배선', () 
 
     const sut: any = Object.create(OrderService.prototype);
     sut.orderRepository = orderRepository;
+    // deliveryCancel 이 잔액 갱신 범위를 잠그므로(lost update 방지) 잠금 서비스 스텁이 필요하다.
+    sut.billingScopeLockService = { lock: async () => ({ user: oneUser, companyUsers: [] }) };
     sut.userRepository = userRepository;
     sut.orderDeliveryRepository = orderDeliveryRepository;
     sut.userCompanyRepository = userCompanyRepository;
