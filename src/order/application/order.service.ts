@@ -320,6 +320,17 @@ type ReportCounterColumns =
   | { countColumn: 'deliveryCompleteReportCount'; sourceColumn: 'deliveryReportLastSource' }
   | { countColumn: 'orderCompleteReportCount'; sourceColumn: 'transactionStatementLastSource' };
 
+/**
+ * 발송 취소 마감 — 실발송 예정 시각으로부터 이만큼 남아 있어야 취소할 수 있다.
+ *
+ * 이 값은 5분 주기 발송 배치(delivery.batch.schedule.ts:55 issueAndSend)와 짝을 이룬다.
+ * 배치는 send_request_at < now 인 행만 집으므로, "10분 이상 남은 행" 과 "배치가 집는 행" 은
+ * 조건상 겹치지 않는다 — 취소 처리 도중 같은 행이 발송돼 버리는 창을 구조적으로 막는 장치다.
+ * 배치 주기가 5분이라 실질 여유는 최소 5분. 이 값을 줄이면 그 여유가 사라지므로
+ * 줄이려면 별도 점유 수단(변형 lease 등)이 선행돼야 한다.
+ */
+const DELIVERY_CANCEL_CUTOFF_MS = 10 * 60 * 1000;
+
 @Injectable()
 export class OrderService {
   private logger = new Logger('OrderService');
@@ -5604,6 +5615,54 @@ export class OrderService {
     await this.orderRepository.update(beforeOrder.id, {
       ssgEventId: allocations[0]?.eventId ?? null,
     });
+  }
+
+  /**
+   * 주문 안에서 지금 취소할 수 있는 발송건 id 목록.
+   *
+   * 네 조건을 모두 만족해야 한다. 하나라도 빠지면 이미 고객에게 간 쿠폰을 취소하고
+   * 돈까지 돌려주는 사고가 된다.
+   *
+   *  1) status = WAIT
+   *     발송 대기 중인 행만. COMPLETE/FAIL/CANCEL 은 이미 끝난 건이다.
+   *
+   *  2) actual_send_at IS NULL
+   *     ★ status 만으로 미발송을 판정하면 안 된다. 외부 API 경로는 발송에 성공해도
+   *       delivery.status 가 WAIT 로 남고 actual_send_at 만 세팅된다
+   *       (external.api.service.ts:1210-1214 주석). 이 조건이 없으면 나간 쿠폰이 취소된다.
+   *
+   *  3) claimed_at IS NULL
+   *     발송 배치가 이미 집어간(claim) 행은 곧 나간다. claimWaitDeliveries 가
+   *     claimed_at 을 CAS 로 세팅해 소유권을 잡으므로, 잡힌 행은 건드리지 않는다.
+   *
+   *  4) send_request_at >= now + DELIVERY_CANCEL_CUTOFF_MS
+   *     티켓의 "실발송 10분 전까지" 규칙. 배치는 send_request_at < now 인 행만 집으므로
+   *     이 조건과 배치의 픽업 조건은 서로 겹치지 않는다.
+   *
+   * 종전 판정은 주문 단위였다 — 예약 mapping 들의 sendRequestAt 중 가장 이른 값 하나로
+   * 주문 전체를 판정해, 이미 나간 건이 하나라도 있으면 남은 대기 건까지 취소가 막혔다.
+   * 그 최솟값 방식은 "주문 전체를 취소한다" 는 전제에서는 옳았고, 취소 단위가 발송건으로
+   * 내려가면서 무효가 된다.
+   *
+   * soft-delete 된 행은 SelectQueryBuilder 가 deleted_at 필터를 자동 적용해 제외된다
+   * (UpdateQueryBuilder 는 자동 적용하지 않으므로 갱신 시에는 명시해야 한다).
+   */
+  private async findCancelableDeliveryIds(orderId: number, now: Date): Promise<number[]> {
+    const cutoff = new Date(now.getTime() + DELIVERY_CANCEL_CUTOFF_MS);
+
+    const rows = await this.orderDeliveryRepository
+      .createQueryBuilder('od')
+      .select('od.id', 'id')
+      .innerJoin('od.orderProductMapping', 'opm')
+      .where('opm.orderId = :orderId', { orderId })
+      .andWhere('od.status = :wait', { wait: IOrderDeliveryStatus.WAIT })
+      .andWhere('od.actualSendAt IS NULL')
+      .andWhere('od.claimedAt IS NULL')
+      .andWhere('od.sendRequestAt >= :cutoff', { cutoff })
+      .orderBy('od.id', 'ASC')
+      .getRawMany<{ id: number }>();
+
+    return rows.map((row) => Number(row.id));
   }
 
   @Transactional()
