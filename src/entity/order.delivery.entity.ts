@@ -203,6 +203,15 @@ export class OrderDeliveryEntity extends BaseEntity {
   @Column({ type: 'datetime', nullable: true, comment: '폐기/환불폐기 시각' })
   discardedAt: Date | null;
 
+  // 발송건 단위 취소 정보. 주문 전체 취소는 order.canceledAt / order.cancelReason 에 남고,
+  // 예약건 부분취소는 한 주문에서 여러 번 일어날 수 있어(상품행별 예약시각이 다름) 주문 단위
+  // 컬럼만으로는 앞선 사유가 덮어써진다. 두 축을 함께 유지한다.
+  @Column({ type: 'datetime', precision: 6, nullable: true, comment: '발송건 취소 시각 (부분취소). NULL=미취소' })
+  canceledAt: Date | null;
+
+  @Column({ type: 'varchar', length: 1000, nullable: true, comment: '발송건 취소 사유 (부분취소)' })
+  cancelReason: string | null;
+
   @Column({ type: 'datetime', precision: 6, nullable: true, comment: '환불 발생 시각 (NULL=미환불)' })
   refundedAt: Date | null;
 
