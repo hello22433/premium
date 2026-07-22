@@ -52,7 +52,13 @@ describe('OrderService.deliveryCancel — 삭제된 상품 포함 주문', () =>
       save: jest.fn().mockResolvedValue(oneUser),
       update: jest.fn().mockResolvedValue({ affected: 1 }),
     };
-    const orderDeliveryRepository = { update: jest.fn().mockResolvedValue({ affected: 1 }) };
+    const orderDeliveryRepository: any = {
+      update: jest.fn().mockResolvedValue({ affected: 1 }),
+      createQueryBuilder: () => {
+        const b: any = { innerJoin: () => b, where: () => b, andWhere: () => b, getCount: async () => 0 };
+        return b;
+      },
+    };
     const userCompanyRepository = { save: jest.fn() };
 
     const sut: any = Object.create(OrderService.prototype);

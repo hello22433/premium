@@ -98,7 +98,13 @@ describe('OrderService.deliveryCancel — 다중 상품행 주문 현행 동작 
       update: jest.fn(async () => ({ affected: 1 })),
     };
     sut.userCompanyRepository = { save: jest.fn() };
-    sut.orderDeliveryRepository = { update: jest.fn(async () => ({ affected: 3 })) };
+    sut.orderDeliveryRepository = {
+      update: jest.fn(async () => ({ affected: 3 })),
+      createQueryBuilder: () => {
+        const b: any = { innerJoin: () => b, where: () => b, andWhere: () => b, getCount: async () => 0 };
+        return b;
+      },
+    };
     sut.ssgEventService = { restoreEventBalance: jest.fn() };
     sut.walletManagedPredicate = { isWalletManaged: jest.fn(async () => true) };
     sut.orderConfirmationReleaseService = {

@@ -1,0 +1,153 @@
+// ★ requireActual 스프레드 필수: import 그래프 내 다른 서비스가 Propagation 등 다른 export 를
+//   클래스정의 시점에 쓰므로, 전체 모듈을 덮으면 로드가 깨진다.
+jest.mock('typeorm-transactional', () => ({
+  ...jest.requireActual('typeorm-transactional'),
+  Transactional: () => () => undefined,
+  runOnTransactionCommit: (cb: () => void) => cb(),
+}));
+
+import { ConflictException } from '@nestjs/common';
+import { OrderService } from './order.service';
+import { IOrderStatus } from '../interface/order.status';
+import { IOrderType } from '../interface/order.type';
+
+/**
+ * 전체취소가 "이미 나간 건" 을 덮지 않도록 하는 가드.
+ *
+ * 배경: 10분 게이트는 sendType === 'RESERVE' 인 상품행만 본다. 그래서
+ * 즉시발송 상품행(이미 발송완료) + 예약 상품행(아직 대기) 이 섞인 주문은, 예약분의 여유만 보고
+ * 게이트를 통과한다. 그 뒤 실행부가 주문의 모든 발송건을 상태 무관하게 CANCEL 로 덮고
+ * settleAmount 전액을 환불하므로, 이미 고객 손에 간 쿠폰이 취소되고 그 몫까지 환불된다
+ * (응답 200, 로그 없음). 부분취소 기능과 별개로 지금 재현 가능한 결함이다.
+ *
+ * 가드는 발송확정(DELIVERY_CONFIRMED) 이후에만 건다 — 그 전에는 발송건이 TEMP 라
+ * 나간 것이 있을 수 없고 잔액 차감도 없어서, 검사를 걸면 정상 취소만 막힌다.
+ */
+describe('OrderService.deliveryCancel — 되돌릴 수 없는 발송건 가드', () => {
+  const buildSut = ({
+    status,
+    irreversibleCount,
+  }: {
+    status: IOrderStatus;
+    irreversibleCount: number;
+  }) => {
+    const order = {
+      id: 1001,
+      userId: 5,
+      clientUserId: null,
+      type: IOrderType.GENERAL,
+      status,
+      isNewBillingFlow: true,
+      settleAmount: 30000,
+      isSettleBalance: false,
+      isCreditExcess: false,
+      cancelReason: null as string | null,
+      canceledAt: null as Date | null,
+      orderProductMappings: [
+        // 즉시발송 상품행 — 이미 나갔다고 가정하는 쪽
+        { id: 501, amount: 1, product: { price: 10000 }, sendType: 'IMMEDIATE', sendRequestAt: null },
+        // 예약 상품행 — 하루 뒤라 10분 게이트를 통과시킨다
+        {
+          id: 502,
+          amount: 2,
+          product: { price: 10000 },
+          sendType: 'RESERVE',
+          sendRequestAt: new Date(Date.now() + 24 * 3600_000),
+        },
+      ],
+    } as any;
+
+    const oneUser = { id: 5, balance: 50000, allSettleAmount: 30000, companyId: null, company: null } as any;
+
+    const getCount = jest.fn(async () => irreversibleCount);
+    const sut: any = Object.create(OrderService.prototype);
+
+    sut.orderRepository = {
+      createQueryBuilder: jest.fn(() => {
+        const b: any = {
+          setLock: () => b,
+          leftJoinAndSelect: () => b,
+          where: () => b,
+          getOne: async () => order,
+        };
+        return b;
+      }),
+      save: jest.fn(async () => order),
+      manager: { findOne: jest.fn(async () => null) },
+    };
+    sut.userRepository = {
+      findOneOrFail: jest.fn(async () => oneUser),
+      save: jest.fn(async () => oneUser),
+      update: jest.fn(async () => ({ affected: 1 })),
+    };
+    sut.userCompanyRepository = { save: jest.fn() };
+    sut.orderDeliveryRepository = {
+      update: jest.fn(async () => ({ affected: 3 })),
+      createQueryBuilder: jest.fn(() => {
+        const b: any = {
+          innerJoin: () => b,
+          where: () => b,
+          andWhere: () => b,
+          getCount,
+        };
+        return b;
+      }),
+    };
+    sut.ssgEventService = { restoreEventBalance: jest.fn() };
+    sut.walletManagedPredicate = { isWalletManaged: jest.fn(async () => false) };
+    sut.legacyWalletCreditSyncService = { syncCredit: jest.fn(), syncDeposit: jest.fn() };
+    sut.orderCancelNotificationService = { notifyDirectOrderCancel: jest.fn() };
+    sut.logger = { error: jest.fn(), log: jest.fn(), warn: jest.fn() };
+
+    return { sut, order, getCount };
+  };
+
+  const body = { id: 1001, cancelReason: '고객 요청' };
+
+  // ★ 이 케이스가 이번 수정의 핵심이다. 가드가 없으면 200 으로 통과하면서
+  //   이미 나간 쿠폰까지 CANCEL 로 덮고 전액 환불한다.
+  it('즉시발송분이 이미 나간 혼재 주문의 전체취소를 거부한다', async () => {
+    const { sut } = buildSut({ status: IOrderStatus.DELIVERY_CONFIRMED, irreversibleCount: 1 });
+
+    await expect(sut.deliveryCancel({ id: 1 }, body)).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('거부 시 아무것도 취소하지 않고 환불도 하지 않는다', async () => {
+    const { sut, order } = buildSut({ status: IOrderStatus.DELIVERY_CONFIRMED, irreversibleCount: 1 });
+
+    await expect(sut.deliveryCancel({ id: 1 }, body)).rejects.toBeInstanceOf(ConflictException);
+
+    expect(sut.orderDeliveryRepository.update).not.toHaveBeenCalled();
+    expect(sut.userRepository.save).not.toHaveBeenCalled();
+    expect(order.status).toBe(IOrderStatus.DELIVERY_CONFIRMED);
+  });
+
+  it('거부 메시지에 몇 건이 걸렸는지 알려준다', async () => {
+    const { sut } = buildSut({ status: IOrderStatus.DELIVERY_CONFIRMED, irreversibleCount: 3 });
+
+    await expect(sut.deliveryCancel({ id: 1 }, body)).rejects.toThrow(/3건/);
+  });
+
+  it('되돌릴 수 없는 건이 없으면 종전대로 전체취소가 진행된다', async () => {
+    const { sut, order } = buildSut({ status: IOrderStatus.DELIVERY_CONFIRMED, irreversibleCount: 0 });
+
+    await sut.deliveryCancel({ id: 1 }, body);
+
+    expect(order.status).toBe(IOrderStatus.DELIVERY_CANCEL);
+    expect(sut.orderDeliveryRepository.update).toHaveBeenCalled();
+  });
+
+  // 발송확정 전에는 발송건이 TEMP 라 나간 것이 있을 수 없고 잔액 차감도 없다.
+  // 여기에 가드를 걸면 정상 취소만 막히므로 검사 자체를 하지 않는다.
+  it.each([
+    ['주문완료', IOrderStatus.DELIVERY_REQUEST],
+    ['검토완료', IOrderStatus.REVIEW_COMPLETE],
+  ])('발송확정 전(%s) 에는 가드를 검사하지 않는다', async (_caseName, status) => {
+    const { sut, order, getCount } = buildSut({ status, irreversibleCount: 99 });
+
+    await sut.deliveryCancel({ id: 1 }, body);
+
+    expect(getCount).not.toHaveBeenCalled();
+    expect(order.status).toBe(IOrderStatus.DELIVERY_CANCEL);
+  });
+});

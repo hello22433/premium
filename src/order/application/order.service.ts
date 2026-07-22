@@ -5783,6 +5783,37 @@ export class OrderService {
     }
   }
 
+  /**
+   * 주문 안에서 이미 발송 단계로 넘어간 발송건 수.
+   *
+   * 전체취소가 그런 건까지 CANCEL 로 덮고 환불하는 것을 막기 위한 카운트다.
+   * "취소 가능한가"(findCancelableDeliveryIds)의 여집합이 아니라 **되돌릴 수 없는 것만** 센다 —
+   * 컷오프(10분)에 걸린 건은 아직 안 나갔으므로 여기 포함하지 않는다.
+   *
+   * 셋 중 하나라도 해당하면 되돌릴 수 없다.
+   *  - actual_send_at IS NOT NULL : 실제로 나갔다
+   *  - coupon_issued_at IS NOT NULL : 쿠폰이 발급됐다(초이스 선택/이메일 수령 등)
+   *  - status 가 터미널 : COMPLETE / COMPLETE_SMS / FAIL / FAIL_SMS
+   */
+  private async countIrreversibleDeliveries(orderId: number): Promise<number> {
+    return this.orderDeliveryRepository
+      .createQueryBuilder('od')
+      .innerJoin('od.orderProductMapping', 'opm')
+      .where('opm.orderId = :orderId', { orderId })
+      .andWhere(
+        '(od.actualSendAt IS NOT NULL OR od.couponIssuedAt IS NOT NULL OR od.status IN (:...terminal))',
+        {
+          terminal: [
+            IOrderDeliveryStatus.COMPLETE,
+            IOrderDeliveryStatus.COMPLETE_SMS,
+            IOrderDeliveryStatus.FAIL,
+            IOrderDeliveryStatus.FAIL_SMS,
+          ],
+        },
+      )
+      .getCount();
+  }
+
   @Transactional()
   async deliveryCancel(user: ILoginUserInfo, getBody: OrderDeliveryCancelReqDto) {
     const { id, cancelReason, deliveryIds } = getBody;
@@ -5861,6 +5892,27 @@ export class OrderService {
     if (order.status === IOrderStatus.DELIVERY_REQUEST || order.status === IOrderStatus.REVIEW_COMPLETE) {
       // 주문완료 또는 검토완료 상태에서 취소 허용
     } else if (order.status === IOrderStatus.DELIVERY_CONFIRMED) {
+      // ★ 이미 나간 건이 섞여 있으면 주문 전체 취소를 거부한다.
+      //
+      // 아래 실행부는 주문의 모든 발송건을 상태 무관하게 CANCEL 로 덮고 settleAmount 전액을
+      // 환불한다. 그런데 바로 위 10분 게이트는 sendType === 'RESERVE' 인 상품행만 보므로,
+      // 즉시발송 상품행(이미 발송완료) + 예약 상품행(아직 대기) 이 섞인 주문은 게이트를
+      // 통과한다 — 예약분의 여유(예: 하루 뒤)만 보고 판정하기 때문이다.
+      // 그 결과 이미 고객 손에 간 쿠폰이 CANCEL 로 덮이고 그 몫까지 환불된다(응답 200, 로그 없음).
+      //
+      // 발송확정 이후에만 검사하면 된다. 그 전(DELIVERY_REQUEST/REVIEW_COMPLETE)에는
+      // 발송건이 아직 TEMP 라 나간 것이 있을 수 없고 잔액 차감도 없다.
+      const irreversible = await this.countIrreversibleDeliveries(order.id);
+      if (irreversible > 0) {
+        this.logger.error(
+          `[DELIVERY_CANCEL] orderId=${order.id} 되돌릴 수 없는 발송건 ${irreversible}건 포함 — 주문 전체 취소 거부`,
+        );
+        throw new ConflictException(
+          `이미 발송됐거나 쿠폰이 발급된 발송건이 ${irreversible}건 있어 주문 전체를 취소할 수 없습니다. ` +
+            '발송 결과를 확인한 뒤 고객센터를 통해 개별 처리해 주세요.',
+        );
+      }
+
       if (diffMs < tenMinutesMs) {
         throw new BadRequestException('주문 취소는 발송 요청 시간 10분 전까지만 가능합니다.');
       }

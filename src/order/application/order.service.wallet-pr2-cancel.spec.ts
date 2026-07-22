@@ -122,7 +122,13 @@ describe('OrderService deliveryCancel wallet PR2-005 branch', () => {
       save: jest.fn().mockResolvedValue(company),
       update: jest.fn().mockResolvedValue({ affected: 1 }),
     };
-    service.orderDeliveryRepository = { update: jest.fn().mockResolvedValue({ affected: 1 }) };
+    service.orderDeliveryRepository = {
+      update: jest.fn().mockResolvedValue({ affected: 1 }),
+      createQueryBuilder: () => {
+        const b: any = { innerJoin: () => b, where: () => b, andWhere: () => b, getCount: async () => 0 };
+        return b;
+      },
+    };
     service.ssgEventService = { restoreEventBalance: jest.fn() };
     service.walletManagedPredicate = {
       isWalletManaged: jest.fn().mockResolvedValue(isWalletManaged),

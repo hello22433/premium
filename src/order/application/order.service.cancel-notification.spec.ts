@@ -52,7 +52,13 @@ describe('OrderService.deliveryCancel — 취소메일 after-commit 배선', () 
       save: jest.fn(async () => oneUser),
       update: jest.fn(async () => undefined),
     };
-    const orderDeliveryRepository: any = { update: jest.fn(async () => undefined) };
+    const orderDeliveryRepository: any = {
+      update: jest.fn(async () => undefined),
+      createQueryBuilder: () => {
+        const b: any = { innerJoin: () => b, where: () => b, andWhere: () => b, getCount: async () => 0 };
+        return b;
+      },
+    };
     const userCompanyRepository: any = { save: jest.fn(async () => company) };
     const walletManagedPredicate: any = { isWalletManaged: async () => false };
     const ssgEventService: any = { restoreEventBalance: jest.fn(async () => undefined) };

@@ -85,8 +85,12 @@ describe('OrderService.deliveryCancel — wallet-managed mirror', () => {
       findOneOrFail: jest.fn().mockResolvedValue(oneUser),
       update: jest.fn().mockResolvedValue({ affected: 1 }),
     };
-    const orderDeliveryRepository = {
+    const orderDeliveryRepository: any = {
       update: jest.fn().mockResolvedValue({ affected: 1 }),
+      createQueryBuilder: () => {
+        const b: any = { innerJoin: () => b, where: () => b, andWhere: () => b, getCount: async () => 0 };
+        return b;
+      },
     };
     const userCompanyRepository = {
       save: jest.fn().mockResolvedValue(company),
@@ -167,7 +171,13 @@ describe('OrderService.deliveryCancel — wallet-managed mirror', () => {
       findOneOrFail: jest.fn().mockResolvedValue(oneUser),
       save: jest.fn().mockResolvedValue(oneUser),
     };
-    const orderDeliveryRepository = { update: jest.fn().mockResolvedValue({ affected: 1 }) };
+    const orderDeliveryRepository: any = {
+      update: jest.fn().mockResolvedValue({ affected: 1 }),
+      createQueryBuilder: () => {
+        const b: any = { innerJoin: () => b, where: () => b, andWhere: () => b, getCount: async () => 0 };
+        return b;
+      },
+    };
     const userCompanyRepository = { save: jest.fn().mockResolvedValue(company) };
     const sut: any = Object.create(OrderService.prototype);
     sut.orderRepository = orderRepository;
@@ -238,7 +248,13 @@ describe('OrderService.deliveryCancel — wallet-managed mirror', () => {
       findOneOrFail: jest.fn().mockResolvedValue(oneUser),
       save: jest.fn().mockResolvedValue(oneUser),
     };
-    const orderDeliveryRepository = { update: jest.fn().mockResolvedValue({ affected: 1 }) };
+    const orderDeliveryRepository: any = {
+      update: jest.fn().mockResolvedValue({ affected: 1 }),
+      createQueryBuilder: () => {
+        const b: any = { innerJoin: () => b, where: () => b, andWhere: () => b, getCount: async () => 0 };
+        return b;
+      },
+    };
     const userCompanyRepository = { save: jest.fn() };
     const sut: any = Object.create(OrderService.prototype);
     sut.orderRepository = orderRepository;
