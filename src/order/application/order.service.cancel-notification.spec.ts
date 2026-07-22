@@ -37,6 +37,7 @@ describe('OrderService.deliveryCancel — 취소메일 after-commit 배선', () 
     };
 
     const orderBuilder: any = {
+      setLock: () => orderBuilder,
       leftJoinAndSelect: () => orderBuilder,
       where: () => orderBuilder,
       getOne: async () => order,

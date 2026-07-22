@@ -5610,6 +5610,22 @@ export class OrderService {
   async deliveryCancel(user: ILoginUserInfo, getBody: OrderDeliveryCancelReqDto) {
     const { id, cancelReason } = getBody;
 
+    // 주문 행 단독 잠금 (deliveryConfirmed:4207 과 동일 패턴).
+    //  - 조인을 건 채로 FOR UPDATE 를 걸면 product 행까지 잠겨, 같은 상품을 쓰는 무관한 주문들이
+    //    직렬화된다. 그래서 잠금 쿼리와 그래프 로딩 쿼리를 분리한다.
+    //  - 락 위치가 맨 앞인 것이 중요하다. 종전에는 order 행 잠금이 맨 끝 save() 시점에야 잡혀
+    //    "wallet → order" 순서였고, 이는 "order → wallet" 으로 잡는 정산확정
+    //    (tryAtomicSettleConfirm)·발송확정과 순서가 역전돼 데드락 소지가 있었다.
+    const lockedOrder = await this.orderRepository
+      .createQueryBuilder('order')
+      .setLock('pessimistic_write')
+      .where('order.id = :id', { id })
+      .getOne();
+
+    if (!lockedOrder) {
+      throw new BadRequestException('해당 주문건은 존재하지 않습니다.');
+    }
+
     const order = await this.orderRepository
       .createQueryBuilder('order')
       .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')

@@ -72,6 +72,7 @@ describe('OrderService.deliveryCancel — wallet-managed mirror', () => {
       manager: externalManager,
       createQueryBuilder: jest.fn(() => {
         const builder: any = {
+          setLock: () => builder,
           leftJoinAndSelect: () => builder,
           where: () => builder,
           getOne: jest.fn().mockResolvedValue(order),
@@ -153,6 +154,7 @@ describe('OrderService.deliveryCancel — wallet-managed mirror', () => {
       manager: externalManager,
       createQueryBuilder: jest.fn(() => {
         const builder: any = {
+          setLock: () => builder,
           leftJoinAndSelect: () => builder,
           where: () => builder,
           getOne: jest.fn().mockResolvedValue(order),
@@ -223,6 +225,7 @@ describe('OrderService.deliveryCancel — wallet-managed mirror', () => {
       manager: externalManager,
       createQueryBuilder: jest.fn(() => {
         const builder: any = {
+          setLock: () => builder,
           leftJoinAndSelect: () => builder,
           where: () => builder,
           getOne: jest.fn().mockResolvedValue(order),

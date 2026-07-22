@@ -104,6 +104,7 @@ describe('OrderService deliveryCancel wallet PR2-005 branch', () => {
 
     service.orderRepository = {
       createQueryBuilder: jest.fn().mockReturnValue({
+        setLock: jest.fn().mockReturnThis(),
         leftJoinAndSelect: jest.fn().mockReturnThis(),
         where: jest.fn().mockReturnThis(),
         getOne: jest.fn().mockResolvedValue(order),

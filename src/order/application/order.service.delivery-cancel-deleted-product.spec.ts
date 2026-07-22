@@ -38,6 +38,7 @@ describe('OrderService.deliveryCancel — 삭제된 상품 포함 주문', () =>
       manager: {},
       createQueryBuilder: jest.fn(() => {
         const builder: any = {
+          setLock: () => builder,
           leftJoinAndSelect: () => builder,
           where: () => builder,
           getOne: jest.fn().mockResolvedValue(order),
@@ -61,6 +62,7 @@ describe('OrderService.deliveryCancel — 삭제된 상품 포함 주문', () =>
     sut.userCompanyRepository = userCompanyRepository;
     sut.ssgEventService = { restoreEventBalance: jest.fn() };
     sut.walletManagedPredicate = { isWalletManaged: jest.fn().mockResolvedValue(false) };
+    // isSettleBalance=false 인 레거시 경로는 여신 복구를 legacyWalletCreditSyncService 로 동기화한다.
     sut.legacyWalletCreditSyncService = {
       syncCredit: jest.fn().mockResolvedValue(undefined),
       syncDeposit: jest.fn().mockResolvedValue(undefined),
