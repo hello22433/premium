@@ -79,7 +79,10 @@ import { OrderProductMappingEntity } from '../../entity/order.product.mapping.en
 import { Transactional, runOnTransactionCommit } from 'typeorm-transactional';
 import { OrderCancelNotificationService } from './order.cancel.notification.service';
 import { isDirectCustomerCancelTarget } from '../domain/order.cancel.notification.policy';
-import { resolveDestructionCertificateGate } from '../domain/destruction.certificate.gate';
+import {
+  resolveDestructionCertificateGate,
+  destructionCertificateBlockMessage,
+} from '../domain/destruction.certificate.gate';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { TestOrderDeliveryEntity } from '../../entity/test.order.delivery.entity';
 import { ProductEntity } from '../../entity/product.entity';
@@ -1900,13 +1903,7 @@ export class OrderService {
     user: ILoginUserInfo,
     ipAddress: string,
   ): Promise<void> {
-    const order = await this.orderRepository.findOne({
-      where: { id: getBody.id },
-    });
-
-    if (!order) {
-      throw new BadRequestException('주문이 존재하지 않습니다.');
-    }
+    await this.assertDestructionCertificateIssuable(getBody.id);
 
     // activity_log에 기록
     await this.activityLogService.createLog({
@@ -5695,6 +5692,31 @@ export class OrderService {
   // findMatchingDiscount는 user_discount/domain/discount.matcher.ts 공통 함수 사용
 
   /**
+   * 서버측 파기확인서 발행 게이트.
+   *
+   * 목록 응답의 canIssueDestructionCertificate 는 UI 힌트이므로, 실제 발행 경로
+   * (메일 발송 / PDF 발행 기록)에서 서버가 다시 판정한다.
+   * 폐기후재발행 롤백으로 soft-delete 된 배송건에도 미파기 PII 가 남을 수 있어,
+   * withDeleted 로 조회해 목록 게이트와 동일한 집합을 판정한다.
+   */
+  private async assertDestructionCertificateIssuable(orderId: number): Promise<void> {
+    const order = await this.orderRepository.findOne({
+      where: { id: orderId },
+      relations: ['orderProductMappings', 'orderProductMappings.orderDeliveries'],
+      withDeleted: true,
+    });
+
+    if (!order) {
+      throw new BadRequestException('주문이 존재하지 않습니다.');
+    }
+
+    const gate = resolveDestructionCertificateGate(order);
+    if (!gate.canIssue) {
+      throw new BadRequestException(destructionCertificateBlockMessage(gate.reason));
+    }
+  }
+
+  /**
    * PDF 리포트 이메일 발송 공통 로직
    */
   private async sendReportEmail(
@@ -5815,6 +5837,8 @@ export class OrderService {
     user: ILoginUserInfo,
     ipAddress: string,
   ): Promise<{ success: boolean; message: string }> {
+    await this.assertDestructionCertificateIssuable(getBody.orderId);
+
     return this.sendReportEmail(getBody, user, ipAddress, {
       requestUrl: '/order/destruction-certificate/report/email',
       actionType: 'DESTRUCTION_CERTIFICATE_EMAIL',

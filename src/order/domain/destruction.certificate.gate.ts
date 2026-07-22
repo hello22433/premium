@@ -55,3 +55,20 @@ export function resolveDestructionCertificateGate(order: OrderEntity): Destructi
 
   return { canIssue: false, reason: DestructionCertificateBlockReason.NOT_DESTROYED };
 }
+
+/**
+ * 블록 사유별 사용자 안내 문구.
+ * 프론트 BLOCK_MESSAGE(canIssueDestructionCertificate.ts)·조기파기 서비스(early.destroy.service.ts)와
+ * 동일한 문구를 유지한다 — 파기 경로(목록/발행/조기파기)에 관계없이 같은 안내를 받아야 한다.
+ */
+const DEFAULT_BLOCK_MESSAGE = '파기확인서 발행이 불가능합니다.';
+const BLOCK_REASON_MESSAGE: Record<DestructionCertificateBlockReason, string> = {
+  [DestructionCertificateBlockReason.DELIVERY_NOT_COMPLETE]: '발송 완료된 건에 대해서만 발행 가능합니다.',
+  [DestructionCertificateBlockReason.NOT_DESTROYED]: '개인정보 파기가 아직 진행되지 않았습니다.',
+  [DestructionCertificateBlockReason.REFUND_IN_PROGRESS]:
+    '환불 진행 중인 건으로 파기 실패했습니다. 고객센터(1644-3614)로 문의해주세요.',
+};
+
+export function destructionCertificateBlockMessage(reason: DestructionCertificateBlockReason | null): string {
+  return reason ? (BLOCK_REASON_MESSAGE[reason] ?? DEFAULT_BLOCK_MESSAGE) : DEFAULT_BLOCK_MESSAGE;
+}
