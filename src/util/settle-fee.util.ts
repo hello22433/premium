@@ -108,11 +108,14 @@ export type SettlementDisplayLine = {
  * 요율 적용 단가별로 행을 분리하면 모든 행의 단가가 실존값이고 price*amount 가 항상 정확한 합계다.
  * (정산정보입력 화면(getOrderSettle 가상 분리 행)과 동일한 표현 방식)
  *
- * - 비차등(균일 요율) 매핑: 단가 × mapping.amount 단일 행.
+ * - 비차등(균일 요율) 매핑: 단가 × 살아있는 발송건 수.
  * - 폐기 후 재발행으로 대체된 CANCEL 원본 delivery 는 제외(이중합산 방지 — D3-52).
  *   정산금액 SoT(calculateMappingSettlementBaseAmount)가 이 함수의 결과를 그대로 합산하므로,
  *   화면과 실제 돈이 동일한 필터·분기 기준을 공유한다(로직 중복 없음).
  *   폐기만 하고 재발행하지 않은 CANCEL 은 기존 동작 유지(정산 반영 정책 별도 판단).
+ * - 취소된 발송건(delivery.status = CANCEL)은 제외한다(197-16 예약건 부분취소).
+ *   그 몫은 이미 환불됐고, 실제 정산확정 금액(getOrderSettlementSummary)도 완료건만 더한다.
+ *   빼지 않으면 거래명세서·발송완료리포트가 환불된 건까지 청구한다.
  */
 export function buildSettlementDisplayLines(mapping: OrderProductMappingEntity): SettlementDisplayLine[] {
   const allDeliveries = mapping.orderDeliveries ?? [];
@@ -123,7 +126,11 @@ export function buildSettlementDisplayLines(mapping: OrderProductMappingEntity):
       .map((delivery) => Number(delivery.replacedFromId)),
   );
   const deliveries = allDeliveries.filter(
-    (delivery) => !(delivery.couponStatus === OrderDeliveryCouponStatus.CANCEL && replacedIds.has(Number(delivery.id))),
+    (delivery) =>
+      // 폐기 후 재발행으로 대체된 원본 (D3-52)
+      !(delivery.couponStatus === OrderDeliveryCouponStatus.CANCEL && replacedIds.has(Number(delivery.id))) &&
+      // 취소된 발송건 (197-16) — 이미 환불됐으므로 청구 대상이 아니다
+      delivery.status !== IOrderDeliveryStatus.CANCEL,
   );
 
   // 차등정산 여부 판정은 필터 "전" 목록 기준 — calculateMappingSettlementBaseAmount(정산금액 util)와
@@ -131,8 +138,19 @@ export function buildSettlementDisplayLines(mapping: OrderProductMappingEntity):
   // 서로 다른 분기(균일 vs 차등)를 타는 불일치를 방지한다.
   const hasDeliveryFee = allDeliveries.some((delivery) => delivery.settleFee !== null);
   if (!hasDeliveryFee) {
-    // 균일 요율: 단가 1회 계산 × 주문 수량
-    return [{ price: calculateSettlementPrice(mapping, false), amount: mapping.amount }];
+    // 균일 요율: 단가 1회 계산 × (주문 수량 − 취소된 발송건 수).
+    //
+    // ★ deliveries.length 를 쓰지 않는 이유: 그 목록은 "폐기 후 재발행으로 대체된 원본"(D3-52)도
+    //   빼는데, 그 경우 재발행분이 원본 자리를 채우므로 청구 수량은 그대로여야 한다.
+    //   길이로 세면 재발행 건의 금액이 절반이 된다(기존 계약 위반 — settle-fee.util.spec
+    //   "delivery-level 요율이 전혀 없는 순수 균일 매핑은 필터 전 기준이어도 균일 분기 유지").
+    //   취소는 대체가 아니라 순수 감소이므로 그 수만 뺀다.
+    const canceledCount = allDeliveries.filter(
+      (delivery) => delivery.status === IOrderDeliveryStatus.CANCEL,
+    ).length;
+    return [
+      { price: calculateSettlementPrice(mapping, false), amount: Math.max(0, mapping.amount - canceledCount) },
+    ];
   }
 
   // 차등정산: 요율 적용 단가별로 발송건 수를 세어 행 분리.

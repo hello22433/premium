@@ -2974,6 +2974,10 @@ export class SettleService {
           'orderDeliveries.settlePriceAdjustment',
           'orderDeliveries.couponStatus',
           'orderDeliveries.replacedFromId',
+          // 취소된 발송건을 정산 표시금액에서 빼려면 status 가 필요하다. 빼먹으면 undefined 가 되어
+          // buildSettlementDisplayLines 의 필터가 조용히 통과하고, 요약만 취소분을 포함한 금액이 된다
+          // (상세와 요약이 어긋난다).
+          'orderDeliveries.status',
         ]);
     } else {
       queryBuilder = queryBuilder.innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries');

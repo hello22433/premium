@@ -2096,7 +2096,13 @@ export class OrderService {
           : null;
 
         const lineView = readLineProductView(orderProductMapping);
-        for (const orderDelivery of orderProductMapping.orderDeliveries) {
+        // 취소된 발송건은 리포트에서 제외한다(197-16 예약건 부분취소).
+        // 발송되지 않았고 그 몫은 이미 환불됐으므로 "발송완료 리포트" 의 행이 아니다.
+        // 실패(FAIL)건은 제외하지 않는다 — 재발송으로 되살아날 수 있고, 발급 후 발송만 실패한
+        // 경우에는 바코드가 살아 있어 고객이 확인해야 할 정보다.
+        for (const orderDelivery of orderProductMapping.orderDeliveries.filter(
+          (delivery) => delivery.status !== IOrderDeliveryStatus.CANCEL,
+        )) {
           // deliveryTarget 복호화 후 마스킹 처리 (originalDeliveryTarget 우선 사용)
           const targetToDecrypt = orderDelivery.originalDeliveryTarget || orderDelivery.deliveryTarget;
           const decryptedDeliveryTarget = this.cryptoCipher.safeDecryptDeliveryTarget(targetToDecrypt) ?? '';
@@ -2570,7 +2576,13 @@ export class OrderService {
             : null;
 
           const lineView = readLineProductView(orderProductMapping);
-          for (const orderDelivery of orderProductMapping.orderDeliveries) {
+          // 취소된 발송건은 리포트에서 제외한다(197-16 예약건 부분취소).
+          // 발송되지 않았고 그 몫은 이미 환불됐으므로 "발송완료 리포트" 의 행이 아니다.
+          // 실패(FAIL)건은 제외하지 않는다 — 재발송으로 되살아날 수 있고, 발급 후 발송만 실패한
+          // 경우에는 바코드가 살아 있어 고객이 확인해야 할 정보다.
+          for (const orderDelivery of orderProductMapping.orderDeliveries.filter(
+            (delivery) => delivery.status !== IOrderDeliveryStatus.CANCEL,
+          )) {
             // deliveryTarget 복호화 후 마스킹 처리 (originalDeliveryTarget 우선 사용)
             const targetToDecrypt = orderDelivery.originalDeliveryTarget || orderDelivery.deliveryTarget;
             const decryptedDeliveryTarget = this.cryptoCipher.safeDecryptDeliveryTarget(targetToDecrypt) ?? '';
