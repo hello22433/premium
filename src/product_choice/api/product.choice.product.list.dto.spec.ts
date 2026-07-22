@@ -41,6 +41,16 @@ describe('ProductChoiceGetProductListReqQueryDto.excludeProductIdList 변환', (
     expect(toDto({ excludeProductIdList: '780,780,763' }).excludeProductIdList).toEqual([780, 763]);
   });
 
+  it('21건 이상이면 qs 가 배열 대신 객체로 넘기는데, 이것도 배열로 받는다', () => {
+    // express 기본 쿼리 파서(qs)는 arrayLimit 이 20 이라, ?id[]=.. 가 21건을 넘으면
+    // 배열이 아니라 {'0':'701','1':'702',...} 객체로 파싱한다.
+    // 이 분기가 없으면 등록 상품 21건 이상인 초이스쿠폰의 상품검색이 전부 400 이 된다.
+    const idList = Array.from({ length: 21 }, (_, index) => 701 + index);
+    const qsObjectForm = Object.fromEntries(idList.map((id, index) => [String(index), String(id)]));
+
+    expect(toDto({ excludeProductIdList: qsObjectForm }).excludeProductIdList).toEqual(idList);
+  });
+
   it('미전달이면 undefined 로 둔다 (제외 조건 자체가 붙지 않아야 한다)', () => {
     expect(toDto({}).excludeProductIdList).toBeUndefined();
   });
