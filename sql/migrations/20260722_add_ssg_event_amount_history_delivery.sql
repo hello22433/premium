@@ -64,7 +64,39 @@ CREATE INDEX `idx_ssg_amount_history_order_delivery`
     ON `ssg_event_amount_history` (`order_id`, `order_delivery_id`);
 
 
--- (3) 롤백 — 적용의 역순이다. 코드(엔티티) 롤백을 먼저 끝낸 뒤에만 실행할 것.
+-- (3) 검증-A: 컬럼 정의.
+--     기대 — 1건, INT / IS_NULLABLE=YES / order_id 바로 다음 위치.
+--     NOT NULL 로 만들어졌다면 잘못이다. 기존 행이 전부 NULL 이라 즉시 실패한다.
+SELECT ORDINAL_POSITION, COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE
+  FROM information_schema.COLUMNS
+ WHERE TABLE_SCHEMA = DATABASE()
+   AND TABLE_NAME = 'ssg_event_amount_history'
+   AND COLUMN_NAME IN ('order_id', 'order_delivery_id')
+ ORDER BY ORDINAL_POSITION;
+
+
+-- (4) 검증-B: 인덱스 컬럼 순서.
+--     기대 — 2건, #1 order_id / #2 order_delivery_id.
+--     ★ 순서가 뒤바뀌면 전체복구(order_id 단독 조회)가 인덱스를 못 탄다.
+--       leftmost prefix 규칙상 앞 컬럼부터 이어져야만 쓰인다.
+SELECT INDEX_NAME, SEQ_IN_INDEX, COLUMN_NAME, NON_UNIQUE
+  FROM information_schema.STATISTICS
+ WHERE TABLE_SCHEMA = DATABASE()
+   AND TABLE_NAME = 'ssg_event_amount_history'
+   AND INDEX_NAME = 'idx_ssg_amount_history_order_delivery'
+ ORDER BY SEQ_IN_INDEX;
+
+
+-- (5) 검증-C: 기존 행 무손상 + 백필이 일어나지 않았는지.
+--     기대 — filled = 0. 이 마이그레이션은 백필하지 않으므로 전 행이 NULL 이어야 한다.
+--     0 이 아니면 누군가 백필을 했다는 뜻이고, 그 값의 근거를 확인하기 전까지
+--     부분복구를 활성화하면 안 된다(근거 없는 안분은 행사잔액을 부풀린다).
+SELECT COUNT(*) AS total_rows,
+       COALESCE(SUM(`order_delivery_id` IS NOT NULL), 0) AS filled
+  FROM `ssg_event_amount_history`;
+
+
+-- (6) 롤백 — 적용의 역순이다. 코드(엔티티) 롤백을 먼저 끝낸 뒤에만 실행할 것.
 --     엔티티가 컬럼을 선언한 채로 컬럼을 지우면 조회가 전부 깨진다.
 -- DROP INDEX `idx_ssg_amount_history_order_delivery` ON `ssg_event_amount_history`;
 -- ALTER TABLE `ssg_event_amount_history` DROP COLUMN `order_delivery_id`;

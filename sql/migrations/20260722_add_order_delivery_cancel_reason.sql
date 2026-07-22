@@ -41,7 +41,28 @@ ALTER TABLE `order_delivery`
     AFTER `canceled_at`;
 
 
--- (2) 롤백 — 코드(엔티티) 롤백을 먼저 끝낸 뒤에만 실행할 것.
+-- (2) 검증-A: 컬럼 정의와 위치.
+--     기대 — 4건이 discarded_at → canceled_at → cancel_reason → refunded_at 순으로 나온다.
+--     canceled_at 은 datetime(6), cancel_reason 은 varchar(1000), 둘 다 IS_NULLABLE=YES.
+--     NOT NULL 로 만들어졌다면 잘못이다. 기존 행이 전부 NULL 이라 즉시 실패한다.
+SELECT ORDINAL_POSITION, COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE
+  FROM information_schema.COLUMNS
+ WHERE TABLE_SCHEMA = DATABASE()
+   AND TABLE_NAME = 'order_delivery'
+   AND COLUMN_NAME IN ('discarded_at', 'canceled_at', 'cancel_reason', 'refunded_at')
+ ORDER BY ORDINAL_POSITION;
+
+
+-- (3) 검증-B: 기존 행 무손상.
+--     기대 — canceled / reasoned 둘 다 0. 백필하지 않으므로 전 행이 NULL 이어야 한다.
+--     기존 취소 건의 사유는 order.cancel_reason 에 그대로 남아 있고 이 컬럼으로 옮기지 않는다.
+SELECT COUNT(*) AS total_rows,
+       COALESCE(SUM(`canceled_at` IS NOT NULL), 0) AS canceled,
+       COALESCE(SUM(`cancel_reason` IS NOT NULL), 0) AS reasoned
+  FROM `order_delivery`;
+
+
+-- (4) 롤백 — 코드(엔티티) 롤백을 먼저 끝낸 뒤에만 실행할 것.
 --     엔티티가 컬럼을 선언한 채로 컬럼을 지우면 조회가 전부 깨진다.
 -- ALTER TABLE `order_delivery`
 --   DROP COLUMN `cancel_reason`,
