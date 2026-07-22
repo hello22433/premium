@@ -9,7 +9,11 @@ import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.st
  * CANCEL 로 덮으면서 환불까지 하게 된다.
  *
  * deleted_at 은 특히 중요하다 — UpdateQueryBuilder 는 SelectQueryBuilder 와 달리
- * soft-delete 필터를 자동으로 붙이지 않는다(실측 확인). 빠지면 삭제된 행도 갱신된다.
+ * soft-delete 필터를 자동으로 붙이지 않는다. 빠지면 삭제된 행도 갱신된다.
+ * 근거: typeorm 0.3.28 QueryBuilder.createWhereExpression (queryType === 'select' 조건).
+ *
+ * 주의: 이 스펙은 mock 에 전달된 조건 문자열만 검사하므로 위 TypeORM 동작 자체는 검증하지 않는다.
+ * 라이브러리 업그레이드로 동작이 바뀌어도 이 스펙은 통과한다.
  */
 describe('OrderService.cancelDeliveriesIfStillWaiting — 조건부 UPDATE 계약', () => {
   // execute() 결과를 통째로 주입한다. affected 를 기본인자로 받으면 undefined 를 명시로 넘겨도

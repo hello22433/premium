@@ -5633,9 +5633,11 @@ export class OrderService {
    *     발송 대기 중인 행만. COMPLETE/FAIL/CANCEL 은 이미 끝난 건이다.
    *
    *  2) actual_send_at IS NULL
-   *     ★ status 만으로 미발송을 판정하면 안 된다. 외부 API 경로는 발송에 성공해도
-   *       delivery.status 가 WAIT 로 남고 actual_send_at 만 세팅된다
-   *       (external.api.service.ts:1210-1214 주석). 이 조건이 없으면 나간 쿠폰이 취소된다.
+   *     ★ status 만으로 미발송을 판정하면 안 된다. 외부 API 발송 성공 처리
+   *       (external.api.service.ts phaseC_handleSuccess)는 orderDelivery.actualSendAt 과
+   *       order.status 만 세팅하고 orderDelivery.status 는 건드리지 않는다 — 즉 발송에
+   *       성공해도 WAIT 로 남는다. 같은 이유로 외부 API 취소 가드도 status 가 아니라
+   *       actualSendAt 을 본다. 이 조건이 없으면 이미 나간 쿠폰이 취소된다.
    *
    *  3) claimed_at IS NULL
    *     발송 배치가 이미 집어간(claim) 행은 곧 나간다. claimWaitDeliveries 가
@@ -5684,7 +5686,9 @@ export class OrderService {
    * 것이므로 트랜잭션을 되돌려야 한다 — 조용히 넘어가면 "환불은 했는데 쿠폰은 나가는" 이중손실이 된다.
    *
    * ★ deleted_at IS NULL 을 명시한 이유: UpdateQueryBuilder 는 SelectQueryBuilder 와 달리
-   *   soft-delete 필터를 자동으로 붙이지 않는다(실측 확인). 없으면 soft-delete 된 행까지 취소된다.
+   *   soft-delete 필터를 자동으로 붙이지 않는다. 없으면 soft-delete 된 행까지 취소된다.
+   *   근거: typeorm 0.3.28 QueryBuilder.createWhereExpression 이 deleted_at IS NULL 을
+   *   queryType === 'select' 인 경우에만 삽입한다. 업그레이드 시 이 지점을 재확인할 것.
    *
    * sendRequestAt(10분 규칙)은 여기서 다시 검사하지 않는다. 시간은 되돌아가지 않으므로
    * 조회 시점에 통과했다면 갱신 시점에도 통과한다 — 오히려 여유가 줄어들 뿐이고,
@@ -5721,7 +5725,7 @@ export class OrderService {
   async deliveryCancel(user: ILoginUserInfo, getBody: OrderDeliveryCancelReqDto) {
     const { id, cancelReason } = getBody;
 
-    // 주문 행 단독 잠금 (deliveryConfirmed:4207 과 동일 패턴).
+    // 주문 행 단독 잠금 (deliveryConfirmed 와 동일 패턴).
     //  - 조인을 건 채로 FOR UPDATE 를 걸면 product 행까지 잠겨, 같은 상품을 쓰는 무관한 주문들이
     //    직렬화된다. 그래서 잠금 쿼리와 그래프 로딩 쿼리를 분리한다.
     //  - 락 위치가 맨 앞인 것이 중요하다. 종전에는 order 행 잠금이 맨 끝 save() 시점에야 잡혀
