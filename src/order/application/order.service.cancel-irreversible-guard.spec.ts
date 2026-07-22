@@ -81,18 +81,25 @@ describe('OrderService.deliveryCancel — 되돌릴 수 없는 발송건 가드'
       update: jest.fn(async () => ({ affected: 1 })),
     };
     sut.userCompanyRepository = { save: jest.fn() };
+    // ★ 조건식을 캡처한다. getCount 만 스텁하면 판정 조건을 통째로 지워도 전부 통과해
+    //   "되돌릴 수 없는 건" 의 정의가 아무것도 고정되지 않는다(뮤테이션으로 확인된 공백).
+    const guardConditions: string[] = [];
     sut.orderDeliveryRepository = {
       update: jest.fn(async () => ({ affected: 3 })),
       createQueryBuilder: jest.fn(() => {
         const b: any = {
           innerJoin: () => b,
           where: () => b,
-          andWhere: () => b,
+          andWhere: (cond: string) => {
+            guardConditions.push(cond);
+            return b;
+          },
           getCount,
         };
         return b;
       }),
     };
+    sut.__guardConditions = guardConditions;
     sut.ssgEventService = { restoreEventBalance: jest.fn() };
     sut.walletManagedPredicate = { isWalletManaged: jest.fn(async () => false) };
     sut.legacyWalletCreditSyncService = { syncCredit: jest.fn(), syncDeposit: jest.fn() };
@@ -126,6 +133,21 @@ describe('OrderService.deliveryCancel — 되돌릴 수 없는 발송건 가드'
     const { sut } = buildSut({ status: IOrderStatus.DELIVERY_CONFIRMED, irreversibleCount: 3 });
 
     await expect(sut.deliveryCancel({ id: 1 }, body)).rejects.toThrow(/3건/);
+  });
+
+  // ★ "되돌릴 수 없다" 의 정의 자체를 고정한다. getCount 만 스텁하면 이 조건들을 지워도
+  //   위 케이스들이 전부 통과한다 — 그러면 이미 나간 쿠폰이 CANCEL 로 덮이고 전액 환불된다.
+  it.each([
+    ['실제 발송됨', 'od.actualSendAt IS NOT NULL'],
+    ['쿠폰 발급됨(초이스/이메일)', 'od.couponIssuedAt IS NOT NULL'],
+    ['PIN 발급됨(일반 배치)', 'od.barCode IS NOT NULL'],
+    ['배치가 소유권을 잡음', 'od.claimedAt IS NOT NULL'],
+  ])('되돌릴 수 없는 조건에 %s 를 포함한다', async (_caseName, fragment) => {
+    const { sut } = buildSut({ status: IOrderStatus.DELIVERY_CONFIRMED, irreversibleCount: 0 });
+
+    await sut.deliveryCancel({ id: 1 }, body);
+
+    expect(sut.__guardConditions.join(' ')).toContain(fragment);
   });
 
   it('되돌릴 수 없는 건이 없으면 종전대로 전체취소가 진행된다', async () => {

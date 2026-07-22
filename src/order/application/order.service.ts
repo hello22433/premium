@@ -5643,7 +5643,7 @@ export class OrderService {
   /**
    * 주문 안에서 지금 취소할 수 있는 발송건 id 목록.
    *
-   * 네 조건을 모두 만족해야 한다. 하나라도 빠지면 이미 고객에게 간 쿠폰을 취소하고
+   * 아래 조건을 **모두** 만족해야 한다. 하나라도 빠지면 이미 고객에게 간 쿠폰을 취소하고
    * 돈까지 돌려주는 사고가 된다.
    *
    *  1) status = WAIT
@@ -5664,14 +5664,21 @@ export class OrderService {
    *     티켓의 "실발송 10분 전까지" 규칙. 배치는 send_request_at < now 인 행만 집으므로
    *     이 조건과 배치의 픽업 조건은 서로 겹치지 않는다.
    *
-   *  5) coupon_issued_at IS NULL
+   *  5) coupon_issued_at IS NULL  /  6) bar_code IS NULL
    *     쿠폰이 이미 발급된 행은 취소 대상이 아니다. 발급 후 발송 직전에 프로세스가 죽으면
    *     그 행은 status=WAIT / actual_send_at=NULL 로 남고, 재기동 시 releaseStaleBatchClaims 가
    *     claimed_at 까지 NULL 로 되돌린다 — 조건 1·2·3 을 모두 통과하는 상태가 된다.
    *     현재는 그런 행의 send_request_at 이 과거라 조건 4 가 막아주지만, 그건 claimed_at 이
    *     막는 것이 아니라 컷오프에 우연히 걸리는 것이다. 발급 여부를 직접 본다.
    *
-   *  6) order.type != EXTERNAL
+   *     ★ 두 컬럼을 모두 봐야 한다. coupon_issued_at 은 초이스 선택 / 이메일 수령 경로에서만
+   *       기록된다(order.receive.service.ts). 일반 배치 발송의 PIN 발급은 이 컬럼을 건드리지
+   *       않고 bar_code 만 채우며, 배치 자신도 "이미 발급됐나" 를 bar_code 로 판정한다
+   *       (delivery.batch.service.ts). 즉 coupon_issued_at 만 보면 배치 경로에서는 방어력이 0 이다.
+   *       bar_code 는 발송 시점(배치) 또는 테스트발송(status=COMPLETE)에서만 채워지므로,
+   *       이 조건이 정상적인 예약 대기 건의 취소를 막지는 않는다.
+   *
+   *  7) order.type != EXTERNAL
    *     외부 API 주문은 배치가 claim 하지 않으므로(claimWaitDeliveries 의 EXISTS 조건)
    *     claimed_at 이 영원히 NULL 이고, 그 경로에서 조건 3 은 방어력이 0 이다.
    *     지금 안전한 이유는 외부 API 가 sendRequestAt 을 즉시(now)로만 만들어 조건 4 에
@@ -5702,6 +5709,7 @@ export class OrderService {
       .andWhere('od.claimedAt IS NULL')
       .andWhere('od.sendRequestAt >= :cutoff', { cutoff })
       .andWhere('od.couponIssuedAt IS NULL')
+      .andWhere('od.barCode IS NULL')
       .andWhere('o.type != :externalType', { externalType: IOrderType.EXTERNAL })
       .orderBy('od.id', 'ASC')
       .getRawMany<{ id: number }>();
@@ -5806,9 +5814,14 @@ export class OrderService {
    * "취소 가능한가"(findCancelableDeliveryIds)의 여집합이 아니라 **되돌릴 수 없는 것만** 센다 —
    * 컷오프(10분)에 걸린 건은 아직 안 나갔으므로 여기 포함하지 않는다.
    *
-   * 셋 중 하나라도 해당하면 되돌릴 수 없다.
+   * 하나라도 해당하면 되돌릴 수 없다.
    *  - actual_send_at IS NOT NULL : 실제로 나갔다
-   *  - coupon_issued_at IS NOT NULL : 쿠폰이 발급됐다(초이스 선택/이메일 수령 등)
+   *  - coupon_issued_at IS NOT NULL : 쿠폰이 발급됐다(초이스 선택/이메일 수령 경로)
+   *  - bar_code IS NOT NULL : PIN 이 협력사에 발급됐다(일반 배치 발송 경로 — 이쪽은
+   *      coupon_issued_at 을 쓰지 않으므로 그 조건만으로는 잡히지 않는다)
+   *  - claimed_at IS NOT NULL : 발송 배치가 이미 소유권을 잡았다. 곧 나가므로 덮으면 안 된다.
+   *      부분취소는 이 창을 findCancelableDeliveryIds 조건 3 으로 명시적으로 막는데,
+   *      전체취소만 빠져 있어 배치가 집어간 행을 CANCEL 로 덮을 수 있었다(같은 근거, 같은 방어).
    *  - status 가 터미널 : COMPLETE / COMPLETE_SMS / FAIL / FAIL_SMS
    */
   private async countIrreversibleDeliveries(orderId: number): Promise<number> {
@@ -5817,7 +5830,8 @@ export class OrderService {
       .innerJoin('od.orderProductMapping', 'opm')
       .where('opm.orderId = :orderId', { orderId })
       .andWhere(
-        '(od.actualSendAt IS NOT NULL OR od.couponIssuedAt IS NOT NULL OR od.status IN (:...terminal))',
+        '(od.actualSendAt IS NOT NULL OR od.couponIssuedAt IS NOT NULL OR od.barCode IS NOT NULL ' +
+          'OR od.claimedAt IS NOT NULL OR od.status IN (:...terminal))',
         {
           terminal: [
             IOrderDeliveryStatus.COMPLETE,
@@ -5848,8 +5862,6 @@ export class OrderService {
     deliveryIds: number[],
     cancelReason: string,
   ): Promise<void> {
-    const now = new Date();
-
     // 전체취소와 동일하게 order 행부터 잠근다(락 순서 일관).
     const lockedOrder = await this.orderRepository
       .createQueryBuilder('order')
@@ -5859,6 +5871,11 @@ export class OrderService {
     if (!lockedOrder) {
       throw new BadRequestException('해당 주문건은 존재하지 않습니다.');
     }
+
+    // ★ 락을 잡은 뒤에 현재 시각을 읽는다. 락 대기는 innodb_lock_wait_timeout(기본 50초)까지
+    //   늘어질 수 있어, 대기 전에 찍은 시각으로 10분 컷오프를 계산하면 그만큼 창이 헐거워지고
+    //   canceled_at 도 과거로 기록된다.
+    const now = new Date();
 
     // 부분취소는 발송확정 이후에만 성립한다. 그 전에는 발송건이 TEMP 라 막을 발송도, 되돌릴 돈도 없다.
     if (lockedOrder.status !== IOrderStatus.DELIVERY_CONFIRMED) {
@@ -5895,9 +5912,16 @@ export class OrderService {
     const notCancelable = requested.filter((deliveryId) => !cancelable.has(deliveryId));
 
     if (notCancelable.length > 0) {
+      // 돈이 오가는 요청의 거부인데 서버에 흔적이 전혀 없었다. 사유를 알 수 없더라도
+      // "어떤 주문의 어떤 id 가 걸렸는지" 는 남겨야 문의가 왔을 때 추적이 된다.
+      this.logger.warn(
+        `[DELIVERY_CANCEL_REJECT] orderId=${orderId} requested=[${requested.join(',')}] ` +
+          `notCancelable=[${notCancelable.join(',')}] cancelable=[${[...cancelable].join(',')}]`,
+      );
       throw new BadRequestException(
         `취소할 수 없는 발송건이 포함돼 있습니다: ${notCancelable.join(', ')}. ` +
-          '이미 발송됐거나, 발송이 임박(10분 이내)했거나, 다른 주문의 발송건일 수 있습니다. ' +
+          '이미 발송됐거나 발송 준비가 시작됐거나, 발송이 임박(10분 이내)했거나, ' +
+          '이 주문의 발송건이 아니거나, 외부 API 주문일 수 있습니다. ' +
           '최신 발송 상태를 다시 조회해 주세요.',
       );
     }

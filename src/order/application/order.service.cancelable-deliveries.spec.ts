@@ -97,6 +97,16 @@ describe('OrderService.findCancelableDeliveryIds — 취소 대상 판정 조건
     expect(calls).toContain('od.couponIssuedAt IS NULL');
   });
 
+  // ★ coupon_issued_at 은 초이스 선택 / 이메일 수령 경로에서만 기록된다. 일반 배치 발송의
+  //   PIN 발급은 bar_code 만 채우므로, 그 조건이 없으면 배치 경로에서 발급 가드가 무력해진다.
+  it('이미 PIN(bar_code)이 발급된 건을 제외한다 — 배치 발송 경로의 발급 신호', async () => {
+    const { sut, calls } = setup();
+
+    await sut.findCancelableDeliveryIds(1001, NOW);
+
+    expect(calls).toContain('od.barCode IS NULL');
+  });
+
   // 외부 API 주문은 배치가 claim 하지 않아 claimed_at 이 영원히 NULL — 조건 3 의 방어력이 0 이다.
   // 배치가 EXTERNAL 을 명시 배제하는 것과 대칭을 맞춘다.
   it('외부 API 주문의 발송건을 제외한다', async () => {
