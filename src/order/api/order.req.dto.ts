@@ -1,6 +1,7 @@
 import { IOrderStatus } from '../interface/order.status';
 import {
   ArrayMaxSize,
+  ArrayNotEmpty,
   IsArray,
   IsBoolean,
   IsDefined,
@@ -466,6 +467,22 @@ export class OrderDeliveryCancelReqDto {
   @IsString()
   @MaxLength(1000)
   cancelReason: string;
+
+  @ApiPropertyOptional({
+    description:
+      '취소할 발송건(order_delivery) id 목록. 예약건 부분취소용. ' +
+      '지금은 선택값이고 서비스가 아직 읽지 않는다 — 부분취소 전환 시 필수로 승격되며, ' +
+      '그때부터 누락/빈 배열은 400 이다(실수로 주문 전체가 취소되는 것을 막기 위함).',
+    type: [Number],
+    example: [9003, 9004, 9005],
+  })
+  // ==================================
+  // 선택값이지만 "주면 제대로 줘야 한다" — 빈 배열이나 숫자 아닌 원소는 지금도 거부한다.
+  @IsOptional()
+  @IsArray()
+  @ArrayNotEmpty()
+  @IsNumber({}, { each: true })
+  deliveryIds?: number[];
 }
 
 export class OrderUpdateOperationUserReqDto {
