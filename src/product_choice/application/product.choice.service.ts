@@ -27,6 +27,7 @@ import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.st
 import { IsolationLevel, Transactional } from 'typeorm-transactional';
 import { format } from 'date-fns';
 import { DateDateFormatStr } from '../../common/domain/date.format.str';
+import { ProductChoiceDetailProductViewDto } from '../api/dto/product.choice.detail.product.view.dto';
 import { ProductChoiceProductViewDto } from '../api/dto/product.choice.product.view.dto';
 import {
   ProductChoiceDeleteCheckResDto,
@@ -129,34 +130,75 @@ export class ProductChoiceService {
   async getDetail(getParam: ProductChoiceGetDetailReqParamDto): Promise<ProductChoiceGetDetailResDto> {
     const { id } = getParam;
 
+    // 구성상품은 목록과 같은 이유로 left join 이다.
+    // inner join 이면 삭제된 구성상품이 조인에서 빠져 남은 상품만으로 정상으로 보이거나,
+    // 구성상품이 전부 삭제된 경우 초이스쿠폰 자체가 "존재하지 않는" 것으로 조회된다.
+    //
+    // withDeleted 로 삭제된 구성상품까지 읽어야 어떤 상품이 빠졌는지 응답에 실을 수 있다.
+    // 다만 withDeleted 는 이 쿼리 전체의 soft-delete 필터를 끄므로
+    // 초이스쿠폰 본체는 deletedAt 조건을 직접 걸어 삭제된 쿠폰이 열리지 않게 한다.
     const productChoice = await this.productRepository
       .createQueryBuilder('product')
+      .withDeleted()
       .leftJoinAndSelect('product.productChoiceMappings', 'productChoiceMappings')
-      .innerJoinAndSelect('productChoiceMappings.product', 'subProduct')
-      .innerJoinAndSelect('subProduct.brand', 'brand')
+      .leftJoinAndSelect('productChoiceMappings.product', 'subProduct')
+      .leftJoinAndSelect('subProduct.brand', 'brand')
       .andWhere('product.type = :type', { type: IProductType.CHOICE })
       .andWhere('product.id = :id', { id })
+      .andWhere('product.deletedAt IS NULL')
+      .andWhere('productChoiceMappings.deletedAt IS NULL')
       .getOne();
 
     if (!productChoice) {
       throw new BadRequestException('존재하지 않는 초이스쿠폰입니다.');
     }
 
-    const productList = productChoice.productChoiceMappings.map((productMapping): ProductChoiceProductViewDto => {
-      return {
-        id: productMapping.product.id,
-        createdDate: format(productMapping.product.createdAt, DateDateFormatStr),
-        code: productMapping.product.code,
-        classification: productMapping.product.classification?.classification ?? '',
-        brandId: productMapping.product.brandId,
-        brandName: productMapping.product.brand!.nameKorean,
-        name: productMapping.product.name,
-        price: productMapping.product.price,
-        expireDay: productMapping.product.expireDay,
-        category: productMapping.product.category,
-        useStatus: productMapping.product.useStatus,
-      };
-    });
+    const productList = (productChoice.productChoiceMappings ?? []).map(
+      (productMapping): ProductChoiceDetailProductViewDto => {
+        const component = productMapping.product;
+        // 매핑만 남고 상품 행이 없거나 soft-delete 된 경우다.
+        // 조인 대상(브랜드/대분류)이 비므로 해당 필드는 빈 값으로 내리고,
+        // 교체 대상을 특정할 수 있도록 id/code/name 은 남아 있는 값을 그대로 싣는다.
+        const isDeleted = !component || component.deletedAt != null;
+
+        if (isDeleted) {
+          return {
+            id: component?.id ?? productMapping.productId,
+            createdDate: component ? format(component.createdAt, DateDateFormatStr) : '',
+            code: component?.code ?? '',
+            classification: '',
+            brandId: component?.brandId ?? 0,
+            brandName: '',
+            name: component?.name ?? '',
+            price: component?.price ?? 0,
+            expireDay: component?.expireDay ?? 0,
+            category: '',
+            useStatus: null,
+            isDeleted: true,
+          };
+        }
+
+        return {
+          id: component.id,
+          createdDate: format(component.createdAt, DateDateFormatStr),
+          code: component.code,
+          classification: component.classification?.classification ?? '',
+          brandId: component.brandId,
+          brandName: component.brand?.nameKorean ?? '',
+          name: component.name,
+          price: component.price,
+          expireDay: component.expireDay,
+          category: component.category,
+          useStatus: component.useStatus,
+          isDeleted: false,
+        };
+      },
+    );
+
+    // 등록상태 판정은 목록과 같은 도메인 함수를 쓴다.
+    // 프론트엔드가 productList 를 훑어 규칙을 재구현하지 않도록 서버가 판정해 내려준다.
+    // 삭제된 구성상품은 useStatus 가 null 이라 hasUnusedComponent 가 비정상으로 본다.
+    const hasUnusedProduct = hasUnusedComponent(productList.map((component) => component.useStatus));
 
     return {
       id: productChoice.id,
@@ -166,6 +208,7 @@ export class ProductChoiceService {
       imagePath: productChoice.imagePath,
       useStatus: productChoice.useStatus,
       productList: productList,
+      hasUnusedProduct,
     };
   }
 

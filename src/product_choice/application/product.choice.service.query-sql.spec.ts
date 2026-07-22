@@ -54,4 +54,50 @@ describe('초이스쿠폰 조회 쿼리 SQL - 삭제된 구성상품 처리', ()
       expect(sql).toContain('`subProduct`.`deleted_at` IS NULL');
     });
   });
+
+  // getDetail 은 목록과 달리 withDeleted 로 삭제된 구성상품까지 읽는다.
+  // 어떤 상품이 빠졌는지 응답에 실어야 관리자가 교체 대상을 알 수 있기 때문이다.
+  const buildGetDetailSql = () =>
+    dataSource
+      .getRepository(ProductEntity)
+      .createQueryBuilder('product')
+      .withDeleted()
+      .leftJoinAndSelect('product.productChoiceMappings', 'productChoiceMappings')
+      .leftJoinAndSelect('productChoiceMappings.product', 'subProduct')
+      .leftJoinAndSelect('subProduct.brand', 'brand')
+      .andWhere('product.type = :type', { type: IProductType.CHOICE })
+      .andWhere('product.id = :id', { id: 1 })
+      .andWhere('product.deletedAt IS NULL')
+      .andWhere('productChoiceMappings.deletedAt IS NULL')
+      .getSql();
+
+  describe('getDetail', () => {
+    // inner join 이면 구성상품이 전부 삭제된 초이스쿠폰이 조회되지 않아
+    // 실제로 존재하는 쿠폰에 "존재하지 않는 초이스쿠폰입니다" 가 뜬다.
+    it('구성상품과 브랜드를 left join 으로 가져온다', () => {
+      const sql = buildGetDetailSql();
+
+      expect(sql).toContain('LEFT JOIN `product_choice_mapping` `productChoiceMappings`');
+      expect(sql).toContain('LEFT JOIN `product` `subProduct`');
+      expect(sql).toContain('LEFT JOIN `brand` `brand`');
+      expect(sql).not.toContain('INNER JOIN `product` `subProduct`');
+      expect(sql).not.toContain('INNER JOIN `brand` `brand`');
+    });
+
+    // 목록과 반대로 삭제된 구성상품이 조인에서 살아남아야 isDeleted 로 표시할 수 있다.
+    it('구성상품 join 에 soft-delete 제외 조건이 붙지 않는다', () => {
+      const sql = buildGetDetailSql();
+
+      expect(sql).not.toContain('`subProduct`.`deleted_at` IS NULL');
+    });
+
+    // withDeleted 는 쿼리 전체의 soft-delete 필터를 끈다.
+    // 초이스쿠폰 본체와 매핑은 조건을 직접 걸어야 삭제된 쿠폰이 상세로 열리지 않는다.
+    it('초이스쿠폰 본체와 매핑에는 삭제 제외 조건을 직접 건다', () => {
+      const sql = buildGetDetailSql();
+
+      expect(sql).toContain('`product`.`deleted_at` IS NULL');
+      expect(sql).toContain('`productChoiceMappings`.`deleted_at` IS NULL');
+    });
+  });
 });
