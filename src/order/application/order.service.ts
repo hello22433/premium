@@ -5690,11 +5690,21 @@ export class OrderService {
    *   근거: typeorm 0.3.28 QueryBuilder.createWhereExpression 이 deleted_at IS NULL 을
    *   queryType === 'select' 인 경우에만 삽입한다. 업그레이드 시 이 지점을 재확인할 것.
    *
+   * ★ orderId 스코프가 반드시 필요하다. deliveryIds 는 결국 요청 바디에서 온 값이고,
+   *   id IN (...) 만으로는 이 함수가 그 값을 무조건 신뢰하게 된다. 남의 주문 발송건 id 를
+   *   섞어 보내면 그 건이 취소되고 환불은 요청자의 주문 기준으로 일어난다 — IDOR 이면서
+   *   자금 결함이다. deliveryCancel 은 소유권 검사가 주석 처리돼 있고 엔드포인트 가드도
+   *   클래스 레벨 인증뿐이라 앞단에서 걸러진다는 보장이 없다.
+   *   호출부에서 findCancelableDeliveryIds 결과와 교집합을 취하더라도 여기서 한 번 더 막는다.
+   *   이 함수가 "돈을 되돌려도 되는가" 판정의 마지막 관문이고, 조건 추가 비용은 사실상 0이다.
+   *   (배치의 claimWaitDeliveries 도 같은 EXISTS 패턴으로 주문 타입을 제한한다.)
+   *
    * sendRequestAt(10분 규칙)은 여기서 다시 검사하지 않는다. 시간은 되돌아가지 않으므로
    * 조회 시점에 통과했다면 갱신 시점에도 통과한다 — 오히려 여유가 줄어들 뿐이고,
    * 그 구간의 실질 방어는 claimed_at 이 담당한다.
    */
   private async cancelDeliveriesIfStillWaiting(
+    orderId: number,
     deliveryIds: number[],
     cancelReason: string,
     canceledAt: Date,
@@ -5712,6 +5722,11 @@ export class OrderService {
         canceledAt,
       })
       .where('id IN (:...deliveryIds)', { deliveryIds })
+      .andWhere(
+        'EXISTS (SELECT 1 FROM order_product_mapping opm ' +
+          'WHERE opm.id = order_delivery.order_product_mapping_id AND opm.order_id = :orderId)',
+        { orderId },
+      )
       .andWhere('status = :wait', { wait: IOrderDeliveryStatus.WAIT })
       .andWhere('claimedAt IS NULL')
       .andWhere('actualSendAt IS NULL')

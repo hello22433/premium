@@ -48,21 +48,38 @@ describe('OrderService.cancelDeliveriesIfStillWaiting — 조건부 UPDATE 계�
     return { sut, calls, params, getSetValues: () => setValues, createQueryBuilder };
   };
 
+  const ORDER_ID = 1001;
   const AT = new Date('2026-07-22T12:00:00+09:00');
 
   it('대상 id 로만 한정한다', async () => {
     const { sut, calls, params } = setup();
 
-    await sut.cancelDeliveriesIfStillWaiting([9003, 9004, 9005], '고객 요청', AT);
+    await sut.cancelDeliveriesIfStillWaiting(ORDER_ID, [9003, 9004, 9005], '고객 요청', AT);
 
     expect(calls).toContain('id IN (:...deliveryIds)');
     expect(params.deliveryIds).toEqual([9003, 9004, 9005]);
   });
 
+  // ★ deliveryIds 는 결국 요청 바디에서 온 값이다. id IN (...) 만으로는 이 함수가 그 값을
+  //   무조건 신뢰하게 되고, 남의 주문 발송건 id 를 섞어 보내면 그 건이 취소되면서
+  //   환불은 요청자의 주문 기준으로 일어난다(IDOR + 자금 결함).
+  //   실DB 로 확인함: 남의 orderId → affected 0, 올바른 orderId → affected 1.
+  it('주문 범위를 벗어난 발송건은 취소하지 않는다 (orderId 스코프)', async () => {
+    const { sut, calls, params } = setup();
+
+    await sut.cancelDeliveriesIfStillWaiting(ORDER_ID, [9003], '고객 요청', AT);
+
+    expect(calls).toContain(
+      'EXISTS (SELECT 1 FROM order_product_mapping opm ' +
+        'WHERE opm.id = order_delivery.order_product_mapping_id AND opm.order_id = :orderId)',
+    );
+    expect(params.orderId).toBe(ORDER_ID);
+  });
+
   it('갱신 순간에 WAIT / claimed_at / actual_send_at 을 다시 검사한다', async () => {
     const { sut, calls, params } = setup();
 
-    await sut.cancelDeliveriesIfStillWaiting([9003], '고객 요청', AT);
+    await sut.cancelDeliveriesIfStillWaiting(ORDER_ID, [9003], '고객 요청', AT);
 
     expect(calls).toContain('status = :wait');
     expect(params.wait).toBe(IOrderDeliveryStatus.WAIT);
@@ -73,7 +90,7 @@ describe('OrderService.cancelDeliveriesIfStillWaiting — 조건부 UPDATE 계�
   it('soft-delete 된 행을 제외한다 (UpdateQueryBuilder 는 자동 적용하지 않는다)', async () => {
     const { sut, calls } = setup();
 
-    await sut.cancelDeliveriesIfStillWaiting([9003], '고객 요청', AT);
+    await sut.cancelDeliveriesIfStillWaiting(ORDER_ID, [9003], '고객 요청', AT);
 
     expect(calls).toContain('deletedAt IS NULL');
   });
@@ -81,7 +98,7 @@ describe('OrderService.cancelDeliveriesIfStillWaiting — 조건부 UPDATE 계�
   it('취소 사유와 시각을 발송건에 남긴다', async () => {
     const { sut, getSetValues } = setup();
 
-    await sut.cancelDeliveriesIfStillWaiting([9003], '고객 요청', AT);
+    await sut.cancelDeliveriesIfStillWaiting(ORDER_ID, [9003], '고객 요청', AT);
 
     expect(getSetValues()).toEqual({
       status: IOrderDeliveryStatus.CANCEL,
@@ -93,19 +110,19 @@ describe('OrderService.cancelDeliveriesIfStillWaiting — 조건부 UPDATE 계�
   it('갱신된 행 수를 그대로 돌려준다 (호출자가 경합을 판정할 근거)', async () => {
     const { sut } = setup({ affected: 2 });
 
-    await expect(sut.cancelDeliveriesIfStillWaiting([9003, 9004, 9005], 'r', AT)).resolves.toBe(2);
+    await expect(sut.cancelDeliveriesIfStillWaiting(ORDER_ID, [9003, 9004, 9005], 'r', AT)).resolves.toBe(2);
   });
 
   it('affected 가 undefined 면 0 으로 본다', async () => {
     const { sut } = setup({});
 
-    await expect(sut.cancelDeliveriesIfStillWaiting([9003], 'r', AT)).resolves.toBe(0);
+    await expect(sut.cancelDeliveriesIfStillWaiting(ORDER_ID, [9003], 'r', AT)).resolves.toBe(0);
   });
 
   it('대상이 없으면 쿼리를 아예 실행하지 않는다', async () => {
     const { sut, createQueryBuilder } = setup();
 
-    await expect(sut.cancelDeliveriesIfStillWaiting([], 'r', AT)).resolves.toBe(0);
+    await expect(sut.cancelDeliveriesIfStillWaiting(ORDER_ID, [], 'r', AT)).resolves.toBe(0);
     expect(createQueryBuilder).not.toHaveBeenCalled();
   });
 });
