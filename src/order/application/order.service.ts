@@ -5648,6 +5648,20 @@ export class OrderService {
    *     티켓의 "실발송 10분 전까지" 규칙. 배치는 send_request_at < now 인 행만 집으므로
    *     이 조건과 배치의 픽업 조건은 서로 겹치지 않는다.
    *
+   *  5) coupon_issued_at IS NULL
+   *     쿠폰이 이미 발급된 행은 취소 대상이 아니다. 발급 후 발송 직전에 프로세스가 죽으면
+   *     그 행은 status=WAIT / actual_send_at=NULL 로 남고, 재기동 시 releaseStaleBatchClaims 가
+   *     claimed_at 까지 NULL 로 되돌린다 — 조건 1·2·3 을 모두 통과하는 상태가 된다.
+   *     현재는 그런 행의 send_request_at 이 과거라 조건 4 가 막아주지만, 그건 claimed_at 이
+   *     막는 것이 아니라 컷오프에 우연히 걸리는 것이다. 발급 여부를 직접 본다.
+   *
+   *  6) order.type != EXTERNAL
+   *     외부 API 주문은 배치가 claim 하지 않으므로(claimWaitDeliveries 의 EXISTS 조건)
+   *     claimed_at 이 영원히 NULL 이고, 그 경로에서 조건 3 은 방어력이 0 이다.
+   *     지금 안전한 이유는 외부 API 가 sendRequestAt 을 즉시(now)로만 만들어 조건 4 에
+   *     걸리기 때문인데, 그것은 타 모듈의 암묵 불변식이다. 외부 API 에 예약발송이 생기면
+   *     조건 3·4 가 동시에 무너진다. 배치가 EXTERNAL 을 명시 배제하는 것과 대칭을 맞춘다.
+   *
    * ※ 이 헬퍼는 아직 어디서도 호출되지 않는다. deliveryCancel 의 실제 판정은 여전히
    *   주문 단위다 — 예약 mapping 들의 sendRequestAt 중 가장 이른 값 하나로 주문 전체를
    *   판정하며(같은 파일 deliveryCancel 안의 reserveSendTimes 블록), 그 블록은 그대로 살아 있다.
@@ -5665,11 +5679,14 @@ export class OrderService {
       .createQueryBuilder('od')
       .select('od.id', 'id')
       .innerJoin('od.orderProductMapping', 'opm')
+      .innerJoin('opm.order', 'o')
       .where('opm.orderId = :orderId', { orderId })
       .andWhere('od.status = :wait', { wait: IOrderDeliveryStatus.WAIT })
       .andWhere('od.actualSendAt IS NULL')
       .andWhere('od.claimedAt IS NULL')
       .andWhere('od.sendRequestAt >= :cutoff', { cutoff })
+      .andWhere('od.couponIssuedAt IS NULL')
+      .andWhere('o.type != :externalType', { externalType: IOrderType.EXTERNAL })
       .orderBy('od.id', 'ASC')
       .getRawMany<{ id: number }>();
 

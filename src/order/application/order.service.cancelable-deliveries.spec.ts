@@ -1,5 +1,6 @@
 import { OrderService } from './order.service';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
+import { IOrderType } from '../interface/order.type';
 
 /**
  * findCancelableDeliveryIds 의 판정 조건 계약을 고정한다.
@@ -83,6 +84,29 @@ describe('OrderService.findCancelableDeliveryIds — 취소 대상 판정 조건
     expect(calls).toContain('innerJoin:od.orderProductMapping:opm');
     expect(calls).toContain('opm.orderId = :orderId');
     expect(params.orderId).toBe(1001);
+  });
+
+  // 발급 후 발송 직전 크래시 → 재기동 시 releaseStaleBatchClaims 가 claimed_at 을 NULL 로 되돌려
+  // status=WAIT / actual_send_at=NULL / claimed_at=NULL 이 된다. 컷오프에 우연히 걸리는 것에
+  // 기대지 않고 발급 여부를 직접 본다.
+  it('이미 쿠폰이 발급된 건을 제외한다', async () => {
+    const { sut, calls } = setup();
+
+    await sut.findCancelableDeliveryIds(1001, NOW);
+
+    expect(calls).toContain('od.couponIssuedAt IS NULL');
+  });
+
+  // 외부 API 주문은 배치가 claim 하지 않아 claimed_at 이 영원히 NULL — 조건 3 의 방어력이 0 이다.
+  // 배치가 EXTERNAL 을 명시 배제하는 것과 대칭을 맞춘다.
+  it('외부 API 주문의 발송건을 제외한다', async () => {
+    const { sut, calls, params } = setup();
+
+    await sut.findCancelableDeliveryIds(1001, NOW);
+
+    expect(calls).toContain('innerJoin:opm.order:o');
+    expect(calls).toContain('o.type != :externalType');
+    expect(params.externalType).toBe(IOrderType.EXTERNAL);
   });
 
   it('id 목록을 숫자로 반환한다', async () => {
