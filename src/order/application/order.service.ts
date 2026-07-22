@@ -5665,6 +5665,50 @@ export class OrderService {
     return rows.map((row) => Number(row.id));
   }
 
+  /**
+   * 고른 발송건을 CANCEL 로 전환한다. 조건부 UPDATE(CAS) 이며 갱신된 행 수를 돌려준다.
+   *
+   * findCancelableDeliveryIds 로 목록을 고른 시점과 실제로 바꾸는 시점 사이에는 시간이 흐른다.
+   * 그 사이 발송 배치가 같은 행을 claim 해 갈 수 있으므로, 판정 조건을 UPDATE 의 WHERE 에
+   * 다시 넣어 DB 가 갱신 순간에 확인하게 한다. 조건이 어긋난 행은 갱신되지 않고 affected 로 드러난다.
+   *
+   * 호출자는 affected 가 요청 건수와 같은지 반드시 확인해야 한다. 다르면 그 사이 상태가 바뀐
+   * 것이므로 트랜잭션을 되돌려야 한다 — 조용히 넘어가면 "환불은 했는데 쿠폰은 나가는" 이중손실이 된다.
+   *
+   * ★ deleted_at IS NULL 을 명시한 이유: UpdateQueryBuilder 는 SelectQueryBuilder 와 달리
+   *   soft-delete 필터를 자동으로 붙이지 않는다(실측 확인). 없으면 soft-delete 된 행까지 취소된다.
+   *
+   * sendRequestAt(10분 규칙)은 여기서 다시 검사하지 않는다. 시간은 되돌아가지 않으므로
+   * 조회 시점에 통과했다면 갱신 시점에도 통과한다 — 오히려 여유가 줄어들 뿐이고,
+   * 그 구간의 실질 방어는 claimed_at 이 담당한다.
+   */
+  private async cancelDeliveriesIfStillWaiting(
+    deliveryIds: number[],
+    cancelReason: string,
+    canceledAt: Date,
+  ): Promise<number> {
+    if (deliveryIds.length === 0) {
+      return 0;
+    }
+
+    const result = await this.orderDeliveryRepository
+      .createQueryBuilder()
+      .update(OrderDeliveryEntity)
+      .set({
+        status: IOrderDeliveryStatus.CANCEL,
+        cancelReason,
+        canceledAt,
+      })
+      .where('id IN (:...deliveryIds)', { deliveryIds })
+      .andWhere('status = :wait', { wait: IOrderDeliveryStatus.WAIT })
+      .andWhere('claimedAt IS NULL')
+      .andWhere('actualSendAt IS NULL')
+      .andWhere('deletedAt IS NULL')
+      .execute();
+
+    return result.affected ?? 0;
+  }
+
   @Transactional()
   async deliveryCancel(user: ILoginUserInfo, getBody: OrderDeliveryCancelReqDto) {
     const { id, cancelReason } = getBody;
