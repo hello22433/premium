@@ -5645,10 +5645,12 @@ export class OrderService {
    *     티켓의 "실발송 10분 전까지" 규칙. 배치는 send_request_at < now 인 행만 집으므로
    *     이 조건과 배치의 픽업 조건은 서로 겹치지 않는다.
    *
-   * 종전 판정은 주문 단위였다 — 예약 mapping 들의 sendRequestAt 중 가장 이른 값 하나로
-   * 주문 전체를 판정해, 이미 나간 건이 하나라도 있으면 남은 대기 건까지 취소가 막혔다.
-   * 그 최솟값 방식은 "주문 전체를 취소한다" 는 전제에서는 옳았고, 취소 단위가 발송건으로
-   * 내려가면서 무효가 된다.
+   * ※ 이 헬퍼는 아직 어디서도 호출되지 않는다. deliveryCancel 의 실제 판정은 여전히
+   *   주문 단위다 — 예약 mapping 들의 sendRequestAt 중 가장 이른 값 하나로 주문 전체를
+   *   판정하며(같은 파일 deliveryCancel 안의 reserveSendTimes 블록), 그 블록은 그대로 살아 있다.
+   *   부분취소 전환 커밋에서 그 블록이 이 헬퍼로 교체된다.
+   *   최솟값 방식은 "주문 전체를 취소한다" 는 전제에서는 옳았고, 취소 단위가 발송건으로
+   *   내려가면서 무효가 된다.
    *
    * soft-delete 된 행은 SelectQueryBuilder 가 deleted_at 필터를 자동 적용해 제외된다
    * (UpdateQueryBuilder 는 자동 적용하지 않으므로 갱신 시에는 명시해야 한다).
