@@ -137,8 +137,15 @@ export class ProductChoiceGetProductListReqQueryDto extends PagingReqDto {
     if (value === undefined || value === null || value === '') {
       return undefined;
     }
-    // 콤마 구분 문자열(780,763)과 반복 파라미터(?id=780&id=763) 양쪽을 모두 허용한다.
-    const rawList = Array.isArray(value) ? value : String(value).split(',');
+    // 콤마 구분 문자열(780,763)과 반복 파라미터(?id[]=780&id[]=763) 양쪽을 모두 허용한다.
+    // 반복 파라미터는 21건부터 express 기본 쿼리 파서(qs)의 arrayLimit(20)에 걸려
+    // 배열이 아니라 객체({'0':'780','1':'763'})로 도착하므로 객체도 함께 받아야 한다.
+    // (이 분기가 없으면 등록 상품 21건 이상인 초이스쿠폰의 상품검색이 전부 400 이 된다)
+    const rawList = Array.isArray(value)
+      ? value
+      : typeof value === 'object'
+        ? Object.values(value as Record<string, unknown>)
+        : String(value).split(',');
     // 잘못된 값은 조용히 버리지 않고 NaN 으로 남겨 IsInt 검증에서 400 으로 드러나게 한다.
     const idList = rawList.map((raw) => {
       const trimmed = String(raw).trim();
@@ -146,6 +153,9 @@ export class ProductChoiceGetProductListReqQueryDto extends PagingReqDto {
     });
     return idList.length > 0 ? [...new Set(idList)] : undefined;
   })
+  // IsInt/Min 의 each 옵션은 값이 배열이 아니면 아무 검증도 하지 않고 통과시키므로,
+  // 배열 보장은 IsArray 가 맡는다. (모듈 내 productIdList/idList 와 동일한 조합)
+  @IsArray()
   @IsInt({ each: true })
   @Min(1, { each: true })
   excludeProductIdList?: number[];
