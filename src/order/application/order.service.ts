@@ -202,6 +202,8 @@ import { CreditExcessApprovalDriftError } from '../../wallet/application/credit-
 import { buildCreditExcessSnapshot, CreditExcessSnapshot, diffCreditExcessSnapshot } from './credit-excess-snapshot';
 import { CreditExcessApprovalExecutionContext } from './credit-excess-approval.context';
 import { OrderConfirmationReleaseService } from '../../wallet/application/order-confirmation-release.service';
+import { RefundPoolService } from '../../wallet/application/refund-pool.service';
+import { OrderPaymentRefundEventType } from '../../entity/order.payment.refund.event.entity';
 import { LegacyWalletCreditSyncService } from '../../wallet/application/legacy-wallet-credit-sync.service';
 import { ShadowMismatchClassifierService } from '../../wallet/application/shadow-mismatch-classifier.service';
 import { BillingScopeLockService } from '../../wallet/application/billing-scope-lock.service';
@@ -388,6 +390,7 @@ export class OrderService {
     private readonly paymentAllocationService: PaymentAllocationService,
     private readonly orderConfirmationWalletService: OrderConfirmationWalletService,
     private readonly orderConfirmationReleaseService: OrderConfirmationReleaseService,
+    private readonly refundPoolService: RefundPoolService,
     private readonly legacyWalletCreditSyncService: LegacyWalletCreditSyncService,
     private readonly shadowMismatchClassifierService: ShadowMismatchClassifierService,
     private readonly walletAllocationInputBuilder: WalletAllocationInputBuilder,
@@ -5814,26 +5817,125 @@ export class OrderService {
       .getCount();
   }
 
+  /**
+   * 예약 발송건 부분취소 (197-16).
+   *
+   * deliveryIds 를 준 요청만 이 경로로 온다. 주지 않으면 종전대로 주문 전체가 취소된다 —
+   * 발송확정 전에는 발송건이 전부 TEMP 라 "일부만 취소" 라는 개념도, 되돌릴 잔액도 없기 때문에
+   * 부분취소를 강제하지 않는다.
+   *
+   * 전체취소와 다른 점:
+   *  - 취소 대상을 요청이 지목한다(단, 반드시 findCancelableDeliveryIds 의 부분집합이어야 한다)
+   *  - 환불이 주문 전액이 아니라 그 발송건 몫이다 (RefundPoolService.refund)
+   *  - 잔여 발송건이 남으면 order.status 를 DELIVERY_CANCEL 로 내리지 않는다
+   */
+  @Transactional()
+  private async partialDeliveryCancel(
+    orderId: number,
+    deliveryIds: number[],
+    cancelReason: string,
+  ): Promise<void> {
+    const now = new Date();
+
+    // 전체취소와 동일하게 order 행부터 잠근다(락 순서 일관).
+    const lockedOrder = await this.orderRepository
+      .createQueryBuilder('order')
+      .setLock('pessimistic_write')
+      .where('order.id = :id', { id: orderId })
+      .getOne();
+    if (!lockedOrder) {
+      throw new BadRequestException('해당 주문건은 존재하지 않습니다.');
+    }
+
+    // 부분취소는 발송확정 이후에만 성립한다. 그 전에는 발송건이 TEMP 라 막을 발송도, 되돌릴 돈도 없다.
+    if (lockedOrder.status !== IOrderStatus.DELIVERY_CONFIRMED) {
+      throw new BadRequestException(
+        '발송 대기 상태의 주문만 발송건별로 취소할 수 있습니다. ' +
+          'deliveryIds 없이 요청하면 주문 전체가 취소됩니다.',
+      );
+    }
+
+    // SSG 는 행사잔액 차감 이력이 주문 단위로 뭉쳐 있어(ssg_event_amount_history.order_delivery_id 미기록)
+    // 발송건 몫을 역산할 근거가 없다. 근거 없이 안분하면 행사잔액이 부풀고, 그쪽은 상한 검증이 없어
+    // 되돌리기 어렵다. 귀속 기록이 붙는 후속 커밋에서 이 차단을 푼다.
+    if (lockedOrder.type === IOrderType.SSG) {
+      throw new BadRequestException(
+        'SSG 주문은 아직 발송건별 취소를 지원하지 않습니다. 주문 전체 취소를 이용해 주세요.',
+      );
+    }
+
+    // 지갑(allocation) 이 없는 주문은 발송건 몫 환불의 근거가 없다.
+    // 지갑 도입(2026-05) 이전 주문이 여기 해당하며, 취소 가능한 주문은 사실상 그 이후 것이다.
+    const externalManager = this.orderRepository.manager;
+    if (!(await this.walletManagedPredicate.isWalletManaged(orderId, externalManager))) {
+      throw new BadRequestException(
+        '이 주문은 발송건별 취소를 지원하지 않습니다(정산 정보 없음). 주문 전체 취소를 이용해 주세요.',
+      );
+    }
+
+    // 요청한 id 가 "지금 취소 가능한 것" 의 부분집합인지 확인한다.
+    // 부분 수용(가능한 것만 취소)하지 않는 이유: 요청자는 N건을 취소했다고 믿는데 실제로는 M건만
+    // 취소되고 환불도 M건분이라, 차이를 응답으로 알려줘도 이미 일부가 커밋된 뒤다. 전량 거부가 안전하다.
+    const cancelable = new Set(await this.findCancelableDeliveryIds(orderId, now));
+    const requested = [...new Set(deliveryIds)];
+    const notCancelable = requested.filter((deliveryId) => !cancelable.has(deliveryId));
+
+    if (notCancelable.length > 0) {
+      throw new BadRequestException(
+        `취소할 수 없는 발송건이 포함돼 있습니다: ${notCancelable.join(', ')}. ` +
+          '이미 발송됐거나, 발송이 임박(10분 이내)했거나, 다른 주문의 발송건일 수 있습니다. ' +
+          '최신 발송 상태를 다시 조회해 주세요.',
+      );
+    }
+
+    // 조건부 UPDATE. 갱신 건수가 요청과 다르면 그 사이 발송 단계로 넘어간 것이므로 여기서 던진다(롤백).
+    await this.cancelDeliveriesIfStillWaiting(orderId, requested, cancelReason, now);
+
+    // 취소분 몫만 환불한다. 재원 배분(신용초과 → 여신 → 예치금)과 멱등은 RefundPoolService 가 담당한다.
+    //
+    // ※ externalManager 를 넘겨 같은 트랜잭션에서 실행한다(외부 API 취소 / CS 폐기와 동일한 방식).
+    //   refund-pool 의 lock 후 재조회가 평문 SELECT 라 호출자 격리수준을 따르는 기존 조건이 여기에도
+    //   적용된다 — 이 브랜치 범위 밖의 별도 이슈로 추적한다.
+    await this.refundPoolService.refund(
+      {
+        orderId,
+        eventType: OrderPaymentRefundEventType.DISCARD_REFUND,
+        targetDeliveryIds: requested,
+        idempotencyKeyPrefix: `partial_cancel:${orderId}:${requested.join('-')}`,
+      },
+      externalManager,
+    );
+
+    // 남은 발송건이 없으면 주문도 취소로 내린다. 남아 있으면 DELIVERY_CONFIRMED 를 유지해야
+    // 잔여분이 정상 발송되고, 전건 터미널이 됐을 때 배치가 완료·정산으로 넘긴다.
+    const remaining = await this.orderDeliveryRepository
+      .createQueryBuilder('od')
+      .innerJoin('od.orderProductMapping', 'opm')
+      .where('opm.orderId = :orderId', { orderId })
+      .andWhere('od.status != :canceled', { canceled: IOrderDeliveryStatus.CANCEL })
+      .getCount();
+
+    if (remaining === 0) {
+      lockedOrder.status = IOrderStatus.DELIVERY_CANCEL;
+      lockedOrder.cancelReason = cancelReason;
+      lockedOrder.canceledAt = now;
+      await this.orderRepository.save(lockedOrder);
+    }
+
+    this.logger.log(
+      `[DELIVERY_CANCEL] 부분취소 완료 orderId=${orderId} canceled=${requested.length}건 ` +
+        `ids=[${requested.join(',')}] 잔여=${remaining}건`,
+    );
+  }
+
   @Transactional()
   async deliveryCancel(user: ILoginUserInfo, getBody: OrderDeliveryCancelReqDto) {
     const { id, cancelReason, deliveryIds } = getBody;
 
-    // 부분취소 미구현 구간의 안전 가드.
-    //
-    // deliveryIds 는 DTO 와 Swagger 에 이미 노출돼 있지만 아래 로직은 아직 주문 전체를 취소한다.
-    // 이 값을 조용히 무시하면 "3건만 취소" 요청이 "주문 전체 취소 + 전액 환불" 로 실행되고
-    // 응답은 200 이다 — 요청보다 더 많이 하는 셈이라 실패보다 나쁘다(되돌릴 수 없고 티도 안 난다).
-    //
-    // 조율로 막지 않는 이유: Swagger 를 본 프론트가 아무 합의 없이 이 필드를 쓰기 시작할 수 있다.
-    // 거절해 두면 전달이 실패해도 사고가 나지 않는다.
-    //
-    // 부분취소 전환 커밋에서 이 가드를 지우고 deliveryIds 를 실제 취소 대상으로 사용한다.
-    if (deliveryIds) {
-      throw new BadRequestException(
-        '발송건 부분취소(deliveryIds)는 아직 지원하지 않습니다. ' +
-          '이 요청을 그대로 처리하면 주문 전체가 취소되므로 거부합니다. ' +
-          'deliveryIds 없이 요청하면 종전과 같이 주문 전체가 취소됩니다.',
-      );
+    // deliveryIds 를 준 요청은 부분취소 경로로 보낸다.
+    // 주지 않으면 아래 전체취소가 종전과 동일하게 동작한다 — 기존 프론트는 영향을 받지 않는다.
+    if (deliveryIds && deliveryIds.length > 0) {
+      return this.partialDeliveryCancel(id, deliveryIds, cancelReason);
     }
 
     // 주문 행 단독 잠금 (deliveryConfirmed 와 동일 패턴).
