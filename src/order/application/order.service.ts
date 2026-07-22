@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   InternalServerErrorException,
@@ -5682,8 +5683,17 @@ export class OrderService {
    * 그 사이 발송 배치가 같은 행을 claim 해 갈 수 있으므로, 판정 조건을 UPDATE 의 WHERE 에
    * 다시 넣어 DB 가 갱신 순간에 확인하게 한다. 조건이 어긋난 행은 갱신되지 않고 affected 로 드러난다.
    *
-   * 호출자는 affected 가 요청 건수와 같은지 반드시 확인해야 한다. 다르면 그 사이 상태가 바뀐
-   * 것이므로 트랜잭션을 되돌려야 한다 — 조용히 넘어가면 "환불은 했는데 쿠폰은 나가는" 이중손실이 된다.
+   * 하나라도 못 바꾸면 여기서 던진다. 반환값으로 알리고 호출자가 검사하게 두지 않는다 —
+   * TypeScript 에는 반환값 무시를 막는 수단이 없어(`await fn(...)` 이 경고 없이 통과)
+   * "반드시 확인하라" 는 계약이 주석 외에 강제력을 갖지 못한다. 판정에 필요한 값
+   * (요청 건수·affected)을 이 함수가 이미 다 쥐고 있으므로 판정도 여기서 한다.
+   * @Transactional() 이라 throw 가 곧 롤백이고, 어차피 롤백이 유일한 정답이라
+   * 호출부에 선택권을 줄 이유가 없다.
+   *
+   * 중복 id 는 들여보내지 않는다. SQL 의 IN 은 집합이라 중복을 접으므로
+   * [9003, 9003, 9004] 는 affected 2 가 되어 정상 취소가 "경합" 으로 오판된다.
+   * DTO 의 @ArrayUnique 가 정상 경로를 막지만, 서비스를 직접 부르는 경로가 생겨도
+   * 뚫리지 않도록 여기서도 접는다.
    *
    * ★ deleted_at IS NULL 을 명시한 이유: UpdateQueryBuilder 는 SelectQueryBuilder 와 달리
    *   soft-delete 필터를 자동으로 붙이지 않는다. 없으면 soft-delete 된 행까지 취소된다.
@@ -5708,9 +5718,16 @@ export class OrderService {
     deliveryIds: number[],
     cancelReason: string,
     canceledAt: Date,
-  ): Promise<number> {
-    if (deliveryIds.length === 0) {
-      return 0;
+  ): Promise<void> {
+    const targetIds = [...new Set(deliveryIds)];
+
+    if (targetIds.length === 0) {
+      // 여기 도달하는 빈 목록은 호출자 버그다. DTO(@ArrayNotEmpty)와 선별 단계가 이미 걸렀어야 한다.
+      // 조용히 0 을 돌려주면 "요청 0건 = affected 0건" 이 되어 "전부 성공" 으로 판정되고,
+      // 발송건은 하나도 취소되지 않은 채 환불만 실행된다.
+      throw new InternalServerErrorException(
+        `cancelDeliveriesIfStillWaiting: 취소 대상이 비어 있다 (orderId=${orderId})`,
+      );
     }
 
     const result = await this.orderDeliveryRepository
@@ -5721,7 +5738,7 @@ export class OrderService {
         cancelReason,
         canceledAt,
       })
-      .where('id IN (:...deliveryIds)', { deliveryIds })
+      .where('id IN (:...deliveryIds)', { deliveryIds: targetIds })
       .andWhere(
         'EXISTS (SELECT 1 FROM order_product_mapping opm ' +
           'WHERE opm.id = order_delivery.order_product_mapping_id AND opm.order_id = :orderId)',
@@ -5733,7 +5750,20 @@ export class OrderService {
       .andWhere('deletedAt IS NULL')
       .execute();
 
-    return result.affected ?? 0;
+    const affected = result.affected ?? 0;
+    if (affected !== targetIds.length) {
+      // 조회와 갱신 사이에 발송 배치가 claim 해 갔거나, 다른 경로가 상태를 바꿨다.
+      // 로그에 요청/실제 건수와 id 를 남긴다 — 이게 없으면 "왜 취소가 안 됐나" 를 사후에 못 푼다.
+      this.logger.error(
+        `[DELIVERY_CANCEL_RACE] orderId=${orderId} requested=${targetIds.length} affected=${affected} ` +
+          `ids=[${targetIds.join(',')}] — 발송 진행으로 상태가 바뀐 것으로 보임, 취소 롤백`,
+      );
+      throw new ConflictException(
+        '취소 처리 중 일부 발송건이 발송 단계로 넘어가 취소하지 못했습니다. ' +
+          '아무것도 취소되지 않았고 환불도 일어나지 않았습니다. ' +
+          '발송 결과를 확인한 뒤 남은 대기 건만 다시 취소해 주세요.',
+      );
+    }
   }
 
   @Transactional()

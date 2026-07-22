@@ -1,3 +1,4 @@
+import { ConflictException, InternalServerErrorException } from '@nestjs/common';
 import { OrderService } from './order.service';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 
@@ -16,9 +17,10 @@ import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.st
  * 라이브러리 업그레이드로 동작이 바뀌어도 이 스펙은 통과한다.
  */
 describe('OrderService.cancelDeliveriesIfStillWaiting — 조건부 UPDATE 계약', () => {
-  // execute() 결과를 통째로 주입한다. affected 를 기본인자로 받으면 undefined 를 명시로 넘겨도
-  // 기본값이 적용돼(JS 기본인자 동작) "affected 부재" 케이스를 표현할 수 없다.
-  const setup = (executeResult: { affected?: number } = { affected: 3 }) => {
+  // execute() 결과를 주입한다. 생략하면 "요청한 만큼 갱신됨"(성공)이 기본이다 —
+  // 고정 숫자를 기본값으로 두면 id 개수가 다른 케이스마다 불일치가 나서 의도치 않게 실패한다.
+  // 명시로 넘길 때만 불일치/부재 케이스가 된다(옵셔널이라 undefined 도 표현 가능).
+  const setup = (executeResult?: { affected?: number }) => {
     const calls: string[] = [];
     const params: Record<string, unknown> = {};
     let setValues: Record<string, unknown> = {};
@@ -39,12 +41,13 @@ describe('OrderService.cancelDeliveriesIfStillWaiting — 조건부 UPDATE 계�
         Object.assign(params, p ?? {});
         return builder;
       },
-      execute: async () => executeResult,
+      execute: async () => executeResult ?? { affected: (params.deliveryIds as number[] | undefined)?.length ?? 0 },
     };
 
     const createQueryBuilder = jest.fn(() => builder);
     const sut: any = Object.create(OrderService.prototype);
     sut.orderDeliveryRepository = { createQueryBuilder };
+    sut.logger = { error: jest.fn(), log: jest.fn(), warn: jest.fn() };
     return { sut, calls, params, getSetValues: () => setValues, createQueryBuilder };
   };
 
@@ -107,22 +110,58 @@ describe('OrderService.cancelDeliveriesIfStillWaiting — 조건부 UPDATE 계�
     });
   });
 
-  it('갱신된 행 수를 그대로 돌려준다 (호출자가 경합을 판정할 근거)', async () => {
+  it('요청 건수만큼 갱신되면 조용히 성공한다', async () => {
+    const { sut } = setup({ affected: 3 });
+
+    await expect(sut.cancelDeliveriesIfStillWaiting(ORDER_ID, [9003, 9004, 9005], 'r', AT)).resolves.toBeUndefined();
+  });
+
+  // 계약을 반환값이 아니라 제어흐름으로 강제한다. TypeScript 에는 반환값 무시를 막는 수단이
+  // 없어(`await fn(...)` 이 경고 없이 통과) "호출자가 반드시 검사하라" 는 주석은 강제력이 없다.
+  // @Transactional() 이라 throw 가 곧 롤백이고, 어차피 롤백이 유일한 정답이다.
+  it('갱신 건수가 모자라면 던져서 트랜잭션을 되돌린다', async () => {
     const { sut } = setup({ affected: 2 });
 
-    await expect(sut.cancelDeliveriesIfStillWaiting(ORDER_ID, [9003, 9004, 9005], 'r', AT)).resolves.toBe(2);
+    await expect(
+      sut.cancelDeliveriesIfStillWaiting(ORDER_ID, [9003, 9004, 9005], 'r', AT),
+    ).rejects.toBeInstanceOf(ConflictException);
   });
 
-  it('affected 가 undefined 면 0 으로 본다', async () => {
+  it('실패 메시지가 "아무것도 취소되지 않았다" 를 알린다 — 운영자의 확인 작업을 줄인다', async () => {
+    const { sut } = setup({ affected: 1 });
+
+    await expect(sut.cancelDeliveriesIfStillWaiting(ORDER_ID, [9003, 9004], 'r', AT)).rejects.toThrow(
+      /환불도 일어나지 않았습니다/,
+    );
+  });
+
+  it('affected 가 undefined 면 0 으로 보고 던진다', async () => {
     const { sut } = setup({});
 
-    await expect(sut.cancelDeliveriesIfStillWaiting(ORDER_ID, [9003], 'r', AT)).resolves.toBe(0);
+    await expect(sut.cancelDeliveriesIfStillWaiting(ORDER_ID, [9003], 'r', AT)).rejects.toBeInstanceOf(
+      ConflictException,
+    );
   });
 
-  it('대상이 없으면 쿼리를 아예 실행하지 않는다', async () => {
+  // SQL 의 IN 은 집합이라 중복을 접는다. 접기 전 길이와 비교하면 정상 취소가 "경합" 으로 오판된다.
+  // DTO 의 @ArrayUnique 가 정상 경로를 막지만 서비스 직접 호출 경로 대비로 여기서도 접는다.
+  it('중복 id 를 접어서 비교한다 — 가짜 경합을 만들지 않는다', async () => {
+    const { sut, params } = setup({ affected: 2 });
+
+    await expect(
+      sut.cancelDeliveriesIfStillWaiting(ORDER_ID, [9003, 9003, 9004], 'r', AT),
+    ).resolves.toBeUndefined();
+    expect(params.deliveryIds).toEqual([9003, 9004]);
+  });
+
+  // 조용히 성공으로 처리하면 "요청 0건 = affected 0건" 이 되어 전부 성공으로 판정되고,
+  // 발송건은 하나도 취소되지 않은 채 환불만 실행된다.
+  it('대상이 비어 있으면 호출자 버그로 보고 던진다 (쿼리도 실행하지 않는다)', async () => {
     const { sut, createQueryBuilder } = setup();
 
-    await expect(sut.cancelDeliveriesIfStillWaiting(ORDER_ID, [], 'r', AT)).resolves.toBe(0);
+    await expect(sut.cancelDeliveriesIfStillWaiting(ORDER_ID, [], 'r', AT)).rejects.toBeInstanceOf(
+      InternalServerErrorException,
+    );
     expect(createQueryBuilder).not.toHaveBeenCalled();
   });
 });
