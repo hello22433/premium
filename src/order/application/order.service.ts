@@ -5837,18 +5837,12 @@ export class OrderService {
     // 과금 대상 userId 결정 (대행주문인 경우 clientUserId, 아니면 userId)
     const billingUserId = order.clientUserId ?? order.userId;
 
-    // 잔액 갱신 범위를 잠근다. 취소는 아래에서 oneUser(.company).balance / allSettleAmount 를
-    // 읽어 증감한 뒤 엔티티를 통째로 save 하는 read-modify-write 라, 잠그지 않으면 동시에 일어난
-    // 충전·발송확정의 갱신이 이 save 에 덮여 사라진다(lost update).
-    // deliveryRequest / deliveryConfirmed 는 같은 자금 축에서 이미 이 잠금을 쓰고 있었고 취소만 빠져 있었다.
-    //
-    // 잠금 순서: order → user(회사 모드면 company → users id-ASC) → ssg_event → wallet.
-    // 앞 커밋에서 order 잠금을 맨 앞으로 올려 두었으므로 여기서 이어 잠그면
-    // deliveryConfirmed 와 동일한 순서가 된다(교차 대기 방지).
-    //
-    // 부수 효과로 findOneOrFail 의 맥락 없는 500(EntityNotFoundError)도 사라진다 —
-    // BillingScopeLockService 는 사유가 담긴 예외를 던진다.
-    const { user: oneUser } = await this.lockBillingScope(billingUserId);
+    const oneUser = await this.userRepository.findOneOrFail({
+      where: {
+        id: billingUserId,
+      },
+      relations: ['company'],
+    });
 
     // balanceManagementType에 따른 balance 관리 모드 결정
     const isCompanyBalanceMode = oneUser.company?.balanceManagementType === 'COMPANY';

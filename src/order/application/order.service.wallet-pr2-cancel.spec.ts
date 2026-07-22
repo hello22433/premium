@@ -113,8 +113,6 @@ describe('OrderService deliveryCancel wallet PR2-005 branch', () => {
       update: jest.fn().mockResolvedValue({ affected: 1 }),
       manager: managedManager,
     };
-    // deliveryCancel 이 잔액 갱신 범위를 잠그므로(lost update 방지) 잠금 서비스 스텁이 필요하다.
-    service.billingScopeLockService = { lock: async () => ({ user: billingUser, companyUsers: [] }) };
     service.userRepository = {
       findOneOrFail: jest.fn().mockResolvedValue(billingUser),
       save: jest.fn().mockResolvedValue(billingUser),
