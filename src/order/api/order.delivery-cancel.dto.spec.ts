@@ -45,13 +45,53 @@ describe('OrderDeliveryCancelReqDto validation', () => {
   it('deliveryIds 원소가 숫자가 아니면 거부한다', async () => {
     const errors = await errorsFor({ ...base, deliveryIds: ['9003'] as unknown as number[] });
 
-    expect(propError(errors, 'deliveryIds')?.constraints).toHaveProperty('isNumber');
+    // @IsNumber 에서 @IsInt 로 강화되면서 제약 이름이 isNumber → isInt 로 바뀌었다.
+    expect(propError(errors, 'deliveryIds')?.constraints).toHaveProperty('isInt');
   });
 
   it('deliveryIds 가 배열이 아니면 거부한다', async () => {
     const errors = await errorsFor({ ...base, deliveryIds: 9003 as unknown as number[] });
 
     expect(propError(errors, 'deliveryIds')?.constraints).toHaveProperty('isArray');
+  });
+
+  // ★ 중복은 단순한 입력 위생 문제가 아니다.
+  // 취소 실행은 조건부 UPDATE 의 affected 를 요청 건수와 비교해 발송배치와의 경합을 판정하는데,
+  // SQL 의 IN 은 집합이라 중복을 접는다. [9003, 9003, 9004] → 요청 3 / affected 2 →
+  // 아무 문제 없는 취소가 "경합" 으로 판정돼 롤백되고, 재시도해도 영원히 같은 결과다.
+  // 로그에도 경합으로 찍혀 진짜 경합과 구분되지 않는다.
+  it('deliveryIds 에 중복이 있으면 거부한다 — 가짜 경합 판정을 만든다', async () => {
+    const errors = await errorsFor({ ...base, deliveryIds: [9003, 9003, 9004] });
+
+    expect(propError(errors, 'deliveryIds')?.constraints).toHaveProperty('arrayUnique');
+  });
+
+  // 아래 세 가지는 전부 "매칭 0건" 이 되어 위와 같은 가짜 경합으로 수렴한다.
+  it.each([
+    ['음수', [-1]],
+    ['0', [0]],
+  ])('deliveryIds 원소가 %s 이면 거부한다', async (_caseName, deliveryIds) => {
+    const errors = await errorsFor({ ...base, deliveryIds });
+
+    expect(propError(errors, 'deliveryIds')?.constraints).toHaveProperty('min');
+  });
+
+  it('deliveryIds 원소가 소수이면 거부한다', async () => {
+    const errors = await errorsFor({ ...base, deliveryIds: [9003.7] });
+
+    expect(propError(errors, 'deliveryIds')?.constraints).toHaveProperty('isInt');
+  });
+
+  it('deliveryIds 길이 상한을 넘으면 거부한다 — 초대형 IN 절 차단', async () => {
+    const errors = await errorsFor({ ...base, deliveryIds: Array.from({ length: 10001 }, (_, i) => i + 1) });
+
+    expect(propError(errors, 'deliveryIds')?.constraints).toHaveProperty('arrayMaxSize');
+  });
+
+  it('상한 이내의 큰 목록은 허용한다', async () => {
+    const errors = await errorsFor({ ...base, deliveryIds: Array.from({ length: 10000 }, (_, i) => i + 1) });
+
+    expect(propError(errors, 'deliveryIds')).toBeUndefined();
   });
 
   it('기존 필수 필드(id, cancelReason) 규칙은 그대로다', async () => {

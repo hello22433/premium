@@ -2,6 +2,7 @@ import { IOrderStatus } from '../interface/order.status';
 import {
   ArrayMaxSize,
   ArrayNotEmpty,
+  ArrayUnique,
   IsArray,
   IsBoolean,
   IsDefined,
@@ -479,11 +480,24 @@ export class OrderDeliveryCancelReqDto {
     example: [9003, 9004, 9005],
   })
   // ==================================
-  // 선택값이지만 "주면 제대로 줘야 한다" — 빈 배열이나 숫자 아닌 원소는 지금도 거부한다.
+  // 선택값이지만 "주면 제대로 줘야 한다".
+  //
+  // ★ @ArrayUnique 가 특히 중요하다. 취소 실행은 조건부 UPDATE 의 affected 를 요청 건수와
+  //   비교해 발송배치와의 경합을 판정하는데, SQL 의 IN 은 집합이라 중복을 접는다.
+  //   [9003, 9003, 9004] 를 보내면 요청 3건 / affected 2건이 되어 아무 문제 없는 취소가
+  //   "경합" 으로 판정돼 롤백된다. 사용자는 "잠시 후 다시 시도" 안내를 받지만 재시도해도
+  //   결과가 같고(중복은 시간이 지나도 안 사라진다), 로그에는 경합으로 찍혀 진짜 경합과
+  //   구분되지 않는다. 실DB 로 재현 확인함.
+  //
+  // @IsInt/@Min(1) 은 -1, 0, 9003.7 같은 값이 매칭 0건이 되어 같은 가짜 경합을 만드는 것을 막는다.
+  // @ArrayMaxSize 는 초대형 IN 절로 쿼리가 폭발하는 것을 막는다(한 주문의 발송건 수 상한 여유값).
   @IsOptional()
   @IsArray()
   @ArrayNotEmpty()
-  @IsNumber({}, { each: true })
+  @ArrayUnique()
+  @ArrayMaxSize(10000)
+  @IsInt({ each: true })
+  @Min(1, { each: true })
   deliveryIds?: number[];
 }
 
