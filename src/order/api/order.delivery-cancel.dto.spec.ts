@@ -5,13 +5,9 @@ import { OrderDeliveryCancelReqDto } from './order.req.dto';
 /**
  * 발송취소 요청 DTO 검증.
  *
- * deliveryIds 는 예약건 부분취소용으로, DTO 단계에서는 **선택값**이다.
- * 다만 서비스가 아직 부분취소를 구현하지 않아, 실제로 이 값을 보내면 서비스 가드에서 400 이
- * 난다(order.service.ts deliveryCancel 진입부). 여기서 통과시키는 것은 "형식이 올바른가" 까지다.
- * 값을 보냈을 때 거부되는지는 order.service.partial-cancel-guard.spec.ts 가 지킨다.
- *
- * 부분취소 전환 커밋에서 이 필드는 필수로 승격되며, 그때 이 스펙의 "미전송 허용" 케이스가
- * "미전송 거부" 로 뒤집힌다 — 승격 시 반드시 함께 갱신할 것.
+ * deliveryIds 는 예약건 부분취소용으로, DTO 단계에서는 **선택값**이다 — 생략이 곧 "주문 전체취소"
+ * 라는 기존 계약이라 필수로 승격할 수 없다. 여기서 검증하는 것은 "형식이 올바른가" 까지고,
+ * 취소 가능 여부(발송 상태·소속 주문·컷오프) 판정은 order.service.partial-cancel.spec.ts 가 지킨다.
  */
 describe('OrderDeliveryCancelReqDto validation', () => {
   const base = { id: 1001, cancelReason: '고객 요청' };
@@ -82,14 +78,14 @@ describe('OrderDeliveryCancelReqDto validation', () => {
     expect(propError(errors, 'deliveryIds')?.constraints).toHaveProperty('isInt');
   });
 
-  it('deliveryIds 길이 상한을 넘으면 거부한다 — 초대형 IN 절 차단', async () => {
-    const errors = await errorsFor({ ...base, deliveryIds: Array.from({ length: 10001 }, (_, i) => i + 1) });
+  it('deliveryIds 길이 상한을 넘으면 거부한다 — 초대형 IN 절·400 메시지 폭발 차단', async () => {
+    const errors = await errorsFor({ ...base, deliveryIds: Array.from({ length: 1001 }, (_, i) => i + 1) });
 
     expect(propError(errors, 'deliveryIds')?.constraints).toHaveProperty('arrayMaxSize');
   });
 
   it('상한 이내의 큰 목록은 허용한다', async () => {
-    const errors = await errorsFor({ ...base, deliveryIds: Array.from({ length: 10000 }, (_, i) => i + 1) });
+    const errors = await errorsFor({ ...base, deliveryIds: Array.from({ length: 1000 }, (_, i) => i + 1) });
 
     expect(propError(errors, 'deliveryIds')).toBeUndefined();
   });
