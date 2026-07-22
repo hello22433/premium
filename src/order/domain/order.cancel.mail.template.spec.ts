@@ -1,4 +1,4 @@
-import { orderCancelTemplate } from './order.cancel.mail.template';
+import { orderCancelTemplate, orderPartialCancelTemplate } from './order.cancel.mail.template';
 
 describe('orderCancelTemplate', () => {
   const base = {
@@ -39,5 +39,40 @@ describe('orderCancelTemplate', () => {
     const { content } = orderCancelTemplate({ ...base, eventName: '<b>x</b>' });
     expect(content).toContain('&lt;b&gt;x&lt;/b&gt;');
     expect(content).not.toContain('<b>x</b>');
+  });
+});
+
+describe('orderPartialCancelTemplate (197-16)', () => {
+  const base = {
+    personName: '김담당',
+    code: 'ORD-20260722-0011',
+    eventName: '7월 프로모션',
+    canceledCount: 3,
+    remainingCount: 12,
+    cancelReason: '수량 조정',
+    canceledAt: '2026-07-22 10:05:00',
+  };
+
+  // ★ 전체취소 문안("주문이 취소되었습니다")을 재사용하면, 잔여분이 예정대로 나가는데도
+  //   고객에게 주문 전체가 취소됐다고 알리게 된다. 두 문안이 섞이지 않도록 고정한다.
+  it('주문 전체가 취소된 것처럼 읽히지 않는다', () => {
+    const { title, content } = orderPartialCancelTemplate(base);
+    expect(title).toBe('예약 발송 건이 일부 취소되었습니다 (주문번호: ORD-20260722-0011)');
+    expect(title).not.toContain('주문이 취소되었습니다');
+    expect(content).toContain('남은 건은 예정대로 발송됩니다');
+  });
+
+  it('취소된 건수와 남은 건수를 함께 알린다', () => {
+    const { content } = orderPartialCancelTemplate(base);
+    expect(content).toContain('취소된 발송 건수: 3건');
+    expect(content).toContain('남은 발송 건수: 12건');
+    expect(content).toContain('수량 조정');
+    expect(content).toContain('2026-07-22 10:05:00');
+  });
+
+  it('사용자 입력을 이스케이프한다', () => {
+    const { content } = orderPartialCancelTemplate({ ...base, cancelReason: '<script>alert(1)</script>' });
+    expect(content).toContain('&lt;script&gt;');
+    expect(content).not.toContain('<script>');
   });
 });

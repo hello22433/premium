@@ -33,15 +33,35 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
       cancelableIds?: number[];
       remainingAfterCancel?: number;
       alreadyRefunded?: boolean;
+      settleAmount?: number;
+      refundBreakdown?: { deposit: number; credit: number; excess: number };
+      balanceManagementType?: string;
+      authority?: string;
     } = {},
   ) => {
     const order = {
       id: ORDER_ID,
+      userId: 5,
+      clientUserId: null,
+      code: 'ORD-1001',
+      eventName: '여름 프로모션',
       status: over.status ?? IOrderStatus.DELIVERY_CONFIRMED,
       type: over.type ?? IOrderType.GENERAL,
+      settleAmount: over.settleAmount ?? 100000,
+      isSettleBalance: true,
+      isCreditExcess: false,
       cancelReason: null as string | null,
       canceledAt: null as Date | null,
     } as any;
+
+    // 환불 전/후 allocation. 재원별 복구액은 이 차이로 읽는다.
+    const allocation = {
+      orderId: ORDER_ID,
+      depositRestoredAmount: 0,
+      creditUsedRestoredAmount: 0,
+      creditExcessRestoredAmount: 0,
+    };
+    const refundBreakdown = over.refundBreakdown ?? { deposit: 30000, credit: 0, excess: 0 };
 
     const cancelableIds = over.cancelableIds ?? CANCELABLE;
     const remaining = over.remainingAfterCancel ?? 2; // 기본: 발송완료 2건이 남아 있다
@@ -64,7 +84,31 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
         return b;
       }),
       save: jest.fn(async () => order),
-      manager: {},
+      manager: { findOne: jest.fn(async () => ({ ...allocation })) },
+    };
+
+    const company = {
+      id: 10,
+      balance: 50000,
+      businessNumber: '999-99-99999',
+      balanceManagementType: over.balanceManagementType ?? 'COMPANY',
+    } as any;
+    const billingUser = {
+      id: 5,
+      allSettleAmount: 80000,
+      personEmail: 'ceo@example.com',
+      personName: '홍길동',
+      authority: over.authority ?? 'CORPORATE_ADMIN',
+      company,
+    } as any;
+    sut.userRepository = {
+      findOneOrFail: jest.fn(async () => billingUser),
+      update: jest.fn(async () => ({ affected: 1 })),
+    };
+    sut.userCompanyRepository = { save: jest.fn(async () => company) };
+    sut.orderCancelNotificationService = {
+      notifyDirectOrderCancel: jest.fn(),
+      notifyDirectOrderPartialCancel: jest.fn(),
     };
 
     // 잔여 발송건 카운트용 빌더.
@@ -87,19 +131,29 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
     };
 
     sut.walletManagedPredicate = { isWalletManaged: jest.fn(async () => over.isWalletManaged ?? true) };
+    // 실제 RefundPoolService 는 allocation 의 누적 복구액을 올린다 — 재원별 복구액을 그 차이로 읽으므로
+    // 목도 같은 부수효과를 내야 레거시 미러 검증이 의미를 갖는다.
     sut.refundPoolService = {
-      refund: jest.fn(async () => ({
-        alreadyRefunded: over.alreadyRefunded ?? false,
-        ledgerIds: ['l-1'],
-        totalRefundedAmount: 30000,
-      })),
+      refund: jest.fn(async () => {
+        if (over.alreadyRefunded) {
+          return { alreadyRefunded: true, ledgerIds: ['l-1'], totalRefundedAmount: 0 };
+        }
+        allocation.depositRestoredAmount += refundBreakdown.deposit;
+        allocation.creditUsedRestoredAmount += refundBreakdown.credit;
+        allocation.creditExcessRestoredAmount += refundBreakdown.excess;
+        return {
+          alreadyRefunded: false,
+          ledgerIds: ['l-1'],
+          totalRefundedAmount: refundBreakdown.deposit + refundBreakdown.credit + refundBreakdown.excess,
+        };
+      }),
     };
     sut.logger = { log: jest.fn(), error: jest.fn(), warn: jest.fn() };
 
     sut.findCancelableDeliveryIds = jest.fn(async () => cancelableIds);
     sut.cancelDeliveriesIfStillWaiting = jest.fn(async () => undefined);
 
-    return { sut, order, remainingConditions, graphQuery };
+    return { sut, order, remainingConditions, graphQuery, billingUser, company };
   };
 
   const call = (sut: any, deliveryIds: number[]) =>
@@ -264,7 +318,10 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
       await call(sut, CANCELABLE);
 
       expect(order.status).toBe(IOrderStatus.DELIVERY_CONFIRMED);
-      expect(sut.orderRepository.save).not.toHaveBeenCalled();
+      // 주문 단위 취소 필드는 건드리지 않는다 — 주문 자체는 취소된 게 아니다.
+      // (settleAmount 는 환불액만큼 줄어들므로 save 자체는 일어난다.)
+      expect(order.cancelReason).toBeNull();
+      expect(order.canceledAt).toBeNull();
     });
 
     it('전건이 취소되면 주문도 취소로 내린다', async () => {
@@ -289,6 +346,103 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
         'od.status != :canceled',
         { canceled: IOrderDeliveryStatus.CANCEL },
       ]);
+    });
+  });
+
+  // ★ 정산정보 입력/수정은 `difference = order.settleAmount - 재계산금액` 만큼 잔액을 조정한다.
+  //   재계산 쪽(buildSettlementDisplayLines)이 취소분을 빼므로, settleAmount 를 원액으로 두면
+  //   이미 환불한 몫이 한 번 더 지급된다. 부분취소가 "발송확정 + 취소된 발송건" 조합의 첫 생산자다.
+  describe('주문 정산금액', () => {
+    it('환불한 만큼 order.settleAmount 를 줄인다 — 정산정보 수정 시 이중환불 차단', async () => {
+      const { sut, order } = buildSut({
+        settleAmount: 100000,
+        refundBreakdown: { deposit: 30000, credit: 0, excess: 0 },
+      });
+
+      await call(sut, CANCELABLE);
+
+      expect(order.settleAmount).toBe(70000);
+      expect(sut.orderRepository.save).toHaveBeenCalled();
+    });
+
+    it('전건 취소면 전체취소와 같은 종단 상태를 만든다', async () => {
+      const { sut, order } = buildSut({ remainingAfterCancel: 0 });
+
+      await call(sut, CANCELABLE);
+
+      expect(order.settleAmount).toBe(0);
+      expect(order.isSettleBalance).toBe(false);
+      expect(order.isCreditExcess).toBe(false);
+    });
+
+    it('환불액이 정산금액을 넘어도 음수로 내려가지 않는다', async () => {
+      const { sut, order } = buildSut({
+        settleAmount: 10000,
+        refundBreakdown: { deposit: 30000, credit: 0, excess: 0 },
+      });
+
+      await call(sut, CANCELABLE);
+
+      expect(order.settleAmount).toBe(0);
+    });
+  });
+
+  // 지갑 잔액은 RefundPoolService 가 맞추지만 레거시 컬럼은 건드리지 않는다. 전체취소·외부API취소는
+  // 이 역복원을 하는데 부분취소만 빠져 있으면 고객사 화면과 정산 화면의 잔액이 어긋난다.
+  describe('레거시 미러 역복원', () => {
+    it('예치금 복구분은 회사 balance 에 되돌린다 (COMPANY 모드)', async () => {
+      const { sut, company } = buildSut({ refundBreakdown: { deposit: 30000, credit: 0, excess: 0 } });
+
+      await call(sut, CANCELABLE);
+
+      expect(company.balance).toBe(80000);
+      expect(sut.userCompanyRepository.save).toHaveBeenCalled();
+    });
+
+    it('여신·신용초과 복구분은 allSettleAmount 에서 뺀다', async () => {
+      const { sut, billingUser } = buildSut({ refundBreakdown: { deposit: 0, credit: 20000, excess: 5000 } });
+
+      await call(sut, CANCELABLE);
+
+      expect(billingUser.allSettleAmount).toBe(55000);
+      expect(sut.userRepository.update).toHaveBeenCalledWith({ id: 5 }, { allSettleAmount: 55000 });
+    });
+
+    it('PERSONAL 모드면 회사 balance 를 건드리지 않는다', async () => {
+      const { sut, company } = buildSut({
+        balanceManagementType: 'PERSONAL',
+        refundBreakdown: { deposit: 30000, credit: 0, excess: 0 },
+      });
+
+      await call(sut, CANCELABLE);
+
+      expect(company.balance).toBe(50000);
+      expect(sut.userCompanyRepository.save).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('고객사 통지', () => {
+    // ★ 전체취소 문안("주문이 취소되었습니다")을 재사용하면, 잔여분이 예정대로 나가는데도
+    //   고객에게 주문 전체가 취소됐다고 알리게 된다.
+    it('DIRECT 고객사 주문은 부분취소 전용 문안으로 통지한다', async () => {
+      const { sut, order, billingUser } = buildSut({ remainingAfterCancel: 2 });
+
+      await call(sut, CANCELABLE);
+
+      expect(sut.orderCancelNotificationService.notifyDirectOrderPartialCancel).toHaveBeenCalledWith(
+        order,
+        billingUser,
+        expect.objectContaining({ canceledCount: 3, remainingCount: 2, cancelReason: '고객 요청' }),
+      );
+      expect(sut.orderCancelNotificationService.notifyDirectOrderCancel).not.toHaveBeenCalled();
+    });
+
+    it('통지 대상이 아니면 발송하지 않는다', async () => {
+      const { sut } = buildSut({ authority: 'ADMIN' });
+
+      await call(sut, CANCELABLE);
+
+      expect(sut.orderCancelNotificationService.notifyDirectOrderPartialCancel).not.toHaveBeenCalled();
     });
   });
 

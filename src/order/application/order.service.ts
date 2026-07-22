@@ -5920,6 +5920,14 @@ export class OrderService {
     //   정렬된 집합의 해시를 쓰면 길이가 입력 크기와 무관하게 고정되고, 같은 집합을 다른 순서로 보내도
     //   같은 키가 되어 재시도 멱등이 유지된다.
     const requestDigest = createHash('sha1').update(requested.join(',')).digest('hex').slice(0, 16);
+
+    // 재원별 복구액은 RefundEventResult 에 없으므로 allocation 의 누적 복구액 차이로 읽는다.
+    // 레거시 미러(회사 예치금 / 여신)를 전체취소와 같은 방식으로 되돌리려면 이 분해가 필요하다.
+    const allocationBefore = await externalManager.findOne(OrderPaymentAllocationEntity, { where: { orderId } });
+    if (!allocationBefore) {
+      throw new InternalServerErrorException(`wallet-managed but allocation row missing for orderId=${orderId}`);
+    }
+
     const refundResult = await this.refundPoolService.refund(
       {
         orderId,
@@ -5943,6 +5951,34 @@ export class OrderService {
       );
     }
 
+    // 레거시 미러 역복원 (전체취소·외부API취소와 동일). RefundPoolService 는 legacy 컬럼을 건드리지
+    // 않으므로 이중복원이 아니다. 이게 빠져 있으면 지갑 잔액은 맞는데 고객사 화면·정산 화면의
+    // 예치금/여신이 취소 전 값에 멈춰 서로 어긋난다.
+    const allocationAfter = await externalManager.findOne(OrderPaymentAllocationEntity, { where: { orderId } });
+    if (!allocationAfter) {
+      throw new InternalServerErrorException(`allocation row disappeared during refund for orderId=${orderId}`);
+    }
+    const depositRefunded = allocationAfter.depositRestoredAmount - allocationBefore.depositRestoredAmount;
+    const creditRefunded = allocationAfter.creditUsedRestoredAmount - allocationBefore.creditUsedRestoredAmount;
+    const excessRefunded = allocationAfter.creditExcessRestoredAmount - allocationBefore.creditExcessRestoredAmount;
+
+    const billingUserId = getBillingUserId(lockedOrder);
+    const billingUser = await this.userRepository.findOneOrFail({
+      where: { id: billingUserId },
+      relations: ['company'],
+    });
+    const isCompanyBalanceMode = billingUser.company?.balanceManagementType === 'COMPANY';
+
+    if (depositRefunded > 0 && isCompanyBalanceMode && billingUser.company) {
+      billingUser.company.balance += depositRefunded;
+      await this.userCompanyRepository.save(billingUser.company);
+    }
+    if (creditRefunded + excessRefunded > 0) {
+      billingUser.allSettleAmount -= creditRefunded + excessRefunded;
+      // wallet path 는 user.balance 를 건드리지 않으므로 update 로 좁혀 stale overwrite 를 막는다.
+      await this.userRepository.update({ id: billingUser.id }, { allSettleAmount: billingUser.allSettleAmount });
+    }
+
     // 남은 발송건이 없으면 주문도 취소로 내린다. 남아 있으면 DELIVERY_CONFIRMED 를 유지해야
     // 잔여분이 정상 발송되고, 전건 터미널이 됐을 때 배치가 완료·정산으로 넘긴다.
     const remaining = await this.orderDeliveryRepository
@@ -5952,18 +5988,45 @@ export class OrderService {
       .andWhere('od.status != :canceled', { canceled: IOrderDeliveryStatus.CANCEL })
       .getCount();
 
+    // ★ 환불한 만큼 주문의 정산금액을 줄인다.
+    //   정산정보 입력/수정(createOrderSettle·updateOrderSettle)은 발송확정 이후 주문에 대해
+    //   `difference = order.settleAmount - 재계산금액` 만큼 잔액을 조정한다. 그런데 재계산 쪽
+    //   (buildSettlementDisplayLines)은 이제 취소된 발송건을 빼므로, settleAmount 를 원액으로 두면
+    //   그 차이가 통째로 "돌려줄 돈" 으로 잡혀 이미 환불한 취소분이 한 번 더 지급된다.
+    //   부분취소가 "발송확정 + 취소된 발송건" 조합의 첫 생산자라 이 경로는 이번에 새로 열렸다.
     if (remaining === 0) {
+      // 전건 취소 — 전체취소와 같은 종단 상태를 만든다(다른 코드가 보는 조합을 늘리지 않는다).
       lockedOrder.status = IOrderStatus.DELIVERY_CANCEL;
       lockedOrder.cancelReason = cancelReason;
       lockedOrder.canceledAt = now;
-      await this.orderRepository.save(lockedOrder);
+      lockedOrder.settleAmount = 0;
+      lockedOrder.isSettleBalance = false;
+      lockedOrder.isCreditExcess = false;
+    } else {
+      lockedOrder.settleAmount = Math.max(0, lockedOrder.settleAmount - refundResult.totalRefundedAmount);
     }
+    await this.orderRepository.save(lockedOrder);
 
     // 금액을 남긴다 — 돈이 오간 엔드포인트에서 "얼마를 돌려줬나" 를 원장 조회 없이 답할 수 있어야 한다.
     this.logger.log(
       `[DELIVERY_CANCEL] 부분취소 완료 orderId=${orderId} canceled=${requested.length}건 ` +
-        `refunded=${refundResult.totalRefundedAmount}원 ids=[${requested.join(',')}] 잔여=${remaining}건`,
+        `refunded=${refundResult.totalRefundedAmount}원(예치금=${depositRefunded} 여신=${creditRefunded} ` +
+        `신용초과=${excessRefunded}) ids=[${requested.join(',')}] 잔여=${remaining}건`,
     );
+
+    // 고객사 직접주문(DIRECT) 은 전체취소와 마찬가지로 통지한다 — 돈이 돌아갔는데 외부에 기록이
+    // 남지 않으면 안 된다. 다만 문구는 부분취소 전용이어야 한다(전체취소 문안은 "주문이 취소되었습니다").
+    // ★ @Transactional() 안이므로 커밋 후 발송 — tx 미점유, 롤백 시 미발송. best-effort.
+    if (isDirectCustomerCancelTarget(lockedOrder, billingUser)) {
+      runOnTransactionCommit(() => {
+        void this.orderCancelNotificationService.notifyDirectOrderPartialCancel(lockedOrder, billingUser, {
+          canceledCount: requested.length,
+          remainingCount: remaining,
+          cancelReason,
+          canceledAt: now,
+        });
+      });
+    }
   }
 
   @Transactional()
