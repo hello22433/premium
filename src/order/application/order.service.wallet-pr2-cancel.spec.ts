@@ -189,7 +189,7 @@ describe('OrderService deliveryCancel wallet PR2-005 branch', () => {
     expect(order.status).toBe(IOrderStatus.DELIVERY_CANCEL);
     expect(service.orderDeliveryRepository.update).toHaveBeenCalledWith(
       { orderProductMappingId: In([10]) },
-      { status: IOrderDeliveryStatus.CANCEL },
+      { status: IOrderDeliveryStatus.CANCEL, canceledAt: expect.any(Date), cancelReason: expect.any(String) },
     );
   });
 

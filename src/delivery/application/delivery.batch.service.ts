@@ -209,8 +209,12 @@ const summarizeRestampRows = (rows: { destroyedAt: Date | null; destroyedAtSourc
  * 이 목록이 isOrderAllDeliveriesTerminal 과 reconcileSettlementDrift 두 곳에 각각
  * 하드코딩돼 있었다. 둘은 같은 판정을 해야 하는데 한쪽만 고치면 sweep 이 후보를 안 뽑거나
  * 반대로 뽑아놓고 전이하지 않는 어긋남이 생긴다. 한 곳에서 관리한다.
+ *
+ * ★ 비슷하게 생긴 다른 목록과 합치지 말 것. order.service.ts 의 countIrreversibleDeliveries
+ *   (취소를 되돌릴 수 있는가)와 customer.service.service.ts 의 재발송 대상 목록은 원소가
+ *   겹칠 뿐 판정 목적이 다르고, 특히 CANCEL 포함 여부가 서로 다른 이유로 결정된다.
  */
-const ORDER_COMPLETION_TERMINAL_STATUSES = [
+const ORDER_COMPLETION_TERMINAL_STATUSES: readonly IOrderDeliveryStatus[] = [
   IOrderDeliveryStatus.COMPLETE,
   IOrderDeliveryStatus.COMPLETE_SMS,
   IOrderDeliveryStatus.FAIL,

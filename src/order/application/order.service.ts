@@ -5685,12 +5685,12 @@ export class OrderService {
    *     걸리기 때문인데, 그것은 타 모듈의 암묵 불변식이다. 외부 API 에 예약발송이 생기면
    *     조건 3·4 가 동시에 무너진다. 배치가 EXTERNAL 을 명시 배제하는 것과 대칭을 맞춘다.
    *
-   * ※ 이 헬퍼는 아직 어디서도 호출되지 않는다. deliveryCancel 의 실제 판정은 여전히
-   *   주문 단위다 — 예약 mapping 들의 sendRequestAt 중 가장 이른 값 하나로 주문 전체를
-   *   판정하며(같은 파일 deliveryCancel 안의 reserveSendTimes 블록), 그 블록은 그대로 살아 있다.
-   *   부분취소 전환 커밋에서 그 블록이 이 헬퍼로 교체된다.
-   *   최솟값 방식은 "주문 전체를 취소한다" 는 전제에서는 옳았고, 취소 단위가 발송건으로
-   *   내려가면서 무효가 된다.
+   * ※ 이 헬퍼는 **부분취소 경로(partialDeliveryCancel)에서만** 쓴다.
+   *   전체취소 경로는 여전히 주문 단위로 판정한다 — 예약 mapping 들의 sendRequestAt 중 가장
+   *   이른 값 하나로 주문 전체를 보는 reserveSendTimes 블록(같은 파일 deliveryCancel 안).
+   *   그 방식은 "주문 전체를 한꺼번에 취소한다" 는 전제에서는 옳고, 전체취소는 앞단의
+   *   countIrreversibleDeliveries 가 이미 나간 건이 섞인 주문을 통째로 거부하므로 유지한다.
+   *   취소 단위가 발송건으로 내려가는 부분취소에서만 이 헬퍼가 필요하다.
    *
    * soft-delete 된 행은 SelectQueryBuilder 가 deleted_at 필터를 자동 적용해 제외된다
    * (UpdateQueryBuilder 는 자동 적용하지 않으므로 갱신 시에는 명시해야 한다).
@@ -5887,7 +5887,8 @@ export class OrderService {
 
     // SSG 는 행사잔액 차감 이력이 주문 단위로 뭉쳐 있어(ssg_event_amount_history.order_delivery_id 미기록)
     // 발송건 몫을 역산할 근거가 없다. 근거 없이 안분하면 행사잔액이 부풀고, 그쪽은 상한 검증이 없어
-    // 되돌리기 어렵다. 귀속 기록이 붙는 후속 커밋에서 이 차단을 푼다.
+    // 되돌리기 어렵다. 이 차단은 ssg_event_amount_history.order_delivery_id 에 귀속이 기록되고
+    // restoreEventBalance 가 범위 복구를 지원한 뒤에야 풀 수 있다.
     if (lockedOrder.type === IOrderType.SSG) {
       throw new BadRequestException(
         'SSG 주문은 아직 발송건별 취소를 지원하지 않습니다. 주문 전체 취소를 이용해 주세요.',
@@ -5933,7 +5934,9 @@ export class OrderService {
     //
     // ※ externalManager 를 넘겨 같은 트랜잭션에서 실행한다(외부 API 취소 / CS 폐기와 동일한 방식).
     //   refund-pool 의 lock 후 재조회가 평문 SELECT 라 호출자 격리수준을 따르는 기존 조건이 여기에도
-    //   적용된다 — 이 브랜치 범위 밖의 별도 이슈로 추적한다.
+    //   적용된다. 이번 브랜치가 새로 만든 문제가 아니라 기존 호출부 4곳 중 3곳이 이미 같은
+    //   조건이며(외부API 취소 / CS 폐기 / 발송실패 환불), 여기만 고쳐도 해소되지 않으므로
+    //   현행을 따른다 — 격리수준을 올리려면 RefundPoolService 쪽에서 일괄로 해야 한다.
     //
     // ★ 멱등키 prefix 에 id 목록을 그대로 이어붙이면 안 된다.
     //   저장 컬럼은 order_payment_refund_event.idempotency_key / wallet_transaction.idempotency_key 둘 다
@@ -6247,9 +6250,12 @@ export class OrderService {
     order.cancelReason = cancelReason;
     order.canceledAt = new Date();
     await this.orderRepository.save(order);
+    // 발송건에도 취소 시각·사유를 남긴다. 부분취소만 채우고 전체취소는 비워두면
+    // canceled_at IS NULL 이 "미취소" 와 "주문 전체취소" 두 가지를 뜻하게 되어,
+    // 그 컬럼으로 취소 여부를 판정하는 코드가 전체취소 건을 통째로 놓친다.
     await this.orderDeliveryRepository.update(
       { orderProductMappingId: In(orderProductMappingIdList) },
-      { status: IOrderDeliveryStatus.CANCEL },
+      { status: IOrderDeliveryStatus.CANCEL, canceledAt: order.canceledAt, cancelReason },
     );
     if (isWalletManaged) {
       // wallet path 는 user.balance 를 건드리지 않으므로 update 로 좁혀 stale overwrite 차단.

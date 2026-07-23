@@ -108,7 +108,10 @@ export type SettlementDisplayLine = {
  * 요율 적용 단가별로 행을 분리하면 모든 행의 단가가 실존값이고 price*amount 가 항상 정확한 합계다.
  * (정산정보입력 화면(getOrderSettle 가상 분리 행)과 동일한 표현 방식)
  *
- * - 비차등(균일 요율) 매핑: 단가 × 살아있는 발송건 수.
+ * - 비차등(균일 요율) 매핑: 단가 × (주문 수량 − 취소된 발송건 수).
+ *   ★ "살아있는 발송건 수" 가 아니다 — 아래 균일 분기의 주석 참조. 필터로 살아남은 목록에는
+ *     재발행으로 대체된 원본도 빠져 있는데, 그 경우 재발행분이 원본 자리를 채우므로 청구
+ *     수량은 그대로여야 한다. 길이로 세면 재발행 건 금액이 절반이 된다.
  * - 폐기 후 재발행으로 대체된 CANCEL 원본 delivery 는 제외(이중합산 방지 — D3-52).
  *   정산금액 SoT(calculateMappingSettlementBaseAmount)가 이 함수의 결과를 그대로 합산하므로,
  *   화면과 실제 돈이 동일한 필터·분기 기준을 공유한다(로직 중복 없음).
@@ -116,6 +119,9 @@ export type SettlementDisplayLine = {
  * - 취소된 발송건(delivery.status = CANCEL)은 제외한다(197-16 예약건 부분취소).
  *   그 몫은 이미 환불됐고, 실제 정산확정 금액(getOrderSettlementSummary)도 완료건만 더한다.
  *   빼지 않으면 거래명세서·발송완료리포트가 환불된 건까지 청구한다.
+ *   ※ 두 함수가 CANCEL 축에서는 일치하지만 전부 일치하는 것은 아니다 — getOrderSettlementSummary
+ *     는 FAIL 도 빼고 이 함수는 남긴다(실패건은 재발송으로 성공시켜 청구하는 것이 정책).
+ *     "정산확정과 맞춘다" 는 이유로 여기서 FAIL 을 빼면 안 된다.
  */
 export function buildSettlementDisplayLines(mapping: OrderProductMappingEntity): SettlementDisplayLine[] {
   const allDeliveries = mapping.orderDeliveries ?? [];

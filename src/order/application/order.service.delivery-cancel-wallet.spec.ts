@@ -121,7 +121,7 @@ describe('OrderService.deliveryCancel — wallet-managed mirror', () => {
     );
     expect(orderDeliveryRepository.update).toHaveBeenCalledWith(
       { orderProductMappingId: expect.anything() },
-      { status: IOrderDeliveryStatus.CANCEL },
+      { status: IOrderDeliveryStatus.CANCEL, canceledAt: expect.any(Date), cancelReason: expect.any(String) },
     );
     // wallet-managed 는 releaseConfirmation 이 보상 → legacy sync 미호출(이중반영 금지).
     expect(sut.legacyWalletCreditSyncService.syncDeposit).not.toHaveBeenCalled();

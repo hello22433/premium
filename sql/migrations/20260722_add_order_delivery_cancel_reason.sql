@@ -28,16 +28,19 @@ SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE
 
 -- (1) 컬럼 추가
 --     두 컬럼을 한 문장에 두는 것은 의도적이다 — 인덱스가 섞이지 않은 ADD COLUMN 만의 조합은
---     INSTANT 로 처리되므로(MySQL 8.0.29+) 나눌 이유가 없다. 인덱스를 추가할 일이 생기면
---     그때는 반드시 별도 문장으로 분리할 것(섞으면 INSTANT 가 선택되지 않아 테이블이 리빌드된다).
+--     INSTANT 로 처리될 수 있어(MySQL 8.0.29+ 는 AFTER 지정도 INSTANT 지원) 나눌 이유가 없다.
+--     인덱스를 추가할 일이 생기면 그때는 반드시 별도 문장으로 분리할 것
+--     (섞으면 INSTANT 가 선택되지 않아 테이블이 리빌드된다).
+--     ※ ALGORITHM=INSTANT 를 명시하지는 않았다. 서버 버전/엔진이 조건을 못 채우면 조용히
+--       리빌드로 폴백하므로, 대상 테이블이 큰 환경에서는 적용 전 실행계획/소요시간을 확인할 것.
 ALTER TABLE `order_delivery`
   ADD COLUMN `canceled_at` DATETIME(6) NULL
-    COMMENT '발송건 취소 시각 (부분취소). NULL=미취소 또는 주문 전체취소'
+    COMMENT '발송건 취소 시각. 취소 판정은 status=CANCEL 로 할 것 (이 컬럼은 부가 정보)'
     AFTER `discarded_at`,
   -- order.cancel_reason 은 text 지만 여기는 varchar(1000) 로 둔다.
   -- 요청 DTO 가 @MaxLength(1000) 으로 이미 제한하고 있어 저장 한도를 스키마에 명시한다.
   ADD COLUMN `cancel_reason` VARCHAR(1000) NULL
-    COMMENT '발송건 취소 사유 (부분취소)'
+    COMMENT '발송건 취소 사유'
     AFTER `canceled_at`;
 
 

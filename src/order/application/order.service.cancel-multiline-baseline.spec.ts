@@ -137,7 +137,9 @@ describe('OrderService.deliveryCancel — 다중 상품행 주문 현행 동작 
 
     expect(sut.orderDeliveryRepository.update).toHaveBeenCalledWith(
       { orderProductMappingId: In([MAPPING_A, MAPPING_B]) },
-      { status: IOrderDeliveryStatus.CANCEL },
+      // 발송건에도 취소 시각·사유를 남긴다(전체취소도 부분취소와 동일하게 채운다 —
+      // canceled_at IS NULL 이 "미취소" 와 "전체취소" 를 겸하지 않도록).
+      { status: IOrderDeliveryStatus.CANCEL, canceledAt: expect.any(Date), cancelReason: expect.any(String) },
     );
   });
 
