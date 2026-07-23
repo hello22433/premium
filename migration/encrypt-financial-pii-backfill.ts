@@ -1,8 +1,10 @@
 /**
  * 금융 PII(계좌/카드번호) 컬럼 평문 → 암호화 1회성 백필 스크립트.
  *
- * 대상: user.bankNumber, user.cardNumber, partner_company.bankNumber, order_delivery.bankAccount
- * 옵션(기본 off, 필요 시에만 on): user_company.bankNumber/cardNumber
+ * 컬럼명: TypeORM SnakeNamingStrategy → 엔티티 bankNumber/cardNumber/bankAccount 의 물리 컬럼은
+ *         bank_number/card_number/bank_account. 이 스크립트의 raw SQL 은 물리 컬럼명을 사용한다.
+ * 대상: user.bank_number, user.card_number, partner_company.bank_number, order_delivery.bank_account
+ * 옵션(기본 off, 필요 시에만 on): user_company.bank_number/card_number
  *   - sql/ops/ops_20260723_financial_pii_preaudit.sql [게이트 1] COUNT>0 인 경우에만 켠다.
  *   - 켜는 방법: --include-user-company 플래그 또는 env INCLUDE_USER_COMPANY=1
  *
@@ -285,7 +287,7 @@ async function backfillSimpleTable(
 // ─────────────────────────────────────────────────────────────
 async function backfillOrderDelivery(conn: mysql.Connection, counters: Counters): Promise<void> {
   const table = 'order_delivery';
-  const column = 'bankAccount';
+  const column = 'bank_account';
   await requireBackupSnapshot(conn, table, column);
 
   const [maxRows] = await conn.query<mysql.RowDataPacket[]>(`SELECT MAX(id) AS maxId FROM \`${table}\``);
@@ -372,12 +374,12 @@ async function main(): Promise<void> {
 
   try {
     const targets: Array<{ table: string; column: string }> = [
-      { table: 'user', column: 'bankNumber' },
-      { table: 'user', column: 'cardNumber' },
-      { table: 'partner_company', column: 'bankNumber' },
+      { table: 'user', column: 'bank_number' },
+      { table: 'user', column: 'card_number' },
+      { table: 'partner_company', column: 'bank_number' },
     ];
     if (INCLUDE_USER_COMPANY) {
-      targets.push({ table: 'user_company', column: 'bankNumber' }, { table: 'user_company', column: 'cardNumber' });
+      targets.push({ table: 'user_company', column: 'bank_number' }, { table: 'user_company', column: 'card_number' });
     }
 
     for (const { table, column } of targets) {

@@ -1,10 +1,11 @@
 -- 금융 PII(계좌/카드번호) 컬럼 평문 저장 → 대칭키 암호화 전환
 --
--- 배경: user.bankNumber/cardNumber, partner_company.bankNumber, order_delivery.bankAccount 는
---       평문으로 저장되어 왔다. 이번 변경으로 CryptoCipher.encryptAccountNumber(=encryptDeliveryTarget
---       위임, AES-256-CBC/Base64)로 신규 쓰기를 암호화 저장하고, read 는 safeDecryptAccountNumber
---       (=safeDecryptDeliveryTarget 위임) 로 평문/암호문 혼재를 폴백 복호한다.
---       cardName(카드사명)/bankAccountOwner(예금주명)는 범위 밖(평문 유지, 불변).
+-- 배경: user.bank_number/card_number, partner_company.bank_number, order_delivery.bank_account 는
+--       평문으로 저장되어 왔다(TypeORM SnakeNamingStrategy → 엔티티 bankNumber/cardNumber/bankAccount 의
+--       물리 컬럼명은 bank_number/card_number/bank_account). 이번 변경으로 CryptoCipher.encryptAccountNumber
+--       (=encryptDeliveryTarget 위임, AES-256-CBC/Base64)로 신규 쓰기를 암호화 저장하고, read 는
+--       safeDecryptAccountNumber(=safeDecryptDeliveryTarget 위임) 로 평문/암호문 혼재를 폴백 복호한다.
+--       card_name(카드사명)/bank_account_owner(예금주명)는 범위 밖(평문 유지, 불변).
 --
 -- 키 결정(Option A, 확정): 기존 DELIVERY_TARGET_CRYPTO_KEY/DELIVERY_TARGET_CRYPTO_IV 재사용,
 --       결정론적 고정 IV (6/18 history-column 암호화 선례와 정합). 신규 전용키(Option B)는 채택하지
@@ -32,11 +33,11 @@
 --
 -- -- widening 이 필요한 경우에만 사용(pre-audit MAX 초과 확인 후):
 -- -- ALTER TABLE `user`
--- --   MODIFY COLUMN bankNumber VARCHAR(150) NULL COMMENT '계좌번호 (암호화 저장, encryptAccountNumber)',
--- --   MODIFY COLUMN cardNumber VARCHAR(150) NULL COMMENT '카드번호 (암호화 저장, encryptAccountNumber)';
+-- --   MODIFY COLUMN bank_number VARCHAR(150) NULL COMMENT '계좌번호 (암호화 저장, encryptAccountNumber)',
+-- --   MODIFY COLUMN card_number VARCHAR(150) NULL COMMENT '카드번호 (암호화 저장, encryptAccountNumber)';
 -- --
 -- -- ALTER TABLE partner_company
--- --   MODIFY COLUMN bankNumber VARCHAR(150) NULL COMMENT '계좌번호 (암호화 저장, encryptAccountNumber)';
+-- --   MODIFY COLUMN bank_number VARCHAR(150) NULL COMMENT '계좌번호 (암호화 저장, encryptAccountNumber)';
 --
 -- 폭을 넓히는 방향의 ALTER 는 기존 값을 자르지 않으므로(online, MySQL 8.x) 안전하지만, 반대로 좁히는
 -- 롤백은 암호문이 평문보다 길어 잘릴 수 있어 금지(20260618 선례와 동일 원칙).
@@ -59,10 +60,10 @@
 --      이어서 safeDecrypt 왕복 스모크(암호문→평문 복원)를 확인한다.
 --
 -- 검증:
---   SHOW COLUMNS FROM `user` LIKE 'bankNumber';
---   SHOW COLUMNS FROM `user` LIKE 'cardNumber';
---   SHOW COLUMNS FROM partner_company LIKE 'bankNumber';
---   SHOW COLUMNS FROM order_delivery LIKE 'bankAccount';
+--   SHOW COLUMNS FROM `user` LIKE 'bank_number';
+--   SHOW COLUMNS FROM `user` LIKE 'card_number';
+--   SHOW COLUMNS FROM partner_company LIKE 'bank_number';
+--   SHOW COLUMNS FROM order_delivery LIKE 'bank_account';
 --
 -- 롤백:
 --   본 파일이 no-op DDL 인 경우 롤백 대상 없음. widening ALTER 를 적용했다면, 백필된 암호문이 평문보다
