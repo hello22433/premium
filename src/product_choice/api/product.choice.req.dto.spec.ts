@@ -1,6 +1,7 @@
 import 'reflect-metadata';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
+import * as qs from 'qs';
 import { ProductChoiceGetProductListReqQueryDto } from './product.choice.req.dto';
 
 /**
@@ -15,6 +16,12 @@ import { ProductChoiceGetProductListReqQueryDto } from './product.choice.req.dto
  */
 function toDto(payload: unknown): ProductChoiceGetProductListReqQueryDto {
   return plainToInstance(ProductChoiceGetProductListReqQueryDto, payload, { enableImplicitConversion: false });
+}
+
+// express 기본 쿼리 파서(qs)가 실제로 만드는 파싱 결과를 그대로 DTO 에 태운다.
+// 손으로 객체 모양을 지어내면 파서 동작이 바뀌어도 테스트가 초록으로 남으므로, 실제 qs.parse 를 통과시킨다.
+function parseQueryToDto(queryString: string): ProductChoiceGetProductListReqQueryDto {
+  return toDto(qs.parse(queryString));
 }
 
 async function validatePayload(payload: unknown): Promise<string[]> {
@@ -41,22 +48,37 @@ describe('ProductChoiceGetProductListReqQueryDto.excludeProductIdList 변환', (
     expect(toDto({ excludeProductIdList: '780,780,763' }).excludeProductIdList).toEqual([780, 763]);
   });
 
-  it('21건 이상이면 qs 가 배열 대신 객체로 넘기는데, 이것도 배열로 받는다', () => {
-    // express 기본 쿼리 파서(qs)는 arrayLimit 이 20 이라, ?id[]=.. 가 21건을 넘으면
-    // 배열이 아니라 {'0':'701','1':'702',...} 객체로 파싱한다.
-    // 이 분기가 없으면 등록 상품 21건 이상인 초이스쿠폰의 상품검색이 전부 400 이 된다.
-    const idList = Array.from({ length: 21 }, (_, index) => 701 + index);
-    const qsObjectForm = Object.fromEntries(idList.map((id, index) => [String(index), String(id)]));
-
-    expect(toDto({ excludeProductIdList: qsObjectForm }).excludeProductIdList).toEqual(idList);
-  });
-
   it('미전달이면 undefined 로 둔다 (제외 조건 자체가 붙지 않아야 한다)', () => {
     expect(toDto({}).excludeProductIdList).toBeUndefined();
   });
 
   it('빈 문자열이면 undefined 로 둔다 — 빈 배열이 쿼리에 들어가면 SQL 이 IN () 으로 깨진다', () => {
     expect(toDto({ excludeProductIdList: '' }).excludeProductIdList).toBeUndefined();
+  });
+});
+
+describe('ProductChoiceGetProductListReqQueryDto — 실제 qs 파싱 파이프라인', () => {
+  it('콤마 형식 쿼리스트링을 숫자 배열로 변환한다', () => {
+    expect(parseQueryToDto('excludeProductIdList=780,763,729').excludeProductIdList).toEqual([780, 763, 729]);
+  });
+
+  it('브래킷 반복 형식(?id[]=..) 25건 — qs 가 arrayLimit(20) 때문에 객체로 파싱해도 배열로 받는다', () => {
+    // 손으로 지은 객체가 아니라 실제 qs.parse 를 통과시킨다.
+    // 등록 상품 21건 이상인 초이스쿠폰의 상품검색이 여기서 막히면 안 된다.
+    const idList = Array.from({ length: 25 }, (_, index) => 701 + index);
+    const queryString = idList.map((id) => `excludeProductIdList[]=${id}`).join('&');
+
+    // 전제 고정: 이 구간에서 qs 는 실제로 배열이 아닌 객체를 만든다.
+    expect(Array.isArray(qs.parse(queryString).excludeProductIdList)).toBe(false);
+
+    expect(parseQueryToDto(queryString).excludeProductIdList).toEqual(idList);
+  });
+
+  it('순수 반복 형식(?id=..&id=..) 25건도 배열로 받는다', () => {
+    const idList = Array.from({ length: 25 }, (_, index) => 701 + index);
+    const queryString = idList.map((id) => `excludeProductIdList=${id}`).join('&');
+
+    expect(parseQueryToDto(queryString).excludeProductIdList).toEqual(idList);
   });
 });
 
@@ -79,5 +101,17 @@ describe('ProductChoiceGetProductListReqQueryDto.excludeProductIdList 검증', (
 
   it('0 이하의 id 는 거부한다', async () => {
     expect(await validatePayload({ excludeProductIdList: '0' })).toContain('min');
+  });
+
+  it('int(11) 범위를 넘는 값은 거부한다 — 1e21 같은 표기가 IsInt 를 통과해 흘러드는 것을 막는다', () => {
+    // '1e21' 은 Number.isInteger 가 true 라 IsInt 는 통과하지만, product.id(int32) 를 벗어난다.
+    return validatePayload({ excludeProductIdList: '1e21' }).then((errors) => expect(errors).toContain('max'));
+  });
+
+  it('500개까지는 통과하고 501개는 거부한다 (ArrayMaxSize)', async () => {
+    const make = (count: number) => Array.from({ length: count }, (_, index) => index + 1).join(',');
+
+    expect(await validatePayload({ excludeProductIdList: make(500) })).toEqual([]);
+    expect(await validatePayload({ excludeProductIdList: make(501) })).toContain('arrayMaxSize');
   });
 });

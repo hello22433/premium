@@ -1,4 +1,7 @@
+import 'reflect-metadata';
+import { plainToInstance } from 'class-transformer';
 import { ProductChoiceService } from './product.choice.service';
+import { ProductChoiceGetProductListReqQueryDto } from '../api/product.choice.req.dto';
 import { IProductUseStatus } from '../../product/interface/product.status';
 
 describe('ProductChoiceService.getList', () => {
@@ -320,6 +323,20 @@ describe('ProductChoiceService.getProductList', () => {
     const service = createService(queryBuilder);
 
     await service.getProductList({ page: 1, take: 10, excludeProductIdList: [763, 729] } as any);
+
+    expect(queryBuilder.andWhere).toHaveBeenCalledWith('product.id NOT IN (:...excludeProductIdList)', {
+      excludeProductIdList: [763, 729],
+    });
+  });
+
+  it('쿼리스트링 → DTO 변환 → SQL 이음매: 콤마 문자열이 숫자 배열로 바인딩된다', async () => {
+    // 목으로 DTO 파이프라인을 우회하지 않고, 실제 @Transform 을 거친 값이 그대로 NOT IN 에 실리는지 본다.
+    const queryBuilder = createQueryBuilder([searchProduct(780)]);
+    const service = createService(queryBuilder);
+
+    const dto = plainToInstance(ProductChoiceGetProductListReqQueryDto, { excludeProductIdList: '763,729' });
+
+    await service.getProductList(dto);
 
     expect(queryBuilder.andWhere).toHaveBeenCalledWith('product.id NOT IN (:...excludeProductIdList)', {
       excludeProductIdList: [763, 729],
