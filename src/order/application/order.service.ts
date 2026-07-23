@@ -5893,6 +5893,8 @@ export class OrderService {
     // 발송건 몫을 역산할 근거가 없다. 근거 없이 안분하면 행사잔액이 부풀고, 그쪽은 상한 검증이 없어
     // 되돌리기 어렵다. 이 차단은 ssg_event_amount_history.order_delivery_id 에 귀속이 기록되고
     // restoreEventBalance 가 범위 복구를 지원한 뒤에야 풀 수 있다.
+    // 후속 티켓으로 분리(2026-07-23 결정): docs/followup-ssg-partial-cancel.md 참조.
+    // (SSG 는 지갑+행사잔액을 둘 다 차감하므로 부분취소도 두 축 복구가 필요 — 문서에 설계 스케치 포함.)
     if (lockedOrder.type === IOrderType.SSG) {
       throw new BadRequestException(
         'SSG 주문은 아직 발송건별 취소를 지원하지 않습니다. 주문 전체 취소를 이용해 주세요.',
