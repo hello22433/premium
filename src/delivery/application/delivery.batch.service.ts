@@ -1789,22 +1789,21 @@ export class DeliveryBatchService {
           );
         }
         if (isSsgFailResendDeduct && hasRefundLedgerForResendDeduct && ssgBalanceSettledForResendDeduct) {
-          const newEvent = await this.ssgEventService.selectEventForOrder(product.price, product.expireDay);
-          if (!newEvent) {
+          const deduct = await this.ssgEventService.selectAndDeductForReissueWithPending({
+            amount: product.price,
+            orderId: order.id,
+            couponExpiration: product.expireDay,
+            purpose: 'BATCH_RESEND',
+            issueOrderDeliveryId: orderDelivery.id,
+          });
+          if (!deduct) {
             this.logger.warn(
               `[RESEND] 잔액 충분한 SSG 행사 없음 - orderDelivery.id: ${orderDelivery.id}, price: ${product.price}`,
             );
             return false;
           }
-          const deduct = await this.ssgEventService.deductForReissueWithPending({
-            ssgEventId: newEvent.id,
-            amount: product.price,
-            orderId: order.id,
-            purpose: 'BATCH_RESEND',
-            issueOrderDeliveryId: orderDelivery.id,
-          });
           resendDeductionId = deduct.resendDeductionId;
-          ssgEvent = newEvent;
+          ssgEvent = deduct.event;
           resendDeducted = true;
         }
 
@@ -1900,20 +1899,15 @@ export class DeliveryBatchService {
     price: number,
     couponExpiration: number,
   ): Promise<{ event: SsgEventEntity; resendDeductionId: string } | null> {
-    const event = await this.ssgEventService.selectEventForOrder(price, couponExpiration);
-    if (!event) {
-      return null;
-    }
     // CS 폐기후신규: 선차감 시점엔 신규 delivery 미존재 → issueOrderDeliveryId=null.
     // 신규 delivery 저장 후 markReissueIssueAttempted 로 실제 issue 대상 id 를 기록한다.
-    const { resendDeductionId } = await this.ssgEventService.deductForReissueWithPending({
-      ssgEventId: event.id,
+    return this.ssgEventService.selectAndDeductForReissueWithPending({
       amount: price,
       orderId,
+      couponExpiration,
       purpose: 'CS_REISSUE',
       issueOrderDeliveryId: null,
     });
-    return { event, resendDeductionId };
   }
 
   /**

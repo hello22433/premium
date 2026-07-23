@@ -2381,6 +2381,7 @@ export class CustomerServiceService {
 
         try {
           const ssgEvent = fullDelivery.ssgEvent ?? null;
+          let reissueDeductUsed = true;
 
           // PIN 발급 — 실패 시 SSG 선차감 역복원 + (미등록 확정이면) 폐기 역전·새 delivery 제거
           try {
@@ -2390,7 +2391,23 @@ export class CustomerServiceService {
             if (isSsg && reissueEvent && resendDeductionId) {
               await this.deliveryBatchService.markReissueIssueAttempted(resendDeductionId, fullDelivery.id);
             }
-            await this.partnerCompanyExternService.issue(fullDelivery, ssgEvent);
+            const issueResult = await this.partnerCompanyExternService.issue(
+              fullDelivery,
+              ssgEvent,
+              resendDeductionId ?? undefined,
+            );
+            if (isSsg && reissueEvent && resendDeductionId && issueResult?.ssgNewIssue === false) {
+              await this.deliveryBatchService.reverseReissueDeductDirect(
+                resendDeductionId,
+                reissueEvent.id,
+                reissueOrderId,
+                reissuePrice,
+              );
+              reissueDeductUsed = false;
+              if (issueResult.ssgEventId != null) {
+                fullDelivery.ssgEventId = issueResult.ssgEventId;
+              }
+            }
           } catch (issueError) {
             if (isSsg && reissueEvent && resendDeductionId) {
               const outcome = await this.deliveryBatchService.reverseSsgReissueDeduct(
@@ -2502,7 +2519,7 @@ export class CustomerServiceService {
 
           // issue 성공 + barCode 확인 + durable save 완료 후에야 선차감 pending KEPT 해소(차감 유지 확정).
           // barCode 검증 이전에 KEPT 하면 이후 !barCode 분기의 DEFERRED 역복원을 sweep 이 재시도 못 함(HIGH).
-          if (isSsg && reissueEvent && resendDeductionId) {
+          if (isSsg && reissueEvent && resendDeductionId && reissueDeductUsed) {
             await this.deliveryBatchService.resolveReissuePendingKept(resendDeductionId);
           }
 

@@ -280,10 +280,24 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
 
       await service.execHistory(buildMap(IOrderType.SSG));
 
-      expect(partnerCompanyExternService.issue).toHaveBeenCalled();
+      expect(partnerCompanyExternService.issue).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'ULID1');
       // 첫 save 에 넘긴 newDelivery 의 ssgEventId 검증
       const firstSavedEntity = orderDeliveryRepository.save.mock.calls[0][0];
       expect(firstSavedEntity.ssgEventId).toBe(7);
+    });
+
+    it('2-1) SSG issue 성공이 기존/후보 PIN 재사용이면 선차감 역복원 후 KEPT 처리하지 않는다', async () => {
+      setupSsgAcquired();
+      setupExecDiscard();
+      const fullDelivery = buildFullDelivery(IOrderType.SSG, { id: 7 });
+      orderDeliveryRepository.findOne.mockResolvedValue(fullDelivery);
+      partnerCompanyExternService.issue.mockResolvedValue({ ssgNewIssue: false, ssgEventId: 99 });
+
+      await service.execHistory(buildMap(IOrderType.SSG));
+
+      expect(deliveryBatchService.reverseReissueDeductDirect).toHaveBeenCalledWith('ULID1', 7, ORDER_ID, PRICE);
+      expect(deliveryBatchService.resolveReissuePendingKept).not.toHaveBeenCalled();
+      expect(fullDelivery.ssgEventId).toBe(99);
     });
 
     /**

@@ -129,6 +129,10 @@ describe('DeliveryBatchService.reissuePinAndCreateImageIfNeeded - refund ledger 
 
     ssgEventService = {
       selectEventForOrder: jest.fn().mockResolvedValue(ssgEvent),
+      selectAndDeductForReissueWithPending: jest.fn().mockResolvedValue({
+        event: ssgEvent,
+        resendDeductionId: 'RD-1',
+      }),
       deductEventBalance: jest.fn(),
       deductForReissueWithPending: jest.fn().mockResolvedValue({ resendDeductionId: 'RD-1' }),
       markReissueIssueAttempted: jest.fn().mockResolvedValue(undefined),
@@ -229,15 +233,15 @@ describe('DeliveryBatchService.reissuePinAndCreateImageIfNeeded - refund ledger 
       expect(result).toBe(true);
       expect(refundLedgerService.exists).toHaveBeenCalledWith(od.id);
       // ledger row 있음 → 새 행사 선차감 진행
-      expect(ssgEventService.selectEventForOrder).toHaveBeenCalled();
-      expect(ssgEventService.selectEventForOrder).toHaveBeenCalledWith(10_000, 60);
-      expect(ssgEventService.deductForReissueWithPending).toHaveBeenCalledWith({
-        ssgEventId: ssgEvent.id,
+      expect(ssgEventService.selectAndDeductForReissueWithPending).toHaveBeenCalledWith({
         amount: 10_000,
         orderId: 4145,
+        couponExpiration: 60,
         purpose: 'BATCH_RESEND',
         issueOrderDeliveryId: od.id,
       });
+      expect(ssgEventService.selectEventForOrder).not.toHaveBeenCalled();
+      expect(ssgEventService.deductForReissueWithPending).not.toHaveBeenCalled();
     });
 
     it('HIGH: 신규 행사 선차감 후 issue()가 legacy 등록 후보(B)를 재사용하면 선차감(C)을 KEPT 하지 않고 직접 역복원한다', async () => {
@@ -256,7 +260,7 @@ describe('DeliveryBatchService.reissuePinAndCreateImageIfNeeded - refund ledger 
 
       expect(result).toBe(true);
       // 새 행사(C) 선차감은 발생.
-      expect(ssgEventService.deductForReissueWithPending).toHaveBeenCalled();
+      expect(ssgEventService.selectAndDeductForReissueWithPending).toHaveBeenCalled();
       // 재사용이므로 KEPT 금지 + state 비의존 직접 역복원(refundResendEventDeduction + REVERSED).
       expect(ssgEventService.refundResendEventDeduction).toHaveBeenCalledWith(
         expect.objectContaining({ resendDeductionId: 'RD-1', ssgEventId: ssgEvent.id, orderId: 4145, amount: 10_000 }),
@@ -279,6 +283,7 @@ describe('DeliveryBatchService.reissuePinAndCreateImageIfNeeded - refund ledger 
       expect(result).toBe(true);
       // ledger row 없음 = 보류(최초실패 환불 미생성) = 선차감하면 이중차감 → 선차감 X (불변).
       expect(ssgEventService.selectEventForOrder).not.toHaveBeenCalled();
+      expect(ssgEventService.selectAndDeductForReissueWithPending).not.toHaveBeenCalled();
       expect(ssgEventService.deductForReissueWithPending).not.toHaveBeenCalled();
       // B3: ledger 없음 = 보류 정상 → 구버전 "비정상 warn" 은 info 로 강등.
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('SSG 보류 재발송'));
@@ -299,6 +304,7 @@ describe('DeliveryBatchService.reissuePinAndCreateImageIfNeeded - refund ledger 
 
       expect(result).toBe(true);
       expect(ssgEventService.selectEventForOrder).not.toHaveBeenCalled();
+      expect(ssgEventService.selectAndDeductForReissueWithPending).not.toHaveBeenCalled();
       expect(ssgEventService.deductForReissueWithPending).not.toHaveBeenCalled();
     });
 
@@ -312,6 +318,7 @@ describe('DeliveryBatchService.reissuePinAndCreateImageIfNeeded - refund ledger 
 
       expect(result).toBe(true);
       expect(ssgEventService.selectEventForOrder).not.toHaveBeenCalled();
+      expect(ssgEventService.selectAndDeductForReissueWithPending).not.toHaveBeenCalled();
       expect(ssgEventService.deductForReissueWithPending).not.toHaveBeenCalled();
       expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('환불 ledger 누락'));
     });
@@ -331,6 +338,7 @@ describe('DeliveryBatchService.reissuePinAndCreateImageIfNeeded - refund ledger 
 
       expect(result).toBe(true);
       expect(ssgEventService.selectEventForOrder).not.toHaveBeenCalled();
+      expect(ssgEventService.selectAndDeductForReissueWithPending).not.toHaveBeenCalled();
       expect(ssgEventService.deductForReissueWithPending).not.toHaveBeenCalled();
       expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('SSG 잔액 보정 미완료'));
     });
@@ -345,6 +353,7 @@ describe('DeliveryBatchService.reissuePinAndCreateImageIfNeeded - refund ledger 
 
       expect(result).toBe(true);
       // status=WAIT라 가드(A) 미진입 → 선차감 안 일어남 → reverseRefundForResend(skipSsg=false)
+      expect(ssgEventService.selectAndDeductForReissueWithPending).not.toHaveBeenCalled();
       expect(ssgEventService.deductForReissueWithPending).not.toHaveBeenCalled();
       expect(ssgEventService.chargeBackForResend).toHaveBeenCalled();
       // 고객사 환불 역처리도 같이 진행

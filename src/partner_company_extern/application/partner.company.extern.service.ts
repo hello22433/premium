@@ -858,6 +858,7 @@ export class PartnerCompanyExternService {
               couponNum: orderDelivery.couponNum ?? null,
               expireAt: orderDelivery.expireAt ?? null,
               encourageAt: orderDelivery.encourageAt ?? null,
+              ssgEventId: ssgEvent.id,
             });
 
             return JSON.stringify(response);
@@ -1562,6 +1563,7 @@ export class PartnerCompanyExternService {
         couponNum: confirmedCandidate.couponNum,
         expireAt: confirmedCandidate.expireAt,
         encourageAt: confirmedCandidate.encourageAt,
+        ssgEventId: confirmedCandidate.ssgEventId,
       });
       if (!transitioned) {
         // 같은 시점 다른 흐름이 state 를 바꿔서 전이를 못 한 경우 — outcome 모호. 보수적으로 NETWORK_UNKNOWN.

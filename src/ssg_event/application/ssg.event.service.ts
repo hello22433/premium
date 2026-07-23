@@ -28,8 +28,6 @@ import { OrderDeliveryRefundEntity } from '../../entity/order.delivery.refund.en
 import { OrderProductMappingEntity } from '../../entity/order.product.mapping.entity';
 import { IOrderType } from '../../order/interface/order.type';
 import * as ExcelJS from 'exceljs';
-import { join } from 'path';
-import * as process from 'node:process';
 
 import { ActivityLogService } from '../../activity_log/application/activity.log.service';
 import { ActivityLogResult } from '../../activity_log/interface/activity.log.result';
@@ -492,7 +490,8 @@ export class SsgEventService {
     // 성공 로그 저장
     const responseTime = Date.now() - startTime;
     const recordCount = resultList.length;
-    const { password: _, ...requestParams } = getBody;
+    const requestParams: Record<string, unknown> = { ...getBody };
+    delete requestParams.password;
 
     await this.activityLogService.createLog({
       userId: user.id,
@@ -1226,9 +1225,89 @@ export class SsgEventService {
     purpose: 'BATCH_RESEND' | 'CS_REISSUE';
     issueOrderDeliveryId: number | null;
   }): Promise<{ resendDeductionId: string }> {
-    // 차감은 정규 deductEventBalance(@Transactional REQUIRED) 재사용 — 본 메서드 tx 에 합류해 원자성 유지.
-    // 락/잔액검증/이력기록의 단일 출처(중복 구현 drift 방지). isTemporary=false(즉시 확정 차감).
-    await this.deductEventBalance(input.ssgEventId, input.amount, input.orderId, false);
+    const ssgEvent = await this.findSsgEventForUpdate(input.ssgEventId);
+
+    if (!ssgEvent) {
+      throw new BadRequestException('유효한 이벤트가 없습니다.');
+    }
+
+    if (ssgEvent.eventBalance < input.amount) {
+      throw new BadRequestException('이벤트 잔액이 부족합니다.');
+    }
+
+    const { resendDeductionId } = await this.applyReissueDeductionWithPending(ssgEvent, input);
+    return { resendDeductionId };
+  }
+
+  /**
+   * 재발급용 행사 후보를 같은 트랜잭션에서 잠근 뒤 차감+pending을 원자 처리한다.
+   * 선택 시점과 차감 시점 사이에 첫 후보가 소진되더라도, 잠긴 최신 잔액 기준으로 다음 후보를 사용한다.
+   */
+  @Transactional()
+  async selectAndDeductForReissueWithPending(input: {
+    amount: number;
+    orderId: number;
+    couponExpiration?: number;
+    purpose: 'BATCH_RESEND' | 'CS_REISSUE';
+    issueOrderDeliveryId: number | null;
+  }): Promise<{ event: SsgEventEntity; resendDeductionId: string } | null> {
+    const referenceDate = new Date();
+    let queryBuilder = this.ssgEventRepository
+      .createQueryBuilder('ssg')
+      .setLock('pessimistic_write')
+      .where('ssg.startAt <= :referenceDate', { referenceDate })
+      .andWhere('ssg.endAt >= :referenceDate', { referenceDate })
+      .andWhere('ssg.eventBalance > 0')
+      .orderBy('ssg.id', 'ASC');
+
+    if (input.couponExpiration) {
+      queryBuilder = queryBuilder.andWhere('ssg.couponExpiration = :couponExpiration', {
+        couponExpiration: input.couponExpiration,
+      });
+    }
+
+    const candidates = await queryBuilder.getMany();
+    for (const event of candidates) {
+      if (event.eventBalance < input.amount) {
+        continue;
+      }
+
+      const { resendDeductionId } = await this.applyReissueDeductionWithPending(event, {
+        ssgEventId: event.id,
+        amount: input.amount,
+        orderId: input.orderId,
+        purpose: input.purpose,
+        issueOrderDeliveryId: input.issueOrderDeliveryId,
+      });
+      return { event, resendDeductionId };
+    }
+
+    return null;
+  }
+
+  private async applyReissueDeductionWithPending(
+    ssgEvent: SsgEventEntity,
+    input: {
+      ssgEventId: number;
+      amount: number;
+      orderId: number;
+      purpose: 'BATCH_RESEND' | 'CS_REISSUE';
+      issueOrderDeliveryId: number | null;
+    },
+  ): Promise<{ resendDeductionId: string }> {
+    const newBalance = ssgEvent.eventBalance - input.amount;
+
+    const history = this.amountHistoryRepository.create({
+      ssgEventId: ssgEvent.id,
+      amount: -input.amount,
+      balance: newBalance,
+      orderId: input.orderId,
+      isTemporary: false,
+    });
+
+    ssgEvent.eventBalance = newBalance;
+    await this.amountHistoryRepository.save(history);
+    await this.ssgEventRepository.save(ssgEvent);
 
     const resendDeductionId = ulid();
     await this.resendDeductPendingRepository.save(
