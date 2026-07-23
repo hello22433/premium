@@ -1,6 +1,7 @@
 import { BadRequestException, InternalServerErrorException } from '@nestjs/common';
 import { CustomerServiceService } from './customer.service.service';
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
+import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 
 /**
  * 핀상태변경(execPinStatusModify) terminal/CAS/트랜잭션 회귀 테스트.
@@ -88,6 +89,24 @@ describe('CustomerServiceService.execPinStatusModify — terminal / CAS / 트랜
         ),
       ).rejects.toBeInstanceOf(BadRequestException);
 
+      expect(sut.dataSource.createQueryRunner).not.toHaveBeenCalled();
+    });
+
+    // ★ 발송취소(부분취소, 197-16). status=CANCEL 이지만 couponStatus(beforeChange)=NOT_USED 라
+    //   기존 couponStatus terminal 가드를 통과한다. status 가드가 없으면 외부 cancel 호출·상태오염.
+    it('발송취소(status=CANCEL)이면 외부 cancel/Tx 이전에 거부', async () => {
+      const { sut } = makeSut(1);
+
+      await expect(
+        sut.execPinStatusModify(
+          buildMap({
+            beforeChange: OrderDeliveryCouponStatus.NOT_USED,
+            orderDelivery: { id: 5001, userId: 42, status: IOrderDeliveryStatus.CANCEL },
+          }),
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+
+      expect(sut.partnerCompanyExternService.cancel).not.toHaveBeenCalled();
       expect(sut.dataSource.createQueryRunner).not.toHaveBeenCalled();
     });
 

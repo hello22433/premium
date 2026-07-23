@@ -2096,6 +2096,14 @@ export class CustomerServiceService {
   async execPinStatusModify(map: any) {
     const { businessName, beforeChange, afterChange, type, content, orderDelivery } = map;
 
+    // 발송취소(부분취소, 197-16)된 건은 핀상태변경 대상이 아니다. 취소는 status 만 CANCEL 로 바꾸고
+    // couponStatus 는 NOT_USED 로 남아 아래 couponStatus 기반 terminal 가드가 놓친다. 폐기(execDiscard)와
+    // 대칭을 맞춘다 — 이 경로는 환불을 하지 않아 이중환불은 없으나, 발급된 적 없는 취소건에 외부 cancel
+    // 을 호출하고 couponStatus 를 오염시키는 것을 막는다.
+    if (orderDelivery.status === IOrderDeliveryStatus.CANCEL) {
+      throw new BadRequestException('이미 취소된 발송건입니다.');
+    }
+
     // [공통 terminal 가드] 끝난 상태(USED/CANCEL/REFUND_CANCEL)는 어떤 협력사 분기든 재진입 금지.
     // switch 앞에 두어 default 분기까지 전 경로를 덮는다 — 분기별 가드의 누락(REFUND_CANCEL 등)을 봉합.
     // (EXPIRED 는 협력사=차단 / SSG=현행 보존으로 분기별 별도 처리. 폐기 execDiscard 와 동일 패턴)
@@ -2381,6 +2389,14 @@ export class CustomerServiceService {
       .getOne();
     if (!locked) {
       throw new BadRequestException('존재하지 않는 발송 정보입니다.');
+    }
+
+    // 발송취소(부분취소, 197-16)된 건은 재전송 대상이 아니다 — 이미 환불됐다.
+    // 취소는 status 만 CANCEL 로 바꾸고 couponStatus 는 NOT_USED / barCode 는 NULL 로 남으므로,
+    // csResendAs* 의 barCode 기반 가드(csResendAsEmail 은 barCode&&emailReceiverPhone, 미선택 CHOICE 는
+    // 우회)가 이를 놓친다. 그대로 재전송하면 취소·환불된 쿠폰이 되살아나 수령자가 교환할 수 있다(돈 누수).
+    if (locked.status === IOrderDeliveryStatus.CANCEL) {
+      throw new BadRequestException('이미 취소된 발송건입니다.');
     }
 
     // 비동기 수신확인 진행중(PENDING)이면 재진입 차단 (reportSweep 소관 — 중복 발송 방지). reSend 와 동일.
