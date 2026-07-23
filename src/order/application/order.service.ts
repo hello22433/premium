@@ -6038,6 +6038,24 @@ export class OrderService {
     } else {
       // CAS 로 status=CANCEL 이 이미 반영된 발송건을 같은 트랜잭션에서 재조회해 재계산한다
       // (createOrderSettle 과 동일한 getOrderProductsForSettlementAmount + calculateOrderSettlementAmount).
+      //
+      // ※※ [별도 확인 필요 / PR 코멘트 참고] settleAmount 의 basis 가 코드베이스에서 통일돼 있지 않다.
+      //   - 발송확정(wallet 최신, order.service deliveryConfirmed):
+      //       settleAmount = allocation.payableSettlementAmount
+      //       = (gross - 포인트) + 카드할증(gross - 포인트)   ← 포인트 제외, 할증 base 도 포인트 뺀 값
+      //   - 정산수정(createOrderSettle/updateOrderSettle, 살아있는 경로):
+      //       settleAmount = calculateOrderSettlementAmount = gross + 카드할증(gross)   ← 포인트 포함
+      //   포인트 쓴 주문에서 두 basis 는 (포인트값 + 할증×포인트)만큼 다르다. 이 불일치는 부분취소와
+      //   무관한 기존 사안이며(포인트 주문을 발송확정 후 정산수정하면 원래부터 difference 가 어긋날 수
+      //   있음), 실제 잔액 오조정까지 가는지는 "정산수정 difference 블록이 이 wallet 주문들에 실제로
+      //   도는지 + 도면 포인트만큼 오조정되는지" 를 정산 담당과 확인해야 한다. → 별도 티켓.
+      //
+      //   여기서 wallet 관례(payableSettlementAmount)가 아니라 calculateOrderSettlementAmount 를
+      //   쓰는 이유: 부분취소발 이중환불을 실제로 일으키는 것이 정산수정의 difference 블록이고, 그 블록이
+      //   비교 기준으로 쓰는 함수가 바로 calculateOrderSettlementAmount 다. 같은 함수로 맞춰야
+      //   difference = 0 이 되어 이중환불이 사라진다. payableSettlementAmount 로 맞추면 basis 가 어긋나
+      //   이중환불이 되살아난다. 즉 "버그를 일으키는 그 경로" 와 basis 를 일치시키는 것이 정답이다.
+      //   (basis 통일은 위 별도 티켓에서 정산수정·발송확정을 한꺼번에 정리하는 게 맞다.)
       const survivingMappings = await this.getOrderProductsForSettlementAmount(orderId);
       lockedOrder.settleAmount = calculateOrderSettlementAmount(
         { cardSurchargeApplied: lockedOrder.cardSurchargeApplied, orderProductMappings: survivingMappings },
