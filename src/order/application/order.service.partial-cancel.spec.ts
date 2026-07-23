@@ -12,6 +12,7 @@ import { IOrderStatus } from '../interface/order.status';
 import { IOrderType } from '../interface/order.type';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 import { OrderPaymentRefundEventType } from '../../entity/order.payment.refund.event.entity';
+import { calculateOrderSettlementAmount } from '../../util/settle-fee.util';
 
 /**
  * 예약 발송건 부분취소 (197-16).
@@ -37,6 +38,7 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
       refundBreakdown?: { deposit: number; credit: number; excess: number };
       balanceManagementType?: string;
       authority?: string;
+      survivingMappings?: any[];
     } = {},
   ) => {
     const order = {
@@ -48,6 +50,7 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
       status: over.status ?? IOrderStatus.DELIVERY_CONFIRMED,
       type: over.type ?? IOrderType.GENERAL,
       settleAmount: over.settleAmount ?? 100000,
+      cardSurchargeApplied: false,
       isSettleBalance: true,
       isCreditExcess: false,
       cancelReason: null as string | null,
@@ -153,7 +156,12 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
     sut.findCancelableDeliveryIds = jest.fn(async () => cancelableIds);
     sut.cancelDeliveriesIfStillWaiting = jest.fn(async () => undefined);
 
-    return { sut, order, remainingConditions, graphQuery, billingUser, company };
+    // 잔여분 정산금액 재계산용(approach B). 정산수정과 동일하게 getOrderProductsForSettlementAmount 를
+    // 재조회해 calculateOrderSettlementAmount 로 덮는다. 기본은 빈 목록(=0), 테스트가 필요 시 주입.
+    const survivingMappings = over.survivingMappings ?? [];
+    sut.getOrderProductsForSettlementAmount = jest.fn(async () => survivingMappings);
+
+    return { sut, order, remainingConditions, graphQuery, billingUser, company, survivingMappings };
   };
 
   const call = (sut: any, deliveryIds: number[]) =>
@@ -353,15 +361,37 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
   //   재계산 쪽(buildSettlementDisplayLines)이 취소분을 빼므로, settleAmount 를 원액으로 두면
   //   이미 환불한 몫이 한 번 더 지급된다. 부분취소가 "발송확정 + 취소된 발송건" 조합의 첫 생산자다.
   describe('주문 정산금액', () => {
-    it('환불한 만큼 order.settleAmount 를 줄인다 — 정산정보 수정 시 이중환불 차단', async () => {
-      const { sut, order } = buildSut({
-        settleAmount: 100000,
-        refundBreakdown: { deposit: 30000, credit: 0, excess: 0 },
-      });
+    // 균일 매핑: 원 수량 3, 단가 35000, 1건 취소(status=CANCEL) → 잔여 2건 → 재계산 70000.
+    const uniformSurviving = () => [
+      {
+        amount: 3,
+        fee: null,
+        priceAdjustment: null,
+        product: { price: 35000 },
+        orderDeliveries: [
+          { id: 9003, status: IOrderDeliveryStatus.CANCEL, settleFee: null, couponStatus: null, replacedFromId: null },
+          { id: 9004, status: IOrderDeliveryStatus.WAIT, settleFee: null, couponStatus: null, replacedFromId: null },
+          { id: 9005, status: IOrderDeliveryStatus.WAIT, settleFee: null, couponStatus: null, replacedFromId: null },
+        ],
+      },
+    ];
+
+    // ★ 핵심: settleAmount 를 "환불 실지급액 차감" 이 아니라 정산수정과 동일한 함수
+    //   (calculateOrderSettlementAmount) 로 재계산해 덮는다. 그래야 카드할증+포인트 병용에서
+    //   할증 base 불일치(payable vs gross)로 인한 잔차 없이 difference 가 정확히 0 이 된다.
+    it('정산금액을 취소 반영 후 재계산 값으로 맞춘다 (환불액 차감이 아님)', async () => {
+      const survivingMappings = uniformSurviving();
+      const { sut, order } = buildSut({ settleAmount: 100000, survivingMappings });
 
       await call(sut, CANCELABLE);
 
-      expect(order.settleAmount).toBe(70000);
+      const expected = calculateOrderSettlementAmount(
+        { cardSurchargeApplied: false, orderProductMappings: survivingMappings as any },
+        false,
+      );
+      expect(order.settleAmount).toBe(expected);
+      expect(expected).toBe(70000); // 균일 2건 × 35000
+      expect(sut.getOrderProductsForSettlementAmount).toHaveBeenCalledWith(ORDER_ID);
       expect(sut.orderRepository.save).toHaveBeenCalled();
     });
 
@@ -373,17 +403,8 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
       expect(order.settleAmount).toBe(0);
       expect(order.isSettleBalance).toBe(false);
       expect(order.isCreditExcess).toBe(false);
-    });
-
-    it('환불액이 정산금액을 넘어도 음수로 내려가지 않는다', async () => {
-      const { sut, order } = buildSut({
-        settleAmount: 10000,
-        refundBreakdown: { deposit: 30000, credit: 0, excess: 0 },
-      });
-
-      await call(sut, CANCELABLE);
-
-      expect(order.settleAmount).toBe(0);
+      // 전건 취소는 재계산하지 않는다(0 대입) — 잔여분 재조회를 하지 않아야 한다.
+      expect(sut.getOrderProductsForSettlementAmount).not.toHaveBeenCalled();
     });
   });
 

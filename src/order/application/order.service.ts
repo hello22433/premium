@@ -6015,12 +6015,18 @@ export class OrderService {
       .andWhere('od.status != :canceled', { canceled: IOrderDeliveryStatus.CANCEL })
       .getCount();
 
-    // ★ 환불한 만큼 주문의 정산금액을 줄인다.
+    // ★ 주문의 정산금액을 "취소 반영 후 값" 으로 맞춘다.
     //   정산정보 입력/수정(createOrderSettle·updateOrderSettle)은 발송확정 이후 주문에 대해
-    //   `difference = order.settleAmount - 재계산금액` 만큼 잔액을 조정한다. 그런데 재계산 쪽
+    //   `difference = order.settleAmount - 재계산금액` 만큼 잔액을 조정한다. 재계산 쪽
     //   (buildSettlementDisplayLines)은 이제 취소된 발송건을 빼므로, settleAmount 를 원액으로 두면
     //   그 차이가 통째로 "돌려줄 돈" 으로 잡혀 이미 환불한 취소분이 한 번 더 지급된다.
     //   부분취소가 "발송확정 + 취소된 발송건" 조합의 첫 생산자라 이 경로는 이번에 새로 열렸다.
+    //
+    //   ★ settleAmount -= totalRefundedAmount(환불 실지급액) 로 빼면 안 된다. 환불액의 카드할증은
+    //     payable base(gross - 포인트) 기준인데(refund-pool), 정산 재계산의 할증은 gross 기준이라,
+    //     카드할증+포인트 병용 주문에서 그 차이(할증율 × 취소분 포인트)만큼 settleAmount 가 높게 남아
+    //     이후 정산수정 difference 가 소액 양수 → 취소분 일부가 다시 환불된다. 정산수정과 "동일한 함수·
+    //     동일한 로딩" 으로 재계산해 덮으면 difference 가 정확히 0 이 된다(할증·포인트·반올림 무관).
     if (remaining === 0) {
       // 전건 취소 — 전체취소와 같은 종단 상태를 만든다(다른 코드가 보는 조합을 늘리지 않는다).
       lockedOrder.status = IOrderStatus.DELIVERY_CANCEL;
@@ -6030,7 +6036,13 @@ export class OrderService {
       lockedOrder.isSettleBalance = false;
       lockedOrder.isCreditExcess = false;
     } else {
-      lockedOrder.settleAmount = Math.max(0, lockedOrder.settleAmount - refundResult.totalRefundedAmount);
+      // CAS 로 status=CANCEL 이 이미 반영된 발송건을 같은 트랜잭션에서 재조회해 재계산한다
+      // (createOrderSettle 과 동일한 getOrderProductsForSettlementAmount + calculateOrderSettlementAmount).
+      const survivingMappings = await this.getOrderProductsForSettlementAmount(orderId);
+      lockedOrder.settleAmount = calculateOrderSettlementAmount(
+        { cardSurchargeApplied: lockedOrder.cardSurchargeApplied, orderProductMappings: survivingMappings },
+        lockedOrder.cardSurchargeApplied,
+      );
     }
     await this.orderRepository.save(lockedOrder);
 
