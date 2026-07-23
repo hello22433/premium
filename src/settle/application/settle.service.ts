@@ -96,7 +96,6 @@ import {
   buildSettlementDisplayLines,
 } from '../../util/settle-fee.util';
 import { applyCardSurcharge } from '../../order/domain/order.fee.calculator';
-import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { OrderDeliveryRefundEntity } from '../../entity/order.delivery.refund.entity';
 import { UserDiscountEntity } from '../../entity/user.discount.entity';
@@ -1158,13 +1157,7 @@ export class SettleService {
       .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .leftJoinAndSelect('product.brand', 'brand')
       .where('order.status IN (:...status)', { status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'] })
-      .andWhere(
-        new Brackets((qb) =>
-          qb
-            .where('partnerCompany.type != :galaxiaType', { galaxiaType: IPartnerCompanyType.GALAXIA })
-            .orWhere('partnerCompany.type IS NULL'),
-        ),
-      );
+      .andWhere('orderDelivery.actualSendAt IS NOT NULL');
 
     if (settleMethod) {
       queryBuilder = queryBuilder.andWhere('partnerCompany.settleMethod LIKE :settleMethod', {
@@ -1178,8 +1171,8 @@ export class SettleService {
       });
     }
 
-    // 날짜 조건 적용 (order.createdAt 기준)
-    queryBuilder = QueryBuilderDateCondition(queryBuilder, 'order', 'createdAt', startAt, endAt);
+    // 발송내역 검색이므로 실제 발송일 기준으로 기간 필터를 적용한다.
+    queryBuilder = QueryBuilderDateCondition(queryBuilder, 'orderDelivery', 'actualSendAt', startAt, endAt);
 
     // 총 개수 조회 (페이징 전)
     const totalCount = await queryBuilder.getCount();
@@ -1225,7 +1218,7 @@ export class SettleService {
 
       return {
         id: order.id,
-        registeredAt: format(orderDelivery.sendRequestAt, DateFormatStr),
+        registeredAt: format(orderDelivery.actualSendAt!, DateFormatStr),
         partnerCompanyName: partnerCompany.businessName,
         userBusinessName: order.clientUser?.company?.businessName ?? order.user!.company?.businessName ?? '',
         eventName: order.eventName,
@@ -1267,11 +1260,7 @@ export class SettleService {
     // 동일 필터를 id수집 QB와 graph QB 양쪽에 동일 적용
     const applyPartnerFilters = <T extends SelectQueryBuilder<any>>(qb: T): T => {
       qb.where('order.status IN (:...status)', { status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'] }).andWhere(
-        new Brackets((b) =>
-          b
-            .where('partnerCompany.type != :galaxiaType', { galaxiaType: IPartnerCompanyType.GALAXIA })
-            .orWhere('partnerCompany.type IS NULL'),
-        ),
+        'orderDelivery.actualSendAt IS NOT NULL',
       );
 
       if (settleMethod) {
@@ -1286,27 +1275,27 @@ export class SettleService {
         });
       }
 
-      QueryBuilderDateCondition(qb, 'order', 'createdAt', startAt, endAt);
+      QueryBuilderDateCondition(qb, 'orderDelivery', 'actualSendAt', startAt, endAt);
       return qb;
     };
 
-    // 1) id 수집 (경량: select 없이 join만, 부모 order.id distinct)
-    let idQueryBuilder = this.orderRepository
-      .createQueryBuilder('order')
+    // 1) 발송내역 id 수집. 주문 단위로 수집하면 같은 주문의 기간 밖 발송건이 엑셀에 섞일 수 있다.
+    let idQueryBuilder = this.orderDeliveryRepository
+      .createQueryBuilder('orderDelivery')
+      .innerJoin('orderDelivery.orderProductMapping', 'orderProductMapping')
+      .innerJoin('orderProductMapping.order', 'order')
       .innerJoin('order.user', 'user')
       .leftJoin('user.company', 'userCompany')
       .leftJoin('order.clientUser', 'clientUser')
       .leftJoin('clientUser.company', 'clientCompany')
-      .innerJoin('order.orderProductMappings', 'orderProductMappings')
-      .innerJoin('orderProductMappings.product', 'product')
+      .innerJoin('orderProductMapping.product', 'product')
       .innerJoin('product.partnerCompany', 'partnerCompany')
       .leftJoin('product.brand', 'brand')
-      .innerJoin('orderProductMappings.orderDeliveries', 'orderDeliveries')
-      .leftJoin('orderDeliveries.choiceSelectProduct', 'choiceSelectProduct')
+      .leftJoin('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
       .leftJoin('choiceSelectProduct.partnerCompany', 'choicePartnerCompany')
       .leftJoin('choiceSelectProduct.brand', 'choiceBrand');
     idQueryBuilder = applyPartnerFilters(idQueryBuilder);
-    idQueryBuilder = idQueryBuilder.select('order.id', 'id').distinct(true).orderBy('order.id', 'DESC');
+    idQueryBuilder = idQueryBuilder.select('orderDelivery.id', 'id').orderBy('orderDelivery.id', 'DESC');
     const idRows = await idQueryBuilder.getRawMany();
     const ids = idRows.map((r) => Number(r.id));
 
@@ -1361,101 +1350,99 @@ export class SettleService {
     for (let i = 0; i < ids.length; i += CHUNK) {
       const chunkIds = ids.slice(i, i + CHUNK);
 
-      const chunkList = await this.orderRepository
-        .createQueryBuilder('order')
+      const chunkList = await this.orderDeliveryRepository
+        .createQueryBuilder('orderDelivery')
+        .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
+        .innerJoinAndSelect('orderProductMapping.order', 'order')
         .innerJoinAndSelect('order.user', 'user')
         .leftJoinAndSelect('user.company', 'userCompany')
         .leftJoinAndSelect('order.clientUser', 'clientUser')
         .leftJoinAndSelect('clientUser.company', 'clientCompany')
-        .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
-        .innerJoinAndSelect('orderProductMappings.product', 'product')
+        .innerJoinAndSelect('orderProductMapping.product', 'product')
         .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
         .leftJoinAndSelect('product.brand', 'brand')
-        .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
-        .leftJoinAndSelect('orderDeliveries.choiceSelectProduct', 'choiceSelectProduct')
+        .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
         .leftJoinAndSelect('choiceSelectProduct.partnerCompany', 'choicePartnerCompany')
         .leftJoinAndSelect('choiceSelectProduct.brand', 'choiceBrand')
         .whereInIds(chunkIds)
-        .orderBy('order.id', 'DESC')
+        .orderBy('orderDelivery.id', 'DESC')
         .getMany();
 
       // chunkIds 순서대로 정렬 (whereInIds는 순서를 보장하지 않음)
-      const chunkMap = new Map(chunkList.map((o) => [o.id, o]));
+      const chunkMap = new Map(chunkList.map((d) => [d.id, d]));
 
-      for (const orderId of chunkIds) {
-        const order = chunkMap.get(orderId);
-        if (!order) continue;
-        for (const orderProductMapping of order.orderProductMappings!) {
-          const product = orderProductMapping.product;
-          const partnerCompany = product.partnerCompany!;
+      for (const orderDeliveryId of chunkIds) {
+        const orderDelivery = chunkMap.get(orderDeliveryId);
+        if (!orderDelivery) continue;
+        const orderProductMapping = orderDelivery.orderProductMapping;
+        const order = orderProductMapping.order;
+        const product = orderProductMapping.product;
+        const partnerCompany = product.partnerCompany!;
 
-          for (const orderDelivery of orderProductMapping.orderDeliveries!) {
-            // 초이스쿠폰 선택 시 선택된 상품 정보 사용
-            const displayProduct = orderDelivery.choiceSelectProduct ?? product;
-            const displayPartnerCompany = orderDelivery.choiceSelectProduct?.partnerCompany ?? partnerCompany;
-            const displayBrand = orderDelivery.choiceSelectProduct?.brand ?? product.brand;
+        // 초이스쿠폰 선택 시 선택된 상품 정보 사용
+        const displayProduct = orderDelivery.choiceSelectProduct ?? product;
+        const displayPartnerCompany = orderDelivery.choiceSelectProduct?.partnerCompany ?? partnerCompany;
+        const displayBrand = orderDelivery.choiceSelectProduct?.brand ?? product.brand;
 
-            // 수신번호 복호화
-            const receiverPhone = this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.deliveryTarget) ?? '';
+        // 수신번호 복호화
+        const receiverPhone = this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.deliveryTarget) ?? '';
 
-            // 유효기간 계산 (기호 없이 yyyyMMdd 형식): 저장된 expireAt 직접 사용
-            let validityStartAt = '';
-            let validityEndAt = '';
-            if (orderDelivery.expireAt) {
-              const endDate = new Date(orderDelivery.expireAt);
-              // 시작일 = 종료일 - (유효기간일수 - 1)
-              const startDate = new Date(endDate.getTime() - (displayProduct.expireDay - 1) * 24 * 60 * 60 * 1000);
-              validityStartAt = format(startDate, DateCompactStr);
-              validityEndAt = format(endDate, DateCompactStr);
-            } else if (orderDelivery.actualSendAt) {
-              // fallback: expireAt 없는 레거시 데이터
-              const sendDateObj = new Date(orderDelivery.actualSendAt);
-              const startDate = displayPartnerCompany.validityStartsNextDay
-                ? new Date(sendDateObj.getTime() + 24 * 60 * 60 * 1000)
-                : sendDateObj;
-              const endDate = new Date(startDate.getTime() + displayProduct.expireDay * 24 * 60 * 60 * 1000);
-              validityStartAt = format(startDate, DateCompactStr);
-              validityEndAt = format(endDate, DateCompactStr);
-            }
-
-            // 발송일/시간, 교환일/시간 (기호 없이 yyyyMMdd, HHmmss 형식)
-            const sendDateTime = formatCompactDateTime(orderDelivery.actualSendAt);
-            const tradeDateTime = formatCompactDateTime(orderDelivery.tradeAt);
-
-            // 폐기시간 (취소/환불 시) - execDiscard 트랜잭션에서 세팅한 discardedAt 사용
-            const discardAt = orderDelivery.discardedAt ? format(orderDelivery.discardedAt, DateFormatStr) : '';
-
-            sheet
-              .addRow({
-                partnerCompanyName: displayPartnerCompany.businessName,
-                userBusinessName: order.clientUser?.company?.businessName ?? order.user!.company?.businessName ?? '',
-                productCode: displayProduct.code,
-                sendTitle: orderProductMapping.sendTitle ?? '',
-                eventName: order.eventName,
-                productName: displayProduct.name,
-                brandName: displayBrand?.nameKorean ?? '',
-                price: orderDelivery.choiceSelectProduct
-                  ? orderDelivery.choiceSelectProduct.price
-                  : readLineProductView(orderProductMapping).price,
-                balance: orderDelivery.galaxiaBalance ?? 0,
-                expireDay: displayProduct.expireDay,
-                validityStartAt,
-                validityEndAt,
-                receiverPhone,
-                senderPhone: orderProductMapping.fromPhoneNumber ?? '',
-                tradeDate: tradeDateTime.date,
-                tradeTime: tradeDateTime.time,
-                sendDate: sendDateTime.date,
-                sendTime: sendDateTime.time,
-                pinStatus: couponStatusToKorean(orderDelivery.couponStatus),
-                pinNumber: orderDelivery.barCode ?? '',
-                discardAt,
-                transactionId: orderDelivery.transactionId ?? '',
-              })
-              .commit();
-            recordCount++;
-          }
+        // 유효기간 계산 (기호 없이 yyyyMMdd 형식): 저장된 expireAt 직접 사용
+        let validityStartAt = '';
+        let validityEndAt = '';
+        if (orderDelivery.expireAt) {
+          const endDate = new Date(orderDelivery.expireAt);
+          // 시작일 = 종료일 - (유효기간일수 - 1)
+          const startDate = new Date(endDate.getTime() - (displayProduct.expireDay - 1) * 24 * 60 * 60 * 1000);
+          validityStartAt = format(startDate, DateCompactStr);
+          validityEndAt = format(endDate, DateCompactStr);
+        } else if (orderDelivery.actualSendAt) {
+          // fallback: expireAt 없는 레거시 데이터
+          const sendDateObj = new Date(orderDelivery.actualSendAt);
+          const startDate = displayPartnerCompany.validityStartsNextDay
+            ? new Date(sendDateObj.getTime() + 24 * 60 * 60 * 1000)
+            : sendDateObj;
+          const endDate = new Date(startDate.getTime() + displayProduct.expireDay * 24 * 60 * 60 * 1000);
+          validityStartAt = format(startDate, DateCompactStr);
+          validityEndAt = format(endDate, DateCompactStr);
         }
+
+        // 발송일/시간, 교환일/시간 (기호 없이 yyyyMMdd, HHmmss 형식)
+        const sendDateTime = formatCompactDateTime(orderDelivery.actualSendAt);
+        const tradeDateTime = formatCompactDateTime(orderDelivery.tradeAt);
+
+        // 폐기시간 (취소/환불 시) - execDiscard 트랜잭션에서 세팅한 discardedAt 사용
+        const discardAt = orderDelivery.discardedAt ? format(orderDelivery.discardedAt, DateFormatStr) : '';
+
+        sheet
+          .addRow({
+            partnerCompanyName: displayPartnerCompany.businessName,
+            userBusinessName: order.clientUser?.company?.businessName ?? order.user!.company?.businessName ?? '',
+            productCode: displayProduct.code,
+            sendTitle: orderProductMapping.sendTitle ?? '',
+            eventName: order.eventName,
+            productName: displayProduct.name,
+            brandName: displayBrand?.nameKorean ?? '',
+            price: orderDelivery.choiceSelectProduct
+              ? orderDelivery.choiceSelectProduct.price
+              : readLineProductView(orderProductMapping).price,
+            balance: orderDelivery.galaxiaBalance ?? 0,
+            expireDay: displayProduct.expireDay,
+            validityStartAt,
+            validityEndAt,
+            receiverPhone,
+            senderPhone: orderProductMapping.fromPhoneNumber ?? '',
+            tradeDate: tradeDateTime.date,
+            tradeTime: tradeDateTime.time,
+            sendDate: sendDateTime.date,
+            sendTime: sendDateTime.time,
+            pinStatus: couponStatusToKorean(orderDelivery.couponStatus),
+            pinNumber: orderDelivery.barCode ?? '',
+            discardAt,
+            transactionId: orderDelivery.transactionId ?? '',
+          })
+          .commit();
+        recordCount++;
       }
     }
 
