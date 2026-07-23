@@ -57,12 +57,14 @@ export class UserCompanyEntity extends BaseEntity {
   @Column({ type: 'varchar', length: 100, nullable: true, comment: '은행명' })
   bankName: string | null;
 
+  // TODO(financial-pii): 활성 writer/reader 없음(dead 의심). at-rest COUNT>0이면 백필 대상 — sql/ops/ops_20260723_financial_pii_preaudit.sql 참조
   @Column({ type: 'varchar', length: 100, nullable: true, comment: '계좌번호' })
   bankNumber: string | null;
 
   @Column({ type: 'varchar', length: 100, nullable: true, comment: '카드사명' })
   cardName: string | null;
 
+  // TODO(financial-pii): 활성 writer/reader 없음(dead 의심). at-rest COUNT>0이면 백필 대상 — sql/ops/ops_20260723_financial_pii_preaudit.sql 참조
   @Column({ type: 'varchar', length: 100, nullable: true, comment: '카드번호' })
   cardNumber: string | null;
 

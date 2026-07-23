@@ -1,3 +1,4 @@
+import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { InjectRepository } from '@nestjs/typeorm';
 import { createExportTempPath } from '../../util/file.util';
 import { Brackets, In, Repository } from 'typeorm';
@@ -174,6 +175,7 @@ export class OrderRealProductService {
     private userRepository: Repository<UserEntity>,
     private deliveryTrackHttp: DeliveryTrackHttp,
     private activityLogService: ActivityLogService,
+    private readonly cryptoCipher: CryptoCipher,
   ) {}
 
   private applyRealProductOrderAccessScope<T extends { andWhere: (condition: string, parameters?: object) => T }>(
@@ -1267,7 +1269,9 @@ export class OrderRealProductService {
       trackingNumber: oneOrderProductMapping.trackingNumber,
       paymentMethod: oneOrderProductMapping.paymentMethod,
       paymentBank: oneOrderProductMapping.realProductOrder.businessUser.bankName,
-      paymentAccountInfo: oneOrderProductMapping.realProductOrder.businessUser.bankNumber,
+      paymentAccountInfo:
+        this.cryptoCipher.safeDecryptAccountNumber(oneOrderProductMapping.realProductOrder.businessUser.bankNumber) ??
+        oneOrderProductMapping.realProductOrder.businessUser.bankNumber,
       remarks: oneOrderProductMapping.remarks,
       progressStatus: oneOrderProductMapping.progressStatus,
       filePath: oneOrderProductMapping.filePath,

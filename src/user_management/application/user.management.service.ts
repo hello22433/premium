@@ -1,3 +1,4 @@
+import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { randomBytes, createHash } from 'crypto';
 import {
   BadRequestException,
@@ -144,6 +145,7 @@ export class UserManagementService {
     private readonly settleService: SettleService,
     private readonly orderFromService: OrderFromService,
     private readonly settlementCodeAdminService: SettlementCodeAdminService,
+    private readonly cryptoCipher: CryptoCipher,
   ) {}
 
   private readonly initPasswordTemplateCode = this.configService.getOrThrow<string>(
@@ -466,9 +468,9 @@ export class UserManagementService {
       maximumLimit: company?.maximumLimit ?? 0,
 
       bankName: user.bankName,
-      bankNumber: user.bankNumber,
+      bankNumber: this.cryptoCipher.safeDecryptAccountNumber(user.bankNumber) ?? user.bankNumber,
       cardName: user.cardName,
-      cardNumber: user.cardNumber,
+      cardNumber: this.cryptoCipher.safeDecryptAccountNumber(user.cardNumber) ?? user.cardNumber,
       balance: this.getCurrentBalance(user, company),
       fromPhoneNumber:
         process.env.FROM_PHONE_SOT_ENFORCE === 'true'
@@ -1004,9 +1006,9 @@ export class UserManagementService {
       settleCondition: getBody.settleCondition,
       settleMethod: getBody.settleMethod,
       bankName: getBody.bankName,
-      bankNumber: getBody.bankNumber,
+      bankNumber: getBody.bankNumber ? this.cryptoCipher.encryptAccountNumber(getBody.bankNumber) : getBody.bankNumber,
       cardName: getBody.cardName,
-      cardNumber: getBody.cardNumber,
+      cardNumber: getBody.cardNumber ? this.cryptoCipher.encryptAccountNumber(getBody.cardNumber) : getBody.cardNumber,
       status: getBody.status,
       personCode: getBody.email,
       fromPhoneNumber: getBody.fromPhoneNumber,
@@ -1144,9 +1146,9 @@ export class UserManagementService {
       user.settleMethod = getBody.settleMethod;
     }
     user.bankName = getBody.bankName;
-    user.bankNumber = getBody.bankNumber;
+    user.bankNumber = getBody.bankNumber ? this.cryptoCipher.encryptAccountNumber(getBody.bankNumber) : getBody.bankNumber;
     user.cardName = getBody.cardName;
-    user.cardNumber = getBody.cardNumber;
+    user.cardNumber = getBody.cardNumber ? this.cryptoCipher.encryptAccountNumber(getBody.cardNumber) : getBody.cardNumber;
     // user.status 는 여기서 직접 세팅하지 않음 — save 후 accountStatusTransitionService 로 일원화 처리.
     // fromPhoneNumber mirror 직접 세팅 제거 — save 이후 seedApprovedDefaultPhone 이 최종 권위 write.
 

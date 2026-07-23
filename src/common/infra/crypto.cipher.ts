@@ -157,4 +157,14 @@ export class CryptoCipher {
       return encryptedData;
     }
   }
+
+  // 금융 PII(계좌/카드번호) 저장 암호화 — deliveryTarget과 동일 스킴(AES-256-CBC, 결정론 고정 IV) 재사용.
+  // Option B(전용키/랜덤IV) 전환 시 이 두 메서드만 교체하면 호출부 불변(단일 seam).
+  encryptAccountNumber(data: string): string {
+    return this.encryptDeliveryTarget(data);
+  }
+
+  safeDecryptAccountNumber(encryptedData: string | null | undefined): string | null {
+    return this.safeDecryptDeliveryTarget(encryptedData);
+  }
 }
