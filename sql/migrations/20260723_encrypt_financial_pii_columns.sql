@@ -1,0 +1,71 @@
+-- 금융 PII(계좌/카드번호) 컬럼 평문 저장 → 대칭키 암호화 전환
+--
+-- 배경: user.bankNumber/cardNumber, partner_company.bankNumber, order_delivery.bankAccount 는
+--       평문으로 저장되어 왔다. 이번 변경으로 CryptoCipher.encryptAccountNumber(=encryptDeliveryTarget
+--       위임, AES-256-CBC/Base64)로 신규 쓰기를 암호화 저장하고, read 는 safeDecryptAccountNumber
+--       (=safeDecryptDeliveryTarget 위임) 로 평문/암호문 혼재를 폴백 복호한다.
+--       cardName(카드사명)/bankAccountOwner(예금주명)는 범위 밖(평문 유지, 불변).
+--
+-- 키 결정(Option A, 확정): 기존 DELIVERY_TARGET_CRYPTO_KEY/DELIVERY_TARGET_CRYPTO_IV 재사용,
+--       결정론적 고정 IV (6/18 history-column 암호화 선례와 정합). 신규 전용키(Option B)는 채택하지
+--       않음 — 채택 시에도 cipher 별칭(encryptAccountNumber/safeDecryptAccountNumber)이 단일 교체점.
+--       관련 근거: .gjc/_session-019f8dab-1a32-7000-b8a6-f40c0042827e/plans/ralplan/
+--                  019f8dab-1a32-7000-b8a6-f40c0042827e/pending-approval.md (ADR/확정 결정 표)
+--
+-- 백필 방침: 전량 백필(폐기 아님). 기존 평문 행은 이 마이그레이션이 아니라 별도 스크립트
+--       migration/encrypt-financial-pii-backfill.ts 로 처리한다(코드 배포와 분리된 1회성 작업).
+--       read 는 safeDecryptAccountNumber 폴백이 있어 평문/암호문 혼재 기간에도 무중단.
+--
+-- ─────────────────────────────────────────────────────────────
+-- DDL: 이 마이그레이션 자체는 컬럼 폭 변경이 없다(no-op DDL).
+-- ─────────────────────────────────────────────────────────────
+-- 근거: AES-256-CBC → base64 팽창 계산 = 평문 n바이트 → ceil((n+1)/16)*16 바이트 → base64 길이 ×4/3.
+--   계좌번호 14자(≈14B) → 16B 블록 → base64 24자.
+--   카드번호 16자(≈16B) → 32B 블록(패딩 풀블록 포함) → base64 44자.
+--   → user.bankNumber/cardNumber, partner_company.bankNumber 는 VARCHAR(100) 이므로 암호문(24~44자)을
+--     여유 있게 수용한다. order_delivery.bankAccount 는 VARCHAR(255) 로 이미 안전.
+--
+-- 단, 위 계산은 "평문이 66자 이하"를 전제로 한다(66자 초과 시 base64 암호문이 100자를 넘을 수 있음).
+-- 실제 컬럼 데이터의 MAX(CHAR_LENGTH(...)) 는 사전에 sql/ops/ops_20260723_financial_pii_preaudit.sql
+-- (READ-ONLY, [게이트 2])로 실측했다. 그 결과가 여유 범위를 벗어나는 경우에만 아래 widening ALTER를
+-- 적용한다(기본 비활성 — 주석 해제 후 실행):
+--
+-- -- widening 이 필요한 경우에만 사용(pre-audit MAX 초과 확인 후):
+-- -- ALTER TABLE `user`
+-- --   MODIFY COLUMN bankNumber VARCHAR(150) NULL COMMENT '계좌번호 (암호화 저장, encryptAccountNumber)',
+-- --   MODIFY COLUMN cardNumber VARCHAR(150) NULL COMMENT '카드번호 (암호화 저장, encryptAccountNumber)';
+-- --
+-- -- ALTER TABLE partner_company
+-- --   MODIFY COLUMN bankNumber VARCHAR(150) NULL COMMENT '계좌번호 (암호화 저장, encryptAccountNumber)';
+--
+-- 폭을 넓히는 방향의 ALTER 는 기존 값을 자르지 않으므로(online, MySQL 8.x) 안전하지만, 반대로 좁히는
+-- 롤백은 암호문이 평문보다 길어 잘릴 수 있어 금지(20260618 선례와 동일 원칙).
+--
+-- ─────────────────────────────────────────────────────────────
+-- 실행 순서 (코드 → 백업 → 백필)
+-- ─────────────────────────────────────────────────────────────
+--   1. Release1(read safeDecrypt) 배포 및 안정화 확인 — 저장값이 아직 평문이므로 폴백=원본 반환(무해).
+--   2. Release2(write encrypt 균일 falsy 가드) 배포 — 이 시점 이후 신규/수정 행만 암호화 저장 시작.
+--   3. (본 파일) 마이그레이션 문서 적용 — 기본은 no-op. pre-audit 결과에 따라 widening ALTER 필요 시만 적용.
+--   4. sql/ops/ops_20260723_financial_pii_preaudit.sql 실행(READ-ONLY) → user_company 포함 여부·widening
+--      필요 여부를 판정 기록(파일 하단 템플릿에 결과 기입).
+--   5. 백업 스냅샷 생성(하드 전제, 백필 스크립트가 자체 수행) — 백업 없이는 백필 중단. 여러 대상 테이블의
+--      백업은 실행 단위 고정 BACKFILL_RUN_ID 로 상관 추적된다(미지정 시 실행 시각 기반 자동 생성).
+--   6. migration/encrypt-financial-pii-backfill.ts 를 --dry-run 으로 먼저 실행(안전 인자 검증: batch-size≥1,
+--      resume-from-id≥0) → updated/skipped/failed/ambiguous 카운트 확인 → ambiguous 행 개별 검수 →
+--      문제 없으면 실제 실행(--dry-run 제거).
+--   7. 멱등 재실행 검증: 동일 BACKFILL_RUN_ID 로 재실행하면 기존 백업 테이블을 행수 검증 후 재사용하고
+--      (재생성 실패 없음), dedup(non-throw 불변식)이 이미 암호화된 행을 skip 하여 updated=0 이 된다.
+--      이어서 safeDecrypt 왕복 스모크(암호문→평문 복원)를 확인한다.
+--
+-- 검증:
+--   SHOW COLUMNS FROM `user` LIKE 'bankNumber';
+--   SHOW COLUMNS FROM `user` LIKE 'cardNumber';
+--   SHOW COLUMNS FROM partner_company LIKE 'bankNumber';
+--   SHOW COLUMNS FROM order_delivery LIKE 'bankAccount';
+--
+-- 롤백:
+--   본 파일이 no-op DDL 인 경우 롤백 대상 없음. widening ALTER 를 적용했다면, 백필된 암호문이 평문보다
+--   길어 원복(좁히는 ALTER) 시 잘릴 수 있으므로 데이터 확인 후에만 롤백한다. write encrypt(Release2)와
+--   백필 데이터 자체의 롤백은 코드 배포 롤백(Release1 유지)과 백업 스냅샷 복원으로만 가능하다
+--   (마이그레이션 롤백 불변식: Release1 미만으로 롤백 금지 — 암호문 존재 시 평문 파서가 깨짐).

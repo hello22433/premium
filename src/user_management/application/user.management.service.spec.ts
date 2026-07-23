@@ -51,7 +51,14 @@ import { AccountStatusTransitionService } from '../../account_lifecycle/applicat
 import { SettleService } from '../../settle/application/settle.service';
 import { OrderFromService } from '../../order_from/application/order.from.service';
 import { SettlementCodeAdminService } from '../../wallet/application/settlement-code-admin.service';
+import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { UserManagementChargeBalanceReqDto, UserManagementModifyBalanceReqDto } from '../api/user.management.req.dto';
+const cipherStub = {
+  encryptAccountNumber: (v: string) => v,
+  safeDecryptAccountNumber: (v: string) => v,
+  encryptDeliveryTarget: (v: string) => v,
+  safeDecryptDeliveryTarget: (v: string) => v,
+} as unknown as CryptoCipher;
 
 describe('user management service test', () => {
   let userRepository: any = mock<Repository<UserEntity>>();
@@ -168,6 +175,7 @@ describe('user management service test', () => {
             seedApprovedDefaultPhone: jest.fn(),
           },
         },
+        { provide: CryptoCipher, useValue: cipherStub },
       ],
     }).compile();
 
@@ -1041,6 +1049,7 @@ describe('settleMethod SoT 동기화 테스트', () => {
             seedApprovedDefaultPhone: jest.fn(),
           },
         },
+        { provide: CryptoCipher, useValue: cipherStub },
       ],
     }).compile();
 
@@ -1435,6 +1444,7 @@ describe('modifyMaximumLimit — wallet credit_limit 동기화', () => {
             seedApprovedDefaultPhone: jest.fn(),
           },
         },
+        { provide: CryptoCipher, useValue: cipherStub },
       ],
     }).compile();
 
