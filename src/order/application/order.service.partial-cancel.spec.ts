@@ -137,16 +137,18 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
     // 실제 RefundPoolService 는 allocation 의 누적 복구액을 올린다 — 재원별 복구액을 그 차이로 읽으므로
     // 목도 같은 부수효과를 내야 레거시 미러 검증이 의미를 갖는다.
     sut.refundPoolService = {
-      refund: jest.fn(async () => {
+      // 원장은 라인당 1개 → 정상 흐름은 요청 건수만큼 반환(커버리지 가드 통과).
+      refund: jest.fn(async (input: any) => {
+        const ledgerIds = (input.targetDeliveryIds as number[]).map((id) => `l-${id}`);
         if (over.alreadyRefunded) {
-          return { alreadyRefunded: true, ledgerIds: ['l-1'], totalRefundedAmount: 0 };
+          return { alreadyRefunded: true, ledgerIds, totalRefundedAmount: 0 };
         }
         allocation.depositRestoredAmount += refundBreakdown.deposit;
         allocation.creditUsedRestoredAmount += refundBreakdown.credit;
         allocation.creditExcessRestoredAmount += refundBreakdown.excess;
         return {
           alreadyRefunded: false,
-          ledgerIds: ['l-1'],
+          ledgerIds,
           totalRefundedAmount: refundBreakdown.deposit + refundBreakdown.credit + refundBreakdown.excess,
         };
       }),
@@ -464,6 +466,35 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
       await call(sut, CANCELABLE);
 
       expect(sut.orderCancelNotificationService.notifyDirectOrderPartialCancel).not.toHaveBeenCalled();
+    });
+
+    // ★ 잔여 0(대기 전량 취소)이면 주문이 DELIVERY_CANCEL 로 내려가 사실상 전체취소다. 이때 부분취소
+    //   문안("일부 취소, 남은 0건")을 보내면 모순된 안내가 나가므로 전체취소 문안으로 보낸다.
+    it('전건 소진(remaining=0)이면 전체취소 문안으로 통지한다 (부분취소 문안 아님)', async () => {
+      const { sut, order } = buildSut({ remainingAfterCancel: 0 });
+
+      await call(sut, CANCELABLE);
+
+      expect(sut.orderCancelNotificationService.notifyDirectOrderCancel).toHaveBeenCalledWith(order, expect.anything());
+      expect(sut.orderCancelNotificationService.notifyDirectOrderPartialCancel).not.toHaveBeenCalled();
+    });
+  });
+
+  // ★ cancelDeliveriesIfStillWaiting 은 요청 전부를 CANCEL 로 바꾸지만, 환불은 allocation_line 이 있는
+  //   발송건만 한다(원장 1개/라인). 원장 수 != 요청 수면 일부가 미환불(고객 계속 청구)인데 로그도 없이
+  //   200 이 나가므로, 커버리지 불일치를 롤백으로 막는다.
+  describe('환불 커버리지', () => {
+    it('환불 원장 수가 요청 건수보다 적으면(라인 누락) 롤백한다', async () => {
+      const { sut } = buildSut();
+      // refund 목이 요청 3건인데 원장 2개만 반환 → 1건 미환불.
+      sut.refundPoolService.refund = jest.fn(async () => ({
+        alreadyRefunded: false,
+        ledgerIds: ['l-1', 'l-2'],
+        totalRefundedAmount: 20000,
+      }));
+
+      await expect(call(sut, CANCELABLE)).rejects.toBeInstanceOf(ConflictException);
+      expect(sut.logger.error).toHaveBeenCalledWith(expect.stringContaining('DELIVERY_CANCEL_REFUND_COVERAGE'));
     });
   });
 

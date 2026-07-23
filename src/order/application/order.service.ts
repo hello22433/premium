@@ -270,6 +270,20 @@ function resolveSettleFee(
 }
 
 /**
+ * 발송완료리포트 행에 넣을 발송건인지 판정한다(197-16 예약건 부분취소).
+ *
+ * 취소(발송취소)된 건은 발송되지 않았고 그 몫은 이미 환불됐으므로 "발송완료 리포트" 의 행이 아니다.
+ * 실패(FAIL)건은 제외하지 않는다 — 재발송으로 되살아날 수 있고, 발급 후 발송만 실패한 경우에는
+ * 바코드가 살아 있어 고객이 확인해야 할 정보다(markSendFail 은 status/failedAt 만 바꾸고 barCode 유지).
+ *
+ * getDeliveryCompleteReport / getDeliveryCompleteReportMultiple 두 리포트 루프가 공유한다.
+ * (spec: order.service.report-cancel-exclusion.spec.ts 가 이 술어를 직접 검증한다.)
+ */
+export function isDeliveryInCompleteReport(delivery: Pick<OrderDeliveryEntity, 'status'>): boolean {
+  return delivery.status !== IOrderDeliveryStatus.CANCEL;
+}
+
+/**
  * 거래명세서(단건/다중 공통) 품목 행 구성.
  *
  * D3-49 리뷰 B안: 차등정산(SSG 중복할인) 매핑은 요율 적용 단가별로 행을 분리한다(상세 화면과 동일 구성).
@@ -2097,13 +2111,8 @@ export class OrderService {
           : null;
 
         const lineView = readLineProductView(orderProductMapping);
-        // 취소된 발송건은 리포트에서 제외한다(197-16 예약건 부분취소).
-        // 발송되지 않았고 그 몫은 이미 환불됐으므로 "발송완료 리포트" 의 행이 아니다.
-        // 실패(FAIL)건은 제외하지 않는다 — 재발송으로 되살아날 수 있고, 발급 후 발송만 실패한
-        // 경우에는 바코드가 살아 있어 고객이 확인해야 할 정보다.
-        for (const orderDelivery of orderProductMapping.orderDeliveries.filter(
-          (delivery) => delivery.status !== IOrderDeliveryStatus.CANCEL,
-        )) {
+        // 취소된 발송건은 리포트에서 제외한다(197-16). 근거는 isDeliveryInCompleteReport docstring 참조.
+        for (const orderDelivery of orderProductMapping.orderDeliveries.filter(isDeliveryInCompleteReport)) {
           // deliveryTarget 복호화 후 마스킹 처리 (originalDeliveryTarget 우선 사용)
           const targetToDecrypt = orderDelivery.originalDeliveryTarget || orderDelivery.deliveryTarget;
           const decryptedDeliveryTarget = this.cryptoCipher.safeDecryptDeliveryTarget(targetToDecrypt) ?? '';
@@ -2577,13 +2586,8 @@ export class OrderService {
             : null;
 
           const lineView = readLineProductView(orderProductMapping);
-          // 취소된 발송건은 리포트에서 제외한다(197-16 예약건 부분취소).
-          // 발송되지 않았고 그 몫은 이미 환불됐으므로 "발송완료 리포트" 의 행이 아니다.
-          // 실패(FAIL)건은 제외하지 않는다 — 재발송으로 되살아날 수 있고, 발급 후 발송만 실패한
-          // 경우에는 바코드가 살아 있어 고객이 확인해야 할 정보다.
-          for (const orderDelivery of orderProductMapping.orderDeliveries.filter(
-            (delivery) => delivery.status !== IOrderDeliveryStatus.CANCEL,
-          )) {
+          // 취소된 발송건은 리포트에서 제외한다(197-16). 근거는 isDeliveryInCompleteReport docstring 참조.
+          for (const orderDelivery of orderProductMapping.orderDeliveries.filter(isDeliveryInCompleteReport)) {
             // deliveryTarget 복호화 후 마스킹 처리 (originalDeliveryTarget 우선 사용)
             const targetToDecrypt = orderDelivery.originalDeliveryTarget || orderDelivery.deliveryTarget;
             const decryptedDeliveryTarget = this.cryptoCipher.safeDecryptDeliveryTarget(targetToDecrypt) ?? '';
@@ -5978,6 +5982,22 @@ export class OrderService {
       );
     }
 
+    // ★ 환불 커버리지 검증. cancelDeliveriesIfStillWaiting 은 요청한 발송건을 전부 CANCEL 로 바꾸는데,
+    //   RefundPoolService 는 order_payment_allocation_line 이 있는 발송건만 환불한다(라인당 원장 1개).
+    //   정상 흐름은 발송건:라인 = 1:1 이라 항상 일치하지만, 라인이 없는 발송건(재발행 대체행 등)이
+    //   요청에 섞이면 그 건은 CANCEL 됐는데 환불은 안 되고(고객은 여전히 청구됨) 아무 에러도 없이
+    //   200 + "취소 완료" 로그가 나간다. 원장 수(=환불된 라인 수)와 요청 수가 다르면 롤백한다.
+    if (refundResult.ledgerIds.length !== requested.length) {
+      this.logger.error(
+        `[DELIVERY_CANCEL_REFUND_COVERAGE] orderId=${orderId} requested=${requested.length} ` +
+          `refundedLines=${refundResult.ledgerIds.length} ids=[${requested.join(',')}] ` +
+          `— 일부 발송건에 정산 라인이 없어 미환불, 취소 롤백`,
+      );
+      throw new ConflictException(
+        '취소 대상 중 환불 정보를 찾지 못한 발송건이 있어 처리하지 못했습니다. 아무것도 취소되지 않았습니다. 고객센터로 문의해 주세요.',
+      );
+    }
+
     // 레거시 미러 역복원 (전체취소·외부API취소와 동일). RefundPoolService 는 legacy 컬럼을 건드리지
     // 않으므로 이중복원이 아니다. 이게 빠져 있으면 지갑 잔액은 맞는데 고객사 화면·정산 화면의
     // 예치금/여신이 취소 전 값에 멈춰 서로 어긋난다.
@@ -6072,16 +6092,23 @@ export class OrderService {
     );
 
     // 고객사 직접주문(DIRECT) 은 전체취소와 마찬가지로 통지한다 — 돈이 돌아갔는데 외부에 기록이
-    // 남지 않으면 안 된다. 다만 문구는 부분취소 전용이어야 한다(전체취소 문안은 "주문이 취소되었습니다").
+    // 남지 않으면 안 된다.
+    // ★ 잔여가 0이면(대기 건을 전량 취소) 위에서 주문을 DELIVERY_CANCEL 로 내려 사실상 전체취소다.
+    //   이때 부분취소 문안("일부 취소, 남은 0건")을 보내면 고객에게 모순된 안내가 나가므로
+    //   전체취소 문안("주문이 취소되었습니다")으로 보낸다. 잔여가 있으면 부분취소 전용 문안.
     // ★ @Transactional() 안이므로 커밋 후 발송 — tx 미점유, 롤백 시 미발송. best-effort.
     if (isDirectCustomerCancelTarget(lockedOrder, billingUser)) {
       runOnTransactionCommit(() => {
-        void this.orderCancelNotificationService.notifyDirectOrderPartialCancel(lockedOrder, billingUser, {
-          canceledCount: requested.length,
-          remainingCount: remaining,
-          cancelReason,
-          canceledAt: now,
-        });
+        if (remaining === 0) {
+          void this.orderCancelNotificationService.notifyDirectOrderCancel(lockedOrder, billingUser);
+        } else {
+          void this.orderCancelNotificationService.notifyDirectOrderPartialCancel(lockedOrder, billingUser, {
+            canceledCount: requested.length,
+            remainingCount: remaining,
+            cancelReason,
+            canceledAt: now,
+          });
+        }
       });
     }
   }
