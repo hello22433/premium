@@ -294,6 +294,13 @@ export class CustomerServiceService {
     const mapping = orderDelivery.orderProductMapping;
     const order = mapping.order;
 
+    // 발송취소(부분취소, 197-16)된 건은 이미 환불됐다 — 안전망(진입 가드가 앞서 막지만, 다른 경로가
+    // 이 함수에 직접 도달해도 이중환불을 막는다). 발송취소 환불은 wallet 원장(OrderPaymentRefundEventEntity)에만
+    // 기록돼 아래 refund-ledger exists() 로는 잡히지 않으므로, status 로 직접 판정한다.
+    if (orderDelivery.status === IOrderDeliveryStatus.CANCEL) {
+      return null;
+    }
+
     // 이미 환불됨이면 폐기 복구 skip. 판단 기준은 financial SoT = refund ledger 존재 여부(exists)이며,
     // status===FAIL 프록시를 쓰지 않는다. FAIL 이어도 ledger 가 없으면(보류: 차감 유지, 발송 미성립)
     // 폐기 시 복구해야 하고, 반대로 FAIL 이 아니어도 이미 환불 ledger 가 있으면 이중 복구를 막아야 한다.
@@ -1638,7 +1645,16 @@ export class CustomerServiceService {
     const partnerType = this.getPartnerType(orderDelivery);
     const beforeChange = orderDelivery.couponStatus;
 
+    // 발송취소(부분취소, 197-16)된 건은 폐기 대상이 아니다. status 만 CANCEL 이고 couponStatus 는
+    // NOT_USED 로 남아 couponStatus 기반 terminal 가드(validateDiscardRequest)가 놓친다. 그대로 두면
+    // 이미 환불된 건을 폐기가 다시 환불한다(발송취소=wallet 원장 / 폐기=refund 원장이라 겹침검사도 못 잡음).
+    // ★ 슬롯·lease 획득보다 앞에 둔다 — 뒤로 가면 거부된 건이 lease 를 잡았다 놓지 못해 그 행이 잠긴다.
+    if (orderDelivery.status === IOrderDeliveryStatus.CANCEL) {
+      throw new BadRequestException('이미 취소된 발송건입니다.');
+    }
+
     // 외부 부작용 전에 판정 가능한 도메인 검증은 슬롯·intent 생성보다 먼저 끝낸다.
+    // (terminal couponStatus USED/CANCEL/REFUND_CANCEL 차단은 이 함수 안으로 추출돼 있다.)
     this.validateDiscardRequest(partnerType, beforeChange, couponStatus);
     // 환불폐기는 refundRatio(1~100) 필수 — 없으면 환불금액 0원 계산 위험.
     // 정산정보 입력 화면에서 미리 세팅하거나, 호출자가 options.refundRatio 로 전달해야 한다.
@@ -3772,6 +3788,19 @@ export class CustomerServiceService {
           }
           if (!userAuthList.includes(requiredAuth)) {
             failed.push({ id: orderDeliveryId, reason: '해당 쿠폰 종류에 대한 폐기 권한이 없습니다.' });
+            continue;
+          }
+
+          // 2-0. 발송취소(부분취소, 197-16)된 건은 폐기 대상이 아니다.
+          // 발송취소는 status 만 CANCEL 로 바꾸고 couponStatus 는 NOT_USED 로 남기므로 아래
+          // couponStatus 기반 가드가 놓친다. 그대로 진행하면 이미 환불된 건을 폐기가 다시
+          // 환불한다(발송취소는 wallet 원장, 폐기는 refund 원장이라 exists() 겹침검사도 못 잡음).
+          if (orderDelivery.status === IOrderDeliveryStatus.CANCEL) {
+            failed.push({
+              id: orderDeliveryId,
+              reason: '이미 취소된 발송건입니다.',
+              syncedStatus: orderDelivery.couponStatus,
+            });
             continue;
           }
 
