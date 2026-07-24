@@ -579,3 +579,49 @@ describe('phaseC — 영속 컬럼 집합 잠금 (save→targeted update 리팩�
     }
   });
 });
+
+// ── phaseC clobber 부재 회귀 (D3-60) ────────────────────────────────────
+describe('phaseC — full save() 부재 (D3-60 clobber)', () => {
+  it('성공 경로: save() 를 쓰지 않는다 — targeted update 로만 영속', async () => {
+    const { svc, mocks } = refundService({ isWalletManaged: false });
+
+    await (svc as any).phaseC_handleSuccess(makeOrder(), makePostSendDelivery());
+
+    expect(mocks.odSave).not.toHaveBeenCalled();
+    expect(mocks.odUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it('실패 경로: save() 를 쓰지 않는다', async () => {
+    const { svc, mocks } = refundService({ isWalletManaged: false });
+
+    await (svc as any).phaseC_handleFailure(makeOrder(), makePostSendDelivery(), makeAccount(), new Error('x'));
+
+    expect(mocks.odSave).not.toHaveBeenCalled();
+    expect(mocks.odUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it('SET 절에 clobber 3컬럼이 없다 — 남이 확정한 값을 되돌리지 않는다', async () => {
+    const { svc, mocks } = refundService({ isWalletManaged: false });
+
+    await (svc as any).phaseC_handleSuccess(makeOrder(), makePostSendDelivery());
+
+    const [, patch] = mocks.odUpdate.mock.calls[0] as any[];
+    expect(patch).not.toHaveProperty('couponStatus'); // 환불된 쿠폰 되살림
+    expect(patch).not.toHaveProperty('deletedAt'); // 지워진 행 부활
+    expect(patch).not.toHaveProperty('mutationClaimedAt'); // CS 폐기가 쥔 lease 무력화
+  });
+
+  it('발급 결과 컬럼은 건드리지 않는다 — persistIssuedPin 소관 (이중 소유 금지)', async () => {
+    const { svc, mocks } = refundService({ isWalletManaged: false });
+
+    await (svc as any).phaseC_handleSuccess(makeOrder(), makePostSendDelivery());
+
+    const [, patch] = mocks.odUpdate.mock.calls[0] as any[];
+    for (const owned of ['barCode', 'personalCode', 'couponNum', 'ssgTransactionId', 'ssgEventId']) {
+      expect(patch).not.toHaveProperty(owned);
+    }
+    // transactionId/externalTrId 는 saveTransactionIds 소관
+    expect(patch).not.toHaveProperty('transactionId');
+    expect(patch).not.toHaveProperty('externalTrId');
+  });
+});
