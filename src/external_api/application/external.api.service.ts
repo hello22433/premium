@@ -1331,14 +1331,32 @@ export class ExternalApiService {
     // couponNum·deletedAt …)은 trId 조회 시점의 옛 값 그대로라, save 는 그 사이 배치·재발행이 쓴
     // 값을 되돌린다. 특히 deletedAt=NULL 되돌림은 unwindReissue 가 지운 tip 을 부활시킨다.
     // 이 함수가 실제로 바꾸는 3개 컬럼만 targeted update 한다.
-    await this.orderDeliveryRepository.update(
-      { id: orderDelivery.id },
+    //
+    // fencing: 내 변형 lease 를 아직 들고 있을 때만 쓴다.
+    // lease 는 5분 stale self-heal 이라, 협력사 취소가 극단 지연되면(재시도 최대 31초 + 응답 대기)
+    // 그 사이 폐기·재발행이 lease 를 stale 로 보고 가져갈 수 있다. 그때 무조건 쓰면 남이 확정한
+    // 상태를 덮는다.
+    const claimed = await this.orderDeliveryRepository.update(
+      { id: orderDelivery.id, mutationClaimedAt: mutationClaimAt },
       {
         status: IOrderDeliveryStatus.CANCEL,
         couponStatus: OrderDeliveryCouponStatus.CANCEL,
         discardedAt,
       },
     );
+
+    // affected=0 = lease 를 뺏긴 뒤였다. 여기서 멈추면 안 된다 —
+    // 협력사 취소(cancelByExternalApi)는 **이 함수에 오기 전에 이미 끝난 비가역 작업**이라,
+    // 중단하면 "협력사 쿠폰은 죽었는데 환불은 안 나간" 고객 피해가 남는다.
+    // 따라서 환불은 그대로 집행하고(refundLedger.claim 의 멱등 게이트가 이중환불을 막는다 — D3-3),
+    // 상태 미반영만 경보로 남겨 수동 정합을 유도한다.
+    if (!claimed.affected) {
+      this.logger.error(
+        `[CANCEL_FENCE_LOST] 변형 lease 상실로 취소 상태 미반영 — 환불은 진행한다. ` +
+          `orderDeliveryId=${orderDelivery.id}, orderId=${order.id}, ` +
+          `수동 확인 필요: order_delivery.status/coupon_status 가 CANCEL 인지 대조`,
+      );
+    }
 
     order.status = IOrderStatus.DELIVERY_CANCEL;
     await this.orderRepository.save(order);
