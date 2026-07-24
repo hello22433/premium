@@ -62,9 +62,18 @@ describe('CustomerServiceService — execResend (CS 재전송) 발송 가드', (
     qb = {
       setLock: jest.fn().mockReturnThis(),
       where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      update: jest.fn().mockReturnThis(),
+      set: jest.fn().mockReturnThis(),
       getOne: jest.fn(),
+      // lease 획득 CAS 결과. affected=1 = 획득/탈취 성공, 0 = 활성 lease 라 거절.
+      execute: jest.fn().mockResolvedValue({ affected: 1 }),
     };
-    orderDeliveryRepository = { createQueryBuilder: jest.fn(() => qb) };
+    orderDeliveryRepository = {
+      createQueryBuilder: jest.fn(() => qb),
+      // releaseMutationLease(owner-guarded 해제)
+      update: jest.fn().mockResolvedValue({ affected: 1 }),
+    };
     orderHistoryRepository = {
       count: jest.fn().mockResolvedValue(0), // dedup 창 통과
       create: jest.fn((x: any) => x),
@@ -114,6 +123,7 @@ describe('CustomerServiceService — execResend (CS 재전송) 발송 가드', (
 
   it('변형 lease 활성(폐기/취소/재발행 진행중)이면 409 로 거절한다', async () => {
     qb.getOne.mockResolvedValue(buildLocked({ mutationClaimedAt: new Date() }));
+    qb.execute.mockResolvedValue({ affected: 0 }); // 활성 lease → CAS 실패
 
     await expect(service.execResend(buildMap())).rejects.toBeInstanceOf(ConflictException);
 
@@ -123,9 +133,87 @@ describe('CustomerServiceService — execResend (CS 재전송) 발송 가드', (
   it('stale lease(5분 초과)는 잔재이므로 막지 않는다 — 크래시 후 영구 차단 방지', async () => {
     const stale = new Date(Date.now() - MUTATION_CLAIM_STALE_MS - 60_000);
     qb.getOne.mockResolvedValue(buildLocked({ mutationClaimedAt: stale }));
+    qb.execute.mockResolvedValue({ affected: 1 }); // stale → 탈취 성공
 
     await service.execResend(buildMap());
 
     expect(deliveryBatchService.csResendAsMms).toHaveBeenCalled();
+  });
+
+  /**
+   * ★ 리뷰 지적 회귀 — lease 는 **읽기가 아니라 탈취**여야 한다 (3eb7270·8a8f256 과 동일 계열).
+   *
+   * 종전에는 `if (locked.mutationClaimedAt >= stale) throw` 로 **읽고 통과만** 했다.
+   * 그러면 이미 밖에 나가 있는 좀비 A(execDiscard 가 lease 를 잡고 **행 락을 놓은 뒤**
+   * 협력사 cancel 중 5분+ 지연)가 깨어났을 때, A 의 fenced write
+   * (WHERE mutation_claimed_at = tA)가 여전히 일치해 **성공한다**.
+   * → 이 재전송이 방금 보낸 쿠폰을 A 가 폐기·환불로 확정 → 고객은 죽은 핀을 받는다.
+   *
+   * 비관락은 "새로 시작하는 변형"만 막는다. 이미 나가 있는 좀비는 토큰을 덮어써야만 무력화된다.
+   */
+  describe('변형 lease — 읽기가 아니라 탈취 + 해제 (리뷰 회귀)', () => {
+    const leaseSetArg = () => (qb.set.mock.calls[0] as any[])?.[0];
+    const releaseCalls = () =>
+      (orderDeliveryRepository.update.mock.calls as any[][]).filter((c) => c[1]?.mutationClaimedAt === null);
+
+    it('발송 전에 내 토큰으로 lease 를 SET 한다 — 좀비의 fencing 을 무효화', async () => {
+      qb.getOne.mockResolvedValue(buildLocked({ mutationClaimedAt: new Date(Date.now() - MUTATION_CLAIM_STALE_MS - 1) }));
+
+      await service.execResend(buildMap());
+
+      // SET 이 없으면 stale 토큰이 그대로 남아 좀비의 WHERE 가 계속 일치한다
+      expect(leaseSetArg()).toEqual({ mutationClaimedAt: expect.any(Date) });
+      expect(deliveryBatchService.csResendAsMms).toHaveBeenCalled();
+    });
+
+    it('lease 획득은 CAS — WHERE 에 (IS NULL OR < stale) 술어가 있다', async () => {
+      qb.getOne.mockResolvedValue(buildLocked());
+
+      await service.execResend(buildMap());
+
+      const cas = (qb.andWhere.mock.calls as any[][]).find((c) => /mutationClaimedAt/i.test(String(c[0])));
+      expect(cas).toBeDefined();
+      expect(String(cas![0])).toMatch(/mutationClaimedAt IS NULL/i);
+      expect(String(cas![0])).toMatch(/mutationClaimedAt\s*<\s*:stale/i);
+    });
+
+    it('성공 시 owner-guarded 해제 — 내 토큰일 때만 푼다', async () => {
+      qb.getOne.mockResolvedValue(buildLocked());
+
+      await service.execResend(buildMap());
+
+      expect(releaseCalls()).toHaveLength(1);
+      expect(releaseCalls()[0][0]).toEqual({
+        id: ORDER_DELIVERY_ID,
+        mutationClaimedAt: leaseSetArg().mutationClaimedAt,
+      });
+    });
+
+    it('발송이 실패해도 finally 에서 해제한다 — 안 풀면 5분간 폐기·취소가 전부 막힌다', async () => {
+      qb.getOne.mockResolvedValue(buildLocked());
+      deliveryBatchService.csResendAsMms.mockRejectedValue(new Error('gateway down'));
+
+      await expect(service.execResend(buildMap())).rejects.toThrow('gateway down');
+
+      expect(releaseCalls()).toHaveLength(1);
+    });
+
+    it('lease 를 못 잡았으면(409) 해제를 시도하지 않는다 — 남의 lease 를 건드리지 않음', async () => {
+      qb.getOne.mockResolvedValue(buildLocked({ mutationClaimedAt: new Date() }));
+      qb.execute.mockResolvedValue({ affected: 0 });
+
+      await expect(service.execResend(buildMap())).rejects.toBeInstanceOf(ConflictException);
+
+      expect(releaseCalls()).toHaveLength(0);
+    });
+
+    it('폐기 쿠폰이면 lease 를 잡기 전에 거절한다 (불필요한 점유 방지)', async () => {
+      qb.getOne.mockResolvedValue(buildLocked({ couponStatus: OrderDeliveryCouponStatus.CANCEL }));
+
+      await expect(service.execResend(buildMap())).rejects.toBeInstanceOf(BadRequestException);
+
+      expect(qb.set).not.toHaveBeenCalled();
+      expect(releaseCalls()).toHaveLength(0);
+    });
   });
 });

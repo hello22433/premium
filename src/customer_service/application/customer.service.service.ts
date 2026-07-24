@@ -1879,67 +1879,77 @@ export class CustomerServiceService {
     //      그 창에서 이 비관락은 아무것도 막지 못한다(폐기가 그 행의 락을 쥐고 있지 않으므로 즉시 획득된다).
     //      lease 를 읽어야만 "취소 진행 중" 을 알 수 있다.
     //
-    //   여기서는 lease 를 **획득하지 않고 읽기만 한다.** 이 트랜잭션이 pessimistic_write 로 행을
-    //   잡고 있는 동안에는 남이 lease 를 획득하는 UPDATE 자체가 블록되므로, 검사~발송 사이에
-    //   새 변형이 끼어들 수 없다(검사와 발송이 락 구간 안에서 원자적이다).
+    //   lease 는 **읽기가 아니라 획득(탈취)이어야 한다** (리뷰 지적, 3eb7270·8a8f256 과 동일 계열).
+    //   종전에는 stale lease 를 "통과"만 시키고 토큰을 덮어쓰지 않았다. 그러면 이미 나가 있는
+    //   좀비 A(예: execDiscard 가 lease 를 잡은 뒤 **행 락을 놓고** 협력사 cancel 중 5분+ 지연)가
+    //   깨어났을 때, A 의 fenced write(WHERE mutation_claimed_at=tA)가 **여전히 일치해 성공**한다.
+    //   → 이 재전송이 보낸 쿠폰을 A 가 곧바로 폐기·환불로 확정 → 고객은 죽은 핀을 받는다.
+    //   비관락은 "새로 시작하는 변형"만 막고, 이미 밖에 나가 있는 좀비는 못 막는다.
+    //   stale 이면 내 토큰으로 CAS 탈취해 A 의 fencing 을 무효화(affected=0)시킨다.
     if (locked.couponStatus && UNSENDABLE_COUPON_STATUSES.includes(locked.couponStatus)) {
       throw new BadRequestException('폐기·환불된 쿠폰은 재전송할 수 없습니다.');
     }
-    const mutationStale = new Date(Date.now() - MUTATION_CLAIM_STALE_MS);
-    if (locked.mutationClaimedAt && locked.mutationClaimedAt >= mutationStale) {
+    const mutationClaimAt = new Date();
+    if (!(await this.acquireMutationLease(map.orderDeliveryId, mutationClaimAt))) {
       throw new ConflictException(
         '해당 발송 건에 다른 처리(폐기/취소/재발행)가 진행 중입니다. 잠시 후 다시 시도해주세요.',
       );
     }
 
-    // 2. dedup — 락 보유 중 최근 시간창 내 동일 건 재전송 이력 확인
-    const dedupSince = new Date(Date.now() - RESEND_DEDUP_WINDOW_MS);
-    const recentResendCount = await this.orderHistoryRepository.count({
-      where: {
-        orderDeliveryId: map.orderDeliveryId,
-        type: CS_HISTORY_TYPE.RESEND,
-        createdAt: MoreThanOrEqual(dedupSince),
-      },
-    });
-    if (recentResendCount > 0) {
-      throw new ConflictException('이미 재전송 요청이 처리되었습니다. 잠시 후 다시 시도해주세요.');
-    }
+    // 획득했으면 모든 종료 경로에서 owner-guarded 해제. 안 풀면 최대 5분간 이 건의
+    // 폐기·외부취소·재발행이 전부 "다른 처리가 진행 중" 으로 거절된다.
+    try {
+      // 2. dedup — 락 보유 중 최근 시간창 내 동일 건 재전송 이력 확인
+      const dedupSince = new Date(Date.now() - RESEND_DEDUP_WINDOW_MS);
+      const recentResendCount = await this.orderHistoryRepository.count({
+        where: {
+          orderDeliveryId: map.orderDeliveryId,
+          type: CS_HISTORY_TYPE.RESEND,
+          createdAt: MoreThanOrEqual(dedupSince),
+        },
+      });
+      if (recentResendCount > 0) {
+        throw new ConflictException('이미 재전송 요청이 처리되었습니다. 잠시 후 다시 시도해주세요.');
+      }
 
-    // 3. 실제 발송
-    switch (map.extraType) {
-      case 'sms': {
-        await this.deliveryBatchService.csResendAsSms(map.orderDeliveryId);
-        break;
+      // 3. 실제 발송
+      switch (map.extraType) {
+        case 'sms': {
+          await this.deliveryBatchService.csResendAsSms(map.orderDeliveryId);
+          break;
+        }
+        case 'forced_mms': {
+          await this.deliveryBatchService.csResendAsMms(map.orderDeliveryId);
+          break;
+        }
+        case 'alimtalk': {
+          await this.deliveryBatchService.csResendAsAlimTalk(map.orderDeliveryId);
+          break;
+        }
+        case 'email': {
+          await this.deliveryBatchService.csResendAsEmail(map.orderDeliveryId);
+          break;
+        }
+        default: {
+          throw new BadRequestException('지원하지 않는 재전송 유형입니다.');
+        }
       }
-      case 'forced_mms': {
-        await this.deliveryBatchService.csResendAsMms(map.orderDeliveryId);
-        break;
-      }
-      case 'alimtalk': {
-        await this.deliveryBatchService.csResendAsAlimTalk(map.orderDeliveryId);
-        break;
-      }
-      case 'email': {
-        await this.deliveryBatchService.csResendAsEmail(map.orderDeliveryId);
-        break;
-      }
-      default: {
-        throw new BadRequestException('지원하지 않는 재전송 유형입니다.');
-      }
-    }
 
-    // 4. 이력 저장 — 락 보유 중 커밋되어 후속 중복 요청의 dedup 마커가 된다
-    await this.orderHistoryRepository.save(
-      this.orderHistoryRepository.create({
-        orderDeliveryId: map.orderDeliveryId,
-        userId: map.userId,
-        type: map.type,
-        content: map.content,
-        sendMethod: map.sendMethod,
-        beforeChange: map.beforeChange,
-        afterChange: '',
-      }),
-    );
+      // 4. 이력 저장 — 락 보유 중 커밋되어 후속 중복 요청의 dedup 마커가 된다
+      await this.orderHistoryRepository.save(
+        this.orderHistoryRepository.create({
+          orderDeliveryId: map.orderDeliveryId,
+          userId: map.userId,
+          type: map.type,
+          content: map.content,
+          sendMethod: map.sendMethod,
+          beforeChange: map.beforeChange,
+          afterChange: '',
+        }),
+      );
+    } finally {
+      await this.releaseMutationLease(map.orderDeliveryId, mutationClaimAt);
+    }
   }
 
   /**
