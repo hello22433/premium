@@ -213,7 +213,7 @@ export class ProductChoiceService {
   }
 
   async getProductList(getQuery: ProductChoiceGetProductListReqQueryDto): Promise<ProductChoiceGetProductListResDto> {
-    const { brandId, category, name, useStatus, code, expireDay, price, page, take } = getQuery;
+    const { brandId, category, name, useStatus, code, expireDay, price, page, take, excludeProductIdList } = getQuery;
     let queryBuilder = this.productRepository
       .createQueryBuilder('product')
       .innerJoinAndSelect('product.brand', 'brand')
@@ -248,6 +248,14 @@ export class ProductChoiceService {
     if (expireDay) {
       queryBuilder = queryBuilder.andWhere('product.expireDay = :expireDay', {
         expireDay: expireDay,
+      });
+    }
+
+    // 이미 등록된 상품을 페이징 전에 제외해야 페이지가 앞으로 당겨지고 totalPage 도 실제 후보 수와 맞는다.
+    // 빈 배열을 그대로 넘기면 `IN ()` 이 되어 SQL 문법 에러가 나므로 length 가드가 필요하다.
+    if (excludeProductIdList?.length) {
+      queryBuilder = queryBuilder.andWhere('product.id NOT IN (:...excludeProductIdList)', {
+        excludeProductIdList: excludeProductIdList,
       });
     }
 
