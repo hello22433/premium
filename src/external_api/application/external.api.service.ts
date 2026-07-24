@@ -1303,7 +1303,7 @@ export class ExternalApiService {
         }
       }
 
-      await this.processCancelRefund(order, orderDelivery, account);
+      await this.processCancelRefund(order, orderDelivery, account, mutationClaimAt);
 
       return ExternalApiResponse.success();
     } finally {
@@ -1316,6 +1316,8 @@ export class ExternalApiService {
     order: OrderEntity,
     orderDelivery: OrderDeliveryEntity,
     account: ExternalApiAccountEntity,
+    /** cancelOrder 가 획득한 변형 lease 토큰. 상태 쓰기의 fencing 조건으로 쓴다(다음 커밋). */
+    mutationClaimAt: Date,
   ) {
     orderDelivery.status = IOrderDeliveryStatus.CANCEL;
     orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
