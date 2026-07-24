@@ -6,7 +6,7 @@ jest.mock('typeorm-transactional', () => ({
   runOnTransactionCommit: (cb: () => void) => cb(),
 }));
 
-import { In } from 'typeorm';
+import { In, IsNull, Not } from 'typeorm';
 import { OrderService } from './order.service';
 import { IOrderStatus } from '../interface/order.status';
 import { IOrderType } from '../interface/order.type';
@@ -128,15 +128,24 @@ describe('OrderService.deliveryCancel — 다중 상품행 주문 현행 동작 
     expect(order.canceledAt).toBeInstanceOf(Date);
   });
 
-  // ★ 전환 시 가장 먼저 깨져야 하는 단언. 지금은 상품행 전체를 조건 없이 CANCEL 로 덮는다.
-  //   부분취소가 배선되면 선택된 발송건만, 그것도 CAS 조건과 함께 갱신되어야 한다.
-  it('[현행] 모든 상품행의 발송건을 조건 없이 CANCEL 로 덮는다', async () => {
+  // 전체취소는 상품행 전체의 발송건을 CANCEL 로 덮는다. 단 **이미 CANCEL 인 행과 soft-delete 된 행은
+  // 제외**한다.
+  //   · status != CANCEL : 부분취소로 먼저 취소된 발송건이 있는 주문을 이어서 전체취소하면(도달 가능 —
+  //     부분취소는 주문을 DELIVERY_CONFIRMED 로 남긴다) 조건이 없을 때 그 건의 사유·시각이 전체취소
+  //     값으로 덮여 발송건별 취소이력이 사라진다. 발송건 단위 컬럼을 만든 이유가 그대로 무너진다.
+  //     (로컬 QA 에서 실제 재현 → 조건 추가로 해소)
+  //   · deletedAt IS NULL : update() 는 soft-delete 필터를 자동 적용하지 않는다.
+  it('전체취소는 이미 취소된 건·삭제된 건을 제외하고 CANCEL 로 덮는다', async () => {
     const { sut } = buildSut();
 
     await sut.deliveryCancel({ id: 1 }, body);
 
     expect(sut.orderDeliveryRepository.update).toHaveBeenCalledWith(
-      { orderProductMappingId: In([MAPPING_A, MAPPING_B]) },
+      {
+        orderProductMappingId: In([MAPPING_A, MAPPING_B]),
+        status: Not(IOrderDeliveryStatus.CANCEL),
+        deletedAt: IsNull(),
+      },
       // 발송건에도 취소 시각·사유를 남긴다(전체취소도 부분취소와 동일하게 채운다 —
       // canceled_at IS NULL 이 "미취소" 와 "전체취소" 를 겸하지 않도록).
       { status: IOrderDeliveryStatus.CANCEL, canceledAt: expect.any(Date), cancelReason: expect.any(String) },

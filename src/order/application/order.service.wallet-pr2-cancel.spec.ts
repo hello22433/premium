@@ -1,4 +1,4 @@
-import { In } from 'typeorm';
+import { In, IsNull, Not } from 'typeorm';
 import {
   addTransactionalDataSource,
   deleteDataSourceByName,
@@ -187,8 +187,9 @@ describe('OrderService deliveryCancel wallet PR2-005 branch', () => {
 
     // status flip + 배송 취소
     expect(order.status).toBe(IOrderStatus.DELIVERY_CANCEL);
+    // 이미 CANCEL 인 건(부분취소 이력)과 soft-delete 된 건은 제외하고 덮는다.
     expect(service.orderDeliveryRepository.update).toHaveBeenCalledWith(
-      { orderProductMappingId: In([10]) },
+      { orderProductMappingId: In([10]), status: Not(IOrderDeliveryStatus.CANCEL), deletedAt: IsNull() },
       { status: IOrderDeliveryStatus.CANCEL, canceledAt: expect.any(Date), cancelReason: expect.any(String) },
     );
   });

@@ -1,3 +1,4 @@
+import { IsNull, Not } from 'typeorm';
 import {
   addTransactionalDataSource,
   deleteDataSourceByName,
@@ -119,8 +120,9 @@ describe('OrderService.deliveryCancel — wallet-managed mirror', () => {
       { orderId: 700, reason: 'order_cancel', failedDeliveryIds: null },
       externalManager,
     );
+    // 이미 CANCEL 인 건(부분취소 이력)과 soft-delete 된 건은 제외하고 덮는다.
     expect(orderDeliveryRepository.update).toHaveBeenCalledWith(
-      { orderProductMappingId: expect.anything() },
+      { orderProductMappingId: expect.anything(), status: Not(IOrderDeliveryStatus.CANCEL), deletedAt: IsNull() },
       { status: IOrderDeliveryStatus.CANCEL, canceledAt: expect.any(Date), cancelReason: expect.any(String) },
     );
     // wallet-managed 는 releaseConfirmation 이 보상 → legacy sync 미호출(이중반영 금지).

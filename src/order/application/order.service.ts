@@ -62,7 +62,18 @@ import {
 } from '../api/order.res.dto';
 import { OrderEntity } from '../../entity/order.entity';
 import { InjectRepository } from '@nestjs/typeorm';
-import { EntityManager, In, IsNull, Not, ObjectLiteral, QueryRunner, Repository, SelectQueryBuilder } from 'typeorm';
+import {
+  EntityManager,
+  In,
+  IsNull,
+  LessThanOrEqual,
+  MoreThanOrEqual,
+  Not,
+  ObjectLiteral,
+  QueryRunner,
+  Repository,
+  SelectQueryBuilder,
+} from 'typeorm';
 import { QueryDeepPartialEntity } from 'typeorm/query-builder/QueryPartialEntity';
 import { QueryBuilderDateCondition } from '../../common/infra/query.builder.date.condition';
 import { CustomerSettlementViewDto, OrderViewDto } from '../api/dto/order.view.dto';
@@ -6429,8 +6440,19 @@ export class OrderService {
     // 발송건에도 취소 시각·사유를 남긴다. 부분취소만 채우고 전체취소는 비워두면
     // canceled_at IS NULL 이 "미취소" 와 "주문 전체취소" 두 가지를 뜻하게 되어,
     // 그 컬럼으로 취소 여부를 판정하는 코드가 전체취소 건을 통째로 놓친다.
+    //
+    // ★ 이미 CANCEL 인 행은 건드리지 않는다. 부분취소로 먼저 취소된 발송건이 있는 주문을
+    //   이어서 전체취소하면(도달 가능 — 부분취소는 주문을 DELIVERY_CONFIRMED 로 남긴다),
+    //   조건 없는 UPDATE 가 그 건의 사유·시각을 전체취소 값으로 덮어써 발송건별 취소이력이
+    //   사라진다. 발송건 단위 컬럼을 만든 이유(주문 단위 컬럼은 마지막 사유가 앞선 사유를
+    //   덮어쓴다)가 그대로 재현되는 셈이다. 로컬 QA 에서 실제로 재현했다.
+    //   soft-delete 된 행도 제외한다 — update() 는 deleted_at 필터를 자동 적용하지 않는다.
     await this.orderDeliveryRepository.update(
-      { orderProductMappingId: In(orderProductMappingIdList) },
+      {
+        orderProductMappingId: In(orderProductMappingIdList),
+        status: Not(IOrderDeliveryStatus.CANCEL),
+        deletedAt: IsNull(),
+      },
       { status: IOrderDeliveryStatus.CANCEL, canceledAt: order.canceledAt, cancelReason },
     );
     if (isWalletManaged) {
