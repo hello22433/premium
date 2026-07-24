@@ -121,6 +121,16 @@ describe('AutoOrderPreValidator', () => {
     expect(r.blocked.some((b) => b.field === 'CONTENT' && b.level === 'FILE')).toBe(true);
   });
 
+  // createTemp.assertNoForbiddenWord가 eventName도 검사하므로 사전검증에도 있어야 preview=commit이 성립
+  it('프로모션명 금칙어 → FILE 차단(EVENT_NAME, 마스킹)', () => {
+    const r = validator.validate(input({ header: header({ eventName: '도박 프로모션' }) }));
+    expect(r.fileBlocked).toBe(true);
+    const b = r.blocked.find((x) => x.field === 'EVENT_NAME');
+    expect(b?.code).toBe('FORBIDDEN_WORD');
+    expect(b?.level).toBe('FILE');
+    expect(b?.matched).toBe('도*'); // 원문 노출 방지
+  });
+
   it('발신수단 미허용 → FILE 차단', () => {
     const r = validator.validate(
       input({ header: header({ sendMethod: IOrderSendMethod.EMAIL }), userAllowedSendMethods: 'ALIM_TALK,MMS' }),

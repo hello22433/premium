@@ -21,7 +21,7 @@ import {
  * → 미리보기(DRY_RUN)와 승인(COMMIT)이 "똑같이" 막힘을 보고하므로 preview=commit이 성립한다.
  *
  * 차단 레벨:
- *  - FILE : 제목/내용 금칙어, 발신수단 미허용 → 공유값이라 파일 전체 차단
+ *  - FILE : 제목/내용/프로모션명 금칙어, 발신수단 미허용 → 공유값이라 파일 전체 차단
  *  - ROW  : 대치문자 금칙어 → 수신자별 값이라 그 행만 제외(나머지 생성)
  *  - ORDER: SSG 예약창 밖 → SSG 주문만 스킵(일반 주문은 생성)
  *
@@ -69,6 +69,20 @@ export class AutoOrderPreValidator {
         field: 'CONTENT',
         matched: this.mask(contentHits[0]),
         reason: '발송 내용(C21)에 금칙어가 포함되어 있습니다.',
+      });
+    }
+
+    // ── FILE ①-c 프로모션명 금칙어 (C19, 주문 레벨 공유값 → 오염 시 파일 전체 차단)
+    //   createTemp.assertNoForbiddenWord가 eventName도 검사하므로(주문 레벨 필드), 여기서 빠지면
+    //   preview는 정상, approve는 금칙어 throw로 롤백되어 preview=commit이 깨진다.
+    const eventNameHits = this.forbiddenWordMatcher.scan(header.eventName);
+    if (eventNameHits.length > 0) {
+      blocked.push({
+        code: 'FORBIDDEN_WORD',
+        level: 'FILE',
+        field: 'EVENT_NAME',
+        matched: this.mask(eventNameHits[0]),
+        reason: '프로모션명(C19)에 금칙어가 포함되어 있습니다.',
       });
     }
 

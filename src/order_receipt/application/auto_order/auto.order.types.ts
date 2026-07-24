@@ -119,7 +119,7 @@ export type BlockCode =
   | 'EMAIL_SENDER_MISSING'; // 이메일 발신주소(등록/기본계정)를 확보할 수 없음
 
 /** 금칙어 적발 필드 (code === 'FORBIDDEN_WORD'일 때만) */
-export type BlockField = 'TITLE' | 'CONTENT' | 'REPLACE_CHAR';
+export type BlockField = 'TITLE' | 'CONTENT' | 'EVENT_NAME' | 'REPLACE_CHAR';
 
 export interface BlockReason {
   code: BlockCode;
