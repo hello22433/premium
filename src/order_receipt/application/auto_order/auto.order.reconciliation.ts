@@ -32,6 +32,7 @@ export function buildReconciliation(input: ReconciliationInput): AutoOrderReconc
     unmappedCount: input.unmappedCount,
     excludedCount: input.excludedCount,
     blockedDeliveryCount,
+    expectedBuiltCount: input.expectedBuiltCount, // 경계 매퍼가 DTO의 expectedDeliveryCount로 투영(built와 정합 → "기대≠구성인데 ✓일치" 모순 제거)
     matched: partitionOk && builtMatchesExpected,
   };
 }

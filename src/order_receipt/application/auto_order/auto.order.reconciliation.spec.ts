@@ -12,6 +12,7 @@ describe('buildReconciliation', () => {
     const r = input({ inputRowCount: 10, unmappedCount: 2, excludedCount: 1, mappedCount: 7, builtDeliveryCount: 7, expectedBuiltCount: 7 });
     expect(r.blockedDeliveryCount).toBe(0);
     expect(r.builtDeliveryCount + r.unmappedCount + r.excludedCount + r.blockedDeliveryCount).toBe(10);
+    expect(r.expectedBuiltCount).toBe(7); // 출력에 echo(경계 매퍼가 DTO expectedDeliveryCount로 투영)
     expect(r.matched).toBe(true);
   });
 
@@ -24,6 +25,7 @@ describe('buildReconciliation', () => {
   it('파일 전체 차단: 기대생성 0, 실제 0 → matched=true, blocked=매핑 전체', () => {
     const r = input({ inputRowCount: 10, unmappedCount: 2, excludedCount: 1, mappedCount: 7, builtDeliveryCount: 0, expectedBuiltCount: 0 });
     expect(r.blockedDeliveryCount).toBe(7);
+    expect(r.expectedBuiltCount).toBe(0); // DTO expectedDeliveryCount로 투영되면 "기대 0 / 구성 0 / ✓" 정합
     expect(r.matched).toBe(true);
   });
 

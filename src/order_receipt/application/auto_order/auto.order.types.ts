@@ -186,11 +186,12 @@ export interface BuildPayloadResult {
  */
 export interface AutoOrderReconciliation {
   inputRowCount: number;
-  expectedDeliveryCount: number;
+  expectedDeliveryCount: number; // = inputRowCount(입력행 총수). 내부 partition 불변식용. ★DTO의 expectedDeliveryCount는 아래 expectedBuiltCount로 투영된다(경계 매퍼).
   builtDeliveryCount: number;
   unmappedCount: number;
   excludedCount: number;
   blockedDeliveryCount: number;
+  expectedBuiltCount: number; // 차단 이유로 독립 산출한 "생성돼야 할" 발송건수. matched는 built===expectedBuiltCount로 판정. 프론트 계약 expectedDeliveryCount(=Σ수량)로 노출.
   matched: boolean;
 }
 

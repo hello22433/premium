@@ -62,18 +62,19 @@ interface AutoOrderResultDto {
 interface AutoOrderFileResultDto {
   targetFilePath: string;    // 파싱 대상 파일 경로(표시명 도출용)
   fileIndex: number;         // filePath 목록 기준 인덱스
-  status: 'VALID' | 'INVALID_FORMAT' | 'ALREADY_COMMITTED';
+  status: 'VALID' | 'INVALID_FORMAT'; // 백엔드는 이 둘만 보냄(ALREADY_COMMITTED는 최상위 alreadyCommitted 불린으로 표현)
   formatError: { code: FormatErrorCode; message: string } | null; // status==='INVALID_FORMAT'일 때만 non-null
   reconciliation: {
-    inputRowCount: number;        // 발송명단 총 행수
-    expectedDeliveryCount: number;// 생성돼야 할 발송건수(독립 산출)
+    inputRowCount: number;        // 발송명단 총 행수(미매핑·제외·차단 포함)
+    expectedDeliveryCount: number;// 생성돼야 할 발송건수(차단 반영 독립 산출 = builtDeliveryCount와 정합해야 정상)
     builtDeliveryCount: number;   // 실제 생성(예정) 발송건수
-    matched: boolean;             // 두 값이 일치(사유 없는 누락/중복 없음)
+    matched: boolean;             // expectedDeliveryCount === builtDeliveryCount(사유 없는 누락/중복 없음)
   };
   orders: AutoOrderOrderDto[];
   unmappedRows: { rowNo: number; code: string; reason: string }[]; // 미등록 상품코드 행(code=상품코드)
-  warningRows:  { rowNo: number; code: BlockCode; reason: string }[]; // 행 단위 차단(금칙어/수신처 등)
+  warningRows:  { rowNo: number; code: BlockCode; reason: string }[]; // 행(ROW) 단위 차단만(대치문자 금칙어/수신처 없음·형식오류)
   excludedRows: { rowNo: number; reason: string }[]; // 엑셀이 스스로 무효표시(_유효=False)한 행
+  fileWarnings: { code: BlockCode; reason: string }[]; // 파일(FILE)/주문(ORDER) 단위 차단 사유. 없으면 []. ★아래 3-2 참고
 }
 
 interface AutoOrderOrderDto {
@@ -116,25 +117,29 @@ interface AutoOrderOrderDto {
 
 > 위 5종(`NOT_XLSX`~`EMPTY_LIST`)은 "고객사 자체 양식" 등 **정상 케이스일 수 있어 승인은 막지 않습니다**(건너뛰어도 됨). 반면 **`DATA_INVALID`는 데이터 오류로 승인 전체를 롤백**시키므로 별도로 취급하세요. 나머지 VALID 파일은 정상 진행하면 됩니다.
 
-### 3-2. `BlockCode` — 행 단위 경고 (`warningRows[].code`)
-| code | 의미 |
-|---|---|
-| `FORBIDDEN_WORD` | 대치문자에 금칙어 |
-| `MISSING_DELIVERY_TARGET` | 발송수단에 맞는 수신처 없음(문자=휴대폰 / 이메일=이메일) |
-| `INVALID_DELIVERY_TARGET` | 수신처는 있으나 형식 불량(이메일/휴대폰 형식 아님) |
-| `SSG_RESERVATION_WINDOW` | SSG 예약 가능창 밖(주문 단위 스킵) |
-| `SEND_METHOD_NOT_ALLOWED` | 이 계정에 허용되지 않은 발신수단 |
-| `RECEIPT_OWNER_MISSING` | 접수 소유자(기업 사용자) 조회 실패 |
-| `EMAIL_SENDER_MISSING` | 이메일 발신주소 확보 실패 |
+### 3-2. `BlockCode` — 차단 사유 (레벨에 따라 다른 배열로 도착)
+| code | 의미 | 레벨 → 배열 |
+|---|---|---|
+| `FORBIDDEN_WORD`(대치문자) | 수신자 대치문자에 금칙어 | ROW → `warningRows` |
+| `MISSING_DELIVERY_TARGET` | 발송수단에 맞는 수신처 없음(문자=휴대폰 / 이메일=이메일) | ROW → `warningRows` |
+| `INVALID_DELIVERY_TARGET` | 수신처는 있으나 형식 불량(이메일/휴대폰 형식 아님) | ROW → `warningRows` |
+| `FORBIDDEN_WORD`(제목/내용/행사명) | 발송제목·내용·프로모션명에 금칙어 | FILE → `fileWarnings` |
+| `SEND_METHOD_NOT_ALLOWED` | 이 계정에 허용되지 않은 발신수단 | FILE → `fileWarnings` |
+| `RECEIPT_OWNER_MISSING` | 접수 소유자(기업 사용자) 조회 실패 | FILE → `fileWarnings` |
+| `EMAIL_SENDER_MISSING` | 이메일 발신주소 확보 실패 | FILE → `fileWarnings` |
+| `SSG_RESERVATION_WINDOW` | SSG 예약 가능창 밖 | ORDER → `fileWarnings`(SSG 주문만 스킵, 일반은 생성) |
 
-> `SEND_METHOD_NOT_ALLOWED`, `RECEIPT_OWNER_MISSING`, `EMAIL_SENDER_MISSING`, 제목/내용 금칙어는 **파일 전체 차단(FILE 레벨)** → 그 파일의 `orders`는 0건이 됩니다. `warningRows`는 행 레벨(그 행만 제외)입니다.
+> **ROW(`warningRows`)**: 그 행만 제외되고 나머지는 생성됩니다.
+> **FILE(`fileWarnings`)**: 그 파일 전체가 차단되어 `orders`는 0건이 됩니다(`status`는 여전히 `VALID` — 양식은 정상이므로). 이때 **왜 0건인지는 `fileWarnings`에만 있으니 반드시 렌더하세요.**
+> **ORDER(`fileWarnings`)**: 해당 주문 종류(SSG)만 스킵되고 일반 주문은 생성됩니다.
 
 ### 3-3. `status`
 | status | 의미 |
 |---|---|
-| `VALID` | 자동주문 대상(orders/warningRows 등 채워짐) |
+| `VALID` | 자동주문 대상(orders/warningRows/fileWarnings 등 채워짐). ※FILE 차단 파일도 VALID + orders 0건 + fileWarnings 사유 |
 | `INVALID_FORMAT` | 양식 아님(`formatError` 참조, 승인은 무해 통과) |
-| `ALREADY_COMMITTED` | 멱등 재처리로 저장 스냅샷 반환된 파일 |
+
+> 멱등 재처리(이미 생성 완료)는 파일 `status`가 아니라 **최상위 `alreadyCommitted: boolean`** 으로 표현됩니다(구 `ALREADY_COMMITTED` 파일 status는 제거).
 
 ---
 
@@ -151,8 +156,8 @@ interface AutoOrderOrderDto {
                                └─ 있으면 COMMITTED 스냅샷 / 없으면 404(미승인)
 ```
 
-- **승인 버튼 노출 조건 권장**: `summary.allMatched === true` && FILE 차단(파일 orders 0건 + fileBlocked성 warning) 없음일 때 활성. 검산 불일치(`matched===false`)는 백엔드가 승인 시 롤백하므로, 프론트도 미리 경고 표시 권장.
-- **검산(reconciliation)**: `expectedDeliveryCount !== builtDeliveryCount`면 `matched=false` → "행이 사유 없이 누락/중복"이라는 코드버그 신호. 이 경우 승인은 백엔드가 막습니다(아래 5).
+- **승인 버튼 노출 조건 권장**: `summary.allMatched === true` && 모든 대상 파일에 `fileWarnings`가 비어 있을 때 활성. `fileWarnings`가 있으면 그 파일은 0건 생성이므로 관리자에게 사유(`fileWarnings[].reason`)를 노출하세요.
+- **검산(reconciliation)**: `expectedDeliveryCount`는 "차단 반영 후 생성돼야 할 건수"라 정상이면 `builtDeliveryCount`와 같습니다. `matched===false`(=두 값 불일치)는 "행이 사유 없이 누락/중복"이라는 코드버그 신호이고, 이 경우 승인은 백엔드가 막습니다(아래 5). ※`inputRowCount`는 미매핑·제외·차단을 포함한 총 입력행수라 `builtDeliveryCount`와 다를 수 있음(정상).
 
 ---
 
@@ -172,13 +177,14 @@ interface AutoOrderOrderDto {
 ## 6. 프론트에서 건드릴 것 / 안 건드릴 것
 
 **할 것**
-- `type.ts`의 `TOrderReceiptAutoResult`(및 하위 타입)를 2절 형태로 정렬 — 특히 `mode`, `formatError`, `reconciliation`, `warningRows[].code`(BlockCode), `orders[].type`(GENERAL/SSG).
+- `type.ts`의 `TOrderReceiptAutoResult`(및 하위 타입)를 2절 형태로 정렬 — 특히 `mode`, `formatError`, `reconciliation`, `warningRows[].code`·**`fileWarnings[].code`**(BlockCode), `orders[].type`(GENERAL/SSG). ※`FormatErrorCode`에 **`DATA_INVALID`** 추가 필요(백엔드 6종).
+- **`fileWarnings`를 반드시 렌더**: FILE/ORDER 차단 파일은 `orders`가 0건인데 사유가 `fileWarnings`에만 있습니다. 안 그리면 "이유 없이 0건"으로 보입니다.
 - 미리보기/결과조회를 **동일 렌더러**로 처리(둘 다 `AutoOrderResultDto`).
 - 3-1/3-2 코드 표를 한글 라벨 상수로 매핑(사용자 노출 문구). **`DATA_INVALID`는 다른 5종과 시각적으로 구분**(승인 차단 성격).
 - **승인은 항상 접수 전체를 커밋**하므로, 승인 버튼 누르기 전 **전체(fileIndexes 생략)로 미리보기**해 검토하도록 UX 유도.
 
 **안 할 것 / 확인 필요(백엔드에 회신 주세요)**
-- **(확인①) 계약 정본**: 위 필드명이 프론트 `type.ts`와 어긋나는 항목이 있으면 알려주세요. 백엔드는 프론트 기존 타입에 맞추는 것을 우선했으나, `sendParams/settlement/orderDeliveryList/fileWarnings` 등 프론트가 optional로 두던 필드는 **현재 미제공(후속 단계)** 입니다.
+- **(확인①) 계약 정본**: 위 필드명이 프론트 `type.ts`와 어긋나는 항목이 있으면 알려주세요. 백엔드는 프론트 기존 타입에 맞추는 것을 우선했습니다. `fileWarnings`는 **이번에 제공**(FILE/ORDER 차단 사유). `sendParams/settlement/orderDeliveryList` 등 프론트가 optional로 두던 나머지 표시전용 필드는 **현재 미제공(후속 단계)** 입니다.
 - **(확인②) `GET /result` 범위**: 이 엔드포인트가 이번 PR 범위에 포함되는지(프론트가 승인 응답만 쓰고 결과조회는 안 쓸 계획이면 알려주세요 — 백엔드는 새로고침/재방문 대비로 추가함).
 
 > 설계 결정: 미리보기는 파일 일부만 볼 수 있지만 **승인은 접수 단위(항상 전체)** 입니다. 부분 승인을 허용하면 재승인 시 옛 스냅샷을 반환하는 침묵 결함이 생겨, 승인을 전체로 고정했습니다. 프론트는 승인 전 전체 미리보기로 이 간극을 메워 주세요.
