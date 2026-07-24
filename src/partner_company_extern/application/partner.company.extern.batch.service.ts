@@ -1362,28 +1362,42 @@ export class PartnerCompanyExternBatchService {
     // 7. orderDelivery 상태 업데이트
     const galaxiaBalance = parseInt(remainprice, 10);
 
+    // 거래구분별로 **실제 바꾸는 컬럼**만 모은다. save(orderDelivery) 금지 —
+    // merge 는 조회 시점 스냅샷으로 행 전체를 써서 그 사이 CS 재발행·폐기가 쓴
+    // mutation_claimed_at(남의 lease)·deleted_at(지운 tip)까지 되돌린다 (D3-60).
+    //
+    // push 는 협력사 콜백이라 **업무시간 포함 아무 때나** 도달한다 — daily(야간 cron)보다
+    // CS 조작과 겹칠 창이 훨씬 넓다.
+    const touched: Array<(typeof PartnerCompanyExternBatchService.GALAXIA_SYNC_COLUMNS)[number]> = [];
+
     switch (raw.appdiv) {
       case '10': // 사용
         orderDelivery.couponStatus = OrderDeliveryCouponStatus.USED;
         orderDelivery.tradeAt = this.parseGalaxiaDateTime(raw.appday, raw.apptime);
         orderDelivery.tradePlace = storename?.trim() || orderDelivery.tradePlace;
         orderDelivery.galaxiaBalance = galaxiaBalance;
+        touched.push('couponStatus', 'tradeAt', 'tradePlace', 'galaxiaBalance');
         break;
       case '20': // 사용취소
       case '25': // 망취소
         orderDelivery.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
         orderDelivery.tradeAt = null;
         orderDelivery.galaxiaBalance = galaxiaBalance;
+        touched.push('couponStatus', 'tradeAt', 'galaxiaBalance');
         break;
       case '81': // 환불등록 (End User 직접 환불 → REFUND_CANCEL = 수령 고객 환불폐기)
         orderDelivery.couponStatus = OrderDeliveryCouponStatus.REFUND_CANCEL;
         // 폐기 시각은 push 수신 시각이 아니라 환불 이벤트 시각(appday+apptime)으로 박는다.
         orderDelivery.discardedAt = this.parseGalaxiaDateTime(raw.appday, raw.apptime);
         orderDelivery.galaxiaBalance = 0;
+        touched.push('couponStatus', 'discardedAt', 'galaxiaBalance');
         break;
     }
 
-    await this.orderDeliveryRepository.save(orderDelivery);
+    // 알 수 없는 거래구분이면 switch 가 아무것도 안 바꾼다 → 빈 UPDATE 를 쏘지 않는다.
+    if (touched.length > 0) {
+      await this.persistGalaxiaSync(orderDelivery, touched);
+    }
 
     this.logger.log(
       `[galaxiaPush] 처리 완료: orderDeliveryId=${orderDelivery.id}, appDiv=${raw.appdiv}, amount=${amount}`,
