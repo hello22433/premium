@@ -1,4 +1,7 @@
+import 'reflect-metadata';
+import { plainToInstance } from 'class-transformer';
 import { ProductChoiceService } from './product.choice.service';
+import { ProductChoiceGetProductListReqQueryDto } from '../api/product.choice.req.dto';
 import { IProductUseStatus } from '../../product/interface/product.status';
 
 describe('ProductChoiceService.getList', () => {
@@ -253,5 +256,102 @@ describe('ProductChoiceService.getDetail', () => {
     const service = createService(null);
 
     await expect(service.getDetail({ id: 999 } as any)).rejects.toThrow('존재하지 않는 초이스쿠폰입니다.');
+  });
+});
+
+describe('ProductChoiceService.getProductList', () => {
+  const createQueryBuilder = (products: any[], totalCount = products.length) => {
+    const queryBuilder: any = {
+      innerJoinAndSelect: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      skip: jest.fn().mockReturnThis(),
+      take: jest.fn().mockReturnThis(),
+      getManyAndCount: jest.fn().mockResolvedValue([products, totalCount]),
+    };
+
+    return queryBuilder;
+  };
+
+  const createService = (queryBuilder: any) => {
+    const productRepository = {
+      createQueryBuilder: jest.fn().mockReturnValue(queryBuilder),
+    };
+
+    return new ProductChoiceService(productRepository as any, {} as any, {} as any, {} as any);
+  };
+
+  const searchProduct = (id: number) => ({
+    id,
+    createdAt: new Date('2026-06-17T00:00:00.000Z'),
+    code: `EP${id}`,
+    brandId: 1,
+    brand: { nameKorean: '브랜드' },
+    name: `상품${id}`,
+    price: 5000,
+    expireDay: 60,
+    category: 'D',
+    useStatus: IProductUseStatus.USE,
+  });
+
+  const excludeConditions = (queryBuilder: any): string[] =>
+    queryBuilder.andWhere.mock.calls
+      .map(([condition]: any[]) => String(condition))
+      .filter((condition: string) => condition.includes('NOT IN'));
+
+  it('제외 목록을 넘기지 않으면 제외 조건을 붙이지 않는다', async () => {
+    const queryBuilder = createQueryBuilder([searchProduct(780)]);
+    const service = createService(queryBuilder);
+
+    await service.getProductList({ page: 1, take: 10 } as any);
+
+    expect(excludeConditions(queryBuilder)).toHaveLength(0);
+  });
+
+  it('제외 목록이 빈 배열이면 제외 조건을 붙이지 않는다', async () => {
+    // 빈 배열을 그대로 넘기면 `IN ()` 이 되어 SQL 문법 에러가 난다. (신규 등록 화면이 이 케이스)
+    const queryBuilder = createQueryBuilder([searchProduct(780)]);
+    const service = createService(queryBuilder);
+
+    await service.getProductList({ page: 1, take: 10, excludeProductIdList: [] } as any);
+
+    expect(excludeConditions(queryBuilder)).toHaveLength(0);
+  });
+
+  it('제외 목록이 있으면 NOT IN 조건과 파라미터를 함께 넘긴다', async () => {
+    const queryBuilder = createQueryBuilder([searchProduct(780)]);
+    const service = createService(queryBuilder);
+
+    await service.getProductList({ page: 1, take: 10, excludeProductIdList: [763, 729] } as any);
+
+    expect(queryBuilder.andWhere).toHaveBeenCalledWith('product.id NOT IN (:...excludeProductIdList)', {
+      excludeProductIdList: [763, 729],
+    });
+  });
+
+  it('쿼리스트링 → DTO 변환 → SQL 이음매: 콤마 문자열이 숫자 배열로 바인딩된다', async () => {
+    // 목으로 DTO 파이프라인을 우회하지 않고, 실제 @Transform 을 거친 값이 그대로 NOT IN 에 실리는지 본다.
+    const queryBuilder = createQueryBuilder([searchProduct(780)]);
+    const service = createService(queryBuilder);
+
+    const dto = plainToInstance(ProductChoiceGetProductListReqQueryDto, { excludeProductIdList: '763,729' });
+
+    await service.getProductList(dto);
+
+    expect(queryBuilder.andWhere).toHaveBeenCalledWith('product.id NOT IN (:...excludeProductIdList)', {
+      excludeProductIdList: [763, 729],
+    });
+  });
+
+  it('getManyAndCount 가 돌려준 totalCount 로 totalPage 를 올림 계산한다', async () => {
+    // 제외가 totalCount 에 반영되는지는 목이 아니라 실제 DB 로만 증명된다(로컬 HTTP 검증에서 확인).
+    // 여기서는 count → totalPage 산술만 고정한다.
+    const queryBuilder = createQueryBuilder([searchProduct(780)], 25);
+    const service = createService(queryBuilder);
+
+    const result = await service.getProductList({ page: 1, take: 10 } as any);
+
+    expect(result.totalCount).toBe(25);
+    expect(result.totalPage).toBe(3);
   });
 });
