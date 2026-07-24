@@ -133,9 +133,14 @@ export class OrderViewDto {
     required: false,
     nullable: true,
     description:
-      'RESERVE 상품의 분 단위 예약시각이 2종 이상 상이할 때만 채움. 각 항목: 상품명, 예약시각(KST), 실제 발송시각(발송 전 null)',
+      '혼합 발송(IMMEDIATE+RESERVE) 또는 RESERVE 분 단위 예약시각 2종 이상일 때 채움. 각 항목: productName(상품명), sendType(IMMEDIATE|RESERVE), sendRequestAt(예약시각 KST; IMMEDIATE·draft RESERVE는 null), actualSendAt(실제 발송시각 KST; 미발송 null)',
   })
-  productSendTimes?: { productName: string; sendRequestAt: string; actualSendAt: string | null }[];
+  productSendTimes?: {
+    productName: string;
+    sendType: 'IMMEDIATE' | 'RESERVE';
+    sendRequestAt: string | null;
+    actualSendAt: string | null;
+  }[];
 
   @ApiPropertyOptional({
     nullable: true,

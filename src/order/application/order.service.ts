@@ -76,7 +76,7 @@ import { format } from 'date-fns';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { IOrderStatus } from '../interface/order.status';
 import { OrderProductMappingEntity } from '../../entity/order.product.mapping.entity';
-import { Transactional, runOnTransactionCommit } from 'typeorm-transactional';
+import { Propagation, Transactional, runOnTransactionCommit } from 'typeorm-transactional';
 import { OrderCancelNotificationService } from './order.cancel.notification.service';
 import { isDirectCustomerCancelTarget } from '../domain/order.cancel.notification.policy';
 import {
@@ -887,30 +887,49 @@ export class OrderService {
       // sendRequestAt: 예약 발송 요청 시간 (actualSendAt이 없을 때 폴백용)
       const sendRequestAt = firstMapping?.sendRequestAt ? format(firstMapping.sendRequestAt, DateFormatStr) : null;
 
-      // 상품별 예약 발송시간 배열: RESERVE 상품 중 분 단위 distinct ≥ 2일 때만 채움
-      const reserveMappings = (order.orderProductMappings ?? []).filter(
-        (m) => m.sendType === 'RESERVE' && m.sendRequestAt,
-      );
-      const minuteSlots = new Set(reserveMappings.map((m) => Math.floor(m.sendRequestAt!.getTime() / 60000)));
-      let productSendTimes: { productName: string; sendRequestAt: string; actualSendAt: string | null }[] | undefined;
-      if (minuteSlots.size >= 2) {
-        productSendTimes = reserveMappings.map((m) => {
-          const mappingActualSendAt =
-            (m.orderDeliveries ?? [])
-              .filter(
-                (d) =>
-                  d.deletedAt == null &&
-                  d.actualSendAt &&
-                  (d.status === IOrderDeliveryStatus.COMPLETE || d.status === IOrderDeliveryStatus.COMPLETE_SMS),
-              )
-              .reduce<Date | null>((max, d) => (max === null || d.actualSendAt! > max ? d.actualSendAt! : max), null) ??
-            null;
-          return {
+      // 상품별 발송시간 배열 채움 게이트: 혼합 발송(IMMEDIATE+RESERVE) 또는 RESERVE 분 단위 distinct ≥ 2
+      const allMappings = order.orderProductMappings ?? [];
+      // 슬롯 산정(distinct 항): sendRequestAt 존재 RESERVE 매핑의 분 슬롯 distinct (기존 유지)
+      const distinctReserveMinuteSlots = new Set(
+        allMappings
+          .filter((m) => m.sendType === 'RESERVE' && m.sendRequestAt)
+          .map((m) => Math.floor(m.sendRequestAt!.getTime() / 60000)),
+      ).size;
+      // 혼합 판정: IMMEDIATE ≥1 AND RESERVE ≥1 (매핑 카운트 기반, productSendTimes와 독립·응답 미노출)
+      const isMixedSendType =
+        allMappings.some((m) => m.sendType === 'IMMEDIATE') && allMappings.some((m) => m.sendType === 'RESERVE');
+
+      // per-mapping actualSendAt: 활성 COMPLETE/COMPLETE_SMS 중 가장 최근 값 (RESERVE·IMMEDIATE 공용)
+      const resolveMappingActualSendAt = (
+        deliveries:
+          | { deletedAt?: Date | null; actualSendAt?: Date | null; status: IOrderDeliveryStatus }[]
+          | null
+          | undefined,
+      ): string | null => {
+        const maxActualSendAt = (deliveries ?? [])
+          .filter(
+            (d) =>
+              d.deletedAt == null &&
+              d.actualSendAt &&
+              (d.status === IOrderDeliveryStatus.COMPLETE || d.status === IOrderDeliveryStatus.COMPLETE_SMS),
+          )
+          .reduce<Date | null>((max, d) => (max === null || d.actualSendAt! > max ? d.actualSendAt! : max), null);
+        return maxActualSendAt ? format(maxActualSendAt, DateFormatStr) : null;
+      };
+
+      let productSendTimes:
+        | { productName: string; sendType: 'IMMEDIATE' | 'RESERVE'; sendRequestAt: string | null; actualSendAt: string | null }[]
+        | undefined;
+      if (isMixedSendType || distinctReserveMinuteSlots >= 2) {
+        // 배열 산출: sendType ∈ {RESERVE, IMMEDIATE}인 전 매핑 (Case-G 포함, 슬롯 산정과 독립)
+        productSendTimes = allMappings
+          .filter((m) => m.sendType === 'IMMEDIATE' || m.sendType === 'RESERVE')
+          .map((m) => ({
             productName: m.product?.name ?? '(삭제된 상품)',
-            sendRequestAt: format(m.sendRequestAt!, DateFormatStr),
-            actualSendAt: mappingActualSendAt ? format(mappingActualSendAt, DateFormatStr) : null,
-          };
-        });
+            sendType: m.sendType as 'IMMEDIATE' | 'RESERVE',
+            sendRequestAt: m.sendType === 'RESERVE' && m.sendRequestAt ? format(m.sendRequestAt, DateFormatStr) : null,
+            actualSendAt: resolveMappingActualSendAt(m.orderDeliveries),
+          }));
       }
 
       // 주문 시점 스냅샷 우선, NULL이면 clientUser ?? user FK로 fallback
@@ -3469,7 +3488,7 @@ export class OrderService {
       }
 
       try {
-        await this.forbiddenWordBlockLogRepository.insert({
+        await this.writeForbiddenWordBlockLog({
           userId: user.id,
           userEmail: user.email,
           matchedWords,
@@ -3495,6 +3514,23 @@ export class OrderService {
         message: '금칙어가 포함되어 있습니다.',
       });
     }
+  }
+
+  /**
+   * 금칙어 차단 로그를 부모 트랜잭션과 분리된 새 트랜잭션(REQUIRES_NEW)으로 기록한다.
+   * createTemp/updateTemp/deliveryRequest 는 적발 시 BadRequestException 을 던져 부모
+   * 트랜잭션을 롤백하는데, 같은 트랜잭션에 기록하면 차단 로그까지 롤백돼 이력이 남지 않는다.
+   */
+  @Transactional({ propagation: Propagation.REQUIRES_NEW })
+  private async writeForbiddenWordBlockLog(entry: {
+    userId: number;
+    userEmail: string;
+    matchedWords: string[];
+    field: string;
+    contentSnippet: string;
+    orderId: number | null;
+  }): Promise<void> {
+    await this.forbiddenWordBlockLogRepository.insert(entry);
   }
 
   private async assertPositiveIntegerAmounts(orderProductList: OrderProductCreateTempDto[]): Promise<void> {
