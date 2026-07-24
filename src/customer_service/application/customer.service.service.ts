@@ -1073,7 +1073,9 @@ export class CustomerServiceService {
       if (!orderDelivery) {
         throw new Error('claim 후 재조회 실패');
       }
-      await this.deliveryBatchService.oneSend(orderDelivery);
+      // 위 CAS 로 획득한 변형 lease 토큰을 넘긴다 — 발송(외부 통신) 중 lease 가 5분 stale 로
+      // 넘어가면 oneSend 의 발송결과 쓰기가 남이 확정한 상태를 덮어쓰기 때문(리뷰 HIGH).
+      await this.deliveryBatchService.oneSend(orderDelivery, true, undefined, claimAt);
     } finally {
       // claimedAt 해제가 던져도 변형 lease 는 반드시 푼다. 안 풀면 최대 5분간 이 건의
       // 폐기·외부취소·재발행이 전부 거절된다(둘은 별개 컬럼이라 한쪽 실패가 다른 쪽을 막으면 안 된다).
