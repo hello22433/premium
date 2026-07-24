@@ -1494,8 +1494,12 @@ export class DeliveryBatchService {
     // - 1차(짧음): status/actualSendAt/failedAt만 갱신 → idx_order_delivery_claim 락을 짧게 잡고 빠르게 commit
     // - 2차: 나머지 부가 컬럼은 idx_order_delivery_claim에 무관하므로 락 footprint가 작음
     // 이렇게 분리해야 후속 cron의 claim 쿼리와 락 경쟁 시간을 최소화해 데드락 가능성을 줄인다.
-    await this.orderDeliveryRepository.update(
-      { id: orderDelivery.id },
+    //
+    // fencing: 발송(외부 통신)이 도는 사이 lease 가 stale 로 넘어가 폐기·외부취소가 상태를
+    // 확정했을 수 있다. 내 소유가 유지될 때만 쓴다(리뷰 HIGH).
+    await this.updateDeliveryOwned(
+      orderDelivery.id,
+      claimToken,
       {
         status: orderDelivery.status,
         actualSendAt: orderDelivery.actualSendAt,
@@ -1509,6 +1513,7 @@ export class DeliveryBatchService {
         reportAttemptCount: orderDelivery.reportAttemptCount,
         reportFallbackAttemptCount: orderDelivery.reportFallbackAttemptCount,
       },
+      '발송 결과',
     );
     await this.orderDeliveryRepository.update(
       { id: orderDelivery.id },
