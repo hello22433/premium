@@ -496,3 +496,86 @@ describe('processCancelRefund — 상태 쓰기 fencing (리뷰 HIGH)', () => {
     expect(mocks.logger.error).not.toHaveBeenCalledWith(expect.stringContaining('[CANCEL_FENCE_LOST]'));
   });
 });
+
+// ── phaseC 가 "유일하게 영속하는 컬럼" 잠금 ──────────────────────────────
+//
+// phaseC 는 현재 save(orderDelivery)(=merge, 행 전체)로 영속한다. 이를 targeted update 로
+// 좁히려면 **phaseC 말고는 아무도 안 쓰는 컬럼**을 하나도 빠짐없이 열거해야 한다.
+// 하나라도 빠지면 드문 clobber 를 막으려다 **매 주문 확정 유실**을 만든다.
+//
+//   expireAt   — phaseB 에서 issue() **뒤**에 계산된다. persistIssuedPin 은 이미 지나간 뒤라
+//                그 값을 모른다. phaseC 가 유일한 영속자.
+//   imagePath  — 쿠폰 이미지. 자체 update 가 없다. 빠지면 이미지가 영영 유실된다.
+//   report 4종 — 알림톡 POST 성공 표식. 빠지면 sweep 이 재선택해 **중복 발송**한다.
+//   status/actualSendAt/failedAt/apiErrorMessage — 발송 결과 그 자체.
+//
+// 아래 헬퍼는 save(entity) 든 update(where, patch) 든 **구현과 무관하게** 반영 컬럼을 모은다.
+// → save→targeted update 리팩터 전후로 **같은 단언**이 성립한다(리팩터 가드).
+function persistedColumns(mocks: { odSave: jest.Mock; odUpdate: jest.Mock }): Set<string> {
+  const cols = new Set<string>();
+  for (const call of mocks.odSave.mock.calls as unknown as any[][]) {
+    Object.keys(call[0] ?? {}).forEach((k) => cols.add(k));
+  }
+  for (const call of mocks.odUpdate.mock.calls as unknown as any[][]) {
+    Object.keys(call[1] ?? {}).forEach((k) => cols.add(k));
+  }
+  return cols;
+}
+
+/** phaseB 를 막 통과한 알림톡 주문의 delivery — phaseC 가 영속해야 할 값이 전부 실려 있다. */
+const makePostSendDelivery = () =>
+  makeOrderDelivery({
+    status: 'COMPLETE',
+    actualSendAt: new Date('2026-07-24T01:00:00.000Z'),
+    failedAt: null,
+    expireAt: new Date('2026-08-23T00:00:00.000Z'),
+    imagePath: 'img/coupon-55.png',
+    alimTalkMsgKey: 'MSG-KEY-1',
+    reportState: 'PENDING',
+    reportNextDueAt: new Date('2026-07-24T01:05:00.000Z'),
+    reportDeadlineAt: new Date('2026-07-24T02:00:00.000Z'),
+    apiErrorMessage: null,
+  } as any);
+
+const PHASEC_REQUIRED_COLUMNS = [
+  'status',
+  'actualSendAt',
+  'failedAt',
+  'expireAt',
+  'imagePath',
+  'alimTalkMsgKey',
+  'reportState',
+  'reportNextDueAt',
+  'reportDeadlineAt',
+];
+
+describe('phaseC — 영속 컬럼 집합 잠금 (save→targeted update 리팩터 가드)', () => {
+  it('성공 경로: phaseC 가 유일 영속자인 컬럼이 전부 DB 에 반영된다', async () => {
+    const { svc, mocks } = refundService({ isWalletManaged: false });
+
+    await (svc as any).phaseC_handleSuccess(makeOrder(), makePostSendDelivery());
+
+    const cols = persistedColumns(mocks);
+    for (const required of PHASEC_REQUIRED_COLUMNS) {
+      // 실패하면 = 그 컬럼이 DB 에 안 실린다 = 유실. imagePath 면 쿠폰 이미지가,
+      // reportState 면 알림톡 중복 발송이 된다.
+      expect(cols.has(required)).toBe(true);
+    }
+  });
+
+  it('실패 경로: 위 컬럼 + apiErrorMessage 가 DB 에 반영된다', async () => {
+    const { svc, mocks } = refundService({ isWalletManaged: false });
+
+    await (svc as any).phaseC_handleFailure(
+      makeOrder(),
+      makePostSendDelivery(),
+      makeAccount(),
+      new Error('발송 실패'),
+    );
+
+    const cols = persistedColumns(mocks);
+    for (const required of [...PHASEC_REQUIRED_COLUMNS, 'apiErrorMessage']) {
+      expect(cols.has(required)).toBe(true);
+    }
+  });
+});
