@@ -126,11 +126,52 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
       authority: over.authority ?? 'CORPORATE_ADMIN',
       company,
     } as any;
+    // 레거시 미러 복원은 값을 되쓰지 않고 DB 증감식(UPDATE ... SET x = x ± :n)으로 나간다.
+    // set() 에 넘긴 식과 파라미터를 캡처해, read-modify-write 로 되돌아가면 잡히게 한다.
+    type CapturedUpdate = { set: Record<string, () => string>; params: unknown; where: unknown };
+    const makeUpdateBuilder = (sink: CapturedUpdate[]) => () => {
+      const captured = { set: {}, params: null, where: null } as unknown as CapturedUpdate;
+      const b: any = {
+        update: () => b,
+        set: (value: Record<string, () => string>) => {
+          captured.set = value;
+          return b;
+        },
+        where: (_condition: string, params: unknown) => {
+          captured.where = params;
+          return b;
+        },
+        setParameters: (params: unknown) => {
+          captured.params = params;
+          return b;
+        },
+        execute: async () => {
+          sink.push(captured);
+          return { affected: 1 };
+        },
+      };
+      return b;
+    };
+    const userUpdates: CapturedUpdate[] = [];
+    const companyUpdates: CapturedUpdate[] = [];
+
     sut.userRepository = {
       findOneOrFail: jest.fn(async () => billingUser),
       update: jest.fn(async () => ({ affected: 1 })),
+      createQueryBuilder: jest.fn(makeUpdateBuilder(userUpdates)),
     };
-    sut.userCompanyRepository = { save: jest.fn(async () => company) };
+    sut.userCompanyRepository = {
+      save: jest.fn(async () => company),
+      createQueryBuilder: jest.fn(makeUpdateBuilder(companyUpdates)),
+    };
+    // 전건 취소 시 전체취소와 같은 표현으로 allocation 을 닫는다(released_at).
+    sut.orderConfirmationReleaseService = {
+      releaseConfirmation: jest.fn(async () => ({
+        alreadyReleased: false,
+        walletTransactionIds: [],
+        rolledBackAttemptIds: [],
+      })),
+    };
     sut.orderCancelNotificationService = {
       notifyDirectOrderCancel: jest.fn(),
       notifyDirectOrderPartialCancel: jest.fn(),
@@ -185,7 +226,17 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
     const survivingMappings = over.survivingMappings ?? uniformSurvivingMappings();
     sut.getOrderProductsForCancelSettlement = jest.fn(async () => survivingMappings);
 
-    return { sut, order, remainingConditions, graphQuery, billingUser, company, survivingMappings };
+    return {
+      sut,
+      order,
+      remainingConditions,
+      graphQuery,
+      billingUser,
+      company,
+      survivingMappings,
+      userUpdates,
+      companyUpdates,
+    };
   };
 
   const call = (sut: any, deliveryIds: number[]) =>
@@ -476,34 +527,74 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
   // 지갑 잔액은 RefundPoolService 가 맞추지만 레거시 컬럼은 건드리지 않는다. 전체취소·외부API취소는
   // 이 역복원을 하는데 부분취소만 빠져 있으면 고객사 화면과 정산 화면의 잔액이 어긋난다.
   describe('레거시 미러 역복원', () => {
-    it('예치금 복구분은 회사 balance 에 되돌린다 (COMPANY 모드)', async () => {
-      const { sut, company } = buildSut({ refundBreakdown: { deposit: 30000, credit: 0, excess: 0 } });
+    // ★ balance / all_settle_amount 는 회사·유저 단위 공유 자원이라 이 주문의 락으로 보호되지 않는다.
+    //   읽은 값에 델타를 더해 되쓰면(read-modify-write) 같은 고객사의 다른 주문이 동시에 취소될 때
+    //   갱신 하나가 통째로 유실된다 — 환불했는데 잔액에 반영되지 않는다. 그래서 증감식을 DB 로 넘긴다.
+    it('예치금 복구분은 회사 balance 를 DB 증감식으로 올린다 (COMPANY 모드)', async () => {
+      const { sut, company, companyUpdates } = buildSut({
+        refundBreakdown: { deposit: 30000, credit: 0, excess: 0 },
+      });
 
       await call(sut, CANCELABLE);
 
-      expect(company.balance).toBe(80000);
-      expect(sut.userCompanyRepository.save).toHaveBeenCalled();
+      expect(companyUpdates).toHaveLength(1);
+      expect(companyUpdates[0].set.balance()).toBe('balance + :depositRefunded');
+      expect(companyUpdates[0].params).toEqual({ depositRefunded: 30000 });
+      expect(companyUpdates[0].where).toEqual({ id: 10 });
+      // 엔티티 값을 고쳐 되쓰지 않는다 — 고쳤다면 lost update 방식으로 되돌아간 것이다.
+      expect(company.balance).toBe(50000);
+      expect(sut.userCompanyRepository.save).not.toHaveBeenCalled();
     });
 
-    it('여신·신용초과 복구분은 allSettleAmount 에서 뺀다', async () => {
-      const { sut, billingUser } = buildSut({ refundBreakdown: { deposit: 0, credit: 20000, excess: 5000 } });
+    it('여신·신용초과 복구분은 all_settle_amount 를 DB 증감식으로 내린다', async () => {
+      const { sut, billingUser, userUpdates } = buildSut({
+        refundBreakdown: { deposit: 0, credit: 20000, excess: 5000 },
+      });
 
       await call(sut, CANCELABLE);
 
-      expect(billingUser.allSettleAmount).toBe(55000);
-      expect(sut.userRepository.update).toHaveBeenCalledWith({ id: 5 }, { allSettleAmount: 55000 });
+      expect(userUpdates).toHaveLength(1);
+      expect(userUpdates[0].set.allSettleAmount()).toBe('all_settle_amount - :creditReturned');
+      // 여신 + 신용초과를 합쳐 한 번에 내린다.
+      expect(userUpdates[0].params).toEqual({ creditReturned: 25000 });
+      expect(userUpdates[0].where).toEqual({ id: 5 });
+      expect(billingUser.allSettleAmount).toBe(80000);
     });
 
     it('PERSONAL 모드면 회사 balance 를 건드리지 않는다', async () => {
-      const { sut, company } = buildSut({
+      const { sut, company, companyUpdates } = buildSut({
         balanceManagementType: 'PERSONAL',
         refundBreakdown: { deposit: 30000, credit: 0, excess: 0 },
       });
 
       await call(sut, CANCELABLE);
 
+      expect(companyUpdates).toHaveLength(0);
       expect(company.balance).toBe(50000);
-      expect(sut.userCompanyRepository.save).not.toHaveBeenCalled();
+    });
+  });
+
+  // 같은 종단 사건(대기건이 하나도 안 남음)이 요청 형태에 따라 두 가지 wallet 표현으로 갈리면
+  // 사후 스윕·정산이 둘을 다르게 본다. isWalletManaged 는 released_at IS NULL 로 판정하므로,
+  // 전량 부분취소가 released_at 을 안 닫으면 "주문은 취소됐는데 지갑은 점유 중" 이 남는다.
+  describe('allocation 종단 처리', () => {
+    it('전건 취소면 전체취소와 같이 allocation 을 닫는다 (released_at)', async () => {
+      const { sut } = buildSut({ remainingAfterCancel: 0 });
+
+      await call(sut, CANCELABLE);
+
+      expect(sut.orderConfirmationReleaseService.releaseConfirmation).toHaveBeenCalledWith(
+        expect.objectContaining({ orderId: ORDER_ID, failedDeliveryIds: null }),
+        expect.anything(),
+      );
+    });
+
+    it('잔여가 있으면 allocation 을 닫지 않는다 (잔여분이 아직 지갑 점유 중)', async () => {
+      const { sut } = buildSut({ remainingAfterCancel: 2 });
+
+      await call(sut, CANCELABLE);
+
+      expect(sut.orderConfirmationReleaseService.releaseConfirmation).not.toHaveBeenCalled();
     });
   });
 

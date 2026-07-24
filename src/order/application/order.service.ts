@@ -6073,14 +6073,30 @@ export class OrderService {
     });
     const isCompanyBalanceMode = billingUser.company?.balanceManagementType === 'COMPANY';
 
+    // ★ 두 컬럼 모두 DB 에서 증감시킨다(읽은 값 + 델타를 되쓰지 않는다).
+    //   balance / all_settle_amount 는 회사·유저 단위 공유 자원이라 이 주문의 락으로 보호되지 않는다.
+    //   같은 고객사의 서로 다른 주문 2건이 동시에 취소되면, 각자 락 밖에서 읽은 값에 자기 델타를 더해
+    //   되쓰므로 갱신 하나가 통째로 유실된다(lost update = 환불 한 건이 잔액에 반영되지 않음).
+    //   증감식을 DB 에 넘기면 UPDATE 가 행 락 안에서 현재값 기준으로 계산해 유실이 구조적으로 사라진다.
+    //   company.balance 는 종전에 save(엔티티 전체)라 다른 필드까지 stale 스냅샷으로 덮어쓸 위험도 있었다.
     if (depositRefunded > 0 && isCompanyBalanceMode && billingUser.company) {
-      billingUser.company.balance += depositRefunded;
-      await this.userCompanyRepository.save(billingUser.company);
+      await this.userCompanyRepository
+        .createQueryBuilder()
+        .update()
+        .set({ balance: () => 'balance + :depositRefunded' })
+        .where('id = :id', { id: billingUser.company.id })
+        .setParameters({ depositRefunded })
+        .execute();
     }
     if (creditRefunded + excessRefunded > 0) {
-      billingUser.allSettleAmount -= creditRefunded + excessRefunded;
-      // wallet path 는 user.balance 를 건드리지 않으므로 update 로 좁혀 stale overwrite 를 막는다.
-      await this.userRepository.update({ id: billingUser.id }, { allSettleAmount: billingUser.allSettleAmount });
+      // wallet path 는 user.balance 를 건드리지 않으므로 all_settle_amount 만 움직인다.
+      await this.userRepository
+        .createQueryBuilder()
+        .update()
+        .set({ allSettleAmount: () => 'all_settle_amount - :creditReturned' })
+        .where('id = :id', { id: billingUser.id })
+        .setParameters({ creditReturned: creditRefunded + excessRefunded })
+        .execute();
     }
 
     // 남은 발송건이 없으면 주문도 취소로 내린다. 남아 있으면 DELIVERY_CONFIRMED 를 유지해야
@@ -6106,6 +6122,21 @@ export class OrderService {
     //     동일한 로딩" 으로 재계산해 덮으면 difference 가 정확히 0 이 된다(할증·포인트·반올림 무관).
     if (remaining === 0) {
       // 전건 취소 — 전체취소와 같은 종단 상태를 만든다(다른 코드가 보는 조합을 늘리지 않는다).
+      //
+      // ★ allocation 도 전체취소와 같은 표현으로 닫는다. 이게 빠지면 released_at 이 NULL 로 남아
+      //   isWalletManaged(= EXISTS(allocation WHERE order_id=? AND released_at IS NULL)) 가 계속
+      //   true 인 조합 — "주문은 취소됐는데 지갑은 아직 점유 중" — 이 새로 생긴다. 같은 종단 사건이
+      //   요청 형태(전체취소 vs 대기건 전량 부분취소)에 따라 두 가지 wallet 표현으로 갈리면
+      //   사후 스윕·정산이 둘을 다르게 본다. UI 의 "전체 선택" 은 자연스러운 조작이라 반드시 도달한다.
+      //
+      //   여기서 돈은 움직이지 않는다. 위에서 발송건별로 이미 전액 환불했고(커버리지 가드가 보장),
+      //   releaseConfirmation 은 자원별로 max(0, used - restored) 만, 포인트도
+      //   (usedAmount - restoredAmount - skippedExpiredAmount) 만 복구하므로 전부 0 이다.
+      //   즉 이 호출의 효과는 released_at/release_reason 기록과 INITIAL attempt 의 ROLLED_BACK 정리뿐이다.
+      await this.orderConfirmationReleaseService.releaseConfirmation(
+        { orderId, reason: 'order_cancel_partial_all', failedDeliveryIds: null },
+        externalManager,
+      );
       lockedOrder.status = IOrderStatus.DELIVERY_CANCEL;
       lockedOrder.cancelReason = cancelReason;
       lockedOrder.canceledAt = now;
