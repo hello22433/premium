@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, Logger } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { plainToInstance } from 'class-transformer';
 import { validate, ValidationError } from 'class-validator';
@@ -214,6 +214,9 @@ export class AutoOrderService {
     },
     mode: AutoOrderRunMode,
   ): Promise<AutoOrderFileResult> {
+    // ★ S3 접근보다 먼저 소유 검증(filePath 는 신뢰경계 밖 입력).
+    this.assertAttachmentReadable(url, receipt);
+
     const fileName = this.safeFileName(url);
 
     // ── 1단계 파싱
@@ -506,6 +509,47 @@ export class AutoOrderService {
     } catch {
       return url;
     }
+  }
+
+  /**
+   * 첨부 읽기 전 소유 검증 — 다운로드 경로(OrderReceiptService.assertDownloadable)와 동일 규칙을 자동주문에 대칭 적용.
+   * filePath 는 클라이언트가 임의 지정 가능한 값이므로(접수 등록/수정 시 문자열 그대로 저장), 검증 없이 읽으면
+   * 서버 자격증명으로 "남의 private 객체"를 읽게 된다. 그래서 S3 접근 전에 반드시 통과해야 한다.
+   *
+   * ⚠️ 판정 주체는 '요청한 관리자'가 아니라 receipt.userId(접수 소유자)다.
+   *   미리보기/승인은 운영관리자 이상만 호출하므로, 다운로드처럼 요청자 기준(관리자면 우회)으로 검사하면
+   *   항상 통과해 검사가 무력화된다. 접수에 붙은 첨부는 '그 접수 소유자의 객체'여야 한다.
+   *
+   * 허용목록: private/{접수소유자}/... 또는 file/...(전환 전 레거시 공개 첨부). 그 외는 전부 거부.
+   */
+  private assertAttachmentReadable(url: string, receipt: OrderReceiptEntity): void {
+    const deny = (reason: string, message: string): never => {
+      // 경로 원문은 남기지 않는다(키 노출 방지). 변조 탐지를 위해 접수/소유자 식별자만 기록.
+      this.logger.error(`자동주문 첨부 거부(${reason}) receipt=${receipt.id} 접수소유자=${receipt.userId}`);
+      throw new ForbiddenException(message);
+    };
+
+    if (!this.fileService.isOwnStorageUrl(url)) {
+      // 외부 host URL 도 pathname 이 우리 key 로 쓰이므로(extractStorageKey), host 검사가 1차 방어다.
+      deny('우리 스토리지 URL 아님', '접수 첨부로 사용할 수 없는 파일 경로입니다.');
+    }
+
+    const key = this.fileService.extractStorageKey(url);
+
+    if (key.startsWith('private/')) {
+      const ownerId = Number(key.split('/')[1]);
+      if (!Number.isInteger(ownerId)) {
+        deny('소유자 세그먼트 없는 private 키', '접수 첨부로 사용할 수 없는 파일 경로입니다.');
+      }
+      if (ownerId !== receipt.userId) {
+        deny(`타 소유자 객체(첨부소유자=${ownerId})`, '접수 소유자의 첨부가 아닙니다.');
+      }
+      return;
+    }
+
+    if (key.startsWith('file/')) return; // 전환 전 주문접수 첨부(공개 객체) 호환 — 다운로드 경로와 동일 허용
+
+    deny('허용되지 않은 위치', '접수 첨부로 사용할 수 없는 파일 경로입니다.');
   }
 
   /** 크기 상한 초과 처리: COMMIT은 throw(승인 롤백), DRY_RUN은 INVALID_FORMAT 파일 결과 반환. source=조회 출처(로그용). */

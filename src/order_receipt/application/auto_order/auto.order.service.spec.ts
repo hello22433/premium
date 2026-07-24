@@ -1,5 +1,5 @@
 import * as ExcelJS from 'exceljs';
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { Repository } from 'typeorm';
 import { AutoOrderService } from './auto.order.service';
 import { AutoOrderExcelParser } from './auto.order.excel.parser';
@@ -106,6 +106,9 @@ function makeService(
     getBuffer: async (url: string) => bufferByUrl[url],
     getContentLength: async (url: string) => bufferByUrl[url]?.length ?? null,
     extractOriginalFileName: (url: string) => url.split('/').pop() ?? url,
+    // 소유 검증용 — 기본은 "접수 소유자(userId=10)의 정상 private 첨부"로 취급
+    isOwnStorageUrl: () => true,
+    extractStorageKey: (url: string) => `private/10/${url.split('/').pop() ?? url}`,
   } as unknown as FileService;
 
   const matcher = {
@@ -276,6 +279,76 @@ describe('AutoOrderService (DRY_RUN 미리보기)', () => {
     await expect(svc.run(receipt('u://a.xlsx'), admin, AutoOrderRunMode.COMMIT)).rejects.toThrow(BadRequestException);
   });
 
+  // ── 리뷰(admin): 첨부 소유 검증 — filePath는 신뢰경계 밖 입력이라 S3 읽기 전에 소유자 확인
+  //    (다운로드 경로 assertDownloadable과 동일 규칙, 단 주체는 접수 소유자)
+  describe('첨부 소유 검증(assertAttachmentReadable)', () => {
+    // 접수 소유자=10. fileService를 케이스별로 갈아끼워 key/host를 조작한다.
+    const withStorage = (svc: AutoOrderService, key: string, ownUrl = true) => {
+      const probe = { fetched: false };
+      (svc as any).fileService = {
+        isOwnStorageUrl: () => ownUrl,
+        extractStorageKey: () => key,
+        extractOriginalFileName: (u: string) => u,
+        getContentLength: async () => {
+          probe.fetched = true;
+          return 1;
+        },
+        getBuffer: async () => {
+          probe.fetched = true;
+          return Buffer.from('x');
+        },
+      };
+      return probe;
+    };
+
+    it('타 소유자의 private 객체 → Forbidden, S3 접근 자체가 없어야 함', async () => {
+      const { svc } = makeService({});
+      const probe = withStorage(svc, 'private/999/other.xlsx'); // 접수 소유자(10)와 불일치
+      await expect(svc.run(receipt('u://a.xlsx'), admin, AutoOrderRunMode.DRY_RUN)).rejects.toThrow(ForbiddenException);
+      expect(probe.fetched).toBe(false); // 읽기 전에 차단
+    });
+
+    it('우리 스토리지가 아닌 host URL → Forbidden (외부 pathname을 우리 key로 오인 방지)', async () => {
+      const { svc } = makeService({});
+      const probe = withStorage(svc, 'private/10/a.xlsx', false);
+      await expect(svc.run(receipt('u://a.xlsx'), admin, AutoOrderRunMode.DRY_RUN)).rejects.toThrow(ForbiddenException);
+      expect(probe.fetched).toBe(false);
+    });
+
+    it('소유자 세그먼트 없는 private 키 → Forbidden', async () => {
+      const { svc } = makeService({});
+      withStorage(svc, 'private/abc-noowner.xlsx');
+      await expect(svc.run(receipt('u://a.xlsx'), admin, AutoOrderRunMode.DRY_RUN)).rejects.toThrow(ForbiddenException);
+    });
+
+    it('첨부 외 위치(image/) → Forbidden', async () => {
+      const { svc } = makeService({});
+      withStorage(svc, 'image/logo.png');
+      await expect(svc.run(receipt('u://a.xlsx'), admin, AutoOrderRunMode.DRY_RUN)).rejects.toThrow(ForbiddenException);
+    });
+
+    it('접수 소유자의 private 첨부는 통과(정상 처리)', async () => {
+      const buf = await buildFilledBuffer([{ b: '010-1111-1111', code: 'GEN-1' }]);
+      const { svc } = makeService({ 'u://a.xlsx': buf }); // 기본 목: private/10/... + 정상 버퍼
+      const file = (await svc.run(receipt('u://a.xlsx'), admin, AutoOrderRunMode.DRY_RUN)).files[0];
+      expect(file.status).toBe('VALID');
+    });
+
+    it('레거시 file/ 첨부는 허용(전환 전 공개 첨부 호환)', async () => {
+      const buf = await buildFilledBuffer([{ b: '010-1111-1111', code: 'GEN-1' }]);
+      const { svc } = makeService({ 'u://a.xlsx': buf });
+      (svc as any).fileService = {
+        isOwnStorageUrl: () => true,
+        extractStorageKey: () => 'file/legacy-a.xlsx',
+        extractOriginalFileName: (u: string) => u,
+        getContentLength: async () => buf.length,
+        getBuffer: async () => buf,
+      };
+      const file = (await svc.run(receipt('u://a.xlsx'), admin, AutoOrderRunMode.DRY_RUN)).files[0];
+      expect(file.status).toBe('VALID');
+    });
+  });
+
   it('범위 밖 fileIndexes → BadRequestException (조용한 빈 미리보기 방지)', async () => {
     const a = await buildFilledBuffer([{ b: '010-1111-1111', code: 'GEN-1' }]);
     const { svc } = makeService({ 'u://a.xlsx': a });
@@ -408,6 +481,8 @@ describe('AutoOrderService (COMMIT 승인)', () => {
 
   it('COMMIT 중 인프라(읽기) 오류 → run 전파(승인 롤백); DRY_RUN은 INVALID_FORMAT', async () => {
     const throwingFile = {
+      isOwnStorageUrl: () => true,
+      extractStorageKey: () => 'private/10/x.xlsx', // 소유 검증 통과(접수 소유자)
       getContentLength: async () => null, // HeadObject 미제공 → 본문 조회 시도로 진행
       getBuffer: async () => { throw new Error('S3 timeout'); },
       extractOriginalFileName: (u: string) => u,
@@ -526,6 +601,8 @@ describe('AutoOrderService (리뷰 추가 커버리지)', () => {
     const { svc } = makeService({ 'u://big.xlsx': Buffer.from('small') });
     let bufferFetched = false;
     (svc as any).fileService = {
+      isOwnStorageUrl: () => true,
+      extractStorageKey: () => 'private/10/big.xlsx', // 소유 검증 통과(접수 소유자)
       getContentLength: async () => AutoOrderService.MAX_FILE_BYTES + 1, // 본문은 작지만 Head는 초과 보고
       getBuffer: async () => {
         bufferFetched = true;
@@ -548,6 +625,8 @@ describe('AutoOrderService (리뷰 추가 커버리지)', () => {
     const big = Buffer.alloc(AutoOrderService.MAX_FILE_BYTES + 1);
     const { svc } = makeService({ 'u://big.xlsx': big });
     (svc as any).fileService = {
+      isOwnStorageUrl: () => true,
+      extractStorageKey: () => 'private/10/big.xlsx', // 소유 검증 통과(접수 소유자)
       getContentLength: async () => null, // Head 실패/미제공
       getBuffer: async () => big,
       extractOriginalFileName: (u: string) => u,
