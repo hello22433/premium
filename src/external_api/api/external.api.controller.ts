@@ -12,6 +12,7 @@ import {
   UseInterceptors,
   HttpCode,
 } from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
 import { ApiTags, ApiOperation, ApiSecurity } from '@nestjs/swagger';
 import { Request } from 'express';
 
@@ -45,6 +46,7 @@ export class ExternalApiController {
   }
 
   @Get('products')
+  @SkipThrottle({ orders: true, cancelResend: true })
   @ApiOperation({ summary: '상품 목록 조회' })
   async getProducts(@Req() req: Request, @Query() query: ExternalProductQueryDto) {
     return this.externalApiService.getProducts(
@@ -56,6 +58,7 @@ export class ExternalApiController {
   }
 
   @Post('orders')
+  @SkipThrottle({ reads: true, cancelResend: true })
   @HttpCode(200)
   @UseInterceptors(IdempotencyInterceptor)
   @ApiOperation({ summary: '쿠폰 발송 (즉시)' })
@@ -64,6 +67,7 @@ export class ExternalApiController {
   }
 
   @Post('orders/:trId/resend')
+  @SkipThrottle({ orders: true, reads: true })
   @HttpCode(200)
   @ApiOperation({ summary: '재발송' })
   async resendOrder(@Req() req: Request, @Param('trId') trId: string) {
@@ -73,6 +77,7 @@ export class ExternalApiController {
   // reconcile 전용: 호출자 reqTrId(=externalOrderId) 로 주문 조회. 타임아웃으로 trId 를 못 받은 경우의
   // 착지/발송 확인용 읽기 전용 엔드포인트. 반드시 orders/:trId/status 보다 위에 둔다(라우트 우선순위).
   @Get('orders/status')
+  @SkipThrottle({ orders: true, cancelResend: true })
   @ApiOperation({ summary: '주문 조회 (externalOrderId 기준, reconcile)' })
   async getOrderStatusByExternalOrderId(@Req() req: Request, @Query('externalOrderId') externalOrderId: string) {
     return this.externalApiService.getOrderStatusByExternalOrderId(
@@ -83,18 +88,21 @@ export class ExternalApiController {
   }
 
   @Get('orders/:trId/status')
+  @SkipThrottle({ orders: true, cancelResend: true })
   @ApiOperation({ summary: '주문 상태 확인' })
   async getOrderStatus(@Req() req: Request, @Param('trId') trId: string) {
     return this.externalApiService.getOrderStatus(this.getAccount(req), trId, this.getApiContext(req));
   }
 
   @Delete('orders/:trId')
+  @SkipThrottle({ orders: true, reads: true })
   @ApiOperation({ summary: '쿠폰 취소' })
   async cancelOrder(@Req() req: Request, @Param('trId') trId: string) {
     return this.externalApiService.cancelOrder(this.getAccount(req), trId, this.getApiContext(req));
   }
 
   @Post('orders/ssg')
+  @SkipThrottle({ reads: true, cancelResend: true })
   @HttpCode(200)
   @UseInterceptors(IdempotencyInterceptor)
   @ApiOperation({ summary: 'SSG 쿠폰 발송' })
@@ -103,6 +111,7 @@ export class ExternalApiController {
   }
 
   @Get('orders/ssg/:trId/status')
+  @SkipThrottle({ orders: true, cancelResend: true })
   @ApiOperation({ summary: 'SSG 주문 상태 확인' })
   async getSsgOrderStatus(@Req() req: Request, @Param('trId') trId: string) {
     return this.externalApiService.getSsgOrderStatus(this.getAccount(req), trId, this.getApiContext(req));

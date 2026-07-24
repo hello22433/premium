@@ -157,13 +157,13 @@ export class UserEntity extends BaseEntity {
   @Column({ type: 'varchar', length: 100, comment: '은행 명' })
   bankName: string;
 
-  @Column({ type: 'varchar', length: 100, comment: '계좌 번호' })
+  @Column({ type: 'varchar', length: 100, comment: '계좌 번호 (암호화 저장, CryptoCipher)' })
   bankNumber: string;
 
   @Column({ type: 'varchar', length: 100, comment: '카드 명' })
   cardName: string;
 
-  @Column({ type: 'varchar', length: 100, comment: '카드 번호' })
+  @Column({ type: 'varchar', length: 100, comment: '카드 번호 (암호화 저장, CryptoCipher)' })
   cardNumber: string;
 
   /**

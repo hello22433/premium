@@ -1,3 +1,4 @@
+import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { PartnerCompanyEntity } from '../../entity/partner.company.entity';
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { FindOptionsWhere, Like, Repository } from 'typeorm';
@@ -31,6 +32,7 @@ export class PartnerCompanyService {
   constructor(
     @InjectRepository(PartnerCompanyEntity)
     private partnerCompanyRepository: Repository<PartnerCompanyEntity>,
+    private readonly cryptoCipher: CryptoCipher,
   ) {}
 
   async getSelectList(): Promise<PartnerCompanyGetSelectListResDto> {
@@ -250,7 +252,7 @@ export class PartnerCompanyService {
       settleMethod: partnerCompany.settleMethod,
       maximumLimit: partnerCompany.maximumLimit,
       bankName: partnerCompany.bankName,
-      bankNumber: partnerCompany.bankNumber,
+      bankNumber: this.cryptoCipher.safeDecryptAccountNumber(partnerCompany.bankNumber) ?? partnerCompany.bankNumber,
       status: partnerCompany.status,
       createdAt: format(partnerCompany.createdAt, DateFormatStr),
       validityStartsNextDay: partnerCompany.validityStartsNextDay,
@@ -300,7 +302,7 @@ export class PartnerCompanyService {
       settleCondition,
       settleMethod,
       maximumLimit,
-      bankNumber,
+      bankNumber: bankNumber ? this.cryptoCipher.encryptAccountNumber(bankNumber) : bankNumber,
       bankName,
       settleDay,
       type: type ?? null,
@@ -352,7 +354,7 @@ export class PartnerCompanyService {
     partnerCompany.settleCondition = settleCondition;
     partnerCompany.settleMethod = settleMethod;
     partnerCompany.maximumLimit = maximumLimit;
-    partnerCompany.bankNumber = bankNumber;
+    partnerCompany.bankNumber = bankNumber ? this.cryptoCipher.encryptAccountNumber(bankNumber) : bankNumber;
     partnerCompany.bankName = bankName;
     partnerCompany.settleDay = settleDay;
     // type은 유효한 enum 값이 제공된 경우에만 업데이트 (빈 문자열, null, undefined 무시)

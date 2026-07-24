@@ -1,6 +1,7 @@
 import { IOrderStatus } from '../../interface/order.status';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IOrderDeliveryStatus } from '../../../delivery/interface/order.delivery.status';
+import { DestructionCertificateBlockReason } from '../../interface/destruction.certificate.block.reason';
 
 export class CustomerSettlementDto {
   @ApiProperty({
@@ -115,6 +116,18 @@ export class OrderViewDto {
     description: '재발송 완료 건 포함 여부',
   })
   hasResentDelivery: boolean;
+
+  @ApiProperty({
+    description: '파기확인서 발행 가능 여부 (발송 완료 + 모든 발송건의 개인정보 파기 완료)',
+  })
+  canIssueDestructionCertificate: boolean;
+
+  @ApiProperty({
+    enum: DestructionCertificateBlockReason,
+    nullable: true,
+    description: '파기확인서 발행 불가 사유. null 이면 발행 가능',
+  })
+  destructionCertificateBlockReason: DestructionCertificateBlockReason | null;
 
   @ApiProperty({
     required: false,

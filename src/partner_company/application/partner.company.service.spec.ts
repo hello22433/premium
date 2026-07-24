@@ -16,6 +16,14 @@ import { createMockRepositoryMethod } from '../../common/test/mock.repository.me
 import { IPartnerCompanySettleCondition } from '../interface/partner.company.settle.condition';
 import { IPartnerCompanySettleMethod } from '../interface/partner.company.settle.method';
 import { BadRequestException } from '@nestjs/common';
+import { CryptoCipher } from '../../common/infra/crypto.cipher';
+
+const cipherStub = {
+  encryptAccountNumber: (v: string) => v,
+  safeDecryptAccountNumber: (v: string) => v,
+  encryptDeliveryTarget: (v: string) => v,
+  safeDecryptDeliveryTarget: (v: string) => v,
+} as unknown as CryptoCipher;
 
 describe('partner company service test', () => {
   let sut: PartnerCompanyService;
@@ -36,6 +44,7 @@ describe('partner company service test', () => {
             createQueryBuilder: jest.fn(() => queryBuilder),
           },
         },
+        { provide: CryptoCipher, useValue: cipherStub },
       ],
     }).compile();
 
