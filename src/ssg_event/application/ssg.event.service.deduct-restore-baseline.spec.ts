@@ -67,7 +67,9 @@ describe('SsgEventService deduct/restore — 변경 전 기준선 (baseline)', (
 
     expect(created).toHaveLength(1); // 합산 1행
     expect(created[0]).toMatchObject({ ssgEventId: 10, amount: -10000, orderId: 700, isTemporary: true });
-    expect(created[0].orderDeliveryId).toBeUndefined(); // 귀속 없음
+    // 발송건 귀속을 남기지 않는다 — 이 때문에 SSG 는 발송건별 부분복구를 못 하고 부분취소가 400 이다.
+    // (귀속 컬럼 order_delivery_id 는 SSG 부분취소 후속 티켓에서 엔티티·마이그레이션과 함께 들어간다.)
+    expect(created[0].orderDeliveryId).toBeUndefined();
     expect(events[10].eventBalance).toBe(90000); // 100000 - 10000
   });
 

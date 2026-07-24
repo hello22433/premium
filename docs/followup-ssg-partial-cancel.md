@@ -49,9 +49,17 @@ else if (refundAmount>0) balance/allSettleAmount 복구    // 레거시 환불(�
 
 ## 착수 시 해야 할 일 (설계 스케치)
 
+0. **컬럼/엔티티 되살리기** (이 티켓에서 빠졌음 — 197-16 리뷰 LOW 반영).
+   `ssg_event_amount_history.order_delivery_id` 컬럼 + `(order_id, order_delivery_id)` 인덱스
+   마이그레이션과 엔티티 필드는 **197-16 PR 에서 제거**했다. 쓰는 코드가 없는데 앱 배포 선행
+   마이그레이션만 1개 늘어나기 때문이다. 원본은 커밋 `cb5da68` 의
+   `sql/migrations/20260722_add_ssg_event_amount_history_delivery.sql` 과
+   `src/entity/ssg.event.amount.history.entity.ts` 에 그대로 있으니 되살려 쓰면 된다.
+   ★ 엔티티가 컬럼을 선언한 채 마이그레이션이 안 돌면 그 테이블 조회가 전부 Unknown column 으로
+     깨진다. **둘을 반드시 같이** 넣고, 마이그레이션을 앱 배포보다 먼저 적용할 것.
+
 1. **차감을 발송건별로 기록**: `deductEventBalanceMultiple` 이 발송건(order_delivery_id)별 1행씩 남기도록.
-   - 최종 `eventBalance` 는 현행(합산 차감)과 **동일**해야 함(러닝 밸런스). 마이그레이션으로 컬럼은 추가됨
-     (`order_delivery_id`) — 단, **운영 DB에는 아직 없을 수 있으니 배포 전 존재 확인 필수**.
+   - 최종 `eventBalance` 는 현행(합산 차감)과 **동일**해야 함(러닝 밸런스).
    - 재발행/유효기간변경(`restoreTemporaryEventBalance` → 재차감) 경로도 발송건별 기록을 승계해야 함.
 2. **범위 복구**: `restoreEventBalance(orderId, deliveryIds?)` 로 특정 발송건 몫만 복구.
    - `order_delivery_id` **NULL 인 옛 행(귀속 없음)** 은 안분 근거가 없으므로 **fail-closed**(그 주문은 부분취소 400 유지).
