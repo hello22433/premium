@@ -469,12 +469,15 @@ describe('DeliveryBatchService.processOneDeliveryInternal — full save() 부재
       await expect((sut as any).processOneDeliveryInternal(makeDelivery(), TOKEN)).resolves.toBeDefined();
     });
 
-    it('lease 상실은 무음이 아니다 — [BATCH_FENCE_LOST] 경보', async () => {
+    it('lease 상실은 무음이 아니다 — [BATCH_FENCE_LOST] 경보 (orderId 포함)', async () => {
       repo.update.mockResolvedValue({ affected: 0 });
 
       await (sut as any).processOneDeliveryInternal(makeDelivery(), TOKEN);
 
-      expect((sut as any).logger.error).toHaveBeenCalledWith(expect.stringContaining('[BATCH_FENCE_LOST]'));
+      // 운영이 잃은 쓰기를 대사할 때 order 조인을 손으로 안 하도록 orderId 를 함께 남긴다(리뷰 P1).
+      const msg = (sut as any).logger.error.mock.calls.map((c: any[]) => c[0]).find((m: string) => m?.includes('[BATCH_FENCE_LOST]'));
+      expect(msg).toContain('[BATCH_FENCE_LOST]');
+      expect(msg).toContain('orderId: 55');
     });
 
     it('정상 소유(affected=1)면 경보하지 않는다 — 오탐 방지', async () => {

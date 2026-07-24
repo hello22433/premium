@@ -1272,6 +1272,8 @@ export class DeliveryBatchService {
     claimToken: Date | null | undefined,
     patch: Parameters<Repository<OrderDeliveryEntity>['update']>[1],
     label: string,
+    /** 경보 로그에 함께 남길 주문 id. 운영이 잃은 쓰기를 대사할 때 order 조인을 손으로 안 하도록. */
+    orderId?: number,
   ): Promise<boolean> {
     const where = claimToken
       ? { id: orderDeliveryId, mutationClaimedAt: claimToken }
@@ -1279,10 +1281,15 @@ export class DeliveryBatchService {
 
     const res = await this.orderDeliveryRepository.update(where, patch);
 
+    // affected=0 판정은 MySQL 기본(CLIENT_FOUND_ROWS 미설정)의 "값이 실제로 바뀐 행 수" 세만틱에
+    // 기댄다. 이 배치의 patch 는 모든 실경로에서 status 를 전이(WAIT→COMPLETE/FAIL)하므로
+    // 정상 경로에서는 affected≥1 이 보장돼 오탐이 없다. 만약 값 무변경 재진입 쓰기가 생기면
+    // 여기서 거짓 [BATCH_FENCE_LOST] 가 뜰 수 있음을 유의(무해 — 로그만, 쓰기 자체는 멱등).
     if (claimToken && !res.affected) {
       this.logger.error(
         `[BATCH_FENCE_LOST] ${label} 쓰기 생략 — 변형 lease 를 뺏긴 뒤였다. ` +
-          `orderDelivery.id: ${orderDeliveryId}, claimToken: ${claimToken.toISOString()}`,
+          `orderDelivery.id: ${orderDeliveryId}, orderId: ${orderId ?? 'N/A'}, ` +
+          `claimToken: ${claimToken.toISOString()}`,
       );
       return false;
     }
@@ -1366,6 +1373,7 @@ export class DeliveryBatchService {
           claimToken,
           { status: orderDelivery.status, failedAt: orderDelivery.failedAt },
           'PIN 발급 실패 상태',
+          order.id,
         );
 
         // 실패해도 히스토리는 남김
@@ -1514,6 +1522,7 @@ export class DeliveryBatchService {
         reportFallbackAttemptCount: orderDelivery.reportFallbackAttemptCount,
       },
       '발송 결과',
+      order.id,
     );
     // 1차에서 lease 상실이 확인됐다면 2차도 쓰지 않는다. 남이 소유한 행에 이미지/유효기간만
     // 남기면 "상태는 남의 것, 부가 컬럼은 내 것" 인 반쪽 행이 된다(경보는 1차에서 이미 나갔다).
@@ -1527,10 +1536,18 @@ export class DeliveryBatchService {
           encourageAt: orderDelivery.encourageAt,
         },
         '발송 부가 컬럼',
+        order.id,
       );
     }
 
     // 6. 발송 실패 시 환불 처리 (B1/B3: 최초 발송 실패는 보류, SSG 는 ATTEMPTED 만 환불, 재발송은 환불)
+    //
+    // ⚠️ 이 판정은 **메모리 status**로 한다 — 위 fencing 에서 stillOwned=false 여도(=lease 를
+    //   뺏긴 뒤여도) 여기까지 온다. 일부러 여기서 stillOwned 로 막지 않는다:
+    //   fencing 은 "상태 쓰기"의 소유권만 지키고, 환불의 이중집행 방지는 **별도 축**
+    //   (refundForFail → refund-ledger 멱등 게이트, D3-3)이 맡는다. lease 를 훔쳐간 쪽
+    //   (폐기·취소)이 자기 환불을 돌려도 같은 ledger 키라 이중환불이 안 난다.
+    //   즉 fence 가 이 환불 분기까지 보호한다고 오해하면 안 된다 — 백스톱은 ledger 다.
     if (orderDelivery.status === IOrderDeliveryStatus.FAIL) {
       const shouldHold = isInitialSend && (await this.shouldHoldRefundForFail(orderDelivery, order));
       if (!shouldHold) {
@@ -2587,6 +2604,7 @@ export class DeliveryBatchService {
         imagePath: orderDelivery.imagePath,
       },
       'oneSend 발송 결과',
+      orderDelivery.orderProductMapping?.order?.id,
     );
   }
 
