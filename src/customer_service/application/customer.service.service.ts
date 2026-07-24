@@ -2002,13 +2002,24 @@ export class CustomerServiceService {
           });
         }
 
+        // 이력을 **발송 전에** 남긴다 (리뷰 반영).
+        //
+        // 위 update 는 execHistory 에 트랜잭션이 없어 즉시 커밋된다. 그런데 종전에는 이력 저장이
+        // 이 아래 reSend 뒤(공통 말미)에 있어서, reSend 가 던지면 —— 폐기·재발행·배치가 그 행을
+        // 점유 중이면 claim CAS 가 실패해 409 가 난다 —— **수신자(PII)만 바뀐 채 아무 흔적도
+        // 남지 않았다.** 되돌리는 코드도 없다.
+        //
+        // 수신자 변경은 이 시점에 이미 확정된 사실이므로, 후속 발송의 성패와 무관하게 기록한다.
+        // 같은 판단을 이 브랜치의 65298e0(이력을 발송 전으로)에서 이미 내렸다.
+        await this.saveCsHistory(map, encryptedNewTarget);
+
         const resendDto = new CustomerServiceReSendReqDto();
         resendDto.orderDeliveryId = map.orderDeliveryId;
 
         await this.reSend(map.user, resendDto);
 
-        afterChange = encryptedNewTarget;
-        break;
+        // 이력은 위에서 저장했다. 공통 말미의 중복 저장을 건너뛴다(RESEND 분기와 동일 관용구).
+        return;
       }
       case CS_HISTORY_TYPE.DISCARD_REISSUE: {
         const newTarget = map.afterChange;
