@@ -3524,6 +3524,35 @@ export class OrderService {
   }
 
   /**
+   * 부분취소 정산금액 재계산 전용 로더 (197-16).
+   *
+   * 위 getOrderProductsForSettlementAmount(정산수정과 공유)는 product 를 **innerJoin** 한다.
+   * ProductEntity 는 BaseEntity 의 @DeleteDateColumn 을 갖기 때문에, 주문 이후 상품이 소프트삭제되면
+   * TypeORM 이 조인에 deleted_at IS NULL 을 걸어 **그 매핑 행이 결과에서 통째로 사라진다.**
+   * 그 상태로 재계산하면 삭제 상품 몫이 0으로 세어져 settleAmount 가 실제보다 낮게(전부 삭제면 0)
+   * 저장되고, 이후 전체취소가 신흐름에서 그 값을 그대로 환불액으로 읽어
+   * (refundAmount = order.settleAmount → refundAmount > 0 단락평가로 wallet 경로 자체가 스킵)
+   * **취소는 되고 환불은 0원** 이 된다. 매핑 일부만 삭제되면 과소환불이라 더 늦게 발견된다.
+   *
+   * 그래서 여기서는 product 를 **leftJoin** 해 매핑 행을 남긴다. 단가는 정산 계산이 이미
+   * readLineProductView(snapshotProductPrice ?? product?.price ?? 0)로 읽으므로, 상품이 없어도
+   * **주문 시점 스냅샷 단가**로 정확히 재계산된다 — 전체취소가 정가 폴백에 쓰는 정책과 동일하다.
+   *
+   * ※ 상품이 살아 있으면 leftJoin 과 innerJoin 은 같은 행을 돌려주므로, 정산수정(createOrderSettle)의
+   *   difference 블록과 기준이 어긋나지 않는다(difference = 0 유지). 오직 소프트삭제된 경우에만
+   *   갈라지며, 그때 갈라지는 쪽이 옳다. 공유 헬퍼를 고치지 않고 분리한 이유는 정산수정 경로까지
+   *   기준이 바뀌는 파급을 이 티켓에서 지지 않기 위해서다.
+   */
+  private async getOrderProductsForCancelSettlement(orderId: number) {
+    return this.orderProductMappingRepository
+      .createQueryBuilder('orderProductMapping')
+      .leftJoinAndSelect('orderProductMapping.product', 'product')
+      .leftJoinAndSelect('orderProductMapping.orderDeliveries', 'orderDeliveries')
+      .where('orderProductMapping.orderId = :orderId', { orderId })
+      .getMany();
+  }
+
+  /**
    * 정산 변경이력용: 매핑들의 현재 정산 필드(fee/priceAdjustment/settleDiscountType)와 상품명을 스냅샷으로 캡처한다.
    * 정산 처리 로직이 엔티티를 in-place mutate 하므로, 반드시 mutate 이전에 호출해야 before 값이 보존된다.
    */
@@ -6059,7 +6088,7 @@ export class OrderService {
       lockedOrder.isCreditExcess = false;
     } else {
       // CAS 로 status=CANCEL 이 이미 반영된 발송건을 같은 트랜잭션에서 재조회해 재계산한다
-      // (createOrderSettle 과 동일한 getOrderProductsForSettlementAmount + calculateOrderSettlementAmount).
+      // (정산수정과 동일한 계산 함수 calculateOrderSettlementAmount + 부분취소 전용 로더).
       //
       // ※※ [별도 확인 필요 / PR 코멘트 참고] settleAmount 의 basis 가 코드베이스에서 통일돼 있지 않다.
       //   - 발송확정(wallet 최신, order.service deliveryConfirmed):
@@ -6078,11 +6107,31 @@ export class OrderService {
       //   difference = 0 이 되어 이중환불이 사라진다. payableSettlementAmount 로 맞추면 basis 가 어긋나
       //   이중환불이 되살아난다. 즉 "버그를 일으키는 그 경로" 와 basis 를 일치시키는 것이 정답이다.
       //   (basis 통일은 위 별도 티켓에서 정산수정·발송확정을 한꺼번에 정리하는 게 맞다.)
-      const survivingMappings = await this.getOrderProductsForSettlementAmount(orderId);
-      lockedOrder.settleAmount = calculateOrderSettlementAmount(
+      //   ★ 로더는 부분취소 전용(getOrderProductsForCancelSettlement)을 쓴다. 정산수정과 공유하는
+      //     innerJoin 로더를 쓰면 주문 이후 소프트삭제된 상품의 매핑이 통째로 빠져 settleAmount 가
+      //     과소(전부 삭제면 0)로 저장되고, 이후 전체취소가 그 값을 환불액으로 읽어 무·과소환불이 된다.
+      //     자세한 근거는 그 메서드의 주석 참조.
+      const survivingMappings = await this.getOrderProductsForCancelSettlement(orderId);
+      const recomputedSettleAmount = calculateOrderSettlementAmount(
         { cardSurchargeApplied: lockedOrder.cardSurchargeApplied, orderProductMappings: survivingMappings },
         lockedOrder.cardSurchargeApplied,
       );
+
+      // 이 분기는 remaining > 0 (살아있는 발송건이 있음) 이다. 그런데 재계산이 0원이라면 단가를
+      // 복원하지 못한 것이다(스냅샷도 없고 상품도 삭제된 옛 주문). 조용히 0을 저장하면 이후 전체취소가
+      // 그 0을 환불액으로 읽어 "취소는 되고 환불은 0원" 이 된다 — 돈이 걸린 침묵이라 던져서 롤백한다.
+      // 이 주문은 전체취소로 처리하면 된다(그 경로는 settleAmount 를 덮지 않은 원본값으로 환불한다).
+      if (recomputedSettleAmount === 0) {
+        this.logger.error(
+          `[DELIVERY_CANCEL_SETTLE_RECALC] orderId=${orderId} 잔여=${remaining}건인데 재계산 정산금액이 0원 ` +
+            `— 상품 스냅샷 단가 복원 실패로 판단해 롤백(무·과소환불 차단)`,
+        );
+        throw new InternalServerErrorException(
+          '취소 후 정산금액을 계산하지 못해 처리하지 못했습니다. 아무것도 취소되지 않았습니다. ' +
+            '주문 전체 취소를 이용하거나 고객센터로 문의해 주세요.',
+        );
+      }
+      lockedOrder.settleAmount = recomputedSettleAmount;
     }
     await this.orderRepository.save(lockedOrder);
 

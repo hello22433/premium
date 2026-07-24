@@ -26,6 +26,28 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
   const CANCELABLE = [9003, 9004, 9005]; // 대기 중 (취소 가능)
   const ALREADY_SENT = 9001; // 이미 발송됨 (취소 불가)
 
+  /**
+   * 잔여분 재계산에 쓰이는 매핑 fixture.
+   * 균일 매핑: 원 수량 3, 단가 35000, 1건 취소(status=CANCEL) → 잔여 2건 → 재계산 70000.
+   *
+   * ★ 이 값을 buildSut 의 기본값으로 둔다. 예전 기본값은 빈 배열(=재계산 0원)이었는데, 그건
+   *   "잔여 발송건이 있는데 정산금액은 0" 이라는 **불가능한 상태**를 기본으로 깔아 둔 것이었다.
+   *   프로덕션은 이제 그 조합을 fail-closed 로 막으므로(무·과소환불 차단) fixture 도 현실을 따른다.
+   */
+  const uniformSurvivingMappings = () => [
+    {
+      amount: 3,
+      fee: null,
+      priceAdjustment: null,
+      product: { price: 35000 },
+      orderDeliveries: [
+        { id: 9003, status: IOrderDeliveryStatus.CANCEL, settleFee: null, couponStatus: null, replacedFromId: null },
+        { id: 9004, status: IOrderDeliveryStatus.WAIT, settleFee: null, couponStatus: null, replacedFromId: null },
+        { id: 9005, status: IOrderDeliveryStatus.WAIT, settleFee: null, couponStatus: null, replacedFromId: null },
+      ],
+    },
+  ];
+
   const buildSut = (
     over: {
       status?: IOrderStatus;
@@ -158,10 +180,10 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
     sut.findCancelableDeliveryIds = jest.fn(async () => cancelableIds);
     sut.cancelDeliveriesIfStillWaiting = jest.fn(async () => undefined);
 
-    // 잔여분 정산금액 재계산용(approach B). 정산수정과 동일하게 getOrderProductsForSettlementAmount 를
-    // 재조회해 calculateOrderSettlementAmount 로 덮는다. 기본은 빈 목록(=0), 테스트가 필요 시 주입.
-    const survivingMappings = over.survivingMappings ?? [];
-    sut.getOrderProductsForSettlementAmount = jest.fn(async () => survivingMappings);
+    // 잔여분 정산금액 재계산용(approach B). 부분취소 전용 로더로 재조회해
+    // calculateOrderSettlementAmount 로 덮는다. 기본은 잔여 2건과 아귀가 맞는 균일 매핑(=70000).
+    const survivingMappings = over.survivingMappings ?? uniformSurvivingMappings();
+    sut.getOrderProductsForCancelSettlement = jest.fn(async () => survivingMappings);
 
     return { sut, order, remainingConditions, graphQuery, billingUser, company, survivingMappings };
   };
@@ -363,20 +385,7 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
   //   재계산 쪽(buildSettlementDisplayLines)이 취소분을 빼므로, settleAmount 를 원액으로 두면
   //   이미 환불한 몫이 한 번 더 지급된다. 부분취소가 "발송확정 + 취소된 발송건" 조합의 첫 생산자다.
   describe('주문 정산금액', () => {
-    // 균일 매핑: 원 수량 3, 단가 35000, 1건 취소(status=CANCEL) → 잔여 2건 → 재계산 70000.
-    const uniformSurviving = () => [
-      {
-        amount: 3,
-        fee: null,
-        priceAdjustment: null,
-        product: { price: 35000 },
-        orderDeliveries: [
-          { id: 9003, status: IOrderDeliveryStatus.CANCEL, settleFee: null, couponStatus: null, replacedFromId: null },
-          { id: 9004, status: IOrderDeliveryStatus.WAIT, settleFee: null, couponStatus: null, replacedFromId: null },
-          { id: 9005, status: IOrderDeliveryStatus.WAIT, settleFee: null, couponStatus: null, replacedFromId: null },
-        ],
-      },
-    ];
+    const uniformSurviving = uniformSurvivingMappings;
 
     // ★ 핵심: settleAmount 를 "환불 실지급액 차감" 이 아니라 정산수정과 동일한 함수
     //   (calculateOrderSettlementAmount) 로 재계산해 덮는다. 그래야 카드할증+포인트 병용에서
@@ -393,7 +402,7 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
       );
       expect(order.settleAmount).toBe(expected);
       expect(expected).toBe(70000); // 균일 2건 × 35000
-      expect(sut.getOrderProductsForSettlementAmount).toHaveBeenCalledWith(ORDER_ID);
+      expect(sut.getOrderProductsForCancelSettlement).toHaveBeenCalledWith(ORDER_ID);
       expect(sut.orderRepository.save).toHaveBeenCalled();
     });
 
@@ -406,7 +415,61 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
       expect(order.isSettleBalance).toBe(false);
       expect(order.isCreditExcess).toBe(false);
       // 전건 취소는 재계산하지 않는다(0 대입) — 잔여분 재조회를 하지 않아야 한다.
-      expect(sut.getOrderProductsForSettlementAmount).not.toHaveBeenCalled();
+      expect(sut.getOrderProductsForCancelSettlement).not.toHaveBeenCalled();
+    });
+
+    // ── 소프트삭제된 상품이 섞인 주문 (리뷰 HIGH) ───────────────────────────────────
+    //
+    // 정산수정과 공유하는 로더는 product 를 innerJoin 이라, 주문 이후 상품이 소프트삭제되면
+    // 그 매핑 행이 결과에서 사라진다. 그대로 재계산하면 settleAmount 가 과소(전부 삭제면 0)로
+    // 저장되고, 이후 **전체취소가 그 값을 환불액으로 읽어**(신흐름 refundAmount=order.settleAmount)
+    // "취소는 되고 환불은 0원" 이 된다. 그래서 부분취소는 전용 로더(leftJoin)로 매핑 행을 남기고
+    // 주문 시점 스냅샷 단가로 재계산한다.
+    it('상품이 삭제돼도 스냅샷 단가로 재계산한다 (product 없음 → snapshotProductPrice)', async () => {
+      // leftJoin 이므로 매핑은 남고 product 만 null 이다. 단가는 스냅샷에서 온다.
+      const deletedProductMappings = [
+        {
+          amount: 3,
+          fee: null,
+          priceAdjustment: null,
+          product: null, // 소프트삭제 → 조인 결과 없음
+          snapshotProductPrice: 35000, // 주문 시점 박제 단가
+          orderDeliveries: [
+            { id: 9003, status: IOrderDeliveryStatus.CANCEL, settleFee: null, couponStatus: null, replacedFromId: null },
+            { id: 9004, status: IOrderDeliveryStatus.WAIT, settleFee: null, couponStatus: null, replacedFromId: null },
+            { id: 9005, status: IOrderDeliveryStatus.WAIT, settleFee: null, couponStatus: null, replacedFromId: null },
+          ],
+        },
+      ];
+      const { sut, order } = buildSut({ settleAmount: 100000, survivingMappings: deletedProductMappings });
+
+      await call(sut, CANCELABLE);
+
+      // 0 이 아니라 잔여 2건 × 35000 이어야 한다. 0 이면 이후 전체취소가 환불을 통째로 건너뛴다.
+      expect(order.settleAmount).toBe(70000);
+    });
+
+    // 스냅샷도 없고 상품도 삭제된 옛 주문은 단가를 복원할 근거가 자체가 없다.
+    // 조용히 0 을 저장하면 이후 전체취소가 0 원을 환불한다 — 돈이 걸린 침묵이라 던져서 롤백한다.
+    it('잔여 발송건이 있는데 재계산이 0원이면 던진다 (조용한 0 저장 차단)', async () => {
+      const unresolvableMappings = [
+        {
+          amount: 3,
+          fee: null,
+          priceAdjustment: null,
+          product: null, // 삭제됨
+          snapshotProductPrice: null, // 스냅샷 이전 주문
+          orderDeliveries: [
+            { id: 9003, status: IOrderDeliveryStatus.CANCEL, settleFee: null, couponStatus: null, replacedFromId: null },
+            { id: 9004, status: IOrderDeliveryStatus.WAIT, settleFee: null, couponStatus: null, replacedFromId: null },
+          ],
+        },
+      ];
+      const { sut, order } = buildSut({ settleAmount: 100000, survivingMappings: unresolvableMappings });
+
+      await expect(call(sut, CANCELABLE)).rejects.toThrow(/정산금액을 계산하지 못해/);
+      // 롤백 대상이므로 0 이 대입된 채로 남지 않아야 한다(원본 유지).
+      expect(order.settleAmount).toBe(100000);
     });
   });
 
