@@ -423,4 +423,87 @@ describe('DeliveryBatchService.processOneDeliveryInternal — full save() 부재
       expect(repo.update).not.toHaveBeenCalled();
     });
   });
+
+  /**
+   * 리뷰 HIGH — D3-60 수정(save→targeted update)은 "무엇을 쓰나"만 좁혔고
+   * "쓸 자격이 있나"는 `{ id }` 조건 그대로였다.
+   *
+   * PIN 발급·문자 발송은 외부 통신이라 수 초~수십 초가 걸리고 변형 lease 는 5분 stale
+   * self-heal 이다. 그 사이 폐기·외부취소·재발행이 lease 를 가져가 상태를 확정하면,
+   * 배치가 **남이 확정한 상태 위에 자기 결과를 덮어썼다.**
+   */
+  describe('변형 lease fencing (리뷰 HIGH)', () => {
+    const TOKEN = new Date('2026-07-24T03:00:00.000Z');
+
+    it('claimToken 을 넘기면 모든 상태 쓰기의 where 에 내 토큰이 실린다', async () => {
+      await (sut as any).processOneDeliveryInternal(makeDelivery(), TOKEN);
+
+      expect(repo.update).toHaveBeenCalled();
+      for (const [where] of repo.update.mock.calls as unknown as any[][]) {
+        expect(where).toEqual({ id: 901, mutationClaimedAt: TOKEN });
+      }
+    });
+
+    it('토큰이 없으면 종전대로 무울타리 — 기존 호출 경로가 깨지지 않는다', async () => {
+      await (sut as any).processOneDeliveryInternal(makeDelivery());
+
+      for (const [where] of repo.update.mock.calls as unknown as any[][]) {
+        expect(where).toEqual({ id: 901 });
+      }
+    });
+
+    it('PIN 발급 실패 경로도 fencing 된다', async () => {
+      const od = makeDelivery({ barCode: null, imagePath: null });
+      (sut as any).partnerCompanyExternService.issue.mockRejectedValue(new Error('발급 실패'));
+
+      await (sut as any).processOneDeliveryInternal(od, TOKEN);
+
+      const failWrite = (repo.update.mock.calls as unknown as any[][]).find((c) => c[1] && 'status' in c[1]);
+      expect(failWrite![0]).toEqual({ id: 901, mutationClaimedAt: TOKEN });
+    });
+
+    it('lease 를 뺏겨 affected=0 이어도 예외를 던지지 않는다 — 이미 나간 문자의 중복 발송 방지', async () => {
+      repo.update.mockResolvedValue({ affected: 0 });
+
+      // 예외를 던지면 processOneDeliveryForBatch 의 catch → claimedAt reset → 다음 cron 재발송이 된다.
+      await expect((sut as any).processOneDeliveryInternal(makeDelivery(), TOKEN)).resolves.toBeDefined();
+    });
+
+    it('lease 상실은 무음이 아니다 — [BATCH_FENCE_LOST] 경보', async () => {
+      repo.update.mockResolvedValue({ affected: 0 });
+
+      await (sut as any).processOneDeliveryInternal(makeDelivery(), TOKEN);
+
+      expect((sut as any).logger.error).toHaveBeenCalledWith(expect.stringContaining('[BATCH_FENCE_LOST]'));
+    });
+
+    it('정상 소유(affected=1)면 경보하지 않는다 — 오탐 방지', async () => {
+      await (sut as any).processOneDeliveryInternal(makeDelivery(), TOKEN);
+
+      expect((sut as any).logger.error).not.toHaveBeenCalledWith(expect.stringContaining('[BATCH_FENCE_LOST]'));
+    });
+
+    it('1차(발송결과)에서 lease 를 잃으면 2차(부가컬럼)는 시도조차 하지 않는다', async () => {
+      // 대조군: 정상 소유일 땐 2차 쓰기가 **반드시 나간다**(없으면 아래 단언이 공허해진다)
+      await (sut as any).processOneDeliveryInternal(makeDelivery(), TOKEN);
+      const controlWrite = (repo.update.mock.calls as unknown as any[][]).find((c) => c[1] && 'imagePath' in c[1]);
+      expect(controlWrite).toBeDefined();
+
+      repo.update.mockClear();
+      repo.update.mockResolvedValue({ affected: 0 });
+
+      await (sut as any).processOneDeliveryInternal(makeDelivery(), TOKEN);
+
+      // 반쪽 행(상태는 남의 것 + 이미지/유효기간은 내 것) 금지
+      const extraWrite = (repo.update.mock.calls as unknown as any[][]).find((c) => c[1] && 'imagePath' in c[1]);
+      expect(extraWrite).toBeUndefined();
+    });
+
+    it('persistOneSendResult: 토큰을 넘기면 fencing 된다 (CS·발송실패내역 재발송 경로)', async () => {
+      await (sut as any).persistOneSendResult(makeDelivery(), TOKEN);
+
+      const [where] = repo.update.mock.calls[0];
+      expect(where).toEqual({ id: 901, mutationClaimedAt: TOKEN });
+    });
+  });
 });
