@@ -811,9 +811,23 @@ export class PartnerCompanyExternBatchService {
    * 호출부가 **자기가 실제로 바꾼 컬럼만** 명시한다. 안 바꾼 컬럼까지 싣으면 그 컬럼에 대해서는
    * 여전히 stale 스냅샷을 쓰는 셈이라 clobber 가 남는다.
    *
-   * ※ fencing(변형 lease 존중)은 별개 축이다. 이 서비스는 lease 를 잡지도 보지도 않으며,
-   *   "협력사가 통보한 사용/환불을 우리 lease 가 미룰 수 있는가" 는 운영 정책 결정이 선행돼야 한다.
-   *   본 헬퍼는 clobber 축만 닫는다.
+   * ┌─ 【의도적 설계 결정 — 잊은 것이 아님】 2026-07-24 ────────────────────────────┐
+   * │ 이 헬퍼는 WHERE 에 { id } 만 쓴다(fencing 없음). **일부러 안 넣었다.**          │
+   * │                                                                              │
+   * │ 왜: fencing(`AND mutation_claimed_at = 내토큰`)을 넣으려면 이 서비스가 먼저    │
+   * │   변형 lease 를 "잡아야" 하는데, 지금 이 서비스는 lease 를 잡지도 읽지도        │
+   * │   않는다(파일 전체에서 mutationClaimedAt/claimedAt 참조 0건).                  │
+   * │   lease 를 잡게 만드는 것은 곧 "CS 가 이 쿠폰을 재발행/폐기 중이면, 협력사가    │
+   * │   통보한 사용·환불 반영을 미룰 것인가?" 라는 질문에 답하는 것이다.              │
+   * │   → 이건 코드가 아니라 **운영 정책** 결정이며, 미결이다.                        │
+   * │                                                                              │
+   * │ 그래서 지금 닫은 것: clobber 축만 (save→targeted update).                      │
+   * │   = 남의 lease·deleted_at·안 바꾼 컬럼을 되돌리는 부수효과 제거.                │
+   * │ 아직 열린 것: fencing 축.                                                      │
+   * │   = "lease 를 쥔 행에도 협력사 사실을 무조건 쓴다"(현행 유지).                  │
+   * │   정책 결정이 나면 여기 WHERE 에 토큰 조건을 추가하면 된다.                     │
+   * │ 관련: audit/분류표-order_delivery-쓰기지점-전수-2026-07-24.md §2-5 / §3-2       │
+   * └──────────────────────────────────────────────────────────────────────────────┘
    */
   private async persistPartnerSync(
     orderDelivery: OrderDeliveryEntity,

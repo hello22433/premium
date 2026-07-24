@@ -937,9 +937,13 @@ export class ExternalApiService {
    *   - deleted_at             → NULL         (지워진 행 부활)
    *   - mutation_claimed_at    → NULL         (CS 폐기가 쥔 lease 무력화 = 1차 방어 파괴)
    *
-   * ★ fencing 은 하지 않는다(할 수 없다). 주문 생성 경로(createOrder/createSsgOrder)는
-   *   변형 lease 를 **잡지 않는다** — acquireMutationLease 는 cancelOrder 에서만 호출된다.
-   *   쥔 토큰이 없으니 조건에 실을 것도 없다. 여기서 닫는 것은 clobber 축뿐이다.
+   * ┌─ 【의도적 설계 결정 — 잊은 것이 아님】 2026-07-24 ────────────────────────────┐
+   * │ fencing(`AND mutation_claimed_at = 내토큰`)을 **할 수 없다.** 회피가 아니다.   │
+   * │ 주문 생성 경로(createOrder/createSsgOrder)는 변형 lease 를 아예 안 잡는다 —    │
+   * │ acquireMutationLease 는 파일 전체에서 cancelOrder 한 곳에서만 호출된다.        │
+   * │ 쥔 토큰이 없으니 WHERE 에 실을 것이 없다. 여기서 닫는 것은 clobber 축뿐이다.   │
+   * │ (취소 경로 processCancelRefund 는 lease 를 쥐므로 거기서만 fencing 을 넣었다.) │
+   * └──────────────────────────────────────────────────────────────────────────────┘
    *
    * 아래가 **phaseC 말고는 아무도 안 쓰는 컬럼의 전부**다(전수 확인, 회귀는
    * external.api.wallet-refund.spec.ts 의 "phaseC 영속 컬럼 집합 잠금" 이 잠근다):
