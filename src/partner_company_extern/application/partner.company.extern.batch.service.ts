@@ -790,6 +790,42 @@ export class PartnerCompanyExternBatchService {
     await this.orderDeliveryRepository.update({ id: result.id }, updateData);
   }
 
+  /** 갤럭시아 동기화가 order_delivery 에 쓰는 컬럼의 전부. updateOrderDelivery 와 같은 어휘다. */
+  private static readonly GALAXIA_SYNC_COLUMNS = [
+    'couponStatus',
+    'tradeAt',
+    'tradePlace',
+    'galaxiaBalance',
+    'discardedAt',
+  ] as const;
+
+  /**
+   * 갤럭시아 동기화 결과를 targeted update 로 반영한다 — save(orderDelivery) 대체 (D3-60 clobber).
+   *
+   * save 는 merge 라 **행 전체**를 조회 시점 스냅샷으로 쓴다. 이 배치/콜백은 협력사 조회 뒤에
+   * 도달하므로 그 사이 CS 재발행·폐기가 쓴 값을 되돌린다. 되돌아가면 치명적인 것:
+   *   - mutation_claimed_at → 스냅샷(대개 NULL)  남의 변형 lease 무력화 = 1차 방어 파괴
+   *   - deleted_at          → NULL                unwindReissue 가 지운 tip 부활(쿠폰 2장)
+   *   - status/barCode/…    → 옛 값               발송 결과 되돌림
+   *
+   * 호출부가 **자기가 실제로 바꾼 컬럼만** 명시한다. 안 바꾼 컬럼까지 싣으면 그 컬럼에 대해서는
+   * 여전히 stale 스냅샷을 쓰는 셈이라 clobber 가 남는다.
+   *
+   * ※ fencing(변형 lease 존중)은 별개 축이다. 이 서비스는 lease 를 잡지도 보지도 않으며,
+   *   "협력사가 통보한 사용/환불을 우리 lease 가 미룰 수 있는가" 는 운영 정책 결정이 선행돼야 한다.
+   *   본 헬퍼는 clobber 축만 닫는다.
+   */
+  private async persistGalaxiaSync(
+    orderDelivery: OrderDeliveryEntity,
+    columns: ReadonlyArray<(typeof PartnerCompanyExternBatchService.GALAXIA_SYNC_COLUMNS)[number]>,
+  ): Promise<void> {
+    const patch: Record<string, unknown> = {};
+    for (const column of columns) {
+      patch[column] = orderDelivery[column];
+    }
+    await this.orderDeliveryRepository.update({ id: orderDelivery.id }, patch);
+  }
+
   // ===== 타임아웃 래퍼 =====
   private async callExternalApiWithTimeout(
     orderDelivery: OrderDeliveryEntity,
