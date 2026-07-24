@@ -118,7 +118,12 @@ function refundService(opts: {
   (svc as any).dataSource = { manager: { query: managerQuery, findOne: managerFindOne } };
 
   (svc as any).orderRepository = { save: jest.fn(async (o: any) => o) };
-  (svc as any).orderDeliveryRepository = { save: jest.fn(async (o: any) => o) };
+  // processCancelRefund 의 상태 쓰기는 save(merge) 가 아니라 targeted update 다 (D3-60).
+  // UpdateResult 형태로 반환해야 후속 fencing(affected 검사)까지 태울 수 있다.
+  (svc as any).orderDeliveryRepository = {
+    save: jest.fn(async (o: any) => o),
+    update: jest.fn(async () => ({ affected: 1 })),
+  };
   // G004: loadOrderBillingUser fallback 미스 시 userRepository.findOne 로 재조회. 안전망으로 account.user 반환.
   (svc as any).userRepository = {
     findOne: jest.fn(async () => makeAccount().user),

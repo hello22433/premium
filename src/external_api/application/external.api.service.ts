@@ -1319,10 +1319,26 @@ export class ExternalApiService {
     /** cancelOrder 가 획득한 변형 lease 토큰. 상태 쓰기의 fencing 조건으로 쓴다(다음 커밋). */
     mutationClaimAt: Date,
   ) {
+    const discardedAt = new Date();
     orderDelivery.status = IOrderDeliveryStatus.CANCEL;
     orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
-    orderDelivery.discardedAt = new Date();
-    await this.orderDeliveryRepository.save(orderDelivery);
+    orderDelivery.discardedAt = discardedAt;
+
+    // save(orderDelivery) 금지 — merge 는 **행 전체**를 메모리 스냅샷으로 UPDATE 한다 (D3-60 clobber).
+    // orderDelivery 는 findOrderDeliveryByTrId 가 로드한 full 엔티티이고, cancelOrder 의 lease 획득 후
+    // 재조회는 status/couponStatus/expireAt/barCode/discardedAt **6개만** 갱신한다.
+    // 나머지 컬럼(imagePath·actualSendAt·encourageAt·reportState·alimTalkMsgKey·personalCode·
+    // couponNum·deletedAt …)은 trId 조회 시점의 옛 값 그대로라, save 는 그 사이 배치·재발행이 쓴
+    // 값을 되돌린다. 특히 deletedAt=NULL 되돌림은 unwindReissue 가 지운 tip 을 부활시킨다.
+    // 이 함수가 실제로 바꾸는 3개 컬럼만 targeted update 한다.
+    await this.orderDeliveryRepository.update(
+      { id: orderDelivery.id },
+      {
+        status: IOrderDeliveryStatus.CANCEL,
+        couponStatus: OrderDeliveryCouponStatus.CANCEL,
+        discardedAt,
+      },
+    );
 
     order.status = IOrderStatus.DELIVERY_CANCEL;
     await this.orderRepository.save(order);
