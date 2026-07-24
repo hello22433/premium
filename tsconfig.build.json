@@ -6,6 +6,9 @@
     "dist",
     "**/*spec.ts",
     // 수동 ERP 스모크 스크립트. ecount IP 화이트리스트 미등록 머신에선 실패하므로 빌드/테스트에서 제외.
-    "src/erp/erp.smoke.ts"
+    "src/erp/erp.smoke.ts",
+    // migration/*.ts 는 ts-node 로 직접 실행하는 1회성 스크립트다. nest build 대상에 포함되면
+    // tsc 의 공통 rootDir 이 프로젝트 루트로 올라가 dist/main.js 가 dist/src/main.js 로 이동 → node dist/main(start:prod) 실패.
+    "migration"
   ]
 }
