@@ -58,6 +58,7 @@ import {
   OrderGetSettleGetListResDto,
   OrderAllocationPreviewResDto,
   OrderGetCustomerSettlementResDto,
+  OrderPartialDeliveryCancelResDto,
 } from '../api/order.res.dto';
 import { OrderEntity } from '../../entity/order.entity';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -5915,7 +5916,7 @@ export class OrderService {
     orderId: number,
     deliveryIds: number[],
     cancelReason: string,
-  ): Promise<void> {
+  ): Promise<OrderPartialDeliveryCancelResDto> {
     // 전체취소와 동일하게 order 행부터 잠근다(락 순서 일관).
     const lockedOrder = await this.orderRepository
       .createQueryBuilder('order')
@@ -6219,6 +6220,16 @@ export class OrderService {
         }
       });
     }
+
+    // 돈이 오간 요청이므로 결과를 응답으로도 돌려준다 — 로그에만 남기면 클라이언트가
+    // "무엇이 취소됐고 얼마가 돌아갔는지" 를 대사할 방법이 없다.
+    // 전량 거부 정책상 canceledIds 는 항상 요청 집합과 같지만(부분 성공 없음), 정렬·중복제거된
+    // 실제 처리 대상을 그대로 내려 클라이언트가 자기 요청과 대조할 수 있게 한다.
+    return {
+      canceledIds: requested,
+      refundedAmount: refundResult.totalRefundedAmount,
+      remaining,
+    };
   }
 
   @Transactional()

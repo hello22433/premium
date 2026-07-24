@@ -574,6 +574,35 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
     });
   });
 
+  // 돈이 오간 엔드포인트가 void 를 돌려주면 클라이언트는 "무엇이 취소됐고 얼마가 돌아갔는지" 를
+  // 대사할 방법이 없다(서버 로그에만 남음). 응답 필드가 사라지면 여기서 깨진다.
+  describe('취소 결과 응답', () => {
+    it('취소된 id·환불액·잔여 건수를 돌려준다', async () => {
+      const { sut } = buildSut({
+        remainingAfterCancel: 2,
+        refundBreakdown: { deposit: 30000, credit: 20000, excess: 5000 },
+      });
+
+      const result = await call(sut, CANCELABLE);
+
+      expect(result).toEqual({
+        canceledIds: CANCELABLE,
+        refundedAmount: 55000, // 예치금 + 여신 + 신용초과
+        remaining: 2,
+      });
+    });
+
+    // 전량 거부 정책상 부분 성공이 없으므로 canceledIds 는 요청 집합과 같다.
+    // 다만 중복은 접고 정렬한 "실제 처리 대상" 이어야 클라이언트가 자기 요청과 대조할 수 있다.
+    it('canceledIds 는 중복을 접고 정렬한 실제 처리 대상이다', async () => {
+      const { sut } = buildSut();
+
+      const result = await call(sut, [9005, 9003, 9004, 9003]);
+
+      expect(result.canceledIds).toEqual([9003, 9004, 9005]);
+    });
+  });
+
   // 같은 종단 사건(대기건이 하나도 안 남음)이 요청 형태에 따라 두 가지 wallet 표현으로 갈리면
   // 사후 스윕·정산이 둘을 다르게 본다. isWalletManaged 는 released_at IS NULL 로 판정하므로,
   // 전량 부분취소가 released_at 을 안 닫으면 "주문은 취소됐는데 지갑은 점유 중" 이 남는다.

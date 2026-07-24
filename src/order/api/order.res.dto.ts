@@ -684,3 +684,30 @@ export class OrderGetDeliveryAuditResDto {
   })
   ssgDuplicates: OrderDeliverySsgDuplicateDto[];
 }
+
+/**
+ * 발송건 부분취소 결과 (197-16).
+ *
+ * 돈이 오간 엔드포인트라 클라이언트가 "무엇이 취소됐고 얼마가 돌아갔는지" 를 응답만으로
+ * 대사(reconcile)할 수 있어야 한다. 종전에는 서버 로그에만 남아 문의가 오면 추적이 어려웠다.
+ *
+ * ※ deliveryIds 를 주지 않은 **전체취소** 요청은 종전대로 본문이 없다. 이 응답은 부분취소 전용이며,
+ *   기존 프론트(전체취소만 호출)는 영향을 받지 않는다.
+ */
+export class OrderPartialDeliveryCancelResDto {
+  @ApiProperty({
+    type: [Number],
+    description: '실제로 취소된 발송건 id (요청 id 를 정렬·중복제거한 결과). 전량 거부 정책상 요청과 일치한다.',
+  })
+  canceledIds: number[];
+
+  @ApiProperty({
+    description: '이번 취소로 되돌아간 총 금액(원). 예치금 + 여신 + 신용초과 합계.',
+  })
+  refundedAmount: number;
+
+  @ApiProperty({
+    description: '취소 후 남은(=취소되지 않은) 발송건 수. 0 이면 주문 전체가 취소 상태로 내려간다.',
+  })
+  remaining: number;
+}
