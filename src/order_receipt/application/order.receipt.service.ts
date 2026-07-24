@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import { parseFilePathList } from '../../util/file.util';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { Transactional } from 'typeorm-transactional';
 import { OrderReceiptEntity } from '../../entity/order.receipt.entity';
 import { FileService } from '../../file/application/file.service';
 import {
@@ -23,6 +24,9 @@ import { DateFormatStr } from '../../common/domain/date.format.str';
 import { format, subDays } from 'date-fns';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { IUserAuthority } from '../../user/interface/user.authority';
+import { AutoOrderService } from './auto_order/auto.order.service';
+import { AutoOrderRunMode } from './auto_order/auto.order.types';
+import { AutoOrderResultDto, toAutoOrderResultDto } from './auto_order/auto.order.result.mapper';
 
 @Injectable()
 export class OrderReceiptService {
@@ -33,7 +37,41 @@ export class OrderReceiptService {
     @InjectRepository(OrderReceiptEntity)
     private orderReceiptRepository: Repository<OrderReceiptEntity>,
     private fileService: FileService,
+    private autoOrderService: AutoOrderService,
   ) {}
+
+  /**
+   * 자동주문 미리보기(DRY_RUN). 첨부 집행신청서를 파싱해 "승인 시 무엇이 생성/차단될지"를 리포트로 반환.
+   * DB를 변경하지 않는다(실제 생성은 approve). 승인과 짝을 이루는 관리자 액션이라 운영관리자 이상만 허용.
+   */
+  async previewAutoOrder(user: ILoginUserInfo, id: number, fileIndexes?: number[]): Promise<AutoOrderResultDto> {
+    this.validateAdminAuthority(user, '운영관리자 이상만 미리보기를 조회할 수 있습니다.');
+    const receipt = await this.findReceiptOrThrow(id);
+
+    // 이미 승인돼 스냅샷이 있으면 재계산하지 않고 그대로 반환(재계산 시 orderId=null·시간의존 SSG창 결과가
+    // 사실과 달라짐 — 엔티티 주석의 "재조회 시 재계산 안 함" 약속). 미승인 건만 새로 미리보기 계산.
+    const stored = await this.autoOrderService.getStoredResult(id);
+    if (stored) {
+      return toAutoOrderResultDto(stored.result, { mode: 'COMMITTED', receiptId: id, generatedAt: stored.generatedAt });
+    }
+
+    const result = await this.autoOrderService.run(receipt, user, AutoOrderRunMode.DRY_RUN, fileIndexes);
+    return toAutoOrderResultDto(result, { mode: 'PREVIEW', receiptId: id, generatedAt: new Date() });
+  }
+
+  /**
+   * 승인 후 자동주문 리포트 조회(GET /result). 저장된 COMMIT 스냅샷을 그대로 반환(재계산 없음).
+   * 스냅샷이 없으면(미승인/자동주문 대상 아님) 404.
+   */
+  async getAutoOrderResult(user: ILoginUserInfo, id: number): Promise<AutoOrderResultDto> {
+    this.validateAdminAuthority(user, '운영관리자 이상만 자동주문 결과를 조회할 수 있습니다.');
+    await this.findReceiptOrThrow(id);
+    const stored = await this.autoOrderService.getStoredResult(id);
+    if (!stored) {
+      throw new NotFoundException('자동주문 결과가 없습니다(승인 전이거나 자동주문 대상이 아닙니다).');
+    }
+    return toAutoOrderResultDto(stored.result, { mode: 'COMMITTED', receiptId: id, generatedAt: stored.generatedAt });
+  }
 
   async getList(user: ILoginUserInfo, getQuery: OrderReceiptGetListReqQueryDto): Promise<OrderReceiptGetListResDto> {
     const { take, page, status } = getQuery;
@@ -215,10 +253,15 @@ export class OrderReceiptService {
     });
   }
 
+  /**
+   * 주문접수 승인. 상태 전환(APPROVED) 후 첨부 집행신청서로 자동주문(TEMP)을 생성한다.
+   * @Transactional: 자동주문이 실패하면 상태 전환까지 함께 롤백(all-or-nothing) → 어중간한 상태 방지.
+   */
+  @Transactional()
   async approve(user: ILoginUserInfo, id: number) {
     this.validateAdminAuthority(user, '운영관리자 이상만 승인할 수 있습니다.');
 
-    const receipt = await this.findReceiptOrThrow(id);
+    const receipt = await this.findReceiptOrThrow(id, { lock: true }); // 동시 승인 직렬화
 
     if (receipt.status !== OrderReceiptStatus.RECEIVED) {
       throw new BadRequestException('접수 상태인 건만 승인할 수 있습니다.');
@@ -226,6 +269,21 @@ export class OrderReceiptService {
 
     this.applyNonRejectedStatus(receipt, OrderReceiptStatus.APPROVED, user);
     await this.orderReceiptRepository.save(receipt);
+
+    // 승인의 길목에 자동주문 훅(COMMIT). 첨부가 없거나 처리할 게 없으면 무해하게 통과.
+    // 승인은 항상 접수 '전체'를 커밋한다(부분 승인 없음). 미리보기는 파일 일부만 볼 수 있으나, 승인은 접수 단위이며
+    // 스냅샷도 접수 단위(orderReceiptId UNIQUE)라 부분 승인을 허용하면 재승인 시 옛 스냅샷을 반환하는 침묵 결함이
+    // 생긴다 → 승인은 전체 고정. (프론트는 승인 전 전체 미리보기로 검토하도록 요청서에 명시.)
+    try {
+      const result = await this.autoOrderService.run(receipt, user, AutoOrderRunMode.COMMIT);
+      return toAutoOrderResultDto(result, { mode: 'COMMITTED', receiptId: id, generatedAt: new Date() });
+    } catch (e) {
+      // 락을 못 잡는 경합 잔여 등으로 멱등 UNIQUE 위반이 나면 raw 500 대신 409로(트랜잭션은 어차피 롤백).
+      if (this.isDuplicateKeyError(e)) {
+        throw new ConflictException('이미 처리 중이거나 처리된 승인입니다. 잠시 후 자동주문 결과를 확인해 주세요.');
+      }
+      throw e;
+    }
   }
 
   async reject(user: ILoginUserInfo, id: number, getBody: OrderReceiptRejectReqDto) {
@@ -324,6 +382,13 @@ export class OrderReceiptService {
   async changeStatus(user: ILoginUserInfo, id: number, getBody: OrderReceiptChangeStatusReqDto) {
     this.validateAdminAuthority(user, '운영관리자 이상만 상태를 변경할 수 있습니다.');
 
+    // APPROVED는 상태 변경으로 못 만든다 → 반드시 approve API를 통하게. (반려를 reject API로 유도하는 것과 대칭)
+    // changeStatus는 자동주문 실행/스냅샷/락을 타지 않으므로, 여기서 APPROVED를 허용하면 "주문 0건인 채 APPROVED"로
+    // 갇힌다(이후 approve는 RECEIVED만 받아 재실행 불가, GET /result는 404). "APPROVED ⇒ 자동주문 생성됨" 불변식 보호.
+    if (getBody.status === OrderReceiptStatus.APPROVED) {
+      throw new BadRequestException('승인 처리는 승인 API(/approve)를 사용해주세요. 상태 변경으로는 자동주문이 생성되지 않습니다.');
+    }
+
     const receipt = await this.findReceiptOrThrow(id);
 
     this.applyNonRejectedStatus(receipt, getBody.status, user);
@@ -374,13 +439,26 @@ export class OrderReceiptService {
     receipt.processedUserId = user.id;
   }
 
-  private async findReceiptOrThrow(id: number): Promise<OrderReceiptEntity> {
-    const receipt = await this.orderReceiptRepository.findOne({ where: { id } });
+  private async findReceiptOrThrow(id: number, opts?: { lock?: boolean }): Promise<OrderReceiptEntity> {
+    // approve는 lock:true로 행을 비관적 락 → 동시 승인이 직렬화돼(둘째는 대기 후 status=APPROVED를 보고 거부)
+    // 멱등 게이트를 뚫고 중복 insert하는 경합을 차단한다. (락은 @Transactional 안에서만 유효)
+    const receipt = await this.orderReceiptRepository.findOne({
+      where: { id },
+      ...(opts?.lock ? { lock: { mode: 'pessimistic_write' as const } } : {}),
+    });
 
     if (!receipt) {
       throw new BadRequestException('주문접수 건이 존재하지 않습니다.');
     }
 
     return receipt;
+  }
+
+  /** MySQL 중복키(ER_DUP_ENTRY/1062) 오류인지 — 동시 승인 경합을 raw 500 대신 409로 변환하기 위함 */
+  private isDuplicateKeyError(e: unknown): boolean {
+    const err = e as { code?: string; errno?: number; driverError?: { code?: string; errno?: number } };
+    const code = err?.driverError?.code ?? err?.code;
+    const errno = err?.driverError?.errno ?? err?.errno;
+    return code === 'ER_DUP_ENTRY' || errno === 1062;
   }
 }

@@ -133,6 +133,12 @@ export class FileStorageS3 implements IFileStorage {
     return raw ? decodeURIComponent(raw) : null;
   }
 
+  async headContentLength(key: string): Promise<number | null> {
+    const bucketName = this.configService.getOrThrow('AWS_S3_BUCKET');
+    const res = await this.s3Client.send(new HeadObjectCommand({ Bucket: bucketName, Key: key }));
+    return typeof res.ContentLength === 'number' ? res.ContentLength : null;
+  }
+
   isOwnStorageUrl(fileUrl: string): boolean {
     const bucketName = this.configService.getOrThrow('AWS_S3_BUCKET');
     try {
@@ -172,6 +178,25 @@ export class FileStorageS3 implements IFileStorage {
     } catch (e) {
       throw new Error(e as any);
     }
+  }
+
+  async getFileBuffer(key: string): Promise<Buffer> {
+    const bucketName = this.configService.getOrThrow('AWS_S3_BUCKET');
+    const { Body } = await this.s3Client.send(new GetObjectCommand({ Bucket: bucketName, Key: key }));
+
+    if (Body instanceof Readable) {
+      const chunks: Buffer[] = [];
+      for await (const chunk of Body) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+      return Buffer.concat(chunks);
+    }
+    // AWS SDK v3 SdkStream 헬퍼 폴백(웹 스트림 환경)
+    const sdkBody = Body as { transformToByteArray?: () => Promise<Uint8Array> } | undefined;
+    if (typeof sdkBody?.transformToByteArray === 'function') {
+      return Buffer.from(await sdkBody.transformToByteArray());
+    }
+    throw new Error('S3 Body is not a readable stream');
   }
 
   async downloadFileToLocalWithPath(path: string, fileTitle: string, downloadPath: string): Promise<string> {

@@ -1,0 +1,66 @@
+import { Injectable, Logger } from '@nestjs/common';
+import { AutoOrderExcelParser } from './auto.order.excel.parser';
+import { FormatErrorCode, ParsedFile, StructureResult } from './auto.order.types';
+
+/**
+ * 2단계 - 구조검증.
+ * "이 파일이 우리 v4.1 양식이 맞는가"만 판정한다.
+ * 실패 시 파일 전체를 INVALID_FORMAT으로 리젝(셀 위치가 다르면 엉뚱한 값으로 주문이 생기므로 조기 차단).
+ */
+@Injectable()
+export class AutoOrderStructureValidator {
+  private static readonly SUPPORTED_VERSION = 'v4.1-immediate-send';
+  private readonly logger = new Logger(AutoOrderStructureValidator.name);
+
+  validate(parsed: ParsedFile): StructureResult {
+    if (parsed.parseError === 'SHEET_MISSING' || !parsed.header) {
+      return this.invalid('필수 시트(1.신청정보 / 2.발송명단)가 없습니다.', 'MISSING_SHEET');
+    }
+    if (parsed.parseError === 'FORMULA_NOT_CACHED') {
+      return this.invalid(
+        '엑셀 수식 결과가 저장되지 않았습니다. 엑셀에서 파일을 열어 다시 저장(계산 후 저장)한 뒤 업로드해 주세요.',
+        'HEADER_MISMATCH',
+      );
+    }
+    if (parsed.parseError === 'TOO_MANY_ROWS') {
+      return this.invalid(
+        `발송명단이 처리 한도(${AutoOrderExcelParser.MAX_LIST_ROWS.toLocaleString()}행)를 초과했습니다. 파일을 나눠 접수해 주세요.`,
+        'HEADER_MISMATCH',
+      );
+    }
+
+    const h = parsed.header;
+
+    if (h.formVersion !== AutoOrderStructureValidator.SUPPORTED_VERSION) {
+      // 양식 개정(예: v4.2) 배포 시 전 건이 VERSION_MISMATCH로 조용히 0건 처리된다 → warn으로 남겨
+      // 이 로그의 급증 자체가 "양식이 바뀌었다"는 감지 신호가 되게 한다(알림/에러 없이 며칠 뒤 발견 방지).
+      this.logger.warn(
+        `자동주문 양식버전 불일치: 파일=${h.formVersion || '없음'} 지원=${AutoOrderStructureValidator.SUPPORTED_VERSION} (양식 개정 시 급증=감지 신호)`,
+      );
+      return this.invalid(
+        `지원하지 않는 양식버전입니다. (파일: ${h.formVersion || '없음'} / 지원: ${AutoOrderStructureValidator.SUPPORTED_VERSION})`,
+        'VERSION_MISMATCH',
+      );
+    }
+    if (!h.eventName) return this.invalid('프로모션명(C19)이 비어 있습니다.', 'HEADER_MISMATCH');
+    if (!h.sendTitle) return this.invalid('발송 제목(C20)이 비어 있습니다.', 'HEADER_MISMATCH');
+    if (!h.sendContent) return this.invalid('발송 내용(C21)이 비어 있습니다.', 'HEADER_MISMATCH');
+    if (!h.sendMethod) return this.invalid('발신수단(C23)이 비어 있거나 알 수 없는 값입니다.', 'HEADER_MISMATCH');
+    if (h.isImmediate === null) {
+      return this.invalid('즉시발송 여부(C16) 값을 해석할 수 없습니다. (예: TRUE/FALSE)', 'HEADER_MISMATCH');
+    }
+    if (h.destroyDay < 1) {
+      return this.invalid('개인정보 파기일(C25)이 비어 있거나 올바르지 않습니다.', 'HEADER_MISMATCH');
+    }
+    if (!h.isImmediate && !h.sendRequestAt) {
+      return this.invalid('예약발송인데 발송희망일/시간(C17/C18)이 올바르지 않습니다.', 'HEADER_MISMATCH');
+    }
+    if (parsed.rows.length === 0) return this.invalid('발송명단에 데이터가 없습니다.', 'EMPTY_LIST');
+
+    return { status: 'VALID', message: null, code: null };
+  }
+
+  private invalid(message: string, code: FormatErrorCode): StructureResult {
+    return { status: 'INVALID_FORMAT', message, code };
+  }
+}
