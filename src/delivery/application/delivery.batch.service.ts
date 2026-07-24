@@ -1497,7 +1497,7 @@ export class DeliveryBatchService {
     //
     // fencing: 발송(외부 통신)이 도는 사이 lease 가 stale 로 넘어가 폐기·외부취소가 상태를
     // 확정했을 수 있다. 내 소유가 유지될 때만 쓴다(리뷰 HIGH).
-    await this.updateDeliveryOwned(
+    const stillOwned = await this.updateDeliveryOwned(
       orderDelivery.id,
       claimToken,
       {
@@ -1515,14 +1515,20 @@ export class DeliveryBatchService {
       },
       '발송 결과',
     );
-    await this.orderDeliveryRepository.update(
-      { id: orderDelivery.id },
-      {
-        imagePath: orderDelivery.imagePath,
-        expireAt: orderDelivery.expireAt,
-        encourageAt: orderDelivery.encourageAt,
-      },
-    );
+    // 1차에서 lease 상실이 확인됐다면 2차도 쓰지 않는다. 남이 소유한 행에 이미지/유효기간만
+    // 남기면 "상태는 남의 것, 부가 컬럼은 내 것" 인 반쪽 행이 된다(경보는 1차에서 이미 나갔다).
+    if (stillOwned) {
+      await this.updateDeliveryOwned(
+        orderDelivery.id,
+        claimToken,
+        {
+          imagePath: orderDelivery.imagePath,
+          expireAt: orderDelivery.expireAt,
+          encourageAt: orderDelivery.encourageAt,
+        },
+        '발송 부가 컬럼',
+      );
+    }
 
     // 6. 발송 실패 시 환불 처리 (B1/B3: 최초 발송 실패는 보류, SSG 는 ATTEMPTED 만 환불, 재발송은 환불)
     if (orderDelivery.status === IOrderDeliveryStatus.FAIL) {
