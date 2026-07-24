@@ -107,6 +107,17 @@ describe('OrderService.findCancelableDeliveryIds — 취소 대상 판정 조건
     expect(calls).toContain('od.barCode IS NULL');
   });
 
+  // 발송 배치(claimWaitDeliveries)가 직접 보는 컬럼이다. bar_code IS NULL 이 지금은 같은 행을
+  // 간접적으로 걸러 주지만, 그건 "발급되면 bar_code 도 찬다" 는 타 모듈의 암묵 불변식에 기댄 것이라
+  // 배치가 보는 컬럼을 여기서도 본다. 이 줄이 지워지면 두 조건집합이 다시 갈라진다.
+  it('비동기 리포트 대기(report_state) 건을 제외한다 — 배치와 조건집합 일치', async () => {
+    const { sut, calls } = setup();
+
+    await sut.findCancelableDeliveryIds(1001, NOW);
+
+    expect(calls).toContain('od.reportState IS NULL');
+  });
+
   // 외부 API 주문은 배치가 claim 하지 않아 claimed_at 이 영원히 NULL — 조건 3 의 방어력이 0 이다.
   // 배치가 EXTERNAL 을 명시 배제하는 것과 대칭을 맞춘다.
   it('외부 API 주문의 발송건을 제외한다', async () => {

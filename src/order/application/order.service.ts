@@ -355,6 +355,13 @@ type ReportCounterColumns =
  */
 const DELIVERY_CANCEL_CUTOFF_MS = 10 * 60 * 1000;
 
+/**
+ * 부분취소 거부 응답에 나열할 발송건 id 최대 개수.
+ * deliveryIds 상한이 1000 이라 전량을 이어붙이면 에러 메시지 하나가 7KB 를 넘고 화면에도 다 못 띄운다.
+ * 사용자에게는 앞부분 + "외 N건" 만 보이고, 전량은 거부 로그(DELIVERY_CANCEL_REJECT)에 남는다.
+ */
+const NOT_CANCELABLE_IDS_IN_MESSAGE = 20;
+
 @Injectable()
 export class OrderService {
   private logger = new Logger('OrderService');
@@ -5708,8 +5715,10 @@ export class OrderService {
    *       기록된다(order.receive.service.ts). 일반 배치 발송의 PIN 발급은 이 컬럼을 건드리지
    *       않고 bar_code 만 채우며, 배치 자신도 "이미 발급됐나" 를 bar_code 로 판정한다
    *       (delivery.batch.service.ts). 즉 coupon_issued_at 만 보면 배치 경로에서는 방어력이 0 이다.
-   *       bar_code 는 발송 시점(배치) 또는 테스트발송(status=COMPLETE)에서만 채워지므로,
-   *       이 조건이 정상적인 예약 대기 건의 취소를 막지는 않는다.
+   *       bar_code 는 실제 쿠폰 발급 시점(배치 발송)에만 채워지므로, 이 조건이 정상적인 예약
+   *       대기 건의 취소를 막지는 않는다.
+   *       (테스트발송은 여기 해당하지 않는다 — testDelivery 는 test_order_delivery 에만 쓰고
+   *        order_delivery 행은 건드리지 않는다. 테스트발송했다고 취소가 막히지 않는다.)
    *
    *  7) order.type != EXTERNAL
    *     외부 API 주문은 배치가 claim 하지 않으므로(claimWaitDeliveries 의 EXISTS 조건)
@@ -5743,6 +5752,10 @@ export class OrderService {
       .andWhere('od.sendRequestAt >= :cutoff', { cutoff })
       .andWhere('od.couponIssuedAt IS NULL')
       .andWhere('od.barCode IS NULL')
+      // 발송 배치(claimWaitDeliveries)가 집는 조건집합과 맞춘다. 지금은 bar_code IS NULL 이
+      // 간접적으로 같은 행을 걸러내지만, 그건 "발급되면 bar_code 도 찬다" 는 다른 모듈의
+      // 암묵 불변식에 기댄 것이다. 배치가 직접 보는 컬럼을 여기서도 본다(조건 6 과 같은 이유).
+      .andWhere('od.reportState IS NULL')
       .andWhere('o.type != :externalType', { externalType: IOrderType.EXTERNAL })
       .orderBy('od.id', 'ASC')
       .getRawMany<{ id: number }>();
@@ -5888,6 +5901,14 @@ export class OrderService {
    *  - 취소 대상을 요청이 지목한다(단, 반드시 findCancelableDeliveryIds 의 부분집합이어야 한다)
    *  - 환불이 주문 전액이 아니라 그 발송건 몫이다 (RefundPoolService.refund)
    *  - 잔여 발송건이 남으면 order.status 를 DELIVERY_CANCEL 로 내리지 않는다
+   *
+   * ※ 아래 @Transactional() 은 **독립 트랜잭션이 아니다.** 호출부(deliveryCancel)도 @Transactional()
+   *   이고 둘 다 기본 전파(REQUIRED)라, 이 데코레이터는 새 트랜잭션도 세이브포인트도 만들지 않고
+   *   호출부의 트랜잭션에 그대로 합류한다. 이 경로가 곳곳에서 기대는 "throw = 롤백" 은 이 데코레이터가
+   *   보장하는 것이 아니라 **바깥 트랜잭션이 함께 롤백되기 때문에** 성립한다.
+   *   그래서 호출부가 나중에 이 호출을 try/catch 로 감싸면 취소(CANCEL)와 환불 원장이 그대로 커밋된다 —
+   *   "409 = 아무것도 안 됐다" 보장이 조용히 깨지므로 감싸지 말 것. 격리가 필요하면 전파를
+   *   REQUIRES_NEW 로 올리는 것이 아니라(원장이 바깥과 갈라진다) 호출 구조를 바꿔야 한다.
    */
   @Transactional()
   private async partialDeliveryCancel(
@@ -5954,9 +5975,14 @@ export class OrderService {
         `[DELIVERY_CANCEL_REJECT] orderId=${orderId} requested=[${requested.join(',')}] ` +
           `notCancelable=[${notCancelable.join(',')}] cancelable=[${[...cancelable].join(',')}]`,
       );
+      // 응답에 나열하는 id 는 앞에서 자른다 — deliveryIds 상한이 1000 이라 전량을 이어붙이면
+      // 에러 메시지 하나가 7KB 를 넘고, 화면에는 어차피 다 못 띄운다. 전량은 위 로그에 남는다.
+      const shown = notCancelable.slice(0, NOT_CANCELABLE_IDS_IN_MESSAGE);
+      const omitted = notCancelable.length - shown.length;
       throw new BadRequestException(
-        `취소할 수 없는 발송건이 포함돼 있습니다: ${notCancelable.join(', ')}. ` +
-          '이미 발송됐거나 발송 준비가 시작됐거나, 발송이 임박(10분 이내)했거나, ' +
+        `취소할 수 없는 발송건이 포함돼 있습니다: ${shown.join(', ')}` +
+          (omitted > 0 ? ` 외 ${omitted}건` : '') +
+          '. 이미 발송됐거나 발송 준비가 시작됐거나, 발송이 임박(10분 이내)했거나, ' +
           '이 주문의 발송건이 아니거나, 외부 API 주문일 수 있습니다. ' +
           '최신 발송 상태를 다시 조회해 주세요.',
       );
