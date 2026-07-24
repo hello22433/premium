@@ -1469,7 +1469,9 @@ export class PartnerCompanyExternBatchService {
             parseInt(useDateStr.substring(6, 8)),
           );
 
-          await this.orderDeliveryRepository.save(orderDelivery);
+          // save(orderDelivery) 금지 — merge 는 협력사 조회 시점 스냅샷으로 행 전체를 써
+          // 그 사이 CS 재발행·폐기가 쓴 mutation_claimed_at/deleted_at 까지 되돌린다 (D3-60).
+          await this.persistPartnerSync(orderDelivery, ['couponStatus', 'tradeAt']);
 
           this.logger.log(
             `[checkCulturelandDaily] 교환 처리 완료: orderDeliveryId=${orderDelivery.id}, certNo=${certNo}`,
