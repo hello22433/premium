@@ -91,6 +91,8 @@ SELECT COUNT(*) FROM order_delivery
 | `wallet 승계 실패 — tip 무력화 성공` ERROR | 발송은 막았으나 **발급된 PIN 이 협력사에서 살아있다(과금됨)**. 원본은 폐기 유지 | 🚨 협력사 핀 정리 + 원본 복구 판단 필요 |
 | `lease 상실로 softDelete 도 보류` ERROR | tip 을 남이 가져갔다(배치가 발송 중일 수 있다). 지우지 않고 남겨 둔 것 | 🚨 해당 tip 의 `status`/`coupon_status` 확인 |
 | `[BATCH] 변형 lease 해제 실패` / `[CS_RESEND] claimedAt 해제 실패` / `[resendFailedDelivery] 변형 lease 해제 실패` | DB 쓰기 실패. 해당 건의 폐기/취소가 최대 5분간 거절된다 | 5분 stale self-heal 로 수렴. 반복되면 DB 상태 점검 |
+| **`[CANCEL_FENCE_LOST]`** ERROR (외부 취소) | 협력사 취소는 **끝났고 환불도 집행됐는데**, 그 사이 lease 를 뺏겨 `status`/`coupon_status` 만 CANCEL 로 못 바꿨다 | 🚨 로그의 `orderDeliveryId` 로 `order_delivery.status`/`coupon_status` 가 CANCEL 인지 대조. 아니면 수동 정정. 환불은 이미 나갔으므로 **재환불 금지**(ledger 멱등이 막지만 확인) |
+| **`[BATCH_FENCE_LOST]`** ERROR (배치·재발송) | 발송 결과 쓰기를 lease 상실로 **생략**했다. 남이 그 행의 상태를 확정한 상태 | 라벨로 어느 쓰기인지 구분(`PIN 발급 실패 상태` / `발송 결과` / `발송 부가 컬럼` / `oneSend 발송 결과`). `발송 결과` 계열이면 **문자가 나갔을 수 있으므로** 협력사 상태·고객 수신 확인 |
 
 ### 신규 에러코드
 
@@ -129,6 +131,27 @@ SELECT COUNT(*) FROM order_delivery
 
 > ⚠️ 새 발송 경로를 추가할 때는 반드시 이 두 가지를 함께 넣으십시오.
 > 배제 목록은 `UNSENDABLE_COUPON_STATUSES`(`order.delivery.mutation.claim.ts`) 하나를 공유합니다.
+
+### lease 를 "잡는 것" 과 "쓸 때 확인하는 것" 은 다르다 (fencing)
+
+lease 획득은 **입구**만 막습니다. 획득 후 PIN 발급·문자 발송(외부 통신, 수 초~수십 초)이 도는 동안
+lease 가 **5분 stale self-heal** 로 남에게 넘어갈 수 있고, 그때 상태를 `WHERE id = ?` 로 쓰면
+**남이 확정한 상태를 덮어씁니다.** 그래서 모든 상태 쓰기는 조건에 내 토큰을 함께 싣습니다:
+
+```sql
+UPDATE order_delivery SET ... WHERE id = ? AND mutation_claimed_at = <내 토큰>
+```
+
+`affected = 0` 이면 소유를 잃은 것이며, **그 시점에 이미 끝난 비가역 작업이 무엇이냐**에 따라 대응이 갈립니다.
+
+| 지점 | `affected = 0` 대응 | 이유 |
+|---|---|---|
+| 외부 API 취소 (`processCancelRefund`) | **환불은 그대로 집행** + `[CANCEL_FENCE_LOST]` | 협력사 취소가 **이 지점보다 먼저** 끝난 비가역 작업. 중단하면 "쿠폰은 죽었는데 환불은 안 나간" 고객 피해가 남는다. 이중환불은 refund ledger 멱등 게이트가 막는다(D3-3) |
+| 발송배치 · CS/발송실패내역 재발송 | **건너뛰고** `[BATCH_FENCE_LOST]` | 예외를 던지면 `claimedAt` reset → 다음 cron 재발송. 이미 문자가 나갔다면 **중복 발송**이 된다 |
+
+> 발송 결과 쓰기는 1차(상태·알림톡)/2차(이미지·유효기간)로 나뉘는데,
+> 1차에서 소유를 잃으면 2차는 **시도하지 않습니다** — "상태는 남의 것, 부가 컬럼은 내 것" 인
+> 반쪽 행을 만들지 않기 위해서입니다.
 
 ### 발송 후 lease 를 잃으면
 
