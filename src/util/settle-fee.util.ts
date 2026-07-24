@@ -43,13 +43,47 @@ export function calculateSettlementPrice(
   return applyCardSurcharge(price, cardSurchargeApplied);
 }
 
+/**
+ * 매핑 1건의 정산 기준금액(카드할증 미포함).
+ *
+ * 표시 라인(buildSettlementDisplayLines)과 "완전히 동일한 분해"를 합산하므로, 화면 합계와
+ * 실제 정산금액이 구조적으로 항상 일치한다(차등 판정·재발행 CANCEL 원본 제외 로직을 한 벌로 공유).
+ * 단가는 모두 정수(OrderFeeCalculator 반올림)라 그룹 합산(Σ price×amount)과 발송건별 합산(Σ 단가)이
+ * 정확히 일치한다.
+ *
+ * 이 함수는 정산확정 여신차감·발송확정·환불 등 "실제 돈" 경로가 쓰는 SoT 이다(getUserList/Summary/Ids
+ * 표시 합계도 동일). 호출부는 mapping.orderDeliveries 를 반드시 로드해야 한다 — 미로드 시 균일 분기로
+ * 빠져 발송건별 settleFee 를 무시한 틀린 금액이 조용히 나온다.
+ */
 export function calculateMappingSettlementBaseAmount(mapping: OrderProductMappingEntity): number {
+  return buildSettlementDisplayLines(mapping).reduce((total, line) => total + line.price * line.amount, 0);
+}
+
+/** 정산 표시용 라인 1행: 실존 단가(price)와 그 단가가 적용된 발송건 수(amount). */
+export type SettlementDisplayLine = {
+  price: number;
+  amount: number;
+};
+
+/**
+ * 정산 표시용 라인 구성 (D3-49 리뷰 B안 — 요율별 행 분리).
+ * 고객사별정산 상세/다중상세와 거래명세서가 동일한 라인 구성을 쓰도록 공유한다.
+ *
+ * 차등정산(SSG 중복할인 등 delivery.settleFee 보유) 매핑은 발송건마다 요율이 달라
+ * 단일 단가가 존재하지 않는다. 라인총액/수량 평균(반올림)을 단가로 내보내면 어느 쿠폰에도
+ * 없는 근사값이 되고, 소비측이 price*amount 로 합계를 재구성하면 반올림 오차가 생긴다.
+ * 요율 적용 단가별로 행을 분리하면 모든 행의 단가가 실존값이고 price*amount 가 항상 정확한 합계다.
+ * (정산정보입력 화면(getOrderSettle 가상 분리 행)과 동일한 표현 방식)
+ *
+ * - 비차등(균일 요율) 매핑: 단가 × mapping.amount 단일 행.
+ * - 폐기 후 재발행으로 대체된 CANCEL 원본 delivery 는 제외(이중합산 방지 — D3-52).
+ *   정산금액 SoT(calculateMappingSettlementBaseAmount)가 이 함수의 결과를 그대로 합산하므로,
+ *   화면과 실제 돈이 동일한 필터·분기 기준을 공유한다(로직 중복 없음).
+ *   폐기만 하고 재발행하지 않은 CANCEL 은 기존 동작 유지(정산 반영 정책 별도 판단).
+ */
+export function buildSettlementDisplayLines(mapping: OrderProductMappingEntity): SettlementDisplayLine[] {
   const allDeliveries = mapping.orderDeliveries ?? [];
-  // 폐기 후 신규발송(재발행)은 원본 행을 지우지 않고 같은 매핑에 새 행을 추가한다
-  // (customer.service.service.ts — newDelivery.replacedFromId = 원본 id, settleFee 승계).
-  // 재발행분이 원본의 자리를 이어받으므로, 대체된 CANCEL 원본까지 합산하면 이중합산이 된다.
-  // 폐기만 하고 재발행하지 않은 CANCEL 행은 기존 동작 유지(정산 반영 정책은 별도 판단).
-  // bigint 컬럼(replacedFromId)은 런타임에 string으로 hydrate될 수 있어 Number 정규화 후 비교.
+  // bigint 컬럼(replacedFromId)은 런타임에 string 으로 hydrate 될 수 있어 Number 정규화 후 비교.
   const replacedIds = new Set(
     allDeliveries
       .filter((delivery) => delivery.replacedFromId !== null && delivery.replacedFromId !== undefined)
@@ -58,20 +92,24 @@ export function calculateMappingSettlementBaseAmount(mapping: OrderProductMappin
   const deliveries = allDeliveries.filter(
     (delivery) => !(delivery.couponStatus === OrderDeliveryCouponStatus.CANCEL && replacedIds.has(Number(delivery.id))),
   );
-  // 차등정산 여부 판정은 필터 "전" 목록(allDeliveries) 기준.
-  // 표시 경로(settle.service buildSettlementDisplayLines)와 동일 기준으로 맞춰,
-  // 유일한 settleFee 보유 행이 대체된 CANCEL 원본이고 재발행 생존분이 settleFee 를
-  // 승계하지 않은 엣지에서 화면(차등 분기)과 정산금액(균일 분기)이 어긋나는 것을 방지.
-  // (합산 대상은 여전히 필터 후 deliveries — 판정은 성격(과거), 합산은 현황(생존)으로 분리)
-  const hasDeliveryFee = allDeliveries.some((delivery) => delivery.settleFee !== null);
 
-  if (hasDeliveryFee) {
-    return deliveries.reduce((total, delivery) => {
-      return total + calculateSettlementPrice(mapping, false, delivery);
-    }, 0);
+  // 차등정산 여부 판정은 필터 "전" 목록 기준 — calculateMappingSettlementBaseAmount(정산금액 util)와
+  // 분기 판정을 일치시켜, 대체된 CANCEL 원본만 settleFee 를 갖는 엣지에서 화면과 정산금액이
+  // 서로 다른 분기(균일 vs 차등)를 타는 불일치를 방지한다.
+  const hasDeliveryFee = allDeliveries.some((delivery) => delivery.settleFee !== null);
+  if (!hasDeliveryFee) {
+    // 균일 요율: 단가 1회 계산 × 주문 수량
+    return [{ price: calculateSettlementPrice(mapping, false), amount: mapping.amount }];
   }
 
-  return calculateSettlementPrice(mapping, false) * mapping.amount;
+  // 차등정산: 요율 적용 단가별로 발송건 수를 세어 행 분리.
+  // 단가 자체를 그룹 키로 쓰므로 각 행에서 price*amount == 발송건별 정확 합계가 보장된다.
+  const unitPriceCounts = new Map<number, number>();
+  for (const delivery of deliveries) {
+    const unitPrice = calculateSettlementPrice(mapping, false, delivery);
+    unitPriceCounts.set(unitPrice, (unitPriceCounts.get(unitPrice) ?? 0) + 1);
+  }
+  return [...unitPriceCounts.entries()].map(([price, amount]) => ({ price, amount }));
 }
 
 /**

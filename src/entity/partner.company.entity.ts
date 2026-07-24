@@ -58,7 +58,7 @@ export class PartnerCompanyEntity extends BaseEntity {
   @Column({ type: 'varchar', length: 100, comment: '은행 명' })
   bankName: string;
 
-  @Column({ type: 'varchar', length: 100, comment: '계좌 번호' })
+  @Column({ type: 'varchar', length: 100, comment: '계좌 번호 (암호화 저장, CryptoCipher)' })
   bankNumber: string;
 
   @Column({ type: 'varchar', length: 100, default: 'ACTIVE', comment: 'ex) 정상: ACTIVE' })

@@ -1,0 +1,26 @@
+name: be-deploy-dev
+
+# 수동 실행 전용. push 만으로는 배포되지 않는다.
+# develop 에 push 한 뒤, Gitea → 이 레포 → Actions 탭에서
+# 이 워크플로우를 'Run workflow' 로 눌러야 pull → build → restart 가 진행된다.
+# (기존 PuTTY 수동 배포: git pull origin develop → npm run build → pm2 restart backend 를 그대로 자동화)
+#
+# 이 epopkon dev 서버(AWS 리눅스)에 라벨 'epopkon-dev' 로 host 러너가 등록되어 있어야 한다:
+#   act_runner register --instance https://gitea.syscuss.com --token <토큰> --labels epopkon-dev:host
+#   ⚠ 라벨을 'dev' 로 쓰면 안 된다. WiseAd 윈도우 러너가 이미 'dev' 라벨을 갖고 있어 배포가 엉뚱한 서버로 간다.
+# host 러너는 ubuntu 계정(= pm2 가 설치된 계정)으로 상시 구동한다.
+on:
+  workflow_dispatch:
+
+jobs:
+  build-deploy:
+    runs-on: epopkon-dev
+    steps:
+      - name: Deploy in place
+        run: |
+          cd /home/ubuntu/epopkon-premium
+          git fetch origin
+          git reset --hard origin/develop
+          npm install         # 증분 설치: 의존성 안 바뀌면 수 초, 바뀐 것만 설치 (npm ci 처럼 전체 재빌드 안 함)
+          npm run build
+          pm2 restart backend --update-env

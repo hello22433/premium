@@ -19,6 +19,14 @@ jest.mock('exceljs', () => ({
 
 import { OrderRealProductService } from './order.real.product.service';
 import { IUserAuthority } from '../../user/interface/user.authority';
+import { CryptoCipher } from '../../common/infra/crypto.cipher';
+
+const cipherStub = {
+  encryptAccountNumber: (v: string) => v,
+  safeDecryptAccountNumber: (v: string) => v,
+  encryptDeliveryTarget: (v: string) => v,
+  safeDecryptDeliveryTarget: (v: string) => v,
+} as unknown as CryptoCipher;
 
 const createQueryBuilder = (result: unknown, count = 1) => ({
   innerJoinAndSelect: jest.fn().mockReturnThis(),
@@ -63,6 +71,7 @@ const createService = () => {
     userRepository as any,
     {} as any,
     activityLogService as any,
+    cipherStub,
   );
 
   return {

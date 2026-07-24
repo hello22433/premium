@@ -145,6 +145,28 @@ export class CustomerServiceGetListReqDto extends PagingReqDto {
   @IsOptional()
   @IsString()
   eventName?: string;
+
+  // expireDayMin/Max 는 사용자가 직접 입력하는 값이 아니라 프론트의 유효기간 프리셋
+  // (30일=29/31, 60일=59/61, 5년=1824/1826 등) 상수로 전송된다 (product.req.dto.ts 와 동일 컨벤션)
+  @ApiPropertyOptional({
+    description: '유효기간(일) 하한 — 이 값 이상의 유효기간 상품 발송 건만 조회',
+  })
+  // =============================================================
+  @IsOptional()
+  @IsInt({ message: '유효기간 최소값은 정수로 입력해주세요.' })
+  @Min(0, { message: '유효기간 최소값은 0일 이상으로 입력해주세요.' })
+  @Type(() => Number)
+  expireDayMin?: number;
+
+  @ApiPropertyOptional({
+    description: '유효기간(일) 상한 — 이 값 이하의 유효기간 상품 발송 건만 조회',
+  })
+  // =============================================================
+  @IsOptional()
+  @IsInt({ message: '유효기간 최대값은 정수로 입력해주세요.' })
+  @Min(0, { message: '유효기간 최대값은 0일 이상으로 입력해주세요.' })
+  @Type(() => Number)
+  expireDayMax?: number;
 }
 
 export class CustomerServiceGetDetailListReqDto extends PagingReqDto {
@@ -496,6 +518,28 @@ export class CustomerServiceExcelDownloadReqDto {
   @IsOptional()
   @IsString()
   eventName?: string;
+
+  // expireDayMin/Max 는 사용자가 직접 입력하는 값이 아니라 프론트의 유효기간 프리셋
+  // (30일=29/31, 60일=59/61, 5년=1824/1826 등) 상수로 전송된다 (product.req.dto.ts 와 동일 컨벤션)
+  @ApiPropertyOptional({
+    description: '유효기간(일) 하한 — 이 값 이상의 유효기간 상품 발송 건만 조회',
+  })
+  // =============================================================
+  @IsOptional()
+  @IsInt({ message: '유효기간 최소값은 정수로 입력해주세요.' })
+  @Min(0, { message: '유효기간 최소값은 0일 이상으로 입력해주세요.' })
+  @Type(() => Number)
+  expireDayMin?: number;
+
+  @ApiPropertyOptional({
+    description: '유효기간(일) 상한 — 이 값 이하의 유효기간 상품 발송 건만 조회',
+  })
+  // =============================================================
+  @IsOptional()
+  @IsInt({ message: '유효기간 최대값은 정수로 입력해주세요.' })
+  @Min(0, { message: '유효기간 최대값은 0일 이상으로 입력해주세요.' })
+  @Type(() => Number)
+  expireDayMax?: number;
 
   @ApiProperty({
     description: '비밀번호 (다운로드 확인용)',

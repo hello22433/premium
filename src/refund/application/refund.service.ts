@@ -107,7 +107,7 @@ export class RefundService {
         refundPrice: (orderDelivery.orderProductMapping!.product.price * orderDelivery.refundRatio!) / 100,
         bankAccountOwner: orderDelivery.bankAccountOwner,
         bankName: orderDelivery.bankName,
-        bankAccount: orderDelivery.bankAccount,
+        bankAccount: this.cryptoCipher.safeDecryptAccountNumber(orderDelivery.bankAccount) ?? orderDelivery.bankAccount,
         approveAt: orderDelivery.approveAt ? format(orderDelivery.approveAt, DateFormatStr) : null,
         refundStatus: orderDelivery.refundStatus!,
         refundAt: orderDelivery.refundAt ? format(orderDelivery.refundAt, DateFormatStr) : null,
@@ -202,7 +202,7 @@ export class RefundService {
     orderDelivery.refundStatus = refundStatus;
     orderDelivery.bankAccountOwner = bankAccountOwner ?? null;
     orderDelivery.bankName = bankName;
-    orderDelivery.bankAccount = bankAccount;
+    orderDelivery.bankAccount = bankAccount ? this.cryptoCipher.encryptAccountNumber(bankAccount) : bankAccount;
     orderDelivery.approveAt = resolvedApproveAt;
     orderDelivery.refundAt = resolvedRefundAt;
   }

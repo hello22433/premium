@@ -1,4 +1,6 @@
 import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { QueryBuilderExpireDayCondition } from '../../common/infra/query.builder.expire.day.condition';
+import { assertExpireDayRangeValid } from '../../common/utils/expire.util';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { createExportTempPath } from '../../util/file.util';
@@ -38,8 +40,8 @@ import { CreateCode } from '../../common/domain/create.code';
 import { ProductChoicePrefixCode, ProductDigitNumber, ProductPrefixCode } from '../domain/product.code';
 import { BrandDigitNumber, BrandPrefixCode } from '../../brand/domain/brand.code';
 import { ProductUpdateHistoryEntity } from '../../entity/product.update.history.entity';
-import { ProductUpdateHistoryKeyName } from '../domain/product.update.history.key.name';
-import { Transactional } from 'typeorm-transactional';
+import { ProductUpdateHistoryKeyName, ProductUseStatusAutoHistoryKey } from '../domain/product.update.history.key.name';
+import { IsolationLevel, Transactional } from 'typeorm-transactional';
 import { ProductHistoryViewDto } from '../api/dto/product.history.view.dto';
 import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
@@ -74,6 +76,8 @@ import { ActivityLogResult } from '../../activity_log/interface/activity.log.res
 import { IUserSyncProductStatus } from '../../user_sync_product/interface/user.sync.product.status';
 import { IFileStorage } from '../../file/interface/file.storage';
 import { ProductSharedListFileEntity } from '../../entity/product.shared.list.file.entity';
+import { ProductChoiceMappingEntity } from '../../entity/product.choice.mapping.entity';
+import { isAutoUnusedByHistory, resolveChoiceUseStatus } from '../../product_choice/domain/choice.use.status';
 
 @Injectable()
 export class ProductService {
@@ -100,6 +104,8 @@ export class ProductService {
     private userRepository: Repository<UserEntity>,
     @InjectRepository(ProductSharedListFileEntity)
     private productSharedListFileRepository: Repository<ProductSharedListFileEntity>,
+    @InjectRepository(ProductChoiceMappingEntity)
+    private productChoiceMappingRepository: Repository<ProductChoiceMappingEntity>,
     private activityLogService: ActivityLogService,
     @Inject('IFileStorage')
     private fileStorage: IFileStorage,
@@ -198,14 +204,7 @@ export class ProductService {
       expireDayMax,
     } = getQuery;
 
-    // 유효기간 필터 입력 검증: 둘 다 전송되었고 하한 > 상한이면 400
-    // 주의: expireDayMin/Max 는 사용자가 직접 입력하는 값이 아니라 프론트의 유효기간 프리셋
-    // (30일=29/31, 60일=59/61, 5년=1824/1826 등) 상수로 전송된다. 따라서 이 예외는 정상
-    // 사용자 조작으로는 발생하지 않고 프론트 버그/API 직접 호출 시에만 도달하므로, 메시지는
-    // 사용자 친화 문구가 아니라 프론트 개발자 디버깅용으로 둔다.
-    if (expireDayMin !== undefined && expireDayMax !== undefined && expireDayMin > expireDayMax) {
-      throw new BadRequestException('유효기간의 범위가 잘못 설정되었습니다.');
-    }
+    assertExpireDayRangeValid(expireDayMin, expireDayMax);
 
     let queryBuilder = this.productRepository
       .createQueryBuilder('product')
@@ -240,6 +239,11 @@ export class ProductService {
       } else {
         queryBuilder = queryBuilder.andWhere('product.id IN (:...mappedProductIds)', {
           mappedProductIds: uniqueProductIds,
+        });
+        // 매핑은 살아 있어도 미사용 상품(자동 미사용 초이스쿠폰 포함)은 노출하지 않는다.
+        // 사용으로 복구되면 매핑이 그대로이므로 다시 노출된다.
+        queryBuilder = queryBuilder.andWhere('product.useStatus = :corporateUseStatus', {
+          corporateUseStatus: IProductUseStatus.USE,
         });
       }
     }
@@ -329,14 +333,7 @@ export class ProductService {
       });
     }
 
-    // 유효기간(일) 범위 필터 — 한쪽만 전송 시 단방향(열린 경계), 둘 다 전송 시 BETWEEN 과 동일
-    if (expireDayMin !== undefined) {
-      queryBuilder = queryBuilder.andWhere('product.expireDay >= :expireDayMin', { expireDayMin });
-    }
-
-    if (expireDayMax !== undefined) {
-      queryBuilder = queryBuilder.andWhere('product.expireDay <= :expireDayMax', { expireDayMax });
-    }
+    queryBuilder = QueryBuilderExpireDayCondition(queryBuilder, 'product.expireDay', expireDayMin, expireDayMax);
 
     if (isLike !== undefined) {
       queryBuilder = queryBuilder
@@ -425,14 +422,7 @@ export class ProductService {
       expireDayMax,
     } = getQuery;
 
-    // 유효기간 필터 입력 검증: 둘 다 전송되었고 하한 > 상한이면 400
-    // 주의: expireDayMin/Max 는 사용자가 직접 입력하는 값이 아니라 프론트의 유효기간 프리셋
-    // (30일=29/31, 60일=59/61, 5년=1824/1826 등) 상수로 전송된다. 따라서 이 예외는 정상
-    // 사용자 조작으로는 발생하지 않고 프론트 버그/API 직접 호출 시에만 도달하므로, 메시지는
-    // 사용자 친화 문구가 아니라 프론트 개발자 디버깅용으로 둔다.
-    if (expireDayMin !== undefined && expireDayMax !== undefined && expireDayMin > expireDayMax) {
-      throw new BadRequestException('유효기간의 범위가 잘못 설정되었습니다.');
-    }
+    assertExpireDayRangeValid(expireDayMin, expireDayMax);
 
     let queryBuilder = this.productRepository
       .createQueryBuilder('product')
@@ -466,6 +456,9 @@ export class ProductService {
         queryBuilder = queryBuilder.andWhere('product.id IN (:...mappedProductIds)', {
           mappedProductIds: uniqueProductIds,
         });
+        queryBuilder = queryBuilder.andWhere('product.useStatus = :headPersonMappedUseStatus', {
+          headPersonMappedUseStatus: IProductUseStatus.USE,
+        });
       }
     }
 
@@ -493,6 +486,9 @@ export class ProductService {
       } else {
         queryBuilder = queryBuilder.andWhere('product.id IN (:...mappedProductIds)', {
           mappedProductIds: uniqueProductIds,
+        });
+        queryBuilder = queryBuilder.andWhere('product.useStatus = :corporateMappedUseStatus', {
+          corporateMappedUseStatus: IProductUseStatus.USE,
         });
       }
     }
@@ -582,14 +578,7 @@ export class ProductService {
       });
     }
 
-    // 유효기간(일) 범위 필터 — 한쪽만 전송 시 단방향(열린 경계), 둘 다 전송 시 BETWEEN 과 동일
-    if (expireDayMin !== undefined) {
-      queryBuilder = queryBuilder.andWhere('product.expireDay >= :expireDayMin', { expireDayMin });
-    }
-
-    if (expireDayMax !== undefined) {
-      queryBuilder = queryBuilder.andWhere('product.expireDay <= :expireDayMax', { expireDayMax });
-    }
+    queryBuilder = QueryBuilderExpireDayCondition(queryBuilder, 'product.expireDay', expireDayMin, expireDayMax);
 
     if (isLike !== undefined) {
       queryBuilder = queryBuilder
@@ -681,6 +670,7 @@ export class ProductService {
     return this.productRepository
       .createQueryBuilder('product')
       .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .leftJoinAndSelect('partnerCompany.userDiscounts', 'partnerDiscounts')
       .innerJoinAndSelect('product.brand', 'brand')
       .leftJoinAndSelect('product.classification', 'classification')
       .where('product.price = :price', { price })
@@ -773,6 +763,7 @@ export class ProductService {
     const reloaded = await this.productRepository
       .createQueryBuilder('product')
       .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .leftJoinAndSelect('partnerCompany.userDiscounts', 'partnerDiscounts')
       .innerJoinAndSelect('product.brand', 'brand')
       .leftJoinAndSelect('product.classification', 'classification')
       .where('product.id = :id', { id: savedProduct.id })
@@ -945,7 +936,7 @@ export class ProductService {
     return;
   }
 
-  @Transactional()
+  @Transactional({ isolationLevel: IsolationLevel.READ_COMMITTED })
   async updatePartial(user: ILoginUserInfo, getBody: ProductUpdatePartialReqDto) {
     const { id, reason } = getBody;
 
@@ -1055,8 +1046,122 @@ export class ProductService {
     }
 
     await this.productRepository.save(product);
+
+    // 구성상품 사용상태가 바뀌면 이 상품을 포함한 초이스쿠폰의 사용상태도 함께 맞춘다.
+    if (productUpdateHistoryCreateList.some((h) => h.key === 'useStatus')) {
+      productUpdateHistoryCreateList.push(...(await this.syncChoiceUseStatus(user, product, reason)));
+    }
+
     await this.productUpdateHistoryRepository.insert(productUpdateHistoryCreateList);
     return;
+  }
+
+  // 구성상품이 하나라도 미사용/영구미사용이면 초이스쿠폰도 미사용, 전부 사용이면 사용으로 되돌린다.
+  // 하나의 구성상품이 여러 초이스쿠폰에 묶일 수 있으므로 전부 반영한다.
+  private async syncChoiceUseStatus(
+    user: ILoginUserInfo,
+    component: ProductEntity,
+    reason?: string,
+  ): Promise<ProductUpdateHistoryEntity[]> {
+    const componentMappings = await this.productChoiceMappingRepository.find({
+      where: { productId: component.id },
+    });
+    if (componentMappings.length === 0) {
+      return [];
+    }
+
+    const histories: ProductUpdateHistoryEntity[] = [];
+    // 여러 구성상품이 동시에 수정되면 같은 초이스쿠폰을 두 트랜잭션이 함께 갱신할 수 있다.
+    // 초이스쿠폰 행에 쓰기 락을 걸어 직렬화하되, 데드락을 피하려 항상 choiceProductId 오름차순으로 락을 잡는다.
+    const choiceProductIds = [...new Set(componentMappings.map((mapping) => mapping.choiceProductId))].sort(
+      (a, b) => a - b,
+    );
+
+    for (const choiceProductId of choiceProductIds) {
+      const choiceProduct = await this.productRepository.findOne({
+        where: { id: choiceProductId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!choiceProduct) {
+        continue;
+      }
+
+      // 초이스쿠폰에 묶인 구성상품을 읽는다.
+      const siblingMappings = await this.productChoiceMappingRepository.find({
+        where: { choiceProductId },
+      });
+      const siblingProductIds = siblingMappings.map((mapping) => mapping.productId);
+
+      const uniqueSiblingProductIds = [...new Set(siblingProductIds)].sort((a, b) => a - b);
+
+      // updatePartial 트랜잭션은 READ COMMITTED다.
+      // choiceProduct 락을 잡은 뒤 구성상품을 다시 읽어야 다른 트랜잭션의 최신 커밋 상태를 본다.
+      // withDeleted로 soft-delete된 구성상품도 확인하고, 매핑은 있는데 상품이 없거나 삭제됐으면 UNUSED로 닫는다.
+      const siblingProducts =
+        uniqueSiblingProductIds.length > 0
+          ? await this.productRepository
+              .createQueryBuilder('product')
+              .withDeleted()
+              .where('product.id IN (:...ids)', { ids: uniqueSiblingProductIds })
+              .orderBy('product.id', 'ASC')
+              .getMany()
+          : [];
+      const siblingProductMap = listToMap(siblingProducts, (sibling) => sibling.id);
+      const siblingUseStatuses = uniqueSiblingProductIds.map((siblingProductId) => {
+        const sibling = siblingProductMap.get(siblingProductId);
+        if (!sibling || sibling.deletedAt) {
+          return undefined;
+        }
+        return sibling.useStatus;
+      });
+
+      const nextUseStatus = resolveChoiceUseStatus(siblingUseStatuses);
+
+      if (choiceProduct.useStatus === nextUseStatus) {
+        continue;
+      }
+
+      // USE 로 되돌리는 경우는 자동으로 내려간 초이스쿠폰만 대상이다.
+      // 관리자가 직접 미사용으로 둔 초이스쿠폰까지 구성상품 회복만으로 노출시키면 안 된다.
+      // 마지막 사용상태 이력의 key 로 판별한다. 자동 강등이면 ProductUseStatusAutoHistoryKey 다.
+      if (nextUseStatus === IProductUseStatus.USE && !(await this.wasAutoUnused(choiceProductId))) {
+        continue;
+      }
+
+      // 자동 강등/복구 이력은 관리자 수동 변경과 구분되도록 별도 key 로 남긴다.
+      const history = new ProductUpdateHistoryEntity();
+      history.productId = choiceProductId;
+      history.userId = user.id;
+      history.key = ProductUseStatusAutoHistoryKey;
+      history.keyName = ProductUpdateHistoryKeyName(ProductUseStatusAutoHistoryKey);
+      history.beforeValue = choiceProduct.useStatus;
+      history.afterValue = nextUseStatus;
+      history.reason = reason ?? `구성상품(${component.code}) 사용상태 변경에 따른 자동 반영`;
+      histories.push(history);
+
+      choiceProduct.useStatus = nextUseStatus;
+      await this.productRepository.save(choiceProduct);
+      // 자동 미사용 시에는 고객상품관리 매핑을 지우지 않는다.
+      // 매핑을 지우면 이후 사용으로 복구돼도 고객사 목록에 다시 노출되지 않기 때문이다.
+      // 미사용 상품의 노출/집계 제외는 조회 시 product.useStatus = USE 필터로 처리한다.
+    }
+
+    return histories;
+  }
+
+  // 초이스쿠폰이 자동으로 미사용 처리된 상태인지 판별한다.
+  // 판별 규칙은 도메인(isAutoUnusedByHistory)에 두어 ProductChoiceService 와 같은 기준을 쓴다.
+  // 호출부에서 이미 초이스쿠폰 행에 쓰기 락을 잡았으므로, 이 조회는 락 안에서 최신 이력을 본다.
+  private async wasAutoUnused(choiceProductId: number): Promise<boolean> {
+    const lastUseStatusHistory = await this.productUpdateHistoryRepository.findOne({
+      where: {
+        productId: choiceProductId,
+        key: In(['useStatus', ProductUseStatusAutoHistoryKey]),
+      },
+      order: { id: 'DESC' },
+    });
+
+    return isAutoUnusedByHistory(lastUseStatusHistory);
   }
 
   async excelDownload(user: ILoginUserInfo, getBody: ProductExcelDownloadReqBodyDto) {
@@ -1107,8 +1212,13 @@ export class ProductService {
 
       const mappedProductIds = event.userSyncProductEventMappings?.map((m) => m.productId);
 
-      if (mappedProductIds && mappedProductIds.length > 0) {
+      if (!mappedProductIds || mappedProductIds.length === 0) {
+        queryBuilder = queryBuilder.andWhere('1 = 0');
+      } else {
         queryBuilder = queryBuilder.andWhere('product.id IN (:...mappedProductIds)', { mappedProductIds });
+        queryBuilder = queryBuilder.andWhere('product.useStatus = :excelMappedUseStatus', {
+          excelMappedUseStatus: IProductUseStatus.USE,
+        });
       }
     }
 
@@ -1915,7 +2025,10 @@ export class ProductService {
     await this.productLikeRepository.save(productLike);
   }
 
-  async delete(getDto: ProductDeleteReqDto) {
+  // 삭제도 구성상품이 빠지는 것이므로 초이스쿠폰 사용상태를 다시 계산해야 한다.
+  // 삭제와 재계산이 한 트랜잭션에서 끝나야 삭제만 반영되고 초이스쿠폰이 사용으로 남는 상태를 막는다.
+  @Transactional({ isolationLevel: IsolationLevel.READ_COMMITTED })
+  async delete(user: ILoginUserInfo, getDto: ProductDeleteReqDto) {
     const { idList } = getDto;
 
     const productList = await this.productRepository.find({
@@ -1931,6 +2044,17 @@ export class ProductService {
     await this.productRepository.softDelete({
       id: In(idList),
     });
+
+    // 삭제된 구성상품은 siblingProducts 조회에서 deletedAt 이 채워진 채로 잡히고,
+    // resolveChoiceUseStatus 가 이를 비정상으로 보아 초이스쿠폰을 미사용으로 내린다.
+    const histories: ProductUpdateHistoryEntity[] = [];
+    for (const product of productList) {
+      histories.push(...(await this.syncChoiceUseStatus(user, product, `구성상품(${product.code}) 삭제`)));
+    }
+
+    if (histories.length > 0) {
+      await this.productUpdateHistoryRepository.insert(histories);
+    }
 
     return;
   }

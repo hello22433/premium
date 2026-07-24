@@ -63,7 +63,6 @@ import {
   EntityManager,
   In,
   LessThanOrEqual,
-  Like,
   MoreThanOrEqual,
   ObjectLiteral,
   QueryRunner,
@@ -80,6 +79,10 @@ import { OrderProductMappingEntity } from '../../entity/order.product.mapping.en
 import { Transactional, runOnTransactionCommit } from 'typeorm-transactional';
 import { OrderCancelNotificationService } from './order.cancel.notification.service';
 import { isDirectCustomerCancelTarget } from '../domain/order.cancel.notification.policy';
+import {
+  resolveDestructionCertificateGate,
+  destructionCertificateBlockMessage,
+} from '../domain/destruction.certificate.gate';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { TestOrderDeliveryEntity } from '../../entity/test.order.delivery.entity';
 import { ProductEntity } from '../../entity/product.entity';
@@ -103,6 +106,7 @@ import { createExportTempPath } from '../../util/file.util';
 import { UserEntity } from '../../entity/user.entity';
 import { UserCompanyEntity } from '../../entity/user.company.entity';
 import {
+  buildPartnerSettleSnapshot,
   buildLineProductSnapshot,
   buildOrderClientUserSnapshot,
   buildOrderOperationUserSnapshot,
@@ -114,7 +118,12 @@ import {
   readOperationPersonName,
   readUserView,
 } from '../util/order.snapshot.builder';
-import { assertLineIdsValid, OwnedLine, resolveLineSnapshot } from './order.snapshot.update.helper';
+import {
+  assertLineIdsValid,
+  OwnedLine,
+  resolveLineSnapshot,
+  resolvePartnerSettleSnapshot as resolvePartnerSettleSnapshotForUpdate,
+} from './order.snapshot.update.helper';
 import { UserViewScopeEntity, ViewScopeType } from '../../entity/user.view.scope.entity';
 import { IUserAuthority } from '../../user/interface/user.authority';
 import { IUserSettleCondition } from '../../user/interface/user.settle.condition';
@@ -142,12 +151,11 @@ import { IProductType } from '../../product/interface/product.type';
 import { defaultOrderMidImagePath, defaultOrderTopImagePath } from '../../const';
 import { OrderStatusExcelMapping } from '../domain/order.excel.mapping';
 import { OrderFeeCalculator, applyCardSurcharge } from '../domain/order.fee.calculator';
-import { calculateOrderSettlementAmount } from '../../util/settle-fee.util';
+import { calculateOrderSettlementAmount, buildSettlementDisplayLines } from '../../util/settle-fee.util';
 import { OrderCustomerViewDto } from '../api/dto/order.customer.view.dto';
 import { MaskingUtil } from '../../common/utils/masking.util';
 import { resolveExpireDays } from '../../common/utils/expire.util';
-import { CreateCode } from '../../common/domain/create.code';
-import { OrderDigitNumber, OrderPrefixCode } from '../domain/order.code';
+import { createTempOrderCode, deriveOrderCodeFromId } from '../domain/order.code';
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { PhoneUtil } from '../../common/utils/phone.util';
 import { DeliveryBatchService } from '../../delivery/application/delivery.batch.service';
@@ -162,6 +170,19 @@ import { IOrderDateType } from '../interface/order.date.type';
 import { OrderEncryptKey } from '../../order_receive/interface/order.encrypt.key';
 import { ActivityLogService } from '../../activity_log/application/activity.log.service';
 import { ActivityLogResult } from '../../activity_log/interface/activity.log.result';
+import {
+  buildSettleDiscountChanges,
+  buildSettleDeliveryChanges,
+  isSettleOrderChanged,
+  SETTLE_DISCOUNT_SOURCE_ACTION_TYPE,
+  SettleDeliveryChange,
+  SettleDeliverySnapshot,
+  SettleDiscountChange,
+  SettleDiscountChangeSource,
+  SettleFieldSnapshot,
+  SettleSnapshot,
+  SettleOrderSnapshot,
+} from '../domain/settle.discount.history';
 import { WalletCutoverConfig, WalletCutoverMode } from '../../wallet/config/wallet-cutover.config';
 import { WalletManagedPredicate } from '../../wallet/application/wallet-managed.predicate';
 import { SettlementCodeRequiredError } from '../../wallet/application/settlement-code-required.error';
@@ -243,6 +264,30 @@ function resolveSettleFee(
   return { fee: 0, priceAdjustment: null, settleDiscountType: mapping.settleDiscountType };
 }
 
+/**
+ * 거래명세서(단건/다중 공통) 품목 행 구성.
+ *
+ * D3-49 리뷰 B안: 차등정산(SSG 중복할인) 매핑은 요율 적용 단가별로 행을 분리한다(상세 화면과 동일 구성).
+ * 모든 행의 단가가 실존값이라 unitPrice * quantity === price 가 항상 성립한다(평균단가 근사 제거).
+ * 균일 요율 매핑은 기존처럼 단일 행이며, 분리된 행들은 같은 매핑 id 를 공유한다.
+ * 행별 일자(sendRequestAt)는 단건/다중(증빙일자)의 규칙이 달라 호출부에서 계산해 넘긴다.
+ */
+function buildOrderCompleteReportRows(
+  mapping: OrderProductMappingEntity,
+  sendRequestAt: string | null,
+): OrderCompleteReportDeliveryViewDto[] {
+  const lineView = readLineProductView(mapping);
+
+  return buildSettlementDisplayLines(mapping).map((line) => ({
+    id: mapping.id, // orderProductMapping id 사용
+    sendRequestAt,
+    productName: lineView.name,
+    quantity: line.amount, // 수량
+    unitPrice: line.price, // 할인/할증 적용된 실제 단가(행 내 균일)
+    price: line.price * line.amount, // 공급가액 (단가 * 수량)
+  }));
+}
+
 type OrderSearchType = 'ALL' | 'CUSTOMER' | 'MANAGER' | 'OPERATION_ADMIN' | 'EVENT' | 'PRODUCT';
 
 type OrderListQueryParams = {
@@ -316,6 +361,8 @@ export class OrderService {
     private readonly forbiddenWordBlockLogRepository: Repository<ForbiddenWordBlockLogEntity>,
     private readonly orderFromService: OrderFromService,
     private readonly billingScopeLockService: BillingScopeLockService,
+    @InjectRepository(WalletAccountEntity)
+    private readonly walletAccountRepository: Repository<WalletAccountEntity>,
   ) {}
 
   /**
@@ -397,17 +444,19 @@ export class OrderService {
     const billingUserId = order.clientUserId ?? order.userId;
     const billingUser = await this.userRepository.findOne({
       where: { id: billingUserId },
-      select: ['id', 'companyId'],
+      relations: ['company'],
     });
 
     const wallet = await this.walletAccountResolverService.resolveForOrder(order);
-    const finalAmount = calculateOrderSettlementAmount(order, order.cardSurchargeApplied);
+    const effectiveSurcharge = await this.resolveEffectiveSurcharge(order, billingUser?.company);
+    const finalAmount = calculateOrderSettlementAmount(order, effectiveSurcharge);
 
     const allocationInput = await this.walletAllocationInputBuilder.build(order, wallet, finalAmount, {
       requestedPointAmount: getBody.pointUseAmount,
       depositUseEnabled: getBody.depositUseEnabled,
       depositUseAmount: getBody.depositUseAmount,
       companyId: billingUser?.companyId ?? null,
+      cardSurchargeApplied: effectiveSurcharge,
     });
     // clamp 금지 — 초과 입력은 400 (확정과 동일 규칙)
     this.assertUsageWithinLimits(allocationInput, getBody);
@@ -484,12 +533,15 @@ export class OrderService {
       relations: ['company'],
     });
     const company = billingUser?.company;
-    const defaultCardSurchargeApplied = company?.settleMethod === 'CARD';
-    const { policy: settlePolicy } = await this.resolveSettlePolicy(order, company);
+    const { policy: settlePolicy, resolvedWallet } = await this.resolveSettlePolicy(order, company);
+    // 카드할증 기본값도 정산방법(코드 지갑 SoT) 소스를 따른다 — wallet 토글(§4.0) 반영. wallet 미조회(LEGACY/SHADOW-실패)는 ?? true 로 현행 회사 CARD⇒기본 ON 보존.
+    const defaultCardSurchargeApplied = settlePolicy === 'CARD' && (resolvedWallet?.cardSurchargeApplied ?? true);
 
-    const cardSurchargeApplied = opts.useExistingAsMiddleFallback
-      ? (body.cardSurchargeApplied ?? order.cardSurchargeApplied ?? defaultCardSurchargeApplied)
-      : (body.cardSurchargeApplied ?? defaultCardSurchargeApplied);
+    // 기존값 폴백은 정산완료(settleMethod!=null) update 에서만 — cardSurchargeApplied 는 non-nullable(false)이라 미정산 update 가 wallet 기본값을 가로채지 않게 게이트.
+    const hasSettleInput = order.settleMethod != null;
+    const existingSurcharge =
+      opts.useExistingAsMiddleFallback && hasSettleInput ? order.cardSurchargeApplied : undefined;
+    const cardSurchargeApplied = body.cardSurchargeApplied ?? existingSurcharge ?? defaultCardSurchargeApplied;
 
     // 정책 부재(LEGACY/SHADOW 회사 정책 null)에도 신규 저장은 항상 non-null — 기본값 'CASH'(할증OFF 와 정합).
     const settleMethod = opts.useExistingAsMiddleFallback
@@ -497,6 +549,21 @@ export class OrderService {
       : (body.settleMethod ?? settlePolicy ?? 'CASH');
 
     return { cardSurchargeApplied, settleMethod };
+  }
+
+  /**
+   * 카드할증 effective 값 (settle 읽기/preview/confirm 공통, §4.0/§4.3 Y).
+   * - 정산완료(settleMethod!=null): 저장된 order.cardSurchargeApplied.
+   * - 미정산: resolveSettlePolicy 기반 wallet 토글 기본값(policy CARD & wallet 토글; wallet 미조회는 ?? true = 현행 회사 CARD⇒ON 보존).
+   * 완료판정은 settleMethod (cardSurchargeApplied 는 non-nullable false 라 판정 불가). hasSettleInput 이면 resolveSettlePolicy 미호출(laziness).
+   */
+  private async resolveEffectiveSurcharge(
+    order: Pick<OrderEntity, 'userId' | 'clientUserId' | 'settleMethod' | 'cardSurchargeApplied'>,
+    company: { settleMethod?: string | null } | null | undefined,
+  ): Promise<boolean> {
+    if (order.settleMethod != null) return order.cardSurchargeApplied;
+    const { policy, resolvedWallet } = await this.resolveSettlePolicy(order, company);
+    return policy === 'CARD' && (resolvedWallet?.cardSurchargeApplied ?? true);
   }
 
   /**
@@ -657,8 +724,8 @@ export class OrderService {
       .leftJoinAndSelect('order.operationUser', 'operationUser')
       .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .leftJoinAndSelect('orderProductMappings.product', 'product')
-      .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
       .withDeleted()
+      .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
       .where('order.type = :type', { type })
       .andWhere('order.deletedAt IS NULL');
 
@@ -777,8 +844,9 @@ export class OrderService {
         }
 
         // 실제 발송 시간: 성공한 배송 건 중 하나의 actualSendAt 사용
+        // 목록 표시는 활성 배송건만 사용한다. soft-delete 배송건은 파기확인서 게이트 판정에만 쓴다.
         for (const mapping of order.orderProductMappings) {
-          for (const delivery of mapping.orderDeliveries ?? []) {
+          for (const delivery of (mapping.orderDeliveries ?? []).filter((d) => d.deletedAt == null)) {
             if (
               delivery.actualSendAt &&
               (delivery.status === IOrderDeliveryStatus.COMPLETE ||
@@ -792,20 +860,27 @@ export class OrderService {
         }
       }
 
-      // 발송 실패 건 포함 여부 확인
+      // 발송 실패 건 포함 여부 확인 (활성 배송건만)
       const hasFailedDelivery =
         order.orderProductMappings?.some((mapping) =>
-          mapping.orderDeliveries?.some(
-            (delivery) =>
-              delivery.status === IOrderDeliveryStatus.FAIL || delivery.status === IOrderDeliveryStatus.FAIL_SMS,
-          ),
+          mapping.orderDeliveries
+            ?.filter((delivery) => delivery.deletedAt == null)
+            .some(
+              (delivery) =>
+                delivery.status === IOrderDeliveryStatus.FAIL || delivery.status === IOrderDeliveryStatus.FAIL_SMS,
+            ),
         ) ?? false;
 
-      // 재발송 완료 건 포함 여부 확인
+      // 재발송 완료 건 포함 여부 확인 (활성 배송건만)
       const hasResentDelivery =
         order.orderProductMappings?.some((mapping) =>
-          mapping.orderDeliveries?.some((delivery) => delivery.resendAt != null),
+          mapping.orderDeliveries
+            ?.filter((delivery) => delivery.deletedAt == null)
+            .some((delivery) => delivery.resendAt != null),
         ) ?? false;
+
+      // 파기확인서 발행 가능 여부 (deliveryTarget 단일 컬럼 판정 — destruction.certificate.gate 참조)
+      const destructionCertificateGate = resolveDestructionCertificateGate(order);
 
       // 첫 번째 상품의 발송 정보 사용
       const firstMapping = order.orderProductMappings?.[0];
@@ -824,6 +899,7 @@ export class OrderService {
             (m.orderDeliveries ?? [])
               .filter(
                 (d) =>
+                  d.deletedAt == null &&
                   d.actualSendAt &&
                   (d.status === IOrderDeliveryStatus.COMPLETE || d.status === IOrderDeliveryStatus.COMPLETE_SMS),
               )
@@ -860,11 +936,65 @@ export class OrderService {
         sendType: firstMapping?.sendType ?? null,
         hasFailedDelivery,
         hasResentDelivery,
+        canIssueDestructionCertificate: destructionCertificateGate.canIssue,
+        destructionCertificateBlockReason: destructionCertificateGate.reason,
         productSendTimes,
       };
     });
 
+    if (getQuery.includeSettlement && OrderService.canViewCustomerSettlement(user)) {
+      await this.attachCustomerSettlement(orderList, resultList);
+    }
+
     return { list: resultList, totalPage, totalCount, currentPage: page };
+  }
+
+  private static readonly CUSTOMER_SETTLEMENT_ROLES: ReadonlyArray<IUserAuthority> = [
+    IUserAuthority.SUPER_ADMIN,
+    IUserAuthority.OPERATION_ADMIN,
+  ];
+
+  /** customerSettlement 노출 화이트리스트 (운영관리자 이상). 쿠키 authority 는 UI 힌트일 뿐 이 서버 필터가 유일 방어선. */
+  private static canViewCustomerSettlement(user: ILoginUserInfo): boolean {
+    return OrderService.CUSTOMER_SETTLEMENT_ROLES.includes(user.authority as IUserAuthority);
+  }
+
+  /**
+   * 응답 페이지 내 distinct 고객사(settlement_code)에 대해 wallet_account 를 1회 배치 조회 후
+   * remainServiceAmount 를 map 조인한다 (행별 재계산·N+1 없음).
+   * - settleCondition SoT = wallet_account.settle_condition (user 컬럼은 deprecated).
+   * - remainServiceAmount = creditLimit + depositBalance − creditUsedAmount − creditExcessAmount, 0-clamp.
+   * - wallet_account 미존재 고객사는 customerSettlement 필드를 붙이지 않는다(생략).
+   */
+  private async attachCustomerSettlement(orders: OrderEntity[], views: OrderViewDto[]): Promise<void> {
+    const settlementCodeOf = (order: OrderEntity): string | null =>
+      (order.clientUser ?? order.user)?.settlementCode || null;
+
+    const orderCodes = orders.map(settlementCodeOf);
+    const settlementCodes = [...new Set(orderCodes.filter((code): code is string => code !== null))];
+    if (settlementCodes.length === 0) {
+      return;
+    }
+
+    const wallets = await this.walletAccountRepository.find({
+      where: { ownerType: 'SETTLEMENT_CODE', ownerId: In(settlementCodes) },
+    });
+    const walletByCode = new Map(wallets.map((wallet) => [wallet.ownerId, wallet]));
+
+    orderCodes.forEach((code, index) => {
+      if (code === null) {
+        return;
+      }
+      const wallet = walletByCode.get(code);
+      if (!wallet) {
+        return;
+      }
+      const remain = wallet.creditLimit + wallet.depositBalance - wallet.creditUsedAmount - wallet.creditExcessAmount;
+      views[index].customerSettlement = {
+        settleCondition: wallet.settleCondition,
+        remainServiceAmount: Math.max(0, remain),
+      };
+    });
   }
 
   async getDetail(user: ILoginUserInfo, getParam: OrderGetDetailReqParamDto): Promise<OrderGetDetailResDto> {
@@ -1670,39 +1800,26 @@ export class OrderService {
     const fileName: string = `${serialNumber}_거래명세서`;
     const orderDeliveryList: OrderCompleteReportDeliveryViewDto[] = [];
 
+    // 카드할증(3%)은 거래명세서 총액에 포함하지 않는다(의도된 동작).
+    //   - price/totalAmount 는 물품(상품권) 공급가액 기준(applyCardSurcharge 미적용).
+    //   - 카드 정산 주문의 실제 청구액(order.settleAmount)은 여기에 카드할증이 더해진 값이지만,
+    //     카드할증은 물품 공급가가 아닌 결제수단 수수료이므로 별도 결제 영수증으로 첨부해 안내한다.
+    //   - vat 은 상품권 특성상 0(면세)로 고정.
     let price = 0;
     let vat = 0;
     let totalAmount = 0;
 
     if (order.orderProductMappings && order.orderProductMappings.length > 0) {
       for (const orderProductMapping of order.orderProductMappings) {
-        const lineView = readLineProductView(orderProductMapping);
-        const originalPrice = lineView.price;
-        const quantity = orderProductMapping.amount ?? 0;
-
-        // 할인/할증 적용된 단가 계산 (소수점 발생 시 올림 처리)
-        let adjustedPrice = originalPrice;
-        if (orderProductMapping.fee !== null && orderProductMapping.fee > 0 && orderProductMapping.priceAdjustment) {
-          if (orderProductMapping.priceAdjustment === IPriceAdjustment.DISCOUNT) {
-            adjustedPrice = Math.ceil((originalPrice * (100 - orderProductMapping.fee)) / 100);
-          } else if (orderProductMapping.priceAdjustment === IPriceAdjustment.ADDITIONAL) {
-            adjustedPrice = Math.ceil((originalPrice * (100 + orderProductMapping.fee)) / 100);
-          }
-        }
-
-        const total = adjustedPrice * quantity;
-        price += total;
-
-        // 상품별로 한 줄만 추가 (첫 번째 orderDelivery의 발송 시각 사용)
+        // 품목별 일자: 첫 번째 orderDelivery 의 발송 시각 사용
         const firstDelivery = orderProductMapping.orderDeliveries?.[0];
-        orderDeliveryList.push({
-          id: orderProductMapping.id, // orderProductMapping id 사용
-          sendRequestAt: firstDelivery?.sendRequestAt ? format(firstDelivery.sendRequestAt, DateFormatStr) : null,
-          productName: lineView.name,
-          quantity, // 수량
-          unitPrice: adjustedPrice, // 할인/할증 적용된 단가
-          price: total, // 공급가액 (단가 * 수량)
-        });
+        const itemSendRequestAt = firstDelivery?.sendRequestAt
+          ? format(firstDelivery.sendRequestAt, DateFormatStr)
+          : null;
+
+        const rows = buildOrderCompleteReportRows(orderProductMapping, itemSendRequestAt);
+        orderDeliveryList.push(...rows);
+        price += rows.reduce((sum, row) => sum + row.price, 0);
       }
 
       totalAmount = price + vat;
@@ -1786,13 +1903,7 @@ export class OrderService {
     user: ILoginUserInfo,
     ipAddress: string,
   ): Promise<void> {
-    const order = await this.orderRepository.findOne({
-      where: { id: getBody.id },
-    });
-
-    if (!order) {
-      throw new BadRequestException('주문이 존재하지 않습니다.');
-    }
+    await this.assertDestructionCertificateIssuable(getBody.id);
 
     // activity_log에 기록
     await this.activityLogService.createLog({
@@ -2132,52 +2243,37 @@ export class OrderService {
     const eventName = eventNames.length > 1 ? `${eventNames[0]} 외 ${eventNames.length - 1}건` : eventNames[0];
 
     const orderDeliveryList: OrderCompleteReportDeliveryViewDto[] = [];
+    // 카드할증(3%)은 거래명세서 총액에 포함하지 않는다(의도된 동작).
+    //   - price/totalAmount 는 물품(상품권) 공급가액 기준(applyCardSurcharge 미적용).
+    //   - 카드 정산 주문의 실제 청구액(order.settleAmount)은 여기에 카드할증이 더해진 값이지만,
+    //     카드할증은 물품 공급가가 아닌 결제수단 수수료이므로 별도 결제 영수증으로 첨부해 안내한다.
+    //   - vat 은 상품권 특성상 0(면세)로 고정.
     let price = 0;
     let vat = 0;
     let totalAmount = 0;
-    // 거래일자: 증빙일자가 있으면 증빙일자 사용
-    let sendRequestAt: string | null = evidenceDateParsed ? format(evidenceDateParsed, DateFormatStr) : null;
+    // 거래일자: 증빙일자가 있으면 증빙일자 사용 (루프 불변값이므로 1회만 계산)
+    const evidenceDateStr = evidenceDateParsed ? format(evidenceDateParsed, DateFormatStr) : null;
+    let sendRequestAt: string | null = evidenceDateStr;
 
     for (const order of orders) {
       if (order.orderProductMappings && order.orderProductMappings.length > 0) {
         for (const orderProductMapping of order.orderProductMappings) {
-          const lineView = readLineProductView(orderProductMapping);
-          const originalPrice = lineView.price;
-          const quantity = orderProductMapping.amount ?? 0;
-
-          let adjustedPrice = originalPrice;
-          if (orderProductMapping.fee !== null && orderProductMapping.fee > 0 && orderProductMapping.priceAdjustment) {
-            if (orderProductMapping.priceAdjustment === IPriceAdjustment.DISCOUNT) {
-              adjustedPrice = Math.ceil((originalPrice * (100 - orderProductMapping.fee)) / 100);
-            } else if (orderProductMapping.priceAdjustment === IPriceAdjustment.ADDITIONAL) {
-              adjustedPrice = Math.ceil((originalPrice * (100 + orderProductMapping.fee)) / 100);
-            }
-          }
-
-          const total = adjustedPrice * quantity;
-          price += total;
-
           const firstDelivery = orderProductMapping.orderDeliveries?.[0];
+          const deliveryDateStr = firstDelivery?.sendRequestAt
+            ? format(firstDelivery.sendRequestAt, DateFormatStr)
+            : null;
+
           // 증빙일자가 없고 sendRequestAt도 없으면 첫 배송의 발송요청일 사용
-          if (!sendRequestAt && firstDelivery?.sendRequestAt) {
-            sendRequestAt = format(firstDelivery.sendRequestAt, DateFormatStr);
+          if (!sendRequestAt && deliveryDateStr) {
+            sendRequestAt = deliveryDateStr;
           }
 
-          // 품목별 일자: 증빙일자가 있으면 증빙일자 사용
-          const itemSendRequestAt = evidenceDateParsed
-            ? format(evidenceDateParsed, DateFormatStr)
-            : firstDelivery?.sendRequestAt
-              ? format(firstDelivery.sendRequestAt, DateFormatStr)
-              : null;
+          // 품목별 일자: 증빙일자가 있으면 증빙일자, 없으면 첫 배송의 발송요청일
+          const itemSendRequestAt = evidenceDateStr ?? deliveryDateStr;
 
-          orderDeliveryList.push({
-            id: orderProductMapping.id,
-            sendRequestAt: itemSendRequestAt,
-            productName: lineView.name,
-            quantity,
-            unitPrice: adjustedPrice,
-            price: total,
-          });
+          const rows = buildOrderCompleteReportRows(orderProductMapping, itemSendRequestAt);
+          orderDeliveryList.push(...rows);
+          price += rows.reduce((sum, row) => sum + row.price, 0);
         }
       }
     }
@@ -2680,10 +2776,16 @@ export class OrderService {
     // 입력완료 표식 = order.settleMethod 존재 (settleAmount>0 의존 제거 — 0원 정산도 입력값 유지)
     const hasSettleInput = order.settleMethod != null;
     // 정책 폴백은 미입력일 때만 필요. 읽기 경로는 fail-closed 불필요 → lazy 해석으로 WALLET 불필요 throw/조회 회피.
-    const settlePolicy = hasSettleInput
-      ? null
-      : (await this.resolveSettlePolicy(order, billingUserForSettle?.company)).policy;
-    const effectiveCardSurcharge = hasSettleInput ? order.cardSurchargeApplied : settlePolicy === 'CARD';
+    let settlePolicy: 'CARD' | 'CASH' | null;
+    let effectiveCardSurcharge: boolean;
+    if (hasSettleInput) {
+      settlePolicy = null;
+      effectiveCardSurcharge = order.cardSurchargeApplied;
+    } else {
+      const resolved = await this.resolveSettlePolicy(order, billingUserForSettle?.company);
+      settlePolicy = resolved.policy;
+      effectiveCardSurcharge = resolved.policy === 'CARD' && (resolved.resolvedWallet?.cardSurchargeApplied ?? true);
+    }
 
     // 카드할증 산정 (백엔드 산식 단일화: 프론트 자체계산 제거)
     const cardSurchargeBase = totalDiscountAmount;
@@ -2878,8 +2980,137 @@ export class OrderService {
       .getMany();
   }
 
+  /**
+   * 정산 변경이력용: 매핑들의 현재 정산 필드(fee/priceAdjustment/settleDiscountType)와 상품명을 스냅샷으로 캡처한다.
+   * 정산 처리 로직이 엔티티를 in-place mutate 하므로, 반드시 mutate 이전에 호출해야 before 값이 보존된다.
+   */
+  private captureSettleSnapshot(
+    mappings: Array<{
+      id: number;
+      fee: number | null;
+      priceAdjustment: IPriceAdjustment | null;
+      settleDiscountType: IOrderSettleDiscountType | null;
+      product?: { name?: string | null } | null;
+      orderDeliveries?: Array<{
+        id: number;
+        settleFee: number | null;
+        settlePriceAdjustment: IPriceAdjustment | null;
+        settleDiscountType: IOrderSettleDiscountType | null;
+      }> | null;
+    }>,
+  ): SettleSnapshot {
+    const beforeById = new Map<number, SettleFieldSnapshot>();
+    const productNameById = new Map<number, string>();
+    const deliveryBeforeById = new Map<number, { mappingId: number } & SettleDeliverySnapshot>();
+    for (const mapping of mappings) {
+      beforeById.set(mapping.id, {
+        fee: mapping.fee,
+        priceAdjustment: mapping.priceAdjustment,
+        settleDiscountType: mapping.settleDiscountType,
+      });
+      if (mapping.product?.name) {
+        productNameById.set(mapping.id, mapping.product.name);
+      }
+      for (const delivery of mapping.orderDeliveries ?? []) {
+        deliveryBeforeById.set(delivery.id, {
+          mappingId: mapping.id,
+          settleFee: delivery.settleFee,
+          settlePriceAdjustment: delivery.settlePriceAdjustment,
+          settleDiscountType: delivery.settleDiscountType,
+        });
+      }
+    }
+    return { beforeById, productNameById, deliveryBeforeById };
+  }
+
+  /**
+   * 정산 할인/할증 변경이력을 activity_log 에 기록한다 (성공만 영구보존 — purge 제외 actionType).
+   * - 운영자 신원(user)이 없으면(단위테스트 등 비-API 경로) 기록을 생략한다. 실제 API 경로는 항상 user 가 존재한다.
+   * - 실제 변경(매핑 change 또는 주문 결제수단/카드할증 변경)이 없으면 기록하지 않는다.
+   * - @Transactional 내부에서 호출되어 정산 저장과 동일 트랜잭션으로 커밋/롤백된다.
+   */
+  private async logSettleDiscountChange(params: {
+    user?: ILoginUserInfo;
+    orderId: number;
+    requestUrl: string;
+    method: string;
+    source: SettleDiscountChangeSource;
+    changes: SettleDiscountChange[];
+    deliveryChanges?: SettleDeliveryChange[];
+    orderBefore?: SettleOrderSnapshot;
+    orderAfter?: SettleOrderSnapshot & { settleAmount: number };
+  }): Promise<void> {
+    const { user } = params;
+    if (!user) {
+      return;
+    }
+    const orderChanged = Boolean(
+      params.orderBefore && params.orderAfter && isSettleOrderChanged(params.orderBefore, params.orderAfter),
+    );
+    const deliveryChanges = params.deliveryChanges ?? [];
+    if (params.changes.length === 0 && deliveryChanges.length === 0 && !orderChanged) {
+      return;
+    }
+    await this.activityLogService.createLog({
+      userId: user.id,
+      userEmail: user.email,
+      method: params.method,
+      requestUrl: params.requestUrl,
+      actionType: SETTLE_DISCOUNT_SOURCE_ACTION_TYPE[params.source],
+      ipAddress: '',
+      statusCode: 200,
+      result: ActivityLogResult.SUCCESS,
+      responseTime: 0,
+      requestParams: {
+        orderId: params.orderId,
+        source: params.source,
+        changes: params.changes,
+        ...(deliveryChanges.length > 0 ? { deliveryChanges } : {}),
+        ...(orderChanged ? { order: { before: params.orderBefore, after: params.orderAfter } } : {}),
+      },
+    });
+  }
+
+  /**
+   * 수동 정산입력(create/update) 성공 시 매핑/delivery 변경을 조립해 기록한다.
+   * mapping 대표값 변경은 changes, mapping 에 롤업되지 않는 delivery 부분변경은 deliveryChanges 로 남긴다.
+   */
+  private async logManualSettleChange(params: {
+    user?: ILoginUserInfo;
+    orderId: number;
+    method: string;
+    snapshot: SettleSnapshot;
+    savedMappings: Array<{ id: number } & SettleFieldSnapshot>;
+    allMappings: Array<{ id: number; orderDeliveries?: Array<{ id: number } & SettleDeliverySnapshot> | null }>;
+    orderBefore: SettleOrderSnapshot;
+    orderAfter: SettleOrderSnapshot & { settleAmount: number };
+  }): Promise<void> {
+    const changes = buildSettleDiscountChanges(
+      params.snapshot.beforeById,
+      params.savedMappings,
+      params.snapshot.productNameById,
+    );
+    const deliveryChanges = buildSettleDeliveryChanges(
+      params.snapshot.deliveryBeforeById,
+      params.allMappings,
+      new Set(changes.map((change) => change.mappingId)),
+      params.snapshot.productNameById,
+    );
+    await this.logSettleDiscountChange({
+      user: params.user,
+      orderId: params.orderId,
+      requestUrl: '/order/settle',
+      method: params.method,
+      source: SettleDiscountChangeSource.MANUAL,
+      changes,
+      deliveryChanges,
+      orderBefore: params.orderBefore,
+      orderAfter: params.orderAfter,
+    });
+  }
+
   @Transactional()
-  async createOrderSettle(getBody: OrderCreateSettleReqDto) {
+  async createOrderSettle(getBody: OrderCreateSettleReqDto, user?: ILoginUserInfo) {
     const { list } = getBody;
 
     if (list.length === 0) {
@@ -2913,6 +3144,13 @@ export class OrderService {
     const oneUserId = existingOrderProducts[0].order.clientUserId ?? existingOrderProducts[0].order.userId;
     const sendAmount = existingOrderProducts[0].order.sendAmount;
     const isSettleBalance = existingOrderProducts[0].order.isSettleBalance;
+    // 정산 변경이력(성공만 영구기록): 처리 전 상태 스냅샷.
+    // processSettleList 가 mapping 엔티티를 mutate 하므로 반드시 이 시점에 캡처해야 한다.
+    const settleSnapshot = this.captureSettleSnapshot(allOrderProducts);
+    const settleOrderBefore: SettleOrderSnapshot = {
+      settleMethod: existingOrderProducts[0].order.settleMethod,
+      cardSurchargeApplied: existingOrderProducts[0].order.cardSurchargeApplied,
+    };
 
     assertSettleListDeliveryCoverage(list, allOrderProducts, { requireFullCoverage: true });
     const { orderProductList } = await this.processSettleList(list, allOrderProductMap);
@@ -2935,6 +3173,17 @@ export class OrderService {
       { id: orderId },
       { settleAmount: newSettleAmount, cardSurchargeApplied, settleMethod },
     );
+
+    await this.logManualSettleChange({
+      user,
+      orderId,
+      method: 'POST',
+      snapshot: settleSnapshot,
+      savedMappings: orderProductList,
+      allMappings: allOrderProducts,
+      orderBefore: settleOrderBefore,
+      orderAfter: { settleMethod, cardSurchargeApplied, settleAmount: newSettleAmount },
+    });
 
     if (order.isNewBillingFlow) {
       // === 새 흐름 ===
@@ -2987,7 +3236,7 @@ export class OrderService {
   }
 
   @Transactional()
-  async updateOrderSettle(getBody: OrderUpdateSettleReqDto) {
+  async updateOrderSettle(getBody: OrderUpdateSettleReqDto, user?: ILoginUserInfo) {
     const { list } = getBody;
 
     if (list.length === 0) {
@@ -3022,6 +3271,12 @@ export class OrderService {
 
     const beforeSettleAmount = existingOrderProducts[0].order.settleAmount;
     const isSettleBalance = existingOrderProducts[0].order.isSettleBalance;
+    // 정산 변경이력(성공만 영구기록): 처리 전 상태 스냅샷.
+    const settleSnapshot = this.captureSettleSnapshot(allOrderProducts);
+    const settleOrderBefore: SettleOrderSnapshot = {
+      settleMethod: existingOrderProducts[0].order.settleMethod,
+      cardSurchargeApplied: existingOrderProducts[0].order.cardSurchargeApplied,
+    };
 
     assertSettleListDeliveryCoverage(list, allOrderProducts, { requireFullCoverage: false });
     const { orderProductList } = await this.processSettleList(list, allOrderProductMap);
@@ -3044,6 +3299,17 @@ export class OrderService {
       { id: orderId },
       { settleAmount: newSettleAmount, cardSurchargeApplied, settleMethod },
     );
+
+    await this.logManualSettleChange({
+      user,
+      orderId,
+      method: 'PUT',
+      snapshot: settleSnapshot,
+      savedMappings: orderProductList,
+      allMappings: allOrderProducts,
+      orderBefore: settleOrderBefore,
+      orderAfter: { settleMethod, cardSurchargeApplied, settleAmount: newSettleAmount },
+    });
 
     // 발송확정 이후(DELIVERY_CONFIRMED, DELIVERY_COMPLETE)에 정산정보를 수정한 경우
     // 이전 정산금액과 새 정산금액의 차이를 balance/allSettleAmount에 반영
@@ -3149,15 +3415,20 @@ export class OrderService {
 
   /**
    * 임시저장/수정 콘텐츠 금칙어 검사. 적발 시 block_log 기록 후 BadRequestException(FORBIDDEN_WORD).
+   * eventName(이벤트명)은 주문 레벨 필드라 상품 행과 별도로 검사한다.
    */
   private async assertNoForbiddenWord(
     user: ILoginUserInfo,
     orderProductList: OrderProductCreateTempDto[],
     orderId: number | null,
+    eventName?: string | null,
   ): Promise<void> {
     const targets = OrderService.collectForbiddenWordTargets(
       orderProductList.map((product) => ({ ...product, deliveries: product.orderDeliveryList ?? [] })),
     );
+    if (eventName) {
+      targets.push({ field: 'eventName', text: eventName });
+    }
     await this.assertTargetsHaveNoForbiddenWord(user, targets, orderId);
   }
 
@@ -3172,11 +3443,16 @@ export class OrderService {
         deliveries: mapping.orderDeliveries ?? [],
       })),
     );
+    if (order.eventName) {
+      targets.push({ field: 'eventName', text: order.eventName });
+    }
     await this.assertTargetsHaveNoForbiddenWord(user, targets, order.id);
   }
 
   /**
-   * 금칙어 검사 공통 로직: 적발 시 block_log 기록 후 BadRequestException(FORBIDDEN_WORD) throw.
+   * 금칙어 검사 공통 로직: 전 필드를 스캔해 적발 필드별 block_log 기록 후,
+   * 적발 단어 합집합(중복 제거)으로 BadRequestException(FORBIDDEN_WORD) throw.
+   * (첫 필드에서 즉시 throw하면 교차 필드 적발 시 FE 안내 팝업에 단어가 누락된다)
    * block_log insert 실패는 warn 후에도 reject 유지.
    */
   private async assertTargetsHaveNoForbiddenWord(
@@ -3184,6 +3460,8 @@ export class OrderService {
     targets: { field: string; text: string }[],
     orderId: number | null,
   ): Promise<void> {
+    const allWords: string[] = [];
+
     for (const target of targets) {
       const matchedWords = this.forbiddenWordMatcher.scan(target.text);
       if (matchedWords.length === 0) {
@@ -3203,30 +3481,66 @@ export class OrderService {
         this.logger.warn(`금칙어 차단 로그 기록 실패: ${(e as Error).message}`);
       }
 
+      for (const word of matchedWords) {
+        if (!allWords.includes(word)) {
+          allWords.push(word);
+        }
+      }
+    }
+
+    if (allWords.length > 0) {
       throw new BadRequestException({
         code: 'FORBIDDEN_WORD',
-        words: matchedWords,
+        words: allWords,
         message: '금칙어가 포함되어 있습니다.',
       });
     }
   }
 
-  private assertPositiveIntegerAmounts(orderProductList: OrderProductCreateTempDto[]): void {
-    const hasInvalidAmount = orderProductList.some(
-      (product) => !Number.isInteger(product.amount) || product.amount < 1,
-    );
+  private async assertPositiveIntegerAmounts(orderProductList: OrderProductCreateTempDto[]): Promise<void> {
+    const invalidItems = orderProductList
+      .map((product, index) => ({ order: index + 1, productId: product.productId, amount: product.amount }))
+      .filter((item) => !Number.isInteger(item.amount) || item.amount < 1);
 
-    if (hasInvalidAmount) {
-      throw new BadRequestException('상품 수량은 1 이상의 정수여야 합니다.');
+    if (invalidItems.length === 0) {
+      return;
     }
+
+    // 오류 상품명은 안내용으로만 조회 — 조회 실패해도 순번 기준으로 폴백
+    const nameMap = new Map<number, string>();
+    try {
+      const productIds = [...new Set(invalidItems.map((item) => item.productId).filter((id) => Number.isInteger(id)))];
+      if (productIds.length > 0) {
+        const products = await this.productRepository.find({
+          where: { id: In(productIds) },
+          select: ['id', 'name'],
+        });
+        for (const product of products) {
+          nameMap.set(product.id, product.name);
+        }
+      }
+    } catch {
+      // 상품명 조회 실패는 무시하고 순번만 안내
+    }
+
+    const detail = invalidItems
+      .map((item) => {
+        const name = nameMap.get(item.productId);
+        return `- 상품${item.order}${name ? ` (${name})` : ''}`;
+      })
+      .join('\n');
+
+    throw new BadRequestException(
+      `수량이 올바르지 않은 상품이 있습니다. 각 상품에 수신번호를 1개 이상 입력해주세요.\n\n${detail}`,
+    );
   }
 
   @Transactional()
   async createTemp(user: ILoginUserInfo, getBody: OrderCreateTempReqDto): Promise<OrderCreateTempResDto> {
     const { type, eventName, topImagePath, midImagePath, orderProductList } = getBody;
 
-    this.assertPositiveIntegerAmounts(orderProductList);
-    await this.assertNoForbiddenWord(user, orderProductList, null);
+    await this.assertPositiveIntegerAmounts(orderProductList);
+    await this.assertNoForbiddenWord(user, orderProductList, null, eventName);
 
     // 대행주문인 경우 clientUser의 허용 발신수단으로 검증
     const clientUserId = getBody.clientUserId ?? null;
@@ -3244,7 +3558,7 @@ export class OrderService {
       where: {
         id: In(uniqueProductIds),
       },
-      relations: ['brand'],
+      relations: ['brand', 'partnerCompany', 'partnerCompany.userDiscounts'],
     });
 
     if (uniqueProductIds.length !== getProductList.length) {
@@ -3254,18 +3568,6 @@ export class OrderService {
 
     // 전송 정산 가격 적용
     let sendAmount = 0;
-
-    const prevProduct = await this.orderRepository.findOne({
-      where: {
-        code: Like(`${OrderPrefixCode}%`),
-      },
-      order: { code: 'DESC' },
-      withDeleted: true,
-    });
-
-    const prevCode = prevProduct?.code ?? null;
-
-    const newCode = CreateCode(prevCode, OrderPrefixCode, OrderDigitNumber);
 
     for (const orderProduct of orderProductList) {
       const getProduct = productPriceMap.get(orderProduct.productId)!;
@@ -3293,7 +3595,7 @@ export class OrderService {
     const orderInsertResult = await this.orderRepository.insert({
       userId: user.id,
       status: IOrderStatus.TEMP,
-      code: newCode,
+      code: createTempOrderCode(),
       type,
       eventName,
       sendAmount: sendAmount,
@@ -3305,7 +3607,16 @@ export class OrderService {
       ...buildOrderClientUserSnapshot(clientUserEntity),
       ...buildOrderOperationUserSnapshot(operationUserEntity),
     });
-    const orderId: number = orderInsertResult.identifiers[0].id;
+    // identifiers 가 누락(undefined)/빈 배열([])/id 부재([{}]) 면 [0] 또는 .id 접근이
+    // raw TypeError 를 낸다. ?.[0]?.id 로 모두 undefined 로 좁힌 뒤 명시 가드 →
+    // 세 엣지 모두 같은 도메인 에러로 실패(부분주문 방지).
+    const orderId: number | undefined = orderInsertResult.identifiers?.[0]?.id;
+    if (orderId == null) {
+      throw new Error('createTemp: insert 결과에 생성 id가 없어 확정코드를 채번할 수 없습니다');
+    }
+
+    // 2-step 채번: id 확정 후 EPEVT 코드로 확정(같은 트랜잭션 → 임시코드 커밋 전 소멸)
+    await this.orderRepository.update(orderId, { code: deriveOrderCodeFromId(orderId) });
 
     const orderDeliveryCreateList: OrderDeliveryEntity[] = [];
 
@@ -3347,7 +3658,12 @@ export class OrderService {
 
       // 주문 생성 시점 상품 정보 snapshot 박제
       const liveProduct = productPriceMap.get(product.productId)!;
-      Object.assign(orderProduct, buildLineProductSnapshot(liveProduct));
+      const lineSnapshot = buildLineProductSnapshot(liveProduct);
+      Object.assign(orderProduct, lineSnapshot);
+      Object.assign(
+        orderProduct,
+        buildPartnerSettleSnapshot(liveProduct, lineSnapshot.snapshotProductPrice ?? liveProduct.price),
+      );
 
       await this.orderProductMappingRepository.save(orderProduct);
 
@@ -3387,8 +3703,8 @@ export class OrderService {
   async updateTemp(user: ILoginUserInfo, getBody: OrderUpdateTempReqDto): Promise<void> {
     const { id, eventName, topImagePath, midImagePath, orderProductList } = getBody;
 
-    this.assertPositiveIntegerAmounts(orderProductList);
-    await this.assertNoForbiddenWord(user, orderProductList, id);
+    await this.assertPositiveIntegerAmounts(orderProductList);
+    await this.assertNoForbiddenWord(user, orderProductList, id, eventName);
 
     const order = await this.orderRepository.findOne({
       where: {
@@ -3436,7 +3752,7 @@ export class OrderService {
       where: {
         id: In(uniqueProductIds),
       },
-      relations: ['brand'],
+      relations: ['brand', 'partnerCompany', 'partnerCompany.userDiscounts'],
     });
 
     if (uniqueProductIds.length !== getProductList.length) {
@@ -3463,6 +3779,10 @@ export class OrderService {
             snapshotProductBrandName: m.snapshotProductBrandName,
             snapshotProductExpireDay: m.snapshotProductExpireDay,
             snapshotProductImagePath: m.snapshotProductImagePath,
+          },
+          partnerSettleSnapshot: {
+            partnerSettleFee: m.partnerSettleFee,
+            partnerSettlePriceAdjustment: m.partnerSettlePriceAdjustment,
           },
         },
       ]),
@@ -3539,7 +3859,17 @@ export class OrderService {
       orderProduct.encourageDay = product.encourageDay ?? null;
 
       const liveProduct = productPriceMap.get(product.productId)!;
-      Object.assign(orderProduct, resolveLineSnapshot(product, ownedMap, liveProduct));
+      const lineSnapshot = resolveLineSnapshot(product, ownedMap, liveProduct);
+      Object.assign(orderProduct, lineSnapshot);
+      Object.assign(
+        orderProduct,
+        resolvePartnerSettleSnapshotForUpdate(
+          product,
+          ownedMap,
+          liveProduct,
+          lineSnapshot.snapshotProductPrice ?? liveProduct.price,
+        ),
+      );
 
       await this.orderProductMappingRepository.save(orderProduct);
 
@@ -3963,6 +4293,8 @@ export class OrderService {
     ).filter((discount) => discount.userId === billingUserId);
 
     const mappingsToUpdate: OrderProductMappingEntity[] = [];
+    // 정산 자동캡처 이력: 할인 자동 매칭 전 스냅샷 (아래 loop 가 mapping.fee 를 mutate 하므로 이 시점 캡처).
+    const autoSettleSnapshot = this.captureSettleSnapshot(order.orderProductMappings!);
 
     // 각 매핑별 할인/할증 상태 저장 (중복번호 체크에 사용)
     const mappingPriceAdjustments = new Map<number, IPriceAdjustment | null>();
@@ -4002,6 +4334,19 @@ export class OrderService {
     if (mappingsToUpdate.length > 0) {
       await this.orderProductMappingRepository.save(mappingsToUpdate);
     }
+
+    await this.logSettleDiscountChange({
+      user,
+      orderId: order.id,
+      requestUrl: '/order/delivery-confirmed',
+      method: 'POST',
+      source: SettleDiscountChangeSource.AUTO_CONFIRM,
+      changes: buildSettleDiscountChanges(
+        autoSettleSnapshot.beforeById,
+        mappingsToUpdate,
+        autoSettleSnapshot.productNameById,
+      ),
+    });
 
     // ======== 중복번호 제어 체크 시작 ========
     // 할인 적용 → 1건만 허용 (중복 불가)
@@ -4084,8 +4429,20 @@ export class OrderService {
     }
     // ======== 중복번호 제어 체크 끝 ========
 
-    // 최종 정산금액 계산 (배송별 정산값 우선, 주문 전체 카드할증 1회 적용)
-    const finalAmount = calculateOrderSettlementAmount(order, order.cardSurchargeApplied);
+    // 미정산 주문은 확정 시점 정책을 주문 스냅샷으로 고정해 allocation/조회/재정산의 기준을 일치시킨다.
+    const settleOrderBefore: SettleOrderSnapshot = {
+      settleMethod: order.settleMethod,
+      cardSurchargeApplied: order.cardSurchargeApplied,
+    };
+    const hasSettleInput = order.settleMethod != null;
+    const resolvedSettlePolicy = hasSettleInput
+      ? null
+      : await this.resolveSettlePolicy(order, oneUser.company);
+    const effectiveSettleMethod = order.settleMethod ?? resolvedSettlePolicy?.policy ?? 'CASH';
+    const effectiveSurcharge = hasSettleInput
+      ? order.cardSurchargeApplied
+      : effectiveSettleMethod === 'CARD' && (resolvedSettlePolicy?.resolvedWallet?.cardSurchargeApplied ?? true);
+    const finalAmount = calculateOrderSettlementAmount(order, effectiveSurcharge);
 
     if (order.isNewBillingFlow) {
       // === 새 흐름: 발송확정 시 전액 차감 ===
@@ -4126,6 +4483,7 @@ export class OrderService {
           depositUseEnabled: getBody.depositUseEnabled,
           depositUseAmount: getBody.depositUseAmount,
           companyId: oneUser.companyId,
+          cardSurchargeApplied: effectiveSurcharge,
         });
         // 사용액 입력 검증 (clamp 금지 — 사용 가능 한도 초과 시 400)
         this.assertUsageWithinLimits(allocationInput, getBody);
@@ -4185,10 +4543,9 @@ export class OrderService {
           {
             orderId: order.id,
             allocation,
-            cardSurchargeAppliedSnapshot: order.cardSurchargeApplied,
+            cardSurchargeAppliedSnapshot: effectiveSurcharge,
             hasDiscountSnapshot: allocation.hasDiscount,
-            // effective: 정산입력된 order.settleMethod 우선, 없으면 이미 조회한 wallet SoT 재사용 (추가 조회 0)
-            settleMethodSnapshot: order.settleMethod ?? wallet.settleMethod,
+            settleMethodSnapshot: effectiveSettleMethod,
             deliveryIdsForAttempt,
             creditExcessApprovalId: getBody.creditExcessApprovalId ?? null,
           },
@@ -4267,6 +4624,7 @@ export class OrderService {
             const wallet = await this.walletAccountResolverService.resolveForOrder(order, this.orderRepository.manager);
             const previewInput = await this.walletAllocationInputBuilder.build(order, wallet, finalAmount, {
               companyId: oneUser.companyId,
+              cardSurchargeApplied: effectiveSurcharge,
             });
             const preview = this.paymentAllocationService.allocate(previewInput);
 
@@ -4417,6 +4775,10 @@ export class OrderService {
       order.settleAmount = finalAmount;
     }
     // ======== 과금 처리 끝 ========
+    if (!hasSettleInput) {
+      order.settleMethod = effectiveSettleMethod;
+      order.cardSurchargeApplied = effectiveSurcharge;
+    }
 
     for (const orderMapping of order.orderProductMappings!) {
       for (const orderDelivery of orderMapping.orderDeliveries) {
@@ -4430,6 +4792,22 @@ export class OrderService {
 
     order.status = IOrderStatus.DELIVERY_CONFIRMED;
     await this.orderRepository.save(order);
+    if (!hasSettleInput) {
+      await this.logSettleDiscountChange({
+        user,
+        orderId: order.id,
+        requestUrl: '/order/delivery-confirmed',
+        method: 'POST',
+        source: SettleDiscountChangeSource.AUTO_CONFIRM,
+        changes: [],
+        orderBefore: settleOrderBefore,
+        orderAfter: {
+          settleMethod: order.settleMethod,
+          cardSurchargeApplied: order.cardSurchargeApplied,
+          settleAmount: order.settleAmount,
+        },
+      });
+    }
 
     return { message: message, ...this.allocationDetail(walletAllocation) };
   }
@@ -4442,10 +4820,12 @@ export class OrderService {
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .innerJoinAndSelect('orderProductMappings.product', 'product')
+      .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
       .where('order.id = :id', { id })
       // .andWhere('order.userId = :userId', { userId: user.id })
       .andWhere('order.status = :status', { status: IOrderStatus.DELIVERY_REQUEST })
       .andWhere('order.type = :type', { type: IOrderType.SSG })
+      .setLock('pessimistic_write')
       .getOne();
 
     if (!beforeOrder) {
@@ -4456,6 +4836,11 @@ export class OrderService {
 
     if (couponExpiration === couponExpirationProduct) {
       throw new BadRequestException(`유효기간이 ${couponExpiration}일 로 동일합니다.`);
+    }
+
+    const hasDeduction = await this.ssgEventService.hasOpenTempDeduction(beforeOrder.id);
+    if (!hasDeduction) {
+      throw new BadRequestException('처리 가능한 가차감 이력이 없습니다.');
     }
 
     const afterProductList = await this.productRepository.find({
@@ -4469,6 +4854,13 @@ export class OrderService {
       (product) => product.price,
       (product) => product.id,
     );
+
+    // restore 대상(기존 이벤트)과 allocate 후보(새 유효기간 이벤트)를 id ASC 순서로 선잠금하여
+    // 서로 다른 트랜잭션 간 락 순서 역전(데드락 소지)을 차단한다.
+    await this.ssgEventService.lockEventsForCouponExpireChange(beforeOrder.id, couponExpiration);
+
+    // 상품 교체 전: 기존 이벤트 가차감(isTemporary=true) 복원
+    await this.ssgEventService.restoreTemporaryEventBalance(beforeOrder.id);
 
     for (const orderProductMapping of beforeOrder.orderProductMappings!) {
       const beforeProductId = orderProductMapping.productId;
@@ -4488,44 +4880,48 @@ export class OrderService {
       );
     }
 
-    const order = await this.orderRepository
-      .createQueryBuilder('order')
-      .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
-      .innerJoinAndSelect('orderProductMappings.product', 'product')
-      .where('order.id = :id', { id })
-      // .andWhere('order.userId = :userId', { userId: user.id })
-      .andWhere('order.status = :status', { status: IOrderStatus.DELIVERY_REQUEST })
-      .andWhere('order.type = :type', { type: IOrderType.SSG })
-      .getOne();
-    // 현재 order 에 되어있는 모든 product id 를 추출, 가격이 같은 다른 couponExpireation 으로 변경 진행
-    if (!order) {
-      throw new InternalServerErrorException('해당 주문이 존재하지 않습니다.');
+    // 새 유효기간 이벤트 재할당 + 가차감 (배송건별 예약시각을 개별 반영 — 상품별 예약발송 정책 유지)
+    const deliveries: { deliveryId: number; price: number; reserveDate?: Date }[] = [];
+    for (const mapping of beforeOrder.orderProductMappings!) {
+      const afterProductId = afterProductPriceMap.get(mapping.product.price);
+      const afterProduct = afterProductList.find((p) => p.id === afterProductId);
+      const price = afterProduct?.price ?? mapping.product.price;
+      const reserveDate =
+        mapping.sendType === 'RESERVE' && mapping.sendRequestAt
+          ? new Date(mapping.sendRequestAt as unknown as string)
+          : undefined;
+      for (const delivery of mapping.orderDeliveries) {
+        deliveries.push({ deliveryId: delivery.id, price, reserveDate });
+      }
     }
 
-    // // 상품 가격으로 전체 가격 계산
-    const totalPrice = order.sendAmount;
+    const allocations = await this.ssgEventService.allocateEventsForDeliveries(deliveries, couponExpiration);
 
-    const now = new Date();
-    const ssgEventList = await this.ssgEventRepository.find({
-      where: {
-        startAt: LessThanOrEqual(now),
-        endAt: MoreThanOrEqual(now),
-        couponExpiration: couponExpiration,
-      },
-      order: { order: 'desc' },
+    if (!allocations) {
+      throw new BadRequestException('사용 가능한 SSG 이벤트가 없습니다. (잔액 부족)');
+    }
+
+    await this.ssgEventService.deductEventBalanceMultiple(allocations, beforeOrder.id, true);
+
+    // orderDelivery.ssgEventId 및 order.ssgEventId 재저장
+    const allocationMap = new Map<number, number>();
+    for (const alloc of allocations) {
+      allocationMap.set(alloc.deliveryId, alloc.eventId);
+    }
+
+    for (const mapping of beforeOrder.orderProductMappings!) {
+      for (const delivery of mapping.orderDeliveries) {
+        if (allocationMap.has(delivery.id)) {
+          await this.orderDeliveryRepository.update(delivery.id, {
+            ssgEventId: allocationMap.get(delivery.id),
+          });
+        }
+      }
+    }
+
+    await this.orderRepository.update(beforeOrder.id, {
+      ssgEventId: allocations[0]?.eventId ?? null,
     });
-
-    if (ssgEventList.length === 0) {
-      throw new BadRequestException('행사가 존재하지 않습니다.');
-    }
-
-    const ssgEventTotalPrice = ssgEventList.reduce((acc, cur) => acc + cur.eventPrice, 0);
-
-    if (ssgEventTotalPrice < totalPrice) {
-      throw new BadRequestException('행사 잔액이 부족합니다.');
-    }
-
-    return;
   }
 
   @Transactional()
@@ -5296,6 +5692,31 @@ export class OrderService {
   // findMatchingDiscount는 user_discount/domain/discount.matcher.ts 공통 함수 사용
 
   /**
+   * 서버측 파기확인서 발행 게이트.
+   *
+   * 목록 응답의 canIssueDestructionCertificate 는 UI 힌트이므로, 실제 발행 경로
+   * (메일 발송 / PDF 발행 기록)에서 서버가 다시 판정한다.
+   * 폐기후재발행 롤백으로 soft-delete 된 배송건에도 미파기 PII 가 남을 수 있어,
+   * withDeleted 로 조회해 목록 게이트와 동일한 집합을 판정한다.
+   */
+  private async assertDestructionCertificateIssuable(orderId: number): Promise<void> {
+    const order = await this.orderRepository.findOne({
+      where: { id: orderId },
+      relations: ['orderProductMappings', 'orderProductMappings.orderDeliveries'],
+      withDeleted: true,
+    });
+
+    if (!order) {
+      throw new BadRequestException('주문이 존재하지 않습니다.');
+    }
+
+    const gate = resolveDestructionCertificateGate(order);
+    if (!gate.canIssue) {
+      throw new BadRequestException(destructionCertificateBlockMessage(gate.reason));
+    }
+  }
+
+  /**
    * PDF 리포트 이메일 발송 공통 로직
    */
   private async sendReportEmail(
@@ -5416,6 +5837,8 @@ export class OrderService {
     user: ILoginUserInfo,
     ipAddress: string,
   ): Promise<{ success: boolean; message: string }> {
+    await this.assertDestructionCertificateIssuable(getBody.orderId);
+
     return this.sendReportEmail(getBody, user, ipAddress, {
       requestUrl: '/order/destruction-certificate/report/email',
       actionType: 'DESTRUCTION_CERTIFICATE_EMAIL',

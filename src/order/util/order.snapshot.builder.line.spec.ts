@@ -1,4 +1,4 @@
-import { buildLineProductSnapshot, readLineProductView } from './order.snapshot.builder';
+import { buildLineProductSnapshot, buildPartnerSettleSnapshot, readLineProductView } from './order.snapshot.builder';
 
 const product = (over: any = {}) =>
   ({
@@ -23,6 +23,41 @@ describe('buildLineProductSnapshot', () => {
   });
   it('brand 없으면 브랜드명 빈문자', () => {
     expect(buildLineProductSnapshot(product({ brand: null })).snapshotProductBrandName).toBe('');
+  });
+});
+
+describe('buildPartnerSettleSnapshot', () => {
+  it('LIVE product의 협력사 할인 조건에서 협력사 정산 스냅샷을 만든다', () => {
+    expect(
+      buildPartnerSettleSnapshot(
+        product({
+          category: 'MOBILE_COUPON',
+          classificationId: null,
+          partnerCompany: {
+            userDiscounts: [
+              {
+                category: 'PRODUCT_GROUP',
+                method: 'BULK',
+                group: 'MOBILE_COUPON',
+                pricePercent: 5,
+                priceAdjustment: 'DISCOUNT',
+              },
+            ],
+          },
+        }),
+        1000,
+      ),
+    ).toEqual({
+      partnerSettleFee: 5,
+      partnerSettlePriceAdjustment: 'DISCOUNT',
+    });
+  });
+
+  it('협력사 할인 조건이 없으면 0/null 스냅샷을 만든다', () => {
+    expect(buildPartnerSettleSnapshot(product({ partnerCompany: { userDiscounts: [] } }), 1000)).toEqual({
+      partnerSettleFee: 0,
+      partnerSettlePriceAdjustment: null,
+    });
   });
 });
 

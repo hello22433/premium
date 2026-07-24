@@ -89,4 +89,37 @@ describe('CryptoCipher', () => {
       expect(result.id).toBe(99);
     });
   });
+
+  describe('encryptAccountNumber / safeDecryptAccountNumber (계좌/카드번호 PII)', () => {
+    const THIRTY_TWO_BYTE_KEY = 'account_key_needs_32bytes_long!!';
+    const SIXTEEN_BYTE_IV = 'account_iv_16by!';
+    const accountConfigService = {
+      getOrThrow: jest.fn((key: string) => {
+        if (key === 'DELIVERY_TARGET_CRYPTO_KEY') return THIRTY_TWO_BYTE_KEY;
+        if (key === 'DELIVERY_TARGET_CRYPTO_IV') return SIXTEEN_BYTE_IV;
+        return SIXTEEN_BYTE_KEY;
+      }),
+    };
+    const accountSut = new CryptoCipher(accountConfigService as any);
+
+    test('encryptAccountNumber 결과를 decryptDeliveryTarget으로 복호화하면 원문과 일치한다', () => {
+      const original = '110-1234-567890';
+
+      const encrypted = accountSut.encryptAccountNumber(original);
+
+      expect(accountSut.decryptDeliveryTarget(encrypted)).toBe(original);
+    });
+
+    test('safeDecryptAccountNumber는 encryptAccountNumber 결과를 원문으로 복원한다', () => {
+      const original = '110-1234-567890';
+
+      const encrypted = accountSut.encryptAccountNumber(original);
+
+      expect(accountSut.safeDecryptAccountNumber(encrypted)).toBe(original);
+    });
+
+    test.each([null, undefined, ''])('safeDecryptAccountNumber는 falsy 입력(%p)에 대해 null을 반환한다', (input) => {
+      expect(accountSut.safeDecryptAccountNumber(input)).toBeNull();
+    });
+  });
 });

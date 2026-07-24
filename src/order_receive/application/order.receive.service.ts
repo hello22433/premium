@@ -124,6 +124,7 @@ export class OrderReceiveService {
       await this.couponViewLogRepository
         .createQueryBuilder()
         .insert()
+        .updateEntity(false)
         .values({
           orderDeliveryId,
           ipAddress,
@@ -363,7 +364,13 @@ export class OrderReceiveService {
   /** alimTalk 응답 blockChoiceReentry 계산. */
   private computeBlockChoiceReentry(orderDelivery: OrderDeliveryEntity): boolean {
     if (orderDelivery.orderProductMapping.product.type !== IProductType.CHOICE) return false;
+    // 현재 지원하는 발송 채널(EMAIL / ALIM_TALK / MMS)은 모두 선택 완료 후에도 쿠폰을 재열람할 수단이
+    // 있으므로(알림톡=카톡 웹링크, MMS=이미지+웹링크, EMAIL=자체 흐름) 재진입을 차단하지 않는다.
+    // 재선택/PIN 이중발급 방지는 selection-claim CAS + handleAlreadySelectedChoice(API)가 담당한다.
+    // 아래 SENDING/SENT/legacy 차단 로직은 향후 새 발송 채널이 추가될 때의 기본 동작으로 보존한다.
     if (orderDelivery.deliveryMethod === IOrderSendMethod.EMAIL) return false;
+    if (orderDelivery.deliveryMethod === IOrderSendMethod.ALIM_TALK) return false;
+    if (orderDelivery.deliveryMethod === IOrderSendMethod.MMS) return false;
 
     const staleThreshold = new Date(Date.now() - CHOICE_POST_SEND_STALE_MS);
     const isActiveChoicePostSend =

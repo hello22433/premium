@@ -1,3 +1,4 @@
+import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { randomBytes, createHash } from 'crypto';
 import {
   BadRequestException,
@@ -10,6 +11,7 @@ import {
 } from '@nestjs/common';
 import { UserEntity } from '../../entity/user.entity';
 import { IUserStatus } from '../../user/interface/user.status';
+import { IUserSettleMethod } from '../../user/interface/user.settle.method';
 import { UserCompanyEntity } from '../../entity/user.company.entity';
 import { UserViewScopeEntity, ViewScopeType } from '../../entity/user.view.scope.entity';
 import { DepartmentEntity } from '../../entity/department.entity';
@@ -143,6 +145,7 @@ export class UserManagementService {
     private readonly settleService: SettleService,
     private readonly orderFromService: OrderFromService,
     private readonly settlementCodeAdminService: SettlementCodeAdminService,
+    private readonly cryptoCipher: CryptoCipher,
   ) {}
 
   private readonly initPasswordTemplateCode = this.configService.getOrThrow<string>(
@@ -424,6 +427,21 @@ export class UserManagementService {
     // 대상 계정 기준 잔여 발송 한도/신용초과금 (로그인 본인이 아니라 조회 대상 기준)
     const remain = await this.settleService.getRemainServiceAmountByUserId(id);
 
+    // 현재 여신 사용액 — wallet_account.credit_used_amount (여신 이력 사용액 누계의 최신값 SoT).
+    // getWalletHistory 와 동일하게 settlement_code 로 wallet 을 조회해 이력 요약과 정합을 보장한다.
+    // settlement_code 미부여(PENDING 등) 계정은 wallet 이 없으므로 0.
+    const walletAccount = user.settlementCode
+      ? await this.walletAccountRepository.findOne({
+          where: { ownerType: 'SETTLEMENT_CODE', ownerId: user.settlementCode },
+        })
+      : null;
+    const creditUsedAmount = walletAccount?.creditUsedAmount ?? 0;
+
+    // settleMethod 표시값은 정산 SoT(WALLET=wallet_account, LEGACY=company)를 우선한다.
+    // deprecated user.settleMethod 만 반환하면 공유 정산코드(SHARE_ONE) 계정에서 실제
+    // 정산(getOrderSettle)이 쓰는 값과 어긋나, "선택값 불러오기"가 오표시된다.
+    const effectiveSettleMethod = this.resolveEffectiveSettleMethod(user, company, walletAccount);
+
     return {
       id: user.id,
       email: user.email,
@@ -446,13 +464,13 @@ export class UserManagementService {
       businessPhoneNumber: company?.businessPhoneNumber ?? '',
       ip: user.ip,
       settleCondition: user.settleCondition,
-      settleMethod: user.settleMethod,
+      settleMethod: effectiveSettleMethod,
       maximumLimit: company?.maximumLimit ?? 0,
 
       bankName: user.bankName,
-      bankNumber: user.bankNumber,
+      bankNumber: this.cryptoCipher.safeDecryptAccountNumber(user.bankNumber) ?? user.bankNumber,
       cardName: user.cardName,
-      cardNumber: user.cardNumber,
+      cardNumber: this.cryptoCipher.safeDecryptAccountNumber(user.cardNumber) ?? user.cardNumber,
       balance: this.getCurrentBalance(user, company),
       fromPhoneNumber:
         process.env.FROM_PHONE_SOT_ENFORCE === 'true'
@@ -500,6 +518,7 @@ export class UserManagementService {
       loginVerifyMethod: user.loginVerifyMethod,
       remainServiceAmount: remain.remainServiceAmount,
       creditExcessAmount: remain.creditExcessAmount,
+      creditUsedAmount,
     };
   }
 
@@ -771,6 +790,54 @@ export class UserManagementService {
   }
 
   /**
+   * 계정 표시용 정산방법(settleMethod) SoT 해석.
+   * order.service.resolveSettlePolicy 와 동일 기준으로, 계정관리 "선택값 불러오기"가
+   * 실제 정산(getOrderSettle)이 쓰는 값과 정확히 일치하도록 한다.
+   * - LEGACY: company.settleMethod (없으면 user.settleMethod 폴백)
+   * - settlement_code 미부여(PENDING): wallet SoT 자체가 없음 → SHADOW=company, WALLET=user 폴백
+   * - WALLET: wallet_account.settleMethod. 조회 실패는 폴백하지 않고 fail-closed(throw).
+   *   (오표시된 값이 폼 저장 시 공유 wallet 을 오염시키는 것을 방지 — resolveSettlePolicy 와 동일)
+   * - SHADOW: wallet 우선, 조회 실패 시 company.settleMethod 폴백
+   * @param walletAccount getDetail 이 settlement_code 로 1회 조회한 wallet (미부여/미존재 시 null).
+   *   중복 조회 제거 + creditUsedAmount 와 동일 wallet SoT 보장.
+   */
+  private resolveEffectiveSettleMethod(
+    user: UserEntity,
+    company: UserCompanyEntity | null,
+    walletAccount: WalletAccountEntity | null,
+  ): IUserSettleMethod {
+    const userMethod = user.settleMethod;
+    const companyMethod = (company?.settleMethod as IUserSettleMethod | null) ?? null;
+    const mode = this.walletCutoverConfig.pr3SettleMode;
+
+    // LEGACY 는 회사 정책이 SoT.
+    if (mode === WalletCutoverMode.LEGACY) {
+      return companyMethod ?? userMethod;
+    }
+
+    // wallet SoT 부재(settlement_code 미부여) 또는 SHADOW 조회 실패 시 공통 폴백값.
+    // SHADOW=company 우선, WALLET=user (WALLET 은 조회 실패를 폴백하지 않고 fail-closed).
+    const nonWalletFallback = mode === WalletCutoverMode.SHADOW ? (companyMethod ?? userMethod) : userMethod;
+
+    // settlement_code 미부여(PENDING 등)는 wallet 이 존재하지 않는 정상 상태.
+    if (!user.settlementCode) {
+      return nonWalletFallback;
+    }
+
+    // settlement_code 有: getDetail 이 조회한 wallet 을 재사용한다.
+    if (walletAccount) {
+      return (walletAccount.settleMethod as IUserSettleMethod) ?? userMethod;
+    }
+
+    // wallet 미존재: SHADOW 는 company 폴백, WALLET 은 fail-closed(throw).
+    // 오표시된 정산방법이 폼 저장 시 공유 wallet 을 오염시키는 것을 방지 (resolveSettlePolicy 와 동일).
+    if (mode === WalletCutoverMode.SHADOW) {
+      return nonWalletFallback;
+    }
+    throw new NotFoundException(`wallet_account not found for settlement_code=${user.settlementCode}`);
+  }
+
+  /**
    * 잔액 차감 (재발송 시 역환불). atomic conditional UPDATE로 잔액 부족 체크와 차감을 원자적으로 수행.
    */
   @Transactional()
@@ -939,9 +1006,9 @@ export class UserManagementService {
       settleCondition: getBody.settleCondition,
       settleMethod: getBody.settleMethod,
       bankName: getBody.bankName,
-      bankNumber: getBody.bankNumber,
+      bankNumber: getBody.bankNumber ? this.cryptoCipher.encryptAccountNumber(getBody.bankNumber) : getBody.bankNumber,
       cardName: getBody.cardName,
-      cardNumber: getBody.cardNumber,
+      cardNumber: getBody.cardNumber ? this.cryptoCipher.encryptAccountNumber(getBody.cardNumber) : getBody.cardNumber,
       status: getBody.status,
       personCode: getBody.email,
       fromPhoneNumber: getBody.fromPhoneNumber,
@@ -1054,8 +1121,10 @@ export class UserManagementService {
         user.company.businessPhoneNumber = getBody.businessPhoneNumber;
         user.company.industryType = getBody.industryType;
         user.company.industryItem = getBody.industryItem;
-        // settleMethod SoT 동기화 (company.settleMethod 가 정산 계산 소스)
-        user.company.settleMethod = getBody.settleMethod ?? null;
+        // settleMethod SoT 동기화 (company.settleMethod 가 정산 계산 소스). 미전송 시 기존값 보존(정산코드 관리로 이관).
+        if (getBody.settleMethod != null) {
+          user.company.settleMethod = getBody.settleMethod;
+        }
         // maximumLimit은 별도 API로만 수정 가능하므로 여기서는 업데이트하지 않음
         await this.userCompanyRepository.save(user.company);
       }
@@ -1069,17 +1138,27 @@ export class UserManagementService {
     user.corporateNumber = getBody.corporateNumber;
     user.businessType = getBody.businessType;
     user.ip = getBody.ip;
-    user.settleCondition = getBody.settleCondition;
-    user.settleMethod = getBody.settleMethod;
+    // 정산조건/정산방법(NOT NULL): 미전송·null 시 기존값 보존(정산코드 관리 페이지 wallet SoT 로 편집 이관).
+    if (getBody.settleCondition != null) {
+      user.settleCondition = getBody.settleCondition;
+    }
+    if (getBody.settleMethod != null) {
+      user.settleMethod = getBody.settleMethod;
+    }
     user.bankName = getBody.bankName;
-    user.bankNumber = getBody.bankNumber;
+    user.bankNumber = getBody.bankNumber ? this.cryptoCipher.encryptAccountNumber(getBody.bankNumber) : getBody.bankNumber;
     user.cardName = getBody.cardName;
-    user.cardNumber = getBody.cardNumber;
+    user.cardNumber = getBody.cardNumber ? this.cryptoCipher.encryptAccountNumber(getBody.cardNumber) : getBody.cardNumber;
     // user.status 는 여기서 직접 세팅하지 않음 — save 후 accountStatusTransitionService 로 일원화 처리.
     // fromPhoneNumber mirror 직접 세팅 제거 — save 이후 seedApprovedDefaultPhone 이 최종 권위 write.
 
-    user.settlePeriodCondition = getBody.settlePeriodCondition;
-    user.settlePeriodCount = getBody.settlePeriodCount;
+    // 정산기준(정산주기): 미전송 시 기존값 보존.
+    if (getBody.settlePeriodCondition !== undefined) {
+      user.settlePeriodCondition = getBody.settlePeriodCondition;
+    }
+    if (getBody.settlePeriodCount !== undefined) {
+      user.settlePeriodCount = getBody.settlePeriodCount;
+    }
     user.duplicatePhoneLimit = getBody.duplicatePhoneLimit ?? 0;
     // payload 에 없으면(구버전/부분 payload) 셀프서비스 토글 값을 보존한다. 명시 전달 시에만 갱신.
     if (getBody.hideSystemFromPhone !== undefined) {
@@ -1097,7 +1176,7 @@ export class UserManagementService {
     await this.userRepository.save(user);
 
     // settleMethod SoT 동기화: wallet_account(WALLET 모드) 또는 company(LEGACY 모드) 에 반영.
-    if (getBody.settleMethod !== undefined) {
+    if (getBody.settleMethod != null) {
       const settleMethod = getBody.settleMethod as 'CARD' | 'CASH';
       if (this.walletCutoverConfig.pr3SettleMode === WalletCutoverMode.WALLET) {
         const wallet = await this.walletResolver.resolveByUserId(user.id);

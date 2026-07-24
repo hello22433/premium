@@ -5,12 +5,12 @@ import { dateAtRegexp } from '../../common/domain/date.regexp';
 import { Type } from 'class-transformer';
 
 export class SsgEventGetListReqDto extends PagingReqDto {
-  @ApiPropertyOptional({ description: '생성 시작일 ex) yyyy-MM-ddTHH:mm:ss' })
+  @ApiPropertyOptional({ description: '조회기간(행사기간 기준) 시작일 ex) yyyy-MM-ddTHH:mm:ss' })
   @IsOptional()
   @Matches(dateAtRegexp)
   createdStartAt?: string;
 
-  @ApiPropertyOptional({ description: '생성 끝 일 ex) yyyy-MM-ddTHH:mm:ss' })
+  @ApiPropertyOptional({ description: '조회기간(행사기간 기준) 끝 일 ex) yyyy-MM-ddTHH:mm:ss' })
   @IsOptional()
   @Matches(dateAtRegexp)
   createdEndAt?: string;
@@ -29,12 +29,12 @@ export class SsgEventGetListReqDto extends PagingReqDto {
 }
 
 export class SsgEventExcelDownloadReqDto extends PagingReqDto {
-  @ApiPropertyOptional({ description: '생성 시작일 ex) yyyy-MM-ddTHH:mm:ss' })
+  @ApiPropertyOptional({ description: '조회기간(행사기간 기준) 시작일 ex) yyyy-MM-ddTHH:mm:ss' })
   @IsOptional()
   @Matches(dateAtRegexp)
   createdStartAt?: string;
 
-  @ApiPropertyOptional({ description: '생성 끝 일 ex) yyyy-MM-ddTHH:mm:ss' })
+  @ApiPropertyOptional({ description: '조회기간(행사기간 기준) 끝 일 ex) yyyy-MM-ddTHH:mm:ss' })
   @IsOptional()
   @Matches(dateAtRegexp)
   createdEndAt?: string;

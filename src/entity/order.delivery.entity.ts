@@ -161,7 +161,7 @@ export class OrderDeliveryEntity extends BaseEntity {
   @Column({ type: 'varchar', nullable: true, comment: '은행명' })
   bankName: string | null;
 
-  @Column({ type: 'varchar', nullable: true, comment: '계좌번호' })
+  @Column({ type: 'varchar', nullable: true, comment: '계좌번호 (암호화 저장, CryptoCipher)' })
   bankAccount: string | null;
 
   @Column({ type: 'varchar', nullable: true, comment: '예금주' })

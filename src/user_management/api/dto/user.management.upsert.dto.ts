@@ -1,8 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IsEmail, IsEnum, IsNotEmpty, IsNumber, IsOptional, IsArray, ArrayNotEmpty, IsBoolean } from 'class-validator';
 import { IUserAuthority } from '../../../user/interface/user.authority';
-import { IUserSettleCondition } from '../../../user/interface/user.settle.condition';
-import { IUserSettleMethod } from '../../../user/interface/user.settle.method';
 import { IUserBusinessType } from '../../../user/interface/user.business.type';
 import { UserSettlePeriodConditionEnum } from '../../../user/interface/user.settle.period.condition.enum';
 import { IOrderSendMethod } from '../../../order/interface/order.send.method';
@@ -88,30 +86,6 @@ export class UserManagementUpsertDto {
   // ===============================
   @IsOptional()
   ip: string | null = null;
-
-  @ApiProperty({
-    description: '정산 조건',
-  })
-  // ============================
-  @IsNotEmpty()
-  @IsEnum(IUserSettleCondition)
-  settleCondition: IUserSettleCondition;
-
-  @ApiProperty({
-    description: '정산 방법',
-  })
-  // ============================
-  @IsNotEmpty()
-  @IsEnum(IUserSettleMethod)
-  settleMethod: IUserSettleMethod;
-
-  @ApiProperty({
-    description: '최대 서비스 한도',
-  })
-  // ============================
-  @IsNotEmpty()
-  @IsNumber()
-  maximumLimit: number;
 
   @ApiPropertyOptional({
     description: '최대 서비스 한도 변경 사유',

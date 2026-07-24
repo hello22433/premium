@@ -13,6 +13,7 @@ import { BadRequestException } from '@nestjs/common';
 import { IUserDiscountCategory } from '../../user_discount/interface/user.discount.category';
 import { IUserDiscountMethod } from '../../user_discount/interface/user.discount.method';
 import { ICompareCondition } from '../../user_discount/interface/compare.condition';
+import { SettleDiscountChangeSource } from '../domain/settle.discount.history';
 
 describe('OrderService card surcharge settlement priority', () => {
   beforeAll(() => {
@@ -42,6 +43,7 @@ describe('OrderService card surcharge settlement priority', () => {
     existingOrderProductOverrides = {},
     pr3SettleMode = WalletCutoverMode.LEGACY,
     walletSettleMethod = null,
+    walletCardSurchargeApplied = undefined,
   }: {
     settleMethod: string | null;
     orderOverrides?: Record<string, unknown>;
@@ -50,6 +52,7 @@ describe('OrderService card surcharge settlement priority', () => {
     existingOrderProductOverrides?: Record<string, unknown>;
     pr3SettleMode?: WalletCutoverMode;
     walletSettleMethod?: 'CARD' | 'CASH' | null;
+    walletCardSurchargeApplied?: boolean;
   }) => {
     const order = {
       id: 77,
@@ -117,7 +120,7 @@ describe('OrderService card surcharge settlement priority', () => {
       },
     };
     service.walletAccountResolverService = {
-      resolveForOrder: jest.fn().mockResolvedValue({ id: 1, settleMethod: walletSettleMethod }),
+      resolveForOrder: jest.fn().mockResolvedValue({ id: 1, settleMethod: walletSettleMethod, cardSurchargeApplied: walletCardSurchargeApplied }),
     };
     service.logger = { debug: jest.fn(), warn: jest.fn(), log: jest.fn() };
 
@@ -258,7 +261,7 @@ describe('OrderService card surcharge settlement priority', () => {
     );
   });
 
-  it('createOrderSettle: WALLET 모드는 settleMethod 미전송 시 wallet_account 정책을 저장한다', async () => {
+  it('createOrderSettle: WALLET 모드는 settleMethod·카드할증 기본값 모두 wallet_account 정책을 따른다 (PR-B)', async () => {
     const { service, order, settleFee } = createService({
       settleMethod: 'CASH', // 회사 정책 (무시되어야 함)
       pr3SettleMode: WalletCutoverMode.WALLET,
@@ -271,9 +274,9 @@ describe('OrderService card surcharge settlement priority', () => {
     expect(service.orderRepository.update).toHaveBeenCalledWith(
       { id: order.id },
       {
-        // 정책=wallet 'CARD' 이지만 cardSurchargeApplied 는 회사 기준 default(false) 유지 — 독립
-        settleAmount: applyCardSurcharge(order.sendAmount + settleFee, false),
-        cardSurchargeApplied: false,
+        // PR-B: 카드할증 기본값도 정산코드 wallet.settleMethod 기준 (company=CASH 무시, wallet=CARD → 할증 ON)
+        settleAmount: applyCardSurcharge(order.sendAmount + settleFee, true),
+        cardSurchargeApplied: true,
         settleMethod: 'CARD',
       },
     );
@@ -319,11 +322,11 @@ describe('OrderService card surcharge settlement priority', () => {
     );
   });
 
-  it('updateOrderSettle: body 값이 없으면 기존 저장값을 settleMethod보다 우선한다', async () => {
+  it('updateOrderSettle: 미정산(order.settleMethod 없음) + body 생략 → 저장 기본값(false) 무시하고 정책 기본값 폴백 (리뷰 P1)', async () => {
     const { service, order, settleFee } = createService({
       settleMethod: 'CARD',
       orderOverrides: {
-        cardSurchargeApplied: false,
+        cardSurchargeApplied: false, // DB 기본값(미정산). settleMethod 없으면 완료로 보지 않아 wallet 기본값으로 폴백
       },
     });
 
@@ -332,8 +335,50 @@ describe('OrderService card surcharge settlement priority', () => {
     expect(service.orderRepository.update).toHaveBeenCalledWith(
       { id: order.id },
       {
+        settleAmount: applyCardSurcharge(order.sendAmount + settleFee, true),
+        cardSurchargeApplied: true, // 정책 CARD + wallet 미조회(LEGACY) ?? true
+        settleMethod: 'CARD',
+      },
+    );
+  });
+
+  it('updateOrderSettle: 미정산 + WALLET wallet CARD+토글OFF → 기본값 false', async () => {
+    const { service, order, settleFee } = createService({
+      settleMethod: 'CASH',
+      pr3SettleMode: WalletCutoverMode.WALLET,
+      walletSettleMethod: 'CARD',
+      walletCardSurchargeApplied: false,
+      orderOverrides: { cardSurchargeApplied: false },
+    });
+
+    await service.updateOrderSettle(createBody());
+
+    expect(service.orderRepository.update).toHaveBeenCalledWith(
+      { id: order.id },
+      {
         settleAmount: applyCardSurcharge(order.sendAmount + settleFee, false),
-        cardSurchargeApplied: false,
+        cardSurchargeApplied: false, // wallet CARD 지만 토글 OFF
+        settleMethod: 'CARD',
+      },
+    );
+  });
+
+  it('updateOrderSettle: 미정산 + WALLET wallet CARD+토글ON → 기본값 true', async () => {
+    const { service, order, settleFee } = createService({
+      settleMethod: 'CASH',
+      pr3SettleMode: WalletCutoverMode.WALLET,
+      walletSettleMethod: 'CARD',
+      walletCardSurchargeApplied: true,
+      orderOverrides: { cardSurchargeApplied: false },
+    });
+
+    await service.updateOrderSettle(createBody());
+
+    expect(service.orderRepository.update).toHaveBeenCalledWith(
+      { id: order.id },
+      {
+        settleAmount: applyCardSurcharge(order.sendAmount + settleFee, true),
+        cardSurchargeApplied: true,
         settleMethod: 'CARD',
       },
     );
@@ -685,6 +730,7 @@ describe('OrderService deliveryConfirmed settlement amount', () => {
 
   it('deliveryConfirmed: 발송확정 금액은 mapping 수수료가 아니라 배송별 정산값 합산 기준으로 차감한다', async () => {
     const service = Object.create(OrderService.prototype) as any;
+    service.activityLogService = { createLog: jest.fn() };
     const deliveries = [
       {
         id: 1,
@@ -809,10 +855,32 @@ describe('OrderService deliveryConfirmed settlement amount', () => {
       { balance: 50000 - 18498, allSettleAmount: 0 },
     );
     expect(order.settleAmount).not.toBe(18999);
+    expect(order.settleMethod).toBe('CASH');
+    expect(order.cardSurchargeApplied).toBe(false);
+    expect(service.orderRepository.save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        settleMethod: 'CASH',
+        cardSurchargeApplied: false,
+        settleAmount: 18498,
+      }),
+    );
+    expect(service.activityLogService.createLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actionType: expect.any(String),
+        requestParams: expect.objectContaining({
+          source: SettleDiscountChangeSource.AUTO_CONFIRM,
+          order: {
+            before: { settleMethod: undefined, cardSurchargeApplied: false },
+            after: { settleMethod: 'CASH', cardSurchargeApplied: false, settleAmount: 18498 },
+          },
+        }),
+      }),
+    );
   });
 
   it('deliveryConfirmed: 동일 주문 확정이 겹치면 상태 조건으로 두 번째 차감을 차단한다', async () => {
     const service = Object.create(OrderService.prototype) as any;
+    service.activityLogService = { createLog: jest.fn() };
     const deliveries = [
       {
         id: 1,
@@ -959,6 +1027,7 @@ describe('OrderService deliveryConfirmed settlement amount', () => {
 
   it('deliveryConfirmed: 고객사 정산 fallback에 협력사 할인 조건을 섞지 않는다', async () => {
     const service = Object.create(OrderService.prototype) as any;
+    service.activityLogService = { createLog: jest.fn() };
     const deliveries = [
       {
         id: 1,
@@ -1157,11 +1226,13 @@ describe('OrderService getOrderSettle read priority', () => {
     companySettleMethod = null,
     pr3SettleMode = WalletCutoverMode.LEGACY,
     walletSettleMethod = null,
+    walletCardSurchargeApplied = true,
   }: {
     orderOverrides?: Record<string, unknown>;
     companySettleMethod?: 'CARD' | 'CASH' | null;
     pr3SettleMode?: WalletCutoverMode;
     walletSettleMethod?: 'CARD' | 'CASH' | null;
+    walletCardSurchargeApplied?: boolean;
   }) => {
     const order = {
       id: 77,
@@ -1190,7 +1261,11 @@ describe('OrderService getOrderSettle read priority', () => {
       },
     };
     service.walletAccountResolverService = {
-      resolveForOrder: jest.fn().mockResolvedValue({ id: 1, settleMethod: walletSettleMethod }),
+      resolveForOrder: jest.fn().mockResolvedValue({
+        id: 1,
+        settleMethod: walletSettleMethod,
+        cardSurchargeApplied: walletCardSurchargeApplied,
+      }),
     };
 
     return { service, order };
@@ -1267,6 +1342,33 @@ describe('OrderService getOrderSettle read priority', () => {
 
     expect(service.walletAccountResolverService.resolveForOrder).toHaveBeenCalled();
     expect(res.settleMethod).toBe('CARD'); // wallet 정책
+  });
+
+  it('미입력 + WALLET CARD/OFF: wallet 카드할증 기본값 false를 반환한다', async () => {
+    const { service } = createReadService({
+      pr3SettleMode: WalletCutoverMode.WALLET,
+      walletSettleMethod: 'CARD',
+      walletCardSurchargeApplied: false,
+      orderOverrides: { settleMethod: null, cardSurchargeApplied: false },
+    });
+
+    const res = await service.getOrderSettle(query);
+
+    expect(res.settleMethod).toBe('CARD');
+    expect(res.cardSurchargeApplied).toBe(false);
+  });
+
+  it('미입력 + WALLET CARD/ON: DB 기본 false 대신 wallet 기본값 true를 반환한다', async () => {
+    const { service } = createReadService({
+      pr3SettleMode: WalletCutoverMode.WALLET,
+      walletSettleMethod: 'CARD',
+      walletCardSurchargeApplied: true,
+      orderOverrides: { settleMethod: null, cardSurchargeApplied: false },
+    });
+
+    const res = await service.getOrderSettle(query);
+
+    expect(res.cardSurchargeApplied).toBe(true);
   });
 
   it('고객사 정산 조회는 협력사 할인 조건을 고객사 할인 후보로 섞지 않는다', async () => {

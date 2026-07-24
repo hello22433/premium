@@ -58,16 +58,16 @@ describe('OrderReceiveService 재진입 차단 판정', () => {
   const isLegacy = (od: any): boolean => (service as any).isLegacyChoiceReentryBlocked(od);
 
   describe('computeBlockChoiceReentry', () => {
-    it('SENT → 차단', () => {
-      expect(blockChoiceReentry(makeOd({ choicePostSendStatus: ChoicePostSendStatus.SENT }))).toBe(true);
+    it('MMS(기본) + SENT → 미차단 (MMS도 재열람 허용)', () => {
+      expect(blockChoiceReentry(makeOd({ choicePostSendStatus: ChoicePostSendStatus.SENT }))).toBe(false);
     });
 
-    it('활성 SENDING → 차단', () => {
+    it('MMS(기본) + 활성 SENDING → 미차단', () => {
       expect(
         blockChoiceReentry(
           makeOd({ choicePostSendStatus: ChoicePostSendStatus.SENDING, choicePostSendClaimedAt: fresh() }),
         ),
-      ).toBe(true);
+      ).toBe(false);
     });
 
     it('stale SENDING → 차단 안 함(재선점 허용)', () => {
@@ -102,7 +102,7 @@ describe('OrderReceiveService 재진입 차단 판정', () => {
       ).toBe(false);
     });
 
-    it('legacy MMS(선택+barCode, status≠ALIM_TALK+COMPLETE) → fallback 차단', () => {
+    it('legacy MMS(선택+barCode) → 미차단 (MMS도 재열람 허용)', () => {
       expect(
         blockChoiceReentry(
           makeOd({
@@ -113,7 +113,7 @@ describe('OrderReceiveService 재진입 차단 판정', () => {
             status: IOrderDeliveryStatus.COMPLETE,
           }),
         ),
-      ).toBe(true);
+      ).toBe(false);
     });
 
     it('legacy ALIM_TALK+COMPLETE → fallback 미차단', () => {
@@ -125,6 +125,44 @@ describe('OrderReceiveService 재진입 차단 판정', () => {
             barCode: 'B',
             deliveryMethod: IOrderSendMethod.ALIM_TALK,
             status: IOrderDeliveryStatus.COMPLETE,
+          }),
+        ),
+      ).toBe(false);
+    });
+
+    it('ALIM_TALK 문자폴백(COMPLETE_SMS) + SENT → 미차단 (알림톡 웹링크로 재열람 가능)', () => {
+      expect(
+        blockChoiceReentry(
+          makeOd({
+            deliveryMethod: IOrderSendMethod.ALIM_TALK,
+            status: IOrderDeliveryStatus.COMPLETE_SMS,
+            choicePostSendStatus: ChoicePostSendStatus.SENT,
+          }),
+        ),
+      ).toBe(false);
+    });
+
+    it('legacy ALIM_TALK 문자폴백(COMPLETE_SMS) → 미차단', () => {
+      expect(
+        blockChoiceReentry(
+          makeOd({
+            choicePostSendStatus: null,
+            choiceSelectProductId: 7,
+            barCode: 'B',
+            deliveryMethod: IOrderSendMethod.ALIM_TALK,
+            status: IOrderDeliveryStatus.COMPLETE_SMS,
+          }),
+        ),
+      ).toBe(false);
+    });
+
+    it('MMS + COMPLETE + SENT → 미차단 (MMS 재진입 차단 해제)', () => {
+      expect(
+        blockChoiceReentry(
+          makeOd({
+            deliveryMethod: IOrderSendMethod.MMS,
+            status: IOrderDeliveryStatus.COMPLETE,
+            choicePostSendStatus: ChoicePostSendStatus.SENT,
           }),
         ),
       ).toBe(false);

@@ -35,6 +35,7 @@ import { UserEntityTest } from '../../../test/infra/user.entity.test';
 import { PasswordBcryptEncrypt } from '../../auth/infrastructure/password.bcrypt.encrypt';
 import { IUserSettleCondition } from '../../user/interface/user.settle.condition';
 import { IUserSettleMethod } from '../../user/interface/user.settle.method';
+import { UserSettlePeriodConditionEnum } from '../../user/interface/user.settle.period.condition.enum';
 import { BadRequestException } from '@nestjs/common';
 import { IUserAuthority } from '../../user/interface/user.authority';
 import { IUserStatus } from '../../user/interface/user.status';
@@ -50,7 +51,14 @@ import { AccountStatusTransitionService } from '../../account_lifecycle/applicat
 import { SettleService } from '../../settle/application/settle.service';
 import { OrderFromService } from '../../order_from/application/order.from.service';
 import { SettlementCodeAdminService } from '../../wallet/application/settlement-code-admin.service';
+import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { UserManagementChargeBalanceReqDto, UserManagementModifyBalanceReqDto } from '../api/user.management.req.dto';
+const cipherStub = {
+  encryptAccountNumber: (v: string) => v,
+  safeDecryptAccountNumber: (v: string) => v,
+  encryptDeliveryTarget: (v: string) => v,
+  safeDecryptDeliveryTarget: (v: string) => v,
+} as unknown as CryptoCipher;
 
 describe('user management service test', () => {
   let userRepository: any = mock<Repository<UserEntity>>();
@@ -167,6 +175,7 @@ describe('user management service test', () => {
             seedApprovedDefaultPhone: jest.fn(),
           },
         },
+        { provide: CryptoCipher, useValue: cipherStub },
       ],
     }).compile();
 
@@ -1040,6 +1049,7 @@ describe('settleMethod SoT 동기화 테스트', () => {
             seedApprovedDefaultPhone: jest.fn(),
           },
         },
+        { provide: CryptoCipher, useValue: cipherStub },
       ],
     }).compile();
 
@@ -1137,6 +1147,43 @@ describe('settleMethod SoT 동기화 테스트', () => {
     );
   });
 
+  it('update: 정산조건/정산방법/최대한도/정산기준 미전송 → 기존값 보존 + wallet/company 미오염', async () => {
+    walletCutoverConfig.pr3SettleMode = WalletCutoverMode.WALLET;
+    const company = { id: 10, businessNumber: '1234567890', settleMethod: 'CASH', maximumLimit: 500 };
+    userRepository.findOne.mockResolvedValue({
+      ...UserEntityTest(),
+      id: 1,
+      company,
+      companyId: 10,
+      status: IUserStatus.USED,
+      settleCondition: IUserSettleCondition.PRE_PAYMENT,
+      settleMethod: IUserSettleMethod.CARD,
+      settlePeriodCondition: UserSettlePeriodConditionEnum.NEXT_MONTH,
+      settlePeriodCount: 15,
+    });
+    userCompanyRepository.findOne.mockResolvedValue(company);
+
+    // 계정 페이지 read-only 전환 후 프론트가 보내는 형태: 정산 편집 필드 전부 미포함.
+    const { settleCondition: _sc, maximumLimit: _ml, ...bodyWithoutSettle } = baseUpdateBody as any;
+    await sut.update(bodyWithoutSettle as any);
+
+    const savedUser = userRepository.save.mock.calls.at(-1)?.[0];
+    // user NOT NULL 정산 필드 보존
+    expect(savedUser.settleCondition).toBe(IUserSettleCondition.PRE_PAYMENT);
+    expect(savedUser.settleMethod).toBe(IUserSettleMethod.CARD);
+    // 정산기준(정산주기) 보존
+    expect(savedUser.settlePeriodCondition).toBe(UserSettlePeriodConditionEnum.NEXT_MONTH);
+    expect(savedUser.settlePeriodCount).toBe(15);
+    // settleMethod 미전송 → wallet_account 정본 동기화 미호출(오염 방지)
+    expect(walletResolver.resolveByUserId).not.toHaveBeenCalled();
+    expect(walletAccountRepository.save).not.toHaveBeenCalled();
+    // 동일 사업자번호 경로: company 는 저장되지만 settleMethod/maximumLimit 은 미변경 보존
+    expect(userCompanyRepository.save).toHaveBeenCalled();
+    const savedCompany = userCompanyRepository.save.mock.calls.at(-1)?.[0];
+    expect(savedCompany.settleMethod).toBe('CASH');
+    expect(savedCompany.maximumLimit).toBe(500);
+  });
+
   it('create: LEGACY 모드 — 신규 company에 settleMethod 포함 저장', async () => {
     walletCutoverConfig.pr3SettleMode = WalletCutoverMode.LEGACY;
     userRepository.count.mockResolvedValue(0);
@@ -1178,6 +1225,153 @@ describe('settleMethod SoT 동기화 테스트', () => {
     } as any);
 
     expect(userCompanyRepository.save).not.toHaveBeenCalled();
+  });
+
+  describe('getDetail — settleMethod 표시 SoT (선택값 불러오기)', () => {
+    const company = { id: 10, businessNumber: '1234567890', settleMethod: 'CASH' };
+
+    it('WALLET 모드: wallet_account.settleMethod(SoT) 반환, user.settleMethod(deprecated) 무시', async () => {
+      walletCutoverConfig.pr3SettleMode = WalletCutoverMode.WALLET;
+      walletAccountRepository.findOne.mockResolvedValue({ settleMethod: 'CARD' });
+      userRepository.findOne.mockResolvedValue({
+        ...UserEntityTest(),
+        id: 1,
+        settlementCode: 'company-1',
+        settleMethod: IUserSettleMethod.CASH,
+        company,
+        companyId: 10,
+      });
+
+      const result = await sut.getDetail({ id: 1 } as any);
+
+      expect(result.settleMethod).toBe('CARD');
+      expect(walletAccountRepository.findOne).toHaveBeenCalledWith({
+        where: { ownerType: 'SETTLEMENT_CODE', ownerId: 'company-1' },
+      });
+    });
+
+    it('WALLET 모드: settlement_code 有 + wallet 조회 실패 → fail-closed(throw), user 폴백 금지', async () => {
+      walletCutoverConfig.pr3SettleMode = WalletCutoverMode.WALLET;
+      walletAccountRepository.findOne.mockResolvedValue(null);
+      userRepository.findOne.mockResolvedValue({
+        ...UserEntityTest(),
+        id: 1,
+        settlementCode: 'company-1',
+        settleMethod: IUserSettleMethod.CASH,
+        company,
+        companyId: 10,
+      });
+
+      await expect(sut.getDetail({ id: 1 } as any)).rejects.toThrow('wallet_account not found');
+    });
+
+    it('WALLET 모드: settlement_code 미부여(PENDING) → user.settleMethod 폴백, wallet 미호출', async () => {
+      walletCutoverConfig.pr3SettleMode = WalletCutoverMode.WALLET;
+      userRepository.findOne.mockResolvedValue({
+        ...UserEntityTest(),
+        id: 1,
+        settlementCode: '',
+        settleMethod: IUserSettleMethod.CASH,
+        company,
+        companyId: 10,
+      });
+
+      const result = await sut.getDetail({ id: 1 } as any);
+
+      expect(result.settleMethod).toBe(IUserSettleMethod.CASH);
+      expect(walletAccountRepository.findOne).not.toHaveBeenCalled();
+    });
+
+    it('SHADOW 모드: wallet 조회 실패 시 company.settleMethod 폴백', async () => {
+      walletCutoverConfig.pr3SettleMode = WalletCutoverMode.SHADOW;
+      walletAccountRepository.findOne.mockResolvedValue(null);
+      userRepository.findOne.mockResolvedValue({
+        ...UserEntityTest(),
+        id: 1,
+        settlementCode: 'company-1',
+        settleMethod: IUserSettleMethod.CARD,
+        company: { ...company, settleMethod: 'CASH' },
+        companyId: 10,
+      });
+
+      const result = await sut.getDetail({ id: 1 } as any);
+
+      expect(result.settleMethod).toBe('CASH');
+    });
+
+    it('LEGACY 모드: company.settleMethod 우선, wallet 미호출', async () => {
+      walletCutoverConfig.pr3SettleMode = WalletCutoverMode.LEGACY;
+      userRepository.findOne.mockResolvedValue({
+        ...UserEntityTest(),
+        id: 1,
+        settleMethod: IUserSettleMethod.CARD,
+        company: { ...company, settleMethod: 'CASH' },
+        companyId: 10,
+      });
+
+      const result = await sut.getDetail({ id: 1 } as any);
+
+      expect(result.settleMethod).toBe('CASH');
+      expect(walletResolver.resolveByUserId).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getDetail — 여신 현재 사용액(creditUsedAmount)', () => {
+    const company = { id: 10, businessNumber: '1234567890', settleMethod: 'CASH' };
+
+    it('wallet 존재: settlement_code 로 조회한 wallet_account.credit_used_amount 를 반환', async () => {
+      walletCutoverConfig.pr3SettleMode = WalletCutoverMode.WALLET;
+      walletAccountRepository.findOne.mockResolvedValue({ creditUsedAmount: 123_456 });
+      userRepository.findOne.mockResolvedValue({
+        ...UserEntityTest(),
+        id: 1,
+        settlementCode: 'company-1',
+        company,
+        companyId: 10,
+      });
+
+      const result = await sut.getDetail({ id: 1 } as any);
+
+      expect(result.creditUsedAmount).toBe(123_456);
+      expect(walletAccountRepository.findOne).toHaveBeenCalledWith({
+        where: { ownerType: 'SETTLEMENT_CODE', ownerId: 'company-1' },
+      });
+    });
+
+    it('wallet row 미존재(비-WALLET 모드): 조회는 하되 creditUsedAmount = 0', async () => {
+      walletCutoverConfig.pr3SettleMode = WalletCutoverMode.LEGACY;
+      walletAccountRepository.findOne.mockResolvedValue(null);
+      userRepository.findOne.mockResolvedValue({
+        ...UserEntityTest(),
+        id: 1,
+        settlementCode: 'company-1',
+        company,
+        companyId: 10,
+      });
+
+      const result = await sut.getDetail({ id: 1 } as any);
+
+      expect(result.creditUsedAmount).toBe(0);
+      expect(walletAccountRepository.findOne).toHaveBeenCalledWith({
+        where: { ownerType: 'SETTLEMENT_CODE', ownerId: 'company-1' },
+      });
+    });
+
+    it('settlement_code 미부여(PENDING): wallet 조회 없이 creditUsedAmount = 0', async () => {
+      walletCutoverConfig.pr3SettleMode = WalletCutoverMode.WALLET;
+      userRepository.findOne.mockResolvedValue({
+        ...UserEntityTest(),
+        id: 1,
+        settlementCode: '',
+        company,
+        companyId: 10,
+      });
+
+      const result = await sut.getDetail({ id: 1 } as any);
+
+      expect(result.creditUsedAmount).toBe(0);
+      expect(walletAccountRepository.findOne).not.toHaveBeenCalled();
+    });
   });
 });
 
@@ -1250,6 +1444,7 @@ describe('modifyMaximumLimit — wallet credit_limit 동기화', () => {
             seedApprovedDefaultPhone: jest.fn(),
           },
         },
+        { provide: CryptoCipher, useValue: cipherStub },
       ],
     }).compile();
 

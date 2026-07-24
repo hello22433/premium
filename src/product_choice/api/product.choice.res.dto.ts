@@ -1,5 +1,6 @@
 import { GetListResDto } from '../../common/api/dto/get.list.res.dto';
 import { ApiProperty } from '@nestjs/swagger';
+import { ProductChoiceDetailProductViewDto } from './dto/product.choice.detail.product.view.dto';
 import { ProductChoiceProductViewDto } from './dto/product.choice.product.view.dto';
 import { ProductChoiceViewDto } from './dto/product.choice.view.dto';
 import { ProductChoiceDetailDto } from './dto/product.choice.detail.dto';
@@ -14,11 +15,16 @@ export class ProductChoiceGetListResDto extends GetListResDto {
 
 export class ProductChoiceGetDetailResDto extends ProductChoiceDetailDto {
   @ApiProperty({
-    type: [ProductChoiceProductViewDto],
-    description: '상품 pk 리스트',
+    type: [ProductChoiceDetailProductViewDto],
+    description: '상품 pk 리스트. 삭제된 구성상품도 isDeleted 로 표시해 포함한다',
   })
   // ================================
-  productList: ProductChoiceProductViewDto[];
+  productList: ProductChoiceDetailProductViewDto[];
+
+  @ApiProperty({
+    description: '구성상품 중 사용 상태가 아니거나 삭제된 상품 존재 여부 (true: 비정상). 목록의 동일 필드와 같은 규칙',
+  })
+  hasUnusedProduct: boolean;
 }
 
 export class ProductChoiceGetProductListResDto extends GetListResDto {

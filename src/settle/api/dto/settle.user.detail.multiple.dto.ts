@@ -24,7 +24,8 @@ export class SettleProductMultipleDetailDto {
   name: string;
 
   @ApiProperty({
-    description: '상품 가격(단가, 공급가)',
+    description:
+      '상품 가격(할인/할증 적용 단가, 행 내 균일). 차등정산(SSG 중복할인) 매핑은 요율 적용 단가별로 행이 분리·병합되므로 price*amount 가 항상 정확한 공급가액.',
   })
   price: number;
 

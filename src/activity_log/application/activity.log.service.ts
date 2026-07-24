@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Brackets, In, LessThan, Not, Repository } from 'typeorm';
+import { Brackets, EntityManager, In, LessThan, Not, Repository } from 'typeorm';
 import { ActivityLogEntity } from '../../entity/activity.log.entity';
 import { ActivityLogResult } from '../interface/activity.log.result';
 import { UserEntity } from '../../entity/user.entity';
@@ -49,8 +49,10 @@ export class ActivityLogService {
    * 생성된 로그 id 를 반환한다 (wallet mirror idempotency_key 생성 등에서 사용).
    * 호출 트랜잭션이 @Transactional cls 컨텍스트면 같은 트랜잭션 안에서 INSERT 된다.
    */
-  async createLog(dto: CreateActivityLogDto): Promise<number> {
-    const result = await this.activityLogRepository.insert({
+  async createLog(dto: CreateActivityLogDto, manager?: EntityManager): Promise<number> {
+    // manager 전달 시 해당 트랜잭션 안에서 INSERT(동일 트랜잭션 감사 보장). 미전달 시 전역 repository.
+    const repo = manager ? manager.getRepository(ActivityLogEntity) : this.activityLogRepository;
+    const result = await repo.insert({
       userId: dto.userId,
       userEmail: dto.userEmail,
       method: dto.method,
@@ -298,6 +300,11 @@ export class ActivityLogService {
       .andWhere('activityLog.actionType IN (:...actionTypes)', {
         actionTypes: ['BALANCE_CHARGE', 'BALANCE_MODIFY', 'BALANCE_REFUND', 'DISCARD_RESTORE'],
       })
+      .andWhere(
+        // 여신복구(ALL_SETTLE_AMOUNT)는 예치금/선입금 이동이 아니라 예치금 이력에서 제외(저장부 user_task_history 제외 규칙과 정합).
+        // restoreType 없는 과거 로그는 하위호환으로 노출.
+        "(activityLog.actionType <> 'DISCARD_RESTORE' OR COALESCE(JSON_UNQUOTE(JSON_EXTRACT(activityLog.requestParams, '$.restoreType')), '') <> 'ALL_SETTLE_AMOUNT')",
+      )
       .andWhere("JSON_EXTRACT(activityLog.requestParams, '$.targetUserId') = :targetUserId", {
         targetUserId,
       })

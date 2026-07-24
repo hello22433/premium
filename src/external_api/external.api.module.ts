@@ -55,8 +55,19 @@ import { OrderFromModule } from '../order_from/order.from.module';
     ]),
     ThrottlerModule.forRoot([
       {
-        ttl: 60000, // 1분
-        limit: 60, // API Key당 분당 60회
+        name: 'orders',
+        ttl: 60000,
+        limit: 300,
+      },
+      {
+        name: 'reads',
+        ttl: 60000,
+        limit: 300,
+      },
+      {
+        name: 'cancelResend',
+        ttl: 60000,
+        limit: 60,
       },
     ]),
     PartnerCompanyExternModule,

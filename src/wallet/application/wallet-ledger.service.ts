@@ -15,6 +15,8 @@ export interface RecordTransactionInput {
   amount: number; // 차감 음수, 적립/복구 양수
   pointGrantId?: string | null; // resourceType=POINT 일 때
   memo?: string | null;
+  operatorId?: number | null; // 운영자 수동 거래(예치금 충전 등) 감사 정본
+  operatorEmail?: string | null;
   idempotencyKey: string;
 }
 
@@ -110,6 +112,7 @@ export class WalletLedgerService {
 
     // 1. 잔액 변경 (POINT: grant.remaining_amount, 그 외: wallet_account 컬럼)
     let balanceAfter: number;
+    let balanceBefore: number | null = null;
     if (input.resourceType === WalletResourceType.POINT) {
       if (!input.pointGrantId) {
         throw new Error('point_grant_id required for POINT resource_type');
@@ -158,6 +161,7 @@ export class WalletLedgerService {
           `${input.resourceType.toLowerCase()}_underflow: walletId=${wallet.id}, current=${(wallet as any)[field]}, requested=${input.amount}`,
         );
       }
+      balanceBefore = (wallet as any)[field];
       (wallet as any)[field] = (wallet as any)[field] + input.amount;
       await manager.save(wallet);
       balanceAfter = (wallet as any)[field];
@@ -172,6 +176,9 @@ export class WalletLedgerService {
       resourceType: input.resourceType,
       amount: input.amount,
       balanceAfter,
+      balanceBefore,
+      operatorId: input.operatorId ?? null,
+      operatorEmail: input.operatorEmail ?? null,
       memo: input.memo ?? null,
       idempotencyKey: input.idempotencyKey,
     });
