@@ -169,6 +169,47 @@ describe('ExternalApiService.resendOrder atomic slot claim', () => {
   });
 
   /**
+   * ★ releaseResendSlot 은 **lease fencing 을 하면 안 된다** — 리뷰 P1 회귀 잠금.
+   *
+   * resend_count 는 소유자 구분 없는 fungible 카운터다. 각 요청은 claim 에서 +1 하고,
+   * **자기 발송이 실패했을 때만** -1 한다(성공 경로는 슬롯 유지, :1577). 따라서
+   *   resend_count = (성공 발송 수) + (미해소 in-flight)  ≥ 성공 발송 수
+   * 가 항상 성립하고, claim 게이트(resend_count < max)가 성공 발송을 max 초과로 허용하지 않는다.
+   *
+   * -1 은 **자기 자신의 +1 을 되돌리는 것**이라, 그 사이 lease 가 남에게 탈취됐어도 무조건 실행돼야 한다.
+   * 여기에 `AND mutation_claimed_at = :myToken` 을 붙이면, 5분 지연으로 lease 를 뺏긴 실패 요청이
+   * affected=0 으로 자기 슬롯을 **반납하지 못한다** → 슬롯 영구 누수(stale self-heal 은 lease 에만 있고
+   * 카운터엔 없다) → resend_count 가 max 까지 차올라 정상 재발송이 3008 로 영구 거부된다.
+   *
+   * 즉 fencing 이 옳은 곳은 releaseMutationLease(내 lease 만 해제)이고, 이 슬롯 반납은 반대다.
+   * 이 계약을 코드에 못박아, 향후 누군가 여기 lease 조건을 붙이면 이 테스트가 깨지도록 한다.
+   */
+  it('releaseResendSlot: WHERE 는 { id } 뿐 — lease/상태 fencing 없음 (탈취 후 실패도 자기 슬롯 반납)', async () => {
+    const { svc, qb } = makeService();
+
+    await (svc as any).releaseResendSlot(55);
+
+    const whereCalls = [
+      ...(qb.where as jest.Mock).mock.calls,
+      ...(qb.andWhere as jest.Mock).mock.calls,
+    ] as any[][];
+
+    // id 로만 대상을 좁힌다
+    const idClause = whereCalls.find((c) => /id\s*=\s*:id/i.test(String(c[0])));
+    expect(idClause).toBeDefined();
+    expect(idClause![1]).toEqual({ id: 55 });
+
+    // 어떤 WHERE 절에도 lease 소유권/상태 술어가 없어야 한다.
+    // (붙으면 탈취당한 실패 요청이 슬롯을 못 돌려줘 카운터가 영구 누수된다)
+    for (const call of whereCalls) {
+      const predicate = String(call[0]);
+      expect(predicate).not.toMatch(/mutation_claimed_at/i);
+      expect(call[1] ?? {}).not.toHaveProperty('mutationClaimAt');
+      expect(call[1] ?? {}).not.toHaveProperty('mutationClaimedAt');
+    }
+  });
+
+  /**
    * 리뷰 CONFIRMED: 슬롯 CAS 가 lease 를 WHERE 로 "읽기"만 하고 SET 으로 "획득"하지 않으면,
    * dispatchSend(외부 발송, 수 초) 동안 lease 가 비어 있다. 그 사이 폐기/취소가 진입해
    * 협력사 취소 + 환불을 마치면, 이 재발송은 이미 죽은 핀을 고객에게 배달하고

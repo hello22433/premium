@@ -1595,7 +1595,18 @@ export class ExternalApiService {
     }
   }
 
-  /** 재발송 슬롯 롤백 — 발송 실패 시 선점한 슬롯 1개 반납 (음수 방지). */
+  /**
+   * 재발송 슬롯 롤백 — 발송 실패 시 선점한 슬롯 1개 반납 (음수 방지).
+   *
+   * WHERE 는 { id } 뿐이며 **일부러 lease fencing 을 하지 않는다** (리뷰 P1).
+   * resend_count 는 소유자 구분 없는 fungible 카운터라, 각 요청은 claim 에서 +1 하고
+   * 자기 발송이 실패했을 때만 -1 한다. 이 -1 은 "자기 자신의 +1 을 되돌리는" 것이므로,
+   * 그 사이 lease 가 남에게 탈취됐어도 무조건 실행돼야 카운트가 정확히 유지된다.
+   * 여기에 `AND mutation_claimed_at = :myToken` 을 붙이면 탈취당한 실패 요청이 affected=0 으로
+   * 자기 슬롯을 못 돌려줘 영구 누수 → resend_count 가 max 까지 차 정상 재발송이 막힌다.
+   * (fencing 이 옳은 곳은 releaseMutationLease — "내 lease 만 해제". 슬롯 반납은 반대다.)
+   * 회귀 잠금: external.api.resend-slot.spec.ts "WHERE 는 { id } 뿐 — lease/상태 fencing 없음".
+   */
   private async releaseResendSlot(orderDeliveryId: number): Promise<void> {
     await this.orderDeliveryRepository
       .createQueryBuilder()
