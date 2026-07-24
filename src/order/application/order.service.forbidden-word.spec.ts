@@ -1,3 +1,13 @@
+// typeorm-transactional 데코레이터를 no-op 으로 mock (실제 DB 트랜잭션 없음).
+// writeForbiddenWordBlockLog 가 REQUIRES_NEW 로 데코레이트돼 있어, mock 없이는 트랜잭션 컨텍스트 미초기화로 실패한다.
+jest.mock('typeorm-transactional', () => ({
+  Transactional: () => (_target: unknown, _key: unknown, descriptor: unknown) => descriptor,
+  Propagation: { REQUIRED: 'REQUIRED', REQUIRES_NEW: 'REQUIRES_NEW' },
+  runOnTransactionCommit: jest.fn(),
+  initializeTransactionalContext: jest.fn(),
+  addTransactionalDataSources: jest.fn(),
+}));
+
 import { BadRequestException } from '@nestjs/common';
 import { OrderService } from './order.service';
 
