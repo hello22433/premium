@@ -2716,19 +2716,10 @@ export class CustomerServiceService {
       }
     }
 
-    const history = this.orderHistoryRepository.create({
-      orderDeliveryId: map.orderDelivery.id,
-      userId: map.userId,
-      type: map.type,
-      content: map.content,
-      sendMethod: map.sendMethod,
-      beforeChange: map.beforeChange,
-      afterChange: afterChange,
-      destroyAmount: discardDestroyAmount,
-      restoreAmount: discardRestoreAmount,
+    await this.saveCsHistory(map, afterChange, {
+      destroy: discardDestroyAmount,
+      restore: discardRestoreAmount,
     });
-
-    await this.orderHistoryRepository.save(history);
 
     // 환불 실패는 폐기 상태/이력 저장 이후에 명시적으로 통보한다.
     // 사용자에게 "폐기 자체는 완료되었음"을 응답 메시지로 알려서 동일 발송건의 무의미한 재시도를 막는다.
@@ -2737,6 +2728,30 @@ export class CustomerServiceService {
         `폐기는 완료되었으나 환불 처리 중 오류가 발생했습니다. 운영팀에 문의해주세요. (${pendingRefundError.message})`,
       );
     }
+  }
+
+  /**
+   * execHistory 의 CS 이력 저장. 공통 말미와, 조기 return 하는 분기가 **같은 계약**을 쓰도록 추출한다.
+   * (RESEND 는 execResend 가 자체 저장, RECEIVER_CHANGE 는 발송 전에 저장한다.)
+   */
+  private async saveCsHistory(
+    map: any,
+    afterChange: string,
+    amounts: { destroy: number | null; restore: number | null } = { destroy: null, restore: null },
+  ): Promise<void> {
+    const history = this.orderHistoryRepository.create({
+      orderDeliveryId: map.orderDelivery.id,
+      userId: map.userId,
+      type: map.type,
+      content: map.content,
+      sendMethod: map.sendMethod,
+      beforeChange: map.beforeChange,
+      afterChange,
+      destroyAmount: amounts.destroy,
+      restoreAmount: amounts.restore,
+    });
+
+    await this.orderHistoryRepository.save(history);
   }
 
   /**
