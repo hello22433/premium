@@ -938,11 +938,21 @@ export class ExternalApiService {
    *   - mutation_claimed_at    → NULL         (CS 폐기가 쥔 lease 무력화 = 1차 방어 파괴)
    *
    * ┌─ 【의도적 설계 결정 — 잊은 것이 아님】 2026-07-24 ────────────────────────────┐
-   * │ fencing(`AND mutation_claimed_at = 내토큰`)을 **할 수 없다.** 회피가 아니다.   │
-   * │ 주문 생성 경로(createOrder/createSsgOrder)는 변형 lease 를 아예 안 잡는다 —    │
-   * │ acquireMutationLease 는 파일 전체에서 cancelOrder 한 곳에서만 호출된다.        │
-   * │ 쥔 토큰이 없으니 WHERE 에 실을 것이 없다. 여기서 닫는 것은 clobber 축뿐이다.   │
-   * │ (취소 경로 processCancelRefund 는 lease 를 쥐므로 거기서만 fencing 을 넣었다.) │
+   * │ fencing(`AND mutation_claimed_at = 내토큰`)은 **불가능하고, 또 불필요하다.**   │
+   * │                                                                              │
+   * │ 불가능: 주문 생성 경로(createOrder/createSsgOrder)는 변형 lease 를 아예 안     │
+   * │   잡는다 — acquireMutationLease 는 파일 전체에서 cancelOrder 한 곳뿐. 쥔       │
+   * │   토큰이 없으니 WHERE 에 실을 것이 없다.                                       │
+   * │ 불필요: phaseC 는 **갓 만든 행**을 쓴다. 이 창(phaseB, 수 초)에 겹칠 변형       │
+   * │   액터가 사실상 없다 —                                                         │
+   * │   · 협력사 취소(cancelOrder)는 externalTrId 가 있어야 하는데, 그건 createOrder │
+   * │     가 응답을 반환해야 협력사에 전달된다. phaseB 도는 중엔 응답 전이라 불가.    │
+   * │   · 배치 발송은 external 주문을 claim 대상에서 아예 배제한다(order.type 필터).  │
+   * │   · CS 폐기는 이론상만 — 방금 생성된 쿠폰을 수 초 안에 찾아 폐기해야 도달.      │
+   * │   (대조: resendOrder 는 이미 존재하는 쿠폰이라 겹칠 창이 실재 → 거기엔 lease+  │
+   * │    fencing 을 넣었다. 생성 경로는 그 상황이 아니다.)                           │
+   * │ 그래서 여기 save→targeted update 는 "살아있는 구멍" 봉합이 아니라 D3-60 위생    │
+   * │ (stale 전체엔티티 의존 제거 + 나머지 경로와 일관성)이다.                       │
    * └──────────────────────────────────────────────────────────────────────────────┘
    *
    * 아래가 **phaseC 말고는 아무도 안 쓰는 컬럼의 전부**다(전수 확인, 회귀는
