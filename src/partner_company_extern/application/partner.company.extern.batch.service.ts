@@ -790,8 +790,8 @@ export class PartnerCompanyExternBatchService {
     await this.orderDeliveryRepository.update({ id: result.id }, updateData);
   }
 
-  /** 갤럭시아 동기화가 order_delivery 에 쓰는 컬럼의 전부. updateOrderDelivery 와 같은 어휘다. */
-  private static readonly GALAXIA_SYNC_COLUMNS = [
+  /** 협력사 사용/환불 동기화(갤럭시아 daily·push, 컬처랜드 daily)가 order_delivery 에 쓰는 컬럼의 전부. updateOrderDelivery 와 같은 어휘다. */
+  private static readonly PARTNER_SYNC_COLUMNS = [
     'couponStatus',
     'tradeAt',
     'tradePlace',
@@ -800,7 +800,7 @@ export class PartnerCompanyExternBatchService {
   ] as const;
 
   /**
-   * 갤럭시아 동기화 결과를 targeted update 로 반영한다 — save(orderDelivery) 대체 (D3-60 clobber).
+   * 협력사 동기화 결과를 targeted update 로 반영한다 — save(orderDelivery) 대체 (D3-60 clobber).
    *
    * save 는 merge 라 **행 전체**를 조회 시점 스냅샷으로 쓴다. 이 배치/콜백은 협력사 조회 뒤에
    * 도달하므로 그 사이 CS 재발행·폐기가 쓴 값을 되돌린다. 되돌아가면 치명적인 것:
@@ -815,9 +815,9 @@ export class PartnerCompanyExternBatchService {
    *   "협력사가 통보한 사용/환불을 우리 lease 가 미룰 수 있는가" 는 운영 정책 결정이 선행돼야 한다.
    *   본 헬퍼는 clobber 축만 닫는다.
    */
-  private async persistGalaxiaSync(
+  private async persistPartnerSync(
     orderDelivery: OrderDeliveryEntity,
-    columns: ReadonlyArray<(typeof PartnerCompanyExternBatchService.GALAXIA_SYNC_COLUMNS)[number]>,
+    columns: ReadonlyArray<(typeof PartnerCompanyExternBatchService.PARTNER_SYNC_COLUMNS)[number]>,
   ): Promise<void> {
     const patch: Record<string, unknown> = {};
     for (const column of columns) {
@@ -1249,7 +1249,7 @@ export class PartnerCompanyExternBatchService {
             orderDelivery.galaxiaBalance = 0;
             // save(orderDelivery) 금지 — merge 는 협력사 조회 시점 스냅샷으로 행 전체를 써
             // 그 사이 CS 재발행·폐기가 쓴 mutation_claimed_at/deleted_at 까지 되돌린다(D3-60).
-            await this.persistGalaxiaSync(orderDelivery, ['couponStatus', 'discardedAt', 'galaxiaBalance']);
+            await this.persistPartnerSync(orderDelivery, ['couponStatus', 'discardedAt', 'galaxiaBalance']);
 
             this.logger.log(
               `[checkGalaxiaDaily] ${giftKind} 81 환불 상태 보정: orderDeliveryId=${orderDelivery.id} → REFUND_CANCEL`,
@@ -1261,7 +1261,7 @@ export class PartnerCompanyExternBatchService {
             orderDelivery.tradePlace = transaction.appStore.trim();
             // 이 분기가 바꾸는 것은 tradePlace 하나뿐이다. 직전 81 분기가 쓴 컬럼까지 다시 실으면
             // 81 이 아닌 거래에서 couponStatus 를 스냅샷 값으로 덮어쓰게 된다.
-            await this.persistGalaxiaSync(orderDelivery, ['tradePlace']);
+            await this.persistPartnerSync(orderDelivery, ['tradePlace']);
 
             this.logger.log(
               `[checkGalaxiaDaily] ${giftKind} tradePlace 업데이트: orderDeliveryId=${orderDelivery.id}, appStore=${transaction.appStore}`,
@@ -1368,7 +1368,7 @@ export class PartnerCompanyExternBatchService {
     //
     // push 는 협력사 콜백이라 **업무시간 포함 아무 때나** 도달한다 — daily(야간 cron)보다
     // CS 조작과 겹칠 창이 훨씬 넓다.
-    const touched: Array<(typeof PartnerCompanyExternBatchService.GALAXIA_SYNC_COLUMNS)[number]> = [];
+    const touched: Array<(typeof PartnerCompanyExternBatchService.PARTNER_SYNC_COLUMNS)[number]> = [];
 
     switch (raw.appdiv) {
       case '10': // 사용
@@ -1396,7 +1396,7 @@ export class PartnerCompanyExternBatchService {
 
     // 알 수 없는 거래구분이면 switch 가 아무것도 안 바꾼다 → 빈 UPDATE 를 쏘지 않는다.
     if (touched.length > 0) {
-      await this.persistGalaxiaSync(orderDelivery, touched);
+      await this.persistPartnerSync(orderDelivery, touched);
     }
 
     this.logger.log(
