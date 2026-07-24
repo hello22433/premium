@@ -1247,7 +1247,9 @@ export class PartnerCompanyExternBatchService {
               orderDelivery.discardedAt = this.parseGalaxiaDateTime(transaction.appDay, transaction.appTime);
             }
             orderDelivery.galaxiaBalance = 0;
-            await this.orderDeliveryRepository.save(orderDelivery);
+            // save(orderDelivery) 금지 — merge 는 협력사 조회 시점 스냅샷으로 행 전체를 써
+            // 그 사이 CS 재발행·폐기가 쓴 mutation_claimed_at/deleted_at 까지 되돌린다(D3-60).
+            await this.persistGalaxiaSync(orderDelivery, ['couponStatus', 'discardedAt', 'galaxiaBalance']);
 
             this.logger.log(
               `[checkGalaxiaDaily] ${giftKind} 81 환불 상태 보정: orderDeliveryId=${orderDelivery.id} → REFUND_CANCEL`,
@@ -1257,7 +1259,9 @@ export class PartnerCompanyExternBatchService {
           // tradePlace 업데이트 (기존 로직 유지)
           if (transaction.appStore && transaction.appStore.trim()) {
             orderDelivery.tradePlace = transaction.appStore.trim();
-            await this.orderDeliveryRepository.save(orderDelivery);
+            // 이 분기가 바꾸는 것은 tradePlace 하나뿐이다. 직전 81 분기가 쓴 컬럼까지 다시 실으면
+            // 81 이 아닌 거래에서 couponStatus 를 스냅샷 값으로 덮어쓰게 된다.
+            await this.persistGalaxiaSync(orderDelivery, ['tradePlace']);
 
             this.logger.log(
               `[checkGalaxiaDaily] ${giftKind} tradePlace 업데이트: orderDeliveryId=${orderDelivery.id}, appStore=${transaction.appStore}`,
