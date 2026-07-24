@@ -928,6 +928,47 @@ export class ExternalApiService {
     return { orderDelivery, deliveryHistory };
   }
 
+  /**
+   * phaseC 의 발송 결과 영속 — save(orderDelivery) 금지, targeted update (D3-60 clobber).
+   *
+   * save 는 merge 라 **행 전체**를 phaseA 시점 스냅샷으로 쓴다. phaseB(협력사 발급 + 문자 발송)는
+   * 외부 통신이라 수 초가 걸리고, 그 사이 CS 폐기가 들어오면 save 가 남이 쓴 값을 되돌린다:
+   *   - coupon_status='CANCEL' → 'NOT_USED'  (환불은 끝났는데 되살아난 쿠폰)
+   *   - deleted_at             → NULL         (지워진 행 부활)
+   *   - mutation_claimed_at    → NULL         (CS 폐기가 쥔 lease 무력화 = 1차 방어 파괴)
+   *
+   * ★ fencing 은 하지 않는다(할 수 없다). 주문 생성 경로(createOrder/createSsgOrder)는
+   *   변형 lease 를 **잡지 않는다** — acquireMutationLease 는 cancelOrder 에서만 호출된다.
+   *   쥔 토큰이 없으니 조건에 실을 것도 없다. 여기서 닫는 것은 clobber 축뿐이다.
+   *
+   * 아래가 **phaseC 말고는 아무도 안 쓰는 컬럼의 전부**다(전수 확인, 회귀는
+   * external.api.wallet-refund.spec.ts 의 "phaseC 영속 컬럼 집합 잠금" 이 잠근다):
+   *   - status/actualSendAt/failedAt/apiErrorMessage : 발송 결과
+   *   - expireAt   : phaseB 에서 issue() **뒤**에 계산 → persistIssuedPin 이 모르는 값
+   *   - imagePath  : 자체 update 없음. 빠지면 쿠폰 이미지 영구 유실
+   *   - report 4종 : 알림톡 POST 성공 표식. 빠지면 sweep 재선택 → 중복 발송
+   *
+   * 나머지(barCode/personalCode/couponNum/ssgTransactionId/encourageAt/ssgEventId)는
+   * persistIssuedPin 이, transactionId/externalTrId 는 saveTransactionIds 가 이미 영속한다.
+   */
+  private async persistPhaseCResult(orderDelivery: OrderDeliveryEntity): Promise<void> {
+    await this.orderDeliveryRepository.update(
+      { id: orderDelivery.id },
+      {
+        status: orderDelivery.status,
+        actualSendAt: orderDelivery.actualSendAt,
+        failedAt: orderDelivery.failedAt,
+        apiErrorMessage: orderDelivery.apiErrorMessage,
+        expireAt: orderDelivery.expireAt,
+        imagePath: orderDelivery.imagePath,
+        alimTalkMsgKey: orderDelivery.alimTalkMsgKey,
+        reportState: orderDelivery.reportState,
+        reportNextDueAt: orderDelivery.reportNextDueAt,
+        reportDeadlineAt: orderDelivery.reportDeadlineAt,
+      },
+    );
+  }
+
   // ─── Phase C: 성공 상태 업데이트 ─────────────────────────
 
   @Transactional()
@@ -935,7 +976,7 @@ export class ExternalApiService {
     if (!orderDelivery.actualSendAt) {
       orderDelivery.actualSendAt = new Date();
     }
-    await this.orderDeliveryRepository.save(orderDelivery);
+    await this.persistPhaseCResult(orderDelivery);
 
     order.status = IOrderStatus.DELIVERY_COMPLETE;
     await this.orderRepository.save(order);
