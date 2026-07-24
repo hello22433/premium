@@ -92,6 +92,21 @@ export function calculateMappingSettlementBaseAmount(mapping: OrderProductMappin
   return buildSettlementDisplayLines(mapping).reduce((total, line) => total + line.price * line.amount, 0);
 }
 
+/**
+ * 매핑 1건의 **청구 수량** (= 정산금액이 실제로 몇 건분인가).
+ *
+ * ★ `mapping.amount`(주문 수량)를 그대로 쓰면 안 되는 곳이 있다. 정산금액(위 함수)은
+ *   buildSettlementDisplayLines 를 통해 취소된 발송건(status=CANCEL)을 빼는데, 수량만 원값을 쓰면
+ *   **같은 화면·같은 행에서 "수량 10건 / 금액 8건분"** 이 되어 운영자가 근거로 삼는 숫자가 갈린다.
+ *   금액과 수량은 반드시 같은 분해(buildSettlementDisplayLines)에서 나와야 구조적으로 일치한다.
+ *
+ * 재발행으로 대체된 CANCEL 원본은 여기서도 차감되지 않는다 — 재발행분이 그 자리를 채우므로
+ * 청구 수량은 그대로다(위 함수와 동일한 근거). 순수 감소인 발송취소만 빠진다.
+ */
+export function calculateMappingBilledQuantity(mapping: OrderProductMappingEntity): number {
+  return buildSettlementDisplayLines(mapping).reduce((total, line) => total + line.amount, 0);
+}
+
 /** 정산 표시용 라인 1행: 실존 단가(price)와 그 단가가 적용된 발송건 수(amount). */
 export type SettlementDisplayLine = {
   price: number;

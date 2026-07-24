@@ -95,6 +95,7 @@ import { OrderDeliveryCouponStatus, couponStatusToKorean } from '../../delivery/
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 import {
   calculateMappingSettlementBaseAmount,
+  calculateMappingBilledQuantity,
   buildSettlementDisplayLines,
   computeSettleNetAmountByOrder,
 } from '../../util/settle-fee.util';
@@ -1536,7 +1537,9 @@ export class SettleService {
 
       for (const mapping of order.orderProductMappings!) {
         productNameList.push(mapping.product.name);
-        amount += mapping.amount;
+        // 수량과 금액은 같은 분해에서 나와야 한다 — mapping.amount(원 수량)를 쓰면 금액만 취소분을
+        // 빼서 같은 행에 "수량 10건 / 금액 8건분" 이 표시된다.
+        amount += calculateMappingBilledQuantity(mapping);
         finalSettlePrice += calculateMappingSettlementBaseAmount(mapping);
       }
 
@@ -1593,7 +1596,8 @@ export class SettleService {
       totalDeliveryPriceSum += order.sendAmount;
 
       for (const mapping of order.orderProductMappings!) {
-        totalAmountSum += mapping.amount;
+        // 목록과 동일하게 청구 수량 기준(취소분 제외) — 합계와 금액의 기준을 맞춘다.
+        totalAmountSum += calculateMappingBilledQuantity(mapping);
         totalSettlePriceSum += calculateMappingSettlementBaseAmount(mapping);
       }
     }
@@ -1992,7 +1996,8 @@ export class SettleService {
 
         for (const orderProductMapping of order.orderProductMappings!) {
           productNameList.push(orderProductMapping.product.name);
-          amount += orderProductMapping.amount;
+          // 엑셀 '발송수량' 도 화면 목록과 같은 청구 수량 기준(취소분 제외)을 쓴다.
+          amount += calculateMappingBilledQuantity(orderProductMapping);
         }
 
         // 첫 번째 배송의 실제 발송 시간 사용
