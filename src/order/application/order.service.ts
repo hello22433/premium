@@ -6186,14 +6186,27 @@ export class OrderService {
         lockedOrder.cardSurchargeApplied,
       );
 
-      // 이 분기는 remaining > 0 (살아있는 발송건이 있음) 이다. 그런데 재계산이 0원이라면 단가를
-      // 복원하지 못한 것이다(스냅샷도 없고 상품도 삭제된 옛 주문). 조용히 0을 저장하면 이후 전체취소가
-      // 그 0을 환불액으로 읽어 "취소는 되고 환불은 0원" 이 된다 — 돈이 걸린 침묵이라 던져서 롤백한다.
+      // 단가를 **복원할 근거가 없는** 매핑이 있으면 던져서 롤백한다.
+      //
+      // readLineProductView 는 snapshotProductPrice ?? product?.price ?? 0 순으로 폴백하는데,
+      // 스냅샷도 없고(스냅샷 도입 이전 주문) 상품도 소프트삭제된 매핑은 마지막 0 으로 떨어진다.
+      // 그 0 을 조용히 저장하면 이후 전체취소가 그것을 환불액으로 읽어(신흐름 refundAmount =
+      // order.settleAmount) "취소는 되고 환불은 0원" 이 된다 — 돈이 걸린 침묵이라 막는다.
       // 이 주문은 전체취소로 처리하면 된다(그 경로는 settleAmount 를 덮지 않은 원본값으로 환불한다).
-      if (recomputedSettleAmount === 0) {
+      //
+      // ★ 판정 기준을 "재계산 결과가 0" 으로 두면 안 된다. 정당한 0원 정산 주문(무료 프로모션,
+      //   전액할인)이 같은 값을 내는데, 그걸 막으면 그 주문은 전체취소로 밀려나고 전체취소는
+      //   refundAmount(0) > 0 단락평가로 wallet 경로를 건너뛰어 allocation.released_at 이 NULL 로
+      //   남는다 — 이 브랜치가 막으려던 바로 그 drift 로 유도된다. 그래서 "값이 0인가" 가 아니라
+      //   "근거가 없는가"(스냅샷·상품 둘 다 부재)로 좁힌다.
+      const unresolvableMappings = survivingMappings.filter(
+        (mapping) => mapping.snapshotProductPrice == null && mapping.product == null,
+      );
+      if (unresolvableMappings.length > 0) {
         this.logger.error(
-          `[DELIVERY_CANCEL_SETTLE_RECALC] orderId=${orderId} 잔여=${remaining}건인데 재계산 정산금액이 0원 ` +
-            `— 상품 스냅샷 단가 복원 실패로 판단해 롤백(무·과소환불 차단)`,
+          `[DELIVERY_CANCEL_SETTLE_RECALC] orderId=${orderId} 잔여=${remaining}건 — 단가 복원 근거가 없는 ` +
+            `매핑 ${unresolvableMappings.length}건(스냅샷·상품 모두 부재) mappingIds=` +
+            `[${unresolvableMappings.map((mapping) => mapping.id).join(',')}] → 롤백(무·과소환불 차단)`,
         );
         throw new InternalServerErrorException(
           '취소 후 정산금액을 계산하지 못해 처리하지 못했습니다. 아무것도 취소되지 않았습니다. ' +
@@ -6205,10 +6218,14 @@ export class OrderService {
     await this.orderRepository.save(lockedOrder);
 
     // 금액을 남긴다 — 돈이 오간 엔드포인트에서 "얼마를 돌려줬나" 를 원장 조회 없이 답할 수 있어야 한다.
+    // ★ refunded(=totalRefundedAmount)는 gross 기준 총액이라 **포인트 복구분을 포함**한다.
+    //   괄호 안 재원별 분해는 allocation 델타에서 읽은 값이라 포인트가 빠져 있어, 포인트를 쓴 주문에서는
+    //   합이 총액과 다르다. 차이는 포인트 복구분이다(둘 다 정확한 값 — 기준이 다를 뿐).
     this.logger.log(
       `[DELIVERY_CANCEL] 부분취소 완료 orderId=${orderId} canceled=${requested.length}건 ` +
-        `refunded=${refundResult.totalRefundedAmount}원(예치금=${depositRefunded} 여신=${creditRefunded} ` +
-        `신용초과=${excessRefunded}) ids=[${requested.join(',')}] 잔여=${remaining}건`,
+        `refunded=${refundResult.totalRefundedAmount}원(포인트 포함 총액) ` +
+        `내역: 예치금=${depositRefunded} 여신=${creditRefunded} 신용초과=${excessRefunded} ` +
+        `ids=[${requested.join(',')}] 잔여=${remaining}건`,
     );
 
     // 고객사 직접주문(DIRECT) 은 전체취소와 마찬가지로 통지한다 — 돈이 돌아갔는데 외부에 기록이

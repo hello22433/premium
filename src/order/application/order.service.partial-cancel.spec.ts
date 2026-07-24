@@ -500,9 +500,9 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
       expect(order.settleAmount).toBe(70000);
     });
 
-    // 스냅샷도 없고 상품도 삭제된 옛 주문은 단가를 복원할 근거가 자체가 없다.
+    // 스냅샷도 없고 상품도 삭제된 옛 주문은 단가를 복원할 근거 자체가 없다.
     // 조용히 0 을 저장하면 이후 전체취소가 0 원을 환불한다 — 돈이 걸린 침묵이라 던져서 롤백한다.
-    it('잔여 발송건이 있는데 재계산이 0원이면 던진다 (조용한 0 저장 차단)', async () => {
+    it('단가 복원 근거가 없으면(스냅샷·상품 모두 부재) 던진다 (조용한 0 저장 차단)', async () => {
       const unresolvableMappings = [
         {
           amount: 3,
@@ -521,6 +521,32 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
       await expect(call(sut, CANCELABLE)).rejects.toThrow(/정산금액을 계산하지 못해/);
       // 롤백 대상이므로 0 이 대입된 채로 남지 않아야 한다(원본 유지).
       expect(order.settleAmount).toBe(100000);
+    });
+
+    // ★ 위 가드를 "재계산 결과가 0" 으로 판정하면 안 되는 이유.
+    //   정당한 0원 정산 주문(무료 프로모션·전액할인)이 같은 값을 낸다. 그걸 막으면 그 주문은
+    //   전체취소로 밀려나고, 전체취소는 refundAmount(0) > 0 단락평가로 wallet 경로를 건너뛰어
+    //   allocation.released_at 이 NULL 로 남는다 — 이 브랜치가 막으려던 바로 그 drift 다.
+    //   그래서 판정은 "값이 0인가" 가 아니라 "단가 복원 근거가 없는가" 여야 한다.
+    it('정당한 0원 정산 주문은 막지 않는다 (스냅샷이 0 이면 근거가 있는 값이다)', async () => {
+      const freeMappings = [
+        {
+          amount: 3,
+          fee: null,
+          priceAdjustment: null,
+          product: null, // 상품은 삭제됐지만
+          snapshotProductPrice: 0, // 주문 시점 단가가 0 원으로 박제돼 있다 = 근거 있음
+          orderDeliveries: [
+            { id: 9003, status: IOrderDeliveryStatus.CANCEL, settleFee: null, couponStatus: null, replacedFromId: null },
+            { id: 9004, status: IOrderDeliveryStatus.WAIT, settleFee: null, couponStatus: null, replacedFromId: null },
+          ],
+        },
+      ];
+      const { sut, order } = buildSut({ settleAmount: 0, survivingMappings: freeMappings });
+
+      await call(sut, CANCELABLE);
+
+      expect(order.settleAmount).toBe(0);
     });
   });
 

@@ -702,7 +702,9 @@ export class OrderPartialDeliveryCancelResDto {
   canceledIds: number[];
 
   @ApiProperty({
-    description: '이번 취소로 되돌아간 총 금액(원). 예치금 + 여신 + 신용초과 합계.',
+    description:
+      '이번 취소로 되돌아간 총 금액(원). 정산금액 기준 총액이며 **포인트 복구분을 포함**한다 ' +
+      '(예치금 + 여신 + 신용초과 + 포인트). 재원별 내역이 필요하면 환불 원장을 조회할 것.',
   })
   refundedAmount: number;
 
