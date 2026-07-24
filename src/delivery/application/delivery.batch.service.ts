@@ -1253,6 +1253,43 @@ export class DeliveryBatchService {
   }
 
   /**
+   * 배치가 자기 소유를 유지하는 동안에만 쓰는 targeted update (리뷰 HIGH).
+   *
+   * PIN 발급·문자 발송은 외부 통신이라 수 초~수십 초가 걸리고 변형 lease 는 5분 stale
+   * self-heal 이다. 그 사이 폐기·외부취소·재발행이 lease 를 가져가 상태를 확정할 수 있는데,
+   * 조건이 `{ id }` 뿐이면 배치가 **남이 확정한 상태 위에 자기 결과를 덮어쓴다**.
+   * (컬럼 범위를 좁힌 D3-60 수정은 "무엇을 쓰나"만 고쳤고 "쓸 자격이 있나"는 그대로였다.)
+   *
+   * affected=0 이면 **예외를 던지지 않고 건너뛴다**: 이 시점엔 이미 문자가 나갔을 수 있어
+   * 예외 → 재시도가 중복 발송이 된다. 대신 [BATCH_FENCE_LOST] 로 반드시 경보한다.
+   *
+   * claimToken 이 없으면(테스트·레거시 경로) 종전대로 무울타리로 쓴다.
+   *
+   * @returns 실제로 썼으면 true, lease 상실로 건너뛰었으면 false
+   */
+  private async updateDeliveryOwned(
+    orderDeliveryId: number,
+    claimToken: Date | null | undefined,
+    patch: Parameters<Repository<OrderDeliveryEntity>['update']>[1],
+    label: string,
+  ): Promise<boolean> {
+    const where = claimToken
+      ? { id: orderDeliveryId, mutationClaimedAt: claimToken }
+      : { id: orderDeliveryId };
+
+    const res = await this.orderDeliveryRepository.update(where, patch);
+
+    if (claimToken && !res.affected) {
+      this.logger.error(
+        `[BATCH_FENCE_LOST] ${label} 쓰기 생략 — 변형 lease 를 뺏긴 뒤였다. ` +
+          `orderDelivery.id: ${orderDeliveryId}, claimToken: ${claimToken.toISOString()}`,
+      );
+      return false;
+    }
+    return true;
+  }
+
+  /**
    * 최초 발송 실패 시 환불 보류 여부 (B1/B3).
    * 비-SSG 는 보류(B1). SSG 는 발송 후 SsgInsertState 로 판단 — CONFIRMED/NONE/FAILED 는 보류,
    * ATTEMPTED(INSERT 응답 미확정)만 보류 제외(기존 refundForFail → resolver outcome 경로 유지).
@@ -1323,9 +1360,12 @@ export class DeliveryBatchService {
         // save(orderDelivery) 금지 — merge 는 claim 시점 스냅샷으로 행 전체를 쓴다. issue()(외부 통신,
         // 수 초) 동안 폐기·외부취소가 쓴 coupon_status=CANCEL 을 되돌리고 mutation_claimed_at 까지
         // 지운다(D3-60 clobber). markSendFail 이 쓰는 두 컬럼만 targeted update 한다.
-        await this.orderDeliveryRepository.update(
-          { id: orderDelivery.id },
+        // + 그 사이 lease 를 뺏겼다면 남이 확정한 상태를 덮지 않는다(fencing, 리뷰 HIGH).
+        await this.updateDeliveryOwned(
+          orderDelivery.id,
+          claimToken,
           { status: orderDelivery.status, failedAt: orderDelivery.failedAt },
+          'PIN 발급 실패 상태',
         );
 
         // 실패해도 히스토리는 남김
