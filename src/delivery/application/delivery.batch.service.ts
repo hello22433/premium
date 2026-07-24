@@ -2574,9 +2574,10 @@ export class DeliveryBatchService {
    * transactionId 는 호출자의 claim CAS. 알림톡도 oneSend 는 **동기** 전송이라
    * reportState/msgKey 를 건드리지 않는다(비동기 sweep 은 배치 전용 경로).
    */
-  private async persistOneSendResult(orderDelivery: OrderDeliveryEntity): Promise<void> {
-    await this.orderDeliveryRepository.update(
-      { id: orderDelivery.id },
+  private async persistOneSendResult(orderDelivery: OrderDeliveryEntity, leaseToken?: Date | null): Promise<void> {
+    await this.updateDeliveryOwned(
+      orderDelivery.id,
+      leaseToken,
       {
         status: orderDelivery.status,
         actualSendAt: orderDelivery.actualSendAt,
@@ -2585,6 +2586,7 @@ export class DeliveryBatchService {
         encourageAt: orderDelivery.encourageAt,
         imagePath: orderDelivery.imagePath,
       },
+      'oneSend 발송 결과',
     );
   }
 
@@ -2592,6 +2594,13 @@ export class DeliveryBatchService {
     orderDelivery: OrderDeliveryEntity,
     isSave: boolean = true,
     testOrderDeliveryId?: number,
+    /**
+     * 호출자가 이 행에 대해 쥔 변형 lease 토큰(mutation_claimed_at 값).
+     * 넘기면 발송 결과 쓰기가 그 소유 하에서만 이뤄진다(fencing). 없으면 종전대로 무울타리.
+     * oneSend 는 배치·CS 재발송·발송실패내역 재발송·테스트발송이 함께 쓰는 진입점이라
+     * 소유자가 호출자마다 달라 여기서 만들 수 없다.
+     */
+    leaseToken?: Date | null,
   ): Promise<boolean> {
     const order = orderDelivery.orderProductMapping.order;
     // 재발송인 경우 chargeBack 후 발송 실패 시 재환불이 필요한지 판단하기 위해 이전 상태 저장 (FAIL_SMS 포함)
@@ -2618,7 +2627,7 @@ export class DeliveryBatchService {
         deliveryHistory.deliveryMethod = orderDelivery.deliveryMethod;
 
         if (isSave) {
-          await this.persistOneSendResult(orderDelivery);
+          await this.persistOneSendResult(orderDelivery, leaseToken);
         }
         await this.deliverySendHistoryRepository.save(deliveryHistory);
         return false;
@@ -2913,7 +2922,7 @@ export class DeliveryBatchService {
     }
 
     if (isSave) {
-      await this.persistOneSendResult(orderDelivery);
+      await this.persistOneSendResult(orderDelivery, leaseToken);
     }
 
     // 테스트 발송은 발송실패내역(delivery_send_history)에 기록하지 않는다.
