@@ -1245,11 +1245,16 @@ export class ExternalApiService {
     if (!(await this.acquireMutationLease(orderDelivery.id, mutationClaimAt))) {
       throw new ExternalApiException('3010', '해당 주문에 다른 처리가 진행 중입니다. 잠시 후 다시 시도해 주세요.');
     }
-    // CRITICAL: 메모리 엔티티에도 lease 를 반영한다.
-    // orderDelivery 는 findOrderDeliveryByTrId 가 full entity 로 로드한 스냅샷이라 mutationClaimedAt=null 이고,
-    // acquireMutationLease 는 DB row 만 UPDATE 한다. 이 동기화가 없으면 processCancelRefund 의
-    // save(orderDelivery)(=merge) 가 "메모리 null vs DB claimAt" 을 변경으로 인식해
-    // mutation_claimed_at=NULL 을 써버린다 → 환불 도중 자기 lease 를 스스로 해제(자기 fencing 무력화).
+    // 메모리 엔티티에도 lease 를 반영한다. orderDelivery 는 findOrderDeliveryByTrId 가 full entity 로
+    // 로드한 스냅샷이라 mutationClaimedAt=null 이고, acquireMutationLease 는 DB row 만 UPDATE 한다.
+    //
+    // 종전에는 이것이 **필수 방어**였다: processCancelRefund 가 save(orderDelivery)(=merge) 를 했고,
+    // 그 merge 가 "메모리 null vs DB claimAt" 을 변경으로 인식해 mutation_claimed_at=NULL 을 써
+    // 환불 도중 자기 lease 를 스스로 해제했다.
+    // 그 save 는 targeted update + fencing 으로 교체됐고, fencing 은 이 필드가 아니라
+    // mutationClaimAt 지역변수를 직접 조건으로 쓴다 — 즉 더는 이 동기화에 의존하지 않는다.
+    // 그래도 남긴다: 이 엔티티를 읽는 하위 코드가 실제 소유 상태를 보는 것이 맞고,
+    // 누군가 다시 save 를 들여와도 같은 사고가 재발하지 않는다.
     orderDelivery.mutationClaimedAt = mutationClaimAt;
     try {
       // lease 획득 전 스냅샷은 stale 일 수 있다(직전까지 진행되던 재발행이 barCode/couponStatus 를 갱신).

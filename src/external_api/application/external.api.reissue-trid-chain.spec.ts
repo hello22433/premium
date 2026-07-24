@@ -532,10 +532,13 @@ describe('D3-55 살아있는 재발행 tip 취소', () => {
     expect((svc as any).processCancelRefund).not.toHaveBeenCalled(); // 환불 미진입
   });
 
-  it('cancelOrder: 획득한 lease 를 메모리 엔티티에도 반영한다 — processCancelRefund 의 save(merge) 가 자기 lease 를 NULL 로 되돌리지 않도록', async () => {
-    // 리뷰 CONFIRMED: findOrderDeliveryByTrId 는 full entity 로 로드하므로 mutationClaimedAt=null 이 메모리에 남는다.
-    // acquireMutationLease 는 DB row 만 UPDATE → 동기화가 없으면 save(orderDelivery) 가 "메모리 null vs DB claimAt" 을
-    // 변경으로 인식해 mutation_claimed_at=NULL 을 써버린다 = 환불 도중 자기 lease 자진 해제.
+  it('cancelOrder: 획득한 lease 를 메모리 엔티티에도 반영한다 — 하위 코드가 실제 소유 상태를 보도록', async () => {
+    // findOrderDeliveryByTrId 는 full entity 로 로드하므로 mutationClaimedAt=null 이 메모리에 남고,
+    // acquireMutationLease 는 DB row 만 UPDATE 한다. 동기화가 없으면 메모리와 DB 가 어긋난다.
+    //
+    // 원래 이 계약은 processCancelRefund 의 save(merge) 가 mutation_claimed_at=NULL 을 써
+    // 자기 lease 를 자진 해제하는 사고를 막으려던 것이었다. 그 save 는 targeted update + fencing 으로
+    // 교체돼(리뷰 HIGH) 더는 이 동기화에 의존하지 않지만, 계약 자체는 재발 방지로 계속 잠근다.
     const root = makeDelivery({
       id: 100,
       externalTrId: 'TR-1',
@@ -554,12 +557,12 @@ describe('D3-55 살아있는 재발행 tip 취소', () => {
     (svc as any).partnerCompanyExternService = { cancelByExternalApi: jest.fn(async () => undefined) };
     const seen: Array<Date | null> = [];
     (svc as any).processCancelRefund = jest.fn(async (_o: any, od: any) => {
-      seen.push(od.mutationClaimedAt ?? null); // save(merge) 가 보게 될 값
+      seen.push(od.mutationClaimedAt ?? null); // 하위 코드가 보게 될 값
     });
 
     await svc.cancelOrder(account, 'TR-1', ctx);
 
-    // processCancelRefund 진입 시점의 엔티티가 내 lease 토큰을 들고 있어야 한다(= merge 시 diff 없음 → NULL 미기록)
+    // processCancelRefund 진입 시점의 엔티티가 내 lease 토큰을 들고 있어야 한다
     expect(seen).toHaveLength(1);
     expect(seen[0]).toBeInstanceOf(Date);
   });
