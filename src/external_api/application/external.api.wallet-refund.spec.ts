@@ -83,6 +83,9 @@ function makeOrderDelivery(over?: Partial<OrderDeliveryEntity>): OrderDeliveryEn
   } as any;
 }
 
+/** cancelOrder 가 획득한 변형 lease 토큰. processCancelRefund 의 fencing 조건. */
+const LEASE_TOKEN = new Date('2026-07-24T00:00:00.000Z');
+
 /**
  * phaseC_handleFailure / processCancelRefund 단위 구동용 service.
  * manager.findOne 은 OrderDeliveryAttempt(INITIAL) + OrderPaymentAllocation 을 반환하도록 entity 별 분기.
@@ -94,9 +97,12 @@ function refundService(opts: {
   attempt?: { id: string } | null;
   recoverResult?: SsgRecoveryResult;
   refundAlreadyRefunded?: boolean;
+  /** 취소 상태 쓰기의 fencing 결과. 0 이면 lease 를 뺏긴 상황(기본 1 = 정상 소유). */
+  updateAffected?: number;
 }) {
   const svc = Object.create(ExternalApiService.prototype) as ExternalApiService;
-  (svc as any).logger = { warn: jest.fn(), log: jest.fn(), error: jest.fn() };
+  const logger = { warn: jest.fn(), log: jest.fn(), error: jest.fn() };
+  (svc as any).logger = logger;
 
   const queries: Array<{ sql: string; params: any[] }> = [];
   const managerQuery = jest.fn(async (sql: string, params: any[]) => {
@@ -120,10 +126,9 @@ function refundService(opts: {
   (svc as any).orderRepository = { save: jest.fn(async (o: any) => o) };
   // processCancelRefund 의 상태 쓰기는 save(merge) 가 아니라 targeted update 다 (D3-60).
   // UpdateResult 형태로 반환해야 후속 fencing(affected 검사)까지 태울 수 있다.
-  (svc as any).orderDeliveryRepository = {
-    save: jest.fn(async (o: any) => o),
-    update: jest.fn(async () => ({ affected: 1 })),
-  };
+  const odSave = jest.fn(async (o: any) => o);
+  const odUpdate = jest.fn(async () => ({ affected: opts.updateAffected ?? 1 }));
+  (svc as any).orderDeliveryRepository = { save: odSave, update: odUpdate };
   // G004: loadOrderBillingUser fallback 미스 시 userRepository.findOne 로 재조회. 안전망으로 account.user 반환.
   (svc as any).userRepository = {
     findOne: jest.fn(async () => makeAccount().user),
@@ -155,7 +160,18 @@ function refundService(opts: {
   return {
     svc,
     queries,
-    mocks: { managerQuery, managerFindOne, claim, refund, refundBalance, recoverWithLease, syncDeposit },
+    mocks: {
+      managerQuery,
+      managerFindOne,
+      claim,
+      refund,
+      refundBalance,
+      recoverWithLease,
+      syncDeposit,
+      odSave,
+      odUpdate,
+      logger,
+    },
   };
 }
 
@@ -329,7 +345,7 @@ describe('processCancelRefund — R2 wallet 환불 (DISCARD_REFUND)', () => {
     });
     const account = makeAccount({ isCompany: true });
 
-    await (svc as any).processCancelRefund(makeOrder(), makeOrderDelivery(), account);
+    await (svc as any).processCancelRefund(makeOrder(), makeOrderDelivery(), account, LEASE_TOKEN);
 
     const refundArg = (mocks.refund.mock.calls[0] as any[])[0];
     expect(refundArg.eventType).toBe(OrderPaymentRefundEventType.DISCARD_REFUND);
@@ -345,7 +361,7 @@ describe('processCancelRefund — R2 wallet 환불 (DISCARD_REFUND)', () => {
   it('LEGACY 취소 → 기존 refundBalance 회귀 0', async () => {
     const { svc, mocks } = refundService({ isWalletManaged: false });
 
-    await (svc as any).processCancelRefund(makeOrder(), makeOrderDelivery(), makeAccount());
+    await (svc as any).processCancelRefund(makeOrder(), makeOrderDelivery(), makeAccount(), LEASE_TOKEN);
 
     expect(mocks.refund).not.toHaveBeenCalled();
     expect(mocks.refundBalance).toHaveBeenCalledWith(expect.anything(), 30000);
@@ -418,5 +434,65 @@ describe('resendOrder — R3 가드', () => {
   it('DELIVERY_COMPLETE 이지만 barCode 없음 → 3004 (기존 체크 유지)', async () => {
     const { svc } = resendService(makeOrder({ status: IOrderStatus.DELIVERY_COMPLETE }), { barCode: null as any });
     await expect((svc as any).resendOrder(makeAccount(), 'tr')).rejects.toMatchObject({ code: '3004' });
+  });
+});
+
+// ── 리뷰 HIGH: processCancelRefund 상태 쓰기의 D3-60 clobber 제거 + 변형 lease fencing ──
+describe('processCancelRefund — 상태 쓰기 fencing (리뷰 HIGH)', () => {
+  it('full save 를 쓰지 않는다 — 행 전체 merge 로 남의 컬럼을 되돌리면 안 된다 (D3-60)', async () => {
+    const { svc, mocks } = refundService({ isWalletManaged: false });
+
+    await (svc as any).processCancelRefund(makeOrder(), makeOrderDelivery(), makeAccount(), LEASE_TOKEN);
+
+    // save(orderDelivery) 는 merge 라 재조회하지 않은 컬럼(imagePath·deletedAt·reportState…)까지
+    // 스냅샷 값으로 되돌린다. 이 경로는 targeted update 만 써야 한다.
+    expect(mocks.odSave).not.toHaveBeenCalled();
+    expect(mocks.odUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it('이 함수가 바꾸는 3개 컬럼만 쓴다 (status/couponStatus/discardedAt)', async () => {
+    const { svc, mocks } = refundService({ isWalletManaged: false });
+
+    await (svc as any).processCancelRefund(makeOrder(), makeOrderDelivery(), makeAccount(), LEASE_TOKEN);
+
+    const [, patch] = mocks.odUpdate.mock.calls[0] as any[];
+    expect(Object.keys(patch).sort()).toEqual(['couponStatus', 'discardedAt', 'status']);
+  });
+
+  it('where 조건에 내 lease 토큰이 실린다 — 뺏긴 뒤엔 안 써야 하므로', async () => {
+    const { svc, mocks } = refundService({ isWalletManaged: false });
+
+    await (svc as any).processCancelRefund(makeOrder(), makeOrderDelivery(), makeAccount(), LEASE_TOKEN);
+
+    const [where] = mocks.odUpdate.mock.calls[0] as any[];
+    expect(where).toEqual({ id: 55, mutationClaimedAt: LEASE_TOKEN });
+  });
+
+  it('lease 를 뺏겨 affected=0 이어도 환불은 집행한다 — 협력사 취소가 이미 끝난 비가역 작업이므로', async () => {
+    // ★ 중단하면 "협력사 쿠폰은 죽었는데 환불은 안 나간" 고객 피해가 남는다.
+    //   cancelByExternalApi 는 cancelOrder 에서 이 함수보다 **먼저** 호출된다.
+    const { svc, mocks } = refundService({ isWalletManaged: false, updateAffected: 0 });
+
+    await expect(
+      (svc as any).processCancelRefund(makeOrder(), makeOrderDelivery(), makeAccount(), LEASE_TOKEN),
+    ).resolves.toBeUndefined();
+
+    expect(mocks.refundBalance).toHaveBeenCalledWith(expect.anything(), 30000);
+  });
+
+  it('lease 상실은 조용히 넘어가지 않는다 — [CANCEL_FENCE_LOST] 경보로 수동 정합 유도', async () => {
+    const { svc, mocks } = refundService({ isWalletManaged: false, updateAffected: 0 });
+
+    await (svc as any).processCancelRefund(makeOrder(), makeOrderDelivery(), makeAccount(), LEASE_TOKEN);
+
+    expect(mocks.logger.error).toHaveBeenCalledWith(expect.stringContaining('[CANCEL_FENCE_LOST]'));
+  });
+
+  it('정상 소유(affected=1)면 경보를 남기지 않는다 — 오탐 방지', async () => {
+    const { svc, mocks } = refundService({ isWalletManaged: false });
+
+    await (svc as any).processCancelRefund(makeOrder(), makeOrderDelivery(), makeAccount(), LEASE_TOKEN);
+
+    expect(mocks.logger.error).not.toHaveBeenCalledWith(expect.stringContaining('[CANCEL_FENCE_LOST]'));
   });
 });
