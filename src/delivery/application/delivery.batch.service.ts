@@ -1223,7 +1223,7 @@ export class DeliveryBatchService {
   ): Promise<{ deliveryHistory: DeliverySendHistoryEntity; orderId: number } | null> {
     const claimToken = orderDelivery.claimedAt;
     try {
-      const result = await this.processOneDeliveryInternal(orderDelivery);
+      const result = await this.processOneDeliveryInternal(orderDelivery, claimToken);
       return result;
     } catch (error) {
       this.logger.error(`[BATCH] Failed to process orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
@@ -1271,6 +1271,11 @@ export class DeliveryBatchService {
    */
   private async processOneDeliveryInternal(
     orderDelivery: OrderDeliveryEntity,
+    /**
+     * 이 행에 대한 배치 소유 토큰(claimWaitDeliveries 가 claimed_at = mutation_claimed_at 로 함께 세팅).
+     * 상태 쓰기의 fencing 조건으로 쓴다(다음 커밋). 없으면 종전대로 무울타리.
+     */
+    claimToken?: Date | null,
   ): Promise<{ deliveryHistory: DeliverySendHistoryEntity; orderId: number }> {
     const order = orderDelivery.orderProductMapping.order;
     const product = orderDelivery.orderProductMapping.product;
