@@ -447,7 +447,9 @@ export class PartnerCompanyExternHistoryService {
       }
 
       // 6. 발송 (락 없는 상태). oneSend 가 PIN 발급/확인 + 이미지 + 실제 발송 처리.
-      const sendSuccess = await this.deliveryBatchService.oneSend(orderDelivery);
+      //    claim 시 획득한 변형 lease 토큰을 넘겨, 발송 중 lease 가 stale 로 넘어가면
+      //    oneSend 의 결과 쓰기가 남이 확정한 상태를 덮지 않게 한다(리뷰 HIGH).
+      const sendSuccess = await this.deliveryBatchService.oneSend(orderDelivery, true, undefined, claimAt);
 
       if (sendSuccess) {
         // 부분 update(owner guard) — oneSend 가 중간 저장한 PIN/status/imagePath 를 stale entity 로 덮어쓰지 않음
