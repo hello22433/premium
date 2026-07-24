@@ -996,7 +996,11 @@ export class ExternalApiService {
     if (!orderDelivery.failedAt) {
       orderDelivery.failedAt = new Date();
     }
-    await this.orderDeliveryRepository.save(orderDelivery);
+    // 성공 경로와 같은 컬럼 계약. 실패 경로가 특히 중요하다 — barCode 는 persistIssuedPin 이
+    // 이미 영속했으므로, 발급까지 성공하고 발송만 실패한 건은 FAIL 행에 유효 PIN 이 남는다.
+    // save(merge) 였다면 그 사이 들어온 폐기의 coupon_status 까지 되돌려 "환불됐는데 살아있는 핀"
+    // 을 만들 수 있었다.
+    await this.persistPhaseCResult(orderDelivery);
 
     order.status = IOrderStatus.DELIVERY_CANCEL;
     await this.orderRepository.save(order);
