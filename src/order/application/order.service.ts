@@ -76,7 +76,7 @@ import { format } from 'date-fns';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { IOrderStatus } from '../interface/order.status';
 import { OrderProductMappingEntity } from '../../entity/order.product.mapping.entity';
-import { Transactional, runOnTransactionCommit } from 'typeorm-transactional';
+import { Propagation, Transactional, runOnTransactionCommit } from 'typeorm-transactional';
 import { OrderCancelNotificationService } from './order.cancel.notification.service';
 import { isDirectCustomerCancelTarget } from '../domain/order.cancel.notification.policy';
 import {
@@ -3469,7 +3469,7 @@ export class OrderService {
       }
 
       try {
-        await this.forbiddenWordBlockLogRepository.insert({
+        await this.writeForbiddenWordBlockLog({
           userId: user.id,
           userEmail: user.email,
           matchedWords,
@@ -3495,6 +3495,23 @@ export class OrderService {
         message: '금칙어가 포함되어 있습니다.',
       });
     }
+  }
+
+  /**
+   * 금칙어 차단 로그를 부모 트랜잭션과 분리된 새 트랜잭션(REQUIRES_NEW)으로 기록한다.
+   * createTemp/updateTemp/deliveryRequest 는 적발 시 BadRequestException 을 던져 부모
+   * 트랜잭션을 롤백하는데, 같은 트랜잭션에 기록하면 차단 로그까지 롤백돼 이력이 남지 않는다.
+   */
+  @Transactional({ propagation: Propagation.REQUIRES_NEW })
+  private async writeForbiddenWordBlockLog(entry: {
+    userId: number;
+    userEmail: string;
+    matchedWords: string[];
+    field: string;
+    contentSnippet: string;
+    orderId: number | null;
+  }): Promise<void> {
+    await this.forbiddenWordBlockLogRepository.insert(entry);
   }
 
   private async assertPositiveIntegerAmounts(orderProductList: OrderProductCreateTempDto[]): Promise<void> {
