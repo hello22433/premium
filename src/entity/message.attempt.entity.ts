@@ -16,7 +16,7 @@ import { TrackingCreatedByOp } from '../delivery/interface/delivery.workflow.sta
  * - 한 행은 단일 `mseq` 에 고정된다. 재발송은 `retryOfAttemptId` 로 연결된 **새 행**이며
  *   기존 행의 `mseq` 를 교체하지 않는다.
  * - `rootAttemptId` 는 체인 식별자다. 504 자동 재발송은 `(rootAttemptId, 'AUTO_504')` unique 로
- *   체인당 1회만 허용해 무한 연쇄를 차단한다(DB generated column `retry_scope_key`).
+ *   체인당 1회만 허용해 무한 연쇄를 차단한다(DB generated column `auto504_chain_key` unique).
  * - 취소 의도(`cancelRequestedAt`/`cancelReason`)는 슬롯 점유 트랜잭션에서 **먼저 커밋**하고,
  *   재조정·크래시를 거쳐도 유실되지 않는다. 종결 시 반드시 `cancelResolution` 이 채워진다(§10 불변식 ③).
  * - 결과 조회는 확정월 파티션(`MSG_RESULT_yyyyMM`)을 증분 탐색한다(§7.3).

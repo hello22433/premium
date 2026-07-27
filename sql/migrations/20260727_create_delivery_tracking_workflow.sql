@@ -9,7 +9,8 @@
 --                / message_attempt(개별 메시지 시도) / refund_attempt(환불 외부 부작용)
 -- 감사·검증 3종 = dual_approval(+audit) / workflow_resolution / stale_external_response
 --
--- 환경: MySQL 8.4 / ENGINE=InnoDB / utf8mb4. FK 제약은 이 저장소 관례대로 두지 않는다(논리 FK).
+-- 환경: MySQL 8.x / MariaDB 10.x 공용 / ENGINE=InnoDB / utf8mb4. FK 제약은 이 저장소 관례대로 두지 않는다(논리 FK).
+--       생성 컬럼 식은 **결과에 문자열 리터럴을 넣지 않는다** — MariaDB 가 세션 collation 의존으로 거부한다(오류 1901).
 -- ============================================================================
 
 
@@ -141,24 +142,39 @@ CREATE TABLE `message_attempt` (
   -- 유형별 재발송 허용 횟수 강제 (§5.3 표): AUTO_504=체인당 1회, CHANNEL_FALLBACK=원 attempt 당 1회,
   -- MANUAL_RESEND=원 attempt 당 다회(attempt_seq 포함), INITIAL=제약 없음(NULL 다중 허용).
   --
-  -- ⚠ NULL 부모 주의: MySQL 에서 CONCAT(..., NULL) = NULL 이고 unique 인덱스는 NULL 을 다중 허용하므로,
-  --   `retry_of_attempt_id` 가 NULL 이면 제약이 조용히 무력화된다. 정상 흐름에서는 알림톡 시도도
-  --   추적하므로 CHANNEL_FALLBACK 은 항상 부모를 갖지만, 추적 공백(알림톡 행 생성 실패 등)에서도
-  --   같은 쿠폰에 폴백이 여러 건 쌓이지 않도록 **order_delivery 범위 키로 대체**한다.
-  `retry_scope_key`           VARCHAR(80)
+  -- ⚠ 생성 컬럼에 문자열 리터럴을 **결과로** 넣지 않는다: MariaDB 는 식의 결과 collation 이
+  --   세션(`character_set_connection`)에 의존하면 거부한다(오류 1901). 그래서 유형 접두사를 붙인
+  --   CONCAT 대신 **유형별 컬럼을 나눠 컬럼 값을 그대로 돌려주는 CASE** 를 쓴다.
+  --   (`WHEN 'AUTO_504'` 처럼 비교에만 쓰는 리터럴은 결과에 들어가지 않아 허용된다 — 같은 패턴이
+  --    `product.ssg_price_key`(20260617)에 이미 적용돼 있다.)
+  --
+  -- ⚠ NULL 부모 주의: unique 인덱스는 NULL 을 다중 허용하므로 `retry_of_attempt_id` 가 NULL 이면
+  --   제약이 조용히 무력화된다. 정상 흐름에서는 알림톡 시도도 추적하므로 CHANNEL_FALLBACK 은 항상
+  --   부모를 갖지만, 추적 공백(알림톡 행 생성 실패 등)에 대비해 **부모 없는 폴백은 쿠폰 범위 키**로
+  --   따로 잡는다(`fallback_delivery_key`).
+  `auto504_chain_key`         CHAR(32)
+      GENERATED ALWAYS AS (CASE WHEN `attempt_type` = 'AUTO_504' THEN `root_attempt_id` END) STORED
+      COMMENT 'AUTO_504 체인당 1회 보조 (§5.3)',
+  `fallback_parent_key`       CHAR(32)
+      GENERATED ALWAYS AS (CASE WHEN `attempt_type` = 'CHANNEL_FALLBACK' THEN `retry_of_attempt_id` END) STORED
+      COMMENT 'CHANNEL_FALLBACK 원 attempt 당 1회 보조',
+  `fallback_delivery_key`     INT
       GENERATED ALWAYS AS (
-        CASE `attempt_type`
-          WHEN 'AUTO_504'         THEN CONCAT('A:', `root_attempt_id`)
-          WHEN 'CHANNEL_FALLBACK' THEN CONCAT('C:', COALESCE(`retry_of_attempt_id`, CONCAT('od', `order_delivery_id`)))
-          WHEN 'MANUAL_RESEND'    THEN CONCAT('M:', `retry_of_attempt_id`, ':', `attempt_seq`)
-        END
+        CASE WHEN `attempt_type` = 'CHANNEL_FALLBACK' AND `retry_of_attempt_id` IS NULL
+             THEN `order_delivery_id` END
       ) STORED
-      COMMENT '재발송 유형별 unique 범위 보조 (§5.3). CHANNEL_FALLBACK 은 부모 부재 시 order_delivery 범위',
+      COMMENT '부모 없는 폴백의 쿠폰당 1회 보조(추적 공백 대비)',
+  `manual_resend_parent_key`  CHAR(32)
+      GENERATED ALWAYS AS (CASE WHEN `attempt_type` = 'MANUAL_RESEND' THEN `retry_of_attempt_id` END) STORED
+      COMMENT 'MANUAL_RESEND 다회 허용 — attempt_seq 와 조합해 같은 순번 중복만 차단',
   `created_at`                DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
   `updated_at`                DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_message_attempt_attempt_id` (`attempt_id`),
-  UNIQUE KEY `uk_message_attempt_retry_scope` (`retry_scope_key`),
+  UNIQUE KEY `uk_message_attempt_auto504` (`auto504_chain_key`),
+  UNIQUE KEY `uk_message_attempt_fallback` (`fallback_parent_key`),
+  UNIQUE KEY `uk_message_attempt_fallback_od` (`fallback_delivery_key`),
+  UNIQUE KEY `uk_message_attempt_manual` (`manual_resend_parent_key`, `attempt_seq`),
   KEY `idx_message_attempt_delivery` (`order_delivery_id`, `status`),
   KEY `idx_message_attempt_status` (`status`, `state_entered_at`),
   KEY `idx_message_attempt_due` (`status`, `next_attempt_at`),
@@ -174,7 +190,7 @@ CREATE TABLE `message_attempt` (
 --   (불변식 SQL 의 created_by_op IN ('MESSAGE_SEND','RETRY') / = 'MANUAL_RESEND' 필터가 자연히 걸러낸다).
 -- M3 검증
 -- 상관키 유일성(§10 2단계 PASS): SELECT attempt_id FROM message_attempt GROUP BY attempt_id HAVING COUNT(*) > 1; -- 0행
--- 체인당 AUTO_504 1회(§10 4단계 PASS):
+-- 체인당 AUTO_504 1회(§10 4단계 PASS, uk_message_attempt_auto504 가 물리 강제):
 --   SELECT root_attempt_id FROM message_attempt WHERE attempt_type='AUTO_504' GROUP BY root_attempt_id HAVING COUNT(*)>1; -- 0행
 -- M3 롤백: DROP TABLE IF EXISTS `message_attempt`;
 
