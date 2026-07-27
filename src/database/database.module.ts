@@ -92,6 +92,8 @@ import { ForbiddenWordEntity } from '../entity/forbidden.word.entity';
 import { ForbiddenWordHistoryEntity } from '../entity/forbidden.word.history.entity';
 import { ForbiddenWordBlockLogEntity } from '../entity/forbidden.word.block.log.entity';
 import { CouponViewLogEntity } from '../entity/coupon.view.log.entity';
+import { OrderReceiptGeneratedOrderEntity } from '../entity/order.receipt.generated.order.entity';
+import { OrderReceiptAutoResultEntity } from '../entity/order.receipt.auto.result.entity';
 
 @Module({
   imports: [
@@ -191,6 +193,8 @@ import { CouponViewLogEntity } from '../entity/coupon.view.log.entity';
           ForbiddenWordHistoryEntity,
           ForbiddenWordBlockLogEntity,
           CouponViewLogEntity,
+          OrderReceiptGeneratedOrderEntity,
+          OrderReceiptAutoResultEntity,
         ],
         extra: {
           connectionLimit: +configService.get('DATABASE_CONNECTION_LIMIT', 50),
