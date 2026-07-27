@@ -860,14 +860,17 @@ export class OrderService {
         }
       }
 
-      // 발송 실패 건 포함 여부 확인 (활성 배송건만)
+      // 미해결 발송 실패 건 포함 여부 확인 (활성 배송건만)
+      // 재발송 성공 시에도 status 는 FAIL/FAIL_SMS 로 남고 resendAt 만 채워지므로,
+      // resendAt 이 없는 건(= 아직 재발송되지 않은 실패)만 실패로 본다.
       const hasFailedDelivery =
         order.orderProductMappings?.some((mapping) =>
           mapping.orderDeliveries
             ?.filter((delivery) => delivery.deletedAt == null)
             .some(
               (delivery) =>
-                delivery.status === IOrderDeliveryStatus.FAIL || delivery.status === IOrderDeliveryStatus.FAIL_SMS,
+                (delivery.status === IOrderDeliveryStatus.FAIL || delivery.status === IOrderDeliveryStatus.FAIL_SMS) &&
+                delivery.resendAt == null,
             ),
         ) ?? false;
 
@@ -1113,10 +1116,11 @@ export class OrderService {
               partnerCompanyName: '',
             };
 
-        // 해당 상품의 발송 실패 건수 계산
+        // 해당 상품의 미해결 발송 실패 건수 계산 (재발송 완료 건 제외 — resendAt 이 채워지면 실패로 세지 않는다)
         const failCount = orderProductMapping.orderDeliveries.filter(
           (delivery) =>
-            delivery.status === IOrderDeliveryStatus.FAIL || delivery.status === IOrderDeliveryStatus.FAIL_SMS,
+            (delivery.status === IOrderDeliveryStatus.FAIL || delivery.status === IOrderDeliveryStatus.FAIL_SMS) &&
+            delivery.resendAt == null,
         ).length;
 
         productList.push({
