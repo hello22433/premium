@@ -1,6 +1,11 @@
 import { classifyGemtekResult, GemtekResultOutcome } from './gemtek.result.policy';
 import { advanceCursor, monthsToSearch, nextYearMonth, toYearMonth } from './result.partition.cursor';
-import { computeNextAttemptAt, computeResendDeadline, isWithinResendDeadline } from './resend.schedule';
+import {
+  computeNextAttemptAt,
+  computeResendDeadline,
+  isWithinAllowedSendWindow,
+  isWithinResendDeadline,
+} from './resend.schedule';
 
 /**
  * §4 Gemtek 결과 코드 정책 / §7.2 재발송 시간 정책 / §7.3 증분 탐색.
@@ -59,14 +64,26 @@ describe('결과 파티션 증분 탐색 (§7.3)', () => {
 });
 
 describe('504 재발송 시간 정책 (§7.2)', () => {
-  it('허용 시간대(08:00–21:00) 확정은 즉시 예약한다', () => {
+  it('허용 시간대(08:00–20:00) 확정은 즉시 예약한다', () => {
     const confirmed = new Date('2026-07-27T10:30:00');
     expect(computeNextAttemptAt(confirmed).getTime()).toBe(confirmed.getTime());
   });
 
-  it('심야(21:00 이후) 확정은 익일 08:00 으로 미룬다', () => {
-    const next = computeNextAttemptAt(new Date('2026-07-27T22:10:00'));
-    expect(next.toISOString()).toBe(new Date('2026-07-28T08:00:00').toISOString());
+  it('20:00 이후 확정은 익일 08:00 으로 미룬다(자동 발송 허용 시간대 08:00–20:00)', () => {
+    expect(computeNextAttemptAt(new Date('2026-07-27T20:00:00')).toISOString()).toBe(
+      new Date('2026-07-28T08:00:00').toISOString(),
+    );
+    expect(computeNextAttemptAt(new Date('2026-07-27T22:10:00')).toISOString()).toBe(
+      new Date('2026-07-28T08:00:00').toISOString(),
+    );
+  });
+
+  it('허용 시간대 판정은 08:00 포함 ~ 20:00 미포함이다', () => {
+    expect(isWithinAllowedSendWindow(new Date('2026-07-27T07:59:59'))).toBe(false);
+    expect(isWithinAllowedSendWindow(new Date('2026-07-27T08:00:00'))).toBe(true);
+    expect(isWithinAllowedSendWindow(new Date('2026-07-27T19:59:59'))).toBe(true);
+    expect(isWithinAllowedSendWindow(new Date('2026-07-27T20:00:00'))).toBe(false);
+    expect(isWithinAllowedSendWindow(new Date('2026-07-27T01:01:00'))).toBe(false);
   });
 
   it('새벽(08:00 이전) 확정은 당일 08:00 으로 미룬다', () => {

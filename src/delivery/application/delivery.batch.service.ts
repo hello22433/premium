@@ -46,6 +46,7 @@ import { ISmsSend } from '../../sms/interface/sms.send';
 import { MessageAttemptService } from './message-attempt.service';
 import { MessageAttemptChannel, MessageAttemptType } from '../interface/message.attempt.status';
 import { DeliveryExclusiveOp } from '../interface/delivery.workflow.status';
+import { computeNextAttemptAt, isWithinAllowedSendWindow } from '../domain/resend.schedule';
 import { IOrderSendMethod } from '../../order/interface/order.send.method';
 import { IOrderStatus } from '../../order/interface/order.status';
 import { IOrderType } from '../../order/interface/order.type';
@@ -934,6 +935,18 @@ export class DeliveryBatchService {
       this.releaseReportClaim(od);
       od.reportNextDueAt = new Date(now.getTime() + REPORT_NEXT_DUE_MS);
       await this.persistReportState(od, token);
+      return;
+    }
+
+    // 심야 자동 발송 금지(08:00–20:00 KST 밖) — SMS 폴백도 **배치가 트리거하는 발송**이라
+    // 광고성 정보 전송 제한 대상이다. 폴백을 포기하지 않고 다음 허용 시작으로 미룬다.
+    // (재시도 소진·기한 초과로 여기까지 온 건이므로 다음 창에서 즉시 폴백된다.)
+    if (!isWithinAllowedSendWindow(now)) {
+      const deferUntil = computeNextAttemptAt(now);
+      this.releaseReportClaim(od);
+      od.reportNextDueAt = deferUntil;
+      await this.persistReportState(od, token);
+      this.logger.log(`[REPORT_SWEEP][R1] 심야 SMS 폴백 보류 — od=${od.id}, 재개 예정=${deferUntil.toISOString()}`);
       return;
     }
 

@@ -29,6 +29,8 @@ describe('MessageResultReconcileService — 결과 조회·재조정', () => {
   const createService = (options: {
     tracking?: unknown[];
     reconciling?: unknown[];
+    unknown?: unknown[];
+    expiredResend?: unknown[];
     resultByMseq?: jest.Mock;
     resultByAttemptId?: jest.Mock;
     queueMseq?: jest.Mock;
@@ -36,6 +38,7 @@ describe('MessageResultReconcileService — 결과 조회·재조정', () => {
     pendingCount?: number;
   }) => {
     const update = jest.fn().mockResolvedValue({ affected: 1 });
+    const attemptQueries: { sql: string; params: Record<string, unknown> }[] = [];
     const workflowUpdates: { set: Record<string, unknown>; where: string[] }[] = [];
 
     const attemptRepository = {
@@ -43,15 +46,27 @@ describe('MessageResultReconcileService — 결과 조회·재조정', () => {
         .fn()
         .mockImplementationOnce(async () => options.tracking ?? [])
         .mockImplementationOnce(async () => options.reconciling ?? [])
+        .mockImplementationOnce(async () => options.unknown ?? [])
         .mockImplementation(async () => []),
       update,
       count: jest.fn().mockResolvedValue(options.pendingCount ?? 0),
-      createQueryBuilder: jest.fn().mockReturnValue({
-        update: jest.fn().mockReturnThis(),
-        set: jest.fn().mockReturnThis(),
-        where: jest.fn().mockReturnThis(),
-        andWhere: jest.fn().mockReturnThis(),
-        execute: jest.fn().mockResolvedValue({ affected: 0 }),
+      createQueryBuilder: jest.fn().mockImplementation(() => {
+        const qb: Record<string, unknown> = {
+          update: jest.fn().mockReturnThis(),
+          set: jest.fn().mockReturnThis(),
+          where: jest.fn().mockImplementation((sql: string, params: Record<string, unknown>) => {
+            attemptQueries.push({ sql, params });
+            return qb;
+          }),
+          andWhere: jest.fn().mockImplementation((sql: string, params: Record<string, unknown>) => {
+            attemptQueries.push({ sql, params });
+            return qb;
+          }),
+          take: jest.fn().mockReturnThis(),
+          getMany: jest.fn().mockImplementation(async () => options.expiredResend ?? []),
+          execute: jest.fn().mockResolvedValue({ affected: 0 }),
+        };
+        return qb;
       }),
     } as never;
 
@@ -103,6 +118,7 @@ describe('MessageResultReconcileService — 결과 조회·재조정', () => {
       ),
       update,
       workflowUpdates,
+      attemptQueries,
       gemtekResultQuery,
     };
   };
@@ -299,5 +315,98 @@ describe('MessageResultReconcileService — 결과 조회·재조정', () => {
 
     expect(queueMseq).not.toHaveBeenCalled();
     expect(update).not.toHaveBeenCalled();
+  });
+  describe('UNKNOWN 승격 후에도 보존 한도까지 조회한다 (§7.1·§7.3)', () => {
+    it('지연 확정 결과가 도착해도 자동 종결하지 않고 LATE_RESULT_REVIEW 로 기록만 한다', async () => {
+      const reportTime = new Date('2026-07-27T11:30:00');
+      const { service, update, workflowUpdates } = createService({
+        unknown: [attempt({ status: MessageAttemptStatus.UNKNOWN })],
+        resultByMseq: jest.fn().mockResolvedValue({ mseq: 1001, stat: '3', result: '0', sendTime: null, reportTime }),
+      });
+
+      const summary = await service.reconcileOnce(now);
+
+      expect(summary.lateResult).toBe(1);
+      // 상태는 UNKNOWN 을 유지한다 — 늦게 온 성공으로 자동 정정하지 않는다.
+      const [criteria, patch] = update.mock.calls[0];
+      expect(criteria).toMatchObject({ status: MessageAttemptStatus.UNKNOWN });
+      expect(patch).toMatchObject({ gemtekResult: '0', lateResultAt: now });
+      expect(patch).not.toHaveProperty('status');
+      expect(workflowUpdates[0].set).toMatchObject({
+        workflowStatus: DeliveryWorkflowStatus.OPS_REVIEW_REQUIRED,
+        opsReviewReason: 'LATE_RESULT_REVIEW',
+      });
+    });
+
+    it('아직 확정 전이면 커서만 전진시키고 다음 사이클에 다시 본다(조회 중단 없음)', async () => {
+      const findByMseq = jest.fn().mockResolvedValue(null);
+      const { service, update } = createService({
+        unknown: [attempt({ status: MessageAttemptStatus.UNKNOWN, nextSearchMonth: '202606' })],
+        resultByMseq: findByMseq,
+      });
+
+      const summary = await service.reconcileOnce(now);
+
+      expect(findByMseq.mock.calls.map((c) => c[0])).toEqual(['202606', '202607']);
+      expect(summary.lateResult).toBe(0);
+      expect(update.mock.calls[0][1]).toMatchObject({ lastSearchedMonth: '202607', nextSearchMonth: '202607' });
+    });
+
+    it('보존 한도(90일)를 넘긴 UNKNOWN 은 조회하지 않는다', async () => {
+      const findByMseq = jest.fn();
+      const { service, update } = createService({
+        unknown: [attempt({ status: MessageAttemptStatus.UNKNOWN, createdAt: new Date('2026-04-01T00:00:00') })],
+        resultByMseq: findByMseq,
+      });
+
+      const summary = await service.reconcileOnce(now);
+
+      expect(findByMseq).not.toHaveBeenCalled();
+      expect(summary.lateResult).toBe(0);
+      expect(update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('예약 재발송 만료 판정 (§7.2)', () => {
+    it('만료는 next_attempt_at 이 아니라 retry_deadline_at(=확정+24h) 기준이다', async () => {
+      const { service, attemptQueries } = createService({ expiredResend: [] });
+
+      await service.sweepSlaOnce(now);
+
+      const expiredCondition = attemptQueries.find((q) => q.sql.includes('retry_deadline_at'));
+      expect(expiredCondition).toBeDefined();
+      expect(expiredCondition!.sql).toContain('ma.retry_deadline_at < :now');
+      // 기한 컬럼이 없는 과거 행만 next_attempt_at + 24h 로 보수 만료시킨다.
+      expect(expiredCondition!.sql).toContain('ma.retry_deadline_at IS NULL');
+      expect((expiredCondition!.params.legacyCutoff as Date).getTime()).toBe(now.getTime() - 24 * 60 * 60 * 1000);
+    });
+
+    it('기한을 넘긴 예약은 FAILED_FINAL 로 종결한다', async () => {
+      const { service, update } = createService({
+        expiredResend: [attempt({ status: MessageAttemptStatus.RETRY_SCHEDULED })],
+      });
+
+      const summary = await service.sweepSlaOnce(now);
+
+      expect(summary.expiredResend).toBe(1);
+      expect(update.mock.calls[0][0]).toMatchObject({ status: MessageAttemptStatus.RETRY_SCHEDULED });
+      expect(update.mock.calls[0][1]).toMatchObject({ status: MessageAttemptStatus.FAILED_FINAL });
+    });
+
+    it('504 예약 시 확정 시각 기준 기한을 함께 저장한다', async () => {
+      const reportTime = new Date('2026-07-27T22:30:00');
+      const { service, update } = createService({
+        auto504: true,
+        tracking: [attempt()],
+        resultByMseq: jest.fn().mockResolvedValue({ mseq: 1001, stat: '3', result: '504', sendTime: null, reportTime }),
+      });
+
+      await service.reconcileOnce(new Date('2026-07-27T22:35:00'));
+
+      const patch = update.mock.calls[0][1];
+      expect(patch.retryDeadlineAt.toISOString()).toBe(new Date('2026-07-28T22:30:00').toISOString());
+      // 예약 시각(익일 08:00)이 기한(익일 22:30)보다 앞선다 — 창 안에서만 실행된다.
+      expect(patch.nextAttemptAt.getTime()).toBeLessThan(patch.retryDeadlineAt.getTime());
+    });
   });
 });

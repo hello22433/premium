@@ -55,8 +55,13 @@ export class DeliveryBatchSchedule {
     return true;
   }
 
-  // 5분 마다 실행. cron 중복 실행 차단으로 진행 중에는 후속 cron skip.
-  @Cron('0 */5 * * * *')
+  // 발송 배치 — **09:00~20:00 KST 에만** 5분 간격으로 실행한다(2026-07-27 운영 확정).
+  //
+  //   주문 작성의 예약발송 선택 시간대가 이미 심야를 배제하므로 그 밖의 시간에 발송 배치를 돌릴
+  //   이유가 없고, 예약 시각 오입력·데이터 이상으로 새벽에 문자가 나가면 광고성 정보 전송 제한
+  //   위반 위험이 있다. 마지막 실행은 19:55 이며, 그 시각 이후 도래분은 다음 날 09:00 에 나간다.
+  //   (운영자 수동 재발송·CS 재발송은 사람이 판단하는 행위라 이 제한의 대상이 아니다.)
+  @Cron('0 */5 9-19 * * *', { timeZone: 'Asia/Seoul' })
   async issueAndSend() {
     if (this.isStillRunning(this.issueAndSendStartedAt, 'issueAndSend')) {
       this.logger.log('[BATCH] 이전 issueAndSend 진행 중 — skip');

@@ -89,6 +89,22 @@ export class MessageAttemptEntity {
   @Column({ type: 'datetime', precision: 6, nullable: true, comment: 'RETRY_SCHEDULED 재발송 예정 시각' })
   nextAttemptAt: Date | null;
 
+  @Column({
+    type: 'datetime',
+    precision: 6,
+    nullable: true,
+    comment: '재발송 가능 기한 = 실패 확정 시각 + 24h. 예약 만료 판정의 단일 기준(§7.2)',
+  })
+  retryDeadlineAt: Date | null;
+
+  @Column({
+    type: 'datetime',
+    precision: 6,
+    nullable: true,
+    comment: 'UNKNOWN 승격 후 지연 확정 결과 도착 시각(LATE_RESULT_REVIEW). 자동 종결 금지 표식(§7.1)',
+  })
+  lateResultAt: Date | null;
+
   @Column({ type: 'varchar', length: 64, nullable: true, comment: 'Level B 실행 lease 소유자' })
   ownerToken: string | null;
 

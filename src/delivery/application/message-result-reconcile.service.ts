@@ -10,7 +10,12 @@ import { GemtekResultQuery, GemtekResultRecord } from '../../sms/infra/gemtek.re
 import { SmsGemtekSend } from '../../sms/infra/sms.gemtek.send';
 import { classifyGemtekResult, GemtekResultOutcome } from '../domain/gemtek.result.policy';
 import { advanceCursor, monthsToSearch, toYearMonth } from '../domain/result.partition.cursor';
-import { computeNextAttemptAt, isWithinResendDeadline } from '../domain/resend.schedule';
+import {
+  computeNextAttemptAt,
+  computeResendDeadline,
+  isWithinResendDeadline,
+  RESEND_DEADLINE_MS,
+} from '../domain/resend.schedule';
 
 /** 표 4-1 상태별 최대 체류시간(제안값, §7.1). 승인 확정 시 이 상수를 바꾼다. */
 export const SLA_SUBMITTING_MS = 5 * 60 * 1000;
@@ -34,6 +39,8 @@ export interface ReconcileSummary {
   unknown: number;
   pending: number;
   recovered: number;
+  /** UNKNOWN 승격 후 지연 확정 결과가 도착해 LATE_RESULT_REVIEW 로 기록된 건수(§7.1) */
+  lateResult: number;
 }
 
 export interface SlaSweepSummary {
@@ -83,6 +90,7 @@ export class MessageResultReconcileService {
       unknown: 0,
       pending: 0,
       recovered: 0,
+      lateResult: 0,
     };
 
     const tracking = await this.attemptRepository.find({
@@ -115,6 +123,26 @@ export class MessageResultReconcileService {
         }
       } catch (e) {
         this.logger.error(`재조정 복구 실패(다음 사이클 재시도). attemptId=${attempt.attemptId}: ${e}`);
+      }
+    }
+
+    // **UNKNOWN·OPS 승격 건도 보존 한도(90일)까지 조회 대상이다(§7.1·§7.3).**
+    // 승격은 정산 보류·운영 배정 신호일 뿐 조회 중단 신호가 아니다. 다만 늦게 도착한 확정 결과로
+    // 자동 종결·자동 정산 정정을 하지 않고 `LATE_RESULT_REVIEW` 로 기록만 한다.
+    const unknown = await this.attemptRepository.find({
+      where: { status: MessageAttemptStatus.UNKNOWN, mseq: Not(IsNull()), lateResultAt: IsNull() },
+      order: { stateEnteredAt: 'ASC' },
+      take: limit,
+    });
+
+    for (const attempt of unknown) {
+      summary.scanned++;
+      try {
+        if (await this.reviewLateResult(attempt, now)) {
+          summary.lateResult++;
+        }
+      } catch (e) {
+        this.logger.error(`지연 결과 조회 실패(다음 사이클 재시도). attemptId=${attempt.attemptId}: ${e}`);
       }
     }
 
@@ -194,6 +222,8 @@ export class MessageResultReconcileService {
       await this.transition(attempt, MessageAttemptStatus.TRACKING, MessageAttemptStatus.RETRY_SCHEDULED, {
         ...raw,
         nextAttemptAt: computeNextAttemptAt(confirmedAt),
+        // 기한은 **확정 시각 기준**으로 고정 저장한다(예약 시각 기준이 아니다, §7.2).
+        retryDeadlineAt: computeResendDeadline(confirmedAt),
       });
       summary.retryScheduled++;
       return;
@@ -222,6 +252,83 @@ export class MessageResultReconcileService {
       return false;
     }
     return isWithinResendDeadline(confirmedAt, now);
+  }
+
+  /**
+   * `UNKNOWN` 으로 승격된 시도의 **지연 확정 결과**를 확인한다(§7.1 `LATE_RESULT_REVIEW`).
+   *
+   * 승격은 조회 중단 신호가 아니므로 보존 한도(90일)까지 계속 훑는다. 다만 늦게 도착한 결과로
+   * **자동 성공·실패·정산 정정을 하지 않는다** — 원본 코드와 도착 시각만 기록하고 운영 확인
+   * (`DUAL_APPROVAL`)으로 넘긴다. 한 번 기록한 뒤에는 `late_result_at` 로 재기록을 막는다.
+   */
+  private async reviewLateResult(attempt: MessageAttemptEntity, now: Date): Promise<boolean> {
+    if (now.getTime() - attempt.createdAt.getTime() > MAX_TRACKING_MS) {
+      // 보존 한도 종료 파티션은 재조회하지 않는다(§7.3). 상태는 이미 UNKNOWN·운영 승격이다.
+      return false;
+    }
+
+    const currentMonth = toYearMonth(now);
+    const startMonth = attempt.nextSearchMonth ?? attempt.receiptMonth ?? toYearMonth(attempt.createdAt);
+
+    for (const month of monthsToSearch(startMonth, currentMonth)) {
+      const row = await this.gemtekResultQuery.findByMseq(month, attempt.mseq!);
+      if (!row || row.stat !== '3') {
+        continue;
+      }
+
+      await this.attemptRepository.update(
+        { attemptId: attempt.attemptId, status: MessageAttemptStatus.UNKNOWN },
+        {
+          gemtekStat: row.stat,
+          gemtekResult: row.result,
+          sendTime: row.sendTime,
+          reportTime: row.reportTime,
+          lateResultAt: now,
+        },
+      );
+      await this.markLateResultReview(attempt.orderDeliveryId, now);
+      this.logger.warn(
+        `[LATE_RESULT_REVIEW] 지연 확정 도착 — 자동 종결하지 않는다. ` +
+          `attemptId=${attempt.attemptId}, stat=${row.stat}, result=${row.result}`,
+      );
+      return true;
+    }
+
+    // 아직 확정 전이다. 커서만 전진시키고 다음 사이클에 다시 본다.
+    const cursor = advanceCursor(currentMonth);
+    await this.attemptRepository.update(
+      { attemptId: attempt.attemptId, status: MessageAttemptStatus.UNKNOWN },
+      { lastSearchedMonth: cursor.lastSearchedMonth, nextSearchMonth: cursor.nextSearchMonth },
+    );
+    return false;
+  }
+
+  /**
+   * 지연 결과를 운영 재검토 대상으로 올린다(§6.3 `lateResult` 행).
+   * `FAILED_FINAL` 은 `OPS_REVIEW_REQUIRED` 로 재상정하고, 이미 승격됐으면 사유만 갱신한다.
+   * `RESOLVED_MANUALLY_*`·`COMPLETED`·`CANCELLED` 는 불변·정합 상태라 건드리지 않는다(감사 기록만).
+   */
+  private async markLateResultReview(orderDeliveryId: number, now: Date): Promise<void> {
+    await this.workflowRepository
+      .createQueryBuilder()
+      .update(DeliveryWorkflowEntity)
+      .set({
+        workflowStatus: DeliveryWorkflowStatus.OPS_REVIEW_REQUIRED,
+        opsEscalatedAt: now,
+        opsReviewReason: OpsReviewReason.LATE_RESULT_REVIEW,
+        stateEnteredAt: now,
+        workflowVersion: () => 'workflow_version + 1',
+      })
+      .where('order_delivery_id = :orderDeliveryId', { orderDeliveryId })
+      .andWhere('workflow_status IN (:...reviewable)', {
+        reviewable: [
+          DeliveryWorkflowStatus.IN_PROGRESS,
+          DeliveryWorkflowStatus.PENDING_RECONCILE,
+          DeliveryWorkflowStatus.FAILED_FINAL,
+          DeliveryWorkflowStatus.OPS_REVIEW_REQUIRED,
+        ],
+      })
+      .execute();
   }
 
   /**
@@ -324,13 +431,21 @@ export class MessageResultReconcileService {
     }
 
     // 예약 재발송의 기한 초과 → FAILED_FINAL(기한 예외 승인 절차 없음, §7.2).
-    const expired = await this.attemptRepository.find({
-      where: {
-        status: MessageAttemptStatus.RETRY_SCHEDULED,
-        nextAttemptAt: LessThan(new Date(now.getTime() - SLA_TRACKING_MS)),
-      },
-      take: RECONCILE_BATCH_SIZE,
-    });
+    //
+    // 기준은 **실패 확정 시각 + 24h(`retry_deadline_at`)** 이다. `next_attempt_at` 기준으로 재면
+    // 심야 확정분이 익일 08:00 예약 + 체류시간만큼 더 살아남아 기한을 넘긴 재발송이 나갈 수 있다.
+    // 기한 컬럼이 없는 과거 행은 `next_attempt_at + 24h` 로 보수적으로 만료시킨다.
+    const expired = await this.attemptRepository
+      .createQueryBuilder('ma')
+      .where('ma.status = :status', { status: MessageAttemptStatus.RETRY_SCHEDULED })
+      .andWhere(
+        `((ma.retry_deadline_at IS NOT NULL AND ma.retry_deadline_at < :now)
+           OR (ma.retry_deadline_at IS NULL AND ma.next_attempt_at IS NOT NULL AND ma.next_attempt_at < :legacyCutoff))`,
+        { now, legacyCutoff: new Date(now.getTime() - RESEND_DEADLINE_MS) },
+      )
+      .take(RECONCILE_BATCH_SIZE)
+      .getMany();
+
     for (const attempt of expired) {
       await this.transition(attempt, MessageAttemptStatus.RETRY_SCHEDULED, MessageAttemptStatus.FAILED_FINAL, {
         resolvedAt: now,

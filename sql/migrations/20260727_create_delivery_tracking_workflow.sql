@@ -124,6 +124,8 @@ CREATE TABLE `message_attempt` (
   `last_searched_month`       CHAR(6)      NULL                           COMMENT '마지막 조회 완료 월 (§7.3)',
   `next_search_month`         CHAR(6)      NULL                           COMMENT '다음 사이클 조회 시작 월 (§7.3)',
   `next_attempt_at`           DATETIME(6)  NULL                           COMMENT 'RETRY_SCHEDULED 재발송 예정 시각 (§7.2 심야 정책 반영값)',
+  `retry_deadline_at`         DATETIME(6)  NULL                           COMMENT '재발송 가능 기한 = 실패 확정 시각 + 24h (§7.2). 예약 만료 판정의 단일 기준',
+  `late_result_at`            DATETIME(6)  NULL                           COMMENT 'UNKNOWN 승격 후 지연 확정 결과가 도착한 시각(LATE_RESULT_REVIEW, §7.1·§7.3). 자동 종결 금지 표식',
   `owner_token`               VARCHAR(64)  NULL                           COMMENT 'Level B 실행 lease 소유자',
   `generation`                BIGINT       NOT NULL DEFAULT 0             COMMENT 'Level B 세대(3중 fencing)',
   `workflow_version`          BIGINT       NULL                           COMMENT '바인딩된 workflow_version(3중 fencing)',
