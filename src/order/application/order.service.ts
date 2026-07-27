@@ -60,7 +60,7 @@ import {
 } from '../api/order.res.dto';
 import { OrderEntity } from '../../entity/order.entity';
 import { InjectRepository } from '@nestjs/typeorm';
-import { EntityManager, In, Not, ObjectLiteral, QueryRunner, Repository, SelectQueryBuilder } from 'typeorm';
+import { EntityManager, In, ObjectLiteral, QueryRunner, Repository, SelectQueryBuilder } from 'typeorm';
 import { QueryBuilderDateCondition } from '../../common/infra/query.builder.date.condition';
 import { CustomerSettlementViewDto, OrderViewDto } from '../api/dto/order.view.dto';
 import { DateDateFormatStr, DateFormatStr } from '../../common/domain/date.format.str';
@@ -1158,11 +1158,12 @@ export class OrderService {
     const testDeliveryHistoryMap = new Map<number, OrderTestDeliveryHistoryDto[]>();
 
     if (orderProductMappingIds.length > 0) {
-      // 발송 확정 전(WAIT)인 건만 제외. 기존 이력은 모두 COMPLETE 라 영향 없다.
+      // 성공 확정된 이력만 노출한다. WAIT(예약)/TEMP(발송중 마커)/FAIL(실패)는 제외.
+      // TEMP 는 발송 시작~확정 사이 또는 확정 실패로 잔류한 미확정 상태라 성공 이력으로 보여선 안 된다.
       const testDeliveryHistories = await this.testOrderDeliveryRepository.find({
         where: {
           orderProductMappingId: In(orderProductMappingIds),
-          status: Not(IOrderDeliveryStatus.WAIT),
+          status: In([IOrderDeliveryStatus.COMPLETE, IOrderDeliveryStatus.COMPLETE_SMS]),
         },
         order: { id: 'ASC' },
       });
@@ -5627,46 +5628,10 @@ export class OrderService {
     return baseDate.tz('Asia/Seoul').add(expireDays, 'day').toDate();
   }
 
-  // 외부 발송은 트랜잭션/락 밖에서 수행 (예약 → 발송 → 확정)
   async testDelivery(user: ILoginUserInfo, getBody: OrderTestDeliveryReqDto) {
-    const { orderId, orderProductMappingId } = getBody;
+    const { orderId, orderProductMappingId, deliveryTarget } = getBody;
 
     await this.assertOrderInViewScope(user, orderId);
-
-    const { testOrderDeliveryId, orderDelivery } = await this.reserveTestDelivery(user, getBody);
-
-    // 2. 전송 (TX 밖 — testOrderDeliveryId 로 테스트 발송임을 전달하여 PIN 재발급 스킵)
-    let isSuccess = false;
-    try {
-      isSuccess = await this.deliveryBatchService.oneSend(orderDelivery, false, testOrderDeliveryId);
-    } catch (error) {
-      await this.rollbackTestDelivery(testOrderDeliveryId);
-      throw error;
-    }
-
-    if (!isSuccess) {
-      await this.rollbackTestDelivery(testOrderDeliveryId);
-      throw new BadRequestException('테스트 발송에 실패했습니다. 수신자 정보를 확인해주세요.');
-    }
-
-    // 3. 확정 - 발송 성공 시에만 이력 확정 및 횟수 증가
-    await this.confirmTestDelivery(testOrderDeliveryId, orderProductMappingId);
-  }
-
-  // 테스트 발송 3단계(확정): 이력 COMPLETE + 발송 횟수 증가
-  @Transactional()
-  private async confirmTestDelivery(testOrderDeliveryId: number, orderProductMappingId: number): Promise<void> {
-    await this.testOrderDeliveryRepository.update(testOrderDeliveryId, { status: IOrderDeliveryStatus.COMPLETE });
-    await this.orderProductMappingRepository.increment({ id: orderProductMappingId }, 'testDeliveryCount', 1);
-  }
-
-  // 테스트 발송 1단계(예약): 행 잠금 + 한도 검증 + WAIT 이력 저장. 커밋 후 실제 발송이 일어난다.
-  @Transactional()
-  private async reserveTestDelivery(
-    user: ILoginUserInfo,
-    getBody: OrderTestDeliveryReqDto,
-  ): Promise<{ testOrderDeliveryId: number; orderDelivery: OrderDeliveryEntity }> {
-    const { orderId, orderProductMappingId, deliveryTarget } = getBody;
 
     // 최대 횟수 (상품별 2회). 운영관리자/최고관리자는 제한 없음.
     const maxLimitCount = 2;
@@ -5683,7 +5648,6 @@ export class OrderService {
       .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
       .innerJoinAndSelect('order.user', 'user')
       .where('orderProductMapping.id = :id', { id: orderProductMappingId })
-      .setLock('pessimistic_write')
       .getOne();
 
     if (!orderProductMapping) {
@@ -5694,8 +5658,33 @@ export class OrderService {
       throw new BadRequestException('주문 정보와 상품 정보가 일치하지 않습니다.');
     }
 
-    if (!canBypassTestDeliveryLimit && orderProductMapping.testDeliveryCount >= maxLimitCount) {
-      throw new BadRequestException('테스트발송은 상품당 최대 2회입니다.');
+    const testDeliveryAllowedStatuses = [
+      IOrderStatus.TEMP,
+      IOrderStatus.DELIVERY_REQUEST,
+      IOrderStatus.REVIEW_COMPLETE,
+      IOrderStatus.DELIVERY_CONFIRMED,
+      IOrderStatus.DELIVERY_COMPLETE,
+    ];
+    if (!testDeliveryAllowedStatuses.includes(orderProductMapping.order.status)) {
+      throw new BadRequestException('현재 상태의 주문은 테스트 발송할 수 없습니다.');
+    }
+
+    // 한도 용량 원자 선점: count < 2 인 경우에만 +1. affected=0 이면 한도 초과(동시 요청 포함)로 차단한다.
+    // 락+검사 대신 조건부 UPDATE 로 선점해 동시 요청의 한도 초과를 구조적으로 막는다.
+    // 발송 전에 선점하므로, 이후 발송이 실패하면 보상(-1)한다. 운영관리자/최고관리자는 무제한이라 무조건 +1.
+    if (!canBypassTestDeliveryLimit) {
+      const claim = await this.orderProductMappingRepository
+        .createQueryBuilder()
+        .update()
+        .set({ testDeliveryCount: () => 'test_delivery_count + 1' })
+        .where('id = :id', { id: orderProductMappingId })
+        .andWhere('test_delivery_count < :maxLimitCount', { maxLimitCount })
+        .execute();
+      if ((claim.affected ?? 0) === 0) {
+        throw new BadRequestException('테스트발송은 상품당 최대 2회입니다.');
+      }
+    } else {
+      await this.orderProductMappingRepository.increment({ id: orderProductMappingId }, 'testDeliveryCount', 1);
     }
 
     const firstDelivery = await this.orderDeliveryRepository.findOne({
@@ -5704,6 +5693,11 @@ export class OrderService {
     });
     const expireAt = this.resolveOrderExpireAt(orderProductMapping, firstDelivery?.expireAt);
     const expireDate = expireAt ? dayjs(expireAt).tz('Asia/Seoul').format('YYYY. MM. DD') : null;
+
+    const deliveryMethod = orderProductMapping.sendMethod!;
+    const encryptedDeliveryTarget = this.cryptoCipher.encryptDeliveryTarget(
+      PhoneUtil.normalizeDeliveryTarget(deliveryTarget),
+    );
 
     // 쿠폰이미지 만들기
     const { path: imagePath } = await DeliveryCreateCouponImage(
@@ -5717,25 +5711,19 @@ export class OrderService {
       orderProductMapping.product.type,
     );
 
-    const deliveryMethod = orderProductMapping.sendMethod!;
-    const encryptedDeliveryTarget = this.cryptoCipher.encryptDeliveryTarget(
-      PhoneUtil.normalizeDeliveryTarget(deliveryTarget),
-    );
-
-    // test_order_delivery 테이블에 저장 (oneSend에서 테스트 발송 여부를 판단하여 PIN 재발급 스킵)
+    // test_order_delivery 저장 (oneSend에서 테스트 발송 여부를 판단하여 PIN 재발급 스킵)
     const testOrderDelivery = new TestOrderDeliveryEntity();
-    testOrderDelivery.status = IOrderDeliveryStatus.WAIT;
+    testOrderDelivery.status = IOrderDeliveryStatus.COMPLETE;
     testOrderDelivery.orderProductMappingId = orderProductMapping.id;
     testOrderDelivery.deliveryMethod = deliveryMethod;
     testOrderDelivery.deliveryTarget = encryptedDeliveryTarget;
     testOrderDelivery.imagePath = imagePath;
-
     testOrderDelivery.sendRequestAt = new Date();
     testOrderDelivery.expireAt = expireAt;
     testOrderDelivery.barCode = barCode;
     testOrderDelivery.personalCode = barCode;
-
     const savedTestOrderDelivery = await this.testOrderDeliveryRepository.save(testOrderDelivery);
+    const testOrderDeliveryId = savedTestOrderDelivery.id;
 
     const orderDelivery = new OrderDeliveryEntity();
     orderDelivery.deliveryMethod = deliveryMethod;
@@ -5747,16 +5735,47 @@ export class OrderService {
     orderDelivery.imagePath = imagePath;
     orderDelivery.expireAt = expireAt;
 
-    return { testOrderDeliveryId: savedTestOrderDelivery.id, orderDelivery };
+    // 전송 (TX 밖 — testOrderDeliveryId 로 테스트 발송임을 전달하여 PIN 재발급 스킵).
+    // 발송 실패 시 선점한 한도를 보상(-1)하고 저장한 이력을 정리한다.
+    let isSuccess = false;
+    try {
+      isSuccess = await this.deliveryBatchService.oneSend(orderDelivery, false, testOrderDeliveryId);
+    } catch (error) {
+      await this.rollbackTestDelivery(testOrderDeliveryId, orderProductMappingId);
+      throw error;
+    }
+
+    if (!isSuccess) {
+      await this.rollbackTestDelivery(testOrderDeliveryId, orderProductMappingId);
+      throw new BadRequestException('테스트 발송에 실패했습니다. 수신자 정보를 확인해주세요.');
+    }
   }
 
-  // 테스트 발송 실패 시 예약 이력 제거. 원 발송 실패 사유를 덮지 않도록 예외는 로그만 남긴다.
-  private async rollbackTestDelivery(testOrderDeliveryId: number): Promise<void> {
+  // 테스트 발송 실패 시 저장한 이력 제거 + 선점한 한도 보상 차감(-1).
+  // 발송 전에 한도를 선점(+1)했으므로 발송 실패 시 되돌린다. 원 발송 실패 사유를 덮지 않도록 예외는 로그만 남긴다.
+  private async rollbackTestDelivery(testOrderDeliveryId: number, orderProductMappingId: number): Promise<void> {
+    // 이력 삭제와 한도 보상은 서로 독립이므로 각각 try 로 감싼다.
     try {
       await this.testOrderDeliveryRepository.softDelete(testOrderDeliveryId);
     } catch (error) {
       this.logger.error(
-        `테스트 발송 예약 이력 제거 중 오류 (testOrderDeliveryId: ${testOrderDeliveryId})`,
+        `테스트 발송 이력 제거 중 오류 (testOrderDeliveryId: ${testOrderDeliveryId})`,
+        error instanceof Error ? error.stack : String(error),
+      );
+    }
+
+    // 관리자 무제한이어도 발송 전 +1 했으므로 보상 대상이다. 0 미만으로 내려가지 않도록 조건부 차감.
+    try {
+      await this.orderProductMappingRepository
+        .createQueryBuilder()
+        .update()
+        .set({ testDeliveryCount: () => 'test_delivery_count - 1' })
+        .where('id = :id', { id: orderProductMappingId })
+        .andWhere('test_delivery_count > 0')
+        .execute();
+    } catch (error) {
+      this.logger.error(
+        `테스트 발송 한도 보상 차감 중 오류 (orderProductMappingId: ${orderProductMappingId})`,
         error instanceof Error ? error.stack : String(error),
       );
     }
