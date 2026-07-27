@@ -1,9 +1,18 @@
 import { IOrderStatus } from '../../interface/order.status';
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiProperty } from '@nestjs/swagger';
 import { IOrderDeliveryStatus } from '../../../delivery/interface/order.delivery.status';
 import { DestructionCertificateBlockReason } from '../../interface/destruction.certificate.block.reason';
 
-export class CustomerSettlementDto {
+/**
+ * 발송관리 고객사 호버 툴팁용 정산정보 (주문 1건 기준).
+ * 목록(/order/list)과 분리된 지연 로딩 엔드포인트 전용 뷰.
+ */
+export class CustomerSettlementViewDto {
+  @ApiProperty({
+    description: 'order id',
+  })
+  orderId: number;
+
   @ApiProperty({
     description: '정산조건 ex) 선정산: PRE_PAYMENT, 후정산: POST_PAYMENT',
     enum: ['PRE_PAYMENT', 'POST_PAYMENT'],
@@ -11,10 +20,9 @@ export class CustomerSettlementDto {
   settleCondition: 'PRE_PAYMENT' | 'POST_PAYMENT';
 
   @ApiProperty({
-    nullable: true,
-    description: '잔여 서비스 한도 (원 단위 정수, 0-clamp). 계산 불가 시 null',
+    description: '잔여 발송 한도 (원 단위 정수, 0-clamp)',
   })
-  remainServiceAmount: number | null;
+  remainServiceAmount: number;
 }
 
 export class OrderViewDto {
@@ -142,11 +150,4 @@ export class OrderViewDto {
     actualSendAt: string | null;
   }[];
 
-  @ApiPropertyOptional({
-    nullable: true,
-    type: CustomerSettlementDto,
-    description:
-      '고객사 정산 정보. wallet_account 미존재 시 필드 생략. SUPER_ADMIN/OPERATION_ADMIN 조회 + includeSettlement=true 일 때만 포함.',
-  })
-  customerSettlement?: CustomerSettlementDto;
 }

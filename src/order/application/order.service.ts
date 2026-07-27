@@ -39,6 +39,7 @@ import {
   OrderTransactionStatementEmailReqDto,
   OrderDestructionCertificateEmailReqDto,
   OrderAllocationPreviewReqDto,
+  OrderGetCustomerSettlementReqDto,
 } from '../api/order.req.dto';
 import {
   OrderCreateTempResDto,
@@ -56,6 +57,7 @@ import {
   OrderGetPreviousContentResDto,
   OrderGetSettleGetListResDto,
   OrderAllocationPreviewResDto,
+  OrderGetCustomerSettlementResDto,
 } from '../api/order.res.dto';
 import { OrderEntity } from '../../entity/order.entity';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -70,7 +72,7 @@ import {
   SelectQueryBuilder,
 } from 'typeorm';
 import { QueryBuilderDateCondition } from '../../common/infra/query.builder.date.condition';
-import { OrderViewDto } from '../api/dto/order.view.dto';
+import { CustomerSettlementViewDto, OrderViewDto } from '../api/dto/order.view.dto';
 import { DateDateFormatStr, DateFormatStr } from '../../common/domain/date.format.str';
 import { format } from 'date-fns';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
@@ -964,10 +966,6 @@ export class OrderService {
       };
     });
 
-    if (getQuery.includeSettlement && OrderService.canViewCustomerSettlement(user)) {
-      await this.attachCustomerSettlement(orderList, resultList);
-    }
-
     return { list: resultList, totalPage, totalCount, currentPage: page };
   }
 
@@ -982,41 +980,79 @@ export class OrderService {
   }
 
   /**
-   * 응답 페이지 내 distinct 고객사(settlement_code)에 대해 wallet_account 를 1회 배치 조회 후
-   * remainServiceAmount 를 map 조인한다 (행별 재계산·N+1 없음).
+   * 발송관리 고객사 호버 툴팁용 정산정보 조회.
+   * 목록(/order/list) 응답에 싣지 않고 분리한 이유 = 화면 최초 렌더를 지갑 조회에 묶지 않기 위함(지연 로딩).
    * - settleCondition SoT = wallet_account.settle_condition (user 컬럼은 deprecated).
    * - remainServiceAmount = creditLimit + depositBalance − creditUsedAmount − creditExcessAmount, 0-clamp.
-   * - wallet_account 미존재 고객사는 customerSettlement 필드를 붙이지 않는다(생략).
+   * - 정산코드 미부여 / wallet_account 미존재 주문은 응답에서 생략한다(프론트는 '정보 없음' 처리).
+   * - 권한 미달이면 빈 목록. 조회 범위(view_scope) 밖 주문 id 는 자동 제외되어 IDOR 로 타사 잔액을 캐낼 수 없다.
+   * - type(GENERAL/SSG) 로 주문 유형을 함께 필터링한다. 컨트롤러의 SEND_GENERAL/SEND_SSG 검증과 짝이며,
+   *   유형이 다른 주문 id 는 조회되지 않는다(교차 유형 우회 차단).
+   * - 쿼리 수는 주문 id 개수와 무관하게 고정: 주문 배치 1회 + wallet 배치 1회 + view_scope 확인 2회(user, user_view_scope).
+   *   즉 정상 요청당 총 4회이며, id 가 늘어도 늘지 않는다(N+1 없음).
    */
-  private async attachCustomerSettlement(orders: OrderEntity[], views: OrderViewDto[]): Promise<void> {
-    const settlementCodeOf = (order: OrderEntity): string | null =>
-      (order.clientUser ?? order.user)?.settlementCode || null;
+  async getCustomerSettlement(
+    user: ILoginUserInfo,
+    getQuery: OrderGetCustomerSettlementReqDto,
+  ): Promise<OrderGetCustomerSettlementResDto> {
+    const ids = [...new Set(getQuery.ids ?? [])];
+    if (ids.length === 0 || !OrderService.canViewCustomerSettlement(user)) {
+      return { list: [] };
+    }
 
-    const orderCodes = orders.map(settlementCodeOf);
-    const settlementCodes = [...new Set(orderCodes.filter((code): code is string => code !== null))];
-    if (settlementCodes.length === 0) {
-      return;
+    const currentUser = await this.userRepository.findOne({
+      where: { id: user.id },
+      select: ['id', 'companyId', 'departmentId'],
+    });
+    const viewScope = await this.userViewScopeRepository.findOne({
+      where: { userId: user.id },
+    });
+
+    let queryBuilder = this.orderRepository
+      .createQueryBuilder('order')
+      .innerJoin('order.user', 'user')
+      .leftJoin('order.clientUser', 'clientUser')
+      .select(['order.id', 'user.id', 'user.settlementCode', 'clientUser.id', 'clientUser.settlementCode'])
+      .where('order.id IN (:...ids)', { ids })
+      // 교차 유형 조회 차단: 컨트롤러가 검증한 권한(SEND_GENERAL/SEND_SSG)과 실제 주문 유형을 일치시킨다.
+      // (SEND_GENERAL 만 가진 운영자가 type=GENERAL 로 SSG 주문 id 를 캐는 경로 봉쇄)
+      .andWhere('order.type = :type', { type: getQuery.type });
+    queryBuilder = this.applyViewScopeFilter(queryBuilder, user, currentUser, viewScope);
+
+    const orders = await queryBuilder.getMany();
+
+    // 과금 대상(대행주문이면 clientUser) 기준 정산코드. 코드 미부여 주문은 조회 대상에서 제외.
+    const codeByOrderId = new Map<number, string>();
+    for (const order of orders) {
+      const settlementCode = (order.clientUser ?? order.user)?.settlementCode || null;
+      if (settlementCode) {
+        codeByOrderId.set(order.id, settlementCode);
+      }
+    }
+    if (codeByOrderId.size === 0) {
+      return { list: [] };
     }
 
     const wallets = await this.walletAccountRepository.find({
-      where: { ownerType: 'SETTLEMENT_CODE', ownerId: In(settlementCodes) },
+      where: { ownerType: 'SETTLEMENT_CODE', ownerId: In([...new Set(codeByOrderId.values())]) },
     });
     const walletByCode = new Map(wallets.map((wallet) => [wallet.ownerId, wallet]));
 
-    orderCodes.forEach((code, index) => {
-      if (code === null) {
-        return;
-      }
-      const wallet = walletByCode.get(code);
+    const list: CustomerSettlementViewDto[] = [];
+    codeByOrderId.forEach((settlementCode, orderId) => {
+      const wallet = walletByCode.get(settlementCode);
       if (!wallet) {
         return;
       }
       const remain = wallet.creditLimit + wallet.depositBalance - wallet.creditUsedAmount - wallet.creditExcessAmount;
-      views[index].customerSettlement = {
+      list.push({
+        orderId,
         settleCondition: wallet.settleCondition,
         remainServiceAmount: Math.max(0, remain),
-      };
+      });
     });
+
+    return { list };
   }
 
   async getDetail(user: ILoginUserInfo, getParam: OrderGetDetailReqParamDto): Promise<OrderGetDetailResDto> {

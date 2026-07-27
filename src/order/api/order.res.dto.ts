@@ -1,4 +1,4 @@
-import { OrderViewDto } from './dto/order.view.dto';
+import { CustomerSettlementViewDto, OrderViewDto } from './dto/order.view.dto';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { GetListResDto } from '../../common/api/dto/get.list.res.dto';
 import { IOrderType } from '../interface/order.type';
@@ -16,6 +16,18 @@ export class OrderGetListResDto extends GetListResDto {
     description: '주문 list',
   })
   list: OrderViewDto[];
+}
+
+/**
+ * 발송관리 고객사 정산정보(호버 툴팁) 응답.
+ * 정산코드 미부여 / wallet_account 미존재 주문은 목록에서 생략된다.
+ */
+export class OrderGetCustomerSettlementResDto {
+  @ApiProperty({
+    description: '주문별 고객사 정산정보 list',
+    type: [CustomerSettlementViewDto],
+  })
+  list: CustomerSettlementViewDto[];
 }
 
 export class OrderCreateTempResDto {

@@ -44,6 +44,7 @@ import {
   OrderGetDestructionCertificatePdfReqDto,
   OrderGetDetailReqParamDto,
   OrderGetListReqDto,
+  OrderGetCustomerSettlementReqDto,
   OrderGetOrderCompleteReportPdfReqDto,
   OrderGetOrderCompleteReportReqDto,
   OrderGetPreviousContentReqQueryDto,
@@ -76,6 +77,7 @@ import {
   OrderGetDeliveryCompleteReportMultipleResDto,
   OrderGetDetailResDto,
   OrderGetListResDto,
+  OrderGetCustomerSettlementResDto,
   OrderGetMyOrderHistoryResDto,
   OrderGetOrderCompleteReportResDto,
   OrderGetPreviousContentResDto,
@@ -145,6 +147,32 @@ export class OrderController {
     }
 
     return this.orderService.getList(user, getQuery);
+  }
+
+  @ApiOperation({
+    summary: '발송관리 고객사 정산정보(호버 툴팁) 조회 API',
+    description:
+      '발송관리 목록의 고객사 컬럼 호버 시 노출할 정산조건/잔여 발송한도를 조회한다.<br>' +
+      '목록 렌더를 막지 않도록 /order/list 와 분리된 지연 로딩 전용 엔드포인트다.<br>' +
+      'type(GENERAL/SSG)에 따라 목록과 동일한 발송관리 세부권한(SEND_GENERAL/SEND_SSG)을 검증하고,<br>' +
+      '조회 대상 주문도 해당 type 으로 제한한다 (유형이 다른 주문 id 는 조회되지 않음).<br>' +
+      '최고 관리자 / 운영 관리자만 값을 받는다 (그 외 권한은 빈 목록).<br>' +
+      '정산코드 미부여 또는 지갑 미생성 고객사의 주문은 응답에서 생략된다.',
+  })
+  @ApiOkResponse({
+    type: OrderGetCustomerSettlementResDto,
+    description: '성공적으로 조회한 경우',
+  })
+  // ====================================================
+  @Get('/order/customer-settlement')
+  async getCustomerSettlement(@User() user: ILoginUserInfo, @Query() getQuery: OrderGetCustomerSettlementReqDto) {
+    // 목록과 동일한 발송관리 세부권한 검증 — 이게 빠지면 발송관리 권한 없는 운영자가 주문 id 만으로 잔여한도를 캘 수 있다.
+    await this.authService.authorityValidator(
+      user,
+      getQuery.type === IOrderType.SSG ? UserAuthSubEnum.SEND_SSG : UserAuthSubEnum.SEND_GENERAL,
+    );
+
+    return this.orderService.getCustomerSettlement(user, getQuery);
   }
 
   @ApiOperation({
