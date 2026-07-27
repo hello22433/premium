@@ -5,7 +5,7 @@ import { MessageAttemptEntity } from '../../entity/message.attempt.entity';
 import { MessageAttemptChannel, MessageAttemptStatus, MessageAttemptType } from '../interface/message.attempt.status';
 import { DeliveryExclusiveOp, LEGACY_SEND_OP, TrackingCreatedByOp } from '../interface/delivery.workflow.status';
 import { generateAttemptId } from '../domain/message.attempt.id';
-import { DeliverySlot, DeliveryWorkflowSlotService } from './delivery-workflow-slot.service';
+import { DeliverySlot, DeliveryWorkflowSlotService, SlotApprovalBinding } from './delivery-workflow-slot.service';
 import { SmsSendOut } from '../../sms/interface/sms.send';
 
 export interface TrackSendContext {
@@ -15,11 +15,17 @@ export interface TrackSendContext {
   /** 발송 원인(화면 노출용). 예: `COUPON`, `ALIM_TALK_FALLBACK`, `CS_RESEND` */
   sendReason?: string;
   /**
-   * **컷오버 전환 건**에서 점유할 배타 op (§6.1 표 2-1). 미전환 건에서는 사용하지 않는다.
-   * 미지정이면 `MESSAGE_SEND` 로 본다.
+   * **컷오버 전환 건**에서 점유할 배타 op (§6.1 표 2-1). 필수다 — 기본값을 두면 수동 재발송이
+   * `MESSAGE_SEND` 로 잘못 점유돼 허용 상태(`FAILED_FINAL`/`OPS_REVIEW_REQUIRED`)를 벗어나고,
+   * 생성 출처(`created_by_op`)도 자동 op 로 오기록돼 `§10` 불변식 ②/②-b 가 오분류한다.
+   * 미전환 건에서는 슬롯을 잡지 않으므로 감사 기록 용도로만 쓰인다.
    */
-  slotOp?: DeliveryExclusiveOp;
-  approvalId?: string | null;
+  slotOp: DeliveryExclusiveOp;
+  /**
+   * DUAL op 의 승인 바인딩(§6.2). 전환 건에서 `OPS_REVIEW_REQUIRED` 를 점유하려면 반드시 필요하다.
+   * 없으면 승인 불요 상태(`MANUAL_RESEND` = `FAILED_FINAL` 등)에서만 점유가 성립한다.
+   */
+  approval?: SlotApprovalBinding;
   /** 테스트 발송처럼 추적 대상이 아닌 호출. true 면 상관키 없이 그대로 발송한다. */
   skipTracking?: boolean;
 }
@@ -150,12 +156,21 @@ export class MessageAttemptService {
       return { cutover: false, workflowVersion: String(workflow.workflowVersion), slot: null };
     }
 
-    const op = ctx.slotOp ?? DeliveryExclusiveOp.MESSAGE_SEND;
-    const acquired = await this.slotService.acquire({ orderDeliveryId: ctx.orderDeliveryId, op });
+    const acquired = await this.slotService.acquire({
+      orderDeliveryId: ctx.orderDeliveryId,
+      op: ctx.slotOp,
+      approval: ctx.approval,
+    });
     if (!acquired.acquired) {
+      // 전환 건은 legacy 경로로 처리하지 않는다(§9 전환 마크 기반 진입 거부).
+      // DUAL 이 필요한 상태(OPS_REVIEW_REQUIRED)면 승인 바인딩을 갖춘 경로로만 실행할 수 있다.
       throw new ConflictException({
         code: acquired.code,
-        message: `전환 건은 배타 슬롯 없이 발송할 수 없습니다. (orderDeliveryId: ${ctx.orderDeliveryId}, op: ${op})`,
+        requiresDualApproval: acquired.requiresDualApproval ?? false,
+        message:
+          `전환 건은 배타 슬롯 없이 발송할 수 없습니다. ` +
+          `(orderDeliveryId: ${ctx.orderDeliveryId}, op: ${ctx.slotOp}, ` +
+          `workflowStatus: ${acquired.workflowStatus ?? 'UNKNOWN'})`,
       });
     }
 
@@ -185,9 +200,7 @@ export class MessageAttemptService {
     try {
       const parent = await this.findChainParent(ctx);
       const attemptId = generateAttemptId();
-      const createdByOp: TrackingCreatedByOp = gate.cutover
-        ? (ctx.slotOp ?? DeliveryExclusiveOp.MESSAGE_SEND)
-        : LEGACY_SEND_OP;
+      const createdByOp: TrackingCreatedByOp = gate.cutover ? ctx.slotOp : LEGACY_SEND_OP;
 
       const attempt = await this.attemptRepository.save(
         this.attemptRepository.create({
@@ -204,7 +217,7 @@ export class MessageAttemptService {
           workflowVersion: gate.workflowVersion,
           createdByOp,
           createdWorkflowVersion: gate.workflowVersion,
-          approvalId: ctx.approvalId ?? null,
+          approvalId: ctx.approval?.approvalId ?? null,
           stateEnteredAt: new Date(),
         }),
       );

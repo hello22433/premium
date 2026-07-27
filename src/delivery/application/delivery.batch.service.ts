@@ -45,6 +45,7 @@ import { IMailSend } from '../../mail/interface/mail-send';
 import { ISmsSend } from '../../sms/interface/sms.send';
 import { MessageAttemptService } from './message-attempt.service';
 import { MessageAttemptChannel, MessageAttemptType } from '../interface/message.attempt.status';
+import { DeliveryExclusiveOp } from '../interface/delivery.workflow.status';
 import { IOrderSendMethod } from '../../order/interface/order.send.method';
 import { IOrderStatus } from '../../order/interface/order.status';
 import { IOrderType } from '../../order/interface/order.type';
@@ -1278,9 +1279,7 @@ export class DeliveryBatchService {
     /** 경보 로그에 함께 남길 주문 id. 운영이 잃은 쓰기를 대사할 때 order 조인을 손으로 안 하도록. */
     orderId?: number,
   ): Promise<boolean> {
-    const where = claimToken
-      ? { id: orderDeliveryId, mutationClaimedAt: claimToken }
-      : { id: orderDeliveryId };
+    const where = claimToken ? { id: orderDeliveryId, mutationClaimedAt: claimToken } : { id: orderDeliveryId };
 
     const res = await this.orderDeliveryRepository.update(where, patch);
 
@@ -1694,6 +1693,7 @@ export class DeliveryBatchService {
     filePathList: string[],
     decryptedDeliveryTarget: string,
     encryptKey: string,
+    slotOp: DeliveryExclusiveOp,
   ): Promise<IOrderDeliveryStatus.COMPLETE_SMS | unknown> {
     try {
       const smsText = this.buildSmsText(orderDelivery, encryptKey, body, memo, tailText);
@@ -1701,6 +1701,7 @@ export class DeliveryBatchService {
       await this.messageAttemptService.trackSend(
         {
           orderDeliveryId: orderDelivery.id,
+          slotOp,
           channel: MessageAttemptChannel.MMS,
           attemptType: MessageAttemptType.CHANNEL_FALLBACK,
           sendReason: 'ALIM_TALK_FALLBACK',
@@ -2290,6 +2291,7 @@ export class DeliveryBatchService {
     await this.messageAttemptService.trackSend(
       {
         orderDeliveryId: orderDelivery.id,
+        slotOp: DeliveryExclusiveOp.MANUAL_RESEND,
         channel: MessageAttemptChannel.MMS,
         attemptType: MessageAttemptType.MANUAL_RESEND,
         sendReason: 'CS_RESEND',
@@ -2372,6 +2374,7 @@ export class DeliveryBatchService {
       const { report } = await this.messageAttemptService.trackAlimTalk(
         {
           orderDeliveryId: orderDelivery.id,
+          slotOp: DeliveryExclusiveOp.MANUAL_RESEND,
           attemptType: MessageAttemptType.MANUAL_RESEND,
           sendReason: 'CS_RESEND',
         },
@@ -2418,6 +2421,7 @@ export class DeliveryBatchService {
     await this.messageAttemptService.trackSend(
       {
         orderDeliveryId: orderDelivery.id,
+        slotOp: DeliveryExclusiveOp.MANUAL_RESEND,
         channel: MessageAttemptChannel.MMS,
         attemptType: MessageAttemptType.CHANNEL_FALLBACK,
         sendReason: 'CS_ALIM_TALK_FALLBACK',
@@ -2502,6 +2506,7 @@ export class DeliveryBatchService {
     await this.messageAttemptService.trackSend(
       {
         orderDeliveryId: orderDelivery.id,
+        slotOp: DeliveryExclusiveOp.MANUAL_RESEND,
         channel: MessageAttemptChannel.SMS,
         attemptType: MessageAttemptType.MANUAL_RESEND,
         sendReason: 'CS_RESEND',
@@ -2675,6 +2680,8 @@ export class DeliveryBatchService {
     // B1/B3: 실패 재발송 — 보류(환불 미생성)/환불됨 분기. snapshot 은 reissue 호출 *전* 에 잡는다
     // (reissue 내부 reverseRefundForResend 가 ledger 를 release 해 exists() 가 뒤집히기 때문).
     // refunded reverse 보강은 비-SSG 만(SSG refunded 는 reissue 내부에서 처리), held-slot 발급은 SSG 포함 wallet 전체.
+    // 전환 건에서 점유할 배타 op — 실패 재발송이면 MANUAL_RESEND, 최초 발송이면 MESSAGE_SEND(§6.1 표 2-1).
+    const sendSlotOp = wasFailBefore ? DeliveryExclusiveOp.MANUAL_RESEND : DeliveryExclusiveOp.MESSAGE_SEND;
     const isWalletManaged = wasFailBefore ? await this.walletManagedPredicate.isWalletManaged(order.id) : false;
     const refundLedgerBeforeReissue = wasFailBefore ? await this.refundLedgerService.exists(orderDelivery.id) : false;
 
@@ -2782,6 +2789,7 @@ export class DeliveryBatchService {
         const { responseData, report } = await this.messageAttemptService.trackAlimTalk(
           {
             orderDeliveryId: orderDelivery.id,
+            slotOp: sendSlotOp,
             attemptType: wasFailBefore ? MessageAttemptType.MANUAL_RESEND : MessageAttemptType.INITIAL,
             sendReason: 'COUPON',
             skipTracking: !!testOrderDeliveryId,
@@ -2816,6 +2824,7 @@ export class DeliveryBatchService {
           filePathList,
           decryptedDeliveryTarget,
           encryptKey,
+          sendSlotOp,
         );
 
         if (resultSms === IOrderDeliveryStatus.COMPLETE_SMS) {
@@ -2844,6 +2853,7 @@ export class DeliveryBatchService {
         await this.messageAttemptService.trackSend(
           {
             orderDeliveryId: orderDelivery.id,
+            slotOp: sendSlotOp,
             channel: MessageAttemptChannel.MMS,
             attemptType: wasFailBefore ? MessageAttemptType.MANUAL_RESEND : MessageAttemptType.INITIAL,
             sendReason: 'COUPON',
@@ -2891,6 +2901,7 @@ export class DeliveryBatchService {
           await this.messageAttemptService.trackSend(
             {
               orderDeliveryId: orderDelivery.id,
+              slotOp: sendSlotOp,
               channel: MessageAttemptChannel.MMS,
               attemptType: wasFailBefore ? MessageAttemptType.MANUAL_RESEND : MessageAttemptType.INITIAL,
               sendReason: 'EMAIL_SMS_RESEND',

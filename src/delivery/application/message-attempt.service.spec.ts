@@ -77,6 +77,7 @@ describe('MessageAttemptService — 시도 추적(outbox 2단 마크)', () => {
     orderDeliveryId,
     channel: MessageAttemptChannel.MMS,
     attemptType: MessageAttemptType.INITIAL,
+    slotOp: DeliveryExclusiveOp.MESSAGE_SEND,
     sendReason: 'COUPON',
     ...override,
   });
@@ -127,13 +128,43 @@ describe('MessageAttemptService — 시도 추적(outbox 2단 마크)', () => {
   describe('전환 건 — Level A 슬롯 강제(fail-closed)', () => {
     const cutoverMigratedAt = new Date('2026-07-27T00:00:00+09:00');
 
+    it('수동 재발송은 MANUAL_RESEND 슬롯을 점유하고 생성 출처도 그 op 로 기록한다', async () => {
+      const { service, saved, acquire } = createService({ cutoverMigratedAt });
+
+      await service.trackSend(
+        ctx({ slotOp: DeliveryExclusiveOp.MANUAL_RESEND, attemptType: MessageAttemptType.MANUAL_RESEND }),
+        async () => ({ mseq: 3, recovered: false }),
+      );
+
+      // MESSAGE_SEND 로 점유하면 FAILED_FINAL/OPS_REVIEW_REQUIRED 가 허용 상태가 아니라 409 로 막힌다.
+      expect(acquire).toHaveBeenCalledWith(
+        expect.objectContaining({ op: DeliveryExclusiveOp.MANUAL_RESEND, approval: undefined }),
+      );
+      expect(saved[0]).toMatchObject({ createdByOp: DeliveryExclusiveOp.MANUAL_RESEND, approvalId: null });
+    });
+
+    it('DUAL 승인 바인딩을 슬롯 점유에 전달하고 생성 행에 승인 id 를 남긴다', async () => {
+      const { service, saved, acquire } = createService({ cutoverMigratedAt });
+      const approval = { approvalId: '77', payloadHash: 'h'.repeat(64), boundWorkflowVersion: '9' };
+
+      await service.trackSend(
+        ctx({ slotOp: DeliveryExclusiveOp.MANUAL_RESEND, attemptType: MessageAttemptType.MANUAL_RESEND, approval }),
+        async () => ({ mseq: 3, recovered: false }),
+      );
+
+      expect(acquire).toHaveBeenCalledWith(expect.objectContaining({ approval }));
+      expect(saved[0]).toMatchObject({ approvalId: '77' });
+    });
+
     it('슬롯을 점유한 뒤 발송하고, 끝나면 fencing 해제한다', async () => {
       const { service, saved, acquire, release } = createService({ cutoverMigratedAt });
       const send = jest.fn().mockResolvedValue({ mseq: 7, recovered: false });
 
       await service.trackSend(ctx({ slotOp: DeliveryExclusiveOp.MESSAGE_SEND }), send);
 
-      expect(acquire).toHaveBeenCalledWith({ orderDeliveryId, op: DeliveryExclusiveOp.MESSAGE_SEND });
+      expect(acquire).toHaveBeenCalledWith(
+        expect.objectContaining({ orderDeliveryId, op: DeliveryExclusiveOp.MESSAGE_SEND }),
+      );
       expect(send).toHaveBeenCalled();
       expect(release).toHaveBeenCalledWith(expect.objectContaining({ ownerToken: 'token-1' }));
       // 슬롯 세대에 바인딩된 값으로 기록해야 3중 fencing 이 성립한다.
@@ -219,7 +250,12 @@ describe('MessageAttemptService — 시도 추적(outbox 2단 마크)', () => {
       const { service, saved, update } = createService();
 
       await service.trackAlimTalk(
-        { orderDeliveryId, attemptType: MessageAttemptType.INITIAL, sendReason: 'COUPON' },
+        {
+          orderDeliveryId,
+          slotOp: DeliveryExclusiveOp.MESSAGE_SEND,
+          attemptType: MessageAttemptType.INITIAL,
+          sendReason: 'COUPON',
+        },
         async () => ({ report: { code: 'A000' } }),
         (result) => result.report.code === 'A000',
       );
@@ -232,7 +268,7 @@ describe('MessageAttemptService — 시도 추적(outbox 2단 마크)', () => {
       const { service, update } = createService();
 
       await service.trackAlimTalk(
-        { orderDeliveryId, attemptType: MessageAttemptType.INITIAL },
+        { orderDeliveryId, slotOp: DeliveryExclusiveOp.MESSAGE_SEND, attemptType: MessageAttemptType.INITIAL },
         async () => ({ report: { code: 'A999' } }),
         (result) => result.report.code === 'A000',
       );
@@ -246,7 +282,7 @@ describe('MessageAttemptService — 시도 추적(outbox 2단 마크)', () => {
 
       await expect(
         service.trackAlimTalk(
-          { orderDeliveryId, attemptType: MessageAttemptType.INITIAL },
+          { orderDeliveryId, slotOp: DeliveryExclusiveOp.MESSAGE_SEND, attemptType: MessageAttemptType.INITIAL },
           async () => Promise.reject(failure),
           () => true,
         ),
