@@ -1,3 +1,4 @@
+import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { InjectRepository } from '@nestjs/typeorm';
 import { createExportTempPath } from '../../util/file.util';
 import { Brackets, In, Repository } from 'typeorm';
@@ -44,8 +45,6 @@ import { IUserAuthority } from '../../user/interface/user.authority';
 import { RealProductViewDto } from '../api/dto/real.product.view.dto';
 import { PublicChargeTaxViewDto } from '../api/dto/public.charge.tax.view.dto';
 import { DeliveryTrackHttp } from '../../delivery/infra/delivery.track.http';
-import { join } from 'path';
-import * as process from 'node:process';
 import * as ExcelJS from 'exceljs';
 import { OrderRealProductStatusExcelMapping } from '../domain/order.real.product.status.excel.mapping';
 import { OrderRealProductSettleViewDto } from '../api/dto/order.real.product.settle.view.dto';
@@ -174,6 +173,7 @@ export class OrderRealProductService {
     private userRepository: Repository<UserEntity>,
     private deliveryTrackHttp: DeliveryTrackHttp,
     private activityLogService: ActivityLogService,
+    private readonly cryptoCipher: CryptoCipher,
   ) {}
 
   private applyRealProductOrderAccessScope<T extends { andWhere: (condition: string, parameters?: object) => T }>(
@@ -495,8 +495,8 @@ export class OrderRealProductService {
   async updateApprove(user: ILoginUserInfo, getBody: OrderRealProductUpdateRequestReqDto): Promise<void> {
     const { id } = getBody;
 
-    // 수정요청 승인은 관리자만 가능
-    if (user.authority !== IUserAuthority.SUPER_ADMIN && user.authority !== IUserAuthority.OPERATION_ADMIN) {
+    // 수정요청 승인은 최고 관리자만 가능하다.
+    if (user.authority !== IUserAuthority.SUPER_ADMIN) {
       throw new BadRequestException('수정요청 승인 권한이 없습니다.');
     }
 
@@ -508,6 +508,10 @@ export class OrderRealProductService {
 
     if (!order) {
       throw new BadRequestException('해당 주문건은 존재하지 않습니다.');
+    }
+
+    if (order.status !== IOrderRealProductStatus.ORDER_EDIT_REQUEST) {
+      throw new BadRequestException('수정요청 상태의 주문만 승인할 수 있습니다.');
     }
 
     order.status = IOrderRealProductStatus.ORDER_PENDING; // 주문 진행중으로 수정
@@ -1053,7 +1057,8 @@ export class OrderRealProductService {
     // 성공 로그 저장
     const responseTime = Date.now() - startTime;
     const recordCount = resultList.length;
-    const { password: _, ...requestParams } = getBody;
+    const { password: excludedPassword, ...requestParams } = getBody;
+    void excludedPassword;
 
     await this.activityLogService.createLog({
       userId: user.id,
@@ -1208,7 +1213,8 @@ export class OrderRealProductService {
     // 성공 로그 저장
     const responseTime = Date.now() - startTime;
     const recordCount = orderList.length;
-    const { password: _, ...requestParams } = getBody;
+    const { password: excludedPassword, ...requestParams } = getBody;
+    void excludedPassword;
 
     await this.activityLogService.createLog({
       userId: user.id,
@@ -1267,14 +1273,16 @@ export class OrderRealProductService {
       trackingNumber: oneOrderProductMapping.trackingNumber,
       paymentMethod: oneOrderProductMapping.paymentMethod,
       paymentBank: oneOrderProductMapping.realProductOrder.businessUser.bankName,
-      paymentAccountInfo: oneOrderProductMapping.realProductOrder.businessUser.bankNumber,
+      paymentAccountInfo:
+        this.cryptoCipher.safeDecryptAccountNumber(oneOrderProductMapping.realProductOrder.businessUser.bankNumber) ??
+        oneOrderProductMapping.realProductOrder.businessUser.bankNumber,
       remarks: oneOrderProductMapping.remarks,
       progressStatus: oneOrderProductMapping.progressStatus,
       filePath: oneOrderProductMapping.filePath,
     };
   }
 
-  async updateOrderProductMappingDetail(getBody: OrderRealProductMappingUpdateReqDto) {
+  async updateOrderProductMappingDetail(user: ILoginUserInfo, getBody: OrderRealProductMappingUpdateReqDto) {
     const {
       id,
       writer,
@@ -1292,9 +1300,12 @@ export class OrderRealProductService {
       partnerCompanyId,
     } = getBody;
 
-    const queryBuilder = this.orderProductMappingRepository
+    let queryBuilder = this.orderProductMappingRepository
       .createQueryBuilder('orderRealProductMapping')
+      .innerJoinAndSelect('orderRealProductMapping.realProductOrder', 'realProductOrder')
       .where('orderRealProductMapping.id = :id', { id });
+
+    queryBuilder = this.applyRealProductOrderAccessScope(queryBuilder, user, 'realProductOrder');
 
     const oneOrderProductMapping = await queryBuilder.getOne();
     if (!oneOrderProductMapping) {

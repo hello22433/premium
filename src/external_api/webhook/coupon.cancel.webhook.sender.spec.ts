@@ -30,11 +30,9 @@ describe('CouponCancelWebhookSender HMAC signing', () => {
 
   // openssl 오라클 고정 벡터
   const EVENT_ID_V1 = '11111111-1111-4111-8111-111111111111';
-  const EXPECTED_SIG_V1 =
-    'v1=bf960ef1988e889ecebb12b671aaf3f82e1a3136fcc1cb5b11869dc8cd5a2abf';
+  const EXPECTED_SIG_V1 = 'v1=bf960ef1988e889ecebb12b671aaf3f82e1a3136fcc1cb5b11869dc8cd5a2abf';
   const EVENT_ID_V2 = '22222222-2222-4222-8222-222222222222';
-  const EXPECTED_SIG_V2 =
-    'v1=894a8ddbb60c18e90451413e940fbec1d34a5c3383c1564a03051d02487f206c';
+  const EXPECTED_SIG_V2 = 'v1=894a8ddbb60c18e90451413e940fbec1d34a5c3383c1564a03051d02487f206c';
 
   const account = { id: 1, cancelWebhookUrl: 'https://example.com/webhook' } as never;
 

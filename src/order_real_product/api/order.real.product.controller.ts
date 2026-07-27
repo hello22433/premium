@@ -158,11 +158,11 @@ export class OrderRealProductController {
     description: '주문이 존재하지 않을 경우',
   })
   @ApiUnauthorizedResponse({
-    description: '최고, 운영관리자가 아닌 경우',
+    description: '최고 관리자가 아닌 경우',
   })
   // ====================================================
   @Post('/real-product/order/update-approve')
-  @UseGuards(AuthUserSuperAndOperationAdminGuard)
+  @UseGuards(AuthUserSuperAdminGuard)
   updateApprove(@User() user: ILoginUserInfo, @Body() getBody: OrderRealProductUpdateRequestReqDto) {
     return this.orderRealProductService.updateApprove(user, getBody);
   }
@@ -418,7 +418,7 @@ export class OrderRealProductController {
   // ====================================================
   @Put('/real-product/order/order-product-mapping')
   @UseGuards(AuthUserSuperAndOperationAdminGuard)
-  updateOrderProductMappingDetail(@Body() getBody: OrderRealProductMappingUpdateReqDto) {
-    return this.orderRealProductService.updateOrderProductMappingDetail(getBody);
+  updateOrderProductMappingDetail(@User() user: ILoginUserInfo, @Body() getBody: OrderRealProductMappingUpdateReqDto) {
+    return this.orderRealProductService.updateOrderProductMappingDetail(user, getBody);
   }
 }

@@ -5,6 +5,7 @@ import { IOrderStatus } from '../../order/interface/order.status';
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { ExternalApiAccountEntity } from '../../entity/external.api.account.entity';
+import { MUTATION_CLAIM_STALE_MS } from '../../delivery/interface/order.delivery.mutation.claim';
 
 // D3-55: 폐기 후 재발행 시 파트너 trId(externalTrId)는 폐기된 원본(root)에 남고, 새로 발급된
 // 유효 delivery 는 externalTrId=null 이 된다. findOrderDeliveryByTrId 가 replacedFromId 체인의
@@ -30,7 +31,7 @@ function makeDelivery(over: {
   externalTrId?: string | null;
   couponStatus?: OrderDeliveryCouponStatus;
   replacedFromId?: number | string | null;
-  barCode?: string;
+  barCode?: string | null;
   status?: IOrderDeliveryStatus;
   discardedAt?: Date | null;
   actualSendAt?: Date | null;
@@ -44,7 +45,7 @@ function makeDelivery(over: {
     status: over.status ?? IOrderDeliveryStatus.COMPLETE,
     discardedAt: over.discardedAt ?? null,
     actualSendAt: over.actualSendAt === undefined ? new Date('2026-07-01T00:00:00.000Z') : over.actualSendAt,
-    barCode: over.barCode ?? `PIN-${over.id}`,
+    barCode: over.barCode === undefined ? `PIN-${over.id}` : over.barCode,
     personalCode: null,
     expireAt: null,
     sendRequestAt: new Date('2026-07-01T00:00:00.000Z'),
@@ -77,9 +78,16 @@ function makeService(rows: OrderDeliveryEntity[]) {
     rows.filter((r) => r.orderProductMappingId === where.orderProductMappingId),
   );
 
+  // 변형 lease: createQueryBuilder 체인 = 획득(acquireMutationLease, 기본 성공), update = 해제(owner guard)
+  const qb: any = {};
+  for (const m of ['update', 'set', 'where', 'andWhere']) qb[m] = jest.fn(() => qb);
+  qb.execute = jest.fn(async () => ({ affected: 1 }));
+  const update = jest.fn(async () => ({ affected: 1 }));
+
   const svc = Object.create(ExternalApiService.prototype) as ExternalApiService;
-  (svc as any).orderDeliveryRepository = { findOne, find };
-  return { svc, findOne, find };
+  (svc as any).orderDeliveryRepository = { findOne, find, update, createQueryBuilder: jest.fn(() => qb) };
+  (svc as any).logger = { error: jest.fn(), log: jest.fn(), warn: jest.fn() };
+  return { svc, findOne, find, update, qb };
 }
 
 describe('D3-55 재발행 trId 체인 해소 (findOrderDeliveryByTrId / resolveActiveDelivery)', () => {
@@ -234,12 +242,8 @@ describe('D3-55 재발행 trId 체인 해소 (findOrderDeliveryByTrId / resolveA
     expect(res.data!.couponStatus).toBe(ExternalCouponStatus.ISSUED); // 살아있는 tip 기준
     expect(res.data!.barCode).toBe('PIN-NEW');
   });
-});
 
-// ── 리뷰 finding 2: 미발송(actualSendAt=null) 재발행 tip 에 대한 취소 환불 레이스 차단 ──
-// (발송 신호는 status 가 아니라 actualSendAt — 정상 발송 쿠폰도 delivery.status 는 WAIT 로 남음)
-describe('D3-55 재발행 미발송 tip 취소 가드', () => {
-  it('cancelOrder: 미발송(actualSendAt=null) tip 은 3010 으로 거절(환불 레이스 차단)', async () => {
+  it('getSsgOrderStatus: 재발행 후에도 응답 trId 는 요청값을 echo (getOrderStatus 와 대칭)', async () => {
     const root = makeDelivery({
       id: 100,
       externalTrId: 'TR-1',
@@ -251,15 +255,43 @@ describe('D3-55 재발행 미발송 tip 취소 가드', () => {
       externalTrId: null,
       couponStatus: OrderDeliveryCouponStatus.NOT_USED,
       replacedFromId: 100,
-      status: IOrderDeliveryStatus.WAIT,
-      actualSendAt: null, // 재발행 발송 진행 중(미발송)
+      barCode: 'PIN-NEW',
     });
     const { svc } = makeService([root, tip]);
 
-    await expect(svc.cancelOrder(account, 'TR-1', ctx)).rejects.toMatchObject({ code: '3010' });
+    const res = await svc.getSsgOrderStatus(account, 'TR-1', ctx);
+
+    expect(res.data!.trId).toBe('TR-1'); // tip.externalTrId(null) 아니라 요청 trId echo
+    expect(res.data!.couponStatus).toBe(ExternalCouponStatus.ISSUED);
   });
 
-  it('cancelOrder: 발송 완료된 재발행 tip(actualSendAt 있음)은 가드를 통과해 정상 취소 진행', async () => {
+  it('resendOrder: 재발행 trId 는 tip 으로 해소된다(폐기 root 로 갔다면 3005, tip(미발행)이면 3004)', async () => {
+    const root = makeDelivery({
+      id: 100,
+      externalTrId: 'TR-1',
+      couponStatus: OrderDeliveryCouponStatus.CANCEL, // root 로 갔다면 여기서 3005
+      discardedAt: DISCARDED_AT,
+    });
+    const tip = makeDelivery({
+      id: 101,
+      externalTrId: null,
+      couponStatus: OrderDeliveryCouponStatus.NOT_USED, // tip 은 살아있음
+      replacedFromId: 100,
+      barCode: null, // 미발행 → tip 으로 해소되면 3004
+    });
+    const { svc } = makeService([root, tip]);
+
+    // 3004(발행된 쿠폰 없음) = tip(NOT_USED) 해소 증거. root 해소였다면 couponStatus CANCEL → 3005.
+    await expect(svc.resendOrder(account, 'TR-1', ctx)).rejects.toMatchObject({ code: '3004' });
+  });
+});
+
+// ── 살아있는 재발행 tip 은 파트너가 정상 취소 가능 (D3-55 핵심 가치) ──
+// 참고: 재발행 발송 진행 중(actualSendAt=null) 창의 취소/환불 레이스는 재발행이 비원자적이라
+// 발생 가능하나, status/actualSendAt 로 완벽 구분하려던 가드가 살아있는 FAIL_SMS tip 을 오차단하는 등
+// 새 오류를 유발해 제거함(리뷰3). 알려진 제약으로 문서화, 근본 해법은 재발행 원자화(별도 작업).
+describe('D3-55 살아있는 재발행 tip 취소', () => {
+  it('cancelOrder: 살아있는 재발행 tip(발송완료) 은 tip 대상으로 정상 취소가 진행된다', async () => {
     const root = makeDelivery({
       id: 100,
       externalTrId: 'TR-1',
@@ -274,7 +306,7 @@ describe('D3-55 재발행 미발송 tip 취소 가드', () => {
       // actualSendAt 기본값(세팅됨) → 발송 완료된 살아있는 재발행 쿠폰
     });
     const svc = makeService([root, tip]).svc;
-    // partnerCompany 취소/환불 경로를 스텁해 가드 통과만 검증(레이스 가드에 안 걸림).
+    // 취소/환불 부수효과는 스텁하고, tip(살아있는 행)이 취소 경로에 도달하는지만 검증.
     (svc as any).partnerCompanyExternService = { cancelByExternalApi: jest.fn(async () => undefined) };
     (svc as any).processCancelRefund = jest.fn(async () => undefined);
 
@@ -282,6 +314,257 @@ describe('D3-55 재발행 미발송 tip 취소 가드', () => {
 
     expect((svc as any).processCancelRefund).toHaveBeenCalled();
     expect(res).toBeDefined();
+  });
+
+  it('cancelOrder: 발송 실패(FAIL_SMS)했지만 PIN 발급된 살아있는 재발행 tip 도 정상 취소된다', async () => {
+    // 리뷰(리뷰2 FAIL 가드 회귀 방지): 재발행 send 실패(FAIL_SMS)여도 PIN(barCode)은 발급됨·미환불 =
+    // 살아있는 쿠폰. status=FAIL 로 막던 가드는 이걸 오차단했었다. 가드 제거 후엔 정상 취소/환불로 진행해야 한다.
+    const root = makeDelivery({
+      id: 100,
+      externalTrId: 'TR-1',
+      couponStatus: OrderDeliveryCouponStatus.CANCEL,
+      discardedAt: DISCARDED_AT,
+    });
+    const tip = makeDelivery({
+      id: 101,
+      externalTrId: null,
+      couponStatus: OrderDeliveryCouponStatus.NOT_USED, // 아직 살아있음(터미널 아님)
+      replacedFromId: 100,
+      status: IOrderDeliveryStatus.FAIL_SMS, // 발송만 실패
+      actualSendAt: null,
+      barCode: 'PIN-NEW', // PIN 은 발급됨 → 취소로 회수 가능
+    });
+    const svc = makeService([root, tip]).svc;
+    (svc as any).partnerCompanyExternService = { cancelByExternalApi: jest.fn(async () => undefined) };
+    (svc as any).processCancelRefund = jest.fn(async () => undefined);
+
+    const res = await svc.cancelOrder(account, 'TR-1', ctx);
+
+    // 3005/3010 로 막히지 않고 취소·환불 경로에 도달해야 한다.
+    expect((svc as any).processCancelRefund).toHaveBeenCalled();
+    expect(res).toBeDefined();
+  });
+
+  it('cancelOrder: 이미 폐기/환불된 tip(couponStatus CANCEL)은 기존 터미널 가드로 3005', async () => {
+    // 개념 정합: 폐기는 couponStatus 로 가드(환불상태로 가드하지 않음). 이미 폐기된 건은 3005.
+    const root = makeDelivery({
+      id: 100,
+      externalTrId: 'TR-1',
+      couponStatus: OrderDeliveryCouponStatus.CANCEL,
+      discardedAt: DISCARDED_AT,
+    });
+    const tip = makeDelivery({
+      id: 101,
+      externalTrId: null,
+      couponStatus: OrderDeliveryCouponStatus.CANCEL, // tip 도 이미 폐기됨
+      replacedFromId: 100,
+      discardedAt: DISCARDED_AT,
+    });
+    const { svc } = makeService([root, tip]);
+
+    await expect(svc.cancelOrder(account, 'TR-1', ctx)).rejects.toMatchObject({ code: '3005' });
+  });
+
+  // ── D3-55 후속: 변형 lease — 재발행 진행중 창을 입구에서 차단 ──
+
+  it('cancelOrder: 변형 lease 획득 실패(재발행 진행중) → 3010, 협력사 취소/환불 미진입', async () => {
+    const root = makeDelivery({
+      id: 100,
+      externalTrId: 'TR-1',
+      couponStatus: OrderDeliveryCouponStatus.CANCEL,
+      discardedAt: DISCARDED_AT,
+    });
+    const tip = makeDelivery({
+      id: 101,
+      externalTrId: null,
+      couponStatus: OrderDeliveryCouponStatus.NOT_USED,
+      replacedFromId: 100,
+      status: IOrderDeliveryStatus.WAIT, // 재발행 발급/발송 진행 중
+      actualSendAt: null,
+    });
+    const { svc, qb } = makeService([root, tip]);
+    qb.execute.mockResolvedValue({ affected: 0 }); // 재발행 tip 이 lease 보유 중 → CAS 실패
+    (svc as any).partnerCompanyExternService = { cancelByExternalApi: jest.fn() };
+    (svc as any).processCancelRefund = jest.fn();
+
+    await expect(svc.cancelOrder(account, 'TR-1', ctx)).rejects.toMatchObject({ code: '3010' });
+
+    expect((svc as any).partnerCompanyExternService.cancelByExternalApi).not.toHaveBeenCalled();
+    expect((svc as any).processCancelRefund).not.toHaveBeenCalled();
+  });
+
+  it('cancelOrder: lease 획득 후 volatile 재조회 — 획득 직전 재발행이 채운 barCode 로 협력사 취소를 스킵하지 않는다', async () => {
+    const root = makeDelivery({
+      id: 100,
+      externalTrId: 'TR-1',
+      couponStatus: OrderDeliveryCouponStatus.CANCEL,
+      discardedAt: DISCARDED_AT,
+    });
+    const tip = makeDelivery({
+      id: 101,
+      externalTrId: null,
+      couponStatus: OrderDeliveryCouponStatus.NOT_USED,
+      replacedFromId: 100,
+      barCode: null, // resolve 시점 스냅샷: 아직 PIN 없음
+      actualSendAt: null,
+    });
+    const { svc, qb } = makeService([root, tip]);
+    // lease 획득 직전 재발행이 완료되어 barCode 가 채워진 상황 — 획득 시점에 행을 갱신
+    qb.execute.mockImplementation(async () => {
+      (tip as any).barCode = 'PIN-LATE';
+      (tip as any).status = IOrderDeliveryStatus.COMPLETE;
+      return { affected: 1 };
+    });
+    (svc as any).partnerCompanyExternService = { cancelByExternalApi: jest.fn(async () => undefined) };
+    (svc as any).processCancelRefund = jest.fn(async () => undefined);
+
+    await svc.cancelOrder(account, 'TR-1', ctx);
+
+    // 재조회로 barCode 를 봤으므로 협력사 취소가 스킵되지 않는다 (스킵되면 갈락시아 살아있는 핀 + 환불 = 자금 사고)
+    expect((svc as any).partnerCompanyExternService.cancelByExternalApi).toHaveBeenCalled();
+  });
+
+  it('cancelOrder: 성공/가드 거절 모두 owner-guarded 해제가 실행된다', async () => {
+    const root = makeDelivery({
+      id: 100,
+      externalTrId: 'TR-1',
+      couponStatus: OrderDeliveryCouponStatus.CANCEL,
+      discardedAt: DISCARDED_AT,
+    });
+    const tip = makeDelivery({
+      id: 101,
+      externalTrId: null,
+      couponStatus: OrderDeliveryCouponStatus.NOT_USED,
+      replacedFromId: 100,
+    });
+    const { svc, update } = makeService([root, tip]);
+    (svc as any).partnerCompanyExternService = { cancelByExternalApi: jest.fn(async () => undefined) };
+    (svc as any).processCancelRefund = jest.fn(async () => undefined);
+
+    await svc.cancelOrder(account, 'TR-1', ctx);
+
+    expect(update).toHaveBeenCalledWith({ id: 101, mutationClaimedAt: expect.any(Date) }, { mutationClaimedAt: null });
+  });
+
+  it('cancelOrder: lease 획득은 CAS — SET=mutationClaimedAt 만, WHERE=id + (IS NULL OR < claimAt-5분)', async () => {
+    // mock 은 affected 만 돌려주므로, 획득이 진짜 CAS 인지는 발행된 쿼리 모양으로 잠근다.
+    // andWhere 술어가 빠지면 활성 lease(재발행 진행중)를 무조건 강탈 → 게이트가 통째로 무력화된다.
+    const tip = makeDelivery({ id: 101, externalTrId: 'TR-1', couponStatus: OrderDeliveryCouponStatus.NOT_USED });
+    const { svc, qb } = makeService([tip]);
+    (svc as any).partnerCompanyExternService = { cancelByExternalApi: jest.fn(async () => undefined) };
+    (svc as any).processCancelRefund = jest.fn(async () => undefined);
+
+    await svc.cancelOrder(account, 'TR-1', ctx);
+
+    const setArg = (qb.set as jest.Mock).mock.calls[0][0];
+    expect(Object.keys(setArg)).toEqual(['mutationClaimedAt']); // 획득 UPDATE 는 쿠폰상태를 건드리지 않는다
+    const claimAt: Date = setArg.mutationClaimedAt;
+    expect(claimAt).toBeInstanceOf(Date);
+
+    const idWhere = (qb.where as jest.Mock).mock.calls.find((c: any[]) => /^id = :id$/.test(String(c[0])));
+    expect(idWhere).toBeDefined();
+    expect(idWhere![1]).toEqual({ id: 101 });
+
+    const cas = (qb.andWhere as jest.Mock).mock.calls.find((c: any[]) => /mutationClaimedAt/.test(String(c[0])));
+    expect(cas).toBeDefined();
+    expect(String(cas![0])).toMatch(/mutationClaimedAt IS NULL/);
+    expect(String(cas![0])).toMatch(/mutationClaimedAt\s*<\s*:stale/);
+    expect(cas![1].stale.getTime()).toBe(claimAt.getTime() - MUTATION_CLAIM_STALE_MS);
+  });
+
+  it('cancelOrder: 가드 거절(USED → 3006) 경로에서도 finally 에서 owner-guarded 해제', async () => {
+    // 해제가 finally 가 아니면 가드로 거절된 취소가 5분짜리 lease 를 남겨
+    // 그 행의 재발행/재발송/폐기가 전부 막힌다(3010).
+    const tip = makeDelivery({ id: 101, externalTrId: 'TR-1', couponStatus: OrderDeliveryCouponStatus.USED });
+    const { svc, update } = makeService([tip]);
+    (svc as any).partnerCompanyExternService = { cancelByExternalApi: jest.fn() };
+    (svc as any).processCancelRefund = jest.fn();
+
+    await expect(svc.cancelOrder(account, 'TR-1', ctx)).rejects.toMatchObject({ code: '3006' });
+
+    expect(update).toHaveBeenCalledWith({ id: 101, mutationClaimedAt: expect.any(Date) }, { mutationClaimedAt: null });
+  });
+
+  it('cancelOrder: lease 획득 실패(3010) 시에는 해제를 시도하지 않는다 (남의 lease 를 건드리지 않음)', async () => {
+    const tip = makeDelivery({ id: 101, externalTrId: 'TR-1', couponStatus: OrderDeliveryCouponStatus.NOT_USED });
+    const { svc, qb, update } = makeService([tip]);
+    qb.execute.mockResolvedValue({ affected: 0 }); // 남이 lease 보유 중
+
+    await expect(svc.cancelOrder(account, 'TR-1', ctx)).rejects.toMatchObject({ code: '3010' });
+
+    // 획득 실패는 try 진입 전 throw — finally 가 없어야 한다(있으면 owner guard 로 affected=0 이라 무해하나,
+    // 획득/해제 대칭이 깨지면 이후 리팩터에서 남의 lease 를 지우는 방향으로 흐르기 쉽다).
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('cancelOrder: lease 획득 후 재조회가 비면(soft-delete 등) fail-closed 로 3010 — 협력사 취소 스킵 + 환불 강행 방지', async () => {
+    // 리뷰 CONFIRMED: `if (fresh)` 로 열려 있으면, 재발행 실패로 unwindReissue 가 tip 을 softDelete 한 경우
+    // 낡은 스냅샷(barCode=null)이 그대로 쓰여 협력사 취소가 스킵된 채 환불만 나간다 = 자금 사고.
+    const root = makeDelivery({
+      id: 100,
+      externalTrId: 'TR-1',
+      couponStatus: OrderDeliveryCouponStatus.CANCEL,
+      discardedAt: DISCARDED_AT,
+    });
+    const tip = makeDelivery({
+      id: 101,
+      externalTrId: null,
+      couponStatus: OrderDeliveryCouponStatus.NOT_USED,
+      replacedFromId: 100,
+      barCode: null, // 로드 시점 스냅샷: 아직 미발급
+      actualSendAt: null,
+    });
+    const { svc, findOne } = makeService([root, tip]);
+    // resolve 단계 조회는 정상, lease 획득 후 volatile 재조회만 null (행이 soft-delete 됨)
+    const original = findOne.getMockImplementation()!;
+    let call = 0;
+    findOne.mockImplementation(async (opts: any) => {
+      call += 1;
+      if (call >= 3) return null; // root 조회 → tip 재로딩 → (3번째) volatile 재조회
+      return original(opts);
+    });
+    (svc as any).partnerCompanyExternService = { cancelByExternalApi: jest.fn() };
+    (svc as any).processCancelRefund = jest.fn();
+
+    await expect(svc.cancelOrder(account, 'TR-1', ctx)).rejects.toMatchObject({ code: '3010' });
+
+    expect((svc as any).partnerCompanyExternService.cancelByExternalApi).not.toHaveBeenCalled();
+    expect((svc as any).processCancelRefund).not.toHaveBeenCalled(); // 환불 미진입
+  });
+
+  it('cancelOrder: 획득한 lease 를 메모리 엔티티에도 반영한다 — 하위 코드가 실제 소유 상태를 보도록', async () => {
+    // findOrderDeliveryByTrId 는 full entity 로 로드하므로 mutationClaimedAt=null 이 메모리에 남고,
+    // acquireMutationLease 는 DB row 만 UPDATE 한다. 동기화가 없으면 메모리와 DB 가 어긋난다.
+    //
+    // 원래 이 계약은 processCancelRefund 의 save(merge) 가 mutation_claimed_at=NULL 을 써
+    // 자기 lease 를 자진 해제하는 사고를 막으려던 것이었다. 그 save 는 targeted update + fencing 으로
+    // 교체돼(리뷰 HIGH) 더는 이 동기화에 의존하지 않지만, 계약 자체는 재발 방지로 계속 잠근다.
+    const root = makeDelivery({
+      id: 100,
+      externalTrId: 'TR-1',
+      couponStatus: OrderDeliveryCouponStatus.CANCEL,
+      discardedAt: DISCARDED_AT,
+    });
+    const tip = makeDelivery({
+      id: 101,
+      externalTrId: null,
+      couponStatus: OrderDeliveryCouponStatus.NOT_USED,
+      replacedFromId: 100,
+    });
+    expect((tip as any).mutationClaimedAt ?? null).toBeNull(); // 로드 스냅샷은 null
+
+    const { svc } = makeService([root, tip]);
+    (svc as any).partnerCompanyExternService = { cancelByExternalApi: jest.fn(async () => undefined) };
+    const seen: Array<Date | null> = [];
+    (svc as any).processCancelRefund = jest.fn(async (_o: any, od: any) => {
+      seen.push(od.mutationClaimedAt ?? null); // 하위 코드가 보게 될 값
+    });
+
+    await svc.cancelOrder(account, 'TR-1', ctx);
+
+    // processCancelRefund 진입 시점의 엔티티가 내 lease 토큰을 들고 있어야 한다
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toBeInstanceOf(Date);
   });
 });
 

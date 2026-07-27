@@ -235,7 +235,7 @@ export class OrderDetailProductDto {
   galaxiaDuration: number | null;
 
   @ApiProperty({
-    description: '해당 상품의 발송 실패 건수',
+    description: '해당 상품의 미해결 발송 실패 건수 (재발송 완료 건 제외)',
   })
   failCount: number;
 

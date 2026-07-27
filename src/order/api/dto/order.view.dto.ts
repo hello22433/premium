@@ -1,8 +1,18 @@
 import { IOrderStatus } from '../../interface/order.status';
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiProperty } from '@nestjs/swagger';
 import { IOrderDeliveryStatus } from '../../../delivery/interface/order.delivery.status';
+import { DestructionCertificateBlockReason } from '../../interface/destruction.certificate.block.reason';
 
-export class CustomerSettlementDto {
+/**
+ * 발송관리 고객사 호버 툴팁용 정산정보 (주문 1건 기준).
+ * 목록(/order/list)과 분리된 지연 로딩 엔드포인트 전용 뷰.
+ */
+export class CustomerSettlementViewDto {
+  @ApiProperty({
+    description: 'order id',
+  })
+  orderId: number;
+
   @ApiProperty({
     description: '정산조건 ex) 선정산: PRE_PAYMENT, 후정산: POST_PAYMENT',
     enum: ['PRE_PAYMENT', 'POST_PAYMENT'],
@@ -10,10 +20,9 @@ export class CustomerSettlementDto {
   settleCondition: 'PRE_PAYMENT' | 'POST_PAYMENT';
 
   @ApiProperty({
-    nullable: true,
-    description: '잔여 서비스 한도 (원 단위 정수, 0-clamp). 계산 불가 시 null',
+    description: '잔여 발송 한도 (원 단위 정수, 0-clamp)',
   })
-  remainServiceAmount: number | null;
+  remainServiceAmount: number;
 }
 
 export class OrderViewDto {
@@ -107,7 +116,7 @@ export class OrderViewDto {
   sendType: string | null;
 
   @ApiProperty({
-    description: '발송 실패 건 포함 여부',
+    description: '미해결 발송 실패 건 포함 여부 (재발송되지 않은 FAIL/FAIL_SMS 존재)',
   })
   hasFailedDelivery: boolean;
 
@@ -117,18 +126,28 @@ export class OrderViewDto {
   hasResentDelivery: boolean;
 
   @ApiProperty({
+    description: '파기확인서 발행 가능 여부 (발송 완료 + 모든 발송건의 개인정보 파기 완료)',
+  })
+  canIssueDestructionCertificate: boolean;
+
+  @ApiProperty({
+    enum: DestructionCertificateBlockReason,
+    nullable: true,
+    description: '파기확인서 발행 불가 사유. null 이면 발행 가능',
+  })
+  destructionCertificateBlockReason: DestructionCertificateBlockReason | null;
+
+  @ApiProperty({
     required: false,
     nullable: true,
     description:
-      'RESERVE 상품의 분 단위 예약시각이 2종 이상 상이할 때만 채움. 각 항목: 상품명, 예약시각(KST), 실제 발송시각(발송 전 null)',
+      '혼합 발송(IMMEDIATE+RESERVE) 또는 RESERVE 분 단위 예약시각 2종 이상일 때 채움. 각 항목: productName(상품명), sendType(IMMEDIATE|RESERVE), sendRequestAt(예약시각 KST; IMMEDIATE·draft RESERVE는 null), actualSendAt(실제 발송시각 KST; 미발송 null)',
   })
-  productSendTimes?: { productName: string; sendRequestAt: string; actualSendAt: string | null }[];
+  productSendTimes?: {
+    productName: string;
+    sendType: 'IMMEDIATE' | 'RESERVE';
+    sendRequestAt: string | null;
+    actualSendAt: string | null;
+  }[];
 
-  @ApiPropertyOptional({
-    nullable: true,
-    type: CustomerSettlementDto,
-    description:
-      '고객사 정산 정보. wallet_account 미존재 시 필드 생략. SUPER_ADMIN/OPERATION_ADMIN 조회 + includeSettlement=true 일 때만 포함.',
-  })
-  customerSettlement?: CustomerSettlementDto;
 }

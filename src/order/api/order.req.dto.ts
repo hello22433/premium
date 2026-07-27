@@ -1,5 +1,6 @@
 import { IOrderStatus } from '../interface/order.status';
 import {
+  ArrayMaxSize,
   IsArray,
   IsBoolean,
   IsEnum,
@@ -111,15 +112,36 @@ export class OrderGetListReqDto extends PagingReqDto {
   @IsEnum(IOrderSendingType)
   sendingType?: IOrderSendingType = IOrderSendingType.ALL;
 
-  @ApiPropertyOptional({
-    description: '발송관리 고객사 정산정보(customerSettlement) 포함 여부. 발송관리 화면에서만 true 로 보낸다.',
-    default: false,
+}
+
+/**
+ * 발송관리 고객사 정산정보(호버 툴팁) 조회 요청.
+ * 목록 응답과 분리된 지연 로딩 전용이라 현재 페이지의 주문 id 만 콤마로 전달한다.
+ * type 은 목록(/order/list)과 동일한 발송관리 세부권한(SEND_GENERAL / SEND_SSG) 검증에 쓰인다.
+ */
+export class OrderGetCustomerSettlementReqDto {
+  @ApiProperty({
+    description: '주문 id 목록 (콤마 구분, 최대 200개) ex) 101,102,103',
   })
   // ===================================
-  @IsOptional()
-  @IsBoolean()
-  @Transform(({ value }) => value === 'true')
-  includeSettlement?: boolean;
+  @Transform(({ value }) =>
+    String(value ?? '')
+      .split(',')
+      .map((raw) => Number(raw.trim()))
+      .filter((id) => Number.isInteger(id) && id > 0),
+  )
+  @IsArray()
+  @ArrayMaxSize(200)
+  @IsInt({ each: true })
+  ids: number[];
+
+  @ApiProperty({
+    description: '발송관리 화면 구분 ex) 일반발송: GENERAL, 신세계발송: SSG',
+    enum: [IOrderType.GENERAL, IOrderType.SSG],
+  })
+  // ===================================
+  @IsIn([IOrderType.GENERAL, IOrderType.SSG])
+  type: IOrderType.GENERAL | IOrderType.SSG;
 }
 
 export class OrderCreateTempReqDto extends OrderCreateDto {

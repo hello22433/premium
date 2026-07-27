@@ -24,6 +24,7 @@ describe('SettleController', () => {
 
   const createController = () => {
     const settleService = {
+      getUserPerDetail: jest.fn().mockResolvedValue({ list: [], totalCount: 0 }),
       updateUserPerOrder: jest.fn().mockResolvedValue({ ok: true }),
     };
     const activityLogService = {};
@@ -263,6 +264,26 @@ describe('SettleController', () => {
       await expect(controller.updateUserPerOrder(user, dto)).rejects.toBeInstanceOf(ForbiddenException);
 
       expect(settleService.updateUserPerOrder).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getUserPerDetail', () => {
+    it('상세 조회 전 SETTLE_USER_MANAGE 권한을 검증한다', async () => {
+      const { controller, settleService, authService } = createController();
+
+      await controller.getUserPerDetail(user, { userId: 10 } as any);
+
+      expect(authService.authorityValidator).toHaveBeenCalledWith(user, UserAuthSubEnum.SETTLE_USER_MANAGE);
+      expect(settleService.getUserPerDetail).toHaveBeenCalledWith({ userId: 10 });
+    });
+
+    it('권한 검증에 실패하면 상세 조회를 실행하지 않는다', async () => {
+      const { controller, settleService, authService } = createController();
+      authService.authorityValidator.mockRejectedValue(new ForbiddenException('권한이 없습니다.'));
+
+      await expect(controller.getUserPerDetail(user, { userId: 10 } as any)).rejects.toBeInstanceOf(ForbiddenException);
+
+      expect(settleService.getUserPerDetail).not.toHaveBeenCalled();
     });
   });
 });

@@ -70,5 +70,6 @@ import { OrderFromModule } from '../order_from/order.from.module';
   ],
   controllers: [OrderController],
   providers: [OrderService, EarlyDestroyService, OrderCancelNotificationService],
+  exports: [OrderService],
 })
 export class OrderModule {}

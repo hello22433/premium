@@ -92,6 +92,16 @@ import { ForbiddenWordEntity } from '../entity/forbidden.word.entity';
 import { ForbiddenWordHistoryEntity } from '../entity/forbidden.word.history.entity';
 import { ForbiddenWordBlockLogEntity } from '../entity/forbidden.word.block.log.entity';
 import { CouponViewLogEntity } from '../entity/coupon.view.log.entity';
+import { OrderReceiptGeneratedOrderEntity } from '../entity/order.receipt.generated.order.entity';
+import { OrderReceiptAutoResultEntity } from '../entity/order.receipt.auto.result.entity';
+import { DeliveryWorkflowEntity } from '../entity/delivery.workflow.entity';
+import { PinIssueCommandEntity } from '../entity/pin.issue.command.entity';
+import { MessageAttemptEntity } from '../entity/message.attempt.entity';
+import { RefundAttemptEntity } from '../entity/refund.attempt.entity';
+import { DualApprovalEntity } from '../entity/dual.approval.entity';
+import { DualApprovalAuditEntity } from '../entity/dual.approval.audit.entity';
+import { WorkflowResolutionEntity } from '../entity/workflow.resolution.entity';
+import { StaleExternalResponseEntity } from '../entity/stale.external.response.entity';
 
 @Module({
   imports: [
@@ -191,6 +201,16 @@ import { CouponViewLogEntity } from '../entity/coupon.view.log.entity';
           ForbiddenWordHistoryEntity,
           ForbiddenWordBlockLogEntity,
           CouponViewLogEntity,
+          OrderReceiptGeneratedOrderEntity,
+          OrderReceiptAutoResultEntity,
+          DeliveryWorkflowEntity,
+          PinIssueCommandEntity,
+          MessageAttemptEntity,
+          RefundAttemptEntity,
+          DualApprovalEntity,
+          DualApprovalAuditEntity,
+          WorkflowResolutionEntity,
+          StaleExternalResponseEntity,
         ],
         extra: {
           connectionLimit: +configService.get('DATABASE_CONNECTION_LIMIT', 50),
@@ -230,6 +250,10 @@ import { CouponViewLogEntity } from '../entity/coupon.view.log.entity';
         options: {
           encrypt: false, // TLS 암호화 비활성화
           trustServerCertificate: true, // 인증서 검증 무시
+          // MSG_QUEUE(EXT_COL2) 필터드 unique index 가 적용되면 INSERT 세션도 QUOTED_IDENTIFIER/ARITHABORT ON
+          // 이어야 하고, 아니면 발송 INSERT 가 오류 1934 로 전면 실패한다. 드라이버 기본값에 의존하지 않고 명시한다.
+          // (plans/프리미엄_발송실패_재발송_구상.md §9 Gemtek DBA 계약 — 인덱스 적용 전 코드 선반영)
+          enableArithAbort: true,
         },
       }),
     }),

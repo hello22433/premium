@@ -1,4 +1,4 @@
-import { Column, Entity, JoinColumn, ManyToOne, OneToMany, OneToOne, PrimaryGeneratedColumn } from 'typeorm';
+import { Column, Entity, Index, JoinColumn, ManyToOne, OneToMany, OneToOne, PrimaryGeneratedColumn } from 'typeorm';
 import { BaseEntity } from '../common/entity/base.entity';
 import { IUserStatus } from '../user/interface/user.status';
 import { IUserAuthority } from '../user/interface/user.authority';
@@ -15,6 +15,7 @@ import { CompanyType } from '../common/domain/company.type';
 import { LoginVerifyMethod } from '../user/interface/login.verify.method';
 
 @Entity('user')
+@Index('idx_user_settlement_code', ['settlementCode'])
 export class UserEntity extends BaseEntity {
   @PrimaryGeneratedColumn()
   id: number;
@@ -156,13 +157,13 @@ export class UserEntity extends BaseEntity {
   @Column({ type: 'varchar', length: 100, comment: '은행 명' })
   bankName: string;
 
-  @Column({ type: 'varchar', length: 100, comment: '계좌 번호' })
+  @Column({ type: 'varchar', length: 100, comment: '계좌 번호 (암호화 저장, CryptoCipher)' })
   bankNumber: string;
 
   @Column({ type: 'varchar', length: 100, comment: '카드 명' })
   cardName: string;
 
-  @Column({ type: 'varchar', length: 100, comment: '카드 번호' })
+  @Column({ type: 'varchar', length: 100, comment: '카드 번호 (암호화 저장, CryptoCipher)' })
   cardNumber: string;
 
   /**

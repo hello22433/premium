@@ -24,7 +24,11 @@ export interface SettlementJoinClassification {
   code?: string;
 }
 
-export type SettlementCodeHistoryEventType = 'CREDIT_LIMIT_CHANGED' | 'SETTLE_POLICY_CHANGED' | 'DEPOSIT_CHARGED';
+export type SettlementCodeHistoryEventType =
+  | 'CREDIT_LIMIT_CHANGED'
+  | 'SETTLE_POLICY_CHANGED'
+  | 'CODE_RENAMED'
+  | 'DEPOSIT_CHARGED';
 
 /** 정산코드 변경 이력 공통 항목(정책/한도=activity_log, 예치금=wallet_transaction). */
 export interface SettlementCodeHistoryItem {
@@ -86,7 +90,7 @@ export class SettlementCodeAdminService {
    * INSERT ... ON DUPLICATE KEY UPDATE id=id (uq_wallet_owner) 로, 동일 code 가 이미 있으면
    * no-op 성공 처리한다 (동시 가입 race 에서도 단일 row 보장 — Pre-mortem #2). 중복은 log.warn.
    *
-   * @param companyId 로그/추적용 (실제 wallet 은 code 로 식별; wallet 에 company_id 컬럼 없음).
+   * @param companyId 홈(발급) 회사 id — wallet_account.owner_company_id 에 저장(정산코드↔회사 결정론 링크). 로그/추적에도 사용.
    * @param code      owner_id (예: company-123).
    * @param creditLimit 신규 생성 시 여신 한도.
    * @param manager   호출자가 소유한 트랜잭션 매니저 (필수 — 프로비저닝은 호스트 TX 안에서 실행).
@@ -101,10 +105,10 @@ export class SettlementCodeAdminService {
   ): Promise<void> {
     const result = await manager.query(
       `INSERT INTO wallet_account
-         (owner_type, owner_id, deposit_balance, credit_limit, credit_used_amount, credit_excess_amount, settle_condition, settle_method)
-       VALUES ('SETTLEMENT_CODE', ?, 0, ?, 0, 0, ?, ?)
+         (owner_type, owner_id, owner_company_id, deposit_balance, credit_limit, credit_used_amount, credit_excess_amount, settle_condition, settle_method)
+       VALUES ('SETTLEMENT_CODE', ?, ?, 0, ?, 0, 0, ?, ?)
        ON DUPLICATE KEY UPDATE id = id`,
-      [code, creditLimit, settleCondition, settleMethod],
+      [code, companyId, creditLimit, settleCondition, settleMethod],
     );
 
     // MySQL: 신규 insert 는 affectedRows=1, id=id no-op update(중복) 는 affectedRows=0.
@@ -251,7 +255,7 @@ export class SettlementCodeAdminService {
    * 진행 중 주문과 무관하게 언제든 가능 (자금 이동 없음). oldCode 는 회사 소속 검증(회사→users 잠금 하),
    * newCode 는 잠금 하 사전 부재 검증.
    */
-  async renameCode(companyId: number, oldCode: string, newCode: string): Promise<void> {
+  async renameCode(companyId: number, oldCode: string, newCode: string, operator: ILoginUserInfo): Promise<void> {
     if (!oldCode || !newCode) {
       throw new BadRequestException('oldCode / newCode 는 필수입니다.');
     }
@@ -259,14 +263,9 @@ export class SettlementCodeAdminService {
       throw new BadRequestException('oldCode 와 newCode 가 동일합니다.');
     }
     await this.dataSource.transaction(async (manager) => {
-      // 회사 → users 순으로 잠근 뒤 oldCode 가 이 회사 소속 코드인지 검증 (타 회사 코드 전역 rename 방지, H5).
-      const { companyUsers } = await this.billingScopeLock.lockByCompany(companyId, manager);
-      const belongsToCompany = companyUsers.some((u) => u.settlementCode === oldCode);
-      if (!belongsToCompany) {
-        throw new BadRequestException(
-          `정산코드('${oldCode}')는 이 회사(companyId=${companyId})에 속한 코드가 아닙니다.`,
-        );
-      }
+      // 잠금 순서: 회사 row FOR UPDATE → oldCode wallet FOR UPDATE. 소속 판정은 유저가 아니라 wallet.owner_company_id 로 한다
+      // (유저 0인 코드도 이 회사 홈 코드면 rename 허용 — 스펙 §2.4 P1 결함 수정).
+      await this.billingScopeLock.lockByCompany(companyId, manager);
 
       // **oldCode wallet FOR UPDATE (P1 rename↔assign 직렬화)**: assignUserToCode 는 target 코드 wallet 을 FOR UPDATE 로
       // 잠근다. rename 도 oldCode wallet 을 먼저 잠가 두 경로를 직렬화한다 — 그렇지 않으면 foreignRef 검증 직후 타 회사
@@ -274,6 +273,12 @@ export class SettlementCodeAdminService {
       const oldWallet = await this.lockWalletByCode(manager, oldCode, 'pessimistic_write');
       if (!oldWallet) {
         throw new BadRequestException(`정산코드('${oldCode}') 의 wallet_account 를 찾을 수 없습니다.`);
+      }
+      // 홈(발급) 회사 = owner_company_id 기준 소속 판정. rename 은 코드 이름만 바꾸고 홈 회사(owner_company_id)는 불변.
+      if (oldWallet.ownerCompanyId !== companyId) {
+        throw new BadRequestException(
+          `정산코드('${oldCode}')는 이 회사(companyId=${companyId})에 속한 코드가 아닙니다.`,
+        );
       }
 
       // **공유 코드 리네임 불가 계약 (결정 #6 파생)**: 교차 회사 공유가 정상 경로가 되었으므로 "foreign drift"가 아니라
@@ -302,7 +307,42 @@ export class SettlementCodeAdminService {
       await manager
         .getRepository(UserEntity)
         .update({ companyId, settlementCode: oldCode }, { settlementCode: newCode });
-      this.logger.log(`renameCode companyId=${companyId} ${oldCode} -> ${newCode}`);
+
+      // **이력이 코드를 따라가도록 이관 (정책/한도 이력 승계)**: getCodeHistory 는 requestParams.settlementCode 로
+      // 필터하므로, 리네임 이전 oldCode 로 박제된 정책/한도/과거 리네임 감사 로그의 settlementCode 를 newCode 로 갱신한다.
+      // 이관하지 않으면 리네임 후 새 이름 이력에서 과거 한도/정책 변경이 사라진다(oldCode wallet 은 이미 없어 접근 경로도 없음).
+      // 감사행 불변성 유지: 전 컬럼 재기록(save)·N+1 없이 request_params 만 건드리는 단일 targeted UPDATE
+      // (이 서비스의 ensureSettlementCodeWallet 과 동일한 raw-SQL 컨벤션, snake_case 컬럼).
+      await manager.query(
+        `UPDATE activity_log
+            SET request_params = JSON_SET(request_params, '$.settlementCode', ?)
+          WHERE deleted_at IS NULL
+            AND action_type IN (?, ?, ?)
+            AND JSON_UNQUOTE(JSON_EXTRACT(request_params, '$.settlementCode')) = ?`,
+        [
+          newCode,
+          ActivityLogActionType.MAXIMUM_LIMIT_MODIFY,
+          ActivityLogActionType.SETTLE_CODE_POLICY_MODIFY,
+          ActivityLogActionType.SETTLE_CODE_RENAME,
+          oldCode,
+        ],
+      );
+      // 정책/한도 이력에 리네임을 노출한다 (getCodeHistory 는 newCode 기준 조회 — settlementCode=newCode 저장).
+      // 동일 트랜잭션 감사(리네임 정본): rename 커밋과 감사 로그가 원자적으로 함께 남는다.
+      await this.activityLogService.createLog({
+        userId: operator.id,
+        userEmail: operator.email,
+        method: 'PUT',
+        requestUrl: '/settlement-codes/rename',
+        actionType: ActivityLogActionType.SETTLE_CODE_RENAME,
+        ipAddress: '',
+        statusCode: 200,
+        result: ActivityLogResult.SUCCESS,
+        responseTime: 0,
+        requestParams: { settlementCode: newCode, before: oldCode, after: newCode },
+      }, manager);
+
+      this.logger.log(`renameCode companyId=${companyId} ${oldCode} -> ${newCode} by operator=${operator.id}`);
     });
   }
 
@@ -365,16 +405,16 @@ export class SettlementCodeAdminService {
    */
   async setSettlePolicy(
     settlementCode: string,
-    update: { settleCondition?: 'PRE_PAYMENT' | 'POST_PAYMENT'; settleMethod?: 'CARD' | 'CASH' },
+    update: { settleCondition?: 'PRE_PAYMENT' | 'POST_PAYMENT'; settleMethod?: 'CARD' | 'CASH'; cardSurchargeApplied?: boolean },
     operator: ILoginUserInfo,
   ): Promise<{
     settlementCode: string;
-    before: { settleCondition: 'PRE_PAYMENT' | 'POST_PAYMENT'; settleMethod: 'CARD' | 'CASH' };
-    after: { settleCondition: 'PRE_PAYMENT' | 'POST_PAYMENT'; settleMethod: 'CARD' | 'CASH' };
+    before: { settleCondition: 'PRE_PAYMENT' | 'POST_PAYMENT'; settleMethod: 'CARD' | 'CASH'; cardSurchargeApplied: boolean };
+    after: { settleCondition: 'PRE_PAYMENT' | 'POST_PAYMENT'; settleMethod: 'CARD' | 'CASH'; cardSurchargeApplied: boolean };
     noop?: boolean;
   }> {
-    if (update.settleCondition === undefined && update.settleMethod === undefined) {
-      throw new BadRequestException('변경할 항목(settleCondition/settleMethod)이 없습니다.');
+    if (update.settleCondition === undefined && update.settleMethod === undefined && update.cardSurchargeApplied === undefined) {
+      throw new BadRequestException('변경할 항목(settleCondition/settleMethod/cardSurchargeApplied)이 없습니다.');
     }
     return this.runWithRetry(() =>
       this.dataSource.transaction(async (manager) => {
@@ -390,13 +430,15 @@ export class SettlementCodeAdminService {
           throw new BadRequestException(`정산코드('${settlementCode}') 의 wallet_account 를 찾을 수 없습니다.`);
         }
 
-        const before = { settleCondition: wallet.settleCondition, settleMethod: wallet.settleMethod };
+        const before = { settleCondition: wallet.settleCondition, settleMethod: wallet.settleMethod, cardSurchargeApplied: wallet.cardSurchargeApplied };
 
         const condChanged = update.settleCondition !== undefined && update.settleCondition !== wallet.settleCondition;
         const methodChanged = update.settleMethod !== undefined && update.settleMethod !== wallet.settleMethod;
+        const surchargeChanged =
+          update.cardSurchargeApplied !== undefined && update.cardSurchargeApplied !== wallet.cardSurchargeApplied;
 
         // **동일값(no-op)**: 요청값이 현재값과 같으면 저장/감사 로그 없이 현재값 반환(감사 노이즈 방지).
-        if (!condChanged && !methodChanged) {
+        if (!condChanged && !methodChanged && !surchargeChanged) {
           return { settlementCode, before, after: before, noop: true };
         }
 
@@ -423,9 +465,12 @@ export class SettlementCodeAdminService {
         if (methodChanged) {
           wallet.settleMethod = update.settleMethod!;
         }
+        if (surchargeChanged) {
+          wallet.cardSurchargeApplied = update.cardSurchargeApplied!;
+        }
         await manager.getRepository(WalletAccountEntity).save(wallet);
 
-        const after = { settleCondition: wallet.settleCondition, settleMethod: wallet.settleMethod };
+        const after = { settleCondition: wallet.settleCondition, settleMethod: wallet.settleMethod, cardSurchargeApplied: wallet.cardSurchargeApplied };
         await this.activityLogService.createLog({
           userId: operator.id,
           userEmail: operator.email,
@@ -573,13 +618,15 @@ export class SettlementCodeAdminService {
     const actionByEvent: Partial<Record<SettlementCodeHistoryEventType, ActivityLogActionType>> = {
       CREDIT_LIMIT_CHANGED: ActivityLogActionType.MAXIMUM_LIMIT_MODIFY,
       SETTLE_POLICY_CHANGED: ActivityLogActionType.SETTLE_CODE_POLICY_MODIFY,
+      CODE_RENAMED: ActivityLogActionType.SETTLE_CODE_RENAME,
     };
-    let types = [ActivityLogActionType.MAXIMUM_LIMIT_MODIFY, ActivityLogActionType.SETTLE_CODE_POLICY_MODIFY];
+    // 기본 조회 범위 = actionByEvent 의 전체 매핑 값 (eventType 필터가 늘어도 자동으로 동기화).
+    let types = Object.values(actionByEvent);
     if (opts.eventType !== undefined) {
       const mapped = actionByEvent[opts.eventType];
       if (!mapped) {
         throw new BadRequestException(
-          'eventType 은 CREDIT_LIMIT_CHANGED | SETTLE_POLICY_CHANGED 만 허용됩니다(예치금 이력은 GET /settlement-codes/deposits).',
+          'eventType 은 CREDIT_LIMIT_CHANGED | SETTLE_POLICY_CHANGED | CODE_RENAMED 만 허용됩니다(예치금 이력은 GET /settlement-codes/deposits).',
         );
       }
       types = [mapped];
@@ -649,27 +696,34 @@ export class SettlementCodeAdminService {
 
   private mapActivityLogItem(r: ActivityLogEntity): SettlementCodeHistoryItem {
     const params = (r.requestParams ?? {}) as Record<string, unknown>;
-    if (r.actionType === ActivityLogActionType.MAXIMUM_LIMIT_MODIFY) {
-      return {
-        source: 'ACTIVITY_LOG',
-        sourceId: String(r.id),
-        eventType: 'CREDIT_LIMIT_CHANGED',
-        occurredAt: r.createdAt,
-        operatorId: r.userId,
-        operatorEmail: r.userEmail,
-        before: params.beforeMaximumLimit,
-        after: params.afterMaximumLimit,
-      };
+    let eventType: SettlementCodeHistoryEventType;
+    let before: unknown;
+    let after: unknown;
+    switch (r.actionType) {
+      case ActivityLogActionType.MAXIMUM_LIMIT_MODIFY:
+        eventType = 'CREDIT_LIMIT_CHANGED';
+        before = params.beforeMaximumLimit;
+        after = params.afterMaximumLimit;
+        break;
+      case ActivityLogActionType.SETTLE_CODE_RENAME:
+        eventType = 'CODE_RENAMED';
+        before = params.before;
+        after = params.after;
+        break;
+      default:
+        eventType = 'SETTLE_POLICY_CHANGED';
+        before = params.before;
+        after = params.after;
     }
     return {
       source: 'ACTIVITY_LOG',
       sourceId: String(r.id),
-      eventType: 'SETTLE_POLICY_CHANGED',
+      eventType,
       occurredAt: r.createdAt,
       operatorId: r.userId,
       operatorEmail: r.userEmail,
-      before: params.before,
-      after: params.after,
+      before,
+      after,
     };
   }
 

@@ -5,6 +5,7 @@ export type WalletAccountOwnerType = 'SETTLEMENT_CODE';
 @Entity('wallet_account')
 @Unique('uq_wallet_owner', ['ownerType', 'ownerId'])
 @Index('idx_wallet_account_owner_id', ['ownerId'])
+@Index('idx_wallet_account_owner_company', ['ownerCompanyId', 'ownerType'])
 export class WalletAccountEntity {
   @PrimaryGeneratedColumn({ type: 'bigint' })
   id: string;
@@ -14,6 +15,14 @@ export class WalletAccountEntity {
 
   @Column({ type: 'varchar', length: 50, comment: 'user.settlement_code 값 (예: company-123)' })
   ownerId: string;
+
+  @Column({
+    name: 'owner_company_id',
+    type: 'int',
+    nullable: true,
+    comment: 'SETTLEMENT_CODE 홈(발급) 회사 id. N:M 사용 회사와 별개, 비정산코드 owner는 NULL',
+  })
+  ownerCompanyId: number | null;
 
   @Column({ type: 'int', default: 0, comment: '예치금 잔액' })
   depositBalance: number;
@@ -42,6 +51,12 @@ export class WalletAccountEntity {
     comment: 'CARD / CASH. settlement_code 단위 정책.',
   })
   settleMethod: 'CARD' | 'CASH';
+
+  @Column({
+    default: true,
+    comment: '카드할증 3% 적용 기본값 (settleMethod=CARD 코드 기준). default 파생에만 CARD 게이트 적용',
+  })
+  cardSurchargeApplied: boolean;
 
   @CreateDateColumn({ type: 'datetime', precision: 6 })
   createdAt: Date;

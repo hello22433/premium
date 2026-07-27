@@ -790,6 +790,56 @@ export class PartnerCompanyExternBatchService {
     await this.orderDeliveryRepository.update({ id: result.id }, updateData);
   }
 
+  /** 협력사 사용/환불 동기화(갤럭시아 daily·push, 컬처랜드 daily)가 order_delivery 에 쓰는 컬럼의 전부. updateOrderDelivery 와 같은 어휘다. */
+  private static readonly PARTNER_SYNC_COLUMNS = [
+    'couponStatus',
+    'tradeAt',
+    'tradePlace',
+    'galaxiaBalance',
+    'discardedAt',
+  ] as const;
+
+  /**
+   * 협력사 동기화 결과를 targeted update 로 반영한다 — save(orderDelivery) 대체 (D3-60 clobber).
+   *
+   * save 는 merge 라 **행 전체**를 조회 시점 스냅샷으로 쓴다. 이 배치/콜백은 협력사 조회 뒤에
+   * 도달하므로 그 사이 CS 재발행·폐기가 쓴 값을 되돌린다. 되돌아가면 치명적인 것:
+   *   - mutation_claimed_at → 스냅샷(대개 NULL)  남의 변형 lease 무력화 = 1차 방어 파괴
+   *   - deleted_at          → NULL                unwindReissue 가 지운 tip 부활(쿠폰 2장)
+   *   - status/barCode/…    → 옛 값               발송 결과 되돌림
+   *
+   * 호출부가 **자기가 실제로 바꾼 컬럼만** 명시한다. 안 바꾼 컬럼까지 싣으면 그 컬럼에 대해서는
+   * 여전히 stale 스냅샷을 쓰는 셈이라 clobber 가 남는다.
+   *
+   * ┌─ 【의도적 설계 결정 — 잊은 것이 아님】 2026-07-24 ────────────────────────────┐
+   * │ 이 헬퍼는 WHERE 에 { id } 만 쓴다(fencing 없음). **일부러 안 넣었다.**          │
+   * │                                                                              │
+   * │ 왜: fencing(`AND mutation_claimed_at = 내토큰`)을 넣으려면 이 서비스가 먼저    │
+   * │   변형 lease 를 "잡아야" 하는데, 지금 이 서비스는 lease 를 잡지도 읽지도        │
+   * │   않는다(파일 전체에서 mutationClaimedAt/claimedAt 참조 0건).                  │
+   * │   lease 를 잡게 만드는 것은 곧 "CS 가 이 쿠폰을 재발행/폐기 중이면, 협력사가    │
+   * │   통보한 사용·환불 반영을 미룰 것인가?" 라는 질문에 답하는 것이다.              │
+   * │   → 이건 코드가 아니라 **운영 정책** 결정이며, 미결이다.                        │
+   * │                                                                              │
+   * │ 그래서 지금 닫은 것: clobber 축만 (save→targeted update).                      │
+   * │   = 남의 lease·deleted_at·안 바꾼 컬럼을 되돌리는 부수효과 제거.                │
+   * │ 아직 열린 것: fencing 축.                                                      │
+   * │   = "lease 를 쥔 행에도 협력사 사실을 무조건 쓴다"(현행 유지).                  │
+   * │   정책 결정이 나면 여기 WHERE 에 토큰 조건을 추가하면 된다.                     │
+   * │ 관련: audit/분류표-order_delivery-쓰기지점-전수-2026-07-24.md §2-5 / §3-2       │
+   * └──────────────────────────────────────────────────────────────────────────────┘
+   */
+  private async persistPartnerSync(
+    orderDelivery: OrderDeliveryEntity,
+    columns: ReadonlyArray<(typeof PartnerCompanyExternBatchService.PARTNER_SYNC_COLUMNS)[number]>,
+  ): Promise<void> {
+    const patch: Record<string, unknown> = {};
+    for (const column of columns) {
+      patch[column] = orderDelivery[column];
+    }
+    await this.orderDeliveryRepository.update({ id: orderDelivery.id }, patch);
+  }
+
   // ===== 타임아웃 래퍼 =====
   private async callExternalApiWithTimeout(
     orderDelivery: OrderDeliveryEntity,
@@ -1211,7 +1261,9 @@ export class PartnerCompanyExternBatchService {
               orderDelivery.discardedAt = this.parseGalaxiaDateTime(transaction.appDay, transaction.appTime);
             }
             orderDelivery.galaxiaBalance = 0;
-            await this.orderDeliveryRepository.save(orderDelivery);
+            // save(orderDelivery) 금지 — merge 는 협력사 조회 시점 스냅샷으로 행 전체를 써
+            // 그 사이 CS 재발행·폐기가 쓴 mutation_claimed_at/deleted_at 까지 되돌린다(D3-60).
+            await this.persistPartnerSync(orderDelivery, ['couponStatus', 'discardedAt', 'galaxiaBalance']);
 
             this.logger.log(
               `[checkGalaxiaDaily] ${giftKind} 81 환불 상태 보정: orderDeliveryId=${orderDelivery.id} → REFUND_CANCEL`,
@@ -1221,7 +1273,9 @@ export class PartnerCompanyExternBatchService {
           // tradePlace 업데이트 (기존 로직 유지)
           if (transaction.appStore && transaction.appStore.trim()) {
             orderDelivery.tradePlace = transaction.appStore.trim();
-            await this.orderDeliveryRepository.save(orderDelivery);
+            // 이 분기가 바꾸는 것은 tradePlace 하나뿐이다. 직전 81 분기가 쓴 컬럼까지 다시 실으면
+            // 81 이 아닌 거래에서 couponStatus 를 스냅샷 값으로 덮어쓰게 된다.
+            await this.persistPartnerSync(orderDelivery, ['tradePlace']);
 
             this.logger.log(
               `[checkGalaxiaDaily] ${giftKind} tradePlace 업데이트: orderDeliveryId=${orderDelivery.id}, appStore=${transaction.appStore}`,
@@ -1322,28 +1376,42 @@ export class PartnerCompanyExternBatchService {
     // 7. orderDelivery 상태 업데이트
     const galaxiaBalance = parseInt(remainprice, 10);
 
+    // 거래구분별로 **실제 바꾸는 컬럼**만 모은다. save(orderDelivery) 금지 —
+    // merge 는 조회 시점 스냅샷으로 행 전체를 써서 그 사이 CS 재발행·폐기가 쓴
+    // mutation_claimed_at(남의 lease)·deleted_at(지운 tip)까지 되돌린다 (D3-60).
+    //
+    // push 는 협력사 콜백이라 **업무시간 포함 아무 때나** 도달한다 — daily(야간 cron)보다
+    // CS 조작과 겹칠 창이 훨씬 넓다.
+    const touched: Array<(typeof PartnerCompanyExternBatchService.PARTNER_SYNC_COLUMNS)[number]> = [];
+
     switch (raw.appdiv) {
       case '10': // 사용
         orderDelivery.couponStatus = OrderDeliveryCouponStatus.USED;
         orderDelivery.tradeAt = this.parseGalaxiaDateTime(raw.appday, raw.apptime);
         orderDelivery.tradePlace = storename?.trim() || orderDelivery.tradePlace;
         orderDelivery.galaxiaBalance = galaxiaBalance;
+        touched.push('couponStatus', 'tradeAt', 'tradePlace', 'galaxiaBalance');
         break;
       case '20': // 사용취소
       case '25': // 망취소
         orderDelivery.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
         orderDelivery.tradeAt = null;
         orderDelivery.galaxiaBalance = galaxiaBalance;
+        touched.push('couponStatus', 'tradeAt', 'galaxiaBalance');
         break;
       case '81': // 환불등록 (End User 직접 환불 → REFUND_CANCEL = 수령 고객 환불폐기)
         orderDelivery.couponStatus = OrderDeliveryCouponStatus.REFUND_CANCEL;
         // 폐기 시각은 push 수신 시각이 아니라 환불 이벤트 시각(appday+apptime)으로 박는다.
         orderDelivery.discardedAt = this.parseGalaxiaDateTime(raw.appday, raw.apptime);
         orderDelivery.galaxiaBalance = 0;
+        touched.push('couponStatus', 'discardedAt', 'galaxiaBalance');
         break;
     }
 
-    await this.orderDeliveryRepository.save(orderDelivery);
+    // 알 수 없는 거래구분이면 switch 가 아무것도 안 바꾼다 → 빈 UPDATE 를 쏘지 않는다.
+    if (touched.length > 0) {
+      await this.persistPartnerSync(orderDelivery, touched);
+    }
 
     this.logger.log(
       `[galaxiaPush] 처리 완료: orderDeliveryId=${orderDelivery.id}, appDiv=${raw.appdiv}, amount=${amount}`,
@@ -1415,7 +1483,9 @@ export class PartnerCompanyExternBatchService {
             parseInt(useDateStr.substring(6, 8)),
           );
 
-          await this.orderDeliveryRepository.save(orderDelivery);
+          // save(orderDelivery) 금지 — merge 는 협력사 조회 시점 스냅샷으로 행 전체를 써
+          // 그 사이 CS 재발행·폐기가 쓴 mutation_claimed_at/deleted_at 까지 되돌린다 (D3-60).
+          await this.persistPartnerSync(orderDelivery, ['couponStatus', 'tradeAt']);
 
           this.logger.log(
             `[checkCulturelandDaily] 교환 처리 완료: orderDeliveryId=${orderDelivery.id}, certNo=${certNo}`,

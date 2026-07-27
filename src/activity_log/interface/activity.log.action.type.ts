@@ -14,6 +14,7 @@ export enum ActivityLogActionType {
   BALANCE_REFUND_REVERSE = 'BALANCE_REFUND_REVERSE', // 선충전 잔액 환불 복구 (재발송 시 역환불)
   MAXIMUM_LIMIT_MODIFY = 'MAXIMUM_LIMIT_MODIFY', // 최대서비스한도(여신한도) 수정
   SETTLE_CODE_POLICY_MODIFY = 'SETTLE_CODE_POLICY_MODIFY', // 정산코드 정산조건/정산방법 변경
+  SETTLE_CODE_RENAME = 'SETTLE_CODE_RENAME', // 정산코드 리네임(이름 변경)
   DELIVERY_COMPLETE_REPORT = 'DELIVERY_COMPLETE_REPORT', // 발송완료리포트 다운로드
   TRANSACTION_STATEMENT = 'TRANSACTION_STATEMENT', // 거래명세서 다운로드
   DISCARD_RESTORE = 'DISCARD_RESTORE', // 폐기 복구 (선충전 잔액 / 여신)

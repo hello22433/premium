@@ -61,8 +61,7 @@ export class CouponCancelWebhookSender {
     const secret = this.configService.get<string>('WEBHOOK_HMAC_SECRET');
     if (secret) {
       const ts = Math.floor(Date.now() / 1000).toString();
-      const sig =
-        'v1=' + createHmac('sha256', secret).update(`${ts}.${requestBody}`).digest('hex');
+      const sig = 'v1=' + createHmac('sha256', secret).update(`${ts}.${requestBody}`).digest('hex');
       headers['X-Webhook-Signature'] = sig;
       headers['X-Webhook-Timestamp'] = ts;
     } else {

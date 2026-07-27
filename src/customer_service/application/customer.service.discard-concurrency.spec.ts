@@ -1,6 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
 import { CustomerServiceService } from './customer.service.service';
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
+import { MUTATION_CLAIM_STALE_MS } from '../../delivery/interface/order.delivery.mutation.claim';
 
 /**
  * 폐기 동시성/terminal 회귀 테스트 (리뷰 반영분 검증).
@@ -25,14 +26,25 @@ describe('CustomerServiceService.execDiscard — terminal 차단 / CAS 멱등', 
       orderProductMapping: { product: { type: 'GENERAL' }, order: { cardSurchargeApplied: false } },
     }) as any;
 
-  // orderDeliveryRepository.createQueryBuilder() 의 fluent 체인 mock — getOne 이 대상 반환
+  // orderDeliveryRepository.createQueryBuilder() 의 fluent 체인 mock — getOne 이 대상 반환.
+  // update/set/andWhere/execute 는 변형 lease 획득(acquireMutationLease) CAS 용 — 기본 획득 성공(affected=1).
+  // repo.update 는 lease 해제(releaseMutationLease, owner guard) 용.
   const mockRepoReturning = (orderDelivery: any) => {
     const qb: any = {};
-    for (const m of ['createQueryBuilder', 'innerJoinAndSelect', 'leftJoinAndSelect', 'where']) {
+    for (const m of [
+      'createQueryBuilder',
+      'innerJoinAndSelect',
+      'leftJoinAndSelect',
+      'where',
+      'update',
+      'set',
+      'andWhere',
+    ]) {
       qb[m] = jest.fn(() => qb);
     }
     qb.getOne = jest.fn().mockResolvedValue(orderDelivery);
-    return { createQueryBuilder: jest.fn(() => qb) };
+    qb.execute = jest.fn().mockResolvedValue({ affected: 1 });
+    return { createQueryBuilder: jest.fn(() => qb), update: jest.fn().mockResolvedValue({ affected: 1 }) };
   };
 
   const makeSut = (orderDelivery: any) => {
@@ -91,6 +103,101 @@ describe('CustomerServiceService.execDiscard — terminal 차단 / CAS 멱등', 
     });
   });
 
+  describe('(D) 변형 lease 게이트 — 교차 행위(재발행 중 폐기 등) 입구 차단', () => {
+    it('lease 획득 실패(affected=0)면 외부 cancel/Tx 이전에 거부한다', async () => {
+      const sut = makeSut(buildOrderDelivery(OrderDeliveryCouponStatus.NOT_USED));
+      // acquireMutationLease CAS 실패 — 재발행 tip 등 다른 변형 작업이 lease 보유 중
+      sut.orderDeliveryRepository.createQueryBuilder().execute.mockResolvedValue({ affected: 0 });
+      sut.dataSource = { createQueryRunner: jest.fn() };
+      sut.restoreBalanceOnDiscard = jest.fn();
+
+      await expect(sut.execDiscard(operator, 7001, OrderDeliveryCouponStatus.CANCEL)).rejects.toThrow(
+        /다른 처리가 진행 중/,
+      );
+
+      expect(sut.dataSource.createQueryRunner).not.toHaveBeenCalled(); // Tx1 미진입
+      expect(sut.restoreBalanceOnDiscard).not.toHaveBeenCalled(); // Tx2 미진입
+    });
+
+    it('정상 종료 시 owner-guarded 해제(WHERE id+mutationClaimedAt → null)가 호출된다', async () => {
+      const sut = makeSut(buildOrderDelivery(OrderDeliveryCouponStatus.NOT_USED));
+      const txMock = makeTxRunner(1);
+      sut.dataSource = { createQueryRunner: jest.fn(() => txMock) };
+      sut.orderHistoryRepository = { create: jest.fn(() => ({})) };
+      sut.restoreBalanceOnDiscard = jest.fn().mockResolvedValue(undefined);
+
+      await sut.execDiscard(operator, 7001, OrderDeliveryCouponStatus.CANCEL);
+
+      expect(sut.orderDeliveryRepository.update).toHaveBeenCalledWith(
+        { id: 7001, mutationClaimedAt: expect.any(Date) },
+        { mutationClaimedAt: null },
+      );
+    });
+
+    // ── lease 획득 CAS 자체의 계약 (mock 은 affected 만 돌려주므로 발행된 쿼리 모양으로 잠근다) ──
+    it('lease 획득은 CAS — SET=mutationClaimedAt 만, WHERE=id + (IS NULL OR < claimAt-5분)', async () => {
+      const sut = makeSut(buildOrderDelivery(OrderDeliveryCouponStatus.NOT_USED));
+      sut.dataSource = { createQueryRunner: jest.fn(() => makeTxRunner(1)) };
+      sut.orderHistoryRepository = { create: jest.fn(() => ({})) };
+      sut.restoreBalanceOnDiscard = jest.fn().mockResolvedValue(undefined);
+
+      await sut.execDiscard(operator, 7001, OrderDeliveryCouponStatus.CANCEL);
+
+      const qb = sut.orderDeliveryRepository.createQueryBuilder();
+
+      // SET 에 lease 만 — 획득 UPDATE 가 couponStatus/discardedAt 을 건드리면 남의 결정을 덮는다
+      const setArg = qb.set.mock.calls[0][0];
+      expect(Object.keys(setArg)).toEqual(['mutationClaimedAt']);
+      const claimAt: Date = setArg.mutationClaimedAt;
+      expect(claimAt).toBeInstanceOf(Date);
+
+      // WHERE id
+      const idWhere = qb.where.mock.calls.find((c: any[]) => /^id = :id$/.test(String(c[0])));
+      expect(idWhere).toBeDefined();
+      expect(idWhere![1]).toEqual({ id: 7001 });
+
+      // CAS 술어: 비었거나 stale 일 때만 획득. 이 조건이 없으면 활성 lease 를 무조건 강탈한다(게이트 무력화).
+      const cas = qb.andWhere.mock.calls.find((c: any[]) => /mutationClaimedAt/.test(String(c[0])));
+      expect(cas).toBeDefined();
+      expect(String(cas![0])).toMatch(/mutationClaimedAt IS NULL/);
+      expect(String(cas![0])).toMatch(/mutationClaimedAt\s*<\s*:stale/);
+      expect(cas![1].stale.getTime()).toBe(claimAt.getTime() - MUTATION_CLAIM_STALE_MS);
+    });
+
+    it('실패(Tx1 CAS affected=0 → throw) 경로에서도 finally 에서 lease 를 해제한다', async () => {
+      const sut = makeSut(buildOrderDelivery(OrderDeliveryCouponStatus.NOT_USED));
+      sut.dataSource = { createQueryRunner: jest.fn(() => makeTxRunner(0)) };
+      sut.orderHistoryRepository = { create: jest.fn(() => ({})) };
+      sut.restoreBalanceOnDiscard = jest.fn().mockResolvedValue(undefined);
+
+      await expect(sut.execDiscard(operator, 7001, OrderDeliveryCouponStatus.CANCEL)).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+
+      // 해제가 finally 가 아니면(성공 경로에만 있으면) 실패한 폐기가 5분짜리 lease 를 남겨
+      // 그 행의 재발행/취소/재발송이 전부 3010·BadRequest 로 막힌다.
+      expect(sut.orderDeliveryRepository.update).toHaveBeenCalledWith(
+        { id: 7001, mutationClaimedAt: expect.any(Date) },
+        { mutationClaimedAt: null },
+      );
+    });
+
+    it('terminal 거절(가드가 lease 획득보다 앞) — lease 를 잡지도 해제하지도 않는다 (고아 lease 방지)', async () => {
+      const sut = makeSut(buildOrderDelivery(OrderDeliveryCouponStatus.USED));
+      sut.dataSource = { createQueryRunner: jest.fn() };
+      sut.restoreBalanceOnDiscard = jest.fn();
+
+      await expect(sut.execDiscard(operator, 7001, OrderDeliveryCouponStatus.CANCEL)).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+
+      const qb = sut.orderDeliveryRepository.createQueryBuilder();
+      // 획득 UPDATE 미발행: 가드를 lease 뒤로 옮기면 try 밖에서 throw → finally 없음 → lease 가 5분간 고아가 된다
+      expect(qb.execute).not.toHaveBeenCalled();
+      expect(sut.orderDeliveryRepository.update).not.toHaveBeenCalled();
+    });
+  });
+
   describe('(C) bulkDiscard — 조건부 UPDATE(CAS) 사용 검증', () => {
     // 운영자: authorityList 에 CUSTOMER_GENERAL_COUPON 부여 → 권한검사 통과
     const operatorEntity = {
@@ -110,13 +217,27 @@ describe('CustomerServiceService.execDiscard — terminal 차단 / CAS 멱등', 
         choiceSelectProduct: undefined,
       }) as any;
 
-    const makeBulkSut = (txAffected: number) => {
+    const makeBulkSut = (txAffected: number, leaseAffected = 1) => {
       const sut: any = Object.create(CustomerServiceService.prototype);
       sut.userRepository = { findOne: jest.fn().mockResolvedValue(operatorEntity) };
-      sut.orderDeliveryRepository = { findOne: jest.fn().mockResolvedValue(buildBulkOrderDelivery()) };
       sut.dataSource = { createQueryRunner: jest.fn(() => makeTxRunner(txAffected)) };
       sut.orderHistoryRepository = { create: jest.fn(() => ({})) };
       sut.restoreBalanceOnDiscard = jest.fn().mockResolvedValue(undefined);
+      sut.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
+
+      // 변형 lease (D3-55 후속): acquire=createQueryBuilder CAS, release=update
+      const leaseQb: any = {
+        update: jest.fn(() => leaseQb),
+        set: jest.fn(() => leaseQb),
+        where: jest.fn(() => leaseQb),
+        andWhere: jest.fn(() => leaseQb),
+        execute: jest.fn(async () => ({ affected: leaseAffected })),
+      };
+      sut.orderDeliveryRepository = {
+        findOne: jest.fn().mockResolvedValue(buildBulkOrderDelivery()),
+        createQueryBuilder: jest.fn(() => leaseQb),
+        update: jest.fn(async () => ({ affected: 1 })),
+      };
       return sut;
     };
 
@@ -138,6 +259,43 @@ describe('CustomerServiceService.execDiscard — terminal 차단 / CAS 멱등', 
       expect(result.success).toHaveLength(0);
       expect(result.failed).toEqual([{ id: 8001, reason: '동시에 상태가 변경되어 폐기하지 못했습니다.' }]);
       expect(sut.restoreBalanceOnDiscard).not.toHaveBeenCalled();
+    });
+
+    /**
+     * D3-55 후속 — 변형 lease 게이트.
+     * bulkDiscard 는 운영자가 가장 많이 쓰는 폐기 경로인데 lease 를 잡지 않았다.
+     * 재발행이 issue()/발송(외부 통신 수 초) 중인 tip 을 다중폐기가 협력사 취소 + 환불까지 마치면,
+     * 재발행은 그대로 진행해 **이미 죽은 핀이 담긴 문자를 고객에게 배달**한다.
+     * fencing 은 내 쓰기만 보호할 뿐 남이 CANCEL 을 쓰는 것을 막지 못하므로 게이트가 필요하다.
+     */
+    it('활성 lease(다른 처리 진행중) → 건별 failed 로 skip, 협력사 취소/Tx 미진입', async () => {
+      const sut = makeBulkSut(1, 0); // lease CAS affected=0
+
+      const result = await sut.bulkDiscard(operator, [8001], '일괄폐기');
+
+      expect(result.success).toHaveLength(0);
+      expect(result.failed).toEqual([
+        { id: 8001, reason: '해당 발송 건에 다른 처리가 진행 중입니다. 잠시 후 다시 시도해 주세요.' },
+      ]);
+      expect(sut.dataSource.createQueryRunner().startTransaction).not.toHaveBeenCalled();
+      expect(sut.restoreBalanceOnDiscard).not.toHaveBeenCalled();
+    });
+
+    it('성공/실패 모두 건별 finally 에서 owner-guarded 해제', async () => {
+      const releases = (sut: any) =>
+        (sut.orderDeliveryRepository.update.mock.calls as unknown as any[][]).filter(
+          (c) => c[1] && c[1].mutationClaimedAt === null,
+        );
+
+      const ok = makeBulkSut(1);
+      await ok.bulkDiscard(operator, [8001], '일괄폐기');
+      expect(releases(ok)).toHaveLength(1);
+      expect(releases(ok)[0][0]).toEqual({ id: 8001, mutationClaimedAt: expect.any(Date) });
+
+      // CAS 경합으로 건이 실패해도 lease 는 반납된다 (미반납 시 5분간 그 행이 잠긴다)
+      const conflicted = makeBulkSut(0);
+      await conflicted.bulkDiscard(operator, [8001], '일괄폐기');
+      expect(releases(conflicted)).toHaveLength(1);
     });
   });
 

@@ -8,8 +8,9 @@ import { ViewScopeType } from '../../entity/user.view.scope.entity';
 
 /**
  * getList() — productSendTimes 필드 검증
- * RESERVE 상품 분 단위 distinct ≥ 2일 때만 배열 채움.
- * per-mapping actualSendAt은 가장 최근 COMPLETE 건 기준.
+ * 배열 채움 게이트: 혼합 발송(IMMEDIATE+RESERVE) 또는 RESERVE 분 단위 distinct ≥ 2.
+ * 게이트 통과 시 배열 = RESERVE ∪ IMMEDIATE 전 매핑 (각 항목 sendType 포함, Case-G 포함).
+ * per-mapping actualSendAt은 가장 최근 COMPLETE/COMPLETE_SMS 건 기준.
  */
 
 const BASE_USER = {
@@ -145,7 +146,7 @@ describe('OrderService getList — productSendTimes', () => {
       expect(result.list[0].productSendTimes).toHaveLength(2);
     });
 
-    it('IMMEDIATE+RESERVE 혼재 시 IMMEDIATE는 산정 제외, RESERVE distinct만 계산', async () => {
+    it('IMMEDIATE+RESERVE 혼재(RESERVE 동일 분 슬롯)면 혼합 게이트로 배열 채움 + 즉시상품 포함', async () => {
       const mappings = [
         makeMapping(1, '즉시상품', 'IMMEDIATE', null, []),
         makeMapping(2, '예약A', 'RESERVE', new Date('2026-07-01T09:00:00'), []),
@@ -153,11 +154,13 @@ describe('OrderService getList — productSendTimes', () => {
       ];
       const service = setupService([makeOrder(mappings)]);
       const result = await service.getList(BASE_USER, BASE_QUERY);
-      // RESERVE distinct=1 → 미포함
-      expect(result.list[0].productSendTimes).toBeUndefined();
+      const times = result.list[0].productSendTimes!;
+      // 혼합(IMMEDIATE≥1 AND RESERVE≥1) → RESERVE distinct=1이어도 채워짐, 전 매핑 포함
+      expect(times).toHaveLength(3);
+      expect(times.map((t: any) => t.productName)).toContain('즉시상품');
     });
 
-    it('IMMEDIATE+RESERVE 혼재 시 RESERVE distinct≥2이면 배열은 RESERVE 항목만 담음', async () => {
+    it('IMMEDIATE+RESERVE 혼재 시 배열에 즉시상품도 포함(반전)', async () => {
       const mappings = [
         makeMapping(1, '즉시상품', 'IMMEDIATE', null, []),
         makeMapping(2, '예약A', 'RESERVE', new Date('2026-07-01T09:00:00'), []),
@@ -166,8 +169,11 @@ describe('OrderService getList — productSendTimes', () => {
       const service = setupService([makeOrder(mappings)]);
       const result = await service.getList(BASE_USER, BASE_QUERY);
       const times = result.list[0].productSendTimes!;
-      expect(times).toHaveLength(2);
-      expect(times.map((t: any) => t.productName)).not.toContain('즉시상품');
+      expect(times).toHaveLength(3);
+      expect(times.map((t: any) => t.productName)).toContain('즉시상품');
+      const immediate = times.find((t: any) => t.productName === '즉시상품')!;
+      expect(immediate.sendType).toBe('IMMEDIATE');
+      expect(immediate.sendRequestAt).toBeNull();
     });
   });
 
@@ -299,6 +305,82 @@ describe('OrderService getList — productSendTimes', () => {
       const result = await service.getList(BASE_USER, BASE_QUERY);
       const itemA = result.list[0].productSendTimes!.find((t: any) => t.productName === '상품A')!;
       expect(itemA.actualSendAt).not.toBeNull();
+    });
+  });
+
+  describe('혼합 발송유형(IMMEDIATE+RESERVE) — 게이트 및 배열', () => {
+    it('혼합 RESERVE1(9:00) + IMMEDIATE1 → 길이 2, 각 항목 sendType/sendRequestAt 정확', async () => {
+      const mappings = [
+        makeMapping(1, '예약상품', 'RESERVE', new Date('2026-07-01T09:00:00'), []),
+        makeMapping(2, '즉시상품', 'IMMEDIATE', null, []),
+      ];
+      const service = setupService([makeOrder(mappings)]);
+      const result = await service.getList(BASE_USER, BASE_QUERY);
+      const times = result.list[0].productSendTimes!;
+      expect(times).toHaveLength(2);
+      const reserve = times.find((t: any) => t.productName === '예약상품')!;
+      const immediate = times.find((t: any) => t.productName === '즉시상품')!;
+      expect(reserve.sendType).toBe('RESERVE');
+      expect(reserve.sendRequestAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/);
+      expect(immediate.sendType).toBe('IMMEDIATE');
+      expect(immediate.sendRequestAt).toBeNull();
+    });
+
+    it('Case-G: RESERVE(9:00) + draft RESERVE(null) + IMMEDIATE1 → draft 포함, draft sendRequestAt null', async () => {
+      const mappings = [
+        makeMapping(1, '예약상품', 'RESERVE', new Date('2026-07-01T09:00:00'), []),
+        makeMapping(2, 'draft예약', 'RESERVE', null, []),
+        makeMapping(3, '즉시상품', 'IMMEDIATE', null, []),
+      ];
+      const service = setupService([makeOrder(mappings)]);
+      const result = await service.getList(BASE_USER, BASE_QUERY);
+      const times = result.list[0].productSendTimes!;
+      expect(times).toHaveLength(3);
+      const draft = times.find((t: any) => t.productName === 'draft예약')!;
+      expect(draft.sendType).toBe('RESERVE');
+      expect(draft.sendRequestAt).toBeNull();
+    });
+
+    it('Case-G(즉시1 + slot 없는 draft RESERVE1): 혼합 게이트로 채워짐, 배열 길이=매핑수', async () => {
+      const mappings = [
+        makeMapping(1, '즉시상품', 'IMMEDIATE', null, []),
+        makeMapping(2, 'draft예약', 'RESERVE', null, []),
+      ];
+      const service = setupService([makeOrder(mappings)]);
+      const result = await service.getList(BASE_USER, BASE_QUERY);
+      const times = result.list[0].productSendTimes!;
+      expect(times).toHaveLength(2);
+    });
+
+    it('IMMEDIATE 재발송 COMPLETE/COMPLETE_SMS actualSendAt은 가장 최근 값', async () => {
+      const firstSendAt = new Date('2026-07-01T09:05:00');
+      const resendAt = new Date('2026-07-01T10:30:00');
+      const mappings = [
+        makeMapping(1, '즉시상품', 'IMMEDIATE', null, [
+          makeDelivery(1, IOrderDeliveryStatus.COMPLETE, firstSendAt),
+          makeDelivery(2, IOrderDeliveryStatus.COMPLETE_SMS, resendAt),
+        ]),
+        makeMapping(2, '예약상품', 'RESERVE', new Date('2026-07-01T09:00:00'), []),
+      ];
+      const service = setupService([makeOrder(mappings)]);
+      const result = await service.getList(BASE_USER, BASE_QUERY);
+      const immediate = result.list[0].productSendTimes!.find((t: any) => t.productName === '즉시상품')!;
+      expect(immediate.actualSendAt).toContain('10:30');
+    });
+
+    it('§5 비혼합 draft 확장: RESERVE 2슬롯 + draft RESERVE(null), IMMEDIATE 0 → 길이 3, draft null/RESERVE', async () => {
+      const mappings = [
+        makeMapping(1, '예약A', 'RESERVE', new Date('2026-07-01T09:00:00'), []),
+        makeMapping(2, '예약B', 'RESERVE', new Date('2026-07-01T10:00:00'), []),
+        makeMapping(3, 'draft예약', 'RESERVE', null, []),
+      ];
+      const service = setupService([makeOrder(mappings)]);
+      const result = await service.getList(BASE_USER, BASE_QUERY);
+      const times = result.list[0].productSendTimes!;
+      expect(times).toHaveLength(3);
+      const draft = times.find((t: any) => t.productName === 'draft예약')!;
+      expect(draft.sendRequestAt).toBeNull();
+      expect(draft.sendType).toBe('RESERVE');
     });
   });
 });

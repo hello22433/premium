@@ -254,6 +254,12 @@ export class UserManagementGetDetailResDto {
     description: '대상 계정 기준 신용초과금 (잔여 한도가 음수일 때의 초과액, 0 이상)',
   })
   creditExcessAmount: number;
+
+  @ApiProperty({
+    description:
+      '대상 계정 기준 현재 여신 사용액 (wallet_account.credit_used_amount, 원 단위 0 이상). 여신 이력의 사용액 누계 최신값과 정합. wallet 미부여 계정은 0.',
+  })
+  creditUsedAmount: number;
 }
 
 export class UserDepartmentInfoDto {

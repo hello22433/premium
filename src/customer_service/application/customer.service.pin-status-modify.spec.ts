@@ -29,13 +29,25 @@ describe('CustomerServiceService.execPinStatusModify — terminal / CAS / 트랜
       ...overrides,
     }) as any;
 
-  const makeSut = (txAffected: number, cancelMessage = '폐기 완료') => {
+  const makeSut = (txAffected: number, cancelMessage = '폐기 완료', leaseAffected = 1) => {
     const sut: any = Object.create(CustomerServiceService.prototype);
     const tx = makeTxRunner(txAffected);
     sut.dataSource = { createQueryRunner: jest.fn(() => tx) };
     sut.orderHistoryRepository = { create: jest.fn(() => ({})) };
     sut.partnerCompanyExternService = { cancel: jest.fn().mockResolvedValue({ message: cancelMessage }) };
-    return { sut, tx };
+    sut.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
+
+    // 변형 lease (D3-55 후속): acquire=createQueryBuilder CAS, release=update
+    const leaseQb: any = {
+      update: jest.fn(() => leaseQb),
+      set: jest.fn(() => leaseQb),
+      where: jest.fn(() => leaseQb),
+      andWhere: jest.fn(() => leaseQb),
+      execute: jest.fn(async () => ({ affected: leaseAffected })),
+    };
+    const update = jest.fn(async () => ({ affected: 1 }));
+    sut.orderDeliveryRepository = { createQueryBuilder: jest.fn(() => leaseQb), update };
+    return { sut, tx, leaseQb, update };
   };
 
   describe('(A) terminal 재진입 차단 — switch 앞 공통 가드', () => {
@@ -188,6 +200,60 @@ describe('CustomerServiceService.execPinStatusModify — terminal / CAS / 트랜
 
       // cancel 이 throw → commitPinStatusTransition(=createQueryRunner) 도달 전에 전파
       expect(sut.dataSource.createQueryRunner).not.toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * D3-55 후속 — 변형 lease 게이트.
+   * 핀상태변경도 coupon_status 를 CANCEL 로 쓰고 협력사 cancel 을 태우므로, 재발행/외부취소/
+   * 배치발송이 진행 중인 행에 진입하면 "발송 중인 핀을 죽이고 문자는 그대로 나가는" 상태가 된다.
+   * execDiscard 와 동일하게 terminal 가드 직후·협력사 cancel 앞에서 게이트한다.
+   */
+  describe('(G) 변형 lease 게이트 (D3-55 후속)', () => {
+    it('활성 lease(다른 처리 진행중) → 400 거절, 협력사 cancel/Tx 미진입', async () => {
+      const { sut } = makeSut(1, '폐기 완료', 0); // lease CAS affected=0
+
+      await expect(sut.execPinStatusModify(buildMap())).rejects.toThrow(/다른 처리가 진행 중/);
+
+      expect(sut.partnerCompanyExternService.cancel).not.toHaveBeenCalled();
+      expect(sut.dataSource.createQueryRunner).not.toHaveBeenCalled();
+    });
+
+    it('lease 획득은 CAS — SET=mutationClaimedAt, WHERE=(IS NULL OR < stale)', async () => {
+      const { sut, leaseQb } = makeSut(1);
+
+      await sut.execPinStatusModify(buildMap());
+
+      const setArg = (leaseQb.set.mock.calls as any[][])[0][0];
+      expect(setArg).toEqual({ mutationClaimedAt: expect.any(Date) });
+      const staleCall = (leaseQb.andWhere.mock.calls as any[][]).find((c) => /mutationClaimedAt IS NULL/i.test(c[0]));
+      expect(staleCall).toBeDefined();
+    });
+
+    it('성공/실패 모두 finally 에서 owner-guarded 해제', async () => {
+      const releases = (update: jest.Mock) =>
+        (update.mock.calls as unknown as any[][]).filter((c) => c[1] && c[1].mutationClaimedAt === null);
+
+      const ok = makeSut(1);
+      await ok.sut.execPinStatusModify(buildMap());
+      expect(releases(ok.update)).toHaveLength(1);
+      expect(releases(ok.update)[0][0]).toEqual({ id: 5001, mutationClaimedAt: expect.any(Date) });
+
+      const boom = makeSut(1);
+      boom.sut.partnerCompanyExternService.cancel = jest.fn().mockRejectedValue(new Error('협력사 오류'));
+      await expect(boom.sut.execPinStatusModify(buildMap())).rejects.toThrow();
+      expect(releases(boom.update)).toHaveLength(1);
+    });
+
+    it('terminal 거절은 lease 를 잡지도 해제하지도 않는다 (고아 lease 방지)', async () => {
+      const { sut, leaseQb, update } = makeSut(1);
+
+      await expect(
+        sut.execPinStatusModify(buildMap({ beforeChange: OrderDeliveryCouponStatus.USED })),
+      ).rejects.toBeInstanceOf(BadRequestException);
+
+      expect(leaseQb.execute).not.toHaveBeenCalled();
+      expect(update).not.toHaveBeenCalled();
     });
   });
 

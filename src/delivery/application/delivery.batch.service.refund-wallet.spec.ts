@@ -41,6 +41,7 @@ import { DeliverySendService } from './delivery.send.service';
 import { RefundLedgerService } from './refund-ledger.service';
 import { SsgInsertStateService } from './ssg-insert-state.service';
 import { SsgRefundResolverService } from './ssg-refund.resolver';
+import { MessageAttemptService } from './message-attempt.service';
 import { OrderFromService } from '../../order_from/application/order.from.service';
 
 /**
@@ -146,6 +147,14 @@ describe('DeliveryBatchService.refundForFail - wallet path', () => {
         { provide: 'DeliveryAlimTalk', useValue: {} },
         { provide: 'IMailSend', useValue: {} },
         { provide: 'ISmsSend', useValue: {} },
+        // shadow 추적은 발송을 대행하지 않는다 — 상관키 없이 그대로 통과시키는 스텁.
+        {
+          provide: MessageAttemptService,
+          useValue: {
+            trackSend: (_ctx: unknown, send: (attemptId?: string) => Promise<unknown>) => send(undefined),
+            trackAlimTalk: (_ctx: unknown, send: () => Promise<unknown>) => send(),
+          },
+        },
         { provide: DeliveryTrackHttp, useValue: {} },
         { provide: CryptoCipher, useValue: {} },
         { provide: ConfigService, useValue: { get: jest.fn() } },

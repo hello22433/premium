@@ -17,6 +17,7 @@ export const ACTIVITY_LOG_PURGE_EXCLUDED_ACTION_TYPES: string[] = [
   ActivityLogActionType.BALANCE_REFUND_REVERSE,
   ActivityLogActionType.MAXIMUM_LIMIT_MODIFY,
   ActivityLogActionType.SETTLE_CODE_POLICY_MODIFY,
+  ActivityLogActionType.SETTLE_CODE_RENAME,
   ActivityLogActionType.DISCARD_RESTORE,
   ActivityLogActionType.ACCOUNT_CREATE,
   ActivityLogActionType.ACCOUNT_WITHDRAW,
