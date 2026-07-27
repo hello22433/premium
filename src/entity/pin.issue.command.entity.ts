@@ -1,0 +1,82 @@
+import { Column, CreateDateColumn, Entity, Index, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm';
+import { PartnerResponseClass, PinIssueCommandStatus } from '../delivery/interface/pin.issue.command.status';
+import { TrackingCreatedByOp } from '../delivery/interface/delivery.workflow.status';
+
+/**
+ * 협력사 PIN 발급 명령 상태 머신. §5.2.
+ *
+ * - 최초 협력사 요청 **전에** 발급 명령과 작업 선점 정보를 자사 DB에 확정 저장한다.
+ *   협력사 호출은 DB 트랜잭션 밖에서 하고, 응답은 3중 fencing 일치 소유자만 반영한다(§6.1).
+ * - 최초 발급(`createdByOp = PIN_ISSUE`)은 order_delivery 당 1건만 존재할 수 있다
+ *   (DB generated column `initial_issue_key` unique). 재시도는 `RETRY`, 재발급은 `PIN_REISSUE` 소관이다.
+ * - `PIN_REISSUE` 는 외부 부작용(신규 발급)이 있는 DUAL op 이므로 `approvalId` 가 필수이며,
+ *   승인 없는 재발급은 `§10` 불변식 ②-c 가 이 테이블을 대상으로 탐지한다.
+ */
+@Entity('pin_issue_command')
+@Index('idx_pin_issue_command_delivery', ['orderDeliveryId', 'status'])
+@Index('idx_pin_issue_command_status', ['status', 'stateEnteredAt'])
+@Index('idx_pin_issue_command_due', ['status', 'nextAttemptAt'])
+@Index('idx_pin_issue_command_approval', ['approvalId'])
+export class PinIssueCommandEntity {
+  @PrimaryGeneratedColumn({ type: 'bigint' })
+  id: string;
+
+  @Column({ type: 'int', comment: 'FK) order_delivery.id' })
+  orderDeliveryId: number;
+
+  @Column({ type: 'varchar', length: 24, default: PinIssueCommandStatus.STARTED })
+  status: PinIssueCommandStatus;
+
+  @Column({ type: 'varchar', length: 32, comment: '협력사 타입' })
+  partnerType: string;
+
+  @Column({ type: 'varchar', length: 191, nullable: true, comment: '협력사 요청 키(trId 등). 멱등/조회 키' })
+  requestKey: string | null;
+
+  @Column({ type: 'int', default: 0, comment: '협력사 발급 호출 횟수' })
+  attemptCount: number;
+
+  @Column({ type: 'varchar', length: 32, nullable: true, comment: 'PARTNER_RESPONSE_* 원본 응답코드' })
+  partnerResponseCode: string | null;
+
+  @Column({ type: 'varchar', length: 16, nullable: true, comment: '§9 분류표 버킷' })
+  responseClass: PartnerResponseClass | null;
+
+  @Column({ type: 'varchar', length: 64, nullable: true, comment: 'Level B 실행 lease 소유자' })
+  ownerToken: string | null;
+
+  @Column({ type: 'bigint', default: 0, comment: 'Level B 세대(3중 fencing)' })
+  generation: string;
+
+  @Column({ type: 'bigint', nullable: true, comment: '바인딩된 workflow_version(3중 fencing)' })
+  workflowVersion: string | null;
+
+  @Column({ type: 'varchar', length: 24, comment: '생성 출처 op PIN_ISSUE|RETRY|PIN_REISSUE' })
+  createdByOp: TrackingCreatedByOp;
+
+  @Column({ type: 'bigint', comment: '생성 시점 workflow_version(승인 대조 조인 키)' })
+  createdWorkflowVersion: string;
+
+  @Column({ type: 'bigint', nullable: true, comment: 'DUAL op(PIN_REISSUE)만 필수. dual_approval.id' })
+  approvalId: string | null;
+
+  @Column({ type: 'datetime', precision: 6, nullable: true, comment: 'RETRY_PENDING 재시도 예정 시각' })
+  nextAttemptAt: Date | null;
+
+  @Column({
+    type: 'datetime',
+    precision: 6,
+    default: () => 'CURRENT_TIMESTAMP(6)',
+    comment: '현재 status 진입 시각(표 4-1 체류시간)',
+  })
+  stateEnteredAt: Date;
+
+  @Column({ type: 'datetime', precision: 6, nullable: true, comment: '터미널 확정 시각' })
+  resolvedAt: Date | null;
+
+  @CreateDateColumn({ type: 'datetime', precision: 6 })
+  createdAt: Date;
+
+  @UpdateDateColumn({ type: 'datetime', precision: 6 })
+  updatedAt: Date;
+}

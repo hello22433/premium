@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { SmsGemtekSend } from './infra/sms.gemtek.send';
+import { GemtekResultQuery } from './infra/gemtek.result.query';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { GemteckMsgQueueEntity } from '../entity/gemtek/msg.queue.entity';
 
@@ -8,6 +9,7 @@ import { GemteckMsgQueueEntity } from '../entity/gemtek/msg.queue.entity';
   controllers: [],
   providers: [
     SmsGemtekSend,
+    GemtekResultQuery,
     {
       provide: 'ISmsSend',
       useClass: SmsGemtekSend,
@@ -15,6 +17,7 @@ import { GemteckMsgQueueEntity } from '../entity/gemtek/msg.queue.entity';
   ],
   exports: [
     SmsGemtekSend,
+    GemtekResultQuery,
     {
       provide: 'ISmsSend',
       useClass: SmsGemtekSend,

@@ -5,6 +5,12 @@ import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { OrderDeliveryRefundStatusEnum } from '../../delivery/interface/order.delivery.refund.status.enum';
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { ActivityLogService } from '../../activity_log/application/activity.log.service';
+const cipherStub = {
+  encryptAccountNumber: (v: string) => v,
+  safeDecryptAccountNumber: (v: string) => v,
+  encryptDeliveryTarget: (v: string) => v,
+  safeDecryptDeliveryTarget: (v: string) => v,
+} as unknown as CryptoCipher;
 
 describe('RefundService 일괄(batch)', () => {
   let service: RefundService;
@@ -16,7 +22,7 @@ describe('RefundService 일괄(batch)', () => {
       save: jest.fn(),
     };
     service = new RefundService(
-      {} as CryptoCipher,
+      cipherStub,
       {} as ActivityLogService,
       repo as unknown as Repository<OrderDeliveryEntity>,
     );

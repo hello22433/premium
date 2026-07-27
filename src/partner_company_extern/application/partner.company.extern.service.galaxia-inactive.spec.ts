@@ -34,6 +34,18 @@ const makeRepoMock = () => ({
   findOne: jest.fn(),
   existsBy: jest.fn(),
   query: jest.fn(),
+  // refreshCouponStatus 의 영속은 optimistic CAS(QueryBuilder) 다 — coupon_status 가 진입 시점에서
+  // 변하지 않았을 때만 쓴다(조회 중 폐기가 확정되면 stale 결과로 덮어쓰지 않기 위해).
+  createQueryBuilder: jest.fn(() => {
+    const qb: any = {
+      update: jest.fn(() => qb),
+      set: jest.fn(() => qb),
+      where: jest.fn(() => qb),
+      andWhere: jest.fn(() => qb),
+      execute: jest.fn().mockResolvedValue({ affected: 1 }),
+    };
+    return qb;
+  }),
 });
 
 /**

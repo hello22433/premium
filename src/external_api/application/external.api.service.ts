@@ -31,6 +31,7 @@ import {
 import { IOrderType } from '../../order/interface/order.type';
 import { IOrderStatus } from '../../order/interface/order.status';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
+import { MUTATION_CLAIM_STALE_MS } from '../../delivery/interface/order.delivery.mutation.claim';
 import { IOrderSendMethod } from '../../order/interface/order.send.method';
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
 import { IProductUseStatus } from '../../product/interface/product.status';
@@ -358,10 +359,10 @@ export class ExternalApiService {
     return this.resolveCardSurchargeAppliedForUser(account.user);
   }
 
-  // billingUser 기준 카드할증 판정. 정산방법 SoT = 정산코드 wallet.settleMethod (order.service resolveSettlePolicy 와 동일 모델).
-  //  - WALLET: wallet.settleMethod (미존재 시 fail-closed throw — 잘못된 결제수단 영구저장 방지)
-  //  - SHADOW: wallet 조회 실패 시 company 폴백
-  //  - LEGACY: company.settleMethod (user.settleMethod 는 deprecated)
+  // billingUser 기준 카드할증 판정. SoT = 정산코드 wallet.settleMethod === 'CARD' && wallet.cardSurchargeApplied (order.service §4.0 와 동일 모델).
+  //  - WALLET: wallet.settleMethod + 토글 (미존재 시 fail-closed throw — 잘못된 결제수단 영구저장 방지)
+  //  - SHADOW: wallet 성공 시 토글 반영 / 실패 시 company 폴백(토글 미개입)
+  //  - LEGACY: company.settleMethod (user.settleMethod 는 deprecated, 토글 미개입)
   private async resolveCardSurchargeAppliedForUser(user: UserEntity): Promise<boolean> {
     const mode = this.walletCutoverConfig.pr3SettleMode;
     const companyApplied = user.company?.settleMethod === IUserSettleMethod.CARD;
@@ -370,7 +371,7 @@ export class ExternalApiService {
     }
     try {
       const wallet = await this.walletAccountResolverService.resolveByUserId(user.id);
-      return wallet.settleMethod === 'CARD';
+      return wallet.settleMethod === 'CARD' && !!wallet.cardSurchargeApplied;
     } catch (e) {
       if (mode === WalletCutoverMode.WALLET) {
         throw e; // fail-closed
@@ -927,6 +928,61 @@ export class ExternalApiService {
     return { orderDelivery, deliveryHistory };
   }
 
+  /**
+   * phaseC 의 발송 결과 영속 — save(orderDelivery) 금지, targeted update (D3-60 clobber).
+   *
+   * save 는 merge 라 **행 전체**를 phaseA 시점 스냅샷으로 쓴다. phaseB(협력사 발급 + 문자 발송)는
+   * 외부 통신이라 수 초가 걸리고, 그 사이 CS 폐기가 들어오면 save 가 남이 쓴 값을 되돌린다:
+   *   - coupon_status='CANCEL' → 'NOT_USED'  (환불은 끝났는데 되살아난 쿠폰)
+   *   - deleted_at             → NULL         (지워진 행 부활)
+   *   - mutation_claimed_at    → NULL         (CS 폐기가 쥔 lease 무력화 = 1차 방어 파괴)
+   *
+   * ┌─ 【의도적 설계 결정 — 잊은 것이 아님】 2026-07-24 ────────────────────────────┐
+   * │ fencing(`AND mutation_claimed_at = 내토큰`)은 **불가능하고, 또 불필요하다.**   │
+   * │                                                                              │
+   * │ 불가능: 주문 생성 경로(createOrder/createSsgOrder)는 변형 lease 를 아예 안     │
+   * │   잡는다 — acquireMutationLease 는 파일 전체에서 cancelOrder 한 곳뿐. 쥔       │
+   * │   토큰이 없으니 WHERE 에 실을 것이 없다.                                       │
+   * │ 불필요: phaseC 는 **갓 만든 행**을 쓴다. 이 창(phaseB, 수 초)에 겹칠 변형       │
+   * │   액터가 사실상 없다 —                                                         │
+   * │   · 협력사 취소(cancelOrder)는 externalTrId 가 있어야 하는데, 그건 createOrder │
+   * │     가 응답을 반환해야 협력사에 전달된다. phaseB 도는 중엔 응답 전이라 불가.    │
+   * │   · 배치 발송은 external 주문을 claim 대상에서 아예 배제한다(order.type 필터).  │
+   * │   · CS 폐기는 이론상만 — 방금 생성된 쿠폰을 수 초 안에 찾아 폐기해야 도달.      │
+   * │   (대조: resendOrder 는 이미 존재하는 쿠폰이라 겹칠 창이 실재 → 거기엔 lease+  │
+   * │    fencing 을 넣었다. 생성 경로는 그 상황이 아니다.)                           │
+   * │ 그래서 여기 save→targeted update 는 "살아있는 구멍" 봉합이 아니라 D3-60 위생    │
+   * │ (stale 전체엔티티 의존 제거 + 나머지 경로와 일관성)이다.                       │
+   * └──────────────────────────────────────────────────────────────────────────────┘
+   *
+   * 아래가 **phaseC 말고는 아무도 안 쓰는 컬럼의 전부**다(전수 확인, 회귀는
+   * external.api.wallet-refund.spec.ts 의 "phaseC 영속 컬럼 집합 잠금" 이 잠근다):
+   *   - status/actualSendAt/failedAt/apiErrorMessage : 발송 결과
+   *   - expireAt   : phaseB 에서 issue() **뒤**에 계산 → persistIssuedPin 이 모르는 값
+   *   - imagePath  : 자체 update 없음. 빠지면 쿠폰 이미지 영구 유실
+   *   - report 4종 : 알림톡 POST 성공 표식. 빠지면 sweep 재선택 → 중복 발송
+   *
+   * 나머지(barCode/personalCode/couponNum/ssgTransactionId/encourageAt/ssgEventId)는
+   * persistIssuedPin 이, transactionId/externalTrId 는 saveTransactionIds 가 이미 영속한다.
+   */
+  private async persistPhaseCResult(orderDelivery: OrderDeliveryEntity): Promise<void> {
+    await this.orderDeliveryRepository.update(
+      { id: orderDelivery.id },
+      {
+        status: orderDelivery.status,
+        actualSendAt: orderDelivery.actualSendAt,
+        failedAt: orderDelivery.failedAt,
+        apiErrorMessage: orderDelivery.apiErrorMessage,
+        expireAt: orderDelivery.expireAt,
+        imagePath: orderDelivery.imagePath,
+        alimTalkMsgKey: orderDelivery.alimTalkMsgKey,
+        reportState: orderDelivery.reportState,
+        reportNextDueAt: orderDelivery.reportNextDueAt,
+        reportDeadlineAt: orderDelivery.reportDeadlineAt,
+      },
+    );
+  }
+
   // ─── Phase C: 성공 상태 업데이트 ─────────────────────────
 
   @Transactional()
@@ -934,7 +990,7 @@ export class ExternalApiService {
     if (!orderDelivery.actualSendAt) {
       orderDelivery.actualSendAt = new Date();
     }
-    await this.orderDeliveryRepository.save(orderDelivery);
+    await this.persistPhaseCResult(orderDelivery);
 
     order.status = IOrderStatus.DELIVERY_COMPLETE;
     await this.orderRepository.save(order);
@@ -954,7 +1010,11 @@ export class ExternalApiService {
     if (!orderDelivery.failedAt) {
       orderDelivery.failedAt = new Date();
     }
-    await this.orderDeliveryRepository.save(orderDelivery);
+    // 성공 경로와 같은 컬럼 계약. 실패 경로가 특히 중요하다 — barCode 는 persistIssuedPin 이
+    // 이미 영속했으므로, 발급까지 성공하고 발송만 실패한 건은 FAIL 행에 유효 PIN 이 남는다.
+    // save(merge) 였다면 그 사이 들어온 폐기의 coupon_status 까지 되돌려 "환불됐는데 살아있는 핀"
+    // 을 만들 수 있었다.
+    await this.persistPhaseCResult(orderDelivery);
 
     order.status = IOrderStatus.DELIVERY_CANCEL;
     await this.orderRepository.save(order);
@@ -1135,6 +1195,8 @@ export class ExternalApiService {
     // D3-55: reconcile 는 상태를 최신 delivery(id DESC=tip) 기준으로 보되, trId 는 externalTrId 를 가진
     // 원본(root)에서 가져온다. 재발행 tip 은 externalTrId=null 이라 그대로 쓰면 파트너가 trId 를 복구할 수 없다.
     // tip 이 이미 trId 를 가진 경우(재발행 없음)엔 추가 조회 없이 그대로 사용.
+    // 정렬 없음/단건 조회지만 모호성 없음: 외부주문은 createOrder 가 매핑 1개·발송건 1개(amount:1)로 만들고
+    // trId 는 root 하나에만 심긴다(재발행 tip=null). 즉 order 당 externalTrId 보유 행은 항상 root 단 하나.
     const responseTrId =
       orderDelivery.externalTrId ??
       (
@@ -1190,6 +1252,37 @@ export class ExternalApiService {
 
   // ─── 주문 취소 ──────────────────────────────────────────
 
+  /**
+   * 변형 lease 획득 — 원자적 CAS. 비었거나 stale(5분 초과)일 때만 획득.
+   * 재발행(execHistory DISCARD_REISSUE)·내부 폐기(execDiscard)와 같은 컬럼을 공유해
+   * "서로 다른 행위의 교차"(재발행 중 취소 등)를 입구에서 차단한다(D3-55 후속).
+   * claimedAt(발송배치 lease)과 별개 — 배치는 stale 정책이 없고 부팅 sweep 이
+   * WAIT+claimedAt 을 무조건 해제하므로 겸용 시 살아있는 점유가 강탈·삭제된다.
+   */
+  private async acquireMutationLease(orderDeliveryId: number, claimAt: Date): Promise<boolean> {
+    const staleThreshold = new Date(claimAt.getTime() - MUTATION_CLAIM_STALE_MS);
+    const result = await this.orderDeliveryRepository
+      .createQueryBuilder()
+      .update(OrderDeliveryEntity)
+      .set({ mutationClaimedAt: claimAt })
+      .where('id = :id', { id: orderDeliveryId })
+      .andWhere('(mutationClaimedAt IS NULL OR mutationClaimedAt < :stale)', { stale: staleThreshold })
+      .execute();
+    return !!result.affected;
+  }
+
+  /** 변형 lease 해제 (owner guard) — 내 lease 만 해제, 실패는 로깅만(stale self-heal 이 안전망). */
+  private async releaseMutationLease(orderDeliveryId: number, claimAt: Date): Promise<void> {
+    try {
+      await this.orderDeliveryRepository.update(
+        { id: orderDeliveryId, mutationClaimedAt: claimAt },
+        { mutationClaimedAt: null },
+      );
+    } catch (releaseErr) {
+      this.logger.error(`[변형lease] 해제 실패 — orderDeliveryId=${orderDeliveryId}`, releaseErr);
+    }
+  }
+
   async cancelOrder(
     account: ExternalApiAccountEntity,
     trId: string,
@@ -1204,47 +1297,82 @@ export class ExternalApiService {
       throw new ExternalApiException('3009', '신세계 상품권은 폐기할 수 없습니다');
     }
 
-    // D3-55: findOrderDeliveryByTrId 가 재발행 tip 으로 해소하므로, tip 이 아직 미발송(actualSendAt=null)이면
-    // 재발행 발송과 취소/환불이 레이스가 된다(발송 완료 전 환불 → 발송됐는데 취소·환불된 쿠폰).
-    // 발송 완료 전에는 거절해 재시도를 유도한다.
-    // (발송 신호는 status 가 아니라 actualSendAt — 정상 발송 쿠폰도 delivery.status 는 WAIT 로 남고 actualSendAt 만 세팅됨.
-    //  재발행 tip 도 발송 성공 시 actualSendAt 세팅: customer.service.service.ts fullDelivery.actualSendAt)
-    if (!orderDelivery.actualSendAt) {
-      throw new ExternalApiException('3010', '발송 처리 중인 주문입니다. 잠시 후 다시 시도해 주세요.');
+    // D3-55 후속: 변형 lease 로 재발행 진행중 창을 입구에서 닫는다.
+    // 재발행 tip 은 INSERT 시점부터 lease 를 보유하므로, 발급/발송 중인 tip 취소는 3010(일시적, 재시도 유도).
+    // 과거 status/actualSendAt 기반 가드는 살아있는 FAIL_SMS tip 을 오차단해 제거했던 이력이 있다(리뷰2/3).
+    const mutationClaimAt = new Date();
+    if (!(await this.acquireMutationLease(orderDelivery.id, mutationClaimAt))) {
+      throw new ExternalApiException('3010', '해당 주문에 다른 처리가 진행 중입니다. 잠시 후 다시 시도해 주세요.');
     }
-
-    if (
-      orderDelivery.status === IOrderDeliveryStatus.CANCEL ||
-      orderDelivery.couponStatus === OrderDeliveryCouponStatus.CANCEL ||
-      orderDelivery.couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL
-    ) {
-      throw new ExternalApiException('3005', '이미 폐기/취소된 주문');
-    }
-
-    if (orderDelivery.couponStatus === OrderDeliveryCouponStatus.USED) {
-      throw new ExternalApiException('3006', '이미 사용된 쿠폰은 취소 불가');
-    }
-
-    if (orderDelivery.expireAt && orderDelivery.expireAt.getTime() < Date.now()) {
-      throw new ExternalApiException('3007', '만료된 쿠폰');
-    }
-
-    if (product?.isCancelable === false) {
-      throw new ExternalApiException('3009', '취소 불가 상품');
-    }
-
-    if (orderDelivery.barCode && product?.partnerCompany) {
-      try {
-        await this.partnerCompanyExternService.cancelByExternalApi(orderDelivery);
-      } catch (error) {
-        this.logger.error(`[cancelOrder] 쿠폰 취소 실패 - trId: ${trId}`, error);
-        throw translatePartnerError(error, 'cancel');
+    // 메모리 엔티티에도 lease 를 반영한다. orderDelivery 는 findOrderDeliveryByTrId 가 full entity 로
+    // 로드한 스냅샷이라 mutationClaimedAt=null 이고, acquireMutationLease 는 DB row 만 UPDATE 한다.
+    //
+    // 종전에는 이것이 **필수 방어**였다: processCancelRefund 가 save(orderDelivery)(=merge) 를 했고,
+    // 그 merge 가 "메모리 null vs DB claimAt" 을 변경으로 인식해 mutation_claimed_at=NULL 을 써
+    // 환불 도중 자기 lease 를 스스로 해제했다.
+    // 그 save 는 targeted update + fencing 으로 교체됐고, fencing 은 이 필드가 아니라
+    // mutationClaimAt 지역변수를 직접 조건으로 쓴다 — 즉 더는 이 동기화에 의존하지 않는다.
+    // 그래도 남긴다: 이 엔티티를 읽는 하위 코드가 실제 소유 상태를 보는 것이 맞고,
+    // 누군가 다시 save 를 들여와도 같은 사고가 재발하지 않는다.
+    orderDelivery.mutationClaimedAt = mutationClaimAt;
+    try {
+      // lease 획득 전 스냅샷은 stale 일 수 있다(직전까지 진행되던 재발행이 barCode/couponStatus 를 갱신).
+      // 아래 가드와 "barCode 있으면 협력사 취소" 판단이 옛 값으로 내려가지 않도록 volatile 컬럼을 재조회한다.
+      //
+      // fail-closed: 재조회가 비면 반드시 거절한다. stale 스냅샷으로 진행하면 barCode=null(미발급 시점 값) 때문에
+      // 협력사 취소를 건너뛴 채 환불만 나가 "협력사엔 살아있는 핀 + DB 는 CANCEL + 환불 완료" 자금 사고가 된다.
+      // 행이 사라지는 경로가 실재한다 — 재발행 실패 시 unwindReissue 가 tip 을 softDelete 한다(기본 조회에서 제외).
+      const fresh = await this.orderDeliveryRepository.findOne({
+        where: { id: orderDelivery.id },
+        select: ['id', 'status', 'couponStatus', 'expireAt', 'barCode', 'discardedAt'],
+      });
+      if (!fresh) {
+        this.logger.error(
+          `[cancelOrder] lease 획득 후 재조회 실패(행 없음/soft-delete) — 취소 거절. orderDeliveryId=${orderDelivery.id}, trId=${trId}`,
+        );
+        throw new ExternalApiException('3010', '해당 주문에 다른 처리가 진행 중입니다. 잠시 후 다시 시도해 주세요.');
       }
+      orderDelivery.status = fresh.status;
+      orderDelivery.couponStatus = fresh.couponStatus;
+      orderDelivery.expireAt = fresh.expireAt;
+      orderDelivery.barCode = fresh.barCode;
+      orderDelivery.discardedAt = fresh.discardedAt;
+
+      if (
+        orderDelivery.status === IOrderDeliveryStatus.CANCEL ||
+        orderDelivery.couponStatus === OrderDeliveryCouponStatus.CANCEL ||
+        orderDelivery.couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL
+      ) {
+        throw new ExternalApiException('3005', '이미 폐기/취소된 주문');
+      }
+
+      if (orderDelivery.couponStatus === OrderDeliveryCouponStatus.USED) {
+        throw new ExternalApiException('3006', '이미 사용된 쿠폰은 취소 불가');
+      }
+
+      if (orderDelivery.expireAt && orderDelivery.expireAt.getTime() < Date.now()) {
+        throw new ExternalApiException('3007', '만료된 쿠폰');
+      }
+
+      if (product?.isCancelable === false) {
+        throw new ExternalApiException('3009', '취소 불가 상품');
+      }
+
+      if (orderDelivery.barCode && product?.partnerCompany) {
+        try {
+          await this.partnerCompanyExternService.cancelByExternalApi(orderDelivery);
+        } catch (error) {
+          this.logger.error(`[cancelOrder] 쿠폰 취소 실패 - trId: ${trId}`, error);
+          throw translatePartnerError(error, 'cancel');
+        }
+      }
+
+      await this.processCancelRefund(order, orderDelivery, account, mutationClaimAt);
+
+      return ExternalApiResponse.success();
+    } finally {
+      await this.releaseMutationLease(orderDelivery.id, mutationClaimAt);
     }
-
-    await this.processCancelRefund(order, orderDelivery, account);
-
-    return ExternalApiResponse.success();
   }
 
   @Transactional()
@@ -1252,11 +1380,47 @@ export class ExternalApiService {
     order: OrderEntity,
     orderDelivery: OrderDeliveryEntity,
     account: ExternalApiAccountEntity,
+    /** cancelOrder 가 획득한 변형 lease 토큰. 상태 쓰기의 fencing 조건으로 쓴다(다음 커밋). */
+    mutationClaimAt: Date,
   ) {
+    const discardedAt = new Date();
     orderDelivery.status = IOrderDeliveryStatus.CANCEL;
     orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
-    orderDelivery.discardedAt = new Date();
-    await this.orderDeliveryRepository.save(orderDelivery);
+    orderDelivery.discardedAt = discardedAt;
+
+    // save(orderDelivery) 금지 — merge 는 **행 전체**를 메모리 스냅샷으로 UPDATE 한다 (D3-60 clobber).
+    // orderDelivery 는 findOrderDeliveryByTrId 가 로드한 full 엔티티이고, cancelOrder 의 lease 획득 후
+    // 재조회는 status/couponStatus/expireAt/barCode/discardedAt **6개만** 갱신한다.
+    // 나머지 컬럼(imagePath·actualSendAt·encourageAt·reportState·alimTalkMsgKey·personalCode·
+    // couponNum·deletedAt …)은 trId 조회 시점의 옛 값 그대로라, save 는 그 사이 배치·재발행이 쓴
+    // 값을 되돌린다. 특히 deletedAt=NULL 되돌림은 unwindReissue 가 지운 tip 을 부활시킨다.
+    // 이 함수가 실제로 바꾸는 3개 컬럼만 targeted update 한다.
+    //
+    // fencing: 내 변형 lease 를 아직 들고 있을 때만 쓴다.
+    // lease 는 5분 stale self-heal 이라, 협력사 취소가 극단 지연되면(재시도 최대 31초 + 응답 대기)
+    // 그 사이 폐기·재발행이 lease 를 stale 로 보고 가져갈 수 있다. 그때 무조건 쓰면 남이 확정한
+    // 상태를 덮는다.
+    const claimed = await this.orderDeliveryRepository.update(
+      { id: orderDelivery.id, mutationClaimedAt: mutationClaimAt },
+      {
+        status: IOrderDeliveryStatus.CANCEL,
+        couponStatus: OrderDeliveryCouponStatus.CANCEL,
+        discardedAt,
+      },
+    );
+
+    // affected=0 = lease 를 뺏긴 뒤였다. 여기서 멈추면 안 된다 —
+    // 협력사 취소(cancelByExternalApi)는 **이 함수에 오기 전에 이미 끝난 비가역 작업**이라,
+    // 중단하면 "협력사 쿠폰은 죽었는데 환불은 안 나간" 고객 피해가 남는다.
+    // 따라서 환불은 그대로 집행하고(refundLedger.claim 의 멱등 게이트가 이중환불을 막는다 — D3-3),
+    // 상태 미반영만 경보로 남겨 수동 정합을 유도한다.
+    if (!claimed.affected) {
+      this.logger.error(
+        `[CANCEL_FENCE_LOST] 변형 lease 상실로 취소 상태 미반영 — 환불은 진행한다. ` +
+          `orderDeliveryId=${orderDelivery.id}, orderId=${order.id}, ` +
+          `수동 확인 필요: order_delivery.status/coupon_status 가 CANCEL 인지 대조`,
+      );
+    }
 
     order.status = IOrderStatus.DELIVERY_CANCEL;
     await this.orderRepository.save(order);
@@ -1312,6 +1476,9 @@ export class ExternalApiService {
     const orderDelivery = await this.findOrderDeliveryByTrId(account, trId, ctx);
     const order = orderDelivery.orderProductMapping?.order;
 
+    // D3-55 후속: 재발행 진행 중 tip 은 변형 lease 를 보유한다. 아래 슬롯 CAS 의 WHERE 에
+    // lease 조건을 포함해, 재발행 자체 발송과의 이중 발송을 원자적으로 차단한다(활성 lease → 3010).
+
     // R3: 재발송은 발송 성공(DELIVERY_COMPLETE) 주문만 허용. 실패/취소(DELIVERY_CANCEL)는 거절.
     // 폐기/취소된 쿠폰(couponStatus CANCEL/REFUND_CANCEL)도 거절. cancelOrder 가드와 대칭.
     if (order?.status !== IOrderStatus.DELIVERY_COMPLETE) {
@@ -1330,26 +1497,34 @@ export class ExternalApiService {
 
     const max = this.resolveResendMax(account);
 
-    // ─ Atomic slot claim ─
+    // ─ Atomic slot claim + 변형 lease 획득 ─
     // 동시 이중 발송(발송 비용 중복)과 resendCount 손실 race 를 차단하기 위해,
     // 외부 발송 전에 DB 에서 원자적으로 슬롯을 선점한다 (read-then-write save 금지).
     // WHERE 에 couponStatus 가드를 포함해 SELECT~UPDATE 사이의 취소/폐기 race 도 닫는다.
+    //
+    // lease 는 "읽기"가 아니라 "획득"이어야 한다 — SET 에 mutationClaimedAt 을 포함해 슬롯 선점과 동시에
+    // 잡는다. 읽기만 하면 dispatchSend(외부 발송, 수 초) 동안 lease 가 비어 있어, 그 사이 폐기/취소가
+    // 진입해 협력사 취소 + 환불을 마치고, 이 재발송은 이미 죽은 핀을 고객에게 배달하게 된다.
+    // stale(5분 초과) lease 는 크래시 잔재로 보고 강탈한다(self-heal).
+    const mutationClaimAt = new Date();
+    const mutationStale = new Date(mutationClaimAt.getTime() - MUTATION_CLAIM_STALE_MS);
     const claim = await this.orderDeliveryRepository
       .createQueryBuilder()
       .update(OrderDeliveryEntity)
-      .set({ resendCount: () => 'resend_count + 1' })
+      .set({ resendCount: () => 'resend_count + 1', mutationClaimedAt: mutationClaimAt })
       .where('id = :id', { id: orderDelivery.id })
       .andWhere('resend_count < :max', { max })
       .andWhere('coupon_status NOT IN (:...blocked)', {
         blocked: [OrderDeliveryCouponStatus.CANCEL, OrderDeliveryCouponStatus.REFUND_CANCEL],
       })
+      .andWhere('(mutation_claimed_at IS NULL OR mutation_claimed_at < :mutationStale)', { mutationStale })
       .execute();
 
     if (!claim.affected) {
-      // 한도 도달 또는 직전 취소/폐기. 최신 상태로 정확히 분기.
+      // 한도 도달 / 직전 취소·폐기 / 변형 작업 진행중. 최신 상태로 정확히 분기.
       const fresh = await this.orderDeliveryRepository.findOne({
         where: { id: orderDelivery.id },
-        select: ['resendCount', 'couponStatus'],
+        select: ['resendCount', 'couponStatus', 'mutationClaimedAt'],
       });
       if (
         fresh?.couponStatus === OrderDeliveryCouponStatus.CANCEL ||
@@ -1357,36 +1532,81 @@ export class ExternalApiService {
       ) {
         throw new ExternalApiException('3005', '폐기/취소된 쿠폰은 재발송 불가');
       }
+      if (fresh?.mutationClaimedAt && fresh.mutationClaimedAt >= mutationStale) {
+        throw new ExternalApiException('3010', '해당 주문에 다른 처리가 진행 중입니다. 잠시 후 다시 시도해 주세요.');
+      }
       throw new ExternalApiException('3008', `재발송 횟수 초과 (${fresh?.resendCount ?? max}/${max})`);
     }
+    // 메모리 엔티티에도 반영 — 이후 누군가 save(merge) 해도 자기 lease 를 NULL 로 되돌리지 않도록.
+    orderDelivery.mutationClaimedAt = mutationClaimAt;
 
-    // 슬롯 선점 후 외부 발송. 실패(throw 또는 isSuccess=false)하면 선점한 슬롯을 되돌린다
-    // (현행 정책: 성공만 카운트). 단일 catch 로 롤백 경로를 통일한다.
     try {
-      const history = await this.dispatchSend(orderDelivery);
-      if (!history.isSuccess) {
-        throw new ExternalApiException('3003', '재발송 실패');
+      // 슬롯 선점 후 외부 발송. 실패(throw 또는 isSuccess=false)하면 선점한 슬롯을 되돌린다
+      // (현행 정책: 성공만 카운트). 단일 catch 로 롤백 경로를 통일한다.
+      try {
+        const history = await this.dispatchSend(orderDelivery);
+        if (!history.isSuccess) {
+          throw new ExternalApiException('3003', '재발송 실패');
+        }
+      } catch (error) {
+        await this.releaseResendSlot(orderDelivery.id);
+        throw error;
       }
-    } catch (error) {
-      await this.releaseResendSlot(orderDelivery.id);
-      throw error;
+
+      // 성공: resendCount 는 이미 DB 에서 +1 됨(save 로 stale 값 덮지 말 것).
+      // dispatchSend 가 in-memory 로 갱신한 발송 상태만 targeted update + fencing(내 lease 일 때만).
+      const sendWrite = await this.orderDeliveryRepository.update(
+        { id: orderDelivery.id, mutationClaimedAt: mutationClaimAt },
+        {
+          resendAt: new Date(),
+          status: orderDelivery.status,
+          actualSendAt: orderDelivery.actualSendAt,
+        },
+      );
+      if (!sendWrite.affected) {
+        // affected=0 = 발송(외부 통신, 수 초) 도중 폐기/취소가 lease 를 탈취했다
+        // = **방금 보낸 핀은 협력사에서 취소되고 환불까지 됐을 수 있다**.
+        // 여기서 success() 를 주면 파트너는 발송 성공으로 알고, 고객은 죽은 핀을 받고,
+        // resendAt/actualSendAt 은 갱신 안 된 채 로그 한 줄만 남는다. → 3010(CONFLICT).
+        //
+        // ★ "주문 상태를 다시 조회해 주세요" 라고 하면 안 된다 (리뷰 MEDIUM).
+        //   getOrderStatus 의 toExternalCouponStatus 는 USED/EXPIRED/REFUND_CANCEL 을 전부
+        //   ISSUED 로 축약한다(의도된 설계, D3-54). 즉 이 상황에서 재조회하면 **정상으로 보인다**.
+        //   우리가 유도한 확인 행동이 문제를 못 드러내고 오히려 안심시킨다.
+        //
+        // ★ 재발송 슬롯(resend_count)은 반납하지 않는다.
+        //   위 catch 의 롤백은 "발송이 실패했으니 시도를 무르는" 것인데, 여기는 발송이
+        //   **성공**했다(문자가 고객에게 나갔다). 슬롯은 소비된 게 맞다.
+        this.logger.error(
+          `[resendOrder] 발송결과 기록 실패 — 변형 lease 상실(다른 처리가 선점). ` +
+            `문자는 이미 발송됐으나 해당 쿠폰이 취소·환불됐을 수 있다. 운영 확인 필요. ` +
+            `orderDeliveryId=${orderDelivery.id}, trId=${trId}`,
+        );
+        throw new ExternalApiException(
+          '3010',
+          '재발송 문자는 발송되었으나, 그 사이 해당 주문이 취소·폐기되었을 수 있습니다. ' +
+            '조회 API 로는 확인되지 않으니 담당자에게 문의해 주세요.',
+        );
+      }
+
+      return ExternalApiResponse.success();
+    } finally {
+      await this.releaseMutationLease(orderDelivery.id, mutationClaimAt);
     }
-
-    // 성공: resendCount 는 이미 DB 에서 +1 됨(save 로 stale 값 덮지 말 것).
-    // dispatchSend 가 in-memory 로 갱신한 발송 상태만 targeted update.
-    await this.orderDeliveryRepository.update(
-      { id: orderDelivery.id },
-      {
-        resendAt: new Date(),
-        status: orderDelivery.status,
-        actualSendAt: orderDelivery.actualSendAt,
-      },
-    );
-
-    return ExternalApiResponse.success();
   }
 
-  /** 재발송 슬롯 롤백 — 발송 실패 시 선점한 슬롯 1개 반납 (음수 방지). */
+  /**
+   * 재발송 슬롯 롤백 — 발송 실패 시 선점한 슬롯 1개 반납 (음수 방지).
+   *
+   * WHERE 는 { id } 뿐이며 **일부러 lease fencing 을 하지 않는다** (리뷰 P1).
+   * resend_count 는 소유자 구분 없는 fungible 카운터라, 각 요청은 claim 에서 +1 하고
+   * 자기 발송이 실패했을 때만 -1 한다. 이 -1 은 "자기 자신의 +1 을 되돌리는" 것이므로,
+   * 그 사이 lease 가 남에게 탈취됐어도 무조건 실행돼야 카운트가 정확히 유지된다.
+   * 여기에 `AND mutation_claimed_at = :myToken` 을 붙이면 탈취당한 실패 요청이 affected=0 으로
+   * 자기 슬롯을 못 돌려줘 영구 누수 → resend_count 가 max 까지 차 정상 재발송이 막힌다.
+   * (fencing 이 옳은 곳은 releaseMutationLease — "내 lease 만 해제". 슬롯 반납은 반대다.)
+   * 회귀 잠금: external.api.resend-slot.spec.ts "WHERE 는 { id } 뿐 — lease/상태 fencing 없음".
+   */
   private async releaseResendSlot(orderDeliveryId: number): Promise<void> {
     await this.orderDeliveryRepository
       .createQueryBuilder()
@@ -1719,7 +1939,9 @@ export class ExternalApiService {
     });
 
     // 원본 id → 그 원본을 대체한 delivery id. bigint 는 런타임에 string 으로 hydrate 될 수 있어 Number 정규화.
-    // 같은 원본을 가리키는 행이 복수면(레이스/이상데이터) 최신(max id)을 선택해 결정적으로 만든다.
+    // 정상 데이터에선 한 원본을 대체하는 행이 1개뿐이라 유일. 이상 데이터(같은 원본을 가리키는 행이
+    // 복수로 갈라진 체인)에선 max id 로 결정적이되 "살아있는 가지"를 보장하진 못한다(그런 데이터는 발생
+    // 불가 전제 — 재발행은 원본을 CANCEL 로 폐기 후 1건만 생성). 완벽한 분기 추적은 범위 밖(알려진 제약).
     const replacedByMap = new Map<number, number>();
     for (const sibling of siblings) {
       if (sibling.replacedFromId == null) {

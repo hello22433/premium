@@ -122,14 +122,18 @@ describe('PartnerCompanyExternBatchService.checkGalaxiaDaily — 81 환불 상�
       expect(galaxiaBarcodeLogRepository.save).toHaveBeenCalledWith(
         expect.objectContaining({ orderDeliveryId: 3001, appDiv: '81' }),
       );
-      // 상태 보정
-      expect(orderDeliveryRepository.save).toHaveBeenCalled();
-      const saved = orderDeliveryRepository.save.mock.calls[0][0];
-      expect(saved.couponStatus).toBe(OrderDeliveryCouponStatus.REFUND_CANCEL);
+      // 상태 보정 — save(merge) 금지, targeted update 여야 한다 (D3-60 clobber)
+      expect(orderDeliveryRepository.save).not.toHaveBeenCalled();
+      expect(orderDeliveryRepository.update).toHaveBeenCalled();
+      const [where, patch] = orderDeliveryRepository.update.mock.calls[0];
+      expect(where).toEqual({ id: 3001 });
+      // 이 분기가 바꾸는 3컬럼만. 더 실으면 안 바꾼 컬럼을 stale 스냅샷으로 덮는다.
+      expect(Object.keys(patch).sort()).toEqual(['couponStatus', 'discardedAt', 'galaxiaBalance']);
+      expect(patch.couponStatus).toBe(OrderDeliveryCouponStatus.REFUND_CANCEL);
       // discardedAt은 배치 실행 시각이 아니라 환불 이벤트 시각(appDay=20260520, appTime=120000)
-      expect(saved.discardedAt).toBeInstanceOf(Date);
-      expect(saved.discardedAt.getTime()).toBe(new Date(2026, 4, 20, 12, 0, 0).getTime());
-      expect(saved.galaxiaBalance).toBe(0);
+      expect(patch.discardedAt).toBeInstanceOf(Date);
+      expect(patch.discardedAt.getTime()).toBe(new Date(2026, 4, 20, 12, 0, 0).getTime());
+      expect(patch.galaxiaBalance).toBe(0);
     });
 
     it('이미 discardedAt이 박혀 있으면 기존 시각을 보존한다 (push 81 → daily 순서 방어)', async () => {
@@ -144,9 +148,9 @@ describe('PartnerCompanyExternBatchService.checkGalaxiaDaily — 81 환불 상�
 
       await runDaily();
 
-      const saved = orderDeliveryRepository.save.mock.calls[0][0];
-      expect(saved.couponStatus).toBe(OrderDeliveryCouponStatus.REFUND_CANCEL);
-      expect(saved.discardedAt).toBe(existingDiscardedAt);
+      const [, patch] = orderDeliveryRepository.update.mock.calls[0];
+      expect(patch.couponStatus).toBe(OrderDeliveryCouponStatus.REFUND_CANCEL);
+      expect(patch.discardedAt).toBe(existingDiscardedAt);
     });
 
     it('로그가 이미 존재해도(중복) 상태 보정은 멱등하게 수행한다', async () => {
@@ -163,13 +167,13 @@ describe('PartnerCompanyExternBatchService.checkGalaxiaDaily — 81 환불 상�
       await runDaily();
 
       expect(galaxiaBarcodeLogRepository.save).not.toHaveBeenCalled();
-      const saved = orderDeliveryRepository.save.mock.calls[0][0];
-      expect(saved.couponStatus).toBe(OrderDeliveryCouponStatus.REFUND_CANCEL);
+      const [, patch] = orderDeliveryRepository.update.mock.calls[0];
+      expect(patch.couponStatus).toBe(OrderDeliveryCouponStatus.REFUND_CANCEL);
     });
   });
 
   describe('appDiv=10 (사용) 거래는 상태 보정 대상이 아니다', () => {
-    it('사용처(appStore)가 없으면 couponStatus를 건드리지 않는다 (orderDelivery save 미호출)', async () => {
+    it('사용처(appStore)가 없으면 couponStatus를 건드리지 않는다 (orderDelivery 쓰기 미호출)', async () => {
       const orderDelivery = buildOrderDelivery({ discardedAt: null });
       orderDeliveryRepository.findOne.mockResolvedValue(orderDelivery);
       galaxia.checkDaily.mockResolvedValue({
@@ -183,6 +187,7 @@ describe('PartnerCompanyExternBatchService.checkGalaxiaDaily — 81 환불 상�
       // 로그는 저장하지만 상태/orderDelivery는 저장하지 않음
       expect(galaxiaBarcodeLogRepository.save).toHaveBeenCalled();
       expect(orderDeliveryRepository.save).not.toHaveBeenCalled();
+      expect(orderDeliveryRepository.update).not.toHaveBeenCalled();
     });
   });
 });

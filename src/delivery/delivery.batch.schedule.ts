@@ -3,6 +3,7 @@
 import { DeliveryBatchService } from './application/delivery.batch.service';
 import { SsgRecoverySweepService } from './application/ssg-recovery-sweep.service';
 import { SsgResendDeductRecoveryService } from './application/ssg-resend-deduct-recovery.service';
+import { MessageResultReconcileService } from './application/message-result-reconcile.service';
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 
@@ -19,6 +20,7 @@ export class DeliveryBatchSchedule {
     private deliveryBatchService: DeliveryBatchService,
     private ssgRecoverySweepService: SsgRecoverySweepService,
     private ssgResendDeductRecoveryService: SsgResendDeductRecoveryService,
+    private messageResultReconcileService: MessageResultReconcileService,
   ) {}
 
   // 부팅 stale claim 해제는 main.ts(listen() 전)에서만 수행한다. lifecycle 훅은 migration
@@ -34,6 +36,8 @@ export class DeliveryBatchSchedule {
   private ssgRecoverySweepStartedAt: number | null = null;
   private resendDeductSweepStartedAt: number | null = null;
   private reportSweepStartedAt: number | null = null;
+  private resultReconcileStartedAt: number | null = null;
+  private trackingSlaStartedAt: number | null = null;
 
   /**
    * 실행 중 플래그를 체크한다. 진행 중이면 true 반환(skip).
@@ -51,8 +55,13 @@ export class DeliveryBatchSchedule {
     return true;
   }
 
-  // 5분 마다 실행. cron 중복 실행 차단으로 진행 중에는 후속 cron skip.
-  @Cron('0 */5 * * * *')
+  // 발송 배치 — **09:00~20:00 KST 에만** 5분 간격으로 실행한다(2026-07-27 운영 확정).
+  //
+  //   주문 작성의 예약발송 선택 시간대가 이미 심야를 배제하므로 그 밖의 시간에 발송 배치를 돌릴
+  //   이유가 없고, 예약 시각 오입력·데이터 이상으로 새벽에 문자가 나가면 광고성 정보 전송 제한
+  //   위반 위험이 있다. 마지막 실행은 19:55 이며, 그 시각 이후 도래분은 다음 날 09:00 에 나간다.
+  //   (운영자 수동 재발송·CS 재발송은 사람이 판단하는 행위라 이 제한의 대상이 아니다.)
+  @Cron('0 */5 9-19 * * *', { timeZone: 'Asia/Seoul' })
   async issueAndSend() {
     if (this.isStillRunning(this.issueAndSendStartedAt, 'issueAndSend')) {
       this.logger.log('[BATCH] 이전 issueAndSend 진행 중 — skip');
@@ -144,6 +153,54 @@ export class DeliveryBatchSchedule {
       this.logger.error(e);
     } finally {
       this.encourageStartedAt = null;
+    }
+  }
+
+  // Gemtek 결과 조회 — 접수 후 30분 간격(§7 표 4). 확정월 파티션을 증분 범위만 훑는다(§7.3).
+  // 다른 cron 과 동시 trigger 회피를 위해 20초 offset.
+  @Cron('20 */30 * * * *')
+  async handleMessageResultReconcile() {
+    if (this.isStillRunning(this.resultReconcileStartedAt, 'handleMessageResultReconcile')) {
+      this.logger.log('[BATCH] 이전 handleMessageResultReconcile 진행 중 — skip');
+      return;
+    }
+    this.resultReconcileStartedAt = Date.now();
+    try {
+      const summary = await this.messageResultReconcileService.reconcileOnce();
+      if (summary.scanned > 0) {
+        this.logger.log(
+          `[TRACKING] 결과 조회 scanned=${summary.scanned} success=${summary.succeeded} fail=${summary.failed} ` +
+            `retry=${summary.retryScheduled} unknown=${summary.unknown} pending=${summary.pending} ` +
+            `recovered=${summary.recovered}`,
+        );
+      }
+    } catch (e) {
+      this.logger.error(e);
+    } finally {
+      this.resultReconcileStartedAt = null;
+    }
+  }
+
+  // 상태별 최대 체류시간(표 4-1) 초과 건 강제 전이·운영 승격. 10분마다, 50초 offset.
+  @Cron('50 */10 * * * *')
+  async handleTrackingSlaSweep() {
+    if (this.isStillRunning(this.trackingSlaStartedAt, 'handleTrackingSlaSweep')) {
+      this.logger.log('[BATCH] 이전 handleTrackingSlaSweep 진행 중 — skip');
+      return;
+    }
+    this.trackingSlaStartedAt = Date.now();
+    try {
+      const summary = await this.messageResultReconcileService.sweepSlaOnce();
+      if (summary.toReconciling || summary.toUnknown || summary.expiredResend) {
+        this.logger.warn(
+          `[TRACKING_SLA] reconciling=${summary.toReconciling} unknown=${summary.toUnknown} ` +
+            `escalated=${summary.escalated} expiredResend=${summary.expiredResend}`,
+        );
+      }
+    } catch (e) {
+      this.logger.error(e);
+    } finally {
+      this.trackingSlaStartedAt = null;
     }
   }
 

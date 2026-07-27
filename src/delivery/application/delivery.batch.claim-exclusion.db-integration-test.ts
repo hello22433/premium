@@ -4,7 +4,11 @@ import * as dotenv from 'dotenv';
 import * as mysql from 'mysql2/promise';
 import { DataSource, Repository } from 'typeorm';
 import { SnakeNamingStrategy } from 'typeorm-naming-strategies';
-import { addTransactionalDataSource, deleteDataSourceByName, initializeTransactionalContext } from 'typeorm-transactional';
+import {
+  addTransactionalDataSource,
+  deleteDataSourceByName,
+  initializeTransactionalContext,
+} from 'typeorm-transactional';
 
 import { UserEntity } from '../../entity/user.entity';
 import { PartnerCompanyEntity } from '../../entity/partner.company.entity';

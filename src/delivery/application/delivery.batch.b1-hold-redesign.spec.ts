@@ -44,6 +44,7 @@ import { OrderFromService } from '../../order_from/application/order.from.servic
 import { WalletManagedPredicate } from '../../wallet/application/wallet-managed.predicate';
 import { RefundPoolService } from '../../wallet/application/refund-pool.service';
 import { ResendDeductService } from '../../wallet/application/resend-deduct.service';
+import { MessageAttemptService } from './message-attempt.service';
 import { LegacyWalletCreditSyncService } from '../../wallet/application/legacy-wallet-credit-sync.service';
 
 /**
@@ -199,6 +200,14 @@ describe('DeliveryBatchService - B1 settlement-hold redesign', () => {
         { provide: 'DeliveryAlimTalk', useValue: {} },
         { provide: 'IMailSend', useValue: {} },
         { provide: 'ISmsSend', useValue: smsSend },
+        // shadow 추적은 발송을 대행하지 않는다 — 상관키 없이 그대로 통과시키는 스텁.
+        {
+          provide: MessageAttemptService,
+          useValue: {
+            trackSend: (_ctx: unknown, send: (attemptId?: string) => Promise<unknown>) => send(undefined),
+            trackAlimTalk: (_ctx: unknown, send: () => Promise<unknown>) => send(),
+          },
+        },
         { provide: DeliveryTrackHttp, useValue: {} },
         { provide: CryptoCipher, useValue: cryptoCipher },
         { provide: ConfigService, useValue: { get: jest.fn(), getOrThrow: jest.fn() } },
@@ -206,7 +215,12 @@ describe('DeliveryBatchService - B1 settlement-hold redesign', () => {
         { provide: PartnerCompanyExternService, useValue: partnerCompanyExternService },
         {
           provide: SsgEventService,
-          useValue: { selectEventForOrder: jest.fn(), deductEventBalance: jest.fn(), chargeBackForResend: jest.fn() },
+          useValue: {
+            selectEventForOrder: jest.fn(),
+            selectAndDeductForReissueWithPending: jest.fn(),
+            deductEventBalance: jest.fn(),
+            chargeBackForResend: jest.fn(),
+          },
         },
         { provide: UserManagementService, useValue: userManagementService },
         { provide: DeliverySendService, useValue: deliverySendService },

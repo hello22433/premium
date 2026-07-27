@@ -2,6 +2,7 @@ import { Body, Controller, Delete, Get, Logger, Param, Patch, Post, Put, Query, 
 import { ApiBadRequestResponse, ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Response } from 'express';
 import fs from 'node:fs';
+import { pipeline } from 'node:stream';
 import { OrderReceiptService } from '../application/order.receipt.service';
 import {
   OrderReceiptCreateReqDto,
@@ -11,6 +12,7 @@ import {
   OrderReceiptRejectReqDto,
   OrderReceiptUpdateReqDto,
   OrderReceiptChangeStatusReqDto,
+  OrderReceiptPreviewReqDto,
 } from './order.receipt.req.dto';
 import { OrderReceiptGetDetailResDto, OrderReceiptGetListResDto } from './order.receipt.res.dto';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
@@ -88,16 +90,27 @@ export class OrderReceiptController {
     );
 
     const fileStream = fs.createReadStream(filePath);
-    fileStream.pipe(res);
-
-    fileStream.on('end', () => fs.unlink(filePath, () => {}));
-    fileStream.on('error', (err) => {
+    // pipeline은 성공/스트림오류/클라이언트 조기 종료(res close) 등 '모든' 종료 경로에서 콜백을 1회 호출하고
+    // 두 스트림을 정리한다 → 어느 경로로 끝나든 임시파일을 확실히 삭제한다.
+    // (과거엔 read 스트림의 end/error에만 unlink를 걸어, 클라이언트가 중간에 끊으면 read 쪽엔 end·error가
+    //  안 떠서 temp 파일이 tmpdir에 무기한 쌓였다.)
+    pipeline(fileStream, res, (err) => {
+      // unlink 실패(EBUSY/EPERM 등)를 삼키면 이 fix가 막으려던 temp 누수가 조용히 다시 생긴다 → ENOENT 외엔 남긴다.
+      fs.unlink(filePath, (unlinkErr) => {
+        if (unlinkErr && (unlinkErr as NodeJS.ErrnoException).code !== 'ENOENT') {
+          this.logger.warn(`주문접수 첨부 임시파일 삭제 실패(누수 가능): ${filePath} — ${unlinkErr.message}`);
+        }
+      });
+      if (!err) return;
+      // 클라이언트 조기 종료는 정상적인 취소이므로 warn, 그 외 실제 오류만 error + (헤더 전이면) 500.
+      if ((err as NodeJS.ErrnoException).code === 'ERR_STREAM_PREMATURE_CLOSE') {
+        this.logger.warn(`주문접수 첨부 다운로드 중단(클라이언트 종료): ${filePath}`);
+        return;
+      }
       this.logger.error(`주문접수 첨부 스트림 오류: ${err}`);
-      fs.unlink(filePath, () => {});
-      if (!res.headersSent) {
+      // pipeline이 오류 시 res를 이미 destroy하므로, 헤더 전·미파괴일 때만 안전하게 500 본문을 쓴다.
+      if (!res.headersSent && !res.destroyed) {
         res.status(500).json({ message: '파일 다운로드 중 오류가 발생했습니다.' });
-      } else {
-        res.destroy();
       }
     });
   }
@@ -114,6 +127,39 @@ export class OrderReceiptController {
   async create(@User() user: ILoginUserInfo, @Body() getBody: OrderReceiptCreateReqDto) {
     await this.authService.authorityValidator(user, UserAuthSubEnum.ORDER_RECEIPT);
     return this.orderReceiptService.create(user, getBody);
+  }
+
+  @ApiOperation({
+    summary: '주문접수 자동주문 미리보기 API',
+    description:
+      '첨부 집행신청서를 파싱해 승인 시 생성/차단될 주문을 미리 계산합니다(DB 무변경). ' +
+      '운영관리자 이상만 조회 가능.',
+  })
+  @ApiBearerAuth()
+  @ApiOkResponse({ description: '미리보기 계산에 성공한 경우' })
+  @ApiBadRequestResponse({ description: '주문접수 건이 존재하지 않는 경우' })
+  // ===================================================
+  @Post('/order-receipt/:id/preview')
+  async previewAutoOrder(
+    @User() user: ILoginUserInfo,
+    @Param() getParam: OrderReceiptGetDetailReqParamDto,
+    @Body() getBody: OrderReceiptPreviewReqDto,
+  ) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.ORDER_RECEIPT);
+    return this.orderReceiptService.previewAutoOrder(user, getParam.id, getBody.fileIndexes);
+  }
+
+  @ApiOperation({
+    summary: '주문접수 자동주문 결과 조회 API',
+    description: '승인 시 생성된 자동주문 리포트(저장 스냅샷)를 반환합니다. 운영관리자 이상만 조회 가능.',
+  })
+  @ApiBearerAuth()
+  @ApiOkResponse({ description: '자동주문 결과 조회에 성공한 경우' })
+  // ===================================================
+  @Get('/order-receipt/:id/result')
+  async getAutoOrderResult(@User() user: ILoginUserInfo, @Param() getParam: OrderReceiptGetDetailReqParamDto) {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.ORDER_RECEIPT);
+    return this.orderReceiptService.getAutoOrderResult(user, getParam.id);
   }
 
   @ApiOperation({

@@ -19,6 +19,15 @@ jest.mock('exceljs', () => ({
 
 import { OrderRealProductService } from './order.real.product.service';
 import { IUserAuthority } from '../../user/interface/user.authority';
+import { CryptoCipher } from '../../common/infra/crypto.cipher';
+import { IOrderRealProductStatus } from '../interface/order.real.product.status';
+
+const cipherStub = {
+  encryptAccountNumber: (v: string) => v,
+  safeDecryptAccountNumber: (v: string) => v,
+  encryptDeliveryTarget: (v: string) => v,
+  safeDecryptDeliveryTarget: (v: string) => v,
+} as unknown as CryptoCipher;
 
 const createQueryBuilder = (result: unknown, count = 1) => ({
   innerJoinAndSelect: jest.fn().mockReturnThis(),
@@ -63,6 +72,7 @@ const createService = () => {
     userRepository as any,
     {} as any,
     activityLogService as any,
+    cipherStub,
   );
 
   return {
@@ -367,5 +377,122 @@ describe('OrderRealProductService 실물상품 조회 접근 제어', () => {
     await (service as any).getDeliveryTrackingStatus({ id: 1, authority: IUserAuthority.OPERATION_ADMIN }, { id: 10 });
 
     expect(queryBuilder.andWhere).not.toHaveBeenCalledWith('order.businessUserId = :userId', expect.anything());
+  });
+});
+
+describe('OrderRealProductService 실물상품 수정요청 승인/매핑 수정 방어선', () => {
+  it('수정요청 승인은 최고 관리자만 가능하다', async () => {
+    const { service, orderRepository } = createService();
+
+    await expect(
+      service.updateApprove({ id: 1, authority: IUserAuthority.OPERATION_ADMIN } as any, { id: 10 } as any),
+    ).rejects.toThrow('수정요청 승인 권한이 없습니다.');
+
+    expect(orderRepository.createQueryBuilder).not.toHaveBeenCalled();
+  });
+
+  it('수정요청 상태가 아닌 주문은 승인으로 ORDER_PENDING 되돌림을 거부한다', async () => {
+    const { service, orderRepository } = createService();
+    const order = { id: 10, status: IOrderRealProductStatus.DELIVERY_COMPLETED };
+
+    orderRepository.createQueryBuilder.mockReturnValue(createQueryBuilder(order));
+
+    await expect(
+      service.updateApprove({ id: 1, authority: IUserAuthority.SUPER_ADMIN } as any, { id: 10 } as any),
+    ).rejects.toThrow('수정요청 상태의 주문만 승인할 수 있습니다.');
+
+    expect(orderRepository.save).not.toHaveBeenCalled();
+  });
+
+  it('수정요청 상태의 주문만 ORDER_PENDING으로 승인한다', async () => {
+    const { service, orderRepository } = createService();
+    const order = { id: 10, status: IOrderRealProductStatus.ORDER_EDIT_REQUEST };
+
+    orderRepository.createQueryBuilder.mockReturnValue(createQueryBuilder(order));
+
+    await service.updateApprove({ id: 1, authority: IUserAuthority.SUPER_ADMIN } as any, { id: 10 } as any);
+
+    expect(order.status).toBe(IOrderRealProductStatus.ORDER_PENDING);
+    expect(orderRepository.save).toHaveBeenCalledWith(order);
+  });
+
+  it('관리자 전용 발주 상품 상세 수정은 주문 조인 후 저장한다', async () => {
+    const { service, orderProductMappingRepository } = createService();
+    const mapping = {
+      id: 20,
+      partnerCompanyId: null,
+      writer: '',
+      buyMethod: '',
+      offlineAddress: '',
+      offlinePersonName: '',
+      offlinePhoneNumber: '',
+      receivingMethod: '',
+      trackingNumber: '',
+      paymentMethod: '',
+      remarks: '',
+      progressStatus: '',
+      filePath: '',
+    };
+    const queryBuilder = createQueryBuilder(mapping);
+    orderProductMappingRepository.createQueryBuilder.mockReturnValue(queryBuilder);
+
+    await service.updateOrderProductMappingDetail(
+      { id: 1, authority: IUserAuthority.OPERATION_ADMIN } as any,
+      {
+        id: 20,
+        partnerCompanyId: 30,
+        writer: '작성자',
+        buyMethod: '온라인',
+        offlineAddress: '주소',
+        offlinePersonName: '수령자',
+        offlinePhoneNumber: '010',
+        receivingMethod: '택배',
+        trackingNumber: 'TRACK',
+        paymentMethod: '현금',
+        remarks: '메모',
+        progressStatus: '진행',
+        filePath: '/file',
+      } as any,
+    );
+
+    expect(queryBuilder.innerJoinAndSelect).toHaveBeenCalledWith(
+      'orderRealProductMapping.realProductOrder',
+      'realProductOrder',
+    );
+    expect(queryBuilder.andWhere).not.toHaveBeenCalledWith(
+      'realProductOrder.businessUserId = :userId',
+      expect.anything(),
+    );
+    expect(orderProductMappingRepository.save).toHaveBeenCalledWith(expect.objectContaining({ id: 20 }));
+  });
+
+  it('서비스가 낮은 권한 경로에서 재사용되면 접근범위 밖 매핑은 저장하지 않고 거부한다', async () => {
+    const { service, orderProductMappingRepository } = createService();
+    const queryBuilder = createQueryBuilder(null);
+    orderProductMappingRepository.createQueryBuilder.mockReturnValue(queryBuilder);
+
+    await expect(
+      service.updateOrderProductMappingDetail(
+        { id: 100, authority: IUserAuthority.CORPORATE_ADMIN } as any,
+        {
+          id: 20,
+          partnerCompanyId: 30,
+          writer: '작성자',
+          buyMethod: '온라인',
+          offlineAddress: '주소',
+          offlinePersonName: '수령자',
+          offlinePhoneNumber: '010',
+          receivingMethod: '택배',
+          trackingNumber: 'TRACK',
+          paymentMethod: '현금',
+          remarks: '메모',
+          progressStatus: '진행',
+          filePath: '/file',
+        } as any,
+      ),
+    ).rejects.toThrow('상품이 존재하지 않습니다.');
+
+    expect(queryBuilder.andWhere).toHaveBeenCalledWith('realProductOrder.businessUserId = :userId', { userId: 100 });
+    expect(orderProductMappingRepository.save).not.toHaveBeenCalled();
   });
 });

@@ -4,7 +4,11 @@ import * as mysql from 'mysql2/promise';
 import * as path from 'path';
 import { DataSource, Repository } from 'typeorm';
 import { SnakeNamingStrategy } from 'typeorm-naming-strategies';
-import { addTransactionalDataSource, deleteDataSourceByName, initializeTransactionalContext } from 'typeorm-transactional';
+import {
+  addTransactionalDataSource,
+  deleteDataSourceByName,
+  initializeTransactionalContext,
+} from 'typeorm-transactional';
 import { SsgEventAmountHistoryEntity } from '../../entity/ssg.event.amount.history.entity';
 import { SsgEventService } from './ssg.event.service';
 

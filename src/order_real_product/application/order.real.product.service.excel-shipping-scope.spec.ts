@@ -17,6 +17,14 @@ jest.mock('exceljs', () => ({
 import { OrderRealProductService } from './order.real.product.service';
 import { IUserAuthority } from '../../user/interface/user.authority';
 import { IOrderSection } from '../../order/interface/order.section';
+import { CryptoCipher } from '../../common/infra/crypto.cipher';
+
+const cipherStub = {
+  encryptAccountNumber: (v: string) => v,
+  safeDecryptAccountNumber: (v: string) => v,
+  encryptDeliveryTarget: (v: string) => v,
+  safeDecryptDeliveryTarget: (v: string) => v,
+} as unknown as CryptoCipher;
 
 const createService = () => {
   const andWhereCalls: Array<[string, Record<string, unknown>?]> = [];
@@ -39,6 +47,7 @@ const createService = () => {
     verifyPassword: jest.fn().mockResolvedValue(undefined),
     createLog: jest.fn().mockResolvedValue(undefined),
   };
+  service.cryptoCipher = cipherStub;
 
   return { service, andWhereCalls };
 };

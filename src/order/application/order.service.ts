@@ -39,6 +39,7 @@ import {
   OrderTransactionStatementEmailReqDto,
   OrderDestructionCertificateEmailReqDto,
   OrderAllocationPreviewReqDto,
+  OrderGetCustomerSettlementReqDto,
 } from '../api/order.req.dto';
 import {
   OrderCreateTempResDto,
@@ -56,6 +57,7 @@ import {
   OrderGetPreviousContentResDto,
   OrderGetSettleGetListResDto,
   OrderAllocationPreviewResDto,
+  OrderGetCustomerSettlementResDto,
 } from '../api/order.res.dto';
 import { OrderEntity } from '../../entity/order.entity';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -70,15 +72,19 @@ import {
   SelectQueryBuilder,
 } from 'typeorm';
 import { QueryBuilderDateCondition } from '../../common/infra/query.builder.date.condition';
-import { OrderViewDto } from '../api/dto/order.view.dto';
+import { CustomerSettlementViewDto, OrderViewDto } from '../api/dto/order.view.dto';
 import { DateDateFormatStr, DateFormatStr } from '../../common/domain/date.format.str';
 import { format } from 'date-fns';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { IOrderStatus } from '../interface/order.status';
 import { OrderProductMappingEntity } from '../../entity/order.product.mapping.entity';
-import { Transactional, runOnTransactionCommit } from 'typeorm-transactional';
+import { Propagation, Transactional, runOnTransactionCommit } from 'typeorm-transactional';
 import { OrderCancelNotificationService } from './order.cancel.notification.service';
 import { isDirectCustomerCancelTarget } from '../domain/order.cancel.notification.policy';
+import {
+  resolveDestructionCertificateGate,
+  destructionCertificateBlockMessage,
+} from '../domain/destruction.certificate.gate';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { TestOrderDeliveryEntity } from '../../entity/test.order.delivery.entity';
 import { ProductEntity } from '../../entity/product.entity';
@@ -440,17 +446,19 @@ export class OrderService {
     const billingUserId = order.clientUserId ?? order.userId;
     const billingUser = await this.userRepository.findOne({
       where: { id: billingUserId },
-      select: ['id', 'companyId'],
+      relations: ['company'],
     });
 
     const wallet = await this.walletAccountResolverService.resolveForOrder(order);
-    const finalAmount = calculateOrderSettlementAmount(order, order.cardSurchargeApplied);
+    const effectiveSurcharge = await this.resolveEffectiveSurcharge(order, billingUser?.company);
+    const finalAmount = calculateOrderSettlementAmount(order, effectiveSurcharge);
 
     const allocationInput = await this.walletAllocationInputBuilder.build(order, wallet, finalAmount, {
       requestedPointAmount: getBody.pointUseAmount,
       depositUseEnabled: getBody.depositUseEnabled,
       depositUseAmount: getBody.depositUseAmount,
       companyId: billingUser?.companyId ?? null,
+      cardSurchargeApplied: effectiveSurcharge,
     });
     // clamp 금지 — 초과 입력은 400 (확정과 동일 규칙)
     this.assertUsageWithinLimits(allocationInput, getBody);
@@ -527,14 +535,15 @@ export class OrderService {
       relations: ['company'],
     });
     const company = billingUser?.company;
-    const { policy: settlePolicy } = await this.resolveSettlePolicy(order, company);
-    // 카드할증 기본값도 정산방법(코드 지갑 SoT) 소스를 따른다 — company.settleMethod 는 회사 단위라 코드별로 갈릴 때 틀림.
-    // resolveSettlePolicy 가 cutover mode(WALLET=코드 지갑 / SHADOW=지갑·회사 폴백 / LEGACY=회사)를 이미 반영한다.
-    const defaultCardSurchargeApplied = settlePolicy === 'CARD';
+    const { policy: settlePolicy, resolvedWallet } = await this.resolveSettlePolicy(order, company);
+    // 카드할증 기본값도 정산방법(코드 지갑 SoT) 소스를 따른다 — wallet 토글(§4.0) 반영. wallet 미조회(LEGACY/SHADOW-실패)는 ?? true 로 현행 회사 CARD⇒기본 ON 보존.
+    const defaultCardSurchargeApplied = settlePolicy === 'CARD' && (resolvedWallet?.cardSurchargeApplied ?? true);
 
-    const cardSurchargeApplied = opts.useExistingAsMiddleFallback
-      ? (body.cardSurchargeApplied ?? order.cardSurchargeApplied ?? defaultCardSurchargeApplied)
-      : (body.cardSurchargeApplied ?? defaultCardSurchargeApplied);
+    // 기존값 폴백은 정산완료(settleMethod!=null) update 에서만 — cardSurchargeApplied 는 non-nullable(false)이라 미정산 update 가 wallet 기본값을 가로채지 않게 게이트.
+    const hasSettleInput = order.settleMethod != null;
+    const existingSurcharge =
+      opts.useExistingAsMiddleFallback && hasSettleInput ? order.cardSurchargeApplied : undefined;
+    const cardSurchargeApplied = body.cardSurchargeApplied ?? existingSurcharge ?? defaultCardSurchargeApplied;
 
     // 정책 부재(LEGACY/SHADOW 회사 정책 null)에도 신규 저장은 항상 non-null — 기본값 'CASH'(할증OFF 와 정합).
     const settleMethod = opts.useExistingAsMiddleFallback
@@ -542,6 +551,21 @@ export class OrderService {
       : (body.settleMethod ?? settlePolicy ?? 'CASH');
 
     return { cardSurchargeApplied, settleMethod };
+  }
+
+  /**
+   * 카드할증 effective 값 (settle 읽기/preview/confirm 공통, §4.0/§4.3 Y).
+   * - 정산완료(settleMethod!=null): 저장된 order.cardSurchargeApplied.
+   * - 미정산: resolveSettlePolicy 기반 wallet 토글 기본값(policy CARD & wallet 토글; wallet 미조회는 ?? true = 현행 회사 CARD⇒ON 보존).
+   * 완료판정은 settleMethod (cardSurchargeApplied 는 non-nullable false 라 판정 불가). hasSettleInput 이면 resolveSettlePolicy 미호출(laziness).
+   */
+  private async resolveEffectiveSurcharge(
+    order: Pick<OrderEntity, 'userId' | 'clientUserId' | 'settleMethod' | 'cardSurchargeApplied'>,
+    company: { settleMethod?: string | null } | null | undefined,
+  ): Promise<boolean> {
+    if (order.settleMethod != null) return order.cardSurchargeApplied;
+    const { policy, resolvedWallet } = await this.resolveSettlePolicy(order, company);
+    return policy === 'CARD' && (resolvedWallet?.cardSurchargeApplied ?? true);
   }
 
   /**
@@ -702,8 +726,8 @@ export class OrderService {
       .leftJoinAndSelect('order.operationUser', 'operationUser')
       .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
       .leftJoinAndSelect('orderProductMappings.product', 'product')
-      .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
       .withDeleted()
+      .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
       .where('order.type = :type', { type })
       .andWhere('order.deletedAt IS NULL');
 
@@ -822,8 +846,9 @@ export class OrderService {
         }
 
         // 실제 발송 시간: 성공한 배송 건 중 하나의 actualSendAt 사용
+        // 목록 표시는 활성 배송건만 사용한다. soft-delete 배송건은 파기확인서 게이트 판정에만 쓴다.
         for (const mapping of order.orderProductMappings) {
-          for (const delivery of mapping.orderDeliveries ?? []) {
+          for (const delivery of (mapping.orderDeliveries ?? []).filter((d) => d.deletedAt == null)) {
             if (
               delivery.actualSendAt &&
               (delivery.status === IOrderDeliveryStatus.COMPLETE ||
@@ -837,49 +862,79 @@ export class OrderService {
         }
       }
 
-      // 발송 실패 건 포함 여부 확인
+      // 미해결 발송 실패 건 포함 여부 확인 (활성 배송건만)
+      // 재발송 성공 시에도 status 는 FAIL/FAIL_SMS 로 남고 resendAt 만 채워지므로,
+      // resendAt 이 없는 건(= 아직 재발송되지 않은 실패)만 실패로 본다.
       const hasFailedDelivery =
         order.orderProductMappings?.some((mapping) =>
-          mapping.orderDeliveries?.some(
-            (delivery) =>
-              delivery.status === IOrderDeliveryStatus.FAIL || delivery.status === IOrderDeliveryStatus.FAIL_SMS,
-          ),
+          mapping.orderDeliveries
+            ?.filter((delivery) => delivery.deletedAt == null)
+            .some(
+              (delivery) =>
+                (delivery.status === IOrderDeliveryStatus.FAIL || delivery.status === IOrderDeliveryStatus.FAIL_SMS) &&
+                delivery.resendAt == null,
+            ),
         ) ?? false;
 
-      // 재발송 완료 건 포함 여부 확인
+      // 재발송 완료 건 포함 여부 확인 (활성 배송건만)
       const hasResentDelivery =
         order.orderProductMappings?.some((mapping) =>
-          mapping.orderDeliveries?.some((delivery) => delivery.resendAt != null),
+          mapping.orderDeliveries
+            ?.filter((delivery) => delivery.deletedAt == null)
+            .some((delivery) => delivery.resendAt != null),
         ) ?? false;
+
+      // 파기확인서 발행 가능 여부 (deliveryTarget 단일 컬럼 판정 — destruction.certificate.gate 참조)
+      const destructionCertificateGate = resolveDestructionCertificateGate(order);
 
       // 첫 번째 상품의 발송 정보 사용
       const firstMapping = order.orderProductMappings?.[0];
       // sendRequestAt: 예약 발송 요청 시간 (actualSendAt이 없을 때 폴백용)
       const sendRequestAt = firstMapping?.sendRequestAt ? format(firstMapping.sendRequestAt, DateFormatStr) : null;
 
-      // 상품별 예약 발송시간 배열: RESERVE 상품 중 분 단위 distinct ≥ 2일 때만 채움
-      const reserveMappings = (order.orderProductMappings ?? []).filter(
-        (m) => m.sendType === 'RESERVE' && m.sendRequestAt,
-      );
-      const minuteSlots = new Set(reserveMappings.map((m) => Math.floor(m.sendRequestAt!.getTime() / 60000)));
-      let productSendTimes: { productName: string; sendRequestAt: string; actualSendAt: string | null }[] | undefined;
-      if (minuteSlots.size >= 2) {
-        productSendTimes = reserveMappings.map((m) => {
-          const mappingActualSendAt =
-            (m.orderDeliveries ?? [])
-              .filter(
-                (d) =>
-                  d.actualSendAt &&
-                  (d.status === IOrderDeliveryStatus.COMPLETE || d.status === IOrderDeliveryStatus.COMPLETE_SMS),
-              )
-              .reduce<Date | null>((max, d) => (max === null || d.actualSendAt! > max ? d.actualSendAt! : max), null) ??
-            null;
-          return {
+      // 상품별 발송시간 배열 채움 게이트: 혼합 발송(IMMEDIATE+RESERVE) 또는 RESERVE 분 단위 distinct ≥ 2
+      const allMappings = order.orderProductMappings ?? [];
+      // 슬롯 산정(distinct 항): sendRequestAt 존재 RESERVE 매핑의 분 슬롯 distinct (기존 유지)
+      const distinctReserveMinuteSlots = new Set(
+        allMappings
+          .filter((m) => m.sendType === 'RESERVE' && m.sendRequestAt)
+          .map((m) => Math.floor(m.sendRequestAt!.getTime() / 60000)),
+      ).size;
+      // 혼합 판정: IMMEDIATE ≥1 AND RESERVE ≥1 (매핑 카운트 기반, productSendTimes와 독립·응답 미노출)
+      const isMixedSendType =
+        allMappings.some((m) => m.sendType === 'IMMEDIATE') && allMappings.some((m) => m.sendType === 'RESERVE');
+
+      // per-mapping actualSendAt: 활성 COMPLETE/COMPLETE_SMS 중 가장 최근 값 (RESERVE·IMMEDIATE 공용)
+      const resolveMappingActualSendAt = (
+        deliveries:
+          | { deletedAt?: Date | null; actualSendAt?: Date | null; status: IOrderDeliveryStatus }[]
+          | null
+          | undefined,
+      ): string | null => {
+        const maxActualSendAt = (deliveries ?? [])
+          .filter(
+            (d) =>
+              d.deletedAt == null &&
+              d.actualSendAt &&
+              (d.status === IOrderDeliveryStatus.COMPLETE || d.status === IOrderDeliveryStatus.COMPLETE_SMS),
+          )
+          .reduce<Date | null>((max, d) => (max === null || d.actualSendAt! > max ? d.actualSendAt! : max), null);
+        return maxActualSendAt ? format(maxActualSendAt, DateFormatStr) : null;
+      };
+
+      let productSendTimes:
+        | { productName: string; sendType: 'IMMEDIATE' | 'RESERVE'; sendRequestAt: string | null; actualSendAt: string | null }[]
+        | undefined;
+      if (isMixedSendType || distinctReserveMinuteSlots >= 2) {
+        // 배열 산출: sendType ∈ {RESERVE, IMMEDIATE}인 전 매핑 (Case-G 포함, 슬롯 산정과 독립)
+        productSendTimes = allMappings
+          .filter((m) => m.sendType === 'IMMEDIATE' || m.sendType === 'RESERVE')
+          .map((m) => ({
             productName: m.product?.name ?? '(삭제된 상품)',
-            sendRequestAt: format(m.sendRequestAt!, DateFormatStr),
-            actualSendAt: mappingActualSendAt ? format(mappingActualSendAt, DateFormatStr) : null,
-          };
-        });
+            sendType: m.sendType as 'IMMEDIATE' | 'RESERVE',
+            sendRequestAt: m.sendType === 'RESERVE' && m.sendRequestAt ? format(m.sendRequestAt, DateFormatStr) : null,
+            actualSendAt: resolveMappingActualSendAt(m.orderDeliveries),
+          }));
       }
 
       // 주문 시점 스냅샷 우선, NULL이면 clientUser ?? user FK로 fallback
@@ -905,13 +960,11 @@ export class OrderService {
         sendType: firstMapping?.sendType ?? null,
         hasFailedDelivery,
         hasResentDelivery,
+        canIssueDestructionCertificate: destructionCertificateGate.canIssue,
+        destructionCertificateBlockReason: destructionCertificateGate.reason,
         productSendTimes,
       };
     });
-
-    if (getQuery.includeSettlement && OrderService.canViewCustomerSettlement(user)) {
-      await this.attachCustomerSettlement(orderList, resultList);
-    }
 
     return { list: resultList, totalPage, totalCount, currentPage: page };
   }
@@ -927,42 +980,79 @@ export class OrderService {
   }
 
   /**
-   * 응답 페이지 내 distinct 고객사(settlement_code)에 대해 wallet_account 를 1회 배치 조회 후
-   * remainServiceAmount 를 map 조인한다 (행별 재계산·N+1 없음).
+   * 발송관리 고객사 호버 툴팁용 정산정보 조회.
+   * 목록(/order/list) 응답에 싣지 않고 분리한 이유 = 화면 최초 렌더를 지갑 조회에 묶지 않기 위함(지연 로딩).
    * - settleCondition SoT = wallet_account.settle_condition (user 컬럼은 deprecated).
    * - remainServiceAmount = creditLimit + depositBalance − creditUsedAmount − creditExcessAmount, 0-clamp.
-   * - wallet_account 미존재 고객사는 customerSettlement 필드를 붙이지 않는다(생략).
+   * - 정산코드 미부여 / wallet_account 미존재 주문은 응답에서 생략한다(프론트는 '정보 없음' 처리).
+   * - 권한 미달이면 빈 목록. 조회 범위(view_scope) 밖 주문 id 는 자동 제외되어 IDOR 로 타사 잔액을 캐낼 수 없다.
+   * - type(GENERAL/SSG) 로 주문 유형을 함께 필터링한다. 컨트롤러의 SEND_GENERAL/SEND_SSG 검증과 짝이며,
+   *   유형이 다른 주문 id 는 조회되지 않는다(교차 유형 우회 차단).
+   * - 쿼리 수는 주문 id 개수와 무관하게 고정: 주문 배치 1회 + wallet 배치 1회 + view_scope 확인 2회(user, user_view_scope).
+   *   즉 정상 요청당 총 4회이며, id 가 늘어도 늘지 않는다(N+1 없음).
    */
-  private async attachCustomerSettlement(orders: OrderEntity[], views: OrderViewDto[]): Promise<void> {
-    const settlementCodeOf = (order: OrderEntity): string | null =>
-      (order.clientUser ?? order.user)?.settlementCode || null;
+  async getCustomerSettlement(
+    user: ILoginUserInfo,
+    getQuery: OrderGetCustomerSettlementReqDto,
+  ): Promise<OrderGetCustomerSettlementResDto> {
+    const ids = [...new Set(getQuery.ids ?? [])];
+    if (ids.length === 0 || !OrderService.canViewCustomerSettlement(user)) {
+      return { list: [] };
+    }
 
-    const orderCodes = orders.map(settlementCodeOf);
-    const settlementCodes = [...new Set(orderCodes.filter((code): code is string => code !== null))];
-    if (settlementCodes.length === 0) {
-      return;
+    const currentUser = await this.userRepository.findOne({
+      where: { id: user.id },
+      select: ['id', 'companyId', 'departmentId'],
+    });
+    const viewScope = await this.userViewScopeRepository.findOne({
+      where: { userId: user.id },
+    });
+
+    let queryBuilder = this.orderRepository
+      .createQueryBuilder('order')
+      .innerJoin('order.user', 'user')
+      .leftJoin('order.clientUser', 'clientUser')
+      .select(['order.id', 'user.id', 'user.settlementCode', 'clientUser.id', 'clientUser.settlementCode'])
+      .where('order.id IN (:...ids)', { ids })
+      // 교차 유형 조회 차단: 컨트롤러가 검증한 권한(SEND_GENERAL/SEND_SSG)과 실제 주문 유형을 일치시킨다.
+      // (SEND_GENERAL 만 가진 운영자가 type=GENERAL 로 SSG 주문 id 를 캐는 경로 봉쇄)
+      .andWhere('order.type = :type', { type: getQuery.type });
+    queryBuilder = this.applyViewScopeFilter(queryBuilder, user, currentUser, viewScope);
+
+    const orders = await queryBuilder.getMany();
+
+    // 과금 대상(대행주문이면 clientUser) 기준 정산코드. 코드 미부여 주문은 조회 대상에서 제외.
+    const codeByOrderId = new Map<number, string>();
+    for (const order of orders) {
+      const settlementCode = (order.clientUser ?? order.user)?.settlementCode || null;
+      if (settlementCode) {
+        codeByOrderId.set(order.id, settlementCode);
+      }
+    }
+    if (codeByOrderId.size === 0) {
+      return { list: [] };
     }
 
     const wallets = await this.walletAccountRepository.find({
-      where: { ownerType: 'SETTLEMENT_CODE', ownerId: In(settlementCodes) },
+      where: { ownerType: 'SETTLEMENT_CODE', ownerId: In([...new Set(codeByOrderId.values())]) },
     });
     const walletByCode = new Map(wallets.map((wallet) => [wallet.ownerId, wallet]));
 
-    orderCodes.forEach((code, index) => {
-      if (code === null) {
-        return;
-      }
-      const wallet = walletByCode.get(code);
+    const list: CustomerSettlementViewDto[] = [];
+    codeByOrderId.forEach((settlementCode, orderId) => {
+      const wallet = walletByCode.get(settlementCode);
       if (!wallet) {
         return;
       }
-      const remain =
-        wallet.creditLimit + wallet.depositBalance - wallet.creditUsedAmount - wallet.creditExcessAmount;
-      views[index].customerSettlement = {
+      const remain = wallet.creditLimit + wallet.depositBalance - wallet.creditUsedAmount - wallet.creditExcessAmount;
+      list.push({
+        orderId,
         settleCondition: wallet.settleCondition,
         remainServiceAmount: Math.max(0, remain),
-      };
+      });
     });
+
+    return { list };
   }
 
   async getDetail(user: ILoginUserInfo, getParam: OrderGetDetailReqParamDto): Promise<OrderGetDetailResDto> {
@@ -1062,10 +1152,11 @@ export class OrderService {
               partnerCompanyName: '',
             };
 
-        // 해당 상품의 발송 실패 건수 계산
+        // 해당 상품의 미해결 발송 실패 건수 계산 (재발송 완료 건 제외 — resendAt 이 채워지면 실패로 세지 않는다)
         const failCount = orderProductMapping.orderDeliveries.filter(
           (delivery) =>
-            delivery.status === IOrderDeliveryStatus.FAIL || delivery.status === IOrderDeliveryStatus.FAIL_SMS,
+            (delivery.status === IOrderDeliveryStatus.FAIL || delivery.status === IOrderDeliveryStatus.FAIL_SMS) &&
+            delivery.resendAt == null,
         ).length;
 
         productList.push({
@@ -1871,13 +1962,7 @@ export class OrderService {
     user: ILoginUserInfo,
     ipAddress: string,
   ): Promise<void> {
-    const order = await this.orderRepository.findOne({
-      where: { id: getBody.id },
-    });
-
-    if (!order) {
-      throw new BadRequestException('주문이 존재하지 않습니다.');
-    }
+    await this.assertDestructionCertificateIssuable(getBody.id);
 
     // activity_log에 기록
     await this.activityLogService.createLog({
@@ -2750,10 +2835,16 @@ export class OrderService {
     // 입력완료 표식 = order.settleMethod 존재 (settleAmount>0 의존 제거 — 0원 정산도 입력값 유지)
     const hasSettleInput = order.settleMethod != null;
     // 정책 폴백은 미입력일 때만 필요. 읽기 경로는 fail-closed 불필요 → lazy 해석으로 WALLET 불필요 throw/조회 회피.
-    const settlePolicy = hasSettleInput
-      ? null
-      : (await this.resolveSettlePolicy(order, billingUserForSettle?.company)).policy;
-    const effectiveCardSurcharge = hasSettleInput ? order.cardSurchargeApplied : settlePolicy === 'CARD';
+    let settlePolicy: 'CARD' | 'CASH' | null;
+    let effectiveCardSurcharge: boolean;
+    if (hasSettleInput) {
+      settlePolicy = null;
+      effectiveCardSurcharge = order.cardSurchargeApplied;
+    } else {
+      const resolved = await this.resolveSettlePolicy(order, billingUserForSettle?.company);
+      settlePolicy = resolved.policy;
+      effectiveCardSurcharge = resolved.policy === 'CARD' && (resolved.resolvedWallet?.cardSurchargeApplied ?? true);
+    }
 
     // 카드할증 산정 (백엔드 산식 단일화: 프론트 자체계산 제거)
     const cardSurchargeBase = totalDiscountAmount;
@@ -3383,15 +3474,20 @@ export class OrderService {
 
   /**
    * 임시저장/수정 콘텐츠 금칙어 검사. 적발 시 block_log 기록 후 BadRequestException(FORBIDDEN_WORD).
+   * eventName(이벤트명)은 주문 레벨 필드라 상품 행과 별도로 검사한다.
    */
   private async assertNoForbiddenWord(
     user: ILoginUserInfo,
     orderProductList: OrderProductCreateTempDto[],
     orderId: number | null,
+    eventName?: string | null,
   ): Promise<void> {
     const targets = OrderService.collectForbiddenWordTargets(
       orderProductList.map((product) => ({ ...product, deliveries: product.orderDeliveryList ?? [] })),
     );
+    if (eventName) {
+      targets.push({ field: 'eventName', text: eventName });
+    }
     await this.assertTargetsHaveNoForbiddenWord(user, targets, orderId);
   }
 
@@ -3406,11 +3502,16 @@ export class OrderService {
         deliveries: mapping.orderDeliveries ?? [],
       })),
     );
+    if (order.eventName) {
+      targets.push({ field: 'eventName', text: order.eventName });
+    }
     await this.assertTargetsHaveNoForbiddenWord(user, targets, order.id);
   }
 
   /**
-   * 금칙어 검사 공통 로직: 적발 시 block_log 기록 후 BadRequestException(FORBIDDEN_WORD) throw.
+   * 금칙어 검사 공통 로직: 전 필드를 스캔해 적발 필드별 block_log 기록 후,
+   * 적발 단어 합집합(중복 제거)으로 BadRequestException(FORBIDDEN_WORD) throw.
+   * (첫 필드에서 즉시 throw하면 교차 필드 적발 시 FE 안내 팝업에 단어가 누락된다)
    * block_log insert 실패는 warn 후에도 reject 유지.
    */
   private async assertTargetsHaveNoForbiddenWord(
@@ -3418,6 +3519,8 @@ export class OrderService {
     targets: { field: string; text: string }[],
     orderId: number | null,
   ): Promise<void> {
+    const allWords: string[] = [];
+
     for (const target of targets) {
       const matchedWords = this.forbiddenWordMatcher.scan(target.text);
       if (matchedWords.length === 0) {
@@ -3425,7 +3528,7 @@ export class OrderService {
       }
 
       try {
-        await this.forbiddenWordBlockLogRepository.insert({
+        await this.writeForbiddenWordBlockLog({
           userId: user.id,
           userEmail: user.email,
           matchedWords,
@@ -3437,12 +3540,37 @@ export class OrderService {
         this.logger.warn(`금칙어 차단 로그 기록 실패: ${(e as Error).message}`);
       }
 
+      for (const word of matchedWords) {
+        if (!allWords.includes(word)) {
+          allWords.push(word);
+        }
+      }
+    }
+
+    if (allWords.length > 0) {
       throw new BadRequestException({
         code: 'FORBIDDEN_WORD',
-        words: matchedWords,
+        words: allWords,
         message: '금칙어가 포함되어 있습니다.',
       });
     }
+  }
+
+  /**
+   * 금칙어 차단 로그를 부모 트랜잭션과 분리된 새 트랜잭션(REQUIRES_NEW)으로 기록한다.
+   * createTemp/updateTemp/deliveryRequest 는 적발 시 BadRequestException 을 던져 부모
+   * 트랜잭션을 롤백하는데, 같은 트랜잭션에 기록하면 차단 로그까지 롤백돼 이력이 남지 않는다.
+   */
+  @Transactional({ propagation: Propagation.REQUIRES_NEW })
+  private async writeForbiddenWordBlockLog(entry: {
+    userId: number;
+    userEmail: string;
+    matchedWords: string[];
+    field: string;
+    contentSnippet: string;
+    orderId: number | null;
+  }): Promise<void> {
+    await this.forbiddenWordBlockLogRepository.insert(entry);
   }
 
   private async assertPositiveIntegerAmounts(orderProductList: OrderProductCreateTempDto[]): Promise<void> {
@@ -3488,7 +3616,7 @@ export class OrderService {
     const { type, eventName, topImagePath, midImagePath, orderProductList } = getBody;
 
     await this.assertPositiveIntegerAmounts(orderProductList);
-    await this.assertNoForbiddenWord(user, orderProductList, null);
+    await this.assertNoForbiddenWord(user, orderProductList, null, eventName);
 
     // 대행주문인 경우 clientUser의 허용 발신수단으로 검증
     const clientUserId = getBody.clientUserId ?? null;
@@ -3652,7 +3780,7 @@ export class OrderService {
     const { id, eventName, topImagePath, midImagePath, orderProductList } = getBody;
 
     await this.assertPositiveIntegerAmounts(orderProductList);
-    await this.assertNoForbiddenWord(user, orderProductList, id);
+    await this.assertNoForbiddenWord(user, orderProductList, id, eventName);
 
     const order = await this.orderRepository.findOne({
       where: {
@@ -4377,8 +4505,20 @@ export class OrderService {
     }
     // ======== 중복번호 제어 체크 끝 ========
 
-    // 최종 정산금액 계산 (배송별 정산값 우선, 주문 전체 카드할증 1회 적용)
-    const finalAmount = calculateOrderSettlementAmount(order, order.cardSurchargeApplied);
+    // 미정산 주문은 확정 시점 정책을 주문 스냅샷으로 고정해 allocation/조회/재정산의 기준을 일치시킨다.
+    const settleOrderBefore: SettleOrderSnapshot = {
+      settleMethod: order.settleMethod,
+      cardSurchargeApplied: order.cardSurchargeApplied,
+    };
+    const hasSettleInput = order.settleMethod != null;
+    const resolvedSettlePolicy = hasSettleInput
+      ? null
+      : await this.resolveSettlePolicy(order, oneUser.company);
+    const effectiveSettleMethod = order.settleMethod ?? resolvedSettlePolicy?.policy ?? 'CASH';
+    const effectiveSurcharge = hasSettleInput
+      ? order.cardSurchargeApplied
+      : effectiveSettleMethod === 'CARD' && (resolvedSettlePolicy?.resolvedWallet?.cardSurchargeApplied ?? true);
+    const finalAmount = calculateOrderSettlementAmount(order, effectiveSurcharge);
 
     if (order.isNewBillingFlow) {
       // === 새 흐름: 발송확정 시 전액 차감 ===
@@ -4419,6 +4559,7 @@ export class OrderService {
           depositUseEnabled: getBody.depositUseEnabled,
           depositUseAmount: getBody.depositUseAmount,
           companyId: oneUser.companyId,
+          cardSurchargeApplied: effectiveSurcharge,
         });
         // 사용액 입력 검증 (clamp 금지 — 사용 가능 한도 초과 시 400)
         this.assertUsageWithinLimits(allocationInput, getBody);
@@ -4478,10 +4619,9 @@ export class OrderService {
           {
             orderId: order.id,
             allocation,
-            cardSurchargeAppliedSnapshot: order.cardSurchargeApplied,
+            cardSurchargeAppliedSnapshot: effectiveSurcharge,
             hasDiscountSnapshot: allocation.hasDiscount,
-            // effective: 정산입력된 order.settleMethod 우선, 없으면 이미 조회한 wallet SoT 재사용 (추가 조회 0)
-            settleMethodSnapshot: order.settleMethod ?? wallet.settleMethod,
+            settleMethodSnapshot: effectiveSettleMethod,
             deliveryIdsForAttempt,
             creditExcessApprovalId: getBody.creditExcessApprovalId ?? null,
           },
@@ -4560,6 +4700,7 @@ export class OrderService {
             const wallet = await this.walletAccountResolverService.resolveForOrder(order, this.orderRepository.manager);
             const previewInput = await this.walletAllocationInputBuilder.build(order, wallet, finalAmount, {
               companyId: oneUser.companyId,
+              cardSurchargeApplied: effectiveSurcharge,
             });
             const preview = this.paymentAllocationService.allocate(previewInput);
 
@@ -4710,6 +4851,10 @@ export class OrderService {
       order.settleAmount = finalAmount;
     }
     // ======== 과금 처리 끝 ========
+    if (!hasSettleInput) {
+      order.settleMethod = effectiveSettleMethod;
+      order.cardSurchargeApplied = effectiveSurcharge;
+    }
 
     for (const orderMapping of order.orderProductMappings!) {
       for (const orderDelivery of orderMapping.orderDeliveries) {
@@ -4723,6 +4868,22 @@ export class OrderService {
 
     order.status = IOrderStatus.DELIVERY_CONFIRMED;
     await this.orderRepository.save(order);
+    if (!hasSettleInput) {
+      await this.logSettleDiscountChange({
+        user,
+        orderId: order.id,
+        requestUrl: '/order/delivery-confirmed',
+        method: 'POST',
+        source: SettleDiscountChangeSource.AUTO_CONFIRM,
+        changes: [],
+        orderBefore: settleOrderBefore,
+        orderAfter: {
+          settleMethod: order.settleMethod,
+          cardSurchargeApplied: order.cardSurchargeApplied,
+          settleAmount: order.settleAmount,
+        },
+      });
+    }
 
     return { message: message, ...this.allocationDetail(walletAllocation) };
   }
@@ -5607,6 +5768,31 @@ export class OrderService {
   // findMatchingDiscount는 user_discount/domain/discount.matcher.ts 공통 함수 사용
 
   /**
+   * 서버측 파기확인서 발행 게이트.
+   *
+   * 목록 응답의 canIssueDestructionCertificate 는 UI 힌트이므로, 실제 발행 경로
+   * (메일 발송 / PDF 발행 기록)에서 서버가 다시 판정한다.
+   * 폐기후재발행 롤백으로 soft-delete 된 배송건에도 미파기 PII 가 남을 수 있어,
+   * withDeleted 로 조회해 목록 게이트와 동일한 집합을 판정한다.
+   */
+  private async assertDestructionCertificateIssuable(orderId: number): Promise<void> {
+    const order = await this.orderRepository.findOne({
+      where: { id: orderId },
+      relations: ['orderProductMappings', 'orderProductMappings.orderDeliveries'],
+      withDeleted: true,
+    });
+
+    if (!order) {
+      throw new BadRequestException('주문이 존재하지 않습니다.');
+    }
+
+    const gate = resolveDestructionCertificateGate(order);
+    if (!gate.canIssue) {
+      throw new BadRequestException(destructionCertificateBlockMessage(gate.reason));
+    }
+  }
+
+  /**
    * PDF 리포트 이메일 발송 공통 로직
    */
   private async sendReportEmail(
@@ -5727,6 +5913,8 @@ export class OrderService {
     user: ILoginUserInfo,
     ipAddress: string,
   ): Promise<{ success: boolean; message: string }> {
+    await this.assertDestructionCertificateIssuable(getBody.orderId);
+
     return this.sendReportEmail(getBody, user, ipAddress, {
       requestUrl: '/order/destruction-certificate/report/email',
       actionType: 'DESTRUCTION_CERTIFICATE_EMAIL',

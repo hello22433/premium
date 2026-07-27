@@ -1,10 +1,34 @@
-import { BadRequestException, ForbiddenException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import {
+  addTransactionalDataSource,
+  deleteDataSourceByName,
+  initializeTransactionalContext,
+} from 'typeorm-transactional';
 import { OrderReceiptService } from './order.receipt.service';
 import { OrderReceiptStatus } from '../interface/order.receipt.status';
 import { IUserAuthority } from '../../user/interface/user.authority';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 
 describe('OrderReceiptService access and status policy', () => {
+  // approve()가 @Transactional 이므로 스텁 DataSource 등록(콜백만 실행)
+  beforeAll(() => {
+    initializeTransactionalContext();
+    deleteDataSourceByName('default');
+    addTransactionalDataSource({
+      name: 'default',
+      patch: false,
+      dataSource: {
+        transaction: async (...args: any[]) => {
+          const callback = typeof args[0] === 'function' ? args[0] : args[1];
+          return callback({});
+        },
+      } as any,
+    });
+  });
+
+  afterAll(() => {
+    deleteDataSourceByName('default');
+  });
   const corporateUser = (id: number): ILoginUserInfo => ({
     id,
     email: `user${id}@example.com`,
@@ -59,10 +83,15 @@ describe('OrderReceiptService access and status policy', () => {
       downloadWithPath: jest.fn(),
     };
 
+    const autoOrderService: any = {
+      run: jest.fn().mockResolvedValue({ files: [], alreadyCommitted: false }),
+      getStoredResult: jest.fn().mockResolvedValue(null),
+    };
     return {
-      service: new OrderReceiptService(repository as any, fileService as any),
+      service: new OrderReceiptService(repository as any, fileService as any, autoOrderService),
       repository,
       fileService,
+      autoOrderService,
       receipt,
     };
   };
@@ -90,6 +119,140 @@ describe('OrderReceiptService access and status policy', () => {
     );
   });
 
+  it('승인 성공 시 자동주문 훅을 COMMIT 모드로 호출한다', async () => {
+    const { service, autoOrderService, receipt } = createService(
+      makeReceipt({ userId: 20, status: OrderReceiptStatus.RECEIVED }),
+    );
+
+    await service.approve(operationAdmin, 100);
+
+    expect(autoOrderService.run).toHaveBeenCalledTimes(1);
+    const [passedReceipt, passedUser, mode] = autoOrderService.run.mock.calls[0];
+    expect(passedReceipt).toBe(receipt);
+    expect(passedUser).toBe(operationAdmin);
+    expect(mode).toBe('COMMIT');
+  });
+
+  it('승인은 항상 접수 전체를 COMMIT한다(fileIndexes 미전달 — 부분 승인 없음)', async () => {
+    const { service, autoOrderService } = createService(
+      makeReceipt({ userId: 20, status: OrderReceiptStatus.RECEIVED }),
+    );
+
+    await service.approve(operationAdmin, 100);
+
+    const [, , mode, passedIndexes] = autoOrderService.run.mock.calls[0];
+    expect(mode).toBe('COMMIT');
+    expect(passedIndexes).toBeUndefined(); // 전체 커밋(선택 없음)
+  });
+
+  it('자동주문 훅이 throw하면 승인 전체가 실패한다(원자성)', async () => {
+    const { service, autoOrderService } = createService(
+      makeReceipt({ userId: 20, status: OrderReceiptStatus.RECEIVED }),
+    );
+    autoOrderService.run.mockRejectedValueOnce(new Error('자동주문 실패'));
+
+    await expect(service.approve(operationAdmin, 100)).rejects.toThrow('자동주문 실패');
+  });
+
+  it('동시 승인 경합으로 UNIQUE 위반(ER_DUP_ENTRY)이면 raw 500 대신 409(Conflict)', async () => {
+    const { service, autoOrderService } = createService(
+      makeReceipt({ userId: 20, status: OrderReceiptStatus.RECEIVED }),
+    );
+    autoOrderService.run.mockRejectedValueOnce({
+      code: 'ER_DUP_ENTRY',
+      message: "Duplicate entry '100-0-GENERAL' for key 'uq_receipt_file_type'",
+    });
+
+    await expect(service.approve(operationAdmin, 100)).rejects.toThrow(ConflictException);
+  });
+
+  it('접수 상태가 아니면(이미 APPROVED) 승인 거부 + 자동주문 훅 미호출', async () => {
+    const { service, autoOrderService } = createService(
+      makeReceipt({ userId: 20, status: OrderReceiptStatus.APPROVED }),
+    );
+
+    await expect(service.approve(operationAdmin, 100)).rejects.toThrow(BadRequestException);
+    expect(autoOrderService.run).not.toHaveBeenCalled(); // 상태가드가 훅 앞에서 차단(재실행 방지)
+  });
+
+  it('미리보기는 운영관리자 이상만 허용', async () => {
+    const { service } = createService(makeReceipt({ userId: 20, status: OrderReceiptStatus.RECEIVED }));
+
+    await expect((service as any).previewAutoOrder(corporateUser(20), 100)).rejects.toThrow(ForbiddenException);
+  });
+
+  it('미리보기는 자동주문 훅을 DRY_RUN 모드로 호출한다', async () => {
+    const { service, autoOrderService, receipt } = createService(
+      makeReceipt({ userId: 20, status: OrderReceiptStatus.RECEIVED }),
+    );
+
+    await (service as any).previewAutoOrder(operationAdmin, 100);
+
+    expect(autoOrderService.run).toHaveBeenCalledTimes(1);
+    const [passedReceipt, passedUser, mode] = autoOrderService.run.mock.calls[0];
+    expect(passedReceipt).toBe(receipt);
+    expect(passedUser).toBe(operationAdmin);
+    expect(mode).toBe('DRY_RUN');
+  });
+
+  it('승인된 접수(스냅샷 존재)에 미리보기 → 재계산 없이 저장 스냅샷(COMMITTED) 반환', async () => {
+    const { service, autoOrderService } = createService(makeReceipt({ userId: 20, status: OrderReceiptStatus.APPROVED }));
+    autoOrderService.getStoredResult.mockResolvedValueOnce({
+      result: { files: [], alreadyCommitted: false },
+      generatedAt: new Date('2026-08-05T05:30:00.000Z'),
+    });
+
+    const dto = await (service as any).previewAutoOrder(operationAdmin, 100);
+
+    expect(dto.mode).toBe('COMMITTED');
+    expect(dto.generatedAt).toBe('2026-08-05T05:30:00.000Z');
+    expect(autoOrderService.run).not.toHaveBeenCalled(); // 재계산 안 함
+  });
+
+  it('미리보기는 fileIndexes를 훅에 전달하고 PREVIEW DTO를 반환한다', async () => {
+    const { service, autoOrderService } = createService(makeReceipt({ userId: 20, status: OrderReceiptStatus.RECEIVED }));
+
+    const dto = await (service as any).previewAutoOrder(operationAdmin, 100, [1, 2]);
+
+    expect(autoOrderService.run.mock.calls[0][3]).toEqual([1, 2]); // 4번째 인자=fileIndexes
+    expect(dto.mode).toBe('PREVIEW');
+    expect(dto.receiptId).toBe(100);
+    expect(dto.summary).toBeDefined();
+  });
+
+  it('승인은 COMMITTED DTO를 반환한다', async () => {
+    const { service } = createService(makeReceipt({ userId: 20, status: OrderReceiptStatus.RECEIVED }));
+
+    const dto = await service.approve(operationAdmin, 100);
+
+    expect((dto as any).mode).toBe('COMMITTED');
+    expect((dto as any).receiptId).toBe(100);
+  });
+
+  it('결과조회는 운영관리자 이상만 허용', async () => {
+    const { service } = createService(makeReceipt({ userId: 20, status: OrderReceiptStatus.APPROVED }));
+    await expect((service as any).getAutoOrderResult(corporateUser(20), 100)).rejects.toThrow(ForbiddenException);
+  });
+
+  it('결과조회: 스냅샷 없으면 404', async () => {
+    const { service } = createService(makeReceipt({ userId: 20, status: OrderReceiptStatus.APPROVED }));
+    await expect((service as any).getAutoOrderResult(operationAdmin, 100)).rejects.toThrow(NotFoundException);
+  });
+
+  it('결과조회: 저장 스냅샷을 COMMITTED DTO로 매핑', async () => {
+    const { service, autoOrderService } = createService(makeReceipt({ userId: 20, status: OrderReceiptStatus.APPROVED }));
+    autoOrderService.getStoredResult.mockResolvedValueOnce({
+      result: { files: [], alreadyCommitted: false },
+      generatedAt: new Date('2026-08-05T05:30:00.000Z'),
+    });
+
+    const dto = await (service as any).getAutoOrderResult(operationAdmin, 100);
+
+    expect(dto.mode).toBe('COMMITTED');
+    expect(dto.generatedAt).toBe('2026-08-05T05:30:00.000Z');
+    expect(dto.summary.fileCount).toBe(0);
+  });
+
   it('blocks corporate delete while receipt is reviewing but keeps rejected delete available for owner', async () => {
     const reviewing = createService(makeReceipt({ userId: 20, status: OrderReceiptStatus.REVIEWING }));
 
@@ -102,7 +265,7 @@ describe('OrderReceiptService access and status policy', () => {
     expect(rejected.repository.softDelete).toHaveBeenCalledWith(100);
   });
 
-  it('blocks rejected transition through generic changeStatus and clears stale rejectReason on non-rejected statuses', async () => {
+  it('blocks rejected/approved transitions through generic changeStatus and clears stale rejectReason on non-rejected statuses', async () => {
     const rejectedTarget = createService(makeReceipt({ status: OrderReceiptStatus.RECEIVED }));
 
     await expect(
@@ -110,15 +273,23 @@ describe('OrderReceiptService access and status policy', () => {
     ).rejects.toThrow(BadRequestException);
     expect(rejectedTarget.repository.save).not.toHaveBeenCalled();
 
-    const approvedTarget = createService(
+    // APPROVED도 상태변경으로는 불가(자동주문 실행/스냅샷 우회 방지) — 반드시 approve API를 타야 함
+    const approvedBlocked = createService(makeReceipt({ status: OrderReceiptStatus.RECEIVED }));
+    await expect(
+      approvedBlocked.service.changeStatus(operationAdmin, 100, { status: OrderReceiptStatus.APPROVED }),
+    ).rejects.toThrow(BadRequestException);
+    expect(approvedBlocked.repository.save).not.toHaveBeenCalled();
+
+    // 비-반려/비-승인 상태(REVIEWING) 전환은 stale rejectReason을 정리한다
+    const reviewingTarget = createService(
       makeReceipt({ status: OrderReceiptStatus.REJECTED, rejectReason: 'old reason' }),
     );
 
-    await approvedTarget.service.changeStatus(operationAdmin, 100, { status: OrderReceiptStatus.APPROVED });
+    await reviewingTarget.service.changeStatus(operationAdmin, 100, { status: OrderReceiptStatus.REVIEWING });
 
-    expect(approvedTarget.receipt.rejectReason).toBeNull();
-    expect(approvedTarget.receipt.status).toBe(OrderReceiptStatus.APPROVED);
-    expect(approvedTarget.repository.save).toHaveBeenCalledWith(approvedTarget.receipt);
+    expect(reviewingTarget.receipt.rejectReason).toBeNull();
+    expect(reviewingTarget.receipt.status).toBe(OrderReceiptStatus.REVIEWING);
+    expect(reviewingTarget.repository.save).toHaveBeenCalledWith(reviewingTarget.receipt);
   });
 
   it('caps per-detail S3 metadata lookups at MAX_FILE_META_LOOKUP and falls back to key-derived names', async () => {

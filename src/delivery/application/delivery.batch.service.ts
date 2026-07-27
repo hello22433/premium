@@ -37,11 +37,16 @@ import { InjectDataSource } from '@nestjs/typeorm';
 
 import { DeliveryAlimTalk } from '../interface/delivery.alim.talk';
 import { IOrderDeliveryStatus } from '../interface/order.delivery.status';
+import { MUTATION_CLAIM_STALE_MS, UNSENDABLE_COUPON_STATUSES } from '../interface/order.delivery.mutation.claim';
 import { OrderDeliveryCouponStatus } from '../interface/order.delivery.coupon.status';
 import { OrderDeliveryRefundStatusEnum } from '../interface/order.delivery.refund.status.enum';
 import { PII_BEARING_HISTORY_TYPES } from '../../order/interface/order.history.pii.types';
 import { IMailSend } from '../../mail/interface/mail-send';
 import { ISmsSend } from '../../sms/interface/sms.send';
+import { MessageAttemptService } from './message-attempt.service';
+import { MessageAttemptChannel, MessageAttemptType } from '../interface/message.attempt.status';
+import { DeliveryExclusiveOp } from '../interface/delivery.workflow.status';
+import { computeNextAttemptAt, isWithinAllowedSendWindow } from '../domain/resend.schedule';
 import { IOrderSendMethod } from '../../order/interface/order.send.method';
 import { IOrderStatus } from '../../order/interface/order.status';
 import { IOrderType } from '../../order/interface/order.type';
@@ -110,6 +115,7 @@ export class DeliveryBatchService {
     private mailSend: IMailSend,
     @Inject('ISmsSend')
     private smsSend: ISmsSend,
+    private messageAttemptService: MessageAttemptService,
     private deliveryTrackHttp: DeliveryTrackHttp,
     private cryptoCipher: CryptoCipher,
     private configService: ConfigService,
@@ -459,8 +465,49 @@ export class DeliveryBatchService {
 
   /**
    * 비정상 종료로 남은 WAIT 행의 claimedAt 을 해제한다. main.ts 에서 listen() 전 1회 호출.
+   *
+   * ★ 배치가 잡은 변형 lease 도 함께 해제한다 (리뷰 MEDIUM).
+   *   claimWaitDeliveries 는 이제 claimedAt 과 mutationClaimedAt 을 **같은 토큰으로 함께** 세팅한다.
+   *   claimedAt 만 지우면 mutation_claimed_at 이 남아, 재시작 후 최대 5분간
+   *   **그 행의 폐기·외부취소·핀상태변경이 전부 "다른 처리가 진행 중" 으로 거절된다** —
+   *   실제로는 아무것도 안 돌고 있는데. 하필 재시작 = 사고 대응 중인 시점에 사고 대응 액션이 막힌다.
+   *
+   *   `mutation_claimed_at = claimed_at` 조건이 **필수**다. 이게 "배치가 잡은 lease" 의 서명이다.
+   *   조건 없이 지우면 멀티팟에서 **다른 팟이 진행 중인 재발행/폐기의 살아있는 lease** 를 부팅 팟이
+   *   지워버린다(컬럼을 분리한 이유를 정면으로 부순다).
+   *   WAIT + claimed_at IS NOT NULL ⟹ 배치 소유가 성립함을 전수 확인했다:
+   *     - 재발행 tip 은 claimedAt=NULL (lease 만 보유)
+   *     - runReportFallback 은 claimedAt 을 안 쓴다
+   *     - reSend/발송실패내역 재발송은 status 가 WAIT 가 아니다
    */
   async releaseStaleBatchClaims(): Promise<number> {
+    // ① 배치가 잡은 변형 lease 만 먼저 해제한다. claimed_at 을 아직 지우기 전이어야
+    //    `mutation_claimed_at = claimed_at` 서명을 대조할 수 있다(순서 필수).
+    //
+    // ★ stale 술어가 **필수**다 (4차 조준 리뷰 HIGH x2 — 내가 만든 회귀).
+    //   이 메서드는 부팅 시 1회 돌지만, 롤링 배포·다중 인스턴스에서는 **다른 팟이 지금 발송 중**일 수
+    //   있다. 나이 조건 없이 지우면:
+    //     팟 B: od#123 claim(claimed_at=mutation_claimed_at=T) → 협력사 issue() 진행 중(수 초)
+    //     팟 A: 부팅 → ①이 B 의 **살아있는 lease** 를 벗김 → 그 즉시 폐기·외부취소·다른 팟 claim 에
+    //           전부 열림 → B 가 발송하는 사이 폐기가 협력사 취소 + 환불 → 환불된 핀이 배달된다.
+    //   종전에는 ②가 claimed_at 만 벗겨도 **변형 lease 가 남아 폐기를 막아주고 있었다.**
+    //   내가 ①을 추가하면서 그 마지막 방벽을 걷어냈다.
+    //   stale(5분 초과)만 지우면: 크래시 잔재는 회수되고(살아있는 발송은 초 단위라 절대 안 걸린다),
+    //   살아있는 팟은 건드리지 않는다. 5분 미만의 잔재는 claimWaitDeliveries 의 per-row self-heal 이
+    //   어차피 회수한다.
+    const staleThreshold = new Date(Date.now() - MUTATION_CLAIM_STALE_MS);
+    await this.orderDeliveryRepository
+      .createQueryBuilder()
+      .update(OrderDeliveryEntity)
+      .set({ mutationClaimedAt: null })
+      .where('status = :status', { status: IOrderDeliveryStatus.WAIT })
+      .andWhere('claimedAt IS NOT NULL')
+      .andWhere('claimed_at < :staleThreshold', { staleThreshold })
+      .andWhere('mutation_claimed_at = claimed_at')
+      .execute();
+
+    // ② claimedAt 해제는 **조건 없이**. ①의 서명 조건을 여기 합치면, 구버전 코드가 claim 해
+    //    mutation_claimed_at 이 NULL 인 행(배포 직전 크래시 잔재)이 영원히 안 풀린다.
     const result = await this.orderDeliveryRepository
       .createQueryBuilder()
       .update(OrderDeliveryEntity)
@@ -474,16 +521,40 @@ export class DeliveryBatchService {
   /**
    * WAIT 발송 대기 행을 claimedAt 으로 멱등 claim. 비동기 PENDING(report_state)·external(order.type=EXTERNAL) 제외.
    * external 은 자체 동기 dispatch 이므로 batch claim 에서 원자적으로 배제(중복 issue/발송·차감 전 발송 차단).
+   * 변형 lease(mutation_claimed_at) 활성 행도 제외 — 재발행(폐기후신규발송) tip 은 WAIT 로 INSERT 되므로,
+   * lease 없이는 배치가 집어가 재발행 자체 발송과 이중 발송이 된다. stale(5분 초과)은 크래시 잔재로 보고
+   * 정상 수거한다(발급된 PIN 의 미발송 정체 방지 — 기존 WAIT self-heal 경로 유지).
+   *
+   * ★ stale 수거는 lease 를 WHERE 로 통과시키는 데 그치지 않고 SET 으로 **탈취**해야 한다.
+   *   값을 그대로 두면 원 소유자(좀비)의 fencing 조건(mutation_claimed_at = :myClaimAt)이 여전히
+   *   일치해 affected=1 로 성공한다 — fencing 이 설계된 바로 그 상황에서 발동하지 않는다.
+   *   탈취하면 좀비의 쓰기가 affected=0 이 되어 "조용한 이중 발급" 이 "시끄러운 중단" 으로 바뀐다.
    * @returns claim 된 행 수
    */
   async claimWaitDeliveries(claimedAt: Date): Promise<number> {
+    const mutationStale = new Date(claimedAt.getTime() - MUTATION_CLAIM_STALE_MS);
     const claimResult = await this.orderDeliveryRepository
       .createQueryBuilder()
       .update(OrderDeliveryEntity)
-      .set({ claimedAt })
+      // 변형 lease 를 배치 소유로 탈취(위 주석). claimedAt 과 동일 값이라 소유자 식별도 일관된다.
+      .set({ claimedAt, mutationClaimedAt: claimedAt })
       .where('status = :status', { status: IOrderDeliveryStatus.WAIT })
       .andWhere('sendRequestAt < :now', { now: claimedAt })
       .andWhere('claimedAt IS NULL')
+      // 변형(재발행/폐기/취소) 진행중 행은 발송 배치가 건드리지 않는다 (D3-55 후속)
+      .andWhere('(mutation_claimed_at IS NULL OR mutation_claimed_at < :mutationStale)', { mutationStale })
+      // 이미 폐기/환불된 쿠폰은 발송하지 않는다. status 와 coupon_status 는 다른 축이라
+      // 폐기(coupon_status=CANCEL)가 status 를 건드리지 않으므로, 어떤 이유로든 WAIT 로 남은
+      // 취소 행을 배치가 집어 "환불된 죽은 핀"을 고객에게 발송할 수 있었다 (리뷰 HIGH).
+      .andWhere('(coupon_status IS NULL OR coupon_status NOT IN (:...blockedCouponStatuses))', {
+        blockedCouponStatuses: UNSENDABLE_COUPON_STATUSES,
+      })
+      // soft-delete 된 행은 집지 않는다. UpdateQueryBuilder 는 deleted_at 필터를 **자동 적용하지 않는다**
+      // (SelectQueryBuilder 와 달리). 재발행 실패 시 unwindReissue 가 tip 을 softDelete 하는데,
+      // 이 조건이 없으면 그 행이 status=WAIT / coupon_status=NOT_USED 로 남아 배치가 집어
+      // PIN 을 발급·발송한다 — 이미 폐기 역전으로 원본이 살아난 뒤라면 고객 쿠폰이 2장이 된다.
+      // SSG 는 선차감까지 역복원된 뒤라 미차감 발급이다 (리뷰 CONFIRMED).
+      .andWhere('deleted_at IS NULL')
       // 비동기 알림톡 PENDING(report_state) 행은 발송 배치 재발송 대상 아님 (reportSweep 소관)
       .andWhere('report_state IS NULL')
       // external_api 발송 건은 자체 동기 dispatch — batch 가 절대 claim 하지 않음 (중복 issue/발송 차단)
@@ -867,6 +938,18 @@ export class DeliveryBatchService {
       return;
     }
 
+    // 심야 자동 발송 금지(08:00–20:00 KST 밖) — SMS 폴백도 **배치가 트리거하는 발송**이라
+    // 광고성 정보 전송 제한 대상이다. 폴백을 포기하지 않고 다음 허용 시작으로 미룬다.
+    // (재시도 소진·기한 초과로 여기까지 온 건이므로 다음 창에서 즉시 폴백된다.)
+    if (!isWithinAllowedSendWindow(now)) {
+      const deferUntil = computeNextAttemptAt(now);
+      this.releaseReportClaim(od);
+      od.reportNextDueAt = deferUntil;
+      await this.persistReportState(od, token);
+      this.logger.log(`[REPORT_SWEEP][R1] 심야 SMS 폴백 보류 — od=${od.id}, 재개 예정=${deferUntil.toISOString()}`);
+      return;
+    }
+
     await this.runReportFallback(od, token);
   }
 
@@ -875,45 +958,163 @@ export class DeliveryBatchService {
    * sendSms 코어(csResendAsMms) 직접 사용 — oneSend/reverseRefundForResend 경로 미사용(환불→재차감 루프 차단).
    */
   private async runReportFallback(od: OrderDeliveryEntity, token: string): Promise<void> {
-    const preempt = await this.orderDeliveryRepository
+    // ★ SMS 대체발송도 "발송" 이다 — 변형 lease + 쿠폰상태 가드가 필요하다 (D3-55 후속, 리뷰).
+    //
+    //   report_owner_token 은 리포트 sweep 워커끼리의 소유권일 뿐, 폐기/외부취소/재발행과는
+    //   아무 관계가 없다. 알림톡 POST 는 성공했지만 수신확인이 안 된 채 재시도를 소진하는
+    //   동안(분 단위) 그 쿠폰이 폐기·환불될 수 있고, 종전 코드는 그 죽은 핀을 SMS 로 다시
+    //   보낸 뒤 markOrderTerminalAndSettle 로 **정산까지** 했다.
+    //
+    //   ★ 게이트 실패(affected=0)의 원인은 **4가지**이고, 처리가 서로 다르다 (리뷰 HIGH).
+    //     WHERE 는 id/token/status=WAIT/lease/coupon_status 의 AND 라 affected=0 만으로는
+    //     무엇이 틀렸는지 알 수 없다. 하나로 뭉개면 **일시적 원인까지 영구 봉인**된다 —
+    //     status=WAIT + report_state=UNCONFIRMED 는 reportSweep(PENDING 요구)도,
+    //     claimWaitDeliveries(report_state IS NULL 요구)도, CS reSend(COMPLETE/FAIL 요구)도,
+    //     발송실패내역 재발송(FAIL/FAIL_SMS 요구)도 **아무도 집지 못하는 상태**다.
+    //     그래서 fresh 로 1회 재조회해 원인별로 가른다.
+    const mutationClaimAt = new Date();
+    const mutationStale = new Date(mutationClaimAt.getTime() - MUTATION_CLAIM_STALE_MS);
+    const leaseGate = await this.orderDeliveryRepository
       .createQueryBuilder()
       .update(OrderDeliveryEntity)
-      .set({ reportFallbackAttemptCount: 1 })
+      .set({ mutationClaimedAt: mutationClaimAt })
       .where('id = :id', { id: od.id })
-      .andWhere('report_fallback_attempt_count = 0')
       .andWhere('report_owner_token = :token', { token })
-      // SMS(외부호출) 직전 fencing 완결: 이미 터미널로 전이됐거나 리포트 상태가 이탈한 행은 선점 자체를 차단
       .andWhere('status = :wait', { wait: IOrderDeliveryStatus.WAIT })
-      .andWhere('report_state = :pending', { pending: IOrderDeliveryReportState.PENDING })
+      .andWhere('(mutation_claimed_at IS NULL OR mutation_claimed_at < :mutationStale)', { mutationStale })
+      .andWhere('(coupon_status IS NULL OR coupon_status NOT IN (:...blockedCouponStatuses))', {
+        blockedCouponStatuses: UNSENDABLE_COUPON_STATUSES,
+      })
       .execute();
 
-    if ((preempt.affected ?? 0) === 0) {
-      // 이미 선점됨/소유권 상실 → recovery (재전송 안 함)
-      await this.recoverStuckFallback(od, token);
+    if ((leaseGate.affected ?? 0) === 0) {
+      const fresh = await this.orderDeliveryRepository.findOne({
+        where: { id: od.id },
+        select: ['id', 'status', 'couponStatus', 'mutationClaimedAt', 'reportOwnerToken'],
+      });
+
+      // (1) 폐기·환불 확정 — **유일하게 정당한 봉인**.
+      //     recoverStuckFallback(→ FAIL 확정 + 환불)으로 보내면 폐기가 이미 끝낸 환불과 겹쳐
+      //     이중 환불이 된다. 발송하지 않고 닫는다.
+      if (fresh?.couponStatus && UNSENDABLE_COUPON_STATUSES.includes(fresh.couponStatus)) {
+        this.logger.error(
+          `[REPORT_SWEEP][R1] SMS 폴백 중단 — 폐기·환불된 쿠폰(coupon_status=${fresh.couponStatus}). od=${od.id}`,
+        );
+        od.reportState = IOrderDeliveryReportState.UNCONFIRMED;
+        // ★ status 는 **건드리지 않는다** (4차 조준 리뷰 CRITICAL x2 — 앞선 라운드의 내 수정을 철회).
+        //
+        //   한때 여기서 status=CANCEL 로 "터미널 전이" 를 했다. 두 가지 이유로 틀렸다:
+        //
+        //   ① 정산을 열어주지 못한다. isOrderAllDeliveriesTerminal(L696)의 터미널 집합은
+        //      [COMPLETE, COMPLETE_SMS, FAIL, FAIL_SMS] 로 **CANCEL 을 포함하지 않는다**.
+        //      CANCEL 은 WAIT 과 똑같이 비터미널이라 주문은 그대로 미정산이다. 즉 얻는 게 없다.
+        //      (주문 미정산 자체는 이 분기가 만든 문제가 아니다 — 폐기된 알림톡 PENDING 건은
+        //       종전에도 status=WAIT 로 남아 똑같이 비터미널이었다. 별도 티켓.)
+        //
+        //   ② **lease 를 못 잡은 상태에서 남의 행에 터미널을 쓰는 짓이다.** 이 분기의 진입 조건
+        //      자체가 leaseGate.affected=0 = "다른 액터가 이 행의 운명을 결정 중" 이다.
+        //      그 액터가 재발행이면: execDiscard 가 원본을 CANCEL 로 만든 창에 우리가 status=CANCEL
+        //      을 쓰고, 이후 재발행이 실패해 reverseDiscard 가 coupon_status 만 NOT_USED 로 되돌린다
+        //      (reverseDiscard 는 status 를 안 만진다) → **status=CANCEL + coupon_status=NOT_USED**.
+        //      고객은 알림톡으로 살아있는 쿠폰을 이미 받았는데 DB·CS 화면은 "취소됨" 이다.
+        //      이 프로젝트가 내내 지켜온 규칙("변형은 lease 를 잡고 한다")을 정면으로 어긴다.
+        //
+        //   남는 행(status=WAIT + coupon_status=CANCEL + report_state=UNCONFIRMED)은 **무해하다**:
+        //   쿠폰은 이미 죽고 환불도 끝났으므로 아무도 이 행에 할 일이 없고, 모든 발송 경로가
+        //   coupon_status 가드로 이 행을 배제한다. 방치가 정답이다.
+        this.releaseReportClaim(od);
+        if (!(await this.persistReportState(od, token))) {
+          this.logger.error(`[REPORT_SWEEP][R1] UNCONFIRMED 기록도 실패(소유권 상실) — od=${od.id}`);
+        }
+        return;
+      }
+
+      // (2) 이미 터미널(status != WAIT) — 종전 동작 유지. 성공 종결이면 claim 만 정리한다.
+      if (fresh && fresh.status !== IOrderDeliveryStatus.WAIT) {
+        await this.recoverStuckFallback(od, token);
+        return;
+      }
+
+      // (3) 일시적 — 변형 lease 활성(폐기/재발행/CS 재발송 진행중) 또는 report 토큰 회전.
+      //     "지금은 못 한다" 를 "영원히 안 한다" 로 만들면 안 된다. PENDING 을 유지한 채
+      //     다음 due 로 미뤄 다음 tick 이 재시도하게 둔다(at-most-once 선점은 아직 안 했으므로 안전).
+      //
+      //     ★ 두 원인을 구분해 로깅한다 (리뷰 MEDIUM). 완전히 다른 사건이다:
+      //       - lease 활성      = 정상. 곧 해소되거나 5분 stale 로 강탈된다.
+      //       - 토큰 회전       = 동시 sweep 워커 2개 = **설정/배포 이상 신호**.
+      //       - lease 나이가 stale 임계를 넘었는데도 계속 여기로 오면 = **lease 누수**(해제 실패).
+      //     뭉뚱그리면 6개월 뒤 이 WARN 을 보는 사람이 어느 쪽인지 알 수 없다.
+      const leaseAgeMs = fresh?.mutationClaimedAt ? Date.now() - fresh.mutationClaimedAt.getTime() : null;
+      const tokenRotated = !!fresh && fresh.reportOwnerToken !== token;
+      if (leaseAgeMs !== null && leaseAgeMs > MUTATION_CLAIM_STALE_MS) {
+        // stale 인데도 게이트가 실패했다 = 다른 술어 때문이거나 lease 가 누수 중이다.
+        this.logger.error(
+          `[REPORT_SWEEP][R1] SMS 폴백 연기 — lease 가 stale(${Math.round(leaseAgeMs / 1000)}s) 인데도 ` +
+            `게이트 실패. lease 누수 의심. od=${od.id}, tokenRotated=${tokenRotated}`,
+        );
+      } else {
+        this.logger.warn(
+          `[REPORT_SWEEP][R1] SMS 폴백 연기 — ${tokenRotated ? 'report 토큰 회전(동시 워커 의심)' : `변형 lease 활성(${leaseAgeMs === null ? 'n/a' : Math.round(leaseAgeMs / 1000) + 's'})`}. ` +
+            `다음 tick 재시도. od=${od.id}`,
+        );
+      }
+      this.releaseReportClaim(od);
+      od.reportNextDueAt = new Date(Date.now() + REPORT_NEXT_DUE_MS);
+      await this.persistReportState(od, token); // report_state 는 PENDING 유지
       return;
     }
-    od.reportFallbackAttemptCount = 1;
 
-    let smsOk = false;
     try {
-      await this.csResendAsMms(od.id);
-      smsOk = true;
-    } catch (error) {
-      this.logger.error(`[REPORT_SWEEP][R1] SMS 폴백 실패 od=${od.id}: ${error}`);
-    }
+      const preempt = await this.orderDeliveryRepository
+        .createQueryBuilder()
+        .update(OrderDeliveryEntity)
+        .set({ reportFallbackAttemptCount: 1 })
+        .where('id = :id', { id: od.id })
+        .andWhere('report_fallback_attempt_count = 0')
+        .andWhere('report_owner_token = :token', { token })
+        // SMS(외부호출) 직전 fencing 완결: 이미 터미널로 전이됐거나 리포트 상태가 이탈한 행은 선점 자체를 차단
+        .andWhere('status = :wait', { wait: IOrderDeliveryStatus.WAIT })
+        .andWhere('report_state = :pending', { pending: IOrderDeliveryReportState.PENDING })
+        .execute();
 
-    od.reportState = IOrderDeliveryReportState.UNCONFIRMED;
-    this.releaseReportClaim(od);
-
-    if (smsOk) {
-      this.markSendSuccess(od, IOrderDeliveryStatus.COMPLETE_SMS);
-      // 소유권 보유 시에만 종결/정산 (lease 회전 시 stale worker 의 이력 정정·이중 정산 방지)
-      if (await this.persistReportState(od, token)) {
-        await this.correctSendHistory(od.id, true, { fallback: 'COMPLETE_SMS' });
-        await this.markOrderTerminalAndSettle(od.orderProductMapping.order.id);
+      if ((preempt.affected ?? 0) === 0) {
+        // 이미 선점됨/소유권 상실 → recovery (재전송 안 함)
+        await this.recoverStuckFallback(od, token);
+        return;
       }
-    } else {
-      await this.finalizeReportFail(od, token);
+      od.reportFallbackAttemptCount = 1;
+
+      let smsOk = false;
+      try {
+        await this.csResendAsMms(od.id);
+        smsOk = true;
+      } catch (error) {
+        this.logger.error(`[REPORT_SWEEP][R1] SMS 폴백 실패 od=${od.id}: ${error}`);
+      }
+
+      od.reportState = IOrderDeliveryReportState.UNCONFIRMED;
+      this.releaseReportClaim(od);
+
+      if (smsOk) {
+        this.markSendSuccess(od, IOrderDeliveryStatus.COMPLETE_SMS);
+        // 소유권 보유 시에만 종결/정산 (lease 회전 시 stale worker 의 이력 정정·이중 정산 방지)
+        if (await this.persistReportState(od, token)) {
+          await this.correctSendHistory(od.id, true, { fallback: 'COMPLETE_SMS' });
+          await this.markOrderTerminalAndSettle(od.orderProductMapping.order.id);
+        }
+      } else {
+        await this.finalizeReportFail(od, token);
+      }
+    } finally {
+      // 변형 lease 해제 — 자기 토큰으로만. 실패는 삼킨다(5분 stale self-heal).
+      try {
+        await this.orderDeliveryRepository.update(
+          { id: od.id, mutationClaimedAt: mutationClaimAt },
+          { mutationClaimedAt: null },
+        );
+      } catch (releaseError) {
+        this.logger.error(`[REPORT_SWEEP][R1] 변형 lease 해제 실패 od=${od.id}, error: ${releaseError}`);
+      }
     }
   }
 
@@ -1029,25 +1230,85 @@ export class DeliveryBatchService {
    * 예외 발생 시 status=WAIT 행의 claimedAt을 해제해 다음 cron에서 재시도되게 한다.
    * 해제 안 하면 row가 영구 stale claim 상태로 빠져 부팅 시 releaseStaleClaims만이
    * 풀 수 있는 사고가 된다. status가 이미 FAIL/COMPLETE면 건드리지 않음.
+   * claimedAt reset 은 owner guard(claimedAt = 내 토큰) 로 남의 claim 을 풀지 않는다.
+   *
+   * 변형 lease(claimWaitDeliveries 가 탈취한 mutation_claimed_at)는 성공/실패 모두 finally 에서
+   * owner-guarded 해제한다. 해제하지 않으면 발송 직후 stale(5분) 까지 폐기·취소가 전부 거절된다.
    */
   private async processOneDeliveryForBatch(
     orderDelivery: OrderDeliveryEntity,
   ): Promise<{ deliveryHistory: DeliverySendHistoryEntity; orderId: number } | null> {
+    const claimToken = orderDelivery.claimedAt;
     try {
-      const result = await this.processOneDeliveryInternal(orderDelivery);
+      const result = await this.processOneDeliveryInternal(orderDelivery, claimToken);
       return result;
     } catch (error) {
       this.logger.error(`[BATCH] Failed to process orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
       try {
         await this.orderDeliveryRepository.update(
-          { id: orderDelivery.id, status: IOrderDeliveryStatus.WAIT },
+          { id: orderDelivery.id, status: IOrderDeliveryStatus.WAIT, claimedAt: claimToken ?? undefined },
           { claimedAt: null },
         );
       } catch (resetError) {
         this.logger.error(`[BATCH] claimedAt reset 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${resetError}`);
       }
       return null;
+    } finally {
+      if (claimToken) {
+        try {
+          await this.orderDeliveryRepository.update(
+            { id: orderDelivery.id, mutationClaimedAt: claimToken },
+            { mutationClaimedAt: null },
+          );
+        } catch (releaseError) {
+          this.logger.error(
+            `[BATCH] 변형 lease 해제 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${releaseError}`,
+          );
+        }
+      }
     }
+  }
+
+  /**
+   * 배치가 자기 소유를 유지하는 동안에만 쓰는 targeted update (리뷰 HIGH).
+   *
+   * PIN 발급·문자 발송은 외부 통신이라 수 초~수십 초가 걸리고 변형 lease 는 5분 stale
+   * self-heal 이다. 그 사이 폐기·외부취소·재발행이 lease 를 가져가 상태를 확정할 수 있는데,
+   * 조건이 `{ id }` 뿐이면 배치가 **남이 확정한 상태 위에 자기 결과를 덮어쓴다**.
+   * (컬럼 범위를 좁힌 D3-60 수정은 "무엇을 쓰나"만 고쳤고 "쓸 자격이 있나"는 그대로였다.)
+   *
+   * affected=0 이면 **예외를 던지지 않고 건너뛴다**: 이 시점엔 이미 문자가 나갔을 수 있어
+   * 예외 → 재시도가 중복 발송이 된다. 대신 [BATCH_FENCE_LOST] 로 반드시 경보한다.
+   *
+   * claimToken 이 없으면(테스트·레거시 경로) 종전대로 무울타리로 쓴다.
+   *
+   * @returns 실제로 썼으면 true, lease 상실로 건너뛰었으면 false
+   */
+  private async updateDeliveryOwned(
+    orderDeliveryId: number,
+    claimToken: Date | null | undefined,
+    patch: Parameters<Repository<OrderDeliveryEntity>['update']>[1],
+    label: string,
+    /** 경보 로그에 함께 남길 주문 id. 운영이 잃은 쓰기를 대사할 때 order 조인을 손으로 안 하도록. */
+    orderId?: number,
+  ): Promise<boolean> {
+    const where = claimToken ? { id: orderDeliveryId, mutationClaimedAt: claimToken } : { id: orderDeliveryId };
+
+    const res = await this.orderDeliveryRepository.update(where, patch);
+
+    // affected=0 판정은 MySQL 기본(CLIENT_FOUND_ROWS 미설정)의 "값이 실제로 바뀐 행 수" 세만틱에
+    // 기댄다. 이 배치의 patch 는 모든 실경로에서 status 를 전이(WAIT→COMPLETE/FAIL)하므로
+    // 정상 경로에서는 affected≥1 이 보장돼 오탐이 없다. 만약 값 무변경 재진입 쓰기가 생기면
+    // 여기서 거짓 [BATCH_FENCE_LOST] 가 뜰 수 있음을 유의(무해 — 로그만, 쓰기 자체는 멱등).
+    if (claimToken && !res.affected) {
+      this.logger.error(
+        `[BATCH_FENCE_LOST] ${label} 쓰기 생략 — 변형 lease 를 뺏긴 뒤였다. ` +
+          `orderDelivery.id: ${orderDeliveryId}, orderId: ${orderId ?? 'N/A'}, ` +
+          `claimToken: ${claimToken.toISOString()}`,
+      );
+      return false;
+    }
+    return true;
   }
 
   /**
@@ -1069,6 +1330,11 @@ export class DeliveryBatchService {
    */
   private async processOneDeliveryInternal(
     orderDelivery: OrderDeliveryEntity,
+    /**
+     * 이 행에 대한 배치 소유 토큰(claimWaitDeliveries 가 claimed_at = mutation_claimed_at 로 함께 세팅).
+     * 상태 쓰기의 fencing 조건으로 쓴다(다음 커밋). 없으면 종전대로 무울타리.
+     */
+    claimToken?: Date | null,
   ): Promise<{ deliveryHistory: DeliverySendHistoryEntity; orderId: number }> {
     const order = orderDelivery.orderProductMapping.order;
     const product = orderDelivery.orderProductMapping.product;
@@ -1113,7 +1379,17 @@ export class DeliveryBatchService {
         }
 
         this.markSendFail(orderDelivery, IOrderDeliveryStatus.FAIL);
-        await this.orderDeliveryRepository.save(orderDelivery);
+        // save(orderDelivery) 금지 — merge 는 claim 시점 스냅샷으로 행 전체를 쓴다. issue()(외부 통신,
+        // 수 초) 동안 폐기·외부취소가 쓴 coupon_status=CANCEL 을 되돌리고 mutation_claimed_at 까지
+        // 지운다(D3-60 clobber). markSendFail 이 쓰는 두 컬럼만 targeted update 한다.
+        // + 그 사이 lease 를 뺏겼다면 남이 확정한 상태를 덮지 않는다(fencing, 리뷰 HIGH).
+        await this.updateDeliveryOwned(
+          orderDelivery.id,
+          claimToken,
+          { status: orderDelivery.status, failedAt: orderDelivery.failedAt },
+          'PIN 발급 실패 상태',
+          order.id,
+        );
 
         // 실패해도 히스토리는 남김
         const deliveryHistory = new DeliverySendHistoryEntity();
@@ -1241,8 +1517,12 @@ export class DeliveryBatchService {
     // - 1차(짧음): status/actualSendAt/failedAt만 갱신 → idx_order_delivery_claim 락을 짧게 잡고 빠르게 commit
     // - 2차: 나머지 부가 컬럼은 idx_order_delivery_claim에 무관하므로 락 footprint가 작음
     // 이렇게 분리해야 후속 cron의 claim 쿼리와 락 경쟁 시간을 최소화해 데드락 가능성을 줄인다.
-    await this.orderDeliveryRepository.update(
-      { id: orderDelivery.id },
+    //
+    // fencing: 발송(외부 통신)이 도는 사이 lease 가 stale 로 넘어가 폐기·외부취소가 상태를
+    // 확정했을 수 있다. 내 소유가 유지될 때만 쓴다(리뷰 HIGH).
+    const stillOwned = await this.updateDeliveryOwned(
+      orderDelivery.id,
+      claimToken,
       {
         status: orderDelivery.status,
         actualSendAt: orderDelivery.actualSendAt,
@@ -1256,17 +1536,33 @@ export class DeliveryBatchService {
         reportAttemptCount: orderDelivery.reportAttemptCount,
         reportFallbackAttemptCount: orderDelivery.reportFallbackAttemptCount,
       },
+      '발송 결과',
+      order.id,
     );
-    await this.orderDeliveryRepository.update(
-      { id: orderDelivery.id },
-      {
-        imagePath: orderDelivery.imagePath,
-        expireAt: orderDelivery.expireAt,
-        encourageAt: orderDelivery.encourageAt,
-      },
-    );
+    // 1차에서 lease 상실이 확인됐다면 2차도 쓰지 않는다. 남이 소유한 행에 이미지/유효기간만
+    // 남기면 "상태는 남의 것, 부가 컬럼은 내 것" 인 반쪽 행이 된다(경보는 1차에서 이미 나갔다).
+    if (stillOwned) {
+      await this.updateDeliveryOwned(
+        orderDelivery.id,
+        claimToken,
+        {
+          imagePath: orderDelivery.imagePath,
+          expireAt: orderDelivery.expireAt,
+          encourageAt: orderDelivery.encourageAt,
+        },
+        '발송 부가 컬럼',
+        order.id,
+      );
+    }
 
     // 6. 발송 실패 시 환불 처리 (B1/B3: 최초 발송 실패는 보류, SSG 는 ATTEMPTED 만 환불, 재발송은 환불)
+    //
+    // ⚠️ 이 판정은 **메모리 status**로 한다 — 위 fencing 에서 stillOwned=false 여도(=lease 를
+    //   뺏긴 뒤여도) 여기까지 온다. 일부러 여기서 stillOwned 로 막지 않는다:
+    //   fencing 은 "상태 쓰기"의 소유권만 지키고, 환불의 이중집행 방지는 **별도 축**
+    //   (refundForFail → refund-ledger 멱등 게이트, D3-3)이 맡는다. lease 를 훔쳐간 쪽
+    //   (폐기·취소)이 자기 환불을 돌려도 같은 ledger 키라 이중환불이 안 난다.
+    //   즉 fence 가 이 환불 분기까지 보호한다고 오해하면 안 된다 — 백스톱은 ledger 다.
     if (orderDelivery.status === IOrderDeliveryStatus.FAIL) {
       const shouldHold = isInitialSend && (await this.shouldHoldRefundForFail(orderDelivery, order));
       if (!shouldHold) {
@@ -1274,8 +1570,19 @@ export class DeliveryBatchService {
       }
     }
 
-    // 7. DB 저장
-    await this.orderDeliveryRepository.save(orderDelivery);
+    // 7. save(orderDelivery) 제거 (D3-60 clobber).
+    //
+    // merge 는 행 전체를 쓴다. 이 엔티티는 claim 시점 스냅샷이라 issue()/발송(외부 통신, 수 초)
+    // 동안 다른 액터가 쓴 값을 되돌린다:
+    //   - coupon_status='CANCEL' → 'NOT_USED'  (환불됐는데 살아있는 쿠폰)
+    //   - mutation_claimed_at    → 스냅샷 값    (변형 lease 무력화)
+    //   - deleted_at             → NULL         (soft-delete 된 행 부활)
+    //
+    // 이 메서드가 엔티티에 쓰는 컬럼은 imagePath/expireAt/encourageAt(위) 와
+    // status/actualSendAt/failedAt/report*(markSendSuccess·markSendFail → 위 1차 update) 뿐이고,
+    // 전부 앞의 targeted update 2개가 이미 영속했다. 발급 결과(barCode/personalCode/couponNum/
+    // ssgTransactionId)는 issue() 가 자체 targeted update 로 반영한다.
+    // → 여기서 추가로 쓸 컬럼이 없다.
 
     return { deliveryHistory, orderId: order.id };
   }
@@ -1399,18 +1706,30 @@ export class DeliveryBatchService {
     filePathList: string[],
     decryptedDeliveryTarget: string,
     encryptKey: string,
+    slotOp: DeliveryExclusiveOp,
   ): Promise<IOrderDeliveryStatus.COMPLETE_SMS | unknown> {
     try {
       const smsText = this.buildSmsText(orderDelivery, encryptKey, body, memo, tailText);
       const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber!;
-      await this.smsSend.send({
-        msgType: 'M',
-        to: decryptedDeliveryTarget,
-        from: fromPhoneNumber,
-        subject: title,
-        text: smsText,
-        filePath: filePathList,
-      });
+      await this.messageAttemptService.trackSend(
+        {
+          orderDeliveryId: orderDelivery.id,
+          slotOp,
+          channel: MessageAttemptChannel.MMS,
+          attemptType: MessageAttemptType.CHANNEL_FALLBACK,
+          sendReason: 'ALIM_TALK_FALLBACK',
+        },
+        (attemptId) =>
+          this.smsSend.send({
+            msgType: 'M',
+            to: decryptedDeliveryTarget,
+            from: fromPhoneNumber,
+            subject: title,
+            text: smsText,
+            filePath: filePathList,
+            attemptId,
+          }),
+      );
       orderDelivery.status = IOrderDeliveryStatus.COMPLETE_SMS;
       return IOrderDeliveryStatus.COMPLETE_SMS;
     } catch (e) {
@@ -1497,22 +1816,21 @@ export class DeliveryBatchService {
           );
         }
         if (isSsgFailResendDeduct && hasRefundLedgerForResendDeduct && ssgBalanceSettledForResendDeduct) {
-          const newEvent = await this.ssgEventService.selectEventForOrder(product.price, product.expireDay);
-          if (!newEvent) {
+          const deduct = await this.ssgEventService.selectAndDeductForReissueWithPending({
+            amount: product.price,
+            orderId: order.id,
+            couponExpiration: product.expireDay,
+            purpose: 'BATCH_RESEND',
+            issueOrderDeliveryId: orderDelivery.id,
+          });
+          if (!deduct) {
             this.logger.warn(
               `[RESEND] 잔액 충분한 SSG 행사 없음 - orderDelivery.id: ${orderDelivery.id}, price: ${product.price}`,
             );
             return false;
           }
-          const deduct = await this.ssgEventService.deductForReissueWithPending({
-            ssgEventId: newEvent.id,
-            amount: product.price,
-            orderId: order.id,
-            purpose: 'BATCH_RESEND',
-            issueOrderDeliveryId: orderDelivery.id,
-          });
           resendDeductionId = deduct.resendDeductionId;
-          ssgEvent = newEvent;
+          ssgEvent = deduct.event;
           resendDeducted = true;
         }
 
@@ -1608,20 +1926,15 @@ export class DeliveryBatchService {
     price: number,
     couponExpiration: number,
   ): Promise<{ event: SsgEventEntity; resendDeductionId: string } | null> {
-    const event = await this.ssgEventService.selectEventForOrder(price, couponExpiration);
-    if (!event) {
-      return null;
-    }
     // CS 폐기후신규: 선차감 시점엔 신규 delivery 미존재 → issueOrderDeliveryId=null.
     // 신규 delivery 저장 후 markReissueIssueAttempted 로 실제 issue 대상 id 를 기록한다.
-    const { resendDeductionId } = await this.ssgEventService.deductForReissueWithPending({
-      ssgEventId: event.id,
+    return this.ssgEventService.selectAndDeductForReissueWithPending({
       amount: price,
       orderId,
+      couponExpiration,
       purpose: 'CS_REISSUE',
       issueOrderDeliveryId: null,
     });
-    return { event, resendDeductionId };
   }
 
   /**
@@ -1988,14 +2301,25 @@ export class DeliveryBatchService {
     const fromPhoneNumber =
       orderDelivery.orderProductMapping.fromPhoneNumber ||
       (await this.orderFromService.resolveSendDefaultPhone(getBillingUserId(orderDelivery.orderProductMapping.order)));
-    await this.smsSend.send({
-      msgType: 'M',
-      to: phoneNumber,
-      from: fromPhoneNumber,
-      subject: title,
-      text: smsText,
-      filePath: filePathList,
-    });
+    await this.messageAttemptService.trackSend(
+      {
+        orderDeliveryId: orderDelivery.id,
+        slotOp: DeliveryExclusiveOp.MANUAL_RESEND,
+        channel: MessageAttemptChannel.MMS,
+        attemptType: MessageAttemptType.MANUAL_RESEND,
+        sendReason: 'CS_RESEND',
+      },
+      (attemptId) =>
+        this.smsSend.send({
+          msgType: 'M',
+          to: phoneNumber,
+          from: fromPhoneNumber,
+          subject: title,
+          text: smsText,
+          filePath: filePathList,
+          attemptId,
+        }),
+    );
   }
 
   async csResendAsAlimTalk(
@@ -2060,11 +2384,21 @@ export class DeliveryBatchService {
     // 알림톡 시도
     let alimTalkSucceeded = false;
     try {
-      const { report } = await this.deliveryAlimTalk.send({
-        to: phoneNumber,
-        text: alimTalk,
-        encryptKey: encryptKey,
-      });
+      const { report } = await this.messageAttemptService.trackAlimTalk(
+        {
+          orderDeliveryId: orderDelivery.id,
+          slotOp: DeliveryExclusiveOp.MANUAL_RESEND,
+          attemptType: MessageAttemptType.MANUAL_RESEND,
+          sendReason: 'CS_RESEND',
+        },
+        () =>
+          this.deliveryAlimTalk.send({
+            to: phoneNumber,
+            text: alimTalk,
+            encryptKey: encryptKey,
+          }),
+        (result) => result.report.code === 'A000',
+      );
       alimTalkSucceeded = report.code === 'A000';
     } catch (e) {
       this.logger.warn(
@@ -2097,14 +2431,25 @@ export class DeliveryBatchService {
       orderDelivery.orderProductMapping.fromPhoneNumber ||
       (await this.orderFromService.resolveSendDefaultPhone(getBillingUserId(orderDelivery.orderProductMapping.order)));
 
-    await this.smsSend.send({
-      msgType: 'M',
-      to: phoneNumber,
-      from: fromPhoneNumber,
-      subject: title,
-      text: smsText,
-      filePath: filePathList,
-    });
+    await this.messageAttemptService.trackSend(
+      {
+        orderDeliveryId: orderDelivery.id,
+        slotOp: DeliveryExclusiveOp.MANUAL_RESEND,
+        channel: MessageAttemptChannel.MMS,
+        attemptType: MessageAttemptType.CHANNEL_FALLBACK,
+        sendReason: 'CS_ALIM_TALK_FALLBACK',
+      },
+      (attemptId) =>
+        this.smsSend.send({
+          msgType: 'M',
+          to: phoneNumber,
+          from: fromPhoneNumber,
+          subject: title,
+          text: smsText,
+          filePath: filePathList,
+          attemptId,
+        }),
+    );
 
     return IOrderDeliveryStatus.COMPLETE_SMS;
   }
@@ -2171,14 +2516,25 @@ export class DeliveryBatchService {
       orderDelivery.orderProductMapping.fromPhoneNumber ||
       (await this.orderFromService.resolveSendDefaultPhone(getBillingUserId(orderDelivery.orderProductMapping.order)));
 
-    await this.smsSend.send({
-      msgType,
-      to: phoneNumber,
-      from: fromPhoneNumber,
-      subject: msgType === 'L' ? ' ' : '',
-      text,
-      filePath: [],
-    });
+    await this.messageAttemptService.trackSend(
+      {
+        orderDeliveryId: orderDelivery.id,
+        slotOp: DeliveryExclusiveOp.MANUAL_RESEND,
+        channel: MessageAttemptChannel.SMS,
+        attemptType: MessageAttemptType.MANUAL_RESEND,
+        sendReason: 'CS_RESEND',
+      },
+      (attemptId) =>
+        this.smsSend.send({
+          msgType,
+          to: phoneNumber,
+          from: fromPhoneNumber,
+          subject: msgType === 'L' ? ' ' : '',
+          text,
+          filePath: [],
+          attemptId,
+        }),
+    );
   }
 
   async csResendAsEmail(orderDeliveryId: number): Promise<void> {
@@ -2279,10 +2635,54 @@ export class DeliveryBatchService {
     });
   }
 
+  /**
+   * oneSend 의 결과 영속 — save(orderDelivery) 금지, targeted update (D3-60 clobber).
+   *
+   * save 는 merge 라 **행 전체**를 claim 시점 스냅샷으로 쓴다. oneSend 는 PIN 발급·문자 발송
+   * (외부 통신)으로 수 초가 걸리고, 변형 lease 는 5분 stale 이라 그 사이 폐기·외부취소가
+   * lease 를 강탈해 들어올 수 있다. 그때 save 는 남이 쓴 값을 스냅샷으로 되돌린다:
+   *   - coupon_status='CANCEL' → 'NOT_USED'   (환불은 끝났는데 되살아난 쿠폰 = 자금 손실)
+   *   - deleted_at             → NULL          (unwindReissue 가 지운 tip 부활)
+   *   - mutation_claimed_at    → 스냅샷 값      (남의 변형 lease 무력화)
+   *
+   * 아래 6개가 oneSend 가 엔티티에 쓰는 컬럼의 **전부**다(전수 확인):
+   *   - status/actualSendAt/failedAt : markSendSuccess · markSendFail
+   *   - expireAt/encourageAt         : 유효기간 신규 계산(재발송은 기존 값 유지)
+   *   - imagePath                    : reissuePinAndCreateImageIfNeeded (자체 update 가 없는 유일한 컬럼)
+   *
+   * 나머지는 각자 자체 targeted update 로 이미 영속한다 —
+   * barCode/personalCode/couponNum/ssgTransactionId 는 issue(), ssgEventId 는 재발급 분기,
+   * transactionId 는 호출자의 claim CAS. 알림톡도 oneSend 는 **동기** 전송이라
+   * reportState/msgKey 를 건드리지 않는다(비동기 sweep 은 배치 전용 경로).
+   */
+  private async persistOneSendResult(orderDelivery: OrderDeliveryEntity, leaseToken?: Date | null): Promise<void> {
+    await this.updateDeliveryOwned(
+      orderDelivery.id,
+      leaseToken,
+      {
+        status: orderDelivery.status,
+        actualSendAt: orderDelivery.actualSendAt,
+        failedAt: orderDelivery.failedAt,
+        expireAt: orderDelivery.expireAt,
+        encourageAt: orderDelivery.encourageAt,
+        imagePath: orderDelivery.imagePath,
+      },
+      'oneSend 발송 결과',
+      orderDelivery.orderProductMapping?.order?.id,
+    );
+  }
+
   async oneSend(
     orderDelivery: OrderDeliveryEntity,
     isSave: boolean = true,
     testOrderDeliveryId?: number,
+    /**
+     * 호출자가 이 행에 대해 쥔 변형 lease 토큰(mutation_claimed_at 값).
+     * 넘기면 발송 결과 쓰기가 그 소유 하에서만 이뤄진다(fencing). 없으면 종전대로 무울타리.
+     * oneSend 는 배치·CS 재발송·발송실패내역 재발송·테스트발송이 함께 쓰는 진입점이라
+     * 소유자가 호출자마다 달라 여기서 만들 수 없다.
+     */
+    leaseToken?: Date | null,
   ): Promise<boolean> {
     const order = orderDelivery.orderProductMapping.order;
     // 재발송인 경우 chargeBack 후 발송 실패 시 재환불이 필요한지 판단하기 위해 이전 상태 저장 (FAIL_SMS 포함)
@@ -2293,6 +2693,8 @@ export class DeliveryBatchService {
     // B1/B3: 실패 재발송 — 보류(환불 미생성)/환불됨 분기. snapshot 은 reissue 호출 *전* 에 잡는다
     // (reissue 내부 reverseRefundForResend 가 ledger 를 release 해 exists() 가 뒤집히기 때문).
     // refunded reverse 보강은 비-SSG 만(SSG refunded 는 reissue 내부에서 처리), held-slot 발급은 SSG 포함 wallet 전체.
+    // 전환 건에서 점유할 배타 op — 실패 재발송이면 MANUAL_RESEND, 최초 발송이면 MESSAGE_SEND(§6.1 표 2-1).
+    const sendSlotOp = wasFailBefore ? DeliveryExclusiveOp.MANUAL_RESEND : DeliveryExclusiveOp.MESSAGE_SEND;
     const isWalletManaged = wasFailBefore ? await this.walletManagedPredicate.isWalletManaged(order.id) : false;
     const refundLedgerBeforeReissue = wasFailBefore ? await this.refundLedgerService.exists(orderDelivery.id) : false;
 
@@ -2309,7 +2711,7 @@ export class DeliveryBatchService {
         deliveryHistory.deliveryMethod = orderDelivery.deliveryMethod;
 
         if (isSave) {
-          await this.orderDeliveryRepository.save(orderDelivery);
+          await this.persistOneSendResult(orderDelivery, leaseToken);
         }
         await this.deliverySendHistoryRepository.save(deliveryHistory);
         return false;
@@ -2358,7 +2760,7 @@ export class DeliveryBatchService {
       }
     }
 
-    const filePathList = [];
+    const filePathList: string[] = [];
     if (orderDelivery.imagePath) {
       filePathList.push(orderDelivery.imagePath);
     }
@@ -2397,11 +2799,22 @@ export class DeliveryBatchService {
     if (deliveryMethod === IOrderSendMethod.ALIM_TALK) {
       try {
         const alimTalk = AlimTalkTemplate(orderDelivery);
-        const { responseData, report } = await this.deliveryAlimTalk.send({
-          to: decryptedDeliveryTarget,
-          text: alimTalk,
-          encryptKey: encryptKey,
-        });
+        const { responseData, report } = await this.messageAttemptService.trackAlimTalk(
+          {
+            orderDeliveryId: orderDelivery.id,
+            slotOp: sendSlotOp,
+            attemptType: wasFailBefore ? MessageAttemptType.MANUAL_RESEND : MessageAttemptType.INITIAL,
+            sendReason: 'COUPON',
+            skipTracking: !!testOrderDeliveryId,
+          },
+          () =>
+            this.deliveryAlimTalk.send({
+              to: decryptedDeliveryTarget,
+              text: alimTalk,
+              encryptKey: encryptKey,
+            }),
+          (result) => result.report.code === 'A000',
+        );
 
         deliveryHistory.context = JSON.stringify(responseData);
         deliveryHistory.etcContext = JSON.stringify(report);
@@ -2424,6 +2837,7 @@ export class DeliveryBatchService {
           filePathList,
           decryptedDeliveryTarget,
           encryptKey,
+          sendSlotOp,
         );
 
         if (resultSms === IOrderDeliveryStatus.COMPLETE_SMS) {
@@ -2449,14 +2863,26 @@ export class DeliveryBatchService {
       const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber!;
 
       try {
-        await this.smsSend.send({
-          msgType: 'M',
-          to: decryptedDeliveryTarget,
-          from: fromPhoneNumber,
-          subject: title,
-          text: smsText,
-          filePath: filePathList,
-        });
+        await this.messageAttemptService.trackSend(
+          {
+            orderDeliveryId: orderDelivery.id,
+            slotOp: sendSlotOp,
+            channel: MessageAttemptChannel.MMS,
+            attemptType: wasFailBefore ? MessageAttemptType.MANUAL_RESEND : MessageAttemptType.INITIAL,
+            sendReason: 'COUPON',
+            skipTracking: !!testOrderDeliveryId,
+          },
+          (attemptId) =>
+            this.smsSend.send({
+              msgType: 'M',
+              to: decryptedDeliveryTarget,
+              from: fromPhoneNumber,
+              subject: title,
+              text: smsText,
+              filePath: filePathList,
+              attemptId,
+            }),
+        );
         this.markSendSuccess(orderDelivery, IOrderDeliveryStatus.COMPLETE);
         deliveryHistory.context = smsText;
       } catch (e) {
@@ -2485,14 +2911,26 @@ export class DeliveryBatchService {
         const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber!;
 
         try {
-          await this.smsSend.send({
-            msgType: 'M',
-            to: decryptedEmailReceiverPhone,
-            from: fromPhoneNumber,
-            subject: title,
-            text: emailText,
-            filePath: filePathList,
-          });
+          await this.messageAttemptService.trackSend(
+            {
+              orderDeliveryId: orderDelivery.id,
+              slotOp: sendSlotOp,
+              channel: MessageAttemptChannel.MMS,
+              attemptType: wasFailBefore ? MessageAttemptType.MANUAL_RESEND : MessageAttemptType.INITIAL,
+              sendReason: 'EMAIL_SMS_RESEND',
+              skipTracking: !!testOrderDeliveryId,
+            },
+            (attemptId) =>
+              this.smsSend.send({
+                msgType: 'M',
+                to: decryptedEmailReceiverPhone,
+                from: fromPhoneNumber,
+                subject: title,
+                text: emailText,
+                filePath: filePathList,
+                attemptId,
+              }),
+          );
           this.markSendSuccess(orderDelivery, IOrderDeliveryStatus.COMPLETE);
           deliveryHistory.context = emailText;
           deliveryHistory.target = this.cryptoCipher.encryptDeliveryTarget(decryptedEmailReceiverPhone);
@@ -2604,7 +3042,7 @@ export class DeliveryBatchService {
     }
 
     if (isSave) {
-      await this.orderDeliveryRepository.save(orderDelivery);
+      await this.persistOneSendResult(orderDelivery, leaseToken);
     }
 
     // 테스트 발송은 발송실패내역(delivery_send_history)에 기록하지 않는다.
@@ -2662,10 +3100,14 @@ export class DeliveryBatchService {
 
     const orderDeliveryList = await this.orderDeliveryRepository
       .createQueryBuilder('orderDelivery')
+      .withDeleted() // 폐기후재발행 롤백으로 soft-delete 된 행도 파기 (조기파기와 동일 집합)
       .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
       .innerJoinAndSelect('orderProductMapping.order', 'order')
       .where(
-        `DATE_ADD(orderProductMapping.sendRequestAt, INTERVAL orderProductMapping.requestToDestroyPersonalInfoDay DAY) <= :now`,
+        // 파기 기준은 날짜(DATE) 단위 절삭 — "발송요청일 + N일". 시각(datetime) 비교면 자정 크론이
+        // 그날 발송요청 시각 이후 몫을 다음 날로 미뤄, 파기예정일 당일 내내 미파기 상태가 됐다
+        // (0710/backend-response 문서 2번). TZ/DB 커넥션 모두 KST(+09:00)라 DATE() 는 KST 날짜다.
+        `DATE_ADD(DATE(orderProductMapping.sendRequestAt), INTERVAL orderProductMapping.requestToDestroyPersonalInfoDay DAY) <= DATE(:now)`,
         { now },
       )
       .andWhere('order.status = :status', { status: IOrderStatus.DELIVERY_COMPLETE })

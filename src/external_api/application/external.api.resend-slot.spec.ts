@@ -3,6 +3,7 @@ import { ExternalApiService } from './external.api.service';
 import { IOrderStatus } from '../../order/interface/order.status';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
+import { MUTATION_CLAIM_STALE_MS } from '../../delivery/interface/order.delivery.mutation.claim';
 
 // 외부 API 재발송 atomic slot claim 계약 고정.
 // - 발송 전 원자적 슬롯 선점(resend_count + 1, 한도/취소 가드)
@@ -35,7 +36,7 @@ function makeOrderDelivery(over?: {
 function makeService(opts?: {
   orderDelivery?: any;
   claimAffected?: number;
-  fresh?: { resendCount?: number; couponStatus?: OrderDeliveryCouponStatus };
+  fresh?: { resendCount?: number; couponStatus?: OrderDeliveryCouponStatus; mutationClaimedAt?: Date | null };
   dispatch?: jest.Mock;
 }) {
   const orderDelivery = opts?.orderDelivery ?? makeOrderDelivery();
@@ -57,11 +58,12 @@ function makeService(opts?: {
   const findOne = jest.fn(async () => ({
     resendCount: opts?.fresh?.resendCount ?? 3,
     couponStatus: opts?.fresh?.couponStatus ?? OrderDeliveryCouponStatus.NOT_USED,
+    mutationClaimedAt: opts?.fresh?.mutationClaimedAt ?? null,
   }));
   (svc as any).orderDeliveryRepository = { createQueryBuilder, update, findOne };
   (svc as any).dispatchSend = opts?.dispatch ?? jest.fn(async () => ({ isSuccess: true }));
 
-  return { svc, orderDelivery, set, execute, createQueryBuilder, update, findOne };
+  return { svc, orderDelivery, set, execute, createQueryBuilder, update, findOne, qb };
 }
 
 describe('ExternalApiService.resendOrder atomic slot claim', () => {
@@ -98,6 +100,25 @@ describe('ExternalApiService.resendOrder atomic slot claim', () => {
 
     await expect(svc.resendOrder(account, 'TR-RESEND', ctx)).rejects.toMatchObject({ code: '3005' });
     expect((svc as any).dispatchSend).not.toHaveBeenCalled();
+  });
+
+  it('변형 lease 활성(재발행/폐기 진행중)으로 선점 실패 → 3010 (D3-55 후속, 이중 발송 차단)', async () => {
+    const { svc } = makeService({
+      claimAffected: 0,
+      fresh: { resendCount: 1, mutationClaimedAt: new Date() }, // 활성 lease (stale 아님)
+    });
+
+    await expect(svc.resendOrder(account, 'TR-RESEND', ctx)).rejects.toMatchObject({ code: '3010' });
+    expect((svc as any).dispatchSend).not.toHaveBeenCalled();
+  });
+
+  it('stale 변형 lease(5분 초과)는 선점을 막지 않는다 — affected=0 이면 3008 로 분류', async () => {
+    const { svc } = makeService({
+      claimAffected: 0,
+      fresh: { resendCount: 3, mutationClaimedAt: new Date(Date.now() - 6 * 60 * 1000) }, // stale
+    });
+
+    await expect(svc.resendOrder(account, 'TR-RESEND', ctx)).rejects.toMatchObject({ code: '3008' });
   });
 
   it('발송 실패(isSuccess=false): 선점 슬롯 롤백 후 3003', async () => {
@@ -145,5 +166,183 @@ describe('ExternalApiService.resendOrder atomic slot claim', () => {
     expect(execute).toHaveBeenCalledTimes(1);
     const setArg = (set.mock.calls[0] as any[])[0];
     expect(setArg.resendCount()).toBe('GREATEST(resend_count - 1, 0)');
+  });
+
+  /**
+   * ★ releaseResendSlot 은 **lease fencing 을 하면 안 된다** — 리뷰 P1 회귀 잠금.
+   *
+   * resend_count 는 소유자 구분 없는 fungible 카운터다. 각 요청은 claim 에서 +1 하고,
+   * **자기 발송이 실패했을 때만** -1 한다(성공 경로는 슬롯 유지, :1577). 따라서
+   *   resend_count = (성공 발송 수) + (미해소 in-flight)  ≥ 성공 발송 수
+   * 가 항상 성립하고, claim 게이트(resend_count < max)가 성공 발송을 max 초과로 허용하지 않는다.
+   *
+   * -1 은 **자기 자신의 +1 을 되돌리는 것**이라, 그 사이 lease 가 남에게 탈취됐어도 무조건 실행돼야 한다.
+   * 여기에 `AND mutation_claimed_at = :myToken` 을 붙이면, 5분 지연으로 lease 를 뺏긴 실패 요청이
+   * affected=0 으로 자기 슬롯을 **반납하지 못한다** → 슬롯 영구 누수(stale self-heal 은 lease 에만 있고
+   * 카운터엔 없다) → resend_count 가 max 까지 차올라 정상 재발송이 3008 로 영구 거부된다.
+   *
+   * 즉 fencing 이 옳은 곳은 releaseMutationLease(내 lease 만 해제)이고, 이 슬롯 반납은 반대다.
+   * 이 계약을 코드에 못박아, 향후 누군가 여기 lease 조건을 붙이면 이 테스트가 깨지도록 한다.
+   */
+  it('releaseResendSlot: WHERE 는 { id } 뿐 — lease/상태 fencing 없음 (탈취 후 실패도 자기 슬롯 반납)', async () => {
+    const { svc, qb } = makeService();
+
+    await (svc as any).releaseResendSlot(55);
+
+    const whereCalls = [
+      ...(qb.where as jest.Mock).mock.calls,
+      ...(qb.andWhere as jest.Mock).mock.calls,
+    ] as any[][];
+
+    // id 로만 대상을 좁힌다
+    const idClause = whereCalls.find((c) => /id\s*=\s*:id/i.test(String(c[0])));
+    expect(idClause).toBeDefined();
+    expect(idClause![1]).toEqual({ id: 55 });
+
+    // 어떤 WHERE 절에도 lease 소유권/상태 술어가 없어야 한다.
+    // (붙으면 탈취당한 실패 요청이 슬롯을 못 돌려줘 카운터가 영구 누수된다)
+    for (const call of whereCalls) {
+      const predicate = String(call[0]);
+      expect(predicate).not.toMatch(/mutation_claimed_at/i);
+      expect(call[1] ?? {}).not.toHaveProperty('mutationClaimAt');
+      expect(call[1] ?? {}).not.toHaveProperty('mutationClaimedAt');
+    }
+  });
+
+  /**
+   * 리뷰 CONFIRMED: 슬롯 CAS 가 lease 를 WHERE 로 "읽기"만 하고 SET 으로 "획득"하지 않으면,
+   * dispatchSend(외부 발송, 수 초) 동안 lease 가 비어 있다. 그 사이 폐기/취소가 진입해
+   * 협력사 취소 + 환불을 마치면, 이 재발송은 이미 죽은 핀을 고객에게 배달하고
+   * 최종 update 로 status=COMPLETE 를 되살린다.
+   */
+  describe('변형 lease — 읽기가 아니라 획득/fencing/해제', () => {
+    it('슬롯 선점 CAS 의 SET 에 mutationClaimedAt 이 포함된다 (발송 구간 내내 lease 보유)', async () => {
+      const { svc, set } = makeService({ claimAffected: 1 });
+
+      await svc.resendOrder(account, 'TR-RESEND', ctx);
+
+      const setArg = (set.mock.calls[0] as any[])[0];
+      expect(setArg.resendCount()).toBe('resend_count + 1');
+      expect(setArg.mutationClaimedAt).toBeInstanceOf(Date); // ← 획득
+    });
+
+    it('발송 후 update 는 내 lease 로 fencing 된다 (좀비의 status=COMPLETE 되살림 차단)', async () => {
+      const { svc, update } = makeService({ claimAffected: 1 });
+
+      await svc.resendOrder(account, 'TR-RESEND', ctx);
+
+      const calls = update.mock.calls as unknown as any[][];
+      const sendWrite = calls.find((c) => c[1] && 'resendAt' in c[1]) as any[];
+      expect(sendWrite).toBeDefined();
+      expect(sendWrite[0]).toEqual({ id: expect.anything(), mutationClaimedAt: expect.any(Date) });
+    });
+
+    it('슬롯 CAS 의 WHERE 에 lease 술어가 있고 stale 임계 = claimAt-5분 (활성 lease 만 배제, stale 은 강탈)', async () => {
+      const { svc, qb, set } = makeService({ claimAffected: 1 });
+
+      await svc.resendOrder(account, 'TR-RESEND', ctx);
+
+      const claimAt: Date = (set.mock.calls[0] as any[])[0].mutationClaimedAt;
+      const cas = (qb.andWhere as jest.Mock).mock.calls.find((c: any[]) => /mutation_claimed_at/i.test(String(c[0])));
+      expect(cas).toBeDefined(); // 술어가 없으면 재발행 진행중 tip 에 이중 발송
+      expect(String(cas![0])).toMatch(/mutation_claimed_at IS NULL/i);
+      expect(String(cas![0])).toMatch(/mutation_claimed_at\s*<\s*:mutationStale/i);
+      expect(cas![1].mutationStale.getTime()).toBe(claimAt.getTime() - MUTATION_CLAIM_STALE_MS);
+    });
+
+    /**
+     * ★ 슬롯 CAS 의 WHERE 에 coupon_status 배제 술어가 살아 있어야 한다 (발송 경로 5개 공통 계약).
+     *
+     * 95 는 "affected=0 이고 fresh.couponStatus=CANCEL 이면 3005" 라는 **분류**만 본다. 술어 자체를
+     * 지워도 그 테스트는 초록이다 — mock 이 affected 를 직접 주기 때문이다. 그러나 술어가 없으면
+     * 진입부 R3 가드(SELECT)와 이 CAS(UPDATE) 사이의 창에서 폐기·외부취소가 끼어들 때 affected=1 이
+     * 나오고, 이미 협력사에서 취소·환불된 죽은 핀을 파트너 요청으로 다시 배달한다.
+     * SELECT 가드는 race 를 못 막는다 — CAS 의 WHERE 만이 막는다.
+     */
+    it('슬롯 CAS 의 WHERE 에 폐기/환불 쿠폰 배제 술어가 있다 (R3 가드~CAS 사이 폐기 race 차단)', async () => {
+      const { svc, qb } = makeService({ claimAffected: 1 });
+
+      await svc.resendOrder(account, 'TR-RESEND', ctx);
+
+      const blocked = (qb.andWhere as jest.Mock).mock.calls.find((c: any[]) => /coupon_status/i.test(String(c[0])));
+      expect(blocked).toBeDefined();
+      expect(String(blocked![0])).toMatch(/coupon_status NOT IN/i);
+      expect(blocked![1].blocked).toEqual(
+        expect.arrayContaining([OrderDeliveryCouponStatus.CANCEL, OrderDeliveryCouponStatus.REFUND_CANCEL]),
+      );
+    });
+
+    it('슬롯 CAS 의 SET 절에 couponStatus/discardedAt 이 없다 (남이 쓴 CANCEL 을 되돌리지 않는다)', async () => {
+      const { svc, set, update } = makeService({ claimAffected: 1 });
+
+      await svc.resendOrder(account, 'TR-RESEND', ctx);
+
+      for (const setArg of [(set.mock.calls[0] as any[])[0], (update.mock.calls[0] as any[])[1]]) {
+        expect(setArg).not.toHaveProperty('couponStatus');
+        expect(setArg).not.toHaveProperty('discardedAt');
+      }
+      // 발송결과 update 는 자기 소유 컬럼만
+      expect(Object.keys((update.mock.calls[0] as any[])[1]).sort()).toEqual(['actualSendAt', 'resendAt', 'status']);
+    });
+
+    /**
+     * ★ 종전 계약("throw 없이 로그만, 응답은 0000")을 뒤집었다 (리뷰 MEDIUM).
+     *
+     * affected=0 = 발송(수 초) 도중 폐기/취소가 lease 를 탈취했다
+     * = 방금 보낸 핀은 협력사에서 취소되고 환불까지 됐을 수 있다.
+     * success() 를 주면 파트너는 발송 성공으로 알고, 고객은 죽은 핀을 받고,
+     * resendAt/actualSendAt 은 갱신 안 된 채 로그 한 줄만 남는다.
+     * 3010(CONFLICT)로 응답해 파트너가 getOrderStatus 로 재확인하게 한다.
+     */
+    it('fencing: 발송결과 update 가 affected=0(lease 강탈당한 좀비)이면 success 금지 → 3010', async () => {
+      const { svc, update } = makeService({ claimAffected: 1 });
+      // 발송결과 update 만 affected=0, finally 의 해제 update 는 정상
+      update.mockResolvedValueOnce({ affected: 0 } as any).mockResolvedValue({ affected: 1 } as any);
+
+      await expect(svc.resendOrder(account, 'TR-RESEND', ctx)).rejects.toMatchObject({ code: '3010' });
+
+      const lost = ((svc as any).logger.error as jest.Mock).mock.calls.filter((c: any[]) =>
+        String(c[0]).includes('변형 lease 상실'),
+      );
+      expect(lost).toHaveLength(1);
+    });
+
+    /**
+     * 슬롯 CAS 가 실패하면 lease 를 **획득하지 못한 것**이다(SET 이 안 나갔다).
+     * 그런데도 해제를 시도하면, 그 행의 활성 lease 는 지금 폐기/재발행을 하고 있는 **남의 것**이다.
+     * owner guard(WHERE mutationClaimedAt=:my)가 최종 방어선이지만, 애초에 시도하지 않는 것이 계약이다.
+     * cancelOrder(488)·reSend·resendFailedDelivery 에는 이 계약이 있는데 resendOrder 만 없었다.
+     */
+    it('슬롯 선점 실패 시에는 lease 해제를 시도하지 않는다 — 남의 lease 를 건드리지 않음', async () => {
+      const { svc, update } = makeService({
+        claimAffected: 0,
+        fresh: { resendCount: 0, mutationClaimedAt: new Date() }, // 남이 변형 작업 중
+      });
+
+      await expect(svc.resendOrder(account, 'TR-RESEND', ctx)).rejects.toMatchObject({ code: '3010' });
+
+      const releases = (update.mock.calls as unknown as any[][]).filter((c) => c[1] && c[1].mutationClaimedAt === null);
+      expect(releases).toHaveLength(0);
+    });
+
+    it('성공/실패 모두 finally 에서 owner-guarded 해제', async () => {
+      const releaseOf = (update: jest.Mock) =>
+        (update.mock.calls as unknown as any[][]).filter((c) => c[1] && c[1].mutationClaimedAt === null);
+
+      const ok = makeService({ claimAffected: 1 });
+      await ok.svc.resendOrder(account, 'TR-RESEND', ctx);
+      expect(releaseOf(ok.update)).toHaveLength(1);
+      expect(releaseOf(ok.update)[0][0]).toEqual({
+        id: expect.anything(),
+        mutationClaimedAt: expect.any(Date),
+      });
+
+      const failed = makeService({
+        claimAffected: 1,
+        dispatch: jest.fn(async () => ({ isSuccess: false })) as any,
+      });
+      await expect(failed.svc.resendOrder(account, 'TR-RESEND', ctx)).rejects.toMatchObject({ code: '3003' });
+      expect(releaseOf(failed.update)).toHaveLength(1);
+    });
   });
 });
