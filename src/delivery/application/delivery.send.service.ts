@@ -19,6 +19,8 @@ import {
 } from '../interface/order.delivery.report.state';
 import { IMailSend } from '../../mail/interface/mail-send';
 import { ISmsSend } from '../../sms/interface/sms.send';
+import { MessageAttemptService } from './message-attempt.service';
+import { MessageAttemptChannel, MessageAttemptType } from '../interface/message.attempt.status';
 import { IOrderType } from '../../order/interface/order.type';
 import { IProductType } from '../../product/interface/product.type';
 import { IFileStorage } from '../../file/interface/file.storage';
@@ -48,6 +50,7 @@ export class DeliverySendService {
     private mailSend: IMailSend,
     @Inject('ISmsSend')
     private smsSend: ISmsSend,
+    private messageAttemptService: MessageAttemptService,
     private cryptoCipher: CryptoCipher,
     private configService: ConfigService,
     @InjectRepository(EmailSendHistoryEntity)
@@ -265,14 +268,24 @@ export class DeliverySendService {
 
     try {
       const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber!;
-      await this.smsSend.send({
-        msgType: 'M',
-        to: decryptedDeliveryTarget,
-        from: fromPhoneNumber,
-        subject: title,
-        text: smsText,
-        filePath: filePathList,
-      });
+      await this.messageAttemptService.trackSend(
+        {
+          orderDeliveryId: orderDelivery.id,
+          channel: MessageAttemptChannel.MMS,
+          attemptType: MessageAttemptType.INITIAL,
+          sendReason: 'COUPON',
+        },
+        (attemptId) =>
+          this.smsSend.send({
+            msgType: 'M',
+            to: decryptedDeliveryTarget,
+            from: fromPhoneNumber,
+            subject: title,
+            text: smsText,
+            filePath: filePathList,
+            attemptId,
+          }),
+      );
       this.markSendSuccess(orderDelivery, IOrderDeliveryStatus.COMPLETE);
       deliveryHistory.context = smsText;
     } catch (e) {
@@ -370,14 +383,24 @@ export class DeliverySendService {
     try {
       const smsText = this.buildSmsText(orderDelivery, encryptKey, body, memo, tailText);
       const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber!;
-      await this.smsSend.send({
-        msgType: 'M',
-        to: decryptedDeliveryTarget,
-        from: fromPhoneNumber,
-        subject: title,
-        text: smsText,
-        filePath: filePathList,
-      });
+      await this.messageAttemptService.trackSend(
+        {
+          orderDeliveryId: orderDelivery.id,
+          channel: MessageAttemptChannel.MMS,
+          attemptType: MessageAttemptType.CHANNEL_FALLBACK,
+          sendReason: 'ALIM_TALK_FALLBACK',
+        },
+        (attemptId) =>
+          this.smsSend.send({
+            msgType: 'M',
+            to: decryptedDeliveryTarget,
+            from: fromPhoneNumber,
+            subject: title,
+            text: smsText,
+            filePath: filePathList,
+            attemptId,
+          }),
+      );
       orderDelivery.status = IOrderDeliveryStatus.COMPLETE_SMS;
       return IOrderDeliveryStatus.COMPLETE_SMS;
     } catch (e) {

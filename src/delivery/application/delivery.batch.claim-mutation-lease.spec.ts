@@ -347,6 +347,10 @@ describe('DeliveryBatchService.processOneDeliveryInternal — full save() 부재
       (sut as any).reissuePinAndCreateImageIfNeeded = jest.fn().mockResolvedValue(true);
       (sut as any).deliverySendHistoryRepository = { save: jest.fn().mockResolvedValue(undefined) };
       (sut as any).smsSend = { send: jest.fn().mockResolvedValue(undefined) };
+      // shadow 추적은 발송을 대행하지 않는다 — 상관키 없이 그대로 통과시키는 스텁.
+      (sut as any).messageAttemptService = {
+        trackSend: (_ctx: unknown, send: (attemptId?: string) => Promise<unknown>) => send(undefined),
+      };
       (sut as any).buildSmsText = jest.fn().mockReturnValue('본문');
       // markSendSuccess 는 deliverySendService 로 위임된다(프로덕션 174行).
       (sut as any).deliverySendService.markSendSuccess = jest.fn((d: any, status: any) => {

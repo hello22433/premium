@@ -43,6 +43,8 @@ import { OrderDeliveryRefundStatusEnum } from '../interface/order.delivery.refun
 import { PII_BEARING_HISTORY_TYPES } from '../../order/interface/order.history.pii.types';
 import { IMailSend } from '../../mail/interface/mail-send';
 import { ISmsSend } from '../../sms/interface/sms.send';
+import { MessageAttemptService } from './message-attempt.service';
+import { MessageAttemptChannel, MessageAttemptType } from '../interface/message.attempt.status';
 import { IOrderSendMethod } from '../../order/interface/order.send.method';
 import { IOrderStatus } from '../../order/interface/order.status';
 import { IOrderType } from '../../order/interface/order.type';
@@ -111,6 +113,7 @@ export class DeliveryBatchService {
     private mailSend: IMailSend,
     @Inject('ISmsSend')
     private smsSend: ISmsSend,
+    private messageAttemptService: MessageAttemptService,
     private deliveryTrackHttp: DeliveryTrackHttp,
     private cryptoCipher: CryptoCipher,
     private configService: ConfigService,
@@ -1695,14 +1698,24 @@ export class DeliveryBatchService {
     try {
       const smsText = this.buildSmsText(orderDelivery, encryptKey, body, memo, tailText);
       const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber!;
-      await this.smsSend.send({
-        msgType: 'M',
-        to: decryptedDeliveryTarget,
-        from: fromPhoneNumber,
-        subject: title,
-        text: smsText,
-        filePath: filePathList,
-      });
+      await this.messageAttemptService.trackSend(
+        {
+          orderDeliveryId: orderDelivery.id,
+          channel: MessageAttemptChannel.MMS,
+          attemptType: MessageAttemptType.CHANNEL_FALLBACK,
+          sendReason: 'ALIM_TALK_FALLBACK',
+        },
+        (attemptId) =>
+          this.smsSend.send({
+            msgType: 'M',
+            to: decryptedDeliveryTarget,
+            from: fromPhoneNumber,
+            subject: title,
+            text: smsText,
+            filePath: filePathList,
+            attemptId,
+          }),
+      );
       orderDelivery.status = IOrderDeliveryStatus.COMPLETE_SMS;
       return IOrderDeliveryStatus.COMPLETE_SMS;
     } catch (e) {
@@ -2274,14 +2287,24 @@ export class DeliveryBatchService {
     const fromPhoneNumber =
       orderDelivery.orderProductMapping.fromPhoneNumber ||
       (await this.orderFromService.resolveSendDefaultPhone(getBillingUserId(orderDelivery.orderProductMapping.order)));
-    await this.smsSend.send({
-      msgType: 'M',
-      to: phoneNumber,
-      from: fromPhoneNumber,
-      subject: title,
-      text: smsText,
-      filePath: filePathList,
-    });
+    await this.messageAttemptService.trackSend(
+      {
+        orderDeliveryId: orderDelivery.id,
+        channel: MessageAttemptChannel.MMS,
+        attemptType: MessageAttemptType.MANUAL_RESEND,
+        sendReason: 'CS_RESEND',
+      },
+      (attemptId) =>
+        this.smsSend.send({
+          msgType: 'M',
+          to: phoneNumber,
+          from: fromPhoneNumber,
+          subject: title,
+          text: smsText,
+          filePath: filePathList,
+          attemptId,
+        }),
+    );
   }
 
   async csResendAsAlimTalk(
@@ -2383,14 +2406,24 @@ export class DeliveryBatchService {
       orderDelivery.orderProductMapping.fromPhoneNumber ||
       (await this.orderFromService.resolveSendDefaultPhone(getBillingUserId(orderDelivery.orderProductMapping.order)));
 
-    await this.smsSend.send({
-      msgType: 'M',
-      to: phoneNumber,
-      from: fromPhoneNumber,
-      subject: title,
-      text: smsText,
-      filePath: filePathList,
-    });
+    await this.messageAttemptService.trackSend(
+      {
+        orderDeliveryId: orderDelivery.id,
+        channel: MessageAttemptChannel.MMS,
+        attemptType: MessageAttemptType.CHANNEL_FALLBACK,
+        sendReason: 'CS_ALIM_TALK_FALLBACK',
+      },
+      (attemptId) =>
+        this.smsSend.send({
+          msgType: 'M',
+          to: phoneNumber,
+          from: fromPhoneNumber,
+          subject: title,
+          text: smsText,
+          filePath: filePathList,
+          attemptId,
+        }),
+    );
 
     return IOrderDeliveryStatus.COMPLETE_SMS;
   }
@@ -2457,14 +2490,24 @@ export class DeliveryBatchService {
       orderDelivery.orderProductMapping.fromPhoneNumber ||
       (await this.orderFromService.resolveSendDefaultPhone(getBillingUserId(orderDelivery.orderProductMapping.order)));
 
-    await this.smsSend.send({
-      msgType,
-      to: phoneNumber,
-      from: fromPhoneNumber,
-      subject: msgType === 'L' ? ' ' : '',
-      text,
-      filePath: [],
-    });
+    await this.messageAttemptService.trackSend(
+      {
+        orderDeliveryId: orderDelivery.id,
+        channel: MessageAttemptChannel.SMS,
+        attemptType: MessageAttemptType.MANUAL_RESEND,
+        sendReason: 'CS_RESEND',
+      },
+      (attemptId) =>
+        this.smsSend.send({
+          msgType,
+          to: phoneNumber,
+          from: fromPhoneNumber,
+          subject: msgType === 'L' ? ' ' : '',
+          text,
+          filePath: [],
+          attemptId,
+        }),
+    );
   }
 
   async csResendAsEmail(orderDeliveryId: number): Promise<void> {
@@ -2688,7 +2731,7 @@ export class DeliveryBatchService {
       }
     }
 
-    const filePathList = [];
+    const filePathList: string[] = [];
     if (orderDelivery.imagePath) {
       filePathList.push(orderDelivery.imagePath);
     }
@@ -2779,14 +2822,25 @@ export class DeliveryBatchService {
       const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber!;
 
       try {
-        await this.smsSend.send({
-          msgType: 'M',
-          to: decryptedDeliveryTarget,
-          from: fromPhoneNumber,
-          subject: title,
-          text: smsText,
-          filePath: filePathList,
-        });
+        await this.messageAttemptService.trackSend(
+          {
+            orderDeliveryId: orderDelivery.id,
+            channel: MessageAttemptChannel.MMS,
+            attemptType: wasFailBefore ? MessageAttemptType.MANUAL_RESEND : MessageAttemptType.INITIAL,
+            sendReason: 'COUPON',
+            skipTracking: !!testOrderDeliveryId,
+          },
+          (attemptId) =>
+            this.smsSend.send({
+              msgType: 'M',
+              to: decryptedDeliveryTarget,
+              from: fromPhoneNumber,
+              subject: title,
+              text: smsText,
+              filePath: filePathList,
+              attemptId,
+            }),
+        );
         this.markSendSuccess(orderDelivery, IOrderDeliveryStatus.COMPLETE);
         deliveryHistory.context = smsText;
       } catch (e) {
@@ -2815,14 +2869,25 @@ export class DeliveryBatchService {
         const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber!;
 
         try {
-          await this.smsSend.send({
-            msgType: 'M',
-            to: decryptedEmailReceiverPhone,
-            from: fromPhoneNumber,
-            subject: title,
-            text: emailText,
-            filePath: filePathList,
-          });
+          await this.messageAttemptService.trackSend(
+            {
+              orderDeliveryId: orderDelivery.id,
+              channel: MessageAttemptChannel.MMS,
+              attemptType: wasFailBefore ? MessageAttemptType.MANUAL_RESEND : MessageAttemptType.INITIAL,
+              sendReason: 'EMAIL_SMS_RESEND',
+              skipTracking: !!testOrderDeliveryId,
+            },
+            (attemptId) =>
+              this.smsSend.send({
+                msgType: 'M',
+                to: decryptedEmailReceiverPhone,
+                from: fromPhoneNumber,
+                subject: title,
+                text: emailText,
+                filePath: filePathList,
+                attemptId,
+              }),
+          );
           this.markSendSuccess(orderDelivery, IOrderDeliveryStatus.COMPLETE);
           deliveryHistory.context = emailText;
           deliveryHistory.target = this.cryptoCipher.encryptDeliveryTarget(decryptedEmailReceiverPhone);

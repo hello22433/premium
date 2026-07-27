@@ -41,6 +41,7 @@ import { LegacyWalletCreditSyncService } from '../../wallet/application/legacy-w
 import { OrderDeliveryAttemptEntity } from '../../entity/order.delivery.attempt.entity';
 import { OrderPaymentRefundEventEntity } from '../../entity/order.payment.refund.event.entity';
 import { OrderPaymentAllocationEntity } from '../../entity/order.payment.allocation.entity';
+import { MessageAttemptService } from './message-attempt.service';
 import { OrderHistoryEntity } from '../../entity/order.history.entity';
 
 /**
@@ -192,6 +193,11 @@ describe('DeliveryBatchService.reissuePinAndCreateImageIfNeeded - refund ledger 
         { provide: 'DeliveryAlimTalk', useValue: {} },
         { provide: 'IMailSend', useValue: {} },
         { provide: 'ISmsSend', useValue: {} },
+        // shadow 추적은 발송을 대행하지 않는다 — 상관키 없이 그대로 통과시키는 스텁.
+        {
+          provide: MessageAttemptService,
+          useValue: { trackSend: (_ctx: unknown, send: (attemptId?: string) => Promise<unknown>) => send(undefined) },
+        },
         { provide: DeliveryTrackHttp, useValue: {} },
         { provide: CryptoCipher, useValue: {} },
         { provide: ConfigService, useValue: { get: jest.fn() } },

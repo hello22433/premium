@@ -36,6 +36,7 @@ import { WalletManagedPredicate } from '../../wallet/application/wallet-managed.
 import { RefundPoolService } from '../../wallet/application/refund-pool.service';
 import { ResendDeductService } from '../../wallet/application/resend-deduct.service';
 import { LegacyWalletCreditSyncService } from '../../wallet/application/legacy-wallet-credit-sync.service';
+import { MessageAttemptService } from './message-attempt.service';
 import { SsgRefundOutcome } from '../interface/ssg.refund.resolve';
 
 describe('DeliveryBatchService', () => {
@@ -74,6 +75,11 @@ describe('DeliveryBatchService', () => {
         { provide: 'DeliveryAlimTalk', useValue: {} },
         { provide: 'IMailSend', useValue: {} },
         { provide: 'ISmsSend', useValue: { send: jest.fn() } },
+        // shadow 추적은 발송을 대행하지 않는다 — 상관키 없이 그대로 통과시키는 스텁.
+        {
+          provide: MessageAttemptService,
+          useValue: { trackSend: (_ctx: unknown, send: (attemptId?: string) => Promise<unknown>) => send(undefined) },
+        },
         { provide: DeliveryTrackHttp, useValue: {} },
         {
           provide: CryptoCipher,
