@@ -34,6 +34,7 @@ import { systemFromPhoneNumber, ssgIssueUserName } from '../../const';
 import { smsSsgTemplate } from '../../delivery/domain/sms.ssg.template';
 import { addDays, format, subDays } from 'date-fns';
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
+import { UNSENDABLE_COUPON_STATUSES } from '../../delivery/interface/order.delivery.mutation.claim';
 import { CancelCouponResDto } from '../api/CancelCouponResDto';
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
@@ -248,6 +249,64 @@ export class PartnerCompanyExternService {
     });
   }
 
+  /**
+   * PIN 발급 결과를 order_delivery 에 즉시 durable 반영한다.
+   *
+   * ★ issue() 의 **모든 성공 반환 경로**가 이걸 타야 한다 (리뷰 CRITICAL).
+   *
+   * 종전에는 메인 경로(협력사 발급 완료 지점)에서만 호출했고, 조기 return 하는 경로들은
+   * barCode 를 **메모리에만** 채운 뒤 caller 의 `save(orderDelivery)` 가 영속시켜 줬다.
+   * D3-60(clobber) 대응으로 그 save 들을 targeted update 로 바꾸면서 PIN 컬럼이 대상에서
+   * 빠졌고, 그 결과 조기 return 경로에서 `bar_code` 가 **NULL 로 남는** 결함이 생겼다.
+   *
+   * 그 결말:
+   *  - 고객은 바코드를 받았는데(이미지·문자에 담겨 나감) 우리 DB 엔 없다 → CS 조회 불가
+   *  - 재발송 시 `!barCode` 판정 → **새 PIN 재발급·재과금** (고객이 가진 것과 불일치)
+   *  - cancelOrder/execDiscard 의 `if (barCode && partnerCompany)` 가드가 falsy →
+   *    **협력사 취소를 건너뛴 채 환불만 집행** → 협력사엔 살아있는 핀 + 환불 완료 = 자금 손실
+   *
+   * ★ REQUIRES_NEW 인 이유 (리뷰 CRITICAL) — issue() 의 트랜잭션과 **운명을 분리**해야 한다.
+   *
+   *   협력사 발급(HTTP)은 롤백 대상이 아니다. 그런데 REQUIRED 로 두면 issue() 가 이후 어디서든
+   *   throw 할 때 이 update 가 **함께 롤백**되어, "협력사엔 발급·과금된 핀 + 우리 DB 는 NULL" 이
+   *   된다. 그 상태의 결말이 위에 적은 3가지다(특히 cancel 이 협력사 취소를 건너뛴 채 환불 집행).
+   *
+   *   종전(save 시절)에는 caller 의 save(orderDelivery) 가 issue() **밖**에서 실행돼 롤백돼도
+   *   메모리의 barCode 를 다시 써 줬다. targeted update 로 바꾸면서 그 안전망이 사라졌으므로,
+   *   여기서 명시적으로 트랜잭션을 분리해 복원한다.
+   *
+   *   같은 이유로 SsgInsertStateService 의 markAttempted/markConfirmed 도 REQUIRES_NEW 다
+   *   ("호출자 트랜잭션이 롤백돼도 state 는 함께 commit 된다").
+   *
+   * ⚠️ self-deadlock 검토 (과거 재발행 비관락이 markConfirmed(REQUIRES_NEW) 와 얼어붙은 전례):
+   *   REQUIRES_NEW 는 **별도 커넥션·별도 트랜잭션**이므로, 호출자가 이 order_delivery 행에
+   *   X-lock 을 쥔 채 issue() 를 호출하면 여기서 영원히 블록된다(lock wait timeout).
+   *   issue() 호출자 5곳을 전수 확인했다:
+   *     - delivery.batch(발송배치/oneSend) : 트랜잭션 없음
+   *     - customer.service(재발행)          : execHistory 는 @Transactional 아님
+   *     - external_api(phaseB)              : "Phase B: 쿠폰 발행 + 발송 (트랜잭션 없음)" 명시
+   *     - order_receive(x2)                 : sendToMMS 만 @Transactional 인데, 그 안에서
+   *       order_delivery 는 **락 없는 SELECT** 만 하고(claim 은 별도 REQUIRES_NEW 에서 CAS),
+   *       쓰기는 issue() **뒤**에 온다 → X-lock 미보유.
+   *   결정적 근거: markConfirmed(REQUIRES_NEW)가 이미 같은 경로에서 order_delivery 를
+   *   UPDATE 하고 있고 운영에서 정상 동작한다. 같은 구조다.
+   */
+  @Transactional({ propagation: Propagation.REQUIRES_NEW })
+  async persistIssuedPin(orderDelivery: OrderDeliveryEntity): Promise<void> {
+    await this.orderDeliveryRepository.update(
+      { id: orderDelivery.id },
+      {
+        barCode: orderDelivery.barCode,
+        personalCode: orderDelivery.personalCode,
+        couponNum: orderDelivery.couponNum,
+        ssgTransactionId: orderDelivery.ssgTransactionId,
+        expireAt: orderDelivery.expireAt,
+        encourageAt: orderDelivery.encourageAt,
+        ...(orderDelivery.ssgEventId != null ? { ssgEventId: orderDelivery.ssgEventId } : {}),
+      },
+    );
+  }
+
   @Transactional({ propagation: Propagation.REQUIRED })
   async issue(
     orderDelivery: OrderDeliveryEntity,
@@ -346,6 +405,9 @@ export class PartnerCompanyExternService {
                   { transactionId: orderDelivery.transactionId },
                   { recoveredFrom: 'DEDUP' },
                 );
+                // ssg_issue_log 에서 메모리로만 복원한 PIN — DB order_delivery 는 아직 NULL 이다
+                // (이 분기 진입 조건 자체가 fresh?.barCode 부재). 반드시 durable 반영한다.
+                await this.persistIssuedPin(orderDelivery);
                 return result;
               }
               // 정확 매칭 없음: barCode-only 성공 반환은 메타데이터 누락 + cust_info 우회라 위험.
@@ -361,6 +423,8 @@ export class PartnerCompanyExternService {
                 { transactionId: orderDelivery.transactionId },
                 { recoveredFrom: 'DEDUP' },
               );
+              // 메모리로만 복원한 PIN — DB order_delivery 는 아직 NULL 이다. 반드시 durable 반영.
+              await this.persistIssuedPin(orderDelivery);
               return result;
             }
           }
@@ -380,7 +444,11 @@ export class PartnerCompanyExternService {
 
     try {
       if (!type || orderDelivery.orderProductMapping.product.type === 'SELF') {
+        // 자체 상품 — 협력사 호출 없이 우리가 바코드를 만든다. 그래도 **DB 에 반드시 남겨야** 한다.
+        // 이 바코드는 곧 쿠폰 이미지에 찍혀 고객에게 나간다. DB 에 없으면 CS 조회도, 재발송 시
+        // 동일 핀 재사용도 불가능하다(!barCode → 다른 바코드 재생성 → 고객이 받은 것과 불일치).
         orderDelivery.barCode = orderBarcodeGenerate();
+        await this.persistIssuedPin(orderDelivery);
         return result;
       }
 
@@ -841,22 +909,8 @@ export class PartnerCompanyExternService {
         );
       }
 
-      // PIN 발급 결과를 order_delivery에도 즉시 반영한다.
-      // caller(배치/수동 발송)가 issue() 반환 이후 createCouponImage/save 등에서 throw하면
-      // entity 메모리에만 들고 있던 barCode/personalCode 등이 DB에 남지 않아
-      // 외부 SSG에는 INSERT 됐는데 사내 DB는 NULL인 불일치 상태가 발생한다(orphan PIN).
-      // @Transactional 안에서 update하므로 issue() 자체가 throw하면 함께 롤백된다.
-      await this.orderDeliveryRepository.update(
-        { id: orderDelivery.id },
-        {
-          barCode: orderDelivery.barCode,
-          personalCode: orderDelivery.personalCode,
-          couponNum: orderDelivery.couponNum,
-          ssgTransactionId: orderDelivery.ssgTransactionId,
-          expireAt: orderDelivery.expireAt,
-          encourageAt: orderDelivery.encourageAt,
-        },
-      );
+      // PIN 발급 결과를 order_delivery에도 즉시 반영한다. (조기 return 경로들도 반드시 이걸 탄다)
+      await this.persistIssuedPin(orderDelivery);
     } catch (e) {
       this.logger.error(e);
 
@@ -979,8 +1033,21 @@ export class PartnerCompanyExternService {
     const productPartnerType = orderDelivery.orderProductMapping?.product?.partnerCompany?.type;
     const type = choicePartnerType ?? productPartnerType;
 
-    // 핀 미발급 건(barCode 없음): 외부 API에 등록된 PIN이 없으므로 호출 생략
+    // 핀 미발급 건(barCode 없음): 외부 API에 등록된 PIN이 없으므로 호출 생략.
+    //
+    // ★ 이 조기 return 은 이 코드베이스에서 가장 조용한 자금 사고 지점이다 (리뷰 CRITICAL).
+    //   전제는 "barCode 가 없다 = 협력사에 핀이 없다" 인데, 그 전제가 깨지는 경로가 있다:
+    //     - issue() 의 PIN durable update 가 실패/롤백되면 협력사엔 발급·과금됐는데 우리 DB 만 NULL
+    //     - 호출자가 stale 스냅샷(발급 전 값)으로 들어오면 메모리 barCode 가 null
+    //   그 상태로 여기 오면 **협력사 취소를 건너뛴 채 "폐기 완료"를 반환**하고, caller 는
+    //   그대로 환불을 집행한다 → 협력사엔 살아있는 과금된 핀 + 고객은 환불. 완전 무음이었다.
+    //   막지는 못하더라도(진짜 미발급 건도 여기로 온다) **흔적은 반드시 남겨야 한다.**
     if (!orderDelivery.barCode) {
+      this.logger.warn(
+        `[CANCEL_SKIP] barCode 부재로 협력사 취소 생략 — 발급 롤백/스냅샷 stale 이면 협력사에 ` +
+          `살아있는 핀이 남는다(환불은 집행된다). orderDeliveryId=${orderDelivery.id}, ` +
+          `transactionId=${orderDelivery.transactionId}, type=${type ?? 'none'}`,
+      );
       orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
       return {
         code: '',
@@ -1054,6 +1121,11 @@ export class PartnerCompanyExternService {
   }
 
   async refreshCouponStatus(orderDelivery: OrderDeliveryEntity): Promise<OrderDeliveryEntity> {
+    // ★ 진입 시점의 coupon_status 를 붙잡아 둔다 — 아래 optimistic CAS 의 대조값.
+    //   협력사 조회(외부 통신, 수 초) 동안 아래 분기들이 orderDelivery.couponStatus 를 덮어쓰므로
+    //   **반드시 여기서** 캡처해야 한다.
+    const loadedCouponStatus = orderDelivery.couponStatus ?? null;
+
     // 초이스쿠폰의 경우 선택한 상품의 협력사를 우선 확인
     const choicePartnerType = orderDelivery.choiceSelectProduct?.partnerCompany?.type;
     const productPartnerType = orderDelivery.orderProductMapping.product.partnerCompany?.type;
@@ -1371,8 +1443,57 @@ export class PartnerCompanyExternService {
         throw new Error(`Unsupported partnerCompany type: ${partnerType}`);
     }
 
-    // 저장
-    return this.orderDeliveryRepository.save(orderDelivery);
+    // 저장 — save(orderDelivery) 금지 (D3-55/D3-60).
+    //
+    // ★ mutation_claimed_at 은 **컬럼**이고, save()=merge 는 **행 전체**를 쓴다.
+    //   이 메서드의 스냅샷은 협력사 조회(외부 통신, 수 초) **전에** 로드된 것이라
+    //   mutation_claimed_at=null 이 굳어 있다. 그 사이 폐기·재발행이 lease 를 잡으면
+    //   여기 save 가 **남의 살아있는 lease 를 NULL 로 지운다**:
+    //     - 진행 중인 재발행의 fenced write 가 affected=0 → 운영자에게 409("다른 작업이 선점")
+    //       — 실제로는 아무도 선점하지 않았는데.
+    //     - lease 가 사라져 폐기×재발행 교차 창이 **다시 열린다**(이 작업이 닫으려던 그 창).
+    //
+    // 이 메서드가 엔티티에 쓰는 컬럼은 아래 5개가 전부다(전수 확인: 협력사별 분기 전 구간).
+    //
+    // ★ 그리고 **optimistic CAS** 가 필요하다 (리뷰 HIGH, 양쪽 일치).
+    //   lease 컬럼 clobber 는 위로 막혔지만 coupon_status 축(D3-60 의 본체)은 여전히 열려 있었다:
+    //     T0: 운영자 A 가 "핀상태갱신" → 협력사 check 호출(수 초). 응답 NOT_USED.
+    //     T1: 운영자 B 가 폐기 → lease 획득 → 협력사 cancel → coupon_status=CANCEL → 환불 집행.
+    //     T2: A 의 update 착지 → coupon_status=NOT_USED, discarded_at=NULL (스냅샷 stale 값)
+    //         → **환불된 죽은 쿠폰이 DB 상 되살아나고 폐기 시각까지 지워진다.**
+    //         → UNSENDABLE_COUPON_STATUSES 게이트를 통과 → 배치/CS 재전송이 그 핀을 배달.
+    //   폐기 쪽은 lease 를 정상적으로 잡았고 아무 잘못이 없다. 이 update 가 무조건부였을 뿐이다.
+    //
+    //   막는 법 — **진입 시점 값에서 변하지 않았을 때만 쓴다**(optimistic CAS).
+    //   lease 술어(mutation_claimed_at IS NULL)를 쓰면 안 된다: syncCouponStatusAfterDiscardFailure
+    //   는 **자기 lease 를 쥔 채** 이 메서드를 부르므로 자기 쓰기를 스스로 막게 된다
+    //   (b90abcb 에서 이미 밟은 지뢰다).
+    //   "터미널 다운그레이드 금지" 도 안 된다: 폐기 실패 후 동기화(CANCEL → 실제 NOT_USED 정정)라는
+    //   **정당한 다운그레이드**가 실재하고, 그걸 막으면 살아있는 쿠폰이 DB 상 죽은 채로 굳는다.
+    //   진입 시점 값 대조는 그 둘을 정확히 가른다.
+    const write = await this.orderDeliveryRepository
+      .createQueryBuilder()
+      .update(OrderDeliveryEntity)
+      .set({
+        couponStatus: orderDelivery.couponStatus,
+        discardedAt: orderDelivery.discardedAt,
+        tradeAt: orderDelivery.tradeAt,
+        tradePlace: orderDelivery.tradePlace,
+        galaxiaBalance: orderDelivery.galaxiaBalance,
+      })
+      .where('id = :id', { id: orderDelivery.id })
+      // NULL-safe equality(<=>) — coupon_status 가 NULL 인 행도 정상 대조된다.
+      .andWhere('coupon_status <=> :loaded', { loaded: loadedCouponStatus })
+      .execute();
+    if (!write.affected) {
+      // 조회(외부 통신, 수 초) 도중 남이 coupon_status 를 바꿨다. 우리 결과는 stale 이므로 버린다.
+      // 덮어썼다면 폐기·환불이 확정된 쿠폰을 되살렸을 것이다.
+      this.logger.error(
+        `[핀상태갱신] 조회 중 쿠폰상태가 변경됨 — 갱신을 폐기한다(stale 덮어쓰기 방지). ` +
+          `orderDeliveryId=${orderDelivery.id}, 진입시=${loadedCouponStatus}, 협력사응답=${orderDelivery.couponStatus}`,
+      );
+    }
+    return orderDelivery;
   }
 
   /**

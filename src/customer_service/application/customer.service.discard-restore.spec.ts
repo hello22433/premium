@@ -512,6 +512,11 @@ describe('CustomerServiceService.restoreBalanceOnDiscard — refunded-proxy read
       leftJoinAndSelect: jest.fn(() => queryBuilder),
       where: jest.fn(() => queryBuilder),
       getOne: jest.fn().mockResolvedValue(orderDelivery),
+      // 변형 lease 획득(acquireMutationLease) CAS 체인 — 기본 획득 성공
+      update: jest.fn(() => queryBuilder),
+      set: jest.fn(() => queryBuilder),
+      andWhere: jest.fn(() => queryBuilder),
+      execute: jest.fn().mockResolvedValue({ affected: 1 }),
     };
     const txUpdateBuilder: any = {
       update: jest.fn(() => txUpdateBuilder),
@@ -537,7 +542,11 @@ describe('CustomerServiceService.restoreBalanceOnDiscard — refunded-proxy read
       rollbackTransaction: jest.fn().mockResolvedValue(undefined),
       release: jest.fn().mockResolvedValue(undefined),
     };
-    sut.orderDeliveryRepository = { createQueryBuilder: jest.fn(() => queryBuilder) };
+    sut.orderDeliveryRepository = {
+      createQueryBuilder: jest.fn(() => queryBuilder),
+      // 변형 lease 해제(releaseMutationLease, owner guard) 용
+      update: jest.fn().mockResolvedValue({ affected: 1 }),
+    };
     sut.orderHistoryRepository = {
       create: jest.fn((input) => input),
       update: jest.fn().mockResolvedValue(undefined),

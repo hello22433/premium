@@ -1,4 +1,4 @@
-import { BadRequestException, InternalServerErrorException } from '@nestjs/common';
+import { BadRequestException, ConflictException, HttpStatus, InternalServerErrorException } from '@nestjs/common';
 import { CustomerServiceService } from './customer.service.service';
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
 import { SsgRefundOutcome } from '../../delivery/interface/ssg.refund.resolve';
@@ -22,6 +22,34 @@ import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.st
  * 생성자 의존성이 많아 Object.create 로 생성자 우회 후 협력자만 mock 주입한다.
  * (discard-concurrency.spec 관례)
  */
+/**
+ * 예외를 **타입(HTTP 상태)까지** 잠근다.
+ *
+ * `rejects.toThrow(/정규식/)` 은 **메시지만** 본다 — 같은 메시지를 든 500 으로 되돌려도 초록이다.
+ * 그런데 여기서 타입은 장식이 아니라 계약이다:
+ *   - 선점(다른 액터가 lease 를 가져감)은 정의상 conflict(409). 500 으로 두면 진짜 서버 버그
+ *     (NPE/DB 다운)와 같은 코드라 알림·대시보드에서 5xx 노이즈에 묻힌다.
+ *   - 어드민 프론트가 5xx 를 "잠시 후 다시 시도해주세요" 로 일괄 처리하면(흔한 패턴) 본문의
+ *     **"재시도하지 마시고"** 가 화면에 안 뜨고, 운영자는 정확히 금지된 행동을 한다.
+ *   - 외부 API 가 같은 상황에서 3010(409)을 주는 것과 대칭이어야 한다.
+ * 반대로 wallet 승계 실패는 **진짜 오류**라 500 이어야 한다 — 그 비대칭도 함께 잠근다.
+ */
+const expectRejection = async (
+  promise: Promise<unknown>,
+  type: new (...args: any[]) => any,
+  status: HttpStatus,
+  messageRe: RegExp,
+) => {
+  const err: any = await promise.then(
+    () => null,
+    (e) => e,
+  );
+  expect(err).toBeInstanceOf(type);
+  expect(err.getStatus()).toBe(status);
+  expect(err.message).toMatch(messageRe);
+  return err;
+};
+
 describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)', () => {
   const VALID_PHONE = '01098765432';
   const ORDER_ID = 555;
@@ -162,6 +190,7 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
     };
     orderDeliveryRepository = {
       save: jest.fn().mockImplementation(async (e: any) => ({ id: 8001, ...e })),
+      update: jest.fn().mockResolvedValue({ affected: 1 }),
       findOne: jest.fn(),
       softDelete: jest.fn().mockResolvedValue(undefined),
       createQueryBuilder: jest.fn(),
@@ -207,6 +236,31 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
         cancel: OrderDeliveryCouponStatus.CANCEL,
       });
     });
+
+    /**
+     * 리뷰 HIGH: reverseDiscard 는 CAS(WHERE coupon_status=CANCEL) 라 affected=0 으로 조용히
+     * 실패할 수 있다. caller 는 이 boolean 으로 "폐기를 취소했습니다. 다시 시도해 주세요"(복구됨)와
+     * "운영팀에 문의"(복구 실패)를 가른다. 반환값이 affected 에서 실제로 파생되지 않고 상수 true 면
+     * 복구 실패가 성공으로 보고되어 caller 의 분기(3-1)가 통째로 死문이 된다.
+     */
+    it('CAS 결과를 boolean 으로 반환한다 — affected=0 이면 false (복구 실패를 caller 가 알아야 한다)', async () => {
+      const execute = jest.fn();
+      const where = jest.fn().mockReturnValue({ execute });
+      const set = jest.fn().mockReturnValue({ where });
+      const update = jest.fn().mockReturnValue({ set });
+      jest.spyOn(orderDeliveryRepository, 'createQueryBuilder').mockReturnValue({ update } as any);
+
+      execute.mockResolvedValueOnce({ affected: 1 });
+      await expect((service as any).reverseDiscard(99, OrderDeliveryCouponStatus.NOT_USED)).resolves.toBe(true);
+
+      // CAS 불일치(이미 다른 액터가 상태를 바꿈) → 고객 쿠폰이 폐기된 채로 남아 있다
+      execute.mockResolvedValueOnce({ affected: 0 });
+      await expect((service as any).reverseDiscard(99, OrderDeliveryCouponStatus.NOT_USED)).resolves.toBe(false);
+
+      // 드라이버가 affected 를 안 주는 경우도 성공으로 오인하지 않는다
+      execute.mockResolvedValueOnce({});
+      await expect((service as any).reverseDiscard(99, OrderDeliveryCouponStatus.NOT_USED)).resolves.toBe(false);
+    });
   });
 
   describe('execHistory — 폐기 후 신규 발송', () => {
@@ -232,13 +286,25 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
       expect(firstSavedEntity.ssgEventId).toBe(7);
     });
 
-    it('3) issue 실패 + RESTORED → 선차감 역복원 + reverseDiscard(먼저) + softDelete', async () => {
+    /**
+     * ★ 순서가 종전(reverseDiscard → softDelete)과 반대로 바뀌었다 (리뷰 CRITICAL).
+     *
+     * 종전 순서는 중간 중단·softDelete 실패 시 "원본 복구 + 살아있는 tip" 을 남긴다.
+     * 그 tip 은 status=WAIT / barCode=NULL / claimed_at=NULL 이고 finally 가 lease 를 해제하므로
+     * claimWaitDeliveries 를 전부 통과한다 → 배치가 **새 PIN 을 발급해 발송**한다.
+     * SSG 선차감은 이미 역복원된 뒤라 **미차감 발급**(직접 자금 손실) + 고객 쿠폰 2장이 된다.
+     *
+     * 새 순서는 중단 시 남는 상태가 "둘 다 폐기"(무해·복구가능)다.
+     * 그리고 softDelete 실패를 삼켜도 안전하도록, 그 앞에서 status/couponStatus 를 CANCEL 로
+     * 전이(fenced)해 배치 픽업을 확실히 차단한다.
+     */
+    it('3) issue 실패 + RESTORED → 선차감 역복원 + tip 무력화(먼저) + reverseDiscard(나중)', async () => {
       setupSsgAcquired();
       setupExecDiscard();
       orderDeliveryRepository.findOne.mockResolvedValue(buildFullDelivery(IOrderType.SSG, { id: 7 }));
       partnerCompanyExternService.issue.mockRejectedValue(new Error('issue boom'));
       deliveryBatchService.reverseSsgReissueDeduct.mockResolvedValue(SsgRefundOutcome.RESTORED);
-      const reverseDiscardSpy = jest.spyOn(service as any, 'reverseDiscard').mockResolvedValue(undefined);
+      const reverseDiscardSpy = jest.spyOn(service as any, 'reverseDiscard').mockResolvedValue(true);
 
       await expect(service.execHistory(buildMap(IOrderType.SSG))).rejects.toThrow();
 
@@ -249,12 +315,47 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
         ORDER_ID,
         'ULID1',
       );
-      // MEDIUM-1: reverseDiscard 가 softDelete 보다 먼저 호출돼야 한다
+
+      // tip 무력화: fenced update 로 status/couponStatus 를 CANCEL 전이 → 배치가 못 집는다
+      const killCall = (orderDeliveryRepository.update.mock.calls as unknown as any[][]).find(
+        (c) => c[1] && c[1].couponStatus === OrderDeliveryCouponStatus.CANCEL,
+      );
+      expect(killCall).toBeDefined();
+      expect(killCall![0]).toEqual({ id: expect.anything(), mutationClaimedAt: expect.any(Date) });
+      expect(killCall![1].status).toBe(IOrderDeliveryStatus.CANCEL);
+
       expect(reverseDiscardSpy).toHaveBeenCalledWith(7001, OrderDeliveryCouponStatus.NOT_USED);
       expect(orderDeliveryRepository.softDelete).toHaveBeenCalled();
-      const reverseOrder = reverseDiscardSpy.mock.invocationCallOrder[0];
+
+      // 무력화 → softDelete → reverseDiscard 순
+      const killOrder =
+        orderDeliveryRepository.update.mock.invocationCallOrder[
+          (orderDeliveryRepository.update.mock.calls as unknown as any[][]).findIndex(
+            (c) => c[1] && c[1].couponStatus === OrderDeliveryCouponStatus.CANCEL,
+          )
+        ];
       const softDeleteOrder = orderDeliveryRepository.softDelete.mock.invocationCallOrder[0];
-      expect(reverseOrder).toBeLessThan(softDeleteOrder);
+      const reverseOrder = reverseDiscardSpy.mock.invocationCallOrder[0];
+      expect(killOrder).toBeLessThan(softDeleteOrder);
+      expect(softDeleteOrder).toBeLessThan(reverseOrder);
+    });
+
+    /**
+     * 리뷰 HIGH: reverseDiscard 는 CAS(WHERE coupon_status=CANCEL) 라 affected=0 으로 조용히
+     * 실패할 수 있다. 그런데도 "폐기를 취소했습니다. 다시 시도해 주세요" 라고 말하면, 운영자는
+     * 복구된 줄 알고 재시도하지만 원본이 폐기 상태라 terminal 가드에 걸린다 —
+     * 고객은 쿠폰을 잃었는데 CS 는 이유를 모른다.
+     */
+    it('3-1) issue 실패 + RESTORED + reverseDiscard 실패 → "다시 시도" 유도 금지, 운영팀 문의 안내', async () => {
+      setupSsgAcquired();
+      setupExecDiscard();
+      orderDeliveryRepository.findOne.mockResolvedValue(buildFullDelivery(IOrderType.SSG, { id: 7 }));
+      partnerCompanyExternService.issue.mockRejectedValue(new Error('issue boom'));
+      deliveryBatchService.reverseSsgReissueDeduct.mockResolvedValue(SsgRefundOutcome.RESTORED);
+      jest.spyOn(service as any, 'reverseDiscard').mockResolvedValue(false); // CAS 불일치
+
+      await expect(service.execHistory(buildMap(IOrderType.SSG))).rejects.toThrow(/운영팀에 문의/);
+      await expect(service.execHistory(buildMap(IOrderType.SSG))).rejects.not.toThrow(/다시 시도해 주세요/);
     });
 
     it('4) issue 실패 + SKIPPED_CONFIRMED → 폐기 유지, InternalServerError(발송실패내역), reverseDiscard 미호출', async () => {
@@ -349,6 +450,67 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
       expect(orderDeliveryRepository.softDelete).toHaveBeenCalled();
     });
 
+    /**
+     * ★ wallet 승계는 barCode 검사 **뒤**여야 한다 (리뷰 HIGH — 26 의 반대쪽 절반).
+     *
+     * 26 은 "fencing 앞"만 잠근다. 그것만 보면 carry 를 issue() 직후·barCode 검사 **앞**으로
+     * 끌어올려도 26/10/12 는 전부 초록이다. 그러나 barCode 누락은 unwind 경로다 — unwind 는 tip 을
+     * softDelete 하고 원본 폐기를 되돌린다. 그 전에 wallet(allocation_line/attempt)을 tip 으로
+     * 옮겨 두면, 살아 돌아온 **원본**에는 환불 근거가 없고 근거는 삭제된 tip 에 매달려 있다.
+     * 이후 고객이 그 원본을 폐기하면 attempt/line 부재로 환불이 drift abort 된다 — 쿠폰도 돈도 없다.
+     *
+     * 요약: carry 는 (barCode 검사) < carry < (유효기간 fencing) 사이에만 존재해야 하고,
+     * 이 테스트가 왼쪽 경계를, 26 이 오른쪽 경계를 잠근다.
+     */
+    it('9-1) barCode 없음(unwind → softDelete) 경로에서는 wallet 승계를 하지 않는다 (원본의 환불 근거 보존)', async () => {
+      setupSsgAcquired();
+      setupExecDiscard();
+      orderDeliveryRepository.findOne.mockResolvedValue(buildFullDelivery(IOrderType.SSG, { id: 7 }, ''));
+      partnerCompanyExternService.issue.mockResolvedValue(undefined);
+      deliveryBatchService.reverseSsgReissueDeduct.mockResolvedValue(SsgRefundOutcome.RESTORED);
+      jest.spyOn(service as any, 'reverseDiscard').mockResolvedValue(true);
+      const carry = jest.spyOn(service as any, 'carryWalletOwnershipToReissuedDelivery').mockResolvedValue(undefined);
+
+      await expect(service.execHistory(buildMap(IOrderType.SSG))).rejects.toThrow();
+
+      // tip 은 softDelete 된다 — 그 tip 으로 wallet 을 옮겼다면 원본의 환불 근거가 사라진다
+      expect(orderDeliveryRepository.softDelete).toHaveBeenCalled();
+      expect(carry).not.toHaveBeenCalled();
+    });
+
+    /**
+     * ★ 비-SSG 실패 메시지는 **실제 잔여 상태**를 말해야 한다 (4차 리뷰 HIGH).
+     *
+     * 종전 메시지는 "핀 발급에 실패했습니다." 였다. 그런데 그 시점의 진짜 상태는:
+     *   - 원본: 협력사에서 **이미 취소됨**. 그리고 재발행의 폐기는 skipBalanceRestore:true 라
+     *     **환불이 집행되지 않았다** → 고객은 쿠폰도 없고 환불도 없다(결제만 그대로).
+     *   - 재시도 불가: 원본이 CANCEL 이라 execDiscard 터미널 가드에 걸린다(운영자는 이유를 모른다).
+     *   - order_history 도 이 시점엔 0건 → CS 는 추적조차 못 한다.
+     * "핀 발급에 실패" 는 그 어느 것도 전달하지 않는다 — 운영자는 그냥 다시 누르고, 막히고, 끝난다.
+     */
+    it('9-2) 비SSG barCode 없음: wallet 승계 전 중단 + tip 무력화 + 실제 잔여상태를 알리는 메시지', async () => {
+      setupExecDiscard();
+      orderDeliveryRepository.findOne.mockResolvedValue(buildFullDelivery(IOrderType.GENERAL, null, ''));
+      const carry = jest.spyOn(service as any, 'carryWalletOwnershipToReissuedDelivery').mockResolvedValue(undefined);
+      const reverseDiscard = jest.spyOn(service as any, 'reverseDiscard').mockResolvedValue(true);
+
+      await expect(service.execHistory(buildMap(IOrderType.GENERAL))).rejects.toThrow(
+        /협력사에서 이미 취소.*환불도 집행되지 않았습니다/s,
+      );
+
+      expect(carry).not.toHaveBeenCalled();
+
+      // tip 을 살려 두면 배치가 새 PIN 을 발급해 고객에게 보낸다(운영자에겐 실패라고 답한 뒤)
+      const kill = (orderDeliveryRepository.update.mock.calls as unknown as any[][]).find(
+        (c) => c[0]?.id === 8001 && c[1]?.couponStatus === OrderDeliveryCouponStatus.CANCEL,
+      );
+      expect(kill).toBeDefined();
+      expect(kill![0]).toHaveProperty('mutationClaimedAt'); // fenced
+
+      // 비-SSG 원본은 협력사 cancel 을 이미 태워 상태 플립으로 되살릴 수 없다
+      expect(reverseDiscard).not.toHaveBeenCalled();
+    });
+
     it('10) GENERAL + wallet-managed: 신규 delivery 로 allocation_line repoint + INITIAL attempt 생성', async () => {
       await expectWalletOwnershipCarried(IOrderType.GENERAL);
     });
@@ -367,6 +529,450 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
     it('12) SSG + wallet-managed: allocation_line repoint + INITIAL attempt 생성 (환불 drift 방지)', async () => {
       // SSG 도 고객 wallet 결제는 승계 대상 — 승계 누락 시 신규 SSG 쿠폰 폐기에서 attempt/line 부재로 환불이 drift abort 된다.
       await expectWalletOwnershipCarried(IOrderType.SSG);
+    });
+  });
+
+  /**
+   * D3-55 후속 — 재발행 tip 쓰기의 컬럼 소유권.
+   *
+   * fullDelivery 는 issue() 호출 전에 로드한 스냅샷이라 couponStatus/discardedAt 이 로드 시점 값으로 굳는다.
+   * issue()/csResendAsXxx 는 외부 통신이라 수 초가 걸리고, 그 사이 폐기(execDiscard)나 외부 취소(cancelOrder)가
+   * 같은 행에 CANCEL 을 쓸 수 있다. save(fullDelivery) 는 행 전체를 쓰므로(merge) 그 CANCEL 을 stale 값으로
+   * 되돌려 "환불됐는데 살아있는 핀" 을 만든다. 따라서 tip 쓰기는 자기 소유 컬럼만 targeted update 해야 한다.
+   *
+   * 소유권: expireAt/encourageAt/status/actualSendAt/failedAt = 재발행
+   *         couponStatus/discardedAt = 폐기·취소   (SET 절에 절대 등장하면 안 됨)
+   *         barCode/personalCode/couponNum/ssgTransactionId = issue() 가 자체 targeted update 로 저장
+   */
+  describe('D3-55 후속 — tip 쓰기는 targeted update (stale save 로 couponStatus 를 덮지 않는다)', () => {
+    /** update 호출 중 SET 절(2번째 인자)만 모은다. */
+    const setClauses = () => orderDeliveryRepository.update.mock.calls.map((c: any[]) => c[1]);
+
+    it('13) 재발행 성공 시 fullDelivery 를 save 하지 않는다 (save 는 tip INSERT 1회뿐)', async () => {
+      setupExecDiscard();
+      orderDeliveryRepository.findOne.mockResolvedValue(buildFullDelivery(IOrderType.GENERAL, null));
+
+      await service.execHistory(buildMap(IOrderType.GENERAL));
+
+      // save 는 newDelivery INSERT 한 번만. 이후 두 번의 쓰기는 update 로 나가야 한다.
+      expect(orderDeliveryRepository.save).toHaveBeenCalledTimes(1);
+      expect(orderDeliveryRepository.save.mock.calls[0][0]).toEqual(
+        expect.objectContaining({ replacedFromId: 7001, couponStatus: OrderDeliveryCouponStatus.NOT_USED }),
+      );
+    });
+
+    it('14) 어떤 update 의 SET 절에도 couponStatus/discardedAt 이 없다 (일반)', async () => {
+      setupExecDiscard();
+      orderDeliveryRepository.findOne.mockResolvedValue(buildFullDelivery(IOrderType.GENERAL, null));
+
+      await service.execHistory(buildMap(IOrderType.GENERAL));
+
+      expect(orderDeliveryRepository.update).toHaveBeenCalled();
+      for (const set of setClauses()) {
+        expect(set).not.toHaveProperty('couponStatus');
+        expect(set).not.toHaveProperty('discardedAt');
+        expect(set).not.toHaveProperty('ssgEventId'); // markConfirmed(REQUIRES_NEW) 소유 — outer tx 에서 쓰면 self-deadlock
+      }
+    });
+
+    it('15) 어떤 update 의 SET 절에도 couponStatus/discardedAt 이 없다 (SSG)', async () => {
+      setupSsgAcquired();
+      setupExecDiscard();
+      orderDeliveryRepository.findOne.mockResolvedValue(buildFullDelivery(IOrderType.SSG, { id: 7 }));
+
+      await service.execHistory(buildMap(IOrderType.SSG));
+
+      expect(orderDeliveryRepository.save).toHaveBeenCalledTimes(1);
+      for (const set of setClauses()) {
+        expect(set).not.toHaveProperty('couponStatus');
+        expect(set).not.toHaveProperty('discardedAt');
+        expect(set).not.toHaveProperty('ssgEventId');
+      }
+    });
+
+    it('16) 발송 성공: status/actualSendAt/failedAt 만 tip(8001) 에 targeted update', async () => {
+      setupExecDiscard();
+      orderDeliveryRepository.findOne.mockResolvedValue(buildFullDelivery(IOrderType.GENERAL, null));
+
+      await service.execHistory(buildMap(IOrderType.GENERAL));
+
+      const sendUpdate = orderDeliveryRepository.update.mock.calls.find((c: any[]) => 'status' in c[1]);
+      expect(sendUpdate).toBeDefined();
+      // criteria 에 mutationClaimedAt(owner guard) = fencing — 내 lease 일 때만 기록
+      expect(sendUpdate[0]).toEqual({ id: 8001, mutationClaimedAt: expect.any(Date) });
+      expect(Object.keys(sendUpdate[1]).sort()).toEqual(['actualSendAt', 'failedAt', 'status']);
+      expect(sendUpdate[1].status).toBe(IOrderDeliveryStatus.COMPLETE);
+      expect(sendUpdate[1].actualSendAt).toBeInstanceOf(Date);
+      expect(sendUpdate[1].failedAt).toBeUndefined();
+    });
+
+    it('17) 발송 실패: FAIL_SMS + failedAt 로 targeted update (couponStatus 는 여전히 미포함)', async () => {
+      setupExecDiscard();
+      orderDeliveryRepository.findOne.mockResolvedValue(buildFullDelivery(IOrderType.GENERAL, null));
+      deliveryBatchService.csResendAsSms.mockRejectedValue(new Error('MMS gateway down'));
+
+      // 발송 실패는 update/history 기록 후 caller 에게 throw 한다(발송실패내역 안내).
+      await expect(service.execHistory(buildMap(IOrderType.GENERAL))).rejects.toThrow(/발송에 실패했습니다/);
+
+      const sendUpdate = orderDeliveryRepository.update.mock.calls.find((c: any[]) => 'status' in c[1]);
+      expect(sendUpdate[0]).toEqual({ id: 8001, mutationClaimedAt: expect.any(Date) });
+      expect(sendUpdate[1].status).toBe(IOrderDeliveryStatus.FAIL_SMS);
+      expect(sendUpdate[1].failedAt).toBeInstanceOf(Date);
+      expect(sendUpdate[1].actualSendAt).toBeUndefined();
+      expect(sendUpdate[1]).not.toHaveProperty('couponStatus');
+    });
+
+    it('18) 비SSG 만 유효기간 update (SSG 는 issue() 가 expireAt 을 채우므로 쓰지 않는다)', async () => {
+      setupExecDiscard();
+      orderDeliveryRepository.findOne.mockResolvedValue(buildFullDelivery(IOrderType.GENERAL, null));
+      await service.execHistory(buildMap(IOrderType.GENERAL));
+
+      const generalExpiry = orderDeliveryRepository.update.mock.calls.filter((c: any[]) => 'expireAt' in c[1]);
+      expect(generalExpiry).toHaveLength(1);
+      expect(generalExpiry[0][0]).toEqual({ id: 8001, mutationClaimedAt: expect.any(Date) });
+      expect(Object.keys(generalExpiry[0][1]).sort()).toEqual(['encourageAt', 'expireAt']);
+
+      jest.clearAllMocks();
+      setupSsgAcquired();
+      setupExecDiscard();
+      orderDeliveryRepository.save.mockImplementation(async (e: any) => ({ id: 8001, ...e }));
+      orderDeliveryRepository.findOne.mockResolvedValue(buildFullDelivery(IOrderType.SSG, { id: 7 }));
+      await service.execHistory(buildMap(IOrderType.SSG));
+
+      const ssgExpiry = orderDeliveryRepository.update.mock.calls.filter((c: any[]) => 'expireAt' in c[1]);
+      expect(ssgExpiry).toHaveLength(0);
+    });
+  });
+
+  /**
+   * D3-55 후속 2 — 변형 lease(mutationClaimedAt).
+   *
+   * tip 은 새 행이므로 INSERT 자체가 원자적 lease 획득이다(CAS 불필요).
+   * issue()/발송(외부 통신) 동안 폐기·외부취소·발송배치가 tip 에 진입하지 못하게 하고,
+   * 종료(정상/실패) 시 owner guard 조건부로 해제한다. 쓰기는 fencing(WHERE mutationClaimedAt=:my)
+   * 조건부라 stale 강탈 후 깨어난 좀비는 affected=0 으로 아무것도 덮지 않는다.
+   */
+  describe('D3-55 후속 2 — 변형 lease (tip INSERT 획득 / finally 해제 / fencing)', () => {
+    const releaseCalls = () =>
+      orderDeliveryRepository.update.mock.calls.filter(
+        (c: any[]) => c[1] && 'mutationClaimedAt' in c[1] && c[1].mutationClaimedAt === null,
+      );
+
+    it('19) tip INSERT 에 lease 세팅 + 성공 경로 finally 에서 owner-guarded 해제', async () => {
+      setupExecDiscard();
+      orderDeliveryRepository.findOne.mockResolvedValue(buildFullDelivery(IOrderType.GENERAL, null));
+
+      await service.execHistory(buildMap(IOrderType.GENERAL));
+
+      // INSERT 시 획득
+      const inserted = orderDeliveryRepository.save.mock.calls[0][0];
+      expect(inserted.mutationClaimedAt).toBeInstanceOf(Date);
+
+      // finally 해제: WHERE { id, mutationClaimedAt: 내토큰 } → SET { mutationClaimedAt: null }
+      const releases = releaseCalls();
+      expect(releases).toHaveLength(1);
+      expect(releases[0][0]).toEqual({ id: 8001, mutationClaimedAt: inserted.mutationClaimedAt });
+      expect(releases[0][1]).toEqual({ mutationClaimedAt: null });
+    });
+
+    it('20) 발송 실패(throw) 경로에서도 finally 해제가 실행된다', async () => {
+      setupExecDiscard();
+      orderDeliveryRepository.findOne.mockResolvedValue(buildFullDelivery(IOrderType.GENERAL, null));
+      deliveryBatchService.csResendAsSms.mockRejectedValue(new Error('MMS gateway down'));
+
+      await expect(service.execHistory(buildMap(IOrderType.GENERAL))).rejects.toThrow(/발송에 실패했습니다/);
+
+      expect(releaseCalls()).toHaveLength(1);
+    });
+
+    /**
+     * ★ 종전 계약("로그만 남기고 진행")을 뒤집었다 (리뷰 HIGH).
+     *
+     * fencing affected=0 = lease 를 빼앗겼다 = **다른 폐기/취소가 지금 이 tip 을 죽이고 있다**.
+     * 그런데도 발송을 강행하면, 협력사에서 취소·환불된 핀을 고객에게 문자로 배달한다 —
+     * 이 작업 전체가 막으려던 바로 그 사고다. 아직 발송 전이므로 중단이 가장 싸다.
+     */
+    it('21) fencing: 유효기간 기록이 lease 상실(affected=0)이면 발송하지 않고 중단한다', async () => {
+      setupExecDiscard();
+      orderDeliveryRepository.findOne.mockResolvedValue(buildFullDelivery(IOrderType.GENERAL, null));
+      // stale 강탈 시나리오: fenced update 가 affected=0 (남이 lease 를 가져감)
+      orderDeliveryRepository.update.mockResolvedValue({ affected: 0 });
+
+      // 409(Conflict) — 타입까지 잠근다. 500 으로 되돌아가면 어드민이 "잠시 후 재시도" 로 뭉개
+      // 본문의 "재시도하지 마시고" 를 못 띄운다(정규식 단독 assertion 은 그 회귀를 통과시킨다).
+      await expectRejection(
+        service.execHistory(buildMap(IOrderType.GENERAL)),
+        ConflictException,
+        HttpStatus.CONFLICT,
+        /다른 작업이 이 발송 건을 선점/,
+      );
+
+      // 발송 자체가 일어나면 안 된다 — 죽은 핀 배달 차단
+      expect(deliveryBatchService.csResendAsMms).not.toHaveBeenCalled();
+      expect(deliveryBatchService.csResendAsSms).not.toHaveBeenCalled();
+      expect(deliveryBatchService.csResendAsAlimTalk).not.toHaveBeenCalled();
+
+      const lostLogs = (service.logger.error as jest.Mock).mock.calls.filter((c: any[]) =>
+        String(c[0]).includes('변형 lease 상실'),
+      );
+      expect(lostLogs.length).toBeGreaterThanOrEqual(1);
+    });
+
+    /**
+     * ★ wallet 승계는 유효기간 fencing **앞**이어야 한다 (리뷰 HIGH).
+     *
+     * fencing 이 lease 상실로 throw 하면 우리는 발송하지 않지만 tip 은 사라지지 않는다.
+     * status=WAIT + barCode(협력사에서 이미 발급·과금) 로 남아, 탈취자가 배치면 배치가 그대로
+     * 고객에게 발송한다. 그 시점에 wallet 이 미승계면 allocation_line/attempt 가 원본을 가리켜
+     * 이후 그 쿠폰을 폐기해도 환불이 drift abort 된다 — 고객은 쿠폰을 잃고 환불도 못 받는다.
+     *
+     * (단 barCode 검사보다는 뒤여야 한다. 그 경로는 unwind 가 tip 을 softDelete 하므로 wallet 을
+     *  옮겨 두면 원본의 환불 근거가 사라진다.)
+     */
+    it('26) fencing 으로 중단하더라도 wallet 승계는 이미 끝나 있다 (배치가 tip 을 발송할 수 있으므로)', async () => {
+      setupExecDiscard();
+      orderDeliveryRepository.findOne.mockResolvedValue(buildFullDelivery(IOrderType.GENERAL, null));
+      const carry = jest.spyOn(service as any, 'carryWalletOwnershipToReissuedDelivery').mockResolvedValue(undefined);
+      orderDeliveryRepository.update.mockResolvedValue({ affected: 0 });
+
+      await expect(service.execHistory(buildMap(IOrderType.GENERAL))).rejects.toThrow(/다른 작업이 이 발송 건을 선점/);
+
+      expect(carry).toHaveBeenCalled();
+    });
+
+    /**
+     * ★ carryWallet 자신이 throw 하면 tip 을 무력화해야 한다 (리뷰 HIGH).
+     *
+     * 그냥 전파시키면 finally 가 lease 를 반납하고, tip 은 status=WAIT + barCode(발급·과금 완료)
+     * + claimed_at=NULL + coupon_status=NOT_USED + lease 없음 으로 남아 claimWaitDeliveries 를
+     * **전부 통과**한다 → 배치가 고객에게 발송한다. 그런데 wallet 은 미승계라(그래서 여기 온 것)
+     * 이후 그 쿠폰을 폐기해도 환불이 drift abort 된다 — 고객은 쿠폰을 잃고 환불도 못 받는다.
+     */
+    it('28) wallet 승계 실패 → tip 을 fenced 무력화하고 중단 (배치 자동 발송 차단)', async () => {
+      setupExecDiscard();
+      orderDeliveryRepository.findOne.mockResolvedValue(buildFullDelivery(IOrderType.GENERAL, null));
+      jest
+        .spyOn(service as any, 'carryWalletOwnershipToReissuedDelivery')
+        .mockRejectedValue(new Error('wallet-managed 인데 allocation 없음'));
+
+      // ★ 선점(409)과 달리 이건 **진짜 오류**라 500 이어야 한다 — 그 비대칭을 잠근다.
+      //   409 로 내려가면 어드민이 "다른 사람이 처리 중" 으로 오인해 재시도할 수 있는데,
+      //   이 상태는 재시도로 낫지 않는다(PIN 은 이미 발급·과금됐고 wallet 만 미승계).
+      await expectRejection(
+        service.execHistory(buildMap(IOrderType.GENERAL)),
+        InternalServerErrorException,
+        HttpStatus.INTERNAL_SERVER_ERROR,
+        /결제 정보 승계에 실패/,
+      );
+
+      // tip(8001) 을 CANCEL 로 무력화했는가 — 안 하면 배치가 집어 발송한다
+      const kill = (orderDeliveryRepository.update.mock.calls as unknown as any[][]).find(
+        (c) => c[0]?.id === 8001 && c[1]?.couponStatus === OrderDeliveryCouponStatus.CANCEL,
+      );
+      expect(kill).toBeDefined();
+      expect(kill![0]).toHaveProperty('mutationClaimedAt'); // fenced — 내 lease 일 때만
+      expect(deliveryBatchService.csResendAsSms).not.toHaveBeenCalled();
+    });
+
+    /**
+     * ★ 이력은 발송 **전**, PIN 확정 즉시 남긴다 (리뷰 MEDIUM).
+     *
+     * lease 상실 throw 들은 "발송이 안 됐다" 는 뜻이 아니다 — tip 은 status=WAIT + barCode 로
+     * 남아 배치가 이어서 발송할 수 있다. 이력을 발송 뒤에 남기면 그 경로에서 **고객은 PIN 을
+     * 받았는데 CS 에는 그 PIN 의 이력이 없는** 상태가 된다. 협력사에서 이미 발급·과금된 PIN 이니
+     * 발송 성공 여부와 무관하게 "이 PIN 이 발급됐다" 는 사실을 남겨야 한다.
+     */
+    it('27) fencing 으로 중단해도 신규 PIN 이력은 남는다 (OLD/NEW 양쪽)', async () => {
+      setupExecDiscard();
+      orderDeliveryRepository.findOne.mockResolvedValue(buildFullDelivery(IOrderType.GENERAL, null));
+      orderDeliveryRepository.update.mockResolvedValue({ affected: 0 });
+
+      await expect(service.execHistory(buildMap(IOrderType.GENERAL))).rejects.toThrow(/다른 작업이 이 발송 건을 선점/);
+
+      expect(orderHistoryRepository.save).toHaveBeenCalled();
+      const rows = (orderHistoryRepository.save as jest.Mock).mock.calls[0][0];
+      expect(rows).toHaveLength(2); // 원본 + 신규 delivery 양쪽
+    });
+
+    /**
+     * SSG 는 유효기간 fenced update 분기를 타지 않으므로(issue() 가 expireAt 을 채움) 검사 지점이
+     * 없었다. 발송 직전 lease 소유 재확인이 그 공백을 메운다.
+     */
+    it('22) SSG: 발송 직전 lease 소유 재확인 — 상실했으면 발송하지 않고 중단', async () => {
+      setupSsgAcquired();
+      setupExecDiscard();
+      orderDeliveryRepository.findOne
+        .mockResolvedValueOnce(buildFullDelivery(IOrderType.SSG, { id: 7 })) // fullDelivery 로드
+        .mockResolvedValue(null); // isMutationLeaseOwned → 내 lease 아님
+
+      // 발송 직전 lease 확인도 409 다 (유효기간 fencing 과 동일 계약)
+      await expectRejection(
+        service.execHistory(buildMap(IOrderType.SSG)),
+        ConflictException,
+        HttpStatus.CONFLICT,
+        /다른 작업이 이 발송 건을 선점/,
+      );
+
+      expect(deliveryBatchService.csResendAsMms).not.toHaveBeenCalled();
+    });
+
+    /**
+     * 발송 후 fencing 실패는 되돌릴 수 없다(문자는 이미 나갔다). 그대로 두면 tip 이 WAIT 로 남아
+     * 배치가 같은 핀으로 재발송한다(고객 문자 2통). 최소한 status 를 WAIT 에서 떼어내야 한다.
+     */
+    /**
+     * ★ pre-issue catch 의 lease 해제는 unwind **뒤**여야 한다 (리뷰 CONFIRMED).
+     *
+     * 먼저 반납하면 그 창에서 tip 은 status=WAIT / claimed_at=NULL / lease 없음 /
+     * coupon_status=NOT_USED / soft-delete 전 — claimWaitDeliveries 의 모든 조건을 통과한다.
+     * 배치가 집어 PIN 을 발급·발송하고, 뒤이어 unwind 가 원본 폐기를 되돌리면
+     * **살아있는 쿠폰 2장**(원본 + 배치가 발송한 tip)이 된다. SSG 선차감은 이미 역복원된 뒤라
+     * 미차감 발급까지 겹친다.
+     *
+     * 반대 순서(unwind → 해제)면 배치가 그 창을 볼 때 tip 은 이미 CANCEL + soft-delete 다.
+     */
+    it('24) pre-issue 실패: lease 해제가 unwind(tip 무력화·softDelete) 뒤에 일어난다', async () => {
+      setupSsgAcquired();
+      setupExecDiscard();
+      // pre-issue 경로 진입: save 는 성공하되 findOne 이 null → "새 발송 건 조회 실패"
+      orderDeliveryRepository.save.mockResolvedValue({ id: 8001 });
+      orderDeliveryRepository.findOne.mockResolvedValue(null);
+      jest.spyOn(service as any, 'reverseDiscard').mockResolvedValue(true);
+
+      await expect(service.execHistory(buildMap(IOrderType.SSG))).rejects.toThrow();
+
+      // tip 무력화(fenced kill)와 lease 해제는 둘 다 update 로 나간다 — 호출 순서로 구분.
+      // ★ 반드시 tip(id=8001) 로 한정할 것. execHistory 는 재발행 전에 execDiscard 를 실제로
+      //   호출하고, 그 안에서 **원본**의 변형 lease 를 잡았다 푼다(해제도 mutationClaimedAt:null).
+      //   id 로 좁히지 않으면 그 원본 해제를 tip 의 해제로 오인해 순서 검증이 무의미해진다.
+      const TIP_ID = 8001;
+      const calls = (orderDeliveryRepository.update.mock.calls as unknown as any[][]).map((c, i) => ({ c, i }));
+      const killIdx = calls.find(
+        ({ c }) => c[0]?.id === TIP_ID && c[1]?.couponStatus === OrderDeliveryCouponStatus.CANCEL,
+      )?.i;
+      const releaseIdx = calls.find(({ c }) => c[0]?.id === TIP_ID && c[1]?.mutationClaimedAt === null)?.i;
+
+      expect(killIdx).toBeDefined(); // unwind 의 tip 무력화가 실제로 일어났고
+      expect(releaseIdx).toBeDefined(); // tip 의 lease 해제도 일어났으며
+      const killOrder = orderDeliveryRepository.update.mock.invocationCallOrder[killIdx!];
+      const releaseOrder = orderDeliveryRepository.update.mock.invocationCallOrder[releaseIdx!];
+      const softDeleteOrder = orderDeliveryRepository.softDelete.mock.invocationCallOrder[0];
+
+      // 해제는 반드시 마지막 — 그 전에 tip 은 CANCEL 전이 + soft-delete 로 배치 픽업이 봉쇄돼야 한다
+      expect(killOrder).toBeLessThan(releaseOrder);
+      expect(softDeleteOrder).toBeLessThan(releaseOrder);
+    });
+
+    /**
+     * ★ 비-SSG pre-issue 실패도 tip 을 무력화해야 한다 (리뷰 HIGH, 양쪽 일치).
+     *
+     * 종전에는 unwind 전체가 `if (isSsg && ...)` 안에 갇혀 있어서, 비-SSG 재발행이 pre-issue 로
+     * 실패하면(save 성공 + findOne 실패) **아무것도 하지 않고** lease 만 반납했다. 남는 tip 은
+     *   status=WAIT / claimed_at=NULL / coupon_status=NOT_USED / lease 없음 / deleted_at=NULL
+     * 로 claimWaitDeliveries 를 전부 통과 → 배치가 PIN 을 발급해 고객에게 발송한다.
+     * 그런데 carryWallet 은 아직 실행 전이라 **wallet 미승계 tip 이 배달**된다 → 이후 폐기해도
+     * 환불이 drift abort. order_history 도 아직 0건이라 CS 는 추적조차 못 한다.
+     *
+     * 단 **원본 폐기 역전은 하면 안 된다.** 비-SSG 폐기는 협력사 cancel 을 이미 태웠으므로,
+     * coupon_status 를 플립해 되살리면 "DB 는 살아있는데 협력사에선 죽은 쿠폰"이 된다.
+     */
+    it('29) 비-SSG pre-issue 실패: tip 은 무력화하되 원본 폐기는 되돌리지 않는다', async () => {
+      setupExecDiscard();
+      orderDeliveryRepository.save.mockResolvedValue({ id: 8001 });
+      orderDeliveryRepository.findOne.mockResolvedValue(null); // pre-issue 실패
+      const reverseDiscard = jest.spyOn(service as any, 'reverseDiscard').mockResolvedValue(true);
+
+      await expect(service.execHistory(buildMap(IOrderType.GENERAL))).rejects.toThrow();
+
+      // tip(8001) 무력화 — 안 하면 배치가 wallet 미승계 tip 을 고객에게 발송한다
+      const kill = (orderDeliveryRepository.update.mock.calls as unknown as any[][]).find(
+        (c) => c[0]?.id === 8001 && c[1]?.couponStatus === OrderDeliveryCouponStatus.CANCEL,
+      );
+      expect(kill).toBeDefined();
+      expect(kill![0]).toHaveProperty('mutationClaimedAt'); // fenced
+
+      // 원본 폐기 역전은 금지 — 협력사에서 이미 죽은 쿠폰을 DB 에서만 살려낼 수 없다
+      expect(reverseDiscard).not.toHaveBeenCalled();
+    });
+
+    /**
+     * ★ tip 무력화 실패(변형 lease 상실)면 원본 폐기를 되돌리면 안 된다 (리뷰 HIGH).
+     *
+     * kill 의 affected=0 은 "WHERE 의 lease 토큰이 안 맞는다" = 남이 이 tip 을 가져갔다는 뜻이다.
+     * 그 tip 은 status=WAIT / coupon_status=NOT_USED 로 살아 있어 배치가 집어 PIN 을 발급·발송한다.
+     * 여기서 원본 폐기까지 되돌리면 **살아있는 쿠폰이 2장**이 된다.
+     *
+     * 되돌리지 않으면 남는 상태는 "원본 폐기 + tip 발송" — 재발행이 배치를 경유해 완료된 것과
+     * 같아 고객 피해가 없다. 따라서 폐기 역전은 tipNeutralized 를 전제로만 수행한다.
+     */
+    it('25) pre-issue 실패 + tip 무력화 실패(lease 상실): 원본 폐기를 되돌리지 않는다 (쿠폰 2장 방지)', async () => {
+      setupSsgAcquired();
+      setupExecDiscard();
+      orderDeliveryRepository.save.mockResolvedValue({ id: 8001 });
+      orderDeliveryRepository.findOne.mockResolvedValue(null);
+
+      const reverseDiscard = jest.spyOn(service as any, 'reverseDiscard').mockResolvedValue(true);
+      // tip(8001) 의 kill 만 affected=0 (lease 를 뺏김). 나머지 update 는 정상.
+      const baseUpdate = orderDeliveryRepository.update.getMockImplementation();
+      orderDeliveryRepository.update.mockImplementation(async (criteria: any, set: any) => {
+        if (criteria?.id === 8001 && set?.couponStatus === OrderDeliveryCouponStatus.CANCEL) {
+          return { affected: 0 };
+        }
+        return baseUpdate ? await baseUpdate(criteria, set) : { affected: 1 };
+      });
+
+      await expect(service.execHistory(buildMap(IOrderType.SSG))).rejects.toThrow();
+
+      // 되돌렸다면 원본 쿠폰이 살아나 tip 과 함께 2장이 된다
+      expect(reverseDiscard).not.toHaveBeenCalled();
+
+      // ★ softDelete 도 하면 안 된다 (리뷰 HIGH).
+      //   무력화 실패 = 남이(대표적으로 stale lease 를 탈취한 발송배치가) 이 tip 을 가져갔다는 뜻.
+      //   그 행을 지워도 배치의 targeted update 는 soft-delete 필터를 안 타므로 발송은 그대로
+      //   진행되고, 남는 건 "deleted_at 찍힌 행 + 고객 손의 살아있는 쿠폰 + 협력사 과금 완료" 다.
+      //   CS 목록에서 사라지고 정산에서도 빠진다(과금당했는데 청구 못 함). 게다가 softDelete 는
+      //   **성공**하므로 아무 신호도 안 남는다. 내 것이 아닌 행을 지울 권리는 없다.
+      expect(orderDeliveryRepository.softDelete).not.toHaveBeenCalled();
+    });
+
+    /**
+     * ★ 발송 후 lease 상실은 **성공이 아니다** (리뷰 CRITICAL).
+     *
+     * 종전에는 fallback 쓰기만 하고 정상 return 했다 → CS 화면에 "재발행 완료" 로 뜬다.
+     * 그러나 lease 를 빼앗겼다는 건 다른 폐기/취소가 그 핀을 죽이고 있(었)다는 뜻이고,
+     * 문자는 이미 나갔다. 고객은 취소·환불된 죽은 핀을 들고 전화하는데 CS 이력은 정상 발행이다.
+     * 외부 API resendOrder 는 같은 상황에서 3010 을 던진다 — 내부만 성공을 주장할 이유가 없다.
+     *
+     * 단 history 는 남긴 뒤 던져야 한다. 발급·발송된 PIN 을 추적할 유일한 수단이다.
+     */
+    it('23) 발송 후 fencing 실패 → fallback 쓰기 + history 기록 후 throw (성공 반환 금지)', async () => {
+      setupExecDiscard();
+      orderDeliveryRepository.findOne.mockResolvedValue(buildFullDelivery(IOrderType.GENERAL, null));
+      // 유효기간 update 는 성공(=lease 보유), 발송결과 fenced update 만 affected=0
+      orderDeliveryRepository.update
+        .mockResolvedValueOnce({ affected: 1 }) // 유효기간
+        .mockResolvedValueOnce({ affected: 0 }) // 발송결과 (fenced) — lease 상실
+        .mockResolvedValue({ affected: 1 }); // fallback + 해제
+
+      // 발송 **후** lease 상실도 409 — 외부 API resendOrder 의 3010 과 대칭. 내부만 500 일 이유가 없다.
+      await expectRejection(
+        service.execHistory(buildMap(IOrderType.GENERAL)),
+        ConflictException,
+        HttpStatus.CONFLICT,
+        /다른 처리가 이 발송 건을 선점/,
+      );
+
+      const fallback = (orderDeliveryRepository.update.mock.calls as unknown as any[][]).find(
+        (c) => c[0] && c[0].status === IOrderDeliveryStatus.WAIT,
+      );
+      expect(fallback).toBeDefined();
+      // lease 가 아니라 status=WAIT 로 소유권을 좁힌다 — 배치가 이미 집어갔으면 affected=0 이라 안 덮는다
+      expect(fallback![0]).toEqual({ id: expect.anything(), status: IOrderDeliveryStatus.WAIT });
+      expect(fallback![1]).toHaveProperty('status');
+      expect(fallback![1]).toHaveProperty('actualSendAt');
+
+      // throw 하더라도 이력은 남아야 한다 — 고객이 받은 PIN 을 CS 가 조회할 유일한 수단
+      expect(orderHistoryRepository.save).toHaveBeenCalled();
     });
   });
 });

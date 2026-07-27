@@ -83,6 +83,9 @@ function makeOrderDelivery(over?: Partial<OrderDeliveryEntity>): OrderDeliveryEn
   } as any;
 }
 
+/** cancelOrder 가 획득한 변형 lease 토큰. processCancelRefund 의 fencing 조건. */
+const LEASE_TOKEN = new Date('2026-07-24T00:00:00.000Z');
+
 /**
  * phaseC_handleFailure / processCancelRefund 단위 구동용 service.
  * manager.findOne 은 OrderDeliveryAttempt(INITIAL) + OrderPaymentAllocation 을 반환하도록 entity 별 분기.
@@ -94,9 +97,12 @@ function refundService(opts: {
   attempt?: { id: string } | null;
   recoverResult?: SsgRecoveryResult;
   refundAlreadyRefunded?: boolean;
+  /** 취소 상태 쓰기의 fencing 결과. 0 이면 lease 를 뺏긴 상황(기본 1 = 정상 소유). */
+  updateAffected?: number;
 }) {
   const svc = Object.create(ExternalApiService.prototype) as ExternalApiService;
-  (svc as any).logger = { warn: jest.fn(), log: jest.fn(), error: jest.fn() };
+  const logger = { warn: jest.fn(), log: jest.fn(), error: jest.fn() };
+  (svc as any).logger = logger;
 
   const queries: Array<{ sql: string; params: any[] }> = [];
   const managerQuery = jest.fn(async (sql: string, params: any[]) => {
@@ -118,7 +124,11 @@ function refundService(opts: {
   (svc as any).dataSource = { manager: { query: managerQuery, findOne: managerFindOne } };
 
   (svc as any).orderRepository = { save: jest.fn(async (o: any) => o) };
-  (svc as any).orderDeliveryRepository = { save: jest.fn(async (o: any) => o) };
+  // processCancelRefund 의 상태 쓰기는 save(merge) 가 아니라 targeted update 다 (D3-60).
+  // UpdateResult 형태로 반환해야 후속 fencing(affected 검사)까지 태울 수 있다.
+  const odSave = jest.fn(async (o: any) => o);
+  const odUpdate = jest.fn(async () => ({ affected: opts.updateAffected ?? 1 }));
+  (svc as any).orderDeliveryRepository = { save: odSave, update: odUpdate };
   // G004: loadOrderBillingUser fallback 미스 시 userRepository.findOne 로 재조회. 안전망으로 account.user 반환.
   (svc as any).userRepository = {
     findOne: jest.fn(async () => makeAccount().user),
@@ -150,7 +160,18 @@ function refundService(opts: {
   return {
     svc,
     queries,
-    mocks: { managerQuery, managerFindOne, claim, refund, refundBalance, recoverWithLease, syncDeposit },
+    mocks: {
+      managerQuery,
+      managerFindOne,
+      claim,
+      refund,
+      refundBalance,
+      recoverWithLease,
+      syncDeposit,
+      odSave,
+      odUpdate,
+      logger,
+    },
   };
 }
 
@@ -324,7 +345,7 @@ describe('processCancelRefund — R2 wallet 환불 (DISCARD_REFUND)', () => {
     });
     const account = makeAccount({ isCompany: true });
 
-    await (svc as any).processCancelRefund(makeOrder(), makeOrderDelivery(), account);
+    await (svc as any).processCancelRefund(makeOrder(), makeOrderDelivery(), account, LEASE_TOKEN);
 
     const refundArg = (mocks.refund.mock.calls[0] as any[])[0];
     expect(refundArg.eventType).toBe(OrderPaymentRefundEventType.DISCARD_REFUND);
@@ -340,7 +361,7 @@ describe('processCancelRefund — R2 wallet 환불 (DISCARD_REFUND)', () => {
   it('LEGACY 취소 → 기존 refundBalance 회귀 0', async () => {
     const { svc, mocks } = refundService({ isWalletManaged: false });
 
-    await (svc as any).processCancelRefund(makeOrder(), makeOrderDelivery(), makeAccount());
+    await (svc as any).processCancelRefund(makeOrder(), makeOrderDelivery(), makeAccount(), LEASE_TOKEN);
 
     expect(mocks.refund).not.toHaveBeenCalled();
     expect(mocks.refundBalance).toHaveBeenCalledWith(expect.anything(), 30000);
@@ -378,7 +399,8 @@ describe('resendOrder — R3 가드', () => {
     };
     (svc as any).orderDeliveryRepository = {
       save: jest.fn(async (o: any) => o),
-      update: jest.fn(async () => undefined),
+      // 발송결과 targeted update 는 fencing(affected 검사) + lease 해제에 쓰인다 → UpdateResult 형태로 반환
+      update: jest.fn(async () => ({ affected: 1 })),
       findOne: jest.fn(async () => null),
       createQueryBuilder: jest.fn(() => claimQb),
     };
@@ -412,5 +434,194 @@ describe('resendOrder — R3 가드', () => {
   it('DELIVERY_COMPLETE 이지만 barCode 없음 → 3004 (기존 체크 유지)', async () => {
     const { svc } = resendService(makeOrder({ status: IOrderStatus.DELIVERY_COMPLETE }), { barCode: null as any });
     await expect((svc as any).resendOrder(makeAccount(), 'tr')).rejects.toMatchObject({ code: '3004' });
+  });
+});
+
+// ── 리뷰 HIGH: processCancelRefund 상태 쓰기의 D3-60 clobber 제거 + 변형 lease fencing ──
+describe('processCancelRefund — 상태 쓰기 fencing (리뷰 HIGH)', () => {
+  it('full save 를 쓰지 않는다 — 행 전체 merge 로 남의 컬럼을 되돌리면 안 된다 (D3-60)', async () => {
+    const { svc, mocks } = refundService({ isWalletManaged: false });
+
+    await (svc as any).processCancelRefund(makeOrder(), makeOrderDelivery(), makeAccount(), LEASE_TOKEN);
+
+    // save(orderDelivery) 는 merge 라 재조회하지 않은 컬럼(imagePath·deletedAt·reportState…)까지
+    // 스냅샷 값으로 되돌린다. 이 경로는 targeted update 만 써야 한다.
+    expect(mocks.odSave).not.toHaveBeenCalled();
+    expect(mocks.odUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it('이 함수가 바꾸는 3개 컬럼만 쓴다 (status/couponStatus/discardedAt)', async () => {
+    const { svc, mocks } = refundService({ isWalletManaged: false });
+
+    await (svc as any).processCancelRefund(makeOrder(), makeOrderDelivery(), makeAccount(), LEASE_TOKEN);
+
+    const [, patch] = mocks.odUpdate.mock.calls[0] as any[];
+    expect(Object.keys(patch).sort()).toEqual(['couponStatus', 'discardedAt', 'status']);
+  });
+
+  it('where 조건에 내 lease 토큰이 실린다 — 뺏긴 뒤엔 안 써야 하므로', async () => {
+    const { svc, mocks } = refundService({ isWalletManaged: false });
+
+    await (svc as any).processCancelRefund(makeOrder(), makeOrderDelivery(), makeAccount(), LEASE_TOKEN);
+
+    const [where] = mocks.odUpdate.mock.calls[0] as any[];
+    expect(where).toEqual({ id: 55, mutationClaimedAt: LEASE_TOKEN });
+  });
+
+  it('lease 를 뺏겨 affected=0 이어도 환불은 집행한다 — 협력사 취소가 이미 끝난 비가역 작업이므로', async () => {
+    // ★ 중단하면 "협력사 쿠폰은 죽었는데 환불은 안 나간" 고객 피해가 남는다.
+    //   cancelByExternalApi 는 cancelOrder 에서 이 함수보다 **먼저** 호출된다.
+    const { svc, mocks } = refundService({ isWalletManaged: false, updateAffected: 0 });
+
+    await expect(
+      (svc as any).processCancelRefund(makeOrder(), makeOrderDelivery(), makeAccount(), LEASE_TOKEN),
+    ).resolves.toBeUndefined();
+
+    expect(mocks.refundBalance).toHaveBeenCalledWith(expect.anything(), 30000);
+  });
+
+  it('lease 상실은 조용히 넘어가지 않는다 — [CANCEL_FENCE_LOST] 경보로 수동 정합 유도', async () => {
+    const { svc, mocks } = refundService({ isWalletManaged: false, updateAffected: 0 });
+
+    await (svc as any).processCancelRefund(makeOrder(), makeOrderDelivery(), makeAccount(), LEASE_TOKEN);
+
+    expect(mocks.logger.error).toHaveBeenCalledWith(expect.stringContaining('[CANCEL_FENCE_LOST]'));
+  });
+
+  it('정상 소유(affected=1)면 경보를 남기지 않는다 — 오탐 방지', async () => {
+    const { svc, mocks } = refundService({ isWalletManaged: false });
+
+    await (svc as any).processCancelRefund(makeOrder(), makeOrderDelivery(), makeAccount(), LEASE_TOKEN);
+
+    expect(mocks.logger.error).not.toHaveBeenCalledWith(expect.stringContaining('[CANCEL_FENCE_LOST]'));
+  });
+});
+
+// ── phaseC 가 "유일하게 영속하는 컬럼" 잠금 ──────────────────────────────
+//
+// phaseC 는 현재 save(orderDelivery)(=merge, 행 전체)로 영속한다. 이를 targeted update 로
+// 좁히려면 **phaseC 말고는 아무도 안 쓰는 컬럼**을 하나도 빠짐없이 열거해야 한다.
+// 하나라도 빠지면 드문 clobber 를 막으려다 **매 주문 확정 유실**을 만든다.
+//
+//   expireAt   — phaseB 에서 issue() **뒤**에 계산된다. persistIssuedPin 은 이미 지나간 뒤라
+//                그 값을 모른다. phaseC 가 유일한 영속자.
+//   imagePath  — 쿠폰 이미지. 자체 update 가 없다. 빠지면 이미지가 영영 유실된다.
+//   report 4종 — 알림톡 POST 성공 표식. 빠지면 sweep 이 재선택해 **중복 발송**한다.
+//   status/actualSendAt/failedAt/apiErrorMessage — 발송 결과 그 자체.
+//
+// 아래 헬퍼는 save(entity) 든 update(where, patch) 든 **구현과 무관하게** 반영 컬럼을 모은다.
+// → save→targeted update 리팩터 전후로 **같은 단언**이 성립한다(리팩터 가드).
+function persistedColumns(mocks: { odSave: jest.Mock; odUpdate: jest.Mock }): Set<string> {
+  const cols = new Set<string>();
+  for (const call of mocks.odSave.mock.calls as unknown as any[][]) {
+    Object.keys(call[0] ?? {}).forEach((k) => cols.add(k));
+  }
+  for (const call of mocks.odUpdate.mock.calls as unknown as any[][]) {
+    Object.keys(call[1] ?? {}).forEach((k) => cols.add(k));
+  }
+  return cols;
+}
+
+/** phaseB 를 막 통과한 알림톡 주문의 delivery — phaseC 가 영속해야 할 값이 전부 실려 있다. */
+const makePostSendDelivery = () =>
+  makeOrderDelivery({
+    status: 'COMPLETE',
+    actualSendAt: new Date('2026-07-24T01:00:00.000Z'),
+    failedAt: null,
+    expireAt: new Date('2026-08-23T00:00:00.000Z'),
+    imagePath: 'img/coupon-55.png',
+    alimTalkMsgKey: 'MSG-KEY-1',
+    reportState: 'PENDING',
+    reportNextDueAt: new Date('2026-07-24T01:05:00.000Z'),
+    reportDeadlineAt: new Date('2026-07-24T02:00:00.000Z'),
+    apiErrorMessage: null,
+  } as any);
+
+const PHASEC_REQUIRED_COLUMNS = [
+  'status',
+  'actualSendAt',
+  'failedAt',
+  'expireAt',
+  'imagePath',
+  'alimTalkMsgKey',
+  'reportState',
+  'reportNextDueAt',
+  'reportDeadlineAt',
+];
+
+describe('phaseC — 영속 컬럼 집합 잠금 (save→targeted update 리팩터 가드)', () => {
+  it('성공 경로: phaseC 가 유일 영속자인 컬럼이 전부 DB 에 반영된다', async () => {
+    const { svc, mocks } = refundService({ isWalletManaged: false });
+
+    await (svc as any).phaseC_handleSuccess(makeOrder(), makePostSendDelivery());
+
+    const cols = persistedColumns(mocks);
+    for (const required of PHASEC_REQUIRED_COLUMNS) {
+      // 실패하면 = 그 컬럼이 DB 에 안 실린다 = 유실. imagePath 면 쿠폰 이미지가,
+      // reportState 면 알림톡 중복 발송이 된다.
+      expect(cols.has(required)).toBe(true);
+    }
+  });
+
+  it('실패 경로: 위 컬럼 + apiErrorMessage 가 DB 에 반영된다', async () => {
+    const { svc, mocks } = refundService({ isWalletManaged: false });
+
+    await (svc as any).phaseC_handleFailure(
+      makeOrder(),
+      makePostSendDelivery(),
+      makeAccount(),
+      new Error('발송 실패'),
+    );
+
+    const cols = persistedColumns(mocks);
+    for (const required of [...PHASEC_REQUIRED_COLUMNS, 'apiErrorMessage']) {
+      expect(cols.has(required)).toBe(true);
+    }
+  });
+});
+
+// ── phaseC clobber 부재 회귀 (D3-60) ────────────────────────────────────
+describe('phaseC — full save() 부재 (D3-60 clobber)', () => {
+  it('성공 경로: save() 를 쓰지 않는다 — targeted update 로만 영속', async () => {
+    const { svc, mocks } = refundService({ isWalletManaged: false });
+
+    await (svc as any).phaseC_handleSuccess(makeOrder(), makePostSendDelivery());
+
+    expect(mocks.odSave).not.toHaveBeenCalled();
+    expect(mocks.odUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it('실패 경로: save() 를 쓰지 않는다', async () => {
+    const { svc, mocks } = refundService({ isWalletManaged: false });
+
+    await (svc as any).phaseC_handleFailure(makeOrder(), makePostSendDelivery(), makeAccount(), new Error('x'));
+
+    expect(mocks.odSave).not.toHaveBeenCalled();
+    expect(mocks.odUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it('SET 절에 clobber 3컬럼이 없다 — 남이 확정한 값을 되돌리지 않는다', async () => {
+    const { svc, mocks } = refundService({ isWalletManaged: false });
+
+    await (svc as any).phaseC_handleSuccess(makeOrder(), makePostSendDelivery());
+
+    const [, patch] = mocks.odUpdate.mock.calls[0] as any[];
+    expect(patch).not.toHaveProperty('couponStatus'); // 환불된 쿠폰 되살림
+    expect(patch).not.toHaveProperty('deletedAt'); // 지워진 행 부활
+    expect(patch).not.toHaveProperty('mutationClaimedAt'); // CS 폐기가 쥔 lease 무력화
+  });
+
+  it('발급 결과 컬럼은 건드리지 않는다 — persistIssuedPin 소관 (이중 소유 금지)', async () => {
+    const { svc, mocks } = refundService({ isWalletManaged: false });
+
+    await (svc as any).phaseC_handleSuccess(makeOrder(), makePostSendDelivery());
+
+    const [, patch] = mocks.odUpdate.mock.calls[0] as any[];
+    for (const owned of ['barCode', 'personalCode', 'couponNum', 'ssgTransactionId', 'ssgEventId']) {
+      expect(patch).not.toHaveProperty(owned);
+    }
+    // transactionId/externalTrId 는 saveTransactionIds 소관
+    expect(patch).not.toHaveProperty('transactionId');
+    expect(patch).not.toHaveProperty('externalTrId');
   });
 });

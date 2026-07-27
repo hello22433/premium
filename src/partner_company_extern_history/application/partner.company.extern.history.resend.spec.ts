@@ -13,6 +13,7 @@ import { SsgPinVerdict } from '../../partner_company_extern/interface/ssg.issue'
 import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 import { IProductType } from '../../product/interface/product.type';
+import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
 
 /**
  * resendFailedDelivery 단위 테스트 — self-deadlock fix(배치 동시성 모델 전환).
@@ -279,6 +280,105 @@ describe('PartnerCompanyExternHistoryService.resendFailedDelivery', () => {
     expect(res.success).toBe(false);
     expect(res.message).toContain('이미 완료');
     expect(res.message).not.toContain('처리 중');
+  });
+
+  /**
+   * D3-55 후속 — 발송실패내역 재발송도 변형 lease(mutation_claimed_at) 를 존중해야 한다.
+   *
+   * 이 경로는 oneSend() → 외부 통신(PIN 발급 + 문자 발송) 으로 수 초가 걸린다. 그 사이 폐기·
+   * 외부취소·재발행이 같은 행에 진입하면 협력사에서 핀이 죽고 환불까지 나간 뒤 우리가 그 핀을
+   * 고객에게 배달한다. CS 재발행·발송배치·외부 API 는 이미 이 lease 를 존중하는데 이 경로만
+   * 이탈해 있었다 — 심지어 재발행 실패 시 운영자에게 안내하는 경로가 바로 여기다.
+   */
+  describe('변형 lease (D3-55 후속)', () => {
+    it('claim CAS 의 SET 에 mutationClaimedAt 이 claimedAt 과 같은 토큰으로 들어간다', async () => {
+      qb.getOne.mockResolvedValueOnce(makeDelivery()).mockResolvedValueOnce(makeDelivery());
+      ssgInsertStateService.getState.mockResolvedValue(SsgInsertState.CONFIRMED);
+
+      await sut.resendFailedDelivery(584170);
+
+      const setArg = qb.set.mock.calls[0][0];
+      expect(setArg.mutationClaimedAt).toBeInstanceOf(Date);
+      // 소유자 식별이 일관되도록 두 토큰이 같아야 한다(해제도 같은 값으로 owner-guard)
+      expect(setArg.mutationClaimedAt).toBe(setArg.claimedAt);
+    });
+
+    it('claim CAS WHERE: 변형 lease 활성 행 제외 + 폐기/환불 쿠폰 제외 + soft-delete 제외', async () => {
+      qb.getOne.mockResolvedValueOnce(makeDelivery()).mockResolvedValueOnce(makeDelivery());
+      ssgInsertStateService.getState.mockResolvedValue(SsgInsertState.CONFIRMED);
+
+      await sut.resendFailedDelivery(584170);
+
+      const whereSqls = qb.andWhere.mock.calls.map((c: any[]) => String(c[0]));
+      // 활성 lease 면 획득 실패, stale(5분 초과) 면 강탈
+      expect(whereSqls.some((s: string) => /mutation_claimed_at IS NULL/.test(s))).toBe(true);
+      expect(whereSqls.some((s: string) => /mutation_claimed_at\s*<\s*:mutationStale/.test(s))).toBe(true);
+      // status 와 coupon_status 는 별개 축 — status=FAIL 인데 coupon_status=CANCEL 인 행이 있다
+      expect(whereSqls.some((s: string) => /coupon_status NOT IN/.test(s))).toBe(true);
+      // UpdateQueryBuilder 는 soft-delete 필터를 자동 적용하지 않는다(재발행 unwind 가 지운 tip)
+      expect(whereSqls.some((s: string) => /deleted_at IS NULL/.test(s))).toBe(true);
+    });
+
+    const leaseReleases = () =>
+      orderDeliveryRepository.update.mock.calls.filter((c) => c[1] && c[1].mutationClaimedAt === null);
+
+    it('성공 경로: 변형 lease 를 자기 토큰으로 해제한다', async () => {
+      qb.getOne.mockResolvedValueOnce(makeDelivery()).mockResolvedValueOnce(makeDelivery());
+      ssgInsertStateService.getState.mockResolvedValue(SsgInsertState.CONFIRMED);
+      deliveryBatchService.oneSend.mockResolvedValue(true);
+
+      await sut.resendFailedDelivery(584170);
+
+      const releases = leaseReleases();
+      expect(releases).toHaveLength(1);
+      // claimedAt 해제와 한 update 로 합치면, 변형 lease 만 남에게 빼앗긴 경우 남의 활성 lease 를 지운다
+      expect(releases[0][0]).toEqual({ id: 584170, mutationClaimedAt: expect.any(Date) });
+      expect(releases[0][1]).toEqual({ mutationClaimedAt: null });
+    });
+
+    it('예외(oneSend throw) 경로에서도 변형 lease 를 해제한다', async () => {
+      qb.getOne.mockResolvedValueOnce(makeDelivery()).mockResolvedValueOnce(makeDelivery());
+      ssgInsertStateService.getState.mockResolvedValue(SsgInsertState.CONFIRMED);
+      deliveryBatchService.oneSend.mockRejectedValue(new Error('boom'));
+
+      const res = await sut.resendFailedDelivery(584170);
+
+      expect(res.success).toBe(false);
+      expect(leaseReleases()).toHaveLength(1);
+    });
+
+    it('claim 실패 시에는 lease 해제를 시도하지 않는다 — 남의 lease 를 건드리지 않음', async () => {
+      qb.getOne.mockResolvedValueOnce(makeDelivery()).mockResolvedValueOnce(makeDelivery({ claimedAt: new Date() }));
+      qb.execute.mockResolvedValueOnce({ affected: 0 });
+
+      await sut.resendFailedDelivery(584170);
+
+      expect(leaseReleases()).toHaveLength(0);
+    });
+
+    it('거부 사유: 변형 lease 활성이면 "다른 처리 진행 중" 으로 안내한다 (새로고침 유도 아님)', async () => {
+      qb.getOne
+        .mockResolvedValueOnce(makeDelivery())
+        .mockResolvedValueOnce(makeDelivery({ mutationClaimedAt: new Date() }));
+      qb.execute.mockResolvedValueOnce({ affected: 0 });
+
+      const res = await sut.resendFailedDelivery(584170);
+
+      expect(res.success).toBe(false);
+      expect(res.message).toContain('다른 처리');
+    });
+
+    it('거부 사유: 폐기·환불된 쿠폰은 그 사유를 그대로 알려준다', async () => {
+      qb.getOne
+        .mockResolvedValueOnce(makeDelivery())
+        .mockResolvedValueOnce(makeDelivery({ couponStatus: OrderDeliveryCouponStatus.REFUND_CANCEL }));
+      qb.execute.mockResolvedValueOnce({ affected: 0 });
+
+      const res = await sut.resendFailedDelivery(584170);
+
+      expect(res.success).toBe(false);
+      expect(res.message).toContain('폐기·환불');
+    });
   });
 
   it('claim affected=0 + status 대상 + claimedAt 없음/오래됨 → 상태 변경(새로고침) 안내', async () => {
