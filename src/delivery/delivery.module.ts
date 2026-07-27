@@ -36,6 +36,11 @@ import { SsgEventModule } from '../ssg_event/ssg.event.module';
 import { UserManagementModule } from '../user_management/user.management.module';
 import { WalletModule } from '../wallet/wallet.module';
 import { OrderFromModule } from '../order_from/order.from.module';
+import { DeliveryWorkflowEntity } from '../entity/delivery.workflow.entity';
+import { MessageAttemptEntity } from '../entity/message.attempt.entity';
+import { DeliveryWorkflowSlotService } from './application/delivery-workflow-slot.service';
+import { MessageAttemptService } from './application/message-attempt.service';
+import { MessageResultReconcileService } from './application/message-result-reconcile.service';
 
 @Module({
   imports: [
@@ -57,6 +62,8 @@ import { OrderFromModule } from '../order_from/order.from.module';
       SsgIssueLogEntity,
       OrderHistoryEntity,
       SsgResendDeductPendingEntity,
+      DeliveryWorkflowEntity,
+      MessageAttemptEntity,
     ]),
     MailModule,
     SmsModule,
@@ -82,6 +89,9 @@ import { OrderFromModule } from '../order_from/order.from.module';
     SsgRecoveryService,
     SsgRecoverySweepService,
     SsgResendDeductRecoveryService,
+    DeliveryWorkflowSlotService,
+    MessageAttemptService,
+    MessageResultReconcileService,
   ],
   exports: [
     {
@@ -96,6 +106,9 @@ import { OrderFromModule } from '../order_from/order.from.module';
     SsgRecoveryService,
     SsgRecoverySweepService,
     SsgResendDeductRecoveryService,
+    DeliveryWorkflowSlotService,
+    MessageAttemptService,
+    MessageResultReconcileService,
     SsgInsertStateModule,
   ],
 })

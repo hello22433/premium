@@ -43,6 +43,10 @@ import { OrderDeliveryRefundStatusEnum } from '../interface/order.delivery.refun
 import { PII_BEARING_HISTORY_TYPES } from '../../order/interface/order.history.pii.types';
 import { IMailSend } from '../../mail/interface/mail-send';
 import { ISmsSend } from '../../sms/interface/sms.send';
+import { MessageAttemptService } from './message-attempt.service';
+import { MessageAttemptChannel, MessageAttemptType } from '../interface/message.attempt.status';
+import { DeliveryExclusiveOp } from '../interface/delivery.workflow.status';
+import { computeNextAttemptAt, isWithinAllowedSendWindow } from '../domain/resend.schedule';
 import { IOrderSendMethod } from '../../order/interface/order.send.method';
 import { IOrderStatus } from '../../order/interface/order.status';
 import { IOrderType } from '../../order/interface/order.type';
@@ -111,6 +115,7 @@ export class DeliveryBatchService {
     private mailSend: IMailSend,
     @Inject('ISmsSend')
     private smsSend: ISmsSend,
+    private messageAttemptService: MessageAttemptService,
     private deliveryTrackHttp: DeliveryTrackHttp,
     private cryptoCipher: CryptoCipher,
     private configService: ConfigService,
@@ -933,6 +938,18 @@ export class DeliveryBatchService {
       return;
     }
 
+    // 심야 자동 발송 금지(08:00–20:00 KST 밖) — SMS 폴백도 **배치가 트리거하는 발송**이라
+    // 광고성 정보 전송 제한 대상이다. 폴백을 포기하지 않고 다음 허용 시작으로 미룬다.
+    // (재시도 소진·기한 초과로 여기까지 온 건이므로 다음 창에서 즉시 폴백된다.)
+    if (!isWithinAllowedSendWindow(now)) {
+      const deferUntil = computeNextAttemptAt(now);
+      this.releaseReportClaim(od);
+      od.reportNextDueAt = deferUntil;
+      await this.persistReportState(od, token);
+      this.logger.log(`[REPORT_SWEEP][R1] 심야 SMS 폴백 보류 — od=${od.id}, 재개 예정=${deferUntil.toISOString()}`);
+      return;
+    }
+
     await this.runReportFallback(od, token);
   }
 
@@ -1275,9 +1292,7 @@ export class DeliveryBatchService {
     /** 경보 로그에 함께 남길 주문 id. 운영이 잃은 쓰기를 대사할 때 order 조인을 손으로 안 하도록. */
     orderId?: number,
   ): Promise<boolean> {
-    const where = claimToken
-      ? { id: orderDeliveryId, mutationClaimedAt: claimToken }
-      : { id: orderDeliveryId };
+    const where = claimToken ? { id: orderDeliveryId, mutationClaimedAt: claimToken } : { id: orderDeliveryId };
 
     const res = await this.orderDeliveryRepository.update(where, patch);
 
@@ -1691,18 +1706,30 @@ export class DeliveryBatchService {
     filePathList: string[],
     decryptedDeliveryTarget: string,
     encryptKey: string,
+    slotOp: DeliveryExclusiveOp,
   ): Promise<IOrderDeliveryStatus.COMPLETE_SMS | unknown> {
     try {
       const smsText = this.buildSmsText(orderDelivery, encryptKey, body, memo, tailText);
       const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber!;
-      await this.smsSend.send({
-        msgType: 'M',
-        to: decryptedDeliveryTarget,
-        from: fromPhoneNumber,
-        subject: title,
-        text: smsText,
-        filePath: filePathList,
-      });
+      await this.messageAttemptService.trackSend(
+        {
+          orderDeliveryId: orderDelivery.id,
+          slotOp,
+          channel: MessageAttemptChannel.MMS,
+          attemptType: MessageAttemptType.CHANNEL_FALLBACK,
+          sendReason: 'ALIM_TALK_FALLBACK',
+        },
+        (attemptId) =>
+          this.smsSend.send({
+            msgType: 'M',
+            to: decryptedDeliveryTarget,
+            from: fromPhoneNumber,
+            subject: title,
+            text: smsText,
+            filePath: filePathList,
+            attemptId,
+          }),
+      );
       orderDelivery.status = IOrderDeliveryStatus.COMPLETE_SMS;
       return IOrderDeliveryStatus.COMPLETE_SMS;
     } catch (e) {
@@ -2274,14 +2301,25 @@ export class DeliveryBatchService {
     const fromPhoneNumber =
       orderDelivery.orderProductMapping.fromPhoneNumber ||
       (await this.orderFromService.resolveSendDefaultPhone(getBillingUserId(orderDelivery.orderProductMapping.order)));
-    await this.smsSend.send({
-      msgType: 'M',
-      to: phoneNumber,
-      from: fromPhoneNumber,
-      subject: title,
-      text: smsText,
-      filePath: filePathList,
-    });
+    await this.messageAttemptService.trackSend(
+      {
+        orderDeliveryId: orderDelivery.id,
+        slotOp: DeliveryExclusiveOp.MANUAL_RESEND,
+        channel: MessageAttemptChannel.MMS,
+        attemptType: MessageAttemptType.MANUAL_RESEND,
+        sendReason: 'CS_RESEND',
+      },
+      (attemptId) =>
+        this.smsSend.send({
+          msgType: 'M',
+          to: phoneNumber,
+          from: fromPhoneNumber,
+          subject: title,
+          text: smsText,
+          filePath: filePathList,
+          attemptId,
+        }),
+    );
   }
 
   async csResendAsAlimTalk(
@@ -2346,11 +2384,21 @@ export class DeliveryBatchService {
     // 알림톡 시도
     let alimTalkSucceeded = false;
     try {
-      const { report } = await this.deliveryAlimTalk.send({
-        to: phoneNumber,
-        text: alimTalk,
-        encryptKey: encryptKey,
-      });
+      const { report } = await this.messageAttemptService.trackAlimTalk(
+        {
+          orderDeliveryId: orderDelivery.id,
+          slotOp: DeliveryExclusiveOp.MANUAL_RESEND,
+          attemptType: MessageAttemptType.MANUAL_RESEND,
+          sendReason: 'CS_RESEND',
+        },
+        () =>
+          this.deliveryAlimTalk.send({
+            to: phoneNumber,
+            text: alimTalk,
+            encryptKey: encryptKey,
+          }),
+        (result) => result.report.code === 'A000',
+      );
       alimTalkSucceeded = report.code === 'A000';
     } catch (e) {
       this.logger.warn(
@@ -2383,14 +2431,25 @@ export class DeliveryBatchService {
       orderDelivery.orderProductMapping.fromPhoneNumber ||
       (await this.orderFromService.resolveSendDefaultPhone(getBillingUserId(orderDelivery.orderProductMapping.order)));
 
-    await this.smsSend.send({
-      msgType: 'M',
-      to: phoneNumber,
-      from: fromPhoneNumber,
-      subject: title,
-      text: smsText,
-      filePath: filePathList,
-    });
+    await this.messageAttemptService.trackSend(
+      {
+        orderDeliveryId: orderDelivery.id,
+        slotOp: DeliveryExclusiveOp.MANUAL_RESEND,
+        channel: MessageAttemptChannel.MMS,
+        attemptType: MessageAttemptType.CHANNEL_FALLBACK,
+        sendReason: 'CS_ALIM_TALK_FALLBACK',
+      },
+      (attemptId) =>
+        this.smsSend.send({
+          msgType: 'M',
+          to: phoneNumber,
+          from: fromPhoneNumber,
+          subject: title,
+          text: smsText,
+          filePath: filePathList,
+          attemptId,
+        }),
+    );
 
     return IOrderDeliveryStatus.COMPLETE_SMS;
   }
@@ -2457,14 +2516,25 @@ export class DeliveryBatchService {
       orderDelivery.orderProductMapping.fromPhoneNumber ||
       (await this.orderFromService.resolveSendDefaultPhone(getBillingUserId(orderDelivery.orderProductMapping.order)));
 
-    await this.smsSend.send({
-      msgType,
-      to: phoneNumber,
-      from: fromPhoneNumber,
-      subject: msgType === 'L' ? ' ' : '',
-      text,
-      filePath: [],
-    });
+    await this.messageAttemptService.trackSend(
+      {
+        orderDeliveryId: orderDelivery.id,
+        slotOp: DeliveryExclusiveOp.MANUAL_RESEND,
+        channel: MessageAttemptChannel.SMS,
+        attemptType: MessageAttemptType.MANUAL_RESEND,
+        sendReason: 'CS_RESEND',
+      },
+      (attemptId) =>
+        this.smsSend.send({
+          msgType,
+          to: phoneNumber,
+          from: fromPhoneNumber,
+          subject: msgType === 'L' ? ' ' : '',
+          text,
+          filePath: [],
+          attemptId,
+        }),
+    );
   }
 
   async csResendAsEmail(orderDeliveryId: number): Promise<void> {
@@ -2623,6 +2693,8 @@ export class DeliveryBatchService {
     // B1/B3: 실패 재발송 — 보류(환불 미생성)/환불됨 분기. snapshot 은 reissue 호출 *전* 에 잡는다
     // (reissue 내부 reverseRefundForResend 가 ledger 를 release 해 exists() 가 뒤집히기 때문).
     // refunded reverse 보강은 비-SSG 만(SSG refunded 는 reissue 내부에서 처리), held-slot 발급은 SSG 포함 wallet 전체.
+    // 전환 건에서 점유할 배타 op — 실패 재발송이면 MANUAL_RESEND, 최초 발송이면 MESSAGE_SEND(§6.1 표 2-1).
+    const sendSlotOp = wasFailBefore ? DeliveryExclusiveOp.MANUAL_RESEND : DeliveryExclusiveOp.MESSAGE_SEND;
     const isWalletManaged = wasFailBefore ? await this.walletManagedPredicate.isWalletManaged(order.id) : false;
     const refundLedgerBeforeReissue = wasFailBefore ? await this.refundLedgerService.exists(orderDelivery.id) : false;
 
@@ -2688,7 +2760,7 @@ export class DeliveryBatchService {
       }
     }
 
-    const filePathList = [];
+    const filePathList: string[] = [];
     if (orderDelivery.imagePath) {
       filePathList.push(orderDelivery.imagePath);
     }
@@ -2727,11 +2799,22 @@ export class DeliveryBatchService {
     if (deliveryMethod === IOrderSendMethod.ALIM_TALK) {
       try {
         const alimTalk = AlimTalkTemplate(orderDelivery);
-        const { responseData, report } = await this.deliveryAlimTalk.send({
-          to: decryptedDeliveryTarget,
-          text: alimTalk,
-          encryptKey: encryptKey,
-        });
+        const { responseData, report } = await this.messageAttemptService.trackAlimTalk(
+          {
+            orderDeliveryId: orderDelivery.id,
+            slotOp: sendSlotOp,
+            attemptType: wasFailBefore ? MessageAttemptType.MANUAL_RESEND : MessageAttemptType.INITIAL,
+            sendReason: 'COUPON',
+            skipTracking: !!testOrderDeliveryId,
+          },
+          () =>
+            this.deliveryAlimTalk.send({
+              to: decryptedDeliveryTarget,
+              text: alimTalk,
+              encryptKey: encryptKey,
+            }),
+          (result) => result.report.code === 'A000',
+        );
 
         deliveryHistory.context = JSON.stringify(responseData);
         deliveryHistory.etcContext = JSON.stringify(report);
@@ -2754,6 +2837,7 @@ export class DeliveryBatchService {
           filePathList,
           decryptedDeliveryTarget,
           encryptKey,
+          sendSlotOp,
         );
 
         if (resultSms === IOrderDeliveryStatus.COMPLETE_SMS) {
@@ -2779,14 +2863,26 @@ export class DeliveryBatchService {
       const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber!;
 
       try {
-        await this.smsSend.send({
-          msgType: 'M',
-          to: decryptedDeliveryTarget,
-          from: fromPhoneNumber,
-          subject: title,
-          text: smsText,
-          filePath: filePathList,
-        });
+        await this.messageAttemptService.trackSend(
+          {
+            orderDeliveryId: orderDelivery.id,
+            slotOp: sendSlotOp,
+            channel: MessageAttemptChannel.MMS,
+            attemptType: wasFailBefore ? MessageAttemptType.MANUAL_RESEND : MessageAttemptType.INITIAL,
+            sendReason: 'COUPON',
+            skipTracking: !!testOrderDeliveryId,
+          },
+          (attemptId) =>
+            this.smsSend.send({
+              msgType: 'M',
+              to: decryptedDeliveryTarget,
+              from: fromPhoneNumber,
+              subject: title,
+              text: smsText,
+              filePath: filePathList,
+              attemptId,
+            }),
+        );
         this.markSendSuccess(orderDelivery, IOrderDeliveryStatus.COMPLETE);
         deliveryHistory.context = smsText;
       } catch (e) {
@@ -2815,14 +2911,26 @@ export class DeliveryBatchService {
         const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber!;
 
         try {
-          await this.smsSend.send({
-            msgType: 'M',
-            to: decryptedEmailReceiverPhone,
-            from: fromPhoneNumber,
-            subject: title,
-            text: emailText,
-            filePath: filePathList,
-          });
+          await this.messageAttemptService.trackSend(
+            {
+              orderDeliveryId: orderDelivery.id,
+              slotOp: sendSlotOp,
+              channel: MessageAttemptChannel.MMS,
+              attemptType: wasFailBefore ? MessageAttemptType.MANUAL_RESEND : MessageAttemptType.INITIAL,
+              sendReason: 'EMAIL_SMS_RESEND',
+              skipTracking: !!testOrderDeliveryId,
+            },
+            (attemptId) =>
+              this.smsSend.send({
+                msgType: 'M',
+                to: decryptedEmailReceiverPhone,
+                from: fromPhoneNumber,
+                subject: title,
+                text: emailText,
+                filePath: filePathList,
+                attemptId,
+              }),
+          );
           this.markSendSuccess(orderDelivery, IOrderDeliveryStatus.COMPLETE);
           deliveryHistory.context = emailText;
           deliveryHistory.target = this.cryptoCipher.encryptDeliveryTarget(decryptedEmailReceiverPhone);

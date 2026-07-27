@@ -19,6 +19,9 @@ import {
 } from '../interface/order.delivery.report.state';
 import { IMailSend } from '../../mail/interface/mail-send';
 import { ISmsSend } from '../../sms/interface/sms.send';
+import { MessageAttemptService } from './message-attempt.service';
+import { MessageAttemptChannel, MessageAttemptType } from '../interface/message.attempt.status';
+import { DeliveryExclusiveOp } from '../interface/delivery.workflow.status';
 import { IOrderType } from '../../order/interface/order.type';
 import { IProductType } from '../../product/interface/product.type';
 import { IFileStorage } from '../../file/interface/file.storage';
@@ -48,6 +51,7 @@ export class DeliverySendService {
     private mailSend: IMailSend,
     @Inject('ISmsSend')
     private smsSend: ISmsSend,
+    private messageAttemptService: MessageAttemptService,
     private cryptoCipher: CryptoCipher,
     private configService: ConfigService,
     @InjectRepository(EmailSendHistoryEntity)
@@ -144,11 +148,21 @@ export class DeliverySendService {
   ): Promise<void> {
     try {
       const alimTalk = AlimTalkTemplate(orderDelivery);
-      const { responseData, report } = await this.deliveryAlimTalk.send({
-        to: decryptedDeliveryTarget,
-        text: alimTalk,
-        encryptKey: encryptKey,
-      });
+      const { responseData, report } = await this.messageAttemptService.trackAlimTalk(
+        {
+          orderDeliveryId: orderDelivery.id,
+          slotOp: DeliveryExclusiveOp.MESSAGE_SEND,
+          attemptType: MessageAttemptType.INITIAL,
+          sendReason: 'COUPON',
+        },
+        () =>
+          this.deliveryAlimTalk.send({
+            to: decryptedDeliveryTarget,
+            text: alimTalk,
+            encryptKey: encryptKey,
+          }),
+        (result) => result.report.code === 'A000',
+      );
 
       deliveryHistory.context = JSON.stringify(responseData);
       deliveryHistory.etcContext = JSON.stringify(report);
@@ -214,11 +228,22 @@ export class DeliverySendService {
     deliveryHistory.orderDeliveryId = orderDelivery.id;
     try {
       const alimTalk = AlimTalkTemplate(orderDelivery);
-      const { msgKey, responseData } = await this.deliveryAlimTalk.postAlimtalk({
-        to: decryptedDeliveryTarget,
-        text: alimTalk,
-        encryptKey: encryptKey,
-      });
+      const { msgKey, responseData } = await this.messageAttemptService.trackAlimTalk(
+        {
+          orderDeliveryId: orderDelivery.id,
+          slotOp: DeliveryExclusiveOp.MESSAGE_SEND,
+          attemptType: MessageAttemptType.INITIAL,
+          sendReason: 'COUPON',
+        },
+        () =>
+          this.deliveryAlimTalk.postAlimtalk({
+            to: decryptedDeliveryTarget,
+            text: alimTalk,
+            encryptKey: encryptKey,
+          }),
+        // POST 수락(msgKey 확보)은 접수 성공이며 최종 도달은 reportSweep 가 확정한다 → 미확정(TRACKING).
+        (result) => !!result.msgKey,
+      );
 
       deliveryHistory.context = JSON.stringify(responseData);
       deliveryHistory.isSuccess = true; // POST 수락 (최종 도달 여부는 reportSweep 가 정정)
@@ -265,14 +290,25 @@ export class DeliverySendService {
 
     try {
       const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber!;
-      await this.smsSend.send({
-        msgType: 'M',
-        to: decryptedDeliveryTarget,
-        from: fromPhoneNumber,
-        subject: title,
-        text: smsText,
-        filePath: filePathList,
-      });
+      await this.messageAttemptService.trackSend(
+        {
+          orderDeliveryId: orderDelivery.id,
+          slotOp: DeliveryExclusiveOp.MESSAGE_SEND,
+          channel: MessageAttemptChannel.MMS,
+          attemptType: MessageAttemptType.INITIAL,
+          sendReason: 'COUPON',
+        },
+        (attemptId) =>
+          this.smsSend.send({
+            msgType: 'M',
+            to: decryptedDeliveryTarget,
+            from: fromPhoneNumber,
+            subject: title,
+            text: smsText,
+            filePath: filePathList,
+            attemptId,
+          }),
+      );
       this.markSendSuccess(orderDelivery, IOrderDeliveryStatus.COMPLETE);
       deliveryHistory.context = smsText;
     } catch (e) {
@@ -366,18 +402,30 @@ export class DeliverySendService {
     filePathList: string[],
     decryptedDeliveryTarget: string,
     encryptKey: string,
+    slotOp: DeliveryExclusiveOp = DeliveryExclusiveOp.MESSAGE_SEND,
   ): Promise<IOrderDeliveryStatus.COMPLETE_SMS | unknown> {
     try {
       const smsText = this.buildSmsText(orderDelivery, encryptKey, body, memo, tailText);
       const fromPhoneNumber = orderDelivery.orderProductMapping.fromPhoneNumber!;
-      await this.smsSend.send({
-        msgType: 'M',
-        to: decryptedDeliveryTarget,
-        from: fromPhoneNumber,
-        subject: title,
-        text: smsText,
-        filePath: filePathList,
-      });
+      await this.messageAttemptService.trackSend(
+        {
+          orderDeliveryId: orderDelivery.id,
+          slotOp,
+          channel: MessageAttemptChannel.MMS,
+          attemptType: MessageAttemptType.CHANNEL_FALLBACK,
+          sendReason: 'ALIM_TALK_FALLBACK',
+        },
+        (attemptId) =>
+          this.smsSend.send({
+            msgType: 'M',
+            to: decryptedDeliveryTarget,
+            from: fromPhoneNumber,
+            subject: title,
+            text: smsText,
+            filePath: filePathList,
+            attemptId,
+          }),
+      );
       orderDelivery.status = IOrderDeliveryStatus.COMPLETE_SMS;
       return IOrderDeliveryStatus.COMPLETE_SMS;
     } catch (e) {
