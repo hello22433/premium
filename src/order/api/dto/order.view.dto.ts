@@ -108,7 +108,7 @@ export class OrderViewDto {
   sendType: string | null;
 
   @ApiProperty({
-    description: '발송 실패 건 포함 여부',
+    description: '미해결 발송 실패 건 포함 여부 (재발송되지 않은 FAIL/FAIL_SMS 존재)',
   })
   hasFailedDelivery: boolean;
 
