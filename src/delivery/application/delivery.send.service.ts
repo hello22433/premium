@@ -147,11 +147,20 @@ export class DeliverySendService {
   ): Promise<void> {
     try {
       const alimTalk = AlimTalkTemplate(orderDelivery);
-      const { responseData, report } = await this.deliveryAlimTalk.send({
-        to: decryptedDeliveryTarget,
-        text: alimTalk,
-        encryptKey: encryptKey,
-      });
+      const { responseData, report } = await this.messageAttemptService.trackAlimTalk(
+        {
+          orderDeliveryId: orderDelivery.id,
+          attemptType: MessageAttemptType.INITIAL,
+          sendReason: 'COUPON',
+        },
+        () =>
+          this.deliveryAlimTalk.send({
+            to: decryptedDeliveryTarget,
+            text: alimTalk,
+            encryptKey: encryptKey,
+          }),
+        (result) => result.report.code === 'A000',
+      );
 
       deliveryHistory.context = JSON.stringify(responseData);
       deliveryHistory.etcContext = JSON.stringify(report);

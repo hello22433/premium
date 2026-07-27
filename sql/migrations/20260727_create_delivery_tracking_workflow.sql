@@ -73,7 +73,7 @@ CREATE TABLE `pin_issue_command` (
   `owner_token`               VARCHAR(64)  NULL                           COMMENT 'Level B 실행 lease 소유자',
   `generation`                BIGINT       NOT NULL DEFAULT 0             COMMENT 'Level B 세대(3중 fencing)',
   `workflow_version`          BIGINT       NULL                           COMMENT '바인딩된 delivery_workflow.workflow_version(3중 fencing)',
-  `created_by_op`             VARCHAR(24)  NOT NULL                       COMMENT '생성 출처 op PIN_ISSUE|RETRY|PIN_REISSUE (§5.2·MEDIUM 3)',
+  `created_by_op`             VARCHAR(24)  NOT NULL                       COMMENT '생성 출처 op PIN_ISSUE|RETRY|PIN_REISSUE, 컷오버 이전 legacy 경로는 LEGACY_SEND (§5.2·MEDIUM 3)',
   `created_workflow_version`  BIGINT       NOT NULL                       COMMENT '생성 시점 workflow_version(승인 대조 조인 키)',
   `approval_id`               BIGINT       NULL                           COMMENT 'DUAL op(PIN_REISSUE)만 필수. dual_approval.id',
   `next_attempt_at`           DATETIME(6)  NULL                           COMMENT 'RETRY_PENDING 재시도 예정 시각',
@@ -127,7 +127,7 @@ CREATE TABLE `message_attempt` (
   `owner_token`               VARCHAR(64)  NULL                           COMMENT 'Level B 실행 lease 소유자',
   `generation`                BIGINT       NOT NULL DEFAULT 0             COMMENT 'Level B 세대(3중 fencing)',
   `workflow_version`          BIGINT       NULL                           COMMENT '바인딩된 workflow_version(3중 fencing)',
-  `created_by_op`             VARCHAR(24)  NOT NULL                       COMMENT '생성 출처 op MESSAGE_SEND|RETRY|MANUAL_RESEND (§3 다·HIGH 2)',
+  `created_by_op`             VARCHAR(24)  NOT NULL                       COMMENT '생성 출처 op MESSAGE_SEND|RETRY|MANUAL_RESEND, 컷오버 이전 legacy 경로는 LEGACY_SEND (§3 다·HIGH 2)',
   `created_workflow_version`  BIGINT       NOT NULL                       COMMENT '생성 시점 workflow_version(승인 대조 조인 키)',
   `approval_id`               BIGINT       NULL                           COMMENT 'DUAL op(MANUAL_RESEND)만 필수. dual_approval.id',
   `cancel_requested_at`       DATETIME(6)  NULL                           COMMENT 'durable cancel intent 커밋 시각 (§5.3 HIGH 3)',
@@ -138,15 +138,20 @@ CREATE TABLE `message_attempt` (
   `resolved_at`               DATETIME(6)  NULL                           COMMENT '터미널 확정 시각',
   -- 유형별 재발송 허용 횟수 강제 (§5.3 표): AUTO_504=체인당 1회, CHANNEL_FALLBACK=원 attempt 당 1회,
   -- MANUAL_RESEND=원 attempt 당 다회(attempt_seq 포함), INITIAL=제약 없음(NULL 다중 허용).
+  --
+  -- ⚠ NULL 부모 주의: MySQL 에서 CONCAT(..., NULL) = NULL 이고 unique 인덱스는 NULL 을 다중 허용하므로,
+  --   `retry_of_attempt_id` 가 NULL 이면 제약이 조용히 무력화된다. 정상 흐름에서는 알림톡 시도도
+  --   추적하므로 CHANNEL_FALLBACK 은 항상 부모를 갖지만, 추적 공백(알림톡 행 생성 실패 등)에서도
+  --   같은 쿠폰에 폴백이 여러 건 쌓이지 않도록 **order_delivery 범위 키로 대체**한다.
   `retry_scope_key`           VARCHAR(80)
       GENERATED ALWAYS AS (
         CASE `attempt_type`
           WHEN 'AUTO_504'         THEN CONCAT('A:', `root_attempt_id`)
-          WHEN 'CHANNEL_FALLBACK' THEN CONCAT('C:', `retry_of_attempt_id`)
+          WHEN 'CHANNEL_FALLBACK' THEN CONCAT('C:', COALESCE(`retry_of_attempt_id`, CONCAT('od', `order_delivery_id`)))
           WHEN 'MANUAL_RESEND'    THEN CONCAT('M:', `retry_of_attempt_id`, ':', `attempt_seq`)
         END
       ) STORED
-      COMMENT '재발송 유형별 unique 범위 보조 (§5.3)',
+      COMMENT '재발송 유형별 unique 범위 보조 (§5.3). CHANNEL_FALLBACK 은 부모 부재 시 order_delivery 범위',
   `created_at`                DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
   `updated_at`                DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
   PRIMARY KEY (`id`),
@@ -161,6 +166,10 @@ CREATE TABLE `message_attempt` (
   KEY `idx_message_attempt_approval` (`approval_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='메시지(알림톡/SMS/MMS) 개별 시도 상태 머신';
 
+-- M3 주석: created_by_op = LEGACY_SEND 는 컷오버 이전 legacy 발송 경로가 만든 관찰용 행이다.
+--   전환 마크(delivery_workflow.cutover_migrated_at)가 없는 건은 기존 claimedAt 이 유일한 동시성 모델이라
+--   Level A 슬롯·op 가드의 적용 대상이 아니므로, §10 불변식 ②/②-b 집계에서 제외한다
+--   (불변식 SQL 의 created_by_op IN ('MESSAGE_SEND','RETRY') / = 'MANUAL_RESEND' 필터가 자연히 걸러낸다).
 -- M3 검증
 -- 상관키 유일성(§10 2단계 PASS): SELECT attempt_id FROM message_attempt GROUP BY attempt_id HAVING COUNT(*) > 1; -- 0행
 -- 체인당 AUTO_504 1회(§10 4단계 PASS):

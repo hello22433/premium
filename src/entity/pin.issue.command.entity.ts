@@ -1,6 +1,6 @@
 import { Column, CreateDateColumn, Entity, Index, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm';
 import { PartnerResponseClass, PinIssueCommandStatus } from '../delivery/interface/pin.issue.command.status';
-import { DeliveryExclusiveOp } from '../delivery/interface/delivery.workflow.status';
+import { TrackingCreatedByOp } from '../delivery/interface/delivery.workflow.status';
 
 /**
  * 협력사 PIN 발급 명령 상태 머신. §5.2.
@@ -52,7 +52,7 @@ export class PinIssueCommandEntity {
   workflowVersion: string | null;
 
   @Column({ type: 'varchar', length: 24, comment: '생성 출처 op PIN_ISSUE|RETRY|PIN_REISSUE' })
-  createdByOp: DeliveryExclusiveOp;
+  createdByOp: TrackingCreatedByOp;
 
   @Column({ type: 'bigint', comment: '생성 시점 workflow_version(승인 대조 조인 키)' })
   createdWorkflowVersion: string;

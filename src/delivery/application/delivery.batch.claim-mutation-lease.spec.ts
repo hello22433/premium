@@ -350,6 +350,7 @@ describe('DeliveryBatchService.processOneDeliveryInternal — full save() 부재
       // shadow 추적은 발송을 대행하지 않는다 — 상관키 없이 그대로 통과시키는 스텁.
       (sut as any).messageAttemptService = {
         trackSend: (_ctx: unknown, send: (attemptId?: string) => Promise<unknown>) => send(undefined),
+        trackAlimTalk: (_ctx: unknown, send: () => Promise<unknown>) => send(),
       };
       (sut as any).buildSmsText = jest.fn().mockReturnValue('본문');
       // markSendSuccess 는 deliverySendService 로 위임된다(프로덕션 174行).

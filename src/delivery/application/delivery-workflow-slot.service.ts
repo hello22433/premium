@@ -65,11 +65,36 @@ export const ALLOWED_WORKFLOW_STATUSES: Record<DeliveryExclusiveOp, DeliveryWork
   ],
 };
 
-/** DUAL_APPROVAL 이 필요한 op (§8.1·§8.2). REFUND 는 경로 A(OPS_REVIEW_REQUIRED)만 DUAL 이다. */
-export const DUAL_REQUIRED_OPS: DeliveryExclusiveOp[] = [
-  DeliveryExclusiveOp.OPS_RESOLVE,
-  DeliveryExclusiveOp.PIN_REISSUE,
-];
+/**
+ * **DUAL_APPROVAL 이 필요한 (op, workflow 상태) 조합** (§6.1 표 2-1·§8.1).
+ *
+ * DUAL 요구는 op 단위가 아니라 **op × 진입 상태** 단위다. 이 구분을 op 목록으로 뭉개면
+ * `OPS_REVIEW_REQUIRED` 의 수동 재발송·환불이 승인 없이 슬롯을 잡아 four-eyes 가 우회된다.
+ * - `MANUAL_RESEND` : `FAILED_FINAL` 은 슬롯 fencing 만, `OPS_REVIEW_REQUIRED` 는 DUAL 필수
+ * - `REFUND`        : 종결 상태(경로 B)는 DUAL 불요, `OPS_REVIEW_REQUIRED`(경로 A)는 DUAL 필수
+ * - `OPS_RESOLVE` / `PIN_REISSUE` : 허용 상태 자체가 `OPS_REVIEW_REQUIRED` 뿐이라 항상 DUAL
+ *
+ * 승인이 없으면 이 상태들을 **허용 상태 집합에서 뺀 채** 조건부 UPDATE 를 수행하므로,
+ * "승인 없이 OPS_REVIEW_REQUIRED 를 점유"하는 경로는 SQL 레벨에서 성립하지 않는다.
+ */
+export const DUAL_REQUIRED_STATUSES: Partial<Record<DeliveryExclusiveOp, DeliveryWorkflowStatus[]>> = {
+  [DeliveryExclusiveOp.MANUAL_RESEND]: [DeliveryWorkflowStatus.OPS_REVIEW_REQUIRED],
+  [DeliveryExclusiveOp.REFUND]: [DeliveryWorkflowStatus.OPS_REVIEW_REQUIRED],
+  [DeliveryExclusiveOp.OPS_RESOLVE]: [DeliveryWorkflowStatus.OPS_REVIEW_REQUIRED],
+  [DeliveryExclusiveOp.PIN_REISSUE]: [DeliveryWorkflowStatus.OPS_REVIEW_REQUIRED],
+};
+
+/** 승인 없이 점유 가능한 상태(= 허용 상태 − DUAL 필수 상태). 비어 있으면 승인 없이는 점유 불가한 op 다. */
+export function statusesWithoutApproval(op: DeliveryExclusiveOp): DeliveryWorkflowStatus[] {
+  const dualOnly = DUAL_REQUIRED_STATUSES[op] ?? [];
+  return ALLOWED_WORKFLOW_STATUSES[op].filter((status) => !dualOnly.includes(status));
+}
+
+/** 승인을 제시했을 때 점유 가능한 상태(= 허용 상태 ∩ DUAL 필수 상태). 비어 있으면 승인 대상이 아닌 op 다. */
+export function statusesWithApproval(op: DeliveryExclusiveOp): DeliveryWorkflowStatus[] {
+  const dualOnly = DUAL_REQUIRED_STATUSES[op] ?? [];
+  return ALLOWED_WORKFLOW_STATUSES[op].filter((status) => dualOnly.includes(status));
+}
 
 export interface SlotApprovalBinding {
   /** 실행에 사용할 승인 행을 **단일 지목**한다. "조건에 맞는 승인이 있으면 통과"는 금지(§6.1). */
@@ -104,6 +129,8 @@ export type AcquireSlotResult =
       activeOp?: DeliveryExclusiveOp | null;
       leaseExpiresAt?: Date | null;
       workflowStatus?: DeliveryWorkflowStatus | null;
+      /** 상태는 op 허용 범위이지만 DUAL 승인이 없어 막힌 경우. 화면은 "승인 요청"을 안내한다(§8.1). */
+      requiresDualApproval?: boolean;
     };
 
 /**
@@ -165,7 +192,12 @@ export class DeliveryWorkflowSlotService {
     const leaseExpiresAt = new Date(now.getTime() + leaseMs);
     const ownerToken = randomUUID();
 
-    if (DUAL_REQUIRED_OPS.includes(op) && !input.approval) {
+    // DUAL 요구는 op × 상태 조합이다(§6.1 표 2-1). 승인 유무에 따라 **허용 상태 집합 자체**를 좁혀서
+    // "승인 없이 OPS_REVIEW_REQUIRED 점유"(four-eyes 우회)를 SQL 레벨에서 불가능하게 만든다.
+    const allowedStatuses = input.approval ? statusesWithApproval(op) : statusesWithoutApproval(op);
+    if (allowedStatuses.length === 0) {
+      // 승인 없이 점유할 수 있는 상태가 없거나(OPS_RESOLVE/PIN_REISSUE),
+      // 승인 대상이 아닌 op 에 승인을 붙인 경우(전용轉用 시도).
       return { acquired: false, code: DeliverySlotFailureCode.DELIVERY_OPERATION_NOT_ALLOWED };
     }
 
@@ -180,7 +212,7 @@ export class DeliveryWorkflowSlotService {
         workflowVersion: () => 'workflow_version + 1',
       })
       .where('order_delivery_id = :orderDeliveryId', { orderDeliveryId })
-      .andWhere('workflow_status IN (:...allowedStatuses)', { allowedStatuses: ALLOWED_WORKFLOW_STATUSES[op] })
+      .andWhere('workflow_status IN (:...allowedStatuses)', { allowedStatuses })
       .andWhere('(active_exclusive_op IS NULL OR exclusive_lease_expires_at < :now)', { now });
 
     this.applyOpGuards(qb, op);
@@ -209,7 +241,7 @@ export class DeliveryWorkflowSlotService {
     const result = await qb.execute();
 
     if (!result.affected) {
-      return await this.classifyFailure(orderDeliveryId, op, now, manager);
+      return await this.classifyFailure(orderDeliveryId, op, now, !!input.approval, manager);
     }
 
     const row = await this.repo(manager).findOne({ where: { orderDeliveryId } });
@@ -368,6 +400,7 @@ export class DeliveryWorkflowSlotService {
     orderDeliveryId: number,
     op: DeliveryExclusiveOp,
     now: Date,
+    hadApproval: boolean,
     manager?: EntityManager,
   ): Promise<AcquireSlotResult> {
     const row = await this.repo(manager).findOne({ where: { orderDeliveryId } });
@@ -387,11 +420,14 @@ export class DeliveryWorkflowSlotService {
       };
     }
 
-    if (!ALLOWED_WORKFLOW_STATUSES[op].includes(row.workflowStatus)) {
+    const effectiveStatuses = hadApproval ? statusesWithApproval(op) : statusesWithoutApproval(op);
+    if (!effectiveStatuses.includes(row.workflowStatus)) {
       return {
         acquired: false,
         code: DeliverySlotFailureCode.DELIVERY_OPERATION_NOT_ALLOWED,
         workflowStatus: row.workflowStatus,
+        // 상태 자체는 op 허용 범위인데 승인이 없어 막힌 경우 = DUAL 필요(재승인/승인 요청 안내용).
+        requiresDualApproval: !hadApproval && statusesWithApproval(op).includes(row.workflowStatus),
       };
     }
 

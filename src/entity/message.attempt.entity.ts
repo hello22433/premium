@@ -6,7 +6,7 @@ import {
   MessageCancelReason,
   MessageCancelResolution,
 } from '../delivery/interface/message.attempt.status';
-import { DeliveryExclusiveOp } from '../delivery/interface/delivery.workflow.status';
+import { TrackingCreatedByOp } from '../delivery/interface/delivery.workflow.status';
 
 /**
  * 알림톡/SMS/MMS 개별 시도 상태 머신. §5.3.
@@ -99,7 +99,7 @@ export class MessageAttemptEntity {
   workflowVersion: string | null;
 
   @Column({ type: 'varchar', length: 24, comment: '생성 출처 op MESSAGE_SEND|RETRY|MANUAL_RESEND' })
-  createdByOp: DeliveryExclusiveOp;
+  createdByOp: TrackingCreatedByOp;
 
   @Column({ type: 'bigint', comment: '생성 시점 workflow_version(승인 대조 조인 키)' })
   createdWorkflowVersion: string;

@@ -196,7 +196,10 @@ describe('DeliveryBatchService.reissuePinAndCreateImageIfNeeded - refund ledger 
         // shadow 추적은 발송을 대행하지 않는다 — 상관키 없이 그대로 통과시키는 스텁.
         {
           provide: MessageAttemptService,
-          useValue: { trackSend: (_ctx: unknown, send: (attemptId?: string) => Promise<unknown>) => send(undefined) },
+          useValue: {
+            trackSend: (_ctx: unknown, send: (attemptId?: string) => Promise<unknown>) => send(undefined),
+            trackAlimTalk: (_ctx: unknown, send: () => Promise<unknown>) => send(),
+          },
         },
         { provide: DeliveryTrackHttp, useValue: {} },
         { provide: CryptoCipher, useValue: {} },

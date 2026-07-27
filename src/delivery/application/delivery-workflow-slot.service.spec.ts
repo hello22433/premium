@@ -1,7 +1,8 @@
 import {
   ALLOWED_WORKFLOW_STATUSES,
   DeliveryWorkflowSlotService,
-  DUAL_REQUIRED_OPS,
+  statusesWithApproval,
+  statusesWithoutApproval,
 } from './delivery-workflow-slot.service';
 import {
   DeliveryExclusiveOp,
@@ -145,15 +146,68 @@ describe('DeliveryWorkflowSlotService — Level A 배타 슬롯', () => {
       expect(guard!.sql).toContain("'CLAIMED','SUBMITTING','RECONCILING','UNKNOWN'");
     });
 
-    it('DUAL op 는 승인 바인딩 없이는 DB 를 건드리지 않고 거부한다', async () => {
-      for (const op of DUAL_REQUIRED_OPS) {
+    it('승인 없는 MANUAL_RESEND 는 OPS_REVIEW_REQUIRED 를 허용 상태에서 제외한다(four-eyes 우회 차단)', async () => {
+      const { service, conditions } = createService();
+
+      await service.acquire({ orderDeliveryId, op: DeliveryExclusiveOp.MANUAL_RESEND });
+
+      const statusCondition = conditions.find((c) => c.params?.allowedStatuses);
+      expect(statusCondition!.params!.allowedStatuses).toEqual([DeliveryWorkflowStatus.FAILED_FINAL]);
+    });
+
+    it('승인 없는 REFUND 는 종결 상태(경로 B)만 허용하고 OPS_REVIEW_REQUIRED(경로 A)를 제외한다', async () => {
+      const { service, conditions } = createService();
+
+      await service.acquire({ orderDeliveryId, op: DeliveryExclusiveOp.REFUND });
+
+      const statusCondition = conditions.find((c) => c.params?.allowedStatuses);
+      expect(statusCondition!.params!.allowedStatuses).not.toContain(DeliveryWorkflowStatus.OPS_REVIEW_REQUIRED);
+      expect(statusCondition!.params!.allowedStatuses).toEqual([
+        DeliveryWorkflowStatus.FAILED_FINAL,
+        DeliveryWorkflowStatus.CANCELLED,
+        DeliveryWorkflowStatus.RESOLVED_MANUALLY_FAILED,
+      ]);
+    });
+
+    it('승인을 제시한 DUAL op 는 OPS_REVIEW_REQUIRED 로만 좁혀 점유한다', async () => {
+      for (const op of [DeliveryExclusiveOp.MANUAL_RESEND, DeliveryExclusiveOp.REFUND]) {
+        const { service, conditions } = createService();
+
+        await service.acquire({
+          orderDeliveryId,
+          op,
+          approval: { approvalId: '1', payloadHash: 'h'.repeat(64), boundWorkflowVersion: '8' },
+        });
+
+        const statusCondition = conditions.find((c) => c.params?.allowedStatuses);
+        expect(statusCondition!.params!.allowedStatuses).toEqual([DeliveryWorkflowStatus.OPS_REVIEW_REQUIRED]);
+      }
+    });
+
+    it('항상 DUAL 인 op(OPS_RESOLVE·PIN_REISSUE)는 승인 없이는 DB 를 건드리지 않고 거부한다', async () => {
+      for (const op of [DeliveryExclusiveOp.OPS_RESOLVE, DeliveryExclusiveOp.PIN_REISSUE]) {
         const { service, conditions } = createService();
 
         const result = await service.acquire({ orderDeliveryId, op });
 
         expect(result).toEqual({ acquired: false, code: DeliverySlotFailureCode.DELIVERY_OPERATION_NOT_ALLOWED });
+        expect(statusesWithoutApproval(op)).toEqual([]);
         expect(conditions).toHaveLength(0);
       }
+    });
+
+    it('승인 대상이 아닌 자동 op 에 승인을 붙이면 전용(轉用)으로 보고 거부한다', async () => {
+      const { service, conditions } = createService();
+
+      const result = await service.acquire({
+        orderDeliveryId,
+        op: DeliveryExclusiveOp.MESSAGE_SEND,
+        approval: { approvalId: '1', payloadHash: 'h'.repeat(64), boundWorkflowVersion: '8' },
+      });
+
+      expect(statusesWithApproval(DeliveryExclusiveOp.MESSAGE_SEND)).toEqual([]);
+      expect(result).toEqual({ acquired: false, code: DeliverySlotFailureCode.DELIVERY_OPERATION_NOT_ALLOWED });
+      expect(conditions).toHaveLength(0);
     });
 
     it('DUAL op 는 승인 5개 조건(id·op·delivery·바인딩 버전·APPROVED)을 같은 UPDATE 에서 검증한다', async () => {
@@ -268,6 +322,24 @@ describe('DeliveryWorkflowSlotService — Level A 배타 슬롯', () => {
 
       expect(cancelResend).toMatchObject({ code: DeliverySlotFailureCode.DELIVERY_RESEND_NOT_SCHEDULED });
       expect(cancelInflight).toMatchObject({ code: DeliverySlotFailureCode.DELIVERY_NO_INFLIGHT_SEND });
+    });
+
+    it('승인 없는 MANUAL_RESEND 가 OPS_REVIEW_REQUIRED 에서 막히면 DUAL 승인 필요를 알린다', async () => {
+      const { service } = createService({
+        affected: 0,
+        row: {
+          workflowStatus: DeliveryWorkflowStatus.OPS_REVIEW_REQUIRED,
+          activeExclusiveOp: null,
+          exclusiveLeaseExpiresAt: null,
+        },
+      });
+
+      const result = await service.acquire({ orderDeliveryId, op: DeliveryExclusiveOp.MANUAL_RESEND, now });
+
+      expect(result).toMatchObject({
+        code: DeliverySlotFailureCode.DELIVERY_OPERATION_NOT_ALLOWED,
+        requiresDualApproval: true,
+      });
     });
 
     it('대상 workflow 가 없으면 WORKFLOW_NOT_FOUND', async () => {

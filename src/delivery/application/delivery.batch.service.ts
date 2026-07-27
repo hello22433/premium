@@ -2369,11 +2369,20 @@ export class DeliveryBatchService {
     // 알림톡 시도
     let alimTalkSucceeded = false;
     try {
-      const { report } = await this.deliveryAlimTalk.send({
-        to: phoneNumber,
-        text: alimTalk,
-        encryptKey: encryptKey,
-      });
+      const { report } = await this.messageAttemptService.trackAlimTalk(
+        {
+          orderDeliveryId: orderDelivery.id,
+          attemptType: MessageAttemptType.MANUAL_RESEND,
+          sendReason: 'CS_RESEND',
+        },
+        () =>
+          this.deliveryAlimTalk.send({
+            to: phoneNumber,
+            text: alimTalk,
+            encryptKey: encryptKey,
+          }),
+        (result) => result.report.code === 'A000',
+      );
       alimTalkSucceeded = report.code === 'A000';
     } catch (e) {
       this.logger.warn(
@@ -2770,11 +2779,21 @@ export class DeliveryBatchService {
     if (deliveryMethod === IOrderSendMethod.ALIM_TALK) {
       try {
         const alimTalk = AlimTalkTemplate(orderDelivery);
-        const { responseData, report } = await this.deliveryAlimTalk.send({
-          to: decryptedDeliveryTarget,
-          text: alimTalk,
-          encryptKey: encryptKey,
-        });
+        const { responseData, report } = await this.messageAttemptService.trackAlimTalk(
+          {
+            orderDeliveryId: orderDelivery.id,
+            attemptType: wasFailBefore ? MessageAttemptType.MANUAL_RESEND : MessageAttemptType.INITIAL,
+            sendReason: 'COUPON',
+            skipTracking: !!testOrderDeliveryId,
+          },
+          () =>
+            this.deliveryAlimTalk.send({
+              to: decryptedDeliveryTarget,
+              text: alimTalk,
+              encryptKey: encryptKey,
+            }),
+          (result) => result.report.code === 'A000',
+        );
 
         deliveryHistory.context = JSON.stringify(responseData);
         deliveryHistory.etcContext = JSON.stringify(report);

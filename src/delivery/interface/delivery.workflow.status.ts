@@ -59,6 +59,19 @@ export enum DeliveryExclusiveOp {
 }
 
 /**
+ * 컷오버 **이전** legacy 발송 경로가 만든 추적 행의 생성 출처 표식.
+ *
+ * 전환 마크(`cutover_migrated_at`)가 없는 건은 기존 `claimedAt`/`mutationClaimedAt` 이 유일한
+ * 동시성 모델이며(§9 단일 동시성 모델 원칙), Level A 슬롯·op 가드의 적용 대상이 아니다.
+ * 이 행들을 `MESSAGE_SEND`/`RETRY` 로 기록하면 `§10` 불변식 ②(자동 op 가드 위반)·②-b(승인 없는
+ * 수동 재발송)가 legacy 정상 동작을 위반으로 집계하므로 **별도 값으로 분리**해 집계에서 제외한다.
+ */
+export const LEGACY_SEND_OP = 'LEGACY_SEND';
+
+/** 추적 행(`message_attempt`·`pin_issue_command`)의 `created_by_op` 값 집합. */
+export type TrackingCreatedByOp = DeliveryExclusiveOp | typeof LEGACY_SEND_OP;
+
+/**
  * `OPS_REVIEW_REQUIRED` 승격 사유 (§6.3·§7.1).
  */
 export enum OpsReviewReason {
