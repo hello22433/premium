@@ -130,7 +130,9 @@ export class MessageResultReconcileService {
     // 승격은 정산 보류·운영 배정 신호일 뿐 조회 중단 신호가 아니다. 다만 늦게 도착한 확정 결과로
     // 자동 종결·자동 정산 정정을 하지 않고 `LATE_RESULT_REVIEW` 로 기록만 한다.
     const unknown = await this.attemptRepository.find({
-      where: { status: MessageAttemptStatus.UNKNOWN, mseq: Not(IsNull()), lateResultAt: IsNull() },
+      // `MSEQ` 유무로 거르지 않는다 — 재조정 중 SLA 초과로 승격된 건은 `MSEQ` 가 없고,
+      // 그 결과는 상관키(`EXT_COL2`)로만 찾을 수 있다. 걸러내면 90일 동안 영원히 못 본다.
+      where: { status: MessageAttemptStatus.UNKNOWN, lateResultAt: IsNull() },
       order: { stateEnteredAt: 'ASC' },
       take: limit,
     });
@@ -271,7 +273,11 @@ export class MessageResultReconcileService {
     const startMonth = attempt.nextSearchMonth ?? attempt.receiptMonth ?? toYearMonth(attempt.createdAt);
 
     for (const month of monthsToSearch(startMonth, currentMonth)) {
-      const row = await this.gemtekResultQuery.findByMseq(month, attempt.mseq!);
+      // `MSEQ` 를 확보하지 못한 채 승격된 건(재조정 중 SLA 초과)도 조회 대상이다.
+      // 그런 건은 상관키(`EXT_COL2`)로만 찾을 수 있으므로 조회 키를 상태에 맞게 고른다.
+      const row = attempt.mseq
+        ? await this.gemtekResultQuery.findByMseq(month, attempt.mseq)
+        : await this.gemtekResultQuery.findByAttemptId(month, attempt.attemptId);
       if (!row || row.stat !== '3') {
         continue;
       }
@@ -279,6 +285,8 @@ export class MessageResultReconcileService {
       await this.attemptRepository.update(
         { attemptId: attempt.attemptId, status: MessageAttemptStatus.UNKNOWN },
         {
+          // 상관키로 찾은 건은 이제 `MSEQ` 를 알게 됐으므로 함께 남긴다(이후 조회·운영 확인 근거).
+          mseq: attempt.mseq ?? String(row.mseq),
           gemtekStat: row.stat,
           gemtekResult: row.result,
           sendTime: row.sendTime,
@@ -289,7 +297,7 @@ export class MessageResultReconcileService {
       await this.markLateResultReview(attempt.orderDeliveryId, now);
       this.logger.warn(
         `[LATE_RESULT_REVIEW] 지연 확정 도착 — 자동 종결하지 않는다. ` +
-          `attemptId=${attempt.attemptId}, stat=${row.stat}, result=${row.result}`,
+          `attemptId=${attempt.attemptId}, mseq=${attempt.mseq ?? row.mseq}, stat=${row.stat}, result=${row.result}`,
       );
       return true;
     }

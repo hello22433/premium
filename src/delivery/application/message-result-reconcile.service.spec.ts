@@ -352,6 +352,44 @@ describe('MessageResultReconcileService — 결과 조회·재조정', () => {
       expect(update.mock.calls[0][1]).toMatchObject({ lastSearchedMonth: '202607', nextSearchMonth: '202607' });
     });
 
+    it('MSEQ 없이 승격된 UNKNOWN 은 상관키(EXT_COL2)로 결과를 찾고 MSEQ 도 함께 남긴다', async () => {
+      const reportTime = new Date('2026-07-27T11:00:00');
+      const findByMseq = jest.fn();
+      const findByAttemptId = jest
+        .fn()
+        .mockResolvedValue({ mseq: 4004, stat: '3', result: '504', sendTime: null, reportTime });
+      const { service, update, workflowUpdates } = createService({
+        unknown: [attempt({ status: MessageAttemptStatus.UNKNOWN, mseq: null })],
+        resultByMseq: findByMseq,
+        resultByAttemptId: findByAttemptId,
+      });
+
+      const summary = await service.reconcileOnce(now);
+
+      // MSEQ 가 없으면 MSEQ 조회로는 영원히 못 찾는다 — 상관키 조회로 갈라져야 한다.
+      expect(findByMseq).not.toHaveBeenCalled();
+      expect(findByAttemptId).toHaveBeenCalledWith('202607', 'a'.repeat(32));
+      expect(summary.lateResult).toBe(1);
+      const [criteria, patch] = update.mock.calls[0];
+      expect(criteria).toMatchObject({ status: MessageAttemptStatus.UNKNOWN });
+      expect(patch).toMatchObject({ mseq: '4004', gemtekResult: '504', lateResultAt: now });
+      expect(patch).not.toHaveProperty('status');
+      expect(workflowUpdates[0].set).toMatchObject({ opsReviewReason: 'LATE_RESULT_REVIEW' });
+    });
+
+    it('MSEQ 없는 UNKNOWN 이 상관키로도 안 잡히면 커서만 전진시키고 계속 본다', async () => {
+      const findByAttemptId = jest.fn().mockResolvedValue(null);
+      const { service, update } = createService({
+        unknown: [attempt({ status: MessageAttemptStatus.UNKNOWN, mseq: null, nextSearchMonth: '202606' })],
+        resultByAttemptId: findByAttemptId,
+      });
+      const summary = await service.reconcileOnce(now);
+
+      expect(findByAttemptId.mock.calls.map((c) => c[0])).toEqual(['202606', '202607']);
+      expect(summary.lateResult).toBe(0);
+      expect(update.mock.calls[0][1]).toMatchObject({ lastSearchedMonth: '202607', nextSearchMonth: '202607' });
+    });
+
     it('보존 한도(90일)를 넘긴 UNKNOWN 은 조회하지 않는다', async () => {
       const findByMseq = jest.fn();
       const { service, update } = createService({
