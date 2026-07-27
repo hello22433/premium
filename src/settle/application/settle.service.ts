@@ -1180,7 +1180,11 @@ export class SettleService {
 
     // DB 레벨 페이징 적용
     const skip = (page - 1) * take;
-    queryBuilder = queryBuilder.orderBy('orderDelivery.id', 'DESC').skip(skip).take(take);
+    queryBuilder = queryBuilder
+      .orderBy('orderDelivery.actualSendAt', 'DESC')
+      .addOrderBy('orderDelivery.id', 'DESC')
+      .skip(skip)
+      .take(take);
 
     const orderDeliveryList = await queryBuilder.getMany();
 
@@ -1217,7 +1221,7 @@ export class SettleService {
             : Math.ceil(snapshotPrice + feePrice);
 
       return {
-        id: order.id,
+        id: orderDelivery.id,
         registeredAt: format(orderDelivery.actualSendAt!, DateFormatStr),
         partnerCompanyName: partnerCompany.businessName,
         userBusinessName: order.clientUser?.company?.businessName ?? order.user!.company?.businessName ?? '',
@@ -1295,7 +1299,10 @@ export class SettleService {
       .leftJoin('choiceSelectProduct.partnerCompany', 'choicePartnerCompany')
       .leftJoin('choiceSelectProduct.brand', 'choiceBrand');
     idQueryBuilder = applyPartnerFilters(idQueryBuilder);
-    idQueryBuilder = idQueryBuilder.select('orderDelivery.id', 'id').orderBy('orderDelivery.id', 'DESC');
+    idQueryBuilder = idQueryBuilder
+      .select('orderDelivery.id', 'id')
+      .orderBy('orderDelivery.actualSendAt', 'DESC')
+      .addOrderBy('orderDelivery.id', 'DESC');
     const idRows = await idQueryBuilder.getRawMany();
     const ids = idRows.map((r) => Number(r.id));
 

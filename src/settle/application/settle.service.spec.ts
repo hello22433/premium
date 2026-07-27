@@ -1,4 +1,5 @@
 import { BadRequestException } from '@nestjs/common';
+import { Brackets } from 'typeorm';
 import { SettleService } from './settle.service';
 
 const mockExcelRowCommit = jest.fn();
@@ -59,6 +60,7 @@ function makeSelectQb(overrides: Record<string, any> = {}): any {
     where: jest.fn().mockReturnThis(),
     andWhere: jest.fn().mockReturnThis(),
     orderBy: jest.fn().mockReturnThis(),
+    addOrderBy: jest.fn().mockReturnThis(),
     skip: jest.fn().mockReturnThis(),
     take: jest.fn().mockReturnThis(),
     getCount: jest.fn().mockResolvedValue(0),
@@ -77,6 +79,7 @@ function makeExcelQb(overrides: Record<string, any> = {}): any {
     andWhere: jest.fn().mockReturnThis(),
     select: jest.fn().mockReturnThis(),
     orderBy: jest.fn().mockReturnThis(),
+    addOrderBy: jest.fn().mockReturnThis(),
     whereInIds: jest.fn().mockReturnThis(),
     getRawMany: jest.fn().mockResolvedValue([]),
     getMany: jest.fn().mockResolvedValue([]),
@@ -88,11 +91,13 @@ function makeOrderDelivery(
   partnerSettleFee: number | null,
   partnerSettlePriceAdjustment: string | null,
   snapshotPrice = 1000,
+  overrides: Record<string, any> = {},
 ) {
   return {
     id: 1,
     sendRequestAt: new Date('2026-06-19T09:00:00+09:00'),
     actualSendAt: new Date('2026-06-20T10:30:00+09:00'),
+    failedAt: null,
     couponStatus: 'USED',
     orderProductMapping: {
       snapshotProductPrice: snapshotPrice,
@@ -120,13 +125,15 @@ function makeOrderDelivery(
         },
       },
     },
+    ...overrides,
   };
 }
 
-function makeExcelOrderDelivery(id: number, actualSendAt: string) {
+function makeExcelOrderDelivery(id: number, actualSendAt: string | null, overrides: Record<string, any> = {}) {
   return {
     id,
-    actualSendAt: new Date(actualSendAt),
+    actualSendAt: actualSendAt ? new Date(actualSendAt) : null,
+    failedAt: null,
     tradeAt: null,
     discardedAt: null,
     expireAt: new Date('2026-07-20T23:59:59+09:00'),
@@ -160,7 +167,15 @@ function makeExcelOrderDelivery(id: number, actualSendAt: string) {
         },
       },
     },
+    ...overrides,
   };
+}
+
+function expectNoGalaxiaPartnerFilter(qb: { andWhere: jest.Mock }) {
+  const allArgs = qb.andWhere.mock.calls.flat();
+  expect(allArgs.some((arg: unknown) => arg instanceof Brackets)).toBe(false);
+  expect(JSON.stringify(allArgs)).not.toContain('galaxiaType');
+  expect(JSON.stringify(allArgs)).not.toContain('partnerCompany.type');
 }
 
 describe('SettleService — getPartnerCompanyList (#54 fix)', () => {
@@ -192,7 +207,10 @@ describe('SettleService — getPartnerCompanyList (#54 fix)', () => {
     expect(qb.andWhere).toHaveBeenCalledWith('orderDelivery.actualSendAt <= :actualSendAtEndAt', {
       actualSendAtEndAt: '2026-06-20 23:59:59',
     });
-    expect(qb.andWhere).not.toHaveBeenCalledWith(expect.stringContaining('partnerCompany.type'), expect.anything());
+    expect(qb.orderBy).toHaveBeenCalledWith('orderDelivery.actualSendAt', 'DESC');
+    expect(qb.addOrderBy).toHaveBeenCalledWith('orderDelivery.id', 'DESC');
+    expectNoGalaxiaPartnerFilter(qb);
+    expect(result.list[0].id).toBe(1);
     expect(result.list[0].registeredAt).toBe('2026-06-20T10:30:00');
   });
 
@@ -300,7 +318,8 @@ describe('SettleService — getPartnerCompanyList (#54 fix)', () => {
     );
 
     expect(idQb.select).toHaveBeenCalledWith('orderDelivery.id', 'id');
-    expect(idQb.orderBy).toHaveBeenCalledWith('orderDelivery.id', 'DESC');
+    expect(idQb.orderBy).toHaveBeenCalledWith('orderDelivery.actualSendAt', 'DESC');
+    expect(idQb.addOrderBy).toHaveBeenCalledWith('orderDelivery.id', 'DESC');
     expect(idQb.andWhere).toHaveBeenCalledWith('orderDelivery.actualSendAt IS NOT NULL');
     expect(idQb.andWhere).toHaveBeenCalledWith('orderDelivery.actualSendAt >= :actualSendAtStartAt', {
       actualSendAtStartAt: '2026-06-20 00:00:00',
@@ -308,10 +327,12 @@ describe('SettleService — getPartnerCompanyList (#54 fix)', () => {
     expect(idQb.andWhere).toHaveBeenCalledWith('orderDelivery.actualSendAt <= :actualSendAtEndAt', {
       actualSendAtEndAt: '2026-06-20 23:59:59',
     });
-    expect(idQb.andWhere).not.toHaveBeenCalledWith(expect.stringContaining('partnerCompany.type'), expect.anything());
+    expectNoGalaxiaPartnerFilter(idQb);
     expect(graphQb.whereInIds).toHaveBeenCalledWith([101, 202]);
     expect(mockExcelAddRow).toHaveBeenCalledTimes(2);
     expect(mockExcelAddRow).toHaveBeenCalledWith(expect.objectContaining({ partnerCompanyName: '갤럭시아' }));
+    expect(mockExcelSheetCommit).toHaveBeenCalled();
+    expect(mockExcelWorkbookCommit).toHaveBeenCalled();
     expect(activityLogService.createLog).toHaveBeenCalledWith(
       expect.objectContaining({
         requestUrl: '/settle/partner-company/excel-download',
