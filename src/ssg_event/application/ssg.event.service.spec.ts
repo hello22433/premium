@@ -28,6 +28,8 @@ describe('SsgEventService', () => {
     };
     const resendDeductPendingRepository = {
       createQueryBuilder: jest.fn(),
+      create: jest.fn((v) => v),
+      save: jest.fn().mockResolvedValue(undefined),
     };
     const refundLedgerRepository = {
       findOne: jest.fn(),
@@ -54,6 +56,7 @@ describe('SsgEventService', () => {
       amountHistoryRepository,
       recoveryLogRepository,
       resendDeductRecoveryRepository,
+      resendDeductPendingRepository,
       refundLedgerRepository,
     };
   };
@@ -252,6 +255,76 @@ describe('SsgEventService', () => {
 
       await expect(service.refundResendEventDeduction(input)).rejects.toThrow();
       expect(seen.size).toBe(0);
+    });
+  });
+
+  describe('selectAndDeductForReissueWithPending', () => {
+    it('잠근 후보 중 잔액이 부족한 행사는 건너뛰고 다음 행사에 차감과 pending을 원자 기록한다', async () => {
+      const { service, ssgEventRepository, amountHistoryRepository, resendDeductPendingRepository } = createService();
+      const insufficient = { id: 10, eventBalance: 500 };
+      const available = { id: 20, eventBalance: 20_000 };
+
+      ssgEventRepository.createQueryBuilder.mockReturnValue({
+        setLock: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue([insufficient, available]),
+      });
+
+      const result = await service.selectAndDeductForReissueWithPending({
+        amount: 10_000,
+        orderId: 4145,
+        couponExpiration: 30,
+        purpose: 'CS_REISSUE',
+        issueOrderDeliveryId: null,
+      });
+
+      expect(result?.event).toBe(available);
+      expect(insufficient.eventBalance).toBe(500);
+      expect(available.eventBalance).toBe(10_000);
+      expect(amountHistoryRepository.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          ssgEventId: 20,
+          amount: -10_000,
+          balance: 10_000,
+          orderId: 4145,
+          isTemporary: false,
+        }),
+      );
+      expect(resendDeductPendingRepository.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          resendDeductionId: result?.resendDeductionId,
+          ssgEventId: 20,
+          orderId: 4145,
+          amount: 10_000,
+          purpose: 'CS_REISSUE',
+          issueOrderDeliveryId: null,
+        }),
+      );
+    });
+
+    it('잠긴 후보가 모두 부족하면 차감/pending 없이 null을 반환한다', async () => {
+      const { service, ssgEventRepository, amountHistoryRepository, resendDeductPendingRepository } = createService();
+      ssgEventRepository.createQueryBuilder.mockReturnValue({
+        setLock: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue([{ id: 10, eventBalance: 500 }]),
+      });
+
+      await expect(
+        service.selectAndDeductForReissueWithPending({
+          amount: 10_000,
+          orderId: 4145,
+          couponExpiration: 30,
+          purpose: 'CS_REISSUE',
+          issueOrderDeliveryId: null,
+        }),
+      ).resolves.toBeNull();
+      expect(amountHistoryRepository.save).not.toHaveBeenCalled();
+      expect(resendDeductPendingRepository.save).not.toHaveBeenCalled();
     });
   });
 

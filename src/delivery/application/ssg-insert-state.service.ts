@@ -250,6 +250,7 @@ export class SsgInsertStateService {
         couponNum: usable.couponNum,
         expireAt: usable.expireAt,
         encourageAt: usable.encourageAt,
+        ...(usable.ssgEventId != null ? { ssgEventId: usable.ssgEventId } : {}),
       })
       .where('id = :id', { id: orderDeliveryId })
       .execute();

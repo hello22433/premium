@@ -167,6 +167,7 @@ describe('PartnerCompanyExternService - SSG orphan resolver', () => {
       couponNum: newer.couponNum,
       expireAt: newer.expireAt,
       encourageAt: newer.encourageAt,
+      ssgEventId: newer.ssgEventId,
     });
     expect(ssgInsertStateService.markFailed).not.toHaveBeenCalled();
   });

@@ -48,6 +48,7 @@ describe('DeliveryBatchService', () => {
 
     const ssgEventServiceMock = {
       selectEventForOrder: jest.fn(),
+      selectAndDeductForReissueWithPending: jest.fn(),
       deductEventBalance: jest.fn(),
       chargeBackForResend: jest.fn(),
       deductForReissueWithPending: jest.fn().mockResolvedValue({ resendDeductionId: 'ULID-TEST' }),
@@ -152,12 +153,12 @@ describe('DeliveryBatchService', () => {
   });
 
   describe('selectAndDeductSsgEventForReissue', () => {
-    it('발급가능 행사 있으면 선차감(deductForReissueWithPending) + resendDeductionId 반환', async () => {
+    it('발급가능 행사 있으면 원자적 선차감 + resendDeductionId 반환', async () => {
       const event = { id: 7, eventBalance: 100000 } as SsgEventEntity;
-      jest.spyOn(ssgEventService, 'selectEventForOrder').mockResolvedValue(event);
-      const deductSpy = jest
-        .spyOn(ssgEventService, 'deductForReissueWithPending')
-        .mockResolvedValue({ resendDeductionId: 'ULID-X' });
+      const deductSpy = jest.spyOn(ssgEventService, 'selectAndDeductForReissueWithPending').mockResolvedValue({
+        event,
+        resendDeductionId: 'ULID-X',
+      });
 
       const result = await service.selectAndDeductSsgEventForReissue(42, 10000, 30);
 
@@ -166,22 +167,24 @@ describe('DeliveryBatchService', () => {
       expect(result!.resendDeductionId).toBe('ULID-X');
       // CS 경로: 선차감 시점 신규 delivery 미존재 → issueOrderDeliveryId=null, purpose=CS_REISSUE.
       expect(deductSpy).toHaveBeenCalledWith({
-        ssgEventId: 7,
         amount: 10000,
         orderId: 42,
+        couponExpiration: 30,
         purpose: 'CS_REISSUE',
         issueOrderDeliveryId: null,
       });
+      expect(ssgEventService.selectEventForOrder).not.toHaveBeenCalled();
+      expect(ssgEventService.deductForReissueWithPending).not.toHaveBeenCalled();
     });
 
     it('발급가능 행사 없으면 null 반환, 차감 안 함', async () => {
-      jest.spyOn(ssgEventService, 'selectEventForOrder').mockResolvedValue(null);
-      const deductSpy = jest.spyOn(ssgEventService, 'deductForReissueWithPending');
+      jest.spyOn(ssgEventService, 'selectAndDeductForReissueWithPending').mockResolvedValue(null);
 
       const result = await service.selectAndDeductSsgEventForReissue(42, 10000, 30);
 
       expect(result).toBeNull();
-      expect(deductSpy).not.toHaveBeenCalled();
+      expect(ssgEventService.selectEventForOrder).not.toHaveBeenCalled();
+      expect(ssgEventService.deductForReissueWithPending).not.toHaveBeenCalled();
     });
   });
 });

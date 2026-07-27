@@ -206,7 +206,12 @@ describe('DeliveryBatchService - B1 settlement-hold redesign', () => {
         { provide: PartnerCompanyExternService, useValue: partnerCompanyExternService },
         {
           provide: SsgEventService,
-          useValue: { selectEventForOrder: jest.fn(), deductEventBalance: jest.fn(), chargeBackForResend: jest.fn() },
+          useValue: {
+            selectEventForOrder: jest.fn(),
+            selectAndDeductForReissueWithPending: jest.fn(),
+            deductEventBalance: jest.fn(),
+            chargeBackForResend: jest.fn(),
+          },
         },
         { provide: UserManagementService, useValue: userManagementService },
         { provide: DeliverySendService, useValue: deliverySendService },
