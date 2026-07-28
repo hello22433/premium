@@ -85,9 +85,13 @@ describe('MessageAttemptService — 시도 추적(outbox 2단 마크)', () => {
       });
 
     const slotService = { ensureWorkflow, acquire, release } as never;
+    // §9 컷오버 판정은 읽기 전용 게이트가 담당한다(앵커 생성과 분리 — 조회 실패를 삼키지 않기 위함).
+    const isCutover = jest.fn().mockResolvedValue(!!overrides.cutoverMigratedAt);
+    const cutoverGuard = { isCutover } as never;
 
     return {
-      service: new MessageAttemptService(attemptRepository, slotService, dataSource),
+      service: new MessageAttemptService(attemptRepository, slotService, dataSource, cutoverGuard),
+      isCutover,
       saved,
       save,
       update,

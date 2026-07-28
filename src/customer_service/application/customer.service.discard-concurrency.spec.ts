@@ -49,6 +49,13 @@ describe('CustomerServiceService.execDiscard — terminal 차단 / CAS 멱등', 
 
   const makeSut = (orderDelivery: any) => {
     const sut: any = Object.create(CustomerServiceService.prototype);
+    // §9 컷오버 게이트 — 단위 테스트 기본값은 '미전환 건'(legacy 경로 그대로 통과).
+    (sut as any).cutoverGuard = {
+      assertLegacyAllowed: jest.fn().mockResolvedValue(undefined),
+      assertRefundExecutionAllowed: jest.fn().mockResolvedValue(undefined),
+      isCutover: jest.fn().mockResolvedValue(false),
+      splitLegacyAllowed: jest.fn(async (ids: number[]) => ({ allowed: ids, blocked: [] })),
+    };
     sut.orderDeliveryRepository = mockRepoReturning(orderDelivery);
     sut.authService = { authorityValidator: jest.fn().mockResolvedValue(undefined) };
     return sut;
@@ -219,6 +226,13 @@ describe('CustomerServiceService.execDiscard — terminal 차단 / CAS 멱등', 
 
     const makeBulkSut = (txAffected: number, leaseAffected = 1) => {
       const sut: any = Object.create(CustomerServiceService.prototype);
+      // §9 컷오버 게이트 — 단위 테스트 기본값은 '미전환 건'(legacy 경로 그대로 통과).
+      (sut as any).cutoverGuard = {
+        assertLegacyAllowed: jest.fn().mockResolvedValue(undefined),
+        assertRefundExecutionAllowed: jest.fn().mockResolvedValue(undefined),
+        isCutover: jest.fn().mockResolvedValue(false),
+        splitLegacyAllowed: jest.fn(async (ids: number[]) => ({ allowed: ids, blocked: [] })),
+      };
       sut.userRepository = { findOne: jest.fn().mockResolvedValue(operatorEntity) };
       sut.dataSource = { createQueryRunner: jest.fn(() => makeTxRunner(txAffected)) };
       sut.orderHistoryRepository = { create: jest.fn(() => ({})) };

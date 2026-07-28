@@ -205,6 +205,13 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
     };
 
     service = Object.create(CustomerServiceService.prototype);
+    // §9 컷오버 게이트 — 단위 테스트 기본값은 '미전환 건'(legacy 경로 그대로 통과).
+    (service as any).cutoverGuard = {
+      assertLegacyAllowed: jest.fn().mockResolvedValue(undefined),
+      assertRefundExecutionAllowed: jest.fn().mockResolvedValue(undefined),
+      isCutover: jest.fn().mockResolvedValue(false),
+      splitLegacyAllowed: jest.fn(async (ids: number[]) => ({ allowed: ids, blocked: [] })),
+    };
     service.deliveryBatchService = deliveryBatchService;
     service.partnerCompanyExternService = partnerCompanyExternService;
     service.orderDeliveryRepository = orderDeliveryRepository;

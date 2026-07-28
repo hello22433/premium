@@ -8,6 +8,7 @@ import { DeliveryExclusiveOp, LEGACY_SEND_OP, TrackingCreatedByOp } from '../int
 import { generateAttemptId } from '../domain/message.attempt.id';
 import { DeliverySlot, DeliveryWorkflowSlotService, SlotApprovalBinding } from './delivery-workflow-slot.service';
 import { SmsSendOut } from '../../sms/interface/sms.send';
+import { DeliveryCutoverGuardService } from './delivery-cutover-guard.service';
 
 /**
  * `trackPreparedSend` 실행 결과 (§3 나 전달 완료 경쟁 봉합).
@@ -71,6 +72,7 @@ export class MessageAttemptService {
     private readonly attemptRepository: Repository<MessageAttemptEntity>,
     private readonly slotService: DeliveryWorkflowSlotService,
     @InjectDataSource() private readonly dataSource: DataSource,
+    private readonly cutoverGuard: DeliveryCutoverGuardService,
   ) {}
 
   /**
@@ -227,19 +229,26 @@ export class MessageAttemptService {
    * 슬롯을 얻지 못한 전환 건은 발송을 수행하지 않는다(§9 전환 마크 기반 legacy 진입 거부).
    */
   private async openGate(ctx: TrackSendContext): Promise<TrackingGate> {
-    let workflow: Awaited<ReturnType<DeliveryWorkflowSlotService['ensureWorkflow']>>;
-    try {
-      workflow = await this.slotService.ensureWorkflow(ctx.orderDeliveryId);
-    } catch (e) {
-      // 전환 여부조차 알 수 없는 상태다. 미전환이 대다수인 shadow 단계에서는 발송을 막지 않는다.
-      this.logger.warn(`workflow 조회 실패(추적 미적용). orderDeliveryId=${ctx.orderDeliveryId}: ${e}`);
-      return { cutover: false, workflowVersion: '0', slot: null };
+    // ① 전환 여부 판정(읽기 전용). **실패를 삼키지 않는다** — 전환 여부를 모르는 채 발송하면
+    //    전환 건이 슬롯 없이 legacy 로 나가 두 동시성 모델이 동시에 열린다(§9 위반).
+    //    이 조회는 order_delivery 와 같은 DB 를 쓰므로, 실패하는 상황이면 발송 자체도 성립하지 않는다.
+    const cutover = await this.cutoverGuard.isCutover(ctx.orderDeliveryId);
+
+    if (!cutover) {
+      // ② 미전환 확정. 여기서 앵커 행 생성은 **관찰용**이라 실패해도 발송을 막지 않는다.
+      //    ①이 성공했으므로 "전환 아님"은 이미 데이터 사실로 확인됐다 — 모르는 채 통과시키는 게 아니다.
+      let workflowVersion = '0';
+      try {
+        const anchor = await this.slotService.ensureWorkflow(ctx.orderDeliveryId);
+        workflowVersion = String(anchor.workflowVersion);
+      } catch (e) {
+        this.logger.warn(`workflow 앵커 생성 실패(추적 미적용, 미전환 확정). orderDeliveryId=${ctx.orderDeliveryId}: ${e}`);
+      }
+      return { cutover: false, workflowVersion, slot: null };
     }
 
-    if (!workflow.cutoverMigratedAt) {
-      return { cutover: false, workflowVersion: String(workflow.workflowVersion), slot: null };
-    }
-
+    // ③ 전환 건. 앵커 생성은 불필요하다 — 전환 마크가 이미 그 앵커 행에 있다.
+    //    슬롯 점유 실패는 삼키지 않고 그대로 거부한다(fail-closed).
     const acquired = await this.slotService.acquire({
       orderDeliveryId: ctx.orderDeliveryId,
       op: ctx.slotOp,

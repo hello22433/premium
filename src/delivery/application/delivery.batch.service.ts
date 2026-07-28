@@ -44,6 +44,8 @@ import { PII_BEARING_HISTORY_TYPES } from '../../order/interface/order.history.p
 import { IMailSend } from '../../mail/interface/mail-send';
 import { ISmsSend, SmsSendOut } from '../../sms/interface/sms.send';
 import { MessageAttemptService } from './message-attempt.service';
+import { DeliveryCutoverGuardService } from './delivery-cutover-guard.service';
+import { LegacyDeliveryEntryPoint, NOT_CUTOVER_ORDER_DELIVERY } from '../interface/legacy.delivery.entry.point';
 import { MessageAttemptChannel, MessageAttemptType } from '../interface/message.attempt.status';
 import { DeliveryExclusiveOp } from '../interface/delivery.workflow.status';
 import { computeNextAttemptAt, isWithinAllowedSendWindow } from '../domain/resend.schedule';
@@ -148,6 +150,7 @@ export class DeliveryBatchService {
     private readonly orderHistoryRepository: Repository<OrderHistoryEntity>,
     @InjectDataSource() private readonly dataSource: DataSource,
     private readonly orderFromService: OrderFromService,
+    private readonly cutoverGuard: DeliveryCutoverGuardService,
   ) {}
 
   private readonly logger = new Logger('batch');
@@ -265,6 +268,10 @@ export class DeliveryBatchService {
    * (이전 순서: SSG 먼저 → ledger 가 막더라도 SSG 잔액은 이미 복구됨 = 중복 위험.)
    */
   private async refundForFail(orderDelivery: OrderDeliveryEntity): Promise<void> {
+    // 컷오버 전환 건 거부(§9 인벤토리 #5). 전환 건의 환불은 refund_attempt CLAIMED→SUBMITTING 뒤
+    // 실행 단계로만 호출한다. 호출처 4곳 어디서 들어와도 여기서 한 번에 막힌다.
+    await this.cutoverGuard.assertLegacyAllowed(orderDelivery.id, LegacyDeliveryEntryPoint.BATCH_REFUND_FOR_FAIL);
+
     const order = orderDelivery.orderProductMapping.order;
     const mapping = orderDelivery.orderProductMapping;
     const productPrice = mapping.product.price;
@@ -563,6 +570,9 @@ export class DeliveryBatchService {
           'WHERE opm.id = order_delivery.order_product_mapping_id AND o.type != :externalType)',
         { externalType: IOrderType.EXTERNAL },
       )
+      // 컷오버 드레이닝·전환 건은 배치가 집지 않는다. 가드 통과 후 지연된 워커까지 막으려면
+      // 판정이 아니라 **점유와 같은 문장**이어야 한다(§9 quiesce, admission race).
+      .andWhere(NOT_CUTOVER_ORDER_DELIVERY)
       .execute();
     return claimResult.affected ?? 0;
   }
@@ -985,6 +995,8 @@ export class DeliveryBatchService {
       .andWhere('(coupon_status IS NULL OR coupon_status NOT IN (:...blockedCouponStatuses))', {
         blockedCouponStatuses: UNSENDABLE_COUPON_STATUSES,
       })
+      // 컷오버 드레이닝·전환 건은 legacy 변형 lease 를 잡지 못한다(§9 quiesce).
+      .andWhere(NOT_CUTOVER_ORDER_DELIVERY)
       .execute();
 
     if ((leaseGate.affected ?? 0) === 0) {

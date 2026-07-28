@@ -7,6 +7,7 @@ import { SsgRefundOutcome } from '../interface/ssg.refund.resolve';
 import { RefundLedgerService } from './refund-ledger.service';
 import { SsgInsertStateService } from './ssg-insert-state.service';
 import { SsgRefundResolverService } from './ssg-refund.resolver';
+import { DeliveryCutoverGuardService } from './delivery-cutover-guard.service';
 
 /**
  * SsgRefundResolverService 단위 테스트
@@ -49,6 +50,16 @@ describe('SsgRefundResolverService', () => {
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        {
+          provide: DeliveryCutoverGuardService,
+          useValue: {
+            // §9 컷오버 게이트 — 단위 테스트 기본값은 '미전환 건'(legacy 경로 그대로 통과).
+            assertLegacyAllowed: jest.fn().mockResolvedValue(undefined),
+            assertRefundExecutionAllowed: jest.fn().mockResolvedValue(undefined),
+            isCutover: jest.fn().mockResolvedValue(false),
+            splitLegacyAllowed: jest.fn(async (ids: number[]) => ({ allowed: ids, blocked: [] })),
+          },
+        },
         SsgRefundResolverService,
         { provide: SsgInsertStateService, useValue: stateService },
         { provide: PartnerCompanyExternService, useValue: partnerExternService },
@@ -91,6 +102,8 @@ describe('SsgRefundResolverService', () => {
         ssgEventId: baseInput.ssgEventId,
         orderId: baseInput.orderId,
         amount: baseInput.refundAmount,
+        // 이 경로는 대상 발송건이 확정돼 있어 컷오버 판정 대상이다(§9 #9).
+        orderDeliveryId: baseInput.orderDeliveryId,
       });
       // 원래 환불 ledger 경로/ settled 신호는 건드리지 않음
       expect(ssgEventService.refundForDeliveryFail).not.toHaveBeenCalled();

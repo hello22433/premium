@@ -48,6 +48,7 @@ describe('SsgEventService', () => {
       refundLedgerRepository as any,
       activityLogService as any,
       ssgIssue as any,
+      { assertLegacyAllowed: jest.fn().mockResolvedValue(undefined) } as any, // cutoverGuard (§9 컷오버 게이트)
     );
 
     return {

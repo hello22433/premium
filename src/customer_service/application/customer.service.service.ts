@@ -40,6 +40,11 @@ import { CustomerServiceDlvryDetailViewDto } from '../api/dto/customer.service.d
 import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
 import { DeliveryBatchService } from '../../delivery/application/delivery.batch.service';
 import { RefundLedgerService } from '../../delivery/application/refund-ledger.service';
+import { DeliveryCutoverGuardService } from '../../delivery/application/delivery-cutover-guard.service';
+import {
+  LegacyDeliveryEntryPoint,
+  NOT_CUTOVER_ORDER_DELIVERY,
+} from '../../delivery/interface/legacy.delivery.entry.point';
 import { WalletManagedPredicate } from '../../wallet/application/wallet-managed.predicate';
 import { RefundPoolService } from '../../wallet/application/refund-pool.service';
 import { LegacyWalletCreditSyncService } from '../../wallet/application/legacy-wallet-credit-sync.service';
@@ -146,6 +151,7 @@ export class CustomerServiceService {
     private readonly authService: AuthService,
     @InjectRepository(CouponViewLogEntity)
     private readonly couponViewLogRepository: Repository<CouponViewLogEntity>,
+    private readonly cutoverGuard: DeliveryCutoverGuardService,
   ) {}
 
   /**
@@ -241,6 +247,15 @@ export class CustomerServiceService {
     queryRunner: QueryRunner,
     operatorName?: string,
   ): Promise<number | null> {
+    // 컷오버 전환 건 거부(§9 인벤토리 #8). 전환 건의 폐기 환불(Tx2)은 DISCARD + REFUND 슬롯을 거쳐
+    // refund_attempt 로만 실행한다. Tx1(폐기 확정)/Tx2(환불) 분리는 유지하되 Tx2 만 대체된다.
+    // 같은 트랜잭션 매니저로 조회해 Tx1 이 만든 상태를 그대로 본다.
+    await this.cutoverGuard.assertLegacyAllowed(
+      orderDelivery.id,
+      LegacyDeliveryEntryPoint.CS_DISCARD_RESTORE,
+      queryRunner.manager,
+    );
+
     const mapping = orderDelivery.orderProductMapping;
     const order = mapping.order;
 
@@ -1015,6 +1030,10 @@ export class CustomerServiceService {
     const { orderDeliveryId } = getBody;
     const statuses = ['COMPLETE', 'FAIL', 'COMPLETE_SMS', 'FAIL_SMS'];
 
+    // 0. 컷오버 전환 건 거부(§9 인벤토리 #3). 이 상태집합은 FAIL 밖(COMPLETE*)까지 포함하므로
+    //    전환 건은 workflow 종결 상태 가드(표 2-1)로 재판정해야 한다 → legacy claim 경로 진입 금지.
+    await this.cutoverGuard.assertLegacyAllowed(orderDeliveryId, LegacyDeliveryEntryPoint.CS_RESEND);
+
     // 1. 대상 조회 (락 없음). 동시 재발송은 아래 원자적 claim 으로 직렬화.
     const target = await this.buildReSendQuery(orderDeliveryId, statuses).getOne();
     if (!target) {
@@ -1061,6 +1080,9 @@ export class CustomerServiceService {
       .andWhere('(coupon_status IS NULL OR coupon_status NOT IN (:...unsendable))', {
         unsendable: UNSENDABLE_COUPON_STATUSES,
       })
+      // 컷오버 드레이닝·전환 건은 legacy claim 을 잡지 못한다. 위 가드는 빠른 거부용이고,
+      // 가드 통과 후 지연된 워커까지 막는 근거는 **점유와 같은 문장에 있는** 이 술어다(§9 quiesce).
+      .andWhere(NOT_CUTOVER_ORDER_DELIVERY)
       .execute();
     if (!claimResult.affected) {
       throw new ConflictException('재발송 처리 중이거나 상태가 변경되었습니다. 잠시 후 다시 시도해주세요.');
@@ -1104,6 +1126,8 @@ export class CustomerServiceService {
       .set({ mutationClaimedAt: claimAt })
       .where('id = :id', { id: orderDeliveryId })
       .andWhere('(mutationClaimedAt IS NULL OR mutationClaimedAt < :stale)', { stale: staleThreshold })
+      // 컷오버 드레이닝·전환 건은 legacy 변형 lease(폐기·재발행 등)를 잡지 못한다(§9 quiesce).
+      .andWhere(NOT_CUTOVER_ORDER_DELIVERY)
       .execute();
     return !!result.affected;
   }

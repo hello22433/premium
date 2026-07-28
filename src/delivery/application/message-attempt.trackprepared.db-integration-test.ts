@@ -85,7 +85,10 @@ describe('MessageAttemptService.trackPreparedSend DB 동시성 (delivered 직렬
     attemptRepository = dataSource.getRepository(MessageAttemptEntity);
 
     // trackPreparedSend 는 attemptRepository 와 dataSource 만 쓴다(슬롯 서비스 미사용).
-    service = new MessageAttemptService(attemptRepository, {} as never, dataSource);
+    service = new MessageAttemptService(attemptRepository, {} as never, dataSource, {
+      // §9 컷오버 게이트 — 이 통합 테스트는 미전환 건 경로만 다룬다.
+      isCutover: async () => false,
+    } as never);
   });
 
   afterAll(async () => {

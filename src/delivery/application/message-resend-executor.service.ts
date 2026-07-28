@@ -4,6 +4,7 @@ import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { DataSource, IsNull, LessThan, LessThanOrEqual, Repository } from 'typeorm';
 import { MessageAttemptEntity } from '../../entity/message.attempt.entity';
 import { DeliveryWorkflowEntity } from '../../entity/delivery.workflow.entity';
+import { NOT_CUTOVER_ORDER_DELIVERY } from '../interface/legacy.delivery.entry.point';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { MessageAttemptChannel, MessageAttemptStatus, MessageAttemptType } from '../interface/message.attempt.status';
 import { DeliveryExclusiveOp, LEGACY_SEND_OP } from '../interface/delivery.workflow.status';
@@ -358,6 +359,9 @@ export class MessageResendExecutorService {
       })
       .andWhere('refunded_at IS NULL')
       .andWhere('refund_status IS NULL')
+      // 컷오버 드레이닝·전환 건은 legacy 게이트를 잡지 못한다. 위 cutoverMigratedAt 분기는 읽기 판정이라
+      // 그 사이 마크가 서면 늦게 도착한다 — 점유와 같은 문장에 술어를 넣어 원자화한다(§9 quiesce).
+      .andWhere(NOT_CUTOVER_ORDER_DELIVERY)
       .execute();
 
     if (!result.affected) {

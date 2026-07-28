@@ -28,6 +28,13 @@ describe('DeliveryBatchService — reportSweep / settlement (async alimtalk)', (
 
   beforeEach(() => {
     service = Object.create(DeliveryBatchService.prototype);
+    // §9 컷오버 게이트 — 단위 테스트 기본값은 '미전환 건'(legacy 경로 그대로 통과).
+    (service as any).cutoverGuard = {
+      assertLegacyAllowed: jest.fn().mockResolvedValue(undefined),
+      assertRefundExecutionAllowed: jest.fn().mockResolvedValue(undefined),
+      isCutover: jest.fn().mockResolvedValue(false),
+      splitLegacyAllowed: jest.fn(async (ids: number[]) => ({ allowed: ids, blocked: [] })),
+    };
     service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
     service.persistReportState = jest.fn().mockResolvedValue(true);
     service.clearReportClaim = jest.fn().mockResolvedValue(true);

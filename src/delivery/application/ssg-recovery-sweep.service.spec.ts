@@ -5,6 +5,7 @@ import { OrderDeliveryRefundEntity } from '../../entity/order.delivery.refund.en
 import { SsgRecoveryResult } from '../interface/ssg.recovery.result';
 import { SsgRecoverySweepService } from './ssg-recovery-sweep.service';
 import { SsgRecoveryService } from './ssg-recovery.service';
+import { DeliveryCutoverGuardService } from './delivery-cutover-guard.service';
 
 /**
  * SsgRecoverySweepService 단위 테스트
@@ -44,6 +45,16 @@ describe('SsgRecoverySweepService', () => {
     };
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        {
+          provide: DeliveryCutoverGuardService,
+          useValue: {
+            // §9 컷오버 게이트 — 단위 테스트 기본값은 '미전환 건'(legacy 경로 그대로 통과).
+            assertLegacyAllowed: jest.fn().mockResolvedValue(undefined),
+            assertRefundExecutionAllowed: jest.fn().mockResolvedValue(undefined),
+            isCutover: jest.fn().mockResolvedValue(false),
+            splitLegacyAllowed: jest.fn(async (ids: number[]) => ({ allowed: ids, blocked: [] })),
+          },
+        },
         SsgRecoverySweepService,
         { provide: getRepositoryToken(OrderDeliveryRefundEntity), useValue: refundRepository },
         { provide: SsgRecoveryService, useValue: recoveryService },

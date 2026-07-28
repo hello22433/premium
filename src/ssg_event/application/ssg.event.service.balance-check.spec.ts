@@ -31,6 +31,7 @@ describe('SsgEventService.getOpenTempDeductionByEvent', () => {
       {} as any, // refundLedgerRepository
       {} as any, // activityLogService
       {} as any, // ssgIssue
+      { assertLegacyAllowed: jest.fn().mockResolvedValue(undefined) } as any, // cutoverGuard (§9 컷오버 게이트)
     );
 
     return { service, qb };
@@ -151,6 +152,7 @@ describe('SsgEventService.getSsgBalanceCheckForOrder', () => {
       {} as any, // refundLedgerRepository
       {} as any, // activityLogService
       ssgIssue as any,
+      { assertLegacyAllowed: jest.fn().mockResolvedValue(undefined) } as any, // cutoverGuard (§9 컷오버 게이트)
     );
 
     return { service, ssgIssue, ssgEventRepository };
@@ -281,6 +283,7 @@ describe('SsgEventService.getSsgBalanceCheckForOrder 병렬/타임아웃', () =>
       {} as any,
       {} as any,
       ssgIssue as any,
+      { assertLegacyAllowed: jest.fn().mockResolvedValue(undefined) } as any, // cutoverGuard (§9 컷오버 게이트)
     );
     return { service, getAmountImpl };
   };

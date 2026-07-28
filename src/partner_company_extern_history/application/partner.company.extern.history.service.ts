@@ -25,6 +25,11 @@ import { DeliveryBatchService } from '../../delivery/application/delivery.batch.
 import { CreateResendTransactionId } from '../../order/domain/create.transaction.id';
 import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
 import { SsgInsertStateService } from '../../delivery/application/ssg-insert-state.service';
+import { DeliveryCutoverGuardService } from '../../delivery/application/delivery-cutover-guard.service';
+import {
+  LegacyDeliveryEntryPoint,
+  NOT_CUTOVER_ORDER_DELIVERY,
+} from '../../delivery/interface/legacy.delivery.entry.point';
 import { SsgInsertState } from '../../delivery/interface/ssg.insert.state';
 import { SsgOrphanResolveOutcome } from '../../partner_company_extern/interface/ssg.orphan.resolve';
 import { SsgPinVerdict } from '../../partner_company_extern/interface/ssg.issue';
@@ -67,6 +72,7 @@ export class PartnerCompanyExternHistoryService {
     private deliveryBatchService: DeliveryBatchService,
     private readonly partnerCompanyExternService: PartnerCompanyExternService,
     private readonly ssgInsertStateService: SsgInsertStateService,
+    private readonly cutoverGuard: DeliveryCutoverGuardService,
   ) {}
 
   /**
@@ -345,6 +351,10 @@ export class PartnerCompanyExternHistoryService {
    * - SSG 재진입은 getState 로 분기(ATTEMPTED→orphan resolver, CONFIRMED→PIN 무결성, NONE/FAILED→새 PIN).
    */
   async resendFailedDelivery(orderDeliveryId: number): Promise<ResendResultDto> {
+    // 0. 컷오버 전환 건 거부(§9 인벤토리 #2). 전환 건의 수동 재발송은 MANUAL_RESEND/PIN_REISSUE 슬롯
+    //    경로로만 실행한다. claimedAt 토큰은 신규 Level A 슬롯을 모르므로 둘을 병행시키지 않는다.
+    await this.cutoverGuard.assertLegacyAllowed(orderDeliveryId, LegacyDeliveryEntryPoint.FAILURE_LIST_RESEND);
+
     // 1. 대상 조회 (락 없음). 동시 재발송은 아래 원자적 claim 으로 차단.
     const target = await this.buildResendQuery(orderDeliveryId).getOne();
     if (!target) {
@@ -415,6 +425,9 @@ export class PartnerCompanyExternHistoryService {
       .andWhere('(coupon_status IS NULL OR coupon_status NOT IN (:...unsendable))', {
         unsendable: UNSENDABLE_COUPON_STATUSES,
       })
+      // 컷오버 드레이닝·전환 건은 legacy claim 을 잡지 못한다. 위 가드는 빠른 거부용이고,
+      // 가드 통과 후 지연된 워커까지 막는 근거는 **점유와 같은 문장에 있는** 이 술어다(§9 quiesce).
+      .andWhere(NOT_CUTOVER_ORDER_DELIVERY)
       // UpdateQueryBuilder 는 soft-delete 필터를 자동 적용하지 않는다. 재발행 unwind 가
       // softDelete 한 tip 이 status=FAIL 로 남아 있으면 여기서 되살아나 발송된다.
       .andWhere('deleted_at IS NULL')

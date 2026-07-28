@@ -135,6 +135,8 @@ export class SsgRefundResolverService {
           ssgEventId: input.ssgEventId,
           orderId: input.orderId,
           amount: input.refundAmount,
+          // 이 경로는 대상 발송건이 확정돼 있다 → 컷오버 판정 대상(§9 #9).
+          orderDeliveryId: input.orderDeliveryId,
         });
       } catch (e) {
         this.logger.error(
