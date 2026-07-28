@@ -96,6 +96,38 @@ export class MessageAttemptService {
   }
 
   /**
+   * **사전 생성된 attempt(`OUTBOX_READY`)** 로 발송을 실행한다 (§5.3 재발송 두 행 변경의 원자성).
+   *
+   * `dueResend`(§6.3) 는 "원 시도 `RETRIED` 전이 + 신규 시도 생성"을 **하나의 트랜잭션**으로 커밋한 뒤
+   * 외부 호출만 남긴다. 그 신규 행은 `trackSend` 처럼 여기서 생성하지 않으므로, 이 메서드는
+   * 상태 마크(`SUBMITTING`)와 결과 반영만 수행한다.
+   *
+   * `OUTBOX_READY → SUBMITTING` CAS 가 실패하면(다른 worker 선점·이미 진행) 외부 호출 없이
+   * false 를 돌려준다 — 같은 attempt 로 두 번 insert 하는 경로를 상태 전이가 차단한다.
+   */
+  async trackPreparedSend(
+    attempt: MessageAttemptEntity,
+    send: (attemptId: string) => Promise<SmsSendOut>,
+  ): Promise<boolean> {
+    // 외부 호출은 이 마크가 커밋된 뒤에만 시작한다(§5.3 outbox 2단 마크).
+    const marked = await this.transition(attempt, MessageAttemptStatus.OUTBOX_READY, MessageAttemptStatus.SUBMITTING);
+    if (!marked) {
+      this.logger.warn(`SUBMITTING 마크 실패(선점·진행 중) — 발송하지 않는다. attemptId=${attempt.attemptId}`);
+      return false;
+    }
+
+    try {
+      const result = await send(attempt.attemptId);
+      await this.settleSubmitted(attempt, result);
+      return true;
+    } catch (e) {
+      // 외부 호출 시작 마크 이후의 실패는 "발급 여부 불명"이다. 재삽입하지 않고 재조회 대상으로만 남긴다.
+      await this.markReconciling(attempt, e);
+      throw e;
+    }
+  }
+
+  /**
    * 알림톡 발송을 추적한다(§3 나 — 현행 알림톡 흐름은 유지하되 시도는 기록한다).
    *
    * 알림톡은 Gemtek 큐를 쓰지 않아 상관키·`MSEQ` 가 없다. 그럼에도 시도를 남기는 이유는

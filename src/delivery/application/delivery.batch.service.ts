@@ -42,7 +42,7 @@ import { OrderDeliveryCouponStatus } from '../interface/order.delivery.coupon.st
 import { OrderDeliveryRefundStatusEnum } from '../interface/order.delivery.refund.status.enum';
 import { PII_BEARING_HISTORY_TYPES } from '../../order/interface/order.history.pii.types';
 import { IMailSend } from '../../mail/interface/mail-send';
-import { ISmsSend } from '../../sms/interface/sms.send';
+import { ISmsSend, SmsSendOut } from '../../sms/interface/sms.send';
 import { MessageAttemptService } from './message-attempt.service';
 import { MessageAttemptChannel, MessageAttemptType } from '../interface/message.attempt.status';
 import { DeliveryExclusiveOp } from '../interface/delivery.workflow.status';
@@ -2229,6 +2229,30 @@ export class DeliveryBatchService {
    * - 이미지 없으면 기존 barCode로 생성
    */
   async csResendAsMms(orderDeliveryId: number): Promise<void> {
+    const dispatch = await this.prepareCouponResendDispatch(orderDeliveryId, MessageAttemptChannel.MMS);
+    await this.messageAttemptService.trackSend(
+      {
+        orderDeliveryId,
+        slotOp: DeliveryExclusiveOp.MANUAL_RESEND,
+        channel: MessageAttemptChannel.MMS,
+        attemptType: MessageAttemptType.MANUAL_RESEND,
+        sendReason: 'CS_RESEND',
+      },
+      dispatch,
+    );
+  }
+
+  /**
+   * 재발송 payload 를 구성해 발송 클로저를 돌려준다 (CS 재발송·504 자동 재발송 `dueResend` 공용).
+   *
+   * - 유효기간 재계산·상태 변경·PIN 재발급을 하지 않는다(기존 barCode·수신정보 그대로).
+   * - MMS 는 이미지가 유실됐으면 기존 barCode 로 재생성한다.
+   * - 발급 전·삭제 건은 throw 로 거른다. 외부 호출은 반환된 클로저를 실행할 때만 일어난다.
+   */
+  async prepareCouponResendDispatch(
+    orderDeliveryId: number,
+    channel: MessageAttemptChannel.SMS | MessageAttemptChannel.MMS,
+  ): Promise<(attemptId?: string) => Promise<SmsSendOut>> {
     const orderDelivery = await this.orderDeliveryRepository
       .createQueryBuilder('orderDelivery')
       .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
@@ -2251,9 +2275,21 @@ export class DeliveryBatchService {
     const isUnselectedChoiceCoupon =
       orderDelivery.orderProductMapping.product.type === IProductType.CHOICE && !orderDelivery.choiceSelectProductId;
     if (!orderDelivery.barCode && !isUnselectedChoiceCoupon) {
-      throw new Error('쿠폰이 발급되지 않은 건은 MMS 재발송이 불가능합니다.');
+      throw new Error(
+        `쿠폰이 발급되지 않은 건은 ${channel === MessageAttemptChannel.MMS ? 'MMS' : 'SMS'} 재발송이 불가능합니다.`,
+      );
     }
 
+    return channel === MessageAttemptChannel.MMS
+      ? await this.buildMmsResendDispatch(orderDelivery, isUnselectedChoiceCoupon)
+      : await this.buildSmsResendDispatch(orderDelivery, isUnselectedChoiceCoupon);
+  }
+
+  /** MMS 재발송 클로저 (기존 csResendAsMms 본문 추출 — 동작 불변). */
+  private async buildMmsResendDispatch(
+    orderDelivery: OrderDeliveryEntity,
+    isUnselectedChoiceCoupon: boolean,
+  ): Promise<(attemptId?: string) => Promise<SmsSendOut>> {
     // 이미지 없으면 기존 barCode로 생성 (초이스쿠폰 미선택 시 이미지 불필요)
     if (!orderDelivery.imagePath && !isUnselectedChoiceCoupon) {
       try {
@@ -2301,25 +2337,17 @@ export class DeliveryBatchService {
     const fromPhoneNumber =
       orderDelivery.orderProductMapping.fromPhoneNumber ||
       (await this.orderFromService.resolveSendDefaultPhone(getBillingUserId(orderDelivery.orderProductMapping.order)));
-    await this.messageAttemptService.trackSend(
-      {
-        orderDeliveryId: orderDelivery.id,
-        slotOp: DeliveryExclusiveOp.MANUAL_RESEND,
-        channel: MessageAttemptChannel.MMS,
-        attemptType: MessageAttemptType.MANUAL_RESEND,
-        sendReason: 'CS_RESEND',
-      },
-      (attemptId) =>
-        this.smsSend.send({
-          msgType: 'M',
-          to: phoneNumber,
-          from: fromPhoneNumber,
-          subject: title,
-          text: smsText,
-          filePath: filePathList,
-          attemptId,
-        }),
-    );
+
+    return (attemptId) =>
+      this.smsSend.send({
+        msgType: 'M',
+        to: phoneNumber,
+        from: fromPhoneNumber,
+        subject: title,
+        text: smsText,
+        filePath: filePathList,
+        attemptId,
+      });
   }
 
   async csResendAsAlimTalk(
@@ -2455,30 +2483,24 @@ export class DeliveryBatchService {
   }
 
   async csResendAsSms(orderDeliveryId: number): Promise<void> {
-    const orderDelivery = await this.orderDeliveryRepository
-      .createQueryBuilder('orderDelivery')
-      .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
-      .innerJoinAndSelect('orderProductMapping.order', 'order')
-      .leftJoinAndSelect('orderProductMapping.product', 'product')
-      .leftJoinAndSelect('product.brand', 'brand')
-      .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
-      .leftJoinAndSelect('choiceSelectProduct.brand', 'choiceBrand')
-      .withDeleted()
-      .where('orderDelivery.id = :id', { id: orderDeliveryId })
-      .getOne();
+    const dispatch = await this.prepareCouponResendDispatch(orderDeliveryId, MessageAttemptChannel.SMS);
+    await this.messageAttemptService.trackSend(
+      {
+        orderDeliveryId,
+        slotOp: DeliveryExclusiveOp.MANUAL_RESEND,
+        channel: MessageAttemptChannel.SMS,
+        attemptType: MessageAttemptType.MANUAL_RESEND,
+        sendReason: 'CS_RESEND',
+      },
+      dispatch,
+    );
+  }
 
-    if (!orderDelivery) {
-      throw new Error('발송 데이터가 존재하지 않습니다.');
-    }
-
-    this.assertChoiceProductNotDeletedForCsResend(orderDelivery);
-
-    const isUnselectedChoiceCoupon =
-      orderDelivery.orderProductMapping.product.type === IProductType.CHOICE && !orderDelivery.choiceSelectProductId;
-    if (!orderDelivery.barCode && !isUnselectedChoiceCoupon) {
-      throw new Error('쿠폰이 발급되지 않은 건은 SMS 재발송이 불가능합니다.');
-    }
-
+  /** SMS 재발송 클로저 (기존 csResendAsSms 본문 추출 — 동작 불변). */
+  private async buildSmsResendDispatch(
+    orderDelivery: OrderDeliveryEntity,
+    isUnselectedChoiceCoupon: boolean,
+  ): Promise<(attemptId?: string) => Promise<SmsSendOut>> {
     // 수신 전화번호 결정
     const phoneNumber =
       orderDelivery.deliveryMethod === IOrderSendMethod.EMAIL && orderDelivery.emailReceiverPhone
@@ -2516,25 +2538,16 @@ export class DeliveryBatchService {
       orderDelivery.orderProductMapping.fromPhoneNumber ||
       (await this.orderFromService.resolveSendDefaultPhone(getBillingUserId(orderDelivery.orderProductMapping.order)));
 
-    await this.messageAttemptService.trackSend(
-      {
-        orderDeliveryId: orderDelivery.id,
-        slotOp: DeliveryExclusiveOp.MANUAL_RESEND,
-        channel: MessageAttemptChannel.SMS,
-        attemptType: MessageAttemptType.MANUAL_RESEND,
-        sendReason: 'CS_RESEND',
-      },
-      (attemptId) =>
-        this.smsSend.send({
-          msgType,
-          to: phoneNumber,
-          from: fromPhoneNumber,
-          subject: msgType === 'L' ? ' ' : '',
-          text,
-          filePath: [],
-          attemptId,
-        }),
-    );
+    return (attemptId) =>
+      this.smsSend.send({
+        msgType,
+        to: phoneNumber,
+        from: fromPhoneNumber,
+        subject: msgType === 'L' ? ' ' : '',
+        text,
+        filePath: [],
+        attemptId,
+      });
   }
 
   async csResendAsEmail(orderDeliveryId: number): Promise<void> {

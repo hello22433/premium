@@ -549,8 +549,10 @@ export class MessageResultReconcileService {
   /**
    * 남은 미확정 시도가 없을 때만 workflow 를 `FAILED_FINAL` 로 확정한다.
    * 하나라도 미확정이면 완료·정산·환불을 막는 `PENDING_RECONCILE` 로 둔다(§5.1).
+   *
+   * 재발송 실행기(`dueResend`)의 기한 초과 종결도 같은 규칙을 써야 하므로 public 이다.
    */
-  private async markWorkflowFailedIfSettled(orderDeliveryId: number, now: Date): Promise<void> {
+  async markWorkflowFailedIfSettled(orderDeliveryId: number, now: Date): Promise<void> {
     const pending = await this.attemptRepository.count({
       where: {
         orderDeliveryId,

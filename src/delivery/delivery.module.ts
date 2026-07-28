@@ -41,6 +41,7 @@ import { MessageAttemptEntity } from '../entity/message.attempt.entity';
 import { DeliveryWorkflowSlotService } from './application/delivery-workflow-slot.service';
 import { MessageAttemptService } from './application/message-attempt.service';
 import { MessageResultReconcileService } from './application/message-result-reconcile.service';
+import { MessageResendExecutorService } from './application/message-resend-executor.service';
 
 @Module({
   imports: [
@@ -92,6 +93,7 @@ import { MessageResultReconcileService } from './application/message-result-reco
     DeliveryWorkflowSlotService,
     MessageAttemptService,
     MessageResultReconcileService,
+    MessageResendExecutorService,
   ],
   exports: [
     {
@@ -109,6 +111,7 @@ import { MessageResultReconcileService } from './application/message-result-reco
     DeliveryWorkflowSlotService,
     MessageAttemptService,
     MessageResultReconcileService,
+    MessageResendExecutorService,
     SsgInsertStateModule,
   ],
 })
