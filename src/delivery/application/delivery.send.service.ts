@@ -234,6 +234,8 @@ export class DeliverySendService {
           slotOp: DeliveryExclusiveOp.MESSAGE_SEND,
           attemptType: MessageAttemptType.INITIAL,
           sendReason: 'COUPON',
+          // POST 수락은 접수일 뿐 — 최종 도달은 reportSweep 가 확정한다(TRACKING 유지).
+          awaitsReport: true,
         },
         () =>
           this.deliveryAlimTalk.postAlimtalk({

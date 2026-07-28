@@ -44,6 +44,7 @@ import { PII_BEARING_HISTORY_TYPES } from '../../order/interface/order.history.p
 import { IMailSend } from '../../mail/interface/mail-send';
 import { ISmsSend, SmsSendOut } from '../../sms/interface/sms.send';
 import { MessageAttemptService } from './message-attempt.service';
+import { MessageResultReconcileService } from './message-result-reconcile.service';
 import { DeliveryCutoverGuardService } from './delivery-cutover-guard.service';
 import { LegacyDeliveryEntryPoint, NOT_CUTOVER_ORDER_DELIVERY } from '../interface/legacy.delivery.entry.point';
 import { MessageAttemptChannel, MessageAttemptType } from '../interface/message.attempt.status';
@@ -118,6 +119,7 @@ export class DeliveryBatchService {
     @Inject('ISmsSend')
     private smsSend: ISmsSend,
     private messageAttemptService: MessageAttemptService,
+    private messageResultReconcileService: MessageResultReconcileService,
     private deliveryTrackHttp: DeliveryTrackHttp,
     private cryptoCipher: CryptoCipher,
     private configService: ConfigService,
@@ -930,6 +932,9 @@ export class DeliveryBatchService {
       this.markSendSuccess(od, IOrderDeliveryStatus.COMPLETE);
       // 소유권 보유 시에만 종결/정산 (lease 회전 시 stale write·이중 정산 방지)
       if (await this.persistReportState(od, token)) {
+        // 알림톡 시도도 같은 확정으로 닫는다. 여기서 닫지 않으면 MSEQ 없는 알림톡 attempt 를
+        // 볼 주체가 없어(reconcileOnce 는 mseq 보유 건만 훑는다) SLA 초과로 UNKNOWN 이 된다.
+        await this.messageResultReconcileService.settleAlimTalkReport(od.id, true);
         await this.correctSendHistory(od.id, true, inquiry.data ?? { reportCode: '10000' });
         await this.markOrderTerminalAndSettle(od.orderProductMapping.order.id);
       }
@@ -947,6 +952,10 @@ export class DeliveryBatchService {
       await this.persistReportState(od, token);
       return;
     }
+
+    // 여기부터는 R1(재시도 소진·기한 초과) 구간이라 알림톡은 더 이상 확정 성공할 수 없다.
+    // 폴백 SMS 는 이 확정 실패를 부모로 삼는 CHANNEL_FALLBACK 시도다(§5.3).
+    await this.messageResultReconcileService.settleAlimTalkReport(od.id, false);
 
     // 심야 자동 발송 금지(08:00–20:00 KST 밖) — SMS 폴백도 **배치가 트리거하는 발송**이라
     // 광고성 정보 전송 제한 대상이다. 폴백을 포기하지 않고 다음 허용 시작으로 미룬다.

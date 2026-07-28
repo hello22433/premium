@@ -4,7 +4,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { In, IsNull, LessThan, Not, Repository } from 'typeorm';
 import { MessageAttemptEntity } from '../../entity/message.attempt.entity';
 import { DeliveryWorkflowEntity } from '../../entity/delivery.workflow.entity';
-import { MessageAttemptStatus, MessageAttemptType } from '../interface/message.attempt.status';
+import { MessageAttemptChannel, MessageAttemptStatus, MessageAttemptType } from '../interface/message.attempt.status';
 import { DeliveryWorkflowStatus, OpsReviewReason } from '../interface/delivery.workflow.status';
 import { GemtekResultQuery, GemtekResultRecord } from '../../sms/infra/gemtek.result.query';
 import { SmsGemtekSend } from '../../sms/infra/sms.gemtek.send';
@@ -16,6 +16,7 @@ import {
   isWithinResendDeadline,
   RESEND_DEADLINE_MS,
 } from '../domain/resend.schedule';
+import { DeliveryWorkflowSlotService } from './delivery-workflow-slot.service';
 
 /** 표 4-1 상태별 최대 체류시간(제안값, §7.1). 승인 확정 시 이 상수를 바꾼다. */
 export const SLA_SUBMITTING_MS = 5 * 60 * 1000;
@@ -73,6 +74,7 @@ export class MessageResultReconcileService {
     private readonly gemtekResultQuery: GemtekResultQuery,
     private readonly smsGemtekSend: SmsGemtekSend,
     private readonly configService: ConfigService,
+    private readonly slotService: DeliveryWorkflowSlotService,
   ) {}
 
   /** 504 자동 재발송 활성화 여부(§10 4단계 canary). 기본 비활성. */
@@ -215,7 +217,7 @@ export class MessageResultReconcileService {
         ...raw,
         resolvedAt: confirmedAt,
       });
-      await this.markDelivered(attempt, confirmedAt);
+      await this.slotService.markDelivered(attempt.orderDeliveryId, attempt.channel, confirmedAt);
       summary.succeeded++;
       return;
     }
@@ -526,24 +528,49 @@ export class MessageResultReconcileService {
     return !!result.affected;
   }
 
-  /** 쿠폰 전달 완료 표식(§3 나 — 한 채널이라도 최종 성공하면 전달 완료). */
-  private async markDelivered(attempt: MessageAttemptEntity, deliveredAt: Date): Promise<void> {
-    await this.workflowRepository
-      .createQueryBuilder()
-      .update(DeliveryWorkflowEntity)
-      .set({
-        deliveredFlag: true,
-        deliveredChannel: attempt.channel,
-        deliveredAt,
-        workflowStatus: DeliveryWorkflowStatus.COMPLETED,
-        stateEnteredAt: deliveredAt,
-        workflowVersion: () => 'workflow_version + 1',
-      })
-      .where('order_delivery_id = :orderDeliveryId', { orderDeliveryId: attempt.orderDeliveryId })
-      .andWhere('workflow_status IN (:...open)', {
-        open: [DeliveryWorkflowStatus.IN_PROGRESS, DeliveryWorkflowStatus.PENDING_RECONCILE],
-      })
-      .execute();
+  /**
+   * 알림톡 수신확인 결과를 시도 상태에 반영한다(`reportSweep` 전용 진입점).
+   *
+   * 비동기 경로(`ALIMTALK_ASYNC_REPORT=true`)의 알림톡 시도는 `MSEQ` 가 없어 결과 조회 배치의
+   * 대상이 아니다(`reconcileOnce` 는 `mseq IS NOT NULL` 만 훑는다). 확정을 아는 유일한 주체가
+   * `reportSweep` 이므로 여기서 닫지 않으면 성공한 발송이 SLA 초과로 `UNKNOWN` 이 된다.
+   *
+   * - `confirmed`: 수신확정 → `SUCCEEDED` + 전달완료 표식(§3 나)
+   * - 미확정 종결(R1 — 재시도 소진·기한 초과로 SMS 폴백 전환): 확정 실패 → `FAILED_FINAL`.
+   *   workflow 종결은 폴백 시도가 남아 있을 수 있으므로 `markWorkflowFailedIfSettled` 에 맡긴다.
+   */
+  async settleAlimTalkReport(orderDeliveryId: number, confirmed: boolean, now: Date = new Date()): Promise<boolean> {
+    const attempt = await this.attemptRepository.findOne({
+      where: {
+        orderDeliveryId,
+        channel: MessageAttemptChannel.ALIM_TALK,
+        status: MessageAttemptStatus.TRACKING,
+      },
+      order: { id: 'DESC' },
+    });
+
+    if (!attempt) {
+      return false;
+    }
+
+    const settled = await this.transition(
+      attempt,
+      MessageAttemptStatus.TRACKING,
+      confirmed ? MessageAttemptStatus.SUCCEEDED : MessageAttemptStatus.FAILED_FINAL,
+      { resolvedAt: now },
+    );
+
+    if (!settled) {
+      return false;
+    }
+
+    if (confirmed) {
+      await this.slotService.markDelivered(orderDeliveryId, attempt.channel, now);
+    } else {
+      await this.markWorkflowFailedIfSettled(orderDeliveryId, now);
+    }
+
+    return true;
   }
 
   /**

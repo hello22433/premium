@@ -38,6 +38,12 @@ export interface TrackSendContext {
   approval?: SlotApprovalBinding;
   /** 테스트 발송처럼 추적 대상이 아닌 호출. true 면 상관키 없이 그대로 발송한다. */
   skipTracking?: boolean;
+  /**
+   * 알림톡 전용. `true` 면 호출이 **POST 수락(접수)까지만** 확인하며 최종 도달은 `reportSweep` 가
+   * 확정한다(`ALIMTALK_ASYNC_REPORT=true` 경로). 기본값 `false` 는 동기 inquiry 폴링으로 최종
+   * 확정까지 마친 경로이므로 성공을 즉시 `SUCCEEDED` 로 종결한다.
+   */
+  awaitsReport?: boolean;
 }
 
 /** 전환 여부에 따른 실행 게이트. 전환 건만 Level A 슬롯을 점유한다. */
@@ -188,10 +194,16 @@ export class MessageAttemptService {
    * **SMS 폴백이 체인 부모를 갖게 하기 위함**이다. 부모가 없으면 `CHANNEL_FALLBACK` 의
    * "원 attempt 당 1회" unique 키가 NULL 이 되어 제약이 무력화된다(§5.3 표).
    *
-   * `accepted` 판정은 호출자(legacy)가 내리는 값을 그대로 기록한다. 접수 성공은 최종 전달이 아니므로
-   * `TRACKING`(미확정)으로 두고, 실패는 legacy 가 폴백을 실행하는 확정 실패이므로 `FAILED_FINAL` 로 둔다.
-   * 전송 예외의 "발송 여부 불명" 세분화(`RECONCILING`/`UNKNOWN`)는 알림톡 report sweep 연동과 함께
-   * 컷오버 슬라이스에서 도입한다.
+   * **`accepted` 의 의미는 호출 경로에 따라 다르다. 그래서 `awaitsReport` 로 구분한다.**
+   * - 동기 경로(`send()`): infobank inquiry 폴링까지 마친 **최종 수신확정**이다. 여기서 `TRACKING`
+   *   으로 두면 그 시도를 닫아줄 주체가 어디에도 없다 — 결과 조회 배치는 `MSEQ` 보유 건만 훑고
+   *   (`MessageResultReconcileService.reconcileOnce`), `reportSweep` 는 `report_state=PENDING`
+   *   건만 본다. 결국 SLA 초과로 성공한 발송이 `UNKNOWN` + `OPS_REVIEW_REQUIRED` 로 오분류된다.
+   *   따라서 성공은 즉시 `SUCCEEDED` + 전달완료 표식으로 확정한다.
+   * - 비동기 경로(`postAlimtalk()`, `awaitsReport: true`): POST 수락은 접수일 뿐이므로 `TRACKING`
+   *   으로 두고, 최종 확정은 `reportSweep` → `settleAlimTalkReport` 가 내린다.
+   *
+   * 실패는 두 경로 모두 legacy 가 폴백을 실행하는 확정 실패이므로 `FAILED_FINAL` 이다.
    */
   async trackAlimTalk<T>(
     ctx: Omit<TrackSendContext, 'channel'>,
@@ -210,12 +222,12 @@ export class MessageAttemptService {
       try {
         const result = await send();
         if (attempt) {
-          await this.resolveAlimTalk(attempt, accepted(result));
+          await this.resolveAlimTalk(attempt, accepted(result), !!ctx.awaitsReport);
         }
         return result;
       } catch (e) {
         if (attempt) {
-          await this.resolveAlimTalk(attempt, false);
+          await this.resolveAlimTalk(attempt, false, !!ctx.awaitsReport);
         }
         throw e;
       }
@@ -242,7 +254,9 @@ export class MessageAttemptService {
         const anchor = await this.slotService.ensureWorkflow(ctx.orderDeliveryId);
         workflowVersion = String(anchor.workflowVersion);
       } catch (e) {
-        this.logger.warn(`workflow 앵커 생성 실패(추적 미적용, 미전환 확정). orderDeliveryId=${ctx.orderDeliveryId}: ${e}`);
+        this.logger.warn(
+          `workflow 앵커 생성 실패(추적 미적용, 미전환 확정). orderDeliveryId=${ctx.orderDeliveryId}: ${e}`,
+        );
       }
       return { cutover: false, workflowVersion, slot: null };
     }
@@ -373,18 +387,42 @@ export class MessageAttemptService {
     }
   }
 
-  /** 알림톡 접수 결과를 반영한다(접수 성공=미확정 `TRACKING`, 실패=폴백을 유발한 확정 실패). */
-  private async resolveAlimTalk(attempt: MessageAttemptEntity, accepted: boolean): Promise<void> {
+  /**
+   * 알림톡 결과를 반영한다.
+   *
+   * - 실패: 폴백을 유발하는 확정 실패 → `FAILED_FINAL`
+   * - 성공 + `awaitsReport`: POST 수락(접수)일 뿐 → `TRACKING` (확정은 `settleAlimTalkReport`)
+   * - 성공 + 동기 경로: inquiry 폴링까지 끝난 최종 확정 → `SUCCEEDED` + 전달완료 표식
+   *
+   * 전달완료 표식은 결과 조회 배치와 **같은 전이**(`slotService.markDelivered`)를 쓴다.
+   */
+  private async resolveAlimTalk(
+    attempt: MessageAttemptEntity,
+    accepted: boolean,
+    awaitsReport: boolean,
+  ): Promise<void> {
     try {
       const now = new Date();
-      await this.attemptRepository.update(
+      const settled = accepted && !awaitsReport;
+      const status = accepted
+        ? settled
+          ? MessageAttemptStatus.SUCCEEDED
+          : MessageAttemptStatus.TRACKING
+        : MessageAttemptStatus.FAILED_FINAL;
+
+      const result = await this.attemptRepository.update(
         { attemptId: attempt.attemptId, status: MessageAttemptStatus.SUBMITTING },
         {
-          status: accepted ? MessageAttemptStatus.TRACKING : MessageAttemptStatus.FAILED_FINAL,
-          resolvedAt: accepted ? null : now,
+          status,
+          resolvedAt: status === MessageAttemptStatus.TRACKING ? null : now,
           stateEnteredAt: now,
         },
       );
+
+      // 전이에 실패했으면(선점·경쟁) 전달완료 표식도 세우지 않는다 — 남의 상태로 workflow 를 닫지 않는다.
+      if (settled && result.affected) {
+        await this.slotService.markDelivered(attempt.orderDeliveryId, attempt.channel, now);
+      }
     } catch (e) {
       this.logger.warn(`알림톡 시도 추적 갱신 실패. attemptId=${attempt.attemptId}: ${e}`);
     }

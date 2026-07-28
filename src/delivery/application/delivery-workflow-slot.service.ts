@@ -13,6 +13,7 @@ import {
   MESSAGE_RETRY_BLOCKING_STATUSES,
   MESSAGE_RETRY_RESUME_BLOCKING_STATUSES,
   MESSAGE_SEND_BLOCKING_STATUSES,
+  MessageAttemptChannel,
   MessageAttemptStatus,
   MessageAttemptType,
 } from '../interface/message.attempt.status';
@@ -311,6 +312,39 @@ export class DeliveryWorkflowSlotService {
     if (!result.affected) {
       this.logger.warn(`슬롯 해제 실패(이미 회수됨, ABA 방지). orderDeliveryId=${slot.orderDeliveryId} op=${slot.op}`);
     }
+
+    return !!result.affected;
+  }
+
+  /**
+   * 쿠폰 전달 완료 표식 (§3 나 — 알림톡·SMS·MMS 중 **하나라도 최종 성공하면 전달 완료**).
+   *
+   * 결과 조회 배치(Gemtek `MSEQ` 확정)와 알림톡 확정 경로가 **같은 전이를 써야** 채널별로
+   * 전달완료 판정이 갈리지 않는다. 종결·수동 종결 상태는 건드리지 않는다(`RESOLVED_MANUALLY_*`
+   * 는 불변 override, §7.1).
+   */
+  async markDelivered(
+    orderDeliveryId: number,
+    channel: MessageAttemptChannel,
+    deliveredAt: Date,
+    manager?: EntityManager,
+  ): Promise<boolean> {
+    const result = await this.repo(manager)
+      .createQueryBuilder()
+      .update(DeliveryWorkflowEntity)
+      .set({
+        deliveredFlag: true,
+        deliveredChannel: channel,
+        deliveredAt,
+        workflowStatus: DeliveryWorkflowStatus.COMPLETED,
+        stateEnteredAt: deliveredAt,
+        workflowVersion: () => 'workflow_version + 1',
+      })
+      .where('order_delivery_id = :orderDeliveryId', { orderDeliveryId })
+      .andWhere('workflow_status IN (:...open)', {
+        open: [DeliveryWorkflowStatus.IN_PROGRESS, DeliveryWorkflowStatus.PENDING_RECONCILE],
+      })
+      .execute();
 
     return !!result.affected;
   }

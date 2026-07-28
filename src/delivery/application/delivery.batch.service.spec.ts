@@ -37,6 +37,7 @@ import { RefundPoolService } from '../../wallet/application/refund-pool.service'
 import { ResendDeductService } from '../../wallet/application/resend-deduct.service';
 import { LegacyWalletCreditSyncService } from '../../wallet/application/legacy-wallet-credit-sync.service';
 import { MessageAttemptService } from './message-attempt.service';
+import { MessageResultReconcileService } from './message-result-reconcile.service';
 import { SsgRefundOutcome } from '../interface/ssg.refund.resolve';
 import { DeliveryCutoverGuardService } from './delivery-cutover-guard.service';
 
@@ -93,6 +94,11 @@ describe('DeliveryBatchService', () => {
             trackSend: (_ctx: unknown, send: (attemptId?: string) => Promise<unknown>) => send(undefined),
             trackAlimTalk: (_ctx: unknown, send: () => Promise<unknown>) => send(),
           },
+        },
+        // 알림톡 확정 반영은 reportSweep 경로에서만 쓰인다(§3 나).
+        {
+          provide: MessageResultReconcileService,
+          useValue: { settleAlimTalkReport: jest.fn().mockResolvedValue(true) },
         },
         { provide: DeliveryTrackHttp, useValue: {} },
         {

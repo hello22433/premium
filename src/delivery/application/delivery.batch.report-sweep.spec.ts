@@ -36,6 +36,8 @@ describe('DeliveryBatchService — reportSweep / settlement (async alimtalk)', (
       splitLegacyAllowed: jest.fn(async (ids: number[]) => ({ allowed: ids, blocked: [] })),
     };
     service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    // 알림톡 시도 확정 반영(§3 나) — 비동기 경로에서 reportSweep 가 유일한 확정 주체다.
+    service.messageResultReconcileService = { settleAlimTalkReport: jest.fn().mockResolvedValue(true) };
     service.persistReportState = jest.fn().mockResolvedValue(true);
     service.clearReportClaim = jest.fn().mockResolvedValue(true);
     service.correctSendHistory = jest.fn().mockResolvedValue(undefined);
@@ -64,6 +66,8 @@ describe('DeliveryBatchService — reportSweep / settlement (async alimtalk)', (
       expect(service.correctSendHistory).toHaveBeenCalledWith(od.id, true, expect.anything());
       expect(service.markOrderTerminalAndSettle).toHaveBeenCalledWith(100);
       expect(service.csResendAsMms).not.toHaveBeenCalled();
+      // 알림톡 attempt 도 같은 확정으로 닫는다 — 닫지 않으면 SLA 30h 뒤 UNKNOWN 으로 오분류된다.
+      expect(service.messageResultReconcileService.settleAlimTalkReport).toHaveBeenCalledWith(od.id, true);
     });
 
     it('미확정 & attempt<2 & 마감 전 → 재시도(다음 due 갱신, PENDING 유지, fallback 미진입)', async () => {
@@ -77,6 +81,8 @@ describe('DeliveryBatchService — reportSweep / settlement (async alimtalk)', (
       expect(od.reportAttemptCount).toBe(1);
       expect(fallbackSpy).not.toHaveBeenCalled();
       expect(service.persistReportState).toHaveBeenCalled();
+      // 아직 확정 가능 구간이므로 attempt 를 닫지 않는다.
+      expect(service.messageResultReconcileService.settleAlimTalkReport).not.toHaveBeenCalled();
     });
 
     it('미확정 & attempt 소진(2) → runReportFallback 진입', async () => {
@@ -87,6 +93,8 @@ describe('DeliveryBatchService — reportSweep / settlement (async alimtalk)', (
       await service.processOneReport(od, 'tok');
 
       expect(fallbackSpy).toHaveBeenCalledWith(od, 'tok');
+      // R1 진입 = 알림톡은 더 이상 확정 성공할 수 없다 → 확정 실패로 닫는다.
+      expect(service.messageResultReconcileService.settleAlimTalkReport).toHaveBeenCalledWith(od.id, false);
     });
 
     it('마감 초과 → 즉시 runReportFallback', async () => {
