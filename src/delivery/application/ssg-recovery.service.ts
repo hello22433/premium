@@ -6,6 +6,8 @@ import { OrderDeliveryRefundEntity } from '../../entity/order.delivery.refund.en
 import { SsgRecoveryResult } from '../interface/ssg.recovery.result';
 import { SsgRefundOutcome } from '../interface/ssg.refund.resolve';
 import { SsgRefundResolverService } from './ssg-refund.resolver';
+import { DeliveryCutoverGuardService } from './delivery-cutover-guard.service';
+import { notCutoverPredicate } from '../interface/legacy.delivery.entry.point';
 
 /**
  * SSG 행사 잔액 복구의 단일 lease 게이트 진입점.
@@ -36,6 +38,7 @@ export class SsgRecoveryService {
     @InjectRepository(OrderDeliveryRefundEntity)
     private readonly refundRepository: Repository<OrderDeliveryRefundEntity>,
     private readonly ssgRefundResolverService: SsgRefundResolverService,
+    private readonly cutoverGuard: DeliveryCutoverGuardService,
   ) {}
 
   /**
@@ -54,6 +57,27 @@ export class SsgRecoveryService {
     refundAmount: number,
     leaseSeconds: number = SsgRecoveryService.DEFAULT_LEASE_SECONDS,
   ): Promise<SsgRecoveryResult> {
+    // 컷오버 전환 건은 이 sweep 이 직접 환불을 부르지 않는다(§9 인벤토리 #10).
+    // 전환 건의 재조정은 RECONCILE 슬롯 경유로만 실행하며, 슬롯을 얻지 못하면 다음 사이클로 미룬다.
+    // cron 이므로 다음 두 경우 모두 예외로 배치를 멈추지 않고 SKIPPED 로 넘긴다(다음 사이클 재시도).
+    //   - 전환 완료: 신규 경로 소관
+    //   - 드레이닝(quiesce): 양쪽 모두 시작 금지 구간이라 isCutover 가 던진다
+    let cutover: boolean;
+    try {
+      cutover = await this.cutoverGuard.isCutover(orderDeliveryId);
+    } catch (e) {
+      this.logger.warn(
+        `[SSG_RECOVERY] 컷오버 드레이닝 — legacy sweep 보류(다음 사이클 재시도). orderDeliveryId=${orderDeliveryId}: ${e}`,
+      );
+      return SsgRecoveryResult.SKIPPED_NO_CLAIM;
+    }
+    if (cutover) {
+      this.logger.warn(
+        `[SSG_RECOVERY] 컷오버 전환 건 — legacy sweep 건너뜀(RECONCILE 슬롯 경로 소관). orderDeliveryId=${orderDeliveryId}`,
+      );
+      return SsgRecoveryResult.SKIPPED_NO_CLAIM;
+    }
+
     const token = ulid();
 
     // 1) CAS token claim (원자). settled=false 이고 lease 미보유/만료인 row 만 소유.
@@ -68,6 +92,9 @@ export class SsgRecoveryService {
       .where('order_delivery_id = :odid', { odid: orderDeliveryId })
       .andWhere('ssg_balance_settled = false')
       .andWhere('(ssg_recover_lease_until IS NULL OR ssg_recover_lease_until < NOW(6))')
+      // 컷오버 드레이닝·전환 건은 legacy 복구 lease 를 잡지 못한다(§9 quiesce).
+      // 위 isCutover 판정과 이 CAS 사이에 마크가 설 수 있으므로, 점유와 같은 문장으로 원자화한다.
+      .andWhere(notCutoverPredicate('order_delivery_refund.order_delivery_id'))
       .execute();
 
     if (!claim.affected) {

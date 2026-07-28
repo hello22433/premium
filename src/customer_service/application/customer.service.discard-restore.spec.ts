@@ -43,6 +43,13 @@ describe('CustomerServiceService.restoreBalanceOnDiscard — refunded-proxy read
 
   const makeSut = (existsResult: boolean, claimImpl?: jest.Mock) => {
     const sut: any = Object.create(CustomerServiceService.prototype);
+    // §9 컷오버 게이트 — 단위 테스트 기본값은 '미전환 건'(legacy 경로 그대로 통과).
+    (sut as any).cutoverGuard = {
+      assertLegacyAllowed: jest.fn().mockResolvedValue(undefined),
+      assertRefundExecutionAllowed: jest.fn().mockResolvedValue(undefined),
+      isCutover: jest.fn().mockResolvedValue(false),
+      splitLegacyAllowed: jest.fn(async (ids: number[]) => ({ allowed: ids, blocked: [] })),
+    };
     sut.refundLedgerService = {
       exists: jest.fn().mockResolvedValue(existsResult),
       claimWithManager: claimImpl ?? jest.fn().mockResolvedValue(undefined),
@@ -500,6 +507,13 @@ describe('CustomerServiceService.restoreBalanceOnDiscard — refunded-proxy read
 
   it('정산완료 폐기 이력은 Tx2 복구액 확정 후 destroyAmount와 restoreAmount를 같은 snapshot 배분액으로 보강한다', async () => {
     const sut: any = Object.create(CustomerServiceService.prototype);
+    // §9 컷오버 게이트 — 단위 테스트 기본값은 '미전환 건'(legacy 경로 그대로 통과).
+    (sut as any).cutoverGuard = {
+      assertLegacyAllowed: jest.fn().mockResolvedValue(undefined),
+      assertRefundExecutionAllowed: jest.fn().mockResolvedValue(undefined),
+      isCutover: jest.fn().mockResolvedValue(false),
+      splitLegacyAllowed: jest.fn(async (ids: number[]) => ({ allowed: ids, blocked: [] })),
+    };
     const orderDelivery = buildOrderDelivery(IOrderDeliveryStatus.COMPLETE);
     orderDelivery.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
     orderDelivery.orderProductMapping.product.type = IProductType.GENERAL;

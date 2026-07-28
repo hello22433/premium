@@ -14,6 +14,7 @@ import { IPartnerCompanyType } from '../../partner_company/interface/partner.com
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 import { IProductType } from '../../product/interface/product.type';
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
+import { DeliveryCutoverGuardService } from '../../delivery/application/delivery-cutover-guard.service';
 
 /**
  * resendFailedDelivery 단위 테스트 — self-deadlock fix(배치 동시성 모델 전환).
@@ -87,6 +88,16 @@ describe('PartnerCompanyExternHistoryService.resendFailedDelivery', () => {
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        {
+          provide: DeliveryCutoverGuardService,
+          useValue: {
+            // §9 컷오버 게이트 — 단위 테스트 기본값은 '미전환 건'(legacy 경로 그대로 통과).
+            assertLegacyAllowed: jest.fn().mockResolvedValue(undefined),
+            assertRefundExecutionAllowed: jest.fn().mockResolvedValue(undefined),
+            isCutover: jest.fn().mockResolvedValue(false),
+            splitLegacyAllowed: jest.fn(async (ids: number[]) => ({ allowed: ids, blocked: [] })),
+          },
+        },
         PartnerCompanyExternHistoryService,
         { provide: getRepositoryToken(PartnerCompanyExternHistoryEntity), useValue: {} },
         { provide: getRepositoryToken(OrderDeliveryEntity), useValue: orderDeliveryRepository },

@@ -15,6 +15,7 @@ import { OrderDeliveryEntity } from '../entity/order.delivery.entity';
 import { OrderProductMappingEntity } from '../entity/order.product.mapping.entity';
 import { SsgReservationRangeEntity } from '../entity/ssg.reservation.range.entity';
 import { ActivityLogModule } from '../activity_log/activity.log.module';
+import { DeliveryCutoverModule } from '../delivery/delivery.cutover.module';
 
 @Module({
   imports: [
@@ -32,6 +33,7 @@ import { ActivityLogModule } from '../activity_log/activity.log.module';
       SsgReservationRangeEntity,
     ]),
     ActivityLogModule,
+    DeliveryCutoverModule,
   ],
   controllers: [SsgEventController],
   providers: [SsgEventService, { provide: 'ISsgIssue', useClass: SsgIssue }],

@@ -20,6 +20,7 @@ import {
 @Index('idx_delivery_workflow_status', ['workflowStatus', 'stateEnteredAt'])
 @Index('idx_delivery_workflow_slot', ['activeExclusiveOp', 'exclusiveLeaseExpiresAt'])
 @Index('idx_delivery_workflow_cutover', ['cutoverMigratedAt'])
+@Index('idx_delivery_workflow_draining', ['cutoverDrainingAt'])
 export class DeliveryWorkflowEntity {
   @PrimaryGeneratedColumn({ type: 'bigint' })
   id: string;
@@ -81,6 +82,22 @@ export class DeliveryWorkflowEntity {
 
   @Column({ type: 'varchar', length: 32, nullable: true })
   opsReviewReason: OpsReviewReason | null;
+
+  /**
+   * 컷오버 **드레이닝(quiesce)** 마크.
+   *
+   * 드레이닝 확인과 전환 마크 설정 사이에는 "가드를 이미 통과한 legacy 워커가 그 직후 lease 를 잡는"
+   * admission race 가 있다. 그 창을 닫으려면 **판정 시점이 아니라 진입 자체를 먼저 막아야** 한다.
+   * 이 마크가 서면 legacy 신규 진입은 거부되고, 신규 모델도 아직 시작하지 않는다(양쪽 모두 정지).
+   * 진행 중이던 legacy 작업이 lease 만료 창을 넘겨 모두 빠져나간 뒤에 `cutoverMigratedAt` 을 세운다.
+   */
+  @Column({
+    type: 'datetime',
+    precision: 6,
+    nullable: true,
+    comment: '컷오버 드레이닝 마크. NOT NULL 이면 legacy 신규 진입 거부(신규 모델도 미시작, quiesce)',
+  })
+  cutoverDrainingAt: Date | null;
 
   @Column({
     type: 'datetime',

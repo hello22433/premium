@@ -42,6 +42,7 @@ import { DeliveryWorkflowSlotService } from './application/delivery-workflow-slo
 import { MessageAttemptService } from './application/message-attempt.service';
 import { MessageResultReconcileService } from './application/message-result-reconcile.service';
 import { MessageResendExecutorService } from './application/message-resend-executor.service';
+import { DeliveryCutoverModule } from './delivery.cutover.module';
 
 @Module({
   imports: [
@@ -74,6 +75,7 @@ import { MessageResendExecutorService } from './application/message-resend-execu
     UserManagementModule,
     SsgInsertStateModule,
     OrderFromModule,
+    DeliveryCutoverModule,
     forwardRef(() => WalletModule),
   ],
   providers: [
@@ -113,6 +115,7 @@ import { MessageResendExecutorService } from './application/message-resend-execu
     MessageResultReconcileService,
     MessageResendExecutorService,
     SsgInsertStateModule,
+    DeliveryCutoverModule,
   ],
 })
 export class DeliveryModule {}

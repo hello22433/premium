@@ -83,6 +83,7 @@ describeDb('SsgEventService.getOpenTempDeductionByEvent (R) DB integration', () 
       {} as any, // refundLedgerRepository
       {} as any, // activityLogService
       {} as any, // ssgIssue
+      { assertLegacyAllowed: jest.fn().mockResolvedValue(undefined) } as any, // cutoverGuard (§9 컷오버 게이트)
     );
   });
 

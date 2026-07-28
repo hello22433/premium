@@ -63,6 +63,13 @@ describe('ExternalApiService.getProductsForBilling — salePrice 할인/카드�
     opts?: { mode?: WalletCutoverMode; walletSettleMethod?: 'CARD' | 'CASH'; walletCardSurchargeApplied?: boolean },
   ) => {
     const svc = Object.create(ExternalApiService.prototype) as any;
+    // §9 컷오버 게이트 — 단위 테스트 기본값은 '미전환 건'(legacy 경로 그대로 통과).
+    (svc as any).cutoverGuard = {
+      assertLegacyAllowed: jest.fn().mockResolvedValue(undefined),
+      assertRefundExecutionAllowed: jest.fn().mockResolvedValue(undefined),
+      isCutover: jest.fn().mockResolvedValue(false),
+      splitLegacyAllowed: jest.fn(async (ids: number[]) => ({ allowed: ids, blocked: [] })),
+    };
     svc.productRepository = { createQueryBuilder: jest.fn(() => makeQb(products)) };
     // userId 조건 필터를 시뮬레이션: where.userId 와 일치하는 항목만 반환.
     svc.userDiscountRepository = {

@@ -46,6 +46,13 @@ function makeAccount() {
 // findOne 은 호출되면 안 되지만(read-max 제거) 안전하게 stub.
 function makeHarness(assignedId = 777) {
   const svc = Object.create(ExternalApiService.prototype) as ExternalApiService;
+  // §9 컷오버 게이트 — 단위 테스트 기본값은 '미전환 건'(legacy 경로 그대로 통과).
+  (svc as any).cutoverGuard = {
+    assertLegacyAllowed: jest.fn().mockResolvedValue(undefined),
+    assertRefundExecutionAllowed: jest.fn().mockResolvedValue(undefined),
+    isCutover: jest.fn().mockResolvedValue(false),
+    splitLegacyAllowed: jest.fn(async (ids: number[]) => ({ allowed: ids, blocked: [] })),
+  };
   (svc as any).logger = { warn: jest.fn(), log: jest.fn(), error: jest.fn() };
 
   const savedCodes: string[] = [];

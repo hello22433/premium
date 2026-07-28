@@ -35,6 +35,7 @@ import { AccountLifecycleModule } from '../account_lifecycle/account.lifecycle.m
 import { WalletModule } from '../wallet/wallet.module';
 import { OrderFromModule } from '../order_from/order.from.module';
 import { ActivityLogModule } from '../activity_log/activity.log.module';
+import { DeliveryCutoverModule } from '../delivery/delivery.cutover.module';
 
 @Module({
   imports: [
@@ -79,6 +80,7 @@ import { ActivityLogModule } from '../activity_log/activity.log.module';
     WalletModule,
     OrderFromModule,
     ActivityLogModule,
+    DeliveryCutoverModule,
   ],
   controllers: [ExternalApiController],
   providers: [

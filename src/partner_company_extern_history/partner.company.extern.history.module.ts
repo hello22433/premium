@@ -9,6 +9,7 @@ import { OrderDeliveryEntity } from '../entity/order.delivery.entity';
 import { DeliveryModule } from '../delivery/delivery.module';
 import { PartnerCompanyExternModule } from '../partner_company_extern/partner.company.extern.module';
 import { SsgInsertStateModule } from '../delivery/ssg.insert.state.module';
+import { DeliveryCutoverModule } from '../delivery/delivery.cutover.module';
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { SsgInsertStateModule } from '../delivery/ssg.insert.state.module';
     forwardRef(() => DeliveryModule),
     PartnerCompanyExternModule,
     SsgInsertStateModule,
+    DeliveryCutoverModule,
   ],
   controllers: [PartnerCompanyExternHistoryController],
   providers: [PartnerCompanyExternHistoryService, CryptoCipher],

@@ -48,6 +48,13 @@ describe('CustomerServiceService — CS 조회 API 권한검사(MEDIUM)', () => 
     const makeSut = (productTypeRows: any[], manyAndCount: [any[], number], authImpl?: jest.Mock) => {
       const qb = makeQueryBuilder(productTypeRows, manyAndCount);
       const sut: any = Object.create(CustomerServiceService.prototype);
+      // §9 컷오버 게이트 — 단위 테스트 기본값은 '미전환 건'(legacy 경로 그대로 통과).
+      (sut as any).cutoverGuard = {
+        assertLegacyAllowed: jest.fn().mockResolvedValue(undefined),
+        assertRefundExecutionAllowed: jest.fn().mockResolvedValue(undefined),
+        isCutover: jest.fn().mockResolvedValue(false),
+        splitLegacyAllowed: jest.fn(async (ids: number[]) => ({ allowed: ids, blocked: [] })),
+      };
       sut.orderDeliveryRepository = { createQueryBuilder: jest.fn().mockReturnValue(qb) };
       sut.authService = { authorityValidator: authImpl ?? jest.fn().mockResolvedValue(undefined) };
       sut.cryptoCipher = { safeDecryptDeliveryTarget: jest.fn().mockReturnValue('user@test.com') };
@@ -122,6 +129,13 @@ describe('CustomerServiceService — CS 조회 API 권한검사(MEDIUM)', () => 
 
     const makeSut = (orderDelivery: any, authImpl?: jest.Mock) => {
       const sut: any = Object.create(CustomerServiceService.prototype);
+      // §9 컷오버 게이트 — 단위 테스트 기본값은 '미전환 건'(legacy 경로 그대로 통과).
+      (sut as any).cutoverGuard = {
+        assertLegacyAllowed: jest.fn().mockResolvedValue(undefined),
+        assertRefundExecutionAllowed: jest.fn().mockResolvedValue(undefined),
+        isCutover: jest.fn().mockResolvedValue(false),
+        splitLegacyAllowed: jest.fn(async (ids: number[]) => ({ allowed: ids, blocked: [] })),
+      };
       sut.orderDeliveryRepository = { findOne: jest.fn().mockResolvedValue(orderDelivery) };
       sut.authService = { authorityValidator: authImpl ?? jest.fn().mockResolvedValue(undefined) };
       // execStatusList 가 도달하면 복호화가 일어나는지 감시하기 위한 목.

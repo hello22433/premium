@@ -41,6 +41,11 @@ import { IPartnerCompanyType } from '../../partner_company/interface/partner.com
 import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
 import { DeliverySendService } from '../../delivery/application/delivery.send.service';
 import { RefundLedgerService } from '../../delivery/application/refund-ledger.service';
+import { DeliveryCutoverGuardService } from '../../delivery/application/delivery-cutover-guard.service';
+import {
+  LegacyDeliveryEntryPoint,
+  NOT_CUTOVER_ORDER_DELIVERY,
+} from '../../delivery/interface/legacy.delivery.entry.point';
 import { SsgRecoveryService } from '../../delivery/application/ssg-recovery.service';
 import { SsgRecoveryResult } from '../../delivery/interface/ssg.recovery.result';
 import { SsgEventService } from '../../ssg_event/application/ssg.event.service';
@@ -141,6 +146,7 @@ export class ExternalApiService {
     private mappingResolver: ApiCustomerMappingResolver,
     private legacyWalletCreditSyncService: LegacyWalletCreditSyncService,
     private activityLogService: ActivityLogService,
+    private cutoverGuard: DeliveryCutoverGuardService,
   ) {}
 
   // 주문의 billing user(+company) 로드. getBillingUserId(order)=clientUserId ?? userId.
@@ -1091,6 +1097,9 @@ export class ExternalApiService {
     account: ExternalApiAccountEntity,
     error: any,
   ) {
+    // 컷오버 전환 건 거부(§9 인벤토리 #6). 전환 건의 발송 실패 환불도 refund_attempt 로만 실행한다.
+    await this.cutoverGuard.assertLegacyAllowed(orderDelivery.id, LegacyDeliveryEntryPoint.EXTERNAL_API_FAIL_REFUND);
+
     orderDelivery.status = IOrderDeliveryStatus.FAIL;
     orderDelivery.apiErrorMessage = error?.message?.substring(0, 500) ?? null;
     if (!orderDelivery.failedAt) {
@@ -1364,6 +1373,8 @@ export class ExternalApiService {
       .update(OrderDeliveryEntity)
       .set({ mutationClaimedAt: claimAt })
       .where('id = :id', { id: orderDeliveryId })
+      // 컷오버 드레이닝·전환 건은 legacy 변형 lease 를 잡지 못한다(§9 quiesce).
+      .andWhere(NOT_CUTOVER_ORDER_DELIVERY)
       .andWhere('(mutationClaimedAt IS NULL OR mutationClaimedAt < :stale)', { stale: staleThreshold })
       .execute();
     return !!result.affected;
@@ -1394,6 +1405,11 @@ export class ExternalApiService {
     if (order.type === IOrderType.SSG) {
       throw new ExternalApiException('3009', '신세계 상품권은 폐기할 수 없습니다');
     }
+
+    // 컷오버 전환 건은 취소도 legacy 경로로 처리하지 않는다(§9 인벤토리 #7).
+    // 협력사 취소는 비가역이라 **호출 전** 최상단에서 막아야 한다. 뒤쪽 processCancelRefund 가드만
+    // 있으면 "협력사 쿠폰은 죽었는데 환불 경로는 거부" 상태가 되므로 여기서 먼저 닫는다.
+    await this.cutoverGuard.assertLegacyAllowed(orderDelivery.id, LegacyDeliveryEntryPoint.EXTERNAL_API_CANCEL_REFUND);
 
     // D3-55 후속: 변형 lease 로 재발행 진행중 창을 입구에서 닫는다.
     // 재발행 tip 은 INSERT 시점부터 lease 를 보유하므로, 발급/발송 중인 tip 취소는 3010(일시적, 재시도 유도).
@@ -1481,6 +1497,11 @@ export class ExternalApiService {
     /** cancelOrder 가 획득한 변형 lease 토큰. 상태 쓰기의 fencing 조건으로 쓴다(다음 커밋). */
     mutationClaimAt: Date,
   ) {
+    // 컷오버 전환 건 거부(§9 인벤토리 #7). 취소 사유는 workflow `CANCELLED` 전이 후 REFUND(경로 B)로
+    // 처리한다. 협력사 취소는 이 함수 진입 전에 끝나므로, 이 거부는 **취소 API 최상단 가드**(cancelOrder)
+    // 와 짝을 이룰 때만 의미가 있다 — 그래서 cancelOrder 진입부에서도 같은 게이트를 통과시킨다.
+    await this.cutoverGuard.assertLegacyAllowed(orderDelivery.id, LegacyDeliveryEntryPoint.EXTERNAL_API_CANCEL_REFUND);
+
     const discardedAt = new Date();
     orderDelivery.status = IOrderDeliveryStatus.CANCEL;
     orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
@@ -1628,6 +1649,8 @@ export class ExternalApiService {
         blocked: [OrderDeliveryCouponStatus.CANCEL, OrderDeliveryCouponStatus.REFUND_CANCEL],
       })
       .andWhere('(mutation_claimed_at IS NULL OR mutation_claimed_at < :mutationStale)', { mutationStale })
+      // 컷오버 드레이닝·전환 건은 legacy 재발송 슬롯을 잡지 못한다(§9 quiesce).
+      .andWhere(NOT_CUTOVER_ORDER_DELIVERY)
       .execute();
 
     if (!claim.affected) {

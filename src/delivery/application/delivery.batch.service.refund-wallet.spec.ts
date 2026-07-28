@@ -43,6 +43,7 @@ import { SsgInsertStateService } from './ssg-insert-state.service';
 import { SsgRefundResolverService } from './ssg-refund.resolver';
 import { MessageAttemptService } from './message-attempt.service';
 import { OrderFromService } from '../../order_from/application/order.from.service';
+import { DeliveryCutoverGuardService } from './delivery-cutover-guard.service';
 
 /**
  * PR2-006 — refundForFail wallet path 분기 회귀.
@@ -135,6 +136,16 @@ describe('DeliveryBatchService.refundForFail - wallet path', () => {
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        {
+          provide: DeliveryCutoverGuardService,
+          useValue: {
+            // §9 컷오버 게이트 — 단위 테스트 기본값은 '미전환 건'(legacy 경로 그대로 통과).
+            assertLegacyAllowed: jest.fn().mockResolvedValue(undefined),
+            assertRefundExecutionAllowed: jest.fn().mockResolvedValue(undefined),
+            isCutover: jest.fn().mockResolvedValue(false),
+            splitLegacyAllowed: jest.fn(async (ids: number[]) => ({ allowed: ids, blocked: [] })),
+          },
+        },
         DeliveryBatchService,
         { provide: getRepositoryToken(OrderEntity), useValue: {} },
         { provide: getRepositoryToken(OrderRealProductEntity), useValue: {} },
