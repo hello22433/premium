@@ -10,6 +10,7 @@ jest.mock('../../delivery/infra/delivery.create.coupon.image', () => ({
 
 import { BadRequestException } from '@nestjs/common';
 import { OrderService } from './order.service';
+import { DeliveryCreateCouponImage } from '../../delivery/infra/delivery.create.coupon.image';
 import { IUserAuthority } from '../../user/interface/user.authority';
 import { ViewScopeType } from '../../entity/user.view.scope.entity';
 import { IOrderStatus } from '../interface/order.status';
@@ -27,6 +28,11 @@ import { IOrderStatus } from '../interface/order.status';
  * 한도 선점/보상 흐름을 시뮬레이션한다.
  */
 describe('OrderService testDelivery 정책 (횟수제한/IDOR)', () => {
+  // mockRejectedValueOnce 등이 다음 케이스로 새지 않도록 기본 성공 동작으로 되돌린다.
+  beforeEach(() => {
+    (DeliveryCreateCouponImage as jest.Mock).mockReset().mockResolvedValue({ path: 'test-coupon.png' });
+  });
+
   const LIMIT_MSG = '테스트발송은 상품당 최대 2회입니다.';
   const MISMATCH_MSG = '주문 정보와 상품 정보가 일치하지 않습니다.';
 
@@ -296,6 +302,39 @@ describe('OrderService testDelivery 정책 (횟수제한/IDOR)', () => {
       // 이력 삭제가 throw 해도 보상 차감(-1)은 실행되어야 한다.
       expect(service.updateBuilder.captured[1]?.set.testDeliveryCount()).toContain('test_delivery_count - 1');
       expect(service.logger.error).toHaveBeenCalled();
+    });
+
+    // 준비 단계(이미지 생성·이력 저장)도 선점 이후의 외부 I/O 라 실패 시 한도를 보상해야 한다.
+    // 보상하지 않으면 실제 발송 없이 2회 한도만 영구 소진된다.
+    it('쿠폰 이미지 생성이 실패하면 이력 저장 전이라도 선점 한도를 보상 차감(-1)한다', async () => {
+      const service = buildService({ id: 5, orderId: 77, testDeliveryCount: 0 }, { claimAffected: [1] });
+      (DeliveryCreateCouponImage as jest.Mock).mockRejectedValueOnce(new Error('image gen failed'));
+
+      await expect(service.testDelivery(owner(IUserAuthority.CORPORATE_ADMIN), body())).rejects.toThrow(
+        'image gen failed',
+      );
+
+      // 이력 저장 전 실패라 저장·삭제는 일어나지 않는다.
+      expect(service.testOrderDeliveryRepository.save).not.toHaveBeenCalled();
+      expect(service.testOrderDeliveryRepository.softDelete).not.toHaveBeenCalled();
+      // 발송도 하지 않았으므로 선점한 한도는 되돌아와야 한다.
+      expect(service.deliveryBatchService.oneSend).not.toHaveBeenCalled();
+      const compensation = service.updateBuilder.captured[1];
+      expect(compensation).toBeDefined();
+      expect(compensation.set.testDeliveryCount()).toContain('test_delivery_count - 1');
+      expect(compensation.where.some((c: string) => c.includes('test_delivery_count > 0'))).toBe(true);
+    });
+
+    it('테스트 발송 이력 저장이 실패하면 선점 한도를 보상 차감(-1)한다', async () => {
+      const service = buildService({ id: 5, orderId: 77, testDeliveryCount: 0 }, { claimAffected: [1] });
+      service.testOrderDeliveryRepository.save.mockRejectedValue(new Error('save failed'));
+
+      await expect(service.testDelivery(owner(IUserAuthority.CORPORATE_ADMIN), body())).rejects.toThrow('save failed');
+
+      expect(service.deliveryBatchService.oneSend).not.toHaveBeenCalled();
+      // 저장 자체가 실패해 이력 id 가 없으므로 삭제는 시도하지 않는다.
+      expect(service.testOrderDeliveryRepository.softDelete).not.toHaveBeenCalled();
+      expect(service.updateBuilder.captured[1]?.set.testDeliveryCount()).toContain('test_delivery_count - 1');
     });
 
     it('mapping 이 없으면 발송·선점 없이 거부된다', async () => {

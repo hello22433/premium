@@ -5687,81 +5687,84 @@ export class OrderService {
       await this.orderProductMappingRepository.increment({ id: orderProductMappingId }, 'testDeliveryCount', 1);
     }
 
-    const firstDelivery = await this.orderDeliveryRepository.findOne({
-      where: { orderProductMappingId },
-      order: { id: 'ASC' },
-    });
-    const expireAt = this.resolveOrderExpireAt(orderProductMapping, firstDelivery?.expireAt);
-    const expireDate = expireAt ? dayjs(expireAt).tz('Asia/Seoul').format('YYYY. MM. DD') : null;
-
-    const deliveryMethod = orderProductMapping.sendMethod!;
-    const encryptedDeliveryTarget = this.cryptoCipher.encryptDeliveryTarget(
-      PhoneUtil.normalizeDeliveryTarget(deliveryTarget),
-    );
-
-    // 쿠폰이미지 만들기
-    const { path: imagePath } = await DeliveryCreateCouponImage(
-      orderProductMapping.product.imagePath,
-      orderProductMapping.product.name,
-      barCode,
-      orderProductMapping.product.brand!.nameKorean,
-      expireDate,
-      orderProductMapping.topImagePath,
-      orderProductMapping.midImagePath,
-      orderProductMapping.product.type,
-    );
-
-    // test_order_delivery 저장 (oneSend에서 테스트 발송 여부를 판단하여 PIN 재발급 스킵)
-    const testOrderDelivery = new TestOrderDeliveryEntity();
-    testOrderDelivery.status = IOrderDeliveryStatus.COMPLETE;
-    testOrderDelivery.orderProductMappingId = orderProductMapping.id;
-    testOrderDelivery.deliveryMethod = deliveryMethod;
-    testOrderDelivery.deliveryTarget = encryptedDeliveryTarget;
-    testOrderDelivery.imagePath = imagePath;
-    testOrderDelivery.sendRequestAt = new Date();
-    testOrderDelivery.expireAt = expireAt;
-    testOrderDelivery.barCode = barCode;
-    testOrderDelivery.personalCode = barCode;
-    const savedTestOrderDelivery = await this.testOrderDeliveryRepository.save(testOrderDelivery);
-    const testOrderDeliveryId = savedTestOrderDelivery.id;
-
-    const orderDelivery = new OrderDeliveryEntity();
-    orderDelivery.deliveryMethod = deliveryMethod;
-    orderDelivery.orderProductMappingId = orderProductMapping.id;
-    orderDelivery.deliveryTarget = encryptedDeliveryTarget;
-    orderDelivery.barCode = barCode;
-    orderDelivery.personalCode = barCode;
-    orderDelivery.orderProductMapping = orderProductMapping;
-    orderDelivery.imagePath = imagePath;
-    orderDelivery.expireAt = expireAt;
-
-    // 전송 (TX 밖 — testOrderDeliveryId 로 테스트 발송임을 전달하여 PIN 재발급 스킵).
-    // 발송 실패 시 선점한 한도를 보상(-1)하고 저장한 이력을 정리한다.
-    let isSuccess = false;
+    // 선점 이후의 모든 준비 단계(이미지 생성·이력 저장)와 발송을 한 번에 보상 범위로 묶는다.
+    // 준비 단계도 외부 I/O 라 실패할 수 있고, 그때 보상하지 않으면 발송 없이 한도만 소진된다.
+    let testOrderDeliveryId: number | null = null;
     try {
-      isSuccess = await this.deliveryBatchService.oneSend(orderDelivery, false, testOrderDeliveryId);
+      const firstDelivery = await this.orderDeliveryRepository.findOne({
+        where: { orderProductMappingId },
+        order: { id: 'ASC' },
+      });
+      const expireAt = this.resolveOrderExpireAt(orderProductMapping, firstDelivery?.expireAt);
+      const expireDate = expireAt ? dayjs(expireAt).tz('Asia/Seoul').format('YYYY. MM. DD') : null;
+
+      const deliveryMethod = orderProductMapping.sendMethod!;
+      const encryptedDeliveryTarget = this.cryptoCipher.encryptDeliveryTarget(
+        PhoneUtil.normalizeDeliveryTarget(deliveryTarget),
+      );
+
+      // 쿠폰이미지 만들기
+      const { path: imagePath } = await DeliveryCreateCouponImage(
+        orderProductMapping.product.imagePath,
+        orderProductMapping.product.name,
+        barCode,
+        orderProductMapping.product.brand!.nameKorean,
+        expireDate,
+        orderProductMapping.topImagePath,
+        orderProductMapping.midImagePath,
+        orderProductMapping.product.type,
+      );
+
+      // test_order_delivery 저장 (oneSend에서 테스트 발송 여부를 판단하여 PIN 재발급 스킵)
+      const testOrderDelivery = new TestOrderDeliveryEntity();
+      testOrderDelivery.status = IOrderDeliveryStatus.COMPLETE;
+      testOrderDelivery.orderProductMappingId = orderProductMapping.id;
+      testOrderDelivery.deliveryMethod = deliveryMethod;
+      testOrderDelivery.deliveryTarget = encryptedDeliveryTarget;
+      testOrderDelivery.imagePath = imagePath;
+      testOrderDelivery.sendRequestAt = new Date();
+      testOrderDelivery.expireAt = expireAt;
+      testOrderDelivery.barCode = barCode;
+      testOrderDelivery.personalCode = barCode;
+      const savedTestOrderDelivery = await this.testOrderDeliveryRepository.save(testOrderDelivery);
+      testOrderDeliveryId = savedTestOrderDelivery.id;
+
+      const orderDelivery = new OrderDeliveryEntity();
+      orderDelivery.deliveryMethod = deliveryMethod;
+      orderDelivery.orderProductMappingId = orderProductMapping.id;
+      orderDelivery.deliveryTarget = encryptedDeliveryTarget;
+      orderDelivery.barCode = barCode;
+      orderDelivery.personalCode = barCode;
+      orderDelivery.orderProductMapping = orderProductMapping;
+      orderDelivery.imagePath = imagePath;
+      orderDelivery.expireAt = expireAt;
+
+      // 전송 (TX 밖 — testOrderDeliveryId 로 테스트 발송임을 전달하여 PIN 재발급 스킵).
+      const isSuccess = await this.deliveryBatchService.oneSend(orderDelivery, false, testOrderDeliveryId);
+      if (!isSuccess) {
+        throw new BadRequestException('테스트 발송에 실패했습니다. 수신자 정보를 확인해주세요.');
+      }
     } catch (error) {
+      // 준비 단계 실패 시에는 아직 이력이 없을 수 있으므로 testOrderDeliveryId 는 null 일 수 있다.
       await this.rollbackTestDelivery(testOrderDeliveryId, orderProductMappingId);
       throw error;
-    }
-
-    if (!isSuccess) {
-      await this.rollbackTestDelivery(testOrderDeliveryId, orderProductMappingId);
-      throw new BadRequestException('테스트 발송에 실패했습니다. 수신자 정보를 확인해주세요.');
     }
   }
 
   // 테스트 발송 실패 시 저장한 이력 제거 + 선점한 한도 보상 차감(-1).
-  // 발송 전에 한도를 선점(+1)했으므로 발송 실패 시 되돌린다. 원 발송 실패 사유를 덮지 않도록 예외는 로그만 남긴다.
-  private async rollbackTestDelivery(testOrderDeliveryId: number, orderProductMappingId: number): Promise<void> {
+  // 발송 전에 한도를 선점(+1)했으므로 이후 단계가 실패하면 되돌린다. 원 실패 사유를 덮지 않도록 예외는 로그만 남긴다.
+  // testOrderDeliveryId 가 null 이면 이력 저장 전(이미지 생성 등)에 실패한 경우라 한도 보상만 수행한다.
+  private async rollbackTestDelivery(testOrderDeliveryId: number | null, orderProductMappingId: number): Promise<void> {
     // 이력 삭제와 한도 보상은 서로 독립이므로 각각 try 로 감싼다.
-    try {
-      await this.testOrderDeliveryRepository.softDelete(testOrderDeliveryId);
-    } catch (error) {
-      this.logger.error(
-        `테스트 발송 이력 제거 중 오류 (testOrderDeliveryId: ${testOrderDeliveryId})`,
-        error instanceof Error ? error.stack : String(error),
-      );
+    if (testOrderDeliveryId !== null) {
+      try {
+        await this.testOrderDeliveryRepository.softDelete(testOrderDeliveryId);
+      } catch (error) {
+        this.logger.error(
+          `테스트 발송 이력 제거 중 오류 (testOrderDeliveryId: ${testOrderDeliveryId})`,
+          error instanceof Error ? error.stack : String(error),
+        );
+      }
     }
 
     // 관리자 무제한이어도 발송 전 +1 했으므로 보상 대상이다. 0 미만으로 내려가지 않도록 조건부 차감.
