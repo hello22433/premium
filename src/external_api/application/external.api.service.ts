@@ -91,6 +91,15 @@ import { LegacyWalletCreditSyncService } from '../../wallet/application/legacy-w
 import { OrderPaymentAllocationEntity } from '../../entity/order.payment.allocation.entity';
 import { OrderPaymentRefundEventType } from '../../entity/order.payment.refund.event.entity';
 import { OrderDeliveryAttemptEntity, OrderDeliveryAttemptType } from '../../entity/order.delivery.attempt.entity';
+import { ActivityLogService } from '../../activity_log/application/activity.log.service';
+import { ActivityLogActionType } from '../../activity_log/interface/activity.log.action.type';
+import { ActivityLogResult } from '../../activity_log/interface/activity.log.result';
+
+type ExternalRefundBalanceChange = {
+  beforeBalance: number;
+  afterBalance: number;
+  balanceManagementType: string;
+};
 
 @Injectable()
 export class ExternalApiService {
@@ -131,6 +140,7 @@ export class ExternalApiService {
     private orderFromService: OrderFromService,
     private mappingResolver: ApiCustomerMappingResolver,
     private legacyWalletCreditSyncService: LegacyWalletCreditSyncService,
+    private activityLogService: ActivityLogService,
   ) {}
 
   // 주문의 billing user(+company) 로드. getBillingUserId(order)=clientUserId ?? userId.
@@ -263,17 +273,93 @@ export class ExternalApiService {
     await this.orderRepository.save(order);
   }
 
-  private async refundBalance(billingUser: UserEntity, price: number): Promise<void> {
+  private async refundBalance(billingUser: UserEntity, price: number): Promise<ExternalRefundBalanceChange> {
     const user = billingUser;
     const isCompany = user.company?.balanceManagementType === 'COMPANY';
     if (isCompany) {
-      await this.dataSource.manager.query('UPDATE user_company SET balance = balance + ? WHERE id = ?', [
+      const result = await this.dataSource.manager.query('UPDATE user_company SET balance = balance + ? WHERE id = ?', [
         price,
         user.companyId,
       ]);
+      if (result?.affectedRows !== 1) {
+        throw new ExternalApiException('9999', '시스템 오류', '외부 API 회사 예치금 환불 대상 없음');
+      }
+      const rows = await this.dataSource.manager.query('SELECT balance FROM user_company WHERE id = ?', [
+        user.companyId,
+      ]);
+      if (!rows?.[0]) {
+        throw new ExternalApiException('9999', '시스템 오류', '외부 API 회사 예치금 환불 잔액 조회 실패');
+      }
+      const afterBalance = Number(rows?.[0]?.balance ?? 0);
+      return {
+        beforeBalance: afterBalance - price,
+        afterBalance,
+        balanceManagementType: user.company?.balanceManagementType ?? 'COMPANY',
+      };
     } else {
-      await this.dataSource.manager.query('UPDATE user SET balance = balance + ? WHERE id = ?', [price, user.id]);
+      const result = await this.dataSource.manager.query('UPDATE user SET balance = balance + ? WHERE id = ?', [
+        price,
+        user.id,
+      ]);
+      if (result?.affectedRows !== 1) {
+        throw new ExternalApiException('9999', '시스템 오류', '외부 API 사용자 예치금 환불 대상 없음');
+      }
+      const rows = await this.dataSource.manager.query('SELECT balance FROM user WHERE id = ?', [user.id]);
+      if (!rows?.[0]) {
+        throw new ExternalApiException('9999', '시스템 오류', '외부 API 사용자 예치금 환불 잔액 조회 실패');
+      }
+      const afterBalance = Number(rows?.[0]?.balance ?? 0);
+      return {
+        beforeBalance: afterBalance - price,
+        afterBalance,
+        balanceManagementType: user.company?.balanceManagementType ?? 'ACCOUNT',
+      };
     }
+  }
+
+  private async logExternalRefundActivity(input: {
+    billingUser: UserEntity;
+    order: OrderEntity;
+    orderDelivery: OrderDeliveryEntity;
+    amount: number;
+    sourcePath: 'EXTERNAL_FAIL' | 'EXTERNAL_CANCEL';
+    memo: string;
+    refundLedgerId: number | null;
+    balanceChange: ExternalRefundBalanceChange;
+  }): Promise<void> {
+    const { billingUser, order, orderDelivery, amount, sourcePath, memo, refundLedgerId, balanceChange } = input;
+    const company = billingUser.company;
+
+    await this.activityLogService.createLog(
+      {
+        userId: 0,
+        userEmail: 'system@epopkon.com',
+        method: 'SYSTEM',
+        requestUrl: '/system/balance/refund',
+        actionType: ActivityLogActionType.BALANCE_REFUND,
+        ipAddress: '',
+        statusCode: 200,
+        result: ActivityLogResult.SUCCESS,
+        responseTime: 0,
+        requestParams: {
+          targetUserId: billingUser.id,
+          targetUserEmail: billingUser.email,
+          targetBusinessName: company?.businessName ?? '',
+          targetCompanyId: company?.id ?? null,
+          balanceManagementType: balanceChange.balanceManagementType,
+          chargeAmount: amount,
+          beforeBalance: balanceChange.beforeBalance,
+          afterBalance: balanceChange.afterBalance,
+          memo,
+          sourcePath,
+          orderId: order.id,
+          orderDeliveryId: orderDelivery.id,
+          externalTrId: orderDelivery.externalTrId ?? null,
+          refundLedgerId,
+        },
+      },
+      this.dataSource.manager,
+    );
   }
 
   // ─── Wallet 환불 (WALLET cutover 모드) ───────────────────
@@ -1080,6 +1166,8 @@ export class ExternalApiService {
 
     // R2: 환불 wallet 분기. wallet-managed 면 풀 기반 환불 + R4 차감 mirror 역복원,
     // 그 외(LEGACY/SHADOW)는 기존 raw refundBalance 유지(회귀 0).
+    const refundLedgerId = await this.refundLedgerService.getLedgerId(orderDelivery.id);
+
     if (isWalletManaged) {
       await this.refundViaWallet(
         billingUser,
@@ -1089,7 +1177,7 @@ export class ExternalApiService {
         'fail_refund',
       );
     } else {
-      await this.refundBalance(billingUser, order.settleAmount);
+      const balanceChange = await this.refundBalance(billingUser, order.settleAmount);
       // 레거시 예치금 wallet 동기화 (same-tx). settlement_code 단일 wallet 로 수렴(isCompanyMode 무관 1회).
       await this.legacyWalletCreditSyncService.syncDeposit(this.dataSource.manager, {
         billingUserId: billingUser.id,
@@ -1099,6 +1187,16 @@ export class ExternalApiService {
         type: 'FAIL_REFUND',
         idempotencyKey: `legacy_fail_refund:${order.id}:${orderDelivery.id}:deposit`,
         memo: `외부 API 발송 실패 환불 (주문번호: ${order.id})`,
+      });
+      await this.logExternalRefundActivity({
+        billingUser,
+        order,
+        orderDelivery,
+        amount: order.settleAmount,
+        sourcePath: 'EXTERNAL_FAIL',
+        memo: `외부 API 발송 실패 환불 (주문번호: ${order.id})`,
+        refundLedgerId,
+        balanceChange,
       });
     }
   }
@@ -1443,6 +1541,8 @@ export class ExternalApiService {
     });
 
     // R2: 취소 환불 wallet 분기. cancel 경로는 SSG 차단(cancelOrder:606)이라 SSG resolver 불필요.
+    const refundLedgerId = await this.refundLedgerService.getLedgerId(orderDelivery.id);
+
     if (isWalletManaged) {
       await this.refundViaWallet(
         billingUser,
@@ -1452,7 +1552,7 @@ export class ExternalApiService {
         'discard_refund',
       );
     } else {
-      await this.refundBalance(billingUser, order.settleAmount);
+      const balanceChange = await this.refundBalance(billingUser, order.settleAmount);
       // 레거시 예치금 wallet 동기화 (same-tx). settlement_code 단일 wallet 로 수렴(isCompanyMode 무관 1회).
       await this.legacyWalletCreditSyncService.syncDeposit(this.dataSource.manager, {
         billingUserId: billingUser.id,
@@ -1462,6 +1562,16 @@ export class ExternalApiService {
         type: 'DISCARD_REFUND',
         idempotencyKey: `legacy_discard_refund:${order.id}:${orderDelivery.id}:deposit`,
         memo: `외부 API 취소 환불 (주문번호: ${order.id})`,
+      });
+      await this.logExternalRefundActivity({
+        billingUser,
+        order,
+        orderDelivery,
+        amount: order.settleAmount,
+        sourcePath: 'EXTERNAL_CANCEL',
+        memo: `외부 API 취소 환불 (주문번호: ${order.id})`,
+        refundLedgerId,
+        balanceChange,
       });
     }
   }

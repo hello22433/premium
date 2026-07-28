@@ -27,8 +27,6 @@ beforeAll(() => {
 afterAll(() => {
   deleteDataSourceByName('default');
 });
-import { ExternalApiException } from '../api/external.api.exception.filter';
-import { WalletCutoverMode } from '../../wallet/config/wallet-cutover.config';
 import { OrderPaymentRefundEventType } from '../../entity/order.payment.refund.event.entity';
 import { ExternalApiAccountEntity } from '../../entity/external.api.account.entity';
 import { OrderEntity } from '../../entity/order.entity';
@@ -37,6 +35,7 @@ import { IOrderType } from '../../order/interface/order.type';
 import { IOrderStatus } from '../../order/interface/order.status';
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
 import { SsgRecoveryResult } from '../../delivery/interface/ssg.recovery.result';
+import { ActivityLogActionType } from '../../activity_log/interface/activity.log.action.type';
 
 // External API 환불(실패/취소) + 재발송 가드 wallet 정합화 단위 테스트.
 //   - R7-A: phaseC_handleFailure claim 멱등 흡수.
@@ -137,16 +136,22 @@ function refundService(opts: {
   const claim = jest.fn(async () => {
     if (opts.claimThrows) throw opts.claimThrows;
   });
+  const getLedgerId = jest.fn(async () => 991);
   const refund = jest.fn(async () => ({
     ledgerIds: ['l1'],
     totalRefundedAmount: 30000,
     alreadyRefunded: opts.refundAlreadyRefunded ?? false,
   }));
-  const refundBalance = jest.fn(async () => undefined);
+  const refundBalance = jest.fn(async () => ({
+    beforeBalance: 70000,
+    afterBalance: 100000,
+    balanceManagementType: 'ACCOUNT',
+  }));
   const recoverWithLease = jest.fn(async () => opts.recoverResult ?? SsgRecoveryResult.RESTORED);
   const syncDeposit = jest.fn(async () => undefined);
+  const createLog = jest.fn(async () => 1);
 
-  (svc as any).refundLedgerService = { claim };
+  (svc as any).refundLedgerService = { claim, getLedgerId };
   (svc as any).refundPoolService = { refund };
   (svc as any).ssgRecoveryService = { recoverWithLease };
   (svc as any).walletManagedPredicate = {
@@ -156,6 +161,7 @@ function refundService(opts: {
   (svc as any).refundBalance = refundBalance;
   // 레거시 예치금 wallet 동기화 목 (legacy 경로에서만 호출됨).
   (svc as any).legacyWalletCreditSyncService = { syncCredit: jest.fn(), syncDeposit };
+  (svc as any).activityLogService = { createLog };
 
   return {
     svc,
@@ -164,10 +170,12 @@ function refundService(opts: {
       managerQuery,
       managerFindOne,
       claim,
+      getLedgerId,
       refund,
       refundBalance,
       recoverWithLease,
       syncDeposit,
+      createLog,
       odSave,
       odUpdate,
       logger,
@@ -326,6 +334,20 @@ describe('phaseC_handleFailure — R7-A claim 멱등 + R2 wallet 환불', () => 
       idempotencyKey: 'legacy_fail_refund:1:55:deposit',
       memo: expect.any(String),
     });
+    expect(mocks.createLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestUrl: '/system/balance/refund',
+        actionType: ActivityLogActionType.BALANCE_REFUND,
+        requestParams: expect.objectContaining({
+          sourcePath: 'EXTERNAL_FAIL',
+          orderId: 1,
+          orderDeliveryId: 55,
+          refundLedgerId: 991,
+          chargeAmount: 30000,
+        }),
+      }),
+      expect.anything(),
+    );
   });
 
   it('WALLET-managed인데 INITIAL attempt 없음 → drift throw', async () => {
@@ -375,6 +397,64 @@ describe('processCancelRefund — R2 wallet 환불 (DISCARD_REFUND)', () => {
       type: 'DISCARD_REFUND',
       idempotencyKey: 'legacy_discard_refund:1:55:deposit',
       memo: expect.any(String),
+    });
+    expect(mocks.createLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestUrl: '/system/balance/refund',
+        actionType: ActivityLogActionType.BALANCE_REFUND,
+        requestParams: expect.objectContaining({
+          sourcePath: 'EXTERNAL_CANCEL',
+          orderId: 1,
+          orderDeliveryId: 55,
+          refundLedgerId: 991,
+          chargeAmount: 30000,
+        }),
+      }),
+      expect.anything(),
+    );
+  });
+});
+
+describe('refundBalance — 레거시 환불 감사 로그 전 잔액 복원 검증', () => {
+  it('사용자 잔액 UPDATE 대상이 없으면 시스템 오류로 중단한다', async () => {
+    const svc = Object.create(ExternalApiService.prototype) as ExternalApiService;
+    const query = jest.fn(async () => ({ affectedRows: 0 }));
+    (svc as any).dataSource = { manager: { query } };
+
+    await expect((svc as any).refundBalance(makeAccount().user, 30000)).rejects.toMatchObject({
+      code: '9999',
+    });
+
+    expect(query).toHaveBeenCalledTimes(1);
+  });
+
+  it('사용자 잔액 UPDATE 후 잔액 재조회가 실패하면 시스템 오류로 중단한다', async () => {
+    const svc = Object.create(ExternalApiService.prototype) as ExternalApiService;
+    const query = jest.fn(async (sql: string) => {
+      if (sql.startsWith('UPDATE user SET')) return { affectedRows: 1 };
+      return [];
+    });
+    (svc as any).dataSource = { manager: { query } };
+
+    await expect((svc as any).refundBalance(makeAccount().user, 30000)).rejects.toMatchObject({
+      code: '9999',
+    });
+
+    expect(query).toHaveBeenCalledTimes(2);
+  });
+
+  it('회사 잔액 UPDATE 후 재조회된 잔액으로 전후 잔액을 반환한다', async () => {
+    const svc = Object.create(ExternalApiService.prototype) as ExternalApiService;
+    const query = jest.fn(async (sql: string) => {
+      if (sql.startsWith('UPDATE user_company SET')) return { affectedRows: 1 };
+      return [{ balance: 100000 }];
+    });
+    (svc as any).dataSource = { manager: { query } };
+
+    await expect((svc as any).refundBalance(makeAccount({ isCompany: true }).user, 30000)).resolves.toEqual({
+      beforeBalance: 70000,
+      afterBalance: 100000,
+      balanceManagementType: 'COMPANY',
     });
   });
 });
@@ -497,6 +577,34 @@ describe('processCancelRefund — 상태 쓰기 fencing (리뷰 HIGH)', () => {
   });
 });
 
+describe('cancelOrder — 동시 취소 mutation lease 방어', () => {
+  it('lease 획득 실패 시 협력사 취소와 환불로 내려가지 않는다', async () => {
+    const svc = Object.create(ExternalApiService.prototype) as ExternalApiService;
+    const order = makeOrder();
+    const product = { isCancelable: true, partnerCompany: { id: 77 } };
+    const orderDelivery = makeOrderDelivery({
+      orderProductMapping: { order, product },
+    } as any);
+    const cancelByExternalApi = jest.fn(async () => undefined);
+    const processCancelRefund = jest.fn(async () => undefined);
+    const releaseMutationLease = jest.fn(async () => undefined);
+
+    (svc as any).findOrderDeliveryByTrId = jest.fn(async () => orderDelivery);
+    (svc as any).acquireMutationLease = jest.fn(async () => false);
+    (svc as any).releaseMutationLease = releaseMutationLease;
+    (svc as any).partnerCompanyExternService = { cancelByExternalApi };
+    (svc as any).processCancelRefund = processCancelRefund;
+
+    await expect((svc as any).cancelOrder(makeAccount(), 'TR-1', {})).rejects.toMatchObject({
+      code: '3010',
+    });
+
+    expect(cancelByExternalApi).not.toHaveBeenCalled();
+    expect(processCancelRefund).not.toHaveBeenCalled();
+    expect(releaseMutationLease).not.toHaveBeenCalled();
+  });
+});
+
 // ── phaseC 가 "유일하게 영속하는 컬럼" 잠금 ──────────────────────────────
 //
 // phaseC 는 현재 save(orderDelivery)(=merge, 행 전체)로 영속한다. 이를 targeted update 로
@@ -566,12 +674,7 @@ describe('phaseC — 영속 컬럼 집합 잠금 (save→targeted update 리팩�
   it('실패 경로: 위 컬럼 + apiErrorMessage 가 DB 에 반영된다', async () => {
     const { svc, mocks } = refundService({ isWalletManaged: false });
 
-    await (svc as any).phaseC_handleFailure(
-      makeOrder(),
-      makePostSendDelivery(),
-      makeAccount(),
-      new Error('발송 실패'),
-    );
+    await (svc as any).phaseC_handleFailure(makeOrder(), makePostSendDelivery(), makeAccount(), new Error('발송 실패'));
 
     const cols = persistedColumns(mocks);
     for (const required of [...PHASEC_REQUIRED_COLUMNS, 'apiErrorMessage']) {
