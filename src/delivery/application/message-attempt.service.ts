@@ -1,7 +1,8 @@
 import { ConflictException, Injectable, Logger } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
+import { DataSource, Repository } from 'typeorm';
 import { MessageAttemptEntity } from '../../entity/message.attempt.entity';
+import { DeliveryWorkflowEntity } from '../../entity/delivery.workflow.entity';
 import { MessageAttemptChannel, MessageAttemptStatus, MessageAttemptType } from '../interface/message.attempt.status';
 import { DeliveryExclusiveOp, LEGACY_SEND_OP, TrackingCreatedByOp } from '../interface/delivery.workflow.status';
 import { generateAttemptId } from '../domain/message.attempt.id';
@@ -69,6 +70,7 @@ export class MessageAttemptService {
     @InjectRepository(MessageAttemptEntity)
     private readonly attemptRepository: Repository<MessageAttemptEntity>,
     private readonly slotService: DeliveryWorkflowSlotService,
+    @InjectDataSource() private readonly dataSource: DataSource,
   ) {}
 
   /**
@@ -110,13 +112,17 @@ export class MessageAttemptService {
    * 외부 호출만 남긴다. 그 신규 행은 `trackSend` 처럼 여기서 생성하지 않으므로, 이 메서드는
    * 상태 마크(`SUBMITTING`)와 결과 반영만 수행한다.
    *
-   * **전달 완료 경쟁 봉합(§3 나, PR#32 HIGH):** `delivered_flag = false` 검증과
-   * `OUTBOX_READY → SUBMITTING` 전이를 **하나의 조건부 UPDATE** 로 묶는다. read 후 별도 전이는
-   * 두 호출 사이에 타 채널 전달 완료가 끼어드는 창을 남긴다. 외부 호출은 이 커밋 이후에만 시작하며,
-   * 커밋 이후의 지연 전달 완료는 §3 나가 명시 수용하는 in-flight 중복이다.
+   * **전달 완료 경쟁 봉합(§3 나, PR#32 HIGH 3차):** delivered 검증과 `OUTBOX_READY → SUBMITTING`
+   * 전이는 **workflow 행을 `SELECT ... FOR UPDATE` 로 잠근 트랜잭션 안에서** 수행한다.
+   * 서브쿼리(`NOT EXISTS`) 결합만으로는 InnoDB 가 workflow 행을 잠그지 않아, "서브쿼리 평가 후 ~
+   * 전이 커밋 전" 사이에 타 채널 전달 완료가 커밋되는 interleaving 을 막지 못한다. 전달 완료를
+   * 기록하는 쪽(결과 배치 `markDelivered`)은 같은 workflow 행을 UPDATE 하므로 이 잠금과
+   * 직렬화된다 — 먼저 커밋됐다면 잠금 획득 후 flag 가 보이고(취소 종결), 아니면 그 기록이
+   * 이 트랜잭션 커밋 뒤로 밀린다(§3 나가 명시 수용하는 in-flight 중복). **외부 발송 호출은
+   * 이 트랜잭션 커밋 이후에만 시작한다.**
    *
    * - `SENT`       : 전이 성공 → 외부 발송 수행.
-   * - `SUPERSEDED` : delivered 로 전이가 막힘 → 같은 조건부 CAS 로 `CANCELLED_SUPERSEDED` 종결까지
+   * - `SUPERSEDED` : delivered 확인 → 같은 트랜잭션에서 `CANCELLED_SUPERSEDED` 종결까지
    *                  수행했다(발송 대상 아님, 실패·환불 후보 아님).
    * - `NOT_READY`  : 상태 경쟁(다른 worker 선점·이미 진행) → 아무것도 하지 않음.
    */
@@ -126,43 +132,42 @@ export class MessageAttemptService {
   ): Promise<PreparedSendResult> {
     const now = new Date();
 
-    // 외부 호출은 이 마크가 커밋된 뒤에만 시작한다(§5.3 outbox 2단 마크).
-    const marked = await this.attemptRepository
-      .createQueryBuilder()
-      .update(MessageAttemptEntity)
-      .set({ status: MessageAttemptStatus.SUBMITTING, stateEnteredAt: now })
-      .where('attempt_id = :attemptId', { attemptId: attempt.attemptId })
-      .andWhere('status = :outboxReady', { outboxReady: MessageAttemptStatus.OUTBOX_READY })
-      .andWhere(
-        `NOT EXISTS (SELECT 1 FROM delivery_workflow w
-                      WHERE w.order_delivery_id = :orderDeliveryId AND w.delivered_flag = 1)`,
-        { orderDeliveryId: attempt.orderDeliveryId },
-      )
-      .execute();
+    const outcome = await this.dataSource.transaction(async (manager) => {
+      // 전달 완료 기록자(markDelivered)와의 직렬화 지점. 잠금 없이는 커밋 시점 보장이 없다.
+      const workflow = await manager.getRepository(DeliveryWorkflowEntity).findOne({
+        where: { orderDeliveryId: attempt.orderDeliveryId },
+        lock: { mode: 'pessimistic_write' },
+      });
 
-    if (!marked.affected) {
-      // delivered 로 막혔는지 상태 경쟁인지도 조건부 CAS 로 구분한다 — 재조회 후 판정하면 또 경쟁한다.
-      const superseded = await this.attemptRepository
-        .createQueryBuilder()
-        .update(MessageAttemptEntity)
-        .set({ status: MessageAttemptStatus.CANCELLED_SUPERSEDED, resolvedAt: now, stateEnteredAt: now })
-        .where('attempt_id = :attemptId', { attemptId: attempt.attemptId })
-        .andWhere('status = :outboxReady', { outboxReady: MessageAttemptStatus.OUTBOX_READY })
-        .andWhere(
-          `EXISTS (SELECT 1 FROM delivery_workflow w
-                    WHERE w.order_delivery_id = :orderDeliveryId AND w.delivered_flag = 1)`,
-          { orderDeliveryId: attempt.orderDeliveryId },
-        )
-        .execute();
+      const attemptRepo = manager.getRepository(MessageAttemptEntity);
 
-      if (superseded.affected) {
-        this.logger.log(`타 채널 전달 완료 — 발송 없이 취소 종결(§3 나). attemptId=${attempt.attemptId}`);
-        return 'SUPERSEDED';
+      if (workflow?.deliveredFlag) {
+        // 발송 대상이 아니다 — 같은 트랜잭션에서 취소 종결까지 수행해 열린 예약을 남기지 않는다.
+        const superseded = await attemptRepo.update(
+          { attemptId: attempt.attemptId, status: MessageAttemptStatus.OUTBOX_READY },
+          { status: MessageAttemptStatus.CANCELLED_SUPERSEDED, resolvedAt: now, stateEnteredAt: now },
+        );
+        return superseded.affected ? 'SUPERSEDED' : 'NOT_READY';
       }
+
+      // 외부 호출 시작 마크(§5.3 outbox 2단 마크). delivered=false 가 이 트랜잭션 커밋까지 유지된다.
+      const marked = await attemptRepo.update(
+        { attemptId: attempt.attemptId, status: MessageAttemptStatus.OUTBOX_READY },
+        { status: MessageAttemptStatus.SUBMITTING, stateEnteredAt: now },
+      );
+      return marked.affected ? 'MARKED' : 'NOT_READY';
+    });
+
+    if (outcome === 'SUPERSEDED') {
+      this.logger.log(`타 채널 전달 완료 — 발송 없이 취소 종결(§3 나). attemptId=${attempt.attemptId}`);
+      return 'SUPERSEDED';
+    }
+    if (outcome === 'NOT_READY') {
       this.logger.warn(`SUBMITTING 마크 실패(선점·진행 중) — 발송하지 않는다. attemptId=${attempt.attemptId}`);
       return 'NOT_READY';
     }
 
+    // 외부 호출은 위 트랜잭션이 커밋된 뒤에만 시작한다.
     try {
       const result = await send(attempt.attemptId);
       await this.settleSubmitted(attempt, result);

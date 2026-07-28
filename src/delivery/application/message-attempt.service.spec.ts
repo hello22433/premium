@@ -3,6 +3,7 @@ import { MessageAttemptService, formatYearMonth } from './message-attempt.servic
 import { MessageAttemptChannel, MessageAttemptStatus, MessageAttemptType } from '../interface/message.attempt.status';
 import { DeliveryExclusiveOp, DeliverySlotFailureCode, LEGACY_SEND_OP } from '../interface/delivery.workflow.status';
 import { isValidAttemptId } from '../domain/message.attempt.id';
+import { DeliveryWorkflowEntity } from '../../entity/delivery.workflow.entity';
 
 /**
  * outbox 2단 마크 + 컷오버 게이트 검증.
@@ -20,8 +21,10 @@ describe('MessageAttemptService — 시도 추적(outbox 2단 마크)', () => {
       acquire?: jest.Mock;
       release?: jest.Mock;
       ensureWorkflow?: jest.Mock;
-      /** createQueryBuilder 기반 조건부 UPDATE 의 affected 시퀀스(trackPreparedSend 용) */
-      qbAffected?: number[];
+      /** trackPreparedSend 트랜잭션의 workflow 잠금 read 가 볼 deliveredFlag */
+      txDelivered?: boolean;
+      /** trackPreparedSend 트랜잭션 내 attempt 조건부 UPDATE 의 affected 시퀀스 */
+      txAffected?: number[];
     } = {},
   ) => {
     const saved: Record<string, unknown>[] = [];
@@ -34,44 +37,30 @@ describe('MessageAttemptService — 시도 추적(outbox 2단 마크)', () => {
     const update = overrides.update ?? jest.fn().mockResolvedValue({ affected: 1 });
     const findOne = overrides.findOne ?? jest.fn().mockResolvedValue(null);
 
-    const qbUpdates: {
-      set: Record<string, unknown>;
-      conditions: { sql: string; params?: Record<string, unknown> }[];
-    }[] = [];
-    const qbAffected = overrides.qbAffected ?? [1];
-    let qbCall = 0;
-
     const attemptRepository = {
       create: jest.fn().mockImplementation((entity) => ({ ...entity })),
       save,
       update,
       findOne,
-      createQueryBuilder: jest.fn().mockImplementation(() => {
-        const captured: {
-          set: Record<string, unknown>;
-          conditions: { sql: string; params?: Record<string, unknown> }[];
-        } = { set: {}, conditions: [] };
-        qbUpdates.push(captured);
-        const qb: Record<string, unknown> = {
-          update: jest.fn().mockReturnThis(),
-          set: jest.fn().mockImplementation((values: Record<string, unknown>) => {
-            captured.set = values;
-            return qb;
-          }),
-          where: jest.fn().mockImplementation((sql: string, params?: Record<string, unknown>) => {
-            captured.conditions.push({ sql, params });
-            return qb;
-          }),
-          andWhere: jest.fn().mockImplementation((sql: string, params?: Record<string, unknown>) => {
-            captured.conditions.push({ sql, params });
-            return qb;
-          }),
-          execute: jest
-            .fn()
-            .mockImplementation(async () => ({ affected: qbAffected[Math.min(qbCall++, qbAffected.length - 1)] })),
-        };
-        return qb;
-      }),
+    } as never;
+
+    // trackPreparedSend 는 workflow 행을 잠근 트랜잭션 안에서 판정·전이한다(PR#32 HIGH 3차).
+    const txAffected = overrides.txAffected ?? [1];
+    let txCall = 0;
+    const txUpdate = jest
+      .fn()
+      .mockImplementation(async () => ({ affected: txAffected[Math.min(txCall++, txAffected.length - 1)] }));
+    const txWorkflowFindOne = jest.fn().mockResolvedValue({
+      orderDeliveryId,
+      deliveredFlag: overrides.txDelivered ?? false,
+    });
+    const dataSource = {
+      transaction: jest.fn().mockImplementation(async (cb: (m: unknown) => Promise<unknown>) =>
+        cb({
+          getRepository: (entity: unknown) =>
+            entity === DeliveryWorkflowEntity ? { findOne: txWorkflowFindOne } : { update: txUpdate },
+        }),
+      ),
     } as never;
 
     const acquire =
@@ -98,12 +87,14 @@ describe('MessageAttemptService — 시도 추적(outbox 2단 마크)', () => {
     const slotService = { ensureWorkflow, acquire, release } as never;
 
     return {
-      service: new MessageAttemptService(attemptRepository, slotService),
+      service: new MessageAttemptService(attemptRepository, slotService, dataSource),
       saved,
       save,
       update,
       findOne,
-      qbUpdates,
+      txUpdate,
+      txWorkflowFindOne,
+      dataSource,
       acquire,
       release,
     };
@@ -365,20 +356,27 @@ describe('MessageAttemptService — 시도 추적(outbox 2단 마크)', () => {
         status: MessageAttemptStatus.OUTBOX_READY,
       }) as never;
 
-    it('delivered_flag=false 검증과 OUTBOX_READY→SUBMITTING 전이를 하나의 조건부 UPDATE 로 묶는다(PR#32 HIGH)', async () => {
-      const { service, qbUpdates, update } = createService();
+    it('workflow 행을 pessimistic_write 로 잠근 트랜잭션에서 delivered 확인·SUBMITTING 전이를 수행한다(PR#32 HIGH 3차)', async () => {
+      const { service, txWorkflowFindOne, txUpdate, update, dataSource } = createService();
       const send = jest.fn().mockResolvedValue({ mseq: 55, recovered: false });
 
       const outcome = await service.trackPreparedSend(prepared(), send);
 
       expect(outcome).toBe('SENT');
-      const mark = qbUpdates[0];
-      expect(mark.set).toMatchObject({ status: MessageAttemptStatus.SUBMITTING });
-      const sqls = mark.conditions.map((c) => c.sql).join('\n');
-      expect(sqls).toContain('status = :outboxReady');
-      expect(sqls).toContain('NOT EXISTS');
-      expect(sqls).toContain('delivered_flag = 1');
-      // 외부 호출은 마크 커밋 뒤에만, 상관키를 넘겨서.
+      // 서브쿼리 검증은 workflow 행을 잠그지 않으므로 반드시 FOR UPDATE 잠금 read 여야 한다.
+      expect((dataSource as { transaction: jest.Mock }).transaction).toHaveBeenCalledTimes(1);
+      expect(txWorkflowFindOne).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { orderDeliveryId },
+          lock: { mode: 'pessimistic_write' },
+        }),
+      );
+      // 같은 트랜잭션에서 OUTBOX_READY → SUBMITTING CAS.
+      expect(txUpdate).toHaveBeenCalledWith(
+        { attemptId: 'c'.repeat(32), status: MessageAttemptStatus.OUTBOX_READY },
+        expect.objectContaining({ status: MessageAttemptStatus.SUBMITTING }),
+      );
+      // 외부 호출은 트랜잭션 커밋 뒤에만, 상관키를 넘겨서.
       expect(send).toHaveBeenCalledWith('c'.repeat(32));
       // MSEQ 확보 → 즉시 결과 조회 대상(TRACKING) 등록.
       expect(update).toHaveBeenCalledWith(
@@ -387,25 +385,34 @@ describe('MessageAttemptService — 시도 추적(outbox 2단 마크)', () => {
       );
     });
 
-    it('delivered 로 전이가 막히면 발송 없이 CANCELLED_SUPERSEDED 로 종결하고 SUPERSEDED 를 돌려준다', async () => {
-      const { service, qbUpdates } = createService({ qbAffected: [0, 1] });
+    it('잠금 하에 delivered 가 확인되면 같은 트랜잭션에서 CANCELLED_SUPERSEDED 로 종결하고 발송하지 않는다', async () => {
+      const { service, txUpdate } = createService({ txDelivered: true });
       const send = jest.fn();
 
       const outcome = await service.trackPreparedSend(prepared(), send);
 
       expect(outcome).toBe('SUPERSEDED');
       expect(send).not.toHaveBeenCalled();
-      // 취소 종결도 delivered EXISTS + OUTBOX_READY CAS 조건부다(재조회 후 판정하면 또 경쟁한다).
-      const cancel = qbUpdates[1];
-      expect(cancel.set).toMatchObject({ status: MessageAttemptStatus.CANCELLED_SUPERSEDED });
-      const sqls = cancel.conditions.map((c) => c.sql).join('\n');
-      expect(sqls).toContain('EXISTS');
-      expect(sqls).toContain('delivered_flag = 1');
-      expect(sqls).toContain('status = :outboxReady');
+      expect(txUpdate).toHaveBeenCalledWith(
+        { attemptId: 'c'.repeat(32), status: MessageAttemptStatus.OUTBOX_READY },
+        expect.objectContaining({ status: MessageAttemptStatus.CANCELLED_SUPERSEDED }),
+      );
+      // SUBMITTING 전이는 시도조차 하지 않는다.
+      expect(txUpdate).toHaveBeenCalledTimes(1);
     });
 
-    it('상태 경쟁(둘 다 affected=0)이면 NOT_READY — 아무것도 종결하지 않고 발송하지 않는다', async () => {
-      const { service, update } = createService({ qbAffected: [0, 0] });
+    it('delivered 인데 취소 CAS 도 경쟁에 지면(affected=0) NOT_READY — 남의 전이를 덮지 않는다', async () => {
+      const { service } = createService({ txDelivered: true, txAffected: [0] });
+      const send = jest.fn();
+
+      const outcome = await service.trackPreparedSend(prepared(), send);
+
+      expect(outcome).toBe('NOT_READY');
+      expect(send).not.toHaveBeenCalled();
+    });
+
+    it('상태 경쟁(SUBMITTING CAS affected=0)이면 NOT_READY — 발송하지 않는다', async () => {
+      const { service, update } = createService({ txAffected: [0] });
       const send = jest.fn();
 
       const outcome = await service.trackPreparedSend(prepared(), send);
