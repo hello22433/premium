@@ -45,7 +45,9 @@ import { WalletManagedPredicate } from '../../wallet/application/wallet-managed.
 import { RefundPoolService } from '../../wallet/application/refund-pool.service';
 import { ResendDeductService } from '../../wallet/application/resend-deduct.service';
 import { MessageAttemptService } from './message-attempt.service';
+import { MessageResultReconcileService } from './message-result-reconcile.service';
 import { LegacyWalletCreditSyncService } from '../../wallet/application/legacy-wallet-credit-sync.service';
+import { DeliveryCutoverGuardService } from './delivery-cutover-guard.service';
 
 /**
  * B1: 정산 복구 이벤트 미생성(초기 발송 실패 보류) redesign 회귀 테스트.
@@ -185,6 +187,16 @@ describe('DeliveryBatchService - B1 settlement-hold redesign', () => {
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        {
+          provide: DeliveryCutoverGuardService,
+          useValue: {
+            // §9 컷오버 게이트 — 단위 테스트 기본값은 '미전환 건'(legacy 경로 그대로 통과).
+            assertLegacyAllowed: jest.fn().mockResolvedValue(undefined),
+            assertRefundExecutionAllowed: jest.fn().mockResolvedValue(undefined),
+            isCutover: jest.fn().mockResolvedValue(false),
+            splitLegacyAllowed: jest.fn(async (ids: number[]) => ({ allowed: ids, blocked: [] })),
+          },
+        },
         DeliveryBatchService,
         { provide: getRepositoryToken(OrderEntity), useValue: {} },
         { provide: getRepositoryToken(OrderRealProductEntity), useValue: {} },
@@ -207,6 +219,11 @@ describe('DeliveryBatchService - B1 settlement-hold redesign', () => {
             trackSend: (_ctx: unknown, send: (attemptId?: string) => Promise<unknown>) => send(undefined),
             trackAlimTalk: (_ctx: unknown, send: () => Promise<unknown>) => send(),
           },
+        },
+        // 알림톡 확정 반영은 reportSweep 경로에서만 쓰인다(§3 나).
+        {
+          provide: MessageResultReconcileService,
+          useValue: { settleAlimTalkReport: jest.fn().mockResolvedValue(true) },
         },
         { provide: DeliveryTrackHttp, useValue: {} },
         { provide: CryptoCipher, useValue: cryptoCipher },

@@ -30,6 +30,13 @@ describe('CustomerServiceService.execHistory — RECEIVER_CHANGE 이력/발송 �
 
   function makeService() {
     const sut = Object.create(CustomerServiceService.prototype) as CustomerServiceService;
+    // §9 컷오버 게이트 — 단위 테스트 기본값은 '미전환 건'(legacy 경로 그대로 통과).
+    (sut as any).cutoverGuard = {
+      assertLegacyAllowed: jest.fn().mockResolvedValue(undefined),
+      assertRefundExecutionAllowed: jest.fn().mockResolvedValue(undefined),
+      isCutover: jest.fn().mockResolvedValue(false),
+      splitLegacyAllowed: jest.fn(async (ids: number[]) => ({ allowed: ids, blocked: [] })),
+    };
 
     const odUpdate = jest.fn(async () => ({ affected: 1 }));
     const historySave = jest.fn(async (h: any) => h);

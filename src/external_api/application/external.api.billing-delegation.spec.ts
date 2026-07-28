@@ -25,6 +25,13 @@ describe('PR2a G003 위임층 behavior-identity', () => {
   describe('getAssignedProductIds → getAssignedProductIdsForBilling', () => {
     function svcWithAssignedIds(productIds: number[]) {
       const svc = Object.create(ExternalApiService.prototype) as ExternalApiService;
+      // §9 컷오버 게이트 — 단위 테스트 기본값은 '미전환 건'(legacy 경로 그대로 통과).
+      (svc as any).cutoverGuard = {
+        assertLegacyAllowed: jest.fn().mockResolvedValue(undefined),
+        assertRefundExecutionAllowed: jest.fn().mockResolvedValue(undefined),
+        isCutover: jest.fn().mockResolvedValue(false),
+        splitLegacyAllowed: jest.fn(async (ids: number[]) => ({ allowed: ids, blocked: [] })),
+      };
       const getMany = jest.fn(async () => productIds.map((id) => ({ productId: id })));
       const qb: any = {
         innerJoin: jest.fn(() => qb),
@@ -54,6 +61,13 @@ describe('PR2a G003 위임층 behavior-identity', () => {
   describe('computeSettlement → computeSettlementForBilling', () => {
     function svcWithDiscounts() {
       const svc = Object.create(ExternalApiService.prototype) as ExternalApiService;
+      // §9 컷오버 게이트 — 단위 테스트 기본값은 '미전환 건'(legacy 경로 그대로 통과).
+      (svc as any).cutoverGuard = {
+        assertLegacyAllowed: jest.fn().mockResolvedValue(undefined),
+        assertRefundExecutionAllowed: jest.fn().mockResolvedValue(undefined),
+        isCutover: jest.fn().mockResolvedValue(false),
+        splitLegacyAllowed: jest.fn(async (ids: number[]) => ({ allowed: ids, blocked: [] })),
+      };
       (svc as any).userDiscountRepository = {
         find: jest.fn(async () => []),
       };

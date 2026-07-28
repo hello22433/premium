@@ -38,6 +38,7 @@ CREATE TABLE `delivery_workflow` (
                                                                           COMMENT '현재 workflow_status 진입 시각(SLA 체류시간 판정 기준, 표 4-1)',
   `ops_escalated_at`           DATETIME(6)  NULL                          COMMENT 'OPS_REVIEW_REQUIRED 승격 시각(에스컬레이션 SLA 기준)',
   `ops_review_reason`          VARCHAR(32)  NULL                          COMMENT 'SLA_EXCEEDED|LATE_RESULT_REVIEW|REISSUE_REVIEW|REFUND_UNKNOWN 등',
+  `cutover_draining_at`        DATETIME(6)  NULL                          COMMENT '컷오버 드레이닝 마크. NOT NULL 이면 legacy 신규 진입을 거부하되 신규 모델도 아직 시작하지 않는다(quiesce 구간, §9)',
   `cutover_migrated_at`        DATETIME(6)  NULL                          COMMENT '컷오버 전환 마크. NOT NULL 이면 legacy 진입점 거부 + workflow 가 유일 SoT (§8·§9)',
   `created_at`                 DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
   `updated_at`                 DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
@@ -45,7 +46,8 @@ CREATE TABLE `delivery_workflow` (
   UNIQUE KEY `uk_delivery_workflow_delivery` (`order_delivery_id`),
   KEY `idx_delivery_workflow_status` (`workflow_status`, `state_entered_at`),
   KEY `idx_delivery_workflow_slot` (`active_exclusive_op`, `exclusive_lease_expires_at`),
-  KEY `idx_delivery_workflow_cutover` (`cutover_migrated_at`)
+  KEY `idx_delivery_workflow_cutover` (`cutover_migrated_at`),
+  KEY `idx_delivery_workflow_draining` (`cutover_draining_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='발송 workflow 전체 상태 + Level A 배타 슬롯 앵커';
 
 -- M1 검증

@@ -1,12 +1,22 @@
 import { ConflictException, Injectable, Logger } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
+import { DataSource, Repository } from 'typeorm';
 import { MessageAttemptEntity } from '../../entity/message.attempt.entity';
+import { DeliveryWorkflowEntity } from '../../entity/delivery.workflow.entity';
 import { MessageAttemptChannel, MessageAttemptStatus, MessageAttemptType } from '../interface/message.attempt.status';
 import { DeliveryExclusiveOp, LEGACY_SEND_OP, TrackingCreatedByOp } from '../interface/delivery.workflow.status';
 import { generateAttemptId } from '../domain/message.attempt.id';
 import { DeliverySlot, DeliveryWorkflowSlotService, SlotApprovalBinding } from './delivery-workflow-slot.service';
 import { SmsSendOut } from '../../sms/interface/sms.send';
+import { DeliveryCutoverGuardService } from './delivery-cutover-guard.service';
+
+/**
+ * `trackPreparedSend` 실행 결과 (§3 나 전달 완료 경쟁 봉합).
+ * - `SENT`       : `SUBMITTING` 전이 성공 → 외부 발송 수행됨.
+ * - `SUPERSEDED` : delivered 로 전이가 막혀 `CANCELLED_SUPERSEDED` 로 종결됨(발송 없음).
+ * - `NOT_READY`  : 상태 경쟁(선점·이미 진행) → 아무것도 하지 않음.
+ */
+export type PreparedSendResult = 'SENT' | 'SUPERSEDED' | 'NOT_READY';
 
 export interface TrackSendContext {
   orderDeliveryId: number;
@@ -28,6 +38,12 @@ export interface TrackSendContext {
   approval?: SlotApprovalBinding;
   /** 테스트 발송처럼 추적 대상이 아닌 호출. true 면 상관키 없이 그대로 발송한다. */
   skipTracking?: boolean;
+  /**
+   * 알림톡 전용. `true` 면 호출이 **POST 수락(접수)까지만** 확인하며 최종 도달은 `reportSweep` 가
+   * 확정한다(`ALIMTALK_ASYNC_REPORT=true` 경로). 기본값 `false` 는 동기 inquiry 폴링으로 최종
+   * 확정까지 마친 경로이므로 성공을 즉시 `SUCCEEDED` 로 종결한다.
+   */
+  awaitsReport?: boolean;
 }
 
 /** 전환 여부에 따른 실행 게이트. 전환 건만 Level A 슬롯을 점유한다. */
@@ -61,6 +77,8 @@ export class MessageAttemptService {
     @InjectRepository(MessageAttemptEntity)
     private readonly attemptRepository: Repository<MessageAttemptEntity>,
     private readonly slotService: DeliveryWorkflowSlotService,
+    @InjectDataSource() private readonly dataSource: DataSource,
+    private readonly cutoverGuard: DeliveryCutoverGuardService,
   ) {}
 
   /**
@@ -96,16 +114,96 @@ export class MessageAttemptService {
   }
 
   /**
+   * **사전 생성된 attempt(`OUTBOX_READY`)** 로 발송을 실행한다 (§5.3 재발송 두 행 변경의 원자성).
+   *
+   * `dueResend`(§6.3) 는 "원 시도 `RETRIED` 전이 + 신규 시도 생성"을 **하나의 트랜잭션**으로 커밋한 뒤
+   * 외부 호출만 남긴다. 그 신규 행은 `trackSend` 처럼 여기서 생성하지 않으므로, 이 메서드는
+   * 상태 마크(`SUBMITTING`)와 결과 반영만 수행한다.
+   *
+   * **전달 완료 경쟁 봉합(§3 나, PR#32 HIGH 3차):** delivered 검증과 `OUTBOX_READY → SUBMITTING`
+   * 전이는 **workflow 행을 `SELECT ... FOR UPDATE` 로 잠근 트랜잭션 안에서** 수행한다.
+   * 서브쿼리(`NOT EXISTS`) 결합만으로는 InnoDB 가 workflow 행을 잠그지 않아, "서브쿼리 평가 후 ~
+   * 전이 커밋 전" 사이에 타 채널 전달 완료가 커밋되는 interleaving 을 막지 못한다. 전달 완료를
+   * 기록하는 쪽(결과 배치 `markDelivered`)은 같은 workflow 행을 UPDATE 하므로 이 잠금과
+   * 직렬화된다 — 먼저 커밋됐다면 잠금 획득 후 flag 가 보이고(취소 종결), 아니면 그 기록이
+   * 이 트랜잭션 커밋 뒤로 밀린다(§3 나가 명시 수용하는 in-flight 중복). **외부 발송 호출은
+   * 이 트랜잭션 커밋 이후에만 시작한다.**
+   *
+   * - `SENT`       : 전이 성공 → 외부 발송 수행.
+   * - `SUPERSEDED` : delivered 확인 → 같은 트랜잭션에서 `CANCELLED_SUPERSEDED` 종결까지
+   *                  수행했다(발송 대상 아님, 실패·환불 후보 아님).
+   * - `NOT_READY`  : 상태 경쟁(다른 worker 선점·이미 진행) → 아무것도 하지 않음.
+   */
+  async trackPreparedSend(
+    attempt: MessageAttemptEntity,
+    send: (attemptId: string) => Promise<SmsSendOut>,
+  ): Promise<PreparedSendResult> {
+    const now = new Date();
+
+    const outcome = await this.dataSource.transaction(async (manager) => {
+      // 전달 완료 기록자(markDelivered)와의 직렬화 지점. 잠금 없이는 커밋 시점 보장이 없다.
+      const workflow = await manager.getRepository(DeliveryWorkflowEntity).findOne({
+        where: { orderDeliveryId: attempt.orderDeliveryId },
+        lock: { mode: 'pessimistic_write' },
+      });
+
+      const attemptRepo = manager.getRepository(MessageAttemptEntity);
+
+      if (workflow?.deliveredFlag) {
+        // 발송 대상이 아니다 — 같은 트랜잭션에서 취소 종결까지 수행해 열린 예약을 남기지 않는다.
+        const superseded = await attemptRepo.update(
+          { attemptId: attempt.attemptId, status: MessageAttemptStatus.OUTBOX_READY },
+          { status: MessageAttemptStatus.CANCELLED_SUPERSEDED, resolvedAt: now, stateEnteredAt: now },
+        );
+        return superseded.affected ? 'SUPERSEDED' : 'NOT_READY';
+      }
+
+      // 외부 호출 시작 마크(§5.3 outbox 2단 마크). delivered=false 가 이 트랜잭션 커밋까지 유지된다.
+      const marked = await attemptRepo.update(
+        { attemptId: attempt.attemptId, status: MessageAttemptStatus.OUTBOX_READY },
+        { status: MessageAttemptStatus.SUBMITTING, stateEnteredAt: now },
+      );
+      return marked.affected ? 'MARKED' : 'NOT_READY';
+    });
+
+    if (outcome === 'SUPERSEDED') {
+      this.logger.log(`타 채널 전달 완료 — 발송 없이 취소 종결(§3 나). attemptId=${attempt.attemptId}`);
+      return 'SUPERSEDED';
+    }
+    if (outcome === 'NOT_READY') {
+      this.logger.warn(`SUBMITTING 마크 실패(선점·진행 중) — 발송하지 않는다. attemptId=${attempt.attemptId}`);
+      return 'NOT_READY';
+    }
+
+    // 외부 호출은 위 트랜잭션이 커밋된 뒤에만 시작한다.
+    try {
+      const result = await send(attempt.attemptId);
+      await this.settleSubmitted(attempt, result);
+      return 'SENT';
+    } catch (e) {
+      // 외부 호출 시작 마크 이후의 실패는 "발급 여부 불명"이다. 재삽입하지 않고 재조회 대상으로만 남긴다.
+      await this.markReconciling(attempt, e);
+      throw e;
+    }
+  }
+
+  /**
    * 알림톡 발송을 추적한다(§3 나 — 현행 알림톡 흐름은 유지하되 시도는 기록한다).
    *
    * 알림톡은 Gemtek 큐를 쓰지 않아 상관키·`MSEQ` 가 없다. 그럼에도 시도를 남기는 이유는
    * **SMS 폴백이 체인 부모를 갖게 하기 위함**이다. 부모가 없으면 `CHANNEL_FALLBACK` 의
    * "원 attempt 당 1회" unique 키가 NULL 이 되어 제약이 무력화된다(§5.3 표).
    *
-   * `accepted` 판정은 호출자(legacy)가 내리는 값을 그대로 기록한다. 접수 성공은 최종 전달이 아니므로
-   * `TRACKING`(미확정)으로 두고, 실패는 legacy 가 폴백을 실행하는 확정 실패이므로 `FAILED_FINAL` 로 둔다.
-   * 전송 예외의 "발송 여부 불명" 세분화(`RECONCILING`/`UNKNOWN`)는 알림톡 report sweep 연동과 함께
-   * 컷오버 슬라이스에서 도입한다.
+   * **`accepted` 의 의미는 호출 경로에 따라 다르다. 그래서 `awaitsReport` 로 구분한다.**
+   * - 동기 경로(`send()`): infobank inquiry 폴링까지 마친 **최종 수신확정**이다. 여기서 `TRACKING`
+   *   으로 두면 그 시도를 닫아줄 주체가 어디에도 없다 — 결과 조회 배치는 `MSEQ` 보유 건만 훑고
+   *   (`MessageResultReconcileService.reconcileOnce`), `reportSweep` 는 `report_state=PENDING`
+   *   건만 본다. 결국 SLA 초과로 성공한 발송이 `UNKNOWN` + `OPS_REVIEW_REQUIRED` 로 오분류된다.
+   *   따라서 성공은 즉시 `SUCCEEDED` + 전달완료 표식으로 확정한다.
+   * - 비동기 경로(`postAlimtalk()`, `awaitsReport: true`): POST 수락은 접수일 뿐이므로 `TRACKING`
+   *   으로 두고, 최종 확정은 `reportSweep` → `settleAlimTalkReport` 가 내린다.
+   *
+   * 실패는 두 경로 모두 legacy 가 폴백을 실행하는 확정 실패이므로 `FAILED_FINAL` 이다.
    */
   async trackAlimTalk<T>(
     ctx: Omit<TrackSendContext, 'channel'>,
@@ -124,12 +222,12 @@ export class MessageAttemptService {
       try {
         const result = await send();
         if (attempt) {
-          await this.resolveAlimTalk(attempt, accepted(result));
+          await this.resolveAlimTalk(attempt, accepted(result), !!ctx.awaitsReport);
         }
         return result;
       } catch (e) {
         if (attempt) {
-          await this.resolveAlimTalk(attempt, false);
+          await this.resolveAlimTalk(attempt, false, !!ctx.awaitsReport);
         }
         throw e;
       }
@@ -143,19 +241,28 @@ export class MessageAttemptService {
    * 슬롯을 얻지 못한 전환 건은 발송을 수행하지 않는다(§9 전환 마크 기반 legacy 진입 거부).
    */
   private async openGate(ctx: TrackSendContext): Promise<TrackingGate> {
-    let workflow: Awaited<ReturnType<DeliveryWorkflowSlotService['ensureWorkflow']>>;
-    try {
-      workflow = await this.slotService.ensureWorkflow(ctx.orderDeliveryId);
-    } catch (e) {
-      // 전환 여부조차 알 수 없는 상태다. 미전환이 대다수인 shadow 단계에서는 발송을 막지 않는다.
-      this.logger.warn(`workflow 조회 실패(추적 미적용). orderDeliveryId=${ctx.orderDeliveryId}: ${e}`);
-      return { cutover: false, workflowVersion: '0', slot: null };
+    // ① 전환 여부 판정(읽기 전용). **실패를 삼키지 않는다** — 전환 여부를 모르는 채 발송하면
+    //    전환 건이 슬롯 없이 legacy 로 나가 두 동시성 모델이 동시에 열린다(§9 위반).
+    //    이 조회는 order_delivery 와 같은 DB 를 쓰므로, 실패하는 상황이면 발송 자체도 성립하지 않는다.
+    const cutover = await this.cutoverGuard.isCutover(ctx.orderDeliveryId);
+
+    if (!cutover) {
+      // ② 미전환 확정. 여기서 앵커 행 생성은 **관찰용**이라 실패해도 발송을 막지 않는다.
+      //    ①이 성공했으므로 "전환 아님"은 이미 데이터 사실로 확인됐다 — 모르는 채 통과시키는 게 아니다.
+      let workflowVersion = '0';
+      try {
+        const anchor = await this.slotService.ensureWorkflow(ctx.orderDeliveryId);
+        workflowVersion = String(anchor.workflowVersion);
+      } catch (e) {
+        this.logger.warn(
+          `workflow 앵커 생성 실패(추적 미적용, 미전환 확정). orderDeliveryId=${ctx.orderDeliveryId}: ${e}`,
+        );
+      }
+      return { cutover: false, workflowVersion, slot: null };
     }
 
-    if (!workflow.cutoverMigratedAt) {
-      return { cutover: false, workflowVersion: String(workflow.workflowVersion), slot: null };
-    }
-
+    // ③ 전환 건. 앵커 생성은 불필요하다 — 전환 마크가 이미 그 앵커 행에 있다.
+    //    슬롯 점유 실패는 삼키지 않고 그대로 거부한다(fail-closed).
     const acquired = await this.slotService.acquire({
       orderDeliveryId: ctx.orderDeliveryId,
       op: ctx.slotOp,
@@ -280,18 +387,42 @@ export class MessageAttemptService {
     }
   }
 
-  /** 알림톡 접수 결과를 반영한다(접수 성공=미확정 `TRACKING`, 실패=폴백을 유발한 확정 실패). */
-  private async resolveAlimTalk(attempt: MessageAttemptEntity, accepted: boolean): Promise<void> {
+  /**
+   * 알림톡 결과를 반영한다.
+   *
+   * - 실패: 폴백을 유발하는 확정 실패 → `FAILED_FINAL`
+   * - 성공 + `awaitsReport`: POST 수락(접수)일 뿐 → `TRACKING` (확정은 `settleAlimTalkReport`)
+   * - 성공 + 동기 경로: inquiry 폴링까지 끝난 최종 확정 → `SUCCEEDED` + 전달완료 표식
+   *
+   * 전달완료 표식은 결과 조회 배치와 **같은 전이**(`slotService.markDelivered`)를 쓴다.
+   */
+  private async resolveAlimTalk(
+    attempt: MessageAttemptEntity,
+    accepted: boolean,
+    awaitsReport: boolean,
+  ): Promise<void> {
     try {
       const now = new Date();
-      await this.attemptRepository.update(
+      const settled = accepted && !awaitsReport;
+      const status = accepted
+        ? settled
+          ? MessageAttemptStatus.SUCCEEDED
+          : MessageAttemptStatus.TRACKING
+        : MessageAttemptStatus.FAILED_FINAL;
+
+      const result = await this.attemptRepository.update(
         { attemptId: attempt.attemptId, status: MessageAttemptStatus.SUBMITTING },
         {
-          status: accepted ? MessageAttemptStatus.TRACKING : MessageAttemptStatus.FAILED_FINAL,
-          resolvedAt: accepted ? null : now,
+          status,
+          resolvedAt: status === MessageAttemptStatus.TRACKING ? null : now,
           stateEnteredAt: now,
         },
       );
+
+      // 전이에 실패했으면(선점·경쟁) 전달완료 표식도 세우지 않는다 — 남의 상태로 workflow 를 닫지 않는다.
+      if (settled && result.affected) {
+        await this.slotService.markDelivered(attempt.orderDeliveryId, attempt.channel, now);
+      }
     } catch (e) {
       this.logger.warn(`알림톡 시도 추적 갱신 실패. attemptId=${attempt.attemptId}: ${e}`);
     }

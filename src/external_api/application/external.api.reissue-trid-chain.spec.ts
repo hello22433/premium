@@ -85,6 +85,13 @@ function makeService(rows: OrderDeliveryEntity[]) {
   const update = jest.fn(async () => ({ affected: 1 }));
 
   const svc = Object.create(ExternalApiService.prototype) as ExternalApiService;
+  // §9 컷오버 게이트 — 단위 테스트 기본값은 '미전환 건'(legacy 경로 그대로 통과).
+  (svc as any).cutoverGuard = {
+    assertLegacyAllowed: jest.fn().mockResolvedValue(undefined),
+    assertRefundExecutionAllowed: jest.fn().mockResolvedValue(undefined),
+    isCutover: jest.fn().mockResolvedValue(false),
+    splitLegacyAllowed: jest.fn(async (ids: number[]) => ({ allowed: ids, blocked: [] })),
+  };
   (svc as any).orderDeliveryRepository = { findOne, find, update, createQueryBuilder: jest.fn(() => qb) };
   (svc as any).logger = { error: jest.fn(), log: jest.fn(), warn: jest.fn() };
   return { svc, findOne, find, update, qb };
@@ -572,6 +579,13 @@ describe('D3-55 살아있는 재발행 tip 취소', () => {
 describe('D3-55 후속: reconcile(getOrderStatusByExternalOrderId) trId 복구', () => {
   function makeReconcileService(tip: OrderDeliveryEntity, rootTrId: string | null) {
     const svc = Object.create(ExternalApiService.prototype) as ExternalApiService;
+    // §9 컷오버 게이트 — 단위 테스트 기본값은 '미전환 건'(legacy 경로 그대로 통과).
+    (svc as any).cutoverGuard = {
+      assertLegacyAllowed: jest.fn().mockResolvedValue(undefined),
+      assertRefundExecutionAllowed: jest.fn().mockResolvedValue(undefined),
+      isCutover: jest.fn().mockResolvedValue(false),
+      splitLegacyAllowed: jest.fn(async (ids: number[]) => ({ allowed: ids, blocked: [] })),
+    };
     (svc as any).mappingResolver = {
       findExistingOrderByExternalOrderId: jest.fn(async () => ({ id: 7, status: IOrderStatus.DELIVERY_COMPLETE })),
     };

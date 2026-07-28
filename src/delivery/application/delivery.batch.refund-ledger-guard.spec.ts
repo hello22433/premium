@@ -42,7 +42,9 @@ import { OrderDeliveryAttemptEntity } from '../../entity/order.delivery.attempt.
 import { OrderPaymentRefundEventEntity } from '../../entity/order.payment.refund.event.entity';
 import { OrderPaymentAllocationEntity } from '../../entity/order.payment.allocation.entity';
 import { MessageAttemptService } from './message-attempt.service';
+import { MessageResultReconcileService } from './message-result-reconcile.service';
 import { OrderHistoryEntity } from '../../entity/order.history.entity';
+import { DeliveryCutoverGuardService } from './delivery-cutover-guard.service';
 
 /**
  * 이번 핫픽스 회귀 테스트:
@@ -181,6 +183,16 @@ describe('DeliveryBatchService.reissuePinAndCreateImageIfNeeded - refund ledger 
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        {
+          provide: DeliveryCutoverGuardService,
+          useValue: {
+            // §9 컷오버 게이트 — 단위 테스트 기본값은 '미전환 건'(legacy 경로 그대로 통과).
+            assertLegacyAllowed: jest.fn().mockResolvedValue(undefined),
+            assertRefundExecutionAllowed: jest.fn().mockResolvedValue(undefined),
+            isCutover: jest.fn().mockResolvedValue(false),
+            splitLegacyAllowed: jest.fn(async (ids: number[]) => ({ allowed: ids, blocked: [] })),
+          },
+        },
         DeliveryBatchService,
         { provide: getRepositoryToken(OrderEntity), useValue: {} },
         { provide: getRepositoryToken(OrderRealProductEntity), useValue: {} },
@@ -200,6 +212,11 @@ describe('DeliveryBatchService.reissuePinAndCreateImageIfNeeded - refund ledger 
             trackSend: (_ctx: unknown, send: (attemptId?: string) => Promise<unknown>) => send(undefined),
             trackAlimTalk: (_ctx: unknown, send: () => Promise<unknown>) => send(),
           },
+        },
+        // 알림톡 확정 반영은 reportSweep 경로에서만 쓰인다(§3 나).
+        {
+          provide: MessageResultReconcileService,
+          useValue: { settleAlimTalkReport: jest.fn().mockResolvedValue(true) },
         },
         { provide: DeliveryTrackHttp, useValue: {} },
         { provide: CryptoCipher, useValue: {} },

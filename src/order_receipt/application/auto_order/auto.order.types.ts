@@ -48,7 +48,10 @@ export interface ParsedRow {
   rowNo: number; // 엑셀 실제 행번호(5부터). 리포트 추적용으로 끝까지 보존
   phone: string | null; // B
   email: string | null; // D
+  brand: string | null; // F (브랜드, 2A 시트에서 자동 도출). SSG 판별의 1차 신호
+  productName: string | null; // G (상품명 — 사용자가 직접 입력/복붙하는 유일한 상품 식별자). 미매핑 리포트 진단용
   productCode: string | null; // H (상품명 G에서 자동 도출된 코드)
+  listPrice: number; // I (정상가 = 액면가, 2A 판매가격). SSG는 code가 아니라 이 값이 상품 식별 키다
   amount: number; // J (수식 =IF(B="","",1)). 휴대폰(B) 있으면 1, 이메일 전용 행은 B가 비어 0이 될 수 있음 → 수량은 payload 단계에서 행 수로 계산(J 신뢰 안 함)
   isValid: boolean; // M (_유효, TRUE/FALSE)
   statusReason: string | null; // N (_상태: format_error/duplicate/unselected/ok)
@@ -91,13 +94,30 @@ export interface MappedRow extends ParsedRow {
 }
 
 /**
+ * 미매핑 사유 코드 (프론트 계약).
+ * 전부 "주문에 못 실린 행"이라 회계상 unmapped 버킷에 속하지만, 관리자 조치가 서로 다르므로 코드로 구분한다.
+ */
+export type UnmappedReasonCode =
+  | 'PRODUCT_CODE_NOT_FOUND' // 상품코드(H)가 이 서버 product 테이블에 없음(기존 '미등록 상품코드')
+  | 'PRODUCT_NOT_SELLABLE' // 상품은 있으나 useStatus !== USE(판매중지) → 발송확정에서 어차피 throw
+  | 'SSG_PRICE_MISSING' // SSG 행인데 정상가(I)를 읽을 수 없음(수식 결과 미캐시 등)
+  | 'SSG_TEMPLATE_MISSING'; // SSG 상품 자동생성 실패(템플릿 상품 부재 등 운영 확인 필요)
+
+/** 3단계 - 사유가 붙은 미매핑 행 */
+export interface UnmappedRow extends ParsedRow {
+  reasonCode: UnmappedReasonCode;
+  reason: string;
+}
+
+/**
  * 3단계 상품매핑/분기 결과.
- * 입력 행은 4갈래로 서로소 분할된다: excluded / unmapped / general / ssg
+ * 입력 행은 5갈래로 서로소 분할된다: excluded / unmapped / pendingSsg / general / ssg
  * (blocked는 4단계에서 general·ssg 안에서 추가로 갈린다)
  */
 export interface MappedResult {
   excludedRows: ParsedRow[]; // _유효=False (엑셀이 스스로 무효 표시)
-  unmappedRows: ParsedRow[]; // 상품코드가 DB에 없음
+  unmappedRows: UnmappedRow[]; // 상품을 확보하지 못한 행(사유 코드 포함)
+  pendingSsgRows: ParsedRow[]; // DRY_RUN 전용: 해당 액면가 SSG 상품이 아직 없어 "승인 시 생성" 예정(미리보기는 DB 무변경)
   generalRows: MappedRow[]; // 비-SSG 상품 → 일반 주문
   ssgRows: MappedRow[]; // SSG 상품 → SSG 주문
 }
@@ -116,7 +136,8 @@ export type BlockCode =
   | 'MISSING_DELIVERY_TARGET' // 발신수단에 맞는 수신처(휴대폰/이메일)가 행에 없음
   | 'INVALID_DELIVERY_TARGET' // 수신처가 있으나 형식이 올바르지 않음(이메일 아님/휴대폰 아님)
   | 'RECEIPT_OWNER_MISSING' // 접수 소유자(기업 사용자)를 찾을 수 없음
-  | 'EMAIL_SENDER_MISSING'; // 이메일 발신주소(등록/기본계정)를 확보할 수 없음
+  | 'EMAIL_SENDER_MISSING' // 이메일 발신주소(등록/기본계정)를 확보할 수 없음
+  | 'SSG_PRODUCT_PENDING_CREATE'; // DRY_RUN 전용: 액면가 SSG 상품 미존재 → 승인 시 생성되며 미리보기에선 주문에 미포함
 
 /** 금칙어 적발 필드 (code === 'FORBIDDEN_WORD'일 때만) */
 export type BlockField = 'TITLE' | 'CONTENT' | 'EVENT_NAME' | 'REPLACE_CHAR';
@@ -209,8 +230,10 @@ export interface AutoOrderReportOrder {
 /** 리포트 행 분류(프론트 계약) */
 export interface ReportUnmappedRow {
   rowNo: number;
-  code: string; // 미등록 상품코드
+  code: string; // 상품코드(H). SSG처럼 코드 자체가 없거나 신뢰 불가한 경우 ''일 수 있다
+  productName: string; // 상품명(G) — 코드가 비어도 관리자가 어떤 상품인지 식별할 수 있게(진단 정보)
   reason: string;
+  reasonCode: UnmappedReasonCode; // 프론트 라벨/조치 분기용
 }
 export interface ReportWarningRow {
   rowNo: number;
@@ -220,6 +243,17 @@ export interface ReportWarningRow {
 export interface ReportExcludedRow {
   rowNo: number;
   reason: string;
+}
+
+/**
+ * 미리보기 전용: 승인 시 자동 생성될 SSG 상품 요약(액면가별 집계).
+ * DRY_RUN은 DB 무변경 계약이라 상품을 만들지 않으므로, 해당 행은 주문에 못 실린다(=blocked로 계상).
+ * 승인하면 생성되어 정상 주문이 된다는 사실을 관리자에게 알리는 용도.
+ */
+export interface ReportPendingSsgProduct {
+  price: number; // 액면가(정상가 I)
+  rowCount: number; // 이 액면가로 대기 중인 발송명단 행 수
+  rowNos: number[]; // 해당 엑셀 행번호
 }
 
 /** 파일 1개 처리 결과 */
@@ -238,6 +272,7 @@ export interface AutoOrderFileResult {
   unmappedRows: ReportUnmappedRow[]; // 미등록 상품코드 행(프론트 계약)
   warningRows: ReportWarningRow[]; // ROW 차단 사유(금칙어/수신처없음 등)를 경고로 표시
   excludedRows: ReportExcludedRow[]; // _유효=False 행
+  pendingSsgProducts: ReportPendingSsgProduct[]; // DRY_RUN에서 "승인 시 생성 예정"인 SSG 상품(액면가별). COMMIT은 항상 []
 }
 
 /** 접수 1건(파일 N개) 전체 결과 */

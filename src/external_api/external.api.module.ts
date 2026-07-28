@@ -34,6 +34,8 @@ import { CryptoCipher } from '../common/infra/crypto.cipher';
 import { AccountLifecycleModule } from '../account_lifecycle/account.lifecycle.module';
 import { WalletModule } from '../wallet/wallet.module';
 import { OrderFromModule } from '../order_from/order.from.module';
+import { ActivityLogModule } from '../activity_log/activity.log.module';
+import { DeliveryCutoverModule } from '../delivery/delivery.cutover.module';
 
 @Module({
   imports: [
@@ -77,6 +79,8 @@ import { OrderFromModule } from '../order_from/order.from.module';
     AccountLifecycleModule,
     WalletModule,
     OrderFromModule,
+    ActivityLogModule,
+    DeliveryCutoverModule,
   ],
   controllers: [ExternalApiController],
   providers: [

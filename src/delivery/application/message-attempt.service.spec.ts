@@ -3,6 +3,7 @@ import { MessageAttemptService, formatYearMonth } from './message-attempt.servic
 import { MessageAttemptChannel, MessageAttemptStatus, MessageAttemptType } from '../interface/message.attempt.status';
 import { DeliveryExclusiveOp, DeliverySlotFailureCode, LEGACY_SEND_OP } from '../interface/delivery.workflow.status';
 import { isValidAttemptId } from '../domain/message.attempt.id';
+import { DeliveryWorkflowEntity } from '../../entity/delivery.workflow.entity';
 
 /**
  * outbox 2단 마크 + 컷오버 게이트 검증.
@@ -20,6 +21,10 @@ describe('MessageAttemptService — 시도 추적(outbox 2단 마크)', () => {
       acquire?: jest.Mock;
       release?: jest.Mock;
       ensureWorkflow?: jest.Mock;
+      /** trackPreparedSend 트랜잭션의 workflow 잠금 read 가 볼 deliveredFlag */
+      txDelivered?: boolean;
+      /** trackPreparedSend 트랜잭션 내 attempt 조건부 UPDATE 의 affected 시퀀스 */
+      txAffected?: number[];
     } = {},
   ) => {
     const saved: Record<string, unknown>[] = [];
@@ -37,6 +42,25 @@ describe('MessageAttemptService — 시도 추적(outbox 2단 마크)', () => {
       save,
       update,
       findOne,
+    } as never;
+
+    // trackPreparedSend 는 workflow 행을 잠근 트랜잭션 안에서 판정·전이한다(PR#32 HIGH 3차).
+    const txAffected = overrides.txAffected ?? [1];
+    let txCall = 0;
+    const txUpdate = jest
+      .fn()
+      .mockImplementation(async () => ({ affected: txAffected[Math.min(txCall++, txAffected.length - 1)] }));
+    const txWorkflowFindOne = jest.fn().mockResolvedValue({
+      orderDeliveryId,
+      deliveredFlag: overrides.txDelivered ?? false,
+    });
+    const dataSource = {
+      transaction: jest.fn().mockImplementation(async (cb: (m: unknown) => Promise<unknown>) =>
+        cb({
+          getRepository: (entity: unknown) =>
+            entity === DeliveryWorkflowEntity ? { findOne: txWorkflowFindOne } : { update: txUpdate },
+        }),
+      ),
     } as never;
 
     const acquire =
@@ -60,16 +84,25 @@ describe('MessageAttemptService — 시도 추적(outbox 2단 마크)', () => {
         cutoverMigratedAt: overrides.cutoverMigratedAt ?? null,
       });
 
-    const slotService = { ensureWorkflow, acquire, release } as never;
+    const markDelivered = jest.fn().mockResolvedValue(true);
+    const slotService = { ensureWorkflow, acquire, release, markDelivered } as never;
+    // §9 컷오버 판정은 읽기 전용 게이트가 담당한다(앵커 생성과 분리 — 조회 실패를 삼키지 않기 위함).
+    const isCutover = jest.fn().mockResolvedValue(!!overrides.cutoverMigratedAt);
+    const cutoverGuard = { isCutover } as never;
 
     return {
-      service: new MessageAttemptService(attemptRepository, slotService),
+      service: new MessageAttemptService(attemptRepository, slotService, dataSource, cutoverGuard),
+      isCutover,
       saved,
       save,
       update,
       findOne,
+      txUpdate,
+      txWorkflowFindOne,
+      dataSource,
       acquire,
       release,
+      markDelivered,
     };
   };
 
@@ -245,9 +278,14 @@ describe('MessageAttemptService — 시도 추적(outbox 2단 마크)', () => {
     });
   });
 
-  describe('알림톡 추적 — 폴백 체인 부모 확보(§5.3 CHANNEL_FALLBACK unique)', () => {
-    it('접수 성공(A000)은 미확정(TRACKING)으로 남긴다', async () => {
-      const { service, saved, update } = createService();
+  describe('알림톡 추적 — 확정 반영 + 폴백 체인 부모 확보(§3 나·§5.3)', () => {
+    /**
+     * 동기 경로(inquiry 폴링 완료)의 성공을 TRACKING 으로 두면 그 시도를 닫을 주체가 없다 —
+     * reconcileOnce 는 mseq 보유 건만, reportSweep 는 report_state=PENDING 건만 본다.
+     * 결국 SLA 30h 초과로 성공한 발송이 UNKNOWN + OPS_REVIEW_REQUIRED 로 오분류된다.
+     */
+    it('동기 경로의 확정 성공은 SUCCEEDED 로 종결하고 전달완료를 표식한다', async () => {
+      const { service, saved, update, markDelivered } = createService();
 
       await service.trackAlimTalk(
         {
@@ -261,7 +299,28 @@ describe('MessageAttemptService — 시도 추적(outbox 2단 마크)', () => {
       );
 
       expect(saved[0]).toMatchObject({ channel: MessageAttemptChannel.ALIM_TALK });
-      expect(update.mock.calls[1][1]).toMatchObject({ status: MessageAttemptStatus.TRACKING });
+      expect(update.mock.calls[1][1]).toMatchObject({ status: MessageAttemptStatus.SUCCEEDED });
+      expect(markDelivered).toHaveBeenCalledWith(orderDeliveryId, MessageAttemptChannel.ALIM_TALK, expect.any(Date));
+    });
+
+    it('비동기 경로(awaitsReport)의 POST 수락은 미확정(TRACKING)으로 남긴다', async () => {
+      const { service, update, markDelivered } = createService();
+
+      await service.trackAlimTalk(
+        {
+          orderDeliveryId,
+          slotOp: DeliveryExclusiveOp.MESSAGE_SEND,
+          attemptType: MessageAttemptType.INITIAL,
+          sendReason: 'COUPON',
+          awaitsReport: true,
+        },
+        async () => ({ msgKey: 'MK-1' }),
+        (result) => !!result.msgKey,
+      );
+
+      expect(update.mock.calls[1][1]).toMatchObject({ status: MessageAttemptStatus.TRACKING, resolvedAt: null });
+      // 접수일 뿐이므로 전달완료를 앞당겨 표식하지 않는다(확정은 reportSweep 소관).
+      expect(markDelivered).not.toHaveBeenCalled();
     });
 
     it('접수 실패는 FAILED_FINAL 로 확정해 폴백 SMS 가 부모로 잡을 수 있게 한다', async () => {
@@ -319,5 +378,91 @@ describe('MessageAttemptService — 시도 추적(outbox 2단 마크)', () => {
     expect(ensureWorkflow).not.toHaveBeenCalled();
     expect(save).not.toHaveBeenCalled();
     expect(send).toHaveBeenCalledWith(undefined);
+  });
+
+  describe('trackPreparedSend — 사전 생성 attempt 발송(§5.3 재개, §3 나 전달완료 경쟁 봉합)', () => {
+    const prepared = () =>
+      ({
+        attemptId: 'c'.repeat(32),
+        orderDeliveryId,
+        status: MessageAttemptStatus.OUTBOX_READY,
+      }) as never;
+
+    it('workflow 행을 pessimistic_write 로 잠근 트랜잭션에서 delivered 확인·SUBMITTING 전이를 수행한다(PR#32 HIGH 3차)', async () => {
+      const { service, txWorkflowFindOne, txUpdate, update, dataSource } = createService();
+      const send = jest.fn().mockResolvedValue({ mseq: 55, recovered: false });
+
+      const outcome = await service.trackPreparedSend(prepared(), send);
+
+      expect(outcome).toBe('SENT');
+      // 서브쿼리 검증은 workflow 행을 잠그지 않으므로 반드시 FOR UPDATE 잠금 read 여야 한다.
+      expect((dataSource as { transaction: jest.Mock }).transaction).toHaveBeenCalledTimes(1);
+      expect(txWorkflowFindOne).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { orderDeliveryId },
+          lock: { mode: 'pessimistic_write' },
+        }),
+      );
+      // 같은 트랜잭션에서 OUTBOX_READY → SUBMITTING CAS.
+      expect(txUpdate).toHaveBeenCalledWith(
+        { attemptId: 'c'.repeat(32), status: MessageAttemptStatus.OUTBOX_READY },
+        expect.objectContaining({ status: MessageAttemptStatus.SUBMITTING }),
+      );
+      // 외부 호출은 트랜잭션 커밋 뒤에만, 상관키를 넘겨서.
+      expect(send).toHaveBeenCalledWith('c'.repeat(32));
+      // MSEQ 확보 → 즉시 결과 조회 대상(TRACKING) 등록.
+      expect(update).toHaveBeenCalledWith(
+        { attemptId: 'c'.repeat(32), status: MessageAttemptStatus.SUBMITTING },
+        expect.objectContaining({ status: MessageAttemptStatus.TRACKING, mseq: '55' }),
+      );
+    });
+
+    it('잠금 하에 delivered 가 확인되면 같은 트랜잭션에서 CANCELLED_SUPERSEDED 로 종결하고 발송하지 않는다', async () => {
+      const { service, txUpdate } = createService({ txDelivered: true });
+      const send = jest.fn();
+
+      const outcome = await service.trackPreparedSend(prepared(), send);
+
+      expect(outcome).toBe('SUPERSEDED');
+      expect(send).not.toHaveBeenCalled();
+      expect(txUpdate).toHaveBeenCalledWith(
+        { attemptId: 'c'.repeat(32), status: MessageAttemptStatus.OUTBOX_READY },
+        expect.objectContaining({ status: MessageAttemptStatus.CANCELLED_SUPERSEDED }),
+      );
+      // SUBMITTING 전이는 시도조차 하지 않는다.
+      expect(txUpdate).toHaveBeenCalledTimes(1);
+    });
+
+    it('delivered 인데 취소 CAS 도 경쟁에 지면(affected=0) NOT_READY — 남의 전이를 덮지 않는다', async () => {
+      const { service } = createService({ txDelivered: true, txAffected: [0] });
+      const send = jest.fn();
+
+      const outcome = await service.trackPreparedSend(prepared(), send);
+
+      expect(outcome).toBe('NOT_READY');
+      expect(send).not.toHaveBeenCalled();
+    });
+
+    it('상태 경쟁(SUBMITTING CAS affected=0)이면 NOT_READY — 발송하지 않는다', async () => {
+      const { service, update } = createService({ txAffected: [0] });
+      const send = jest.fn();
+
+      const outcome = await service.trackPreparedSend(prepared(), send);
+
+      expect(outcome).toBe('NOT_READY');
+      expect(send).not.toHaveBeenCalled();
+      expect(update).not.toHaveBeenCalled();
+    });
+
+    it('외부 예외는 RECONCILING 전환 후 재던진다(blind 재삽입 금지)', async () => {
+      const { service, update } = createService();
+      const send = jest.fn().mockRejectedValue(new Error('gemtek down'));
+
+      await expect(service.trackPreparedSend(prepared(), send)).rejects.toThrow('gemtek down');
+      expect(update).toHaveBeenCalledWith(
+        { attemptId: 'c'.repeat(32), status: MessageAttemptStatus.SUBMITTING },
+        expect.objectContaining({ status: MessageAttemptStatus.RECONCILING }),
+      );
+    });
   });
 });

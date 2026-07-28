@@ -25,6 +25,18 @@ export const REFUND_IN_FLIGHT_STATUSES: RefundAttemptStatus[] = [
 ];
 
 /**
+ * **외부 환불을 실제로 실행 중**인 상태 (§5.4 `CLAIMED → SUBMITTING → …`).
+ *
+ * 하위 실행기(ledger claim 등)가 "상위 `refund_attempt` 게이트를 통과한 호출인가"를 판정할 때 쓴다.
+ * `RECONCILING`·`UNKNOWN` 은 재조정 구간이라 **신규 외부 환불을 실행하지 않는다** — 여기에 포함하면
+ * 재조정 중 blind 재환불이 열린다. 터미널(`SUCCEEDED`/`FAILED`)도 당연히 실행 상태가 아니다.
+ */
+export const REFUND_EXECUTING_STATUSES: RefundAttemptStatus[] = [
+  RefundAttemptStatus.CLAIMED,
+  RefundAttemptStatus.SUBMITTING,
+];
+
+/**
  * 환불 진입 경로 (§5.4).
  *
  * - A : `OPS_REVIEW_REQUIRED` 경유(DUAL 필수). 성공 시 WF `RESOLVED_MANUALLY_REFUNDED` 원자 전이 +

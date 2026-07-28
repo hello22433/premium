@@ -7,6 +7,13 @@ import { ExternalApiService } from './external.api.service';
 describe('ExternalApiService.getProducts billing 스코프 (PR2 리뷰 #3)', () => {
   const makeSvc = (resolved: unknown) => {
     const svc = Object.create(ExternalApiService.prototype) as any;
+    // §9 컷오버 게이트 — 단위 테스트 기본값은 '미전환 건'(legacy 경로 그대로 통과).
+    (svc as any).cutoverGuard = {
+      assertLegacyAllowed: jest.fn().mockResolvedValue(undefined),
+      assertRefundExecutionAllowed: jest.fn().mockResolvedValue(undefined),
+      isCutover: jest.fn().mockResolvedValue(false),
+      splitLegacyAllowed: jest.fn(async (ids: number[]) => ({ allowed: ids, blocked: [] })),
+    };
     svc.mappingResolver = { resolveBillingTarget: jest.fn(async () => resolved) };
     svc.getProductsForBilling = jest.fn(async () => ({ result: { code: '0000', data: [] } }));
     return svc;
@@ -44,6 +51,13 @@ describe('ExternalApiService.getProducts billing 스코프 (PR2 리뷰 #3)', () 
 
   it('미등록 externalCustomerId → resolver 가 4003 throw(default 폴백 금지) 전파', async () => {
     const svc = Object.create(ExternalApiService.prototype) as any;
+    // §9 컷오버 게이트 — 단위 테스트 기본값은 '미전환 건'(legacy 경로 그대로 통과).
+    (svc as any).cutoverGuard = {
+      assertLegacyAllowed: jest.fn().mockResolvedValue(undefined),
+      assertRefundExecutionAllowed: jest.fn().mockResolvedValue(undefined),
+      isCutover: jest.fn().mockResolvedValue(false),
+      splitLegacyAllowed: jest.fn(async (ids: number[]) => ({ allowed: ids, blocked: [] })),
+    };
     svc.mappingResolver = {
       resolveBillingTarget: jest.fn(async () => {
         throw Object.assign(new Error('unregistered'), { code: '4003' });

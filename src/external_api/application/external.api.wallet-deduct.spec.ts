@@ -66,6 +66,13 @@ function makeService(opts: {
   persistThrows?: Error;
 }) {
   const svc = Object.create(ExternalApiService.prototype) as ExternalApiService;
+  // §9 컷오버 게이트 — 단위 테스트 기본값은 '미전환 건'(legacy 경로 그대로 통과).
+  (svc as any).cutoverGuard = {
+    assertLegacyAllowed: jest.fn().mockResolvedValue(undefined),
+    assertRefundExecutionAllowed: jest.fn().mockResolvedValue(undefined),
+    isCutover: jest.fn().mockResolvedValue(false),
+    splitLegacyAllowed: jest.fn(async (ids: number[]) => ({ allowed: ids, blocked: [] })),
+  };
   (svc as any).logger = { warn: jest.fn(), log: jest.fn(), error: jest.fn() };
 
   const queries: Array<{ sql: string; params: any[] }> = [];
@@ -293,6 +300,13 @@ describe('ExternalApiService wallet 차감 (deductViaWallet)', () => {
 describe('ExternalApiService phaseA 분기 라우팅 (WALLET vs LEGACY)', () => {
   function routingService(mode: Mode) {
     const svc = Object.create(ExternalApiService.prototype) as ExternalApiService;
+    // §9 컷오버 게이트 — 단위 테스트 기본값은 '미전환 건'(legacy 경로 그대로 통과).
+    (svc as any).cutoverGuard = {
+      assertLegacyAllowed: jest.fn().mockResolvedValue(undefined),
+      assertRefundExecutionAllowed: jest.fn().mockResolvedValue(undefined),
+      isCutover: jest.fn().mockResolvedValue(false),
+      splitLegacyAllowed: jest.fn(async (ids: number[]) => ({ allowed: ids, blocked: [] })),
+    };
     (svc as any).walletCutoverConfig = { pr2DeliveryLifecycleMode: mode };
     const deductViaWallet = jest.fn(async () => undefined);
     const deductBalance = jest.fn(async () => undefined);
@@ -354,6 +368,13 @@ describe('ExternalApiService phaseA 분기 라우팅 (WALLET vs LEGACY)', () => 
 
 function phaseAService(mode: Mode) {
   const svc = Object.create(ExternalApiService.prototype) as ExternalApiService;
+  // §9 컷오버 게이트 — 단위 테스트 기본값은 '미전환 건'(legacy 경로 그대로 통과).
+  (svc as any).cutoverGuard = {
+    assertLegacyAllowed: jest.fn().mockResolvedValue(undefined),
+    assertRefundExecutionAllowed: jest.fn().mockResolvedValue(undefined),
+    isCutover: jest.fn().mockResolvedValue(false),
+    splitLegacyAllowed: jest.fn(async (ids: number[]) => ({ allowed: ids, blocked: [] })),
+  };
   (svc as any).logger = { warn: jest.fn(), log: jest.fn(), error: jest.fn() };
 
   let seq = 0;
@@ -706,6 +727,13 @@ describe('phaseA_createSsgAndDeduct (SSG: allocation + ssgEvent 둘 다)', () =>
 describe('externalOrderId 멱등 재생 (신규 차감 없음)', () => {
   it('일반 주문: 기존 주문 존재 → phaseA 미호출, 기존 응답 재생', async () => {
     const svc = Object.create(ExternalApiService.prototype) as any;
+    // §9 컷오버 게이트 — 단위 테스트 기본값은 '미전환 건'(legacy 경로 그대로 통과).
+    (svc as any).cutoverGuard = {
+      assertLegacyAllowed: jest.fn().mockResolvedValue(undefined),
+      assertRefundExecutionAllowed: jest.fn().mockResolvedValue(undefined),
+      isCutover: jest.fn().mockResolvedValue(false),
+      splitLegacyAllowed: jest.fn(async (ids: number[]) => ({ allowed: ids, blocked: [] })),
+    };
     const existing = { id: 555 };
     svc.mappingResolver = { findExistingOrderByExternalOrderId: jest.fn(async () => existing) };
     svc.buildCreateResponseForExistingOrder = jest.fn(() => ({ result: { code: '0000' } }));
@@ -725,6 +753,13 @@ describe('externalOrderId 멱등 재생 (신규 차감 없음)', () => {
 
   it('SSG 주문: 기존 주문 존재 → phaseA 미호출, 기존 응답 재생', async () => {
     const svc = Object.create(ExternalApiService.prototype) as any;
+    // §9 컷오버 게이트 — 단위 테스트 기본값은 '미전환 건'(legacy 경로 그대로 통과).
+    (svc as any).cutoverGuard = {
+      assertLegacyAllowed: jest.fn().mockResolvedValue(undefined),
+      assertRefundExecutionAllowed: jest.fn().mockResolvedValue(undefined),
+      isCutover: jest.fn().mockResolvedValue(false),
+      splitLegacyAllowed: jest.fn(async (ids: number[]) => ({ allowed: ids, blocked: [] })),
+    };
     const existing = { id: 777 };
     svc.mappingResolver = { findExistingOrderByExternalOrderId: jest.fn(async () => existing) };
     svc.buildSsgCreateResponseForExistingOrder = jest.fn(() => ({ result: { code: '0000' } }));

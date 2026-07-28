@@ -42,8 +42,11 @@ import { OrderDeliveryCouponStatus } from '../interface/order.delivery.coupon.st
 import { OrderDeliveryRefundStatusEnum } from '../interface/order.delivery.refund.status.enum';
 import { PII_BEARING_HISTORY_TYPES } from '../../order/interface/order.history.pii.types';
 import { IMailSend } from '../../mail/interface/mail-send';
-import { ISmsSend } from '../../sms/interface/sms.send';
+import { ISmsSend, SmsSendOut } from '../../sms/interface/sms.send';
 import { MessageAttemptService } from './message-attempt.service';
+import { MessageResultReconcileService } from './message-result-reconcile.service';
+import { DeliveryCutoverGuardService } from './delivery-cutover-guard.service';
+import { LegacyDeliveryEntryPoint, NOT_CUTOVER_ORDER_DELIVERY } from '../interface/legacy.delivery.entry.point';
 import { MessageAttemptChannel, MessageAttemptType } from '../interface/message.attempt.status';
 import { DeliveryExclusiveOp } from '../interface/delivery.workflow.status';
 import { computeNextAttemptAt, isWithinAllowedSendWindow } from '../domain/resend.schedule';
@@ -116,6 +119,7 @@ export class DeliveryBatchService {
     @Inject('ISmsSend')
     private smsSend: ISmsSend,
     private messageAttemptService: MessageAttemptService,
+    private messageResultReconcileService: MessageResultReconcileService,
     private deliveryTrackHttp: DeliveryTrackHttp,
     private cryptoCipher: CryptoCipher,
     private configService: ConfigService,
@@ -148,6 +152,7 @@ export class DeliveryBatchService {
     private readonly orderHistoryRepository: Repository<OrderHistoryEntity>,
     @InjectDataSource() private readonly dataSource: DataSource,
     private readonly orderFromService: OrderFromService,
+    private readonly cutoverGuard: DeliveryCutoverGuardService,
   ) {}
 
   private readonly logger = new Logger('batch');
@@ -265,6 +270,10 @@ export class DeliveryBatchService {
    * (이전 순서: SSG 먼저 → ledger 가 막더라도 SSG 잔액은 이미 복구됨 = 중복 위험.)
    */
   private async refundForFail(orderDelivery: OrderDeliveryEntity): Promise<void> {
+    // 컷오버 전환 건 거부(§9 인벤토리 #5). 전환 건의 환불은 refund_attempt CLAIMED→SUBMITTING 뒤
+    // 실행 단계로만 호출한다. 호출처 4곳 어디서 들어와도 여기서 한 번에 막힌다.
+    await this.cutoverGuard.assertLegacyAllowed(orderDelivery.id, LegacyDeliveryEntryPoint.BATCH_REFUND_FOR_FAIL);
+
     const order = orderDelivery.orderProductMapping.order;
     const mapping = orderDelivery.orderProductMapping;
     const productPrice = mapping.product.price;
@@ -563,6 +572,9 @@ export class DeliveryBatchService {
           'WHERE opm.id = order_delivery.order_product_mapping_id AND o.type != :externalType)',
         { externalType: IOrderType.EXTERNAL },
       )
+      // 컷오버 드레이닝·전환 건은 배치가 집지 않는다. 가드 통과 후 지연된 워커까지 막으려면
+      // 판정이 아니라 **점유와 같은 문장**이어야 한다(§9 quiesce, admission race).
+      .andWhere(NOT_CUTOVER_ORDER_DELIVERY)
       .execute();
     return claimResult.affected ?? 0;
   }
@@ -920,6 +932,9 @@ export class DeliveryBatchService {
       this.markSendSuccess(od, IOrderDeliveryStatus.COMPLETE);
       // 소유권 보유 시에만 종결/정산 (lease 회전 시 stale write·이중 정산 방지)
       if (await this.persistReportState(od, token)) {
+        // 알림톡 시도도 같은 확정으로 닫는다. 여기서 닫지 않으면 MSEQ 없는 알림톡 attempt 를
+        // 볼 주체가 없어(reconcileOnce 는 mseq 보유 건만 훑는다) SLA 초과로 UNKNOWN 이 된다.
+        await this.messageResultReconcileService.settleAlimTalkReport(od.id, true);
         await this.correctSendHistory(od.id, true, inquiry.data ?? { reportCode: '10000' });
         await this.markOrderTerminalAndSettle(od.orderProductMapping.order.id);
       }
@@ -937,6 +952,10 @@ export class DeliveryBatchService {
       await this.persistReportState(od, token);
       return;
     }
+
+    // 여기부터는 R1(재시도 소진·기한 초과) 구간이라 알림톡은 더 이상 확정 성공할 수 없다.
+    // 폴백 SMS 는 이 확정 실패를 부모로 삼는 CHANNEL_FALLBACK 시도다(§5.3).
+    await this.messageResultReconcileService.settleAlimTalkReport(od.id, false);
 
     // 심야 자동 발송 금지(08:00–20:00 KST 밖) — SMS 폴백도 **배치가 트리거하는 발송**이라
     // 광고성 정보 전송 제한 대상이다. 폴백을 포기하지 않고 다음 허용 시작으로 미룬다.
@@ -985,6 +1004,8 @@ export class DeliveryBatchService {
       .andWhere('(coupon_status IS NULL OR coupon_status NOT IN (:...blockedCouponStatuses))', {
         blockedCouponStatuses: UNSENDABLE_COUPON_STATUSES,
       })
+      // 컷오버 드레이닝·전환 건은 legacy 변형 lease 를 잡지 못한다(§9 quiesce).
+      .andWhere(NOT_CUTOVER_ORDER_DELIVERY)
       .execute();
 
     if ((leaseGate.affected ?? 0) === 0) {
@@ -2229,6 +2250,30 @@ export class DeliveryBatchService {
    * - 이미지 없으면 기존 barCode로 생성
    */
   async csResendAsMms(orderDeliveryId: number): Promise<void> {
+    const dispatch = await this.prepareCouponResendDispatch(orderDeliveryId, MessageAttemptChannel.MMS);
+    await this.messageAttemptService.trackSend(
+      {
+        orderDeliveryId,
+        slotOp: DeliveryExclusiveOp.MANUAL_RESEND,
+        channel: MessageAttemptChannel.MMS,
+        attemptType: MessageAttemptType.MANUAL_RESEND,
+        sendReason: 'CS_RESEND',
+      },
+      dispatch,
+    );
+  }
+
+  /**
+   * 재발송 payload 를 구성해 발송 클로저를 돌려준다 (CS 재발송·504 자동 재발송 `dueResend` 공용).
+   *
+   * - 유효기간 재계산·상태 변경·PIN 재발급을 하지 않는다(기존 barCode·수신정보 그대로).
+   * - MMS 는 이미지가 유실됐으면 기존 barCode 로 재생성한다.
+   * - 발급 전·삭제 건은 throw 로 거른다. 외부 호출은 반환된 클로저를 실행할 때만 일어난다.
+   */
+  async prepareCouponResendDispatch(
+    orderDeliveryId: number,
+    channel: MessageAttemptChannel.SMS | MessageAttemptChannel.MMS,
+  ): Promise<(attemptId?: string) => Promise<SmsSendOut>> {
     const orderDelivery = await this.orderDeliveryRepository
       .createQueryBuilder('orderDelivery')
       .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
@@ -2251,9 +2296,21 @@ export class DeliveryBatchService {
     const isUnselectedChoiceCoupon =
       orderDelivery.orderProductMapping.product.type === IProductType.CHOICE && !orderDelivery.choiceSelectProductId;
     if (!orderDelivery.barCode && !isUnselectedChoiceCoupon) {
-      throw new Error('쿠폰이 발급되지 않은 건은 MMS 재발송이 불가능합니다.');
+      throw new Error(
+        `쿠폰이 발급되지 않은 건은 ${channel === MessageAttemptChannel.MMS ? 'MMS' : 'SMS'} 재발송이 불가능합니다.`,
+      );
     }
 
+    return channel === MessageAttemptChannel.MMS
+      ? await this.buildMmsResendDispatch(orderDelivery, isUnselectedChoiceCoupon)
+      : await this.buildSmsResendDispatch(orderDelivery, isUnselectedChoiceCoupon);
+  }
+
+  /** MMS 재발송 클로저 (기존 csResendAsMms 본문 추출 — 동작 불변). */
+  private async buildMmsResendDispatch(
+    orderDelivery: OrderDeliveryEntity,
+    isUnselectedChoiceCoupon: boolean,
+  ): Promise<(attemptId?: string) => Promise<SmsSendOut>> {
     // 이미지 없으면 기존 barCode로 생성 (초이스쿠폰 미선택 시 이미지 불필요)
     if (!orderDelivery.imagePath && !isUnselectedChoiceCoupon) {
       try {
@@ -2301,25 +2358,17 @@ export class DeliveryBatchService {
     const fromPhoneNumber =
       orderDelivery.orderProductMapping.fromPhoneNumber ||
       (await this.orderFromService.resolveSendDefaultPhone(getBillingUserId(orderDelivery.orderProductMapping.order)));
-    await this.messageAttemptService.trackSend(
-      {
-        orderDeliveryId: orderDelivery.id,
-        slotOp: DeliveryExclusiveOp.MANUAL_RESEND,
-        channel: MessageAttemptChannel.MMS,
-        attemptType: MessageAttemptType.MANUAL_RESEND,
-        sendReason: 'CS_RESEND',
-      },
-      (attemptId) =>
-        this.smsSend.send({
-          msgType: 'M',
-          to: phoneNumber,
-          from: fromPhoneNumber,
-          subject: title,
-          text: smsText,
-          filePath: filePathList,
-          attemptId,
-        }),
-    );
+
+    return (attemptId) =>
+      this.smsSend.send({
+        msgType: 'M',
+        to: phoneNumber,
+        from: fromPhoneNumber,
+        subject: title,
+        text: smsText,
+        filePath: filePathList,
+        attemptId,
+      });
   }
 
   async csResendAsAlimTalk(
@@ -2455,30 +2504,24 @@ export class DeliveryBatchService {
   }
 
   async csResendAsSms(orderDeliveryId: number): Promise<void> {
-    const orderDelivery = await this.orderDeliveryRepository
-      .createQueryBuilder('orderDelivery')
-      .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
-      .innerJoinAndSelect('orderProductMapping.order', 'order')
-      .leftJoinAndSelect('orderProductMapping.product', 'product')
-      .leftJoinAndSelect('product.brand', 'brand')
-      .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
-      .leftJoinAndSelect('choiceSelectProduct.brand', 'choiceBrand')
-      .withDeleted()
-      .where('orderDelivery.id = :id', { id: orderDeliveryId })
-      .getOne();
+    const dispatch = await this.prepareCouponResendDispatch(orderDeliveryId, MessageAttemptChannel.SMS);
+    await this.messageAttemptService.trackSend(
+      {
+        orderDeliveryId,
+        slotOp: DeliveryExclusiveOp.MANUAL_RESEND,
+        channel: MessageAttemptChannel.SMS,
+        attemptType: MessageAttemptType.MANUAL_RESEND,
+        sendReason: 'CS_RESEND',
+      },
+      dispatch,
+    );
+  }
 
-    if (!orderDelivery) {
-      throw new Error('발송 데이터가 존재하지 않습니다.');
-    }
-
-    this.assertChoiceProductNotDeletedForCsResend(orderDelivery);
-
-    const isUnselectedChoiceCoupon =
-      orderDelivery.orderProductMapping.product.type === IProductType.CHOICE && !orderDelivery.choiceSelectProductId;
-    if (!orderDelivery.barCode && !isUnselectedChoiceCoupon) {
-      throw new Error('쿠폰이 발급되지 않은 건은 SMS 재발송이 불가능합니다.');
-    }
-
+  /** SMS 재발송 클로저 (기존 csResendAsSms 본문 추출 — 동작 불변). */
+  private async buildSmsResendDispatch(
+    orderDelivery: OrderDeliveryEntity,
+    isUnselectedChoiceCoupon: boolean,
+  ): Promise<(attemptId?: string) => Promise<SmsSendOut>> {
     // 수신 전화번호 결정
     const phoneNumber =
       orderDelivery.deliveryMethod === IOrderSendMethod.EMAIL && orderDelivery.emailReceiverPhone
@@ -2516,25 +2559,16 @@ export class DeliveryBatchService {
       orderDelivery.orderProductMapping.fromPhoneNumber ||
       (await this.orderFromService.resolveSendDefaultPhone(getBillingUserId(orderDelivery.orderProductMapping.order)));
 
-    await this.messageAttemptService.trackSend(
-      {
-        orderDeliveryId: orderDelivery.id,
-        slotOp: DeliveryExclusiveOp.MANUAL_RESEND,
-        channel: MessageAttemptChannel.SMS,
-        attemptType: MessageAttemptType.MANUAL_RESEND,
-        sendReason: 'CS_RESEND',
-      },
-      (attemptId) =>
-        this.smsSend.send({
-          msgType,
-          to: phoneNumber,
-          from: fromPhoneNumber,
-          subject: msgType === 'L' ? ' ' : '',
-          text,
-          filePath: [],
-          attemptId,
-        }),
-    );
+    return (attemptId) =>
+      this.smsSend.send({
+        msgType,
+        to: phoneNumber,
+        from: fromPhoneNumber,
+        subject: msgType === 'L' ? ' ' : '',
+        text,
+        filePath: [],
+        attemptId,
+      });
   }
 
   async csResendAsEmail(orderDeliveryId: number): Promise<void> {

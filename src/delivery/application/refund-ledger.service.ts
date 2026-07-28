@@ -7,6 +7,8 @@ import {
   OrderDeliveryRefundRestoreType,
   OrderDeliveryRefundSourcePath,
 } from '../../entity/order.delivery.refund.entity';
+import { DeliveryCutoverGuardService, RefundExecutionFencing } from './delivery-cutover-guard.service';
+import { LegacyDeliveryEntryPoint } from '../interface/legacy.delivery.entry.point';
 
 export interface ClaimRefundInput {
   orderDeliveryId: number;
@@ -25,6 +27,15 @@ export interface ClaimRefundInput {
    * plans/ssg-balance-refactor.md PR3 보강.
    */
   ssgPending?: boolean;
+  /**
+   * 이 claim 을 실행 중인 상위 `refund_attempt` 의 3중 fencing (§9 인벤토리 #12·§6.1).
+   *
+   * 컷오버 전환 건의 환불은 `refund_attempt` 단일 in-flight 가 상위 게이트이고, ledger claim 은 그
+   * **하위 멱등 확인**으로 종속된다. id 하나로는 통과 증명이 되지 않으므로 `ownerToken`·`generation`·
+   * `workflowVersion` 을 함께 받아, 가드가 attempt 와 현재 workflow 슬롯 소유자를 **한 쿼리로** 대조한다
+   * (lease 를 뺏긴 stale worker 차단). 미전환 건은 이 값이 없어도 기존 경로 그대로 동작한다.
+   */
+  refundExecution?: RefundExecutionFencing;
 }
 
 /**
@@ -46,9 +57,30 @@ export class RefundLedgerService {
     private readonly refundRepository: Repository<OrderDeliveryRefundEntity>,
     @InjectRepository(OrderDeliveryEntity)
     private readonly deliveryRepository: Repository<OrderDeliveryEntity>,
+    private readonly cutoverGuard: DeliveryCutoverGuardService,
   ) {}
 
+  /**
+   * 상위 게이트 확인 (§9 인벤토리 #12). 두 게이트(기존 ledger claim · 신규 `refund_attempt`)가
+   * 서로를 모르는 구간을 남기지 않기 위한 종속이다.
+   *
+   * **id 를 넘겼다는 사실만으로는 통과시키지 않는다** — 임의의 값으로 legacy 환불 경로가 재개방되기
+   * 때문이다. 가드가 attempt 의 소유(`order_delivery_id`)·실행 상태·`REFUND` 슬롯 보유에 더해
+   * 3중 fencing(`ownerToken`·`generation`·`workflowVersion`)까지 한 쿼리로 대조한다.
+   */
+  private async assertUpstreamGate(input: ClaimRefundInput, manager?: EntityManager): Promise<void> {
+    await this.cutoverGuard.assertRefundExecutionAllowed(
+      {
+        orderDeliveryId: input.orderDeliveryId,
+        fencing: input.refundExecution,
+        entryPoint: LegacyDeliveryEntryPoint.REFUND_LEDGER_CLAIM,
+      },
+      manager,
+    );
+  }
+
   async claim(input: ClaimRefundInput): Promise<void> {
+    await this.assertUpstreamGate(input);
     await this.insertLedger(this.refundRepository, input);
     await this.markRefundedAt(this.deliveryRepository, input.orderDeliveryId);
   }
@@ -121,6 +153,7 @@ export class RefundLedgerService {
   }
 
   async claimWithManager(manager: EntityManager, input: ClaimRefundInput): Promise<void> {
+    await this.assertUpstreamGate(input, manager);
     await this.insertLedger(manager.getRepository(OrderDeliveryRefundEntity), input);
     await this.markRefundedAt(manager.getRepository(OrderDeliveryEntity), input.orderDeliveryId);
   }

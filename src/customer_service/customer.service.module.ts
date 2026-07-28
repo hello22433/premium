@@ -17,6 +17,7 @@ import { UserCompanyEntity } from 'src/entity/user.company.entity';
 import { UserTaskHistoryEntity } from 'src/entity/user.task.history.entity';
 import { WalletModule } from '../wallet/wallet.module';
 import { CouponViewLogEntity } from '../entity/coupon.view.log.entity';
+import { DeliveryCutoverModule } from '../delivery/delivery.cutover.module';
 
 @Module({
   imports: [
@@ -37,6 +38,7 @@ import { CouponViewLogEntity } from '../entity/coupon.view.log.entity';
     DeliveryModule,
     SmsModule,
     ActivityLogModule,
+    DeliveryCutoverModule,
   ],
   controllers: [CustomerServiceController],
   providers: [CustomerServiceService],

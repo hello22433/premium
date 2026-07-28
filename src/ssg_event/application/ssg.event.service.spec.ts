@@ -48,6 +48,7 @@ describe('SsgEventService', () => {
       refundLedgerRepository as any,
       activityLogService as any,
       ssgIssue as any,
+      { assertLegacyAllowed: jest.fn().mockResolvedValue(undefined) } as any, // cutoverGuard (§9 컷오버 게이트)
     );
 
     return {
@@ -386,6 +387,144 @@ describe('SsgEventService', () => {
       await service.restoreTemporaryEventBalance(1);
 
       expect(amountHistoryRepository.save).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('restoreEventBalance — 주문 취소 SSG 이벤트 NET 복원', () => {
+    const buildRestoreEventSut = (histories: any[], events: Record<number, any>) => {
+      const { service, ssgEventRepository, amountHistoryRepository } = createService();
+
+      amountHistoryRepository.find = jest.fn(({ where }: { where?: { ssgEventId?: number } } = {}) =>
+        Promise.resolve(
+          where?.ssgEventId == null
+            ? histories
+            : histories.filter((history) => history.ssgEventId === where.ssgEventId),
+        ),
+      );
+      ssgEventRepository.createQueryBuilder.mockImplementation(() => {
+        let id: number | undefined;
+        const builder: any = {
+          setLock: jest.fn().mockReturnThis(),
+          where: jest.fn((_clause: string, params: { id: number }) => {
+            id = params.id;
+            return builder;
+          }),
+          getOne: jest.fn(() => Promise.resolve(id ? (events[id] ?? null) : null)),
+        };
+        return builder;
+      });
+
+      return { service, amountHistoryRepository, ssgEventRepository, events };
+    };
+
+    it('단순 차감만 있는 주문은 행사별 차감액을 그대로 복원한다', async () => {
+      const { service, amountHistoryRepository, events } = buildRestoreEventSut(
+        [{ id: 1, ssgEventId: 10, amount: -100, isTemporary: false, orderId: 1 }],
+        { 10: { id: 10, eventBalance: 900 } },
+      );
+
+      await service.restoreEventBalance(1);
+
+      expect(events[10].eventBalance).toBe(1000);
+      expect(amountHistoryRepository.save).toHaveBeenCalledWith(
+        expect.objectContaining({ ssgEventId: 10, amount: 100, balance: 1000, orderId: 1, isTemporary: false }),
+      );
+    });
+
+    it('이미 실패 환불로 복원되어 NET 0인 주문은 취소 복원을 추가하지 않는다', async () => {
+      const { service, amountHistoryRepository, ssgEventRepository, events } = buildRestoreEventSut(
+        [
+          { id: 1, ssgEventId: 10, amount: -100, isTemporary: false, orderId: 1 },
+          { id: 2, ssgEventId: 10, amount: 100, isTemporary: false, orderId: 1 },
+        ],
+        { 10: { id: 10, eventBalance: 1000 } },
+      );
+
+      await service.restoreEventBalance(1);
+
+      expect(events[10].eventBalance).toBe(1000);
+      expect(amountHistoryRepository.save).not.toHaveBeenCalled();
+      expect(ssgEventRepository.save).not.toHaveBeenCalled();
+    });
+
+    it('실패 환불 후 재발송 재차감 이력이 섞이면 남은 NET 음수만 복원한다', async () => {
+      const { service, amountHistoryRepository, events } = buildRestoreEventSut(
+        [
+          { id: 1, ssgEventId: 10, amount: -100, isTemporary: false, orderId: 1 },
+          { id: 2, ssgEventId: 10, amount: 100, isTemporary: false, orderId: 1 },
+          { id: 3, ssgEventId: 10, amount: -100, isTemporary: false, orderId: 1 },
+        ],
+        { 10: { id: 10, eventBalance: 900 } },
+      );
+
+      await service.restoreEventBalance(1);
+
+      expect(events[10].eventBalance).toBe(1000);
+      expect(amountHistoryRepository.save).toHaveBeenCalledTimes(1);
+      expect(amountHistoryRepository.save).toHaveBeenCalledWith(
+        expect.objectContaining({ ssgEventId: 10, amount: 100, balance: 1000 }),
+      );
+    });
+
+    it('다중 행사 주문은 행사별 NET 기준으로 복원하고 NET 0 행사는 건너뛴다', async () => {
+      const { service, amountHistoryRepository, events } = buildRestoreEventSut(
+        [
+          { id: 1, ssgEventId: 20, amount: -300, isTemporary: false, orderId: 1 },
+          { id: 2, ssgEventId: 10, amount: -100, isTemporary: false, orderId: 1 },
+          { id: 3, ssgEventId: 10, amount: 100, isTemporary: false, orderId: 1 },
+        ],
+        {
+          10: { id: 10, eventBalance: 1000 },
+          20: { id: 20, eventBalance: 700 },
+        },
+      );
+
+      await service.restoreEventBalance(1);
+
+      expect(events[10].eventBalance).toBe(1000);
+      expect(events[20].eventBalance).toBe(1000);
+      expect(amountHistoryRepository.save).toHaveBeenCalledTimes(1);
+      expect(amountHistoryRepository.save).toHaveBeenCalledWith(
+        expect.objectContaining({ ssgEventId: 20, amount: 300, balance: 1000 }),
+      );
+    });
+
+    it('취소 복원 이력이 이미 쌓인 뒤 재호출되면 NET 0이라 no-op이다', async () => {
+      const { service, amountHistoryRepository, ssgEventRepository, events } = buildRestoreEventSut(
+        [
+          { id: 1, ssgEventId: 10, amount: -100, isTemporary: false, orderId: 1 },
+          { id: 2, ssgEventId: 10, amount: 100, isTemporary: false, orderId: 1 },
+        ],
+        { 10: { id: 10, eventBalance: 1000 } },
+      );
+
+      await service.restoreEventBalance(1);
+
+      expect(events[10].eventBalance).toBe(1000);
+      expect(amountHistoryRepository.save).not.toHaveBeenCalled();
+      expect(ssgEventRepository.save).not.toHaveBeenCalled();
+    });
+
+    it('초기 조회 후 락 대기 중 다른 복원이 커밋되면 lock 이후 최신 NET 0을 보고 no-op이다', async () => {
+      const { service, ssgEventRepository, amountHistoryRepository } = createService();
+      const event = { id: 10, eventBalance: 1000 };
+      const initialHistories = [{ id: 1, ssgEventId: 10, amount: -100, isTemporary: false, orderId: 1 }];
+      const latestHistories = [
+        { id: 1, ssgEventId: 10, amount: -100, isTemporary: false, orderId: 1 },
+        { id: 2, ssgEventId: 10, amount: 100, isTemporary: false, orderId: 1 },
+      ];
+      amountHistoryRepository.find = jest
+        .fn()
+        .mockResolvedValueOnce(initialHistories)
+        .mockResolvedValueOnce(latestHistories);
+      mockFindSsgEvent(ssgEventRepository, event);
+
+      await service.restoreEventBalance(1);
+
+      expect(event.eventBalance).toBe(1000);
+      expect(amountHistoryRepository.find).toHaveBeenCalledTimes(2);
+      expect(amountHistoryRepository.save).not.toHaveBeenCalled();
+      expect(ssgEventRepository.save).not.toHaveBeenCalled();
     });
   });
 

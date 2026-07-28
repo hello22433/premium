@@ -30,6 +30,13 @@ describe('DeliveryBatchService.claimWaitDeliveries — 변형 lease 제외 (D3-5
       execute: jest.fn().mockResolvedValue({ affected: 1 }),
     };
     sut = Object.create(DeliveryBatchService.prototype);
+    // §9 컷오버 게이트 — 단위 테스트 기본값은 '미전환 건'(legacy 경로 그대로 통과).
+    (sut as any).cutoverGuard = {
+      assertLegacyAllowed: jest.fn().mockResolvedValue(undefined),
+      assertRefundExecutionAllowed: jest.fn().mockResolvedValue(undefined),
+      isCutover: jest.fn().mockResolvedValue(false),
+      splitLegacyAllowed: jest.fn(async (ids: number[]) => ({ allowed: ids, blocked: [] })),
+    };
     (sut as any).orderDeliveryRepository = { createQueryBuilder: jest.fn(() => qb) };
   });
 
@@ -139,6 +146,13 @@ describe('DeliveryBatchService.processOneDeliveryForBatch — 변형 lease 반�
   beforeEach(() => {
     update = jest.fn().mockResolvedValue({ affected: 1 });
     sut = Object.create(DeliveryBatchService.prototype);
+    // §9 컷오버 게이트 — 단위 테스트 기본값은 '미전환 건'(legacy 경로 그대로 통과).
+    (sut as any).cutoverGuard = {
+      assertLegacyAllowed: jest.fn().mockResolvedValue(undefined),
+      assertRefundExecutionAllowed: jest.fn().mockResolvedValue(undefined),
+      isCutover: jest.fn().mockResolvedValue(false),
+      splitLegacyAllowed: jest.fn(async (ids: number[]) => ({ allowed: ids, blocked: [] })),
+    };
     (sut as any).orderDeliveryRepository = { update };
     (sut as any).logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
   });
@@ -221,6 +235,13 @@ describe('DeliveryBatchService.processOneDeliveryInternal — full save() 부재
   beforeEach(() => {
     repo = { update: jest.fn().mockResolvedValue({ affected: 1 }), save: jest.fn().mockResolvedValue(undefined) };
     sut = Object.create(DeliveryBatchService.prototype);
+    // §9 컷오버 게이트 — 단위 테스트 기본값은 '미전환 건'(legacy 경로 그대로 통과).
+    (sut as any).cutoverGuard = {
+      assertLegacyAllowed: jest.fn().mockResolvedValue(undefined),
+      assertRefundExecutionAllowed: jest.fn().mockResolvedValue(undefined),
+      isCutover: jest.fn().mockResolvedValue(false),
+      splitLegacyAllowed: jest.fn(async (ids: number[]) => ({ allowed: ids, blocked: [] })),
+    };
     (sut as any).orderDeliveryRepository = repo;
     (sut as any).logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
     (sut as any).cryptoCipher = {

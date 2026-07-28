@@ -36,6 +36,8 @@ import { Transactional } from 'typeorm-transactional';
 import { evaluateSsgEventSignals, SsgBalanceCheckResult, SsgEventSignalResult } from './ssg.balance.guard';
 import { ulid } from 'ulid';
 import { allocateSsgEventsForDeliveries, SsgAllocationIndeterminateError } from '../domain/ssg.event.allocation';
+import { DeliveryCutoverGuardService } from '../../delivery/application/delivery-cutover-guard.service';
+import { LegacyDeliveryEntryPoint } from '../../delivery/interface/legacy.delivery.entry.point';
 
 // 상세조회 임계경로에서 SSG 외부 API(getAmount) 지연이 페이지 로딩을 묶지 않도록 하는 가드 타임아웃
 const SSG_BALANCE_CHECK_TIMEOUT_MS = 3000;
@@ -62,6 +64,7 @@ export class SsgEventService {
     private readonly activityLogService: ActivityLogService,
     @Inject('ISsgIssue')
     private readonly ssgIssue: ISsgIssue,
+    private readonly cutoverGuard: DeliveryCutoverGuardService,
   ) {}
 
   /**
@@ -788,29 +791,40 @@ export class SsgEventService {
 
   @Transactional()
   async restoreEventBalance(orderId: number): Promise<void> {
-    // ssgEventId 오름차순으로 락 획득 순서를 결정화하여 데드락 방지
-    // (동일 주문이 다중 행사를 갖고 동시에 cancel/refund되는 경우 대비)
-    const histories = await this.amountHistoryRepository.find({
+    // 주문 취소 복원은 같은 주문의 사후 보정 이력(실패환불/재발송 재차감/역복원)을 다시 뒤집지 않고,
+    // 행사별 NET 이 아직 음수인 경우에만 남은 점유액을 복원한다.
+    const initialHistories = await this.amountHistoryRepository.find({
       where: { orderId },
       order: { ssgEventId: 'ASC' },
     });
 
-    for (const history of histories) {
-      if (!history.ssgEventId || !history.amount) {
-        continue;
-      }
-
-      const ssgEvent = await this.findSsgEventForUpdate(history.ssgEventId);
+    // ssgEventId 오름차순으로 락 획득 순서를 결정화하여 데드락 방지
+    // (동일 주문이 다중 행사를 갖고 동시에 cancel/refund되는 경우 대비)
+    const eventIds = [
+      ...new Set(initialHistories.map((history) => history.ssgEventId).filter((id): id is number => !!id)),
+    ].sort((a, b) => a - b);
+    for (const ssgEventId of eventIds) {
+      const ssgEvent = await this.findSsgEventForUpdate(ssgEventId);
 
       if (!ssgEvent) {
         continue;
       }
 
-      const restoredBalance = ssgEvent.eventBalance - history.amount;
+      // 동시 취소/복원 대기 후에는 앞선 트랜잭션의 복원 이력이 생겼을 수 있으므로 lock 이후 최신 NET을 다시 계산한다.
+      const latestHistories = await this.amountHistoryRepository.find({
+        where: { orderId, ssgEventId },
+      });
+      const netAmount = latestHistories.reduce((sum, history) => sum + (history.amount ?? 0), 0);
+      if (netAmount >= 0) {
+        continue;
+      }
+
+      const restoreAmount = -netAmount;
+      const restoredBalance = ssgEvent.eventBalance + restoreAmount;
 
       const restorationHistory = this.amountHistoryRepository.create({
         ssgEventId: ssgEvent.id,
-        amount: -history.amount,
+        amount: restoreAmount,
         balance: restoredBalance,
         orderId,
         isTemporary: false,
@@ -1054,6 +1068,10 @@ export class SsgEventService {
     orderDeliveryId: number,
     refundLedgerId?: number,
   ): Promise<void> {
+    // 컷오버 전환 건 거부(§9 인벤토리 #9). SSG 행사 잔액은 고객 환불과 다른 원장이지만, 진입은 반드시
+    // refund_attempt 를 거친다(기존 recovery_log 멱등키를 refund_attempt 외부 idempotency key 와 1:1 매핑).
+    await this.cutoverGuard.assertLegacyAllowed(orderDeliveryId, LegacyDeliveryEntryPoint.SSG_EVENT_REFUND);
+
     const ssgEvent = await this.findSsgEventForUpdate(ssgEventId);
 
     if (!ssgEvent) {
@@ -1121,7 +1139,19 @@ export class SsgEventService {
     ssgEventId: number;
     orderId: number;
     amount: number;
+    /**
+     * 역복원 대상 발송건(§9 인벤토리 #9 컷오버 판정용). 알 수 있는 호출자만 넘긴다.
+     *
+     * 선차감 unwind 는 **발송건이 아직 확정되지 않은 구간**(issue 미시도 직접 역복원·sweep 재시도)에서도
+     * 일어난다. 그 구간에는 귀속시킬 `order_delivery` 가 없어 컷오버 판정 자체가 성립하지 않으므로
+     * 값을 넘기지 않으며, 그때는 이 원장 조작이 legacy/신규 경로 구분과 무관하다.
+     */
+    orderDeliveryId?: number;
   }): Promise<void> {
+    if (input.orderDeliveryId != null) {
+      await this.cutoverGuard.assertLegacyAllowed(input.orderDeliveryId, LegacyDeliveryEntryPoint.SSG_EVENT_REFUND);
+    }
+
     const ssgEvent = await this.findSsgEventForUpdate(input.ssgEventId);
 
     if (!ssgEvent) {

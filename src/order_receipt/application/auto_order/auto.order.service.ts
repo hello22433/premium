@@ -36,6 +36,7 @@ import {
   MappedResult,
   ParsedHeader,
   PreValidateResult,
+  ReportPendingSsgProduct,
 } from './auto.order.types';
 
 /**
@@ -77,30 +78,47 @@ export class AutoOrderService {
     mode: AutoOrderRunMode,
     fileIndexes?: number[],
   ): Promise<AutoOrderResult> {
-    // ── COMMIT 멱등 게이트: 이미 처리했으면 저장 스냅샷 그대로 반환(재계산 안 함)
+    // ── COMMIT 멱등 게이트: 이미 처리했으면 저장 스냅샷 그대로 반환(재계산 안 함). 예외: 생성 주문 0건이면 재계산 허용.
     if (mode === AutoOrderRunMode.COMMIT) {
       const saved = await this.autoResultRepository.findOne({ where: { orderReceiptId: receipt.id } });
       if (saved) {
-        // 승인 후 첨부가 바뀐 채 재승인되면(APPROVED→RECEIVED→filePath 교체→재승인) 구 스냅샷을 조용히
-        // 돌려주면 "미리보기는 신규 N건, 실제는 0건/구 파일"이 된다. 첨부 해시 불일치면 명시적 400으로 막는다.
-        const currentHash = this.computeFilePathHash(receipt.filePath);
-        if (saved.filePathHash && saved.filePathHash !== currentHash) {
-          throw new BadRequestException(
-            '승인 후 첨부파일이 변경되어 기존 자동주문 결과와 일치하지 않습니다. 재승인을 진행할 수 없습니다(기존 자동주문 결과 정리 후 다시 시도).',
+        // ── 0건 스냅샷 복구(FE 요청서 2026-07-28 R4-a): 실제 생성 주문이 0건이면 게이트를 열어 재계산한다.
+        //    전량 미매핑/차단으로 0건 커밋된 접수는 원인(상품코드 등)을 고쳐도 스냅샷이 영구 반환돼 복구 경로가
+        //    없었다(첨부 교체는 아래 해시검사 400). 생성 주문이 0건이면 중복 주문 위험이 원천적으로 없으므로
+        //    첨부 교체 여부와 무관하게 재계산을 허용한다. 판정은 스냅샷 JSON이 아니라 멱등 기록 테이블
+        //    (order_receipt_generated_order, 생성의 SoT)로 한다 — 스냅샷 파손/드리프트에도 안전.
+        //    동시 재승인 경합은 최초 커밋과 동일하게 UNIQUE(orderReceiptId, fileIndex, type)와
+        //    orderReceiptId UNIQUE(스냅샷 insert)가 DB에서 차단한다.
+        const generatedCount = await this.generatedOrderRepository.count({
+          where: { orderReceiptId: receipt.id },
+        });
+        if (generatedCount === 0) {
+          this.logger.warn(
+            `자동주문 0건 스냅샷 재계산 허용 receipt=${receipt.id} (생성 주문 0건 → 기존 스냅샷 삭제 후 재실행)`,
           );
+          await this.autoResultRepository.delete({ orderReceiptId: receipt.id });
+        } else {
+          // 승인 후 첨부가 바뀐 채 재승인되면(APPROVED→RECEIVED→filePath 교체→재승인) 구 스냅샷을 조용히
+          // 돌려주면 "미리보기는 신규 N건, 실제는 0건/구 파일"이 된다. 첨부 해시 불일치면 명시적 400으로 막는다.
+          const currentHash = this.computeFilePathHash(receipt.filePath);
+          if (saved.filePathHash && saved.filePathHash !== currentHash) {
+            throw new BadRequestException(
+              '승인 후 첨부파일이 변경되어 기존 자동주문 결과와 일치하지 않습니다. 재승인을 진행할 수 없습니다(기존 자동주문 결과 정리 후 다시 시도).',
+            );
+          }
+          let prev: AutoOrderResult;
+          try {
+            prev = JSON.parse(saved.resultJson) as AutoOrderResult;
+          } catch (e) {
+            // 저장 스냅샷이 손상/스키마드리프트로 파싱 불가 → raw SyntaxError 500 대신 맥락 있는 오류로.
+            // 원 주문은 최초 커밋에서 이미 생성됐으므로 이 경로는 복구 불가, 명확히 실패시킨다.
+            this.logger.error(
+              `자동주문 저장 스냅샷 파싱 실패 receipt=${receipt.id}: ${(e as Error).message}`,
+            );
+            throw new Error(`이미 처리된 자동주문 결과를 읽을 수 없습니다(receipt=${receipt.id}).`);
+          }
+          return { ...prev, alreadyCommitted: true };
         }
-        let prev: AutoOrderResult;
-        try {
-          prev = JSON.parse(saved.resultJson) as AutoOrderResult;
-        } catch (e) {
-          // 저장 스냅샷이 손상/스키마드리프트로 파싱 불가 → raw SyntaxError 500 대신 맥락 있는 오류로.
-          // 원 주문은 최초 커밋에서 이미 생성됐으므로 이 경로는 복구 불가, 명확히 실패시킨다.
-          this.logger.error(
-            `자동주문 저장 스냅샷 파싱 실패 receipt=${receipt.id}: ${(e as Error).message}`,
-          );
-          throw new Error(`이미 처리된 자동주문 결과를 읽을 수 없습니다(receipt=${receipt.id}).`);
-        }
-        return { ...prev, alreadyCommitted: true };
       }
     }
 
@@ -290,8 +308,8 @@ export class AutoOrderService {
     }
     const header = parsed.header as ParsedHeader;
 
-    // ── 3단계 상품매핑/분기
-    const mapped = await this.productMapper.map(parsed.rows);
+    // ── 3단계 상품매핑/분기 (mode 전달: DRY_RUN은 SSG 상품을 생성하지 않고 조회만 — 미리보기 DB 무변경 계약)
+    const mapped = await this.productMapper.map(parsed.rows, mode);
 
     // ── 4단계 사전검증
     const pre = this.preValidator.validate({
@@ -303,6 +321,11 @@ export class AutoOrderService {
       ssgReservationRange: ctx.range,
       resolvedFromEmail: ctx.resolvedFromEmail,
     });
+
+    // ── 3.5단계 보정: "승인 시 생성 예정" SSG 행을 ROW 차단으로 계상한다.
+    //   미리보기는 상품을 만들지 않으므로 이 행들은 주문에 못 실린다. 미매핑(=관리자 조치 필요)이 아니라
+    //   "승인하면 생성됨"이므로 사유 있는 차단으로 보고해야 회계(mapped = built + blocked)도 성립한다.
+    this.applyPendingSsgBlocks(mapped, pre);
 
     // ── 5~6단계 payload 조립 + (mode별) 실행
     let orders: AutoOrderReportOrder[];
@@ -326,7 +349,8 @@ export class AutoOrderService {
       inputRowCount: parsed.rows.length,
       unmappedCount: mapped.unmappedRows.length,
       excludedCount: mapped.excludedRows.length,
-      mappedCount: mapped.generalRows.length + mapped.ssgRows.length,
+      // pendingSsg는 "상품 확보는 되지만 미리보기라 미생성" → mapped 쪽에 계상하고 blocked로 빠진다
+      mappedCount: mapped.generalRows.length + mapped.ssgRows.length + mapped.pendingSsgRows.length,
       builtDeliveryCount,
       // 차단 이유로 "생성돼야 할" 건수를 독립 산출 → built와 대조(사유 없는 드롭/중복계상 실검출)
       expectedBuiltCount: this.computeExpectedBuilt(mapped, pre),
@@ -364,7 +388,9 @@ export class AutoOrderService {
       unmappedRows: mapped.unmappedRows.map((r) => ({
         rowNo: r.rowNo,
         code: r.productCode ?? '',
-        reason: '미등록 상품코드',
+        productName: r.productName ?? '', // 코드가 비어도 어떤 상품인지 식별 가능하게(진단 정보)
+        reason: r.reason,
+        reasonCode: r.reasonCode,
       })),
       // 백엔드 ROW 차단(금칙어/수신처없음)을 프론트 warningRows로 표시(행별 사유 노출)
       warningRows: rowBlocks.map((b) => ({ rowNo: b.rowNo ?? 0, code: b.code, reason: b.reason })),
@@ -372,6 +398,7 @@ export class AutoOrderService {
         rowNo: r.rowNo,
         reason: r.statusReason ?? '_유효=False',
       })),
+      pendingSsgProducts: this.summarizePendingSsg(mapped.pendingSsgRows),
     };
   }
 
@@ -452,6 +479,37 @@ export class AutoOrderService {
     const generalBuilt = mapped.generalRows.filter((r) => !pre.blockedRowNos.has(r.rowNo)).length;
     const ssgBuilt = pre.ssgOrderBlocked ? 0 : mapped.ssgRows.filter((r) => !pre.blockedRowNos.has(r.rowNo)).length;
     return generalBuilt + ssgBuilt;
+  }
+
+  /**
+   * DRY_RUN에서 "해당 액면가 SSG 상품이 아직 없는" 행을 ROW 차단으로 등록한다(사유 있는 미생성).
+   * 미리보기는 DB 무변경이 계약이라 상품을 만들지 않는다 → 그 행은 주문에 못 실린다.
+   * 승인(COMMIT)하면 상품이 생성되어 정상 주문이 되므로, 미매핑이 아니라 "승인 시 생성 예정"으로 보고한다.
+   * (COMMIT에서는 pendingSsgRows가 항상 비어 있어 이 함수는 no-op이다 → preview=commit 의미 유지)
+   */
+  private applyPendingSsgBlocks(mapped: MappedResult, pre: PreValidateResult): void {
+    for (const row of mapped.pendingSsgRows) {
+      pre.blockedRowNos.add(row.rowNo);
+      pre.blocked.push({
+        code: 'SSG_PRODUCT_PENDING_CREATE',
+        level: 'ROW',
+        rowNo: row.rowNo,
+        reason: `${row.rowNo}행: 신세계 상품(${row.listPrice.toLocaleString()}원)이 아직 없어 승인 시 자동 생성됩니다(미리보기에는 주문으로 잡히지 않음).`,
+      });
+    }
+  }
+
+  /** 미리보기의 "승인 시 생성 예정" SSG 상품을 액면가별로 집계(프론트 표시용). */
+  private summarizePendingSsg(rows: MappedResult['pendingSsgRows']): ReportPendingSsgProduct[] {
+    const byPrice = new Map<number, number[]>();
+    for (const row of rows) {
+      const rowNos = byPrice.get(row.listPrice) ?? [];
+      rowNos.push(row.rowNo);
+      byPrice.set(row.listPrice, rowNos);
+    }
+    return [...byPrice.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([price, rowNos]) => ({ price, rowCount: rowNos.length, rowNos }));
   }
 
   /**
@@ -600,6 +658,7 @@ export class AutoOrderService {
       unmappedRows: [],
       warningRows: [],
       excludedRows: [],
+      pendingSsgProducts: [],
     };
   }
 }
