@@ -4,6 +4,7 @@ import { DeliveryBatchService } from './application/delivery.batch.service';
 import { SsgRecoverySweepService } from './application/ssg-recovery-sweep.service';
 import { SsgResendDeductRecoveryService } from './application/ssg-resend-deduct-recovery.service';
 import { MessageResultReconcileService } from './application/message-result-reconcile.service';
+import { MessageResendExecutorService } from './application/message-resend-executor.service';
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 
@@ -21,6 +22,7 @@ export class DeliveryBatchSchedule {
     private ssgRecoverySweepService: SsgRecoverySweepService,
     private ssgResendDeductRecoveryService: SsgResendDeductRecoveryService,
     private messageResultReconcileService: MessageResultReconcileService,
+    private messageResendExecutorService: MessageResendExecutorService,
   ) {}
 
   // 부팅 stale claim 해제는 main.ts(listen() 전)에서만 수행한다. lifecycle 훅은 migration
@@ -38,6 +40,7 @@ export class DeliveryBatchSchedule {
   private reportSweepStartedAt: number | null = null;
   private resultReconcileStartedAt: number | null = null;
   private trackingSlaStartedAt: number | null = null;
+  private dueResendStartedAt: number | null = null;
 
   /**
    * 실행 중 플래그를 체크한다. 진행 중이면 true 반환(skip).
@@ -201,6 +204,32 @@ export class DeliveryBatchSchedule {
       this.logger.error(e);
     } finally {
       this.trackingSlaStartedAt = null;
+    }
+  }
+
+  // 504 자동 재발송 실행(§6.3 dueResend, §10 4단계 canary — DELIVERY_AUTO_RESEND_504_ENABLED).
+  // 자동 재발송 허용 창은 **08:00~20:00 KST**(§7.2) — 심야 확정분이 익일 08:00 으로 예약되므로
+  // cron 도 08시부터 돈다(09시 시작이면 08시 도래 예약이 최대 1시간 지연된다). 최초 발송 배치의
+  // 09~20시 제한과 다른 값인 것이 맞다. 다른 5분 cron(0/15/30/45초)과 동시 trigger 회피 25초 offset.
+  @Cron('25 */5 8-19 * * *', { timeZone: 'Asia/Seoul' })
+  async handleDueResend() {
+    if (this.isStillRunning(this.dueResendStartedAt, 'handleDueResend')) {
+      this.logger.log('[BATCH] 이전 handleDueResend 진행 중 — skip');
+      return;
+    }
+    this.dueResendStartedAt = Date.now();
+    try {
+      const summary = await this.messageResendExecutorService.runDueResendOnce();
+      if (summary.scanned > 0) {
+        this.logger.log(
+          `[DUE_RESEND] scanned=${summary.scanned} resent=${summary.resent} resumed=${summary.resumed} ` +
+            `expired=${summary.expired} superseded=${summary.superseded} skipped=${summary.skipped}`,
+        );
+      }
+    } catch (e) {
+      this.logger.error(e);
+    } finally {
+      this.dueResendStartedAt = null;
     }
   }
 

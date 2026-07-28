@@ -3,6 +3,7 @@ import { MessageAttemptService, formatYearMonth } from './message-attempt.servic
 import { MessageAttemptChannel, MessageAttemptStatus, MessageAttemptType } from '../interface/message.attempt.status';
 import { DeliveryExclusiveOp, DeliverySlotFailureCode, LEGACY_SEND_OP } from '../interface/delivery.workflow.status';
 import { isValidAttemptId } from '../domain/message.attempt.id';
+import { DeliveryWorkflowEntity } from '../../entity/delivery.workflow.entity';
 
 /**
  * outbox 2단 마크 + 컷오버 게이트 검증.
@@ -20,6 +21,10 @@ describe('MessageAttemptService — 시도 추적(outbox 2단 마크)', () => {
       acquire?: jest.Mock;
       release?: jest.Mock;
       ensureWorkflow?: jest.Mock;
+      /** trackPreparedSend 트랜잭션의 workflow 잠금 read 가 볼 deliveredFlag */
+      txDelivered?: boolean;
+      /** trackPreparedSend 트랜잭션 내 attempt 조건부 UPDATE 의 affected 시퀀스 */
+      txAffected?: number[];
     } = {},
   ) => {
     const saved: Record<string, unknown>[] = [];
@@ -37,6 +42,25 @@ describe('MessageAttemptService — 시도 추적(outbox 2단 마크)', () => {
       save,
       update,
       findOne,
+    } as never;
+
+    // trackPreparedSend 는 workflow 행을 잠근 트랜잭션 안에서 판정·전이한다(PR#32 HIGH 3차).
+    const txAffected = overrides.txAffected ?? [1];
+    let txCall = 0;
+    const txUpdate = jest
+      .fn()
+      .mockImplementation(async () => ({ affected: txAffected[Math.min(txCall++, txAffected.length - 1)] }));
+    const txWorkflowFindOne = jest.fn().mockResolvedValue({
+      orderDeliveryId,
+      deliveredFlag: overrides.txDelivered ?? false,
+    });
+    const dataSource = {
+      transaction: jest.fn().mockImplementation(async (cb: (m: unknown) => Promise<unknown>) =>
+        cb({
+          getRepository: (entity: unknown) =>
+            entity === DeliveryWorkflowEntity ? { findOne: txWorkflowFindOne } : { update: txUpdate },
+        }),
+      ),
     } as never;
 
     const acquire =
@@ -63,11 +87,14 @@ describe('MessageAttemptService — 시도 추적(outbox 2단 마크)', () => {
     const slotService = { ensureWorkflow, acquire, release } as never;
 
     return {
-      service: new MessageAttemptService(attemptRepository, slotService),
+      service: new MessageAttemptService(attemptRepository, slotService, dataSource),
       saved,
       save,
       update,
       findOne,
+      txUpdate,
+      txWorkflowFindOne,
+      dataSource,
       acquire,
       release,
     };
@@ -319,5 +346,91 @@ describe('MessageAttemptService — 시도 추적(outbox 2단 마크)', () => {
     expect(ensureWorkflow).not.toHaveBeenCalled();
     expect(save).not.toHaveBeenCalled();
     expect(send).toHaveBeenCalledWith(undefined);
+  });
+
+  describe('trackPreparedSend — 사전 생성 attempt 발송(§5.3 재개, §3 나 전달완료 경쟁 봉합)', () => {
+    const prepared = () =>
+      ({
+        attemptId: 'c'.repeat(32),
+        orderDeliveryId,
+        status: MessageAttemptStatus.OUTBOX_READY,
+      }) as never;
+
+    it('workflow 행을 pessimistic_write 로 잠근 트랜잭션에서 delivered 확인·SUBMITTING 전이를 수행한다(PR#32 HIGH 3차)', async () => {
+      const { service, txWorkflowFindOne, txUpdate, update, dataSource } = createService();
+      const send = jest.fn().mockResolvedValue({ mseq: 55, recovered: false });
+
+      const outcome = await service.trackPreparedSend(prepared(), send);
+
+      expect(outcome).toBe('SENT');
+      // 서브쿼리 검증은 workflow 행을 잠그지 않으므로 반드시 FOR UPDATE 잠금 read 여야 한다.
+      expect((dataSource as { transaction: jest.Mock }).transaction).toHaveBeenCalledTimes(1);
+      expect(txWorkflowFindOne).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { orderDeliveryId },
+          lock: { mode: 'pessimistic_write' },
+        }),
+      );
+      // 같은 트랜잭션에서 OUTBOX_READY → SUBMITTING CAS.
+      expect(txUpdate).toHaveBeenCalledWith(
+        { attemptId: 'c'.repeat(32), status: MessageAttemptStatus.OUTBOX_READY },
+        expect.objectContaining({ status: MessageAttemptStatus.SUBMITTING }),
+      );
+      // 외부 호출은 트랜잭션 커밋 뒤에만, 상관키를 넘겨서.
+      expect(send).toHaveBeenCalledWith('c'.repeat(32));
+      // MSEQ 확보 → 즉시 결과 조회 대상(TRACKING) 등록.
+      expect(update).toHaveBeenCalledWith(
+        { attemptId: 'c'.repeat(32), status: MessageAttemptStatus.SUBMITTING },
+        expect.objectContaining({ status: MessageAttemptStatus.TRACKING, mseq: '55' }),
+      );
+    });
+
+    it('잠금 하에 delivered 가 확인되면 같은 트랜잭션에서 CANCELLED_SUPERSEDED 로 종결하고 발송하지 않는다', async () => {
+      const { service, txUpdate } = createService({ txDelivered: true });
+      const send = jest.fn();
+
+      const outcome = await service.trackPreparedSend(prepared(), send);
+
+      expect(outcome).toBe('SUPERSEDED');
+      expect(send).not.toHaveBeenCalled();
+      expect(txUpdate).toHaveBeenCalledWith(
+        { attemptId: 'c'.repeat(32), status: MessageAttemptStatus.OUTBOX_READY },
+        expect.objectContaining({ status: MessageAttemptStatus.CANCELLED_SUPERSEDED }),
+      );
+      // SUBMITTING 전이는 시도조차 하지 않는다.
+      expect(txUpdate).toHaveBeenCalledTimes(1);
+    });
+
+    it('delivered 인데 취소 CAS 도 경쟁에 지면(affected=0) NOT_READY — 남의 전이를 덮지 않는다', async () => {
+      const { service } = createService({ txDelivered: true, txAffected: [0] });
+      const send = jest.fn();
+
+      const outcome = await service.trackPreparedSend(prepared(), send);
+
+      expect(outcome).toBe('NOT_READY');
+      expect(send).not.toHaveBeenCalled();
+    });
+
+    it('상태 경쟁(SUBMITTING CAS affected=0)이면 NOT_READY — 발송하지 않는다', async () => {
+      const { service, update } = createService({ txAffected: [0] });
+      const send = jest.fn();
+
+      const outcome = await service.trackPreparedSend(prepared(), send);
+
+      expect(outcome).toBe('NOT_READY');
+      expect(send).not.toHaveBeenCalled();
+      expect(update).not.toHaveBeenCalled();
+    });
+
+    it('외부 예외는 RECONCILING 전환 후 재던진다(blind 재삽입 금지)', async () => {
+      const { service, update } = createService();
+      const send = jest.fn().mockRejectedValue(new Error('gemtek down'));
+
+      await expect(service.trackPreparedSend(prepared(), send)).rejects.toThrow('gemtek down');
+      expect(update).toHaveBeenCalledWith(
+        { attemptId: 'c'.repeat(32), status: MessageAttemptStatus.SUBMITTING },
+        expect.objectContaining({ status: MessageAttemptStatus.RECONCILING }),
+      );
+    });
   });
 });
