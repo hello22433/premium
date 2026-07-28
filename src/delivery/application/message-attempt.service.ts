@@ -8,6 +8,14 @@ import { generateAttemptId } from '../domain/message.attempt.id';
 import { DeliverySlot, DeliveryWorkflowSlotService, SlotApprovalBinding } from './delivery-workflow-slot.service';
 import { SmsSendOut } from '../../sms/interface/sms.send';
 
+/**
+ * `trackPreparedSend` 실행 결과 (§3 나 전달 완료 경쟁 봉합).
+ * - `SENT`       : `SUBMITTING` 전이 성공 → 외부 발송 수행됨.
+ * - `SUPERSEDED` : delivered 로 전이가 막혀 `CANCELLED_SUPERSEDED` 로 종결됨(발송 없음).
+ * - `NOT_READY`  : 상태 경쟁(선점·이미 진행) → 아무것도 하지 않음.
+ */
+export type PreparedSendResult = 'SENT' | 'SUPERSEDED' | 'NOT_READY';
+
 export interface TrackSendContext {
   orderDeliveryId: number;
   channel: MessageAttemptChannel;
@@ -102,24 +110,63 @@ export class MessageAttemptService {
    * 외부 호출만 남긴다. 그 신규 행은 `trackSend` 처럼 여기서 생성하지 않으므로, 이 메서드는
    * 상태 마크(`SUBMITTING`)와 결과 반영만 수행한다.
    *
-   * `OUTBOX_READY → SUBMITTING` CAS 가 실패하면(다른 worker 선점·이미 진행) 외부 호출 없이
-   * false 를 돌려준다 — 같은 attempt 로 두 번 insert 하는 경로를 상태 전이가 차단한다.
+   * **전달 완료 경쟁 봉합(§3 나, PR#32 HIGH):** `delivered_flag = false` 검증과
+   * `OUTBOX_READY → SUBMITTING` 전이를 **하나의 조건부 UPDATE** 로 묶는다. read 후 별도 전이는
+   * 두 호출 사이에 타 채널 전달 완료가 끼어드는 창을 남긴다. 외부 호출은 이 커밋 이후에만 시작하며,
+   * 커밋 이후의 지연 전달 완료는 §3 나가 명시 수용하는 in-flight 중복이다.
+   *
+   * - `SENT`       : 전이 성공 → 외부 발송 수행.
+   * - `SUPERSEDED` : delivered 로 전이가 막힘 → 같은 조건부 CAS 로 `CANCELLED_SUPERSEDED` 종결까지
+   *                  수행했다(발송 대상 아님, 실패·환불 후보 아님).
+   * - `NOT_READY`  : 상태 경쟁(다른 worker 선점·이미 진행) → 아무것도 하지 않음.
    */
   async trackPreparedSend(
     attempt: MessageAttemptEntity,
     send: (attemptId: string) => Promise<SmsSendOut>,
-  ): Promise<boolean> {
+  ): Promise<PreparedSendResult> {
+    const now = new Date();
+
     // 외부 호출은 이 마크가 커밋된 뒤에만 시작한다(§5.3 outbox 2단 마크).
-    const marked = await this.transition(attempt, MessageAttemptStatus.OUTBOX_READY, MessageAttemptStatus.SUBMITTING);
-    if (!marked) {
+    const marked = await this.attemptRepository
+      .createQueryBuilder()
+      .update(MessageAttemptEntity)
+      .set({ status: MessageAttemptStatus.SUBMITTING, stateEnteredAt: now })
+      .where('attempt_id = :attemptId', { attemptId: attempt.attemptId })
+      .andWhere('status = :outboxReady', { outboxReady: MessageAttemptStatus.OUTBOX_READY })
+      .andWhere(
+        `NOT EXISTS (SELECT 1 FROM delivery_workflow w
+                      WHERE w.order_delivery_id = :orderDeliveryId AND w.delivered_flag = 1)`,
+        { orderDeliveryId: attempt.orderDeliveryId },
+      )
+      .execute();
+
+    if (!marked.affected) {
+      // delivered 로 막혔는지 상태 경쟁인지도 조건부 CAS 로 구분한다 — 재조회 후 판정하면 또 경쟁한다.
+      const superseded = await this.attemptRepository
+        .createQueryBuilder()
+        .update(MessageAttemptEntity)
+        .set({ status: MessageAttemptStatus.CANCELLED_SUPERSEDED, resolvedAt: now, stateEnteredAt: now })
+        .where('attempt_id = :attemptId', { attemptId: attempt.attemptId })
+        .andWhere('status = :outboxReady', { outboxReady: MessageAttemptStatus.OUTBOX_READY })
+        .andWhere(
+          `EXISTS (SELECT 1 FROM delivery_workflow w
+                    WHERE w.order_delivery_id = :orderDeliveryId AND w.delivered_flag = 1)`,
+          { orderDeliveryId: attempt.orderDeliveryId },
+        )
+        .execute();
+
+      if (superseded.affected) {
+        this.logger.log(`타 채널 전달 완료 — 발송 없이 취소 종결(§3 나). attemptId=${attempt.attemptId}`);
+        return 'SUPERSEDED';
+      }
       this.logger.warn(`SUBMITTING 마크 실패(선점·진행 중) — 발송하지 않는다. attemptId=${attempt.attemptId}`);
-      return false;
+      return 'NOT_READY';
     }
 
     try {
       const result = await send(attempt.attemptId);
       await this.settleSubmitted(attempt, result);
-      return true;
+      return 'SENT';
     } catch (e) {
       // 외부 호출 시작 마크 이후의 실패는 "발급 여부 불명"이다. 재삽입하지 않고 재조회 대상으로만 남긴다.
       await this.markReconciling(attempt, e);

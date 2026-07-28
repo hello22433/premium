@@ -34,8 +34,6 @@ describe('MessageResendExecutorService — 504 자동 재발송 실행(dueResend
     due?: unknown[];
     stuck?: unknown[];
     workflow?: Partial<Record<string, unknown>>;
-    /** 제출 직전 재확인(두 번째 ensureWorkflow)이 돌려줄 workflow. 미지정 시 최초와 동일. */
-    freshWorkflow?: Partial<Record<string, unknown>>;
     /** 트랜잭션 내 delivered 가드(잠금 read)가 볼 deliveredFlag. */
     txDelivered?: boolean;
     orderDelivery?: Partial<Record<string, unknown>> | null;
@@ -100,7 +98,6 @@ describe('MessageResendExecutorService — 504 자동 재발송 실행(dueResend
       deliveredFlag: false,
       ...(options.workflow ?? {}),
     };
-    const freshWorkflow = options.freshWorkflow ? { ...workflow, ...options.freshWorkflow } : workflow;
     const slot = {
       orderDeliveryId: 500,
       op: DeliveryExclusiveOp.RETRY,
@@ -108,7 +105,7 @@ describe('MessageResendExecutorService — 504 자동 재발송 실행(dueResend
       workflowVersion: '4',
       leaseExpiresAt: new Date(now.getTime() + 300000),
     };
-    const ensureWorkflow = jest.fn().mockResolvedValueOnce(workflow).mockResolvedValue(freshWorkflow);
+    const ensureWorkflow = jest.fn().mockResolvedValue(workflow);
     const slotService = {
       ensureWorkflow,
       acquire: jest
@@ -121,7 +118,7 @@ describe('MessageResendExecutorService — 504 자동 재발송 실행(dueResend
       release: jest.fn().mockResolvedValue(true),
     };
 
-    const trackPreparedSend = options.trackPreparedSend ?? jest.fn().mockResolvedValue(true);
+    const trackPreparedSend = options.trackPreparedSend ?? jest.fn().mockResolvedValue('SENT');
     const messageAttemptService = { trackPreparedSend } as never;
 
     const markWorkflowFailedIfSettled = jest.fn().mockResolvedValue(undefined);
@@ -261,22 +258,17 @@ describe('MessageResendExecutorService — 504 자동 재발송 실행(dueResend
       expect(trackPreparedSend).not.toHaveBeenCalled();
     });
 
-    it('제출 직전 재확인: commit 후 delivered 가 확인되면 자식을 발송 없이 CANCELLED_SUPERSEDED 로 종결한다', async () => {
-      const { service, attemptUpdate, txSaved, trackPreparedSend } = createService({
-        due: [scheduled()],
-        freshWorkflow: { deliveredFlag: true },
-      });
+    it('제출 게이트: delivered 검증∧SUBMITTING 전이는 trackPreparedSend 의 단일 조건부 UPDATE 소관 — SUPERSEDED 면 superseded 로 집계한다', async () => {
+      const trackPreparedSend = jest.fn().mockResolvedValue('SUPERSEDED');
+      const { service, txSaved } = createService({ due: [scheduled()], trackPreparedSend });
 
       const summary = await service.runDueResendOnce(now);
 
       expect(summary.superseded).toBe(1);
-      // 자식은 만들어졌지만(OUTBOX_READY = 외부 호출 전 확정) 발송 없이 취소 종결된다.
+      expect(summary.resent).toBe(0);
+      // 자식은 만들어졌지만(OUTBOX_READY = 외부 호출 전 확정) 게이트가 발송 없이 취소 종결했다.
       expect(txSaved).toHaveLength(1);
-      expect(trackPreparedSend).not.toHaveBeenCalled();
-      expect(attemptUpdate).toHaveBeenCalledWith(
-        expect.objectContaining({ status: MessageAttemptStatus.OUTBOX_READY }),
-        expect.objectContaining({ status: MessageAttemptStatus.CANCELLED_SUPERSEDED }),
-      );
+      expect(trackPreparedSend).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -451,20 +443,16 @@ describe('MessageResendExecutorService — 504 자동 재발송 실행(dueResend
       expect(trackPreparedSend.mock.calls[0][0]).toMatchObject({ attemptId: 'b'.repeat(32) });
     });
 
-    it('재개 직전 delivered 가 확인되면 발송 없이 CANCELLED_SUPERSEDED 로 종결한다(§3 나)', async () => {
-      const { service, attemptUpdate, trackPreparedSend } = createService({
-        stuck: [stuckChild()],
-        freshWorkflow: { deliveredFlag: true },
-      });
+    it('재개 제출 게이트가 delivered 로 막히면(SUPERSEDED) 발송 없이 superseded 로 집계한다(§3 나)', async () => {
+      const trackPreparedSend = jest.fn().mockResolvedValue('SUPERSEDED');
+      const { service, txSaved } = createService({ stuck: [stuckChild()], trackPreparedSend });
 
       const summary = await service.runDueResendOnce(now);
 
       expect(summary.superseded).toBe(1);
-      expect(attemptUpdate).toHaveBeenCalledWith(
-        { attemptId: 'b'.repeat(32), status: MessageAttemptStatus.OUTBOX_READY },
-        expect.objectContaining({ status: MessageAttemptStatus.CANCELLED_SUPERSEDED }),
-      );
-      expect(trackPreparedSend).not.toHaveBeenCalled();
+      expect(summary.resumed).toBe(0);
+      expect(txSaved).toHaveLength(0);
+      expect(trackPreparedSend.mock.calls[0][0]).toMatchObject({ attemptId: 'b'.repeat(32) });
     });
 
     it('재개 대상도 기한을 넘겼으면 발송 없이 FAILED_FINAL 로 종결한다(상속된 기한, §7.2)', async () => {

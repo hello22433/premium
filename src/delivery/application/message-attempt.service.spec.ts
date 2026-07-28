@@ -20,6 +20,8 @@ describe('MessageAttemptService — 시도 추적(outbox 2단 마크)', () => {
       acquire?: jest.Mock;
       release?: jest.Mock;
       ensureWorkflow?: jest.Mock;
+      /** createQueryBuilder 기반 조건부 UPDATE 의 affected 시퀀스(trackPreparedSend 용) */
+      qbAffected?: number[];
     } = {},
   ) => {
     const saved: Record<string, unknown>[] = [];
@@ -32,11 +34,44 @@ describe('MessageAttemptService — 시도 추적(outbox 2단 마크)', () => {
     const update = overrides.update ?? jest.fn().mockResolvedValue({ affected: 1 });
     const findOne = overrides.findOne ?? jest.fn().mockResolvedValue(null);
 
+    const qbUpdates: {
+      set: Record<string, unknown>;
+      conditions: { sql: string; params?: Record<string, unknown> }[];
+    }[] = [];
+    const qbAffected = overrides.qbAffected ?? [1];
+    let qbCall = 0;
+
     const attemptRepository = {
       create: jest.fn().mockImplementation((entity) => ({ ...entity })),
       save,
       update,
       findOne,
+      createQueryBuilder: jest.fn().mockImplementation(() => {
+        const captured: {
+          set: Record<string, unknown>;
+          conditions: { sql: string; params?: Record<string, unknown> }[];
+        } = { set: {}, conditions: [] };
+        qbUpdates.push(captured);
+        const qb: Record<string, unknown> = {
+          update: jest.fn().mockReturnThis(),
+          set: jest.fn().mockImplementation((values: Record<string, unknown>) => {
+            captured.set = values;
+            return qb;
+          }),
+          where: jest.fn().mockImplementation((sql: string, params?: Record<string, unknown>) => {
+            captured.conditions.push({ sql, params });
+            return qb;
+          }),
+          andWhere: jest.fn().mockImplementation((sql: string, params?: Record<string, unknown>) => {
+            captured.conditions.push({ sql, params });
+            return qb;
+          }),
+          execute: jest
+            .fn()
+            .mockImplementation(async () => ({ affected: qbAffected[Math.min(qbCall++, qbAffected.length - 1)] })),
+        };
+        return qb;
+      }),
     } as never;
 
     const acquire =
@@ -68,6 +103,7 @@ describe('MessageAttemptService — 시도 추적(outbox 2단 마크)', () => {
       save,
       update,
       findOne,
+      qbUpdates,
       acquire,
       release,
     };
@@ -319,5 +355,75 @@ describe('MessageAttemptService — 시도 추적(outbox 2단 마크)', () => {
     expect(ensureWorkflow).not.toHaveBeenCalled();
     expect(save).not.toHaveBeenCalled();
     expect(send).toHaveBeenCalledWith(undefined);
+  });
+
+  describe('trackPreparedSend — 사전 생성 attempt 발송(§5.3 재개, §3 나 전달완료 경쟁 봉합)', () => {
+    const prepared = () =>
+      ({
+        attemptId: 'c'.repeat(32),
+        orderDeliveryId,
+        status: MessageAttemptStatus.OUTBOX_READY,
+      }) as never;
+
+    it('delivered_flag=false 검증과 OUTBOX_READY→SUBMITTING 전이를 하나의 조건부 UPDATE 로 묶는다(PR#32 HIGH)', async () => {
+      const { service, qbUpdates, update } = createService();
+      const send = jest.fn().mockResolvedValue({ mseq: 55, recovered: false });
+
+      const outcome = await service.trackPreparedSend(prepared(), send);
+
+      expect(outcome).toBe('SENT');
+      const mark = qbUpdates[0];
+      expect(mark.set).toMatchObject({ status: MessageAttemptStatus.SUBMITTING });
+      const sqls = mark.conditions.map((c) => c.sql).join('\n');
+      expect(sqls).toContain('status = :outboxReady');
+      expect(sqls).toContain('NOT EXISTS');
+      expect(sqls).toContain('delivered_flag = 1');
+      // 외부 호출은 마크 커밋 뒤에만, 상관키를 넘겨서.
+      expect(send).toHaveBeenCalledWith('c'.repeat(32));
+      // MSEQ 확보 → 즉시 결과 조회 대상(TRACKING) 등록.
+      expect(update).toHaveBeenCalledWith(
+        { attemptId: 'c'.repeat(32), status: MessageAttemptStatus.SUBMITTING },
+        expect.objectContaining({ status: MessageAttemptStatus.TRACKING, mseq: '55' }),
+      );
+    });
+
+    it('delivered 로 전이가 막히면 발송 없이 CANCELLED_SUPERSEDED 로 종결하고 SUPERSEDED 를 돌려준다', async () => {
+      const { service, qbUpdates } = createService({ qbAffected: [0, 1] });
+      const send = jest.fn();
+
+      const outcome = await service.trackPreparedSend(prepared(), send);
+
+      expect(outcome).toBe('SUPERSEDED');
+      expect(send).not.toHaveBeenCalled();
+      // 취소 종결도 delivered EXISTS + OUTBOX_READY CAS 조건부다(재조회 후 판정하면 또 경쟁한다).
+      const cancel = qbUpdates[1];
+      expect(cancel.set).toMatchObject({ status: MessageAttemptStatus.CANCELLED_SUPERSEDED });
+      const sqls = cancel.conditions.map((c) => c.sql).join('\n');
+      expect(sqls).toContain('EXISTS');
+      expect(sqls).toContain('delivered_flag = 1');
+      expect(sqls).toContain('status = :outboxReady');
+    });
+
+    it('상태 경쟁(둘 다 affected=0)이면 NOT_READY — 아무것도 종결하지 않고 발송하지 않는다', async () => {
+      const { service, update } = createService({ qbAffected: [0, 0] });
+      const send = jest.fn();
+
+      const outcome = await service.trackPreparedSend(prepared(), send);
+
+      expect(outcome).toBe('NOT_READY');
+      expect(send).not.toHaveBeenCalled();
+      expect(update).not.toHaveBeenCalled();
+    });
+
+    it('외부 예외는 RECONCILING 전환 후 재던진다(blind 재삽입 금지)', async () => {
+      const { service, update } = createService();
+      const send = jest.fn().mockRejectedValue(new Error('gemtek down'));
+
+      await expect(service.trackPreparedSend(prepared(), send)).rejects.toThrow('gemtek down');
+      expect(update).toHaveBeenCalledWith(
+        { attemptId: 'c'.repeat(32), status: MessageAttemptStatus.SUBMITTING },
+        expect.objectContaining({ status: MessageAttemptStatus.RECONCILING }),
+      );
+    });
   });
 });

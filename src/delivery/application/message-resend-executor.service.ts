@@ -46,9 +46,11 @@ type ResendGate = { kind: 'slot'; slot: DeliverySlot } | { kind: 'legacy'; claim
  * - **원자성(§5.3):** 하나의 DB 트랜잭션에서 ① workflow 행 잠금 + `delivered_flag=false` 확인
  *   ② 원 시도 `RETRY_SCHEDULED → RETRIED` 조건부 갱신 ③ `retryOfAttemptId` 로 연결된
  *   신규 시도(`OUTBOX_READY`) 생성. **Gemtek 외부 호출은 commit 후에만.**
- * - **전달 완료 경쟁(§3 나):** delivered 판정은 트랜잭션 안(행 잠금)에서 하고, commit 후에도
- *   **제출 직전 재확인**한다. `OUTBOX_READY` 는 외부 호출 전임이 확정이라 이 시점 취소가 안전하다.
- *   제출 시작(`SUBMITTING` 커밋) 이후의 지연 전달 완료는 §3 나가 명시 수용하는 in-flight 중복이다.
+ * - **전달 완료 경쟁(§3 나):** delivered 판정은 두 곳에서 원자적으로 강제된다 — ⓐ 자식 생성
+ *   트랜잭션의 workflow 행 잠금(불필요한 자식 생성 차단), ⓑ `trackPreparedSend` 의
+ *   `delivered_flag=false ∧ OUTBOX_READY → SUBMITTING` **단일 조건부 UPDATE**(제출 게이트 —
+ *   read 후 별도 전이가 남기는 경쟁 창이 없다). 제출 시작(`SUBMITTING` 커밋) 이후의 지연
+ *   전달 완료만 §3 나가 명시 수용하는 in-flight 중복으로 남는다.
  * - **체인당 1회:** 최초 시도(`retryOfAttemptId IS NULL`)에서만 트리거하고, DB 의
  *   `(rootAttemptId, 'AUTO_504')` unique 가 최종 강제한다(무한 연쇄 차단, §4).
  * - **기한(§7.2):** 판정 시점은 실제 실행 시점이며 기준은 `retry_deadline_at`(504 확정 + 24h)이다.
@@ -212,18 +214,11 @@ export class MessageResendExecutorService {
         target = child;
       }
 
-      // ⑦ 제출 직전 delivered 재확인(§3 나 경쟁 창 봉합). OUTBOX_READY 는 외부 호출 전임이
-      //    확정이라 취소 종결이 안전하다. 이 재확인 이후의 지연 전달 완료는 in-flight 중복으로 수용된다.
-      const fresh = await this.slotService.ensureWorkflow(attempt.orderDeliveryId);
-      if (fresh.deliveredFlag) {
-        if (await this.supersede(target, now)) {
-          summary.superseded++;
-        }
-        return;
-      }
-
-      // ⑧ commit 후 외부 호출.
-      if (await this.messageAttemptService.trackPreparedSend(target, dispatch)) {
+      // ⑦ commit 후 외부 호출. delivered_flag=false 검증과 SUBMITTING 전이는
+      //    trackPreparedSend 의 **단일 조건부 UPDATE** 가 원자적으로 수행한다(§3 나, PR#32 HIGH).
+      //    delivered 로 막히면 attempt 는 그 안에서 CANCELLED_SUPERSEDED 로 종결된다.
+      const outcome = await this.messageAttemptService.trackPreparedSend(target, dispatch);
+      if (outcome === 'SENT') {
         if (resume) {
           summary.resumed++;
         } else {
@@ -233,6 +228,8 @@ export class MessageResendExecutorService {
               `root=${attempt.rootAttemptId} child=${target.attemptId}`,
           );
         }
+      } else if (outcome === 'SUPERSEDED') {
+        summary.superseded++;
       } else {
         summary.skipped++;
       }
