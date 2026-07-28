@@ -13,6 +13,7 @@ import { FileModule } from '../file/file.module';
 import { ForbiddenWordModule } from '../forbidden_word/forbidden.word.module';
 import { OrderModule } from '../order/order.module';
 import { SsgEventModule } from '../ssg_event/ssg.event.module';
+import { ProductModule } from '../product/product.module';
 import { AutoOrderService } from './application/auto_order/auto.order.service';
 import { AutoOrderExcelParser } from './application/auto_order/auto.order.excel.parser';
 import { AutoOrderStructureValidator } from './application/auto_order/auto.order.structure.validator';
@@ -35,6 +36,7 @@ import { AutoOrderPayloadBuilder } from './application/auto_order/auto.order.pay
     ForbiddenWordModule,
     OrderModule,
     SsgEventModule,
+    ProductModule, // SSG 상품 액면가 확보(findSsgProductByPriceOrNull / findOrCreateSsgProductByPrice)
   ],
   controllers: [OrderReceiptController],
   providers: [

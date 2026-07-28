@@ -36,6 +36,7 @@ import {
   MappedResult,
   ParsedHeader,
   PreValidateResult,
+  ReportPendingSsgProduct,
 } from './auto.order.types';
 
 /**
@@ -307,8 +308,8 @@ export class AutoOrderService {
     }
     const header = parsed.header as ParsedHeader;
 
-    // ── 3단계 상품매핑/분기
-    const mapped = await this.productMapper.map(parsed.rows);
+    // ── 3단계 상품매핑/분기 (mode 전달: DRY_RUN은 SSG 상품을 생성하지 않고 조회만 — 미리보기 DB 무변경 계약)
+    const mapped = await this.productMapper.map(parsed.rows, mode);
 
     // ── 4단계 사전검증
     const pre = this.preValidator.validate({
@@ -320,6 +321,11 @@ export class AutoOrderService {
       ssgReservationRange: ctx.range,
       resolvedFromEmail: ctx.resolvedFromEmail,
     });
+
+    // ── 3.5단계 보정: "승인 시 생성 예정" SSG 행을 ROW 차단으로 계상한다.
+    //   미리보기는 상품을 만들지 않으므로 이 행들은 주문에 못 실린다. 미매핑(=관리자 조치 필요)이 아니라
+    //   "승인하면 생성됨"이므로 사유 있는 차단으로 보고해야 회계(mapped = built + blocked)도 성립한다.
+    this.applyPendingSsgBlocks(mapped, pre);
 
     // ── 5~6단계 payload 조립 + (mode별) 실행
     let orders: AutoOrderReportOrder[];
@@ -343,7 +349,8 @@ export class AutoOrderService {
       inputRowCount: parsed.rows.length,
       unmappedCount: mapped.unmappedRows.length,
       excludedCount: mapped.excludedRows.length,
-      mappedCount: mapped.generalRows.length + mapped.ssgRows.length,
+      // pendingSsg는 "상품 확보는 되지만 미리보기라 미생성" → mapped 쪽에 계상하고 blocked로 빠진다
+      mappedCount: mapped.generalRows.length + mapped.ssgRows.length + mapped.pendingSsgRows.length,
       builtDeliveryCount,
       // 차단 이유로 "생성돼야 할" 건수를 독립 산출 → built와 대조(사유 없는 드롭/중복계상 실검출)
       expectedBuiltCount: this.computeExpectedBuilt(mapped, pre),
@@ -381,7 +388,9 @@ export class AutoOrderService {
       unmappedRows: mapped.unmappedRows.map((r) => ({
         rowNo: r.rowNo,
         code: r.productCode ?? '',
-        reason: '미등록 상품코드',
+        productName: r.productName ?? '', // 코드가 비어도 어떤 상품인지 식별 가능하게(진단 정보)
+        reason: r.reason,
+        reasonCode: r.reasonCode,
       })),
       // 백엔드 ROW 차단(금칙어/수신처없음)을 프론트 warningRows로 표시(행별 사유 노출)
       warningRows: rowBlocks.map((b) => ({ rowNo: b.rowNo ?? 0, code: b.code, reason: b.reason })),
@@ -389,6 +398,7 @@ export class AutoOrderService {
         rowNo: r.rowNo,
         reason: r.statusReason ?? '_유효=False',
       })),
+      pendingSsgProducts: this.summarizePendingSsg(mapped.pendingSsgRows),
     };
   }
 
@@ -469,6 +479,37 @@ export class AutoOrderService {
     const generalBuilt = mapped.generalRows.filter((r) => !pre.blockedRowNos.has(r.rowNo)).length;
     const ssgBuilt = pre.ssgOrderBlocked ? 0 : mapped.ssgRows.filter((r) => !pre.blockedRowNos.has(r.rowNo)).length;
     return generalBuilt + ssgBuilt;
+  }
+
+  /**
+   * DRY_RUN에서 "해당 액면가 SSG 상품이 아직 없는" 행을 ROW 차단으로 등록한다(사유 있는 미생성).
+   * 미리보기는 DB 무변경이 계약이라 상품을 만들지 않는다 → 그 행은 주문에 못 실린다.
+   * 승인(COMMIT)하면 상품이 생성되어 정상 주문이 되므로, 미매핑이 아니라 "승인 시 생성 예정"으로 보고한다.
+   * (COMMIT에서는 pendingSsgRows가 항상 비어 있어 이 함수는 no-op이다 → preview=commit 의미 유지)
+   */
+  private applyPendingSsgBlocks(mapped: MappedResult, pre: PreValidateResult): void {
+    for (const row of mapped.pendingSsgRows) {
+      pre.blockedRowNos.add(row.rowNo);
+      pre.blocked.push({
+        code: 'SSG_PRODUCT_PENDING_CREATE',
+        level: 'ROW',
+        rowNo: row.rowNo,
+        reason: `${row.rowNo}행: 신세계 상품(${row.listPrice.toLocaleString()}원)이 아직 없어 승인 시 자동 생성됩니다(미리보기에는 주문으로 잡히지 않음).`,
+      });
+    }
+  }
+
+  /** 미리보기의 "승인 시 생성 예정" SSG 상품을 액면가별로 집계(프론트 표시용). */
+  private summarizePendingSsg(rows: MappedResult['pendingSsgRows']): ReportPendingSsgProduct[] {
+    const byPrice = new Map<number, number[]>();
+    for (const row of rows) {
+      const rowNos = byPrice.get(row.listPrice) ?? [];
+      rowNos.push(row.rowNo);
+      byPrice.set(row.listPrice, rowNos);
+    }
+    return [...byPrice.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([price, rowNos]) => ({ price, rowCount: rowNos.length, rowNos }));
   }
 
   /**
@@ -617,6 +658,7 @@ export class AutoOrderService {
       unmappedRows: [],
       warningRows: [],
       excludedRows: [],
+      pendingSsgProducts: [],
     };
   }
 }

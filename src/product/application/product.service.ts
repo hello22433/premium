@@ -665,8 +665,9 @@ export class ProductService {
   /**
    * price 에 해당하는 활성 SSG 상품을 조회. 없으면 null.
    * findOrCreateSsgProductByPrice 의 fast-path 와 ER_DUP_ENTRY 멱등 재조회에서 공유한다.
+   * ★ public: 자동주문 미리보기(DRY_RUN)는 "DB 무변경"이 계약이라 생성 없는 조회 경로가 필요하다.
    */
-  private findSsgProductByPriceOrNull(price: number): Promise<ProductEntity | null> {
+  findSsgProductByPriceOrNull(price: number): Promise<ProductEntity | null> {
     return this.productRepository
       .createQueryBuilder('product')
       .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
