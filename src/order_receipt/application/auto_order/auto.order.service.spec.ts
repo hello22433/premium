@@ -17,6 +17,8 @@ import { ProductEntity } from '../../../entity/product.entity';
 import { UserEntity } from '../../../entity/user.entity';
 import { OrderReceiptEntity } from '../../../entity/order.receipt.entity';
 import { IProductType } from '../../../product/interface/product.type';
+import { IProductUseStatus } from '../../../product/interface/product.status';
+import { ProductService } from '../../../product/application/product.service';
 import { ILoginUserInfo } from '../../../auth/interface/login.user';
 import { AutoOrderRunMode } from './auto.order.types';
 
@@ -26,7 +28,16 @@ const MASTER: Record<string, IProductType> = {
   'SSG-1': IProductType.SSG,
 };
 
-type RowInput = { b?: string; d?: string; code?: string; valid?: boolean; rep1?: string };
+type RowInput = {
+  b?: string;
+  d?: string;
+  code?: string;
+  valid?: boolean;
+  rep1?: string;
+  brand?: string;
+  name?: string;
+  price?: number;
+};
 
 /** 채워진 v4.1 버퍼 생성 (수식 셀은 캐시결과 포함) */
 async function buildFilledBuffer(rows: RowInput[], formVersion = 'v4.1-immediate-send'): Promise<Buffer> {
@@ -48,6 +59,9 @@ async function buildFilledBuffer(rows: RowInput[], formVersion = 'v4.1-immediate
     if (r.b !== undefined) list.getCell(`B${rn}`).value = r.b;
     if (r.d !== undefined) list.getCell(`D${rn}`).value = r.d;
     list.getCell(`H${rn}`).value = f('INDEX(...)', r.code ?? '');
+    if (r.brand !== undefined) list.getCell(`F${rn}`).value = f('INDEX(...)', r.brand);
+    if (r.name !== undefined) list.getCell(`G${rn}`).value = r.name;
+    if (r.price !== undefined) list.getCell(`I${rn}`).value = f('INDEX(...)', r.price);
     list.getCell(`J${rn}`).value = f('IF(...)', 1);
     list.getCell(`M${rn}`).value = f('AND(...)', r.valid ?? true);
     list.getCell(`N${rn}`).value = f('IF(...)', (r.valid ?? true) ? 'ok' : 'duplicate');
@@ -90,8 +104,18 @@ function makeService(
 ): { svc: AutoOrderService; mocks: Mocks } {
   const productRepo = {
     find: async () =>
-      Object.entries(MASTER).map(([code, type], i) => ({ id: i + 1, code, type, price: 5000 }) as ProductEntity),
+      Object.entries(MASTER).map(([code, type], i) => ({ id: i + 1, code, type, price: 5000, useStatus: IProductUseStatus.USE }) as ProductEntity),
   } as unknown as Repository<ProductEntity>;
+
+  // SSG는 액면가로 확보한다(코드 매핑 아님) — 테스트 마스터엔 5000원 SSG 상품이 존재한다고 가정
+  const productService = {
+    findSsgProductByPriceOrNull: async (price: number) =>
+      price === 5000
+        ? (({ id: 99, code: 'EP-5000', type: IProductType.SSG, price, useStatus: IProductUseStatus.USE }) as ProductEntity)
+        : null,
+    findOrCreateSsgProductByPrice: async (price: number) =>
+      ({ id: 99, code: `EP-${price}`, type: IProductType.SSG, price, useStatus: IProductUseStatus.USE }) as ProductEntity,
+  } as unknown as ProductService;
 
   const userRepo = {
     findOne: async () =>
@@ -148,7 +172,7 @@ function makeService(
   const svc = new AutoOrderService(
     new AutoOrderExcelParser(),
     new AutoOrderStructureValidator(),
-    new AutoOrderProductMapper(productRepo),
+    new AutoOrderProductMapper(productRepo, productService),
     new AutoOrderPreValidator(matcher),
     new AutoOrderPayloadBuilder(),
     fileService,
@@ -171,7 +195,7 @@ describe('AutoOrderService (DRY_RUN 미리보기)', () => {
     const buf = await buildFilledBuffer([
       { b: '010-1111-1111', code: 'GEN-1' },
       { b: '010-2222-2222', code: 'GEN-1' },
-      { b: '010-3333-3333', code: 'SSG-1' },
+      { b: '010-3333-3333', code: 'SSG-1', price: 5000 },
     ]);
     const { svc } = makeService({ 'u://a.xlsx': buf });
 
@@ -241,7 +265,7 @@ describe('AutoOrderService (DRY_RUN 미리보기)', () => {
 
   it('첨부 여러 개 → files 배열로 각각 처리', async () => {
     const a = await buildFilledBuffer([{ b: '010-1111-1111', code: 'GEN-1' }]);
-    const b = await buildFilledBuffer([{ b: '010-2222-2222', code: 'SSG-1' }]);
+    const b = await buildFilledBuffer([{ b: '010-2222-2222', code: 'SSG-1', price: 5000 }]);
     const { svc } = makeService({ 'u://a.xlsx': a, 'u://b.xlsx': b });
 
     const result = await svc.run(receipt('u://a.xlsx,u://b.xlsx'), admin, AutoOrderRunMode.DRY_RUN);
@@ -252,7 +276,7 @@ describe('AutoOrderService (DRY_RUN 미리보기)', () => {
 
   it('fileIndexes=[1] → 선택 파일만 처리, fileIndex는 전체목록 기준 유지', async () => {
     const a = await buildFilledBuffer([{ b: '010-1111-1111', code: 'GEN-1' }]);
-    const b = await buildFilledBuffer([{ b: '010-2222-2222', code: 'SSG-1' }]);
+    const b = await buildFilledBuffer([{ b: '010-2222-2222', code: 'SSG-1', price: 5000 }]);
     const { svc } = makeService({ 'u://a.xlsx': a, 'u://b.xlsx': b });
 
     const result = await svc.run(receipt('u://a.xlsx,u://b.xlsx'), admin, AutoOrderRunMode.DRY_RUN, [1]);
@@ -379,7 +403,9 @@ describe('AutoOrderService (DRY_RUN 미리보기)', () => {
     expect(file.targetFilePath).toBe('u://a.xlsx');
     expect(file.formatErrorCode).toBeNull();
     expect(file.orders[0].products[0]).toMatchObject({ code: 'GEN-1', deliveryCount: 1 });
-    expect(file.unmappedRows).toEqual([{ rowNo: 6, code: '없음', reason: '미등록 상품코드' }]);
+    expect(file.unmappedRows).toEqual([
+      { rowNo: 6, code: '없음', productName: '', reason: '미등록 상품코드', reasonCode: 'PRODUCT_CODE_NOT_FOUND' },
+    ]);
     expect(file.excludedRows.map((r) => r.rowNo)).toEqual([7]);
   });
 
@@ -396,7 +422,7 @@ describe('AutoOrderService (COMMIT 승인)', () => {
   it('실제 생성: createTemp 호출 + orderId 세팅 + 멱등기록 + 스냅샷 저장', async () => {
     const buf = await buildFilledBuffer([
       { b: '010-1111-1111', code: 'GEN-1' },
-      { b: '010-2222-2222', code: 'SSG-1' },
+      { b: '010-2222-2222', code: 'SSG-1', price: 5000 },
     ]);
     const { svc, mocks } = makeService({ 'u://a.xlsx': buf });
 
@@ -527,7 +553,7 @@ describe('AutoOrderService (COMMIT 승인)', () => {
   it('createTemp가 루프 중 throw → run 전파 + 스냅샷 미저장(트랜잭션 롤백 위임)', async () => {
     const buf = await buildFilledBuffer([
       { b: '010-1111-1111', code: 'GEN-1' },
-      { b: '010-2222-2222', code: 'SSG-1' },
+      { b: '010-2222-2222', code: 'SSG-1', price: 5000 },
     ]);
     const { svc, mocks } = makeService(
       { 'u://a.xlsx': buf },
@@ -572,12 +598,98 @@ describe('AutoOrderService (COMMIT 승인)', () => {
   });
 });
 
+// ── SSG 가격 기반 매핑 (FE 요청서 2026-07-28 Part C)
+describe('AutoOrderService (SSG 가격 기반 매핑)', () => {
+  const ssgRow = (price: number, code = 'EP0000000502') => ({
+    b: '010-5176-3614',
+    brand: '신세계모바일상품권',
+    name: `신세계 모바일 교환권 ${price.toLocaleString()}원`,
+    code, // 이 서버에 없는 EP코드(양식은 다른 서버 스냅샷)
+    price,
+  });
+
+  it('이 서버에 없는 EP코드라도 정상가(I)로 SSG 주문이 만들어진다', async () => {
+    const buf = await buildFilledBuffer([ssgRow(5000)]); // 5000원 SSG 상품은 존재(fakeProductService)
+    const { svc } = makeService({ 'u://ssg.xlsx': buf });
+
+    const file = (await svc.run(receipt('u://ssg.xlsx'), admin, AutoOrderRunMode.DRY_RUN)).files[0];
+
+    expect(file.unmappedRows).toHaveLength(0);
+    expect(file.orders).toHaveLength(1);
+    expect(file.orders[0].type).toBe('SSG');
+    expect(file.reconciliation.builtDeliveryCount).toBe(1);
+    expect(file.reconciliation.matched).toBe(true);
+  });
+
+  it('미리보기: 미존재 액면가는 상품을 만들지 않고 "승인 시 생성 예정"으로 보고한다(DB 무변경)', async () => {
+    const buf = await buildFilledBuffer([ssgRow(30000)]); // 30000원 SSG 상품 없음
+    const { svc, mocks } = makeService({ 'u://ssg.xlsx': buf });
+
+    const file = (await svc.run(receipt('u://ssg.xlsx'), admin, AutoOrderRunMode.DRY_RUN)).files[0];
+
+    expect(file.pendingSsgProducts).toEqual([{ price: 30000, rowCount: 1, rowNos: [5] }]);
+    expect(file.unmappedRows).toHaveLength(0); // 미매핑으로 세지 않는다
+    expect(file.reconciliation.unmappedCount).toBe(0);
+    expect(file.reconciliation.blockedDeliveryCount).toBe(1); // 사유 있는 미생성
+    expect(file.reconciliation.matched).toBe(true);
+    expect(file.blockedRows.some((b) => b.code === 'SSG_PRODUCT_PENDING_CREATE')).toBe(true);
+    expect(mocks.createTemp).not.toHaveBeenCalled();
+  });
+
+  it('승인: 미존재 액면가는 상품을 생성해 주문에 포함한다', async () => {
+    const buf = await buildFilledBuffer([ssgRow(30000)]);
+    const { svc, mocks } = makeService({ 'u://ssg.xlsx': buf });
+
+    const file = (await svc.run(receipt('u://ssg.xlsx'), admin, AutoOrderRunMode.COMMIT)).files[0];
+
+    expect(file.pendingSsgProducts).toEqual([]);
+    expect(file.orders).toHaveLength(1);
+    expect(file.reconciliation.builtDeliveryCount).toBe(1);
+    expect(file.reconciliation.matched).toBe(true);
+    expect(mocks.createTemp).toHaveBeenCalledTimes(1);
+  });
+
+  it('SSG인데 정상가(I)가 비면 SSG_PRICE_MISSING 사유로 미매핑', async () => {
+    const buf = await buildFilledBuffer([{ ...ssgRow(0), price: undefined }]);
+    const { svc } = makeService({ 'u://ssg.xlsx': buf });
+
+    const file = (await svc.run(receipt('u://ssg.xlsx'), admin, AutoOrderRunMode.DRY_RUN)).files[0];
+
+    expect(file.unmappedRows[0].reasonCode).toBe('SSG_PRICE_MISSING');
+    expect(file.unmappedRows[0].productName).toContain('신세계'); // 진단 정보(G열)
+    expect(file.reconciliation.matched).toBe(true);
+  });
+
+  it('SSG 코드가 이 서버에 있어도 그 행의 I열이 비면 주문에 포함되지 않는다(액면가 오발송 방지)', async () => {
+    // MASTER의 'SSG-1'은 이 서버에 존재하는 SSG 코드 — 그럼에도 정상가를 모르면 차단해야 한다.
+    const buf = await buildFilledBuffer([{ b: '010-1111-1111', code: 'SSG-1', name: '신세계 모바일 교환권' }]);
+    const { svc, mocks } = makeService({ 'u://ssg.xlsx': buf });
+
+    const file = (await svc.run(receipt('u://ssg.xlsx'), admin, AutoOrderRunMode.COMMIT)).files[0];
+
+    expect(file.orders).toHaveLength(0);
+    expect(file.unmappedRows[0].reasonCode).toBe('SSG_PRICE_MISSING');
+    expect(file.reconciliation.matched).toBe(true);
+    expect(mocks.createTemp).not.toHaveBeenCalled();
+  });
+
+  it('비-SSG 미등록 코드는 기존대로 미매핑(회귀 없음)', async () => {
+    const buf = await buildFilledBuffer([{ b: '010-1111-1111', code: '없음', name: '일반 상품' }]);
+    const { svc } = makeService({ 'u://a.xlsx': buf });
+
+    const file = (await svc.run(receipt('u://a.xlsx'), admin, AutoOrderRunMode.DRY_RUN)).files[0];
+
+    expect(file.unmappedRows[0].reasonCode).toBe('PRODUCT_CODE_NOT_FOUND');
+    expect(file.pendingSsgProducts).toEqual([]);
+  });
+});
+
 describe('AutoOrderService (리뷰 추가 커버리지)', () => {
   // 리뷰 test-analyzer #1: DRY_RUN은 절대 쓰지 않는다(미리보기가 실제 주문을 만들면 안 됨)
   it('DRY_RUN: 어떤 쓰기도 하지 않는다(createTemp/멱등insert/스냅샷 모두 미호출)', async () => {
     const buf = await buildFilledBuffer([
       { b: '010-1111-1111', code: 'GEN-1' },
-      { b: '010-2222-2222', code: 'SSG-1' },
+      { b: '010-2222-2222', code: 'SSG-1', price: 5000 },
     ]);
     const { svc, mocks } = makeService({ 'u://a.xlsx': buf });
 
@@ -607,7 +719,7 @@ describe('AutoOrderService (리뷰 추가 커버리지)', () => {
     const buf = await buildReserveBuffer(
       [
         { b: '010-1111-1111', code: 'GEN-1' },
-        { b: '010-2222-2222', code: 'SSG-1' },
+        { b: '010-2222-2222', code: 'SSG-1', price: 5000 },
       ],
       '2026-08-10',
       '10:00',

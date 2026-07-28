@@ -7,6 +7,7 @@ import {
   BlockLevel,
   FormatErrorCode,
   ReportExcludedRow,
+  ReportPendingSsgProduct,
   ReportProduct,
   ReportUnmappedRow,
   ReportWarningRow,
@@ -90,6 +91,7 @@ export interface AutoOrderFileResultDto {
   unmappedRows: ReportUnmappedRow[];
   warningRows: ReportWarningRow[];
   excludedRows: ReportExcludedRow[];
+  pendingSsgProducts: ReportPendingSsgProduct[]; // 미리보기에서 "승인 시 생성 예정"인 SSG 상품(액면가별). 없으면 [].
   fileBlocked: boolean; // FILE 차단 존재(≠ built===0) — 프론트 파일차단 게이트 SoT
   blocked: AutoOrderBlockReasonDto[]; // FILE/ORDER 사유(level 포함). 없으면 [].
   blockedRows: AutoOrderBlockReasonDto[]; // ROW 사유(rowNo 포함). 없으면 [].
@@ -141,9 +143,18 @@ export function toAutoOrderResultDto(
       deliveryCount: o.deliveryCount,
       products: o.products,
     })),
-    unmappedRows: f.unmappedRows,
+    // 구 스냅샷(필드 추가 이전 COMMIT 결과)엔 productName/reasonCode가 없다 → 계약 형태를 보장하도록 보정.
+    unmappedRows: f.unmappedRows.map((r) => ({
+      rowNo: r.rowNo,
+      code: r.code ?? '',
+      productName: r.productName ?? '',
+      reason: r.reason,
+      reasonCode: r.reasonCode ?? 'PRODUCT_CODE_NOT_FOUND',
+    })),
     warningRows: f.warningRows,
     excludedRows: f.excludedRows,
+    // 구 스냅샷(필드 추가 이전 COMMIT 결과)엔 없는 필드 → ?? []로 방어.
+    pendingSsgProducts: f.pendingSsgProducts ?? [],
     fileBlocked: f.fileBlocked,
     // 저장 스냅샷(resultJson)은 내부 타입 그대로 직렬화된 과거 데이터일 수 있어 배열 부재를 방어(?? []).
     blocked: (f.blocked ?? []).map(toBlockReasonDto),

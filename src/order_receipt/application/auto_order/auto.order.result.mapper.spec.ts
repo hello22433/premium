@@ -43,6 +43,7 @@ function validFile(over: Partial<AutoOrderFileResult> = {}): AutoOrderFileResult
     blocked: [],
     blockedRows: [],
     unmappedRows: [],
+    pendingSsgProducts: [],
     warningRows: [],
     excludedRows: [],
     ...over,
