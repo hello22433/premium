@@ -1,11 +1,12 @@
 import { MessageResendExecutorService } from './message-resend-executor.service';
 import { MessageAttemptChannel, MessageAttemptStatus, MessageAttemptType } from '../interface/message.attempt.status';
 import { DeliveryExclusiveOp, LEGACY_SEND_OP } from '../interface/delivery.workflow.status';
+import { DeliveryWorkflowEntity } from '../../entity/delivery.workflow.entity';
 
 /**
  * 504 자동 재발송 실행기(§6.3 dueResend).
- * plans/프리미엄_발송실패_재발송_구상.md §4(체인당 1회) / §5.3(두 행 원자성) / §7.2(기한·시간대) /
- * §9(단일 동시성 모델) / §10 4단계(canary 플래그).
+ * plans/프리미엄_발송실패_재발송_구상.md §3 나(전달완료 경쟁) / §4(체인당 1회) / §5.3(두 행 원자성·재개) /
+ * §7.2(기한·시간대) / §9(단일 동시성 모델) / §10 4단계(canary 플래그).
  */
 describe('MessageResendExecutorService — 504 자동 재발송 실행(dueResend)', () => {
   // 허용 발송 시간대(08:00–20:00 KST) 안의 시각.
@@ -33,6 +34,10 @@ describe('MessageResendExecutorService — 504 자동 재발송 실행(dueResend
     due?: unknown[];
     stuck?: unknown[];
     workflow?: Partial<Record<string, unknown>>;
+    /** 제출 직전 재확인(두 번째 ensureWorkflow)이 돌려줄 workflow. 미지정 시 최초와 동일. */
+    freshWorkflow?: Partial<Record<string, unknown>>;
+    /** 트랜잭션 내 delivered 가드(잠금 read)가 볼 deliveredFlag. */
+    txDelivered?: boolean;
     orderDelivery?: Partial<Record<string, unknown>> | null;
     claimAffected?: number;
     retiredAffected?: number;
@@ -95,6 +100,7 @@ describe('MessageResendExecutorService — 504 자동 재발송 실행(dueResend
       deliveredFlag: false,
       ...(options.workflow ?? {}),
     };
+    const freshWorkflow = options.freshWorkflow ? { ...workflow, ...options.freshWorkflow } : workflow;
     const slot = {
       orderDeliveryId: 500,
       op: DeliveryExclusiveOp.RETRY,
@@ -102,13 +108,16 @@ describe('MessageResendExecutorService — 504 자동 재발송 실행(dueResend
       workflowVersion: '4',
       leaseExpiresAt: new Date(now.getTime() + 300000),
     };
+    const ensureWorkflow = jest.fn().mockResolvedValueOnce(workflow).mockResolvedValue(freshWorkflow);
     const slotService = {
-      ensureWorkflow: jest.fn().mockResolvedValue(workflow),
-      acquire: jest.fn().mockResolvedValue(
-        (options.slotAcquired ?? true)
-          ? { acquired: true, slot }
-          : { acquired: false, code: 'DELIVERY_OPERATION_LOCKED' },
-      ),
+      ensureWorkflow,
+      acquire: jest
+        .fn()
+        .mockResolvedValue(
+          (options.slotAcquired ?? true)
+            ? { acquired: true, slot }
+            : { acquired: false, code: 'DELIVERY_OPERATION_LOCKED' },
+        ),
       release: jest.fn().mockResolvedValue(true),
     };
 
@@ -132,7 +141,10 @@ describe('MessageResendExecutorService — 504 자동 재발송 실행(dueResend
 
     const txSaved: Record<string, unknown>[] = [];
     const txUpdate = jest.fn().mockResolvedValue({ affected: options.retiredAffected ?? 1 });
-    const txRepo = {
+    const txLockedRead = jest
+      .fn()
+      .mockResolvedValue({ orderDeliveryId: 500, deliveredFlag: options.txDelivered ?? false });
+    const txAttemptRepo = {
       update: txUpdate,
       create: jest.fn().mockImplementation((v: Record<string, unknown>) => v),
       save: jest.fn().mockImplementation(async (v: Record<string, unknown>) => {
@@ -140,9 +152,12 @@ describe('MessageResendExecutorService — 504 자동 재발송 실행(dueResend
         return v;
       }),
     };
+    const txWorkflowRepo = { findOne: txLockedRead };
     const dataSource = {
       transaction: jest.fn().mockImplementation(async (cb: (m: unknown) => Promise<unknown>) =>
-        cb({ getRepository: () => txRepo }),
+        cb({
+          getRepository: (entity: unknown) => (entity === DeliveryWorkflowEntity ? txWorkflowRepo : txAttemptRepo),
+        }),
       ),
     } as never;
 
@@ -163,11 +178,13 @@ describe('MessageResendExecutorService — 504 자동 재발송 실행(dueResend
       claimConditions,
       claimSet,
       slotService,
+      ensureWorkflow,
       trackPreparedSend,
       markWorkflowFailedIfSettled,
       prepareCouponResendDispatch,
       dispatch,
       txUpdate,
+      txLockedRead,
       txSaved,
       dataSource,
     };
@@ -207,20 +224,60 @@ describe('MessageResendExecutorService — 504 자동 재발송 실행(dueResend
     expect(trackPreparedSend).not.toHaveBeenCalled();
   });
 
-  it('타 채널 전달 완료(deliveredFlag) 건은 CANCELLED_SUPERSEDED 로 종결하고 재발송하지 않는다(§3 나)', async () => {
-    const { service, attemptUpdate, trackPreparedSend } = createService({
-      due: [scheduled()],
-      workflow: { deliveredFlag: true },
+  describe('타 채널 전달 완료 경쟁(§3 나) — 세 겹의 가드', () => {
+    it('빠른 경로: 시작 시점에 deliveredFlag 면 CANCELLED_SUPERSEDED 로 종결하고 재발송하지 않는다', async () => {
+      const { service, attemptUpdate, trackPreparedSend } = createService({
+        due: [scheduled()],
+        workflow: { deliveredFlag: true },
+      });
+
+      const summary = await service.runDueResendOnce(now);
+
+      expect(summary.superseded).toBe(1);
+      expect(attemptUpdate).toHaveBeenCalledWith(
+        { attemptId: 'a'.repeat(32), status: MessageAttemptStatus.RETRY_SCHEDULED },
+        expect.objectContaining({ status: MessageAttemptStatus.CANCELLED_SUPERSEDED }),
+      );
+      expect(trackPreparedSend).not.toHaveBeenCalled();
     });
 
-    const summary = await service.runDueResendOnce(now);
+    it('원자 가드: 트랜잭션 내 잠금 read 가 delivered 를 확인하면 자식 없이 원 예약을 취소 종결한다', async () => {
+      const { service, attemptUpdate, txSaved, txUpdate, trackPreparedSend, txLockedRead } = createService({
+        due: [scheduled()],
+        txDelivered: true,
+      });
 
-    expect(summary.superseded).toBe(1);
-    expect(attemptUpdate).toHaveBeenCalledWith(
-      { attemptId: 'a'.repeat(32), status: MessageAttemptStatus.RETRY_SCHEDULED },
-      expect.objectContaining({ status: MessageAttemptStatus.CANCELLED_SUPERSEDED }),
-    );
-    expect(trackPreparedSend).not.toHaveBeenCalled();
+      const summary = await service.runDueResendOnce(now);
+
+      expect(summary.superseded).toBe(1);
+      expect(txLockedRead).toHaveBeenCalledWith(expect.objectContaining({ lock: { mode: 'pessimistic_write' } }));
+      // 원 시도 RETRIED 전이도 자식 생성도 일어나지 않는다.
+      expect(txUpdate).not.toHaveBeenCalled();
+      expect(txSaved).toHaveLength(0);
+      expect(attemptUpdate).toHaveBeenCalledWith(
+        { attemptId: 'a'.repeat(32), status: MessageAttemptStatus.RETRY_SCHEDULED },
+        expect.objectContaining({ status: MessageAttemptStatus.CANCELLED_SUPERSEDED }),
+      );
+      expect(trackPreparedSend).not.toHaveBeenCalled();
+    });
+
+    it('제출 직전 재확인: commit 후 delivered 가 확인되면 자식을 발송 없이 CANCELLED_SUPERSEDED 로 종결한다', async () => {
+      const { service, attemptUpdate, txSaved, trackPreparedSend } = createService({
+        due: [scheduled()],
+        freshWorkflow: { deliveredFlag: true },
+      });
+
+      const summary = await service.runDueResendOnce(now);
+
+      expect(summary.superseded).toBe(1);
+      // 자식은 만들어졌지만(OUTBOX_READY = 외부 호출 전 확정) 발송 없이 취소 종결된다.
+      expect(txSaved).toHaveLength(1);
+      expect(trackPreparedSend).not.toHaveBeenCalled();
+      expect(attemptUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({ status: MessageAttemptStatus.OUTBOX_READY }),
+        expect.objectContaining({ status: MessageAttemptStatus.CANCELLED_SUPERSEDED }),
+      );
+    });
   });
 
   describe('미전환(legacy) 건 — 기존 claimedAt/mutationClaimedAt 모델로만 직렬화(§9)', () => {
@@ -327,7 +384,7 @@ describe('MessageResendExecutorService — 504 자동 재발송 실행(dueResend
 
       expect(summary.resent).toBe(1);
       expect(slotService.acquire).toHaveBeenCalledWith(
-        expect.objectContaining({ orderDeliveryId: 500, op: DeliveryExclusiveOp.RETRY }),
+        expect.objectContaining({ orderDeliveryId: 500, op: DeliveryExclusiveOp.RETRY, retryResume: false }),
       );
       expect(slotService.release).toHaveBeenCalledTimes(1);
       // legacy claim 은 잡지 않는다(두 동시성 모델을 겹치지 않는다, §9).
@@ -375,15 +432,38 @@ describe('MessageResendExecutorService — 504 자동 재발송 실행(dueResend
       expect(trackPreparedSend.mock.calls[0][0]).toMatchObject({ attemptId: 'b'.repeat(32) });
     });
 
-    it('전환 건의 재개는 컷오버 슬라이스 도입 전까지 수행하지 않는다', async () => {
-      const { service, trackPreparedSend } = createService({
+    it('전환 건도 정체를 영구 방치하지 않는다 — RETRY 재개 변형 가드(retryResume)로 슬롯을 점유해 재개한다', async () => {
+      const { service, slotService, txSaved, trackPreparedSend, claimSet } = createService({
         stuck: [stuckChild()],
         workflow: { cutoverMigratedAt: new Date('2026-07-01T00:00:00') },
       });
 
       const summary = await service.runDueResendOnce(now);
 
-      expect(summary.skipped).toBe(1);
+      expect(summary.resumed).toBe(1);
+      expect(slotService.acquire).toHaveBeenCalledWith(
+        expect.objectContaining({ orderDeliveryId: 500, op: DeliveryExclusiveOp.RETRY, retryResume: true }),
+      );
+      expect(slotService.release).toHaveBeenCalledTimes(1);
+      expect(claimSet).toHaveLength(0);
+      // 재개는 신규 행 생성 없이 정체 행 그대로.
+      expect(txSaved).toHaveLength(0);
+      expect(trackPreparedSend.mock.calls[0][0]).toMatchObject({ attemptId: 'b'.repeat(32) });
+    });
+
+    it('재개 직전 delivered 가 확인되면 발송 없이 CANCELLED_SUPERSEDED 로 종결한다(§3 나)', async () => {
+      const { service, attemptUpdate, trackPreparedSend } = createService({
+        stuck: [stuckChild()],
+        freshWorkflow: { deliveredFlag: true },
+      });
+
+      const summary = await service.runDueResendOnce(now);
+
+      expect(summary.superseded).toBe(1);
+      expect(attemptUpdate).toHaveBeenCalledWith(
+        { attemptId: 'b'.repeat(32), status: MessageAttemptStatus.OUTBOX_READY },
+        expect.objectContaining({ status: MessageAttemptStatus.CANCELLED_SUPERSEDED }),
+      );
       expect(trackPreparedSend).not.toHaveBeenCalled();
     });
 

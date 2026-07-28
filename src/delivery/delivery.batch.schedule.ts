@@ -208,9 +208,10 @@ export class DeliveryBatchSchedule {
   }
 
   // 504 자동 재발송 실행(§6.3 dueResend, §10 4단계 canary — DELIVERY_AUTO_RESEND_504_ENABLED).
-  // 발송 배치와 동일하게 **09:00~20:00 KST 에만** 5분 간격으로 실행한다(§7.2 자동 발송 허용 시간대).
-  // 다른 5분 cron(0/15/30/45초)과 동시 trigger 회피를 위해 25초 offset.
-  @Cron('25 */5 9-19 * * *', { timeZone: 'Asia/Seoul' })
+  // 자동 재발송 허용 창은 **08:00~20:00 KST**(§7.2) — 심야 확정분이 익일 08:00 으로 예약되므로
+  // cron 도 08시부터 돈다(09시 시작이면 08시 도래 예약이 최대 1시간 지연된다). 최초 발송 배치의
+  // 09~20시 제한과 다른 값인 것이 맞다. 다른 5분 cron(0/15/30/45초)과 동시 trigger 회피 25초 offset.
+  @Cron('25 */5 8-19 * * *', { timeZone: 'Asia/Seoul' })
   async handleDueResend() {
     if (this.isStillRunning(this.dueResendStartedAt, 'handleDueResend')) {
       this.logger.log('[BATCH] 이전 handleDueResend 진행 중 — skip');

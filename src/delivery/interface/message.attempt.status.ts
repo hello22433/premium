@@ -56,6 +56,21 @@ export const MESSAGE_RETRY_BLOCKING_STATUSES: MessageAttemptStatus[] = [
 ];
 
 /**
+ * `RETRY` **재개(resume) 변형**의 미확정 가드 집합 (§5.3 OUTBOX_READY 재개).
+ *
+ * 크래시로 `OUTBOX_READY` 에 정체된 `AUTO_504` 자식을 동일 attemptId 로 재개할 때 쓴다.
+ * 재개 대상 자체가 `OUTBOX_READY` 이므로 due 가드(`MESSAGE_RETRY_BLOCKING_STATUSES`)처럼
+ * `OUTBOX_READY` 를 제외 집합에 두면 재개가 항상 막힌다 — 그 외 미확정만 금지한다.
+ */
+export const MESSAGE_RETRY_RESUME_BLOCKING_STATUSES: MessageAttemptStatus[] = [
+  MessageAttemptStatus.SUBMITTING,
+  MessageAttemptStatus.SUBMITTED,
+  MessageAttemptStatus.TRACKING,
+  MessageAttemptStatus.RECONCILING,
+  MessageAttemptStatus.UNKNOWN,
+];
+
+/**
  * `CANCEL_INFLIGHT_SEND` 취소 대상 상태 집합 (§6.1 표 2-1).
  *
  * `OUTBOX_READY`/`SUBMITTING` 은 외부 취소 API 가 필요 없어 Gemtek 계약과 무관하게 항상 유효하고,

@@ -18,6 +18,9 @@ import { DeliveryBatchService } from './delivery.batch.service';
 /** 한 사이클에서 실행할 재발송 수 상한(504 는 3개월 88건 수준 — 낮은 상한으로 충분하다). */
 const DUE_RESEND_BATCH_SIZE = 50;
 
+/** 트랜잭션 내 delivered 가드가 "타 채널 전달 완료"를 확인한 경우의 반환값. */
+const DELIVERED = Symbol('DELIVERED');
+
 export interface DueResendSummary {
   scanned: number;
   /** 예약 도래 → 원 시도 RETRIED + 신규 AUTO_504 시도 발송 */
@@ -40,15 +43,20 @@ type ResendGate = { kind: 'slot'; slot: DeliverySlot } | { kind: 'legacy'; claim
  * `MessageResultReconcileService` 가 504 확정 건을 `RETRY_SCHEDULED` 로 예약하면(§4·§7.2),
  * 이 실행기가 `nextAttemptAt` 도래 시 다음을 수행한다.
  *
- * - **원자성(§5.3):** 하나의 DB 트랜잭션에서 ① 원 시도 `RETRY_SCHEDULED → RETRIED` 조건부 갱신
- *   ② `retryOfAttemptId` 로 연결된 신규 시도(`OUTBOX_READY`) 생성. **Gemtek 외부 호출은 commit 후에만.**
+ * - **원자성(§5.3):** 하나의 DB 트랜잭션에서 ① workflow 행 잠금 + `delivered_flag=false` 확인
+ *   ② 원 시도 `RETRY_SCHEDULED → RETRIED` 조건부 갱신 ③ `retryOfAttemptId` 로 연결된
+ *   신규 시도(`OUTBOX_READY`) 생성. **Gemtek 외부 호출은 commit 후에만.**
+ * - **전달 완료 경쟁(§3 나):** delivered 판정은 트랜잭션 안(행 잠금)에서 하고, commit 후에도
+ *   **제출 직전 재확인**한다. `OUTBOX_READY` 는 외부 호출 전임이 확정이라 이 시점 취소가 안전하다.
+ *   제출 시작(`SUBMITTING` 커밋) 이후의 지연 전달 완료는 §3 나가 명시 수용하는 in-flight 중복이다.
  * - **체인당 1회:** 최초 시도(`retryOfAttemptId IS NULL`)에서만 트리거하고, DB 의
  *   `(rootAttemptId, 'AUTO_504')` unique 가 최종 강제한다(무한 연쇄 차단, §4).
  * - **기한(§7.2):** 판정 시점은 실제 실행 시점이며 기준은 `retry_deadline_at`(504 확정 + 24h)이다.
  *   넘겼으면 재발송 없이 `FAILED_FINAL` 로 종결한다(기한 예외 승인 절차 없음).
- * - **시간대(§7.2):** 08:00–20:00 KST 밖에서는 실행하지 않는다(cron 자체도 09–19시로 제한).
+ * - **시간대(§7.2):** 08:00–20:00 KST 밖에서는 실행하지 않는다.
  * - **동시성(§9 단일 모델 원칙):** 전환 건은 `RETRY` 배타 슬롯(op 가드 포함)으로, 미전환 건은
  *   기존 `claimedAt`/`mutationClaimedAt` claim 으로만 직렬화한다. 두 모델을 겹쳐 쓰지 않는다.
+ *   전환 건의 `OUTBOX_READY` 정체 재개는 `RETRY` 재개 변형 가드(`retryResume`)로 점유한다.
  * - **§10 4단계 canary:** `DELIVERY_AUTO_RESEND_504_ENABLED=true` 일 때만 동작한다(예약 생성과 동일 플래그).
  */
 @Injectable()
@@ -134,12 +142,9 @@ export class MessageResendExecutorService {
     const workflow = await this.slotService.ensureWorkflow(attempt.orderDeliveryId);
 
     // ② 한 채널이라도 최종 성공했으면 남은 예약을 취소 종결한다 — 실패·환불 후보가 아니다(§3 나).
+    //    (빠른 경로 — 원자 판정은 트랜잭션 내 delivered 가드와 제출 직전 재확인이 담당한다.)
     if (workflow.deliveredFlag) {
-      const done = await this.attemptRepository.update(
-        { attemptId: attempt.attemptId, status: attempt.status },
-        { status: MessageAttemptStatus.CANCELLED_SUPERSEDED, resolvedAt: now, stateEnteredAt: now },
-      );
-      if (done.affected) {
+      if (await this.supersede(attempt, now)) {
         summary.superseded++;
       }
       return;
@@ -152,20 +157,15 @@ export class MessageResendExecutorService {
       return;
     }
 
-    // ④ OUTBOX_READY 재개는 legacy 건만 — 전환 건의 재개 op(슬롯 계약)는 컷오버 슬라이스에서 도입한다.
-    if (attempt.status === MessageAttemptStatus.OUTBOX_READY && workflow.cutoverMigratedAt) {
-      summary.skipped++;
-      return;
-    }
-
-    const gate = await this.acquireGate(workflow, attempt.orderDeliveryId, now);
+    const resume = attempt.status === MessageAttemptStatus.OUTBOX_READY;
+    const gate = await this.acquireGate(workflow, attempt.orderDeliveryId, now, resume);
     if (!gate) {
       summary.skipped++;
       return;
     }
 
     try {
-      // ⑤ 죽은 핀·환불 재확인 — legacy claim CAS 는 이미 걸렀지만 슬롯 경로(RETRY 가드에 환불 조건 없음)의
+      // ④ 죽은 핀·환불 재확인 — legacy claim CAS 는 이미 걸렀지만 슬롯 경로(RETRY 가드에 환불 조건 없음)의
       //    공통 안전망이다. 걸리면 발송하지 않고 예약은 sweep 의 기한 판정으로 종결되게 둔다.
       const od = await this.orderDeliveryRepository.findOne({
         where: { id: attempt.orderDeliveryId },
@@ -186,32 +186,55 @@ export class MessageResendExecutorService {
         return;
       }
 
-      // ⑥ 발송 payload 구성(외부 부작용 없음). 발급 전·삭제 건이면 여기서 throw → skip.
+      // ⑤ 발송 payload 구성(외부 부작용 없음). 발급 전·삭제 건이면 여기서 throw → skip.
       const dispatch = await this.deliveryBatchService.prepareCouponResendDispatch(
         attempt.orderDeliveryId,
         attempt.channel,
       );
 
-      if (attempt.status === MessageAttemptStatus.RETRY_SCHEDULED) {
-        // ⑦ 원자적 두 행 변경(§5.3) 후 ⑧ commit 후 외부 호출.
+      let target: MessageAttemptEntity;
+      if (resume) {
+        target = attempt;
+      } else {
+        // ⑥ 원자적 변경(§5.3): workflow 행 잠금 + delivered 확인 → 원 시도 RETRIED → 자식 생성.
         const child = await this.createRetriedChild(attempt, workflow, gate, now);
+        if (child === DELIVERED) {
+          // 잠금 하에 전달 완료가 확인됐다 — 자식 없이 원 예약을 취소 종결한다(§3 나).
+          if (await this.supersede(attempt, now)) {
+            summary.superseded++;
+          }
+          return;
+        }
         if (!child) {
           summary.skipped++;
           return;
         }
-        await this.messageAttemptService.trackPreparedSend(child, dispatch);
-        summary.resent++;
-        this.logger.log(
-          `[DUE_RESEND] 504 자동 재발송 실행. orderDeliveryId=${attempt.orderDeliveryId} ` +
-            `root=${attempt.rootAttemptId} child=${child.attemptId}`,
-        );
-      } else {
-        // OUTBOX_READY 재개 — 신규 행을 만들지 않고 그 행으로 최초 insert 를 수행한다.
-        if (await this.messageAttemptService.trackPreparedSend(attempt, dispatch)) {
+        target = child;
+      }
+
+      // ⑦ 제출 직전 delivered 재확인(§3 나 경쟁 창 봉합). OUTBOX_READY 는 외부 호출 전임이
+      //    확정이라 취소 종결이 안전하다. 이 재확인 이후의 지연 전달 완료는 in-flight 중복으로 수용된다.
+      const fresh = await this.slotService.ensureWorkflow(attempt.orderDeliveryId);
+      if (fresh.deliveredFlag) {
+        if (await this.supersede(target, now)) {
+          summary.superseded++;
+        }
+        return;
+      }
+
+      // ⑧ commit 후 외부 호출.
+      if (await this.messageAttemptService.trackPreparedSend(target, dispatch)) {
+        if (resume) {
           summary.resumed++;
         } else {
-          summary.skipped++;
+          summary.resent++;
+          this.logger.log(
+            `[DUE_RESEND] 504 자동 재발송 실행. orderDeliveryId=${attempt.orderDeliveryId} ` +
+              `root=${attempt.rootAttemptId} child=${target.attemptId}`,
+          );
         }
+      } else {
+        summary.skipped++;
       }
     } finally {
       await this.releaseGate(attempt.orderDeliveryId, gate);
@@ -219,8 +242,12 @@ export class MessageResendExecutorService {
   }
 
   /**
-   * §5.3 재발송 두 행 변경의 원자성 — 단일 트랜잭션에서 원 시도 `RETRIED` 종결 + 신규 시도 생성.
-   * 원 시도 CAS 가 실패하면(다른 worker 선점) 아무것도 만들지 않는다.
+   * §5.3 재발송 두 행 변경의 원자성 — 단일 트랜잭션에서 다음을 수행한다.
+   *   ① workflow 행을 잠그고(`pessimistic_write`) `delivered_flag=false` 를 확인한다.
+   *      전달 완료를 기록하는 쪽(결과 배치)이 같은 행을 UPDATE 하므로, 잠금 하의 판정은
+   *      "이 트랜잭션이 커밋되는 순간까지 미전달"을 보장한다(§3 나 경쟁 차단).
+   *   ② 원 시도를 `RETRY_SCHEDULED → RETRIED` 조건부 갱신한다(다른 worker 선점 시 중단).
+   *   ③ `retryOfAttemptId` 로 연결된 신규 시도(`OUTBOX_READY`)를 생성한다.
    * `(rootAttemptId, 'AUTO_504')` DB unique 위반 시 트랜잭션 전체가 롤백된다(체인당 1회 최종 강제).
    */
   private async createRetriedChild(
@@ -228,10 +255,17 @@ export class MessageResendExecutorService {
     workflow: DeliveryWorkflowEntity,
     gate: ResendGate,
     now: Date,
-  ): Promise<MessageAttemptEntity | null> {
+  ): Promise<MessageAttemptEntity | typeof DELIVERED | null> {
     return await this.dataSource.transaction(async (manager) => {
-      const repo = manager.getRepository(MessageAttemptEntity);
+      const locked = await manager.getRepository(DeliveryWorkflowEntity).findOne({
+        where: { orderDeliveryId: origin.orderDeliveryId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (locked?.deliveredFlag) {
+        return DELIVERED;
+      }
 
+      const repo = manager.getRepository(MessageAttemptEntity);
       const retired = await repo.update(
         { attemptId: origin.attemptId, status: MessageAttemptStatus.RETRY_SCHEDULED },
         { status: MessageAttemptStatus.RETRIED, resolvedAt: now, stateEnteredAt: now },
@@ -265,6 +299,15 @@ export class MessageResendExecutorService {
     });
   }
 
+  /** 타 채널 전달 완료 — 미확정 예약·정체 자식을 취소 종결한다(실패·환불 후보 아님, §3 나). */
+  private async supersede(attempt: MessageAttemptEntity, now: Date): Promise<boolean> {
+    const result = await this.attemptRepository.update(
+      { attemptId: attempt.attemptId, status: attempt.status },
+      { status: MessageAttemptStatus.CANCELLED_SUPERSEDED, resolvedAt: now, stateEnteredAt: now },
+    );
+    return !!result.affected;
+  }
+
   /** 실행 시점 기한 초과 — 재발송 없이 최종 실패로 종결한다(§7.2, 기한 예외 승인 절차 없음). */
   private async expire(attempt: MessageAttemptEntity, now: Date): Promise<void> {
     const result = await this.attemptRepository.update(
@@ -278,16 +321,23 @@ export class MessageResendExecutorService {
 
   /**
    * 동시성 게이트 획득(§9 단일 동시성 모델 원칙).
-   * - 전환 건: Level A `RETRY` 슬롯(§6.1 표 2-1 — 도래한 RETRY_SCHEDULED EXISTS + 미확정 부재 가드 포함).
+   * - 전환 건: Level A `RETRY` 슬롯. due 실행은 기본 가드(도래한 RETRY_SCHEDULED EXISTS + 미확정 부재),
+   *   `OUTBOX_READY` 재개는 **재개 변형 가드**(`retryResume` — 정체 AUTO_504 EXISTS + 그 외 미확정 부재)로 점유한다.
    * - 미전환 건: 기존 `claimedAt`/`mutationClaimedAt` 원자 CAS(발송배치·CS 재발송과 동일 모델).
    */
   private async acquireGate(
     workflow: DeliveryWorkflowEntity,
     orderDeliveryId: number,
     now: Date,
+    retryResume: boolean,
   ): Promise<ResendGate | null> {
     if (workflow.cutoverMigratedAt) {
-      const acquired = await this.slotService.acquire({ orderDeliveryId, op: DeliveryExclusiveOp.RETRY, now });
+      const acquired = await this.slotService.acquire({
+        orderDeliveryId,
+        op: DeliveryExclusiveOp.RETRY,
+        retryResume,
+        now,
+      });
       if (!acquired.acquired) {
         this.logger.warn(`[DUE_RESEND] RETRY 슬롯 점유 실패(${acquired.code}). orderDeliveryId=${orderDeliveryId}`);
         return null;
@@ -333,10 +383,7 @@ export class MessageResendExecutorService {
     // claimedAt 해제와 변형 lease 해제를 한 update 로 합치지 않는다 — 한쪽만 stale 로 빼앗긴 경우
     // 남의 활성 lease 를 지우게 된다(CS 재발송과 동일 원칙). 해제 실패는 5분 stale self-heal 에 맡긴다.
     try {
-      await this.orderDeliveryRepository.update(
-        { id: orderDeliveryId, claimedAt: gate.claimAt },
-        { claimedAt: null },
-      );
+      await this.orderDeliveryRepository.update({ id: orderDeliveryId, claimedAt: gate.claimAt }, { claimedAt: null });
     } catch (e) {
       this.logger.error(`[DUE_RESEND] claimedAt 해제 실패. orderDeliveryId=${orderDeliveryId}: ${e}`);
     }

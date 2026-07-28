@@ -121,6 +121,22 @@ describe('DeliveryWorkflowSlotService — Level A 배타 슬롯', () => {
       expect(guard!.sql).toContain('next_attempt_at <= :now');
     });
 
+    it('RETRY 재개 변형(retryResume)은 정체 AUTO_504 OUTBOX_READY 를 요구하고, 그 외 미확정만 금지한다(§5.3 재개)', async () => {
+      const { service, conditions } = createService();
+
+      await service.acquire({ orderDeliveryId, op: DeliveryExclusiveOp.RETRY, retryResume: true });
+
+      const guard = conditions.find((c) => c.params?.messageResumeBlocking);
+      expect(guard).toBeDefined();
+      // 재개 대상 자체가 OUTBOX_READY 라 제외 집합에 넣으면 재개가 항상 막힌다(PR#32 HIGH).
+      expect(guard!.params?.messageResumeBlocking).not.toContain(MessageAttemptStatus.OUTBOX_READY);
+      expect(guard!.params?.messageResumeBlocking).toContain(MessageAttemptStatus.SUBMITTING);
+      expect(guard!.params?.messageResumeBlocking).toContain(MessageAttemptStatus.UNKNOWN);
+      expect(guard!.sql).toContain('attempt_type = :auto504');
+      // due 가드(도래 예약 EXISTS)는 재개 변형에서 쓰지 않는다.
+      expect(guard!.sql).not.toContain('next_attempt_at');
+    });
+
     it('PIN_ISSUE 는 발급 명령이 하나라도 있으면 점유하지 못한다(재시도=RETRY, 재발급=PIN_REISSUE)', async () => {
       const { service, conditions } = createService();
 

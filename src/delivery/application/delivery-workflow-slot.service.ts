@@ -11,8 +11,10 @@ import {
 import {
   MESSAGE_INFLIGHT_STATUSES,
   MESSAGE_RETRY_BLOCKING_STATUSES,
+  MESSAGE_RETRY_RESUME_BLOCKING_STATUSES,
   MESSAGE_SEND_BLOCKING_STATUSES,
   MessageAttemptStatus,
+  MessageAttemptType,
 } from '../interface/message.attempt.status';
 import { PIN_RETRY_BLOCKING_STATUSES, PinIssueCommandStatus } from '../interface/pin.issue.command.status';
 
@@ -108,6 +110,12 @@ export interface AcquireSlotInput {
   op: DeliveryExclusiveOp;
   /** DUAL op 는 필수. 승인 검증과 슬롯 점유를 2단계로 나누지 않는다(§6.2 버전 경쟁 차단). */
   approval?: SlotApprovalBinding;
+  /**
+   * `RETRY` 전용 — 메시지 변형의 **재개(resume)** 가드를 쓴다(§5.3 OUTBOX_READY 재개).
+   * 크래시로 `OUTBOX_READY` 에 정체된 `AUTO_504` 자식을 동일 attemptId 로 재개할 때는
+   * 정체 행 자체가 `OUTBOX_READY` 라 due 가드의 제외 집합을 그대로 쓸 수 없다.
+   */
+  retryResume?: boolean;
   leaseMs?: number;
   now?: Date;
 }
@@ -215,7 +223,7 @@ export class DeliveryWorkflowSlotService {
       .andWhere('workflow_status IN (:...allowedStatuses)', { allowedStatuses })
       .andWhere('(active_exclusive_op IS NULL OR exclusive_lease_expires_at < :now)', { now });
 
-    this.applyOpGuards(qb, op);
+    this.applyOpGuards(qb, op, input);
 
     if (input.approval) {
       qb.andWhere(
@@ -311,7 +319,11 @@ export class DeliveryWorkflowSlotService {
    * op 별 가드를 WHERE 에 결합한다(§6.1 "재조정·중복 트리거 가드").
    * 하나의 공용 가드를 공유하지 않는다 — op 가 다르면 막아야 하는 것도 다르다.
    */
-  private applyOpGuards(qb: UpdateQueryBuilder<DeliveryWorkflowEntity>, op: DeliveryExclusiveOp): void {
+  private applyOpGuards(
+    qb: UpdateQueryBuilder<DeliveryWorkflowEntity>,
+    op: DeliveryExclusiveOp,
+    input?: Pick<AcquireSlotInput, 'retryResume'>,
+  ): void {
     switch (op) {
       case DeliveryExclusiveOp.MESSAGE_SEND:
         // 미확정 시도(UNKNOWN·RETRY_SCHEDULED 포함)가 하나라도 있으면 신규 발송을 만들지 않는다.
@@ -329,6 +341,25 @@ export class DeliveryWorkflowSlotService {
         break;
 
       case DeliveryExclusiveOp.RETRY:
+        if (input?.retryResume) {
+          // 재개 변형(§5.3): 크래시로 OUTBOX_READY 에 정체된 AUTO_504 자식이 있어야 하고,
+          // 그 외 미확정(SUBMITTING 이후·재조정·UNKNOWN)이 없어야 한다. 정체 행 자체가
+          // OUTBOX_READY 이므로 due 가드처럼 OUTBOX_READY 를 제외 집합에 두면 항상 실패한다.
+          qb.andWhere(
+            `EXISTS (SELECT 1 FROM message_attempt ma
+                      WHERE ma.order_delivery_id = :orderDeliveryId
+                        AND ma.status = :outboxReady AND ma.attempt_type = :auto504)
+             AND NOT EXISTS (SELECT 1 FROM message_attempt ma
+                      WHERE ma.order_delivery_id = :orderDeliveryId
+                        AND ma.status IN (:...messageResumeBlocking))`,
+            {
+              outboxReady: MessageAttemptStatus.OUTBOX_READY,
+              auto504: MessageAttemptType.AUTO_504,
+              messageResumeBlocking: MESSAGE_RETRY_RESUME_BLOCKING_STATUSES,
+            },
+          );
+          break;
+        }
         // PIN 변형 또는 메시지 변형 중 하나의 대상이 있어야 하고, 각 변형의 미확정 가드를 만족해야 한다.
         qb.andWhere(
           `(
