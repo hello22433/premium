@@ -205,6 +205,23 @@ describe('AutoOrderProductMapper', () => {
     expect(result.ssgRows[0].product.price).toBe(10000);
   });
 
+  it('SSG 코드가 이 서버에 있어도 정상가(I)가 비면 SSG_PRICE_MISSING(코드 매핑으로 새지 않는다)', async () => {
+    // I열 수식 결과가 '행 단위'로 미캐시되면 파일 게이트(FORMULA_NOT_CACHED)에 걸리지 않는다.
+    // 그때 코드 매핑으로 빠지면 액면가를 모른 채 그 코드의 상품권이 발송된다 → 반드시 차단.
+    const { service, find } = fakeProductService({ 5000: {} });
+    const m = makeMapper(fakeRepo(master), service);
+
+    const result = await m.map(
+      [row({ rowNo: 5, brand: '신세계모바일상품권', productCode: 'SSG-10000-60', listPrice: 0 })],
+      AutoOrderRunMode.COMMIT,
+    );
+
+    expect(result.ssgRows).toHaveLength(0);
+    expect(result.generalRows).toHaveLength(0);
+    expect(result.unmappedRows[0].reasonCode).toBe('SSG_PRICE_MISSING');
+    expect(find).not.toHaveBeenCalled(); // 가격을 모르면 조회조차 하지 않는다
+  });
+
   it('판매중지(useStatus !== USE) 상품은 PRODUCT_NOT_SELLABLE로 차단한다', async () => {
     const m = makeMapper(fakeRepo(master, { useStatus: IProductUseStatus.UNUSED }));
     const result = await m.map([row({ rowNo: 5, productCode: 'GEN-5000-90' })], AutoOrderRunMode.COMMIT);

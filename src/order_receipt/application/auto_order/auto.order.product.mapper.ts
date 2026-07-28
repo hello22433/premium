@@ -66,13 +66,13 @@ export class AutoOrderProductMapper {
     for (const row of aliveRows) {
       const byCode = row.productCode ? productByCode.get(row.productCode) : undefined;
 
-      // ── 2순위: SSG는 액면가(I)가 SoT.
-      //   코드로 찾힌 상품이 SSG인데 액면가가 다르면(서버별 채번 차이로 EP코드가 다른 상품을 가리킴)
-      //   코드를 버리고 가격으로 다시 확보한다 — 아니면 액면가가 틀린 상품권이 조용히 발송된다.
+      // ── 2순위: SSG는 액면가(I)가 SoT — 코드가 SSG를 가리키면 무조건 가격 경로다.
+      //   코드로 찾힌 SSG 상품을 그대로 쓰면, 서버별 EP 채번 차이로 그 코드가 다른 액면가의 상품일 때
+      //   금액이 틀린 상품권이 조용히 발송된다. 액면가 일치 여부를 여기서 판단하지 않고 전량 위임하는 이유는
+      //   I열이 '행 단위'로 비는 경우(수식 결과 일부 미캐시) 때문이다 — 그때 코드 매핑으로 빠지면
+      //   SSG_PRICE_MISSING 차단이 무력화된다. resolveSsgProduct가 listPrice<=0을 차단으로 처리한다.
       //   코드가 비-SSG 상품을 정확히 가리키면 그 코드가 권위다(브랜드 문자열보다 신뢰).
-      const needsSsgPricePath = byCode
-        ? byCode.type === IProductType.SSG && row.listPrice > 0 && byCode.price !== row.listPrice
-        : this.isSsgRow(row);
+      const needsSsgPricePath = byCode ? byCode.type === IProductType.SSG : this.isSsgRow(row);
 
       if (needsSsgPricePath) {
         const resolved = await this.resolveSsgProduct(row, mode, ssgByPrice);

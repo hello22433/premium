@@ -195,7 +195,7 @@ describe('AutoOrderService (DRY_RUN 미리보기)', () => {
     const buf = await buildFilledBuffer([
       { b: '010-1111-1111', code: 'GEN-1' },
       { b: '010-2222-2222', code: 'GEN-1' },
-      { b: '010-3333-3333', code: 'SSG-1' },
+      { b: '010-3333-3333', code: 'SSG-1', price: 5000 },
     ]);
     const { svc } = makeService({ 'u://a.xlsx': buf });
 
@@ -265,7 +265,7 @@ describe('AutoOrderService (DRY_RUN 미리보기)', () => {
 
   it('첨부 여러 개 → files 배열로 각각 처리', async () => {
     const a = await buildFilledBuffer([{ b: '010-1111-1111', code: 'GEN-1' }]);
-    const b = await buildFilledBuffer([{ b: '010-2222-2222', code: 'SSG-1' }]);
+    const b = await buildFilledBuffer([{ b: '010-2222-2222', code: 'SSG-1', price: 5000 }]);
     const { svc } = makeService({ 'u://a.xlsx': a, 'u://b.xlsx': b });
 
     const result = await svc.run(receipt('u://a.xlsx,u://b.xlsx'), admin, AutoOrderRunMode.DRY_RUN);
@@ -276,7 +276,7 @@ describe('AutoOrderService (DRY_RUN 미리보기)', () => {
 
   it('fileIndexes=[1] → 선택 파일만 처리, fileIndex는 전체목록 기준 유지', async () => {
     const a = await buildFilledBuffer([{ b: '010-1111-1111', code: 'GEN-1' }]);
-    const b = await buildFilledBuffer([{ b: '010-2222-2222', code: 'SSG-1' }]);
+    const b = await buildFilledBuffer([{ b: '010-2222-2222', code: 'SSG-1', price: 5000 }]);
     const { svc } = makeService({ 'u://a.xlsx': a, 'u://b.xlsx': b });
 
     const result = await svc.run(receipt('u://a.xlsx,u://b.xlsx'), admin, AutoOrderRunMode.DRY_RUN, [1]);
@@ -422,7 +422,7 @@ describe('AutoOrderService (COMMIT 승인)', () => {
   it('실제 생성: createTemp 호출 + orderId 세팅 + 멱등기록 + 스냅샷 저장', async () => {
     const buf = await buildFilledBuffer([
       { b: '010-1111-1111', code: 'GEN-1' },
-      { b: '010-2222-2222', code: 'SSG-1' },
+      { b: '010-2222-2222', code: 'SSG-1', price: 5000 },
     ]);
     const { svc, mocks } = makeService({ 'u://a.xlsx': buf });
 
@@ -553,7 +553,7 @@ describe('AutoOrderService (COMMIT 승인)', () => {
   it('createTemp가 루프 중 throw → run 전파 + 스냅샷 미저장(트랜잭션 롤백 위임)', async () => {
     const buf = await buildFilledBuffer([
       { b: '010-1111-1111', code: 'GEN-1' },
-      { b: '010-2222-2222', code: 'SSG-1' },
+      { b: '010-2222-2222', code: 'SSG-1', price: 5000 },
     ]);
     const { svc, mocks } = makeService(
       { 'u://a.xlsx': buf },
@@ -660,6 +660,19 @@ describe('AutoOrderService (SSG 가격 기반 매핑)', () => {
     expect(file.reconciliation.matched).toBe(true);
   });
 
+  it('SSG 코드가 이 서버에 있어도 그 행의 I열이 비면 주문에 포함되지 않는다(액면가 오발송 방지)', async () => {
+    // MASTER의 'SSG-1'은 이 서버에 존재하는 SSG 코드 — 그럼에도 정상가를 모르면 차단해야 한다.
+    const buf = await buildFilledBuffer([{ b: '010-1111-1111', code: 'SSG-1', name: '신세계 모바일 교환권' }]);
+    const { svc, mocks } = makeService({ 'u://ssg.xlsx': buf });
+
+    const file = (await svc.run(receipt('u://ssg.xlsx'), admin, AutoOrderRunMode.COMMIT)).files[0];
+
+    expect(file.orders).toHaveLength(0);
+    expect(file.unmappedRows[0].reasonCode).toBe('SSG_PRICE_MISSING');
+    expect(file.reconciliation.matched).toBe(true);
+    expect(mocks.createTemp).not.toHaveBeenCalled();
+  });
+
   it('비-SSG 미등록 코드는 기존대로 미매핑(회귀 없음)', async () => {
     const buf = await buildFilledBuffer([{ b: '010-1111-1111', code: '없음', name: '일반 상품' }]);
     const { svc } = makeService({ 'u://a.xlsx': buf });
@@ -676,7 +689,7 @@ describe('AutoOrderService (리뷰 추가 커버리지)', () => {
   it('DRY_RUN: 어떤 쓰기도 하지 않는다(createTemp/멱등insert/스냅샷 모두 미호출)', async () => {
     const buf = await buildFilledBuffer([
       { b: '010-1111-1111', code: 'GEN-1' },
-      { b: '010-2222-2222', code: 'SSG-1' },
+      { b: '010-2222-2222', code: 'SSG-1', price: 5000 },
     ]);
     const { svc, mocks } = makeService({ 'u://a.xlsx': buf });
 
@@ -706,7 +719,7 @@ describe('AutoOrderService (리뷰 추가 커버리지)', () => {
     const buf = await buildReserveBuffer(
       [
         { b: '010-1111-1111', code: 'GEN-1' },
-        { b: '010-2222-2222', code: 'SSG-1' },
+        { b: '010-2222-2222', code: 'SSG-1', price: 5000 },
       ],
       '2026-08-10',
       '10:00',
