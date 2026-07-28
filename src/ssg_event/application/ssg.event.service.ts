@@ -788,29 +788,40 @@ export class SsgEventService {
 
   @Transactional()
   async restoreEventBalance(orderId: number): Promise<void> {
-    // ssgEventId 오름차순으로 락 획득 순서를 결정화하여 데드락 방지
-    // (동일 주문이 다중 행사를 갖고 동시에 cancel/refund되는 경우 대비)
-    const histories = await this.amountHistoryRepository.find({
+    // 주문 취소 복원은 같은 주문의 사후 보정 이력(실패환불/재발송 재차감/역복원)을 다시 뒤집지 않고,
+    // 행사별 NET 이 아직 음수인 경우에만 남은 점유액을 복원한다.
+    const initialHistories = await this.amountHistoryRepository.find({
       where: { orderId },
       order: { ssgEventId: 'ASC' },
     });
 
-    for (const history of histories) {
-      if (!history.ssgEventId || !history.amount) {
-        continue;
-      }
-
-      const ssgEvent = await this.findSsgEventForUpdate(history.ssgEventId);
+    // ssgEventId 오름차순으로 락 획득 순서를 결정화하여 데드락 방지
+    // (동일 주문이 다중 행사를 갖고 동시에 cancel/refund되는 경우 대비)
+    const eventIds = [
+      ...new Set(initialHistories.map((history) => history.ssgEventId).filter((id): id is number => !!id)),
+    ].sort((a, b) => a - b);
+    for (const ssgEventId of eventIds) {
+      const ssgEvent = await this.findSsgEventForUpdate(ssgEventId);
 
       if (!ssgEvent) {
         continue;
       }
 
-      const restoredBalance = ssgEvent.eventBalance - history.amount;
+      // 동시 취소/복원 대기 후에는 앞선 트랜잭션의 복원 이력이 생겼을 수 있으므로 lock 이후 최신 NET을 다시 계산한다.
+      const latestHistories = await this.amountHistoryRepository.find({
+        where: { orderId, ssgEventId },
+      });
+      const netAmount = latestHistories.reduce((sum, history) => sum + (history.amount ?? 0), 0);
+      if (netAmount >= 0) {
+        continue;
+      }
+
+      const restoreAmount = -netAmount;
+      const restoredBalance = ssgEvent.eventBalance + restoreAmount;
 
       const restorationHistory = this.amountHistoryRepository.create({
         ssgEventId: ssgEvent.id,
-        amount: -history.amount,
+        amount: restoreAmount,
         balance: restoredBalance,
         orderId,
         isTemporary: false,
