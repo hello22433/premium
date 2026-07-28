@@ -71,8 +71,10 @@ async function buildReserveBuffer(rows: RowInput[], sendDate: string, sendTime: 
 interface Mocks {
   createTemp: jest.Mock;
   generatedInsert: jest.Mock;
+  generatedCount: jest.Mock;
   autoResultFindOne: jest.Mock;
   autoResultInsert: jest.Mock;
+  autoResultDelete: jest.Mock;
 }
 
 function makeService(
@@ -119,15 +121,23 @@ function makeService(
   const m: Mocks = {
     createTemp: mocks?.createTemp ?? jest.fn(async () => ({ id: ++seq })),
     generatedInsert: mocks?.generatedInsert ?? jest.fn(async () => undefined),
+    // 기본값 1 = "생성 주문 존재": 스냅샷이 있는 기존 게이트 테스트가 종전(스냅샷 반환) 동작을 유지하도록.
+    // 0건 재계산 경로는 테스트에서 명시적으로 0을 주입한다.
+    generatedCount: mocks?.generatedCount ?? jest.fn(async () => 1),
     autoResultFindOne: mocks?.autoResultFindOne ?? jest.fn(async () => null),
     autoResultInsert: mocks?.autoResultInsert ?? jest.fn(async () => undefined),
+    autoResultDelete: mocks?.autoResultDelete ?? jest.fn(async () => undefined),
   };
 
   const orderService = { createTemp: m.createTemp } as unknown as OrderService;
-  const generatedRepo = { insert: m.generatedInsert } as unknown as Repository<OrderReceiptGeneratedOrderEntity>;
+  const generatedRepo = {
+    insert: m.generatedInsert,
+    count: m.generatedCount,
+  } as unknown as Repository<OrderReceiptGeneratedOrderEntity>;
   const autoResultRepo = {
     findOne: m.autoResultFindOne,
     insert: m.autoResultInsert,
+    delete: m.autoResultDelete,
   } as unknown as Repository<OrderReceiptAutoResultEntity>;
 
   const orderFromRepo = {
@@ -419,7 +429,7 @@ describe('AutoOrderService (COMMIT 승인)', () => {
     expect(result.files[0].orders[0].orderId).toBe(999); // 저장본 그대로
   });
 
-  it('재승인 시 첨부가 바뀌면(해시 불일치) 스냅샷 반환 대신 400', async () => {
+  it('재승인 시 첨부가 바뀌면(해시 불일치, 생성 주문 존재) 스냅샷 반환 대신 400', async () => {
     const saved = { files: [], alreadyCommitted: false };
     const { svc, mocks } = makeService(
       {},
@@ -439,6 +449,65 @@ describe('AutoOrderService (COMMIT 승인)', () => {
     );
     const result = await svc.run(receipt('u://a.xlsx'), admin, AutoOrderRunMode.COMMIT);
     expect(result.alreadyCommitted).toBe(true);
+  });
+
+  // ── 0건 스냅샷 복구(FE 요청서 2026-07-28 R4-a) ──────────────────────────
+
+  it('0건 스냅샷(생성 주문 0건): 게이트 통과 → 기존 스냅샷 삭제 + 재계산·재생성 + 새 스냅샷 저장', async () => {
+    const buf = await buildFilledBuffer([{ b: '010-1111-1111', code: 'GEN-1' }]);
+    const saved = { files: [{ fileIndex: 0, orders: [] }], alreadyCommitted: false };
+    const { svc, mocks } = makeService(
+      { 'u://a.xlsx': buf },
+      {
+        autoResultFindOne: jest.fn(async () => ({ resultJson: JSON.stringify(saved) })),
+        generatedCount: jest.fn(async () => 0), // 멱등 기록 테이블(SoT)에 생성 주문 없음
+      },
+    );
+
+    const result = await svc.run(receipt('u://a.xlsx'), admin, AutoOrderRunMode.COMMIT);
+
+    expect(mocks.autoResultDelete).toHaveBeenCalledWith({ orderReceiptId: 100 }); // 구 0건 스냅샷 정리
+    expect(mocks.createTemp).toHaveBeenCalledTimes(1); // 실제 재생성
+    expect(mocks.autoResultInsert).toHaveBeenCalledTimes(1); // 새 스냅샷 저장
+    expect(result.alreadyCommitted).toBe(false);
+    expect(result.files[0].orders).toHaveLength(1);
+  });
+
+  it('0건 스냅샷 + 첨부 교체(해시 불일치): 400 대신 재계산 허용(상품코드 고친 새 첨부로 복구)', async () => {
+    const buf = await buildFilledBuffer([{ b: '010-1111-1111', code: 'GEN-1' }]);
+    const saved = { files: [{ fileIndex: 0, orders: [] }], alreadyCommitted: false };
+    const { svc, mocks } = makeService(
+      { 'u://changed.xlsx': buf },
+      {
+        autoResultFindOne: jest.fn(async () => ({
+          resultJson: JSON.stringify(saved),
+          filePathHash: 'OLD_HASH_NOT_MATCHING',
+        })),
+        generatedCount: jest.fn(async () => 0),
+      },
+    );
+
+    const result = await svc.run(receipt('u://changed.xlsx'), admin, AutoOrderRunMode.COMMIT);
+
+    expect(mocks.createTemp).toHaveBeenCalledTimes(1);
+    expect(result.files[0].orders[0].orderId).toBe(1001); // 새로 생성된 주문
+  });
+
+  it('스냅샷 존재 + 생성 주문 존재(count>0): 0건 게이트 미적용 — 스냅샷 반환 유지', async () => {
+    const saved = { files: [{ fileIndex: 0, orders: [{ orderId: 999 }] }], alreadyCommitted: false };
+    const { svc, mocks } = makeService(
+      {},
+      {
+        autoResultFindOne: jest.fn(async () => ({ resultJson: JSON.stringify(saved) })),
+        generatedCount: jest.fn(async () => 2),
+      },
+    );
+
+    const result = await svc.run(receipt('u://a.xlsx'), admin, AutoOrderRunMode.COMMIT);
+
+    expect(result.alreadyCommitted).toBe(true);
+    expect(mocks.autoResultDelete).not.toHaveBeenCalled();
+    expect(mocks.createTemp).not.toHaveBeenCalled();
   });
 
   it('FILE 차단 파일은 createTemp 호출 없음(주문 0건)', async () => {

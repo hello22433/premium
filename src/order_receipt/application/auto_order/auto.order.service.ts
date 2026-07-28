@@ -77,30 +77,47 @@ export class AutoOrderService {
     mode: AutoOrderRunMode,
     fileIndexes?: number[],
   ): Promise<AutoOrderResult> {
-    // ── COMMIT 멱등 게이트: 이미 처리했으면 저장 스냅샷 그대로 반환(재계산 안 함)
+    // ── COMMIT 멱등 게이트: 이미 처리했으면 저장 스냅샷 그대로 반환(재계산 안 함). 예외: 생성 주문 0건이면 재계산 허용.
     if (mode === AutoOrderRunMode.COMMIT) {
       const saved = await this.autoResultRepository.findOne({ where: { orderReceiptId: receipt.id } });
       if (saved) {
-        // 승인 후 첨부가 바뀐 채 재승인되면(APPROVED→RECEIVED→filePath 교체→재승인) 구 스냅샷을 조용히
-        // 돌려주면 "미리보기는 신규 N건, 실제는 0건/구 파일"이 된다. 첨부 해시 불일치면 명시적 400으로 막는다.
-        const currentHash = this.computeFilePathHash(receipt.filePath);
-        if (saved.filePathHash && saved.filePathHash !== currentHash) {
-          throw new BadRequestException(
-            '승인 후 첨부파일이 변경되어 기존 자동주문 결과와 일치하지 않습니다. 재승인을 진행할 수 없습니다(기존 자동주문 결과 정리 후 다시 시도).',
+        // ── 0건 스냅샷 복구(FE 요청서 2026-07-28 R4-a): 실제 생성 주문이 0건이면 게이트를 열어 재계산한다.
+        //    전량 미매핑/차단으로 0건 커밋된 접수는 원인(상품코드 등)을 고쳐도 스냅샷이 영구 반환돼 복구 경로가
+        //    없었다(첨부 교체는 아래 해시검사 400). 생성 주문이 0건이면 중복 주문 위험이 원천적으로 없으므로
+        //    첨부 교체 여부와 무관하게 재계산을 허용한다. 판정은 스냅샷 JSON이 아니라 멱등 기록 테이블
+        //    (order_receipt_generated_order, 생성의 SoT)로 한다 — 스냅샷 파손/드리프트에도 안전.
+        //    동시 재승인 경합은 최초 커밋과 동일하게 UNIQUE(orderReceiptId, fileIndex, type)와
+        //    orderReceiptId UNIQUE(스냅샷 insert)가 DB에서 차단한다.
+        const generatedCount = await this.generatedOrderRepository.count({
+          where: { orderReceiptId: receipt.id },
+        });
+        if (generatedCount === 0) {
+          this.logger.warn(
+            `자동주문 0건 스냅샷 재계산 허용 receipt=${receipt.id} (생성 주문 0건 → 기존 스냅샷 삭제 후 재실행)`,
           );
+          await this.autoResultRepository.delete({ orderReceiptId: receipt.id });
+        } else {
+          // 승인 후 첨부가 바뀐 채 재승인되면(APPROVED→RECEIVED→filePath 교체→재승인) 구 스냅샷을 조용히
+          // 돌려주면 "미리보기는 신규 N건, 실제는 0건/구 파일"이 된다. 첨부 해시 불일치면 명시적 400으로 막는다.
+          const currentHash = this.computeFilePathHash(receipt.filePath);
+          if (saved.filePathHash && saved.filePathHash !== currentHash) {
+            throw new BadRequestException(
+              '승인 후 첨부파일이 변경되어 기존 자동주문 결과와 일치하지 않습니다. 재승인을 진행할 수 없습니다(기존 자동주문 결과 정리 후 다시 시도).',
+            );
+          }
+          let prev: AutoOrderResult;
+          try {
+            prev = JSON.parse(saved.resultJson) as AutoOrderResult;
+          } catch (e) {
+            // 저장 스냅샷이 손상/스키마드리프트로 파싱 불가 → raw SyntaxError 500 대신 맥락 있는 오류로.
+            // 원 주문은 최초 커밋에서 이미 생성됐으므로 이 경로는 복구 불가, 명확히 실패시킨다.
+            this.logger.error(
+              `자동주문 저장 스냅샷 파싱 실패 receipt=${receipt.id}: ${(e as Error).message}`,
+            );
+            throw new Error(`이미 처리된 자동주문 결과를 읽을 수 없습니다(receipt=${receipt.id}).`);
+          }
+          return { ...prev, alreadyCommitted: true };
         }
-        let prev: AutoOrderResult;
-        try {
-          prev = JSON.parse(saved.resultJson) as AutoOrderResult;
-        } catch (e) {
-          // 저장 스냅샷이 손상/스키마드리프트로 파싱 불가 → raw SyntaxError 500 대신 맥락 있는 오류로.
-          // 원 주문은 최초 커밋에서 이미 생성됐으므로 이 경로는 복구 불가, 명확히 실패시킨다.
-          this.logger.error(
-            `자동주문 저장 스냅샷 파싱 실패 receipt=${receipt.id}: ${(e as Error).message}`,
-          );
-          throw new Error(`이미 처리된 자동주문 결과를 읽을 수 없습니다(receipt=${receipt.id}).`);
-        }
-        return { ...prev, alreadyCommitted: true };
       }
     }
 
