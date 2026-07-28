@@ -42,6 +42,7 @@ import { OrderDeliveryAttemptEntity } from '../../entity/order.delivery.attempt.
 import { OrderPaymentRefundEventEntity } from '../../entity/order.payment.refund.event.entity';
 import { OrderPaymentAllocationEntity } from '../../entity/order.payment.allocation.entity';
 import { MessageAttemptService } from './message-attempt.service';
+import { MessageResultReconcileService } from './message-result-reconcile.service';
 import { OrderHistoryEntity } from '../../entity/order.history.entity';
 import { DeliveryCutoverGuardService } from './delivery-cutover-guard.service';
 
@@ -211,6 +212,11 @@ describe('DeliveryBatchService.reissuePinAndCreateImageIfNeeded - refund ledger 
             trackSend: (_ctx: unknown, send: (attemptId?: string) => Promise<unknown>) => send(undefined),
             trackAlimTalk: (_ctx: unknown, send: () => Promise<unknown>) => send(),
           },
+        },
+        // 알림톡 확정 반영은 reportSweep 경로에서만 쓰인다(§3 나).
+        {
+          provide: MessageResultReconcileService,
+          useValue: { settleAlimTalkReport: jest.fn().mockResolvedValue(true) },
         },
         { provide: DeliveryTrackHttp, useValue: {} },
         { provide: CryptoCipher, useValue: {} },

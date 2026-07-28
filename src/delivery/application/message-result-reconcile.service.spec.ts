@@ -36,6 +36,7 @@ describe('MessageResultReconcileService — 결과 조회·재조정', () => {
     queueMseq?: jest.Mock;
     auto504?: boolean;
     pendingCount?: number;
+    alimTalkAttempt?: unknown;
   }) => {
     const update = jest.fn().mockResolvedValue({ affected: 1 });
     const attemptQueries: { sql: string; params: Record<string, unknown> }[] = [];
@@ -49,6 +50,7 @@ describe('MessageResultReconcileService — 결과 조회·재조정', () => {
         .mockImplementationOnce(async () => options.unknown ?? [])
         .mockImplementation(async () => []),
       update,
+      findOne: jest.fn().mockImplementation(async () => options.alimTalkAttempt ?? null),
       count: jest.fn().mockResolvedValue(options.pendingCount ?? 0),
       createQueryBuilder: jest.fn().mockImplementation(() => {
         const qb: Record<string, unknown> = {
@@ -108,6 +110,10 @@ describe('MessageResultReconcileService — 결과 조회·재조정', () => {
         ),
     } as never;
 
+    // 전달완료 표식은 슬롯 서비스가 단일 소유한다(알림톡 확정 경로와 같은 전이를 쓰기 위함).
+    const markDelivered = jest.fn().mockResolvedValue(true);
+    const slotService = { markDelivered } as never;
+
     return {
       service: new MessageResultReconcileService(
         attemptRepository,
@@ -115,17 +121,19 @@ describe('MessageResultReconcileService — 결과 조회·재조정', () => {
         gemtekResultQuery,
         smsGemtekSend,
         configService,
+        slotService,
       ),
       update,
       workflowUpdates,
       attemptQueries,
       gemtekResultQuery,
+      markDelivered,
     };
   };
 
   it('(3,0) 확정은 SUCCEEDED 로 종결하고 쿠폰 전달완료를 표식한다', async () => {
     const reportTime = new Date('2026-07-27T11:00:00');
-    const { service, update, workflowUpdates } = createService({
+    const { service, update, markDelivered } = createService({
       tracking: [attempt()],
       resultByMseq: jest.fn().mockResolvedValue({ mseq: 1001, stat: '3', result: '0', sendTime: null, reportTime }),
     });
@@ -138,13 +146,7 @@ describe('MessageResultReconcileService — 결과 조회·재조정', () => {
       gemtekResult: '0',
       resolvedAt: reportTime,
     });
-    expect(workflowUpdates[0].set).toMatchObject({
-      deliveredFlag: true,
-      deliveredChannel: MessageAttemptChannel.MMS,
-      workflowStatus: DeliveryWorkflowStatus.COMPLETED,
-    });
-    // 종결·수동 종결 상태는 건드리지 않는다(RESOLVED_MANUALLY_* 불변 override).
-    expect(workflowUpdates[0].where.join(' ')).toContain('workflow_status IN (:...open)');
+    expect(markDelivered).toHaveBeenCalledWith(500, MessageAttemptChannel.MMS, reportTime);
   });
 
   it('520 등 확정 실패는 FAILED_FINAL 로 종결한다', async () => {
@@ -445,6 +447,53 @@ describe('MessageResultReconcileService — 결과 조회·재조정', () => {
       expect(patch.retryDeadlineAt.toISOString()).toBe(new Date('2026-07-28T22:30:00').toISOString());
       // 예약 시각(익일 08:00)이 기한(익일 22:30)보다 앞선다 — 창 안에서만 실행된다.
       expect(patch.nextAttemptAt.getTime()).toBeLessThan(patch.retryDeadlineAt.getTime());
+    });
+  });
+  /**
+   * 알림톡 시도는 MSEQ 가 없어 reconcileOnce 대상이 아니다(`mseq: Not(IsNull())`).
+   * reportSweep 가 닫아주지 않으면 성공한 발송이 SLA 초과로 UNKNOWN + OPS_REVIEW_REQUIRED 가 된다.
+   */
+  describe('settleAlimTalkReport — 알림톡 확정 반영 (§3 나)', () => {
+    const alimTalk = (override: Partial<Record<string, unknown>> = {}) =>
+      attempt({ channel: MessageAttemptChannel.ALIM_TALK, mseq: null, ...override });
+
+    it('수신확정은 SUCCEEDED 로 종결하고 전달완료를 표식한다', async () => {
+      const { service, update, markDelivered } = createService({ alimTalkAttempt: alimTalk() });
+
+      const settled = await service.settleAlimTalkReport(500, true, now);
+
+      expect(settled).toBe(true);
+      expect(update).toHaveBeenCalledWith(
+        expect.objectContaining({ status: MessageAttemptStatus.TRACKING }),
+        expect.objectContaining({ status: MessageAttemptStatus.SUCCEEDED, resolvedAt: now }),
+      );
+      expect(markDelivered).toHaveBeenCalledWith(500, MessageAttemptChannel.ALIM_TALK, now);
+    });
+
+    it('R1 미확정 종결은 FAILED_FINAL 로 닫고 전달완료를 표식하지 않는다', async () => {
+      const { service, update, markDelivered } = createService({ alimTalkAttempt: alimTalk() });
+
+      const settled = await service.settleAlimTalkReport(500, false, now);
+
+      expect(settled).toBe(true);
+      expect(update.mock.calls[0][1]).toMatchObject({ status: MessageAttemptStatus.FAILED_FINAL });
+      expect(markDelivered).not.toHaveBeenCalled();
+    });
+
+    it('TRACKING 알림톡 시도가 없으면 아무것도 하지 않는다(중복 호출 무해)', async () => {
+      const { service, update, markDelivered } = createService({});
+
+      expect(await service.settleAlimTalkReport(500, true, now)).toBe(false);
+      expect(update).not.toHaveBeenCalled();
+      expect(markDelivered).not.toHaveBeenCalled();
+    });
+
+    it('상태 전이가 경쟁에 밀리면(affected=0) 전달완료를 표식하지 않는다', async () => {
+      const { service, markDelivered, update } = createService({ alimTalkAttempt: alimTalk() });
+      update.mockResolvedValueOnce({ affected: 0 });
+
+      expect(await service.settleAlimTalkReport(500, true, now)).toBe(false);
+      expect(markDelivered).not.toHaveBeenCalled();
     });
   });
 });

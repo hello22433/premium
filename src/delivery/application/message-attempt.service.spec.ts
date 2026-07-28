@@ -84,7 +84,8 @@ describe('MessageAttemptService — 시도 추적(outbox 2단 마크)', () => {
         cutoverMigratedAt: overrides.cutoverMigratedAt ?? null,
       });
 
-    const slotService = { ensureWorkflow, acquire, release } as never;
+    const markDelivered = jest.fn().mockResolvedValue(true);
+    const slotService = { ensureWorkflow, acquire, release, markDelivered } as never;
     // §9 컷오버 판정은 읽기 전용 게이트가 담당한다(앵커 생성과 분리 — 조회 실패를 삼키지 않기 위함).
     const isCutover = jest.fn().mockResolvedValue(!!overrides.cutoverMigratedAt);
     const cutoverGuard = { isCutover } as never;
@@ -101,6 +102,7 @@ describe('MessageAttemptService — 시도 추적(outbox 2단 마크)', () => {
       dataSource,
       acquire,
       release,
+      markDelivered,
     };
   };
 
@@ -276,9 +278,14 @@ describe('MessageAttemptService — 시도 추적(outbox 2단 마크)', () => {
     });
   });
 
-  describe('알림톡 추적 — 폴백 체인 부모 확보(§5.3 CHANNEL_FALLBACK unique)', () => {
-    it('접수 성공(A000)은 미확정(TRACKING)으로 남긴다', async () => {
-      const { service, saved, update } = createService();
+  describe('알림톡 추적 — 확정 반영 + 폴백 체인 부모 확보(§3 나·§5.3)', () => {
+    /**
+     * 동기 경로(inquiry 폴링 완료)의 성공을 TRACKING 으로 두면 그 시도를 닫을 주체가 없다 —
+     * reconcileOnce 는 mseq 보유 건만, reportSweep 는 report_state=PENDING 건만 본다.
+     * 결국 SLA 30h 초과로 성공한 발송이 UNKNOWN + OPS_REVIEW_REQUIRED 로 오분류된다.
+     */
+    it('동기 경로의 확정 성공은 SUCCEEDED 로 종결하고 전달완료를 표식한다', async () => {
+      const { service, saved, update, markDelivered } = createService();
 
       await service.trackAlimTalk(
         {
@@ -292,7 +299,28 @@ describe('MessageAttemptService — 시도 추적(outbox 2단 마크)', () => {
       );
 
       expect(saved[0]).toMatchObject({ channel: MessageAttemptChannel.ALIM_TALK });
-      expect(update.mock.calls[1][1]).toMatchObject({ status: MessageAttemptStatus.TRACKING });
+      expect(update.mock.calls[1][1]).toMatchObject({ status: MessageAttemptStatus.SUCCEEDED });
+      expect(markDelivered).toHaveBeenCalledWith(orderDeliveryId, MessageAttemptChannel.ALIM_TALK, expect.any(Date));
+    });
+
+    it('비동기 경로(awaitsReport)의 POST 수락은 미확정(TRACKING)으로 남긴다', async () => {
+      const { service, update, markDelivered } = createService();
+
+      await service.trackAlimTalk(
+        {
+          orderDeliveryId,
+          slotOp: DeliveryExclusiveOp.MESSAGE_SEND,
+          attemptType: MessageAttemptType.INITIAL,
+          sendReason: 'COUPON',
+          awaitsReport: true,
+        },
+        async () => ({ msgKey: 'MK-1' }),
+        (result) => !!result.msgKey,
+      );
+
+      expect(update.mock.calls[1][1]).toMatchObject({ status: MessageAttemptStatus.TRACKING, resolvedAt: null });
+      // 접수일 뿐이므로 전달완료를 앞당겨 표식하지 않는다(확정은 reportSweep 소관).
+      expect(markDelivered).not.toHaveBeenCalled();
     });
 
     it('접수 실패는 FAILED_FINAL 로 확정해 폴백 SMS 가 부모로 잡을 수 있게 한다', async () => {
