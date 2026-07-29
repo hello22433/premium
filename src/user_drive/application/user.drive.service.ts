@@ -136,9 +136,10 @@ export class UserDriveService {
    * 첨부 다운로드 프록시용. 권한·소유 검증 후 비공개(private) S3 객체를 임시파일로 받아
    * 로컬 경로와 원본 파일명을 돌려준다. 컨트롤러가 Content-Disposition(원본명)으로 스트리밍한다.
    *  - 문서 권한: 상세조회와 동일(assertCanReadDrive) — 관리자 전체, 기업=본인 수신 문서(비DRAFT)만.
-   *  - 객체 소유 검증(assertDownloadable): 첨부 업로더는 항상 "발신자" 이므로 key 의 ownerId 가
-   *    drive.senderId 여야 함(관리자 제외). filePath 는 신뢰 불가하므로 key 소유까지 검증한다.
-   *    ※ 주문접수와 달리 정당한 다운로더가 수신자(≠업로더)라, ownerId 를 요청자가 아니라 senderId 와 비교.
+   *  - 객체 소유 검증(assertDownloadable): 문서함 첨부는 관리자만 등록하므로 key 의 ownerId(업로더)는
+   *    항상 관리자다. filePath 는 신뢰 불가하므로, 관리자 아닌 요청자(기업 수신자)에게는 "업로더가 관리자인
+   *    첨부"만 허용해 심어진 타인 객체를 차단한다. ※ 주문접수와 달리 정당한 다운로더가 수신자(≠업로더)라
+   *    요청자 id 로 비교하지 않는다.
    *  - 원본명: 객체 메타데이터(verbatim) 우선, 없으면 key 복원.
    */
   async downloadFile(
@@ -158,7 +159,7 @@ export class UserDriveService {
       throw new BadRequestException('해당 문서의 첨부파일이 아닙니다.');
     }
 
-    this.assertDownloadable(fileUrl, userDrive, user);
+    await this.assertDownloadable(fileUrl, user);
 
     const fileName = await this.fileService.getOriginalName(fileUrl);
 
@@ -170,8 +171,12 @@ export class UserDriveService {
     return { fileName, filePath };
   }
 
+  private isAdminAuthority(authority: IUserAuthority | string): boolean {
+    return [IUserAuthority.SUPER_ADMIN, IUserAuthority.OPERATION_ADMIN].includes(authority as IUserAuthority);
+  }
+
   private isAdminUser(user: ILoginUserInfo): boolean {
-    return [IUserAuthority.SUPER_ADMIN, IUserAuthority.OPERATION_ADMIN].includes(user.authority as IUserAuthority);
+    return this.isAdminAuthority(user.authority);
   }
 
   /** 문서 읽기 권한 — 관리자 전체 / 기업관리자는 본인이 수신자이고 DRAFT 아님(상세조회와 동일 규칙). */
@@ -192,11 +197,13 @@ export class UserDriveService {
   /**
    * 클라이언트가 filePath 에 임의 URL/key 를 심어 백엔드 자격증명으로 타인 객체를 우회 read 하는 것을 차단.
    *  - host: 우리 S3 버킷 URL 이 아니면 차단.
-   *  - private/{ownerId}/... : ownerId 가 이 문서의 발신자(업로더)여야 함. 관리자는 전체 허용.
-   *    ownerId 세그먼트가 없는 구 private key 는 문서함 첨부가 아니므로 차단.
+   *  - private/{ownerId}/... : 문서함 첨부는 관리자만 등록하므로, 정당한 첨부의 업로더(ownerId)는 항상 관리자다.
+   *    따라서 관리자가 아닌 요청자(기업 수신자)는 "업로더가 관리자인 첨부"만 허용한다 → 심어진 타인(비관리자) 객체 차단.
+   *    발신자 본인(senderId)뿐 아니라, 다른 관리자(예: SUPER 가 교차수정으로 추가)가 올린 첨부도 정상 다운로드된다.
+   *    ownerId 세그먼트가 없는 구 private key 는 문서함 첨부가 아니므로 차단(NaN → Forbidden).
    *  - file/ : 전환 전 첨부(공개 객체) 호환용으로만 허용. 그 외 위치는 차단.
    */
-  private assertDownloadable(fileUrl: string, drive: UserDriveEntity, user: ILoginUserInfo) {
+  private async assertDownloadable(fileUrl: string, user: ILoginUserInfo): Promise<void> {
     if (!this.fileService.isOwnStorageUrl(fileUrl)) {
       throw new ForbiddenException('다운로드할 수 없는 파일입니다.');
     }
@@ -208,9 +215,12 @@ export class UserDriveService {
       if (!Number.isInteger(ownerId)) {
         throw new ForbiddenException('다운로드할 수 없는 파일입니다.');
       }
-      // 업로더는 발신자이므로 ownerId 는 drive.senderId 여야 한다(수신자가 요청해도 통과해야 하므로 user.id 비교 아님).
-      if (!this.isAdminUser(user) && ownerId !== drive.senderId) {
-        throw new ForbiddenException('다운로드 권한이 없습니다.');
+      // 관리자 요청자는 전체 허용. 그 외(기업 수신자)는 업로더가 관리자인 경우에만 허용한다.
+      if (!this.isAdminUser(user)) {
+        const uploader = await this.userRepository.findOne({ where: { id: ownerId } });
+        if (!uploader || !this.isAdminAuthority(uploader.authority)) {
+          throw new ForbiddenException('다운로드 권한이 없습니다.');
+        }
       }
       return;
     }
