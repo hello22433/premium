@@ -6,14 +6,26 @@ import { IUserDriveStatus } from '../interface/user.drive.status';
 /**
  * 문서함 첨부 다운로드 프록시 회귀 — 문서권한 / 첨부귀속 / 객체소유(우회 차단) / 원본명.
  *  - 문서권한: 관리자=전체, 기업관리자=본인 수신 문서(비DRAFT)만.
- *  - 객체소유: 첨부 업로더는 항상 "발신자" 이므로 key 의 private/{ownerId}/ 는 drive.senderId 여야 함.
- *    ※ 주문접수와 달리 정당한 다운로더가 수신자(≠업로더)이므로 ownerId 를 요청자가 아니라 senderId 와 비교.
+ *  - 객체소유: 문서함 첨부는 관리자만 등록하므로 정당한 첨부의 업로더(key 의 private/{ownerId}/)는 항상 관리자.
+ *    관리자 아닌 요청자(기업 수신자)에게는 "업로더가 관리자인 첨부"만 허용 → 심어진 타인(비관리자) 객체 차단.
+ *    ※ 발신자 본인뿐 아니라 다른 관리자(SUPER 교차수정 추가)가 올린 첨부도 정상 다운로드됨.
  */
 describe('UserDriveService.downloadFile', () => {
-  // 발신자(업로더) id=5, 수신자(기업) id=10 인 문서. 신 key 는 private/{senderId}/...
+  // 발신자 id=5(OPERATION 관리자), 수신자(기업) id=10 인 문서. 신 key 는 private/{업로더id}/...
   const ownUrl = 'https://b.s3.amazonaws.com/private/5/0123456789abcdef0123456789abcdef-보고서.xlsx';
-  // ownerId=99 (발신자 아님) 의 private 객체 — filePath 에 섞여도 받으면 안 됨
-  const foreignUrl = 'https://b.s3.amazonaws.com/private/99/ffffffffffffffffffffffffffffffff-남의것.xlsx';
+  // 발신자 아닌 다른 관리자(id=8, SUPER)가 교차수정으로 추가한 첨부 — 수신자도 받을 수 있어야 함(과차단 없음)
+  const otherAdminUrl = 'https://b.s3.amazonaws.com/private/8/8888888888888888aaaaaaaaaaaaaaaa-공지.xlsx';
+  // ownerId=77 은 비관리자(기업) — filePath 에 섞여도 수신자가 받으면 안 됨
+  const foreignUrl = 'https://b.s3.amazonaws.com/private/77/ffffffffffffffffffffffffffffffff-남의것.xlsx';
+  // ownerId=404 는 존재하지 않는 사용자 — 차단
+  const ghostUrl = 'https://b.s3.amazonaws.com/private/404/dddddddddddddddddddddddddddddddd-유령.xlsx';
+
+  // 업로더 id → 권한. 관리자면 수신자 다운로드 허용, 비관리자/없음이면 차단.
+  const USERS: Record<number, IUserAuthority> = {
+    5: IUserAuthority.OPERATION_ADMIN,
+    8: IUserAuthority.SUPER_ADMIN,
+    77: IUserAuthority.CORPORATE_ADMIN,
+  };
 
   const makeSut = (filePath: string, driveOverrides: Record<string, any> = {}) => {
     const drive = {
@@ -24,7 +36,12 @@ describe('UserDriveService.downloadFile', () => {
       filePath,
       ...driveOverrides,
     };
-    const repo: any = { findOne: jest.fn().mockResolvedValue(drive) };
+    const driveRepo: any = { findOne: jest.fn().mockResolvedValue(drive) };
+    const userRepo: any = {
+      findOne: jest.fn(({ where: { id } }: { where: { id: number } }) =>
+        Promise.resolve(USERS[id] ? { id, authority: USERS[id] } : null),
+      ),
+    };
     const fileService: any = {
       extractStorageKey: (url: string) => new URL(url).pathname.replace(/^\/+/, ''),
       isOwnStorageUrl: jest.fn().mockReturnValue(true),
@@ -32,7 +49,7 @@ describe('UserDriveService.downloadFile', () => {
       downloadWithPath: jest.fn().mockResolvedValue('/tmp/x.xlsx'),
     };
     // 생성자: (userDriveRepository, userRepository, fileService)
-    return { sut: new UserDriveService(repo, {} as any, fileService), fileService };
+    return { sut: new UserDriveService(driveRepo, userRepo, fileService), fileService, userRepo };
   };
 
   const receiver = { id: 10, authority: IUserAuthority.CORPORATE_ADMIN } as any;
@@ -46,9 +63,16 @@ describe('UserDriveService.downloadFile', () => {
     expect(fileService.downloadWithPath).toHaveBeenCalledTimes(1);
   });
 
-  it('관리자 → 허용', async () => {
-    const { sut } = makeSut(ownUrl);
+  it('★수신자가 다른 관리자(SUPER 교차수정)가 올린 첨부를 다운로드 → 허용 (과차단 없음)', async () => {
+    const { sut, fileService } = makeSut(otherAdminUrl);
+    await expect(sut.downloadFile(receiver, 1, otherAdminUrl)).resolves.toBeDefined();
+    expect(fileService.downloadWithPath).toHaveBeenCalledTimes(1);
+  });
+
+  it('관리자 → 허용 (업로더 조회 없이 통과)', async () => {
+    const { sut, userRepo } = makeSut(ownUrl);
     await expect(sut.downloadFile(admin, 1, ownUrl)).resolves.toBeDefined();
+    expect(userRepo.findOne).not.toHaveBeenCalled();
   });
 
   it('비수신 기업관리자 → Forbidden (문서 접근 불가)', async () => {
@@ -70,10 +94,16 @@ describe('UserDriveService.downloadFile', () => {
     expect(fileService.downloadWithPath).not.toHaveBeenCalled();
   });
 
-  it('★우회 차단: ownerId 가 발신자가 아닌 private key 를 심어도 → Forbidden', async () => {
-    // foreignUrl(ownerId=99) 이 filePath 에 있어 includes() 는 통과하지만, senderId(5)≠99
+  it('★우회 차단: 업로더가 비관리자(기업)인 private key 를 심어도 → Forbidden', async () => {
+    // foreignUrl(ownerId=77, CORPORATE_ADMIN) 이 filePath 에 있어 includes() 는 통과하지만 업로더가 비관리자
     const { sut, fileService } = makeSut(foreignUrl);
     await expect(sut.downloadFile(receiver, 1, foreignUrl)).rejects.toBeInstanceOf(ForbiddenException);
+    expect(fileService.downloadWithPath).not.toHaveBeenCalled();
+  });
+
+  it('★우회 차단: 존재하지 않는 업로더 id 의 private key → Forbidden', async () => {
+    const { sut, fileService } = makeSut(ghostUrl);
+    await expect(sut.downloadFile(receiver, 1, ghostUrl)).rejects.toBeInstanceOf(ForbiddenException);
     expect(fileService.downloadWithPath).not.toHaveBeenCalled();
   });
 
