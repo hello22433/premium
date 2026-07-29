@@ -107,11 +107,19 @@ export class UserDriveService {
     // 원본 파일명(메타데이터)까지 함께 — FE 가 화면 표시·다운로드명 모두 진짜 이름으로 일관되게.
     // S3 HeadObject 는 상한(MAX_FILE_META_LOOKUP)까지만 — 초과분은 key 복원 폴백(호출 폭주 방지).
     const files = await Promise.all(
-      fileUrlList.map(async (url, index) =>
-        index < UserDriveService.MAX_FILE_META_LOOKUP
-          ? { url, name: await this.fileService.getOriginalName(url) }
-          : { url, name: this.fileService.extractOriginalFileName(url) },
-      ),
+      fileUrlList.map(async (url, index) => {
+        try {
+          const name =
+            index < UserDriveService.MAX_FILE_META_LOOKUP
+              ? await this.fileService.getOriginalName(url)
+              : this.fileService.extractOriginalFileName(url);
+          return { url, name };
+        } catch {
+          // 잘못된/레거시 항목(비URL·콤마분할 조각 등)의 이름 조회가 실패해도 상세 전체를 500 내지 않도록 폴백.
+          // 원본명 조회는 표시용이라, 한 항목이 깨져도 마지막 경로조각(없으면 원문)으로 degrade 한다.
+          return { url, name: url.split('/').pop() || url };
+        }
+      }),
     );
 
     return {
@@ -219,10 +227,13 @@ export class UserDriveService {
     const key = this.fileService.extractStorageKey(fileUrl);
 
     if (key.startsWith('private/')) {
-      const ownerId = Number(key.split('/')[1]);
-      if (!Number.isInteger(ownerId)) {
+      const ownerSegment = key.split('/')[1] ?? '';
+      // ownerId 세그먼트는 10진 숫자여야 한다. Number('')===0, Number('0x10')===16 등이 Number.isInteger 를
+      // 통과하는 모호함을 없애기 위해 정규식으로 명시 검증(문서함 첨부 key 규격: private/{decimal-id}/...).
+      if (!/^\d+$/.test(ownerSegment)) {
         throw new ForbiddenException('다운로드할 수 없는 파일입니다.');
       }
+      const ownerId = Number(ownerSegment);
       // 요청자가 관리자면 전체 허용. 그 외엔 "이 문서에 글 쓸 수 있던 사람이 올린 첨부"만 허용:
       // 발신자 본인이면 즉시 통과, 아니면 업로더가 SUPER 인 경우(아무 문서나 수정 가능)만 예외 허용.
       if (!this.isAdminUser(user) && ownerId !== drive.senderId) {
