@@ -1,4 +1,5 @@
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
+import { IOrderDeliveryReportState } from '../../delivery/interface/order.delivery.report.state';
 import { IOrderType } from '../interface/order.type';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import {
@@ -77,7 +78,8 @@ describe('evaluateDeliveryCancelable', () => {
       evaluateDeliveryCancelable({ ...base, claimedAt: now }, IOrderType.GENERAL, now).blockReason,
     ).toBe(DeliveryCancelBlockReason.IN_PROGRESS);
     expect(
-      evaluateDeliveryCancelable({ ...base, reportState: 'SOME_STATE' }, IOrderType.GENERAL, now).blockReason,
+      evaluateDeliveryCancelable({ ...base, reportState: IOrderDeliveryReportState.PENDING }, IOrderType.GENERAL, now)
+        .blockReason,
     ).toBe(DeliveryCancelBlockReason.IN_PROGRESS);
   });
 

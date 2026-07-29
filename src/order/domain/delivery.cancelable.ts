@@ -1,4 +1,5 @@
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
+import { IOrderDeliveryReportState } from '../../delivery/interface/order.delivery.report.state';
 import { IOrderType } from '../interface/order.type';
 
 /**
@@ -54,9 +55,17 @@ export interface DeliveryCancelableView {
   claimedAt: Date | null;
   couponIssuedAt: Date | null;
   barCode: string | null;
-  reportState: unknown | null;
+  reportState: IOrderDeliveryReportState | null;
   sendRequestAt: Date | null;
 }
+
+/**
+ * 판정 결과. 불변식 "cancelable=true ⟺ blockReason=null" 을 판별 유니온으로 타입에 못 박는다.
+ * 소비자는 `if (!result.cancelable)` 로 좁히면 blockReason 이 non-null 로 보장된다.
+ */
+export type DeliveryCancelableResult =
+  | { cancelable: true; blockReason: null }
+  | { cancelable: false; blockReason: DeliveryCancelBlockReason };
 
 /**
  * "이 발송건을 지금 취소할 수 있는가" 를 로드된 엔티티 필드만으로 판정한다(추가 쿼리 없음).
@@ -81,8 +90,11 @@ export function evaluateDeliveryCancelable(
   orderType: IOrderType,
   now: Date,
   cutoffMs: number = DELIVERY_CANCEL_CUTOFF_MS,
-): { cancelable: boolean; blockReason: DeliveryCancelBlockReason | null } {
-  const block = (reason: DeliveryCancelBlockReason) => ({ cancelable: false, blockReason: reason });
+): DeliveryCancelableResult {
+  const block = (reason: DeliveryCancelBlockReason): DeliveryCancelableResult => ({
+    cancelable: false,
+    blockReason: reason,
+  });
 
   if (delivery.status !== IOrderDeliveryStatus.WAIT) {
     return block(DeliveryCancelBlockReason.NOT_WAITING);
