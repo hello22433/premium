@@ -49,6 +49,7 @@ describe('SsgEventService deduct/restore — 변경 전 기준선 (baseline)', (
       {} as any,
       {} as any,
       {} as any,
+      {} as any, // cutoverGuard (develop 리베이스로 추가된 11번째 의존성)
     );
     return { service, created, events, amountHistoryRepository };
   };
