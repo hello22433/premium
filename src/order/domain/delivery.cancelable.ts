@@ -34,6 +34,14 @@ export enum DeliveryCancelBlockReason {
   EXTERNAL_ORDER = 'EXTERNAL_ORDER',
   /** 발송 예정 시각까지 컷오프(기본 10분) 미만 남음 */
   CUTOFF_PASSED = 'CUTOFF_PASSED',
+  /**
+   * 주문 레벨에서 부분취소를 지원하지 않는 주문 — 발송건 조건과 무관하게 엔드포인트가 거부한다.
+   * 현재: SSG 주문(행사잔액 발송건별 복구 미지원, partialDeliveryCancel 이 SSG 를 400 으로 선차단).
+   * ★ 이 사유는 발송건 술어(evaluateDeliveryCancelable)가 아니라 주문 조립부(getDetail)에서
+   *   order.type 으로 판정한다 — findCancelableDeliveryIds(발송건 SQL)에는 없는 order-level 게이트라
+   *   술어의 발송건 7조건과 분리해 둔다.
+   */
+  UNSUPPORTED_ORDER = 'UNSUPPORTED_ORDER',
 }
 
 /**
@@ -92,7 +100,10 @@ export function evaluateDeliveryCancelable(
     return block(DeliveryCancelBlockReason.EXTERNAL_ORDER);
   }
   // sendRequestAt 이 없으면(즉시발송 등 예약 아님) 컷오프 판정 불가 → 취소 대상 아님으로 본다.
-  if (delivery.sendRequestAt === null || delivery.sendRequestAt.getTime() < now.getTime() + cutoffMs) {
+  // ★ `== null` 로 null 과 undefined 를 함께 막는다. 로더 배선 오류로 이 필드가 undefined 로
+  //   들어오면 `=== null` 은 빠져나가 .getTime() 에서 TypeError → 주문상세 전체 500 이 된다.
+  //   판정 불가 상황은 항상 "취소 불가"(fail-closed)로 떨어뜨려 조회를 깨지 않는다.
+  if (delivery.sendRequestAt == null || delivery.sendRequestAt.getTime() < now.getTime() + cutoffMs) {
     return block(DeliveryCancelBlockReason.CUTOFF_PASSED);
   }
 

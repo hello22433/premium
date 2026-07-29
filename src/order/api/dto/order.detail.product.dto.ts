@@ -3,6 +3,7 @@ import { IOrderDeliveryStatus } from '../../../delivery/interface/order.delivery
 import { IOrderSendMethod } from '../../interface/order.send.method';
 import { OrderEmailSendType } from '../../domain/order.email.send.type';
 import { OrderEmailFinalSendMethod } from '../../domain/order.email.final.send.method';
+import { DeliveryCancelBlockReason } from '../../domain/delivery.cancelable';
 
 export class OrderProductDto {
   @ApiProperty({
@@ -91,11 +92,13 @@ export class OrderViewDeliveryDto extends OrderDeliveryViewCommonDto {
   cancelable: boolean;
 
   @ApiProperty({
-    description:
-      '취소 불가 사유 코드 (cancelable=false 일 때). NOT_WAITING/ALREADY_SENT/ALREADY_ISSUED/IN_PROGRESS/EXTERNAL_ORDER/CUTOFF_PASSED. 취소 가능하면 null',
+    enum: DeliveryCancelBlockReason,
     nullable: true,
+    description:
+      '취소 불가 사유 코드 (cancelable=false 일 때, 취소 가능하면 null). 값 목록은 enum 단일 소스. ' +
+      'FE 는 코드→문구 매핑을 소유하되 매핑 없는 코드는 기본 툴팁으로 폴백할 것(새 사유 추가는 하위호환)',
   })
-  cancelBlockReason: string | null;
+  cancelBlockReason: DeliveryCancelBlockReason | null;
 }
 
 export class OrderTestDeliveryHistoryDto {

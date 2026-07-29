@@ -109,7 +109,11 @@ import {
 } from '../domain/order.validation';
 import { OrderFromService } from '../../order_from/application/order.from.service';
 import { getBillingUserId } from '../domain/order.billing-user.helper';
-import { DELIVERY_CANCEL_CUTOFF_MS, evaluateDeliveryCancelable } from '../domain/delivery.cancelable';
+import {
+  DELIVERY_CANCEL_CUTOFF_MS,
+  DeliveryCancelBlockReason,
+  evaluateDeliveryCancelable,
+} from '../domain/delivery.cancelable';
 import { listToMap, listToMapValue } from '../../util/map.util';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 import { CreateTransactionId } from '../domain/create.transaction.id';
@@ -1532,7 +1536,16 @@ export class OrderService {
           const decryptedDeliveryTarget = this.cryptoCipher.safeDecryptDeliveryTarget(targetToDecrypt) ?? '';
 
           // 부분취소 가능 여부(화면 표시용). 권위 게이트는 findCancelableDeliveryIds+CAS.
-          const { cancelable, blockReason } = evaluateDeliveryCancelable(orderDelivery, order.type, now);
+          // ★ 발송건 술어(evaluateDeliveryCancelable)에 더해 주문 레벨 게이트를 함께 적용한다.
+          //   partialDeliveryCancel 은 발송건 조건을 보기 전에 SSG 주문을 400 으로 선차단하는데,
+          //   그걸 반영하지 않으면 SSG 주문의 WAIT 예약건이 cancelable=true 로 내려가 "선택은 되는데
+          //   제출하면 400" 이 된다. 발송건 SQL(findCancelableDeliveryIds)에는 없는 order-level 게이트라
+          //   술어가 아니라 여기서 order.type 으로 판정한다.
+          //   (레거시 non-wallet 주문도 400 이지만 wallet 여부는 비동기 조회라 여기서 보지 않는다 —
+          //    그 조합은 WAIT 예약건이 사실상 드물어 후속 항목으로 남긴다.)
+          const perDelivery = evaluateDeliveryCancelable(orderDelivery, order.type, now);
+          const orderLevelBlock =
+            order.type === IOrderType.SSG ? DeliveryCancelBlockReason.UNSUPPORTED_ORDER : null;
 
           orderDeliveryList.push({
             id: orderDelivery.id,
@@ -1542,8 +1555,8 @@ export class OrderService {
             replaceCharacter3: orderDelivery.replaceCharacter3,
             status: orderDelivery.status,
             isResent: orderDelivery.resendAt !== null,
-            cancelable,
-            cancelBlockReason: blockReason,
+            cancelable: orderLevelBlock === null && perDelivery.cancelable,
+            cancelBlockReason: orderLevelBlock ?? perDelivery.blockReason,
           });
         }
 

@@ -1,11 +1,20 @@
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 import { IOrderType } from '../interface/order.type';
+import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import {
   DELIVERY_CANCEL_CUTOFF_MS,
   DeliveryCancelBlockReason,
   DeliveryCancelableView,
   evaluateDeliveryCancelable,
 } from './delivery.cancelable';
+
+// 컴파일 타임 계약(pr-test H-1): OrderDeliveryEntity 가 술어 뷰 shape 을 만족하는지 검증한다.
+// 술어 단위테스트는 뷰를 손으로 만들어 넘기므로 엔티티 필드명 drift(예: sendRequestAt 리네임)를
+// 못 잡는다 — getDetail 조립부가 실 엔티티를 술어에 태우는데, 필드명이 어긋나면 값이 undefined 가
+// 되어 조용히 오작동(최악의 경우 sendRequestAt undefined → 주문상세 500)한다. 이 할당이 컴파일되면
+// 엔티티가 뷰의 모든 필드를 호환 타입으로 갖는다는 뜻이고, 리네임 시 여기서 컴파일이 깨진다.
+const _entitySatisfiesCancelableView = (e: OrderDeliveryEntity): DeliveryCancelableView => e;
+void _entitySatisfiesCancelableView;
 
 /**
  * evaluateDeliveryCancelable 은 findCancelableDeliveryIds(order.service.ts)의 SQL 조건집합을
@@ -95,6 +104,20 @@ describe('evaluateDeliveryCancelable', () => {
   it('sendRequestAt=null(예약 아님)은 취소 대상 아님 → CUTOFF_PASSED', () => {
     expect(
       evaluateDeliveryCancelable({ ...base, sendRequestAt: null }, IOrderType.GENERAL, now).blockReason,
+    ).toBe(DeliveryCancelBlockReason.CUTOFF_PASSED);
+  });
+
+  it('sendRequestAt=undefined(배선 오류)여도 throw 하지 않고 CUTOFF_PASSED (조회 500 방지 — H-1)', () => {
+    expect(() =>
+      evaluateDeliveryCancelable(
+        { ...base, sendRequestAt: undefined as unknown as Date },
+        IOrderType.GENERAL,
+        now,
+      ),
+    ).not.toThrow();
+    expect(
+      evaluateDeliveryCancelable({ ...base, sendRequestAt: undefined as unknown as Date }, IOrderType.GENERAL, now)
+        .blockReason,
     ).toBe(DeliveryCancelBlockReason.CUTOFF_PASSED);
   });
 
