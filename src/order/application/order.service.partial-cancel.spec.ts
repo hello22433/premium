@@ -61,6 +61,7 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
       balanceManagementType?: string;
       authority?: string;
       survivingMappings?: any[];
+      cardSurchargeApplied?: boolean;
     } = {},
   ) => {
     const order = {
@@ -72,7 +73,7 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
       status: over.status ?? IOrderStatus.DELIVERY_CONFIRMED,
       type: over.type ?? IOrderType.GENERAL,
       settleAmount: over.settleAmount ?? 100000,
-      cardSurchargeApplied: false,
+      cardSurchargeApplied: over.cardSurchargeApplied ?? false,
       isSettleBalance: true,
       isCreditExcess: false,
       cancelReason: null as string | null,
@@ -455,6 +456,24 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
       expect(expected).toBe(70000); // 균일 2건 × 35000
       expect(sut.getOrderProductsForCancelSettlement).toHaveBeenCalledWith(ORDER_ID);
       expect(sut.orderRepository.save).toHaveBeenCalled();
+    });
+
+    // ★ 재계산은 order.cardSurchargeApplied 를 그대로 넘겨 할증을 얹는다. 이 축(cardSurchargeApplied=true)이
+    //   부분취소 통합 스펙에서 한 번도 실행되지 않아, 위 주석이 방어 대상이라 선언한 '카드할증+포인트
+    //   병용 잔차 0' 의 할증 분기가 미검증이었다(pr-test M-1). 여기서 재계산에 할증이 실제 반영됨을 고정.
+    it('재계산에 카드할증이 반영된다 (cardSurchargeApplied=true) — M-1', async () => {
+      const survivingMappings = uniformSurviving();
+      const { sut, order } = buildSut({ settleAmount: 100000, survivingMappings, cardSurchargeApplied: true });
+
+      await call(sut, CANCELABLE);
+
+      const expected = calculateOrderSettlementAmount(
+        { cardSurchargeApplied: true, orderProductMappings: survivingMappings as any },
+        true,
+      );
+      expect(order.settleAmount).toBe(expected);
+      // 할증이 실제로 얹혔는지 — 비할증 재계산(70000)보다 커야 한다(값이 무할증과 갈린다).
+      expect(expected).toBeGreaterThan(70000);
     });
 
     it('전건 취소면 전체취소와 같은 종단 상태를 만든다', async () => {
