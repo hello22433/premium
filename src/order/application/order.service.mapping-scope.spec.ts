@@ -108,6 +108,26 @@ describe('OrderService mapping scope', () => {
     );
   });
 
+  it.each([
+    ['음수', -1],
+    ['소수', 1.5],
+  ])('updateEncourageDay: %s 독려일은 저장하지 않는다', async (_name, encourageDay) => {
+    const service = buildService({ ...baseMapping, order: { ...baseMapping.order } });
+
+    await expect(service.updateEncourageDay(inScopeUser, 77, { encourageDay })).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(service.orderProductMappingRepository.save).not.toHaveBeenCalled();
+  });
+
+  it('updateEncourageDay: encourageDay 누락은 저장 없이 no-op 처리한다', async () => {
+    const service = buildService({ ...baseMapping, order: { ...baseMapping.order } });
+
+    await service.updateEncourageDay(inScopeUser, 77, {} as any);
+
+    expect(service.orderProductMappingRepository.save).not.toHaveBeenCalled();
+  });
+
   it('회사 범위 운영관리자는 다른 운영관리자 담당 대행발송 매핑을 수정할 수 없다', async () => {
     const operationAdmin = { id: 10, email: 'op@x.com', authority: IUserAuthority.OPERATION_ADMIN };
     const service = buildService(

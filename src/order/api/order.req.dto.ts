@@ -23,7 +23,6 @@ import { IOrderType } from '../interface/order.type';
 import { IOrderSection } from '../interface/order.section';
 import { Transform, Type } from 'class-transformer';
 import { OrderSettleCreateDto } from './dto/order.settle.create.dto';
-import { IOrderSendMethod } from '../interface/order.send.method';
 import { IOrderSendingType } from '../interface/order.sending.type';
 import { IOrderDateType } from '../interface/order.date.type';
 import { CompanyType } from '../../common/domain/company.type';
@@ -119,7 +118,6 @@ export class OrderGetListReqDto extends PagingReqDto {
   @IsOptional()
   @IsEnum(IOrderSendingType)
   sendingType?: IOrderSendingType = IOrderSendingType.ALL;
-
 }
 
 export class OrderGetListSummaryReqDto extends PickType(OrderGetListReqDto, [
@@ -637,11 +635,13 @@ export class OrderUpdateEncourageDayReqParamDto {
 
 export class OrderUpdateEncourageDayReqBodyDto {
   @ApiPropertyOptional({
-    description: '독려 문자 day (null이면 미사용)',
+    description: '독려 문자 day (0 이상의 정수, null이면 미사용)',
   })
   // ===================================
   @IsOptional()
   @IsNumber()
+  @IsInt()
+  @Min(0)
   encourageDay: number | null;
 }
 
