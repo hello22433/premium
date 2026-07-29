@@ -1158,8 +1158,7 @@ export class OrderService {
     const testDeliveryHistoryMap = new Map<number, OrderTestDeliveryHistoryDto[]>();
 
     if (orderProductMappingIds.length > 0) {
-      // 성공 확정된 이력만 노출한다. WAIT(예약)/TEMP(발송중 마커)/FAIL(실패)는 제외.
-      // TEMP 는 발송 시작~확정 사이 또는 확정 실패로 잔류한 미확정 상태라 성공 이력으로 보여선 안 된다.
+      // 발송 성공 확정된 이력만 노출한다. TEMP(발송 중/확정 실패)/WAIT/FAIL 은 제외.
       const testDeliveryHistories = await this.testOrderDeliveryRepository.find({
         where: {
           orderProductMappingId: In(orderProductMappingIds),
@@ -5669,6 +5668,9 @@ export class OrderService {
       throw new BadRequestException('현재 상태의 주문은 테스트 발송할 수 없습니다.');
     }
 
+    // 크래시로 남은 미발송 이력을 먼저 정리한다. 한도 선점 전에 수행해야 회수한 횟수를 이번 요청이 쓴다.
+    await this.discardStaleTestDeliveries(orderProductMappingId);
+
     // 한도 용량 원자 선점: count < 2 인 경우에만 +1. affected=0 이면 한도 초과(동시 요청 포함)로 차단한다.
     // 락+검사 대신 조건부 UPDATE 로 선점해 동시 요청의 한도 초과를 구조적으로 막는다.
     // 발송 전에 선점하므로, 이후 발송이 실패하면 보상(-1)한다. 운영관리자/최고관리자는 무제한이라 무조건 +1.
@@ -5690,6 +5692,7 @@ export class OrderService {
     // 선점 이후의 모든 준비 단계(이미지 생성·이력 저장)와 발송을 한 번에 보상 범위로 묶는다.
     // 준비 단계도 외부 I/O 라 실패할 수 있고, 그때 보상하지 않으면 발송 없이 한도만 소진된다.
     let testOrderDeliveryId: number | null = null;
+    let isSent = false;
     try {
       const firstDelivery = await this.orderDeliveryRepository.findOne({
         where: { orderProductMappingId },
@@ -5716,8 +5719,9 @@ export class OrderService {
       );
 
       // test_order_delivery 저장 (oneSend에서 테스트 발송 여부를 판단하여 PIN 재발급 스킵)
+      // 발송 전에는 TEMP 로 저장한다. COMPLETE 를 미리 넣으면 발송 중/실패 건이 성공 이력으로 노출된다.
       const testOrderDelivery = new TestOrderDeliveryEntity();
-      testOrderDelivery.status = IOrderDeliveryStatus.COMPLETE;
+      testOrderDelivery.status = IOrderDeliveryStatus.TEMP;
       testOrderDelivery.orderProductMappingId = orderProductMapping.id;
       testOrderDelivery.deliveryMethod = deliveryMethod;
       testOrderDelivery.deliveryTarget = encryptedDeliveryTarget;
@@ -5739,15 +5743,110 @@ export class OrderService {
       orderDelivery.imagePath = imagePath;
       orderDelivery.expireAt = expireAt;
 
+      // 발송 직전 WAIT 로 전환한다. 크래시로 잔류했을 때 TEMP(발송 전)와 WAIT(발송 여부 불명)를
+      // 구분해야 잔류 정리가 미발송 건만 골라 되돌릴 수 있다.
+      await this.testOrderDeliveryRepository
+        .createQueryBuilder()
+        .update()
+        .set({ status: IOrderDeliveryStatus.WAIT })
+        .where('id = :id', { id: testOrderDeliveryId })
+        .execute();
+
       // 전송 (TX 밖 — testOrderDeliveryId 로 테스트 발송임을 전달하여 PIN 재발급 스킵).
       const isSuccess = await this.deliveryBatchService.oneSend(orderDelivery, false, testOrderDeliveryId);
       if (!isSuccess) {
         throw new BadRequestException('테스트 발송에 실패했습니다. 수신자 정보를 확인해주세요.');
       }
+
+      // 발송 성공 후 확정. WAIT 인 행만 전환한다.
+      isSent = true;
+      const confirm = await this.testOrderDeliveryRepository
+        .createQueryBuilder()
+        .update()
+        .set({ status: IOrderDeliveryStatus.COMPLETE })
+        .where('id = :id', { id: testOrderDeliveryId })
+        .andWhere('status = :wait', { wait: IOrderDeliveryStatus.WAIT })
+        .execute();
+      if ((confirm.affected ?? 0) === 0) {
+        this.logger.error(
+          `테스트 발송 확정 UPDATE 가 0행 (testOrderDeliveryId: ${testOrderDeliveryId}) — 이미 발송된 건이 TEMP 로 잔류`,
+        );
+      }
     } catch (error) {
+      // 이미 발송된 건은 되돌리지 않는다. 이력 삭제·한도 보상 시 다음 요청이 다시 발송해 중복이 된다.
+      if (isSent) {
+        this.logger.error(
+          `테스트 발송 확정 실패 (testOrderDeliveryId: ${testOrderDeliveryId}) — 발송은 완료됨. 이력 TEMP 잔류, 한도 보상 안 함`,
+          error instanceof Error ? error.stack : String(error),
+        );
+        throw error;
+      }
       // 준비 단계 실패 시에는 아직 이력이 없을 수 있으므로 testOrderDeliveryId 는 null 일 수 있다.
       await this.rollbackTestDelivery(testOrderDeliveryId, orderProductMappingId);
       throw error;
+    }
+  }
+
+  /**
+   * 크래시나 확정 실패로 rollbackTestDelivery 가 실행되지 못해 남은 이력을 정리한다.
+   *
+   * TEMP 는 oneSend 호출 전에 죽은 경우라 확실한 미발송이다. 이력을 지우고 선점한 한도를 회수한다.
+   * WAIT 은 발송됐을 수 있어 provider 도달 여부를 알 수 없다. 지우면 재발송으로 중복이 될 수 있어
+   * 그대로 두고 한도도 소진 상태로 유지한다. 대신 화면에 안 보이면서 횟수만 소진된 상태라
+   * 운영이 인지할 수 있도록 1회 경보·마킹한다(자동 확정은 미발송 건을 성공으로 만들 수 있어 하지 않는다).
+   *
+   * 진행 중인 정상 흐름을 잔류로 오인하지 않도록 grace 를 둔다.
+   */
+  private async discardStaleTestDeliveries(orderProductMappingId: number): Promise<void> {
+    const graceSeconds = 600;
+    try {
+      const stale = await this.testOrderDeliveryRepository
+        .createQueryBuilder()
+        .softDelete()
+        .where('order_product_mapping_id = :orderProductMappingId', { orderProductMappingId })
+        .andWhere('status = :temp', { temp: IOrderDeliveryStatus.TEMP })
+        .andWhere('deleted_at IS NULL')
+        .andWhere(`created_at < NOW(6) - INTERVAL ${graceSeconds} SECOND`)
+        .execute();
+
+      const discarded = stale.affected ?? 0;
+      if (discarded > 0) {
+        // 발송되지 않은 건이므로 선점됐던 한도를 회수한다. 0 미만으로 내려가지 않도록 조건부 차감.
+        await this.orderProductMappingRepository
+          .createQueryBuilder()
+          .update()
+          .set({ testDeliveryCount: () => `GREATEST(test_delivery_count - ${discarded}, 0)` })
+          .where('id = :id', { id: orderProductMappingId })
+          .execute();
+
+        this.logger.warn(
+          `테스트 발송 미발송 잔류 ${discarded}건 정리·한도 회수 (orderProductMappingId: ${orderProductMappingId})`,
+        );
+      }
+
+      // 발송 여부 불명(WAIT) 잔류는 미경보 건만 1회 마킹한다. ops_escalated_at 이 중복 경보를 막는다.
+      const escalated = await this.testOrderDeliveryRepository
+        .createQueryBuilder()
+        .update()
+        .set({ opsEscalatedAt: () => 'NOW()' })
+        .where('order_product_mapping_id = :orderProductMappingId', { orderProductMappingId })
+        .andWhere('status = :wait', { wait: IOrderDeliveryStatus.WAIT })
+        .andWhere('deleted_at IS NULL')
+        .andWhere('ops_escalated_at IS NULL')
+        .andWhere(`created_at < NOW(6) - INTERVAL ${graceSeconds} SECOND`)
+        .execute();
+
+      if ((escalated.affected ?? 0) > 0) {
+        this.logger.error(
+          `테스트 발송 여부 불명 ${escalated.affected}건 잔류 — 운영 확인 필요 (orderProductMappingId: ${orderProductMappingId})`,
+        );
+      }
+    } catch (error) {
+      // 정리는 부가 작업이라 실패해도 발송 요청 자체를 막지 않는다.
+      this.logger.error(
+        `테스트 발송 잔류 정리 중 오류 (orderProductMappingId: ${orderProductMappingId})`,
+        error instanceof Error ? error.stack : String(error),
+      );
     }
   }
 

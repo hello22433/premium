@@ -14,6 +14,7 @@ import { DeliveryCreateCouponImage } from '../../delivery/infra/delivery.create.
 import { IUserAuthority } from '../../user/interface/user.authority';
 import { ViewScopeType } from '../../entity/user.view.scope.entity';
 import { IOrderStatus } from '../interface/order.status';
+import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 
 /**
  * 테스트 발송(testDelivery) 정책 검증:
@@ -21,6 +22,8 @@ import { IOrderStatus } from '../interface/order.status';
  *  - 기업관리자(CORPORATE_ADMIN)는 상품당 2회 제한이 유지된다.
  *  - 한도 용량은 발송 전 조건부 UPDATE(test_delivery_count < 2) 로 원자 선점되어 동시 요청 초과가 차단된다.
  *  - 발송 실패 시 저장한 이력 정리 + 선점 한도 보상 차감(-1) 이 수행된다.
+ *  - 이력은 TEMP(저장) → WAIT(발송 직전) → COMPLETE(발송 성공 후) 로 전이한다.
+ *  - 크래시로 남은 TEMP 잔류는 다음 요청 진입 시 정리하고 한도를 회수한다.
  *  - orderId 와 orderProductMapping.orderId 불일치(IDOR) 는 거부된다.
  *  - assertOrderInViewScope 로 조회 범위 밖 주문은 거부된다.
  *
@@ -80,11 +83,16 @@ describe('OrderService testDelivery 정책 (횟수제한/IDOR)', () => {
    * 한도 선점(claim)과 보상 차감(rollback) 이 각각 이 체인을 쓴다.
    */
   const createUpdateBuilder = (affectedQueue: number[]) => {
-    const captured: Array<{ set: any; where: string[] }> = [];
-    let current: { set: any; where: string[] };
+    const captured: Array<{ set: any; where: string[]; isSoftDelete?: boolean }> = [];
+    let current: { set: any; where: string[]; isSoftDelete?: boolean };
     const builder: any = {
       update: jest.fn(() => {
         current = { set: undefined, where: [] };
+        return builder;
+      }),
+      // 진입부 잔류 정리(softDelete)는 별도 큐(staleAffected)로 결과를 준다.
+      softDelete: jest.fn(() => {
+        current = { set: undefined, where: [], isSoftDelete: true };
         return builder;
       }),
       set: jest.fn((v: any) => {
@@ -101,6 +109,9 @@ describe('OrderService testDelivery 정책 (횟수제한/IDOR)', () => {
       }),
       execute: jest.fn(() => {
         captured.push(current);
+        if (current.isSoftDelete) {
+          return Promise.resolve({ affected: builder.staleAffected ?? 0 });
+        }
         const affected = affectedQueue.length > 0 ? affectedQueue.shift()! : 1;
         return Promise.resolve({ affected });
       }),
@@ -109,7 +120,10 @@ describe('OrderService testDelivery 정책 (횟수제한/IDOR)', () => {
     return builder;
   };
 
-  const buildService = (mapping: any, opts: { claimAffected?: number[] } = {}) => {
+  const buildService = (
+    mapping: any,
+    opts: { claimAffected?: number[]; confirmAffected?: number[]; staleAffected?: number } = {},
+  ) => {
     const fullMapping = {
       id: 5,
       orderId: 77,
@@ -156,10 +170,16 @@ describe('OrderService testDelivery 정책 (횟수제한/IDOR)', () => {
     service.orderDeliveryRepository = {
       findOne: jest.fn().mockResolvedValue(null),
     };
+    // 상태 전이(WAIT/COMPLETE) UPDATE 와 진입부 잔류 정리(softDelete) 가 이 체인을 공유한다.
+    const confirmBuilder = createUpdateBuilder(opts.confirmAffected ? [...opts.confirmAffected] : []);
+    // 진입부 잔류 정리 결과. 기본은 정리 대상 없음(affected=0).
+    confirmBuilder.staleAffected = opts.staleAffected ?? 0;
     service.testOrderDeliveryRepository = {
       save: jest.fn().mockResolvedValue({ id: 101 }),
       softDelete: jest.fn().mockResolvedValue({ affected: 1 }),
+      createQueryBuilder: jest.fn(() => confirmBuilder),
     };
+    service.confirmBuilder = confirmBuilder;
     service.deliveryBatchService = {
       oneSend: jest.fn().mockResolvedValue(true),
     };
@@ -290,7 +310,7 @@ describe('OrderService testDelivery 정책 (횟수제한/IDOR)', () => {
       expect(service.updateBuilder.captured[1]?.set.testDeliveryCount()).toContain('test_delivery_count - 1');
     });
 
-    it('이력 삭제가 실패해도 한도 보상 차감은 수행된다(독립 try)', async () => {
+    it('이력 삭제가 실패해도 한도 보상 차감은 수행되고, 이력은 COMPLETE 로 확정되지 않는다', async () => {
       const service = buildService({ id: 5, orderId: 77, testDeliveryCount: 0 }, { claimAffected: [1] });
       service.deliveryBatchService.oneSend.mockResolvedValue(false);
       service.testOrderDeliveryRepository.softDelete.mockRejectedValue(new Error('DB down'));
@@ -302,6 +322,14 @@ describe('OrderService testDelivery 정책 (횟수제한/IDOR)', () => {
       // 이력 삭제가 throw 해도 보상 차감(-1)은 실행되어야 한다.
       expect(service.updateBuilder.captured[1]?.set.testDeliveryCount()).toContain('test_delivery_count - 1');
       expect(service.logger.error).toHaveBeenCalled();
+      // soft delete 실패로 행이 잔류해도 COMPLETE 확정은 없어 성공 이력으로 노출되지 않는다.
+      expect(service.testOrderDeliveryRepository.save).toHaveBeenCalledWith(
+        expect.objectContaining({ status: IOrderDeliveryStatus.TEMP }),
+      );
+      const statuses = service.confirmBuilder.captured
+        .filter((c: any) => !c.isSoftDelete)
+        .map((c: any) => c.set.status);
+      expect(statuses).not.toContain(IOrderDeliveryStatus.COMPLETE);
     });
 
     // 준비 단계(이미지 생성·이력 저장)도 선점 이후의 외부 I/O 라 실패 시 한도를 보상해야 한다.
@@ -359,6 +387,177 @@ describe('OrderService testDelivery 정책 (횟수제한/IDOR)', () => {
       expect(service.deliveryBatchService.oneSend).not.toHaveBeenCalled();
       expect(service.updateBuilder.captured.length).toBe(0);
       expect(service.testOrderDeliveryRepository.save).not.toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * 크래시로 rollbackTestDelivery 가 실행되지 못한 잔류 이력을 다음 요청 진입 시 정리한다.
+   * TEMP(발송 전 크래시)만 대상이고, WAIT(발송 여부 불명)은 중복 발송 위험 때문에 손대지 않는다.
+   */
+  describe('진입부 잔류 정리', () => {
+    const findStaleCleanup = (service: any) => service.confirmBuilder.captured.find((c: any) => c.isSoftDelete);
+
+    it('grace 경과한 TEMP 잔류를 정리하고 한도를 회수한다', async () => {
+      const service = buildService(
+        { id: 5, orderId: 77, testDeliveryCount: 2 },
+        { claimAffected: [1], staleAffected: 1 },
+      );
+
+      await expect(service.testDelivery(owner(IUserAuthority.CORPORATE_ADMIN), body())).resolves.toBeUndefined();
+
+      const cleanup = findStaleCleanup(service);
+      expect(cleanup).toBeDefined();
+      const where = cleanup.where.join(' ');
+      expect(where).toContain('status = :temp');
+      expect(where).toContain('order_product_mapping_id = :orderProductMappingId');
+      // 진행 중인 정상 흐름을 잔류로 오인하지 않도록 grace 를 둔다.
+      expect(where).toContain('INTERVAL 600 SECOND');
+
+      // 회수한 횟수만큼 한도를 되돌린다. 0 미만으로는 내려가지 않는다.
+      const recovery = service.updateBuilder.captured[0];
+      expect(recovery.set.testDeliveryCount()).toContain('GREATEST(test_delivery_count - 1, 0)');
+    });
+
+    it('정리 대상이 없으면 한도를 건드리지 않는다', async () => {
+      const service = buildService({ id: 5, orderId: 77, testDeliveryCount: 0 }, { claimAffected: [1] });
+
+      await expect(service.testDelivery(owner(IUserAuthority.CORPORATE_ADMIN), body())).resolves.toBeUndefined();
+
+      // 한도 UPDATE 는 선점(+1) 하나뿐이어야 한다.
+      expect(service.updateBuilder.captured.length).toBe(1);
+      expect(service.updateBuilder.captured[0].set.testDeliveryCount()).toContain('test_delivery_count + 1');
+    });
+
+    it('정리는 한도 선점보다 먼저 수행된다 (회수분을 이번 요청이 쓸 수 있어야 한다)', async () => {
+      const service = buildService(
+        { id: 5, orderId: 77, testDeliveryCount: 2 },
+        { claimAffected: [1], staleAffected: 1 },
+      );
+      let claimedBeforeCleanup = false;
+      const originalSoftDelete = service.confirmBuilder.softDelete;
+      service.confirmBuilder.softDelete = jest.fn(() => {
+        claimedBeforeCleanup = service.updateBuilder.captured.length > 0;
+        return originalSoftDelete();
+      });
+
+      await service.testDelivery(owner(IUserAuthority.CORPORATE_ADMIN), body());
+
+      expect(claimedBeforeCleanup).toBe(false);
+    });
+
+    it('WAIT 잔류는 미경보 건만 1회 마킹하고 삭제·확정하지 않는다', async () => {
+      const service = buildService({ id: 5, orderId: 77, testDeliveryCount: 0 }, { claimAffected: [1] });
+
+      await expect(service.testDelivery(owner(IUserAuthority.CORPORATE_ADMIN), body())).resolves.toBeUndefined();
+
+      const escalation = service.confirmBuilder.captured.find(
+        (c: any) => !c.isSoftDelete && c.set?.opsEscalatedAt !== undefined,
+      );
+      expect(escalation).toBeDefined();
+      const where = escalation.where.join(' ');
+      expect(where).toContain('status = :wait');
+      // 중복 경보 방지.
+      expect(where).toContain('ops_escalated_at IS NULL');
+      expect(where).toContain('INTERVAL 600 SECOND');
+      // 발송됐을 수 있으므로 COMPLETE 확정도 삭제도 하지 않는다.
+      expect(escalation.set.status).toBeUndefined();
+    });
+
+    it('정리가 실패해도 발송 요청은 계속된다', async () => {
+      const service = buildService({ id: 5, orderId: 77, testDeliveryCount: 0 }, { claimAffected: [1] });
+      service.confirmBuilder.softDelete.mockImplementationOnce(() => {
+        throw new Error('cleanup failed');
+      });
+
+      await expect(service.testDelivery(owner(IUserAuthority.CORPORATE_ADMIN), body())).resolves.toBeUndefined();
+
+      expect(service.deliveryBatchService.oneSend).toHaveBeenCalled();
+      expect(service.logger.error).toHaveBeenCalled();
+    });
+  });
+
+  // 진입부 정리(softDelete·경보 마킹)를 걸러낸 상태 전이 UPDATE 만 뽑는다.
+  const statusTransitions = (service: any) =>
+    service.confirmBuilder.captured.filter((c: any) => !c.isSoftDelete && c.set?.status !== undefined);
+
+  // 이력 상태: TEMP(저장) → WAIT(발송 직전) → COMPLETE(발송 성공 후).
+  // 크래시로 잔류했을 때 발송 여부를 구분할 수 있어야 진입부 정리가 미발송 건만 되돌린다.
+  describe('이력 상태 전이(TEMP → WAIT → COMPLETE)', () => {
+    it('TEMP 저장 → 발송 직전 WAIT → 발송 성공 후 COMPLETE 순으로 전이한다', async () => {
+      const service = buildService({ id: 5, orderId: 77, testDeliveryCount: 0 }, { claimAffected: [1] });
+
+      await expect(service.testDelivery(owner(IUserAuthority.CORPORATE_ADMIN), body())).resolves.toBeUndefined();
+
+      expect(service.testOrderDeliveryRepository.save).toHaveBeenCalledWith(
+        expect.objectContaining({ status: IOrderDeliveryStatus.TEMP }),
+      );
+      const [wait, confirm] = statusTransitions(service);
+      expect(wait.set.status).toBe(IOrderDeliveryStatus.WAIT);
+      expect(confirm.set.status).toBe(IOrderDeliveryStatus.COMPLETE);
+      // 확정은 WAIT 인 행만 전환한다.
+      expect(confirm.where.some((c: string) => c.includes('status = :wait'))).toBe(true);
+    });
+
+    it('WAIT 전환은 발송 전에, COMPLETE 확정은 발송 후에 수행된다', async () => {
+      const service = buildService({ id: 5, orderId: 77, testDeliveryCount: 0 }, { claimAffected: [1] });
+      let statusesDuringSend: string[] = [];
+      service.deliveryBatchService.oneSend.mockImplementation(() => {
+        statusesDuringSend = statusTransitions(service).map((c: any) => c.set.status);
+        return Promise.resolve(true);
+      });
+
+      await expect(service.testDelivery(owner(IUserAuthority.CORPORATE_ADMIN), body())).resolves.toBeUndefined();
+
+      // 발송 시점에는 WAIT 만 기록돼 있어야 한다. COMPLETE 가 미리 있으면 발송 중 성공 이력으로 노출된다.
+      expect(statusesDuringSend).toEqual([IOrderDeliveryStatus.WAIT]);
+      expect(statusTransitions(service).length).toBe(2);
+    });
+
+    it('WAIT 전환이 실패하면 발송하지 않고 이력 삭제 + 한도 보상한다', async () => {
+      const service = buildService({ id: 5, orderId: 77, testDeliveryCount: 0 }, { claimAffected: [1] });
+      service.confirmBuilder.execute.mockRejectedValue(new Error('wait update failed'));
+
+      await expect(service.testDelivery(owner(IUserAuthority.CORPORATE_ADMIN), body())).rejects.toThrow(
+        'wait update failed',
+      );
+
+      // 아직 발송 전이므로 되돌린다.
+      expect(service.deliveryBatchService.oneSend).not.toHaveBeenCalled();
+      expect(service.testOrderDeliveryRepository.softDelete).toHaveBeenCalledWith(101);
+      expect(service.updateBuilder.captured[1]?.set.testDeliveryCount()).toContain('test_delivery_count - 1');
+    });
+
+    it('확정 UPDATE 가 실패하면 이력 삭제·한도 보상을 하지 않는다 (중복 발송 방지)', async () => {
+      const service = buildService({ id: 5, orderId: 77, testDeliveryCount: 0 }, { claimAffected: [1] });
+      // execute 순서: 진입부 정리(softDelete) → 경보 마킹 → WAIT 전환 → 확정. 확정만 실패시킨다.
+      service.confirmBuilder.execute
+        .mockResolvedValueOnce({ affected: 0 })
+        .mockResolvedValueOnce({ affected: 0 })
+        .mockResolvedValueOnce({ affected: 1 })
+        .mockRejectedValueOnce(new Error('confirm DB down'));
+
+      await expect(service.testDelivery(owner(IUserAuthority.CORPORATE_ADMIN), body())).rejects.toThrow(
+        'confirm DB down',
+      );
+
+      // 이미 발송된 건이므로 되돌리지 않는다. 선점(+1) 외에 보상(-1) UPDATE 가 없어야 한다.
+      expect(service.testOrderDeliveryRepository.softDelete).not.toHaveBeenCalled();
+      expect(service.updateBuilder.captured.length).toBe(1);
+      expect(service.logger.error).toHaveBeenCalled();
+    });
+
+    it('확정 UPDATE 가 0행이어도 삭제·보상 없이 로그만 남긴다', async () => {
+      // affected 큐: 경보 마킹 0행, WAIT 전환 1행, 확정 0행.
+      const service = buildService(
+        { id: 5, orderId: 77, testDeliveryCount: 0 },
+        { claimAffected: [1], confirmAffected: [0, 1, 0] },
+      );
+
+      await expect(service.testDelivery(owner(IUserAuthority.CORPORATE_ADMIN), body())).resolves.toBeUndefined();
+
+      expect(service.testOrderDeliveryRepository.softDelete).not.toHaveBeenCalled();
+      expect(service.updateBuilder.captured.length).toBe(1);
+      expect(service.logger.error).toHaveBeenCalled();
     });
   });
 });

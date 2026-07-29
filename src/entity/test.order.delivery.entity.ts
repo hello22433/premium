@@ -57,6 +57,9 @@ export class TestOrderDeliveryEntity extends BaseEntity {
   @Column({ type: 'int', nullable: true, comment: 'FK) product.id 초이스 쿠폰 선택 시' })
   choiceSelectProductId: number | null;
 
+  @Column({ type: 'datetime', nullable: true, comment: '발송 여부 불명(WAIT) 잔류 경보 시각. 중복 경보 방지용' })
+  opsEscalatedAt: Date | null;
+
   @ManyToOne(() => OrderProductMappingEntity, { createForeignKeyConstraints: false })
   @JoinColumn({ name: 'order_product_mapping_id' })
   orderProductMapping: OrderProductMappingEntity;
