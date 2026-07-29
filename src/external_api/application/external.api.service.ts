@@ -1239,9 +1239,12 @@ export class ExternalApiService {
   ): Promise<ExternalApiResponse<OrderStatusResponseData>> {
     const orderDelivery = await this.findOrderDeliveryByTrId(account, trId, ctx);
     const mapping = orderDelivery.orderProductMapping;
-    const product = mapping?.product;
     const order = mapping?.order;
-    const price = product?.price ?? 0;
+    // D3-53: 응답 price 를 주문시점 박제값(order.sendAmount)으로 통일.
+    //  - 생성응답(createOrder)·getSsgOrderStatus 와 3자 비트동일.
+    //  - 과거엔 live product.price(가변)를 읽어, 주문 후 상품가가 바뀌면
+    //    파트너 대사 시 생성응답 price 와 조회 price 가 달라졌다(표시 불일치).
+    const price = order?.sendAmount ?? 0;
     const settleAmount = order?.settleAmount ?? 0;
     const { validStartDate, validEndDate } = this.resolveValidDates(orderDelivery);
 
