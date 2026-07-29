@@ -106,6 +106,26 @@ type ExternalRefundBalanceChange = {
   balanceManagementType: string;
 };
 
+/**
+ * trId 기반 조회가 로딩하는 관계. 재발송(`resendOrder`)이 `AlimTalkTemplate` 을 태우므로
+ * 템플릿이 참조하는 관계를 모두 포함해야 한다 — 하나라도 빠지면 템플릿에서 예외가 나고
+ * 알림톡을 시도조차 못한 채 MMS 폴백으로 흘러간다(발행자명 `order.user.company`,
+ * 초이스쿠폰 `choiceSelectProduct.brand`).
+ */
+export const EXTERNAL_ORDER_DELIVERY_RELATIONS = [
+  'orderProductMapping',
+  'orderProductMapping.order',
+  'orderProductMapping.order.user',
+  'orderProductMapping.order.user.company',
+  'orderProductMapping.order.clientUser',
+  'orderProductMapping.order.clientUser.company',
+  'orderProductMapping.product',
+  'orderProductMapping.product.partnerCompany',
+  'orderProductMapping.product.brand',
+  'choiceSelectProduct',
+  'choiceSelectProduct.brand',
+];
+
 @Injectable()
 export class ExternalApiService {
   private readonly logger = new Logger('ExternalApiService');
@@ -2020,13 +2040,7 @@ export class ExternalApiService {
   ): Promise<OrderDeliveryEntity> {
     const root = await this.orderDeliveryRepository.findOne({
       where: { externalTrId: trId },
-      relations: [
-        'orderProductMapping',
-        'orderProductMapping.order',
-        'orderProductMapping.product',
-        'orderProductMapping.product.partnerCompany',
-        'orderProductMapping.product.brand',
-      ],
+      relations: EXTERNAL_ORDER_DELIVERY_RELATIONS,
     });
 
     if (!root) {
@@ -2106,13 +2120,7 @@ export class ExternalApiService {
     // tip 으로 이동 — caller 가 기대하는 relations 로 재로딩.
     const tip = await this.orderDeliveryRepository.findOne({
       where: { id: currentId },
-      relations: [
-        'orderProductMapping',
-        'orderProductMapping.order',
-        'orderProductMapping.product',
-        'orderProductMapping.product.partnerCompany',
-        'orderProductMapping.product.brand',
-      ],
+      relations: EXTERNAL_ORDER_DELIVERY_RELATIONS,
     });
     // 방금 sibling 목록에 있던 id 이므로 정상 도달 불가. 방어적으로 root 유지.
     return tip ?? root;
