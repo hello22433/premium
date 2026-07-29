@@ -1,8 +1,13 @@
 import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import fs from 'node:fs';
 import { parseFilePathList } from '../../util/file.util';
 import { InjectRepository } from '@nestjs/typeorm';
 import { UserDriveEntity } from '../../entity/user.drive.entity';
 import { Repository } from 'typeorm';
+import { FileService } from '../../file/application/file.service';
 import {
   UserDriveCreateReqDto,
   UserDriveGetDetailReqParamDto,
@@ -21,11 +26,15 @@ import { IUserAuthority } from '../../user/interface/user.authority';
 
 @Injectable()
 export class UserDriveService {
+  /** 상세조회에서 원본명(HeadObject)을 조회하는 첨부 수 상한 — 초과분은 key 복원 폴백(S3 호출 폭주 방지) */
+  static readonly MAX_FILE_META_LOOKUP = 10;
+
   constructor(
     @InjectRepository(UserDriveEntity)
     private userDriveRepository: Repository<UserDriveEntity>,
     @InjectRepository(UserEntity)
     private userRepository: Repository<UserEntity>,
+    private fileService: FileService,
   ) {}
 
   async getList(user: ILoginUserInfo, getQuery: UserDriveGetListReqDto): Promise<UserDriveGetListResDto> {
@@ -94,6 +103,17 @@ export class UserDriveService {
       await this.userDriveRepository.save(userDrive);
     }
 
+    const fileUrlList = parseFilePathList(userDrive.filePath);
+    // 원본 파일명(메타데이터)까지 함께 — FE 가 화면 표시·다운로드명 모두 진짜 이름으로 일관되게.
+    // S3 HeadObject 는 상한(MAX_FILE_META_LOOKUP)까지만 — 초과분은 key 복원 폴백(호출 폭주 방지).
+    const files = await Promise.all(
+      fileUrlList.map(async (url, index) =>
+        index < UserDriveService.MAX_FILE_META_LOOKUP
+          ? { url, name: await this.fileService.getOriginalName(url) }
+          : { url, name: this.fileService.extractOriginalFileName(url) },
+      ),
+    );
+
     return {
       id: userDrive.id,
       sendAt: format(userDrive.sendAt, DateFormatStr),
@@ -106,9 +126,100 @@ export class UserDriveService {
       title: userDrive.title,
       content: userDrive.content,
       status: userDrive.status,
-      filePathList: parseFilePathList(userDrive.filePath),
+      filePathList: fileUrlList,
+      files,
       replyContent: userDrive.replyContent,
     };
+  }
+
+  /**
+   * 첨부 다운로드 프록시용. 권한·소유 검증 후 비공개(private) S3 객체를 임시파일로 받아
+   * 로컬 경로와 원본 파일명을 돌려준다. 컨트롤러가 Content-Disposition(원본명)으로 스트리밍한다.
+   *  - 문서 권한: 상세조회와 동일(assertCanReadDrive) — 관리자 전체, 기업=본인 수신 문서(비DRAFT)만.
+   *  - 객체 소유 검증(assertDownloadable): 첨부 업로더는 항상 "발신자" 이므로 key 의 ownerId 가
+   *    drive.senderId 여야 함(관리자 제외). filePath 는 신뢰 불가하므로 key 소유까지 검증한다.
+   *    ※ 주문접수와 달리 정당한 다운로더가 수신자(≠업로더)라, ownerId 를 요청자가 아니라 senderId 와 비교.
+   *  - 원본명: 객체 메타데이터(verbatim) 우선, 없으면 key 복원.
+   */
+  async downloadFile(
+    user: ILoginUserInfo,
+    id: number,
+    fileUrl: string,
+  ): Promise<{ fileName: string; filePath: string }> {
+    const userDrive = await this.userDriveRepository.findOne({ where: { id } });
+    if (!userDrive) {
+      throw new BadRequestException('문서가 존재하지 않습니다.');
+    }
+
+    this.assertCanReadDrive(user, userDrive);
+
+    const fileUrlList = parseFilePathList(userDrive.filePath);
+    if (!fileUrlList.includes(fileUrl)) {
+      throw new BadRequestException('해당 문서의 첨부파일이 아닙니다.');
+    }
+
+    this.assertDownloadable(fileUrl, userDrive, user);
+
+    const fileName = await this.fileService.getOriginalName(fileUrl);
+
+    const downloadDir = join(tmpdir(), 'epopkon-user-drive');
+    fs.mkdirSync(downloadDir, { recursive: true });
+
+    const filePath = await this.fileService.downloadWithPath(downloadDir, randomUUID(), fileUrl);
+
+    return { fileName, filePath };
+  }
+
+  private isAdminUser(user: ILoginUserInfo): boolean {
+    return [IUserAuthority.SUPER_ADMIN, IUserAuthority.OPERATION_ADMIN].includes(user.authority as IUserAuthority);
+  }
+
+  /** 문서 읽기 권한 — 관리자 전체 / 기업관리자는 본인이 수신자이고 DRAFT 아님(상세조회와 동일 규칙). */
+  private assertCanReadDrive(user: ILoginUserInfo, drive: UserDriveEntity) {
+    if (this.isAdminUser(user)) {
+      return;
+    }
+
+    if (
+      user.authority !== IUserAuthority.CORPORATE_ADMIN ||
+      drive.receiverId !== user.id ||
+      drive.status === IUserDriveStatus.DRAFT
+    ) {
+      throw new ForbiddenException('조회 권한이 없습니다.');
+    }
+  }
+
+  /**
+   * 클라이언트가 filePath 에 임의 URL/key 를 심어 백엔드 자격증명으로 타인 객체를 우회 read 하는 것을 차단.
+   *  - host: 우리 S3 버킷 URL 이 아니면 차단.
+   *  - private/{ownerId}/... : ownerId 가 이 문서의 발신자(업로더)여야 함. 관리자는 전체 허용.
+   *    ownerId 세그먼트가 없는 구 private key 는 문서함 첨부가 아니므로 차단.
+   *  - file/ : 전환 전 첨부(공개 객체) 호환용으로만 허용. 그 외 위치는 차단.
+   */
+  private assertDownloadable(fileUrl: string, drive: UserDriveEntity, user: ILoginUserInfo) {
+    if (!this.fileService.isOwnStorageUrl(fileUrl)) {
+      throw new ForbiddenException('다운로드할 수 없는 파일입니다.');
+    }
+
+    const key = this.fileService.extractStorageKey(fileUrl);
+
+    if (key.startsWith('private/')) {
+      const ownerId = Number(key.split('/')[1]);
+      if (!Number.isInteger(ownerId)) {
+        throw new ForbiddenException('다운로드할 수 없는 파일입니다.');
+      }
+      // 업로더는 발신자이므로 ownerId 는 drive.senderId 여야 한다(수신자가 요청해도 통과해야 하므로 user.id 비교 아님).
+      if (!this.isAdminUser(user) && ownerId !== drive.senderId) {
+        throw new ForbiddenException('다운로드 권한이 없습니다.');
+      }
+      return;
+    }
+
+    if (key.startsWith('file/')) {
+      return;
+    }
+
+    throw new ForbiddenException('다운로드할 수 없는 파일입니다.');
   }
 
   async create(user: ILoginUserInfo, getBody: UserDriveCreateReqDto) {

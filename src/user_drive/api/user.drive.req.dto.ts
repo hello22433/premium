@@ -1,6 +1,6 @@
 import { PagingReqDto } from '../../common/api/dto/pagination.req.dto';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsArray, IsEnum, IsNotEmpty, IsNumber, IsOptional, Min } from 'class-validator';
+import { ArrayMaxSize, IsArray, IsEnum, IsNotEmpty, IsNumber, IsOptional, IsString, Min } from 'class-validator';
 import { Type } from 'class-transformer';
 import { IUserDriveStatus } from '../interface/user.drive.status';
 
@@ -46,6 +46,8 @@ export class UserDriveCreateReqDto {
   })
   // =================================
   @IsArray()
+  @ArrayMaxSize(10, { message: '첨부파일은 최대 10개까지 등록할 수 있습니다.' })
+  @IsString({ each: true })
   filePath: string[];
 
   @ApiPropertyOptional({
@@ -76,6 +78,16 @@ export class UserDriveUpdateReqDto extends UserDriveCreateReqDto {
   @IsNotEmpty()
   @IsEnum(IUserDriveStatus)
   override status: IUserDriveStatus;
+}
+
+export class UserDriveFileDownloadReqQueryDto {
+  @ApiProperty({
+    description: '다운로드할 첨부파일 url (해당 문서에 첨부된 url 이어야 함)',
+  })
+  // =================================
+  @IsNotEmpty()
+  @IsString()
+  fileUrl: string;
 }
 
 export class UserDriveReplyReqDto {

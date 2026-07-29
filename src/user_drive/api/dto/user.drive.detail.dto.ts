@@ -1,6 +1,14 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { IUserDriveStatus } from '../../interface/user.drive.status';
 
+export class UserDriveFileDto {
+  @ApiProperty({ description: '다운로드용 파일 url (다운로드는 프록시 경유)' })
+  url: string;
+
+  @ApiProperty({ description: '원본 파일명 (표시·다운로드 파일명)' })
+  name: string;
+}
+
 export class UserDriveDetailDto {
   @ApiProperty({
     description: 'drive id',
@@ -58,9 +66,12 @@ export class UserDriveDetailDto {
   status: IUserDriveStatus;
 
   @ApiProperty({
-    description: '파일 url list',
+    description: '파일 url list (하위호환용, 원본명 필요 시 files 사용)',
   })
   filePathList: string[];
+
+  @ApiProperty({ description: '파일 목록(원본명 포함)', type: [UserDriveFileDto] })
+  files: UserDriveFileDto[];
 
   @ApiProperty({
     description: '답변 내용',
