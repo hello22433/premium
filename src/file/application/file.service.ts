@@ -1,9 +1,18 @@
-import { BadRequestException, Inject, Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  Inject,
+  Injectable,
+  InternalServerErrorException,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { FileUploadResDto } from '../api/file.res.dto';
 import { IFileStorage } from '../interface/file.storage';
 
 @Injectable()
 export class FileService {
+  private readonly logger = new Logger(FileService.name);
+
   constructor(@Inject('IFileStorage') private fileStorage: IFileStorage) {}
 
   async uploadImageFile(file: Express.Multer.File): Promise<FileUploadResDto> {
@@ -25,13 +34,36 @@ export class FileService {
     return { url: fileReturn.url };
   }
 
-  async downloadWithPath(path: string, fileTitle: string, fileUrl: string) {
+  async downloadWithPath(path: string, fileTitle: string, fileUrl: string): Promise<string> {
+    let key: string;
     try {
-      const key = this.extractStorageKey(fileUrl);
-      return this.fileStorage.downloadFileToLocalWithPath(path, fileTitle, key);
-    } catch (error) {
-      throw new Error('올바른 파일 경로가 아닙니다.');
+      key = this.extractStorageKey(fileUrl);
+    } catch {
+      // URL 형식이 아니면 호출자(클라이언트) 입력 문제 → 400.
+      throw new BadRequestException('올바른 파일 경로가 아닙니다.');
     }
+
+    try {
+      // 과거엔 await 없이 return 해 S3 비동기 실패가 이 catch 를 우회했다(원본 에러가 raw 500 으로 노출).
+      // await 로 실제로 잡아, 원인을 로그로 남기고 상태를 구분해 던진다.
+      return await this.fileStorage.downloadFileToLocalWithPath(path, fileTitle, key);
+    } catch (error) {
+      this.logger.error(
+        `S3 다운로드 실패 (key=${key}): ${error instanceof Error ? error.message : String(error)}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+      if (this.isNotFoundError(error)) {
+        throw new NotFoundException('파일을 찾을 수 없습니다.');
+      }
+      // 인증/네트워크/스로틀 등은 서버측 원인 → 500(원인은 위 로그로 관측). "경로 오류"로 오도하지 않는다.
+      throw new InternalServerErrorException('파일 다운로드 중 오류가 발생했습니다.');
+    }
+  }
+
+  /** S3(GetObject) '객체 없음' 판별 — AWS SDK v3 에러/HTTP 메타의 여러 형태에 대응. */
+  private isNotFoundError(error: unknown): boolean {
+    const e = error as { name?: string; Code?: string; $metadata?: { httpStatusCode?: number } };
+    return e?.name === 'NoSuchKey' || e?.Code === 'NoSuchKey' || e?.$metadata?.httpStatusCode === 404;
   }
 
   /** S3 URL 의 객체를 메모리 버퍼로 읽는다(엑셀 파싱 등 서버 내 처리용). */
