@@ -14,8 +14,12 @@
 
 ## 프론트 변경 요청
 
+> **현행(FE 코드 확인 결과, 2026-07-29):** 문서함 화면은 단일 컴포넌트 `src/features/customer-service/document/DocumentDetailPage.tsx`(상세=작성=수정 겸용). 첨부 업로드는 `postFileUpload`가 아니라 **`postFileImage`(`POST /file/image`, 폼필드 `imageFile`, 응답 `data.result.url`, ACL public)** 를 씀. 다운로드는 raw `<a href={fileUrl}>`. `getDisplayFileName` 로직은 이 파일에 인라인 복붙되어 있음.
+> **가장 빠른 길:** 이미 완성된 주문접수 화면 `src/features/order/receipt/OrderReceiptDetailPage.tsx` + `src/apis/order-receipt/getOrderReceiptFileDownload.ts` 를 **그대로 본떠** 옮기면 됩니다(같은 패턴).
+
 ### A. 업로드 호출 교체 (문서 발신/작성 화면)
-문서함 첨부 업로드를 `postFileUpload` → **`postFileUploadPrivate`** 로 교체. (주문접수와 동일 함수, 이미 있으면 재사용)
+`DocumentDetailPage.tsx` 의 첨부 업로드를 **`postFileImage` → `postFileUploadPrivate`(`src/apis/postFileUploadPrivate.ts`, 이미 존재)** 로 교체.
+- ⚠️ 두 함수는 **드롭인 치환이 아님**: 폼필드(`imageFile`→`file`)와 응답 shape(`data.result.url` → **`data.url`**)가 다름. URL 추출부를 주문접수(`OrderReceiptDetailPage.tsx`)가 `postFileUploadPrivate` 응답을 파싱하는 방식과 동일하게 맞출 것.
 
 ### B. 다운로드를 프록시 경유로 (문서 상세 화면)
 첨부를 `<a href={fileUrl}>` 직접 오픈 → **프록시 blob 다운로드**로 교체. private라 직접 URL 접근은 403입니다.
@@ -40,7 +44,7 @@ const handleDownload = useCallback(async (file: { url: string; name: string }) =
 기존 `filePathList` + `getDisplayFileName(key파싱)` 대신 **상세조회 응답의 `files`**를 써서 뱃지 표시·다운로드명 모두 `name`으로 통일(화면=다운로드 일관). `filePathList`는 남아 있으나 신규 화면은 `files` 사용.
 
 ### D. 단위테스트 갱신
-문서함 상세/발신 테스트가 `postFileUpload`를 mock/assert 한다면 `postFileUploadPrivate`로 갱신.
+`DocumentDetailPage` 테스트가 `postFileImage`를 mock/assert 한다면 `postFileUploadPrivate`로 갱신.
 
 ## 호환/주의
 - 과거 첨부(공개 `file/` URL)도 프록시로 다운로드됩니다(백엔드 레거시 `file/` 허용). 다운로드는 신/구 구분 없이 프록시로 통일.
