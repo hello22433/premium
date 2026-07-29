@@ -146,6 +146,10 @@ export class DeliverySendService {
     filePathList: string[],
     deliveryHistory: DeliverySendHistoryEntity,
   ): Promise<void> {
+    // 폴백은 "알림톡이 나가지 못했다"가 확정된 경우로만 한정한다. 도달 확정 뒤의 후속 처리 실패까지
+    // 폴백으로 흘리면 같은 쿠폰이 MMS 로 중복 발송된다.
+    let alimTalkDelivered = false;
+    let responseContext: string | null = null;
     try {
       const alimTalk = AlimTalkTemplate(orderDelivery);
       const { responseData, report } = await this.messageAttemptService.trackAlimTalk(
@@ -164,16 +168,31 @@ export class DeliverySendService {
         (result) => result.report.code === 'A000',
       );
 
-      deliveryHistory.context = JSON.stringify(responseData);
+      // 도달 여부는 이력 직렬화보다 **먼저** 확정한다 — JSON.stringify 예외가 폴백 경로를 여는 것을 막는다.
+      alimTalkDelivered = report.code === 'A000';
+
+      responseContext = JSON.stringify(responseData);
+      deliveryHistory.context = responseContext;
       deliveryHistory.etcContext = JSON.stringify(report);
 
-      if (report.code !== 'A000') {
-        throw new Error('AlimTalk Send Error');
+      if (!alimTalkDelivered) {
+        // 실패 사유(reportCode 63018/63019/63020 등)를 message 에 실어 catch 의 이력 기록까지 전달한다.
+        throw new Error(`AlimTalk Send Error: ${JSON.stringify(report)}`);
       }
 
       this.markSendSuccess(orderDelivery, IOrderDeliveryStatus.COMPLETE);
     } catch (e) {
-      deliveryHistory.context = JSON.stringify(e);
+      // Error 는 JSON.stringify 하면 '{}' 라 사유가 사라진다. 응답 원문이 있으면 지우지 않고 사유를 덧붙인다.
+      const reason = (e as Error)?.message ?? String(e);
+      deliveryHistory.context = responseContext ? `${responseContext} ${reason}` : reason;
+
+      if (alimTalkDelivered) {
+        // 알림톡은 이미 고객에게 도달했다 — 여기서 폴백하면 MMS 중복 발송이다.
+        // 발송 판정은 유지하고 후속 처리 실패만 남긴다.
+        this.logger.error(`알림톡 도달 후 후속 처리 실패(폴백 없음). orderDeliveryId=${orderDelivery.id}: ${reason}`);
+        return;
+      }
+
       deliveryHistory.isSuccess = false;
       const resultSms = await this.handleAlimTalkFail(
         orderDelivery,
@@ -226,6 +245,9 @@ export class DeliverySendService {
     deliveryHistory: DeliverySendHistoryEntity,
   ): Promise<void> {
     deliveryHistory.orderDeliveryId = orderDelivery.id;
+    // 동기 경로와 동일 — POST 수락(msgKey 확보) 이후의 예외는 폴백 대상이 아니다(MMS 중복 발송 차단).
+    let alimTalkAccepted = false;
+    let responseContext: string | null = null;
     try {
       const alimTalk = AlimTalkTemplate(orderDelivery);
       const { msgKey, responseData } = await this.messageAttemptService.trackAlimTalk(
@@ -247,12 +269,28 @@ export class DeliverySendService {
         (result) => !!result.msgKey,
       );
 
-      deliveryHistory.context = JSON.stringify(responseData);
+      // POST 수락 여부를 이력 직렬화보다 먼저 확정한다(동기 경로와 동일 이유).
+      alimTalkAccepted = true;
+
+      responseContext = JSON.stringify(responseData);
+      deliveryHistory.context = responseContext;
       deliveryHistory.isSuccess = true; // POST 수락 (최종 도달 여부는 reportSweep 가 정정)
 
       this.markAlimtalkPending(orderDelivery, msgKey);
     } catch (e) {
-      deliveryHistory.context = JSON.stringify(e);
+      // Error 는 JSON.stringify 하면 '{}' 라 사유가 사라진다. 응답 원문이 있으면 지우지 않고 사유를 덧붙인다.
+      const reason = (e as Error)?.message ?? String(e);
+      deliveryHistory.context = responseContext ? `${responseContext} ${reason}` : reason;
+
+      if (alimTalkAccepted) {
+        // POST 는 이미 수락됐다(발송 진행 중) — 폴백하면 MMS 중복 발송이다.
+        // 최종 도달 판정은 reportSweep 가 하므로 여기서는 후속 처리 실패만 남긴다.
+        this.logger.error(
+          `알림톡 POST 수락 후 후속 처리 실패(폴백 없음). orderDeliveryId=${orderDelivery.id}: ${reason}`,
+        );
+        return;
+      }
+
       deliveryHistory.isSuccess = false;
       const resultSms = await this.handleAlimTalkFail(
         orderDelivery,
