@@ -68,6 +68,12 @@ else if (refundAmount>0) balance/allSettleAmount 복구    // 레거시 환불(�
 4. **범위 결정(권장 ⓑ)**: 1차는 **수정 이력 없는 단순 SSG 주문만** 허용(재차감/유효기간변경 이력 있으면 fail-closed).
 5. **운영 검증**: 착수 전 정산 담당에게 SSG 결제 모델(고객사가 지갑에서 무엇을·얼마를 부담하는지) 확인 후
    실 데이터로 신흐름/구흐름 분포 확인.
+6. **행사잔액 화면 집계 동반 수정 (필수)**: `ssg.event.service.ts` 의 행사잔액 집계
+   (`getSsgBalanceCheckForOrder` 계열, 대략 L215~/L384~)는 "발송대기" 를 **주문 상태**(`isOrderWait` =
+   DELIVERY_REQUEST/REVIEW_COMPLETE/DELIVERY_CONFIRMED)로만 판정하고 발송건 `status=CANCEL` 을 보지 않는다.
+   부분취소는 주문을 DELIVERY_CONFIRMED 로 남기므로, SSG 부분취소를 열면 **취소된 발송건이 "발송대기" 에
+   영구 집계**되어 행사잔액 화면이 0 으로 수렴하지 않는다(취소분이 계속 대기로 잡힘). 취소건은 대기·완료
+   어느 쪽에도 넣지 않도록 `orderDelivery.status === CANCEL` 제외를 함께 넣어야 한다.
 
 ## 기준선 보호
 
