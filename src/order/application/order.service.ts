@@ -109,6 +109,7 @@ import {
 } from '../domain/order.validation';
 import { OrderFromService } from '../../order_from/application/order.from.service';
 import { getBillingUserId } from '../domain/order.billing-user.helper';
+import { DELIVERY_CANCEL_CUTOFF_MS, evaluateDeliveryCancelable } from '../domain/delivery.cancelable';
 import { listToMap, listToMapValue } from '../../util/map.util';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 import { CreateTransactionId } from '../domain/create.transaction.id';
@@ -350,22 +351,9 @@ type ReportCounterColumns =
   | { countColumn: 'deliveryCompleteReportCount'; sourceColumn: 'deliveryReportLastSource' }
   | { countColumn: 'orderCompleteReportCount'; sourceColumn: 'transactionStatementLastSource' };
 
-/**
- * 발송 취소 마감 — 실발송 예정 시각으로부터 이만큼 남아 있어야 취소할 수 있다.
- *
- * 이 값은 5분 주기 발송 배치(issueAndSend)와 짝을 이룬다. 배치는 send_request_at < 실행시각 인
- * 행만 집으므로, "이 값 이상 남은 행" 과 "배치가 집는 행" 은 조건상 겹치지 않는다 —
- * 취소 처리 도중 같은 행이 발송돼 버리는 창을 구조적으로 막는 장치다.
- *
- * 실질 여유 = 이 값 ~ 이 값 + 배치주기(5분). 즉 지금 값이면 10~15분이다.
- * 취소 대상은 send_request_at 이 now+10분 이후이므로 그 행을 집을 수 있는 첫 tick 자체가
- * now+10분 이후이고, tick 이 5분 간격이라 실제 픽업은 거기서 0~5분 더 밀린다.
- * (배치 주기는 여유를 깎지 않고 얹는다.)
- *
- * 이 값을 줄이면 여유가 그만큼 줄고, 0 에 가까워지면 취소와 발송이 같은 tick 을 다투게 된다.
- * 줄이려면 별도 점유 수단(변형 lease 등)이 선행돼야 한다.
- */
-const DELIVERY_CANCEL_CUTOFF_MS = 10 * 60 * 1000;
+// 발송 취소 마감(DELIVERY_CANCEL_CUTOFF_MS)은 '../domain/delivery.cancelable' 로 이동했다.
+// SQL 게이트(findCancelableDeliveryIds)와 화면 표시 술어(evaluateDeliveryCancelable)가 같은 값을
+// 공유하기 위함. 배치 주기와의 관계 등 근거는 그 파일의 상수 주석 참고.
 
 /**
  * 부분취소 거부 응답에 나열할 발송건 id 최대 개수.
@@ -1523,6 +1511,9 @@ export class OrderService {
       }
     }
 
+    // 발송건별 부분취소 가능 여부 판정 기준 시각 — 루프 밖에서 1회 생성해 행마다 흔들리지 않게 한다.
+    const now = new Date();
+
     let topImagePath;
     let midImagePath;
 
@@ -1540,6 +1531,9 @@ export class OrderService {
           const targetToDecrypt = orderDelivery.originalDeliveryTarget || orderDelivery.deliveryTarget;
           const decryptedDeliveryTarget = this.cryptoCipher.safeDecryptDeliveryTarget(targetToDecrypt) ?? '';
 
+          // 부분취소 가능 여부(화면 표시용). 권위 게이트는 findCancelableDeliveryIds+CAS.
+          const { cancelable, blockReason } = evaluateDeliveryCancelable(orderDelivery, order.type, now);
+
           orderDeliveryList.push({
             id: orderDelivery.id,
             deliveryTarget: decryptedDeliveryTarget,
@@ -1548,6 +1542,8 @@ export class OrderService {
             replaceCharacter3: orderDelivery.replaceCharacter3,
             status: orderDelivery.status,
             isResent: orderDelivery.resendAt !== null,
+            cancelable,
+            cancelBlockReason: blockReason,
           });
         }
 
@@ -5749,6 +5745,9 @@ export class OrderService {
    * soft-delete 된 행은 SelectQueryBuilder 가 deleted_at 필터를 자동 적용해 제외된다
    * (UpdateQueryBuilder 는 자동 적용하지 않으므로 갱신 시에는 명시해야 한다).
    */
+  // ★ 아래 조건집합은 domain/delivery.cancelable.ts 의 evaluateDeliveryCancelable(화면 표시용)과
+  //   1:1 로 일치해야 한다. 이 SQL 이 권위값(취소는 이 결과의 부분집합만 허용)이고 술어는 advisory 다.
+  //   조건을 바꾸면 양쪽을 함께 바꾸고 delivery.cancelable.spec.ts 로 어긋남을 잡는다.
   private async findCancelableDeliveryIds(orderId: number, now: Date): Promise<number[]> {
     const cutoff = new Date(now.getTime() + DELIVERY_CANCEL_CUTOFF_MS);
 
