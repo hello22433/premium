@@ -144,4 +144,42 @@ describe('UserDriveService.downloadFile', () => {
     await expect(sut.downloadFile(receiver, 1, legacyPublic)).resolves.toBeDefined();
     expect(fileService.downloadWithPath).toHaveBeenCalledTimes(1);
   });
+
+  it('문서가 존재하지 않으면 → BadRequest (권한/첨부 검사 전)', async () => {
+    const driveRepo: any = { findOne: jest.fn().mockResolvedValue(null) };
+    const sut = new UserDriveService(driveRepo, {} as any, {} as any);
+    await expect(sut.downloadFile(receiver, 1, ownUrl)).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('다중 첨부 중 하나(발신자 첨부)를 다운로드 → 허용 (콤마조인 목록에서 정확 매칭)', async () => {
+    const multi = [
+      'https://b.s3.amazonaws.com/private/5/aaa-A.xlsx',
+      ownUrl,
+      'https://b.s3.amazonaws.com/private/5/ccc-C.xlsx',
+    ].join(',');
+    const { sut, fileService } = makeSut(multi);
+    await expect(sut.downloadFile(receiver, 1, ownUrl)).resolves.toBeDefined();
+    expect(fileService.downloadWithPath).toHaveBeenCalledTimes(1);
+  });
+
+  it('실 첨부의 부분문자열(항목이 아님) → BadRequest (includes 는 정확일치)', async () => {
+    const { sut, fileService } = makeSut(ownUrl);
+    const fragment = ownUrl.slice(0, ownUrl.length - 5);
+    await expect(sut.downloadFile(receiver, 1, fragment)).rejects.toBeInstanceOf(BadRequestException);
+    expect(fileService.downloadWithPath).not.toHaveBeenCalled();
+  });
+
+  it('★차단: private// (owner 세그먼트 빈 값) → Forbidden (숫자 아님)', async () => {
+    const emptyOwner = 'https://b.s3.amazonaws.com/private//0123456789abcdef-x.xlsx';
+    const { sut, fileService } = makeSut(emptyOwner);
+    await expect(sut.downloadFile(receiver, 1, emptyOwner)).rejects.toBeInstanceOf(ForbiddenException);
+    expect(fileService.downloadWithPath).not.toHaveBeenCalled();
+  });
+
+  it('SUPER_ADMIN 요청자 → 허용 (관리자는 객체소유 검사 없이 통과)', async () => {
+    const superReq = { id: 1, authority: IUserAuthority.SUPER_ADMIN } as any;
+    const { sut, userRepo } = makeSut(foreignUrl); // 업로더가 비관리자여도 관리자 요청자는 통과
+    await expect(sut.downloadFile(superReq, 1, foreignUrl)).resolves.toBeDefined();
+    expect(userRepo.findOne).not.toHaveBeenCalled();
+  });
 });
