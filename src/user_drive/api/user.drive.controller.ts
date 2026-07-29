@@ -76,13 +76,21 @@ export class UserDriveController {
     // 한글 등 비ASCII 는 RFC5987 filename* 로, 구형 클라이언트용 ASCII filename 도 함께 둔다.
     const asciiFallback = fileName.replace(/[^\x20-\x7e]/g, '_').replace(/"/g, '');
     const encodedFileName = encodeURIComponent(fileName);
-    res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
-    res.setHeader(
-      'Content-Disposition',
-      `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encodedFileName}`,
-    );
 
-    const fileStream = fs.createReadStream(filePath);
+    // pipeline 배선(아래) 전에 헤더 설정/스트림 생성이 실패하면 임시파일 정리 콜백이 안 걸려 고아가 된다.
+    // 이 구간을 감싸 예외 시 임시파일을 지우고 재던진다(이후 정리는 pipeline 콜백이 담당).
+    let fileStream: fs.ReadStream;
+    try {
+      res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encodedFileName}`,
+      );
+      fileStream = fs.createReadStream(filePath);
+    } catch (setupErr) {
+      fs.unlink(filePath, () => undefined);
+      throw setupErr;
+    }
     // pipeline은 성공/스트림오류/클라이언트 조기 종료(res close) 등 '모든' 종료 경로에서 콜백을 1회 호출하고
     // 두 스트림을 정리한다 → 어느 경로로 끝나든 임시파일을 확실히 삭제한다.
     pipeline(fileStream, res, (err) => {
@@ -96,7 +104,7 @@ export class UserDriveController {
         this.logger.warn(`문서함 첨부 다운로드 중단(클라이언트 종료): ${filePath}`);
         return;
       }
-      this.logger.error(`문서함 첨부 스트림 오류: ${err}`);
+      this.logger.error(`문서함 첨부 스트림 오류: ${err}`, err instanceof Error ? err.stack : undefined);
       if (!res.headersSent && !res.destroyed) {
         res.status(500).json({ message: '파일 다운로드 중 오류가 발생했습니다.' });
       }
