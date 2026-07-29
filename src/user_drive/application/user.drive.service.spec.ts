@@ -8,6 +8,7 @@ import { createMockRepositoryMethod } from '../../common/test/mock.repository.me
 import { createMockQueryBuilder } from '../../common/test/mock.query.builder';
 import { IUserAuthority } from '../../user/interface/user.authority';
 import { IUserDriveStatus } from '../interface/user.drive.status';
+import { FileService } from '../../file/application/file.service';
 
 describe('UserDriveService', () => {
   let sut: UserDriveService;
@@ -41,6 +42,17 @@ describe('UserDriveService', () => {
         {
           provide: getRepositoryToken(UserEntity),
           useValue: createMockRepositoryMethod(),
+        },
+        {
+          // getDetail 의 첨부 원본명 조회에만 쓰임 — 이 spec 은 그 외 로직만 검증하므로 단순 stub
+          provide: FileService,
+          useValue: {
+            getOriginalName: jest.fn().mockResolvedValue('file.xlsx'),
+            extractOriginalFileName: jest.fn().mockReturnValue('file.xlsx'),
+            extractStorageKey: jest.fn().mockReturnValue(''),
+            isOwnStorageUrl: jest.fn().mockReturnValue(true),
+            downloadWithPath: jest.fn(),
+          },
         },
       ],
     }).compile();
