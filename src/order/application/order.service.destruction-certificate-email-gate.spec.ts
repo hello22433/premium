@@ -117,7 +117,7 @@ describe('OrderService sendDestructionCertificateReportEmail — 발행 게이�
 
     await expect(
       service.sendDestructionCertificateReportEmail(makeEmailBody(), BASE_USER, '127.0.0.1'),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    ).rejects.toThrow('발송 완료된 건에 대해서만 발행 가능합니다.');
     expect(service.mailSendSmtp.send).not.toHaveBeenCalled();
   });
 
@@ -188,8 +188,8 @@ describe('OrderService destructionCertificatePdf — 발행 게이트', () => {
   it('발송 완료 상태가 아니면 BadRequestException 을 던진다', async () => {
     const service = setupService(makeOrder([makeDelivery('-')], IOrderStatus.DELIVERY_REQUEST));
 
-    await expect(service.destructionCertificatePdf({ id: 1 } as any, BASE_USER, '127.0.0.1')).rejects.toBeInstanceOf(
-      BadRequestException,
+    await expect(service.destructionCertificatePdf({ id: 1 } as any, BASE_USER, '127.0.0.1')).rejects.toThrow(
+      '발송 완료된 건에 대해서만 발행 가능합니다.',
     );
     expect(service.activityLogService.createLog).not.toHaveBeenCalled();
   });

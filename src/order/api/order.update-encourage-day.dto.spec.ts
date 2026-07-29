@@ -14,12 +14,18 @@ const constraintsOf = async (payload: Record<string, unknown>) => {
 
 describe('OrderUpdateEncourageDayReqBodyDto validation', () => {
   it.each([
-    ['누락', {}],
     ['미사용 null', { encourageDay: null }],
-    ['당일 0', { encourageDay: 0 }],
     ['양의 정수', { encourageDay: 3 }],
   ])('%s 입력을 허용한다', async (_name, payload) => {
     await expect(validateDto(payload)).resolves.toHaveLength(0);
+  });
+
+  it('누락 입력을 거부한다', async () => {
+    await expect(constraintsOf({})).resolves.toContain('isDefined');
+  });
+
+  it('0 독려일을 거부한다', async () => {
+    await expect(constraintsOf({ encourageDay: 0 })).resolves.toContain('min');
   });
 
   it('음수 독려일을 거부한다', async () => {

@@ -3,6 +3,7 @@ import {
   ArrayMaxSize,
   IsArray,
   IsBoolean,
+  IsDefined,
   IsEnum,
   IsIn,
   IsInt,
@@ -13,6 +14,7 @@ import {
   Matches,
   MaxLength,
   Min,
+  ValidateIf,
   ValidateNested,
 } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional, PickType } from '@nestjs/swagger';
@@ -634,14 +636,15 @@ export class OrderUpdateEncourageDayReqParamDto {
 }
 
 export class OrderUpdateEncourageDayReqBodyDto {
-  @ApiPropertyOptional({
-    description: '독려 문자 day (0 이상의 정수, null이면 미사용)',
+  @ApiProperty({
+    description: '독려 문자 day (1 이상의 정수, null이면 미사용)',
+    nullable: true,
   })
   // ===================================
-  @IsOptional()
-  @IsNumber()
+  @IsDefined()
+  @ValidateIf((_object, value) => value !== null)
   @IsInt()
-  @Min(0)
+  @Min(1)
   encourageDay: number | null;
 }
 

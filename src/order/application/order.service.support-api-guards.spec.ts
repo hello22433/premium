@@ -160,10 +160,36 @@ describe('OrderService support API guards', () => {
     expect(service.activityLogService.createLog).not.toHaveBeenCalled();
   });
 
+  it('deliveryCompleteReportPdf: 조회 범위 안 발송완료 주문은 카운터와 로그를 남긴다', async () => {
+    const order = {
+      id: 1,
+      status: IOrderStatus.DELIVERY_COMPLETE,
+      deletedAt: null,
+      userId: user.id,
+      operationUserId: null,
+      clientUserId: null,
+      deliveryCompleteReportCount: 0,
+      orderCompleteReportCount: 0,
+    };
+    const { service } = setupReportService(order);
+
+    await service.deliveryCompleteReportPdf({ id: 1, source: 'DOCUMENT' }, user, '127.0.0.1');
+
+    expect(order.deliveryCompleteReportCount).toBe(1);
+    expect(service.orderRepository.save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        deliveryCompleteReportCount: 1,
+        deliveryReportLastSource: 'DOCUMENT',
+      }),
+    );
+    expect(service.activityLogService.createLog).toHaveBeenCalledTimes(1);
+  });
+
   it('getPreviousContent: 현재 주문 제외 조건은 주문 id 기준이다', async () => {
     const service = Object.create(OrderService.prototype) as any;
     const currentOrderQueryBuilder = {
       innerJoin: jest.fn().mockReturnThis(),
+      withDeleted: jest.fn().mockReturnThis(),
       where: jest.fn().mockReturnThis(),
       andWhere: jest.fn().mockReturnThis(),
       getOne: jest.fn().mockResolvedValue({ id: 100, type: 'GENERAL' }),
@@ -190,6 +216,8 @@ describe('OrderService support API guards', () => {
       '(order.userId = :userId OR order.operationUserId = :userId OR (order.clientUserId = :userId AND order.apiAppId IS NULL))',
       { userId: user.id },
     );
+    expect(currentOrderQueryBuilder.withDeleted).toHaveBeenCalled();
+    expect(currentOrderQueryBuilder.andWhere).toHaveBeenCalledWith('order.deletedAt IS NULL');
     expect(queryBuilder.where).toHaveBeenCalledWith('order.id != :id', { id: 100 });
   });
 
@@ -197,6 +225,7 @@ describe('OrderService support API guards', () => {
     const service = Object.create(OrderService.prototype) as any;
     const currentOrderQueryBuilder = {
       innerJoin: jest.fn().mockReturnThis(),
+      withDeleted: jest.fn().mockReturnThis(),
       where: jest.fn().mockReturnThis(),
       andWhere: jest.fn().mockReturnThis(),
       getOne: jest.fn().mockResolvedValue(null),

@@ -81,6 +81,14 @@ describe('OrderService mapping scope', () => {
   };
 
   it.each([
+    [
+      'testDelivery',
+      (service: any) =>
+        service.testDelivery(outOfScopeUser, {
+          orderProductMappingId: 77,
+          deliveryTarget: '01012341234',
+        }),
+    ],
     ['updateEncourageDay', (service: any) => service.updateEncourageDay(outOfScopeUser, 77, { encourageDay: 1 })],
     [
       'updateGalaxiaDuration',
@@ -109,6 +117,7 @@ describe('OrderService mapping scope', () => {
   });
 
   it.each([
+    ['0', 0],
     ['음수', -1],
     ['소수', 1.5],
   ])('updateEncourageDay: %s 독려일은 저장하지 않는다', async (_name, encourageDay) => {
@@ -120,10 +129,10 @@ describe('OrderService mapping scope', () => {
     expect(service.orderProductMappingRepository.save).not.toHaveBeenCalled();
   });
 
-  it('updateEncourageDay: encourageDay 누락은 저장 없이 no-op 처리한다', async () => {
+  it('updateEncourageDay: encourageDay 누락은 저장하지 않는다', async () => {
     const service = buildService({ ...baseMapping, order: { ...baseMapping.order } });
 
-    await service.updateEncourageDay(inScopeUser, 77, {} as any);
+    await expect(service.updateEncourageDay(inScopeUser, 77, {} as any)).rejects.toBeInstanceOf(BadRequestException);
 
     expect(service.orderProductMappingRepository.save).not.toHaveBeenCalled();
   });

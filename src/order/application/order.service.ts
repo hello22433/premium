@@ -797,7 +797,7 @@ export class OrderService {
     }
   }
 
-  private async findDeliveryCompleteOrderInViewScope(
+  private async findReportOrderInViewScope(
     user: ILoginUserInfo,
     orderId: number,
     withReportRelations = false,
@@ -833,6 +833,16 @@ export class OrderService {
       throw new BadRequestException('주문이 존재하지 않습니다.');
     }
 
+    return order;
+  }
+
+  private async findDeliveryCompleteOrderInViewScope(
+    user: ILoginUserInfo,
+    orderId: number,
+    withReportRelations = false,
+  ): Promise<OrderEntity> {
+    const order = await this.findReportOrderInViewScope(user, orderId, withReportRelations);
+
     if (order.status !== IOrderStatus.DELIVERY_COMPLETE) {
       throw new BadRequestException('발송 완료된 건에 대해서만 조회 가능합니다.');
     }
@@ -843,7 +853,7 @@ export class OrderService {
   private async findOrderProductMappingInViewScope(
     user: ILoginUserInfo,
     orderProductMappingId: number,
-    relations: Array<'product' | 'product.partnerCompany'> = [],
+    relations: Array<'product' | 'product.brand' | 'product.partnerCompany'> = [],
   ): Promise<OrderProductMappingEntity | null> {
     let queryBuilder = this.orderProductMappingRepository
       .createQueryBuilder('orderProductMapping')
@@ -851,8 +861,16 @@ export class OrderService {
       .innerJoinAndSelect('order.user', 'user')
       .where('orderProductMapping.id = :id', { id: orderProductMappingId });
 
-    if (relations.includes('product') || relations.includes('product.partnerCompany')) {
+    if (
+      relations.includes('product') ||
+      relations.includes('product.brand') ||
+      relations.includes('product.partnerCompany')
+    ) {
       queryBuilder = queryBuilder.leftJoinAndSelect('orderProductMapping.product', 'product');
+    }
+
+    if (relations.includes('product.brand')) {
+      queryBuilder = queryBuilder.leftJoinAndSelect('product.brand', 'brand');
     }
 
     if (relations.includes('product.partnerCompany')) {
@@ -6027,7 +6045,9 @@ export class OrderService {
     let currentOrderQueryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoin('order.user', 'user')
-      .where('order.id = :id', { id: orderId });
+      .withDeleted()
+      .where('order.id = :id', { id: orderId })
+      .andWhere('order.deletedAt IS NULL');
 
     const currentUser = await this.userRepository.findOne({
       where: { id: user.id },
@@ -6092,14 +6112,14 @@ export class OrderService {
       throw new BadRequestException('임시저장 상태에서는 독려문자를 설정할 수 없습니다.');
     }
 
-    if (!Object.prototype.hasOwnProperty.call(getBody, 'encourageDay')) {
-      return;
+    if (encourageDay === undefined) {
+      throw new BadRequestException('독려일을 입력해주세요.');
     }
 
     // 독려문자 사용 설정 시 유효기간 검증
     if (encourageDay != null) {
-      if (!Number.isInteger(encourageDay) || encourageDay < 0) {
-        throw new BadRequestException('독려일은 0 이상의 정수여야 합니다.');
+      if (!Number.isInteger(encourageDay) || encourageDay < 1) {
+        throw new BadRequestException('독려일은 1 이상의 정수여야 합니다.');
       }
 
       // 해당 상품의 배송 정보 중 가장 빠른 만료일 조회
@@ -6258,7 +6278,7 @@ export class OrderService {
    */
   private async assertDestructionCertificateIssuable(orderId: number, user?: ILoginUserInfo): Promise<void> {
     const order = user
-      ? await this.findDeliveryCompleteOrderInViewScope(user, orderId, true)
+      ? await this.findReportOrderInViewScope(user, orderId, true)
       : await this.orderRepository.findOne({
           where: { id: orderId },
           relations: ['orderProductMappings', 'orderProductMappings.orderDeliveries'],
