@@ -15,6 +15,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
 import axios from 'axios';
+import { resolveDownloadExtension } from '../../util/file.util';
 
 @Injectable()
 export class FileStorageS3 implements IFileStorage {
@@ -210,11 +211,8 @@ export class FileStorageS3 implements IFileStorage {
     const { Body } = await this.s3Client.send(command);
 
     if (Body instanceof Readable) {
-      // const filePathList2 = downloadPath.split('/')[filePathList.length - 1].split('-');
-      // const filePath = filePathList2.slice(1).join('');
-      // 확장자명
-      const filePathList = downloadPath.split('.'); //length 를 위한
-      const extension = downloadPath.split('.')[filePathList.length - 1];
+      // 확장자: key 마지막 세그먼트에 '.' 이 있을 때만. 없으면 'bin'(과거엔 경로 전체가 확장자가 되어 ENOENT 500).
+      const extension = resolveDownloadExtension(downloadPath);
 
       const localFilePath = join(path, fileTitle + `.${extension}`);
       const writeStream = fs.createWriteStream(localFilePath);
