@@ -162,6 +162,8 @@ describe('ExternalApiService getOrderStatus price 는 주문시점 박제값(sen
     const general = await svc.getOrderStatus(account, 'TR-DELIVERY-STATUS', ctx);
     const ssg = await svc.getSsgOrderStatus(account, 'TR-DELIVERY-STATUS', ctx);
 
+    // 값 자체를 독립 고정(리뷰 LOW): 상호 일치만 보면 둘이 함께 live 5000 으로 회귀해도 통과한다.
+    expect(general.data!.price).toBe(2000);
     expect(general.data!.price).toBe(ssg.data!.price); // 생성응답·SSG조회·일반조회 3자 일치
   });
 });
