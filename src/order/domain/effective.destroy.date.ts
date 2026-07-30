@@ -1,7 +1,6 @@
 import { OrderEntity } from '../../entity/order.entity';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { OrderProductMappingEntity } from '../../entity/order.product.mapping.entity';
-import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
 
 /**
  * 실효 개인정보 파기예정일 계산.
@@ -17,8 +16,10 @@ import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delive
  *
  *    배치 쿼리의 대응 절:
  *      DATE_ADD(DATE(sendRequestAt), INTERVAL requestToDestroyPersonalInfoDay DAY) <= DATE(now)
- *      AND (expireAt IS NULL OR DATE(expireAt) < DATE(now)
- *           OR deletedAt IS NOT NULL OR couponStatus != 'NOT_USED')
+ *      AND (expireAt IS NULL OR DATE(expireAt) < DATE(now) OR deletedAt IS NOT NULL)
+ *
+ *    판정 기준은 쿠폰 상태가 아니라 유효기간 하나다 — 사용(USED)·폐기·환불폐기 여부와 무관하게
+ *    유효기간이 남아 있으면 파기하지 않는다(운영 결정).
  *
  * 반환값은 시분초를 0 으로 절삭한 로컬(KST) 날짜다. 배치가 DATE() 단위로 비교하고 자정에 도는
  * 것과 맞춘다. 계산 불가(발송건 없음/기준 컬럼 결측)면 null 을 돌려주고, 호출부는 종전 표시로
@@ -41,14 +42,15 @@ const addDays = (value: Date, days: number): Date => {
 /**
  * 발송건 1건의 파기예정일.
  *
- * 기준일 = DATE(발송요청일) + N일. 여기에 유효기간 가드가 적용되는 건(= 미사용이고 유효기간이
- * 아직 남은 살아있는 쿠폰)만 만료 다음 날까지 미뤄진다. 가드 비적용 3종(유효기간 없음 /
- * soft-delete / 소멸한 쿠폰)은 기준일 그대로다.
+ * 기준일 = DATE(발송요청일) + N일. 여기에 유효기간 가드가 적용되는 건(= 유효기간이 아직 남은
+ * 건)만 만료 다음 날까지 미뤄진다. 가드 비적용 2종(유효기간 없음 / soft-delete)은 기준일
+ * 그대로다. 쿠폰 상태(USED·CANCEL 등)는 판정에 쓰지 않는다 — 유효기간이 남아 있으면 사용
+ * 완료된 쿠폰도 보류한다.
  *
  * 배치는 두 조건을 AND 로 묶으므로 실제 파기 최초 시점은 두 날짜의 MAX 다.
  */
 export function resolveDeliveryDestroyAt(
-  delivery: Pick<OrderDeliveryEntity, 'expireAt' | 'deletedAt' | 'couponStatus'>,
+  delivery: Pick<OrderDeliveryEntity, 'expireAt' | 'deletedAt'>,
   sendRequestAt: Date | null | undefined,
   destroyDay: number | null | undefined,
 ): Date | null {
@@ -58,11 +60,7 @@ export function resolveDeliveryDestroyAt(
 
   const baseDestroyAt = addDays(atStartOfDay(sendRequestAt), destroyDay);
 
-  const guardApplies =
-    delivery.expireAt !== null &&
-    delivery.expireAt !== undefined &&
-    delivery.deletedAt === null &&
-    delivery.couponStatus === OrderDeliveryCouponStatus.NOT_USED;
+  const guardApplies = delivery.expireAt !== null && delivery.expireAt !== undefined && delivery.deletedAt === null;
 
   if (!guardApplies) return baseDestroyAt;
 

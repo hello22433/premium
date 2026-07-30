@@ -15,8 +15,10 @@ import { DeliveryBatchService } from './delivery.batch.service';
  * - 리뷰(이기성): order_history 의 PII(수신정보 변경요청/폐기 후 신규 발송 이력의 before/afterChange)도
  *   같이 마스킹해야 함(미파기 시 CS 이력 API 로 평문 수신처 노출). 단 상태 감사 이력은 보존.
  * - 유효기간 가드: 유효기간이 파기예정일보다 뒤인 상품(예: 유효기간 5년 / 파기 180일)에서
- *   수신처가 만료 전에 지워져 재발송·만료안내가 불가능해지던 문제. "미사용 + 유효기간 남음" 건만
- *   만료 다음 날까지 파기를 보류한다(그 외는 종전대로 즉시 파기).
+ *   수신처가 만료 전에 지워져 재발송·만료안내·CS 대응이 불가능해지던 문제. 유효기간이 남은 건은
+ *   만료 다음 날까지 파기를 보류한다. 판정 기준은 유효기간 하나이며 쿠폰 상태는 보지 않는다 —
+ *   사용 완료(USED) 건도 유효기간 동안은 보류한다(운영 결정).
+ *   비적용 2종(유효기간 없음 / soft-delete 된 tip)은 종전대로 즉시 파기.
  *
  * 생성자 의존성이 많아 Object.create 로 우회 후 필요한 repository 만 mock 주입.
  *
@@ -184,35 +186,32 @@ describe('DeliveryBatchService.deliveryDeliveryTargetDestroy', () => {
       expect(findExpireGuard(selectQb)[0]).toContain('orderDelivery.expireAt IS NULL');
     });
 
-    it('soft-delete 된 tip(재발행 롤백으로 되감긴 신행)은 가드 비적용 — 현재는 3번 절과 중복인 방어절', async () => {
+    it('soft-delete 된 tip(재발행 롤백으로 되감긴 신행)은 가드 비적용 — 유효기간이 남아도 파기', async () => {
       const selectQb = makeSelectQb([{ id: 1 }]);
       const sut = makeSut(selectQb);
 
       await sut.deliveryDeliveryTargetDestroy();
 
       // 지워지는 쪽은 구행이 아니라 신행(tip)이다 — customer.service.service.ts:2204.
-      // 그리고 softDelete 는 couponStatus=CANCEL 플립 성공(tipNeutralized) 뒤에만 실행되므로
-      // 이 절이 잡는 행은 모두 3번 절에도 걸린다(현재 no-op). CANCEL 없이 지우는 경로가 생길
-      // 때를 대비한 방어로 유지하며, 이 테스트는 그 방어가 사라지지 않았음만 고정한다.
+      // 되감긴 tip 은 고객이 볼 쿠폰이 아니라 붙잡을 이유가 없다. couponStatus 절을 걷어내면서
+      // 이 절이 실효를 갖게 됐다(종전에는 CANCEL 절이 이 집합을 100% 커버해 no-op 이었다).
       expect(findExpireGuard(selectQb)[0]).toContain('orderDelivery.deletedAt IS NOT NULL');
     });
 
-    it('소멸한 쿠폰(NOT_USED 이외)은 가드 비적용 — 만료 안내 대상이 아니므로 PII 를 붙잡지 않는다', async () => {
+    it('쿠폰 상태로는 좁히지 않는다 — 유효기간이 남으면 사용 완료 건도 보류한다(운영 결정)', async () => {
       const selectQb = makeSelectQb([{ id: 1 }]);
       const sut = makeSut(selectQb);
 
       await sut.deliveryDeliveryTargetDestroy();
 
       const guard = findExpireGuard(selectQb);
-      expect(guard[0]).toContain('orderDelivery.couponStatus != :liveCouponStatus');
-      // NOT_USED 의 여집합 = USED/CANCEL/REFUND_CANCEL/EXPIRED 4종이 비적용된다.
-      // 명분은 '만료 안내'축이다 — handleDeliveryEncourage 가 NOT_USED 만 대상으로 한다.
-      // '재발송'축의 차단 목록은 UNSENDABLE_COUPON_STATUSES(CANCEL/REFUND_CANCEL)뿐이라
-      // USED/EXPIRED 는 기술적으로 재발송 가능하다. 실익이 없어 함께 제외한 것뿐이다.
-      expect(guard[1].liveCouponStatus).toBe('NOT_USED');
+      // 판정 기준은 유효기간 하나다. couponStatus 절이 다시 들어오면 USED 건이 만료 전에
+      // 파기되어 "유효기간 안에는 조회·CS 대응이 가능해야 한다"는 요구가 깨진다.
+      expect(guard[0]).not.toContain('couponStatus');
+      expect(guard[1]).not.toHaveProperty('liveCouponStatus');
     });
 
-    it('가드 4절의 최상위 결합자는 OR 다 — AND 로 뒤집히면 대량 미파기가 된다', async () => {
+    it('가드 3절의 최상위 결합자는 OR 다 — AND 로 뒤집히면 대량 미파기가 된다', async () => {
       const selectQb = makeSelectQb([{ id: 1 }]);
       const sut = makeSut(selectQb);
 
@@ -221,24 +220,22 @@ describe('DeliveryBatchService.deliveryDeliveryTargetDestroy', () => {
       const [sql] = findExpireGuard(selectQb);
 
       // 이 테스트가 지키는 회귀는 딱 하나 — "최상위 결합자가 OR 에서 AND 로 바뀌는 것"이다.
-      // AND 가 되면 '유효기간 없음 AND 만료됨 AND 삭제됨 AND 죽은쿠폰'을 모두 만족해야만 파기라,
+      // AND 가 되면 '유효기간 없음 AND 만료됨 AND 삭제됨'을 모두 만족해야만 파기라,
       // 사실상 아무것도 파기되지 않는다(PII 영구 잔존).
       //
-      // 검사 방식: 최상위 OR 로 쪼갠 뒤 4개 항이 서로 다른 조각에 하나씩 들어 있는지 본다.
-      // 단순히 `not.toMatch(/\bAND\b/)` 로 AND 를 금지하지 않는 이유 —
-      // 항 '내부'의 AND 는 오히려 정당한 개선일 수 있다. 예컨대 couponStatus 의 NULL 모호성을
-      // 명시적으로 좁히는 `(couponStatus != :liveCouponStatus AND couponStatus IS NOT NULL)` 는
-      // 올바른 수정인데, AND 를 통째로 금지하면 그 수정이 이 테스트에 막힌다.
+      // 검사 방식: 최상위 OR 로 쪼갠 뒤 3개 항이 서로 다른 조각에 하나씩 들어 있는지 본다.
+      // 단순히 `not.toMatch(/\bAND\b/)` 로 AND 를 금지하지 않는 이유 — 항 '내부'의 AND 는
+      // 오히려 정당한 개선일 수 있어(예: 특정 항의 NULL 모호성을 명시적으로 좁히는 경우),
+      // AND 를 통째로 금지하면 그 수정이 이 테스트에 막힌다.
       // 조각 개수만 고정하고 내부 구조는 자유롭게 둔다.
       const topLevelClauses = sql.split(/\bOR\b/);
-      expect(topLevelClauses).toHaveLength(4);
+      expect(topLevelClauses).toHaveLength(3);
 
       // 순서는 강제하지 않는다(재배열은 의미 변화가 아니다). 각 항이 '정확히 한 조각'에만 있으면 된다.
       for (const term of [
         'orderDelivery.expireAt IS NULL',
         'DATE(orderDelivery.expireAt) < DATE(:now)',
         'orderDelivery.deletedAt IS NOT NULL',
-        'orderDelivery.couponStatus != :liveCouponStatus',
       ]) {
         expect(topLevelClauses.filter((c: string) => c.includes(term))).toHaveLength(1);
       }

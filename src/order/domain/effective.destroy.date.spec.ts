@@ -6,7 +6,8 @@ import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delive
  *
  * 이 규칙은 delivery.batch.service.ts 의 정기파기 쿼리를 손으로 복제한 것이라,
  * 두 곳이 어긋나면 고객사에 고지한 파기일과 실제 파기일이 달라진다. 배치 쪽 가드의
- * 4개 절(만료/expireAt NULL/soft-delete/소멸 쿠폰)에 각각 대응하는 케이스를 둔다.
+ * 3개 절(만료/expireAt NULL/soft-delete)에 각각 대응하는 케이스를 둔다.
+ * 쿠폰 상태는 판정에 쓰지 않는다 — 유효기간이 남아 있으면 사용 완료 건도 보류한다.
  *
  * 배치 SQL 자체의 필터 동작은 target-destroy-expiry-guard.db-integration-test.ts 가
  * 실DB 로 검증한다. 여기서는 "그래서 며칠인가"만 다룬다.
@@ -75,13 +76,15 @@ describe('resolveDeliveryDestroyAt — 발송건 1건의 파기예정일', () =>
     OrderDeliveryCouponStatus.CANCEL,
     OrderDeliveryCouponStatus.REFUND_CANCEL,
     OrderDeliveryCouponStatus.EXPIRED,
-  ])('소멸한 쿠폰(%s)은 유효기간이 남아도 기준일 그대로다 — 배치 가드 3번 절', (couponStatus) => {
+  ])('쿠폰 상태(%s)는 판정에 쓰지 않는다 — 유효기간이 남아 있으면 상태 불문 미뤄진다', (couponStatus) => {
+    // 운영 결정: 판정 기준은 유효기간 하나다. 사용 완료된 쿠폰도 유효기간 동안은 파기하지 않는다.
+    // couponStatus 를 넘겨도 결과가 달라지지 않음을 고정한다(시그니처가 이 필드를 받지 않는다).
     const at = resolveDeliveryDestroyAt(
-      { expireAt: day('2030-12-31T00:00:00'), deletedAt: null, couponStatus },
+      { expireAt: day('2030-12-31T00:00:00'), deletedAt: null, couponStatus } as never,
       day('2026-01-01T14:00:00'),
       180,
     );
-    expect(ymd(at)).toBe('2026-06-30');
+    expect(ymd(at)).toBe('2031-01-01');
   });
 
   it('파기일수가 NULL 이면 null — 배치가 이 행을 영원히 집지 않으므로 날짜를 지어내지 않는다', () => {

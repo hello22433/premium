@@ -296,7 +296,7 @@ describe('DeliveryBatchService.deliveryDeliveryTargetDestroy 유효기간 가드
     return row?.deliveryTarget ?? null;
   };
 
-  it('미사용 + 유효기간 남음만 보류하고, 나머지는 종전대로 파기한다', async () => {
+  it('유효기간이 남으면 상태 불문 보류하고, 만료·미발행·soft-delete 는 종전대로 파기한다', async () => {
     // positive control — 반드시 파기되어야 하는 행. 이게 파기되지 않으면 픽스처가 주 날짜 절을
     // 통과하지 못한 것이므로, 아래 '보류' 단언들은 전부 의미가 없다(테스트 자체가 거짓 초록).
     const controlId = await seedDelivery({ label: 'control-expired', expireAt: dayAt(-1) });
@@ -306,26 +306,31 @@ describe('DeliveryBatchService.deliveryDeliveryTargetDestroy 유효기간 가드
     const softDeletedId = await seedDelivery({ label: 'soft-deleted', expireAt: dayAt(+1), softDeleted: true });
     const usedId = await seedDelivery({ label: 'used', expireAt: dayAt(+1), couponStatus: 'USED' });
     const cancelId = await seedDelivery({ label: 'cancel', expireAt: dayAt(+1), couponStatus: 'CANCEL' });
+    const usedExpiredId = await seedDelivery({ label: 'used-expired', expireAt: dayAt(-1), couponStatus: 'USED' });
 
     await service.deliveryDeliveryTargetDestroy();
 
     // ① positive control — 픽스처가 유효함을 먼저 증명한다
     expect(await readTarget(controlId)).toBe(DESTROY_VALUE);
 
-    // ② 이 PR 의 존재 이유 — 미사용 + 유효기간 남음은 수신처가 보존된다
+    // ② 이 기능의 존재 이유 — 유효기간이 남으면 수신처가 보존된다
     expect(await readTarget(holdId)).toBe(ORIGINAL_TARGET);
 
     // ③ 유효기간이 없는 건은 종전대로 파기. 절 1(expireAt IS NULL)이 없으면 NULL 3값 논리로
     //    영구 미파기가 되는 집합이라, 이 단언이 그 회귀를 막는 핵심이다.
     expect(await readTarget(nullExpireId)).toBe(DESTROY_VALUE);
 
-    // ④ soft-delete 된 tip — withDeleted() 로 후보에 들어오고, update 는 soft-delete 필터를
-    //    타지 않으므로 실제로 마스킹된다.
+    // ④ soft-delete 된 tip — 되감긴 껍데기라 유효기간이 남아도 파기한다. withDeleted() 로
+    //    후보에 들어오고, update 는 soft-delete 필터를 타지 않으므로 실제로 마스킹된다.
     expect(await readTarget(softDeletedId)).toBe(DESTROY_VALUE);
 
-    // ⑤⑥ 이미 소멸한 쿠폰은 유효기간이 남아 있어도 파기
-    expect(await readTarget(usedId)).toBe(DESTROY_VALUE);
-    expect(await readTarget(cancelId)).toBe(DESTROY_VALUE);
+    // ⑤⑥ 운영 결정 — 판정 기준은 유효기간 하나다. 사용/폐기된 쿠폰도 유효기간 안에는 보류한다.
+    //     (유효기간 내에는 조회·CS 대응이 가능해야 한다는 요구)
+    expect(await readTarget(usedId)).toBe(ORIGINAL_TARGET);
+    expect(await readTarget(cancelId)).toBe(ORIGINAL_TARGET);
+
+    // ⑦ 다만 만료까지 지났으면 상태와 무관하게 파기된다 — 보류가 무기한이 되지 않음을 고정한다.
+    expect(await readTarget(usedExpiredId)).toBe(DESTROY_VALUE);
   });
 
   it('만료 당일은 보류하고 다음 날 회차에서 파기한다 — DATE() 절삭의 자정 경계', async () => {
