@@ -61,10 +61,21 @@ const addDays = (value: Date, days: number): Date => {
 };
 
 /**
- * 발송건 1건의 파기예정일.
+ * 발송건 1건의 파기일.
  *
- * 기준일 = DATE(발송요청일) + N일. 여기에 유효기간 가드가 적용되는 건(= 유효기간이 아직 남은
- * 건)만 만료 다음 날까지 미뤄진다. 가드 비적용 2종(유효기간 없음 / soft-delete)은 기준일
+ * **이미 파기된 건은 실적일을, 아직 파기되지 않은 건은 예정일을 돌려준다.**
+ * 이 값은 파기확인서의 '파기일' 칸에도 쓰이므로(대외 증빙), 이미 지운 건에 미래 날짜를 주면
+ * 거짓 증명이 된다. 그래서 실적을 알 수 있으면 실적이 항상 우선한다.
+ *
+ * 실적을 아는 경로는 조기파기뿐이다(early_destroy_request.executedAt). 정기파기 배치는 파기
+ * 시각을 따로 기록하지 않는데, 배치는 정의상 아래 계산식이 가리키는 날에 지우므로 계산값이
+ * 곧 실적과 같다 — 즉 정기파기 건은 별도 기록 없이도 정확하다. 반대로 조기파기는 그 날짜보다
+ * 앞당겨 지우므로 계산식으로는 알 수 없고, 그래서 executedAt 을 받아야 한다.
+ * ⚠️ 조기파기 요청을 거치지 않는 수동 파기 경로가 생기면 이 함수는 그 건을 다시 예정일로
+ *    답하게 된다. 그런 경로를 추가할 때는 실적 기록도 함께 남겨야 한다.
+ *
+ * 예정일 계산 = DATE(발송요청일) + N일. 여기에 유효기간 가드가 적용되는 건(= 유효기간이 아직
+ * 남은 건)만 만료 다음 날까지 미뤄진다. 가드 비적용 2종(유효기간 없음 / soft-delete)은 기준일
  * 그대로다. 쿠폰 상태(USED·CANCEL 등)는 판정에 쓰지 않는다 — 유효기간이 남아 있으면 사용
  * 완료된 쿠폰도 보류한다.
  *
@@ -81,7 +92,13 @@ export function resolveDeliveryDestroyAt(
   delivery: Pick<OrderDeliveryEntity, 'expireAt' | 'deletedAt'>,
   sendRequestAt: Date | null | undefined,
   destroyDay: number | null | undefined,
+  earlyDestroyedAt?: Date | null,
 ): Date | null {
+  // 실적 우선. 조기파기로 이미 지운 건은 예정일이 아니라 지운 날을 답해야 한다.
+  // 이 분기가 없으면 유효기간 5년 상품을 발송 한 달 만에 조기파기했을 때 파기확인서에
+  // 4년 11개월 뒤 날짜가 인쇄된다(리뷰 HIGH-1).
+  if (earlyDestroyedAt) return atStartOfDay(earlyDestroyedAt);
+
   // 배치 주 절이 INTERVAL NULL DAY → NULL 이 되어 이 행을 영원히 집지 않는다. 파기일을 특정할
   // 수 없으므로 null. (실제로 파기되지 않는 상태이므로 날짜를 지어내면 거짓 고지가 된다.)
   if (!sendRequestAt || destroyDay === null || destroyDay === undefined) return null;
@@ -109,8 +126,17 @@ export function resolveDeliveryDestroyAt(
  *
  * 그 보장은 **넘겨받은 집합에 한정**된다. 호출부가 발송건을 걸러낸 뒤 넘기면 걸러진 건은 MAX 에
  * 들어가지 않는다. 위 ⚠️ 대로 hideDiscardReissueDeliveries 적용 전 집합을 넘겨야 하는 이유다.
+ *
+ * earlyDestroyedAtByDeliveryId: 조기파기로 이미 지운 발송건의 실적일(order_delivery.id → 실행시각).
+ * 호출부가 early_destroy_request(COMPLETED)에서 만들어 넘긴다. 넘기지 않으면 전부 예정일로
+ * 계산되므로, 파기확인서처럼 실적이 필요한 화면을 그리는 경로에서는 반드시 채워야 한다.
+ * 일부만 조기파기된 주문에서는 실적일과 예정일이 섞여 MAX 를 이루는데, 그래도 "이 날이면 전부
+ * 지워져 있다"는 의미는 유지된다(이미 지운 건은 그 날짜가 과거라 MAX 에 영향을 주지 않는다).
  */
-export function resolveOrderEffectiveDestroyAt(order: Pick<OrderEntity, 'orderProductMappings'>): Date | null {
+export function resolveOrderEffectiveDestroyAt(
+  order: Pick<OrderEntity, 'orderProductMappings'>,
+  earlyDestroyedAtByDeliveryId?: ReadonlyMap<number, Date>,
+): Date | null {
   const mappings: OrderProductMappingEntity[] = order.orderProductMappings ?? [];
 
   let latest: Date | null = null;
@@ -121,6 +147,7 @@ export function resolveOrderEffectiveDestroyAt(order: Pick<OrderEntity, 'orderPr
         delivery,
         mapping.sendRequestAt,
         mapping.requestToDestroyPersonalInfoDay,
+        earlyDestroyedAtByDeliveryId?.get(delivery.id),
       );
       // 특정 불가한 건이 하나라도 있으면 주문 전체를 특정할 수 없다.
       if (destroyAt === null) return null;

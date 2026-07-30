@@ -86,6 +86,7 @@ import {
   destructionCertificateBlockMessage,
 } from '../domain/destruction.certificate.gate';
 import { resolveOrderEffectiveDestroyAt } from '../domain/effective.destroy.date';
+import { EarlyDestroyRequestEntity, EarlyDestroyRequestStatus } from '../../entity/early.destroy.request.entity';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { TestOrderDeliveryEntity } from '../../entity/test.order.delivery.entity';
 import { ProductEntity } from '../../entity/product.entity';
@@ -321,6 +322,8 @@ export class OrderService {
     private orderProductMappingRepository: Repository<OrderProductMappingEntity>,
     @InjectRepository(OrderDeliveryEntity)
     private orderDeliveryRepository: Repository<OrderDeliveryEntity>,
+    @InjectRepository(EarlyDestroyRequestEntity)
+    private earlyDestroyRequestRepository: Repository<EarlyDestroyRequestEntity>,
     @InjectRepository(TestOrderDeliveryEntity)
     private testOrderDeliveryRepository: Repository<TestOrderDeliveryEntity>,
     @InjectRepository(ProductEntity)
@@ -1578,6 +1581,63 @@ export class OrderService {
   }
 
   /**
+   * 조기파기로 이미 지운 발송건의 **실적 파기일**을 order_delivery.id 로 인덱싱해 돌려준다.
+   *
+   * 파기확인서는 "언제 파기했다"를 증명하는 대외 문서라 예정일을 쓰면 거짓 증명이 된다.
+   * 정기파기는 계산식이 가리키는 날에 지우므로 계산값이 곧 실적이지만(별도 기록 불필요),
+   * 조기파기는 그보다 앞당겨 지우므로 실행 시각을 읽어와야 한다(리뷰 HIGH-1).
+   *
+   * 매칭 규칙 — early_destroy_request_item 의 orderDeliveryId 는 nullable 이다:
+   *  · 값이 있으면 그 발송건 1건만 파기된 것이다.
+   *  · NULL 이면 해당 orderProductMapping 의 **발송건 전체**가 파기된 것이므로 전부 펼쳐 넣는다.
+   * COMPLETED 요청만 본다 — PENDING 은 아직 아무것도 지우지 않았다.
+   *
+   * 같은 발송건이 여러 요청에 걸리는 경우는 실행 단계에서 차단되지만(이미 파기된 건 포함 시
+   * executeRequest 가 거부), 방어적으로 가장 이른 실행 시각을 남긴다 — 최초 파기가 실적이다.
+   */
+  private async loadEarlyDestroyedAtMap(orderIds: number[]): Promise<Map<number, Date>> {
+    const result = new Map<number, Date>();
+    if (orderIds.length === 0) return result;
+
+    const requests = await this.earlyDestroyRequestRepository.find({
+      where: { orderId: In(orderIds), status: EarlyDestroyRequestStatus.COMPLETED },
+      relations: ['items'],
+    });
+
+    const mappingWideRequests: { mappingId: number; executedAt: Date }[] = [];
+    for (const request of requests) {
+      if (!request.executedAt) continue; // COMPLETED 인데 시각이 없으면 실적을 주장할 수 없다
+      for (const item of request.items ?? []) {
+        if (item.orderDeliveryId !== null) {
+          const prev = result.get(item.orderDeliveryId);
+          if (!prev || request.executedAt < prev) result.set(item.orderDeliveryId, request.executedAt);
+        } else {
+          mappingWideRequests.push({ mappingId: item.orderProductMappingId, executedAt: request.executedAt });
+        }
+      }
+    }
+
+    // 매핑 전체 파기 건은 그 매핑의 발송건 id 를 조회해 펼친다(soft-delete 된 행도 파기 대상이었다).
+    if (mappingWideRequests.length > 0) {
+      const mappingIds = [...new Set(mappingWideRequests.map((r) => r.mappingId))];
+      const deliveries = await this.orderDeliveryRepository.find({
+        where: { orderProductMappingId: In(mappingIds) },
+        select: ['id', 'orderProductMappingId'],
+        withDeleted: true,
+      });
+      for (const { mappingId, executedAt } of mappingWideRequests) {
+        for (const delivery of deliveries) {
+          if (delivery.orderProductMappingId !== mappingId) continue;
+          const prev = result.get(delivery.id);
+          if (!prev || executedAt < prev) result.set(delivery.id, executedAt);
+        }
+      }
+    }
+
+    return result;
+  }
+
+  /**
    * 고객 노출용 발송 목록 필터.
    *
    * '폐기 후 신규 발송'은 자사↔수신자 간 내부 처리(고객사는 알 필요 없음)이므로, 원본을 대체해
@@ -1641,7 +1701,8 @@ export class OrderService {
     //   필터 후에 계산하면 tip 의 늦은 유효기간이 MAX 에서 누락돼 실제보다 이른 날짜를 고지하게
     //   된다(예: 원본 2031-01-02 / tip 2031-06-02 인데 2031-01-02 로 인쇄). tip 을 화면에서
     //   숨기는 것은 노출 정책이고, 파기일 산정에 포함하는 것은 사실 진술이라 축이 다르다.
-    const effectiveDestroyAt = resolveOrderEffectiveDestroyAt(order);
+    // 조기파기 실적일을 함께 넘긴다 — 이미 지운 건에 예정일(미래)을 고지하지 않기 위해서다.
+    const effectiveDestroyAt = resolveOrderEffectiveDestroyAt(order, await this.loadEarlyDestroyedAtMap([order.id]));
 
     // '폐기 후 신규 발송' 신규 건 숨김 — 발송완료리포트도 최초 발송 1건만 집계
     this.hideDiscardReissueDeliveries(order.orderProductMappings);
@@ -2070,9 +2131,10 @@ export class OrderService {
     //   통합 보고서는 주문이 N개이므로 집계 규칙을 한 단계 더 얹는다 — 전 주문 파기일의 MAX 이고,
     //   하나라도 특정 불가(null)면 전체가 null 이다. 문서 한 장이 여러 주문을 덮으므로 "이 날이면
     //   전부 지워져 있다"가 성립하려면 가장 늦은 날이어야 한다.
+    const earlyDestroyedAtMap = await this.loadEarlyDestroyedAtMap(orders.map((o) => o.id));
     let multipleEffectiveDestroyAt: Date | null = null;
     for (const order of orders) {
-      const destroyAt = resolveOrderEffectiveDestroyAt(order);
+      const destroyAt = resolveOrderEffectiveDestroyAt(order, earlyDestroyedAtMap);
       if (destroyAt === null) {
         multipleEffectiveDestroyAt = null;
         break;

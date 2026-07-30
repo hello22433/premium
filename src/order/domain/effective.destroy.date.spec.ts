@@ -95,6 +95,54 @@ describe('resolveDeliveryDestroyAt — 발송건 1건의 파기예정일', () =>
   it('발송요청일이 없으면 null', () => {
     expect(resolveDeliveryDestroyAt({ ...alive, expireAt: null }, null, 180)).toBeNull();
   });
+
+  describe('조기파기 실적일 우선 (리뷰 HIGH-1)', () => {
+    it('조기파기된 건은 예정일이 아니라 실제로 지운 날을 돌려준다', () => {
+      // 유효기간 5년 상품을 발송 한 달 만에 조기파기한 경우.
+      // 실적을 무시하면 파기확인서에 2031-01-01(4년 11개월 뒤)이 인쇄된다.
+      const at = resolveDeliveryDestroyAt(
+        { ...alive, expireAt: day('2030-12-31T00:00:00') },
+        day('2026-01-01T14:00:00'),
+        180,
+        day('2026-02-01T09:30:00'), // 조기파기 실행 시각
+      );
+      expect(ymd(at)).toBe('2026-02-01');
+    });
+
+    it('실적일은 시분초를 버린 날짜로 절삭된다', () => {
+      const at = resolveDeliveryDestroyAt(
+        { ...alive, expireAt: null },
+        day('2026-01-01'),
+        180,
+        day('2026-02-01T23:59:59'),
+      );
+      expect(ymd(at)).toBe('2026-02-01');
+    });
+
+    it('실적일이 예정일보다 뒤여도 실적이 이긴다 — 예정일은 추정, 실적은 사실이다', () => {
+      // 파기가 지연 실행된 경우. MAX 를 취하지 않는다(그러면 다시 추정값이 섞인다).
+      const at = resolveDeliveryDestroyAt(
+        { ...alive, expireAt: day('2026-03-01T00:00:00') },
+        day('2026-01-01T14:00:00'),
+        180, // 예정 2026-06-30
+        day('2026-08-15T10:00:00'),
+      );
+      expect(ymd(at)).toBe('2026-08-15');
+    });
+
+    it('실적일이 없으면(정기파기 또는 미파기) 종전대로 예정일을 계산한다', () => {
+      // 정기파기는 계산식이 가리키는 날에 지우므로 계산값이 곧 실적이다.
+      const undef = resolveDeliveryDestroyAt({ ...alive, expireAt: null }, day('2026-01-01T14:00:00'), 180, undefined);
+      const nul = resolveDeliveryDestroyAt({ ...alive, expireAt: null }, day('2026-01-01T14:00:00'), 180, null);
+      expect(ymd(undef)).toBe('2026-06-30');
+      expect(ymd(nul)).toBe('2026-06-30');
+    });
+
+    it('실적일이 있으면 파기일수/발송요청일이 없어도 null 이 아니다 — 이미 지운 사실은 확정이다', () => {
+      const at = resolveDeliveryDestroyAt({ ...alive, expireAt: null }, null, null, day('2026-02-01T00:00:00'));
+      expect(ymd(at)).toBe('2026-02-01');
+    });
+  });
 });
 
 describe('resolveOrderEffectiveDestroyAt — 주문 단위 집계', () => {
@@ -145,6 +193,20 @@ describe('resolveOrderEffectiveDestroyAt — 주문 단위 집계', () => {
     expect(ymd(resolveOrderEffectiveDestroyAt(withTip))).toBe('2031-06-02');
     // tip 을 걸러낸 집합을 넘기면 5개월 이른 날짜가 나온다 — 이 차이가 고지 오류의 크기다.
     expect(ymd(resolveOrderEffectiveDestroyAt(withoutTip))).toBe('2031-01-01');
+  });
+
+  it('일부만 조기파기된 주문 — 실적일과 예정일이 섞여도 MAX 의미가 유지된다', () => {
+    // 발송건 2개 중 하나만 조기파기. 이미 지운 건의 실적일은 과거라 MAX 에 영향을 주지 않고,
+    // 남은 건의 예정일이 "이 날이면 전부 지워져 있다"를 결정한다.
+    const destroyed = { ...aliveDelivery(new Date('2030-12-31T00:00:00')), id: 1 };
+    const pending = { ...aliveDelivery(new Date('2026-03-01T00:00:00')), id: 2 }; // 예정 2026-06-30
+
+    const order: any = { orderProductMappings: [mapping([destroyed, pending])] };
+    const earlyMap = new Map<number, Date>([[1, new Date('2026-02-01T09:00:00')]]);
+
+    expect(ymd(resolveOrderEffectiveDestroyAt(order, earlyMap))).toBe('2026-06-30');
+    // 실적을 넘기지 않으면 조기파기된 건의 예정일(2031-01-01)이 MAX 를 지배해 5년 뒤가 된다.
+    expect(ymd(resolveOrderEffectiveDestroyAt(order))).toBe('2031-01-01');
   });
 
   it('발송건이 없으면 null (증명할 내용이 없다)', () => {

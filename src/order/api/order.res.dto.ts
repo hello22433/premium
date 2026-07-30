@@ -235,11 +235,15 @@ export class OrderGetDeliveryCompleteReportResDto extends OrderGetDeliveryComple
   @ApiProperty({
     nullable: true,
     description:
-      '실효 개인정보 파기예정일 ex) yyyy-MM-dd. `MAX(발송요청일 + 파기일수, 유효기간 만료일 + 1일)` 로, ' +
-      '정기파기 배치가 파기할 수 있는 **가장 이른 날짜**다(만료 당일은 아직 유효하므로 +1일). ' +
+      '실효 개인정보 파기일 ex) yyyy-MM-dd. **이미 파기된 건은 실적일, 아직 파기되지 않은 건은 예정일**이다. ' +
+      '파기확인서의 파기일 칸에 그대로 쓸 수 있다. ' +
+      '① 조기파기된 건 → 실제 실행일(early_destroy_request.executedAt). ' +
+      '② 그 외 → `MAX(발송요청일 + 파기일수, 유효기간 만료일 + 1일)` (만료 당일은 아직 유효하므로 +1일). ' +
+      '정기파기 배치는 이 계산식이 가리키는 날에 지우므로 ②는 예정일이자 실적일이다. ' +
       '유효기간이 파기예정일보다 뒤인 상품(예: 유효기간 5년 / 파기 180일)은 만료 다음 날까지 파기가 ' +
       '보류되므로 requestToDestroyPersonalInfoDay 로 자체 계산한 날짜와 다르다. ' +
-      '해당 시점에 환불이 진행중이면 배치가 건너뛰어 이보다 뒤 회차로 밀릴 수 있다. ' +
+      '주문에 발송건이 여러 개면 그중 가장 늦은 날짜(= 이 날이면 전부 지워져 있다). ' +
+      '미파기 건은 해당 시점에 환불이 진행중이면 배치가 건너뛰어 이보다 뒤 회차로 밀릴 수 있다. ' +
       '파기일을 특정할 수 없으면 null 이며, 이때는 호출부가 종전 계산으로 폴백한다.',
   })
   effectiveDestroyAt: string | null;
