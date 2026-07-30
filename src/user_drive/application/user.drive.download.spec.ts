@@ -131,11 +131,21 @@ describe('UserDriveService.downloadFile', () => {
     expect(fileService.downloadWithPath).not.toHaveBeenCalled();
   });
 
-  it('레거시 공개 첨부(image/) 는 호환 허용 (문서함 실제 레거시 접두사)', async () => {
+  it('레거시 공개 첨부(image/) 는 호환 허용 (문서함 실제 레거시 접두사, 소유검사 없이 통과)', async () => {
     const imageUrl = 'https://b.s3.amazonaws.com/image/abc-banner.png';
-    const { sut, fileService } = makeSut(imageUrl);
+    const { sut, fileService, userRepo } = makeSut(imageUrl);
     await expect(sut.downloadFile(receiver, 1, imageUrl)).resolves.toBeDefined();
     expect(fileService.downloadWithPath).toHaveBeenCalledTimes(1);
+    expect(userRepo.findOne).not.toHaveBeenCalled(); // public 접두사 분기(소유검사 skip)로 통과함을 확인
+  });
+
+  it('레거시 image/ 도 문서 열람권한이 먼저 걸린다 — 비수신 기업관리자 → BadRequest', async () => {
+    // image/ 는 소유검사를 건너뛰므로, 비수신자를 막는 유일한 방어선은 상위 assertCanReadDrive.
+    // 이 순서(열람권한 → 소유검사)가 뒤집히면 레거시 public 첨부가 새므로 회귀로 못박는다.
+    const imageUrl = 'https://b.s3.amazonaws.com/image/abc-banner.png';
+    const { sut, fileService } = makeSut(imageUrl);
+    await expect(sut.downloadFile(otherCorp, 1, imageUrl)).rejects.toBeInstanceOf(BadRequestException);
+    expect(fileService.downloadWithPath).not.toHaveBeenCalled();
   });
 
   it('★차단: 첨부 위치가 아닌 접두사(export/ 등) → Forbidden', async () => {
