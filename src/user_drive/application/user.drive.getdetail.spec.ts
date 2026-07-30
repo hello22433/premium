@@ -27,6 +27,7 @@ describe('UserDriveService.getDetail — files 조립', () => {
     };
     const driveRepo: any = { findOne: jest.fn().mockResolvedValue(drive), save: jest.fn() };
     const fileService: any = {
+      extractStorageKey: (u: string) => new URL(u).pathname.replace(/^\/+/, ''),
       getOriginalName: jest.fn(async (u: string) => `meta:${u.split('/').pop()}`),
       extractOriginalFileName: jest.fn((u: string) => `key:${u.split('/').pop()}`),
       ...fileServiceOverrides,
@@ -84,5 +85,24 @@ describe('UserDriveService.getDetail — files 조립', () => {
     const res = await sut.getDetail(admin, { id: 1 });
     expect(res.files).toEqual([]);
     expect(fileService.getOriginalName).not.toHaveBeenCalled();
+  });
+
+  it('레거시(image/·file/) 는 HeadObject 스킵하고 key 복원, private 만 HeadObject (M-3)', async () => {
+    const urls = ['https://b/image/abc-legacy.png', 'https://b/file/123-old.xlsx', 'https://b/private/5/u-new.xlsx'];
+    const { sut, fileService } = makeSut(urls);
+
+    const res = await sut.getDetail(admin, { id: 1 });
+
+    expect(fileService.getOriginalName).toHaveBeenCalledTimes(1); // private 1개만
+    expect(fileService.getOriginalName).toHaveBeenCalledWith('https://b/private/5/u-new.xlsx');
+    expect(fileService.extractOriginalFileName).toHaveBeenCalledTimes(2); // 레거시 2개
+    expect(res.files.map((f) => f.name)).toEqual(['key:abc-legacy.png', 'key:123-old.xlsx', 'meta:u-new.xlsx']);
+  });
+
+  it('fail-soft 폴백명은 uuid 접두사(첫 - 앞)를 벗긴다 (표시 일관성, LOW-3)', async () => {
+    const bad = 'uuid1234-보고서.xlsx'; // 스킴 없음 → extractStorageKey 의 new URL 에서 throw → 폴백
+    const { sut } = makeSut([bad]);
+    const res = await sut.getDetail(admin, { id: 1 });
+    expect(res.files[0]).toEqual({ url: bad, name: '보고서.xlsx' });
   });
 });

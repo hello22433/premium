@@ -109,15 +109,19 @@ export class UserDriveService {
     const files = await Promise.all(
       fileUrlList.map(async (url, index) => {
         try {
-          const name =
-            index < UserDriveService.MAX_FILE_META_LOOKUP
-              ? await this.fileService.getOriginalName(url)
-              : this.fileService.extractOriginalFileName(url);
+          const key = this.fileService.extractStorageKey(url);
+          // 원본명 메타데이터는 private 업로드에만 붙는다 → 레거시(image//file/)는 HeadObject 헛호출을
+          // 건너뛰고 key 복원으로 바로 간다. private 도 상한(MAX_FILE_META_LOOKUP)까지만 HeadObject.
+          const useHead = key.startsWith('private/') && index < UserDriveService.MAX_FILE_META_LOOKUP;
+          const name = useHead
+            ? await this.fileService.getOriginalName(url)
+            : this.fileService.extractOriginalFileName(url);
           return { url, name };
         } catch {
           // 잘못된/레거시 항목(비URL·콤마분할 조각 등)의 이름 조회가 실패해도 상세 전체를 500 내지 않도록 폴백.
-          // 원본명 조회는 표시용이라, 한 항목이 깨져도 마지막 경로조각(없으면 원문)으로 degrade 한다.
-          return { url, name: url.split('/').pop() || url };
+          // uuid 접두사를 벗겨(첫 '-' 뒤) extractOriginalFileName 과 표시 일관성을 맞춘다.
+          const base = url.split('/').pop() || url;
+          return { url, name: base.includes('-') ? base.split('-').slice(1).join('-') : base };
         }
       }),
     );
