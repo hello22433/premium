@@ -3161,20 +3161,27 @@ export class DeliveryBatchService {
       // ── 유효기간 가드 ────────────────────────────────────────────────────────────
       // 유효기간이 파기예정일보다 뒤인 상품(예: 유효기간 5년 / 파기 180일)은 만료 전까지 파기를 미룬다.
       //   실효 파기예정일 = MAX(발송요청일 + N일, 유효기간 만료일 + 1일)
-      // 수신처를 만료 전에 지우면 재발송도, 만료 안내 독려문자(handleDeliveryEncourage)도 불가능해지고,
-      // 유효기간이 남은 쿠폰의 CS 대응 자체가 막힌다. (수신처가 '-' 면 CS 재발송이 '파기된 발송
-      // 정보입니다.' 로 차단된다 — customer.service.service.ts:1050)
+      // 수신처를 만료 전에 지우면 안 되는 이유는 셋인데, **적용 범위가 서로 다르다**:
+      //   · CS 대응 — 보류 집합 전체에 적용된다. 수신처가 '-' 면 CS 재발송이 '파기된 발송
+      //     정보입니다.' 로 차단된다(customer.service.service.ts:1051).
+      //   · 재발송 — CANCEL/REFUND_CANCEL 은 UNSENDABLE_COUPON_STATUSES 로 이미 차단돼 있어
+      //     (order.delivery.mutation.claim.ts:33) 이 명분이 적용되지 않는다.
+      //   · 만료 안내 독려문자 — handleDeliveryEncourage 가 couponStatus=NOT_USED 이고
+      //     status IN (COMPLETE, COMPLETE_SMS) 인 건만 대상으로 하므로(아래 handleDeliveryEncourage
+      //     참조) USED·CANCEL·FAIL 에는 적용되지 않는다.
+      // 즉 보류 집합 전체를 정당화하는 명분은 CS 대응 하나다. 나머지 둘은 부분집합에만 걸린다.
       //
       // 만료 후 재포착: 보류된 행은 PII 5종이 모두 원값이라 위 미파기 절(:3158)이 계속 참이고, 주 날짜
       // 절도 한 번 참이 되면 계속 참이므로, 만료 다음 날 자정 회차에서 자동으로 파기된다(누락 없음).
       // 보류 기간에도 매 회차 후보군에는 남아 있다가 이 가드 절에서만 걸러진다.
       //
-      // 이 가드로 새로 보류되는 집합에는 **발송 실패(status=FAIL) 건도 포함**된다. PIN 발급까지
-      // 성공한 뒤 발송에서 실패하면 expireAt 이 영속되고(:1441, :1565) couponStatus 는 NOT_USED 로
-      // 남으며, 최초 실패는 환불이 보류될 수 있어 refundStatus 도 NULL 이라 환불 가드에도 걸리지
-      // 않는다. 재발송이 유일한 구제책인 집합이라 유효기간까지 수신처를 남기는 것이 가드 취지에
-      // 부합한다 — 의도된 포함이다. 발송 성공 건으로 좁히려면 status IN (COMPLETE, COMPLETE_SMS)
-      // 를 이 절에 추가해야 하지만, 그러면 정작 재발송이 필요한 실패 건이 먼저 파기된다.
+      // **발송 실패(status=FAIL) 건도 보류된다** — 다른 행과 같은 이유, 즉 살아있는 expireAt 때문이다.
+      // PIN 발급까지 성공한 뒤 발송에서 실패하면 expireAt 이 영속되므로(:1441, 그리고 :1565 의
+      // updateDeliveryOwned('발송 부가 컬럼')) 가드가 그대로 걸린다. 부수적으로 couponStatus 는
+      // NOT_USED 로 남고 최초 실패는 환불이 보류될 수 있어 refundStatus 도 NULL 이라 다른 가드에도
+      // 걸리지 않아, 실제로 보류가 성립한다. 재발송이 유일한 구제책인 집합이라 이 포함은 의도된
+      // 것이다. 발송 성공 건으로 좁히려면 status IN (COMPLETE, COMPLETE_SMS) 를 이 절에 추가해야
+      // 하지만, 그러면 정작 재발송이 필요한 실패 건이 먼저 파기된다.
       //
       // [AND 로 덧붙는 절이므로 파기 대상을 좁히기만 한다 — 이 변경으로 새로 파기되는 건은 없다]
       // 아래 3개 절은 반드시 OR 로 묶인다. AND 로 바꾸면 "3개를 모두 만족해야 파기"가 되어 의미가
@@ -3188,19 +3195,26 @@ export class DeliveryBatchService {
       //   좁히는 절을 두지 않는다. 그 대가로 PII 보유기간이 최대 유효기간(5년)까지 늘어난다는
       //   점은 개인정보처리방침·고객사 계약 문구와 함께 검토되어야 한다.
       //
+      // (번호는 아래 SQL 의 OR 항 순서와 같다)
+      //
       //  1) expireAt IS NULL — [필수. 제거 금지]
-      //     미발행·발송실패 등 유효기간 자체가 없는 건. SQL 3값 논리상 `NULL < DATE(:now)` 는 거짓이
+      //     미발행 등 유효기간 자체가 없는 건. SQL 3값 논리상 `NULL < DATE(:now)` 는 거짓이
       //     아니라 NULL 이고 WHERE 는 TRUE 가 아닌 행을 버리므로, 이 절이 없으면 해당 건이 파기되지
       //     않는다. 종전(이 가드 이전)에는 정상 파기되던 집합이라 PII 사고다. 정책 논의 대상이 아니라
       //     정합성 방어이므로 지우지 말 것.
       //     · 정확히는 3절이 OR 라 `NULL OR TRUE = TRUE` 다. 이 절을 빼도 soft-delete 행은 여전히
       //       파기된다. 영구 미파기가 되는 건 `expireAt IS NULL` AND `deletedAt IS NULL` 인
-      //       교집합인데, 그게 정확히 미발행·발송실패 모집단이다.
+      //       교집합, 즉 **PIN 미발급 모집단**이다. (발송실패 중에서도 발급 전에 실패한 건만이다 —
+      //       발급 후 실패는 위에 적은 대로 expireAt 이 있어 이 교집합에 들지 않는다.)
       //
-      //  2) deletedAt IS NOT NULL — [정책 선택. 변경 가능]
+      //  2) DATE(expireAt) < DATE(:now) — [이 기능의 본체]
+      //     만료 다음 날부터 파기한다. 만료 당일은 아직 쿠폰이 유효하므로 파기하지 않는다.
+      //     날짜 절삭이라 expireAt 의 시분초는 판정에 영향을 주지 않는다(주 날짜 절과 같은 방식).
+      //
+      //  3) deletedAt IS NOT NULL — [정책 선택. 변경 가능]
       //     order_delivery 를 soft-delete 하는 경로는 레포 전체에 하나뿐이고, 지워지는 것은 재발행
       //     실패 시 unwindReissue 가 되감는 **신행(tip)** 이다 — 구행이 아니다
-      //     (customer.service.service.ts:2204. 같은 파일 :562 와 external.api.service.ts:1458 의
+      //     (customer.service.service.ts:2204. 이 파일 :562 와 external.api.service.ts:1458 의
       //     기존 주석도 "unwindReissue 가 tip 을 softDelete" 로 서술한다).
       //     실물 쿠폰이 있다면 그것은 **원본(구행)** 쪽이다 — SSG 는 reverseDiscard 로 부활하고,
       //     비-SSG 는 협력사 취소된 채 남는다. 되감긴 tip 은 고객이 볼 쿠폰이 아니므로 유효기간이
@@ -3208,7 +3222,11 @@ export class DeliveryBatchService {
       //     · 이 절은 couponStatus 절을 걷어내면서 실효를 갖게 됐다. 종전에는 softDelete 가
       //       `couponStatus=CANCEL` 플립 성공 뒤에만 실행되므로(customer.service.service.ts:2175-2202)
       //       CANCEL 절이 이 집합을 100% 커버해 no-op 이었으나, 이제 이 절이 단독으로 잡는다.
-      //     · 빼면 되감긴 tip 의 PII 를 유효기간만큼(최대 5년) 더 보관하게 된다.
+      //     · 다만 단독으로 잡는 구간은 좁다 — 되감긴 tip 은 대개 expireAt 이 NULL 이라 1) 이
+      //       커버하고, 이 절만이 잡는 것은 'issue() 가 expireAt 을 영속한 뒤 barCode 누락으로
+      //       unwind 된' 경우다(partner.company.extern.service.ts:189 가 영속, 그 뒤
+      //       customer.service.service.ts:2510 이 되감는다).
+      //     · 빼면 그 구간의 PII 를 유효기간만큼(최대 5년) 더 보관하게 된다.
       //
       // 조기파기(EarlyDestroyService.executeRequest)에는 이 가드가 없다 — 의도된 비대칭이다.
       // 정기파기는 기한 도래로 기계가 일괄 수행하지만, 조기파기는 운영자가 대상을 지정해 "지금

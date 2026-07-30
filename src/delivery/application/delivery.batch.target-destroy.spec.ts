@@ -27,7 +27,7 @@ import { DeliveryBatchService } from './delivery.batch.service';
  *   즉 여기서 확인하는 것은 "어떤 SQL 문자열을 QueryBuilder 에 넘겼는가"뿐이고,
  *   "그 SQL 이 실제로 그 행을 걸러내는가"는 원리적으로 검증하지 못한다.
  *   특히 아래 두 가지는 이 방식으로 절대 잡히지 않으므로 DB 통합 테스트가 필요하다:
- *     · NULL 3값 논리 (expireAt NULL, couponStatus legacy NULL 의 실제 매칭 결과)
+ *     · NULL 3값 논리 (expireAt NULL 이 `< DATE(:now)` 에서 UNKNOWN 이 되어 행이 통째로 탈락하는 것)
  *     · DATE() 절삭의 자정 경계 동작 (커넥션 TZ 가 KST 라는 전제에 의존)
  *   그 두 축은 delivery.batch.target-destroy-expiry-guard.db-integration-test.ts 가 실DB 로 덮는다.
  *   실행: $env:DATABASE_DATABASE='epopkon_test'; npm run test:db

@@ -231,10 +231,12 @@ export class OrderGetDeliveryCompleteReportResDto extends OrderGetDeliveryComple
   @ApiProperty({
     nullable: true,
     description:
-      '실효 개인정보 파기예정일 ex) yyyy-MM-dd. 발송요청일+파기일수와 쿠폰 유효기간 중 늦은 쪽으로, ' +
-      '정기파기 배치가 실제로 파기하는 날짜다. 유효기간이 파기예정일보다 뒤인 상품(예: 유효기간 5년 / ' +
-      '파기 180일)은 만료 다음 날까지 파기가 보류되므로 requestToDestroyPersonalInfoDay 로 자체 계산한 ' +
-      '날짜와 다르다. 파기일을 특정할 수 없으면 null.',
+      '실효 개인정보 파기예정일 ex) yyyy-MM-dd. `MAX(발송요청일 + 파기일수, 유효기간 만료일 + 1일)` 로, ' +
+      '정기파기 배치가 파기할 수 있는 **가장 이른 날짜**다(만료 당일은 아직 유효하므로 +1일). ' +
+      '유효기간이 파기예정일보다 뒤인 상품(예: 유효기간 5년 / 파기 180일)은 만료 다음 날까지 파기가 ' +
+      '보류되므로 requestToDestroyPersonalInfoDay 로 자체 계산한 날짜와 다르다. ' +
+      '해당 시점에 환불이 진행중이면 배치가 건너뛰어 이보다 뒤 회차로 밀릴 수 있다. ' +
+      '파기일을 특정할 수 없으면 null 이며, 이때는 호출부가 종전 계산으로 폴백한다.',
   })
   effectiveDestroyAt: string | null;
 

@@ -1635,6 +1635,14 @@ export class OrderService {
 
     await this.recoverDeletedProducts(order.orderProductMappings);
 
+    // ★ 파기예정일은 hideDiscardReissueDeliveries **이전**에 계산해야 한다.
+    //   그 함수는 opm.orderDeliveries 를 replacedFromId === null 로 덮어써 폐기후재발행 tip 을
+    //   목록에서 지우는데, 정기파기 배치에는 replacedFromId 필터가 없어 tip 도 파기 대상이다.
+    //   필터 후에 계산하면 tip 의 늦은 유효기간이 MAX 에서 누락돼 실제보다 이른 날짜를 고지하게
+    //   된다(예: 원본 2031-01-02 / tip 2031-06-02 인데 2031-01-02 로 인쇄). tip 을 화면에서
+    //   숨기는 것은 노출 정책이고, 파기일 산정에 포함하는 것은 사실 진술이라 축이 다르다.
+    const effectiveDestroyAt = resolveOrderEffectiveDestroyAt(order);
+
     // '폐기 후 신규 발송' 신규 건 숨김 — 발송완료리포트도 최초 발송 1건만 집계
     this.hideDiscardReissueDeliveries(order.orderProductMappings);
 
@@ -1761,13 +1769,13 @@ export class OrderService {
       status: order.status,
       couponExpiration: couponExpiration,
       requestToDestroyPersonalInfoDay: firstMapping?.requestToDestroyPersonalInfoDay ?? 0,
-      // 실효 파기예정일 — 유효기간 가드로 파기가 미뤄지는 건까지 반영한 '실제로 지워지는 날'.
-      // 보고서 PDF 가 "발송일 + N일"로 자체 계산하던 것을 대체한다(그 계산은 유효기간 5년 상품에서
-      // 실제와 어긋난다). 계산 불가 시 null 이며, 그때는 프론트가 종전 계산으로 폴백한다.
-      effectiveDestroyAt: (() => {
-        const destroyAt = resolveOrderEffectiveDestroyAt(order);
-        return destroyAt ? format(destroyAt, DateDateFormatStr) : null;
-      })(),
+      // 실효 파기예정일 — 유효기간 가드로 파기가 미뤄지는 건까지 반영한 '배치가 파기할 수 있는
+      // 가장 이른 날'. 보고서 PDF 가 orderProductMapping.sendRequestAt + N일로 자체 계산하던 것을
+      // 대신할 값으로 **추가**한다(기존 requestToDestroyPersonalInfoDay 는 그대로 두므로, 실제
+      // 교체는 프론트가 이 필드를 쓰기 시작할 때 일어난다).
+      // 값은 위 :1638 에서 tip 포함 집합으로 계산해 둔 것이다. 계산 불가 시 null 이며, 그때
+      // 종전 계산으로 폴백하는 것은 프론트와의 합의사항이다(이 레포가 강제하지는 못한다).
+      effectiveDestroyAt: effectiveDestroyAt ? format(effectiveDestroyAt, DateDateFormatStr) : null,
       productList: productList,
       actualSendAt: actualSendAt,
       // 발송 정보 추가 (첫 번째 상품의 정보 사용)
@@ -2053,6 +2061,22 @@ export class OrderService {
       }
     }
 
+    // ★ 단일 보고서(:1638)와 같은 이유로 hideDiscardReissueDeliveries **이전**에 계산한다.
+    //   통합 보고서는 주문이 N개이므로 집계 규칙을 한 단계 더 얹는다 — 전 주문 파기일의 MAX 이고,
+    //   하나라도 특정 불가(null)면 전체가 null 이다. 문서 한 장이 여러 주문을 덮으므로 "이 날이면
+    //   전부 지워져 있다"가 성립하려면 가장 늦은 날이어야 한다.
+    let multipleEffectiveDestroyAt: Date | null = null;
+    for (const order of orders) {
+      const destroyAt = resolveOrderEffectiveDestroyAt(order);
+      if (destroyAt === null) {
+        multipleEffectiveDestroyAt = null;
+        break;
+      }
+      if (multipleEffectiveDestroyAt === null || destroyAt > multipleEffectiveDestroyAt) {
+        multipleEffectiveDestroyAt = destroyAt;
+      }
+    }
+
     // '폐기 후 신규 발송' 신규 건 숨김 — 통합 발송완료리포트도 최초 발송 1건만 집계
     for (const order of orders) {
       this.hideDiscardReissueDeliveries(order.orderProductMappings);
@@ -2208,6 +2232,9 @@ export class OrderService {
       status: firstOrder.status,
       couponExpiration: couponExpiration,
       requestToDestroyPersonalInfoDay: firstMapping?.requestToDestroyPersonalInfoDay ?? 0,
+      // 전 주문 파기일의 MAX(:2064 에서 tip 포함 집합으로 계산). 단일 보고서와 같은 formatter 가
+      // 그리므로 이 필드가 빠지면 같은 주문을 단일로 뽑을 때와 통합으로 뽑을 때 날짜가 달라진다.
+      effectiveDestroyAt: multipleEffectiveDestroyAt ? format(multipleEffectiveDestroyAt, DateDateFormatStr) : null,
       productList: productList,
       actualSendAt: actualSendAt,
       sendMethod: firstMapping?.sendMethod ?? null,

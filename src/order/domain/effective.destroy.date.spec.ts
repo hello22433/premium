@@ -132,6 +132,21 @@ describe('resolveOrderEffectiveDestroyAt — 주문 단위 집계', () => {
     expect(resolveOrderEffectiveDestroyAt(order)).toBeNull();
   });
 
+  it('폐기후재발행 tip 이 포함된 집합을 넘기면 tip 의 늦은 유효기간이 MAX 에 반영된다', () => {
+    // 호출부 계약 고정 — 이 함수는 hideDiscardReissueDeliveries **이전** 집합을 받아야 한다.
+    // 배치에는 replacedFromId 필터가 없어 tip 도 파기 대상이므로, tip 을 뺀 집합으로 계산하면
+    // 실제보다 이른 날짜를 고지하게 된다(원본 2031-01-02 인데 tip 이 2031-06-02 까지 남는 식).
+    const original = aliveDelivery(new Date('2030-12-31T00:00:00')); // → 2031-01-01
+    const reissueTip = { ...aliveDelivery(new Date('2031-06-01T00:00:00')), replacedFromId: 1 }; // → 2031-06-02
+
+    const withTip: any = { orderProductMappings: [mapping([original, reissueTip])] };
+    const withoutTip: any = { orderProductMappings: [mapping([original])] };
+
+    expect(ymd(resolveOrderEffectiveDestroyAt(withTip))).toBe('2031-06-02');
+    // tip 을 걸러낸 집합을 넘기면 5개월 이른 날짜가 나온다 — 이 차이가 고지 오류의 크기다.
+    expect(ymd(resolveOrderEffectiveDestroyAt(withoutTip))).toBe('2031-01-01');
+  });
+
   it('발송건이 없으면 null (증명할 내용이 없다)', () => {
     expect(resolveOrderEffectiveDestroyAt({ orderProductMappings: [mapping([])] } as any)).toBeNull();
     expect(resolveOrderEffectiveDestroyAt({ orderProductMappings: [] } as any)).toBeNull();

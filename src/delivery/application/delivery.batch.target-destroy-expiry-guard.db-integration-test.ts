@@ -362,14 +362,16 @@ describe('DeliveryBatchService.deliveryDeliveryTargetDestroy 유효기간 가드
     expect(await readTarget(id)).toBe(DESTROY_VALUE); // 2회차: 자동 파기 — 누락 없음
   });
 
-  it('couponStatus 는 NOT NULL 이라 legacy NULL 로 새는 행이 존재하지 않는다', async () => {
-    // 서비스 주석이 "NULL 이면 파기 보류 쪽으로 떨어진다(안전 방향)" 라고 서술하는 근거를
-    // 스키마 차원에서 고정한다. 이 컬럼이 언젠가 nullable 로 바뀌면 이 테스트가 먼저 깨져
-    // 가드의 NULL 거동을 재검토하게 만든다.
-    const column = await dataSource.query(
-      `SELECT IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS
-        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'order_delivery' AND COLUMN_NAME = 'coupon_status'`,
-    );
-    expect(column[0].IS_NULLABLE).toBe('NO');
+  it('폐기후재발행 tip 도 파기 대상이다 — 배치에는 replacedFromId 필터가 없다', async () => {
+    // 보고서 API 는 hideDiscardReissueDeliveries 로 tip 을 목록에서 숨기지만, 배치는 숨기지 않는다.
+    // 그래서 실효 파기예정일(effective.destroy.date.ts)은 반드시 tip 을 포함한 집합으로 계산해야
+    // 한다. 이 테스트는 그 전제 — "배치가 tip 도 실제로 파기한다" — 를 실DB 로 고정한다.
+    // (전제가 깨지면 보고서가 고지하는 날짜의 근거가 사라진다.)
+    const tipId = await seedDelivery({ label: 'reissue-tip', expireAt: dayAt(-1) });
+    await deliveryRepository.update(tipId, { replacedFromId: tipId });
+
+    await service.deliveryDeliveryTargetDestroy();
+
+    expect(await readTarget(tipId)).toBe(DESTROY_VALUE);
   });
 });
