@@ -946,6 +946,9 @@ export class ExternalApiService {
     const mapping = this.orderProductMappingRepository.create({
       orderId: order.id,
       productId: product.id,
+      // ⚠️ D3-53 전제: 외부 일반주문은 단일라인. amount 가 1 이 아니게 되면 위 sendAmount(=product.price)가
+      //    '단가'가 아니라 '총액'이 되어, getOrderStatus 가 응답 price 로 노출하는 값의 의미가 조용히 바뀐다.
+      //    → 수량 도입 시 getOrderStatus/getSsgOrderStatus 의 price 소스를 반드시 재검토할 것.
       amount: 1,
       sendContent: dto.message || '',
       sendTitle: dto.title || product.name,
@@ -1244,6 +1247,7 @@ export class ExternalApiService {
     //  - 생성응답(createOrder)·getSsgOrderStatus 와 3자 비트동일.
     //  - 과거엔 live product.price(가변)를 읽어, 주문 후 상품가가 바뀌면
     //    파트너 대사 시 생성응답 price 와 조회 price 가 달라졌다(표시 불일치).
+    //  - 전제: 외부주문은 단일라인(생성부 amount:1)이라 sendAmount == 단가. 수량 도입 시 재검토(생성부 주석 참조).
     const price = order?.sendAmount ?? 0;
     const settleAmount = order?.settleAmount ?? 0;
     const { validStartDate, validEndDate } = this.resolveValidDates(orderDelivery);
@@ -1940,6 +1944,8 @@ export class ExternalApiService {
     const mapping = this.orderProductMappingRepository.create({
       orderId: order.id,
       productId: product.id,
+      // ⚠️ D3-53 전제: 외부 SSG주문도 단일라인(sendAmount === product.price 보장, 위 findOrCreateSsgProductByPrice).
+      //    amount 가 1 이 아니게 되면 sendAmount 가 '총액'이 되어 getSsgOrderStatus price(단가) 의미가 바뀐다 → 수량 도입 시 재검토.
       amount: 1,
       sendContent: dto.message || '',
       sendTitle: product.name,
