@@ -19,7 +19,7 @@
 
 ### A. 업로드 호출 교체 (문서 발신/작성 화면)
 `DocumentDetailPage.tsx` 의 첨부 업로드를 **`postFileImage` → `postFileUploadPrivate`(`src/apis/postFileUploadPrivate.ts`, 이미 존재)** 로 교체.
-- ⚠️ 두 함수는 **드롭인 치환이 아님**: 폼필드(`imageFile`→`file`)와 응답 shape(`data.result.url` → **`data.url`**)가 다름. URL 추출부를 주문접수(`OrderReceiptDetailPage.tsx`)가 `postFileUploadPrivate` 응답을 파싱하는 방식과 동일하게 맞출 것.
+- ⚠️ 차이는 **폼필드뿐**: `imageFile` → **`file`**. 응답 shape은 **동일**합니다 — 전역 `TransformResInterceptor`가 모든 응답을 `{ result }`로 감싸므로 두 API 다 **`data.result.url`** 로 꺼냅니다(주문접수 FE도 동일). 즉 URL 추출부(`.data.result.url`)는 그대로 두고 업로드 함수와 폼필드만 바꾸면 됩니다.
 
 ### B. 다운로드를 프록시 경유로 (문서 상세 화면)
 첨부를 `<a href={fileUrl}>` 직접 오픈 → **프록시 blob 다운로드**로 교체. private라 직접 URL 접근은 403입니다.
@@ -47,8 +47,8 @@ const handleDownload = useCallback(async (file: { url: string; name: string }) =
 `DocumentDetailPage` 테스트가 `postFileImage`를 mock/assert 한다면 `postFileUploadPrivate`로 갱신.
 
 ## 호환/주의
-- 과거 첨부(공개 `file/` URL)도 프록시로 다운로드됩니다(백엔드 레거시 `file/` 허용). 다운로드는 신/구 구분 없이 프록시로 통일.
-- 첨부 등록은 **최대 10개**(백엔드 `@ArrayMaxSize(10)`).
+- 과거 첨부(공개 `image/` URL — 문서함 레거시는 `/file/image` 로 올라가 `image/` 접두사)도 프록시로 다운로드됩니다(백엔드 레거시 `image/`·`file/` 허용). 다운로드는 신/구 구분 없이 프록시로 통일.
+- 첨부 등록은 **신규 생성 시 최대 10개**(`@ArrayMaxSize(10)`). **수정(update)은 개수 제한 없음** — 상한 도입 전 만들어진 초과 문서도 정상 수정되도록.
 - 영향 화면은 문서함(발신 작성 + 수신 상세)뿐.
 
 ## 체크리스트
