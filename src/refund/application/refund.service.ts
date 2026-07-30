@@ -22,6 +22,7 @@ import { ActivityLogService } from '../../activity_log/application/activity.log.
 import { ActivityLogActionType } from '../../activity_log/interface/activity.log.action.type';
 import { ActivityLogResult } from '../../activity_log/interface/activity.log.result';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
+import { readLineProductView } from '../../order/util/order.snapshot.builder';
 
 export type RefundGetListAuditContext = {
   user: ILoginUserInfo;
@@ -93,18 +94,21 @@ export class RefundService {
 
     const resultList: RefundListViewDto[] = orderDeliveryList.map((orderDelivery) => {
       const decryptedDeliveryTarget = this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.deliveryTarget) ?? '';
+      // D3-69: 단가를 주문시점 박제값(snapshotProductPrice)으로 통일 — live product.price(가변)는
+      // 상품가 변경 시 환불목록의 환불예정액을 손님 실납부액과 다르게 표시했다.
+      const linePrice = readLineProductView(orderDelivery.orderProductMapping!).price;
 
       return {
         id: orderDelivery.id,
         refundRegisterAt: format(orderDelivery.refundRegisterAt!, DateFormatStr),
         userBusinessName: orderDelivery.orderProductMapping!.order!.user!.company?.businessName ?? '',
         productName: orderDelivery.orderProductMapping!.product.name,
-        deliveryPrice: orderDelivery.orderProductMapping!.product.price,
+        deliveryPrice: linePrice,
         sendRequestAt: format(orderDelivery.sendRequestAt, DateFormatStr),
         personalCode: orderDelivery.personalCode ? MaskingUtil.maskPersonalCode(orderDelivery.personalCode) : '-',
         deliveryTarget: decryptedDeliveryTarget,
         refundRatio: orderDelivery.refundRatio!,
-        refundPrice: (orderDelivery.orderProductMapping!.product.price * orderDelivery.refundRatio!) / 100,
+        refundPrice: (linePrice * orderDelivery.refundRatio!) / 100,
         bankAccountOwner: orderDelivery.bankAccountOwner,
         bankName: orderDelivery.bankName,
         bankAccount: this.cryptoCipher.safeDecryptAccountNumber(orderDelivery.bankAccount) ?? orderDelivery.bankAccount,
