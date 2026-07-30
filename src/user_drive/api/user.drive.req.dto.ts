@@ -78,6 +78,17 @@ export class UserDriveUpdateReqDto extends UserDriveCreateReqDto {
   @IsNotEmpty()
   @IsEnum(IUserDriveStatus)
   override status: IUserDriveStatus;
+
+  @ApiProperty({
+    description: '첨부파일 list (수정은 개수 제한 없음)',
+  })
+  // =================================
+  // create 의 @ArrayMaxSize(10) 을 상속하면, 상한 도입 전(무제한 시절) 만들어진 첨부 11개↑ 문서가
+  // 제목만 고쳐도 400 이 되어 영구 수정 불가해진다(FE 가 기존 목록 전체를 되보내므로). 수정은 관리자
+  // 전용 신뢰 작업이라 개수 상한 없이 재정의한다(신규 생성만 create 에서 10개로 제한).
+  @IsArray()
+  @IsString({ each: true })
+  override filePath: string[];
 }
 
 export class UserDriveFileDownloadReqQueryDto {
