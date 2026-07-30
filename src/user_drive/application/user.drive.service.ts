@@ -255,6 +255,37 @@ export class UserDriveService {
     throw new ForbiddenException('다운로드할 수 없는 파일입니다.');
   }
 
+  /**
+   * 넣을 때(쓰기) 검증 — 새로 추가되는 첨부만 대상. confused-deputy(운영자가 남의 private URL 을
+   * 문서에 심어 수신자에게 유출)를 소스에서 차단해, 읽기(assertDownloadable)와 이중방어를 이룬다.
+   *  - private/{ownerId}/ : ownerId 가 등록자 본인이어야 함(본인이 올린 것만 첨부 가능).
+   *  - image/·file/ : 공개(public-read) 레거시 → 심어도 유출이 아니고(이미 공개), FE 전환 전 현행
+   *    문서함이 /file/image(→ image/)로 올리므로 호환 위해 허용.
+   *  - 그 외 위치·외부 host : 차단.
+   * ※ 기존에 이미 문서에 있던 첨부는 재검증하지 않는다(SUPER 가 교차수정으로 남긴 타인 소유 첨부,
+   *   또는 발신자 소유 첨부를 SUPER 가 재저장할 때 보존하기 위함).
+   */
+  private assertNewAttachmentsOwnedBySelf(newUrls: string[], user: ILoginUserInfo): void {
+    for (const url of newUrls) {
+      if (!this.fileService.isOwnStorageUrl(url)) {
+        throw new BadRequestException('허용되지 않은 파일 경로입니다.');
+      }
+      const key = this.fileService.extractStorageKey(url);
+
+      if (key.startsWith('private/')) {
+        const ownerSegment = key.split('/')[1] ?? '';
+        if (!/^\d+$/.test(ownerSegment) || Number(ownerSegment) !== user.id) {
+          throw new BadRequestException('본인이 업로드한 첨부만 등록할 수 있습니다.');
+        }
+        continue;
+      }
+      if (key.startsWith('image/') || key.startsWith('file/')) {
+        continue; // 공개 레거시: 심어도 유출 아님(이미 public), 전환 전 호환
+      }
+      throw new BadRequestException('허용되지 않은 파일 경로입니다.');
+    }
+  }
+
   async create(user: ILoginUserInfo, getBody: UserDriveCreateReqDto) {
     const { title, content, receiverId, filePath, status } = getBody;
 
@@ -271,6 +302,9 @@ export class UserDriveService {
     if (!receiver) {
       throw new BadRequestException('고객사가 존재 하지 않습니다.');
     }
+
+    // 생성 시 첨부는 전부 신규 → 전량 검증(본인 업로드 private 또는 공개 레거시만).
+    this.assertNewAttachmentsOwnedBySelf(filePath, user);
 
     await this.userDriveRepository.insert({
       senderId: user.id,
@@ -315,6 +349,12 @@ export class UserDriveService {
     if (!receiver) {
       throw new BadRequestException('고객사가 존재 하지 않습니다.');
     }
+
+    // 새로 추가된 첨부만 검증(기존 목록에 없던 것). 기존 첨부는 보존 — SUPER 가 교차수정 시
+    // 발신자/타관리자 소유 첨부를 되보내도 통과해야 하므로 델타만 본다.
+    const existingUrls = parseFilePathList(userDrive.filePath);
+    const addedUrls = filePath.filter((url) => !existingUrls.includes(url));
+    this.assertNewAttachmentsOwnedBySelf(addedUrls, user);
 
     userDrive.title = title;
     userDrive.content = content;
