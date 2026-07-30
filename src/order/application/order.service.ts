@@ -85,6 +85,7 @@ import {
   resolveDestructionCertificateGate,
   destructionCertificateBlockMessage,
 } from '../domain/destruction.certificate.gate';
+import { resolveOrderEffectiveDestroyAt } from '../domain/effective.destroy.date';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { TestOrderDeliveryEntity } from '../../entity/test.order.delivery.entity';
 import { ProductEntity } from '../../entity/product.entity';
@@ -1760,6 +1761,13 @@ export class OrderService {
       status: order.status,
       couponExpiration: couponExpiration,
       requestToDestroyPersonalInfoDay: firstMapping?.requestToDestroyPersonalInfoDay ?? 0,
+      // 실효 파기예정일 — 유효기간 가드로 파기가 미뤄지는 건까지 반영한 '실제로 지워지는 날'.
+      // 보고서 PDF 가 "발송일 + N일"로 자체 계산하던 것을 대체한다(그 계산은 유효기간 5년 상품에서
+      // 실제와 어긋난다). 계산 불가 시 null 이며, 그때는 프론트가 종전 계산으로 폴백한다.
+      effectiveDestroyAt: (() => {
+        const destroyAt = resolveOrderEffectiveDestroyAt(order);
+        return destroyAt ? format(destroyAt, DateDateFormatStr) : null;
+      })(),
       productList: productList,
       actualSendAt: actualSendAt,
       // 발송 정보 추가 (첫 번째 상품의 정보 사용)

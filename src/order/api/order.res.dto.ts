@@ -230,6 +230,16 @@ export class OrderGetDeliveryCompleteReportResDto extends OrderGetDeliveryComple
 
   @ApiProperty({
     nullable: true,
+    description:
+      '실효 개인정보 파기예정일 ex) yyyy-MM-dd. 발송요청일+파기일수와 쿠폰 유효기간 중 늦은 쪽으로, ' +
+      '정기파기 배치가 실제로 파기하는 날짜다. 유효기간이 파기예정일보다 뒤인 상품(예: 유효기간 5년 / ' +
+      '파기 180일)은 만료 다음 날까지 파기가 보류되므로 requestToDestroyPersonalInfoDay 로 자체 계산한 ' +
+      '날짜와 다르다. 파기일을 특정할 수 없으면 null.',
+  })
+  effectiveDestroyAt: string | null;
+
+  @ApiProperty({
+    nullable: true,
     description: '실제 발송 시간 ex) yyyy-MM-ddTHH:mm:ss',
   })
   actualSendAt: string | null;
