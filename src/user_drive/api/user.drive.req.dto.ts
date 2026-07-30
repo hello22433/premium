@@ -91,6 +91,17 @@ export class UserDriveUpdateReqDto extends UserDriveCreateReqDto {
   override filePath: string[];
 }
 
+export class UserDriveFileDownloadReqParamDto {
+  @ApiProperty({
+    description: '문서(user drive) id',
+  })
+  // =================================
+  @IsNotEmpty()
+  @IsNumber()
+  @Type(() => Number)
+  id: number;
+}
+
 export class UserDriveFileDownloadReqQueryDto {
   @ApiProperty({
     description: '다운로드할 첨부파일 url (해당 문서에 첨부된 url 이어야 함)',

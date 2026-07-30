@@ -9,6 +9,7 @@ import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { UserDriveService } from '../application/user.drive.service';
 import {
   UserDriveCreateReqDto,
+  UserDriveFileDownloadReqParamDto,
   UserDriveFileDownloadReqQueryDto,
   UserDriveGetDetailReqParamDto,
   UserDriveGetListReqDto,
@@ -17,6 +18,7 @@ import {
 } from './user.drive.req.dto';
 import { UserDriveGetDetailResDto, UserDriveGetListResDto } from './user.drive.res.dto';
 import { AuthUserSuperAndOperationAdminGuard } from '../../auth/api/auth.user.super-operation-admin.guard';
+import { buildContentDispositionAttachment } from '../../util/file.util';
 
 @ApiTags('user-drive')
 @ApiBearerAuth()
@@ -67,26 +69,19 @@ export class UserDriveController {
   @Get('/user-drive/:id/file/download')
   async downloadFile(
     @User() user: ILoginUserInfo,
-    @Param() getParam: UserDriveGetDetailReqParamDto,
+    @Param() getParam: UserDriveFileDownloadReqParamDto,
     @Query() getQuery: UserDriveFileDownloadReqQueryDto,
     @Res() res: Response,
   ) {
     const { fileName, filePath } = await this.userDriveService.downloadFile(user, getParam.id, getQuery.fileUrl);
 
-    // 한글 등 비ASCII 는 RFC5987 filename* 로, 구형 클라이언트용 ASCII filename 도 함께 둔다.
-    const asciiFallback = fileName.replace(/[^\x20-\x7e]/g, '_').replace(/"/g, '');
-    const encodedFileName = encodeURIComponent(fileName);
-
-    // pipeline 배선(아래) 전에 헤더 설정/스트림 생성이 실패하면 임시파일 정리 콜백이 안 걸려 고아가 된다.
-    // 이 구간을 감싸 예외 시 임시파일을 지우고 재던진다(이후 정리는 pipeline 콜백이 담당).
+    // 스트림을 먼저 열고(동기 실패 시 헤더 오염 없이 임시파일 정리), 성공 후 헤더를 건다.
+    // pipeline 배선 전에 실패하면 정리 콜백이 안 걸려 고아가 되므로 이 구간을 감싼다.
     let fileStream: fs.ReadStream;
     try {
-      res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
-      res.setHeader(
-        'Content-Disposition',
-        `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encodedFileName}`,
-      );
       fileStream = fs.createReadStream(filePath);
+      res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
+      res.setHeader('Content-Disposition', buildContentDispositionAttachment(fileName));
     } catch (setupErr) {
       fs.unlink(filePath, () => undefined);
       throw setupErr;
@@ -106,6 +101,9 @@ export class UserDriveController {
       }
       this.logger.error(`문서함 첨부 스트림 오류: ${err}`, err instanceof Error ? err.stack : undefined);
       if (!res.headersSent && !res.destroyed) {
+        // 데이터 전송 전 실패: attachment 헤더가 남아 에러 JSON 이 파일로 저장되지 않도록 제거 후 응답.
+        res.removeHeader('Content-Disposition');
+        res.removeHeader('Access-Control-Expose-Headers');
         res.status(500).json({ message: '파일 다운로드 중 오류가 발생했습니다.' });
       }
     });
