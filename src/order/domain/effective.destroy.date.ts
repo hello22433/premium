@@ -168,7 +168,11 @@ export function resolveDeliveryDestroyAt(
  */
 export function resolveOrderEffectiveDestroyAt(
   order: Pick<OrderEntity, 'orderProductMappings'>,
-  earlyDestroyedAtByDeliveryId?: ReadonlyMap<number, Date>,
+  // ★ 선택 인자가 아니다. optional 로 두면 호출부에서 두 번째 인자를 빠뜨려도 컴파일이 통과하고
+  //   결과는 "전부 예정일" — 이 기능이 막으려던 버그(이미 지운 건에 미래 날짜)로 조용히
+  //   되돌아간다. 필수로 강제해 배선 회귀를 런타임 결함이 아니라 컴파일 에러로 만든다.
+  //   실적이 필요 없는 경로는 new Map() 을 명시적으로 넘겨 "의도한 것"임을 남길 것.
+  earlyDestroyedAtByDeliveryId: ReadonlyMap<number, Date>,
 ): Date | null {
   const mappings: OrderProductMappingEntity[] = order.orderProductMappings ?? [];
 
@@ -180,7 +184,7 @@ export function resolveOrderEffectiveDestroyAt(
         delivery,
         mapping.sendRequestAt,
         mapping.requestToDestroyPersonalInfoDay,
-        earlyDestroyedAtByDeliveryId?.get(delivery.id),
+        earlyDestroyedAtByDeliveryId.get(delivery.id),
       );
       // 특정 불가한 건이 하나라도 있으면 주문 전체를 특정할 수 없다.
       if (destroyAt === null) return null;

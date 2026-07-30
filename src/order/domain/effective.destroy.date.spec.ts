@@ -193,7 +193,7 @@ describe('resolveOrderEffectiveDestroyAt — 주문 단위 집계', () => {
         mapping([aliveDelivery(new Date('2030-12-31T00:00:00'))]), // 2031-01-01
       ],
     };
-    expect(ymd(resolveOrderEffectiveDestroyAt(order))).toBe('2031-01-01');
+    expect(ymd(resolveOrderEffectiveDestroyAt(order, new Map()))).toBe('2031-01-01');
   });
 
   it('파기일을 특정할 수 없는 발송건이 하나라도 있으면 주문 전체가 null', () => {
@@ -204,7 +204,7 @@ describe('resolveOrderEffectiveDestroyAt — 주문 단위 집계', () => {
         mapping([aliveDelivery(null)], null), // 파기일수 NULL
       ],
     };
-    expect(resolveOrderEffectiveDestroyAt(order)).toBeNull();
+    expect(resolveOrderEffectiveDestroyAt(order, new Map())).toBeNull();
   });
 
   it('폐기후재발행 tip 이 포함된 집합을 넘기면 tip 의 늦은 유효기간이 MAX 에 반영된다', () => {
@@ -217,9 +217,9 @@ describe('resolveOrderEffectiveDestroyAt — 주문 단위 집계', () => {
     const withTip: any = { orderProductMappings: [mapping([original, reissueTip])] };
     const withoutTip: any = { orderProductMappings: [mapping([original])] };
 
-    expect(ymd(resolveOrderEffectiveDestroyAt(withTip))).toBe('2031-06-02');
+    expect(ymd(resolveOrderEffectiveDestroyAt(withTip, new Map()))).toBe('2031-06-02');
     // tip 을 걸러낸 집합을 넘기면 5개월 이른 날짜가 나온다 — 이 차이가 고지 오류의 크기다.
-    expect(ymd(resolveOrderEffectiveDestroyAt(withoutTip))).toBe('2031-01-01');
+    expect(ymd(resolveOrderEffectiveDestroyAt(withoutTip, new Map()))).toBe('2031-01-01');
   });
 
   it('일부만 조기파기된 주문 — 실적일과 예정일이 섞여도 MAX 의미가 유지된다', () => {
@@ -233,11 +233,11 @@ describe('resolveOrderEffectiveDestroyAt — 주문 단위 집계', () => {
 
     expect(ymd(resolveOrderEffectiveDestroyAt(order, earlyMap))).toBe('2026-06-30');
     // 실적을 넘기지 않으면 조기파기된 건의 예정일(2031-01-01)이 MAX 를 지배해 5년 뒤가 된다.
-    expect(ymd(resolveOrderEffectiveDestroyAt(order))).toBe('2031-01-01');
+    expect(ymd(resolveOrderEffectiveDestroyAt(order, new Map()))).toBe('2031-01-01');
   });
 
   it('발송건이 없으면 null (증명할 내용이 없다)', () => {
-    expect(resolveOrderEffectiveDestroyAt({ orderProductMappings: [mapping([])] } as any)).toBeNull();
-    expect(resolveOrderEffectiveDestroyAt({ orderProductMappings: [] } as any)).toBeNull();
+    expect(resolveOrderEffectiveDestroyAt({ orderProductMappings: [mapping([])] } as any, new Map())).toBeNull();
+    expect(resolveOrderEffectiveDestroyAt({ orderProductMappings: [] } as any, new Map())).toBeNull();
   });
 });

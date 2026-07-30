@@ -1595,7 +1595,7 @@ export class OrderService {
    * 같은 발송건이 여러 COMPLETED 요청에 걸릴 수 있다 — 이건 방어가 아니라 **실제 동작**이다.
    * executeRequest(early.destroy.service.ts:225-315)에는 "이미 파기됨" 거부가 없고, 생성 시점
    * 가드도 부분 중복을 허용한다: 발송건 지정 요청은 전량 거부하지만(createRequestForDeliveries)
-   * 매핑 전체 요청은 그 매핑에 미파기 발송건이 하나도 없을 때만 거부한다(createRequestForMappings).
+   * 매핑 지정 요청(createRequest)은 그 매핑에 미파기 발송건이 하나도 없을 때만 거부한다.
    * 즉 D1 파기됨 + D2 미파기인 매핑에 매핑 전체 요청을 다시 걸면 통과하고, 실행 시 D1 까지 다시
    * 덮는다. 그래서 실행 시각 선택 규칙이 필요하며, 여기서는 **가장 이른 시각**을 쓴다(최초 파기가
    * 그 PII 가 사라진 시점이다).
@@ -1641,30 +1641,69 @@ export class OrderService {
         select: ['id', 'orderProductMappingId', 'createdAt'],
         withDeleted: true,
       });
-      const matchedMappingIds = new Set<number>();
+      // 매핑에 발송건이 하나라도 존재하는지(고아 판정용)와, 시간축으로 제외됐는지를 **분리**한다.
+      // 둘을 한 플래그로 합치면 "정상적인 시간축 제외"가 "FK 고아"로 오진되어, 존재하지 않는
+      // 데이터 손상을 쫓게 되고 진짜 고아 알림이 그 소음에 묻힌다.
+      const mappingIdsWithDelivery = new Set<number>();
+      const skippedNewerThanExecution: number[] = [];
+      const skippedUnknownCreatedAt: number[] = [];
+
       for (const { mappingId, executedAt } of mappingWideRequests) {
         for (const delivery of deliveries) {
           if (delivery.orderProductMappingId !== mappingId) continue;
+          mappingIdsWithDelivery.add(mappingId);
+
           // ★ 시간축 필수 — "매핑 전체"는 **실행 시점의** 집합이지 조회 시점의 집합이 아니다.
           //   조기파기 이후 같은 매핑에 새 발송건이 생길 수 있다(CS 폐기후재발행이 동일
           //   orderProductMappingId 로 INSERT — customer.service.service.ts:2298). 그 행까지
           //   "그때 파기됨"으로 도장을 찍으면, 나중에 정기파기로 지워진 뒤 파기확인서에 훨씬
           //   이른 날짜가 인쇄된다(살아 있던 기간을 통째로 숨기는 허위 증명).
-          if (delivery.createdAt && delivery.createdAt > executedAt) continue;
-          matchedMappingIds.add(mappingId);
+          if (!delivery.createdAt) {
+            // 생성 시각을 모르면 "실행 시점에 있었는가"를 판정할 수 없다. 포함(과거 도장)과
+            // 제외(미래 예정일) 중 **제외**를 택한다 — 틀렸을 때 미래 날짜는 눈에 띄지만
+            // 과거 날짜는 그럴듯해 보여 허위 증명이 그대로 통과하기 때문이다.
+            skippedUnknownCreatedAt.push(delivery.id);
+            continue;
+          }
+          // ⚠ 정밀도 비대칭 보정 — executed_at 은 datetime(초), created_at 은 datetime(6) 이다.
+          //   파기가 10:00:05.200 에 실행되면 executedAt 은 10:00:05.000 으로 절삭 저장되므로,
+          //   같은 초에 먼저 생성된 행(10:00:05.050)이 '나중'으로 판정돼 정상 건이 제외된다.
+          //   비교 전에 createdAt 도 초 단위로 내려 맞춘다.
+          const createdAtSecond = new Date(delivery.createdAt);
+          createdAtSecond.setMilliseconds(0);
+          if (createdAtSecond > executedAt) {
+            skippedNewerThanExecution.push(delivery.id);
+            continue;
+          }
+
           const prev = result.get(delivery.id);
           if (!prev || executedAt < prev) result.set(delivery.id, executedAt);
         }
       }
 
-      // "매핑 전체를 파기했다"는 기록이 있는데 대상 발송건을 하나도 못 찾은 경우.
-      // early_destroy_request_item 은 FK 제약이 없어(createForeignKeyConstraints: false) 고아
-      // item 이 남을 수 있다. 조용히 넘어가면 그 매핑 전체가 예정일로 인쇄되므로 남긴다.
-      const orphanMappingIds = mappingIds.filter((id) => !matchedMappingIds.has(id));
+      // (1) 진짜 고아 — "매핑 전체를 파기했다"는 기록이 있는데 그 매핑에 발송건이 0건이다.
+      //     early_destroy_request_item 은 FK 제약이 없어(createForeignKeyConstraints: false)
+      //     dangling id 가 남을 수 있다. 이 경우 그 매핑 전체가 예정일(미래)로 인쇄된다.
+      const orphanMappingIds = mappingIds.filter((id) => !mappingIdsWithDelivery.has(id));
       if (orphanMappingIds.length > 0) {
         this.logger.error(
-          `[파기일] 매핑 전체 조기파기 기록이 있으나 대상 발송건을 찾지 못함 — ` +
+          `[파기일] 매핑 전체 조기파기 기록이 있으나 그 매핑에 발송건이 0건 — ` +
             `orderProductMappingIds=[${orphanMappingIds.join(', ')}]. 해당 건은 예정일로 인쇄된다.`,
+        );
+      }
+      // (2) 생성 시각 결측 — 판정 불가라 제외했다. 데이터 결함이므로 error.
+      if (skippedUnknownCreatedAt.length > 0) {
+        this.logger.error(
+          `[파기일] createdAt 이 없어 실행 시점 포함 여부를 판정할 수 없어 제외 — ` +
+            `orderDeliveryIds=[${skippedUnknownCreatedAt.join(', ')}]. 해당 건은 예정일로 인쇄된다.`,
+        );
+      }
+      // (3) 시간축 제외 — 파기 이후 생긴 행이므로 **정상 동작**이다. 예정일이 정답이라 error 가
+      //     아니다. 다만 정밀도/시계 편차로 정상 건이 잘못 걸리는 경우를 추적할 수 있게 남긴다.
+      if (skippedNewerThanExecution.length > 0) {
+        this.logger.log(
+          `[파기일] 조기파기 실행 이후 생성된 발송건 제외(정상) — ` +
+            `orderDeliveryIds=[${skippedNewerThanExecution.join(', ')}]`,
         );
       }
     }

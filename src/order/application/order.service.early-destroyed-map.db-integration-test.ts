@@ -196,6 +196,12 @@ describe('OrderService.loadEarlyDestroyedAtMap (실DB)', () => {
     productId = product.id;
   });
 
+  // 로거 목이 beforeAll 에서 한 번만 만들어지므로 호출 이력이 케이스 간에 누적된다.
+  // 초기화하지 않으면 앞선 케이스가 남긴 error 로 뒤 케이스의 단언이 영구 통과한다.
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
   afterAll(async () => {
     deleteDataSourceByName('default');
     if (dataSource?.isInitialized) {
@@ -310,13 +316,23 @@ describe('OrderService.loadEarlyDestroyedAtMap (실DB)', () => {
         } as any) as unknown as EarlyDestroyRequestItemEntity,
       );
     }
+
+    // ★ 픽스처 생존 증명 — item 이 실제로 연결됐는지 여기서 못 박는다.
+    //   위 FK 오타 같은 실수가 나면 양성 단언은 깨지지만 **음성 단언(map.size === 0 류)은
+    //   오히려 통과**해 테스트가 조용히 무의미해진다. 모든 케이스가 이 검사를 공유하게 둔다.
+    const saved = await requestRepository.findOne({ where: { id: request.id }, relations: ['items'] });
+    expect(saved?.items).toHaveLength(items.length);
+
     return request.id;
   };
 
   it('orderDeliveryId 지정 item 은 그 1건만 찍고 형제 발송건은 건드리지 않는다', async () => {
     const { orderId, mappingId } = await seedOrder();
-    const target = await seedDelivery(mappingId);
-    const sibling = await seedDelivery(mappingId); // 같은 매핑의 다른 발송건
+    // 두 건 모두 실행 시각보다 먼저 생성해 둔다 — sibling 에 과거 createdAt 을 주지 않으면
+    // 시간축 가드가 대신 걸러내어, 아래 미오염 단언이 "단건 분기가 정확한가"를 증명하지 못한다.
+    const sent = new Date('2026-01-01T10:00:00');
+    const target = await seedDelivery(mappingId, { createdAt: sent });
+    const sibling = await seedDelivery(mappingId, { createdAt: sent }); // 같은 매핑의 다른 발송건
 
     await seedRequest(orderId, EarlyDestroyRequestStatus.COMPLETED, new Date('2026-02-01T09:00:00'), [
       { mappingId, deliveryId: target },
@@ -393,24 +409,56 @@ describe('OrderService.loadEarlyDestroyedAtMap (실DB)', () => {
 
     expect(map.has(d)).toBe(false);
     // 조용히 넘어가면 이 건이 예정일(미래)로 인쇄되므로 흔적이 반드시 남아야 한다.
-    expect(service.logger.error).toHaveBeenCalled();
+    // 메시지까지 확인한다 — 인자 매처가 없으면 다른 경로의 error 가 이 단언을 대신 만족시킨다.
+    expect(service.logger.error).toHaveBeenCalledWith(expect.stringContaining('executedAt 이 NULL'));
   });
 
-  it('같은 발송건이 두 COMPLETED 요청에 걸리면 가장 이른 실행 시각이 남는다', async () => {
+  // 순서를 양방향으로 돌린다. 한쪽만 검사하면 "무조건 덮어쓰기"로 바꿔도 마지막에 처리된 값이
+  // 우연히 정답이 되어 변이가 살아남는다(조회 순서는 MySQL 이 보장하지도 않는다).
+  it.each([
+    ['늦은 요청을 먼저 심은 경우', '2026-05-01T09:00:00', '2026-02-01T09:00:00'],
+    ['이른 요청을 먼저 심은 경우', '2026-02-01T09:00:00', '2026-05-01T09:00:00'],
+  ])('같은 발송건이 두 COMPLETED 요청에 걸리면 가장 이른 실행 시각이 남는다 — %s', async (_label, first, second) => {
     const { orderId, mappingId } = await seedOrder();
     const d = await seedDelivery(mappingId);
 
-    await seedRequest(orderId, EarlyDestroyRequestStatus.COMPLETED, new Date('2026-05-01T09:00:00'), [
-      { mappingId, deliveryId: d },
-    ]);
+    await seedRequest(orderId, EarlyDestroyRequestStatus.COMPLETED, new Date(first), [{ mappingId, deliveryId: d }]);
+    await seedRequest(orderId, EarlyDestroyRequestStatus.COMPLETED, new Date(second), [{ mappingId, deliveryId: d }]);
+
+    const map = await service.loadEarlyDestroyedAtMap([orderId]);
+
+    // 최초 파기가 그 PII 가 사라진 시점이다 — 심은 순서와 무관하게 같은 답이어야 한다.
+    expect(ymd(map.get(d))).toBe('2026-02-01');
+  });
+
+  it('매핑 전체 기록인데 그 매핑에 발송건이 0건이면 고아로 판정해 에러 로그를 남긴다', async () => {
+    const { orderId, mappingId } = await seedOrder(); // 발송건을 만들지 않는다
+
     await seedRequest(orderId, EarlyDestroyRequestStatus.COMPLETED, new Date('2026-02-01T09:00:00'), [
-      { mappingId, deliveryId: d },
+      { mappingId, deliveryId: null },
     ]);
 
     const map = await service.loadEarlyDestroyedAtMap([orderId]);
 
-    // 최초 파기가 그 PII 가 사라진 시점이다.
-    expect(ymd(map.get(d))).toBe('2026-02-01');
+    expect(map.size).toBe(0);
+    expect(service.logger.error).toHaveBeenCalledWith(expect.stringContaining('발송건이 0건'));
+  });
+
+  it('시간축으로 전량 제외된 매핑은 고아가 아니다 — 정상 동작이므로 error 가 아니라 log 다', async () => {
+    // 고아 판정이 시간축 제외와 섞이면, 정상적으로 걸러진 건을 "FK 고아"로 오진해
+    // 존재하지 않는 데이터 손상을 쫓게 된다. 두 경로가 분리돼 있음을 고정한다.
+    const { orderId, mappingId } = await seedOrder();
+    await seedDelivery(mappingId, { createdAt: new Date('2026-06-01T10:00:00') }); // 실행 이후 생성
+
+    await seedRequest(orderId, EarlyDestroyRequestStatus.COMPLETED, new Date('2026-03-05T10:00:00'), [
+      { mappingId, deliveryId: null },
+    ]);
+
+    const map = await service.loadEarlyDestroyedAtMap([orderId]);
+
+    expect(map.size).toBe(0);
+    expect(service.logger.error).not.toHaveBeenCalled(); // 고아 오진 금지
+    expect(service.logger.log).toHaveBeenCalledWith(expect.stringContaining('실행 이후 생성된'));
   });
 
   it('통합 보고서: 여러 주문을 한 번에 처리해도 서로 오염되지 않고 각 주문의 실적이 모두 반영된다', async () => {
