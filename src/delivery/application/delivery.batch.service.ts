@@ -3158,6 +3158,92 @@ export class DeliveryBatchService {
         '(orderDelivery.deliveryTarget != :destroyValue OR orderDelivery.originalDeliveryTarget != :destroyValue OR orderDelivery.emailReceiverPhone != :destroyValue OR orderDelivery.bankAccount != :destroyValue OR orderDelivery.bankAccountOwner != :destroyValue)',
         { destroyValue },
       )
+      // ── 유효기간 가드 ────────────────────────────────────────────────────────────
+      // 유효기간이 파기예정일보다 뒤인 상품(예: 유효기간 5년 / 파기 180일)은 만료 전까지 파기를 미룬다.
+      //   실효 파기예정일 = MAX(발송요청일 + N일, 유효기간 만료일 + 1일)
+      // 수신처를 만료 전에 지우면 재발송도, 만료 안내 독려문자(handleDeliveryEncourage)도 불가능해진다.
+      // (수신처가 '-' 면 CS 재발송이 '파기된 발송 정보입니다.' 로 차단된다 — customer.service.service.ts:1050)
+      //
+      // 만료 후 재포착: 보류된 행은 PII 5종이 모두 원값이라 위 미파기 절(:3158)이 계속 참이고, 주 날짜
+      // 절도 한 번 참이 되면 계속 참이므로, 만료 다음 날 자정 회차에서 자동으로 파기된다(누락 없음).
+      // 보류 기간에도 매 회차 후보군에는 남아 있다가 이 가드 절에서만 걸러진다.
+      //
+      // 이 가드로 새로 보류되는 집합에는 **발송 실패(status=FAIL) 건도 포함**된다. PIN 발급까지
+      // 성공한 뒤 발송에서 실패하면 expireAt 이 영속되고(:1441, :1565) couponStatus 는 NOT_USED 로
+      // 남으며, 최초 실패는 환불이 보류될 수 있어 refundStatus 도 NULL 이라 환불 가드에도 걸리지
+      // 않는다. 재발송이 유일한 구제책인 집합이라 유효기간까지 수신처를 남기는 것이 가드 취지에
+      // 부합한다 — 의도된 포함이다. 발송 성공 건으로 좁히려면 status IN (COMPLETE, COMPLETE_SMS)
+      // 를 이 절에 추가해야 하지만, 그러면 정작 재발송이 필요한 실패 건이 먼저 파기된다.
+      //
+      // [AND 로 덧붙는 절이므로 파기 대상을 좁히기만 한다 — 이 변경으로 새로 파기되는 건은 없다]
+      // 아래 4개 절은 반드시 OR 로 묶인다. AND 로 바꾸면 "4개를 모두 만족해야 파기"가 되어 의미가
+      // 정반대로 뒤집히고 대량 미파기가 발생한다(target-destroy.spec 이 OR 개수로 이를 고정한다).
+      //
+      // 각 절은 "가드를 적용하지 않는다 = 종전 정책대로 즉시 파기한다" 는 뜻이다(파기 면제가 아니다).
+      // 유효기간이 남아 있어도 '재발송할 수 없는' 건까지 PII 를 붙잡으면 최소보유 원칙에 어긋난다.
+      //
+      //  1) expireAt IS NULL — [필수. 제거 금지]
+      //     미발행·발송실패 등 유효기간 자체가 없는 건. SQL 3값 논리상 `NULL < DATE(:now)` 는 거짓이
+      //     아니라 NULL 이고 WHERE 는 TRUE 가 아닌 행을 버리므로, 이 절이 없으면 해당 건이 파기되지
+      //     않는다. 종전(이 가드 이전)에는 정상 파기되던 집합이라 PII 사고다. 정책 논의 대상이 아니라
+      //     정합성 방어이므로 지우지 말 것.
+      //     · 정확히는 4절이 OR 라 `NULL OR TRUE = TRUE` 다. 이 절을 빼도 나머지 절에 걸리는 행은
+      //       여전히 파기된다. 영구 미파기가 되는 건 `expireAt IS NULL` AND `deletedAt IS NULL`
+      //       AND `couponStatus = NOT_USED` 인 교집합인데, 그게 정확히 미발행·발송실패 모집단이다.
+      //
+      //  2) deletedAt IS NOT NULL — [현재는 순수 방어. 3번 절이 이미 100% 커버하는 no-op]
+      //     order_delivery 를 soft-delete 하는 경로는 레포 전체에 하나뿐이고, 지워지는 것은 재발행
+      //     실패 시 unwindReissue 가 되감는 **신행(tip)** 이다 — 구행이 아니다
+      //     (customer.service.service.ts:2204. 같은 파일 :562 와 external.api.service.ts:1458 의
+      //     기존 주석도 "unwindReissue 가 tip 을 softDelete" 로 서술한다).
+      //     실물 쿠폰이 있다면 그것은 **원본(구행)** 쪽이다 — SSG 는 reverseDiscard 로 부활하고,
+      //     비-SSG 는 협력사 취소된 채 남는다. 지워진 tip 으로는 재발송이 불가능하므로 붙잡지 않는다.
+      //     · ★ 현재 이 절은 파기 집합을 한 건도 늘리지 않는다(no-op). softDelete 는 바로 앞의
+      //       `couponStatus=CANCEL` update 가 affected>0 일 때(tipNeutralized)만 실행되므로
+      //       (customer.service.service.ts:2175-2202), deletedAt 이 찍힌 행은 **반드시 CANCEL** 이고
+      //       3번 절이 전부 잡는다. 지워도 동작은 동일하다.
+      //     · 그럼에도 남기는 이유: CANCEL 플립 없이 soft-delete 하는 경로가 새로 생기거나, 과거
+      //       다른 경로로 지워진 legacy 행이 있을 때 유효기간만큼 PII 를 붙잡지 않기 위한 방어다.
+      //       위 withDeleted() 가 이 행들을 후보에 넣어 두는 것과 짝을 이룬다.
+      //
+      //  3) couponStatus != NOT_USED — [정책 선택. 변경 가능]
+      //     USED/CANCEL(폐기)/REFUND_CANCEL/EXPIRED = NOT_USED 의 여집합(enum 5종 전체).
+      //     유효기간 5년 쿠폰을 1개월 만에 사용하면 expireAt 은 그대로 5년 뒤라, 이 절이 없으면
+      //     다 쓴 쿠폰의 수신처를 4년 11개월 더 보관한다. 최소보유 원칙에 어긋나 제외했다.
+      //     · 두 명분을 구분할 것. **만료 안내** 축은 4개 모두 정확히 명분이 사라진다
+      //       (handleDeliveryEncourage 가 couponStatus=NOT_USED 만 대상으로 한다).
+      //       그러나 **재발송** 축의 차단 목록은 UNSENDABLE_COUPON_STATUSES(CANCEL/REFUND_CANCEL)
+      //       뿐이라(order.delivery.mutation.claim.ts:33) USED/EXPIRED 는 기술적으로 재발송이
+      //       가능하다. 실익이 없어 함께 제외한 것이지 "재발송 불가라서"가 아니다.
+      //     · couponStatus 는 NOT NULL 이다(sql/snapshots/prod_db.md:359 varchar(255) NO,
+      //       엔티티도 default NOT_USED). 따라서 이 절에서 NULL 3값 논리로 새는 행은 없다.
+      //       만약 향후 nullable 로 바뀌면 `!= 'NOT_USED'` 가 NULL 이 되어 자동으로 파기 보류
+      //       쪽으로 떨어진다(안전한 방향이라 별도 방어를 두지 않았다).
+      //     · 살아있는 상태가 NOT_USED 외에 추가되면 이 절을 넓혀야 한다. 다만 재발송 가부의
+      //       단일 소스는 UNSENDABLE_COUPON_STATUSES 이므로, 목록을 새로 만들지 말고 그 상수와
+      //       이 절의 관계를 먼저 재검토할 것(중복 목록은 rot 의 원천이다).
+      //
+      // 조기파기(EarlyDestroyService.executeRequest)에는 이 가드가 없다 — 의도된 비대칭이다.
+      // 정기파기는 기한 도래로 기계가 일괄 수행하지만, 조기파기는 운영자가 대상을 지정해 "지금
+      // 파기하라"고 명시적으로 판단한 행위라 유효기간보다 그 의사를 우선한다.
+      // ※ 이 메서드 곳곳의 "조기파기와 동일 집합"(H-1) 불변식과 충돌하지 않는다. 그쪽은 **무엇을
+      //   지우는가**(PII 5종·환불 진행중 제외)의 동형성이고, 이 가드는 **언제 지우는가**의 축이다.
+      //   "동일 집합"을 근거로 이 가드를 조기파기에 이식하지 말 것.
+      // 구현 주의 3가지:
+      //  · 바깥 괄호는 필수다. TypeORM 0.3.x 는 raw string 조건을 자동으로 괄호치지 않으므로
+      //    (isolateWhereStatements 미설정) 괄호를 지우면 AND/OR 우선순위로 정책이 뒤집힌다.
+      //  · :now 는 위 파기 기준일 절과 **같은 파라미터**다. 파라미터 맵은 하나로 병합되고 나중
+      //    바인딩이 이기므로, 여기서 다른 값을 넘기면 배치 전체의 커트오프 날짜가 함께 밀린다.
+      //  · DATE(expireAt) < DATE(:now) 는 expireAt < DATE(:now) 와 동치다(우변이 자정이라 절삭
+      //    비교와 결과가 같다). 후자가 sargable 이지만 선두 절이 이미 함수 적용이라 지금은 이득이
+      //    없어 스타일 일관성을 택했다. 선두 절을 sargable 로 정리할 때 함께 바꾸면 된다.
+      .andWhere(
+        `(orderDelivery.expireAt IS NULL
+          OR DATE(orderDelivery.expireAt) < DATE(:now)
+          OR orderDelivery.deletedAt IS NOT NULL
+          OR orderDelivery.couponStatus != :liveCouponStatus)`,
+        { now, liveCouponStatus: OrderDeliveryCouponStatus.NOT_USED },
+      )
       .getMany();
 
     const destroyIdList = orderDeliveryList.map((od) => od.id);
