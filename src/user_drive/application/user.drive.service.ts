@@ -217,7 +217,9 @@ export class UserDriveService {
    *      · 그 외               → SUPER 가 교차수정으로 올린 경우만 허용(그래서 업로더 권한을 조회해 확인).
    *    이렇게 하면 발신 아닌 다른 운영관리자/기업계정의 key 가 심겨도 차단되면서, SUPER 교차수정은 과차단하지 않는다.
    *    ownerId 세그먼트가 없는 구 private key 는 문서함 첨부가 아니므로 차단(NaN → Forbidden).
-   *  - file/ : 전환 전 첨부(공개 객체) 호환용으로만 허용. 그 외 위치는 차단.
+   *  - image/ · file/ : 전환 전 공개 첨부 호환용으로만 허용. 문서함 레거시 첨부는 /file/image(→ image/)로
+   *    올라갔고, 과거 일반 업로드는 /file/upload(→ file/)다. 둘 다 public-read 라 프록시로 서빙해도
+   *    위험도 동일(오히려 문서 열람권한이 추가로 걸림). 그 외 위치는 차단.
    */
   private async assertDownloadable(fileUrl: string, drive: UserDriveEntity, user: ILoginUserInfo): Promise<void> {
     if (!this.fileService.isOwnStorageUrl(fileUrl)) {
@@ -245,7 +247,8 @@ export class UserDriveService {
       return;
     }
 
-    if (key.startsWith('file/')) {
+    // 레거시 공개 첨부 호환: 문서함은 image/(‥/file/image), 과거 일반 업로드는 file/. 둘 다 public-read.
+    if (key.startsWith('image/') || key.startsWith('file/')) {
       return;
     }
 

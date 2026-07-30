@@ -131,10 +131,17 @@ describe('UserDriveService.downloadFile', () => {
     expect(fileService.downloadWithPath).not.toHaveBeenCalled();
   });
 
-  it('★차단: image/ 등 첨부 외 위치 → Forbidden (file/ 레거시만 허용)', async () => {
+  it('레거시 공개 첨부(image/) 는 호환 허용 (문서함 실제 레거시 접두사)', async () => {
     const imageUrl = 'https://b.s3.amazonaws.com/image/abc-banner.png';
     const { sut, fileService } = makeSut(imageUrl);
-    await expect(sut.downloadFile(receiver, 1, imageUrl)).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(sut.downloadFile(receiver, 1, imageUrl)).resolves.toBeDefined();
+    expect(fileService.downloadWithPath).toHaveBeenCalledTimes(1);
+  });
+
+  it('★차단: 첨부 위치가 아닌 접두사(export/ 등) → Forbidden', async () => {
+    const other = 'https://b.s3.amazonaws.com/export/abc-report.xlsx';
+    const { sut, fileService } = makeSut(other);
+    await expect(sut.downloadFile(receiver, 1, other)).rejects.toBeInstanceOf(ForbiddenException);
     expect(fileService.downloadWithPath).not.toHaveBeenCalled();
   });
 
