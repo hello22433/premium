@@ -27,7 +27,9 @@ import { DeliveryBatchService } from './delivery.batch.service';
  *   특히 아래 두 가지는 이 방식으로 절대 잡히지 않으므로 DB 통합 테스트가 필요하다:
  *     · NULL 3값 논리 (expireAt NULL, couponStatus legacy NULL 의 실제 매칭 결과)
  *     · DATE() 절삭의 자정 경계 동작 (커넥션 TZ 가 KST 라는 전제에 의존)
- *   실행: npm run test:db (*.db-integration-test.ts). CI 자동 실행은 없으므로 수동 확인이 필요하다.
+ *   그 두 축은 delivery.batch.target-destroy-expiry-guard.db-integration-test.ts 가 실DB 로 덮는다.
+ *   실행: $env:DATABASE_DATABASE='epopkon_test'; npm run test:db
+ *   (전용 test DB 강제 — dropSchema 로 스키마를 밀기 때문. CI 자동 실행 없음 → 수동 확인 필요)
  */
 describe('DeliveryBatchService.deliveryDeliveryTargetDestroy', () => {
   // SELECT 용 QueryBuilder mock (where/andWhere 인자 기록)
