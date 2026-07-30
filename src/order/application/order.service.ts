@@ -1592,8 +1592,13 @@ export class OrderService {
    *  · NULL 이면 해당 orderProductMapping 의 **발송건 전체**가 파기된 것이므로 전부 펼쳐 넣는다.
    * COMPLETED 요청만 본다 — PENDING 은 아직 아무것도 지우지 않았다.
    *
-   * 같은 발송건이 여러 요청에 걸리는 경우는 실행 단계에서 차단되지만(이미 파기된 건 포함 시
-   * executeRequest 가 거부), 방어적으로 가장 이른 실행 시각을 남긴다 — 최초 파기가 실적이다.
+   * 같은 발송건이 여러 COMPLETED 요청에 걸릴 수 있다 — 이건 방어가 아니라 **실제 동작**이다.
+   * executeRequest(early.destroy.service.ts:225-315)에는 "이미 파기됨" 거부가 없고, 생성 시점
+   * 가드도 부분 중복을 허용한다: 발송건 지정 요청은 전량 거부하지만(createRequestForDeliveries)
+   * 매핑 전체 요청은 그 매핑에 미파기 발송건이 하나도 없을 때만 거부한다(createRequestForMappings).
+   * 즉 D1 파기됨 + D2 미파기인 매핑에 매핑 전체 요청을 다시 걸면 통과하고, 실행 시 D1 까지 다시
+   * 덮는다. 그래서 실행 시각 선택 규칙이 필요하며, 여기서는 **가장 이른 시각**을 쓴다(최초 파기가
+   * 그 PII 가 사라진 시점이다).
    */
   private async loadEarlyDestroyedAtMap(orderIds: number[]): Promise<Map<number, Date>> {
     const result = new Map<number, Date>();
@@ -1606,7 +1611,18 @@ export class OrderService {
 
     const mappingWideRequests: { mappingId: number; executedAt: Date }[] = [];
     for (const request of requests) {
-      if (!request.executedAt) continue; // COMPLETED 인데 시각이 없으면 실적을 주장할 수 없다
+      if (!request.executedAt) {
+        // COMPLETED 인데 실행 시각이 없으면 실적을 주장할 수 없다. 그런데 그냥 넘어가면 이 요청에
+        // 걸린 발송건이 전부 '예정일' 경로로 되돌아가, 이 기능이 막으려던 미래 날짜 인쇄가 조용히
+        // 재현된다. executeRequest 는 둘을 함께 쓰므로(early.destroy.service.ts:306-310) 정상
+        // 경로에서는 생기지 않고, 레거시 백필 UPDATE 같은 경로에서만 생긴다 — 즉 발견되면 데이터
+        // 결함이므로 반드시 남긴다.
+        this.logger.error(
+          `[파기일] COMPLETED 인데 executedAt 이 NULL — requestId=${request.id}, orderId=${request.orderId}, ` +
+            `items=${request.items?.length ?? 0}건. 해당 발송건은 실적일 대신 예정일(미래)로 인쇄된다.`,
+        );
+        continue;
+      }
       for (const item of request.items ?? []) {
         if (item.orderDeliveryId !== null) {
           const prev = result.get(item.orderDeliveryId);
@@ -1622,15 +1638,34 @@ export class OrderService {
       const mappingIds = [...new Set(mappingWideRequests.map((r) => r.mappingId))];
       const deliveries = await this.orderDeliveryRepository.find({
         where: { orderProductMappingId: In(mappingIds) },
-        select: ['id', 'orderProductMappingId'],
+        select: ['id', 'orderProductMappingId', 'createdAt'],
         withDeleted: true,
       });
+      const matchedMappingIds = new Set<number>();
       for (const { mappingId, executedAt } of mappingWideRequests) {
         for (const delivery of deliveries) {
           if (delivery.orderProductMappingId !== mappingId) continue;
+          // ★ 시간축 필수 — "매핑 전체"는 **실행 시점의** 집합이지 조회 시점의 집합이 아니다.
+          //   조기파기 이후 같은 매핑에 새 발송건이 생길 수 있다(CS 폐기후재발행이 동일
+          //   orderProductMappingId 로 INSERT — customer.service.service.ts:2298). 그 행까지
+          //   "그때 파기됨"으로 도장을 찍으면, 나중에 정기파기로 지워진 뒤 파기확인서에 훨씬
+          //   이른 날짜가 인쇄된다(살아 있던 기간을 통째로 숨기는 허위 증명).
+          if (delivery.createdAt && delivery.createdAt > executedAt) continue;
+          matchedMappingIds.add(mappingId);
           const prev = result.get(delivery.id);
           if (!prev || executedAt < prev) result.set(delivery.id, executedAt);
         }
+      }
+
+      // "매핑 전체를 파기했다"는 기록이 있는데 대상 발송건을 하나도 못 찾은 경우.
+      // early_destroy_request_item 은 FK 제약이 없어(createForeignKeyConstraints: false) 고아
+      // item 이 남을 수 있다. 조용히 넘어가면 그 매핑 전체가 예정일로 인쇄되므로 남긴다.
+      const orphanMappingIds = mappingIds.filter((id) => !matchedMappingIds.has(id));
+      if (orphanMappingIds.length > 0) {
+        this.logger.error(
+          `[파기일] 매핑 전체 조기파기 기록이 있으나 대상 발송건을 찾지 못함 — ` +
+            `orderProductMappingIds=[${orphanMappingIds.join(', ')}]. 해당 건은 예정일로 인쇄된다.`,
+        );
       }
     }
 
