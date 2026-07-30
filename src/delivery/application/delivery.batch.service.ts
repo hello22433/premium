@@ -3219,9 +3219,11 @@ export class DeliveryBatchService {
       //     실물 쿠폰이 있다면 그것은 **원본(구행)** 쪽이다 — SSG 는 reverseDiscard 로 부활하고,
       //     비-SSG 는 협력사 취소된 채 남는다. 되감긴 tip 은 고객이 볼 쿠폰이 아니므로 유효기간이
       //     남아 있어도 붙잡지 않는다. 위 withDeleted() 가 이 행을 후보에 넣는 것과 짝을 이룬다.
-      //     · 이 절은 couponStatus 절을 걷어내면서 실효를 갖게 됐다. 종전에는 softDelete 가
-      //       `couponStatus=CANCEL` 플립 성공 뒤에만 실행되므로(customer.service.service.ts:2175-2202)
-      //       CANCEL 절이 이 집합을 100% 커버해 no-op 이었으나, 이제 이 절이 단독으로 잡는다.
+      //     · 이 절이 잡는 행은 모두 couponStatus=CANCEL 이기도 하다 — softDelete 는
+      //       `couponStatus=CANCEL` 플립이 성공했을 때만 실행되기 때문이다
+      //       (customer.service.service.ts:2175-2202). 따라서 이 가드에 couponStatus 기반 절을
+      //       추가하면 이 절과 완전히 겹쳐 이 절이 no-op 이 된다. 반대로 이 절을 지우면 그때는
+      //       CANCEL 인 soft-delete tip 이 유효기간만큼 보류된다.
       //     · 다만 단독으로 잡는 구간은 좁다 — 되감긴 tip 은 대개 expireAt 이 NULL 이라 1) 이
       //       커버하고, 이 절만이 잡는 것은 'issue() 가 expireAt 을 영속한 뒤 barCode 누락으로
       //       unwind 된' 경우다(partner.company.extern.service.ts:189 가 영속, 그 뒤
@@ -3242,6 +3244,17 @@ export class DeliveryBatchService {
       //  · DATE(expireAt) < DATE(:now) 는 expireAt < DATE(:now) 와 동치다(우변이 자정이라 절삭
       //    비교와 결과가 같다). 후자가 sargable 이지만 선두 절이 이미 함수 적용이라 지금은 이득이
       //    없어 스타일 일관성을 택했다. 선두 절을 sargable 로 정리할 때 함께 바꾸면 된다.
+      //
+      // [성능 — 지금은 무해하나 장기 관찰 대상 (리뷰 MEDIUM)]
+      //   보류된 행은 파기될 때까지 매 회차 후보군에 남는다. 유효기간 5년 상품이면 최대 5년간
+      //   누적되므로 스캔 행 수가 단조 증가한다.
+      //   ⚠️ orderDelivery.expireAt 에 인덱스를 추가해도 해결되지 않는다 — 선두 절
+      //   `DATE_ADD(DATE(orderProductMapping.sendRequestAt), ...)` 가 이미 컬럼에 함수를 씌워
+      //   이 쿼리는 애초에 인덱스 레인지 스캔이 불가능하다(이 가드가 만든 성질이 아니다).
+      //   실제 부담은 접근 경로가 아니라 후보군 행 수이므로, 대응이 필요해지면
+      //   (a) 두 날짜 절을 sargable 형태로 재작성해 인덱스를 태우거나
+      //   (b) 보류 사유가 사라진 행만 남기도록 후보군 산정을 바꾸는 방향이다.
+      //   (이미 파기된 행은 위 PII 5종 미파기 절이 걸러내므로 누적 대상이 아니다.)
       .andWhere(
         `(orderDelivery.expireAt IS NULL
           OR DATE(orderDelivery.expireAt) < DATE(:now)

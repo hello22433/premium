@@ -114,20 +114,21 @@ export function resolveOrderEffectiveDestroyAt(order: Pick<OrderEntity, 'orderPr
   const mappings: OrderProductMappingEntity[] = order.orderProductMappings ?? [];
 
   let latest: Date | null = null;
-  let hasDelivery = false;
 
   for (const mapping of mappings) {
     for (const delivery of mapping.orderDeliveries ?? []) {
-      hasDelivery = true;
       const destroyAt = resolveDeliveryDestroyAt(
         delivery,
         mapping.sendRequestAt,
         mapping.requestToDestroyPersonalInfoDay,
       );
+      // 특정 불가한 건이 하나라도 있으면 주문 전체를 특정할 수 없다.
       if (destroyAt === null) return null;
       if (latest === null || destroyAt > latest) latest = destroyAt;
     }
   }
 
-  return hasDelivery ? latest : null;
+  // 발송건이 하나도 없으면 초기값 null 이 그대로 나간다 — "증명할 내용이 없다"와 같은 뜻이다.
+  // (발송건이 있으면 위 루프에서 최소 1회 갱신되므로 여기서 latest 는 반드시 non-null 이다.)
+  return latest;
 }

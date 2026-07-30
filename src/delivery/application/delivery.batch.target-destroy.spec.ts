@@ -193,8 +193,9 @@ describe('DeliveryBatchService.deliveryDeliveryTargetDestroy', () => {
       await sut.deliveryDeliveryTargetDestroy();
 
       // 지워지는 쪽은 구행이 아니라 신행(tip)이다 — customer.service.service.ts:2204.
-      // 되감긴 tip 은 고객이 볼 쿠폰이 아니라 붙잡을 이유가 없다. couponStatus 절을 걷어내면서
-      // 이 절이 실효를 갖게 됐다(종전에는 CANCEL 절이 이 집합을 100% 커버해 no-op 이었다).
+      // 되감긴 tip 은 고객이 볼 쿠폰이 아니라 붙잡을 이유가 없다.
+      // 이 절이 잡는 행은 모두 couponStatus=CANCEL 이기도 하므로(softDelete 가 CANCEL 플립
+      // 성공 뒤에만 실행됨), 가드에 couponStatus 절을 추가하면 이 절이 no-op 이 된다.
       expect(findExpireGuard(selectQb)[0]).toContain('orderDelivery.deletedAt IS NOT NULL');
     });
 

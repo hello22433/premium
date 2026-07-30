@@ -224,7 +224,11 @@ export class OrderGetDeliveryCompleteReportResDto extends OrderGetDeliveryComple
   userInfo: OrderCustomerViewDto;
 
   @ApiProperty({
-    description: '개인정보 파기 요청일',
+    description:
+      '개인정보 파기 요청일수. ⚠️ 주문의 **첫 번째 상품매핑 값**이다(대표값). 파기일수는 상품별로 ' +
+      '승계되므로 다상품 주문에서 상품마다 다를 수 있고, 그때 이 값은 주문 전체를 대표하지 않는다. ' +
+      '파기 시점이 필요하면 전 매핑을 반영한 effectiveDestroyAt 을 쓸 것 — 이 값으로 날짜를 자체 ' +
+      '계산하면(발송일 + 이 일수) 유효기간 가드와 다상품 편차가 모두 반영되지 않는다.',
   })
   requestToDestroyPersonalInfoDay: number;
 
