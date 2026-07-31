@@ -2078,6 +2078,12 @@ export class CustomerServiceService {
         //    아니라 라인 박제값을 쓴다. 차감(selectAndDeduct...)과 역복원(reverse...)이 이 한 값을
         //    공유하므로, 소스를 바꿔도 차감/복원 균형은 그대로 유지된다.
         const reissuePrice = readLineProductView(orderDelivery.orderProductMapping).price;
+        // ⚠️ expireDay 는 의도적으로 live 를 유지한다(price 와 기준이 다른 것은 혼재가 아니라 분리다).
+        //  - 돈(price) = 원주문 보존 / 유효기간 = "새 쿠폰이므로 새로 계산" — 아래 비-SSG 분기가
+        //    resolveExpireDays(... opm.product.expireDay ...) 로 같은 정책을 명시한다.
+        //  - 게다가 이 값은 SSG 행사 선택의 **정확일치 필터**(ssg.couponExpiration = :couponExpiration)다.
+        //    발행될 쿠폰의 유효기간과 행사 버킷이 같아야 하므로 snapshot 으로 바꾸면 옛 기간 버킷에서
+        //    차감하고 새 기간 쿠폰을 발행(회계 불일치)하거나, 그 기간 행사에 잔액이 없어 정상 재발행이 막힌다.
         const reissueExpireDay = orderDelivery.orderProductMapping.product.expireDay;
         const reissueOrderId = orderDelivery.orderProductMapping.order.id;
 
