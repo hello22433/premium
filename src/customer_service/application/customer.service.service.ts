@@ -77,6 +77,7 @@ import { UserTaskHistoryEntity } from 'src/entity/user.task.history.entity';
 import { OrderDeliveryRefundStatusEnum } from '../../delivery/interface/order.delivery.refund.status.enum';
 import { IOrderSendMethod } from '../../order/interface/order.send.method';
 import { IOrderType } from '../../order/interface/order.type';
+import { readLineProductView } from '../../order/util/order.snapshot.builder';
 import { SsgEventEntity } from '../../entity/ssg.event.entity';
 import { SsgRefundOutcome } from '../../delivery/interface/ssg.refund.resolve';
 import { assertExpireDayRangeValid, resolveExpireDays } from '../../common/utils/expire.util';
@@ -2070,7 +2071,13 @@ export class CustomerServiceService {
         }
 
         const isSsg = orderDelivery.orderProductMapping.order.type === IOrderType.SSG;
-        const reissuePrice = orderDelivery.orderProductMapping.product.price;
+        // D3-70: 재발행은 원주문 가격을 보존한다 — 주문시점 박제값(snapshotProductPrice) 우선.
+        //  - 과거엔 live product.price(가변)로 SSG 행사잔액을 재차감해, 주문 후 상품가가 바뀌면
+        //    같은 쿠폰의 재발행이 원주문과 다른 금액을 차감했다(원 차감액 = 주문시점 단가).
+        //  - 재발행은 delivery(라인) 단위라 order.sendAmount(주문 합계, 다회선이면 라인단가와 다름)가
+        //    아니라 라인 박제값을 쓴다. 차감(selectAndDeduct...)과 역복원(reverse...)이 이 한 값을
+        //    공유하므로, 소스를 바꿔도 차감/복원 균형은 그대로 유지된다.
+        const reissuePrice = readLineProductView(orderDelivery.orderProductMapping).price;
         const reissueExpireDay = orderDelivery.orderProductMapping.product.expireDay;
         const reissueOrderId = orderDelivery.orderProductMapping.order.id;
 
