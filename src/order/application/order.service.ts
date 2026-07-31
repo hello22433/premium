@@ -169,6 +169,7 @@ import {
   shouldExposeSsgBalanceCheck,
 } from '../domain/order.delivery-transition-authority.helper';
 import { IOrderDateType } from '../interface/order.date.type';
+import { IReportSource } from '../interface/report.source';
 import { OrderEncryptKey } from '../../order_receive/interface/order.encrypt.key';
 import { ActivityLogService } from '../../activity_log/application/activity.log.service';
 import { ActivityLogResult } from '../../activity_log/interface/activity.log.result';
@@ -1796,7 +1797,7 @@ export class OrderService {
     }
 
     order.deliveryCompleteReportCount++;
-    order.deliveryReportLastSource = getBody.source || 'DOCUMENT';
+    order.deliveryReportLastSource = getBody.source || IReportSource.DOCUMENT;
 
     await this.orderRepository.save(order);
 
@@ -1936,7 +1937,7 @@ export class OrderService {
     }
 
     order.orderCompleteReportCount++;
-    order.transactionStatementLastSource = getBody.source || 'DOCUMENT';
+    order.transactionStatementLastSource = getBody.source || IReportSource.DOCUMENT;
 
     await this.orderRepository.save(order);
 
