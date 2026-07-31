@@ -1,6 +1,7 @@
 import { OrderEntity } from '../../entity/order.entity';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { OrderProductMappingEntity } from '../../entity/order.product.mapping.entity';
+import { isDeliveryDestroyed, isEstimatedDestroyedAt } from './destroyed.at.source';
 
 /**
  * 실효 개인정보 파기일 계산.
@@ -12,7 +13,9 @@ import { OrderProductMappingEntity } from '../../entity/order.product.mapping.en
  * ── 이 함수가 답하는 두 가지 질문 ──────────────────────────────────────────────
  * 겉보기엔 하나의 날짜를 돌려주지만, 행의 상태에 따라 **성격이 전혀 다른 값**이 나온다.
  *   · 이미 파기된 행 → "언제 지웠나"  = **실적**. order_delivery.destroyed_at 을 그대로 읽는다.
- *   · 아직 안 지운 행 → "언제 지울까"  = **예측**. 배치 규칙을 날짜로 옮겨 계산한다.
+ *   · **지금** 살아있는 행 → "언제 지울까" = **예측**. 배치 규칙을 날짜로 옮겨 계산한다.
+ *     (한 번 파기됐다가 CS 수신정보 변경으로 되살아난 행도 여기 들어온다 — 축은 '과거에
+ *      지운 적이 있나'가 아니라 '지금 지워져 있나'다.)
  *
  * 예측을 과거에 쓰면 안 된다는 것이 이 설계의 핵심이다. 예측식으로 과거를 답하려면 "그때 쓰던
  * 규칙 == 지금 쓰는 규칙"이어야 하는데, 규칙은 실제로 바뀐다. 유효기간 가드가 들어오면서
@@ -33,8 +36,9 @@ import { OrderProductMappingEntity } from '../../entity/order.product.mapping.en
  *      3) refundStatus IS NULL OR NOT IN (PROGRESS, APPROVE)
  *         → 미반영. 그날 환불 진행중이면 배치가 건너뛰고 종결 후 회차에서 파기한다(더 늦어진다).
  *      4) PII 5종 중 하나라도 미파기
- *         → **반영 불필요.** 이 절에 걸리는 행(= 이미 파기된 행)은 예측 경로에 도달하지 않는다.
- *            destroyed_at 실적으로 먼저 답하기 때문이다.
+ *         → **반영 불필요.** deliveryTarget 이 '-' 인 행은 예측 경로에 도달하지 않기 때문이다
+ *            (아래 판정 순서 참조). 다만 그 경로가 항상 실적을 돌려주는 것은 아니다 — 기록이
+ *            없으면 null 이다.
  *      5) (expireAt IS NULL OR DATE(expireAt) < DATE(now) OR deletedAt IS NOT NULL)
  *         → 반영. 유효기간 가드.
  *
@@ -58,6 +62,33 @@ import { OrderProductMappingEntity } from '../../entity/order.product.mapping.en
  * 계산 불가(발송건 없음/기준 컬럼 결측)면 null 을 돌려주고, 호출부는 종전 표시로 폴백한다 —
  * 근거 없는 날짜를 지어내지 않는다.
  */
+
+/**
+ * 파기일의 **성격**. 같은 `yyyy-MM-dd` 문자열이라도 근거의 강도가 다르므로, 날짜와 함께
+ * 반드시 이 값을 들고 다닌다. 대외 증빙(파기확인서)에 실리는 값이라 "이 날짜가 사실입니까"에
+ * 답할 수 있어야 하고, 날짜만으로는 답할 수 없기 때문이다.
+ *
+ *  · ACTUAL           이미 파기됐고 그 시각이 **기록**돼 있다. 가장 강하다.
+ *  · ACTUAL_ESTIMATED 이미 파기됐지만 시각은 **추정**이다(컬럼 신설 백필 §3 이 옛 규칙으로 역산).
+ *                     날짜는 그럴듯하지만 실측이 아니므로 증빙에 쓸 때 주의가 필요하다.
+ *  · SCHEDULED        아직 파기되지 않았다. 배치가 파기할 수 있는 **가장 이른 날**(하한)이다.
+ *
+ * 확실성 순서: ACTUAL > ACTUAL_ESTIMATED > SCHEDULED.
+ */
+export type EffectiveDestroyAtKind = 'ACTUAL' | 'ACTUAL_ESTIMATED' | 'SCHEDULED';
+
+/** 주문/발송건 단위 확실성 비교용. 숫자가 클수록 근거가 강하다. */
+export const KIND_CERTAINTY: Record<EffectiveDestroyAtKind, number> = {
+  ACTUAL: 3,
+  ACTUAL_ESTIMATED: 2,
+  SCHEDULED: 1,
+};
+
+/** 파기일 + 그 근거의 성격. 날짜만 떼어 쓰면 성격이 유실되므로 항상 쌍으로 다룬다. */
+export interface EffectiveDestroyAt {
+  at: Date;
+  kind: EffectiveDestroyAtKind;
+}
 
 /**
  * 파기 완료 마커. 정기파기(delivery.batch.service)·조기파기(early.destroy.service)가 PII 를
@@ -118,26 +149,39 @@ const addDays = (value: Date, days: number): Date => {
  *       · 컬럼 신설 백필에서 기준 컬럼(sendRequestAt / requestToDestroyPersonalInfoDay)이
  *         결측이라 값을 못 채운 행
  *       · 백필을 돌리기 전에 코드가 먼저 배포된 경우(배포 순서 사고)
+ *       · **각인 경로가 마스킹 대상 집합을 놓친 경우** — 마스킹은 됐는데 각인이 안 된 행이다.
+ *         (조기파기가 soft-delete 행을 조회에서 빠뜨렸던 것이 실제 사례다. 각인 UPDATE 는
+ *          soft-delete 필터가 안 붙어 그 행까지 마스킹하는데 대상 목록에는 없었다.)
+ *     ⇒ 열거를 완결로 읽지 말 것. 이 상태가 보이면 **각인 경로 중 하나가 집합을 놓쳤다**고
+ *       보고 조사해야 한다 — 마이그레이션 잔여물로 단정하면 진짜 결함을 놓친다.
  *     여기서 예정일로 폴백하면 안 된다 — 그게 바로 H-1(이미 지운 건에 미래 날짜)의 재현이다.
  *     "모른다"를 null 로 정직하게 표현한다.
  *
- * deletedAt 분기는 발송완료 보고서 경로에서는 사실상 도달하지 않는다 — soft-delete 되는 것은
- * 되감긴 tip 뿐이고 tip 은 replacedFromId 가 있어 호출부가 먼저 걸러내는 경우가 많다. 배치와의
- * 규칙 대조를 위해 남긴 방어 분기다.
+ * deletedAt 분기는 **실제로 도달한다.** soft-delete 되는 것은 되감긴 tip 뿐인데, 이 함수는
+ * hideDiscardReissueDeliveries **이전** 집합을 받도록 계약돼 있어(위 ⚠️) tip 이 반드시 포함된다.
+ * 방어 분기가 아니라 정상 경로이므로 지우면 안 된다.
  * null 판정이 expireAt(=== null && === undefined)과 deletedAt(=== null)에서 비대칭인 점에 주의.
  * 부분 select/DTO 투영으로 deletedAt 이 undefined 로 들어오면 가드가 조용히 꺼져 실제보다 이른
  * 날짜가 나온다. 엔티티를 그대로 넘기면(현 호출부) @DeleteDateColumn 이 항상 선택되어 안전하다.
  */
 export function resolveDeliveryDestroyAt(
-  delivery: Pick<OrderDeliveryEntity, 'expireAt' | 'deletedAt' | 'deliveryTarget' | 'destroyedAt'>,
+  delivery: Pick<
+    OrderDeliveryEntity,
+    'expireAt' | 'deletedAt' | 'deliveryTarget' | 'destroyedAt' | 'destroyedAtSource' | 'emailReceiverPhone'
+  >,
   sendRequestAt: Date | null | undefined,
   destroyDay: number | null | undefined,
-): Date | null {
+): EffectiveDestroyAt | null {
   // ★ 현재 상태를 먼저 묻는다. destroyedAt 을 먼저 보면 수신처가 되살아난 행에서
   //   살아있는 PII 옆에 과거 파기일이 인쇄된다(위 판정 순서 설명 참조).
-  if (delivery.deliveryTarget === DESTROY_VALUE) {
-    // ② 지워져 있고 기록이 있다 → 실적.
-    if (delivery.destroyedAt) return atStartOfDay(delivery.destroyedAt);
+  if (isDeliveryDestroyed(delivery)) {
+    // ② 지워져 있고 기록이 있다 → 실적. 다만 그 값이 사실인지 추정인지는 출처가 가른다.
+    if (delivery.destroyedAt) {
+      return {
+        at: atStartOfDay(delivery.destroyedAt),
+        kind: isEstimatedDestroyedAt(delivery.destroyedAtSource) ? 'ACTUAL_ESTIMATED' : 'ACTUAL',
+      };
+    }
     // ③ 지워져 있는데 기록이 없다 → 모른다. 예정일로 폴백하면 미래 날짜 인쇄가 재현된다.
     return null;
   }
@@ -151,12 +195,12 @@ export function resolveDeliveryDestroyAt(
 
   const guardApplies = delivery.expireAt !== null && delivery.expireAt !== undefined && delivery.deletedAt === null;
 
-  if (!guardApplies) return baseDestroyAt;
+  if (!guardApplies) return { at: baseDestroyAt, kind: 'SCHEDULED' };
 
   // 만료 당일은 아직 유효하므로 다음 날 회차에서 파기된다 — 배치의 `DATE(expireAt) < DATE(now)`.
   const expiryDestroyAt = addDays(atStartOfDay(delivery.expireAt as Date), 1);
 
-  return expiryDestroyAt > baseDestroyAt ? expiryDestroyAt : baseDestroyAt;
+  return { at: expiryDestroyAt > baseDestroyAt ? expiryDestroyAt : baseDestroyAt, kind: 'SCHEDULED' };
 }
 
 /**
@@ -166,7 +210,7 @@ export function resolveDeliveryDestroyAt(
  * "이 날이면 전부 지워져 있다"를 보장해야 고지로서 의미가 있으므로 최댓값을 쓴다.
  *
  * 파기일을 특정할 수 없는 발송건(null)이 하나라도 있으면 주문 전체도 null 이다 — 일부만 보고
- * "전부 파기됨"이라 고지할 수 없다. 위 ②(파기됐는데 시각 모름)도 여기에 걸려 주문 전체가
+ * "전부 파기됨"이라 고지할 수 없다. 위 ③(파기됐는데 시각 모름)도 여기에 걸려 주문 전체가
  * null 이 되는데, 의도된 동작이다. 한 건이라도 근거가 없으면 주문 단위 진술도 성립하지 않는다.
  *
  * 그 보장은 **넘겨받은 집합에 한정**된다. 호출부가 발송건을 걸러낸 뒤 넘기면 걸러진 건은 MAX 에
@@ -178,25 +222,32 @@ export function resolveDeliveryDestroyAt(
  * (다만 "실적일은 MAX 에 영향을 주지 않는다"고 단정하지는 말 것 — 발송건이 **전부** 파기된
  *  주문에서는 MAX 가 곧 실적일이다. 발송건 1건짜리 주문이 그 대표 사례다.)
  */
-export function resolveOrderEffectiveDestroyAt(order: Pick<OrderEntity, 'orderProductMappings'>): Date | null {
+export function resolveOrderEffectiveDestroyAt(
+  order: Pick<OrderEntity, 'orderProductMappings'>,
+): EffectiveDestroyAt | null {
   const mappings: OrderProductMappingEntity[] = order.orderProductMappings ?? [];
 
   let latest: Date | null = null;
+  let weakest: EffectiveDestroyAtKind = 'ACTUAL';
 
   for (const mapping of mappings) {
     for (const delivery of mapping.orderDeliveries ?? []) {
-      const destroyAt = resolveDeliveryDestroyAt(
+      const resolved = resolveDeliveryDestroyAt(
         delivery,
         mapping.sendRequestAt,
         mapping.requestToDestroyPersonalInfoDay,
       );
-      // 특정 불가한 건이 하나라도 있으면 주문 전체를 특정할 수 없다.
-      if (destroyAt === null) return null;
-      if (latest === null || destroyAt > latest) latest = destroyAt;
+      // 특정 불가한 건이 하나가 있으면 주문 전체를 특정할 수 없다.
+      if (resolved === null) return null;
+      if (latest === null || resolved.at > latest) latest = resolved.at;
+      // ★ kind 는 MAX 날짜의 것이 아니라 **가장 약한 것**을 택한다.
+      //   "이 날이면 전부 지워져 있다"는 진술은 구성 요소 중 가장 불확실한 것만큼만 강하다.
+      //   실적 하나 + 예정 하나면 주문 전체는 예정이고, 실적 하나 + 추정 하나면 추정이다.
+      if (KIND_CERTAINTY[resolved.kind] < KIND_CERTAINTY[weakest]) weakest = resolved.kind;
     }
   }
 
   // 발송건이 하나도 없으면 초기값 null 이 그대로 나간다 — "증명할 내용이 없다"와 같은 뜻이다.
   // (발송건이 있으면 위 루프에서 최소 1회 갱신되므로 여기서 latest 는 반드시 non-null 이다.)
-  return latest;
+  return latest === null ? null : { at: latest, kind: weakest };
 }

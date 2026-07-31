@@ -85,7 +85,7 @@ import {
   resolveDestructionCertificateGate,
   destructionCertificateBlockMessage,
 } from '../domain/destruction.certificate.gate';
-import { resolveOrderEffectiveDestroyAt } from '../domain/effective.destroy.date';
+import { KIND_CERTAINTY, EffectiveDestroyAtKind, resolveOrderEffectiveDestroyAt } from '../domain/effective.destroy.date';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { TestOrderDeliveryEntity } from '../../entity/test.order.delivery.entity';
 import { ProductEntity } from '../../entity/product.entity';
@@ -1578,6 +1578,28 @@ export class OrderService {
   }
 
   /**
+   * 파기일을 특정할 수 없을 때 근거를 남긴다.
+   *
+   * 이 경로는 **사용자가 문서를 못 뽑는 지점**인데 지금껏 침묵했다. 배치·조기파기에는 각인
+   * 건수 로그를 붙였으면서 정작 결과가 빈 칸이 되는 곳에 아무 신호가 없으면, 운영은 고객
+   * 문의로만 알게 된다. 특히 '파기됐는데 시각 기록이 없는' 행은 데이터 결함이므로 반드시
+   * 눈에 띄어야 한다 — 백필 누락이거나 배포 순서 사고다.
+   */
+  private warnUnresolvedDestroyAt(order: OrderEntity): void {
+    const missingStamp = (order.orderProductMappings ?? [])
+      .flatMap((m) => m.orderDeliveries ?? [])
+      .filter((d) => d.deliveryTarget === '-' && !d.destroyedAt)
+      .map((d) => d.id);
+    const level = missingStamp.length > 0 ? 'error' : 'warn';
+    this.logger[level](
+      `[파기일] 주문 ${order.id} 의 파기일을 특정할 수 없어 null 로 응답 — ` +
+        (missingStamp.length > 0
+          ? `파기됐으나 destroyed_at 결측 orderDeliveryIds=[${missingStamp.join(', ')}] (백필 누락/배포순서 사고 의심)`
+          : '발송요청일 또는 파기일수 결측(해당 행은 배치가 영원히 집지 않는다)'),
+    );
+  }
+
+  /**
    * 고객 노출용 발송 목록 필터.
    *
    * '폐기 후 신규 발송'은 자사↔수신자 간 내부 처리(고객사는 알 필요 없음)이므로, 원본을 대체해
@@ -1642,7 +1664,8 @@ export class OrderService {
     //   된다(예: 원본 2031-01-02 / tip 2031-06-02 인데 2031-01-02 로 인쇄). tip 을 화면에서
     //   숨기는 것은 노출 정책이고, 파기일 산정에 포함하는 것은 사실 진술이라 축이 다르다.
     // 이미 파기된 건은 order_delivery.destroyed_at 실적을, 그 외는 예정일을 답한다.
-    const effectiveDestroyAt = resolveOrderEffectiveDestroyAt(order);
+    const effectiveDestroy = resolveOrderEffectiveDestroyAt(order);
+    if (effectiveDestroy === null) this.warnUnresolvedDestroyAt(order);
 
     // '폐기 후 신규 발송' 신규 건 숨김 — 발송완료리포트도 최초 발송 1건만 집계
     this.hideDiscardReissueDeliveries(order.orderProductMappings);
@@ -1789,7 +1812,8 @@ export class OrderService {
       // 다상품 주문에서는 두 경로가 애초에 다른 날짜를 낸다. 기존 필드의 의미를 바꾸면 파기일수
       // 편집 API(order.controller.ts 상품매핑 개인정보파기일 변경)와 충돌하므로 값은 그대로 두고
       // DTO 설명에 대표값임을 명시했다.
-      effectiveDestroyAt: effectiveDestroyAt ? format(effectiveDestroyAt, DateDateFormatStr) : null,
+      effectiveDestroyAt: effectiveDestroy ? format(effectiveDestroy.at, DateDateFormatStr) : null,
+      effectiveDestroyAtKind: effectiveDestroy?.kind ?? null,
       productList: productList,
       actualSendAt: actualSendAt,
       // 발송 정보 추가 (첫 번째 상품의 정보 사용)
@@ -2080,12 +2104,19 @@ export class OrderService {
     //   하나라도 특정 불가(null)면 전체가 null 이다. 문서 한 장이 여러 주문을 덮으므로 "이 날이면
     //   전부 지워져 있다"가 성립하려면 가장 늦은 날이어야 한다.
     let multipleEffectiveDestroyAt: Date | null = null;
+    // kind 도 '가장 약한 것'으로 모은다 — 문서 한 장이 여러 주문을 덮으므로, 그중 하나라도
+    // 추정이면 그 문서 전체를 추정으로 봐야 한다(주문 단위 집계와 같은 논리).
+    let multipleKind: EffectiveDestroyAtKind | null = null;
     for (const order of orders) {
-      const destroyAt = resolveOrderEffectiveDestroyAt(order);
-      if (destroyAt === null) {
+      const resolved = resolveOrderEffectiveDestroyAt(order);
+      if (resolved === null) {
+        this.warnUnresolvedDestroyAt(order);
         multipleEffectiveDestroyAt = null;
+        multipleKind = null;
         break;
       }
+      const destroyAt = resolved.at;
+      if (multipleKind === null || KIND_CERTAINTY[resolved.kind] < KIND_CERTAINTY[multipleKind]) multipleKind = resolved.kind;
       if (multipleEffectiveDestroyAt === null || destroyAt > multipleEffectiveDestroyAt) {
         multipleEffectiveDestroyAt = destroyAt;
       }
@@ -2246,9 +2277,10 @@ export class OrderService {
       status: firstOrder.status,
       couponExpiration: couponExpiration,
       requestToDestroyPersonalInfoDay: firstMapping?.requestToDestroyPersonalInfoDay ?? 0,
-      // 전 주문 파기일의 MAX(:2064 에서 tip 포함 집합으로 계산). 단일 보고서와 같은 formatter 가
+      // 전 주문 파기일의 MAX(아래 루프에서 tip 포함 집합으로 계산). 단일 보고서와 같은 formatter 가
       // 그리므로 이 필드가 빠지면 같은 주문을 단일로 뽑을 때와 통합으로 뽑을 때 날짜가 달라진다.
       effectiveDestroyAt: multipleEffectiveDestroyAt ? format(multipleEffectiveDestroyAt, DateDateFormatStr) : null,
+      effectiveDestroyAtKind: multipleEffectiveDestroyAt ? multipleKind : null,
       productList: productList,
       actualSendAt: actualSendAt,
       sendMethod: firstMapping?.sendMethod ?? null,

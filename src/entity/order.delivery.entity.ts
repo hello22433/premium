@@ -1,5 +1,6 @@
 import { Column, Entity, JoinColumn, ManyToOne, OneToMany, PrimaryGeneratedColumn } from 'typeorm';
 import { BaseEntity } from '../common/entity/base.entity';
+import { DestroyedAtSource } from '../order/domain/destroyed.at.source';
 import { OrderProductMappingEntity } from './order.product.mapping.entity';
 import { IOrderDeliveryStatus } from '../delivery/interface/order.delivery.status';
 import { IOrderSendMethod } from '../order/interface/order.send.method';
@@ -111,8 +112,8 @@ export class OrderDeliveryEntity extends BaseEntity {
    * enum 이 아니라 varchar 인 이유: 값이 추가될 때 ALTER 를 다시 돌지 않기 위해서다.
    * (이 레포는 스키마를 수기 SQL 로 관리하므로 ALTER 한 번의 비용이 작지 않다.)
    */
-  @Column({ type: 'varchar', length: 20, nullable: true, comment: '파기 시각의 출처 (사실/추정 판별)' })
-  destroyedAtSource: string | null;
+  @Column({ type: 'varchar', length: 32, nullable: true, comment: '파기 시각의 출처 (사실/추정 판별)' })
+  destroyedAtSource: DestroyedAtSource | null;
 
   @Column({ type: 'varchar', length: 256, nullable: true, comment: '트랜잭션 id' })
   transactionId: string | null;

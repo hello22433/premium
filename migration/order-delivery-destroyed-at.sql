@@ -45,7 +45,7 @@ SET @src_exists := (
   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'order_delivery' AND COLUMN_NAME = 'destroyed_at_source'
 );
 SET @sql := IF(@src_exists = 0,
-  'ALTER TABLE `order_delivery` ADD COLUMN `destroyed_at_source` varchar(20) NULL COMMENT ''파기 시각의 출처 (사실/추정 판별)'', ALGORITHM=INSTANT',
+  'ALTER TABLE `order_delivery` ADD COLUMN `destroyed_at_source` varchar(32) NULL COMMENT ''파기 시각의 출처 (사실/추정 판별)'', ALGORITHM=INSTANT',
   'SELECT 1');
 PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
 
@@ -118,15 +118,30 @@ WHERE od.destroyed_at IS NULL
   AND od.delivery_target = '-';   -- 실제로 지워진 행에만 각인(기록과 행 상태 불일치 방어)
 
 -- ── 3. 백필 (2순위) — 정기파기 추정 ───────────────────────────────────────────
--- ★ 실행 전 가드: §2 가 끝났는지 확인한다. 반드시 0 이어야 한다.
+-- ★ 실행 전 가드: §2 가 끝났는지 확인한다. **반드시 0 이어야 한다.**
 --   §3 을 §2 보다 먼저 돌리면 조기파기 실측이 있는 행을 추정값이 선점하고, §2 는
 --   `destroyed_at IS NULL` 조건이라 **영원히 못 고친다**. 아래 "대용량 분할 실행" 안내가
 --   §3 만 따로 돌리도록 유도할 수 있어 특히 위험하다.
+--
+-- ⚠️ 후보 정의는 §2 와 **완전히 동일해야** 한다. 매핑 단위로 조인하면 조기파기와 무관한 형제
+--    발송건까지 잡혀서, §2 가 정상 완료돼도 0 이 아니게 된다(= 운영자가 정상 상황에서 §3 을
+--    중단한다). 아래는 §2 의 UNION ALL 후보를 그대로 재사용해 **발송건 단위**로 맞춘 것이다.
 SELECT COUNT(*) AS `S3_실행전_반드시0__조기파기_미각인_잔량`
 FROM `order_delivery` od
-JOIN `early_destroy_request_item` i ON i.order_product_mapping_id = od.order_product_mapping_id
-JOIN `early_destroy_request` r ON r.id = i.early_destroy_request_id
-  AND r.status = 'COMPLETED' AND r.executed_at IS NOT NULL
+JOIN (
+  SELECT i.order_delivery_id AS delivery_id
+  FROM `early_destroy_request_item` i
+  JOIN `early_destroy_request` r ON r.id = i.early_destroy_request_id
+  WHERE r.status = 'COMPLETED' AND r.executed_at IS NOT NULL AND i.order_delivery_id IS NOT NULL
+  UNION ALL
+  SELECT od2.id AS delivery_id
+  FROM `early_destroy_request_item` i
+  JOIN `early_destroy_request` r ON r.id = i.early_destroy_request_id
+  JOIN `order_delivery` od2 ON od2.order_product_mapping_id = i.order_product_mapping_id
+  WHERE r.status = 'COMPLETED' AND r.executed_at IS NOT NULL AND i.order_delivery_id IS NULL
+    AND od2.created_at IS NOT NULL
+    AND DATE_SUB(od2.created_at, INTERVAL MICROSECOND(od2.created_at) MICROSECOND) <= r.executed_at
+) c ON c.delivery_id = od.id
 WHERE od.delivery_target = '-' AND od.destroyed_at IS NULL;
 
 -- 정기파기 배치는 파기 시각을 남기지 않았으므로 실측이 없다. 옛 배치의 규칙
@@ -185,9 +200,15 @@ FROM `order_delivery` od
 LEFT JOIN `order_product_mapping` opm ON opm.id = od.order_product_mapping_id
 WHERE od.delivery_target = '-' AND od.destroyed_at IS NULL;
 
--- 4-2. 미파기 행에 시각이 찍혀 있으면 안 된다(있으면 백필 조건 오류 — 살아있는 PII 에
---      "파기 완료" 도장). 반드시 0 이어야 한다.
-SELECT COUNT(*) AS `미파기인데_시각있음_반드시0`
+-- 4-2. 미파기 행에 시각이 찍혀 있는 건. **백필 직후에만 0 이어야 한다.**
+--      ⚠️ "항상 반드시 0"이 아니다 — 운영 중에는 **정상적으로 발생하는 상태**가 있다:
+--         파기된 뒤 CS 수신정보 변경으로 수신처가 되살아나고 아직 다음 배치 회차가 오지 않은 행.
+--         배치는 그 행을 '부활 재파기'로 분류해 새 시각으로 갱신하도록 설계돼 있다
+--         (delivery.batch.service.ts 의 각인 분기). 즉 이 조합 자체는 결함이 아니다.
+--      백필 직후(코드 배포 전)에는 부활 경로가 아직 개입하지 않았으므로 0 이어야 하고,
+--      0 이 아니면 백필 조건 오류다(살아있는 PII 에 "파기 완료" 도장).
+--      운영 중 조회해서 0 이 아니면 → 해당 행이 부활 대기 상태인지 먼저 확인할 것.
+SELECT COUNT(*) AS `미파기인데_시각있음__백필직후0_운영중엔_부활대기_확인`
 FROM `order_delivery` od
 WHERE od.delivery_target <> '-' AND od.destroyed_at IS NOT NULL;
 
@@ -228,7 +249,7 @@ FROM `order_delivery` od
 JOIN `order_product_mapping` opm ON opm.id = od.order_product_mapping_id
 WHERE od.destroyed_at IS NOT NULL
   AND opm.updated_at > od.destroyed_at
-  AND TIME(od.destroyed_at) = '00:00:00';   -- 추정 각인(자정) 행으로 한정
+  AND od.destroyed_at_source = 'BACKFILL_ESTIMATE';   -- 추정 각인 행으로 한정(시각 프록시는 틀린다)
 
 -- ── 참고: 대용량 분할 실행 ────────────────────────────────────────────────────
 -- order_delivery 가 수백만 행이면 §3 을 한 번에 돌리지 말고 id 구간으로 쪼갠다.

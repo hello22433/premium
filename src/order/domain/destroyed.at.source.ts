@@ -14,9 +14,9 @@ export const DESTROYED_AT_SOURCE = {
   EARLY: 'EARLY',
   /** 정기파기 배치 실행 시 각인 (delivery.batch.service). 사실. */
   BATCH: 'BATCH',
-  /** 컬럼 신설 백필 §2 — early_destroy_request.executed_at 복사. 사실. */
+  /** 컬럼 신설 백필 — 조기파기 요청서의 executed_at 을 복사한 값. 사실. */
   BACKFILL_EARLY: 'BACKFILL_EARLY',
-  /** 컬럼 신설 백필 §3 — `발송요청일 + 파기일수` 계산값. **추정**. */
+  /** 컬럼 신설 백필 — `발송요청일 + 파기일수` 로 역산한 값. **추정**. */
   BACKFILL_ESTIMATE: 'BACKFILL_ESTIMATE',
 } as const;
 
@@ -32,3 +32,30 @@ export const isEstimatedDestroyedAt = (source: string | null | undefined): boole
   source !== DESTROYED_AT_SOURCE.EARLY &&
   source !== DESTROYED_AT_SOURCE.BATCH &&
   source !== DESTROYED_AT_SOURCE.BACKFILL_EARLY;
+
+/**
+ * "이 발송건은 **지금** 파기돼 있는가."
+ *
+ * ⚠️ deliveryTarget 하나만 보면 안 된다. CS 수신정보 변경은 **이메일+핀발급 건에서
+ *    emailReceiverPhone 만** 갱신하고 deliveryTarget 은 건드리지 않는다
+ *    (customer.service.service.ts 의 RECEIVER_CHANGE 분기). 파기 후 emailReceiverPhone 은
+ *    '-' 라 truthy 이므로 그 분기에 그대로 들어가고, 결과는
+ *      delivery_target = '-'  +  email_receiver_phone = <살아있는 암호화 전화번호>
+ *    가 된다. deliveryTarget 만 보면 이 행이 "파기됨"으로 판정되어
+ *      · 파기일이 과거 실적으로 인쇄되고(살아있는 PII 옆에 "파기 완료 2026-03-01")
+ *      · 배치가 부활로 분류하지 않아 그 기간이 감사기록에서 사라진다
+ *    판정 순서를 뒤집어 막으려던 모순이 **다른 컬럼으로 그대로 재현**된다(리뷰 HIGH-1).
+ *
+ * emailReceiverPhone 이 NULL 인 것은 "그 경로를 쓰지 않는 발송건"이라는 뜻이므로 파기로 본다.
+ *
+ * ⚠️ 파기확인서 발행 게이트(destruction.certificate.gate.ts)는 **의도적으로** 이 술어를 쓰지
+ *    않고 deliveryTarget 단일 판정을 유지한다. 게이트를 넓히면 emailReceiverPhone 이 한 번도
+ *    마스킹된 적 없는 레거시 행에서 발행이 새로 막혀 운영 회귀가 된다. 표시(이 술어)는 좁게,
+ *    발행(게이트)은 종전대로 — 두 축이 다르다는 것을 알고 쓸 것.
+ */
+export const isDeliveryDestroyed = (delivery: {
+  deliveryTarget: string;
+  emailReceiverPhone?: string | null;
+}): boolean =>
+  delivery.deliveryTarget === '-' &&
+  (delivery.emailReceiverPhone === null || delivery.emailReceiverPhone === undefined || delivery.emailReceiverPhone === '-');

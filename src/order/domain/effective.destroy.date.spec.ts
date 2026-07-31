@@ -18,8 +18,12 @@ import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delive
  */
 describe('resolveDeliveryDestroyAt — 발송건 1건의 파기일', () => {
   const day = (iso: string) => new Date(iso);
-  const ymd = (d: Date | null) =>
-    d ? `${d.getFullYear()}-${`${d.getMonth() + 1}`.padStart(2, '0')}-${`${d.getDate()}`.padStart(2, '0')}` : null;
+  /** {at, kind} 에서 날짜만 뽑는다. null 이면 null. */
+  const ymd = (r: { at: Date } | null) => {
+    const d = r?.at ?? null;
+    return d ? `${d.getFullYear()}-${`${d.getMonth() + 1}`.padStart(2, '0')}-${`${d.getDate()}`.padStart(2, '0')}` : null;
+  };
+  const kindOf = (r: { kind: string } | null) => r?.kind ?? null;
 
   // 아직 파기되지 않은 발송건 — 수신처가 살아 있고 파기 시각도 없다.
   const alive = {
@@ -27,9 +31,18 @@ describe('resolveDeliveryDestroyAt — 발송건 1건의 파기일', () => {
     couponStatus: OrderDeliveryCouponStatus.NOT_USED,
     deliveryTarget: '01011112222',
     destroyedAt: null,
+    destroyedAtSource: null,
+    emailReceiverPhone: null,
   };
   // 이미 파기된 발송건 — PII 가 '-' 로 마스킹되고 파기 시각이 각인된 상태.
-  const destroyedAt = (iso: string) => ({ ...alive, deliveryTarget: '-', destroyedAt: day(iso) });
+  // 출처 BATCH = 실측이므로 kind 는 ACTUAL 이 된다.
+  const destroyedAt = (iso: string) => ({
+    ...alive,
+    deliveryTarget: '-',
+    emailReceiverPhone: '-',
+    destroyedAt: day(iso),
+    destroyedAtSource: 'BATCH' as const,
+  });
 
   describe('예정일 계산 (아직 파기되지 않은 건)', () => {
     it('유효기간이 파기기준일보다 이르면 기준일 그대로다 (가드가 개입하지 않음)', () => {
@@ -135,7 +148,7 @@ describe('resolveDeliveryDestroyAt — 발송건 1건의 파기일', () => {
       // 백필에서 기준 컬럼 결측으로 못 채웠거나, 백필 전에 코드가 배포된 경우.
       // "지운 것은 맞는데 언제인지 모른다"를 날짜로 위장하지 않는다.
       const at = resolveDeliveryDestroyAt(
-        { ...alive, deliveryTarget: '-', expireAt: day('2031-01-01T00:00:00') },
+        { ...alive, deliveryTarget: '-', emailReceiverPhone: '-', expireAt: day('2031-01-01T00:00:00') },
         day('2026-01-01T14:00:00'),
         180,
       );
@@ -147,10 +160,10 @@ describe('resolveDeliveryDestroyAt — 발송건 1건의 파기일', () => {
       expect(ymd(at)).toBe('2026-02-01');
       // ⚠️ ymd 는 시간 성분을 버리므로 위 단언만으로는 절삭을 검증하지 못한다(atStartOfDay 를
       //    지우고 인자를 그대로 반환해도 통과한다). 시각을 직접 봐야 실제로 고정된다.
-      expect(at?.getHours()).toBe(0);
-      expect(at?.getMinutes()).toBe(0);
-      expect(at?.getSeconds()).toBe(0);
-      expect(at?.getMilliseconds()).toBe(0);
+      expect(at?.at.getHours()).toBe(0);
+      expect(at?.at.getMinutes()).toBe(0);
+      expect(at?.at.getSeconds()).toBe(0);
+      expect(at?.at.getMilliseconds()).toBe(0);
     });
 
     it('실적일이 예정일보다 뒤여도 실적이 이긴다 — 예정일은 추정, 실적은 사실이다', () => {
@@ -173,6 +186,57 @@ describe('resolveDeliveryDestroyAt — 발송건 1건의 파기일', () => {
       expect(ymd(at)).toBe('2026-06-30');
     });
 
+    it('출처가 백필 추정이면 kind 가 ACTUAL_ESTIMATED 다 — 날짜만으로는 구분할 수 없다', () => {
+      // 대외 증빙에 "이 날짜가 실제 기록입니까"에 답하려면 성격을 함께 들고 다녀야 한다.
+      const est = resolveDeliveryDestroyAt(
+        { ...destroyedAt('2026-06-30T00:00:00'), destroyedAtSource: 'BACKFILL_ESTIMATE', expireAt: null },
+        day('2026-01-01T14:00:00'),
+        180,
+      );
+      expect(kindOf(est)).toBe('ACTUAL_ESTIMATED');
+      expect(ymd(est)).toBe('2026-06-30'); // 날짜는 같다 — 그래서 kind 가 필요하다
+    });
+
+    it.each(['EARLY', 'BATCH', 'BACKFILL_EARLY'])('출처가 실측(%s)이면 kind 는 ACTUAL 이다', (source) => {
+      const at = resolveDeliveryDestroyAt(
+        { ...destroyedAt('2026-02-01T09:30:00'), destroyedAtSource: source as never, expireAt: null },
+        day('2026-01-01T14:00:00'),
+        180,
+      );
+      expect(kindOf(at)).toBe('ACTUAL');
+    });
+
+    it('출처가 NULL 이면 추정으로 취급한다 (fail-closed) — 모르는 것을 사실로 승격시키지 않는다', () => {
+      const at = resolveDeliveryDestroyAt(
+        { ...destroyedAt('2026-02-01T09:30:00'), destroyedAtSource: null, expireAt: null },
+        day('2026-01-01T14:00:00'),
+        180,
+      );
+      expect(kindOf(at)).toBe('ACTUAL_ESTIMATED');
+    });
+
+    it('아직 파기되지 않은 건의 kind 는 SCHEDULED 다', () => {
+      const at = resolveDeliveryDestroyAt({ ...alive, expireAt: null }, day('2026-01-01T14:00:00'), 180);
+      expect(kindOf(at)).toBe('SCHEDULED');
+    });
+
+    it("★ 이메일 수신번호만 되살아난 행도 부활로 본다 — deliveryTarget 은 여전히 마스킹 상태다 (리뷰 HIGH-1)", () => {
+      // CS 수신정보 변경은 '이메일+핀발급' 건에서 emailReceiverPhone 만 갱신하고 deliveryTarget 은
+      // 건드리지 않는다. deliveryTarget 만 보면 이 행이 "파기됨"으로 판정되어, 살아있는 전화번호
+      // 옆에 과거 실적일이 인쇄된다 — 판정 순서를 뒤집어 막으려던 모순의 다른 얼굴이다.
+      const at = resolveDeliveryDestroyAt(
+        {
+          ...destroyedAt('2026-01-31T00:00:00'),
+          emailReceiverPhone: '01099998888', // 되살아난 PII
+          expireAt: day('2030-12-31T00:00:00'),
+        },
+        day('2026-01-01T14:00:00'),
+        180,
+      );
+      expect(ymd(at)).toBe('2031-01-01'); // 과거 실적(2026-01-31)이 아니라 예정일
+      expect(kindOf(at)).toBe('SCHEDULED');
+    });
+
     it('★ 파기 기록은 있는데 수신처가 살아있으면 실적이 아니라 예정일을 답한다 (CS 수신정보 변경)', () => {
       // 파기 후 CS 사후 대응을 위해 수신처를 다시 채워 넣는 경로가 의도적으로 열려 있다
       // (customer.service.service.ts 의 RECEIVER_CHANGE). 그러면 "언제 지웠나"(destroyedAt)와
@@ -190,8 +254,12 @@ describe('resolveDeliveryDestroyAt — 발송건 1건의 파기일', () => {
 });
 
 describe('resolveOrderEffectiveDestroyAt — 주문 단위 집계', () => {
-  const ymd = (d: Date | null) =>
-    d ? `${d.getFullYear()}-${`${d.getMonth() + 1}`.padStart(2, '0')}-${`${d.getDate()}`.padStart(2, '0')}` : null;
+  /** {at, kind} 에서 날짜만 뽑는다. null 이면 null. */
+  const ymd = (r: { at: Date } | null) => {
+    const d = r?.at ?? null;
+    return d ? `${d.getFullYear()}-${`${d.getMonth() + 1}`.padStart(2, '0')}-${`${d.getDate()}`.padStart(2, '0')}` : null;
+  };
+  const kindOf = (r: { kind: string } | null) => r?.kind ?? null;
   const mapping = (deliveries: any[], destroyDay: number | null = 180) => ({
     sendRequestAt: new Date('2026-01-01T14:00:00'),
     requestToDestroyPersonalInfoDay: destroyDay,
@@ -234,7 +302,7 @@ describe('resolveOrderEffectiveDestroyAt — 주문 단위 집계', () => {
 
   it('파기됐는데 시각 기록이 없는 건이 섞이면 주문 전체가 null', () => {
     // 한 건이라도 근거가 없으면 주문 단위 진술도 성립하지 않는다.
-    const unknown = { ...aliveDelivery(new Date('2030-12-31T00:00:00')), deliveryTarget: '-' };
+    const unknown = { ...aliveDelivery(new Date('2030-12-31T00:00:00')), deliveryTarget: '-', emailReceiverPhone: '-' };
     const order: any = { orderProductMappings: [mapping([aliveDelivery(null), unknown])] };
     expect(resolveOrderEffectiveDestroyAt(order)).toBeNull();
   });
@@ -242,7 +310,7 @@ describe('resolveOrderEffectiveDestroyAt — 주문 단위 집계', () => {
   it('폐기후재발행 tip 이 포함된 집합을 넘기면 tip 의 늦은 유효기간이 MAX 에 반영된다', () => {
     // 호출부 계약 고정 — 이 함수는 hideDiscardReissueDeliveries **이전** 집합을 받아야 한다.
     // 배치에는 replacedFromId 필터가 없어 tip 도 파기 대상이므로, tip 을 뺀 집합으로 계산하면
-    // 실제보다 이른 날짜를 고지하게 된다(원본 2031-01-02 인데 tip 이 2031-06-02 까지 남는 식).
+    // 실제보다 이른 날짜를 고지하게 된다(원본 2031-01-01 인데 tip 이 2031-06-02 까지 남는 식).
     const original = aliveDelivery(new Date('2030-12-31T00:00:00')); // → 2031-01-01
     const reissueTip = { ...aliveDelivery(new Date('2031-06-01T00:00:00')), replacedFromId: 1 }; // → 2031-06-02
 
@@ -271,6 +339,24 @@ describe('resolveOrderEffectiveDestroyAt — 주문 단위 집계', () => {
     const d2 = destroyedDelivery(new Date('2030-12-31T00:00:00'), '2026-03-15T09:00:00');
     const order: any = { orderProductMappings: [mapping([d1, d2])] };
     expect(ymd(resolveOrderEffectiveDestroyAt(order))).toBe('2026-03-15');
+  });
+
+  it('★ 주문 kind 는 가장 약한 것을 택한다 — 실적 + 예정이면 SCHEDULED', () => {
+    // "이 날이면 전부 지워져 있다"는 진술은 가장 불확실한 구성요소만큼만 강하다.
+    const done = destroyedDelivery(new Date('2030-12-31T00:00:00'), '2026-02-01T09:00:00'); // ACTUAL
+    const pending = aliveDelivery(new Date('2026-03-01T00:00:00')); // SCHEDULED
+    const order: any = { orderProductMappings: [mapping([done, pending])] };
+    expect(resolveOrderEffectiveDestroyAt(order)?.kind).toBe('SCHEDULED');
+  });
+
+  it('★ 실적만 있어도 하나가 추정이면 주문 전체가 ACTUAL_ESTIMATED', () => {
+    const actual = destroyedDelivery(new Date('2030-12-31T00:00:00'), '2026-02-01T09:00:00');
+    const estimated = {
+      ...destroyedDelivery(new Date('2030-12-31T00:00:00'), '2026-06-30T00:00:00'),
+      destroyedAtSource: 'BACKFILL_ESTIMATE' as const,
+    };
+    const order: any = { orderProductMappings: [mapping([actual, estimated])] };
+    expect(resolveOrderEffectiveDestroyAt(order)?.kind).toBe('ACTUAL_ESTIMATED');
   });
 
   it('발송건이 없으면 null (증명할 내용이 없다)', () => {

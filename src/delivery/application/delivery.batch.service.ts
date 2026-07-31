@@ -13,7 +13,7 @@ import { applyReplaceCharacters } from '../../common/utils/replace-characters.ut
 import { resolveExpireDays, couponTokenExpiry } from '../../common/utils/expire.util';
 import { OrderEntity } from '../../entity/order.entity';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
-import { DESTROYED_AT_SOURCE } from '../../order/domain/destroyed.at.source';
+import { DESTROYED_AT_SOURCE, isDeliveryDestroyed } from '../../order/domain/destroyed.at.source';
 import { OrderHistoryEntity } from '../../entity/order.history.entity';
 import { OrderRealProductEntity } from '../../entity/order.real.product.entity';
 import { OrderRealProductMappingEntity } from '../../entity/order.real.product.mapping.entity';
@@ -3173,7 +3173,10 @@ export class DeliveryBatchService {
       // 즉 보류 집합 전체를 정당화하는 명분은 CS 대응 하나다. 나머지 둘은 부분집합에만 걸린다.
       //
       // 만료 후 재포착: 보류된 행은 PII 5종이 모두 원값이라 위 미파기 절(:3158)이 계속 참이고, 주 날짜
-      // 절도 한 번 참이 되면 계속 참이므로, 만료 다음 날 자정 회차에서 자동으로 파기된다(누락 없음).
+      // 절도 한 번 참이 되면 계속 참이므로, 만료 다음 날 자정 회차에서 자동으로 파기된다.
+      //  단 **파기일수 상향 편집과 주문 상태 이탈이 없다는 전제**에서다 —
+      //  updateDestroyPersonalInfoDay 에는 상태 검사가 없어 기준일이 뒤로 밀릴 수 있고,
+      //  주문이 DELIVERY_COMPLETE 를 이탈하면 절 2) 가 깨져 아예 파기되지 않는다.
       // 보류 기간에도 매 회차 후보군에는 남아 있다가 이 가드 절에서만 걸러진다.
       //
       // **발송 실패(status=FAIL) 건도 보류된다** — 다른 행과 같은 이유, 즉 살아있는 expireAt 때문이다.
@@ -3237,20 +3240,20 @@ export class DeliveryBatchService {
       //  3) deletedAt IS NOT NULL — [정책 선택. 변경 가능]
       //     order_delivery 를 soft-delete 하는 경로는 레포 전체에 하나뿐이고, 지워지는 것은 재발행
       //     실패 시 unwindReissue 가 되감는 **신행(tip)** 이다 — 구행이 아니다
-      //     (customer.service.service.ts:2204. 이 파일 :562 와 external.api.service.ts:1458 의
+      //     (customer.service.service.ts:2219. 이 파일 :562 와 external.api.service.ts:1458 의
       //     기존 주석도 "unwindReissue 가 tip 을 softDelete" 로 서술한다).
       //     실물 쿠폰이 있다면 그것은 **원본(구행)** 쪽이다 — SSG 는 reverseDiscard 로 부활하고,
       //     비-SSG 는 협력사 취소된 채 남는다. 되감긴 tip 은 고객이 볼 쿠폰이 아니므로 유효기간이
       //     남아 있어도 붙잡지 않는다. 위 withDeleted() 가 이 행을 후보에 넣는 것과 짝을 이룬다.
       //     · 이 절이 잡는 행은 모두 couponStatus=CANCEL 이기도 하다 — softDelete 는
       //       `couponStatus=CANCEL` 플립이 성공했을 때만 실행되기 때문이다
-      //       (customer.service.service.ts:2175-2202). 따라서 이 가드에 couponStatus 기반 절을
+      //       (customer.service.service.ts:2186-2232). 따라서 이 가드에 couponStatus 기반 절을
       //       추가하면 이 절과 완전히 겹쳐 이 절이 no-op 이 된다. 반대로 이 절을 지우면 그때는
       //       CANCEL 인 soft-delete tip 이 유효기간만큼 보류된다.
       //     · 다만 단독으로 잡는 구간은 좁다 — 되감긴 tip 은 대개 expireAt 이 NULL 이라 1) 이
       //       커버하고, 이 절만이 잡는 것은 'issue() 가 expireAt 을 영속한 뒤 barCode 누락으로
-      //       unwind 된' 경우다(partner.company.extern.service.ts:189 가 영속, 그 뒤
-      //       customer.service.service.ts:2510 이 되감는다).
+      //       unwind 된' 경우다(partner.company.extern.service.ts:198-206 의 markConfirmed 가 영속, 그 뒤
+      //       customer.service.service.ts:2502 이 되감는다).
       //     · 빼면 그 구간의 PII 를 유효기간만큼(최대 5년) 더 보관하게 된다.
       //
       // 조기파기(EarlyDestroyService.executeRequest)에는 이 가드가 없다 — 의도된 비대칭이다.
@@ -3324,7 +3327,11 @@ export class DeliveryBatchService {
       // 재수집된 행은 두 종류이고, 각인 여부가 반대다.
       //
       //  (가) **부분 파기 재수집** — 이전 회차에 deliveryTarget 만 '-' 가 되고 나머지가 남은 행.
-      //       PII 는 그때 이미 사라졌으므로 최초 파기일이 정답이다 → 기존 값 **유지**.
+      //       기존 값 **유지**. 근거는 사실이 아니라 **정의**다: 이 시스템에서 "파기됐다"의 판정
+      //       술어는 deliveryTarget 단일이고(destruction.certificate.gate.ts / 파기일 계산 모두),
+      //       그 컬럼이 사라진 시점이 곧 파기일이다. 나머지 컬럼이 늦게 정리되는 것은 이 정의상
+      //       파기일을 바꾸지 않는다. (술어를 5종 전부로 바꾸는 정책이 되면 이 분기도 뒤집어야
+      //       한다 — 그때는 '완료 시점 갱신'이 맞다.)
       //
       //  (나) **부활 후 재파기** — 파기된 뒤 CS 수신정보 변경으로 수신처가 다시 채워진 행
       //       (customer.service.service.ts 참조. 사후 CS 대응을 위해 **의도적으로 허용**된 경로다).
@@ -3334,10 +3341,21 @@ export class DeliveryBatchService {
       // 두 경우를 SQL 한 줄로 가를 수 없다. 위 마스킹 UPDATE 가 이미 돌아서 지금 DB 의
       // deliveryTarget 은 전부 '-' 이기 때문이다. 판정 근거는 **마스킹 이전 상태**이므로,
       // select 결과(orderDeliveryList)를 쓴다 — 이 목록은 UPDATE 전에 읽은 스냅샷이다.
+      // 두 축(각인 유무 × 현재 파기 여부)으로 분류한다. 한 축만 보면 4사분면 중 하나가
+      // 잘못 처리된다 — 특히 (각인 없음 + 이미 파기됨)을 '신규 각인'으로 넣으면 **파기 시점을
+      // 모르는 행에 오늘 날짜를 실측으로 박제**하게 된다(리뷰 HIGH-2). 그 행의 PII 는 이전
+      // 회차에 이미 사라졌으므로 오늘은 사실이 아니고, 한 번 찍히면 되돌릴 수 없다.
       const revivedIds = orderDeliveryList
-        .filter((od) => od.destroyedAt !== null && od.deliveryTarget !== destroyValue)
+        .filter((od) => od.destroyedAt !== null && !isDeliveryDestroyed(od))
         .map((od) => od.id);
-      const firstDestroyIds = orderDeliveryList.filter((od) => od.destroyedAt === null).map((od) => od.id);
+      const firstDestroyIds = orderDeliveryList
+        .filter((od) => od.destroyedAt === null && !isDeliveryDestroyed(od))
+        .map((od) => od.id);
+      // (각인 없음 + 이미 파기됨) — 시각을 알 수 없으므로 **각인하지 않는다**. 읽기측이 null 로
+      // 답하고(effective.destroy.date.ts 분기 ③), 백필 §4-1 이 이 잔량을 센다.
+      const unknownDestroyedAtIds = orderDeliveryList
+        .filter((od) => od.destroyedAt === null && isDeliveryDestroyed(od))
+        .map((od) => od.id);
       const stampIdList = [...firstDestroyIds, ...revivedIds];
 
       if (stampIdList.length > 0) {
@@ -3355,17 +3373,29 @@ export class DeliveryBatchService {
 
       // 관측 — 이 배치는 지금껏 처리 건수를 전혀 남기지 않았다. 파기일은 대외 증빙에 쓰이므로
       // "몇 건을 어떤 사유로 각인했는지"가 사후 감사의 유일한 단서다.
-      const keptIdList = destroyIdList.filter((id) => !stampIdList.includes(id));
+      // Set 으로 판정한다 — filter+includes 는 O(n²) 이고, 이 배치의 후보군은 유효기간 가드
+      // 때문에 최대 5년치가 누적되어 단조 증가한다(위 성능 주석 참조). 로그 한 줄 때문에
+      // 대량 회차에서 이중 루프를 돌 이유가 없다.
+      const stampIdSet = new Set(stampIdList);
+      const keptCount = destroyIdList.filter((id) => !stampIdSet.has(id)).length;
       this.logger.log(
         `[정기파기] 대상 ${destroyIdList.length}건 — 신규 각인 ${firstDestroyIds.length}건, ` +
-          `부활 재파기 갱신 ${revivedIds.length}건, 최초일 유지(부분 파기 재수집) ${keptIdList.length}건`,
+          `부활 재파기 갱신 ${revivedIds.length}건, 최초일 유지(부분 파기 재수집) ${keptCount}건`,
       );
+      if (unknownDestroyedAtIds.length > 0) {
+        // 정상 운영에서는 나오지 않아야 한다. 백필 누락이거나 배포 순서 사고다.
+        this.logger.error(
+          `[정기파기] 이미 파기됐으나 파기 시각을 알 수 없는 발송건 ${unknownDestroyedAtIds.length}건 — ` +
+            `orderDeliveryIds=[${unknownDestroyedAtIds.slice(0, 50).join(', ')}]. ` +
+            `오늘 날짜를 실측으로 박제하지 않고 비워 둔다(해당 주문의 파기일은 null 로 응답된다).`,
+        );
+      }
       if (revivedIds.length > 0) {
         // 정상 경로이지만 드물어야 한다. 잦아지면 CS 수신정보 변경이 파기 건에 반복 적용되고
         // 있다는 신호이므로 운영이 알아야 한다.
         this.logger.warn(
           `[정기파기] 파기 후 수신처가 재입력됐던 발송건을 재파기하고 파기일을 갱신함 — ` +
-            `orderDeliveryIds=[${revivedIds.join(', ')}]. 이전 파기일은 더 이상 유효하지 않다.`,
+            `orderDeliveryIds=[${revivedIds.slice(0, 50).join(', ')}]. 이전 파기일은 더 이상 유효하지 않다.`,
         );
       }
 
