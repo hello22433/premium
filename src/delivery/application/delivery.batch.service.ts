@@ -3345,7 +3345,11 @@ export class DeliveryBatchService {
       //         · 파기 후 CS 수신정보 변경으로 수신처가 다시 채워진 행(사후 CS 대응을 위해
       //           **의도적으로 허용**된 경로. customer.service.service.ts 참조)
       //         · PII 5종 확대 이전에 emailReceiverPhone 이 마스킹되지 않은 레거시 행
-      //           (부활한 적 없음. 2026-07-31 운영 실측 0건 — migration §4-8)
+      //           (되살아난 적 없음. migration §4-8 로 계량하며 2026-07-31 운영 실측은 합집합 0건
+      //            이다 — 레거시 단독 부존재의 근거는 아니다. 그 쿼리는 둘을 구분하지 못한다.)
+      //       ⚠️ 위 둘 중 **destroyedAt 이 아예 없는** 레거시 행은 여기가 아니라 firstDestroyIds
+      //          로 간다. 그러면 오래 전 부분 파기된 행에 오늘 날짜가 BATCH(=실측)로 각인된다.
+      //          현재 그런 행은 실측 0건이지만 구조적으로 열려 있는 경로이므로 적어 둔다.
       //       어느 쪽이든 **그 컬럼의 PII 는 지금 이 회차 직전까지 살아 있었다.** 옛 날짜를
       //       유지하면 "그때 이미 지웠다"는 거짓 증명이 되므로 새 시각으로 **갱신**한다.
       //       (갱신 전 값은 아래 로그에 남긴다 — 덮어쓰면 복구할 수 없으므로 감사 흔적이 필요하다.)
@@ -3359,13 +3363,18 @@ export class DeliveryBatchService {
       // 회차에 이미 사라졌으므로 오늘은 사실이 아니고, 한 번 찍히면 되돌릴 수 없다.
       // 이름을 '부활'로 두지 않는다 — 부활한 적 없는 레거시 부분마스킹 행도 여기 들어오므로
       // (위 (나) 참조), '부활'이라 부르면 로그가 없는 CS 오남용을 있다고 보고하게 된다.
-      const restampIds = orderDeliveryList
-        .filter((od) => od.destroyedAt !== null && !isDeliveryDestroyed(od))
-        .map((od) => od.id);
+      //
+      // ★ 한 번만 필터하고 두 번 map 한다. 같은 술어를 두 벌 쓰면 (a) 한쪽만 고쳤을 때 각인
+      //   대상과 감사 로그가 조용히 어긋나고(잡을 테스트가 없다), (b) 이 블록이 @Transactional
+      //   안이라 로그 생성이 크리티컬 패스에 있다 — 불필요한 순회를 늘릴 이유가 없다.
+      const restampRows = orderDeliveryList.filter((od) => od.destroyedAt !== null && !isDeliveryDestroyed(od));
+      const restampIds = restampRows.map((od) => od.id);
       // 덮어쓰기 전 값 — 갱신하면 복구 불가라 감사 흔적으로 남긴다(아래 warn 로그).
-      const restampPrevious = orderDeliveryList
-        .filter((od) => od.destroyedAt !== null && !isDeliveryDestroyed(od))
-        .map((od) => `${od.id}:${od.destroyedAt?.toISOString() ?? 'null'}/${od.destroyedAtSource ?? 'null'}`);
+      // toISOString 을 optional call(?.) 로 부른다. destroyedAt 은 Date 로 매핑되지만, 로그 한 줄
+      // 때문에 트랜잭션 전체(그 회차 정기파기)가 롤백되는 것은 어떤 경우에도 이득이 아니다.
+      const restampPrevious = restampRows.map(
+        (od) => `${od.id}:${od.destroyedAt?.toISOString?.() ?? 'null'}/${od.destroyedAtSource ?? 'null'}`,
+      );
       const firstDestroyIds = orderDeliveryList
         .filter((od) => od.destroyedAt === null && !isDeliveryDestroyed(od))
         .map((od) => od.id);
@@ -3395,10 +3404,14 @@ export class DeliveryBatchService {
       // 때문에 최대 5년치가 누적되어 단조 증가한다(위 성능 주석 참조). 로그 한 줄 때문에
       // 대량 회차에서 이중 루프를 돌 이유가 없다.
       const stampIdSet = new Set(stampIdList);
+      // ⚠️ keptCount 는 '각인하지 않은 전부'라 두 종류가 섞인다 — 최초일을 **유지**하는 행(가)과
+      //    애초에 최초일이 **없는** 행(unknownDestroyedAtIds). 후자를 '유지'로 뭉뚱그리면 아래
+      //    error 로그와 합계가 어긋나 보이므로 괄호로 분리해 적는다.
       const keptCount = destroyIdList.filter((id) => !stampIdSet.has(id)).length;
       this.logger.log(
         `[정기파기] 대상 ${destroyIdList.length}건 — 신규 각인 ${firstDestroyIds.length}건, ` +
-          `파기일 갱신 ${restampIds.length}건, 최초일 유지 ${keptCount}건`,
+          `파기일 갱신 ${restampIds.length}건, 각인 안 함 ${keptCount}건` +
+          `(그중 시각 미상 ${unknownDestroyedAtIds.length}건, 나머지는 최초일 유지)`,
       );
       if (unknownDestroyedAtIds.length > 0) {
         // 정상 운영에서는 나오지 않아야 한다. 백필 누락이거나 배포 순서 사고다.

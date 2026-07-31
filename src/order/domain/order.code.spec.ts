@@ -1,9 +1,4 @@
-import {
-  OrderPrefixCode,
-  OrderDigitNumber,
-  createTempOrderCode,
-  deriveOrderCodeFromId,
-} from './order.code';
+import { OrderPrefixCode, OrderDigitNumber, createTempOrderCode, deriveOrderCodeFromId } from './order.code';
 
 describe('order.code id 파생 채번 (D3-51)', () => {
   describe('deriveOrderCodeFromId', () => {

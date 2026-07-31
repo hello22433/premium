@@ -371,7 +371,7 @@ describe('DeliveryBatchService.deliveryDeliveryTargetDestroy', () => {
 
   it('★ deliveryTarget 은 마스킹됐지만 emailReceiverPhone 만 살아있어도 갱신 대상이다 (2축 판정)', async () => {
     // 위 revivedRow 는 deliveryTarget 축으로 되살아난 케이스라, 판정을 1축으로 되돌려도 통과한다.
-    // 이 케이스가 그 회귀를 실제로 잡는 유일한 테스트다(리뷰 4차 M-5).
+    // 이 케이스와 바로 아래 로그 검증이 그 회귀를 잡는다(1축 복원 시 둘 다 실패 — 리뷰 4차 M-5).
     // 1축이면 이 행은 '이미 파기됨'으로 오판되어 각인에서 빠지고, 살아있는 전화번호 옆에
     // 과거 파기일이 그대로 남는다.
     const first = new Date('2026-01-31T00:00:00');

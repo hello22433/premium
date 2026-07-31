@@ -24,8 +24,10 @@ export interface DestructionCertificateGateResult {
  *  - CS 수신처 조회 가드·마스킹 유틸·확인서 페이지 진입 검증이 모두 이 컬럼 하나로
  *    파기 여부를 판정한다 — 같은 술어를 써야 게이트 통과 후 페이지에서 튕기지 않는다.
  *
- * 환불 가드(REFUND_IN_PROGRESS)는 "미파기" 판정보다 먼저 반환하되, 전량 파기 완료면
- * 환불 여부와 무관하게 발행 가능하다 — 이미 지운 주문의 확인서를 막을 이유가 없다.
+ * 환불 가드(REFUND_IN_PROGRESS)는 "미파기" 판정보다 먼저 반환하되, 전량 파기 완료 **+ 파기일을
+ * 답할 수 있으면** 환불 여부와 무관하게 발행 가능하다 — 이미 지운 주문의 확인서를 막을 이유가 없다.
+ * (초기 요약은 "전량 파기 완료면 환불 여부와 무관하게 발행 가능"이라고만 적었는데, 아래 파기일
+ *  축 교차검증이 들어오면서 반례가 둘 생겼다 — 그 분기 주석 참조.)
  *
  * ★ 파기일 축 교차 검증 (리뷰 3차 H-1)
  *   위 술어는 deliveryTarget 단일이고, 파기일 계산은 deliveryTarget + emailReceiverPhone
@@ -68,11 +70,14 @@ export function resolveDestructionCertificateGate(order: OrderEntity): Destructi
       // 2축 술어로는 아직 안 지워진 행이 섞여 있다(수신처 부활 / 레거시 부분마스킹).
       // 사유는 NOT_DESTROYED 가 정확하다 — 실제로 남아 있는 PII 가 있다.
       //
-      // ⚠️ 사유 **우선순위가 바뀐 조합이 하나 있다.** 전량 마스킹 + emailReceiverPhone 생존 +
-      //    환불 진행중 인 주문은 종전에 canIssue: true 였는데(위 every('-') 에서 바로 반환),
-      //    이제 여기서 NOT_DESTROYED 로 나간다 — 아래 REFUND_IN_PROGRESS 분기에 **도달하지
-      //    못한다**. 의도한 동작이다: 살아있는 PII 가 있다는 사실이 환불 진행 여부보다 앞선
+      // ⚠️ 사유 **우선순위가 바뀐 조합은 알려진 것만 둘이다.** 둘 다 종전에는 위 every('-')
+      //    에서 곧바로 canIssue: true 였고 아래 REFUND_IN_PROGRESS 분기에 **도달하지 못한다**:
+      //      · 전량 마스킹 + emailReceiverPhone 생존 + 환불 진행중 → 여기서 NOT_DESTROYED
+      //      · 전량 마스킹 + destroyedAt 결측   + 환불 진행중 → 위에서 DESTROY_TIME_UNKNOWN
+      //    의도한 동작이다: "PII 가 남아 있다"·"파기일을 모른다"가 환불 진행 여부보다 앞선
       //    차단 사유이고, 사용자에게도 "환불 때문에 막혔다"보다 정확한 안내다.
+      //    ⚠️ 다만 이 분기에 도달했다고 항상 NOT_DESTROYED 인 것은 아니다 — 형제 발송건 하나가
+      //       파기일 null 을 내면 주문 전체가 null 이 되어 위 DESTROY_TIME_UNKNOWN 으로 빠진다.
       //    (규모: migration §4-8. 2026-07-31 운영 실측 0건)
       return { canIssue: false, reason: DestructionCertificateBlockReason.NOT_DESTROYED };
     }

@@ -182,7 +182,8 @@ describe('resolveDestructionCertificateGate', () => {
     });
 
     it('★ 전량 마스킹 + 수신처 생존 + 환불 진행중이면 REFUND_IN_PROGRESS 가 아니라 NOT_DESTROYED', () => {
-      // 사유 우선순위가 바뀐 유일한 조합이다(리뷰 4차 LOW). 종전에는 every('-') 에서 곧바로
+      // 사유 우선순위가 바뀐 조합 둘 중 하나다(리뷰 4차 LOW). 다른 하나는 위 DESTROY_TIME_UNKNOWN
+      // 케이스이며, 둘 다 종전에는 every('-') 에서 곧바로
       // canIssue: true 였고, 환불 분기에는 애초에 도달하지 않았다.
       // 살아있는 PII 가 있다는 사실이 환불 진행 여부보다 앞선 차단 사유다.
       const order = makeOrder(IOrderStatus.DELIVERY_COMPLETE, [

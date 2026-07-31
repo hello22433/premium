@@ -43,9 +43,11 @@ import { isDeliveryDestroyed, isEstimatedDestroyedAt } from './destroyed.at.sour
  *              · 부활 행 — CS 수신정보 변경으로 emailReceiverPhone 만 되살아난 행
  *              · 레거시 부분마스킹 행 — PII 5종 확대 이전에 일부만 마스킹된 행
  *            둘 다 "아직 안 지워짐"이 맞는 판정이므로 예정일을 답하는 것 자체는 정확하다.
- *            다만 파기확인서 게이트는 deliveryTarget 단일 판정이라 같은 행을 "발행 가능"으로
- *            보므로, 서버가 두 답을 동시에 낸다(리뷰 3차 H-1). 그 조합의 처리는 게이트 쪽에
- *            있어야 하며 여기서 날짜를 왜곡해 맞추지 않는다.
+ *            그리고 그 조합의 처리는 **게이트 쪽에 있다** — 게이트가 이 함수의 결과를 교차검증해
+ *            해당 주문의 파기확인서 발행을 막는다(destruction.certificate.gate.ts).
+ *            즉 서버가 두 답을 동시에 내지 않는다. 여기서 날짜를 왜곡해 맞추지 않는다.
+ *            (초기 주석은 "게이트는 deliveryTarget 단일 판정이라 같은 행을 발행 가능으로 본다"
+ *             였다. 리뷰 3차 H-1 로 게이트에 교차검증이 들어가면서 해소됐다.)
  *            그리고 완전히 지워진 행이라도 항상 실적을 돌려주는 것은 아니다 — 기록이 없으면 null.
  *      5) (expireAt IS NULL OR DATE(expireAt) < DATE(now) OR deletedAt IS NOT NULL)
  *         → 반영. 유효기간 가드.
