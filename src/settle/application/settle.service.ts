@@ -28,6 +28,8 @@ import { OrderEntity } from '../../entity/order.entity';
 import { readBillingView, readLineProductView, readOperationPersonName } from '../../order/util/order.snapshot.builder';
 import { IOrderDateType } from '../../order/interface/order.date.type';
 import { IReportSource } from '../../order/interface/report.source';
+export { applyIsPublishedFilter } from './settle.is-published.filter';
+import { applyIsPublishedFilter } from './settle.is-published.filter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Brackets, In, IsNull, Not, Repository, SelectQueryBuilder } from 'typeorm';
 import {
@@ -1851,24 +1853,7 @@ export class SettleService {
     const applyUserExcelFilters = <T extends SelectQueryBuilder<any>>(qb: T): T => {
       qb.where('order.status IN (:...status)', { status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'] });
 
-      // 발행 = 두 리포트 중 하나라도 발행됨(OR), 미발행 = 둘 다 미발행(AND).
-      // 두 조건이 서로의 여집합이라 모든 주문이 정확히 한쪽에만 속한다.
-      // (AND/AND 였을 때는 한쪽만 발행된 주문이 발행·미발행 어느 목록에도 안 잡혔다.
-      //  발송완료리포트와 거래명세서는 발행 엔드포인트가 분리돼 있어 한쪽만 발행이 정상 동선이다.)
-      if (isPublished === true) {
-        qb.andWhere(
-          new Brackets((qb2: SelectQueryBuilder<any>) => {
-            qb2
-              .where('order.deliveryCompleteReportCount > 0')
-              .orWhere('order.orderCompleteReportCount > 0');
-          }),
-        );
-      }
-
-      if (isPublished === false) {
-        qb.andWhere('order.deliveryCompleteReportCount = 0');
-        qb.andWhere('order.orderCompleteReportCount = 0');
-      }
+      applyIsPublishedFilter(qb, isPublished);
 
       if (searchKeyword) {
         qb.andWhere(
@@ -2996,20 +2981,7 @@ export class SettleService {
       status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'],
     });
 
-    // 발행 = 하나라도 발행(OR), 미발행 = 둘 다 미발행(AND). 엑셀 필터(applyUserExcelFilters)와 동일 규칙.
-    if (isPublished === true) {
-      queryBuilder = queryBuilder.andWhere(
-        new Brackets((qb: SelectQueryBuilder<any>) => {
-          qb.where('order.deliveryCompleteReportCount > 0').orWhere('order.orderCompleteReportCount > 0');
-        }),
-      );
-    }
-
-    if (isPublished === false) {
-      queryBuilder = queryBuilder
-        .andWhere('order.deliveryCompleteReportCount = 0')
-        .andWhere('order.orderCompleteReportCount = 0');
-    }
+    applyIsPublishedFilter(queryBuilder, isPublished);
 
     // 통합 검색 (searchKeyword) 처리
     if (searchKeyword) {
