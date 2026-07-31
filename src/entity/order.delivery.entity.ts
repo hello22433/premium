@@ -72,11 +72,16 @@ export class OrderDeliveryEntity extends BaseEntity {
    *    나왔다. 파기확인서(대외 증빙)의 파기일 칸에 쓰이는 값이라 허위 증명이 된다.
    *    그래서 추론을 버리고 **파기 시점에 그냥 적는다**. 규칙이 또 바뀌어도 과거 기록은 안 흔들린다.
    *
-   * NULL 의 뜻은 두 가지이고, deliveryTarget 으로 구분한다:
-   *  · deliveryTarget != '-'  → 아직 파기되지 않았다(정상). 파기일은 예정일로 계산한다.
-   *  · deliveryTarget == '-'  → **파기됐는데 시각을 모른다.** 컬럼 신설 시 백필에서 기준 컬럼
+   * NULL 의 뜻은 두 가지이고, "지금 지워져 있나"로 구분한다:
+   *  · 안 지워짐 → 아직 파기되지 않았다(정상). 파기일은 예정일로 계산한다.
+   *  · 지워짐   → **파기됐는데 시각을 모른다.** 컬럼 신설 시 백필에서 기준 컬럼
    *    (sendRequestAt / requestToDestroyPersonalInfoDay)이 결측이라 값을 못 채운 행이다.
    *    이때는 날짜를 지어내지 않고 null 로 응답한다(effective.destroy.date.ts 참조).
+   *
+   * ⚠️ 판정 술어는 deliveryTarget **단일이 아니다.** isDeliveryDestroyed(destroyed.at.source.ts)
+   *    가 deliveryTarget + emailReceiverPhone 2축으로 본다. CS 수신정보 변경이 이메일+핀발급
+   *    건에서 emailReceiverPhone 만 되살리기 때문에, deliveryTarget 하나로 판정하면 살아있는
+   *    PII 옆에 과거 파기일이 인쇄된다. 술어는 그 파일 하나에만 두고 여기서 복제하지 말 것.
    *
    * 시각(시분초)까지 담지만 화면·확인서는 날짜만 쓴다. 초 단위를 남기는 이유는 감사 추적용이다.
    */

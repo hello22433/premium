@@ -58,4 +58,6 @@ export const isDeliveryDestroyed = (delivery: {
   emailReceiverPhone?: string | null;
 }): boolean =>
   delivery.deliveryTarget === '-' &&
-  (delivery.emailReceiverPhone === null || delivery.emailReceiverPhone === undefined || delivery.emailReceiverPhone === '-');
+  (delivery.emailReceiverPhone === null ||
+    delivery.emailReceiverPhone === undefined ||
+    delivery.emailReceiverPhone === '-');
