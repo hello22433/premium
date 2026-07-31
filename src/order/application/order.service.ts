@@ -5912,8 +5912,11 @@ export class OrderService {
     // → 발송 결과를 진실대로 성공으로 응답하고, 집계 실패는 로그로 남겨 추적한다.
     if (logMeta.counter) {
       const { countColumn, sourceColumn } = logMeta.counter;
+      // 컬럼명 해석은 try 밖에 둔다. 엔티티 프로퍼티가 리네임되면 여기서 undefined 가 되는데,
+      // catch 안에 있으면 TypeError 가 로그 한 줄로 삼켜지고 200 이 나가 전 주문의 카운트가
+      // 영구히 0 으로 남는다(무증상). 설정 오류는 흡수 대상이 아니므로 그대로 터뜨린다.
+      const countDbColumn = this.orderRepository.metadata.findColumnWithPropertyName(countColumn)!.databaseName;
       try {
-        const countDbColumn = this.orderRepository.metadata.findColumnWithPropertyName(countColumn)!.databaseName;
         await this.orderRepository
           .createQueryBuilder()
           .update(OrderEntity)

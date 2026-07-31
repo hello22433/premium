@@ -199,6 +199,10 @@ export class OrderGetDeliveryCompleteReportPdfReqDto {
     required: false,
   })
   @IsOptional()
+  // @IsOptional() 은 null/undefined 만 건너뛰고 빈 문자열은 검증한다. 정규화 없이 @IsEnum 을 붙이면
+  // source:'' 를 보내던 기존 클라이언트가 400 을 받는다 — 종전에는 통과 후 DOCUMENT 로 저장됐다.
+  // 빈 값은 '미전송'과 같은 뜻이므로 undefined 로 접어 기존 계약을 보존한다.
+  @Transform(({ value }) => (value === '' ? undefined : value))
   // 정산 목록의 발행 상태 문구가 이 값으로 분기하므로(settle.service.formatReportStatus) 자유 문자열을
   // 허용하면 오타가 조용히 '다운로드 완료'로 폴백한다. EMAIL 이 목록에서 빠진 이유는 상수 주석 참고.
   @IsEnum(CLIENT_SETTABLE_REPORT_SOURCES)
@@ -230,6 +234,10 @@ export class OrderGetOrderCompleteReportPdfReqDto {
     required: false,
   })
   @IsOptional()
+  // @IsOptional() 은 null/undefined 만 건너뛰고 빈 문자열은 검증한다. 정규화 없이 @IsEnum 을 붙이면
+  // source:'' 를 보내던 기존 클라이언트가 400 을 받는다 — 종전에는 통과 후 DOCUMENT 로 저장됐다.
+  // 빈 값은 '미전송'과 같은 뜻이므로 undefined 로 접어 기존 계약을 보존한다.
+  @Transform(({ value }) => (value === '' ? undefined : value))
   // 정산 목록의 발행 상태 문구가 이 값으로 분기하므로(settle.service.formatReportStatus) 자유 문자열을
   // 허용하면 오타가 조용히 '다운로드 완료'로 폴백한다. EMAIL 이 목록에서 빠진 이유는 상수 주석 참고.
   @IsEnum(CLIENT_SETTABLE_REPORT_SOURCES)
