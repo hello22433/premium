@@ -71,6 +71,7 @@ import {
   Repository,
   SelectQueryBuilder,
 } from 'typeorm';
+import { QueryDeepPartialEntity } from 'typeorm/query-builder/QueryPartialEntity';
 import { QueryBuilderDateCondition } from '../../common/infra/query.builder.date.condition';
 import { CustomerSettlementViewDto, OrderViewDto } from '../api/dto/order.view.dto';
 import { DateDateFormatStr, DateFormatStr } from '../../common/domain/date.format.str';
@@ -304,6 +305,22 @@ type OrderListQueryParams = {
   sendingType?: IOrderSendingType;
   dateType?: IOrderDateType;
 };
+
+/**
+ * 리포트 1종이 쓰는 발행 카운트 컬럼 쌍.
+ *
+ * 발송완료리포트와 거래명세서는 컬럼만 다를 뿐 발행 집계 규칙이 같아, 이메일 전송 공통 헬퍼
+ * (sendReportEmail)에 이 쌍을 넘겨 어느 리포트의 카운트를 올릴지 지정한다.
+ * 파기증명서는 대응 컬럼도, 정산 목록 표시 컬럼도 없으므로 이 값을 넘기지 않는다(카운트 없음).
+ *
+ * ⚠️ 두 필드를 독립 유니온으로 두면 안 된다. 그러면 2×2=4 조합이 모두 컴파일을 통과해
+ * `{ countColumn: 'orderCompleteReportCount', sourceColumn: 'deliveryReportLastSource' }` 같은
+ * 교차 쌍(거래명세서를 보냈는데 발송완료리포트의 source 가 덮이는 상태)이 타입 검사를 빠져나간다.
+ * 판별 유니온으로 두어 짝이 어긋난 조합을 애초에 표현 불가능하게 만든다.
+ */
+type ReportCounterColumns =
+  | { countColumn: 'deliveryCompleteReportCount'; sourceColumn: 'deliveryReportLastSource' }
+  | { countColumn: 'orderCompleteReportCount'; sourceColumn: 'transactionStatementLastSource' };
 
 @Injectable()
 export class OrderService {
@@ -5808,7 +5825,7 @@ export class OrderService {
     },
     user: ILoginUserInfo,
     ipAddress: string,
-    logMeta: { requestUrl: string; actionType: string },
+    logMeta: { requestUrl: string; actionType: string; counter?: ReportCounterColumns },
   ): Promise<{ success: boolean; message: string }> {
     const { orderId, to, subject, content, pdfBase64, pdfFileName, companyType } = getBody;
 
@@ -5872,6 +5889,37 @@ export class OrderService {
       throw new InternalServerErrorException(result.error || '이메일 발송에 실패했습니다.');
     }
 
+    // 발행 카운트 반영 — 이메일 전송도 "발행"으로 집계한다(실무 확인 규칙).
+    // 이 갱신이 없으면 정산 목록의 발행 상태가 '-' 로 남고 isPublished=false(미발행) 필터에도
+    // 계속 잡혀, 담당자가 이미 보낸 건을 다시 발행하게 된다.
+    //
+    // 순서 주의: activity_log 기록과 실패 throw 뒤에 둔다.
+    //  - 메일 발송은 이미 나간 비가역 행위라, 카운터 갱신이 실패하더라도 발송 기록은 남아야 한다.
+    //  - 발송 실패 건은 여기 도달하지 않는다 → 실패를 '발행 완료'로 표시하지 않는다.
+    //
+    // save() 가 아니라 원자 UPDATE 를 쓰는 이유: save() 는 로드 시점의 order 전 컬럼을 되쓰므로
+    // 동시 트랜잭션이 쓴 값을 stale 로 되돌릴 수 있다. 여기서는 해당 두 컬럼만 건드린다.
+    // (단건 PDF 경로 deliveryCompleteReportPdf / orderCompleteReportPdf 는 아직 full save() 다 —
+    //  같은 행의 두 번째 writer 가 되므로 lost update 여지가 있다. 별도 티켓.)
+    //
+    // count 와 source 를 한 문장으로 갱신한다. 두 문장으로 나누면 사이에서 실패했을 때
+    // count=1 / source=NULL 이 남아 formatReportStatus 폴백이 '다운로드 완료'로 오표시한다
+    // (아무도 다운로드한 적 없는데). 증가는 DB 측 `col + 1` 이라 동시 요청에도 유실되지 않는다.
+    //
+    if (logMeta.counter) {
+      const { countColumn, sourceColumn } = logMeta.counter;
+      const countDbColumn = this.orderRepository.metadata.findColumnWithPropertyName(countColumn)!.databaseName;
+      await this.orderRepository
+        .createQueryBuilder()
+        .update(OrderEntity)
+        .set({
+          [countColumn]: () => `\`${countDbColumn}\` + 1`,
+          [sourceColumn]: IReportSource.EMAIL,
+        } as QueryDeepPartialEntity<OrderEntity>)
+        .where('id = :id', { id: orderId })
+        .execute();
+    }
+
     return {
       success: true,
       message: '이메일이 성공적으로 발송되었습니다.',
@@ -5889,6 +5937,10 @@ export class OrderService {
     return this.sendReportEmail(getBody, user, ipAddress, {
       requestUrl: '/order/delivery-complete/report/email',
       actionType: 'DELIVERY_COMPLETE_REPORT_EMAIL',
+      counter: {
+        countColumn: 'deliveryCompleteReportCount',
+        sourceColumn: 'deliveryReportLastSource',
+      },
     });
   }
 
@@ -5903,6 +5955,10 @@ export class OrderService {
     return this.sendReportEmail(getBody, user, ipAddress, {
       requestUrl: '/order/transaction-statement/report/email',
       actionType: 'TRANSACTION_STATEMENT_EMAIL',
+      counter: {
+        countColumn: 'orderCompleteReportCount',
+        sourceColumn: 'transactionStatementLastSource',
+      },
     });
   }
 
@@ -5919,6 +5975,8 @@ export class OrderService {
     return this.sendReportEmail(getBody, user, ipAddress, {
       requestUrl: '/order/destruction-certificate/report/email',
       actionType: 'DESTRUCTION_CERTIFICATE_EMAIL',
+      // counter 없음 — 파기증명서는 발행 카운트 컬럼도, 정산 목록 표시 컬럼도 존재하지 않는다.
+      // 발행 이력은 activity_log(DESTRUCTION_CERTIFICATE_EMAIL)에만 남는다.
     });
   }
 

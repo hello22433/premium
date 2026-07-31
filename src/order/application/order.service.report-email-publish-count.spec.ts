@@ -1,0 +1,254 @@
+import { BadRequestException, InternalServerErrorException } from '@nestjs/common';
+import { OrderService } from './order.service';
+import { IReportSource } from '../interface/report.source';
+
+/**
+ * 이메일 전송 경로의 발행 카운트 반영 (sendReportEmail).
+ *
+ * 배경: 발송완료리포트/거래명세서를 이메일로 보내도 order.*ReportCount 가 0 으로 남아,
+ * 정산 목록 발행 상태가 '-' 로 표시되고 isPublished=false(미발행) 필터에도 계속 잡혔다.
+ * 카운트를 올리는 경로가 단건 PDF(POST .../report/pdf) 하나뿐이었던 것이 원인.
+ *
+ * 여기서 고정하는 계약:
+ *  1) 발송완료리포트/거래명세서 이메일 성공 → 각자의 카운트 +1, source='EMAIL'
+ *  2) 파기증명서 이메일 → 대응 카운트 컬럼이 없으므로 카운터를 건드리지 않는다
+ *  3) 메일 발송 실패 → 카운터 미반영 (실패를 '발행 완료'로 표시하지 않는다)
+ *  4) 메일 발송 실패여도 activity_log 는 남는다 (비가역 행위 기록 우선)
+ *  5) 카운터 갱신은 save() 가 아니라 원자 UPDATE 한 문장 (order 전 컬럼 되쓰기 금지,
+ *     count/source 부분 갱신으로 인한 '다운로드 완료' 오표시 방지)
+ */
+
+const BASE_USER = { id: 7, email: 'development@enmad.com' } as any;
+const IP = '127.0.0.1';
+
+const makeEmailBody = (orderId = 6142) =>
+  ({
+    orderId,
+    to: 'yjh@example.com',
+    subject: '발송완료리포트',
+    content: '<p>리포트</p>',
+    pdfBase64: Buffer.from('pdf').toString('base64'),
+    pdfFileName: 'report.pdf',
+  }) as any;
+
+type SetupOptions = {
+  sendSuccess?: boolean;
+  order?: unknown;
+};
+
+const setupService = ({ sendSuccess = true, order = { id: 6142 } }: SetupOptions = {}) => {
+  const service = Object.create(OrderService.prototype) as any;
+  const callOrder: string[] = [];
+
+  // 원자 UPDATE 한 문장을 재현하는 최소 QueryBuilder 스텁.
+  // set() 에 넘어간 페이로드와 where 조건을 그대로 붙잡아 단언에 쓴다.
+  const updateCalls: { set: Record<string, unknown>; where: [string, unknown] }[] = [];
+  const makeUpdateQb = () => {
+    const captured: any = {};
+    const qb: any = {
+      update: jest.fn().mockReturnThis(),
+      set: jest.fn((payload: Record<string, unknown>) => {
+        captured.set = payload;
+        return qb;
+      }),
+      where: jest.fn((condition: string, params: unknown) => {
+        captured.where = [condition, params];
+        return qb;
+      }),
+      execute: jest.fn(async () => {
+        callOrder.push('update');
+        updateCalls.push(captured);
+        return { affected: 1 };
+      }),
+    };
+    return qb;
+  };
+
+  service.orderRepository = {
+    findOne: jest.fn().mockResolvedValue(order),
+    createQueryBuilder: jest.fn(() => makeUpdateQb()),
+    metadata: {
+      findColumnWithPropertyName: jest.fn((prop: string) => ({
+        databaseName: prop.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`),
+      })),
+    },
+    increment: jest.fn(),
+    update: jest.fn(),
+    save: jest.fn().mockResolvedValue(undefined),
+  };
+  service.updateCalls = updateCalls;
+  service.mailSendSmtp = {
+    send: jest
+      .fn()
+      .mockResolvedValue(
+        sendSuccess
+          ? { success: true, messageId: 'mid-1', error: null }
+          : { success: false, messageId: null, error: 'SMTP 연결 실패' },
+      ),
+  };
+  service.activityLogService = {
+    createLog: jest.fn().mockImplementation(async () => {
+      callOrder.push('createLog');
+    }),
+  };
+
+  return { service, callOrder };
+};
+
+describe('sendDeliveryCompleteReportEmail — 발송완료리포트 이메일 발행 카운트', () => {
+  it('메일 발송에 성공하면 deliveryCompleteReportCount 를 1 증가시킨다', async () => {
+    const { service } = setupService();
+
+    const result = await service.sendDeliveryCompleteReportEmail(makeEmailBody(), BASE_USER, IP);
+
+    expect(result.success).toBe(true);
+    expect(service.updateCalls).toHaveLength(1);
+    // 증가는 DB 측 `col + 1` 표현식이어야 한다 — 읽어온 값 +1 을 되쓰면 동시 요청에서 유실된다.
+    const increment = service.updateCalls[0].set.deliveryCompleteReportCount;
+    expect(typeof increment).toBe('function');
+    expect(increment()).toBe('`delivery_complete_report_count` + 1');
+  });
+
+  it('발행 소스를 EMAIL 로 기록한다 (deliveryReportLastSource)', async () => {
+    const { service } = setupService();
+
+    await service.sendDeliveryCompleteReportEmail(makeEmailBody(), BASE_USER, IP);
+
+    expect(service.updateCalls[0].set.deliveryReportLastSource).toBe(IReportSource.EMAIL);
+    expect(service.updateCalls[0].where).toEqual(['id = :id', { id: 6142 }]);
+  });
+
+  it('count 와 source 를 한 문장으로 갱신한다 (중간 실패 시 source=NULL 오표시 방지)', async () => {
+    const { service } = setupService();
+
+    await service.sendDeliveryCompleteReportEmail(makeEmailBody(), BASE_USER, IP);
+
+    // UPDATE 는 정확히 1회, 그 한 문장이 두 컬럼을 모두 담아야 한다.
+    expect(service.updateCalls).toHaveLength(1);
+    expect(Object.keys(service.updateCalls[0].set).sort()).toEqual([
+      'deliveryCompleteReportCount',
+      'deliveryReportLastSource',
+    ]);
+  });
+
+  it('order 전 컬럼을 되쓰는 save() 를 쓰지 않는다 (동시 갱신 clobber 방지)', async () => {
+    const { service } = setupService();
+
+    await service.sendDeliveryCompleteReportEmail(makeEmailBody(), BASE_USER, IP);
+
+    expect(service.orderRepository.save).not.toHaveBeenCalled();
+  });
+
+  it('카운터 갱신은 activity_log 기록 이후에 일어난다 (발송 기록 보존 우선)', async () => {
+    const { service, callOrder } = setupService();
+
+    await service.sendDeliveryCompleteReportEmail(makeEmailBody(), BASE_USER, IP);
+
+    expect(callOrder).toEqual(['createLog', 'update']);
+  });
+});
+
+describe('sendTransactionStatementReportEmail — 거래명세서 이메일 발행 카운트', () => {
+  it('메일 발송에 성공하면 orderCompleteReportCount 를 1 증가시킨다', async () => {
+    const { service } = setupService();
+
+    const result = await service.sendTransactionStatementReportEmail(makeEmailBody(), BASE_USER, IP);
+
+    expect(result.success).toBe(true);
+    expect(service.updateCalls[0].set.orderCompleteReportCount()).toBe('`order_complete_report_count` + 1');
+  });
+
+  it('발행 소스를 EMAIL 로 기록한다 (transactionStatementLastSource)', async () => {
+    const { service } = setupService();
+
+    await service.sendTransactionStatementReportEmail(makeEmailBody(), BASE_USER, IP);
+
+    expect(service.updateCalls[0].set.transactionStatementLastSource).toBe(IReportSource.EMAIL);
+  });
+
+  it('발송완료리포트 컬럼을 건드리지 않는다 (리포트 종류 간 교차 오염 없음)', async () => {
+    const { service } = setupService();
+
+    await service.sendTransactionStatementReportEmail(makeEmailBody(), BASE_USER, IP);
+
+    // 짝이 어긋나면(예: orderCompleteReportCount + deliveryReportLastSource) 여기서 잡힌다.
+    expect(Object.keys(service.updateCalls[0].set).sort()).toEqual([
+      'orderCompleteReportCount',
+      'transactionStatementLastSource',
+    ]);
+  });
+});
+
+describe('sendDestructionCertificateReportEmail — 카운터 대상 아님', () => {
+  const makeDestructionOrder = () => ({
+    id: 6142,
+    status: 'DELIVERY_COMPLETE',
+    orderProductMappings: [{ id: 1, orderDeliveries: [{ deliveryTarget: '-', deletedAt: null, status: 'COMPLETE' }] }],
+  });
+
+  it('파기증명서는 대응 카운트 컬럼이 없으므로 카운터를 갱신하지 않는다', async () => {
+    const { service } = setupService({ order: makeDestructionOrder() });
+
+    const result = await service.sendDestructionCertificateReportEmail(makeEmailBody(), BASE_USER, IP);
+
+    expect(result.success).toBe(true);
+    expect(service.updateCalls).toHaveLength(0);
+    expect(service.orderRepository.createQueryBuilder).not.toHaveBeenCalled();
+  });
+
+  it('카운터를 갱신하지 않아도 activity_log 는 남긴다', async () => {
+    const { service } = setupService({ order: makeDestructionOrder() });
+
+    await service.sendDestructionCertificateReportEmail(makeEmailBody(), BASE_USER, IP);
+
+    expect(service.activityLogService.createLog).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('메일 발송 실패 시', () => {
+  it('발송완료리포트 — 카운터를 반영하지 않는다 (실패를 발행으로 집계 금지)', async () => {
+    const { service } = setupService({ sendSuccess: false });
+
+    await expect(service.sendDeliveryCompleteReportEmail(makeEmailBody(), BASE_USER, IP)).rejects.toBeInstanceOf(
+      InternalServerErrorException,
+    );
+
+    expect(service.updateCalls).toHaveLength(0);
+  });
+
+  it('거래명세서 — 카운터를 반영하지 않는다', async () => {
+    const { service } = setupService({ sendSuccess: false });
+
+    await expect(service.sendTransactionStatementReportEmail(makeEmailBody(), BASE_USER, IP)).rejects.toBeInstanceOf(
+      InternalServerErrorException,
+    );
+
+    expect(service.updateCalls).toHaveLength(0);
+  });
+
+  it('실패해도 activity_log 는 FAILURE 로 남는다 (기록이 카운터보다 먼저)', async () => {
+    const { service } = setupService({ sendSuccess: false });
+
+    await expect(service.sendDeliveryCompleteReportEmail(makeEmailBody(), BASE_USER, IP)).rejects.toBeInstanceOf(
+      InternalServerErrorException,
+    );
+
+    expect(service.activityLogService.createLog).toHaveBeenCalledTimes(1);
+    const logArg = service.activityLogService.createLog.mock.calls[0][0];
+    expect(logArg.statusCode).toBe(500);
+    expect(logArg.actionType).toBe('DELIVERY_COMPLETE_REPORT_EMAIL');
+  });
+});
+
+describe('주문이 존재하지 않으면', () => {
+  it('메일을 보내지 않고 카운터도 건드리지 않는다', async () => {
+    const { service } = setupService({ order: null });
+
+    await expect(service.sendDeliveryCompleteReportEmail(makeEmailBody(), BASE_USER, IP)).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+
+    expect(service.mailSendSmtp.send).not.toHaveBeenCalled();
+    expect(service.updateCalls).toHaveLength(0);
+  });
+});
