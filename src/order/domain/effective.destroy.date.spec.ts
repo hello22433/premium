@@ -2,138 +2,148 @@ import { resolveDeliveryDestroyAt, resolveOrderEffectiveDestroyAt } from './effe
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
 
 /**
- * 실효 파기예정일 계산 규칙 고정.
+ * 실효 파기일 계산 규칙 고정.
  *
- * 이 규칙은 delivery.batch.service.ts 의 정기파기 쿼리를 손으로 복제한 것이라,
- * 두 곳이 어긋나면 고객사에 고지한 파기일과 실제 파기일이 달라진다. 배치 쪽 가드의
- * 3개 절(만료/expireAt NULL/soft-delete)에 각각 대응하는 케이스를 둔다.
+ * 이 함수는 성격이 다른 두 답을 낸다:
+ *  · 이미 파기된 행 → destroyed_at **실적**을 그대로 읽는다(계산 없음).
+ *  · 아직 안 지운 행 → 배치 규칙을 날짜로 옮긴 **예정일**을 계산한다.
+ *
+ * 예정일 계산은 delivery.batch.service.ts 의 정기파기 쿼리를 손으로 복제한 것이라, 두 곳이
+ * 어긋나면 고객사에 고지한 파기일과 실제 파기일이 달라진다. 배치 쪽 가드의 3개 절
+ * (만료/expireAt NULL/soft-delete)에 각각 대응하는 케이스를 둔다.
  * 쿠폰 상태는 판정에 쓰지 않는다 — 유효기간이 남아 있으면 사용 완료 건도 보류한다.
  *
  * 배치 SQL 자체의 필터 동작은 target-destroy-expiry-guard.db-integration-test.ts 가
  * 실DB 로 검증한다. 여기서는 "그래서 며칠인가"만 다룬다.
  */
-describe('resolveDeliveryDestroyAt — 발송건 1건의 파기예정일', () => {
+describe('resolveDeliveryDestroyAt — 발송건 1건의 파기일', () => {
   const day = (iso: string) => new Date(iso);
   const ymd = (d: Date | null) =>
     d ? `${d.getFullYear()}-${`${d.getMonth() + 1}`.padStart(2, '0')}-${`${d.getDate()}`.padStart(2, '0')}` : null;
 
-  // 아직 파기되지 않은 발송건 — 수신처가 살아 있다.
+  // 아직 파기되지 않은 발송건 — 수신처가 살아 있고 파기 시각도 없다.
   const alive = {
     deletedAt: null,
     couponStatus: OrderDeliveryCouponStatus.NOT_USED,
     deliveryTarget: '01011112222',
+    destroyedAt: null,
   };
-  // 이미 파기된 발송건 — PII 가 '-' 로 마스킹된 상태.
-  const destroyed = { ...alive, deliveryTarget: '-' };
+  // 이미 파기된 발송건 — PII 가 '-' 로 마스킹되고 파기 시각이 각인된 상태.
+  const destroyedAt = (iso: string) => ({ ...alive, deliveryTarget: '-', destroyedAt: day(iso) });
 
-  it('유효기간이 파기기준일보다 이르면 기준일 그대로다 (가드가 개입하지 않음)', () => {
-    // 발송 2026-01-01 + 180일 = 2026-06-30. 유효기간은 2026-03-01 로 그보다 앞선다.
-    const at = resolveDeliveryDestroyAt(
-      { ...alive, expireAt: day('2026-03-01T10:00:00') },
-      day('2026-01-01T14:00:00'),
-      180,
-    );
-    expect(ymd(at)).toBe('2026-06-30');
+  describe('예정일 계산 (아직 파기되지 않은 건)', () => {
+    it('유효기간이 파기기준일보다 이르면 기준일 그대로다 (가드가 개입하지 않음)', () => {
+      // 발송 2026-01-01 + 180일 = 2026-06-30. 유효기간은 2026-03-01 로 그보다 앞선다.
+      const at = resolveDeliveryDestroyAt(
+        { ...alive, expireAt: day('2026-03-01T10:00:00') },
+        day('2026-01-01T14:00:00'),
+        180,
+      );
+      expect(ymd(at)).toBe('2026-06-30');
+    });
+
+    it('유효기간이 파기기준일보다 뒤면 만료 다음 날로 미뤄진다 (이 기능의 핵심)', () => {
+      // 유효기간 5년 상품 / 파기 180일 — 기준일은 2026-06-30 이지만 실제 파기는 2031 년이다.
+      const at = resolveDeliveryDestroyAt(
+        { ...alive, expireAt: day('2030-12-31T23:59:00') },
+        day('2026-01-01T14:00:00'),
+        180,
+      );
+      expect(ymd(at)).toBe('2031-01-01'); // 만료 당일은 아직 유효 → 다음 날
+    });
+
+    it('시분초는 버리고 날짜 단위로 계산한다 (배치의 DATE() 절삭과 동일)', () => {
+      const early = resolveDeliveryDestroyAt(
+        { ...alive, expireAt: day('2030-12-31T00:30:00') },
+        day('2026-01-01T00:00:01'),
+        180,
+      );
+      const late = resolveDeliveryDestroyAt(
+        { ...alive, expireAt: day('2030-12-31T23:59:59') },
+        day('2026-01-01T23:59:59'),
+        180,
+      );
+      expect(ymd(early)).toBe('2031-01-01');
+      expect(ymd(late)).toBe('2031-01-01'); // 같은 날짜면 시각과 무관하게 같은 답
+    });
+
+    it('유효기간이 없으면(expireAt NULL) 기준일 그대로다 — 배치 가드 1번 절', () => {
+      const at = resolveDeliveryDestroyAt({ ...alive, expireAt: null }, day('2026-01-01T14:00:00'), 180);
+      expect(ymd(at)).toBe('2026-06-30');
+    });
+
+    it('soft-delete 된 건은 유효기간이 남아도 기준일 그대로다 — 배치 가드 3번 절', () => {
+      const at = resolveDeliveryDestroyAt(
+        { ...alive, expireAt: day('2030-12-31T00:00:00'), deletedAt: day('2026-02-01T00:00:00') },
+        day('2026-01-01T14:00:00'),
+        180,
+      );
+      expect(ymd(at)).toBe('2026-06-30');
+    });
+
+    it.each([
+      OrderDeliveryCouponStatus.USED,
+      OrderDeliveryCouponStatus.CANCEL,
+      OrderDeliveryCouponStatus.REFUND_CANCEL,
+      OrderDeliveryCouponStatus.EXPIRED,
+    ])('쿠폰 상태(%s)는 판정에 쓰지 않는다 — 유효기간이 남아 있으면 상태 불문 미뤄진다', (couponStatus) => {
+      // 운영 결정: 판정 기준은 유효기간 하나다. 사용 완료된 쿠폰도 유효기간 동안은 파기하지 않는다.
+      // couponStatus 를 넘겨도 결과가 달라지지 않음을 고정한다(시그니처가 이 필드를 받지 않는다).
+      const at = resolveDeliveryDestroyAt(
+        { ...alive, expireAt: day('2030-12-31T00:00:00'), couponStatus } as never,
+        day('2026-01-01T14:00:00'),
+        180,
+      );
+      expect(ymd(at)).toBe('2031-01-01');
+    });
+
+    it('파기일수가 NULL 이면 null — 배치가 이 행을 영원히 집지 않으므로 날짜를 지어내지 않는다', () => {
+      // INTERVAL NULL DAY → NULL 이라 주 날짜 절이 성립하지 않는다(기존 결함, 이 기능의 소관 아님).
+      expect(resolveDeliveryDestroyAt({ ...alive, expireAt: null }, day('2026-01-01T00:00:00'), null)).toBeNull();
+    });
+
+    it('발송요청일이 없으면 null', () => {
+      expect(resolveDeliveryDestroyAt({ ...alive, expireAt: null }, null, 180)).toBeNull();
+    });
   });
 
-  it('유효기간이 파기기준일보다 뒤면 만료 다음 날로 미뤄진다 (이 기능의 핵심)', () => {
-    // 유효기간 5년 상품 / 파기 180일 — 기준일은 2026-06-30 이지만 실제 파기는 2031 년이다.
-    const at = resolveDeliveryDestroyAt(
-      { ...alive, expireAt: day('2030-12-31T23:59:00') },
-      day('2026-01-01T14:00:00'),
-      180,
-    );
-    expect(ymd(at)).toBe('2031-01-01'); // 만료 당일은 아직 유효 → 다음 날
-  });
-
-  it('시분초는 버리고 날짜 단위로 계산한다 (배치의 DATE() 절삭과 동일)', () => {
-    const early = resolveDeliveryDestroyAt(
-      { ...alive, expireAt: day('2030-12-31T00:30:00') },
-      day('2026-01-01T00:00:01'),
-      180,
-    );
-    const late = resolveDeliveryDestroyAt(
-      { ...alive, expireAt: day('2030-12-31T23:59:59') },
-      day('2026-01-01T23:59:59'),
-      180,
-    );
-    expect(ymd(early)).toBe('2031-01-01');
-    expect(ymd(late)).toBe('2031-01-01'); // 같은 날짜면 시각과 무관하게 같은 답
-  });
-
-  it('유효기간이 없으면(expireAt NULL) 기준일 그대로다 — 배치 가드 1번 절', () => {
-    const at = resolveDeliveryDestroyAt({ ...alive, expireAt: null }, day('2026-01-01T14:00:00'), 180);
-    expect(ymd(at)).toBe('2026-06-30');
-  });
-
-  it('soft-delete 된 건은 유효기간이 남아도 기준일 그대로다 — 배치 가드 2번 절', () => {
-    const at = resolveDeliveryDestroyAt(
-      { ...alive, expireAt: day('2030-12-31T00:00:00'), deletedAt: day('2026-02-01T00:00:00') },
-      day('2026-01-01T14:00:00'),
-      180,
-    );
-    expect(ymd(at)).toBe('2026-06-30');
-  });
-
-  it.each([
-    OrderDeliveryCouponStatus.USED,
-    OrderDeliveryCouponStatus.CANCEL,
-    OrderDeliveryCouponStatus.REFUND_CANCEL,
-    OrderDeliveryCouponStatus.EXPIRED,
-  ])('쿠폰 상태(%s)는 판정에 쓰지 않는다 — 유효기간이 남아 있으면 상태 불문 미뤄진다', (couponStatus) => {
-    // 운영 결정: 판정 기준은 유효기간 하나다. 사용 완료된 쿠폰도 유효기간 동안은 파기하지 않는다.
-    // couponStatus 를 넘겨도 결과가 달라지지 않음을 고정한다(시그니처가 이 필드를 받지 않는다).
-    const at = resolveDeliveryDestroyAt(
-      { expireAt: day('2030-12-31T00:00:00'), deletedAt: null, couponStatus } as never,
-      day('2026-01-01T14:00:00'),
-      180,
-    );
-    expect(ymd(at)).toBe('2031-01-01');
-  });
-
-  it('파기일수가 NULL 이면 null — 배치가 이 행을 영원히 집지 않으므로 날짜를 지어내지 않는다', () => {
-    // INTERVAL NULL DAY → NULL 이라 주 날짜 절이 성립하지 않는다(기존 결함, 이 기능의 소관 아님).
-    expect(resolveDeliveryDestroyAt({ ...alive, expireAt: null }, day('2026-01-01T00:00:00'), null)).toBeNull();
-  });
-
-  it('발송요청일이 없으면 null', () => {
-    expect(resolveDeliveryDestroyAt({ ...alive, expireAt: null }, null, 180)).toBeNull();
-  });
-
-  describe('조기파기 실적일 우선 (리뷰 HIGH-1)', () => {
-    it('조기파기된 건은 예정일이 아니라 실제로 지운 날을 돌려준다', () => {
+  describe('실적 우선 (destroyed_at)', () => {
+    it('파기 시각이 기록된 건은 예정일이 아니라 실제로 지운 날을 돌려준다', () => {
       // 유효기간 5년 상품을 발송 한 달 만에 조기파기한 경우.
       // 실적을 무시하면 파기확인서에 2031-01-01(4년 11개월 뒤)이 인쇄된다.
       const at = resolveDeliveryDestroyAt(
-        { ...destroyed, expireAt: day('2030-12-31T00:00:00') },
+        { ...destroyedAt('2026-02-01T09:30:00'), expireAt: day('2030-12-31T00:00:00') },
         day('2026-01-01T14:00:00'),
         180,
-        day('2026-02-01T09:30:00'), // 조기파기 실행 시각
       );
       expect(ymd(at)).toBe('2026-02-01');
     });
 
-    it('실적 기록이 있어도 그 행이 아직 안 지워졌으면 실적을 인정하지 않는다 (리뷰 CRITICAL)', () => {
-      // 매핑 전체 조기파기 뒤 CS 폐기후재발행이 같은 매핑에 새 행을 만들면, 그 신규 행까지
-      // "그때 파기됨"으로 도장이 찍힌다(맵은 매핑 단위로 펼쳐지므로). 그 행은 실제 수신처를
-      // 보유하고 있으므로, 실적을 그대로 인정하면 살아있는 PII 에 과거 파기일이 인쇄된다.
-      // 행 자신의 상태(deliveryTarget)를 함께 봐야 이 역추론의 틈이 닫힌다.
+    it('★ 옛 규칙으로 파기된 레거시 행에 새 규칙을 소급하지 않는다 (재리뷰 H-1)', () => {
+      // 유효기간 가드 이전에 정기파기된 행. 옛 배치는 유효기간을 보지 않았으므로
+      // 발송요청일+180 = 2026-06-30 에 지웠고, 그 시각이 destroyed_at 에 백필돼 있다.
+      // 계산으로 답하면 MAX(2026-06-30, 2031-01-02) = 2031-01-02 — 이미 지운 건에 미래 날짜다.
       const at = resolveDeliveryDestroyAt(
-        { ...alive, expireAt: day('2030-12-31T00:00:00') }, // deliveryTarget 이 실제 번호
+        { ...destroyedAt('2026-06-30T00:00:03'), expireAt: day('2031-01-01T00:00:00') },
         day('2026-01-01T14:00:00'),
         180,
-        day('2026-02-01T09:30:00'), // 맵에는 실적이 있지만
       );
-      expect(ymd(at)).toBe('2031-01-01'); // 실적 무시하고 예정일로 답한다
+      expect(ymd(at)).toBe('2026-06-30');
+    });
+
+    it('파기됐는데 시각 기록이 없으면 null — 예정일로 폴백하면 H-1 이 재현된다', () => {
+      // 백필에서 기준 컬럼 결측으로 못 채웠거나, 백필 전에 코드가 배포된 경우.
+      // "지운 것은 맞는데 언제인지 모른다"를 날짜로 위장하지 않는다.
+      const at = resolveDeliveryDestroyAt(
+        { ...alive, deliveryTarget: '-', expireAt: day('2031-01-01T00:00:00') },
+        day('2026-01-01T14:00:00'),
+        180,
+      );
+      expect(at).toBeNull();
     });
 
     it('실적일은 시분초를 버린 날짜로 절삭된다', () => {
-      const at = resolveDeliveryDestroyAt(
-        { ...destroyed, expireAt: null },
-        day('2026-01-01'),
-        180,
-        day('2026-02-01T23:59:59'),
-      );
+      const at = resolveDeliveryDestroyAt({ ...destroyedAt('2026-02-01T23:59:59'), expireAt: null }, day('2026-01-01'), 180);
       expect(ymd(at)).toBe('2026-02-01');
       // ⚠️ ymd 는 시간 성분을 버리므로 위 단언만으로는 절삭을 검증하지 못한다(atStartOfDay 를
       //    지우고 인자를 그대로 반환해도 통과한다). 시각을 직접 봐야 실제로 고정된다.
@@ -146,25 +156,21 @@ describe('resolveDeliveryDestroyAt — 발송건 1건의 파기예정일', () =>
     it('실적일이 예정일보다 뒤여도 실적이 이긴다 — 예정일은 추정, 실적은 사실이다', () => {
       // 파기가 지연 실행된 경우. MAX 를 취하지 않는다(그러면 다시 추정값이 섞인다).
       const at = resolveDeliveryDestroyAt(
-        { ...destroyed, expireAt: day('2026-03-01T00:00:00') },
+        { ...destroyedAt('2026-08-15T10:00:00'), expireAt: day('2026-03-01T00:00:00') },
         day('2026-01-01T14:00:00'),
         180, // 예정 2026-06-30
-        day('2026-08-15T10:00:00'),
       );
       expect(ymd(at)).toBe('2026-08-15');
     });
 
-    it('실적일이 없으면(정기파기 또는 미파기) 종전대로 예정일을 계산한다', () => {
-      // 정기파기는 실적 기록이 없어 계산값으로 답한다(배치가 정상 동작할 때의 추정치).
-      const undef = resolveDeliveryDestroyAt({ ...alive, expireAt: null }, day('2026-01-01T14:00:00'), 180, undefined);
-      const nul = resolveDeliveryDestroyAt({ ...alive, expireAt: null }, day('2026-01-01T14:00:00'), 180, null);
-      expect(ymd(undef)).toBe('2026-06-30');
-      expect(ymd(nul)).toBe('2026-06-30');
+    it('실적일이 있으면 파기일수/발송요청일이 없어도 null 이 아니다 — 이미 지운 사실은 확정이다', () => {
+      const at = resolveDeliveryDestroyAt({ ...destroyedAt('2026-02-01T00:00:00'), expireAt: null }, null, null);
+      expect(ymd(at)).toBe('2026-02-01');
     });
 
-    it('실적일이 있으면 파기일수/발송요청일이 없어도 null 이 아니다 — 이미 지운 사실은 확정이다', () => {
-      const at = resolveDeliveryDestroyAt({ ...destroyed, expireAt: null }, null, null, day('2026-02-01T00:00:00'));
-      expect(ymd(at)).toBe('2026-02-01');
+    it('파기 시각이 없고 아직 안 지워진 건은 종전대로 예정일을 계산한다', () => {
+      const at = resolveDeliveryDestroyAt({ ...alive, expireAt: null }, day('2026-01-01T14:00:00'), 180);
+      expect(ymd(at)).toBe('2026-06-30');
     });
   });
 });
@@ -182,9 +188,14 @@ describe('resolveOrderEffectiveDestroyAt — 주문 단위 집계', () => {
     deletedAt: null,
     couponStatus: OrderDeliveryCouponStatus.NOT_USED,
     deliveryTarget: '01011112222',
+    destroyedAt: null,
   });
-  /** 이미 파기된 발송건 — 실적일을 인정받으려면 행 자신도 '-' 여야 한다. */
-  const destroyedDelivery = (expireAt: Date | null) => ({ ...aliveDelivery(expireAt), deliveryTarget: '-' });
+  /** 이미 파기된 발송건 — PII 마스킹과 파기 시각이 함께 있다. */
+  const destroyedDelivery = (expireAt: Date | null, destroyedAtIso: string) => ({
+    ...aliveDelivery(expireAt),
+    deliveryTarget: '-',
+    destroyedAt: new Date(destroyedAtIso),
+  });
 
   it('발송건마다 파기일이 다르면 가장 늦은 날을 쓴다 — "이 날이면 전부 지워져 있다"를 보장', () => {
     const order: any = {
@@ -193,7 +204,7 @@ describe('resolveOrderEffectiveDestroyAt — 주문 단위 집계', () => {
         mapping([aliveDelivery(new Date('2030-12-31T00:00:00'))]), // 2031-01-01
       ],
     };
-    expect(ymd(resolveOrderEffectiveDestroyAt(order, new Map()))).toBe('2031-01-01');
+    expect(ymd(resolveOrderEffectiveDestroyAt(order))).toBe('2031-01-01');
   });
 
   it('파기일을 특정할 수 없는 발송건이 하나라도 있으면 주문 전체가 null', () => {
@@ -204,7 +215,14 @@ describe('resolveOrderEffectiveDestroyAt — 주문 단위 집계', () => {
         mapping([aliveDelivery(null)], null), // 파기일수 NULL
       ],
     };
-    expect(resolveOrderEffectiveDestroyAt(order, new Map())).toBeNull();
+    expect(resolveOrderEffectiveDestroyAt(order)).toBeNull();
+  });
+
+  it('파기됐는데 시각 기록이 없는 건이 섞이면 주문 전체가 null', () => {
+    // 한 건이라도 근거가 없으면 주문 단위 진술도 성립하지 않는다.
+    const unknown = { ...aliveDelivery(new Date('2030-12-31T00:00:00')), deliveryTarget: '-' };
+    const order: any = { orderProductMappings: [mapping([aliveDelivery(null), unknown])] };
+    expect(resolveOrderEffectiveDestroyAt(order)).toBeNull();
   });
 
   it('폐기후재발행 tip 이 포함된 집합을 넘기면 tip 의 늦은 유효기간이 MAX 에 반영된다', () => {
@@ -217,27 +235,32 @@ describe('resolveOrderEffectiveDestroyAt — 주문 단위 집계', () => {
     const withTip: any = { orderProductMappings: [mapping([original, reissueTip])] };
     const withoutTip: any = { orderProductMappings: [mapping([original])] };
 
-    expect(ymd(resolveOrderEffectiveDestroyAt(withTip, new Map()))).toBe('2031-06-02');
+    expect(ymd(resolveOrderEffectiveDestroyAt(withTip))).toBe('2031-06-02');
     // tip 을 걸러낸 집합을 넘기면 5개월 이른 날짜가 나온다 — 이 차이가 고지 오류의 크기다.
-    expect(ymd(resolveOrderEffectiveDestroyAt(withoutTip, new Map()))).toBe('2031-01-01');
+    expect(ymd(resolveOrderEffectiveDestroyAt(withoutTip))).toBe('2031-01-01');
   });
 
-  it('일부만 조기파기된 주문 — 실적일과 예정일이 섞여도 MAX 의미가 유지된다', () => {
-    // 발송건 2개 중 하나만 조기파기. 이미 지운 건의 실적일은 과거라 MAX 에 영향을 주지 않고,
+  it('일부만 파기된 주문 — 실적일과 예정일이 섞여도 MAX 의미가 유지된다', () => {
+    // 발송건 2개 중 하나만 이미 파기. 이미 지운 건의 실적일은 과거라 MAX 에 영향을 주지 않고,
     // 남은 건의 예정일이 "이 날이면 전부 지워져 있다"를 결정한다.
-    const destroyed = { ...destroyedDelivery(new Date('2030-12-31T00:00:00')), id: 1 };
+    const done = { ...destroyedDelivery(new Date('2030-12-31T00:00:00'), '2026-02-01T09:00:00'), id: 1 };
     const pending = { ...aliveDelivery(new Date('2026-03-01T00:00:00')), id: 2 }; // 예정 2026-06-30
 
-    const order: any = { orderProductMappings: [mapping([destroyed, pending])] };
-    const earlyMap = new Map<number, Date>([[1, new Date('2026-02-01T09:00:00')]]);
+    const order: any = { orderProductMappings: [mapping([done, pending])] };
 
-    expect(ymd(resolveOrderEffectiveDestroyAt(order, earlyMap))).toBe('2026-06-30');
-    // 실적을 넘기지 않으면 조기파기된 건의 예정일(2031-01-01)이 MAX 를 지배해 5년 뒤가 된다.
-    expect(ymd(resolveOrderEffectiveDestroyAt(order, new Map()))).toBe('2031-01-01');
+    expect(ymd(resolveOrderEffectiveDestroyAt(order))).toBe('2026-06-30');
+  });
+
+  it('발송건이 전부 파기된 주문에서는 MAX 가 곧 실적일이다', () => {
+    // "실적일은 과거라 MAX 에 영향을 주지 않는다"고 단정하면 안 되는 반례.
+    const d1 = destroyedDelivery(new Date('2030-12-31T00:00:00'), '2026-02-01T09:00:00');
+    const d2 = destroyedDelivery(new Date('2030-12-31T00:00:00'), '2026-03-15T09:00:00');
+    const order: any = { orderProductMappings: [mapping([d1, d2])] };
+    expect(ymd(resolveOrderEffectiveDestroyAt(order))).toBe('2026-03-15');
   });
 
   it('발송건이 없으면 null (증명할 내용이 없다)', () => {
-    expect(resolveOrderEffectiveDestroyAt({ orderProductMappings: [mapping([])] } as any, new Map())).toBeNull();
-    expect(resolveOrderEffectiveDestroyAt({ orderProductMappings: [] } as any, new Map())).toBeNull();
+    expect(resolveOrderEffectiveDestroyAt({ orderProductMappings: [mapping([])] } as any)).toBeNull();
+    expect(resolveOrderEffectiveDestroyAt({ orderProductMappings: [] } as any)).toBeNull();
   });
 });

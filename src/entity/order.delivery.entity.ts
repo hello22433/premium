@@ -55,6 +55,33 @@ export class OrderDeliveryEntity extends BaseEntity {
   @Column({ type: 'datetime', nullable: true, comment: '만료 시간' })
   expireAt: Date | null;
 
+  /**
+   * 개인정보(PII) 파기 실행 시각. **실적 기록**이다 — 계산값이 아니다.
+   *
+   * 이 행의 PII 5종(deliveryTarget / originalDeliveryTarget / emailReceiverPhone /
+   * bankAccount / bankAccountOwner)을 '-' 로 덮어쓴 시점을 기록한다. 기록 주체는 둘이다:
+   *  · 정기파기 배치 — delivery.batch.service.ts 의 deliveryDeliveryTargetDestroy
+   *  · 조기파기      — early.destroy.service.ts 의 executeRequest
+   *
+   * ⚠️ 왜 필요한가 — 이 컬럼이 없던 시절에는 "언제 파기했나"를 **계산으로 역추론**했다.
+   *    `발송요청일 + 파기일수` 로 예정일을 구해 그것을 실적처럼 썼는데, 이 방식은 파기 규칙이
+   *    바뀌는 순간 깨진다. 실제로 쿠폰 유효기간 가드가 들어오면서 규칙이
+   *    `발송요청일 + 파기일수` → `MAX(발송요청일 + 파기일수, 유효기간 만료일 + 1일)` 로 바뀌었고,
+   *    옛 규칙으로 이미 파기된 행에 새 규칙을 소급 적용하니 **이미 지운 건에 수년 뒤 미래 날짜**가
+   *    나왔다. 파기확인서(대외 증빙)의 파기일 칸에 쓰이는 값이라 허위 증명이 된다.
+   *    그래서 추론을 버리고 **파기 시점에 그냥 적는다**. 규칙이 또 바뀌어도 과거 기록은 안 흔들린다.
+   *
+   * NULL 의 뜻은 두 가지이고, deliveryTarget 으로 구분한다:
+   *  · deliveryTarget != '-'  → 아직 파기되지 않았다(정상). 파기일은 예정일로 계산한다.
+   *  · deliveryTarget == '-'  → **파기됐는데 시각을 모른다.** 컬럼 신설 시 백필에서 기준 컬럼
+   *    (sendRequestAt / requestToDestroyPersonalInfoDay)이 결측이라 값을 못 채운 행이다.
+   *    이때는 날짜를 지어내지 않고 null 로 응답한다(effective.destroy.date.ts 참조).
+   *
+   * 시각(시분초)까지 담지만 화면·확인서는 날짜만 쓴다. 초 단위를 남기는 이유는 감사 추적용이다.
+   */
+  @Column({ type: 'datetime', nullable: true, comment: '개인정보 파기 실행 시각' })
+  destroyedAt: Date | null;
+
   @Column({ type: 'varchar', length: 256, nullable: true, comment: '트랜잭션 id' })
   transactionId: string | null;
 

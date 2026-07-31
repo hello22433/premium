@@ -270,12 +270,29 @@ export class EarlyDestroyService {
       }
     }
 
+    // 파기 실행 시각. 아래 PII 마스킹과 request.executedAt 각인에 **같은 값**을 쓴다 — 각자
+    // new Date() 를 부르면 요청서(executedAt)와 발송건(destroyedAt)이 몇 밀리초 어긋나고,
+    // 그 둘을 대조하는 감사에서 불필요한 노이즈가 된다.
+    const destroyedAt = new Date();
+
     const piiPayload = {
       deliveryTarget: DESTROY_VALUE,
       originalDeliveryTarget: DESTROY_VALUE,
       emailReceiverPhone: DESTROY_VALUE,
       bankAccount: DESTROY_VALUE,
       bankAccountOwner: DESTROY_VALUE,
+      // 실적 기록. 조기파기는 예정일보다 앞당겨 지우므로 계산으로는 이 시점에 도달할 수 없다.
+      // 이 값이 있어야 파기확인서에 "언제 지웠다"를 사실로 적을 수 있다.
+      //
+      // ⚠️ 여기서는 정기파기 배치와 달리 `destroyedAt IS NULL` 가드를 두지 않는다. 조기파기는
+      //    이미 파기된 건에 대한 재실행을 막지 않기 때문이다 — executeRequest 에 "이미 파기됨"
+      //    거부가 없고, 매핑 지정 요청(createRequest)은 그 매핑에 미파기 발송건이 하나라도
+      //    있으면 통과하므로, D1 파기됨 + D2 미파기 매핑에 전체 요청을 다시 걸면 D1 까지 다시
+      //    덮인다. 그때 최초 파기일을 유지하려면 가드가 필요하지만, 반대로 운영이 "파기를 다시
+      //    실행했다"는 사실을 지우게 된다. 조기파기는 사람이 명시적으로 실행하는 행위이므로
+      //    **마지막 실행 시각**을 남기는 편이 요청서(early_destroy_request.executedAt)와
+      //    대조했을 때 일관된다. 정기파기는 사람 개입 없는 반복 배치라 반대로 최초 시각을 고정한다.
+      destroyedAt,
     };
 
     const deliveryUpdateConditions: Array<[string, number[]]> = [];
@@ -306,7 +323,9 @@ export class EarlyDestroyService {
     await this.earlyDestroyRequestRepository.update(requestId, {
       status: EarlyDestroyRequestStatus.COMPLETED,
       executedBy: user.id,
-      executedAt: new Date(),
+      // 발송건에 각인한 destroyedAt 과 동일한 값(위 참조). 요청서 단위 기록과 발송건 단위 기록이
+      // 같은 시각을 가리켜야 감사 시 두 테이블을 대조할 수 있다.
+      executedAt: destroyedAt,
     });
 
     this.logger.log(

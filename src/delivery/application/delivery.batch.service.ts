@@ -3290,6 +3290,16 @@ export class DeliveryBatchService {
     if (destroyIdList.length > 0) {
       // PII 5종 파기 — 조기파기(executeRequest)와 동일 집합으로 통일(H-1). 운영 정책: 환불 계좌
       // (bankAccount/bankAccountOwner)도 조기파기가 이미 파기하므로 정기파기 범위도 이를 따른다.
+      //
+      // destroyedAt 은 "언제 지웠나"의 **실적 기록**이다. 이게 없던 시절에는 화면이
+      // `발송요청일 + 파기일수` 로 파기일을 역산했는데, 유효기간 가드로 규칙이 바뀌자 옛 규칙으로
+      // 이미 파기된 행에 수년 뒤 날짜가 인쇄됐다(재리뷰 H-1). 규칙 변경에 흔들리지 않으려면
+      // 추론이 아니라 기록이어야 하므로 파기하는 그 자리에서 남긴다.
+      //
+      // ⚠️ 이 UPDATE 의 대상 조건(위 WHERE)은 "PII 5종 중 **하나라도** 미파기"다. 즉 일부만
+      //    '-' 인 행은 다음 회차에 다시 집힌다. 그때 destroyedAt 을 무조건 덮으면 최초 파기일이
+      //    나중 회차 날짜로 밀려 실적이 훼손된다. 그래서 아래 UPDATE 에서는 destroyedAt 을 빼고,
+      //    `destroyedAt IS NULL` 인 행에만 따로 찍는다(최초 1회 고정).
       await this.orderDeliveryRepository.update(
         { id: In(destroyIdList) },
         {
@@ -3300,6 +3310,17 @@ export class DeliveryBatchService {
           bankAccountOwner: destroyValue,
         },
       );
+
+      // 최초 파기 시각 각인. 이미 값이 있는 행(= 이전 회차에 이미 파기된 부분 파기 행)은 건드리지
+      // 않는다. UpdateQueryBuilder 는 soft-delete 필터를 자동 부착하지 않으므로, 위 select 가
+      // withDeleted() 로 집어온 soft-delete 행도 그대로 갱신된다(집합 일치).
+      await this.orderDeliveryRepository
+        .createQueryBuilder()
+        .update(OrderDeliveryEntity)
+        .set({ destroyedAt: now })
+        .where('id IN (:...ids)', { ids: destroyIdList })
+        .andWhere('destroyedAt IS NULL')
+        .execute();
 
       // order_history 의 PII 도 함께 파기. '수신정보 변경요청'/'폐기 후 신규 발송' 이력의
       // beforeChange/afterChange 에는 평문 수신처가 남아 CS 이력 API(execStatusList)로 노출되므로,

@@ -86,7 +86,6 @@ import {
   destructionCertificateBlockMessage,
 } from '../domain/destruction.certificate.gate';
 import { resolveOrderEffectiveDestroyAt } from '../domain/effective.destroy.date';
-import { EarlyDestroyRequestEntity, EarlyDestroyRequestStatus } from '../../entity/early.destroy.request.entity';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { TestOrderDeliveryEntity } from '../../entity/test.order.delivery.entity';
 import { ProductEntity } from '../../entity/product.entity';
@@ -322,8 +321,6 @@ export class OrderService {
     private orderProductMappingRepository: Repository<OrderProductMappingEntity>,
     @InjectRepository(OrderDeliveryEntity)
     private orderDeliveryRepository: Repository<OrderDeliveryEntity>,
-    @InjectRepository(EarlyDestroyRequestEntity)
-    private earlyDestroyRequestRepository: Repository<EarlyDestroyRequestEntity>,
     @InjectRepository(TestOrderDeliveryEntity)
     private testOrderDeliveryRepository: Repository<TestOrderDeliveryEntity>,
     @InjectRepository(ProductEntity)
@@ -1581,137 +1578,6 @@ export class OrderService {
   }
 
   /**
-   * 조기파기로 이미 지운 발송건의 **실적 파기일**을 order_delivery.id 로 인덱싱해 돌려준다.
-   *
-   * 파기확인서는 "언제 파기했다"를 증명하는 대외 문서라 예정일을 쓰면 거짓 증명이 된다.
-   * 정기파기는 계산식이 가리키는 날에 지우므로 계산값이 곧 실적이지만(별도 기록 불필요),
-   * 조기파기는 그보다 앞당겨 지우므로 실행 시각을 읽어와야 한다(리뷰 HIGH-1).
-   *
-   * 매칭 규칙 — early_destroy_request_item 의 orderDeliveryId 는 nullable 이다:
-   *  · 값이 있으면 그 발송건 1건만 파기된 것이다.
-   *  · NULL 이면 해당 orderProductMapping 의 **발송건 전체**가 파기된 것이므로 전부 펼쳐 넣는다.
-   * COMPLETED 요청만 본다 — PENDING 은 아직 아무것도 지우지 않았다.
-   *
-   * 같은 발송건이 여러 COMPLETED 요청에 걸릴 수 있다 — 이건 방어가 아니라 **실제 동작**이다.
-   * executeRequest(early.destroy.service.ts:225-315)에는 "이미 파기됨" 거부가 없고, 생성 시점
-   * 가드도 부분 중복을 허용한다: 발송건 지정 요청은 전량 거부하지만(createRequestForDeliveries)
-   * 매핑 지정 요청(createRequest)은 그 매핑에 미파기 발송건이 하나도 없을 때만 거부한다.
-   * 즉 D1 파기됨 + D2 미파기인 매핑에 매핑 전체 요청을 다시 걸면 통과하고, 실행 시 D1 까지 다시
-   * 덮는다. 그래서 실행 시각 선택 규칙이 필요하며, 여기서는 **가장 이른 시각**을 쓴다(최초 파기가
-   * 그 PII 가 사라진 시점이다).
-   */
-  private async loadEarlyDestroyedAtMap(orderIds: number[]): Promise<Map<number, Date>> {
-    const result = new Map<number, Date>();
-    if (orderIds.length === 0) return result;
-
-    const requests = await this.earlyDestroyRequestRepository.find({
-      where: { orderId: In(orderIds), status: EarlyDestroyRequestStatus.COMPLETED },
-      relations: ['items'],
-    });
-
-    const mappingWideRequests: { mappingId: number; executedAt: Date }[] = [];
-    for (const request of requests) {
-      if (!request.executedAt) {
-        // COMPLETED 인데 실행 시각이 없으면 실적을 주장할 수 없다. 그런데 그냥 넘어가면 이 요청에
-        // 걸린 발송건이 전부 '예정일' 경로로 되돌아가, 이 기능이 막으려던 미래 날짜 인쇄가 조용히
-        // 재현된다. executeRequest 는 둘을 함께 쓰므로(early.destroy.service.ts:306-310) 정상
-        // 경로에서는 생기지 않고, 레거시 백필 UPDATE 같은 경로에서만 생긴다 — 즉 발견되면 데이터
-        // 결함이므로 반드시 남긴다.
-        this.logger.error(
-          `[파기일] COMPLETED 인데 executedAt 이 NULL — requestId=${request.id}, orderId=${request.orderId}, ` +
-            `items=${request.items?.length ?? 0}건. 해당 발송건은 실적일 대신 예정일(미래)로 인쇄된다.`,
-        );
-        continue;
-      }
-      for (const item of request.items ?? []) {
-        if (item.orderDeliveryId !== null) {
-          const prev = result.get(item.orderDeliveryId);
-          if (!prev || request.executedAt < prev) result.set(item.orderDeliveryId, request.executedAt);
-        } else {
-          mappingWideRequests.push({ mappingId: item.orderProductMappingId, executedAt: request.executedAt });
-        }
-      }
-    }
-
-    // 매핑 전체 파기 건은 그 매핑의 발송건 id 를 조회해 펼친다(soft-delete 된 행도 파기 대상이었다).
-    if (mappingWideRequests.length > 0) {
-      const mappingIds = [...new Set(mappingWideRequests.map((r) => r.mappingId))];
-      const deliveries = await this.orderDeliveryRepository.find({
-        where: { orderProductMappingId: In(mappingIds) },
-        select: ['id', 'orderProductMappingId', 'createdAt'],
-        withDeleted: true,
-      });
-      // 매핑에 발송건이 하나라도 존재하는지(고아 판정용)와, 시간축으로 제외됐는지를 **분리**한다.
-      // 둘을 한 플래그로 합치면 "정상적인 시간축 제외"가 "FK 고아"로 오진되어, 존재하지 않는
-      // 데이터 손상을 쫓게 되고 진짜 고아 알림이 그 소음에 묻힌다.
-      const mappingIdsWithDelivery = new Set<number>();
-      const skippedNewerThanExecution: number[] = [];
-      const skippedUnknownCreatedAt: number[] = [];
-
-      for (const { mappingId, executedAt } of mappingWideRequests) {
-        for (const delivery of deliveries) {
-          if (delivery.orderProductMappingId !== mappingId) continue;
-          mappingIdsWithDelivery.add(mappingId);
-
-          // ★ 시간축 필수 — "매핑 전체"는 **실행 시점의** 집합이지 조회 시점의 집합이 아니다.
-          //   조기파기 이후 같은 매핑에 새 발송건이 생길 수 있다(CS 폐기후재발행이 동일
-          //   orderProductMappingId 로 INSERT — customer.service.service.ts:2298). 그 행까지
-          //   "그때 파기됨"으로 도장을 찍으면, 나중에 정기파기로 지워진 뒤 파기확인서에 훨씬
-          //   이른 날짜가 인쇄된다(살아 있던 기간을 통째로 숨기는 허위 증명).
-          if (!delivery.createdAt) {
-            // 생성 시각을 모르면 "실행 시점에 있었는가"를 판정할 수 없다. 포함(과거 도장)과
-            // 제외(미래 예정일) 중 **제외**를 택한다 — 틀렸을 때 미래 날짜는 눈에 띄지만
-            // 과거 날짜는 그럴듯해 보여 허위 증명이 그대로 통과하기 때문이다.
-            skippedUnknownCreatedAt.push(delivery.id);
-            continue;
-          }
-          // ⚠ 정밀도 비대칭 보정 — executed_at 은 datetime(초), created_at 은 datetime(6) 이다.
-          //   파기가 10:00:05.200 에 실행되면 executedAt 은 10:00:05.000 으로 절삭 저장되므로,
-          //   같은 초에 먼저 생성된 행(10:00:05.050)이 '나중'으로 판정돼 정상 건이 제외된다.
-          //   비교 전에 createdAt 도 초 단위로 내려 맞춘다.
-          const createdAtSecond = new Date(delivery.createdAt);
-          createdAtSecond.setMilliseconds(0);
-          if (createdAtSecond > executedAt) {
-            skippedNewerThanExecution.push(delivery.id);
-            continue;
-          }
-
-          const prev = result.get(delivery.id);
-          if (!prev || executedAt < prev) result.set(delivery.id, executedAt);
-        }
-      }
-
-      // (1) 진짜 고아 — "매핑 전체를 파기했다"는 기록이 있는데 그 매핑에 발송건이 0건이다.
-      //     early_destroy_request_item 은 FK 제약이 없어(createForeignKeyConstraints: false)
-      //     dangling id 가 남을 수 있다. 이 경우 그 매핑 전체가 예정일(미래)로 인쇄된다.
-      const orphanMappingIds = mappingIds.filter((id) => !mappingIdsWithDelivery.has(id));
-      if (orphanMappingIds.length > 0) {
-        this.logger.error(
-          `[파기일] 매핑 전체 조기파기 기록이 있으나 그 매핑에 발송건이 0건 — ` +
-            `orderProductMappingIds=[${orphanMappingIds.join(', ')}]. 해당 건은 예정일로 인쇄된다.`,
-        );
-      }
-      // (2) 생성 시각 결측 — 판정 불가라 제외했다. 데이터 결함이므로 error.
-      if (skippedUnknownCreatedAt.length > 0) {
-        this.logger.error(
-          `[파기일] createdAt 이 없어 실행 시점 포함 여부를 판정할 수 없어 제외 — ` +
-            `orderDeliveryIds=[${skippedUnknownCreatedAt.join(', ')}]. 해당 건은 예정일로 인쇄된다.`,
-        );
-      }
-      // (3) 시간축 제외 — 파기 이후 생긴 행이므로 **정상 동작**이다. 예정일이 정답이라 error 가
-      //     아니다. 다만 정밀도/시계 편차로 정상 건이 잘못 걸리는 경우를 추적할 수 있게 남긴다.
-      if (skippedNewerThanExecution.length > 0) {
-        this.logger.log(
-          `[파기일] 조기파기 실행 이후 생성된 발송건 제외(정상) — ` +
-            `orderDeliveryIds=[${skippedNewerThanExecution.join(', ')}]`,
-        );
-      }
-    }
-
-    return result;
-  }
-
-  /**
    * 고객 노출용 발송 목록 필터.
    *
    * '폐기 후 신규 발송'은 자사↔수신자 간 내부 처리(고객사는 알 필요 없음)이므로, 원본을 대체해
@@ -1775,8 +1641,8 @@ export class OrderService {
     //   필터 후에 계산하면 tip 의 늦은 유효기간이 MAX 에서 누락돼 실제보다 이른 날짜를 고지하게
     //   된다(예: 원본 2031-01-02 / tip 2031-06-02 인데 2031-01-02 로 인쇄). tip 을 화면에서
     //   숨기는 것은 노출 정책이고, 파기일 산정에 포함하는 것은 사실 진술이라 축이 다르다.
-    // 조기파기 실적일을 함께 넘긴다 — 이미 지운 건에 예정일(미래)을 고지하지 않기 위해서다.
-    const effectiveDestroyAt = resolveOrderEffectiveDestroyAt(order, await this.loadEarlyDestroyedAtMap([order.id]));
+    // 이미 파기된 건은 order_delivery.destroyed_at 실적을, 그 외는 예정일을 답한다.
+    const effectiveDestroyAt = resolveOrderEffectiveDestroyAt(order);
 
     // '폐기 후 신규 발송' 신규 건 숨김 — 발송완료리포트도 최초 발송 1건만 집계
     this.hideDiscardReissueDeliveries(order.orderProductMappings);
@@ -2205,10 +2071,9 @@ export class OrderService {
     //   통합 보고서는 주문이 N개이므로 집계 규칙을 한 단계 더 얹는다 — 전 주문 파기일의 MAX 이고,
     //   하나라도 특정 불가(null)면 전체가 null 이다. 문서 한 장이 여러 주문을 덮으므로 "이 날이면
     //   전부 지워져 있다"가 성립하려면 가장 늦은 날이어야 한다.
-    const earlyDestroyedAtMap = await this.loadEarlyDestroyedAtMap(orders.map((o) => o.id));
     let multipleEffectiveDestroyAt: Date | null = null;
     for (const order of orders) {
-      const destroyAt = resolveOrderEffectiveDestroyAt(order, earlyDestroyedAtMap);
+      const destroyAt = resolveOrderEffectiveDestroyAt(order);
       if (destroyAt === null) {
         multipleEffectiveDestroyAt = null;
         break;

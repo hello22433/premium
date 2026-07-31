@@ -80,12 +80,18 @@ describe('DeliveryBatchService.deliveryDeliveryTargetDestroy', () => {
       splitLegacyAllowed: jest.fn(async (ids: number[]) => ({ allowed: ids, blocked: [] })),
     };
     const historyQb = makeHistoryQb();
+    // order_delivery 의 createQueryBuilder 는 두 번 쓰인다 —
+    //  1회차: 파기 대상 SELECT, 2회차: destroyedAt 각인 UPDATE.
+    // 호출 순서로 구분해 돌려준다(같은 mock 을 주면 UPDATE 체인이 SELECT mock 에 걸려 터진다).
+    const stampQb = makeHistoryQb(); // update/set/where/andWhere/execute 형태가 동일해 재사용
+    let deliveryQbCall = 0;
     sut.orderDeliveryRepository = {
-      createQueryBuilder: jest.fn(() => selectQb),
+      createQueryBuilder: jest.fn(() => (deliveryQbCall++ === 0 ? selectQb : stampQb)),
       update: jest.fn().mockResolvedValue(undefined),
     };
     sut.orderHistoryRepository = { createQueryBuilder: jest.fn(() => historyQb) };
     sut.__historyQb = historyQb; // 테스트 검사용
+    sut.__stampQb = stampQb; // 테스트 검사용
     return sut;
   };
 
@@ -275,6 +281,40 @@ describe('DeliveryBatchService.deliveryDeliveryTargetDestroy', () => {
     expect(params.piiTypes).not.toContain('폐기');
     expect(params.piiTypes).not.toContain('환불폐기');
     expect(params.piiTypes).not.toContain('핀상태 변경');
+  });
+
+  it('파기 시각(destroyedAt)을 각인한다 — 파기일을 계산이 아니라 기록으로 답하기 위해', async () => {
+    // 이 값이 없으면 화면이 파기일을 `발송요청일 + 파기일수` 로 역산하는데, 파기 규칙이 바뀌면
+    // 옛 규칙으로 지운 행에 새 규칙이 소급돼 미래 날짜가 인쇄된다(재리뷰 H-1).
+    const sut = makeSut(makeSelectQb([{ id: 1 }, { id: 2 }]));
+
+    await sut.deliveryDeliveryTargetDestroy();
+
+    const stamp = sut.__stampQb;
+    expect(stamp.calls.set).toHaveLength(1);
+    expect(stamp.calls.set[0].destroyedAt).toBeInstanceOf(Date);
+    expect(stamp.calls.where[0][0]).toContain('id IN');
+    expect(stamp.calls.where[0][1].ids).toEqual([1, 2]);
+  });
+
+  it('이미 파기 시각이 있는 행은 덮어쓰지 않는다 — 최초 파기일 고정', async () => {
+    // 재수집 조건이 "PII 5종 중 하나라도 미파기"라 부분 파기 행은 다음 회차에 다시 집힌다.
+    // 그때 무조건 덮으면 최초 파기일이 나중 회차 날짜로 밀려 실적이 훼손된다.
+    const sut = makeSut(makeSelectQb([{ id: 1 }]));
+
+    await sut.deliveryDeliveryTargetDestroy();
+
+    const stamp = sut.__stampQb;
+    expect(stamp.calls.andWhere[0][0]).toContain('destroyedAt IS NULL');
+  });
+
+  it('파기 시각 각인은 PII 마스킹과 분리된 UPDATE 다 — 마스킹 payload 에 섞이면 매 회차 덮인다', async () => {
+    const sut = makeSut(makeSelectQb([{ id: 1 }]));
+
+    await sut.deliveryDeliveryTargetDestroy();
+
+    const [, payload] = sut.orderDeliveryRepository.update.mock.calls[0];
+    expect(payload).not.toHaveProperty('destroyedAt');
   });
 
   it('대상이 없으면 update/history 를 호출하지 않는다(멱등)', async () => {
