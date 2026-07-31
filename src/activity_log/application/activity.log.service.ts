@@ -346,7 +346,7 @@ export class ActivityLogService {
    * 발동하지 않고, 그 함수가 IN (:...actionTypes) 로 흘러가 드라이버에서 TypeError → 500 이 된다
    * (toString / __proto__ / valueOf 도 동일). Map 은 자체 키만 보므로 이 경로가 닫힌다.
    */
-  private static readonly REPORT_HISTORY_ACTION_TYPES = new Map<string, string[]>([
+  private static readonly REPORT_HISTORY_ACTION_TYPES = new Map<IReportHistoryType, string[]>([
     ['DELIVERY_COMPLETE_REPORT', ['DELIVERY_COMPLETE_REPORT', 'DELIVERY_COMPLETE_REPORT_EMAIL']],
     ['TRANSACTION_STATEMENT', ['TRANSACTION_STATEMENT', 'TRANSACTION_STATEMENT_EMAIL']],
   ]);
