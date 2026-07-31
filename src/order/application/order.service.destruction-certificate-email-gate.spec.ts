@@ -19,21 +19,40 @@ const makeEmailBody = () =>
     pdfFileName: 'destruction.pdf',
   }) as any;
 
+/**
+ * 파기된 발송건은 **파기 시각 각인까지** 있는 정상 상태로 만든다.
+ * 게이트가 파기일 축을 교차 검증하므로(리뷰 3차 H-1), 각인이 없으면 DESTROY_TIME_UNKNOWN 으로
+ * 막혀 이 스펙의 검증 의도(전량 파기면 메일 발송)가 사라진다.
+ */
 const makeDelivery = (
   deliveryTarget: string,
   deletedAt: Date | null = null,
   overrides: Partial<{ status: IOrderDeliveryStatus; refundStatus: any }> = {},
-) => ({
-  deliveryTarget,
-  deletedAt,
-  status: overrides.status ?? IOrderDeliveryStatus.COMPLETE,
-  refundStatus: overrides.refundStatus ?? null,
-});
+) => {
+  const destroyed = deliveryTarget === '-';
+  return {
+    deliveryTarget,
+    emailReceiverPhone: destroyed ? '-' : null,
+    expireAt: null,
+    destroyedAt: destroyed ? new Date('2026-02-01T09:30:00') : null,
+    destroyedAtSource: destroyed ? 'BATCH' : null,
+    deletedAt,
+    status: overrides.status ?? IOrderDeliveryStatus.COMPLETE,
+    refundStatus: overrides.refundStatus ?? null,
+  };
+};
 
 const makeOrder = (deliveries: ReturnType<typeof makeDelivery>[], status = IOrderStatus.DELIVERY_COMPLETE) => ({
   id: 1,
   status,
-  orderProductMappings: [{ id: 1, orderDeliveries: deliveries }],
+  orderProductMappings: [
+    {
+      id: 1,
+      orderDeliveries: deliveries,
+      sendRequestAt: new Date('2026-01-01T14:00:00'),
+      requestToDestroyPersonalInfoDay: 180,
+    },
+  ],
 });
 
 const setupService = (order: any) => {
