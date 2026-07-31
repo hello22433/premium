@@ -44,7 +44,7 @@ describe('EarlyDestroyService.executeRequest — C-1 order_history type 필터',
     return qb;
   };
 
-  const makeSut = (historyQb: any, deliveryQb: any) => {
+  const makeSut = (historyQb: any, deliveryQb: any, stampTargets?: any[]) => {
     const sut: any = Object.create(EarlyDestroyService.prototype);
     sut.earlyDestroyRequestRepository = {
       findOne: jest.fn().mockResolvedValue({
@@ -60,7 +60,11 @@ describe('EarlyDestroyService.executeRequest — C-1 order_history type 필터',
       findOne: jest.fn().mockResolvedValue({ id: 77, status: IOrderStatus.DELIVERY_COMPLETE }),
     };
     sut.orderDeliveryRepository = {
-      find: jest.fn().mockResolvedValue([]), // 매핑 확장 경로(이 케이스선 미사용)
+      // 매핑 확장 경로(이 케이스선 미사용) + destroyedAt 각인 대상 조회에 함께 쓰인다.
+      // 기본값은 '아직 각인된 적 없는 살아있는 행' — 즉 정상 조기파기 대상.
+      find: jest
+        .fn()
+        .mockResolvedValue(stampTargets ?? [{ id: 101, destroyedAt: null, deliveryTarget: '01011112222' }]),
       count: jest.fn().mockResolvedValue(0), // 환불 진행중 없음
       createQueryBuilder: jest.fn(() => deliveryQb),
     };
@@ -121,6 +125,63 @@ describe('EarlyDestroyService.executeRequest — C-1 order_history type 필터',
         executedBy: 9,
       }),
     );
+  });
+
+  describe('파기 시각(destroyedAt) 각인', () => {
+    it('PII 마스킹과 분리된 별도 UPDATE 로 각인한다', async () => {
+      // ★ payload 에 섞으면 매핑 단위 UPDATE 범위에 들어온 '이미 파기된 형제 행'의 파기일까지
+      //   무조건 덮인다. 그중에는 정기파기 실적이 섞여 있을 수 있어 실적이 위조된다.
+      const deliveryQb = makeQb();
+      const sut = makeSut(makeQb(), deliveryQb);
+
+      await sut.executeRequest(1, user);
+
+      expect(deliveryQb.calls.set[0]).not.toHaveProperty('destroyedAt');
+      // 출처를 함께 적지 않으면 이 날짜가 실측인지 백필 추정인지 영원히 판별할 수 없다.
+      expect(deliveryQb.calls.set[1]).toEqual({ destroyedAt: expect.any(Date), destroyedAtSource: 'EARLY' });
+      expect(deliveryQb.calls.where[1][1].ids).toEqual([101]);
+    });
+
+    it('요청서 executedAt 과 발송건 destroyedAt 은 동일한 시각이다 (감사 대조)', async () => {
+      // 각자 new Date() 를 부르면 두 기록이 밀리초 단위로 어긋나 대조가 불가능해진다.
+      // toBe = 동일 인스턴스. toEqual 로 느슨하게 두면 이 불변식이 깨져도 통과한다.
+      const deliveryQb = makeQb();
+      const sut = makeSut(makeQb(), deliveryQb);
+
+      await sut.executeRequest(1, user);
+
+      const [, requestPayload] = sut.earlyDestroyRequestRepository.update.mock.calls[0];
+      expect(requestPayload.executedAt).toBe(deliveryQb.calls.set[1].destroyedAt);
+    });
+
+    it('이미 파기된 형제 행은 최초 파기일을 유지한다 — 정기파기 실적 위조 방지', async () => {
+      // 매핑/주문 단위 요청은 미파기 발송건이 하나라도 있으면 통과하므로, 이미 파기된 형제가
+      // UPDATE 범위에 들어온다. 유효기간 가드가 같은 주문 안에서 파기 시점을 갈라놓기 때문에
+      // 드문 조합이 아니다.
+      const deliveryQb = makeQb();
+      const sut = makeSut(makeQb(), deliveryQb, [
+        { id: 101, destroyedAt: null, deliveryTarget: '01011112222' }, // 미파기 → 각인
+        { id: 102, destroyedAt: new Date('2026-01-31T00:00:00'), deliveryTarget: '-' }, // 이미 파기 → 유지
+      ]);
+
+      await sut.executeRequest(1, user);
+
+      expect(deliveryQb.calls.where[1][1].ids).toEqual([101]);
+      expect(deliveryQb.calls.where[1][1].ids).not.toContain(102);
+    });
+
+    it('파기 후 수신처가 재입력된 행은 새 시각으로 갱신한다 (CS 수신정보 변경 경로)', async () => {
+      // destroyedAt 은 있는데 수신처가 살아있는 조합. 옛 날짜를 유지하면 재입력~재파기 사이에
+      // PII 가 실제로 살아 있던 기간을 숨기는 거짓 증명이 된다.
+      const deliveryQb = makeQb();
+      const sut = makeSut(makeQb(), deliveryQb, [
+        { id: 101, destroyedAt: new Date('2026-01-31T00:00:00'), deliveryTarget: '01011112222' },
+      ]);
+
+      await sut.executeRequest(1, user);
+
+      expect(deliveryQb.calls.where[1][1].ids).toEqual([101]);
+    });
   });
 
   it('실행 시점 주문이 DELIVERY_COMPLETE 가 아니면 거부한다 (M-2 하드닝)', async () => {

@@ -8,4 +8,5 @@ export enum DestructionCertificateBlockReason {
   DELIVERY_NOT_COMPLETE = 'DELIVERY_NOT_COMPLETE', // 발송이 완료되지 않음
   NOT_DESTROYED = 'NOT_DESTROYED', // 개인정보 파기가 아직 진행되지 않음
   REFUND_IN_PROGRESS = 'REFUND_IN_PROGRESS', // 환불 진행 중인 발송건이 포함됨
+  DESTROY_TIME_UNKNOWN = 'DESTROY_TIME_UNKNOWN', // 파기는 됐으나 파기 시각을 특정할 수 없음
 }

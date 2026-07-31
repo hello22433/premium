@@ -1997,6 +1997,21 @@ export class CustomerServiceService {
         return;
       }
       case CS_HISTORY_TYPE.RECEIVER_CHANGE: {
+        // ⚠️ 여기에는 **"이미 파기된 발송건인가" 검사가 의도적으로 없다.**
+        //
+        // 개인정보 파기(정기/조기) 후에도 고객 문의는 들어온다. 파기됐다는 이유로 수신처 변경을
+        // 막으면 사후 CS 대응 자체가 불가능해지므로, 파기 이후에도 수신처를 다시 채워 넣는 것을
+        // **운영상 허용**한다. 재발송(execResend)에는 파기 가드가 있지만 이 경로에는 두지 않는
+        // 비대칭도 같은 이유다.
+        //
+        // 대신 그 결정이 파기일 표시에 파급된다는 점을 알고 있어야 한다 — 이 경로를 타면
+        // order_delivery 에 `destroyed_at`(과거에 지운 기록)은 남아 있는데 deliveryTarget 은
+        // 다시 살아난 상태가 된다. 즉 "언제 지웠나"와 "지금 지워져 있나"가 갈린다. 그래서:
+        //  · 파기일 계산(order/domain/effective.destroy.date.ts)은 destroyed_at 보다
+        //    deliveryTarget 을 **먼저** 본다. 안 그러면 살아있는 수신처 옆에 과거 파기일이 인쇄된다.
+        //  · 정기파기 배치는 이 행을 다시 집을 때 destroyed_at 을 **새 시각으로 갱신**한다.
+        //    옛 날짜를 유지하면 재입력~재파기 사이에 PII 가 살아 있었던 기간을 숨기게 된다.
+        // 이 경로의 가드를 나중에 추가하기로 정책이 바뀌면 위 두 곳도 함께 재검토할 것.
         const orderDelivery = map.orderDelivery as OrderDeliveryEntity;
         const newTarget = map.afterChange;
         let encryptedNewTarget: string;
