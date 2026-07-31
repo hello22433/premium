@@ -115,6 +115,9 @@ describe('DeliveryBatchService.deliveryDeliveryTargetDestroy 유효기간 가드
     deliveryRepository = dataSource.getRepository(OrderDeliveryEntity);
 
     service = Object.create(DeliveryBatchService.prototype);
+    // Object.create 는 생성자를 우회하므로 필드 초기화자(logger)가 실행되지 않는다.
+    // 배치가 처리 건수를 로그로 남기게 되면서 필요해졌다(없으면 전 케이스가 TypeError).
+    service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
     // §9 컷오버 게이트 — legacy 경로 그대로 통과시킨다(파기 배치는 게이트를 타지 않지만 형식 통일).
     service.cutoverGuard = {
       assertLegacyAllowed: jest.fn().mockResolvedValue(undefined),
@@ -296,6 +299,18 @@ describe('DeliveryBatchService.deliveryDeliveryTargetDestroy 유효기간 가드
     return row?.deliveryTarget ?? null;
   };
 
+  /** 각인 검증용 — 파기 시각/출처를 함께 읽는다. */
+  const readStamp = async (id: number): Promise<{ at: Date | null; source: string | null }> => {
+    const row = await deliveryRepository.findOne({ where: { id }, withDeleted: true });
+    return { at: row?.destroyedAt ?? null, source: row?.destroyedAtSource ?? null };
+  };
+
+  const isToday = (d: Date | null): boolean => {
+    if (!d) return false;
+    const t = new Date();
+    return d.getFullYear() === t.getFullYear() && d.getMonth() === t.getMonth() && d.getDate() === t.getDate();
+  };
+
   it('유효기간이 남으면 상태 불문 보류하고, 만료·미발행·soft-delete 는 종전대로 파기한다', async () => {
     // positive control — 반드시 파기되어야 하는 행. 이게 파기되지 않으면 픽스처가 주 날짜 절을
     // 통과하지 못한 것이므로, 아래 '보류' 단언들은 전부 의미가 없다(테스트 자체가 거짓 초록).
@@ -373,5 +388,93 @@ describe('DeliveryBatchService.deliveryDeliveryTargetDestroy 유효기간 가드
     await service.deliveryDeliveryTargetDestroy();
 
     expect(await readTarget(tipId)).toBe(DESTROY_VALUE);
+  });
+
+  /**
+   * 파기 시각 각인 — 유닛 spec 으로는 원리적으로 검증할 수 없는 축이다.
+   *
+   * 유닛은 mock QueryBuilder 에 넘어간 문자열만 본다. 그런데 각인 UPDATE 는 별칭 없는
+   * UpdateQueryBuilder + SnakeNamingStrategy 조합이라 `destroyedAt` → `destroyed_at` 번역이
+   * 실제로 일어나는지, soft-delete 행이 UPDATE 에서 누락되지 않는지가 실DB 에서만 드러난다.
+   * (누락되면 `deliveryTarget='-' + destroyedAt NULL` 조합이 정상 경로에서 양산되고,
+   *  그 행들은 파기일을 null 로 응답한다.)
+   */
+  describe('파기 시각(destroyedAt) 각인', () => {
+    it('파기와 동시에 파기 시각과 출처가 각인된다', async () => {
+      const id = await seedDelivery({ label: 'stamp-basic', expireAt: dayAt(-1) });
+
+      await service.deliveryDeliveryTargetDestroy();
+
+      const stamp = await readStamp(id);
+      expect(await readTarget(id)).toBe(DESTROY_VALUE);
+      // ★ non-null 만 보면 new Date(0) 같은 회귀가 통과한다(변이 테스트에서 실제로 생존했다).
+      expect(isToday(stamp.at)).toBe(true);
+      expect(stamp.source).toBe('BATCH');
+    });
+
+    it('보류된 행에는 파기 시각이 찍히지 않는다', async () => {
+      // 마이그레이션 §4-2("미파기인데 시각있음 반드시 0")의 런타임 대응물.
+      const id = await seedDelivery({ label: 'stamp-hold', expireAt: dayAt(30) });
+
+      await service.deliveryDeliveryTargetDestroy();
+
+      expect(await readTarget(id)).toBe(ORIGINAL_TARGET);
+      const stamp = await readStamp(id);
+      expect(stamp.at).toBeNull();
+      expect(stamp.source).toBeNull();
+    });
+
+    it('soft-delete 된 행도 각인된다 — UpdateQueryBuilder 는 soft-delete 필터를 붙이지 않는다', async () => {
+      // select 는 withDeleted() 로 집어오는데 UPDATE 가 그 행을 놓치면 집합이 어긋난다.
+      const id = await seedDelivery({ label: 'stamp-soft', expireAt: dayAt(30), softDeleted: true });
+
+      await service.deliveryDeliveryTargetDestroy();
+
+      expect(await readTarget(id)).toBe(DESTROY_VALUE);
+      const stamp = await readStamp(id);
+      expect(isToday(stamp.at)).toBe(true);
+      expect(stamp.source).toBe('BATCH');
+    });
+
+    it('★ 부분 파기 행이 다시 집혀도 최초 파기일이 유지된다', async () => {
+      // 재수집 조건은 "PII 5종 중 하나라도 미파기"다. 이전 회차에 일부만 '-' 가 된 행은 다시
+      // 집히는데, 그때 덮으면 최초 파기일이 나중 회차로 밀려 실적이 훼손된다.
+      const id = await seedDelivery({ label: 'stamp-partial', expireAt: dayAt(-1) });
+      await service.deliveryDeliveryTargetDestroy();
+      const first = await readStamp(id);
+      expect(first.at).not.toBeNull();
+
+      // 부분 파기 상태를 만든다 — deliveryTarget 은 '-' 그대로 두고 계좌만 되살린다.
+      await deliveryRepository.update(id, { bankAccount: '1234567890' });
+      // 최초 각인을 과거로 돌려 '유지되었는지'를 눈에 보이게 만든다.
+      const past = new Date('2020-01-02T03:04:05');
+      await deliveryRepository.update(id, { destroyedAt: past });
+
+      await service.deliveryDeliveryTargetDestroy();
+
+      const second = await readStamp(id);
+      expect(second.at?.getFullYear()).toBe(2020); // 최초일 유지 — 오늘로 갱신되지 않았다
+    });
+
+    it('★ 파기 후 수신처가 재입력된 행은 새 시각으로 갱신된다 (CS 수신정보 변경 경로)', async () => {
+      // 사후 CS 대응을 위해 파기된 행의 수신처를 다시 채우는 경로가 의도적으로 열려 있다.
+      // 그 행의 PII 는 재입력~재파기 사이에 실제로 살아 있었으므로 옛 날짜를 유지하면 그 기간을
+      // 숨기는 거짓 증명이 된다.
+      const id = await seedDelivery({ label: 'stamp-revived', expireAt: dayAt(-1) });
+      await service.deliveryDeliveryTargetDestroy();
+
+      // 수신처 재입력 + 최초 각인을 과거로
+      await deliveryRepository.update(id, {
+        deliveryTarget: ORIGINAL_TARGET,
+        destroyedAt: new Date('2020-01-02T03:04:05'),
+      });
+
+      await service.deliveryDeliveryTargetDestroy();
+
+      expect(await readTarget(id)).toBe(DESTROY_VALUE);
+      const stamp = await readStamp(id);
+      expect(isToday(stamp.at)).toBe(true); // 갱신됨
+      expect(stamp.source).toBe('BATCH');
+    });
   });
 });
