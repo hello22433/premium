@@ -5846,6 +5846,20 @@ export class OrderService {
       throw new BadRequestException('해당 주문이 존재하지 않습니다.');
     }
 
+    // 발행 카운트용 컬럼명을 메일 발송 '전에' 해석한다.
+    // 엔티티 프로퍼티가 리네임되면 여기서 undefined 가 되는데(ReportCounterColumns 는 문자열
+    // 리터럴이라 컴파일이 못 잡는다), 발송 뒤에 터뜨리면 "메일은 나갔는데 500" → 운영자 재시도
+    // → 고객사 중복 수신이 된다. 발송 전에 확인하면 설정 오류는 fail-fast 로 드러나고
+    // 비가역 행위는 아직 일어나지 않은 상태다.
+    const countDbColumn = logMeta.counter
+      ? this.orderRepository.metadata.findColumnWithPropertyName(logMeta.counter.countColumn)?.databaseName
+      : undefined;
+    if (logMeta.counter && !countDbColumn) {
+      throw new InternalServerErrorException(
+        `[REPORT] 발행 카운트 컬럼을 해석하지 못했습니다: ${logMeta.counter.countColumn}. 엔티티 정의를 확인하세요.`,
+      );
+    }
+
     // 이메일 주소 파싱 (첫번째: to, 나머지: cc)
     const emails = to
       .split(',')
@@ -5920,10 +5934,8 @@ export class OrderService {
     // → 발송 결과를 진실대로 성공으로 응답하고, 집계 실패는 로그로 남겨 추적한다.
     if (logMeta.counter) {
       const { countColumn, sourceColumn } = logMeta.counter;
-      // 컬럼명 해석은 try 밖에 둔다. 엔티티 프로퍼티가 리네임되면 여기서 undefined 가 되는데,
-      // catch 안에 있으면 TypeError 가 로그 한 줄로 삼켜지고 200 이 나가 전 주문의 카운트가
-      // 영구히 0 으로 남는다(무증상). 설정 오류는 흡수 대상이 아니므로 그대로 터뜨린다.
-      const countDbColumn = this.orderRepository.metadata.findColumnWithPropertyName(countColumn)!.databaseName;
+      // countDbColumn 은 발송 전에 이미 확정·검증했다(위 참조). 여기 try 는 순수하게
+      // "메일은 나갔는데 DB 쓰기가 실패한" 일시적 장애만 흡수한다.
       try {
         await this.orderRepository
           .createQueryBuilder()

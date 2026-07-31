@@ -84,6 +84,10 @@ describe('발행 이력 조회 — reportType 검증', () => {
     expect(validateReportType(type)).toHaveLength(0);
   });
 
+  it('실제로 기록되는 DESTRUCTION_CERTIFICATE(PDF) 도 허용한다 (기존 조회 200 유지)', () => {
+    expect(validateReportType('DESTRUCTION_CERTIFICATE')).toHaveLength(0);
+  });
+
   it.each(['TRANSACTION_STATMENT', 'DELIVERY_COMPLETE', 'delivery_complete_report', 'ORDER_DELETE'])(
     "목록 밖 값 '%s' 를 거부한다 (조용한 빈 결과 폴백 차단)",
     (type) => {

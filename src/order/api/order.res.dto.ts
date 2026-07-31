@@ -465,10 +465,13 @@ export class OrderReportHistoryItemDto {
   createdAt: string;
 
   @ApiProperty({
+    // enum 을 명시하지 않는다 — OAS 3.0 에서 nullable:true 는 enum 목록에 null 이 들어 있을 때만
+    // null 을 유효값으로 만든다. 레거시 행은 실제로 source: null 을 반환하므로, enum 을 붙이면
+    // 생성 클라이언트(엄격 역직렬화)가 기존 응답에서 예외를 던진다.
     description:
-      '발행 소스 (DOCUMENT: 문서함 다운로드, DIRECT: 직접발행, EMAIL: 메일전송, null: 레거시 행). ' +
-      'EMAIL 은 actionType 이 *_EMAIL 인 행에 서버가 채워 준다(요청 파라미터에는 없다).',
-    enum: [IReportSource.DOCUMENT, IReportSource.DIRECT, IReportSource.EMAIL],
+      `발행 소스 (${IReportSource.DOCUMENT}: 문서함 다운로드, ${IReportSource.DIRECT}: 직접발행, ` +
+      `${IReportSource.EMAIL}: 메일전송, null: 레거시 행). ` +
+      `${IReportSource.EMAIL} 은 actionType 이 *_EMAIL 인 행에 서버가 채워 준다(요청 파라미터에는 없다).`,
     nullable: true,
   })
   source: string | null;

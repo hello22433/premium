@@ -41,6 +41,10 @@ export const CLIENT_SETTABLE_REPORT_SOURCES = {
 export const REPORT_HISTORY_TYPES = [
   'DELIVERY_COMPLETE_REPORT',
   'TRANSACTION_STATEMENT',
+  // 파기확약서는 카운트 컬럼이 없어 발행 집계 대상이 아니지만, PDF 발행 자체는
+  // actionType='DESTRUCTION_CERTIFICATE' 로 기록된다(destructionCertificatePdf).
+  // 목록에서 빼면 기존에 조회되던 이력이 400 이 되므로 반드시 포함한다.
+  'DESTRUCTION_CERTIFICATE',
   'DELIVERY_COMPLETE_REPORT_EMAIL',
   'TRANSACTION_STATEMENT_EMAIL',
   'DESTRUCTION_CERTIFICATE_EMAIL',

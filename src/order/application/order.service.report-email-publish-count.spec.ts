@@ -35,9 +35,16 @@ type SetupOptions = {
   sendSuccess?: boolean;
   order?: unknown;
   counterUpdateFails?: boolean;
+  /** 엔티티 프로퍼티 리네임 등으로 컬럼명 해석이 실패하는 상황 */
+  unknownColumn?: boolean;
 };
 
-const setupService = ({ sendSuccess = true, order = { id: 6142 }, counterUpdateFails = false }: SetupOptions = {}) => {
+const setupService = ({
+  sendSuccess = true,
+  order = { id: 6142 },
+  counterUpdateFails = false,
+  unknownColumn = false,
+}: SetupOptions = {}) => {
   const service = Object.create(OrderService.prototype) as any;
   const callOrder: string[] = [];
   const loggedErrors: string[] = [];
@@ -80,9 +87,11 @@ const setupService = ({ sendSuccess = true, order = { id: 6142 }, counterUpdateF
     findOne: jest.fn().mockResolvedValue(order),
     createQueryBuilder: jest.fn(() => makeUpdateQb()),
     metadata: {
-      findColumnWithPropertyName: jest.fn((prop: string) => ({
-        databaseName: prop.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`),
-      })),
+      // 실제 SnakeNamingStrategy 와 같은 형태를 흉내낸다. unknownColumn 이면 TypeORM 이
+      // 미등록 프로퍼티에 대해 하는 것과 동일하게 undefined 를 돌려준다.
+      findColumnWithPropertyName: jest.fn((prop: string) =>
+        unknownColumn ? undefined : { databaseName: prop.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`) },
+      ),
     },
     increment: jest.fn(),
     update: jest.fn(),
@@ -288,6 +297,56 @@ describe('메일 발송 성공 후 카운터 갱신이 실패하면 (best-effort
     await expect(service.sendDeliveryCompleteReportEmail(makeEmailBody(), BASE_USER, IP)).rejects.toBeInstanceOf(
       InternalServerErrorException,
     );
+  });
+});
+
+describe('발행 카운트 컬럼을 해석하지 못하면 (설정 오류)', () => {
+  // 엔티티 프로퍼티를 리네임하면 ReportCounterColumns 의 문자열 리터럴과 어긋나는데
+  // 컴파일이 못 잡는다. 이 실패를 메일 발송 '뒤'에 터뜨리면 "메일은 나갔는데 500" →
+  // 운영자 재시도 → 고객사 중복 수신이 된다. 발송 전에 fail-fast 해야 한다.
+  it('메일을 보내기 전에 실패한다 (중복 발송 원천 차단)', async () => {
+    const { service } = setupService({ unknownColumn: true });
+
+    await expect(service.sendDeliveryCompleteReportEmail(makeEmailBody(), BASE_USER, IP)).rejects.toBeInstanceOf(
+      InternalServerErrorException,
+    );
+
+    expect(service.mailSendSmtp.send).not.toHaveBeenCalled();
+  });
+
+  it('activity_log 도 남기지 않는다 (아무 일도 일어나지 않은 상태)', async () => {
+    const { service } = setupService({ unknownColumn: true });
+
+    await expect(service.sendDeliveryCompleteReportEmail(makeEmailBody(), BASE_USER, IP)).rejects.toThrow();
+
+    expect(service.activityLogService.createLog).not.toHaveBeenCalled();
+    expect(service.updateCalls).toHaveLength(0);
+  });
+
+  it('어느 컬럼이 문제인지 메시지에 담는다', async () => {
+    const { service } = setupService({ unknownColumn: true });
+
+    await expect(service.sendDeliveryCompleteReportEmail(makeEmailBody(), BASE_USER, IP)).rejects.toThrow(
+      /deliveryCompleteReportCount/,
+    );
+  });
+
+  it('카운터를 쓰지 않는 파기증명서 경로는 영향받지 않는다', async () => {
+    const { service } = setupService({
+      unknownColumn: true,
+      order: {
+        id: 6142,
+        status: 'DELIVERY_COMPLETE',
+        orderProductMappings: [
+          { id: 1, orderDeliveries: [{ deliveryTarget: '-', deletedAt: null, status: 'COMPLETE' }] },
+        ],
+      },
+    });
+
+    const result = await service.sendDestructionCertificateReportEmail(makeEmailBody(), BASE_USER, IP);
+
+    expect(result.success).toBe(true);
+    expect(service.mailSendSmtp.send).toHaveBeenCalledTimes(1);
   });
 });
 
