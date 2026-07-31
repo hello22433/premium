@@ -2072,6 +2072,8 @@ export class CustomerServiceService {
 
         const isSsg = orderDelivery.orderProductMapping.order.type === IOrderType.SSG;
         // D3-70: 재발행은 원주문 가격을 보존한다 — 주문시점 박제값(snapshotProductPrice) 우선.
+        //  ※ 정책 근거: **실무팀 확인 완료** — "재발행 시에는 원래(주문시점) 값을 쓴다".
+        //    개발 임의 판단이 아니라 업무 규칙이므로, 현재가 기준으로 되돌리지 말 것.
         //  - 과거엔 live product.price(가변)로 SSG 행사잔액을 재차감해, 주문 후 상품가가 바뀌면
         //    같은 쿠폰의 재발행이 원주문과 다른 금액을 차감했다(원 차감액 = 주문시점 단가).
         //  - 재발행은 delivery(라인) 단위라 order.sendAmount(주문 합계, 다회선이면 라인단가와 다름)가
