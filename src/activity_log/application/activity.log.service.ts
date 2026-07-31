@@ -10,6 +10,7 @@ import { GetActivityLogListResDto, GetActionTypesResDto, ActivityLogViewDto } fr
 import { format, subMonths } from 'date-fns';
 import { DateFormatStr } from '../../common/domain/date.format.str';
 import { MaskingUtil } from '../../common/utils/masking.util';
+import { IReportSource } from '../../order/interface/report.source';
 import {
   ACTIVITY_LOG_RETENTION_MONTHS,
   ACTIVITY_LOG_PURGE_EXCLUDED_ACTION_TYPES,
@@ -332,9 +333,23 @@ export class ActivityLogService {
   }
 
   /**
+   * 리포트 기본 타입으로 조회할 때 함께 반환할 actionType 목록.
+   *
+   * 이메일 전송도 발행으로 집계하므로(order.*ReportCount 증가), 정산 목록의 "발행" 버튼이
+   * 이메일로만 발행한 건에도 뜬다. 그때 기본 타입만 조회하면 이력이 비어 있는 모달이 열린다
+   * — 발행됐다고 표시해 놓고 근거를 못 보여주는 상태. 기본 타입 조회에 *_EMAIL 을 합쳐 해소한다.
+   *
+   * *_EMAIL 을 직접 지정한 조회(인쇄 화면들)는 그대로 이메일 이력만 받는다.
+   */
+  private static readonly REPORT_HISTORY_ACTION_TYPES: Record<string, string[]> = {
+    DELIVERY_COMPLETE_REPORT: ['DELIVERY_COMPLETE_REPORT', 'DELIVERY_COMPLETE_REPORT_EMAIL'],
+    TRANSACTION_STATEMENT: ['TRANSACTION_STATEMENT', 'TRANSACTION_STATEMENT_EMAIL'],
+  };
+
+  /**
    * 주문별 발행 이력 조회 (발송완료리포트/거래명세서/이메일발송)
    * @param orderId 주문 ID
-   * @param reportType 리포트 타입
+   * @param reportType 리포트 타입. 기본 타입이면 대응 *_EMAIL 이력도 함께 반환한다.
    */
   async getOrderReportHistory(
     orderId: number,
@@ -345,10 +360,12 @@ export class ActivityLogService {
       | 'TRANSACTION_STATEMENT_EMAIL'
       | 'DESTRUCTION_CERTIFICATE_EMAIL',
   ): Promise<{ userEmail: string; createdAt: string; source: string | null; to: string | null; cc: string | null }[]> {
+    const actionTypes = ActivityLogService.REPORT_HISTORY_ACTION_TYPES[reportType] ?? [reportType];
+
     const logs = await this.activityLogRepository
       .createQueryBuilder('activityLog')
       .where('activityLog.deletedAt IS NULL')
-      .andWhere('activityLog.actionType = :actionType', { actionType: reportType })
+      .andWhere('activityLog.actionType IN (:...actionTypes)', { actionTypes })
       .andWhere("JSON_EXTRACT(activityLog.requestParams, '$.orderId') = :orderId", { orderId })
       .orderBy('activityLog.createdAt', 'DESC')
       .getMany();
@@ -356,7 +373,9 @@ export class ActivityLogService {
     return logs.map((log) => ({
       userEmail: log.userEmail,
       createdAt: format(log.createdAt, DateFormatStr),
-      source: log.requestParams?.source || null,
+      // 이메일 경로는 requestParams 에 source 가 없다(to/cc 만 있다). 그 행이 어느 경로였는지
+      // 프론트가 구분할 수 있도록 EMAIL 로 채워 준다. PDF 경로는 저장된 source 를 그대로 쓴다.
+      source: log.requestParams?.source || (log.actionType.endsWith('_EMAIL') ? IReportSource.EMAIL : null),
       to: log.requestParams?.to || null,
       cc: log.requestParams?.cc || null,
     }));
