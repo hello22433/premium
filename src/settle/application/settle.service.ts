@@ -27,6 +27,7 @@ import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { OrderEntity } from '../../entity/order.entity';
 import { readBillingView, readLineProductView, readOperationPersonName } from '../../order/util/order.snapshot.builder';
 import { IOrderDateType } from '../../order/interface/order.date.type';
+import { IReportSource } from '../../order/interface/report.source';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Brackets, In, IsNull, Not, Repository, SelectQueryBuilder } from 'typeorm';
 import {
@@ -2845,13 +2846,17 @@ export class SettleService {
   /**
    * 리포트 발행 상태 문자열 생성
    * count=0이면 '-', 1이면 '발행 완료'/'다운로드 완료', 2이상이면 '발행(재)'/'다운로드(재)'
+   *
+   * DIRECT(상세화면 직접발행)와 EMAIL(고객사 메일 전송)은 둘 다 '발행'으로 본다(실무 확인 규칙).
+   * 어느 경로였는지는 GET /order/:orderId/report-history 로 구분한다.
+   * 그 외(DOCUMENT / 레거시 null)는 '다운로드'.
    */
   private formatReportStatus(count: number, lastSource: string | null): string {
     if (count === 0) {
       return '-';
     }
     const isReissue = count > 1;
-    if (lastSource === 'DIRECT') {
+    if (lastSource === IReportSource.DIRECT || lastSource === IReportSource.EMAIL) {
       return isReissue ? '발행(재)' : '발행 완료';
     }
     return isReissue ? '다운로드(재)' : '다운로드 완료';
