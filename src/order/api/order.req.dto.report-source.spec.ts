@@ -1,7 +1,11 @@
 import { plainToInstance } from 'class-transformer';
 import { validateSync } from 'class-validator';
-import { OrderGetDeliveryCompleteReportPdfReqDto, OrderGetOrderCompleteReportPdfReqDto } from './order.req.dto';
-import { IReportSource } from '../interface/report.source';
+import {
+  OrderGetDeliveryCompleteReportPdfReqDto,
+  OrderGetOrderCompleteReportPdfReqDto,
+  OrderGetReportHistoryReqQueryDto,
+} from './order.req.dto';
+import { IReportSource, REPORT_HISTORY_TYPES } from '../interface/report.source';
 
 /**
  * PDF 발행 API 의 source 파라미터 검증.
@@ -60,5 +64,42 @@ describe.each([
 
   it('null 을 허용한다', () => {
     expect(validateSource(Dto, null).errors).toHaveLength(0);
+  });
+});
+
+/**
+ * 발행 이력 조회의 reportType 검증.
+ *
+ * 미검증 문자열은 조회 서비스의 actionType 매핑을 인덱싱한다. 목록 밖 값이 들어오면
+ * 200 + 빈 결과로 조용히 폴백해, 실제로 발행된 주문에 "이력 없음"이 뜬다.
+ * 프론트 오타가 배포 후에도 드러나지 않으므로 400 으로 즉시 실패시킨다.
+ */
+const validateReportType = (reportType: unknown) => {
+  const dto = plainToInstance(OrderGetReportHistoryReqQueryDto, { reportType });
+  return validateSync(dto as object).filter((e) => e.property === 'reportType');
+};
+
+describe('발행 이력 조회 — reportType 검증', () => {
+  it.each(REPORT_HISTORY_TYPES)('허용 목록의 %s 를 통과시킨다', (type) => {
+    expect(validateReportType(type)).toHaveLength(0);
+  });
+
+  it.each(['TRANSACTION_STATMENT', 'DELIVERY_COMPLETE', 'delivery_complete_report', 'ORDER_DELETE'])(
+    "목록 밖 값 '%s' 를 거부한다 (조용한 빈 결과 폴백 차단)",
+    (type) => {
+      expect(validateReportType(type).length).toBeGreaterThan(0);
+    },
+  );
+
+  it.each(['constructor', 'toString', '__proto__', 'valueOf'])("프로토타입 멤버 '%s' 를 거부한다", (type) => {
+    expect(validateReportType(type).length).toBeGreaterThan(0);
+  });
+
+  it('미전송을 거부한다 (필수 파라미터)', () => {
+    expect(validateReportType(undefined).length).toBeGreaterThan(0);
+  });
+
+  it('빈 문자열을 거부한다', () => {
+    expect(validateReportType('').length).toBeGreaterThan(0);
   });
 });

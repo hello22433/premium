@@ -10,7 +10,7 @@ import { GetActivityLogListResDto, GetActionTypesResDto, ActivityLogViewDto } fr
 import { format, subMonths } from 'date-fns';
 import { DateFormatStr } from '../../common/domain/date.format.str';
 import { MaskingUtil } from '../../common/utils/masking.util';
-import { IReportSource } from '../../order/interface/report.source';
+import { IReportHistoryType, IReportSource } from '../../order/interface/report.source';
 import {
   ACTIVITY_LOG_RETENTION_MONTHS,
   ACTIVITY_LOG_PURGE_EXCLUDED_ACTION_TYPES,
@@ -358,12 +358,7 @@ export class ActivityLogService {
    */
   async getOrderReportHistory(
     orderId: number,
-    reportType:
-      | 'DELIVERY_COMPLETE_REPORT'
-      | 'TRANSACTION_STATEMENT'
-      | 'DELIVERY_COMPLETE_REPORT_EMAIL'
-      | 'TRANSACTION_STATEMENT_EMAIL'
-      | 'DESTRUCTION_CERTIFICATE_EMAIL',
+    reportType: IReportHistoryType,
   ): Promise<{ userEmail: string; createdAt: string; source: string | null; to: string | null; cc: string | null }[]> {
     const actionTypes = ActivityLogService.REPORT_HISTORY_ACTION_TYPES.get(reportType) ?? [reportType];
 

@@ -28,3 +28,22 @@ export const CLIENT_SETTABLE_REPORT_SOURCES = {
   DOCUMENT: IReportSource.DOCUMENT,
   DIRECT: IReportSource.DIRECT,
 } as const;
+
+/**
+ * 발행 이력 조회(GET /order/:orderId/report-history)가 받는 리포트 타입.
+ *
+ * activity_log.action_type 값과 1:1 이며, 기본 타입 2종은 조회 시 대응 *_EMAIL 이력까지
+ * 함께 반환된다(activity.log.service.REPORT_HISTORY_ACTION_TYPES).
+ *
+ * DTO 검증과 서비스 매핑이 이 목록을 공유해야 한다 — 따로 두면 한쪽만 늘어났을 때
+ * 컴파일은 통과하고 조회만 조용히 빈 결과를 내는 상태가 된다.
+ */
+export const REPORT_HISTORY_TYPES = [
+  'DELIVERY_COMPLETE_REPORT',
+  'TRANSACTION_STATEMENT',
+  'DELIVERY_COMPLETE_REPORT_EMAIL',
+  'TRANSACTION_STATEMENT_EMAIL',
+  'DESTRUCTION_CERTIFICATE_EMAIL',
+] as const;
+
+export type IReportHistoryType = (typeof REPORT_HISTORY_TYPES)[number];

@@ -25,7 +25,12 @@ import { Transform, Type } from 'class-transformer';
 import { OrderSettleCreateDto } from './dto/order.settle.create.dto';
 import { IOrderSendMethod } from '../interface/order.send.method';
 import { IOrderSendingType } from '../interface/order.sending.type';
-import { CLIENT_SETTABLE_REPORT_SOURCES, IReportSource } from '../interface/report.source';
+import {
+  CLIENT_SETTABLE_REPORT_SOURCES,
+  IReportHistoryType,
+  IReportSource,
+  REPORT_HISTORY_TYPES,
+} from '../interface/report.source';
 import { IOrderDateType } from '../interface/order.date.type';
 import { CompanyType } from '../../common/domain/company.type';
 
@@ -700,23 +705,15 @@ export class OrderGetReportHistoryReqQueryDto {
   @ApiProperty({
     description:
       '리포트 타입 ex) DELIVERY_COMPLETE_REPORT: 발송완료리포트, TRANSACTION_STATEMENT: 거래명세서, DELIVERY_COMPLETE_REPORT_EMAIL: 발송완료리포트 이메일 발송, TRANSACTION_STATEMENT_EMAIL: 거래명세서 이메일 발송, DESTRUCTION_CERTIFICATE_EMAIL: 파기확약서 이메일 발송',
-    enum: [
-      'DELIVERY_COMPLETE_REPORT',
-      'TRANSACTION_STATEMENT',
-      'DELIVERY_COMPLETE_REPORT_EMAIL',
-      'TRANSACTION_STATEMENT_EMAIL',
-      'DESTRUCTION_CERTIFICATE_EMAIL',
-    ],
+    enum: REPORT_HISTORY_TYPES,
   })
   // ===================================
   @IsNotEmpty()
-  @IsString()
-  reportType:
-    | 'DELIVERY_COMPLETE_REPORT'
-    | 'TRANSACTION_STATEMENT'
-    | 'DELIVERY_COMPLETE_REPORT_EMAIL'
-    | 'TRANSACTION_STATEMENT_EMAIL'
-    | 'DESTRUCTION_CERTIFICATE_EMAIL';
+  // 미검증 문자열은 조회 서비스의 actionType 매핑을 인덱싱한다. 목록 밖 값이 들어오면
+  // 200 + 빈 결과로 조용히 폴백해, 실제로 발행된 주문에 "이력 없음"이 뜬다 —
+  // 프론트 오타를 배포 후에도 아무도 모른다. 400 으로 즉시 드러낸다.
+  @IsIn(REPORT_HISTORY_TYPES as readonly string[])
+  reportType: IReportHistoryType;
 }
 
 export class OrderGetReportHistoryReqParamDto {
