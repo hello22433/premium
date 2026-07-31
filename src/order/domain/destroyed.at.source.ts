@@ -48,10 +48,27 @@ export const isEstimatedDestroyedAt = (source: string | null | undefined): boole
  *
  * emailReceiverPhone 이 NULL 인 것은 "그 경로를 쓰지 않는 발송건"이라는 뜻이므로 파기로 본다.
  *
- * ⚠️ 파기확인서 발행 게이트(destruction.certificate.gate.ts)는 **의도적으로** 이 술어를 쓰지
- *    않고 deliveryTarget 단일 판정을 유지한다. 게이트를 넓히면 emailReceiverPhone 이 한 번도
- *    마스킹된 적 없는 레거시 행에서 발행이 새로 막혀 운영 회귀가 된다. 표시(이 술어)는 좁게,
- *    발행(게이트)은 종전대로 — 두 축이 다르다는 것을 알고 쓸 것.
+ * ⚠️ 파기확인서 발행 게이트와의 관계 — **"게이트는 1축이라 안전하다"고 읽지 말 것.**
+ *
+ *    게이트(destruction.certificate.gate.ts)는 이 술어를 **직접 호출하지는 않는다.** 전량
+ *    파기 판정은 여전히 deliveryTarget 단일이다. 그러나 그 직후 파기일 축
+ *    (resolveOrderEffectiveDestroyAt)을 교차검증하고, 그 함수가 이 술어를 쓴다. 결과적으로
+ *    **게이트는 2축과 동등하게 동작한다.**
+ *
+ *    (이 문단은 원래 정반대를 서술하고 있었다 — "게이트를 넓히면 레거시 행에서 발행이 새로
+ *     막혀 운영 회귀가 되므로 의도적으로 1축을 유지한다". 그 서술은 게이트에 교차검증이
+ *     들어오면서 거짓이 됐다. 그대로 두면 다음 사람이 "게이트는 1축이니 레거시 회귀는 없다"고
+ *     결론 내려 아래 회귀의 존재 자체를 놓치므로 정정한다 — 리뷰 4차 H-3.)
+ *
+ *    그래서 경고했던 그 회귀는 **실제로 발생한다**: delivery_target='-' + emailReceiverPhone
+ *    생존 행은 kind 가 SCHEDULED 가 되어 게이트가 NOT_DESTROYED 로 막는다. 유효기간이 남아
+ *    있으면 최대 5년간 막힌다. 이것은 **수용된 회귀**다 — 그 행에는 실제로 살아있는 PII 가
+ *    있으므로 "전량 파기됨"을 증명할 수 없는 것이 맞다.
+ *    규모는 migration/order-delivery-destroyed-at.sql 의 §4-8 로 계량한다
+ *    (2026-07-31 운영 실측 0건). 0 이 아니게 되면 CS 수신정보 변경으로 새로 생긴 것이다.
+ *
+ *    반면 백필(§2·§3)은 여전히 `delivery_target = '-'` **1축**이다. 표시·발행·백필 셋의 축이
+ *    완전히 같지는 않다는 점을 알고 쓸 것.
  */
 export const isDeliveryDestroyed = (delivery: {
   deliveryTarget: string;

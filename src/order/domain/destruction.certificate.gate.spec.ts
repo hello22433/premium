@@ -181,6 +181,25 @@ describe('resolveDestructionCertificateGate', () => {
       expect(resolveDestructionCertificateGate(order)).toEqual({ canIssue: true, reason: null });
     });
 
+    it('★ 전량 마스킹 + 수신처 생존 + 환불 진행중이면 REFUND_IN_PROGRESS 가 아니라 NOT_DESTROYED', () => {
+      // 사유 우선순위가 바뀐 유일한 조합이다(리뷰 4차 LOW). 종전에는 every('-') 에서 곧바로
+      // canIssue: true 였고, 환불 분기에는 애초에 도달하지 않았다.
+      // 살아있는 PII 가 있다는 사실이 환불 진행 여부보다 앞선 차단 사유다.
+      const order = makeOrder(IOrderStatus.DELIVERY_COMPLETE, [
+        [
+          destroyed(),
+          destroyed({
+            emailReceiverPhone: 'enc-01099998888',
+            refundStatus: OrderDeliveryRefundStatusEnum.PROGRESS,
+          }),
+        ],
+      ]);
+      expect(resolveDestructionCertificateGate(order)).toEqual({
+        canIssue: false,
+        reason: DestructionCertificateBlockReason.NOT_DESTROYED,
+      });
+    });
+
     it('출처가 비어 있어도(시각은 있음) 발행은 가능하다 — 막는 기준은 날짜 유무다', () => {
       const order = makeOrder(IOrderStatus.DELIVERY_COMPLETE, [[destroyed({ destroyedAtSource: null })]]);
       expect(resolveDestructionCertificateGate(order)).toEqual({ canIssue: true, reason: null });

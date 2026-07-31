@@ -288,9 +288,44 @@ describe('DeliveryBatchService.deliveryDeliveryTargetDestroy', () => {
 
   // 각인 대상 판정은 select 결과(마스킹 이전 스냅샷)로 하므로, 행에 destroyedAt/deliveryTarget 을
   // 실제로 담아야 의미 있는 검증이 된다. id 만 담으면 undefined 비교가 되어 공허 통과한다.
-  const aliveRow = (id: number) => ({ id, destroyedAt: null, deliveryTarget: '01011112222' });
-  const partiallyDestroyedRow = (id: number, at: Date) => ({ id, destroyedAt: at, deliveryTarget: '-' });
-  const revivedRow = (id: number, at: Date) => ({ id, destroyedAt: at, deliveryTarget: '01011112222' });
+  //
+  // ⚠️ emailReceiverPhone 을 반드시 담는다. 판정 술어(isDeliveryDestroyed)는 **2축**인데
+  //    픽스처가 deliveryTarget 만 담으면 emailReceiverPhone 이 undefined 로 들어가고,
+  //    그 값은 술어에서 '파기됨'으로 취급되어 **판정을 1축으로 되돌려도 전 테스트가 통과한다**
+  //    (리뷰 4차 M-5). 아래 emailRevivedRow 가 그 축의 양성 대조군이다.
+  const aliveRow = (id: number) => ({
+    id,
+    destroyedAt: null,
+    deliveryTarget: '01011112222',
+    emailReceiverPhone: null,
+    destroyedAtSource: null,
+  });
+  const partiallyDestroyedRow = (id: number, at: Date) => ({
+    id,
+    destroyedAt: at,
+    deliveryTarget: '-',
+    emailReceiverPhone: '-',
+    destroyedAtSource: 'BATCH',
+  });
+  const revivedRow = (id: number, at: Date) => ({
+    id,
+    destroyedAt: at,
+    deliveryTarget: '01011112222',
+    emailReceiverPhone: null,
+    destroyedAtSource: 'BATCH',
+  });
+  /**
+   * deliveryTarget 은 마스킹된 채 emailReceiverPhone 만 살아있는 행.
+   * CS 수신정보 변경(EMAIL+핀발급 분기)과 PII 5종 확대 이전 레거시가 만드는 모양이며,
+   * 1축 판정으로는 '파기됨'으로 오판되어 각인에서 빠진다.
+   */
+  const emailRevivedRow = (id: number, at: Date, source = 'BACKFILL_ESTIMATE') => ({
+    id,
+    destroyedAt: at,
+    deliveryTarget: '-',
+    emailReceiverPhone: 'enc-01099998888',
+    destroyedAtSource: source,
+  });
 
   it('파기 시각(destroyedAt)을 각인한다 — 파기일을 계산이 아니라 기록으로 답하기 위해', async () => {
     // 이 값이 없으면 화면이 파기일을 `발송요청일 + 파기일수` 로 역산하는데, 파기 규칙이 바뀌면
@@ -332,6 +367,36 @@ describe('DeliveryBatchService.deliveryDeliveryTargetDestroy', () => {
     await sut.deliveryDeliveryTargetDestroy();
 
     expect(sut.__stampQb.calls.where[0][1].ids).toEqual([3]);
+  });
+
+  it('★ deliveryTarget 은 마스킹됐지만 emailReceiverPhone 만 살아있어도 갱신 대상이다 (2축 판정)', async () => {
+    // 위 revivedRow 는 deliveryTarget 축으로 되살아난 케이스라, 판정을 1축으로 되돌려도 통과한다.
+    // 이 케이스가 그 회귀를 실제로 잡는 유일한 테스트다(리뷰 4차 M-5).
+    // 1축이면 이 행은 '이미 파기됨'으로 오판되어 각인에서 빠지고, 살아있는 전화번호 옆에
+    // 과거 파기일이 그대로 남는다.
+    const first = new Date('2026-01-31T00:00:00');
+    const sut = makeSut(makeSelectQb([emailRevivedRow(4, first)]));
+
+    await sut.deliveryDeliveryTargetDestroy();
+
+    expect(sut.__stampQb.calls.where[0][1].ids).toEqual([4]);
+    expect(sut.__stampQb.calls.set[0].destroyedAtSource).toBe('BATCH');
+  });
+
+  it('★ 갱신 로그는 원인을 단정하지 않고 갱신 전 값을 남긴다 (감사 흔적)', async () => {
+    // 이 분기에는 '부활'과 '레거시 부분마스킹'이 섞이며 데이터로 구분되지 않는다.
+    // "수신처가 재입력됐다"고 단정하면 운영이 존재하지 않는 CS 오남용을 추적한다(리뷰 4차 M-1).
+    const first = new Date('2026-01-31T00:00:00');
+    const sut = makeSut(makeSelectQb([emailRevivedRow(4, first, 'BACKFILL_ESTIMATE')]));
+
+    await sut.deliveryDeliveryTargetDestroy();
+
+    const warned = sut.logger.warn.mock.calls.map((c: any[]) => String(c[0])).join('\n');
+    expect(warned).toContain('데이터로 구분 불가');
+    expect(warned).not.toContain('재입력됐던');
+    // 덮어쓰기 전 값이 남아야 복구·감사 근거가 된다.
+    expect(warned).toContain('BACKFILL_ESTIMATE');
+    expect(warned).toContain(first.toISOString());
   });
 
   it('각인할 행이 하나도 없으면 각인 UPDATE 자체를 실행하지 않는다', async () => {

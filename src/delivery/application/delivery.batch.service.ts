@@ -3326,17 +3326,29 @@ export class DeliveryBatchService {
       // ── 파기 시각 각인 ────────────────────────────────────────────────────────
       // 재수집된 행은 두 종류이고, 각인 여부가 반대다.
       //
-      //  (가) **부분 파기 재수집** — 이전 회차에 deliveryTarget 만 '-' 가 되고 나머지가 남은 행.
-      //       기존 값 **유지**. 근거는 사실이 아니라 **정의**다: 이 시스템에서 "파기됐다"의 판정
-      //       술어는 deliveryTarget 단일이고(destruction.certificate.gate.ts / 파기일 계산 모두),
-      //       그 컬럼이 사라진 시점이 곧 파기일이다. 나머지 컬럼이 늦게 정리되는 것은 이 정의상
-      //       파기일을 바꾸지 않는다. (술어를 5종 전부로 바꾸는 정책이 되면 이 분기도 뒤집어야
-      //       한다 — 그때는 '완료 시점 갱신'이 맞다.)
+      //  (가) **부분 파기 재수집** — 이전 회차에 일부 컬럼만 '-' 가 되고 나머지가 남은 행.
+      //       기존 값 **유지**.
+      //       ⚠️ 다만 여기서 말하는 '일부'는 isDeliveryDestroyed 가 보는 2축(deliveryTarget /
+      //          emailReceiverPhone) **밖의** 컬럼일 때만이다. 즉 bankAccount ·
+      //          bankAccountOwner · originalDeliveryTarget 이 남아 있던 경우다. 그 셋이
+      //          늦게 정리되는 것은 파기일을 바꾸지 않는다.
+      //       ⚠️ emailReceiverPhone 이 남아 있던 행은 **(나)로 분류된다** — 부활한 적이 없어도.
+      //          술어가 2축이라 그 행은 "지금 파기돼 있지 않음"이 되기 때문이다. 아래 (나) 참조.
+      //       (초기 주석은 "판정 술어는 deliveryTarget 단일" 이라고 적고, 술어가 5종으로 바뀌면
+      //        이 분기를 뒤집으라는 재검토 조건을 달아 두었다. 술어는 그 뒤 2축으로 넓어졌으므로
+      //        조건이 일부 충족된 상태다 — 리뷰 4차 M-1. 5종 전부로 넓히는 정책이 되면 그때는
+      //        (가)도 '완료 시점 갱신'으로 뒤집어야 한다.)
       //
-      //  (나) **부활 후 재파기** — 파기된 뒤 CS 수신정보 변경으로 수신처가 다시 채워진 행
-      //       (customer.service.service.ts 참조. 사후 CS 대응을 위해 **의도적으로 허용**된 경로다).
-      //       그 행의 PII 는 재입력 시점부터 지금까지 실제로 살아 있었으므로, 옛 날짜를 유지하면
-      //       "그때 이미 지웠다"는 거짓 증명이 된다 → 새 시각으로 **갱신**.
+      //  (나) **재파기 시 시각 갱신 대상** — 마스킹 이전 스냅샷에서 isDeliveryDestroyed 가
+      //       false 인데 destroyedAt 이 이미 있던 행. 두 경로가 섞여 있고 **데이터만으로는
+      //       구분할 수 없다**:
+      //         · 파기 후 CS 수신정보 변경으로 수신처가 다시 채워진 행(사후 CS 대응을 위해
+      //           **의도적으로 허용**된 경로. customer.service.service.ts 참조)
+      //         · PII 5종 확대 이전에 emailReceiverPhone 이 마스킹되지 않은 레거시 행
+      //           (부활한 적 없음. 2026-07-31 운영 실측 0건 — migration §4-8)
+      //       어느 쪽이든 **그 컬럼의 PII 는 지금 이 회차 직전까지 살아 있었다.** 옛 날짜를
+      //       유지하면 "그때 이미 지웠다"는 거짓 증명이 되므로 새 시각으로 **갱신**한다.
+      //       (갱신 전 값은 아래 로그에 남긴다 — 덮어쓰면 복구할 수 없으므로 감사 흔적이 필요하다.)
       //
       // 두 경우를 SQL 한 줄로 가를 수 없다. 위 마스킹 UPDATE 가 이미 돌아서 지금 DB 의
       // deliveryTarget 은 전부 '-' 이기 때문이다. 판정 근거는 **마스킹 이전 상태**이므로,
@@ -3345,9 +3357,15 @@ export class DeliveryBatchService {
       // 잘못 처리된다 — 특히 (각인 없음 + 이미 파기됨)을 '신규 각인'으로 넣으면 **파기 시점을
       // 모르는 행에 오늘 날짜를 실측으로 박제**하게 된다(리뷰 HIGH-2). 그 행의 PII 는 이전
       // 회차에 이미 사라졌으므로 오늘은 사실이 아니고, 한 번 찍히면 되돌릴 수 없다.
-      const revivedIds = orderDeliveryList
+      // 이름을 '부활'로 두지 않는다 — 부활한 적 없는 레거시 부분마스킹 행도 여기 들어오므로
+      // (위 (나) 참조), '부활'이라 부르면 로그가 없는 CS 오남용을 있다고 보고하게 된다.
+      const restampIds = orderDeliveryList
         .filter((od) => od.destroyedAt !== null && !isDeliveryDestroyed(od))
         .map((od) => od.id);
+      // 덮어쓰기 전 값 — 갱신하면 복구 불가라 감사 흔적으로 남긴다(아래 warn 로그).
+      const restampPrevious = orderDeliveryList
+        .filter((od) => od.destroyedAt !== null && !isDeliveryDestroyed(od))
+        .map((od) => `${od.id}:${od.destroyedAt?.toISOString() ?? 'null'}/${od.destroyedAtSource ?? 'null'}`);
       const firstDestroyIds = orderDeliveryList
         .filter((od) => od.destroyedAt === null && !isDeliveryDestroyed(od))
         .map((od) => od.id);
@@ -3356,7 +3374,7 @@ export class DeliveryBatchService {
       const unknownDestroyedAtIds = orderDeliveryList
         .filter((od) => od.destroyedAt === null && isDeliveryDestroyed(od))
         .map((od) => od.id);
-      const stampIdList = [...firstDestroyIds, ...revivedIds];
+      const stampIdList = [...firstDestroyIds, ...restampIds];
 
       if (stampIdList.length > 0) {
         // UpdateQueryBuilder 는 soft-delete 필터를 자동 부착하지 않으므로(TypeORM 은 select 에만
@@ -3380,7 +3398,7 @@ export class DeliveryBatchService {
       const keptCount = destroyIdList.filter((id) => !stampIdSet.has(id)).length;
       this.logger.log(
         `[정기파기] 대상 ${destroyIdList.length}건 — 신규 각인 ${firstDestroyIds.length}건, ` +
-          `부활 재파기 갱신 ${revivedIds.length}건, 최초일 유지(부분 파기 재수집) ${keptCount}건`,
+          `파기일 갱신 ${restampIds.length}건, 최초일 유지 ${keptCount}건`,
       );
       if (unknownDestroyedAtIds.length > 0) {
         // 정상 운영에서는 나오지 않아야 한다. 백필 누락이거나 배포 순서 사고다.
@@ -3390,12 +3408,16 @@ export class DeliveryBatchService {
             `오늘 날짜를 실측으로 박제하지 않고 비워 둔다(해당 주문의 파기일은 null 로 응답된다).`,
         );
       }
-      if (revivedIds.length > 0) {
-        // 정상 경로이지만 드물어야 한다. 잦아지면 CS 수신정보 변경이 파기 건에 반복 적용되고
-        // 있다는 신호이므로 운영이 알아야 한다.
+      if (restampIds.length > 0) {
+        // ⚠️ 문구를 원인으로 단정하지 않는다. 두 원인이 섞여 있고 데이터로는 구분되지 않는다
+        //    (위 (나) 참조) — "수신처가 재입력됐다"고 쓰면 부활한 적 없는 레거시 부분마스킹 행까지
+        //    CS 오남용으로 보고되어, 운영이 존재하지 않는 사건을 추적하게 된다(리뷰 4차 M-1).
+        //    구분이 필요하면 migration §4-8 로 레거시 모집단을 먼저 계량할 것.
+        // 이전 값을 함께 남긴다 — 덮어쓰면 복구 경로가 없다.
         this.logger.warn(
-          `[정기파기] 파기 후 수신처가 재입력됐던 발송건을 재파기하고 파기일을 갱신함 — ` +
-            `orderDeliveryIds=[${revivedIds.slice(0, 50).join(', ')}]. 이전 파기일은 더 이상 유효하지 않다.`,
+          `[정기파기] 이미 파기 시각이 있으나 PII 가 남아 있어 파기일을 갱신함 ${restampIds.length}건 ` +
+            `(원인: CS 수신정보 변경 후 재파기 또는 레거시 부분마스킹 — 데이터로 구분 불가). ` +
+            `갱신 전 값 id:시각/출처=[${restampPrevious.slice(0, 50).join(', ')}]`,
         );
       }
 

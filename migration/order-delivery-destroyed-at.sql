@@ -12,8 +12,17 @@
 -- 실행 순서 (중요)
 --   ① 이 스크립트의 §1(컬럼 추가)  → ② §2~§4(백필)  → ③ 코드 배포  → ④ §2~§4 재실행
 --   ④가 필요한 이유: ②와 ③ 사이에 자정 정기파기 배치가 돌면 그 회차 행은 destroyed_at 이
---   비어 있다(코드가 아직 각인을 안 하므로). 백필은 전 구간 멱등이므로 그냥 다시 돌리면 된다.
---   ③을 ②보다 먼저 하면 파기된 행이 잠시 파기일 null 로 표시된다(거짓은 아니지만 공백).
+--   비어 있다(코드가 아직 각인을 안 하므로). 그 행이 속한 주문은 **파기확인서 발행이 막힌다**
+--   (아래와 같은 이유). 백필은 전 구간 멱등이므로 그냥 다시 돌리면 즉시 풀린다.
+--
+--   ⚠️ ③을 ②보다 먼저 하면 **레거시 파기완료 주문의 파기확인서 발행이 전면 차단된다.**
+--      (초기 문구는 "잠시 파기일 null 로 표시된다(공백)"였다. 그때는 게이트가 destroyed_at 을
+--       보지 않아 표시에만 영향을 줬으나, 게이트가 파기일 축을 교차검증하게 되면서
+--       — destruction.certificate.gate.ts — 결과가 '표시 공백'에서 '기능 정지'로 격상됐다.)
+--      경로: destroyed_at IS NULL → resolveDeliveryDestroyAt 분기 ③ → 주문 파기일 null
+--            → 게이트가 DESTROY_TIME_UNKNOWN 으로 차단 → 목록 발행 버튼과 메일 발송 경로가
+--              함께 막힘(order.service.ts 가 BadRequestException).
+--      **②→③ 순서는 권고가 아니라 필수다.** 백필로 회복되므로 비가역은 아니다.
 --
 -- 요구: MySQL 8.0+ (information_schema 기반 재실행 가드, LEAST). 실행 전 SELECT VERSION(); 확인.
 -- 대상 테이블이 크면 §3/§4 는 배치 분할 실행을 권장한다(맨 아래 참고).
@@ -28,13 +37,17 @@
 --        (같은 쿼리가 실행 시점에 따라 '대상 수'와 '잔량 검증'이 된다 — 조건이 동일하므로.)
 --        ※ 이 쿼리를 빠뜨려도 순서 사고는 나지 않는다 — 방어는 §3 UPDATE 의 NOT EXISTS 에
 --          들어 있다. 이건 규모 파악용이지 게이트가 아니다.
---      · §3 대상 건수:
+--      · §3 대상 건수 — ⚠️ **§3 UPDATE 의 WHERE 를 그대로 복사해야** 한다. 아래 두 절을
+--        빠뜨리면 §2 가 가져갈 행까지 세어 과대 보고된다(§2 **전에** 돌릴 때 특히).
 --          SELECT COUNT(*) AS `S3_대상건수`
 --          FROM `order_delivery` od
 --          JOIN `order_product_mapping` opm ON opm.id = od.order_product_mapping_id
 --          WHERE od.destroyed_at IS NULL AND od.delivery_target = '-'
 --            AND opm.send_request_at IS NOT NULL
---            AND opm.request_to_destroy_personal_info_day IS NOT NULL;
+--            AND opm.request_to_destroy_personal_info_day IS NOT NULL
+--            AND DATE_ADD(DATE(opm.send_request_at),
+--                         INTERVAL opm.request_to_destroy_personal_info_day DAY) IS NOT NULL
+--            AND NOT EXISTS ( ... §3 의 NOT EXISTS 절 그대로 ... );
 --      · 그중 미래로 튀어 NOW() 로 눌리는(= 근거가 가장 약한) 건수까지 미리 보려면 위 쿼리에
 --          AND DATE_ADD(DATE(opm.send_request_at),
 --                       INTERVAL opm.request_to_destroy_personal_info_day DAY) > NOW()
@@ -54,8 +67,14 @@
 -- (다) 트랜잭션 — §2 · §3 은 각각 단일 UPDATE 라 그 자체로 원자적이다. 둘을 하나로 묶고
 --      싶으면 START TRANSACTION; (§2) (§3) COMMIT; 로 감쌀 수 있으나, 대형 테이블에서는
 --      언두 로그가 커지고 락 보유 시간이 길어지므로 권장하지 않는다. 중간에 끊겨도 전 구간이
---      `destroyed_at IS NULL` 조건이라 재실행이 안전하다(멱등). 단 **순서(§2 → §3)만은
---      지켜야 한다** — §3 이 선점하면 §2 는 영원히 못 고친다(§3 가드 참조).
+--      `destroyed_at IS NULL` 조건이라 재실행이 안전하다(멱등).
+--      ※ 순서(§2 → §3)는 **지키는 편이 좋지만 어겨도 데이터가 상하지는 않는다.**
+--        (초기 문구는 "§3 이 선점하면 §2 는 영원히 못 고친다"였는데, 그건 §3 에 NOT EXISTS
+--         방어가 들어가기 전 이야기다. 지금은 §3 이 조기파기 후보 행을 구조적으로 건너뛰므로
+--         §3 을 먼저 돌려도 실측이 덮이지 않고, 뒤늦게 §2 를 돌리면 정확히 채워진다.
+--         로컬 DB 로 실증했다. 자세한 근거는 §3 헤더 참조 — 그쪽이 정본이다.)
+--        순서를 권하는 이유는 이제 "복구 불가" 가 아니라 **중간 상태에서 파기확인서 발행이
+--        일시 차단되는 창을 짧게 하기 위해서**다.
 
 -- ── 1. 컬럼 추가 (재실행 안전) ────────────────────────────────────────────────
 -- nullable + 테이블 끝 추가라 MySQL 8.0 은 INSTANT 로 처리할 수 있다.
@@ -171,7 +190,16 @@ JOIN (
   GROUP BY c.delivery_id
 ) x ON x.delivery_id = od.id
 SET od.destroyed_at = x.destroyed_at,
-    od.destroyed_at_source = 'BACKFILL_EARLY'   -- 실측(요청서 executed_at 복사)
+    od.destroyed_at_source = 'BACKFILL_EARLY',  -- 실측(요청서 executed_at 복사)
+    -- ★★ updated_at 보존 — 빠뜨리면 되돌릴 수 없는 부작용이 난다.
+    --   order_delivery.updated_at 은 DDL 이 `on update CURRENT_TIMESTAMP(6)` 라, SET 절에
+    --   적지 않아도 **MySQL 이 알아서 오늘로 갱신한다.** 이 컬럼은 발송이력 표시일자의
+    --   최종 폴백이므로(partner.company.extern.history.service.ts:96
+    --   `COALESCE(actualSendAt, failedAt, updatedAt)`), 백필이 건드린 행 중 앞의 두 컬럼이
+    --   모두 NULL 인 건은 **화면 날짜가 통째로 백필 실행일로 바뀐다.**
+    --   원래 값을 어디에도 남기지 않으므로 복구가 불가능하다.
+    --   자기 값으로 명시하면 MySQL 이 자동 갱신을 적용하지 않는다(실증 완료).
+    od.updated_at = od.updated_at
 WHERE od.destroyed_at IS NULL
   AND od.delivery_target = '-';   -- 실제로 지워진 행에만 각인(기록과 행 상태 불일치 방어)
 
@@ -247,7 +275,8 @@ SET od.destroyed_at = LEAST(
       DATE_ADD(DATE(opm.send_request_at), INTERVAL opm.request_to_destroy_personal_info_day DAY),
       NOW()
     ),
-    od.destroyed_at_source = 'BACKFILL_ESTIMATE'   -- ★ 추정. 이 값만 사실이 아니다.
+    od.destroyed_at_source = 'BACKFILL_ESTIMATE',  -- ★ 추정. 이 값만 사실이 아니다.
+    od.updated_at = od.updated_at                  -- ★ 자동 갱신 방지. 근거는 §2 의 같은 줄 주석.
 WHERE od.destroyed_at IS NULL
   AND od.delivery_target = '-'
   AND opm.send_request_at IS NOT NULL
@@ -366,6 +395,33 @@ FROM `order_delivery`
 WHERE destroyed_at IS NOT NULL
   AND created_at IS NOT NULL
   AND destroyed_at < DATE_SUB(created_at, INTERVAL MICROSECOND(created_at) MICROSECOND);
+
+-- 4-8. 레거시 '부분 마스킹' 모집단 (리뷰 4차 H-2). **§4 중 유일하게 배포 후에도 주기적으로
+--      돌려야 하는 쿼리다.**
+--
+--      무엇을 세나 — `delivery_target = '-'` 인데 `email_receiver_phone` 이 살아 있는 행.
+--      두 경로로 생긴다:
+--        (가) PII 5종 확대 이전에 2종만 마스킹된 레거시 행
+--        (나) 파기 후 CS 수신정보 변경(EMAIL+핀발급 분기)이 emailReceiverPhone 만 되살린 행
+--      §4-1~4-7 은 전부 `delivery_target = '-'` **단일 축**이라 이 모집단을 하나도 세지 못한다.
+--
+--      왜 계속 봐야 하나 — 이 행들은 유효기간 가드에 따라 결과가 갈리고 **양쪽 다 문제다**:
+--        · 만료/expireAt NULL/soft-delete → 배치가 재수집하며 '부활'로 분류해 파기일을 **오늘로
+--          갱신**한다. 레거시 행은 부활한 적이 없으므로 날짜가 실제보다 늦어진다.
+--        · 유효기간 잔존(최대 5년)   → 재수집되지 않아 isDeliveryDestroyed 가 false 로 유지되고,
+--          게이트가 그 기간 내내 NOT_DESTROYED 로 파기확인서 발행을 막는다.
+--
+--      2026-07-31 운영 실측 = 0 / 0. 즉 (가)는 존재하지 않고, 이후 값이 올라간다면 그것은
+--      전부 (나) — 새로 발생한 CS 경로다. **0 이 아니게 되면 알림 대상**으로 삼을 것.
+SELECT
+  COALESCE(SUM(CASE WHEN od.expire_at IS NULL OR DATE(od.expire_at) < DATE(NOW()) OR od.deleted_at IS NOT NULL
+      THEN 1 ELSE 0 END), 0) AS `재수집됨__파기일이_오늘로_밀림`,
+  COALESCE(SUM(CASE WHEN od.expire_at IS NOT NULL AND DATE(od.expire_at) >= DATE(NOW()) AND od.deleted_at IS NULL
+      THEN 1 ELSE 0 END), 0) AS `재수집안됨__유효기간동안_발행차단`
+FROM `order_delivery` od
+WHERE od.delivery_target = '-'
+  AND od.email_receiver_phone IS NOT NULL
+  AND od.email_receiver_phone <> '-';
 
 -- ── 참고: 대용량 분할 실행 ────────────────────────────────────────────────────
 -- order_delivery 가 수백만 행이면 §3 을 한 번에 돌리지 말고 id 구간으로 쪼갠다.

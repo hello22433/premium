@@ -67,6 +67,13 @@ export function resolveDestructionCertificateGate(order: OrderEntity): Destructi
     if (destroyAt.kind === 'SCHEDULED') {
       // 2축 술어로는 아직 안 지워진 행이 섞여 있다(수신처 부활 / 레거시 부분마스킹).
       // 사유는 NOT_DESTROYED 가 정확하다 — 실제로 남아 있는 PII 가 있다.
+      //
+      // ⚠️ 사유 **우선순위가 바뀐 조합이 하나 있다.** 전량 마스킹 + emailReceiverPhone 생존 +
+      //    환불 진행중 인 주문은 종전에 canIssue: true 였는데(위 every('-') 에서 바로 반환),
+      //    이제 여기서 NOT_DESTROYED 로 나간다 — 아래 REFUND_IN_PROGRESS 분기에 **도달하지
+      //    못한다**. 의도한 동작이다: 살아있는 PII 가 있다는 사실이 환불 진행 여부보다 앞선
+      //    차단 사유이고, 사용자에게도 "환불 때문에 막혔다"보다 정확한 안내다.
+      //    (규모: migration §4-8. 2026-07-31 운영 실측 0건)
       return { canIssue: false, reason: DestructionCertificateBlockReason.NOT_DESTROYED };
     }
     return { canIssue: true, reason: null };
