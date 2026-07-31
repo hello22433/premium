@@ -25,6 +25,7 @@ import { Transform, Type } from 'class-transformer';
 import { OrderSettleCreateDto } from './dto/order.settle.create.dto';
 import { IOrderSendMethod } from '../interface/order.send.method';
 import { IOrderSendingType } from '../interface/order.sending.type';
+import { CLIENT_SETTABLE_REPORT_SOURCES, IReportSource } from '../interface/report.source';
 import { IOrderDateType } from '../interface/order.date.type';
 import { CompanyType } from '../../common/domain/company.type';
 
@@ -111,7 +112,6 @@ export class OrderGetListReqDto extends PagingReqDto {
   @IsOptional()
   @IsEnum(IOrderSendingType)
   sendingType?: IOrderSendingType = IOrderSendingType.ALL;
-
 }
 
 /**
@@ -194,11 +194,14 @@ export class OrderGetDeliveryCompleteReportPdfReqDto {
   id: number;
 
   @ApiProperty({
-    description: '발행 소스 ex) DOCUMENT: 문서함, DIRECT: 직접발행',
+    description: '발행 소스 (DOCUMENT: 문서함 다운로드, DIRECT: 직접발행). 미전송 시 DOCUMENT 로 기록된다.',
+    enum: [IReportSource.DOCUMENT, IReportSource.DIRECT],
     required: false,
   })
   @IsOptional()
-  @IsString()
+  // 정산 목록의 발행 상태 문구가 이 값으로 분기하므로(settle.service.formatReportStatus) 자유 문자열을
+  // 허용하면 오타가 조용히 '다운로드 완료'로 폴백한다. EMAIL 이 목록에서 빠진 이유는 상수 주석 참고.
+  @IsEnum(CLIENT_SETTABLE_REPORT_SOURCES)
   source?: string;
 
   @ApiPropertyOptional({
@@ -222,11 +225,14 @@ export class OrderGetOrderCompleteReportPdfReqDto {
   id: number;
 
   @ApiProperty({
-    description: '발행 소스 ex) DOCUMENT: 문서함, DIRECT: 직접발행',
+    description: '발행 소스 (DOCUMENT: 문서함 다운로드, DIRECT: 직접발행). 미전송 시 DOCUMENT 로 기록된다.',
+    enum: [IReportSource.DOCUMENT, IReportSource.DIRECT],
     required: false,
   })
   @IsOptional()
-  @IsString()
+  // 정산 목록의 발행 상태 문구가 이 값으로 분기하므로(settle.service.formatReportStatus) 자유 문자열을
+  // 허용하면 오타가 조용히 '다운로드 완료'로 폴백한다. EMAIL 이 목록에서 빠진 이유는 상수 주석 참고.
+  @IsEnum(CLIENT_SETTABLE_REPORT_SOURCES)
   source?: string;
 }
 

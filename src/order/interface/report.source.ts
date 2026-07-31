@@ -17,3 +17,14 @@ export enum IReportSource {
   /** 고객사에 이메일로 전송 */
   EMAIL = 'EMAIL',
 }
+
+/**
+ * 클라이언트가 PDF 발행 API 로 직접 보낼 수 있는 소스.
+ *
+ * EMAIL 은 제외한다 — 서버가 메일 전송 경로(sendReportEmail)에서만 기록하는 값이라,
+ * 클라이언트 입력으로 허용하면 메일을 보낸 적 없이 정산 목록을 '발행 완료'로 만들 수 있다.
+ */
+export const CLIENT_SETTABLE_REPORT_SOURCES = {
+  DOCUMENT: IReportSource.DOCUMENT,
+  DIRECT: IReportSource.DIRECT,
+} as const;
