@@ -275,25 +275,36 @@ export class EarlyDestroyService {
     // 그 둘을 대조하는 감사에서 불필요한 노이즈가 된다.
     const destroyedAt = new Date();
 
+    // ★ destroyedAt 은 이 payload 에 넣지 않는다. 이 UPDATE 는 매핑 단위(orderProductMappingId
+    //   IN ...)로도 실행되는데, 매핑 지정/주문 전체 요청은 **미파기 발송건이 하나라도 있으면
+    //   통과**하므로(createRequest / createRequestForOrder) 이미 파기된 형제 행까지 범위에 들어온다.
+    //   payload 에 섞으면 그 형제의 파기일이 무조건 덮이고, 그중에는 **정기파기로 지운 실적**이
+    //   섞여 있을 수 있다. 그러면 정기파기 실적이 조기파기 실적으로 위조된다.
+    //   유효기간 가드가 같은 주문 안에서 발송건별 파기 시점을 갈라놓으므로 흔한 조합이다.
     const piiPayload = {
       deliveryTarget: DESTROY_VALUE,
       originalDeliveryTarget: DESTROY_VALUE,
       emailReceiverPhone: DESTROY_VALUE,
       bankAccount: DESTROY_VALUE,
       bankAccountOwner: DESTROY_VALUE,
-      // 실적 기록. 조기파기는 예정일보다 앞당겨 지우므로 계산으로는 이 시점에 도달할 수 없다.
-      // 이 값이 있어야 파기확인서에 "언제 지웠다"를 사실로 적을 수 있다.
-      //
-      // ⚠️ 여기서는 정기파기 배치와 달리 `destroyedAt IS NULL` 가드를 두지 않는다. 조기파기는
-      //    이미 파기된 건에 대한 재실행을 막지 않기 때문이다 — executeRequest 에 "이미 파기됨"
-      //    거부가 없고, 매핑 지정 요청(createRequest)은 그 매핑에 미파기 발송건이 하나라도
-      //    있으면 통과하므로, D1 파기됨 + D2 미파기 매핑에 전체 요청을 다시 걸면 D1 까지 다시
-      //    덮인다. 그때 최초 파기일을 유지하려면 가드가 필요하지만, 반대로 운영이 "파기를 다시
-      //    실행했다"는 사실을 지우게 된다. 조기파기는 사람이 명시적으로 실행하는 행위이므로
-      //    **마지막 실행 시각**을 남기는 편이 요청서(early_destroy_request.executedAt)와
-      //    대조했을 때 일관된다. 정기파기는 사람 개입 없는 반복 배치라 반대로 최초 시각을 고정한다.
-      destroyedAt,
     };
+
+    // 각인 대상 판정은 **마스킹 이전 상태**로 해야 하므로 UPDATE 전에 읽는다.
+    // 규칙은 정기파기 배치와 동일하다(delivery.batch.service.ts 참조):
+    //  · 아직 각인된 적 없음        → 각인
+    //  · 각인돼 있는데 수신처가 살아있음(= CS 수신정보 변경으로 부활) → 새 시각으로 갱신
+    //  · 각인돼 있고 이미 '-'        → 최초 파기일 유지 (재실행이어도 PII 는 그때 사라졌다)
+    // 마지막 항목이 백필 SQL 의 MIN(executed_at) 규칙과 같은 뜻이다 — 같은 컬럼에 두 규칙이
+    // 공존하면 감사자가 이 값을 어떻게 읽어야 할지 정의되지 않는다.
+    // 재실행 사실 자체는 early_destroy_request 가 요청별로 보존하므로 여기서 덮을 이유가 없다.
+    const stampTargets = await this.orderDeliveryRepository.find({
+      where: { id: In(affectedDeliveryIds) },
+      select: ['id', 'destroyedAt', 'deliveryTarget'],
+      withDeleted: true,
+    });
+    const stampIdList = stampTargets
+      .filter((d) => d.destroyedAt === null || d.deliveryTarget !== DESTROY_VALUE)
+      .map((d) => d.id);
 
     const deliveryUpdateConditions: Array<[string, number[]]> = [];
     if (targetDeliveryIds.length > 0) deliveryUpdateConditions.push(['id', targetDeliveryIds]);
@@ -305,6 +316,24 @@ export class EarlyDestroyService {
         .set(piiPayload)
         .where(`${column} IN (:...ids)`, { ids })
         .execute();
+    }
+
+    if (stampIdList.length > 0) {
+      await this.orderDeliveryRepository
+        .createQueryBuilder()
+        .update(OrderDeliveryEntity)
+        .set({ destroyedAt })
+        .where('id IN (:...ids)', { ids: stampIdList })
+        .execute();
+    }
+    const keptCount = affectedDeliveryIds.length - stampIdList.length;
+    if (keptCount > 0) {
+      // 이미 파기돼 있던 형제 행을 다시 덮은 경우. 정상 동작(요청이 매핑 단위였다)이지만,
+      // 그 행의 파기일이 이번 요청서(executedAt)와 불일치하게 되므로 감사 대조 시 필요하다.
+      this.logger.log(
+        `[조기파기] 이미 파기된 발송건 ${keptCount}건은 최초 파기일을 유지함 — requestId=${requestId}. ` +
+          `해당 건의 destroyed_at 은 이 요청의 executedAt 과 다를 수 있다(정상).`,
+      );
     }
 
     if (affectedDeliveryIds.length > 0) {

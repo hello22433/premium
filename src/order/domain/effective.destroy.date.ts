@@ -88,22 +88,38 @@ const addDays = (value: Date, days: number): Date => {
  *
  * 판정 순서와 각 분기의 의미:
  *
- *  ① destroyed_at 이 있다 → **실적**. 정기·조기 어느 경로로 지웠든 그 시점이 기록돼 있다.
+ * ★ 판정 순서가 이 함수의 핵심이다 — **"지금 지워져 있나"를 "언제 지웠나"보다 먼저 묻는다.**
+ *
+ *   두 질문은 원래 같은 말이었다. 한 번 지우면 끝이니 구분할 필요가 없었다. 그런데 CS 사후
+ *   대응을 위해 **파기된 발송건의 수신처를 다시 채워 넣는 경로가 열려 있다**
+ *   (customer.service.service.ts 의 수신정보 변경 — 운영상 의도된 동작이다). 그 순간 둘이 갈린다:
+ *     · destroyedAt      = 과거에 지웠다는 **기록**
+ *     · deliveryTarget   = 지금 지워져 있는지의 **현재 상태**
+ *   도서관 반납 기록과 같다. "6/30 반납" 기록이 있어도 그 뒤 다시 빌려갔으면 지금은 대출 중이다.
+ *   기록이 틀린 게 아니라 질문이 다른 것이다.
+ *
+ *   그래서 destroyedAt 을 먼저 보면 안 된다. 먼저 보면 재입력된 행에서 살아있는 수신처 옆에
+ *   "파기일 2026-06-30"이 나란히 인쇄된다 — 한 장의 문서에 모순이 찍힌다.
+ *
+ *  ① 지금 살아있다(deliveryTarget != '-') → **예정일**. 배치 규칙을 날짜로 옮겨 계산한다.
+ *     = MAX(DATE(발송요청일) + 파기일수, 유효기간 만료일 + 1일)
+ *     유효기간 가드가 적용되는 건(= 유효기간이 아직 남은 건)만 만료 다음 날까지 미뤄진다.
+ *     가드 비적용 2종(유효기간 없음 / soft-delete)은 기준일 그대로다. 쿠폰 상태(USED·CANCEL 등)는
+ *     판정에 쓰지 않는다 — 유효기간이 남아 있으면 사용 완료된 쿠폰도 보류한다.
+ *     ⚠️ 여기에는 **destroyedAt 이 있는데 수신처가 되살아난 행**도 포함된다. 그 행은 다음 배치
+ *        회차에 다시 파기되므로 예정일이 정답이고, 배치는 그때 destroyedAt 을 새 날짜로 갱신한다
+ *        (delivery.batch.service.ts 의 각인 분기 참조). 과거 기록을 표시하지 않는 것이 핵심이다.
+ *
+ *  ② 지워져 있고 destroyed_at 이 있다 → **실적**. 정기·조기 어느 경로로 지웠든 그 시점이다.
  *     계산을 일절 하지 않는다. 규칙이 나중에 또 바뀌어도 이 값은 흔들리지 않는다.
  *
- *  ② destroyed_at 은 없는데 deliveryTarget 이 '-' 다 → **파기됐는데 시각을 모른다** → null.
+ *  ③ 지워져 있는데 destroyed_at 이 없다 → **파기됐는데 시각을 모른다** → null.
  *     정상 운영에서는 나오지 않아야 하는 조합이다. 도달 경로는 둘뿐이다:
  *       · 컬럼 신설 백필에서 기준 컬럼(sendRequestAt / requestToDestroyPersonalInfoDay)이
  *         결측이라 값을 못 채운 행
  *       · 백필을 돌리기 전에 코드가 먼저 배포된 경우(배포 순서 사고)
  *     여기서 예정일로 폴백하면 안 된다 — 그게 바로 H-1(이미 지운 건에 미래 날짜)의 재현이다.
- *     "모른다"를 null 로 정직하게 표현하고, 호출부가 종전 표시로 폴백하게 둔다.
- *
- *  ③ 아직 안 지워진 행 → **예정일**. 배치 규칙을 날짜로 옮겨 계산한다.
- *     = MAX(DATE(발송요청일) + 파기일수, 유효기간 만료일 + 1일)
- *     유효기간 가드가 적용되는 건(= 유효기간이 아직 남은 건)만 만료 다음 날까지 미뤄진다.
- *     가드 비적용 2종(유효기간 없음 / soft-delete)은 기준일 그대로다. 쿠폰 상태(USED·CANCEL 등)는
- *     판정에 쓰지 않는다 — 유효기간이 남아 있으면 사용 완료된 쿠폰도 보류한다.
+ *     "모른다"를 null 로 정직하게 표현한다.
  *
  * deletedAt 분기는 발송완료 보고서 경로에서는 사실상 도달하지 않는다 — soft-delete 되는 것은
  * 되감긴 tip 뿐이고 tip 은 replacedFromId 가 있어 호출부가 먼저 걸러내는 경우가 많다. 배치와의
@@ -117,13 +133,16 @@ export function resolveDeliveryDestroyAt(
   sendRequestAt: Date | null | undefined,
   destroyDay: number | null | undefined,
 ): Date | null {
-  // ① 실적 우선. 지운 날이 기록돼 있으면 그걸 그대로 쓴다.
-  if (delivery.destroyedAt) return atStartOfDay(delivery.destroyedAt);
+  // ★ 현재 상태를 먼저 묻는다. destroyedAt 을 먼저 보면 수신처가 되살아난 행에서
+  //   살아있는 PII 옆에 과거 파기일이 인쇄된다(위 판정 순서 설명 참조).
+  if (delivery.deliveryTarget === DESTROY_VALUE) {
+    // ② 지워져 있고 기록이 있다 → 실적.
+    if (delivery.destroyedAt) return atStartOfDay(delivery.destroyedAt);
+    // ③ 지워져 있는데 기록이 없다 → 모른다. 예정일로 폴백하면 미래 날짜 인쇄가 재현된다.
+    return null;
+  }
 
-  // ② 지워졌는데 기록이 없다 → 모른다. 예정일로 폴백하면 미래 날짜 인쇄가 재현된다.
-  if (delivery.deliveryTarget === DESTROY_VALUE) return null;
-
-  // ③ 여기부터 예정일 계산.
+  // ① 여기부터 예정일 계산 (지금 살아있는 행).
   // 배치 주 절이 INTERVAL NULL DAY → NULL 이 되어 이 행을 영원히 집지 않는다. 파기일을 특정할
   // 수 없으므로 null. (실제로 파기되지 않는 상태이므로 날짜를 지어내면 거짓 고지가 된다.)
   if (!sendRequestAt || destroyDay === null || destroyDay === undefined) return null;

@@ -72,6 +72,9 @@ describe('DeliveryBatchService.deliveryDeliveryTargetDestroy', () => {
 
   const makeSut = (selectQb: any) => {
     const sut: any = Object.create(DeliveryBatchService.prototype);
+    // Object.create 로 생성자를 우회하므로 필드 초기화자(logger)가 실행되지 않는다.
+    // 배치가 처리 건수를 로그로 남기게 되면서 필요해졌다.
+    sut.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
     // §9 컷오버 게이트 — 단위 테스트 기본값은 '미전환 건'(legacy 경로 그대로 통과).
     (sut as any).cutoverGuard = {
       assertLegacyAllowed: jest.fn().mockResolvedValue(undefined),
@@ -283,29 +286,60 @@ describe('DeliveryBatchService.deliveryDeliveryTargetDestroy', () => {
     expect(params.piiTypes).not.toContain('핀상태 변경');
   });
 
+  // 각인 대상 판정은 select 결과(마스킹 이전 스냅샷)로 하므로, 행에 destroyedAt/deliveryTarget 을
+  // 실제로 담아야 의미 있는 검증이 된다. id 만 담으면 undefined 비교가 되어 공허 통과한다.
+  const aliveRow = (id: number) => ({ id, destroyedAt: null, deliveryTarget: '01011112222' });
+  const partiallyDestroyedRow = (id: number, at: Date) => ({ id, destroyedAt: at, deliveryTarget: '-' });
+  const revivedRow = (id: number, at: Date) => ({ id, destroyedAt: at, deliveryTarget: '01011112222' });
+
   it('파기 시각(destroyedAt)을 각인한다 — 파기일을 계산이 아니라 기록으로 답하기 위해', async () => {
     // 이 값이 없으면 화면이 파기일을 `발송요청일 + 파기일수` 로 역산하는데, 파기 규칙이 바뀌면
     // 옛 규칙으로 지운 행에 새 규칙이 소급돼 미래 날짜가 인쇄된다(재리뷰 H-1).
-    const sut = makeSut(makeSelectQb([{ id: 1 }, { id: 2 }]));
+    const selectQb = makeSelectQb([aliveRow(1), aliveRow(2)]);
+    const sut = makeSut(selectQb);
 
     await sut.deliveryDeliveryTargetDestroy();
 
     const stamp = sut.__stampQb;
     expect(stamp.calls.set).toHaveLength(1);
-    expect(stamp.calls.set[0].destroyedAt).toBeInstanceOf(Date);
     expect(stamp.calls.where[0][0]).toContain('id IN');
     expect(stamp.calls.where[0][1].ids).toEqual([1, 2]);
+    // ★ 타입만 보면(toBeInstanceOf(Date)) `new Date(0)` 같은 회귀가 통과한다 — 파기확인서에
+    //   1970-01-01 이 박제되는 변경이 그린으로 지나간다. 커트오프(:now)와 같은 값이어야 한다.
+    const [, cutoffParams] = selectQb.calls.where[0];
+    expect(stamp.calls.set[0].destroyedAt).toBe(cutoffParams.now);
   });
 
-  it('이미 파기 시각이 있는 행은 덮어쓰지 않는다 — 최초 파기일 고정', async () => {
-    // 재수집 조건이 "PII 5종 중 하나라도 미파기"라 부분 파기 행은 다음 회차에 다시 집힌다.
-    // 그때 무조건 덮으면 최초 파기일이 나중 회차 날짜로 밀려 실적이 훼손된다.
-    const sut = makeSut(makeSelectQb([{ id: 1 }]));
+  it('부분 파기 재수집 행은 최초 파기일을 유지한다 (각인 대상에서 제외)', async () => {
+    // 재수집 조건이 "PII 5종 중 하나라도 미파기"라, 이전 회차에 deliveryTarget 만 '-' 가 된 행은
+    // 다음 회차에 다시 집힌다. PII 는 그때 이미 사라졌으므로 최초 파기일이 정답이다.
+    const first = new Date('2026-01-31T00:00:00');
+    const sut = makeSut(makeSelectQb([aliveRow(1), partiallyDestroyedRow(2, first)]));
 
     await sut.deliveryDeliveryTargetDestroy();
 
-    const stamp = sut.__stampQb;
-    expect(stamp.calls.andWhere[0][0]).toContain('destroyedAt IS NULL');
+    expect(sut.__stampQb.calls.where[0][1].ids).toEqual([1]);
+  });
+
+  it('파기 후 수신처가 재입력된 행은 새 시각으로 갱신한다 (CS 수신정보 변경 경로)', async () => {
+    // destroyedAt 은 있는데 수신처가 살아있는 조합. 이 행의 PII 는 재입력 시점부터 지금까지
+    // 실제로 살아 있었으므로, 옛 날짜를 유지하면 그 기간을 숨기는 거짓 증명이 된다.
+    const first = new Date('2026-01-31T00:00:00');
+    const sut = makeSut(makeSelectQb([revivedRow(3, first)]));
+
+    await sut.deliveryDeliveryTargetDestroy();
+
+    expect(sut.__stampQb.calls.where[0][1].ids).toEqual([3]);
+  });
+
+  it('각인할 행이 하나도 없으면 각인 UPDATE 자체를 실행하지 않는다', async () => {
+    // 전부 부분 파기 재수집인 회차. 빈 IN 절은 SQL 문법 오류가 된다.
+    const first = new Date('2026-01-31T00:00:00');
+    const sut = makeSut(makeSelectQb([partiallyDestroyedRow(1, first), partiallyDestroyedRow(2, first)]));
+
+    await sut.deliveryDeliveryTargetDestroy();
+
+    expect(sut.__stampQb.calls.set).toHaveLength(0);
   });
 
   it('파기 시각 각인은 PII 마스킹과 분리된 UPDATE 다 — 마스킹 payload 에 섞이면 매 회차 덮인다', async () => {

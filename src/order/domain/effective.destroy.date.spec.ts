@@ -172,6 +172,20 @@ describe('resolveDeliveryDestroyAt — 발송건 1건의 파기일', () => {
       const at = resolveDeliveryDestroyAt({ ...alive, expireAt: null }, day('2026-01-01T14:00:00'), 180);
       expect(ymd(at)).toBe('2026-06-30');
     });
+
+    it('★ 파기 기록은 있는데 수신처가 살아있으면 실적이 아니라 예정일을 답한다 (CS 수신정보 변경)', () => {
+      // 파기 후 CS 사후 대응을 위해 수신처를 다시 채워 넣는 경로가 의도적으로 열려 있다
+      // (customer.service.service.ts 의 RECEIVER_CHANGE). 그러면 "언제 지웠나"(destroyedAt)와
+      // "지금 지워져 있나"(deliveryTarget)가 갈린다.
+      // destroyedAt 을 먼저 보면 살아있는 수신처 옆에 과거 파기일이 인쇄된다 — 한 장의 문서에
+      // 모순이 찍힌다. 그 행은 다음 배치 회차에 다시 파기되므로 예정일이 정답이다.
+      const at = resolveDeliveryDestroyAt(
+        { ...alive, destroyedAt: day('2026-01-31T00:00:00'), expireAt: day('2030-12-31T00:00:00') },
+        day('2026-01-01T14:00:00'),
+        180,
+      );
+      expect(ymd(at)).toBe('2031-01-01'); // 과거 실적(2026-01-31)이 아니라 예정일
+    });
   });
 });
 

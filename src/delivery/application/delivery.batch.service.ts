@@ -3204,6 +3204,15 @@ export class DeliveryBatchService {
       //   운영해 왔다 — 유효기간이 남은 쿠폰의 CS 대응을 보유기간 최소화보다 우선한 판단이다.
       //   따라서 이 주석을 근거로 "미검토 리스크"를 다시 제기할 필요는 없다.
       //   (승인 근거 문서는 이 레포에 없다 — 이력이 필요하면 운영팀에 확인할 것.)
+      //
+      //   [보류 대상이 '행 전체'라는 점 — 별도로 확인받은 사항]
+      //   이 가드는 행 단위로 걸리므로, 쿠폰 유효기간과 직접 관련이 없는 **환불 계좌**
+      //   (bankAccount / bankAccountOwner)도 함께 최대 5년 보관된다. 가드를 만든 명분은 쿠폰
+      //   CS 대응인데 금융 PII 까지 같은 기간 묶이는 셈이라 축이 다르다.
+      //   → 이 축도 **확인 후 현행 유지로 결정**했다. 환불 문의 역시 유효기간 동안 들어올 수
+      //     있으므로 계좌 정보도 그때까지 보유할 필요가 있다는 판단이다. 계좌 2종만 종전 일정대로
+      //     파기하려면 UPDATE 를 두 갈래로 나누고 가드 절을 계좌에는 적용하지 않으면 되지만,
+      //     지금은 의도적으로 그렇게 하지 않는다.
       //   실보유기간을 줄이는 방향으로 정책이 바뀐다면, 이 절에 couponStatus 조건을 되돌리는
       //   것이 아니라(그러면 CS 대응 요구가 다시 깨진다) 파기일수 입력 상한을 유효기간에 맞춰
       //   여는 쪽이 맞다.
@@ -3296,10 +3305,9 @@ export class DeliveryBatchService {
       // 이미 파기된 행에 수년 뒤 날짜가 인쇄됐다(재리뷰 H-1). 규칙 변경에 흔들리지 않으려면
       // 추론이 아니라 기록이어야 하므로 파기하는 그 자리에서 남긴다.
       //
-      // ⚠️ 이 UPDATE 의 대상 조건(위 WHERE)은 "PII 5종 중 **하나라도** 미파기"다. 즉 일부만
-      //    '-' 인 행은 다음 회차에 다시 집힌다. 그때 destroyedAt 을 무조건 덮으면 최초 파기일이
-      //    나중 회차 날짜로 밀려 실적이 훼손된다. 그래서 아래 UPDATE 에서는 destroyedAt 을 빼고,
-      //    `destroyedAt IS NULL` 인 행에만 따로 찍는다(최초 1회 고정).
+      // ⚠️ 이 UPDATE 의 대상 조건(위 WHERE)은 "PII 5종 중 **하나라도** 미파기"다. 즉 이미 한 번
+      //    파기된 행도 다시 집힐 수 있고, 그때 destroyedAt 을 어떻게 할지는 **재수집 사유에 따라
+      //    답이 갈린다**. 그래서 각인을 이 payload 에서 빼고 아래에서 사유별로 나눠 찍는다.
       await this.orderDeliveryRepository.update(
         { id: In(destroyIdList) },
         {
@@ -3311,16 +3319,52 @@ export class DeliveryBatchService {
         },
       );
 
-      // 최초 파기 시각 각인. 이미 값이 있는 행(= 이전 회차에 이미 파기된 부분 파기 행)은 건드리지
-      // 않는다. UpdateQueryBuilder 는 soft-delete 필터를 자동 부착하지 않으므로, 위 select 가
-      // withDeleted() 로 집어온 soft-delete 행도 그대로 갱신된다(집합 일치).
-      await this.orderDeliveryRepository
-        .createQueryBuilder()
-        .update(OrderDeliveryEntity)
-        .set({ destroyedAt: now })
-        .where('id IN (:...ids)', { ids: destroyIdList })
-        .andWhere('destroyedAt IS NULL')
-        .execute();
+      // ── 파기 시각 각인 ────────────────────────────────────────────────────────
+      // 재수집된 행은 두 종류이고, 각인 여부가 반대다.
+      //
+      //  (가) **부분 파기 재수집** — 이전 회차에 deliveryTarget 만 '-' 가 되고 나머지가 남은 행.
+      //       PII 는 그때 이미 사라졌으므로 최초 파기일이 정답이다 → 기존 값 **유지**.
+      //
+      //  (나) **부활 후 재파기** — 파기된 뒤 CS 수신정보 변경으로 수신처가 다시 채워진 행
+      //       (customer.service.service.ts 참조. 사후 CS 대응을 위해 **의도적으로 허용**된 경로다).
+      //       그 행의 PII 는 재입력 시점부터 지금까지 실제로 살아 있었으므로, 옛 날짜를 유지하면
+      //       "그때 이미 지웠다"는 거짓 증명이 된다 → 새 시각으로 **갱신**.
+      //
+      // 두 경우를 SQL 한 줄로 가를 수 없다. 위 마스킹 UPDATE 가 이미 돌아서 지금 DB 의
+      // deliveryTarget 은 전부 '-' 이기 때문이다. 판정 근거는 **마스킹 이전 상태**이므로,
+      // select 결과(orderDeliveryList)를 쓴다 — 이 목록은 UPDATE 전에 읽은 스냅샷이다.
+      const revivedIds = orderDeliveryList
+        .filter((od) => od.destroyedAt !== null && od.deliveryTarget !== destroyValue)
+        .map((od) => od.id);
+      const firstDestroyIds = orderDeliveryList.filter((od) => od.destroyedAt === null).map((od) => od.id);
+      const stampIdList = [...firstDestroyIds, ...revivedIds];
+
+      if (stampIdList.length > 0) {
+        // UpdateQueryBuilder 는 soft-delete 필터를 자동 부착하지 않으므로(TypeORM 은 select 에만
+        // 부착한다), 위 select 가 withDeleted() 로 집어온 soft-delete 행도 그대로 갱신된다.
+        await this.orderDeliveryRepository
+          .createQueryBuilder()
+          .update(OrderDeliveryEntity)
+          .set({ destroyedAt: now })
+          .where('id IN (:...ids)', { ids: stampIdList })
+          .execute();
+      }
+
+      // 관측 — 이 배치는 지금껏 처리 건수를 전혀 남기지 않았다. 파기일은 대외 증빙에 쓰이므로
+      // "몇 건을 어떤 사유로 각인했는지"가 사후 감사의 유일한 단서다.
+      const keptIdList = destroyIdList.filter((id) => !stampIdList.includes(id));
+      this.logger.log(
+        `[정기파기] 대상 ${destroyIdList.length}건 — 신규 각인 ${firstDestroyIds.length}건, ` +
+          `부활 재파기 갱신 ${revivedIds.length}건, 최초일 유지(부분 파기 재수집) ${keptIdList.length}건`,
+      );
+      if (revivedIds.length > 0) {
+        // 정상 경로이지만 드물어야 한다. 잦아지면 CS 수신정보 변경이 파기 건에 반복 적용되고
+        // 있다는 신호이므로 운영이 알아야 한다.
+        this.logger.warn(
+          `[정기파기] 파기 후 수신처가 재입력됐던 발송건을 재파기하고 파기일을 갱신함 — ` +
+            `orderDeliveryIds=[${revivedIds.join(', ')}]. 이전 파기일은 더 이상 유효하지 않다.`,
+        );
+      }
 
       // order_history 의 PII 도 함께 파기. '수신정보 변경요청'/'폐기 후 신규 발송' 이력의
       // beforeChange/afterChange 에는 평문 수신처가 남아 CS 이력 API(execStatusList)로 노출되므로,
