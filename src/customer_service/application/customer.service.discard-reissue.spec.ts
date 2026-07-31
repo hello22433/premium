@@ -1013,7 +1013,7 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
    * 원주문과 다른 금액으로 행사잔액을 차감했다.
    */
   describe('D3-70 재발행 단가는 주문시점 박제값(snapshot) 기준', () => {
-    const SNAPSHOT_PRICE = 2000; // 손님이 실제로 낸 값
+    const SNAPSHOT_PRICE = 2000; // 주문시점 액면가(= 원 차감액 기준). 할인·카드할증 반영 전이라 '실납부액'과는 다름
     const LIVE_PRICE = 5000; // 주문 뒤 관리자가 올린 현재 카탈로그가
 
     it('상품가 변경(snapshot 2000 != live 5000)이어도 행사 차감액은 2000 (live 를 따라가지 않음)', async () => {
