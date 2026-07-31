@@ -36,9 +36,17 @@ import { isDeliveryDestroyed, isEstimatedDestroyedAt } from './destroyed.at.sour
  *      3) refundStatus IS NULL OR NOT IN (PROGRESS, APPROVE)
  *         → 미반영. 그날 환불 진행중이면 배치가 건너뛰고 종결 후 회차에서 파기한다(더 늦어진다).
  *      4) PII 5종 중 하나라도 미파기
- *         → **반영 불필요.** deliveryTarget 이 '-' 인 행은 예측 경로에 도달하지 않기 때문이다
- *            (아래 판정 순서 참조). 다만 그 경로가 항상 실적을 돌려주는 것은 아니다 — 기록이
- *            없으면 null 이다.
+ *         → **부분 반영.** 이 함수가 "지금 지워져 있나"로 먼저 갈라내므로(아래 판정 순서),
+ *            완전히 지워진 행은 예측 경로에 도달하지 않는다. 그러나 술어(isDeliveryDestroyed)는
+ *            deliveryTarget + emailReceiverPhone **2종**이고 배치의 재수집 절은 **5종**이라
+ *            둘이 정확히 겹치지 않는다. 그래서 아래 두 종류는 예측 경로에 **도달한다**:
+ *              · 부활 행 — CS 수신정보 변경으로 emailReceiverPhone 만 되살아난 행
+ *              · 레거시 부분마스킹 행 — PII 5종 확대 이전에 일부만 마스킹된 행
+ *            둘 다 "아직 안 지워짐"이 맞는 판정이므로 예정일을 답하는 것 자체는 정확하다.
+ *            다만 파기확인서 게이트는 deliveryTarget 단일 판정이라 같은 행을 "발행 가능"으로
+ *            보므로, 서버가 두 답을 동시에 낸다(리뷰 3차 H-1). 그 조합의 처리는 게이트 쪽에
+ *            있어야 하며 여기서 날짜를 왜곡해 맞추지 않는다.
+ *            그리고 완전히 지워진 행이라도 항상 실적을 돌려주는 것은 아니다 — 기록이 없으면 null.
  *      5) (expireAt IS NULL OR DATE(expireAt) < DATE(now) OR deletedAt IS NOT NULL)
  *         → 반영. 유효기간 가드.
  *
@@ -89,13 +97,6 @@ export interface EffectiveDestroyAt {
   at: Date;
   kind: EffectiveDestroyAtKind;
 }
-
-/**
- * 파기 완료 마커. 정기파기(delivery.batch.service)·조기파기(early.destroy.service)가 PII 를
- * 마스킹할 때 쓰는 값이며, 파기확인서 게이트(destruction.certificate.gate.ts)의 판정 술어와도
- * 같아야 한다 — 세 곳이 어긋나면 "파기됐다"의 정의가 화면마다 달라진다.
- */
-const DESTROY_VALUE = '-';
 
 /** 시분초를 버린 로컬 날짜. */
 const atStartOfDay = (value: Date): Date => {

@@ -1,4 +1,5 @@
 import { resolveDeliveryDestroyAt, resolveOrderEffectiveDestroyAt } from './effective.destroy.date';
+import { DESTROYED_AT_SOURCE } from './destroyed.at.source';
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
 
 /**
@@ -21,7 +22,9 @@ describe('resolveDeliveryDestroyAt — 발송건 1건의 파기일', () => {
   /** {at, kind} 에서 날짜만 뽑는다. null 이면 null. */
   const ymd = (r: { at: Date } | null) => {
     const d = r?.at ?? null;
-    return d ? `${d.getFullYear()}-${`${d.getMonth() + 1}`.padStart(2, '0')}-${`${d.getDate()}`.padStart(2, '0')}` : null;
+    return d
+      ? `${d.getFullYear()}-${`${d.getMonth() + 1}`.padStart(2, '0')}-${`${d.getDate()}`.padStart(2, '0')}`
+      : null;
   };
   const kindOf = (r: { kind: string } | null) => r?.kind ?? null;
 
@@ -156,7 +159,11 @@ describe('resolveDeliveryDestroyAt — 발송건 1건의 파기일', () => {
     });
 
     it('실적일은 시분초를 버린 날짜로 절삭된다', () => {
-      const at = resolveDeliveryDestroyAt({ ...destroyedAt('2026-02-01T23:59:59'), expireAt: null }, day('2026-01-01'), 180);
+      const at = resolveDeliveryDestroyAt(
+        { ...destroyedAt('2026-02-01T23:59:59'), expireAt: null },
+        day('2026-01-01'),
+        180,
+      );
       expect(ymd(at)).toBe('2026-02-01');
       // ⚠️ ymd 는 시간 성분을 버리므로 위 단언만으로는 절삭을 검증하지 못한다(atStartOfDay 를
       //    지우고 인자를 그대로 반환해도 통과한다). 시각을 직접 봐야 실제로 고정된다.
@@ -220,7 +227,7 @@ describe('resolveDeliveryDestroyAt — 발송건 1건의 파기일', () => {
       expect(kindOf(at)).toBe('SCHEDULED');
     });
 
-    it("★ 이메일 수신번호만 되살아난 행도 부활로 본다 — deliveryTarget 은 여전히 마스킹 상태다 (리뷰 HIGH-1)", () => {
+    it('★ 이메일 수신번호만 되살아난 행도 부활로 본다 — deliveryTarget 은 여전히 마스킹 상태다 (리뷰 HIGH-1)', () => {
       // CS 수신정보 변경은 '이메일+핀발급' 건에서 emailReceiverPhone 만 갱신하고 deliveryTarget 은
       // 건드리지 않는다. deliveryTarget 만 보면 이 행이 "파기됨"으로 판정되어, 살아있는 전화번호
       // 옆에 과거 실적일이 인쇄된다 — 판정 순서를 뒤집어 막으려던 모순의 다른 얼굴이다.
@@ -257,7 +264,9 @@ describe('resolveOrderEffectiveDestroyAt — 주문 단위 집계', () => {
   /** {at, kind} 에서 날짜만 뽑는다. null 이면 null. */
   const ymd = (r: { at: Date } | null) => {
     const d = r?.at ?? null;
-    return d ? `${d.getFullYear()}-${`${d.getMonth() + 1}`.padStart(2, '0')}-${`${d.getDate()}`.padStart(2, '0')}` : null;
+    return d
+      ? `${d.getFullYear()}-${`${d.getMonth() + 1}`.padStart(2, '0')}-${`${d.getDate()}`.padStart(2, '0')}`
+      : null;
   };
   const kindOf = (r: { kind: string } | null) => r?.kind ?? null;
   const mapping = (deliveries: any[], destroyDay: number | null = 180) => ({
@@ -272,11 +281,24 @@ describe('resolveOrderEffectiveDestroyAt — 주문 단위 집계', () => {
     deliveryTarget: '01011112222',
     destroyedAt: null,
   });
-  /** 이미 파기된 발송건 — PII 마스킹과 파기 시각이 함께 있다. */
-  const destroyedDelivery = (expireAt: Date | null, destroyedAtIso: string) => ({
+  /**
+   * 이미 파기된 발송건 — PII 마스킹과 파기 시각이 함께 있다.
+   *
+   * ⚠️ source 를 **반드시** 넘겨야 한다. 생략하면 undefined → isEstimatedDestroyedAt 이
+   *    fail-closed 로 '추정'을 돌려주므로 kind 가 ACTUAL_ESTIMATED 가 된다. 예전에는 기본값이
+   *    없어서 `// ACTUAL` 이라 주석 단 픽스처가 실제로는 추정이었고, 그 결과 "실적 + 추정 →
+   *    추정" 테스트가 **양쪽 다 추정**이라 공허하게 통과했다(리뷰 3차 M-3). 기본값을 BATCH(실측)
+   *    로 두어 그 사고를 막는다 — 추정을 원하면 명시적으로 넘긴다.
+   */
+  const destroyedDelivery = (
+    expireAt: Date | null,
+    destroyedAtIso: string,
+    destroyedAtSource: string = DESTROYED_AT_SOURCE.BATCH,
+  ) => ({
     ...aliveDelivery(expireAt),
     deliveryTarget: '-',
     destroyedAt: new Date(destroyedAtIso),
+    destroyedAtSource,
   });
 
   it('발송건마다 파기일이 다르면 가장 늦은 날을 쓴다 — "이 날이면 전부 지워져 있다"를 보장', () => {
@@ -343,18 +365,29 @@ describe('resolveOrderEffectiveDestroyAt — 주문 단위 집계', () => {
 
   it('★ 주문 kind 는 가장 약한 것을 택한다 — 실적 + 예정이면 SCHEDULED', () => {
     // "이 날이면 전부 지워져 있다"는 진술은 가장 불확실한 구성요소만큼만 강하다.
-    const done = destroyedDelivery(new Date('2030-12-31T00:00:00'), '2026-02-01T09:00:00'); // ACTUAL
+    const done = destroyedDelivery(new Date('2030-12-31T00:00:00'), '2026-02-01T09:00:00'); // ACTUAL (기본 출처 BATCH)
     const pending = aliveDelivery(new Date('2026-03-01T00:00:00')); // SCHEDULED
     const order: any = { orderProductMappings: [mapping([done, pending])] };
     expect(resolveOrderEffectiveDestroyAt(order)?.kind).toBe('SCHEDULED');
   });
 
+  // ↓ 양성 대조군. 아래 '추정이 섞이면 강등' 테스트가 **공허하게** 통과하지 않는다는 증거다
+  //   (둘 다 추정인 픽스처면 강등 없이도 통과한다 — 실제로 그런 상태였다, 리뷰 3차 M-3).
+  it('★ 전 발송건이 실측이면 주문 전체가 ACTUAL 이다 (강등 테스트의 양성 대조군)', () => {
+    const a = destroyedDelivery(new Date('2030-12-31T00:00:00'), '2026-02-01T09:00:00', DESTROYED_AT_SOURCE.EARLY);
+    const b = destroyedDelivery(new Date('2030-12-31T00:00:00'), '2026-06-30T00:00:00', DESTROYED_AT_SOURCE.BATCH);
+    const order: any = { orderProductMappings: [mapping([a, b])] };
+    expect(resolveOrderEffectiveDestroyAt(order)?.kind).toBe('ACTUAL');
+  });
+
   it('★ 실적만 있어도 하나가 추정이면 주문 전체가 ACTUAL_ESTIMATED', () => {
-    const actual = destroyedDelivery(new Date('2030-12-31T00:00:00'), '2026-02-01T09:00:00');
-    const estimated = {
-      ...destroyedDelivery(new Date('2030-12-31T00:00:00'), '2026-06-30T00:00:00'),
-      destroyedAtSource: 'BACKFILL_ESTIMATE' as const,
-    };
+    // 위 대조군과 다른 점은 두 번째 건의 **출처 하나뿐**이다.
+    const actual = destroyedDelivery(new Date('2030-12-31T00:00:00'), '2026-02-01T09:00:00', DESTROYED_AT_SOURCE.EARLY);
+    const estimated = destroyedDelivery(
+      new Date('2030-12-31T00:00:00'),
+      '2026-06-30T00:00:00',
+      DESTROYED_AT_SOURCE.BACKFILL_ESTIMATE,
+    );
     const order: any = { orderProductMappings: [mapping([actual, estimated])] };
     expect(resolveOrderEffectiveDestroyAt(order)?.kind).toBe('ACTUAL_ESTIMATED');
   });

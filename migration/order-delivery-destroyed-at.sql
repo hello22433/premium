@@ -23,9 +23,11 @@
 -- 실제보다 위험해 보인다는 지적을 받아 여기 명시한다.
 --
 -- (가) 드라이런 — UPDATE 전에 "몇 건이 바뀌는가"를 먼저 센다.
---      · §2 대상 건수: §3 의 실행 전 가드 쿼리(아래 §3 첫 SELECT)를 **§2 를 돌리기 전에**
---        실행하면 그 값이 곧 §2 가 각인할 건수다. §2 후 같은 쿼리가 0 이 되는지로 검증한다.
+--      · §2 대상 건수: §3 앞의 카운트 쿼리를 **§2 를 돌리기 전에** 실행하면 그 값이 곧 §2 가
+--        각인할 건수다. §2 후 같은 쿼리가 0 이 되는지로 검증한다.
 --        (같은 쿼리가 실행 시점에 따라 '대상 수'와 '잔량 검증'이 된다 — 조건이 동일하므로.)
+--        ※ 이 쿼리를 빠뜨려도 순서 사고는 나지 않는다 — 방어는 §3 UPDATE 의 NOT EXISTS 에
+--          들어 있다. 이건 규모 파악용이지 게이트가 아니다.
 --      · §3 대상 건수:
 --          SELECT COUNT(*) AS `S3_대상건수`
 --          FROM `order_delivery` od
@@ -130,6 +132,11 @@ PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
 --   조기파기 이후 같은 매핑에 새 발송건이 생길 수 있으므로(CS 폐기후재발행이 동일
 --   order_product_mapping_id 로 INSERT), 파기 이후에 생긴 행에 "과거에 파기 완료" 도장이 찍히면
 --   허위 증명이 된다.
+-- ⚠️ soft-delete: early_destroy_request / _item 은 BaseEntity 상속이라 deleted_at 을 갖는다.
+--   애플리케이션이 "취소/삭제됨"으로 취급하는 요청서를 백필이 빼먹으면, 그 요청서가 살아 돌아와
+--   **실측(BACKFILL_EARLY) 도장**을 찍는다. 이 값은 대외 증빙에 나가고, 한 번 찍히면 전 구간의
+--   `destroyed_at IS NULL` 게이트 때문에 재실행으로 교정되지 않는다(리뷰 3차 H-3).
+--   → 후보 산출 전 구간에서 두 테이블 모두 deleted_at IS NULL 을 건다.
 -- ⚠️ 정밀도 비대칭: executed_at 은 datetime(초), created_at 은 datetime(6) 이다. 같은 초에
 --   먼저 생성된 행이 '나중'으로 판정되지 않도록 created_at 을 초 단위로 내려 비교한다.
 --   (절삭은 포함을 **넓히는** 방향이다. 살아있는 PII 에 도장이 찍히는 것은 아래
@@ -144,6 +151,7 @@ JOIN (
     JOIN `early_destroy_request` r ON r.id = i.early_destroy_request_id
     WHERE r.status = 'COMPLETED'
       AND r.executed_at IS NOT NULL
+      AND r.deleted_at IS NULL AND i.deleted_at IS NULL   -- ★ 아래 ⚠️ soft-delete 주석 참조
       AND i.order_delivery_id IS NOT NULL
 
     UNION ALL
@@ -155,6 +163,7 @@ JOIN (
     JOIN `order_delivery` od2 ON od2.order_product_mapping_id = i.order_product_mapping_id
     WHERE r.status = 'COMPLETED'
       AND r.executed_at IS NOT NULL
+      AND r.deleted_at IS NULL AND i.deleted_at IS NULL
       AND i.order_delivery_id IS NULL
       AND od2.created_at IS NOT NULL
       AND DATE_SUB(od2.created_at, INTERVAL MICROSECOND(od2.created_at) MICROSECOND) <= r.executed_at
@@ -167,27 +176,43 @@ WHERE od.destroyed_at IS NULL
   AND od.delivery_target = '-';   -- 실제로 지워진 행에만 각인(기록과 행 상태 불일치 방어)
 
 -- ── 3. 백필 (2순위) — 정기파기 추정 ───────────────────────────────────────────
--- ★ 실행 전 가드: §2 가 끝났는지 확인한다. **반드시 0 이어야 한다.**
---   §3 을 §2 보다 먼저 돌리면 조기파기 실측이 있는 행을 추정값이 선점하고, §2 는
---   `destroyed_at IS NULL` 조건이라 **영원히 못 고친다**. 아래 "대용량 분할 실행" 안내가
---   §3 만 따로 돌리도록 유도할 수 있어 특히 위험하다.
+-- ★★ 순서 방어는 **아래 UPDATE 의 NOT EXISTS 안에 들어 있다.** 이 SELECT 는 참고용 카운트다.
 --
+--   왜 SELECT 가드로는 부족한가 (리뷰 3차 C-1):
+--     · SELECT 는 출력만 할 뿐 다음 UPDATE 를 **막지 못한다**(fail-open).
+--     · 맨 아래 "대용량 분할 실행" 안내가 §3 UPDATE 만 잘라 반복 실행하라고 하므로,
+--       그 형태로 옮기는 순간 상단 가드는 자연스럽게 탈락한다.
+--     · 그리고 위반이 **자기은폐**된다 — §3 이 값을 채우면 그 행은 `destroyed_at IS NULL`
+--       에서 빠지므로, 사고 직후 이 가드를 다시 돌려도 0 이 나온다. §4 검증 전종도 0 이다.
+--       즉 "실측이 DB 에 있는데 추정이 박제됐다"를 **탐지할 방법이 없다.**
+--   → 순서 의존 자체를 없앤다. §3 UPDATE 가 조기파기 후보 행을 구조적으로 건너뛰므로,
+--     §3 을 먼저 돌리거나 id 구간으로 잘라 돌려도 §2 의 실측이 선점당하지 않는다.
+--
+-- 이 카운트의 용도는 둘이다(같은 쿼리, 실행 시점만 다르다):
+--   · §2 **전에** 돌리면  → §2 가 각인할 예정 건수(드라이런, §0 (가))
+--   · §2 **후에** 돌리면  → 0 이어야 한다. 0 이 아니면 §2 가 덜 돈 것이다.
 -- ⚠️ 후보 정의는 §2 와 **완전히 동일해야** 한다. 매핑 단위로 조인하면 조기파기와 무관한 형제
 --    발송건까지 잡혀서, §2 가 정상 완료돼도 0 이 아니게 된다(= 운영자가 정상 상황에서 §3 을
 --    중단한다). 아래는 §2 의 UNION ALL 후보를 그대로 재사용해 **발송건 단위**로 맞춘 것이다.
-SELECT COUNT(*) AS `S3_실행전_반드시0__조기파기_미각인_잔량`
+-- ⚠️ COUNT(DISTINCT od.id) — UNION ALL 은 한 발송건을 여러 요청서만큼 중복 산출하므로
+--    COUNT(*) 로 세면 **후보쌍 개수**가 나와 과대 보고된다(리뷰 3차 LOW-2).
+SELECT COUNT(DISTINCT od.id) AS `S2_대상건수_또는_S3실행전_잔량0`
 FROM `order_delivery` od
 JOIN (
   SELECT i.order_delivery_id AS delivery_id
   FROM `early_destroy_request_item` i
   JOIN `early_destroy_request` r ON r.id = i.early_destroy_request_id
-  WHERE r.status = 'COMPLETED' AND r.executed_at IS NOT NULL AND i.order_delivery_id IS NOT NULL
+  WHERE r.status = 'COMPLETED' AND r.executed_at IS NOT NULL
+    AND r.deleted_at IS NULL AND i.deleted_at IS NULL
+    AND i.order_delivery_id IS NOT NULL
   UNION ALL
   SELECT od2.id AS delivery_id
   FROM `early_destroy_request_item` i
   JOIN `early_destroy_request` r ON r.id = i.early_destroy_request_id
   JOIN `order_delivery` od2 ON od2.order_product_mapping_id = i.order_product_mapping_id
-  WHERE r.status = 'COMPLETED' AND r.executed_at IS NOT NULL AND i.order_delivery_id IS NULL
+  WHERE r.status = 'COMPLETED' AND r.executed_at IS NOT NULL
+    AND r.deleted_at IS NULL AND i.deleted_at IS NULL
+    AND i.order_delivery_id IS NULL
     AND od2.created_at IS NOT NULL
     AND DATE_SUB(od2.created_at, INTERVAL MICROSECOND(od2.created_at) MICROSECOND) <= r.executed_at
 ) c ON c.delivery_id = od.id
@@ -226,7 +251,34 @@ SET od.destroyed_at = LEAST(
 WHERE od.destroyed_at IS NULL
   AND od.delivery_target = '-'
   AND opm.send_request_at IS NOT NULL
-  AND opm.request_to_destroy_personal_info_day IS NOT NULL;
+  AND opm.request_to_destroy_personal_info_day IS NOT NULL
+  -- 계산 결과가 NULL 이면 `destroyed_at IS NULL` + `source='BACKFILL_ESTIMATE'` 고아 행이 생겨
+  -- §4-1 이 영원히 수렴하지 않는다(재실행해도 같은 행이 다시 잡힌다). 잘못된 날짜/일수(예:
+  -- '0000-00-00', 음수 일수)로 DATE_ADD 가 NULL 을 낼 수 있으므로 명시적으로 배제한다.
+  AND DATE_ADD(DATE(opm.send_request_at), INTERVAL opm.request_to_destroy_personal_info_day DAY) IS NOT NULL
+  -- ★★ C-1 fail-closed — 순서 방어를 WHERE 로 흡수했다.
+  --   조기파기 실측 후보(= §2 가 채워야 할 행)는 §3 이 **구조적으로** 건드리지 않는다.
+  --   상단 SELECT 가드와 달리 이건 분할 실행으로 잘라 붙여도 함께 따라간다.
+  --   후보 정의는 §2 의 UNION ALL 두 갈래를 상관 서브쿼리로 옮겨 적은 것이다(동일 조건).
+  AND NOT EXISTS (
+    SELECT 1
+    FROM `early_destroy_request_item` i
+    JOIN `early_destroy_request` r ON r.id = i.early_destroy_request_id
+    WHERE r.status = 'COMPLETED'
+      AND r.executed_at IS NOT NULL
+      AND r.deleted_at IS NULL AND i.deleted_at IS NULL
+      AND (
+        -- (a) 발송건 지정
+        i.order_delivery_id = od.id
+        -- (b) 매핑 전체 + 시간축
+        OR (
+          i.order_delivery_id IS NULL
+          AND i.order_product_mapping_id = od.order_product_mapping_id
+          AND od.created_at IS NOT NULL
+          AND DATE_SUB(od.created_at, INTERVAL MICROSECOND(od.created_at) MICROSECOND) <= r.executed_at
+        )
+      )
+  );
 
 -- ── 4. 검증 ──────────────────────────────────────────────────────────────────
 -- 4-1. 남은 미확정 행 = 파기됐는데 시각을 모르는 행. 이 행들은 API 가 파기일 null 로 응답한다.
@@ -280,13 +332,6 @@ WHERE od.destroyed_at IS NOT NULL
 GROUP BY od.destroyed_at_source
 ORDER BY `건수` DESC;
 
--- 4-6. 출처 누락 검증 — 파기 시각은 있는데 출처가 없는 행. 반드시 0 이어야 한다.
---      0 이 아니면 각인 경로 중 하나가 출처를 안 쓰고 있다는 뜻이고, 그 행들은 사실/추정을
---      영원히 판별할 수 없다.
-SELECT COUNT(*) AS `시각있는데_출처없음_반드시0`
-FROM `order_delivery`
-WHERE destroyed_at IS NOT NULL AND destroyed_at_source IS NULL;
-
 -- 4-5. §3 (나) 검증 — 파기일수 사후 편집으로 추정값이 실제와 어긋날 가능성이 있는 행.
 --      ⚠️ **과대 보고된다.** updated_at 은 파기일수뿐 아니라 그 매핑의 **어떤 컬럼이 바뀌어도**
 --         갱신되므로, 여기 걸린 행이 전부 일수 편집인 것은 아니다. "확정"이 아니라 "이 행들은
@@ -300,8 +345,41 @@ WHERE od.destroyed_at IS NOT NULL
   AND opm.updated_at > od.destroyed_at
   AND od.destroyed_at_source = 'BACKFILL_ESTIMATE';   -- 추정 각인 행으로 한정(시각 프록시는 틀린다)
 
+-- 4-6. 출처 누락 검증 — 파기 시각은 있는데 출처가 없는 행. 반드시 0 이어야 한다.
+--      0 이 아니면 각인 경로 중 하나가 출처를 안 쓰고 있다는 뜻이고, 그 행들은 사실/추정을
+--      영원히 판별할 수 없다. 역방향(출처는 있는데 시각이 없음)도 함께 센다 — §3 의 날짜 계산이
+--      NULL 을 내면 생기는 고아 행으로, §4-1 이 영원히 수렴하지 않게 만든다.
+SELECT
+  COALESCE(SUM(CASE WHEN destroyed_at IS NOT NULL AND destroyed_at_source IS NULL
+           THEN 1 ELSE 0 END), 0)                                  AS `시각있는데_출처없음_반드시0`,
+  COALESCE(SUM(CASE WHEN destroyed_at IS NULL AND destroyed_at_source IS NOT NULL
+           THEN 1 ELSE 0 END), 0)                                  AS `출처있는데_시각없음_반드시0`
+FROM `order_delivery`;
+
+-- 4-7. §2 가 **잘못된 행에** 도장을 찍었는가 (리뷰 3차 M-5).
+--      §4-1~4-6 은 전부 "빠진 것"을 세지만, 이건 "잘못 찍힌 것"을 센다. §2 의 시간축 필터가
+--      깨지면(집계-필터 순서 역전 등) 파기 이후 생성된 행에 과거 도장이 찍히는데, 그 상태는
+--      **파기 시각 < 발송건 생성 시각** 이라는 물리적 모순으로 드러난다. 반드시 0 이어야 한다.
+--      0 이 아니면 그 행들은 "생기기도 전에 파기됐다"고 증언하는 셈이므로 §0 (나)로 되돌릴 것.
+SELECT COUNT(*) AS `파기시각이_생성시각보다_이름_반드시0`
+FROM `order_delivery`
+WHERE destroyed_at IS NOT NULL
+  AND created_at IS NOT NULL
+  AND destroyed_at < DATE_SUB(created_at, INTERVAL MICROSECOND(created_at) MICROSECOND);
+
 -- ── 참고: 대용량 분할 실행 ────────────────────────────────────────────────────
 -- order_delivery 가 수백만 행이면 §3 을 한 번에 돌리지 말고 id 구간으로 쪼갠다.
--- 전 구간이 `destroyed_at IS NULL` 조건이라 중단·재실행이 안전하다.
---   UPDATE ... WHERE od.destroyed_at IS NULL AND od.delivery_target = '-'
---     AND od.id BETWEEN @from AND @to ...
+--
+-- ★ 잘라 쓸 때 **NOT EXISTS 절을 반드시 함께 복사할 것.** 그 절이 §2 실측을 지키는 유일한
+--   방어다(상단 SELECT 가드는 참고용 카운트일 뿐 UPDATE 를 막지 못한다 — 리뷰 3차 C-1).
+--   전 구간이 `destroyed_at IS NULL` 조건이라 중단·재실행 자체는 안전하다.
+--
+--   UPDATE `order_delivery` od
+--   JOIN `order_product_mapping` opm ON opm.id = od.order_product_mapping_id
+--   SET ... (§3 의 SET 그대로)
+--   WHERE od.destroyed_at IS NULL AND od.delivery_target = '-'
+--     AND opm.send_request_at IS NOT NULL
+--     AND opm.request_to_destroy_personal_info_day IS NOT NULL
+--     AND DATE_ADD(DATE(opm.send_request_at), INTERVAL opm.request_to_destroy_personal_info_day DAY) IS NOT NULL
+--     AND NOT EXISTS ( ... §3 의 NOT EXISTS 그대로 ... )   -- ★ 생략 금지
+--     AND od.id BETWEEN @from AND @to;
