@@ -18,7 +18,9 @@ export const AlimTalkTemplate = (orderDelivery: OrderDeliveryEntity) => {
   const brandKoreanName = displayBrand.nameKorean === '신세계' ? '이마트' : displayBrand.nameKorean;
 
   // 발행자: 대행주문인 경우 clientUser의 회사명, 아니면 주문자의 회사명
-  const publisherName = order.clientUser?.company?.businessName ?? order.user!.company?.businessName ?? '';
+  // user 는 non-null 단언하지 않는다 — 관계 미로딩(외부 API 경로 등)이면 단언이 아래 '' 폴백보다
+  // 먼저 TypeError 를 내고, 호출부가 그것을 "알림톡 실패"로 오인해 MMS 폴백으로 흘려보낸다.
+  const publisherName = order.clientUser?.company?.businessName ?? order.user?.company?.businessName ?? '';
 
   const sendTitle = orderDelivery.orderProductMapping.sendTitle ?? '';
 

@@ -2,6 +2,7 @@ import { OrderEntity } from '../../entity/order.entity';
 import { OrderDeliveryRefundStatusEnum } from '../../delivery/interface/order.delivery.refund.status.enum';
 import { IOrderStatus } from '../interface/order.status';
 import { DestructionCertificateBlockReason } from '../interface/destruction.certificate.block.reason';
+import { resolveOrderEffectiveDestroyAt } from './effective.destroy.date';
 
 /**
  * 파기 완료 마커. 정기파기(delivery.batch.service)·조기파기(early.destroy.service)가
@@ -26,6 +27,22 @@ export interface DestructionCertificateGateResult {
  * 환불 가드(REFUND_IN_PROGRESS)는 "미파기" 판정보다 먼저 반환하되, 전량 파기 완료면
  * 환불 여부와 무관하게 발행 가능하다 — 이미 지운 주문의 확인서를 막을 이유가 없다.
  *
+ * ★ 파기일 축 교차 검증 (리뷰 3차 H-1)
+ *   위 술어는 deliveryTarget 단일이고, 파기일 계산은 deliveryTarget + emailReceiverPhone
+ *   2축(isDeliveryDestroyed)이다. 이 비대칭 때문에 두 답이 어긋나는 조합이 실재한다:
+ *     delivery_target = '-'  +  email_receiver_phone = <살아있는 암호화 전화번호>
+ *   (CS 수신정보 변경의 EMAIL+핀발급 분기가 emailReceiverPhone 만 갱신하기 때문. 그리고
+ *    PII 5종 확대 이전에 일부만 마스킹된 레거시 행도 같은 모양이다.)
+ *   그 행에서 게이트는 "발행 가능", 파기일은 "아직 안 지움(예정일)"을 답해, **살아있는 PII 옆에
+ *   파기 완료 증명서**가 나가거나 파기일 칸이 빈 채로 발행된다. 어느 쪽이든 증빙이 깨진다.
+ *   → 술어를 넓히는 대신 **파기일 축을 교차 검증**한다. 날짜가 증빙에 실리므로, 날짜를 답할 수
+ *     없는 주문은 애초에 발행할 수 없다는 것이 이 게이트의 원래 의미와도 맞는다.
+ *
+ *   ⚠️ ACTUAL_ESTIMATED(=백필 역산)는 **막지 않는다.** 컬럼 신설 이전에 파기된 행은 전부
+ *      이 성격이므로 막으면 **레거시 주문 전체가 발행 불가**가 된다. 그 행들도 "파기됐다"는
+ *      사실 자체는 확정이고(deliveryTarget 이 '-'), 불확실한 것은 날짜뿐이다. 날짜 정확도는
+ *      응답의 effectiveDestroyAtKind 로 프론트에 전달해 표기로 처리한다.
+ *
  * order.orderProductMappings(.orderDeliveries) 가 로드된 엔티티를 전제한다.
  */
 export function resolveDestructionCertificateGate(order: OrderEntity): DestructionCertificateGateResult {
@@ -41,6 +58,17 @@ export function resolveDestructionCertificateGate(order: OrderEntity): Destructi
   }
 
   if (deliveries.every((delivery) => delivery.deliveryTarget === DESTROY_VALUE)) {
+    // 위 ★ 주석 참조 — 파기일을 답할 수 없으면 발행하지 않는다.
+    const destroyAt = resolveOrderEffectiveDestroyAt(order);
+    if (destroyAt === null) {
+      // 파기는 됐는데 시각 기록이 없다(백필 누락 / 배포 순서 사고). 날짜 칸을 채울 수 없다.
+      return { canIssue: false, reason: DestructionCertificateBlockReason.DESTROY_TIME_UNKNOWN };
+    }
+    if (destroyAt.kind === 'SCHEDULED') {
+      // 2축 술어로는 아직 안 지워진 행이 섞여 있다(수신처 부활 / 레거시 부분마스킹).
+      // 사유는 NOT_DESTROYED 가 정확하다 — 실제로 남아 있는 PII 가 있다.
+      return { canIssue: false, reason: DestructionCertificateBlockReason.NOT_DESTROYED };
+    }
     return { canIssue: true, reason: null };
   }
 
@@ -67,6 +95,10 @@ const BLOCK_REASON_MESSAGE: Record<DestructionCertificateBlockReason, string> = 
   [DestructionCertificateBlockReason.NOT_DESTROYED]: '개인정보 파기가 아직 진행되지 않았습니다.',
   [DestructionCertificateBlockReason.REFUND_IN_PROGRESS]:
     '환불 진행 중인 건으로 파기 실패했습니다. 고객센터(1644-3614)로 문의해주세요.',
+  // 파기는 됐으나 시각 기록이 없는 경우. 고객에게 "안 지웠다"고 말하면 거짓이므로 사유를 분리한다.
+  // 이 문구가 자주 보이면 백필이 덜 돌았다는 신호다(백필 §4-1 의 마지막 컬럼과 같은 모집단).
+  [DestructionCertificateBlockReason.DESTROY_TIME_UNKNOWN]:
+    '파기 일자를 확인 중입니다. 고객센터(1644-3614)로 문의해주세요.',
 };
 
 export function destructionCertificateBlockMessage(reason: DestructionCertificateBlockReason | null): string {

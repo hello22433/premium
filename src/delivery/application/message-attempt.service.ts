@@ -221,6 +221,9 @@ export class MessageAttemptService {
 
       try {
         const result = await send();
+        // 외부 발송 이후의 종결 기록은 관찰 작업이다. resolveAlimTalk 이 자체적으로 예외를 삼키므로
+        // 여기서 호출자에게 전파되지 않는다 — 전파되면 호출자(sendAlimTalk)가 "알림톡 실패"로 읽고
+        // SMS/MMS 폴백을 실행해 같은 쿠폰을 중복 발송한다(message-attempt.service.spec 이 고정).
         if (attempt) {
           await this.resolveAlimTalk(attempt, accepted(result), !!ctx.awaitsReport);
         }
@@ -232,6 +235,7 @@ export class MessageAttemptService {
         throw e;
       }
     } finally {
+      // closeGate 도 슬롯 해제 실패를 자체적으로 삼킨다(리스 만료·sweep 가 회수).
       await this.closeGate(gate);
     }
   }

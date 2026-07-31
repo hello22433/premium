@@ -1,5 +1,6 @@
 import { Column, Entity, JoinColumn, ManyToOne, OneToMany, PrimaryGeneratedColumn } from 'typeorm';
 import { BaseEntity } from '../common/entity/base.entity';
+import { DestroyedAtSource } from '../order/domain/destroyed.at.source';
 import { OrderProductMappingEntity } from './order.product.mapping.entity';
 import { IOrderDeliveryStatus } from '../delivery/interface/order.delivery.status';
 import { IOrderSendMethod } from '../order/interface/order.send.method';
@@ -54,6 +55,70 @@ export class OrderDeliveryEntity extends BaseEntity {
 
   @Column({ type: 'datetime', nullable: true, comment: '만료 시간' })
   expireAt: Date | null;
+
+  /**
+   * 개인정보(PII) 파기 실행 시각. **실적 기록**이다 — 계산값이 아니다.
+   *
+   * 이 행의 PII 5종(deliveryTarget / originalDeliveryTarget / emailReceiverPhone /
+   * bankAccount / bankAccountOwner)을 '-' 로 덮어쓴 시점을 기록한다. 기록 주체는 둘이다:
+   *  · 정기파기 배치 — delivery.batch.service.ts 의 deliveryDeliveryTargetDestroy
+   *  · 조기파기      — early.destroy.service.ts 의 executeRequest
+   *
+   * ⚠️ 왜 필요한가 — 이 컬럼이 없던 시절에는 "언제 파기했나"를 **계산으로 역추론**했다.
+   *    `발송요청일 + 파기일수` 로 예정일을 구해 그것을 실적처럼 썼는데, 이 방식은 파기 규칙이
+   *    바뀌는 순간 깨진다. 실제로 쿠폰 유효기간 가드가 들어오면서 규칙이
+   *    `발송요청일 + 파기일수` → `MAX(발송요청일 + 파기일수, 유효기간 만료일 + 1일)` 로 바뀌었고,
+   *    옛 규칙으로 이미 파기된 행에 새 규칙을 소급 적용하니 **이미 지운 건에 수년 뒤 미래 날짜**가
+   *    나왔다. 파기확인서(대외 증빙)의 파기일 칸에 쓰이는 값이라 허위 증명이 된다.
+   *    그래서 추론을 버리고 **파기 시점에 그냥 적는다**. 규칙이 또 바뀌어도 과거 기록은 안 흔들린다.
+   *
+   * NULL 의 뜻은 두 가지이고, "지금 지워져 있나"로 구분한다:
+   *  · 안 지워짐 → 아직 파기되지 않았다(정상). 파기일은 예정일로 계산한다.
+   *  · 지워짐   → **파기됐는데 시각을 모른다.** 컬럼 신설 시 백필에서 기준 컬럼
+   *    (sendRequestAt / requestToDestroyPersonalInfoDay)이 결측이라 값을 못 채운 행이다.
+   *    이때는 날짜를 지어내지 않고 null 로 응답한다(effective.destroy.date.ts 참조).
+   *
+   * ⚠️ 판정 술어는 deliveryTarget **단일이 아니다.** isDeliveryDestroyed(destroyed.at.source.ts)
+   *    가 deliveryTarget + emailReceiverPhone 2축으로 본다. CS 수신정보 변경이 이메일+핀발급
+   *    건에서 emailReceiverPhone 만 되살리기 때문에, deliveryTarget 하나로 판정하면 살아있는
+   *    PII 옆에 과거 파기일이 인쇄된다. 술어는 그 파일 하나에만 두고 여기서 복제하지 말 것.
+   *
+   * 시각(시분초)까지 담지만 화면·확인서는 날짜만 쓴다. 초 단위를 남기는 이유는 감사 추적용이다.
+   */
+  @Column({ type: 'datetime', nullable: true, comment: '개인정보 파기 실행 시각' })
+  destroyedAt: Date | null;
+
+  /**
+   * destroyedAt 의 **출처**. 그 값이 사실인지 추정인지를 판별하는 유일한 근거다.
+   *
+   * ⚠️ 왜 별도 컬럼이 필요한가 — destroyedAt 에는 성격이 다른 값이 섞인다:
+   *      · 조기파기/정기파기가 각인한 값 → **사실**(그때 실제로 지웠다)
+   *      · 컬럼 신설 백필 §3 이 계산한 값 → **추정**(옛 규칙으로 역산)
+   *    그런데 날짜만 봐서는 어느 쪽인지 알 수 없다. 이 값이 파기확인서(대외 증빙)에 나가므로,
+   *    "이 날짜가 실제 기록입니까"에 답할 수 없다는 것은 감당하기 어려운 모호함이다.
+   *
+   *    시각으로 추론하려던 시도는 실패했다. `TIME = '00:00:00'` 이면 추정이라는 프록시는
+   *    양방향으로 틀린다 — 백필의 LEAST 가 NOW() 를 고른 추정 행은 자정이 아니고, 자정 크론
+   *    (0 0 * * *)이 찍는 **진짜 실측**은 자정이다. 조기파기 요청과의 매칭도 그 축만 답할 뿐
+   *    배치 실측과 백필 추정을 가르지 못한다. 그래서 값 자체에 출처를 적는다.
+   *
+   * 값:
+   *  · EARLY             조기파기 실행 시 각인 (early.destroy.service)          — 사실
+   *  · BATCH             정기파기 배치 실행 시 각인 (delivery.batch.service)     — 사실
+   *  · BACKFILL_EARLY    컬럼 신설 백필 §2. early_destroy_request.executed_at 복사 — 사실
+   *  · BACKFILL_ESTIMATE 컬럼 신설 백필 §3. `발송요청일 + 파기일수` 계산값        — **추정**
+   *
+   * 사실/추정 축으로는 BACKFILL_ESTIMATE 하나만 추정이다. 나머지 셋은 전부 실측이며,
+   * BACKFILL_* 접두는 "코드 경로가 아니라 일회성 마이그레이션이 기록했다"는 뜻이다.
+   *
+   * NULL 은 destroyedAt 이 NULL 인 행(아직 파기 안 됨)과, 백필 이전에 각인됐는데 출처를
+   * 모르는 행을 뜻한다. 후자는 정상 운영에서 나오지 않아야 한다.
+   *
+   * enum 이 아니라 varchar 인 이유: 값이 추가될 때 ALTER 를 다시 돌지 않기 위해서다.
+   * (이 레포는 스키마를 수기 SQL 로 관리하므로 ALTER 한 번의 비용이 작지 않다.)
+   */
+  @Column({ type: 'varchar', length: 32, nullable: true, comment: '파기 시각의 출처 (사실/추정 판별)' })
+  destroyedAtSource: DestroyedAtSource | null;
 
   @Column({ type: 'varchar', length: 256, nullable: true, comment: '트랜잭션 id' })
   transactionId: string | null;

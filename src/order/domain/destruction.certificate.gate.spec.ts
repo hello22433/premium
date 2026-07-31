@@ -6,17 +6,50 @@ import { OrderDeliveryRefundStatusEnum } from '../../delivery/interface/order.de
 /**
  * 파기확인서 발행 게이트 판정 회귀 테스트 (0710/backend-response 문서의 판정식).
  *
- * 판정은 deliveryTarget 단일 컬럼 — 날짜(sendRequestAt + 파기일수)는 판정에 쓰이지 않는다.
- * 조기파기 직후(파기예정일 전)에도 발행 가능해야 한다는 것이 핵심 요구.
+ * 판정 술어는 여전히 deliveryTarget 단일 컬럼이고, **파기예정일은 판정에 쓰이지 않는다** —
+ * 조기파기 직후(파기예정일 전)에도 발행 가능해야 한다는 것이 원래 요구다.
+ *
+ * 여기에 파기일 축 교차 검증이 하나 얹혔다(리뷰 3차 H-1): 전량 파기로 보이더라도
+ *  · 파기 시각을 특정할 수 없으면 → DESTROY_TIME_UNKNOWN
+ *  · 2축 술어로는 아직 안 지워진 행이 섞여 있으면(수신처 부활 등) → NOT_DESTROYED
+ * 날짜가 확인서에 실리므로, 날짜를 답할 수 없으면 발행도 못 한다.
+ * ⚠️ 백필 역산(ACTUAL_ESTIMATED)은 막지 않는다 — 막으면 레거시 주문 전체가 발행 불가가 된다.
  */
 describe('resolveDestructionCertificateGate', () => {
   const makeOrder = (status: IOrderStatus, deliveriesPerMapping: any[][]): any => ({
     status,
-    orderProductMappings: deliveriesPerMapping.map((orderDeliveries) => ({ orderDeliveries })),
+    orderProductMappings: deliveriesPerMapping.map((orderDeliveries) => ({
+      orderDeliveries,
+      sendRequestAt: new Date('2026-01-01T14:00:00'),
+      requestToDestroyPersonalInfoDay: 180,
+    })),
   });
 
-  const destroyed = (over: any = {}) => ({ deliveryTarget: '-', refundStatus: null, ...over });
-  const alive = (over: any = {}) => ({ deliveryTarget: 'enc-01012341234', refundStatus: null, ...over });
+  /**
+   * 파기 완료 발송건. 파기 시각 각인까지 있는 정상 상태를 기본값으로 둔다 —
+   * 각인이 빠지면 이제 게이트가 막으므로, 각인 없는 픽스처를 기본으로 두면 전 케이스가
+   * DESTROY_TIME_UNKNOWN 으로 쏠려 원래 검증 의도가 사라진다.
+   */
+  const destroyed = (over: any = {}) => ({
+    deliveryTarget: '-',
+    emailReceiverPhone: '-',
+    refundStatus: null,
+    expireAt: null,
+    deletedAt: null,
+    destroyedAt: new Date('2026-02-01T09:30:00'),
+    destroyedAtSource: 'BATCH',
+    ...over,
+  });
+  const alive = (over: any = {}) => ({
+    deliveryTarget: 'enc-01012341234',
+    emailReceiverPhone: null,
+    refundStatus: null,
+    expireAt: null,
+    deletedAt: null,
+    destroyedAt: null,
+    destroyedAtSource: null,
+    ...over,
+  });
 
   it('발송 완료가 아니면 DELIVERY_NOT_COMPLETE', () => {
     const order = makeOrder(IOrderStatus.DELIVERY_REQUEST, [[destroyed()]]);
@@ -97,6 +130,60 @@ describe('resolveDestructionCertificateGate', () => {
     expect(resolveDestructionCertificateGate(order)).toEqual({
       canIssue: false,
       reason: DestructionCertificateBlockReason.NOT_DESTROYED,
+    });
+  });
+
+  describe('파기일 축 교차 검증 (리뷰 3차 H-1)', () => {
+    it('★ 파기됐는데 시각 기록이 없으면 DESTROY_TIME_UNKNOWN — 날짜 칸을 채울 수 없다', () => {
+      const order = makeOrder(IOrderStatus.DELIVERY_COMPLETE, [
+        [destroyed(), destroyed({ destroyedAt: null, destroyedAtSource: null })],
+      ]);
+      expect(resolveDestructionCertificateGate(order)).toEqual({
+        canIssue: false,
+        reason: DestructionCertificateBlockReason.DESTROY_TIME_UNKNOWN,
+      });
+    });
+
+    it('★ 수신처가 되살아난 행이 섞이면 NOT_DESTROYED — 게이트만 보면 통과하던 조합', () => {
+      // delivery_target='-' 인데 email_receiver_phone 은 살아있다.
+      // 1축 게이트는 "전량 파기"로 읽지만 실제로는 PII 가 남아 있다.
+      const order = makeOrder(IOrderStatus.DELIVERY_COMPLETE, [
+        [destroyed(), destroyed({ emailReceiverPhone: 'enc-01099998888' })],
+      ]);
+      expect(resolveDestructionCertificateGate(order)).toEqual({
+        canIssue: false,
+        reason: DestructionCertificateBlockReason.NOT_DESTROYED,
+      });
+    });
+
+    it('★ 레거시 부분마스킹 행(유효기간 잔존)도 같은 이유로 막힌다 — 미래 날짜 인쇄 차단', () => {
+      const order = makeOrder(IOrderStatus.DELIVERY_COMPLETE, [
+        [
+          destroyed({
+            emailReceiverPhone: 'enc-01099998888',
+            expireAt: new Date('2031-01-01T00:00:00'),
+            destroyedAt: new Date('2026-06-30T00:00:00'),
+            destroyedAtSource: 'BACKFILL_ESTIMATE',
+          }),
+        ],
+      ]);
+      expect(resolveDestructionCertificateGate(order)).toEqual({
+        canIssue: false,
+        reason: DestructionCertificateBlockReason.NOT_DESTROYED,
+      });
+    });
+
+    it('★ 백필 역산(ACTUAL_ESTIMATED)은 발행 가능하다 — 막으면 레거시 전체가 발행 불가', () => {
+      // 파기 사실은 확정이고 날짜만 추정이다. 정확도는 effectiveDestroyAtKind 로 전달한다.
+      const order = makeOrder(IOrderStatus.DELIVERY_COMPLETE, [
+        [destroyed({ destroyedAtSource: 'BACKFILL_ESTIMATE' }), destroyed({ destroyedAtSource: 'BACKFILL_EARLY' })],
+      ]);
+      expect(resolveDestructionCertificateGate(order)).toEqual({ canIssue: true, reason: null });
+    });
+
+    it('출처가 비어 있어도(시각은 있음) 발행은 가능하다 — 막는 기준은 날짜 유무다', () => {
+      const order = makeOrder(IOrderStatus.DELIVERY_COMPLETE, [[destroyed({ destroyedAtSource: null })]]);
+      expect(resolveDestructionCertificateGate(order)).toEqual({ canIssue: true, reason: null });
     });
   });
 });

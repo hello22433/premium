@@ -303,6 +303,71 @@ describe('MessageAttemptService — 시도 추적(outbox 2단 마크)', () => {
       expect(markDelivered).toHaveBeenCalledWith(orderDeliveryId, MessageAttemptChannel.ALIM_TALK, expect.any(Date));
     });
 
+    /**
+     * `resolveAlimTalk`·`closeGate` 는 이미 자체적으로 예외를 삼킨다. 아래 3건은 그 **기존 방어를
+     * 계약으로 잠근다** — 새 코드가 방어를 걷어내면 외부 발송이 나간 뒤의 추적 실패가 호출자로
+     * 전파되고, 호출자(sendAlimTalk)가 그것을 "알림톡 실패"로 읽어 SMS/MMS 폴백을 실행해
+     * **같은 쿠폰을 중복 발송**한다.
+     */
+    it('발송 성공 후 시도 종결 기록이 실패해도 결과를 반환한다(폴백 유발 금지)', async () => {
+      const update = jest
+        .fn()
+        .mockResolvedValueOnce({ affected: 1 }) // prepare 단계
+        .mockRejectedValue(new Error('db down')); // resolveAlimTalk 단계
+      const { service } = createService({ update });
+
+      await expect(
+        service.trackAlimTalk(
+          {
+            orderDeliveryId,
+            slotOp: DeliveryExclusiveOp.MESSAGE_SEND,
+            attemptType: MessageAttemptType.INITIAL,
+            sendReason: 'COUPON',
+          },
+          async () => ({ report: { code: 'A000' } }),
+          (result) => result.report.code === 'A000',
+        ),
+      ).resolves.toMatchObject({ report: { code: 'A000' } });
+    });
+
+    it('발송 성공 후 슬롯 해제가 실패해도 결과를 반환한다(폴백 유발 금지)', async () => {
+      const release = jest.fn().mockRejectedValue(new Error('slot release failed'));
+      const { service } = createService({ cutoverMigratedAt: new Date(), release });
+
+      await expect(
+        service.trackAlimTalk(
+          {
+            orderDeliveryId,
+            slotOp: DeliveryExclusiveOp.MESSAGE_SEND,
+            attemptType: MessageAttemptType.INITIAL,
+            sendReason: 'COUPON',
+          },
+          async () => ({ report: { code: 'A000' } }),
+          (result) => result.report.code === 'A000',
+        ),
+      ).resolves.toMatchObject({ report: { code: 'A000' } });
+    });
+
+    it('발송 자체가 실패하면 기록 실패로 덮지 않고 원인을 그대로 던진다', async () => {
+      const update = jest.fn().mockResolvedValueOnce({ affected: 1 }).mockRejectedValue(new Error('db down'));
+      const { service } = createService({ update });
+
+      await expect(
+        service.trackAlimTalk(
+          {
+            orderDeliveryId,
+            slotOp: DeliveryExclusiveOp.MESSAGE_SEND,
+            attemptType: MessageAttemptType.INITIAL,
+            sendReason: 'COUPON',
+          },
+          async () => {
+            throw new Error('infobank timeout');
+          },
+          () => true,
+        ),
+      ).rejects.toThrow('infobank timeout');
+    });
+
     it('비동기 경로(awaitsReport)의 POST 수락은 미확정(TRACKING)으로 남긴다', async () => {
       const { service, update, markDelivered } = createService();
 
