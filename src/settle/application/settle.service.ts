@@ -1851,9 +1851,18 @@ export class SettleService {
     const applyUserExcelFilters = <T extends SelectQueryBuilder<any>>(qb: T): T => {
       qb.where('order.status IN (:...status)', { status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'] });
 
+      // 발행 = 두 리포트 중 하나라도 발행됨(OR), 미발행 = 둘 다 미발행(AND).
+      // 두 조건이 서로의 여집합이라 모든 주문이 정확히 한쪽에만 속한다.
+      // (AND/AND 였을 때는 한쪽만 발행된 주문이 발행·미발행 어느 목록에도 안 잡혔다.
+      //  발송완료리포트와 거래명세서는 발행 엔드포인트가 분리돼 있어 한쪽만 발행이 정상 동선이다.)
       if (isPublished === true) {
-        qb.andWhere('order.deliveryCompleteReportCount > 0');
-        qb.andWhere('order.orderCompleteReportCount > 0');
+        qb.andWhere(
+          new Brackets((qb2: SelectQueryBuilder<any>) => {
+            qb2
+              .where('order.deliveryCompleteReportCount > 0')
+              .orWhere('order.orderCompleteReportCount > 0');
+          }),
+        );
       }
 
       if (isPublished === false) {
@@ -2987,10 +2996,13 @@ export class SettleService {
       status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'],
     });
 
+    // 발행 = 하나라도 발행(OR), 미발행 = 둘 다 미발행(AND). 엑셀 필터(applyUserExcelFilters)와 동일 규칙.
     if (isPublished === true) {
-      queryBuilder = queryBuilder
-        .andWhere('order.deliveryCompleteReportCount > 0')
-        .andWhere('order.orderCompleteReportCount > 0');
+      queryBuilder = queryBuilder.andWhere(
+        new Brackets((qb: SelectQueryBuilder<any>) => {
+          qb.where('order.deliveryCompleteReportCount > 0').orWhere('order.orderCompleteReportCount > 0');
+        }),
+      );
     }
 
     if (isPublished === false) {
