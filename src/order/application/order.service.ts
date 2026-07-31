@@ -1813,8 +1813,13 @@ export class OrderService {
       throw new BadRequestException('주문이 존재하지 않습니다.');
     }
 
+    // 컬럼과 activity_log 가 같은 값을 쓰도록 한 번만 확정한다. 각자 계산하면 source 미전송 시
+    // 컬럼은 DOCUMENT, 로그는 undefined 가 되어 같은 발행 사건의 두 기록이 어긋난다
+    // (이력 조회의 '발행경로'가 빈칸으로 나오고, 프론트는 레거시 null 행과 구별하지 못한다).
+    const resolvedSource = getBody.source || IReportSource.DOCUMENT;
+
     order.deliveryCompleteReportCount++;
-    order.deliveryReportLastSource = getBody.source || IReportSource.DOCUMENT;
+    order.deliveryReportLastSource = resolvedSource;
 
     await this.orderRepository.save(order);
 
@@ -1829,7 +1834,7 @@ export class OrderService {
       statusCode: 200,
       result: ActivityLogResult.SUCCESS,
       responseTime: 0,
-      requestParams: { orderId: getBody.id, source: getBody.source, unmasked: getBody.unmasked === true },
+      requestParams: { orderId: getBody.id, source: resolvedSource, unmasked: getBody.unmasked === true },
     });
 
     return;
@@ -1953,8 +1958,11 @@ export class OrderService {
       throw new BadRequestException('주문이 존재하지 않습니다.');
     }
 
+    // 컬럼/로그 단일 확정 — 발송완료리포트 경로와 동일한 이유.
+    const resolvedSource = getBody.source || IReportSource.DOCUMENT;
+
     order.orderCompleteReportCount++;
-    order.transactionStatementLastSource = getBody.source || IReportSource.DOCUMENT;
+    order.transactionStatementLastSource = resolvedSource;
 
     await this.orderRepository.save(order);
 
@@ -1969,7 +1977,7 @@ export class OrderService {
       statusCode: 200,
       result: ActivityLogResult.SUCCESS,
       responseTime: 0,
-      requestParams: { orderId: getBody.id, source: getBody.source },
+      requestParams: { orderId: getBody.id, source: resolvedSource },
     });
 
     return;
