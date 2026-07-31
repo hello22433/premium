@@ -17,11 +17,16 @@ import { IReportSource } from '../../order/interface/report.source';
 
 const makeService = (rows: any[]) => {
   const service = Object.create(ActivityLogService.prototype) as any;
-  const captured: { actionTypes?: string[] } = {};
+  const captured: { actionTypes?: string[]; conditions: string[]; params: Record<string, unknown> } = {
+    conditions: [],
+    params: {},
+  };
 
   const qb: any = {
     where: jest.fn().mockReturnThis(),
-    andWhere: jest.fn((_condition: string, params?: Record<string, unknown>) => {
+    andWhere: jest.fn((condition: string, params?: Record<string, unknown>) => {
+      captured.conditions.push(condition);
+      if (params) Object.assign(captured.params, params);
       if (params && 'actionTypes' in params) {
         captured.actionTypes = params.actionTypes as string[];
       }
@@ -91,6 +96,53 @@ describe('getOrderReportHistory — 기존 동작 보존', () => {
     await service.getOrderReportHistory(6142, 'DESTRUCTION_CERTIFICATE_EMAIL');
 
     expect(captured.actionTypes).toEqual(['DESTRUCTION_CERTIFICATE_EMAIL']);
+  });
+});
+
+describe('getOrderReportHistory — 실패한 발송은 이력이 아니다', () => {
+  // sendReportEmail 은 발송 실패 시에도 같은 actionType 으로 로그를 남긴다(result=FAILURE).
+  // 응답 DTO 에 result 필드가 없어 화면에서 성공 행과 구별할 수 없으므로, 실패 행이 섞이면
+  // 운영자가 "이미 보냈다"로 읽고 재발송하지 않아 고객사가 리포트를 영영 못 받는다.
+  it('성공 건만 조회하도록 result 조건을 건다', async () => {
+    const { service, captured } = makeService([]);
+
+    await service.getOrderReportHistory(6142, 'DELIVERY_COMPLETE_REPORT');
+
+    expect(captured.conditions).toContain('activityLog.result = :succeeded');
+    expect(captured.params.succeeded).toBe('O');
+  });
+
+  it('_EMAIL 직접 조회에도 동일하게 적용된다', async () => {
+    const { service, captured } = makeService([]);
+
+    await service.getOrderReportHistory(6142, 'DELIVERY_COMPLETE_REPORT_EMAIL');
+
+    expect(captured.conditions).toContain('activityLog.result = :succeeded');
+  });
+});
+
+describe('getOrderReportHistory — 미검증 reportType 방어', () => {
+  // reportType 은 @IsString() 뿐이라 임의 문자열이 도달한다. 매핑을 객체 리터럴로 두면
+  // 'constructor' 같은 프로토타입 멤버가 truthy 로 잡혀 ?? 폴백이 안 걸리고, 그 함수가
+  // IN (:...actionTypes) 로 흘러가 드라이버에서 TypeError → 500 이 된다.
+  it.each(['constructor', 'toString', '__proto__', 'valueOf', 'hasOwnProperty'])(
+    "'%s' 를 받아도 프로토타입 멤버를 집지 않고 그 문자열로만 조회한다",
+    async (evil) => {
+      const { service, captured } = makeService([]);
+
+      await service.getOrderReportHistory(6142, evil as any);
+
+      expect(captured.actionTypes).toEqual([evil]);
+      expect(captured.actionTypes!.every((t) => typeof t === 'string')).toBe(true);
+    },
+  );
+
+  it('알 수 없는 리포트 타입은 그 타입 단독으로 조회한다 (빈 결과)', async () => {
+    const { service, captured } = makeService([]);
+
+    await service.getOrderReportHistory(6142, 'TRANSACTION_STATMENT' as any);
+
+    expect(captured.actionTypes).toEqual(['TRANSACTION_STATMENT']);
   });
 });
 

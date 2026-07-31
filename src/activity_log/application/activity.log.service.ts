@@ -114,7 +114,7 @@ export class ActivityLogService {
   async getActivityLogList(dto: GetActivityLogListReqDto): Promise<GetActivityLogListResDto> {
     const { startAt, endAt, actionType, searchKeyword, page, take } = dto;
 
-    let queryBuilder = this.activityLogRepository
+    const queryBuilder = this.activityLogRepository
       .createQueryBuilder('activityLog')
       .where('activityLog.deletedAt IS NULL');
 
@@ -340,11 +340,16 @@ export class ActivityLogService {
    * — 발행됐다고 표시해 놓고 근거를 못 보여주는 상태. 기본 타입 조회에 *_EMAIL 을 합쳐 해소한다.
    *
    * *_EMAIL 을 직접 지정한 조회(인쇄 화면들)는 그대로 이메일 이력만 받는다.
+   *
+   * ⚠️ 반드시 Map 이어야 한다. 객체 리터럴로 두면 미검증 쿼리스트링이 프로토타입 체인을 탄다 —
+   * ?reportType=constructor 는 `obj['constructor']` 가 Object 생성자(truthy)를 돌려줘 `??` 폴백이
+   * 발동하지 않고, 그 함수가 IN (:...actionTypes) 로 흘러가 드라이버에서 TypeError → 500 이 된다
+   * (toString / __proto__ / valueOf 도 동일). Map 은 자체 키만 보므로 이 경로가 닫힌다.
    */
-  private static readonly REPORT_HISTORY_ACTION_TYPES: Record<string, string[]> = {
-    DELIVERY_COMPLETE_REPORT: ['DELIVERY_COMPLETE_REPORT', 'DELIVERY_COMPLETE_REPORT_EMAIL'],
-    TRANSACTION_STATEMENT: ['TRANSACTION_STATEMENT', 'TRANSACTION_STATEMENT_EMAIL'],
-  };
+  private static readonly REPORT_HISTORY_ACTION_TYPES = new Map<string, string[]>([
+    ['DELIVERY_COMPLETE_REPORT', ['DELIVERY_COMPLETE_REPORT', 'DELIVERY_COMPLETE_REPORT_EMAIL']],
+    ['TRANSACTION_STATEMENT', ['TRANSACTION_STATEMENT', 'TRANSACTION_STATEMENT_EMAIL']],
+  ]);
 
   /**
    * 주문별 발행 이력 조회 (발송완료리포트/거래명세서/이메일발송)
@@ -360,12 +365,17 @@ export class ActivityLogService {
       | 'TRANSACTION_STATEMENT_EMAIL'
       | 'DESTRUCTION_CERTIFICATE_EMAIL',
   ): Promise<{ userEmail: string; createdAt: string; source: string | null; to: string | null; cc: string | null }[]> {
-    const actionTypes = ActivityLogService.REPORT_HISTORY_ACTION_TYPES[reportType] ?? [reportType];
+    const actionTypes = ActivityLogService.REPORT_HISTORY_ACTION_TYPES.get(reportType) ?? [reportType];
 
     const logs = await this.activityLogRepository
       .createQueryBuilder('activityLog')
       .where('activityLog.deletedAt IS NULL')
       .andWhere('activityLog.actionType IN (:...actionTypes)', { actionTypes })
+      // 성공 건만 "발행 이력"이다. sendReportEmail 은 발송 실패 시에도 같은 actionType 으로
+      // 로그를 남기는데(statusCode 500 / result FAILURE), 응답 DTO 에는 result 필드가 없어
+      // 화면에서 성공 행과 구별할 방법이 없다. 걸러내지 않으면 운영자가 실패한 발송을
+      // "이미 보냈다"로 읽고 재발송하지 않아 고객사가 리포트를 영영 못 받는다.
+      .andWhere('activityLog.result = :succeeded', { succeeded: ActivityLogResult.SUCCESS })
       .andWhere("JSON_EXTRACT(activityLog.requestParams, '$.orderId') = :orderId", { orderId })
       .orderBy('activityLog.createdAt', 'DESC')
       .getMany();
