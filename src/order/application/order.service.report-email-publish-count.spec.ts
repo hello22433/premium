@@ -34,11 +34,20 @@ const makeEmailBody = (orderId = 6142) =>
 type SetupOptions = {
   sendSuccess?: boolean;
   order?: unknown;
+  counterUpdateFails?: boolean;
 };
 
-const setupService = ({ sendSuccess = true, order = { id: 6142 } }: SetupOptions = {}) => {
+const setupService = ({ sendSuccess = true, order = { id: 6142 }, counterUpdateFails = false }: SetupOptions = {}) => {
   const service = Object.create(OrderService.prototype) as any;
   const callOrder: string[] = [];
+  const loggedErrors: string[] = [];
+  service.logger = {
+    error: jest.fn((message: string) => {
+      loggedErrors.push(message);
+    }),
+    warn: jest.fn(),
+    log: jest.fn(),
+  };
 
   // 원자 UPDATE 한 문장을 재현하는 최소 QueryBuilder 스텁.
   // set() 에 넘어간 페이로드와 where 조건을 그대로 붙잡아 단언에 쓴다.
@@ -58,6 +67,9 @@ const setupService = ({ sendSuccess = true, order = { id: 6142 } }: SetupOptions
       execute: jest.fn(async () => {
         callOrder.push('update');
         updateCalls.push(captured);
+        if (counterUpdateFails) {
+          throw new Error('Deadlock found when trying to get lock');
+        }
         return { affected: 1 };
       }),
     };
@@ -92,7 +104,7 @@ const setupService = ({ sendSuccess = true, order = { id: 6142 } }: SetupOptions
     }),
   };
 
-  return { service, callOrder };
+  return { service, callOrder, loggedErrors };
 };
 
 describe('sendDeliveryCompleteReportEmail — 발송완료리포트 이메일 발행 카운트', () => {
@@ -237,6 +249,45 @@ describe('메일 발송 실패 시', () => {
     const logArg = service.activityLogService.createLog.mock.calls[0][0];
     expect(logArg.statusCode).toBe(500);
     expect(logArg.actionType).toBe('DELIVERY_COMPLETE_REPORT_EMAIL');
+  });
+});
+
+describe('메일 발송 성공 후 카운터 갱신이 실패하면 (best-effort)', () => {
+  // 이 시점엔 메일이 이미 고객사로 나갔다. 여기서 500 을 올리면 운영자가 "전송 실패"로 읽고
+  // 재시도해 고객사가 같은 메일을 두 번 받는다. 집계 누락은 백필 가능하지만 중복 발송은 불가.
+  it('예외를 삼키고 성공 응답을 돌려준다 (중복 발송 유발 금지)', async () => {
+    const { service } = setupService({ counterUpdateFails: true });
+
+    const result = await service.sendDeliveryCompleteReportEmail(makeEmailBody(), BASE_USER, IP);
+
+    expect(result.success).toBe(true);
+  });
+
+  it('집계 실패를 추적 가능하도록 error 로그를 남긴다', async () => {
+    const { service, loggedErrors } = setupService({ counterUpdateFails: true });
+
+    await service.sendDeliveryCompleteReportEmail(makeEmailBody(), BASE_USER, IP);
+
+    expect(loggedErrors).toHaveLength(1);
+    expect(loggedErrors[0]).toContain('6142');
+    expect(loggedErrors[0]).toContain('deliveryCompleteReportCount');
+    expect(loggedErrors[0]).toContain('Deadlock');
+  });
+
+  it('거래명세서 경로도 동일하게 성공 응답한다', async () => {
+    const { service } = setupService({ counterUpdateFails: true });
+
+    const result = await service.sendTransactionStatementReportEmail(makeEmailBody(), BASE_USER, IP);
+
+    expect(result.success).toBe(true);
+  });
+
+  it('메일 발송 자체가 실패한 경우는 여전히 500 이다 (best-effort 는 발송 이후에만 적용)', async () => {
+    const { service } = setupService({ sendSuccess: false });
+
+    await expect(service.sendDeliveryCompleteReportEmail(makeEmailBody(), BASE_USER, IP)).rejects.toBeInstanceOf(
+      InternalServerErrorException,
+    );
   });
 });
 

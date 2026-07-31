@@ -5906,18 +5906,30 @@ export class OrderService {
     // count=1 / source=NULL 이 남아 formatReportStatus 폴백이 '다운로드 완료'로 오표시한다
     // (아무도 다운로드한 적 없는데). 증가는 DB 측 `col + 1` 이라 동시 요청에도 유실되지 않는다.
     //
+    // best-effort: 실패해도 throw 하지 않는다. 이 시점엔 메일이 이미 고객사로 나갔으므로(비가역),
+    // 여기서 500 을 올리면 운영자가 "전송 실패"로 읽고 재시도해 고객사가 같은 메일을 두 번 받는다.
+    // 집계 누락은 activity_log(actionType=*_EMAIL)로 사후 백필할 수 있지만 중복 발송은 되돌릴 수 없다.
+    // → 발송 결과를 진실대로 성공으로 응답하고, 집계 실패는 로그로 남겨 추적한다.
     if (logMeta.counter) {
       const { countColumn, sourceColumn } = logMeta.counter;
-      const countDbColumn = this.orderRepository.metadata.findColumnWithPropertyName(countColumn)!.databaseName;
-      await this.orderRepository
-        .createQueryBuilder()
-        .update(OrderEntity)
-        .set({
-          [countColumn]: () => `\`${countDbColumn}\` + 1`,
-          [sourceColumn]: IReportSource.EMAIL,
-        } as QueryDeepPartialEntity<OrderEntity>)
-        .where('id = :id', { id: orderId })
-        .execute();
+      try {
+        const countDbColumn = this.orderRepository.metadata.findColumnWithPropertyName(countColumn)!.databaseName;
+        await this.orderRepository
+          .createQueryBuilder()
+          .update(OrderEntity)
+          .set({
+            [countColumn]: () => `\`${countDbColumn}\` + 1`,
+            [sourceColumn]: IReportSource.EMAIL,
+          } as QueryDeepPartialEntity<OrderEntity>)
+          .where('id = :id', { id: orderId })
+          .execute();
+      } catch (error) {
+        this.logger.error(
+          `[REPORT] 메일 발송은 성공했으나 발행 카운트 반영 실패 — 정산 목록에 미발행으로 남는다. ` +
+            `orderId: ${orderId}, column: ${countColumn}, actionType: ${logMeta.actionType}, ` +
+            `message: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
     }
 
     return {
