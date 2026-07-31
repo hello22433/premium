@@ -13,6 +13,7 @@ import { applyReplaceCharacters } from '../../common/utils/replace-characters.ut
 import { resolveExpireDays, couponTokenExpiry } from '../../common/utils/expire.util';
 import { OrderEntity } from '../../entity/order.entity';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
+import { DESTROYED_AT_SOURCE } from '../../order/domain/destroyed.at.source';
 import { OrderHistoryEntity } from '../../entity/order.history.entity';
 import { OrderRealProductEntity } from '../../entity/order.real.product.entity';
 import { OrderRealProductMappingEntity } from '../../entity/order.real.product.mapping.entity';
@@ -3345,7 +3346,9 @@ export class DeliveryBatchService {
         await this.orderDeliveryRepository
           .createQueryBuilder()
           .update(OrderDeliveryEntity)
-          .set({ destroyedAt: now })
+          // destroyedAtSource 를 함께 쓴다 — 이 값이 없으면 나중에 이 날짜가 실측인지
+          // 백필 추정인지 판별할 수 없다(날짜만으로는 구분 불가).
+          .set({ destroyedAt: now, destroyedAtSource: DESTROYED_AT_SOURCE.BATCH })
           .where('id IN (:...ids)', { ids: stampIdList })
           .execute();
       }

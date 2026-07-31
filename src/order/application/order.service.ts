@@ -1774,13 +1774,21 @@ export class OrderService {
       // 가장 이른 날'. 보고서 PDF 가 orderProductMapping.sendRequestAt + N일로 자체 계산하던 것을
       // 대신할 값으로 **추가**한다(기존 requestToDestroyPersonalInfoDay 는 그대로 두므로, 실제
       // 교체는 프론트가 이 필드를 쓰기 시작할 때 일어난다).
-      // 값은 위 :1638 에서 tip 포함 집합으로 계산해 둔 것이다. 계산 불가 시 null 이며, 그때
-      // 종전 계산으로 폴백하는 것은 프론트와의 합의사항이다(이 레포가 강제하지는 못한다).
-      // ⚠️ 폴백 기준이 이 값과 다르다는 점에 주의(리뷰 MEDIUM). 폴백이 쓰는
-      // requestToDestroyPersonalInfoDay 는 firstMapping 대표값인데 effectiveDestroyAt 은 전 매핑
-      // MAX 라, 상품별 파기일수가 다른 다상품 주문에서는 두 경로가 다른 날짜를 낸다. 기존 필드의
-      // 의미를 바꾸면 파기일수 편집 API(order.controller.ts 상품매핑 개인정보파기일 변경)와
-      // 충돌하므로 값은 그대로 두고 DTO 설명에 대표값임을 명시했다.
+      // 값은 tip 포함 집합으로 미리 계산해 둔 것이다.
+      //
+      // ★ 계산 불가 시 null 이고, **프론트는 그때 자체 계산으로 폴백하면 안 된다**(계약 변경).
+      //   종전에는 "null 이면 프론트가 발송일+파기일수로 폴백"을 합의사항으로 뒀는데, 그 식이
+      //   바로 이 필드를 만들게 한 오류의 원인이다. 서버가 정직하게 "모른다"고 답한 자리를
+      //   클라이언트가 추측으로 메우면, 백엔드가 정직해진 만큼 정확히 그만큼 프론트가 거짓말한다.
+      //   그 값이 파기확인서(대외 증빙)에 실리므로 허용할 수 없다.
+      //   → null 이면 빈 칸/"확인 필요"로 표시하도록 DTO 설명에 명시했고, 프론트 요청서에도
+      //     반영했다. 다만 **이 레포가 강제하지는 못한다** — 프론트 구현을 확인해야 완결된다.
+      //
+      // ⚠️ 폴백을 금지하는 또 다른 이유: 폴백이 쓰는 requestToDestroyPersonalInfoDay 는
+      // firstMapping 대표값인데 effectiveDestroyAt 은 전 매핑 MAX 라, 상품별 파기일수가 다른
+      // 다상품 주문에서는 두 경로가 애초에 다른 날짜를 낸다. 기존 필드의 의미를 바꾸면 파기일수
+      // 편집 API(order.controller.ts 상품매핑 개인정보파기일 변경)와 충돌하므로 값은 그대로 두고
+      // DTO 설명에 대표값임을 명시했다.
       effectiveDestroyAt: effectiveDestroyAt ? format(effectiveDestroyAt, DateDateFormatStr) : null,
       productList: productList,
       actualSendAt: actualSendAt,

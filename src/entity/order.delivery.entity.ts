@@ -82,6 +82,38 @@ export class OrderDeliveryEntity extends BaseEntity {
   @Column({ type: 'datetime', nullable: true, comment: '개인정보 파기 실행 시각' })
   destroyedAt: Date | null;
 
+  /**
+   * destroyedAt 의 **출처**. 그 값이 사실인지 추정인지를 판별하는 유일한 근거다.
+   *
+   * ⚠️ 왜 별도 컬럼이 필요한가 — destroyedAt 에는 성격이 다른 값이 섞인다:
+   *      · 조기파기/정기파기가 각인한 값 → **사실**(그때 실제로 지웠다)
+   *      · 컬럼 신설 백필 §3 이 계산한 값 → **추정**(옛 규칙으로 역산)
+   *    그런데 날짜만 봐서는 어느 쪽인지 알 수 없다. 이 값이 파기확인서(대외 증빙)에 나가므로,
+   *    "이 날짜가 실제 기록입니까"에 답할 수 없다는 것은 감당하기 어려운 모호함이다.
+   *
+   *    시각으로 추론하려던 시도는 실패했다. `TIME = '00:00:00'` 이면 추정이라는 프록시는
+   *    양방향으로 틀린다 — 백필의 LEAST 가 NOW() 를 고른 추정 행은 자정이 아니고, 자정 크론
+   *    (0 0 * * *)이 찍는 **진짜 실측**은 자정이다. 조기파기 요청과의 매칭도 그 축만 답할 뿐
+   *    배치 실측과 백필 추정을 가르지 못한다. 그래서 값 자체에 출처를 적는다.
+   *
+   * 값:
+   *  · EARLY             조기파기 실행 시 각인 (early.destroy.service)          — 사실
+   *  · BATCH             정기파기 배치 실행 시 각인 (delivery.batch.service)     — 사실
+   *  · BACKFILL_EARLY    컬럼 신설 백필 §2. early_destroy_request.executed_at 복사 — 사실
+   *  · BACKFILL_ESTIMATE 컬럼 신설 백필 §3. `발송요청일 + 파기일수` 계산값        — **추정**
+   *
+   * 사실/추정 축으로는 BACKFILL_ESTIMATE 하나만 추정이다. 나머지 셋은 전부 실측이며,
+   * BACKFILL_* 접두는 "코드 경로가 아니라 일회성 마이그레이션이 기록했다"는 뜻이다.
+   *
+   * NULL 은 destroyedAt 이 NULL 인 행(아직 파기 안 됨)과, 백필 이전에 각인됐는데 출처를
+   * 모르는 행을 뜻한다. 후자는 정상 운영에서 나오지 않아야 한다.
+   *
+   * enum 이 아니라 varchar 인 이유: 값이 추가될 때 ALTER 를 다시 돌지 않기 위해서다.
+   * (이 레포는 스키마를 수기 SQL 로 관리하므로 ALTER 한 번의 비용이 작지 않다.)
+   */
+  @Column({ type: 'varchar', length: 20, nullable: true, comment: '파기 시각의 출처 (사실/추정 판별)' })
+  destroyedAtSource: string | null;
+
   @Column({ type: 'varchar', length: 256, nullable: true, comment: '트랜잭션 id' })
   transactionId: string | null;
 

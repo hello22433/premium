@@ -33,6 +33,22 @@ SET @sql := IF(@col_exists = 0,
   'SELECT 1');
 PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
 
+-- destroyed_at 의 **출처**. 그 값이 사실인지 추정인지를 판별하는 유일한 근거다.
+-- 날짜만으로는 구분할 수 없다 — 시각 기반 추론(자정이면 추정)은 양방향으로 틀린다:
+--   · §3 의 LEAST 가 NOW() 를 고른 **추정** 행은 자정이 아니다
+--   · 자정 크론(0 0 * * *)이 찍는 **진짜 실측**은 자정이다
+-- 이 값이 파기확인서(대외 증빙)에 나가므로 "이 날짜가 실제 기록입니까"에 답할 수 있어야 한다.
+-- 값: EARLY / BATCH / BACKFILL_EARLY(§2) / BACKFILL_ESTIMATE(§3)  — 추정은 마지막 하나뿐.
+-- 어휘 단일 소스는 src/order/domain/destroyed.at.source.ts 다. 한쪽을 바꾸면 다른 쪽도 바꿀 것.
+SET @src_exists := (
+  SELECT COUNT(*) FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'order_delivery' AND COLUMN_NAME = 'destroyed_at_source'
+);
+SET @sql := IF(@src_exists = 0,
+  'ALTER TABLE `order_delivery` ADD COLUMN `destroyed_at_source` varchar(20) NULL COMMENT ''파기 시각의 출처 (사실/추정 판별)'', ALGORITHM=INSTANT',
+  'SELECT 1');
+PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+
 -- ── 2. 백필 (1순위) — 조기파기 실적 ────────────────────────────────────────────
 -- early_destroy_request.executed_at 은 **실측**이다. 계산으로는 이 시점에 도달할 수 없으므로
 -- (조기파기는 예정일보다 앞당겨 지운다) 반드시 §3 보다 먼저 채운다.
@@ -96,7 +112,8 @@ JOIN (
   ) c
   GROUP BY c.delivery_id
 ) x ON x.delivery_id = od.id
-SET od.destroyed_at = x.destroyed_at
+SET od.destroyed_at = x.destroyed_at,
+    od.destroyed_at_source = 'BACKFILL_EARLY'   -- 실측(요청서 executed_at 복사)
 WHERE od.destroyed_at IS NULL
   AND od.delivery_target = '-';   -- 실제로 지워진 행에만 각인(기록과 행 상태 불일치 방어)
 
@@ -140,7 +157,8 @@ JOIN `order_product_mapping` opm ON opm.id = od.order_product_mapping_id
 SET od.destroyed_at = LEAST(
       DATE_ADD(DATE(opm.send_request_at), INTERVAL opm.request_to_destroy_personal_info_day DAY),
       NOW()
-    )
+    ),
+    od.destroyed_at_source = 'BACKFILL_ESTIMATE'   -- ★ 추정. 이 값만 사실이 아니다.
 WHERE od.destroyed_at IS NULL
   AND od.delivery_target = '-'
   AND opm.send_request_at IS NOT NULL
@@ -178,23 +196,26 @@ SELECT COUNT(*) AS `파기시각이_미래_반드시0`
 FROM `order_delivery` od
 WHERE od.destroyed_at > NOW();
 
--- 4-4. 실측(조기파기 실적) 각인 건수. **시각으로 실측/추정을 판별하지 말 것.**
---      처음에는 `TIME(destroyed_at) <> '00:00:00'` 을 실측 판별에 쓰려 했으나 양방향으로 틀린다:
---        · §3 의 LEAST 가 NOW() 를 고른 행은 자정이 아니다 → 추정인데 실측으로 분류
---        · 정기파기 크론은 자정에 돌므로 배포 후의 **진짜 실측**이 자정이다 → 실측인데 추정으로 분류
---      그래서 시각 대신 **조기파기 요청과 실제로 매칭되는지**로 센다(§2 와 같은 기준).
---      나머지(전체 - 이 수)는 정기파기 추정 또는 배포 후 배치 각인이며, 이 쿼리만으로는 그 둘을
---      구분할 수 없다 — 구분이 필요하면 destroyed_at_source 컬럼 도입을 검토할 것.
---      감사 대비로 이 결과를 실행 기록에 남길 것.
+-- 4-4. 출처별 분포. **감사 대비로 이 결과를 실행 기록에 반드시 남길 것.**
+--      "이 파기일이 사실인가 추정인가"에 답하는 유일한 근거다. 시각으로 판별하려던 초기 시도는
+--      양방향으로 틀렸다(§1 의 destroyed_at_source 주석 참조) — 그래서 출처를 값에 적는다.
+--      BACKFILL_ESTIMATE 만 추정이고 나머지는 실측이다. 이 수치가 곧 "추정으로 증빙되는 건수"다.
 SELECT
-  (SELECT COUNT(*) FROM `order_delivery` WHERE destroyed_at IS NOT NULL)             AS `전체_각인건수`,
-  (SELECT COUNT(DISTINCT od.id)
-     FROM `order_delivery` od
-     JOIN `early_destroy_request_item` i ON i.order_delivery_id = od.id
-       OR i.order_product_mapping_id = od.order_product_mapping_id
-     JOIN `early_destroy_request` r ON r.id = i.early_destroy_request_id
-       AND r.status = 'COMPLETED' AND r.executed_at = od.destroyed_at
-   )                                                                                 AS `조기파기_실측_일치`;
+  COALESCE(od.destroyed_at_source, '(출처미상)') AS `출처`,
+  COUNT(*)                                        AS `건수`,
+  CASE WHEN od.destroyed_at_source = 'BACKFILL_ESTIMATE' OR od.destroyed_at_source IS NULL
+       THEN '추정' ELSE '실측' END                AS `성격`
+FROM `order_delivery` od
+WHERE od.destroyed_at IS NOT NULL
+GROUP BY od.destroyed_at_source
+ORDER BY `건수` DESC;
+
+-- 4-6. 출처 누락 검증 — 파기 시각은 있는데 출처가 없는 행. 반드시 0 이어야 한다.
+--      0 이 아니면 각인 경로 중 하나가 출처를 안 쓰고 있다는 뜻이고, 그 행들은 사실/추정을
+--      영원히 판별할 수 없다.
+SELECT COUNT(*) AS `시각있는데_출처없음_반드시0`
+FROM `order_delivery`
+WHERE destroyed_at IS NOT NULL AND destroyed_at_source IS NULL;
 
 -- 4-5. §3 (나) 검증 — 파기일수 사후 편집으로 추정값이 실제와 어긋날 가능성이 있는 행.
 --      ⚠️ **과대 보고된다.** updated_at 은 파기일수뿐 아니라 그 매핑의 **어떤 컬럼이 바뀌어도**

@@ -308,6 +308,8 @@ describe('DeliveryBatchService.deliveryDeliveryTargetDestroy', () => {
     //   1970-01-01 이 박제되는 변경이 그린으로 지나간다. 커트오프(:now)와 같은 값이어야 한다.
     const [, cutoffParams] = selectQb.calls.where[0];
     expect(stamp.calls.set[0].destroyedAt).toBe(cutoffParams.now);
+    // 출처를 함께 적지 않으면 이 날짜가 실측인지 백필 추정인지 영원히 판별할 수 없다.
+    expect(stamp.calls.set[0].destroyedAtSource).toBe('BATCH');
   });
 
   it('부분 파기 재수집 행은 최초 파기일을 유지한다 (각인 대상에서 제외)', async () => {

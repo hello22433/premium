@@ -7,6 +7,7 @@ import { EarlyDestroyRequestItemEntity } from '../../entity/early.destroy.reques
 import { OrderEntity } from '../../entity/order.entity';
 import { OrderProductMappingEntity } from '../../entity/order.product.mapping.entity';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
+import { DESTROYED_AT_SOURCE } from '../domain/destroyed.at.source';
 import { OrderHistoryEntity } from '../../entity/order.history.entity';
 import { OrderDeliveryRefundStatusEnum } from '../../delivery/interface/order.delivery.refund.status.enum';
 import { IOrderStatus } from '../interface/order.status';
@@ -322,7 +323,9 @@ export class EarlyDestroyService {
       await this.orderDeliveryRepository
         .createQueryBuilder()
         .update(OrderDeliveryEntity)
-        .set({ destroyedAt })
+        // destroyedAtSource 를 함께 쓴다 — 이 값이 없으면 나중에 이 날짜가 실측인지
+        // 백필 추정인지 판별할 수 없다(날짜만으로는 구분 불가).
+        .set({ destroyedAt, destroyedAtSource: DESTROYED_AT_SOURCE.EARLY })
         .where('id IN (:...ids)', { ids: stampIdList })
         .execute();
     }

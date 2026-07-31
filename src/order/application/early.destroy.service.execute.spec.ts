@@ -137,7 +137,8 @@ describe('EarlyDestroyService.executeRequest — C-1 order_history type 필터',
       await sut.executeRequest(1, user);
 
       expect(deliveryQb.calls.set[0]).not.toHaveProperty('destroyedAt');
-      expect(deliveryQb.calls.set[1]).toEqual({ destroyedAt: expect.any(Date) });
+      // 출처를 함께 적지 않으면 이 날짜가 실측인지 백필 추정인지 영원히 판별할 수 없다.
+      expect(deliveryQb.calls.set[1]).toEqual({ destroyedAt: expect.any(Date), destroyedAtSource: 'EARLY' });
       expect(deliveryQb.calls.where[1][1].ids).toEqual([101]);
     });
 
