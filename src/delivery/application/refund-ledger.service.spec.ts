@@ -9,7 +9,7 @@ jest.mock('typeorm-transactional', () => ({
 import { BadRequestException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { EntityManager, QueryFailedError, Repository } from 'typeorm';
+import { DataSource, EntityManager, QueryFailedError, Repository } from 'typeorm';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { OrderDeliveryRefundEntity } from '../../entity/order.delivery.refund.entity';
 import { ClaimRefundInput, RefundLedgerService } from './refund-ledger.service';
@@ -116,6 +116,8 @@ describe('RefundLedgerService', () => {
         RefundLedgerService,
         { provide: getRepositoryToken(OrderDeliveryRefundEntity), useValue: refundRepository },
         { provide: getRepositoryToken(OrderDeliveryEntity), useValue: deliveryRepository },
+        // 전환 건 claim 은 attempt 잠금과 INSERT 를 한 트랜잭션으로 묶는다(미전환 건은 사용하지 않는다).
+        { provide: DataSource, useValue: { transaction: jest.fn() } },
       ],
     }).compile();
 

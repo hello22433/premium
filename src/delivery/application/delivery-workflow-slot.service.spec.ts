@@ -153,13 +153,16 @@ describe('DeliveryWorkflowSlotService — Level A 배타 슬롯', () => {
       expect(sqlOf(conditions)).toContain('refunded_at IS NULL AND refund_status IS NULL');
     });
 
-    it('REFUND 는 미확정 refund_attempt 가 있으면 점유하지 못한다(단일 in-flight)', async () => {
+    it('REFUND 는 미확정 attempt 또는 이미 확정된 환불이 있으면 점유하지 못한다', async () => {
       const { service, conditions } = createService();
 
       await service.acquire({ orderDeliveryId, op: DeliveryExclusiveOp.REFUND });
 
       const guard = conditions.find((c) => c.sql.includes('refund_attempt'));
       expect(guard!.sql).toContain("'CLAIMED','SUBMITTING','RECONCILING','UNKNOWN'");
+      expect(sqlOf(conditions)).toContain(
+        "refunded_at IS NULL AND (refund_status IS NULL OR refund_status = 'FAILED')",
+      );
     });
 
     it('승인 없는 MANUAL_RESEND 는 OPS_REVIEW_REQUIRED 를 허용 상태에서 제외한다(four-eyes 우회 차단)', async () => {

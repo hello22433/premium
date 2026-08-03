@@ -92,6 +92,37 @@ describe('CustomerServiceService.restoreBalanceOnDiscard — refunded-proxy read
     );
   });
 
+  it('컷오버 폐기 환불은 refund_attempt fencing을 ledger claim까지 전달한다', async () => {
+    const claim = jest.fn().mockRejectedValue(new Error('REACHED_RESTORE'));
+    const sut = makeSut(false, claim);
+    const fencing = {
+      refundAttemptId: '91',
+      ownerToken: 'owner-1',
+      generation: '2',
+      workflowVersion: '7',
+      externalIdempotencyKey: 'cs-discard:5001:1',
+    };
+
+    await expect(
+      sut.restoreBalanceOnDiscard(
+        buildOrderDelivery(IOrderDeliveryStatus.COMPLETE),
+        operator,
+        queryRunnerWithUser(),
+        undefined,
+        fencing,
+      ),
+    ).rejects.toThrow(/REACHED_RESTORE/);
+
+    expect(sut.cutoverGuard.assertRefundExecutionAllowed).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orderDeliveryId: 5001,
+        fencing,
+      }),
+      expect.anything(),
+    );
+    expect(claim).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ refundExecution: fencing }));
+  });
+
   const legacyDiscardQueryRunner = () => {
     const builder: any = {
       update: () => builder,
