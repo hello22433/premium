@@ -16,6 +16,7 @@ FROM order_delivery od
 JOIN delivery_send_history dsh
   ON dsh.order_delivery_id = od.id
  AND dsh.is_success = 1
+ AND dsh.deleted_at IS NULL
 JOIN order_product_mapping opm
   ON opm.id = od.order_product_mapping_id
 JOIN `order` o
@@ -42,6 +43,7 @@ FROM order_delivery od
 JOIN delivery_send_history dsh
   ON dsh.order_delivery_id = od.id
  AND dsh.is_success = 1
+ AND dsh.deleted_at IS NULL
 JOIN order_product_mapping opm
   ON opm.id = od.order_product_mapping_id
 JOIN `order` o
@@ -74,6 +76,7 @@ LIMIT 100;
 --   FROM delivery_send_history
 --   WHERE is_success = 1
 --     AND order_delivery_id IS NOT NULL
+--     AND deleted_at IS NULL
 --   GROUP BY order_delivery_id
 -- ) dsh
 --   ON dsh.order_delivery_id = od.id
